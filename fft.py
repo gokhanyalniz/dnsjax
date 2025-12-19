@@ -14,6 +14,7 @@ mesh = jax.make_mesh(PDIMS, axis_names=('X', 'Z'))
 sharding = NamedSharding(mesh, P('X', 'Z'))
 
 def sx2k(vfieldx):
+    # TODO: Dealias!
     return jaxdecomp.fft.pfft3d(vfieldx)
 
 def sk2x(vfieldk):
@@ -41,5 +42,9 @@ KX = KX.reshape([1, 1, -1])
 KY = KY.reshape([1, -1, 1])
 KZ = KZ.reshape([-1, 1, 1])
 
-LAPL = KX**2 + KY**2 + KZ**2
-# INV_LAPL
+# TODO: do these in a way einsum works
+KVEC = [KX, KY, KZ]
+NABLA = [1j*k for k in KVEC]
+
+LAPL = -KX**2 -KY**2 -KZ**2
+INV_LAPL = np.where(LAPL > 0, 1/LAPL, 0)

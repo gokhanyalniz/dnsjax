@@ -40,8 +40,8 @@ WALL_CLOCK_LIMIT = -1.0
 I_FINISH = -1
 
 # Given 3x3 symmetric matrix M, entries M_{ij} will be used
-ISYM = np.array([1, 1, 1, 2, 2, 3],dtype=int)
-JSYM = np.array([1, 2, 3, 2, 3, 3],dtype=int)
+ISYM = np.array([0, 0, 0, 1, 1, 2],dtype=int)
+JSYM = np.array([0, 1, 2, 1, 2, 2],dtype=int)
 NSYM = np.zeros((6,6),dtype=int)
 
 for n in range(6):
