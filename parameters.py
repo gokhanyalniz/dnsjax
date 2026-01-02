@@ -75,7 +75,7 @@ LOCAL_SHAPE = (NXX // PDIMS[0], NZZ // PDIMS[1], NYY)
 AMP = np.pi**2
 
 QF = 1  # Forcing harmonic
-ICF = 0 # Forced component
+ICF = 0  # Forced component
 KF = 2 * np.pi * QF / LY
 
 EKIN_LAM = 1 / 4

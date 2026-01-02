@@ -71,7 +71,7 @@ KVEC = [KX, KY, KZ]
 
 # TODO: do these in a way einsum works
 
-LAPL = -KX**2 - KY**2 - KZ**2
+LAPL = -(KX**2) - KY**2 - KZ**2
 INV_LAPL = jnp.where(LAPL > 0, 1 / LAPL, 0)
 
 print("LAPL", LAPL.shape)
