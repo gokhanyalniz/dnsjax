@@ -11,9 +11,10 @@ def rhs_nonlin_term(vel_vfieldx):
     def rhs_vfieldk(n):
         return sx2k(rhs_vfieldx(n))
 
-    advect = -sum(
-        [1j * KVEC[n] * rhs_vfieldk[NSYM[n, :]] for n in range(3)]
-    )  # unclear if this will work
+    advect = [
+        -sum([1j * KVEC[n] * rhs_vfieldk[NSYM[n, j]] for n in range(3)])
+        for j in range(3)
+    ]
     div = sum([KVEC[n] * advect[n] for n in range(3)])
 
     fvel_vfieldk = np.array(
