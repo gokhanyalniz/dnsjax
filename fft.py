@@ -1,3 +1,4 @@
+# The FFT structure keeps the whole wavenumbers rather than just one half!
 import jax
 import jaxdecomp
 from jax import numpy as jnp
@@ -37,6 +38,11 @@ def sx2k(vfieldx):
 def sk2x(vfieldk):
     return jaxdecomp.fft.pifft3d(vfieldk).real
 
+def vx2k(vfieldx):
+    return jnp.array([sx2k(vfieldx[n]) for n in range(3)])
+
+def vk2x(vfieldk):
+    return jnp.array([sk2x(vfieldk[n]) for n in range(3)])
 
 _XARRAY = jax.make_array_from_callback(
     GLOBAL_SHAPE,

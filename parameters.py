@@ -27,7 +27,7 @@ I_PRINT_STEPS = 20
 I_SAVE_FIELDS = 2000
 
 # Time stepping
-dt = 0.025
+DT = 0.025
 IMPLICITNESS = 0.5
 STEPTOL = 1.0e-9
 DTMAX = 0.1
@@ -79,3 +79,6 @@ ICF = 0  # Forced component
 KF = 2 * np.pi * QF / LY
 
 EKIN_LAM = 1 / 4
+
+# others
+INVTDT = 1/DT
