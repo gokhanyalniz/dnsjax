@@ -7,12 +7,8 @@ from vfield import norm
 
 
 def precorr(vel_vfieldx_in, vel_vfieldk_in):
-    fvel_vfieldk = nonlin_term(vel_vfieldx_in)
-
-    timestep_nonlinterm_prev = jnp.copy(fvel_vfieldk)
-
-    # add the linear term to the rhs for others's use
-    fvel_vfieldk += (LAPL / RE) * vel_vfieldk_in
+    # TODO: Check the necessity of the Fourier transforms
+    timestep_nonlinterm_prev = nonlin_term(vel_vfieldx_in)
 
     # Prediction: u(n+1)_1 = ((1/dt + (1 - implicitness) L) u(n) + N(n)) /
     #                        (1/dt - implicitness L)
@@ -37,19 +33,19 @@ def precorr(vel_vfieldx_in, vel_vfieldk_in):
 
         error = norm(timestep_corfieldk)
 
-        timestep_nonlinterm_prev = timestep_nonlinterm_next
+        timestep_nonlinterm_prev = jnp.copy(timestep_nonlinterm_next)
 
         if error / pred_norm < STEPTOL:
             # accept step
             vel_vfieldk_out = timestep_prefieldk
 
-            # apply a bunch of symmetries
+            # TODO: apply a bunch of symmetries
 
             vel_vfieldx_out = vk2x(vel_vfieldk_out)
 
             break
 
-    vel_vfieldx_out = None
-    vel_vfieldk_out = None
-    fvel_vfieldk = None
-    return vel_vfieldx_out, vel_vfieldk_out, fvel_vfieldk
+        elif c == NCORR - 1:
+            exit("Timestep did not converge.")
+
+    return vel_vfieldx_out, vel_vfieldk_out
