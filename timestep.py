@@ -1,51 +1,54 @@
 from jax import numpy as jnp
 
-from fft import LAPL, vk2x
+from fft import INV_LAPL, KVEC, KX, KY, KZ, LAPL, vk2x
 from parameters import IMPLICITNESS, INVTDT, NCORR, RE, STEPTOL
 from rhs import nonlin_term
 from vfield import norm
 
 
-def precorr(vel_vfieldx_in, vel_vfieldk_in):
+def precorr(vfieldx, vfieldk):
     # TODO: Check the necessity of the Fourier transforms
-    timestep_nonlinterm_prev = nonlin_term(vel_vfieldx_in)
+    nonlinterm_prev = nonlin_term(vfieldx)
 
     # Prediction: u(n+1)_1 = ((1/dt + (1 - implicitness) L) u(n) + N(n)) /
     #                        (1/dt - implicitness L)
-    timestep_prefieldk = (
-        vel_vfieldk_in * (INVTDT + (1 - IMPLICITNESS) * LAPL / RE)
-        + timestep_nonlinterm_prev
+    prefieldk = (
+        vfieldk * (INVTDT + (1 - IMPLICITNESS) * LAPL / RE) + nonlinterm_prev
     ) / (INVTDT - IMPLICITNESS * LAPL / RE)
 
     for c in range(NCORR):
-        pred_norm = norm(timestep_prefieldk)
-        timestep_prefieldx = vk2x(timestep_prefieldk)
-        timestep_nonlinterm_next = nonlin_term(timestep_prefieldx)
+        pred_norm = norm(prefieldk)
+        prefieldx = vk2x(prefieldk)
+        nonlinterm_next = nonlin_term(prefieldx)
 
         # Now we have N(n+1)^c in state(:,:,:,1:3)
 
-        timestep_corfieldk = (
+        corfieldk = (
             IMPLICITNESS
-            * (timestep_nonlinterm_next - timestep_nonlinterm_prev)
+            * (nonlinterm_next - nonlinterm_prev)
             / (INVTDT - IMPLICITNESS * LAPL / RE)
         )
-        timestep_prefieldk += timestep_corfieldk
+        prefieldk += corfieldk
 
-        error = norm(timestep_corfieldk)
+        error = norm(corfieldk)
 
-        timestep_nonlinterm_prev = jnp.copy(timestep_nonlinterm_next)
+        nonlinterm_prev = nonlinterm_next
 
         if error / pred_norm < STEPTOL:
             # accept step
-            vel_vfieldk_out = timestep_prefieldk
+
+            dp = jnp.sum(INV_LAPL * KVEC * prefieldk, axis=0)
+            prefieldk += dp * KVEC
+
+            vfieldk_out = jnp.where((KX == 0) & (KY == 0) & (KZ == 0), 0, prefieldk)
 
             # TODO: apply a bunch of symmetries
 
-            vel_vfieldx_out = vk2x(vel_vfieldk_out)
+            vfieldx_out = vk2x(vfieldk_out)
 
             break
 
         elif c == NCORR - 1:
             exit("Timestep did not converge.")
 
-    return vel_vfieldx_out, vel_vfieldk_out
+    return vfieldx_out, vfieldk_out

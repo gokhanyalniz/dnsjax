@@ -1,12 +1,12 @@
 from jax import numpy as jnp
 
 from fft import FORCE, INV_LAPL, KVEC, LAPL, sx2k
-from parameters import ICF, ISYM, JSYM, NSYM, RE
+from parameters import FORCING, ICF, ISYM, JSYM, NSYM, RE
 
 
-def nonlin_term(vel_vfieldx):
+def nonlin_term(vfieldx):
     def rhs_vfieldx(n):
-        return vel_vfieldx[ISYM[n]] * vel_vfieldx[JSYM[n]]
+        return vfieldx[ISYM[n]] * vfieldx[JSYM[n]]
 
     def rhs_vfieldk(n):
         return sx2k(rhs_vfieldx(n))
@@ -17,21 +17,16 @@ def nonlin_term(vel_vfieldx):
             for m in range(3)
         ]
     )
-    div = sum([KVEC[n] * advect[n] for n in range(3)])
+    div = jnp.sum(KVEC * advect, axis=0)
 
-    fvel_vfieldk = jnp.array(
-        [
-            advect[n] + div * INV_LAPL * KVEC[n] + FORCE
-            if n == ICF
-            else advect[n] + div * INV_LAPL * KVEC[n]
-            for n in range(3)
-        ]
-    )
+    fvel_vfieldk = advect + div * INV_LAPL * KVEC
+    if FORCING != 0:
+        fvel_vfieldk = fvel_vfieldk.at[ICF].add(FORCE)
 
     return fvel_vfieldk
 
 
-def nonlin_plus_lapl(vel_vfieldx, vel_vfieldk):
-    fvel_vfieldk = nonlin_term(vel_vfieldx) + (LAPL / RE) * vel_vfieldk
+def nonlin_plus_lapl(vfieldx, vfieldk):
+    fvel_vfieldk = nonlin_term(vfieldx) + (LAPL / RE) * vfieldk
 
     return fvel_vfieldk
