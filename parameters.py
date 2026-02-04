@@ -1,4 +1,4 @@
-import numpy as np
+from jax import numpy as jnp
 
 # Geometry and discretization
 NX = 64
@@ -6,6 +6,7 @@ NY = 12
 NZ = 48
 
 SUBSAMP_FAC = 2  # SUBSAMP_FAC / 2 dealiasing
+# TODO: Make sure it works with =3
 
 # Domain lengths
 LX = 4.0
@@ -37,16 +38,28 @@ NCORR = 10
 WALL_CLOCK_LIMIT = -1.0
 I_FINISH = -1
 
+# Physics
+AMP = jnp.pi**2
+
+QF = 1  # Forcing harmonic
+ICF = 0  # Forced component
+KF = 2 * jnp.pi * QF / LY
+
+EKIN_LAM = 1 / 4
+
+# others
+INVTDT = 1 / DT
+
 # Given 3x3 symmetric matrix M, entries M_{ij} will be used
-ISYM = np.array([0, 0, 0, 1, 1, 2], dtype=int)
-JSYM = np.array([0, 1, 2, 1, 2, 2], dtype=int)
-NSYM = np.zeros((3, 3), dtype=int)
+ISYM = jnp.array([0, 0, 0, 1, 1, 2], dtype=int)
+JSYM = jnp.array([0, 1, 2, 1, 2, 2], dtype=int)
+NSYM = jnp.zeros((3, 3), dtype=int)
 
 for n in range(6):
     i = ISYM[n]
     j = JSYM[n]
-    NSYM[i, j] = n
-    NSYM[j, i] = n
+    NSYM = NSYM.at[i, j].set(n)
+    NSYM = NSYM.at[j, i].set(n)
 
 # Further definitions
 NX_HALF = NX // 2
@@ -63,22 +76,3 @@ NY_HALF_PAD1 = NY // 2 + 1
 DX = LX / NXX
 DY = LY / NYY
 DZ = LZ / NZZ
-
-# Parallelization
-PDIMS = [2, 2]  # to be read manually later
-
-GLOBAL_SHAPE = (NXX, NZZ, NYY)
-LOCAL_SHAPE = (NXX // PDIMS[0], NZZ // PDIMS[1], NYY)
-
-
-# Physics
-AMP = np.pi**2
-
-QF = 1  # Forcing harmonic
-ICF = 0  # Forced component
-KF = 2 * np.pi * QF / LY
-
-EKIN_LAM = 1 / 4
-
-# others
-INVTDT = 1/DT
