@@ -14,7 +14,6 @@ PDIMS = [2, 2]  # TODO: read manually later
 RANK = jax.process_index()
 
 MESH = jax.make_mesh(PDIMS, axis_names=("Z", "X"))
-SHARDING = NamedSharding(MESH, P("Z", "X"))
 
 # X shape: (ny, nz, nx)
 # Y shape: (nz, nx, ny)

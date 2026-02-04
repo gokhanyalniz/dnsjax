@@ -1,7 +1,10 @@
 from jax import numpy as jnp
+
 from fft import KX, KY
+from parameters import FORCING, KF
 
 # TODO; Check whether the spectral norms need normalization
+
 
 def inprod(vfieldk1, vfieldk2):
     # TODO: Broadcast the result
@@ -16,5 +19,13 @@ def norm2(vfieldk):
 def norm(vfieldk):
     return jnp.sqrt(inprod(vfieldk, vfieldk))
 
+
 def laminar():
-    
+    if FORCING == 0:
+        vfieldk = 0
+    elif FORCING == 1:
+        vfieldk = jnp.where((KX == 0) & (KY == KF), -1j * 0.5, 0)
+    elif FORCING == 2:
+        vfieldk = jnp.where((KX == 0) & (KY == KF), 0.5, 0)
+
+    return vfieldk
