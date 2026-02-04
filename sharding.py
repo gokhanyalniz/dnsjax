@@ -9,8 +9,8 @@ PDIMS = [2, 2]  # TODO: read manually later
 # TODO: Check if I can choose the axes to shard
 # - jaxdecomp.autotune for optimal meshing
 
-jax.config.update("jax_enable_x64", True)
-jax.distributed.initialize()
+# jax.config.update("jax_enable_x64", True)
+# jax.distributed.initialize()
 RANK = jax.process_index()
 
 MESH = jax.make_mesh(PDIMS, axis_names=("Z", "X"))

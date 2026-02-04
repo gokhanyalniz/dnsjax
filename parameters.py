@@ -1,7 +1,5 @@
 from jax import numpy as jnp
 
-from sharding import PDIMS
-
 # Geometry and discretization
 NX = 64
 NY = 12
@@ -78,9 +76,3 @@ NY_HALF_PAD1 = NY // 2 + 1
 DX = LX / NXX
 DY = LY / NYY
 DZ = LZ / NZZ
-
-K_GLOBAL_SHAPE = (NZZ, NXX, NYY)
-K_LOCAL_SHAPE = (NZZ // PDIMS[0], NXX // PDIMS[1], NYY)
-
-X_GLOBAL_SHAPE = (NYY, NZZ, NXX)
-X_LOCAL_SHAPE = (NYY // PDIMS[0], NZZ / PDIMS[1], NXX)
