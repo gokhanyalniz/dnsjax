@@ -7,7 +7,6 @@ from vfield import get_norm
 
 
 def timestep(velocity_spec, velocity_phys):
-    # TODO: Check the necessity of the Fourier transforms
     rhs_no_lapl_prev = get_rhs_no_lapl(velocity_phys)
 
     prediction = (
@@ -31,13 +30,10 @@ def timestep(velocity_spec, velocity_phys):
         rhs_no_lapl_prev = rhs_no_lapl_next
 
         if error / norm_prediction < STEPTOL:
-            # accept step
-
             correction_divergence = INV_LAPL * jnp.sum(KVEC * prediction, axis=0)
             prediction += correction_divergence * KVEC
 
-            # Mode 0 kept 0
-            # TODO: Check if needed
+            # Galilean invariance: set mean to 0
             velocity_spec_next = jnp.where(
                 (QX == 0) & (QY == 0) & (QZ == 0), 0, prediction
             )
