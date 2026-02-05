@@ -9,6 +9,7 @@ import vfield
 from parameters import DT, I_START, T_START
 from timestep import timestep
 
+# TODO: JIT all the things
 
 def dns():
 
