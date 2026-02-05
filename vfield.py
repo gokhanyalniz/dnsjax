@@ -11,7 +11,7 @@ from transform import NXX, NYY, NZZ, QX, QY, QZ
 
 
 def get_inprod(vector_spec_1, vector_spec_2):
-    return jnp.sum(jnp.conj(vector_spec_1) * vector_spec_2).real / 2
+    return jnp.sum(jnp.conj(vector_spec_1) * vector_spec_2).real
 
 
 def get_norm2(vector_spec):
@@ -23,7 +23,7 @@ def get_norm(vector_spec):
 
 
 def get_inprod_phys(vector_phys_1, vector_phys_2):
-    return NXX * NYY * NZZ * jnp.sum(vector_phys_1 * vector_phys_2) / 2
+    return NXX * NYY * NZZ * jnp.sum(vector_phys_1 * vector_phys_2)
 
 
 def get_laminar():

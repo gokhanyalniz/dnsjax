@@ -8,6 +8,7 @@ import transform
 import vfield
 from parameters import DT, I_START, T_START
 from timestep import timestep
+from stats import get_stats
 
 # TODO: JIT all the things
 
@@ -21,9 +22,8 @@ def dns():
     velocity_phys = transform.spec_to_phys_vector(velocity_spec)
 
     while True:
-        norm_phys = vfield.get_inprod_phys(velocity_phys, velocity_phys)
-        norm_spec = vfield.get_norm2(velocity_spec)
-        print(f"t = {t:.6f}", f"{norm_spec:.3f}", f"{norm_phys:.6f}")
+        stats = get_stats(velocity_spec)
+        print(f"t = {t:.6f}", *[f"{x}={y:.6f}" for x, y in stats.items()])
 
         velocity_spec, velocity_phys = timestep(velocity_spec, velocity_phys)
         t += DT
