@@ -7,7 +7,7 @@ PDIMS = [2, 2]  # TODO: read manually later
 
 RANK = jax.process_index()
 
-# TODO cuDecomp Backend: Transposed Mesh Requireds
+# TODO: With cuDecomp, transposed mesh is required
 MESH = jax.make_mesh(
     PDIMS, axis_names=("Z", "X"), axis_types=(AxisType.Auto, AxisType.Auto)
 )
