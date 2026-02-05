@@ -1,38 +1,38 @@
 from jax import numpy as jnp
 
-from fft import INV_LAPL, KVEC, KX, KY, KZ, LAPL, vk2x
+from fft import INV_LAPL, KVEC, KX, KY, KZ, LAPL, spect_to_phys_vector
 from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL
-from rhs import nonlin_term
+from rhs import compute_rhs_no_lapl
 from vfield import norm
 
 
-def precorr(vfieldx, vfieldk):
+def timestep(vfieldx, vfieldk):
     # TODO: Check the necessity of the Fourier transforms
-    nonlinterm_prev = nonlin_term(vfieldx)
+    rhs_no_lapl_prev = compute_rhs_no_lapl(vfieldx)
 
     # Prediction: u(n+1)_1 = ((1/dt + (1 - implicitness) L) u(n) + N(n)) /
     #                        (1/dt - implicitness L)
     prefieldk = (
-        vfieldk * (1 / DT + (1 - IMPLICITNESS) * LAPL / RE) + nonlinterm_prev
+        vfieldk * (1 / DT + (1 - IMPLICITNESS) * LAPL / RE) + rhs_no_lapl_prev
     ) / (1 / DT - IMPLICITNESS * LAPL / RE)
 
     for c in range(NCORR):
         pred_norm = norm(prefieldk)
-        prefieldx = vk2x(prefieldk)
-        nonlinterm_next = nonlin_term(prefieldx)
+        prefieldx = spect_to_phys_vector(prefieldk)
+        nonlinterm_next = compute_rhs_no_lapl(prefieldx)
 
         # Now we have N(n+1)^c in state(:,:,:,1:3)
 
         corfieldk = (
             IMPLICITNESS
-            * (nonlinterm_next - nonlinterm_prev)
+            * (nonlinterm_next - rhs_no_lapl_prev)
             / (1 / DT - IMPLICITNESS * LAPL / RE)
         )
         prefieldk += corfieldk
 
         error = norm(corfieldk)
 
-        nonlinterm_prev = nonlinterm_next
+        rhs_no_lapl_prev = nonlinterm_next
 
         if error / pred_norm < STEPTOL:
             # accept step
@@ -46,7 +46,7 @@ def precorr(vfieldx, vfieldk):
 
             # TODO: apply a bunch of symmetries
 
-            vfieldx_out = vk2x(vfieldk_out)
+            vfieldx_out = spect_to_phys_vector(vfieldk_out)
 
             break
 

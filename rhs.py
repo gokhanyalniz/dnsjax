@@ -1,33 +1,33 @@
 from jax import numpy as jnp
 
-from fft import FORCE, INV_LAPL, KVEC, LAPL, sx2k
+from fft import FORCE, INV_LAPL, KVEC, LAPL, phys_to_spec_scalar
 from parameters import FORCING, IC_F, ISYM, JSYM, NSYM, RE
 
 
-def nonlin_term(vfieldx):
-    def rhs_vfieldx(n):
+def compute_rhs_no_lapl(vfieldx):
+    def compute_nonlin_term_phys(n):
         return vfieldx[ISYM[n]] * vfieldx[JSYM[n]]
 
-    def rhs_vfieldk(n):
-        return sx2k(rhs_vfieldx(n))
+    def compute_nonlin_term_spec(n):
+        return phys_to_spec_scalar(compute_nonlin_term_phys(n))
 
     # TODO: Implement Basdevant
     advect = jnp.array(
         [
-            -sum([1j * KVEC[n] * rhs_vfieldk(NSYM[n, m]) for n in range(3)])
+            -sum([1j * KVEC[n] * compute_nonlin_term_spec(NSYM[n, m]) for n in range(3)])
             for m in range(3)
         ]
     )
     div = jnp.sum(KVEC * advect, axis=0)
 
-    fvel_vfieldk = advect + div * INV_LAPL * KVEC
+    rhs_no_lapl = advect + div * INV_LAPL * KVEC
     if FORCING != 0:
-        fvel_vfieldk = fvel_vfieldk.at[IC_F].add(FORCE)
+        rhs_no_lapl = rhs_no_lapl.at[IC_F].add(FORCE)
 
-    return fvel_vfieldk
+    return rhs_no_lapl
 
 
-def nonlin_plus_lapl(vfieldx, vfieldk):
-    fvel_vfieldk = nonlin_term(vfieldx) + (LAPL / RE) * vfieldk
+def compute_rhs(vfieldx, vfieldk):
+    rhs = compute_rhs_no_lapl(vfieldx) + (LAPL / RE) * vfieldk
 
-    return fvel_vfieldk
+    return rhs
