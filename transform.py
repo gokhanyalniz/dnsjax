@@ -7,36 +7,52 @@ from jax.sharding import PartitionSpec as P
 # from jax_array_info import sharding_vis
 from parameters import (
     AMP,
-    DX,
-    DY,
-    DZ,
     FORCING,
     KF,
-    NXX,
-    NYY,
-    NZZ,
+    LX,
+    LY,
+    LZ,
+    NX,
+    NY,
+    NZ,
+    SUBSAMP_FAC,
 )
 from sharding import MESH
 
+NX_HALF = NX // 2
+NY_HALF = NY // 2
+NZ_HALF = NZ // 2
+
+NXX = SUBSAMP_FAC * NX_HALF
+NYY = SUBSAMP_FAC * NY_HALF
+NZZ = SUBSAMP_FAC * NZ_HALF
+
+NYY_HALF_PAD1 = NYY // 2 + 1
+NY_HALF_PAD1 = NY // 2 + 1
+
+DX = LX / NXX
+DY = LY / NYY
+DZ = LZ / NZZ
+
 
 # TODO: Pin sharding for gradients
-def phys_to_spec_scalar(sfieldx):
+def phys_to_spec_scalar(scalar_phys):
     # TODO: Dealias!
     # - Zero the Nyquist modes
     # Once real-to-complex FFT is implemented, drop the astype
-    return jaxdecomp.fft.pfft3d(sfieldx.astype(jnp.complex128))
+    return jaxdecomp.fft.pfft3d(scalar_phys.astype(jnp.complex128))
 
 
-def spec_to_phys_scalar(sfieldk):
-    return jaxdecomp.fft.pifft3d(sfieldk).real
+def spec_to_phys_scalar(scalar_spec):
+    return jaxdecomp.fft.pifft3d(scalar_spec).real
 
 
-def phys_to_spec_vector(vfieldx):
-    return jnp.array([phys_to_spec_scalar(vfieldx[n]) for n in range(3)])
+def phys_to_spec_vector(vector_phys):
+    return jnp.array([phys_to_spec_scalar(vector_phys[n]) for n in range(3)])
 
 
-def spect_to_phys_vector(vfieldk):
-    return jnp.array([spec_to_phys_scalar(vfieldk[n]) for n in range(3)])
+def spec_to_phys_vector(vector_spec):
+    return jnp.array([spec_to_phys_scalar(vector_spec[n]) for n in range(3)])
 
 
 KX = jax.device_put(

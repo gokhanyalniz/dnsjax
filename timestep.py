@@ -1,56 +1,54 @@
 from jax import numpy as jnp
 
-from fft import INV_LAPL, KVEC, KX, KY, KZ, LAPL, spect_to_phys_vector
 from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL
-from rhs import compute_rhs_no_lapl
-from vfield import norm
+from rhs import get_rhs_no_lapl
+from transform import INV_LAPL, KVEC, KX, KY, KZ, LAPL, spec_to_phys_vector
+from vfield import get_norm
 
 
-def timestep(vfieldx, vfieldk):
+def timestep(velocity_phys, velocity_spec):
     # TODO: Check the necessity of the Fourier transforms
-    rhs_no_lapl_prev = compute_rhs_no_lapl(vfieldx)
+    rhs_no_lapl_prev = get_rhs_no_lapl(velocity_phys)
 
-    # Prediction: u(n+1)_1 = ((1/dt + (1 - implicitness) L) u(n) + N(n)) /
-    #                        (1/dt - implicitness L)
-    prefieldk = (
-        vfieldk * (1 / DT + (1 - IMPLICITNESS) * LAPL / RE) + rhs_no_lapl_prev
+    prediction = (
+        velocity_spec * (1 / DT + (1 - IMPLICITNESS) * LAPL / RE) + rhs_no_lapl_prev
     ) / (1 / DT - IMPLICITNESS * LAPL / RE)
 
     for c in range(NCORR):
-        pred_norm = norm(prefieldk)
-        prefieldx = spect_to_phys_vector(prefieldk)
-        nonlinterm_next = compute_rhs_no_lapl(prefieldx)
+        norm_prediction = get_norm(prediction)
+        prediction_phys = spec_to_phys_vector(prediction)
+        rhs_no_lapl_next = get_rhs_no_lapl(prediction_phys)
 
-        # Now we have N(n+1)^c in state(:,:,:,1:3)
-
-        corfieldk = (
+        correction = (
             IMPLICITNESS
-            * (nonlinterm_next - rhs_no_lapl_prev)
+            * (rhs_no_lapl_next - rhs_no_lapl_prev)
             / (1 / DT - IMPLICITNESS * LAPL / RE)
         )
-        prefieldk += corfieldk
+        prediction += correction
 
-        error = norm(corfieldk)
+        error = get_norm(correction)
 
-        rhs_no_lapl_prev = nonlinterm_next
+        rhs_no_lapl_prev = rhs_no_lapl_next
 
-        if error / pred_norm < STEPTOL:
+        if error / norm_prediction < STEPTOL:
             # accept step
 
-            dp = INV_LAPL * jnp.sum(KVEC * prefieldk, axis=0)
-            prefieldk += dp * KVEC
+            correction_divergence = INV_LAPL * jnp.sum(KVEC * prediction, axis=0)
+            prediction += correction_divergence * KVEC
 
             # Mode 0 kept 0
             # TODO: Check if needed
-            vfieldk_out = jnp.where((KX == 0) & (KY == 0) & (KZ == 0), 0, prefieldk)
+            velocity_spec_next = jnp.where(
+                (KX == 0) & (KY == 0) & (KZ == 0), 0, prediction
+            )
 
             # TODO: apply a bunch of symmetries
 
-            vfieldx_out = spect_to_phys_vector(vfieldk_out)
+            velocity_phys_next = spec_to_phys_vector(velocity_spec_next)
 
             break
 
         elif c == NCORR - 1:
             exit("Timestep did not converge.")
 
-    return vfieldx_out, vfieldk_out
+    return velocity_phys_next, velocity_spec_next
