@@ -2,11 +2,11 @@ from jax import numpy as jnp
 
 from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL
 from rhs import get_rhs_no_lapl
-from transform import INV_LAPL, KVEC, KX, KY, KZ, LAPL, spec_to_phys_vector
+from transform import INV_LAPL, KVEC, QX, QY, QZ, LAPL, spec_to_phys_vector
 from vfield import get_norm
 
 
-def timestep(velocity_phys, velocity_spec):
+def timestep(velocity_spec, velocity_phys):
     # TODO: Check the necessity of the Fourier transforms
     rhs_no_lapl_prev = get_rhs_no_lapl(velocity_phys)
 
@@ -39,7 +39,7 @@ def timestep(velocity_phys, velocity_spec):
             # Mode 0 kept 0
             # TODO: Check if needed
             velocity_spec_next = jnp.where(
-                (KX == 0) & (KY == 0) & (KZ == 0), 0, prediction
+                (QX == 0) & (QY == 0) & (QZ == 0), 0, prediction
             )
 
             # TODO: apply a bunch of symmetries
@@ -51,4 +51,4 @@ def timestep(velocity_phys, velocity_spec):
         elif c == NCORR - 1:
             exit("Timestep did not converge.")
 
-    return velocity_phys_next, velocity_spec_next
+    return velocity_spec_next, velocity_phys_next

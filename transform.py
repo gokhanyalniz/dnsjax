@@ -8,7 +8,7 @@ from jax.sharding import PartitionSpec as P
 from parameters import (
     AMP,
     FORCING,
-    KF,
+    QF,
     LX,
     LY,
     LZ,
@@ -65,6 +65,17 @@ KZ = jax.device_put(
     NamedSharding(MESH, P("Z", None, None)),
 )
 
+
+QX = jax.device_put(
+    jnp.fft.fftfreq(NXX, d=1 / NXX, dtype=jnp.float64).astype(int).reshape([1, -1, 1]),
+    NamedSharding(MESH, P(None, "X", None)),
+)
+QY = jnp.fft.fftfreq(NYY, d=1 / NYY, dtype=jnp.float64).astype(int).reshape([1, 1, -1])
+QZ = jax.device_put(
+    jnp.fft.fftfreq(NZZ, d=1 / NZZ, dtype=jnp.float64).astype(int).reshape([-1, 1, 1]),
+    NamedSharding(MESH, P("Z", None, None)),
+)
+
 KVEC = jax.device_put(
     jnp.zeros((3, NZZ, NXX, NYY), dtype=jnp.float64),
     NamedSharding(MESH, P(None, "Z", "X", None)),
@@ -83,6 +94,8 @@ INV_LAPL = jnp.where(LAPL < 0, 1 / LAPL, 0)
 if FORCING == 0:
     FORCE = 0
 elif FORCING == 1:
-    FORCE = jnp.where((KX == 0) & (KY == KF) & (KZ == 0), -1j * 0.5 * AMP, 0)
+    FORCE = jnp.where((QX == 0) & (QY == QF) & (QZ == 0), -1j * 0.5 * AMP, 0)
+    FORCE = jnp.where((QX == 0) & (QY == -QF) & (QZ == 0), 1j * 0.5 * AMP, FORCE)
 elif FORCING == 2:
-    FORCE = jnp.where((KX == 0) & (KY == KF) & (KZ == 0), 0.5 * AMP, 0)
+    FORCE = jnp.where((QX == 0) & (QY == QF) & (QZ == 0), 0.5 * AMP, 0)
+    FORCE = jnp.where((QX == 0) & (QY == -QF) & (QZ == 0), 0.5 * AMP, FORCE)

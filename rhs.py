@@ -38,7 +38,7 @@ def get_rhs_no_lapl(velocity_phys):
     return rhs_no_lapl
 
 
-def get_rhs(velocity_phys, velocity_spec):
+def get_rhs(velocity_spec, velocity_phys):
     rhs = get_rhs_no_lapl(velocity_phys) + (LAPL / RE) * velocity_spec
 
     return rhs
