@@ -2,7 +2,7 @@
 
 **Work in progress!**
 
-A pseudo-spectral solver for direct numerical simulations of Navier–Stokes equations, written in [JAX](https://github.com/jax-ml/jax).
+A GPU-accelerated & parallelized pseudo-spectral solver for direct numerical simulations of Navier–Stokes equations in [JAX](https://github.com/jax-ml/jax).
 
 Through JAX, it can run on (multiple) CPUs, GPUs, and TPUs.
 
