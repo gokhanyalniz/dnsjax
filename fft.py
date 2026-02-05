@@ -1,11 +1,4 @@
-# The FFT structure keeps the whole wavenumbers rather than just one half!
 import jax
-
-# ruff: disable[E402]
-# This needs to be done first
-jax.config.update("jax_enable_x64", True)
-jax.distributed.initialize()
-# ruff: enable[E402]
 import jaxdecomp
 from jax import numpy as jnp
 from jax.sharding import NamedSharding
@@ -27,23 +20,23 @@ from sharding import MESH
 
 
 # TODO: Pin sharding for gradients
-def sx2k(sfieldx):
+def phys_to_spec_scalar(sfieldx):
     # TODO: Dealias!
     # - Zero the Nyquist modes
     # Once real-to-complex FFT is implemented, drop the astype
     return jaxdecomp.fft.pfft3d(sfieldx.astype(jnp.complex128))
 
 
-def sk2x(sfieldk):
+def spec_to_phys_scalar(sfieldk):
     return jaxdecomp.fft.pifft3d(sfieldk).real
 
 
-def vx2k(vfieldx):
-    return jnp.array([sx2k(vfieldx[n]) for n in range(3)])
+def phys_to_spec_vector(vfieldx):
+    return jnp.array([phys_to_spec_scalar(vfieldx[n]) for n in range(3)])
 
 
-def vk2x(vfieldk):
-    return jnp.array([sk2x(vfieldk[n]) for n in range(3)])
+def spect_to_phys_vector(vfieldk):
+    return jnp.array([spec_to_phys_scalar(vfieldk[n]) for n in range(3)])
 
 
 KX = jax.device_put(
