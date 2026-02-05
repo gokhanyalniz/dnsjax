@@ -1,5 +1,6 @@
-import jax
 import os
+
+import jax
 
 # use strictly the cpu (for now)
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
