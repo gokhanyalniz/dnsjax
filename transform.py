@@ -8,13 +8,13 @@ from jax.sharding import PartitionSpec as P
 from parameters import (
     AMP,
     FORCING,
-    QF,
     LX,
     LY,
     LZ,
     NX,
     NY,
     NZ,
+    QF,
     SUBSAMP_FAC,
 )
 from sharding import MESH
@@ -27,9 +27,6 @@ NXX = SUBSAMP_FAC * NX_HALF
 NYY = SUBSAMP_FAC * NY_HALF
 NZZ = SUBSAMP_FAC * NZ_HALF
 
-NYY_HALF_PAD1 = NYY // 2 + 1
-NY_HALF_PAD1 = NY // 2 + 1
-
 DX = LX / NXX
 DY = LY / NYY
 DZ = LZ / NZZ
@@ -37,10 +34,16 @@ DZ = LZ / NZZ
 
 # TODO: Pin sharding for gradients
 def phys_to_spec_scalar(scalar_phys):
-    # TODO: Dealias!
-    # - Zero the Nyquist modes
-    # Once real-to-complex FFT is implemented, drop the astype
-    return jaxdecomp.fft.pfft3d(scalar_phys.astype(jnp.complex128))
+    scalar_spec = jaxdecomp.fft.pfft3d(scalar_phys.astype(jnp.complex128))
+
+    # Dealias + zero the Nyquist mode
+    scalar_spec = jnp.where(
+        (jnp.abs(QX) < NX_HALF) & (jnp.abs(QY) < NY_HALF) & (jnp.abs(QZ) < NZ_HALF),
+        scalar_spec,
+        0,
+    )
+    # TODO: Once real-to-complex FFT is implemented, drop the astype
+    return scalar_spec
 
 
 def spec_to_phys_scalar(scalar_spec):
