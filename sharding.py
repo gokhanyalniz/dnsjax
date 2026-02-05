@@ -6,10 +6,13 @@ from jax.sharding import AxisType
 PDIMS = [2, 2]  # TODO: read manually later
 
 RANK = jax.process_index()
-# TODO:s cuDecomp Backend: Transposed Mesh Requireds
+
+# TODO cuDecomp Backend: Transposed Mesh Requireds
 MESH = jax.make_mesh(
     PDIMS, axis_names=("Z", "X"), axis_types=(AxisType.Auto, AxisType.Auto)
 )
+# TODO: jaxdecomp.autotune for optimal meshing
+# - Check if I can choose the axes to shard
 
 # X shape: (ny, nz, nx)
 # Y shape: (nz, nx, ny)
