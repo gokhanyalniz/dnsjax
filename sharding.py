@@ -1,6 +1,4 @@
 import jax
-from jax.sharding import NamedSharding
-from jax.sharding import PartitionSpec as P
 
 # Parallelization
 # Use [1, N] for slab decomposition
@@ -14,7 +12,6 @@ PDIMS = [2, 2]  # TODO: read manually later
 RANK = jax.process_index()
 
 MESH = jax.make_mesh(PDIMS, axis_names=("Z", "X"))
-SHARDING = NamedSharding(MESH, P("Z", "X"))
 
 # X shape: (ny, nz, nx)
 # Y shape: (nz, nx, ny)
