@@ -6,7 +6,7 @@ NY = 12
 NZ = 48
 
 SUBSAMP_FAC = 2  # SUBSAMP_FAC / 2 dealiasing
-# TODO: Make sure it works with =3
+# TODO: Make sure it works with = 3
 
 # Domain lengths
 LX = 4.0
@@ -29,8 +29,8 @@ I_SAVE_FIELDS = 2000
 
 # Time stepping
 DT = 0.025
-IMPLICITNESS = 0.5
-STEPTOL = 1.0e-9
+IMPLICITNESS = 0.51
+STEPTOL = 1.0e-5
 DTMAX = 0.1
 NCORR = 10
 
@@ -39,16 +39,13 @@ WALL_CLOCK_LIMIT = -1.0
 I_FINISH = -1
 
 # Physics
-AMP = jnp.pi**2
+AMP = jnp.pi**2 / (4 * RE)
 
+IC_F = 0  # Forced component
 QF = 1  # Forcing harmonic
-ICF = 0  # Forced component
 KF = 2 * jnp.pi * QF / LY
 
 EKIN_LAM = 1 / 4
-
-# others
-INVTDT = 1 / DT
 
 # Given 3x3 symmetric matrix M, entries M_{ij} will be used
 ISYM = jnp.array([0, 0, 0, 1, 1, 2], dtype=int)

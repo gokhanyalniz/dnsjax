@@ -1,6 +1,6 @@
 from jax import numpy as jnp
 
-from fft import KX, KY
+from fft import KX, KY, KZ
 from parameters import FORCING, KF
 
 # TODO; Check whether the spectral norms need normalization
@@ -24,8 +24,8 @@ def laminar():
     if FORCING == 0:
         vfieldk = 0
     elif FORCING == 1:
-        vfieldk = jnp.where((KX == 0) & (KY == KF), -1j * 0.5, 0)
+        vfieldk = jnp.where((KX == 0) & (KY == KF) & (KZ == 0), -1j * 0.5, 0)
     elif FORCING == 2:
-        vfieldk = jnp.where((KX == 0) & (KY == KF), 0.5, 0)
+        vfieldk = jnp.where((KX == 0) & (KY == KF) & (KZ == 0), 0.5, 0)
 
     return vfieldk
