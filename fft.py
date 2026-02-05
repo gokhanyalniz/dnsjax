@@ -22,7 +22,6 @@ from parameters import (
     NXX,
     NYY,
     NZZ,
-    RE,
 )
 from sharding import MESH
 
@@ -30,6 +29,7 @@ from sharding import MESH
 # TODO: Pin sharding for gradients
 def sx2k(sfieldx):
     # TODO: Dealias!
+    # - Zero the Nyquist modes
     # Once real-to-complex FFT is implemented, drop the astype
     return jaxdecomp.fft.pfft3d(sfieldx.astype(jnp.complex128))
 
@@ -69,11 +69,11 @@ for iz in range(NZZ):
     KVEC = KVEC.at[2, iz, :, :].set(KZ[iz, 0, 0])
 
 LAPL = -(KX**2) - KY**2 - KZ**2
-INV_LAPL = jnp.where(LAPL > 0, 1 / LAPL, 0)
+INV_LAPL = jnp.where(LAPL < 0, 1 / LAPL, 0)
 
 if FORCING == 0:
     FORCE = 0
 elif FORCING == 1:
-    FORCE = jnp.where((KX == 0) & (KY == KF), -1j * 0.5 * AMP / (4 * RE), 0)
+    FORCE = jnp.where((KX == 0) & (KY == KF) & (KZ == 0), -1j * 0.5 * AMP, 0)
 elif FORCING == 2:
-    FORCE = jnp.where((KX == 0) & (KY == KF), 0.5 * AMP / (4 * RE), 0)
+    FORCE = jnp.where((KX == 0) & (KY == KF) & (KZ == 0), 0.5 * AMP, 0)

@@ -1,6 +1,4 @@
 import jax
-from jax.sharding import NamedSharding
-from jax.sharding import PartitionSpec as P
 
 # Parallelization
 # Use [1, N] for slab decomposition

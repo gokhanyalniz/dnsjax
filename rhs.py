@@ -1,7 +1,7 @@
 from jax import numpy as jnp
 
 from fft import FORCE, INV_LAPL, KVEC, LAPL, sx2k
-from parameters import FORCING, ICF, ISYM, JSYM, NSYM, RE
+from parameters import FORCING, IC_F, ISYM, JSYM, NSYM, RE
 
 
 def nonlin_term(vfieldx):
@@ -11,6 +11,7 @@ def nonlin_term(vfieldx):
     def rhs_vfieldk(n):
         return sx2k(rhs_vfieldx(n))
 
+    # TODO: Implement Basdevant
     advect = jnp.array(
         [
             -sum([1j * KVEC[n] * rhs_vfieldk(NSYM[n, m]) for n in range(3)])
@@ -21,7 +22,7 @@ def nonlin_term(vfieldx):
 
     fvel_vfieldk = advect + div * INV_LAPL * KVEC
     if FORCING != 0:
-        fvel_vfieldk = fvel_vfieldk.at[ICF].add(FORCE)
+        fvel_vfieldk = fvel_vfieldk.at[IC_F].add(FORCE)
 
     return fvel_vfieldk
 

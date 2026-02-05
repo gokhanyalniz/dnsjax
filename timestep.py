@@ -1,7 +1,7 @@
 from jax import numpy as jnp
 
 from fft import INV_LAPL, KVEC, KX, KY, KZ, LAPL, vk2x
-from parameters import IMPLICITNESS, INVTDT, NCORR, RE, STEPTOL
+from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL
 from rhs import nonlin_term
 from vfield import norm
 
@@ -13,8 +13,8 @@ def precorr(vfieldx, vfieldk):
     # Prediction: u(n+1)_1 = ((1/dt + (1 - implicitness) L) u(n) + N(n)) /
     #                        (1/dt - implicitness L)
     prefieldk = (
-        vfieldk * (INVTDT + (1 - IMPLICITNESS) * LAPL / RE) + nonlinterm_prev
-    ) / (INVTDT - IMPLICITNESS * LAPL / RE)
+        vfieldk * (1 / DT + (1 - IMPLICITNESS) * LAPL / RE) + nonlinterm_prev
+    ) / (1 / DT - IMPLICITNESS * LAPL / RE)
 
     for c in range(NCORR):
         pred_norm = norm(prefieldk)
@@ -26,7 +26,7 @@ def precorr(vfieldx, vfieldk):
         corfieldk = (
             IMPLICITNESS
             * (nonlinterm_next - nonlinterm_prev)
-            / (INVTDT - IMPLICITNESS * LAPL / RE)
+            / (1 / DT - IMPLICITNESS * LAPL / RE)
         )
         prefieldk += corfieldk
 
@@ -37,9 +37,11 @@ def precorr(vfieldx, vfieldk):
         if error / pred_norm < STEPTOL:
             # accept step
 
-            dp = jnp.sum(INV_LAPL * KVEC * prefieldk, axis=0)
+            dp = INV_LAPL * jnp.sum(KVEC * prefieldk, axis=0)
             prefieldk += dp * KVEC
 
+            # Mode 0 kept 0
+            # TODO: Check if needed
             vfieldk_out = jnp.where((KX == 0) & (KY == 0) & (KZ == 0), 0, prefieldk)
 
             # TODO: apply a bunch of symmetries
