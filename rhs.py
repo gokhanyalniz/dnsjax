@@ -1,20 +1,31 @@
 from jax import numpy as jnp
 
-from fft import FORCE, INV_LAPL, KVEC, LAPL, phys_to_spec_scalar
-from parameters import FORCING, IC_F, ISYM, JSYM, NSYM, RE
+from parameters import FORCING, IC_F, RE
+from transform import FORCE, INV_LAPL, KVEC, LAPL, phys_to_spec_scalar
+
+# Given 3x3 symmetric matrix M, entries M_{ij} will be used
+ISYM = jnp.array([0, 0, 0, 1, 1, 2], dtype=int)
+JSYM = jnp.array([0, 1, 2, 1, 2, 2], dtype=int)
+NSYM = jnp.zeros((3, 3), dtype=int)
+
+for n in range(6):
+    i = ISYM[n]
+    j = JSYM[n]
+    NSYM = NSYM.at[i, j].set(n)
+    NSYM = NSYM.at[j, i].set(n)
 
 
-def compute_rhs_no_lapl(vfieldx):
-    def compute_nonlin_term_phys(n):
-        return vfieldx[ISYM[n]] * vfieldx[JSYM[n]]
+def get_rhs_no_lapl(velocity_phys):
+    def get_nonlin_phys(n):
+        return velocity_phys[ISYM[n]] * velocity_phys[JSYM[n]]
 
-    def compute_nonlin_term_spec(n):
-        return phys_to_spec_scalar(compute_nonlin_term_phys(n))
+    def get_nonlin_spec(n):
+        return phys_to_spec_scalar(get_nonlin_phys(n))
 
     # TODO: Implement Basdevant
     advect = jnp.array(
         [
-            -sum([1j * KVEC[n] * compute_nonlin_term_spec(NSYM[n, m]) for n in range(3)])
+            -sum([1j * KVEC[n] * get_nonlin_spec(NSYM[n, m]) for n in range(3)])
             for m in range(3)
         ]
     )
@@ -27,7 +38,7 @@ def compute_rhs_no_lapl(vfieldx):
     return rhs_no_lapl
 
 
-def compute_rhs(vfieldx, vfieldk):
-    rhs = compute_rhs_no_lapl(vfieldx) + (LAPL / RE) * vfieldk
+def get_rhs(velocity_phys, velocity_spec):
+    rhs = get_rhs_no_lapl(velocity_phys) + (LAPL / RE) * velocity_spec
 
     return rhs
