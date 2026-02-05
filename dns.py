@@ -5,7 +5,7 @@ jax.config.update("jax_platforms", "cpu")  # stick to CPUs for now
 jax.distributed.initialize()
 
 import transform
-import vfield
+import velocity
 from parameters import DT, I_START, T_START
 from timestep import timestep
 from stats import get_stats
@@ -18,7 +18,7 @@ def dns():
     t = T_START
 
     # Start from the laminar state to test
-    velocity_spec = vfield.get_laminar()
+    velocity_spec = velocity.get_laminar()
     velocity_phys = transform.spec_to_phys_vector(velocity_spec)
 
     while True:

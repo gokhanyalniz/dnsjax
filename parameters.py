@@ -1,5 +1,7 @@
 from jax import numpy as jnp
 
+# TODO: Read these from a text file
+
 # Geometry and discretization
 NX = 64
 NY = 12
@@ -43,4 +45,3 @@ QF = 1  # Forcing harmonic
 KF = 2 * jnp.pi * QF / LY
 
 SUBSAMP_FAC = 2  # SUBSAMP_FAC / 2 dealiasing
-# TODO: Make sure it works with = 3
