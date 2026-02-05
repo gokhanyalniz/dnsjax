@@ -5,9 +5,6 @@ NX = 64
 NY = 12
 NZ = 48
 
-SUBSAMP_FAC = 2  # SUBSAMP_FAC / 2 dealiasing
-# TODO: Make sure it works with = 3
-
 # Domain lengths
 LX = 4.0
 LZ = 4.0
@@ -45,31 +42,5 @@ IC_F = 0  # Forced component
 QF = 1  # Forcing harmonic
 KF = 2 * jnp.pi * QF / LY
 
-EKIN_LAM = 1 / 4
-
-# Given 3x3 symmetric matrix M, entries M_{ij} will be used
-ISYM = jnp.array([0, 0, 0, 1, 1, 2], dtype=int)
-JSYM = jnp.array([0, 1, 2, 1, 2, 2], dtype=int)
-NSYM = jnp.zeros((3, 3), dtype=int)
-
-for n in range(6):
-    i = ISYM[n]
-    j = JSYM[n]
-    NSYM = NSYM.at[i, j].set(n)
-    NSYM = NSYM.at[j, i].set(n)
-
-# Further definitions
-NX_HALF = NX // 2
-NY_HALF = NY // 2
-NZ_HALF = NZ // 2
-
-NXX = SUBSAMP_FAC * NX_HALF
-NYY = SUBSAMP_FAC * NY_HALF
-NZZ = SUBSAMP_FAC * NZ_HALF
-
-NYY_HALF_PAD1 = NYY // 2 + 1
-NY_HALF_PAD1 = NY // 2 + 1
-
-DX = LX / NXX
-DY = LY / NYY
-DZ = LZ / NZZ
+SUBSAMP_FAC = 2  # SUBSAMP_FAC / 2 dealiasing
+# TODO: Make sure it works with = 3
