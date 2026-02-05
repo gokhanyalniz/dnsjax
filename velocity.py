@@ -7,8 +7,6 @@ from parameters import FORCING, IC_F, QF
 from sharding import MESH
 from transform import NXX, NYY, NZZ, QX, QY, QZ
 
-# TODO; Check whether the spectral norms need normalization
-
 
 def get_inprod(vector_spec_1, vector_spec_2):
     return jnp.sum(jnp.conj(vector_spec_1) * vector_spec_2).real
