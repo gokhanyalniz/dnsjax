@@ -1,6 +1,6 @@
 from jax import numpy as jnp
 
-import vfield
+import velocity
 from parameters import AMP, IC_F, RE
 from transform import FORCE, LAPL
 
@@ -10,7 +10,7 @@ EKIN_LAM = 1 / 4
 
 
 def get_energy(velocity_spec):
-    return vfield.get_norm2(velocity_spec) / 2
+    return velocity.get_norm2(velocity_spec) / 2
 
 
 def get_perturbation_energy(velocity_spec):
@@ -30,7 +30,7 @@ def get_dissipation(velocity_spec):
 
 
 def get_input(velocity_spec):
-    return vfield.get_inprod(velocity_spec[IC_F], FORCE)
+    return velocity.get_inprod(velocity_spec[IC_F], FORCE)
 
 
 def get_stats(velocity_spec):
