@@ -3,17 +3,17 @@ from jax import numpy as jnp
 # TODO: Read these from a text file
 
 # Geometry and discretization
-NX = 64
-NY = 12
-NZ = 48
+NX = 48
+NY = 48
+NZ = 24
 
 # Domain lengths
 LX = 4.0
-LZ = 4.0
+LZ = 2.0
 LY = 4.0  # fixed by non-dimensionalization
 
 # Physics
-RE = 630.0  # Reynolds number
+RE = 628.3185307179584  # Reynolds number
 FORCING = 1  # none = 0, sine = 1, cosine = 2
 
 # Initiation
@@ -27,7 +27,7 @@ I_PRINT_STEPS = 20
 I_SAVE_FIELDS = 2000
 
 # Time stepping
-DT = 0.025
+DT = 0.02
 IMPLICITNESS = 0.51
 STEPTOL = 1.0e-5
 DTMAX = 0.1
@@ -44,4 +44,4 @@ IC_F = 0  # Forced component
 QF = 1  # Forcing harmonic
 KF = 2 * jnp.pi * QF / LY
 
-SUBSAMP_FAC = 2  # SUBSAMP_FAC / 2 dealiasing
+SUBSAMP_FAC = 3  # SUBSAMP_FAC / 2 dealiasing

@@ -2,12 +2,13 @@ from jax import numpy as jnp
 
 from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL
 from rhs import get_rhs_no_lapl
-from transform import INV_LAPL, KVEC, QX, QY, QZ, LAPL, spec_to_phys_vector
+from transform import INV_LAPL, KVEC, LAPL, QX, QY, QZ, spec_to_phys_vector
 from velocity import get_norm
 
 
 def timestep(velocity_spec, velocity_phys):
     rhs_no_lapl_prev = get_rhs_no_lapl(velocity_phys)
+    # print("normrhs", get_norm(rhs_no_lapl_prev))
 
     prediction = (
         velocity_spec * (1 / DT + (1 - IMPLICITNESS) * LAPL / RE) + rhs_no_lapl_prev
@@ -26,6 +27,7 @@ def timestep(velocity_spec, velocity_phys):
         prediction += correction
 
         error = get_norm(correction)
+        # print(error, norm_prediction)
 
         rhs_no_lapl_prev = rhs_no_lapl_next
 

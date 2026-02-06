@@ -21,7 +21,7 @@ def get_norm(vector_spec):
 
 
 def get_inprod_phys(vector_phys_1, vector_phys_2):
-    return NXX * NYY * NZZ * jnp.sum(vector_phys_1 * vector_phys_2)
+    return jnp.average(jnp.sum(vector_phys_1 * vector_phys_2, axis=0))
 
 
 def get_laminar():
