@@ -3,7 +3,7 @@ from jax import numpy as jnp
 from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL
 from rhs import get_rhs_no_lapl
 from transform import INV_LAPL, KVEC, QX, QY, QZ, LAPL, spec_to_phys_vector
-from vfield import get_norm
+from velocity import get_norm
 
 
 def timestep(velocity_spec, velocity_phys):
