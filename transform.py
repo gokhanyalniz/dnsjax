@@ -34,7 +34,9 @@ DZ = LZ / NZZ
 
 # TODO: Pin sharding for gradients
 def phys_to_spec_scalar(scalar_phys):
-    scalar_spec = jaxdecomp.fft.pfft3d(scalar_phys.astype(jnp.complex128))
+    scalar_spec = jaxdecomp.fft.pfft3d(
+        scalar_phys.astype(jnp.complex128), norm="forward"
+    )
 
     # Dealias + zero the Nyquist mode
     scalar_spec = jnp.where(
@@ -47,7 +49,7 @@ def phys_to_spec_scalar(scalar_phys):
 
 
 def spec_to_phys_scalar(scalar_spec):
-    return jaxdecomp.fft.pifft3d(scalar_spec).real
+    return jaxdecomp.fft.pifft3d(scalar_spec, norm="forward").real
 
 
 def phys_to_spec_vector(vector_phys):
