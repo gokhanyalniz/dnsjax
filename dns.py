@@ -12,6 +12,16 @@ from timestep import timestep
 
 # TODO: JIT all the things
 
+""" 
+export MKL_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export MKL_DYNAMIC="FALSE"
+export OMP_DYNAMIC="FALSE"
+export OPENBLAS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1 
+"""
+
 
 def dns():
 
@@ -43,16 +53,21 @@ def dns():
     )
     velocity_spec = transform.phys_to_spec_vector(velocity_phys)
 
+    # from jax_array_info import sharding_vis
+
     # while True:
     stats_all = []
     while t < period:
         stats = get_stats(velocity_spec)
         if RANK == 0 and it % 10 == 0:
-            print(f"t = {t:.6f}", *[f"{x}={y:.6f}" for x, y in stats.items()])
+            print(f"t = {t:.6f}", *[f"{x}={y:.6e}" for x, y in stats.items()])
         if RANK == 0:
             stats_all.append(jnp.array([t, *stats.values()]))
 
         velocity_spec, velocity_phys = timestep(velocity_spec, velocity_phys)
+
+        # sharding_vis(velocity_spec)
+        # sharding_vis(velocity_phys)
         t += DT
         it += 1
 

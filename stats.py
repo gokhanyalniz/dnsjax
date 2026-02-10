@@ -1,3 +1,4 @@
+from jax import jit
 from jax import numpy as jnp
 
 import velocity
@@ -9,10 +10,12 @@ EKIN_LAM = 1 / 4
 # TODO: Normalize with respect to the laminar values
 
 
+@jit
 def get_energy(velocity_spec):
     return velocity.get_norm2(velocity_spec) / 2
 
 
+@jit
 def get_perturbation_energy(velocity_spec):
     energy = get_energy(velocity_spec)
     input = get_input(velocity_spec)
@@ -21,18 +24,22 @@ def get_perturbation_energy(velocity_spec):
     return perturbation_energy
 
 
+@jit
 def get_enstrophy(velocity_spec):
     return jnp.sum(-LAPL * jnp.conj(velocity_spec) * velocity_spec).real
 
 
+@jit
 def get_dissipation(velocity_spec):
     return get_enstrophy(velocity_spec) / RE
 
 
+@jit
 def get_input(velocity_spec):
     return velocity.get_inprod(velocity_spec[IC_F], FORCE)
 
 
+@jit
 def get_stats(velocity_spec):
     stats = {}
     stats["E"] = get_energy(velocity_spec)

@@ -1,29 +1,39 @@
+from functools import partial
+
 import jax
+from jax import jit
 from jax import numpy as jnp
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from parameters import FORCING, IC_F, QF
 from sharding import MESH
-from transform import NXX, NYY, NZZ, QX, QY, QZ
+from transform import INV_LAPL, KVEC, NXX, NYY, NZZ, QX, QY, QZ
+
+ZERO_MEAN = jnp.where((QX == 0) & (QY == 0) & (QZ == 0), 0.0, 1.0)
 
 
+@jit
 def get_inprod(vector_spec_1, vector_spec_2):
     return jnp.sum(jnp.conj(vector_spec_1) * vector_spec_2).real
 
 
+@jit
 def get_norm2(vector_spec):
     return get_inprod(vector_spec, vector_spec)
 
 
+@jit
 def get_norm(vector_spec):
     return jnp.sqrt(get_norm2(vector_spec))
 
 
+@jit
 def get_inprod_phys(vector_phys_1, vector_phys_2):
     return jnp.average(jnp.sum(vector_phys_1 * vector_phys_2, axis=0))
 
 
+@jit
 def get_laminar():
     velocity_spec = jax.device_put(
         jnp.zeros((3, NZZ, NXX, NYY), dtype=jnp.complex128),
@@ -45,3 +55,9 @@ def get_laminar():
         )
 
     return velocity_spec
+
+
+@partial(jit, donate_argnums=0)
+def correct_divergence(velocity_spec):
+    correction = INV_LAPL * jnp.sum(KVEC * velocity_spec, axis=0)
+    return velocity_spec + correction * KVEC
