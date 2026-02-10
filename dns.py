@@ -6,7 +6,7 @@ jax.config.update("jax_platforms", "cpu")  # stick to CPUs for now
 jax.distributed.initialize()
 
 import transform
-from parameters import DT, I_START, T_START
+from parameters import DT, I_START, STEPTOL, T_START
 from stats import get_stats
 from timestep import timestep
 
@@ -64,7 +64,10 @@ def dns():
         if RANK == 0:
             stats_all.append(jnp.array([t, *stats.values()]))
 
-        velocity_spec, velocity_phys = timestep(velocity_spec, velocity_phys)
+        velocity_spec, velocity_phys, error, c = timestep(velocity_spec, velocity_phys)
+
+        if error > STEPTOL:
+            exit("Timestep did not converge")
 
         # sharding_vis(velocity_spec)
         # sharding_vis(velocity_phys)

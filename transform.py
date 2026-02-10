@@ -4,8 +4,8 @@ from jax import jit
 from jax import numpy as jnp
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
-# from jax_array_info import sharding_vis
 
+# from jax_array_info import sharding_vis
 from parameters import (
     AMP,
     FORCING,

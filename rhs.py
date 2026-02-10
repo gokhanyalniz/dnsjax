@@ -6,7 +6,7 @@ from jax.sharding import PartitionSpec as P
 
 from parameters import FORCING, IC_F, RE
 from sharding import MESH
-from transform import FORCE, INV_LAPL, KVEC, LAPL, phys_to_spec_scalar
+from transform import FORCE, INV_LAPL, KVEC, LAPL, phys_to_spec_vector
 
 # Given 3x3 symmetric matrix M, entries M_{ij} will be used
 ISYM = jnp.array([0, 0, 0, 1, 1, 2], dtype=int)
@@ -19,17 +19,46 @@ for n in range(6):
     NSYM = NSYM.at[i, j].set(n)
     NSYM = NSYM.at[j, i].set(n)
 
+
 @jit
-def get_nonlin(velocity_phys, n):
-        return phys_to_spec_scalar(velocity_phys[ISYM[n]] * velocity_phys[JSYM[n]])
+def get_nonlin(velocity_phys):
+
+    # No Basdevant version:
+    # return jax.lax.with_sharding_constraint(
+    #     phys_to_spec_vector(
+    #         jnp.stack(
+    #             [velocity_phys[ISYM[n]] * velocity_phys[JSYM[n]] for n in range(6)]
+    #         )
+    #     ),
+    #     NamedSharding(MESH, P(None, "Z", "X", None)),
+    # )
+
+    # Basdevant version:
+    uu = jnp.stack([velocity_phys[ISYM[n]] * velocity_phys[JSYM[n]] for n in range(6)])
+
+    trace = jnp.sum(uu[tuple(NSYM[i, i] for i in range(3)),], axis=0)
+
+    # No need to update (2,2), it's not used
+    uu = uu.at[(NSYM[0, 0], NSYM[1, 1]),].subtract(trace / 3)
+
+    nonlin = phys_to_spec_vector(uu[:5])
+    nonlin = jnp.concatenate(
+        (nonlin, -(nonlin[NSYM[0, 0]] + nonlin[None, NSYM[1, 1]])), axis=0
+    )
+
+    return jax.lax.with_sharding_constraint(
+        nonlin, NamedSharding(MESH, P(None, "Z", "X", None))
+    )
+
 
 @jit
 def get_rhs_no_lapl(velocity_phys):
 
-    # TODO: Implement Basdevant
+    nonlin = get_nonlin(velocity_phys)
+
     advect = jnp.stack(
         [
-            -sum([1j * KVEC[n] * get_nonlin(velocity_phys, NSYM[n, m]) for n in range(3)])
+            -jnp.sum(1j * KVEC * nonlin[tuple(NSYM[n, m] for n in range(3)),], axis=0)
             for m in range(3)
         ]
     )

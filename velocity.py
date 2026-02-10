@@ -54,10 +54,14 @@ def get_laminar():
             jnp.where((QX == 0) & (QY == -QF) & (QZ == 0), 0.5, velocity_spec)
         )
 
-    return velocity_spec
+    return jax.lax.with_sharding_constraint(
+        velocity_spec, NamedSharding(MESH, P(None, "Z", "X", None))
+    )
 
 
 @partial(jit, donate_argnums=0)
 def correct_divergence(velocity_spec):
     correction = INV_LAPL * jnp.sum(KVEC * velocity_spec, axis=0)
-    return velocity_spec + correction * KVEC
+    return jax.lax.with_sharding_constraint(
+        velocity_spec + correction * KVEC, NamedSharding(MESH, P(None, "Z", "X", None))
+    )
