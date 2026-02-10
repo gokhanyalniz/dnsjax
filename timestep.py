@@ -4,7 +4,7 @@ import jax
 from jax import jit, lax
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
-from jax_array_info import sharding_vis
+# from jax_array_info import sharding_vis
 
 from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL
 from rhs import get_rhs_no_lapl

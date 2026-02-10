@@ -96,6 +96,6 @@ def spec_to_phys_scalar(scalar_spec):
     )
 
 
-phys_to_spec_vector = jax.vmap(phys_to_spec_scalar)
+phys_to_spec_vector = jax.jit(jax.vmap(phys_to_spec_scalar))
 
-spec_to_phys_vector = jax.vmap(spec_to_phys_scalar)
+spec_to_phys_vector = jax.jit(jax.vmap(spec_to_phys_scalar))
