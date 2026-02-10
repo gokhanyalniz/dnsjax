@@ -3,7 +3,7 @@ from jax.sharding import AxisType
 
 # Parallelization
 # Use [1, N] for slab decomposition
-PDIMS = [2, 2]  # TODO: read manually later
+PDIMS = [1, 2]  # TODO: read manually later
 
 RANK = jax.process_index()
 

@@ -12,7 +12,8 @@ EKIN_LAM = 1 / 4
 
 @jit
 def get_energy(velocity_spec):
-    return velocity.get_norm2(velocity_spec) / 2
+    energy = velocity.get_norm2(velocity_spec) / 2
+    return energy
 
 
 @jit
@@ -26,17 +27,20 @@ def get_perturbation_energy(velocity_spec):
 
 @jit
 def get_enstrophy(velocity_spec):
-    return jnp.sum(-LAPL * jnp.conj(velocity_spec) * velocity_spec).real
+    enstrophy = jnp.sum(-LAPL * jnp.conj(velocity_spec) * velocity_spec).real
+    return enstrophy
 
 
 @jit
 def get_dissipation(velocity_spec):
-    return get_enstrophy(velocity_spec) / RE
+    dissipation = get_enstrophy(velocity_spec) / RE
+    return dissipation
 
 
 @jit
 def get_input(velocity_spec):
-    return velocity.get_inprod(velocity_spec[IC_F], FORCE)
+    input = velocity.get_inprod(velocity_spec[IC_F], FORCE)
+    return input
 
 
 @jit

@@ -9,16 +9,17 @@ from jax_array_info import sharding_vis
 from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL
 from rhs import get_rhs_no_lapl
 from sharding import MESH
-from transform import LAPL, spec_to_phys_vector
-from velocity import ZERO_MEAN, correct_divergence, get_norm
+from transform import LAPL
+from velocity import correct_velocity, get_norm
 
 LDT_1 = 1 / DT + (1 - IMPLICITNESS) * LAPL / RE
 ILDT_2 = 1 / (1 / DT - IMPLICITNESS * LAPL / RE)
 
 
 @partial(jit, donate_argnums=0)
-def get_prediction(velocity_spec, velocity_phys):
-    rhs_no_lapl = get_rhs_no_lapl(velocity_phys)
+def get_prediction(velocity_spec):
+
+    rhs_no_lapl = get_rhs_no_lapl(velocity_spec)
 
     prediction = (velocity_spec * LDT_1 + rhs_no_lapl) * ILDT_2
 
@@ -32,7 +33,7 @@ def get_prediction(velocity_spec, velocity_phys):
 @partial(jit, donate_argnums=(0, 1))
 def get_correction(prediction_prev, rhs_no_lapl_prev):
 
-    rhs_no_lapl_next = get_rhs_no_lapl(spec_to_phys_vector(prediction_prev))
+    rhs_no_lapl_next = get_rhs_no_lapl(prediction_prev)
 
     correction = IMPLICITNESS * (rhs_no_lapl_next - rhs_no_lapl_prev) * ILDT_2
 
@@ -57,17 +58,17 @@ def cond_fun(val):
     return (c < NCORR) & (error > STEPTOL)
 
 
-@jit
+@partial(jit, donate_argnums=0)
 def body_fun(val):
     prediction, rhs_no_lapl, _, c = val
     prediction, rhs_no_lapl, error = get_correction(prediction, rhs_no_lapl)
     return prediction, rhs_no_lapl, error, c + 1
 
 
-@partial(jit, donate_argnums=(0, 1))
-def timestep(velocity_spec, velocity_phys):
+@partial(jit, donate_argnums=0)
+def timestep(velocity_spec):
 
-    prediction, rhs_no_lapl = get_prediction(velocity_spec, velocity_phys)
+    prediction, rhs_no_lapl = get_prediction(velocity_spec)
 
     prediction, rhs_no_lapl, error = get_correction(prediction, rhs_no_lapl)
     c = 1
@@ -75,15 +76,11 @@ def timestep(velocity_spec, velocity_phys):
     init_val = prediction, rhs_no_lapl, error, c
     prediction, rhs_no_lapl, error, c = lax.while_loop(cond_fun, body_fun, init_val)
 
-    velocity_spec_next = correct_divergence(prediction) * ZERO_MEAN
-    velocity_phys_next = spec_to_phys_vector(velocity_spec_next)
+    velocity_spec_next = correct_velocity(prediction)
 
     return (
         jax.lax.with_sharding_constraint(
             velocity_spec_next, NamedSharding(MESH, P(None, "Z", "X", None))
-        ),
-        jax.lax.with_sharding_constraint(
-            velocity_phys_next, NamedSharding(MESH, P(None, "Z", "X", None))
         ),
         error,
         c,

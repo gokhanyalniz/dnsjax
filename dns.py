@@ -64,7 +64,7 @@ def dns():
         if RANK == 0:
             stats_all.append(jnp.array([t, *stats.values()]))
 
-        velocity_spec, velocity_phys, error, c = timestep(velocity_spec, velocity_phys)
+        velocity_spec, error, c = timestep(velocity_spec)
 
         if error > STEPTOL:
             exit("Timestep did not converge")

@@ -1,3 +1,5 @@
+from functools import partial
+
 import jax
 from jax import jit
 from jax import numpy as jnp
@@ -6,7 +8,7 @@ from jax.sharding import PartitionSpec as P
 
 from parameters import FORCING, IC_F, RE
 from sharding import MESH
-from transform import FORCE, INV_LAPL, KVEC, LAPL, phys_to_spec_vector
+from transform import FORCE, INV_LAPL, KVEC, LAPL, spec_to_phys_vector, phys_to_spec_vector
 
 # Given 3x3 symmetric matrix M, entries M_{ij} will be used
 ISYM = jnp.array([0, 0, 0, 1, 1, 2], dtype=int)
@@ -20,8 +22,10 @@ for n in range(6):
     NSYM = NSYM.at[j, i].set(n)
 
 
-@jit
-def get_nonlin(velocity_phys):
+@partial(jit, donate_argnums=0)
+def get_nonlin(velocity_spec):
+
+    velocity_phys = spec_to_phys_vector(velocity_spec)
 
     # No Basdevant version:
     # return jax.lax.with_sharding_constraint(
@@ -51,10 +55,10 @@ def get_nonlin(velocity_phys):
     )
 
 
-@jit
-def get_rhs_no_lapl(velocity_phys):
+@partial(jit, donate_argnums=0)
+def get_rhs_no_lapl(velocity_spec):
 
-    nonlin = get_nonlin(velocity_phys)
+    nonlin = get_nonlin(velocity_spec)
 
     advect = jnp.stack(
         [
@@ -73,9 +77,9 @@ def get_rhs_no_lapl(velocity_phys):
     )
 
 
-@jit
-def get_rhs(velocity_spec, velocity_phys):
-    rhs = get_rhs_no_lapl(velocity_phys) + (LAPL / RE) * velocity_spec
+@partial(jit, donate_argnums=0)
+def get_rhs(velocity_spec):
+    rhs = get_rhs_no_lapl(velocity_spec) + (LAPL / RE) * velocity_spec
 
     return jax.lax.with_sharding_constraint(
         rhs, NamedSharding(MESH, P(None, "Z", "X", None))
