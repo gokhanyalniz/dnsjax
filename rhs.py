@@ -1,5 +1,3 @@
-from functools import partial
-
 import jax
 from jax import jit
 from jax import numpy as jnp
@@ -29,7 +27,7 @@ for n in range(6):
     NSYM = NSYM.at[j, i].set(n)
 
 
-@partial(jit, donate_argnums=0)
+@jit
 def get_nonlin(velocity_spec):
 
     velocity_phys = spec_to_phys_vector(velocity_spec)
@@ -67,7 +65,7 @@ def get_nonlin(velocity_spec):
     )
 
 
-@partial(jit, donate_argnums=0)
+@jit
 def get_rhs_no_lapl(velocity_spec):
 
     nonlin = get_nonlin(velocity_spec)
@@ -92,7 +90,7 @@ def get_rhs_no_lapl(velocity_spec):
     )
 
 
-@partial(jit, donate_argnums=0)
+@jit
 def get_rhs(velocity_spec):
     rhs = get_rhs_no_lapl(velocity_spec) + (LAPL / RE) * velocity_spec
 
