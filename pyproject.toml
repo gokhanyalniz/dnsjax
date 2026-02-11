@@ -1,0 +1,41 @@
+[project]
+name = "dnsjax"
+version = "0.1.0"
+description = "A GPU-accelerated & parallelized pseudo-spectral solver for direct numerical simulations of Navier–Stokes equations in JAX."
+authors = [
+    { name = "Gökhan Yalnız", email = "gokhan.yalniz@ist.ac.at" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "jax[cpu]>=0.9.0.1",
+    "jaxdecomp>=0.3.0",
+    "packaging>=26.0",
+]
+
+[dependency-groups]
+dev = [
+    "chex>=0.1.91",
+    "f90nml>=1.5",
+    "pre-commit>=4.5.1",
+    "ruff>=0.15.0",
+]
+
+[tool.ruff]
+# Set the maximum line length to 79.
+line-length = 79
+
+[tool.ruff.lint]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]

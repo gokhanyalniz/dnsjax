@@ -1,16 +1,11 @@
+#!/usr/bin/env python3
 import jax
 from jax import numpy as jnp
-
-jax.config.update("jax_enable_x64", True)  # use 64 bit floating point
-jax.config.update("jax_platforms", "cpu")  # stick to CPUs for now
-jax.distributed.initialize()
 
 import transform
 from parameters import DT, I_START, STEPTOL, T_START
 from stats import get_stats
 from timestep import timestep
-
-# TODO: JIT all the things
 
 """ 
 export MKL_NUM_THREADS=1
