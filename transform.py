@@ -32,21 +32,43 @@ DX = LX / NXX
 DY = LY / NYY
 DZ = LZ / NZZ
 
-KX = (jnp.fft.fftfreq(NXX, d=DX, dtype=jnp.float64) * 2 * jnp.pi).reshape([1, -1, 1])
-KY = (jnp.fft.fftfreq(NYY, d=DY, dtype=jnp.float64) * 2 * jnp.pi).reshape([1, 1, -1])
-KZ = (jnp.fft.fftfreq(NZZ, d=DZ, dtype=jnp.float64) * 2 * jnp.pi).reshape([-1, 1, 1])
+KX = (jnp.fft.fftfreq(NXX, d=DX, dtype=jnp.float64) * 2 * jnp.pi).reshape(
+    [1, -1, 1]
+)
+KY = (jnp.fft.fftfreq(NYY, d=DY, dtype=jnp.float64) * 2 * jnp.pi).reshape(
+    [1, 1, -1]
+)
+KZ = (jnp.fft.fftfreq(NZZ, d=DZ, dtype=jnp.float64) * 2 * jnp.pi).reshape(
+    [-1, 1, 1]
+)
 
-QX = jnp.fft.fftfreq(NXX, d=1 / NXX, dtype=jnp.float64).astype(int).reshape([1, -1, 1])
-QY = jnp.fft.fftfreq(NYY, d=1 / NYY, dtype=jnp.float64).astype(int).reshape([1, 1, -1])
-QZ = jnp.fft.fftfreq(NZZ, d=1 / NZZ, dtype=jnp.float64).astype(int).reshape([-1, 1, 1])
+QX = (
+    jnp.fft.fftfreq(NXX, d=1 / NXX, dtype=jnp.float64)
+    .astype(int)
+    .reshape([1, -1, 1])
+)
+QY = (
+    jnp.fft.fftfreq(NYY, d=1 / NYY, dtype=jnp.float64)
+    .astype(int)
+    .reshape([1, 1, -1])
+)
+QZ = (
+    jnp.fft.fftfreq(NZZ, d=1 / NZZ, dtype=jnp.float64)
+    .astype(int)
+    .reshape([-1, 1, 1])
+)
 
 DEALIAS = jnp.where(
-    (jnp.abs(QX) < NX_HALF) & (jnp.abs(QY) < NY_HALF) & (jnp.abs(QZ) < NZ_HALF),
+    (jnp.abs(QX) < NX_HALF)
+    & (jnp.abs(QY) < NY_HALF)
+    & (jnp.abs(QZ) < NZ_HALF),
     1.0,
     0.0,
 )
 
-KVEC = jnp.zeros((3, NZZ, NXX, NYY), dtype=jnp.float64)  # TODO: Avoid creating this
+KVEC = jnp.zeros(
+    (3, NZZ, NXX, NYY), dtype=jnp.float64
+)  # TODO: Avoid creating this
 
 for ix in range(NXX):
     KVEC = KVEC.at[0, :, ix, :].set(KX[0, ix, 0])
@@ -62,7 +84,9 @@ if FORCING == 0:
     FORCE = 0
 elif FORCING == 1:
     FORCE = jnp.where((QX == 0) & (QY == QF) & (QZ == 0), -1j * 0.5 * AMP, 0)
-    FORCE = jnp.where((QX == 0) & (QY == -QF) & (QZ == 0), 1j * 0.5 * AMP, FORCE)
+    FORCE = jnp.where(
+        (QX == 0) & (QY == -QF) & (QZ == 0), 1j * 0.5 * AMP, FORCE
+    )
 elif FORCING == 2:
     FORCE = jnp.where((QX == 0) & (QY == QF) & (QZ == 0), 0.5 * AMP, 0)
     FORCE = jnp.where((QX == 0) & (QY == -QF) & (QZ == 0), 0.5 * AMP, FORCE)

@@ -44,7 +44,9 @@ def get_laminar():
             jnp.where((QX == 0) & (QY == QF) & (QZ == 0), -1j * 0.5, 0)
         )
         velocity_spec = velocity_spec.at[IC_F].set(
-            jnp.where((QX == 0) & (QY == -QF) & (QZ == 0), 1j * 0.5, velocity_spec[0])
+            jnp.where(
+                (QX == 0) & (QY == -QF) & (QZ == 0), 1j * 0.5, velocity_spec[0]
+            )
         )
     elif FORCING == 2:
         velocity_spec = velocity_spec.at[IC_F].set(
