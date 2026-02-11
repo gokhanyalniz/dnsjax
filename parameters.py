@@ -1,8 +1,4 @@
-from jax import numpy as jnp
-
-# TODO: Read these from a text file
-
-# Geometry and discretization
+# Number of grid points = (before oversampling) # of Fourier modes
 NX = 48
 NY = 48
 NZ = 24
@@ -10,7 +6,10 @@ NZ = 24
 # Domain lengths
 LX = 4.0
 LZ = 2.0
-LY = 4.0  # fixed by non-dimensionalization
+# LY is fixed by non-dimensionalization,
+# but still kept here for future generality.
+# Do not change for Kolmogorov/Waleffe flow!
+LY = 4.0
 
 # Physics
 RE = 628.3185307179584  # Reynolds number
@@ -35,13 +34,11 @@ NCORR = 10
 
 # Termination
 WALL_CLOCK_LIMIT = -1.0
-I_FINISH = -1
+T_STOP = -1
 
-# Physics
-AMP = jnp.pi**2 / (4 * RE)
+# Debugging
+TIME_FUNCTIONS = False
 
-IC_F = 0  # Forced component
-QF = 1  # Forcing harmonic
-KF = 2 * jnp.pi * QF / LY
-
-SUBSAMP_FAC = 3  # SUBSAMP_FAC / 2 dealiasing
+# OVERSAMP_FAC / 2 dealiasing
+# (n + 1) / 2 dealiasing for n'th order nonlinearity
+OVERSAMP_FAC = 3

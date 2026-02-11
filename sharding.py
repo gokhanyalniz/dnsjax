@@ -7,20 +7,15 @@ jax.distributed.initialize()
 
 # Parallelization
 # Use [1, N] for slab decomposition
-PDIMS = [2, 4]  # TODO: read manually later
+PDIMS = [2, 4]
+NP = PDIMS[0] * PDIMS[1]
+if len(jax.devices()) != NP:
+    jax.distributed.shutdown()
+    exit("# of devices not equal to NP.")
 
 RANK = jax.process_index()
 
-# TODO: With cuDecomp, transposed mesh is required
+# With cuDecomp, a transposed mesh will be required
 MESH = jax.make_mesh(
     PDIMS, axis_names=("Z", "X"), axis_types=(AxisType.Auto, AxisType.Auto)
 )
-# TODO: jaxdecomp.autotune for optimal meshing
-# - Check if I can choose the axes to shard
-
-# X shape: (ny, nz, nx)
-# Y shape: (nz, nx, ny)
-
-# dnsbox
-# vfieldk(nx_perproc, ny_half, nz, 3)
-# vfieldxx(nyy, nzz_perproc, nxx, 3)
