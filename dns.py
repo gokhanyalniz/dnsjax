@@ -48,24 +48,25 @@ def dns():
     )
     velocity_spec = transform.phys_to_spec_vector(velocity_phys)
 
-    # from jax_array_info import sharding_vis
-
     # while True:
     stats_all = []
     while t < period:
-        stats = get_stats(velocity_spec)
-        if RANK == 0 and it % 10 == 0:
-            print(f"t = {t:.6f}", *[f"{x}={y:.6e}" for x, y in stats.items()])
-        if RANK == 0:
-            stats_all.append(jnp.array([t, *stats.values()]))
+        if it % 10 == 0:
+            stats = get_stats(velocity_spec)
+            if RANK == 0:
+                print(
+                    f"t = {t:.6f}",
+                    *[f"{x}={y:.6e}" for x, y in stats.items()],
+                )
+                stats_all.append(jnp.array([t, *stats.values()]))
 
         velocity_spec, error, c = timestep(velocity_spec)
 
         if error > STEPTOL:
-            exit("Timestep did not converge")
+            if RANK == 0:
+                print("Timestep did not converge")
+            jax.distributed.shutdown()
 
-        # sharding_vis(velocity_spec)
-        # sharding_vis(velocity_phys)
         t += DT
         it += 1
 

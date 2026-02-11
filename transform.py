@@ -1,6 +1,5 @@
 import jax
 import jaxdecomp
-from jax import jit
 from jax import numpy as jnp
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -92,7 +91,6 @@ elif FORCING == 2:
     FORCE = jnp.where((QX == 0) & (QY == -QF) & (QZ == 0), 0.5 * AMP, FORCE)
 
 
-@jit
 def phys_to_spec_scalar(scalar_phys):
     # TODO: Once real-to-complex FFT is implemented, drop the astype
     return jax.lax.with_sharding_constraint(
@@ -107,7 +105,6 @@ def phys_to_spec_scalar(scalar_phys):
     )
 
 
-@jit
 def spec_to_phys_scalar(scalar_spec):
     return jax.lax.with_sharding_constraint(
         jaxdecomp.fft.pifft3d(
@@ -121,5 +118,4 @@ def spec_to_phys_scalar(scalar_spec):
 
 
 phys_to_spec_vector = jax.jit(jax.vmap(phys_to_spec_scalar))
-
 spec_to_phys_vector = jax.jit(jax.vmap(spec_to_phys_scalar))
