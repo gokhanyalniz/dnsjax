@@ -4,8 +4,8 @@ import jax
 from jax import jit, lax
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
-# from jax_array_info import sharding_vis
 
+# from jax_array_info import sharding_vis
 from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL
 from rhs import get_rhs_no_lapl
 from sharding import MESH
@@ -74,7 +74,9 @@ def timestep(velocity_spec):
     c = 1
 
     init_val = prediction, rhs_no_lapl, error, c
-    prediction, rhs_no_lapl, error, c = lax.while_loop(cond_fun, body_fun, init_val)
+    prediction, rhs_no_lapl, error, c = lax.while_loop(
+        cond_fun, body_fun, init_val
+    )
 
     velocity_spec_next = correct_velocity(prediction)
 
