@@ -1,23 +1,25 @@
 from functools import partial
 
 import jax
-from jax import jit, lax
+from jax import jit, lax, vmap
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
-# from jax_array_info import sharding_vis
-from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL
-from rhs import get_rhs_no_lapl
+from bench import timer
+from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL, TIME_FUNCTIONS
+from rhs import LAPL, get_rhs_no_lapl
 from sharding import MESH
-from transform import LAPL
+from transform import DEALIAS
 from velocity import correct_velocity, get_norm
 
-LDT_1 = 1 / DT + (1 - IMPLICITNESS) * LAPL / RE
-ILDT_2 = 1 / (1 / DT - IMPLICITNESS * LAPL / RE)
+# Zero the aliased modes to (potentially) save on computations
+LDT_1 = (1 / DT + (1 - IMPLICITNESS) * LAPL / RE) * DEALIAS
+ILDT_2 = (1 / (1 / DT - IMPLICITNESS * LAPL / RE)) * DEALIAS
 
 
+@timer("get_prediction")
 @partial(jit, donate_argnums=0)
-@jax.vmap
+@vmap
 def get_prediction(velocity_spec, rhs_no_lapl):
 
     prediction = (velocity_spec * LDT_1 + rhs_no_lapl) * ILDT_2
@@ -27,8 +29,9 @@ def get_prediction(velocity_spec, rhs_no_lapl):
     )
 
 
+@timer("get_correction")
 @partial(jit, donate_argnums=(0, 1))
-@jax.vmap
+@vmap
 def get_correction(prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next):
 
     correction = IMPLICITNESS * (rhs_no_lapl_next - rhs_no_lapl_prev) * ILDT_2
@@ -46,13 +49,13 @@ def get_correction(prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next):
 
 
 @jit
-def cond_fun(val):
+def timestep_iteration_condition(val):
     _, _, error, c = val
     return (c < NCORR) & (error > STEPTOL)
 
 
 @partial(jit, donate_argnums=0)
-def body_fun(val):
+def timestep_iterate(val):
     prediction, rhs_no_lapl_prev, _, c = val
     rhs_no_lapl_next = get_rhs_no_lapl(prediction)
     prediction, correction = get_correction(
@@ -71,7 +74,6 @@ def body_fun(val):
     )
 
 
-@partial(jit, donate_argnums=0)
 def timestep(velocity_spec):
 
     rhs_no_lapl_prev = get_rhs_no_lapl(velocity_spec)
@@ -85,7 +87,9 @@ def timestep(velocity_spec):
     c = 1
 
     init_val = prediction, rhs_no_lapl_next, error, c
-    prediction, _, error, c = lax.while_loop(cond_fun, body_fun, init_val)
+    prediction, _, error, c = lax.while_loop(
+        timestep_iteration_condition, timestep_iterate, init_val
+    )
 
     velocity_spec_next = correct_velocity(prediction)
 
@@ -96,3 +100,10 @@ def timestep(velocity_spec):
         error,
         c,
     )
+
+
+timestep = (
+    timer("timestep")(timestep)
+    if TIME_FUNCTIONS
+    else jit(timestep, donate_argnums=0)
+)
