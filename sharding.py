@@ -7,7 +7,7 @@ jax.distributed.initialize()
 
 # Parallelization
 # Use [1, N] for slab decomposition
-PDIMS = [2, 4]
+PDIMS = [1, 1]
 NP = PDIMS[0] * PDIMS[1]
 if len(jax.devices()) != NP:
     jax.distributed.shutdown()

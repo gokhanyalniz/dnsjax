@@ -26,8 +26,8 @@ export VECLIB_MAXIMUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1 
 """
 
-IC_LAMINAR = False
-IC_PERIODIC = True
+IC_LAMINAR = True
+IC_PERIODIC = False
 
 
 def dns():
@@ -78,7 +78,7 @@ def dns():
     # Call once now not to affect benchmarks later
     stats = get_stats(velocity_spec)
 
-    stats_all = []
+    # stats_all = []
     rhs_tot = 0
     while t < t_stop:
         if it == I_START + 1:
@@ -94,7 +94,7 @@ def dns():
                     f"t = {t:.2f}",
                     *[f"{x}={y:.6e}" for x, y in stats.items()],
                 )
-                stats_all.append(jnp.array([t, *stats.values()]))
+                # stats_all.append(jnp.array([t, *stats.values()]))
 
         velocity_spec, error, c = timestep(velocity_spec)
 
