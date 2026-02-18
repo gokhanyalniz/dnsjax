@@ -3,7 +3,7 @@ from time import perf_counter_ns
 
 import jax
 
-from parameters import TIME_FUNCTIONS
+from parameters import params
 
 timers = {}
 
@@ -14,7 +14,7 @@ def timer(name):
     def decorator_timer(func):
         @wraps(func)
         def wrapper_timer(*args, **kwargs):
-            if TIME_FUNCTIONS:
+            if params.debug.time_functions:
                 start = perf_counter_ns()
                 value = func(*args, **kwargs)
                 jax.block_until_ready(value)
