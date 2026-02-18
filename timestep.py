@@ -6,15 +6,19 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from bench import timer
-from parameters import DT, IMPLICITNESS, NCORR, RE, STEPTOL, TIME_FUNCTIONS
+from parameters import params
 from rhs import LAPL, get_rhs_no_lapl
 from sharding import MESH
 from transform import DEALIAS
 from velocity import correct_velocity, get_norm
 
 # Zero the aliased modes to (potentially) save on computations
-LDT_1 = (1 / DT + (1 - IMPLICITNESS) * LAPL / RE) * DEALIAS
-ILDT_2 = (1 / (1 / DT - IMPLICITNESS * LAPL / RE)) * DEALIAS
+LDT_1 = (
+    1 / params.step.dt + (1 - params.step.implicitness) * LAPL / params.phys.Re
+) * DEALIAS
+ILDT_2 = (
+    1 / (1 / params.step.dt - params.step.implicitness * LAPL / params.phys.Re)
+) * DEALIAS
 
 
 @timer("get_prediction")
@@ -34,7 +38,11 @@ def get_prediction(velocity_spec, rhs_no_lapl):
 @vmap
 def get_correction(prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next):
 
-    correction = IMPLICITNESS * (rhs_no_lapl_next - rhs_no_lapl_prev) * ILDT_2
+    correction = (
+        params.step.implicitness
+        * (rhs_no_lapl_next - rhs_no_lapl_prev)
+        * ILDT_2
+    )
 
     prediction_next = prediction_prev + correction
 
@@ -51,7 +59,9 @@ def get_correction(prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next):
 @jit
 def timestep_iteration_condition(val):
     _, _, error, c = val
-    return (c < NCORR) & (error > STEPTOL)
+    return (c < params.step.max_corrector_iterations) & (
+        error > params.step.corrector_tolerance
+    )
 
 
 @partial(jit, donate_argnums=0)
@@ -104,6 +114,6 @@ def timestep(velocity_spec):
 
 timestep = (
     timer("timestep")(timestep)
-    if TIME_FUNCTIONS
+    if params.debug.time_functions
     else jit(timestep, donate_argnums=0)
 )

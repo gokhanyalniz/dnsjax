@@ -7,48 +7,40 @@ from jax import numpy as jnp
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from parameters import (
-    LX,
-    LY,
-    LZ,
-    NX,
-    NY,
-    NZ,
-    OVERSAMP_FAC,
-)
+from parameters import params
 from sharding import MESH
 
-NX_HALF = NX // 2
-NY_HALF = NY // 2
-NZ_HALF = NZ // 2
+NX_HALF = params.res.Nx // 2
+NY_HALF = params.res.Ny // 2
+NZ_HALF = params.res.Nz // 2
 
-NXX = OVERSAMP_FAC * NX_HALF
-NYY = OVERSAMP_FAC * NY_HALF
-NZZ = OVERSAMP_FAC * NZ_HALF
+NX_PADDED = params.phys.oversampling_factor * NX_HALF
+NY_PADDED = params.phys.oversampling_factor * NY_HALF
+NZ_PADDED = params.phys.oversampling_factor * NZ_HALF
 
-DX = LX / NXX
-DY = LY / NYY
-DZ = LZ / NZZ
+DX = params.geo.Lx / NX_PADDED
+DY = params.geo.Ly / NY_PADDED
+DZ = params.geo.Lz / NZ_PADDED
 
 QX = (
-    jnp.fft.fftfreq(NXX, d=1 / NXX, dtype=jnp.float64)
+    jnp.fft.fftfreq(NX_PADDED, d=1 / NX_PADDED, dtype=jnp.float64)
     .astype(int)
     .reshape([1, -1, 1])
 )
 QY = (
-    jnp.fft.fftfreq(NYY, d=1 / NYY, dtype=jnp.float64)
+    jnp.fft.fftfreq(NY_PADDED, d=1 / NY_PADDED, dtype=jnp.float64)
     .astype(int)
     .reshape([1, 1, -1])
 )
 QZ = (
-    jnp.fft.fftfreq(NZZ, d=1 / NZZ, dtype=jnp.float64)
+    jnp.fft.fftfreq(NZ_PADDED, d=1 / NZ_PADDED, dtype=jnp.float64)
     .astype(int)
     .reshape([-1, 1, 1])
 )
 
-KX = QX * 2 * jnp.pi / LX
-KY = QY * 2 * jnp.pi / LY
-KZ = QZ * 2 * jnp.pi / LZ
+KX = QX * 2 * jnp.pi / params.geo.Lx
+KY = QY * 2 * jnp.pi / params.geo.Ly
+KZ = QZ * 2 * jnp.pi / params.geo.Lz
 
 # All aliased modes and the Nyquist modes are to be discarded
 DEALIAS = jnp.where(
