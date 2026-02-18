@@ -7,7 +7,7 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "jax[cuda13-local]>=0.9.0.1",
+    "jax[cuda12]>=0.9.0.1",
     "jaxdecomp>=0.3.0",
     "packaging>=26.0",
 ]
@@ -15,7 +15,6 @@ dependencies = [
 [dependency-groups]
 dev = [
     "f90nml>=1.5",
-    "jax-array-info",
     "pre-commit>=4.5.1",
     "ruff>=0.15.0",
 ]
@@ -39,6 +38,3 @@ select = [
     # isort
     "I",
 ]
-
-[tool.uv.sources]
-jax-array-info = { git = "https://github.com/Findus23/jax-array-info.git" }

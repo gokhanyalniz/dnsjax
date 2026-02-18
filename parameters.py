@@ -1,18 +1,18 @@
 # Number of grid points = (before oversampling) # of Fourier modes
-NX = 64
-NY = 64
-NZ = 64
+NX = 48
+NY = 48
+NZ = 24
 
 # Domain lengths
 LX = 4.0
-LZ = 4.0
+LZ = 2.0
 # LY is fixed by non-dimensionalization,
 # but still kept here for future generality.
 # Do not change for Kolmogorov/Waleffe flow!
 LY = 4.0
 
 # Physics
-RE = 630 # Reynolds number
+RE = 628.3185307179584 # Reynolds number
 FORCING = 1  # none = 0, sine = 1, cosine = 2
 
 # Initiation
@@ -34,7 +34,7 @@ NCORR = 10
 
 # Termination
 WALL_CLOCK_LIMIT = -1.0
-T_STOP = 100
+T_STOP = -1
 
 # Debugging
 TIME_FUNCTIONS = False

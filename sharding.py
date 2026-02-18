@@ -2,12 +2,12 @@ import jax
 from jax.sharding import AxisType
 
 jax.config.update("jax_enable_x64", True)  # use 64 bit floating point
-jax.config.update("jax_platforms", "cpu")  # stick to CPUs for now
+jax.config.update("jax_platforms", "cuda")  # stick to CPUs for now
 jax.distributed.initialize()
 
 # Parallelization
 # Use [1, N] for slab decomposition
-PDIMS = [1, 1]
+PDIMS = [1, 2]
 NP = PDIMS[0] * PDIMS[1]
 if len(jax.devices()) != NP:
     jax.distributed.shutdown()
