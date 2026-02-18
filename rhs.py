@@ -5,16 +5,16 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from bench import timer
-from parameters import FORCING, LY, RE
+from parameters import params
 from sharding import MESH
 from transform import (
     DEALIAS,
     KX,
     KY,
     KZ,
-    NXX,
-    NYY,
-    NZZ,
+    NX_PADDED,
+    NY_PADDED,
+    NZ_PADDED,
     QX,
     QY,
     QZ,
@@ -23,31 +23,33 @@ from transform import (
 )
 
 # Physics
-if FORCING in [1, 2]:
-    AMP = jnp.pi**2 / (4 * RE)
+if params.phys.forcing in ["kolmogorov", "waleffe"]:
+    AMP = jnp.pi**2 / (4 * params.phys.Re)
 
     IC_F = 0  # Forced component
     QF = 1  # Forcing harmonic
-    KF = 2 * jnp.pi * QF / LY
+    KF = 2 * jnp.pi * QF / params.geo.Ly
 
 FP = (0, *(i[0] for i in jnp.nonzero((QX == 0) & (QY == QF) & (QZ == 0))))
 FN = (0, *(i[0] for i in jnp.nonzero((QX == 0) & (QY == -QF) & (QZ == 0))))
 FORCING_MODES = tuple(zip(FP, FN, strict=True))
 
-if FORCING == 0:
+if params.phys.forcing == "none":
     FORCING_UNIT = 0
-elif FORCING == 1:
+elif params.phys.forcing == "kolmogorov":
     FORCING_UNIT = jnp.array([-1j, 1j]) * 0.5
-elif FORCING == 2:
+elif params.phys.forcing == "waleffe":
     FORCING_UNIT = jnp.array([1, 1]) * 0.5
+    jax.distributed.shutdown()
+    exit("The Ry symmetry needed for Waleffe flow is not yet implemented.")
 
-NABLA = jnp.zeros((3, NZZ, NXX, NYY), dtype=jnp.complex128)
+NABLA = jnp.zeros((3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=jnp.complex128)
 
-for ix in range(NXX):
+for ix in range(NX_PADDED):
     NABLA = NABLA.at[0, :, ix, :].set(1j * KX[0, ix, 0])
-for iy in range(NYY):
+for iy in range(NY_PADDED):
     NABLA = NABLA.at[1, :, :, iy].set(1j * KY[0, 0, iy])
-for iz in range(NZZ):
+for iz in range(NZ_PADDED):
     NABLA = NABLA.at[2, iz, :, :].set(1j * KZ[iz, 0, 0])
 
 # Zero the dealiased modes to (potentially) save computation
@@ -115,7 +117,7 @@ def get_rhs_no_lapl(velocity_spec):
     )
 
     rhs_no_lapl = advect - NABLA * INV_LAPL * jnp.sum(NABLA * advect, axis=0)
-    if FORCING != 0:
+    if params.phys.forcing is not None:
         rhs_no_lapl = rhs_no_lapl.at[FORCING_MODES].add(FORCING_UNIT * AMP)
 
     return jax.lax.with_sharding_constraint(
@@ -125,7 +127,10 @@ def get_rhs_no_lapl(velocity_spec):
 
 @jit
 def get_rhs(velocity_spec):
-    rhs = get_rhs_no_lapl(velocity_spec) + (LAPL / RE) * velocity_spec
+    rhs = (
+        get_rhs_no_lapl(velocity_spec)
+        + (LAPL / params.phys.Re) * velocity_spec
+    )
 
     return jax.lax.with_sharding_constraint(
         rhs, NamedSharding(MESH, P(None, "Z", "X", None))

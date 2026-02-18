@@ -1,13 +1,14 @@
-[physics]
+[phys]
 Re = 628.3185307179584 # Reynolds number
-forcing = "kolmogorov" # "none "kolmogorov" (sine)
+forcing = "kolmogorov" 
+# forcings: "none", "kolmogorov" (sine), "waleffe" (cosine + Ry symmetry)
 
-[geometry]
+[geo]
 Lx = 4.0
 Lz = 2.0
 # ... in units where Ly = 4.0 is fixed.
 
-[resolution]
+[res]
 Nx = 48
 Ny = 48
 Nz = 24
@@ -15,24 +16,23 @@ Nz = 24
 # (= # of grid points) *before* 3/2 oversampling 
 # to delias the 2nd order nonlinearity
 
-[initiation]
+[init]
 start_from_laminar = false
 snapshot = "/mnt/c/Users/gokhan/Seafile/projects/dnsjax/invariants/01/u0.npz"
 t0 = 0 # Initial time
 it0 = 0 # Initial discrete time
 
-[statistics]
+[outs]
 it_stats = 20 # How often to compute stats (in number of time steps)
 
-[time-stepping]
+[step]
 dt = 0.02
 implicitness = 0.5
 corrector_tolerance = 1e-5
 max_corrector_iterations = 10
 
-[termination]
-max_wall_time = -1
-max_sim_time = -1
+[stop]
+max_sim_time = 35.8
 
-[debugging]
+[debug]
 time_functions = false

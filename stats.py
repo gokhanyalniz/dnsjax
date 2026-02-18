@@ -3,11 +3,11 @@ from jax import numpy as jnp
 
 import velocity
 from bench import timer
-from parameters import FORCING, RE, TIME_FUNCTIONS
+from parameters import params
 from rhs import AMP, FORCING_MODES, FORCING_UNIT, LAPL
 from transform import DEALIAS
 
-EKIN_LAM = 1 / 4 if FORCING in [1, 2] else 0
+EKIN_LAM = 1 / 4 if params.phys.forcing in ["kolmogorov", "waleffe"] else 0
 
 
 @timer("get_energy")
@@ -19,7 +19,7 @@ def get_energy(velocity_spec):
 
 @jit
 def get_perturbation_energy(energy, input):
-    if FORCING in [1, 2]:
+    if params.phys.forcing in ["kolmogorov", "waleffe"]:
         perturbation_energy = energy + EKIN_LAM - input / AMP
     else:
         perturbation_energy = energy
@@ -40,14 +40,14 @@ def get_enstrophy(velocity_spec):
 @timer("get_dissipation")
 @jit
 def get_dissipation(velocity_spec):
-    dissipation = get_enstrophy(velocity_spec) / RE
+    dissipation = get_enstrophy(velocity_spec) / params.phys.Re
     return dissipation
 
 
 @timer("get_input")
 @jit
 def get_input(velocity_spec):
-    if FORCING in [1, 2]:
+    if params.phys.forcing in ["kolmogorov", "waleffe"]:
         input = jnp.sum(
             jnp.conj(velocity_spec[FORCING_MODES]) * FORCING_UNIT * AMP,
             dtype=jnp.float64,
@@ -73,4 +73,8 @@ def get_stats(velocity_spec):
     return stats
 
 
-get_stats = timer("get_stats")(get_stats) if TIME_FUNCTIONS else jit(get_stats)
+get_stats = (
+    timer("get_stats")(get_stats)
+    if params.debug.time_functions
+    else jit(get_stats)
+)
