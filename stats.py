@@ -1,11 +1,12 @@
 from jax import jit
 from jax import numpy as jnp
 
-import velocity
 from bench import timer
 from parameters import params
 from rhs import AMP, FORCING_MODES, FORCING_UNIT, LAPL
+from sharding import float_type
 from transform import DEALIAS
+from velocity import get_norm2
 
 EKIN_LAM = 1 / 4 if params.phys.forcing in ["kolmogorov", "waleffe"] else 0
 
@@ -13,7 +14,7 @@ EKIN_LAM = 1 / 4 if params.phys.forcing in ["kolmogorov", "waleffe"] else 0
 @timer("get_energy")
 @jit
 def get_energy(velocity_spec):
-    energy = velocity.get_norm2(velocity_spec) / 2
+    energy = get_norm2(velocity_spec) / 2
     return energy
 
 
@@ -31,7 +32,7 @@ def get_perturbation_energy(energy, input):
 def get_enstrophy(velocity_spec):
     enstrophy = jnp.sum(
         -LAPL * (jnp.conj(velocity_spec) * velocity_spec),
-        dtype=jnp.float64,
+        dtype=float_type,
         where=DEALIAS,
     )
     return enstrophy
@@ -50,7 +51,7 @@ def get_input(velocity_spec):
     if params.phys.forcing in ["kolmogorov", "waleffe"]:
         input = jnp.sum(
             jnp.conj(velocity_spec[FORCING_MODES]) * FORCING_UNIT * AMP,
-            dtype=jnp.float64,
+            dtype=float_type,
         )
     else:
         input = 0

@@ -6,7 +6,7 @@ from jax.sharding import PartitionSpec as P
 
 from bench import timer
 from parameters import params
-from sharding import MESH
+from sharding import MESH, complex_type, float_type
 from transform import (
     DEALIAS,
     KX,
@@ -43,7 +43,7 @@ elif params.phys.forcing == "waleffe":
     jax.distributed.shutdown()
     exit("The Ry symmetry needed for Waleffe flow is not yet implemented.")
 
-NABLA = jnp.zeros((3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=jnp.complex128)
+NABLA = jnp.zeros((3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=complex_type)
 
 for ix in range(NX_PADDED):
     NABLA = NABLA.at[0, :, ix, :].set(1j * KX[0, ix, 0])
@@ -84,7 +84,7 @@ def get_nonlin(velocity_spec):
     )
 
     trace = jnp.sum(
-        uu[tuple(NSYM[i, i] for i in range(3)),], axis=0, dtype=jnp.float64
+        uu[tuple(NSYM[i, i] for i in range(3)),], axis=0, dtype=float_type
     )
 
     # No need to update (2,2), it's not used
