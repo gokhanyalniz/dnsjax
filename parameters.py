@@ -1,85 +1,118 @@
+import tomllib
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from pydantic_settings import (
+from pydantic_settings import BaseSettings
+
+
+class Distribution(BaseModel):
+    # Set Np0=1, Np1=N for slab decomposition
+    Np0: int = Field(ge=1, default=1)
+    Np1: int = Field(ge=1, default=1)
+    platform: Literal["cpu", "cuda", "rocm", "tpu"] = "cpu"
+
+
+class Physics(BaseModel):
+    Re: float = Field(gt=0, default=630)  # Reynolds number
+    # Kolmogorov: sine forcing
+    # Waleffe: cosine forcing + Ry symmetry (not yet implemented)
+    forcing: Literal["none", "kolmogorov", "waleffe"] = "none"
+    # (n + 1) / 2 oversampling in each direction
+    # to dealias the n'th order nonlinearity
+    # oversampling_factor = n + 1
+    oversampling_factor: int = Field(ge=2, default=3)
+
+
+class Geometry(BaseModel):
+    Lx: float = Field(gt=0, default=4.0)
+    Lz: float = Field(gt=0, default=4.0)
+    # ... in units where Ly = 4.0 is fixed.
+    # Ly *is* fixed, but still kept here for generality.
+    # Do not change for Kolmogorov/Waleffe flow!
+    Ly: float = Field(gt=0, default=4.0)
+
+
+class Resolution(BaseModel):
+    # Number of grid points = (before oversampling) # of Fourier modes
+    Nx: int = Field(ge=1, default=48)
+    Ny: int = Field(ge=1, default=48)
+    Nz: int = Field(ge=1, default=48)
+    double_precision: bool = True  # use double-precision floating point
+
+
+class Initiation(BaseModel):
+    start_from_laminar: bool = True
+    snapshot: Path | None = None
+    t0: float = 0  # Initial value of time
+    it0: int = 0  # Initial value of number of time steps taken
+
+
+class Outputs(BaseModel):
+    # All outputs are with respect to the number of time steps taken
+    it_stats: int = 20  # How often to compute stats
+
+
+class TimeStepping(BaseModel):
+    dt: float = Field(gt=0, default=0.02)
+    implicitness: float = Field(ge=0, le=1, default=0.5)
+    corrector_tolerance: float = Field(gt=0, default=1e-5)
+    max_corrector_iterations: int = Field(ge=1, default=10)
+
+
+class Termination(BaseModel):
+    max_sim_time: float = -1
+
+
+class Debugging(BaseModel):
+    time_functions: bool = False
+
+
+class Parameters(BaseModel):
+    dist: Distribution | None = Distribution()
+    phys: Physics = Physics()
+    geo: Geometry = Geometry()
+    res: Resolution = Resolution()
+    init: Initiation = Initiation()
+    outs: Outputs = Outputs()
+    step: TimeStepping = TimeStepping()
+    stop: Termination | None = Termination()
+    debug: Debugging | None = Debugging()
+
+
+class CLIParameters(
     BaseSettings,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-    TomlConfigSettingsSource,
-)
+    cli_parse_args=True,
+    cli_avoid_json=True,
+    cli_hide_none_type=True,
+    cli_prog_name="dnsjax",
+):
+    """Command-line arguments override parameters.toml (if present),
+    which override the default set of parameters."""
 
-
-# Settings class adapted from:
-# https://docs.pydantic.dev/latest/concepts/pydantic_settings
-class Parameters(BaseSettings):
-    class Physics(BaseModel):
-        Re: float = Field(gt=0, default=630)  # Reynolds number
-        # Kolmogorov: sine forcing
-        # Waleffe: cosine forcing + Ry symmetry (not yet implemented)
-        forcing: Literal["none", "kolmogorov", "waleffe"] = "none"
-        # (n + 1) / 2 oversampling in each direction
-        # to dealias the n'th order nonlinearity
-        # oversampling_factor = n + 1
-        oversampling_factor: int = Field(ge=2, default=3)
-
-    class Geometry(BaseModel):
-        Lx: float = Field(gt=0, default=4.0)
-        Lz: float = Field(gt=0, default=4.0)
-        # ... in units where Ly = 4.0 is fixed.
-        # Ly *is* fixed, but still kept here for generality.
-        # Do not change for Kolmogorov/Waleffe flow!
-        Ly: float = Field(gt=0, default=4.0)
-
-    class Resolution(BaseModel):
-        # Number of grid points = (before oversampling) # of Fourier modes
-        Nx: int = Field(ge=1, default=48)
-        Ny: int = Field(ge=1, default=48)
-        Nz: int = Field(ge=1, default=48)
-
-    class Initiation(BaseModel):
-        start_from_laminar: bool = True
-        snapshot: Path | None = None
-        t0: float = 0  # Initial value of time
-        it0: int = 0  # Initial value of number of time steps taken
-
-    class Outputs(BaseModel):
-        # All outputs are with respect to the number of time steps taken
-        it_stats: int = 20  # How often to compute stats
-
-    class TimeStepping(BaseModel):
-        dt: float = Field(gt=0, default=0.02)
-        implicitness: float = Field(ge=0, le=1, default=0.5)
-        corrector_tolerance: float = Field(gt=0, default=1e-5)
-        max_corrector_iterations: int = Field(ge=1, default=10)
-
-    class Termination(BaseModel):
-        max_sim_time: float = 10
-
-    class Debugging(BaseModel):
-        time_functions: bool = False
-
-    phys: Physics
-    geo: Geometry
-    res: Resolution
-    init: Initiation
-    outs: Outputs
-    step: TimeStepping
-    stop: Termination
-    debug: Debugging
-
-    model_config = SettingsConfigDict(toml_file="parameters.toml")
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (TomlConfigSettingsSource(settings_cls),)
+    dist: Distribution | None = None
+    phys: Physics | None = None
+    geo: Geometry | None = None
+    res: Resolution | None = None
+    init: Initiation | None = None
+    outs: Outputs | None = None
+    step: TimeStepping | None = None
+    stop: Termination | None = None
+    debug: Debugging | None = None
 
 
 params = Parameters()
+
+
+def read_parameters(path: Path) -> Parameters:
+    with open(path, "rb") as f:
+        raw = tomllib.load(f)
+    return Parameters(**raw)
+
+
+def update_parameters(params_new: Parameters):
+    for category, dict in params_new.model_dump().items():
+        if dict is not None:
+            for key, value in dict.items():
+                if value is not None:
+                    setattr(getattr(params, category), key, value)

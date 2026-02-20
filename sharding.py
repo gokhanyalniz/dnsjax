@@ -1,21 +1,23 @@
 import jax
+from jax import numpy as jnp
 from jax.sharding import AxisType
 
-jax.config.update("jax_enable_x64", True)  # use 64 bit floating point
-jax.config.update("jax_platforms", "cpu")  # stick to CPUs for now
-jax.distributed.initialize()
+from parameters import params
 
-# Parallelization
-# Use [1, N] for slab decomposition
-PDIMS = [2, 2]
-N_DEVICES = PDIMS[0] * PDIMS[1]
+N_DEVICES = params.dist.Np0 * params.dist.Np0
 if len(jax.devices()) != N_DEVICES:
     jax.distributed.shutdown()
-    exit("# of devices not equal to NP.")
+    exit("# of devices not equal to Np0 x Np1.")
 
-RANK = jax.process_index()
-
-# With cuDecomp, a transposed mesh will be required
 MESH = jax.make_mesh(
-    PDIMS, axis_names=("Z", "X"), axis_types=(AxisType.Auto, AxisType.Auto)
+    [params.dist.Np0, params.dist.Np1],
+    axis_names=("Z", "X"),
+    axis_types=(AxisType.Auto, AxisType.Auto),
 )
+
+if params.res.double_precision:
+    float_type = jnp.float64
+    complex_type = jnp.complex128
+else:
+    float_type = jnp.float32
+    complex_type = jnp.complex64
