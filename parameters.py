@@ -82,23 +82,14 @@ class Parameters(BaseModel):
 
 class CLIParameters(
     BaseSettings,
+    Parameters,
     cli_parse_args=True,
     cli_avoid_json=True,
     cli_hide_none_type=True,
     cli_prog_name="dnsjax",
 ):
     """Command-line arguments override parameters.toml (if present),
-    which override the default set of parameters."""
-
-    dist: Distribution | None = None
-    phys: Physics | None = None
-    geo: Geometry | None = None
-    res: Resolution | None = None
-    init: Initiation | None = None
-    outs: Outputs | None = None
-    step: TimeStepping | None = None
-    stop: Termination | None = None
-    debug: Debugging | None = None
+    which overrides the default parameters."""
 
 
 params = Parameters()
@@ -111,7 +102,7 @@ def read_parameters(path: Path) -> Parameters:
 
 
 def update_parameters(params_new: Parameters):
-    for category, dict in params_new.model_dump().items():
+    for category, dict in params_new.model_dump(exclude_unset=True).items():
         if dict is not None:
             for key, value in dict.items():
                 if value is not None:
