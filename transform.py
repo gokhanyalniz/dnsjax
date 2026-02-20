@@ -22,21 +22,32 @@ DX = params.geo.Lx / NX_PADDED
 DY = params.geo.Ly / NY_PADDED
 DZ = params.geo.Lz / NZ_PADDED
 
-QX = (
-    jnp.fft.fftfreq(NX_PADDED, d=1 / NX_PADDED, dtype=jnp.float64)
-    .astype(int)
-    .reshape([1, -1, 1])
-)
-QY = (
-    jnp.fft.fftfreq(NY_PADDED, d=1 / NY_PADDED, dtype=jnp.float64)
-    .astype(int)
-    .reshape([1, 1, -1])
-)
-QZ = (
-    jnp.fft.fftfreq(NZ_PADDED, d=1 / NZ_PADDED, dtype=jnp.float64)
-    .astype(int)
-    .reshape([-1, 1, 1])
-)
+
+def harmonics(n):
+    i = jnp.arange(n, dtype=int)
+    k = (i + n // 2) % n - n // 2
+    return k
+
+
+QX = harmonics(NX_PADDED).reshape([1, -1, 1])
+QY = harmonics(NY_PADDED).reshape([1, 1, -1])
+QZ = harmonics(NZ_PADDED).reshape([-1, 1, 1])
+
+# QX = (
+#     jnp.fft.fftfreq(NX_PADDED, d=1 / NX_PADDED, dtype=float_type)
+#     .astype(int)
+#     .reshape([1, -1, 1])
+# )
+# QY = (
+#     jnp.fft.fftfreq(NY_PADDED, d=1 / NY_PADDED, dtype=float_type)
+#     .astype(int)
+#     .reshape([1, 1, -1])
+# )
+# QZ = (
+#     jnp.fft.fftfreq(NZ_PADDED, d=1 / NZ_PADDED, dtype=float_type)
+#     .astype(int)
+#     .reshape([-1, 1, 1])
+# )
 
 KX = QX * 2 * jnp.pi / params.geo.Lx
 KY = QY * 2 * jnp.pi / params.geo.Ly

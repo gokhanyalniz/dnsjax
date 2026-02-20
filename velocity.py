@@ -9,7 +9,7 @@ from jax.sharding import PartitionSpec as P
 from bench import timer
 from parameters import params
 from rhs import FORCING_MODES, FORCING_UNIT, INV_LAPL, NABLA
-from sharding import MESH
+from sharding import MESH, complex_type, float_type
 from transform import DEALIAS, NX_PADDED, NY_PADDED, NZ_PADDED, QX, QY, QZ
 
 ZERO_MEAN = jnp.where((QX == 0) & (QY == 0) & (QZ == 0), False, True)
@@ -19,7 +19,7 @@ ZERO_MEAN = jnp.where((QX == 0) & (QY == 0) & (QZ == 0), False, True)
 def get_inprod(vector_spec_1, vector_spec_2):
     return jnp.sum(
         jnp.conj(vector_spec_1) * vector_spec_2,
-        dtype=jnp.float64,
+        dtype=float_type,
         where=DEALIAS,
     )
 
@@ -43,7 +43,7 @@ def get_inprod_phys(vector_phys_1, vector_phys_2):
 @jit
 def get_laminar():
     velocity_spec = jax.device_put(
-        jnp.zeros((3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=jnp.complex128),
+        jnp.zeros((3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=complex_type),
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
     if params.phys.forcing in ["kolmogorov", "waleffe"]:
