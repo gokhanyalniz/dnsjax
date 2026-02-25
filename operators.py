@@ -1,3 +1,4 @@
+from functools import partial
 from dataclasses import dataclass
 
 import jax
@@ -76,7 +77,7 @@ fourier = Fourier()
 
 
 @jit(donate_argnums=0, static_argnums=1)
-@vmap(in_axes=(0, None))
+@partial(vmap, in_axes=(0, None))
 def phys_to_spec(velocity_phys, dealias):
     velocity_spec = (
         jaxdecomp.fft.pfft3d(

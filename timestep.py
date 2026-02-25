@@ -1,3 +1,4 @@
+from functools import partial
 from dataclasses import dataclass
 
 import jax
@@ -34,7 +35,7 @@ stepper = Stepper()
 
 @timer("get_prediction")
 @jit(donate_argnums=0, static_argnums=(2, 3))
-@vmap(in_axes=(0, 0, None, None))
+@partial(vmap, in_axes=(0, 0, None, None))
 def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
 
     prediction = (velocity_spec * ldt1 + rhs_no_lapl) * ildt_2
@@ -46,7 +47,7 @@ def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
 
 @timer("get_correction")
 @jit(donate_argnums=(0, 1), static_argnums=3)
-@vmap(in_axes=(0, 0, 0, None))
+@partial(vmap, in_axes=(0, 0, 0, None))
 def get_correction(
     prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
 ):
