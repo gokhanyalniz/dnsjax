@@ -23,10 +23,10 @@ def main():
     from jax.sharding import PartitionSpec as P
 
     import bench
+    from operators import phys_to_spec_vector
     from sharding import MESH, N_DEVICES, complex_type
     from stats import get_stats
     from timestep import timestep
-    from transform import phys_to_spec_vector
     from velocity import get_laminar
 
     wall_time_stop = (
