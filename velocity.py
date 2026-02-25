@@ -7,12 +7,18 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from bench import timer
+from operators import (
+    DEALIAS,
+    INV_LAPL,
+    NABLA,
+    NX_PADDED,
+    NY_PADDED,
+    NZ_PADDED,
+    ZERO_MEAN,
+)
 from parameters import params
-from rhs import FORCING_MODES, FORCING_UNIT, INV_LAPL, NABLA
+from rhs import FORCING_MODES, FORCING_UNIT
 from sharding import MESH, complex_type, float_type
-from transform import DEALIAS, NX_PADDED, NY_PADDED, NZ_PADDED, QX, QY, QZ
-
-ZERO_MEAN = jnp.where((QX == 0) & (QY == 0) & (QZ == 0), False, True)
 
 
 @jit

@@ -8,7 +8,7 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from parameters import params
-from sharding import MESH
+from sharding import MESH, complex_type
 
 NX_HALF = params.res.Nx // 2
 NY_HALF = params.res.Ny // 2
@@ -18,10 +18,6 @@ NX_PADDED = params.phys.oversampling_factor * NX_HALF
 NY_PADDED = params.phys.oversampling_factor * NY_HALF
 NZ_PADDED = params.phys.oversampling_factor * NZ_HALF
 
-DX = params.geo.Lx / NX_PADDED
-DY = params.geo.Ly / NY_PADDED
-DZ = params.geo.Lz / NZ_PADDED
-
 
 def harmonics(n):
     i = jnp.arange(n, dtype=int)
@@ -29,9 +25,15 @@ def harmonics(n):
     return k
 
 
-QX = harmonics(NX_PADDED).reshape([1, -1, 1])
+QX = jax.device_put(
+    harmonics(NX_PADDED).reshape([1, -1, 1]),
+    NamedSharding(MESH, P(None, "X", None)),
+)
 QY = harmonics(NY_PADDED).reshape([1, 1, -1])
-QZ = harmonics(NZ_PADDED).reshape([-1, 1, 1])
+QZ = jax.device_put(
+    harmonics(NZ_PADDED).reshape([-1, 1, 1]),
+    NamedSharding(MESH, P("Z", None, None)),
+)
 
 KX = QX * 2 * jnp.pi / params.geo.Lx
 KY = QY * 2 * jnp.pi / params.geo.Ly
@@ -45,6 +47,36 @@ DEALIAS = jnp.where(
     True,
     False,
 )
+
+NABLA = jax.device_put(
+    jnp.zeros((3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=complex_type),
+    NamedSharding(MESH, P(None, "Z", "X", None)),
+)
+
+# for ix in range(NX_PADDED):
+#     NABLA = NABLA.at[0, :, ix, :].set(1j * KX[0, ix, 0])
+# for iy in range(NY_PADDED):
+#     NABLA = NABLA.at[1, :, :, iy].set(1j * KY[0, 0, iy])
+# for iz in range(NZ_PADDED):
+#     NABLA = NABLA.at[2, iz, :, :].set(1j * KZ[iz, 0, 0])
+NABLA = NABLA.at[0].set(1j * KX)
+NABLA = NABLA.at[1].set(1j * KY)
+NABLA = NABLA.at[2].set(1j * KZ)
+
+# Zero the dealiased modes to (potentially) save computation
+NABLA = DEALIAS * NABLA
+LAPL = (-(KX**2) - KY**2 - KZ**2) * DEALIAS
+INV_LAPL = jnp.where(LAPL < 0, 1 / LAPL, 0)
+
+# Zero the aliased modes to (potentially) save on computations
+LDT_1 = (
+    1 / params.step.dt + (1 - params.step.implicitness) * LAPL / params.phys.Re
+) * DEALIAS
+ILDT_2 = (
+    1 / (1 / params.step.dt - params.step.implicitness * LAPL / params.phys.Re)
+) * DEALIAS
+
+ZERO_MEAN = jnp.where((QX == 0) & (QY == 0) & (QZ == 0), False, True)
 
 
 @partial(jit, donate_argnums=0)

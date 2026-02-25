@@ -7,13 +7,9 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from bench import timer
-from parameters import params
-from sharding import MESH, complex_type, float_type
-from transform import (
-    DEALIAS,
-    KX,
-    KY,
-    KZ,
+from operators import (
+    INV_LAPL,
+    NABLA,
     NX_PADDED,
     NY_PADDED,
     NZ_PADDED,
@@ -23,6 +19,8 @@ from transform import (
     phys_to_spec_vector,
     spec_to_phys_vector,
 )
+from parameters import params
+from sharding import MESH, complex_type, float_type
 
 # Physics
 if params.phys.forcing is not None:
@@ -52,20 +50,6 @@ else:
     FORCING_MODES = jnp.array([])
     FORCING_UNIT = 0
     AMP = 1
-
-NABLA = jnp.zeros((3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=complex_type)
-
-for ix in range(NX_PADDED):
-    NABLA = NABLA.at[0, :, ix, :].set(1j * KX[0, ix, 0])
-for iy in range(NY_PADDED):
-    NABLA = NABLA.at[1, :, :, iy].set(1j * KY[0, 0, iy])
-for iz in range(NZ_PADDED):
-    NABLA = NABLA.at[2, iz, :, :].set(1j * KZ[iz, 0, 0])
-
-# Zero the dealiased modes to (potentially) save computation
-NABLA = DEALIAS * NABLA
-LAPL = (-(KX**2) - KY**2 - KZ**2) * DEALIAS
-INV_LAPL = jnp.where(LAPL < 0, 1 / LAPL, 0)
 
 # Given 3x3 symmetric matrix M, entries M_{ij} will be used
 # This is for the nonlinear term.

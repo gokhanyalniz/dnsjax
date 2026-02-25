@@ -6,19 +6,11 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from bench import timer
+from operators import ILDT_2, LDT_1
 from parameters import params
-from rhs import LAPL, get_rhs_no_lapl
+from rhs import get_rhs_no_lapl
 from sharding import MESH
-from transform import DEALIAS
 from velocity import correct_velocity, get_norm
-
-# Zero the aliased modes to (potentially) save on computations
-LDT_1 = (
-    1 / params.step.dt + (1 - params.step.implicitness) * LAPL / params.phys.Re
-) * DEALIAS
-ILDT_2 = (
-    1 / (1 / params.step.dt - params.step.implicitness * LAPL / params.phys.Re)
-) * DEALIAS
 
 
 @timer("get_prediction")
