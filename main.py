@@ -8,6 +8,7 @@ from pydantic_settings import CliApp
 
 from parameters import (
     CLIParameters,
+    padded_res,
     params,
     read_parameters,
     update_parameters,
@@ -23,10 +24,10 @@ def main():
     from jax.sharding import PartitionSpec as P
 
     import bench
-    from operators import phys_to_spec_vector
+    from operators import fourier, phys_to_spec
     from sharding import MESH, N_DEVICES, complex_type
     from stats import get_stats
-    from timestep import timestep
+    from timestep import stepper, timestep
     from velocity import get_laminar
 
     wall_time_stop = (
@@ -56,14 +57,18 @@ def main():
             ),
             NamedSharding(MESH, P(None, "Z", "X", None)),
         )
-        velocity_spec = phys_to_spec_vector(velocity_phys)
+        velocity_spec = phys_to_spec(velocity_phys, fourier.DEALIAS)
 
     else:
         main_print("Need to provide an initial condition.")
         return
 
     # Call once now not to affect benchmarks later
-    stats = get_stats(velocity_spec)
+    stats = get_stats(
+        velocity_spec,
+        fourier.LAPL,
+        fourier.DEALIAS,
+    )
 
     # Useful to know the starting stats
     main_print(
@@ -94,14 +99,26 @@ def main():
             and it % params.outs.it_stats == 0
             and it != params.init.it0
         ):
-            stats = get_stats(velocity_spec)
+            stats = get_stats(
+                velocity_spec,
+                fourier.LAPL,
+                fourier.DEALIAS,
+            )
             main_print(
                 f"t = {t:.2f}",
                 *[f"{x}={y:.6e}" for x, y in stats.items()],
                 f"c/it = {rhs_tot / (it - 1 - params.init.it0):.2f}",
             )
 
-        velocity_spec, error, c = timestep(velocity_spec)
+        velocity_spec, error, c = timestep(
+            velocity_spec,
+            fourier.NABLA,
+            fourier.INV_LAPL,
+            fourier.ZERO_MEAN,
+            fourier.DEALIAS,
+            stepper.LDT_1,
+            stepper.ILDT_2,
+        )
 
         if it > params.init.it0:
             # Ignore the first hit, probably subject to JIT compilation
@@ -126,7 +143,11 @@ def main():
     wall_time_per_rhs = wall_time / rhs_tot
 
     # Useful to final stats
-    stats = get_stats(velocity_spec)
+    stats = get_stats(
+        velocity_spec,
+        fourier.LAPL,
+        fourier.DEALIAS,
+    )
     main_print(
         f"t = {t:.2f}",
         *[f"{x}={y:.6e}" for x, y in stats.items()],
@@ -163,6 +184,7 @@ if __name__ == "__main__":
         update_parameters(params_in)
 
     update_parameters(params_cli)
+    padded_res.set_padded_resolution(params)
 
     if params.dist.platform == "cpu":
         os.environ["XLA_FLAGS"] = (
