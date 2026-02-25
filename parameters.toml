@@ -1,38 +1,39 @@
 [phys]
-Re = 628.3185307179584 # Reynolds number
-forcing = "kolmogorov" 
-# forcings: "none", "kolmogorov" (sine), "waleffe" (cosine + Ry symmetry)
+Re = 1000 # Reynolds number
+# forcing = "kolmogorov" 
+# None or "kolmogorov" (sine), "waleffe" (cosine + Ry symmetry)
 
 [geo]
 Lx = 4.0
-Lz = 2.0
+Lz = 4.0
 # ... in units where Ly = 4.0 is fixed.
 
 [res]
-Nx = 48
-Ny = 48
-Nz = 24
+Nx = 128
+Ny = 128
+Nz = 128
 # Nx Ny and Nz are the number of Fourier modes
 # (= # of grid points) *before* 3/2 oversampling 
 # to delias the 2nd order nonlinearity
 
 [init]
-start_from_laminar = false
-snapshot = "/mnt/c/Users/gokhan/Seafile/projects/dnsjax/invariants/01/u0.npz"
+start_from_laminar = true
+# snapshot = "u0.npz"
 t0 = 0 # Initial time
 it0 = 0 # Initial discrete time
 
 [outs]
-it_stats = 20 # How often to compute stats (in number of time steps)
+# it_stats = 1000 # How often to compute stats (in number of time steps)
 
 [step]
-dt = 0.02
+dt = 0.01
 implicitness = 0.5
 corrector_tolerance = 1e-5
 max_corrector_iterations = 10
 
 [stop]
-max_sim_time = 35.8
+# max_sim_time = 100.0
+# max_wall_time = PT10M # ISO 8601 format
 
 [debug]
 time_functions = false

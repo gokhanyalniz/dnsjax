@@ -46,7 +46,7 @@ def get_laminar():
         jnp.zeros((3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=complex_type),
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
-    if params.phys.forcing in ["kolmogorov", "waleffe"]:
+    if params.phys.forcing is not None:
         velocity_spec = velocity_spec.at[FORCING_MODES].add(FORCING_UNIT)
 
     return jax.lax.with_sharding_constraint(
