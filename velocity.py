@@ -3,7 +3,7 @@ from jax import jit
 from jax import numpy as jnp
 
 from bench import timer
-from parameters import padded_res, params
+from parameters import padded_res
 from rhs import force
 from sharding import sharding
 
@@ -34,17 +34,17 @@ def get_laminar():
         jnp.zeros(
             (
                 3,
-                padded_res.NZ_PADDED,
-                padded_res.NX_PADDED,
-                padded_res.NY_PADDED,
+                padded_res.Nz_padded,
+                padded_res.Nx_padded,
+                padded_res.Ny_padded,
             ),
             dtype=sharding.complex_type,
         ),
         sharding.spec_shard,
     )
-    if params.phys.forcing is not None:
-        velocity_spec = velocity_spec.at[force.FORCING_MODES].add(
-            jnp.array(force.FORCING_UNIT)
+    if force.on:
+        velocity_spec = velocity_spec.at[force.forced_modes].add(
+            jnp.array(force.unit)
         )
 
     return jax.lax.with_sharding_constraint(velocity_spec, sharding.spec_shard)

@@ -17,55 +17,54 @@ from sharding import sharding
 @dataclass
 class Force:
     # Physics
-    if params.phys.forcing is not None:
-        FORCING_AMPLITUDE = jnp.pi**2 / (4 * params.phys.Re)
+    if params.phys.forcing in ["kolmogorov", "waleffe"]:
+        on = True
+        amplitude = jnp.pi**2 / (4 * params.phys.Re)
 
-        IC_F = 0  # Forced component
-        QF = 1  # Forcing harmonic
-        KF = 2 * jnp.pi * QF / params.geo.Ly
+        ic_f = 0  # Forced component
+        qf = 1  # Forcing harmonic
+        kf = 2 * jnp.pi * qf / params.geo.Ly
 
-        FP = jnp.nonzero(
-            (fourier.QX[jnp.newaxis, ...] == 0)
-            & (fourier.QY[jnp.newaxis, ...] == QF)
-            & (fourier.QZ[jnp.newaxis, ...] == 0),
+        fp = jnp.nonzero(
+            (fourier.qx[jnp.newaxis, ...] == 0)
+            & (fourier.qy[jnp.newaxis, ...] == qf)
+            & (fourier.qz[jnp.newaxis, ...] == 0),
             size=1,
         )
-        FN = jnp.nonzero(
-            (fourier.QX[jnp.newaxis, ...] == 0)
-            & (fourier.QY[jnp.newaxis, ...] == -QF)
-            & (fourier.QZ[jnp.newaxis, ...] == 0),
+        fn = jnp.nonzero(
+            (fourier.qx[jnp.newaxis, ...] == 0)
+            & (fourier.qy[jnp.newaxis, ...] == -qf)
+            & (fourier.qz[jnp.newaxis, ...] == 0),
             size=1,
         )
-        FP = (int(i[0]) for i in (FP[0].at[0].set(IC_F), *FP[1:]))
-        FN = (int(i[0]) for i in (FN[0].at[0].set(IC_F), *FN[1:]))
+        fp = (int(i[0]) for i in (fp[0].at[0].set(ic_f), *fp[1:]))
+        fn = (int(i[0]) for i in (fn[0].at[0].set(ic_f), *fn[1:]))
 
-        FORCING_MODES = tuple(zip(FP, FN, strict=True))
+        forced_modes = tuple(zip(fp, fn, strict=True))
 
         if params.phys.forcing == "kolmogorov":
-            FORCING_UNIT = (-1j * 0.5, 1j * 0.5)
+            unit = (-1j * 0.5, 1j * 0.5)
         elif params.phys.forcing == "waleffe":
-            FORCING_UNIT = (0.5, 0.5)
+            unit = (0.5, 0.5)
             jax.distributed.shutdown()
             exit("Waleffe flow is not yet implemented.")
     else:
-        FORCING_MODES = None
-        FORCING_UNIT = None
-        FORCING_AMPLITUDE = None
+        on = False
 
 
 force = Force()
 
 # Given 3x3 symmetric matrix M, entries M_{ij} will be used
 # This is for the nonlinear term.
-ISYM = jnp.array([0, 0, 0, 1, 1, 2], dtype=int)
-JSYM = jnp.array([0, 1, 2, 1, 2, 2], dtype=int)
-NSYM = jnp.zeros((3, 3), dtype=int)
+n_to_symi = jnp.array([0, 0, 0, 1, 1, 2], dtype=int)
+n_to_symj = jnp.array([0, 1, 2, 1, 2, 2], dtype=int)
+symij_to_n = jnp.zeros((3, 3), dtype=int)
 
 for n in range(6):
-    i = ISYM[n]
-    j = JSYM[n]
-    NSYM = NSYM.at[i, j].set(n)
-    NSYM = NSYM.at[j, i].set(n)
+    i = n_to_symi[n]
+    j = n_to_symj[n]
+    symij_to_n = symij_to_n.at[i, j].set(n)
+    symij_to_n = symij_to_n.at[j, i].set(n)
 
 
 @jit
@@ -77,9 +76,9 @@ def get_nonlin_phys(velocity_spec):
         jnp.zeros(
             (
                 6,
-                padded_res.NY_PADDED,
-                padded_res.NZ_PADDED,
-                padded_res.NX_PADDED,
+                padded_res.Ny_padded,
+                padded_res.Nz_padded,
+                padded_res.Nx_padded,
             ),
             dtype=sharding.complex_type,
         ),
@@ -88,7 +87,7 @@ def get_nonlin_phys(velocity_spec):
 
     def set_nonlin_phys(i, val):
         return val.at[i, ...].set(
-            velocity_phys[ISYM[i]] * velocity_phys[JSYM[i]]
+            velocity_phys[n_to_symi[i]] * velocity_phys[n_to_symj[i]]
         )
 
     nonlin_phys = lax.fori_loop(
@@ -101,13 +100,15 @@ def get_nonlin_phys(velocity_spec):
     # needed, this needs to be taken into account.
 
     trace = jnp.sum(
-        nonlin_phys[(NSYM[0, 0], NSYM[1, 1], NSYM[2, 2]),],
+        nonlin_phys[(symij_to_n[0, 0], symij_to_n[1, 1], symij_to_n[2, 2]),],
         axis=0,
         dtype=sharding.float_type,
     )
 
     # No need to update (2,2), it's not used
-    nonlin_phys = nonlin_phys.at[(NSYM[0, 0], NSYM[1, 1]),].subtract(trace / 3)
+    nonlin_phys = nonlin_phys.at[
+        (symij_to_n[0, 0], symij_to_n[1, 1]),
+    ].subtract(trace / 3)
 
     # Pass the whole array to reuse memory
     return jax.lax.with_sharding_constraint(nonlin_phys, sharding.phys_shard)
@@ -120,9 +121,9 @@ def get_nonlin_spec(nonlin_phys, dealias):
         jnp.zeros(
             (
                 6,
-                padded_res.NZ_PADDED,
-                padded_res.NX_PADDED,
-                padded_res.NY_PADDED,
+                padded_res.Nz_padded,
+                padded_res.Nx_padded,
+                padded_res.Ny_padded,
             ),
             dtype=sharding.complex_type,
         ),
@@ -131,7 +132,9 @@ def get_nonlin_spec(nonlin_phys, dealias):
 
     nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], dealias))
     # Basdevant: Get the 5th element from tracelessness
-    nonlin = nonlin.at[5].set(-(nonlin[NSYM[0, 0]] + nonlin[NSYM[1, 1]]))
+    nonlin = nonlin.at[5].set(
+        -(nonlin[symij_to_n[0, 0]] + nonlin[symij_to_n[1, 1]])
+    )
 
     return jax.lax.with_sharding_constraint(nonlin, sharding.spec_shard)
 
@@ -159,9 +162,9 @@ def get_rhs_no_lapl(
         jnp.zeros(
             (
                 3,
-                padded_res.NZ_PADDED,
-                padded_res.NX_PADDED,
-                padded_res.NY_PADDED,
+                padded_res.Nz_padded,
+                padded_res.Nx_padded,
+                padded_res.Ny_padded,
             ),
             dtype=sharding.complex_type,
         ),
@@ -171,7 +174,10 @@ def get_rhs_no_lapl(
     def set_advect(i, val):
         return val.at[i, ...].set(
             -jnp.sum(
-                nabla * nonlin[(NSYM[0, i], NSYM[1, i], NSYM[2, i]),],
+                nabla
+                * nonlin[
+                    (symij_to_n[0, i], symij_to_n[1, i], symij_to_n[2, i]),
+                ],
                 axis=0,
             )
         )
@@ -179,9 +185,9 @@ def get_rhs_no_lapl(
     advect = lax.fori_loop(0, 3, set_advect, advect, unroll=True)
 
     rhs_no_lapl = advect - nabla * inv_lapl * jnp.sum(nabla * advect, axis=0)
-    if params.phys.forcing is not None:
-        rhs_no_lapl = rhs_no_lapl.at[force.FORCING_MODES].add(
-            jnp.array(force.FORCING_UNIT) * force.FORCING_AMPLITUDE
+    if force.on:
+        rhs_no_lapl = rhs_no_lapl.at[force.forced_modes].add(
+            jnp.array(force.unit) * force.amplitude
         )
 
     return jax.lax.with_sharding_constraint(rhs_no_lapl, sharding.spec_shard)

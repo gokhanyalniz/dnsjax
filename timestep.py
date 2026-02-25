@@ -15,17 +15,17 @@ from velocity import correct_velocity, get_norm
 @dataclass
 class Stepper:
     # Zero the aliased modes to (potentially) save on computations
-    LDT_1 = (
+    ldt_1 = (
         1 / params.step.dt
-        + (1 - params.step.implicitness) * fourier.LAPL / params.phys.Re
-    ) * fourier.DEALIAS
-    ILDT_2 = (
+        + (1 - params.step.implicitness) * fourier.lapl / params.phys.Re
+    ) * fourier.dealias
+    ildt_2 = (
         1
         / (
             1 / params.step.dt
-            - params.step.implicitness * fourier.LAPL / params.phys.Re
+            - params.step.implicitness * fourier.lapl / params.phys.Re
         )
-    ) * fourier.DEALIAS
+    ) * fourier.dealias
 
 
 stepper = Stepper()

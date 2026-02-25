@@ -8,16 +8,8 @@ from jax import numpy as jnp
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from parameters import params
+from parameters import padded_res, params
 from sharding import sharding
-
-NX_HALF = params.res.Nx // 2
-NY_HALF = params.res.Ny // 2
-NZ_HALF = params.res.Nz // 2
-
-NX_PADDED = params.phys.oversampling_factor * NX_HALF
-NY_PADDED = params.phys.oversampling_factor * NY_HALF
-NZ_PADDED = params.phys.oversampling_factor * NZ_HALF
 
 
 @dataclass
@@ -27,46 +19,52 @@ class Fourier:
         k = (i + n // 2) % n - n // 2
         return k
 
-    QX = jax.device_put(
-        harmonics(NX_PADDED).reshape([1, -1, 1]),
-        NamedSharding(sharding.MESH, P(None, "X", None)),
+    qx = jax.device_put(
+        harmonics(padded_res.Nx_padded).reshape([1, -1, 1]),
+        NamedSharding(sharding.mesh, P(None, "X", None)),
     )
-    QY = harmonics(NY_PADDED).reshape([1, 1, -1])
-    QZ = jax.device_put(
-        harmonics(NZ_PADDED).reshape([-1, 1, 1]),
-        NamedSharding(sharding.MESH, P("Z", None, None)),
+    qy = harmonics(padded_res.Ny_padded).reshape([1, 1, -1])
+    qz = jax.device_put(
+        harmonics(padded_res.Nz_padded).reshape([-1, 1, 1]),
+        NamedSharding(sharding.mesh, P("Z", None, None)),
     )
 
-    KX = QX * 2 * jnp.pi / params.geo.Lx
-    KY = QY * 2 * jnp.pi / params.geo.Ly
-    KZ = QZ * 2 * jnp.pi / params.geo.Lz
+    kx = qx * 2 * jnp.pi / params.geo.Lx
+    ky = qy * 2 * jnp.pi / params.geo.Ly
+    kz = qz * 2 * jnp.pi / params.geo.Lz
 
     # All aliased modes and the Nyquist modes are to be discarded
-    DEALIAS = jnp.where(
-        (jnp.abs(QX) < NX_HALF)
-        & (jnp.abs(QY) < NY_HALF)
-        & (jnp.abs(QZ) < NZ_HALF),
+    dealias = jnp.where(
+        (jnp.abs(qx) < padded_res.Nx_half)
+        & (jnp.abs(qy) < padded_res.Ny_half)
+        & (jnp.abs(qz) < padded_res.Nz_half),
         True,
         False,
     )
 
-    NABLA = jax.device_put(
+    nabla = jax.device_put(
         jnp.zeros(
-            (3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=sharding.complex_type
+            (
+                3,
+                padded_res.Nz_padded,
+                padded_res.Nx_padded,
+                padded_res.Ny_padded,
+            ),
+            dtype=sharding.complex_type,
         ),
         sharding.spec_shard,
     )
 
-    NABLA = NABLA.at[0].set(1j * KX)
-    NABLA = NABLA.at[1].set(1j * KY)
-    NABLA = NABLA.at[2].set(1j * KZ)
+    nabla = nabla.at[0].set(1j * kx)
+    nabla = nabla.at[1].set(1j * ky)
+    nabla = nabla.at[2].set(1j * kz)
 
     # Zero the dealiased modes to (potentially) save computation
-    NABLA = DEALIAS * NABLA
-    LAPL = (-(KX**2) - KY**2 - KZ**2) * DEALIAS
-    INV_LAPL = jnp.where(LAPL < 0, 1 / LAPL, 0)
+    nabla = dealias * nabla
+    lapl = (-(kx**2) - ky**2 - kz**2) * dealias
+    inv_lapl = jnp.where(lapl < 0, 1 / lapl, 0)
 
-    ZERO_MEAN = jnp.where((QX == 0) & (QY == 0) & (QZ == 0), False, True)
+    zero_mean = jnp.where((qx == 0) & (qy == 0) & (qz == 0), False, True)
 
 
 fourier = Fourier()

@@ -55,7 +55,7 @@ def main():
             ),
             sharding.phys_shard,
         )
-        velocity_spec = phys_to_spec(velocity_phys, fourier.DEALIAS)
+        velocity_spec = phys_to_spec(velocity_phys, fourier.dealias)
 
     else:
         main_print("Need to provide an initial condition.")
@@ -64,8 +64,8 @@ def main():
     # Call once now not to affect benchmarks later
     stats = get_stats(
         velocity_spec,
-        fourier.LAPL,
-        fourier.DEALIAS,
+        fourier.lapl,
+        fourier.dealias,
     )
 
     # Useful to know the starting stats
@@ -99,8 +99,8 @@ def main():
         ):
             stats = get_stats(
                 velocity_spec,
-                fourier.LAPL,
-                fourier.DEALIAS,
+                fourier.lapl,
+                fourier.dealias,
             )
             main_print(
                 f"t = {t:.2f}",
@@ -110,12 +110,12 @@ def main():
 
         velocity_spec, error, c = timestep(
             velocity_spec,
-            fourier.NABLA,
-            fourier.INV_LAPL,
-            fourier.ZERO_MEAN,
-            fourier.DEALIAS,
-            stepper.LDT_1,
-            stepper.ILDT_2,
+            fourier.nabla,
+            fourier.inv_lapl,
+            fourier.zero_mean,
+            fourier.dealias,
+            stepper.ldt_1,
+            stepper.ildt_2,
         )
 
         if it > params.init.it0:
@@ -143,8 +143,8 @@ def main():
     # Useful to final stats
     stats = get_stats(
         velocity_spec,
-        fourier.LAPL,
-        fourier.DEALIAS,
+        fourier.lapl,
+        fourier.dealias,
     )
     main_print(
         f"t = {t:.2f}",
@@ -154,14 +154,14 @@ def main():
     if params.debug.time_functions and main_device:
         pp(bench.timers)
 
-    if sharding.N_DEVICES > 1:
+    if sharding.n_devices > 1:
         main_print(
-            f"Ran for {wall_time:.2f} s with {sharding.N_DEVICES} devices,",
+            f"Ran for {wall_time:.2f} s with {sharding.n_devices} devices,",
             f"{wall_time_per_sim_time:.3e} s/t,",
             f"{wall_time_per_rhs:.3e} s/rhs,",
-            f"{sharding.N_DEVICES * wall_time:.3e} NP x s:",
-            f"{sharding.N_DEVICES * wall_time_per_sim_time:.3e} NP x s/t,",
-            f"{sharding.N_DEVICES * wall_time_per_rhs:.3e} NP x s/rhs.",
+            f"{sharding.n_devices * wall_time:.3e} NP x s:",
+            f"{sharding.n_devices * wall_time_per_sim_time:.3e} NP x s/t,",
+            f"{sharding.n_devices * wall_time_per_rhs:.3e} NP x s/rhs.",
         )
     else:
         main_print(
