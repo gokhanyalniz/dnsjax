@@ -1,4 +1,5 @@
 import tomllib
+from datetime import timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -10,14 +11,14 @@ class Distribution(BaseModel):
     # Set Np0=1, Np1=N for slab decomposition
     Np0: int = Field(ge=1, default=1)
     Np1: int = Field(ge=1, default=1)
-    platform: Literal["cpu", "cuda", "rocm", "tpu"] = "cpu"
+    platform: Literal["cpu", "cuda", "rocm", "tpu"] = "cuda"
 
 
 class Physics(BaseModel):
-    Re: float = Field(gt=0, default=630)  # Reynolds number
+    Re: float = Field(gt=0, default=1000)  # Reynolds number
     # Kolmogorov: sine forcing
     # Waleffe: cosine forcing + Ry symmetry (not yet implemented)
-    forcing: Literal["none", "kolmogorov", "waleffe"] = "none"
+    forcing: Literal["kolmogorov", "waleffe"] | None = None
     # (n + 1) / 2 oversampling in each direction
     # to dealias the n'th order nonlinearity
     # oversampling_factor = n + 1
@@ -35,9 +36,9 @@ class Geometry(BaseModel):
 
 class Resolution(BaseModel):
     # Number of grid points = (before oversampling) # of Fourier modes
-    Nx: int = Field(ge=1, default=48)
-    Ny: int = Field(ge=1, default=48)
-    Nz: int = Field(ge=1, default=48)
+    Nx: int = Field(ge=1, default=128)
+    Ny: int = Field(ge=1, default=128)
+    Nz: int = Field(ge=1, default=128)
     double_precision: bool = True  # use double-precision floating point
 
 
@@ -50,18 +51,19 @@ class Initiation(BaseModel):
 
 class Outputs(BaseModel):
     # All outputs are with respect to the number of time steps taken
-    it_stats: int = 20  # How often to compute stats
+    it_stats: int | None = None  # How often to compute stats
 
 
 class TimeStepping(BaseModel):
-    dt: float = Field(gt=0, default=0.02)
+    dt: float = Field(gt=0, default=0.01)
     implicitness: float = Field(ge=0, le=1, default=0.5)
     corrector_tolerance: float = Field(gt=0, default=1e-5)
     max_corrector_iterations: int = Field(ge=1, default=10)
 
 
 class Termination(BaseModel):
-    max_sim_time: float = -1
+    max_sim_time: float | None = None
+    max_wall_time: timedelta | None = None  # ISO 8601 format for durations
 
 
 class Debugging(BaseModel):

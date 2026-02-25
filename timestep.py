@@ -59,12 +59,12 @@ def get_correction(prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next):
 @jit
 def timestep_iteration_condition(val):
     _, _, error, c = val
-    return (c < params.step.max_corrector_iterations) & (
+    condition = (c < params.step.max_corrector_iterations) & (
         error > params.step.corrector_tolerance
     )
+    return condition
 
 
-@partial(jit, donate_argnums=0)
 def timestep_iterate(val):
     prediction, rhs_no_lapl_prev, _, c = val
     rhs_no_lapl_next = get_rhs_no_lapl(prediction)
@@ -116,4 +116,10 @@ timestep = (
     timer("timestep")(timestep)
     if params.debug.time_functions
     else jit(timestep, donate_argnums=0)
+)
+
+timestep_iterate = (
+    timer("timestep_iterate")(timestep_iterate)
+    if params.debug.time_functions
+    else jit(timestep_iterate, donate_argnums=0)
 )

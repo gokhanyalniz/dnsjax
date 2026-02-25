@@ -33,22 +33,6 @@ QX = harmonics(NX_PADDED).reshape([1, -1, 1])
 QY = harmonics(NY_PADDED).reshape([1, 1, -1])
 QZ = harmonics(NZ_PADDED).reshape([-1, 1, 1])
 
-# QX = (
-#     jnp.fft.fftfreq(NX_PADDED, d=1 / NX_PADDED, dtype=float_type)
-#     .astype(int)
-#     .reshape([1, -1, 1])
-# )
-# QY = (
-#     jnp.fft.fftfreq(NY_PADDED, d=1 / NY_PADDED, dtype=float_type)
-#     .astype(int)
-#     .reshape([1, 1, -1])
-# )
-# QZ = (
-#     jnp.fft.fftfreq(NZ_PADDED, d=1 / NZ_PADDED, dtype=float_type)
-#     .astype(int)
-#     .reshape([-1, 1, 1])
-# )
-
 KX = QX * 2 * jnp.pi / params.geo.Lx
 KY = QY * 2 * jnp.pi / params.geo.Ly
 KZ = QZ * 2 * jnp.pi / params.geo.Lz

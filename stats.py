@@ -20,7 +20,7 @@ def get_energy(velocity_spec):
 
 @jit
 def get_perturbation_energy(energy, input):
-    if params.phys.forcing in ["kolmogorov", "waleffe"]:
+    if params.phys.forcing is not None:
         perturbation_energy = energy + EKIN_LAM - input / AMP
     else:
         perturbation_energy = energy
@@ -48,7 +48,7 @@ def get_dissipation(velocity_spec):
 @timer("get_input")
 @jit
 def get_input(velocity_spec):
-    if params.phys.forcing in ["kolmogorov", "waleffe"]:
+    if params.phys.forcing is not None:
         input = jnp.sum(
             jnp.conj(velocity_spec[FORCING_MODES]) * FORCING_UNIT * AMP,
             dtype=float_type,

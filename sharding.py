@@ -4,10 +4,14 @@ from jax.sharding import AxisType
 
 from parameters import params
 
-N_DEVICES = params.dist.Np0 * params.dist.Np0
-if len(jax.devices()) != N_DEVICES:
+N_DEVICES = params.dist.Np0 * params.dist.Np1
+N_DEVICES_REPORTED = len(jax.devices())
+if N_DEVICES_REPORTED != N_DEVICES:
     jax.distributed.shutdown()
-    exit("# of devices not equal to Np0 x Np1.")
+    exit(
+        f"# of devices visible ({N_DEVICES_REPORTED}) "
+        f"is not equal to Np0 x Np1 = {N_DEVICES}."
+    )
 
 MESH = jax.make_mesh(
     [params.dist.Np0, params.dist.Np1],
