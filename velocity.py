@@ -9,7 +9,7 @@ from parameters import padded_res, params
 from sharding import MESH, complex_type, float_type
 
 
-@jit(static_argnums=2)
+@jit
 def get_inprod(vector_spec_1, vector_spec_2, dealias):
     return jnp.sum(
         jnp.conj(vector_spec_1) * vector_spec_2,
@@ -18,13 +18,13 @@ def get_inprod(vector_spec_1, vector_spec_2, dealias):
     )
 
 
-@jit(static_argnums=1)
+@jit
 def get_norm2(vector_spec, dealias):
     return get_inprod(vector_spec, vector_spec, dealias)
 
 
 @timer("get_norm")
-@jit(static_argnums=1)
+@jit
 def get_norm(vector_spec, dealias):
     return jnp.sqrt(get_norm2(vector_spec, dealias))
 
@@ -44,14 +44,16 @@ def get_laminar(forcing_modes, forcing_unit):
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
     if params.phys.forcing is not None:
-        velocity_spec = velocity_spec.at[forcing_modes].add(forcing_unit)
+        velocity_spec = velocity_spec.at[forcing_modes].add(
+            jnp.array(forcing_unit)
+        )
 
     return jax.lax.with_sharding_constraint(
         velocity_spec, NamedSharding(MESH, P(None, "Z", "X", None))
     )
 
 
-@jit(donate_argnums=0, static_argnums=(1, 2))
+@jit(donate_argnums=0)
 def correct_divergence(velocity_spec, nabla, inv_lapl):
     correction = (
         -nabla
@@ -69,7 +71,7 @@ def correct_divergence(velocity_spec, nabla, inv_lapl):
 
 
 @timer("correct_velocity")
-@jit(donate_argnums=0, static_argnums=(1, 2, 3))
+@jit(donate_argnums=0)
 def correct_velocity(velocity_spec, nabla, inv_lapl, zero_mean):
     velocity_corrected = (
         correct_divergence(velocity_spec, nabla, inv_lapl) * zero_mean

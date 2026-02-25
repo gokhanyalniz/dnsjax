@@ -26,36 +26,33 @@ class Force:
         QF = 1  # Forcing harmonic
         KF = 2 * jnp.pi * QF / params.geo.Ly
 
-        FP = (
-            IC_F,
-            *(
-                i[0]
-                for i in jnp.nonzero(
-                    (fourier.QX == 0) & (fourier.QY == QF) & (fourier.QZ == 0)
-                )
-            ),
+        FP = jnp.nonzero(
+            (fourier.QX[jnp.newaxis, ...] == 0)
+            & (fourier.QY[jnp.newaxis, ...] == QF)
+            & (fourier.QZ[jnp.newaxis, ...] == 0),
+            size=1,
         )
-        FN = (
-            IC_F,
-            *(
-                i[0]
-                for i in jnp.nonzero(
-                    (fourier.QX == 0) & (fourier.QY == -QF) & (fourier.QZ == 0)
-                )
-            ),
+        FN = jnp.nonzero(
+            (fourier.QX[jnp.newaxis, ...] == 0)
+            & (fourier.QY[jnp.newaxis, ...] == -QF)
+            & (fourier.QZ[jnp.newaxis, ...] == 0),
+            size=1,
         )
+        FP = (int(i[0]) for i in (FP[0].at[0].set(IC_F), *FP[1:]))
+        FN = (int(i[0]) for i in (FN[0].at[0].set(IC_F), *FN[1:]))
+
         FORCING_MODES = tuple(zip(FP, FN, strict=True))
 
         if params.phys.forcing == "kolmogorov":
-            FORCING_UNIT = jnp.array([-1j, 1j]) * 0.5
+            FORCING_UNIT = (-1j * 0.5, 1j * 0.5)
         elif params.phys.forcing == "waleffe":
-            FORCING_UNIT = jnp.array([1, 1]) * 0.5
+            FORCING_UNIT = (0.5, 0.5)
             jax.distributed.shutdown()
             exit("Waleffe flow is not yet implemented.")
     else:
-        FORCING_MODES = jnp.array([])
-        FORCING_UNIT = 0
-        FORCING_AMPLITUDE = 1
+        FORCING_MODES = None
+        FORCING_UNIT = None
+        FORCING_AMPLITUDE = None
 
 
 force = Force()
@@ -120,7 +117,7 @@ def get_nonlin_phys(velocity_spec):
     )
 
 
-@jit(donate_argnums=0, static_argnums=1)
+@jit(donate_argnums=0)
 def get_nonlin_spec(nonlin_phys, dealias):
 
     nonlin = jax.device_put(
@@ -136,7 +133,7 @@ def get_nonlin_spec(nonlin_phys, dealias):
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
 
-    nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5]), dealias)
+    nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], dealias))
     # Basdevant: Get the 5th element from tracelessness
     nonlin = nonlin.at[5].set(-(nonlin[NSYM[0, 0]] + nonlin[NSYM[1, 1]]))
 
@@ -145,7 +142,7 @@ def get_nonlin_spec(nonlin_phys, dealias):
     )
 
 
-@jit(static_argnums=1)
+@jit
 def get_nonlin(velocity_spec, dealias):
 
     return jax.lax.with_sharding_constraint(
@@ -155,7 +152,7 @@ def get_nonlin(velocity_spec, dealias):
 
 
 @timer("get_rhs_no_lapl")
-@jit(static_argnums=(1, 2, 3, 4, 5, 6))
+@jit(static_argnums=(4, 5, 6))
 def get_rhs_no_lapl(
     velocity_spec,
     nabla,
@@ -194,7 +191,7 @@ def get_rhs_no_lapl(
     rhs_no_lapl = advect - nabla * inv_lapl * jnp.sum(nabla * advect, axis=0)
     if params.phys.forcing is not None:
         rhs_no_lapl = rhs_no_lapl.at[forcing_modes].add(
-            forcing_unit * forcing_amplitude
+            jnp.array(forcing_unit) * forcing_amplitude
         )
 
     return jax.lax.with_sharding_constraint(

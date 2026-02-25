@@ -123,11 +123,11 @@ def main():
             fourier.INV_LAPL,
             fourier.ZERO_MEAN,
             fourier.DEALIAS,
+            stepper.LDT_1,
+            stepper.ILDT_2,
             force.FORCING_MODES,
             force.FORCING_UNIT,
             force.FORCING_AMPLITUDE,
-            stepper.LDT_1,
-            stepper.ILDT_2,
         )
 
         if it > params.init.it0:

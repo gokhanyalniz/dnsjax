@@ -1,5 +1,5 @@
-from functools import partial
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 import jaxdecomp
@@ -55,12 +55,6 @@ class Fourier:
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
 
-    # for ix in range(NX_PADDED):
-    #     NABLA = NABLA.at[0, :, ix, :].set(1j * KX[0, ix, 0])
-    # for iy in range(NY_PADDED):
-    #     NABLA = NABLA.at[1, :, :, iy].set(1j * KY[0, 0, iy])
-    # for iz in range(NZ_PADDED):
-    #     NABLA = NABLA.at[2, iz, :, :].set(1j * KZ[iz, 0, 0])
     NABLA = NABLA.at[0].set(1j * KX)
     NABLA = NABLA.at[1].set(1j * KY)
     NABLA = NABLA.at[2].set(1j * KZ)
@@ -76,7 +70,7 @@ class Fourier:
 fourier = Fourier()
 
 
-@jit(donate_argnums=0, static_argnums=1)
+@jit(donate_argnums=0)
 @partial(vmap, in_axes=(0, None))
 def phys_to_spec(velocity_phys, dealias):
     velocity_spec = (

@@ -1,5 +1,5 @@
-from functools import partial
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 from jax import jit, lax, vmap
@@ -34,7 +34,7 @@ stepper = Stepper()
 
 
 @timer("get_prediction")
-@jit(donate_argnums=0, static_argnums=(2, 3))
+@jit(donate_argnums=0)
 @partial(vmap, in_axes=(0, 0, None, None))
 def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
 
@@ -46,7 +46,7 @@ def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
 
 
 @timer("get_correction")
-@jit(donate_argnums=(0, 1), static_argnums=3)
+@jit(donate_argnums=(0, 1))
 @partial(vmap, in_axes=(0, 0, 0, None))
 def get_correction(
     prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
@@ -122,11 +122,11 @@ def timestep(
     inv_lapl,
     zero_mean,
     dealias,
+    ldt1,
+    ildt_2,
     forcing_modes,
     forcing_unit,
     forcing_amplitude,
-    ldt1,
-    ildt_2,
 ):
 
     rhs_no_lapl_prev = get_rhs_no_lapl(
@@ -185,9 +185,7 @@ def timestep(
 timestep = (
     timer("timestep")(timestep)
     if params.debug.time_functions
-    else jit(
-        timestep, donate_argnums=0, static_argnums=(1, 2, 3, 4, 5, 6, 7, 8, 9)
-    )
+    else jit(timestep, donate_argnums=0, static_argnums=(7, 8, 9))
 )
 
 timestep_iterate = (

@@ -10,13 +10,12 @@ EKIN_LAM = 1 / 4 if params.phys.forcing in ["kolmogorov", "waleffe"] else 0
 
 
 @timer("get_energy")
-@jit(static_argnums=1)
+@jit
 def get_energy(velocity_spec, dealias):
     energy = get_norm2(velocity_spec, dealias) / 2
     return energy
 
 
-@jit(static_argnums=(1, 2))
 def get_perturbation_energy(energy, input, forcing_amplitude):
     if params.phys.forcing is not None:
         perturbation_energy = energy + EKIN_LAM - input / forcing_amplitude
@@ -26,7 +25,7 @@ def get_perturbation_energy(energy, input, forcing_amplitude):
     return perturbation_energy
 
 
-@jit(static_argnums=(1, 2))
+@jit
 def get_enstrophy(velocity_spec, lapl, dealias):
     enstrophy = jnp.sum(
         -lapl * (jnp.conj(velocity_spec) * velocity_spec),
@@ -37,7 +36,7 @@ def get_enstrophy(velocity_spec, lapl, dealias):
 
 
 @timer("get_dissipation")
-@jit(static_argnums=(1, 2))
+@jit
 def get_dissipation(velocity_spec, lapl, dealias):
     dissipation = get_enstrophy(velocity_spec, lapl, dealias) / params.phys.Re
     return dissipation
@@ -49,7 +48,7 @@ def get_input(velocity_spec, forcing_modes, forcing_unit, forcing_amplitude):
     if params.phys.forcing is not None:
         input = jnp.sum(
             jnp.conj(velocity_spec[forcing_modes])
-            * forcing_unit
+            * jnp.array(forcing_unit)
             * forcing_amplitude,
             dtype=float_type,
         )
@@ -88,5 +87,5 @@ def get_stats(
 get_stats = (
     timer("get_stats")(get_stats)
     if params.debug.time_functions
-    else jit(get_stats, static_argnums=(1, 2, 3, 4, 5))
+    else jit(get_stats, static_argnums=(3, 4, 5))
 )
