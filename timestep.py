@@ -85,10 +85,10 @@ def timestep_iterate(val):
         nabla,
         inv_lapl,
         dealias,
+        ildt_2,
         forcing_modes,
         forcing_unit,
         forcing_amplitude,
-        ildt_2,
     ) = operators
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
@@ -159,10 +159,10 @@ def timestep(
         nabla,
         inv_lapl,
         dealias,
+        ildt_2,
         forcing_modes,
         forcing_unit,
         forcing_amplitude,
-        ildt_2,
     )
     init_val = prediction, rhs_no_lapl_next, error, c, operators
     prediction, _, error, c, _ = lax.while_loop(
