@@ -114,22 +114,22 @@ def update_parameters(params_new: Parameters):
 
 @dataclass
 class PaddedResolution:
-    NX_HALF: int
-    NY_HALF: int
-    NZ_HALF: int
+    NX_HALF: int = params.res.Nx // 2
+    NY_HALF: int = params.res.Ny // 2
+    NZ_HALF: int = params.res.Nz // 2
 
-    NX_PADDED: int
-    NY_PADDED: int
-    NZ_PADDED: int
+    NX_PADDED: int = params.phys.oversampling_factor * params.res.Nx // 2
+    NY_PADDED: int = params.phys.oversampling_factor * params.res.Ny // 2
+    NZ_PADDED: int = params.phys.oversampling_factor * params.res.Nz // 2
 
-    def set_padded_resolution(self, params: Parameters):
-        self.NX_HALF = params.res.Nx // 2
-        self.NY_HALF = params.res.Ny // 2
-        self.NZ_HALF = params.res.Nz // 2
+    def set_padded_resolution(self, parameters: Parameters):
+        self.NX_HALF = parameters.res.Nx // 2
+        self.NY_HALF = parameters.res.Ny // 2
+        self.NZ_HALF = parameters.res.Nz // 2
 
-        self.NX_PADDED = params.phys.oversampling_factor * self.NX_HALF
-        self.NY_PADDED = params.phys.oversampling_factor * self.NY_HALF
-        self.NZ_PADDED = params.phys.oversampling_factor * self.NZ_HALF
+        self.NX_PADDED = parameters.phys.oversampling_factor * self.NX_HALF
+        self.NY_PADDED = parameters.phys.oversampling_factor * self.NY_HALF
+        self.NZ_PADDED = parameters.phys.oversampling_factor * self.NZ_HALF
 
 
 padded_res = PaddedResolution()
