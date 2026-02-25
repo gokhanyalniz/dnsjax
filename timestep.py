@@ -3,14 +3,12 @@ from functools import partial
 
 import jax
 from jax import jit, lax, vmap
-from jax.sharding import NamedSharding
-from jax.sharding import PartitionSpec as P
 
 from bench import timer
 from operators import fourier
 from parameters import params
 from rhs import get_rhs_no_lapl
-from sharding import MESH
+from sharding import sharding
 from velocity import correct_velocity, get_norm
 
 
@@ -41,7 +39,7 @@ def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
     prediction = (velocity_spec * ldt1 + rhs_no_lapl) * ildt_2
 
     return jax.lax.with_sharding_constraint(
-        prediction, NamedSharding(MESH, P("Z", "X", None))
+        prediction, sharding.scalar_spec_shard
     )
 
 
@@ -62,10 +60,10 @@ def get_correction(
 
     return (
         jax.lax.with_sharding_constraint(
-            prediction_next, NamedSharding(MESH, P("Z", "X", None))
+            prediction_next, sharding.scalar_spec_shard
         ),
         jax.lax.with_sharding_constraint(
-            correction, NamedSharding(MESH, P("Z", "X", None))
+            correction, sharding.scalar_spec_shard
         ),
     )
 
@@ -98,11 +96,9 @@ def timestep_iterate(val):
     )
     error = get_norm(correction, dealias)
     return (
+        jax.lax.with_sharding_constraint(prediction, sharding.spec_shard),
         jax.lax.with_sharding_constraint(
-            prediction, NamedSharding(MESH, P(None, "Z", "X", None))
-        ),
-        jax.lax.with_sharding_constraint(
-            rhs_no_lapl_next, NamedSharding(MESH, P(None, "Z", "X", None))
+            rhs_no_lapl_next, sharding.spec_shard
         ),
         error,
         c + 1,
@@ -157,7 +153,7 @@ def timestep(
 
     return (
         jax.lax.with_sharding_constraint(
-            velocity_spec_next, NamedSharding(MESH, P(None, "Z", "X", None))
+            velocity_spec_next, sharding.spec_shard
         ),
         error,
         c,

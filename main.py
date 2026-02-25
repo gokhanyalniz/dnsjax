@@ -20,12 +20,10 @@ def main():
     from time import perf_counter_ns
 
     from jax import numpy as jnp
-    from jax.sharding import NamedSharding
-    from jax.sharding import PartitionSpec as P
 
     import bench
     from operators import fourier, phys_to_spec
-    from sharding import MESH, N_DEVICES, complex_type
+    from sharding import sharding
     from stats import get_stats
     from timestep import stepper, timestep
     from velocity import get_laminar
@@ -53,9 +51,9 @@ def main():
     elif params.init.snapshot is not None:
         velocity_phys = jax.device_put(
             jnp.load(params.init.snapshot)["velocity_phys"].astype(
-                complex_type
+                sharding.complex_type
             ),
-            NamedSharding(MESH, P(None, "Z", "X", None)),
+            sharding.phys_shard,
         )
         velocity_spec = phys_to_spec(velocity_phys, fourier.DEALIAS)
 
@@ -156,14 +154,14 @@ def main():
     if params.debug.time_functions and main_device:
         pp(bench.timers)
 
-    if N_DEVICES > 1:
+    if sharding.N_DEVICES > 1:
         main_print(
-            f"Ran for {wall_time:.2f} s with {N_DEVICES} devices,",
+            f"Ran for {wall_time:.2f} s with {sharding.N_DEVICES} devices,",
             f"{wall_time_per_sim_time:.3e} s/t,",
             f"{wall_time_per_rhs:.3e} s/rhs,",
-            f"{N_DEVICES * wall_time:.3e} NP x s:",
-            f"{N_DEVICES * wall_time_per_sim_time:.3e} NP x s/t,",
-            f"{N_DEVICES * wall_time_per_rhs:.3e} NP x s/rhs.",
+            f"{sharding.N_DEVICES * wall_time:.3e} NP x s:",
+            f"{sharding.N_DEVICES * wall_time_per_sim_time:.3e} NP x s/t,",
+            f"{sharding.N_DEVICES * wall_time_per_rhs:.3e} NP x s/rhs.",
         )
     else:
         main_print(

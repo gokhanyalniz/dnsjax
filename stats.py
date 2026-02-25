@@ -4,7 +4,7 @@ from jax import numpy as jnp
 from bench import timer
 from parameters import params
 from rhs import force
-from sharding import float_type
+from sharding import sharding
 from velocity import get_norm2
 
 EKIN_LAM = 1 / 4 if params.phys.forcing in ["kolmogorov", "waleffe"] else 0
@@ -33,7 +33,7 @@ def get_perturbation_energy(energy, input):
 def get_enstrophy(velocity_spec, lapl, dealias):
     enstrophy = jnp.sum(
         -lapl * (jnp.conj(velocity_spec) * velocity_spec),
-        dtype=float_type,
+        dtype=sharding.float_type,
         where=dealias,
     )
     return enstrophy
@@ -54,7 +54,7 @@ def get_input(velocity_spec):
             jnp.conj(velocity_spec[force.FORCING_MODES])
             * jnp.array(force.FORCING_UNIT)
             * force.FORCING_AMPLITUDE,
-            dtype=float_type,
+            dtype=sharding.float_type,
         )
     else:
         input = 0

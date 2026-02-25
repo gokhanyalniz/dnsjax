@@ -9,7 +9,7 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from parameters import params
-from sharding import MESH, complex_type
+from sharding import sharding
 
 NX_HALF = params.res.Nx // 2
 NY_HALF = params.res.Ny // 2
@@ -29,12 +29,12 @@ class Fourier:
 
     QX = jax.device_put(
         harmonics(NX_PADDED).reshape([1, -1, 1]),
-        NamedSharding(MESH, P(None, "X", None)),
+        NamedSharding(sharding.MESH, P(None, "X", None)),
     )
     QY = harmonics(NY_PADDED).reshape([1, 1, -1])
     QZ = jax.device_put(
         harmonics(NZ_PADDED).reshape([-1, 1, 1]),
-        NamedSharding(MESH, P("Z", None, None)),
+        NamedSharding(sharding.MESH, P("Z", None, None)),
     )
 
     KX = QX * 2 * jnp.pi / params.geo.Lx
@@ -51,8 +51,10 @@ class Fourier:
     )
 
     NABLA = jax.device_put(
-        jnp.zeros((3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=complex_type),
-        NamedSharding(MESH, P(None, "Z", "X", None)),
+        jnp.zeros(
+            (3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=sharding.complex_type
+        ),
+        sharding.spec_shard,
     )
 
     NABLA = NABLA.at[0].set(1j * KX)
@@ -76,7 +78,7 @@ def phys_to_spec(velocity_phys, dealias):
     velocity_spec = (
         jaxdecomp.fft.pfft3d(
             jax.lax.with_sharding_constraint(
-                velocity_phys, NamedSharding(MESH, P("Z", "X", None))
+                velocity_phys, sharding.scalar_phys_shard
             ),
             norm="forward",
         )
@@ -84,7 +86,7 @@ def phys_to_spec(velocity_phys, dealias):
     )
 
     return jax.lax.with_sharding_constraint(
-        velocity_spec, NamedSharding(MESH, P("Z", "X", None))
+        velocity_spec, sharding.scalar_spec_shard
     )
 
 
@@ -93,7 +95,7 @@ def phys_to_spec(velocity_phys, dealias):
 def spec_to_phys(velocity_spec):
     velocity_phys = jaxdecomp.fft.pifft3d(
         jax.lax.with_sharding_constraint(
-            velocity_spec, NamedSharding(MESH, P("Z", "X", None))
+            velocity_spec, sharding.scalar_spec_shard
         ),
         norm="forward",
     )
@@ -102,5 +104,5 @@ def spec_to_phys(velocity_spec):
     ].get() + 1j * velocity_phys.imag.at[...].set(0)
 
     return jax.lax.with_sharding_constraint(
-        velocity_phys, NamedSharding(MESH, P("Z", "X", None))
+        velocity_phys, sharding.scalar_phys_shard
     )
