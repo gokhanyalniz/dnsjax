@@ -33,29 +33,36 @@ class Stepper:
 stepper = Stepper()
 
 
-@timer("get_prediction")
-@partial(jit, donate_argnums=0, static_argnames=["stepper"])
-@vmap
-def get_prediction(velocity_spec, rhs_no_lapl, stepper=stepper):
+# @partial(jit, donate_argnums=0, static_argnames=["stepper"])
+@partial(jit, donate_argnums=0)
+@partial(vmap, in_axes=(0, 0, None, None))
+def _get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
 
-    prediction = (velocity_spec * stepper.LDT_1 + rhs_no_lapl) * stepper.ILDT_2
+    prediction = (velocity_spec * ldt1 + rhs_no_lapl) * ildt_2
 
     return jax.lax.with_sharding_constraint(
         prediction, NamedSharding(MESH, P("Z", "X", None))
     )
 
 
-@timer("get_correction")
-@partial(jit, donate_argnums=(0, 1), static_argnames=["stepper"])
-@vmap
-def get_correction(
-    prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, stepper=stepper
+@timer("get_prediction")
+def get_prediction(
+    velocity_spec, rhs_no_lapl, ldt1=stepper.LDT_1, ildt_2=stepper.ILDT_2
+):
+    return _get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2)
+
+
+# @partial(jit, donate_argnums=(0, 1), static_argnames=["stepper"])
+@partial(jit, donate_argnums=(0, 1))
+@partial(vmap, in_axes=(0, 0, 0, None))
+def _get_correction(
+    prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
 ):
 
     correction = (
         params.step.implicitness
         * (rhs_no_lapl_next - rhs_no_lapl_prev)
-        * stepper.ILDT_2
+        * ildt_2
     )
 
     prediction_next = prediction_prev + correction
@@ -67,6 +74,15 @@ def get_correction(
         jax.lax.with_sharding_constraint(
             correction, NamedSharding(MESH, P("Z", "X", None))
         ),
+    )
+
+
+@timer("get_correction")
+def get_correction(
+    prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2=stepper.ILDT_2
+):
+    return _get_correction(
+        prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
     )
 
 

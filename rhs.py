@@ -155,9 +155,16 @@ def get_nonlin(velocity_spec):
     )
 
 
-@timer("get_rhs_no_lapl")
-@partial(jit, static_argnames=["fourier"])
-def get_rhs_no_lapl(velocity_spec, fourier=fourier):
+# @partial(jit, static_argnames=["fourier"])
+@partial(jit)
+def _get_rhs_no_lapl(
+    velocity_spec,
+    nabla,
+    inv_lapl,
+    forcing_modes,
+    forcing_unit,
+    forcing_amplitude,
+):
 
     nonlin = get_nonlin(velocity_spec)
 
@@ -177,21 +184,38 @@ def get_rhs_no_lapl(velocity_spec, fourier=fourier):
     def set_advect(i, val):
         return val.at[i, ...].set(
             -jnp.sum(
-                fourier.NABLA * nonlin[(NSYM[0, i], NSYM[1, i], NSYM[2, i]),],
+                nabla * nonlin[(NSYM[0, i], NSYM[1, i], NSYM[2, i]),],
                 axis=0,
             )
         )
 
     advect = lax.fori_loop(0, 3, set_advect, advect, unroll=True)
 
-    rhs_no_lapl = advect - fourier.NABLA * fourier.INV_LAPL * jnp.sum(
-        fourier.NABLA * advect, axis=0
-    )
+    rhs_no_lapl = advect - nabla * inv_lapl * jnp.sum(nabla * advect, axis=0)
     if params.phys.forcing is not None:
-        rhs_no_lapl = rhs_no_lapl.at[force.FORCING_MODES].add(
-            force.FORCING_UNIT * force.FORCING_AMPLITUDE
+        rhs_no_lapl = rhs_no_lapl.at[forcing_modes].add(
+            forcing_unit * forcing_amplitude
         )
 
     return jax.lax.with_sharding_constraint(
         rhs_no_lapl, NamedSharding(MESH, P(None, "Z", "X", None))
+    )
+
+
+@timer("get_rhs_no_lapl")
+def get_rhs_no_lapl(
+    velocity_spec,
+    nabla=fourier.NABLA,
+    inv_lapl=fourier.INV_LAPL,
+    forcing_modes=force.FORCING_MODES,
+    forcing_unit=force.FORCING_UNIT,
+    forcing_amplitude=force.FORCING_AMPLITUDE,
+):
+    return _get_rhs_no_lapl(
+        velocity_spec,
+        nabla,
+        inv_lapl,
+        forcing_modes,
+        forcing_unit,
+        forcing_amplitude,
     )

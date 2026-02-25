@@ -13,16 +13,21 @@ from rhs import force
 from sharding import MESH, complex_type, float_type
 
 
-@partial(jit, static_argnames=["fourier"])
-def get_inprod(vector_spec_1, vector_spec_2, fourier=fourier):
+# @partial(jit, static_argnames=["fourier"])
+@partial(jit)
+def _get_inprod(vector_spec_1, vector_spec_2, dealias):
     return jnp.sum(
         jnp.conj(vector_spec_1) * vector_spec_2,
         dtype=float_type,
-        where=fourier.DEALIAS,
+        where=dealias,
     )
 
 
-@jit
+def get_inprod(vector_spec_1, vector_spec_2, dealias=fourier.DEALIAS):
+    return _get_inprod(vector_spec_1, vector_spec_2, dealias)
+
+
+# @jit
 def get_norm2(vector_spec):
     return get_inprod(vector_spec, vector_spec)
 
@@ -38,8 +43,9 @@ def get_inprod_phys(vector_phys_1, vector_phys_2):
     return jnp.average(jnp.sum(vector_phys_1 * vector_phys_2, axis=0))
 
 
-@partial(jit, static_argnames=["force"])
-def get_laminar(force=force):
+# @partial(jit, static_argnames=["force"])
+@partial(jit)
+def _get_laminar(forcing_modes, forcing_unit):
     velocity_spec = jax.device_put(
         jnp.zeros(
             (
@@ -53,22 +59,27 @@ def get_laminar(force=force):
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
     if params.phys.forcing is not None:
-        velocity_spec = velocity_spec.at[force.FORCING_MODES].add(
-            force.FORCING_UNIT
-        )
+        velocity_spec = velocity_spec.at[forcing_modes].add(forcing_unit)
 
     return jax.lax.with_sharding_constraint(
         velocity_spec, NamedSharding(MESH, P(None, "Z", "X", None))
     )
 
 
-@partial(jit, donate_argnums=0, static_argnames=["fourier"])
-def correct_divergence(velocity_spec, fourier=fourier):
+def get_laminar(
+    forcing_modes=force.FORCING_MODES, forcing_unit=force.FORCING_UNIT
+):
+    return _get_laminar(forcing_modes, forcing_unit)
+
+
+# @partial(jit, donate_argnums=0, static_argnames=["fourier"])
+@partial(jit, donate_argnums=0)
+def _correct_divergence(velocity_spec, nabla, inv_lapl):
     correction = (
-        -fourier.NABLA
-        * fourier.INV_LAPL
+        -nabla
+        * inv_lapl
         * jnp.sum(
-            fourier.NABLA * velocity_spec,
+            nabla * velocity_spec,
             axis=0,
         )
     )
@@ -79,11 +90,22 @@ def correct_divergence(velocity_spec, fourier=fourier):
     )
 
 
-@timer("correct_velocity")
-@partial(jit, donate_argnums=0, static_argnames=["fourier"])
-def correct_velocity(velocity_spec, fourier=fourier):
-    velocity_corrected = correct_divergence(velocity_spec) * fourier.ZERO_MEAN
+def correct_divergence(
+    velocity_spec, nabla=fourier.NABLA, inv_lapl=fourier.INV_LAPL
+):
+    return _correct_divergence(velocity_spec, nabla, inv_lapl)
+
+
+# @partial(jit, donate_argnums=0, static_argnames=["fourier"])
+@partial(jit, donate_argnums=0)
+def _correct_velocity(velocity_spec, zero_mean):
+    velocity_corrected = correct_divergence(velocity_spec) * zero_mean
 
     return jax.lax.with_sharding_constraint(
         velocity_corrected, NamedSharding(MESH, P(None, "Z", "X", None))
     )
+
+
+@timer("correct_velocity")
+def correct_velocity(velocity_spec, zero_mean=fourier.ZERO_MEAN):
+    return _correct_velocity(velocity_spec, zero_mean)

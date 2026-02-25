@@ -20,26 +20,36 @@ def get_energy(velocity_spec):
     return energy
 
 
-@partial(jit, static_argnames=["force"])
-def get_perturbation_energy(energy, input, force=force):
+# @partial(jit, static_argnames=["force"])
+@partial(jit)
+def _get_perturbation_energy(energy, input, forcing_amplitude):
     if params.phys.forcing is not None:
-        perturbation_energy = (
-            energy + EKIN_LAM - input / force.FORCING_AMPLITUDE
-        )
+        perturbation_energy = energy + EKIN_LAM - input / forcing_amplitude
     else:
         perturbation_energy = energy
 
     return perturbation_energy
 
 
-@partial(jit, static_argnames=["fourier"])
-def get_enstrophy(velocity_spec, fourier=fourier):
+def get_perturbation_energy(
+    energy, input, forcing_amplitude=force.FORCING_AMPLITUDE
+):
+    return _get_perturbation_energy(energy, input, forcing_amplitude)
+
+
+# @partial(jit, static_argnames=["fourier"])
+@partial(jit)
+def _get_enstrophy(velocity_spec, lapl, dealias):
     enstrophy = jnp.sum(
-        -fourier.LAPL * (jnp.conj(velocity_spec) * velocity_spec),
+        -lapl * (jnp.conj(velocity_spec) * velocity_spec),
         dtype=float_type,
-        where=fourier.DEALIAS,
+        where=dealias,
     )
     return enstrophy
+
+
+def get_enstrophy(velocity_spec, lapl=fourier.LAPL, dealias=fourier.DEALIAS):
+    return _get_enstrophy(velocity_spec, lapl, dealias)
 
 
 @timer("get_dissipation")
@@ -49,19 +59,31 @@ def get_dissipation(velocity_spec):
     return dissipation
 
 
-@timer("get_input")
-@partial(jit, static_argnames=["force"])
-def get_input(velocity_spec, force=force):
+# @partial(jit, static_argnames=["force"])
+@partial(jit)
+def _get_input(velocity_spec, forcing_modes, forcing_unit, forcing_amplitude):
     if params.phys.forcing is not None:
         input = jnp.sum(
-            jnp.conj(velocity_spec[force.FORCING_MODES])
-            * force.FORCING_UNIT
-            * force.FORCING_AMPLITUDE,
+            jnp.conj(velocity_spec[forcing_modes])
+            * forcing_unit
+            * forcing_amplitude,
             dtype=float_type,
         )
     else:
         input = 0
     return input
+
+
+@timer("get_input")
+def get_input(
+    velocity_spec,
+    forcing_modes=force.FORCING_MODES,
+    forcing_unit=force.FORCING_UNIT,
+    forcing_amplitude=force.FORCING_AMPLITUDE,
+):
+    return _get_input(
+        velocity_spec, forcing_modes, forcing_unit, forcing_amplitude
+    )
 
 
 def get_stats(velocity_spec):

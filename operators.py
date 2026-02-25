@@ -76,8 +76,9 @@ class Fourier:
 fourier = Fourier()
 
 
+# @partial(jit, donate_argnums=0, static_argnames=["fourier"])
 @partial(jit, donate_argnums=0)
-def phys_to_spec_scalar(scalar_phys):
+def _phys_to_spec_scalar(scalar_phys, dealias):
     scalar_spec = jax.lax.with_sharding_constraint(
         jaxdecomp.fft.pfft3d(
             jax.lax.with_sharding_constraint(
@@ -85,10 +86,14 @@ def phys_to_spec_scalar(scalar_phys):
             ),
             norm="forward",
         )
-        * fourier.DEALIAS,
+        * dealias,
         NamedSharding(MESH, P("Z", "X", None)),
     )
     return scalar_spec
+
+
+def phys_to_spec_scalar(scalar_phys, dealias=fourier.DEALIAS):
+    return _phys_to_spec_scalar(scalar_phys, dealias)
 
 
 @partial(jit, donate_argnums=0)
@@ -107,9 +112,10 @@ def spec_to_phys_scalar(scalar_spec):
     )
 
 
+# @partial(jit, donate_argnums=0, static_argnames=["fourier"])
 @partial(jit, donate_argnums=0)
-@vmap
-def phys_to_spec_vector(velocity_phys):
+@partial(vmap, in_axes=(0, None))
+def _phys_to_spec_vector(velocity_phys, dealias):
     velocity_spec = jax.lax.with_sharding_constraint(
         jaxdecomp.fft.pfft3d(
             jax.lax.with_sharding_constraint(
@@ -117,14 +123,18 @@ def phys_to_spec_vector(velocity_phys):
             ),
             norm="forward",
         )
-        * fourier.DEALIAS,
+        * dealias,
         NamedSharding(MESH, P("Z", "X", None)),
     )
     return velocity_spec
 
 
+def phys_to_spec_vector(velocity_phys, dealias=fourier.DEALIAS):
+    return _phys_to_spec_vector(velocity_phys, dealias)
+
+
 @partial(jit, donate_argnums=0)
-@vmap
+@partial(vmap, in_axes=(0,))
 def spec_to_phys_vector(velocity_spec):
     velocity_phys = jaxdecomp.fft.pifft3d(
         jax.lax.with_sharding_constraint(
