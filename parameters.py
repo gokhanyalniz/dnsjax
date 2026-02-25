@@ -1,4 +1,5 @@
 import tomllib
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Literal
@@ -109,3 +110,26 @@ def update_parameters(params_new: Parameters):
             for key, value in dict.items():
                 if value is not None:
                     setattr(getattr(params, category), key, value)
+
+
+@dataclass
+class PaddedResolution:
+    Nx_half: int = params.res.Nx // 2
+    Ny_half: int = params.res.Ny // 2
+    Nz_half: int = params.res.Nz // 2
+
+    Nx_padded: int = params.phys.oversampling_factor * params.res.Nx // 2
+    Ny_padded: int = params.phys.oversampling_factor * params.res.Ny // 2
+    Nz_padded: int = params.phys.oversampling_factor * params.res.Nz // 2
+
+    def set_padded_resolution(self, parameters: Parameters):
+        self.Nx_half = parameters.res.Nx // 2
+        self.Ny_half = parameters.res.Ny // 2
+        self.Nz_half = parameters.res.Nz // 2
+
+        self.Nx_padded = parameters.phys.oversampling_factor * self.Nx_half
+        self.Ny_padded = parameters.phys.oversampling_factor * self.Ny_half
+        self.Nz_padded = parameters.phys.oversampling_factor * self.Nz_half
+
+
+padded_res = PaddedResolution()

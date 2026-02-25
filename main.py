@@ -8,6 +8,7 @@ from pydantic_settings import CliApp
 
 from parameters import (
     CLIParameters,
+    padded_res,
     params,
     read_parameters,
     update_parameters,
@@ -19,14 +20,12 @@ def main():
     from time import perf_counter_ns
 
     from jax import numpy as jnp
-    from jax.sharding import NamedSharding
-    from jax.sharding import PartitionSpec as P
 
     import bench
-    from operators import phys_to_spec_vector
-    from sharding import MESH, N_DEVICES, complex_type
+    from operators import fourier, phys_to_spec
+    from sharding import sharding
     from stats import get_stats
-    from timestep import timestep
+    from timestep import stepper, timestep
     from velocity import get_laminar
 
     wall_time_stop = (
@@ -52,18 +51,22 @@ def main():
     elif params.init.snapshot is not None:
         velocity_phys = jax.device_put(
             jnp.load(params.init.snapshot)["velocity_phys"].astype(
-                complex_type
+                sharding.complex_type
             ),
-            NamedSharding(MESH, P(None, "Z", "X", None)),
+            sharding.phys_shard,
         )
-        velocity_spec = phys_to_spec_vector(velocity_phys)
+        velocity_spec = phys_to_spec(velocity_phys, fourier.dealias)
 
     else:
         main_print("Need to provide an initial condition.")
         return
 
     # Call once now not to affect benchmarks later
-    stats = get_stats(velocity_spec)
+    stats = get_stats(
+        velocity_spec,
+        fourier.lapl,
+        fourier.dealias,
+    )
 
     # Useful to know the starting stats
     main_print(
@@ -94,14 +97,26 @@ def main():
             and it % params.outs.it_stats == 0
             and it != params.init.it0
         ):
-            stats = get_stats(velocity_spec)
+            stats = get_stats(
+                velocity_spec,
+                fourier.lapl,
+                fourier.dealias,
+            )
             main_print(
                 f"t = {t:.2f}",
                 *[f"{x}={y:.6e}" for x, y in stats.items()],
                 f"c/it = {rhs_tot / (it - 1 - params.init.it0):.2f}",
             )
 
-        velocity_spec, error, c = timestep(velocity_spec)
+        velocity_spec, error, c = timestep(
+            velocity_spec,
+            fourier.nabla,
+            fourier.inv_lapl,
+            fourier.zero_mean,
+            fourier.dealias,
+            stepper.ldt_1,
+            stepper.ildt_2,
+        )
 
         if it > params.init.it0:
             # Ignore the first hit, probably subject to JIT compilation
@@ -126,7 +141,11 @@ def main():
     wall_time_per_rhs = wall_time / rhs_tot
 
     # Useful to final stats
-    stats = get_stats(velocity_spec)
+    stats = get_stats(
+        velocity_spec,
+        fourier.lapl,
+        fourier.dealias,
+    )
     main_print(
         f"t = {t:.2f}",
         *[f"{x}={y:.6e}" for x, y in stats.items()],
@@ -135,14 +154,14 @@ def main():
     if params.debug.time_functions and main_device:
         pp(bench.timers)
 
-    if N_DEVICES > 1:
+    if sharding.n_devices > 1:
         main_print(
-            f"Ran for {wall_time:.2f} s with {N_DEVICES} devices,",
+            f"Ran for {wall_time:.2f} s with {sharding.n_devices} devices,",
             f"{wall_time_per_sim_time:.3e} s/t,",
             f"{wall_time_per_rhs:.3e} s/rhs,",
-            f"{N_DEVICES * wall_time:.3e} NP x s:",
-            f"{N_DEVICES * wall_time_per_sim_time:.3e} NP x s/t,",
-            f"{N_DEVICES * wall_time_per_rhs:.3e} NP x s/rhs.",
+            f"{sharding.n_devices * wall_time:.3e} NP x s:",
+            f"{sharding.n_devices * wall_time_per_sim_time:.3e} NP x s/t,",
+            f"{sharding.n_devices * wall_time_per_rhs:.3e} NP x s/rhs.",
         )
     else:
         main_print(
@@ -163,6 +182,7 @@ if __name__ == "__main__":
         update_parameters(params_in)
 
     update_parameters(params_cli)
+    padded_res.set_padded_resolution(params)
 
     if params.dist.platform == "cpu":
         os.environ["XLA_FLAGS"] = (
