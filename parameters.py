@@ -11,7 +11,7 @@ class Distribution(BaseModel):
     # Set Np0=1, Np1=N for slab decomposition
     Np0: int = Field(ge=1, default=1)
     Np1: int = Field(ge=1, default=1)
-    platform: Literal["cpu", "cuda", "rocm", "tpu"] = "cpu"
+    platform: Literal["cpu", "cuda", "rocm", "tpu"] = "cuda"
 
 
 class Physics(BaseModel):
