@@ -158,9 +158,9 @@ def get_nonlin(velocity_spec, dealias):
 @jit(static_argnums=(1, 2, 3, 4, 5, 6))
 def get_rhs_no_lapl(
     velocity_spec,
-    dealias,
     nabla,
     inv_lapl,
+    dealias,
     forcing_modes,
     forcing_unit,
     forcing_amplitude,

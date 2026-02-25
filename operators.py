@@ -78,21 +78,23 @@ fourier = Fourier()
 @jit(donate_argnums=0, static_argnums=1)
 @vmap(in_axes=(0, None))
 def phys_to_spec(velocity_phys, dealias):
-    velocity_spec = jax.lax.with_sharding_constraint(
+    velocity_spec = (
         jaxdecomp.fft.pfft3d(
             jax.lax.with_sharding_constraint(
                 velocity_phys, NamedSharding(MESH, P("Z", "X", None))
             ),
             norm="forward",
         )
-        * dealias,
-        NamedSharding(MESH, P("Z", "X", None)),
+        * dealias
     )
-    return velocity_spec
+
+    return jax.lax.with_sharding_constraint(
+        velocity_spec, NamedSharding(MESH, P("Z", "X", None))
+    )
 
 
 @jit(donate_argnums=0)
-@vmap(in_axes=(0,))
+@vmap
 def spec_to_phys(velocity_spec):
     velocity_phys = jaxdecomp.fft.pifft3d(
         jax.lax.with_sharding_constraint(

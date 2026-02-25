@@ -81,9 +81,9 @@ def timestep_iteration_condition(val):
 def timestep_iterate(val):
     prediction, rhs_no_lapl_prev, _, c, operators = val
     (
-        dealias,
         nabla,
         inv_lapl,
+        dealias,
         forcing_modes,
         forcing_unit,
         forcing_amplitude,
@@ -91,9 +91,9 @@ def timestep_iterate(val):
     ) = operators
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
-        dealias,
         nabla,
         inv_lapl,
+        dealias,
         forcing_modes,
         forcing_unit,
         forcing_amplitude,
@@ -117,10 +117,10 @@ def timestep_iterate(val):
 
 def timestep(
     velocity_spec,
-    dealias,
     nabla,
     inv_lapl,
     zero_mean,
+    dealias,
     forcing_modes,
     forcing_unit,
     forcing_amplitude,
@@ -130,9 +130,9 @@ def timestep(
 
     rhs_no_lapl_prev = get_rhs_no_lapl(
         velocity_spec,
-        dealias,
         nabla,
         inv_lapl,
+        dealias,
         forcing_modes,
         forcing_unit,
         forcing_amplitude,
@@ -141,9 +141,9 @@ def timestep(
 
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
-        dealias,
         nabla,
         inv_lapl,
+        dealias,
         forcing_modes,
         forcing_unit,
         forcing_amplitude,
@@ -155,9 +155,9 @@ def timestep(
     c = 1
 
     operators = (
-        dealias,
         nabla,
         inv_lapl,
+        dealias,
         forcing_modes,
         forcing_unit,
         forcing_amplitude,

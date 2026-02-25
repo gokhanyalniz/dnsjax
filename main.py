@@ -119,10 +119,10 @@ def main():
 
         velocity_spec, error, c = timestep(
             velocity_spec,
-            fourier.DEALIAS,
             fourier.NABLA,
             fourier.INV_LAPL,
             fourier.ZERO_MEAN,
+            fourier.DEALIAS,
             force.FORCING_MODES,
             force.FORCING_UNIT,
             force.FORCING_AMPLITUDE,
