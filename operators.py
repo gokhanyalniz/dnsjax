@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from functools import partial
 
 import jax
 import jaxdecomp
@@ -76,46 +75,9 @@ class Fourier:
 fourier = Fourier()
 
 
-# @partial(jit, donate_argnums=0, static_argnames=["fourier"])
-@partial(jit, donate_argnums=0)
-def _phys_to_spec_scalar(scalar_phys, dealias):
-    scalar_spec = jax.lax.with_sharding_constraint(
-        jaxdecomp.fft.pfft3d(
-            jax.lax.with_sharding_constraint(
-                scalar_phys, NamedSharding(MESH, P("Z", "X", None))
-            ),
-            norm="forward",
-        )
-        * dealias,
-        NamedSharding(MESH, P("Z", "X", None)),
-    )
-    return scalar_spec
-
-
-def phys_to_spec_scalar(scalar_phys, dealias=fourier.DEALIAS):
-    return _phys_to_spec_scalar(scalar_phys, dealias)
-
-
-@partial(jit, donate_argnums=0)
-def spec_to_phys_scalar(scalar_spec):
-    scalar_phys = jaxdecomp.fft.pifft3d(
-        jax.lax.with_sharding_constraint(
-            scalar_spec, NamedSharding(MESH, P("Z", "X", None))
-        ),
-        norm="forward",
-    )
-    scalar_phys = scalar_phys.real.at[...].get() + 1j * scalar_phys.imag.at[
-        ...
-    ].set(0)
-    return jax.lax.with_sharding_constraint(
-        scalar_phys, NamedSharding(MESH, P("Z", "X", None))
-    )
-
-
-# @partial(jit, donate_argnums=0, static_argnames=["fourier"])
-@partial(jit, donate_argnums=0)
-@partial(vmap, in_axes=(0, None))
-def _phys_to_spec_vector(velocity_phys, dealias):
+@jit(donate_argnums=0, static_argnums=1)
+@vmap(in_axes=(0, None))
+def phys_to_spec(velocity_phys, dealias):
     velocity_spec = jax.lax.with_sharding_constraint(
         jaxdecomp.fft.pfft3d(
             jax.lax.with_sharding_constraint(
@@ -129,13 +91,9 @@ def _phys_to_spec_vector(velocity_phys, dealias):
     return velocity_spec
 
 
-def phys_to_spec_vector(velocity_phys, dealias=fourier.DEALIAS):
-    return _phys_to_spec_vector(velocity_phys, dealias)
-
-
-@partial(jit, donate_argnums=0)
-@partial(vmap, in_axes=(0,))
-def spec_to_phys_vector(velocity_spec):
+@jit(donate_argnums=0)
+@vmap(in_axes=(0,))
+def spec_to_phys(velocity_spec):
     velocity_phys = jaxdecomp.fft.pifft3d(
         jax.lax.with_sharding_constraint(
             velocity_spec, NamedSharding(MESH, P("Z", "X", None))

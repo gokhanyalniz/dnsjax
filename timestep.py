@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from functools import partial
 
 import jax
 from jax import jit, lax, vmap
@@ -33,10 +32,10 @@ class Stepper:
 stepper = Stepper()
 
 
-# @partial(jit, donate_argnums=0, static_argnames=["stepper"])
-@partial(jit, donate_argnums=0)
-@partial(vmap, in_axes=(0, 0, None, None))
-def _get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
+@timer("get_prediction")
+@jit(donate_argnums=0, static_argnums=(2, 3))
+@vmap(in_axes=(0, 0, None, None))
+def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
 
     prediction = (velocity_spec * ldt1 + rhs_no_lapl) * ildt_2
 
@@ -45,17 +44,10 @@ def _get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
     )
 
 
-@timer("get_prediction")
-def get_prediction(
-    velocity_spec, rhs_no_lapl, ldt1=stepper.LDT_1, ildt_2=stepper.ILDT_2
-):
-    return _get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2)
-
-
-# @partial(jit, donate_argnums=(0, 1), static_argnames=["stepper"])
-@partial(jit, donate_argnums=(0, 1))
-@partial(vmap, in_axes=(0, 0, 0, None))
-def _get_correction(
+@timer("get_correction")
+@jit(donate_argnums=(0, 1), static_argnums=3)
+@vmap(in_axes=(0, 0, 0, None))
+def get_correction(
     prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
 ):
 
@@ -77,18 +69,9 @@ def _get_correction(
     )
 
 
-@timer("get_correction")
-def get_correction(
-    prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2=stepper.ILDT_2
-):
-    return _get_correction(
-        prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
-    )
-
-
 @jit
 def timestep_iteration_condition(val):
-    _, _, error, c = val
+    _, _, error, c, _ = val
     condition = (c < params.step.max_corrector_iterations) & (
         error > params.step.corrector_tolerance
     )
@@ -96,12 +79,29 @@ def timestep_iteration_condition(val):
 
 
 def timestep_iterate(val):
-    prediction, rhs_no_lapl_prev, _, c = val
-    rhs_no_lapl_next = get_rhs_no_lapl(prediction)
-    prediction, correction = get_correction(
-        prediction, rhs_no_lapl_prev, rhs_no_lapl_next
+    prediction, rhs_no_lapl_prev, _, c, operators = val
+    (
+        dealias,
+        nabla,
+        inv_lapl,
+        forcing_modes,
+        forcing_unit,
+        forcing_amplitude,
+        ildt_2,
+    ) = operators
+    rhs_no_lapl_next = get_rhs_no_lapl(
+        prediction,
+        dealias,
+        nabla,
+        inv_lapl,
+        forcing_modes,
+        forcing_unit,
+        forcing_amplitude,
     )
-    error = get_norm(correction)
+    prediction, correction = get_correction(
+        prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
+    )
+    error = get_norm(correction, dealias)
     return (
         jax.lax.with_sharding_constraint(
             prediction, NamedSharding(MESH, P(None, "Z", "X", None))
@@ -111,27 +111,66 @@ def timestep_iterate(val):
         ),
         error,
         c + 1,
+        operators,
     )
 
 
-def timestep(velocity_spec):
+def timestep(
+    velocity_spec,
+    dealias,
+    nabla,
+    inv_lapl,
+    zero_mean,
+    forcing_modes,
+    forcing_unit,
+    forcing_amplitude,
+    ldt1,
+    ildt_2,
+):
 
-    rhs_no_lapl_prev = get_rhs_no_lapl(velocity_spec)
-    prediction = get_prediction(velocity_spec, rhs_no_lapl_prev)
+    rhs_no_lapl_prev = get_rhs_no_lapl(
+        velocity_spec,
+        dealias,
+        nabla,
+        inv_lapl,
+        forcing_modes,
+        forcing_unit,
+        forcing_amplitude,
+    )
+    prediction = get_prediction(velocity_spec, rhs_no_lapl_prev, ldt1, ildt_2)
 
-    rhs_no_lapl_next = get_rhs_no_lapl(prediction)
+    rhs_no_lapl_next = get_rhs_no_lapl(
+        prediction,
+        dealias,
+        nabla,
+        inv_lapl,
+        forcing_modes,
+        forcing_unit,
+        forcing_amplitude,
+    )
     prediction, correction = get_correction(
-        prediction, rhs_no_lapl_prev, rhs_no_lapl_next
+        prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
     )
-    error = get_norm(correction)
+    error = get_norm(correction, dealias)
     c = 1
 
-    init_val = prediction, rhs_no_lapl_next, error, c
-    prediction, _, error, c = lax.while_loop(
+    operators = (
+        dealias,
+        nabla,
+        inv_lapl,
+        forcing_modes,
+        forcing_unit,
+        forcing_amplitude,
+        ildt_2,
+    )
+    init_val = prediction, rhs_no_lapl_next, error, c, operators
+    prediction, _, error, c, _ = lax.while_loop(
         timestep_iteration_condition, timestep_iterate, init_val
     )
 
-    velocity_spec_next = correct_velocity(prediction)
+    velocity_spec_next = correct_velocity(
+        prediction, nabla, inv_lapl, zero_mean
+    )
 
     return (
         jax.lax.with_sharding_constraint(
@@ -145,7 +184,9 @@ def timestep(velocity_spec):
 timestep = (
     timer("timestep")(timestep)
     if params.debug.time_functions
-    else jit(timestep, donate_argnums=0)
+    else jit(
+        timestep, donate_argnums=0, static_argnums=(1, 2, 3, 4, 5, 6, 7, 8, 9)
+    )
 )
 
 timestep_iterate = (

@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from functools import partial
 
 import jax
 from jax import jit, lax
@@ -10,8 +9,8 @@ from jax.sharding import PartitionSpec as P
 from bench import timer
 from operators import (
     fourier,
-    phys_to_spec_vector,
-    spec_to_phys_vector,
+    phys_to_spec,
+    spec_to_phys,
 )
 from parameters import padded_res, params
 from sharding import MESH, complex_type, float_type
@@ -77,7 +76,7 @@ for n in range(6):
 @jit
 def get_nonlin_phys(velocity_spec):
 
-    velocity_phys = spec_to_phys_vector(velocity_spec)  # 3 FFTs
+    velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
     nonlin_phys = jax.device_put(
         jnp.zeros(
@@ -121,8 +120,8 @@ def get_nonlin_phys(velocity_spec):
     )
 
 
-@partial(jit, donate_argnums=0)
-def get_nonlin_spec(nonlin_phys):
+@jit(donate_argnums=0, static_argnums=1)
+def get_nonlin_spec(nonlin_phys, dealias):
 
     nonlin = jax.device_put(
         jnp.zeros(
@@ -137,7 +136,7 @@ def get_nonlin_spec(nonlin_phys):
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
 
-    nonlin = nonlin.at[:5].set(phys_to_spec_vector(nonlin_phys[:5]))
+    nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5]), dealias)
     # Basdevant: Get the 5th element from tracelessness
     nonlin = nonlin.at[5].set(-(nonlin[NSYM[0, 0]] + nonlin[NSYM[1, 1]]))
 
@@ -146,19 +145,20 @@ def get_nonlin_spec(nonlin_phys):
     )
 
 
-@jit
-def get_nonlin(velocity_spec):
+@jit(static_argnums=1)
+def get_nonlin(velocity_spec, dealias):
 
     return jax.lax.with_sharding_constraint(
-        get_nonlin_spec(get_nonlin_phys(velocity_spec)),
+        get_nonlin_spec(get_nonlin_phys(velocity_spec), dealias),
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
 
 
-# @partial(jit, static_argnames=["fourier"])
-@partial(jit)
-def _get_rhs_no_lapl(
+@timer("get_rhs_no_lapl")
+@jit(static_argnums=(1, 2, 3, 4, 5, 6))
+def get_rhs_no_lapl(
     velocity_spec,
+    dealias,
     nabla,
     inv_lapl,
     forcing_modes,
@@ -166,7 +166,7 @@ def _get_rhs_no_lapl(
     forcing_amplitude,
 ):
 
-    nonlin = get_nonlin(velocity_spec)
+    nonlin = get_nonlin(velocity_spec, dealias)
 
     advect = jax.device_put(
         jnp.zeros(
@@ -199,23 +199,4 @@ def _get_rhs_no_lapl(
 
     return jax.lax.with_sharding_constraint(
         rhs_no_lapl, NamedSharding(MESH, P(None, "Z", "X", None))
-    )
-
-
-@timer("get_rhs_no_lapl")
-def get_rhs_no_lapl(
-    velocity_spec,
-    nabla=fourier.NABLA,
-    inv_lapl=fourier.INV_LAPL,
-    forcing_modes=force.FORCING_MODES,
-    forcing_unit=force.FORCING_UNIT,
-    forcing_amplitude=force.FORCING_AMPLITUDE,
-):
-    return _get_rhs_no_lapl(
-        velocity_spec,
-        nabla,
-        inv_lapl,
-        forcing_modes,
-        forcing_unit,
-        forcing_amplitude,
     )
