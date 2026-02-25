@@ -2,10 +2,10 @@ from jax import jit
 from jax import numpy as jnp
 
 from bench import timer
+from operators import DEALIAS, LAPL
 from parameters import params
-from rhs import AMP, FORCING_MODES, FORCING_UNIT, LAPL
+from rhs import AMP, FORCING_MODES, FORCING_UNIT
 from sharding import float_type
-from transform import DEALIAS
 from velocity import get_norm2
 
 EKIN_LAM = 1 / 4 if params.phys.forcing in ["kolmogorov", "waleffe"] else 0
