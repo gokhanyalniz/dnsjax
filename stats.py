@@ -7,7 +7,7 @@ from rhs import force
 from sharding import sharding
 from velocity import get_norm2
 
-EKIN_LAM = 1 / 4 if params.phys.forcing in ["kolmogorov", "waleffe"] else 0
+ekin_lam = 1 / 4 if params.phys.forcing in ["kolmogorov", "waleffe"] else 0
 
 
 @timer("get_energy")
@@ -19,10 +19,8 @@ def get_energy(velocity_spec, dealias):
 
 @jit
 def get_perturbation_energy(energy, input):
-    if params.phys.forcing is not None:
-        perturbation_energy = (
-            energy + EKIN_LAM - input / force.FORCING_AMPLITUDE
-        )
+    if force.on:
+        perturbation_energy = energy + ekin_lam - input / force.amplitude
     else:
         perturbation_energy = energy
 
@@ -49,11 +47,11 @@ def get_dissipation(velocity_spec, lapl, dealias):
 @timer("get_input")
 @jit
 def get_input(velocity_spec):
-    if params.phys.forcing is not None:
+    if force.on:
         input = jnp.sum(
-            jnp.conj(velocity_spec[force.FORCING_MODES])
-            * jnp.array(force.FORCING_UNIT)
-            * force.FORCING_AMPLITUDE,
+            jnp.conj(velocity_spec[force.forced_modes])
+            * jnp.array(force.unit)
+            * force.amplitude,
             dtype=sharding.float_type,
         )
     else:

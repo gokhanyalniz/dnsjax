@@ -10,25 +10,25 @@ from parameters import params
 
 @dataclass
 class Sharding:
-    N_DEVICES = params.dist.Np0 * params.dist.Np1
-    N_DEVICES_REPORTED = len(jax.devices())
-    if N_DEVICES_REPORTED != N_DEVICES:
+    n_devices = params.dist.Np0 * params.dist.Np1
+    n_devices_reported = len(jax.devices())
+    if n_devices_reported != n_devices:
         jax.distributed.shutdown()
         exit(
-            f"# of devices visible ({N_DEVICES_REPORTED}) "
-            f"is not equal to Np0 x Np1 = {N_DEVICES}."
+            f"# of devices visible ({n_devices_reported}) "
+            f"is not equal to Np0 x Np1 = {n_devices}."
         )
 
-    MESH = jax.make_mesh(
+    mesh = jax.make_mesh(
         [params.dist.Np0, params.dist.Np1],
         axis_names=("Z", "X"),
         axis_types=(AxisType.Auto, AxisType.Auto),
     )
 
-    phys_shard = NamedSharding(MESH, P(None, "Z", "X", None))
-    spec_shard = NamedSharding(MESH, P(None, "Z", "X", None))
-    scalar_phys_shard = NamedSharding(MESH, P("Z", "X", None))
-    scalar_spec_shard = NamedSharding(MESH, P("Z", "X", None))
+    phys_shard = NamedSharding(mesh, P(None, "Z", "X", None))
+    spec_shard = NamedSharding(mesh, P(None, "Z", "X", None))
+    scalar_phys_shard = NamedSharding(mesh, P("Z", "X", None))
+    scalar_spec_shard = NamedSharding(mesh, P("Z", "X", None))
 
     if params.res.double_precision:
         float_type = jnp.float64
