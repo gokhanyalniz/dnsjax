@@ -34,9 +34,9 @@ stepper = Stepper()
 
 
 @timer("get_prediction")
-@partial(jit, donate_argnums=0)
+@partial(jit, donate_argnums=0, static_argnames=["stepper"])
 @vmap
-def get_prediction(velocity_spec, rhs_no_lapl):
+def get_prediction(velocity_spec, rhs_no_lapl, stepper=stepper):
 
     prediction = (velocity_spec * stepper.LDT_1 + rhs_no_lapl) * stepper.ILDT_2
 
@@ -46,9 +46,11 @@ def get_prediction(velocity_spec, rhs_no_lapl):
 
 
 @timer("get_correction")
-@partial(jit, donate_argnums=(0, 1))
+@partial(jit, donate_argnums=(0, 1), static_argnames=["stepper"])
 @vmap
-def get_correction(prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next):
+def get_correction(
+    prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, stepper=stepper
+):
 
     correction = (
         params.step.implicitness

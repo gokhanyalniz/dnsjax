@@ -156,8 +156,8 @@ def get_nonlin(velocity_spec):
 
 
 @timer("get_rhs_no_lapl")
-@jit
-def get_rhs_no_lapl(velocity_spec):
+@partial(jit, static_argnames=["fourier"])
+def get_rhs_no_lapl(velocity_spec, fourier=fourier):
 
     nonlin = get_nonlin(velocity_spec)
 

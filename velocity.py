@@ -13,8 +13,8 @@ from rhs import force
 from sharding import MESH, complex_type, float_type
 
 
-@jit
-def get_inprod(vector_spec_1, vector_spec_2):
+@partial(jit, static_argnames=["fourier"])
+def get_inprod(vector_spec_1, vector_spec_2, fourier=fourier):
     return jnp.sum(
         jnp.conj(vector_spec_1) * vector_spec_2,
         dtype=float_type,
@@ -38,8 +38,8 @@ def get_inprod_phys(vector_phys_1, vector_phys_2):
     return jnp.average(jnp.sum(vector_phys_1 * vector_phys_2, axis=0))
 
 
-@jit
-def get_laminar():
+@partial(jit, static_argnames=["force"])
+def get_laminar(force=force):
     velocity_spec = jax.device_put(
         jnp.zeros(
             (
@@ -62,8 +62,8 @@ def get_laminar():
     )
 
 
-@partial(jit, donate_argnums=0)
-def correct_divergence(velocity_spec):
+@partial(jit, donate_argnums=0, static_argnames=["fourier"])
+def correct_divergence(velocity_spec, fourier=fourier):
     correction = (
         -fourier.NABLA
         * fourier.INV_LAPL
@@ -80,8 +80,8 @@ def correct_divergence(velocity_spec):
 
 
 @timer("correct_velocity")
-@partial(jit, donate_argnums=0)
-def correct_velocity(velocity_spec):
+@partial(jit, donate_argnums=0, static_argnames=["fourier"])
+def correct_velocity(velocity_spec, fourier=fourier):
     velocity_corrected = correct_divergence(velocity_spec) * fourier.ZERO_MEAN
 
     return jax.lax.with_sharding_constraint(

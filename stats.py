@@ -1,3 +1,5 @@
+from functools import partial
+
 from jax import jit
 from jax import numpy as jnp
 
@@ -18,8 +20,8 @@ def get_energy(velocity_spec):
     return energy
 
 
-@jit
-def get_perturbation_energy(energy, input):
+@partial(jit, static_argnames=["force"])
+def get_perturbation_energy(energy, input, force=force):
     if params.phys.forcing is not None:
         perturbation_energy = (
             energy + EKIN_LAM - input / force.FORCING_AMPLITUDE
@@ -30,8 +32,8 @@ def get_perturbation_energy(energy, input):
     return perturbation_energy
 
 
-@jit
-def get_enstrophy(velocity_spec):
+@partial(jit, static_argnames=["fourier"])
+def get_enstrophy(velocity_spec, fourier=fourier):
     enstrophy = jnp.sum(
         -fourier.LAPL * (jnp.conj(velocity_spec) * velocity_spec),
         dtype=float_type,
@@ -48,8 +50,8 @@ def get_dissipation(velocity_spec):
 
 
 @timer("get_input")
-@jit
-def get_input(velocity_spec):
+@partial(jit, static_argnames=["force"])
+def get_input(velocity_spec, force=force):
     if params.phys.forcing is not None:
         input = jnp.sum(
             jnp.conj(velocity_spec[force.FORCING_MODES])
