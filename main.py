@@ -8,6 +8,7 @@ from pydantic_settings import CliApp
 
 from parameters import (
     CLIParameters,
+    padded_res,
     params,
     read_parameters,
     update_parameters,
@@ -163,6 +164,7 @@ if __name__ == "__main__":
         update_parameters(params_in)
 
     update_parameters(params_cli)
+    padded_res.set_padded_resolution(params)
 
     if params.dist.platform == "cpu":
         os.environ["XLA_FLAGS"] = (

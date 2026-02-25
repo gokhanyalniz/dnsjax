@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from functools import partial
 
 import jax
@@ -8,48 +9,57 @@ from jax.sharding import PartitionSpec as P
 
 from bench import timer
 from operators import (
-    INV_LAPL,
-    NABLA,
-    NX_PADDED,
-    NY_PADDED,
-    NZ_PADDED,
-    QX,
-    QY,
-    QZ,
+    fourier,
     phys_to_spec_vector,
     spec_to_phys_vector,
 )
-from parameters import params
+from parameters import padded_res, params
 from sharding import MESH, complex_type, float_type
 
-# Physics
-if params.phys.forcing is not None:
-    AMP = jnp.pi**2 / (4 * params.phys.Re)
 
-    IC_F = 0  # Forced component
-    QF = 1  # Forcing harmonic
-    KF = 2 * jnp.pi * QF / params.geo.Ly
+@dataclass
+class Force:
+    # Physics
+    if params.phys.forcing is not None:
+        FORCING_AMPLITUDE = jnp.pi**2 / (4 * params.phys.Re)
 
-    FP = (
-        IC_F,
-        *(i[0] for i in jnp.nonzero((QX == 0) & (QY == QF) & (QZ == 0))),
-    )
-    FN = (
-        IC_F,
-        *(i[0] for i in jnp.nonzero((QX == 0) & (QY == -QF) & (QZ == 0))),
-    )
-    FORCING_MODES = tuple(zip(FP, FN, strict=True))
+        IC_F = 0  # Forced component
+        QF = 1  # Forcing harmonic
+        KF = 2 * jnp.pi * QF / params.geo.Ly
 
-    if params.phys.forcing == "kolmogorov":
-        FORCING_UNIT = jnp.array([-1j, 1j]) * 0.5
-    elif params.phys.forcing == "waleffe":
-        FORCING_UNIT = jnp.array([1, 1]) * 0.5
-        jax.distributed.shutdown()
-        exit("The Ry symmetry needed for Waleffe flow is not yet implemented.")
-else:
-    FORCING_MODES = jnp.array([])
-    FORCING_UNIT = 0
-    AMP = 1
+        FP = (
+            IC_F,
+            *(
+                i[0]
+                for i in jnp.nonzero(
+                    (fourier.QX == 0) & (fourier.QY == QF) & (fourier.QZ == 0)
+                )
+            ),
+        )
+        FN = (
+            IC_F,
+            *(
+                i[0]
+                for i in jnp.nonzero(
+                    (fourier.QX == 0) & (fourier.QY == -QF) & (fourier.QZ == 0)
+                )
+            ),
+        )
+        FORCING_MODES = tuple(zip(FP, FN, strict=True))
+
+        if params.phys.forcing == "kolmogorov":
+            FORCING_UNIT = jnp.array([-1j, 1j]) * 0.5
+        elif params.phys.forcing == "waleffe":
+            FORCING_UNIT = jnp.array([1, 1]) * 0.5
+            jax.distributed.shutdown()
+            exit("Waleffe flow is not yet implemented.")
+    else:
+        FORCING_MODES = jnp.array([])
+        FORCING_UNIT = 0
+        FORCING_AMPLITUDE = 1
+
+
+force = Force()
 
 # Given 3x3 symmetric matrix M, entries M_{ij} will be used
 # This is for the nonlinear term.
@@ -70,7 +80,15 @@ def get_nonlin_phys(velocity_spec):
     velocity_phys = spec_to_phys_vector(velocity_spec)  # 3 FFTs
 
     nonlin_phys = jax.device_put(
-        jnp.zeros((6, NY_PADDED, NZ_PADDED, NX_PADDED), dtype=complex_type),
+        jnp.zeros(
+            (
+                6,
+                padded_res.NY_PADDED,
+                padded_res.NZ_PADDED,
+                padded_res.NX_PADDED,
+            ),
+            dtype=complex_type,
+        ),
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
 
@@ -107,7 +125,15 @@ def get_nonlin_phys(velocity_spec):
 def get_nonlin_spec(nonlin_phys):
 
     nonlin = jax.device_put(
-        jnp.zeros((6, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=complex_type),
+        jnp.zeros(
+            (
+                6,
+                padded_res.NZ_PADDED,
+                padded_res.NX_PADDED,
+                padded_res.NY_PADDED,
+            ),
+            dtype=complex_type,
+        ),
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
 
@@ -136,23 +162,35 @@ def get_rhs_no_lapl(velocity_spec):
     nonlin = get_nonlin(velocity_spec)
 
     advect = jax.device_put(
-        jnp.zeros((3, NZ_PADDED, NX_PADDED, NY_PADDED), dtype=complex_type),
+        jnp.zeros(
+            (
+                3,
+                padded_res.NZ_PADDED,
+                padded_res.NX_PADDED,
+                padded_res.NY_PADDED,
+            ),
+            dtype=complex_type,
+        ),
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
 
     def set_advect(i, val):
         return val.at[i, ...].set(
             -jnp.sum(
-                NABLA * nonlin[(NSYM[0, i], NSYM[1, i], NSYM[2, i]),],
+                fourier.NABLA * nonlin[(NSYM[0, i], NSYM[1, i], NSYM[2, i]),],
                 axis=0,
             )
         )
 
     advect = lax.fori_loop(0, 3, set_advect, advect, unroll=True)
 
-    rhs_no_lapl = advect - NABLA * INV_LAPL * jnp.sum(NABLA * advect, axis=0)
+    rhs_no_lapl = advect - fourier.NABLA * fourier.INV_LAPL * jnp.sum(
+        fourier.NABLA * advect, axis=0
+    )
     if params.phys.forcing is not None:
-        rhs_no_lapl = rhs_no_lapl.at[FORCING_MODES].add(FORCING_UNIT * AMP)
+        rhs_no_lapl = rhs_no_lapl.at[force.FORCING_MODES].add(
+            force.FORCING_UNIT * force.FORCING_AMPLITUDE
+        )
 
     return jax.lax.with_sharding_constraint(
         rhs_no_lapl, NamedSharding(MESH, P(None, "Z", "X", None))

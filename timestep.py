@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from functools import partial
 
 import jax
@@ -6,11 +7,30 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from bench import timer
-from operators import ILDT_2, LDT_1
+from operators import fourier
 from parameters import params
 from rhs import get_rhs_no_lapl
 from sharding import MESH
 from velocity import correct_velocity, get_norm
+
+
+@dataclass
+class Stepper:
+    # Zero the aliased modes to (potentially) save on computations
+    LDT_1 = (
+        1 / params.step.dt
+        + (1 - params.step.implicitness) * fourier.LAPL / params.phys.Re
+    ) * fourier.DEALIAS
+    ILDT_2 = (
+        1
+        / (
+            1 / params.step.dt
+            - params.step.implicitness * fourier.LAPL / params.phys.Re
+        )
+    ) * fourier.DEALIAS
+
+
+stepper = Stepper()
 
 
 @timer("get_prediction")
@@ -18,7 +38,7 @@ from velocity import correct_velocity, get_norm
 @vmap
 def get_prediction(velocity_spec, rhs_no_lapl):
 
-    prediction = (velocity_spec * LDT_1 + rhs_no_lapl) * ILDT_2
+    prediction = (velocity_spec * stepper.LDT_1 + rhs_no_lapl) * stepper.ILDT_2
 
     return jax.lax.with_sharding_constraint(
         prediction, NamedSharding(MESH, P("Z", "X", None))
@@ -33,7 +53,7 @@ def get_correction(prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next):
     correction = (
         params.step.implicitness
         * (rhs_no_lapl_next - rhs_no_lapl_prev)
-        * ILDT_2
+        * stepper.ILDT_2
     )
 
     prediction_next = prediction_prev + correction
