@@ -144,7 +144,6 @@ def get_nonlin_spec(nonlin_phys, dealias):
 
 @jit
 def get_nonlin(velocity_spec, dealias):
-
     return jax.lax.with_sharding_constraint(
         get_nonlin_spec(get_nonlin_phys(velocity_spec), dealias),
         NamedSharding(MESH, P(None, "Z", "X", None)),
@@ -152,15 +151,12 @@ def get_nonlin(velocity_spec, dealias):
 
 
 @timer("get_rhs_no_lapl")
-@jit(static_argnums=(4, 5, 6))
+@jit
 def get_rhs_no_lapl(
     velocity_spec,
     nabla,
     inv_lapl,
     dealias,
-    forcing_modes,
-    forcing_unit,
-    forcing_amplitude,
 ):
 
     nonlin = get_nonlin(velocity_spec, dealias)
@@ -190,8 +186,8 @@ def get_rhs_no_lapl(
 
     rhs_no_lapl = advect - nabla * inv_lapl * jnp.sum(nabla * advect, axis=0)
     if params.phys.forcing is not None:
-        rhs_no_lapl = rhs_no_lapl.at[forcing_modes].add(
-            jnp.array(forcing_unit) * forcing_amplitude
+        rhs_no_lapl = rhs_no_lapl.at[force.FORCING_MODES].add(
+            jnp.array(force.FORCING_UNIT) * force.FORCING_AMPLITUDE
         )
 
     return jax.lax.with_sharding_constraint(

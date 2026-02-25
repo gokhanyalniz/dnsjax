@@ -6,6 +6,7 @@ from jax.sharding import PartitionSpec as P
 
 from bench import timer
 from parameters import padded_res, params
+from rhs import force
 from sharding import MESH, complex_type, float_type
 
 
@@ -29,8 +30,8 @@ def get_norm(vector_spec, dealias):
     return jnp.sqrt(get_norm2(vector_spec, dealias))
 
 
-@jit(static_argnums=(0, 1))
-def get_laminar(forcing_modes, forcing_unit):
+@jit
+def get_laminar():
     velocity_spec = jax.device_put(
         jnp.zeros(
             (
@@ -44,8 +45,8 @@ def get_laminar(forcing_modes, forcing_unit):
         NamedSharding(MESH, P(None, "Z", "X", None)),
     )
     if params.phys.forcing is not None:
-        velocity_spec = velocity_spec.at[forcing_modes].add(
-            jnp.array(forcing_unit)
+        velocity_spec = velocity_spec.at[force.FORCING_MODES].add(
+            jnp.array(force.FORCING_UNIT)
         )
 
     return jax.lax.with_sharding_constraint(

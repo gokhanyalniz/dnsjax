@@ -25,7 +25,6 @@ def main():
 
     import bench
     from operators import fourier, phys_to_spec
-    from rhs import force
     from sharding import MESH, N_DEVICES, complex_type
     from stats import get_stats
     from timestep import stepper, timestep
@@ -49,7 +48,7 @@ def main():
     )
 
     if params.init.start_from_laminar:
-        velocity_spec = get_laminar(force.FORCING_MODES, force.FORCING_UNIT)
+        velocity_spec = get_laminar()
 
     elif params.init.snapshot is not None:
         velocity_phys = jax.device_put(
@@ -69,9 +68,6 @@ def main():
         velocity_spec,
         fourier.LAPL,
         fourier.DEALIAS,
-        force.FORCING_MODES,
-        force.FORCING_UNIT,
-        force.FORCING_AMPLITUDE,
     )
 
     # Useful to know the starting stats
@@ -107,9 +103,6 @@ def main():
                 velocity_spec,
                 fourier.LAPL,
                 fourier.DEALIAS,
-                force.FORCING_MODES,
-                force.FORCING_UNIT,
-                force.FORCING_AMPLITUDE,
             )
             main_print(
                 f"t = {t:.2f}",
@@ -125,9 +118,6 @@ def main():
             fourier.DEALIAS,
             stepper.LDT_1,
             stepper.ILDT_2,
-            force.FORCING_MODES,
-            force.FORCING_UNIT,
-            force.FORCING_AMPLITUDE,
         )
 
         if it > params.init.it0:
@@ -157,9 +147,6 @@ def main():
         velocity_spec,
         fourier.LAPL,
         fourier.DEALIAS,
-        force.FORCING_MODES,
-        force.FORCING_UNIT,
-        force.FORCING_AMPLITUDE,
     )
     main_print(
         f"t = {t:.2f}",

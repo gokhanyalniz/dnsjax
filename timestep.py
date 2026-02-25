@@ -86,18 +86,12 @@ def timestep_iterate(val):
         inv_lapl,
         dealias,
         ildt_2,
-        forcing_modes,
-        forcing_unit,
-        forcing_amplitude,
     ) = operators
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
         nabla,
         inv_lapl,
         dealias,
-        forcing_modes,
-        forcing_unit,
-        forcing_amplitude,
     )
     prediction, correction = get_correction(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
@@ -124,9 +118,6 @@ def timestep(
     dealias,
     ldt1,
     ildt_2,
-    forcing_modes,
-    forcing_unit,
-    forcing_amplitude,
 ):
 
     rhs_no_lapl_prev = get_rhs_no_lapl(
@@ -134,9 +125,6 @@ def timestep(
         nabla,
         inv_lapl,
         dealias,
-        forcing_modes,
-        forcing_unit,
-        forcing_amplitude,
     )
     prediction = get_prediction(velocity_spec, rhs_no_lapl_prev, ldt1, ildt_2)
 
@@ -145,9 +133,6 @@ def timestep(
         nabla,
         inv_lapl,
         dealias,
-        forcing_modes,
-        forcing_unit,
-        forcing_amplitude,
     )
     prediction, correction = get_correction(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
@@ -160,9 +145,6 @@ def timestep(
         inv_lapl,
         dealias,
         ildt_2,
-        forcing_modes,
-        forcing_unit,
-        forcing_amplitude,
     )
     init_val = prediction, rhs_no_lapl_next, error, c, operators
     prediction, _, error, c, _ = lax.while_loop(
@@ -185,7 +167,7 @@ def timestep(
 timestep = (
     timer("timestep")(timestep)
     if params.debug.time_functions
-    else jit(timestep, donate_argnums=0, static_argnums=(7, 8, 9))
+    else jit(timestep, donate_argnums=0)
 )
 
 timestep_iterate = (
