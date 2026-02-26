@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+from functools import partial
 
 import jax
-from jax import jit, lax
+from jax import jit
 from jax import numpy as jnp
+from jax.sharding import PartitionSpec as P
+from jax.sharding import explicit_axes
 
-from bench import timer
 from operators import (
     fourier,
     phys_to_spec,
@@ -12,6 +14,11 @@ from operators import (
 )
 from parameters import padded_res, params
 from sharding import sharding
+from velocity import (
+    get_zero_scalar_spec,
+    get_zero_velocity_phys,
+    get_zero_velocity_spec,
+)
 
 
 @dataclass
@@ -26,19 +33,15 @@ class Force:
         kf = 2 * jnp.pi * qf / params.geo.Ly
 
         fp = jnp.nonzero(
-            (fourier.qx[jnp.newaxis, ...] == 0)
-            & (fourier.qy[jnp.newaxis, ...] == qf)
-            & (fourier.qz[jnp.newaxis, ...] == 0),
+            (fourier.qx == 0) & (fourier.qy == qf) & (fourier.qz == 0),
             size=1,
         )
         fn = jnp.nonzero(
-            (fourier.qx[jnp.newaxis, ...] == 0)
-            & (fourier.qy[jnp.newaxis, ...] == -qf)
-            & (fourier.qz[jnp.newaxis, ...] == 0),
+            (fourier.qx == 0) & (fourier.qy == -qf) & (fourier.qz == 0),
             size=1,
         )
-        fp = (int(i[0]) for i in (fp[0].at[0].set(ic_f), *fp[1:]))
-        fn = (int(i[0]) for i in (fn[0].at[0].set(ic_f), *fn[1:]))
+        fp = (int(i[0]) for i in fp)
+        fn = (int(i[0]) for i in fn)
 
         forced_modes = tuple(zip(fp, fn, strict=True))
 
@@ -50,6 +53,29 @@ class Force:
             exit("Waleffe flow is not yet implemented.")
     else:
         on = False
+
+    if on:
+
+        @partial(explicit_axes, axes=("Z", "X"))
+        def get_laminar_state():
+            laminar_state = jnp.zeros(
+                (
+                    padded_res.Nz_padded,
+                    padded_res.Nx_padded,
+                    padded_res.Ny_padded,
+                ),
+                dtype=sharding.complex_type,
+                out_sharding=P("Z", "X", None),
+            )
+            return laminar_state
+
+        laminar_state = get_laminar_state(
+            in_sharding=sharding.scalar_spec_shard
+        )
+
+        laminar_state = laminar_state.at[forced_modes].add(jnp.array(unit))
+    else:
+        laminar_state = 0
 
 
 force = Force()
@@ -68,69 +94,39 @@ for n in range(6):
 
 
 @jit
-def get_nonlin_phys(velocity_spec):
+def _get_nonlin_phys(velocity_phys):
 
-    velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
+    nonlin_phys = get_zero_velocity_phys(6)
 
-    nonlin_phys = jax.device_put(
-        jnp.zeros(
-            (
-                6,
-                padded_res.Ny_padded,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-            ),
-            dtype=sharding.complex_type,
-        ),
-        sharding.spec_shard,
-    )
-
-    def set_nonlin_phys(i, val):
-        return val.at[i, ...].set(
+    for i in range(6):
+        nonlin_phys = nonlin_phys.at[i].set(
             velocity_phys[n_to_symi[i]] * velocity_phys[n_to_symj[i]]
         )
-
-    nonlin_phys = lax.fori_loop(
-        0, 6, set_nonlin_phys, nonlin_phys, unroll=True
-    )
 
     # Basdevant optimization: https://doi.org/10.1016/0021-9991(83)90064-5
     # Save on one FFT by the tracelessness of the nonlinear term
     # The trace is effectively moved to pressure. If "true" pressure is ever
     # needed, this needs to be taken into account.
 
-    trace = jnp.sum(
-        nonlin_phys[(symij_to_n[0, 0], symij_to_n[1, 1], symij_to_n[2, 2]),],
-        axis=0,
-        dtype=sharding.float_type,
+    # Compute trace in-place on symij_to_n[2, 2]
+    nonlin_phys = nonlin_phys.at[symij_to_n[2, 2]].add(
+        nonlin_phys[symij_to_n[0, 0]] + nonlin_phys[symij_to_n[1, 1]]
     )
 
     # No need to update (2,2), it's not used
     nonlin_phys = nonlin_phys.at[
         (symij_to_n[0, 0], symij_to_n[1, 1]),
-    ].subtract(trace / 3)
+    ].subtract(nonlin_phys[symij_to_n[2, 2]] / 3)
 
-    # Pass the whole array to reuse memory
     return jax.lax.with_sharding_constraint(nonlin_phys, sharding.phys_shard)
 
 
 @jit(donate_argnums=0)
-def get_nonlin_spec(nonlin_phys, dealias):
+def _get_nonlin_spec(nonlin_phys, active_modes):
 
-    nonlin = jax.device_put(
-        jnp.zeros(
-            (
-                6,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-                padded_res.Ny_padded,
-            ),
-            dtype=sharding.complex_type,
-        ),
-        sharding.spec_shard,
-    )
+    nonlin = get_zero_velocity_spec(6)
 
-    nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], dealias))
+    nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], active_modes))
     # Basdevant: Get the 5th element from tracelessness
     nonlin = nonlin.at[5].set(
         -(nonlin[symij_to_n[0, 0]] + nonlin[symij_to_n[1, 1]])
@@ -140,54 +136,49 @@ def get_nonlin_spec(nonlin_phys, dealias):
 
 
 @jit
-def get_nonlin(velocity_spec, dealias):
-    return jax.lax.with_sharding_constraint(
-        get_nonlin_spec(get_nonlin_phys(velocity_spec), dealias),
-        sharding.spec_shard,
-    )
+def get_nonlin(velocity_spec, active_modes):
+
+    velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
+
+    nonlin_phys = _get_nonlin_phys(velocity_phys)
+
+    nonlin = _get_nonlin_spec(nonlin_phys, active_modes)
+
+    return jax.lax.with_sharding_constraint(nonlin, sharding.spec_shard)
 
 
-@timer("get_rhs_no_lapl")
 @jit
 def get_rhs_no_lapl(
     velocity_spec,
+    laminar_state,
     nabla,
     inv_lapl,
-    dealias,
+    active_modes,
 ):
 
-    nonlin = get_nonlin(velocity_spec, dealias)
+    nonlin = get_nonlin(velocity_spec, active_modes)
 
-    advect = jax.device_put(
-        jnp.zeros(
-            (
-                3,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-                padded_res.Ny_padded,
-            ),
-            dtype=sharding.complex_type,
-        ),
-        sharding.spec_shard,
-    )
+    rhs_no_lapl = get_zero_velocity_spec(3)
 
-    def set_advect(i, val):
-        return val.at[i, ...].set(
-            -jnp.sum(
-                nabla
-                * nonlin[
-                    (symij_to_n[0, i], symij_to_n[1, i], symij_to_n[2, i]),
-                ],
-                axis=0,
-            )
+    lapl_pressure = get_zero_scalar_spec()
+
+    for i in range(3):
+        minus_dj_uiuj = -jnp.sum(
+            nabla
+            * nonlin[(symij_to_n[i, 0], symij_to_n[i, 1], symij_to_n[i, 2]),],
+            axis=0,
         )
 
-    advect = lax.fori_loop(0, 3, set_advect, advect, unroll=True)
+        rhs_no_lapl = rhs_no_lapl.at[i].set(minus_dj_uiuj)
+        lapl_pressure = lapl_pressure.at[...].add(nabla[i] * minus_dj_uiuj)
 
-    rhs_no_lapl = advect - nabla * inv_lapl * jnp.sum(nabla * advect, axis=0)
+    # Add pressure gradient
+    rhs_no_lapl = rhs_no_lapl.at[...].add(-nabla * inv_lapl * lapl_pressure)
+
+    # Add forcing
     if force.on:
-        rhs_no_lapl = rhs_no_lapl.at[force.forced_modes].add(
-            jnp.array(force.unit) * force.amplitude
+        rhs_no_lapl = rhs_no_lapl.at[force.ic_f].add(
+            laminar_state * force.amplitude
         )
 
     return jax.lax.with_sharding_constraint(rhs_no_lapl, sharding.spec_shard)
