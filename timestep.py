@@ -80,6 +80,7 @@ def timestep_iteration_condition(val):
 def timestep_iterate(val):
     prediction, rhs_no_lapl_prev, _, c, operators = val
     (
+        laminar_state,
         nabla,
         inv_lapl,
         dealias,
@@ -87,6 +88,7 @@ def timestep_iterate(val):
     ) = operators
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
+        laminar_state,
         nabla,
         inv_lapl,
         dealias,
@@ -108,6 +110,7 @@ def timestep_iterate(val):
 
 def timestep(
     velocity_spec,
+    laminar_state,
     nabla,
     inv_lapl,
     zero_mean,
@@ -118,6 +121,7 @@ def timestep(
 
     rhs_no_lapl_prev = get_rhs_no_lapl(
         velocity_spec,
+        laminar_state,
         nabla,
         inv_lapl,
         dealias,
@@ -126,6 +130,7 @@ def timestep(
 
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
+        laminar_state,
         nabla,
         inv_lapl,
         dealias,
@@ -137,6 +142,7 @@ def timestep(
     c = 1
 
     operators = (
+        laminar_state,
         nabla,
         inv_lapl,
         dealias,

@@ -26,19 +26,19 @@ class Force:
         kf = 2 * jnp.pi * qf / params.geo.Ly
 
         fp = jnp.nonzero(
-            (fourier.qx[jnp.newaxis, ...] == 0)
-            & (fourier.qy[jnp.newaxis, ...] == qf)
-            & (fourier.qz[jnp.newaxis, ...] == 0),
+            (fourier.qx == 0)
+            & (fourier.qy == qf)
+            & (fourier.qz == 0),
             size=1,
         )
         fn = jnp.nonzero(
-            (fourier.qx[jnp.newaxis, ...] == 0)
-            & (fourier.qy[jnp.newaxis, ...] == -qf)
-            & (fourier.qz[jnp.newaxis, ...] == 0),
+            (fourier.qx == 0)
+            & (fourier.qy == -qf)
+            & (fourier.qz == 0),
             size=1,
         )
-        fp = (int(i[0]) for i in (fp[0].at[0].set(ic_f), *fp[1:]))
-        fn = (int(i[0]) for i in (fn[0].at[0].set(ic_f), *fn[1:]))
+        fp = (int(i[0]) for i in fp)
+        fn = (int(i[0]) for i in fn)
 
         forced_modes = tuple(zip(fp, fn, strict=True))
 
@@ -50,6 +50,24 @@ class Force:
             exit("Waleffe flow is not yet implemented.")
     else:
         on = False
+
+    if on:
+        laminar_state = jax.device_put(
+            jnp.zeros(
+                (
+                    padded_res.Nz_padded,
+                    padded_res.Nx_padded,
+                    padded_res.Ny_padded,
+                ),
+                dtype=sharding.complex_type,
+            ),
+            sharding.scalar_spec_shard,
+        )
+        laminar_state = laminar_state.at[forced_modes].add(
+            jnp.array(unit)
+        )
+    else:
+        laminar_state = 0
 
 
 force = Force()
@@ -151,6 +169,7 @@ def get_nonlin(velocity_spec, dealias):
 @jit
 def get_rhs_no_lapl(
     velocity_spec,
+    laminar_state,
     nabla,
     inv_lapl,
     dealias,
@@ -186,8 +205,6 @@ def get_rhs_no_lapl(
 
     rhs_no_lapl = advect - nabla * inv_lapl * jnp.sum(nabla * advect, axis=0)
     if force.on:
-        rhs_no_lapl = rhs_no_lapl.at[force.forced_modes].add(
-            jnp.array(force.unit) * force.amplitude
-        )
+        rhs_no_lapl = rhs_no_lapl.at[force.ic_f].add(laminar_state*force.amplitude)
 
     return jax.lax.with_sharding_constraint(rhs_no_lapl, sharding.spec_shard)

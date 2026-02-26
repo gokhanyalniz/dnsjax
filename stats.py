@@ -46,12 +46,11 @@ def get_dissipation(velocity_spec, lapl, dealias):
 
 @timer("get_input")
 @jit
-def get_input(velocity_spec):
+def get_input(velocity_spec, laminar_state):
     if force.on:
         input = jnp.sum(
-            jnp.conj(velocity_spec[force.forced_modes])
-            * jnp.array(force.unit)
-            * force.amplitude,
+            jnp.conj(laminar_state * force.amplitude)
+            * velocity_spec[force.ic_f],
             dtype=sharding.float_type,
         )
     else:
@@ -61,11 +60,12 @@ def get_input(velocity_spec):
 
 def get_stats(
     velocity_spec,
+    laminar_state,
     lapl,
     dealias,
 ):
     energy = get_energy(velocity_spec, dealias)
-    input = get_input(velocity_spec)
+    input = get_input(velocity_spec, laminar_state)
     dissipation = get_dissipation(velocity_spec, lapl, dealias)
     perturbation_energy = get_perturbation_energy(energy, input)
 

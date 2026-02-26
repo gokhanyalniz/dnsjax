@@ -4,7 +4,6 @@ from jax import numpy as jnp
 
 from bench import timer
 from parameters import padded_res
-from rhs import force
 from sharding import sharding
 
 
@@ -29,7 +28,7 @@ def get_norm(vector_spec, dealias):
 
 
 @jit
-def get_laminar():
+def get_zero_velocity():
     velocity_spec = jax.device_put(
         jnp.zeros(
             (
@@ -42,10 +41,6 @@ def get_laminar():
         ),
         sharding.spec_shard,
     )
-    if force.on:
-        velocity_spec = velocity_spec.at[force.forced_modes].add(
-            jnp.array(force.unit)
-        )
 
     return jax.lax.with_sharding_constraint(velocity_spec, sharding.spec_shard)
 

@@ -26,7 +26,8 @@ def main():
     from sharding import sharding
     from stats import get_stats
     from timestep import stepper, timestep
-    from velocity import get_laminar
+    from velocity import get_zero_velocity
+    from rhs import force
 
     wall_time_stop = (
         jnp.inf
@@ -46,7 +47,8 @@ def main():
     )
 
     if params.init.start_from_laminar:
-        velocity_spec = get_laminar()
+        velocity_spec = get_zero_velocity()
+        velocity_spec = velocity_spec.at[force.ic_f].add(force.laminar_state)
 
     elif params.init.snapshot is not None:
         velocity_phys = jax.device_put(
@@ -64,6 +66,7 @@ def main():
     # Call once now not to affect benchmarks later
     stats = get_stats(
         velocity_spec,
+        force.laminar_state,
         fourier.lapl,
         fourier.dealias,
     )
@@ -99,6 +102,7 @@ def main():
         ):
             stats = get_stats(
                 velocity_spec,
+                force.laminar_state,
                 fourier.lapl,
                 fourier.dealias,
             )
@@ -110,6 +114,7 @@ def main():
 
         velocity_spec, error, c = timestep(
             velocity_spec,
+            force.laminar_state,
             fourier.nabla,
             fourier.inv_lapl,
             fourier.zero_mean,
@@ -143,6 +148,7 @@ def main():
     # Useful to final stats
     stats = get_stats(
         velocity_spec,
+        force.laminar_state,
         fourier.lapl,
         fourier.dealias,
     )
