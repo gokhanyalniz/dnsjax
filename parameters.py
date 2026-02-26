@@ -69,6 +69,8 @@ class Termination(BaseModel):
 
 class Debugging(BaseModel):
     time_functions: bool = False
+    measure_corrections: bool = False
+    correct_divergence: bool = True
 
 
 class Parameters(BaseModel):
