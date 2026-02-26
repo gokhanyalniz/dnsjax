@@ -23,11 +23,11 @@ def main():
 
     import bench
     from operators import fourier, phys_to_spec
+    from rhs import force
     from sharding import sharding
     from stats import get_stats
     from timestep import stepper, timestep
     from velocity import get_zero_velocity
-    from rhs import force
 
     wall_time_stop = (
         jnp.inf

@@ -26,15 +26,11 @@ class Force:
         kf = 2 * jnp.pi * qf / params.geo.Ly
 
         fp = jnp.nonzero(
-            (fourier.qx == 0)
-            & (fourier.qy == qf)
-            & (fourier.qz == 0),
+            (fourier.qx == 0) & (fourier.qy == qf) & (fourier.qz == 0),
             size=1,
         )
         fn = jnp.nonzero(
-            (fourier.qx == 0)
-            & (fourier.qy == -qf)
-            & (fourier.qz == 0),
+            (fourier.qx == 0) & (fourier.qy == -qf) & (fourier.qz == 0),
             size=1,
         )
         fp = (int(i[0]) for i in fp)
@@ -63,9 +59,7 @@ class Force:
             ),
             sharding.scalar_spec_shard,
         )
-        laminar_state = laminar_state.at[forced_modes].add(
-            jnp.array(unit)
-        )
+        laminar_state = laminar_state.at[forced_modes].add(jnp.array(unit))
     else:
         laminar_state = 0
 
@@ -205,6 +199,8 @@ def get_rhs_no_lapl(
 
     rhs_no_lapl = advect - nabla * inv_lapl * jnp.sum(nabla * advect, axis=0)
     if force.on:
-        rhs_no_lapl = rhs_no_lapl.at[force.ic_f].add(laminar_state*force.amplitude)
+        rhs_no_lapl = rhs_no_lapl.at[force.ic_f].add(
+            laminar_state * force.amplitude
+        )
 
     return jax.lax.with_sharding_constraint(rhs_no_lapl, sharding.spec_shard)
