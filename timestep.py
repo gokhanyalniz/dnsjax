@@ -31,7 +31,6 @@ class Stepper:
 stepper = Stepper()
 
 
-@timer("get_prediction")
 @jit(donate_argnums=0)
 @partial(vmap, in_axes=(0, 0, None, None))
 def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
@@ -43,7 +42,6 @@ def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
     )
 
 
-@timer("get_correction")
 @jit(donate_argnums=(0, 1))
 @partial(vmap, in_axes=(0, 0, 0, None))
 def get_correction(
@@ -68,7 +66,6 @@ def get_correction(
     )
 
 
-@jit
 def timestep_iteration_condition(val):
     _, _, error, c, _ = val
     condition = (c < params.step.max_corrector_iterations) & (
@@ -96,7 +93,7 @@ def timestep_iterate(val):
     prediction, correction = get_correction(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
     )
-    error = get_norm(correction, dealias)
+    error = get_norm(correction)
     return (
         jax.lax.with_sharding_constraint(prediction, sharding.spec_shard),
         jax.lax.with_sharding_constraint(
@@ -138,7 +135,7 @@ def timestep(
     prediction, correction = get_correction(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
     )
-    error = get_norm(correction, dealias)
+    error = get_norm(correction)
     c = 1
 
     operators = (
@@ -170,10 +167,4 @@ timestep = (
     timer("timestep")(timestep)
     if params.debug.time_functions
     else jit(timestep, donate_argnums=0)
-)
-
-timestep_iterate = (
-    timer("timestep_iterate")(timestep_iterate)
-    if params.debug.time_functions
-    else jit(timestep_iterate, donate_argnums=0)
 )

@@ -68,7 +68,6 @@ def main():
         velocity_spec,
         force.laminar_state,
         fourier.lapl,
-        fourier.dealias,
     )
 
     # Useful to know the starting stats
@@ -104,7 +103,6 @@ def main():
                 velocity_spec,
                 force.laminar_state,
                 fourier.lapl,
-                fourier.dealias,
             )
             main_print(
                 f"t = {t:.2f}",
@@ -150,7 +148,6 @@ def main():
         velocity_spec,
         force.laminar_state,
         fourier.lapl,
-        fourier.dealias,
     )
     main_print(
         f"t = {t:.2f}",
@@ -158,15 +155,15 @@ def main():
     )
 
     if params.debug.time_functions and main_device:
-        pp(bench.timers)
+        pp(bench.timers, sort_dicts=True)
 
     if sharding.n_devices > 1:
         main_print(
             f"Ran for {wall_time:.2f} s with {sharding.n_devices} devices,",
-            f"{wall_time_per_sim_time:.3e} s/t,",
-            f"{wall_time_per_rhs:.3e} s/rhs,",
             f"{sharding.n_devices * wall_time:.3e} NP x s:",
+            f"{wall_time_per_sim_time:.3e} s/t,",
             f"{sharding.n_devices * wall_time_per_sim_time:.3e} NP x s/t,",
+            f"{wall_time_per_rhs:.3e} s/rhs,",
             f"{sharding.n_devices * wall_time_per_rhs:.3e} NP x s/rhs.",
         )
     else:
@@ -200,8 +197,6 @@ if __name__ == "__main__":
 
     jax.config.update("jax_enable_x64", params.res.double_precision)
     jax.config.update("jax_platforms", params.dist.platform)
-    # This will be a default in a later release of JAX:
-    # jax.config.update("jax_use_simplified_jaxpr_constants", True)
     jax.distributed.initialize()
 
     rank = jax.process_index()

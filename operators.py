@@ -2,11 +2,11 @@ from dataclasses import dataclass
 from functools import partial
 
 import jax
-import jaxdecomp
 from jax import jit, vmap
 from jax import numpy as jnp
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
+from jaxdecomp.fft import pfft3d, pifft3d
 
 from parameters import padded_res, params
 from sharding import sharding
@@ -74,7 +74,7 @@ fourier = Fourier()
 @partial(vmap, in_axes=(0, None))
 def phys_to_spec(velocity_phys, dealias):
     velocity_spec = (
-        jaxdecomp.fft.pfft3d(
+        pfft3d(
             jax.lax.with_sharding_constraint(
                 velocity_phys, sharding.scalar_phys_shard
             ),
@@ -91,7 +91,7 @@ def phys_to_spec(velocity_phys, dealias):
 @jit(donate_argnums=0)
 @vmap
 def spec_to_phys(velocity_spec):
-    velocity_phys = jaxdecomp.fft.pifft3d(
+    velocity_phys = pifft3d(
         jax.lax.with_sharding_constraint(
             velocity_spec, sharding.scalar_spec_shard
         ),

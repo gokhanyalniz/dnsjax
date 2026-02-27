@@ -4,7 +4,6 @@ import jax
 from jax import jit, lax
 from jax import numpy as jnp
 
-from bench import timer
 from operators import (
     fourier,
     phys_to_spec,
@@ -159,7 +158,6 @@ def get_nonlin(velocity_spec, dealias):
     )
 
 
-@timer("get_rhs_no_lapl")
 @jit
 def get_rhs_no_lapl(
     velocity_spec,

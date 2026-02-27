@@ -10,10 +10,9 @@ from velocity import get_norm2
 ekin_lam = 1 / 4 if params.phys.forcing in ["kolmogorov", "waleffe"] else 0
 
 
-@timer("get_energy")
 @jit
-def get_energy(velocity_spec, dealias):
-    energy = get_norm2(velocity_spec, dealias) / 2
+def get_energy(velocity_spec):
+    energy = get_norm2(velocity_spec) / 2
     return energy
 
 
@@ -28,23 +27,20 @@ def get_perturbation_energy(energy, input):
 
 
 @jit
-def get_enstrophy(velocity_spec, lapl, dealias):
+def get_enstrophy(velocity_spec, lapl):
     enstrophy = jnp.sum(
         -lapl * (jnp.conj(velocity_spec) * velocity_spec),
         dtype=sharding.float_type,
-        where=dealias,
     )
     return enstrophy
 
 
-@timer("get_dissipation")
 @jit
-def get_dissipation(velocity_spec, lapl, dealias):
-    dissipation = get_enstrophy(velocity_spec, lapl, dealias) / params.phys.Re
+def get_dissipation(velocity_spec, lapl):
+    dissipation = get_enstrophy(velocity_spec, lapl) / params.phys.Re
     return dissipation
 
 
-@timer("get_input")
 @jit
 def get_input(velocity_spec, laminar_state):
     if force.on:
@@ -62,11 +58,10 @@ def get_stats(
     velocity_spec,
     laminar_state,
     lapl,
-    dealias,
 ):
-    energy = get_energy(velocity_spec, dealias)
+    energy = get_energy(velocity_spec)
     input = get_input(velocity_spec, laminar_state)
-    dissipation = get_dissipation(velocity_spec, lapl, dealias)
+    dissipation = get_dissipation(velocity_spec, lapl)
     perturbation_energy = get_perturbation_energy(energy, input)
 
     stats = {
