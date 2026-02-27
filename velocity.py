@@ -1,6 +1,10 @@
+from functools import partial
+
 import jax
 from jax import jit
 from jax import numpy as jnp
+from jax.sharding import PartitionSpec as P
+from jax.sharding import explicit_axes
 
 from parameters import padded_res
 from sharding import sharding
@@ -26,23 +30,22 @@ def get_norm(vector_spec):
 
 @jit
 def get_zero_velocity():
-    # velocity_spec = jax.device_put(
-    #     jnp.zeros(
-    #         (
-    #             3,
-    #             padded_res.Nz_padded,
-    #             padded_res.Nx_padded,
-    #             padded_res.Ny_padded,
-    #         ),
-    #         dtype=sharding.complex_type,
-    #     ),
-    #     sharding.spec_shard,
-    # )
-    velocity_spec = jnp.zeros(
-        (3, padded_res.Nz_padded, padded_res.Nx_padded, padded_res.Ny_padded),
-        dtype=sharding.complex_type,
-        out_sharding=sharding.spec_shard,
-    )
+
+    @partial(explicit_axes, axes=("Z", "X"))
+    def get_empty_velocity():
+        velocity_spec = jnp.zeros(
+            (
+                3,
+                padded_res.Nz_padded,
+                padded_res.Nx_padded,
+                padded_res.Ny_padded,
+            ),
+            dtype=sharding.complex_type,
+            out_sharding=P(None, "Z", "X", None),
+        )
+        return velocity_spec
+
+    velocity_spec = get_empty_velocity(in_sharding=sharding.spec_shard)
 
     return jax.lax.with_sharding_constraint(velocity_spec, sharding.spec_shard)
 

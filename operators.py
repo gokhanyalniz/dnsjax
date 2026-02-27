@@ -4,7 +4,7 @@ from functools import partial
 import jax
 from jax import jit, vmap
 from jax import numpy as jnp
-from jax.sharding import NamedSharding
+from jax.sharding import NamedSharding, explicit_axes
 from jax.sharding import PartitionSpec as P
 from jaxdecomp.fft import pfft3d, pifft3d
 
@@ -40,23 +40,21 @@ class Fourier:
         False,
     )
 
-    # nabla = jax.device_put(
-    #     jnp.zeros(
-    #         (
-    #             3,
-    #             padded_res.Nz_padded,
-    #             padded_res.Nx_padded,
-    #             padded_res.Ny_padded,
-    #         ),
-    #         dtype=sharding.complex_type,
-    #     ),
-    #     sharding.spec_shard,
-    # )
-    nabla = jnp.zeros(
-        (3, padded_res.Nz_padded, padded_res.Nx_padded, padded_res.Ny_padded),
-        dtype=sharding.complex_type,
-        out_sharding=sharding.spec_shard,
-    )
+    @partial(explicit_axes, axes=("Z", "X"))
+    def get_nabla():
+        nabla = jnp.zeros(
+            (
+                3,
+                padded_res.Nz_padded,
+                padded_res.Nx_padded,
+                padded_res.Ny_padded,
+            ),
+            dtype=sharding.complex_type,
+            out_sharding=P(None, "Z", "X", None),
+        )
+        return nabla
+
+    nabla = get_nabla(in_sharding=sharding.spec_shard)
 
     nabla = nabla.at[0].set(1j * kx)
     nabla = nabla.at[1].set(1j * ky)

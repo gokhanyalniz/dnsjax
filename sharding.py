@@ -5,7 +5,7 @@ from jax import numpy as jnp
 from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from parameters import params
+from parameters import padded_res, params
 
 
 @dataclass
@@ -40,6 +40,8 @@ class Sharding:
         axis_types=(AxisType.Auto, AxisType.Auto),
     )
 
+    jax.set_mesh(mesh)
+
     phys_shard = NamedSharding(mesh, P(None, "Z", "X", None))
     spec_shard = NamedSharding(mesh, P(None, "Z", "X", None))
     scalar_phys_shard = NamedSharding(mesh, P("Z", "X", None))
@@ -51,6 +53,20 @@ class Sharding:
     else:
         float_type = jnp.float32
         complex_type = jnp.complex64
+
+    spec_shape = (
+        padded_res.Nz_padded,
+        padded_res.Nx_padded,
+        padded_res.Ny_padded,
+    )
+    phys_shape = (
+        padded_res.Ny_padded,
+        padded_res.Nz_padded,
+        padded_res.Nx_padded,
+    )
+
+    spec_type = complex_type
+    phys_type = complex_type
 
 
 sharding = Sharding()

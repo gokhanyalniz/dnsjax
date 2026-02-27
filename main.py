@@ -146,7 +146,7 @@ def main():
     wall_time_per_sim_time = wall_time / (t - dt_first - params.init.t0)
     wall_time_per_rhs = wall_time / rhs_tot
 
-    # Useful to final stats
+    # Useful to know final stats
     stats = get_stats(
         velocity_spec,
         force.laminar_state,

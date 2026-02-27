@@ -1,8 +1,11 @@
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 from jax import jit, lax
 from jax import numpy as jnp
+from jax.sharding import PartitionSpec as P
+from jax.sharding import explicit_axes
 
 from operators import (
     fourier,
@@ -47,22 +50,24 @@ class Force:
         on = False
 
     if on:
-        # laminar_state = jax.device_put(
-        #     jnp.zeros(
-        #         (
-        #             padded_res.Nz_padded,
-        #             padded_res.Nx_padded,
-        #             padded_res.Ny_padded,
-        #         ),
-        #         dtype=sharding.complex_type,
-        #     ),
-        #     sharding.scalar_spec_shard,
-        # )
-        laminar_state = jnp.zeros(
-            (padded_res.Nz_padded, padded_res.Nx_padded, padded_res.Ny_padded),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.scalar_spec_shard,
+
+        @partial(explicit_axes, axes=("Z", "X"))
+        def get_laminar_state():
+            laminar_state = jnp.zeros(
+                (
+                    padded_res.Nz_padded,
+                    padded_res.Nx_padded,
+                    padded_res.Ny_padded,
+                ),
+                dtype=sharding.complex_type,
+                out_sharding=P("Z", "X", None),
+            )
+            return laminar_state
+
+        laminar_state = get_laminar_state(
+            in_sharding=sharding.scalar_spec_shard
         )
+
         laminar_state = laminar_state.at[forced_modes].add(jnp.array(unit))
     else:
         laminar_state = 0
@@ -88,23 +93,21 @@ def get_nonlin_phys(velocity_spec):
 
     velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
-    # nonlin_phys = jax.device_put(
-    #     jnp.zeros(
-    #         (
-    #             6,
-    #             padded_res.Ny_padded,
-    #             padded_res.Nz_padded,
-    #             padded_res.Nx_padded,
-    #         ),
-    #         dtype=sharding.complex_type,
-    #     ),
-    #     sharding.phys_shard,
-    # )
-    nonlin_phys = jnp.zeros(
-        (6, padded_res.Ny_padded, padded_res.Nz_padded, padded_res.Nx_padded),
-        dtype=sharding.complex_type,
-        out_sharding=sharding.phys_shard,
-    )
+    @partial(explicit_axes, axes=("Z", "X"))
+    def get_empty_nonlin_phys():
+        nonlin_phys = jnp.zeros(
+            (
+                6,
+                padded_res.Ny_padded,
+                padded_res.Nz_padded,
+                padded_res.Nx_padded,
+            ),
+            dtype=sharding.complex_type,
+            out_sharding=P(None, "Z", "X", None),
+        )
+        return nonlin_phys
+
+    nonlin_phys = get_empty_nonlin_phys(in_sharding=sharding.phys_shard)
 
     def set_nonlin_phys(i, val):
         return val.at[i, ...].set(
@@ -138,23 +141,21 @@ def get_nonlin_phys(velocity_spec):
 @jit(donate_argnums=0)
 def get_nonlin_spec(nonlin_phys, dealias):
 
-    # nonlin = jax.device_put(
-    #     jnp.zeros(
-    #         (
-    #             6,
-    #             padded_res.Nz_padded,
-    #             padded_res.Nx_padded,
-    #             padded_res.Ny_padded,
-    #         ),
-    #         dtype=sharding.complex_type,
-    #     ),
-    #     sharding.spec_shard,
-    # )
-    nonlin = jnp.zeros(
-        (6, padded_res.Nz_padded, padded_res.Nx_padded, padded_res.Ny_padded),
-        dtype=sharding.complex_type,
-        out_sharding=sharding.spec_shard,
-    )
+    @partial(explicit_axes, axes=("Z", "X"))
+    def get_empty_nonlin_spec():
+        nonlin = jnp.zeros(
+            (
+                6,
+                padded_res.Nz_padded,
+                padded_res.Nx_padded,
+                padded_res.Ny_padded,
+            ),
+            dtype=sharding.complex_type,
+            out_sharding=P(None, "Z", "X", None),
+        )
+        return nonlin
+
+    nonlin = get_empty_nonlin_spec(in_sharding=sharding.spec_shard)
 
     nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], dealias))
     # Basdevant: Get the 5th element from tracelessness
@@ -184,23 +185,21 @@ def get_rhs_no_lapl(
 
     nonlin = get_nonlin(velocity_spec, dealias)
 
-    # advect = jax.device_put(
-    #     jnp.zeros(
-    #         (
-    #             3,
-    #             padded_res.Nz_padded,
-    #             padded_res.Nx_padded,
-    #             padded_res.Ny_padded,
-    #         ),
-    #         dtype=sharding.complex_type,
-    #     ),
-    #     sharding.spec_shard,
-    # )
-    advect = jnp.zeros(
-        (3, padded_res.Nz_padded, padded_res.Nx_padded, padded_res.Ny_padded),
-        dtype=sharding.complex_type,
-        out_sharding=sharding.spec_shard,
-    )
+    @partial(explicit_axes, axes=("Z", "X"))
+    def get_empty_advect():
+        advect = jnp.zeros(
+            (
+                3,
+                padded_res.Nz_padded,
+                padded_res.Nx_padded,
+                padded_res.Ny_padded,
+            ),
+            dtype=sharding.complex_type,
+            out_sharding=P(None, "Z", "X", None),
+        )
+        return advect
+
+    advect = get_empty_advect(in_sharding=sharding.spec_shard)
 
     def set_advect(i, val):
         return val.at[i, ...].set(
