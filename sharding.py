@@ -37,26 +37,8 @@ class Sharding:
     mesh = jax.make_mesh(
         (params.dist.Np0, params.dist.Np1),
         axis_names=("Z", "X"),
-        axis_types=(AxisType.Explicit, AxisType.Explicit),
+        axis_types=(AxisType.Auto, AxisType.Auto),
     )
-
-    # Create a mesh with size 1 on the first axis
-    mesh_X = jax.make_mesh(
-        (params.dist.Np1,),
-        axis_names=("X",),
-        axis_types=(AxisType.Explicit,),
-        devices=devices[:: params.dist.Np0],
-    )
-    mesh_Z = jax.make_mesh(
-        (params.dist.Np0,),
-        axis_names=("Z",),
-        axis_types=(AxisType.Explicit,),
-        devices=devices[:: params.dist.Np1],
-    )
-
-    # OK now - UNUSED axis has size 1
-    X_shard = NamedSharding(mesh_X, P("X"))
-    Z_shard = NamedSharding(mesh_Z, P("Z"))
 
     phys_shard = NamedSharding(mesh, P(None, "Z", "X", None))
     spec_shard = NamedSharding(mesh, P(None, "Z", "X", None))

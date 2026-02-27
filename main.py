@@ -48,7 +48,10 @@ def main():
 
     if params.init.start_from_laminar:
         velocity_spec = get_zero_velocity()
-        velocity_spec = velocity_spec.at[force.ic_f].add(force.laminar_state)
+        if force.on:
+            velocity_spec = velocity_spec.at[force.ic_f].add(
+                force.laminar_state
+            )
 
     elif params.init.snapshot is not None:
         velocity_phys = jax.device_put(
