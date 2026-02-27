@@ -32,7 +32,7 @@ def get_norm(vector_spec):
 def get_zero_velocity():
 
     @partial(explicit_axes, axes=("Z", "X"))
-    def get_empty_velocity():
+    def _get_zero_velocity():
         velocity_spec = jnp.zeros(
             (
                 3,
@@ -45,7 +45,7 @@ def get_zero_velocity():
         )
         return velocity_spec
 
-    velocity_spec = get_empty_velocity(in_sharding=sharding.spec_shard)
+    velocity_spec = _get_zero_velocity(in_sharding=sharding.spec_shard)
 
     return jax.lax.with_sharding_constraint(velocity_spec, sharding.spec_shard)
 

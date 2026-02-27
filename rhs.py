@@ -1,3 +1,4 @@
+from bench import timer
 from dataclasses import dataclass
 from functools import partial
 
@@ -88,35 +89,37 @@ for n in range(6):
     symij_to_n = symij_to_n.at[j, i].set(n)
 
 
+@partial(explicit_axes, axes=("Z", "X"))
+def _j_get_empty_nonlin_phys():
+    nonlin_phys = jnp.zeros(
+        (
+            6,
+            padded_res.Ny_padded,
+            padded_res.Nz_padded,
+            padded_res.Nx_padded,
+        ),
+        dtype=sharding.complex_type,
+        out_sharding=P(None, "Z", "X", None),
+    )
+    return nonlin_phys
+
+
+@jit(static_argnums=0)
+def _get_empty_nonlin_phys(in_sharding):
+    return _j_get_empty_nonlin_phys(in_sharding=in_sharding)
+
+
 @jit
 def get_nonlin_phys(velocity_spec):
 
     velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
-    @partial(explicit_axes, axes=("Z", "X"))
-    def get_empty_nonlin_phys():
-        nonlin_phys = jnp.zeros(
-            (
-                6,
-                padded_res.Ny_padded,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-            ),
-            dtype=sharding.complex_type,
-            out_sharding=P(None, "Z", "X", None),
-        )
-        return nonlin_phys
+    nonlin_phys = _get_empty_nonlin_phys(sharding.phys_shard)
 
-    nonlin_phys = get_empty_nonlin_phys(in_sharding=sharding.phys_shard)
-
-    def set_nonlin_phys(i, val):
-        return val.at[i, ...].set(
+    for i in range(6):
+        nonlin_phys = nonlin_phys.at[i].set(
             velocity_phys[n_to_symi[i]] * velocity_phys[n_to_symj[i]]
         )
-
-    nonlin_phys = lax.fori_loop(
-        0, 6, set_nonlin_phys, nonlin_phys, unroll=True
-    )
 
     # Basdevant optimization: https://doi.org/10.1016/0021-9991(83)90064-5
     # Save on one FFT by the tracelessness of the nonlinear term
@@ -138,24 +141,30 @@ def get_nonlin_phys(velocity_spec):
     return jax.lax.with_sharding_constraint(nonlin_phys, sharding.phys_shard)
 
 
+@partial(explicit_axes, axes=("Z", "X"))
+def _j_get_empty_nonlin_spec():
+    nonlin = jnp.zeros(
+        (
+            6,
+            padded_res.Nz_padded,
+            padded_res.Nx_padded,
+            padded_res.Ny_padded,
+        ),
+        dtype=sharding.complex_type,
+        out_sharding=P(None, "Z", "X", None),
+    )
+    return nonlin
+
+
+@jit(static_argnums=0)
+def _get_empty_nonlin_spec(in_sharding):
+    return _j_get_empty_nonlin_spec(in_sharding=in_sharding)
+
+
 @jit(donate_argnums=0)
 def get_nonlin_spec(nonlin_phys, dealias):
 
-    @partial(explicit_axes, axes=("Z", "X"))
-    def get_empty_nonlin_spec():
-        nonlin = jnp.zeros(
-            (
-                6,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-                padded_res.Ny_padded,
-            ),
-            dtype=sharding.complex_type,
-            out_sharding=P(None, "Z", "X", None),
-        )
-        return nonlin
-
-    nonlin = get_empty_nonlin_spec(in_sharding=sharding.spec_shard)
+    nonlin = _get_empty_nonlin_spec(sharding.spec_shard)
 
     nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], dealias))
     # Basdevant: Get the 5th element from tracelessness
@@ -174,6 +183,25 @@ def get_nonlin(velocity_spec, dealias):
     )
 
 
+@partial(explicit_axes, axes=("Z", "X"))
+def _j_get_empty_advect():
+    advect = jnp.zeros(
+        (
+            3,
+            padded_res.Nz_padded,
+            padded_res.Nx_padded,
+            padded_res.Ny_padded,
+        ),
+        dtype=sharding.complex_type,
+        out_sharding=P(None, "Z", "X", None),
+    )
+    return advect
+
+
+@jit(static_argnums=0)
+def _get_empty_advect(in_sharding):
+    return _j_get_empty_advect(in_sharding=in_sharding)
+
 @jit
 def get_rhs_no_lapl(
     velocity_spec,
@@ -185,34 +213,16 @@ def get_rhs_no_lapl(
 
     nonlin = get_nonlin(velocity_spec, dealias)
 
-    @partial(explicit_axes, axes=("Z", "X"))
-    def get_empty_advect():
-        advect = jnp.zeros(
-            (
-                3,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-                padded_res.Ny_padded,
-            ),
-            dtype=sharding.complex_type,
-            out_sharding=P(None, "Z", "X", None),
+    advect = _get_empty_advect(sharding.spec_shard)
+
+    for i in range(3):
+        advect = advect.at[i].set(
+        -jnp.sum(
+            nabla
+            * nonlin[(symij_to_n[0, i], symij_to_n[1, i], symij_to_n[2, i]),],
+            axis=0,
         )
-        return advect
-
-    advect = get_empty_advect(in_sharding=sharding.spec_shard)
-
-    def set_advect(i, val):
-        return val.at[i, ...].set(
-            -jnp.sum(
-                nabla
-                * nonlin[
-                    (symij_to_n[0, i], symij_to_n[1, i], symij_to_n[2, i]),
-                ],
-                axis=0,
-            )
-        )
-
-    advect = lax.fori_loop(0, 3, set_advect, advect, unroll=True)
+    )
 
     rhs_no_lapl = advect - nabla * inv_lapl * jnp.sum(nabla * advect, axis=0)
     if force.on:

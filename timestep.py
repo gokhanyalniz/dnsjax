@@ -42,10 +42,10 @@ def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
     )
 
 
-@jit(donate_argnums=(0, 1))
+@jit(donate_argnums=(0,1))
 @partial(vmap, in_axes=(0, 0, 0, None))
 def get_correction(
-    prediction_prev, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
+    prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
 ):
 
     correction = (
@@ -54,57 +54,15 @@ def get_correction(
         * ildt_2
     )
 
-    prediction_next = prediction_prev + correction
+    prediction_new = prediction + correction
 
-    return (
-        jax.lax.with_sharding_constraint(
-            prediction_next, sharding.scalar_spec_shard
-        ),
-        jax.lax.with_sharding_constraint(
+    return jax.lax.with_sharding_constraint(
+            prediction_new, sharding.scalar_spec_shard
+        ), jax.lax.with_sharding_constraint(
             correction, sharding.scalar_spec_shard
-        ),
-    )
+        )
 
-
-def timestep_iteration_condition(val):
-    _, _, error, c, _ = val
-    condition = (c < params.step.max_corrector_iterations) & (
-        error > params.step.corrector_tolerance
-    )
-    return condition
-
-
-def timestep_iterate(val):
-    prediction, rhs_no_lapl_prev, _, c, operators = val
-    (
-        laminar_state,
-        nabla,
-        inv_lapl,
-        dealias,
-        ildt_2,
-    ) = operators
-    rhs_no_lapl_next = get_rhs_no_lapl(
-        prediction,
-        laminar_state,
-        nabla,
-        inv_lapl,
-        dealias,
-    )
-    prediction, correction = get_correction(
-        prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
-    )
-    error = get_norm(correction)
-    return (
-        jax.lax.with_sharding_constraint(prediction, sharding.spec_shard),
-        jax.lax.with_sharding_constraint(
-            rhs_no_lapl_next, sharding.spec_shard
-        ),
-        error,
-        c + 1,
-        operators,
-    )
-
-
+@timer("timestep")
 def timestep(
     velocity_spec,
     laminar_state,
@@ -135,20 +93,25 @@ def timestep(
     prediction, correction = get_correction(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
     )
+
     error = get_norm(correction)
     c = 1
+    while error > params.step.corrector_tolerance and c < params.step.max_corrector_iterations:
+        rhs_no_lapl_prev = rhs_no_lapl_next
+        rhs_no_lapl_next = get_rhs_no_lapl(
+            prediction,
+            laminar_state,
+            nabla,
+            inv_lapl,
+            dealias,
+        )
+        prediction, correction = get_correction(
+            prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
+        )
 
-    operators = (
-        laminar_state,
-        nabla,
-        inv_lapl,
-        dealias,
-        ildt_2,
-    )
-    init_val = prediction, rhs_no_lapl_next, error, c, operators
-    prediction, _, error, c, _ = lax.while_loop(
-        timestep_iteration_condition, timestep_iterate, init_val
-    )
+        error = get_norm(correction)
+        c += 1
+
 
     velocity_spec_next = correct_velocity(
         prediction, nabla, inv_lapl, zero_mean
@@ -161,10 +124,3 @@ def timestep(
         error,
         c,
     )
-
-
-timestep = (
-    timer("timestep")(timestep)
-    if params.debug.time_functions
-    else jit(timestep, donate_argnums=0)
-)
