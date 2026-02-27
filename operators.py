@@ -4,7 +4,7 @@ from functools import partial
 import jax
 from jax import jit, vmap
 from jax import numpy as jnp
-from jax.sharding import NamedSharding
+from jax.sharding import NamedSharding, auto_axes
 from jax.sharding import PartitionSpec as P
 from jaxdecomp.fft import pfft3d, pifft3d
 
@@ -14,20 +14,39 @@ from sharding import sharding
 
 @dataclass
 class Fourier:
-    def harmonics(n):
-        i = jnp.arange(n, dtype=int)
-        k = (i + n // 2) % n - n // 2
-        return k
+    @partial(vmap, in_axes=(0, None))
+    def harmonics(k, n):
+        return (k + n // 2) % n - n // 2
 
-    qx = jax.device_put(
-        harmonics(padded_res.Nx_padded).reshape([1, -1, 1]),
-        NamedSharding(sharding.mesh, P(None, "X", None)),
-    )
-    qy = harmonics(padded_res.Ny_padded).reshape([1, 1, -1])
-    qz = jax.device_put(
-        harmonics(padded_res.Nz_padded).reshape([-1, 1, 1]),
-        NamedSharding(sharding.mesh, P("Z", None, None)),
-    )
+    qx = harmonics(
+        jnp.arange(
+            padded_res.Nx_padded,
+            dtype=int,
+            out_sharding=sharding.X_shard,
+        ),
+        padded_res.Nx_padded,
+    )[jnp.newaxis, :, jnp.newaxis]
+    qy = harmonics(
+        jnp.arange(padded_res.Ny_padded, dtype=int), padded_res.Ny_padded
+    )[jnp.newaxis, jnp.newaxis, :]
+    qz = harmonics(
+        jnp.arange(
+            padded_res.Nz_padded,
+            dtype=int,
+            out_sharding=sharding.Z_shard,
+        ),
+        padded_res.Nz_padded,
+    )[:, jnp.newaxis, jnp.newaxis]
+
+    # qx = jax.device_put(
+    #     harmonics(padded_res.Nx_padded).reshape([1, -1, 1]),
+    #     NamedSharding(sharding.mesh, P(None, "X", None)),
+    # )
+    # qy = harmonics(padded_res.Ny_padded).reshape([1, 1, -1])
+    # qz = jax.device_put(
+    #     harmonics(padded_res.Nz_padded).reshape([-1, 1, 1]),
+    #     NamedSharding(sharding.mesh, P("Z", None, None)),
+    # )
 
     kx = qx * 2 * jnp.pi / params.geo.Lx
     ky = qy * 2 * jnp.pi / params.geo.Ly
@@ -42,17 +61,22 @@ class Fourier:
         False,
     )
 
-    nabla = jax.device_put(
-        jnp.zeros(
-            (
-                3,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-                padded_res.Ny_padded,
-            ),
-            dtype=sharding.complex_type,
-        ),
-        sharding.spec_shard,
+    # nabla = jax.device_put(
+    #     jnp.zeros(
+    #         (
+    #             3,
+    #             padded_res.Nz_padded,
+    #             padded_res.Nx_padded,
+    #             padded_res.Ny_padded,
+    #         ),
+    #         dtype=sharding.complex_type,
+    #     ),
+    #     sharding.spec_shard,
+    # )
+    nabla = jnp.zeros(
+        (3, padded_res.Nz_padded, padded_res.Nx_padded, padded_res.Ny_padded),
+        dtype=sharding.complex_type,
+        out_sharding=sharding.spec_shard,
     )
 
     nabla = nabla.at[0].set(1j * kx)
@@ -72,6 +96,7 @@ fourier = Fourier()
 
 @jit(donate_argnums=0)
 @partial(vmap, in_axes=(0, None))
+@auto_axes
 def phys_to_spec(velocity_phys, dealias):
     velocity_spec = (
         pfft3d(
@@ -90,6 +115,7 @@ def phys_to_spec(velocity_phys, dealias):
 
 @jit(donate_argnums=0)
 @vmap
+@auto_axes
 def spec_to_phys(velocity_spec):
     velocity_phys = pifft3d(
         jax.lax.with_sharding_constraint(
