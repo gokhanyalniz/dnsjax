@@ -67,8 +67,11 @@ def main():
     c_tot = 0
     dt_first = params.step.dt
     wall_time_now = perf_counter_ns()
+    bench_delta = 0
+    corrector_compiled = False
     last_error = 0
     last_c = 0
+    norm_corrections = {}
 
     # Call once now not to affect benchmarks later
     stats = get_stats(
@@ -79,7 +82,7 @@ def main():
 
     main_print(
         f"t = {t:.2f}",
-        *[f"{x}={y:.6e}" for x, y in stats.items()],
+        *[f"{x}={y:.3e}" for x, y in stats.items()],
     )
 
     main_print("Started timestepping at", datetime.now())
@@ -106,11 +109,15 @@ def main():
                 fourier.lapl,
             )
             c_per_it = c_tot / (it - params.init.it0)
+
             main_print(
                 f"t = {t:.2f}",
-                *[f"{x}={y:.6e}" for x, y in stats.items()],
+                *[f"{x}={y:.3e}" for x, y in stats.items()],
                 f"c/it = {c_per_it:.2f}",
                 f"err = {last_error:.3e}",
+                *[f"{x}={y:.3e}" for x, y in norm_corrections.items()]
+                if norm_corrections is not None
+                else "",
             )
 
         velocity_spec, rhs_no_lapl, error = predict_and_correct(
@@ -128,6 +135,10 @@ def main():
             error > params.step.corrector_tolerance
             and c < params.step.max_corrector_iterations
         ):
+            if not corrector_compiled:
+                # Do not include this in the benchmark
+                bench_delta_start = perf_counter_ns()
+
             velocity_spec, rhs_no_lapl, error = iterate_correction(
                 velocity_spec,
                 rhs_no_lapl,
@@ -139,8 +150,14 @@ def main():
             )
             c += 1
 
-        velocity_spec = correct_velocity(
-            velocity_spec, fourier.nabla, fourier.inv_lapl, fourier.zero_mean
+            if not corrector_compiled:
+                bench_delta_stop = perf_counter_ns()
+                bench_delta += bench_delta_stop - bench_delta_start
+                rhs_tot -= 1
+                corrector_compiled = True
+
+        velocity_spec, norm_corrections = correct_velocity(
+            velocity_spec, fourier.nabla, fourier.inv_lapl
         )
 
         t += params.step.dt
@@ -167,7 +184,7 @@ def main():
     alive_time = bench.ns_to_s * (wall_time_now - wall_time_start)
     main_print(f"Job has been alive for {alive_time:.2f}s.")
     if it > params.init.it0 + 1:
-        wall_time = bench.ns_to_s * (wall_time_now - bench_start)
+        wall_time = bench.ns_to_s * (wall_time_now - bench_delta - bench_start)
         wall_time_per_sim_time = wall_time / (t - dt_first - params.init.t0)
         wall_time_per_rhs = wall_time / rhs_tot
 
@@ -179,9 +196,12 @@ def main():
         )
         main_print(
             f"t = {t:.2f}",
-            *[f"{x}={y:.6e}" for x, y in stats.items()],
-            f"c/it = {rhs_tot / (it - 1 - params.init.it0):.2f}",
+            *[f"{x}={y:.3e}" for x, y in stats.items()],
+            f"c/it = {c_per_it:.2f}",
             f"err = {last_error:.3e}",
+            *[f"{x}={y:.3e}" for x, y in norm_corrections.items()]
+            if norm_corrections is not None
+            else "",
         )
 
         if params.debug.time_functions and main_device:
