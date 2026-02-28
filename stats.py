@@ -29,7 +29,7 @@ def get_perturbation_energy(energy, input):
 @jit
 def get_enstrophy(velocity_spec, lapl):
     enstrophy = jnp.sum(
-        -lapl * (jnp.conj(velocity_spec) * velocity_spec),
+        -lapl * jnp.conj(velocity_spec) * velocity_spec,
         dtype=sharding.float_type,
     )
     return enstrophy

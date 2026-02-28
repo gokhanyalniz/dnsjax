@@ -118,7 +118,7 @@ def _get_nonlin_phys(velocity_phys):
         (symij_to_n[0, 0], symij_to_n[1, 1]),
     ].subtract(nonlin_phys[symij_to_n[2, 2]] / 3)
 
-    return nonlin_phys
+    return jax.lax.with_sharding_constraint(nonlin_phys, sharding.phys_shard)
 
 
 @jit(donate_argnums=0)
@@ -163,21 +163,17 @@ def get_rhs_no_lapl(
     lapl_pressure = get_zero_scalar_spec()
 
     for i in range(3):
-        # Advection
-        rhs_no_lapl = rhs_no_lapl.at[i].set(
-            -jnp.sum(
-                nabla
-                * nonlin[
-                    (symij_to_n[0, i], symij_to_n[1, i], symij_to_n[2, i]),
-                ],
-                axis=0,
-            )
+        minus_dj_uiuj = -jnp.sum(
+            nabla
+            * nonlin[(symij_to_n[0, i], symij_to_n[1, i], symij_to_n[2, i]),],
+            axis=0,
         )
 
-        lapl_pressure += nabla[i] * rhs_no_lapl[i]
+        rhs_no_lapl = rhs_no_lapl.at[i].set(minus_dj_uiuj)
+        lapl_pressure = lapl_pressure.at[...].add(nabla[i] * minus_dj_uiuj)
 
     # Add pressure gradient
-    rhs_no_lapl = rhs_no_lapl - nabla * inv_lapl * lapl_pressure
+    rhs_no_lapl = rhs_no_lapl.at[...].add(-nabla * inv_lapl * lapl_pressure)
 
     # Add forcing
     if force.on:

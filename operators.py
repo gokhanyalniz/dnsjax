@@ -97,10 +97,7 @@ def spec_to_phys(velocity_spec):
             velocity_spec, sharding.scalar_spec_shard
         ),
         norm="forward",
-    )
-    velocity_phys = velocity_phys.real.at[
-        ...
-    ].get() + 1j * velocity_phys.imag.at[...].set(0)
+    ).real
 
     return jax.lax.with_sharding_constraint(
         velocity_phys, sharding.scalar_phys_shard

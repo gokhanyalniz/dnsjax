@@ -114,7 +114,7 @@ def _get_zero_velocity_phys(ndims):
             padded_res.Nz_padded,
             padded_res.Nx_padded,
         ),
-        dtype=sharding.complex_type,
+        dtype=sharding.phys_type,
         out_sharding=P(None, "Z", "X", None),
     )
     return velocity_phys
