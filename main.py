@@ -24,7 +24,6 @@ def main():
     import bench
     from operators import fourier, phys_to_spec
     from rhs import force
-    from sharding import sharding
     from stats import get_stats
     from timestep import stepper, timestep
     from velocity import get_zero_velocity
@@ -201,6 +200,10 @@ if __name__ == "__main__":
     jax.config.update("jax_enable_x64", params.res.double_precision)
     jax.config.update("jax_platforms", params.dist.platform)
     jax.distributed.initialize()
+
+    from sharding import sharding
+
+    jax.set_mesh(sharding.mesh)
 
     rank = jax.process_index()
     main_device = False

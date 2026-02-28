@@ -4,7 +4,7 @@ from functools import partial
 import jax
 from jax import jit, vmap
 from jax import numpy as jnp
-from jax.sharding import NamedSharding, explicit_axes
+from jax.sharding import NamedSharding, auto_axes
 from jax.sharding import PartitionSpec as P
 from jaxdecomp.fft import pfft3d, pifft3d
 
@@ -40,21 +40,16 @@ class Fourier:
         False,
     )
 
-    @partial(explicit_axes, axes=("Z", "X"))
-    def get_nabla():
-        nabla = jnp.zeros(
-            (
-                3,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-                padded_res.Ny_padded,
-            ),
-            dtype=sharding.complex_type,
-            out_sharding=P(None, "Z", "X", None),
-        )
-        return nabla
-
-    nabla = get_nabla(in_sharding=sharding.spec_shard)
+    nabla = jnp.zeros(
+        (
+            3,
+            padded_res.Nz_padded,
+            padded_res.Nx_padded,
+            padded_res.Ny_padded,
+        ),
+        dtype=sharding.complex_type,
+        out_sharding=sharding.spec_shard,
+    )
 
     nabla = nabla.at[0].set(1j * kx)
     nabla = nabla.at[1].set(1j * ky)
@@ -71,37 +66,43 @@ class Fourier:
 fourier = Fourier()
 
 
-@jit(donate_argnums=0)
-@partial(vmap, in_axes=(0, None))
-def phys_to_spec(velocity_phys, dealias):
-    velocity_spec = (
-        pfft3d(
-            jax.lax.with_sharding_constraint(
-                velocity_phys, sharding.scalar_phys_shard
-            ),
-            norm="forward",
-        )
-        * dealias
+@partial(auto_axes, axes=("Z", "X"))
+def fft(velocity_phys):
+    velocity_spec = pfft3d(
+        jax.lax.with_sharding_constraint(velocity_phys, P("Z", "X", None)),
+        norm="forward",
     )
-
-    return jax.lax.with_sharding_constraint(
-        velocity_spec, sharding.scalar_spec_shard
-    )
+    return velocity_spec
 
 
-@jit(donate_argnums=0)
-@vmap
-def spec_to_phys(velocity_spec):
+@partial(auto_axes, axes=("Z", "X"))
+def ifft(velocity_spec):
     velocity_phys = pifft3d(
-        jax.lax.with_sharding_constraint(
-            velocity_spec, sharding.scalar_spec_shard
-        ),
+        jax.lax.with_sharding_constraint(velocity_spec, P("Z", "X", None)),
         norm="forward",
     )
     velocity_phys = velocity_phys.real.at[
         ...
     ].get() + 1j * velocity_phys.imag.at[...].set(0)
 
-    return jax.lax.with_sharding_constraint(
-        velocity_phys, sharding.scalar_phys_shard
+    return velocity_phys
+
+
+@jit(donate_argnums=0)
+@partial(vmap, in_axes=(0, None))
+def phys_to_spec(velocity_phys, dealias):
+    velocity_spec = (
+        fft(velocity_phys, out_sharding=sharding.scalar_spec_shard) * dealias
     )
+
+    return velocity_spec
+
+
+@jit(donate_argnums=0)
+@vmap
+def spec_to_phys(velocity_spec):
+    velocity_phys = ifft(
+        velocity_spec, out_sharding=sharding.scalar_phys_shard
+    )
+
+    return velocity_phys

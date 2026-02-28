@@ -1,10 +1,5 @@
-from functools import partial
-
-import jax
 from jax import jit
 from jax import numpy as jnp
-from jax.sharding import PartitionSpec as P
-from jax.sharding import explicit_axes
 
 from parameters import padded_res
 from sharding import sharding
@@ -31,23 +26,18 @@ def get_norm(vector_spec):
 @jit
 def get_zero_velocity():
 
-    @partial(explicit_axes, axes=("Z", "X"))
-    def _get_zero_velocity():
-        velocity_spec = jnp.zeros(
-            (
-                3,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-                padded_res.Ny_padded,
-            ),
-            dtype=sharding.complex_type,
-            out_sharding=P(None, "Z", "X", None),
-        )
-        return velocity_spec
+    velocity_spec = jnp.zeros(
+        (
+            3,
+            padded_res.Nz_padded,
+            padded_res.Nx_padded,
+            padded_res.Ny_padded,
+        ),
+        dtype=sharding.complex_type,
+        out_sharding=sharding.spec_shard,
+    )
 
-    velocity_spec = _get_zero_velocity(in_sharding=sharding.spec_shard)
-
-    return jax.lax.with_sharding_constraint(velocity_spec, sharding.spec_shard)
+    return velocity_spec
 
 
 @jit(donate_argnums=0)
@@ -62,9 +52,7 @@ def correct_divergence(velocity_spec, nabla, inv_lapl):
     )
 
     velocity_corrected = velocity_spec + correction
-    return jax.lax.with_sharding_constraint(
-        velocity_corrected, sharding.spec_shard
-    )
+    return velocity_corrected
 
 
 @jit(donate_argnums=0)
@@ -73,6 +61,4 @@ def correct_velocity(velocity_spec, nabla, inv_lapl, zero_mean):
         correct_divergence(velocity_spec, nabla, inv_lapl) * zero_mean
     )
 
-    return jax.lax.with_sharding_constraint(
-        velocity_corrected, sharding.spec_shard
-    )
+    return velocity_corrected

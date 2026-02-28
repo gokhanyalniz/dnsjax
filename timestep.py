@@ -1,14 +1,11 @@
 from dataclasses import dataclass
 from functools import partial
 
-import jax
-from jax import jit, lax, vmap
+from jax import jit, vmap
 
-from bench import timer
 from operators import fourier
 from parameters import params
 from rhs import get_rhs_no_lapl
-from sharding import sharding
 from velocity import correct_velocity, get_norm
 
 
@@ -37,16 +34,12 @@ def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
 
     prediction = (velocity_spec * ldt1 + rhs_no_lapl) * ildt_2
 
-    return jax.lax.with_sharding_constraint(
-        prediction, sharding.scalar_spec_shard
-    )
+    return prediction
 
 
-@jit(donate_argnums=(0,1))
+@jit(donate_argnums=(0, 1))
 @partial(vmap, in_axes=(0, 0, 0, None))
-def get_correction(
-    prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
-):
+def get_correction(prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2):
 
     correction = (
         params.step.implicitness
@@ -56,13 +49,10 @@ def get_correction(
 
     prediction_new = prediction + correction
 
-    return jax.lax.with_sharding_constraint(
-            prediction_new, sharding.scalar_spec_shard
-        ), jax.lax.with_sharding_constraint(
-            correction, sharding.scalar_spec_shard
-        )
+    return prediction_new, correction
 
-@timer("timestep")
+
+# @timer("timestep")
 def timestep(
     velocity_spec,
     laminar_state,
@@ -73,7 +63,6 @@ def timestep(
     ldt1,
     ildt_2,
 ):
-
     rhs_no_lapl_prev = get_rhs_no_lapl(
         velocity_spec,
         laminar_state,
@@ -96,7 +85,10 @@ def timestep(
 
     error = get_norm(correction)
     c = 1
-    while error > params.step.corrector_tolerance and c < params.step.max_corrector_iterations:
+    while (
+        error > params.step.corrector_tolerance
+        and c < params.step.max_corrector_iterations
+    ):
         rhs_no_lapl_prev = rhs_no_lapl_next
         rhs_no_lapl_next = get_rhs_no_lapl(
             prediction,
@@ -112,15 +104,12 @@ def timestep(
         error = get_norm(correction)
         c += 1
 
-
     velocity_spec_next = correct_velocity(
         prediction, nabla, inv_lapl, zero_mean
     )
 
     return (
-        jax.lax.with_sharding_constraint(
-            velocity_spec_next, sharding.spec_shard
-        ),
+        velocity_spec_next,
         error,
         c,
     )
