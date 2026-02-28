@@ -6,7 +6,7 @@ from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 from jax.sharding import explicit_axes
 
-from parameters import padded_res
+from parameters import padded_res, params
 from sharding import sharding
 
 
@@ -39,21 +39,31 @@ def correct_divergence(velocity_spec, nabla, inv_lapl):
         )
     )
 
+    error = get_norm(correction) if params.debug.measure_corrections else None
+
     velocity_corrected = velocity_spec + correction
     return jax.lax.with_sharding_constraint(
         velocity_corrected, sharding.spec_shard
-    )
+    ), error
 
 
 @jit(donate_argnums=0)
-def correct_velocity(velocity_spec, nabla, inv_lapl, zero_mean):
-    velocity_corrected = (
-        correct_divergence(velocity_spec, nabla, inv_lapl) * zero_mean
-    )
+def correct_velocity(velocity_spec, nabla, inv_lapl):
+    norm_corrections = {}
+    if params.debug.correct_divergence:
+        velocity_corrected, error = correct_divergence(
+            velocity_spec, nabla, inv_lapl
+        )
+        norm_corrections["div"] = error
+    else:
+        velocity_corrected = velocity_spec
+
+    if not params.debug.measure_corrections:
+        norm_corrections = None
 
     return jax.lax.with_sharding_constraint(
         velocity_corrected, sharding.spec_shard
-    )
+    ), norm_corrections
 
 
 @partial(explicit_axes, axes=("Z", "X"))

@@ -35,13 +35,13 @@ class Fourier:
     active_modes = jnp.where(
         (jnp.abs(qx) < padded_res.Nx_half)
         & (jnp.abs(qy) < padded_res.Ny_half)
-        & (jnp.abs(qz) < padded_res.Nz_half),
-        # & ~((qx == 0) & (qy == 0) & (qz == 0)),
+        & (jnp.abs(qz) < padded_res.Nz_half)
+        & ~((qx == 0) & (qy == 0) & (qz == 0)),
         True,
         False,
     )
 
-    zero_mean = jnp.where((qx == 0) & (qy == 0) & (qz == 0), False, True)
+    # zero_mean = jnp.where((qx == 0) & (qy == 0) & (qz == 0), False, True)
 
     @partial(explicit_axes, axes=("Z", "X"))
     def get_nabla():
