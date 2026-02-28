@@ -1,9 +1,8 @@
-from bench import timer
 from dataclasses import dataclass
 from functools import partial
 
 import jax
-from jax import jit, lax
+from jax import jit
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 from jax.sharding import explicit_axes
@@ -15,6 +14,11 @@ from operators import (
 )
 from parameters import padded_res, params
 from sharding import sharding
+from velocity import (
+    get_zero_scalar_spec,
+    get_zero_velocity_phys,
+    get_zero_velocity_spec,
+)
 
 
 @dataclass
@@ -89,32 +93,10 @@ for n in range(6):
     symij_to_n = symij_to_n.at[j, i].set(n)
 
 
-@partial(explicit_axes, axes=("Z", "X"))
-def _j_get_empty_nonlin_phys():
-    nonlin_phys = jnp.zeros(
-        (
-            6,
-            padded_res.Ny_padded,
-            padded_res.Nz_padded,
-            padded_res.Nx_padded,
-        ),
-        dtype=sharding.complex_type,
-        out_sharding=P(None, "Z", "X", None),
-    )
-    return nonlin_phys
-
-
-@jit(static_argnums=0)
-def _get_empty_nonlin_phys(in_sharding):
-    return _j_get_empty_nonlin_phys(in_sharding=in_sharding)
-
-
 @jit
-def get_nonlin_phys(velocity_spec):
+def _get_nonlin_phys(velocity_phys):
 
-    velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
-
-    nonlin_phys = _get_empty_nonlin_phys(sharding.phys_shard)
+    nonlin_phys = get_zero_velocity_phys(6)
 
     for i in range(6):
         nonlin_phys = nonlin_phys.at[i].set(
@@ -126,45 +108,23 @@ def get_nonlin_phys(velocity_spec):
     # The trace is effectively moved to pressure. If "true" pressure is ever
     # needed, this needs to be taken into account.
 
-    trace = jnp.sum(
-        nonlin_phys[(symij_to_n[0, 0], symij_to_n[1, 1], symij_to_n[2, 2]),],
-        axis=0,
-        dtype=sharding.float_type,
+    # Compute trace in-place on symij_to_n[2, 2]
+    nonlin_phys = nonlin_phys.at[symij_to_n[2, 2]].add(
+        nonlin_phys[symij_to_n[0, 0]] + nonlin_phys[symij_to_n[1, 1]]
     )
 
     # No need to update (2,2), it's not used
     nonlin_phys = nonlin_phys.at[
         (symij_to_n[0, 0], symij_to_n[1, 1]),
-    ].subtract(trace / 3)
+    ].subtract(nonlin_phys[symij_to_n[2, 2]] / 3)
 
-    # Pass the whole array to reuse memory
-    return jax.lax.with_sharding_constraint(nonlin_phys, sharding.phys_shard)
-
-
-@partial(explicit_axes, axes=("Z", "X"))
-def _j_get_empty_nonlin_spec():
-    nonlin = jnp.zeros(
-        (
-            6,
-            padded_res.Nz_padded,
-            padded_res.Nx_padded,
-            padded_res.Ny_padded,
-        ),
-        dtype=sharding.complex_type,
-        out_sharding=P(None, "Z", "X", None),
-    )
-    return nonlin
-
-
-@jit(static_argnums=0)
-def _get_empty_nonlin_spec(in_sharding):
-    return _j_get_empty_nonlin_spec(in_sharding=in_sharding)
+    return nonlin_phys
 
 
 @jit(donate_argnums=0)
-def get_nonlin_spec(nonlin_phys, dealias):
+def _get_nonlin_spec(nonlin_phys, dealias):
 
-    nonlin = _get_empty_nonlin_spec(sharding.spec_shard)
+    nonlin = get_zero_velocity_spec(6)
 
     nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], dealias))
     # Basdevant: Get the 5th element from tracelessness
@@ -177,30 +137,15 @@ def get_nonlin_spec(nonlin_phys, dealias):
 
 @jit
 def get_nonlin(velocity_spec, dealias):
-    return jax.lax.with_sharding_constraint(
-        get_nonlin_spec(get_nonlin_phys(velocity_spec), dealias),
-        sharding.spec_shard,
-    )
 
+    velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
-@partial(explicit_axes, axes=("Z", "X"))
-def _j_get_empty_advect():
-    advect = jnp.zeros(
-        (
-            3,
-            padded_res.Nz_padded,
-            padded_res.Nx_padded,
-            padded_res.Ny_padded,
-        ),
-        dtype=sharding.complex_type,
-        out_sharding=P(None, "Z", "X", None),
-    )
-    return advect
+    nonlin_phys = _get_nonlin_phys(velocity_phys)
 
+    nonlin = _get_nonlin_spec(nonlin_phys, dealias)
 
-@jit(static_argnums=0)
-def _get_empty_advect(in_sharding):
-    return _j_get_empty_advect(in_sharding=in_sharding)
+    return jax.lax.with_sharding_constraint(nonlin, sharding.spec_shard)
+
 
 @jit
 def get_rhs_no_lapl(
@@ -213,18 +158,28 @@ def get_rhs_no_lapl(
 
     nonlin = get_nonlin(velocity_spec, dealias)
 
-    advect = _get_empty_advect(sharding.spec_shard)
+    rhs_no_lapl = get_zero_velocity_spec(3)
+
+    lapl_pressure = get_zero_scalar_spec()
 
     for i in range(3):
-        advect = advect.at[i].set(
-        -jnp.sum(
-            nabla
-            * nonlin[(symij_to_n[0, i], symij_to_n[1, i], symij_to_n[2, i]),],
-            axis=0,
+        # Advection
+        rhs_no_lapl = rhs_no_lapl.at[i].set(
+            -jnp.sum(
+                nabla
+                * nonlin[
+                    (symij_to_n[0, i], symij_to_n[1, i], symij_to_n[2, i]),
+                ],
+                axis=0,
+            )
         )
-    )
 
-    rhs_no_lapl = advect - nabla * inv_lapl * jnp.sum(nabla * advect, axis=0)
+        lapl_pressure += nabla[i] * rhs_no_lapl[i]
+
+    # Add pressure gradient
+    rhs_no_lapl = rhs_no_lapl - nabla * inv_lapl * lapl_pressure
+
+    # Add forcing
     if force.on:
         rhs_no_lapl = rhs_no_lapl.at[force.ic_f].add(
             laminar_state * force.amplitude

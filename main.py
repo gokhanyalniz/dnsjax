@@ -27,7 +27,7 @@ def main():
     from sharding import sharding
     from stats import get_stats
     from timestep import stepper, timestep
-    from velocity import get_zero_velocity
+    from velocity import get_zero_velocity_spec
 
     wall_time_stop = (
         jnp.inf
@@ -47,7 +47,7 @@ def main():
     )
 
     if params.init.start_from_laminar:
-        velocity_spec = get_zero_velocity()
+        velocity_spec = get_zero_velocity_spec(3)
         if force.on:
             velocity_spec = velocity_spec.at[force.ic_f].add(
                 force.laminar_state
