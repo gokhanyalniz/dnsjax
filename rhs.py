@@ -12,7 +12,7 @@ from operators import (
     phys_to_spec,
     spec_to_phys,
 )
-from parameters import padded_res, params
+from parameters import params
 from sharding import sharding
 from velocity import (
     get_zero_scalar_spec,
@@ -59,11 +59,7 @@ class Force:
         @partial(explicit_axes, axes=("Z", "X"))
         def get_laminar_state():
             laminar_state = jnp.zeros(
-                (
-                    padded_res.Nz_padded,
-                    padded_res.Nx_padded,
-                    padded_res.Ny_padded,
-                ),
+                sharding.spec_shape,
                 dtype=sharding.complex_type,
                 out_sharding=P("Z", "X", None),
             )

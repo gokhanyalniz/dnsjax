@@ -42,11 +42,6 @@ class Sharding:
 
     jax.set_mesh(mesh)
 
-    # phys_shard = NamedSharding(mesh, P(None, "Z", "X", None))
-    # spec_shard = NamedSharding(mesh, P(None, "Z", "X", None))
-    # scalar_phys_shard = NamedSharding(mesh, P("Z", "X", None))
-    # scalar_spec_shard = NamedSharding(mesh, P("Z", "X", None))
-
     phys_shard = P(None, "Z", "X", None)
     spec_shard = P(None, "Z", "X", None)
     scalar_phys_shard = P("Z", "X", None)

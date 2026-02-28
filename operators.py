@@ -46,12 +46,7 @@ class Fourier:
     @partial(explicit_axes, axes=("Z", "X"))
     def get_nabla():
         nabla = jnp.zeros(
-            (
-                3,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-                padded_res.Ny_padded,
-            ),
+            (3, *sharding.spec_shape),
             dtype=sharding.complex_type,
             out_sharding=P(None, "Z", "X", None),
         )

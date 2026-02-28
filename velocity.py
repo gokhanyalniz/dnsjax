@@ -6,7 +6,7 @@ from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 from jax.sharding import explicit_axes
 
-from parameters import padded_res, params
+from parameters import params
 from sharding import sharding
 
 
@@ -69,12 +69,7 @@ def correct_velocity(velocity_spec, nabla, inv_lapl):
 @partial(explicit_axes, axes=("Z", "X"))
 def _get_zero_velocity_spec(ndims):
     velocity_spec = jnp.zeros(
-        (
-            ndims,
-            padded_res.Nz_padded,
-            padded_res.Nx_padded,
-            padded_res.Ny_padded,
-        ),
+        (ndims, *sharding.spec_shape),
         dtype=sharding.complex_type,
         out_sharding=P(None, "Z", "X", None),
     )
@@ -94,11 +89,7 @@ def get_zero_velocity_spec(ndims):
 @partial(explicit_axes, axes=("Z", "X"))
 def _get_zero_scalar_spec():
     scalar_spec = jnp.zeros(
-        (
-            padded_res.Nz_padded,
-            padded_res.Nx_padded,
-            padded_res.Ny_padded,
-        ),
+        sharding.spec_shape,
         dtype=sharding.complex_type,
         out_sharding=P("Z", "X", None),
     )
@@ -118,12 +109,7 @@ def get_zero_scalar_spec():
 @partial(explicit_axes, axes=("Z", "X"))
 def _get_zero_velocity_phys(ndims):
     velocity_phys = jnp.zeros(
-        (
-            ndims,
-            padded_res.Ny_padded,
-            padded_res.Nz_padded,
-            padded_res.Nx_padded,
-        ),
+        (ndims, *sharding.phys_shape),
         dtype=sharding.phys_type,
         out_sharding=P(None, "Z", "X", None),
     )
