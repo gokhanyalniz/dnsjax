@@ -31,14 +31,17 @@ class Fourier:
     ky = qy * 2 * jnp.pi / params.geo.Ly
     kz = qz * 2 * jnp.pi / params.geo.Lz
 
-    # All aliased modes and the Nyquist modes are to be discarded
-    dealias = jnp.where(
+    # Aliased modes, the Nyquist modes, and the zero mode are to be discarded
+    active_modes = jnp.where(
         (jnp.abs(qx) < padded_res.Nx_half)
         & (jnp.abs(qy) < padded_res.Ny_half)
         & (jnp.abs(qz) < padded_res.Nz_half),
+        # & ~((qx == 0) & (qy == 0) & (qz == 0)),
         True,
         False,
     )
+
+    zero_mean = jnp.where((qx == 0) & (qy == 0) & (qz == 0), False, True)
 
     @partial(explicit_axes, axes=("Z", "X"))
     def get_nabla():
@@ -61,11 +64,9 @@ class Fourier:
     nabla = nabla.at[2].set(1j * kz)
 
     # Zero the dealiased modes to (potentially) save computation
-    nabla = dealias * nabla
-    lapl = (-(kx**2) - ky**2 - kz**2) * dealias
+    nabla = active_modes * nabla
+    lapl = (-(kx**2) - ky**2 - kz**2) * active_modes
     inv_lapl = jnp.where(lapl < 0, 1 / lapl, 0)
-
-    zero_mean = jnp.where((qx == 0) & (qy == 0) & (qz == 0), False, True)
 
 
 fourier = Fourier()
@@ -73,7 +74,7 @@ fourier = Fourier()
 
 @jit(donate_argnums=0)
 @partial(vmap, in_axes=(0, None))
-def phys_to_spec(velocity_phys, dealias):
+def phys_to_spec(velocity_phys, active_modes):
     velocity_spec = (
         pfft3d(
             jax.lax.with_sharding_constraint(
@@ -81,7 +82,7 @@ def phys_to_spec(velocity_phys, dealias):
             ),
             norm="forward",
         )
-        * dealias
+        * active_modes
     )
 
     return jax.lax.with_sharding_constraint(

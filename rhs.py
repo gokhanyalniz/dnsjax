@@ -122,11 +122,11 @@ def _get_nonlin_phys(velocity_phys):
 
 
 @jit(donate_argnums=0)
-def _get_nonlin_spec(nonlin_phys, dealias):
+def _get_nonlin_spec(nonlin_phys, active_modes):
 
     nonlin = get_zero_velocity_spec(6)
 
-    nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], dealias))
+    nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], active_modes))
     # Basdevant: Get the 5th element from tracelessness
     nonlin = nonlin.at[5].set(
         -(nonlin[symij_to_n[0, 0]] + nonlin[symij_to_n[1, 1]])
@@ -136,13 +136,13 @@ def _get_nonlin_spec(nonlin_phys, dealias):
 
 
 @jit
-def get_nonlin(velocity_spec, dealias):
+def get_nonlin(velocity_spec, active_modes):
 
     velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
     nonlin_phys = _get_nonlin_phys(velocity_phys)
 
-    nonlin = _get_nonlin_spec(nonlin_phys, dealias)
+    nonlin = _get_nonlin_spec(nonlin_phys, active_modes)
 
     return jax.lax.with_sharding_constraint(nonlin, sharding.spec_shard)
 
@@ -153,10 +153,10 @@ def get_rhs_no_lapl(
     laminar_state,
     nabla,
     inv_lapl,
-    dealias,
+    active_modes,
 ):
 
-    nonlin = get_nonlin(velocity_spec, dealias)
+    nonlin = get_nonlin(velocity_spec, active_modes)
 
     rhs_no_lapl = get_zero_velocity_spec(3)
 
@@ -165,7 +165,7 @@ def get_rhs_no_lapl(
     for i in range(3):
         minus_dj_uiuj = -jnp.sum(
             nabla
-            * nonlin[(symij_to_n[0, i], symij_to_n[1, i], symij_to_n[2, i]),],
+            * nonlin[(symij_to_n[i, 0], symij_to_n[i, 1], symij_to_n[i, 2]),],
             axis=0,
         )
 
