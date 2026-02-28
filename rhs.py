@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from functools import partial
 
 import jax
-from jax import jit
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 from jax.sharding import explicit_axes
@@ -89,7 +88,7 @@ for n in range(6):
     symij_to_n = symij_to_n.at[j, i].set(n)
 
 
-@jit
+# @jit(donate_argnums=0,out_shardings=sharding.phys_shard)
 def _get_nonlin_phys(velocity_phys):
 
     nonlin_phys = get_zero_velocity_phys(6)
@@ -114,10 +113,10 @@ def _get_nonlin_phys(velocity_phys):
         (symij_to_n[0, 0], symij_to_n[1, 1]),
     ].subtract(nonlin_phys[symij_to_n[2, 2]] / 3)
 
-    return jax.lax.with_sharding_constraint(nonlin_phys, sharding.phys_shard)
+    return nonlin_phys
 
 
-@jit(donate_argnums=0)
+# @jit(donate_argnums=0, out_shardings=sharding.spec_shard)
 def _get_nonlin_spec(nonlin_phys, active_modes):
 
     nonlin = get_zero_velocity_spec(6)
@@ -128,10 +127,10 @@ def _get_nonlin_spec(nonlin_phys, active_modes):
         -(nonlin[symij_to_n[0, 0]] + nonlin[symij_to_n[1, 1]])
     )
 
-    return jax.lax.with_sharding_constraint(nonlin, sharding.spec_shard)
+    return nonlin
 
 
-@jit
+# @jit(out_shardings=sharding.spec_shard)
 def get_nonlin(velocity_spec, active_modes):
 
     velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
@@ -140,10 +139,10 @@ def get_nonlin(velocity_spec, active_modes):
 
     nonlin = _get_nonlin_spec(nonlin_phys, active_modes)
 
-    return jax.lax.with_sharding_constraint(nonlin, sharding.spec_shard)
+    return nonlin
 
 
-@jit
+# @jit(out_shardings=sharding.spec_shard)
 def get_rhs_no_lapl(
     velocity_spec,
     laminar_state,
@@ -177,4 +176,4 @@ def get_rhs_no_lapl(
             laminar_state * force.amplitude
         )
 
-    return jax.lax.with_sharding_constraint(rhs_no_lapl, sharding.spec_shard)
+    return rhs_no_lapl

@@ -260,7 +260,7 @@ if __name__ == "__main__":
         if main_device:
             print(*args, **kwargs, flush=True)
 
-    main_print("JAX initialized at", datetime.now())
+    main_print("Distribution initialized at", datetime.now())
     if params_from_disk:
         main_print(
             "Loaded parameters.toml, "

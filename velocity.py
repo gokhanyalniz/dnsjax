@@ -1,16 +1,16 @@
 from functools import partial
 
-import jax
 from jax import jit
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 from jax.sharding import explicit_axes
 
+from bench import timer
 from parameters import params
 from sharding import sharding
 
 
-@jit
+# @jit
 def get_inprod(vector_spec_1, vector_spec_2):
     return jnp.sum(
         jnp.conj(vector_spec_1) * vector_spec_2,
@@ -18,17 +18,20 @@ def get_inprod(vector_spec_1, vector_spec_2):
     )
 
 
-@jit
+# @jit
 def get_norm2(vector_spec):
     return get_inprod(vector_spec, vector_spec)
 
 
-@jit
+# @jit
 def get_norm(vector_spec):
     return jnp.sqrt(get_norm2(vector_spec))
 
 
-@jit(donate_argnums=0)
+# @jit(
+#     donate_argnums=0,
+#     out_shardings=(sharding.spec_shard, None),
+# )
 def correct_divergence(velocity_spec, nabla, inv_lapl):
     correction = (
         -nabla
@@ -42,12 +45,11 @@ def correct_divergence(velocity_spec, nabla, inv_lapl):
     error = get_norm(correction) if params.debug.measure_corrections else None
 
     velocity_corrected = velocity_spec + correction
-    return jax.lax.with_sharding_constraint(
-        velocity_corrected, sharding.spec_shard
-    ), error
+    return velocity_corrected, error
 
 
-@jit(donate_argnums=0)
+@timer("velocity/correct_velocity")
+@jit(donate_argnums=0, out_shardings=(sharding.spec_shard, None))
 def correct_velocity(velocity_spec, nabla, inv_lapl):
     norm_corrections = {}
     if params.debug.correct_divergence:
@@ -61,9 +63,7 @@ def correct_velocity(velocity_spec, nabla, inv_lapl):
     if not params.debug.measure_corrections:
         norm_corrections = None
 
-    return jax.lax.with_sharding_constraint(
-        velocity_corrected, sharding.spec_shard
-    ), norm_corrections
+    return velocity_corrected, norm_corrections
 
 
 @partial(explicit_axes, axes=("Z", "X"))
@@ -76,14 +76,14 @@ def _get_zero_velocity_spec(ndims):
     return velocity_spec
 
 
-@jit(static_argnums=0)
+# @jit(static_argnums=0, out_shardings=sharding.spec_shard)
 def get_zero_velocity_spec(ndims):
 
     velocity_spec = _get_zero_velocity_spec(
         ndims=ndims, in_sharding=sharding.spec_shard
     )
 
-    return jax.lax.with_sharding_constraint(velocity_spec, sharding.spec_shard)
+    return velocity_spec
 
 
 @partial(explicit_axes, axes=("Z", "X"))
@@ -96,14 +96,12 @@ def _get_zero_scalar_spec():
     return scalar_spec
 
 
-@jit
+# @jit(out_shardings=sharding.scalar_spec_shard)
 def get_zero_scalar_spec():
 
     scalar_spec = _get_zero_scalar_spec(in_sharding=sharding.spec_shard)
 
-    return jax.lax.with_sharding_constraint(
-        scalar_spec, sharding.scalar_spec_shard
-    )
+    return scalar_spec
 
 
 @partial(explicit_axes, axes=("Z", "X"))
@@ -116,9 +114,10 @@ def _get_zero_velocity_phys(ndims):
     return velocity_phys
 
 
-@jit(static_argnums=0)
+# @jit(static_argnums=0, out_shardings=sharding.phys_shard)
+
+
 def get_zero_velocity_phys(ndims):
-    return jax.lax.with_sharding_constraint(
-        _get_zero_velocity_phys(ndims=ndims, in_sharding=sharding.spec_shard),
-        sharding.spec_shard,
+    return _get_zero_velocity_phys(
+        ndims=ndims, in_sharding=sharding.phys_shard
     )

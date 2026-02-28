@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from functools import partial
 
 import jax
-from jax import jit, vmap
 from jax import numpy as jnp
+from jax import vmap
 from jax.sharding import NamedSharding, explicit_axes
 from jax.sharding import PartitionSpec as P
 from jaxdecomp.fft import pfft3d, pifft3d
@@ -41,8 +41,6 @@ class Fourier:
         False,
     )
 
-    # zero_mean = jnp.where((qx == 0) & (qy == 0) & (qz == 0), False, True)
-
     @partial(explicit_axes, axes=("Z", "X"))
     def get_nabla():
         nabla = jnp.zeros(
@@ -67,7 +65,7 @@ class Fourier:
 fourier = Fourier()
 
 
-@jit(donate_argnums=0)
+# @jit(donate_argnums=0, out_shardings=sharding.spec_shard)
 @partial(vmap, in_axes=(0, None))
 def phys_to_spec(velocity_phys, active_modes):
     velocity_spec = (
@@ -80,12 +78,10 @@ def phys_to_spec(velocity_phys, active_modes):
         * active_modes
     )
 
-    return jax.lax.with_sharding_constraint(
-        velocity_spec, sharding.scalar_spec_shard
-    )
+    return velocity_spec
 
 
-@jit(donate_argnums=0)
+# @jit(donate_argnums=0, out_shardings=sharding.phys_shard)
 @vmap
 def spec_to_phys(velocity_spec):
     velocity_phys = pifft3d(
@@ -95,6 +91,4 @@ def spec_to_phys(velocity_spec):
         norm="forward",
     ).real
 
-    return jax.lax.with_sharding_constraint(
-        velocity_phys, sharding.scalar_phys_shard
-    )
+    return velocity_phys

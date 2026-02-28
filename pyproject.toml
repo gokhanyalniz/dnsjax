@@ -15,7 +15,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "jax-array-info",
     "prek>=0.3.3",
     "ruff>=0.15.0",
 ]
@@ -39,6 +38,3 @@ select = [
     # isort
     "I",
 ]
-
-[tool.uv.sources]
-jax-array-info = { git = "https://github.com/Findus23/jax-array-info.git" }
