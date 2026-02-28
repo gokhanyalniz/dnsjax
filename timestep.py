@@ -59,6 +59,38 @@ def get_correction(prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2):
     ), jax.lax.with_sharding_constraint(correction, sharding.scalar_spec_shard)
 
 
+def iterate_correction(
+    prediction,
+    rhs_no_lapl_prev,
+    laminar_state,
+    nabla,
+    inv_lapl,
+    active_modes,
+    ildt_2,
+):
+    rhs_no_lapl_next = get_rhs_no_lapl(
+        prediction,
+        laminar_state,
+        nabla,
+        inv_lapl,
+        active_modes,
+    )
+
+    prediction_next, correction = get_correction(
+        prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
+    )
+
+    error = get_norm(correction)
+
+    return (
+        jax.lax.with_sharding_constraint(prediction_next, sharding.spec_shard),
+        jax.lax.with_sharding_constraint(
+            rhs_no_lapl_next, sharding.spec_shard
+        ),
+        error,
+    )
+
+
 def predict_and_correct(
     velocity_spec,
     laminar_state,
@@ -91,9 +123,20 @@ def predict_and_correct(
 
     error = get_norm(correction)
 
-    return jax.lax.with_sharding_constraint(
-        prediction, sharding.spec_shard
-    ), error
+    return (
+        jax.lax.with_sharding_constraint(prediction, sharding.spec_shard),
+        jax.lax.with_sharding_constraint(
+            rhs_no_lapl_next, sharding.spec_shard
+        ),
+        error,
+    )
+
+
+iterate_correction = (
+    timer("iterate_correction")(iterate_correction)
+    if params.debug.time_functions
+    else jit(iterate_correction, donate_argnums=(0, 1))
+)
 
 
 predict_and_correct = (

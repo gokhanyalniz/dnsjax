@@ -25,7 +25,7 @@ def main():
     from rhs import force
     from sharding import sharding
     from stats import get_stats
-    from timestep import predict_and_correct, stepper
+    from timestep import iterate_correction, predict_and_correct, stepper
     from velocity import correct_velocity, get_zero_velocity_spec
 
     if params.init.start_from_laminar:
@@ -64,6 +64,7 @@ def main():
     t = params.init.t0
 
     rhs_tot = 0
+    c_tot = 0
     dt_first = params.step.dt
     wall_time_now = perf_counter_ns()
     last_error = 0
@@ -104,17 +105,15 @@ def main():
                 force.laminar_state,
                 fourier.lapl,
             )
+            c_per_it = c_tot / (it - params.init.it0)
             main_print(
                 f"t = {t:.2f}",
                 *[f"{x}={y:.6e}" for x, y in stats.items()],
-                f"c/it = {rhs_tot / (it - params.init.it0):.2f}",
+                f"c/it = {c_per_it:.2f}",
                 f"err = {last_error:.3e}",
             )
 
-        # error = jnp.inf
-        c = 1
-
-        velocity_spec, error = predict_and_correct(
+        velocity_spec, rhs_no_lapl, error = predict_and_correct(
             velocity_spec,
             force.laminar_state,
             fourier.nabla,
@@ -123,22 +122,21 @@ def main():
             stepper.ldt_1,
             stepper.ildt_2,
         )
-        c = 1
+        c = 0
 
         while (
             error > params.step.corrector_tolerance
             and c < params.step.max_corrector_iterations
         ):
-            velocity_spec, error = predict_and_correct(
+            velocity_spec, rhs_no_lapl, error = iterate_correction(
                 velocity_spec,
+                rhs_no_lapl,
                 force.laminar_state,
                 fourier.nabla,
                 fourier.inv_lapl,
                 fourier.active_modes,
-                stepper.ldt_1,
                 stepper.ildt_2,
             )
-            print(t, c, error)
             c += 1
 
         velocity_spec = correct_velocity(
@@ -149,10 +147,11 @@ def main():
         it += 1
         last_error = error
         last_c = c
+        c_tot += c
 
         if it > params.init.it0:
             # Ignore the first hit, probably subject to JIT compilation
-            rhs_tot += c * 2  # 2 rhs calculations per prediction-correction
+            rhs_tot += c + 2  # 1 rhs per corrector + 2 rhs per predict-correct
 
         wall_time_now = perf_counter_ns()
 
