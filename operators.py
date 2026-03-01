@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from functools import partial
 
 import jax
-from jax import jit, vmap
 from jax import numpy as jnp
+from jax import vmap
 from jax.sharding import NamedSharding, explicit_axes
 from jax.sharding import PartitionSpec as P
 from jaxdecomp.fft import pfft3d, pifft3d
@@ -19,12 +19,12 @@ class Fourier:
 
     qx = jax.device_put(
         harmonics(padded_res.Nx_padded).reshape([1, -1, 1]),
-        NamedSharding(sharding.mesh, P(None, "X", None)),
+        NamedSharding(sharding.mesh, P(None, "x", None)),
     )
     qy = harmonics(padded_res.Ny_padded).reshape([1, 1, -1])
     qz = jax.device_put(
         harmonics(padded_res.Nz_padded).reshape([-1, 1, 1]),
-        NamedSharding(sharding.mesh, P("Z", None, None)),
+        NamedSharding(sharding.mesh, P("z", None, None)),
     )
 
     kx = qx * 2 * jnp.pi / params.geo.Lx
@@ -41,19 +41,12 @@ class Fourier:
         False,
     )
 
-    # zero_mean = jnp.where((qx == 0) & (qy == 0) & (qz == 0), False, True)
-
-    @partial(explicit_axes, axes=("Z", "X"))
+    @partial(explicit_axes, axes=sharding.axis_names)
     def get_nabla():
         nabla = jnp.zeros(
-            (
-                3,
-                padded_res.Nz_padded,
-                padded_res.Nx_padded,
-                padded_res.Ny_padded,
-            ),
+            (3, *sharding.spec_shape),
             dtype=sharding.complex_type,
-            out_sharding=P(None, "Z", "X", None),
+            out_sharding=sharding.spec_shard,
         )
         return nabla
 
@@ -72,9 +65,14 @@ class Fourier:
 fourier = Fourier()
 
 
-@jit(donate_argnums=0)
+# @jit(donate_argnums=0, out_shardings=sharding.spec_shard)
 @partial(vmap, in_axes=(0, None))
 def phys_to_spec(velocity_phys, active_modes):
+    # WARNING: With active_modes:
+    # - aliased modes
+    # - Nyquist modes
+    # - *and* the mean [(0, 0, 0)] mode
+    # get zeroed!
     velocity_spec = (
         pfft3d(
             jax.lax.with_sharding_constraint(
@@ -85,12 +83,10 @@ def phys_to_spec(velocity_phys, active_modes):
         * active_modes
     )
 
-    return jax.lax.with_sharding_constraint(
-        velocity_spec, sharding.scalar_spec_shard
-    )
+    return velocity_spec
 
 
-@jit(donate_argnums=0)
+# @jit(donate_argnums=0, out_shardings=sharding.phys_shard)
 @vmap
 def spec_to_phys(velocity_spec):
     velocity_phys = pifft3d(
@@ -100,6 +96,4 @@ def spec_to_phys(velocity_spec):
         norm="forward",
     ).real
 
-    return jax.lax.with_sharding_constraint(
-        velocity_phys, sharding.scalar_phys_shard
-    )
+    return velocity_phys

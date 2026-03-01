@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from functools import partial
 
-import jax
 from jax import jit, vmap
 
 from bench import timer
@@ -31,18 +30,19 @@ class Stepper:
 stepper = Stepper()
 
 
-@jit(donate_argnums=0)
+# @jit(donate_argnums=0, out_shardings=sharding.spec_shard)
 @partial(vmap, in_axes=(0, 0, None, None))
 def get_prediction(velocity_spec, rhs_no_lapl, ldt1, ildt_2):
 
     prediction = (velocity_spec * ldt1 + rhs_no_lapl) * ildt_2
 
-    return jax.lax.with_sharding_constraint(
-        prediction, sharding.scalar_spec_shard
-    )
+    return prediction
 
 
-@jit(donate_argnums=(0, 1))
+# @jit(
+#     donate_argnums=(0, 1),
+#     out_shardings=(sharding.spec_shard, sharding.spec_shard),
+# )
 @partial(vmap, in_axes=(0, 0, 0, None))
 def get_correction(prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2):
 
@@ -54,11 +54,14 @@ def get_correction(prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2):
 
     prediction_new = prediction + correction
 
-    return jax.lax.with_sharding_constraint(
-        prediction_new, sharding.scalar_spec_shard
-    ), jax.lax.with_sharding_constraint(correction, sharding.scalar_spec_shard)
+    return prediction_new, correction
 
 
+@timer("timestep/iterate_correction")
+@jit(
+    donate_argnums=(0, 1),
+    out_shardings=(sharding.spec_shard, sharding.spec_shard, None),
+)
 def iterate_correction(
     prediction,
     rhs_no_lapl_prev,
@@ -83,14 +86,17 @@ def iterate_correction(
     error = get_norm(correction)
 
     return (
-        jax.lax.with_sharding_constraint(prediction_next, sharding.spec_shard),
-        jax.lax.with_sharding_constraint(
-            rhs_no_lapl_next, sharding.spec_shard
-        ),
+        prediction_next,
+        rhs_no_lapl_next,
         error,
     )
 
 
+@timer("timestep/predict_and_correct")
+@jit(
+    donate_argnums=0,
+    out_shardings=(sharding.spec_shard, sharding.spec_shard, None),
+)
 def predict_and_correct(
     velocity_spec,
     laminar_state,
@@ -124,23 +130,29 @@ def predict_and_correct(
     error = get_norm(correction)
 
     return (
-        jax.lax.with_sharding_constraint(prediction, sharding.spec_shard),
-        jax.lax.with_sharding_constraint(
-            rhs_no_lapl_next, sharding.spec_shard
-        ),
+        prediction,
+        rhs_no_lapl_next,
         error,
     )
 
 
-iterate_correction = (
-    timer("iterate_correction")(iterate_correction)
-    if params.debug.time_functions
-    else jit(iterate_correction, donate_argnums=(0, 1))
-)
+# iterate_correction = (
+#     timer("iterate_correction")(iterate_correction)
+#     if params.debug.time_functions
+#     else jit(
+#         iterate_correction,
+#         donate_argnums=(0, 1),
+#         out_shardings=(sharding.spec_shard, sharding.spec_shard, None),
+#     )
+# )
 
 
-predict_and_correct = (
-    timer("predict_and_correct")(predict_and_correct)
-    if params.debug.time_functions
-    else jit(predict_and_correct, donate_argnums=0)
-)
+# predict_and_correct = (
+#     timer("predict_and_correct")(predict_and_correct)
+#     if params.debug.time_functions
+#     else jit(
+#         predict_and_correct,
+#         donate_argnums=0,
+#         out_shardings=(sharding.spec_shard, sharding.spec_shard, None),
+#     )
+# )
