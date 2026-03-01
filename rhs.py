@@ -24,6 +24,7 @@ class Force:
     if params.phys.forcing in ["kolmogorov", "waleffe"]:
         on = True
         amplitude = jnp.pi**2 / (4 * params.phys.Re)
+        laminar_amplitude = 1
 
         ic_f = 0  # Forced component
         qf = 1  # Forcing harmonic
@@ -43,32 +44,28 @@ class Force:
         forced_modes = tuple(zip(fp, fn, strict=True))
 
         if params.phys.forcing == "kolmogorov":
-            unit = (-1j * 0.5, 1j * 0.5)
+            phase = 0.5j
+            unit_signs = jnp.array([-1, 1], dtype=sharding.int4_substitute)
         elif params.phys.forcing == "waleffe":
-            unit = (0.5, 0.5)
+            phase = 0.5
+            unit_signs = jnp.array([1, 1], dtype=sharding.int4_substitute)
             jax.distributed.shutdown()
             exit("Waleffe flow is not yet implemented.")
-    else:
-        on = False
-
-    if on:
 
         @partial(explicit_axes, axes=sharding.axis_names)
-        def get_laminar_state():
-            laminar_state = jnp.zeros(
+        def get_unit_force():
+            unit_force = jnp.zeros(
                 sharding.spec_shape,
-                dtype=sharding.complex_type,
+                dtype=sharding.int4_substitute,
                 out_sharding=sharding.scalar_spec_shard,
             )
-            return laminar_state
+            return unit_force
 
-        laminar_state = get_laminar_state(
-            in_sharding=sharding.scalar_spec_shard
-        )
+        unit_force = get_unit_force(in_sharding=sharding.scalar_spec_shard)
 
-        laminar_state = laminar_state.at[forced_modes].add(jnp.array(unit))
+        unit_force = unit_force.at[forced_modes].add(jnp.array(unit_signs))
     else:
-        laminar_state = 0
+        on = False
 
 
 force = Force()
@@ -135,8 +132,8 @@ def get_nonlin(velocity_spec, active_modes):
 # @jit(out_shardings=sharding.spec_shard)
 def get_rhs_no_lapl(
     velocity_spec,
-    laminar_state,
-    nabla,
+    unit_force,
+    kvec,
     inv_lapl,
     active_modes,
 ):
@@ -157,21 +154,24 @@ def get_rhs_no_lapl(
 
     for i in range(3):
         minus_dj_uiuj = -jnp.sum(
-            nabla
+            1j
+            * kvec
             * nonlin[(symij_to_n[i, 0], symij_to_n[i, 1], symij_to_n[i, 2]),],
             axis=0,
         )
 
         rhs_no_lapl = rhs_no_lapl.at[i].set(minus_dj_uiuj)
-        lapl_pressure = lapl_pressure.at[...].add(nabla[i] * minus_dj_uiuj)
+        lapl_pressure = lapl_pressure.at[...].add(1j * kvec[i] * minus_dj_uiuj)
 
     # Add pressure gradient
-    rhs_no_lapl = rhs_no_lapl.at[...].add(-nabla * inv_lapl * lapl_pressure)
+    rhs_no_lapl = rhs_no_lapl.at[...].add(
+        -1j * kvec * inv_lapl * lapl_pressure
+    )
 
     # Add forcing
     if force.on:
         rhs_no_lapl = rhs_no_lapl.at[force.ic_f].add(
-            laminar_state * force.amplitude
+            unit_force * force.amplitude * force.phase
         )
 
     return rhs_no_lapl

@@ -36,7 +36,7 @@ def main():
         )
         if force.on:
             velocity_spec = velocity_spec.at[force.ic_f].add(
-                force.laminar_state
+                force.unit_force * force.laminar_amplitude * force.phase
             )
 
     elif params.init.snapshot is not None:
@@ -80,7 +80,7 @@ def main():
     # Call once now not to affect benchmarks later
     stats = get_stats(
         velocity_spec,
-        force.laminar_state,
+        force.unit_force,
         fourier.lapl,
     )
 
@@ -109,7 +109,7 @@ def main():
         ):
             stats = get_stats(
                 velocity_spec,
-                force.laminar_state,
+                force.unit_force,
                 fourier.lapl,
             )
             c_per_it = c_tot / (it - params.init.it0)
@@ -126,8 +126,8 @@ def main():
 
         velocity_spec, rhs_no_lapl, error = predict_and_correct(
             velocity_spec,
-            force.laminar_state,
-            fourier.nabla,
+            force.unit_force,
+            fourier.kvec,
             fourier.inv_lapl,
             fourier.active_modes,
             stepper.ldt_1,
@@ -146,8 +146,8 @@ def main():
             velocity_spec, rhs_no_lapl, error = iterate_correction(
                 velocity_spec,
                 rhs_no_lapl,
-                force.laminar_state,
-                fourier.nabla,
+                force.unit_force,
+                fourier.kvec,
                 fourier.inv_lapl,
                 fourier.active_modes,
                 stepper.ildt_2,
@@ -161,7 +161,7 @@ def main():
                 corrector_compiled = True
 
         velocity_spec, norm_corrections = correct_velocity(
-            velocity_spec, fourier.nabla, fourier.inv_lapl
+            velocity_spec, fourier.kvec, fourier.inv_lapl
         )
 
         t += params.step.dt
@@ -195,9 +195,11 @@ def main():
         # Useful to know final stats
         stats = get_stats(
             velocity_spec,
-            force.laminar_state,
+            force.unit_force,
             fourier.lapl,
         )
+        c_per_it = c_tot / (it - params.init.it0)
+
         main_print(
             f"t = {t:.2f}",
             *[f"{x}={y:.3e}" for x, y in stats.items()],
