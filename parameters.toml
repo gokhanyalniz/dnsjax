@@ -36,6 +36,6 @@ max_corrector_iterations = 10
 # max_wall_time = "PT10M" # ISO 8601 format
 
 [debug]
-time_functions = false
+time_functions = true
 correct_divergence = true
 measure_corrections = false
