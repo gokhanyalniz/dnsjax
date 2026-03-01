@@ -42,23 +42,23 @@ class Fourier:
     )
 
     @partial(explicit_axes, axes=sharding.axis_names)
-    def get_nabla():
-        nabla = jnp.zeros(
+    def get_kvec():
+        kvec = jnp.zeros(
             (3, *sharding.spec_shape),
-            dtype=sharding.complex_type,
+            dtype=sharding.float_type,
             out_sharding=sharding.spec_shard,
         )
-        return nabla
+        return kvec
 
-    nabla = get_nabla(in_sharding=sharding.spec_shard)
+    kvec = get_kvec(in_sharding=sharding.spec_shard)
 
-    nabla = nabla.at[0].set(1j * kx)
-    nabla = nabla.at[1].set(1j * ky)
-    nabla = nabla.at[2].set(1j * kz)
+    kvec = kvec.at[0].set(kx)
+    kvec = kvec.at[1].set(ky)
+    kvec = kvec.at[2].set(kz)
 
     # Zero the dealiased modes to (potentially) save computation
-    nabla = active_modes * nabla
-    lapl = (-(kx**2) - ky**2 - kz**2) * active_modes
+    kvec = active_modes * kvec
+    lapl = -(kx**2 + ky**2 + kz**2) * active_modes
     inv_lapl = jnp.where(lapl < 0, 1 / lapl, 0)
 
 

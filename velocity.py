@@ -31,12 +31,12 @@ def get_norm(vector_spec):
 #     donate_argnums=0,
 #     out_shardings=(sharding.spec_shard, None),
 # )
-def correct_divergence(velocity_spec, nabla, inv_lapl):
+def correct_divergence(velocity_spec, kvec, inv_lapl):
     correction = (
-        -nabla
+        kvec
         * inv_lapl
         * jnp.sum(
-            nabla * velocity_spec,
+            kvec * velocity_spec,
             axis=0,
         )
     )
@@ -49,11 +49,11 @@ def correct_divergence(velocity_spec, nabla, inv_lapl):
 
 @timer("velocity/correct_velocity")
 @jit(donate_argnums=0, out_shardings=(sharding.spec_shard, None))
-def correct_velocity(velocity_spec, nabla, inv_lapl):
+def correct_velocity(velocity_spec, kvec, inv_lapl):
     norm_corrections = {}
     if params.debug.correct_divergence:
         velocity_corrected, error = correct_divergence(
-            velocity_spec, nabla, inv_lapl
+            velocity_spec, kvec, inv_lapl
         )
         norm_corrections["div"] = error
     else:
