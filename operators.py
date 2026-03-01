@@ -19,12 +19,12 @@ class Fourier:
 
     qx = jax.device_put(
         harmonics(padded_res.Nx_padded).reshape([1, -1, 1]),
-        NamedSharding(sharding.mesh, P(None, "X", None)),
+        NamedSharding(sharding.mesh, P(None, "x", None)),
     )
     qy = harmonics(padded_res.Ny_padded).reshape([1, 1, -1])
     qz = jax.device_put(
         harmonics(padded_res.Nz_padded).reshape([-1, 1, 1]),
-        NamedSharding(sharding.mesh, P("Z", None, None)),
+        NamedSharding(sharding.mesh, P("z", None, None)),
     )
 
     kx = qx * 2 * jnp.pi / params.geo.Lx
@@ -41,12 +41,12 @@ class Fourier:
         False,
     )
 
-    @partial(explicit_axes, axes=("Z", "X"))
+    @partial(explicit_axes, axes=sharding.axis_names)
     def get_nabla():
         nabla = jnp.zeros(
             (3, *sharding.spec_shape),
             dtype=sharding.complex_type,
-            out_sharding=P(None, "Z", "X", None),
+            out_sharding=sharding.spec_shard,
         )
         return nabla
 
@@ -68,6 +68,11 @@ fourier = Fourier()
 # @jit(donate_argnums=0, out_shardings=sharding.spec_shard)
 @partial(vmap, in_axes=(0, None))
 def phys_to_spec(velocity_phys, active_modes):
+    # WARNING: With active_modes:
+    # - aliased modes
+    # - Nyquist modes
+    # - *and* the mean [(0, 0, 0)] mode
+    # get zeroed!
     velocity_spec = (
         pfft3d(
             jax.lax.with_sharding_constraint(

@@ -3,7 +3,6 @@ from functools import partial
 
 import jax
 from jax import numpy as jnp
-from jax.sharding import PartitionSpec as P
 from jax.sharding import explicit_axes
 
 from operators import (
@@ -14,9 +13,8 @@ from operators import (
 from parameters import params
 from sharding import sharding
 from velocity import (
-    get_zero_scalar_spec,
-    get_zero_velocity_phys,
-    get_zero_velocity_spec,
+    get_zero_scalar,
+    get_zero_vector,
 )
 
 
@@ -55,12 +53,12 @@ class Force:
 
     if on:
 
-        @partial(explicit_axes, axes=("Z", "X"))
+        @partial(explicit_axes, axes=sharding.axis_names)
         def get_laminar_state():
             laminar_state = jnp.zeros(
                 sharding.spec_shape,
                 dtype=sharding.complex_type,
-                out_sharding=P("Z", "X", None),
+                out_sharding=sharding.scalar_spec_shard,
             )
             return laminar_state
 
@@ -88,10 +86,16 @@ for n in range(6):
     symij_to_n = symij_to_n.at[j, i].set(n)
 
 
-# @jit(donate_argnums=0,out_shardings=sharding.phys_shard)
-def _get_nonlin_phys(velocity_phys):
+# @jit(out_shardings=sharding.spec_shard)
+def get_nonlin(velocity_spec, active_modes):
 
-    nonlin_phys = get_zero_velocity_phys(6)
+    velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
+
+    nonlin_phys = get_zero_vector(
+        shape=(6, *velocity_phys.shape[1:]),
+        dtype=velocity_phys.dtype,
+        in_sharding=sharding.phys_shard,
+    )
 
     for i in range(6):
         nonlin_phys = nonlin_phys.at[i].set(
@@ -113,31 +117,17 @@ def _get_nonlin_phys(velocity_phys):
         (symij_to_n[0, 0], symij_to_n[1, 1]),
     ].subtract(nonlin_phys[symij_to_n[2, 2]] / 3)
 
-    return nonlin_phys
-
-
-# @jit(donate_argnums=0, out_shardings=sharding.spec_shard)
-def _get_nonlin_spec(nonlin_phys, active_modes):
-
-    nonlin = get_zero_velocity_spec(6)
+    nonlin = get_zero_vector(
+        shape=(6, *velocity_spec.shape[1:]),
+        dtype=velocity_spec.dtype,
+        in_sharding=sharding.spec_shard,
+    )
 
     nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], active_modes))
     # Basdevant: Get the 5th element from tracelessness
     nonlin = nonlin.at[5].set(
         -(nonlin[symij_to_n[0, 0]] + nonlin[symij_to_n[1, 1]])
     )
-
-    return nonlin
-
-
-# @jit(out_shardings=sharding.spec_shard)
-def get_nonlin(velocity_spec, active_modes):
-
-    velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
-
-    nonlin_phys = _get_nonlin_phys(velocity_phys)
-
-    nonlin = _get_nonlin_spec(nonlin_phys, active_modes)
 
     return nonlin
 
@@ -153,9 +143,17 @@ def get_rhs_no_lapl(
 
     nonlin = get_nonlin(velocity_spec, active_modes)
 
-    rhs_no_lapl = get_zero_velocity_spec(3)
+    rhs_no_lapl = get_zero_vector(
+        shape=velocity_spec.shape,
+        dtype=velocity_spec.dtype,
+        in_sharding=sharding.spec_shard,
+    )
 
-    lapl_pressure = get_zero_scalar_spec()
+    lapl_pressure = get_zero_scalar(
+        shape=inv_lapl.shape,
+        dtype=velocity_spec.dtype,
+        in_sharding=sharding.scalar_spec_shard,
+    )
 
     for i in range(3):
         minus_dj_uiuj = -jnp.sum(

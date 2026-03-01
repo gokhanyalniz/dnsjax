@@ -34,18 +34,22 @@ class Sharding:
             *devices,
         )
 
+    axis_names = ("z", "x")
     mesh = jax.make_mesh(
         (params.dist.Np0, params.dist.Np1),
-        axis_names=("Z", "X"),
+        axis_names=axis_names,
         axis_types=(AxisType.Auto, AxisType.Auto),
     )
 
     jax.set_mesh(mesh)
 
-    phys_shard = P(None, "Z", "X", None)
-    spec_shard = P(None, "Z", "X", None)
-    scalar_phys_shard = P("Z", "X", None)
-    scalar_spec_shard = P("Z", "X", None)
+    vector_shard = P(None, *axis_names, None)
+    scalar_shard = P(*axis_names, None)
+
+    phys_shard = vector_shard
+    spec_shard = vector_shard
+    scalar_phys_shard = scalar_shard
+    scalar_spec_shard = scalar_shard
 
     if params.res.double_precision:
         float_type = jnp.float64

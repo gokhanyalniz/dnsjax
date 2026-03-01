@@ -26,10 +26,14 @@ def main():
     from sharding import sharding
     from stats import get_stats
     from timestep import iterate_correction, predict_and_correct, stepper
-    from velocity import correct_velocity, get_zero_velocity_spec
+    from velocity import correct_velocity, get_zero_vector
 
     if params.init.start_from_laminar:
-        velocity_spec = get_zero_velocity_spec(ndims=3)
+        velocity_spec = get_zero_vector(
+            shape=(3, *sharding.spec_shape),
+            dtype=sharding.complex_type,
+            in_sharding=sharding.spec_shard,
+        )
         if force.on:
             velocity_spec = velocity_spec.at[force.ic_f].add(
                 force.laminar_state

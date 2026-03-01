@@ -2,7 +2,6 @@ from functools import partial
 
 from jax import jit
 from jax import numpy as jnp
-from jax.sharding import PartitionSpec as P
 from jax.sharding import explicit_axes
 
 from bench import timer
@@ -66,58 +65,23 @@ def correct_velocity(velocity_spec, nabla, inv_lapl):
     return velocity_corrected, norm_corrections
 
 
-@partial(explicit_axes, axes=("Z", "X"))
-def _get_zero_velocity_spec(ndims):
-    velocity_spec = jnp.zeros(
-        (ndims, *sharding.spec_shape),
-        dtype=sharding.complex_type,
-        out_sharding=P(None, "Z", "X", None),
-    )
-    return velocity_spec
-
-
 # @jit(static_argnums=0, out_shardings=sharding.spec_shard)
-def get_zero_velocity_spec(ndims):
-
-    velocity_spec = _get_zero_velocity_spec(
-        ndims=ndims, in_sharding=sharding.spec_shard
+@partial(explicit_axes, axes=sharding.axis_names)
+def get_zero_vector(shape, dtype):
+    vector = jnp.zeros(
+        shape=shape,
+        dtype=dtype,
+        out_sharding=sharding.vector_shard,
     )
-
-    return velocity_spec
-
-
-@partial(explicit_axes, axes=("Z", "X"))
-def _get_zero_scalar_spec():
-    scalar_spec = jnp.zeros(
-        sharding.spec_shape,
-        dtype=sharding.complex_type,
-        out_sharding=P("Z", "X", None),
-    )
-    return scalar_spec
+    return vector
 
 
 # @jit(out_shardings=sharding.scalar_spec_shard)
-def get_zero_scalar_spec():
-
-    scalar_spec = _get_zero_scalar_spec(in_sharding=sharding.spec_shard)
-
-    return scalar_spec
-
-
-@partial(explicit_axes, axes=("Z", "X"))
-def _get_zero_velocity_phys(ndims):
-    velocity_phys = jnp.zeros(
-        (ndims, *sharding.phys_shape),
-        dtype=sharding.phys_type,
-        out_sharding=P(None, "Z", "X", None),
+@partial(explicit_axes, axes=sharding.axis_names)
+def get_zero_scalar(shape, dtype):
+    scalar = jnp.zeros(
+        shape=shape,
+        dtype=dtype,
+        out_sharding=sharding.scalar_shard,
     )
-    return velocity_phys
-
-
-# @jit(static_argnums=0, out_shardings=sharding.phys_shard)
-
-
-def get_zero_velocity_phys(ndims):
-    return _get_zero_velocity_phys(
-        ndims=ndims, in_sharding=sharding.phys_shard
-    )
+    return scalar
