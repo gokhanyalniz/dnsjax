@@ -65,16 +65,16 @@ def get_correction(prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2):
 def iterate_correction(
     prediction,
     rhs_no_lapl_prev,
-    laminar_state,
-    nabla,
+    unit_force,
+    kvec,
     inv_lapl,
     active_modes,
     ildt_2,
 ):
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
-        laminar_state,
-        nabla,
+        unit_force,
+        kvec,
         inv_lapl,
         active_modes,
     )
@@ -99,8 +99,8 @@ def iterate_correction(
 )
 def predict_and_correct(
     velocity_spec,
-    laminar_state,
-    nabla,
+    unit_force,
+    kvec,
     inv_lapl,
     active_modes,
     ldt1,
@@ -109,8 +109,8 @@ def predict_and_correct(
 
     rhs_no_lapl_prev = get_rhs_no_lapl(
         velocity_spec,
-        laminar_state,
-        nabla,
+        unit_force,
+        kvec,
         inv_lapl,
         active_modes,
     )
@@ -118,8 +118,8 @@ def predict_and_correct(
 
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
-        laminar_state,
-        nabla,
+        unit_force,
+        kvec,
         inv_lapl,
         active_modes,
     )

@@ -59,6 +59,7 @@ class Sharding:
         complex_type = jnp.complex64
 
     phys_type = float_type
+    int4_substitute = jnp.int8
 
     spec_shape = (
         padded_res.Nz_padded,
