@@ -9,7 +9,6 @@ from parameters import params
 from sharding import sharding
 
 
-# @jit
 def get_inprod(vector_spec_1, vector_spec_2):
     return jnp.sum(
         jnp.conj(vector_spec_1) * vector_spec_2,
@@ -17,20 +16,14 @@ def get_inprod(vector_spec_1, vector_spec_2):
     )
 
 
-# @jit
 def get_norm2(vector_spec):
     return get_inprod(vector_spec, vector_spec)
 
 
-# @jit
 def get_norm(vector_spec):
     return jnp.sqrt(get_norm2(vector_spec))
 
 
-# @jit(
-#     donate_argnums=0,
-#     out_shardings=(sharding.spec_shard, None),
-# )
 def correct_divergence(velocity_spec, kvec, inv_lapl):
     correction = (
         kvec
@@ -44,11 +37,11 @@ def correct_divergence(velocity_spec, kvec, inv_lapl):
     error = get_norm(correction) if params.debug.measure_corrections else None
 
     velocity_corrected = velocity_spec + correction
-    return velocity_corrected, error
+    return sharding.constrain_vector(velocity_corrected), error
 
 
 @timer("velocity/correct_velocity")
-@jit(donate_argnums=0, out_shardings=(sharding.spec_shard, None))
+@jit(donate_argnums=0, out_shardings=(sharding.vector_shard, None))
 def correct_velocity(velocity_spec, kvec, inv_lapl):
     norm_corrections = {}
     if params.debug.correct_divergence:
@@ -62,10 +55,9 @@ def correct_velocity(velocity_spec, kvec, inv_lapl):
     if not params.debug.measure_corrections:
         norm_corrections = None
 
-    return velocity_corrected, norm_corrections
+    return sharding.constrain_vector(velocity_corrected), norm_corrections
 
 
-# @jit(static_argnums=0, out_shardings=sharding.spec_shard)
 @partial(explicit_axes, axes=sharding.axis_names)
 def get_zero_vector(shape, dtype):
     vector = jnp.zeros(
@@ -76,7 +68,6 @@ def get_zero_vector(shape, dtype):
     return vector
 
 
-# @jit(out_shardings=sharding.scalar_spec_shard)
 @partial(explicit_axes, axes=sharding.axis_names)
 def get_zero_scalar(shape, dtype):
     scalar = jnp.zeros(

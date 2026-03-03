@@ -9,37 +9,38 @@ from pydantic_settings import BaseSettings
 
 
 class Distribution(BaseModel):
-    # Set Np0=1, Np1=N for slab decomposition
-    Np0: int = Field(ge=1, default=1)
-    Np1: int = Field(ge=1, default=1)
+    # Set np0=1, np1=N for slab decomposition
+    np0: int = Field(ge=1, default=1)
+    np1: int = Field(ge=1, default=1)
     platform: Literal["cpu", "cuda", "rocm", "tpu"] = "cpu"
 
 
 class Physics(BaseModel):
-    Re: float = Field(gt=0, default=1000)  # Reynolds number
+    re: float = Field(gt=0, default=1000)  # Reynolds number
     # Kolmogorov: sine forcing
     # Waleffe: cosine forcing + Ry symmetry (not yet implemented)
-    forcing: Literal["kolmogorov", "waleffe"] | None = None
+    forcing: Literal["none", "kolmogorov", "waleffe"] = "kolmogorov"
     # (n + 1) / 2 oversampling in each direction
     # to dealias the n'th order nonlinearity
     # oversampling_factor = n + 1
     oversampling_factor: int = Field(ge=2, default=3)
+    oversample_y: bool = True
 
 
 class Geometry(BaseModel):
-    Lx: float = Field(gt=0, default=4.0)
-    Lz: float = Field(gt=0, default=4.0)
+    lx: float = Field(gt=0, default=4.0)
+    lz: float = Field(gt=0, default=4.0)
     # ... in units where Ly = 4.0 is fixed.
     # Ly *is* fixed, but still kept here for generality.
     # Do not change for Kolmogorov/Waleffe flow!
-    Ly: float = Field(gt=0, default=4.0)
+    ly: float = Field(gt=0, default=4.0)
 
 
 class Resolution(BaseModel):
     # Number of grid points = (before oversampling) # of Fourier modes
-    Nx: int = Field(ge=1, default=128)
-    Ny: int = Field(ge=1, default=128)
-    Nz: int = Field(ge=1, default=128)
+    nx: int = Field(ge=1, default=128)
+    ny: int = Field(ge=1, default=128)
+    nz: int = Field(ge=1, default=128)
     double_precision: bool = True  # use double-precision floating point
 
 
@@ -116,22 +117,32 @@ def update_parameters(params_new: Parameters):
 
 @dataclass
 class PaddedResolution:
-    Nx_half: int = params.res.Nx // 2
-    Ny_half: int = params.res.Ny // 2
-    Nz_half: int = params.res.Nz // 2
+    nx_half: int = params.res.nx // 2
+    ny_half: int = params.res.ny // 2
+    nz_half: int = params.res.nz // 2
 
-    Nx_padded: int = params.phys.oversampling_factor * params.res.Nx // 2
-    Ny_padded: int = params.phys.oversampling_factor * params.res.Ny // 2
-    Nz_padded: int = params.phys.oversampling_factor * params.res.Nz // 2
+    nx_padded: int = params.phys.oversampling_factor * params.res.nx // 2
+    ny_padded: int = (
+        params.res.ny
+        if not params.phys.oversample_y
+        else params.phys.oversampling_factor * params.res.ny // 2
+    )
+    nz_padded: int = params.phys.oversampling_factor * params.res.nz // 2
 
     def set_padded_resolution(self, parameters: Parameters):
-        self.Nx_half = parameters.res.Nx // 2
-        self.Ny_half = parameters.res.Ny // 2
-        self.Nz_half = parameters.res.Nz // 2
+        if not parameters.phys.oversample_y:
+            print("WARNING: y is *not* oversampled!")
+        self.nx_half = parameters.res.nx // 2
+        self.ny_half = parameters.res.ny // 2
+        self.nz_half = parameters.res.nz // 2
 
-        self.Nx_padded = parameters.phys.oversampling_factor * self.Nx_half
-        self.Ny_padded = parameters.phys.oversampling_factor * self.Ny_half
-        self.Nz_padded = parameters.phys.oversampling_factor * self.Nz_half
+        self.nx_padded = parameters.phys.oversampling_factor * self.nx_half
+        self.ny_padded = (
+            parameters.res.ny
+            if not params.phys.oversample_y
+            else parameters.phys.oversampling_factor * self.ny_half
+        )
+        self.nz_padded = parameters.phys.oversampling_factor * self.nz_half
 
 
 padded_res = PaddedResolution()
