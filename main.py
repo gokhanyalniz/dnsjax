@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 from pprint import pp
@@ -32,7 +33,7 @@ def main():
         velocity_spec = get_zero_vector(
             shape=(3, *sharding.spec_shape),
             dtype=sharding.complex_type,
-            in_sharding=sharding.spec_shard,
+            in_sharding=sharding.vector_shard,
         )
         if force.on:
             velocity_spec = velocity_spec.at[force.ic_f].add(
@@ -44,13 +45,13 @@ def main():
             jnp.load(params.init.snapshot)["velocity_phys"].astype(
                 sharding.phys_type
             ),
-            sharding.phys_shard,
+            sharding.vector_shard,
         )
         velocity_spec = phys_to_spec(velocity_phys, fourier.active_modes)
 
     else:
-        main_print("Provide an initial condition.")
-        return
+        sharding.print("Provide an initial condition.")
+        sharding.exit(code=1)
 
     wall_time_stop = (
         jnp.inf
@@ -84,12 +85,12 @@ def main():
         fourier.lapl,
     )
 
-    main_print(
+    sharding.print(
         f"t = {t:.2f}",
         *[f"{x}={y:.3e}" for x, y in stats.items()],
     )
 
-    main_print("Started timestepping at", datetime.now())
+    sharding.print("Started timestepping at", datetime.now())
 
     while (
         t < t_stop
@@ -100,7 +101,7 @@ def main():
             # Ignore the first hit, probably subject to JIT compilation
             bench_start = perf_counter_ns()
 
-            main_print("First iteration over at", datetime.now())
+            sharding.print("First iteration over at", datetime.now())
 
         if (
             params.outs.it_stats is not None
@@ -114,7 +115,7 @@ def main():
             )
             c_per_it = c_tot / (it - params.init.it0)
 
-            main_print(
+            sharding.print(
                 f"t = {t:.2f}",
                 *[f"{x}={y:.3e}" for x, y in stats.items()],
                 f"c/it = {c_per_it:.2f}",
@@ -177,16 +178,16 @@ def main():
         wall_time_now = perf_counter_ns()
 
     if last_error > params.step.corrector_tolerance:
-        main_print(
+        sharding.print(
             f"Corrector failed to converge at t={t}, it={it}, c={last_c}, "
             f"with error = {last_error:.3e}."
         )
 
-    main_print("Stopped timestepping at", datetime.now())
+    sharding.print("Stopped timestepping at", datetime.now())
 
     wall_time_now = perf_counter_ns()
     alive_time = bench.ns_to_s * (wall_time_now - wall_time_start)
-    main_print(f"Job has been alive for {alive_time:.2f}s.")
+    sharding.print(f"Job has been alive for {alive_time:.2f}s.")
     if it > params.init.it0 + 1:
         wall_time = bench.ns_to_s * (wall_time_now - bench_delta - bench_start)
         wall_time_per_sim_time = wall_time / (t - dt_first - params.init.t0)
@@ -200,7 +201,7 @@ def main():
         )
         c_per_it = c_tot / (it - params.init.it0)
 
-        main_print(
+        sharding.print(
             f"t = {t:.2f}",
             *[f"{x}={y:.3e}" for x, y in stats.items()],
             f"c/it = {c_per_it:.2f}",
@@ -214,7 +215,7 @@ def main():
             pp(bench.timers, sort_dicts=True)
 
         if sharding.n_devices > 1:
-            main_print(
+            sharding.print(
                 f"Ran for {wall_time:.2f}s with {sharding.n_devices} devices,",
                 f"{sharding.n_devices * wall_time:.3e} NP x s:",
                 f"{wall_time_per_sim_time:.3e} s/t,",
@@ -223,7 +224,7 @@ def main():
                 f"{sharding.n_devices * wall_time_per_rhs:.3e} NP x s/rhs.",
             )
         else:
-            main_print(
+            sharding.print(
                 f"Ran for {wall_time:.2f}s with 1 device.",
                 f"{wall_time_per_sim_time:.3e} s/t,",
                 f"{wall_time_per_rhs:.3e} s/rhs.",
@@ -256,36 +257,39 @@ if __name__ == "__main__":
     jax.config.update("jax_enable_x64", params.res.double_precision)
     jax.config.update("jax_platforms", params.dist.platform)
     jax.distributed.initialize()
+    main_device = bool(jax.process_index() == 0)
 
-    rank = jax.process_index()
-    main_device = False
-    if rank == 0:
-        main_device = True
-
-    def main_print(*args, **kwargs):
-        if main_device:
-            print(*args, **kwargs, flush=True)
-
-    main_print("Distribution initialized at", datetime.now())
-    if params_from_disk:
-        main_print(
-            "Loaded parameters.toml, "
-            "which override the default parameters. "
-            "Command-line arguments will further override "
-            "the loaded parameters.",
-        )
-    else:
-        main_print(
-            "Loaded the default parameters, "
-            "as parameters.toml was not found. "
-            "Command-line arguments will further override "
-            "the default parameters.",
-        )
-    main_print("Final working parameters:")
     if main_device:
-        pp(params.model_dump())
+        print("Distribution initialized at", datetime.now(), flush=True)
+        if params_from_disk:
+            print(
+                "Loaded parameters.toml, "
+                "which override the default parameters. "
+                "Command-line arguments will further override "
+                "the loaded parameters.",
+                flush=True,
+            )
+        else:
+            print(
+                "Loaded the default parameters, "
+                "as parameters.toml was not found. "
+                "Command-line arguments will further override "
+                "the default parameters.",
+                flush=True,
+            )
+        print("Final working parameters:")
+        if main_device:
+            pp(params.model_dump())
+
+        print(
+            "Running with the effective resolution:",
+            padded_res.nx_padded,
+            padded_res.ny_padded,
+            padded_res.nz_padded,
+            flush=True,
+        )
 
     main()
 
-    jax.distributed.shutdown()
-    main_print("Shutdown at", datetime.now())
+    print("Shutdown at", datetime.now(), flush=True)
+    sys.exit(0)

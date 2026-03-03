@@ -18,24 +18,24 @@ class Fourier:
         return (jnp.arange(n, dtype=int) + n // 2) % n - n // 2
 
     qx = jax.device_put(
-        harmonics(padded_res.Nx_padded).reshape([1, -1, 1]),
+        harmonics(padded_res.nx_padded).reshape([1, -1, 1]),
         NamedSharding(sharding.mesh, P(None, "x", None)),
     )
-    qy = harmonics(padded_res.Ny_padded).reshape([1, 1, -1])
+    qy = harmonics(padded_res.ny_padded).reshape([1, 1, -1])
     qz = jax.device_put(
-        harmonics(padded_res.Nz_padded).reshape([-1, 1, 1]),
+        harmonics(padded_res.nz_padded).reshape([-1, 1, 1]),
         NamedSharding(sharding.mesh, P("z", None, None)),
     )
 
-    kx = qx * 2 * jnp.pi / params.geo.Lx
-    ky = qy * 2 * jnp.pi / params.geo.Ly
-    kz = qz * 2 * jnp.pi / params.geo.Lz
+    kx = qx * 2 * jnp.pi / params.geo.lx
+    ky = qy * 2 * jnp.pi / params.geo.ly
+    kz = qz * 2 * jnp.pi / params.geo.lz
 
     # Aliased modes, the Nyquist modes, and the zero mode are to be discarded
     active_modes = jnp.where(
-        (jnp.abs(qx) < padded_res.Nx_half)
-        & (jnp.abs(qy) < padded_res.Ny_half)
-        & (jnp.abs(qz) < padded_res.Nz_half)
+        (jnp.abs(qx) < padded_res.nx_half)
+        & (jnp.abs(qy) < padded_res.ny_half)
+        & (jnp.abs(qz) < padded_res.nz_half)
         & ~((qx == 0) & (qy == 0) & (qz == 0)),
         True,
         False,
@@ -46,11 +46,11 @@ class Fourier:
         kvec = jnp.zeros(
             (3, *sharding.spec_shape),
             dtype=sharding.float_type,
-            out_sharding=sharding.spec_shard,
+            out_sharding=sharding.vector_shard,
         )
         return kvec
 
-    kvec = get_kvec(in_sharding=sharding.spec_shard)
+    kvec = get_kvec(in_sharding=sharding.vector_shard)
 
     kvec = kvec.at[0].set(kx)
     kvec = kvec.at[1].set(ky)
@@ -65,7 +65,6 @@ class Fourier:
 fourier = Fourier()
 
 
-# @jit(donate_argnums=0, out_shardings=sharding.spec_shard)
 @partial(vmap, in_axes=(0, None))
 def phys_to_spec(velocity_phys, active_modes):
     # WARNING: With active_modes:
@@ -76,24 +75,21 @@ def phys_to_spec(velocity_phys, active_modes):
     velocity_spec = (
         pfft3d(
             jax.lax.with_sharding_constraint(
-                velocity_phys, sharding.scalar_phys_shard
+                velocity_phys, sharding.scalar_shard
             ),
             norm="forward",
         )
         * active_modes
     )
 
-    return velocity_spec
+    return sharding.constrain_scalar(velocity_spec)
 
 
-# @jit(donate_argnums=0, out_shardings=sharding.phys_shard)
 @vmap
 def spec_to_phys(velocity_spec):
     velocity_phys = pifft3d(
-        jax.lax.with_sharding_constraint(
-            velocity_spec, sharding.scalar_spec_shard
-        ),
+        jax.lax.with_sharding_constraint(velocity_spec, sharding.scalar_shard),
         norm="forward",
     ).real
 
-    return velocity_phys
+    return sharding.constrain_scalar(velocity_phys)

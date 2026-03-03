@@ -1,19 +1,19 @@
 [phys]
-Re = 1000 # Reynolds number
-# forcing = "kolmogorov" 
-# None or "kolmogorov" (sine), "waleffe" (cosine + Ry symmetry)
+re = 1000 # Reynolds number
+forcing = "kolmogorov"
+# "none" or "kolmogorov" (sine), "waleffe" (cosine + Ry symmetry)
 
 [geo]
-Lx = 4.0
-Lz = 4.0
+lx = 4.0
+lz = 4.0
 # ... in units where Ly = 4.0 is fixed.
 
 [res]
-Nx = 128
-Ny = 128
-Nz = 128
+nx = 128
+ny = 128
+nz = 128
 # Nx Ny and Nz are the number of Fourier modes
-# (= # of grid points) *before* 3/2 oversampling 
+# (= # of grid points) *before* 3/2 oversampling
 # to delias the 2nd order nonlinearity
 
 [init]
