@@ -9,9 +9,7 @@ from pydantic_settings import BaseSettings
 
 
 class Distribution(BaseModel):
-    # Set np0=1, np1=N for slab decomposition
-    np0: int = Field(ge=1, default=1)
-    np1: int = Field(ge=1, default=1)
+    np: int = Field(ge=1, default=1)
     platform: Literal["cpu", "cuda", "rocm", "tpu"] = "cpu"
 
 

@@ -3,13 +3,11 @@ name = "dnsjax"
 version = "0.1.0"
 description = "A GPU-accelerated & parallelized pseudo-spectral solver for direct numerical simulations of Navier–Stokes equations in JAX."
 authors = [
-    { name = "Gökhan Yalnız", email = "gokhan.yalniz@ist.ac.at" }
+    { name = "Gökhan Yalnız", email = "gokhan.yalniz@ista.ac.at" }
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "jax>=0.9.0.1",
-    "jaxdecomp>=0.3.0",
-    "packaging>=26.0",
+    "jax>=0.9.2",
     "pydantic-settings>=2.13.0",
 ]
 

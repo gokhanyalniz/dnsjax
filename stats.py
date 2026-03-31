@@ -10,8 +10,8 @@ from velocity import get_norm2
 ekin_lam = 1 / 4 if params.phys.forcing in ["kolmogorov", "waleffe"] else 0
 
 
-def get_energy(velocity_spec):
-    energy = get_norm2(velocity_spec) / 2
+def get_energy(velocity_spec, metric):
+    energy = get_norm2(velocity_spec, metric) / 2
     return energy
 
 
@@ -55,8 +55,9 @@ def get_stats(
     velocity_spec,
     unit_force,
     lapl,
+    metric,
 ):
-    energy = get_energy(velocity_spec)
+    energy = get_energy(velocity_spec, metric)
     input = get_input(velocity_spec, unit_force)
     dissipation = get_dissipation(velocity_spec, lapl)
     perturbation_energy = get_perturbation_energy(energy, input)

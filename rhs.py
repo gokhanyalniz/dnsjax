@@ -4,6 +4,11 @@ from functools import partial
 from jax import numpy as jnp
 from jax.sharding import explicit_axes
 
+from allocators import (
+    get_zero_phys_vector,
+    get_zero_spec_scalar,
+    get_zero_spec_vector,
+)
 from operators import (
     fourier,
     phys_to_spec,
@@ -11,10 +16,6 @@ from operators import (
 )
 from parameters import params
 from sharding import sharding
-from velocity import (
-    get_zero_scalar,
-    get_zero_vector,
-)
 
 
 @dataclass
@@ -64,11 +65,11 @@ class Force:
             unit_force = jnp.zeros(
                 sharding.spec_shape,
                 dtype=sharding.int4_substitute,
-                out_sharding=sharding.scalar_shard,
+                out_sharding=sharding.spec_scalar_shard,
             )
             return unit_force
 
-        unit_force = get_unit_force(in_sharding=sharding.scalar_shard)
+        unit_force = get_unit_force(in_sharding=sharding.spec_scalar_shard)
 
         unit_force = unit_force.at[forced_modes].add(jnp.array(unit_signs))
     else:
@@ -95,10 +96,10 @@ def get_nonlin(velocity_spec, active_modes):
 
     velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
-    nonlin_phys = get_zero_vector(
+    nonlin_phys = get_zero_phys_vector(
         shape=(6, *velocity_phys.shape[1:]),
         dtype=velocity_phys.dtype,
-        in_sharding=sharding.vector_shard,
+        in_sharding=sharding.phys_vector_shard,
     )
 
     for i in range(6):
@@ -121,10 +122,10 @@ def get_nonlin(velocity_spec, active_modes):
         (symij_to_n[0, 0], symij_to_n[1, 1]),
     ].subtract(nonlin_phys[symij_to_n[2, 2]] / 3)
 
-    nonlin = get_zero_vector(
+    nonlin = get_zero_spec_vector(
         shape=(6, *velocity_spec.shape[1:]),
         dtype=velocity_spec.dtype,
-        in_sharding=sharding.vector_shard,
+        in_sharding=sharding.spec_vector_shard,
     )
 
     nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], active_modes))
@@ -133,7 +134,7 @@ def get_nonlin(velocity_spec, active_modes):
         -(nonlin[symij_to_n[0, 0]] + nonlin[symij_to_n[1, 1]])
     )
 
-    return sharding.constrain_vector(nonlin)
+    return sharding.constrain_spec_vector(nonlin)
 
 
 def get_rhs_no_lapl(
@@ -146,16 +147,16 @@ def get_rhs_no_lapl(
 
     nonlin = get_nonlin(velocity_spec, active_modes)
 
-    rhs_no_lapl = get_zero_vector(
+    rhs_no_lapl = get_zero_spec_vector(
         shape=velocity_spec.shape,
         dtype=velocity_spec.dtype,
-        in_sharding=sharding.vector_shard,
+        in_sharding=sharding.spec_vector_shard,
     )
 
-    lapl_pressure = get_zero_scalar(
+    lapl_pressure = get_zero_spec_scalar(
         shape=inv_lapl.shape,
         dtype=velocity_spec.dtype,
-        in_sharding=sharding.scalar_shard,
+        in_sharding=sharding.spec_scalar_shard,
     )
 
     for i in range(3):
@@ -180,4 +181,4 @@ def get_rhs_no_lapl(
             unit_force * force.amplitude * force.phase
         )
 
-    return sharding.constrain_vector(rhs_no_lapl)
+    return sharding.constrain_spec_vector(rhs_no_lapl)

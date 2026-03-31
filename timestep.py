@@ -13,7 +13,7 @@ from velocity import get_norm
 
 @dataclass
 class Stepper:
-    # Zero the aliased modes to (potentially) save on computations
+    # Zero the inactive modes to (potentially) save on computations
     ldt_1 = (
         1 / params.step.dt
         + (1 - params.step.implicitness) * fourier.lapl / params.phys.re
@@ -35,7 +35,7 @@ def get_prediction(velocity_spec, rhs_no_lapl, ldt_1, ildt_2):
 
     prediction = (velocity_spec * ldt_1 + rhs_no_lapl) * ildt_2
 
-    return sharding.constrain_scalar(prediction)
+    return sharding.constrain_spec_scalar(prediction)
 
 
 @partial(vmap, in_axes=(0, 0, 0, None))
@@ -49,15 +49,19 @@ def get_correction(prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2):
 
     prediction_new = prediction + correction
 
-    return sharding.constrain_scalar(
+    return sharding.constrain_spec_scalar(
         prediction_new
-    ), sharding.constrain_scalar(correction)
+    ), sharding.constrain_spec_scalar(correction)
 
 
 @timer("timestep/iterate_correction")
 @jit(
     donate_argnums=(0, 1),
-    out_shardings=(sharding.vector_shard, sharding.vector_shard, None),
+    out_shardings=(
+        sharding.spec_vector_shard,
+        sharding.spec_vector_shard,
+        None,
+    ),
 )
 def iterate_correction(
     prediction,
@@ -65,6 +69,7 @@ def iterate_correction(
     unit_force,
     kvec,
     inv_lapl,
+    metric,
     active_modes,
     ildt_2,
 ):
@@ -80,11 +85,11 @@ def iterate_correction(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
     )
 
-    error = get_norm(correction)
+    error = get_norm(correction, metric)
 
     return (
-        sharding.constrain_vector(prediction_next),
-        sharding.constrain_vector(rhs_no_lapl_next),
+        sharding.constrain_spec_vector(prediction_next),
+        sharding.constrain_spec_vector(rhs_no_lapl_next),
         error,
     )
 
@@ -92,13 +97,18 @@ def iterate_correction(
 @timer("timestep/predict_and_correct")
 @jit(
     donate_argnums=0,
-    out_shardings=(sharding.vector_shard, sharding.vector_shard, None),
+    out_shardings=(
+        sharding.spec_vector_shard,
+        sharding.spec_vector_shard,
+        None,
+    ),
 )
 def predict_and_correct(
     velocity_spec,
     unit_force,
     kvec,
     inv_lapl,
+    metric,
     active_modes,
     ldt_1,
     ildt_2,
@@ -124,10 +134,10 @@ def predict_and_correct(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
     )
 
-    error = get_norm(correction)
+    error = get_norm(correction, metric)
 
     return (
-        sharding.constrain_vector(prediction),
-        sharding.constrain_vector(rhs_no_lapl_next),
+        sharding.constrain_spec_vector(prediction),
+        sharding.constrain_spec_vector(rhs_no_lapl_next),
         error,
     )
