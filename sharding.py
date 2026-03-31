@@ -1,10 +1,11 @@
 import sys
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 from jax import numpy as jnp
 from jax.lax import with_sharding_constraint
-from jax.sharding import AxisType
+from jax.sharding import AxisType, explicit_axes
 from jax.sharding import PartitionSpec as P
 
 from parameters import padded_res, params
@@ -12,7 +13,7 @@ from parameters import padded_res, params
 
 @dataclass
 class Sharding:
-    n_devices = params.dist.np0 * params.dist.np1
+    n_devices = params.dist.np
     main_device = bool(jax.process_index() == 0)
 
     devices = jax.devices()
@@ -21,7 +22,7 @@ class Sharding:
         if main_device:
             print(
                 f"# of devices visible ({n_devices_reported}) "
-                f"is not equal to np0 x np1 = {n_devices}.",
+                f"is not equal to np = {n_devices}.",
                 flush=True,
             )
         sys.exit(1)
@@ -32,29 +33,20 @@ class Sharding:
         flush=True,
     )
 
-    axis_names = ("z", "x")
-    if params.dist.np1 == 1 and params.dist.np0 > 1:
-        print(
-            "(np0 > 1, np1 = 1) distribution is not supported. "
-            "Running with (np1 = 1, np0) instead.",
-            flush=True,
-        )
-        mesh = jax.make_mesh(
-            (params.dist.np1, params.dist.np0),
-            axis_names=axis_names,
-            axis_types=(AxisType.Auto, AxisType.Auto),
-        )
-    else:
-        mesh = jax.make_mesh(
-            (params.dist.np0, params.dist.np1),
-            axis_names=axis_names,
-            axis_types=(AxisType.Auto, AxisType.Auto),
-        )
+    axis_names = ("gpus",)
+    mesh = jax.make_mesh(
+        (params.dist.np,),
+        axis_names=axis_names,
+        axis_types=(AxisType.Auto,),
+    )
 
     jax.set_mesh(mesh)
 
-    vector_shard = P(None, *axis_names, None)
-    scalar_shard = P(*axis_names, None)
+    spec_vector_shard = P(None, None, None, *axis_names)
+    spec_scalar_shard = P(None, None, *axis_names)
+
+    phys_vector_shard = P(None, None, *axis_names, None)
+    phys_scalar_shard = P(None, *axis_names, None)
 
     if params.res.double_precision:
         float_type = jnp.float64
@@ -67,21 +59,28 @@ class Sharding:
     int4_substitute = jnp.int8
 
     spec_shape = (
-        padded_res.nz_padded,
-        padded_res.nx_padded,
-        padded_res.ny_padded,
+        params.res.ny - 1,
+        params.res.nz - 1,
+        params.res.nx // 2,
     )
+
     phys_shape = (
         padded_res.ny_padded,
         padded_res.nz_padded,
         padded_res.nx_padded,
     )
 
-    def constrain_vector(self, vector):
-        return with_sharding_constraint(vector, self.vector_shard)
+    def constrain_spec_vector(self, vector):
+        return with_sharding_constraint(vector, self.spec_vector_shard)
 
-    def constrain_scalar(self, scalar):
-        return with_sharding_constraint(scalar, self.scalar_shard)
+    def constrain_spec_scalar(self, scalar):
+        return with_sharding_constraint(scalar, self.spec_scalar_shard)
+
+    def constrain_phys_vector(self, vector):
+        return with_sharding_constraint(vector, self.phys_vector_shard)
+
+    def constrain_phys_scalar(self, scalar):
+        return with_sharding_constraint(scalar, self.phys_scalar_shard)
 
     def exit(self, code=1):
         sys.exit(code)
@@ -92,3 +91,13 @@ class Sharding:
 
 
 sharding = Sharding()
+
+
+@partial(explicit_axes, axes=sharding.axis_names)
+def get_zeros(shape, dtype, out_sharding):
+    x = jnp.zeros(
+        shape=shape,
+        dtype=dtype,
+        out_sharding=out_sharding,
+    )
+    return x

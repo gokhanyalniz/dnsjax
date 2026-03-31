@@ -18,36 +18,37 @@ from parameters import (
 
 
 def main():
-
     from jax import numpy as jnp
 
     import bench
     from operators import fourier, phys_to_spec
     from rhs import force
-    from sharding import sharding
+    from sharding import get_zeros, sharding
     from stats import get_stats
     from timestep import iterate_correction, predict_and_correct, stepper
-    from velocity import correct_velocity, get_zero_vector
+    from velocity import correct_velocity
 
     if params.init.start_from_laminar:
-        velocity_spec = get_zero_vector(
+        velocity_spec = get_zeros(
             shape=(3, *sharding.spec_shape),
             dtype=sharding.complex_type,
-            in_sharding=sharding.vector_shard,
+            in_sharding=sharding.spec_vector_shard,
+            out_sharding=sharding.spec_vector_shard,
         )
         if force.on:
-            velocity_spec = velocity_spec.at[force.ic_f].add(
-                force.unit_force * force.laminar_amplitude * force.phase
+            velocity_spec = velocity_spec.at[force.forced_modes].add(
+                force.unit_force * force.laminar_amplitude
             )
 
     elif params.init.snapshot is not None:
-        velocity_phys = jax.device_put(
-            jnp.load(params.init.snapshot)["velocity_phys"].astype(
-                sharding.phys_type
-            ),
-            sharding.vector_shard,
+        snapshot = jnp.load(params.init.snapshot)["velocity_phys"].astype(
+            sharding.phys_type
         )
-        velocity_spec = phys_to_spec(velocity_phys, fourier.active_modes)
+        velocity_phys = jax.device_put(
+            snapshot,
+            sharding.phys_vector_shard,
+        )
+        velocity_spec = phys_to_spec(velocity_phys)
 
     else:
         sharding.print("Provide an initial condition.")
@@ -81,8 +82,8 @@ def main():
     # Call once now not to affect benchmarks later
     stats = get_stats(
         velocity_spec,
-        force.unit_force,
         fourier.lapl,
+        fourier.metric,
     )
 
     sharding.print(
@@ -110,8 +111,8 @@ def main():
         ):
             stats = get_stats(
                 velocity_spec,
-                force.unit_force,
                 fourier.lapl,
+                fourier.metric,
             )
             c_per_it = c_tot / (it - params.init.it0)
 
@@ -127,10 +128,9 @@ def main():
 
         velocity_spec, rhs_no_lapl, error = predict_and_correct(
             velocity_spec,
-            force.unit_force,
             fourier.kvec,
             fourier.inv_lapl,
-            fourier.active_modes,
+            fourier.metric,
             stepper.ldt_1,
             stepper.ildt_2,
         )
@@ -147,10 +147,9 @@ def main():
             velocity_spec, rhs_no_lapl, error = iterate_correction(
                 velocity_spec,
                 rhs_no_lapl,
-                force.unit_force,
                 fourier.kvec,
                 fourier.inv_lapl,
-                fourier.active_modes,
+                fourier.metric,
                 stepper.ildt_2,
             )
             c += 1
@@ -162,7 +161,7 @@ def main():
                 corrector_compiled = True
 
         velocity_spec, norm_corrections = correct_velocity(
-            velocity_spec, fourier.kvec, fourier.inv_lapl
+            velocity_spec, fourier.kvec, fourier.inv_lapl, fourier.metric
         )
 
         t += params.step.dt
@@ -196,8 +195,8 @@ def main():
         # Useful to know final stats
         stats = get_stats(
             velocity_spec,
-            force.unit_force,
             fourier.lapl,
+            fourier.metric,
         )
         c_per_it = c_tot / (it - params.init.it0)
 
