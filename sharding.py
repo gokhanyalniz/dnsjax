@@ -1,10 +1,11 @@
 import sys
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 from jax import numpy as jnp
 from jax.lax import with_sharding_constraint
-from jax.sharding import AxisType
+from jax.sharding import AxisType, explicit_axes
 from jax.sharding import PartitionSpec as P
 
 from parameters import padded_res, params
@@ -58,8 +59,8 @@ class Sharding:
     int4_substitute = jnp.int8
 
     spec_shape = (
-        params.res.ny,
-        params.res.nz,
+        params.res.ny - 1,
+        params.res.nz - 1,
         params.res.nx // 2,
     )
 
@@ -90,3 +91,13 @@ class Sharding:
 
 
 sharding = Sharding()
+
+
+@partial(explicit_axes, axes=sharding.axis_names)
+def get_zeros(shape, dtype, out_sharding):
+    x = jnp.zeros(
+        shape=shape,
+        dtype=dtype,
+        out_sharding=out_sharding,
+    )
+    return x

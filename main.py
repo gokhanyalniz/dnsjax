@@ -21,23 +21,23 @@ def main():
     from jax import numpy as jnp
 
     import bench
-    from allocators import get_zero_spec_vector
     from operators import fourier, phys_to_spec
     from rhs import force
-    from sharding import sharding
+    from sharding import get_zeros, sharding
     from stats import get_stats
     from timestep import iterate_correction, predict_and_correct, stepper
     from velocity import correct_velocity
 
     if params.init.start_from_laminar:
-        velocity_spec = get_zero_spec_vector(
+        velocity_spec = get_zeros(
             shape=(3, *sharding.spec_shape),
             dtype=sharding.complex_type,
             in_sharding=sharding.spec_vector_shard,
+            out_sharding=sharding.spec_vector_shard,
         )
         if force.on:
-            velocity_spec = velocity_spec.at[force.ic_f].add(
-                force.unit_force * force.laminar_amplitude * force.phase
+            velocity_spec = velocity_spec.at[force.forced_modes].add(
+                force.unit_force * force.laminar_amplitude
             )
 
     elif params.init.snapshot is not None:
@@ -48,7 +48,7 @@ def main():
             snapshot,
             sharding.phys_vector_shard,
         )
-        velocity_spec = phys_to_spec(velocity_phys, fourier.active_modes)
+        velocity_spec = phys_to_spec(velocity_phys)
 
     else:
         sharding.print("Provide an initial condition.")
@@ -82,7 +82,6 @@ def main():
     # Call once now not to affect benchmarks later
     stats = get_stats(
         velocity_spec,
-        force.unit_force,
         fourier.lapl,
         fourier.metric,
     )
@@ -112,7 +111,6 @@ def main():
         ):
             stats = get_stats(
                 velocity_spec,
-                force.unit_force,
                 fourier.lapl,
                 fourier.metric,
             )
@@ -130,11 +128,9 @@ def main():
 
         velocity_spec, rhs_no_lapl, error = predict_and_correct(
             velocity_spec,
-            force.unit_force,
             fourier.kvec,
             fourier.inv_lapl,
             fourier.metric,
-            fourier.active_modes,
             stepper.ldt_1,
             stepper.ildt_2,
         )
@@ -151,11 +147,9 @@ def main():
             velocity_spec, rhs_no_lapl, error = iterate_correction(
                 velocity_spec,
                 rhs_no_lapl,
-                force.unit_force,
                 fourier.kvec,
                 fourier.inv_lapl,
                 fourier.metric,
-                fourier.active_modes,
                 stepper.ildt_2,
             )
             c += 1
@@ -201,7 +195,6 @@ def main():
         # Useful to know final stats
         stats = get_stats(
             velocity_spec,
-            force.unit_force,
             fourier.lapl,
             fourier.metric,
         )

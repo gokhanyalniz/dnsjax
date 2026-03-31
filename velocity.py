@@ -45,13 +45,15 @@ def correct_divergence(velocity_spec, kvec, inv_lapl, metric):
 @jit(donate_argnums=0, out_shardings=(sharding.spec_vector_shard, None))
 def correct_velocity(velocity_spec, kvec, inv_lapl, metric):
     norm_corrections = {}
+    velocity_corrected = velocity_spec
     if params.debug.correct_divergence:
         velocity_corrected, error = correct_divergence(
-            velocity_spec, kvec, inv_lapl, metric
+            velocity_corrected, kvec, inv_lapl, metric
         )
         norm_corrections["div"] = error
-    else:
-        velocity_corrected = velocity_spec
+
+    # Set the mean mode to zero, it is passive
+    velocity_corrected = velocity_corrected.at[:, 0, 0, 0].set(0)
 
     if not params.debug.measure_corrections:
         norm_corrections = None

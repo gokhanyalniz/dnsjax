@@ -115,10 +115,6 @@ def update_parameters(params_new: Parameters):
 
 @dataclass
 class PaddedResolution:
-    nx_half: int = params.res.nx // 2
-    ny_half: int = params.res.ny // 2
-    nz_half: int = params.res.nz // 2
-
     nx_padded: int = params.phys.oversampling_factor * params.res.nx // 2
     ny_padded: int = (
         params.res.ny
@@ -130,17 +126,18 @@ class PaddedResolution:
     def set_padded_resolution(self, parameters: Parameters):
         if not parameters.phys.oversample_y:
             print("WARNING: y is *not* oversampled!")
-        self.nx_half = parameters.res.nx // 2
-        self.ny_half = parameters.res.ny // 2
-        self.nz_half = parameters.res.nz // 2
 
-        self.nx_padded = parameters.phys.oversampling_factor * self.nx_half
+        self.nx_padded = (
+            parameters.phys.oversampling_factor * params.res.nx // 2
+        )
         self.ny_padded = (
             parameters.res.ny
             if not params.phys.oversample_y
-            else parameters.phys.oversampling_factor * self.ny_half
+            else parameters.phys.oversampling_factor * params.res.ny // 2
         )
-        self.nz_padded = parameters.phys.oversampling_factor * self.nz_half
+        self.nz_padded = (
+            parameters.phys.oversampling_factor * params.res.nz // 2
+        )
 
 
 padded_res = PaddedResolution()

@@ -13,18 +13,18 @@ from velocity import get_norm
 
 @dataclass
 class Stepper:
-    # Zero the inactive modes to (potentially) save on computations
     ldt_1 = (
         1 / params.step.dt
         + (1 - params.step.implicitness) * fourier.lapl / params.phys.re
-    ) * fourier.active_modes
-    ildt_2 = (
-        1
-        / (
-            1 / params.step.dt
-            - params.step.implicitness * fourier.lapl / params.phys.re
-        )
-    ) * fourier.active_modes
+    )
+    ildt_2 = 1 / (
+        1 / params.step.dt
+        - params.step.implicitness * fourier.lapl / params.phys.re
+    )
+
+    # Set the mean mode to zero, it is passive
+    ldt_1 = ldt_1.at[0, 0, 0].set(0)
+    ildt_2 = ildt_2.at[0, 0, 0].set(0)
 
 
 stepper = Stepper()
@@ -66,19 +66,15 @@ def get_correction(prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2):
 def iterate_correction(
     prediction,
     rhs_no_lapl_prev,
-    unit_force,
     kvec,
     inv_lapl,
     metric,
-    active_modes,
     ildt_2,
 ):
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
-        unit_force,
         kvec,
         inv_lapl,
-        active_modes,
     )
 
     prediction_next, correction = get_correction(
@@ -105,30 +101,24 @@ def iterate_correction(
 )
 def predict_and_correct(
     velocity_spec,
-    unit_force,
     kvec,
     inv_lapl,
     metric,
-    active_modes,
     ldt_1,
     ildt_2,
 ):
 
     rhs_no_lapl_prev = get_rhs_no_lapl(
         velocity_spec,
-        unit_force,
         kvec,
         inv_lapl,
-        active_modes,
     )
     prediction = get_prediction(velocity_spec, rhs_no_lapl_prev, ldt_1, ildt_2)
 
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
-        unit_force,
         kvec,
         inv_lapl,
-        active_modes,
     )
     prediction, correction = get_correction(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2

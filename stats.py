@@ -37,11 +37,11 @@ def get_dissipation(velocity_spec, lapl):
     return dissipation
 
 
-def get_input(velocity_spec, unit_force):
+def get_input(velocity_spec):
     if force.on:
         input = jnp.sum(
-            jnp.conj(unit_force * force.amplitude * force.phase)
-            * velocity_spec[force.ic_f],
+            jnp.conj(force.unit_force * force.amplitude)
+            * velocity_spec[force.forced_modes],
             dtype=sharding.float_type,
         )
     else:
@@ -53,12 +53,11 @@ def get_input(velocity_spec, unit_force):
 @jit
 def get_stats(
     velocity_spec,
-    unit_force,
     lapl,
     metric,
 ):
     energy = get_energy(velocity_spec, metric)
-    input = get_input(velocity_spec, unit_force)
+    input = get_input(velocity_spec)
     dissipation = get_dissipation(velocity_spec, lapl)
     perturbation_energy = get_perturbation_energy(energy, input)
 

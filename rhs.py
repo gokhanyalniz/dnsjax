@@ -1,21 +1,13 @@
 from dataclasses import dataclass
-from functools import partial
 
 from jax import numpy as jnp
-from jax.sharding import explicit_axes
 
-from allocators import (
-    get_zero_phys_vector,
-    get_zero_spec_scalar,
-    get_zero_spec_vector,
-)
 from operators import (
-    fourier,
     phys_to_spec,
     spec_to_phys,
 )
 from parameters import params
-from sharding import sharding
+from sharding import get_zeros, sharding
 
 
 @dataclass
@@ -35,43 +27,17 @@ class Force:
 
         ic_f = 0  # Forced component
         qf = 1  # Forcing harmonic
-        kf = 2 * jnp.pi * qf / params.geo.ly
 
-        fp = jnp.nonzero(
-            (fourier.qx == 0) & (fourier.qy == qf) & (fourier.qz == 0),
-            size=1,
-        )
-        fn = jnp.nonzero(
-            (fourier.qx == 0) & (fourier.qy == -qf) & (fourier.qz == 0),
-            size=1,
-        )
-        fp = (int(i[0]) for i in fp)
-        fn = (int(i[0]) for i in fn)
-
-        forced_modes = tuple(zip(fp, fn, strict=True))
+        forced_modes = ((ic_f, ic_f), (qf, -qf), (0, 0), (0, 0))
 
         if params.phys.forcing == "kolmogorov":
-            phase = 0.5j
-            unit_signs = jnp.array([-1, 1], dtype=sharding.int4_substitute)
+            unit_force = jnp.array([-0.5j, 0.5j], dtype=sharding.complex_type)
         elif params.phys.forcing == "waleffe":
-            phase = 0.5
-            unit_signs = jnp.array([1, 1], dtype=sharding.int4_substitute)
+            unit_force = jnp.array([0.5, 0.5], dtype=sharding.complex_type)
 
             sharding.print("Waleffe flow is not yet implemented.")
             sharding.exit(code=1)
 
-        @partial(explicit_axes, axes=sharding.axis_names)
-        def get_unit_force():
-            unit_force = jnp.zeros(
-                sharding.spec_shape,
-                dtype=sharding.int4_substitute,
-                out_sharding=sharding.spec_scalar_shard,
-            )
-            return unit_force
-
-        unit_force = get_unit_force(in_sharding=sharding.spec_scalar_shard)
-
-        unit_force = unit_force.at[forced_modes].add(jnp.array(unit_signs))
     else:
         on = False
         unit_force = None
@@ -92,14 +58,15 @@ for n in range(6):
     symij_to_n = symij_to_n.at[j, i].set(n)
 
 
-def get_nonlin(velocity_spec, active_modes):
+def get_nonlin(velocity_spec):
 
     velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
-    nonlin_phys = get_zero_phys_vector(
+    nonlin_phys = get_zeros(
         shape=(6, *velocity_phys.shape[1:]),
         dtype=velocity_phys.dtype,
         in_sharding=sharding.phys_vector_shard,
+        out_sharding=sharding.phys_vector_shard,
     )
 
     for i in range(6):
@@ -122,13 +89,14 @@ def get_nonlin(velocity_spec, active_modes):
         (symij_to_n[0, 0], symij_to_n[1, 1]),
     ].subtract(nonlin_phys[symij_to_n[2, 2]] / 3)
 
-    nonlin = get_zero_spec_vector(
+    nonlin = get_zeros(
         shape=(6, *velocity_spec.shape[1:]),
         dtype=velocity_spec.dtype,
         in_sharding=sharding.spec_vector_shard,
+        out_sharding=sharding.spec_vector_shard,
     )
 
-    nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5], active_modes))
+    nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5]))
     # Basdevant: Get the 5th element from tracelessness
     nonlin = nonlin.at[5].set(
         -(nonlin[symij_to_n[0, 0]] + nonlin[symij_to_n[1, 1]])
@@ -139,36 +107,42 @@ def get_nonlin(velocity_spec, active_modes):
 
 def get_rhs_no_lapl(
     velocity_spec,
-    unit_force,
     kvec,
     inv_lapl,
-    active_modes,
 ):
 
-    nonlin = get_nonlin(velocity_spec, active_modes)
+    nonlin = get_nonlin(velocity_spec)
 
-    rhs_no_lapl = get_zero_spec_vector(
+    rhs_no_lapl = get_zeros(
         shape=velocity_spec.shape,
         dtype=velocity_spec.dtype,
         in_sharding=sharding.spec_vector_shard,
+        out_sharding=sharding.spec_vector_shard,
     )
 
-    lapl_pressure = get_zero_spec_scalar(
+    lapl_pressure = get_zeros(
         shape=inv_lapl.shape,
         dtype=velocity_spec.dtype,
         in_sharding=sharding.spec_scalar_shard,
+        out_sharding=sharding.spec_scalar_shard,
     )
 
     for i in range(3):
-        minus_dj_uiuj = -jnp.sum(
-            1j
-            * kvec
-            * nonlin[(symij_to_n[i, 0], symij_to_n[i, 1], symij_to_n[i, 2]),],
-            axis=0,
+        # rhs_no_lapl[i] keeps -dj_uiuj at this stage
+        rhs_no_lapl = rhs_no_lapl.at[i].set(
+            -jnp.sum(
+                1j
+                * kvec
+                * nonlin[
+                    (symij_to_n[i, 0], symij_to_n[i, 1], symij_to_n[i, 2]),
+                ],
+                axis=0,
+            )
         )
 
-        rhs_no_lapl = rhs_no_lapl.at[i].set(minus_dj_uiuj)
-        lapl_pressure = lapl_pressure.at[...].add(1j * kvec[i] * minus_dj_uiuj)
+        lapl_pressure = lapl_pressure.at[...].add(
+            1j * kvec[i] * rhs_no_lapl[i]
+        )
 
     # Add pressure gradient
     rhs_no_lapl = rhs_no_lapl.at[...].add(
@@ -177,8 +151,8 @@ def get_rhs_no_lapl(
 
     # Add forcing
     if force.on:
-        rhs_no_lapl = rhs_no_lapl.at[force.ic_f].add(
-            unit_force * force.amplitude * force.phase
+        rhs_no_lapl = rhs_no_lapl.at[force.forced_modes].add(
+            force.unit_force * force.amplitude
         )
 
     return sharding.constrain_spec_vector(rhs_no_lapl)
