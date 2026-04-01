@@ -38,14 +38,15 @@ def correct_divergence(velocity_spec, kvec, inv_lapl, metric):
     )
 
     velocity_corrected = velocity_spec + correction
-    return sharding.constrain_spec_vector(velocity_corrected), error
+    return velocity_corrected, error
 
 
 @timer("velocity/correct_velocity")
-@jit(donate_argnums=0, out_shardings=(sharding.spec_vector_shard, None))
+@jit(donate_argnums=0)
 def correct_velocity(velocity_spec, kvec, inv_lapl, metric):
     norm_corrections = {}
     velocity_corrected = velocity_spec
+
     if params.debug.correct_divergence:
         velocity_corrected, error = correct_divergence(
             velocity_corrected, kvec, inv_lapl, metric
@@ -53,9 +54,11 @@ def correct_velocity(velocity_spec, kvec, inv_lapl, metric):
         norm_corrections["div"] = error
 
     # Set the mean mode to zero, it is passive
-    velocity_corrected = velocity_corrected.at[:, 0, 0, 0].set(0)
+    velocity_corrected = velocity_corrected.at[sharding.vector_mean_mode].set(
+        0, out_sharding=sharding.spec_vector_shard
+    )
 
     if not params.debug.measure_corrections:
         norm_corrections = None
 
-    return sharding.constrain_spec_vector(velocity_corrected), norm_corrections
+    return velocity_corrected, norm_corrections

@@ -1,8 +1,9 @@
 from jax import numpy as jnp
 from jax import shard_map
+from jax.sharding import reshard
 
 from parameters import params
-from sharding import get_zeros, sharding
+from sharding import sharding
 
 norm = "forward"
 
@@ -18,10 +19,9 @@ def zeropad_fft(a: jnp.ndarray, n: int, axis: int) -> jnp.ndarray:
 
     out_shape = list(a.shape)
     out_shape[axis] = n
-    out = get_zeros(
+    out = jnp.zeros(
         shape=out_shape,
         dtype=a.dtype,
-        in_sharding=sharding.spec_scalar_shard,
         out_sharding=sharding.spec_scalar_shard,
     )
 
@@ -52,10 +52,9 @@ def truncate_fft(a: jnp.ndarray, n: int, axis: int) -> jnp.ndarray:
 
     out_shape = list(a.shape)
     out_shape[axis] = n - 1  # Omit the Nyquist mode
-    out = get_zeros(
+    out = jnp.zeros(
         shape=out_shape,
         dtype=a.dtype,
-        in_sharding=sharding.spec_scalar_shard,
         out_sharding=sharding.spec_scalar_shard,
     )
 
@@ -83,10 +82,9 @@ def zeropad_rfft(a: jnp.ndarray, n: int) -> jnp.ndarray:
 
     out_shape = list(a.shape)
     out_shape[axis] = n
-    out = get_zeros(
+    out = jnp.zeros(
         shape=out_shape,
         dtype=a.dtype,
-        in_sharding=sharding.phys_scalar_shard,
         out_sharding=sharding.phys_scalar_shard,
     )
 
@@ -105,10 +103,9 @@ def truncate_rfft(a: jnp.ndarray, n: int) -> jnp.ndarray:
 
     out_shape = list(a.shape)
     out_shape[axis] = n
-    out = get_zeros(
+    out = jnp.zeros(
         shape=out_shape,
         dtype=a.dtype,
-        in_sharding=sharding.phys_scalar_shard,
         out_sharding=sharding.phys_scalar_shard,
     )
 
@@ -135,7 +132,7 @@ def _rfft3d(x):
     )
 
     # Reshard
-    y = sharding.constrain_spec_scalar(y)
+    y = reshard(y, sharding.spec_scalar_shard)
 
     # Transform in z (x is sharded)
     y = truncate_fft(
@@ -185,7 +182,7 @@ def _irfft3d(x):
     )(y)
 
     # Reshard
-    y = sharding.constrain_phys_scalar(y)
+    y = reshard(y, sharding.phys_scalar_shard)
 
     # Transform in x (z is sharded)
     y = zeropad_rfft(y, params.res.nx // 2 + 1)

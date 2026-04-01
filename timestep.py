@@ -23,8 +23,12 @@ class Stepper:
     )
 
     # Set the mean mode to zero, it is passive
-    ldt_1 = ldt_1.at[0, 0, 0].set(0)
-    ildt_2 = ildt_2.at[0, 0, 0].set(0)
+    ldt_1 = ldt_1.at[sharding.scalar_mean_mode].set(
+        0, out_sharding=sharding.spec_scalar_shard
+    )
+    ildt_2 = ildt_2.at[sharding.scalar_mean_mode].set(
+        0, out_sharding=sharding.spec_scalar_shard
+    )
 
 
 stepper = Stepper()
@@ -35,7 +39,7 @@ def get_prediction(velocity_spec, rhs_no_lapl, ldt_1, ildt_2):
 
     prediction = (velocity_spec * ldt_1 + rhs_no_lapl) * ildt_2
 
-    return sharding.constrain_spec_scalar(prediction)
+    return prediction
 
 
 @partial(vmap, in_axes=(0, 0, 0, None))
@@ -49,20 +53,11 @@ def get_correction(prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2):
 
     prediction_new = prediction + correction
 
-    return sharding.constrain_spec_scalar(
-        prediction_new
-    ), sharding.constrain_spec_scalar(correction)
+    return prediction_new, correction
 
 
 @timer("timestep/iterate_correction")
-@jit(
-    donate_argnums=(0, 1),
-    out_shardings=(
-        sharding.spec_vector_shard,
-        sharding.spec_vector_shard,
-        None,
-    ),
-)
+@jit(donate_argnums=(0, 1))
 def iterate_correction(
     prediction,
     rhs_no_lapl_prev,
@@ -83,22 +78,11 @@ def iterate_correction(
 
     error = get_norm(correction, metric)
 
-    return (
-        sharding.constrain_spec_vector(prediction_next),
-        sharding.constrain_spec_vector(rhs_no_lapl_next),
-        error,
-    )
+    return prediction_next, rhs_no_lapl_next, error
 
 
 @timer("timestep/predict_and_correct")
-@jit(
-    donate_argnums=0,
-    out_shardings=(
-        sharding.spec_vector_shard,
-        sharding.spec_vector_shard,
-        None,
-    ),
-)
+@jit(donate_argnums=0)
 def predict_and_correct(
     velocity_spec,
     kvec,
@@ -126,8 +110,4 @@ def predict_and_correct(
 
     error = get_norm(correction, metric)
 
-    return (
-        sharding.constrain_spec_vector(prediction),
-        sharding.constrain_spec_vector(rhs_no_lapl_next),
-        error,
-    )
+    return prediction, rhs_no_lapl_next, error
