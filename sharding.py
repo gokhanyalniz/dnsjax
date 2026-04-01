@@ -1,11 +1,9 @@
 import sys
 from dataclasses import dataclass
-from functools import partial
 
 import jax
 from jax import numpy as jnp
-from jax.lax import with_sharding_constraint
-from jax.sharding import AxisType, explicit_axes
+from jax.sharding import AxisType
 from jax.sharding import PartitionSpec as P
 
 from parameters import padded_res, params
@@ -37,16 +35,21 @@ class Sharding:
     mesh = jax.make_mesh(
         (params.dist.np,),
         axis_names=axis_names,
-        axis_types=(AxisType.Auto,),
+        axis_types=(AxisType.Explicit,),
     )
 
     jax.set_mesh(mesh)
+
+    vector_mean_mode = ((0, 1, 2), (0, 0, 0), (0, 0, 0), (0, 0, 0))
+    scalar_mean_mode = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
 
     spec_vector_shard = P(None, None, None, *axis_names)
     spec_scalar_shard = P(None, None, *axis_names)
 
     phys_vector_shard = P(None, None, *axis_names, None)
     phys_scalar_shard = P(None, *axis_names, None)
+
+    no_shard = P(None)
 
     if params.res.double_precision:
         float_type = jnp.float64
@@ -70,18 +73,6 @@ class Sharding:
         padded_res.nx_padded,
     )
 
-    def constrain_spec_vector(self, vector):
-        return with_sharding_constraint(vector, self.spec_vector_shard)
-
-    def constrain_spec_scalar(self, scalar):
-        return with_sharding_constraint(scalar, self.spec_scalar_shard)
-
-    def constrain_phys_vector(self, vector):
-        return with_sharding_constraint(vector, self.phys_vector_shard)
-
-    def constrain_phys_scalar(self, scalar):
-        return with_sharding_constraint(scalar, self.phys_scalar_shard)
-
     def exit(self, code=1):
         sys.exit(code)
 
@@ -91,13 +82,3 @@ class Sharding:
 
 
 sharding = Sharding()
-
-
-@partial(explicit_axes, axes=sharding.axis_names)
-def get_zeros(shape, dtype, out_sharding):
-    x = jnp.zeros(
-        shape=shape,
-        dtype=dtype,
-        out_sharding=out_sharding,
-    )
-    return x

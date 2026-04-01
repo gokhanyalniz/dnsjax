@@ -41,7 +41,9 @@ def get_input(velocity_spec):
     if force.on:
         input = jnp.sum(
             jnp.conj(force.unit_force * force.amplitude)
-            * velocity_spec[force.forced_modes],
+            * velocity_spec.at[force.forced_modes].get(
+                out_sharding=sharding.no_shard
+            ),
             dtype=sharding.float_type,
         )
     else:

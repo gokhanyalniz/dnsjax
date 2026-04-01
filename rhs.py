@@ -7,7 +7,7 @@ from operators import (
     spec_to_phys,
 )
 from parameters import params
-from sharding import get_zeros, sharding
+from sharding import sharding
 
 
 @dataclass
@@ -62,10 +62,9 @@ def get_nonlin(velocity_spec):
 
     velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
-    nonlin_phys = get_zeros(
+    nonlin_phys = jnp.zeros(
         shape=(6, *velocity_phys.shape[1:]),
         dtype=velocity_phys.dtype,
-        in_sharding=sharding.phys_vector_shard,
         out_sharding=sharding.phys_vector_shard,
     )
 
@@ -89,10 +88,9 @@ def get_nonlin(velocity_spec):
         (symij_to_n[0, 0], symij_to_n[1, 1]),
     ].subtract(nonlin_phys[symij_to_n[2, 2]] / 3)
 
-    nonlin = get_zeros(
+    nonlin = jnp.zeros(
         shape=(6, *velocity_spec.shape[1:]),
         dtype=velocity_spec.dtype,
-        in_sharding=sharding.spec_vector_shard,
         out_sharding=sharding.spec_vector_shard,
     )
 
@@ -102,7 +100,7 @@ def get_nonlin(velocity_spec):
         -(nonlin[symij_to_n[0, 0]] + nonlin[symij_to_n[1, 1]])
     )
 
-    return sharding.constrain_spec_vector(nonlin)
+    return nonlin
 
 
 def get_rhs_no_lapl(
@@ -113,18 +111,10 @@ def get_rhs_no_lapl(
 
     nonlin = get_nonlin(velocity_spec)
 
-    rhs_no_lapl = get_zeros(
+    rhs_no_lapl = jnp.zeros(
         shape=velocity_spec.shape,
         dtype=velocity_spec.dtype,
-        in_sharding=sharding.spec_vector_shard,
         out_sharding=sharding.spec_vector_shard,
-    )
-
-    lapl_pressure = get_zeros(
-        shape=inv_lapl.shape,
-        dtype=velocity_spec.dtype,
-        in_sharding=sharding.spec_scalar_shard,
-        out_sharding=sharding.spec_scalar_shard,
     )
 
     for i in range(3):
@@ -140,9 +130,7 @@ def get_rhs_no_lapl(
             )
         )
 
-        lapl_pressure = lapl_pressure.at[...].add(
-            1j * kvec[i] * rhs_no_lapl[i]
-        )
+    lapl_pressure = jnp.sum(1j * kvec * rhs_no_lapl, axis=0)
 
     # Add pressure gradient
     rhs_no_lapl = rhs_no_lapl.at[...].add(
@@ -152,7 +140,8 @@ def get_rhs_no_lapl(
     # Add forcing
     if force.on:
         rhs_no_lapl = rhs_no_lapl.at[force.forced_modes].add(
-            force.unit_force * force.amplitude
+            force.unit_force * force.amplitude,
+            out_sharding=sharding.spec_vector_shard,
         )
 
-    return sharding.constrain_spec_vector(rhs_no_lapl)
+    return rhs_no_lapl

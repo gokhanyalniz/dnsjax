@@ -23,16 +23,15 @@ def main():
     import bench
     from operators import fourier, phys_to_spec
     from rhs import force
-    from sharding import get_zeros, sharding
+    from sharding import sharding
     from stats import get_stats
     from timestep import iterate_correction, predict_and_correct, stepper
     from velocity import correct_velocity
 
     if params.init.start_from_laminar:
-        velocity_spec = get_zeros(
+        velocity_spec = jnp.zeros(
             shape=(3, *sharding.spec_shape),
             dtype=sharding.complex_type,
-            in_sharding=sharding.spec_vector_shard,
             out_sharding=sharding.spec_vector_shard,
         )
         if force.on:

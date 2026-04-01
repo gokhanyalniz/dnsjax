@@ -3,12 +3,10 @@ from dataclasses import dataclass
 import jax
 from jax import jit, vmap
 from jax import numpy as jnp
-from jax.sharding import NamedSharding
-from jax.sharding import PartitionSpec as P
 
 from fft import _irfft3d, _rfft3d
 from parameters import params
-from sharding import get_zeros, sharding
+from sharding import sharding
 
 
 @dataclass
@@ -27,7 +25,7 @@ class Fourier:
 
     qx = jax.device_put(
         real_harmonics(params.res.nx).reshape([1, 1, -1]),
-        NamedSharding(sharding.mesh, P(None, None, "gpus")),
+        sharding.spec_scalar_shard,
     )
     qy = complex_harmonics(params.res.ny).reshape([-1, 1, 1])
     qz = complex_harmonics(params.res.nz).reshape([1, -1, 1])
@@ -38,10 +36,9 @@ class Fourier:
 
     metric = jnp.where(qx == 0, 1, 2)
 
-    kvec = get_zeros(
+    kvec = jnp.zeros(
         shape=(3, *sharding.spec_shape),
         dtype=sharding.float_type,
-        in_sharding=sharding.spec_vector_shard,
         out_sharding=sharding.spec_vector_shard,
     )
 
@@ -56,9 +53,7 @@ class Fourier:
 fourier = Fourier()
 
 
-@jit(
-    out_shardings=sharding.spec_vector_shard,
-)
+@jit
 @vmap
 def phys_to_spec(velocity_phys):
     velocity_spec = _rfft3d(
@@ -68,9 +63,7 @@ def phys_to_spec(velocity_phys):
     return velocity_spec
 
 
-@jit(
-    out_shardings=sharding.phys_vector_shard,
-)
+@jit
 @vmap
 def spec_to_phys(velocity_spec):
 
