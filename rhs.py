@@ -45,63 +45,6 @@ class Force:
 
 force = Force()
 
-# Given 3x3 symmetric matrix M, entries M_{ij} will be used
-# This is for the nonlinear term.
-n_to_symi = jnp.array([0, 0, 0, 1, 1, 2], dtype=int)
-n_to_symj = jnp.array([0, 1, 2, 1, 2, 2], dtype=int)
-symij_to_n = jnp.zeros((3, 3), dtype=int)
-
-for n in range(6):
-    i = n_to_symi[n]
-    j = n_to_symj[n]
-    symij_to_n = symij_to_n.at[i, j].set(n)
-    symij_to_n = symij_to_n.at[j, i].set(n)
-
-
-def get_nonlin(velocity_spec):
-
-    velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
-
-    nonlin_phys = jnp.zeros(
-        shape=(6, *velocity_phys.shape[1:]),
-        dtype=velocity_phys.dtype,
-        out_sharding=sharding.phys_vector_shard,
-    )
-
-    for i in range(6):
-        nonlin_phys = nonlin_phys.at[i].set(
-            velocity_phys[n_to_symi[i]] * velocity_phys[n_to_symj[i]]
-        )
-
-    # Basdevant optimization: https://doi.org/10.1016/0021-9991(83)90064-5
-    # Save on one FFT by the tracelessness of the nonlinear term
-    # The trace is effectively moved to pressure. If "true" pressure is ever
-    # needed, this needs to be taken into account.
-
-    # Compute trace in-place on symij_to_n[2, 2]
-    nonlin_phys = nonlin_phys.at[symij_to_n[2, 2]].add(
-        nonlin_phys[symij_to_n[0, 0]] + nonlin_phys[symij_to_n[1, 1]]
-    )
-
-    # No need to update (2,2), it's not used
-    nonlin_phys = nonlin_phys.at[
-        (symij_to_n[0, 0], symij_to_n[1, 1]),
-    ].subtract(nonlin_phys[symij_to_n[2, 2]] / 3)
-
-    nonlin = jnp.zeros(
-        shape=(6, *velocity_spec.shape[1:]),
-        dtype=velocity_spec.dtype,
-        out_sharding=sharding.spec_vector_shard,
-    )
-
-    nonlin = nonlin.at[:5].set(phys_to_spec(nonlin_phys[:5]))
-    # Basdevant: Get the 5th element from tracelessness
-    nonlin = nonlin.at[5].set(
-        -(nonlin[symij_to_n[0, 0]] + nonlin[symij_to_n[1, 1]])
-    )
-
-    return nonlin
-
 
 def get_rhs_no_lapl(
     velocity_spec,
@@ -109,33 +52,21 @@ def get_rhs_no_lapl(
     inv_lapl,
 ):
 
-    nonlin = get_nonlin(velocity_spec)
+    velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
-    rhs_no_lapl = jnp.zeros(
-        shape=velocity_spec.shape,
-        dtype=velocity_spec.dtype,
-        out_sharding=sharding.spec_vector_shard,
-    )
+    vorticity_phys = spec_to_phys(
+        1j * jnp.cross(kvec, velocity_spec, axis=0)
+    )  # 3 FFTs
 
-    for i in range(3):
-        # rhs_no_lapl[i] keeps -dj_uiuj at this stage
-        rhs_no_lapl = rhs_no_lapl.at[i].set(
-            -jnp.sum(
-                1j
-                * kvec
-                * nonlin[
-                    (symij_to_n[i, 0], symij_to_n[i, 1], symij_to_n[i, 2]),
-                ],
-                axis=0,
-            )
-        )
+    nonlin = phys_to_spec(
+        jnp.cross(velocity_phys, vorticity_phys, axis=0)
+    )  # 3 FFTs
 
-    lapl_pressure = jnp.sum(1j * kvec * rhs_no_lapl, axis=0)
+    # Poisson problem for pressure
+    lapl_pressure = jnp.sum(1j * kvec * nonlin, axis=0)
 
     # Add pressure gradient
-    rhs_no_lapl = rhs_no_lapl.at[...].add(
-        -1j * kvec * inv_lapl * lapl_pressure
-    )
+    rhs_no_lapl = nonlin - 1j * kvec * inv_lapl * lapl_pressure
 
     # Add forcing
     if force.on:
