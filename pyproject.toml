@@ -17,6 +17,16 @@ dev = [
     "ruff>=0.15.0",
 ]
 
+[project.scripts]
+dnsjax = "dnsjax:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["uv_build>=0.11.4,<0.12.0"]
+build-backend = "uv_build"
+
 [tool.ruff]
 # Set the maximum line length to 79.
 line-length = 79

@@ -1,19 +1,43 @@
+"""Wall-clock timing decorator with JIT-aware GPU synchronization.
+
+Provides a ``@timer(name)`` decorator that records per-function wall-clock
+time into a global ``timers`` dictionary.  The first invocation of each
+decorated function is excluded from the statistics because it typically
+includes JAX's JIT compilation overhead.
+"""
+
+from collections.abc import Callable
 from functools import wraps
 from time import perf_counter_ns
+from typing import ParamSpec, TypeVar
 
 import jax
 
-from parameters import params
+from .parameters import params
 
-timers = {}
+P = ParamSpec("P")
+R = TypeVar("R")
 
-ns_to_s = 10 ** (-9)
+timers: dict[str, dict[str, float | int]] = {}
+
+ns_to_s: float = 10 ** (-9)
 
 
-def timer(name):
-    def decorator_timer(func):
+def timer(name: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Decorator that records wall-clock time for *func* under *name*.
+
+    The very first call is recorded with zero time and zero hits
+    to exclude JIT compilation cost.
+
+    Parameters
+    ----------
+    name:
+        Key under which the timing statistics are stored in ``timers``.
+    """
+
+    def decorator_timer(func: Callable[P, R]) -> Callable[P, R]:
         @wraps(func)
-        def wrapper_timer(*args, **kwargs):
+        def wrapper_timer(*args: P.args, **kwargs: P.kwargs) -> R:
             if params.debug.time_functions:
                 start = perf_counter_ns()
                 value = func(*args, **kwargs)
