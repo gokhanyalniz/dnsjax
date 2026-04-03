@@ -2,6 +2,7 @@ from jax import jit
 from jax import numpy as jnp
 
 from bench import timer
+from operators import divergence, gradient, inverse_laplacian
 from parameters import params
 from sharding import sharding
 
@@ -21,14 +22,20 @@ def get_norm(vector_spec, metric):
     return jnp.sqrt(get_norm2(vector_spec, metric))
 
 
-def correct_divergence(velocity_spec, kvec, inv_lapl, metric):
-    correction = (
-        kvec
-        * inv_lapl
-        * jnp.sum(
-            kvec * velocity_spec,
-            axis=0,
-        )
+def correct_divergence(velocity_spec, kx, ky, kz, inv_lapl, metric):
+    correction = -gradient(
+        inverse_laplacian(
+            divergence(
+                velocity_spec,
+                kx,
+                ky,
+                kz,
+            ),
+            inv_lapl,
+        ),
+        kx,
+        ky,
+        kz,
     )
 
     error = (
@@ -43,13 +50,13 @@ def correct_divergence(velocity_spec, kvec, inv_lapl, metric):
 
 @timer("velocity/correct_velocity")
 @jit(donate_argnums=0)
-def correct_velocity(velocity_spec, kvec, inv_lapl, metric):
+def correct_velocity(velocity_spec, kx, ky, kz, inv_lapl, metric):
     norm_corrections = {}
     velocity_corrected = velocity_spec
 
     if params.debug.correct_divergence:
         velocity_corrected, error = correct_divergence(
-            velocity_corrected, kvec, inv_lapl, metric
+            velocity_corrected, kx, ky, kz, inv_lapl, metric
         )
         norm_corrections["div"] = error
 
