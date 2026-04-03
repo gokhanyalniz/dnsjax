@@ -61,14 +61,18 @@ def get_correction(prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2):
 def iterate_correction(
     prediction,
     rhs_no_lapl_prev,
-    kvec,
+    kx,
+    ky,
+    kz,
     inv_lapl,
     metric,
     ildt_2,
 ):
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
-        kvec,
+        kx,
+        ky,
+        kz,
         inv_lapl,
     )
 
@@ -85,7 +89,9 @@ def iterate_correction(
 @jit(donate_argnums=0)
 def predict_and_correct(
     velocity_spec,
-    kvec,
+    kx,
+    ky,
+    kz,
     inv_lapl,
     metric,
     ldt_1,
@@ -94,14 +100,18 @@ def predict_and_correct(
 
     rhs_no_lapl_prev = get_rhs_no_lapl(
         velocity_spec,
-        kvec,
+        kx,
+        ky,
+        kz,
         inv_lapl,
     )
     prediction = get_prediction(velocity_spec, rhs_no_lapl_prev, ldt_1, ildt_2)
 
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
-        kvec,
+        kx,
+        ky,
+        kz,
         inv_lapl,
     )
     prediction, correction = get_correction(

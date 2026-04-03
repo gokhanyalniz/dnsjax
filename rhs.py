@@ -3,6 +3,11 @@ from dataclasses import dataclass
 from jax import numpy as jnp
 
 from operators import (
+    cross,
+    curl,
+    divergence,
+    gradient,
+    inverse_laplacian,
     phys_to_spec,
     spec_to_phys,
 )
@@ -48,25 +53,24 @@ force = Force()
 
 def get_rhs_no_lapl(
     velocity_spec,
-    kvec,
+    kx,
+    ky,
+    kz,
     inv_lapl,
 ):
 
     velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
-    vorticity_phys = spec_to_phys(
-        1j * jnp.cross(kvec, velocity_spec, axis=0)
-    )  # 3 FFTs
-
-    nonlin = phys_to_spec(
-        jnp.cross(velocity_phys, vorticity_phys, axis=0)
-    )  # 3 FFTs
+    vorticity_phys = spec_to_phys(curl(velocity_spec, kx, ky, kz))
+    nonlin = phys_to_spec(cross(velocity_phys, vorticity_phys))
 
     # Poisson problem for pressure
-    lapl_pressure = jnp.sum(1j * kvec * nonlin, axis=0)
+    lapl_pressure = divergence(nonlin, kx, ky, kz)
 
     # Add pressure gradient
-    rhs_no_lapl = nonlin - 1j * kvec * inv_lapl * lapl_pressure
+    rhs_no_lapl = nonlin - gradient(
+        inverse_laplacian(lapl_pressure, inv_lapl), kx, ky, kz
+    )
 
     # Add forcing
     if force.on:

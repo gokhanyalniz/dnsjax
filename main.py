@@ -41,7 +41,7 @@ def main():
 
     elif params.init.snapshot is not None:
         snapshot = jnp.load(params.init.snapshot)["velocity_phys"].astype(
-            sharding.phys_type
+            sharding.float_type
         )
         velocity_phys = jax.device_put(
             snapshot,
@@ -127,7 +127,9 @@ def main():
 
         velocity_spec, rhs_no_lapl, error = predict_and_correct(
             velocity_spec,
-            fourier.kvec,
+            fourier.kx,
+            fourier.ky,
+            fourier.kz,
             fourier.inv_lapl,
             fourier.metric,
             stepper.ldt_1,
@@ -146,7 +148,9 @@ def main():
             velocity_spec, rhs_no_lapl, error = iterate_correction(
                 velocity_spec,
                 rhs_no_lapl,
-                fourier.kvec,
+                fourier.kx,
+                fourier.ky,
+                fourier.kz,
                 fourier.inv_lapl,
                 fourier.metric,
                 stepper.ildt_2,
@@ -160,7 +164,12 @@ def main():
                 corrector_compiled = True
 
         velocity_spec, norm_corrections = correct_velocity(
-            velocity_spec, fourier.kvec, fourier.inv_lapl, fourier.metric
+            velocity_spec,
+            fourier.kx,
+            fourier.ky,
+            fourier.kz,
+            fourier.inv_lapl,
+            fourier.metric,
         )
 
         t += params.step.dt
