@@ -1,4 +1,31 @@
 #!/usr/bin/env python3
+"""Entry point for the dnsjax DNS solver.
+
+Execution proceeds in two phases:
+
+1. **Initialisation** (module level, under ``if __name__ == "__main__"``):
+   parse CLI arguments, load ``parameters.toml`` if present, configure
+   JAX platform and distributed backend, print the final parameter set.
+
+2. **Main loop** (:func:`main`):
+   initialise velocity (from laminar or snapshot), then iterate:
+
+   - Euler predictor + Crank-Nicolson corrector (:func:`predict_and_correct`)
+   - Additional corrector iterations if needed (:func:`iterate_correction`)
+   - Divergence correction + mean-mode zeroing (:func:`correct_velocity`)
+   - Periodic diagnostic output (:func:`get_stats`)
+
+   The loop terminates when the simulation time, wall-clock time, or
+   corrector divergence criterion is reached.
+
+Benchmarking
+------------
+The first time step is excluded from wall-clock statistics because it
+includes JAX's JIT compilation overhead.  Additionally, the first call
+to ``iterate_correction`` (if it occurs on the first step) is excluded
+via the ``bench_delta`` accumulator.
+"""
+
 import os
 import sys
 from datetime import datetime
@@ -8,55 +35,46 @@ from time import perf_counter_ns
 
 from pydantic_settings import CliApp
 
-from parameters import (
+from .parameters import (
     CLIParameters,
     padded_res,
     params,
+    periodic_systems,
     read_parameters,
     update_parameters,
 )
 
 
-def main():
+def main() -> None:
+    """Run the time-stepping loop after parameters and JAX are initialised."""
     from jax import numpy as jnp
 
-    import bench
-    from operators import fourier, phys_to_spec
-    from rhs import force
-    from sharding import sharding
-    from stats import get_stats
-    from timestep import iterate_correction, predict_and_correct, stepper
-    from velocity import correct_velocity
+    from .bench import ns_to_s, timers
+    from .sharding import sharding
 
-    if params.init.start_from_laminar:
-        velocity_spec = jnp.zeros(
-            shape=(3, *sharding.spec_shape),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.spec_vector_shard,
+    # --- Flow dispatch -------------------------------------------------------
+    if params.phys.system in periodic_systems:
+        from .flows.monochromatic import (
+            correct_velocity,
+            get_stats,
+            init_state,
+            iterate_correction,
+            predict_and_correct,
         )
-        if force.on:
-            velocity_spec = velocity_spec.at[force.forced_modes].add(
-                force.unit_force * force.laminar_amplitude
-            )
-
-    elif params.init.snapshot is not None:
-        snapshot = jnp.load(params.init.snapshot)["velocity_phys"].astype(
-            sharding.float_type
-        )
-        velocity_phys = jax.device_put(
-            snapshot,
-            sharding.phys_vector_shard,
-        )
-        velocity_spec = phys_to_spec(velocity_phys)
-
     else:
-        sharding.print("Provide an initial condition.")
+        sharding.print(
+            f"System '{params.phys.system}' is not yet implemented."
+        )
         sharding.exit(code=1)
 
+    # --- Initial condition ---------------------------------------------------
+    state = init_state(params.init.snapshot)
+
+    # --- Stopping criteria ---------------------------------------------------
     wall_time_stop = (
         jnp.inf
         if params.stop.max_wall_time is None
-        else int(params.stop.max_wall_time.total_seconds() / bench.ns_to_s)
+        else int(params.stop.max_wall_time.total_seconds() / ns_to_s)
     )
 
     t_stop = (
@@ -65,25 +83,24 @@ def main():
         else params.stop.max_sim_time
     )
 
-    it = params.init.it0
-    t = params.init.t0
+    it: int = params.init.it0
+    t: float = params.init.t0
 
-    rhs_tot = 0
-    c_tot = 0
-    dt_first = params.step.dt
-    wall_time_now = perf_counter_ns()
-    bench_delta = 0
-    corrector_compiled = False
+    rhs_tot: int = 0
+    c_tot: int = 0
+    dt_first: float = params.step.dt
+    wall_time_now: int = perf_counter_ns()
+    bench_delta: int = 0  # accumulated JIT-compilation time to subtract
+    corrector_compiled: bool = False
     last_error = 0
-    last_c = 0
-    norm_corrections = {}
+    last_c: int = 0
+    norm_corrections: dict | None = {}
 
-    # Call once now not to affect benchmarks later
-    stats = get_stats(
-        velocity_spec,
-        fourier.lapl,
-        fourier.metric,
-    )
+    ts = []
+    Eps = []
+
+    # Warm-up call so that JIT compilation does not affect benchmarks
+    stats = get_stats(state)
 
     sharding.print(
         f"t = {t:.2f}",
@@ -92,27 +109,25 @@ def main():
 
     sharding.print("Started timestepping at", datetime.now())
 
+    # --- Main time-stepping loop ---------------------------------------------
     while (
         t < t_stop
         and wall_time_now - wall_time_start < wall_time_stop
         and last_error < params.step.corrector_tolerance
     ):
         if it == params.init.it0 + 1:
-            # Ignore the first hit, probably subject to JIT compilation
+            # Start the benchmark clock after the first (JIT-heavy) iteration
             bench_start = perf_counter_ns()
 
             sharding.print("First iteration over at", datetime.now())
 
+        # Periodic diagnostic output
         if (
             params.outs.it_stats is not None
             and it % params.outs.it_stats == 0
             and it > params.init.it0
         ):
-            stats = get_stats(
-                velocity_spec,
-                fourier.lapl,
-                fourier.metric,
-            )
+            stats = get_stats(state)
             c_per_it = c_tot / (it - params.init.it0)
 
             sharding.print(
@@ -125,35 +140,26 @@ def main():
                 else "",
             )
 
-        velocity_spec, rhs_no_lapl, error = predict_and_correct(
-            velocity_spec,
-            fourier.kx,
-            fourier.ky,
-            fourier.kz,
-            fourier.inv_lapl,
-            fourier.metric,
-            stepper.ldt_1,
-            stepper.ildt_2,
+        # Euler predictor + one Crank-Nicolson corrector
+        state_prev = state
+        state, rhs_no_lapl, error = predict_and_correct(
+            state_prev,
         )
         c = 0
 
+        # Additional corrector iterations until convergence
         while (
             error > params.step.corrector_tolerance
             and c < params.step.max_corrector_iterations
         ):
             if not corrector_compiled:
-                # Do not include this in the benchmark
+                # Exclude the first corrector JIT compilation from benchmarks
                 bench_delta_start = perf_counter_ns()
 
-            velocity_spec, rhs_no_lapl, error = iterate_correction(
-                velocity_spec,
+            state, rhs_no_lapl, error = iterate_correction(
+                state_prev,
+                state,
                 rhs_no_lapl,
-                fourier.kx,
-                fourier.ky,
-                fourier.kz,
-                fourier.inv_lapl,
-                fourier.metric,
-                stepper.ildt_2,
             )
             c += 1
 
@@ -163,13 +169,9 @@ def main():
                 rhs_tot -= 1
                 corrector_compiled = True
 
-        velocity_spec, norm_corrections = correct_velocity(
-            velocity_spec,
-            fourier.kx,
-            fourier.ky,
-            fourier.kz,
-            fourier.inv_lapl,
-            fourier.metric,
+        # Divergence correction and mean-mode zeroing
+        state, norm_corrections = correct_velocity(
+            state,
         )
 
         t += params.step.dt
@@ -179,11 +181,12 @@ def main():
         c_tot += c
 
         if it > params.init.it0:
-            # Ignore the first hit, probably subject to JIT compilation
-            rhs_tot += c + 2  # 1 rhs per corrector + 2 rhs per predict-correct
+            # 2 RHS evals per predict_and_correct + 1 per corrector iteration
+            rhs_tot += c + 2
 
         wall_time_now = perf_counter_ns()
 
+    # --- Post-processing -----------------------------------------------------
     if last_error > params.step.corrector_tolerance:
         sharding.print(
             f"Corrector failed to converge at t={t}, it={it}, c={last_c}, "
@@ -193,19 +196,15 @@ def main():
     sharding.print("Stopped timestepping at", datetime.now())
 
     wall_time_now = perf_counter_ns()
-    alive_time = bench.ns_to_s * (wall_time_now - wall_time_start)
+    alive_time = ns_to_s * (wall_time_now - wall_time_start)
     sharding.print(f"Job has been alive for {alive_time:.2f}s.")
     if it > params.init.it0 + 1:
-        wall_time = bench.ns_to_s * (wall_time_now - bench_delta - bench_start)
+        wall_time = ns_to_s * (wall_time_now - bench_delta - bench_start)
         wall_time_per_sim_time = wall_time / (t - dt_first - params.init.t0)
         wall_time_per_rhs = wall_time / rhs_tot
 
-        # Useful to know final stats
-        stats = get_stats(
-            velocity_spec,
-            fourier.lapl,
-            fourier.metric,
-        )
+        # Final diagnostic output
+        stats = get_stats(state)
         c_per_it = c_tot / (it - params.init.it0)
 
         sharding.print(
@@ -218,8 +217,12 @@ def main():
             else "",
         )
 
+        ts = jnp.array(ts)
+        Eps = jnp.array(Eps)
+        jnp.savez("stats.npz", ts=ts, Eps=Eps)
+
         if params.debug.time_functions and main_device:
-            pp(bench.timers, sort_dicts=True)
+            pp(timers, sort_dicts=True)
 
         if sharding.n_devices > 1:
             sharding.print(
@@ -264,7 +267,7 @@ if __name__ == "__main__":
     jax.config.update("jax_enable_x64", params.res.double_precision)
     jax.config.update("jax_platforms", params.dist.platform)
     jax.distributed.initialize()
-    main_device = bool(jax.process_index() == 0)
+    main_device: bool = bool(jax.process_index() == 0)
 
     if main_device:
         print("Distribution initialized at", datetime.now(), flush=True)
@@ -290,9 +293,11 @@ if __name__ == "__main__":
 
         print(
             "Running with the effective resolution:",
-            padded_res.nx_padded,
-            padded_res.ny_padded,
+            padded_res.ny_padded
+            if padded_res.ny_padded is not None
+            else params.res.ny,
             padded_res.nz_padded,
+            padded_res.nx_padded,
             flush=True,
         )
 
