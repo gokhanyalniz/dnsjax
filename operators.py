@@ -30,21 +30,11 @@ class Fourier:
     qy = complex_harmonics(params.res.ny).reshape([-1, 1, 1])
     qz = complex_harmonics(params.res.nz).reshape([1, -1, 1])
 
+    metric = jnp.where(qx == 0, 1, 2)
+
     kx = qx * 2 * jnp.pi / params.geo.lx
     ky = qy * 2 * jnp.pi / params.geo.ly
     kz = qz * 2 * jnp.pi / params.geo.lz
-
-    metric = jnp.where(qx == 0, 1, 2)
-
-    kvec = jnp.zeros(
-        shape=(3, *sharding.spec_shape),
-        dtype=sharding.float_type,
-        out_sharding=sharding.spec_vector_shard,
-    )
-
-    kvec = kvec.at[0].set(kx)
-    kvec = kvec.at[1].set(ky)
-    kvec = kvec.at[2].set(kz)
 
     lapl = -(kx**2 + ky**2 + kz**2)
     inv_lapl = jnp.where(lapl < 0, 1 / lapl, 0)
@@ -72,3 +62,50 @@ def spec_to_phys(velocity_spec):
     )
 
     return velocity_phys
+
+
+def cross(vector_1, vector_2):
+
+    return jnp.array(
+        [
+            vector_1[1] * vector_2[2] - vector_1[2] * vector_2[1],
+            vector_1[2] * vector_2[0] - vector_1[0] * vector_2[2],
+            vector_1[0] * vector_2[1] - vector_1[1] * vector_2[0],
+        ]
+    )
+
+
+def derivative(data_spec, kx, ky, kz, axis):
+    match axis:
+        case 0:
+            return 1j * kx * data_spec
+        case 1:
+            return 1j * ky * data_spec
+        case 2:
+            return 1j * kz * data_spec
+
+
+def divergence(velocity_spec, kx, ky, kz):
+    return sum([derivative(velocity_spec[i], kx, ky, kz, i) for i in range(3)])
+
+
+def curl(velocity_spec, kx, ky, kz):
+    return 1j * jnp.array(
+        [
+            ky * velocity_spec[2] - kz * velocity_spec[1],
+            kz * velocity_spec[0] - kx * velocity_spec[2],
+            kx * velocity_spec[1] - ky * velocity_spec[0],
+        ]
+    )
+
+
+def gradient(data_spec, kx, ky, kz):
+    return jnp.array([derivative(data_spec, kx, ky, kz, i) for i in range(3)])
+
+
+def laplacian(data_spec, lapl_spec):
+    return lapl_spec * data_spec
+
+
+def inverse_laplacian(data_spec, inv_lapl_spec):
+    return inv_lapl_spec * data_spec

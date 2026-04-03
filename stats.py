@@ -2,6 +2,7 @@ from jax import jit
 from jax import numpy as jnp
 
 from bench import timer
+from operators import laplacian
 from parameters import params
 from rhs import force
 from sharding import sharding
@@ -26,7 +27,7 @@ def get_perturbation_energy(energy, input):
 
 def get_enstrophy(velocity_spec, lapl):
     enstrophy = jnp.sum(
-        -lapl * jnp.conj(velocity_spec) * velocity_spec,
+        -laplacian(jnp.conj(velocity_spec) * velocity_spec, lapl),
         dtype=sharding.float_type,
     )
     return enstrophy
