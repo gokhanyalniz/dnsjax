@@ -5,7 +5,7 @@ from jax import jit, vmap
 
 from bench import timer
 from operators import fourier
-from parameters import params
+from parameters import params, periodic_systems
 from rhs import get_rhs_no_lapl
 from sharding import sharding
 from velocity import get_norm
@@ -13,22 +13,25 @@ from velocity import get_norm
 
 @dataclass
 class Stepper:
-    ldt_1 = (
-        1 / params.step.dt
-        + (1 - params.step.implicitness) * fourier.lapl / params.phys.re
-    )
-    ildt_2 = 1 / (
-        1 / params.step.dt
-        - params.step.implicitness * fourier.lapl / params.phys.re
-    )
+    if params.phys.system in periodic_systems:
+        ldt_1 = (
+            1 / params.step.dt
+            + (1 - params.step.implicitness) * fourier.lapl / params.phys.re
+        )
+        ildt_2 = 1 / (
+            1 / params.step.dt
+            - params.step.implicitness * fourier.lapl / params.phys.re
+        )
 
-    # Set the mean mode to zero, it is passive
-    ldt_1 = ldt_1.at[sharding.scalar_mean_mode].set(
-        0, out_sharding=sharding.spec_scalar_shard
-    )
-    ildt_2 = ildt_2.at[sharding.scalar_mean_mode].set(
-        0, out_sharding=sharding.spec_scalar_shard
-    )
+        # Set the mean mode to zero, it is passive
+        ldt_1 = ldt_1.at[sharding.scalar_mean_mode].set(
+            0, out_sharding=sharding.spec_scalar_shard
+        )
+        ildt_2 = ildt_2.at[sharding.scalar_mean_mode].set(
+            0, out_sharding=sharding.spec_scalar_shard
+        )
+    else:
+        raise NotImplementedError
 
 
 stepper = Stepper()
@@ -65,7 +68,8 @@ def iterate_correction(
     ky,
     kz,
     inv_lapl,
-    metric,
+    k_metric,
+    ys,
     ildt_2,
 ):
     rhs_no_lapl_next = get_rhs_no_lapl(
@@ -80,7 +84,7 @@ def iterate_correction(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
     )
 
-    error = get_norm(correction, metric)
+    error = get_norm(correction, k_metric, ys)
 
     return prediction_next, rhs_no_lapl_next, error
 
@@ -93,7 +97,8 @@ def predict_and_correct(
     ky,
     kz,
     inv_lapl,
-    metric,
+    k_metric,
+    ys,
     ldt_1,
     ildt_2,
 ):
@@ -118,6 +123,6 @@ def predict_and_correct(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2
     )
 
-    error = get_norm(correction, metric)
+    error = get_norm(correction, k_metric, ys)
 
     return prediction, rhs_no_lapl_next, error

@@ -22,7 +22,7 @@ def main():
 
     import bench
     from operators import fourier, phys_to_spec
-    from rhs import force
+    from rhs import flow, force
     from sharding import sharding
     from stats import get_stats
     from timestep import iterate_correction, predict_and_correct, stepper
@@ -82,7 +82,8 @@ def main():
     stats = get_stats(
         velocity_spec,
         fourier.lapl,
-        fourier.metric,
+        fourier.k_metric,
+        flow.ys,
     )
 
     sharding.print(
@@ -111,7 +112,8 @@ def main():
             stats = get_stats(
                 velocity_spec,
                 fourier.lapl,
-                fourier.metric,
+                fourier.k_metric,
+                flow.ys,
             )
             c_per_it = c_tot / (it - params.init.it0)
 
@@ -131,7 +133,8 @@ def main():
             fourier.ky,
             fourier.kz,
             fourier.inv_lapl,
-            fourier.metric,
+            fourier.k_metric,
+            flow.ys,
             stepper.ldt_1,
             stepper.ildt_2,
         )
@@ -152,7 +155,8 @@ def main():
                 fourier.ky,
                 fourier.kz,
                 fourier.inv_lapl,
-                fourier.metric,
+                fourier.k_metric,
+                flow.ys,
                 stepper.ildt_2,
             )
             c += 1
@@ -169,7 +173,8 @@ def main():
             fourier.ky,
             fourier.kz,
             fourier.inv_lapl,
-            fourier.metric,
+            fourier.k_metric,
+            flow.ys,
         )
 
         t += params.step.dt
@@ -204,7 +209,8 @@ def main():
         stats = get_stats(
             velocity_spec,
             fourier.lapl,
-            fourier.metric,
+            fourier.k_metric,
+            flow.ys,
         )
         c_per_it = c_tot / (it - params.init.it0)
 

@@ -11,17 +11,17 @@ from operators import (
     phys_to_spec,
     spec_to_phys,
 )
-from parameters import params
+from parameters import cartesian_systems, params
 from sharding import sharding
 
 
 @dataclass
 class Force:
     # Physics
-    if params.phys.forcing in ["kolmogorov", "waleffe"]:
+    if params.phys.system in ["kolmogorov", "waleffe"]:
         if params.res.ny < 4:
             sharding.print(
-                f"{params.phys.forcing} cannot work "
+                f"{params.phys.system} cannot work "
                 "with less than 4 modes in y."
             )
             sharding.exit(code=1)
@@ -35,20 +35,32 @@ class Force:
 
         forced_modes = ((ic_f, ic_f), (qf, -qf), (0, 0), (0, 0))
 
-        if params.phys.forcing == "kolmogorov":
+        if params.phys.system == "kolmogorov":
             unit_force = jnp.array([-0.5j, 0.5j], dtype=sharding.complex_type)
-        elif params.phys.forcing == "waleffe":
+        elif params.phys.system == "waleffe":
             unit_force = jnp.array([0.5, 0.5], dtype=sharding.complex_type)
 
-            sharding.print("Waleffe flow is not yet implemented.")
-            sharding.exit(code=1)
+            sharding.print(
+                "Waleffe flow needs the Ry symmetry,"
+                "which is not yet implemented."
+            )
+            raise NotImplementedError
 
     else:
         on = False
         unit_force = None
 
 
+@dataclass
+class Flow:
+    if params.phys.system in cartesian_systems:
+        ys = -jnp.cos(jnp.arange(params.res.ny) * jnp.pi / (params.res.ny - 1))
+    else:
+        ys = None
+
+
 force = Force()
+flow = Flow()
 
 
 def get_rhs_no_lapl(

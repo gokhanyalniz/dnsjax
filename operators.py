@@ -30,7 +30,7 @@ class Fourier:
     qy = complex_harmonics(params.res.ny).reshape([-1, 1, 1])
     qz = complex_harmonics(params.res.nz).reshape([1, -1, 1])
 
-    metric = jnp.where(qx == 0, 1, 2)
+    k_metric = jnp.where(qx == 0, 1, 2)
 
     kx = qx * 2 * jnp.pi / params.geo.lx
     ky = qy * 2 * jnp.pi / params.geo.ly
@@ -109,3 +109,37 @@ def laplacian(data_spec, lapl_spec):
 
 def inverse_laplacian(data_spec, inv_lapl_spec):
     return inv_lapl_spec * data_spec
+
+
+def integrate_scalar(scalar_data, ys):
+    """
+    Composite Simpson's rule for non-uniform grids.
+    Requires an odd number of points (even number of intervals).
+    """
+
+    if len(ys) % 2 == 0:
+        sharding.print(
+            "Simpson integration is not yet implemented"
+            "for even # of grid points."
+        )
+        sharding.exit(code=1)
+
+    h = jnp.diff(ys)  # shape (N-1,)
+    h0 = h[:-1:2]  # left sub-intervals:  h0, h2, h4, ...
+    h1 = h[1::2]  # right sub-intervals: h1, h3, h5, ...
+
+    y0 = scalar_data[:-2:2]  # left points
+    y1 = scalar_data[1:-1:2]  # mid points
+    y2 = scalar_data[2::2]  # right points
+
+    hsum = h0 + h1
+    hprod = h0 * h1
+    h0divh1 = h0 / h1
+
+    panels = (hsum / 6) * (
+        y0 * (2 - 1 / h0divh1) + y1 * (hsum**2 / hprod) + y2 * (2 - h0divh1)
+    )
+    return jnp.sum(panels)
+
+
+integrate_vector = vmap(integrate_scalar, in_axes=(0, None))

@@ -2,7 +2,7 @@ from jax import numpy as jnp
 from jax import shard_map
 from jax.sharding import reshard
 
-from parameters import params
+from parameters import padded_res, params
 from sharding import sharding
 
 norm = "forward"
@@ -164,7 +164,7 @@ def _rfft3d(x):
 def _irfft3d(x):
 
     # Transform in y (x is sharded)
-    y = zeropad_fft(x, params.res.ny, 0)
+    y = zeropad_fft(x, padded_res.ny_padded, 0)
     y = shard_map(
         lambda a: jnp.fft.ifft(a, axis=0, norm="forward"),
         mesh=sharding.mesh,
@@ -173,7 +173,7 @@ def _irfft3d(x):
     )(y)
 
     # Transform in z (x is sharded)
-    y = zeropad_fft(y, params.res.nz, 1)
+    y = zeropad_fft(y, padded_res.nz_padded, 1)
     y = shard_map(
         lambda a: jnp.fft.ifft(a, axis=1, norm="forward"),
         mesh=sharding.mesh,
@@ -185,7 +185,7 @@ def _irfft3d(x):
     y = reshard(y, sharding.phys_scalar_shard)
 
     # Transform in x (z is sharded)
-    y = zeropad_rfft(y, params.res.nx // 2 + 1)
+    y = zeropad_rfft(y, padded_res.nx_padded // 2 + 1)
     y = shard_map(
         lambda a: jnp.fft.irfft(
             a,

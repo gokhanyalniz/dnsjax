@@ -7,6 +7,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
+periodic_systems = ["decaying-box", "kolmogorov", "waleffe"]
+cartesian_systems = ["plane-couette"]
+walled_systems = [*cartesian_systems]
+
+# TODO: Add physical sanity checks
+
 
 class Distribution(BaseModel):
     np: int = Field(ge=1, default=1)
@@ -17,7 +23,7 @@ class Physics(BaseModel):
     re: float = Field(gt=0, default=1000)  # Reynolds number
     # Kolmogorov: sine forcing
     # Waleffe: cosine forcing + Ry symmetry (not yet implemented)
-    forcing: Literal["none", "kolmogorov", "waleffe"] = "kolmogorov"
+    system: Literal[*periodic_systems, *walled_systems] = "kolmogorov"
     # (n + 1) / 2 oversampling in each direction
     # to dealias the n'th order nonlinearity
     # oversampling_factor = n + 1
