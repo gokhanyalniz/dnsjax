@@ -22,7 +22,7 @@ def main():
 
     import bench
     from operators import fourier, phys_to_spec
-    from rhs import flow, force
+    from rhs import flow
     from sharding import sharding
     from stats import get_stats
     from timestep import iterate_correction, predict_and_correct, stepper
@@ -34,10 +34,6 @@ def main():
             dtype=sharding.complex_type,
             out_sharding=sharding.spec_vector_shard,
         )
-        if force.on:
-            velocity_spec = velocity_spec.at[force.forced_modes].add(
-                force.unit_force * force.laminar_amplitude
-            )
 
     elif params.init.snapshot is not None:
         snapshot = jnp.load(params.init.snapshot)["velocity_phys"].astype(
@@ -47,6 +43,7 @@ def main():
             snapshot,
             sharding.phys_vector_shard,
         )
+        velocity_phys = velocity_phys.at[0].subtract(flow.base_flow)
         velocity_spec = phys_to_spec(velocity_phys)
 
     else:
