@@ -6,7 +6,7 @@ from jax import numpy as jnp
 from jax.sharding import AxisType
 from jax.sharding import PartitionSpec as P
 
-from parameters import padded_res, params, periodic_systems
+from .parameters import padded_res, params, periodic_systems
 
 
 @dataclass
@@ -40,9 +40,6 @@ class Sharding:
 
     jax.set_mesh(mesh)
 
-    vector_mean_mode = ((0, 1, 2), (0, 0, 0), (0, 0, 0), (0, 0, 0))
-    scalar_mean_mode = ((0, 0, 0), (0, 0, 0), (0, 0, 0))
-
     spec_vector_shard = P(None, None, None, *axis_names)
     spec_scalar_shard = P(None, None, *axis_names)
 
@@ -59,6 +56,10 @@ class Sharding:
         complex_type = jnp.complex64
 
     if params.phys.system in periodic_systems:
+        # The (ky, kz, kx) = (0, 0, 0) Fourier mode is the mean mode
+        vector_mean_mode = tuple([slice(None)] + [slice(0, 1)] * 3)
+        scalar_mean_mode = tuple([slice(0, 1)] * 3)
+
         spec_shape = (
             params.res.ny - 1,
             params.res.nz - 1,
@@ -71,6 +72,10 @@ class Sharding:
             padded_res.nx_padded,
         )
     else:
+        # The (kz, kx) = (0, 0) Fourier mode is the mean mode
+        vector_mean_mode = tuple([slice(None)] * 2 + [slice(0, 1)] * 2)
+        scalar_mean_mode = tuple([slice(None)] + [slice(0, 1)] * 2)
+
         spec_shape = (
             params.res.ny,
             params.res.nz - 1,

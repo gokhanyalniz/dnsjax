@@ -3,7 +3,7 @@ from time import perf_counter_ns
 
 import jax
 
-from parameters import params
+from .parameters import params
 
 timers = {}
 

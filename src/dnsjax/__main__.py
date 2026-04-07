@@ -8,7 +8,7 @@ from time import perf_counter_ns
 
 from pydantic_settings import CliApp
 
-from parameters import (
+from .parameters import (
     CLIParameters,
     padded_res,
     params,
@@ -20,13 +20,11 @@ from parameters import (
 def main():
     from jax import numpy as jnp
 
-    import bench
-    from operators import fourier, phys_to_spec
-    from rhs import flow
-    from sharding import sharding
-    from stats import get_stats
-    from timestep import iterate_correction, predict_and_correct, stepper
-    from velocity import correct_velocity
+    from .bench import ns_to_s, timers
+    from .flows.triply_periodic import correct_velocity, flow, get_stats
+    from .operators import fourier, phys_to_spec
+    from .sharding import sharding
+    from .timestep import iterate_correction, predict_and_correct
 
     if params.init.start_from_laminar:
         velocity_spec = jnp.zeros(
@@ -43,7 +41,7 @@ def main():
             snapshot,
             sharding.phys_vector_shard,
         )
-        velocity_phys = velocity_phys.at[0].subtract(flow.base_flow)
+        velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
         velocity_spec = phys_to_spec(velocity_phys)
 
     else:
@@ -53,7 +51,7 @@ def main():
     wall_time_stop = (
         jnp.inf
         if params.stop.max_wall_time is None
-        else int(params.stop.max_wall_time.total_seconds() / bench.ns_to_s)
+        else int(params.stop.max_wall_time.total_seconds() / ns_to_s)
     )
 
     t_stop = (
@@ -132,8 +130,11 @@ def main():
             fourier.inv_lapl,
             fourier.k_metric,
             flow.ys,
-            stepper.ldt_1,
-            stepper.ildt_2,
+            flow.ldt_1,
+            flow.ildt_2,
+            flow.base_flow,
+            flow.curl_base_flow,
+            flow.nonlin_base_flow,
         )
         c = 0
 
@@ -154,7 +155,10 @@ def main():
                 fourier.inv_lapl,
                 fourier.k_metric,
                 flow.ys,
-                stepper.ildt_2,
+                flow.ildt_2,
+                flow.base_flow,
+                flow.curl_base_flow,
+                flow.nonlin_base_flow,
             )
             c += 1
 
@@ -195,10 +199,10 @@ def main():
     sharding.print("Stopped timestepping at", datetime.now())
 
     wall_time_now = perf_counter_ns()
-    alive_time = bench.ns_to_s * (wall_time_now - wall_time_start)
+    alive_time = ns_to_s * (wall_time_now - wall_time_start)
     sharding.print(f"Job has been alive for {alive_time:.2f}s.")
     if it > params.init.it0 + 1:
-        wall_time = bench.ns_to_s * (wall_time_now - bench_delta - bench_start)
+        wall_time = ns_to_s * (wall_time_now - bench_delta - bench_start)
         wall_time_per_sim_time = wall_time / (t - dt_first - params.init.t0)
         wall_time_per_rhs = wall_time / rhs_tot
 
@@ -222,7 +226,7 @@ def main():
         )
 
         if params.debug.time_functions and main_device:
-            pp(bench.timers, sort_dicts=True)
+            pp(timers, sort_dicts=True)
 
         if sharding.n_devices > 1:
             sharding.print(

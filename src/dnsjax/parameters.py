@@ -1,15 +1,18 @@
 import tomllib
 from dataclasses import dataclass
 from datetime import timedelta
+from math import pi
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
-periodic_systems = ["decaying-box", "kolmogorov", "waleffe"]
+monochromatic_systems = ["kolmogorov", "waleffe"]
+periodic_systems = ["decaying-box", *monochromatic_systems]
+
 cartesian_systems = ["plane-couette"]
-walled_systems = [*cartesian_systems]
+walled_systems = [*cartesian_systems, "pipe"]
 
 # TODO: Add physical sanity checks
 
@@ -34,10 +37,7 @@ class Physics(BaseModel):
 class Geometry(BaseModel):
     lx: float = Field(gt=0, default=4.0)
     lz: float = Field(gt=0, default=4.0)
-    # ... in units where Ly = 4.0 is fixed.
-    # Ly *is* fixed, but still kept here for generality.
-    # Do not change for Kolmogorov/Waleffe flow!
-    ly: float = Field(gt=0, default=4.0)
+    tilt_degree: float = Field(gt=-180, le=180, default=0)
 
 
 class Resolution(BaseModel):
@@ -102,7 +102,16 @@ class CLIParameters(
     which overrides the default parameters."""
 
 
+@dataclass
+class DerivedParameters:
+    ly: float = 2
+    tilt_rad: float = 0
+    tilt: bool = False
+    tilt_90: bool = False
+
+
 params = Parameters()
+derived_params = DerivedParameters()
 
 
 def read_parameters(path: Path) -> Parameters:
@@ -117,6 +126,33 @@ def update_parameters(params_new: Parameters):
             for key, value in dict.items():
                 if value is not None:
                     setattr(getattr(params, category), key, value)
+
+    # Set derived parameters:
+    system = params.phys.system
+    if system in periodic_systems:
+        derived_params.ly = 4
+    elif system in cartesian_systems or system == "pipe":
+        derived_params.ly = 2
+    else:
+        raise NotImplementedError
+
+    derived_params.tilt_rad = pi * params.geo.tilt_degree / 180
+
+    if (
+        abs(params.geo.tilt_degree) == 0
+        or abs(params.geo.tilt_degree - 180) == 0
+    ):
+        derived_params.tilt = False
+        derived_params.tilt_90 = False
+    elif (
+        abs(params.geo.tilt_degree + 90) == 0
+        or abs(params.geo.tilt_degree - 90) == 0
+    ):
+        derived_params.tilt = True
+        derived_params.tilt_90 = True
+    else:
+        derived_params.tilt = True
+        derived_params.tilt_90 = False
 
 
 @dataclass

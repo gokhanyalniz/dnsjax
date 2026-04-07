@@ -1,40 +1,11 @@
-from dataclasses import dataclass
 from functools import partial
 
 from jax import jit, vmap
 
-from bench import timer
-from operators import fourier
-from parameters import params, periodic_systems
-from rhs import get_rhs_no_lapl
-from sharding import sharding
-from velocity import get_norm
-
-
-@dataclass
-class Stepper:
-    if params.phys.system in periodic_systems:
-        ldt_1 = (
-            1 / params.step.dt
-            + (1 - params.step.implicitness) * fourier.lapl / params.phys.re
-        )
-        ildt_2 = 1 / (
-            1 / params.step.dt
-            - params.step.implicitness * fourier.lapl / params.phys.re
-        )
-
-        # Set the mean mode to zero, it is passive
-        ldt_1 = ldt_1.at[sharding.scalar_mean_mode].set(
-            0, out_sharding=sharding.spec_scalar_shard
-        )
-        ildt_2 = ildt_2.at[sharding.scalar_mean_mode].set(
-            0, out_sharding=sharding.spec_scalar_shard
-        )
-    else:
-        raise NotImplementedError
-
-
-stepper = Stepper()
+from .bench import timer
+from .parameters import params
+from .rhs import get_rhs_no_lapl
+from .velocity import get_norm
 
 
 @partial(vmap, in_axes=(0, 0, None, None))
@@ -71,6 +42,9 @@ def iterate_correction(
     k_metric,
     ys,
     ildt_2,
+    base_flow,
+    curl_base_flow,
+    nonlin_base_flow,
 ):
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
@@ -78,6 +52,9 @@ def iterate_correction(
         ky,
         kz,
         inv_lapl,
+        base_flow,
+        curl_base_flow,
+        nonlin_base_flow,
     )
 
     prediction_next, correction = get_correction(
@@ -101,6 +78,9 @@ def predict_and_correct(
     ys,
     ldt_1,
     ildt_2,
+    base_flow,
+    curl_base_flow,
+    nonlin_base_flow,
 ):
 
     rhs_no_lapl_prev = get_rhs_no_lapl(
@@ -109,6 +89,9 @@ def predict_and_correct(
         ky,
         kz,
         inv_lapl,
+        base_flow,
+        curl_base_flow,
+        nonlin_base_flow,
     )
     prediction = get_prediction(velocity_spec, rhs_no_lapl_prev, ldt_1, ildt_2)
 
@@ -118,6 +101,9 @@ def predict_and_correct(
         ky,
         kz,
         inv_lapl,
+        base_flow,
+        curl_base_flow,
+        nonlin_base_flow,
     )
     prediction, correction = get_correction(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2

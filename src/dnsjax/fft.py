@@ -2,8 +2,8 @@ from jax import numpy as jnp
 from jax import shard_map
 from jax.sharding import reshard
 
-from parameters import padded_res, params
-from sharding import sharding
+from .parameters import padded_res, params
+from .sharding import sharding
 
 norm = "forward"
 

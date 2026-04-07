@@ -4,9 +4,9 @@ import jax
 from jax import jit, vmap
 from jax import numpy as jnp
 
-from fft import _irfft3d, _rfft3d
-from parameters import params
-from sharding import sharding
+from .fft import _irfft3d, _rfft3d
+from .parameters import derived_params, params, periodic_systems
+from .sharding import sharding
 
 
 @dataclass
@@ -23,21 +23,38 @@ class Fourier:
         qs_out = qs_out.at[n // 2 :].set(qs[n // 2 + 1 :])
         return qs_out
 
-    qx = jax.device_put(
-        real_harmonics(params.res.nx).reshape([1, 1, -1]),
-        sharding.spec_scalar_shard,
+    kx = (
+        jax.device_put(
+            real_harmonics(params.res.nx).reshape([1, 1, -1]),
+            sharding.spec_scalar_shard,
+        )
+        * 2
+        * jnp.pi
+        / params.geo.lx
     )
-    qy = complex_harmonics(params.res.ny).reshape([-1, 1, 1])
-    qz = complex_harmonics(params.res.nz).reshape([1, -1, 1])
+    kz = (
+        complex_harmonics(params.res.nz).reshape([1, -1, 1])
+        * 2
+        * jnp.pi
+        / params.geo.lz
+    )
 
-    k_metric = jnp.where(qx == 0, 1, 2)
+    k_metric = jnp.where(kx == 0, 1, 2)
 
-    kx = qx * 2 * jnp.pi / params.geo.lx
-    ky = qy * 2 * jnp.pi / params.geo.ly
-    kz = qz * 2 * jnp.pi / params.geo.lz
+    if params.phys.system in periodic_systems:
+        ky = (
+            complex_harmonics(params.res.ny).reshape([-1, 1, 1])
+            * 2
+            * jnp.pi
+            / derived_params.ly
+        )
 
-    lapl = -(kx**2 + ky**2 + kz**2)
-    inv_lapl = jnp.where(lapl < 0, 1 / lapl, 0)
+        lapl = -(kx**2 + ky**2 + kz**2)
+        inv_lapl = jnp.where(lapl < 0, 1 / lapl, 0)
+    else:
+        ky = None
+        lapl = -(kx**2 + kz**2)
+        inv_lapl = None
 
 
 fourier = Fourier()
@@ -111,7 +128,7 @@ def inverse_laplacian(data_spec, inv_lapl_spec):
     return inv_lapl_spec * data_spec
 
 
-def integrate_scalar(scalar_data, ys):
+def integrate_scalar_in_y(scalar_data, ys):
     """
     Composite Simpson's rule for non-uniform grids.
     Requires an odd number of points (even number of intervals).
@@ -140,6 +157,3 @@ def integrate_scalar(scalar_data, ys):
         y0 * (2 - 1 / h0divh1) + y1 * (hsum**2 / hprod) + y2 * (2 - h0divh1)
     )
     return jnp.sum(panels)
-
-
-integrate_vector = vmap(integrate_scalar, in_axes=(0, None))
