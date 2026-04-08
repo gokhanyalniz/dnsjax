@@ -198,3 +198,64 @@ def _irfft3d(x):
     )(y)
 
     return y
+
+
+def _rfft2d(x):
+    # Transform in x (z is sharded)
+    # Truncates the Nyquist mode as well
+    y = truncate_rfft(
+        shard_map(
+            lambda a: jnp.fft.rfft(a, axis=2, norm="forward"),
+            mesh=sharding.mesh,
+            in_specs=sharding.phys_scalar_shard,
+            out_specs=sharding.phys_scalar_shard,
+        )(x),
+        params.res.nx // 2,
+    )
+
+    # Reshard
+    y = reshard(y, sharding.spec_scalar_shard)
+
+    # Transform in z (x is sharded)
+    y = truncate_fft(
+        shard_map(
+            lambda a: jnp.fft.fft(a, axis=1, norm="forward"),
+            mesh=sharding.mesh,
+            in_specs=sharding.spec_scalar_shard,
+            out_specs=sharding.spec_scalar_shard,
+        )(y),
+        params.res.nz,
+        1,
+    )
+
+    return y
+
+
+def _irfft2d(x):
+
+    # Transform in z (x is sharded)
+    y = zeropad_fft(x, padded_res.nz_padded, 1)
+    y = shard_map(
+        lambda a: jnp.fft.ifft(a, axis=1, norm="forward"),
+        mesh=sharding.mesh,
+        in_specs=sharding.spec_scalar_shard,
+        out_specs=sharding.spec_scalar_shard,
+    )(y)
+
+    # Reshard
+    y = reshard(y, sharding.phys_scalar_shard)
+
+    # Transform in x (z is sharded)
+    y = zeropad_rfft(y, padded_res.nx_padded // 2 + 1)
+    y = shard_map(
+        lambda a: jnp.fft.irfft(
+            a,
+            axis=2,
+            norm=norm,
+        ),
+        mesh=sharding.mesh,
+        in_specs=sharding.phys_scalar_shard,
+        out_specs=sharding.phys_scalar_shard,
+    )(y)
+
+    return y

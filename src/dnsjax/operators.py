@@ -4,7 +4,7 @@ import jax
 from jax import jit, vmap
 from jax import numpy as jnp
 
-from .fft import _irfft3d, _rfft3d
+from .fft import _irfft2d, _irfft3d, _rfft2d, _rfft3d
 from .parameters import derived_params, params, periodic_systems
 from .sharding import sharding
 
@@ -63,9 +63,15 @@ fourier = Fourier()
 @jit
 @vmap
 def phys_to_spec(velocity_phys):
-    velocity_spec = _rfft3d(
-        velocity_phys,
-    )
+
+    if params.phys.system in periodic_systems:
+        velocity_spec = _rfft3d(
+            velocity_phys,
+        )
+    else:
+        velocity_spec = _rfft2d(
+            velocity_phys,
+        )
 
     return velocity_spec
 
@@ -74,9 +80,14 @@ def phys_to_spec(velocity_phys):
 @vmap
 def spec_to_phys(velocity_spec):
 
-    velocity_phys = _irfft3d(
-        velocity_spec,
-    )
+    if params.phys.system in periodic_systems:
+        velocity_phys = _irfft3d(
+            velocity_spec,
+        )
+    else:
+        velocity_phys = _irfft2d(
+            velocity_spec,
+        )
 
     return velocity_phys
 
