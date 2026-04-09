@@ -63,9 +63,6 @@ class TriplyPeriodicFlow:
     curl_base_flow = jnp.zeros(
         (3, padded_res.ny_padded), dtype=sharding.float_type
     )[:, :, None, None]
-    nonlin_base_flow = jnp.zeros(
-        (3, padded_res.ny_padded), dtype=sharding.float_type
-    )[:, :, None, None]
 
     base_flow = base_flow.at[0].set(
         jnp.fft.irfft(
@@ -78,9 +75,6 @@ class TriplyPeriodicFlow:
         )[:, None, None]
     )
     curl_base_flow = curl_base_flow.at[2].set(-dy_base_flow[0])
-    nonlin_base_flow = nonlin_base_flow.at[1].set(
-        base_flow[0] * dy_base_flow[0]
-    )
 
     tilt_rad = derived_params.tilt_rad
     if jnp.abs(tilt_rad) != 0:

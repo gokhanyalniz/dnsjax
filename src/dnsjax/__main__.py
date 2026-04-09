@@ -134,7 +134,6 @@ def main():
             flow.ildt_2,
             flow.base_flow,
             flow.curl_base_flow,
-            flow.nonlin_base_flow,
         )
         c = 0
 
@@ -158,7 +157,6 @@ def main():
                 flow.ildt_2,
                 flow.base_flow,
                 flow.curl_base_flow,
-                flow.nonlin_base_flow,
             )
             c += 1
 

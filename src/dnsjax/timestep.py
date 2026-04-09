@@ -44,7 +44,6 @@ def iterate_correction(
     ildt_2,
     base_flow,
     curl_base_flow,
-    nonlin_base_flow,
 ):
     rhs_no_lapl_next = get_rhs_no_lapl(
         prediction,
@@ -54,7 +53,6 @@ def iterate_correction(
         inv_lapl,
         base_flow,
         curl_base_flow,
-        nonlin_base_flow,
     )
 
     prediction_next, correction = get_correction(
@@ -80,7 +78,6 @@ def predict_and_correct(
     ildt_2,
     base_flow,
     curl_base_flow,
-    nonlin_base_flow,
 ):
 
     rhs_no_lapl_prev = get_rhs_no_lapl(
@@ -91,7 +88,6 @@ def predict_and_correct(
         inv_lapl,
         base_flow,
         curl_base_flow,
-        nonlin_base_flow,
     )
     prediction = get_prediction(velocity_spec, rhs_no_lapl_prev, ldt_1, ildt_2)
 
@@ -103,7 +99,6 @@ def predict_and_correct(
         inv_lapl,
         base_flow,
         curl_base_flow,
-        nonlin_base_flow,
     )
     prediction, correction = get_correction(
         prediction, rhs_no_lapl_prev, rhs_no_lapl_next, ildt_2

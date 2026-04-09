@@ -9,21 +9,23 @@ from .operators import (
 )
 
 
-def get_nonlin(
-    velocity_spec, kx, ky, kz, base_flow, curl_base_flow, nonlin_base_flow
-):
+def get_nonlin(velocity_spec, kx, ky, kz, base_flow, curl_base_flow):
 
     velocity_phys = spec_to_phys(velocity_spec)  # 3 FFTs
 
     vorticity_phys = spec_to_phys(curl(velocity_spec, kx, ky, kz))
     nonlin_phys = cross(velocity_phys, vorticity_phys)
 
-    # u x curl{U} + U x \omega + U x curl(U)
+    # The rotational form of the nonlinear term brings with it:
+    #   P -> p + |u_total|^2 / 2
+    # Replacing u_total with u + U, we're left with
+    #   u x curl{U} + U x \omega + U x curl(U)
+    # U x curl(U) can be written as \grad(U^2/2), so:
+    # P -> p + |u_total|^2 / 2 - U^2 / 2
 
+    # u x curl{U} + U x \omega
     nonlin_phys = nonlin_phys.at[...].add(
-        cross(velocity_phys, curl_base_flow)
-        + cross(base_flow, vorticity_phys)
-        + nonlin_base_flow
+        cross(velocity_phys, curl_base_flow) + cross(base_flow, vorticity_phys)
     )
 
     nonlin = phys_to_spec(nonlin_phys)
@@ -39,11 +41,15 @@ def get_rhs_no_lapl(
     inv_lapl,
     base_flow,
     curl_base_flow,
-    nonlin_base_flow,
 ):
 
     nonlin = get_nonlin(
-        velocity_spec, kx, ky, kz, base_flow, curl_base_flow, nonlin_base_flow
+        velocity_spec,
+        kx,
+        ky,
+        kz,
+        base_flow,
+        curl_base_flow,
     )
 
     # Poisson problem for pressure
