@@ -78,9 +78,9 @@ def make_stepper(
         iterations (if the error exceeds tolerance) are handled by
         ``iterate_correction``.
 
-        **Functional Purity Exception:** This JIT-compiled function overrides the 
+        **Functional Purity Exception:** This JIT-compiled function overrides the
         XLA buffers (via `donate_argnums=0`) of the inputs to save memory at runtime.
-        While typical JAX code implies functional purity, treating the `state` 
+        While typical JAX code implies functional purity, treating the `state`
         outside of this return block will yield corrupted values due to buffer reuse.
         """
         rhs_prev = get_rhs_fn(state)
