@@ -18,6 +18,8 @@ from .parameters import (
 
 
 def main():
+    import subprocess
+
     from jax import numpy as jnp
 
     from .bench import ns_to_s, timers
@@ -25,6 +27,13 @@ def main():
     from .operators import fourier, phys_to_spec
     from .sharding import sharding
     from .timestep import iterate_correction, predict_and_correct
+
+    rdma_check = subprocess.run(
+        ["cat", "/sys/module/nvidia_peermem/refcnt"],
+        capture_output=True,
+        text=True,
+    )
+    print(f"nvidia_peermem refcnt: {rdma_check.stdout.strip()}")
 
     if params.init.start_from_laminar:
         velocity_spec = jnp.zeros(
