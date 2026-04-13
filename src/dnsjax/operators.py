@@ -17,9 +17,10 @@ from jax import numpy as jnp
 
 from .fft import _irfft2d, _irfft3d, _rfft2d, _rfft3d
 from .parameters import derived_params, params, periodic_systems
-from .sharding import sharding
+from .sharding import sharding, register_dataclass_pytree
 
 
+@register_dataclass_pytree
 @dataclass
 class Fourier:
     """Wavenumber grids, spectral Laplacian, and energy-integral metric.

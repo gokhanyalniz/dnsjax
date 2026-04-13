@@ -21,11 +21,12 @@ from ..operators import (
 )
 from ..parameters import params
 from ..rhs import get_nonlin
-from ..sharding import sharding
+from ..sharding import sharding, register_dataclass_pytree
 from ..timestep import make_stepper
 from ..velocity import get_norm2
 
 
+@register_dataclass_pytree
 @dataclass
 class PlaneCouetteFlow:
     """Precomputed data for plane Couette flow."""
@@ -184,6 +185,7 @@ def _lu_solve(lu_pivots: tuple[Array, Array], b: Array) -> Array:
         return sla.lu_solve(lu_piv, vec)
     return jax.vmap(jax.vmap(solve_single))(lu_pivots, b)
 
+@register_dataclass_pytree
 @dataclass
 class DenseJAXSolver:
     """The current mathematically optimal dense LU cache."""
@@ -200,6 +202,7 @@ class DenseJAXSolver:
     def solve(self, rhs: Array) -> Array:
         return _lu_solve((self.lu, self.piv), rhs)
 
+@register_dataclass_pytree
 @dataclass
 class LineaxBandedSolver:
     """The Lineax sparse operator path."""
@@ -232,7 +235,7 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
         flow.nonlin_base_flow,
         spec_to_phys_2d,
         phys_to_spec_2d,
-        _curl_fn,
+        lambda s: _curl_fn(s, fourier, flow),
     )
 
     u, v, w = velocity_spec
@@ -300,17 +303,17 @@ def init_state(snapshot: str | None) -> tuple[Array, Array]:
     return velocity_spec, pressure_spec
 
 
-def _curl_fn(state: Array) -> Array:
+def _curl_fn(state: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
     """Spectral curl with 1D FD in y and spectral derivatives in x and z."""
     u, v, w = state
 
-    dy_u = jnp.tensordot(flow.D1, u, axes=(1, 0))
-    dy_w = jnp.tensordot(flow.D1, w, axes=(1, 0))
+    dy_u = jnp.tensordot(flow_.D1, u, axes=(1, 0))
+    dy_w = jnp.tensordot(flow_.D1, w, axes=(1, 0))
 
-    dx_v = 1j * fourier.kx * v
-    dz_v = 1j * fourier.kz * v
-    dx_w = 1j * fourier.kx * w
-    dz_u = 1j * fourier.kz * u
+    dx_v = 1j * fourier_.kx * v
+    dz_v = 1j * fourier_.kz * v
+    dx_w = 1j * fourier_.kx * w
+    dz_u = 1j * fourier_.kz * u
 
     omega_x = dy_w - dz_v
     omega_y = dz_u - dx_w
@@ -319,17 +322,17 @@ def _curl_fn(state: Array) -> Array:
     return jnp.array([omega_x, omega_y, omega_z])
 
 
-def _get_rhs(state: tuple[Array, Array]) -> Array:
+def _get_rhs(state: tuple[Array, Array], fourier_: typing.Any, flow_: typing.Any) -> Array:
     """Evaluate non-linear RHS terms."""
     velocity_spec, _ = state
     nonlin = get_nonlin(
         velocity_spec,
-        flow.base_flow,
-        flow.curl_base_flow,
-        flow.nonlin_base_flow,
+        flow_.base_flow,
+        flow_.curl_base_flow,
+        flow_.nonlin_base_flow,
         spec_to_phys_2d,
         phys_to_spec_2d,
-        _curl_fn,
+        lambda s: _curl_fn(s, fourier_, flow_),
     )
     return nonlin
 
@@ -345,6 +348,8 @@ def _imm_iteration(
     pressure_j: Array,
     nonlin_n: Array,
     nonlin_j: Array,
+    fourier_: typing.Any,
+    flow_: typing.Any,
 ) -> tuple[tuple[Array, Array], Array]:
     """Openpipeflow fractional-step algorithm (imm.tex, Section 5.2)."""
     c = params.step.implicitness
@@ -354,23 +359,23 @@ def _imm_iteration(
     Nu_j, Nv_j, Nw_j = nonlin_j
 
     # Pre-calculate d_hat^n
-    dy_v_n = jnp.tensordot(flow.D1, v_n, axes=(1, 0))
-    d_hat_n = 1j * fourier.kx * u_n + dy_v_n + 1j * fourier.kz * w_n
+    dy_v_n = jnp.tensordot(flow_.D1, v_n, axes=(1, 0))
+    d_hat_n = 1j * fourier_.kx * u_n + dy_v_n + 1j * fourier_.kz * w_n
 
     # Stage 1: Solve for v^{(j+1)}
-    dy_p_j = jnp.tensordot(flow.D1, pressure_j, axes=(1, 0))
-    Rv = _einsum_4d(flow.Hk_minus, v_n) - dy_p_j + c * Nv_j + (1 - c) * Nv_n
+    dy_p_j = jnp.tensordot(flow_.D1, pressure_j, axes=(1, 0))
+    Rv = _einsum_4d(flow_.Hk_minus, v_n) - dy_p_j + c * Nv_j + (1 - c) * Nv_n
     Rv_b = jnp.transpose(Rv, (1, 2, 0))
-    v_new_b = flow.Hk_solver.solve(Rv_b)
+    v_new_b = flow_.Hk_solver.solve(Rv_b)
     v_new = jnp.transpose(v_new_b, (2, 0, 1))
 
     # Stage 2: Residuals and RHS for pressure
-    dy_Nv_j = jnp.tensordot(flow.D1, Nv_j, axes=(1, 0))
-    dy_Nv_n = jnp.tensordot(flow.D1, Nv_n, axes=(1, 0))
-    div_Nj = 1j * fourier.kx * Nu_j + dy_Nv_j + 1j * fourier.kz * Nw_j
-    div_Nn = 1j * fourier.kx * Nu_n + dy_Nv_n + 1j * fourier.kz * Nw_n
+    dy_Nv_j = jnp.tensordot(flow_.D1, Nv_j, axes=(1, 0))
+    dy_Nv_n = jnp.tensordot(flow_.D1, Nv_n, axes=(1, 0))
+    div_Nj = 1j * fourier_.kx * Nu_j + dy_Nv_j + 1j * fourier_.kz * Nw_j
+    div_Nn = 1j * fourier_.kx * Nu_n + dy_Nv_n + 1j * fourier_.kz * Nw_n
 
-    Lk_d = _einsum_4d(flow.Lk, d_hat_n)
+    Lk_d = _einsum_4d(flow_.Lk, d_hat_n)
 
     f_hat = (
         d_hat_n / params.step.dt
@@ -379,8 +384,8 @@ def _imm_iteration(
         + (1 - c) * (1.0 / params.phys.re) * Lk_d
     )
 
-    D2_v_new = jnp.tensordot(flow.D2, v_new, axes=(1, 0))
-    Lk_v_n = _einsum_4d(flow.Lk, v_n)
+    D2_v_new = jnp.tensordot(flow_.D2, v_new, axes=(1, 0))
+    Lk_v_n = _einsum_4d(flow_.Lk, v_n)
 
     g_full = (
         v_n / params.step.dt
@@ -396,34 +401,34 @@ def _imm_iteration(
     f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
 
     f_hat_P_b = jnp.transpose(f_hat_P, (1, 2, 0))
-    pP_b = flow.Lk_solver.solve(f_hat_P_b)
+    pP_b = flow_.Lk_solver.solve(f_hat_P_b)
     pP = jnp.transpose(pP_b, (2, 0, 1))
 
-    r_bot = -flow.k2 * pP[0] + g_0
-    r_top = -flow.k2 * pP[-1] + g_1
+    r_bot = -flow_.k2 * pP[0] + g_0
+    r_top = -flow_.k2 * pP[-1] + g_1
     r = jnp.stack([r_bot, r_top], axis=-1)
 
-    alpha = jnp.einsum("zxab, zxb -> zxa", flow.M_inv, r)
+    alpha = jnp.einsum("zxab, zxb -> zxa", flow_.M_inv, r)
     alpha1 = alpha[..., 0][..., None]
     alpha2 = alpha[..., 1][..., None]
 
     p_new_b = (
-        jnp.transpose(pP, (1, 2, 0)) + alpha1 * flow.p1 + alpha2 * flow.p2
+        jnp.transpose(pP, (1, 2, 0)) + alpha1 * flow_.p1 + alpha2 * flow_.p2
     )
     p_new = jnp.transpose(p_new_b, (2, 0, 1))
 
     # Stage 4: Solve for u and w
-    dx_p_new = 1j * fourier.kx * p_new
-    dz_p_new = 1j * fourier.kz * p_new
+    dx_p_new = 1j * fourier_.kx * p_new
+    dz_p_new = 1j * fourier_.kz * p_new
 
-    Ru = _einsum_4d(flow.Hk_minus, u_n) - dx_p_new + c * Nu_j + (1 - c) * Nu_n
-    Rw = _einsum_4d(flow.Hk_minus, w_n) - dz_p_new + c * Nw_j + (1 - c) * Nw_n
+    Ru = _einsum_4d(flow_.Hk_minus, u_n) - dx_p_new + c * Nu_j + (1 - c) * Nu_n
+    Rw = _einsum_4d(flow_.Hk_minus, w_n) - dz_p_new + c * Nw_j + (1 - c) * Nw_n
 
     Ru_b = jnp.transpose(Ru, (1, 2, 0))
     Rw_b = jnp.transpose(Rw, (1, 2, 0))
 
-    u_new_b = flow.Hk_solver.solve(Ru_b)
-    w_new_b = flow.Hk_solver.solve(Rw_b)
+    u_new_b = flow_.Hk_solver.solve(Ru_b)
+    w_new_b = flow_.Hk_solver.solve(Rw_b)
 
     u_new = jnp.transpose(u_new_b, (2, 0, 1))
     w_new = jnp.transpose(w_new_b, (2, 0, 1))
@@ -437,14 +442,14 @@ def _imm_iteration(
 
 
 def _predict(
-    state: tuple[Array, Array], rhs_no_lapl: Array
+    state: tuple[Array, Array], rhs_no_lapl: Array, fourier_: typing.Any, flow_: typing.Any
 ) -> tuple[Array, Array]:
     """Euler predictor step mapping j=0 over Openpipeflow IMM."""
     velocity_n, pressure_n = state
     nonlin_n = rhs_no_lapl
 
     prediction_state, _ = _imm_iteration(
-        velocity_n, velocity_n, pressure_n, nonlin_n, nonlin_n
+        velocity_n, velocity_n, pressure_n, nonlin_n, nonlin_n, fourier_, flow_
     )
     return prediction_state
 
@@ -454,6 +459,8 @@ def _correct(
     prediction_state: tuple[Array, Array],
     rhs_prev: Array,
     rhs_next: Array,
+    fourier_: typing.Any,
+    flow_: typing.Any
 ) -> tuple[tuple[Array, Array], Array]:
     """Crank-Nicolson corrector mapping j>0 over Openpipeflow IMM."""
     velocity_n, _ = state_prev
@@ -463,19 +470,26 @@ def _correct(
     nonlin_j = rhs_next
 
     prediction_state_new, correction = _imm_iteration(
-        velocity_n, velocity_j, pressure_j, nonlin_n, nonlin_j
+        velocity_n, velocity_j, pressure_j, nonlin_n, nonlin_j, fourier_, flow_
     )
     return prediction_state_new, correction
 
 
-def _norm(correction: Array) -> Array:
+def _norm(correction: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
     """L2 convergence norm."""
-    return jnp.sqrt(get_norm2(correction, fourier.k_metric, flow.ys))
+    return jnp.sqrt(get_norm2(correction, fourier_.k_metric, flow_.ys))
 
 
-predict_and_correct, iterate_correction = make_stepper(
+_predict_and_correct_jit, _iterate_correction_jit = make_stepper(
     _get_rhs, _predict, _correct, _norm
 )
+
+def predict_and_correct(state: tuple[Array, Array]) -> tuple[tuple[Array, Array], Array, Array]:
+    return _predict_and_correct_jit(state, fourier, flow)
+
+def iterate_correction(state_prev: tuple[Array, Array], prediction: tuple[Array, Array], rhs_prev: Array):
+    return _iterate_correction_jit(state_prev, prediction, rhs_prev, fourier, flow)
+
 
 
 @timer("velocity/correct_velocity")

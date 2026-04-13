@@ -70,11 +70,12 @@ from ..parameters import (
     params,
 )
 from ..rhs import get_nonlin
-from ..sharding import sharding
+from ..sharding import sharding, register_dataclass_pytree
 from ..timestep import make_stepper
 from ..velocity import get_norm, get_norm2
 
 
+@register_dataclass_pytree
 @dataclass
 class TriplyPeriodicFlow:
     """Precomputed data for triply-periodic flows.
@@ -344,127 +345,117 @@ def _correct_component(
 # ── Flow-specific callables for the stepper factory ──────────────────────
 
 
-def _curl_fn(state: Array) -> Array:
+def _curl_fn(state: Array, fourier_: typing.Any) -> Array:
     """Spectral curl with wavenumbers bound from ``fourier``."""
-    return curl(state, fourier.kx, fourier.ky, fourier.kz)
+    return curl(state, fourier_.kx, fourier_.ky, fourier_.kz)
 
 
-def _get_rhs(state: Array) -> Array:
+def _get_rhs(state: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
     """Divergence-free RHS: nonlinear term + algebraic pressure projection."""
     nonlin = get_nonlin(
         state,
-        flow.base_flow,
-        flow.curl_base_flow,
-        flow.nonlin_base_flow,
+        flow_.base_flow,
+        flow_.curl_base_flow,
+        flow_.nonlin_base_flow,
         spec_to_phys,
         phys_to_spec,
-        _curl_fn,
+        lambda s: _curl_fn(s, fourier_),
     )
     # Poisson problem for pressure: `$\nabla^2 p = \nabla \cdot \mathbf{NL}$`
-    lapl_pressure = divergence(nonlin, fourier.kx, fourier.ky, fourier.kz)
+    lapl_pressure = divergence(nonlin, fourier_.kx, fourier_.ky, fourier_.kz)
     # Subtract pressure gradient to enforce incompressibility
     rhs_no_lapl = nonlin - gradient(
-        inverse_laplacian(lapl_pressure, fourier.inv_lapl),
-        fourier.kx,
-        fourier.ky,
-        fourier.kz,
+        inverse_laplacian(lapl_pressure, fourier_.inv_lapl),
+        fourier_.kx,
+        fourier_.ky,
+        fourier_.kz,
     )
     return rhs_no_lapl
 
 
-def _predict(state: Array, rhs_no_lapl: Array) -> Array:
+def _predict(state: Array, rhs_no_lapl: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
     """Euler predictor with algebraic Helmholtz inversion."""
-    return _predict_component(state, rhs_no_lapl, flow.ldt_1, flow.ildt_2)
+    return _predict_component(state, rhs_no_lapl, flow_.ldt_1, flow_.ildt_2)
 
 
 def _correct(
-    state_prev: Array, prediction: Array, rhs_prev: Array, rhs_next: Array
+    state_prev: Array, prediction: Array, rhs_prev: Array, rhs_next: Array, fourier_: typing.Any, flow_: typing.Any
 ) -> tuple[Array, Array]:
     """Crank-Nicolson corrector with algebraic Helmholtz inversion."""
-    return _correct_component(prediction, rhs_prev, rhs_next, flow.ildt_2)
+    return _correct_component(prediction, rhs_prev, rhs_next, flow_.ildt_2)
 
 
-def _norm(correction: Array) -> Array:
+def _norm(correction: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
     """L2 convergence norm."""
-    return get_norm(correction, fourier.k_metric, flow.ys)
+    return get_norm(correction, fourier_.k_metric, flow_.ys)
 
 
-predict_and_correct, iterate_correction = make_stepper(
+_predict_and_correct_jit, _iterate_correction_jit = make_stepper(
     _get_rhs, _predict, _correct, _norm
 )
+
+def predict_and_correct(state: Array) -> tuple[Array, Array, Array]:
+    return _predict_and_correct_jit(state, fourier, flow)
+
+def iterate_correction(state_prev: Array, prediction: Array, rhs_prev: Array):
+    return _iterate_correction_jit(state_prev, prediction, rhs_prev, fourier, flow)
+
 
 
 # ── Diagnostic statistics ────────────────────────────────────────────────
 
 
-def get_perturbation_energy(state: Array) -> Array:
+def get_perturbation_energy(state: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
     """Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
-    return get_norm2(state, fourier.k_metric, flow.ys) / 2
+    return get_norm2(state, fourier_.k_metric, flow_.ys) / 2
 
 
-def get_energy(perturbation_energy: Array, input: Array) -> Array:
-    """Total kinetic energy
-    `$E = \langle \mathbf{u}_{\text{tot}}, \mathbf{u}_{\text{tot}} \rangle / 2$`.
-
-    Reconstructed from the perturbation energy and the forcing input via
-    `$E = E' - E_{\text{lam}} + I / |F|$`.  For decaying-box flows
-    (no forcing),
-    `$E = E'$`.
-    """
+def get_energy(perturbation_energy: Array, input: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
+    """Total kinetic energy"""
     if params.phys.system in monochromatic_systems:
         return (
-            perturbation_energy - flow.ekin_lam + input / flow.force_amplitude
+            perturbation_energy - flow_.ekin_lam + input / flow_.force_amplitude
         )
     else:
         return perturbation_energy
 
 
-def get_enstrophy(state: Array, input: Array) -> Array:
-    """Total enstrophy times Re:
-    `$D\cdot\mathrm{Re} = \langle \nabla \mathbf{u}_{\text{tot}}, \nabla \mathbf{u}_{\text{tot}} \rangle$`.
-
-    Computed from the perturbation field using
-    `$D\cdot\mathrm{Re} = D'\cdot\mathrm{Re} + 2I\cdot\mathrm{Re} - I_{\text{lam}}\cdot\mathrm{Re}$`,
-    where `$D'\cdot\mathrm{Re}$` is the
-    perturbation enstrophy `$\sum(-\nabla^2 |\mathbf{u}'|^2)$`.
-    """
+def get_enstrophy(state: Array, input: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
+    """Total enstrophy times Re"""
     return (
         jnp.sum(
-            -laplacian(jnp.conj(state) * state, fourier.lapl),
+            -laplacian(jnp.conj(state) * state, fourier_.lapl),
             dtype=sharding.float_type,
         )
         + 2 * input * params.phys.re
-        - flow.input_lam * params.phys.re
+        - flow_.input_lam * params.phys.re
     )
 
 
-def get_dissipation(state: Array, input: Array) -> Array:
+def get_dissipation(state: Array, input: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
     """Total dissipation rate `$D = \text{enstrophy} / \mathrm{Re}$`."""
-    return get_enstrophy(state, input) / params.phys.re
+    return get_enstrophy(state, input, fourier_, flow_) / params.phys.re
 
 
-def get_input(state: Array) -> Array:
-    """Power input from the forcing:
-    `$I = \langle \mathbf{u}_{\text{tot}}, \mathbf{F} \rangle$`.
-    """
+def get_input(state: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
+    """Power input from the forcing"""
     return (
         jnp.sum(
-            jnp.conj(flow.unit_force * flow.force_amplitude)
-            * state.at[flow.forced_modes].get(out_sharding=sharding.no_shard),
+            jnp.conj(flow_.unit_force * flow_.force_amplitude)
+            * state.at[flow_.forced_modes].get(out_sharding=sharding.no_shard),
             dtype=sharding.float_type,
         )
-        + flow.input_lam
+        + flow_.input_lam
     )
 
 
-@timer("stats")
 @jit
-def get_stats(state: Array) -> dict[str, Array]:
+def _get_stats_jit(state: Array, fourier_: typing.Any, flow_: typing.Any) -> dict[str, Array]:
     """Compute diagnostic statistics: E, I, D, E'."""
-    perturbation_energy = get_perturbation_energy(state)
-    input = get_input(state)
-    dissipation = get_dissipation(state, input)
-    energy = get_energy(perturbation_energy, input)
+    perturbation_energy = get_perturbation_energy(state, fourier_, flow_)
+    input = get_input(state, fourier_, flow_)
+    dissipation = get_dissipation(state, input, fourier_, flow_)
+    energy = get_energy(perturbation_energy, input, fourier_, flow_)
 
     stats = {
         "E": energy,
@@ -476,35 +467,36 @@ def get_stats(state: Array) -> dict[str, Array]:
     return stats
 
 
+@timer("stats")
+def get_stats(state: Array) -> dict[str, Array]:
+    return _get_stats_jit(state, fourier, flow)
+
+
+
 # ── Divergence correction ────────────────────────────────────────────────
 
 
 def correct_divergence(
-    state: Array,
+    state: Array, fourier_: typing.Any, flow_: typing.Any
 ) -> tuple[Array, Array | None]:
-    """Project the velocity onto the divergence-free subspace.
-
-    Computes `$\mathbf{u}_{\text{corrected}} = \mathbf{u} - \nabla(\nabla^{-2}(\nabla \cdot \mathbf{u}))$`
-    and optionally
-    returns the L2 norm of the correction.
-    """
+    """Project the velocity onto the divergence-free subspace."""
     correction = -gradient(
         inverse_laplacian(
             divergence(
                 state,
-                fourier.kx,
-                fourier.ky,
-                fourier.kz,
+                fourier_.kx,
+                fourier_.ky,
+                fourier_.kz,
             ),
-            fourier.inv_lapl,
+            fourier_.inv_lapl,
         ),
-        fourier.kx,
-        fourier.ky,
-        fourier.kz,
+        fourier_.kx,
+        fourier_.ky,
+        fourier_.kz,
     )
 
     error = (
-        get_norm(correction, fourier.k_metric, flow.ys)
+        get_norm(correction, fourier_.k_metric, flow_.ys)
         if params.debug.measure_corrections
         else None
     )
@@ -513,31 +505,17 @@ def correct_divergence(
     return velocity_corrected, error
 
 
-@timer("velocity/correct_velocity")
 @jit(donate_argnums=0)
-def correct_velocity(
-    state: Array,
+def _correct_velocity_jit(
+    state: Array, fourier_: typing.Any, flow_: typing.Any
 ) -> tuple[Array, dict[str, Array | None] | None]:
-    """Apply divergence correction and zero out the passive mean mode.
-
-    The input buffer is donated (reused for the output).
-
-    Returns
-    -------
-    velocity_corrected:
-        Corrected velocity, shape ``(3, *spec_shape)``.
-    norm_corrections:
-        Dictionary with the divergence-correction norm (if measuring),
-        or ``None`` if diagnostics are disabled.
-    """
     norm_corrections = {}
     velocity_corrected = state
 
     if params.debug.correct_divergence:
-        velocity_corrected, error = correct_divergence(velocity_corrected)
+        velocity_corrected, error = correct_divergence(velocity_corrected, fourier_, flow_)
         norm_corrections["div"] = error
 
-    # Set the mean mode to zero, it is passive
     velocity_corrected = velocity_corrected.at[sharding.vector_mean_mode].set(
         0, out_sharding=sharding.spec_vector_shard
     )
@@ -546,3 +524,9 @@ def correct_velocity(
         norm_corrections = None
 
     return velocity_corrected, norm_corrections
+
+@timer("velocity/correct_velocity")
+def correct_velocity(
+    state: Array,
+) -> tuple[Array, dict[str, Array | None] | None]:
+    return _correct_velocity_jit(state, fourier, flow)

@@ -24,6 +24,37 @@ from jax.sharding import PartitionSpec as P
 
 from .parameters import padded_res, params, periodic_systems
 
+import dataclasses
+
+def register_dataclass_pytree(cls):
+    def _tree_flatten(obj):
+        children, aux_data = [], {}
+        for f in dataclasses.fields(cls):
+            val = getattr(obj, f.name)
+            if isinstance(val, (str, type(None))):
+                aux_data[f.name] = val
+            elif getattr(val, '__call__', None) is not None and not isinstance(val, (jax.Array, jnp.ndarray)):
+                aux_data[f.name] = val
+            else:
+                children.append(val)
+                aux_data[f.name] = True
+        return (tuple(children), aux_data)
+
+    def _tree_unflatten(aux_data, children):
+        obj = object.__new__(cls)
+        child_idx = 0
+        for f in dataclasses.fields(cls):
+            val_or_flag = aux_data.get(f.name)
+            if val_or_flag is True:
+                setattr(obj, f.name, children[child_idx])
+                child_idx += 1
+            else:
+                setattr(obj, f.name, val_or_flag)
+        return obj
+
+    jax.tree_util.register_pytree_node(cls, _tree_flatten, _tree_unflatten)
+    return cls
+
 
 @dataclass
 class Sharding:

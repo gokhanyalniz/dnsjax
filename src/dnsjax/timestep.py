@@ -21,13 +21,13 @@ from .bench import timer
 
 
 def make_stepper(
-    get_rhs_fn: Callable[[Array], Array],
-    predict_fn: Callable[[Array, Array], Array],
-    correct_fn: Callable[[Array, Array, Array], tuple[Array, Array]],
-    norm_fn: Callable[[Array], Array],
+    get_rhs_fn: Callable[..., Array],
+    predict_fn: Callable[..., Array],
+    correct_fn: Callable[..., tuple[Array, Array]],
+    norm_fn: Callable[..., Array],
 ) -> tuple[
-    Callable[[Array], tuple[Array, Array, Array]],
-    Callable[[Array, Array], tuple[Array, Array, Array]],
+    Callable[..., tuple[Array, Array, Array]],
+    Callable[..., tuple[Array, Array, Array]],
 ]:
     """Build JIT-compiled predict-and-correct and iterate-correction functions.
 
@@ -68,7 +68,7 @@ def make_stepper(
     @timer("timestep/predict_and_correct")
     @jit(donate_argnums=0)
     def predict_and_correct(
-        state: Array | tuple,
+        state: Array | tuple, *args
     ) -> tuple[Array | tuple, Array, Array]:
         """Full predictor-corrector time step (Euler predict + one CN correct).
 
