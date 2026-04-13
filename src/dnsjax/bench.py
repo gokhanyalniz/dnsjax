@@ -9,7 +9,7 @@ includes JAX's JIT compilation overhead.
 from collections.abc import Callable
 from functools import wraps
 from time import perf_counter_ns
-from typing import Any, ParamSpec, TypeVar
+from typing import ParamSpec, TypeVar
 
 import jax
 

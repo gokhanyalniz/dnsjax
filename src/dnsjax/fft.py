@@ -20,8 +20,8 @@ All transforms use ``norm="forward"``, which divides by *N* on the
 forward transform and applies no factor on the inverse.
 """
 
-from jax import Array, numpy as jnp
-from jax import shard_map
+from jax import Array, shard_map
+from jax import numpy as jnp
 from jax.sharding import reshard
 
 from .parameters import padded_res, params

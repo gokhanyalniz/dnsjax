@@ -84,9 +84,7 @@ class Sharding:
         # All three directions are Fourier-expanded; the Nyquist mode is
         # omitted in y and z, giving ny-1 and nz-1 stored modes.
         # The (ky, kz, kx) = (0, 0, 0) Fourier mode is the mean mode.
-        vector_mean_mode: tuple = tuple(
-            [slice(None)] + [slice(0, 1)] * 3
-        )
+        vector_mean_mode: tuple = tuple([slice(None)] + [slice(0, 1)] * 3)
         scalar_mean_mode: tuple = tuple([slice(0, 1)] * 3)
 
         spec_shape: tuple[int, ...] = (

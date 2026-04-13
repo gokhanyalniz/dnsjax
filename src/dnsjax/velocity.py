@@ -8,7 +8,8 @@ performed via Simpson's rule; for pipe flow the radial weight *r* is
 included.
 """
 
-from jax import Array, numpy as jnp
+from jax import Array
+from jax import numpy as jnp
 
 from .operators import (
     integrate_scalar_in_y,
@@ -84,15 +85,11 @@ def get_inprod(
         raise NotImplementedError
 
 
-def get_norm2(
-    vector_spec: Array, k_metric: Array, ys: Array | None
-) -> Array:
+def get_norm2(vector_spec: Array, k_metric: Array, ys: Array | None) -> Array:
     """Squared L2 norm ``||u||^2 = <u, u>``."""
     return get_inprod(vector_spec, vector_spec, k_metric, ys)
 
 
-def get_norm(
-    vector_spec: Array, k_metric: Array, ys: Array | None
-) -> Array:
+def get_norm(vector_spec: Array, k_metric: Array, ys: Array | None) -> Array:
     """L2 norm ``||u|| = sqrt(<u, u>)``."""
     return jnp.sqrt(get_norm2(vector_spec, k_metric, ys))

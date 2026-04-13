@@ -11,7 +11,8 @@ mapping ``r in [0, 1]``.
 
 from dataclasses import dataclass
 
-from jax import Array, numpy as jnp
+from jax import Array
+from jax import numpy as jnp
 
 from ..parameters import params
 from ..sharding import sharding

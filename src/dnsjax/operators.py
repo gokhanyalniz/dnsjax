@@ -156,7 +156,9 @@ def cross(vector_1: Array, vector_2: Array) -> Array:
     )
 
 
-def derivative(data_spec: Array, kx: Array, ky: Array, kz: Array, axis: int) -> Array:
+def derivative(
+    data_spec: Array, kx: Array, ky: Array, kz: Array, axis: int
+) -> Array:
     """Spectral derivative: ``i * k_axis * data_spec``."""
     match axis:
         case 0:

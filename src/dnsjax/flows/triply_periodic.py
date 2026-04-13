@@ -373,9 +373,7 @@ def get_enstrophy(velocity_spec: Array, input: Array) -> Array:
     """
     return (
         jnp.sum(
-            -laplacian(
-                jnp.conj(velocity_spec) * velocity_spec, fourier.lapl
-            ),
+            -laplacian(jnp.conj(velocity_spec) * velocity_spec, fourier.lapl),
             dtype=sharding.float_type,
         )
         + 2 * input * params.phys.re

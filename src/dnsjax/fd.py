@@ -60,7 +60,9 @@ def fornberg_weights(z: float, x: np.ndarray, m: int) -> np.ndarray:
             c2 *= c3
             if j == i - 1:
                 for k in range(mn, 0, -1):
-                    C[i, k] = c1 * (k * C[i - 1, k - 1] - c5 * C[i - 1, k]) / c2
+                    C[i, k] = (
+                        c1 * (k * C[i - 1, k - 1] - c5 * C[i - 1, k]) / c2
+                    )
                 C[i, 0] = -c1 * c5 * C[i - 1, 0] / c2
             for k in range(mn, 0, -1):
                 C[j, k] = (c4 * C[j, k] - k * C[j, k - 1]) / c3
@@ -112,9 +114,7 @@ def build_diff_matrices(
     return D1, D2
 
 
-def build_Lk_neumann(
-    k2: float, D1: np.ndarray, D2: np.ndarray
-) -> np.ndarray:
+def build_Lk_neumann(k2: float, D1: np.ndarray, D2: np.ndarray) -> np.ndarray:
     """Build the Laplacian operator ``D2 - k^2 I`` with Neumann BCs.
 
     Boundary rows are replaced by the corresponding rows of D1 to

@@ -10,7 +10,8 @@ The base flow is ``U(y) = y`` on the Chebyshev-Gauss-Lobatto grid
 
 from dataclasses import dataclass
 
-from jax import Array, numpy as jnp
+from jax import Array
+from jax import numpy as jnp
 
 from ..parameters import params
 from ..sharding import sharding
