@@ -4,7 +4,7 @@ The base flow is ``U(y) = y`` on the Chebyshev-Gauss-Lobatto grid
 ``y in [-1, 1]``, with walls moving at ``+/-1``.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 
 import numpy as np
@@ -31,47 +31,60 @@ from ..velocity import get_norm2
 class PlaneCouetteFlow:
     """Precomputed data for plane Couette flow."""
 
-    ys: Array = -jnp.cos(
-        jnp.arange(params.res.ny, dtype=sharding.float_type)
-        * jnp.pi
-        / (params.res.ny - 1)
-    )
+    ys: Array = field(init=False)
+    base_flow: Array = field(init=False)
+    curl_base_flow: Array = field(init=False)
+    nonlin_base_flow: Array = field(init=False)
+    D1: Array = field(init=False)
+    D2: Array = field(init=False)
+    Lk: Array = field(init=False)
+    Hk: Array = field(init=False)
+    Hk_minus: Array = field(init=False)
+    p1: Array = field(init=False)
+    p2: Array = field(init=False)
+    M_inv: Array = field(init=False)
+    k2: Array = field(init=False)
 
-    base_flow_np = ys.copy()
-    dy_base_flow_np = jnp.ones(params.res.ny, dtype=sharding.float_type)
-    
-    base_flow: Array = jnp.zeros((3, params.res.ny), dtype=sharding.float_type).at[0].set(base_flow_np)[:, :, None, None]
-    curl_base_flow: Array = jnp.zeros((3, params.res.ny), dtype=sharding.float_type).at[2].set(-dy_base_flow_np)[:, :, None, None]
-    nonlin_base_flow: Array = jnp.zeros((3, params.res.ny), dtype=sharding.float_type).at[1].set(base_flow_np * dy_base_flow_np)[:, :, None, None]
+    def __post_init__(self):
+        self.ys = -jnp.cos(
+            jnp.arange(params.res.ny, dtype=sharding.float_type)
+            * jnp.pi
+            / (params.res.ny - 1)
+        )
 
-    __imm_numpy = precompute_imm(
-        y=np.array(ys),
-        kx_vals=np.array(fourier.kx.reshape(-1)),
-        kz_vals=np.array(fourier.kz.reshape(-1)),
-        p=params.res.fd_order,
-        dt=params.step.dt,
-        c=params.step.implicitness,
-        nu=1.0 / params.phys.re,
-    )
+        base_flow_np = self.ys.copy()
+        dy_base_flow_np = jnp.ones(params.res.ny, dtype=sharding.float_type)
+        
+        self.base_flow = jnp.zeros((3, params.res.ny), dtype=sharding.float_type).at[0].set(base_flow_np)[:, :, None, None]
+        self.curl_base_flow = jnp.zeros((3, params.res.ny), dtype=sharding.float_type).at[2].set(-dy_base_flow_np)[:, :, None, None]
+        self.nonlin_base_flow = jnp.zeros((3, params.res.ny), dtype=sharding.float_type).at[1].set(base_flow_np * dy_base_flow_np)[:, :, None, None]
 
-    shard_4d = P(None, *sharding.axis_names, None, None)
-    shard_3d = P(None, *sharding.axis_names, None)
-    shard_2d = P(None, *sharding.axis_names)
-    
-    D1: Array = jax.device_put(jnp.array(__imm_numpy["D1"]), sharding.no_shard)
-    D2: Array = jax.device_put(jnp.array(__imm_numpy["D2"]), sharding.no_shard)
-    
-    Lk: Array = jax.device_put(jnp.array(__imm_numpy["Lk"]), shard_4d)
-    Hk: Array = jax.device_put(jnp.array(__imm_numpy["Hk"]), shard_4d)
-    Hk_minus: Array = jax.device_put(jnp.array(__imm_numpy["Hk_minus"]), shard_4d)
-    
-    p1: Array = jax.device_put(jnp.array(__imm_numpy["p1"]), shard_3d)
-    p2: Array = jax.device_put(jnp.array(__imm_numpy["p2"]), shard_3d)
-    M_inv: Array = jax.device_put(jnp.array(__imm_numpy["M_inv"]), shard_4d)
-    
-    k2: Array = jax.device_put(jnp.array(__imm_numpy["k2"]), shard_2d)
+        __imm_numpy = precompute_imm(
+            y=np.array(self.ys),
+            kx_vals=np.array(fourier.kx.reshape(-1)),
+            kz_vals=np.array(fourier.kz.reshape(-1)),
+            p=params.res.fd_order,
+            dt=params.step.dt,
+            c=params.step.implicitness,
+            nu=1.0 / params.phys.re,
+        )
 
-    del __imm_numpy
+        shard_4d = P(None, *sharding.axis_names, None, None)
+        shard_3d = P(None, *sharding.axis_names, None)
+        shard_2d = P(None, *sharding.axis_names)
+        
+        self.D1 = jax.device_put(jnp.array(__imm_numpy["D1"]), sharding.no_shard)
+        self.D2 = jax.device_put(jnp.array(__imm_numpy["D2"]), sharding.no_shard)
+        
+        self.Lk = jax.device_put(jnp.array(__imm_numpy["Lk"]), shard_4d)
+        self.Hk = jax.device_put(jnp.array(__imm_numpy["Hk"]), shard_4d)
+        self.Hk_minus = jax.device_put(jnp.array(__imm_numpy["Hk_minus"]), shard_4d)
+        
+        self.p1 = jax.device_put(jnp.array(__imm_numpy["p1"]), shard_3d)
+        self.p2 = jax.device_put(jnp.array(__imm_numpy["p2"]), shard_3d)
+        self.M_inv = jax.device_put(jnp.array(__imm_numpy["M_inv"]), shard_4d)
+        
+        self.k2 = jax.device_put(jnp.array(__imm_numpy["k2"]), shard_2d)
 
 
 flow: PlaneCouetteFlow = PlaneCouetteFlow()

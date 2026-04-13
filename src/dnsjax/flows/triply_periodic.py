@@ -42,7 +42,7 @@ The mean mode ``(ky, kz, kx) = (0, 0, 0)`` is zeroed out, since it
 is passive (constant shift) for periodic flows.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 
 import jax
@@ -81,167 +81,177 @@ class TriplyPeriodicFlow:
     fully initialised at import.
     """
 
-    _system: str = params.phys.system
+    _system: str = field(init=False)
+    base_flow: Array = field(init=False)
+    dy_base_flow: Array = field(init=False)
+    curl_base_flow: Array = field(init=False)
+    nonlin_base_flow: Array = field(init=False)
+    
+    qf: int = field(init=False)
+    force_amplitude: Array = field(init=False)
+    ekin_lam: float = field(init=False)
+    input_lam: Array = field(init=False)
+    dissip_lam: Array = field(init=False)
+    
+    forced_modes: tuple = field(init=False)
+    unit_force: Array = field(init=False)
+    
+    ys: Array | None = field(init=False, default=None)
+    
+    ldt_1: Array = field(init=False)
+    ildt_2: Array = field(init=False)
 
-    # Fourier coefficients of the streamwise base flow U_x(y).
-    # This array includes the Nyquist mode (length ny_padded//2 + 1),
-    # unlike the stored spectral velocity arrays which omit it.
-    base_flow_complex: Array = jnp.zeros(
-        padded_res.ny_padded // 2 + 1, dtype=sharding.complex_type
-    )
-    if _system in monochromatic_systems:
-        qf: int = 1  # Forcing harmonic
+    def __post_init__(self):
+        self._system = params.phys.system
 
-        # Kolmogorov: sin(qf * 2pi y / Ly) -> -0.5j at +qf
-        # Waleffe:    cos(qf * 2pi y / Ly) ->  0.5  at +qf
-        if _system == "kolmogorov":
-            base_flow_complex = base_flow_complex.at[qf].add(-0.5j)
-        elif _system == "waleffe":
-            base_flow_complex = base_flow_complex.at[qf].add(0.5)
+        # Fourier coefficients of the streamwise base flow U_x(y).
+        base_flow_complex = jnp.zeros(
+            padded_res.ny_padded // 2 + 1, dtype=sharding.complex_type
+        )
+        if self._system in monochromatic_systems:
+            self.qf = 1  # Forcing harmonic
+
+            # Kolmogorov: sin(qf * 2pi y / Ly) -> -0.5j at +qf
+            # Waleffe:    cos(qf * 2pi y / Ly) ->  0.5  at +qf
+            if self._system == "kolmogorov":
+                base_flow_complex = base_flow_complex.at[self.qf].add(-0.5j)
+            elif self._system == "waleffe":
+                base_flow_complex = base_flow_complex.at[self.qf].add(0.5)
+            else:
+                raise NotImplementedError
+
+            # Forcing amplitude that sustains the laminar state: F = nu * k^2 * U
+            self.force_amplitude = jnp.pi**2 / (4 * params.phys.re)
+            self.ekin_lam = 1.0 / 4.0
+            self.input_lam = jnp.pi**2 / (8 * params.phys.re)
+            self.dissip_lam = self.input_lam
+
+        elif self._system == "decaying-box":
+            self.ekin_lam = 0.0
+            self.input_lam = 0.0
         else:
             raise NotImplementedError
 
-        # Forcing amplitude that sustains the laminar state: F = nu * k^2 * U
-        force_amplitude: Array = jnp.pi**2 / (4 * params.phys.re)
-        ekin_lam: float = 1 / 4
-        input_lam: Array = jnp.pi**2 / (8 * params.phys.re)
-        dissip_lam: Array = input_lam
-
-    elif _system == "decaying-box":
-        ekin_lam = 0
-        input_lam = 0
-    else:
-        raise NotImplementedError
-
-    # dU/dy in Fourier space: spectral derivative = i * ky * U_hat
-    dy_base_flow_complex: Array = (
-        1j * (2 * jnp.pi / derived_params.ly) * base_flow_complex
-    )
-
-    # Physical-space base flow and its derived quantities on the
-    # 3/2-oversampled grid.  Shape: (3, ny_padded, 1, 1) -- trailing
-    # singleton dimensions broadcast with (nz_padded, nx_padded).
-    base_flow: Array = jnp.zeros(
-        (3, padded_res.ny_padded), dtype=sharding.float_type
-    )[:, :, None, None]
-    dy_base_flow: Array = jnp.zeros(
-        (3, padded_res.ny_padded), dtype=sharding.float_type
-    )[:, :, None, None]
-    curl_base_flow: Array = jnp.zeros(
-        (3, padded_res.ny_padded), dtype=sharding.float_type
-    )[:, :, None, None]
-    nonlin_base_flow: Array = jnp.zeros(
-        (3, padded_res.ny_padded), dtype=sharding.float_type
-    )[:, :, None, None]
-
-    # Transform base flow from Fourier to physical (oversampled) space
-    base_flow = base_flow.at[0].set(
-        jnp.fft.irfft(
-            base_flow_complex, n=padded_res.ny_padded, norm="forward"
-        )[:, None, None]
-    )
-    dy_base_flow = dy_base_flow.at[0].set(
-        jnp.fft.irfft(
-            dy_base_flow_complex, n=padded_res.ny_padded, norm="forward"
-        )[:, None, None]
-    )
-    # curl(U) = (0, 0, -dU_x/dy) for a unidirectional base flow
-    curl_base_flow = curl_base_flow.at[2].set(-dy_base_flow[0])
-    # U x curl(U) = (0, U_x * dU_x/dy, 0)
-    nonlin_base_flow = nonlin_base_flow.at[1].set(
-        base_flow[0] * dy_base_flow[0]
-    )
-
-    # Apply tilt: rotate (U_x, 0, 0) -> (U_x cos(theta), 0, U_x sin(theta))
-    tilt_rad: float = derived_params.tilt_rad
-    if jnp.abs(tilt_rad) != 0:
-        base_flow = base_flow.at[2].set(jnp.sin(tilt_rad) * base_flow[0])
-        base_flow = base_flow.at[0].multiply(jnp.cos(tilt_rad))
-        dy_base_flow = dy_base_flow.at[2].set(
-            jnp.sin(tilt_rad) * dy_base_flow[0]
+        # dU/dy in Fourier space: spectral derivative = i * ky * U_hat
+        dy_base_flow_complex = (
+            1j * (2 * jnp.pi / derived_params.ly) * base_flow_complex
         )
-        dy_base_flow = dy_base_flow.at[0].multiply(jnp.cos(tilt_rad))
-        curl_base_flow = curl_base_flow.at[0].set(
-            -jnp.sin(tilt_rad) * curl_base_flow[2]
-        )
-        curl_base_flow = curl_base_flow.at[2].multiply(jnp.cos(tilt_rad))
 
-    # Forced modes: indices into the spectral velocity array
-    # (velocity_component, ky, kz, kx) at which forcing is applied.
-    # The layout depends on whether / how the forcing is tilted.
-    if _system in monochromatic_systems:
-        if not derived_params.tilt:
-            # No tilt: forcing only in u_x at +/- qf in ky
-            forced_modes: tuple = ((0, 0), (qf, -qf), (0, 0), (0, 0))
-        elif derived_params.tilt_90:
-            # 90-degree tilt: forcing only in u_z at +/- qf in ky
-            forced_modes = ((2, 2), (qf, -qf), (0, 0), (0, 0))
-        else:
-            # General tilt: forcing in both u_x and u_z
-            forced_modes = (
-                (0, 0, 2, 2),
-                (qf, -qf, qf, -qf),
-                (0, 0, 0, 0),
-                (0, 0, 0, 0),
+        base_flow = jnp.zeros(
+            (3, padded_res.ny_padded), dtype=sharding.float_type
+        )[:, :, None, None]
+        dy_base_flow = jnp.zeros(
+            (3, padded_res.ny_padded), dtype=sharding.float_type
+        )[:, :, None, None]
+        curl_base_flow = jnp.zeros(
+            (3, padded_res.ny_padded), dtype=sharding.float_type
+        )[:, :, None, None]
+        nonlin_base_flow = jnp.zeros(
+            (3, padded_res.ny_padded), dtype=sharding.float_type
+        )[:, :, None, None]
+
+        # Transform base flow from Fourier to physical (oversampled) space
+        base_flow = base_flow.at[0].set(
+            jnp.fft.irfft(
+                base_flow_complex, n=padded_res.ny_padded, norm="forward"
+            )[:, None, None]
+        )
+        dy_base_flow = dy_base_flow.at[0].set(
+            jnp.fft.irfft(
+                dy_base_flow_complex, n=padded_res.ny_padded, norm="forward"
+            )[:, None, None]
+        )
+        # curl(U) = (0, 0, -dU_x/dy) for a unidirectional base flow
+        curl_base_flow = curl_base_flow.at[2].set(-dy_base_flow[0])
+        # U x curl(U) = (0, U_x * dU_x/dy, 0)
+        nonlin_base_flow = nonlin_base_flow.at[1].set(
+            base_flow[0] * dy_base_flow[0]
+        )
+
+        # Apply tilt: rotate (U_x, 0, 0) -> (U_x cos(theta), 0, U_x sin(theta))
+        tilt_rad: float = derived_params.tilt_rad
+        if jnp.abs(tilt_rad) != 0:
+            base_flow = base_flow.at[2].set(jnp.sin(tilt_rad) * base_flow[0])
+            base_flow = base_flow.at[0].multiply(jnp.cos(tilt_rad))
+            dy_base_flow = dy_base_flow.at[2].set(
+                jnp.sin(tilt_rad) * dy_base_flow[0]
             )
+            dy_base_flow = dy_base_flow.at[0].multiply(jnp.cos(tilt_rad))
+            curl_base_flow = curl_base_flow.at[0].set(
+                -jnp.sin(tilt_rad) * curl_base_flow[2]
+            )
+            curl_base_flow = curl_base_flow.at[2].multiply(jnp.cos(tilt_rad))
 
-        # Unit forcing Fourier coefficients (before amplitude scaling).
-        # Kolmogorov: -0.5j / +0.5j  (sine);  Waleffe: 0.5 / 0.5  (cosine)
-        if not derived_params.tilt or derived_params.tilt_90:
-            if _system == "kolmogorov":
-                unit_force: Array = jnp.array(
-                    [-0.5j, 0.5j], dtype=sharding.complex_type
-                )
-            elif _system == "waleffe":
-                unit_force = jnp.array([0.5, 0.5], dtype=sharding.complex_type)
-        else:
-            if _system == "kolmogorov":
-                unit_force = jnp.array(
-                    [
-                        -0.5j * jnp.cos(tilt_rad),
-                        0.5j * jnp.cos(tilt_rad),
-                        -0.5j * jnp.sin(tilt_rad),
-                        0.5j * jnp.sin(tilt_rad),
-                    ],
-                    dtype=sharding.complex_type,
-                )
-            elif _system == "waleffe":
-                unit_force = jnp.array(
-                    [
-                        0.5 * jnp.cos(tilt_rad),
-                        0.5 * jnp.cos(tilt_rad),
-                        -0.5j * jnp.sin(tilt_rad),
-                        0.5j * jnp.sin(tilt_rad),
-                    ],
-                    dtype=sharding.complex_type,
+        self.base_flow = base_flow
+        self.dy_base_flow = dy_base_flow
+        self.curl_base_flow = curl_base_flow
+        self.nonlin_base_flow = nonlin_base_flow
+
+        # Forced modes
+        if self._system in monochromatic_systems:
+            if not derived_params.tilt:
+                # No tilt: forcing only in u_x at +/- qf in ky
+                self.forced_modes = ((0, 0), (self.qf, -self.qf), (0, 0), (0, 0))
+            elif derived_params.tilt_90:
+                # 90-degree tilt: forcing only in u_z at +/- qf in ky
+                self.forced_modes = ((2, 2), (self.qf, -self.qf), (0, 0), (0, 0))
+            else:
+                # General tilt: forcing in both u_x and u_z
+                self.forced_modes = (
+                    (0, 0, 2, 2),
+                    (self.qf, -self.qf, self.qf, -self.qf),
+                    (0, 0, 0, 0),
+                    (0, 0, 0, 0),
                 )
 
-    ys: Array | None = None  # No wall-normal grid for periodic flows
+            # Unit forcing Fourier coefficients
+            if not derived_params.tilt or derived_params.tilt_90:
+                if self._system == "kolmogorov":
+                    self.unit_force = jnp.array(
+                        [-0.5j, 0.5j], dtype=sharding.complex_type
+                    )
+                elif self._system == "waleffe":
+                    self.unit_force = jnp.array([0.5, 0.5], dtype=sharding.complex_type)
+            else:
+                if self._system == "kolmogorov":
+                    self.unit_force = jnp.array(
+                        [
+                            -0.5j * jnp.cos(tilt_rad),
+                            0.5j * jnp.cos(tilt_rad),
+                            -0.5j * jnp.sin(tilt_rad),
+                            0.5j * jnp.sin(tilt_rad),
+                        ],
+                        dtype=sharding.complex_type,
+                    )
+                elif self._system == "waleffe":
+                    self.unit_force = jnp.array(
+                        [
+                            0.5 * jnp.cos(tilt_rad),
+                            0.5 * jnp.cos(tilt_rad),
+                            -0.5j * jnp.sin(tilt_rad),
+                            0.5j * jnp.sin(tilt_rad),
+                        ],
+                        dtype=sharding.complex_type,
+                    )
 
-    # Make sure we never use these:
-    del base_flow_complex
-    del dy_base_flow_complex
+        self.ys = None
 
-    # Time-stepping coefficients (diagonal Helmholtz operator in Fourier
-    # space).  ldt_1 encodes the explicit part; ildt_2 is the reciprocal
-    # of the implicit part.
-    ldt_1: Array = (
-        1 / params.step.dt
-        + (1 - params.step.implicitness) * fourier.lapl / params.phys.re
-    )
-    ildt_2: Array = 1 / (
-        1 / params.step.dt
-        - params.step.implicitness * fourier.lapl / params.phys.re
-    )
+        # Time-stepping coefficients
+        ldt_1 = (
+            1 / params.step.dt
+            + (1 - params.step.implicitness) * fourier.lapl / params.phys.re
+        )
+        ildt_2 = 1 / (
+            1 / params.step.dt
+            - params.step.implicitness * fourier.lapl / params.phys.re
+        )
 
-    # The mean mode is passive (constant velocity shift); zero it out so
-    # that the predictor/corrector leaves it untouched.
-    ldt_1 = ldt_1.at[sharding.scalar_mean_mode].set(
-        0, out_sharding=sharding.spec_scalar_shard
-    )
-    ildt_2 = ildt_2.at[sharding.scalar_mean_mode].set(
-        0, out_sharding=sharding.spec_scalar_shard
-    )
+        self.ldt_1 = ldt_1.at[sharding.scalar_mean_mode].set(
+            0, out_sharding=sharding.spec_scalar_shard
+        )
+        self.ildt_2 = ildt_2.at[sharding.scalar_mean_mode].set(
+            0, out_sharding=sharding.spec_scalar_shard
+        )
 
 
 flow: TriplyPeriodicFlow = TriplyPeriodicFlow()
