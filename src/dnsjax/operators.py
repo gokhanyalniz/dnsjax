@@ -9,7 +9,7 @@ The ``phys_to_spec`` / ``spec_to_phys`` wrappers apply the 3D FFT
 (from :mod:`dnsjax.fft`) vmapped over the three velocity components.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import jax
 from jax import Array, jit, vmap
@@ -40,11 +40,20 @@ class Fourier:
     and ``-kx``).
     """
 
+    kx: Array = field(init=False)
+    kz: Array = field(init=False)
+    k_metric: Array = field(init=False)
+    ky: Array | None = field(init=False)
+    lapl: Array = field(init=False)
+    inv_lapl: Array | None = field(init=False)
+
+    @staticmethod
     def real_harmonics(n: int) -> Array:
         """Non-negative integer wavenumbers ``[0, 1, ..., n//2 - 1]``."""
         # Omit the Nyquist mode
         return jnp.arange(0, n // 2, dtype=int)
 
+    @staticmethod
     def complex_harmonics(n: int) -> Array:
         """Full-complex integer wavenumbers with the Nyquist mode omitted.
 
@@ -58,44 +67,45 @@ class Fourier:
         qs_out = qs_out.at[n // 2 :].set(qs[n // 2 + 1 :])
         return qs_out
 
-    kx: Array = (
-        jax.device_put(
-            real_harmonics(params.res.nx).reshape([1, 1, -1]),
-            sharding.spec_scalar_shard,
-        )
-        * 2
-        * jnp.pi
-        / params.geo.lx
-    )
-    kz: Array = (
-        complex_harmonics(params.res.nz).reshape([1, -1, 1])
-        * 2
-        * jnp.pi
-        / params.geo.lz
-    )
-
-    # Accounts for real-FFT Hermitian symmetry in spectral-space sums:
-    # kx > 0 modes contribute twice (for +kx and -kx).
-    k_metric: Array = jnp.where(kx == 0, 1, 2)
-
-    if params.phys.system in periodic_systems:
-        ky: Array | None = (
-            complex_harmonics(params.res.ny).reshape([-1, 1, 1])
+    def __post_init__(self) -> None:
+        self.kx = (
+            jax.device_put(
+                self.real_harmonics(params.res.nx).reshape([1, 1, -1]),
+                sharding.spec_scalar_shard,
+            )
             * 2
             * jnp.pi
-            / derived_params.ly
+            / params.geo.lx
+        )
+        self.kz = (
+            self.complex_harmonics(params.res.nz).reshape([1, -1, 1])
+            * 2
+            * jnp.pi
+            / params.geo.lz
         )
 
-        lapl: Array = -(kx**2 + ky**2 + kz**2)
-        # Safe pointwise inverse; the k=0 mode maps to 0 (pressure is
-        # determined only up to a constant there).
-        inv_lapl: Array | None = jnp.where(lapl < 0, 1 / lapl, 0)
-    else:
-        ky = None
-        # Wall-bounded: only the horizontal Laplacian k_x^2 + k_z^2;
-        # the y-part is handled by finite-difference matrices.
-        lapl = -(kx**2 + kz**2)
-        inv_lapl = None
+        # Accounts for real-FFT Hermitian symmetry in spectral-space sums:
+        # kx > 0 modes contribute twice (for +kx and -kx).
+        self.k_metric = jnp.where(self.kx == 0, 1, 2)
+
+        if params.phys.system in periodic_systems:
+            self.ky = (
+                self.complex_harmonics(params.res.ny).reshape([-1, 1, 1])
+                * 2
+                * jnp.pi
+                / derived_params.ly
+            )
+
+            self.lapl = -(self.kx**2 + self.ky**2 + self.kz**2)
+            # Safe pointwise inverse; the k=0 mode maps to 0 (pressure is
+            # determined only up to a constant there).
+            self.inv_lapl = jnp.where(self.lapl < 0, 1 / self.lapl, 0)
+        else:
+            self.ky = None
+            # Wall-bounded: only the horizontal Laplacian k_x^2 + k_z^2;
+            # the y-part is handled by finite-difference matrices.
+            self.lapl = -(self.kx**2 + self.kz**2)
+            self.inv_lapl = None
 
 
 fourier: Fourier = Fourier()
