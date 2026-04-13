@@ -39,6 +39,7 @@ from .parameters import (
     CLIParameters,
     padded_res,
     params,
+    periodic_systems,
     read_parameters,
     update_parameters,
 )
@@ -49,10 +50,23 @@ def main() -> None:
     from jax import numpy as jnp
 
     from .bench import ns_to_s, timers
-    from .flows.triply_periodic import correct_velocity, flow, get_stats
-    from .operators import fourier, phys_to_spec
     from .sharding import sharding
-    from .timestep import iterate_correction, predict_and_correct
+
+    # --- Flow dispatch -------------------------------------------------------
+    if params.phys.system in periodic_systems:
+        from .flows.triply_periodic import (
+            correct_velocity,
+            flow,
+            get_stats,
+            iterate_correction,
+            phys_to_spec,
+            predict_and_correct,
+        )
+    else:
+        sharding.print(
+            f"System '{params.phys.system}' is not yet implemented."
+        )
+        sharding.exit(code=1)
 
     # --- Initial condition ---------------------------------------------------
     if params.init.start_from_laminar:
@@ -105,12 +119,7 @@ def main() -> None:
     norm_corrections: dict | None = {}
 
     # Warm-up call so that JIT compilation does not affect benchmarks
-    stats = get_stats(
-        velocity_spec,
-        fourier.lapl,
-        fourier.k_metric,
-        flow.ys,
-    )
+    stats = get_stats(velocity_spec)
 
     sharding.print(
         f"t = {t:.2f}",
@@ -137,12 +146,7 @@ def main() -> None:
             and it % params.outs.it_stats == 0
             and it > params.init.it0
         ):
-            stats = get_stats(
-                velocity_spec,
-                fourier.lapl,
-                fourier.k_metric,
-                flow.ys,
-            )
+            stats = get_stats(velocity_spec)
             c_per_it = c_tot / (it - params.init.it0)
 
             sharding.print(
@@ -158,17 +162,6 @@ def main() -> None:
         # Euler predictor + one Crank-Nicolson corrector
         velocity_spec, rhs_no_lapl, error = predict_and_correct(
             velocity_spec,
-            fourier.kx,
-            fourier.ky,
-            fourier.kz,
-            fourier.inv_lapl,
-            fourier.k_metric,
-            flow.ys,
-            flow.ldt_1,
-            flow.ildt_2,
-            flow.base_flow,
-            flow.curl_base_flow,
-            flow.nonlin_base_flow,
         )
         c = 0
 
@@ -184,16 +177,6 @@ def main() -> None:
             velocity_spec, rhs_no_lapl, error = iterate_correction(
                 velocity_spec,
                 rhs_no_lapl,
-                fourier.kx,
-                fourier.ky,
-                fourier.kz,
-                fourier.inv_lapl,
-                fourier.k_metric,
-                flow.ys,
-                flow.ildt_2,
-                flow.base_flow,
-                flow.curl_base_flow,
-                flow.nonlin_base_flow,
             )
             c += 1
 
@@ -206,12 +189,6 @@ def main() -> None:
         # Divergence correction and mean-mode zeroing
         velocity_spec, norm_corrections = correct_velocity(
             velocity_spec,
-            fourier.kx,
-            fourier.ky,
-            fourier.kz,
-            fourier.inv_lapl,
-            fourier.k_metric,
-            flow.ys,
         )
 
         t += params.step.dt
@@ -244,12 +221,7 @@ def main() -> None:
         wall_time_per_rhs = wall_time / rhs_tot
 
         # Final diagnostic output
-        stats = get_stats(
-            velocity_spec,
-            fourier.lapl,
-            fourier.k_metric,
-            flow.ys,
-        )
+        stats = get_stats(velocity_spec)
         c_per_it = c_tot / (it - params.init.it0)
 
         sharding.print(

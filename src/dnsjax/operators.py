@@ -15,7 +15,7 @@ import jax
 from jax import Array, jit, vmap
 from jax import numpy as jnp
 
-from .fft import _irfft3d, _rfft3d
+from .fft import _irfft2d, _irfft3d, _rfft2d, _rfft3d
 from .parameters import derived_params, params, periodic_systems
 from .sharding import sharding
 
@@ -122,6 +122,26 @@ def spec_to_phys(velocity_spec: Array) -> Array:
     )
 
     return velocity_phys
+
+
+@jit
+@vmap
+def phys_to_spec_2d(velocity_phys: Array) -> Array:
+    """Forward 2D FFT (x, z only) vmapped over the three velocity components.
+
+    For wall-bounded flows where the y-direction stays in grid-point space.
+    """
+    return _rfft2d(velocity_phys)
+
+
+@jit
+@vmap
+def spec_to_phys_2d(velocity_spec: Array) -> Array:
+    """Inverse 2D FFT (x, z only) vmapped over the three velocity components.
+
+    For wall-bounded flows where the y-direction stays in grid-point space.
+    """
+    return _irfft2d(velocity_spec)
 
 
 def cross(vector_1: Array, vector_2: Array) -> Array:

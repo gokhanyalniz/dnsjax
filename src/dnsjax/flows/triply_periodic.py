@@ -4,6 +4,13 @@ This module defines the ``TriplyPeriodicFlow`` dataclass that holds all
 precomputed, flow-specific data: base flow, forcing, time-stepping
 coefficients (``ldt_1``, ``ildt_2``), and laminar-state diagnostics.
 
+It also exports the full flow interface consumed by ``__main__``:
+
+- ``predict_and_correct`` / ``iterate_correction`` -- time stepping
+- ``get_stats`` -- diagnostic statistics
+- ``correct_velocity`` -- divergence correction + mean-mode zeroing
+- ``phys_to_spec`` -- forward 3D FFT (re-exported from operators)
+
 Base flow construction
 ----------------------
 The monochromatic base flow ``U(y)`` is defined analytically via a single
@@ -36,17 +43,21 @@ is passive (constant shift) for periodic flows.
 """
 
 from dataclasses import dataclass
+from functools import partial
 
-from jax import Array, jit
+from jax import Array, jit, vmap
 from jax import numpy as jnp
 
 from ..bench import timer
 from ..operators import (
+    curl,
     divergence,
     fourier,
     gradient,
     inverse_laplacian,
     laplacian,
+    phys_to_spec,
+    spec_to_phys,
 )
 from ..parameters import (
     derived_params,
@@ -54,7 +65,9 @@ from ..parameters import (
     padded_res,
     params,
 )
+from ..rhs import get_nonlin
 from ..sharding import sharding
+from ..timestep import make_stepper
 from ..velocity import get_norm, get_norm2
 
 
@@ -233,12 +246,107 @@ class TriplyPeriodicFlow:
 flow: TriplyPeriodicFlow = TriplyPeriodicFlow()
 
 
-def get_perturbation_energy(
-    velocity_spec: Array, k_metric: Array, ys: Array | None
+# ── Algebraic Helmholtz operations (triply-periodic specific) ────────────
+
+
+@partial(vmap, in_axes=(0, 0, None, None))
+def _predict_component(
+    velocity_spec: Array,
+    rhs_no_lapl: Array,
+    ldt_1: Array,
+    ildt_2: Array,
 ) -> Array:
+    """Euler predictor step (vmapped over velocity components).
+
+    Computes ``u_p = (u^n * ldt_1 + f^n) / (1/dt - c*nu*lapl)``
+    as a pointwise operation in spectral space, where the Helmholtz
+    inversion is algebraic (multiply by ``ildt_2``).
+    """
+    return (velocity_spec * ldt_1 + rhs_no_lapl) * ildt_2
+
+
+@partial(vmap, in_axes=(0, 0, 0, None))
+def _correct_component(
+    prediction: Array,
+    rhs_no_lapl_prev: Array,
+    rhs_no_lapl_next: Array,
+    ildt_2: Array,
+) -> tuple[Array, Array]:
+    """Crank-Nicolson corrector step (vmapped over velocity components).
+
+    Computes the correction ``delta = c * (f_next - f_prev) * ildt_2``
+    and returns the updated prediction and the correction itself (for
+    convergence monitoring).
+    """
+    correction = (
+        params.step.implicitness
+        * (rhs_no_lapl_next - rhs_no_lapl_prev)
+        * ildt_2
+    )
+    return prediction + correction, correction
+
+
+# ── Flow-specific callables for the stepper factory ──────────────────────
+
+
+def _curl_fn(velocity_spec: Array) -> Array:
+    """Spectral curl with wavenumbers bound from ``fourier``."""
+    return curl(velocity_spec, fourier.kx, fourier.ky, fourier.kz)
+
+
+def _get_rhs(velocity_spec: Array) -> Array:
+    """Divergence-free RHS: nonlinear term + algebraic pressure projection."""
+    nonlin = get_nonlin(
+        velocity_spec,
+        flow.base_flow,
+        flow.curl_base_flow,
+        flow.nonlin_base_flow,
+        spec_to_phys,
+        phys_to_spec,
+        _curl_fn,
+    )
+    # Poisson problem for pressure: lapl(p) = div(NL)
+    lapl_pressure = divergence(nonlin, fourier.kx, fourier.ky, fourier.kz)
+    # Subtract pressure gradient to enforce incompressibility
+    rhs_no_lapl = nonlin - gradient(
+        inverse_laplacian(lapl_pressure, fourier.inv_lapl),
+        fourier.kx,
+        fourier.ky,
+        fourier.kz,
+    )
+    return rhs_no_lapl
+
+
+def _predict(velocity_spec: Array, rhs_no_lapl: Array) -> Array:
+    """Euler predictor with algebraic Helmholtz inversion."""
+    return _predict_component(
+        velocity_spec, rhs_no_lapl, flow.ldt_1, flow.ildt_2
+    )
+
+
+def _correct(
+    prediction: Array, rhs_prev: Array, rhs_next: Array
+) -> tuple[Array, Array]:
+    """Crank-Nicolson corrector with algebraic Helmholtz inversion."""
+    return _correct_component(prediction, rhs_prev, rhs_next, flow.ildt_2)
+
+
+def _norm(correction: Array) -> Array:
+    """L2 convergence norm."""
+    return get_norm(correction, fourier.k_metric, flow.ys)
+
+
+predict_and_correct, iterate_correction = make_stepper(
+    _get_rhs, _predict, _correct, _norm
+)
+
+
+# ── Diagnostic statistics ────────────────────────────────────────────────
+
+
+def get_perturbation_energy(velocity_spec: Array) -> Array:
     """Perturbation kinetic energy ``E' = ||u'||^2 / 2``."""
-    # E' = <u, u> / 2
-    return get_norm2(velocity_spec, k_metric, ys) / 2
+    return get_norm2(velocity_spec, fourier.k_metric, flow.ys) / 2
 
 
 def get_energy(perturbation_energy: Array, input: Array) -> Array:
@@ -248,8 +356,6 @@ def get_energy(perturbation_energy: Array, input: Array) -> Array:
     ``E = E' - E_lam + I / |F|``.  For decaying-box flows (no forcing),
     ``E = E'``.
     """
-    # E_tot = <u + U_lam, u + U_lam> / 2
-    # = E' - E_lam + I / |F|
     if params.phys.system in monochromatic_systems:
         return (
             perturbation_energy - flow.ekin_lam + input / flow.force_amplitude
@@ -258,19 +364,18 @@ def get_energy(perturbation_energy: Array, input: Array) -> Array:
         return perturbation_energy
 
 
-def get_enstrophy(velocity_spec: Array, input: Array, lapl: Array) -> Array:
+def get_enstrophy(velocity_spec: Array, input: Array) -> Array:
     """Total enstrophy times Re: ``D*Re = <grad(u_tot), grad(u_tot)>``.
 
     Computed from the perturbation field using
     ``D*Re = D'*Re + 2*I*Re - I_lam*Re``, where ``D'*Re`` is the
     perturbation enstrophy ``sum(-lapl * |u'|^2)``.
     """
-    # D * Re = <grad(u_tot),grad(u_tot)>
-    # = <k^2 * (u + U_lam), u + U_lam>
-    # = D' * Re + 2 * I * Re - I_lam * Re
     return (
         jnp.sum(
-            -laplacian(jnp.conj(velocity_spec) * velocity_spec, lapl),
+            -laplacian(
+                jnp.conj(velocity_spec) * velocity_spec, fourier.lapl
+            ),
             dtype=sharding.float_type,
         )
         + 2 * input * params.phys.re
@@ -278,14 +383,13 @@ def get_enstrophy(velocity_spec: Array, input: Array, lapl: Array) -> Array:
     )
 
 
-def get_dissipation(velocity_spec: Array, input: Array, lapl: Array) -> Array:
+def get_dissipation(velocity_spec: Array, input: Array) -> Array:
     """Total dissipation rate ``D = enstrophy / Re``."""
-    return get_enstrophy(velocity_spec, input, lapl) / params.phys.re
+    return get_enstrophy(velocity_spec, input) / params.phys.re
 
 
 def get_input(velocity_spec: Array) -> Array:
     """Power input from the forcing: ``I = <u_tot, F>``."""
-    # I = <u_tot, F> = <u + U_lam, F>
     return (
         jnp.sum(
             jnp.conj(flow.unit_force * flow.force_amplitude)
@@ -300,16 +404,11 @@ def get_input(velocity_spec: Array) -> Array:
 
 @timer("stats")
 @jit
-def get_stats(
-    velocity_spec: Array,
-    lapl: Array,
-    k_metric: Array,
-    ys: Array | None,
-) -> dict[str, Array]:
+def get_stats(velocity_spec: Array) -> dict[str, Array]:
     """Compute diagnostic statistics: E, I, D, E'."""
-    perturbation_energy = get_perturbation_energy(velocity_spec, k_metric, ys)
+    perturbation_energy = get_perturbation_energy(velocity_spec)
     input = get_input(velocity_spec)
-    dissipation = get_dissipation(velocity_spec, input, lapl)
+    dissipation = get_dissipation(velocity_spec, input)
     energy = get_energy(perturbation_energy, input)
 
     stats = {
@@ -322,14 +421,11 @@ def get_stats(
     return stats
 
 
+# ── Divergence correction ────────────────────────────────────────────────
+
+
 def correct_divergence(
     velocity_spec: Array,
-    kx: Array,
-    ky: Array,
-    kz: Array,
-    inv_lapl: Array,
-    k_metric: Array,
-    ys: Array | None,
 ) -> tuple[Array, Array | None]:
     """Project the velocity onto the divergence-free subspace.
 
@@ -340,19 +436,19 @@ def correct_divergence(
         inverse_laplacian(
             divergence(
                 velocity_spec,
-                kx,
-                ky,
-                kz,
+                fourier.kx,
+                fourier.ky,
+                fourier.kz,
             ),
-            inv_lapl,
+            fourier.inv_lapl,
         ),
-        kx,
-        ky,
-        kz,
+        fourier.kx,
+        fourier.ky,
+        fourier.kz,
     )
 
     error = (
-        get_norm(correction, k_metric, ys)
+        get_norm(correction, fourier.k_metric, flow.ys)
         if params.debug.measure_corrections
         else None
     )
@@ -365,12 +461,6 @@ def correct_divergence(
 @jit(donate_argnums=0)
 def correct_velocity(
     velocity_spec: Array,
-    kx: Array,
-    ky: Array,
-    kz: Array,
-    inv_lapl: Array,
-    k_metric: Array,
-    ys: Array | None,
 ) -> tuple[Array, dict[str, Array | None] | None]:
     """Apply divergence correction and zero out the passive mean mode.
 
@@ -388,9 +478,7 @@ def correct_velocity(
     velocity_corrected = velocity_spec
 
     if params.debug.correct_divergence:
-        velocity_corrected, error = correct_divergence(
-            velocity_corrected, kx, ky, kz, inv_lapl, k_metric, ys
-        )
+        velocity_corrected, error = correct_divergence(velocity_corrected)
         norm_corrections["div"] = error
 
     # Set the mean mode to zero, it is passive

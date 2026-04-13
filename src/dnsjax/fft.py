@@ -180,6 +180,104 @@ def truncate_rfft(a: Array, n: int) -> Array:
     return out
 
 
+def _rfft2d(x: Array) -> Array:
+    """Forward 2D real FFT in x and z (wall-bounded): physical -> spectral.
+
+    Transform order is x -> z.  The y-axis is left untouched (grid-point
+    space).  After each step, aliased modes are truncated.  A reshard
+    (z-sharded -> kx-sharded) happens between the x- and z-transforms.
+
+    Parameters
+    ----------
+    x:
+        Real-valued scalar field of shape ``(ny, nz_padded, nx_padded)``,
+        z-sharded.
+
+    Returns
+    -------
+    :
+        Complex spectral coefficients of shape ``(ny, nz-1, nx//2)``,
+        kx-sharded.  Nyquist modes are omitted on z and x.
+    """
+    # Step 1: real FFT in x (z is sharded across devices)
+    y = truncate_rfft(
+        shard_map(
+            lambda a: jnp.fft.rfft(a, axis=2, norm="forward"),
+            mesh=sharding.mesh,
+            in_specs=sharding.phys_scalar_shard,
+            out_specs=sharding.phys_scalar_shard,
+        )(x),
+        params.res.nx // 2,
+    )
+
+    # Step 2: reshard from z-sharded (physical) to kx-sharded (spectral)
+    y = reshard(y, sharding.spec_scalar_shard)
+
+    # Step 3: complex FFT in z (kx is sharded), then truncate aliased modes
+    y = truncate_fft(
+        shard_map(
+            lambda a: jnp.fft.fft(a, axis=1, norm="forward"),
+            mesh=sharding.mesh,
+            in_specs=sharding.spec_scalar_shard,
+            out_specs=sharding.spec_scalar_shard,
+        )(y),
+        params.res.nz,
+        1,
+    )
+
+    return y
+
+
+def _irfft2d(x: Array) -> Array:
+    """Inverse 2D real FFT in x and z (wall-bounded): spectral -> physical.
+
+    Transform order is z -> x (reverse of ``_rfft2d``).  Before each step,
+    the spectral array is zero-padded to the oversampled grid size for
+    dealiasing.  A reshard (kx-sharded -> z-sharded) happens between the
+    z-transform and the x-transform.  The y-axis is untouched.
+
+    Parameters
+    ----------
+    x:
+        Complex spectral coefficients of shape ``(ny, nz-1, nx//2)``,
+        kx-sharded.
+
+    Returns
+    -------
+    :
+        Real-valued scalar field of shape ``(ny, nz_padded, nx_padded)``,
+        z-sharded.
+    """
+    # Step 1: zero-pad z to oversampled size, then inverse FFT in z
+    # (kx is sharded)
+    y = zeropad_fft(x, padded_res.nz_padded, 1)
+    y = shard_map(
+        lambda a: jnp.fft.ifft(a, axis=1, norm="forward"),
+        mesh=sharding.mesh,
+        in_specs=sharding.spec_scalar_shard,
+        out_specs=sharding.spec_scalar_shard,
+    )(y)
+
+    # Step 2: reshard from kx-sharded (spectral) to z-sharded (physical)
+    y = reshard(y, sharding.phys_scalar_shard)
+
+    # Step 3: zero-pad kx to oversampled size, then inverse real FFT in x
+    # (z is sharded)
+    y = zeropad_rfft(y, padded_res.nx_padded // 2 + 1)
+    y = shard_map(
+        lambda a: jnp.fft.irfft(
+            a,
+            axis=2,
+            norm=norm,
+        ),
+        mesh=sharding.mesh,
+        in_specs=sharding.phys_scalar_shard,
+        out_specs=sharding.phys_scalar_shard,
+    )(y)
+
+    return y
+
+
 def _rfft3d(x: Array) -> Array:
     """Forward 3D real FFT: physical space -> spectral space.
 
