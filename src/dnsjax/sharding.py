@@ -1,5 +1,21 @@
+"""JAX multi-device mesh setup, precision types, and partition specs.
+
+Initialised at import time from the global ``params``.  The singleton
+``sharding`` exposes the device mesh, data-type choices, partition specs
+for spectral/physical arrays, and convenience helpers (``print``, ``exit``).
+
+Array layout convention
+-----------------------
+Spectral arrays have shape ``(ny[-1], nz-1, nx//2)`` -- the last axis
+(kx, real-FFT half) is sharded across devices.  Physical arrays have
+shape ``(ny_padded, nz_padded, nx_padded)`` -- the second-to-last axis
+(z) is sharded.  The reshard between these layouts is handled in
+:mod:`dnsjax.fft`.
+"""
+
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 import jax
 from jax import numpy as jnp
@@ -11,11 +27,18 @@ from .parameters import padded_res, params, periodic_systems
 
 @dataclass
 class Sharding:
-    n_devices = params.dist.np
-    main_device = bool(jax.process_index() == 0)
+    """Device mesh, precision, partition specs, and array shapes.
+
+    All class-level attributes are computed eagerly at dataclass
+    definition time (not in ``__init__``), so this acts as a
+    module-level singleton once ``sharding = Sharding()`` is executed.
+    """
+
+    n_devices: int = params.dist.np
+    main_device: bool = bool(jax.process_index() == 0)
 
     devices = jax.devices()
-    n_devices_reported = len(devices)
+    n_devices_reported: int = len(devices)
     if n_devices_reported != n_devices:
         if main_device:
             print(
@@ -31,7 +54,7 @@ class Sharding:
         flush=True,
     )
 
-    axis_names = ("gpus",)
+    axis_names: tuple[str, ...] = ("gpus",)
     mesh = jax.make_mesh(
         (params.dist.np,),
         axis_names=axis_names,
@@ -40,6 +63,8 @@ class Sharding:
 
     jax.set_mesh(mesh)
 
+    # Partition specs -- last axis of spectral arrays and second-to-last
+    # axis of physical arrays are distributed across devices.
     spec_vector_shard = P(None, None, None, *axis_names)
     spec_scalar_shard = P(None, None, *axis_names)
 
@@ -56,23 +81,29 @@ class Sharding:
         complex_type = jnp.complex64
 
     if params.phys.system in periodic_systems:
-        # The (ky, kz, kx) = (0, 0, 0) Fourier mode is the mean mode
-        vector_mean_mode = tuple([slice(None)] + [slice(0, 1)] * 3)
-        scalar_mean_mode = tuple([slice(0, 1)] * 3)
+        # All three directions are Fourier-expanded; the Nyquist mode is
+        # omitted in y and z, giving ny-1 and nz-1 stored modes.
+        # The (ky, kz, kx) = (0, 0, 0) Fourier mode is the mean mode.
+        vector_mean_mode: tuple = tuple(
+            [slice(None)] + [slice(0, 1)] * 3
+        )
+        scalar_mean_mode: tuple = tuple([slice(0, 1)] * 3)
 
-        spec_shape = (
+        spec_shape: tuple[int, ...] = (
             params.res.ny - 1,
             params.res.nz - 1,
             params.res.nx // 2,
         )
 
-        phys_shape = (
+        phys_shape: tuple[int, ...] = (
             padded_res.ny_padded,
             padded_res.nz_padded,
             padded_res.nx_padded,
         )
     else:
-        # The (kz, kx) = (0, 0) Fourier mode is the mean mode
+        # Wall-bounded: y is in physical (grid-point) space, only x and z
+        # are Fourier-expanded.
+        # The (kz, kx) = (0, 0) Fourier mode is the mean mode.
         vector_mean_mode = tuple([slice(None)] * 2 + [slice(0, 1)] * 2)
         scalar_mean_mode = tuple([slice(None)] + [slice(0, 1)] * 2)
 
@@ -88,12 +119,14 @@ class Sharding:
             padded_res.nx_padded,
         )
 
-    def exit(self, code=1):
+    def exit(self, code: int = 1) -> None:
+        """Terminate all processes."""
         sys.exit(code)
 
-    def print(self, *args, **kwargs):
+    def print(self, *args: Any, **kwargs: Any) -> None:
+        """Print only on the main device (process index 0)."""
         if self.main_device:
             print(*args, **kwargs, flush=True)
 
 
-sharding = Sharding()
+sharding: Sharding = Sharding()

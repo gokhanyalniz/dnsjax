@@ -1,4 +1,31 @@
 #!/usr/bin/env python3
+"""Entry point for the dnsjax DNS solver.
+
+Execution proceeds in two phases:
+
+1. **Initialisation** (module level, under ``if __name__ == "__main__"``):
+   parse CLI arguments, load ``parameters.toml`` if present, configure
+   JAX platform and distributed backend, print the final parameter set.
+
+2. **Main loop** (:func:`main`):
+   initialise velocity (from laminar or snapshot), then iterate:
+
+   - Euler predictor + Crank-Nicolson corrector (:func:`predict_and_correct`)
+   - Additional corrector iterations if needed (:func:`iterate_correction`)
+   - Divergence correction + mean-mode zeroing (:func:`correct_velocity`)
+   - Periodic diagnostic output (:func:`get_stats`)
+
+   The loop terminates when the simulation time, wall-clock time, or
+   corrector divergence criterion is reached.
+
+Benchmarking
+------------
+The first time step is excluded from wall-clock statistics because it
+includes JAX's JIT compilation overhead.  Additionally, the first call
+to ``iterate_correction`` (if it occurs on the first step) is excluded
+via the ``bench_delta`` accumulator.
+"""
+
 import os
 import sys
 from datetime import datetime
@@ -17,7 +44,8 @@ from .parameters import (
 )
 
 
-def main():
+def main() -> None:
+    """Run the time-stepping loop after parameters and JAX are initialised."""
     from jax import numpy as jnp
 
     from .bench import ns_to_s, timers
@@ -26,6 +54,7 @@ def main():
     from .sharding import sharding
     from .timestep import iterate_correction, predict_and_correct
 
+    # --- Initial condition ---------------------------------------------------
     if params.init.start_from_laminar:
         velocity_spec = jnp.zeros(
             shape=(3, *sharding.spec_shape),
@@ -41,6 +70,7 @@ def main():
             snapshot,
             sharding.phys_vector_shard,
         )
+        # Subtract the base flow to obtain the perturbation
         velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
         velocity_spec = phys_to_spec(velocity_phys)
 
@@ -48,6 +78,7 @@ def main():
         sharding.print("Provide an initial condition.")
         sharding.exit(code=1)
 
+    # --- Stopping criteria ---------------------------------------------------
     wall_time_stop = (
         jnp.inf
         if params.stop.max_wall_time is None
@@ -60,20 +91,20 @@ def main():
         else params.stop.max_sim_time
     )
 
-    it = params.init.it0
-    t = params.init.t0
+    it: int = params.init.it0
+    t: float = params.init.t0
 
-    rhs_tot = 0
-    c_tot = 0
-    dt_first = params.step.dt
-    wall_time_now = perf_counter_ns()
-    bench_delta = 0
-    corrector_compiled = False
+    rhs_tot: int = 0
+    c_tot: int = 0
+    dt_first: float = params.step.dt
+    wall_time_now: int = perf_counter_ns()
+    bench_delta: int = 0  # accumulated JIT-compilation time to subtract
+    corrector_compiled: bool = False
     last_error = 0
-    last_c = 0
-    norm_corrections = {}
+    last_c: int = 0
+    norm_corrections: dict | None = {}
 
-    # Call once now not to affect benchmarks later
+    # Warm-up call so that JIT compilation does not affect benchmarks
     stats = get_stats(
         velocity_spec,
         fourier.lapl,
@@ -88,17 +119,19 @@ def main():
 
     sharding.print("Started timestepping at", datetime.now())
 
+    # --- Main time-stepping loop ---------------------------------------------
     while (
         t < t_stop
         and wall_time_now - wall_time_start < wall_time_stop
         and last_error < params.step.corrector_tolerance
     ):
         if it == params.init.it0 + 1:
-            # Ignore the first hit, probably subject to JIT compilation
+            # Start the benchmark clock after the first (JIT-heavy) iteration
             bench_start = perf_counter_ns()
 
             sharding.print("First iteration over at", datetime.now())
 
+        # Periodic diagnostic output
         if (
             params.outs.it_stats is not None
             and it % params.outs.it_stats == 0
@@ -122,6 +155,7 @@ def main():
                 else "",
             )
 
+        # Euler predictor + one Crank-Nicolson corrector
         velocity_spec, rhs_no_lapl, error = predict_and_correct(
             velocity_spec,
             fourier.kx,
@@ -138,12 +172,13 @@ def main():
         )
         c = 0
 
+        # Additional corrector iterations until convergence
         while (
             error > params.step.corrector_tolerance
             and c < params.step.max_corrector_iterations
         ):
             if not corrector_compiled:
-                # Do not include this in the benchmark
+                # Exclude the first corrector JIT compilation from benchmarks
                 bench_delta_start = perf_counter_ns()
 
             velocity_spec, rhs_no_lapl, error = iterate_correction(
@@ -168,6 +203,7 @@ def main():
                 rhs_tot -= 1
                 corrector_compiled = True
 
+        # Divergence correction and mean-mode zeroing
         velocity_spec, norm_corrections = correct_velocity(
             velocity_spec,
             fourier.kx,
@@ -185,11 +221,12 @@ def main():
         c_tot += c
 
         if it > params.init.it0:
-            # Ignore the first hit, probably subject to JIT compilation
-            rhs_tot += c + 2  # 1 rhs per corrector + 2 rhs per predict-correct
+            # 2 RHS evals per predict_and_correct + 1 per corrector iteration
+            rhs_tot += c + 2
 
         wall_time_now = perf_counter_ns()
 
+    # --- Post-processing -----------------------------------------------------
     if last_error > params.step.corrector_tolerance:
         sharding.print(
             f"Corrector failed to converge at t={t}, it={it}, c={last_c}, "
@@ -206,7 +243,7 @@ def main():
         wall_time_per_sim_time = wall_time / (t - dt_first - params.init.t0)
         wall_time_per_rhs = wall_time / rhs_tot
 
-        # Useful to know final stats
+        # Final diagnostic output
         stats = get_stats(
             velocity_spec,
             fourier.lapl,
@@ -271,7 +308,7 @@ if __name__ == "__main__":
     jax.config.update("jax_enable_x64", params.res.double_precision)
     jax.config.update("jax_platforms", params.dist.platform)
     jax.distributed.initialize()
-    main_device = bool(jax.process_index() == 0)
+    main_device: bool = bool(jax.process_index() == 0)
 
     if main_device:
         print("Distribution initialized at", datetime.now(), flush=True)
