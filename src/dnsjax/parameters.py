@@ -61,6 +61,7 @@ class Resolution(BaseModel):
     nx: int = Field(ge=1, default=128)
     ny: int = Field(ge=1, default=128)
     nz: int = Field(ge=1, default=128)
+    fd_order: int = Field(ge=2, default=4)
     double_precision: bool = True  # use double-precision floating point
 
 

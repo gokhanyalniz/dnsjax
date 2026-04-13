@@ -38,14 +38,14 @@ def make_stepper(
     Parameters
     ----------
     get_rhs_fn:
-        ``velocity_spec -> rhs_no_lapl``.  Computes the divergence-free
+        ``state -> rhs_no_lapl``.  Computes the divergence-free
         RHS (nonlinear term minus pressure gradient, without the
         Laplacian / viscous term).
     predict_fn:
-        ``(velocity_spec, rhs_no_lapl) -> prediction``.  Euler predictor
+        ``(state, rhs_no_lapl) -> prediction_state``.  Euler predictor
         step (flow-specific Helmholtz solve).
     correct_fn:
-        ``(prediction, rhs_prev, rhs_next) -> (prediction_new, correction)``.
+        ``(state_prev, prediction_state, rhs_prev, rhs_next) -> (prediction_state_new, correction)``.
         Crank-Nicolson corrector step.
     norm_fn:
         ``correction -> error``.  Convergence norm (L2 norm of the
@@ -55,19 +55,19 @@ def make_stepper(
     -------
     predict_and_correct:
         Full predictor-corrector step.  Signature:
-        ``velocity_spec -> (prediction, rhs_next, error)``.
+        ``state -> (prediction_state, rhs_next, error)``.
         The input buffer is donated.
     iterate_correction:
         One additional corrector iteration.  Signature:
-        ``(prediction, rhs_prev) -> (prediction_next, rhs_next, error)``.
+        ``(state_prev, prediction_state, rhs_prev) -> (prediction_state_next, rhs_next, error)``.
         Both input buffers are donated.
     """
 
     @timer("timestep/predict_and_correct")
     @jit(donate_argnums=0)
     def predict_and_correct(
-        velocity_spec: Array,
-    ) -> tuple[Array, Array, Array]:
+        state: Array | tuple,
+    ) -> tuple[Array | tuple, Array, Array]:
         """Full predictor-corrector time step (Euler predict + one CN correct).
 
         Computes the RHS at the current velocity, applies the Euler
@@ -76,32 +76,33 @@ def make_stepper(
         iterations (if the error exceeds tolerance) are handled by
         ``iterate_correction``.
         """
-        rhs_prev = get_rhs_fn(velocity_spec)
-        prediction = predict_fn(velocity_spec, rhs_prev)
+        rhs_prev = get_rhs_fn(state)
+        prediction_state = predict_fn(state, rhs_prev)
 
-        rhs_next = get_rhs_fn(prediction)
-        prediction, correction = correct_fn(prediction, rhs_prev, rhs_next)
+        rhs_next = get_rhs_fn(prediction_state)
+        prediction_state, correction = correct_fn(state, prediction_state, rhs_prev, rhs_next)
 
         error = norm_fn(correction)
 
-        return prediction, rhs_next, error
+        return prediction_state, rhs_next, error
 
     @timer("timestep/iterate_correction")
     @jit(donate_argnums=(0, 1))
     def iterate_correction(
-        prediction: Array,
+        state_prev: Array | tuple,
+        prediction_state: Array | tuple,
         rhs_prev: Array,
-    ) -> tuple[Array, Array, Array]:
+    ) -> tuple[Array | tuple, Array, Array]:
         """One corrector iteration: recompute RHS, apply CN correction.
 
-        The input buffers *prediction* and *rhs_prev* are donated
+        The input buffers *prediction_state* and *rhs_prev* are donated
         (their memory is reused for the outputs).
         """
-        rhs_next = get_rhs_fn(prediction)
-        prediction, correction = correct_fn(prediction, rhs_prev, rhs_next)
+        rhs_next = get_rhs_fn(prediction_state)
+        prediction_state, correction = correct_fn(state_prev, prediction_state, rhs_prev, rhs_next)
 
         error = norm_fn(correction)
 
-        return prediction, rhs_next, error
+        return prediction_state, rhs_next, error
 
     return predict_and_correct, iterate_correction

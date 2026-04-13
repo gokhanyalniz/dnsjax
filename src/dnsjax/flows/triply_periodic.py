@@ -45,6 +45,7 @@ is passive (constant shift) for periodic flows.
 from dataclasses import dataclass
 from functools import partial
 
+import jax
 from jax import Array, jit, vmap
 from jax import numpy as jnp
 
@@ -246,12 +247,38 @@ class TriplyPeriodicFlow:
 flow: TriplyPeriodicFlow = TriplyPeriodicFlow()
 
 
+# ── Initialization ────────────────────────────────────────────────────────
+
+
+def init_state(snapshot: str | None) -> Array:
+    """Initialise the flow state (velocity_spec)."""
+    if params.init.start_from_laminar:
+        return jnp.zeros(
+            shape=(3, *sharding.spec_shape),
+            dtype=sharding.complex_type,
+            out_sharding=sharding.spec_vector_shard,
+        )
+    elif snapshot is not None:
+        snapshot_arr = jnp.load(snapshot)["velocity_phys"].astype(
+            sharding.float_type
+        )
+        velocity_phys = jax.device_put(
+            snapshot_arr,
+            sharding.phys_vector_shard,
+        )
+        velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
+        return phys_to_spec(velocity_phys)
+    else:
+        sharding.print("Provide an initial condition.")
+        sharding.exit(code=1)
+
+
 # ── Algebraic Helmholtz operations (triply-periodic specific) ────────────
 
 
 @partial(vmap, in_axes=(0, 0, None, None))
 def _predict_component(
-    velocity_spec: Array,
+    state: Array,
     rhs_no_lapl: Array,
     ldt_1: Array,
     ildt_2: Array,
@@ -262,7 +289,7 @@ def _predict_component(
     as a pointwise operation in spectral space, where the Helmholtz
     inversion is algebraic (multiply by ``ildt_2``).
     """
-    return (velocity_spec * ldt_1 + rhs_no_lapl) * ildt_2
+    return (state * ldt_1 + rhs_no_lapl) * ildt_2
 
 
 @partial(vmap, in_axes=(0, 0, 0, None))
@@ -289,15 +316,15 @@ def _correct_component(
 # ── Flow-specific callables for the stepper factory ──────────────────────
 
 
-def _curl_fn(velocity_spec: Array) -> Array:
+def _curl_fn(state: Array) -> Array:
     """Spectral curl with wavenumbers bound from ``fourier``."""
-    return curl(velocity_spec, fourier.kx, fourier.ky, fourier.kz)
+    return curl(state, fourier.kx, fourier.ky, fourier.kz)
 
 
-def _get_rhs(velocity_spec: Array) -> Array:
+def _get_rhs(state: Array) -> Array:
     """Divergence-free RHS: nonlinear term + algebraic pressure projection."""
     nonlin = get_nonlin(
-        velocity_spec,
+        state,
         flow.base_flow,
         flow.curl_base_flow,
         flow.nonlin_base_flow,
@@ -317,15 +344,15 @@ def _get_rhs(velocity_spec: Array) -> Array:
     return rhs_no_lapl
 
 
-def _predict(velocity_spec: Array, rhs_no_lapl: Array) -> Array:
+def _predict(state: Array, rhs_no_lapl: Array) -> Array:
     """Euler predictor with algebraic Helmholtz inversion."""
     return _predict_component(
-        velocity_spec, rhs_no_lapl, flow.ldt_1, flow.ildt_2
+        state, rhs_no_lapl, flow.ldt_1, flow.ildt_2
     )
 
 
 def _correct(
-    prediction: Array, rhs_prev: Array, rhs_next: Array
+    state_prev: Array, prediction: Array, rhs_prev: Array, rhs_next: Array
 ) -> tuple[Array, Array]:
     """Crank-Nicolson corrector with algebraic Helmholtz inversion."""
     return _correct_component(prediction, rhs_prev, rhs_next, flow.ildt_2)
@@ -344,9 +371,9 @@ predict_and_correct, iterate_correction = make_stepper(
 # ── Diagnostic statistics ────────────────────────────────────────────────
 
 
-def get_perturbation_energy(velocity_spec: Array) -> Array:
+def get_perturbation_energy(state: Array) -> Array:
     """Perturbation kinetic energy ``E' = ||u'||^2 / 2``."""
-    return get_norm2(velocity_spec, fourier.k_metric, flow.ys) / 2
+    return get_norm2(state, fourier.k_metric, flow.ys) / 2
 
 
 def get_energy(perturbation_energy: Array, input: Array) -> Array:
@@ -364,7 +391,7 @@ def get_energy(perturbation_energy: Array, input: Array) -> Array:
         return perturbation_energy
 
 
-def get_enstrophy(velocity_spec: Array, input: Array) -> Array:
+def get_enstrophy(state: Array, input: Array) -> Array:
     """Total enstrophy times Re: ``D*Re = <grad(u_tot), grad(u_tot)>``.
 
     Computed from the perturbation field using
@@ -373,7 +400,7 @@ def get_enstrophy(velocity_spec: Array, input: Array) -> Array:
     """
     return (
         jnp.sum(
-            -laplacian(jnp.conj(velocity_spec) * velocity_spec, fourier.lapl),
+            -laplacian(jnp.conj(state) * state, fourier.lapl),
             dtype=sharding.float_type,
         )
         + 2 * input * params.phys.re
@@ -381,17 +408,17 @@ def get_enstrophy(velocity_spec: Array, input: Array) -> Array:
     )
 
 
-def get_dissipation(velocity_spec: Array, input: Array) -> Array:
+def get_dissipation(state: Array, input: Array) -> Array:
     """Total dissipation rate ``D = enstrophy / Re``."""
-    return get_enstrophy(velocity_spec, input) / params.phys.re
+    return get_enstrophy(state, input) / params.phys.re
 
 
-def get_input(velocity_spec: Array) -> Array:
+def get_input(state: Array) -> Array:
     """Power input from the forcing: ``I = <u_tot, F>``."""
     return (
         jnp.sum(
             jnp.conj(flow.unit_force * flow.force_amplitude)
-            * velocity_spec.at[flow.forced_modes].get(
+            * state.at[flow.forced_modes].get(
                 out_sharding=sharding.no_shard
             ),
             dtype=sharding.float_type,
@@ -402,11 +429,11 @@ def get_input(velocity_spec: Array) -> Array:
 
 @timer("stats")
 @jit
-def get_stats(velocity_spec: Array) -> dict[str, Array]:
+def get_stats(state: Array) -> dict[str, Array]:
     """Compute diagnostic statistics: E, I, D, E'."""
-    perturbation_energy = get_perturbation_energy(velocity_spec)
-    input = get_input(velocity_spec)
-    dissipation = get_dissipation(velocity_spec, input)
+    perturbation_energy = get_perturbation_energy(state)
+    input = get_input(state)
+    dissipation = get_dissipation(state, input)
     energy = get_energy(perturbation_energy, input)
 
     stats = {
@@ -423,7 +450,7 @@ def get_stats(velocity_spec: Array) -> dict[str, Array]:
 
 
 def correct_divergence(
-    velocity_spec: Array,
+    state: Array,
 ) -> tuple[Array, Array | None]:
     """Project the velocity onto the divergence-free subspace.
 
@@ -433,7 +460,7 @@ def correct_divergence(
     correction = -gradient(
         inverse_laplacian(
             divergence(
-                velocity_spec,
+                state,
                 fourier.kx,
                 fourier.ky,
                 fourier.kz,
@@ -451,14 +478,14 @@ def correct_divergence(
         else None
     )
 
-    velocity_corrected = velocity_spec + correction
+    velocity_corrected = state + correction
     return velocity_corrected, error
 
 
 @timer("velocity/correct_velocity")
 @jit(donate_argnums=0)
 def correct_velocity(
-    velocity_spec: Array,
+    state: Array,
 ) -> tuple[Array, dict[str, Array | None] | None]:
     """Apply divergence correction and zero out the passive mean mode.
 
@@ -473,7 +500,7 @@ def correct_velocity(
         or ``None`` if diagnostics are disabled.
     """
     norm_corrections = {}
-    velocity_corrected = velocity_spec
+    velocity_corrected = state
 
     if params.debug.correct_divergence:
         velocity_corrected, error = correct_divergence(velocity_corrected)

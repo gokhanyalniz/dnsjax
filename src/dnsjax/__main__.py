@@ -58,6 +58,17 @@ def main() -> None:
             correct_velocity,
             flow,
             get_stats,
+            init_state,
+            iterate_correction,
+            phys_to_spec,
+            predict_and_correct,
+        )
+    elif params.phys.system == "plane-couette":
+        from .flows.plane_couette import (
+            correct_velocity,
+            flow,
+            get_stats,
+            init_state,
             iterate_correction,
             phys_to_spec,
             predict_and_correct,
@@ -69,28 +80,7 @@ def main() -> None:
         sharding.exit(code=1)
 
     # --- Initial condition ---------------------------------------------------
-    if params.init.start_from_laminar:
-        velocity_spec = jnp.zeros(
-            shape=(3, *sharding.spec_shape),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.spec_vector_shard,
-        )
-
-    elif params.init.snapshot is not None:
-        snapshot = jnp.load(params.init.snapshot)["velocity_phys"].astype(
-            sharding.float_type
-        )
-        velocity_phys = jax.device_put(
-            snapshot,
-            sharding.phys_vector_shard,
-        )
-        # Subtract the base flow to obtain the perturbation
-        velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
-        velocity_spec = phys_to_spec(velocity_phys)
-
-    else:
-        sharding.print("Provide an initial condition.")
-        sharding.exit(code=1)
+    state = init_state(params.init.snapshot)
 
     # --- Stopping criteria ---------------------------------------------------
     wall_time_stop = (
@@ -119,7 +109,7 @@ def main() -> None:
     norm_corrections: dict | None = {}
 
     # Warm-up call so that JIT compilation does not affect benchmarks
-    stats = get_stats(velocity_spec)
+    stats = get_stats(state)
 
     sharding.print(
         f"t = {t:.2f}",
@@ -146,7 +136,7 @@ def main() -> None:
             and it % params.outs.it_stats == 0
             and it > params.init.it0
         ):
-            stats = get_stats(velocity_spec)
+            stats = get_stats(state)
             c_per_it = c_tot / (it - params.init.it0)
 
             sharding.print(
@@ -160,8 +150,9 @@ def main() -> None:
             )
 
         # Euler predictor + one Crank-Nicolson corrector
-        velocity_spec, rhs_no_lapl, error = predict_and_correct(
-            velocity_spec,
+        state_prev = state
+        state, rhs_no_lapl, error = predict_and_correct(
+            state_prev,
         )
         c = 0
 
@@ -174,8 +165,9 @@ def main() -> None:
                 # Exclude the first corrector JIT compilation from benchmarks
                 bench_delta_start = perf_counter_ns()
 
-            velocity_spec, rhs_no_lapl, error = iterate_correction(
-                velocity_spec,
+            state, rhs_no_lapl, error = iterate_correction(
+                state_prev,
+                state,
                 rhs_no_lapl,
             )
             c += 1
@@ -187,8 +179,8 @@ def main() -> None:
                 corrector_compiled = True
 
         # Divergence correction and mean-mode zeroing
-        velocity_spec, norm_corrections = correct_velocity(
-            velocity_spec,
+        state, norm_corrections = correct_velocity(
+            state,
         )
 
         t += params.step.dt
@@ -221,7 +213,7 @@ def main() -> None:
         wall_time_per_rhs = wall_time / rhs_tot
 
         # Final diagnostic output
-        stats = get_stats(velocity_spec)
+        stats = get_stats(state)
         c_per_it = c_tot / (it - params.init.it0)
 
         sharding.print(
