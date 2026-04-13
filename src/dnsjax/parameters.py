@@ -20,7 +20,7 @@ monochromatic_systems: list[str] = ["kolmogorov", "waleffe"]
 periodic_systems: list[str] = ["decaying-box", *monochromatic_systems]
 
 cartesian_systems: list[str] = ["plane-couette"]
-walled_systems: list[str] = [*cartesian_systems, "pipe"]
+walled_systems: list[str] = [*cartesian_systems]
 
 # TODO: Add physical sanity checks
 
@@ -178,7 +178,7 @@ def update_parameters(params_new: Parameters) -> None:
     system = params.phys.system
     if system in periodic_systems:
         derived_params.ly = 4
-    elif system in cartesian_systems or system == "pipe":
+    elif system in cartesian_systems:
         derived_params.ly = 2
     else:
         raise NotImplementedError

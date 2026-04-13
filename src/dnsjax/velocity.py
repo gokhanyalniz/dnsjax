@@ -66,22 +66,6 @@ def get_inprod(
             )
             / derived_params.ly
         )
-    elif system == "pipe":
-        # 1/(Lx \pi R^2) \int r dr d\theta dx u1 * u2
-        return (
-            integrate_scalar_in_y(
-                ys
-                * 2
-                * jnp.sum(
-                    jnp.conj(vector_spec_1) * k_metric * vector_spec_2,
-                    dtype=sharding.float_type,
-                    axis=(0, 2, 3),
-                ),
-                ys,
-            )
-            / (derived_params.ly / 2) ** 2
-        )
-    else:
         raise NotImplementedError
 
 
