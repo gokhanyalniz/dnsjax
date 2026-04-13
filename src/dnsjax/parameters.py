@@ -163,7 +163,8 @@ def read_parameters(path: Path) -> Parameters:
 
 
 def update_parameters(params_new: Parameters) -> None:
-    """Merge *params_new* into the global ``params`` and recompute derived values.
+    """Merge *params_new* into the global ``params``
+    and recompute derived values.
 
     Only fields that were explicitly set in *params_new* are applied, so
     unset fields retain their previous values.

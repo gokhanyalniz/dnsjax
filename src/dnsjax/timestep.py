@@ -45,7 +45,8 @@ def make_stepper(
         ``(state, rhs_no_lapl) -> prediction_state``.  Euler predictor
         step (flow-specific Helmholtz solve).
     correct_fn:
-        ``(state_prev, prediction_state, rhs_prev, rhs_next) -> (prediction_state_new, correction)``.
+        ``(state_prev, prediction_state, rhs_prev, rhs_next) ->
+        (prediction_state_new, correction)``.
         Crank-Nicolson corrector step.
     norm_fn:
         ``correction -> error``.  Convergence norm (L2 norm of the
@@ -59,7 +60,8 @@ def make_stepper(
         The input buffer is donated.
     iterate_correction:
         One additional corrector iteration.  Signature:
-        ``(state_prev, prediction_state, rhs_prev) -> (prediction_state_next, rhs_next, error)``.
+        ``(state_prev, prediction_state, rhs_prev) ->
+        (prediction_state_next, rhs_next, error)``.
         Both input buffers are donated.
     """
 
@@ -80,7 +82,9 @@ def make_stepper(
         prediction_state = predict_fn(state, rhs_prev)
 
         rhs_next = get_rhs_fn(prediction_state)
-        prediction_state, correction = correct_fn(state, prediction_state, rhs_prev, rhs_next)
+        prediction_state, correction = correct_fn(
+            state, prediction_state, rhs_prev, rhs_next
+        )
 
         error = norm_fn(correction)
 
@@ -99,7 +103,9 @@ def make_stepper(
         (their memory is reused for the outputs).
         """
         rhs_next = get_rhs_fn(prediction_state)
-        prediction_state, correction = correct_fn(state_prev, prediction_state, rhs_prev, rhs_next)
+        prediction_state, correction = correct_fn(
+            state_prev, prediction_state, rhs_prev, rhs_next
+        )
 
         error = norm_fn(correction)
 

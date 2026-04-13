@@ -74,7 +74,7 @@ from ..velocity import get_norm, get_norm2
 
 @dataclass
 class TriplyPeriodicFlow:
-    """Precomputed data for triply-periodic (Kolmogorov/Waleffe/decaying) flows.
+    """Precomputed data for triply-periodic flows.
 
     All class-level attributes are computed eagerly at definition time so
     that the module-level singleton ``flow = TriplyPeriodicFlow()`` is
@@ -86,18 +86,18 @@ class TriplyPeriodicFlow:
     dy_base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
     nonlin_base_flow: Array = field(init=False)
-    
+
     qf: int = field(init=False)
     force_amplitude: Array = field(init=False)
     ekin_lam: float = field(init=False)
     input_lam: Array = field(init=False)
     dissip_lam: Array = field(init=False)
-    
+
     forced_modes: tuple = field(init=False)
     unit_force: Array = field(init=False)
-    
+
     ys: Array | None = field(init=False, default=None)
-    
+
     ldt_1: Array = field(init=False)
     ildt_2: Array = field(init=False)
 
@@ -120,7 +120,8 @@ class TriplyPeriodicFlow:
             else:
                 raise NotImplementedError
 
-            # Forcing amplitude that sustains the laminar state: F = nu * k^2 * U
+            # Forcing amplitude that sustains the laminar state:
+            # F = nu * k^2 * U
             self.force_amplitude = jnp.pi**2 / (4 * params.phys.re)
             self.ekin_lam = 1.0 / 4.0
             self.input_lam = jnp.pi**2 / (8 * params.phys.re)
@@ -191,10 +192,20 @@ class TriplyPeriodicFlow:
         if self._system in monochromatic_systems:
             if not derived_params.tilt:
                 # No tilt: forcing only in u_x at +/- qf in ky
-                self.forced_modes = ((0, 0), (self.qf, -self.qf), (0, 0), (0, 0))
+                self.forced_modes = (
+                    (0, 0),
+                    (self.qf, -self.qf),
+                    (0, 0),
+                    (0, 0),
+                )
             elif derived_params.tilt_90:
                 # 90-degree tilt: forcing only in u_z at +/- qf in ky
-                self.forced_modes = ((2, 2), (self.qf, -self.qf), (0, 0), (0, 0))
+                self.forced_modes = (
+                    (2, 2),
+                    (self.qf, -self.qf),
+                    (0, 0),
+                    (0, 0),
+                )
             else:
                 # General tilt: forcing in both u_x and u_z
                 self.forced_modes = (
@@ -211,7 +222,9 @@ class TriplyPeriodicFlow:
                         [-0.5j, 0.5j], dtype=sharding.complex_type
                     )
                 elif self._system == "waleffe":
-                    self.unit_force = jnp.array([0.5, 0.5], dtype=sharding.complex_type)
+                    self.unit_force = jnp.array(
+                        [0.5, 0.5], dtype=sharding.complex_type
+                    )
             else:
                 if self._system == "kolmogorov":
                     self.unit_force = jnp.array(
@@ -356,9 +369,7 @@ def _get_rhs(state: Array) -> Array:
 
 def _predict(state: Array, rhs_no_lapl: Array) -> Array:
     """Euler predictor with algebraic Helmholtz inversion."""
-    return _predict_component(
-        state, rhs_no_lapl, flow.ldt_1, flow.ildt_2
-    )
+    return _predict_component(state, rhs_no_lapl, flow.ldt_1, flow.ildt_2)
 
 
 def _correct(
@@ -428,9 +439,7 @@ def get_input(state: Array) -> Array:
     return (
         jnp.sum(
             jnp.conj(flow.unit_force * flow.force_amplitude)
-            * state.at[flow.forced_modes].get(
-                out_sharding=sharding.no_shard
-            ),
+            * state.at[flow.forced_modes].get(out_sharding=sharding.no_shard),
             dtype=sharding.float_type,
         )
         + flow.input_lam

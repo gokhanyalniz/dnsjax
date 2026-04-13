@@ -28,8 +28,9 @@ class Fourier:
     shape ``(ny[-1], nz-1, nx//2)``:
 
     - ``kx``: shape ``(1, 1, nx//2)`` -- non-negative wavenumbers (real FFT)
-    - ``kz``: shape ``(1, nz-1, 1)`` -- full-complex wavenumbers, Nyquist omitted
-    - ``ky``: shape ``(ny-1, 1, 1)`` -- full-complex (periodic) or ``None`` (walled)
+    - ``kz``: shape ``(1, nz-1, 1)`` -- full-complex wavenumbers
+    - ``ky``: shape ``(ny-1, 1, 1)`` -- full-complex (periodic) or ``None``
+
 
     The Nyquist mode is omitted on every axis to avoid aliasing artefacts
     and to simplify the zero-padding / truncation logic in the FFT module.
@@ -206,7 +207,8 @@ def laplacian(data_spec: Array, lapl_spec: Array) -> Array:
 
 
 def inverse_laplacian(data_spec: Array, inv_lapl_spec: Array) -> Array:
-    """Apply the inverse spectral Laplacian (pointwise multiply by ``1/(-k^2)``)."""
+    """Apply the inverse spectral Laplacian
+    (pointwise multiply by ``1/(-k^2)``)."""
     return inv_lapl_spec * data_spec
 
 

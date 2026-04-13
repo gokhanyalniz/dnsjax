@@ -56,21 +56,17 @@ def main() -> None:
     if params.phys.system in periodic_systems:
         from .flows.triply_periodic import (
             correct_velocity,
-            flow,
             get_stats,
             init_state,
             iterate_correction,
-            phys_to_spec,
             predict_and_correct,
         )
     elif params.phys.system == "plane-couette":
         from .flows.plane_couette import (
             correct_velocity,
-            flow,
             get_stats,
             init_state,
             iterate_correction,
-            phys_to_spec,
             predict_and_correct,
         )
     else:
