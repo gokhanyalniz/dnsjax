@@ -13,7 +13,7 @@ from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
 from ..bench import timer
-from ..fd import precompute_imm
+from ..fd import build_diff_matrices, precompute_imm
 from ..operators import (
     fourier,
     phys_to_spec_2d,
@@ -70,38 +70,94 @@ class PlaneCouetteFlow:
             .set(base_flow_np * dy_base_flow_np)[:, :, None, None]
         )
 
-        __imm_numpy = precompute_imm(
-            y=np.array(self.ys),
-            kx_vals=np.array(fourier.kx.reshape(-1)),
-            kz_vals=np.array(fourier.kz.reshape(-1)),
+        D1, D2 = build_diff_matrices(np.array(self.ys), params.res.fd_order)
+        self.D1 = jax.device_put(jnp.array(D1), sharding.no_shard)
+        self.D2 = jax.device_put(jnp.array(D2), sharding.no_shard)
+
+        kx_global = np.array(fourier.kx.reshape(-1))
+        kz_global = np.array(fourier.kz.reshape(-1))
+        Nkz = len(kz_global)
+        Nkx = len(kx_global)
+        Ny = params.res.ny
+
+        class IMMChunker:
+            def __init__(self, ys_arr, p, dt, c, nu, D1_arr, D2_arr):
+                self.ys_arr = ys_arr
+                self.p = p
+                self.dt = dt
+                self.c = c
+                self.nu = nu
+                self.D1_arr = D1_arr
+                self.D2_arr = D2_arr
+                self.cache = {}
+
+            def get_chunk(
+                self, indices: tuple[slice, ...], key: str
+            ) -> np.ndarray:
+                slice_kz, slice_kx = indices[0], indices[1]
+                cache_key = (
+                    slice_kz.start,
+                    slice_kz.stop,
+                    slice_kx.start,
+                    slice_kx.stop,
+                )
+                if cache_key not in self.cache:
+                    self.cache[cache_key] = precompute_imm(
+                        y=self.ys_arr,
+                        kx_vals=kx_global[slice_kz],
+                        kz_vals=kz_global[slice_kx],
+                        p=self.p,
+                        dt=self.dt,
+                        c=self.c,
+                        nu=self.nu,
+                        D1=self.D1_arr,
+                        D2=self.D2_arr,
+                    )
+                return self.cache[cache_key][key]
+
+        chunker = IMMChunker(
+            ys_arr=np.array(self.ys),
             p=params.res.fd_order,
             dt=params.step.dt,
             c=params.step.implicitness,
             nu=1.0 / params.phys.re,
+            D1_arr=D1,
+            D2_arr=D2,
         )
 
         shard_4d = P(None, *sharding.axis_names, None, None)
         shard_3d = P(None, *sharding.axis_names, None)
         shard_2d = P(None, *sharding.axis_names)
 
-        self.D1 = jax.device_put(
-            jnp.array(__imm_numpy["D1"]), sharding.no_shard
+        self.Lk = jax.make_array_from_callback(
+            (Nkz, Nkx, Ny, Ny),
+            shard_4d,
+            lambda idx: chunker.get_chunk(idx, "Lk"),
         )
-        self.D2 = jax.device_put(
-            jnp.array(__imm_numpy["D2"]), sharding.no_shard
+        self.Hk = jax.make_array_from_callback(
+            (Nkz, Nkx, Ny, Ny),
+            shard_4d,
+            lambda idx: chunker.get_chunk(idx, "Hk"),
         )
-
-        self.Lk = jax.device_put(jnp.array(__imm_numpy["Lk"]), shard_4d)
-        self.Hk = jax.device_put(jnp.array(__imm_numpy["Hk"]), shard_4d)
-        self.Hk_minus = jax.device_put(
-            jnp.array(__imm_numpy["Hk_minus"]), shard_4d
+        self.Hk_minus = jax.make_array_from_callback(
+            (Nkz, Nkx, Ny, Ny),
+            shard_4d,
+            lambda idx: chunker.get_chunk(idx, "Hk_minus"),
         )
-
-        self.p1 = jax.device_put(jnp.array(__imm_numpy["p1"]), shard_3d)
-        self.p2 = jax.device_put(jnp.array(__imm_numpy["p2"]), shard_3d)
-        self.M_inv = jax.device_put(jnp.array(__imm_numpy["M_inv"]), shard_4d)
-
-        self.k2 = jax.device_put(jnp.array(__imm_numpy["k2"]), shard_2d)
+        self.p1 = jax.make_array_from_callback(
+            (Nkz, Nkx, Ny), shard_3d, lambda idx: chunker.get_chunk(idx, "p1")
+        )
+        self.p2 = jax.make_array_from_callback(
+            (Nkz, Nkx, Ny), shard_3d, lambda idx: chunker.get_chunk(idx, "p2")
+        )
+        self.M_inv = jax.make_array_from_callback(
+            (Nkz, Nkx, 2, 2),
+            shard_4d,
+            lambda idx: chunker.get_chunk(idx, "M_inv"),
+        )
+        self.k2 = jax.make_array_from_callback(
+            (Nkz, Nkx), shard_2d, lambda idx: chunker.get_chunk(idx, "k2")
+        )
 
 
 flow: PlaneCouetteFlow = PlaneCouetteFlow()

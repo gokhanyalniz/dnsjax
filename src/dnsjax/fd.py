@@ -210,11 +210,13 @@ def precompute_imm(
     dt: float,
     c: float,
     nu: float,
+    D1: np.ndarray | None = None,
+    D2: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """Full offline precomputation for the influence-matrix method.
 
-    Builds D1, D2, and then loops over all Fourier mode pairs
-    `$(k_z, k_x)$` to construct the per-mode operators and IMM data.
+    Builds D1, D2 (if not provided), and then loops over all Fourier mode
+    pairs `$(k_z, k_x)$` to construct the per-mode operators and IMM data.
 
     The output arrays are indexed ``[i_kz, i_kx, ...]``, matching the
     spectral array layout ``(ny, nz-1, nx//2)`` where ny is the y-grid
@@ -239,6 +241,10 @@ def precompute_imm(
         Implicitness parameter.
     nu:
         Kinematic viscosity `$1/\mathrm{Re}$`.
+    D1:
+        Optional precomputed first-derivative matrix.
+    D2:
+        Optional precomputed second-derivative matrix.
 
     Returns
     -------
@@ -258,7 +264,8 @@ def precompute_imm(
     Nkz = len(kz_vals)
     Nkx = len(kx_vals)
 
-    D1, D2 = build_diff_matrices(y, p)
+    if D1 is None or D2 is None:
+        D1, D2 = build_diff_matrices(y, p)
 
     Lk_all = np.zeros((Nkz, Nkx, Ny, Ny))
     Hk_all = np.zeros((Nkz, Nkx, Ny, Ny))
