@@ -37,7 +37,11 @@ class PlaneCouetteFlow:
     D1: Array = field(init=False)
     D2: Array = field(init=False)
     Lk: Array = field(init=False)
+    lu_Lk: Array = field(init=False)
+    piv_Lk: Array = field(init=False)
     Hk: Array = field(init=False)
+    lu_Hk: Array = field(init=False)
+    piv_Hk: Array = field(init=False)
     Hk_minus: Array = field(init=False)
     p1: Array = field(init=False)
     p2: Array = field(init=False)
@@ -159,8 +163,26 @@ class PlaneCouetteFlow:
             (Nkz, Nkx), shard_2d, lambda idx: chunker.get_chunk(idx, "k2")
         )
 
+        import jax.scipy.linalg as sla
+
+        @jax.jit
+        def batched_lu_factor(A: Array) -> tuple[Array, Array]:
+            return jax.vmap(jax.vmap(sla.lu_factor))(A)
+
+        self.lu_Lk, self.piv_Lk = batched_lu_factor(self.Lk)
+        self.lu_Hk, self.piv_Hk = batched_lu_factor(self.Hk)
+
 
 flow: PlaneCouetteFlow = PlaneCouetteFlow()
+
+import jax.scipy.linalg as sla
+
+@jax.jit
+def _lu_solve(lu_pivots: tuple[Array, Array], b: Array) -> Array:
+    """Batched LU solve across 2D (k_z, k_x) Fourier modes."""
+    def solve_single(lu_piv, vec):
+        return sla.lu_solve(lu_piv, vec)
+    return jax.vmap(jax.vmap(solve_single))(lu_pivots, b)
 
 
 def _compute_static_pressure(velocity_spec: Array) -> Array:
@@ -196,7 +218,7 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     # Solve particular pressure
     f_P = div_N.at[0].set(0.0).at[-1].set(0.0)
     f_P_b = jnp.transpose(f_P, (1, 2, 0))
-    pP_b = jnp.linalg.solve(flow.Lk, f_P_b)
+    pP_b = _lu_solve((flow.lu_Lk, flow.piv_Lk), f_P_b)
     pP = jnp.transpose(pP_b, (2, 0, 1))
 
     # Calculate continuous boundary mismatch
@@ -307,7 +329,7 @@ def _imm_iteration(
     dy_p_j = jnp.tensordot(flow.D1, pressure_j, axes=(1, 0))
     Rv = _einsum_4d(flow.Hk_minus, v_n) - dy_p_j + c * Nv_j + (1 - c) * Nv_n
     Rv_b = jnp.transpose(Rv, (1, 2, 0))
-    v_new_b = jnp.linalg.solve(flow.Hk, Rv_b)
+    v_new_b = _lu_solve((flow.lu_Hk, flow.piv_Hk), Rv_b)
     v_new = jnp.transpose(v_new_b, (2, 0, 1))
 
     # Stage 2: Residuals and RHS for pressure
@@ -342,7 +364,7 @@ def _imm_iteration(
     f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
 
     f_hat_P_b = jnp.transpose(f_hat_P, (1, 2, 0))
-    pP_b = jnp.linalg.solve(flow.Lk, f_hat_P_b)
+    pP_b = _lu_solve((flow.lu_Lk, flow.piv_Lk), f_hat_P_b)
     pP = jnp.transpose(pP_b, (2, 0, 1))
 
     r_bot = -flow.k2 * pP[0] + g_0
@@ -368,8 +390,8 @@ def _imm_iteration(
     Ru_b = jnp.transpose(Ru, (1, 2, 0))
     Rw_b = jnp.transpose(Rw, (1, 2, 0))
 
-    u_new_b = jnp.linalg.solve(flow.Hk, Ru_b)
-    w_new_b = jnp.linalg.solve(flow.Hk, Rw_b)
+    u_new_b = _lu_solve((flow.lu_Hk, flow.piv_Hk), Ru_b)
+    w_new_b = _lu_solve((flow.lu_Hk, flow.piv_Hk), Rw_b)
 
     u_new = jnp.transpose(u_new_b, (2, 0, 1))
     w_new = jnp.transpose(w_new_b, (2, 0, 1))
