@@ -111,6 +111,12 @@ class Debugging(BaseModel):
     correct_divergence: bool = True
 
 
+class Solver(BaseModel):
+    """Linear algebraic solver configurations."""
+
+    use_lineax: bool = False
+
+
 class Parameters(BaseModel):
     """Top-level parameter container aggregating all categories."""
 
@@ -123,6 +129,7 @@ class Parameters(BaseModel):
     step: TimeStepping = TimeStepping()
     stop: Termination | None = Termination()
     debug: Debugging | None = Debugging()
+    solver: Solver = Solver()
 
 
 class CLIParameters(

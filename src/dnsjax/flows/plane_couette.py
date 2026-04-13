@@ -37,11 +37,9 @@ class PlaneCouetteFlow:
     D1: Array = field(init=False)
     D2: Array = field(init=False)
     Lk: Array = field(init=False)
-    lu_Lk: Array = field(init=False)
-    piv_Lk: Array = field(init=False)
+    Lk_solver: typing.Any = field(init=False)
     Hk: Array = field(init=False)
-    lu_Hk: Array = field(init=False)
-    piv_Hk: Array = field(init=False)
+    Hk_solver: typing.Any = field(init=False)
     Hk_minus: Array = field(init=False)
     p1: Array = field(init=False)
     p2: Array = field(init=False)
@@ -163,18 +161,20 @@ class PlaneCouetteFlow:
             (Nkz, Nkx), shard_2d, lambda idx: chunker.get_chunk(idx, "k2")
         )
 
-        import jax.scipy.linalg as sla
+        if params.solver.use_lineax:
+            try:
+                import lineax as lx
+                SolverClass = lambda m: LineaxBandedSolver(m, params.res.fd_order + 1, params.res.fd_order + 1)
+            except ImportError:
+                raise ImportError("Lineax is not installed! Use 'pip install lineax' or set use_lineax=False.")
+        else:
+            SolverClass = DenseJAXSolver
 
-        @jax.jit
-        def batched_lu_factor(A: Array) -> tuple[Array, Array]:
-            return jax.vmap(jax.vmap(sla.lu_factor))(A)
-
-        self.lu_Lk, self.piv_Lk = batched_lu_factor(self.Lk)
-        self.lu_Hk, self.piv_Hk = batched_lu_factor(self.Hk)
+        self.Lk_solver = SolverClass(self.Lk)
+        self.Hk_solver = SolverClass(self.Hk)
 
 
-flow: PlaneCouetteFlow = PlaneCouetteFlow()
-
+import typing
 import jax.scipy.linalg as sla
 
 @jax.jit
@@ -184,6 +184,38 @@ def _lu_solve(lu_pivots: tuple[Array, Array], b: Array) -> Array:
         return sla.lu_solve(lu_piv, vec)
     return jax.vmap(jax.vmap(solve_single))(lu_pivots, b)
 
+@dataclass
+class DenseJAXSolver:
+    """The current mathematically optimal dense LU cache."""
+    matrix: Array
+    lu: Array = field(init=False)
+    piv: Array = field(init=False)
+
+    def __post_init__(self):
+        @jax.jit
+        def batched_lu_factor(A: Array) -> tuple[Array, Array]:
+            return jax.vmap(jax.vmap(sla.lu_factor))(A)
+        self.lu, self.piv = batched_lu_factor(self.matrix)
+
+    def solve(self, rhs: Array) -> Array:
+        return _lu_solve((self.lu, self.piv), rhs)
+
+@dataclass
+class LineaxBandedSolver:
+    """The Lineax sparse operator path."""
+    matrix: Array
+    lower_band: int
+    upper_band: int
+    operator: typing.Any = field(init=False)
+
+    def __post_init__(self):
+        raise NotImplementedError("Lineax banded packing is pending extraction implementation!")
+
+    def solve(self, rhs: Array) -> Array:
+        raise NotImplementedError
+
+
+flow: PlaneCouetteFlow = PlaneCouetteFlow()
 
 def _compute_static_pressure(velocity_spec: Array) -> Array:
     """Solve the continuous pressure Poisson equation
@@ -218,7 +250,7 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     # Solve particular pressure
     f_P = div_N.at[0].set(0.0).at[-1].set(0.0)
     f_P_b = jnp.transpose(f_P, (1, 2, 0))
-    pP_b = _lu_solve((flow.lu_Lk, flow.piv_Lk), f_P_b)
+    pP_b = flow.Lk_solver.solve(f_P_b)
     pP = jnp.transpose(pP_b, (2, 0, 1))
 
     # Calculate continuous boundary mismatch
@@ -329,7 +361,7 @@ def _imm_iteration(
     dy_p_j = jnp.tensordot(flow.D1, pressure_j, axes=(1, 0))
     Rv = _einsum_4d(flow.Hk_minus, v_n) - dy_p_j + c * Nv_j + (1 - c) * Nv_n
     Rv_b = jnp.transpose(Rv, (1, 2, 0))
-    v_new_b = _lu_solve((flow.lu_Hk, flow.piv_Hk), Rv_b)
+    v_new_b = flow.Hk_solver.solve(Rv_b)
     v_new = jnp.transpose(v_new_b, (2, 0, 1))
 
     # Stage 2: Residuals and RHS for pressure
@@ -364,7 +396,7 @@ def _imm_iteration(
     f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
 
     f_hat_P_b = jnp.transpose(f_hat_P, (1, 2, 0))
-    pP_b = _lu_solve((flow.lu_Lk, flow.piv_Lk), f_hat_P_b)
+    pP_b = flow.Lk_solver.solve(f_hat_P_b)
     pP = jnp.transpose(pP_b, (2, 0, 1))
 
     r_bot = -flow.k2 * pP[0] + g_0
@@ -390,8 +422,8 @@ def _imm_iteration(
     Ru_b = jnp.transpose(Ru, (1, 2, 0))
     Rw_b = jnp.transpose(Rw, (1, 2, 0))
 
-    u_new_b = _lu_solve((flow.lu_Hk, flow.piv_Hk), Ru_b)
-    w_new_b = _lu_solve((flow.lu_Hk, flow.piv_Hk), Rw_b)
+    u_new_b = flow.Hk_solver.solve(Ru_b)
+    w_new_b = flow.Hk_solver.solve(Rw_b)
 
     u_new = jnp.transpose(u_new_b, (2, 0, 1))
     w_new = jnp.transpose(w_new_b, (2, 0, 1))
