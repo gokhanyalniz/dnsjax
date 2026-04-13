@@ -4,6 +4,10 @@ Offline precomputation (pure NumPy) for the influence-matrix method
 (IMM).  All quantities produced here are purely real, following the
 proof in the IMM reference document (Section 3.7).
 
+**Functional Purity Exception:** This module runs completely offline on
+the CPU using pure NumPy (rather than JAX) to construct matrices once.
+This is a documented exception to the pure-JAX paradigm of the codebase.
+
 Functions
 ---------
 fornberg_weights:
@@ -11,9 +15,9 @@ fornberg_weights:
 build_diff_matrices:
     Assemble first- and second-derivative matrices D1, D2.
 build_Lk_neumann:
-    Laplacian operator ``D2 - k^2 I`` with Neumann BCs (for pressure).
+    Laplacian operator `$D_2 - k^2 I$` with Neumann BCs (for pressure).
 build_Hk_dirichlet:
-    Helmholtz operators ``Hk``, ``Hk_minus`` with Dirichlet BCs
+    Helmholtz operators `$H_k$`, `$H_k^-$` with Dirichlet BCs
     (for velocity).
 precompute_imm:
     Full offline loop: D1, D2, Lk, Hk, Hk_minus, p1, p2, M_inv for
@@ -115,20 +119,20 @@ def build_diff_matrices(
 
 
 def build_Lk_neumann(k2: float, D1: np.ndarray, D2: np.ndarray) -> np.ndarray:
-    """Build the Laplacian operator ``D2 - k^2 I`` with Neumann BCs.
+    """Build the Laplacian operator `$D_2 - k^2 I$` with Neumann BCs.
 
     Boundary rows are replaced by the corresponding rows of D1 to
-    encode Neumann (``dp/dy = ...``) conditions for the pressure
+    encode Neumann (`$\partial p/\partial y = \dots$`) conditions for the pressure
     Poisson equation.
 
-    For the mean mode ``k^2 = 0``, the first row is instead replaced
-    by ``(1, 0, ..., 0)`` to pin ``p[0] = 0``, since the pure-Neumann
+    For the mean mode `$k^2 = 0$`, the first row is instead replaced
+    by `$(1, 0, \dots, 0)$` to pin `$p_0 = 0$`, since the pure-Neumann
     problem is singular (pressure determined up to a constant).
 
     Parameters
     ----------
     k2:
-        Squared horizontal wavenumber ``kx^2 + kz^2``.
+        Squared horizontal wavenumber `$k_x^2 + k_z^2$`.
     D1, D2:
         Derivative matrices, shape ``(Ny, Ny)``.
 
@@ -157,10 +161,10 @@ def build_Hk_dirichlet(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build the Helmholtz operators with Dirichlet BCs for velocity.
 
-    Returns both ``Hk = (1/dt) I - c nu (D2 - k^2 I)`` (implicit) and
-    ``Hk_minus = (1/dt) I + (1-c) nu (D2 - k^2 I)`` (explicit).
+    Returns both `$H_k = (1/\Delta t) I - c \nu (D_2 - k^2 I)$` (implicit) and
+    `$H_k^- = (1/\Delta t) I + (1-c) \nu (D_2 - k^2 I)$` (explicit).
     Boundary rows are replaced by identity rows to encode no-slip
-    conditions ``u|_wall = 0``.
+    conditions `$u|_{\mathrm{wall}} = 0$`.
 
     Parameters
     ----------
@@ -173,7 +177,7 @@ def build_Hk_dirichlet(
     c:
         Implicitness parameter (0.5 = Crank-Nicolson).
     nu:
-        Kinematic viscosity ``1/Re``.
+        Kinematic viscosity `$1/\mathrm{Re}$`.
 
     Returns
     -------
@@ -210,7 +214,7 @@ def precompute_imm(
     """Full offline precomputation for the influence-matrix method.
 
     Builds D1, D2, and then loops over all Fourier mode pairs
-    ``(kz, kx)`` to construct the per-mode operators and IMM data.
+    `$(k_z, k_x)$` to construct the per-mode operators and IMM data.
 
     The output arrays are indexed ``[i_kz, i_kx, ...]``, matching the
     spectral array layout ``(ny, nz-1, nx//2)`` where ny is the y-grid
@@ -234,7 +238,7 @@ def precompute_imm(
     c:
         Implicitness parameter.
     nu:
-        Kinematic viscosity ``1/Re``.
+        Kinematic viscosity `$1/\mathrm{Re}$`.
 
     Returns
     -------

@@ -168,6 +168,11 @@ def update_parameters(params_new: Parameters) -> None:
 
     Only fields that were explicitly set in *params_new* are applied, so
     unset fields retain their previous values.
+
+    **Side Effects & Functional Purity:**
+    This function performs an in-place mutation on the global `params` and
+    `derived_params` singletons. This is an explicit exception to the pure
+    functional paradigm.
     """
     for category, dict in params_new.model_dump(exclude_unset=True).items():
         if dict is not None:
@@ -221,7 +226,12 @@ class PaddedResolution:
     nz_padded: int = params.phys.oversampling_factor * params.res.nz // 2
 
     def set_padded_resolution(self, parameters: Parameters) -> None:
-        """Recompute padded sizes from *parameters*."""
+        """Recompute padded sizes from *parameters*.
+
+        **Side Effects & Functional Purity:**
+        This method mutates the attributes of the `PaddedResolution` singleton
+        in-place, departing from strict functional immutability.
+        """
         if not parameters.phys.oversample_y:
             print("WARNING: y is *not* oversampled!")
 

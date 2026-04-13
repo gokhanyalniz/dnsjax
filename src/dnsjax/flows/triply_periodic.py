@@ -13,32 +13,32 @@ It also exports the full flow interface consumed by ``__main__``:
 
 Base flow construction
 ----------------------
-The monochromatic base flow ``U(y)`` is defined analytically via a single
-Fourier harmonic (``qf = 1``):
+The monochromatic base flow `$U(y)$` is defined analytically via a single
+Fourier harmonic (`$q_f = 1$`):
 
-- Kolmogorov: ``U = sin(2*pi*y/Ly)`` -- coefficient ``-0.5j`` at mode ``qf``
-- Waleffe:    ``U = cos(2*pi*y/Ly)`` -- coefficient ``+0.5`` at mode ``qf``
-- Decaying-box: ``U = 0``
+- Kolmogorov: `$U = \sin(2\pi y/L_y)$` -- coefficient `-0.5j` at mode `$q_f$`
+- Waleffe:    `$U = \cos(2\pi y/L_y)$` -- coefficient `+0.5` at mode `$q_f$`
+- Decaying-box: `$U = 0$`
 
 The base flow is transformed to physical space on the 3/2-oversampled
-grid for use in the nonlinear term.  Its curl (``-dU/dy`` in the z-component)
-and the self-interaction ``U x curl(U)`` are precomputed once.
+grid for use in the nonlinear term.  Its curl (`$-\partial U_x/\partial y$` in the z-component)
+and the self-interaction `$\mathbf{U} \times \nabla \times \mathbf{U}$` are precomputed once.
 
 Tilt
 ----
-When the forcing direction is tilted by an angle ``theta`` away from the
+When the forcing direction is tilted by an angle `$\theta$` away from the
 x-axis in the (x, z) plane, the base flow and its derivatives are rotated:
-``U_x -> U_x cos(theta)``, ``U_z -> U_x sin(theta)``.
+`$U_x \to U_x \cos\theta$`, `$U_z \to U_x \sin\theta$`.
 
 Time-stepping coefficients
 --------------------------
 For the triply-periodic case the Helmholtz operator is diagonal in
 Fourier space, so the implicit solve reduces to pointwise operations:
 
-    ``ldt_1 = 1/dt + (1-c) * lapl / Re``   (explicit part)
-    ``ildt_2 = 1 / (1/dt - c * lapl / Re)`` (inverse of implicit part)
+    `$ldt_1 = \frac{1}{\Delta t} + (1-c) \frac{\nabla^2}{\mathrm{Re}}$`   (explicit part)
+    `$ildt_2 = \left(\frac{1}{\Delta t} - c \frac{\nabla^2}{\mathrm{Re}}\right)^{-1}$`  (inverse of implicit part)
 
-The mean mode ``(ky, kz, kx) = (0, 0, 0)`` is zeroed out, since it
+The mean mode `$(k_y, k_z, k_x) = (0, 0, 0)$` is zeroed out, since it
 is passive (constant shift) for periodic flows.
 """
 
@@ -101,7 +101,7 @@ class TriplyPeriodicFlow:
     ldt_1: Array = field(init=False)
     ildt_2: Array = field(init=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self._system = params.phys.system
 
         # Fourier coefficients of the streamwise base flow U_x(y).
@@ -121,7 +121,7 @@ class TriplyPeriodicFlow:
                 raise NotImplementedError
 
             # Forcing amplitude that sustains the laminar state:
-            # F = nu * k^2 * U
+            # `$F = \nu k^2 U$`
             self.force_amplitude = jnp.pi**2 / (4 * params.phys.re)
             self.ekin_lam = 1.0 / 4.0
             self.input_lam = jnp.pi**2 / (8 * params.phys.re)
@@ -308,7 +308,7 @@ def _predict_component(
 ) -> Array:
     """Euler predictor step (vmapped over velocity components).
 
-    Computes ``u_p = (u^n * ldt_1 + f^n) / (1/dt - c*nu*lapl)``
+    Computes `$u_p = (u^n \cdot ldt_1 + f^n) \cdot ildt_2$`
     as a pointwise operation in spectral space, where the Helmholtz
     inversion is algebraic (multiply by ``ildt_2``).
     """
@@ -324,7 +324,7 @@ def _correct_component(
 ) -> tuple[Array, Array]:
     """Crank-Nicolson corrector step (vmapped over velocity components).
 
-    Computes the correction ``delta = c * (f_next - f_prev) * ildt_2``
+    Computes the correction `$\delta = c (f_{\text{next}} - f_{\text{prev}}) \cdot ildt_2$`
     and returns the updated prediction and the correction itself (for
     convergence monitoring).
     """
@@ -355,7 +355,7 @@ def _get_rhs(state: Array) -> Array:
         phys_to_spec,
         _curl_fn,
     )
-    # Poisson problem for pressure: lapl(p) = div(NL)
+    # Poisson problem for pressure: `$\nabla^2 p = \nabla \cdot \mathbf{NL}$`
     lapl_pressure = divergence(nonlin, fourier.kx, fourier.ky, fourier.kz)
     # Subtract pressure gradient to enforce incompressibility
     rhs_no_lapl = nonlin - gradient(
@@ -393,16 +393,16 @@ predict_and_correct, iterate_correction = make_stepper(
 
 
 def get_perturbation_energy(state: Array) -> Array:
-    """Perturbation kinetic energy ``E' = ||u'||^2 / 2``."""
+    """Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
     return get_norm2(state, fourier.k_metric, flow.ys) / 2
 
 
 def get_energy(perturbation_energy: Array, input: Array) -> Array:
-    """Total kinetic energy ``E = <u_tot, u_tot> / 2``.
+    """Total kinetic energy `$E = \langle \mathbf{u}_{\text{tot}}, \mathbf{u}_{\text{tot}} \rangle / 2$`.
 
     Reconstructed from the perturbation energy and the forcing input via
-    ``E = E' - E_lam + I / |F|``.  For decaying-box flows (no forcing),
-    ``E = E'``.
+    `$E = E' - E_{\text{lam}} + I / |F|$`.  For decaying-box flows (no forcing),
+    `$E = E'$`.
     """
     if params.phys.system in monochromatic_systems:
         return (
@@ -413,11 +413,11 @@ def get_energy(perturbation_energy: Array, input: Array) -> Array:
 
 
 def get_enstrophy(state: Array, input: Array) -> Array:
-    """Total enstrophy times Re: ``D*Re = <grad(u_tot), grad(u_tot)>``.
+    """Total enstrophy times Re: `$D\cdot\mathrm{Re} = \langle \nabla \mathbf{u}_{\text{tot}}, \nabla \mathbf{u}_{\text{tot}} \rangle$`.
 
     Computed from the perturbation field using
-    ``D*Re = D'*Re + 2*I*Re - I_lam*Re``, where ``D'*Re`` is the
-    perturbation enstrophy ``sum(-lapl * |u'|^2)``.
+    `$D\cdot\mathrm{Re} = D'\cdot\mathrm{Re} + 2I\cdot\mathrm{Re} - I_{\text{lam}}\cdot\mathrm{Re}$`, where `$D'\cdot\mathrm{Re}$` is the
+    perturbation enstrophy `$\sum(-\nabla^2 |\mathbf{u}'|^2)$`.
     """
     return (
         jnp.sum(
@@ -430,12 +430,12 @@ def get_enstrophy(state: Array, input: Array) -> Array:
 
 
 def get_dissipation(state: Array, input: Array) -> Array:
-    """Total dissipation rate ``D = enstrophy / Re``."""
+    """Total dissipation rate `$D = \text{enstrophy} / \mathrm{Re}$`."""
     return get_enstrophy(state, input) / params.phys.re
 
 
 def get_input(state: Array) -> Array:
-    """Power input from the forcing: ``I = <u_tot, F>``."""
+    """Power input from the forcing: `$I = \langle \mathbf{u}_{\text{tot}}, \mathbf{F} \rangle$`."""
     return (
         jnp.sum(
             jnp.conj(flow.unit_force * flow.force_amplitude)
@@ -473,7 +473,7 @@ def correct_divergence(
 ) -> tuple[Array, Array | None]:
     """Project the velocity onto the divergence-free subspace.
 
-    Computes ``u_corrected = u - grad(lapl^{-1}(div(u)))`` and optionally
+    Computes `$\mathbf{u}_{\text{corrected}} = \mathbf{u} - \nabla(\nabla^{-2}(\nabla \cdot \mathbf{u}))$` and optionally
     returns the L2 norm of the correction.
     """
     correction = -gradient(

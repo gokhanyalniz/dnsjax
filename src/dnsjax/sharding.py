@@ -84,8 +84,8 @@ class Sharding:
         # All three directions are Fourier-expanded; the Nyquist mode is
         # omitted in y and z, giving ny-1 and nz-1 stored modes.
         # The (ky, kz, kx) = (0, 0, 0) Fourier mode is the mean mode.
-        vector_mean_mode: tuple = tuple([slice(None)] + [slice(0, 1)] * 3)
-        scalar_mean_mode: tuple = tuple([slice(0, 1)] * 3)
+        vector_mean_mode: tuple[slice, ...] = tuple([slice(None)] + [slice(0, 1)] * 3)
+        scalar_mean_mode: tuple[slice, ...] = tuple([slice(0, 1)] * 3)
 
         spec_shape: tuple[int, ...] = (
             params.res.ny - 1,
@@ -102,8 +102,8 @@ class Sharding:
         # Wall-bounded: y is in physical (grid-point) space, only x and z
         # are Fourier-expanded.
         # The (kz, kx) = (0, 0) Fourier mode is the mean mode.
-        vector_mean_mode = tuple([slice(None)] * 2 + [slice(0, 1)] * 2)
-        scalar_mean_mode = tuple([slice(None)] + [slice(0, 1)] * 2)
+        vector_mean_mode: tuple[slice, ...] = tuple([slice(None)] * 2 + [slice(0, 1)] * 2)
+        scalar_mean_mode: tuple[slice, ...] = tuple([slice(None)] + [slice(0, 1)] * 2)
 
         spec_shape = (
             params.res.ny,

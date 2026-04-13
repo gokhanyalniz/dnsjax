@@ -35,10 +35,10 @@ class Fourier:
     The Nyquist mode is omitted on every axis to avoid aliasing artefacts
     and to simplify the zero-padding / truncation logic in the FFT module.
 
-    ``k_metric`` equals 2 for ``kx > 0`` and 1 for ``kx == 0``, accounting
+    ``k_metric`` equals 2 for `$k_x > 0$` and 1 for `$k_x = 0$`, accounting
     for the Hermitian symmetry of the real FFT when summing over modes
-    (e.g. in energy integrals: the ``kx > 0`` modes represent both ``+kx``
-    and ``-kx``).
+    (e.g. in energy integrals: the `$k_x > 0$` modes represent both `$+k_x$`
+    and `$-k_x$`).
     """
 
     kx: Array = field(init=False)
@@ -50,7 +50,7 @@ class Fourier:
 
     @staticmethod
     def real_harmonics(n: int) -> Array:
-        """Non-negative integer wavenumbers ``[0, 1, ..., n//2 - 1]``."""
+        """Non-negative integer wavenumbers `$[0, 1, \dots, n/2 - 1]$`."""
         # Omit the Nyquist mode
         return jnp.arange(0, n // 2, dtype=int)
 
@@ -58,8 +58,8 @@ class Fourier:
     def complex_harmonics(n: int) -> Array:
         """Full-complex integer wavenumbers with the Nyquist mode omitted.
 
-        Returns ``n - 1`` wavenumbers:
-        ``[0, 1, ..., n//2-1, -n//2+1, ..., -1]``.
+        Returns `$n - 1$` wavenumbers:
+        `$[0, 1, \dots, n/2-1, -n/2+1, \dots, -1]$`.
         """
         qs = (jnp.arange(n, dtype=int) + n // 2) % n - n // 2
         # Omit the Nyquist mode
@@ -156,7 +156,7 @@ def spec_to_phys_2d(velocity_spec: Array) -> Array:
 
 
 def cross(vector_1: Array, vector_2: Array) -> Array:
-    """Vector cross product ``vector_1 x vector_2`` (component-wise)."""
+    """Vector cross product `$\mathbf{v}_1 \times \mathbf{v}_2$` (component-wise)."""
 
     return jnp.array(
         [
@@ -170,7 +170,7 @@ def cross(vector_1: Array, vector_2: Array) -> Array:
 def derivative(
     data_spec: Array, kx: Array, ky: Array, kz: Array, axis: int
 ) -> Array:
-    """Spectral derivative: ``i * k_axis * data_spec``."""
+    """Spectral derivative: `$i k_{\text{axis}} \, \text{data\_spec}$`."""
     match axis:
         case 0:
             return 1j * kx * data_spec
@@ -181,12 +181,12 @@ def derivative(
 
 
 def divergence(velocity_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
-    """Spectral divergence: ``i*kx*u + i*ky*v + i*kz*w``."""
+    """Spectral divergence: `$i k_x u + i k_y v + i k_z w$`."""
     return sum([derivative(velocity_spec[i], kx, ky, kz, i) for i in range(3)])
 
 
 def curl(velocity_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
-    """Spectral curl (vorticity): ``i * k x velocity_spec``."""
+    """Spectral curl (vorticity): `$i \mathbf{k} \times \mathbf{u}_{\text{spec}}$`."""
     return 1j * jnp.array(
         [
             ky * velocity_spec[2] - kz * velocity_spec[1],
@@ -197,18 +197,18 @@ def curl(velocity_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
 
 
 def gradient(data_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
-    """Spectral gradient: ``[i*kx, i*ky, i*kz] * data_spec``."""
+    """Spectral gradient: `$[i k_x, i k_y, i k_z] \, \text{data\_spec}$`."""
     return jnp.array([derivative(data_spec, kx, ky, kz, i) for i in range(3)])
 
 
 def laplacian(data_spec: Array, lapl_spec: Array) -> Array:
-    """Apply the spectral Laplacian (pointwise multiply by ``-k^2``)."""
+    """Apply the spectral Laplacian (pointwise multiply by `$-k^2$`)."""
     return lapl_spec * data_spec
 
 
 def inverse_laplacian(data_spec: Array, inv_lapl_spec: Array) -> Array:
     """Apply the inverse spectral Laplacian
-    (pointwise multiply by ``1/(-k^2)``)."""
+    (pointwise multiply by `$-1/k^2$`)."""
     return inv_lapl_spec * data_spec
 
 

@@ -8,11 +8,11 @@ spectral: kx-sharded).
 
 Dealiasing
 ----------
-The 3/2-rule expands each direction by a factor of ``oversampling_factor
-/ 2`` before transforming to physical space (``zeropad_*``), and
+The 3/2-rule expands each direction by a factor of oversampling\_factor / 2
+before transforming to physical space (``zeropad_*``), and
 truncates back after the forward transform (``truncate_*``).  Nyquist
-modes are omitted in all stored spectral arrays (``n - 1`` modes for a
-full-complex axis, ``n // 2`` modes for the real-FFT axis).
+modes are omitted in all stored spectral arrays (`$n - 1$` modes for a
+full-complex axis, `$n / 2$` modes for the real-FFT axis).
 
 Normalisation
 -------------
@@ -41,9 +41,9 @@ def zeropad_fft(a: Array, n: int, axis: int) -> Array:
     ----------
     a:
         Input array with ``a.shape[axis] == N - 1`` stored modes (Nyquist
-        omitted), where *N* is the original full mode count.
+        omitted), where *$N$* is the original full mode count.
     n:
-        Target length (>= *N*).  Must satisfy ``(n - N) % 2 == 0``.
+        Target length (`$\ge N$`).  Must satisfy `$(n - N) \pmod 2 = 0$`.
     axis:
         Axis along which to pad (0 for y, 1 for z).
     """
@@ -82,16 +82,16 @@ def zeropad_fft(a: Array, n: int, axis: int) -> Array:
 def truncate_fft(a: Array, n: int, axis: int) -> Array:
     """Truncate a full-complex FFT output along *axis*, dropping aliased modes.
 
-    Keeps the lowest ``n // 2`` positive and ``n // 2 - 1`` negative
+    Keeps the lowest `$n / 2$` positive and `$n / 2 - 1$` negative
     modes, discarding all higher modes including the Nyquist mode.  The
-    output has ``n - 1`` stored modes.
+    output has `$n - 1$` stored modes.
 
     Parameters
     ----------
     a:
         Full FFT output with ``a.shape[axis] == N`` modes.
     n:
-        Target mode count (<= *N*).  Must satisfy ``(N - n) % 2 == 0``.
+        Target mode count (`$\le N$`).  Must satisfy `$(N - n) \pmod 2 = 0$`.
     axis:
         Axis along which to truncate (0 for y, 1 for z).
     """

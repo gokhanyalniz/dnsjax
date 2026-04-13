@@ -1,7 +1,7 @@
 """Plane Couette flow: wall-bounded shear between two moving plates.
 
-The base flow is ``U(y) = y`` on the Chebyshev-Gauss-Lobatto grid
-``y in [-1, 1]``, with walls moving at ``+/-1``.
+The base flow is `$U(y) = y$` on the Chebyshev-Gauss-Lobatto grid
+`$y \in [-1, 1]$`, with walls moving at `$\pm 1$`.
 """
 
 from dataclasses import dataclass, field
@@ -44,7 +44,7 @@ class PlaneCouetteFlow:
     M_inv: Array = field(init=False)
     k2: Array = field(init=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.ys = -jnp.cos(
             jnp.arange(params.res.ny, dtype=sharding.float_type)
             * jnp.pi
@@ -111,8 +111,8 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     """Solve the continuous pressure Poisson equation
     on the un-advanced snapshot.
 
-    1. grad^2 p = div N
-    2. dp/dy = N_v + nu * d2v/dy2 at boundaries
+    1. `$\nabla^2 p = \nabla \cdot \mathbf{N}$`
+    2. `$\partial p/\partial y = N_v + \nu \frac{\partial^2 v}{\partial y^2}$` at boundaries
     """
     nonlin = get_nonlin(
         velocity_spec,
