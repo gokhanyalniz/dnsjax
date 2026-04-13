@@ -21,8 +21,9 @@ Fourier harmonic (`$q_f = 1$`):
 - Decaying-box: `$U = 0$`
 
 The base flow is transformed to physical space on the 3/2-oversampled
-grid for use in the nonlinear term.  Its curl (`$-\partial U_x/\partial y$` in the z-component)
-and the self-interaction `$\mathbf{U} \times \nabla \times \mathbf{U}$` are precomputed once.
+grid for use in the nonlinear term.  Its curl (`$-\partial U_x/\partial y$`
+in the z-component) and the self-interaction
+`$\mathbf{U} \times \nabla \times \mathbf{U}$` are precomputed once.
 
 Tilt
 ----
@@ -35,8 +36,10 @@ Time-stepping coefficients
 For the triply-periodic case the Helmholtz operator is diagonal in
 Fourier space, so the implicit solve reduces to pointwise operations:
 
-    `$ldt_1 = \frac{1}{\Delta t} + (1-c) \frac{\nabla^2}{\mathrm{Re}}$`   (explicit part)
-    `$ildt_2 = \left(\frac{1}{\Delta t} - c \frac{\nabla^2}{\mathrm{Re}}\right)^{-1}$`  (inverse of implicit part)
+    `$ldt_1 = \frac{1}{\Delta t} + (1-c) \frac{\nabla^2}{\mathrm{Re}}$`
+    (explicit part)
+    `$ildt_2 = \left(\frac{1}{\Delta t} - c \frac{\nabla^2}{\mathrm{Re}}\right)^{-1}$`
+    (inverse of implicit part)
 
 The mean mode `$(k_y, k_z, k_x) = (0, 0, 0)$` is zeroed out, since it
 is passive (constant shift) for periodic flows.
@@ -169,7 +172,8 @@ class TriplyPeriodicFlow:
             base_flow[0] * dy_base_flow[0]
         )
 
-        # Apply tilt: rotate (U_x, 0, 0) -> (U_x cos(theta), 0, U_x sin(theta))
+        # Apply tilt: rotate (U_x, 0, 0) ->
+        # (U_x cos(theta), 0, U_x sin(theta))
         tilt_rad: float = derived_params.tilt_rad
         if jnp.abs(tilt_rad) != 0:
             base_flow = base_flow.at[2].set(jnp.sin(tilt_rad) * base_flow[0])
@@ -324,7 +328,8 @@ def _correct_component(
 ) -> tuple[Array, Array]:
     """Crank-Nicolson corrector step (vmapped over velocity components).
 
-    Computes the correction `$\delta = c (f_{\text{next}} - f_{\text{prev}}) \cdot ildt_2$`
+    Computes the correction
+    `$\delta = c (f_{\text{next}} - f_{\text{prev}}) \cdot ildt_2$`
     and returns the updated prediction and the correction itself (for
     convergence monitoring).
     """
@@ -398,10 +403,12 @@ def get_perturbation_energy(state: Array) -> Array:
 
 
 def get_energy(perturbation_energy: Array, input: Array) -> Array:
-    """Total kinetic energy `$E = \langle \mathbf{u}_{\text{tot}}, \mathbf{u}_{\text{tot}} \rangle / 2$`.
+    """Total kinetic energy
+    `$E = \langle \mathbf{u}_{\text{tot}}, \mathbf{u}_{\text{tot}} \rangle / 2$`.
 
     Reconstructed from the perturbation energy and the forcing input via
-    `$E = E' - E_{\text{lam}} + I / |F|$`.  For decaying-box flows (no forcing),
+    `$E = E' - E_{\text{lam}} + I / |F|$`.  For decaying-box flows
+    (no forcing),
     `$E = E'$`.
     """
     if params.phys.system in monochromatic_systems:
@@ -413,10 +420,12 @@ def get_energy(perturbation_energy: Array, input: Array) -> Array:
 
 
 def get_enstrophy(state: Array, input: Array) -> Array:
-    """Total enstrophy times Re: `$D\cdot\mathrm{Re} = \langle \nabla \mathbf{u}_{\text{tot}}, \nabla \mathbf{u}_{\text{tot}} \rangle$`.
+    """Total enstrophy times Re:
+    `$D\cdot\mathrm{Re} = \langle \nabla \mathbf{u}_{\text{tot}}, \nabla \mathbf{u}_{\text{tot}} \rangle$`.
 
     Computed from the perturbation field using
-    `$D\cdot\mathrm{Re} = D'\cdot\mathrm{Re} + 2I\cdot\mathrm{Re} - I_{\text{lam}}\cdot\mathrm{Re}$`, where `$D'\cdot\mathrm{Re}$` is the
+    `$D\cdot\mathrm{Re} = D'\cdot\mathrm{Re} + 2I\cdot\mathrm{Re} - I_{\text{lam}}\cdot\mathrm{Re}$`,
+    where `$D'\cdot\mathrm{Re}$` is the
     perturbation enstrophy `$\sum(-\nabla^2 |\mathbf{u}'|^2)$`.
     """
     return (
@@ -435,7 +444,9 @@ def get_dissipation(state: Array, input: Array) -> Array:
 
 
 def get_input(state: Array) -> Array:
-    """Power input from the forcing: `$I = \langle \mathbf{u}_{\text{tot}}, \mathbf{F} \rangle$`."""
+    """Power input from the forcing:
+    `$I = \langle \mathbf{u}_{\text{tot}}, \mathbf{F} \rangle$`.
+    """
     return (
         jnp.sum(
             jnp.conj(flow.unit_force * flow.force_amplitude)
@@ -473,7 +484,8 @@ def correct_divergence(
 ) -> tuple[Array, Array | None]:
     """Project the velocity onto the divergence-free subspace.
 
-    Computes `$\mathbf{u}_{\text{corrected}} = \mathbf{u} - \nabla(\nabla^{-2}(\nabla \cdot \mathbf{u}))$` and optionally
+    Computes `$\mathbf{u}_{\text{corrected}} = \mathbf{u} - \nabla(\nabla^{-2}(\nabla \cdot \mathbf{u}))$`
+    and optionally
     returns the L2 norm of the correction.
     """
     correction = -gradient(

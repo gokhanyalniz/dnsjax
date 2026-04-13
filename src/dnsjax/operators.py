@@ -156,7 +156,9 @@ def spec_to_phys_2d(velocity_spec: Array) -> Array:
 
 
 def cross(vector_1: Array, vector_2: Array) -> Array:
-    """Vector cross product `$\mathbf{v}_1 \times \mathbf{v}_2$` (component-wise)."""
+    """Vector cross product `$\mathbf{v}_1 \times \mathbf{v}_2$`
+    (component-wise).
+    """
 
     return jnp.array(
         [
@@ -186,7 +188,9 @@ def divergence(velocity_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
 
 
 def curl(velocity_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
-    """Spectral curl (vorticity): `$i \mathbf{k} \times \mathbf{u}_{\text{spec}}$`."""
+    """Spectral curl (vorticity):
+    `$i \mathbf{k} \times \mathbf{u}_{\text{spec}}$`.
+    """
     return 1j * jnp.array(
         [
             ky * velocity_spec[2] - kz * velocity_spec[1],

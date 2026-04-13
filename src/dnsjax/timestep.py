@@ -78,10 +78,11 @@ def make_stepper(
         iterations (if the error exceeds tolerance) are handled by
         ``iterate_correction``.
 
-        **Functional Purity Exception:** This JIT-compiled function overrides the
-        XLA buffers (via `donate_argnums=0`) of the inputs to save memory at runtime.
-        While typical JAX code implies functional purity, treating the `state`
-        outside of this return block will yield corrupted values due to buffer reuse.
+        **Functional Purity Exception:** This JIT-compiled function overrides
+        the XLA buffers (via `donate_argnums=0`) of the inputs to save memory
+        at runtime. While typical JAX code implies functional purity, treating
+        the `state` outside of this return block will yield corrupted values
+        due to buffer reuse.
         """
         rhs_prev = get_rhs_fn(state)
         prediction_state = predict_fn(state, rhs_prev)
@@ -104,10 +105,11 @@ def make_stepper(
     ) -> tuple[Array | tuple, Array, Array]:
         """One corrector iteration: recompute RHS, apply CN correction.
 
-        **Functional Purity Exception:** The input buffers *prediction_state*
-        and *rhs_prev* are donated (via `donate_argnums=(0, 1)`), meaning
-        their memory is safely destroyed and reused for the outputs within XLA.
-        Their references outside this function call become invalidated.
+        **Functional Purity Exception:** The input buffers
+        *prediction_state* and *rhs_prev* are donated (via
+        `donate_argnums=(0, 1)`), meaning their memory is safely destroyed
+        and reused for the outputs within XLA. Their references outside this
+        function call become invalidated.
         """
         rhs_next = get_rhs_fn(prediction_state)
         prediction_state, correction = correct_fn(

@@ -122,8 +122,8 @@ def build_Lk_neumann(k2: float, D1: np.ndarray, D2: np.ndarray) -> np.ndarray:
     """Build the Laplacian operator `$D_2 - k^2 I$` with Neumann BCs.
 
     Boundary rows are replaced by the corresponding rows of D1 to
-    encode Neumann (`$\partial p/\partial y = \dots$`) conditions for the pressure
-    Poisson equation.
+    encode Neumann (`$\partial p/\partial y = \dots$`) conditions
+    for the pressure Poisson equation.
 
     For the mean mode `$k^2 = 0$`, the first row is instead replaced
     by `$(1, 0, \dots, 0)$` to pin `$p_0 = 0$`, since the pure-Neumann

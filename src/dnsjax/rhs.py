@@ -2,10 +2,17 @@
 
 The nonlinear term uses the *rotational form* around a base flow **U**:
 
-    `$NL = \mathbf{u}' \times \boldsymbol{\omega}' + \mathbf{u}' \times \nabla \times \mathbf{U} + \mathbf{U} \times \boldsymbol{\omega}' + \mathbf{U} \times \nabla \times \mathbf{U}$`
+    $$
+    NL = \mathbf{u}' \times \boldsymbol{\omega}' +
+    \mathbf{u}' \times \nabla \times \mathbf{U} +
+    \mathbf{U} \times \boldsymbol{\omega}' +
+    \mathbf{U} \times \nabla \times \mathbf{U}
+    $$
 
-where `$\mathbf{u}'$` is the perturbation velocity and `$\boldsymbol{\omega}' = \nabla \times \mathbf{u}'$`.
-The four terms arise from expanding `$(\mathbf{u}' + \mathbf{U}) \times \nabla \times (\mathbf{u}' + \mathbf{U})$`.
+where `$\mathbf{u}'$` is the perturbation velocity and
+`$\boldsymbol{\omega}' = \nabla \times \mathbf{u}'$`.
+The four terms arise from expanding
+`$(\mathbf{u}' + \mathbf{U}) \times \nabla \times (\mathbf{u}' + \mathbf{U})$`.
 
 The transforms (``spec_to_phys``, ``phys_to_spec``) and the ``curl``
 operator are provided as callables so that this module works with both
@@ -50,7 +57,8 @@ def get_nonlin(
     curl_base_flow:
         `$\nabla \times \mathbf{U}$` in physical space, same shape.
     nonlin_base_flow:
-        `$\mathbf{U} \times \nabla \times \mathbf{U}$` in physical space, same shape.
+        `$\mathbf{U} \times \nabla \times \mathbf{U}$` in physical space,
+        same shape.
     spec_to_phys_fn:
         Inverse FFT (spectral -> physical), vmapped over components.
     phys_to_spec_fn:

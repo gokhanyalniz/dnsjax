@@ -112,7 +112,8 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     on the un-advanced snapshot.
 
     1. `$\nabla^2 p = \nabla \cdot \mathbf{N}$`
-    2. `$\partial p/\partial y = N_v + \nu \frac{\partial^2 v}{\partial y^2}$` at boundaries
+    2. `$\partial p/\partial y = N_v + \nu \frac{\partial^2 v}{\partial y^2}$`
+       at boundaries
     """
     nonlin = get_nonlin(
         velocity_spec,
