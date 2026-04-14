@@ -225,11 +225,14 @@ class IMMChunker:
 @jax.jit
 def _lu_solve(lu_pivots: tuple[Array, Array], b: Array) -> Array:
     """Batched LU solve across 2D (k_z, k_x) Fourier modes."""
+    lu, piv = lu_pivots
+    dtype = jnp.result_type(lu, b)
+    lu = lu.astype(dtype)
 
     def solve_single(lu_piv, vec):
         return sla.lu_solve(lu_piv, vec)
 
-    return jax.vmap(jax.vmap(solve_single))(lu_pivots, b)
+    return jax.vmap(jax.vmap(solve_single))((lu, piv), b)
 
 
 @register_dataclass_pytree
