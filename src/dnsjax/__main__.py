@@ -294,9 +294,11 @@ if __name__ == "__main__":
 
         print(
             "Running with the effective resolution:",
-            padded_res.nx_padded,
-            padded_res.ny_padded,
+            padded_res.ny_padded
+            if padded_res.ny_padded is not None
+            else params.res.ny,
             padded_res.nz_padded,
+            padded_res.nx_padded,
             flush=True,
         )
 

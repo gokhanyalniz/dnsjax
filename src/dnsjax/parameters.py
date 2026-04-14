@@ -225,11 +225,13 @@ class PaddedResolution:
     """
 
     nx_padded: int = params.phys.oversampling_factor * params.res.nx // 2
-    ny_padded: int = (
-        params.res.ny
-        if not params.phys.oversample_y
-        else params.phys.oversampling_factor * params.res.ny // 2
-    )
+    ny_padded: int | None = None
+    if params.phys.system in periodic_systems:
+        ny_padded = (
+            params.phys.oversampling_factor * params.res.ny // 2
+            if params.phys.oversample_y
+            else params.res.ny
+        )
     nz_padded: int = params.phys.oversampling_factor * params.res.nz // 2
 
     def set_padded_resolution(self, parameters: Parameters) -> None:
@@ -239,17 +241,21 @@ class PaddedResolution:
         This method mutates the attributes of the `PaddedResolution` singleton
         in-place, departing from strict functional immutability.
         """
-        if not parameters.phys.oversample_y:
+        if (
+            params.phys.system in periodic_systems
+            and not parameters.phys.oversample_y
+        ):
             print("WARNING: y is *not* oversampled!")
 
         self.nx_padded = (
             parameters.phys.oversampling_factor * params.res.nx // 2
         )
-        self.ny_padded = (
-            parameters.res.ny
-            if not params.phys.oversample_y
-            else parameters.phys.oversampling_factor * params.res.ny // 2
-        )
+        if params.phys.system in periodic_systems:
+            self.ny_padded = (
+                params.phys.oversampling_factor * params.res.ny // 2
+                if params.phys.oversample_y
+                else params.res.ny
+            )
         self.nz_padded = (
             parameters.phys.oversampling_factor * params.res.nz // 2
         )

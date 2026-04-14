@@ -7,10 +7,11 @@ for spectral/physical arrays, and convenience helpers (``print``, ``exit``).
 Array layout convention
 -----------------------
 Spectral arrays have shape ``(ny[-1], nz-1, nx//2)`` -- the last axis
-(kx, real-FFT half) is sharded across devices.  Physical arrays have
-shape ``(ny_padded, nz_padded, nx_padded)`` -- the second-to-last axis
-(z) is sharded.  The reshard between these layouts is handled in
-:mod:`dnsjax.fft`.
+(kx, real-FFT, keeping non-negative modes only) is sharded across devices.
+Physical arrays have shape ``(ny_padded, nz_padded, nx_padded)`` for
+the triply-periodic geometry and ``(ny, nz_padded, nx_padded)`` otherwise.
+The second-to-last axis (z) is sharded.  The reshard between these layouts
+is handled in :mod:`dnsjax.fft`.
 """
 
 import dataclasses
