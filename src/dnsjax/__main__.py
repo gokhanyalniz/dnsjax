@@ -54,7 +54,7 @@ def main() -> None:
 
     # --- Flow dispatch -------------------------------------------------------
     if params.phys.system in periodic_systems:
-        from .flows.triply_periodic import (
+        from .flows.monochromatic import (
             correct_velocity,
             get_stats,
             init_state,

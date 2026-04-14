@@ -24,7 +24,12 @@ from ..parameters import params
 from ..rhs import get_nonlin
 from ..sharding import register_dataclass_pytree, sharding
 from ..timestep import make_stepper
-from ..velocity import get_norm2
+from ..geometries.cartesian import (
+    IMMChunker,
+    DenseJAXSolver,
+    LineaxBandedSolver,
+    get_norm2,
+)
 
 
 @register_dataclass_pytree
@@ -84,43 +89,12 @@ class PlaneCouetteFlow:
         Nkx = len(kx_global)
         Ny = params.res.ny
 
-        class IMMChunker:
-            def __init__(self, ys_arr, p, dt, c, nu, D1_arr, D2_arr):
-                self.ys_arr = ys_arr
-                self.p = p
-                self.dt = dt
-                self.c = c
-                self.nu = nu
-                self.D1_arr = D1_arr
-                self.D2_arr = D2_arr
-                self.cache = {}
 
-            def get_chunk(
-                self, indices: tuple[slice, ...], key: str
-            ) -> np.ndarray:
-                slice_kz, slice_kx = indices[0], indices[1]
-                cache_key = (
-                    slice_kz.start,
-                    slice_kz.stop,
-                    slice_kx.start,
-                    slice_kx.stop,
-                )
-                if cache_key not in self.cache:
-                    self.cache[cache_key] = precompute_imm(
-                        y=self.ys_arr,
-                        kx_vals=kx_global[slice_kz],
-                        kz_vals=kz_global[slice_kx],
-                        p=self.p,
-                        dt=self.dt,
-                        c=self.c,
-                        nu=self.nu,
-                        D1=self.D1_arr,
-                        D2=self.D2_arr,
-                    )
-                return self.cache[cache_key][key]
 
         chunker = IMMChunker(
             ys_arr=np.array(self.ys),
+            kx_global=kx_global,
+            kz_global=kz_global,
             p=params.res.fd_order,
             dt=params.step.dt,
             c=params.step.implicitness,
@@ -181,56 +155,7 @@ class PlaneCouetteFlow:
         self.Hk_solver = SolverClass(self.Hk)
 
 
-import jax.scipy.linalg as sla
 
-
-@jax.jit
-def _lu_solve(lu_pivots: tuple[Array, Array], b: Array) -> Array:
-    """Batched LU solve across 2D (k_z, k_x) Fourier modes."""
-
-    def solve_single(lu_piv, vec):
-        return sla.lu_solve(lu_piv, vec)
-
-    return jax.vmap(jax.vmap(solve_single))(lu_pivots, b)
-
-
-@register_dataclass_pytree
-@dataclass
-class DenseJAXSolver:
-    """The current mathematically optimal dense LU cache."""
-
-    matrix: Array
-    lu: Array = field(init=False)
-    piv: Array = field(init=False)
-
-    def __post_init__(self):
-        @jax.jit
-        def batched_lu_factor(A: Array) -> tuple[Array, Array]:
-            return jax.vmap(jax.vmap(sla.lu_factor))(A)
-
-        self.lu, self.piv = batched_lu_factor(self.matrix)
-
-    def solve(self, rhs: Array) -> Array:
-        return _lu_solve((self.lu, self.piv), rhs)
-
-
-@register_dataclass_pytree
-@dataclass
-class LineaxBandedSolver:
-    """The Lineax sparse operator path."""
-
-    matrix: Array
-    lower_band: int
-    upper_band: int
-    operator: Any = field(init=False)
-
-    def __post_init__(self):
-        raise NotImplementedError(
-            "Lineax banded packing is pending extraction implementation!"
-        )
-
-    def solve(self, rhs: Array) -> Array:
-        raise NotImplementedError
 
 
 flow: PlaneCouetteFlow = PlaneCouetteFlow()

@@ -54,13 +54,15 @@ from jax import Array, jit, vmap
 from jax import numpy as jnp
 
 from ..bench import timer
-from ..operators import (
+from ..geometries.triply_periodic import (
     curl,
     divergence,
-    fourier,
     gradient,
     inverse_laplacian,
     laplacian,
+)
+from ..operators import (
+    fourier,
     phys_to_spec,
     spec_to_phys,
 )
@@ -73,7 +75,7 @@ from ..parameters import (
 from ..rhs import get_nonlin
 from ..sharding import register_dataclass_pytree, sharding
 from ..timestep import make_stepper
-from ..velocity import get_norm, get_norm2
+from ..geometries.triply_periodic import get_norm, get_norm2
 
 
 @register_dataclass_pytree
@@ -101,7 +103,7 @@ class TriplyPeriodicFlow:
     forced_modes: tuple = field(init=False)
     unit_force: Array = field(init=False)
 
-    ys: Array | None = field(init=False, default=None)
+
 
     ldt_1: Array = field(init=False)
     ildt_2: Array = field(init=False)
@@ -253,7 +255,6 @@ class TriplyPeriodicFlow:
                         dtype=sharding.complex_type,
                     )
 
-        self.ys = None
 
         # Time-stepping coefficients
         ldt_1 = (
@@ -395,7 +396,7 @@ def _correct(
 
 def _norm(correction: Array, fourier_: Any, flow_: Any) -> Array:
     """L2 convergence norm."""
-    return get_norm(correction, fourier_.k_metric, flow_.ys)
+    return get_norm(correction, fourier_.k_metric)
 
 
 _predict_and_correct_jit, _iterate_correction_jit = make_stepper(
@@ -418,7 +419,7 @@ def iterate_correction(state_prev: Array, prediction: Array, rhs_prev: Array):
 
 def get_perturbation_energy(state: Array, fourier_: Any, flow_: Any) -> Array:
     """Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
-    return get_norm2(state, fourier_.k_metric, flow_.ys) / 2
+    return get_norm2(state, fourier_.k_metric) / 2
 
 
 def get_energy(
@@ -519,7 +520,7 @@ def correct_divergence(
     )
 
     error = (
-        get_norm(correction, fourier_.k_metric, flow_.ys)
+        get_norm(correction, fourier_.k_metric)
         if params.debug.measure_corrections
         else None
     )
