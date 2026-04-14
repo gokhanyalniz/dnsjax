@@ -108,6 +108,3 @@ def build_diff_matrices(
         D2[i, j0 : j0 + s2] = w[:, 2]
 
     return D1, D2
-
-
-

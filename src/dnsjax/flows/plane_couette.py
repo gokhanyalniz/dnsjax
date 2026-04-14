@@ -15,6 +15,12 @@ from jax.sharding import PartitionSpec as P
 
 from ..bench import timer
 from ..fd import build_diff_matrices
+from ..geometries.cartesian import (
+    DenseJAXSolver,
+    IMMChunker,
+    LineaxBandedSolver,
+    get_norm2,
+)
 from ..operators import (
     fourier,
     phys_to_spec_2d,
@@ -24,12 +30,6 @@ from ..parameters import params
 from ..rhs import get_nonlin
 from ..sharding import register_dataclass_pytree, sharding
 from ..timestep import make_stepper
-from ..geometries.cartesian import (
-    IMMChunker,
-    DenseJAXSolver,
-    LineaxBandedSolver,
-    get_norm2,
-)
 
 
 @register_dataclass_pytree
@@ -88,8 +88,6 @@ class PlaneCouetteFlow:
         Nkz = len(kz_global)
         Nkx = len(kx_global)
         Ny = params.res.ny
-
-
 
         chunker = IMMChunker(
             ys_arr=np.array(self.ys),
@@ -153,9 +151,6 @@ class PlaneCouetteFlow:
 
         self.Lk_solver = SolverClass(self.Lk)
         self.Hk_solver = SolverClass(self.Hk)
-
-
-
 
 
 flow: PlaneCouetteFlow = PlaneCouetteFlow()

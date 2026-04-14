@@ -168,5 +168,3 @@ def cross(vector_1: Array, vector_2: Array) -> Array:
             vector_1[0] * vector_2[1] - vector_1[1] * vector_2[0],
         ]
     )
-
-

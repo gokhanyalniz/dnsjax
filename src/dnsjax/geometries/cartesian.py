@@ -4,10 +4,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import jax
+import jax.scipy.linalg as sla
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-import jax.scipy.linalg as sla
 
 from ..parameters import derived_params
 from ..sharding import register_dataclass_pytree, sharding
@@ -320,6 +320,7 @@ def precompute_imm(
 
     if D1 is None or D2 is None:
         from ..fd import build_diff_matrices
+
         D1, D2 = build_diff_matrices(y, p)
 
     Lk_all = np.zeros((Nkz, Nkx, Ny, Ny))

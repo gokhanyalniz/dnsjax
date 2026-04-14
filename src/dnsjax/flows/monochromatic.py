@@ -57,6 +57,8 @@ from ..bench import timer
 from ..geometries.triply_periodic import (
     curl,
     divergence,
+    get_norm,
+    get_norm2,
     gradient,
     inverse_laplacian,
     laplacian,
@@ -75,7 +77,6 @@ from ..parameters import (
 from ..rhs import get_nonlin
 from ..sharding import register_dataclass_pytree, sharding
 from ..timestep import make_stepper
-from ..geometries.triply_periodic import get_norm, get_norm2
 
 
 @register_dataclass_pytree
@@ -102,8 +103,6 @@ class TriplyPeriodicFlow:
 
     forced_modes: tuple = field(init=False)
     unit_force: Array = field(init=False)
-
-
 
     ldt_1: Array = field(init=False)
     ildt_2: Array = field(init=False)
@@ -254,7 +253,6 @@ class TriplyPeriodicFlow:
                         ],
                         dtype=sharding.complex_type,
                     )
-
 
         # Time-stepping coefficients
         ldt_1 = (
