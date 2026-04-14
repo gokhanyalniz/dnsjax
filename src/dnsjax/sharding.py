@@ -118,7 +118,7 @@ class Sharding:
 
     no_shard = P(None)
 
-    spec_imm_corr_shard = NamedSharding(mesh, P(None, None, *axis_names))
+    spec_imm_corr_shard = NamedSharding(mesh, P(None, *axis_names, None))
     spec_dy_op_shard = NamedSharding(mesh, P(None, *axis_names, None, None))
     spec_k2_op_shard = NamedSharding(mesh, P(None, *axis_names))
 
