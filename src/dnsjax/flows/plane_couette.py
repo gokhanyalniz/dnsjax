@@ -181,8 +181,6 @@ class PlaneCouetteFlow:
         self.Hk_solver = SolverClass(self.Hk)
 
 
-import typing
-
 import jax.scipy.linalg as sla
 
 

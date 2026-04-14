@@ -102,7 +102,7 @@ def make_stepper(
         state_prev: Array | tuple,
         prediction_state: Array | tuple,
         rhs_prev: Array,
-        *args
+        *args,
     ) -> tuple[Array | tuple, Array, Array]:
         """One corrector iteration: recompute RHS, apply CN correction.
 

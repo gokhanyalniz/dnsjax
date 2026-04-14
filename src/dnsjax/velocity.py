@@ -66,7 +66,6 @@ def get_inprod(
             )
             / derived_params.ly
         )
-        raise NotImplementedError
 
 
 def get_norm2(vector_spec: Array, k_metric: Array, ys: Array | None) -> Array:

@@ -13,6 +13,7 @@ shape ``(ny_padded, nz_padded, nx_padded)`` -- the second-to-last axis
 :mod:`dnsjax.fft`.
 """
 
+import dataclasses
 import sys
 from dataclasses import dataclass
 from typing import Any
@@ -24,16 +25,17 @@ from jax.sharding import PartitionSpec as P
 
 from .parameters import padded_res, params, periodic_systems
 
-import dataclasses
 
 def register_dataclass_pytree(cls):
     def _tree_flatten(obj):
         children, aux_data = [], {}
         for f in dataclasses.fields(cls):
             val = getattr(obj, f.name)
-            if isinstance(val, (str, type(None))):
-                aux_data[f.name] = val
-            elif getattr(val, '__call__', None) is not None and not isinstance(val, (jax.Array, jnp.ndarray)):
+            if (
+                isinstance(val, (str, type(None)))
+                or getattr(val, "__call__", None) is not None
+                and not isinstance(val, (jax.Array, jnp.ndarray))
+            ):
                 aux_data[f.name] = val
             else:
                 children.append(val)

@@ -17,7 +17,7 @@ from jax import numpy as jnp
 
 from .fft import _irfft2d, _irfft3d, _rfft2d, _rfft3d
 from .parameters import derived_params, params, periodic_systems
-from .sharding import sharding, register_dataclass_pytree
+from .sharding import register_dataclass_pytree, sharding
 
 
 @register_dataclass_pytree
