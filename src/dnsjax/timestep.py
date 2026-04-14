@@ -57,16 +57,16 @@ def make_stepper(
     predict_and_correct:
         Full predictor-corrector step.  Signature:
         ``state -> (prediction_state, rhs_next, error)``.
-        The input buffer is donated.
+        No buffers are donated.
     iterate_correction:
         One additional corrector iteration.  Signature:
         ``(state_prev, prediction_state, rhs_prev) ->
         (prediction_state_next, rhs_next, error)``.
-        Both input buffers are donated.
+        Only *prediction_state* is donated.
     """
 
     @timer("timestep/predict_and_correct")
-    @jit(donate_argnums=0)
+    @jit
     def predict_and_correct(
         state: Array | tuple, *args
     ) -> tuple[Array | tuple, Array, Array]:
@@ -78,11 +78,8 @@ def make_stepper(
         iterations (if the error exceeds tolerance) are handled by
         ``iterate_correction``.
 
-        **Functional Purity Exception:** This JIT-compiled function overrides
-        the XLA buffers (via `donate_argnums=0`) of the inputs to save memory
-        at runtime. While typical JAX code implies functional purity, treating
-        the `state` outside of this return block will yield corrupted values
-        due to buffer reuse.
+        No buffers are donated because *state* (aliased as *state_prev*
+        in the caller) is reused across corrector iterations that follow.
         """
         rhs_prev = get_rhs_fn(state, *args)
         prediction_state = predict_fn(state, rhs_prev, *args)
@@ -97,7 +94,7 @@ def make_stepper(
         return prediction_state, rhs_next, error
 
     @timer("timestep/iterate_correction")
-    @jit(donate_argnums=(0, 1))
+    @jit(donate_argnums=1)
     def iterate_correction(
         state_prev: Array | tuple,
         prediction_state: Array | tuple,
@@ -106,11 +103,12 @@ def make_stepper(
     ) -> tuple[Array | tuple, Array, Array]:
         """One corrector iteration: recompute RHS, apply CN correction.
 
-        **Functional Purity Exception:** The input buffers
-        *prediction_state* and *rhs_prev* are donated (via
-        `donate_argnums=(0, 1)`), meaning their memory is safely destroyed
-        and reused for the outputs within XLA. Their references outside this
-        function call become invalidated.
+        **Functional Purity Exception:** The input buffer
+        *prediction_state* is donated (via
+        `donate_argnums=1`), meaning its memory is safely destroyed
+        and reused for the outputs within XLA. Its reference outside this
+        function call becomes invalidated. *state_prev* is NOT donated
+        because it is reused across multiple corrector iterations.
         """
         rhs_next = get_rhs_fn(prediction_state, *args)
         prediction_state, correction = correct_fn(
