@@ -5,7 +5,6 @@ The base flow is `$U(y) = y$` on the Chebyshev-Gauss-Lobatto grid
 """
 
 from dataclasses import dataclass, field
-from typing import Any
 
 import jax
 import numpy as np
@@ -17,6 +16,7 @@ from ..bench import timer
 from ..fd import build_diff_matrices
 from ..geometries.cartesian import (
     DenseJAXSolver,
+    Fourier,
     IMMChunker,
     LineaxBandedSolver,
     fourier,
@@ -43,10 +43,11 @@ class PlaneCouetteFlow:
     nonlin_base_flow: Array = field(init=False)
     D1: Array = field(init=False)
     D2: Array = field(init=False)
+    D2_bnd: Array = field(init=False)
     Lk: Array = field(init=False)
-    Lk_solver: Any = field(init=False)
+    Lk_solver: DenseJAXSolver | LineaxBandedSolver = field(init=False)
     Hk: Array = field(init=False)
-    Hk_solver: Any = field(init=False)
+    Hk_solver: DenseJAXSolver | LineaxBandedSolver = field(init=False)
     Hk_minus: Array = field(init=False)
     p1: Array = field(init=False)
     p2: Array = field(init=False)
@@ -54,6 +55,14 @@ class PlaneCouetteFlow:
     k2: Array = field(init=False)
 
     def __post_init__(self) -> None:
+        """Build CGL grid, base flow, and IMM operators.
+
+        Constructs the Chebyshev-Gauss-Lobatto grid for
+        the wall-normal coordinate ``y`` in ``[-1, 1]``,
+        the laminar base flow ``U(y) = y`` and its derived
+        quantities, FD matrices D1 and D2, and all per-mode
+        IMM operators via ``IMMChunker``.
+        """
         self.ys = -jnp.cos(
             jnp.arange(params.res.ny, dtype=sharding.float_type)
             * jnp.pi
@@ -82,6 +91,9 @@ class PlaneCouetteFlow:
         D1, D2 = build_diff_matrices(np.array(self.ys), params.res.fd_order)
         self.D1 = jax.device_put(jnp.array(D1), sharding.no_shard)
         self.D2 = jax.device_put(jnp.array(D2), sharding.no_shard)
+        self.D2_bnd = jax.device_put(
+            jnp.array(D2[[0, -1], :]), sharding.no_shard
+        )
 
         kx_global = np.array(fourier.kx.reshape(-1))
         kz_global = np.array(fourier.kz.reshape(-1))
@@ -180,11 +192,10 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     dy_Nv = jnp.einsum("ij, zxj -> zxi", flow.D1, Nv)
     div_N = 1j * fourier.kx * Nu + dy_Nv + 1j * fourier.kz * Nw
 
-    D2_v = jnp.einsum("ij, zxj -> zxi", flow.D2, v)
-
-    g_full = Nv + D2_v / params.phys.re
-    g_0 = g_full[..., 0]
-    g_1 = g_full[..., -1]
+    # Pressure Neumann BC: only wall values are needed
+    D2_v_bnd = jnp.einsum("bj, zxj -> zxb", flow.D2_bnd, v)
+    g_0 = Nv[..., 0] + D2_v_bnd[..., 0] / params.phys.re
+    g_1 = Nv[..., -1] + D2_v_bnd[..., 1] / params.phys.re
 
     # Solve particular pressure
     f_P = div_N.at[..., 0].set(0.0).at[..., -1].set(0.0)
@@ -234,7 +245,11 @@ def init_state(snapshot: str | None) -> tuple[Array, Array]:
     return velocity_spec, pressure_spec
 
 
-def _curl_fn(state: Array, fourier_: Any, flow_: Any) -> Array:
+def _curl_fn(
+    state: Array,
+    fourier_: Fourier,
+    flow_: PlaneCouetteFlow,
+) -> Array:
     """Spectral curl with 1D FD in y and spectral derivatives in x and z."""
     u, v, w = state
 
@@ -253,7 +268,11 @@ def _curl_fn(state: Array, fourier_: Any, flow_: Any) -> Array:
     return jnp.array([omega_x, omega_y, omega_z])
 
 
-def _get_rhs(state: tuple[Array, Array], fourier_: Any, flow_: Any) -> Array:
+def _get_rhs(
+    state: tuple[Array, Array],
+    fourier_: Fourier,
+    flow_: PlaneCouetteFlow,
+) -> Array:
     """Evaluate non-linear RHS terms."""
     velocity_spec, _ = state
     nonlin = get_nonlin(
@@ -281,10 +300,19 @@ def _imm_iteration(
     pressure_j: Array,
     nonlin_n: Array,
     nonlin_j: Array,
-    fourier_: Any,
-    flow_: Any,
+    fourier_: Fourier,
+    flow_: PlaneCouetteFlow,
 ) -> tuple[tuple[Array, Array], Array]:
-    """Openpipeflow fractional-step algorithm (imm.tex, Section 5.2)."""
+    """Openpipeflow fractional-step algorithm (Section 5.2).
+
+    Four stages:
+    1. Solve Helmholtz for v (Dirichlet BCs).
+    2. Build pressure Poisson RHS with Neumann BCs
+       from the y-momentum equation at the walls.
+    3. Solve pressure via the influence-matrix method
+       (particular solution + homogeneous correction).
+    4. Solve Helmholtz for u and w.
+    """
     c = params.step.implicitness
 
     u_n, v_n, w_n = velocity_n
@@ -315,28 +343,35 @@ def _imm_iteration(
         + (1 - c) * (1.0 / params.phys.re) * Lk_d
     )
 
-    D2_v_new = jnp.einsum("ij, zxj -> zxi", flow_.D2, v_new)
-    Lk_v_n = _matvec_4d(flow_.Lk, v_n)
-
-    g_full = (
-        v_n / params.step.dt
-        + c * Nv_j
-        + (1 - c) * Nv_n
-        + c * (1.0 / params.phys.re) * D2_v_new
-        + (1 - c) * (1.0 / params.phys.re) * Lk_v_n
+    # Pressure Neumann BC: only wall values are needed,
+    # so use boundary rows of D2 instead of full operators.
+    D2_v_new_bnd = jnp.einsum("bj, zxj -> zxb", flow_.D2_bnd, v_new)
+    D2_v_n_bnd = jnp.einsum("bj, zxj -> zxb", flow_.D2_bnd, v_n)
+    nu = 1.0 / params.phys.re
+    g_0 = (
+        v_n[..., 0] / params.step.dt
+        + c * Nv_j[..., 0]
+        + (1 - c) * Nv_n[..., 0]
+        + c * nu * D2_v_new_bnd[..., 0]
+        + (1 - c) * nu * D2_v_n_bnd[..., 0]
     )
-    g_0 = g_full[..., 0]
-    g_1 = g_full[..., -1]
+    g_1 = (
+        v_n[..., -1] / params.step.dt
+        + c * Nv_j[..., -1]
+        + (1 - c) * Nv_n[..., -1]
+        + c * nu * D2_v_new_bnd[..., 1]
+        + (1 - c) * nu * D2_v_n_bnd[..., 1]
+    )
 
     # Stage 3: Solve pressure via influence matrix
     f_hat_P = f_hat.at[..., 0].set(0.0).at[..., -1].set(0.0)
-
-    pP = flow_.Lk_solver.solve(f_hat_P)
+    pP = flow_.Lk_solver.solve(f_hat_P)  # particular solution
 
     r_bot = -flow_.k2 * pP[..., 0] + g_0
     r_top = -flow_.k2 * pP[..., -1] + g_1
     r = jnp.stack([r_bot, r_top], axis=-1)
 
+    # IMM homogeneous solution coefficients
     alpha = jnp.einsum("zxab, zxb -> zxa", flow_.M_inv, r)
     alpha1 = alpha[..., 0][..., None]
     alpha2 = alpha[..., 1][..., None]
@@ -364,8 +399,8 @@ def _imm_iteration(
 def _predict(
     state: tuple[Array, Array],
     rhs_no_lapl: Array,
-    fourier_: Any,
-    flow_: Any,
+    fourier_: Fourier,
+    flow_: PlaneCouetteFlow,
 ) -> tuple[Array, Array]:
     """Euler predictor step mapping j=0 over Openpipeflow IMM."""
     velocity_n, pressure_n = state
@@ -382,8 +417,8 @@ def _correct(
     prediction_state: tuple[Array, Array],
     rhs_prev: Array,
     rhs_next: Array,
-    fourier_: Any,
-    flow_: Any,
+    fourier_: Fourier,
+    flow_: PlaneCouetteFlow,
 ) -> tuple[tuple[Array, Array], Array]:
     """Crank-Nicolson corrector mapping j>0 over Openpipeflow IMM."""
     velocity_n, _ = state_prev
@@ -398,7 +433,11 @@ def _correct(
     return prediction_state_new, correction
 
 
-def _norm(correction: Array, fourier_: Any, flow_: Any) -> Array:
+def _norm(
+    correction: Array,
+    fourier_: Fourier,
+    flow_: PlaneCouetteFlow,
+) -> Array:
     """L2 convergence norm."""
     return jnp.sqrt(get_norm2(correction, fourier_.k_metric, flow_.ys))
 
@@ -411,6 +450,7 @@ _predict_and_correct_jit, _iterate_correction_jit = make_stepper(
 def predict_and_correct(
     state: tuple[Array, Array],
 ) -> tuple[tuple[Array, Array], Array, Array]:
+    """Predictor-corrector step with bound singletons."""
     return _predict_and_correct_jit(state, fourier, flow)
 
 
@@ -419,6 +459,7 @@ def iterate_correction(
     prediction: tuple[Array, Array],
     rhs_prev: Array,
 ):
+    """One corrector iteration with bound singletons."""
     return _iterate_correction_jit(
         state_prev, prediction, rhs_prev, fourier, flow
     )

@@ -131,9 +131,47 @@ def integrate_scalar_in_y(scalar_data: Array, ys: Array) -> Array:
 
 
 class IMMChunker:
+    """Chunked IMM precomputation for ``make_array_from_callback``.
+
+    Lazily computes and caches per-shard IMM operator blocks
+    so that only the local ``(kz, kx)`` slice is built on each
+    device.
+    """
+
     def __init__(
-        self, ys_arr, kx_global, kz_global, p, dt, c, nu, D1_arr, D2_arr
-    ):
+        self,
+        ys_arr: np.ndarray,
+        kx_global: np.ndarray,
+        kz_global: np.ndarray,
+        p: int,
+        dt: float,
+        c: float,
+        nu: float,
+        D1_arr: np.ndarray,
+        D2_arr: np.ndarray,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        ys_arr:
+            Wall-normal grid points, shape ``(Ny,)``.
+        kx_global:
+            All streamwise wavenumbers, shape ``(Nkx,)``.
+        kz_global:
+            All spanwise wavenumbers, shape ``(Nkz,)``.
+        p:
+            Finite-difference accuracy order.
+        dt:
+            Time step.
+        c:
+            Implicitness parameter (0.5 for CN).
+        nu:
+            Kinematic viscosity ``1/Re``.
+        D1_arr:
+            First-derivative matrix, shape ``(Ny, Ny)``.
+        D2_arr:
+            Second-derivative matrix, shape ``(Ny, Ny)``.
+        """
         self.ys_arr = ys_arr
         self.kx_global = kx_global
         self.kz_global = kz_global
@@ -143,10 +181,25 @@ class IMMChunker:
         self.nu = nu
         self.D1_arr = D1_arr
         self.D2_arr = D2_arr
-        self.cache = {}
+        self.cache: dict[tuple, dict[str, np.ndarray]] = {}
 
     def get_chunk(self, indices: tuple[slice, ...], key: str) -> np.ndarray:
+        """Return one shard of the precomputed operator *key*.
 
+        Called by ``jax.make_array_from_callback``.
+        *indices* contains per-axis slices identifying the
+        shard.  Results are cached so repeated calls for
+        different keys reuse the same precomputation.
+
+        Parameters
+        ----------
+        indices:
+            Per-axis shard slices from JAX.
+            ``indices[0]`` slices axis 0 (kz),
+            ``indices[1]`` slices axis 1 (kx).
+        key:
+            Operator name (e.g. ``"Lk"``, ``"Hk"``).
+        """
         slice_kz, slice_kx = indices[0], indices[1]
         cache_key = (
             slice_kz.start,
@@ -157,8 +210,8 @@ class IMMChunker:
         if cache_key not in self.cache:
             self.cache[cache_key] = precompute_imm(
                 y=self.ys_arr,
-                kx_vals=self.kx_global[slice_kz],
-                kz_vals=self.kz_global[slice_kx],
+                kx_vals=self.kx_global[slice_kx],
+                kz_vals=self.kz_global[slice_kz],
                 p=self.p,
                 dt=self.dt,
                 c=self.c,
@@ -189,6 +242,8 @@ class DenseJAXSolver:
     piv: Array = field(init=False)
 
     def __post_init__(self):
+        """Batch LU-factor over all ``(kz, kx)`` modes."""
+
         @jax.jit
         def batched_lu_factor(A: Array) -> tuple[Array, Array]:
             return jax.vmap(jax.vmap(sla.lu_factor))(A)
@@ -196,6 +251,18 @@ class DenseJAXSolver:
         self.lu, self.piv = batched_lu_factor(self.matrix)
 
     def solve(self, rhs: Array) -> Array:
+        """Batched LU solve.
+
+        Parameters
+        ----------
+        rhs:
+            Right-hand side, shape ``(Nkz, Nkx, Ny)``.
+
+        Returns
+        -------
+        :
+            Solution array, same shape as *rhs*.
+        """
         return _lu_solve((self.lu, self.piv), rhs)
 
 
@@ -319,8 +386,7 @@ def precompute_imm(
     pairs `$(k_z, k_x)$` to construct the per-mode operators and IMM data.
 
     The output arrays are indexed ``[i_kz, i_kx, ...]``, matching the
-    spectral array layout ``(ny, nz-1, nx//2)`` where ny is the y-grid
-    dimension and the Fourier mode indices are the last two axes.
+    spectral array layout ``(Nkz, Nkx, Ny)``.
 
     All returned arrays are real (``float64``), following the proof in
     the IMM reference document.
