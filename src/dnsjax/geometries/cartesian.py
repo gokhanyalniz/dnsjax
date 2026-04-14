@@ -464,25 +464,14 @@ def precompute_imm(
             Hk_all[iz, ix] = Hk
             Hk_minus_all[iz, ix] = Hk_minus
 
-            # Homogeneous pressure solutions and influence matrix
-            if k2 == 0.0:
-                # Mean mode: no IMM needed (pressure pinned)
-                p1_all[iz, ix] = 0.0
-                p2_all[iz, ix] = 0.0
-                M_inv_all[iz, ix] = 0.0
-            else:
-                p1 = np.linalg.solve(Lk, e1)
-                p2 = np.linalg.solve(Lk, e2)
-                p1_all[iz, ix] = p1
-                p2_all[iz, ix] = p2
-
-                M = np.array(
-                    [
-                        [D1[0, :] @ p1, D1[0, :] @ p2],
-                        [D1[-1, :] @ p1, D1[-1, :] @ p2],
-                    ]
-                )
-                M_inv_all[iz, ix] = np.linalg.inv(M)
+            # Homogeneous pressure solutions.
+            # M = I always: Lk @ p_i = e_i implies
+            # Lk[bnd,:] @ p_i = e_i[bnd], so M = I.
+            p1 = np.linalg.solve(Lk, e1)
+            p2 = np.linalg.solve(Lk, e2)
+            p1_all[iz, ix] = p1
+            p2_all[iz, ix] = p2
+            M_inv_all[iz, ix] = np.eye(2)
 
     return {
         "D1": D1,

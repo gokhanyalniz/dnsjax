@@ -197,7 +197,11 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     f_P = div_N.at[..., 0].set(0.0).at[..., -1].set(0.0)
     pP = flow.Lk_solver.solve(f_P)
 
-    # Neumann residual: D1@pP|_bnd = 0 by construction
+    # Neumann residual: D1@pP|_bnd = 0 by construction.
+    # For the mean mode (k²=0), the bottom BC is pinning (not
+    # Neumann), so the bottom residual is unconditionally zero.
+    k2_h = fourier.kx[..., 0] ** 2 + fourier.kz[..., 0] ** 2
+    g_0 = jnp.where(k2_h > 0, g_0, 0.0)
     r = jnp.stack([g_0, g_1], axis=-1)
 
     # Apply influence matrix algebra mapping constraints
@@ -362,7 +366,11 @@ def _imm_iteration(
     f_hat_P = f_hat.at[..., 0].set(0.0).at[..., -1].set(0.0)
     pP = flow_.Lk_solver.solve(f_hat_P)  # particular solution
 
-    # Neumann residual: D1@pP|_bnd = 0 by construction
+    # Neumann residual: D1@pP|_bnd = 0 by construction.
+    # For the mean mode (k²=0), the bottom BC is pinning (not
+    # Neumann), so the bottom residual is unconditionally zero.
+    k2_h = fourier_.kx[..., 0] ** 2 + fourier_.kz[..., 0] ** 2
+    g_0 = jnp.where(k2_h > 0, g_0, 0.0)
     r = jnp.stack([g_0, g_1], axis=-1)
 
     # IMM homogeneous solution coefficients
