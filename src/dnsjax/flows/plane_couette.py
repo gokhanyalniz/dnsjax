@@ -5,6 +5,7 @@ The base flow is `$U(y) = y$` on the Chebyshev-Gauss-Lobatto grid
 """
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import jax
 import numpy as np
@@ -21,7 +22,7 @@ from ..operators import (
 )
 from ..parameters import params
 from ..rhs import get_nonlin
-from ..sharding import sharding, register_dataclass_pytree
+from ..sharding import register_dataclass_pytree, sharding
 from ..timestep import make_stepper
 from ..velocity import get_norm2
 
@@ -38,9 +39,9 @@ class PlaneCouetteFlow:
     D1: Array = field(init=False)
     D2: Array = field(init=False)
     Lk: Array = field(init=False)
-    Lk_solver: typing.Any = field(init=False)
+    Lk_solver: Any = field(init=False)
     Hk: Array = field(init=False)
-    Hk_solver: typing.Any = field(init=False)
+    Hk_solver: Any = field(init=False)
     Hk_minus: Array = field(init=False)
     p1: Array = field(init=False)
     p2: Array = field(init=False)
@@ -165,9 +166,14 @@ class PlaneCouetteFlow:
         if params.solver.use_lineax:
             try:
                 import lineax as lx
-                SolverClass = lambda m: LineaxBandedSolver(m, params.res.fd_order + 1, params.res.fd_order + 1)
+
+                SolverClass = lambda m: LineaxBandedSolver(
+                    m, params.res.fd_order + 1, params.res.fd_order + 1
+                )
             except ImportError:
-                raise ImportError("Lineax is not installed! Use 'pip install lineax' or set use_lineax=False.")
+                raise ImportError(
+                    "Lineax is not installed! Use 'pip install lineax' or set use_lineax=False."
+                )
         else:
             SolverClass = DenseJAXSolver
 
@@ -176,19 +182,25 @@ class PlaneCouetteFlow:
 
 
 import typing
+
 import jax.scipy.linalg as sla
+
 
 @jax.jit
 def _lu_solve(lu_pivots: tuple[Array, Array], b: Array) -> Array:
     """Batched LU solve across 2D (k_z, k_x) Fourier modes."""
+
     def solve_single(lu_piv, vec):
         return sla.lu_solve(lu_piv, vec)
+
     return jax.vmap(jax.vmap(solve_single))(lu_pivots, b)
+
 
 @register_dataclass_pytree
 @dataclass
 class DenseJAXSolver:
     """The current mathematically optimal dense LU cache."""
+
     matrix: Array
     lu: Array = field(init=False)
     piv: Array = field(init=False)
@@ -197,28 +209,34 @@ class DenseJAXSolver:
         @jax.jit
         def batched_lu_factor(A: Array) -> tuple[Array, Array]:
             return jax.vmap(jax.vmap(sla.lu_factor))(A)
+
         self.lu, self.piv = batched_lu_factor(self.matrix)
 
     def solve(self, rhs: Array) -> Array:
         return _lu_solve((self.lu, self.piv), rhs)
 
+
 @register_dataclass_pytree
 @dataclass
 class LineaxBandedSolver:
     """The Lineax sparse operator path."""
+
     matrix: Array
     lower_band: int
     upper_band: int
-    operator: typing.Any = field(init=False)
+    operator: Any = field(init=False)
 
     def __post_init__(self):
-        raise NotImplementedError("Lineax banded packing is pending extraction implementation!")
+        raise NotImplementedError(
+            "Lineax banded packing is pending extraction implementation!"
+        )
 
     def solve(self, rhs: Array) -> Array:
         raise NotImplementedError
 
 
 flow: PlaneCouetteFlow = PlaneCouetteFlow()
+
 
 def _compute_static_pressure(velocity_spec: Array) -> Array:
     """Solve the continuous pressure Poisson equation
@@ -303,7 +321,7 @@ def init_state(snapshot: str | None) -> tuple[Array, Array]:
     return velocity_spec, pressure_spec
 
 
-def _curl_fn(state: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
+def _curl_fn(state: Array, fourier_: Any, flow_: Any) -> Array:
     """Spectral curl with 1D FD in y and spectral derivatives in x and z."""
     u, v, w = state
 
@@ -322,7 +340,7 @@ def _curl_fn(state: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
     return jnp.array([omega_x, omega_y, omega_z])
 
 
-def _get_rhs(state: tuple[Array, Array], fourier_: typing.Any, flow_: typing.Any) -> Array:
+def _get_rhs(state: tuple[Array, Array], fourier_: Any, flow_: Any) -> Array:
     """Evaluate non-linear RHS terms."""
     velocity_spec, _ = state
     nonlin = get_nonlin(
@@ -348,8 +366,8 @@ def _imm_iteration(
     pressure_j: Array,
     nonlin_n: Array,
     nonlin_j: Array,
-    fourier_: typing.Any,
-    flow_: typing.Any,
+    fourier_: Any,
+    flow_: Any,
 ) -> tuple[tuple[Array, Array], Array]:
     """Openpipeflow fractional-step algorithm (imm.tex, Section 5.2)."""
     c = params.step.implicitness
@@ -442,7 +460,10 @@ def _imm_iteration(
 
 
 def _predict(
-    state: tuple[Array, Array], rhs_no_lapl: Array, fourier_: typing.Any, flow_: typing.Any
+    state: tuple[Array, Array],
+    rhs_no_lapl: Array,
+    fourier_: Any,
+    flow_: Any,
 ) -> tuple[Array, Array]:
     """Euler predictor step mapping j=0 over Openpipeflow IMM."""
     velocity_n, pressure_n = state
@@ -459,8 +480,8 @@ def _correct(
     prediction_state: tuple[Array, Array],
     rhs_prev: Array,
     rhs_next: Array,
-    fourier_: typing.Any,
-    flow_: typing.Any
+    fourier_: Any,
+    flow_: Any,
 ) -> tuple[tuple[Array, Array], Array]:
     """Crank-Nicolson corrector mapping j>0 over Openpipeflow IMM."""
     velocity_n, _ = state_prev
@@ -475,7 +496,7 @@ def _correct(
     return prediction_state_new, correction
 
 
-def _norm(correction: Array, fourier_: typing.Any, flow_: typing.Any) -> Array:
+def _norm(correction: Array, fourier_: Any, flow_: Any) -> Array:
     """L2 convergence norm."""
     return jnp.sqrt(get_norm2(correction, fourier_.k_metric, flow_.ys))
 
@@ -484,12 +505,21 @@ _predict_and_correct_jit, _iterate_correction_jit = make_stepper(
     _get_rhs, _predict, _correct, _norm
 )
 
-def predict_and_correct(state: tuple[Array, Array]) -> tuple[tuple[Array, Array], Array, Array]:
+
+def predict_and_correct(
+    state: tuple[Array, Array],
+) -> tuple[tuple[Array, Array], Array, Array]:
     return _predict_and_correct_jit(state, fourier, flow)
 
-def iterate_correction(state_prev: tuple[Array, Array], prediction: tuple[Array, Array], rhs_prev: Array):
-    return _iterate_correction_jit(state_prev, prediction, rhs_prev, fourier, flow)
 
+def iterate_correction(
+    state_prev: tuple[Array, Array],
+    prediction: tuple[Array, Array],
+    rhs_prev: Array,
+):
+    return _iterate_correction_jit(
+        state_prev, prediction, rhs_prev, fourier, flow
+    )
 
 
 @timer("velocity/correct_velocity")
