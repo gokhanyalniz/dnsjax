@@ -84,15 +84,15 @@ def make_stepper(
         the `state` outside of this return block will yield corrupted values
         due to buffer reuse.
         """
-        rhs_prev = get_rhs_fn(state)
-        prediction_state = predict_fn(state, rhs_prev)
+        rhs_prev = get_rhs_fn(state, *args)
+        prediction_state = predict_fn(state, rhs_prev, *args)
 
-        rhs_next = get_rhs_fn(prediction_state)
+        rhs_next = get_rhs_fn(prediction_state, *args)
         prediction_state, correction = correct_fn(
-            state, prediction_state, rhs_prev, rhs_next
+            state, prediction_state, rhs_prev, rhs_next, *args
         )
 
-        error = norm_fn(correction)
+        error = norm_fn(correction, *args)
 
         return prediction_state, rhs_next, error
 
@@ -102,6 +102,7 @@ def make_stepper(
         state_prev: Array | tuple,
         prediction_state: Array | tuple,
         rhs_prev: Array,
+        *args
     ) -> tuple[Array | tuple, Array, Array]:
         """One corrector iteration: recompute RHS, apply CN correction.
 
@@ -111,12 +112,12 @@ def make_stepper(
         and reused for the outputs within XLA. Their references outside this
         function call become invalidated.
         """
-        rhs_next = get_rhs_fn(prediction_state)
+        rhs_next = get_rhs_fn(prediction_state, *args)
         prediction_state, correction = correct_fn(
-            state_prev, prediction_state, rhs_prev, rhs_next
+            state_prev, prediction_state, rhs_prev, rhs_next, *args
         )
 
-        error = norm_fn(correction)
+        error = norm_fn(correction, *args)
 
         return prediction_state, rhs_next, error
 
