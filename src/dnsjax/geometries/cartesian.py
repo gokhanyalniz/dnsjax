@@ -444,7 +444,7 @@ def precompute_imm(
     p1_all = np.zeros((Nkz, Nkx, Ny))
     p2_all = np.zeros((Nkz, Nkx, Ny))
     M_inv_all = np.zeros((Nkz, Nkx, 2, 2))
-    k2_all = np.zeros((Nkz, Nkx))
+
 
     e1 = np.zeros(Ny)
     e1[0] = 1.0
@@ -454,7 +454,6 @@ def precompute_imm(
     for iz, kz in enumerate(kz_vals):
         for ix, kx in enumerate(kx_vals):
             k2 = float(kx**2 + kz**2)
-            k2_all[iz, ix] = k2
 
             # Laplacian with Neumann BCs (pressure)
             Lk = build_Lk_neumann(k2, D1, D2)
@@ -479,8 +478,8 @@ def precompute_imm(
 
                 M = np.array(
                     [
-                        [k2 * p1[0], k2 * p2[0]],
-                        [k2 * p1[-1], k2 * p2[-1]],
+                        [D1[0, :] @ p1, D1[0, :] @ p2],
+                        [D1[-1, :] @ p1, D1[-1, :] @ p2],
                     ]
                 )
                 M_inv_all[iz, ix] = np.linalg.inv(M)
@@ -494,5 +493,4 @@ def precompute_imm(
         "p1": p1_all,
         "p2": p2_all,
         "M_inv": M_inv_all,
-        "k2": k2_all,
     }

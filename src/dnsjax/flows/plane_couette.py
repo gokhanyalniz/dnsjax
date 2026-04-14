@@ -52,7 +52,6 @@ class PlaneCouetteFlow:
     p1: Array = field(init=False)
     p2: Array = field(init=False)
     M_inv: Array = field(init=False)
-    k2: Array = field(init=False)
 
     def __post_init__(self) -> None:
         """Build CGL grid, base flow, and IMM operators.
@@ -143,11 +142,6 @@ class PlaneCouetteFlow:
             sharding.spec_dy_op_shard,
             lambda idx: chunker.get_chunk(idx, "M_inv"),
         )
-        self.k2 = jax.make_array_from_callback(
-            (Nkz, Nkx),
-            sharding.spec_k2_op_shard,
-            lambda idx: chunker.get_chunk(idx, "k2"),
-        )
 
         if params.solver.use_lineax:
             try:
@@ -203,10 +197,8 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     f_P = div_N.at[..., 0].set(0.0).at[..., -1].set(0.0)
     pP = flow.Lk_solver.solve(f_P)
 
-    # Calculate continuous boundary mismatch
-    r_bot = -flow.k2 * pP[..., 0] + g_0
-    r_top = -flow.k2 * pP[..., -1] + g_1
-    r = jnp.stack([r_bot, r_top], axis=-1)
+    # Neumann residual: D1@pP|_bnd = 0 by construction
+    r = jnp.stack([g_0, g_1], axis=-1)
 
     # Apply influence matrix algebra mapping constraints
     alpha = jnp.einsum("zxab, zxb -> zxa", flow.M_inv, r)
@@ -370,9 +362,8 @@ def _imm_iteration(
     f_hat_P = f_hat.at[..., 0].set(0.0).at[..., -1].set(0.0)
     pP = flow_.Lk_solver.solve(f_hat_P)  # particular solution
 
-    r_bot = -flow_.k2 * pP[..., 0] + g_0
-    r_top = -flow_.k2 * pP[..., -1] + g_1
-    r = jnp.stack([r_bot, r_top], axis=-1)
+    # Neumann residual: D1@pP|_bnd = 0 by construction
+    r = jnp.stack([g_0, g_1], axis=-1)
 
     # IMM homogeneous solution coefficients
     alpha = jnp.einsum("zxab, zxb -> zxa", flow_.M_inv, r)
