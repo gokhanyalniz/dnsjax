@@ -60,7 +60,7 @@ def zeropad_fft(a: Array, n: int, axis: int) -> Array:
     out = jnp.zeros(
         shape=out_shape,
         dtype=a.dtype,
-        out_sharding=sharding.spec_scalar_shard,
+        out_sharding=sharding._fft_spec_scalar_shard,
     )
 
     idx_in = [slice(None)] * 3
@@ -108,7 +108,7 @@ def truncate_fft(a: Array, n: int, axis: int) -> Array:
     out = jnp.zeros(
         shape=out_shape,
         dtype=a.dtype,
-        out_sharding=sharding.spec_scalar_shard,
+        out_sharding=sharding._fft_spec_scalar_shard,
     )
 
     idx_in = [slice(None)] * 3
@@ -211,15 +211,15 @@ def _rfft2d(x: Array) -> Array:
     )
 
     # Step 2: reshard from z-sharded (physical) to kx-sharded (spectral)
-    y = reshard(y, sharding.spec_scalar_shard)
+    y = reshard(y, sharding._fft_spec_scalar_shard)
 
     # Step 3: complex FFT in z (kx is sharded), then truncate aliased modes
     y = truncate_fft(
         shard_map(
             lambda a: jnp.fft.fft(a, axis=1, norm="forward"),
             mesh=sharding.mesh,
-            in_specs=sharding.spec_scalar_shard,
-            out_specs=sharding.spec_scalar_shard,
+            in_specs=sharding._fft_spec_scalar_shard,
+            out_specs=sharding._fft_spec_scalar_shard,
         )(y),
         params.res.nz,
         1,
@@ -254,8 +254,8 @@ def _irfft2d(x: Array) -> Array:
     y = shard_map(
         lambda a: jnp.fft.ifft(a, axis=1, norm="forward"),
         mesh=sharding.mesh,
-        in_specs=sharding.spec_scalar_shard,
-        out_specs=sharding.spec_scalar_shard,
+        in_specs=sharding._fft_spec_scalar_shard,
+        out_specs=sharding._fft_spec_scalar_shard,
     )(y)
 
     # Step 2: reshard from kx-sharded (spectral) to z-sharded (physical)
@@ -309,15 +309,15 @@ def _rfft3d(x: Array) -> Array:
     )
 
     # Step 2: reshard from z-sharded (physical) to kx-sharded (spectral)
-    y = reshard(y, sharding.spec_scalar_shard)
+    y = reshard(y, sharding._fft_spec_scalar_shard)
 
     # Step 3: complex FFT in z (kx is sharded), then truncate aliased modes
     y = truncate_fft(
         shard_map(
             lambda a: jnp.fft.fft(a, axis=1, norm="forward"),
             mesh=sharding.mesh,
-            in_specs=sharding.spec_scalar_shard,
-            out_specs=sharding.spec_scalar_shard,
+            in_specs=sharding._fft_spec_scalar_shard,
+            out_specs=sharding._fft_spec_scalar_shard,
         )(y),
         params.res.nz,
         1,
@@ -328,8 +328,8 @@ def _rfft3d(x: Array) -> Array:
         shard_map(
             lambda a: jnp.fft.fft(a, axis=0, norm="forward"),
             mesh=sharding.mesh,
-            in_specs=sharding.spec_scalar_shard,
-            out_specs=sharding.spec_scalar_shard,
+            in_specs=sharding._fft_spec_scalar_shard,
+            out_specs=sharding._fft_spec_scalar_shard,
         )(y),
         params.res.ny,
         0,
@@ -364,8 +364,8 @@ def _irfft3d(x: Array) -> Array:
     y = shard_map(
         lambda a: jnp.fft.ifft(a, axis=0, norm="forward"),
         mesh=sharding.mesh,
-        in_specs=sharding.spec_scalar_shard,
-        out_specs=sharding.spec_scalar_shard,
+        in_specs=sharding._fft_spec_scalar_shard,
+        out_specs=sharding._fft_spec_scalar_shard,
     )(y)
 
     # Step 2: zero-pad z to oversampled size, then inverse FFT in z
@@ -374,8 +374,8 @@ def _irfft3d(x: Array) -> Array:
     y = shard_map(
         lambda a: jnp.fft.ifft(a, axis=1, norm="forward"),
         mesh=sharding.mesh,
-        in_specs=sharding.spec_scalar_shard,
-        out_specs=sharding.spec_scalar_shard,
+        in_specs=sharding._fft_spec_scalar_shard,
+        out_specs=sharding._fft_spec_scalar_shard,
     )(y)
 
     # Step 3: reshard from kx-sharded (spectral) to z-sharded (physical)

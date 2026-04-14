@@ -1,7 +1,7 @@
 """Plane Couette flow: wall-bounded shear between two moving plates.
 
 The base flow is `$U(y) = y$` on the Chebyshev-Gauss-Lobatto grid
-`$y \in [-1, 1]$`, with walls moving at `$\pm 1$`.
+`$y \\in [-1, 1]$`, with walls moving at `$\\pm 1$`.
 """
 
 from dataclasses import dataclass, field
@@ -19,10 +19,10 @@ from ..geometries.cartesian import (
     DenseJAXSolver,
     IMMChunker,
     LineaxBandedSolver,
+    fourier,
     get_norm2,
 )
 from ..operators import (
-    fourier,
     phys_to_spec_2d,
     spec_to_phys_2d,
 )
@@ -160,8 +160,8 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     """Solve the continuous pressure Poisson equation
     on the un-advanced snapshot.
 
-    1. `$\nabla^2 p = \nabla \cdot \mathbf{N}$`
-    2. `$\partial p/\partial y = N_v + \nu \frac{\partial^2 v}{\partial y^2}$`
+    1. `$\\nabla^2 p = \\nabla \\cdot \\mathbf{N}$`
+    2. `$\\partial p/\\partial y = N_v + \\nu \\frac{\\partial^2 v}{\\partial y^2}$`
        at boundaries
     """
     nonlin = get_nonlin(
@@ -177,24 +177,22 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     u, v, w = velocity_spec
     Nu, Nv, Nw = nonlin
 
-    dy_Nv = jnp.tensordot(flow.D1, Nv, axes=(1, 0))
+    dy_Nv = jnp.einsum("ij, zxj -> zxi", flow.D1, Nv)
     div_N = 1j * fourier.kx * Nu + dy_Nv + 1j * fourier.kz * Nw
 
-    D2_v = jnp.tensordot(flow.D2, v, axes=(1, 0))
+    D2_v = jnp.einsum("ij, zxj -> zxi", flow.D2, v)
 
     g_full = Nv + D2_v / params.phys.re
-    g_0 = g_full[0]
-    g_1 = g_full[-1]
+    g_0 = g_full[..., 0]
+    g_1 = g_full[..., -1]
 
     # Solve particular pressure
-    f_P = div_N.at[0].set(0.0).at[-1].set(0.0)
-    f_P_b = jnp.transpose(f_P, (1, 2, 0))
-    pP_b = flow.Lk_solver.solve(f_P_b)
-    pP = jnp.transpose(pP_b, (2, 0, 1))
+    f_P = div_N.at[..., 0].set(0.0).at[..., -1].set(0.0)
+    pP = flow.Lk_solver.solve(f_P)
 
     # Calculate continuous boundary mismatch
-    r_bot = -flow.k2 * pP[0] + g_0
-    r_top = -flow.k2 * pP[-1] + g_1
+    r_bot = -flow.k2 * pP[..., 0] + g_0
+    r_top = -flow.k2 * pP[..., -1] + g_1
     r = jnp.stack([r_bot, r_top], axis=-1)
 
     # Apply influence matrix algebra mapping constraints
@@ -202,10 +200,7 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     alpha1 = alpha[..., 0][..., None]
     alpha2 = alpha[..., 1][..., None]
 
-    p_new_b = (
-        jnp.transpose(pP, (1, 2, 0)) + alpha1 * flow.p1 + alpha2 * flow.p2
-    )
-    p_new = jnp.transpose(p_new_b, (2, 0, 1))
+    p_new = pP + alpha1 * flow.p1 + alpha2 * flow.p2
 
     return p_new
 
@@ -243,8 +238,8 @@ def _curl_fn(state: Array, fourier_: Any, flow_: Any) -> Array:
     """Spectral curl with 1D FD in y and spectral derivatives in x and z."""
     u, v, w = state
 
-    dy_u = jnp.tensordot(flow_.D1, u, axes=(1, 0))
-    dy_w = jnp.tensordot(flow_.D1, w, axes=(1, 0))
+    dy_u = jnp.einsum("ij, zxj -> zxi", flow_.D1, u)
+    dy_w = jnp.einsum("ij, zxj -> zxi", flow_.D1, w)
 
     dx_v = 1j * fourier_.kx * v
     dz_v = 1j * fourier_.kz * v
@@ -273,9 +268,11 @@ def _get_rhs(state: tuple[Array, Array], fourier_: Any, flow_: Any) -> Array:
     return nonlin
 
 
-def _einsum_4d(op: Array, x: Array) -> Array:
-    """Apply operator of shape (Nkz, Nkx, Ny, Ny) to (Ny, Nkz, Nkx)."""
-    return jnp.einsum("zxij, jzx -> izx", op, x)
+def _matvec_4d(op: Array, x: Array) -> Array:
+    """Apply operator of shape (Nkz, Nkx, Ny, Ny)
+    to field of shape (Nkz, Nkx, Ny).
+    """
+    return jnp.einsum("zxij, zxj -> zxi", op, x)
 
 
 def _imm_iteration(
@@ -295,23 +292,21 @@ def _imm_iteration(
     Nu_j, Nv_j, Nw_j = nonlin_j
 
     # Pre-calculate d_hat^n
-    dy_v_n = jnp.tensordot(flow_.D1, v_n, axes=(1, 0))
+    dy_v_n = jnp.einsum("ij, zxj -> zxi", flow_.D1, v_n)
     d_hat_n = 1j * fourier_.kx * u_n + dy_v_n + 1j * fourier_.kz * w_n
 
     # Stage 1: Solve for v^{(j+1)}
-    dy_p_j = jnp.tensordot(flow_.D1, pressure_j, axes=(1, 0))
-    Rv = _einsum_4d(flow_.Hk_minus, v_n) - dy_p_j + c * Nv_j + (1 - c) * Nv_n
-    Rv_b = jnp.transpose(Rv, (1, 2, 0))
-    v_new_b = flow_.Hk_solver.solve(Rv_b)
-    v_new = jnp.transpose(v_new_b, (2, 0, 1))
+    dy_p_j = jnp.einsum("ij, zxj -> zxi", flow_.D1, pressure_j)
+    Rv = _matvec_4d(flow_.Hk_minus, v_n) - dy_p_j + c * Nv_j + (1 - c) * Nv_n
+    v_new = flow_.Hk_solver.solve(Rv)
 
     # Stage 2: Residuals and RHS for pressure
-    dy_Nv_j = jnp.tensordot(flow_.D1, Nv_j, axes=(1, 0))
-    dy_Nv_n = jnp.tensordot(flow_.D1, Nv_n, axes=(1, 0))
+    dy_Nv_j = jnp.einsum("ij, zxj -> zxi", flow_.D1, Nv_j)
+    dy_Nv_n = jnp.einsum("ij, zxj -> zxi", flow_.D1, Nv_n)
     div_Nj = 1j * fourier_.kx * Nu_j + dy_Nv_j + 1j * fourier_.kz * Nw_j
     div_Nn = 1j * fourier_.kx * Nu_n + dy_Nv_n + 1j * fourier_.kz * Nw_n
 
-    Lk_d = _einsum_4d(flow_.Lk, d_hat_n)
+    Lk_d = _matvec_4d(flow_.Lk, d_hat_n)
 
     f_hat = (
         d_hat_n / params.step.dt
@@ -320,8 +315,8 @@ def _imm_iteration(
         + (1 - c) * (1.0 / params.phys.re) * Lk_d
     )
 
-    D2_v_new = jnp.tensordot(flow_.D2, v_new, axes=(1, 0))
-    Lk_v_n = _einsum_4d(flow_.Lk, v_n)
+    D2_v_new = jnp.einsum("ij, zxj -> zxi", flow_.D2, v_new)
+    Lk_v_n = _matvec_4d(flow_.Lk, v_n)
 
     g_full = (
         v_n / params.step.dt
@@ -330,44 +325,33 @@ def _imm_iteration(
         + c * (1.0 / params.phys.re) * D2_v_new
         + (1 - c) * (1.0 / params.phys.re) * Lk_v_n
     )
-    g_0 = g_full[0]
-    g_1 = g_full[-1]
+    g_0 = g_full[..., 0]
+    g_1 = g_full[..., -1]
 
     # Stage 3: Solve pressure via influence matrix
-    f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
+    f_hat_P = f_hat.at[..., 0].set(0.0).at[..., -1].set(0.0)
 
-    f_hat_P_b = jnp.transpose(f_hat_P, (1, 2, 0))
-    pP_b = flow_.Lk_solver.solve(f_hat_P_b)
-    pP = jnp.transpose(pP_b, (2, 0, 1))
+    pP = flow_.Lk_solver.solve(f_hat_P)
 
-    r_bot = -flow_.k2 * pP[0] + g_0
-    r_top = -flow_.k2 * pP[-1] + g_1
+    r_bot = -flow_.k2 * pP[..., 0] + g_0
+    r_top = -flow_.k2 * pP[..., -1] + g_1
     r = jnp.stack([r_bot, r_top], axis=-1)
 
     alpha = jnp.einsum("zxab, zxb -> zxa", flow_.M_inv, r)
     alpha1 = alpha[..., 0][..., None]
     alpha2 = alpha[..., 1][..., None]
 
-    p_new_b = (
-        jnp.transpose(pP, (1, 2, 0)) + alpha1 * flow_.p1 + alpha2 * flow_.p2
-    )
-    p_new = jnp.transpose(p_new_b, (2, 0, 1))
+    p_new = pP + alpha1 * flow_.p1 + alpha2 * flow_.p2
 
     # Stage 4: Solve for u and w
     dx_p_new = 1j * fourier_.kx * p_new
     dz_p_new = 1j * fourier_.kz * p_new
 
-    Ru = _einsum_4d(flow_.Hk_minus, u_n) - dx_p_new + c * Nu_j + (1 - c) * Nu_n
-    Rw = _einsum_4d(flow_.Hk_minus, w_n) - dz_p_new + c * Nw_j + (1 - c) * Nw_n
+    Ru = _matvec_4d(flow_.Hk_minus, u_n) - dx_p_new + c * Nu_j + (1 - c) * Nu_n
+    Rw = _matvec_4d(flow_.Hk_minus, w_n) - dz_p_new + c * Nw_j + (1 - c) * Nw_n
 
-    Ru_b = jnp.transpose(Ru, (1, 2, 0))
-    Rw_b = jnp.transpose(Rw, (1, 2, 0))
-
-    u_new_b = flow_.Hk_solver.solve(Ru_b)
-    w_new_b = flow_.Hk_solver.solve(Rw_b)
-
-    u_new = jnp.transpose(u_new_b, (2, 0, 1))
-    w_new = jnp.transpose(w_new_b, (2, 0, 1))
+    u_new = flow_.Hk_solver.solve(Ru)
+    w_new = flow_.Hk_solver.solve(Rw)
 
     velocity_new = jnp.array([u_new, v_new, w_new])
 

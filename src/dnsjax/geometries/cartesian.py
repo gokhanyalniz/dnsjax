@@ -1,4 +1,4 @@
-"""Cartesian geometry functions and differential operators."""
+"""Cartesian geometry: Fourier class, norms, integration, IMM."""
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -9,8 +9,54 @@ import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
-from ..parameters import derived_params
+from ..operators import complex_harmonics, real_harmonics
+from ..parameters import derived_params, params
 from ..sharding import register_dataclass_pytree, sharding
+
+
+@register_dataclass_pytree
+@dataclass
+class Fourier:
+    """Wavenumber grids for the Cartesian wall-bounded geometry.
+
+    Broadcasting shapes match the spectral layout ``(Nkz, Nkx, Ny)``:
+    - ``kx``: shape ``(1, nx//2, 1)``
+    - ``kz``: shape ``(nz-1, 1, 1)``
+
+    ``k_metric`` equals 2 for `$k_x > 0$` and 1 for `$k_x = 0$`,
+    accounting for the Hermitian symmetry of the real FFT.
+
+    ``lapl`` is the horizontal Laplacian `$-(k_x^2 + k_z^2)$`; the
+    y-part is handled by finite-difference matrices.
+    """
+
+    kx: Array = field(init=False)
+    kz: Array = field(init=False)
+    k_metric: Array = field(init=False)
+    lapl: Array = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.kx = (
+            jax.device_put(
+                real_harmonics(params.res.nx).reshape([1, -1, 1]),
+                sharding.spec_scalar_shard,
+            )
+            * 2
+            * jnp.pi
+            / params.geo.lx
+        )
+        self.kz = (
+            complex_harmonics(params.res.nz).reshape([-1, 1, 1])
+            * 2
+            * jnp.pi
+            / params.geo.lz
+        )
+
+        self.k_metric = jnp.where(self.kx == 0, 1, 2)
+        self.lapl = -(self.kx**2 + self.kz**2)
+
+
+fourier: Fourier = Fourier()
 
 
 def get_inprod(
@@ -27,7 +73,7 @@ def get_inprod(
             jnp.sum(
                 jnp.conj(vector_spec_1) * k_metric * vector_spec_2,
                 dtype=sharding.float_type,
-                axis=(0, 2, 3),
+                axis=(0, 1, 2),
             ),
             ys,
         )

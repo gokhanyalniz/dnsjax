@@ -1,9 +1,67 @@
-"""Triply-periodic geometry functions and differential operators."""
+"""Triply-periodic geometry: Fourier class, differential operators, norms."""
 
+from dataclasses import dataclass, field
+
+import jax
 from jax import Array
 from jax import numpy as jnp
 
-from ..sharding import sharding
+from ..operators import complex_harmonics, real_harmonics
+from ..parameters import derived_params, params
+from ..sharding import register_dataclass_pytree, sharding
+
+
+@register_dataclass_pytree
+@dataclass
+class Fourier:
+    """Wavenumber grids for the triply-periodic geometry.
+
+    Broadcasting shapes match the spectral layout ``(ky, kz, kx)``:
+    - ``kx``: shape ``(1, 1, nx//2)``
+    - ``kz``: shape ``(1, nz-1, 1)``
+    - ``ky``: shape ``(ny-1, 1, 1)``
+
+    ``k_metric`` equals 2 for `$k_x > 0$` and 1 for `$k_x = 0$`,
+    accounting for the Hermitian symmetry of the real FFT.
+    """
+
+    kx: Array = field(init=False)
+    kz: Array = field(init=False)
+    ky: Array = field(init=False)
+    k_metric: Array = field(init=False)
+    lapl: Array = field(init=False)
+    inv_lapl: Array = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.kx = (
+            jax.device_put(
+                real_harmonics(params.res.nx).reshape([1, 1, -1]),
+                sharding.spec_scalar_shard,
+            )
+            * 2
+            * jnp.pi
+            / params.geo.lx
+        )
+        self.kz = (
+            complex_harmonics(params.res.nz).reshape([1, -1, 1])
+            * 2
+            * jnp.pi
+            / params.geo.lz
+        )
+        self.ky = (
+            complex_harmonics(params.res.ny).reshape([-1, 1, 1])
+            * 2
+            * jnp.pi
+            / derived_params.ly
+        )
+
+        self.k_metric = jnp.where(self.kx == 0, 1, 2)
+        self.lapl = -(self.kx**2 + self.ky**2 + self.kz**2)
+        self.inv_lapl = jnp.where(self.lapl < 0, 1 / self.lapl, 0)
+
+
+fourier: Fourier = Fourier()
+
 
 
 def get_inprod(

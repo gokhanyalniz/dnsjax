@@ -99,8 +99,19 @@ class Sharding:
 
     # Partition specs -- last axis of spectral arrays and second-to-last
     # axis of physical arrays are distributed across devices.
-    spec_vector_shard = P(None, None, None, *axis_names)
-    spec_scalar_shard = P(None, None, *axis_names)
+    # For triply-periodic, spectral layout is (ky, kz, kx) with kx last.
+    # For wall-bounded, public spectral layout is (kz, kx, y) with kx
+    # second.  The _fft shard retains the kx-last convention used
+    # internally by the FFT module.
+    _fft_spec_scalar_shard = P(None, None, *axis_names)
+
+    if params.phys.system in periodic_systems:
+        spec_vector_shard = P(None, None, None, *axis_names)
+        spec_scalar_shard = P(None, None, *axis_names)
+    else:
+        # Wall-bounded: public spectral layout (Nkz, Nkx, Ny)
+        spec_vector_shard = P(None, None, *axis_names, None)
+        spec_scalar_shard = P(None, *axis_names, None)
 
     phys_vector_shard = P(None, None, *axis_names, None)
     phys_scalar_shard = P(None, *axis_names, None)
@@ -137,18 +148,19 @@ class Sharding:
     else:
         # Wall-bounded: y is in physical (grid-point) space, only x and z
         # are Fourier-expanded.
-        # The (kz, kx) = (0, 0) Fourier mode is the mean mode.
+        # Public spectral layout is (Nkz, Nkx, Ny).
+        # The (kz, kx) = (0, 0) Fourier mode spans all y.
         vector_mean_mode: tuple[slice, ...] = tuple(
-            [slice(None)] * 2 + [slice(0, 1)] * 2
+            [slice(None)] + [slice(0, 1)] * 2 + [slice(None)]
         )
         scalar_mean_mode: tuple[slice, ...] = tuple(
-            [slice(None)] + [slice(0, 1)] * 2
+            [slice(0, 1)] * 2 + [slice(None)]
         )
 
         spec_shape = (
-            params.res.ny,
             params.res.nz - 1,
             params.res.nx // 2,
+            params.res.ny,
         )
 
         phys_shape = (

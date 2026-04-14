@@ -57,6 +57,7 @@ from ..bench import timer
 from ..geometries.triply_periodic import (
     curl,
     divergence,
+    fourier,
     get_norm,
     get_norm2,
     gradient,
@@ -64,7 +65,6 @@ from ..geometries.triply_periodic import (
     laplacian,
 )
 from ..operators import (
-    fourier,
     phys_to_spec,
     spec_to_phys,
 )
