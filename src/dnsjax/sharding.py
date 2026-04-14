@@ -21,7 +21,7 @@ from typing import Any
 
 import jax
 from jax import numpy as jnp
-from jax.sharding import AxisType
+from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from .parameters import padded_res, params, periodic_systems
@@ -117,6 +117,10 @@ class Sharding:
     phys_scalar_shard = P(None, *axis_names, None)
 
     no_shard = P(None)
+
+    spec_imm_corr_shard = NamedSharding(mesh, P(None, None, *axis_names))
+    spec_dy_op_shard = NamedSharding(mesh, P(None, *axis_names, None, None))
+    spec_k2_op_shard = NamedSharding(mesh, P(None, *axis_names))
 
     if params.res.double_precision:
         float_type = jnp.float64

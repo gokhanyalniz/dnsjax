@@ -113,38 +113,40 @@ class PlaneCouetteFlow:
             D2_arr=D2,
         )
 
-        shard_4d = P(None, *sharding.axis_names, None, None)
-        shard_3d = P(None, *sharding.axis_names, None)
-        shard_2d = P(None, *sharding.axis_names)
-
         self.Lk = jax.make_array_from_callback(
             (Nkz, Nkx, Ny, Ny),
-            shard_4d,
+            sharding.spec_dy_op_shard,
             lambda idx: chunker.get_chunk(idx, "Lk"),
         )
         self.Hk = jax.make_array_from_callback(
             (Nkz, Nkx, Ny, Ny),
-            shard_4d,
+            sharding.spec_dy_op_shard,
             lambda idx: chunker.get_chunk(idx, "Hk"),
         )
         self.Hk_minus = jax.make_array_from_callback(
             (Nkz, Nkx, Ny, Ny),
-            shard_4d,
+            sharding.spec_dy_op_shard,
             lambda idx: chunker.get_chunk(idx, "Hk_minus"),
         )
         self.p1 = jax.make_array_from_callback(
-            (Nkz, Nkx, Ny), shard_3d, lambda idx: chunker.get_chunk(idx, "p1")
+            (Nkz, Nkx, Ny),
+            sharding.spec_imm_corr_shard,
+            lambda idx: chunker.get_chunk(idx, "p1"),
         )
         self.p2 = jax.make_array_from_callback(
-            (Nkz, Nkx, Ny), shard_3d, lambda idx: chunker.get_chunk(idx, "p2")
+            (Nkz, Nkx, Ny),
+            sharding.spec_imm_corr_shard,
+            lambda idx: chunker.get_chunk(idx, "p2"),
         )
         self.M_inv = jax.make_array_from_callback(
             (Nkz, Nkx, 2, 2),
-            shard_4d,
+            sharding.spec_dy_op_shard,
             lambda idx: chunker.get_chunk(idx, "M_inv"),
         )
         self.k2 = jax.make_array_from_callback(
-            (Nkz, Nkx), shard_2d, lambda idx: chunker.get_chunk(idx, "k2")
+            (Nkz, Nkx),
+            sharding.spec_k2_op_shard,
+            lambda idx: chunker.get_chunk(idx, "k2"),
         )
 
         if params.solver.use_lineax:
