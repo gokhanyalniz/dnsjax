@@ -328,6 +328,7 @@ def _imm_iteration(
     # Stage 1: Solve for v^{(j+1)}
     dy_p_j = jnp.einsum("ij, zxj -> zxi", flow_.D1, pressure_j)
     Rv = _matvec_4d(flow_.Hk_minus, v_n) - dy_p_j + c * Nv_j + (1 - c) * Nv_n
+    Rv = Rv.at[..., 0].set(0.0).at[..., -1].set(0.0)
     v_new = flow_.Hk_solver.solve(Rv)
 
     # Stage 2: Residuals and RHS for pressure
@@ -386,6 +387,8 @@ def _imm_iteration(
 
     Ru = _matvec_4d(flow_.Hk_minus, u_n) - dx_p_new + c * Nu_j + (1 - c) * Nu_n
     Rw = _matvec_4d(flow_.Hk_minus, w_n) - dz_p_new + c * Nw_j + (1 - c) * Nw_n
+    Ru = Ru.at[..., 0].set(0.0).at[..., -1].set(0.0)
+    Rw = Rw.at[..., 0].set(0.0).at[..., -1].set(0.0)
 
     u_new = flow_.Hk_solver.solve(Ru)
     w_new = flow_.Hk_solver.solve(Rw)
