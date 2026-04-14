@@ -14,7 +14,7 @@ from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
 from ..bench import timer
-from ..fd import build_diff_matrices, precompute_imm
+from ..fd import build_diff_matrices
 from ..operators import (
     fourier,
     phys_to_spec_2d,
