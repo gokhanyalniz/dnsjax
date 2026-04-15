@@ -94,8 +94,8 @@ class PlaneCouetteFlow:
             jnp.array(D2[[0, -1], :]), sharding.no_shard
         )
 
-        kx_global = np.array(fourier.kx.reshape(-1))
-        kz_global = np.array(fourier.kz.reshape(-1))
+        kx_global = fourier.kx_global
+        kz_global = fourier.kz_global
         Nkz = len(kz_global)
         Nkx = len(kx_global)
         Ny = params.res.ny

@@ -30,30 +30,26 @@ class Fourier:
     y-part is handled by finite-difference matrices.
     """
 
+    kx_global: np.ndarray = field(init=False)
     kx: Array = field(init=False)
+    kz_global: np.ndarray = field(init=False)
     kz: Array = field(init=False)
     k_metric: Array = field(init=False)
-    lapl: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        self.kx = (
-            jax.device_put(
-                real_harmonics(params.res.nx).reshape([1, -1, 1]),
-                sharding.spec_scalar_shard,
-            )
-            * 2
-            * jnp.pi
-            / params.geo.lx
+        self.kx_global = np.array(
+            real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
         )
-        self.kz = (
-            complex_harmonics(params.res.nz).reshape([-1, 1, 1])
-            * 2
-            * jnp.pi
-            / params.geo.lz
+        self.kx = jax.device_put(
+            jnp.array(self.kx_global).reshape([1, -1, 1]),
+            sharding.spec_scalar_shard,
         )
+        self.kz_global = np.array(
+            complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
+        )
+        self.kz = jnp.array(self.kz_global).reshape([-1, 1, 1])
 
         self.k_metric = jnp.where(self.kx == 0, 1, 2)
-        self.lapl = -(self.kx**2 + self.kz**2)
 
 
 fourier: Fourier = Fourier()
@@ -444,7 +440,6 @@ def precompute_imm(
     p1_all = np.zeros((Nkz, Nkx, Ny))
     p2_all = np.zeros((Nkz, Nkx, Ny))
     M_inv_all = np.zeros((Nkz, Nkx, 2, 2))
-
 
     e1 = np.zeros(Ny)
     e1[0] = 1.0
