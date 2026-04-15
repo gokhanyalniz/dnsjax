@@ -182,8 +182,8 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
         lambda s: _curl_fn(s, fourier, flow),
     )
 
-    u, v, w = velocity_spec
-    Nu, Nv, Nw = nonlin
+    u, v, w = velocity_spec[0], velocity_spec[1], velocity_spec[2]
+    Nu, Nv, Nw = nonlin[0], nonlin[1], nonlin[2]
 
     dy_Nv = jnp.einsum("ij, zxj -> zxi", flow.D1, Nv)
     div_N = 1j * fourier.kx * Nu + dy_Nv + 1j * fourier.kz * Nw
@@ -249,7 +249,7 @@ def _curl_fn(
     flow_: PlaneCouetteFlow,
 ) -> Array:
     """Spectral curl with 1D FD in y and spectral derivatives in x and z."""
-    u, v, w = state
+    u, v, w = state[0], state[1], state[2]
 
     dy_u = jnp.einsum("ij, zxj -> zxi", flow_.D1, u)
     dy_w = jnp.einsum("ij, zxj -> zxi", flow_.D1, w)
@@ -313,9 +313,9 @@ def _imm_iteration(
     """
     c = params.step.implicitness
 
-    u_n, v_n, w_n = velocity_n
-    Nu_n, Nv_n, Nw_n = nonlin_n
-    Nu_j, Nv_j, Nw_j = nonlin_j
+    u_n, v_n, w_n = velocity_n[0], velocity_n[1], velocity_n[2]
+    Nu_n, Nv_n, Nw_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]
+    Nu_j, Nv_j, Nw_j = nonlin_j[0], nonlin_j[1], nonlin_j[2]
 
     # Pre-calculate d_hat^n
     dy_v_n = jnp.einsum("ij, zxj -> zxi", flow_.D1, v_n)
