@@ -34,7 +34,7 @@ def register_dataclass_pytree(cls):
             val = getattr(obj, f.name)
             if (
                 isinstance(val, (str, type(None)))
-                or getattr(val, "__call__", None) is not None
+                or callable(val)
                 and not isinstance(val, (jax.Array, jnp.ndarray))
             ):
                 aux_data[f.name] = val

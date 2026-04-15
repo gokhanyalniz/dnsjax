@@ -10,7 +10,6 @@ import jax
 import numpy as np
 from jax import Array, jit
 from jax import numpy as jnp
-from jax.sharding import PartitionSpec as P
 
 from ..bench import timer
 from ..fd import build_diff_matrices
@@ -143,6 +142,7 @@ class PlaneCouetteFlow:
             lambda idx: chunker.get_chunk(idx, "M_inv"),
         )
 
+        # ruff: disable[F401,E731,B904]
         if params.solver.use_lineax:
             try:
                 import lineax as lx
@@ -152,8 +152,10 @@ class PlaneCouetteFlow:
                 )
             except ImportError:
                 raise ImportError(
-                    "Lineax is not installed! Use 'pip install lineax' or set use_lineax=False."
+                    "Lineax is not installed! Use 'pip install lineax'"
+                    "or set use_lineax=False."
                 )
+        # ruff: enable[F401,E731,B904]
         else:
             SolverClass = DenseJAXSolver
 
@@ -169,7 +171,8 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     on the un-advanced snapshot.
 
     1. `$\\nabla^2 p = \\nabla \\cdot \\mathbf{N}$`
-    2. `$\\partial p/\\partial y = N_v + \\nu \\frac{\\partial^2 v}{\\partial y^2}$`
+    2. `$\\partial p/\\partial y = N_v
+        + \\nu \\frac{\\partial^2 v}{\\partial y^2}$`
        at boundaries
     """
     nonlin = get_nonlin(
@@ -182,7 +185,7 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
         lambda s: _curl_fn(s, fourier, flow),
     )
 
-    u, v, w = velocity_spec[0], velocity_spec[1], velocity_spec[2]
+    v = velocity_spec[1]
     Nu, Nv, Nw = nonlin[0], nonlin[1], nonlin[2]
 
     dy_Nv = jnp.einsum("ij, zxj -> zxi", flow.D1, Nv)

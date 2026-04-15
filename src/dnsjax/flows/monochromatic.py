@@ -38,7 +38,9 @@ Fourier space, so the implicit solve reduces to pointwise operations:
 
     `$ldt_1 = \frac{1}{\Delta t} + (1-c) \frac{\nabla^2}{\mathrm{Re}}$`
     (explicit part)
-    `$ildt_2 = \left(\frac{1}{\Delta t} - c \frac{\nabla^2}{\mathrm{Re}}\right)^{-1}$`
+    `$ildt_2 = \left(
+    \frac{1}{\Delta t} - c \frac{\nabla^2}{\mathrm{Re}}
+    \right)^{-1}$`
     (inverse of implicit part)
 
 The mean mode `$(k_y, k_z, k_x) = (0, 0, 0)$` is zeroed out, since it

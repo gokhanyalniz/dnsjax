@@ -63,7 +63,6 @@ class Fourier:
 fourier: Fourier = Fourier()
 
 
-
 def get_inprod(
     vector_spec_1: Array, vector_spec_2: Array, k_metric: Array
 ) -> Array:
