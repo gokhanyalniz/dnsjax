@@ -42,6 +42,7 @@ class PlaneCouetteFlow:
     nonlin_base_flow: Array = field(init=False)
     D1: Array = field(init=False)
     D2: Array = field(init=False)
+    D1_bnd: Array = field(init=False)
     D2_bnd: Array = field(init=False)
     Lk: Array = field(init=False)
     Lk_solver: DenseJAXSolver | LineaxBandedSolver = field(init=False)
@@ -50,6 +51,8 @@ class PlaneCouetteFlow:
     Hk_minus: Array = field(init=False)
     p1: Array = field(init=False)
     p2: Array = field(init=False)
+    v1: Array = field(init=False)
+    v2: Array = field(init=False)
     M_inv: Array = field(init=False)
 
     def __post_init__(self) -> None:
@@ -89,6 +92,9 @@ class PlaneCouetteFlow:
         D1, D2 = build_diff_matrices(np.array(self.ys), params.res.fd_order)
         self.D1 = jax.device_put(jnp.array(D1), sharding.no_shard)
         self.D2 = jax.device_put(jnp.array(D2), sharding.no_shard)
+        self.D1_bnd = jax.device_put(
+            jnp.array(D1[[0, -1], :]), sharding.no_shard
+        )
         self.D2_bnd = jax.device_put(
             jnp.array(D2[[0, -1], :]), sharding.no_shard
         )
@@ -136,6 +142,16 @@ class PlaneCouetteFlow:
             sharding.spec_imm_corr_shard,
             lambda idx: chunker.get_chunk(idx, "p2"),
         )
+        self.v1 = jax.make_array_from_callback(
+            (Nkz, Nkx, Ny),
+            sharding.spec_imm_corr_shard,
+            lambda idx: chunker.get_chunk(idx, "v1"),
+        )
+        self.v2 = jax.make_array_from_callback(
+            (Nkz, Nkx, Ny),
+            sharding.spec_imm_corr_shard,
+            lambda idx: chunker.get_chunk(idx, "v2"),
+        )
         self.M_inv = jax.make_array_from_callback(
             (Nkz, Nkx, 2, 2),
             sharding.spec_dy_op_shard,
@@ -173,7 +189,15 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     1. `$\\nabla^2 p = \\nabla \\cdot \\mathbf{N}$`
     2. `$\\partial p/\\partial y = N_v
         + \\nu \\frac{\\partial^2 v}{\\partial y^2}$`
-       at boundaries
+       at boundaries (from the continuous y-momentum equation,
+       using `$v|_{\\mathrm{wall}} = 0$` and `$\\partial_t v|_{
+       \\mathrm{wall}} = 0$` which hold for all time under no-slip).
+
+    Since `$p_1, p_2$` are constructed with unit Neumann BCs at the
+    bottom and top walls respectively (``Lk``'s boundary rows are
+    ``D1`` rows by construction), ``alpha1 = g_0`` and
+    ``alpha2 = g_1`` directly encode the desired Neumann values; no
+    influence-matrix inversion is needed for the continuous problem.
     """
     nonlin = get_nonlin(
         velocity_spec,
@@ -191,26 +215,20 @@ def _compute_static_pressure(velocity_spec: Array) -> Array:
     dy_Nv = jnp.einsum("ij, zxj -> zxi", flow.D1, Nv)
     div_N = 1j * fourier.kx * Nu + dy_Nv + 1j * fourier.kz * Nw
 
-    # Pressure Neumann BC: only wall values are needed
+    # Pressure Neumann BC: only wall values are needed.
     D2_v_bnd = jnp.einsum("bj, zxj -> zxb", flow.D2_bnd, v)
     g_0 = Nv[..., 0] + D2_v_bnd[..., 0] / params.phys.re
     g_1 = Nv[..., -1] + D2_v_bnd[..., 1] / params.phys.re
 
-    # Solve particular pressure
+    # Particular pressure with zero Neumann BCs.
     f_P = div_N.at[..., 0].set(0.0).at[..., -1].set(0.0)
     pP = flow.Lk_solver.solve(f_P)
 
-    # Neumann residual: D1@pP|_bnd = 0 by construction.
-    # For the mean mode (k²=0), the bottom BC is pinning (not
-    # Neumann), so the bottom residual is unconditionally zero.
+    # Mean mode (k²=0) bottom BC is pinning (gauge, not Neumann),
+    # so zero alpha1 there.
     k2_h = fourier.kx[..., 0] ** 2 + fourier.kz[..., 0] ** 2
-    g_0 = jnp.where(k2_h > 0, g_0, 0.0)
-    r = jnp.stack([g_0, g_1], axis=-1)
-
-    # Apply influence matrix algebra mapping constraints
-    alpha = jnp.einsum("zxab, zxb -> zxa", flow.M_inv, r)
-    alpha1 = alpha[..., 0][..., None]
-    alpha2 = alpha[..., 1][..., None]
+    alpha1 = jnp.where(k2_h > 0, g_0, 0.0)[..., None]
+    alpha2 = g_1[..., None]
 
     p_new = pP + alpha1 * flow.p1 + alpha2 * flow.p2
 
@@ -304,33 +322,41 @@ def _imm_iteration(
     fourier_: Fourier,
     flow_: PlaneCouetteFlow,
 ) -> tuple[tuple[Array, Array], Array]:
-    """Openpipeflow fractional-step algorithm (Section 5.2).
+    """Kleiser-Schumann influence-matrix method.
 
-    Four stages:
-    1. Solve Helmholtz for v (Dirichlet BCs).
-    2. Build pressure Poisson RHS with Neumann BCs
-       from the y-momentum equation at the walls.
-    3. Solve pressure via the influence-matrix method
-       (particular solution + homogeneous correction).
-    4. Solve Helmholtz for u and w.
+    The y-momentum equation supplies only the *interior* Poisson
+    equation for pressure; the wall BC is determined indirectly by
+    enforcing continuity `$\\nabla \\cdot u = 0$` at the walls.
+
+    Six stages:
+    1. Build the interior Poisson RHS from divergence of momentum.
+    2. Solve Poisson for the particular pressure `$p_P$` with
+       arbitrary (zero) Neumann BCs.
+    3. Solve Helmholtz for `$v_{arb}$` using `$p_P$`.
+    4. Compute wall divergence residual `$d_{\\mathrm{wall}} = (D_1
+       v_{arb})|_{\\mathrm{wall}}$` (since `$u = w = 0$` at walls).
+    5. Apply the influence matrix `$\\alpha = -M^{-1} d_{\\mathrm{wall}}$`.
+    6. Assemble corrected `$p = p_P + \\alpha_1 p_1 + \\alpha_2 p_2$`
+       and `$v = v_{arb} + \\alpha_1 v_1 + \\alpha_2 v_2$` (linearity
+       of the Helmholtz operator), then solve Helmholtz for `$u$` and
+       `$w$` using the corrected pressure.
+
+    ``pressure_j`` is unused (pressure is reconstructed from scratch
+    each iteration); the argument is kept to preserve the calling
+    convention shared with the triply-periodic flows.
     """
+    del pressure_j
     c = params.step.implicitness
 
     u_n, v_n, w_n = velocity_n[0], velocity_n[1], velocity_n[2]
     Nu_n, Nv_n, Nw_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]
     Nu_j, Nv_j, Nw_j = nonlin_j[0], nonlin_j[1], nonlin_j[2]
 
-    # Pre-calculate d_hat^n
+    # d_hat^n (discrete divergence at time n; ~0 after first step).
     dy_v_n = jnp.einsum("ij, zxj -> zxi", flow_.D1, v_n)
     d_hat_n = 1j * fourier_.kx * u_n + dy_v_n + 1j * fourier_.kz * w_n
 
-    # Stage 1: Solve for v^{(j+1)}
-    dy_p_j = jnp.einsum("ij, zxj -> zxi", flow_.D1, pressure_j)
-    Rv = _matvec_4d(flow_.Hk_minus, v_n) - dy_p_j + c * Nv_j + (1 - c) * Nv_n
-    Rv = Rv.at[..., 0].set(0.0).at[..., -1].set(0.0)
-    v_new = flow_.Hk_solver.solve(Rv)
-
-    # Stage 2: Residuals and RHS for pressure
+    # Stage 1: interior pressure Poisson RHS.
     dy_Nv_j = jnp.einsum("ij, zxj -> zxi", flow_.D1, Nv_j)
     dy_Nv_n = jnp.einsum("ij, zxj -> zxi", flow_.D1, Nv_n)
     div_Nj = 1j * fourier_.kx * Nu_j + dy_Nv_j + 1j * fourier_.kz * Nw_j
@@ -345,45 +371,34 @@ def _imm_iteration(
         + (1 - c) * (1.0 / params.phys.re) * Lk_d
     )
 
-    # Pressure Neumann BC: only wall values are needed,
-    # so use boundary rows of D2 instead of full operators.
-    D2_v_new_bnd = jnp.einsum("bj, zxj -> zxb", flow_.D2_bnd, v_new)
-    D2_v_n_bnd = jnp.einsum("bj, zxj -> zxb", flow_.D2_bnd, v_n)
-    nu = 1.0 / params.phys.re
-    g_0 = (
-        v_n[..., 0] / params.step.dt
-        + c * Nv_j[..., 0]
-        + (1 - c) * Nv_n[..., 0]
-        + c * nu * D2_v_new_bnd[..., 0]
-        + (1 - c) * nu * D2_v_n_bnd[..., 0]
-    )
-    g_1 = (
-        v_n[..., -1] / params.step.dt
-        + c * Nv_j[..., -1]
-        + (1 - c) * Nv_n[..., -1]
-        + c * nu * D2_v_new_bnd[..., 1]
-        + (1 - c) * nu * D2_v_n_bnd[..., 1]
-    )
-
-    # Stage 3: Solve pressure via influence matrix
+    # Stage 2: particular pressure with ZERO Neumann BCs.
     f_hat_P = f_hat.at[..., 0].set(0.0).at[..., -1].set(0.0)
-    pP = flow_.Lk_solver.solve(f_hat_P)  # particular solution
+    pP = flow_.Lk_solver.solve(f_hat_P)
 
-    # Neumann residual: D1@pP|_bnd = 0 by construction.
-    # For the mean mode (k²=0), the bottom BC is pinning (not
-    # Neumann), so the bottom residual is unconditionally zero.
+    # Stage 3: Helmholtz solve for v_arb using p_P.
+    dy_pP = jnp.einsum("ij, zxj -> zxi", flow_.D1, pP)
+    Rv = _matvec_4d(flow_.Hk_minus, v_n) - dy_pP + c * Nv_j + (1 - c) * Nv_n
+    Rv = Rv.at[..., 0].set(0.0).at[..., -1].set(0.0)
+    v_arb = flow_.Hk_solver.solve(Rv)
+
+    # Stage 4: wall divergence residual. At walls u=w=0 (no-slip),
+    # so div u|_wall = D1 v|_wall.
+    d_wall = jnp.einsum("bj, zxj -> zxb", flow_.D1_bnd, v_arb)
+
+    # Mean mode (k²=0) bottom-wall residual is a pressure gauge; zero it.
     k2_h = fourier_.kx[..., 0] ** 2 + fourier_.kz[..., 0] ** 2
-    g_0 = jnp.where(k2_h > 0, g_0, 0.0)
-    r = jnp.stack([g_0, g_1], axis=-1)
+    d_wall = d_wall.at[..., 0].set(jnp.where(k2_h > 0, d_wall[..., 0], 0.0))
 
-    # IMM homogeneous solution coefficients
-    alpha = jnp.einsum("zxab, zxb -> zxa", flow_.M_inv, r)
+    # Stage 5: influence matrix algebra alpha = -M_inv @ d_wall.
+    alpha = -jnp.einsum("zxab, zxb -> zxa", flow_.M_inv, d_wall)
     alpha1 = alpha[..., 0][..., None]
     alpha2 = alpha[..., 1][..., None]
 
+    # Corrected pressure, and corrected v via linearity of Helmholtz.
     p_new = pP + alpha1 * flow_.p1 + alpha2 * flow_.p2
+    v_new = v_arb + alpha1 * flow_.v1 + alpha2 * flow_.v2
 
-    # Stage 4: Solve for u and w
+    # Stage 6: Helmholtz solves for u and w with corrected pressure.
     dx_p_new = 1j * fourier_.kx * p_new
     dz_p_new = 1j * fourier_.kz * p_new
 

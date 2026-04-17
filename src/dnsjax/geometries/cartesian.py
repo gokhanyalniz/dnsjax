@@ -422,8 +422,9 @@ def precompute_imm(
         - ``"Hk_minus"``: explicit Helmholtz, ``(Nkz, Nkx, Ny, Ny)``
         - ``"p1"``, ``"p2"``: homogeneous pressure solutions,
           ``(Nkz, Nkx, Ny)``
+        - ``"v1"``, ``"v2"``: homogeneous velocity solutions,
+          ``(Nkz, Nkx, Ny)``
         - ``"M_inv"``: inverted influence matrix, ``(Nkz, Nkx, 2, 2)``
-        - ``"k2"``: squared wavenumber per mode, ``(Nkz, Nkx)``
     """
     Ny = len(y)
     Nkz = len(kz_vals)
@@ -439,6 +440,8 @@ def precompute_imm(
     Hk_minus_all = np.zeros((Nkz, Nkx, Ny, Ny))
     p1_all = np.zeros((Nkz, Nkx, Ny))
     p2_all = np.zeros((Nkz, Nkx, Ny))
+    v1_all = np.zeros((Nkz, Nkx, Ny))
+    v2_all = np.zeros((Nkz, Nkx, Ny))
     M_inv_all = np.zeros((Nkz, Nkx, 2, 2))
 
     e1 = np.zeros(Ny)
@@ -459,14 +462,43 @@ def precompute_imm(
             Hk_all[iz, ix] = Hk
             Hk_minus_all[iz, ix] = Hk_minus
 
-            # Homogeneous pressure solutions.
-            # M = I always: Lk @ p_i = e_i implies
-            # Lk[bnd,:] @ p_i = e_i[bnd], so M = I.
+            # Homogeneous pressure solutions `$L_k p_i = e_i$`.
             p1 = np.linalg.solve(Lk, e1)
             p2 = np.linalg.solve(Lk, e2)
             p1_all[iz, ix] = p1
             p2_all[iz, ix] = p2
-            M_inv_all[iz, ix] = np.eye(2)
+
+            # Homogeneous velocity solutions `$v_i = H_k^{-1}
+            # (-D_1 p_i)$` with zero Dirichlet BCs (no-slip).
+            rhs1 = -D1 @ p1
+            rhs2 = -D1 @ p2
+            rhs1[0] = 0.0
+            rhs1[-1] = 0.0
+            rhs2[0] = 0.0
+            rhs2[-1] = 0.0
+            v1 = np.linalg.solve(Hk, rhs1)
+            v2 = np.linalg.solve(Hk, rhs2)
+            v1_all[iz, ix] = v1
+            v2_all[iz, ix] = v2
+
+            # Influence matrix `$M_{ji} = (D_1 v_i)|_{\text{wall}_j}$`:
+            # wall divergence produced by adding `$p_i$` to the pressure.
+            M = np.zeros((2, 2))
+            M[0, 0] = D1[0, :] @ v1
+            M[0, 1] = D1[0, :] @ v2
+            M[1, 0] = D1[-1, :] @ v1
+            M[1, 1] = D1[-1, :] @ v2
+
+            if k2 == 0.0:
+                # Mean mode: `$p_1 \equiv 1$` (constant, gauge freedom),
+                # so column 0 of M is zero and M is singular. Zero the
+                # `$p_1$` contribution and use only the top-wall
+                # residual via `$p_2$`.
+                M_inv_all[iz, ix] = np.array(
+                    [[0.0, 0.0], [0.0, 1.0 / M[1, 1]]]
+                )
+            else:
+                M_inv_all[iz, ix] = np.linalg.inv(M)
 
     return {
         "D1": D1,
@@ -476,5 +508,7 @@ def precompute_imm(
         "Hk_minus": Hk_minus_all,
         "p1": p1_all,
         "p2": p2_all,
+        "v1": v1_all,
+        "v2": v2_all,
         "M_inv": M_inv_all,
     }
