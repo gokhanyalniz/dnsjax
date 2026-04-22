@@ -19,6 +19,9 @@ from pydantic_settings import BaseSettings
 monochromatic_systems: list[str] = ["kolmogorov", "waleffe"]
 periodic_systems: list[str] = ["decaying-box", *monochromatic_systems]
 
+cartesian_systems: list[str] = ["plane-couette"]
+walled_systems: list[str] = [*cartesian_systems]
+
 
 class Distribution(BaseModel):
     """Device distribution and backend platform."""
@@ -33,7 +36,7 @@ class Physics(BaseModel):
     re: float = Field(gt=0, default=1000)  # Reynolds number
     # Kolmogorov: sine forcing
     # Waleffe: cosine forcing + Ry symmetry (not yet implemented)
-    system: Literal[*periodic_systems] = "kolmogorov"
+    system: Literal[*periodic_systems, *walled_systems] = "kolmogorov"
     # (n + 1) / 2 oversampling in each direction
     # to dealias the n'th order nonlinearity
     # oversampling_factor = n + 1
@@ -105,6 +108,16 @@ class Debugging(BaseModel):
     correct_divergence: bool = True
 
 
+class Solver(BaseModel):
+    """Linear algebraic solver configurations."""
+
+    # ``"banded"``: LAPACK-packed banded LU factors (memory-efficient,
+    # exploits the known stencil bandwidth of D1, D2).
+    # ``"dense"``: full ``Ny x Ny`` LU factors per Fourier mode
+    # (legacy path, kept for verification against the banded path).
+    backend: Literal["banded", "dense"] = "banded"
+
+
 class Parameters(BaseModel):
     """Top-level parameter container aggregating all categories."""
 
@@ -117,6 +130,7 @@ class Parameters(BaseModel):
     step: TimeStepping = TimeStepping()
     stop: Termination | None = Termination()
     debug: Debugging | None = Debugging()
+    solver: Solver = Solver()
 
 
 class CLIParameters(
@@ -173,6 +187,8 @@ def update_parameters(params_new: Parameters) -> None:
     system = params.phys.system
     if system in periodic_systems:
         derived_params.ly = 4
+    elif system in cartesian_systems:
+        derived_params.ly = 2
     else:
         raise NotImplementedError
 
@@ -231,6 +247,8 @@ class PaddedResolution:
                 if params.phys.oversample_y
                 else params.res.ny
             )
+        else:
+            self.ny_padded = None
         self.nz_padded = (
             parameters.phys.oversampling_factor * params.res.nz // 2
         )

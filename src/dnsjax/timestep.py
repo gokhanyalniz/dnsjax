@@ -8,7 +8,9 @@ across all flow types; only the RHS evaluation, Helmholtz solve, and
 norm computation differ.
 
 For triply-periodic flows the Helmholtz solve is algebraic (pointwise
-multiply by ``ldt_1``, ``ildt_2``).
+multiply by ``ldt_1``, ``ildt_2``).  For wall-bounded flows it is a
+matrix solve per Fourier mode, with a different ordering for the velocity
+components (v first, then pressure via IMM, then u, v, w all updated).
 """
 
 from collections.abc import Callable

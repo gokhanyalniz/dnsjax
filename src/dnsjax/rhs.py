@@ -16,10 +16,11 @@ The four terms arise from expanding
 (\\mathbf{u}' + \\mathbf{U})$`.
 
 The transforms (``spec_to_phys``, ``phys_to_spec``) and the ``curl``
-operator are provided as callables.
+operator are provided as callables so that this module works with both
+3D FFTs (triply-periodic flows) and 2D FFTs (wall-bounded flows).
 
 The pressure projection is *not* performed here -- it is flow-specific
-(algebraic for triply-periodic)
+(algebraic for triply-periodic, influence-matrix method for wall-bounded)
 and lives in the corresponding flow module.
 """
 
