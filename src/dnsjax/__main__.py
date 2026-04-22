@@ -61,6 +61,14 @@ def main() -> None:
             iterate_correction,
             predict_and_correct,
         )
+    elif params.phys.system == "plane-couette":
+        from .flows.plane_couette import (
+            correct_velocity,
+            get_stats,
+            init_state,
+            iterate_correction,
+            predict_and_correct,
+        )
     else:
         sharding.print(
             f"System '{params.phys.system}' is not yet implemented."
@@ -107,6 +115,10 @@ def main() -> None:
         *[f"{x}={y:.3e}" for x, y in stats.items()],
     )
 
+    # Debug: save stats
+    ts.append(t)
+    Eps.append(stats["E'"])
+
     sharding.print("Started timestepping at", datetime.now())
 
     # --- Main time-stepping loop ---------------------------------------------
@@ -139,6 +151,10 @@ def main() -> None:
                 if norm_corrections is not None
                 else "",
             )
+
+            # Debug: save stats
+            ts.append(t)
+            Eps.append(stats["E'"])
 
         # Euler predictor + one Crank-Nicolson corrector
         state_prev = state
@@ -217,6 +233,10 @@ def main() -> None:
             else "",
         )
 
+        # Debug: save stats
+        ts.append(t)
+        Eps.append(stats["E'"])
+
         ts = jnp.array(ts)
         Eps = jnp.array(Eps)
         jnp.savez("stats.npz", ts=ts, Eps=Eps)
@@ -292,12 +312,12 @@ if __name__ == "__main__":
             pp(params.model_dump())
 
         print(
-            "Running with the effective resolution:",
+            "Running with the physical-space (x, y, z) resolution:",
+            padded_res.nx_padded,
             padded_res.ny_padded
             if padded_res.ny_padded is not None
             else params.res.ny,
             padded_res.nz_padded,
-            padded_res.nx_padded,
             flush=True,
         )
 

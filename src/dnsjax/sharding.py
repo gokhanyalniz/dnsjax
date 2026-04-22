@@ -29,7 +29,7 @@ from jax import numpy as jnp
 from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from .parameters import padded_res, params
+from .parameters import padded_res, params, periodic_systems
 
 
 def register_dataclass_pytree(cls: type) -> type:
@@ -108,9 +108,14 @@ class Sharding:
     # internally by the FFT module.
     _fft_spec_scalar_shard = P(None, None, axis_name)
 
-    # kx is sharded [ky, kz, kx]
-    spec_vector_shard = P(None, None, None, axis_name)
-    spec_scalar_shard = P(None, None, axis_name)
+    if params.phys.system in periodic_systems:
+        # kx is sharded [ky, kz, kx]
+        spec_vector_shard = P(None, None, None, axis_name)
+        spec_scalar_shard = P(None, None, axis_name)
+    else:
+        # kx is sharded [kz, kx, y]
+        spec_vector_shard = P(None, None, axis_name, None)
+        spec_scalar_shard = P(None, axis_name, None)
 
     # z is sharded [y, z, x]
     phys_vector_shard = P(None, None, axis_name, None)
@@ -130,28 +135,54 @@ class Sharding:
         float_type = jnp.float32
         complex_type = jnp.complex64
 
-    # All three directions are Fourier-expanded; the Nyquist modes are
-    # omitted, giving ny-1, nz-1, and nx//2 stored modes.
+    if params.phys.system in periodic_systems:
+        # All three directions are Fourier-expanded; the Nyquist modes are
+        # omitted, giving ny-1, nz-1, and nx//2 stored modes.
 
-    # Spectral layout is [ky, kz, kx]
-    spec_shape: tuple[int, ...] = (
-        params.res.ny - 1,
-        params.res.nz - 1,
-        params.res.nx // 2,
-    )
+        # Spectral layout is [ky, kz, kx]
+        spec_shape: tuple[int, ...] = (
+            params.res.ny - 1,
+            params.res.nz - 1,
+            params.res.nx // 2,
+        )
 
-    # Physical layout is [y, z, x]
-    phys_shape: tuple[int, ...] = (
-        padded_res.ny_padded,
-        padded_res.nz_padded,
-        padded_res.nx_padded,
-    )
+        # Physical layout is [y, z, x]
+        phys_shape: tuple[int, ...] = (
+            padded_res.ny_padded,
+            padded_res.nz_padded,
+            padded_res.nx_padded,
+        )
 
-    # The (ky, kz, kx) = (0, 0, 0) Fourier mode is the mean mode.
-    vector_mean_mode: tuple[slice, ...] = tuple(
-        [slice(None)] + [slice(0, 1)] * 3
-    )
-    scalar_mean_mode: tuple[slice, ...] = tuple([slice(0, 1)] * 3)
+        # The (ky, kz, kx) = (0, 0, 0) Fourier mode is the mean mode.
+        vector_mean_mode: tuple[slice, ...] = tuple(
+            [slice(None)] + [slice(0, 1)] * 3
+        )
+        scalar_mean_mode: tuple[slice, ...] = tuple([slice(0, 1)] * 3)
+    else:
+        # Wall-bounded: y is in physical (grid-point) space, only x and z
+        # are Fourier-expanded.
+
+        # Spectral layout is [kz, kx, y]
+        spec_shape = (
+            params.res.nz - 1,
+            params.res.nx // 2,
+            params.res.ny,
+        )
+
+        # Physical layout is [y, z, x]
+        phys_shape = (
+            params.res.ny,
+            padded_res.nz_padded,
+            padded_res.nx_padded,
+        )
+
+        # The (kz, kx) = (0, 0) Fourier mode spans all y.
+        vector_mean_mode: tuple[slice, ...] = tuple(
+            [slice(None)] + [slice(0, 1)] * 2 + [slice(None)]
+        )
+        scalar_mean_mode: tuple[slice, ...] = tuple(
+            [slice(0, 1)] * 2 + [slice(None)]
+        )
 
     def exit(self, code: int = 1) -> None:
         """Terminate all processes."""

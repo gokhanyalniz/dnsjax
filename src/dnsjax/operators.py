@@ -1,17 +1,18 @@
 """Shared spectral utilities: FFT wrappers and wavenumber helpers.
 
 Provides wavenumber generation functions (``real_harmonics``,
-``complex_harmonics``), vmapped FFT wrappers for 3D transforms,
+``complex_harmonics``), vmapped FFT wrappers for 3D / 2D transforms,
 and the vector cross product.
 
 Geometry-specific ``Fourier`` dataclasses live in the corresponding
-geometry modules (``geometries.triply_periodic``).
+geometry modules (``geometries.triply_periodic``,
+``geometries.cartesian``).
 """
 
 from jax import Array, jit, vmap
 from jax import numpy as jnp
 
-from .fft import _irfft3d, _rfft3d
+from .fft import _irfft2d, _irfft3d, _rfft2d, _rfft3d
 
 
 def real_harmonics(n: int) -> Array:
@@ -98,6 +99,51 @@ def spec_to_phys(velocity_spec: Array) -> Array:
         sharded on the z axis.
     """
     return _irfft3d(velocity_spec)
+
+
+@jit
+@vmap
+def phys_to_spec_2d(velocity_phys: Array) -> Array:
+    """Forward 2D real FFT in (x, z), vmapped over velocity components.
+
+    Used for wall-bounded flows, where the y-direction stays in
+    grid-point space.
+
+    Parameters
+    ----------
+    velocity_phys:
+        Physical field of shape ``(3, ny, nz_padded, nx_padded)`` in
+        ``[y, z, x]`` layout, sharded on the z axis.
+
+    Returns
+    -------
+    :
+        Spectral field of shape ``(3, nz-1, nx//2, ny)`` in
+        ``[kz, kx, y]`` layout, sharded on the kx axis.
+    """
+    return jnp.transpose(_rfft2d(velocity_phys), (1, 2, 0))
+
+
+@jit
+@vmap
+def spec_to_phys_2d(velocity_spec: Array) -> Array:
+    """Inverse 2D real FFT in (x, z), vmapped over velocity components.
+
+    Used for wall-bounded flows.
+
+    Parameters
+    ----------
+    velocity_spec:
+        Spectral field of shape ``(3, nz-1, nx//2, ny)`` in
+        ``[kz, kx, y]`` layout, sharded on the kx axis.
+
+    Returns
+    -------
+    :
+        Physical field of shape ``(3, ny, nz_padded, nx_padded)`` in
+        ``[y, z, x]`` layout, sharded on the z axis.
+    """
+    return _irfft2d(jnp.transpose(velocity_spec, (2, 0, 1)))
 
 
 def cross(vector_1: Array, vector_2: Array) -> Array:
