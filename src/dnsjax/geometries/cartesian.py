@@ -995,7 +995,7 @@ spec_to_phys = spec_to_phys_2d
 
 
 def init_state(snapshot: str | None, flow: CartesianFlow) -> Array:
-    """Initialize the flow state (velocity_spec)."""
+    """Initialise the flow state (velocity_spec)."""
     if params.init.start_from_laminar:
         velocity_spec = jnp.zeros(
             shape=(3, *sharding.spec_shape),

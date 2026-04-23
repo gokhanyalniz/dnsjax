@@ -102,7 +102,6 @@ def main() -> None:
     corrector_compiled: bool = False
     last_error = 0
     last_c: int = 0
-    # norm_corrections: dict | None = {}
 
     ts = []
     Eps = []
@@ -147,9 +146,6 @@ def main() -> None:
                 *[f"{x}={y:.3e}" for x, y in stats.items()],
                 f"c/it = {c_per_it:.2f}",
                 f"err = {last_error:.3e}",
-                # *[f"{x}={y:.3e}" for x, y in norm_corrections.items()]
-                # if norm_corrections is not None
-                # else "",
             )
 
             # Debug: save stats
@@ -227,9 +223,6 @@ def main() -> None:
             *[f"{x}={y:.3e}" for x, y in stats.items()],
             f"c/it = {c_per_it:.2f}",
             f"err = {last_error:.3e}",
-            # *[f"{x}={y:.3e}" for x, y in norm_corrections.items()]
-            # if norm_corrections is not None
-            # else "",
         )
 
         # Debug: save stats

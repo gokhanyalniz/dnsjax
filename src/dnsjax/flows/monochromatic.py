@@ -325,4 +325,5 @@ def _get_stats_jit(
 
 @timer("stats")
 def get_stats(state: Array) -> dict[str, Array]:
+    """Bench-timed wrapper around ``_get_stats_jit``."""
     return _get_stats_jit(state, fourier, flow)
