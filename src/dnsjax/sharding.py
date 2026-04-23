@@ -22,7 +22,6 @@ The reshard between these layouts is handled in :mod:`dnsjax.fft`.
 import dataclasses
 import sys
 from dataclasses import dataclass
-from typing import Any
 
 import jax
 from jax import numpy as jnp
@@ -32,9 +31,10 @@ from jax.sharding import PartitionSpec as P
 from .parameters import padded_res, params, periodic_systems
 
 
-def register_dataclass_pytree(cls: type) -> type:
-    def _tree_flatten(obj: Any) -> tuple[tuple[Any, ...], dict[str, Any]]:
-        children, aux_data = [], {}
+def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
+    def _tree_flatten(obj: T) -> tuple[tuple[object, ...], dict[str, object]]:
+        children: list[object] = []
+        aux_data: dict[str, object] = {}
         for f in dataclasses.fields(cls):
             val = getattr(obj, f.name)
             if (
@@ -49,8 +49,8 @@ def register_dataclass_pytree(cls: type) -> type:
         return (tuple(children), aux_data)
 
     def _tree_unflatten(
-        aux_data: dict[str, Any], children: tuple[Any, ...]
-    ) -> Any:
+        aux_data: dict[str, object], children: tuple[object, ...]
+    ) -> T:
         obj = object.__new__(cls)
         child_idx = 0
         for f in dataclasses.fields(cls):
@@ -188,7 +188,7 @@ class Sharding:
         """Terminate all processes."""
         sys.exit(code)
 
-    def print(self, *args: Any, **kwargs: Any) -> None:
+    def print(self, *args: object, **kwargs: object) -> None:
         """Print only on the main device (process index 0)."""
         if self.main_device:
             print(*args, **kwargs, flush=True)

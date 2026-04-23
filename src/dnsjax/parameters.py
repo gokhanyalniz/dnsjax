@@ -104,8 +104,6 @@ class Debugging(BaseModel):
     """Debug and diagnostic flags."""
 
     time_functions: bool = True
-    measure_corrections: bool = False
-    correct_divergence: bool = True
 
 
 class Solver(BaseModel):

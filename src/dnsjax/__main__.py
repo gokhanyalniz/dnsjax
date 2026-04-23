@@ -100,12 +100,11 @@ def main() -> None:
     wall_time_now: int = perf_counter_ns()
     bench_delta: int = 0  # accumulated JIT-compilation time to subtract
     corrector_compiled: bool = False
-    last_error = 0
+    last_error: float = 0.0
     last_c: int = 0
-    # norm_corrections: dict | None = {}
 
-    ts = []
-    Eps = []
+    ts: list[float] = []
+    Eps: list[float] = []
 
     # Warm-up call so that JIT compilation does not affect benchmarks
     stats = get_stats(state)
@@ -147,9 +146,6 @@ def main() -> None:
                 *[f"{x}={y:.3e}" for x, y in stats.items()],
                 f"c/it = {c_per_it:.2f}",
                 f"err = {last_error:.3e}",
-                # *[f"{x}={y:.3e}" for x, y in norm_corrections.items()]
-                # if norm_corrections is not None
-                # else "",
             )
 
             # Debug: save stats
@@ -187,9 +183,7 @@ def main() -> None:
 
         if params.phys.system in periodic_systems:
             # Divergence correction and mean-mode zeroing
-            state, norm_corrections = correct_velocity(
-                state,
-            )
+            state = correct_velocity(state)
 
         t += params.step.dt
         it += 1
@@ -229,18 +223,13 @@ def main() -> None:
             *[f"{x}={y:.3e}" for x, y in stats.items()],
             f"c/it = {c_per_it:.2f}",
             f"err = {last_error:.3e}",
-            # *[f"{x}={y:.3e}" for x, y in norm_corrections.items()]
-            # if norm_corrections is not None
-            # else "",
         )
 
         # Debug: save stats
         ts.append(t)
         Eps.append(stats["E'"])
 
-        ts = jnp.array(ts)
-        Eps = jnp.array(Eps)
-        jnp.savez("stats.npz", ts=ts, Eps=Eps)
+        jnp.savez("stats.npz", ts=jnp.array(ts), Eps=jnp.array(Eps))
 
         if params.debug.time_functions and main_device:
             pp(timers, sort_dicts=True)
