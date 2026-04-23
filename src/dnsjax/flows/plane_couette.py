@@ -15,7 +15,7 @@ from ..geometries.cartesian import (
     CartesianFlow,
     build_cartesian_stepper,
     fourier,
-    get_perturbation_energy,
+    get_norm2,
 )
 from ..parameters import params
 from ..sharding import register_dataclass_pytree, sharding
@@ -83,7 +83,9 @@ def _get_stats_jit(
     state: Array, fourier_: Any, flow_: Any
 ) -> dict[str, Array]:
     """Compute diagnostic statistics: E, I, D, E'."""
-    perturbation_energy = get_perturbation_energy(state, fourier_, flow_)
+    # perturbation_energy = get_perturbation_energy(state, fourier_, flow_)
+    # Perturbation kinetic energy: `$E' = \\|\\mathbf{u}'\\|^2 / 2$`."""
+    perturbation_energy = get_norm2(state, fourier_.k_metric, flow_.ys) / 2
     # input = get_input(state, fourier_, flow_)
     # dissipation = get_dissipation(state, input, fourier_, flow_)
     # energy = get_energy(perturbation_energy, input, fourier_, flow_)

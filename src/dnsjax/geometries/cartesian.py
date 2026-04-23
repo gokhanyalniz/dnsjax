@@ -1323,24 +1323,6 @@ def _norm(
     return jnp.sqrt(get_norm2(correction, fourier_.k_metric, flow_.ys))
 
 
-@timer("velocity/correct_velocity")
-@jit(donate_argnums=0)
-def correct_velocity(
-    state: Array,
-) -> tuple[Array, dict[str, Array | None] | None]:
-    """Pass-through, IMM satisfies strict numerical continuity inherently."""
-    norm_corrections = None if not params.debug.measure_corrections else {}
-    return state, norm_corrections
-
-
-# ── Diagnostic helpers (geometry-general) ────────────────────────────────
-
-
-def get_perturbation_energy(state: Array, fourier_: Any, flow_: Any) -> Array:
-    """Perturbation kinetic energy `$E' = \\|\\mathbf{u}'\\|^2 / 2$`."""
-    return get_norm2(state, fourier_.k_metric, flow_.ys) / 2
-
-
 # ── Stepper factory ─────────────────────────────────────────────────────
 
 
