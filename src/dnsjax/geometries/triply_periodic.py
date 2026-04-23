@@ -1,14 +1,37 @@
-"""Triply-periodic geometry: Fourier class, differential operators, norms."""
+"""Triply-periodic geometry: Fourier class, differential operators, norms,
+base dataclass, solvers, and stepper factory.
+
+Provides all geometry-general infrastructure for triply-periodic flows:
+the ``Fourier`` wavenumber class, the ``TriplyPeriodicFlow`` base
+dataclass (time-stepping coefficients), algebraic Helmholtz predict /
+correct operations, divergence correction, state initialisation, and the
+``build_triply_periodic_stepper`` factory.
+
+Flow-specific modules (e.g. ``flows.monochromatic``) subclass
+``TriplyPeriodicFlow`` to define the base flow, then call
+``build_triply_periodic_stepper`` to obtain ready-to-use time-stepping
+functions.
+"""
 
 from dataclasses import dataclass, field
+from functools import partial
+from typing import Any
 
 import jax
-from jax import Array
+from jax import Array, jit, vmap
 from jax import numpy as jnp
 
-from ..operators import complex_harmonics, real_harmonics
-from ..parameters import derived_params, params
+from ..bench import timer
+from ..operators import (
+    complex_harmonics,
+    phys_to_spec,
+    real_harmonics,
+    spec_to_phys,
+)
+from ..parameters import derived_params, padded_res, params
+from ..rhs import get_nonlin
 from ..sharding import register_dataclass_pytree, sharding
+from ..timestep import make_stepper
 
 
 @register_dataclass_pytree
@@ -76,6 +99,9 @@ class Fourier:
 
 
 fourier: Fourier = Fourier()
+
+
+# ── Norms and differential operators ─────────────────────────────────────
 
 
 def get_inprod(
@@ -146,3 +172,270 @@ def inverse_laplacian(data_spec: Array, inv_lapl_spec: Array) -> Array:
     """Apply the inverse spectral Laplacian
     (pointwise multiply by `$-1/k^2$`)."""
     return inv_lapl_spec * data_spec
+
+
+# ── TriplyPeriodicFlow base dataclass ────────────────────────────────────
+
+
+@register_dataclass_pytree
+@dataclass
+class TriplyPeriodicFlow:
+    """Precomputed data for triply-periodic flows.
+
+    Subclasses must set ``base_flow``, ``curl_base_flow``, and
+    ``nonlin_base_flow`` *after* calling ``super().__post_init__()``,
+    which builds the time-stepping coefficients ``ldt_1`` and ``ildt_2``.
+    """
+
+    base_flow: Array = field(init=False)
+    curl_base_flow: Array = field(init=False)
+    nonlin_base_flow: Array = field(init=False)
+    ldt_1: Array = field(init=False)
+    ildt_2: Array = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Build time-stepping coefficients.
+
+        For the triply-periodic case the Helmholtz operator is diagonal
+        in Fourier space, so the implicit solve reduces to pointwise
+        operations:
+
+            `$ldt_1 = \\frac{1}{\\Delta t}
+            + (1-c) \\frac{\\nabla^2}{\\mathrm{Re}}$`
+            (explicit part)
+            `$ildt_2 = \\left(
+            \\frac{1}{\\Delta t}
+            - c \\frac{\\nabla^2}{\\mathrm{Re}}
+            \\right)^{-1}$`
+            (inverse of implicit part)
+
+        The mean mode `$(k_y, k_z, k_x) = (0, 0, 0)$` is zeroed out,
+        since it is passive (constant shift) for periodic flows.
+        """
+        ldt_1 = (
+            1 / params.step.dt
+            + (1 - params.step.implicitness) * fourier.lapl / params.phys.re
+        )
+        ildt_2 = 1 / (
+            1 / params.step.dt
+            - params.step.implicitness * fourier.lapl / params.phys.re
+        )
+
+        # Zero the mean modes in timestepper matrices
+        self.ldt_1 = ldt_1.at[sharding.scalar_mean_mode].set(
+            0, out_sharding=sharding.spec_scalar_shard
+        )
+        self.ildt_2 = ildt_2.at[sharding.scalar_mean_mode].set(
+            0, out_sharding=sharding.spec_scalar_shard
+        )
+
+
+# ── Initialization ────────────────────────────────────────────────────────
+
+
+def init_state(snapshot: str | None, flow: TriplyPeriodicFlow) -> Array:
+    """Initialise the flow state (velocity_spec)."""
+    if params.init.start_from_laminar:
+        return jnp.zeros(
+            shape=(3, *sharding.spec_shape),
+            dtype=sharding.complex_type,
+            out_sharding=sharding.spec_vector_shard,
+        )
+    elif snapshot is not None:
+        snapshot_arr = jnp.load(snapshot)["velocity_phys"].astype(
+            sharding.float_type
+        )
+        velocity_phys = jax.device_put(
+            snapshot_arr,
+            sharding.phys_vector_shard,
+        )
+        velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
+        return phys_to_spec(velocity_phys)
+    else:
+        sharding.print("Provide an initial condition.")
+        sharding.exit(code=1)
+
+
+# ── Algebraic Helmholtz operations (triply-periodic specific) ────────────
+
+
+@partial(vmap, in_axes=(0, 0, None, None))
+def _predict_component(
+    state: Array,
+    rhs_no_lapl: Array,
+    ldt_1: Array,
+    ildt_2: Array,
+) -> Array:
+    """Euler predictor step (vmapped over velocity components).
+
+    Computes `$u_p = (u^n \\cdot ldt_1 + f^n) \\cdot ildt_2$`
+    as a pointwise operation in spectral space, where the Helmholtz
+    inversion is algebraic (multiply by ``ildt_2``).
+    """
+    return (state * ldt_1 + rhs_no_lapl) * ildt_2
+
+
+@partial(vmap, in_axes=(0, 0, 0, None))
+def _correct_component(
+    prediction: Array,
+    rhs_no_lapl_prev: Array,
+    rhs_no_lapl_next: Array,
+    ildt_2: Array,
+) -> tuple[Array, Array]:
+    """Crank-Nicolson corrector step (vmapped over velocity components).
+
+    Computes the correction
+    `$\\delta = c (f_{\\text{next}} - f_{\\text{prev}}) \\cdot ildt_2$`
+    and returns the updated prediction and the correction itself (for
+    convergence monitoring).
+    """
+    correction = (
+        params.step.implicitness
+        * (rhs_no_lapl_next - rhs_no_lapl_prev)
+        * ildt_2
+    )
+    return prediction + correction, correction
+
+
+# ── Geometry-general callables for the stepper factory ───────────────────
+
+
+def _curl_fn(state: Array, fourier_: Any) -> Array:
+    """Spectral curl with wavenumbers bound from ``fourier``."""
+    return curl(state, fourier_.kx, fourier_.ky, fourier_.kz)
+
+
+def _get_rhs(state: Array, fourier_: Any, flow_: Any) -> Array:
+    """Divergence-free RHS: nonlinear term + algebraic pressure projection."""
+    nonlin = get_nonlin(
+        state,
+        flow_.base_flow,
+        flow_.curl_base_flow,
+        flow_.nonlin_base_flow,
+        spec_to_phys,
+        phys_to_spec,
+        lambda s: _curl_fn(s, fourier_),
+    )
+    # Pressure Poisson: `$\\nabla^2 p = \\nabla \\cdot \\mathbf{NL}$`
+    lapl_pressure = divergence(nonlin, fourier_.kx, fourier_.ky, fourier_.kz)
+    # Subtract pressure gradient to enforce incompressibility
+    rhs_no_lapl = nonlin - gradient(
+        inverse_laplacian(lapl_pressure, fourier_.inv_lapl),
+        fourier_.kx,
+        fourier_.ky,
+        fourier_.kz,
+    )
+    return rhs_no_lapl
+
+
+def _predict(
+    state: Array, rhs_no_lapl: Array, fourier_: Any, flow_: Any
+) -> Array:
+    """Euler predictor with algebraic Helmholtz inversion."""
+    return _predict_component(state, rhs_no_lapl, flow_.ldt_1, flow_.ildt_2)
+
+
+def _correct(
+    state_prev: Array,
+    prediction: Array,
+    rhs_prev: Array,
+    rhs_next: Array,
+    fourier_: Any,
+    flow_: Any,
+) -> tuple[Array, Array]:
+    """Crank-Nicolson corrector with algebraic Helmholtz inversion."""
+    return _correct_component(prediction, rhs_prev, rhs_next, flow_.ildt_2)
+
+
+def _norm(correction: Array, fourier_: Any, flow_: Any) -> Array:
+    """L2 convergence norm."""
+    return get_norm(correction, fourier_.k_metric)
+
+
+# ── Divergence correction ────────────────────────────────────────────────
+
+
+def correct_divergence(state: Array, fourier_: Any, flow_: Any) -> Array:
+    """Project the velocity onto the divergence-free subspace."""
+    correction = -gradient(
+        inverse_laplacian(
+            divergence(
+                state,
+                fourier_.kx,
+                fourier_.ky,
+                fourier_.kz,
+            ),
+            fourier_.inv_lapl,
+        ),
+        fourier_.kx,
+        fourier_.ky,
+        fourier_.kz,
+    )
+
+    velocity_corrected = state + correction
+    return velocity_corrected
+
+
+@jit(donate_argnums=0)
+def _correct_velocity_jit(state: Array, fourier_: Any, flow_: Any) -> Array:
+
+    velocity_corrected = correct_divergence(state, fourier_, flow_)
+
+    velocity_corrected = velocity_corrected.at[sharding.vector_mean_mode].set(
+        0, out_sharding=sharding.spec_vector_shard
+    )
+
+    return velocity_corrected
+
+
+# ── Diagnostic helpers ───────────────────────────────────────────────────
+
+
+def get_perturbation_energy(state: Array, fourier_: Any, flow_: Any) -> Array:
+    """Perturbation kinetic energy `$E' = \\|\\mathbf{u}'\\|^2 / 2$`."""
+    return get_norm2(state, fourier_.k_metric) / 2
+
+
+# ── Stepper factory ─────────────────────────────────────────────────────
+
+
+def build_triply_periodic_stepper(
+    flow: TriplyPeriodicFlow,
+) -> tuple:
+    """Build time-stepping functions for a triply-periodic flow.
+
+    Returns ``(predict_and_correct, iterate_correction, init_state_bound,
+    correct_velocity)`` with the ``fourier`` and *flow* singletons
+    already bound.
+    """
+    _predict_and_correct_jit, _iterate_correction_jit = make_stepper(
+        _get_rhs, _predict, _correct, _norm
+    )
+
+    def predict_and_correct(
+        state: Array,
+    ) -> tuple[Array, Array, Array]:
+        """Predictor-corrector step with bound singletons."""
+        return _predict_and_correct_jit(state, fourier, flow)
+
+    def iterate_correction(
+        state_prev: Array,
+        prediction: Array,
+        rhs_prev: Array,
+    ) -> tuple[Array, Array, Array]:
+        """One corrector iteration with bound singletons."""
+        return _iterate_correction_jit(
+            state_prev, prediction, rhs_prev, fourier, flow
+        )
+
+    def init_state_bound(snapshot: str | None) -> Array:
+        """Initialize the flow state with bound flow singleton."""
+        return init_state(snapshot, flow)
+
+    @timer("velocity/correct_velocity")
+    def correct_velocity(
+        state: Array,
+    ) -> tuple[Array, dict[str, Array | None] | None]:
+        return _correct_velocity_jit(state, fourier, flow)
+
+    return predict_and_correct, iterate_correction, init_state_bound, correct_velocity
