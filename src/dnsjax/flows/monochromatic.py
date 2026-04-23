@@ -18,24 +18,24 @@ Base flow construction
 The monochromatic base flow `$U(y)$` is defined analytically via a single
 Fourier harmonic (`$q_f = 1$`):
 
-- Kolmogorov: `$U = \\\\sin(2\\\\pi y/L_y)$`
+- Kolmogorov: `$U = \\sin(2\\pi y/L_y)$`
     -- coefficient `-0.5j` at mode `$q_f$`
-- Waleffe:    `$U = \\\\cos(2\\\\pi y/L_y)$`
+- Waleffe:    `$U = \\cos(2\\pi y/L_y)$`
     -- coefficient `+0.5` at mode `$q_f$`
 - Decaying-box: `$U = 0$`
 
 The base flow is transformed to physical space on the 3/2-oversampled
 grid for use in the nonlinear term.  Its curl
-(`$-\\\\partial U_x/\\\\partial y$` in the z-component) and the
-self-interaction `$\\\\mathbf{U} \\\\times \\\\nabla \\\\times \\\\mathbf{U}$`
+(`$-\\partial U_x/\\partial y$` in the z-component) and the
+self-interaction `$\\mathbf{U} \\times \\nabla \\times \\mathbf{U}$`
 are precomputed once.
 
 Tilt
 ----
-When the forcing direction is tilted by an angle `$\\\\theta$` away from
+When the forcing direction is tilted by an angle `$\\theta$` away from
 the x-axis in the (x, z) plane, the base flow and its derivatives are
 rotated:
-    `$U_x \\\\to U_x \\\\cos\\\\theta$`, `$U_z \\\\to U_x \\\\sin\\\\theta$`.
+    `$U_x \\to U_x \\cos\\theta$`, `$U_z \\to U_x \\sin\\theta$`.
 """
 
 from dataclasses import dataclass, field
