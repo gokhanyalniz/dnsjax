@@ -12,7 +12,8 @@ Execution proceeds in two phases:
 
    - Euler predictor + Crank-Nicolson corrector (:func:`predict_and_correct`)
    - Additional corrector iterations if needed (:func:`iterate_correction`)
-   - Divergence correction + mean-mode zeroing (:func:`correct_velocity`)
+   - Divergence correction + mean-mode zeroing for triply-periodic flows
+     (:func:`correct_velocity`)
    - Periodic diagnostic output (:func:`get_stats`)
 
    The loop terminates when the simulation time, wall-clock time, or
@@ -63,7 +64,6 @@ def main() -> None:
         )
     elif params.phys.system == "plane-couette":
         from .flows.plane_couette import (
-            correct_velocity,
             get_stats,
             init_state,
             iterate_correction,
@@ -102,7 +102,7 @@ def main() -> None:
     corrector_compiled: bool = False
     last_error = 0
     last_c: int = 0
-    norm_corrections: dict | None = {}
+    # norm_corrections: dict | None = {}
 
     ts = []
     Eps = []
@@ -147,9 +147,9 @@ def main() -> None:
                 *[f"{x}={y:.3e}" for x, y in stats.items()],
                 f"c/it = {c_per_it:.2f}",
                 f"err = {last_error:.3e}",
-                *[f"{x}={y:.3e}" for x, y in norm_corrections.items()]
-                if norm_corrections is not None
-                else "",
+                # *[f"{x}={y:.3e}" for x, y in norm_corrections.items()]
+                # if norm_corrections is not None
+                # else "",
             )
 
             # Debug: save stats
@@ -185,10 +185,11 @@ def main() -> None:
                 rhs_tot -= 1
                 corrector_compiled = True
 
-        # Divergence correction and mean-mode zeroing
-        state, norm_corrections = correct_velocity(
-            state,
-        )
+        if params.phys.system in periodic_systems:
+            # Divergence correction and mean-mode zeroing
+            state, norm_corrections = correct_velocity(
+                state,
+            )
 
         t += params.step.dt
         it += 1
@@ -228,9 +229,9 @@ def main() -> None:
             *[f"{x}={y:.3e}" for x, y in stats.items()],
             f"c/it = {c_per_it:.2f}",
             f"err = {last_error:.3e}",
-            *[f"{x}={y:.3e}" for x, y in norm_corrections.items()]
-            if norm_corrections is not None
-            else "",
+            # *[f"{x}={y:.3e}" for x, y in norm_corrections.items()]
+            # if norm_corrections is not None
+            # else "",
         )
 
         # Debug: save stats

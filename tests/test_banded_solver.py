@@ -147,7 +147,7 @@ def test_banded_vs_dense_on_imm_operators() -> None:
 
 def test_lk_matvec_matches_dense() -> None:
     """``_lk_matvec`` matches ``build_Lk_neumann(...) @ u``."""
-    from dnsjax.flows.plane_couette import _lk_matvec
+    from dnsjax.geometries.cartesian import _lk_matvec
 
     Ny, p = 17, 4
     y = -np.cos(np.arange(Ny) * np.pi / (Ny - 1))
@@ -167,15 +167,13 @@ def test_lk_matvec_matches_dense() -> None:
         u_j = jnp.asarray(u)[None, None, :]
         k2 = jnp.asarray([[[k2_val]]])
         k2_is_zero = k2 == 0.0
-        got = np.asarray(
-            _lk_matvec(u_j, D2_j, D1_bnd_j, k2, k2_is_zero)
-        )[0, 0]
+        got = np.asarray(_lk_matvec(u_j, D2_j, D1_bnd_j, k2, k2_is_zero))[0, 0]
         assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
 
 
 def test_hk_minus_matvec_matches_dense() -> None:
     """``_hk_minus_matvec`` matches ``build_Hk_dirichlet[1] @ u``."""
-    from dnsjax.flows.plane_couette import _hk_minus_matvec
+    from dnsjax.geometries.cartesian import _hk_minus_matvec
 
     Ny, p = 17, 4
     dt, c, nu = 0.01, 0.5, 1.0 / 1000.0
