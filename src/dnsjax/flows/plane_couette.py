@@ -14,11 +14,8 @@ from ..bench import timer
 from ..geometries.cartesian import (
     CartesianFlow,
     build_cartesian_stepper,
-    correct_velocity,
     fourier,
     get_perturbation_energy,
-    phys_to_spec,
-    spec_to_phys,
 )
 from ..parameters import params
 from ..sharding import register_dataclass_pytree, sharding
@@ -74,8 +71,8 @@ class PlaneCouetteFlow(CartesianFlow):
 
 flow: PlaneCouetteFlow = PlaneCouetteFlow()
 
-predict_and_correct, iterate_correction, init_state = (
-    build_cartesian_stepper(flow)
+predict_and_correct, iterate_correction, init_state = build_cartesian_stepper(
+    flow
 )
 
 

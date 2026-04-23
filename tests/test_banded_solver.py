@@ -167,9 +167,7 @@ def test_lk_matvec_matches_dense() -> None:
         u_j = jnp.asarray(u)[None, None, :]
         k2 = jnp.asarray([[[k2_val]]])
         k2_is_zero = k2 == 0.0
-        got = np.asarray(
-            _lk_matvec(u_j, D2_j, D1_bnd_j, k2, k2_is_zero)
-        )[0, 0]
+        got = np.asarray(_lk_matvec(u_j, D2_j, D1_bnd_j, k2, k2_is_zero))[0, 0]
         assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
 
 
