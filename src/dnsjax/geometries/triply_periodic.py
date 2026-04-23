@@ -28,7 +28,7 @@ from ..operators import (
     real_harmonics,
     spec_to_phys,
 )
-from ..parameters import derived_params, padded_res, params
+from ..parameters import derived_params, params
 from ..rhs import get_nonlin
 from ..sharding import register_dataclass_pytree, sharding
 from ..timestep import make_stepper
@@ -435,7 +435,12 @@ def build_triply_periodic_stepper(
     @timer("velocity/correct_velocity")
     def correct_velocity(
         state: Array,
-    ) -> tuple[Array, dict[str, Array | None] | None]:
+    ) -> Array:
         return _correct_velocity_jit(state, fourier, flow)
 
-    return predict_and_correct, iterate_correction, init_state_bound, correct_velocity
+    return (
+        predict_and_correct,
+        iterate_correction,
+        init_state_bound,
+        correct_velocity,
+    )

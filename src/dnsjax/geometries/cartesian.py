@@ -13,16 +13,14 @@ functions.
 """
 
 from dataclasses import dataclass, field
-from typing import Any
 
 import jax
 import jax.scipy.linalg as sla
 import numpy as np
-from jax import Array, jit, lax
+from jax import Array, lax
 from jax import numpy as jnp
 from scipy.linalg.lapack import get_lapack_funcs
 
-from ..bench import timer
 from ..fd import build_diff_matrices
 from ..operators import (
     complex_harmonics,
