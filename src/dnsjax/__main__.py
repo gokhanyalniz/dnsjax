@@ -187,9 +187,7 @@ def main() -> None:
 
         if params.phys.system in periodic_systems:
             # Divergence correction and mean-mode zeroing
-            state, norm_corrections = correct_velocity(
-                state,
-            )
+            state = correct_velocity(state)
 
         t += params.step.dt
         it += 1

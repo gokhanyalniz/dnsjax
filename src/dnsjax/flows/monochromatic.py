@@ -513,9 +513,7 @@ def get_stats(state: Array) -> dict[str, Array]:
 # ── Divergence correction ────────────────────────────────────────────────
 
 
-def correct_divergence(
-    state: Array, fourier_: Any, flow_: Any
-) -> tuple[Array, Array | None]:
+def correct_divergence(state: Array, fourier_: Any, flow_: Any) -> Array:
     """Project the velocity onto the divergence-free subspace."""
     correction = -gradient(
         inverse_laplacian(
@@ -532,37 +530,20 @@ def correct_divergence(
         fourier_.kz,
     )
 
-    error = (
-        get_norm(correction, fourier_.k_metric)
-        if params.debug.measure_corrections
-        else None
-    )
-
     velocity_corrected = state + correction
-    return velocity_corrected, error
+    return velocity_corrected
 
 
 @jit(donate_argnums=0)
-def _correct_velocity_jit(
-    state: Array, fourier_: Any, flow_: Any
-) -> tuple[Array, dict[str, Array | None] | None]:
-    norm_corrections = {}
-    velocity_corrected = state
+def _correct_velocity_jit(state: Array, fourier_: Any, flow_: Any) -> Array:
 
-    if params.debug.correct_divergence:
-        velocity_corrected, error = correct_divergence(
-            velocity_corrected, fourier_, flow_
-        )
-        norm_corrections["div"] = error
+    velocity_corrected = correct_divergence(state, fourier_, flow_)
 
     velocity_corrected = velocity_corrected.at[sharding.vector_mean_mode].set(
         0, out_sharding=sharding.spec_vector_shard
     )
 
-    if not params.debug.measure_corrections:
-        norm_corrections = None
-
-    return velocity_corrected, norm_corrections
+    return velocity_corrected
 
 
 @timer("velocity/correct_velocity")
