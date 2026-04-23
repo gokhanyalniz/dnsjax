@@ -388,14 +388,6 @@ def _correct_velocity_jit(state: Array, fourier_: Any, flow_: Any) -> Array:
     return velocity_corrected
 
 
-# ── Diagnostic helpers ───────────────────────────────────────────────────
-
-
-def get_perturbation_energy(state: Array, fourier_: Any, flow_: Any) -> Array:
-    """Perturbation kinetic energy `$E' = \\|\\mathbf{u}'\\|^2 / 2$`."""
-    return get_norm2(state, fourier_.k_metric) / 2
-
-
 # ── Stepper factory ─────────────────────────────────────────────────────
 
 

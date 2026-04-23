@@ -49,7 +49,7 @@ from ..geometries.triply_periodic import (
     TriplyPeriodicFlow,
     build_triply_periodic_stepper,
     fourier,
-    get_perturbation_energy,
+    get_norm2,
     laplacian,
 )
 from ..operators import phys_to_spec  # noqa: F401 – re-export for __main__
@@ -308,7 +308,7 @@ def _get_stats_jit(
     state: Array, fourier_: Any, flow_: Any
 ) -> dict[str, Array]:
     """Compute diagnostic statistics: E, I, D, E'."""
-    perturbation_energy = get_perturbation_energy(state, fourier_, flow_)
+    perturbation_energy = get_norm2(state, fourier_.k_metric) / 2
     input = get_input(state, fourier_, flow_)
     dissipation = get_dissipation(state, input, fourier_, flow_)
     energy = get_energy(perturbation_energy, input, fourier_, flow_)
