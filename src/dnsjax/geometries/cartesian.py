@@ -73,7 +73,7 @@ class Fourier:
         )
 
         self.k_metric = jax.device_put(
-            jnp.where(self.kx == 0, 1, 2),
+            jnp.where(self.kx == 0, 1, 2).astype(sharding.float_type),
             sharding.spec_scalar_shard,
         )
 
@@ -218,9 +218,7 @@ class IMMChunker:
         self.D1_arr = D1_arr
         self.D2_arr = D2_arr
         self.backend = backend
-        self.cache: dict[
-            tuple[int, int, int, int], dict[str, np.ndarray]
-        ] = {}
+        self.cache: dict[tuple[int, int, int, int], dict[str, np.ndarray]] = {}
 
     def get_chunk(self, indices: tuple[slice, ...], key: str) -> np.ndarray:
         """Return one shard of the precomputed operator *key*.
@@ -475,9 +473,12 @@ class PerModeBandedOperator:
     from the ab-row count under the invariant
     ``ab.shape[-2] == 3*p + 1`` with ``kl == ku == p``.
 
-    The ``solve`` method splits complex RHS into real/imag halves,
-    runs two real banded solves, and recombines — this keeps the
-    LU factors in real float precision (half the memory of complex).
+    ``solve`` forwards the RHS (real or complex) directly to
+    :func:`_banded_solve_device`.  Because the scan body only uses
+    real-factor × RHS multiplications and RHS / real divisions, a
+    complex RHS flows through under JAX's mixed-type arithmetic —
+    no real/imag split is needed.  The real-precision LU factors
+    retain their half-memory advantage over complex-typed factors.
     """
 
     ab: Array
@@ -490,7 +491,7 @@ class PerModeBandedOperator:
         ----------
         rhs:
             Right-hand side, shape ``(Nkz, Nkx, Ny)``.  May be
-            real or complex.
+            real or complex; the dtype is preserved.
 
         Returns
         -------
@@ -503,12 +504,7 @@ class PerModeBandedOperator:
         def solve_one(ab: Array, ipiv: Array, b: Array) -> Array:
             return _banded_solve_device(ab, ipiv, b, kl, ku)
 
-        batched = jax.vmap(jax.vmap(solve_one))
-        if jnp.iscomplexobj(rhs):
-            xr = batched(self.ab, self.ipiv, rhs.real)
-            xi = batched(self.ab, self.ipiv, rhs.imag)
-            return xr + 1j * xi
-        return batched(self.ab, self.ipiv, rhs)
+        return jax.vmap(jax.vmap(solve_one))(self.ab, self.ipiv, rhs)
 
 
 def build_Lk_neumann(k2: float, D1: np.ndarray, D2: np.ndarray) -> np.ndarray:
@@ -1029,8 +1025,10 @@ def _curl_fn(
     """Spectral curl with 1D FD in y and spectral derivatives in x and z."""
     u, v, w = state[0], state[1], state[2]
 
-    dy_u = jnp.einsum("ij, zxj -> zxi", flow_.D1, u)
-    dy_w = jnp.einsum("ij, zxj -> zxi", flow_.D1, w)
+    # Stack (u, w) so the two D1 y-derivatives needed for the curl
+    # are one batched GEMM rather than two separate kernel launches.
+    dy_uw = jnp.einsum("ij, czxj -> czxi", flow_.D1, jnp.stack([u, w]))
+    dy_u, dy_w = dy_uw[0], dy_uw[1]
 
     dx_v = 1j * fourier_.kx * v
     dz_v = 1j * fourier_.kz * v
