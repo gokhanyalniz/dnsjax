@@ -67,9 +67,7 @@ def make_stepper(
 
     @timer("timestep/predict_and_correct")
     @jit
-    def predict_and_correct(
-        state: Array, *args
-    ) -> tuple[Array, Array, Array]:
+    def predict_and_correct(state: Array, *args) -> tuple[Array, Array, Array]:
         """Full predictor-corrector time step (Euler predict + one CN correct).
 
         Computes the RHS at the current velocity, applies the Euler

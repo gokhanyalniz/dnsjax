@@ -52,11 +52,12 @@ class PlaneCouetteFlow(CartesianFlow):
     def __post_init__(self) -> None:
         """Build CGL grid, base flow, and IMM operators.
 
-        Constructs the Chebyshev-Gauss-Lobatto grid for
-        the wall-normal coordinate ``y`` in ``[-1, 1]``,
-        the laminar base flow ``U(y) = y`` and its derived
-        quantities, FD matrices D1 and D2, and all per-mode
-        IMM operators via ``IMMChunker``.
+        Delegates the CGL grid, FD matrices, and per-mode IMM
+        operator setup to :meth:`CartesianFlow.__post_init__`,
+        which assembles and factorises `$L_k$`, `$H_k$` directly
+        on the device.  This method then defines the
+        plane-Couette base flow ``U(y) = y`` and its derived
+        quantities.
         """
         super().__post_init__()
 

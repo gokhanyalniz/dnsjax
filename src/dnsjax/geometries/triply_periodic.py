@@ -85,7 +85,7 @@ class Fourier:
         )
 
         self.k_metric = jax.device_put(
-            jnp.where(self.kx == 0, 1, 2),
+            jnp.where(self.kx == 0, 1, 2).astype(sharding.float_type),
             sharding.spec_scalar_shard,
         )
         self.lapl = jax.device_put(
