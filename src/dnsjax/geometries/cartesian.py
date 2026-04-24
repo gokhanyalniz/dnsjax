@@ -14,13 +14,13 @@ functions.
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 
 import jax
 import jax.scipy.linalg as sla
 import numpy as np
 from jax import Array, lax
 from jax import numpy as jnp
-from scipy.linalg.lapack import get_lapack_funcs
 
 from ..fd import build_diff_matrices
 from ..operators import (
@@ -48,27 +48,25 @@ class Fourier:
     accounting for the Hermitian symmetry of the real FFT.
     """
 
-    kx_global: np.ndarray = field(init=False)
     kx: Array = field(init=False)
-    kz_global: np.ndarray = field(init=False)
     kz: Array = field(init=False)
     k_metric: Array = field(init=False)
     k2: Array = field(init=False)
     k2_is_zero: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        self.kx_global = np.array(
-            real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
-        )
+        kx_vals = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
         self.kx = jax.device_put(
-            jnp.array(self.kx_global).reshape([1, -1, 1]),
+            jnp.asarray(kx_vals, dtype=sharding.float_type).reshape(
+                [1, -1, 1]
+            ),
             sharding.spec_scalar_shard,
         )
-        self.kz_global = np.array(
-            complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
-        )
+        kz_vals = complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
         self.kz = jax.device_put(
-            jnp.array(self.kz_global).reshape([-1, 1, 1]),
+            jnp.asarray(kz_vals, dtype=sharding.float_type).reshape(
+                [-1, 1, 1]
+            ),
             sharding.no_shard,
         )
 
@@ -161,111 +159,6 @@ def integrate_scalar_in_y(scalar_data: Array, ys: Array) -> Array:
     return jnp.sum(panels)
 
 
-class IMMChunker:
-    """Chunked IMM precomputation for ``make_array_from_callback``.
-
-    Lazily computes and caches per-shard IMM operator blocks
-    so that only the local ``(kz, kx)`` slice is built on each
-    device.
-    """
-
-    def __init__(
-        self,
-        ys_arr: np.ndarray,
-        kx_global: np.ndarray,
-        kz_global: np.ndarray,
-        p: int,
-        dt: float,
-        c: float,
-        nu: float,
-        D1_arr: np.ndarray,
-        D2_arr: np.ndarray,
-        backend: str = "banded",
-    ) -> None:
-        """
-        Parameters
-        ----------
-        ys_arr:
-            Wall-normal grid points, shape ``(Ny,)``.
-        kx_global:
-            All streamwise wavenumbers, shape ``(Nkx,)``.
-        kz_global:
-            All spanwise wavenumbers, shape ``(Nkz,)``.
-        p:
-            Finite-difference accuracy order.
-        dt:
-            Time step.
-        c:
-            Implicitness parameter (0.5 for CN).
-        nu:
-            Kinematic viscosity ``1/Re``.
-        D1_arr:
-            First-derivative matrix, shape ``(Ny, Ny)``.
-        D2_arr:
-            Second-derivative matrix, shape ``(Ny, Ny)``.
-        backend:
-            Either ``"banded"`` (default) or ``"dense"``.  Controls
-            whether ``precompute_imm`` emits LAPACK-packed banded LU
-            factors or full dense ``Lk``, ``Hk``, ``Hk_minus``.
-        """
-        self.ys_arr = ys_arr
-        self.kx_global = kx_global
-        self.kz_global = kz_global
-        self.p = p
-        self.dt = dt
-        self.c = c
-        self.nu = nu
-        self.D1_arr = D1_arr
-        self.D2_arr = D2_arr
-        self.backend = backend
-        self.cache: dict[tuple[int, int, int, int], dict[str, np.ndarray]] = {}
-
-    def get_chunk(self, indices: tuple[slice, ...], key: str) -> np.ndarray:
-        """Return one shard of the precomputed operator *key*.
-
-        Called by ``jax.make_array_from_callback``.
-        *indices* contains per-axis slices identifying the
-        shard.  Results are cached so repeated calls for
-        different keys reuse the same precomputation.
-
-        Parameters
-        ----------
-        indices:
-            Per-axis shard slices from JAX.
-            ``indices[0]`` slices axis 0 (kz),
-            ``indices[1]`` slices axis 1 (kx).
-        key:
-            Operator name.  Under ``backend="banded"``:
-            ``"Lk_ab"``, ``"Lk_piv"``, ``"Hk_ab"``, ``"Hk_piv"``.
-            Under ``backend="dense"``: ``"Lk"``, ``"Hk"``,
-            ``"Hk_minus"``.  Homogeneous IMM data (``p1..q2``,
-            ``M_inv``) is no longer produced here; it is derived
-            on-device in :class:`CartesianFlow` from the GPU
-            operator factors.
-        """
-        slice_kz, slice_kx = indices[0], indices[1]
-        cache_key = (
-            slice_kz.start,
-            slice_kz.stop,
-            slice_kx.start,
-            slice_kx.stop,
-        )
-        if cache_key not in self.cache:
-            self.cache[cache_key] = precompute_imm(
-                y=self.ys_arr,
-                kx_vals=self.kx_global[slice_kx],
-                kz_vals=self.kz_global[slice_kz],
-                p=self.p,
-                dt=self.dt,
-                c=self.c,
-                nu=self.nu,
-                D1=self.D1_arr,
-                D2=self.D2_arr,
-                backend=self.backend,
-            )
-        return self.cache[cache_key][key]
-
-
 @jax.jit
 def _lu_solve(lu_pivots: tuple[Array, Array], b: Array) -> Array:
     """Batched LU solve across 2D (k_z, k_x) Fourier modes."""
@@ -321,75 +214,6 @@ class DenseJAXSolver:
                 (self.lu, self.piv), rhs
             )
         return _lu_solve((self.lu, self.piv), rhs)
-
-
-def _pack_banded(A: np.ndarray, kl: int, ku: int) -> np.ndarray:
-    """Pack a dense `$(N_y, N_y)$` matrix into LAPACK ``ab`` format.
-
-    Output shape ``(2*kl + ku + 1, Ny)``, suitable for ``dgbtrf``.
-    The leading ``kl`` rows are reserved for fill-in during the
-    LU factorisation and are left zero on input.  Within the
-    remaining ``kl + ku + 1`` rows, entry `$A_{ij}$` is stored at
-    ``ab[kl + ku + i - j, j]`` for
-    `$\\max(0, j-k_u) \\le i \\le \\min(N_y-1, j+k_l)$`.
-
-    Parameters
-    ----------
-    A:
-        Dense banded matrix, shape ``(Ny, Ny)``.
-    kl, ku:
-        Lower and upper bandwidths.
-
-    Returns
-    -------
-    :
-        LAPACK-ab-packed matrix, shape ``(2*kl + ku + 1, Ny)``.
-    """
-    Ny = A.shape[0]
-    ab = np.zeros((2 * kl + ku + 1, Ny), dtype=A.dtype)
-    for j in range(Ny):
-        i_lo = max(0, j - ku)
-        i_hi = min(Ny - 1, j + kl)
-        for i in range(i_lo, i_hi + 1):
-            ab[kl + ku + i - j, j] = A[i, j]
-    return ab
-
-
-def _banded_lu_numpy(
-    A: np.ndarray, kl: int, ku: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Factor a dense banded matrix via LAPACK ``dgbtrf`` (CPU-only).
-
-    Partial pivoting is applied.  SciPy's LAPACK wrapper returns
-    0-based pivot indices (despite Fortran convention), which is what
-    our device-side scan expects.
-
-    Parameters
-    ----------
-    A:
-        Dense banded matrix, shape ``(Ny, Ny)``.
-    kl, ku:
-        Lower and upper bandwidths.
-
-    Returns
-    -------
-    ab:
-        Packed LU factors, shape ``(2*kl + ku + 1, Ny)``.  `L` and
-        `U` share the packed storage; the first ``kl`` rows hold
-        fill-in produced by pivoting.
-    ipiv:
-        Pivot indices, shape ``(Ny,)``, int32, 0-based.  At step
-        ``j``, row ``j`` was swapped with row ``ipiv[j]``.
-    """
-    ab = _pack_banded(A, kl, ku)
-    (gbtrf,) = get_lapack_funcs(("gbtrf",), (ab,))
-    lu, piv, info = gbtrf(ab, kl, ku, overwrite_ab=True)
-    if info != 0:
-        raise ValueError(f"dgbtrf failed with info={info}")
-    # SciPy's LAPACK wrapper returns 0-based pivot indices already
-    # (despite the Fortran-level routine using 1-based indexing), so
-    # no conversion is needed.
-    return lu, piv.astype(np.int32)
 
 
 def _banded_solve_device(
@@ -483,10 +307,10 @@ def _banded_solve_device(
 class PerModeBandedOperator:
     """Per-mode banded LU cache in LAPACK ``ab`` packing.
 
-    Stores the partial-pivoted LU factors produced on the CPU by
-    ``dgbtrf`` (one matrix per Fourier mode pair ``(kz, kx)``) on
-    device, alongside the pivot indices.  The bandwidth is derived
-    from the ab-row count under the invariant
+    Stores the partial-pivoted LU factors produced on the GPU by
+    :func:`_banded_lu_factor_batched` (one matrix per Fourier mode
+    pair ``(kz, kx)``) alongside the pivot indices.  The bandwidth
+    is derived from the ab-row count under the invariant
     ``ab.shape[-2] == 3*p + 1`` with ``kl == ku == p``.
 
     ``solve`` forwards the RHS (real or complex) directly to
@@ -534,239 +358,353 @@ class PerModeBandedOperator:
         return per_mode(self.ab, self.ipiv, rhs)
 
 
-def build_Lk_neumann(k2: float, D1: np.ndarray, D2: np.ndarray) -> np.ndarray:
-    """Build the Laplacian operator `$D_2 - k^2 I$` with Neumann BCs.
+# ── GPU IMM operator builders (direct ab packing, no dense matrix) ──
 
-    Boundary rows are replaced by the corresponding rows of D1 to
-    encode Neumann (`$\\partial p/\\partial y = \\dots$`) conditions
-    for the pressure Poisson equation.
 
-    For the mean mode `$k^2 = 0$`, the first row is instead replaced
-    by `$(1, 0, \\dots, 0)$` to pin `$p_0 = 0$`, since the pure-Neumann
-    problem is singular (pressure determined up to a constant).
+def _ab_index_map(Ny: int, p: int) -> tuple[Array, Array, Array, Array, Array]:
+    """Precompute the `(r, j) -> dense i` index map for ab packing.
+
+    With ``kl = ku = p``, the LAPACK banded ``ab`` format stores
+    entry `$A_{i,j}$` at position ``ab[kl + ku + i - j, j]``.  For a
+    given ab position ``(r, j)``, the corresponding dense row is
+    ``i = r + j - (kl + ku)``.  This helper builds that inverse
+    map (shape ``(3p + 1, Ny)``) plus the `$i$`-range mask and its
+    clipped form for safe advanced indexing.
+
+    Returns
+    -------
+    r_idx:
+        Column vector of ab row indices, shape ``(3p + 1, 1)``.
+    j_idx:
+        Row vector of dense column indices, shape ``(1, Ny)``.
+    i_idx:
+        Dense row indices `$i = r + j - (k_l + k_u)$`, shape
+        ``(3p + 1, Ny)``.  Can be negative or `$\\ge N_y$`; use
+        ``in_range`` to mask.
+    in_range:
+        Boolean mask ``(i_idx >= 0) & (i_idx < Ny)``.
+    i_clip:
+        ``i_idx`` clipped to ``[0, Ny - 1]``, safe to feed into
+        advanced indexing into a ``(Ny, Ny)`` matrix.
+    """
+    kl = ku = p
+    ab_rows = 2 * kl + ku + 1
+    r_idx = jnp.arange(ab_rows)[:, None]
+    j_idx = jnp.arange(Ny)[None, :]
+    i_idx = r_idx + j_idx - (kl + ku)
+    in_range = (i_idx >= 0) & (i_idx < Ny)
+    i_clip = jnp.clip(i_idx, 0, Ny - 1)
+    return r_idx, j_idx, i_idx, in_range, i_clip
+
+
+def _build_Lk_ab_gpu(
+    D1: Array, D2: Array, k2: Array, k2_is_zero: Array, p: int
+) -> Array:
+    """Build `$L_k$` directly in LAPACK ab-packed form on the GPU.
+
+    `$L_k$` is the Neumann-modified Laplacian
+    `$D_2 - k^2 I$` with the wall rows replaced by `$D_1$` rows to
+    encode Neumann boundary conditions, except that the `$k^2 = 0$`
+    mean mode pins `$p_0 = 0$` by setting row 0 to
+    `$(1, 0, \\dots, 0)$` (the pure-Neumann problem is singular).
+
+    No dense `$(N_y, N_y)$` or `$(N_{kz}, N_{kx}, N_y, N_y)$`
+    intermediate is materialised: each ``ab`` entry is computed
+    directly from `$D_1$`, `$D_2$`, and `$k^2$` via a precomputed
+    `$(r, j) \\to i$` index map.
 
     Parameters
     ----------
+    D1:
+        First-derivative matrix, shape ``(Ny, Ny)``.
+    D2:
+        Second-derivative matrix, shape ``(Ny, Ny)``.
     k2:
-        Squared horizontal wavenumber `$k_x^2 + k_z^2$`.
-    D1, D2:
-        Derivative matrices, shape ``(Ny, Ny)``.
+        Squared horizontal wavenumber, shape ``(Nkz, Nkx, 1)``.
+    k2_is_zero:
+        Mean-mode boolean mask, shape ``(Nkz, Nkx, 1)``.
+    p:
+        Finite-difference order (``kl = ku = p``).
 
     Returns
     -------
     :
-        Modified Laplacian operator, shape ``(Ny, Ny)``.
+        LAPACK ab-packed `$L_k$`, shape ``(Nkz, Nkx, 3p + 1, Ny)``,
+        kx-sharded (axis 1).
     """
-    Ny = D2.shape[0]
-    L = D2 - k2 * np.eye(Ny)
+    Ny = D2.shape[-1]
+    kl = ku = p
+    r_idx, j_idx, i_idx, in_range, i_clip = _ab_index_map(Ny, p)
 
-    if k2 == 0.0:
-        # Pin p[0] = 0 for the singular mean mode
-        L[0, :] = 0.0
-        L[0, 0] = 1.0
-        L[-1, :] = D1[-1, :]
-    else:
-        L[0, :] = D1[0, :]  # Neumann at bottom wall
-        L[-1, :] = D1[-1, :]  # Neumann at top wall
+    # Interior contribution: Lk[i, j] = D2[i, j] - k2 * delta_{i, j}.
+    j_bcast = jnp.broadcast_to(j_idx, i_idx.shape)
+    D2_ab = jnp.where(in_range, D2[i_clip, j_bcast], 0.0)
+    is_main_diag = (r_idx == kl + ku).astype(D2.dtype)
 
-    return L
+    # Shape plan:
+    # - D2_ab:        (3p+1, Ny)       -> [None, None, :, :]
+    # - k2:           (Nkz, Nkx, 1)    -> [..., None] => (Nkz, Nkx, 1, 1)
+    # - is_main_diag: (3p+1, 1)        -> [None, None, :, :]
+    ab_interior = (
+        D2_ab[None, None, :, :]
+        - k2[..., None] * is_main_diag[None, None, :, :]
+    )
+
+    # Boundary-row overwrites: dense row 0 and Ny-1 are not D2-based.
+    is_row_0 = i_idx == 0  # (3p+1, Ny)
+    is_row_Nm1 = i_idx == (Ny - 1)  # (3p+1, Ny)
+
+    D1_row_0 = D1[0, j_bcast]  # (3p+1, Ny) — D1[0, :] broadcast over rows
+    D1_row_Nm1 = D1[-1, j_bcast]
+    pin_row = (j_bcast == 0).astype(D2.dtype)  # (3p+1, Ny)
+
+    row0_val = jnp.where(
+        k2_is_zero[..., None],
+        pin_row[None, None, :, :],
+        D1_row_0[None, None, :, :],
+    )
+
+    ab = jnp.where(is_row_0[None, None, :, :], row0_val, ab_interior)
+    ab = jnp.where(
+        is_row_Nm1[None, None, :, :],
+        D1_row_Nm1[None, None, :, :],
+        ab,
+    )
+
+    return jax.lax.with_sharding_constraint(ab, sharding.spec_dy_op_shard)
 
 
-def build_Hk_dirichlet(
-    k2: float, D2: np.ndarray, dt: float, c: float, nu: float
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build the Helmholtz operators with Dirichlet BCs for velocity.
+def _build_Hk_ab_gpu(
+    D2: Array, k2: Array, dt: float, c: float, nu: float, p: int
+) -> Array:
+    """Build `$H_k$` directly in LAPACK ab-packed form on the GPU.
 
-    Returns both `$H_k = (1/\\Delta t) I - c \\nu (D_2 - k^2 I)$` (implicit)
-    and `$H_k^- = (1/\\Delta t) I + (1-c) \\nu (D_2 - k^2 I)$` (explicit).
-    Boundary rows are replaced by identity rows to encode no-slip
-    conditions `$u|_{\\mathrm{wall}} = 0$`.
+    `$H_k = (1/\\Delta t) I - c \\nu (D_2 - k^2 I)$` with identity
+    boundary rows (no-slip Dirichlet).  No dense intermediate.
 
     Parameters
     ----------
-    k2:
-        Squared horizontal wavenumber.
     D2:
         Second-derivative matrix, shape ``(Ny, Ny)``.
+    k2:
+        Squared horizontal wavenumber, shape ``(Nkz, Nkx, 1)``.
     dt:
         Time step.
     c:
         Implicitness parameter (0.5 = Crank-Nicolson).
     nu:
         Kinematic viscosity `$1/\\mathrm{Re}$`.
-
-    Returns
-    -------
-    Hk:
-        Implicit Helmholtz operator, shape ``(Ny, Ny)``.
-    Hk_minus:
-        Explicit Helmholtz operator, shape ``(Ny, Ny)``.
-    """
-    Ny = D2.shape[0]
-    Lk_raw = D2 - k2 * np.eye(Ny)  # without BC modification
-
-    Hk = (1.0 / dt) * np.eye(Ny) - c * nu * Lk_raw
-    Hk_minus = (1.0 / dt) * np.eye(Ny) + (1.0 - c) * nu * Lk_raw
-
-    # Dirichlet BCs: u|_wall = 0
-    for H in (Hk, Hk_minus):
-        H[0, :] = 0.0
-        H[0, 0] = 1.0
-        H[-1, :] = 0.0
-        H[-1, -1] = 1.0
-
-    return Hk, Hk_minus
-
-
-def precompute_imm(
-    y: np.ndarray,
-    kx_vals: np.ndarray,
-    kz_vals: np.ndarray,
-    p: int,
-    dt: float,
-    c: float,
-    nu: float,
-    D1: np.ndarray | None = None,
-    D2: np.ndarray | None = None,
-    backend: str = "banded",
-) -> dict[str, np.ndarray]:
-    """Full offline precomputation for the influence-matrix method.
-
-    Builds D1, D2 (if not provided), and then loops over all Fourier mode
-    pairs `$(k_z, k_x)$` to construct the per-mode operators and IMM data.
-
-    Output layout: ``[i_kz, i_kx, ...]``, matching the spectral array
-    layout ``(Nkz, Nkx, Ny)``.  All returned arrays are real
-    (``float64``), following the proof in the IMM reference document.
-
-    The ``backend`` switch controls how the per-mode `$L_k$` and
-    `$H_k$` operators are exposed:
-
-    - ``"banded"`` (default): factored once on the CPU via LAPACK
-      ``dgbtrf`` with `$k_l = k_u = p$`, returned as LAPACK-packed
-      ``ab`` factors of shape ``(3p + 1, Ny)`` plus 0-based pivots.
-      Memory use is `$O(N_y)$` per mode rather than `$O(N_y^2)$`.
-    - ``"dense"``: returns the full `$N_y \\times N_y$` `$L_k$`,
-      `$H_k$`, and explicit `$H_k^-$` matrices (legacy, for parity
-      checks against the banded path).
-
-    Parameters
-    ----------
-    y:
-        Wall-normal grid points, shape ``(Ny,)``.
-    kx_vals:
-        Streamwise wavenumber values, shape ``(Nkx,)``.
-    kz_vals:
-        Spanwise wavenumber values, shape ``(Nkz,)``.
     p:
-        Finite-difference accuracy order.  Doubles as the
-        half-bandwidth of `$L_k$` and `$H_k$` (``kl = ku = p``).
-    dt:
-        Time step.
-    c:
-        Implicitness parameter.
-    nu:
-        Kinematic viscosity `$1/\\mathrm{Re}$`.
-    D1:
-        Optional precomputed first-derivative matrix.
-    D2:
-        Optional precomputed second-derivative matrix.
-    backend:
-        ``"banded"`` (default) or ``"dense"``.
+        Finite-difference order (``kl = ku = p``).
 
     Returns
     -------
     :
-        Dictionary with keys.  ``"D1"`` and ``"D2"`` (the derivative
-        matrices, ``(Ny, Ny)``) are always present.  The remaining
-        keys depend on the backend, and in both cases are limited to
-        the per-mode operator factors — the homogeneous IMM data
-        (``p1, p2, v1, v2, q1, q2``) and ``M_inv`` are derived
-        on-device in :class:`CartesianFlow` from the already-factored
-        GPU operator, so the CPU avoids a second dense LU that would
-        otherwise be discarded.
-
-        Under ``backend="banded"``:
-
-        - ``"Lk_ab"``: LAPACK-packed `$L_k$` LU factors,
-          ``(Nkz, Nkx, 3p + 1, Ny)``.
-        - ``"Lk_piv"``: `$L_k$` pivot indices (0-based),
-          ``(Nkz, Nkx, Ny)`` int32.
-        - ``"Hk_ab"``, ``"Hk_piv"``: same for `$H_k$`.
-
-        Under ``backend="dense"``:
-
-        - ``"Lk"``: Neumann-modified Laplacian, ``(Nkz, Nkx, Ny, Ny)``.
-        - ``"Hk"``: implicit Helmholtz, ``(Nkz, Nkx, Ny, Ny)``.
-        - ``"Hk_minus"``: explicit Helmholtz,
-          ``(Nkz, Nkx, Ny, Ny)``.
+        LAPACK ab-packed `$H_k$`, shape ``(Nkz, Nkx, 3p + 1, Ny)``,
+        kx-sharded (axis 1).
     """
-    if backend not in {"banded", "dense"}:
-        raise ValueError(
-            f"backend must be 'banded' or 'dense', got {backend!r}"
-        )
+    Ny = D2.shape[-1]
+    kl = ku = p
+    r_idx, j_idx, i_idx, in_range, i_clip = _ab_index_map(Ny, p)
 
-    Ny = len(y)
-    Nkz = len(kz_vals)
-    Nkx = len(kx_vals)
+    # Interior: Hk[i, j] = (1/dt + c*nu*k2) delta_{i,j} - c*nu*D2[i, j].
+    j_bcast = jnp.broadcast_to(j_idx, i_idx.shape)
+    D2_ab = jnp.where(in_range, D2[i_clip, j_bcast], 0.0)
+    is_main_diag = (r_idx == kl + ku).astype(D2.dtype)
 
-    if D1 is None or D2 is None:
-        from ..fd import build_diff_matrices
+    diag_scalar = (1.0 / dt) + c * nu * k2  # (Nkz, Nkx, 1)
+    ab_interior = (
+        diag_scalar[..., None] * is_main_diag[None, None, :, :]
+        - c * nu * D2_ab[None, None, :, :]
+    )
 
-        D1, D2 = build_diff_matrices(y, p)
+    # Boundary-row overwrites: identity rows.  Ab entry at dense
+    # (i, j) is stored at (r, j) with r = kl+ku+i-j; the only
+    # nonzero entries for identity rows are the main diagonal.
+    is_row_0 = i_idx == 0
+    is_row_Nm1 = i_idx == (Ny - 1)
+    identity_row_0 = (j_bcast == 0).astype(D2.dtype)
+    identity_row_Nm1 = (j_bcast == (Ny - 1)).astype(D2.dtype)
 
-    if backend == "banded":
-        kl = ku = p
-        ab_rows = 2 * kl + ku + 1  # = 3p + 1
-        Lk_ab_all = np.zeros((Nkz, Nkx, ab_rows, Ny))
-        Hk_ab_all = np.zeros((Nkz, Nkx, ab_rows, Ny))
-        Lk_piv_all = np.zeros((Nkz, Nkx, Ny), dtype=np.int32)
-        Hk_piv_all = np.zeros((Nkz, Nkx, Ny), dtype=np.int32)
+    ab = jnp.where(
+        is_row_0[None, None, :, :],
+        identity_row_0[None, None, :, :],
+        ab_interior,
+    )
+    ab = jnp.where(
+        is_row_Nm1[None, None, :, :],
+        identity_row_Nm1[None, None, :, :],
+        ab,
+    )
 
-        for iz, kz in enumerate(kz_vals):
-            for ix, kx in enumerate(kx_vals):
-                k2 = float(kx**2 + kz**2)
-                Lk = build_Lk_neumann(k2, D1, D2)
-                Hk, _ = build_Hk_dirichlet(k2, D2, dt, c, nu)
-                Lk_ab, Lk_piv = _banded_lu_numpy(Lk, kl, ku)
-                Hk_ab, Hk_piv = _banded_lu_numpy(Hk, kl, ku)
-                Lk_ab_all[iz, ix] = Lk_ab
-                Lk_piv_all[iz, ix] = Lk_piv
-                Hk_ab_all[iz, ix] = Hk_ab
-                Hk_piv_all[iz, ix] = Hk_piv
+    return jax.lax.with_sharding_constraint(ab, sharding.spec_dy_op_shard)
 
-        return {
-            "D1": D1,
-            "D2": D2,
-            "Lk_ab": Lk_ab_all,
-            "Lk_piv": Lk_piv_all,
-            "Hk_ab": Hk_ab_all,
-            "Hk_piv": Hk_piv_all,
-        }
 
-    # Dense backend: the operator matrices only.  The GPU
-    # :class:`DenseJAXSolver` built from these factors does the LU
-    # once on-device; homogeneous data and ``M_inv`` are then derived
-    # on-device using that factorisation.
-    Lk_all = np.zeros((Nkz, Nkx, Ny, Ny))
-    Hk_all = np.zeros((Nkz, Nkx, Ny, Ny))
-    Hk_minus_all = np.zeros((Nkz, Nkx, Ny, Ny))
+def _build_Lk_dense_gpu(
+    D1: Array, D2: Array, k2: Array, k2_is_zero: Array
+) -> Array:
+    """Build the Neumann-BC Laplacian `$L_k$` in dense form on GPU.
 
-    for iz, kz in enumerate(kz_vals):
-        for ix, kx in enumerate(kx_vals):
-            k2 = float(kx**2 + kz**2)
-            Lk_all[iz, ix] = build_Lk_neumann(k2, D1, D2)
-            Hk, Hk_minus = build_Hk_dirichlet(k2, D2, dt, c, nu)
-            Hk_all[iz, ix] = Hk
-            Hk_minus_all[iz, ix] = Hk_minus
+    Used only by the ``"dense"`` solver backend; allocates
+    `$(N_{kz}, N_{kx}, N_y, N_y)$`.  No CPU path.
 
-    return {
-        "D1": D1,
-        "D2": D2,
-        "Lk": Lk_all,
-        "Hk": Hk_all,
-        "Hk_minus": Hk_minus_all,
-    }
+    Parameters / returns follow :func:`_build_Lk_ab_gpu`, but the
+    output is the full dense operator.
+    """
+    Ny = D2.shape[-1]
+    eye = jnp.eye(Ny, dtype=D2.dtype)
+    # Lk_interior[..., i, j] = D2[i, j] - k2 * delta_{i, j}
+    Lk = D2[None, None, :, :] - k2[..., None] * eye
+
+    # Row 0: D1[0, :] for k2 != 0; pin row [1, 0, ..., 0] for k2 == 0.
+    # k2_is_zero is (Nkz, Nkx, 1); `jnp.where` broadcasts the (Ny,)
+    # branches along the last axis to give (Nkz, Nkx, Ny).
+    pin = eye[0, :]  # (Ny,)
+    row_0 = jnp.where(k2_is_zero, pin, D1[0, :])
+    Lk = Lk.at[..., 0, :].set(row_0)
+
+    # Row -1: D1[-1, :] for all modes.
+    Lk = Lk.at[..., -1, :].set(D1[-1, :])
+
+    return jax.lax.with_sharding_constraint(Lk, sharding.spec_dy_op_shard)
+
+
+def _build_Hk_dense_gpu(
+    D2: Array, k2: Array, dt: float, c: float, nu: float
+) -> tuple[Array, Array]:
+    """Build dense `$H_k$` and `$H_k^-$` on GPU (dense backend only).
+
+    Returns both the implicit operator
+    `$H_k = (1/\\Delta t) I - c \\nu (D_2 - k^2 I)$` and the
+    explicit one `$H_k^- = (1/\\Delta t) I + (1-c) \\nu (D_2 - k^2 I)$`,
+    each with identity wall rows for no-slip Dirichlet BCs.
+    """
+    Ny = D2.shape[-1]
+    eye = jnp.eye(Ny, dtype=D2.dtype)
+    Lk_raw = D2[None, None, :, :] - k2[..., None] * eye
+
+    Hk = (1.0 / dt) * eye - c * nu * Lk_raw
+    Hk_minus = (1.0 / dt) * eye + (1.0 - c) * nu * Lk_raw
+
+    # Dirichlet identity rows.
+    zero_row = jnp.zeros(Ny, dtype=D2.dtype)
+    e_0 = zero_row.at[0].set(1.0)
+    e_Nm1 = zero_row.at[-1].set(1.0)
+    Hk = Hk.at[..., 0, :].set(e_0).at[..., -1, :].set(e_Nm1)
+    Hk_minus = Hk_minus.at[..., 0, :].set(e_0).at[..., -1, :].set(e_Nm1)
+
+    Hk = jax.lax.with_sharding_constraint(Hk, sharding.spec_dy_op_shard)
+    Hk_minus = jax.lax.with_sharding_constraint(
+        Hk_minus, sharding.spec_dy_op_shard
+    )
+    return Hk, Hk_minus
+
+
+# ── GPU banded LU factorisation (LAPACK-compatible) ──────────────────
+
+
+def _banded_lu_factor_mode(
+    ab: Array, kl: int, ku: int
+) -> tuple[Array, Array]:
+    """Single-mode banded LU with partial pivoting (LAPACK-compatible).
+
+    Equivalent to LAPACK ``dgbtrf`` on one `$N_y \\times N_y$`
+    matrix in LAPACK ab packing.  The factorisation runs as a
+    ``lax.scan`` of length `$N_y$`; at each column *j* a small
+    `$(k_l + 1, k_l + k_u + 1)$` dense *window* is extracted from a
+    `$k_l + k_u + 1$`-wide dynamic slice of ``ab``, partial-pivoted,
+    row-swapped, and Gauss-eliminated, then written back.
+
+    The window corresponds to dense rows `$[j, j + k_l]$` and dense
+    columns `$[j, j + k_l + k_u]$` — exactly the entries touched by
+    one step of ``dgbtrf``.  Because the LAPACK packing stores
+    dense row *i* along the diagonal ``ab[kl + ku + i - j, j]``,
+    the window is a parallelogram inside ``ab_window``, and is
+    reshaped into a rectangle via the compile-time index map
+    ``W[r, c] = ab_window[kl + ku - c + r, c]``.
+
+    To keep the dynamic slice width fixed near the right edge of
+    ``ab``, the input is zero-padded by ``kl + ku`` columns on the
+    right before the scan and trimmed back afterwards.  Those
+    padding columns can absorb harmless writes from the last
+    ``kl + ku`` steps because dense rows beyond `$N_y - 1$` are
+    zero by construction, so the pivot stays on the true diagonal
+    and the elimination is a no-op there.
+
+    Parameters
+    ----------
+    ab:
+        Input banded matrix in LAPACK ab packing, shape
+        ``(2 kl + ku + 1, Ny)``.
+    kl, ku:
+        Lower and upper bandwidths (``kl == ku == p`` in our use).
+
+    Returns
+    -------
+    ab:
+        LU factors in LAPACK ab packing (same shape and layout as
+        the input), with ``L`` below and ``U`` on and above the
+        diagonal.
+    ipiv:
+        0-based pivot indices, shape ``(Ny,)`` int32.  At step
+        ``j``, dense row ``j`` was swapped with dense row
+        ``ipiv[j]``; ``ipiv[j] >= j`` always.
+    """
+    Ny = ab.shape[-1]
+    window_cols = kl + ku + 1
+    window_rows = kl + 1
+    r_win = jnp.arange(window_rows)[:, None]
+    c_win = jnp.arange(window_cols)[None, :]
+    win_ab_row = kl + ku - c_win + r_win
+    win_c = jnp.broadcast_to(c_win, win_ab_row.shape)
+
+    ab = jnp.pad(ab, [(0, 0), (0, kl + ku)])
+    ipiv = jnp.zeros(Ny, dtype=jnp.int32)
+
+    def step(
+        carry: tuple[Array, Array], j: Array
+    ) -> tuple[tuple[Array, Array], None]:
+        ab, ipiv = carry
+        ab_win = lax.dynamic_slice_in_dim(ab, j, window_cols, axis=-1)
+        # Rectangular view of the (kl+1) x (kl+ku+1) parallelogram.
+        W = ab_win[win_ab_row, win_c]
+
+        # Partial pivot on column 0 of W (dense column j).
+        r_best = jnp.argmax(jnp.abs(W[:, 0])).astype(jnp.int32)
+        ipiv = ipiv.at[j].set(j.astype(jnp.int32) + r_best)
+
+        # Swap dense rows j and j + r_best inside the window.
+        row_0 = W[0]
+        row_best = W[r_best]
+        W = W.at[0].set(row_best).at[r_best].set(row_0)
+
+        # Multipliers, then eliminate the sub-diagonal of column 0
+        # across the remaining window columns.
+        pivot = W[0, 0]
+        mult = W[1:, 0] / pivot
+        W = W.at[1:, 0].set(mult)
+        W = W.at[1:, 1:].add(-mult[:, None] * W[0, 1:][None, :])
+
+        ab_win = ab_win.at[win_ab_row, win_c].set(W)
+        ab = lax.dynamic_update_slice_in_dim(ab, ab_win, j, axis=-1)
+        return (ab, ipiv), None
+
+    (ab, ipiv), _ = lax.scan(step, (ab, ipiv), jnp.arange(Ny))
+    return ab[:, :Ny], ipiv
+
+
+@partial(jax.jit, static_argnames=("kl", "ku"))
+def _banded_lu_factor_batched(
+    ab: Array, kl: int, ku: int
+) -> tuple[Array, Array]:
+    """Batch :func:`_banded_lu_factor_mode` over `$(N_{kz}, N_{kx})$`.
+
+    ``jax.vmap(jax.vmap(...))`` preserves the kx-sharding of the
+    input ab on axis 1, so each device factorises only its local
+    modes.
+    """
+    factor_one = lambda a: _banded_lu_factor_mode(a, kl, ku)  # noqa: E731
+    return jax.vmap(jax.vmap(factor_one))(ab)
 
 
 # ── CartesianFlow base dataclass ─────────────────────────────────────────
@@ -811,9 +749,19 @@ class CartesianFlow:
         """Build CGL grid, FD matrices, and IMM operators.
 
         Constructs the Chebyshev-Gauss-Lobatto grid for
-        the wall-normal coordinate ``y`` in ``[-1, 1]``,
-        FD matrices D1 and D2, and all per-mode
-        IMM operators via ``IMMChunker``.
+        the wall-normal coordinate ``y`` in ``[-1, 1]``, FD
+        matrices ``D1`` and ``D2``, and all per-mode IMM
+        operators directly on the device.  No CPU LU or chunked
+        host->device copy is involved: under the banded backend,
+        ``Lk`` and ``Hk`` are assembled straight into LAPACK
+        ab-packed form via :func:`_build_Lk_ab_gpu` /
+        :func:`_build_Hk_ab_gpu` and factorised by
+        :func:`_banded_lu_factor_batched`; under the dense backend
+        they are built as full `$(N_y, N_y)$` blocks via
+        :func:`_build_Lk_dense_gpu` / :func:`_build_Hk_dense_gpu`
+        and factorised by :class:`DenseJAXSolver`.  Homogeneous
+        IMM data (``p1..q2``, ``M_inv``) is derived from the GPU
+        operator by :meth:`_derive_imm_homogeneous_data`.
         """
         self.ys = -jnp.cos(
             jnp.arange(params.res.ny, dtype=sharding.float_type)
@@ -821,84 +769,55 @@ class CartesianFlow:
             / (params.res.ny - 1)
         )
 
+        # ``build_diff_matrices`` stays on the CPU: the ``(Ny, Ny)``
+        # derivative matrices are tiny, used once for the mean-mode
+        # gauge fix and the IMM operator construction, and copied to
+        # the GPU immediately below.
         D1, D2 = build_diff_matrices(np.array(self.ys), params.res.fd_order)
-        self.D1 = jax.device_put(jnp.array(D1), sharding.no_shard)
-        self.D2 = jax.device_put(jnp.array(D2), sharding.no_shard)
+        self.D1 = jax.device_put(jnp.asarray(D1), sharding.no_shard)
+        self.D2 = jax.device_put(jnp.asarray(D2), sharding.no_shard)
         self.D1_bnd = jax.device_put(
-            jnp.array(D1[[0, -1], :]), sharding.no_shard
+            jnp.asarray(D1[[0, -1], :]), sharding.no_shard
         )
         self.D2_bnd = jax.device_put(
-            jnp.array(D2[[0, -1], :]), sharding.no_shard
+            jnp.asarray(D2[[0, -1], :]), sharding.no_shard
         )
 
-        kx_global = fourier.kx_global
-        kz_global = fourier.kz_global
-        Nkz = len(kz_global)
-        Nkx = len(kx_global)
+        Nkz = params.res.nz - 1
+        Nkx = params.res.nx // 2
         Ny = params.res.ny
 
-        chunker = IMMChunker(
-            ys_arr=np.array(self.ys),
-            kx_global=kx_global,
-            kz_global=kz_global,
-            p=params.res.fd_order,
-            dt=params.step.dt,
-            c=params.step.implicitness,
-            nu=1.0 / params.phys.re,
-            D1_arr=D1,
-            D2_arr=D2,
-            backend=params.solver.backend,
-        )
+        p = params.res.fd_order
+        dt = params.step.dt
+        c = params.step.implicitness
+        nu = 1.0 / params.phys.re
 
-        # Build the per-mode operator cache (banded LU factors or dense
-        # matrices) from the CPU precompute.  The *homogeneous* IMM
-        # fields (``p1..q2``, ``M_inv``) are intentionally *not* fetched
-        # from the chunker — they are derived on-device below from the
-        # same factorisation that the GPU operator uses anyway, which
-        # avoids a second dense LU per mode on the CPU.
         if params.solver.backend == "banded":
-            p = params.res.fd_order
-            ab_rows = 3 * p + 1  # = 2*kl + ku + 1 with kl = ku = p
-            Lk_ab = jax.make_array_from_callback(
-                (Nkz, Nkx, ab_rows, Ny),
-                sharding.spec_dy_op_shard,
-                lambda idx: chunker.get_chunk(idx, "Lk_ab"),
+            # Build Lk, Hk directly in LAPACK ab packing (no dense
+            # `(Nkz, Nkx, Ny, Ny)` intermediate anywhere) and factorise
+            # with the pure-JAX banded LU scan.
+            Lk_ab = _build_Lk_ab_gpu(
+                self.D1, self.D2, fourier.k2, fourier.k2_is_zero, p
             )
-            Lk_piv = jax.make_array_from_callback(
-                (Nkz, Nkx, Ny),
-                sharding.spec_imm_corr_shard,
-                lambda idx: chunker.get_chunk(idx, "Lk_piv"),
-            )
-            Hk_ab = jax.make_array_from_callback(
-                (Nkz, Nkx, ab_rows, Ny),
-                sharding.spec_dy_op_shard,
-                lambda idx: chunker.get_chunk(idx, "Hk_ab"),
-            )
-            Hk_piv = jax.make_array_from_callback(
-                (Nkz, Nkx, Ny),
-                sharding.spec_imm_corr_shard,
-                lambda idx: chunker.get_chunk(idx, "Hk_piv"),
-            )
+            Hk_ab = _build_Hk_ab_gpu(self.D2, fourier.k2, dt, c, nu, p)
+            Lk_ab, Lk_piv = _banded_lu_factor_batched(Lk_ab, p, p)
+            Hk_ab, Hk_piv = _banded_lu_factor_batched(Hk_ab, p, p)
             self.Lk_op = PerModeBandedOperator(ab=Lk_ab, ipiv=Lk_piv)
             self.Hk_op = PerModeBandedOperator(ab=Hk_ab, ipiv=Hk_piv)
         else:
-            self.Lk = jax.make_array_from_callback(
-                (Nkz, Nkx, Ny, Ny),
-                sharding.spec_dy_op_shard,
-                lambda idx: chunker.get_chunk(idx, "Lk"),
+            # Dense backend: parity/reference path.  The full
+            # `(Nkz, Nkx, Ny, Ny)` matrices only ever materialise
+            # under this branch.
+            Lk_dense = _build_Lk_dense_gpu(
+                self.D1, self.D2, fourier.k2, fourier.k2_is_zero
             )
-            Hk = jax.make_array_from_callback(
-                (Nkz, Nkx, Ny, Ny),
-                sharding.spec_dy_op_shard,
-                lambda idx: chunker.get_chunk(idx, "Hk"),
+            Hk_dense, Hk_minus_dense = _build_Hk_dense_gpu(
+                self.D2, fourier.k2, dt, c, nu
             )
-            self.Hk_minus = jax.make_array_from_callback(
-                (Nkz, Nkx, Ny, Ny),
-                sharding.spec_dy_op_shard,
-                lambda idx: chunker.get_chunk(idx, "Hk_minus"),
-            )
-            self.Lk_op = DenseJAXSolver(self.Lk)
-            self.Hk_op = DenseJAXSolver(Hk)
+            self.Lk = Lk_dense
+            self.Hk_minus = Hk_minus_dense
+            self.Lk_op = DenseJAXSolver(Lk_dense)
+            self.Hk_op = DenseJAXSolver(Hk_dense)
 
         self._derive_imm_homogeneous_data(Nkz, Nkx, Ny)
 
