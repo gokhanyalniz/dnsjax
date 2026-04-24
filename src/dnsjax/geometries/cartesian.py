@@ -235,9 +235,13 @@ class IMMChunker:
             ``indices[0]`` slices axis 0 (kz),
             ``indices[1]`` slices axis 1 (kx).
         key:
-            Operator name (e.g. ``"Lk_ab"``, ``"Hk_piv"``,
-            ``"p1"``, ``"M_inv"``; under ``backend="dense"``
-            also ``"Lk"``, ``"Hk"``, ``"Hk_minus"``).
+            Operator name.  Under ``backend="banded"``:
+            ``"Lk_ab"``, ``"Lk_piv"``, ``"Hk_ab"``, ``"Hk_piv"``.
+            Under ``backend="dense"``: ``"Lk"``, ``"Hk"``,
+            ``"Hk_minus"``.  Homogeneous IMM data (``p1..q2``,
+            ``M_inv``) is no longer produced here; it is derived
+            on-device in :class:`CartesianFlow` from the GPU
+            operator factors.
         """
         slice_kz, slice_kx = indices[0], indices[1]
         cache_key = (
@@ -296,16 +300,26 @@ class DenseJAXSolver:
     def solve(self, rhs: Array) -> Array:
         """Batched LU solve.
 
+        A leading batch axis (e.g. the 3 velocity components) is
+        supported transparently by an extra ``vmap`` that leaves the
+        cached LU factors untouched; this lets ``_imm_iteration`` do
+        one stack-and-solve instead of three sequential kernel calls.
+
         Parameters
         ----------
         rhs:
-            Right-hand side, shape ``(Nkz, Nkx, Ny)``.
+            Right-hand side, shape ``(Nkz, Nkx, Ny)`` or
+            ``(C, Nkz, Nkx, Ny)`` for a leading batch axis ``C``.
 
         Returns
         -------
         :
             Solution array, same shape as *rhs*.
         """
+        if rhs.ndim == 4:
+            return jax.vmap(_lu_solve, in_axes=(None, 0))(
+                (self.lu, self.piv), rhs
+            )
         return _lu_solve((self.lu, self.piv), rhs)
 
 
@@ -417,6 +431,13 @@ def _banded_solve_device(
     Ny = ab.shape[-1]
     kuu = kl + ku
 
+    # Hoist the sub- and super-diagonal slabs out of the scan bodies:
+    # each column j then reduces to a single `lower[:, j]` / `upper[:, j]`
+    # index op instead of `ab[:, j]` plus an inner `dynamic_slice_in_dim`.
+    lower = ab[kl + ku + 1 :, :]  # shape (kl, Ny), sub-diagonal L entries
+    upper = ab[:kuu, :]  # shape (kuu, Ny), super-diagonal U entries
+    diag = ab[kl + ku, :]  # shape (Ny,), U pivots
+
     # Forward elimination with row padding at the end.
     b = jnp.concatenate([b, jnp.zeros(kl, dtype=b.dtype)], axis=-1)
 
@@ -426,9 +447,7 @@ def _banded_solve_device(
         bpj = b_carry[pj]
         b_carry = b_carry.at[j].set(bpj)
         b_carry = b_carry.at[pj].set(bj)
-        # Sub-diagonal L entries for column j live at
-        # ab[kl + ku + 1 : kl + ku + 1 + kl, j]
-        lams = lax.dynamic_slice_in_dim(ab[:, j], kl + ku + 1, kl, axis=-1)
+        lams = lower[:, j]
         block = lax.dynamic_slice_in_dim(b_carry, j + 1, kl, axis=-1)
         block = block - lams * bpj
         b_carry = lax.dynamic_update_slice_in_dim(
@@ -445,12 +464,9 @@ def _banded_solve_device(
     def bwd_step(b_carry: Array, j_rev: Array) -> tuple[Array, None]:
         j = Ny - 1 - j_rev
         j_padded = j + kuu
-        diag = ab[kl + ku, j]
-        xj = b_carry[j_padded] / diag
+        xj = b_carry[j_padded] / diag[j]
         b_carry = b_carry.at[j_padded].set(xj)
-        # Super-diagonal U entries for column j span
-        # ab[0 : kuu, j], in order of increasing i in [j-kuu, j-1].
-        ups = lax.dynamic_slice_in_dim(ab[:, j], 0, kuu, axis=-1)
+        ups = upper[:, j]
         block = lax.dynamic_slice_in_dim(b_carry, j_padded - kuu, kuu, axis=-1)
         block = block - ups * xj
         b_carry = lax.dynamic_update_slice_in_dim(
@@ -487,11 +503,17 @@ class PerModeBandedOperator:
     def solve(self, rhs: Array) -> Array:
         """Batched banded solve across ``(kz, kx)`` modes.
 
+        A leading batch axis (e.g. the 3 velocity components) is
+        supported transparently by an extra ``vmap`` that leaves the
+        packed LU factors untouched, so the same ``ab`` / ``ipiv``
+        are reused across all batched RHSs.
+
         Parameters
         ----------
         rhs:
-            Right-hand side, shape ``(Nkz, Nkx, Ny)``.  May be
-            real or complex; the dtype is preserved.
+            Right-hand side, shape ``(Nkz, Nkx, Ny)`` or
+            ``(C, Nkz, Nkx, Ny)`` for a leading batch axis ``C``.
+            May be real or complex; the dtype is preserved.
 
         Returns
         -------
@@ -504,7 +526,12 @@ class PerModeBandedOperator:
         def solve_one(ab: Array, ipiv: Array, b: Array) -> Array:
             return _banded_solve_device(ab, ipiv, b, kl, ku)
 
-        return jax.vmap(jax.vmap(solve_one))(self.ab, self.ipiv, rhs)
+        per_mode = jax.vmap(jax.vmap(solve_one))
+        if rhs.ndim == 4:
+            return jax.vmap(per_mode, in_axes=(None, None, 0))(
+                self.ab, self.ipiv, rhs
+            )
+        return per_mode(self.ab, self.ipiv, rhs)
 
 
 def build_Lk_neumann(k2: float, D1: np.ndarray, D2: np.ndarray) -> np.ndarray:
@@ -650,21 +677,16 @@ def precompute_imm(
     Returns
     -------
     :
-        Dictionary with keys (always present):
+        Dictionary with keys.  ``"D1"`` and ``"D2"`` (the derivative
+        matrices, ``(Ny, Ny)``) are always present.  The remaining
+        keys depend on the backend, and in both cases are limited to
+        the per-mode operator factors — the homogeneous IMM data
+        (``p1, p2, v1, v2, q1, q2``) and ``M_inv`` are derived
+        on-device in :class:`CartesianFlow` from the already-factored
+        GPU operator, so the CPU avoids a second dense LU that would
+        otherwise be discarded.
 
-        - ``"D1"``, ``"D2"``: derivative matrices, ``(Ny, Ny)``.
-        - ``"p1"``, ``"p2"``: homogeneous pressure solutions,
-          ``(Nkz, Nkx, Ny)``.
-        - ``"v1"``, ``"v2"``: homogeneous wall-normal velocity
-          solutions, ``(Nkz, Nkx, Ny)``.
-        - ``"q1"``, ``"q2"``: homogeneous velocity potentials
-          `$q_i = H_k^{-1} p_i$`, ``(Nkz, Nkx, Ny)``.
-          The horizontal homogeneous responses are
-          `$u^{(i)} = -i k_x q_i$`, `$w^{(i)} = -i k_z q_i$`.
-        - ``"M_inv"``: inverted influence matrix,
-          ``(Nkz, Nkx, 2, 2)``.
-
-        Backend-specific keys.  Under ``backend="banded"``:
+        Under ``backend="banded"``:
 
         - ``"Lk_ab"``: LAPACK-packed `$L_k$` LU factors,
           ``(Nkz, Nkx, 3p + 1, Ny)``.
@@ -693,16 +715,6 @@ def precompute_imm(
 
         D1, D2 = build_diff_matrices(y, p)
 
-    # IMM homogeneous data — needed for both backends.
-    p1_all = np.zeros((Nkz, Nkx, Ny))
-    p2_all = np.zeros((Nkz, Nkx, Ny))
-    v1_all = np.zeros((Nkz, Nkx, Ny))
-    v2_all = np.zeros((Nkz, Nkx, Ny))
-    q1_all = np.zeros((Nkz, Nkx, Ny))
-    q2_all = np.zeros((Nkz, Nkx, Ny))
-    M_inv_all = np.zeros((Nkz, Nkx, 2, 2))
-
-    # Backend-specific operator storage.
     if backend == "banded":
         kl = ku = p
         ab_rows = 2 * kl + ku + 1  # = 3p + 1
@@ -710,114 +722,51 @@ def precompute_imm(
         Hk_ab_all = np.zeros((Nkz, Nkx, ab_rows, Ny))
         Lk_piv_all = np.zeros((Nkz, Nkx, Ny), dtype=np.int32)
         Hk_piv_all = np.zeros((Nkz, Nkx, Ny), dtype=np.int32)
-    else:
-        Lk_all = np.zeros((Nkz, Nkx, Ny, Ny))
-        Hk_all = np.zeros((Nkz, Nkx, Ny, Ny))
-        Hk_minus_all = np.zeros((Nkz, Nkx, Ny, Ny))
 
-    e1 = np.zeros(Ny)
-    e1[0] = 1.0
-    e2 = np.zeros(Ny)
-    e2[-1] = 1.0
-
-    for iz, kz in enumerate(kz_vals):
-        for ix, kx in enumerate(kx_vals):
-            k2 = float(kx**2 + kz**2)
-
-            # Laplacian with Neumann BCs (pressure)
-            Lk = build_Lk_neumann(k2, D1, D2)
-
-            # Helmholtz with Dirichlet BCs (velocity)
-            Hk, Hk_minus = build_Hk_dirichlet(k2, D2, dt, c, nu)
-
-            # Homogeneous pressure solutions `$L_k p_i = e_i$`.
-            p1 = np.linalg.solve(Lk, e1)
-            p2 = np.linalg.solve(Lk, e2)
-            p1_all[iz, ix] = p1
-            p2_all[iz, ix] = p2
-
-            # Homogeneous velocity solutions `$v_i = H_k^{-1}
-            # (-D_1 p_i)$` with zero Dirichlet BCs (no-slip).
-            rhs1 = -D1 @ p1
-            rhs2 = -D1 @ p2
-            rhs1[0] = 0.0
-            rhs1[-1] = 0.0
-            rhs2[0] = 0.0
-            rhs2[-1] = 0.0
-            v1 = np.linalg.solve(Hk, rhs1)
-            v2 = np.linalg.solve(Hk, rhs2)
-            v1_all[iz, ix] = v1
-            v2_all[iz, ix] = v2
-
-            # Homogeneous velocity potentials `$q_i = H_k^{-1} p_i$`
-            # with zero Dirichlet BCs. The horizontal homogeneous
-            # responses factor as `$u^{(i)} = -i k_x q_i$` and
-            # `$w^{(i)} = -i k_z q_i$` because the scalar `$-i k_x$`,
-            # `$-i k_z$` commute with `$H_k^{-1}$` per mode.
-            q_rhs1 = p1.copy()
-            q_rhs2 = p2.copy()
-            q_rhs1[0] = 0.0
-            q_rhs1[-1] = 0.0
-            q_rhs2[0] = 0.0
-            q_rhs2[-1] = 0.0
-            q1 = np.linalg.solve(Hk, q_rhs1)
-            q2 = np.linalg.solve(Hk, q_rhs2)
-            q1_all[iz, ix] = q1
-            q2_all[iz, ix] = q2
-
-            # Influence matrix `$M_{ji} = (D_1 v_i)|_{\\text{wall}_j}$`:
-            # wall divergence produced by adding `$p_i$` to the pressure.
-            M = np.zeros((2, 2))
-            M[0, 0] = D1[0, :] @ v1
-            M[0, 1] = D1[0, :] @ v2
-            M[1, 0] = D1[-1, :] @ v1
-            M[1, 1] = D1[-1, :] @ v2
-
-            if k2 == 0.0:
-                # Mean mode: `$p_1 \\equiv 1$` (constant, gauge freedom),
-                # so column 0 of M is zero and M is singular. Zero the
-                # `$p_1$` contribution and use only the top-wall
-                # residual via `$p_2$`.
-                M_inv_all[iz, ix] = np.array(
-                    [[0.0, 0.0], [0.0, 1.0 / M[1, 1]]]
-                )
-            else:
-                M_inv_all[iz, ix] = np.linalg.inv(M)
-
-            # Operator caches: banded LU factors or dense copies.
-            if backend == "banded":
+        for iz, kz in enumerate(kz_vals):
+            for ix, kx in enumerate(kx_vals):
+                k2 = float(kx**2 + kz**2)
+                Lk = build_Lk_neumann(k2, D1, D2)
+                Hk, _ = build_Hk_dirichlet(k2, D2, dt, c, nu)
                 Lk_ab, Lk_piv = _banded_lu_numpy(Lk, kl, ku)
                 Hk_ab, Hk_piv = _banded_lu_numpy(Hk, kl, ku)
                 Lk_ab_all[iz, ix] = Lk_ab
                 Lk_piv_all[iz, ix] = Lk_piv
                 Hk_ab_all[iz, ix] = Hk_ab
                 Hk_piv_all[iz, ix] = Hk_piv
-            else:
-                Lk_all[iz, ix] = Lk
-                Hk_all[iz, ix] = Hk
-                Hk_minus_all[iz, ix] = Hk_minus
 
-    out: dict[str, np.ndarray] = {
+        return {
+            "D1": D1,
+            "D2": D2,
+            "Lk_ab": Lk_ab_all,
+            "Lk_piv": Lk_piv_all,
+            "Hk_ab": Hk_ab_all,
+            "Hk_piv": Hk_piv_all,
+        }
+
+    # Dense backend: the operator matrices only.  The GPU
+    # :class:`DenseJAXSolver` built from these factors does the LU
+    # once on-device; homogeneous data and ``M_inv`` are then derived
+    # on-device using that factorisation.
+    Lk_all = np.zeros((Nkz, Nkx, Ny, Ny))
+    Hk_all = np.zeros((Nkz, Nkx, Ny, Ny))
+    Hk_minus_all = np.zeros((Nkz, Nkx, Ny, Ny))
+
+    for iz, kz in enumerate(kz_vals):
+        for ix, kx in enumerate(kx_vals):
+            k2 = float(kx**2 + kz**2)
+            Lk_all[iz, ix] = build_Lk_neumann(k2, D1, D2)
+            Hk, Hk_minus = build_Hk_dirichlet(k2, D2, dt, c, nu)
+            Hk_all[iz, ix] = Hk
+            Hk_minus_all[iz, ix] = Hk_minus
+
+    return {
         "D1": D1,
         "D2": D2,
-        "p1": p1_all,
-        "p2": p2_all,
-        "v1": v1_all,
-        "v2": v2_all,
-        "q1": q1_all,
-        "q2": q2_all,
-        "M_inv": M_inv_all,
+        "Lk": Lk_all,
+        "Hk": Hk_all,
+        "Hk_minus": Hk_minus_all,
     }
-    if backend == "banded":
-        out["Lk_ab"] = Lk_ab_all
-        out["Lk_piv"] = Lk_piv_all
-        out["Hk_ab"] = Hk_ab_all
-        out["Hk_piv"] = Hk_piv_all
-    else:
-        out["Lk"] = Lk_all
-        out["Hk"] = Hk_all
-        out["Hk_minus"] = Hk_minus_all
-    return out
 
 
 # ── CartesianFlow base dataclass ─────────────────────────────────────────
@@ -901,44 +850,12 @@ class CartesianFlow:
             backend=params.solver.backend,
         )
 
-        # Homogeneous IMM data — always needed.
-        self.p1 = jax.make_array_from_callback(
-            (Nkz, Nkx, Ny),
-            sharding.spec_imm_corr_shard,
-            lambda idx: chunker.get_chunk(idx, "p1"),
-        )
-        self.p2 = jax.make_array_from_callback(
-            (Nkz, Nkx, Ny),
-            sharding.spec_imm_corr_shard,
-            lambda idx: chunker.get_chunk(idx, "p2"),
-        )
-        self.v1 = jax.make_array_from_callback(
-            (Nkz, Nkx, Ny),
-            sharding.spec_imm_corr_shard,
-            lambda idx: chunker.get_chunk(idx, "v1"),
-        )
-        self.v2 = jax.make_array_from_callback(
-            (Nkz, Nkx, Ny),
-            sharding.spec_imm_corr_shard,
-            lambda idx: chunker.get_chunk(idx, "v2"),
-        )
-        self.q1 = jax.make_array_from_callback(
-            (Nkz, Nkx, Ny),
-            sharding.spec_imm_corr_shard,
-            lambda idx: chunker.get_chunk(idx, "q1"),
-        )
-        self.q2 = jax.make_array_from_callback(
-            (Nkz, Nkx, Ny),
-            sharding.spec_imm_corr_shard,
-            lambda idx: chunker.get_chunk(idx, "q2"),
-        )
-        self.M_inv = jax.make_array_from_callback(
-            (Nkz, Nkx, 2, 2),
-            sharding.spec_dy_op_shard,
-            lambda idx: chunker.get_chunk(idx, "M_inv"),
-        )
-
-        # Operator caches: LAPACK-packed banded LU or legacy dense.
+        # Build the per-mode operator cache (banded LU factors or dense
+        # matrices) from the CPU precompute.  The *homogeneous* IMM
+        # fields (``p1..q2``, ``M_inv``) are intentionally *not* fetched
+        # from the chunker — they are derived on-device below from the
+        # same factorisation that the GPU operator uses anyway, which
+        # avoids a second dense LU per mode on the CPU.
         if params.solver.backend == "banded":
             p = params.res.fd_order
             ab_rows = 3 * p + 1  # = 2*kl + ku + 1 with kl = ku = p
@@ -982,6 +899,76 @@ class CartesianFlow:
             )
             self.Lk_op = DenseJAXSolver(self.Lk)
             self.Hk_op = DenseJAXSolver(Hk)
+
+        self._derive_imm_homogeneous_data(Nkz, Nkx, Ny)
+
+    def _derive_imm_homogeneous_data(
+        self, Nkz: int, Nkx: int, Ny: int
+    ) -> None:
+        """Fill ``p1..q2`` and ``M_inv`` on-device from the GPU operator.
+
+        Both backends converge here once :attr:`Lk_op` and :attr:`Hk_op`
+        are in place.  Nothing else on the CPU needs to do another LU
+        solve — everything below runs against the already-factored
+        device operator.
+
+        The mean mode (`$k^2 = 0$`) is handled analytically: ``M`` has a
+        zero first column there (`$p_1 \\equiv 1$` is a pressure gauge),
+        so the 2x2 inverse is replaced by `$[[0, 0], [0, 1/M_{11}]]$`
+        as in the original CPU path.  The ``jnp.where`` around
+        ``safe_det`` keeps the regular branch NaN-free before the
+        selection happens.
+        """
+        # Homogeneous pressure solutions `$L_k p_i = e_i$`.
+        e1_b = jnp.zeros(
+            (Nkz, Nkx, Ny),
+            dtype=sharding.float_type,
+            out_sharding=sharding.spec_imm_corr_shard,
+        ).at[..., 0].set(1.0)
+        e2_b = jnp.zeros(
+            (Nkz, Nkx, Ny),
+            dtype=sharding.float_type,
+            out_sharding=sharding.spec_imm_corr_shard,
+        ).at[..., -1].set(1.0)
+        self.p1 = self.Lk_op.solve(e1_b)
+        self.p2 = self.Lk_op.solve(e2_b)
+
+        # Homogeneous velocity solutions `$v_i = H_k^{-1} (-D_1 p_i)$`
+        # with zero Dirichlet BCs (no-slip).
+        rhs_v1 = -jnp.einsum("ij, zxj -> zxi", self.D1, self.p1)
+        rhs_v2 = -jnp.einsum("ij, zxj -> zxi", self.D1, self.p2)
+        rhs_v1 = rhs_v1.at[..., 0].set(0.0).at[..., -1].set(0.0)
+        rhs_v2 = rhs_v2.at[..., 0].set(0.0).at[..., -1].set(0.0)
+        self.v1 = self.Hk_op.solve(rhs_v1)
+        self.v2 = self.Hk_op.solve(rhs_v2)
+
+        # Homogeneous velocity potentials `$q_i = H_k^{-1} p_i$` with
+        # zero Dirichlet BCs.
+        q_rhs1 = self.p1.at[..., 0].set(0.0).at[..., -1].set(0.0)
+        q_rhs2 = self.p2.at[..., 0].set(0.0).at[..., -1].set(0.0)
+        self.q1 = self.Hk_op.solve(q_rhs1)
+        self.q2 = self.Hk_op.solve(q_rhs2)
+
+        # Influence matrix `$M_{ji} = (D_1 v_i)|_{\\text{wall}_j}$`.
+        M00 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], self.v1)
+        M01 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], self.v2)
+        M10 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], self.v1)
+        M11 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], self.v2)
+
+        is_mean = fourier.k2_is_zero[..., 0]
+        det = M00 * M11 - M01 * M10
+        safe_det = jnp.where(is_mean, 1.0, det)
+        inv_00 = jnp.where(is_mean, 0.0, M11 / safe_det)
+        inv_01 = jnp.where(is_mean, 0.0, -M01 / safe_det)
+        inv_10 = jnp.where(is_mean, 0.0, -M10 / safe_det)
+        inv_11 = jnp.where(is_mean, 1.0 / M11, M00 / safe_det)
+        self.M_inv = jnp.stack(
+            [
+                jnp.stack([inv_00, inv_01], axis=-1),
+                jnp.stack([inv_10, inv_11], axis=-1),
+            ],
+            axis=-2,
+        )
 
 
 # ── Spectral transform aliases ───────────────────────────────────────────
@@ -1194,15 +1181,19 @@ def _imm_iteration(
     k2 = fourier_.k2
     k2_is_zero = fourier_.k2_is_zero
 
+    # Horizontal spectral-derivative factors, reused across every stage.
+    ikx = 1j * fourier_.kx
+    ikz = 1j * fourier_.kz
+
     # d_hat^n (discrete divergence at time n; ~0 after first step).
     dy_v_n = jnp.einsum("ij, zxj -> zxi", flow_.D1, v_n)
-    d_hat_n = 1j * fourier_.kx * u_n + dy_v_n + 1j * fourier_.kz * w_n
+    d_hat_n = ikx * u_n + dy_v_n + ikz * w_n
 
     # Stage 1: interior pressure Poisson RHS.
     dy_Nv_j = jnp.einsum("ij, zxj -> zxi", flow_.D1, Nv_j)
     dy_Nv_n = jnp.einsum("ij, zxj -> zxi", flow_.D1, Nv_n)
-    div_Nj = 1j * fourier_.kx * Nu_j + dy_Nv_j + 1j * fourier_.kz * Nw_j
-    div_Nn = 1j * fourier_.kx * Nu_n + dy_Nv_n + 1j * fourier_.kz * Nw_n
+    div_Nj = ikx * Nu_j + dy_Nv_j + ikz * Nw_j
+    div_Nn = ikx * Nu_n + dy_Nv_n + ikz * Nw_n
 
     if params.solver.backend == "banded":
         Lk_d = _lk_matvec(d_hat_n, flow_.D2, flow_.D1_bnd, k2, k2_is_zero)
@@ -1216,31 +1207,31 @@ def _imm_iteration(
     pP = flow_.Lk_op.solve(f_hat_P)
 
     # Stage 3: Helmholtz solves for all three velocity components
-    # against the particular pressure p_P (zero Dirichlet BCs).
-    dx_pP = 1j * fourier_.kx * pP
+    # against the particular pressure p_P (zero Dirichlet BCs).  The
+    # three components share the same :math:`H_k` operator per mode,
+    # so the explicit matvec, the wall-row zeroing, and the final
+    # solve are all batched over the component axis — one kernel
+    # launch each instead of three sequential ones.
+    dx_pP = ikx * pP
     dy_pP = jnp.einsum("ij, zxj -> zxi", flow_.D1, pP)
-    dz_pP = 1j * fourier_.kz * pP
+    dz_pP = ikz * pP
+    grad_pP = jnp.stack([dx_pP, dy_pP, dz_pP])  # (3, Nkz, Nkx, Ny)
 
     if params.solver.backend == "banded":
-        Hku_n = _hk_minus_matvec(u_n, flow_.D2, k2, dt, c, nu)
-        Hkv_n = _hk_minus_matvec(v_n, flow_.D2, k2, dt, c, nu)
-        Hkw_n = _hk_minus_matvec(w_n, flow_.D2, k2, dt, c, nu)
+        Hk_minus_stack = jax.vmap(
+            _hk_minus_matvec,
+            in_axes=(0, None, None, None, None, None),
+        )(velocity_n, flow_.D2, k2, dt, c, nu)
     else:
-        Hku_n = _matvec_4d(flow_.Hk_minus, u_n)
-        Hkv_n = _matvec_4d(flow_.Hk_minus, v_n)
-        Hkw_n = _matvec_4d(flow_.Hk_minus, w_n)
+        Hk_minus_stack = jax.vmap(_matvec_4d, in_axes=(None, 0))(
+            flow_.Hk_minus, velocity_n
+        )
 
-    Ru = Hku_n - dx_pP + c * Nu_j + (1 - c) * Nu_n
-    Rv = Hkv_n - dy_pP + c * Nv_j + (1 - c) * Nv_n
-    Rw = Hkw_n - dz_pP + c * Nw_j + (1 - c) * Nw_n
+    R_stack = Hk_minus_stack - grad_pP + c * nonlin_j + (1 - c) * nonlin_n
+    R_stack = R_stack.at[..., 0].set(0.0).at[..., -1].set(0.0)
 
-    Ru = Ru.at[..., 0].set(0.0).at[..., -1].set(0.0)
-    Rv = Rv.at[..., 0].set(0.0).at[..., -1].set(0.0)
-    Rw = Rw.at[..., 0].set(0.0).at[..., -1].set(0.0)
-
-    u_arb = flow_.Hk_op.solve(Ru)
-    v_arb = flow_.Hk_op.solve(Rv)
-    w_arb = flow_.Hk_op.solve(Rw)
+    arb_stack = flow_.Hk_op.solve(R_stack)
+    u_arb, v_arb, w_arb = arb_stack[0], arb_stack[1], arb_stack[2]
 
     # Stage 4: wall divergence residual. At walls u=w=0 (no-slip),
     # so div u|_wall = D1 v|_wall.
@@ -1265,8 +1256,8 @@ def _imm_iteration(
     # since u^(i) = -ikx q_i and w^(i) = -ikz q_i (the -ikx, -ikz
     # scalar factors commute with Hk linearity per mode).
     q_new = alpha1 * flow_.q1 + alpha2 * flow_.q2
-    u_new = u_arb - 1j * fourier_.kx * q_new
-    w_new = w_arb - 1j * fourier_.kz * q_new
+    u_new = u_arb - ikx * q_new
+    w_new = w_arb - ikz * q_new
 
     velocity_new = jnp.array([u_new, v_new, w_new])
 
