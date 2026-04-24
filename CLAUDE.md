@@ -8,7 +8,7 @@ Do not run the code for runtime testing. You can run `uv run ruff check --fix sr
 
 ## Documentation instructions
 
-Add and update docstrings and comments (in LaTeX for math) for any new code and any changed code. In the future MkDocs will be used with MathJax, escape LaTeX commands apppropriately. Keep documentation lines in code to 79 characters wide.
+Add and update docstrings and comments (in LaTeX for math) for any new code and any changed code. In the future MkDocs will be used with MathJax, escape LaTeX commands apppropriately. Keep documentation lines in code to 79 characters wide. Keep CLAUDE.md up-to-date.
 
 ## Architecture
 

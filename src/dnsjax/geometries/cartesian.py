@@ -12,6 +12,7 @@ Flow-specific modules (e.g. ``flows.plane_couette``) subclass
 functions.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import jax
@@ -217,7 +218,9 @@ class IMMChunker:
         self.D1_arr = D1_arr
         self.D2_arr = D2_arr
         self.backend = backend
-        self.cache: dict[tuple, dict[str, np.ndarray]] = {}
+        self.cache: dict[
+            tuple[int, int, int, int], dict[str, np.ndarray]
+        ] = {}
 
     def get_chunk(self, indices: tuple[slice, ...], key: str) -> np.ndarray:
         """Return one shard of the precomputed operator *key*.
@@ -994,7 +997,7 @@ spec_to_phys = spec_to_phys_2d
 # ── Solver functions (geometry-general) ──────────────────────────────────
 
 
-def init_state(snapshot: str | None, flow: CartesianFlow) -> Array:
+def init_state(snapshot: str | None) -> Array:
     """Initialise the flow state (velocity_spec)."""
     if params.init.start_from_laminar:
         velocity_spec = jnp.zeros(
@@ -1009,9 +1012,7 @@ def init_state(snapshot: str | None, flow: CartesianFlow) -> Array:
         velocity_phys = jax.device_put(
             snapshot_arr, sharding.phys_vector_shard
         )
-        # velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
         velocity_spec = phys_to_spec_2d(velocity_phys)
-        velocity_phys = spec_to_phys_2d(velocity_spec)
 
     else:
         sharding.print("Provide an initial condition.")
@@ -1326,7 +1327,11 @@ def _norm(
 
 def build_cartesian_stepper(
     flow: CartesianFlow,
-) -> tuple:
+) -> tuple[
+    Callable[[Array], tuple[Array, Array, Array]],
+    Callable[[Array, Array, Array], tuple[Array, Array, Array]],
+    Callable[[str | None], Array],
+]:
     """Build time-stepping functions for a Cartesian wall-bounded flow.
 
     Returns ``(predict_and_correct, iterate_correction, init_state_bound)``
@@ -1353,7 +1358,7 @@ def build_cartesian_stepper(
         )
 
     def init_state_bound(snapshot: str | None) -> Array:
-        """Initialize the flow state with bound flow singleton."""
-        return init_state(snapshot, flow)
+        """Initialize the flow state."""
+        return init_state(snapshot)
 
     return predict_and_correct, iterate_correction, init_state_bound

@@ -13,9 +13,9 @@ Flow-specific modules (e.g. ``flows.monochromatic``) subclass
 functions.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any
 
 import jax
 from jax import Array, jit, vmap
@@ -300,12 +300,14 @@ def _correct_component(
 # ── Geometry-general callables for the stepper factory ───────────────────
 
 
-def _curl_fn(state: Array, fourier_: Any) -> Array:
+def _curl_fn(state: Array, fourier_: Fourier) -> Array:
     """Spectral curl with wavenumbers bound from ``fourier``."""
     return curl(state, fourier_.kx, fourier_.ky, fourier_.kz)
 
 
-def _get_rhs(state: Array, fourier_: Any, flow_: Any) -> Array:
+def _get_rhs(
+    state: Array, fourier_: Fourier, flow_: TriplyPeriodicFlow
+) -> Array:
     """Divergence-free RHS: nonlinear term + algebraic pressure projection."""
     nonlin = get_nonlin(
         state,
@@ -329,7 +331,10 @@ def _get_rhs(state: Array, fourier_: Any, flow_: Any) -> Array:
 
 
 def _predict(
-    state: Array, rhs_no_lapl: Array, fourier_: Any, flow_: Any
+    state: Array,
+    rhs_no_lapl: Array,
+    fourier_: Fourier,
+    flow_: TriplyPeriodicFlow,
 ) -> Array:
     """Euler predictor with algebraic Helmholtz inversion."""
     return _predict_component(state, rhs_no_lapl, flow_.ldt_1, flow_.ildt_2)
@@ -340,14 +345,16 @@ def _correct(
     prediction: Array,
     rhs_prev: Array,
     rhs_next: Array,
-    fourier_: Any,
-    flow_: Any,
+    fourier_: Fourier,
+    flow_: TriplyPeriodicFlow,
 ) -> tuple[Array, Array]:
     """Crank-Nicolson corrector with algebraic Helmholtz inversion."""
     return _correct_component(prediction, rhs_prev, rhs_next, flow_.ildt_2)
 
 
-def _norm(correction: Array, fourier_: Any, flow_: Any) -> Array:
+def _norm(
+    correction: Array, fourier_: Fourier, flow_: TriplyPeriodicFlow
+) -> Array:
     """L2 convergence norm."""
     return get_norm(correction, fourier_.k_metric)
 
@@ -355,7 +362,7 @@ def _norm(correction: Array, fourier_: Any, flow_: Any) -> Array:
 # ── Divergence correction ────────────────────────────────────────────────
 
 
-def correct_divergence(state: Array, fourier_: Any, flow_: Any) -> Array:
+def correct_divergence(state: Array, fourier_: Fourier) -> Array:
     """Project the velocity onto the divergence-free subspace."""
     correction = -gradient(
         inverse_laplacian(
@@ -377,9 +384,9 @@ def correct_divergence(state: Array, fourier_: Any, flow_: Any) -> Array:
 
 
 @jit(donate_argnums=0)
-def _correct_velocity_jit(state: Array, fourier_: Any, flow_: Any) -> Array:
+def _correct_velocity_jit(state: Array, fourier_: Fourier) -> Array:
 
-    velocity_corrected = correct_divergence(state, fourier_, flow_)
+    velocity_corrected = correct_divergence(state, fourier_)
 
     velocity_corrected = velocity_corrected.at[sharding.vector_mean_mode].set(
         0, out_sharding=sharding.spec_vector_shard
@@ -393,7 +400,12 @@ def _correct_velocity_jit(state: Array, fourier_: Any, flow_: Any) -> Array:
 
 def build_triply_periodic_stepper(
     flow: TriplyPeriodicFlow,
-) -> tuple:
+) -> tuple[
+    Callable[[Array], tuple[Array, Array, Array]],
+    Callable[[Array, Array, Array], tuple[Array, Array, Array]],
+    Callable[[str | None], Array],
+    Callable[[Array], Array],
+]:
     """Build time-stepping functions for a triply-periodic flow.
 
     Returns ``(predict_and_correct, iterate_correction, init_state_bound,
@@ -428,7 +440,7 @@ def build_triply_periodic_stepper(
     def correct_velocity(
         state: Array,
     ) -> Array:
-        return _correct_velocity_jit(state, fourier, flow)
+        return _correct_velocity_jit(state, fourier)
 
     return (
         predict_and_correct,

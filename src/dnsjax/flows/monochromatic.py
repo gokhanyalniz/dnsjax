@@ -39,13 +39,13 @@ rotated:
 """
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from jax import Array, jit
 from jax import numpy as jnp
 
 from ..bench import timer
 from ..geometries.triply_periodic import (
+    Fourier,
     TriplyPeriodicFlow,
     build_triply_periodic_stepper,
     fourier,
@@ -73,7 +73,6 @@ class MonochromaticFlow(TriplyPeriodicFlow):
     """
 
     _system: str = field(init=False)
-    dy_base_flow: Array = field(init=False)
 
     qf: int = field(init=False)
     force_amplitude: Array = field(init=False)
@@ -81,7 +80,7 @@ class MonochromaticFlow(TriplyPeriodicFlow):
     input_lam: Array = field(init=False)
     dissip_lam: Array = field(init=False)
 
-    forced_modes: tuple = field(init=False)
+    forced_modes: tuple[tuple[int, ...], ...] = field(init=False)
     unit_force: Array = field(init=False)
 
     def __post_init__(self) -> None:
@@ -179,7 +178,6 @@ class MonochromaticFlow(TriplyPeriodicFlow):
             curl_base_flow = curl_base_flow.at[2].multiply(jnp.cos(tilt_rad))
 
         self.base_flow = base_flow
-        self.dy_base_flow = dy_base_flow
         self.curl_base_flow = curl_base_flow
         self.nonlin_base_flow = nonlin_base_flow
 
@@ -256,8 +254,8 @@ predict_and_correct, iterate_correction, init_state, correct_velocity = (
 def get_energy(
     perturbation_energy: Array,
     input: Array,
-    fourier_: Any,
-    flow_: Any,
+    fourier_: Fourier,
+    flow_: MonochromaticFlow,
 ) -> Array:
     """Total kinetic energy"""
     if params.phys.system in monochromatic_systems:
@@ -271,7 +269,10 @@ def get_energy(
 
 
 def get_enstrophy(
-    state: Array, input: Array, fourier_: Any, flow_: Any
+    state: Array,
+    input: Array,
+    fourier_: Fourier,
+    flow_: MonochromaticFlow,
 ) -> Array:
     """Total enstrophy times Re"""
     return (
@@ -285,13 +286,18 @@ def get_enstrophy(
 
 
 def get_dissipation(
-    state: Array, input: Array, fourier_: Any, flow_: Any
+    state: Array,
+    input: Array,
+    fourier_: Fourier,
+    flow_: MonochromaticFlow,
 ) -> Array:
     """Total dissipation rate `$D = \\text{enstrophy} / \\mathrm{Re}$`."""
     return get_enstrophy(state, input, fourier_, flow_) / params.phys.re
 
 
-def get_input(state: Array, fourier_: Any, flow_: Any) -> Array:
+def get_input(
+    state: Array, fourier_: Fourier, flow_: MonochromaticFlow
+) -> Array:
     """Power input from the forcing"""
     return (
         jnp.sum(
@@ -305,7 +311,7 @@ def get_input(state: Array, fourier_: Any, flow_: Any) -> Array:
 
 @jit
 def _get_stats_jit(
-    state: Array, fourier_: Any, flow_: Any
+    state: Array, fourier_: Fourier, flow_: MonochromaticFlow
 ) -> dict[str, Array]:
     """Compute diagnostic statistics: E, I, D, E'."""
     perturbation_energy = get_norm2(state, fourier_.k_metric) / 2

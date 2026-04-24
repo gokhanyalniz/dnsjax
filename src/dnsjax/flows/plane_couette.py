@@ -28,7 +28,6 @@ the walls moving at `$\\pm 1$`.  Its derived quantities:
 """
 
 from dataclasses import dataclass
-from typing import Any
 
 from jax import Array, jit
 from jax import numpy as jnp
@@ -36,6 +35,7 @@ from jax import numpy as jnp
 from ..bench import timer
 from ..geometries.cartesian import (
     CartesianFlow,
+    Fourier,
     build_cartesian_stepper,
     fourier,
     get_norm2,
@@ -100,28 +100,20 @@ predict_and_correct, iterate_correction, init_state = build_cartesian_stepper(
 
 
 # ── Diagnostic statistics ────────────────────────────────────────────────
-#
+
+
 @jit
 def _get_stats_jit(
-    state: Array, fourier_: Any, flow_: Any
+    state: Array, fourier_: Fourier, flow_: PlaneCouetteFlow
 ) -> dict[str, Array]:
     """Compute diagnostic statistics: E'.
 
-    Only the perturbation kinetic energy is currently computed.  The
-    commented-out scaffolding below marks where total-energy, input,
-    and dissipation analogues (present for monochromatic flows) would
-    be wired in once implemented for wall-bounded flows.
+    Only the perturbation kinetic energy is currently computed.
     """
     # Perturbation kinetic energy: `$E' = \\|\\mathbf{u}'\\|^2 / 2$`.
     perturbation_energy = get_norm2(state, fourier_.k_metric, flow_.ys) / 2
-    # input = get_input(state, fourier_, flow_)
-    # dissipation = get_dissipation(state, input, fourier_, flow_)
-    # energy = get_energy(perturbation_energy, input, fourier_, flow_)
 
     stats = {
-        # "E": energy,
-        # "I": input,
-        # "D": dissipation,
         "E'": perturbation_energy,
     }
 

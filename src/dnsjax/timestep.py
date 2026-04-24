@@ -68,8 +68,8 @@ def make_stepper(
     @timer("timestep/predict_and_correct")
     @jit
     def predict_and_correct(
-        state: Array | tuple, *args
-    ) -> tuple[Array | tuple, Array, Array]:
+        state: Array, *args
+    ) -> tuple[Array, Array, Array]:
         """Full predictor-corrector time step (Euler predict + one CN correct).
 
         Computes the RHS at the current velocity, applies the Euler
@@ -96,11 +96,11 @@ def make_stepper(
     @timer("timestep/iterate_correction")
     @jit(donate_argnums=1)
     def iterate_correction(
-        state_prev: Array | tuple,
-        prediction_state: Array | tuple,
+        state_prev: Array,
+        prediction_state: Array,
         rhs_prev: Array,
         *args,
-    ) -> tuple[Array | tuple, Array, Array]:
+    ) -> tuple[Array, Array, Array]:
         """One corrector iteration: recompute RHS, apply CN correction.
 
         **Functional Purity Exception:** The input buffer
