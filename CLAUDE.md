@@ -4,7 +4,7 @@
 
 ## Debugging instructions
 
-Do not run the code for runtime testing. You can run `uv run ruff check --fix src/` for linting and to check code syntax.
+You can run `uv run ruff check --fix` for linting and static checks. For runtime tests, you may run a given flow from its laminar state a few time steps with low resolution on two devices, like: `mpirun -np 2 python -m dnsjax --dist.np 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 9`. The laminar state should time step with a single corrector step, with stepping error of O(-18) or less, and perturbation energy of O(-32) or less.
 
 ## Documentation instructions
 
