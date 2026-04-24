@@ -57,7 +57,7 @@ The pressure Poisson equation with preliminary Neumann boundary conditions is so
 Plane-Couette uses per-mode LU factorizations of the finite-difference operators $L_k$ and $H_k$, one pair per Fourier mode $(k_z, k_x)$. Two storage backends are available through `params.solver.backend`:
 
 - **`banded`** (default): LU factors are kept in LAPACK's banded `ab` packed format, shape $(N_{k_z}, N_{k_x}, 3p+1, N_y)$ with $p$ = `params.res.fd_order`. The $L_k$ and $H_k^-$ actions are rebuilt on the fly from the shared $(N_y, N_y)$ second-derivative matrix $D_2$, so the per-mode matrices themselves are not stored. Total footprint scales as $N_{k_z} \cdot N_{k_x} \cdot (3p+1) \cdot N_y$ — linear in `nx`, linear in `nz`, and **linear in `ny`**.
-- **`dense`**: five $(N_{k_z}, N_{k_x}, N_y, N_y)$ arrays per run ($L_k$, $H_k$, $H_k^-$, and the two LU caches). Total footprint scales as $N_{k_z} \cdot N_{k_x} \cdot N_y^2$ — linear in `nx`, linear in `nz`, **quadratic in `ny`**. Kept as a reference / rollback path.
+- **`dense`**: five $(N_{k_z}, N_{k_x}, N_y, N_y)$ arrays per run ($L_k$, $H_k$, $H_k^-$, and the two LU caches). Total footprint scales as $N_{k_z} \cdot N_{k_x} \cdot N_y^2$ — linear in `nx`, linear in `nz`, **quadratic in `ny`**. Kept as a reference path.
 
 Both backends use $N_{k_z} = $ `nz - 1` and $N_{k_x} = $ `nx // 2`. The factor $\sim N_y / (3p+1)$ saving along `ny` is what lets the banded backend scale to the resolutions needed for wall-bounded turbulence. Concretely, at `nx = nz = 64`, `fd_order = 4`, double precision:
 
