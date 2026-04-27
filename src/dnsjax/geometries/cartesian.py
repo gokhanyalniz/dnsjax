@@ -603,9 +603,7 @@ def _build_Hk_dense_gpu(
 # ── GPU banded LU factorisation (LAPACK-compatible) ──────────────────
 
 
-def _banded_lu_factor_mode(
-    ab: Array, kl: int, ku: int
-) -> tuple[Array, Array]:
+def _banded_lu_factor_mode(ab: Array, kl: int, ku: int) -> tuple[Array, Array]:
     """Single-mode banded LU with partial pivoting (LAPACK-compatible).
 
     Equivalent to LAPACK ``dgbtrf`` on one `$N_y \\times N_y$`
@@ -839,16 +837,24 @@ class CartesianFlow:
         selection happens.
         """
         # Homogeneous pressure solutions `$L_k p_i = e_i$`.
-        e1_b = jnp.zeros(
-            (Nkz, Nkx, Ny),
-            dtype=sharding.float_type,
-            out_sharding=sharding.spec_imm_corr_shard,
-        ).at[..., 0].set(1.0)
-        e2_b = jnp.zeros(
-            (Nkz, Nkx, Ny),
-            dtype=sharding.float_type,
-            out_sharding=sharding.spec_imm_corr_shard,
-        ).at[..., -1].set(1.0)
+        e1_b = (
+            jnp.zeros(
+                (Nkz, Nkx, Ny),
+                dtype=sharding.float_type,
+                out_sharding=sharding.spec_imm_corr_shard,
+            )
+            .at[..., 0]
+            .set(1.0)
+        )
+        e2_b = (
+            jnp.zeros(
+                (Nkz, Nkx, Ny),
+                dtype=sharding.float_type,
+                out_sharding=sharding.spec_imm_corr_shard,
+            )
+            .at[..., -1]
+            .set(1.0)
+        )
         self.p1 = self.Lk_op.solve(e1_b)
         self.p2 = self.Lk_op.solve(e2_b)
 
