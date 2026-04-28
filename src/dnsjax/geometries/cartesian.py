@@ -216,146 +216,174 @@ class DenseJAXSolver:
         return _lu_solve((self.lu, self.piv), rhs)
 
 
-def _banded_solve_device(
-    ab: Array, ipiv: Array, b: Array, kl: int, ku: int
+def _spike_solve(
+    lu: Array,
+    piv: Array,
+    V: Array,
+    W: Array,
+    red_lu: Array,
+    red_piv: Array,
+    rhs: Array,
 ) -> Array:
-    """Device-side solve of `$A x = b$` from LAPACK-packed LU factors.
+    """Solve `$A x = b$` via the SPIKE algorithm, single 3D RHS.
 
-    Equivalent to ``dgbtrs`` for ``trans='N'``.  Forward elimination
-    applies the partial-pivoting row swaps stored in ``ipiv`` and
-    subtracts the ``kl`` sub-diagonal contributions from the next
-    ``kl`` entries of ``b``.  Back substitution divides by the
-    diagonal and subtracts the ``kuu = kl + ku`` super-diagonal
-    contributions from the preceding rows.  Two ``lax.scan``s keep
-    the implementation JIT- and vmap-friendly.
+    The banded operator was partitioned at construction into ``P``
+    block-rows of size ``m = N_y / P`` with bandwidth ``p``.  The
+    spike matrices `$V_i = A_i^{-1} B_i$` and `$W_i = A_i^{-1} C_i$`
+    capture the off-block coupling, and a small reduced system of
+    size ``2 P p`` resolves the spike weights at block boundaries.
 
-    Padding strategy: ``b`` is padded with ``kl`` zero entries after
-    (for forward elim) and ``kuu`` zero entries before (for back
-    sub) so that the per-step ``dynamic_slice_in_dim`` updates are
-    always of fixed width.  Pad-region writes are harmless because
-    the padding is stripped at the end.
+    Stages:
+
+    1. Local solve `$A_i g_i = f_i$` (per-block dense LU solve,
+       parallel across blocks).
+    2. Build the reduced RHS from the top-`p` and bottom-`p` slices
+       of each ``g_i``.
+    3. Reduced solve for the spike weights
+       `$\\alpha = (\\alpha^T_i, \\alpha^B_i)`.
+    4. Reconstruct
+       `$x_i = g_i - V_i \\alpha^T_{i+1} - W_i \\alpha^B_{i-1}$`,
+       with neighbour weights zero at the matrix endpoints.
 
     Parameters
     ----------
-    ab:
-        Packed LU factors for one mode, shape ``(2*kl + ku + 1,
-        Ny)``.
-    ipiv:
-        Pivot indices for one mode, shape ``(Ny,)``, int32, 0-based.
-    b:
-        Right-hand side for one mode, shape ``(Ny,)``, real.
-    kl, ku:
-        Band widths (static).
+    lu, piv:
+        Per-block dense LU factors and pivots,
+        ``(N_{kz}, N_{kx}, P, m, m)`` and ``(N_{kz}, N_{kx}, P, m)``.
+    V, W:
+        Spike matrices ``(N_{kz}, N_{kx}, P, m, p)``.
+    red_lu, red_piv:
+        Dense LU of the `$2 P p \\times 2 P p$` reduced system per
+        ``(kz, kx)`` mode.
+    rhs:
+        Right-hand side, shape ``(N_{kz}, N_{kx}, N_y)``.
 
     Returns
     -------
     :
-        Solution ``x`` with the same shape and dtype as ``b``.
+        Solution `$x$`, same shape and dtype as *rhs*.
     """
-    Ny = ab.shape[-1]
-    kuu = kl + ku
+    P, m = lu.shape[-3], lu.shape[-2]
+    p = V.shape[-1]
+    Ny = P * m
 
-    # Hoist the sub- and super-diagonal slabs out of the scan bodies:
-    # each column j then reduces to a single `lower[:, j]` / `upper[:, j]`
-    # index op instead of `ab[:, j]` plus an inner `dynamic_slice_in_dim`.
-    lower = ab[kl + ku + 1 :, :]  # shape (kl, Ny), sub-diagonal L entries
-    upper = ab[:kuu, :]  # shape (kuu, Ny), super-diagonal U entries
-    diag = ab[kl + ku, :]  # shape (Ny,), U pivots
+    # Stage 1: local solve A_i g_i = f_i in parallel across blocks.
+    rhs_blocks = rhs.reshape(rhs.shape[:-1] + (P, m))
+    g = jax.vmap(jax.vmap(jax.vmap(sla.lu_solve)))((lu, piv), rhs_blocks)
 
-    # Forward elimination with row padding at the end.
-    b = jnp.concatenate([b, jnp.zeros(kl, dtype=b.dtype)], axis=-1)
+    # Stage 2: reduced RHS from g top/bottom slices.
+    g_top = g[..., :p]
+    g_bot = g[..., m - p :]
+    b_red_blocks = jnp.stack([g_top, g_bot], axis=-2)
+    b_red = b_red_blocks.reshape(b_red_blocks.shape[:-3] + (2 * P * p,))
 
-    def fwd_step(b_carry: Array, j: Array) -> tuple[Array, None]:
-        pj = ipiv[j]
-        bj = b_carry[j]
-        bpj = b_carry[pj]
-        b_carry = b_carry.at[j].set(bpj)
-        b_carry = b_carry.at[pj].set(bj)
-        lams = lower[:, j]
-        block = lax.dynamic_slice_in_dim(b_carry, j + 1, kl, axis=-1)
-        block = block - lams * bpj
-        b_carry = lax.dynamic_update_slice_in_dim(
-            b_carry, block, j + 1, axis=-1
-        )
-        return b_carry, None
+    # Stage 3: reduced solve.
+    alpha = jax.vmap(jax.vmap(sla.lu_solve))((red_lu, red_piv), b_red)
 
-    b, _ = lax.scan(fwd_step, b, jnp.arange(Ny - 1))
-    b = b[:Ny]
+    # Stage 4: extract per-block alpha^T / alpha^B, then shift.
+    alpha_blocks = alpha.reshape(alpha.shape[:-1] + (P, 2, p))
+    alpha_T = alpha_blocks[..., 0, :]
+    alpha_B = alpha_blocks[..., 1, :]
+    zeros_p = jnp.zeros_like(alpha_T[..., :1, :])
+    alpha_T_next = jnp.concatenate([alpha_T[..., 1:, :], zeros_p], axis=-2)
+    alpha_B_prev = jnp.concatenate([zeros_p, alpha_B[..., :-1, :]], axis=-2)
 
-    # Back substitution with row padding at the front.
-    b = jnp.concatenate([jnp.zeros(kuu, dtype=b.dtype), b], axis=-1)
+    # Stage 5: x_i = g_i - V_i alpha^T(i+1) - W_i alpha^B(i-1).
+    V_contrib = jnp.einsum("...irc,...ic->...ir", V, alpha_T_next)
+    W_contrib = jnp.einsum("...irc,...ic->...ir", W, alpha_B_prev)
+    x_blocks = g - V_contrib - W_contrib
 
-    def bwd_step(b_carry: Array, j_rev: Array) -> tuple[Array, None]:
-        j = Ny - 1 - j_rev
-        j_padded = j + kuu
-        xj = b_carry[j_padded] / diag[j]
-        b_carry = b_carry.at[j_padded].set(xj)
-        ups = upper[:, j]
-        block = lax.dynamic_slice_in_dim(b_carry, j_padded - kuu, kuu, axis=-1)
-        block = block - ups * xj
-        b_carry = lax.dynamic_update_slice_in_dim(
-            b_carry, block, j_padded - kuu, axis=-1
-        )
-        return b_carry, None
-
-    b, _ = lax.scan(bwd_step, b, jnp.arange(Ny))
-    return b[kuu:]
+    return x_blocks.reshape(x_blocks.shape[:-2] + (Ny,))
 
 
 @register_dataclass_pytree
 @dataclass
 class PerModeBandedOperator:
-    """Per-mode banded LU cache in LAPACK ``ab`` packing.
+    """SPIKE-factored banded operator (band-preserving, GPU-fast).
 
-    Stores the partial-pivoted LU factors produced on the GPU by
-    :func:`_banded_lu_factor_batched` (one matrix per Fourier mode
-    pair ``(kz, kx)``) alongside the pivot indices.  The bandwidth
-    is derived from the ab-row count under the invariant
-    ``ab.shape[-2] == 3*p + 1`` with ``kl == ku == p``.
+    The original `$(N_y, N_y)$` banded operator (bandwidth ``p``) is
+    partitioned at construction into ``P`` contiguous block-rows of
+    size ``m = N_y / P`` (with ``m >= 2 p``) and factored locally via
+    :func:`jax.scipy.linalg.lu_factor` (cuSOLVER-batched dense LU on
+    the small `$(m, m)$` blocks).  Off-block coupling is captured by
+    spike matrices `$V_i = A_i^{-1} B_i$` and `$W_i = A_i^{-1} C_i$`
+    plus a small dense reduced system of size `$2 P p$`, also
+    LU-factored once.
 
-    ``solve`` forwards the RHS (real or complex) directly to
-    :func:`_banded_solve_device`.  Because the scan body only uses
-    real-factor × RHS multiplications and RHS / real divisions, a
-    complex RHS flows through under JAX's mixed-type arithmetic —
-    no real/imag split is needed.  The real-precision LU factors
-    retain their half-memory advantage over complex-typed factors.
+    No `$(N_y, N_y)$` array is ever materialised: per-mode storage
+    is `$O(N_y m + (P p)^2) = O(N_y p)$`.  At solve time the only
+    sequential work is the small reduced solve; the dominant
+    per-block solve and the spike combination are all batched
+    cuBLAS / cuSOLVER calls.
+
+    Attributes
+    ----------
+    lu:
+        Per-block dense LU factors, shape
+        ``(N_{kz}, N_{kx}, P, m, m)``.
+    piv:
+        Per-block pivot indices, shape ``(N_{kz}, N_{kx}, P, m)``.
+    V:
+        Right-spike matrix, shape ``(N_{kz}, N_{kx}, P, m, p)``.
+    W:
+        Left-spike matrix, shape ``(N_{kz}, N_{kx}, P, m, p)``.
+    red_lu:
+        Dense LU of the reduced system, shape
+        ``(N_{kz}, N_{kx}, 2 P p, 2 P p)``.
+    red_piv:
+        Pivots for the reduced LU, shape
+        ``(N_{kz}, N_{kx}, 2 P p)``.
     """
 
-    ab: Array
-    ipiv: Array
+    lu: Array
+    piv: Array
+    V: Array
+    W: Array
+    red_lu: Array
+    red_piv: Array
 
     def solve(self, rhs: Array) -> Array:
-        """Batched banded solve across ``(kz, kx)`` modes.
+        """Batched SPIKE solve across ``(kz, kx)`` modes.
 
         A leading batch axis (e.g. the 3 velocity components) is
         supported transparently by an extra ``vmap`` that leaves the
-        packed LU factors untouched, so the same ``ab`` / ``ipiv``
-        are reused across all batched RHSs.
+        cached factors untouched, so the same ``lu`` / ``V`` / ``W``
+        / reduced LU are reused across all batched RHSs.
 
         Parameters
         ----------
         rhs:
-            Right-hand side, shape ``(Nkz, Nkx, Ny)`` or
-            ``(C, Nkz, Nkx, Ny)`` for a leading batch axis ``C``.
-            May be real or complex; the dtype is preserved.
+            Right-hand side, shape ``(N_{kz}, N_{kx}, N_y)`` or
+            ``(C, N_{kz}, N_{kx}, N_y)`` for a leading batch axis
+            ``C``.  May be real or complex; the dtype is preserved.
 
         Returns
         -------
         :
             Solution array, same shape and dtype as *rhs*.
         """
-        p = (self.ab.shape[-2] - 1) // 3
-        kl = ku = p
-
-        def solve_one(ab: Array, ipiv: Array, b: Array) -> Array:
-            return _banded_solve_device(ab, ipiv, b, kl, ku)
-
-        per_mode = jax.vmap(jax.vmap(solve_one))
         if rhs.ndim == 4:
-            return jax.vmap(per_mode, in_axes=(None, None, 0))(
-                self.ab, self.ipiv, rhs
+            return jax.vmap(
+                _spike_solve,
+                in_axes=(None, None, None, None, None, None, 0),
+            )(
+                self.lu,
+                self.piv,
+                self.V,
+                self.W,
+                self.red_lu,
+                self.red_piv,
+                rhs,
             )
-        return per_mode(self.ab, self.ipiv, rhs)
+        return _spike_solve(
+            self.lu,
+            self.piv,
+            self.V,
+            self.W,
+            self.red_lu,
+            self.red_piv,
+            rhs,
+        )
 
 
 # ── GPU IMM operator builders (direct ab packing, no dense matrix) ──

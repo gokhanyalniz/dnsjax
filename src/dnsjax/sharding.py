@@ -126,6 +126,9 @@ class Sharding:
     # Shards for the influence matrix method
     spec_imm_corr_shard = NamedSharding(mesh, P(None, axis_name, None))
     spec_dy_op_shard = NamedSharding(mesh, P(None, axis_name, None, None))
+    spec_dy_blocks_shard = NamedSharding(
+        mesh, P(None, axis_name, None, None, None)
+    )
     spec_k2_op_shard = NamedSharding(mesh, P(None, axis_name))
 
     if params.res.double_precision:
