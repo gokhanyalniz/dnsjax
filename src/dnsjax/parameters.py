@@ -114,6 +114,12 @@ class Solver(BaseModel):
     # ``"dense"``: full ``Ny x Ny`` LU factors per Fourier mode
     # (legacy path, kept for verification against the banded path).
     backend: Literal["banded", "dense"] = "banded"
+    # Target SPIKE block size `$m$`.  When set, `$P = N_y / m$`.
+    # When ``None`` (default), the block partition that minimises
+    # total per-mode SPIKE storage is chosen automatically.
+    # Use ``scripts/spike_partition_info.py`` to explore the
+    # memory / performance trade-off for a given resolution.
+    spike_block_size: int | None = None
 
 
 class Parameters(BaseModel):

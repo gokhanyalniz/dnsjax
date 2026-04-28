@@ -17,7 +17,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 
-import jax
 from jax import Array, jit, vmap
 from jax import numpy as jnp
 
@@ -57,45 +56,38 @@ class Fourier:
 
     def __post_init__(self) -> None:
         self.kx = (
-            jax.device_put(
+            jnp.asarray(
                 real_harmonics(params.res.nx).reshape([1, 1, -1]),
-                sharding.spec_scalar_shard,
+                out_sharding=sharding.spec_scalar_shard,
             )
             * 2
             * jnp.pi
             / params.geo.lx
         )
         self.kz = (
-            jax.device_put(
+            jnp.asarray(
                 complex_harmonics(params.res.nz).reshape([1, -1, 1]),
-                sharding.no_shard,
+                out_sharding=sharding.no_shard,
             )
             * 2
             * jnp.pi
             / params.geo.lz
         )
         self.ky = (
-            jax.device_put(
+            jnp.asarray(
                 complex_harmonics(params.res.ny).reshape([-1, 1, 1]),
-                sharding.no_shard,
+                out_sharding=sharding.no_shard,
             )
             * 2
             * jnp.pi
             / derived_params.ly
         )
 
-        self.k_metric = jax.device_put(
-            jnp.where(self.kx == 0, 1, 2).astype(sharding.float_type),
-            sharding.spec_scalar_shard,
+        self.k_metric = jnp.where(self.kx == 0, 1, 2).astype(
+            sharding.float_type
         )
-        self.lapl = jax.device_put(
-            -(self.kx**2 + self.ky**2 + self.kz**2),
-            sharding.spec_scalar_shard,
-        )
-        self.inv_lapl = jax.device_put(
-            jnp.where(self.lapl < 0, 1 / self.lapl, 0),
-            sharding.spec_scalar_shard,
-        )
+        self.lapl = -(self.kx**2 + self.ky**2 + self.kz**2)
+        self.inv_lapl = jnp.where(self.lapl < 0, 1 / self.lapl, 0)
 
 
 fourier: Fourier = Fourier()
@@ -245,9 +237,9 @@ def init_state(snapshot: str | None, flow: TriplyPeriodicFlow) -> Array:
         snapshot_arr = jnp.load(snapshot)["velocity_phys"].astype(
             sharding.float_type
         )
-        velocity_phys = jax.device_put(
-            snapshot_arr,
-            sharding.phys_vector_shard,
+        velocity_phys = jnp.asarray(
+            jnp.asarray(snapshot_arr),
+            out_sharding=sharding.phys_vector_shard,
         )
         velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
         return phys_to_spec(velocity_phys)
@@ -404,17 +396,21 @@ def build_triply_periodic_stepper(
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
+    Callable[[Array], tuple[Array, Array, Array, Array]],
     Callable[[Array], Array],
 ]:
     """Build time-stepping functions for a triply-periodic flow.
 
-    Returns ``(predict_and_correct, iterate_correction, init_state_bound,
-    correct_velocity)`` with the ``fourier`` and *flow* singletons
-    already bound.
+    Returns ``(predict_and_correct, iterate_correction,
+    init_state_bound, predict_and_fully_correct,
+    correct_velocity)`` with the ``fourier`` and *flow*
+    singletons already bound.
     """
-    _predict_and_correct_jit, _iterate_correction_jit = make_stepper(
-        _get_rhs, _predict, _correct, _norm
-    )
+    (
+        _predict_and_correct_jit,
+        _iterate_correction_jit,
+        _predict_and_fully_correct_jit,
+    ) = make_stepper(_get_rhs, _predict, _correct, _norm)
 
     def predict_and_correct(
         state: Array,
@@ -432,6 +428,12 @@ def build_triply_periodic_stepper(
             state_prev, prediction, rhs_prev, fourier, flow
         )
 
+    def predict_and_fully_correct(
+        state: Array,
+    ) -> tuple[Array, Array, Array, Array]:
+        """Fused predict + corrector loop with bound singletons."""
+        return _predict_and_fully_correct_jit(state, fourier, flow)
+
     def init_state_bound(snapshot: str | None) -> Array:
         """Initialize the flow state with bound flow singleton."""
         return init_state(snapshot, flow)
@@ -446,5 +448,6 @@ def build_triply_periodic_stepper(
         predict_and_correct,
         iterate_correction,
         init_state_bound,
+        predict_and_fully_correct,
         correct_velocity,
     )

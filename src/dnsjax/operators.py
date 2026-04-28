@@ -102,48 +102,57 @@ def spec_to_phys(velocity_spec: Array) -> Array:
 
 
 @jit
-@vmap
 def phys_to_spec_2d(velocity_phys: Array) -> Array:
-    """Forward 2D real FFT in (x, z), vmapped over velocity components.
+    r"""Forward 2D real FFT in `$(x, z)$`, batched over components.
 
-    Used for wall-bounded flows, where the y-direction stays in
-    grid-point space.
+    The leading (component) axis is folded into the y-axis before
+    the transform and unfolded afterwards, so a single reshard
+    handles all components at once.
 
     Parameters
     ----------
     velocity_phys:
-        Physical field of shape ``(3, ny, nz_padded, nx_padded)`` in
-        ``[y, z, x]`` layout, sharded on the z axis.
+        Physical field of shape ``(C, ny, nz_padded, nx_padded)``
+        in ``[y, z, x]`` layout, sharded on the z axis.
 
     Returns
     -------
     :
-        Spectral field of shape ``(3, nz-1, nx//2, ny)`` in
+        Spectral field of shape ``(C, nz-1, nx//2, ny)`` in
         ``[kz, kx, y]`` layout, sharded on the kx axis.
     """
-    return jnp.transpose(_rfft2d(velocity_phys), (1, 2, 0))
+    C, ny = velocity_phys.shape[0], velocity_phys.shape[1]
+    flat = velocity_phys.reshape(C * ny, *velocity_phys.shape[2:])
+    spec_flat = _rfft2d(flat)
+    return spec_flat.reshape(C, ny, *spec_flat.shape[1:]).transpose(0, 2, 3, 1)
 
 
 @jit
-@vmap
 def spec_to_phys_2d(velocity_spec: Array) -> Array:
-    """Inverse 2D real FFT in (x, z), vmapped over velocity components.
+    r"""Inverse 2D real FFT in `$(x, z)$`, batched over components.
 
-    Used for wall-bounded flows.
+    The leading (component) axis is folded into the y-axis before
+    the transform and unfolded afterwards, so a single reshard
+    handles all components at once.
 
     Parameters
     ----------
     velocity_spec:
-        Spectral field of shape ``(3, nz-1, nx//2, ny)`` in
+        Spectral field of shape ``(C, nz-1, nx//2, ny)`` in
         ``[kz, kx, y]`` layout, sharded on the kx axis.
 
     Returns
     -------
     :
-        Physical field of shape ``(3, ny, nz_padded, nx_padded)`` in
-        ``[y, z, x]`` layout, sharded on the z axis.
+        Physical field of shape ``(C, ny, nz_padded, nx_padded)``
+        in ``[y, z, x]`` layout, sharded on the z axis.
     """
-    return _irfft2d(jnp.transpose(velocity_spec, (2, 0, 1)))
+    C, ny = velocity_spec.shape[0], velocity_spec.shape[-1]
+    flat = velocity_spec.transpose(0, 3, 1, 2).reshape(
+        C * ny, *velocity_spec.shape[1:3]
+    )
+    phys_flat = _irfft2d(flat)
+    return phys_flat.reshape(C, ny, *phys_flat.shape[1:])
 
 
 def cross(vector_1: Array, vector_2: Array) -> Array:

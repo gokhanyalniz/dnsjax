@@ -27,6 +27,7 @@ and lives in the corresponding flow module.
 from collections.abc import Callable
 
 from jax import Array
+from jax import numpy as jnp
 
 from .operators import cross
 
@@ -74,9 +75,14 @@ def get_nonlin(
         Nonlinear term in spectral space, shape ``(3, *spec_shape)``.
     """
 
-    velocity_phys = spec_to_phys_fn(velocity_spec)  # 3 inverse FFTs
-
-    vorticity_phys = spec_to_phys_fn(curl_fn(velocity_spec))
+    # Batch velocity (3) + vorticity (3) into one transform call
+    # so that the FFT reshard happens once for all 6 fields.
+    vorticity_spec = curl_fn(velocity_spec)
+    combined_phys = spec_to_phys_fn(
+        jnp.concatenate([velocity_spec, vorticity_spec])
+    )
+    velocity_phys = combined_phys[:3]
+    vorticity_phys = combined_phys[3:]
     nonlin_phys = cross(velocity_phys, vorticity_phys)
 
     # u' x curl(U) + U x omega' + U x curl(U)

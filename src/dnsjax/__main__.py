@@ -59,15 +59,13 @@ def main() -> None:
             correct_velocity,
             get_stats,
             init_state,
-            iterate_correction,
-            predict_and_correct,
+            predict_and_fully_correct,
         )
     elif params.phys.system == "plane-couette":
         from .flows.plane_couette import (
             get_stats,
             init_state,
-            iterate_correction,
-            predict_and_correct,
+            predict_and_fully_correct,
         )
     else:
         sharding.print(
@@ -98,8 +96,6 @@ def main() -> None:
     c_tot: int = 0
     dt_first: float = params.step.dt
     wall_time_now: int = perf_counter_ns()
-    bench_delta: int = 0  # accumulated JIT-compilation time to subtract
-    corrector_compiled: bool = False
     last_error: float = 0.0
     last_c: int = 0
 
@@ -152,34 +148,8 @@ def main() -> None:
             ts.append(t)
             Eps.append(stats["E'"])
 
-        # Euler predictor + one Crank-Nicolson corrector
-        state_prev = state
-        state, rhs_no_lapl, error = predict_and_correct(
-            state_prev,
-        )
-        c = 0
-
-        # Additional corrector iterations until convergence
-        while (
-            error > params.step.corrector_tolerance
-            and c < params.step.max_corrector_iterations
-        ):
-            if not corrector_compiled:
-                # Exclude the first corrector JIT compilation from benchmarks
-                bench_delta_start = perf_counter_ns()
-
-            state, rhs_no_lapl, error = iterate_correction(
-                state_prev,
-                state,
-                rhs_no_lapl,
-            )
-            c += 1
-
-            if not corrector_compiled:
-                bench_delta_stop = perf_counter_ns()
-                bench_delta += bench_delta_stop - bench_delta_start
-                rhs_tot -= 1
-                corrector_compiled = True
+        # Fused predictor + all corrector iterations (single JIT scope).
+        state, rhs_no_lapl, error, c = predict_and_fully_correct(state)
 
         if params.phys.system in periodic_systems:
             # Divergence correction and mean-mode zeroing
@@ -188,12 +158,13 @@ def main() -> None:
         t += params.step.dt
         it += 1
         last_error = error
-        last_c = c
-        c_tot += c
+        c_int = int(c)
+        last_c = c_int
+        c_tot += c_int
 
         if it > params.init.it0:
             # 2 RHS evals per predict_and_correct + 1 per corrector iteration
-            rhs_tot += c + 2
+            rhs_tot += c_int + 2
 
         wall_time_now = perf_counter_ns()
 
@@ -210,7 +181,7 @@ def main() -> None:
     alive_time = ns_to_s * (wall_time_now - wall_time_start)
     sharding.print(f"Job has been alive for {alive_time:.2f}s.")
     if it > params.init.it0 + 1:
-        wall_time = ns_to_s * (wall_time_now - bench_delta - bench_start)
+        wall_time = ns_to_s * (wall_time_now - bench_start)
         wall_time_per_sim_time = wall_time / (t - dt_first - params.init.t0)
         wall_time_per_rhs = wall_time / rhs_tot
 
