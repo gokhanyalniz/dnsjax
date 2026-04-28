@@ -243,9 +243,13 @@ class MonochromaticFlow(TriplyPeriodicFlow):
 
 flow: MonochromaticFlow = MonochromaticFlow()
 
-predict_and_correct, iterate_correction, init_state, correct_velocity = (
-    build_triply_periodic_stepper(flow)
-)
+(
+    predict_and_correct,
+    iterate_correction,
+    init_state,
+    predict_and_fully_correct,
+    correct_velocity,
+) = build_triply_periodic_stepper(flow)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────────────

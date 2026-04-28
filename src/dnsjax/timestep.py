@@ -15,9 +15,12 @@ components (v first, then pressure via IMM, then u, v, w all updated).
 
 from collections.abc import Callable
 
+import jax.lax
 from jax import Array, jit
+from jax import numpy as jnp
 
 from .bench import timer
+from .parameters import params
 
 
 def make_stepper(
@@ -28,6 +31,7 @@ def make_stepper(
 ) -> tuple[
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array]],
+    Callable[..., tuple[Array, Array, Array, Array]],
 ]:
     """Build JIT-compiled predict-and-correct and iterate-correction functions.
 
@@ -63,6 +67,10 @@ def make_stepper(
         ``(state_prev, prediction_state, rhs_prev) ->
         (prediction_state_next, rhs_next, error)``.
         Only *prediction_state* is donated.
+    predict_and_fully_correct:
+        Fused predict + corrector loop in a single JIT scope
+        via ``lax.while_loop``.  Signature:
+        ``state -> (prediction_state, rhs_next, error, num_c)``.
     """
 
     @timer("timestep/predict_and_correct")
@@ -117,4 +125,43 @@ def make_stepper(
 
         return prediction_state, rhs_next, error
 
-    return predict_and_correct, iterate_correction
+    @timer("timestep/predict_and_fully_correct")
+    @jit
+    def predict_and_fully_correct(
+        state: Array, *args
+    ) -> tuple[Array, Array, Array, Array]:
+        """Predict + all corrector iterations in one JIT scope.
+
+        Uses ``lax.while_loop`` so that the corrector convergence
+        check stays on-device, eliminating per-iteration
+        GPU-to-CPU synchronisation.
+        """
+        rhs_prev = get_rhs_fn(state, *args)
+        prediction = predict_fn(state, rhs_prev, *args)
+
+        rhs_next = get_rhs_fn(prediction, *args)
+        prediction, correction = correct_fn(
+            state, prediction, rhs_prev, rhs_next, *args
+        )
+        error = norm_fn(correction, *args)
+
+        tol = params.step.corrector_tolerance
+        max_c = params.step.max_corrector_iterations
+
+        def cond_fn(carry):
+            _, _, err, c = carry
+            return jnp.logical_and(err > tol, c < max_c)
+
+        def body_fn(carry):
+            pred, rhs_p, _, c = carry
+            rhs_n = get_rhs_fn(pred, *args)
+            pred, corr = correct_fn(state, pred, rhs_p, rhs_n, *args)
+            return pred, rhs_n, norm_fn(corr, *args), c + 1
+
+        init = (prediction, rhs_next, error, jnp.int32(0))
+        prediction, rhs_next, error, num_c = jax.lax.while_loop(
+            cond_fn, body_fn, init
+        )
+        return prediction, rhs_next, error, num_c
+
+    return predict_and_correct, iterate_correction, predict_and_fully_correct

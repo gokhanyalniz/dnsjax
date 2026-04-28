@@ -14,12 +14,11 @@ functions.
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from functools import partial
 
 import jax
 import jax.scipy.linalg as sla
 import numpy as np
-from jax import Array, lax
+from jax import Array
 from jax import numpy as jnp
 
 from ..fd import build_diff_matrices
@@ -56,33 +55,24 @@ class Fourier:
 
     def __post_init__(self) -> None:
         kx_vals = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
-        self.kx = jax.device_put(
-            jnp.asarray(kx_vals, dtype=sharding.float_type).reshape(
-                [1, -1, 1]
-            ),
-            sharding.spec_scalar_shard,
+        self.kx = jnp.asarray(
+            kx_vals.reshape([1, -1, 1]),
+            dtype=sharding.float_type,
+            out_sharding=sharding.spec_scalar_shard,
         )
         kz_vals = complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
-        self.kz = jax.device_put(
-            jnp.asarray(kz_vals, dtype=sharding.float_type).reshape(
-                [-1, 1, 1]
-            ),
-            sharding.no_shard,
+        self.kz = jnp.asarray(
+            kz_vals.reshape([-1, 1, 1]),
+            dtype=sharding.float_type,
+            out_sharding=sharding.no_shard,
         )
 
-        self.k_metric = jax.device_put(
-            jnp.where(self.kx == 0, 1, 2).astype(sharding.float_type),
-            sharding.spec_scalar_shard,
+        self.k_metric = jnp.where(self.kx == 0, 1, 2).astype(
+            sharding.float_type
         )
 
-        self.k2 = jax.device_put(
-            self.kx**2 + self.kz**2,
-            sharding.spec_scalar_shard,
-        )
-        self.k2_is_zero = jax.device_put(
-            self.k2 == 0.0,
-            sharding.spec_scalar_shard,
-        )
+        self.k2 = self.kx**2 + self.kz**2
+        self.k2_is_zero = self.k2 == 0.0
 
 
 fourier: Fourier = Fourier()
@@ -189,6 +179,7 @@ class DenseJAXSolver:
             return jax.vmap(jax.vmap(sla.lu_factor))(A)
 
         self.lu, self.piv = batched_lu_factor(self.matrix)
+        self.matrix = None
 
     def solve(self, rhs: Array) -> Array:
         """Batched LU solve.
@@ -216,202 +207,240 @@ class DenseJAXSolver:
         return _lu_solve((self.lu, self.piv), rhs)
 
 
-def _banded_solve_device(
-    ab: Array, ipiv: Array, b: Array, kl: int, ku: int
+@jax.jit
+def _spike_solve(
+    lu: Array,
+    piv: Array,
+    V: Array,
+    W: Array,
+    red_lu: Array,
+    red_piv: Array,
+    rhs: Array,
 ) -> Array:
-    """Device-side solve of `$A x = b$` from LAPACK-packed LU factors.
+    """Solve `$A x = b$` via the SPIKE algorithm, single 3D RHS.
 
-    Equivalent to ``dgbtrs`` for ``trans='N'``.  Forward elimination
-    applies the partial-pivoting row swaps stored in ``ipiv`` and
-    subtracts the ``kl`` sub-diagonal contributions from the next
-    ``kl`` entries of ``b``.  Back substitution divides by the
-    diagonal and subtracts the ``kuu = kl + ku`` super-diagonal
-    contributions from the preceding rows.  Two ``lax.scan``s keep
-    the implementation JIT- and vmap-friendly.
+    The banded operator was partitioned at construction into ``P``
+    block-rows of size ``m = N_y / P`` with bandwidth ``p``.  The
+    spike matrices `$V_i = A_i^{-1} B_i$` and `$W_i = A_i^{-1} C_i$`
+    capture the off-block coupling, and a small reduced system of
+    size ``2 P p`` resolves the spike weights at block boundaries.
 
-    Padding strategy: ``b`` is padded with ``kl`` zero entries after
-    (for forward elim) and ``kuu`` zero entries before (for back
-    sub) so that the per-step ``dynamic_slice_in_dim`` updates are
-    always of fixed width.  Pad-region writes are harmless because
-    the padding is stripped at the end.
+    Stages:
+
+    1. Local solve `$A_i g_i = f_i$` (per-block dense LU solve,
+       parallel across blocks).
+    2. Build the reduced RHS from the top-`p` and bottom-`p` slices
+       of each ``g_i``.
+    3. Reduced solve for the spike weights
+       `$\\alpha = (\\alpha^T_i, \\alpha^B_i)`.
+    4. Reconstruct
+       `$x_i = g_i - V_i \\alpha^T_{i+1} - W_i \\alpha^B_{i-1}$`,
+       with neighbour weights zero at the matrix endpoints.
 
     Parameters
     ----------
-    ab:
-        Packed LU factors for one mode, shape ``(2*kl + ku + 1,
-        Ny)``.
-    ipiv:
-        Pivot indices for one mode, shape ``(Ny,)``, int32, 0-based.
-    b:
-        Right-hand side for one mode, shape ``(Ny,)``, real.
-    kl, ku:
-        Band widths (static).
+    lu, piv:
+        Per-block dense LU factors and pivots,
+        ``(N_{kz}, N_{kx}, P, m, m)`` and ``(N_{kz}, N_{kx}, P, m)``.
+    V, W:
+        Spike matrices ``(N_{kz}, N_{kx}, P, m, p)``.
+    red_lu, red_piv:
+        Dense LU of the `$2 P p \\times 2 P p$` reduced system per
+        ``(kz, kx)`` mode.
+    rhs:
+        Right-hand side, shape ``(N_{kz}, N_{kx}, N_y)``.
 
     Returns
     -------
     :
-        Solution ``x`` with the same shape and dtype as ``b``.
+        Solution `$x$`, same shape and dtype as *rhs*.
     """
-    Ny = ab.shape[-1]
-    kuu = kl + ku
+    P, m = lu.shape[-3], lu.shape[-2]
+    p = V.shape[-1]
+    Ny = P * m
 
-    # Hoist the sub- and super-diagonal slabs out of the scan bodies:
-    # each column j then reduces to a single `lower[:, j]` / `upper[:, j]`
-    # index op instead of `ab[:, j]` plus an inner `dynamic_slice_in_dim`.
-    lower = ab[kl + ku + 1 :, :]  # shape (kl, Ny), sub-diagonal L entries
-    upper = ab[:kuu, :]  # shape (kuu, Ny), super-diagonal U entries
-    diag = ab[kl + ku, :]  # shape (Ny,), U pivots
+    # Stage 1: local solve A_i g_i = f_i in parallel across blocks.
+    rhs_blocks = rhs.reshape(rhs.shape[:-1] + (P, m))
+    g = jax.vmap(jax.vmap(jax.vmap(sla.lu_solve)))((lu, piv), rhs_blocks)
 
-    # Forward elimination with row padding at the end.
-    b = jnp.concatenate([b, jnp.zeros(kl, dtype=b.dtype)], axis=-1)
+    # Stage 2: reduced RHS from g top/bottom slices.
+    g_top = g[..., :p]
+    g_bot = g[..., m - p :]
+    b_red_blocks = jnp.stack([g_top, g_bot], axis=-2)
+    b_red = b_red_blocks.reshape(b_red_blocks.shape[:-3] + (2 * P * p,))
 
-    def fwd_step(b_carry: Array, j: Array) -> tuple[Array, None]:
-        pj = ipiv[j]
-        bj = b_carry[j]
-        bpj = b_carry[pj]
-        b_carry = b_carry.at[j].set(bpj)
-        b_carry = b_carry.at[pj].set(bj)
-        lams = lower[:, j]
-        block = lax.dynamic_slice_in_dim(b_carry, j + 1, kl, axis=-1)
-        block = block - lams * bpj
-        b_carry = lax.dynamic_update_slice_in_dim(
-            b_carry, block, j + 1, axis=-1
-        )
-        return b_carry, None
+    # Stage 3: reduced solve.
+    alpha = jax.vmap(jax.vmap(sla.lu_solve))((red_lu, red_piv), b_red)
 
-    b, _ = lax.scan(fwd_step, b, jnp.arange(Ny - 1))
-    b = b[:Ny]
+    # Stage 4: extract per-block alpha^T / alpha^B, then shift.
+    alpha_blocks = alpha.reshape(alpha.shape[:-1] + (P, 2, p))
+    alpha_T = alpha_blocks[..., 0, :]
+    alpha_B = alpha_blocks[..., 1, :]
+    zeros_p = jnp.zeros_like(alpha_T[..., :1, :])
+    alpha_T_next = jnp.concatenate([alpha_T[..., 1:, :], zeros_p], axis=-2)
+    alpha_B_prev = jnp.concatenate([zeros_p, alpha_B[..., :-1, :]], axis=-2)
 
-    # Back substitution with row padding at the front.
-    b = jnp.concatenate([jnp.zeros(kuu, dtype=b.dtype), b], axis=-1)
+    # Stage 5: x_i = g_i - V_i alpha^T(i+1) - W_i alpha^B(i-1).
+    V_contrib = jnp.einsum("...irc,...ic->...ir", V, alpha_T_next)
+    W_contrib = jnp.einsum("...irc,...ic->...ir", W, alpha_B_prev)
+    x_blocks = g - V_contrib - W_contrib
 
-    def bwd_step(b_carry: Array, j_rev: Array) -> tuple[Array, None]:
-        j = Ny - 1 - j_rev
-        j_padded = j + kuu
-        xj = b_carry[j_padded] / diag[j]
-        b_carry = b_carry.at[j_padded].set(xj)
-        ups = upper[:, j]
-        block = lax.dynamic_slice_in_dim(b_carry, j_padded - kuu, kuu, axis=-1)
-        block = block - ups * xj
-        b_carry = lax.dynamic_update_slice_in_dim(
-            b_carry, block, j_padded - kuu, axis=-1
-        )
-        return b_carry, None
-
-    b, _ = lax.scan(bwd_step, b, jnp.arange(Ny))
-    return b[kuu:]
+    return x_blocks.reshape(x_blocks.shape[:-2] + (Ny,))
 
 
 @register_dataclass_pytree
 @dataclass
 class PerModeBandedOperator:
-    """Per-mode banded LU cache in LAPACK ``ab`` packing.
+    """SPIKE-factored banded operator (band-preserving, GPU-fast).
 
-    Stores the partial-pivoted LU factors produced on the GPU by
-    :func:`_banded_lu_factor_batched` (one matrix per Fourier mode
-    pair ``(kz, kx)``) alongside the pivot indices.  The bandwidth
-    is derived from the ab-row count under the invariant
-    ``ab.shape[-2] == 3*p + 1`` with ``kl == ku == p``.
+    The original `$(N_y, N_y)$` banded operator (bandwidth ``p``) is
+    partitioned at construction into ``P`` contiguous block-rows of
+    size ``m = N_y / P`` (with ``m >= 2 p``) and factored locally via
+    :func:`jax.scipy.linalg.lu_factor` (cuSOLVER-batched dense LU on
+    the small `$(m, m)$` blocks).  Off-block coupling is captured by
+    spike matrices `$V_i = A_i^{-1} B_i$` and `$W_i = A_i^{-1} C_i$`
+    plus a small dense reduced system of size `$2 P p$`, also
+    LU-factored once.
 
-    ``solve`` forwards the RHS (real or complex) directly to
-    :func:`_banded_solve_device`.  Because the scan body only uses
-    real-factor × RHS multiplications and RHS / real divisions, a
-    complex RHS flows through under JAX's mixed-type arithmetic —
-    no real/imag split is needed.  The real-precision LU factors
-    retain their half-memory advantage over complex-typed factors.
+    No `$(N_y, N_y)$` array is ever materialised: per-mode storage
+    is `$O(N_y m + (P p)^2) = O(N_y p)$`.  At solve time the only
+    sequential work is the small reduced solve; the dominant
+    per-block solve and the spike combination are all batched
+    cuBLAS / cuSOLVER calls.
+
+    Attributes
+    ----------
+    lu:
+        Per-block dense LU factors, shape
+        ``(N_{kz}, N_{kx}, P, m, m)``.
+    piv:
+        Per-block pivot indices, shape ``(N_{kz}, N_{kx}, P, m)``.
+    V:
+        Right-spike matrix, shape ``(N_{kz}, N_{kx}, P, m, p)``.
+    W:
+        Left-spike matrix, shape ``(N_{kz}, N_{kx}, P, m, p)``.
+    red_lu:
+        Dense LU of the reduced system, shape
+        ``(N_{kz}, N_{kx}, 2 P p, 2 P p)``.
+    red_piv:
+        Pivots for the reduced LU, shape
+        ``(N_{kz}, N_{kx}, 2 P p)``.
     """
 
-    ab: Array
-    ipiv: Array
+    lu: Array
+    piv: Array
+    V: Array
+    W: Array
+    red_lu: Array
+    red_piv: Array
 
     def solve(self, rhs: Array) -> Array:
-        """Batched banded solve across ``(kz, kx)`` modes.
+        """Batched SPIKE solve across ``(kz, kx)`` modes.
 
         A leading batch axis (e.g. the 3 velocity components) is
         supported transparently by an extra ``vmap`` that leaves the
-        packed LU factors untouched, so the same ``ab`` / ``ipiv``
-        are reused across all batched RHSs.
+        cached factors untouched, so the same ``lu`` / ``V`` / ``W``
+        / reduced LU are reused across all batched RHSs.
 
         Parameters
         ----------
         rhs:
-            Right-hand side, shape ``(Nkz, Nkx, Ny)`` or
-            ``(C, Nkz, Nkx, Ny)`` for a leading batch axis ``C``.
-            May be real or complex; the dtype is preserved.
+            Right-hand side, shape ``(N_{kz}, N_{kx}, N_y)`` or
+            ``(C, N_{kz}, N_{kx}, N_y)`` for a leading batch axis
+            ``C``.  May be real or complex; the dtype is preserved.
 
         Returns
         -------
         :
             Solution array, same shape and dtype as *rhs*.
         """
-        p = (self.ab.shape[-2] - 1) // 3
-        kl = ku = p
-
-        def solve_one(ab: Array, ipiv: Array, b: Array) -> Array:
-            return _banded_solve_device(ab, ipiv, b, kl, ku)
-
-        per_mode = jax.vmap(jax.vmap(solve_one))
         if rhs.ndim == 4:
-            return jax.vmap(per_mode, in_axes=(None, None, 0))(
-                self.ab, self.ipiv, rhs
+            return jax.vmap(
+                _spike_solve,
+                in_axes=(None, None, None, None, None, None, 0),
+            )(
+                self.lu,
+                self.piv,
+                self.V,
+                self.W,
+                self.red_lu,
+                self.red_piv,
+                rhs,
             )
-        return per_mode(self.ab, self.ipiv, rhs)
+        return _spike_solve(
+            self.lu,
+            self.piv,
+            self.V,
+            self.W,
+            self.red_lu,
+            self.red_piv,
+            rhs,
+        )
 
 
-# ── GPU IMM operator builders (direct ab packing, no dense matrix) ──
+# ── SPIKE block-partitioned operator builders ─────────────────────
 
 
-def _ab_index_map(Ny: int, p: int) -> tuple[Array, Array, Array, Array, Array]:
-    """Precompute the `(r, j) -> dense i` index map for ab packing.
+def _spike_memory_per_mode(Ny: int, P: int, p: int) -> float:
+    r"""Per-mode SPIKE storage: `$N_y^2 / P + 4 P^2 p^2$`."""
+    return Ny * Ny / P + 4 * P * P * p * p
 
-    With ``kl = ku = p``, the LAPACK banded ``ab`` format stores
-    entry `$A_{i,j}$` at position ``ab[kl + ku + i - j, j]``.  For a
-    given ab position ``(r, j)``, the corresponding dense row is
-    ``i = r + j - (kl + ku)``.  This helper builds that inverse
-    map (shape ``(3p + 1, Ny)``) plus the `$i$`-range mask and its
-    clipped form for safe advanced indexing.
+
+def _choose_block_partition(Ny: int, p: int) -> tuple[int, int]:
+    r"""Choose SPIKE block count `$P$` and block size `$m$`.
+
+    Picks the divisor `$P \ge 2$` of `$N_y$` (with
+    `$m = N_y / P \ge 2 p$`) that minimises total per-mode
+    SPIKE storage `$N_y^2 / P + 4 P^2 p^2$` (block LU
+    factors plus reduced system).  Falls back to `$P = 1$`
+    when `$N_y$` is prime or too small.
+
+    Parameters
+    ----------
+    Ny:
+        Wall-normal grid size.
+    p:
+        FD order (half-bandwidth of the banded operator).
 
     Returns
     -------
-    r_idx:
-        Column vector of ab row indices, shape ``(3p + 1, 1)``.
-    j_idx:
-        Row vector of dense column indices, shape ``(1, Ny)``.
-    i_idx:
-        Dense row indices `$i = r + j - (k_l + k_u)$`, shape
-        ``(3p + 1, Ny)``.  Can be negative or `$\\ge N_y$`; use
-        ``in_range`` to mask.
-    in_range:
-        Boolean mask ``(i_idx >= 0) & (i_idx < Ny)``.
-    i_clip:
-        ``i_idx`` clipped to ``[0, Ny - 1]``, safe to feed into
-        advanced indexing into a ``(Ny, Ny)`` matrix.
+    P:
+        Number of blocks.
+    m:
+        Block size (``Ny // P``).
     """
-    kl = ku = p
-    ab_rows = 2 * kl + ku + 1
-    r_idx = jnp.arange(ab_rows)[:, None]
-    j_idx = jnp.arange(Ny)[None, :]
-    i_idx = r_idx + j_idx - (kl + ku)
-    in_range = (i_idx >= 0) & (i_idx < Ny)
-    i_clip = jnp.clip(i_idx, 0, Ny - 1)
-    return r_idx, j_idx, i_idx, in_range, i_clip
+    min_m = max(2 * p, 1)
+    max_P = max(Ny // min_m, 1)
+
+    best_P, best_cost = 1, float("inf")
+    for P_cand in range(2, max_P + 1):
+        if Ny % P_cand == 0:
+            cost = _spike_memory_per_mode(Ny, P_cand, p)
+            if cost < best_cost:
+                best_P, best_cost = P_cand, cost
+
+    if best_P == 1:
+        return 1, Ny
+    return best_P, Ny // best_P
 
 
-def _build_Lk_ab_gpu(
-    D1: Array, D2: Array, k2: Array, k2_is_zero: Array, p: int
-) -> Array:
-    """Build `$L_k$` directly in LAPACK ab-packed form on the GPU.
+def _build_Lk_blocks_gpu(
+    D1: Array,
+    D2: Array,
+    k2: Array,
+    k2_is_zero: Array,
+    p: int,
+    P: int,
+    m: int,
+) -> tuple[Array, Array, Array]:
+    r"""Build SPIKE block-partitioned `$L_k$` on GPU.
 
-    `$L_k$` is the Neumann-modified Laplacian
-    `$D_2 - k^2 I$` with the wall rows replaced by `$D_1$` rows to
-    encode Neumann boundary conditions, except that the `$k^2 = 0$`
-    mean mode pins `$p_0 = 0$` by setting row 0 to
-    `$(1, 0, \\dots, 0)$` (the pure-Neumann problem is singular).
-
-    No dense `$(N_y, N_y)$` or `$(N_{kz}, N_{kx}, N_y, N_y)$`
-    intermediate is materialised: each ``ab`` entry is computed
-    directly from `$D_1$`, `$D_2$`, and `$k^2$` via a precomputed
-    `$(r, j) \\to i$` index map.
+    The Neumann-BC pressure Poisson operator
+    `$L_k = D_2 - k^2 I$` (with `$D_1$` wall rows for
+    `$k^2 \ne 0$` and a row-0 pin for the `$k^2 = 0$`
+    mean mode) is assembled directly into per-block dense
+    form for the SPIKE factorisation.  No
+    `$(N_y, N_y)$` matrix is materialised.
 
     Parameters
     ----------
@@ -420,124 +449,332 @@ def _build_Lk_ab_gpu(
     D2:
         Second-derivative matrix, shape ``(Ny, Ny)``.
     k2:
-        Squared horizontal wavenumber, shape ``(Nkz, Nkx, 1)``.
+        `$k_x^2 + k_z^2$`, shape ``(Nkz, Nkx, 1)``.
     k2_is_zero:
-        Mean-mode boolean mask, shape ``(Nkz, Nkx, 1)``.
+        Mean-mode boolean mask, same shape as *k2*.
     p:
-        Finite-difference order (``kl = ku = p``).
+        FD order (half-bandwidth).
+    P:
+        Number of SPIKE blocks.
+    m:
+        Block size (``Ny // P``).
 
     Returns
     -------
-    :
-        LAPACK ab-packed `$L_k$`, shape ``(Nkz, Nkx, 3p + 1, Ny)``,
-        kx-sharded (axis 1).
+    A_blocks:
+        Diagonal blocks, shape
+        ``(N_{kz}, N_{kx}, P, m, m)``.
+    B_corner:
+        Right-coupling corners, shape
+        ``(N_{kz}, N_{kx}, P, p, p)``.
+        Zero for the last block.
+    C_corner:
+        Left-coupling corners, shape
+        ``(N_{kz}, N_{kx}, P, p, p)``.
+        Zero for the first block.
     """
-    Ny = D2.shape[-1]
-    kl = ku = p
-    r_idx, j_idx, i_idx, in_range, i_clip = _ab_index_map(Ny, p)
+    dtype = D2.dtype
+    eye_m = jnp.eye(m, dtype=dtype)
 
-    # Interior contribution: Lk[i, j] = D2[i, j] - k2 * delta_{i, j}.
-    j_bcast = jnp.broadcast_to(j_idx, i_idx.shape)
-    D2_ab = jnp.where(in_range, D2[i_clip, j_bcast], 0.0)
-    is_main_diag = (r_idx == kl + ku).astype(D2.dtype)
+    # Diagonal blocks of D2 (mode-independent).
+    A_D2 = jnp.stack(
+        [D2[i * m : (i + 1) * m, i * m : (i + 1) * m] for i in range(P)]
+    )  # (P, m, m)
 
-    # Shape plan:
-    # - D2_ab:        (3p+1, Ny)       -> [None, None, :, :]
-    # - k2:           (Nkz, Nkx, 1)    -> [..., None] => (Nkz, Nkx, 1, 1)
-    # - is_main_diag: (3p+1, 1)        -> [None, None, :, :]
-    ab_interior = (
-        D2_ab[None, None, :, :]
-        - k2[..., None] * is_main_diag[None, None, :, :]
+    # Lk = D2 - k2 * I, broadcast across (Nkz, Nkx).
+    A_blocks = (
+        A_D2[None, None] - k2[..., None, None] * eye_m
+    )  # (Nkz, Nkx, P, m, m)
+
+    # Row 0 (block 0, local row 0): D1[0,:m] for
+    # k2 != 0, pin row [1,0,...,0] for k2 == 0.
+    D1_row0 = D1[0, :m]
+    pin_row = jnp.zeros(m, dtype=dtype).at[0].set(1.0)
+    row0 = jnp.where(k2_is_zero, pin_row, D1_row0)
+    A_blocks = A_blocks.at[:, :, 0, 0, :].set(row0)
+
+    # Row Ny-1 (block P-1, local row m-1): D1[-1,:].
+    D1_rowN = D1[-1, (P - 1) * m :]
+    A_blocks = A_blocks.at[:, :, -1, -1, :].set(D1_rowN[None, None])
+
+    # Coupling corners (mode-independent, from D2).
+    B_list = []
+    for i in range(P):
+        if i < P - 1:
+            r0 = (i + 1) * m - p
+            c0 = (i + 1) * m
+            B_list.append(D2[r0 : r0 + p, c0 : c0 + p])
+        else:
+            B_list.append(jnp.zeros((p, p), dtype=dtype))
+    B_corner = jnp.broadcast_to(
+        jnp.stack(B_list)[None, None],
+        k2.shape[:2] + (P, p, p),
     )
 
-    # Boundary-row overwrites: dense row 0 and Ny-1 are not D2-based.
-    is_row_0 = i_idx == 0  # (3p+1, Ny)
-    is_row_Nm1 = i_idx == (Ny - 1)  # (3p+1, Ny)
-
-    D1_row_0 = D1[0, j_bcast]  # (3p+1, Ny) — D1[0, :] broadcast over rows
-    D1_row_Nm1 = D1[-1, j_bcast]
-    pin_row = (j_bcast == 0).astype(D2.dtype)  # (3p+1, Ny)
-
-    row0_val = jnp.where(
-        k2_is_zero[..., None],
-        pin_row[None, None, :, :],
-        D1_row_0[None, None, :, :],
+    C_list = []
+    for i in range(P):
+        if i > 0:
+            r0 = i * m
+            c0 = i * m - p
+            C_list.append(D2[r0 : r0 + p, c0 : c0 + p])
+        else:
+            C_list.append(jnp.zeros((p, p), dtype=dtype))
+    C_corner = jnp.broadcast_to(
+        jnp.stack(C_list)[None, None],
+        k2.shape[:2] + (P, p, p),
     )
 
-    ab = jnp.where(is_row_0[None, None, :, :], row0_val, ab_interior)
-    ab = jnp.where(
-        is_row_Nm1[None, None, :, :],
-        D1_row_Nm1[None, None, :, :],
-        ab,
-    )
-
-    return jax.lax.with_sharding_constraint(ab, sharding.spec_dy_op_shard)
+    return A_blocks, B_corner, C_corner
 
 
-def _build_Hk_ab_gpu(
-    D2: Array, k2: Array, dt: float, c: float, nu: float, p: int
-) -> Array:
-    """Build `$H_k$` directly in LAPACK ab-packed form on the GPU.
+def _build_Hk_blocks_gpu(
+    D2: Array,
+    k2: Array,
+    dt: float,
+    c: float,
+    nu: float,
+    p: int,
+    P: int,
+    m: int,
+) -> tuple[Array, Array, Array]:
+    r"""Build SPIKE block-partitioned `$H_k$` on GPU.
 
-    `$H_k = (1/\\Delta t) I - c \\nu (D_2 - k^2 I)$` with identity
-    boundary rows (no-slip Dirichlet).  No dense intermediate.
+    The implicit Helmholtz operator
+    `$H_k = (1/\Delta t) I - c \nu (D_2 - k^2 I)$`
+    with identity (Dirichlet) wall rows is assembled
+    directly into per-block dense form.  No
+    `$(N_y, N_y)$` matrix is materialised.
 
     Parameters
     ----------
     D2:
         Second-derivative matrix, shape ``(Ny, Ny)``.
     k2:
-        Squared horizontal wavenumber, shape ``(Nkz, Nkx, 1)``.
+        `$k_x^2 + k_z^2$`, shape ``(Nkz, Nkx, 1)``.
     dt:
         Time step.
     c:
-        Implicitness parameter (0.5 = Crank-Nicolson).
+        Implicitness parameter.
     nu:
-        Kinematic viscosity `$1/\\mathrm{Re}$`.
+        Kinematic viscosity `$1/\mathrm{Re}$`.
     p:
-        Finite-difference order (``kl = ku = p``).
+        FD order (half-bandwidth).
+    P:
+        Number of SPIKE blocks.
+    m:
+        Block size (``Ny // P``).
+
+    Returns
+    -------
+    A_blocks:
+        Diagonal blocks, shape
+        ``(N_{kz}, N_{kx}, P, m, m)``.
+    B_corner:
+        Right-coupling corners, shape
+        ``(N_{kz}, N_{kx}, P, p, p)``.
+        Zero for the last block.
+    C_corner:
+        Left-coupling corners, shape
+        ``(N_{kz}, N_{kx}, P, p, p)``.
+        Zero for the first block.
+    """
+    dtype = D2.dtype
+    eye_m = jnp.eye(m, dtype=dtype)
+
+    A_D2 = jnp.stack(
+        [D2[i * m : (i + 1) * m, i * m : (i + 1) * m] for i in range(P)]
+    )  # (P, m, m)
+
+    # Hk = (1/dt + c*nu*k2) I - c*nu*D2
+    diag_coeff = (1.0 / dt) + c * nu * k2  # (Nkz, Nkx, 1)
+    A_blocks = (
+        diag_coeff[..., None, None] * eye_m - c * nu * A_D2[None, None]
+    )  # (Nkz, Nkx, P, m, m)
+
+    # Dirichlet identity wall rows.
+    e0 = jnp.zeros(m, dtype=dtype).at[0].set(1.0)
+    eN = jnp.zeros(m, dtype=dtype).at[-1].set(1.0)
+    A_blocks = A_blocks.at[:, :, 0, 0, :].set(e0)
+    A_blocks = A_blocks.at[:, :, -1, -1, :].set(eN)
+
+    # Coupling corners: -c*nu * D2 sub-blocks.
+    c_nu = c * nu
+    B_list = []
+    for i in range(P):
+        if i < P - 1:
+            r0 = (i + 1) * m - p
+            c0 = (i + 1) * m
+            B_list.append(-c_nu * D2[r0 : r0 + p, c0 : c0 + p])
+        else:
+            B_list.append(jnp.zeros((p, p), dtype=dtype))
+    B_corner = jnp.broadcast_to(
+        jnp.stack(B_list)[None, None],
+        k2.shape[:2] + (P, p, p),
+    )
+
+    C_list = []
+    for i in range(P):
+        if i > 0:
+            r0 = i * m
+            c0 = i * m - p
+            C_list.append(-c_nu * D2[r0 : r0 + p, c0 : c0 + p])
+        else:
+            C_list.append(jnp.zeros((p, p), dtype=dtype))
+    C_corner = jnp.broadcast_to(
+        jnp.stack(C_list)[None, None],
+        k2.shape[:2] + (P, p, p),
+    )
+
+    return A_blocks, B_corner, C_corner
+
+
+def _build_reduced_matrix(V: Array, W: Array, p: int) -> Array:
+    r"""Assemble the SPIKE reduced system from spike tips.
+
+    The reduced matrix has size
+    `$2 P p \times 2 P p$` with identity diagonal blocks
+    and `$(p \times p)$` off-diagonal couplings from the
+    top/bottom `$p$` rows of the spike matrices `$V_i$`
+    and `$W_i$`.
+
+    Parameters
+    ----------
+    V:
+        Right-spike matrix,
+        ``(N_{kz}, N_{kx}, P, m, p)``.
+    W:
+        Left-spike matrix,
+        ``(N_{kz}, N_{kx}, P, m, p)``.
+    p:
+        Half-bandwidth (spike tip size).
 
     Returns
     -------
     :
-        LAPACK ab-packed `$H_k$`, shape ``(Nkz, Nkx, 3p + 1, Ny)``,
-        kx-sharded (axis 1).
+        Reduced matrix, shape
+        ``(N_{kz}, N_{kx}, 2 P p, 2 P p)``.
     """
-    Ny = D2.shape[-1]
-    kl = ku = p
-    r_idx, j_idx, i_idx, in_range, i_clip = _ab_index_map(Ny, p)
+    P = V.shape[-3]
+    m = V.shape[-2]
+    n_red = 2 * P * p
+    dtype = V.dtype
 
-    # Interior: Hk[i, j] = (1/dt + c*nu*k2) delta_{i,j} - c*nu*D2[i, j].
-    j_bcast = jnp.broadcast_to(j_idx, i_idx.shape)
-    D2_ab = jnp.where(in_range, D2[i_clip, j_bcast], 0.0)
-    is_main_diag = (r_idx == kl + ku).astype(D2.dtype)
+    V_top = V[..., :p, :]
+    V_bot = V[..., m - p :, :]
+    W_top = W[..., :p, :]
+    W_bot = W[..., m - p :, :]
 
-    diag_scalar = (1.0 / dt) + c * nu * k2  # (Nkz, Nkx, 1)
-    ab_interior = (
-        diag_scalar[..., None] * is_main_diag[None, None, :, :]
-        - c * nu * D2_ab[None, None, :, :]
+    # Derive batch dims from V so A_red inherits kx-sharding
+    # (jnp.broadcast_to on an unsharded eye would lose sharding
+    # under the Explicit mesh).
+    ones_kx = jnp.ones_like(V[..., 0, 0, 0])  # (Nkz, Nkx)
+    A_red = ones_kx[..., None, None] * jnp.eye(n_red, dtype=dtype)
+
+    for i in range(P):
+        rT = 2 * i * p
+        rB = (2 * i + 1) * p
+
+        if i < P - 1:
+            c_next = 2 * (i + 1) * p
+            A_red = A_red.at[..., rT : rT + p, c_next : c_next + p].set(
+                V_top[..., i, :, :]
+            )
+            A_red = A_red.at[..., rB : rB + p, c_next : c_next + p].set(
+                V_bot[..., i, :, :]
+            )
+
+        if i > 0:
+            c_prev = (2 * (i - 1) + 1) * p
+            A_red = A_red.at[..., rT : rT + p, c_prev : c_prev + p].set(
+                W_top[..., i, :, :]
+            )
+            A_red = A_red.at[..., rB : rB + p, c_prev : c_prev + p].set(
+                W_bot[..., i, :, :]
+            )
+
+    return A_red
+
+
+def _spike_factor(
+    A_blocks: Array,
+    B_corner: Array,
+    C_corner: Array,
+) -> tuple[Array, Array, Array, Array, Array, Array]:
+    r"""SPIKE factorisation of a block-partitioned banded operator.
+
+    Performs per-block dense LU (cuSOLVER batched), spike
+    matrix solves `$V_i = A_i^{-1} B_i$`,
+    `$W_i = A_i^{-1} C_i$`, and reduced-system LU — all
+    on the GPU with no `$(N_y, N_y)$` array.
+
+    Array sharding is handled eagerly via
+    ``out_sharding`` on the allocating calls before
+    the JIT'd compute kernels, because the ``Explicit``
+    mesh type used by :mod:`sharding` does not support
+    resharding inside
+    ``jax.lax.with_sharding_constraint``.
+
+    Parameters
+    ----------
+    A_blocks:
+        Diagonal blocks, shape
+        ``(N_{kz}, N_{kx}, P, m, m)``,
+        kx-sharded.
+    B_corner:
+        Right-coupling corners, shape
+        ``(N_{kz}, N_{kx}, P, p, p)``.
+    C_corner:
+        Left-coupling corners, shape
+        ``(N_{kz}, N_{kx}, P, p, p)``.
+
+    Returns
+    -------
+    lu, piv:
+        Per-block dense LU factors and pivots.
+    V, W:
+        Spike matrices,
+        ``(N_{kz}, N_{kx}, P, m, p)``.
+    red_lu, red_piv:
+        Dense LU of the reduced system.
+    """
+    m = A_blocks.shape[-2]
+    p = B_corner.shape[-1]
+    dtype = A_blocks.dtype
+
+    # Expand p x p corners to full (m, p) RHS, sharded
+    # to match the kx-sharded LU factors.
+    B_full = jnp.zeros(
+        A_blocks.shape[:-1] + (p,),
+        dtype=dtype,
+        out_sharding=sharding.spec_dy_blocks_shard,
     )
+    B_full = B_full.at[..., m - p :, :].set(B_corner)
 
-    # Boundary-row overwrites: identity rows.  Ab entry at dense
-    # (i, j) is stored at (r, j) with r = kl+ku+i-j; the only
-    # nonzero entries for identity rows are the main diagonal.
-    is_row_0 = i_idx == 0
-    is_row_Nm1 = i_idx == (Ny - 1)
-    identity_row_0 = (j_bcast == 0).astype(D2.dtype)
-    identity_row_Nm1 = (j_bcast == (Ny - 1)).astype(D2.dtype)
-
-    ab = jnp.where(
-        is_row_0[None, None, :, :],
-        identity_row_0[None, None, :, :],
-        ab_interior,
+    C_full = jnp.zeros(
+        A_blocks.shape[:-1] + (p,),
+        dtype=dtype,
+        out_sharding=sharding.spec_dy_blocks_shard,
     )
-    ab = jnp.where(
-        is_row_Nm1[None, None, :, :],
-        identity_row_Nm1[None, None, :, :],
-        ab,
-    )
+    C_full = C_full.at[..., :p, :].set(C_corner)
 
-    return jax.lax.with_sharding_constraint(ab, sharding.spec_dy_op_shard)
+    @jax.jit
+    def _do_factor(A, B, C):
+        """JIT-compiled SPIKE factorisation kernel."""
+        # Per-block dense LU (cuSOLVER batched).
+        lu, piv = jax.vmap(jax.vmap(jax.vmap(sla.lu_factor)))(A)
+
+        # Spike solves: V_i = A_i^{-1} B_i,
+        #               W_i = A_i^{-1} C_i.
+        V = jax.vmap(jax.vmap(jax.vmap(sla.lu_solve)))((lu, piv), B)
+        W = jax.vmap(jax.vmap(jax.vmap(sla.lu_solve)))((lu, piv), C)
+
+        # Reduced system assembly and factorisation.
+        A_red = _build_reduced_matrix(V, W, p)
+        red_lu, red_piv = jax.vmap(jax.vmap(sla.lu_factor))(A_red)
+
+        return lu, piv, V, W, red_lu, red_piv
+
+    return _do_factor(A_blocks, B_full, C_full)
 
 
 def _build_Lk_dense_gpu(
@@ -548,8 +785,9 @@ def _build_Lk_dense_gpu(
     Used only by the ``"dense"`` solver backend; allocates
     `$(N_{kz}, N_{kx}, N_y, N_y)$`.  No CPU path.
 
-    Parameters / returns follow :func:`_build_Lk_ab_gpu`, but the
-    output is the full dense operator.
+    Parameters / returns follow
+    :func:`_build_Lk_blocks_gpu`, but the output is the
+    full dense operator.
     """
     Ny = D2.shape[-1]
     eye = jnp.eye(Ny, dtype=D2.dtype)
@@ -566,143 +804,33 @@ def _build_Lk_dense_gpu(
     # Row -1: D1[-1, :] for all modes.
     Lk = Lk.at[..., -1, :].set(D1[-1, :])
 
-    return jax.lax.with_sharding_constraint(Lk, sharding.spec_dy_op_shard)
+    return Lk
 
 
 def _build_Hk_dense_gpu(
     D2: Array, k2: Array, dt: float, c: float, nu: float
-) -> tuple[Array, Array]:
-    """Build dense `$H_k$` and `$H_k^-$` on GPU (dense backend only).
+) -> Array:
+    """Build dense `$H_k$` on GPU (dense backend only).
 
-    Returns both the implicit operator
-    `$H_k = (1/\\Delta t) I - c \\nu (D_2 - k^2 I)$` and the
-    explicit one `$H_k^- = (1/\\Delta t) I + (1-c) \\nu (D_2 - k^2 I)$`,
-    each with identity wall rows for no-slip Dirichlet BCs.
+    Returns the implicit operator
+    `$H_k = (1/\\Delta t) I - c \\nu (D_2 - k^2 I)$`
+    with identity wall rows for no-slip Dirichlet BCs.
+    The explicit counterpart `$H_k^-$` is applied matrix-free
+    by :func:`_hk_minus_matvec`.
     """
     Ny = D2.shape[-1]
     eye = jnp.eye(Ny, dtype=D2.dtype)
     Lk_raw = D2[None, None, :, :] - k2[..., None] * eye
 
     Hk = (1.0 / dt) * eye - c * nu * Lk_raw
-    Hk_minus = (1.0 / dt) * eye + (1.0 - c) * nu * Lk_raw
 
     # Dirichlet identity rows.
     zero_row = jnp.zeros(Ny, dtype=D2.dtype)
     e_0 = zero_row.at[0].set(1.0)
     e_Nm1 = zero_row.at[-1].set(1.0)
     Hk = Hk.at[..., 0, :].set(e_0).at[..., -1, :].set(e_Nm1)
-    Hk_minus = Hk_minus.at[..., 0, :].set(e_0).at[..., -1, :].set(e_Nm1)
 
-    Hk = jax.lax.with_sharding_constraint(Hk, sharding.spec_dy_op_shard)
-    Hk_minus = jax.lax.with_sharding_constraint(
-        Hk_minus, sharding.spec_dy_op_shard
-    )
-    return Hk, Hk_minus
-
-
-# ── GPU banded LU factorisation (LAPACK-compatible) ──────────────────
-
-
-def _banded_lu_factor_mode(ab: Array, kl: int, ku: int) -> tuple[Array, Array]:
-    """Single-mode banded LU with partial pivoting (LAPACK-compatible).
-
-    Equivalent to LAPACK ``dgbtrf`` on one `$N_y \\times N_y$`
-    matrix in LAPACK ab packing.  The factorisation runs as a
-    ``lax.scan`` of length `$N_y$`; at each column *j* a small
-    `$(k_l + 1, k_l + k_u + 1)$` dense *window* is extracted from a
-    `$k_l + k_u + 1$`-wide dynamic slice of ``ab``, partial-pivoted,
-    row-swapped, and Gauss-eliminated, then written back.
-
-    The window corresponds to dense rows `$[j, j + k_l]$` and dense
-    columns `$[j, j + k_l + k_u]$` — exactly the entries touched by
-    one step of ``dgbtrf``.  Because the LAPACK packing stores
-    dense row *i* along the diagonal ``ab[kl + ku + i - j, j]``,
-    the window is a parallelogram inside ``ab_window``, and is
-    reshaped into a rectangle via the compile-time index map
-    ``W[r, c] = ab_window[kl + ku - c + r, c]``.
-
-    To keep the dynamic slice width fixed near the right edge of
-    ``ab``, the input is zero-padded by ``kl + ku`` columns on the
-    right before the scan and trimmed back afterwards.  Those
-    padding columns can absorb harmless writes from the last
-    ``kl + ku`` steps because dense rows beyond `$N_y - 1$` are
-    zero by construction, so the pivot stays on the true diagonal
-    and the elimination is a no-op there.
-
-    Parameters
-    ----------
-    ab:
-        Input banded matrix in LAPACK ab packing, shape
-        ``(2 kl + ku + 1, Ny)``.
-    kl, ku:
-        Lower and upper bandwidths (``kl == ku == p`` in our use).
-
-    Returns
-    -------
-    ab:
-        LU factors in LAPACK ab packing (same shape and layout as
-        the input), with ``L`` below and ``U`` on and above the
-        diagonal.
-    ipiv:
-        0-based pivot indices, shape ``(Ny,)`` int32.  At step
-        ``j``, dense row ``j`` was swapped with dense row
-        ``ipiv[j]``; ``ipiv[j] >= j`` always.
-    """
-    Ny = ab.shape[-1]
-    window_cols = kl + ku + 1
-    window_rows = kl + 1
-    r_win = jnp.arange(window_rows)[:, None]
-    c_win = jnp.arange(window_cols)[None, :]
-    win_ab_row = kl + ku - c_win + r_win
-    win_c = jnp.broadcast_to(c_win, win_ab_row.shape)
-
-    ab = jnp.pad(ab, [(0, 0), (0, kl + ku)])
-    ipiv = jnp.zeros(Ny, dtype=jnp.int32)
-
-    def step(
-        carry: tuple[Array, Array], j: Array
-    ) -> tuple[tuple[Array, Array], None]:
-        ab, ipiv = carry
-        ab_win = lax.dynamic_slice_in_dim(ab, j, window_cols, axis=-1)
-        # Rectangular view of the (kl+1) x (kl+ku+1) parallelogram.
-        W = ab_win[win_ab_row, win_c]
-
-        # Partial pivot on column 0 of W (dense column j).
-        r_best = jnp.argmax(jnp.abs(W[:, 0])).astype(jnp.int32)
-        ipiv = ipiv.at[j].set(j.astype(jnp.int32) + r_best)
-
-        # Swap dense rows j and j + r_best inside the window.
-        row_0 = W[0]
-        row_best = W[r_best]
-        W = W.at[0].set(row_best).at[r_best].set(row_0)
-
-        # Multipliers, then eliminate the sub-diagonal of column 0
-        # across the remaining window columns.
-        pivot = W[0, 0]
-        mult = W[1:, 0] / pivot
-        W = W.at[1:, 0].set(mult)
-        W = W.at[1:, 1:].add(-mult[:, None] * W[0, 1:][None, :])
-
-        ab_win = ab_win.at[win_ab_row, win_c].set(W)
-        ab = lax.dynamic_update_slice_in_dim(ab, ab_win, j, axis=-1)
-        return (ab, ipiv), None
-
-    (ab, ipiv), _ = lax.scan(step, (ab, ipiv), jnp.arange(Ny))
-    return ab[:, :Ny], ipiv
-
-
-@partial(jax.jit, static_argnames=("kl", "ku"))
-def _banded_lu_factor_batched(
-    ab: Array, kl: int, ku: int
-) -> tuple[Array, Array]:
-    """Batch :func:`_banded_lu_factor_mode` over `$(N_{kz}, N_{kx})$`.
-
-    ``jax.vmap(jax.vmap(...))`` preserves the kx-sharding of the
-    input ab on axis 1, so each device factorises only its local
-    modes.
-    """
-    factor_one = lambda a: _banded_lu_factor_mode(a, kl, ku)  # noqa: E731
-    return jax.vmap(jax.vmap(factor_one))(ab)
+    return Hk
 
 
 # ── CartesianFlow base dataclass ─────────────────────────────────────────
@@ -729,12 +857,6 @@ class CartesianFlow:
     D2_bnd: Array = field(init=False)
     Lk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
     Hk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
-    # ``Lk`` and ``Hk_minus`` are only populated under
-    # ``params.solver.backend == "dense"`` for the matrix-free matvecs
-    # at :func:`_imm_iteration`.  Under ``"banded"`` they stay ``None``
-    # and the matvecs are computed on the fly from ``D2``.
-    Lk: Array | None = field(init=False, default=None)
-    Hk_minus: Array | None = field(init=False, default=None)
     p1: Array = field(init=False)
     p2: Array = field(init=False)
     v1: Array = field(init=False)
@@ -747,18 +869,21 @@ class CartesianFlow:
         """Build CGL grid, FD matrices, and IMM operators.
 
         Constructs the Chebyshev-Gauss-Lobatto grid for
-        the wall-normal coordinate ``y`` in ``[-1, 1]``, FD
-        matrices ``D1`` and ``D2``, and all per-mode IMM
-        operators directly on the device.  No CPU LU or chunked
-        host->device copy is involved: under the banded backend,
-        ``Lk`` and ``Hk`` are assembled straight into LAPACK
-        ab-packed form via :func:`_build_Lk_ab_gpu` /
-        :func:`_build_Hk_ab_gpu` and factorised by
-        :func:`_banded_lu_factor_batched`; under the dense backend
-        they are built as full `$(N_y, N_y)$` blocks via
-        :func:`_build_Lk_dense_gpu` / :func:`_build_Hk_dense_gpu`
-        and factorised by :class:`DenseJAXSolver`.  Homogeneous
-        IMM data (``p1..q2``, ``M_inv``) is derived from the GPU
+        the wall-normal coordinate `$y$` in `$[-1, 1]$`,
+        FD matrices `$D_1$` and `$D_2$`, and all per-mode
+        IMM operators directly on the device.  Under the
+        banded backend, `$L_k$` and `$H_k$` are assembled
+        into per-block dense form and factorised via the
+        SPIKE algorithm (:func:`_spike_factor`): per-block
+        dense LU on `$(m, m)$` blocks (cuSOLVER batched)
+        plus a small reduced system, with no
+        `$(N_y, N_y)$` array materialised.  Under the
+        dense backend they are built as full
+        `$(N_y, N_y)$` blocks via
+        :func:`_build_Lk_dense_gpu` /
+        :func:`_build_Hk_dense_gpu` and factorised by
+        :class:`DenseJAXSolver`.  Homogeneous IMM data
+        (``p1..q2``, ``M_inv``) is derived from the GPU
         operator by :meth:`_derive_imm_homogeneous_data`.
         """
         self.ys = -jnp.cos(
@@ -772,13 +897,15 @@ class CartesianFlow:
         # gauge fix and the IMM operator construction, and copied to
         # the GPU immediately below.
         D1, D2 = build_diff_matrices(np.array(self.ys), params.res.fd_order)
-        self.D1 = jax.device_put(jnp.asarray(D1), sharding.no_shard)
-        self.D2 = jax.device_put(jnp.asarray(D2), sharding.no_shard)
-        self.D1_bnd = jax.device_put(
-            jnp.asarray(D1[[0, -1], :]), sharding.no_shard
+        self.D1 = jnp.asarray(jnp.asarray(D1), out_sharding=sharding.no_shard)
+        self.D2 = jnp.asarray(jnp.asarray(D2), out_sharding=sharding.no_shard)
+        self.D1_bnd = jnp.asarray(
+            jnp.asarray(D1[[0, -1], :]),
+            out_sharding=sharding.no_shard,
         )
-        self.D2_bnd = jax.device_put(
-            jnp.asarray(D2[[0, -1], :]), sharding.no_shard
+        self.D2_bnd = jnp.asarray(
+            jnp.asarray(D2[[0, -1], :]),
+            out_sharding=sharding.no_shard,
         )
 
         Nkz = params.res.nz - 1
@@ -791,29 +918,56 @@ class CartesianFlow:
         nu = 1.0 / params.phys.re
 
         if params.solver.backend == "banded":
-            # Build Lk, Hk directly in LAPACK ab packing (no dense
-            # `(Nkz, Nkx, Ny, Ny)` intermediate anywhere) and factorise
-            # with the pure-JAX banded LU scan.
-            Lk_ab = _build_Lk_ab_gpu(
-                self.D1, self.D2, fourier.k2, fourier.k2_is_zero, p
+            # SPIKE block-partitioned factorisation: dense LU
+            # on small (m, m) blocks, no (Ny, Ny) array.
+            sbs = params.solver.spike_block_size
+            if sbs is not None:
+                if Ny % sbs != 0 or sbs < 2 * p:
+                    sharding.print(
+                        f"spike_block_size={sbs} invalid for "
+                        f"Ny={Ny}, p={p}; falling back to auto."
+                    )
+                    P_blk, m_blk = _choose_block_partition(Ny, p)
+                else:
+                    P_blk, m_blk = Ny // sbs, sbs
+            else:
+                P_blk, m_blk = _choose_block_partition(Ny, p)
+            sharding.print(
+                f"SPIKE partition: P={P_blk}, m={m_blk} (Ny={Ny}, p={p})"
             )
-            Hk_ab = _build_Hk_ab_gpu(self.D2, fourier.k2, dt, c, nu, p)
-            Lk_ab, Lk_piv = _banded_lu_factor_batched(Lk_ab, p, p)
-            Hk_ab, Hk_piv = _banded_lu_factor_batched(Hk_ab, p, p)
-            self.Lk_op = PerModeBandedOperator(ab=Lk_ab, ipiv=Lk_piv)
-            self.Hk_op = PerModeBandedOperator(ab=Hk_ab, ipiv=Hk_piv)
+            Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
+                self.D1,
+                self.D2,
+                fourier.k2,
+                fourier.k2_is_zero,
+                p,
+                P_blk,
+                m_blk,
+            )
+            Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
+                self.D2,
+                fourier.k2,
+                dt,
+                c,
+                nu,
+                p,
+                P_blk,
+                m_blk,
+            )
+            self.Lk_op = PerModeBandedOperator(
+                *_spike_factor(Lk_A, Lk_B, Lk_C)
+            )
+            self.Hk_op = PerModeBandedOperator(
+                *_spike_factor(Hk_A, Hk_B, Hk_C)
+            )
         else:
-            # Dense backend: parity/reference path.  The full
-            # `(Nkz, Nkx, Ny, Ny)` matrices only ever materialise
-            # under this branch.
+            # Dense backend: parity/reference path.  Full
+            # `(Nkz, Nkx, Ny, Ny)` matrices are built, LU-factored,
+            # then discarded — only the factors are kept.
             Lk_dense = _build_Lk_dense_gpu(
                 self.D1, self.D2, fourier.k2, fourier.k2_is_zero
             )
-            Hk_dense, Hk_minus_dense = _build_Hk_dense_gpu(
-                self.D2, fourier.k2, dt, c, nu
-            )
-            self.Lk = Lk_dense
-            self.Hk_minus = Hk_minus_dense
+            Hk_dense = _build_Hk_dense_gpu(self.D2, fourier.k2, dt, c, nu)
             self.Lk_op = DenseJAXSolver(Lk_dense)
             self.Hk_op = DenseJAXSolver(Hk_dense)
 
@@ -917,8 +1071,9 @@ def init_state(snapshot: str | None) -> Array:
         snapshot_arr = jnp.load(snapshot)["velocity_phys_nonexpanded"].astype(
             sharding.float_type
         )
-        velocity_phys = jax.device_put(
-            snapshot_arr, sharding.phys_vector_shard
+        velocity_phys = jnp.asarray(
+            jnp.asarray(snapshot_arr),
+            out_sharding=sharding.phys_vector_shard,
         )
         velocity_spec = phys_to_spec_2d(velocity_phys)
 
@@ -970,13 +1125,6 @@ def _get_rhs(
         lambda s: _curl_fn(s, fourier_, flow_),
     )
     return nonlin
-
-
-def _matvec_4d(op: Array, x: Array) -> Array:
-    """Apply operator of shape (Nkz, Nkx, Ny, Ny)
-    to field of shape (Nkz, Nkx, Ny).
-    """
-    return jnp.einsum("zxij, zxj -> zxi", op, x)
 
 
 def _lk_matvec(
@@ -1110,20 +1258,22 @@ def _imm_iteration(
     ikx = 1j * fourier_.kx
     ikz = 1j * fourier_.kz
 
+    # Batch the three D1 y-derivatives into one GEMM.
+    dy_stack = jnp.einsum(
+        "ij, czxj -> czxi",
+        flow_.D1,
+        jnp.stack([v_n, Nv_j, Nv_n]),
+    )
+    dy_v_n, dy_Nv_j, dy_Nv_n = dy_stack[0], dy_stack[1], dy_stack[2]
+
     # d_hat^n (discrete divergence at time n; ~0 after first step).
-    dy_v_n = jnp.einsum("ij, zxj -> zxi", flow_.D1, v_n)
     d_hat_n = ikx * u_n + dy_v_n + ikz * w_n
 
     # Stage 1: interior pressure Poisson RHS.
-    dy_Nv_j = jnp.einsum("ij, zxj -> zxi", flow_.D1, Nv_j)
-    dy_Nv_n = jnp.einsum("ij, zxj -> zxi", flow_.D1, Nv_n)
     div_Nj = ikx * Nu_j + dy_Nv_j + ikz * Nw_j
     div_Nn = ikx * Nu_n + dy_Nv_n + ikz * Nw_n
 
-    if params.solver.backend == "banded":
-        Lk_d = _lk_matvec(d_hat_n, flow_.D2, flow_.D1_bnd, k2, k2_is_zero)
-    else:
-        Lk_d = _matvec_4d(flow_.Lk, d_hat_n)
+    Lk_d = _lk_matvec(d_hat_n, flow_.D2, flow_.D1_bnd, k2, k2_is_zero)
 
     f_hat = d_hat_n / dt + c * div_Nj + (1 - c) * div_Nn + (1 - c) * nu * Lk_d
 
@@ -1142,15 +1292,10 @@ def _imm_iteration(
     dz_pP = ikz * pP
     grad_pP = jnp.stack([dx_pP, dy_pP, dz_pP])  # (3, Nkz, Nkx, Ny)
 
-    if params.solver.backend == "banded":
-        Hk_minus_stack = jax.vmap(
-            _hk_minus_matvec,
-            in_axes=(0, None, None, None, None, None),
-        )(velocity_n, flow_.D2, k2, dt, c, nu)
-    else:
-        Hk_minus_stack = jax.vmap(_matvec_4d, in_axes=(None, 0))(
-            flow_.Hk_minus, velocity_n
-        )
+    Hk_minus_stack = jax.vmap(
+        _hk_minus_matvec,
+        in_axes=(0, None, None, None, None, None),
+    )(velocity_n, flow_.D2, k2, dt, c, nu)
 
     R_stack = Hk_minus_stack - grad_pP + c * nonlin_j + (1 - c) * nonlin_n
     R_stack = R_stack.at[..., 0].set(0.0).at[..., -1].set(0.0)
@@ -1245,15 +1390,19 @@ def build_cartesian_stepper(
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
+    Callable[[Array], tuple[Array, Array, Array, Array]],
 ]:
     """Build time-stepping functions for a Cartesian wall-bounded flow.
 
-    Returns ``(predict_and_correct, iterate_correction, init_state_bound)``
-    with the ``fourier`` and *flow* singletons already bound.
+    Returns ``(predict_and_correct, iterate_correction,
+    init_state_bound, predict_and_fully_correct)`` with the
+    ``fourier`` and *flow* singletons already bound.
     """
-    _predict_and_correct_jit, _iterate_correction_jit = make_stepper(
-        _get_rhs, _predict, _correct, _norm
-    )
+    (
+        _predict_and_correct_jit,
+        _iterate_correction_jit,
+        _predict_and_fully_correct_jit,
+    ) = make_stepper(_get_rhs, _predict, _correct, _norm)
 
     def predict_and_correct(
         state: Array,
@@ -1271,8 +1420,19 @@ def build_cartesian_stepper(
             state_prev, prediction, rhs_prev, fourier, flow
         )
 
+    def predict_and_fully_correct(
+        state: Array,
+    ) -> tuple[Array, Array, Array, Array]:
+        """Fused predict + corrector loop with bound singletons."""
+        return _predict_and_fully_correct_jit(state, fourier, flow)
+
     def init_state_bound(snapshot: str | None) -> Array:
         """Initialize the flow state."""
         return init_state(snapshot)
 
-    return predict_and_correct, iterate_correction, init_state_bound
+    return (
+        predict_and_correct,
+        iterate_correction,
+        init_state_bound,
+        predict_and_fully_correct,
+    )
