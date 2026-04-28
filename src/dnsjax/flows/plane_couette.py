@@ -95,9 +95,12 @@ class PlaneCouetteFlow(CartesianFlow):
 
 flow: PlaneCouetteFlow = PlaneCouetteFlow()
 
-predict_and_correct, iterate_correction, init_state = build_cartesian_stepper(
-    flow
-)
+(
+    predict_and_correct,
+    iterate_correction,
+    init_state,
+    predict_and_fully_correct,
+) = build_cartesian_stepper(flow)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────────────

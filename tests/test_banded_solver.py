@@ -1,17 +1,16 @@
-"""Unit tests for the banded LU helpers in :mod:`dnsjax.geometries.cartesian`.
+"""Unit tests for the SPIKE solver in :mod:`dnsjax.geometries.cartesian`.
 
 The tests cover four concerns:
 
-1. Round-trip accuracy of ``_banded_lu_numpy`` +
-   ``_banded_solve_device`` against ``np.linalg.solve`` for a random
-   banded matrix (real RHS).
-2. ``PerModeBandedOperator`` on a complex RHS using the split
-   real/imag path.
-3. Parity between ``PerModeBandedOperator`` and ``DenseJAXSolver``
-   for `$L_k$` and `$H_k$` at representative modes including the
-   `$k^2 = 0$` mean-mode pin.
-4. ``_lk_matvec`` and ``_hk_minus_matvec`` match the dense
-   ``build_Lk_neumann @ u`` / ``build_Hk_dirichlet[1] @ u``.
+1. SPIKE factorisation + solve round-trip for a random banded matrix
+   with both real and complex RHS (multi-block ``P >= 2`` partition).
+2. Parity between ``PerModeBandedOperator`` (SPIKE) and
+   ``DenseJAXSolver`` for `$L_k$` and `$H_k$` at the module-level
+   Fourier modes, including the `$k^2 = 0$` mean-mode pin.
+3. ``_lk_matvec`` matches a reference `$L_k u$` built from
+   `$D_1$`/`$D_2$`.
+4. ``_hk_minus_matvec`` matches a reference `$H_k^- u$` built from
+   `$D_2$`.
 
 Run as a script via ``uv run python tests/test_banded_solver.py``.
 """
@@ -26,13 +25,13 @@ jax.config.update("jax_enable_x64", True)
 
 # Mutate global ``params`` before importing any dnsjax module that
 # captures values from it (``sharding.Sharding`` does so at class
-# definition time).  Small resolutions keep the module-level
-# ``PlaneCouetteFlow()`` singleton cheap.
+# definition time).  Ny = 16 allows a genuine multi-block SPIKE
+# partition (P = 2, m = 8) at fd_order = 4.
 from dnsjax.parameters import params  # noqa: E402
 
 params.phys.system = "plane-couette"
 params.res.nx = 4
-params.res.ny = 17
+params.res.ny = 16
 params.res.nz = 4
 params.res.fd_order = 4
 params.res.double_precision = True
@@ -45,122 +44,182 @@ from dnsjax.fd import build_diff_matrices  # noqa: E402
 from dnsjax.geometries.cartesian import (  # noqa: E402
     DenseJAXSolver,
     PerModeBandedOperator,
-    _banded_lu_numpy,
-    _banded_solve_device,
-    build_Hk_dirichlet,
-    build_Lk_neumann,
+    _build_Hk_blocks_gpu,
+    _build_Hk_dense_gpu,
+    _build_Lk_blocks_gpu,
+    _build_Lk_dense_gpu,
+    _choose_block_partition,
+    _hk_minus_matvec,
+    _lk_matvec,
+    _spike_factor,
+    fourier,
 )
+from dnsjax.sharding import sharding  # noqa: E402
+
+# ── helpers ──────────────────────────────────────────────────────────
 
 
-def _make_random_banded(Ny: int, kl: int, ku: int, seed: int) -> np.ndarray:
-    """Random banded matrix with a strong diagonal (well-conditioned)."""
+def _make_random_banded(Ny: int, p: int, seed: int) -> np.ndarray:
+    """Random banded matrix (half-bandwidth *p*), well-conditioned."""
     rng = np.random.default_rng(seed)
     A = np.zeros((Ny, Ny))
     for i in range(Ny):
-        j_lo = max(0, i - kl)
-        j_hi = min(Ny, i + ku + 1)
+        j_lo = max(0, i - p)
+        j_hi = min(Ny, i + p + 1)
         A[i, j_lo:j_hi] = rng.standard_normal(j_hi - j_lo)
-    # Diagonal shift avoids pathological conditioning.
     A += 10.0 * np.eye(Ny)
     return A
 
 
-def test_banded_solve_random_real() -> None:
-    """``_banded_solve_device`` matches ``np.linalg.solve`` (real RHS)."""
-    Ny, kl, ku = 16, 4, 4
-    A = _make_random_banded(Ny, kl, ku, seed=0)
+def _extract_spike_blocks(
+    A: np.ndarray, P: int, m: int, p: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract diagonal blocks and coupling corners from a banded matrix."""
+    A_blocks = np.zeros((P, m, m))
+    B_corner = np.zeros((P, p, p))
+    C_corner = np.zeros((P, p, p))
+    for i in range(P):
+        r0 = i * m
+        A_blocks[i] = A[r0 : r0 + m, r0 : r0 + m]
+        if i < P - 1:
+            B_corner[i] = A[r0 + m - p : r0 + m, r0 + m : r0 + m + p]
+        if i > 0:
+            C_corner[i] = A[r0 : r0 + p, r0 - p : r0]
+    return A_blocks, B_corner, C_corner
+
+
+def _build_Lk_reference(
+    k2_val: float, D1: np.ndarray, D2: np.ndarray
+) -> np.ndarray:
+    r"""Build single-mode `$L_k$` (Neumann-BC Laplacian) in NumPy."""
+    Ny = D2.shape[0]
+    Lk = D2.copy() - k2_val * np.eye(Ny)
+    if k2_val == 0.0:
+        Lk[0, :] = 0.0
+        Lk[0, 0] = 1.0
+    else:
+        Lk[0, :] = D1[0, :]
+    Lk[-1, :] = D1[-1, :]
+    return Lk
+
+
+def _build_Hk_minus_reference(
+    k2_val: float,
+    D2: np.ndarray,
+    dt: float,
+    c: float,
+    nu: float,
+) -> np.ndarray:
+    r"""Build single-mode `$H_k^-$` (explicit Helmholtz) in NumPy."""
+    Ny = D2.shape[0]
+    eye = np.eye(Ny)
+    Hk_minus = (1.0 / dt) * eye + (1.0 - c) * nu * (D2 - k2_val * eye)
+    Hk_minus[0, :] = eye[0, :]
+    Hk_minus[-1, :] = eye[-1, :]
+    return Hk_minus
+
+
+# ── tests ────────────────────────────────────────────────────────────
+
+
+def test_spike_solve_random() -> None:
+    """SPIKE solve matches ``np.linalg.solve`` (real + complex RHS)."""
+    Ny, p = 32, 4
+    P, m = 4, 8
+    A = _make_random_banded(Ny, p, seed=0)
+    A_blk, B_crn, C_crn = _extract_spike_blocks(A, P, m, p)
+
+    Nkz = params.res.nz - 1
+    Nkx = params.res.nx // 2
+    A_j = jnp.asarray(
+        jnp.tile(jnp.asarray(A_blk)[None, None], (Nkz, Nkx, 1, 1, 1)),
+        out_sharding=sharding.spec_dy_blocks_shard,
+    )
+    B_j = jnp.tile(jnp.asarray(B_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
+    C_j = jnp.tile(jnp.asarray(C_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
+
+    op = PerModeBandedOperator(*_spike_factor(A_j, B_j, C_j))
+
     rng = np.random.default_rng(10)
+
+    # Real RHS.
     b = rng.standard_normal(Ny)
-
-    ab, ipiv = _banded_lu_numpy(A, kl, ku)
-    x = np.asarray(
-        _banded_solve_device(
-            jnp.asarray(ab), jnp.asarray(ipiv), jnp.asarray(b), kl, ku
-        )
+    rhs = jnp.asarray(
+        jnp.tile(jnp.asarray(b)[None, None, :], (Nkz, Nkx, 1)),
+        out_sharding=sharding.spec_imm_corr_shard,
     )
-    x_ref = np.linalg.solve(A, b)
-    assert_allclose(x, x_ref, atol=1e-10, rtol=1e-10)
-
-
-def test_banded_operator_complex_rhs() -> None:
-    """Complex RHS via the split path in ``PerModeBandedOperator``."""
-    Ny, kl, ku = 16, 4, 4
-    A = _make_random_banded(Ny, kl, ku, seed=1)
-    rng = np.random.default_rng(11)
-    b = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
-
-    ab, ipiv = _banded_lu_numpy(A, kl, ku)
-    op = PerModeBandedOperator(
-        ab=jnp.asarray(ab)[None, None],
-        ipiv=jnp.asarray(ipiv)[None, None],
-    )
-    rhs = jnp.asarray(b)[None, None, :]
     x = np.asarray(op.solve(rhs))[0, 0]
-    x_ref = np.linalg.solve(A, b)
-    assert_allclose(x, x_ref, atol=1e-10, rtol=1e-10)
+    assert_allclose(x, np.linalg.solve(A, b), atol=1e-10, rtol=1e-10)
+
+    # Complex RHS.
+    b_c = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
+    rhs_c = jnp.asarray(
+        jnp.tile(jnp.asarray(b_c)[None, None, :], (Nkz, Nkx, 1)),
+        out_sharding=sharding.spec_imm_corr_shard,
+    )
+    x_c = np.asarray(op.solve(rhs_c))[0, 0]
+    assert_allclose(x_c, np.linalg.solve(A, b_c), atol=1e-10, rtol=1e-10)
 
 
-def test_banded_vs_dense_on_imm_operators() -> None:
+def test_spike_vs_dense_on_imm_operators() -> None:
     """``PerModeBandedOperator`` matches ``DenseJAXSolver`` on Lk/Hk."""
-    Ny = 17
-    p = 4
-    kl = ku = p
+    Ny = params.res.ny
+    p = params.res.fd_order
     y = -np.cos(np.arange(Ny) * np.pi / (Ny - 1))
     D1, D2 = build_diff_matrices(y, p)
+    D1_j, D2_j = jnp.asarray(D1), jnp.asarray(D2)
 
     dt, c, nu = 0.01, 0.5, 1.0 / 1000.0
-    modes = [(0.0, 0.0), (0.0, 1.7), (2.0, 3.0)]
+    P_opt, m_opt = _choose_block_partition(Ny, p)
 
+    # SPIKE path.
+    Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
+        D1_j, D2_j, fourier.k2, fourier.k2_is_zero, p, P_opt, m_opt
+    )
+    Lk_banded = PerModeBandedOperator(*_spike_factor(Lk_A, Lk_B, Lk_C))
+
+    Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
+        D2_j, fourier.k2, dt, c, nu, p, P_opt, m_opt
+    )
+    Hk_banded = PerModeBandedOperator(*_spike_factor(Hk_A, Hk_B, Hk_C))
+
+    # Dense path (reference).
+    Lk_dense = DenseJAXSolver(
+        _build_Lk_dense_gpu(D1_j, D2_j, fourier.k2, fourier.k2_is_zero)
+    )
+    Hk_dense = DenseJAXSolver(_build_Hk_dense_gpu(D2_j, fourier.k2, dt, c, nu))
+
+    # Solve same complex RHS with both backends.
+    Nkz, Nkx = int(fourier.k2.shape[0]), int(fourier.k2.shape[1])
     rng = np.random.default_rng(20)
-    for kz, kx in modes:
-        k2 = kx**2 + kz**2
-        Lk = build_Lk_neumann(k2, D1, D2)
-        Hk, _ = build_Hk_dirichlet(k2, D2, dt, c, nu)
+    b = rng.standard_normal((Nkz, Nkx, Ny)) + 1j * rng.standard_normal(
+        (Nkz, Nkx, Ny)
+    )
+    rhs = jnp.asarray(
+        jnp.asarray(b), out_sharding=sharding.spec_imm_corr_shard
+    )
 
-        # Banded path.
-        Lk_ab, Lk_piv = _banded_lu_numpy(Lk, kl, ku)
-        Hk_ab, Hk_piv = _banded_lu_numpy(Hk, kl, ku)
-        Lk_op = PerModeBandedOperator(
-            ab=jnp.asarray(Lk_ab)[None, None],
-            ipiv=jnp.asarray(Lk_piv)[None, None],
-        )
-        Hk_op = PerModeBandedOperator(
-            ab=jnp.asarray(Hk_ab)[None, None],
-            ipiv=jnp.asarray(Hk_piv)[None, None],
-        )
+    x_b = np.asarray(Lk_banded.solve(rhs))
+    x_d = np.asarray(Lk_dense.solve(rhs))
+    assert_allclose(x_b, x_d, atol=1e-9, rtol=1e-9)
 
-        # Dense path (reference).
-        Lk_dense = DenseJAXSolver(jnp.asarray(Lk)[None, None])
-        Hk_dense = DenseJAXSolver(jnp.asarray(Hk)[None, None])
-
-        b = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
-        rhs = jnp.asarray(b)[None, None, :]
-
-        x_banded = np.asarray(Lk_op.solve(rhs))[0, 0]
-        x_dense = np.asarray(Lk_dense.solve(rhs))[0, 0]
-        assert_allclose(x_banded, x_dense, atol=1e-9, rtol=1e-9)
-
-        x_banded = np.asarray(Hk_op.solve(rhs))[0, 0]
-        x_dense = np.asarray(Hk_dense.solve(rhs))[0, 0]
-        assert_allclose(x_banded, x_dense, atol=1e-9, rtol=1e-9)
+    x_b = np.asarray(Hk_banded.solve(rhs))
+    x_d = np.asarray(Hk_dense.solve(rhs))
+    assert_allclose(x_b, x_d, atol=1e-9, rtol=1e-9)
 
 
-def test_lk_matvec_matches_dense() -> None:
-    """``_lk_matvec`` matches ``build_Lk_neumann(...) @ u``."""
-    from dnsjax.geometries.cartesian import _lk_matvec
-
+def test_lk_matvec_matches_reference() -> None:
+    r"""``_lk_matvec`` matches reference `$L_k u$` from D1/D2."""
     Ny, p = 17, 4
     y = -np.cos(np.arange(Ny) * np.pi / (Ny - 1))
     D1, D2 = build_diff_matrices(y, p)
-    D1_bnd = D1[[0, -1], :]
     D2_j = jnp.asarray(D2)
-    D1_bnd_j = jnp.asarray(D1_bnd)
+    D1_bnd_j = jnp.asarray(D1[[0, -1], :])
 
     rng = np.random.default_rng(30)
-    modes = [(0.0, 0.0), (0.0, 1.7), (2.0, 3.0)]
-    for kz, kx in modes:
+    for kz, kx in [(0.0, 0.0), (0.0, 1.7), (2.0, 3.0)]:
         k2_val = kx**2 + kz**2
-        Lk = build_Lk_neumann(k2_val, D1, D2)
+        Lk = _build_Lk_reference(k2_val, D1, D2)
         u = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
         ref = Lk @ u
 
@@ -171,10 +230,8 @@ def test_lk_matvec_matches_dense() -> None:
         assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
 
 
-def test_hk_minus_matvec_matches_dense() -> None:
-    """``_hk_minus_matvec`` matches ``build_Hk_dirichlet[1] @ u``."""
-    from dnsjax.geometries.cartesian import _hk_minus_matvec
-
+def test_hk_minus_matvec_matches_reference() -> None:
+    r"""``_hk_minus_matvec`` matches reference `$H_k^- u$` from D2."""
     Ny, p = 17, 4
     dt, c, nu = 0.01, 0.5, 1.0 / 1000.0
     y = -np.cos(np.arange(Ny) * np.pi / (Ny - 1))
@@ -182,10 +239,9 @@ def test_hk_minus_matvec_matches_dense() -> None:
     D2_j = jnp.asarray(D2)
 
     rng = np.random.default_rng(40)
-    modes = [(0.0, 0.0), (0.0, 1.7), (2.0, 3.0)]
-    for kz, kx in modes:
+    for kz, kx in [(0.0, 0.0), (0.0, 1.7), (2.0, 3.0)]:
         k2_val = kx**2 + kz**2
-        _, Hk_minus = build_Hk_dirichlet(k2_val, D2, dt, c, nu)
+        Hk_minus = _build_Hk_minus_reference(k2_val, D2, dt, c, nu)
         u = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
         ref = Hk_minus @ u
 
@@ -196,9 +252,8 @@ def test_hk_minus_matvec_matches_dense() -> None:
 
 
 if __name__ == "__main__":
-    test_banded_solve_random_real()
-    test_banded_operator_complex_rhs()
-    test_banded_vs_dense_on_imm_operators()
-    test_lk_matvec_matches_dense()
-    test_hk_minus_matvec_matches_dense()
+    test_spike_solve_random()
+    test_spike_vs_dense_on_imm_operators()
+    test_lk_matvec_matches_reference()
+    test_hk_minus_matvec_matches_reference()
     print("All banded-solver tests passed.")
