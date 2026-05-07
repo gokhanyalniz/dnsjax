@@ -42,19 +42,21 @@ from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.fd import build_diff_matrices  # noqa: E402
 from dnsjax.geometries.cartesian import (  # noqa: E402
-    DenseJAXSolver,
-    PerModeBandedOperator,
     _build_Hk_blocks_gpu,
     _build_Hk_dense_gpu,
     _build_Lk_blocks_gpu,
     _build_Lk_dense_gpu,
-    _choose_block_partition,
     _hk_minus_matvec,
     _lk_matvec,
-    _spike_factor,
     fourier,
 )
 from dnsjax.sharding import sharding  # noqa: E402
+from dnsjax.solvers import (  # noqa: E402
+    DenseJAXSolver,
+    PerModeBandedOperator,
+    _choose_block_partition,
+    _spike_factor,
+)
 
 # ── helpers ──────────────────────────────────────────────────────────
 
