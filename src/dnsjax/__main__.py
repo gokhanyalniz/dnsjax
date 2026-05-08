@@ -10,21 +10,19 @@ Execution proceeds in two phases:
 2. **Main loop** (:func:`main`):
    initialise velocity (from laminar or snapshot), then iterate:
 
-   - Euler predictor + Crank-Nicolson corrector (:func:`predict_and_correct`)
-   - Additional corrector iterations if needed (:func:`iterate_correction`)
-   - Divergence correction + mean-mode zeroing for triply-periodic flows
-     (:func:`correct_velocity`)
+   - Fused predictor + corrector loop
+     (:func:`predict_and_fully_correct`)
+   - Divergence correction + mean-mode zeroing for
+     triply-periodic flows (:func:`correct_velocity`)
    - Periodic diagnostic output (:func:`get_stats`)
 
-   The loop terminates when the simulation time, wall-clock time, or
-   corrector divergence criterion is reached.
+   The loop terminates when the simulation time, wall-clock
+   time, or corrector divergence criterion is reached.
 
 Benchmarking
 ------------
-The first time step is excluded from wall-clock statistics because it
-includes JAX's JIT compilation overhead.  Additionally, the first call
-to ``iterate_correction`` (if it occurs on the first step) is excluded
-via the ``bench_delta`` accumulator.
+The first time step is excluded from wall-clock statistics
+because it includes JAX's JIT compilation overhead.
 """
 
 import os
