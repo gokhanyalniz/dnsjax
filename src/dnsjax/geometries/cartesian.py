@@ -16,7 +16,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import jax
-import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
@@ -432,19 +431,15 @@ class CartesianFlow:
             / (params.res.ny - 1)
         )
 
-        # ``build_diff_matrices`` stays on the CPU: the ``(Ny, Ny)``
-        # derivative matrices are tiny, used once for the mean-mode
-        # gauge fix and the IMM operator construction, and copied to
-        # the GPU immediately below.
-        D1, D2 = build_diff_matrices(np.array(self.ys), params.res.fd_order)
-        self.D1 = jax.device_put(jnp.asarray(D1), sharding.no_shard)
-        self.D2 = jax.device_put(jnp.asarray(D2), sharding.no_shard)
-        self.D1_bnd = jax.device_put(
-            jnp.asarray(D1[[0, -1], :]), sharding.no_shard
-        )
-        self.D2_bnd = jax.device_put(
-            jnp.asarray(D2[[0, -1], :]), sharding.no_shard
-        )
+        # ``build_diff_matrices`` constructs the ``(Ny, Ny)``
+        # derivative matrices using JAX arrays with Python control
+        # flow (outside ``@jit``).  The results are distributed to
+        # devices immediately below.
+        D1, D2 = build_diff_matrices(self.ys, params.res.fd_order)
+        self.D1 = jax.device_put(D1, sharding.no_shard)
+        self.D2 = jax.device_put(D2, sharding.no_shard)
+        self.D1_bnd = jax.device_put(D1[[0, -1], :], sharding.no_shard)
+        self.D2_bnd = jax.device_put(D2[[0, -1], :], sharding.no_shard)
 
         Nkz = params.res.nz - 1
         Nkx = params.res.nx // 2
