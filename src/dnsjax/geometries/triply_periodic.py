@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 
-from jax import Array, jit, vmap
+from jax import Array, device_put, jit, vmap
 from jax import numpy as jnp
 
 from ..bench import timer
@@ -56,27 +56,27 @@ class Fourier:
 
     def __post_init__(self) -> None:
         self.kx = (
-            jnp.asarray(
+            device_put(
                 real_harmonics(params.res.nx).reshape([1, 1, -1]),
-                out_sharding=sharding.spec_scalar_shard,
+                sharding.spec_scalar_shard,
             )
             * 2
             * jnp.pi
             / params.geo.lx
         )
         self.kz = (
-            jnp.asarray(
+            device_put(
                 complex_harmonics(params.res.nz).reshape([1, -1, 1]),
-                out_sharding=sharding.no_shard,
+                sharding.no_shard,
             )
             * 2
             * jnp.pi
             / params.geo.lz
         )
         self.ky = (
-            jnp.asarray(
+            device_put(
                 complex_harmonics(params.res.ny).reshape([-1, 1, 1]),
-                out_sharding=sharding.no_shard,
+                sharding.no_shard,
             )
             * 2
             * jnp.pi
@@ -237,10 +237,7 @@ def init_state(snapshot: str | None, flow: TriplyPeriodicFlow) -> Array:
         snapshot_arr = jnp.load(snapshot)["velocity_phys"].astype(
             sharding.float_type
         )
-        velocity_phys = jnp.asarray(
-            jnp.asarray(snapshot_arr),
-            out_sharding=sharding.phys_vector_shard,
-        )
+        velocity_phys = device_put(snapshot_arr, sharding.phys_vector_shard)
         velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
         return phys_to_spec(velocity_phys)
     else:

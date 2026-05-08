@@ -57,7 +57,8 @@ Key sections: `[phys]` (re, system, oversampling_factor, oversample_y), `[geo]` 
 
 ### JAX-specific notes
 
-- Explicit mode sharding is used globally rather than Auto mode. Do not use `jax.lax.with_sharding_constraint`, and try to avoid `jax.device_put` where possible. Instead, use the `out_sharding` argument for array-allocating calls like `jnp.zeros`, and for `ndarray.at.get(...)` and `ndarray.at.set(...)` etc.
+- Explicit mode sharding is used globally rather than Auto mode, which propagates shardings on arrays for most operations. Do not use `jax.lax.with_sharding_constraint`.
+- Avoid allocating a global array first and then distributing it with `jax.device_put` to devices after when such an array can be directly allocated on individual devices via the `out_sharding` argument for array-allocating calls like `jnp.zeros`, `ndarray.at.get(...)` and `ndarray.at.set(...)` etc. When this is not possible, do not use `jnp.asarray` just to avoid a `jax.device_put`.
 - `jax_enable_x64` is set from `params.res.double_precision` before JAX initializes arrays.
 - Buffer donation (`donate_argnums`) is used on main time-stepping functions to reuse memory.
 - `@jit` and `@timer` decorators are stacked with `@timer` outermost so timing wraps the JIT-compiled function.

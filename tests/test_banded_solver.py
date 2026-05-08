@@ -133,9 +133,9 @@ def test_spike_solve_random() -> None:
 
     Nkz = params.res.nz - 1
     Nkx = params.res.nx // 2
-    A_j = jnp.asarray(
+    A_j = jax.device_put(
         jnp.tile(jnp.asarray(A_blk)[None, None], (Nkz, Nkx, 1, 1, 1)),
-        out_sharding=sharding.spec_dy_blocks_shard,
+        sharding.spec_dy_blocks_shard,
     )
     B_j = jnp.tile(jnp.asarray(B_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
     C_j = jnp.tile(jnp.asarray(C_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
@@ -146,18 +146,18 @@ def test_spike_solve_random() -> None:
 
     # Real RHS.
     b = rng.standard_normal(Ny)
-    rhs = jnp.asarray(
+    rhs = jax.device_put(
         jnp.tile(jnp.asarray(b)[None, None, :], (Nkz, Nkx, 1)),
-        out_sharding=sharding.spec_imm_corr_shard,
+        sharding.spec_imm_corr_shard,
     )
     x = np.asarray(op.solve(rhs))[0, 0]
     assert_allclose(x, np.linalg.solve(A, b), atol=1e-10, rtol=1e-10)
 
     # Complex RHS.
     b_c = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
-    rhs_c = jnp.asarray(
+    rhs_c = jax.device_put(
         jnp.tile(jnp.asarray(b_c)[None, None, :], (Nkz, Nkx, 1)),
-        out_sharding=sharding.spec_imm_corr_shard,
+        sharding.spec_imm_corr_shard,
     )
     x_c = np.asarray(op.solve(rhs_c))[0, 0]
     assert_allclose(x_c, np.linalg.solve(A, b_c), atol=1e-10, rtol=1e-10)
@@ -197,9 +197,7 @@ def test_spike_vs_dense_on_imm_operators() -> None:
     b = rng.standard_normal((Nkz, Nkx, Ny)) + 1j * rng.standard_normal(
         (Nkz, Nkx, Ny)
     )
-    rhs = jnp.asarray(
-        jnp.asarray(b), out_sharding=sharding.spec_imm_corr_shard
-    )
+    rhs = jax.device_put(jnp.asarray(b), sharding.spec_imm_corr_shard)
 
     x_b = np.asarray(Lk_banded.solve(rhs))
     x_d = np.asarray(Lk_dense.solve(rhs))
