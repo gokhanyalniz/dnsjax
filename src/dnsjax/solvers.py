@@ -463,10 +463,7 @@ def _spike_factor(
 
     Array sharding is handled eagerly via
     ``out_sharding`` on the allocating calls before
-    the JIT'd compute kernels, because the ``Explicit``
-    mesh type used by :mod:`sharding` does not support
-    resharding inside
-    ``jax.lax.with_sharding_constraint``.
+    the JIT'd compute kernels.
 
     Parameters
     ----------

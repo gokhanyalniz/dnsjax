@@ -61,16 +61,14 @@ class Fourier:
 
     def __post_init__(self) -> None:
         kx_vals = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
-        self.kx = jnp.asarray(
-            kx_vals.reshape([1, -1, 1]),
-            dtype=sharding.float_type,
-            out_sharding=sharding.spec_scalar_shard,
+        self.kx = jax.device_put(
+            kx_vals.reshape([1, -1, 1]).astype(sharding.float_type),
+            sharding.spec_scalar_shard,
         )
         kz_vals = complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
-        self.kz = jnp.asarray(
-            kz_vals.reshape([-1, 1, 1]),
-            dtype=sharding.float_type,
-            out_sharding=sharding.no_shard,
+        self.kz = jax.device_put(
+            kz_vals.reshape([-1, 1, 1]).astype(sharding.float_type),
+            sharding.no_shard,
         )
 
         self.k_metric = jnp.where(self.kx == 0, 1, 2).astype(
@@ -439,15 +437,13 @@ class CartesianFlow:
         # gauge fix and the IMM operator construction, and copied to
         # the GPU immediately below.
         D1, D2 = build_diff_matrices(np.array(self.ys), params.res.fd_order)
-        self.D1 = jnp.asarray(jnp.asarray(D1), out_sharding=sharding.no_shard)
-        self.D2 = jnp.asarray(jnp.asarray(D2), out_sharding=sharding.no_shard)
-        self.D1_bnd = jnp.asarray(
-            jnp.asarray(D1[[0, -1], :]),
-            out_sharding=sharding.no_shard,
+        self.D1 = jax.device_put(jnp.asarray(D1), sharding.no_shard)
+        self.D2 = jax.device_put(jnp.asarray(D2), sharding.no_shard)
+        self.D1_bnd = jax.device_put(
+            jnp.asarray(D1[[0, -1], :]), sharding.no_shard
         )
-        self.D2_bnd = jnp.asarray(
-            jnp.asarray(D2[[0, -1], :]),
-            out_sharding=sharding.no_shard,
+        self.D2_bnd = jax.device_put(
+            jnp.asarray(D2[[0, -1], :]), sharding.no_shard
         )
 
         Nkz = params.res.nz - 1
@@ -613,9 +609,8 @@ def init_state(snapshot: str | None) -> Array:
         snapshot_arr = jnp.load(snapshot)["velocity_phys_nonexpanded"].astype(
             sharding.float_type
         )
-        velocity_phys = jnp.asarray(
-            jnp.asarray(snapshot_arr),
-            out_sharding=sharding.phys_vector_shard,
+        velocity_phys = jax.device_put(
+            snapshot_arr, sharding.phys_vector_shard
         )
         velocity_spec = phys_to_spec_2d(velocity_phys)
 
