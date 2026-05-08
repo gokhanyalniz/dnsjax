@@ -167,29 +167,28 @@ def test_spike_vs_dense_on_imm_operators() -> None:
     """``PerModeBandedOperator`` matches ``DenseJAXSolver`` on Lk/Hk."""
     Ny = params.res.ny
     p = params.res.fd_order
-    y = -np.cos(np.arange(Ny) * np.pi / (Ny - 1))
+    y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))
     D1, D2 = build_diff_matrices(y, p)
-    D1_j, D2_j = jnp.asarray(D1), jnp.asarray(D2)
 
     dt, c, nu = 0.01, 0.5, 1.0 / 1000.0
     P_opt, m_opt = _choose_block_partition(Ny, p)
 
     # SPIKE path.
     Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-        D1_j, D2_j, fourier.k2, fourier.k2_is_zero, p, P_opt, m_opt
+        D1, D2, fourier.k2, fourier.k2_is_zero, p, P_opt, m_opt
     )
     Lk_banded = PerModeBandedOperator(*_spike_factor(Lk_A, Lk_B, Lk_C))
 
     Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
-        D2_j, fourier.k2, dt, c, nu, p, P_opt, m_opt
+        D2, fourier.k2, dt, c, nu, p, P_opt, m_opt
     )
     Hk_banded = PerModeBandedOperator(*_spike_factor(Hk_A, Hk_B, Hk_C))
 
     # Dense path (reference).
     Lk_dense = DenseJAXSolver(
-        _build_Lk_dense_gpu(D1_j, D2_j, fourier.k2, fourier.k2_is_zero)
+        _build_Lk_dense_gpu(D1, D2, fourier.k2, fourier.k2_is_zero)
     )
-    Hk_dense = DenseJAXSolver(_build_Hk_dense_gpu(D2_j, fourier.k2, dt, c, nu))
+    Hk_dense = DenseJAXSolver(_build_Hk_dense_gpu(D2, fourier.k2, dt, c, nu))
 
     # Solve same complex RHS with both backends.
     Nkz, Nkx = int(fourier.k2.shape[0]), int(fourier.k2.shape[1])
@@ -211,22 +210,21 @@ def test_spike_vs_dense_on_imm_operators() -> None:
 def test_lk_matvec_matches_reference() -> None:
     r"""``_lk_matvec`` matches reference `$L_k u$` from D1/D2."""
     Ny, p = 17, 4
-    y = -np.cos(np.arange(Ny) * np.pi / (Ny - 1))
+    y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))
     D1, D2 = build_diff_matrices(y, p)
-    D2_j = jnp.asarray(D2)
-    D1_bnd_j = jnp.asarray(D1[[0, -1], :])
 
     rng = np.random.default_rng(30)
     for kz, kx in [(0.0, 0.0), (0.0, 1.7), (2.0, 3.0)]:
         k2_val = kx**2 + kz**2
-        Lk = _build_Lk_reference(k2_val, D1, D2)
+        Lk = _build_Lk_reference(k2_val, np.asarray(D1), np.asarray(D2))
         u = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
         ref = Lk @ u
 
         u_j = jnp.asarray(u)[None, None, :]
         k2 = jnp.asarray([[[k2_val]]])
         k2_is_zero = k2 == 0.0
-        got = np.asarray(_lk_matvec(u_j, D2_j, D1_bnd_j, k2, k2_is_zero))[0, 0]
+        D1_bnd = D1[[0, -1], :]
+        got = np.asarray(_lk_matvec(u_j, D2, D1_bnd, k2, k2_is_zero))[0, 0]
         assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
 
 
@@ -234,20 +232,19 @@ def test_hk_minus_matvec_matches_reference() -> None:
     r"""``_hk_minus_matvec`` matches reference `$H_k^- u$` from D2."""
     Ny, p = 17, 4
     dt, c, nu = 0.01, 0.5, 1.0 / 1000.0
-    y = -np.cos(np.arange(Ny) * np.pi / (Ny - 1))
+    y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))
     _, D2 = build_diff_matrices(y, p)
-    D2_j = jnp.asarray(D2)
 
     rng = np.random.default_rng(40)
     for kz, kx in [(0.0, 0.0), (0.0, 1.7), (2.0, 3.0)]:
         k2_val = kx**2 + kz**2
-        Hk_minus = _build_Hk_minus_reference(k2_val, D2, dt, c, nu)
+        Hk_minus = _build_Hk_minus_reference(k2_val, np.asarray(D2), dt, c, nu)
         u = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
         ref = Hk_minus @ u
 
         u_j = jnp.asarray(u)[None, None, :]
         k2 = jnp.asarray([[[k2_val]]])
-        got = np.asarray(_hk_minus_matvec(u_j, D2_j, k2, dt, c, nu))[0, 0]
+        got = np.asarray(_hk_minus_matvec(u_j, D2, k2, dt, c, nu))[0, 0]
         assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
 
 
