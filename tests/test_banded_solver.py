@@ -1,4 +1,4 @@
-"""Unit tests for the SPIKE solver in :mod:`dnsjax.geometries.cartesian`.
+"""Unit tests for the SPIKE solver in :mod:`dnsjax.solvers`.
 
 The tests cover four concerns:
 

@@ -6,9 +6,9 @@ plane-Couette-specific base flow.  Geometry-general infrastructure
 iteration, predict / correct / norm, banded / dense LU solvers) is
 inherited from ``geometries.cartesian.CartesianFlow``.
 
-It also exports the full flow interface consumed by ``__main__``:
+It also exports the flow interface consumed by ``__main__``:
 
-- ``predict_and_correct`` / ``iterate_correction`` -- time stepping
+- ``predict_and_fully_correct`` -- fused predictor + corrector
 - ``init_state`` -- initial state from laminar or snapshot
 - ``get_stats`` -- diagnostic statistics
 

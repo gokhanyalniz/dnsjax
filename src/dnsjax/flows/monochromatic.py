@@ -6,12 +6,12 @@ diagnostics.  Geometry-general infrastructure (time-stepping coefficients,
 solvers, divergence correction) is inherited from
 ``geometries.triply_periodic.TriplyPeriodicFlow``.
 
-It also exports the full flow interface consumed by ``__main__``:
+It also exports the flow interface consumed by ``__main__``:
 
-- ``predict_and_correct`` / ``iterate_correction`` -- time stepping
+- ``predict_and_fully_correct`` -- fused predictor + corrector
+- ``init_state`` -- initial state from laminar or snapshot
 - ``get_stats`` -- diagnostic statistics
 - ``correct_velocity`` -- divergence correction + mean-mode zeroing
-- ``phys_to_spec`` -- forward 3D FFT (re-exported from operators)
 
 Base flow construction
 ----------------------
@@ -52,7 +52,7 @@ from ..geometries.triply_periodic import (
     get_norm2,
     laplacian,
 )
-from ..operators import phys_to_spec  # noqa: F401 – re-export for __main__
+from ..operators import phys_to_spec  # noqa: F401 – public re-export
 from ..parameters import (
     derived_params,
     monochromatic_systems,

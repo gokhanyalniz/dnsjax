@@ -53,7 +53,7 @@ Defaults (Pydantic models) -> `parameters.toml` -> CLI args. `update_parameters(
 
 ### Configuration (`parameters.toml`)
 
-Key sections: `[phys]` (re, forcing, oversampling_factor), `[geo]` (lx, lz, tilt_degree), `[res]` (nx, ny, nz, fd_order, double_precision), `[step]` (dt, implicitness, corrector_tolerance), `[stop]` (max_sim_time, max_wall_time as ISO 8601), `[debug]` (time_functions), `[dist]` (np, platform), `[solver]` (backend: `"banded"` or `"dense"`, spike_block_size: optional target SPIKE block size `m`).
+Key sections: `[phys]` (re, system, oversampling_factor, oversample_y), `[geo]` (lx, lz, tilt_degree), `[res]` (nx, ny, nz, fd_order, double_precision), `[step]` (dt, implicitness, corrector_tolerance), `[stop]` (max_sim_time, max_wall_time as ISO 8601), `[debug]` (time_functions), `[dist]` (np, platform), `[solver]` (backend: `"banded"` or `"dense"`, spike_block_size: optional target SPIKE block size `m`).
 
 ### JAX-specific notes
 

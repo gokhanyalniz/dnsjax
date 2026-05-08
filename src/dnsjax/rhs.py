@@ -19,9 +19,10 @@ The transforms (``spec_to_phys``, ``phys_to_spec``) and the ``curl``
 operator are provided as callables so that this module works with both
 3D FFTs (triply-periodic flows) and 2D FFTs (wall-bounded flows).
 
-The pressure projection is *not* performed here -- it is flow-specific
-(algebraic for triply-periodic, influence-matrix method for wall-bounded)
-and lives in the corresponding flow module.
+The pressure projection is *not* performed here -- it is
+geometry-specific (algebraic in ``geometries.triply_periodic``,
+influence-matrix method in ``geometries.cartesian``) and lives
+in the corresponding geometry module.
 """
 
 from collections.abc import Callable
@@ -55,7 +56,9 @@ def get_nonlin(
     velocity_spec:
         Perturbation velocity in spectral space, shape ``(3, *spec_shape)``.
     base_flow:
-        Base-flow velocity **U** in physical space, shape ``(3, ny_p, 1, 1)``.
+        Base-flow velocity **U** in physical space,
+        shape ``(3, ny_phys, 1, 1)`` where ``ny_phys`` is
+        ``ny_padded`` (periodic) or ``ny`` (wall-bounded).
     curl_base_flow:
         `$\\nabla \\times \\mathbf{U}$` in physical space, same shape.
     nonlin_base_flow:

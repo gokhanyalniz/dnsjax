@@ -109,7 +109,7 @@ class Debugging(BaseModel):
 class Solver(BaseModel):
     """Linear algebraic solver configurations."""
 
-    # ``"banded"``: LAPACK-packed banded LU factors (memory-efficient,
+    # ``"banded"``: SPIKE block-partitioned solver (memory-efficient,
     # exploits the known stencil bandwidth of D1, D2).
     # ``"dense"``: full ``Ny x Ny`` LU factors per Fourier mode
     # (legacy path, kept for verification against the banded path).

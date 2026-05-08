@@ -682,7 +682,7 @@ def _lk_matvec(
     ``(Nkz, Nkx, Ny, Ny)`` operator.  The interior of the output is
     `$D_2 u - k^2 u$`; the wall rows use `$D_1$` to encode Neumann
     BCs, except for the `$k^2 = 0$` mean mode where row 0 pins
-    `$p_0 = 0$` (matching :func:`build_Lk_neumann`).
+    `$p_0 = 0$` (matching :func:`_build_Lk_dense_gpu`).
 
     Parameters
     ----------
@@ -716,7 +716,7 @@ def _hk_minus_matvec(
 ) -> Array:
     """Apply `$H_k^- u$` for the explicit-side Helmholtz operator.
 
-    Matrix-free evaluation of ``flow_.Hk_minus @ u``:
+    Matrix-free evaluation of `$H_k^- u$`:
     `$\\tfrac{1}{\\Delta t} u + (1 - c) \\nu (D_2 u - k^2 u)$` in the
     interior, with identity wall rows (`$u|_\\text{wall}$` unchanged).
 
