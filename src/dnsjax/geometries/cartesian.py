@@ -82,13 +82,18 @@ fourier: Fourier = Fourier()
 
 
 def get_inprod(
-    vector_spec_1: Array, vector_spec_2: Array, k_metric: Array, ys: Array
+    vector_spec_1: Array,
+    vector_spec_2: Array,
+    k_metric: Array,
+    y_weights: Array,
 ) -> Array:
-    """Volume-averaged L2 inner product ``<u1, u2>`` in spectral space.
+    r"""Volume-averaged L2 inner product ``<u1, u2>`` in
+    spectral space.
 
-    For Cartesian walled flows the Fourier modes in x
-    and z are summed first, then the resulting y-profile is integrated
-    with Simpson's rule.
+    For Cartesian walled flows the Fourier modes in `$x$`
+    and `$z$` are summed first, then the resulting
+    `$y$`-profile is integrated with precomputed quadrature
+    weights (Clenshaw-Curtis for CGL grids).
     """
     return (
         integrate_scalar_in_y(
@@ -97,59 +102,98 @@ def get_inprod(
                 dtype=sharding.float_type,
                 axis=(0, 1, 2),
             ),
-            ys,
+            y_weights,
         )
         / derived_params.ly
     )
 
 
-def get_norm2(vector_spec: Array, k_metric: Array, ys: Array) -> Array:
-    """Squared L2 norm ``||u||^2 = <u, u>``."""
-    return get_inprod(vector_spec, vector_spec, k_metric, ys)
+def get_norm2(vector_spec: Array, k_metric: Array, y_weights: Array) -> Array:
+    r"""Squared L2 norm `$\|u\|^2 = \langle u, u \rangle$`."""
+    return get_inprod(vector_spec, vector_spec, k_metric, y_weights)
 
 
-def get_norm(vector_spec: Array, k_metric: Array, ys: Array) -> Array:
-    """L2 norm ``||u|| = sqrt(<u, u>)``."""
-    return jnp.sqrt(get_norm2(vector_spec, k_metric, ys))
+def get_norm(vector_spec: Array, k_metric: Array, y_weights: Array) -> Array:
+    r"""L2 norm `$\|u\| = \sqrt{\langle u, u \rangle}$`."""
+    return jnp.sqrt(get_norm2(vector_spec, k_metric, y_weights))
 
 
-def integrate_scalar_in_y(scalar_data: Array, ys: Array) -> Array:
-    """Composite Simpson's rule on a non-uniform grid in *y*.
+def clenshaw_curtis_weights(ny: int) -> Array:
+    r"""Clenshaw-Curtis quadrature weights for a CGL grid.
 
-    Requires an odd number of grid points (even number of sub-intervals).
-    Uses the exact quadrature weights for pairs of non-uniform panels.
+    For ``ny`` Chebyshev-Gauss-Lobatto points
+    `$y_j = -\cos(j\pi / N)$`, `$j = 0, \ldots, N$` with
+    `$N = \texttt{ny} - 1$`, returns the exact quadrature
+    weights `$w_j$` such that
+
+    .. math::
+        \int_{-1}^{1} f(y)\,dy
+        \;\approx\; \sum_{j=0}^{N} w_j\,f(y_j).
+
+    The rule is exact for polynomials of degree `$\le N$`
+    (spectral accuracy for smooth integrands).  Works for
+    both odd and even *ny*.
+
+    Parameters
+    ----------
+    ny:
+        Number of CGL grid points (`$N + 1$`).
+
+    Returns
+    -------
+    :
+        Weight array of shape ``(ny,)`` with dtype
+        ``sharding.float_type``.
+
+    References
+    ----------
+    Trefethen, *Spectral Methods in MATLAB* (2000), ch. 12.
+    """
+    N = ny - 1
+    theta = jnp.arange(ny, dtype=sharding.float_type) * jnp.pi / N
+
+    if N % 2 == 0:  # N even (ny odd)
+        M = N // 2 - 1
+        w_end = 1.0 / (N * N - 1)
+    else:  # N odd (ny even)
+        M = (N - 1) // 2
+        w_end = 1.0 / (N * N)
+
+    if M > 0:
+        k = jnp.arange(1, M + 1, dtype=sharding.float_type)
+        cos_terms = jnp.cos(2 * k[None, :] * theta[:, None])
+        coeffs = 2.0 / (4 * k**2 - 1)
+        v = 1.0 - jnp.sum(cos_terms * coeffs[None, :], axis=1)
+    else:
+        v = jnp.ones(ny, dtype=sharding.float_type)
+
+    if N % 2 == 0:
+        v = v - jnp.cos(N * theta) / (N * N - 1)
+
+    w = (2.0 / N) * v
+    w = w.at[0].set(w_end)
+    w = w.at[-1].set(w_end)
+
+    return w
+
+
+def integrate_scalar_in_y(scalar_data: Array, y_weights: Array) -> Array:
+    r"""Quadrature integral in *y* using precomputed weights.
+
+    Returns `$\sum_j w_j \, f(y_j)$` where `$w_j$` are
+    precomputed quadrature weights (Clenshaw-Curtis for CGL
+    grids, or composite polynomial weights for arbitrary
+    grids via :func:`~dnsjax.fd.build_integration_weights`).
 
     Parameters
     ----------
     scalar_data:
-        1-D array of function values at the grid points *ys*.
-    ys:
-        1-D array of grid-point coordinates (length must be odd).
+        1-D array of function values at the grid points,
+        shape ``(ny,)``.
+    y_weights:
+        Precomputed quadrature weights, shape ``(ny,)``.
     """
-
-    if len(ys) % 2 == 0:
-        sharding.print(
-            "Simpson integration is not yet implemented "
-            "for even # of grid points."
-        )
-        sharding.exit(code=1)
-
-    h = jnp.diff(ys)  # shape (N-1,)
-    h0 = h[:-1:2]  # left sub-intervals:  h0, h2, h4, ...
-    h1 = h[1::2]  # right sub-intervals: h1, h3, h5, ...
-
-    y0 = scalar_data[:-2:2]  # left points
-    y1 = scalar_data[1:-1:2]  # mid points
-    y2 = scalar_data[2::2]  # right points
-
-    hsum = h0 + h1
-    hprod = h0 * h1
-    h0divh1 = h0 / h1
-
-    panels = (hsum / 6) * (
-        y0 * (2 - 1 / h0divh1) + y1 * (hsum**2 / hprod) + y2 * (2 - h0divh1)
-    )
-    return jnp.sum(panels)
+    return jnp.dot(y_weights, scalar_data)
 
 
 # ── SPIKE block-partitioned operator builders ─────────────────────
@@ -382,11 +426,13 @@ class CartesianFlow:
 
     Subclasses must set ``base_flow``, ``curl_base_flow``, and
     ``nonlin_base_flow`` *after* calling ``super().__post_init__()``,
-    which builds the CGL grid (``ys``), finite-difference matrices,
-    and all per-mode IMM operators.
+    which builds the CGL grid (``ys``), Clenshaw-Curtis
+    quadrature weights (``y_weights``), finite-difference
+    matrices, and all per-mode IMM operators.
     """
 
     ys: Array = field(init=False)
+    y_weights: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
     nonlin_base_flow: Array = field(init=False)
@@ -405,10 +451,14 @@ class CartesianFlow:
     M_inv: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        """Build CGL grid, FD matrices, and IMM operators.
+        """Build CGL grid, quadrature weights, FD matrices,
+        and IMM operators.
 
         Constructs the Chebyshev-Gauss-Lobatto grid for
-        the wall-normal coordinate `$y$` in `$[-1, 1]$`,
+        the wall-normal coordinate `$y$` in `$[-1, 1]$`
+        and precomputes Clenshaw-Curtis quadrature weights
+        (``y_weights``) for spectral-accuracy integration
+        in the wall-normal direction, then builds
         FD matrices `$D_1$` and `$D_2$`, and all per-mode
         IMM operators directly on the device.  Under the
         banded backend, `$L_k$` and `$H_k$` are assembled
@@ -430,6 +480,7 @@ class CartesianFlow:
             * jnp.pi
             / (params.res.ny - 1)
         )
+        self.y_weights = clenshaw_curtis_weights(params.res.ny)
 
         # ``build_diff_matrices`` constructs the ``(Ny, Ny)``
         # derivative matrices using JAX arrays with Python control
@@ -910,7 +961,7 @@ def _norm(
     flow_: CartesianFlow,
 ) -> Array:
     """L2 convergence norm."""
-    return jnp.sqrt(get_norm2(correction, fourier_.k_metric, flow_.ys))
+    return jnp.sqrt(get_norm2(correction, fourier_.k_metric, flow_.y_weights))
 
 
 # ── Stepper factory ─────────────────────────────────────────────────────

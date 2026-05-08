@@ -115,7 +115,9 @@ def _get_stats_jit(
     Only the perturbation kinetic energy is currently computed.
     """
     # Perturbation kinetic energy: `$E' = \\|\\mathbf{u}'\\|^2 / 2$`.
-    perturbation_energy = get_norm2(state, fourier_.k_metric, flow_.ys) / 2
+    perturbation_energy = (
+        get_norm2(state, fourier_.k_metric, flow_.y_weights) / 2
+    )
 
     stats = {
         "E'": perturbation_energy,

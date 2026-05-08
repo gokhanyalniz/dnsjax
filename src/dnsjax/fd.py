@@ -1,6 +1,6 @@
 """Finite-difference infrastructure for wall-bounded flows.
 
-Offline precomputation for the influence-matrix method (IMM).  Both
+Offline precomputation for the influence-matrix method (IMM).  All
 functions run at initialisation time outside ``@jit``, so Python
 loops and concrete-value branching are used directly.
 
@@ -10,6 +10,8 @@ fornberg_weights:
     Fornberg's (1998) algorithm for FD weights on non-uniform grids.
 build_diff_matrices:
     Assemble first- and second-derivative matrices D1, D2.
+build_integration_weights:
+    Composite polynomial quadrature weights on a non-uniform grid.
 
 """
 
@@ -105,3 +107,61 @@ def build_diff_matrices(y: Array, p: int) -> tuple[Array, Array]:
         D2 = D2.at[i, j0 : j0 + s2].set(w[:, 2])
 
     return D1, D2
+
+
+def build_integration_weights(y: Array, p: int) -> Array:
+    r"""Composite polynomial quadrature weights on a non-uniform
+    grid.
+
+    For each sub-interval `$[y_i, y_{i+1}]$` a local stencil of
+    `$p + 1$` points (same width as the D1 stencil in
+    :func:`build_diff_matrices`) is used to build a polynomial
+    interpolant whose integral over that sub-interval is
+    computed exactly via a Vandermonde system.  The stencil is
+    normalised to `$[-1, 1]$` before forming the system for
+    numerical conditioning.  Per-interval contributions are
+    summed to give global weights `$w_j$` satisfying
+
+    .. math::
+        \int_{y_0}^{y_{N}} f(y)\,dy
+        \;\approx\; \sum_j w_j\,f(y_j).
+
+    Composite accuracy is `$O(h^{p+1})$` for smooth
+    integrands, consistent with the FD derivative order `$p$`
+    from :func:`build_diff_matrices`.
+
+    Parameters
+    ----------
+    y:
+        Grid-point coordinates, shape ``(Ny,)``.
+    p:
+        Accuracy order.  Uses ``(p+1)``-point stencils.
+
+    Returns
+    -------
+    :
+        Weight array of shape ``(Ny,)``.
+    """
+    Ny = len(y)
+    s = p + 1
+    h = s // 2
+    w = jnp.zeros(Ny, dtype=y.dtype)
+
+    for i in range(Ny - 1):
+        j0 = max(0, min(i + 1 - h, Ny - s))
+        xs = y[j0 : j0 + s]
+
+        mid = (xs[0] + xs[-1]) / 2
+        half = (xs[-1] - xs[0]) / 2
+        t = (xs - mid) / half
+        a_n = (y[i] - mid) / half
+        b_n = (y[i + 1] - mid) / half
+
+        V = jnp.vander(t, N=s, increasing=True)
+        ks = jnp.arange(s, dtype=y.dtype)
+        mu = half * (b_n ** (ks + 1) - a_n ** (ks + 1)) / (ks + 1)
+
+        q = jnp.linalg.solve(V.T, mu)
+        w = w.at[j0 : j0 + s].add(q)
+
+    return w

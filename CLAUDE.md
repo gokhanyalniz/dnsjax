@@ -23,11 +23,11 @@ fft.py               # 3D/2D real FFT with 3/2-rule dealiasing; shard_map for mu
 rhs.py               # Rotational-form nonlinear term (shared across flow types)
 timestep.py          # make_stepper() factory: produces JIT-compiled predict_and_correct, iterate_correction, predict_and_fully_correct (fused corrector loop via lax.while_loop)
 bench.py             # @timer decorator; timers dict for function timing
-fd.py                # Finite-difference utilities (Fornberg weights, D1/D2 matrices)
+fd.py                # Finite-difference utilities (Fornberg weights, D1/D2 matrices, composite quadrature weights for arbitrary non-uniform grids)
 solvers.py           # Geometry-independent linear solvers: DenseJAXSolver (batched dense LU), PerModeBandedOperator (SPIKE block-partitioned banded solver), SPIKE factorisation and block-partitioning utilities
 geometries/
   triply_periodic.py # Fourier class, spectral diff ops (curl, div, grad, laplacian), norms, TriplyPeriodicFlow base dataclass, algebraic Helmholtz predict/correct, divergence correction, build_triply_periodic_stepper factory
-  cartesian.py       # Fourier class, norms with Simpson y-integration, CartesianFlow base dataclass, on-device IMM operator assembly (Lk/Hk builders for dense and banded backends), Kleiser-Schumann IMM iteration, build_cartesian_stepper factory
+  cartesian.py       # Fourier class, norms with Clenshaw-Curtis y-integration, CartesianFlow base dataclass, on-device IMM operator assembly (Lk/Hk builders for dense and banded backends), Kleiser-Schumann IMM iteration, build_cartesian_stepper factory
 flows/
   monochromatic.py   # MonochromaticFlow(TriplyPeriodicFlow): base flow and forcing for Kolmogorov / Waleffe / decaying-box; diagnostics (E, I, D, E')
   plane_couette.py   # PlaneCouetteFlow(CartesianFlow): plane-Couette base flow U(y) = y; diagnostics
