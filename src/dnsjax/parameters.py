@@ -20,7 +20,8 @@ monochromatic_systems: list[str] = ["kolmogorov", "waleffe"]
 periodic_systems: list[str] = ["decaying-box", *monochromatic_systems]
 
 cartesian_systems: list[str] = ["plane-couette"]
-walled_systems: list[str] = [*cartesian_systems]
+cylindrical_systems: list[str] = ["pipe"]
+walled_systems: list[str] = [*cartesian_systems, *cylindrical_systems]
 
 
 class Distribution(BaseModel):
@@ -42,6 +43,9 @@ class Physics(BaseModel):
     # oversampling_factor = n + 1
     oversampling_factor: int = Field(ge=2, default=3)
     oversample_y: bool = True
+    driving: Literal[
+        "constant_pressure_gradient", "constant_bulk_velocity"
+    ] = "constant_pressure_gradient"
 
 
 class Geometry(BaseModel):
@@ -153,11 +157,14 @@ class CLIParameters(
 class DerivedParameters:
     """Parameters derived from the user-facing configuration.
 
-    ``ly`` is fixed by the flow system (4 for periodic, 2 for walled).
+    ``ly`` is fixed by the geometry (4 for triply-periodic, 2 for walled).
+    ``volume_fac`` is also fixed by the geometry
+        (1 for periodic, 2 for Cartesian, 0.5 for cylindrical)
     Tilt flags are set from ``tilt_degree``.
     """
 
-    ly: float = 2
+    ly: float = 4
+    volume_fac: float = 1
     tilt_rad: float = 0
     tilt: bool = False
     tilt_90: bool = False
@@ -191,8 +198,16 @@ def update_parameters(params_new: Parameters) -> None:
     system = params.phys.system
     if system in periodic_systems:
         derived_params.ly = 4
+        derived_params.volume_fac = 1
     elif system in cartesian_systems:
         derived_params.ly = 2
+        derived_params.volume_fac = 2
+    elif system in cylindrical_systems:
+        derived_params.ly = 2  # Diameter = 2*radius
+        # Force a full 2*pi spanwise extent for the cylindrical geometry
+        params_new.geo.lz = 2 * pi
+        # To compansate for the (1/Lz) factor
+        derived_params.volume_fac = 0.5
     else:
         raise NotImplementedError
 
