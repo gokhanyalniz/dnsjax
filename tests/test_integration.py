@@ -30,10 +30,8 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.fd import build_integration_weights  # noqa: E402
-from dnsjax.geometries.cartesian import (  # noqa: E402
-    clenshaw_curtis_weights,
-    integrate_scalar_in_y,
-)
+from dnsjax.geometries.cartesian import clenshaw_curtis_weights  # noqa: E402
+from dnsjax.geometries.wall_bounded import integrate_scalar  # noqa: E402
 
 
 def _cgl_grid(ny: int) -> jnp.ndarray:
@@ -117,14 +115,14 @@ def test_cc_spectral_convergence():
     assert err < 1e-14, f"final error {err:.2e} not < 1e-14"
 
 
-def test_cc_integrate_scalar_in_y():
-    """integrate_scalar_in_y must match direct dot product."""
+def test_cc_integrate_scalar():
+    """integrate_scalar must match direct dot product."""
     ny = 27
     w = clenshaw_curtis_weights(ny)
     ys = _cgl_grid(ny)
     f = jnp.sin(jnp.pi * ys)
     assert_allclose(
-        float(integrate_scalar_in_y(f, w)),
+        float(integrate_scalar(f, w)),
         float(jnp.dot(w, f)),
         atol=1e-15,
     )

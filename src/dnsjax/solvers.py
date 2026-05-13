@@ -29,6 +29,7 @@ import jax.scipy.linalg as sla
 from jax import Array
 from jax import numpy as jnp
 
+from .parameters import params
 from .sharding import register_dataclass_pytree, sharding
 
 # ── Dense LU solver ───────────────────────────────────────────────
@@ -325,6 +326,50 @@ def _choose_block_partition(Ny: int, p: int) -> tuple[int, int]:
     if best_P == 1:
         return 1, Ny
     return best_P, Ny // best_P
+
+
+def validate_spike_partition(
+    N: int, p: int, label: str = "N"
+) -> tuple[int, int]:
+    r"""Validate and resolve the SPIKE block partition.
+
+    Checks ``params.solver.spike_block_size``; if valid,
+    returns ``(N // sbs, sbs)``.  If invalid or ``None``,
+    falls back to :func:`_choose_block_partition` and prints
+    the chosen partition.
+
+    Parameters
+    ----------
+    N:
+        Wall-normal grid size (``Ny`` or ``Nr``).
+    p:
+        FD accuracy order (half-bandwidth).
+    label:
+        Name used in diagnostic messages (e.g. ``"Ny"``).
+
+    Returns
+    -------
+    P_blk:
+        Number of SPIKE blocks.
+    m_blk:
+        Block size.
+    """
+    sbs = params.solver.spike_block_size
+    if sbs is not None:
+        if N % sbs != 0 or sbs < 2 * p:
+            sharding.print(
+                f"spike_block_size={sbs} invalid for "
+                f"{label}={N}, p={p}; falling back to auto."
+            )
+            P_blk, m_blk = _choose_block_partition(N, p)
+        else:
+            P_blk, m_blk = N // sbs, sbs
+    else:
+        P_blk, m_blk = _choose_block_partition(N, p)
+    sharding.print(
+        f"SPIKE partition: P={P_blk}, m={m_blk} ({label}={N}, p={p})"
+    )
+    return P_blk, m_blk
 
 
 def _extract_banded_corners(

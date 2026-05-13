@@ -26,17 +26,26 @@ from ..operators import (
     real_harmonics,
     spec_to_phys_2d,
 )
-from ..parameters import derived_params, params
+from ..parameters import params
 from ..rhs import get_nonlin
 from ..sharding import register_dataclass_pytree, sharding
 from ..solvers import (
     DenseJAXSolver,
     PerModeBandedOperator,
-    _choose_block_partition,
     _extract_banded_corners,
     _spike_factor,
+    validate_spike_partition,
 )
-from ..timestep import make_stepper
+from .wall_bounded import (
+    build_wall_bounded_stepper,
+    get_inprod,  # noqa: F401 — re-exported
+    get_norm,  # noqa: F401 — re-exported
+    get_norm2,
+    init_state,  # noqa: F401 — re-exported
+    integrate_scalar,
+    phys_to_spec,  # noqa: F401 — re-exported
+    spec_to_phys,  # noqa: F401 — re-exported
+)
 
 
 @register_dataclass_pytree
@@ -44,12 +53,23 @@ from ..timestep import make_stepper
 class Fourier:
     """Wavenumber grids for the Cartesian wall-bounded geometry.
 
-    Broadcasting shapes match the spectral layout ``(Nkz, Nkx, Ny)``:
-    - ``kx``: shape ``(1, nx//2, 1)``
-    - ``kz``: shape ``(nz-1, 1, 1)``
+    Broadcasting shapes match the spectral layout
+    ``(Nkz, Nkx, Ny)``.
 
-    ``k_metric`` equals 2 for `$k_x > 0$` and 1 for `$k_x = 0$`,
-    accounting for the Hermitian symmetry of the real FFT.
+    Attributes
+    ----------
+    kx:
+        Streamwise wavenumber, shape ``(1, nx//2, 1)``.
+    kz:
+        Spanwise wavenumber, shape ``(nz-1, 1, 1)``.
+    k_metric:
+        Hermitian-symmetry weight: 2 for `$k_x > 0$`,
+        1 for `$k_x = 0$`.
+    k2:
+        Squared horizontal wavenumber
+        `$k_x^2 + k_z^2$`.
+    k2_is_zero:
+        Boolean mask for the mean mode (`$k^2 = 0$`).
     """
 
     kx: Array = field(init=False)
@@ -81,41 +101,8 @@ class Fourier:
 fourier: Fourier = Fourier()
 
 
-def get_inprod(
-    vector_spec_1: Array,
-    vector_spec_2: Array,
-    k_metric: Array,
-    y_weights: Array,
-) -> Array:
-    r"""Volume-averaged L2 inner product ``<u1, u2>`` in
-    spectral space.
-
-    For Cartesian walled flows the Fourier modes in `$x$`
-    and `$z$` are summed first, then the resulting
-    `$y$`-profile is integrated with precomputed quadrature
-    weights (Clenshaw-Curtis for CGL grids).
-    """
-    return (
-        integrate_scalar_in_y(
-            jnp.sum(
-                jnp.conj(vector_spec_1) * k_metric * vector_spec_2,
-                dtype=sharding.float_type,
-                axis=(0, 1, 2),
-            ),
-            y_weights,
-        )
-        / derived_params.ly
-    )
-
-
-def get_norm2(vector_spec: Array, k_metric: Array, y_weights: Array) -> Array:
-    r"""Squared L2 norm `$\|u\|^2 = \langle u, u \rangle$`."""
-    return get_inprod(vector_spec, vector_spec, k_metric, y_weights)
-
-
-def get_norm(vector_spec: Array, k_metric: Array, y_weights: Array) -> Array:
-    r"""L2 norm `$\|u\| = \sqrt{\langle u, u \rangle}$`."""
-    return jnp.sqrt(get_norm2(vector_spec, k_metric, y_weights))
+# Backward-compatible alias (used by tests/test_integration.py).
+integrate_scalar_in_y = integrate_scalar
 
 
 def clenshaw_curtis_weights(ny: int) -> Array:
@@ -177,25 +164,6 @@ def clenshaw_curtis_weights(ny: int) -> Array:
     return w
 
 
-def integrate_scalar_in_y(scalar_data: Array, y_weights: Array) -> Array:
-    r"""Quadrature integral in *y* using precomputed weights.
-
-    Returns `$\sum_j w_j \, f(y_j)$` where `$w_j$` are
-    precomputed quadrature weights (Clenshaw-Curtis for CGL
-    grids, or composite polynomial weights for arbitrary
-    grids via :func:`~dnsjax.fd.build_integration_weights`).
-
-    Parameters
-    ----------
-    scalar_data:
-        1-D array of function values at the grid points,
-        shape ``(ny,)``.
-    y_weights:
-        Precomputed quadrature weights, shape ``(ny,)``.
-    """
-    return jnp.dot(y_weights, scalar_data)
-
-
 # ── SPIKE block-partitioned operator builders ─────────────────────
 
 
@@ -212,7 +180,7 @@ def _build_Lk_blocks_gpu(
 
     The Neumann-BC pressure Poisson operator
     `$L_k = D_2 - k^2 I$` (with `$D_1$` wall rows for
-    `$k^2 \ne 0$` and a row-0 pin for the `$k^2 = 0$`
+    `$k^2 \ne 0$` and a top-wall pin for the `$k^2 = 0$`
     mean mode) is assembled directly into per-block dense
     form for the SPIKE factorisation.  No
     `$(N_y, N_y)$` matrix is materialised.
@@ -261,16 +229,16 @@ def _build_Lk_blocks_gpu(
         A_D2[None, None] - k2[..., None, None] * eye_m
     )  # (Nkz, Nkx, P, m, m)
 
-    # Row 0 (block 0, local row 0): D1[0,:m] for
-    # k2 != 0, pin row [1,0,...,0] for k2 == 0.
+    # Row 0 (block 0, local row 0): D1[0,:m] for all modes.
     D1_row0 = D1[0, :m]
-    pin_row = jnp.zeros(m, dtype=dtype).at[0].set(1.0)
-    row0 = jnp.where(k2_is_zero, pin_row, D1_row0)
-    A_blocks = A_blocks.at[:, :, 0, 0, :].set(row0)
+    A_blocks = A_blocks.at[:, :, 0, 0, :].set(D1_row0[None, None])
 
-    # Row Ny-1 (block P-1, local row m-1): D1[-1,:].
+    # Row Ny-1 (block P-1, local row m-1): D1[-1,:] for
+    # k2 != 0, pin row [...,0,1] for k2 == 0.
     D1_rowN = D1[-1, (P - 1) * m :]
-    A_blocks = A_blocks.at[:, :, -1, -1, :].set(D1_rowN[None, None])
+    pin_row = jnp.zeros(m, dtype=dtype).at[-1].set(1.0)
+    rowN = jnp.where(k2_is_zero, pin_row, D1_rowN)
+    A_blocks = A_blocks.at[:, :, -1, -1, :].set(rowN)
 
     # Coupling corners (mode-independent, from D2).
     B_raw, C_raw = _extract_banded_corners(D2, P, m, p)
@@ -377,15 +345,15 @@ def _build_Lk_dense_gpu(
     # Lk_interior[..., i, j] = D2[i, j] - k2 * delta_{i, j}
     Lk = D2[None, None, :, :] - k2[..., None] * eye
 
-    # Row 0: D1[0, :] for k2 != 0; pin row [1, 0, ..., 0] for k2 == 0.
-    # k2_is_zero is (Nkz, Nkx, 1); `jnp.where` broadcasts the (Ny,)
-    # branches along the last axis to give (Nkz, Nkx, Ny).
-    pin = eye[0, :]  # (Ny,)
-    row_0 = jnp.where(k2_is_zero, pin, D1[0, :])
-    Lk = Lk.at[..., 0, :].set(row_0)
+    # Row 0: D1[0, :] for all modes (Neumann).
+    Lk = Lk.at[..., 0, :].set(D1[0, :])
 
-    # Row -1: D1[-1, :] for all modes.
-    Lk = Lk.at[..., -1, :].set(D1[-1, :])
+    # Row -1: D1[-1, :] for k2 != 0; pin row [0, ..., 0, 1]
+    # for k2 == 0.  k2_is_zero is (Nkz, Nkx, 1); `jnp.where`
+    # broadcasts the (Ny,) branches to (Nkz, Nkx, Ny).
+    pin = eye[-1, :]  # (Ny,)
+    row_N = jnp.where(k2_is_zero, pin, D1[-1, :])
+    Lk = Lk.at[..., -1, :].set(row_N)
 
     return Lk
 
@@ -424,11 +392,25 @@ def _build_Hk_dense_gpu(
 class CartesianFlow:
     """Precomputed data for wall-bounded Cartesian flows.
 
-    Subclasses must set ``base_flow``, ``curl_base_flow``, and
-    ``nonlin_base_flow`` *after* calling ``super().__post_init__()``,
-    which builds the CGL grid (``ys``), Clenshaw-Curtis
-    quadrature weights (``y_weights``), finite-difference
-    matrices, and all per-mode IMM operators.
+    Subclasses must set ``base_flow``, ``curl_base_flow``,
+    and ``nonlin_base_flow`` *after* calling
+    ``super().__post_init__()``, which builds the CGL grid
+    (``ys``), Clenshaw-Curtis quadrature weights
+    (``y_weights``), finite-difference matrices, and all
+    per-mode IMM operators.
+
+    Attributes
+    ----------
+    D1:
+        First-derivative FD matrix, shape ``(Ny, Ny)``.
+    D2:
+        Second-derivative FD matrix, shape ``(Ny, Ny)``.
+    D1_bnd:
+        Boundary rows `$D_1[0,:],\\; D_1[-1,:]$`,
+        shape ``(2, Ny)``.
+    D2_bnd:
+        Boundary rows `$D_2[0,:],\\; D_2[-1,:]$`,
+        shape ``(2, Ny)``.
     """
 
     ys: Array = field(init=False)
@@ -502,23 +484,7 @@ class CartesianFlow:
         nu = 1.0 / params.phys.re
 
         if params.solver.backend == "banded":
-            # SPIKE block-partitioned factorisation: dense LU
-            # on small (m, m) blocks, no (Ny, Ny) array.
-            sbs = params.solver.spike_block_size
-            if sbs is not None:
-                if Ny % sbs != 0 or sbs < 2 * p:
-                    sharding.print(
-                        f"spike_block_size={sbs} invalid for "
-                        f"Ny={Ny}, p={p}; falling back to auto."
-                    )
-                    P_blk, m_blk = _choose_block_partition(Ny, p)
-                else:
-                    P_blk, m_blk = Ny // sbs, sbs
-            else:
-                P_blk, m_blk = _choose_block_partition(Ny, p)
-            sharding.print(
-                f"SPIKE partition: P={P_blk}, m={m_blk} (Ny={Ny}, p={p})"
-            )
+            P_blk, m_blk = validate_spike_partition(Ny, p, "Ny")
             Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
                 self.D1,
                 self.D2,
@@ -568,11 +534,10 @@ class CartesianFlow:
         device operator.
 
         The mean mode (`$k^2 = 0$`) is handled analytically: ``M`` has a
-        zero first column there (`$p_1 \\equiv 1$` is a pressure gauge),
-        so the 2x2 inverse is replaced by `$[[0, 0], [0, 1/M_{11}]]$`
-        as in the original CPU path.  The ``jnp.where`` around
-        ``safe_det`` keeps the regular branch NaN-free before the
-        selection happens.
+        zero second column there (`$p_2 \\equiv 1$` is a pressure gauge),
+        so the 2x2 inverse is replaced by `$[[1/M_{00}, 0], [0, 0]]$`.
+        The ``jnp.where`` around ``safe_det`` keeps the regular branch
+        NaN-free before the selection happens.
         """
         # Homogeneous pressure solutions `$L_k p_i = e_i$`.
         e1_b = (
@@ -621,10 +586,10 @@ class CartesianFlow:
         is_mean = fourier.k2_is_zero[..., 0]
         det = M00 * M11 - M01 * M10
         safe_det = jnp.where(is_mean, 1.0, det)
-        inv_00 = jnp.where(is_mean, 0.0, M11 / safe_det)
+        inv_00 = jnp.where(is_mean, 1.0 / M00, M11 / safe_det)
         inv_01 = jnp.where(is_mean, 0.0, -M01 / safe_det)
         inv_10 = jnp.where(is_mean, 0.0, -M10 / safe_det)
-        inv_11 = jnp.where(is_mean, 1.0 / M11, M00 / safe_det)
+        inv_11 = jnp.where(is_mean, 0.0, M00 / safe_det)
         self.M_inv = jnp.stack(
             [
                 jnp.stack([inv_00, inv_01], axis=-1),
@@ -634,37 +599,7 @@ class CartesianFlow:
         )
 
 
-# ── Spectral transform aliases ───────────────────────────────────────────
-
-phys_to_spec = phys_to_spec_2d
-spec_to_phys = spec_to_phys_2d
-
-
-# ── Solver functions (geometry-general) ──────────────────────────────────
-
-
-def init_state(snapshot: str | None) -> Array:
-    """Initialise the flow state (velocity_spec)."""
-    if params.init.start_from_laminar:
-        velocity_spec = jnp.zeros(
-            shape=(3, *sharding.spec_shape),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.spec_vector_shard,
-        )
-    elif snapshot is not None:
-        snapshot_arr = jnp.load(snapshot)["velocity_phys_nonexpanded"].astype(
-            sharding.float_type
-        )
-        velocity_phys = jax.device_put(
-            snapshot_arr, sharding.phys_vector_shard
-        )
-        velocity_spec = phys_to_spec_2d(velocity_phys)
-
-    else:
-        sharding.print("Provide an initial condition.")
-        sharding.exit(code=1)
-
-    return velocity_spec
+# ── Solver functions ─────────────────────────────────────────────────────
 
 
 def _curl_fn(
@@ -712,78 +647,62 @@ def _get_rhs(
 
 def _lk_matvec(
     u: Array,
-    D2: Array,
-    D1_bnd: Array,
-    k2: Array,
-    k2_is_zero: Array,
+    flow_: CartesianFlow,
+    fourier_: Fourier,
 ) -> Array:
-    """Apply `$L_k u$` for the Neumann-BC pressure Poisson operator.
+    r"""Apply `$L_k u$` for the Neumann-BC pressure Poisson operator.
 
     Matrix-free evaluation that avoids storing the per-mode
-    ``(Nkz, Nkx, Ny, Ny)`` operator.  The interior of the output is
-    `$D_2 u - k^2 u$`; the wall rows use `$D_1$` to encode Neumann
-    BCs, except for the `$k^2 = 0$` mean mode where row 0 pins
-    `$p_0 = 0$` (matching :func:`_build_Lk_dense_gpu`).
+    ``(Nkz, Nkx, Ny, Ny)`` operator.  The interior of the
+    output is `$D_2 u - k^2 u$`; the wall rows use `$D_1$`
+    to encode Neumann BCs, except for the `$k^2 = 0$` mean
+    mode where the top-wall row pins `$p_{N_y-1} = 0$`
+    (matching :func:`_build_Lk_dense_gpu`).
 
     Parameters
     ----------
     u:
         Field, shape ``(Nkz, Nkx, Ny)``.
-    D2:
-        Second-derivative matrix, shape ``(Ny, Ny)``.
-    D1_bnd:
-        Boundary rows `$D_1[0,:]$`, `$D_1[-1,:]$`, shape ``(2, Ny)``.
-    k2:
-        Squared horizontal wavenumber, broadcasting as
-        ``(Nkz, Nkx, 1)``.
-    k2_is_zero:
-        Boolean mask ``k2 == 0``, same shape as *k2*.
-
-    Returns
-    -------
-    :
-        ``Lk @ u`` with the same shape and dtype as *u*.
+    flow\_:
+        Cartesian flow data (uses ``D2``, ``D1_bnd``).
+    fourier\_:
+        Wavenumber grids (uses ``k2``, ``k2_is_zero``).
     """
-    D2u = jnp.einsum("ij, zxj -> zxi", D2, u)
-    out = D2u - k2 * u
-    bot_neumann = jnp.einsum("j, zxj -> zx", D1_bnd[0], u)
-    bot = jnp.where(k2_is_zero[..., 0], u[..., 0], bot_neumann)
-    top = jnp.einsum("j, zxj -> zx", D1_bnd[-1], u)
+    D2u = jnp.einsum("ij, zxj -> zxi", flow_.D2, u)
+    out = D2u - fourier_.k2 * u
+    bot = jnp.einsum("j, zxj -> zx", flow_.D1_bnd[0], u)
+    top_neumann = jnp.einsum("j, zxj -> zx", flow_.D1_bnd[-1], u)
+    top = jnp.where(fourier_.k2_is_zero[..., 0], u[..., -1], top_neumann)
     return out.at[..., 0].set(bot).at[..., -1].set(top)
 
 
 def _hk_minus_matvec(
-    u: Array, D2: Array, k2: Array, dt: float, c: float, nu: float
+    u: Array,
+    flow_: CartesianFlow,
+    fourier_: Fourier,
 ) -> Array:
-    """Apply `$H_k^- u$` for the explicit-side Helmholtz operator.
+    r"""Apply `$H_k^- u$` for the explicit-side Helmholtz
+    operator.
 
     Matrix-free evaluation of `$H_k^- u$`:
-    `$\\tfrac{1}{\\Delta t} u + (1 - c) \\nu (D_2 u - k^2 u)$` in the
-    interior, with identity wall rows (`$u|_\\text{wall}$` unchanged).
+    `$\tfrac{1}{\Delta t} u + (1 - c) \nu (D_2 u - k^2 u)$`
+    in the interior, with identity wall rows
+    (`$u|_\text{wall}$` unchanged).
 
     Parameters
     ----------
     u:
         Field, shape ``(Nkz, Nkx, Ny)``.
-    D2:
-        Second-derivative matrix, shape ``(Ny, Ny)``.
-    k2:
-        Squared horizontal wavenumber, broadcasting as
-        ``(Nkz, Nkx, 1)``.
-    dt:
-        Time step.
-    c:
-        Implicitness parameter.
-    nu:
-        Kinematic viscosity `$1/\\mathrm{Re}$`.
-
-    Returns
-    -------
-    :
-        ``Hk_minus @ u`` with the same shape and dtype as *u*.
+    flow\_:
+        Cartesian flow data (uses ``D2``).
+    fourier\_:
+        Wavenumber grids (uses ``k2``).
     """
-    D2u = jnp.einsum("ij, zxj -> zxi", D2, u)
-    out = (1.0 / dt) * u + (1.0 - c) * nu * (D2u - k2 * u)
+    dt = params.step.dt
+    c = params.step.implicitness
+    nu = 1.0 / params.phys.re
+    D2u = jnp.einsum("ij, zxj -> zxi", flow_.D2, u)
+    out = (1.0 / dt) * u + (1.0 - c) * nu * (D2u - fourier_.k2 * u)
     return out.at[..., 0].set(u[..., 0]).at[..., -1].set(u[..., -1])
 
 
@@ -833,8 +752,6 @@ def _imm_iteration(
     Nu_n, Nv_n, Nw_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]
     Nu_j, Nv_j, Nw_j = nonlin_j[0], nonlin_j[1], nonlin_j[2]
 
-    # Squared horizontal wavenumber, broadcastable to (Nkz, Nkx, Ny).
-    k2 = fourier_.k2
     k2_is_zero = fourier_.k2_is_zero
 
     # Horizontal spectral-derivative factors, reused across every stage.
@@ -856,7 +773,7 @@ def _imm_iteration(
     div_Nj = ikx * Nu_j + dy_Nv_j + ikz * Nw_j
     div_Nn = ikx * Nu_n + dy_Nv_n + ikz * Nw_n
 
-    Lk_d = _lk_matvec(d_hat_n, flow_.D2, flow_.D1_bnd, k2, k2_is_zero)
+    Lk_d = _lk_matvec(d_hat_n, flow_, fourier_)
 
     f_hat = d_hat_n / dt + c * div_Nj + (1 - c) * div_Nn + (1 - c) * nu * Lk_d
 
@@ -877,8 +794,8 @@ def _imm_iteration(
 
     Hk_minus_stack = jax.vmap(
         _hk_minus_matvec,
-        in_axes=(0, None, None, None, None, None),
-    )(velocity_n, flow_.D2, k2, dt, c, nu)
+        in_axes=(0, None, None),
+    )(velocity_n, flow_, fourier_)
 
     R_stack = Hk_minus_stack - grad_pP + c * nonlin_j + (1 - c) * nonlin_n
     R_stack = R_stack.at[..., 0].set(0.0).at[..., -1].set(0.0)
@@ -890,9 +807,9 @@ def _imm_iteration(
     # so div u|_wall = D1 v|_wall.
     d_wall = jnp.einsum("bj, zxj -> zxb", flow_.D1_bnd, v_arb)
 
-    # Mean mode (k²=0) bottom-wall residual is a pressure gauge; zero it.
-    d_wall = d_wall.at[..., 0].set(
-        jnp.where(k2_is_zero[..., 0], 0.0, d_wall[..., 0])
+    # Mean mode (k²=0) top-wall residual is a pressure gauge; zero it.
+    d_wall = d_wall.at[..., 1].set(
+        jnp.where(k2_is_zero[..., 0], 0.0, d_wall[..., 1])
     )
 
     # Stage 5: influence matrix algebra alpha = -M_inv @ d_wall.
@@ -975,47 +892,13 @@ def build_cartesian_stepper(
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array, Array]],
 ]:
-    """Build time-stepping functions for a Cartesian wall-bounded flow.
+    """Build time-stepping functions for a Cartesian
+    wall-bounded flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct)`` with the
     ``fourier`` and *flow* singletons already bound.
     """
-    (
-        _predict_and_correct_jit,
-        _iterate_correction_jit,
-        _predict_and_fully_correct_jit,
-    ) = make_stepper(_get_rhs, _predict, _correct, _norm)
-
-    def predict_and_correct(
-        state: Array,
-    ) -> tuple[Array, Array, Array]:
-        """Predictor-corrector step with bound singletons."""
-        return _predict_and_correct_jit(state, fourier, flow)
-
-    def iterate_correction(
-        state_prev: Array,
-        prediction: Array,
-        rhs_prev: Array,
-    ) -> tuple[Array, Array, Array]:
-        """One corrector iteration with bound singletons."""
-        return _iterate_correction_jit(
-            state_prev, prediction, rhs_prev, fourier, flow
-        )
-
-    def predict_and_fully_correct(
-        state: Array,
-    ) -> tuple[Array, Array, Array, Array]:
-        """Fused predict + corrector loop with bound singletons."""
-        return _predict_and_fully_correct_jit(state, fourier, flow)
-
-    def init_state_bound(snapshot: str | None) -> Array:
-        """Initialize the flow state."""
-        return init_state(snapshot)
-
-    return (
-        predict_and_correct,
-        iterate_correction,
-        init_state_bound,
-        predict_and_fully_correct,
+    return build_wall_bounded_stepper(
+        _get_rhs, _predict, _correct, _norm, fourier, flow
     )
