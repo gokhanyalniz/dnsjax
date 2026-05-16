@@ -26,7 +26,7 @@ from ..operators import (
     real_harmonics,
     spec_to_phys_2d,
 )
-from ..parameters import params
+from ..parameters import derived_params, params
 from ..rhs import get_nonlin
 from ..sharding import register_dataclass_pytree, sharding
 from ..solvers import (
@@ -431,6 +431,10 @@ class CartesianFlow:
     q1: Array = field(init=False)
     q2: Array = field(init=False)
     M_inv: Array = field(init=False)
+    cos_tilt: Array = field(init=False)
+    sin_tilt: Array = field(init=False)
+    h_bulk_response: Array = field(init=False)
+    H_bulk_inv: Array = field(init=False)
 
     def __post_init__(self) -> None:
         """Build CGL grid, quadrature weights, FD matrices,
@@ -523,6 +527,14 @@ class CartesianFlow:
 
         self._derive_imm_homogeneous_data(Nkz, Nkx, Ny)
 
+        self.cos_tilt = jnp.cos(derived_params.tilt_rad).astype(
+            sharding.float_type
+        )
+        self.sin_tilt = jnp.sin(derived_params.tilt_rad).astype(
+            sharding.float_type
+        )
+        self._precompute_bulk_response(Nkz, Nkx, Ny)
+
     def _derive_imm_homogeneous_data(
         self, Nkz: int, Nkx: int, Ny: int
     ) -> None:
@@ -597,6 +609,59 @@ class CartesianFlow:
             ],
             axis=-2,
         )
+
+    def _precompute_bulk_response(self, Nkz: int, Nkx: int, Ny: int) -> None:
+        r"""Precompute the Helmholtz response for constant-bulk-
+        velocity enforcement.
+
+        Solves `$H_k\,h = \mathbf{1}$` (unit uniform RHS,
+        zero Dirichlet wall BCs) at the mean mode
+        `$(k_x, k_z) = (0, 0)$`.  The response `$h(y)$` is
+        the velocity profile produced by a unit mean pressure
+        gradient over one implicit time step.  Its bulk
+        `$H = \int_{-1}^{1} h\,dy / 2$` gives the scaling
+        needed to zero the perturbation bulk velocity:
+
+        .. math::
+            G = -\frac{U_{b,\mathrm{pert}}}{H}, \qquad
+            \bar{u}'_s \;\leftarrow\; \bar{u}'_s + G\,h
+
+        which is equivalent to adding a uniform forcing `$G$`
+        to the mean-mode streamwise Helmholtz RHS before
+        solving.
+        """
+        if params.phys.driving != "constant_bulk_velocity":
+            self.h_bulk_response = jnp.zeros(
+                Ny,
+                dtype=sharding.float_type,
+                out_sharding=sharding.no_shard,
+            )
+            self.H_bulk_inv = jnp.zeros((), dtype=sharding.float_type)
+            return
+
+        # Unit uniform RHS at the mean mode only, zero wall BCs.
+        ones_vec = (
+            jnp.ones(Ny, dtype=sharding.float_type)
+            .at[0]
+            .set(0.0)
+            .at[-1]
+            .set(0.0)
+        )
+        rhs = jnp.where(fourier.k2_is_zero, ones_vec, 0.0)
+
+        h_full = self.Hk_op.solve(rhs)
+
+        # Extract the mean-mode response via masked sum
+        # (avoids scalar-indexing the kx-sharded axis).
+        self.h_bulk_response = jax.device_put(
+            jnp.sum(
+                jnp.where(fourier.k2_is_zero, h_full, 0.0),
+                axis=(0, 1),
+            ),
+            sharding.no_shard,
+        )
+        H_bulk = jnp.dot(self.y_weights, self.h_bulk_response) / 2
+        self.H_bulk_inv = 1.0 / H_bulk
 
 
 # ── Solver functions ─────────────────────────────────────────────────────
@@ -828,6 +893,18 @@ def _imm_iteration(
     q_new = alpha1 * flow_.q1 + alpha2 * flow_.q2
     u_new = u_arb - ikx * q_new
     w_new = w_arb - ikz * q_new
+
+    if params.phys.driving == "constant_bulk_velocity":
+        # Zero the perturbation bulk velocity in the streamwise
+        # direction.  At the mean mode ikx=ikz=0, so q_new
+        # corrections vanish for u and w; only this acts there.
+        mean_u = jnp.sum(jnp.where(k2_is_zero, u_new, 0.0), axis=(0, 1)).real
+        mean_w = jnp.sum(jnp.where(k2_is_zero, w_new, 0.0), axis=(0, 1)).real
+        mean_us = mean_u * flow_.cos_tilt + mean_w * flow_.sin_tilt
+        bulk_us = jnp.dot(flow_.y_weights, mean_us) / 2
+        bulk_corr = -bulk_us * flow_.H_bulk_inv * flow_.h_bulk_response
+        u_new = u_new + jnp.where(k2_is_zero, bulk_corr * flow_.cos_tilt, 0.0)
+        w_new = w_new + jnp.where(k2_is_zero, bulk_corr * flow_.sin_tilt, 0.0)
 
     velocity_new = jnp.array([u_new, v_new, w_new])
 

@@ -1,14 +1,35 @@
 ## Project Overview
 
-`dnsjax` is a GPU-accelerated pseudo-spectral + finite-differences DNS solver for the 3D incompressible Navier-Stokes equations, written in JAX. It targets triply-periodic flows (Kolmogorov, Waleffe, decaying-box) and wall-bounded flows (plane-Couette, pipe). The solver uses a predictor-corrector time integration scheme (Euler + iterative Crank-Nicolson, following Willis 2017 / openpipeflow).
+`dnsjax` is a GPU-accelerated pseudo-spectral + finite-differences DNS solver for the 3D incompressible Navier-Stokes equations, written in JAX. It targets triply-periodic flows (Kolmogorov, Waleffe, decaying-box) and wall-bounded flows (plane-Couette, plane-Poiseuille, pipe). The solver uses a predictor-corrector time integration scheme (Euler + iterative Crank-Nicolson, following Willis 2017 / openpipeflow).
 
-## Debugging instructions
+## Commands
 
-You can run `uv run ruff check --fix` for linting and static checks. For runtime tests, you may run a given flow from its laminar state a few time steps with low resolution on two devices, like: `mpirun -np 2 python -m dnsjax --dist.np 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`. The laminar state should time step with a single corrector step, with stepping error of O(-18) or less, and perturbation energy of O(-32) or less. You should also run existing tests listed in section Tests below if you touch the modules they test.
+### Prerequisites
+
+Python >=3.14, `uv`, MPI (for multi-device runs).
+
+### Setup
+
+`uv sync`
+
+### Lint
+
+`uv run ruff check --fix`
+
+### Run tests
+
+Single file: `uv run python tests/test_cartesian.py`
+Laminar smoke (multi-device): `uv run python tests/test_laminar_smoke.py --np 2`
+
+### Smoke test (laminar time stepping)
+
+`mpirun -np 2 python -m dnsjax --dist.np 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
+
+The laminar state should time step with a single corrector step, with stepping error of O(-18) or less, and perturbation energy of O(-32) or less. Run existing tests listed in section Tests below if you touch the modules they test.
 
 ## Documentation instructions
 
-Keep docstrings, comments (in LaTeX for math for both) and typing up-to-date. In the future MkDocs will be used with MathJax, escape LaTeX commands apppropriately. Keep documentation lines in code to 79 characters wide. Keep CLAUDE.md up-to-date.
+Keep docstrings, comments (in LaTeX for math for both) and typing up-to-date. In the future MkDocs will be used with MathJax, escape LaTeX commands appropriately. Keep documentation lines in code to 79 characters wide. Keep CLAUDE.md up-to-date.
 
 ## Architecture
 
@@ -28,17 +49,18 @@ solvers.py           # Geometry-independent linear solvers: DenseJAXSolver (batc
 geometries/
   wall_bounded.py    # Shared wall-bounded infrastructure: integrate_scalar, get_inprod/get_norm2/get_norm, init_state, build_wall_bounded_stepper factory, phys_to_spec/spec_to_phys aliases
   triply_periodic.py # Fourier class, spectral diff ops (curl, div, grad, laplacian), norms, TriplyPeriodicFlow base dataclass, algebraic Helmholtz predict/correct, divergence correction, build_triply_periodic_stepper factory
-  cartesian.py       # Fourier class, Clenshaw-Curtis weights, CartesianFlow base dataclass, on-device IMM operator assembly (Lk/Hk builders for dense and banded backends), Kleiser-Schumann IMM iteration, build_cartesian_stepper factory
+  cartesian.py       # Fourier class, Clenshaw-Curtis weights, CartesianFlow base dataclass (with tilt and constant-bulk-velocity support), on-device IMM operator assembly (Lk/Hk builders for dense and banded backends), Kleiser-Schumann IMM iteration, build_cartesian_stepper factory
   cylindrical.py     # Fourier class, get_norm2_cyl, CylindricalFlow base dataclass, half-CGL radial grid, parity-reduced FD matrices, decoupled u+/u-/uz operators (Lk, Hk_plus, Hk_minus, Hk_z), 1x1 IMM, build_cylindrical_stepper factory
 flows/
   monochromatic.py   # MonochromaticFlow(TriplyPeriodicFlow): base flow and forcing for Kolmogorov / Waleffe / decaying-box; diagnostics (E, I, D, E')
-  plane_couette.py   # PlaneCouetteFlow(CartesianFlow): plane-Couette base flow U(y) = y; diagnostics
+  plane_couette.py   # PlaneCouetteFlow(CartesianFlow): plane-Couette base flow U(y) = y with tilt; diagnostics
+  plane_poiseuille.py # PlanePoiseuilleFlow(CartesianFlow): plane-Poiseuille base flow Us = 1-y^2 with tilt; diagnostics (E', dPds')
   pipe.py            # PipeFlow(CylindricalFlow): pipe base flow Uz = 1 - r^2; diagnostics
 ```
 
 ### Code-exploration constraints
 
-Wall-bounded geometries (`cartesian.py`, `cylindrical.py`) and flows (`plane_couette.py`, `pipe.py`) are completely independent from and design-wise mostly unrelated to the triply-periodic geometry (`triply_periodic.py`) and the respective monochromatic flows (`monochromatic.py`). In the development of future wall-bounded geometries and flows, do not explore the triply-periodic geometry and monochromatic flows.
+Wall-bounded geometries (`cartesian.py`, `cylindrical.py`) and flows (`plane_couette.py`, `plane_poiseuille.py`, `pipe.py`) are completely independent from and design-wise mostly unrelated to the triply-periodic geometry (`triply_periodic.py`) and the respective monochromatic flows (`monochromatic.py`). In the development of future wall-bounded geometries and flows, do not explore the triply-periodic geometry and monochromatic flows.
 
 ### Key design patterns
 
@@ -50,11 +72,31 @@ Wall-bounded geometries (`cartesian.py`, `cylindrical.py`) and flows (`plane_cou
 
 **Perturbation formulation**: The solver evolves the perturbation `u'` around the laminar base flow `U(y)`. The nonlinear term in `rhs.py` uses the rotational form: `NL = u' x omega' + u' x curl(U) + U x omega' + U x curl(U)`. Base flow terms are precomputed once in the flow dataclass constructor.
 
-**JAX pytree registration**: Geometry base dataclasses (`TriplyPeriodicFlow`, `CartesianFlow`, `CylindricalFlow`) and their flow subclasses (`MonochromaticFlow(TriplyPeriodicFlow)`, `PlaneCouetteFlow(CartesianFlow)`, `PipeFlow(CylindricalFlow)`), along with the geometry-specific `Fourier` classes and the solver dataclasses (`DenseJAXSolver`, `PerModeBandedOperator`), are registered as JAX pytrees via `register_dataclass_pytree()` in `sharding.py`, allowing them to be passed through `@jit` boundaries as static-like arguments.
+**JAX pytree registration**: Geometry base dataclasses (`TriplyPeriodicFlow`, `CartesianFlow`, `CylindricalFlow`) and their flow subclasses (`MonochromaticFlow(TriplyPeriodicFlow)`, `PlaneCouetteFlow(CartesianFlow)`, `PlanePoiseuilleFlow(CartesianFlow)`, `PipeFlow(CylindricalFlow)`), along with the geometry-specific `Fourier` classes and the solver dataclasses (`DenseJAXSolver`, `PerModeBandedOperator`), are registered as JAX pytrees via `register_dataclass_pytree()` in `sharding.py`, allowing them to be passed through `@jit` boundaries as static-like arguments.
 
-**Wall-bounded flows use the influence-matrix method (IMM)**: For plane-Couette, the pressure Poisson equation with preliminary Neumann BCs is solved via LU-factored matrices (`Lk`, `Hk`). The entire per-mode setup runs on the device: the FD matrices `D1`/`D2` are built using JAX arrays with Python control flow (outside `@jit`) and distributed to devices once, after which `Lk` and `Hk` are assembled and factorised with no further host↔device traffic. All IMM homogeneous data (`p1, p2, v1, v2, q1, q2, M_inv`) is then derived by `CartesianFlow._derive_imm_homogeneous_data` from the already-factored GPU operator. `params.solver.backend` selects the operator-factor storage format: `"banded"` (default) uses the SPIKE algorithm (Polizzi & Sameh 2006) to partition each banded `(Ny, Ny)` operator into `P` contiguous blocks of size `m = Ny/P` (with `m >= 2p`, `p = params.res.fd_order`) and factors each block as a dense `(m, m)` LU via cuSOLVER's batched LU (`jax.scipy.linalg.lu_factor`); spike matrices `V_i = A_i^{-1} B_i`, `W_i = A_i^{-1} C_i` capture the off-block coupling, and a small dense reduced system of size `2Pp` is also LU-factored once. At solve time (inside the JIT'd IMM iteration), per-block LU solves, a tiny reduced solve, and a spike reconstruction replace the old sequential `lax.scan` — all cuSOLVER-batched. Storage is `O(Ny·m)` per mode, no `(Nkz, Nkx, Ny, Ny)` array is ever materialised. The geometry-independent solver infrastructure (`DenseJAXSolver`, `PerModeBandedOperator`, `_spike_factor`, `_choose_block_partition`, `_extract_banded_corners`) lives in `solvers.py`; `_build_Lk_blocks_gpu`/`_build_Hk_blocks_gpu` in `geometries/cartesian.py` assemble the per-block dense operators and coupling corners using those helpers. Both backends apply `Lk` and `Hk_minus` matvecs matrix-free via `_lk_matvec` / `_hk_minus_matvec`, reconstructing the operator action on the fly from the shared `D2` / `D1` FD matrices (no per-mode operator matrices are stored). `"dense"` builds the full `(Nkz, Nkx, Ny, Ny)` matrices on the GPU via `_build_Lk_dense_gpu`/`_build_Hk_dense_gpu`, LU-factors them on-device via `DenseJAXSolver`, then discards the originals — a reference path kept for parity with the banded backend. The IMM uses the homogeneous solutions (`p1`, `p2`) and influence matrix `M_inv` during timestepping to find the correct pressure boundary condition from the normal derivative of the wall-normal velocity at the wall; pressure is then solved with that BC, and velocity is updated with the corresponding pressure gradient. Operator factors and homogeneous data inherit the kx-sharded layout from the broadcast against `fourier.k2`.
+**Wall-bounded flows use the influence-matrix method (IMM)**:
+- The pressure Poisson equation with preliminary Neumann BCs is solved via LU-factored matrices (`Lk`, `Hk`). The entire per-mode setup runs on the device: FD matrices `D1`/`D2` are built using JAX arrays with Python control flow (outside `@jit`) and distributed to devices once, after which `Lk` and `Hk` are assembled and factorised with no further host↔device traffic.
+- All IMM homogeneous data (`p1, p2, v1, v2, q1, q2, M_inv`) is derived by `CartesianFlow._derive_imm_homogeneous_data` from the already-factored GPU operator.
+- `params.solver.backend` selects the operator-factor storage format:
+  - `"banded"` (default): SPIKE algorithm (Polizzi & Sameh 2006) partitions each banded `(Ny, Ny)` operator into `P` contiguous blocks of size `m = Ny/P` (with `m >= 2p`, `p = params.res.fd_order`) and factors each block as a dense `(m, m)` LU via cuSOLVER's batched LU (`jax.scipy.linalg.lu_factor`). Spike matrices `V_i = A_i^{-1} B_i`, `W_i = A_i^{-1} C_i` capture off-block coupling, and a small dense reduced system of size `2Pp` is also LU-factored once. At solve time (inside the JIT'd IMM iteration), per-block LU solves, a tiny reduced solve, and a spike reconstruction replace the old sequential `lax.scan` — all cuSOLVER-batched. Storage is `O(Ny·m)` per mode; no `(Nkz, Nkx, Ny, Ny)` array is ever materialised.
+  - `"dense"`: builds the full `(Nkz, Nkx, Ny, Ny)` matrices on the GPU via `_build_Lk_dense_gpu`/`_build_Hk_dense_gpu`, LU-factors them on-device via `DenseJAXSolver`, then discards the originals — a reference path kept for parity with the banded backend.
+- Solver infrastructure: geometry-independent code (`DenseJAXSolver`, `PerModeBandedOperator`, `_spike_factor`, `_choose_block_partition`, `_extract_banded_corners`) lives in `solvers.py`; `_build_Lk_blocks_gpu`/`_build_Hk_blocks_gpu` in `geometries/cartesian.py` assemble the per-block dense operators and coupling corners using those helpers.
+- Both backends apply `Lk` and `Hk_minus` matvecs matrix-free via `_lk_matvec` / `_hk_minus_matvec`, reconstructing the operator action on the fly from the shared `D2` / `D1` FD matrices (no per-mode operator matrices are stored).
+- IMM iteration: homogeneous solutions (`p1`, `p2`) and influence matrix `M_inv` find the correct pressure BC from the normal derivative of wall-normal velocity at the wall; pressure is then solved with that BC, and velocity is updated with the corresponding pressure gradient. Operator factors and homogeneous data inherit the kx-sharded layout from the broadcast against `fourier.k2`.
+- Constant bulk velocity: with `params.phys.driving == "constant_bulk_velocity"`, `CartesianFlow._precompute_bulk_response` solves `Hk h = 1` (zero Dirichlet wall BCs) at the mean mode; after each IMM iteration, the mean-mode streamwise velocity is corrected by `G * h` where `G = -Ub_pert / H_bulk` and `H_bulk = dot(y_weights, h) / 2`.
+- Tilt: both Cartesian flows support tilted domains via `cos_tilt`/`sin_tilt` (from `derived_params.tilt_rad`), which rotate the streamwise direction in the (x, z) plane.
 
-**Cylindrical geometry and decoupled velocity formulation**: For pipe flow, the cylindrical Navier-Stokes vector Laplacian couples `u_r` and `u_theta` through `1/r^2` terms. Following Openpipeflow (Willis 2017), `geometries/cylindrical.py` decouples them via `u+ = u_r + i u_theta`, `u- = u_r - i u_theta`, reducing the vector problem to three scalar Helmholtz equations. Each component has an **effective azimuthal mode** `m_eff` that governs its scalar Laplacian structure (`D2 + (1/r)D1 - m_eff^2/r^2`): `m_eff = m+1` for `u+`, `m_eff = m-1` for `u-`, `m_eff = m` for `u_z`. Despite different `m_eff`, `u+` and `u-` share the **same parity** `(-1)^{m+1}` — parity is kinematic (how a field transforms under `r -> -r` on the auxiliary grid), while `m_eff` determines the operator spectrum. The radial grid is a half-CGL grid on `(0, 1]` with `Nr = ny` points, formed by taking the positive half of a `2Nr`-point CGL grid on `[-1, 1]`. No grid point falls at `r = 0`; regularity is enforced by parity-reduced FD matrices built by mirroring the grid and folding ghost unknowns: `D_reduced = D_pos ± D_ghost_flipped`, where the sign depends on parity. Two base operators `A_base_even` and `A_base_odd` (`D2 + diag(1/r)*D1` with even/odd parity) differ only in the first ~p rows (near the centre). Three separate Helmholtz operators `Hk_plus`, `Hk_minus`, `Hk_z` are built for each velocity component (with the appropriate `m_eff^2/r^2` diagonal shift), compared to the single shared `Hk` in Cartesian. The pipe has only one physical wall at `r = 1`, giving a `1x1` influence matrix (scalar `alpha` per mode) instead of the Cartesian `2x2`. Homogeneous data consists of 4 arrays (`p1`, `v_plus_1`, `v_minus_1`, `q_z_1`) plus scalar `M_inv`. SPIKE block construction reuses `solvers.py` with a parity-dependent first block: pre-built for both parities, selected per mode via `jnp.where`. Matrix-free matvecs decompose into a common part (`D_pos`) plus a parity-dependent ghost correction for the first ~p entries. The velocity state array stores components in the order `(u_z, u+, u-)`, matching the Cartesian convention of (streamwise, wall-normal, spanwise); the physical representation follows the same convention as `(u_z, u_r, u_theta)`. The `_get_rhs` function converts between `(u_z, u+, u-)` and `(u_z, u_r, u_theta)` for the nonlinear term, and `_curl_fn` implements the cylindrical curl in spectral space. With `params.phys.driving == "constant_bulk_velocity"`, each IMM iteration adds a uniform mean pressure gradient `G` to the mean-mode `u_z` Helmholtz RHS (via a Helmholtz-consistent post-solve correction `uz += G * h`, where `h = Hk_z^{-1} [1,...,1,0]` is precomputed) to enforce zero perturbation bulk velocity; `G = -Ub_pert / H_bulk` where `H_bulk = 2 int_0^1 h r dr`.
+**Cylindrical geometry and decoupled velocity formulation**:
+- The cylindrical Navier-Stokes vector Laplacian couples `u_r` and `u_theta` through `1/r^2` terms. Following Openpipeflow (Willis 2017), `geometries/cylindrical.py` decouples them via `u+ = u_r + i u_theta`, `u- = u_r - i u_theta`, reducing the vector problem to three scalar Helmholtz equations.
+- Each component has an **effective azimuthal mode** `m_eff` that governs its scalar Laplacian structure (`D2 + (1/r)D1 - m_eff^2/r^2`): `m_eff = m+1` for `u+`, `m_eff = m-1` for `u-`, `m_eff = m` for `u_z`. Despite different `m_eff`, `u+` and `u-` share the **same parity** `(-1)^{m+1}` — parity is kinematic (how a field transforms under `r -> -r` on the auxiliary grid), while `m_eff` determines the operator spectrum.
+- Radial grid: half-CGL on `(0, 1]` with `Nr = ny` points, formed by taking the positive half of a `2Nr`-point CGL grid on `[-1, 1]`. No grid point falls at `r = 0`; regularity is enforced by parity-reduced FD matrices built by mirroring the grid and folding ghost unknowns: `D_reduced = D_pos ± D_ghost_flipped`, where the sign depends on parity.
+- Two base operators `A_base_even` and `A_base_odd` (`D2 + diag(1/r)*D1` with even/odd parity) differ only in the first ~p rows (near the centre).
+- Three separate Helmholtz operators `Hk_plus`, `Hk_minus`, `Hk_z` are built per velocity component (with the appropriate `m_eff^2/r^2` diagonal shift), compared to the single shared `Hk` in Cartesian.
+- The pipe has only one physical wall at `r = 1`, giving a `1x1` influence matrix (scalar `alpha` per mode) instead of the Cartesian `2x2`. Homogeneous data consists of 4 arrays (`p1`, `v_plus_1`, `v_minus_1`, `q_z_1`) plus scalar `M_inv`.
+- SPIKE block construction reuses `solvers.py` with a parity-dependent first block: pre-built for both parities, selected per mode via `jnp.where`.
+- Matrix-free matvecs decompose into a common part (`D_pos`) plus a parity-dependent ghost correction for the first ~p entries.
+- Velocity ordering: state array stores `(u_z, u+, u-)`, matching the Cartesian convention of (streamwise, wall-normal, spanwise); the physical representation follows the same convention as `(u_z, u_r, u_theta)`. `_get_rhs` converts between the two for the nonlinear term, and `_curl_fn` implements the cylindrical curl in spectral space.
+- Constant bulk velocity: with `params.phys.driving == "constant_bulk_velocity"`, each IMM iteration adds a uniform mean pressure gradient `G` to the mean-mode `u_z` Helmholtz RHS (via a Helmholtz-consistent post-solve correction `uz += G * h`, where `h = Hk_z^{-1} [1,...,1,0]` is precomputed) to enforce zero perturbation bulk velocity; `G = -Ub_pert / H_bulk` where `H_bulk = 2 int_0^1 h r dr`.
 
 ### Parameter layering
 
@@ -62,7 +104,7 @@ Defaults (Pydantic models) -> `parameters.toml` -> CLI args. `update_parameters(
 
 ### Configuration (`parameters.toml`)
 
-Key sections: `[phys]` (re, system, oversampling_factor, oversample_y, driving: `"constant_pressure_gradient"` (default) or `"constant_bulk_velocity"` for pipe flow), `[geo]` (lx, lz, tilt_degree), `[res]` (nx, ny, nz, fd_order, double_precision), `[step]` (dt, implicitness, corrector_tolerance), `[stop]` (max_sim_time, max_wall_time as ISO 8601), `[debug]` (time_functions), `[dist]` (np, platform), `[solver]` (backend: `"banded"` or `"dense"`, spike_block_size: optional target SPIKE block size `m`).
+Key sections: `[phys]` (re, system, oversampling_factor, oversample_y, driving: `"constant_pressure_gradient"` (default) or `"constant_bulk_velocity"` for pipe and plane-Poiseuille flows), `[geo]` (lx, lz, tilt_degree), `[res]` (nx, ny, nz, fd_order, double_precision), `[step]` (dt, implicitness, corrector_tolerance), `[stop]` (max_sim_time, max_wall_time as ISO 8601), `[debug]` (time_functions), `[dist]` (np, platform), `[solver]` (backend: `"banded"` or `"dense"`, spike_block_size: optional target SPIKE block size `m`).
 
 ### JAX-specific notes
 

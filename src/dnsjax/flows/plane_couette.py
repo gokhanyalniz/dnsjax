@@ -56,13 +56,17 @@ class PlaneCouetteFlow(CartesianFlow):
         operator setup to :meth:`CartesianFlow.__post_init__`,
         which assembles and factorises `$L_k$`, `$H_k$` directly
         on the device.  This method then defines the
-        plane-Couette base flow ``U(y) = y`` and its derived
-        quantities.
+        plane-Couette base flow
+        `$\\mathbf{U} = y(\\cos\\theta, 0, \\sin\\theta)$`
+        and its derived quantities.
         """
         super().__post_init__()
 
-        base_flow_np = self.ys.copy()
-        dy_base_flow_np = jnp.ones(params.res.ny, dtype=sharding.float_type)
+        Us = self.ys.copy()  # U_s(y) = y
+        dy_Us = jnp.ones(params.res.ny, dtype=sharding.float_type)
+
+        cos_t = self.cos_tilt
+        sin_t = self.sin_tilt
 
         self.base_flow = (
             jnp.zeros(
@@ -71,17 +75,23 @@ class PlaneCouetteFlow(CartesianFlow):
                 out_sharding=sharding.no_shard,
             )
             .at[0]
-            .set(base_flow_np)[:, :, None, None]
+            .set(Us * cos_t)
+            .at[2]
+            .set(Us * sin_t)[:, :, None, None]
         )
+        # curl(U) = (dy_Us sin θ, 0, -dy_Us cos θ)
         self.curl_base_flow = (
             jnp.zeros(
                 (3, params.res.ny),
                 dtype=sharding.float_type,
                 out_sharding=sharding.no_shard,
             )
+            .at[0]
+            .set(dy_Us * sin_t)
             .at[2]
-            .set(-dy_base_flow_np)[:, :, None, None]
+            .set(-dy_Us * cos_t)[:, :, None, None]
         )
+        # U x curl(U) = (0, y, 0) — tilt-independent
         self.nonlin_base_flow = (
             jnp.zeros(
                 (3, params.res.ny),
@@ -89,7 +99,7 @@ class PlaneCouetteFlow(CartesianFlow):
                 out_sharding=sharding.no_shard,
             )
             .at[1]
-            .set(base_flow_np * dy_base_flow_np)[:, :, None, None]
+            .set(Us * dy_Us)[:, :, None, None]
         )
 
 
