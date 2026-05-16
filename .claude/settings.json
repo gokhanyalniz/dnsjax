@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run *)",
+      "Bash(mpirun *)",
+      "Bash(python -W error*)",
+      "Bash(python -m pytest *)",
+      "Bash(find *)",
+      "Bash(wc *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git status *)",
+      "Bash(git branch *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ext=\"${TOOL_INPUT_file_path##*.}\"; [ \"$ext\" = \"py\" ] && uv run ruff check --fix --quiet \"$TOOL_INPUT_file_path\" && uv run ruff format --quiet \"$TOOL_INPUT_file_path\" || true"
+          }
+        ]
+      }
+    ]
+  }
+}
