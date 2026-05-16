@@ -65,6 +65,12 @@ def main() -> None:
             init_state,
             predict_and_fully_correct,
         )
+    elif params.phys.system == "plane-poiseuille":
+        from .flows.plane_poiseuille import (
+            get_stats,
+            init_state,
+            predict_and_fully_correct,
+        )
     elif params.phys.system == "pipe":
         from .flows.pipe import (
             get_stats,

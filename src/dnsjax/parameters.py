@@ -19,7 +19,7 @@ from pydantic_settings import BaseSettings
 monochromatic_systems: list[str] = ["kolmogorov", "waleffe"]
 periodic_systems: list[str] = ["decaying-box", *monochromatic_systems]
 
-cartesian_systems: list[str] = ["plane-couette"]
+cartesian_systems: list[str] = ["plane-couette", "plane-poiseuille"]
 cylindrical_systems: list[str] = ["pipe"]
 walled_systems: list[str] = [*cartesian_systems, *cylindrical_systems]
 
