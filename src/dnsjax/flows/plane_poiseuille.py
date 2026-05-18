@@ -50,7 +50,7 @@ from ..geometries.cartesian import (
     fourier,
     get_norm2,
 )
-from ..parameters import params
+from ..parameters import derived_params, params
 from ..sharding import register_dataclass_pytree, sharding
 
 
@@ -75,9 +75,6 @@ class PlanePoiseuilleFlow(CartesianFlow):
         Us = 1.0 - self.ys**2  # U_s(y) = 1 - y^2
         dy_Us = -2.0 * self.ys  # dU_s/dy = -2y
 
-        cos_t = self.cos_tilt
-        sin_t = self.sin_tilt
-
         self.base_flow = (
             jnp.zeros(
                 (3, params.res.ny),
@@ -85,9 +82,9 @@ class PlanePoiseuilleFlow(CartesianFlow):
                 out_sharding=sharding.no_shard,
             )
             .at[0]
-            .set(Us * cos_t)
+            .set(Us * derived_params.cos_tilt)
             .at[2]
-            .set(Us * sin_t)[:, :, None, None]
+            .set(Us * derived_params.sin_tilt)[:, :, None, None]
         )
         # curl(U) = (dy_Us sin θ, 0, -dy_Us cos θ)
         self.curl_base_flow = (
@@ -97,9 +94,9 @@ class PlanePoiseuilleFlow(CartesianFlow):
                 out_sharding=sharding.no_shard,
             )
             .at[0]
-            .set(dy_Us * sin_t)
+            .set(dy_Us * derived_params.sin_tilt)
             .at[2]
-            .set(-dy_Us * cos_t)[:, :, None, None]
+            .set(-dy_Us * derived_params.cos_tilt)[:, :, None, None]
         )
         # U x curl(U) = (0, -2y(1-y^2), 0) — tilt-independent
         self.nonlin_base_flow = (
@@ -149,8 +146,11 @@ def _get_stats_jit(
     u_wall_shear = jnp.einsum("bj, zxj -> zxb", flow_.D1_bnd, state[0])
     w_wall_shear = jnp.einsum("bj, zxj -> zxb", flow_.D1_bnd, state[2])
     us_wall_shear = (
-        u_wall_shear * flow_.cos_tilt + w_wall_shear * flow_.sin_tilt
+        u_wall_shear * derived_params.cos_tilt
+        + w_wall_shear * derived_params.sin_tilt
     )
+
+    # TODO: Measure spanwise wall shear
 
     # Extract mean mode via masked sum (kx-sharded).
     mean_us_shear = jnp.sum(
