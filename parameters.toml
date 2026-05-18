@@ -34,6 +34,3 @@ max_corrector_iterations = 10
 [stop]
 # max_sim_time = 100.0
 # max_wall_time = "PT10M" # ISO 8601 format
-
-[debug]
-time_functions = true

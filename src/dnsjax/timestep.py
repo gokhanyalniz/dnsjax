@@ -19,7 +19,6 @@ import jax.lax
 from jax import Array, jit
 from jax import numpy as jnp
 
-from .bench import timer
 from .parameters import params
 
 
@@ -73,7 +72,6 @@ def make_stepper(
         ``state -> (prediction_state, rhs_next, error, num_c)``.
     """
 
-    @timer("timestep/predict_and_correct")
     @jit
     def predict_and_correct(state: Array, *args) -> tuple[Array, Array, Array]:
         """Full predictor-corrector time step (Euler predict + one CN correct).
@@ -99,7 +97,6 @@ def make_stepper(
 
         return prediction_state, rhs_next, error
 
-    @timer("timestep/iterate_correction")
     @jit(donate_argnums=1)
     def iterate_correction(
         state_prev: Array,
@@ -125,7 +122,6 @@ def make_stepper(
 
         return prediction_state, rhs_next, error
 
-    @timer("timestep/predict_and_fully_correct")
     @jit
     def predict_and_fully_correct(
         state: Array, *args

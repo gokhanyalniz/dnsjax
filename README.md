@@ -83,7 +83,7 @@ Physical arrays are sharded on the $z$ axis, spectral arrays on the $k_x$ axis; 
 - [x] Banded LU with split-complex solves for wall-bounded flows
 - [x] Finite-differences + the influence-matrix method for wall-bounded flows
 - [x] Solve for perturbations around the laminar state
-- [x] Save diagnostics (parameters, sharding, benchmarks, runtime) to a log file
+- [x] Save diagnostics (parameters, sharding, runtime) to a log file
 - [x] Read parameters from a TOML configuration file
 - [x] Command-line interface
 

@@ -23,6 +23,8 @@ cartesian_systems: list[str] = ["plane-couette", "plane-poiseuille"]
 cylindrical_systems: list[str] = ["pipe"]
 walled_systems: list[str] = [*cartesian_systems, *cylindrical_systems]
 
+ns_to_s: float = 10 ** (-9)  # nanoseconds to seconds
+
 
 class Distribution(BaseModel):
     """Device distribution and backend platform."""
@@ -104,12 +106,6 @@ class Termination(BaseModel):
     max_wall_time: timedelta | None = None  # ISO 8601 format for durations
 
 
-class Debugging(BaseModel):
-    """Debug and diagnostic flags."""
-
-    time_functions: bool = True
-
-
 class Solver(BaseModel):
     """Linear algebraic solver configurations."""
 
@@ -137,7 +133,6 @@ class Parameters(BaseModel):
     outs: Outputs = Outputs()
     step: TimeStepping = TimeStepping()
     stop: Termination | None = Termination()
-    debug: Debugging | None = Debugging()
     solver: Solver = Solver()
 
 
