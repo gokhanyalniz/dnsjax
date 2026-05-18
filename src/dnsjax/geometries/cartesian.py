@@ -431,8 +431,6 @@ class CartesianFlow:
     q1: Array = field(init=False)
     q2: Array = field(init=False)
     M_inv: Array = field(init=False)
-    cos_tilt: Array = field(init=False)
-    sin_tilt: Array = field(init=False)
     h_bulk_response: Array = field(init=False)
     H_bulk_inv: Array = field(init=False)
 
@@ -526,13 +524,6 @@ class CartesianFlow:
             self.Hk_op = DenseJAXSolver(Hk_dense)
 
         self._derive_imm_homogeneous_data(Nkz, Nkx, Ny)
-
-        self.cos_tilt = jnp.cos(derived_params.tilt_rad).astype(
-            sharding.float_type
-        )
-        self.sin_tilt = jnp.sin(derived_params.tilt_rad).astype(
-            sharding.float_type
-        )
         self._precompute_bulk_response(Nkz, Nkx, Ny)
 
     def _derive_imm_homogeneous_data(
@@ -900,11 +891,17 @@ def _imm_iteration(
         # corrections vanish for u and w; only this acts there.
         mean_u = jnp.sum(jnp.where(k2_is_zero, u_new, 0.0), axis=(0, 1)).real
         mean_w = jnp.sum(jnp.where(k2_is_zero, w_new, 0.0), axis=(0, 1)).real
-        mean_us = mean_u * flow_.cos_tilt + mean_w * flow_.sin_tilt
+        mean_us = (
+            mean_u * derived_params.cos_tilt + mean_w * derived_params.sin_tilt
+        )
         bulk_us = jnp.dot(flow_.y_weights, mean_us) / 2
         bulk_corr = -bulk_us * flow_.H_bulk_inv * flow_.h_bulk_response
-        u_new = u_new + jnp.where(k2_is_zero, bulk_corr * flow_.cos_tilt, 0.0)
-        w_new = w_new + jnp.where(k2_is_zero, bulk_corr * flow_.sin_tilt, 0.0)
+        u_new = u_new + jnp.where(
+            k2_is_zero, bulk_corr * derived_params.cos_tilt, 0.0
+        )
+        w_new = w_new + jnp.where(
+            k2_is_zero, bulk_corr * derived_params.sin_tilt, 0.0
+        )
 
     velocity_new = jnp.array([u_new, v_new, w_new])
 

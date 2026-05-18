@@ -40,7 +40,7 @@ from ..geometries.cartesian import (
     fourier,
     get_norm2,
 )
-from ..parameters import params
+from ..parameters import derived_params, params
 from ..sharding import register_dataclass_pytree, sharding
 
 
@@ -65,9 +65,6 @@ class PlaneCouetteFlow(CartesianFlow):
         Us = self.ys.copy()  # U_s(y) = y
         dy_Us = jnp.ones(params.res.ny, dtype=sharding.float_type)
 
-        cos_t = self.cos_tilt
-        sin_t = self.sin_tilt
-
         self.base_flow = (
             jnp.zeros(
                 (3, params.res.ny),
@@ -75,9 +72,9 @@ class PlaneCouetteFlow(CartesianFlow):
                 out_sharding=sharding.no_shard,
             )
             .at[0]
-            .set(Us * cos_t)
+            .set(Us * derived_params.cos_tilt)
             .at[2]
-            .set(Us * sin_t)[:, :, None, None]
+            .set(Us * derived_params.sin_tilt)[:, :, None, None]
         )
         # curl(U) = (dy_Us sin θ, 0, -dy_Us cos θ)
         self.curl_base_flow = (
@@ -87,9 +84,9 @@ class PlaneCouetteFlow(CartesianFlow):
                 out_sharding=sharding.no_shard,
             )
             .at[0]
-            .set(dy_Us * sin_t)
+            .set(dy_Us * derived_params.sin_tilt)
             .at[2]
-            .set(-dy_Us * cos_t)[:, :, None, None]
+            .set(-dy_Us * derived_params.cos_tilt)[:, :, None, None]
         )
         # U x curl(U) = (0, y, 0) — tilt-independent
         self.nonlin_base_flow = (
