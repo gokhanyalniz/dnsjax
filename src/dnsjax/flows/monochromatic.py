@@ -43,7 +43,6 @@ from dataclasses import dataclass, field
 from jax import Array, jit
 from jax import numpy as jnp
 
-from ..bench import timer
 from ..geometries.triply_periodic import (
     Fourier,
     TriplyPeriodicFlow,
@@ -295,7 +294,6 @@ def _get_stats_jit(
     return stats
 
 
-@timer("stats")
 def get_stats(state: Array) -> dict[str, Array]:
-    """Bench-timed wrapper around ``_get_stats_jit``."""
+    """Wrapper around ``_get_stats_jit``."""
     return _get_stats_jit(state, fourier, flow)

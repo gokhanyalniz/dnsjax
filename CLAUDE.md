@@ -43,7 +43,6 @@ operators.py         # Wavenumber helpers (real_harmonics, complex_harmonics); v
 fft.py               # 3D/2D real FFT with 3/2-rule dealiasing; shard_map for multi-device
 rhs.py               # Rotational-form nonlinear term (shared across flow types)
 timestep.py          # make_stepper() factory: produces JIT-compiled predict_and_correct, iterate_correction, predict_and_fully_correct (fused corrector loop via lax.while_loop)
-bench.py             # @timer decorator; timers dict for function timing
 fd.py                # Finite-difference utilities (Fornberg weights, D1/D2 matrices, composite quadrature weights for arbitrary non-uniform grids)
 solvers.py           # Geometry-independent linear solvers: DenseJAXSolver (batched dense LU), PerModeBandedOperator (SPIKE block-partitioned banded solver), SPIKE factorisation, block-partitioning, and partition validation utilities
 geometries/
@@ -104,7 +103,7 @@ Defaults (Pydantic models) -> `parameters.toml` -> CLI args. `update_parameters(
 
 ### Configuration (`parameters.toml`)
 
-Key sections: `[phys]` (re, system, oversampling_factor, oversample_y, driving: `"constant_pressure_gradient"` (default) or `"constant_bulk_velocity"` for pipe and plane-Poiseuille flows), `[geo]` (lx, lz, tilt_degree), `[res]` (nx, ny, nz, fd_order, double_precision), `[step]` (dt, implicitness, corrector_tolerance), `[stop]` (max_sim_time, max_wall_time as ISO 8601), `[debug]` (time_functions), `[dist]` (np, platform), `[solver]` (backend: `"banded"` or `"dense"`, spike_block_size: optional target SPIKE block size `m`).
+Key sections: `[phys]` (re, system, oversampling_factor, oversample_y, driving: `"constant_pressure_gradient"` (default) or `"constant_bulk_velocity"` for pipe and plane-Poiseuille flows), `[geo]` (lx, lz, tilt_degree), `[res]` (nx, ny, nz, fd_order, double_precision), `[step]` (dt, implicitness, corrector_tolerance), `[stop]` (max_sim_time, max_wall_time as ISO 8601), `[dist]` (np, platform), `[solver]` (backend: `"banded"` or `"dense"`, spike_block_size: optional target SPIKE block size `m`).
 
 ### JAX-specific notes
 
@@ -112,7 +111,6 @@ Key sections: `[phys]` (re, system, oversampling_factor, oversample_y, driving: 
 - Avoid allocating a global array first and then distributing it with `jax.device_put` to devices after when such an array can be directly allocated on individual devices via the `out_sharding` argument for array-allocating calls like `jnp.zeros`, `ndarray.at.get(...)` and `ndarray.at.set(...)` etc. When this is not possible, do not use `jnp.asarray` just to avoid a `jax.device_put`.
 - `jax_enable_x64` is set from `params.res.double_precision` before JAX initializes arrays.
 - Buffer donation (`donate_argnums`) is used on main time-stepping functions to reuse memory.
-- `@jit` and `@timer` decorators are stacked with `@timer` outermost so timing wraps the JIT-compiled function.
 - The first time step is excluded from benchmark statistics because it includes JIT compilation overhead.
 - FFT normalization uses `norm="forward"` (divides by N on forward, no factor on inverse).
 
