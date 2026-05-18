@@ -9,7 +9,7 @@ present) -> command-line arguments.  The global singletons ``params``,
 import tomllib
 from dataclasses import dataclass
 from datetime import timedelta
-from math import pi
+from math import cos, pi, sin
 from pathlib import Path
 from typing import Literal
 
@@ -160,14 +160,13 @@ class DerivedParameters:
     ``ly`` is fixed by the geometry (4 for triply-periodic, 2 for walled).
     ``volume_fac`` is also fixed by the geometry
         (1 for periodic, 2 for Cartesian, 0.5 for cylindrical)
-    Tilt flags are set from ``tilt_degree``.
     """
 
     ly: float = 4
     volume_fac: float = 1
     tilt_rad: float = 0
-    tilt: bool = False
-    tilt_90: bool = False
+    cos_tilt: float = 0
+    sin_tilt: float = 0
 
 
 params: Parameters = Parameters()
@@ -211,23 +210,27 @@ def update_parameters(params_new: Parameters) -> None:
     else:
         raise NotImplementedError
 
-    derived_params.tilt_rad = pi * params.geo.tilt_degree / 180
-
-    if (
-        abs(params.geo.tilt_degree) == 0
-        or abs(params.geo.tilt_degree - 180) == 0
-    ):
-        derived_params.tilt = False
-        derived_params.tilt_90 = False
-    elif (
-        abs(params.geo.tilt_degree + 90) == 0
-        or abs(params.geo.tilt_degree - 90) == 0
-    ):
-        derived_params.tilt = True
-        derived_params.tilt_90 = True
+    # Select tilting parameters to exact precision for special angles
+    if abs(params.geo.tilt_degree) == 0:
+        derived_params.tilt_rad = 0
+        derived_params.cos_tilt = 1
+        derived_params.sin_tilt = 0
+    elif abs(params.geo.tilt_degree - 180) == 0:
+        derived_params.tilt_rad = pi
+        derived_params.cos_tilt = -1
+        derived_params.sin_tilt = 0
+    elif abs(params.geo.tilt_degree - 90) == 0:
+        derived_params.tilt_rad = pi / 2
+        derived_params.cos_tilt = 0
+        derived_params.sin_tilt = 1
+    elif abs(params.geo.tilt_degree + 90) == 0:
+        derived_params.tilt_rad = -pi / 2
+        derived_params.cos_tilt = 0
+        derived_params.sin_tilt = -1
     else:
-        derived_params.tilt = True
-        derived_params.tilt_90 = False
+        derived_params.tilt_rad = pi * params.geo.tilt_degree / 180
+        derived_params.cos_tilt = cos(derived_params.tilt_rad)
+        derived_params.sin_tilt = sin(derived_params.tilt_rad)
 
 
 @dataclass

@@ -60,7 +60,7 @@ flows/
 
 ### Code-exploration constraints
 
-Wall-bounded geometries (`cartesian.py`, `cylindrical.py`) and flows (`plane_couette.py`, `plane_poiseuille.py`, `pipe.py`) are completely independent from and design-wise mostly unrelated to the triply-periodic geometry (`triply_periodic.py`) and the respective monochromatic flows (`monochromatic.py`). In the development of future wall-bounded geometries and flows, do not explore the triply-periodic geometry and monochromatic flows.
+Wall-bounded geometries (`cartesian.py`, `cylindrical.py`) and flows (`plane_couette.py`, `plane_poiseuille.py`, `pipe.py`) are completely independent from and design-wise mostly unrelated to the triply-periodic geometry (`triply_periodic.py`) and the respective monochromatic flows (`monochromatic.py`). In the development of future wall-bounded geometries and flows, do not explore the triply-periodic geometry and monochromatic flows, unless explicitly prompted to do so.
 
 ### Key design patterns
 

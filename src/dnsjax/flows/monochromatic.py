@@ -123,122 +123,84 @@ class MonochromaticFlow(TriplyPeriodicFlow):
             1j * (2 * jnp.pi / derived_params.ly) * base_flow_complex
         )
 
-        base_flow = jnp.zeros(
-            (3, padded_res.ny_padded),
-            dtype=sharding.float_type,
-            out_sharding=sharding.no_shard,
-        )[:, :, None, None]
-        dy_base_flow = jnp.zeros(
-            (3, padded_res.ny_padded),
-            dtype=sharding.float_type,
-            out_sharding=sharding.no_shard,
-        )[:, :, None, None]
-        curl_base_flow = jnp.zeros(
-            (3, padded_res.ny_padded),
-            dtype=sharding.float_type,
-            out_sharding=sharding.no_shard,
-        )[:, :, None, None]
-        nonlin_base_flow = jnp.zeros(
-            (3, padded_res.ny_padded),
-            dtype=sharding.float_type,
-            out_sharding=sharding.no_shard,
-        )[:, :, None, None]
-
-        # Transform base flow from Fourier to physical (oversampled) space
-        base_flow = base_flow.at[0].set(
-            jnp.fft.irfft(
-                base_flow_complex, n=padded_res.ny_padded, norm="forward"
-            )[:, None, None]
+        Us = jnp.fft.irfft(
+            base_flow_complex,
+            n=padded_res.ny_padded,
+            norm="forward",
         )
-        dy_base_flow = dy_base_flow.at[0].set(
-            jnp.fft.irfft(
-                dy_base_flow_complex, n=padded_res.ny_padded, norm="forward"
-            )[:, None, None]
-        )
-        # curl(U) = (0, 0, -dU_x/dy) for a unidirectional base flow
-        curl_base_flow = curl_base_flow.at[2].set(-dy_base_flow[0])
-        # U x curl(U) = (0, U_x * dU_x/dy, 0)
-        nonlin_base_flow = nonlin_base_flow.at[1].set(
-            base_flow[0] * dy_base_flow[0]
+        dy_Us = jnp.fft.irfft(
+            dy_base_flow_complex,
+            n=padded_res.ny_padded,
+            norm="forward",
         )
 
-        # Apply tilt: rotate (U_x, 0, 0) ->
-        # (U_x cos(theta), 0, U_x sin(theta))
-        tilt_rad: float = derived_params.tilt_rad
-        if jnp.abs(tilt_rad) != 0:
-            base_flow = base_flow.at[2].set(jnp.sin(tilt_rad) * base_flow[0])
-            base_flow = base_flow.at[0].multiply(jnp.cos(tilt_rad))
-            dy_base_flow = dy_base_flow.at[2].set(
-                jnp.sin(tilt_rad) * dy_base_flow[0]
+        self.base_flow = (
+            jnp.zeros(
+                (3, padded_res.ny_padded),
+                dtype=sharding.float_type,
+                out_sharding=sharding.no_shard,
             )
-            dy_base_flow = dy_base_flow.at[0].multiply(jnp.cos(tilt_rad))
-            curl_base_flow = curl_base_flow.at[0].set(
-                -jnp.sin(tilt_rad) * curl_base_flow[2]
+            .at[0]
+            .set(Us * derived_params.cos_tilt)
+            .at[2]
+            .set(Us * derived_params.sin_tilt)[:, :, None, None]
+        )
+        # `$\nabla \times \mathbf{U}
+        #     = (\partial_y U_s \sin\theta,\;0,
+        #        \;-\partial_y U_s \cos\theta)$`
+        self.curl_base_flow = (
+            jnp.zeros(
+                (3, padded_res.ny_padded),
+                dtype=sharding.float_type,
+                out_sharding=sharding.no_shard,
             )
-            curl_base_flow = curl_base_flow.at[2].multiply(jnp.cos(tilt_rad))
+            .at[0]
+            .set(dy_Us * derived_params.sin_tilt)
+            .at[2]
+            .set(-dy_Us * derived_params.cos_tilt)[:, :, None, None]
+        )
+        # `$\mathbf{U}\times\nabla\times\mathbf{U}
+        #     = (0,\;U_s\,\partial_y U_s,\;0)$`
+        # — tilt-independent
+        self.nonlin_base_flow = (
+            jnp.zeros(
+                (3, padded_res.ny_padded),
+                dtype=sharding.float_type,
+                out_sharding=sharding.no_shard,
+            )
+            .at[1]
+            .set(Us * dy_Us)[:, :, None, None]
+        )
 
-        self.base_flow = base_flow
-        self.curl_base_flow = curl_base_flow
-        self.nonlin_base_flow = nonlin_base_flow
-
-        # Forced modes
+        # Forced modes and unit forcing Fourier coefficients
         if self._system in monochromatic_systems:
-            if not derived_params.tilt:
-                # No tilt: forcing only in u_x at +/- qf in ky
-                self.forced_modes = (
-                    (0, 0),
-                    (self.qf, -self.qf),
-                    (0, 0),
-                    (0, 0),
-                )
-            elif derived_params.tilt_90:
-                # 90-degree tilt: forcing only in u_z at +/- qf in ky
-                self.forced_modes = (
-                    (2, 2),
-                    (self.qf, -self.qf),
-                    (0, 0),
-                    (0, 0),
-                )
-            else:
-                # General tilt: forcing in both u_x and u_z
-                self.forced_modes = (
-                    (0, 0, 2, 2),
-                    (self.qf, -self.qf, self.qf, -self.qf),
-                    (0, 0, 0, 0),
-                    (0, 0, 0, 0),
-                )
+            self.forced_modes = (
+                (0, 0, 2, 2),
+                (self.qf, -self.qf, self.qf, -self.qf),
+                (0, 0, 0, 0),
+                (0, 0, 0, 0),
+            )
 
-            # Unit forcing Fourier coefficients
-            if not derived_params.tilt or derived_params.tilt_90:
-                if self._system == "kolmogorov":
-                    self.unit_force = jnp.array(
-                        [-0.5j, 0.5j], dtype=sharding.complex_type
-                    )
-                elif self._system == "waleffe":
-                    self.unit_force = jnp.array(
-                        [0.5, 0.5], dtype=sharding.complex_type
-                    )
-            else:
-                if self._system == "kolmogorov":
-                    self.unit_force = jnp.array(
-                        [
-                            -0.5j * jnp.cos(tilt_rad),
-                            0.5j * jnp.cos(tilt_rad),
-                            -0.5j * jnp.sin(tilt_rad),
-                            0.5j * jnp.sin(tilt_rad),
-                        ],
-                        dtype=sharding.complex_type,
-                    )
-                elif self._system == "waleffe":
-                    self.unit_force = jnp.array(
-                        [
-                            0.5 * jnp.cos(tilt_rad),
-                            0.5 * jnp.cos(tilt_rad),
-                            -0.5j * jnp.sin(tilt_rad),
-                            0.5j * jnp.sin(tilt_rad),
-                        ],
-                        dtype=sharding.complex_type,
-                    )
+            if self._system == "kolmogorov":
+                self.unit_force = jnp.array(
+                    [
+                        -0.5j * derived_params.cos_tilt,
+                        0.5j * derived_params.cos_tilt,
+                        -0.5j * derived_params.sin_tilt,
+                        0.5j * derived_params.sin_tilt,
+                    ],
+                    dtype=sharding.complex_type,
+                )
+            elif self._system == "waleffe":
+                self.unit_force = jnp.array(
+                    [
+                        0.5 * derived_params.cos_tilt,
+                        0.5 * derived_params.cos_tilt,
+                        0.5 * derived_params.sin_tilt,
+                        0.5 * derived_params.sin_tilt,
+                    ],
+                    dtype=sharding.complex_type,
+                )
 
 
 flow: MonochromaticFlow = MonochromaticFlow()
