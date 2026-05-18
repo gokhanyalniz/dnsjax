@@ -20,7 +20,6 @@ from functools import partial
 from jax import Array, device_put, jit, vmap
 from jax import numpy as jnp
 
-from ..bench import timer
 from ..operators import (
     complex_harmonics,
     phys_to_spec,
@@ -435,7 +434,6 @@ def build_triply_periodic_stepper(
         """Initialize the flow state with bound flow singleton."""
         return init_state(snapshot, flow)
 
-    @timer("velocity/correct_velocity")
     def correct_velocity(
         state: Array,
     ) -> Array:

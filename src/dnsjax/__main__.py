@@ -36,6 +36,7 @@ from pydantic_settings import CliApp
 
 from .parameters import (
     CLIParameters,
+    ns_to_s,
     padded_res,
     params,
     periodic_systems,
@@ -48,7 +49,6 @@ def main() -> None:
     """Run the time-stepping loop after parameters and JAX are initialised."""
     from jax import numpy as jnp
 
-    from .bench import ns_to_s, timers
     from .sharding import sharding
 
     # --- Flow dispatch -------------------------------------------------------
@@ -211,9 +211,6 @@ def main() -> None:
         Eps.append(stats["E'"])
 
         jnp.savez("stats.npz", ts=jnp.array(ts), Eps=jnp.array(Eps))
-
-        if params.debug.time_functions and main_device:
-            pp(timers, sort_dicts=True)
 
         if sharding.n_devices > 1:
             sharding.print(
