@@ -541,6 +541,13 @@ class CartesianFlow:
         so the 2x2 inverse is replaced by `$[[1/M_{00}, 0], [0, 0]]$`.
         The ``jnp.where`` around ``safe_det`` keeps the regular branch
         NaN-free before the selection happens.
+
+        After ``M_inv`` is built, ``v1`` and ``v2`` are zeroed at
+        the mean mode so the IMM velocity correction produces
+        zero there (continuity forces `$v \\equiv 0$` at
+        `$k^2 = 0$`).  The zeroing must follow the ``M_inv``
+        computation, which uses the original ``v1`` to evaluate
+        `$1/M_{00}$`.
         """
         # Homogeneous pressure solutions `$L_k p_i = e_i$`.
         e1_b = (
@@ -600,6 +607,10 @@ class CartesianFlow:
             ],
             axis=-2,
         )
+
+        # Zero homogeneous wall-normal velocity at the mean mode.
+        self.v1 = jnp.where(fourier.k2_is_zero, 0.0, self.v1)
+        self.v2 = jnp.where(fourier.k2_is_zero, 0.0, self.v2)
 
     def _precompute_bulk_response(self, Nkz: int, Nkx: int, Ny: int) -> None:
         r"""Precompute the Helmholtz response for mean-mode
@@ -784,7 +795,7 @@ def _imm_iteration(
     equation for pressure; the wall BC is determined indirectly by
     enforcing continuity `$\nabla \cdot u = 0$` at the walls.
 
-    Six stages (plus optional mean-mode corrections):
+    Six stages (plus mean-mode projections):
 
     1. Build the interior Poisson RHS from divergence of momentum.
     2. Solve Poisson for the particular pressure `$p_P$` with
@@ -811,14 +822,19 @@ def _imm_iteration(
        factorisation `$u^{(i)} = -i k_x q_i$`,
        `$w^{(i)} = -i k_z q_i$` (the scalar `$-i k_x$`,
        `$-i k_z$` commute with `$H_k^{-1}$` per mode).
-    7. *(optional)* If ``constant_bulk_velocity``, zero the
+    7. Zero the mean-mode (`$k^2 = 0$`) wall-normal velocity
+       `$v$`.  Continuity `$\partial v / \partial y = 0$`
+       plus no-slip at both walls forces `$v \equiv 0$` there;
+       the projection prevents accumulation of numerical noise
+       from the Helmholtz RHS.
+    8. *(optional)* If ``constant_bulk_velocity``, zero the
        mean-mode perturbation bulk velocity in the streamwise
        direction `$(\cos\theta, 0, \sin\theta)$`.
-    8. *(optional)* If ``block_mean_spanwise_velocity``, zero
+    9. *(optional)* If ``block_mean_spanwise_velocity``, zero
        the mean-mode perturbation bulk velocity in the
        spanwise direction `$(-\sin\theta, 0, \cos\theta)$`.
 
-    Steps 7 and 8 are orthogonal projections and do not
+    Steps 7--9 are orthogonal projections and do not
     interfere.
     """
     c = params.step.implicitness
@@ -877,6 +893,10 @@ def _imm_iteration(
     R_stack = Hk_minus_stack - grad_pP + c * nonlin_j + (1 - c) * nonlin_n
     R_stack = R_stack.at[..., 0].set(0.0).at[..., -1].set(0.0)
 
+    # Zero v-component RHS at the mean mode so the Helmholtz
+    # solve itself returns v = 0 there.
+    R_stack = R_stack.at[1].set(jnp.where(k2_is_zero, 0.0, R_stack[1]))
+
     arb_stack = flow_.Hk_op.solve(R_stack)
     u_arb, v_arb, w_arb = arb_stack[0], arb_stack[1], arb_stack[2]
 
@@ -898,6 +918,9 @@ def _imm_iteration(
     # via Helmholtz linearity — no additional Helmholtz solves.
     # p_new = pP + alpha1 * flow_.p1 + alpha2 * flow_.p2
     v_new = v_arb + alpha1 * flow_.v1 + alpha2 * flow_.v2
+
+    # Stage 7: zero mean-mode wall-normal velocity.
+    v_new = jnp.where(k2_is_zero, 0.0, v_new)
 
     # Horizontal corrections factor through the scalar potential Δq,
     # since u^(i) = -ikx q_i and w^(i) = -ikz q_i (the -ikx, -ikz

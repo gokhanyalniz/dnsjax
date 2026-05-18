@@ -953,6 +953,11 @@ class CylindricalFlow:
         measures `$\partial u_r / \partial r|_{\mathrm{wall}}$`.
         `$M^{-1} = 1/M$` for non-mean modes; `$M^{-1} = 0$`
         for `$(m, k_z) = (0, 0)$`.
+
+        After the solves, the `$u_r$` part of ``v_plus_1``
+        and ``v_minus_1`` is zeroed at the mean mode
+        (continuity forces `$u_r \\equiv 0$` there), while
+        preserving the `$u_\\theta$` part.
         """
         # Unit RHS at wall (last grid point).
         e_wall = (
@@ -984,6 +989,15 @@ class CylindricalFlow:
         rhs_v_minus = rhs_v_minus.at[..., -1].set(0.0)
         self.v_plus_1 = self.Hk_plus_op.solve(rhs_v_plus)
         self.v_minus_1 = self.Hk_minus_op.solve(rhs_v_minus)
+
+        # Zero the u_r part at the mean mode, preserving u_theta.
+        vr_1 = (self.v_plus_1 + self.v_minus_1) / 2
+        self.v_plus_1 = self.v_plus_1 - jnp.where(
+            fourier.k2_is_zero, vr_1, 0.0
+        )
+        self.v_minus_1 = self.v_minus_1 - jnp.where(
+            fourier.k2_is_zero, vr_1, 0.0
+        )
 
         # Scalar potential for u_z: Hk_z q_z_1 = p1
         q_rhs = self.p1.at[..., -1].set(0.0)
@@ -1227,7 +1241,7 @@ def _imm_iteration(
     The pipe's single wall at `$r = 1$` gives a `$1 \times 1$`
     influence matrix (scalar `$\alpha$` per mode).
 
-    Six stages:
+    Six stages (plus mean-mode projections):
 
     1. **Poisson RHS**: cylindrical divergence of momentum in
        `$(u_z, u_+, u_-)$` components:
@@ -1257,6 +1271,13 @@ def _imm_iteration(
        `$u_+ = u_{+,arb} + \alpha\,v_{+,1}$`,
        `$u_- = u_{-,arb} + \alpha\,v_{-,1}$`,
        `$u_z = u_{z,arb} - ik_z\,\alpha\,q_{z,1}$`.
+    7. **Zero mean-mode** `$u_r$`: continuity
+       `$(1/r)\,\partial(r u_r)/\partial r = 0$` plus
+       no-slip at `$r = 1$` forces `$u_r \equiv 0$` at the
+       mean mode.  The `$u_\theta$` part of `$u_\pm$` is
+       preserved.
+    8. *(optional)* If ``constant_bulk_velocity``, zero the
+       mean-mode perturbation bulk `$u_z$`.
     """
     c = params.step.implicitness
     dt = params.step.dt
@@ -1353,6 +1374,14 @@ def _imm_iteration(
     R_minus = R_minus.at[..., -1].set(0.0)
     R_z = R_z.at[..., -1].set(0.0)
 
+    # Zero the u_r part of the +/- RHS at the mean mode so
+    # the Helmholtz solves produce u_r = 0 there.  At m=0,
+    # Hk_plus and Hk_minus are identical (m_eff^2 = 1, same
+    # parity), so the antisymmetric RHS gives up = -um.
+    Rr_mean = (R_plus + R_minus) / 2
+    R_plus = R_plus - jnp.where(fourier_.k2_is_zero, Rr_mean, 0.0)
+    R_minus = R_minus - jnp.where(fourier_.k2_is_zero, Rr_mean, 0.0)
+
     up_arb = flow_.Hk_plus_op.solve(R_plus)
     um_arb = flow_.Hk_minus_op.solve(R_minus)
     uz_arb = flow_.Hk_z_op.solve(R_z)
@@ -1372,6 +1401,11 @@ def _imm_iteration(
     # Stage 6: corrected velocity.
     up_new = up_arb + alpha * flow_.v_plus_1
     um_new = um_arb + alpha * flow_.v_minus_1
+
+    # Stage 7: zero mean-mode u_r, preserving u_theta.
+    ur_mean = (up_new + um_new) / 2
+    up_new = up_new - jnp.where(fourier_.k2_is_zero, ur_mean, 0.0)
+    um_new = um_new - jnp.where(fourier_.k2_is_zero, ur_mean, 0.0)
 
     # Constant-bulk-velocity enforcement: add a uniform mean
     # pressure gradient G to the mean-mode u_z Helmholtz RHS
