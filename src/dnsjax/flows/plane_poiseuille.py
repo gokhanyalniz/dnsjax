@@ -35,6 +35,15 @@ With ``driving = "constant_bulk_velocity"``, each IMM iteration
 adjusts the mean-mode streamwise velocity to maintain zero
 perturbation bulk velocity; the perturbation pressure gradient is
 the diagnostic quantity.
+
+Spanwise blocking
+-----------------
+With ``block_mean_spanwise_velocity = True``, each IMM iteration
+additionally zeroes the perturbation bulk velocity in the spanwise
+direction `$(-\sin\theta, 0, \cos\theta)$`, simulating the
+presence of sidewalls that prevent net spanwise momentum.  This
+option is independent of ``driving`` and uses the same Helmholtz
+response as the streamwise constant-bulk-velocity enforcement.
 """
 
 from dataclasses import dataclass
