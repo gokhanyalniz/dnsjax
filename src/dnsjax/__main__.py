@@ -159,7 +159,7 @@ def main() -> None:
             Eps.append(stats["E'"])
 
         # Fused predictor + all corrector iterations (single JIT scope).
-        state, rhs_no_lapl, error, c = predict_and_fully_correct(state)
+        state, error, c = predict_and_fully_correct(state)
 
         if params.phys.system in periodic_systems:
             # Divergence correction and mean-mode zeroing
