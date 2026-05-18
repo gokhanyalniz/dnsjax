@@ -83,6 +83,7 @@ Wall-bounded geometries (`cartesian.py`, `cylindrical.py`) and flows (`plane_cou
 - Both backends apply `Lk` and `Hk_minus` matvecs matrix-free via `_lk_matvec` / `_hk_minus_matvec`, reconstructing the operator action on the fly from the shared `D2` / `D1` FD matrices (no per-mode operator matrices are stored).
 - IMM iteration: homogeneous solutions (`p1`, `p2`) and influence matrix `M_inv` find the correct pressure BC from the normal derivative of wall-normal velocity at the wall; pressure is then solved with that BC, and velocity is updated with the corresponding pressure gradient. Operator factors and homogeneous data inherit the kx-sharded layout from the broadcast against `fourier.k2`.
 - Constant bulk velocity: with `params.phys.driving == "constant_bulk_velocity"`, `CartesianFlow._precompute_bulk_response` solves `Hk h = 1` (zero Dirichlet wall BCs) at the mean mode; after each IMM iteration, the mean-mode streamwise velocity is corrected by `G * h` where `G = -Ub_pert / H_bulk` and `H_bulk = dot(y_weights, h) / 2`.
+- Block mean spanwise velocity: with `params.phys.block_mean_spanwise_velocity == True`, each IMM iteration additionally zeroes the perturbation bulk velocity in the spanwise direction `(-sin θ, 0, cos θ)`. Uses the same `h_bulk_response` / `H_bulk_inv` as the streamwise constant-bulk-velocity enforcement (the Helmholtz operator at the mean mode is identical for all horizontal velocity components). The two corrections are orthogonal and independent.
 - Tilt: both Cartesian flows support tilted domains via `cos_tilt`/`sin_tilt` (from `derived_params.tilt_rad`), which rotate the streamwise direction in the (x, z) plane.
 
 **Cylindrical geometry and decoupled velocity formulation**:
@@ -103,7 +104,7 @@ Defaults (Pydantic models) -> `parameters.toml` -> CLI args. `update_parameters(
 
 ### Configuration (`parameters.toml`)
 
-Key sections: `[phys]` (re, system, oversampling_factor, oversample_y, driving: `"constant_pressure_gradient"` (default) or `"constant_bulk_velocity"` for pipe and plane-Poiseuille flows), `[geo]` (lx, lz, tilt_degree), `[res]` (nx, ny, nz, fd_order, double_precision), `[step]` (dt, implicitness, corrector_tolerance), `[stop]` (max_sim_time, max_wall_time as ISO 8601), `[dist]` (np, platform), `[solver]` (backend: `"banded"` or `"dense"`, spike_block_size: optional target SPIKE block size `m`).
+Key sections: `[phys]` (re, system, oversampling_factor, oversample_y, driving: `"constant_pressure_gradient"` (default) or `"constant_bulk_velocity"` for pipe and plane-Poiseuille flows, block_mean_spanwise_velocity: `false` (default) — zeroes mean-mode spanwise bulk velocity for Cartesian flows), `[geo]` (lx, lz, tilt_degree), `[res]` (nx, ny, nz, fd_order, double_precision), `[step]` (dt, implicitness, corrector_tolerance), `[stop]` (max_sim_time, max_wall_time as ISO 8601), `[dist]` (np, platform), `[solver]` (backend: `"banded"` or `"dense"`, spike_block_size: optional target SPIKE block size `m`).
 
 ### JAX-specific notes
 

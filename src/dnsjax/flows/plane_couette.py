@@ -25,6 +25,15 @@ the walls moving at `$\\pm 1$`.  Its derived quantities:
 - `$dU_x/dy = 1$`
 - `$\\nabla \\times \\mathbf{U} = (0, 0, -1)$`
 - `$\\mathbf{U} \\times \\nabla \\times \\mathbf{U} = (0, y, 0)$`
+
+Spanwise blocking
+-----------------
+With ``block_mean_spanwise_velocity = True``, each IMM iteration
+zeroes the perturbation bulk velocity in the spanwise direction
+`$(-\\sin\\theta, 0, \\cos\\theta)$`, simulating the presence of
+sidewalls that prevent net spanwise momentum.  This option is
+independent of ``driving`` and uses the same Helmholtz response
+as the streamwise constant-bulk-velocity enforcement.
 """
 
 from dataclasses import dataclass
