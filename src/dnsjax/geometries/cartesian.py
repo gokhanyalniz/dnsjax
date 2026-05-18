@@ -964,7 +964,7 @@ def build_cartesian_stepper(
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
-    Callable[[Array], tuple[Array, Array, Array, Array]],
+    Callable[[Array], tuple[Array, Array, Array]],
 ]:
     """Build time-stepping functions for a Cartesian
     wall-bounded flow.

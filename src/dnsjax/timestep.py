@@ -31,7 +31,7 @@ def make_stepper(
 ) -> tuple[
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array]],
-    Callable[..., tuple[Array, Array, Array, Array]],
+    Callable[..., tuple[Array, Array, Array]],
 ]:
     """Build JIT-compiled predict-and-correct and iterate-correction functions.
 
@@ -129,7 +129,7 @@ def make_stepper(
     @jit
     def predict_and_fully_correct(
         state: Array, *args
-    ) -> tuple[Array, Array, Array, Array]:
+    ) -> tuple[Array, Array, Array]:
         """Predict + all corrector iterations in one JIT scope.
 
         Uses ``lax.while_loop`` so that the corrector convergence
@@ -162,6 +162,6 @@ def make_stepper(
         prediction, rhs_next, error, num_c = jax.lax.while_loop(
             cond_fn, body_fn, init
         )
-        return prediction, rhs_next, error, num_c
+        return prediction, error, num_c
 
     return predict_and_correct, iterate_correction, predict_and_fully_correct

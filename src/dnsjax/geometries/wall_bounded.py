@@ -139,7 +139,7 @@ def build_wall_bounded_stepper(
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
-    Callable[[Array], tuple[Array, Array, Array, Array]],
+    Callable[[Array], tuple[Array, Array, Array]],
 ]:
     """Build time-stepping functions for a wall-bounded flow.
 
@@ -181,7 +181,7 @@ def build_wall_bounded_stepper(
 
     def predict_and_fully_correct(
         state: Array,
-    ) -> tuple[Array, Array, Array, Array]:
+    ) -> tuple[Array, Array, Array]:
         """Fused predict + corrector loop with bound singletons."""
         return _predict_and_fully_correct_jit(state, fourier, flow)
 
