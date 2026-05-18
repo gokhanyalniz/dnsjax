@@ -48,6 +48,7 @@ class Physics(BaseModel):
     driving: Literal[
         "constant_pressure_gradient", "constant_bulk_velocity"
     ] = "constant_pressure_gradient"
+    block_mean_spanwise_velocity: bool = False
 
 
 class Geometry(BaseModel):

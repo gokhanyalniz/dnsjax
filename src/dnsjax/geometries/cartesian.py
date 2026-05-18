@@ -602,7 +602,7 @@ class CartesianFlow:
         )
 
     def _precompute_bulk_response(self, Nkz: int, Nkx: int, Ny: int) -> None:
-        r"""Precompute the Helmholtz response for constant-bulk-
+        r"""Precompute the Helmholtz response for mean-mode
         velocity enforcement.
 
         Solves `$H_k\,h = \mathbf{1}$` (unit uniform RHS,
@@ -611,17 +611,25 @@ class CartesianFlow:
         the velocity profile produced by a unit mean pressure
         gradient over one implicit time step.  Its bulk
         `$H = \int_{-1}^{1} h\,dy / 2$` gives the scaling
-        needed to zero the perturbation bulk velocity:
+        needed to zero a perturbation bulk velocity component:
 
         .. math::
             G = -\frac{U_{b,\mathrm{pert}}}{H}, \qquad
-            \bar{u}'_s \;\leftarrow\; \bar{u}'_s + G\,h
+            \bar{u}' \;\leftarrow\; \bar{u}' + G\,h
 
         which is equivalent to adding a uniform forcing `$G$`
-        to the mean-mode streamwise Helmholtz RHS before
-        solving.
+        to the mean-mode Helmholtz RHS before solving.
+
+        Used by both ``constant_bulk_velocity`` (streamwise)
+        and ``block_mean_spanwise_velocity`` (spanwise);
+        the `$H_k$` operator at the mean mode is the same for
+        all horizontal velocity components, so a single
+        response `$h$` serves both directions.
         """
-        if params.phys.driving != "constant_bulk_velocity":
+        if (
+            params.phys.driving != "constant_bulk_velocity"
+            and not params.phys.block_mean_spanwise_velocity
+        ):
             self.h_bulk_response = jnp.zeros(
                 Ny,
                 dtype=sharding.float_type,
@@ -770,35 +778,48 @@ def _imm_iteration(
     fourier_: Fourier,
     flow_: CartesianFlow,
 ) -> tuple[Array, Array]:
-    """Kleiser-Schumann influence-matrix method.
+    r"""Kleiser-Schumann influence-matrix method.
 
     The y-momentum equation supplies only the *interior* Poisson
     equation for pressure; the wall BC is determined indirectly by
-    enforcing continuity `$\\nabla \\cdot u = 0$` at the walls.
+    enforcing continuity `$\nabla \cdot u = 0$` at the walls.
 
-    Six stages:
+    Six stages (plus optional mean-mode corrections):
+
     1. Build the interior Poisson RHS from divergence of momentum.
     2. Solve Poisson for the particular pressure `$p_P$` with
        arbitrary (zero) Neumann BCs.
     3. Solve Helmholtz for all three particular velocity components
-       `$u_{arb}, v_{arb}, w_{arb}$` against `$p_P$` (zero Dirichlet
-       BCs).
-    4. Compute wall divergence residual `$d_{\\mathrm{wall}} = (D_1
-       v_{arb})|_{\\mathrm{wall}}$` (since `$u = w = 0$` at walls).
-    5. Apply the influence matrix `$\\alpha = -M^{-1} d_{\\mathrm{wall}}$`.
+       `$u_{arb}, v_{arb}, w_{arb}$` against `$p_P$` (zero
+       Dirichlet BCs).
+    4. Compute wall divergence residual
+       `$d_{\mathrm{wall}} = (D_1 v_{arb})|_{\mathrm{wall}}$`
+       (since `$u = w = 0$` at walls).
+    5. Apply the influence matrix
+       `$\alpha = -M^{-1} d_{\mathrm{wall}}$`.
     6. Assemble the corrected pressure and all three corrected
-       velocity components via Helmholtz linearity, with no further
-       Helmholtz solves:
+       velocity components via Helmholtz linearity, with no
+       further Helmholtz solves:
 
-       - `$p = p_P + \\alpha_1 p_1 + \\alpha_2 p_2$`
-       - `$v = v_{arb} + \\alpha_1 v_1 + \\alpha_2 v_2$`
-       - `$u = u_{arb} - i k_x \\Delta q$`
-       - `$w = w_{arb} - i k_z \\Delta q$`
+       - `$p = p_P + \alpha_1 p_1 + \alpha_2 p_2$`
+       - `$v = v_{arb} + \alpha_1 v_1 + \alpha_2 v_2$`
+       - `$u = u_{arb} - i k_x \Delta q$`
+       - `$w = w_{arb} - i k_z \Delta q$`
 
-       where `$\\Delta q = \\alpha_1 q_1 + \\alpha_2 q_2$` and
-       `$q_i = H_k^{-1} p_i$` (precomputed), using the factorisation
-       `$u^{(i)} = -i k_x q_i$`, `$w^{(i)} = -i k_z q_i$` (the scalar
-       `$-i k_x$`, `$-i k_z$` commute with `$H_k^{-1}$` per mode).
+       where `$\Delta q = \alpha_1 q_1 + \alpha_2 q_2$` and
+       `$q_i = H_k^{-1} p_i$` (precomputed), using the
+       factorisation `$u^{(i)} = -i k_x q_i$`,
+       `$w^{(i)} = -i k_z q_i$` (the scalar `$-i k_x$`,
+       `$-i k_z$` commute with `$H_k^{-1}$` per mode).
+    7. *(optional)* If ``constant_bulk_velocity``, zero the
+       mean-mode perturbation bulk velocity in the streamwise
+       direction `$(\cos\theta, 0, \sin\theta)$`.
+    8. *(optional)* If ``block_mean_spanwise_velocity``, zero
+       the mean-mode perturbation bulk velocity in the
+       spanwise direction `$(-\sin\theta, 0, \cos\theta)$`.
+
+    Steps 7 and 8 are orthogonal projections and do not
+    interfere.
     """
     c = params.step.implicitness
     dt = params.step.dt
@@ -901,6 +922,30 @@ def _imm_iteration(
         )
         w_new = w_new + jnp.where(
             k2_is_zero, bulk_corr * derived_params.sin_tilt, 0.0
+        )
+
+    if params.phys.block_mean_spanwise_velocity:
+        # Zero the perturbation bulk velocity in the spanwise
+        # direction (-sin θ, 0, cos θ).  Orthogonal to the
+        # streamwise correction above, so the two do not
+        # interfere.
+        mean_u = jnp.sum(jnp.where(k2_is_zero, u_new, 0.0), axis=(0, 1)).real
+        mean_w = jnp.sum(jnp.where(k2_is_zero, w_new, 0.0), axis=(0, 1)).real
+        mean_un = (
+            -mean_u * derived_params.sin_tilt
+            + mean_w * derived_params.cos_tilt
+        )
+        bulk_un = jnp.dot(flow_.y_weights, mean_un) / 2
+        bulk_corr = -bulk_un * flow_.H_bulk_inv * flow_.h_bulk_response
+        u_new = u_new + jnp.where(
+            k2_is_zero,
+            -bulk_corr * derived_params.sin_tilt,
+            0.0,
+        )
+        w_new = w_new + jnp.where(
+            k2_is_zero,
+            bulk_corr * derived_params.cos_tilt,
+            0.0,
         )
 
     velocity_new = jnp.array([u_new, v_new, w_new])
