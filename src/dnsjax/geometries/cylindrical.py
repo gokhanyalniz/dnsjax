@@ -991,13 +991,13 @@ class CylindricalFlow:
         self.v_minus_1 = self.Hk_minus_op.solve(rhs_v_minus)
 
         # Zero the u_r part at the mean mode, preserving u_theta.
-        vr_1 = (self.v_plus_1 + self.v_minus_1) / 2
-        self.v_plus_1 = self.v_plus_1 - jnp.where(
-            fourier.k2_is_zero, vr_1, 0.0
+        vr_corr = jnp.where(
+            fourier.k2_is_zero,
+            (self.v_plus_1 + self.v_minus_1) / 2,
+            0.0,
         )
-        self.v_minus_1 = self.v_minus_1 - jnp.where(
-            fourier.k2_is_zero, vr_1, 0.0
-        )
+        self.v_plus_1 = self.v_plus_1 - vr_corr
+        self.v_minus_1 = self.v_minus_1 - vr_corr
 
         # Scalar potential for u_z: Hk_z q_z_1 = p1
         q_rhs = self.p1.at[..., -1].set(0.0)
@@ -1378,9 +1378,9 @@ def _imm_iteration(
     # the Helmholtz solves produce u_r = 0 there.  At m=0,
     # Hk_plus and Hk_minus are identical (m_eff^2 = 1, same
     # parity), so the antisymmetric RHS gives up = -um.
-    Rr_mean = (R_plus + R_minus) / 2
-    R_plus = R_plus - jnp.where(fourier_.k2_is_zero, Rr_mean, 0.0)
-    R_minus = R_minus - jnp.where(fourier_.k2_is_zero, Rr_mean, 0.0)
+    Rr_corr = jnp.where(fourier_.k2_is_zero, (R_plus + R_minus) / 2, 0.0)
+    R_plus = R_plus - Rr_corr
+    R_minus = R_minus - Rr_corr
 
     up_arb = flow_.Hk_plus_op.solve(R_plus)
     um_arb = flow_.Hk_minus_op.solve(R_minus)
@@ -1403,9 +1403,9 @@ def _imm_iteration(
     um_new = um_arb + alpha * flow_.v_minus_1
 
     # Stage 7: zero mean-mode u_r, preserving u_theta.
-    ur_mean = (up_new + um_new) / 2
-    up_new = up_new - jnp.where(fourier_.k2_is_zero, ur_mean, 0.0)
-    um_new = um_new - jnp.where(fourier_.k2_is_zero, ur_mean, 0.0)
+    ur_corr = jnp.where(fourier_.k2_is_zero, (up_new + um_new) / 2, 0.0)
+    up_new = up_new - ur_corr
+    um_new = um_new - ur_corr
 
     # Constant-bulk-velocity enforcement: add a uniform mean
     # pressure gradient G to the mean-mode u_z Helmholtz RHS

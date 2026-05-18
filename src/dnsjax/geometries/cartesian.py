@@ -929,47 +929,45 @@ def _imm_iteration(
     u_new = u_arb - ikx * q_new
     w_new = w_arb - ikz * q_new
 
-    if params.phys.driving == "constant_bulk_velocity":
-        # Zero the perturbation bulk velocity in the streamwise
-        # direction.  At the mean mode ikx=ikz=0, so q_new
-        # corrections vanish for u and w; only this acts there.
+    if (
+        params.phys.driving == "constant_bulk_velocity"
+        or params.phys.block_mean_spanwise_velocity
+    ):
+        # Extract mean-mode velocity profiles once (shared by
+        # both streamwise and spanwise corrections).
         mean_u = jnp.sum(jnp.where(k2_is_zero, u_new, 0.0), axis=(0, 1)).real
         mean_w = jnp.sum(jnp.where(k2_is_zero, w_new, 0.0), axis=(0, 1)).real
-        mean_us = (
-            mean_u * derived_params.cos_tilt + mean_w * derived_params.sin_tilt
-        )
-        bulk_us = jnp.dot(flow_.y_weights, mean_us) / 2
-        bulk_corr = -bulk_us * flow_.H_bulk_inv * flow_.h_bulk_response
-        u_new = u_new + jnp.where(
-            k2_is_zero, bulk_corr * derived_params.cos_tilt, 0.0
-        )
-        w_new = w_new + jnp.where(
-            k2_is_zero, bulk_corr * derived_params.sin_tilt, 0.0
-        )
 
-    if params.phys.block_mean_spanwise_velocity:
-        # Zero the perturbation bulk velocity in the spanwise
-        # direction (-sin θ, 0, cos θ).  Orthogonal to the
-        # streamwise correction above, so the two do not
-        # interfere.
-        mean_u = jnp.sum(jnp.where(k2_is_zero, u_new, 0.0), axis=(0, 1)).real
-        mean_w = jnp.sum(jnp.where(k2_is_zero, w_new, 0.0), axis=(0, 1)).real
-        mean_un = (
-            -mean_u * derived_params.sin_tilt
-            + mean_w * derived_params.cos_tilt
-        )
-        bulk_un = jnp.dot(flow_.y_weights, mean_un) / 2
-        bulk_corr = -bulk_un * flow_.H_bulk_inv * flow_.h_bulk_response
-        u_new = u_new + jnp.where(
-            k2_is_zero,
-            -bulk_corr * derived_params.sin_tilt,
-            0.0,
-        )
-        w_new = w_new + jnp.where(
-            k2_is_zero,
-            bulk_corr * derived_params.cos_tilt,
-            0.0,
-        )
+        u_corr = 0.0
+        w_corr = 0.0
+
+        if params.phys.driving == "constant_bulk_velocity":
+            mean_us = (
+                mean_u * derived_params.cos_tilt
+                + mean_w * derived_params.sin_tilt
+            )
+            bulk_us = jnp.dot(flow_.y_weights, mean_us) / 2
+            G_s = -bulk_us * flow_.H_bulk_inv * flow_.h_bulk_response
+            u_corr = u_corr + G_s * derived_params.cos_tilt
+            w_corr = w_corr + G_s * derived_params.sin_tilt
+
+        if params.phys.block_mean_spanwise_velocity:
+            # The streamwise correction (cos θ, sin θ) is
+            # orthogonal to the spanwise direction
+            # (-sin θ, cos θ), so mean_u / mean_w from
+            # before the correction give the correct
+            # spanwise projection.
+            mean_un = (
+                -mean_u * derived_params.sin_tilt
+                + mean_w * derived_params.cos_tilt
+            )
+            bulk_un = jnp.dot(flow_.y_weights, mean_un) / 2
+            G_n = -bulk_un * flow_.H_bulk_inv * flow_.h_bulk_response
+            u_corr = u_corr - G_n * derived_params.sin_tilt
+            w_corr = w_corr + G_n * derived_params.cos_tilt
+
+        u_new = u_new + jnp.where(k2_is_zero, u_corr, 0.0)
+        w_new = w_new + jnp.where(k2_is_zero, w_corr, 0.0)
 
     velocity_new = jnp.array([u_new, v_new, w_new])
 
