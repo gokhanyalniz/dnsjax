@@ -113,16 +113,6 @@ class PlaneCouetteFlow(CartesianFlow):
             .at[2]
             .set(-dy_Us * derived_params.cos_tilt)[:, :, None, None]
         )
-        # U x curl(U) = (0, y, 0) — tilt-independent
-        self.nonlin_base_flow = (
-            jnp.zeros(
-                (3, params.res.ny),
-                dtype=sharding.float_type,
-                out_sharding=sharding.no_shard,
-            )
-            .at[1]
-            .set(Us * dy_Us)[:, :, None, None]
-        )
 
 
 flow: PlaneCouetteFlow = PlaneCouetteFlow()

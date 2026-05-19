@@ -173,14 +173,13 @@ def inverse_laplacian(data_spec: Array, inv_lapl_spec: Array) -> Array:
 class TriplyPeriodicFlow:
     """Precomputed data for triply-periodic flows.
 
-    Subclasses must set ``base_flow``, ``curl_base_flow``, and
-    ``nonlin_base_flow`` *after* calling ``super().__post_init__()``,
-    which builds the time-stepping coefficients ``ldt_1`` and ``ildt_2``.
+    Subclasses must set ``base_flow`` and ``curl_base_flow``
+    *after* calling ``super().__post_init__()``, which builds
+    the time-stepping coefficients ``ldt_1`` and ``ildt_2``.
     """
 
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
-    nonlin_base_flow: Array = field(init=False)
     ldt_1: Array = field(init=False)
     ildt_2: Array = field(init=False)
 
@@ -301,7 +300,6 @@ def _get_rhs(
         state,
         flow_.base_flow,
         flow_.curl_base_flow,
-        flow_.nonlin_base_flow,
         spec_to_phys,
         phys_to_spec,
         lambda s: _curl_fn(s, fourier_),

@@ -158,18 +158,6 @@ class MonochromaticFlow(TriplyPeriodicFlow):
             .at[2]
             .set(-dy_Us * derived_params.cos_tilt)[:, :, None, None]
         )
-        # `$\mathbf{U}\times\nabla\times\mathbf{U}
-        #     = (0,\;U_s\,\partial_y U_s,\;0)$`
-        # — tilt-independent
-        self.nonlin_base_flow = (
-            jnp.zeros(
-                (3, padded_res.ny_padded),
-                dtype=sharding.float_type,
-                out_sharding=sharding.no_shard,
-            )
-            .at[1]
-            .set(Us * dy_Us)[:, :, None, None]
-        )
 
         # Forced modes and unit forcing Fourier coefficients
         if self._system in monochromatic_systems:
