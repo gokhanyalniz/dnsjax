@@ -152,10 +152,10 @@ def make_stepper(
             pred, rhs_p, _, c = carry
             rhs_n = get_rhs_fn(pred, *args)
             pred, corr = correct_fn(state, pred, rhs_p, rhs_n, *args)
-            return pred, rhs_n, norm_fn(corr, *args), c + 1
+            return pred, rhs_p, norm_fn(corr, *args), c + 1
 
-        init = (prediction, rhs_next, error, jnp.int32(0))
-        prediction, rhs_next, error, num_c = jax.lax.while_loop(
+        init = (prediction, rhs_prev, error, jnp.int32(0))
+        prediction, _, error, num_c = jax.lax.while_loop(
             cond_fn, body_fn, init
         )
         return prediction, error, num_c
