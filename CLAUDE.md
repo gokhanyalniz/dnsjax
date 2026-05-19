@@ -115,6 +115,9 @@ Key sections: `[phys]` (re, system, oversampling_factor, oversample_y, driving: 
 - The first time step is excluded from benchmark statistics because it includes JIT compilation overhead.
 - FFT normalization uses `norm="forward"` (divides by N on forward, no factor on inverse).
 
+### Common optimization patterns
+- When the aim is to operate on a quantity derivable from the mean mode (streamwise *and* spanwise wavenumber equal to zero), first index to the mean mode, and then operate, when this indexing and the desired operations commute. You can use the function `extract_mean_mode` for this purpose in wall-bounded geometries.
+
 ## Tests
 All to be kept up-to-date as the respective modules change:
 - `tests/test_banded_solver.py` contains geometry-independent SPIKE solver tests.
