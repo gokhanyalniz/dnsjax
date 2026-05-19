@@ -10,8 +10,9 @@ modules.
 from collections.abc import Callable
 
 import jax
-from jax import Array
+from jax import Array, lax, shard_map
 from jax import numpy as jnp
+from jax.sharding import PartitionSpec as P
 
 from ..operators import phys_to_spec_2d, spec_to_phys_2d
 from ..parameters import derived_params, params
@@ -23,6 +24,46 @@ from ..timestep import make_stepper
 
 phys_to_spec = phys_to_spec_2d
 spec_to_phys = spec_to_phys_2d
+
+
+# ── Mean-mode extraction ───────────────────────────────────────
+
+
+def extract_mean_mode(state: Array) -> Array:
+    r"""Extract the mean Fourier mode from a spectral state.
+
+    Given a wall-bounded spectral state of shape
+    ``(C, N_{k_1}, N_{k_2}, N_y)`` where axis 2 is sharded
+    across devices, returns the `$k_1 = k_2 = 0$` mode of
+    shape ``(C, N_y)`` in `$O(N_y)$` work per device via
+    ``shard_map`` + ``psum``.
+
+    Parameters
+    ----------
+    state:
+        Shape ``(C, N_{k_1}, N_{k_2}, N_y)``, sharded on
+        axis 2 (kx for Cartesian, kz for cylindrical).
+
+    Returns
+    -------
+    :
+        Shape ``(C, N_y)``, replicated across devices.
+    """
+
+    def _local(shard: Array) -> Array:
+        first = shard[:, 0, 0, :]
+        is_source = lax.axis_index(sharding.axis_name) == 0
+        return lax.psum(
+            jnp.where(is_source, first, jnp.zeros_like(first)),
+            sharding.axis_name,
+        )
+
+    return shard_map(
+        _local,
+        mesh=sharding.mesh,
+        in_specs=sharding.spec_vector_shard,
+        out_specs=P(None, None),
+    )(state)
 
 
 # ── Norms and integration ───────────────────────────────────────

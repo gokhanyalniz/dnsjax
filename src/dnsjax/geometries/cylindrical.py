@@ -106,6 +106,7 @@ from ..solvers import (
 )
 from .wall_bounded import (
     build_wall_bounded_stepper,
+    extract_mean_mode,
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
     get_norm2,
@@ -1124,13 +1125,8 @@ class CylindricalFlow:
 
         h_full = self.Hk_z_op.solve(rhs)
 
-        # Extract the mean-mode response via masked sum
-        # (avoids scalar-indexing the kz-sharded axis).
         self.h_bulk_response = jax.device_put(
-            jnp.sum(
-                jnp.where(fourier.k2_is_zero, h_full, 0.0),
-                axis=(0, 1),
-            ),
+            extract_mean_mode(h_full[None])[0],
             sharding.no_shard,
         )
         H_bulk = 2 * jnp.dot(self.y_weights, self.h_bulk_response)
@@ -1495,10 +1491,7 @@ def _imm_iteration(
     # the bulk from uz_arb lets the IMM correction and the
     # bulk correction fuse into a single expression.
     if params.phys.driving == "constant_bulk_velocity":
-        mean_uz = jnp.sum(
-            jnp.where(fourier_.k2_is_zero, uz_arb, 0.0),
-            axis=(0, 1),
-        ).real
+        mean_uz = extract_mean_mode(uz_arb[None])[0].real
         bulk_uz = 2 * jnp.dot(flow_.y_weights, mean_uz)
         uz_new = (
             uz_arb

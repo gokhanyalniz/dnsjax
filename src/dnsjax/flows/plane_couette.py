@@ -45,6 +45,7 @@ from ..geometries.cartesian import (
     CartesianFlow,
     Fourier,
     build_cartesian_stepper,
+    extract_mean_mode,
     fourier,
     get_norm2,
     get_pert_enstrophy,
@@ -163,7 +164,7 @@ def _get_stats_jit(
     )
 
     # ── Mean velocity profiles ─────────────────────────────
-    mean_u = state[:, 0, 0, :].real  # (3, Ny)
+    mean_u = extract_mean_mode(state).real  # (3, Ny)
     mean_us = (
         mean_u[0] * derived_params.cos_tilt
         + mean_u[2] * derived_params.sin_tilt

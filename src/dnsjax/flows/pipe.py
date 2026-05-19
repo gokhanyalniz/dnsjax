@@ -35,6 +35,7 @@ from ..geometries.cylindrical import (
     CylindricalFlow,
     Fourier,
     build_cylindrical_stepper,
+    extract_mean_mode,
     fourier,
     get_norm2_cyl,
     get_pert_enstrophy_cyl,
@@ -155,8 +156,9 @@ def _get_stats_jit(
     )
 
     # ── Mean velocity profiles ───────────────────────────────
-    mean_uz = state[0, 0, 0, :].real  # (Nr,)
-    mean_uplus = state[1, 0, 0, :]  # (Nr,), complex
+    mean_state = extract_mean_mode(state)  # (3, Nr)
+    mean_uz = mean_state[0].real  # (Nr,)
+    mean_uplus = mean_state[1]  # (Nr,), complex
     mean_utheta = mean_uplus.imag  # (Nr,)
 
     # ── Wall shear & bulk velocity ──────────────────────────
