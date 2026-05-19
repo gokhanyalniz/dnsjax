@@ -37,15 +37,29 @@ from ..geometries.cylindrical import (
     build_cylindrical_stepper,
     fourier,
     get_norm2_cyl,
+    get_pert_enstrophy_cyl,
+    integrate_scalar,
 )
-from ..parameters import params
+from ..parameters import derived_params, params
 from ..sharding import register_dataclass_pytree, sharding
 
 
 @register_dataclass_pytree
 @dataclass
 class PipeFlow(CylindricalFlow):
-    """Precomputed data for pipe flow."""
+    r"""Precomputed data for pipe flow.
+
+    Laminar constants for `$U_z = 1 - r^2$` on `$(0, 1]$`:
+
+    - `$I_{\mathrm{lam}} = D_{\mathrm{lam}} = 2/Re$`
+    - `$E_{\mathrm{lam}} = 1/6$`
+    - `$U_{b,\mathrm{lam}} = 1/2$`
+    """
+
+    I_lam: float = 0.0
+    D_lam: float = 0.0
+    E_lam: float = 1.0 / 6.0
+    U_bulk_lam: float = 0.5
 
     def __post_init__(self) -> None:
         r"""Build radial grid, base flow, and IMM operators.
@@ -57,6 +71,8 @@ class PipeFlow(CylindricalFlow):
         quantities.
         """
         super().__post_init__()
+        self.I_lam = 2.0 / params.phys.re
+        self.D_lam = self.I_lam
 
         rs = self.rs  # (Nr,) on (0, 1]
 
@@ -114,34 +130,91 @@ flow: PipeFlow = PipeFlow()
 def _get_stats_jit(
     state: Array, fourier_: Fourier, flow_: PipeFlow
 ) -> dict[str, Array]:
-    r"""Compute diagnostic statistics: `$E'$`, `$dP'/dz$`.
+    r"""Compute diagnostic statistics.
 
-    - Perturbation kinetic energy with the cylindrical norm
-      (radial Jacobian `$r$` and `$u_\pm$` half-factor).
-    - Perturbation mean pressure gradient from the global
-      momentum balance:
-      `$dP'/dz = 2\,\partial_r u'_z|_{r=1} / \mathrm{Re}$`.
+    - `$E'$`: perturbation kinetic energy (cylindrical norm
+      with radial Jacobian `$r$` and `$u_\pm$` half-factor).
+    - `$I$`: energy input rate.
+    - `$D$`: energy dissipation rate.  For
+      `$-\nabla^2 U = 4$` (constant), the cross-enstrophy
+      reduces to `$4\,U'_{b,z}$`.
+    - `$E$`: total kinetic energy.
+    - `$\tau'_z$`, `$\tau'_\theta$`: perturbation wall
+      shear stress `$(\partial_r u'_{z,\theta}) / Re$`
+      at the pipe wall (`$r = 1$`).
+    - `$U'_{b,z}$`, `$U'_{b,\theta}$`: perturbation bulk
+      velocity in the axial and azimuthal directions.
+
+    All total-field quantities are computed algebraically
+    from perturbation norms and laminar constants, without
+    constructing `$\mathbf{u}' + \mathbf{U}$`.
     """
+    Re = params.phys.re
     perturbation_energy = (
         get_norm2_cyl(state, fourier_.k_metric, flow_.y_weights) / 2
     )
 
+    # ── Mean velocity profiles ───────────────────────────────
+    mean_uz = state[0, 0, 0, :].real  # (Nr,)
+    mean_uplus = state[1, 0, 0, :]  # (Nr,), complex
+    mean_utheta = mean_uplus.imag  # (Nr,)
+
+    # ── Wall shear & bulk velocity ──────────────────────────
     D1_wall_row = flow_.D1_wall.ravel()
-    wall_shear_all = jnp.einsum("j, mzj -> mz", D1_wall_row, state[0])
-    dpdz_pert = (
-        2
-        * jnp.sum(
-            jnp.where(fourier_.k2_is_zero[..., 0], wall_shear_all, 0.0)
-        ).real
-        / params.phys.re
+    tau_z = jnp.dot(D1_wall_row, mean_uz)
+    tau_theta = jnp.dot(D1_wall_row, mean_utheta)
+    U_bulk_z = (
+        integrate_scalar(mean_uz, flow_.y_weights) / derived_params.volume_fac
+    )
+    U_bulk_theta = (
+        integrate_scalar(mean_utheta, flow_.y_weights)
+        / derived_params.volume_fac
     )
 
-    stats = {
-        "E'": perturbation_energy,
-        "dPdz'": dpdz_pert,
-    }
+    # ── Energy input rate I ─────────────────────────────────
+    # CPG: I = I_lam + (4/Re) * Ub'_z
+    # CBV: I = I_lam - U_bulk_lam * dPdz'
+    dpdz_pert = 2 * tau_z / Re
+    I_cpg = flow_.I_lam + 4 * U_bulk_z / Re
+    I_cbv = flow_.I_lam - flow_.U_bulk_lam * dpdz_pert
+    is_cbv = params.phys.driving == "constant_bulk_velocity"
+    energy_input = jnp.where(is_cbv, I_cbv, I_cpg)
 
-    return stats
+    # ── Dissipation D ───────────────────────────────────────
+    # D = D_lam + 8 * Ub'_z / Re + Omega'/Re
+    pert_enstrophy = get_pert_enstrophy_cyl(
+        state,
+        flow_.D1_pos,
+        flow_.D1_ghost,
+        fourier_.m_is_even,
+        flow_.inv_r,
+        fourier_.m,
+        fourier_.kz2,
+        fourier_.k_metric,
+        flow_.y_weights,
+    )
+    dissipation = flow_.D_lam + 8 * U_bulk_z / Re + pert_enstrophy / Re
+
+    # ── Total energy E ──────────────────────────────────────
+    # E = E_lam + <U . u'> + E'
+    # Only U_z contributes (base flow has no radial/azimuthal).
+    base_uz = flow_.base_flow[0, :, 0, 0]  # (Nr,)
+    cross = (
+        integrate_scalar(base_uz * mean_uz, flow_.y_weights)
+        / derived_params.volume_fac
+    )
+    total_energy = flow_.E_lam + cross + perturbation_energy
+
+    return {
+        "E'": perturbation_energy,
+        "I": energy_input,
+        "D": dissipation,
+        "E": total_energy,
+        "tau'_z": tau_z / Re,
+        "tau'_th": tau_theta / Re,
+        "Ub'_z": U_bulk_z,
+        "Ub'_th": U_bulk_theta,
+    }
 
 
 def get_stats(state: Array) -> dict[str, Array]:

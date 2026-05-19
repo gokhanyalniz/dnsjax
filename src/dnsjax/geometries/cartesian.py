@@ -41,6 +41,7 @@ from .wall_bounded import (
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
     get_norm2,
+    get_pert_enstrophy,  # noqa: F401 — re-exported
     init_state,  # noqa: F401 — re-exported
     integrate_scalar,
     phys_to_spec,  # noqa: F401 — re-exported

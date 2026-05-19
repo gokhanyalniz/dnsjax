@@ -189,6 +189,84 @@ integrate_scalar_in_r = integrate_scalar
 # ── Cylindrical-specific norms ──────────────────────────────────
 
 
+def get_pert_enstrophy_cyl(
+    state: Array,
+    D1_pos: Array,
+    D1_ghost: Array,
+    m_is_even: Array,
+    inv_r: Array,
+    m: Array,
+    kz2: Array,
+    k_metric: Array,
+    y_weights: Array,
+) -> Array:
+    r"""Perturbation enstrophy for the cylindrical geometry.
+
+    Uses the identity
+    `$\Omega' = \langle |\nabla \mathbf{u}'|^2 \rangle$`,
+    split into radial derivative, azimuthal, and axial terms:
+
+    .. math::
+        \Omega' = \langle |D_1 \mathbf{u}'|^2 \rangle
+        + \langle |m_{\mathrm{eff}}/r\;\mathbf{u}'|^2 \rangle
+        + \langle k_z^2\,|\mathbf{u}'|^2 \rangle
+
+    where `$m_{\mathrm{eff}} = m$` for `$u_z$`,
+    `$m + 1$` for `$u_+$`, `$m - 1$` for `$u_-$`.
+    The radial derivative uses parity-dependent FD matrices:
+    `$D_1 = D_{1,\mathrm{pos}} + (-1)^{m_{\mathrm{eff}}}
+    D_{1,\mathrm{ghost}}$`.
+
+    Parameters
+    ----------
+    state:
+        Spectral velocity in `$(u_z, u_+, u_-)$` form,
+        shape ``(3, Nm, Nkz, Nr)``.
+    D1_pos:
+        Common part of first-derivative FD matrix.
+    D1_ghost:
+        Ghost correction for `$D_1$`.
+    m_is_even:
+        Boolean mask for even `$m$`, shape ``(Nm, 1, 1)``.
+    inv_r:
+        `$1/r$` on the radial grid.
+    m:
+        Azimuthal mode number, shape ``(Nm, 1, 1)``.
+    kz2:
+        `$k_z^2$`, shape ``(1, Nkz, 1)``.
+    k_metric:
+        Hermitian-symmetry weight for the real FFT axis.
+    y_weights:
+        Radial integration weights `$w_j r_j$`.
+    """
+    # Parity signs: u_z has parity (-1)^m, u_± has (-1)^{m+1}.
+    p_sign_z = m_is_even * 2 - 1
+    p_sign_pm = -p_sign_z
+
+    # Batched D1 matvecs (2 GEMMs for all 3 components).
+    dy_pos = jnp.einsum("ij, cmzj -> cmzi", D1_pos, state)
+    dy_ghost = jnp.einsum("ij, cmzj -> cmzi", D1_ghost, state)
+    p_signs = jnp.stack([p_sign_z, p_sign_pm, p_sign_pm])
+    dy_state = dy_pos + p_signs * dy_ghost
+
+    enstrophy_D1 = get_norm2_cyl(dy_state, k_metric, y_weights)
+
+    # Azimuthal term: m_eff/r * u for each component.
+    state_m = jnp.stack(
+        [
+            m * inv_r * state[0],
+            (m + 1) * inv_r * state[1],
+            (m - 1) * inv_r * state[2],
+        ]
+    )
+    enstrophy_m = get_norm2_cyl(state_m, k_metric, y_weights)
+
+    # Axial term: kz^2 |u|^2.
+    enstrophy_kz = get_norm2_cyl(state, kz2 * k_metric, y_weights)
+
+    return enstrophy_D1 + enstrophy_m + enstrophy_kz
+
+
 def get_norm2_cyl(state: Array, k_metric: Array, y_weights: Array) -> Array:
     r"""Cylindrical squared L2 norm for `$(u_z, u_+, u_-)$`.
 

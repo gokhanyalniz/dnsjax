@@ -109,9 +109,6 @@ def main() -> None:
     last_error: float = 0.0
     last_c: int = 0
 
-    ts: list[float] = []
-    Eps: list[float] = []
-
     # Warm-up call so that JIT compilation does not affect benchmarks
     stats = get_stats(state)
 
@@ -119,10 +116,6 @@ def main() -> None:
         f"t = {t:.2f}",
         *[f"{x}={y:.3e}" for x, y in stats.items()],
     )
-
-    # Debug: save stats
-    ts.append(t)
-    Eps.append(stats["E'"])
 
     sharding.print("Started timestepping at", datetime.now())
 
@@ -153,10 +146,6 @@ def main() -> None:
                 f"c/it = {c_per_it:.2f}",
                 f"err = {last_error:.3e}",
             )
-
-            # Debug: save stats
-            ts.append(t)
-            Eps.append(stats["E'"])
 
         # Fused predictor + all corrector iterations (single JIT scope).
         state, error, c = predict_and_fully_correct(state)
@@ -205,12 +194,6 @@ def main() -> None:
             f"c/it = {c_per_it:.2f}",
             f"err = {last_error:.3e}",
         )
-
-        # Debug: save stats
-        ts.append(t)
-        Eps.append(stats["E'"])
-
-        jnp.savez("stats.npz", ts=jnp.array(ts), Eps=jnp.array(Eps))
 
         if sharding.n_devices > 1:
             sharding.print(
