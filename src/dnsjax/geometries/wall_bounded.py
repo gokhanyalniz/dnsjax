@@ -99,6 +99,43 @@ def get_norm(
     return jnp.sqrt(get_norm2(vector_spec, k_metric, y_weights))
 
 
+def get_pert_enstrophy(
+    state: Array,
+    D1: Array,
+    k2: Array,
+    k_metric: Array,
+    y_weights: Array,
+) -> Array:
+    r"""Perturbation enstrophy for Cartesian wall-bounded flows.
+
+    Uses the identity
+    `$\Omega' = \langle |\nabla \mathbf{u}'|^2 \rangle$`,
+    split into horizontal and wall-normal contributions:
+
+    .. math::
+        \Omega' = \langle (k_x^2 + k_z^2)\,|\mathbf{u}'|^2
+        \rangle
+        + \langle |\partial_y \mathbf{u}'|^2 \rangle
+
+    Parameters
+    ----------
+    state:
+        Spectral velocity, shape ``(3, Nkz, Nkx, Ny)``.
+    D1:
+        First-derivative FD matrix, shape ``(Ny, Ny)``.
+    k2:
+        `$k_x^2 + k_z^2$`, shape ``(Nkz, Nkx, 1)``.
+    k_metric:
+        Hermitian-symmetry weight for the real FFT axis.
+    y_weights:
+        Quadrature weights for wall-normal integration.
+    """
+    horiz = get_norm2(state, k2 * k_metric, y_weights)
+    dy_state = jnp.einsum("ij, czxj -> czxi", D1, state)
+    wall_normal = get_norm2(dy_state, k_metric, y_weights)
+    return horiz + wall_normal
+
+
 # ── Flow state initialisation ───────────────────────────────────
 
 

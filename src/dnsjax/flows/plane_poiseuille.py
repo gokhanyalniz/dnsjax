@@ -57,6 +57,8 @@ from ..geometries.cartesian import (
     build_cartesian_stepper,
     fourier,
     get_norm2,
+    get_pert_enstrophy,
+    integrate_scalar,
 )
 from ..parameters import derived_params, params
 from ..sharding import register_dataclass_pytree, sharding
@@ -65,7 +67,19 @@ from ..sharding import register_dataclass_pytree, sharding
 @register_dataclass_pytree
 @dataclass
 class PlanePoiseuilleFlow(CartesianFlow):
-    """Precomputed data for plane Poiseuille flow."""
+    r"""Precomputed data for plane Poiseuille flow.
+
+    Laminar constants for `$U_s = 1 - y^2$` on `$[-1, 1]$`:
+
+    - `$I_{\mathrm{lam}} = D_{\mathrm{lam}} = 4/(3\,Re)$`
+    - `$E_{\mathrm{lam}} = 4/15$`
+    - `$U_{b,\mathrm{lam}} = 2/3$`
+    """
+
+    I_lam: float = 0.0
+    D_lam: float = 0.0
+    E_lam: float = 4.0 / 15.0
+    U_bulk_lam: float = 2.0 / 3.0
 
     def __post_init__(self) -> None:
         r"""Build CGL grid, base flow, and IMM operators.
@@ -79,6 +93,8 @@ class PlanePoiseuilleFlow(CartesianFlow):
         and its derived quantities.
         """
         super().__post_init__()
+        self.I_lam = 4.0 / (3.0 * params.phys.re)
+        self.D_lam = self.I_lam
 
         Us = 1.0 - self.ys**2  # U_s(y) = 1 - y^2
         dy_Us = -2.0 * self.ys  # dU_s/dy = -2y
@@ -135,50 +151,102 @@ flow: PlanePoiseuilleFlow = PlanePoiseuilleFlow()
 def _get_stats_jit(
     state: Array, fourier_: Fourier, flow_: PlanePoiseuilleFlow
 ) -> dict[str, Array]:
-    r"""Compute diagnostic statistics: `$E'$`, `$dP'/ds$`.
+    r"""Compute diagnostic statistics.
 
-    - Perturbation kinetic energy
-      `$E' = \|\mathbf{u}'\|^2 / 2$`.
-    - Perturbation mean streamwise pressure gradient
-      `$dP'/ds = (\partial_y u'_s|_{y=1}
-      - \partial_y u'_s|_{y=-1}) / (2\,\mathrm{Re})$`
-      where `$u'_s = u'_x \cos\theta + u'_z \sin\theta$`
-      at the mean mode.
+    - `$E'$`: perturbation kinetic energy
+      `$\|\mathbf{u}'\|^2 / 2$`.
+    - `$I$`: energy input rate
+      `$\langle (\mathbf{u} + \mathbf{U}) \cdot
+      (-\nabla \Pi) \rangle$`.
+    - `$D$`: energy dissipation rate
+      `$\langle |\nabla \times (\mathbf{u}' +
+      \mathbf{U})|^2 \rangle / Re$`.
+    - `$E$`: total kinetic energy
+      `$\langle |\mathbf{u}' + \mathbf{U}|^2 \rangle / 2$`.
+    - `$\tau'_{s,b/t}$`, `$\tau'_{n,b/t}$`: perturbation
+      wall shear stress `$(\partial_y u'_{s,n}) / Re$` at
+      the bottom (`$y=-1$`) and top (`$y=1$`) walls.
+    - `$U'_{b,s}$`, `$U'_{b,n}$`: perturbation bulk
+      velocity in the streamwise and spanwise directions.
+
+    All total-field quantities are computed algebraically
+    from perturbation norms and laminar constants, without
+    constructing `$\mathbf{u}' + \mathbf{U}$`.  For
+    `$-\nabla^2 U = 2$` (constant), the cross-enstrophy
+    reduces to
+    `$\langle \boldsymbol{\omega}_U \cdot
+    \boldsymbol{\omega}_{u'} \rangle
+    = 2\,U'_{b,s}$`
+    where `$U'_{b,s}$` is the perturbation bulk streamwise
+    velocity.
     """
+    Re = params.phys.re
     perturbation_energy = (
         get_norm2(state, fourier_.k_metric, flow_.y_weights) / 2
     )
 
-    # Wall shear of mean-mode streamwise perturbation velocity.
-    # D1_bnd rows: [0] = bottom wall (y=-1), [-1] = top wall (y=1).
-    u_wall_shear = jnp.einsum("bj, zxj -> zxb", flow_.D1_bnd, state[0])
-    w_wall_shear = jnp.einsum("bj, zxj -> zxb", flow_.D1_bnd, state[2])
-    us_wall_shear = (
-        u_wall_shear * derived_params.cos_tilt
-        + w_wall_shear * derived_params.sin_tilt
+    # ── Mean velocity profiles ─────────────────────────────
+    mean_u = state[:, 0, 0, :].real  # (3, Ny)
+    mean_us = (
+        mean_u[0] * derived_params.cos_tilt
+        + mean_u[2] * derived_params.sin_tilt
+    )  # (Ny,)
+    mean_un = (
+        -mean_u[0] * derived_params.sin_tilt
+        + mean_u[2] * derived_params.cos_tilt
+    )  # (Ny,)
+
+    # ── Wall shear & bulk velocity ─────────────────────────
+    mean_us_shear = flow_.D1_bnd @ mean_us  # (2,)
+    mean_un_shear = flow_.D1_bnd @ mean_un  # (2,)
+    U_bulk_s = (
+        integrate_scalar(mean_us, flow_.y_weights) / derived_params.volume_fac
+    )
+    U_bulk_n = (
+        integrate_scalar(mean_un, flow_.y_weights) / derived_params.volume_fac
     )
 
-    # TODO: Measure spanwise wall shear
+    # ── Energy input rate I ─────────────────────────────────
+    # CPG: I = I_lam + (2/Re) * Ub'_s
+    # CBV: I = I_lam - U_bulk_lam * dPds'
+    dpds_pert = (mean_us_shear[1] - mean_us_shear[0]) / (2 * Re)
+    I_cpg = flow_.I_lam + 2 * U_bulk_s / Re
+    I_cbv = flow_.I_lam - flow_.U_bulk_lam * dpds_pert
+    is_cbv = params.phys.driving == "constant_bulk_velocity"
+    energy_input = jnp.where(is_cbv, I_cbv, I_cpg)
 
-    # Extract mean mode via masked sum (kx-sharded).
-    mean_us_shear = jnp.sum(
-        jnp.where(
-            fourier_.k2_is_zero,
-            us_wall_shear,
-            0.0,
-        ),
-        axis=(0, 1),
-    ).real
+    # ── Dissipation D ───────────────────────────────────────
+    # D = D_lam + 4 * Ub'_s / Re + Omega'/Re
+    pert_enstrophy = get_pert_enstrophy(
+        state,
+        flow_.D1,
+        fourier_.k2,
+        fourier_.k_metric,
+        flow_.y_weights,
+    )
+    dissipation = flow_.D_lam + 4 * U_bulk_s / Re + pert_enstrophy / Re
 
-    # dP'/ds = (dy_us'|_{y=1} - dy_us'|_{y=-1}) / (2*Re)
-    dpds_pert = (mean_us_shear[1] - mean_us_shear[0]) / (2 * params.phys.re)
+    # ── Total energy E ──────────────────────────────────────
+    # E = E_lam + <U . u'> + E'
+    base = flow_.base_flow[:, :, 0, 0]  # (3, Ny)
+    cross = (
+        integrate_scalar(jnp.sum(base * mean_u, axis=0), flow_.y_weights)
+        / derived_params.volume_fac
+    )
+    total_energy = flow_.E_lam + cross + perturbation_energy
 
-    stats = {
+    return {
         "E'": perturbation_energy,
-        "dPds'": dpds_pert,
+        "I": energy_input,
+        "D": dissipation,
+        "E": total_energy,
+        "tau'_s,b": mean_us_shear[0] / Re,
+        "tau'_s,t": mean_us_shear[1] / Re,
+        "tau'_n,b": mean_un_shear[0] / Re,
+        "tau'_n,t": mean_un_shear[1] / Re,
+        "Ub'_s": U_bulk_s,
+        "Ub'_n": U_bulk_n,
     }
-
-    return stats
 
 
 def get_stats(state: Array) -> dict[str, Array]:
