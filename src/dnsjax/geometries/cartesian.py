@@ -38,6 +38,7 @@ from ..solvers import (
 )
 from .wall_bounded import (
     build_wall_bounded_stepper,
+    extract_mean_mode,
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
     get_norm2,
@@ -662,13 +663,8 @@ class CartesianFlow:
 
         h_full = self.Hk_op.solve(rhs)
 
-        # Extract the mean-mode response via masked sum
-        # (avoids scalar-indexing the kx-sharded axis).
         self.h_bulk_response = jax.device_put(
-            jnp.sum(
-                jnp.where(fourier.k2_is_zero, h_full, 0.0),
-                axis=(0, 1),
-            ),
+            extract_mean_mode(h_full[None])[0],
             sharding.no_shard,
         )
         H_bulk = jnp.dot(self.y_weights, self.h_bulk_response) / 2
@@ -936,8 +932,8 @@ def _imm_iteration(
     ):
         # Extract mean-mode velocity profiles once (shared by
         # both streamwise and spanwise corrections).
-        mean_u = jnp.sum(jnp.where(k2_is_zero, u_new, 0.0), axis=(0, 1)).real
-        mean_w = jnp.sum(jnp.where(k2_is_zero, w_new, 0.0), axis=(0, 1)).real
+        mean_uw = extract_mean_mode(jnp.stack([u_new, w_new])).real
+        mean_u, mean_w = mean_uw[0], mean_uw[1]
 
         u_corr = 0.0
         w_corr = 0.0
