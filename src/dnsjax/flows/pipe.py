@@ -101,18 +101,6 @@ class PipeFlow(CylindricalFlow):
             .set(omega_theta)[:, :, None, None]
         )
 
-        # U x curl(U) = (0, -2r(1-r^2), 0).
-        nonlin_r = -2.0 * rs * (1.0 - rs**2)
-        self.nonlin_base_flow = (
-            jnp.zeros(
-                (3, params.res.ny),
-                dtype=sharding.float_type,
-                out_sharding=sharding.no_shard,
-            )
-            .at[1]
-            .set(nonlin_r)[:, :, None, None]
-        )
-
 
 flow: PipeFlow = PipeFlow()
 

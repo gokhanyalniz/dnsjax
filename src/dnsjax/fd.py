@@ -15,11 +15,11 @@ build_integration_weights:
 
 """
 
-from jax import Array
-from jax import numpy as jnp
+import numpy as np
+from numpy import ndarray
 
 
-def fornberg_weights(z: Array, x: Array, m: int) -> Array:
+def fornberg_weights(z: float, x: ndarray, m: int) -> ndarray:
     r"""Compute finite-difference weights via Fornberg's algorithm.
 
     Fornberg (1998), *SIAM Rev.* **40**, 685--691.
@@ -41,8 +41,8 @@ def fornberg_weights(z: Array, x: Array, m: int) -> Array:
         contains the weights for the ``d``-th derivative.
     """
     n = len(x) - 1
-    C = jnp.zeros((n + 1, m + 1))
-    C = C.at[0, 0].set(1.0)
+    C = np.zeros((n + 1, m + 1))
+    C[0, 0] = 1.0
     c1 = 1.0
     c4 = x[0] - z
     for i in range(1, n + 1):
@@ -55,18 +55,21 @@ def fornberg_weights(z: Array, x: Array, m: int) -> Array:
             c2 *= c3
             if j == i - 1:
                 for k in range(mn, 0, -1):
-                    C = C.at[i, k].set(
+                    C[i, k] = (
                         c1 * (k * C[i - 1, k - 1] - c5 * C[i - 1, k]) / c2
                     )
-                C = C.at[i, 0].set(-c1 * c5 * C[i - 1, 0] / c2)
+                C[i, 0] = -c1 * c5 * C[i - 1, 0] / c2
             for k in range(mn, 0, -1):
-                C = C.at[j, k].set((c4 * C[j, k] - k * C[j, k - 1]) / c3)
-            C = C.at[j, 0].set(c4 * C[j, 0] / c3)
+                C[j, k] = (c4 * C[j, k] - k * C[j, k - 1]) / c3
+            C[j, 0] = c4 * C[j, 0] / c3
         c1 = c2
     return C
 
 
-def build_diff_matrices(y: Array, p: int) -> tuple[Array, Array]:
+def build_diff_matrices(
+    y: ndarray,
+    p: int,
+) -> tuple[ndarray, ndarray]:
     r"""Build first- and second-derivative matrices on a
     non-uniform grid.
 
@@ -89,27 +92,28 @@ def build_diff_matrices(y: Array, p: int) -> tuple[Array, Array]:
     D2:
         Second-derivative matrix, shape ``(Ny, Ny)``.
     """
+    y = np.asarray(y)
     Ny = len(y)
     s1, s2 = p + 1, p + 2  # stencil widths
     h1, h2 = s1 // 2, s2 // 2  # half-widths for centering
-    D1 = jnp.zeros((Ny, Ny))
-    D2 = jnp.zeros((Ny, Ny))
+    D1 = np.zeros((Ny, Ny))
+    D2 = np.zeros((Ny, Ny))
 
     for i in range(Ny):
         # D1 stencil
         j0 = max(0, min(i - h1, Ny - s1))
         w = fornberg_weights(y[i], y[j0 : j0 + s1], 1)
-        D1 = D1.at[i, j0 : j0 + s1].set(w[:, 1])
+        D1[i, j0 : j0 + s1] = w[:, 1]
 
         # D2 stencil
         j0 = max(0, min(i - h2, Ny - s2))
         w = fornberg_weights(y[i], y[j0 : j0 + s2], 2)
-        D2 = D2.at[i, j0 : j0 + s2].set(w[:, 2])
+        D2[i, j0 : j0 + s2] = w[:, 2]
 
     return D1, D2
 
 
-def build_integration_weights(y: Array, p: int) -> Array:
+def build_integration_weights(y: ndarray, p: int) -> ndarray:
     r"""Composite polynomial quadrature weights on a non-uniform
     grid.
 
@@ -142,10 +146,11 @@ def build_integration_weights(y: Array, p: int) -> Array:
     :
         Weight array of shape ``(Ny,)``.
     """
+    y = np.asarray(y)
     Ny = len(y)
     s = p + 1
     h = s // 2
-    w = jnp.zeros(Ny, dtype=y.dtype)
+    w = np.zeros(Ny, dtype=y.dtype)
 
     for i in range(Ny - 1):
         j0 = max(0, min(i + 1 - h, Ny - s))
@@ -157,11 +162,11 @@ def build_integration_weights(y: Array, p: int) -> Array:
         a_n = (y[i] - mid) / half
         b_n = (y[i + 1] - mid) / half
 
-        V = jnp.vander(t, N=s, increasing=True)
-        ks = jnp.arange(s, dtype=y.dtype)
+        V = np.vander(t, N=s, increasing=True)
+        ks = np.arange(s, dtype=y.dtype)
         mu = half * (b_n ** (ks + 1) - a_n ** (ks + 1)) / (ks + 1)
 
-        q = jnp.linalg.solve(V.T, mu)
-        w = w.at[j0 : j0 + s].add(q)
+        q = np.linalg.solve(V.T, mu)
+        w[j0 : j0 + s] += q
 
     return w

@@ -56,6 +56,17 @@ class DenseJAXSolver:
     On construction, the input matrix is LU-factored over all
     `$(k_z, k_x)$` modes via cuSOLVER batched LU, then
     discarded.  Only the factors are retained.
+
+    Two storage layouts are supported:
+
+    - **Standard** (``lu.ndim == 4``): one operator shared across
+      all RHS components, shape ``(Nkz, Nkx, Ny, Ny)``.
+    - **Batched operators** (``lu.ndim == 5``): ``C`` distinct
+      operators stacked along a leading axis, shape
+      ``(C, Nkz, Nkx, Ny, Ny)``.  Each component of a
+      ``(C, Nkz, Nkx, Ny)`` RHS is solved with its own operator.
+      Use :meth:`from_factors` to construct from pre-factored
+      arrays.
     """
 
     matrix: Array
@@ -72,14 +83,39 @@ class DenseJAXSolver:
         self.lu, self.piv = batched_lu_factor(self.matrix)
         self.matrix = None
 
+    @classmethod
+    def from_factors(cls, lu: Array, piv: Array) -> DenseJAXSolver:
+        """Construct from pre-factored LU arrays.
+
+        Bypasses the ``__post_init__`` factorisation, useful for
+        building a combined solver from individually factored
+        operators (e.g. stacking cylindrical
+        ``Hk_plus``, ``Hk_minus``, ``Hk_z``).
+
+        Parameters
+        ----------
+        lu:
+            LU factors, shape ``(Nkz, Nkx, Ny, Ny)`` or
+            ``(C, Nkz, Nkx, Ny, Ny)`` for batched operators.
+        piv:
+            Pivot indices matching *lu*.
+        """
+        obj = object.__new__(cls)
+        obj.matrix = None
+        obj.lu = lu
+        obj.piv = piv
+        return obj
+
     def solve(self, rhs: Array) -> Array:
         """Batched LU solve.
 
-        A leading batch axis (e.g. the 3 velocity components) is
-        supported transparently by an extra ``vmap`` that leaves
-        the cached LU factors untouched; this lets
-        ``_imm_iteration`` do one stack-and-solve instead of
-        three sequential kernel calls.
+        Dispatch:
+
+        - ``lu.ndim == 5``: batched operators — ``vmap`` over
+          both the operator and RHS leading axis.
+        - ``rhs.ndim == 4``: shared operator — ``vmap`` over
+          the RHS leading axis only.
+        - Otherwise: single operator, single RHS.
 
         Parameters
         ----------
@@ -93,6 +129,8 @@ class DenseJAXSolver:
         :
             Solution array, same shape as *rhs*.
         """
+        if self.lu.ndim == 5:
+            return jax.vmap(_lu_solve)((self.lu, self.piv), rhs)
         if rhs.ndim == 4:
             return jax.vmap(_lu_solve, in_axes=(None, 0))(
                 (self.lu, self.piv), rhs
@@ -208,26 +246,43 @@ class PerModeBandedOperator:
     per-block solve and the spike combination are all batched
     cuBLAS / cuSOLVER calls.
 
+    Two storage layouts are supported:
+
+    - **Standard** (``lu.ndim == 5``): one operator shared across
+      all RHS components, shape
+      ``(N_{kz}, N_{kx}, P, m, m)``.
+    - **Batched operators** (``lu.ndim == 6``): ``C`` distinct
+      operators stacked along a leading axis, shape
+      ``(C, N_{kz}, N_{kx}, P, m, m)``.  Each component of a
+      ``(C, N_{kz}, N_{kx}, N_y)`` RHS is solved with its own
+      operator.
+
     Attributes
     ----------
     lu:
         Per-block dense LU factors, shape
-        ``(N_{kz}, N_{kx}, P, m, m)``.
+        ``(N_{kz}, N_{kx}, P, m, m)`` or
+        ``(C, N_{kz}, N_{kx}, P, m, m)``.
     piv:
         Per-block pivot indices, shape
-        ``(N_{kz}, N_{kx}, P, m)``.
+        ``(N_{kz}, N_{kx}, P, m)`` or
+        ``(C, N_{kz}, N_{kx}, P, m)``.
     V:
         Right-spike matrix, shape
-        ``(N_{kz}, N_{kx}, P, m, p)``.
+        ``(N_{kz}, N_{kx}, P, m, p)`` or
+        ``(C, N_{kz}, N_{kx}, P, m, p)``.
     W:
         Left-spike matrix, shape
-        ``(N_{kz}, N_{kx}, P, m, p)``.
+        ``(N_{kz}, N_{kx}, P, m, p)`` or
+        ``(C, N_{kz}, N_{kx}, P, m, p)``.
     red_lu:
         Dense LU of the reduced system, shape
-        ``(N_{kz}, N_{kx}, 2 P p, 2 P p)``.
+        ``(N_{kz}, N_{kx}, 2 P p, 2 P p)`` or
+        ``(C, N_{kz}, N_{kx}, 2 P p, 2 P p)``.
     red_piv:
         Pivots for the reduced LU, shape
-        ``(N_{kz}, N_{kx}, 2 P p)``.
+        ``(N_{kz}, N_{kx}, 2 P p)`` or
+        ``(C, N_{kz}, N_{kx}, 2 P p)``.
     """
 
     lu: Array
@@ -240,10 +295,13 @@ class PerModeBandedOperator:
     def solve(self, rhs: Array) -> Array:
         """Batched SPIKE solve across ``(kz, kx)`` modes.
 
-        A leading batch axis (e.g. the 3 velocity components) is
-        supported transparently by an extra ``vmap`` that leaves
-        the cached factors untouched, so the same ``lu`` / ``V``
-        / ``W`` / reduced LU are reused across all batched RHSs.
+        Dispatch:
+
+        - ``lu.ndim == 6``: batched operators — ``vmap`` over
+          both the operator and RHS leading axis.
+        - ``rhs.ndim == 4``: shared operator — ``vmap`` over
+          the RHS leading axis only.
+        - Otherwise: single operator, single RHS.
 
         Parameters
         ----------
@@ -258,6 +316,16 @@ class PerModeBandedOperator:
         :
             Solution array, same shape and dtype as *rhs*.
         """
+        if self.lu.ndim == 6:
+            return jax.vmap(_spike_solve)(
+                self.lu,
+                self.piv,
+                self.V,
+                self.W,
+                self.red_lu,
+                self.red_piv,
+                rhs,
+            )
         if rhs.ndim == 4:
             return jax.vmap(
                 _spike_solve,

@@ -394,9 +394,9 @@ def _build_Hk_dense_gpu(
 class CartesianFlow:
     """Precomputed data for wall-bounded Cartesian flows.
 
-    Subclasses must set ``base_flow``, ``curl_base_flow``,
-    and ``nonlin_base_flow`` *after* calling
-    ``super().__post_init__()``, which builds the CGL grid
+    Subclasses must set ``base_flow`` and ``curl_base_flow``
+    *after* calling ``super().__post_init__()``, which builds
+    the CGL grid
     (``ys``), Clenshaw-Curtis quadrature weights
     (``y_weights``), finite-difference matrices, and all
     per-mode IMM operators.
@@ -419,7 +419,6 @@ class CartesianFlow:
     y_weights: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
-    nonlin_base_flow: Array = field(init=False)
     D1: Array = field(init=False)
     D2: Array = field(init=False)
     D1_bnd: Array = field(init=False)
@@ -709,7 +708,6 @@ def _get_rhs(
         state,
         flow_.base_flow,
         flow_.curl_base_flow,
-        flow_.nonlin_base_flow,
         spec_to_phys_2d,
         phys_to_spec_2d,
         lambda s: _curl_fn(s, fourier_, flow_),

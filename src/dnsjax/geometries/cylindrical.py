@@ -725,8 +725,8 @@ def _build_Hk_dense_gpu(
 class CylindricalFlow:
     r"""Precomputed data for wall-bounded cylindrical flows.
 
-    Subclasses must set ``base_flow``, ``curl_base_flow``, and
-    ``nonlin_base_flow`` *after* calling
+    Subclasses must set ``base_flow`` and ``curl_base_flow``
+    *after* calling
     ``super().__post_init__()``, which builds the half-CGL
     radial grid, parity-reduced FD matrices, and all per-mode
     IMM operators.
@@ -784,7 +784,6 @@ class CylindricalFlow:
     y_weights: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
-    nonlin_base_flow: Array = field(init=False)
     D1_pos: Array = field(init=False)
     D2_pos: Array = field(init=False)
     D1_ghost: Array = field(init=False)
@@ -793,9 +792,7 @@ class CylindricalFlow:
     A_base_even: Array = field(init=False)
     A_base_odd: Array = field(init=False)
     Lk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
-    Hk_plus_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
-    Hk_minus_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
-    Hk_z_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
+    Hk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
     p1: Array = field(init=False)
     v_plus_1: Array = field(init=False)
     v_minus_1: Array = field(init=False)
@@ -910,9 +907,7 @@ class CylindricalFlow:
                 P_blk,
                 m_blk,
             )
-            self.Hk_plus_op = PerModeBandedOperator(
-                *_spike_factor(Hp_A, Hp_B, Hp_C)
-            )
+            lu_p, piv_p, V_p, W_p, rl_p, rp_p = _spike_factor(Hp_A, Hp_B, Hp_C)
 
             # Hk_minus (meff = m-1, parity = (-1)^{m+1})
             Hm_A, Hm_B, Hm_C = _build_Hk_blocks_gpu(
@@ -929,9 +924,7 @@ class CylindricalFlow:
                 P_blk,
                 m_blk,
             )
-            self.Hk_minus_op = PerModeBandedOperator(
-                *_spike_factor(Hm_A, Hm_B, Hm_C)
-            )
+            lu_m, piv_m, V_m, W_m, rl_m, rp_m = _spike_factor(Hm_A, Hm_B, Hm_C)
 
             # Hk_z (meff = m, parity = (-1)^m)
             Hz_A, Hz_B, Hz_C = _build_Hk_blocks_gpu(
@@ -948,8 +941,16 @@ class CylindricalFlow:
                 P_blk,
                 m_blk,
             )
-            self.Hk_z_op = PerModeBandedOperator(
-                *_spike_factor(Hz_A, Hz_B, Hz_C)
+            lu_z, piv_z, V_z, W_z, rl_z, rp_z = _spike_factor(Hz_A, Hz_B, Hz_C)
+
+            # Combined Hk: component order (plus, minus, z).
+            self.Hk_op = PerModeBandedOperator(
+                lu=jnp.stack([lu_p, lu_m, lu_z]),
+                piv=jnp.stack([piv_p, piv_m, piv_z]),
+                V=jnp.stack([V_p, V_m, V_z]),
+                W=jnp.stack([W_p, W_m, W_z]),
+                red_lu=jnp.stack([rl_p, rl_m, rl_z]),
+                red_piv=jnp.stack([rp_p, rp_m, rp_z]),
             )
 
         else:
@@ -977,7 +978,7 @@ class CylindricalFlow:
                 c_impl,
                 nu,
             )
-            self.Hk_plus_op = DenseJAXSolver(Hp_dense)
+            Hk_plus_solver = DenseJAXSolver(Hp_dense)
 
             Hm_dense = _build_Hk_dense_gpu(
                 self.A_base_even,
@@ -990,7 +991,7 @@ class CylindricalFlow:
                 c_impl,
                 nu,
             )
-            self.Hk_minus_op = DenseJAXSolver(Hm_dense)
+            Hk_minus_solver = DenseJAXSolver(Hm_dense)
 
             Hz_dense = _build_Hk_dense_gpu(
                 self.A_base_even,
@@ -1003,7 +1004,25 @@ class CylindricalFlow:
                 c_impl,
                 nu,
             )
-            self.Hk_z_op = DenseJAXSolver(Hz_dense)
+            Hk_z_solver = DenseJAXSolver(Hz_dense)
+
+            # Combined Hk: component order (plus, minus, z).
+            self.Hk_op = DenseJAXSolver.from_factors(
+                lu=jnp.stack(
+                    [
+                        Hk_plus_solver.lu,
+                        Hk_minus_solver.lu,
+                        Hk_z_solver.lu,
+                    ]
+                ),
+                piv=jnp.stack(
+                    [
+                        Hk_plus_solver.piv,
+                        Hk_minus_solver.piv,
+                        Hk_z_solver.piv,
+                    ]
+                ),
+            )
 
         self._derive_imm_homogeneous_data(Nm, Nkz, Nr)
         self._precompute_bulk_response(Nm, Nkz, Nr)
@@ -1066,8 +1085,14 @@ class CylindricalFlow:
         rhs_v_minus = -(D1_p1 + m_over_r * self.p1)
         rhs_v_plus = rhs_v_plus.at[..., -1].set(0.0)
         rhs_v_minus = rhs_v_minus.at[..., -1].set(0.0)
-        self.v_plus_1 = self.Hk_plus_op.solve(rhs_v_plus)
-        self.v_minus_1 = self.Hk_minus_op.solve(rhs_v_minus)
+        q_rhs = self.p1.at[..., -1].set(0.0)
+
+        # Batched solve: component order (plus, minus, z).
+        rhs_stack = jnp.stack([rhs_v_plus, rhs_v_minus, q_rhs])
+        result_stack = self.Hk_op.solve(rhs_stack)
+        self.v_plus_1 = result_stack[0]
+        self.v_minus_1 = result_stack[1]
+        self.q_z_1 = result_stack[2]
 
         # Zero the u_r part at the mean mode, preserving u_theta.
         vr_corr = jnp.where(
@@ -1077,10 +1102,6 @@ class CylindricalFlow:
         )
         self.v_plus_1 = self.v_plus_1 - vr_corr
         self.v_minus_1 = self.v_minus_1 - vr_corr
-
-        # Scalar potential for u_z: Hk_z q_z_1 = p1
-        q_rhs = self.p1.at[..., -1].set(0.0)
-        self.q_z_1 = self.Hk_z_op.solve(q_rhs)
 
         # 1x1 influence matrix:
         # M = D1_wall . (v_plus_1 + v_minus_1) / 2
@@ -1123,7 +1144,10 @@ class CylindricalFlow:
         ones_vec = jnp.ones(Nr, dtype=sharding.float_type).at[-1].set(0.0)
         rhs = jnp.where(fourier.k2_is_zero, ones_vec, 0.0)
 
-        h_full = self.Hk_z_op.solve(rhs)
+        # Solve using the z-component (index 2) of the combined
+        # Hk operator via a padded batch (one-time init cost).
+        zeros = jnp.zeros_like(rhs)
+        h_full = self.Hk_op.solve(jnp.stack([zeros, zeros, rhs]))[2]
 
         self.h_bulk_response = jax.device_put(
             extract_mean_mode(h_full[None])[0],
@@ -1209,7 +1233,6 @@ def _get_rhs(
         state_rthz,
         flow_.base_flow,
         flow_.curl_base_flow,
-        flow_.nonlin_base_flow,
         spec_to_phys_2d,
         phys_to_spec_2d,
         lambda s: _curl_fn(s, fourier_, flow_),
@@ -1408,25 +1431,28 @@ def _imm_iteration(
     pP = flow_.Lk_op.solve(f_hat_P)
 
     # Stage 3: Helmholtz solves for each component.
-    # pP has parity (-1)^m -> parity_sign_p.
-    D1_pP = jnp.einsum(
-        "ij, mzj -> mzi", flow_.D1_pos, pP
-    ) + parity_sign_p * jnp.einsum("ij, mzj -> mzi", flow_.D1_ghost, pP)
+    # Batch the D1 derivatives of pP and vel_n into shared
+    # GEMMs (2 D1 GEMMs instead of 4 separate ones).
+    vel_n_stack = jnp.stack([up_n, um_n, uz_n])
+    pP_and_vel = jnp.concatenate([pP[None], vel_n_stack])
+    D1_batch = jnp.einsum("ij, cmzj -> cmzi", flow_.D1_pos, pP_and_vel)
+    D1g_batch = jnp.einsum("ij, cmzj -> cmzi", flow_.D1_ghost, pP_and_vel)
+
+    # pP pressure gradient (parity (-1)^m -> parity_sign_p).
+    D1_pP = D1_batch[0] + parity_sign_p * D1g_batch[0]
     m_over_r = m * inv_r
 
     grad_pP_plus = D1_pP - m_over_r * pP
     grad_pP_minus = D1_pP + m_over_r * pP
     grad_pP_z = ikz * pP
 
-    # Batched `$H_k^-$` matvec for all three components
-    # (4 batched GEMMs instead of 12 sequential ones).
-    vel_n_stack = jnp.stack([up_n, um_n, uz_n])
+    # Batched `$H_k^-$` matvec for all three components.
+    D1_vel = D1_batch[1:]
+    D1g_vel = D1g_batch[1:]
     D2_all = jnp.einsum("ij, cmzj -> cmzi", flow_.D2_pos, vel_n_stack)
-    D1_all = jnp.einsum("ij, cmzj -> cmzi", flow_.D1_pos, vel_n_stack)
     D2g_all = jnp.einsum("ij, cmzj -> cmzi", flow_.D2_ghost, vel_n_stack)
-    D1g_all = jnp.einsum("ij, cmzj -> cmzi", flow_.D1_ghost, vel_n_stack)
-    common_hk = D2_all + flow_.inv_r * D1_all
-    ghost_hk = D2g_all + flow_.inv_r * D1g_all
+    common_hk = D2_all + flow_.inv_r * D1_vel
+    ghost_hk = D2g_all + flow_.inv_r * D1g_vel
     parity_hk = jnp.stack([parity_sign_v, parity_sign_v, parity_sign_p])
     Abase_stack = common_hk + parity_hk * ghost_hk
     meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq])
@@ -1435,30 +1461,30 @@ def _imm_iteration(
     )
     Hk_minus_stack = (1.0 / dt) * vel_n_stack + (1.0 - c) * nu * lapl_stack
     Hk_minus_stack = Hk_minus_stack.at[..., -1].set(vel_n_stack[..., -1])
-    Hk_minus_up = Hk_minus_stack[0]
-    Hk_minus_um = Hk_minus_stack[1]
-    Hk_minus_uz = Hk_minus_stack[2]
 
-    R_plus = Hk_minus_up - grad_pP_plus + c * NLp_j + (1 - c) * NLp_n
-    R_minus = Hk_minus_um - grad_pP_minus + c * NLm_j + (1 - c) * NLm_n
-    R_z = Hk_minus_uz - grad_pP_z + c * NLz_j + (1 - c) * NLz_n
+    R_stack = (
+        Hk_minus_stack
+        - jnp.stack([grad_pP_plus, grad_pP_minus, grad_pP_z])
+        + c * jnp.stack([NLp_j, NLm_j, NLz_j])
+        + (1 - c) * jnp.stack([NLp_n, NLm_n, NLz_n])
+    )
 
     # Zero wall BC (Dirichlet no-slip).
-    R_plus = R_plus.at[..., -1].set(0.0)
-    R_minus = R_minus.at[..., -1].set(0.0)
-    R_z = R_z.at[..., -1].set(0.0)
+    R_stack = R_stack.at[..., -1].set(0.0)
 
     # Zero the u_r part of the +/- RHS at the mean mode so
     # the Helmholtz solves produce u_r = 0 there.  At m=0,
     # Hk_plus and Hk_minus are identical (m_eff^2 = 1, same
     # parity), so the antisymmetric RHS gives up = -um.
-    Rr_corr = jnp.where(fourier_.k2_is_zero, (R_plus + R_minus) / 2, 0.0)
-    R_plus = R_plus - Rr_corr
-    R_minus = R_minus - Rr_corr
+    Rr_corr = jnp.where(
+        fourier_.k2_is_zero, (R_stack[0] + R_stack[1]) / 2, 0.0
+    )
+    R_stack = R_stack.at[0].add(-Rr_corr)
+    R_stack = R_stack.at[1].add(-Rr_corr)
 
-    up_arb = flow_.Hk_plus_op.solve(R_plus)
-    um_arb = flow_.Hk_minus_op.solve(R_minus)
-    uz_arb = flow_.Hk_z_op.solve(R_z)
+    # Batched Helmholtz solve: component order (plus, minus, z).
+    arb_stack = flow_.Hk_op.solve(R_stack)
+    up_arb, um_arb, uz_arb = arb_stack[0], arb_stack[1], arb_stack[2]
 
     # Stage 4: wall divergence residual.
     D1_wall_row = flow_.D1_wall.ravel()

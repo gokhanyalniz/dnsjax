@@ -144,6 +144,7 @@ def main() -> None:
                 f"t = {t:.2f}",
                 *[f"{x}={y:.3e}" for x, y in stats.items()],
                 f"c/it = {c_per_it:.2f}",
+                f"c = {last_c}",
                 f"err = {last_error:.3e}",
             )
 
