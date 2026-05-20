@@ -53,26 +53,26 @@ def main() -> None:
 
     # --- Flow dispatch -------------------------------------------------------
     if params.phys.system in periodic_systems:
-        from .flows.monochromatic import (
+        from .flows.triply_periodic.monochromatic import (
             correct_velocity,
             get_stats,
             init_state,
             predict_and_fully_correct,
         )
     elif params.phys.system == "plane-couette":
-        from .flows.plane_couette import (
+        from .flows.wall_bounded.plane_couette import (
             get_stats,
             init_state,
             predict_and_fully_correct,
         )
     elif params.phys.system == "plane-poiseuille":
-        from .flows.plane_poiseuille import (
+        from .flows.wall_bounded.plane_poiseuille import (
             get_stats,
             init_state,
             predict_and_fully_correct,
         )
     elif params.phys.system == "pipe":
-        from .flows.pipe import (
+        from .flows.wall_bounded.pipe import (
             get_stats,
             init_state,
             predict_and_fully_correct,

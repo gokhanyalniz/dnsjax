@@ -1,6 +1,6 @@
 [phys]
 re = 1000 # Reynolds number
-forcing = "kolmogorov"
+system = "kolmogorov"
 # "none" or "kolmogorov" (sine), "waleffe" (cosine + Ry symmetry)
 
 [geo]

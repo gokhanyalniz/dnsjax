@@ -32,7 +32,7 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.fd import build_diff_matrices  # noqa: E402
-from dnsjax.geometries.cartesian import (  # noqa: E402
+from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
     _build_Hk_blocks_gpu,
     _build_Hk_dense_gpu,
     _build_Lk_blocks_gpu,

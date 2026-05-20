@@ -30,8 +30,10 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.fd import build_integration_weights  # noqa: E402
-from dnsjax.geometries.cartesian import clenshaw_curtis_weights  # noqa: E402
 from dnsjax.geometries.wall_bounded import integrate_scalar  # noqa: E402
+from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
+    clenshaw_curtis_weights,
+)
 
 
 def _cgl_grid(ny: int) -> jnp.ndarray:

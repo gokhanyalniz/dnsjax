@@ -14,10 +14,10 @@ from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
-from ..operators import phys_to_spec_2d, spec_to_phys_2d
-from ..parameters import derived_params, params
-from ..sharding import sharding
-from ..timestep import make_stepper
+from ...operators import phys_to_spec_2d, spec_to_phys_2d
+from ...parameters import derived_params, params
+from ...sharding import sharding
+from ...timestep import make_stepper
 
 # ── Spectral transform aliases ──────────────────────────────────
 
