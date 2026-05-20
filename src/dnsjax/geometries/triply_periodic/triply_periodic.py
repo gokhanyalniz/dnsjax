@@ -7,7 +7,8 @@ dataclass (time-stepping coefficients), algebraic Helmholtz predict /
 correct operations, divergence correction, state initialisation, and the
 ``build_triply_periodic_stepper`` factory.
 
-Flow-specific modules (e.g. ``flows.monochromatic``) subclass
+Flow-specific modules (e.g. ``flows.triply_periodic.monochromatic``)
+subclass
 ``TriplyPeriodicFlow`` to define the base flow, then call
 ``build_triply_periodic_stepper`` to obtain ready-to-use time-stepping
 functions.
@@ -20,16 +21,16 @@ from functools import partial
 from jax import Array, device_put, jit, vmap
 from jax import numpy as jnp
 
-from ..operators import (
+from ...operators import (
     complex_harmonics,
     phys_to_spec,
     real_harmonics,
     spec_to_phys,
 )
-from ..parameters import derived_params, params
-from ..rhs import get_nonlin
-from ..sharding import register_dataclass_pytree, sharding
-from ..timestep import make_stepper
+from ...parameters import derived_params, params
+from ...rhs import get_nonlin
+from ...sharding import register_dataclass_pytree, sharding
+from ...timestep import make_stepper
 
 
 @register_dataclass_pytree

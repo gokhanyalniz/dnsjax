@@ -25,8 +25,9 @@ works with both 3D FFTs (triply-periodic flows) and 2D FFTs
 (wall-bounded flows).
 
 The pressure projection is *not* performed here -- it is
-geometry-specific (algebraic in ``geometries.triply_periodic``,
-influence-matrix method in ``geometries.cartesian``) and lives
+geometry-specific (algebraic in
+``geometries.triply_periodic``, influence-matrix method in
+``geometries.wall_bounded.cartesian``) and lives
 in the corresponding geometry module.
 """
 

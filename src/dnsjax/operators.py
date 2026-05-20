@@ -6,7 +6,7 @@ and the vector cross product.
 
 Geometry-specific ``Fourier`` dataclasses live in the corresponding
 geometry modules (``geometries.triply_periodic``,
-``geometries.cartesian``).
+``geometries.wall_bounded.cartesian``).
 """
 
 from jax import Array, jit, vmap

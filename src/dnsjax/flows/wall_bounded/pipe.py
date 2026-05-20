@@ -5,7 +5,7 @@ pipe-flow-specific base flow.  Geometry-general infrastructure
 (half-CGL grid, parity-reduced FD matrices, IMM operators,
 cylindrical IMM iteration, predict / correct / norm, banded /
 dense LU solvers) is inherited from
-``geometries.cylindrical.CylindricalFlow``.
+``geometries.wall_bounded.cylindrical.CylindricalFlow``.
 
 It also exports the flow interface consumed by ``__main__``:
 
@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from jax import Array, jit
 from jax import numpy as jnp
 
-from ..geometries.cylindrical import (
+from ...geometries.wall_bounded.cylindrical import (
     CylindricalFlow,
     Fourier,
     build_cylindrical_stepper,
@@ -41,8 +41,8 @@ from ..geometries.cylindrical import (
     get_pert_enstrophy_cyl,
     integrate_scalar,
 )
-from ..parameters import derived_params, params
-from ..sharding import register_dataclass_pytree, sharding
+from ...parameters import derived_params, params
+from ...sharding import register_dataclass_pytree, sharding
 
 
 @register_dataclass_pytree
