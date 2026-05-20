@@ -4,7 +4,8 @@ This module defines the ``MonochromaticFlow`` dataclass that holds all
 precomputed, flow-specific data: base flow, forcing, and laminar-state
 diagnostics.  Geometry-general infrastructure (time-stepping coefficients,
 solvers, divergence correction) is inherited from
-``geometries.triply_periodic.TriplyPeriodicFlow``.
+``geometries.triply_periodic.TriplyPeriodicFlow``
+(via ``geometries.triply_periodic.triply_periodic``).
 
 It also exports the flow interface consumed by ``__main__``:
 
@@ -43,7 +44,7 @@ from dataclasses import dataclass, field
 from jax import Array, jit
 from jax import numpy as jnp
 
-from ..geometries.triply_periodic import (
+from ...geometries.triply_periodic.triply_periodic import (
     Fourier,
     TriplyPeriodicFlow,
     build_triply_periodic_stepper,
@@ -51,14 +52,14 @@ from ..geometries.triply_periodic import (
     get_norm2,
     laplacian,
 )
-from ..operators import phys_to_spec  # noqa: F401 – public re-export
-from ..parameters import (
+from ...operators import phys_to_spec  # noqa: F401 – public re-export
+from ...parameters import (
     derived_params,
     monochromatic_systems,
     padded_res,
     params,
 )
-from ..sharding import register_dataclass_pytree, sharding
+from ...sharding import register_dataclass_pytree, sharding
 
 
 @register_dataclass_pytree

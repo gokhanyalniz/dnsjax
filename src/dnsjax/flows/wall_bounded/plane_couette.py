@@ -1,11 +1,10 @@
-"""Plane Poiseuille (channel) flow: pressure-driven flow between plates.
+"""Plane Couette flow: wall-bounded shear between two moving plates.
 
-This module defines the ``PlanePoiseuilleFlow`` dataclass that holds
-the plane-Poiseuille-specific base flow.  Geometry-general
-infrastructure (CGL grid, FD matrices, IMM operators,
-Kleiser-Schumann IMM iteration, predict / correct / norm, banded /
-dense LU solvers) is inherited from
-``geometries.cartesian.CartesianFlow``.
+This module defines the ``PlaneCouetteFlow`` dataclass that holds the
+plane-Couette-specific base flow.  Geometry-general infrastructure
+(CGL grid, FD matrices, IMM operators, Kleiser-Schumann IMM
+iteration, predict / correct / norm, banded / dense LU solvers) is
+inherited from ``geometries.wall_bounded.cartesian.CartesianFlow``.
 
 It also exports the flow interface consumed by ``__main__``:
 
@@ -13,37 +12,28 @@ It also exports the flow interface consumed by ``__main__``:
 - ``init_state`` -- initial state from laminar or snapshot
 - ``get_stats`` -- diagnostic statistics
 
+Unlike the triply-periodic interface, no ``correct_velocity`` is
+exported: the influence-matrix method enforces `$\\nabla \\cdot
+\\mathbf{u} = 0$` and the no-slip wall BCs exactly at every time
+step, so no separate divergence projection is required.
+
 Base flow
 ---------
-The laminar base flow is `$U_s(y) = 1 - y^2$` on `$y \\in [-1, 1]$`,
-oriented in the streamwise direction
-`$(\cos\theta, 0, \sin\theta)$` where `$\theta$` is the tilt
-angle.  Its derived quantities:
+The laminar base flow is `$U(y) = y$` on `$y \\in [-1, 1]$`, with
+the walls moving at `$\\pm 1$`.  Its derived quantities:
 
-- `$dU_s/dy = -2y$`
-- `$\nabla \times \mathbf{U} = (-2y\sin\theta, 0, 2y\cos\theta)$`
-- `$\mathbf{U} \times \nabla \times \mathbf{U}
-  = (0,\; -2y(1-y^2),\; 0)$` (tilt-independent)
-
-Driving
--------
-With ``driving = "constant_pressure_gradient"`` (default), the base
-flow is maintained by a fixed mean pressure gradient and the
-perturbation pressure gradient is a diagnostic output.
-
-With ``driving = "constant_bulk_velocity"``, each IMM iteration
-adjusts the mean-mode streamwise velocity to maintain zero
-perturbation bulk velocity; the perturbation pressure gradient is
-the diagnostic quantity.
+- `$dU_x/dy = 1$`
+- `$\\nabla \\times \\mathbf{U} = (0, 0, -1)$`
+- `$\\mathbf{U} \\times \\nabla \\times \\mathbf{U} = (0, y, 0)$`
 
 Spanwise blocking
 -----------------
 With ``block_mean_spanwise_velocity = True``, each IMM iteration
-additionally zeroes the perturbation bulk velocity in the spanwise
-direction `$(-\sin\theta, 0, \cos\theta)$`, simulating the
-presence of sidewalls that prevent net spanwise momentum.  This
-option is independent of ``driving`` and uses the same Helmholtz
-response as the streamwise constant-bulk-velocity enforcement.
+zeroes the perturbation bulk velocity in the spanwise direction
+`$(-\\sin\\theta, 0, \\cos\\theta)$`, simulating the presence of
+sidewalls that prevent net spanwise momentum.  This option is
+independent of ``driving`` and uses the same Helmholtz response
+as the streamwise constant-bulk-velocity enforcement.
 """
 
 from dataclasses import dataclass
@@ -51,7 +41,7 @@ from dataclasses import dataclass
 from jax import Array, jit
 from jax import numpy as jnp
 
-from ..geometries.cartesian import (
+from ...geometries.wall_bounded.cartesian import (
     CartesianFlow,
     Fourier,
     build_cartesian_stepper,
@@ -61,26 +51,26 @@ from ..geometries.cartesian import (
     get_pert_enstrophy,
     integrate_scalar,
 )
-from ..parameters import derived_params, params
-from ..sharding import register_dataclass_pytree, sharding
+from ...parameters import derived_params, params
+from ...sharding import register_dataclass_pytree, sharding
 
 
 @register_dataclass_pytree
 @dataclass
-class PlanePoiseuilleFlow(CartesianFlow):
-    r"""Precomputed data for plane Poiseuille flow.
+class PlaneCouetteFlow(CartesianFlow):
+    r"""Precomputed data for plane Couette flow.
 
-    Laminar constants for `$U_s = 1 - y^2$` on `$[-1, 1]$`:
+    Laminar constants for `$U_s = y$` on `$[-1, 1]$`:
 
-    - `$I_{\mathrm{lam}} = D_{\mathrm{lam}} = 4/(3\,Re)$`
-    - `$E_{\mathrm{lam}} = 4/15$`
-    - `$U_{b,\mathrm{lam}} = 2/3$`
+    - `$I_{\mathrm{lam}} = D_{\mathrm{lam}} = 1/Re$`
+    - `$E_{\mathrm{lam}} = 1/6$`
+    - `$U_{b,\mathrm{lam}} = 0$`
     """
 
     I_lam: float = 0.0
     D_lam: float = 0.0
-    E_lam: float = 4.0 / 15.0
-    U_bulk_lam: float = 2.0 / 3.0
+    E_lam: float = 1.0 / 6.0
+    U_bulk_lam: float = 0.0
 
     def __post_init__(self) -> None:
         r"""Build CGL grid, base flow, and IMM operators.
@@ -89,16 +79,16 @@ class PlanePoiseuilleFlow(CartesianFlow):
         operator setup to :meth:`CartesianFlow.__post_init__`,
         which assembles and factorises `$L_k$`, `$H_k$` directly
         on the device.  This method then defines the
-        plane-Poiseuille base flow
-        `$\mathbf{U} = (1-y^2)(\cos\theta, 0, \sin\theta)$`
+        plane-Couette base flow
+        `$\mathbf{U} = y(\cos\theta, 0, \sin\theta)$`
         and its derived quantities.
         """
         super().__post_init__()
-        self.I_lam = 4.0 / (3.0 * params.phys.re)
+        self.I_lam = 1.0 / params.phys.re
         self.D_lam = self.I_lam
 
-        Us = 1.0 - self.ys**2  # U_s(y) = 1 - y^2
-        dy_Us = -2.0 * self.ys  # dU_s/dy = -2y
+        Us = self.ys.copy()  # U_s(y) = y
+        dy_Us = jnp.ones(params.res.ny, dtype=sharding.float_type)
 
         self.base_flow = (
             jnp.zeros(
@@ -125,7 +115,7 @@ class PlanePoiseuilleFlow(CartesianFlow):
         )
 
 
-flow: PlanePoiseuilleFlow = PlanePoiseuilleFlow()
+flow: PlaneCouetteFlow = PlaneCouetteFlow()
 
 (
     predict_and_correct,
@@ -140,36 +130,23 @@ flow: PlanePoiseuilleFlow = PlanePoiseuilleFlow()
 
 @jit
 def _get_stats_jit(
-    state: Array, fourier_: Fourier, flow_: PlanePoiseuilleFlow
+    state: Array, fourier_: Fourier, flow_: PlaneCouetteFlow
 ) -> dict[str, Array]:
     r"""Compute diagnostic statistics.
 
-    - `$E'$`: perturbation kinetic energy
-      `$\|\mathbf{u}'\|^2 / 2$`.
-    - `$I$`: energy input rate
-      `$\langle (\mathbf{u} + \mathbf{U}) \cdot
-      (-\nabla \Pi) \rangle$`.
-    - `$D$`: energy dissipation rate
-      `$\langle |\nabla \times (\mathbf{u}' +
-      \mathbf{U})|^2 \rangle / Re$`.
-    - `$E$`: total kinetic energy
-      `$\langle |\mathbf{u}' + \mathbf{U}|^2 \rangle / 2$`.
+    - `$E'$`: perturbation kinetic energy.
+    - `$I$`: energy input rate from wall shear:
+      `$I = I_{\mathrm{lam}} + (\partial_y u'_s|_{y=1}
+      + \partial_y u'_s|_{y=-1}) / (2\,Re)$`.
+    - `$D$`: energy dissipation rate.  Since
+      `$\nabla^2 U = 0$`, cross-enstrophy vanishes:
+      `$D = D_{\mathrm{lam}} + \Omega'/Re$`.
+    - `$E$`: total kinetic energy.
     - `$\tau'_{s,b/t}$`, `$\tau'_{n,b/t}$`: perturbation
       wall shear stress `$(\partial_y u'_{s,n}) / Re$` at
       the bottom (`$y=-1$`) and top (`$y=1$`) walls.
     - `$U'_{b,s}$`, `$U'_{b,n}$`: perturbation bulk
       velocity in the streamwise and spanwise directions.
-
-    All total-field quantities are computed algebraically
-    from perturbation norms and laminar constants, without
-    constructing `$\mathbf{u}' + \mathbf{U}$`.  For
-    `$-\nabla^2 U = 2$` (constant), the cross-enstrophy
-    reduces to
-    `$\langle \boldsymbol{\omega}_U \cdot
-    \boldsymbol{\omega}_{u'} \rangle
-    = 2\,U'_{b,s}$`
-    where `$U'_{b,s}$` is the perturbation bulk streamwise
-    velocity.
     """
     Re = params.phys.re
     perturbation_energy = (
@@ -198,16 +175,13 @@ def _get_stats_jit(
     )
 
     # ── Energy input rate I ─────────────────────────────────
-    # CPG: I = I_lam + (2/Re) * Ub'_s
-    # CBV: I = I_lam - U_bulk_lam * dPds'
-    dpds_pert = (mean_us_shear[1] - mean_us_shear[0]) / (2 * Re)
-    I_cpg = flow_.I_lam + 2 * U_bulk_s / Re
-    I_cbv = flow_.I_lam - flow_.U_bulk_lam * dpds_pert
-    is_cbv = params.phys.driving == "constant_bulk_velocity"
-    energy_input = jnp.where(is_cbv, I_cbv, I_cpg)
+    # I = I_lam + (dy_us'|{y=1} + dy_us'|{y=-1}) / (2*Re)
+    wall_shear_sum = (mean_us_shear[1] + mean_us_shear[0]) / (2 * Re)
+    energy_input = flow_.I_lam + wall_shear_sum
 
     # ── Dissipation D ───────────────────────────────────────
-    # D = D_lam + 4 * Ub'_s / Re + Omega'/Re
+    # nabla^2 U = 0 => cross-enstrophy = 0
+    # D = D_lam + Omega'/Re
     pert_enstrophy = get_pert_enstrophy(
         state,
         flow_.D1,
@@ -215,7 +189,7 @@ def _get_stats_jit(
         fourier_.k_metric,
         flow_.y_weights,
     )
-    dissipation = flow_.D_lam + 4 * U_bulk_s / Re + pert_enstrophy / Re
+    dissipation = flow_.D_lam + pert_enstrophy / Re
 
     # ── Total energy E ──────────────────────────────────────
     # E = E_lam + <U . u'> + E'

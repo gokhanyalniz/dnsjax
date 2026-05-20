@@ -40,8 +40,9 @@ from dnsjax.fd import (  # noqa: E402
     build_diff_matrices,
     build_integration_weights,
 )
-from dnsjax.flows.pipe import flow as pipe_flow  # noqa: E402
-from dnsjax.geometries.cylindrical import (  # noqa: E402
+from dnsjax.flows.wall_bounded.pipe import flow as pipe_flow  # noqa: E402
+from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
+from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _abase_matvec,
     _build_A_base,
     _build_half_cgl_grid,
@@ -54,7 +55,6 @@ from dnsjax.geometries.cylindrical import (  # noqa: E402
     fourier,
     get_norm2_cyl,
 )
-from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
     DenseJAXSolver,

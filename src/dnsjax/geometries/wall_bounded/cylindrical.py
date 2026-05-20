@@ -74,7 +74,7 @@ FD matrices, not by a boundary condition.  This gives a
 `$1 \times 1$` influence matrix -- simpler than the
 Cartesian `$2 \times 2$` case.
 
-Flow-specific modules (e.g. ``flows.pipe``) subclass
+Flow-specific modules (e.g. ``flows.wall_bounded.pipe``) subclass
 ``CylindricalFlow`` to define the base flow, then call
 ``build_cylindrical_stepper`` to obtain ready-to-use
 time-stepping functions.
@@ -87,24 +87,24 @@ import jax
 from jax import Array
 from jax import numpy as jnp
 
-from ..fd import build_diff_matrices, build_integration_weights
-from ..operators import (
+from ...fd import build_diff_matrices, build_integration_weights
+from ...operators import (
     complex_harmonics,
     phys_to_spec_2d,
     real_harmonics,
     spec_to_phys_2d,
 )
-from ..parameters import params
-from ..rhs import get_nonlin
-from ..sharding import register_dataclass_pytree, sharding
-from ..solvers import (
+from ...parameters import params
+from ...rhs import get_nonlin
+from ...sharding import register_dataclass_pytree, sharding
+from ...solvers import (
     DenseJAXSolver,
     PerModeBandedOperator,
     _extract_banded_corners,
     _spike_factor,
     validate_spike_partition,
 )
-from .wall_bounded import (
+from ._base import (
     build_wall_bounded_stepper,
     extract_mean_mode,
     get_inprod,  # noqa: F401 — re-exported

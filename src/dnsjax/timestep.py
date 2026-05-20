@@ -69,7 +69,7 @@ def make_stepper(
     predict_and_fully_correct:
         Fused predict + corrector loop in a single JIT scope
         via ``lax.while_loop``.  Signature:
-        ``state -> (prediction_state, rhs_next, error, num_c)``.
+        ``state -> (prediction_state, error, num_c)``.
     """
 
     @jit
