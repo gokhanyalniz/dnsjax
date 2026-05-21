@@ -84,8 +84,23 @@ class Outputs(BaseModel):
 
     # All outputs are with respect to the number of time steps taken
     it_stats: int | None = None  # How often to compute stats
+    it_snapshot: int | None = None  # How often to save snapshots
     nstats: int = Field(ge=1, default=100)
     stats_precision: int = Field(ge=1, le=17, default=9)
+    # Wall-bounded snapshot on-disk layout (ignored for periodic
+    # flows, which always use a native layout):
+    #   "y_major": wall-normal axis slowest on disk, enabling fast
+    #              partial y-slice reads (``load_y_slice``).
+    #   "native":  spectral axis order, fewest/zero-copy writes.
+    snapshot_layout: Literal["y_major", "native"] = "y_major"
+    # How processes write a snapshot's shared chunk files:
+    #   "concurrent": all processes write their disjoint byte ranges
+    #                 at once (fast; POSIX/parallel filesystems).
+    #   "serial":     rank-ordered (token-passing) writes, one
+    #                 process at a time -- safe on filesystems such
+    #                 as NFS where concurrent writes can corrupt
+    #                 data.  No effect for single-process runs.
+    snapshot_write_mode: Literal["concurrent", "serial"] = "concurrent"
 
 
 class TimeStepping(BaseModel):
