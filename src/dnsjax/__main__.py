@@ -98,7 +98,24 @@ def main() -> None:
         sharding.exit(code=1)
 
     # --- Initial condition ---------------------------------------------------
-    state = init_state(params.init.snapshot)
+    if (
+        params.init.snapshot is not None
+        and Path(params.init.snapshot).is_dir()
+    ):
+        # zarr3 snapshot (new format)
+        from .snapshot import (
+            load_snapshot,
+            validate_snapshot_params,
+        )
+
+        validate_snapshot_params(params.init.snapshot)
+        state, t_snap, it_snap = load_snapshot(params.init.snapshot)
+        params.init.t0 = t_snap
+        params.init.it0 = it_snap
+        sharding.print(f"Resumed from snapshot: t={t_snap:.6e}, it={it_snap}")
+    else:
+        # Legacy .npz or laminar start
+        state = init_state(params.init.snapshot)
 
     # --- Stopping criteria ---------------------------------------------------
     wall_time_stop = (
@@ -207,6 +224,17 @@ def main() -> None:
 
         t += params.step.dt
         it += 1
+
+        # Periodic snapshot save
+        if (
+            params.outs.it_snapshot is not None
+            and it % params.outs.it_snapshot == 0
+            and it > params.init.it0
+        ):
+            from .snapshot import save_snapshot
+
+            save_snapshot(state, t, it, f"snapshot_it{it:09d}")
+
         last_error = error
         c_int = int(c)
         last_c = c_int
@@ -226,6 +254,12 @@ def main() -> None:
         )
 
     sharding.print("Stopped timestepping at", datetime.now())
+
+    # Final snapshot (if snapshotting is active and we stepped)
+    if params.outs.it_snapshot is not None and it > params.init.it0:
+        from .snapshot import save_snapshot
+
+        save_snapshot(state, t, it, f"snapshot_it{it:09d}")
 
     wall_time_now = perf_counter_ns()
     alive_time = ns_to_s * (wall_time_now - wall_time_start)
