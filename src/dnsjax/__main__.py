@@ -45,6 +45,20 @@ from .parameters import (
 )
 
 
+def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width):
+    """Write *n_valid* buffered stats rows to *file_path*."""
+    import numpy as np
+
+    data = np.asarray(buffer[:n_valid])
+    with open(file_path, "a") as f:
+        for i in range(n_valid):
+            t_str = f"{ts_buf[i]:.{p}e}".rjust(col_width)
+            stat_strs = " ".join(
+                f"{v:.{p}e}".rjust(col_width) for v in data[i]
+            )
+            f.write(f"{t_str} {stat_strs}\n")
+
+
 def main() -> None:
     """Run the time-stepping loop after parameters and JAX are initialised."""
     from jax import numpy as jnp
@@ -117,6 +131,34 @@ def main() -> None:
         *[f"{x}={y:.3e}" for x, y in stats.items()],
     )
 
+    # --- Stats buffer setup ------------------------------------------------
+    if params.outs.it_stats is not None:
+        stat_names = list(stats.keys())
+        n_stat_cols = len(stat_names)
+        buffer = jnp.zeros(
+            (params.outs.nstats, n_stat_cols),
+            dtype=sharding.float_type,
+        )
+        ts_buf: list[float] = []
+        py_idx: int = 0
+        p = params.outs.stats_precision - 1
+        val_width = params.outs.stats_precision + 7
+        col_width = max(
+            val_width,
+            max(len(n) for n in ["t"] + stat_names),
+        )
+        stats_file = Path("stats.dat")
+
+        if sharding.main_device and not stats_file.exists():
+            header = " ".join(n.rjust(col_width) for n in ["t"] + stat_names)
+            with open(stats_file, "w") as f:
+                f.write(header + "\n")
+
+        stat_vals = jnp.stack(list(stats.values()))
+        buffer = buffer.at[py_idx].set(stat_vals)
+        ts_buf.append(t)
+        py_idx += 1
+
     sharding.print("Started timestepping at", datetime.now())
 
     # --- Main time-stepping loop ---------------------------------------------
@@ -131,22 +173,30 @@ def main() -> None:
 
             sharding.print("First iteration over at", datetime.now())
 
-        # Periodic diagnostic output
+        # Periodic diagnostic output -> GPU buffer
         if (
             params.outs.it_stats is not None
             and it % params.outs.it_stats == 0
             and it > params.init.it0
         ):
             stats = get_stats(state)
-            c_per_it = c_tot / (it - params.init.it0)
+            stat_vals = jnp.stack(list(stats.values()))
+            buffer = buffer.at[py_idx].set(stat_vals)
+            ts_buf.append(t)
+            py_idx += 1
 
-            sharding.print(
-                f"t = {t:.2f}",
-                *[f"{x}={y:.3e}" for x, y in stats.items()],
-                f"c/it = {c_per_it:.2f}",
-                f"c = {last_c}",
-                f"err = {last_error:.3e}",
-            )
+            if py_idx == params.outs.nstats:
+                if sharding.main_device:
+                    _flush_stats(
+                        buffer,
+                        py_idx,
+                        ts_buf,
+                        stats_file,
+                        p,
+                        col_width,
+                    )
+                ts_buf.clear()
+                py_idx = 0
 
         # Fused predictor + all corrector iterations (single JIT scope).
         state, error, c = predict_and_fully_correct(state)
@@ -189,6 +239,12 @@ def main() -> None:
         stats = get_stats(state)
         c_per_it = c_tot / (it - params.init.it0)
 
+        if params.outs.it_stats is not None:
+            stat_vals = jnp.stack(list(stats.values()))
+            buffer = buffer.at[py_idx].set(stat_vals)
+            ts_buf.append(t)
+            py_idx += 1
+
         sharding.print(
             f"t = {t:.2f}",
             *[f"{x}={y:.3e}" for x, y in stats.items()],
@@ -211,6 +267,21 @@ def main() -> None:
                 f"{wall_time_per_sim_time:.3e} s/t,",
                 f"{wall_time_per_rhs:.3e} s/rhs.",
             )
+
+    # Flush remaining buffered stats
+    if (
+        params.outs.it_stats is not None
+        and py_idx > 0
+        and sharding.main_device
+    ):
+        _flush_stats(
+            buffer,
+            py_idx,
+            ts_buf,
+            stats_file,
+            p,
+            col_width,
+        )
 
 
 if __name__ == "__main__":

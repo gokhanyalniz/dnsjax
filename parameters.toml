@@ -24,6 +24,8 @@ it0 = 0 # Initial discrete time
 
 [outs]
 # it_stats = 1000 # How often to compute stats (in number of time steps)
+# nstats = 100          # Flush stats to stats.dat every nstats lines
+# stats_precision = 9   # Significant digits (9 = float32, 17 = float64 lossless)
 
 [step]
 dt = 0.01

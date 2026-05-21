@@ -84,6 +84,8 @@ class Outputs(BaseModel):
 
     # All outputs are with respect to the number of time steps taken
     it_stats: int | None = None  # How often to compute stats
+    nstats: int = Field(ge=1, default=100)
+    stats_precision: int = Field(ge=1, le=17, default=9)
 
 
 class TimeStepping(BaseModel):
