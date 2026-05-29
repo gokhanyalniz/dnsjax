@@ -84,6 +84,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import jax
+import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
@@ -94,7 +95,7 @@ from ...operators import (
     real_harmonics,
     spec_to_phys_2d,
 )
-from ...parameters import params
+from ...parameters import derived_params, params
 from ...rhs import get_nonlin
 from ...sharding import register_dataclass_pytree, sharding
 from ...solvers import (
@@ -811,9 +812,36 @@ class CylindricalFlow:
         IMM data.
         """
         Nr = params.res.ny
-        self.rs = _build_half_cgl_grid(Nr)
+        if params.geo.wall_grid is not None:
+            grid_raw = np.loadtxt(params.geo.wall_grid, dtype=np.float64)
+            if len(grid_raw) != Nr:
+                raise ValueError(
+                    f"Wall grid file has {len(grid_raw)} points,"
+                    f" expected ny={Nr}"
+                )
+            # File: first line = wall (r=1),
+            # last line = closest to centre.
+            # Internal: ascending (smallest r at index 0).
+            grid = grid_raw[::-1].copy()
+            if not np.isclose(grid[-1], 1.0):
+                raise ValueError(
+                    "Cylindrical wall grid must end at r=1"
+                    f" (got r[-1]={grid[-1]})"
+                )
+            if grid[0] <= 0.0:
+                raise ValueError(
+                    "Cylindrical wall grid must have all"
+                    f" r > 0 (got r[0]={grid[0]})"
+                )
+            self.rs = jnp.asarray(grid, dtype=sharding.float_type)
+        else:
+            self.rs = _build_half_cgl_grid(Nr)
         self.inv_r = 1.0 / self.rs
         self.inv_r2 = self.inv_r**2
+
+        derived_params.wall_normal_grid = [
+            float(v) for v in np.asarray(self.rs)
+        ]
 
         # Integration weights with radial Jacobian folded in.
         w = build_integration_weights(self.rs, params.res.fd_order)

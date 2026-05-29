@@ -37,6 +37,26 @@
 - Velocity ordering: state array stores `(u_z, u+, u-)`, matching the Cartesian convention of (streamwise, wall-normal, spanwise); the physical representation follows the same convention as `(u_z, u_r, u_theta)`. `_get_rhs` converts between the two for the nonlinear term, and `_curl_fn` implements the cylindrical curl in spectral space.
 - Constant bulk velocity: with `params.phys.driving == "constant_bulk_velocity"`, each IMM iteration adds a uniform mean pressure gradient `G` to the mean-mode `u_z` Helmholtz RHS (via a Helmholtz-consistent post-solve correction `uz += G * h`, where `h = Hk_z^{-1} [1,...,1,0]` is precomputed) to enforce zero perturbation bulk velocity; `G = -Ub_pert / H_bulk` where `H_bulk = 2 int_0^1 h r dr`.
 
+### Custom wall-normal grids
+
+Both Cartesian and cylindrical geometries support user-provided wall-normal grids via `params.geo.wall_grid` (a file path). When unset, the default CGL (Cartesian) or half-CGL (cylindrical) grid is used.
+
+- **File format**: one coordinate per line, in wall-to-interior order. Cartesian: first line = top wall (y=1), last line = bottom wall (y=-1). Cylindrical: first line = wall (r=1), last line = closest to centre. The code reverses to ascending order internally.
+- **Validation**: file must exist (checked in `update_parameters`), have exactly `ny` values, and span the correct domain. Cartesian: [-1, 1]. Cylindrical: (0, 1] with all r > 0.
+- **Integration weights**: CGL grids use Clenshaw-Curtis weights (spectral accuracy). Custom grids use `build_integration_weights` from `fd.py` (composite polynomial, order-p accuracy matching the FD stencil). Cylindrical always uses composite weights (both default and custom).
+- **Operators**: `build_diff_matrices` (Fornberg's algorithm) and all downstream operator assembly (Lk, Hk, IMM) work on arbitrary monotonic grids. Parity-reduced matrices in cylindrical (`_build_parity_reduced_matrices`) mirror the grid and call `build_diff_matrices` on the auxiliary grid, which is valid for any sorted positive grid.
+- **Snapshot metadata**: the grid is stored in `_dnsjax_meta.json` as `wall_normal_grid` (float array). On snapshot load, if the current grid differs from the snapshot's grid, the state is interpolated automatically.
+
+### Wall-normal interpolation
+
+When loading a snapshot with a different wall-normal grid (different `ny` or different point locations), `_interpolate_if_needed` in `__main__.py` applies the optimal interpolation. Utilities live in `fd.py`:
+
+- **CGL-to-CGL** (`chebyshev_interpolation_matrix`): Chebyshev coefficient truncation/extension via DCT-I. Exact for polynomials of degree <= min(N_old, N_new) - 1. Spectrally optimal.
+- **Half-CGL-to-half-CGL** (`half_cgl_interpolation_matrices`): parity-aware extension to full CGL grid, Chebyshev interpolation, restriction to positive half. Returns (T_even, T_odd) matrices. Parity depends on azimuthal mode m and velocity component: u_z uses (-1)^m, u_+/u_- use (-1)^{m+1}.
+- **General** (`barycentric_interpolation_matrix`): barycentric Lagrange interpolation (Berrut & Trefethen 2004). Weights computed in log-space for stability.
+- **Dispatch** (`build_interpolation_matrix`): selects optimal method based on grid type and geometry.
+- **After interpolation**: wall BCs are enforced (zeroed). Residual divergence from the changed y-derivative operator is O(interpolation error) and is projected out by the first corrector step's pressure Poisson solve.
+
 ### Optimization patterns
 
 When the aim is to operate on a quantity derivable from the mean mode (streamwise *and* spanwise wavenumber equal to zero), first index to the mean mode, and then operate, when this indexing and the desired operations commute. You can use the function `extract_mean_mode` for this purpose.
@@ -51,5 +71,5 @@ When the aim is to operate on a quantity derivable from the mean mode (streamwis
 
 - `tests/test_cartesian.py`: Cartesian operator and matvec tests
 - `tests/test_cylindrical.py`: cylindrical operator and matvec tests
-- `tests/test_integration.py`: quadrature weight tests
+- `tests/test_integration.py`: quadrature weight and interpolation matrix tests
 - `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows
