@@ -57,6 +57,7 @@ class Geometry(BaseModel):
     lx: float = Field(gt=0, default=4.0)
     lz: float = Field(gt=0, default=4.0)
     tilt_degree: float = Field(gt=-180, le=180, default=0)
+    wall_grid: Path | None = None
 
 
 class Resolution(BaseModel):
@@ -180,6 +181,7 @@ class DerivedParameters:
     tilt_rad: float = 0
     cos_tilt: float = 0
     sin_tilt: float = 0
+    wall_normal_grid: list[float] | None = None
 
 
 params: Parameters = Parameters()
@@ -244,6 +246,14 @@ def update_parameters(params_new: Parameters) -> None:
         derived_params.tilt_rad = pi * params.geo.tilt_degree / 180
         derived_params.cos_tilt = cos(derived_params.tilt_rad)
         derived_params.sin_tilt = sin(derived_params.tilt_rad)
+
+    if (
+        params.geo.wall_grid is not None
+        and not Path(params.geo.wall_grid).is_file()
+    ):
+        raise FileNotFoundError(
+            f"Wall grid file not found: {params.geo.wall_grid}"
+        )
 
 
 @dataclass

@@ -16,10 +16,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import jax
+import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
-from ...fd import build_diff_matrices
+from ...fd import build_diff_matrices, build_integration_weights
 from ...operators import (
     complex_harmonics,
     phys_to_spec_2d,
@@ -460,12 +461,36 @@ class CartesianFlow:
         (``p1..q2``, ``M_inv``) is derived from the GPU
         operator by :meth:`_derive_imm_homogeneous_data`.
         """
-        self.ys = -jnp.cos(
-            jnp.arange(params.res.ny, dtype=sharding.float_type)
-            * jnp.pi
-            / (params.res.ny - 1)
-        )
-        self.y_weights = clenshaw_curtis_weights(params.res.ny)
+        if params.geo.wall_grid is not None:
+            grid_raw = np.loadtxt(params.geo.wall_grid, dtype=np.float64)
+            if len(grid_raw) != params.res.ny:
+                raise ValueError(
+                    f"Wall grid file has {len(grid_raw)} points,"
+                    f" expected ny={params.res.ny}"
+                )
+            # File: first line = top wall (y=1),
+            # last line = bottom wall (y=-1).
+            # Internal: ascending (y=-1 at index 0).
+            grid = grid_raw[::-1].copy()
+            if not np.isclose(grid[0], -1.0) or not np.isclose(grid[-1], 1.0):
+                raise ValueError(
+                    "Cartesian wall grid must span [-1, 1]"
+                    f" (got [{grid[0]}, {grid[-1]}])"
+                )
+            self.ys = jnp.asarray(grid, dtype=sharding.float_type)
+            w = build_integration_weights(grid, params.res.fd_order)
+            self.y_weights = jnp.asarray(w, dtype=sharding.float_type)
+        else:
+            self.ys = -jnp.cos(
+                jnp.arange(params.res.ny, dtype=sharding.float_type)
+                * jnp.pi
+                / (params.res.ny - 1)
+            )
+            self.y_weights = clenshaw_curtis_weights(params.res.ny)
+
+        derived_params.wall_normal_grid = [
+            float(v) for v in np.asarray(self.ys)
+        ]
 
         # ``build_diff_matrices`` constructs the ``(Ny, Ny)``
         # derivative matrices using JAX arrays with Python control

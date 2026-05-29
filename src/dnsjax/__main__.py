@@ -36,12 +36,15 @@ from pydantic_settings import CliApp
 
 from .parameters import (
     CLIParameters,
+    cylindrical_systems,
+    derived_params,
     ns_to_s,
     padded_res,
     params,
     periodic_systems,
     read_parameters,
     update_parameters,
+    walled_systems,
 )
 
 
@@ -57,6 +60,95 @@ def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width):
                 f"{v:.{p}e}".rjust(col_width) for v in data[i]
             )
             f.write(f"{t_str} {stat_strs}\n")
+
+
+def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
+    r"""Interpolate snapshot state if the wall-normal grid changed.
+
+    Compares the snapshot's wall-normal grid against the current
+    grid (from ``derived_params``).  When they differ -- either
+    in number of points or in point locations -- applies the
+    optimal interpolation.
+
+    After interpolation, the first corrector iteration projects
+    out any `$O(\varepsilon)$` divergence introduced by the
+    changed `$\partial/\partial y$` operator.
+    """
+    import numpy as np
+
+    from .fd import build_interpolation_matrix
+    from .operators import complex_harmonics
+
+    meta = read_metadata(Path(snap_path))
+    snap_grid = meta.get("wall_normal_grid")
+    snap_ny = meta.get("params", {}).get("res", {}).get("ny")
+    curr_grid = derived_params.wall_normal_grid
+
+    if snap_ny is None or curr_grid is None:
+        return state
+
+    needs_interp = snap_ny != params.res.ny or (
+        snap_grid is not None
+        and not np.allclose(snap_grid, curr_grid, atol=1e-12)
+    )
+
+    if not needs_interp:
+        return state
+
+    curr_grid_np = np.array(curr_grid)
+    if snap_grid is not None:
+        old_grid = np.array(snap_grid)
+    else:
+        # Legacy snapshot without grid: assume default grid.
+        if params.phys.system in cylindrical_systems:
+            N_full = 2 * snap_ny
+            s = -np.cos(np.arange(N_full) * np.pi / (N_full - 1))
+            old_grid = s[snap_ny:]
+        else:
+            old_grid = -np.cos(np.arange(snap_ny) * np.pi / (snap_ny - 1))
+
+    geometry = (
+        "cylindrical"
+        if params.phys.system in cylindrical_systems
+        else "cartesian"
+    )
+    T = build_interpolation_matrix(old_grid, curr_grid_np, geometry)
+
+    if isinstance(T, tuple):
+        # Parity-aware cylindrical interpolation.
+        T_even, T_odd = T
+        m_vals = np.asarray(complex_harmonics(params.res.nz))
+        m_is_even = m_vals % 2 == 0
+
+        # T_p: parity (-1)^m for u_z (component 0)
+        # T_v: parity (-1)^{m+1} for u_+, u_- (components 1, 2)
+        T_p = np.where(m_is_even[:, None, None], T_even, T_odd)
+        T_v = np.where(m_is_even[:, None, None], T_odd, T_even)
+        T_p_jax = jnp.asarray(T_p, dtype=state.dtype)
+        T_v_jax = jnp.asarray(T_v, dtype=state.dtype)
+
+        # state shape: (3, Nm, Nkz, Nr_old)
+        s0 = jnp.einsum("mij, mkj -> mki", T_p_jax, state[0])
+        s1 = jnp.einsum("mij, mkj -> mki", T_v_jax, state[1])
+        s2 = jnp.einsum("mij, mkj -> mki", T_v_jax, state[2])
+        state = jnp.stack([s0, s1, s2])
+    else:
+        T_jax = jnp.asarray(T, dtype=state.dtype)
+        # state shape: (3, kz, kx, ny_old)
+        state = jnp.einsum("ij, ...j -> ...i", T_jax, state)
+
+    # Enforce wall boundary conditions.
+    if geometry == "cartesian":
+        state = state.at[..., 0].set(0.0)
+        state = state.at[..., -1].set(0.0)
+    else:
+        state = state.at[..., -1].set(0.0)
+
+    sharding.print(
+        "Interpolated wall-normal grid; first corrector step "
+        "will project out any residual divergence."
+    )
+    return state
 
 
 def main() -> None:
@@ -105,6 +197,7 @@ def main() -> None:
         # zarr3 snapshot (new format)
         from .snapshot import (
             load_snapshot,
+            read_metadata,
             validate_snapshot_params,
         )
 
@@ -113,6 +206,16 @@ def main() -> None:
         params.init.t0 = t_snap
         params.init.it0 = it_snap
         sharding.print(f"Resumed from snapshot: t={t_snap:.6e}, it={it_snap}")
+
+        # --- Wall-normal grid interpolation ---
+        if params.phys.system in walled_systems:
+            state = _interpolate_if_needed(
+                state,
+                Path(params.init.snapshot),
+                read_metadata,
+                sharding,
+                jnp,
+            )
     else:
         # Legacy .npz or laminar start
         state = init_state(params.init.snapshot)

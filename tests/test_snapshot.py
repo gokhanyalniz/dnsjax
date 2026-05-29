@@ -68,6 +68,7 @@ def _worker(
     write_mode: str,
     npv: int,
     d: str,
+    ny_override: int | None = None,
 ):
     """Set up singletons for *npv* CPU devices, then save or load."""
     os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={npv}"
@@ -78,7 +79,7 @@ def _worker(
 
     params.phys.system = system
     params.res.nx = NX
-    params.res.ny = NY
+    params.res.ny = ny_override if ny_override is not None else NY
     params.res.nz = NZ
     params.res.double_precision = True
     params.dist.np = npv
@@ -98,15 +99,67 @@ def _worker(
     from dnsjax.sharding import sharding
 
     shape = (3, *sharding.spec_shape)
-    reference = _make_reference(np, shape)
     vshard = NamedSharding(sharding.mesh, sharding.spec_vector_shard)
 
     if action == "save":
+        reference = _make_reference(np, shape)
         state = jax.device_put(reference, vshard)
         snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
         return
 
+    if action == "save_poly":
+        # Save a low-degree polynomial for interpolation tests.
+        from dnsjax.parameters import derived_params
+
+        ny = params.res.ny
+        y = np.asarray(
+            -np.cos(np.arange(ny, dtype=np.float64) * np.pi / (ny - 1))
+        )
+        derived_params.wall_normal_grid = y.tolist()
+        # 1 - y^2: zero at walls, degree 2 (well within CGL accuracy)
+        poly = 1 - y**2
+        state_np = np.zeros(shape, dtype=np.complex128)
+        state_np[0, 0, 0, :] = poly  # single mode, component 0
+        state_np[1, 0, 0, :] = poly * 0.5  # component 1, scaled
+        state = jax.device_put(state_np, vshard)
+        snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
+        return
+
+    if action == "load_interp":
+        # Load, let interpolation happen, check polynomial values.
+        from dnsjax.__main__ import _interpolate_if_needed
+        from dnsjax.parameters import derived_params
+
+        ny = params.res.ny
+        y_curr = -np.cos(np.arange(ny, dtype=np.float64) * np.pi / (ny - 1))
+        derived_params.wall_normal_grid = y_curr.tolist()
+
+        snapshot.validate_snapshot_params(d)
+        state, t, it = snapshot.load_snapshot(d)
+        state = _interpolate_if_needed(
+            state,
+            os.path.join(d),
+            snapshot.read_metadata,
+            sharding,
+            jax.numpy,
+        )
+        got = np.asarray(state)
+        expected_poly = 1 - y_curr**2
+        np.testing.assert_allclose(
+            got[0, 0, 0, :].real, expected_poly, atol=1e-10
+        )
+        np.testing.assert_allclose(
+            got[1, 0, 0, :].real, expected_poly * 0.5, atol=1e-10
+        )
+        # Wall BCs enforced: walls set to 0.
+        assert got[0, 0, 0, 0].real == 0.0
+        assert got[0, 0, 0, -1].real == 0.0
+        assert t == T_SAVE
+        print("worker-load-interp-ok", flush=True)
+        return
+
     # action == "load"
+    reference = _make_reference(np, shape)
     snapshot.validate_snapshot_params(d)
     state, t, it = snapshot.load_snapshot(d)
     got = np.asarray(state)
@@ -144,6 +197,7 @@ def _run_worker(
     write_mode: str,
     npv: int,
     d: str,
+    ny: int | None = None,
 ) -> subprocess.CompletedProcess:
     cmd = [
         sys.executable,
@@ -162,6 +216,8 @@ def _run_worker(
         "--dir",
         d,
     ]
+    if ny is not None:
+        cmd.extend(["--ny", str(ny)])
     return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
 
@@ -198,18 +254,55 @@ def run_case(
     return True
 
 
+def run_ny_mismatch_case() -> bool:
+    """Save at ny=8, load at ny=16 with interpolation."""
+    name = "wb ny 8->16 interp"
+    with tempfile.TemporaryDirectory() as tmp:
+        snap_dir = os.path.join(tmp, "snap")
+        r_save = _run_worker(
+            "save_poly",
+            "plane-couette",
+            "y_major",
+            "concurrent",
+            1,
+            snap_dir,
+            ny=8,
+        )
+        if r_save.returncode != 0:
+            _fail(name, "save_poly", r_save)
+            return False
+        r_load = _run_worker(
+            "load_interp",
+            "plane-couette",
+            "y_major",
+            "concurrent",
+            1,
+            snap_dir,
+            ny=16,
+        )
+        if r_load.returncode != 0:
+            _fail(name, "load_interp", r_load)
+            return False
+    print(f"  PASS  {name}")
+    return True
+
+
 # ── main ─────────────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Snapshot tests")
     parser.add_argument("--worker", action="store_true")
-    parser.add_argument("--action", choices=["save", "load"])
+    parser.add_argument(
+        "--action",
+        choices=["save", "load", "save_poly", "load_interp"],
+    )
     parser.add_argument("--system")
     parser.add_argument("--layout")
     parser.add_argument("--write-mode")
     parser.add_argument("--np", type=int)
     parser.add_argument("--dir")
+    parser.add_argument("--ny", type=int, default=None)
     args = parser.parse_args()
 
     if args.worker:
@@ -220,6 +313,7 @@ if __name__ == "__main__":
             args.write_mode,
             args.np,
             args.dir,
+            ny_override=args.ny,
         )
         sys.exit(0)
 
@@ -229,6 +323,12 @@ if __name__ == "__main__":
             passed += 1
         else:
             failed += 1
+
+    # ny-mismatch interpolation test
+    if run_ny_mismatch_case():
+        passed += 1
+    else:
+        failed += 1
 
     print(f"\n{passed} passed, {failed} failed.")
     sys.exit(1 if failed else 0)

@@ -29,7 +29,12 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
-from dnsjax.fd import build_integration_weights  # noqa: E402
+from dnsjax.fd import (  # noqa: E402
+    barycentric_interpolation_matrix,
+    build_integration_weights,
+    chebyshev_interpolation_matrix,
+    half_cgl_interpolation_matrices,
+)
 from dnsjax.geometries.wall_bounded import integrate_scalar  # noqa: E402
 from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
     clenshaw_curtis_weights,
@@ -207,6 +212,125 @@ def test_composite_vs_cc_on_cgl():
             atol=1e-12,
             err_msg=f"degree={d}",
         )
+
+
+# ── Interpolation tests ──────────────────────────────────────────
+
+
+def test_chebyshev_interp_identity():
+    """CGL N -> N must give the identity matrix."""
+    for ny in [5, 17, 33]:
+        T = chebyshev_interpolation_matrix(ny, ny)
+        assert_allclose(T, np.eye(ny), atol=1e-12, err_msg=f"ny={ny}")
+
+
+def test_chebyshev_interp_polynomial():
+    """Low-degree polynomials must survive CGL interpolation."""
+    ny_old, ny_new = 17, 33
+    T = chebyshev_interpolation_matrix(ny_old, ny_new)
+    y_old = np.asarray(_cgl_grid(ny_old))
+    y_new = np.asarray(_cgl_grid(ny_new))
+    for d in range(ny_old):
+        f_old = y_old**d
+        f_new = T @ f_old
+        assert_allclose(
+            f_new,
+            y_new**d,
+            atol=1e-10,
+            err_msg=f"degree={d}",
+        )
+
+
+def test_chebyshev_interp_truncation():
+    """Downsampling must preserve low-degree content."""
+    ny_old, ny_new = 33, 17
+    T = chebyshev_interpolation_matrix(ny_old, ny_new)
+    y_old = np.asarray(_cgl_grid(ny_old))
+    y_new = np.asarray(_cgl_grid(ny_new))
+    for d in range(ny_new):
+        f_old = y_old**d
+        f_new = T @ f_old
+        assert_allclose(
+            f_new,
+            y_new**d,
+            atol=1e-10,
+            err_msg=f"degree={d}",
+        )
+
+
+def _half_cgl_grid(nr):
+    N_full = 2 * nr
+    s = np.cos(np.arange(N_full) * np.pi / (N_full - 1))
+    return -s[nr:]
+
+
+def test_half_cgl_interp_even_parity():
+    """Even-parity fields must survive half-CGL interpolation."""
+    nr_old, nr_new = 16, 24
+    T_even, _ = half_cgl_interpolation_matrices(nr_old, nr_new)
+    r_old = _half_cgl_grid(nr_old)
+    r_new = _half_cgl_grid(nr_new)
+    # Even-parity test: f(r) = r^2 (even function of r)
+    for d in [0, 2, 4]:
+        f_old = r_old**d
+        f_new = T_even @ f_old
+        assert_allclose(
+            f_new,
+            r_new**d,
+            atol=1e-10,
+            err_msg=f"even degree={d}",
+        )
+
+
+def test_half_cgl_interp_odd_parity():
+    """Odd-parity fields must survive half-CGL interpolation."""
+    nr_old, nr_new = 16, 24
+    _, T_odd = half_cgl_interpolation_matrices(nr_old, nr_new)
+    r_old = _half_cgl_grid(nr_old)
+    r_new = _half_cgl_grid(nr_new)
+    for d in [1, 3, 5]:
+        f_old = r_old**d
+        f_new = T_odd @ f_old
+        assert_allclose(
+            f_new,
+            r_new**d,
+            atol=1e-10,
+            err_msg=f"odd degree={d}",
+        )
+
+
+def test_barycentric_polynomial():
+    """Barycentric must exactly interpolate polynomials."""
+    ny_old = 17
+    ny_new = 25
+    y_old = np.asarray(_perturbed_grid(ny_old))
+    y_new = np.asarray(_perturbed_grid(ny_new, seed=99))
+    T = barycentric_interpolation_matrix(y_old, y_new)
+    for d in range(ny_old):
+        f_old = y_old**d
+        f_new = T @ f_old
+        expected = y_new**d
+        assert_allclose(
+            f_new,
+            expected,
+            atol=1e-7,
+            err_msg=f"degree={d}",
+        )
+
+
+def test_barycentric_vs_chebyshev():
+    """On CGL grids, barycentric and Chebyshev must agree."""
+    ny_old, ny_new = 17, 25
+    T_cheb = chebyshev_interpolation_matrix(ny_old, ny_new)
+    y_old = np.asarray(_cgl_grid(ny_old))
+    y_new = np.asarray(_cgl_grid(ny_new))
+    T_bary = barycentric_interpolation_matrix(y_old, y_new)
+    f_old = np.sin(np.pi * y_old)
+    assert_allclose(
+        T_cheb @ f_old,
+        T_bary @ f_old,
+        atol=1e-10,
+    )
 
 
 # ── Runner ─────────────────────────────────────────────────────────

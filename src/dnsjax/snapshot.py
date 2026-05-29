@@ -89,7 +89,7 @@ from jax import Array
 from jax import numpy as jnp
 from jax.sharding import NamedSharding
 
-from .parameters import params, periodic_systems
+from .parameters import derived_params, params, periodic_systems
 from .sharding import sharding
 
 
@@ -229,6 +229,21 @@ def _native_local_shape(local_kx: int) -> tuple[int, ...]:
     return (3, *spec)
 
 
+def _native_local_shape_from_meta(
+    meta: dict, local_kx: int
+) -> tuple[int, ...]:
+    """Native vector-shard shape using the **snapshot's** shape.
+
+    Used when loading a snapshot whose wall-normal resolution
+    (``ny``) differs from the current run.
+    """
+    native = meta["native_shape"]
+    spec = list(native[1:])  # drop leading 3
+    ax = 2 if meta.get("geometry") == "triply_periodic" else 1
+    spec[ax] = local_kx
+    return (3, *spec)
+
+
 def _shard_device_index(shard) -> int:
     """Mesh position of a shard's device."""
     devices = list(sharding.mesh.devices.flat)
@@ -349,13 +364,14 @@ def _write_metadata(path: Path, t: float, it: int, layout: _Layout) -> None:
         "native_shape": [3, *sharding.spec_shape],
         "dtype": _zarr3_dtype_name(),
         "n_devices": sharding.n_devices,
+        "wall_normal_grid": derived_params.wall_normal_grid,
         "params": params.model_dump(mode="json"),
     }
     with open(path / "_dnsjax_meta.json", "w") as f:
         json.dump(meta, f, indent=2, default=str)
 
 
-def _read_metadata(path: Path) -> dict:
+def read_metadata(path: Path) -> dict:
     """Read ``_dnsjax_meta.json``."""
     with open(path / "_dnsjax_meta.json") as f:
         return json.load(f)
@@ -387,7 +403,10 @@ def _write_chunks_gds(
 
 
 def _read_chunks_gds(
-    store_path: Path, layout: _Layout, dtype: np.dtype
+    store_path: Path,
+    layout: _Layout,
+    dtype: np.dtype,
+    local_shape: tuple[int, ...] | None = None,
 ) -> list[Array]:
     """Read each device's kx sub-range via kvikIO into a native
     vector shard (np-agnostic)."""
@@ -396,11 +415,13 @@ def _read_chunks_gds(
 
     local_kx = layout.kx_global // sharding.n_devices
     itemsize = dtype.itemsize
+    if local_shape is None:
+        local_shape = _native_local_shape(local_kx)
     per_device: list[Array] = []
     for local_idx, device in enumerate(jax.local_devices()):
         kx_start = _mesh_device_index(device) * local_kx
         with cp.cuda.Device(local_idx):
-            vec = cp.empty(_native_local_shape(local_kx), dtype=dtype)
+            vec = cp.empty(local_shape, dtype=dtype)
             slab = cp.empty((local_kx, layout.b_size), dtype=dtype)
             for comp in range(3):
                 comp_buf = vec[comp]
@@ -488,7 +509,10 @@ def _write_chunks_host(
 
 
 def _read_chunks_host(
-    store_path: Path, layout: _Layout, dtype: np.dtype
+    store_path: Path,
+    layout: _Layout,
+    dtype: np.dtype,
+    local_shape: tuple[int, ...] | None = None,
 ) -> list[Array]:
     """Read each device's kx sub-range via host I/O into a native
     vector shard (np-agnostic).
@@ -505,6 +529,8 @@ def _read_chunks_host(
     local_kx = layout.kx_global // sharding.n_devices
     itemsize = dtype.itemsize
     slab_bytes = local_kx * layout.b_size * itemsize
+    if local_shape is None:
+        local_shape = _native_local_shape(local_kx)
     try:
         import cupy as cp
     except ImportError:
@@ -515,7 +541,7 @@ def _read_chunks_host(
         if cp is not None:
             try:
                 with cp.cuda.Device(local_idx):
-                    vec = cp.empty(_native_local_shape(local_kx), dtype=dtype)
+                    vec = cp.empty(local_shape, dtype=dtype)
                     slab_gpu = cp.empty((local_kx, layout.b_size), dtype=dtype)
                     for comp in range(3):
                         comp_buf = vec[comp]
@@ -535,7 +561,7 @@ def _read_chunks_host(
                 continue
             except Exception:
                 cp = None
-        vec = np.empty(_native_local_shape(local_kx), dtype=dtype)
+        vec = np.empty(local_shape, dtype=dtype)
         for comp in range(3):
             comp_buf = vec[comp]
             chunk_path = _chunk_file(store_path, comp)
@@ -630,20 +656,31 @@ def load_snapshot(
         Iteration count at snapshot.
     """
     path = Path(path)
-    meta = _read_metadata(path)
+    meta = read_metadata(path)
     layout = _layout_from_meta(meta)
     dtype = _np_dtype(meta["dtype"])
+
+    # When the snapshot's ny differs from the current run,
+    # allocate read buffers at the snapshot's ny.
+    snap_native = tuple(meta["native_shape"])
+    curr_native = (3, *sharding.spec_shape)
+    local_kx = layout.kx_global // sharding.n_devices
+    if snap_native != curr_native:
+        local_shape: tuple[int, ...] | None = _native_local_shape_from_meta(
+            meta, local_kx
+        )
+    else:
+        local_shape = None  # default path
 
     store_path = path / "state"
     if _gds_available():
         sharding.print("Snapshot: using GDS path")
-        per_device = _read_chunks_gds(store_path, layout, dtype)
+        per_device = _read_chunks_gds(store_path, layout, dtype, local_shape)
     else:
-        per_device = _read_chunks_host(store_path, layout, dtype)
+        per_device = _read_chunks_host(store_path, layout, dtype, local_shape)
 
-    native_shape = tuple(meta["native_shape"])
     state = jax.make_array_from_single_device_arrays(
-        native_shape,
+        snap_native,
         NamedSharding(sharding.mesh, sharding.spec_vector_shard),
         per_device,
     )
@@ -676,7 +713,7 @@ def load_y_slice(path: str | Path, y_index: int) -> Array:
         Unless the snapshot uses the ``y_major`` layout.
     """
     path = Path(path)
-    meta = _read_metadata(path)
+    meta = read_metadata(path)
 
     if meta["layout"] != "wb_y_major":
         raise ValueError(
@@ -730,14 +767,13 @@ def validate_snapshot_params(
     path:
         Directory of the zarr3 store.
     """
-    meta = _read_metadata(Path(path))
+    meta = read_metadata(Path(path))
     snap_params = meta.get("params", {})
     current = params.model_dump(mode="json")
 
     # Critical: must match exactly
     critical = {
         ("res", "nx"): "x resolution",
-        ("res", "ny"): "y resolution",
         ("res", "nz"): "z resolution",
         ("res", "double_precision"): "precision",
         ("phys", "system"): "flow system",
@@ -753,8 +789,24 @@ def validate_snapshot_params(
     native = meta.get("native_shape")
     expected = [3, *sharding.spec_shape]
     if native is not None and list(native) != expected:
-        raise SnapshotMismatchError(
-            f"Shape: snapshot {native}, expected {expected}"
+        if _is_periodic():
+            raise SnapshotMismatchError(
+                f"Shape: snapshot {native}, expected {expected}"
+            )
+        # Wall-bounded: allow ny mismatch (last axis).
+        if list(native)[:3] != expected[:3]:
+            raise SnapshotMismatchError(
+                f"Shape (non-ny axes): snapshot "
+                f"{native[:3]}, expected {expected[:3]}"
+            )
+
+    # ny mismatch: info (wall-normal interpolation will handle it)
+    snap_ny = snap_params.get("res", {}).get("ny")
+    curr_ny = current.get("res", {}).get("ny")
+    if snap_ny is not None and snap_ny != curr_ny:
+        sharding.print(
+            f"Info: ny changed: {snap_ny} -> {curr_ny} "
+            f"(will interpolate wall-normal grid)"
         )
 
     kx_global = params.res.nx // 2
