@@ -3,8 +3,8 @@
 ### Module layout
 
 - `_base.py`: shared wall-bounded infrastructure (integrate_scalar, get_inprod/get_norm2/get_norm, get_pert_enstrophy, init_state, build_wall_bounded_stepper factory, phys_to_spec/spec_to_phys aliases, extract_mean_mode)
-- `cartesian.py`: Cartesian geometry (Fourier, CGL grid, CartesianFlow, Kleiser-Schumann IMM, Lk/Hk operator builders)
-- `cylindrical.py`: cylindrical geometry (Fourier, half-CGL grid, CylindricalFlow, get_pert_enstrophy_cyl, parity-reduced FD, decoupled u+/u- formulation, 1x1 IMM)
+- `cartesian.py`: Cartesian geometry (Fourier, CGL grid, build_cartesian_grid, CartesianFlow, Kleiser-Schumann IMM, Lk/Hk operator builders)
+- `cylindrical.py`: cylindrical geometry (Fourier, half-CGL grid, build_half_cgl_grid, build_parity_reduced_matrices, build_cylindrical_grid, CylindricalFlow, get_pert_enstrophy_cyl, parity-reduced FD, decoupled u+/u- formulation, 1x1 IMM)
 
 ### Stepper factory (wall-bounded layer)
 

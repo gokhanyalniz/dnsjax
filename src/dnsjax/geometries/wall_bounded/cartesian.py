@@ -167,6 +167,60 @@ def clenshaw_curtis_weights(ny: int) -> Array:
     return w
 
 
+def build_cartesian_grid(
+    ny: int,
+    fd_order: int,
+    wall_grid: str | None = None,
+) -> tuple[Array, Array, Array, Array]:
+    r"""Build the Cartesian wall-normal grid, FD matrices, and
+    quadrature weights.
+
+    Parameters
+    ----------
+    ny:
+        Number of wall-normal grid points.
+    fd_order:
+        Finite-difference stencil half-bandwidth.
+    wall_grid:
+        Optional path to a custom wall-normal grid file.
+        If ``None``, the default CGL grid is used.
+
+    Returns
+    -------
+    ys:
+        Wall-normal grid on `$[-1, 1]$`, shape ``(ny,)``.
+    D1:
+        First-derivative FD matrix, shape ``(ny, ny)``.
+    D2:
+        Second-derivative FD matrix, shape ``(ny, ny)``.
+    y_weights:
+        Quadrature weights, shape ``(ny,)``.
+    """
+    if wall_grid is not None:
+        grid_raw = np.loadtxt(wall_grid, dtype=np.float64)
+        if len(grid_raw) != ny:
+            raise ValueError(
+                f"Wall grid file has {len(grid_raw)} points, expected ny={ny}"
+            )
+        grid = grid_raw[::-1].copy()
+        if not np.isclose(grid[0], -1.0) or not np.isclose(grid[-1], 1.0):
+            raise ValueError(
+                "Cartesian wall grid must span [-1, 1]"
+                f" (got [{grid[0]}, {grid[-1]}])"
+            )
+        ys = jnp.asarray(grid, dtype=sharding.float_type)
+        w = build_integration_weights(grid, fd_order)
+        y_weights = jnp.asarray(w, dtype=sharding.float_type)
+    else:
+        ys = -jnp.cos(
+            jnp.arange(ny, dtype=sharding.float_type) * jnp.pi / (ny - 1)
+        )
+        y_weights = clenshaw_curtis_weights(ny)
+
+    D1, D2 = build_diff_matrices(ys, fd_order)
+    return ys, D1, D2, y_weights
+
+
 # ── SPIKE block-partitioned operator builders ─────────────────────
 
 
@@ -461,42 +515,16 @@ class CartesianFlow:
         (``p1..q2``, ``M_inv``) is derived from the GPU
         operator by :meth:`_derive_imm_homogeneous_data`.
         """
-        if params.geo.wall_grid is not None:
-            grid_raw = np.loadtxt(params.geo.wall_grid, dtype=np.float64)
-            if len(grid_raw) != params.res.ny:
-                raise ValueError(
-                    f"Wall grid file has {len(grid_raw)} points,"
-                    f" expected ny={params.res.ny}"
-                )
-            # File: first line = top wall (y=1),
-            # last line = bottom wall (y=-1).
-            # Internal: ascending (y=-1 at index 0).
-            grid = grid_raw[::-1].copy()
-            if not np.isclose(grid[0], -1.0) or not np.isclose(grid[-1], 1.0):
-                raise ValueError(
-                    "Cartesian wall grid must span [-1, 1]"
-                    f" (got [{grid[0]}, {grid[-1]}])"
-                )
-            self.ys = jnp.asarray(grid, dtype=sharding.float_type)
-            w = build_integration_weights(grid, params.res.fd_order)
-            self.y_weights = jnp.asarray(w, dtype=sharding.float_type)
-        else:
-            self.ys = -jnp.cos(
-                jnp.arange(params.res.ny, dtype=sharding.float_type)
-                * jnp.pi
-                / (params.res.ny - 1)
-            )
-            self.y_weights = clenshaw_curtis_weights(params.res.ny)
+        self.ys, D1, D2, self.y_weights = build_cartesian_grid(
+            params.res.ny,
+            params.res.fd_order,
+            params.geo.wall_grid,
+        )
 
         derived_params.wall_normal_grid = [
             float(v) for v in np.asarray(self.ys)
         ]
 
-        # ``build_diff_matrices`` constructs the ``(Ny, Ny)``
-        # derivative matrices using JAX arrays with Python control
-        # flow (outside ``@jit``).  The results are distributed to
-        # devices immediately below.
-        D1, D2 = build_diff_matrices(self.ys, params.res.fd_order)
         self.D1 = jax.device_put(D1, sharding.no_shard)
         self.D2 = jax.device_put(D2, sharding.no_shard)
         self.D1_bnd = jax.device_put(D1[[0, -1], :], sharding.no_shard)
