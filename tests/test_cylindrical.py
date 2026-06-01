@@ -45,13 +45,13 @@ from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _abase_matvec,
     _build_A_base,
-    _build_half_cgl_grid,
     _build_Hk_blocks_gpu,
     _build_Hk_dense_gpu,
     _build_Lk_blocks_gpu,
     _build_Lk_dense_gpu,
-    _build_parity_reduced_matrices,
     _lk_matvec,
+    build_half_cgl_grid,
+    build_parity_reduced_matrices,
     fourier,
     get_norm2_cyl,
 )
@@ -97,7 +97,7 @@ def _build_Lk_reference_cyl(
 def test_half_cgl_grid_properties() -> None:
     """Half-CGL grid: strictly positive, monotone, endpoint = 1."""
     for Nr in [8, 16, 32]:
-        rs = np.asarray(_build_half_cgl_grid(Nr))
+        rs = np.asarray(build_half_cgl_grid(Nr))
         assert rs.shape == (Nr,), f"Nr={Nr}: wrong shape {rs.shape}"
         assert np.all(rs > 0), f"Nr={Nr}: non-positive point"
         assert_allclose(
@@ -114,10 +114,10 @@ def test_parity_reduced_matrices_vs_full_grid() -> None:
     """Parity-reduced matrices match the full auxiliary grid."""
     Nr = params.res.ny
     p = params.res.fd_order
-    rs = _build_half_cgl_grid(Nr)
+    rs = build_half_cgl_grid(Nr)
 
     D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos = (
-        _build_parity_reduced_matrices(rs, p)
+        build_parity_reduced_matrices(rs, p)
     )
 
     # Reference: build full auxiliary grid explicitly.
@@ -177,10 +177,10 @@ def test_A_base_matches_reference() -> None:
     r"""``_build_A_base`` matches `$D_2 + \mathrm{diag}(1/r) D_1$`."""
     Nr = params.res.ny
     p = params.res.fd_order
-    rs = _build_half_cgl_grid(Nr)
+    rs = build_half_cgl_grid(Nr)
     inv_r = 1.0 / rs
 
-    D1_even, D2_even, D1_odd, D2_odd, _, _ = _build_parity_reduced_matrices(
+    D1_even, D2_even, D1_odd, D2_odd, _, _ = build_parity_reduced_matrices(
         rs, p
     )
 
@@ -202,11 +202,11 @@ def test_abase_matvec_matches_dense() -> None:
     """``_abase_matvec`` matches dense ``A_base @ u``."""
     Nr = params.res.ny
     p = params.res.fd_order
-    rs = _build_half_cgl_grid(Nr)
+    rs = build_half_cgl_grid(Nr)
     inv_r = 1.0 / rs
 
     D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos = (
-        _build_parity_reduced_matrices(rs, p)
+        build_parity_reduced_matrices(rs, p)
     )
     D1_ghost = D1_even - D1_pos
     D2_ghost = D2_even - D2_pos
@@ -495,7 +495,7 @@ def test_cylindrical_integration_weights() -> None:
     """Composite weights on half-CGL: sum and polynomial exactness."""
     p = params.res.fd_order
     for Nr in [8, 16, 32]:
-        rs = _build_half_cgl_grid(Nr)
+        rs = build_half_cgl_grid(Nr)
         rs_np = np.asarray(rs)
         w = build_integration_weights(rs, p=p)
         w_np = np.asarray(w)
