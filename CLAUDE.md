@@ -27,6 +27,12 @@ Laminar smoke (multi-device): `uv run python tests/test_laminar_smoke.py --np 2`
 
 The laminar state should time step with a single corrector step, with stepping error of O(-18) or less, and perturbation energy of O(-32) or less. Run existing tests listed in section Tests below if you touch the modules they test.
 
+### Generate random initial condition
+
+`uv run python scripts/random_field.py --system plane-couette --nx 128 --ny 65 --nz 128 --amplitude 0.1 --smoothness 0.4 --seed 1 --output random_ic`
+
+Generates a divergence-free random perturbation (obeying BCs) and saves it as a zarr3 snapshot. Load with `--init.snapshot random_ic --init.start_from_laminar False`. Supports all flow systems. Run `--test` for self-verification. See `scripts/random_field.py` docstring for the full algorithm and CLI options.
+
 ## Documentation instructions
 
 Keep docstrings, comments (in LaTeX for math for both) and typing up-to-date. In the future MkDocs will be used with MathJax, escape LaTeX commands appropriately. Keep documentation lines in code to 79 characters wide. Keep CLAUDE.md files up-to-date (root and subdirectory files).
@@ -49,8 +55,8 @@ snapshot.py          # Snapshot save/load: zarr3 format, 3 combined per-componen
 geometries/
   wall_bounded/      # Wall-bounded geometry family (see wall_bounded/CLAUDE.md)
     _base.py         # Shared wall-bounded infrastructure: integrate_scalar, get_inprod/get_norm2/get_norm, get_pert_enstrophy, init_state, build_wall_bounded_stepper factory, phys_to_spec/spec_to_phys aliases, extract_mean_mode
-    cartesian.py     # Fourier class, Clenshaw-Curtis weights, CartesianFlow base dataclass (with tilt and constant-bulk-velocity support), on-device IMM operator assembly (Lk/Hk builders for dense and banded backends), Kleiser-Schumann IMM iteration, build_cartesian_stepper factory
-    cylindrical.py   # Fourier class, get_norm2_cyl, CylindricalFlow base dataclass, half-CGL radial grid, parity-reduced FD matrices, decoupled u+/u-/uz operators (Lk, Hk_plus, Hk_minus, Hk_z), 1x1 IMM, build_cylindrical_stepper factory
+    cartesian.py     # Fourier class, Clenshaw-Curtis weights, build_cartesian_grid (shared grid/FD/weights factory), CartesianFlow base dataclass (with tilt and constant-bulk-velocity support), on-device IMM operator assembly (Lk/Hk builders for dense and banded backends), Kleiser-Schumann IMM iteration, build_cartesian_stepper factory
+    cylindrical.py   # Fourier class, get_norm2_cyl, build_half_cgl_grid, build_parity_reduced_matrices, build_cylindrical_grid (shared grid/FD/weights factory), CylindricalFlow base dataclass, half-CGL radial grid, parity-reduced FD matrices, decoupled u+/u-/uz operators (Lk, Hk_plus, Hk_minus, Hk_z), 1x1 IMM, build_cylindrical_stepper factory
   triply_periodic/   # Triply-periodic geometry family (see triply_periodic/CLAUDE.md)
     triply_periodic.py # Fourier class, spectral diff ops (curl, div, grad, laplacian), norms, TriplyPeriodicFlow base dataclass, algebraic Helmholtz predict/correct, divergence correction, build_triply_periodic_stepper factory
 flows/
@@ -114,6 +120,10 @@ Loading from a zarr3 snapshot directory (detected by `Path.is_dir()`) overrides 
 - Buffer donation (`donate_argnums`) is used on main time-stepping functions to reuse memory.
 - The first time step is excluded from benchmark statistics because it includes JIT compilation overhead.
 - FFT normalization uses `norm="forward"` (divides by N on forward, no factor on inverse).
+
+## Scripts
+- `scripts/spike_partition_info.py`: display SPIKE block-partition trade-offs for a given resolution.
+- `scripts/random_field.py`: generate a random divergence-free perturbation and save as a zarr3 snapshot. Supports all flow systems (Cartesian wall-bounded, cylindrical, triply-periodic). Uses `build_cartesian_grid` / `build_cylindrical_grid` from the geometry modules for grid/FD setup without constructing the full flow dataclass. Per-mode divergence-free enforcement uses NumPy loops (not JAX) to avoid tracing overhead; all other array work uses JAX. Run with `--test` for self-verification (divergence-free, wall BCs, norm, Hermitian symmetry, seed determinism).
 
 ## Tests
 All to be kept up-to-date as the respective modules change:

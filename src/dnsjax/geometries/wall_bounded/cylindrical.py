@@ -297,7 +297,7 @@ def get_norm2_cyl(state: Array, k_metric: Array, y_weights: Array) -> Array:
 # ── Half-diameter grid and parity-reduced FD matrices ──────────────
 
 
-def _build_half_cgl_grid(Nr: int) -> Array:
+def build_half_cgl_grid(Nr: int) -> Array:
     r"""Build the half-CGL radial grid on `$(0, 1]$`.
 
     Takes the positive half of a `$2 N_r$`-point CGL grid on
@@ -331,7 +331,7 @@ def _build_half_cgl_grid(Nr: int) -> Array:
     return s[Nr:]
 
 
-def _build_parity_reduced_matrices(
+def build_parity_reduced_matrices(
     rs: Array, p: int
 ) -> tuple[Array, Array, Array, Array, Array, Array]:
     r"""Build parity-reduced FD matrices from the auxiliary grid.
@@ -376,6 +376,69 @@ def _build_parity_reduced_matrices(
     D2_odd = D2_pos - D2_ghost_flipped
 
     return D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos
+
+
+def build_cylindrical_grid(
+    ny: int,
+    fd_order: int,
+    wall_grid: str | None = None,
+) -> tuple[Array, Array, Array, Array, Array, Array]:
+    r"""Build radial grid, parity-reduced D1 matrices, weights,
+    and `$1/r$` for the cylindrical geometry.
+
+    Parameters
+    ----------
+    ny:
+        Number of radial grid points (`$N_r$`).
+    fd_order:
+        Finite-difference stencil half-bandwidth.
+    wall_grid:
+        Optional path to a custom radial grid file.
+        If ``None``, the default half-CGL grid is used.
+
+    Returns
+    -------
+    rs:
+        Radial grid on `$(0, 1]$`, shape ``(ny,)``.
+    D1_even:
+        Even-parity first-derivative matrix, ``(ny, ny)``.
+    D1_odd:
+        Odd-parity first-derivative matrix, ``(ny, ny)``.
+    D1_pos:
+        Common (parity-independent) part, ``(ny, ny)``.
+    y_weights:
+        Integration weights with radial Jacobian
+        `$w_j r_j$`, shape ``(ny,)``.
+    inv_r:
+        `$1/r$` on the grid, shape ``(ny,)``.
+    """
+    if wall_grid is not None:
+        grid_raw = np.loadtxt(wall_grid, dtype=np.float64)
+        if len(grid_raw) != ny:
+            raise ValueError(
+                f"Wall grid file has {len(grid_raw)} points, expected ny={ny}"
+            )
+        grid = grid_raw[::-1].copy()
+        if not np.isclose(grid[-1], 1.0):
+            raise ValueError(
+                f"Cylindrical wall grid must end at r=1 (got r[-1]={grid[-1]})"
+            )
+        if grid[0] <= 0.0:
+            raise ValueError(
+                "Cylindrical wall grid must have all"
+                f" r > 0 (got r[0]={grid[0]})"
+            )
+        rs = jnp.asarray(grid, dtype=sharding.float_type)
+    else:
+        rs = build_half_cgl_grid(ny)
+    inv_r = 1.0 / rs
+    w = build_integration_weights(rs, fd_order)
+    y_weights = w * rs
+
+    D1_even, _, D1_odd, _, D1_pos, _ = build_parity_reduced_matrices(
+        rs, fd_order
+    )
+    return rs, D1_even, D1_odd, D1_pos, y_weights, inv_r
 
 
 # ── SPIKE block-partitioned operator builders ─────────────────────
@@ -812,42 +875,18 @@ class CylindricalFlow:
         IMM data.
         """
         Nr = params.res.ny
-        if params.geo.wall_grid is not None:
-            grid_raw = np.loadtxt(params.geo.wall_grid, dtype=np.float64)
-            if len(grid_raw) != Nr:
-                raise ValueError(
-                    f"Wall grid file has {len(grid_raw)} points,"
-                    f" expected ny={Nr}"
-                )
-            # File: first line = wall (r=1),
-            # last line = closest to centre.
-            # Internal: ascending (smallest r at index 0).
-            grid = grid_raw[::-1].copy()
-            if not np.isclose(grid[-1], 1.0):
-                raise ValueError(
-                    "Cylindrical wall grid must end at r=1"
-                    f" (got r[-1]={grid[-1]})"
-                )
-            if grid[0] <= 0.0:
-                raise ValueError(
-                    "Cylindrical wall grid must have all"
-                    f" r > 0 (got r[0]={grid[0]})"
-                )
-            self.rs = jnp.asarray(grid, dtype=sharding.float_type)
-        else:
-            self.rs = _build_half_cgl_grid(Nr)
-        self.inv_r = 1.0 / self.rs
+        self.rs, D1_even, D1_odd, D1_pos, self.y_weights, self.inv_r = (
+            build_cylindrical_grid(
+                Nr, params.res.fd_order, params.geo.wall_grid
+            )
+        )
         self.inv_r2 = self.inv_r**2
 
         derived_params.wall_normal_grid = [
             float(v) for v in np.asarray(self.rs)
         ]
 
-        # Integration weights with radial Jacobian folded in.
-        w = build_integration_weights(self.rs, params.res.fd_order)
-        self.y_weights = w * self.rs
-
-        # Parity-reduced FD matrices.
+        # Full parity-reduced matrices (D2 needed for operators).
         (
             D1_even,
             D2_even,
@@ -855,7 +894,7 @@ class CylindricalFlow:
             D2_odd,
             D1_pos,
             D2_pos,
-        ) = _build_parity_reduced_matrices(self.rs, params.res.fd_order)
+        ) = build_parity_reduced_matrices(self.rs, params.res.fd_order)
 
         self.D1_pos = jax.device_put(D1_pos, sharding.no_shard)
         self.D2_pos = jax.device_put(D2_pos, sharding.no_shard)
