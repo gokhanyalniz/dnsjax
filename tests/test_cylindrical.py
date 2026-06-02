@@ -58,7 +58,6 @@ from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
     DenseJAXSolver,
-    PerModeBandedOperator,
     _spike_factor,
     validate_spike_partition,
 )
@@ -332,7 +331,7 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
         P_blk,
         m_blk,
     )
-    Lk_banded = PerModeBandedOperator(*_spike_factor(Lk_A, Lk_B, Lk_C))
+    Lk_banded = _spike_factor(Lk_A, Lk_B, Lk_C)
     Lk_dense = DenseJAXSolver(
         _build_Lk_dense_gpu(
             D1_wall,
@@ -364,7 +363,7 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
         P_blk,
         m_blk,
     )
-    Hp_banded = PerModeBandedOperator(*_spike_factor(Hp_A, Hp_B, Hp_C))
+    Hp_banded = _spike_factor(Hp_A, Hp_B, Hp_C)
     Hp_dense = DenseJAXSolver(
         _build_Hk_dense_gpu(
             A_even,
@@ -401,7 +400,7 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
         P_blk,
         m_blk,
     )
-    Hm_banded = PerModeBandedOperator(*_spike_factor(Hm_A, Hm_B, Hm_C))
+    Hm_banded = _spike_factor(Hm_A, Hm_B, Hm_C)
     Hm_dense = DenseJAXSolver(
         _build_Hk_dense_gpu(
             A_even,
@@ -438,7 +437,7 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
         P_blk,
         m_blk,
     )
-    Hz_banded = PerModeBandedOperator(*_spike_factor(Hz_A, Hz_B, Hz_C))
+    Hz_banded = _spike_factor(Hz_A, Hz_B, Hz_C)
     Hz_dense = DenseJAXSolver(
         _build_Hk_dense_gpu(
             A_even,
