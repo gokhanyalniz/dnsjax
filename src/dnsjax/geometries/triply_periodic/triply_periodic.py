@@ -20,6 +20,7 @@ from functools import partial
 
 from jax import Array, device_put, jit, vmap
 from jax import numpy as jnp
+from jax.sharding import PartitionSpec as P
 
 from ...operators import (
     complex_harmonics,
@@ -36,15 +37,18 @@ from ...timestep import make_stepper
 @register_dataclass_pytree
 @dataclass
 class Fourier:
-    """Wavenumber grids for the triply-periodic geometry.
+    r"""Wavenumber grids for the triply-periodic geometry.
 
-    Broadcasting shapes match the spectral layout ``(ky, kz, kx)``:
-    - ``kx``: shape ``(1, 1, nx//2)``
-    - ``kz``: shape ``(1, nz-1, 1)``
-    - ``ky``: shape ``(ny-1, 1, 1)``
+    Broadcasting shapes match the spectral layout
+    ``(ky, kz, kx)``:
 
-    ``k_metric`` equals 2 for `$k_x > 0$` and 1 for `$k_x = 0$`,
-    accounting for the Hermitian symmetry of the real FFT.
+    - ``kx``: shape ``(1, 1, nx_spec)`` — sharded on ``np1``.
+    - ``kz``: shape ``(1, nz_spec, 1)`` — sharded on ``np0``.
+    - ``ky``: shape ``(ny-1, 1, 1)`` — fully local.
+
+    ``k_metric`` equals 2 for `$k_x > 0$` and 1 for
+    `$k_x = 0$`, accounting for the Hermitian symmetry of
+    the real FFT.
     """
 
     kx: Array = field(init=False)
@@ -55,24 +59,36 @@ class Fourier:
     inv_lapl: Array = field(init=False)
 
     def __post_init__(self) -> None:
+        kx_true = real_harmonics(params.res.nx)
+        if sharding.nx_spec_pad:
+            kx_true = jnp.concatenate(
+                [kx_true, jnp.zeros(sharding.nx_spec_pad)]
+            )
         self.kx = (
             device_put(
-                real_harmonics(params.res.nx).reshape([1, 1, -1]),
-                sharding.spec_scalar_shard,
+                kx_true.reshape([1, 1, -1]),
+                P(None, None, sharding.a1),
             )
             * 2
             * jnp.pi
             / params.geo.lx
         )
+
+        kz_true = complex_harmonics(params.res.nz)
+        if sharding.nz_spec_pad:
+            kz_true = jnp.concatenate(
+                [kz_true, jnp.zeros(sharding.nz_spec_pad)]
+            )
         self.kz = (
             device_put(
-                complex_harmonics(params.res.nz).reshape([1, -1, 1]),
-                sharding.no_shard,
+                kz_true.reshape([1, -1, 1]),
+                P(None, sharding.a0, None),
             )
             * 2
             * jnp.pi
             / params.geo.lz
         )
+
         self.ky = (
             device_put(
                 complex_harmonics(params.res.ny).reshape([-1, 1, 1]),

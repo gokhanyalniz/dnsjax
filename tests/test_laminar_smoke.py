@@ -163,7 +163,9 @@ EP_THRESHOLD = 1e-28
 # ── helpers ──────────────────────────────────────────────────────────
 
 
-def _build_command(system_args: list[str], np_count: int) -> list[str]:
+def _build_command(
+    system_args: list[str], np_count: int, np0: int = 1
+) -> list[str]:
     """Build the subprocess command for a single system."""
     base = [
         "mpirun",
@@ -174,6 +176,8 @@ def _build_command(system_args: list[str], np_count: int) -> list[str]:
         "dnsjax",
         "--dist.np",
         str(np_count),
+        "--dist.np0",
+        str(np0),
     ]
     return base + system_args
 
@@ -197,10 +201,10 @@ def _parse_diagnostics(
 # ── test runner ──────────────────────────────────────────────────────
 
 
-def run_smoke_test(system: dict, np_count: int) -> None:
+def run_smoke_test(system: dict, np_count: int, np0: int = 1) -> None:
     """Run a single laminar smoke test."""
     name = system["name"]
-    cmd = _build_command(system["args"], np_count)
+    cmd = _build_command(system["args"], np_count, np0)
 
     result = subprocess.run(
         cmd,
@@ -246,13 +250,19 @@ if __name__ == "__main__":
         default=1,
         help="Number of devices (uses mpirun when > 1)",
     )
+    parser.add_argument(
+        "--np0",
+        type=int,
+        default=1,
+        help="np0 mesh axis (wall-normal / kz split)",
+    )
     args = parser.parse_args()
 
     passed = 0
     failed = 0
     for system in SYSTEMS:
         try:
-            run_smoke_test(system, args.np)
+            run_smoke_test(system, args.np, args.np0)
             passed += 1
         except (AssertionError, subprocess.TimeoutExpired) as exc:
             print(f"  FAIL  {system['name']}: {exc}")

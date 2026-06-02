@@ -13,6 +13,7 @@ from jax import Array, jit, vmap
 from jax import numpy as jnp
 
 from .fft import _irfft2d, _irfft3d, _rfft2d, _rfft3d
+from .sharding import sharding
 
 
 def real_harmonics(n: int) -> Array:
@@ -101,58 +102,115 @@ def spec_to_phys(velocity_spec: Array) -> Array:
     return _irfft3d(velocity_spec)
 
 
-@jit
-def phys_to_spec_2d(velocity_phys: Array) -> Array:
-    r"""Forward 2D real FFT in `$(x, z)$`, batched over components.
+if sharding.np0 > 1:
+    # With 2D sharding, y is distributed by np0.  Merging the
+    # component axis with y produces an ambiguous reshape that
+    # JAX cannot automatically resolve.  Use vmap instead.
+    @jit
+    def phys_to_spec_2d(velocity_phys: Array) -> Array:
+        r"""Forward 2D real FFT in `$(x, z)$`, vmapped over
+        components.
 
-    The leading (component) axis is folded into the y-axis before
-    the transform and unfolded afterwards, so a single reshard
-    handles all components at once.
+        Parameters
+        ----------
+        velocity_phys:
+            Physical field of shape
+            ``(C, ny, nz_padded, nx_padded)`` in
+            ``[y, z, x]`` layout.
 
-    Parameters
-    ----------
-    velocity_phys:
-        Physical field of shape ``(C, ny, nz_padded, nx_padded)``
-        in ``[y, z, x]`` layout, sharded on the z axis.
+        Returns
+        -------
+        :
+            Spectral field of shape
+            ``(C, nz_spec, nx_spec, ny)`` in
+            ``[kz, kx, y]`` layout.
+        """
+        return vmap(_rfft2d)(velocity_phys).transpose(0, 2, 3, 1)
 
-    Returns
-    -------
-    :
-        Spectral field of shape ``(C, nz-1, nx//2, ny)`` in
-        ``[kz, kx, y]`` layout, sharded on the kx axis.
-    """
-    C, ny = velocity_phys.shape[0], velocity_phys.shape[1]
-    flat = velocity_phys.reshape(C * ny, *velocity_phys.shape[2:])
-    spec_flat = _rfft2d(flat)
-    return spec_flat.reshape(C, ny, *spec_flat.shape[1:]).transpose(0, 2, 3, 1)
+    @jit
+    def spec_to_phys_2d(velocity_spec: Array) -> Array:
+        r"""Inverse 2D real FFT in `$(x, z)$`, vmapped over
+        components.
 
+        Parameters
+        ----------
+        velocity_spec:
+            Spectral field of shape
+            ``(C, nz_spec, nx_spec, ny)`` in
+            ``[kz, kx, y]`` layout.
 
-@jit
-def spec_to_phys_2d(velocity_spec: Array) -> Array:
-    r"""Inverse 2D real FFT in `$(x, z)$`, batched over components.
+        Returns
+        -------
+        :
+            Physical field of shape
+            ``(C, ny, nz_padded, nx_padded)`` in
+            ``[y, z, x]`` layout.
+        """
+        return vmap(_irfft2d)(velocity_spec.transpose(0, 3, 1, 2))
 
-    The leading (component) axis is folded into the y-axis before
-    the transform and unfolded afterwards, so a single reshard
-    handles all components at once.
+else:
+    # np0 == 1: y is replicated, so merging the component axis
+    # with y is unambiguous and batches all components into a
+    # single reshard.
+    @jit
+    def phys_to_spec_2d(velocity_phys: Array) -> Array:
+        r"""Forward 2D real FFT in `$(x, z)$`, batched over
+        components.
 
-    Parameters
-    ----------
-    velocity_spec:
-        Spectral field of shape ``(C, nz-1, nx//2, ny)`` in
-        ``[kz, kx, y]`` layout, sharded on the kx axis.
+        The leading (component) axis is folded into the y-axis
+        before the transform and unfolded afterwards, so a single
+        reshard handles all components at once.
 
-    Returns
-    -------
-    :
-        Physical field of shape ``(C, ny, nz_padded, nx_padded)``
-        in ``[y, z, x]`` layout, sharded on the z axis.
-    """
-    C, ny = velocity_spec.shape[0], velocity_spec.shape[-1]
-    flat = velocity_spec.transpose(0, 3, 1, 2).reshape(
-        C * ny, *velocity_spec.shape[1:3]
-    )
-    phys_flat = _irfft2d(flat)
-    return phys_flat.reshape(C, ny, *phys_flat.shape[1:])
+        Parameters
+        ----------
+        velocity_phys:
+            Physical field of shape
+            ``(C, ny, nz_padded, nx_padded)`` in
+            ``[y, z, x]`` layout.
+
+        Returns
+        -------
+        :
+            Spectral field of shape
+            ``(C, nz_spec, nx_spec, ny)`` in
+            ``[kz, kx, y]`` layout.
+        """
+        C, ny = velocity_phys.shape[0], velocity_phys.shape[1]
+        flat = velocity_phys.reshape(C * ny, *velocity_phys.shape[2:])
+        spec_flat = _rfft2d(flat)
+        return spec_flat.reshape(C, ny, *spec_flat.shape[1:]).transpose(
+            0, 2, 3, 1
+        )
+
+    @jit
+    def spec_to_phys_2d(velocity_spec: Array) -> Array:
+        r"""Inverse 2D real FFT in `$(x, z)$`, batched over
+        components.
+
+        The leading (component) axis is folded into the y-axis
+        before the transform and unfolded afterwards, so a single
+        reshard handles all components at once.
+
+        Parameters
+        ----------
+        velocity_spec:
+            Spectral field of shape
+            ``(C, nz_spec, nx_spec, ny)`` in
+            ``[kz, kx, y]`` layout.
+
+        Returns
+        -------
+        :
+            Physical field of shape
+            ``(C, ny, nz_padded, nx_padded)`` in
+            ``[y, z, x]`` layout.
+        """
+        C, ny = velocity_spec.shape[0], velocity_spec.shape[-1]
+        flat = velocity_spec.transpose(0, 3, 1, 2).reshape(
+            C * ny, *velocity_spec.shape[1:3]
+        )
+        phys_flat = _irfft2d(flat)
+        return phys_flat.reshape(C, ny, *phys_flat.shape[1:])
 
 
 def cross(vector_1: Array, vector_2: Array) -> Array:

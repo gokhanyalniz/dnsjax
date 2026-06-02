@@ -87,6 +87,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
+from jax.sharding import PartitionSpec as P
 
 from ...fd import (
     build_diff_matrices,
@@ -165,15 +166,26 @@ class Fourier:
     m_is_even: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        kz_vals = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
+        kz_true = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
+        if sharding.nx_spec_pad:
+            kz_vals = jnp.concatenate(
+                [kz_true, jnp.zeros(sharding.nx_spec_pad)]
+            )
+        else:
+            kz_vals = kz_true
         self.kz = jax.device_put(
             kz_vals.reshape([1, -1, 1]).astype(sharding.float_type),
-            sharding.spec_scalar_shard,
+            P(None, sharding.a1, None),
         )
-        m_vals = complex_harmonics(params.res.nz)
+
+        m_true = complex_harmonics(params.res.nz)
+        if sharding.nz_spec_pad:
+            m_vals = jnp.concatenate([m_true, jnp.zeros(sharding.nz_spec_pad)])
+        else:
+            m_vals = m_true
         self.m = jax.device_put(
             m_vals.reshape([-1, 1, 1]).astype(sharding.float_type),
-            sharding.no_shard,
+            P(sharding.a0, None, None),
         )
 
         self.k_metric = jnp.where(self.kz == 0, 1, 2).astype(
@@ -943,8 +955,8 @@ class CylindricalFlow:
         self.inv_r2 = jax.device_put(self.inv_r2, sharding.no_shard)
         self.y_weights = jax.device_put(self.y_weights, sharding.no_shard)
 
-        Nm = params.res.nz - 1
-        Nkz = params.res.nx // 2
+        Nm = sharding.nz_spec
+        Nkz = sharding.nx_spec
 
         fd_p = params.res.fd_order
         dt = params.step.dt

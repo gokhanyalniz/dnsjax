@@ -1,18 +1,37 @@
-"""2D and 3D real FFT with 3/2-rule dealiasing via zero-padding and truncation.
+r"""2D and 3D real FFT with 3/2-rule dealiasing via zero-padding
+and truncation, plus double-parallelisation reshards.
 
 For the 2D case:
 The forward transform (physical -> spectral) is ``_rfft2d``; the inverse
 is ``_irfft2d``. They operate on scalar fields of layout ``[y, z, x]``,
 and ``[y, kz, kx]`` respectively. The public-facing part of the code
-in `operators.py` transposed the spectral output to layout ``[kz, kx ,y]``.
+in `operators.py` transposes the spectral output to layout ``[kz, kx, y]``.
 
 For the 3D case:
 The forward transform (physical -> spectral) is ``_rfft3d``; the inverse
 is ``_irfft3d``.  They operate on scalar fields of layout ``[y, z, x]``,
 and ``[ky, kz, kx]`` respectively.
 
-``shard_map`` is used for per-device FFTs with an explicit reshard between
-the two sharding layouts (physical: z-sharded; spectral: kx-sharded).
+``shard_map`` is used for per-device FFTs.  Two reshards shuttle data
+between the three sharding stages of the pipeline:
+
+1. **phys** ``P(a0, a1, None)`` — ``[y_{np0}, z_{np1}, x]``
+2. **mid**  ``P(a0, None, a1)`` — ``[y_{np0}, z, kx_{np1}]``
+   (after the `$z \leftrightarrow k_x$` reshard, Ns-way)
+3. **spec** ``P(None, a0, a1)`` — ``[y, kz_{np0}, kx_{np1}]``
+   (after the `$y \leftrightarrow k_z$` reshard, Nr-way)
+
+When ``np0 == 1`` the mid and spec layouts are identical and the
+second reshard is skipped.  When ``np1 == 1`` the phys and mid
+layouts are identical and the first reshard is skipped.
+
+Spectral padding
+~~~~~~~~~~~~~~~~
+If the true mode count (`$n_z - 1$` or `$n_x / 2$`) is not
+divisible by the mesh axis, zero dummy modes are appended after
+dealiasing truncation (forward) and stripped before oversampling
+zero-pad (inverse).  The padding amount is read from
+``sharding.nz_spec_pad`` and ``sharding.nx_spec_pad``.
 
 Dealiasing
 ----------
@@ -38,7 +57,43 @@ from .sharding import sharding
 norm: str = "forward"
 
 
-def zeropad_fft(a: Array, n: int, axis: int) -> Array:
+# ── Spectral padding / stripping helpers ─────────────────────
+
+
+def _pad_kz(a: Array, out_shard) -> Array:
+    """Append ``nz_spec_pad`` zero modes along axis 1 (kz)."""
+    pad = jnp.zeros(
+        (a.shape[0], sharding.nz_spec_pad, a.shape[2]),
+        dtype=a.dtype,
+        out_sharding=out_shard,
+    )
+    return jnp.concatenate([a, pad], axis=1)
+
+
+def _strip_kz(a: Array) -> Array:
+    """Remove the trailing ``nz_spec_pad`` modes along axis 1."""
+    return a[:, : a.shape[1] - sharding.nz_spec_pad, :]
+
+
+def _pad_kx(a: Array, out_shard) -> Array:
+    """Append ``nx_spec_pad`` zero modes along axis 2 (kx)."""
+    pad = jnp.zeros(
+        (a.shape[0], a.shape[1], sharding.nx_spec_pad),
+        dtype=a.dtype,
+        out_sharding=out_shard,
+    )
+    return jnp.concatenate([a, pad], axis=2)
+
+
+def _strip_kx(a: Array) -> Array:
+    """Remove the trailing ``nx_spec_pad`` modes along axis 2."""
+    return a[:, :, : a.shape[2] - sharding.nx_spec_pad]
+
+
+# ── Dealiasing padding / truncation ─────────────────────────
+
+
+def zeropad_fft(a: Array, n: int, axis: int, out_shard) -> Array:
     """Zero-pad a full-complex spectral array along *axis* to length *n*.
 
     Inserts zeros between the positive and negative Fourier modes,
@@ -55,6 +110,8 @@ def zeropad_fft(a: Array, n: int, axis: int) -> Array:
         `$(n - N) \\pmod 2 = 0$`.
     axis:
         Axis along which to pad (0 for y, 1 for z).
+    out_shard:
+        Partition spec for the output array.
     """
     if axis not in (0, 1):
         raise ValueError(f"axis must be 0 or 1; got {axis}.")
@@ -66,11 +123,7 @@ def zeropad_fft(a: Array, n: int, axis: int) -> Array:
 
     out_shape = list(a.shape)
     out_shape[axis] = n
-    out = jnp.zeros(
-        shape=out_shape,
-        dtype=a.dtype,
-        out_sharding=sharding._fft_spec_scalar_shard,
-    )
+    out = jnp.zeros(shape=out_shape, dtype=a.dtype, out_sharding=out_shard)
 
     idx_in = [slice(None)] * 3
     idx_out = [slice(None)] * 3
@@ -88,8 +141,9 @@ def zeropad_fft(a: Array, n: int, axis: int) -> Array:
     return out
 
 
-def truncate_fft(a: Array, n: int, axis: int) -> Array:
-    """Truncate a full-complex FFT output along *axis*, dropping aliased modes.
+def truncate_fft(a: Array, n: int, axis: int, out_shard) -> Array:
+    """Truncate a full-complex FFT output along *axis*, dropping
+    aliased modes.
 
     Keeps the lowest `$n / 2$` positive and `$n / 2 - 1$` negative
     modes, discarding all higher modes including the Nyquist mode.  The
@@ -104,6 +158,8 @@ def truncate_fft(a: Array, n: int, axis: int) -> Array:
         `$(N - n) \\pmod 2 = 0$`.
     axis:
         Axis along which to truncate (0 for y, 1 for z).
+    out_shard:
+        Partition spec for the output array.
     """
     if axis not in (0, 1):
         raise ValueError(f"axis must be 0 or 1; got {axis}.")
@@ -115,11 +171,7 @@ def truncate_fft(a: Array, n: int, axis: int) -> Array:
 
     out_shape = list(a.shape)
     out_shape[axis] = n - 1  # Omit the Nyquist mode
-    out = jnp.zeros(
-        shape=out_shape,
-        dtype=a.dtype,
-        out_sharding=sharding._fft_spec_scalar_shard,
-    )
+    out = jnp.zeros(shape=out_shape, dtype=a.dtype, out_sharding=out_shard)
 
     idx_in = [slice(None)] * 3
     idx_out = [slice(None)] * 3
@@ -137,7 +189,7 @@ def truncate_fft(a: Array, n: int, axis: int) -> Array:
     return out
 
 
-def zeropad_rfft(a: Array, n: int) -> Array:
+def zeropad_rfft(a: Array, n: int, out_shard) -> Array:
     """Zero-pad a real-FFT spectral array along axis 2 (kx) to *n* modes.
 
     Unlike ``zeropad_fft``, only positive frequencies exist in a real FFT,
@@ -150,11 +202,7 @@ def zeropad_rfft(a: Array, n: int) -> Array:
 
     out_shape = list(a.shape)
     out_shape[axis] = n
-    out = jnp.zeros(
-        shape=out_shape,
-        dtype=a.dtype,
-        out_sharding=sharding.phys_scalar_shard,
-    )
+    out = jnp.zeros(shape=out_shape, dtype=a.dtype, out_sharding=out_shard)
 
     idx = [slice(None)] * 3
     idx[axis] = slice(None, N)
@@ -163,7 +211,7 @@ def zeropad_rfft(a: Array, n: int) -> Array:
     return out
 
 
-def truncate_rfft(a: Array, n: int) -> Array:
+def truncate_rfft(a: Array, n: int, out_shard) -> Array:
     """Truncate a real-FFT output along axis 2 (kx) to *n* modes.
 
     Keeps only the lowest *n* non-negative frequencies.
@@ -175,11 +223,7 @@ def truncate_rfft(a: Array, n: int) -> Array:
 
     out_shape = list(a.shape)
     out_shape[axis] = n
-    out = jnp.zeros(
-        shape=out_shape,
-        dtype=a.dtype,
-        out_sharding=sharding.phys_scalar_shard,
-    )
+    out = jnp.zeros(shape=out_shape, dtype=a.dtype, out_sharding=out_shard)
 
     idx_in = [slice(None)] * 3
     idx_out = [slice(None)] * 3
@@ -190,219 +234,294 @@ def truncate_rfft(a: Array, n: int) -> Array:
     return out
 
 
-def _rfft2d(x: Array) -> Array:
-    """Forward 2D real FFT in x and z (wall-bounded): physical -> spectral.
+# ── 2D FFT (wall-bounded) ───────────────────────────────────
 
-    Transform order is x -> z.  The y-axis is left untouched (grid-point
-    space).  After each step, aliased modes are truncated.  A reshard
-    (z-sharded -> kx-sharded) happens between the x- and z-transforms.
+
+def _rfft2d(x: Array) -> Array:
+    r"""Forward 2D real FFT in x and z (wall-bounded):
+    physical -> spectral.
+
+    Pipeline: x-FFT `$\to$` [reshard #1: `$z \leftrightarrow
+    k_x$`] `$\to$` z-FFT `$\to$` [reshard #2:
+    `$y \leftrightarrow k_z$`].
+
+    Reshard #1 is skipped when ``np1 == 1`` (layouts are
+    identical).  Reshard #2 is skipped when ``np0 == 1``.
 
     Parameters
     ----------
     x:
-        Real-valued scalar field of shape ``(ny, nz_padded, nx_padded)``,
-        z-sharded.
+        Real-valued scalar field of shape
+        ``(ny, nz_padded, nx_padded)``, with
+        ``P(a0, a1, None)`` sharding.
 
     Returns
     -------
     :
-        Complex spectral coefficients of shape ``(ny, nz-1, nx//2)``,
-        kx-sharded.  Nyquist modes are omitted on z and x.
+        Complex spectral coefficients of shape
+        ``(ny, nz_spec, nx_spec)`` with
+        ``P(None, a0, a1)`` sharding.
     """
-    # Step 1: real FFT in x (z is sharded across devices)
+    phys = sharding._fft_phys_scalar_shard
+    mid = sharding._fft_mid_scalar_shard
+    spec = sharding._fft_spec_scalar_shard
+
+    # ---- Step 1: real FFT in x (y sharded by np0, z by np1) --
     y = truncate_rfft(
         shard_map(
             lambda a: jnp.fft.rfft(a, axis=2, norm="forward"),
             mesh=sharding.mesh,
-            in_specs=sharding.phys_scalar_shard,
-            out_specs=sharding.phys_scalar_shard,
+            in_specs=phys,
+            out_specs=phys,
         )(x),
         params.res.nx // 2,
+        phys,
     )
 
-    # Step 2: reshard from z-sharded (physical) to kx-sharded (spectral)
-    y = reshard(y, sharding._fft_spec_scalar_shard)
+    # Pad kx for np1 divisibility (appends zeros after nx//2).
+    if sharding.nx_spec_pad:
+        y = _pad_kx(y, phys)
 
-    # Step 3: complex FFT in z (kx is sharded), then truncate aliased modes
+    # ---- Reshard #1: z <-> kx (Ns-way, skipped when np1==1) --
+    if sharding.a1 is not None:
+        y = reshard(y, mid)
+
+    # ---- Step 2: complex FFT in z, then truncate aliased modes
     y = truncate_fft(
         shard_map(
             lambda a: jnp.fft.fft(a, axis=1, norm="forward"),
             mesh=sharding.mesh,
-            in_specs=sharding._fft_spec_scalar_shard,
-            out_specs=sharding._fft_spec_scalar_shard,
+            in_specs=mid,
+            out_specs=mid,
         )(y),
         params.res.nz,
         1,
+        mid,
     )
+
+    # Pad kz for np0 divisibility (appends zeros after nz-1).
+    if sharding.nz_spec_pad:
+        y = _pad_kz(y, mid)
+
+    # ---- Reshard #2: y <-> kz (Nr-way, skipped when np0==1) --
+    if sharding.a0 is not None:
+        y = reshard(y, spec)
 
     return y
 
 
 def _irfft2d(x: Array) -> Array:
-    """Inverse 2D real FFT in x and z (wall-bounded): spectral -> physical.
+    r"""Inverse 2D real FFT in x and z (wall-bounded):
+    spectral -> physical.
 
-    Transform order is z -> x (reverse of ``_rfft2d``).  Before each step,
-    the spectral array is zero-padded to the oversampled grid size for
-    dealiasing.  A reshard (kx-sharded -> z-sharded) happens between the
-    z-transform and the x-transform.  The y-axis is untouched.
+    Reverse pipeline: [reshard #2: `$k_z \leftrightarrow y$`]
+    `$\to$` z-IFFT `$\to$` [reshard #1:
+    `$k_x \leftrightarrow z$`] `$\to$` x-IFFT.
 
     Parameters
     ----------
     x:
-        Complex spectral coefficients of shape ``(ny, nz-1, nx//2)``,
-        kx-sharded.
+        Complex spectral coefficients of shape
+        ``(ny, nz_spec, nx_spec)`` with
+        ``P(None, a0, a1)`` sharding.
 
     Returns
     -------
     :
-        Real-valued scalar field of shape ``(ny, nz_padded, nx_padded)``,
-        z-sharded.
+        Real-valued scalar field of shape
+        ``(ny, nz_padded, nx_padded)`` with
+        ``P(a0, a1, None)`` sharding.
     """
-    # Step 1: zero-pad z to oversampled size, then inverse FFT in z
-    # (kx is sharded)
-    y = zeropad_fft(x, padded_res.nz_padded, 1)
+    phys = sharding._fft_phys_scalar_shard
+    mid = sharding._fft_mid_scalar_shard
+    spec = sharding._fft_spec_scalar_shard
+
+    # ---- Reshard #2 reverse: kz <-> y (skipped when np0==1) --
+    if sharding.a0 is not None:
+        x = reshard(x, mid)
+    else:
+        mid = spec  # layouts are identical when np0==1
+
+    # Strip kz padding before oversampling zero-pad.
+    if sharding.nz_spec_pad:
+        x = _strip_kz(x)
+
+    # ---- Step 1: zero-pad z then inverse FFT in z ------------
+    y = zeropad_fft(x, padded_res.nz_padded, 1, mid)
     y = shard_map(
         lambda a: jnp.fft.ifft(a, axis=1, norm="forward"),
         mesh=sharding.mesh,
-        in_specs=sharding._fft_spec_scalar_shard,
-        out_specs=sharding._fft_spec_scalar_shard,
+        in_specs=mid,
+        out_specs=mid,
     )(y)
 
-    # Step 2: reshard from kx-sharded (spectral) to z-sharded (physical)
-    y = reshard(y, sharding.phys_scalar_shard)
+    # ---- Reshard #1 reverse: kx <-> z (skipped when np1==1) --
+    if sharding.a1 is not None:
+        y = reshard(y, phys)
 
-    # Step 3: zero-pad kx to oversampled size, then inverse real FFT in x
-    # (z is sharded)
-    y = zeropad_rfft(y, padded_res.nx_padded // 2 + 1)
+    # Strip kx padding before oversampling zero-pad.
+    if sharding.nx_spec_pad:
+        y = _strip_kx(y)
+
+    # ---- Step 2: zero-pad kx then inverse real FFT in x ------
+    y = zeropad_rfft(y, padded_res.nx_padded // 2 + 1, phys)
     y = shard_map(
-        lambda a: jnp.fft.irfft(
-            a,
-            axis=2,
-            norm=norm,
-        ),
+        lambda a: jnp.fft.irfft(a, axis=2, norm=norm),
         mesh=sharding.mesh,
-        in_specs=sharding.phys_scalar_shard,
-        out_specs=sharding.phys_scalar_shard,
+        in_specs=phys,
+        out_specs=phys,
     )(y)
 
     return y
 
 
-def _rfft3d(x: Array) -> Array:
-    """Forward 3D real FFT: physical space -> spectral space.
+# ── 3D FFT (triply-periodic) ────────────────────────────────
 
-    Transform order is x -> z -> y.  After each step, aliased modes are
-    truncated.  A reshard (z-sharded -> kx-sharded) happens between the
-    x-transform and the z-transform.
+
+def _rfft3d(x: Array) -> Array:
+    r"""Forward 3D real FFT: physical space -> spectral space.
+
+    Pipeline: x-FFT `$\to$` [reshard #1] `$\to$` z-FFT
+    `$\to$` [reshard #2] `$\to$` y-FFT.
 
     Parameters
     ----------
     x:
-        Real-valued scalar field of shape ``(ny_padded, nz_padded,
-        nx_padded)``, z-sharded.
+        Real-valued scalar field of shape
+        ``(ny_padded, nz_padded, nx_padded)`` with
+        ``P(a0, a1, None)`` sharding.
 
     Returns
     -------
     :
-        Complex spectral coefficients of shape ``(ny-1, nz-1, nx//2)``,
-        kx-sharded.  Nyquist modes are omitted on all axes.
+        Complex spectral coefficients of shape
+        ``(ny-1, nz_spec, nx_spec)`` with
+        ``P(None, a0, a1)`` sharding.
     """
-    # Step 1: real FFT in x (z is sharded across devices)
+    phys = sharding._fft_phys_scalar_shard
+    mid = sharding._fft_mid_scalar_shard
+    spec = sharding._fft_spec_scalar_shard
+
+    # ---- Step 1: real FFT in x --------------------------------
     y = truncate_rfft(
         shard_map(
             lambda a: jnp.fft.rfft(a, axis=2, norm="forward"),
             mesh=sharding.mesh,
-            in_specs=sharding.phys_scalar_shard,
-            out_specs=sharding.phys_scalar_shard,
+            in_specs=phys,
+            out_specs=phys,
         )(x),
         params.res.nx // 2,
+        phys,
     )
 
-    # Step 2: reshard from z-sharded (physical) to kx-sharded (spectral)
-    y = reshard(y, sharding._fft_spec_scalar_shard)
+    if sharding.nx_spec_pad:
+        y = _pad_kx(y, phys)
 
-    # Step 3: complex FFT in z (kx is sharded), then truncate aliased modes
+    # ---- Reshard #1: z <-> kx (skipped when np1==1) -----------
+    if sharding.a1 is not None:
+        y = reshard(y, mid)
+
+    # ---- Step 2: complex FFT in z, then truncate ---------------
     y = truncate_fft(
         shard_map(
             lambda a: jnp.fft.fft(a, axis=1, norm="forward"),
             mesh=sharding.mesh,
-            in_specs=sharding._fft_spec_scalar_shard,
-            out_specs=sharding._fft_spec_scalar_shard,
+            in_specs=mid,
+            out_specs=mid,
         )(y),
         params.res.nz,
         1,
+        mid,
     )
 
-    # Step 4: complex FFT in y (kx is sharded), then truncate aliased modes
+    if sharding.nz_spec_pad:
+        y = _pad_kz(y, mid)
+
+    # ---- Reshard #2: y <-> kz (skipped when np0==1) -----------
+    if sharding.a0 is not None:
+        y = reshard(y, spec)
+
+    # ---- Step 3: complex FFT in y, then truncate ---------------
     y = truncate_fft(
         shard_map(
             lambda a: jnp.fft.fft(a, axis=0, norm="forward"),
             mesh=sharding.mesh,
-            in_specs=sharding._fft_spec_scalar_shard,
-            out_specs=sharding._fft_spec_scalar_shard,
+            in_specs=spec,
+            out_specs=spec,
         )(y),
         params.res.ny,
         0,
+        spec,
     )
 
     return y
 
 
 def _irfft3d(x: Array) -> Array:
-    """Inverse 3D real FFT: spectral space -> physical space.
+    r"""Inverse 3D real FFT: spectral space -> physical space.
 
-    Transform order is y -> z -> x (reverse of ``_rfft3d``).  Before each
-    step, the spectral array is zero-padded to the oversampled grid size
-    for dealiasing.  A reshard (kx-sharded -> z-sharded) happens between
-    the z-transform and the x-transform.
+    Reverse pipeline: y-IFFT `$\to$` [reshard #2] `$\to$`
+    z-IFFT `$\to$` [reshard #1] `$\to$` x-IFFT.
 
     Parameters
     ----------
     x:
-        Complex spectral coefficients of shape ``(ny-1, nz-1, nx//2)``,
-        kx-sharded.
+        Complex spectral coefficients of shape
+        ``(ny-1, nz_spec, nx_spec)`` with
+        ``P(None, a0, a1)`` sharding.
 
     Returns
     -------
     :
-        Real-valued scalar field of shape ``(ny_padded, nz_padded,
-        nx_padded)``, z-sharded.
+        Real-valued scalar field of shape
+        ``(ny_padded, nz_padded, nx_padded)`` with
+        ``P(a0, a1, None)`` sharding.
     """
-    # Step 1: zero-pad y to oversampled size, then inverse FFT in y
-    # (kx is sharded)
-    y = zeropad_fft(x, padded_res.ny_padded, 0)
+    phys = sharding._fft_phys_scalar_shard
+    mid = sharding._fft_mid_scalar_shard
+    spec = sharding._fft_spec_scalar_shard
+
+    # ---- Step 1: zero-pad y then inverse FFT in y -------------
+    y = zeropad_fft(x, padded_res.ny_padded, 0, spec)
     y = shard_map(
         lambda a: jnp.fft.ifft(a, axis=0, norm="forward"),
         mesh=sharding.mesh,
-        in_specs=sharding._fft_spec_scalar_shard,
-        out_specs=sharding._fft_spec_scalar_shard,
+        in_specs=spec,
+        out_specs=spec,
     )(y)
 
-    # Step 2: zero-pad z to oversampled size, then inverse FFT in z
-    # (kx is sharded)
-    y = zeropad_fft(y, padded_res.nz_padded, 1)
+    # ---- Reshard #2 reverse: kz <-> y (skipped when np0==1) ---
+    if sharding.a0 is not None:
+        y = reshard(y, mid)
+
+    # Strip kz padding before oversampling zero-pad.
+    if sharding.nz_spec_pad:
+        y = _strip_kz(y)
+
+    # ---- Step 2: zero-pad z then inverse FFT in z -------------
+    y = zeropad_fft(y, padded_res.nz_padded, 1, mid)
     y = shard_map(
         lambda a: jnp.fft.ifft(a, axis=1, norm="forward"),
         mesh=sharding.mesh,
-        in_specs=sharding._fft_spec_scalar_shard,
-        out_specs=sharding._fft_spec_scalar_shard,
+        in_specs=mid,
+        out_specs=mid,
     )(y)
 
-    # Step 3: reshard from kx-sharded (spectral) to z-sharded (physical)
-    y = reshard(y, sharding.phys_scalar_shard)
+    # ---- Reshard #1 reverse: kx <-> z (skipped when np1==1) ---
+    if sharding.a1 is not None:
+        y = reshard(y, phys)
 
-    # Step 4: zero-pad kx to oversampled size, then inverse real FFT in x
-    # (z is sharded)
-    y = zeropad_rfft(y, padded_res.nx_padded // 2 + 1)
+    # Strip kx padding before oversampling zero-pad.
+    if sharding.nx_spec_pad:
+        y = _strip_kx(y)
+
+    # ---- Step 3: zero-pad kx then inverse real FFT in x -------
+    y = zeropad_rfft(y, padded_res.nx_padded // 2 + 1, phys)
     y = shard_map(
-        lambda a: jnp.fft.irfft(
-            a,
-            axis=2,
-            norm=norm,
-        ),
+        lambda a: jnp.fft.irfft(a, axis=2, norm=norm),
         mesh=sharding.mesh,
-        in_specs=sharding.phys_scalar_shard,
-        out_specs=sharding.phys_scalar_shard,
+        in_specs=phys,
+        out_specs=phys,
     )(y)
 
     return y

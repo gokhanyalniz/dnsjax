@@ -33,16 +33,15 @@ def extract_mean_mode(state: Array) -> Array:
     r"""Extract the mean Fourier mode from a spectral state.
 
     Given a wall-bounded spectral state of shape
-    ``(C, N_{k_1}, N_{k_2}, N_y)`` where axis 2 is sharded
-    across devices, returns the `$k_1 = k_2 = 0$` mode of
-    shape ``(C, N_y)`` in `$O(N_y)$` work per device via
-    ``shard_map`` + ``psum``.
+    ``(C, N_{k_z}, N_{k_x}, N_y)`` where `$k_z$` is sharded
+    by ``np0`` and `$k_x$` by ``np1``, returns the
+    `$k_z = k_x = 0$` mode of shape ``(C, N_y)`` in
+    `$O(N_y)$` work per device via ``shard_map`` + ``psum``.
 
     Parameters
     ----------
     state:
-        Shape ``(C, N_{k_1}, N_{k_2}, N_y)``, sharded on
-        axis 2 (kx for Cartesian, kz for cylindrical).
+        Shape ``(C, N_{k_z}, N_{k_x}, N_y)``.
 
     Returns
     -------
@@ -52,10 +51,10 @@ def extract_mean_mode(state: Array) -> Array:
 
     def _local(shard: Array) -> Array:
         first = shard[:, 0, 0, :]
-        is_source = lax.axis_index(sharding.axis_name) == 0
+        is_source = (lax.axis_index("np0") == 0) & (lax.axis_index("np1") == 0)
         return lax.psum(
             jnp.where(is_source, first, jnp.zeros_like(first)),
-            sharding.axis_name,
+            ("np0", "np1"),
         )
 
     return shard_map(

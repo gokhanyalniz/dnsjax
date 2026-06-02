@@ -19,6 +19,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
+from jax.sharding import PartitionSpec as P
 
 from ...fd import (
     build_diff_matrices,
@@ -58,17 +59,21 @@ from ._base import (
 @register_dataclass_pytree
 @dataclass
 class Fourier:
-    """Wavenumber grids for the Cartesian wall-bounded geometry.
+    r"""Wavenumber grids for the Cartesian wall-bounded geometry.
 
     Broadcasting shapes match the spectral layout
-    ``(Nkz, Nkx, Ny)``.
+    ``(nz_spec, nx_spec, ny)``.  When ``nz_spec > nz - 1``
+    or ``nx_spec > nx // 2`` (spectral padding for 2D
+    divisibility), the extra trailing entries are zero.
 
     Attributes
     ----------
     kx:
-        Streamwise wavenumber, shape ``(1, nx//2, 1)``.
+        Streamwise wavenumber, shape ``(1, nx_spec, 1)``,
+        sharded on `$k_x$` (``np1``).
     kz:
-        Spanwise wavenumber, shape ``(nz-1, 1, 1)``.
+        Spanwise wavenumber, shape ``(nz_spec, 1, 1)``,
+        sharded on `$k_z$` (``np0``).
     k_metric:
         Hermitian-symmetry weight: 2 for `$k_x > 0$`,
         1 for `$k_x = 0$`.
@@ -86,15 +91,28 @@ class Fourier:
     k2_is_zero: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        kx_vals = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
+        kx_true = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
+        if sharding.nx_spec_pad:
+            kx_vals = jnp.concatenate(
+                [kx_true, jnp.zeros(sharding.nx_spec_pad)]
+            )
+        else:
+            kx_vals = kx_true
         self.kx = jax.device_put(
             kx_vals.reshape([1, -1, 1]).astype(sharding.float_type),
-            sharding.spec_scalar_shard,
+            P(None, sharding.a1, None),
         )
-        kz_vals = complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
+
+        kz_true = complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
+        if sharding.nz_spec_pad:
+            kz_vals = jnp.concatenate(
+                [kz_true, jnp.zeros(sharding.nz_spec_pad)]
+            )
+        else:
+            kz_vals = kz_true
         self.kz = jax.device_put(
             kz_vals.reshape([-1, 1, 1]).astype(sharding.float_type),
-            sharding.no_shard,
+            P(sharding.a0, None, None),
         )
 
         self.k_metric = jnp.where(self.kx == 0, 1, 2).astype(
@@ -553,8 +571,8 @@ class CartesianFlow:
         self.D1_bnd = jax.device_put(D1[[0, -1], :], sharding.no_shard)
         self.D2_bnd = jax.device_put(D2[[0, -1], :], sharding.no_shard)
 
-        Nkz = params.res.nz - 1
-        Nkx = params.res.nx // 2
+        Nkz = sharding.nz_spec
+        Nkx = sharding.nx_spec
         Ny = params.res.ny
 
         p = params.res.fd_order

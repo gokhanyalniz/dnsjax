@@ -27,9 +27,37 @@ ns_to_s: float = 10 ** (-9)  # nanoseconds to seconds
 
 
 class Distribution(BaseModel):
-    """Device distribution and backend platform."""
+    r"""Device distribution and backend platform.
+
+    Double parallelisation
+    ----------------------
+    ``np0 * np1 == np``.  ``np0`` splits the wall-normal
+    axis (`$y$` / `$r$`) in physical space and the spanwise-
+    wavenumber axis (`$k_z$` / `$m$`) in spectral space.
+    ``np1`` splits the spanwise axis (`$z$`) in physical
+    space and the streamwise-wavenumber axis (`$k_x$`) in
+    spectral space.  Each device holds the full wall-normal
+    extent in spectral space, so FD / SPIKE solves are
+    unchanged.
+
+    When ``np0 == 1`` (default), the decomposition collapses
+    to the original 1D scheme (only `$k_x$` / `$z$`
+    distributed).  When ``np1`` is not set it is derived as
+    ``np // np0``.
+
+    Recommended: for double parallelisation with wall-bounded
+    flows, use tanh grids (``geo.grid_type = "tanh"``) with
+    power-of-2 ``ny`` and ``nz`` for clean divisibility.
+    CGL grids (``ny = 2^k + 1``) are awkward to split evenly;
+    the code pads both physical-`$y$` and spectral-`$k_z$`
+    axes to the next multiple of ``np0`` when needed, so
+    arbitrary resolutions still work, but power-of-2 avoids
+    the overhead.
+    """
 
     np: int = Field(ge=1, default=1)
+    np0: int = Field(ge=1, default=1)
+    np1: int = Field(ge=1, default=1)
     platform: Literal["cpu", "cuda", "rocm", "tpu"] = "cpu"
 
 
@@ -223,6 +251,22 @@ def update_parameters(params_new: Parameters) -> None:
             for key, value in dict.items():
                 if value is not None:
                     setattr(getattr(params, category), key, value)
+
+    # ── Derive np0 / np1 from np ──────────────────────────────────
+    # np1 defaults to 1.  When np0 * np1 != np and np1 is still
+    # at the default, derive np1 = np // np0 (backward-compatible
+    # with `--dist.np N` alone → 1D decomposition on kx/z).
+    d = params.dist
+    if d.np0 * d.np1 != d.np:
+        if d.np % d.np0 != 0:
+            raise ValueError(f"np={d.np} is not divisible by np0={d.np0}")
+        derived = d.np // d.np0
+        if d.np1 != 1:
+            raise ValueError(
+                f"np0 * np1 = {d.np0} * {d.np1} = "
+                f"{d.np0 * d.np1} != np = {d.np}"
+            )
+        d.np1 = derived
 
     # Set derived parameters:
     system = params.phys.system
