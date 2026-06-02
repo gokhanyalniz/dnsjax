@@ -187,6 +187,82 @@ def build_integration_weights(y: ndarray, p: int) -> ndarray:
     return w
 
 
+# ── Stretched grid generation ────────────────────────────────
+
+
+def tanh_two_sided_grid(ny: int, s: float) -> ndarray:
+    r"""Symmetric tanh-stretched grid on `$[-1, 1]$`.
+
+    Wall-normal grids for finite-difference methods do not
+    benefit from the CGL `$O(1/N^2)$` wall clustering
+    (designed for spectral accuracy), yet inherit the
+    `$O(N^4)$` second-derivative conditioning and an
+    `$O(1/N^2)$` convective CFL limit (Trefethen 2000;
+    Weideman & Reddy 2000).  A tanh-stretched grid with
+    controlled wall spacing `$\sim O(1/N)$` achieves the
+    same order-`$p$` accuracy with `$O(N^2)$` conditioning
+    and an `$O(1/N)$` CFL limit.
+
+    .. math::
+        y_j = \frac{\tanh\!\bigl(s\,(2j/(N{-}1) - 1)\bigr)}
+                   {\tanh(s)},
+        \quad j = 0, \ldots, N{-}1.
+
+    Endpoints are exactly `$y = \pm 1$`.  As `$s \to 0$`
+    the grid approaches uniform spacing; larger `$s$`
+    increases wall clustering.
+
+    Parameters
+    ----------
+    ny:
+        Number of grid points.
+    s:
+        Stretching parameter (`$s > 0$`).
+
+    Returns
+    -------
+    :
+        Grid array, shape ``(ny,)``, ascending from
+        `$-1$` to `$1$`.
+    """
+    xi = np.linspace(-1.0, 1.0, ny)
+    return np.tanh(s * xi) / np.tanh(s)
+
+
+def tanh_one_sided_grid(nr: int, s: float) -> ndarray:
+    r"""One-sided tanh-stretched grid on `$(0, 1]$`.
+
+    Clusters points toward the wall at `$r = 1$` while
+    keeping all points strictly positive (no point at
+    `$r = 0$`, consistent with the parity-reduced
+    cylindrical formulation).
+
+    .. math::
+        \xi_j = (j + 1) / N_r, \qquad
+        r_j = 1 - \frac{\tanh\!\bigl(s\,(1 - \xi_j)\bigr)}
+                       {\tanh(s)},
+        \quad j = 0, \ldots, N_r{-}1.
+
+    `$\xi$` spans `$(0, 1]$` (excluding 0), so `$r_0 > 0$`
+    and `$r_{N_r - 1} = 1$` exactly.
+
+    Parameters
+    ----------
+    nr:
+        Number of radial grid points.
+    s:
+        Stretching parameter (`$s > 0$`).
+
+    Returns
+    -------
+    :
+        Grid array, shape ``(nr,)``, ascending from near
+        `$0$` to `$1$`.
+    """
+    xi = np.arange(1, nr + 1, dtype=np.float64) / nr
+    return 1.0 - np.tanh(s * (1.0 - xi)) / np.tanh(s)
+
+
 # ── Grid detection ───────────────────────────────────────────
 
 

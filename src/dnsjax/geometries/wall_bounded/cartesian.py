@@ -20,7 +20,11 @@ import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
-from ...fd import build_diff_matrices, build_integration_weights
+from ...fd import (
+    build_diff_matrices,
+    build_integration_weights,
+    tanh_two_sided_grid,
+)
 from ...operators import (
     complex_harmonics,
     phys_to_spec_2d,
@@ -171,9 +175,18 @@ def build_cartesian_grid(
     ny: int,
     fd_order: int,
     wall_grid: str | None = None,
+    grid_type: str | None = None,
+    grid_stretch: float = 1.5,
 ) -> tuple[Array, Array, Array, Array]:
     r"""Build the Cartesian wall-normal grid, FD matrices, and
     quadrature weights.
+
+    Grid selection (precedence):
+
+    1. *wall_grid*: load from file.
+    2. *grid_type*: ``"tanh"`` for symmetric tanh stretching,
+       ``"cgl"`` for default CGL.
+    3. Default: CGL grid.
 
     Parameters
     ----------
@@ -183,7 +196,10 @@ def build_cartesian_grid(
         Finite-difference stencil half-bandwidth.
     wall_grid:
         Optional path to a custom wall-normal grid file.
-        If ``None``, the default CGL grid is used.
+    grid_type:
+        Named grid type (``"cgl"`` or ``"tanh"``).
+    grid_stretch:
+        Stretching parameter for ``grid_type="tanh"``.
 
     Returns
     -------
@@ -208,6 +224,11 @@ def build_cartesian_grid(
                 "Cartesian wall grid must span [-1, 1]"
                 f" (got [{grid[0]}, {grid[-1]}])"
             )
+        ys = jnp.asarray(grid, dtype=sharding.float_type)
+        w = build_integration_weights(grid, fd_order)
+        y_weights = jnp.asarray(w, dtype=sharding.float_type)
+    elif grid_type == "tanh":
+        grid = tanh_two_sided_grid(ny, grid_stretch)
         ys = jnp.asarray(grid, dtype=sharding.float_type)
         w = build_integration_weights(grid, fd_order)
         y_weights = jnp.asarray(w, dtype=sharding.float_type)
@@ -519,6 +540,8 @@ class CartesianFlow:
             params.res.ny,
             params.res.fd_order,
             params.geo.wall_grid,
+            params.geo.grid_type,
+            params.geo.grid_stretch,
         )
 
         derived_params.wall_normal_grid = [
@@ -560,12 +583,9 @@ class CartesianFlow:
                 P_blk,
                 m_blk,
             )
-            self.Lk_op = PerModeBandedOperator(
-                *_spike_factor(Lk_A, Lk_B, Lk_C)
-            )
-            self.Hk_op = PerModeBandedOperator(
-                *_spike_factor(Hk_A, Hk_B, Hk_C)
-            )
+            bt = params.solver.block_thomas
+            self.Lk_op = _spike_factor(Lk_A, Lk_B, Lk_C, bt)
+            self.Hk_op = _spike_factor(Hk_A, Hk_B, Hk_C, bt)
         else:
             # Dense backend: parity/reference path.  Full
             # `(Nkz, Nkx, Ny, Ny)` matrices are built, LU-factored,
