@@ -44,7 +44,6 @@ from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
     DenseJAXSolver,
-    PerModeBandedOperator,
     _choose_block_partition,
     _spike_factor,
 )
@@ -109,12 +108,12 @@ def test_spike_vs_dense_on_cartesian_operators() -> None:
     Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
         D1, D2, fourier.k2, fourier.k2_is_zero, p, P_opt, m_opt
     )
-    Lk_banded = PerModeBandedOperator(*_spike_factor(Lk_A, Lk_B, Lk_C))
+    Lk_banded = _spike_factor(Lk_A, Lk_B, Lk_C)
 
     Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
         D2, fourier.k2, dt, c, nu, p, P_opt, m_opt
     )
-    Hk_banded = PerModeBandedOperator(*_spike_factor(Hk_A, Hk_B, Hk_C))
+    Hk_banded = _spike_factor(Hk_A, Hk_B, Hk_C)
 
     # Dense path (reference).
     Lk_dense = DenseJAXSolver(

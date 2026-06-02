@@ -88,7 +88,11 @@ import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
-from ...fd import build_diff_matrices, build_integration_weights
+from ...fd import (
+    build_diff_matrices,
+    build_integration_weights,
+    tanh_one_sided_grid,
+)
 from ...operators import (
     complex_harmonics,
     phys_to_spec_2d,
@@ -103,6 +107,7 @@ from ...solvers import (
     PerModeBandedOperator,
     _extract_banded_corners,
     _spike_factor,
+    _stack_banded_operators,
     validate_spike_partition,
 )
 from ._base import (
@@ -382,9 +387,18 @@ def build_cylindrical_grid(
     ny: int,
     fd_order: int,
     wall_grid: str | None = None,
+    grid_type: str | None = None,
+    grid_stretch: float = 1.5,
 ) -> tuple[Array, Array, Array, Array, Array, Array]:
     r"""Build radial grid, parity-reduced D1 matrices, weights,
     and `$1/r$` for the cylindrical geometry.
+
+    Grid selection (precedence):
+
+    1. *wall_grid*: load from file.
+    2. *grid_type*: ``"tanh"`` for one-sided tanh stretching,
+       ``"cgl"`` for default half-CGL.
+    3. Default: half-CGL grid.
 
     Parameters
     ----------
@@ -394,7 +408,10 @@ def build_cylindrical_grid(
         Finite-difference stencil half-bandwidth.
     wall_grid:
         Optional path to a custom radial grid file.
-        If ``None``, the default half-CGL grid is used.
+    grid_type:
+        Named grid type (``"cgl"`` or ``"tanh"``).
+    grid_stretch:
+        Stretching parameter for ``grid_type="tanh"``.
 
     Returns
     -------
@@ -428,6 +445,9 @@ def build_cylindrical_grid(
                 "Cylindrical wall grid must have all"
                 f" r > 0 (got r[0]={grid[0]})"
             )
+        rs = jnp.asarray(grid, dtype=sharding.float_type)
+    elif grid_type == "tanh":
+        grid = tanh_one_sided_grid(ny, grid_stretch)
         rs = jnp.asarray(grid, dtype=sharding.float_type)
     else:
         rs = build_half_cgl_grid(ny)
@@ -877,7 +897,11 @@ class CylindricalFlow:
         Nr = params.res.ny
         self.rs, D1_even, D1_odd, D1_pos, self.y_weights, self.inv_r = (
             build_cylindrical_grid(
-                Nr, params.res.fd_order, params.geo.wall_grid
+                Nr,
+                params.res.fd_order,
+                params.geo.wall_grid,
+                params.geo.grid_type,
+                params.geo.grid_stretch,
             )
         )
         self.inv_r2 = self.inv_r**2
@@ -940,6 +964,7 @@ class CylindricalFlow:
 
         if params.solver.backend == "banded":
             P_blk, m_blk = validate_spike_partition(Nr, fd_p, "Nr")
+            bt = params.solver.block_thomas
 
             # Lk
             Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
@@ -955,9 +980,7 @@ class CylindricalFlow:
                 P_blk,
                 m_blk,
             )
-            self.Lk_op = PerModeBandedOperator(
-                *_spike_factor(Lk_A, Lk_B, Lk_C)
-            )
+            self.Lk_op = _spike_factor(Lk_A, Lk_B, Lk_C, bt)
 
             # Hk_plus (meff = m+1, parity = (-1)^{m+1})
             Hp_A, Hp_B, Hp_C = _build_Hk_blocks_gpu(
@@ -974,7 +997,7 @@ class CylindricalFlow:
                 P_blk,
                 m_blk,
             )
-            lu_p, piv_p, V_p, W_p, rl_p, rp_p = _spike_factor(Hp_A, Hp_B, Hp_C)
+            op_p = _spike_factor(Hp_A, Hp_B, Hp_C, bt)
 
             # Hk_minus (meff = m-1, parity = (-1)^{m+1})
             Hm_A, Hm_B, Hm_C = _build_Hk_blocks_gpu(
@@ -991,7 +1014,7 @@ class CylindricalFlow:
                 P_blk,
                 m_blk,
             )
-            lu_m, piv_m, V_m, W_m, rl_m, rp_m = _spike_factor(Hm_A, Hm_B, Hm_C)
+            op_m = _spike_factor(Hm_A, Hm_B, Hm_C, bt)
 
             # Hk_z (meff = m, parity = (-1)^m)
             Hz_A, Hz_B, Hz_C = _build_Hk_blocks_gpu(
@@ -1008,17 +1031,10 @@ class CylindricalFlow:
                 P_blk,
                 m_blk,
             )
-            lu_z, piv_z, V_z, W_z, rl_z, rp_z = _spike_factor(Hz_A, Hz_B, Hz_C)
+            op_z = _spike_factor(Hz_A, Hz_B, Hz_C, bt)
 
             # Combined Hk: component order (plus, minus, z).
-            self.Hk_op = PerModeBandedOperator(
-                lu=jnp.stack([lu_p, lu_m, lu_z]),
-                piv=jnp.stack([piv_p, piv_m, piv_z]),
-                V=jnp.stack([V_p, V_m, V_z]),
-                W=jnp.stack([W_p, W_m, W_z]),
-                red_lu=jnp.stack([rl_p, rl_m, rl_z]),
-                red_piv=jnp.stack([rp_p, rp_m, rp_z]),
-            )
+            self.Hk_op = _stack_banded_operators(op_p, op_m, op_z)
 
         else:
             # Dense backend

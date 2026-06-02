@@ -36,10 +36,7 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.sharding import sharding  # noqa: E402
-from dnsjax.solvers import (  # noqa: E402
-    PerModeBandedOperator,
-    _spike_factor,
-)
+from dnsjax.solvers import _spike_factor  # noqa: E402
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -76,11 +73,16 @@ def _extract_spike_blocks(
 # ── tests ────────────────────────────────────────────────────────────
 
 
-def test_spike_solve_random() -> None:
-    """SPIKE solve matches ``np.linalg.solve`` (real + complex RHS)."""
-    Ny, p = 32, 4
-    P, m = 4, 8
-    A = _make_random_banded(Ny, p, seed=0)
+def _run_spike_solve(
+    A: np.ndarray,
+    P: int,
+    m: int,
+    p: int,
+    block_thomas: bool,
+    seed_rhs: int = 10,
+) -> None:
+    """Check SPIKE solve matches np.linalg.solve (both paths)."""
+    Ny = P * m
     A_blk, B_crn, C_crn = _extract_spike_blocks(A, P, m, p)
 
     Nkz = params.res.nz - 1
@@ -92,11 +94,9 @@ def test_spike_solve_random() -> None:
     B_j = jnp.tile(jnp.asarray(B_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
     C_j = jnp.tile(jnp.asarray(C_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
 
-    op = PerModeBandedOperator(*_spike_factor(A_j, B_j, C_j))
+    op = _spike_factor(A_j, B_j, C_j, block_thomas=block_thomas)
 
-    rng = np.random.default_rng(10)
-
-    # Real RHS.
+    rng = np.random.default_rng(seed_rhs)
     b = rng.standard_normal(Ny)
     rhs = jax.device_put(
         jnp.tile(jnp.asarray(b)[None, None, :], (Nkz, Nkx, 1)),
@@ -105,7 +105,6 @@ def test_spike_solve_random() -> None:
     x = np.asarray(op.solve(rhs))[0, 0]
     assert_allclose(x, np.linalg.solve(A, b), atol=1e-10, rtol=1e-10)
 
-    # Complex RHS.
     b_c = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
     rhs_c = jax.device_put(
         jnp.tile(jnp.asarray(b_c)[None, None, :], (Nkz, Nkx, 1)),
@@ -113,6 +112,30 @@ def test_spike_solve_random() -> None:
     )
     x_c = np.asarray(op.solve(rhs_c))[0, 0]
     assert_allclose(x_c, np.linalg.solve(A, b_c), atol=1e-10, rtol=1e-10)
+
+
+def test_spike_solve_random() -> None:
+    """SPIKE solve (dense reduced) matches np.linalg.solve."""
+    Ny, p = 32, 4
+    P, m = 4, 8
+    A = _make_random_banded(Ny, p, seed=0)
+    _run_spike_solve(A, P, m, p, block_thomas=False)
+
+
+def test_spike_solve_block_thomas() -> None:
+    """SPIKE solve (block-Thomas reduced) matches np.linalg.solve."""
+    Ny, p = 32, 4
+    P, m = 4, 8
+    A = _make_random_banded(Ny, p, seed=0)
+    _run_spike_solve(A, P, m, p, block_thomas=True)
+
+
+def test_spike_solve_block_thomas_p2() -> None:
+    """Block-Thomas with minimum P=2."""
+    Ny, p = 16, 4
+    P, m = 2, 8
+    A = _make_random_banded(Ny, p, seed=42)
+    _run_spike_solve(A, P, m, p, block_thomas=True)
 
 
 # ── Runner ───────────────────────────────────────────────────────────

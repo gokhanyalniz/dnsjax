@@ -52,12 +52,23 @@ class Physics(BaseModel):
 
 
 class Geometry(BaseModel):
-    """Domain size and optional tilt angle for the forcing direction."""
+    """Domain size and optional tilt angle for the forcing direction.
+
+    Wall-normal grid selection (precedence order):
+
+    1. ``wall_grid`` (file path): load a custom grid from file.
+    2. ``grid_type``: generate a named grid at startup.
+    3. Default: CGL (Cartesian) or half-CGL (cylindrical).
+
+    Setting both ``wall_grid`` and ``grid_type`` is an error.
+    """
 
     lx: float = Field(gt=0, default=4.0)
     lz: float = Field(gt=0, default=4.0)
     tilt_degree: float = Field(gt=-180, le=180, default=0)
     wall_grid: Path | None = None
+    grid_type: Literal["cgl", "tanh"] | None = None
+    grid_stretch: float = Field(gt=0, default=1.5)
 
 
 class Resolution(BaseModel):
@@ -139,6 +150,11 @@ class Solver(BaseModel):
     # Use ``scripts/spike_partition_info.py`` to explore the
     # memory / performance trade-off for a given resolution.
     spike_block_size: int | None = None
+    # Use block-Thomas ``lax.scan`` solves for the SPIKE reduced
+    # system (and, when applicable, the per-block banded solves).
+    # When ``False``, the original batched cuSOLVER ``lu_solve``
+    # paths are used instead.
+    block_thomas: bool = True
 
 
 class Parameters(BaseModel):
@@ -253,6 +269,12 @@ def update_parameters(params_new: Parameters) -> None:
     ):
         raise FileNotFoundError(
             f"Wall grid file not found: {params.geo.wall_grid}"
+        )
+
+    if params.geo.wall_grid is not None and params.geo.grid_type is not None:
+        raise ValueError(
+            "Cannot set both wall_grid and grid_type"
+            " (wall_grid takes precedence; remove one)"
         )
 
 
