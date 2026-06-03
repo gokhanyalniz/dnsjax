@@ -448,19 +448,33 @@ class PerModeBandedOperator:
 # ── SPIKE block partitioning and factorisation ───────────────────
 
 
-def _spike_memory_per_mode(Ny: int, P: int, p: int) -> float:
-    r"""Per-mode SPIKE storage: `$N_y^2 / P + 4 P^2 p^2$`."""
-    return Ny * Ny / P + 4 * P * P * p * p
+def _spike_memory_per_mode(
+    Ny: int, P: int, p: int, block_thomas: bool = False
+) -> float:
+    r"""Per-mode SPIKE storage estimate.
+
+    Block LU factors dominate at `$N_y^2 / P$`.  The reduced-system
+    cost is `$O(P p^2)$` for block-Thomas or `$O(P^2 p^2)$` for
+    the dense reduced path.
+    """
+    block_cost = Ny * Ny / P
+    if block_thomas:
+        return block_cost + 4 * P * p * p
+    return block_cost + 4 * P * P * p * p
 
 
-def _choose_block_partition(Ny: int, p: int) -> tuple[int, int]:
+def _choose_block_partition(
+    Ny: int, p: int, block_thomas: bool = False
+) -> tuple[int, int]:
     r"""Choose SPIKE block count `$P$` and block size `$m$`.
 
     Picks the divisor `$P \ge 2$` of `$N_y$` (with
     `$m = N_y / P \ge 2 p$`) that minimises total per-mode
-    SPIKE storage `$N_y^2 / P + 4 P^2 p^2$` (block LU
-    factors plus reduced system).  Falls back to `$P = 1$`
-    when `$N_y$` is prime or too small.
+    SPIKE storage.  When *block_thomas* is active the
+    reduced-system cost is `$O(P p^2)$` instead of
+    `$O(P^2 p^2)$`, favouring more (smaller) blocks.
+    Falls back to `$P = 1$` when `$N_y$` is prime or too
+    small.
 
     Parameters
     ----------
@@ -468,6 +482,8 @@ def _choose_block_partition(Ny: int, p: int) -> tuple[int, int]:
         Wall-normal grid size.
     p:
         FD order (half-bandwidth of the banded operator).
+    block_thomas:
+        Use the block-Thomas reduced-system cost model.
 
     Returns
     -------
@@ -482,7 +498,7 @@ def _choose_block_partition(Ny: int, p: int) -> tuple[int, int]:
     best_P, best_cost = 1, float("inf")
     for P_cand in range(2, max_P + 1):
         if Ny % P_cand == 0:
-            cost = _spike_memory_per_mode(Ny, P_cand, p)
+            cost = _spike_memory_per_mode(Ny, P_cand, p, block_thomas)
             if cost < best_cost:
                 best_P, best_cost = P_cand, cost
 
@@ -492,7 +508,7 @@ def _choose_block_partition(Ny: int, p: int) -> tuple[int, int]:
 
 
 def validate_spike_partition(
-    N: int, p: int, label: str = "N"
+    N: int, p: int, label: str = "N", block_thomas: bool = True
 ) -> tuple[int, int]:
     r"""Validate and resolve the SPIKE block partition.
 
@@ -509,6 +525,9 @@ def validate_spike_partition(
         FD accuracy order (half-bandwidth).
     label:
         Name used in diagnostic messages (e.g. ``"Ny"``).
+    block_thomas:
+        Use the block-Thomas cost model when choosing
+        the partition automatically.
 
     Returns
     -------
@@ -524,11 +543,11 @@ def validate_spike_partition(
                 f"spike_block_size={sbs} invalid for "
                 f"{label}={N}, p={p}; falling back to auto."
             )
-            P_blk, m_blk = _choose_block_partition(N, p)
+            P_blk, m_blk = _choose_block_partition(N, p, block_thomas)
         else:
             P_blk, m_blk = N // sbs, sbs
     else:
-        P_blk, m_blk = _choose_block_partition(N, p)
+        P_blk, m_blk = _choose_block_partition(N, p, block_thomas)
     sharding.print(
         f"SPIKE partition: P={P_blk}, m={m_blk} ({label}={N}, p={p})"
     )

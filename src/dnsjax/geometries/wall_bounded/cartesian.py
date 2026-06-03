@@ -581,7 +581,8 @@ class CartesianFlow:
         nu = 1.0 / params.phys.re
 
         if params.solver.backend == "banded":
-            P_blk, m_blk = validate_spike_partition(Ny, p, "Ny")
+            bt = params.solver.block_thomas
+            P_blk, m_blk = validate_spike_partition(Ny, p, "Ny", bt)
             Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
                 self.D1,
                 self.D2,
@@ -601,7 +602,6 @@ class CartesianFlow:
                 P_blk,
                 m_blk,
             )
-            bt = params.solver.block_thomas
             self.Lk_op = _spike_factor(Lk_A, Lk_B, Lk_C, bt)
             self.Hk_op = _spike_factor(Hk_A, Hk_B, Hk_C, bt)
         else:
