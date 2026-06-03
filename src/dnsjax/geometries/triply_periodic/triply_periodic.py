@@ -366,7 +366,15 @@ def _norm(
 
 
 def correct_divergence(state: Array, fourier_: Fourier) -> Array:
-    """Project the velocity onto the divergence-free subspace."""
+    r"""Project velocity onto the divergence-free subspace.
+
+    This is the **post-step** incompressibility projection.
+    The first projection happens inside :func:`_get_rhs`,
+    where the pressure Poisson solve removes the divergent
+    part of the nonlinear term before the Helmholtz step.
+    This second projection removes any residual divergence
+    accumulated during the corrector iterations.
+    """
     correction = -gradient(
         inverse_laplacian(
             divergence(
@@ -388,7 +396,11 @@ def correct_divergence(state: Array, fourier_: Fourier) -> Array:
 
 @jit(donate_argnums=0)
 def _correct_velocity_jit(state: Array, fourier_: Fourier) -> Array:
+    """Divergence correction + mean-mode zeroing.
 
+    Returned as ``correct_velocity`` by the stepper builder
+    and called once per time step after the corrector loop.
+    """
     velocity_corrected = correct_divergence(state, fourier_)
 
     velocity_corrected = velocity_corrected.at[sharding.vector_mean_mode].set(

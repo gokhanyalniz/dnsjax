@@ -214,6 +214,13 @@ def build_cartesian_grid(
         Finite-difference stencil half-bandwidth.
     wall_grid:
         Optional path to a custom wall-normal grid file.
+        File format: one coordinate per line in
+        wall-to-interior order (first line = top wall
+        `$y = 1$`, last line = bottom wall `$y = -1$`).
+        The code reverses to ascending order internally.
+        Custom grids use composite polynomial integration
+        weights (order-*p* accuracy matching the FD stencil)
+        instead of Clenshaw-Curtis.
     grid_type:
         Named grid type (``"cgl"`` or ``"tanh"``).
     grid_stretch:
