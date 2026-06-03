@@ -115,8 +115,8 @@ if sharding.np0 > 1:
         ----------
         velocity_phys:
             Physical field of shape
-            ``(C, ny, nz_padded, nx_padded)`` in
-            ``[y, z, x]`` layout.
+            ``(C, ny + ny_y_pad, nz_padded, nx_padded)``
+            in ``[y, z, x]`` layout.
 
         Returns
         -------
@@ -143,8 +143,8 @@ if sharding.np0 > 1:
         -------
         :
             Physical field of shape
-            ``(C, ny, nz_padded, nx_padded)`` in
-            ``[y, z, x]`` layout.
+            ``(C, ny + ny_y_pad, nz_padded, nx_padded)``
+            in ``[y, z, x]`` layout.
         """
         return vmap(_irfft2d)(velocity_spec.transpose(0, 3, 1, 2))
 

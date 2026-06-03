@@ -1324,10 +1324,16 @@ def _get_rhs(
 
     state_rthz = jnp.array([u_z, ur, utheta])
 
+    bf, cbf = flow_.base_flow, flow_.curl_base_flow
+    if sharding.ny_y_pad:
+        ypad = ((0, 0), (0, sharding.ny_y_pad), (0, 0), (0, 0))
+        bf = jnp.pad(bf, ypad)
+        cbf = jnp.pad(cbf, ypad)
+
     nonlin_rthz = get_nonlin(
         state_rthz,
-        flow_.base_flow,
-        flow_.curl_base_flow,
+        bf,
+        cbf,
         spec_to_phys_2d,
         phys_to_spec_2d,
         lambda s: _curl_fn(s, fourier_, flow_),

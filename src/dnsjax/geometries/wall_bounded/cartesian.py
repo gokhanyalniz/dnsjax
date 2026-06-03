@@ -621,22 +621,33 @@ class CartesianFlow:
     def _derive_imm_homogeneous_data(
         self, Nkz: int, Nkx: int, Ny: int
     ) -> None:
-        """Fill ``p1..q2`` and ``M_inv`` on-device from the GPU operator.
+        r"""Fill ``p1..q2`` and ``M_inv`` from the factored
+        GPU operator.
 
-        Both backends converge here once :attr:`Lk_op` and :attr:`Hk_op`
-        are in place.  Nothing else on the CPU needs to do another LU
-        solve — everything below runs against the already-factored
-        device operator.
+        Both backends converge here once :attr:`Lk_op` and
+        :attr:`Hk_op` are in place.  Nothing else on the CPU
+        needs to do another LU solve -- everything below runs
+        against the already-factored device operator.
 
-        The mean mode (`$k^2 = 0$`) is handled analytically: ``M`` has a
-        zero second column there (`$p_2 \\equiv 1$` is a pressure gauge),
-        so the 2x2 inverse is replaced by `$[[1/M_{00}, 0], [0, 0]]$`.
-        The ``jnp.where`` around ``safe_det`` keeps the regular branch
-        NaN-free before the selection happens.
+        In Schur-complement notation, the arrays
+        ``p1, p2, v1, v2, q1, q2`` are the columns of
+        `$A_{II}^{-1}\,A_{IB}$` (the interior-to-boundary
+        coupling through the factored interior operator), and
+        ``M_inv`` is `$S^{-1}$` where `$S$` is the `$2 \times
+        2$` Schur complement (influence / capacitance matrix).
+        See :func:`_imm_iteration` for the full context.
 
-        After ``M_inv`` is built, ``v1`` and ``v2`` are zeroed at
-        the mean mode so the IMM velocity correction produces
-        zero there (continuity forces `$v \\equiv 0$` at
+        The mean mode (`$k^2 = 0$`) is handled analytically:
+        ``M`` has a zero second column there
+        (`$p_2 \equiv 1$` is a pressure gauge), so the
+        `$2 \times 2$` inverse is replaced by
+        `$[[1/M_{00}, 0], [0, 0]]$`.  The ``jnp.where``
+        around ``safe_det`` keeps the regular branch NaN-free
+        before the selection happens.
+
+        After ``M_inv`` is built, ``v1`` and ``v2`` are zeroed
+        at the mean mode so the IMM velocity correction produces
+        zero there (continuity forces `$v \equiv 0$` at
         `$k^2 = 0$`).  The zeroing must follow the ``M_inv``
         computation, which uses the original ``v1`` to evaluate
         `$1/M_{00}$`.
@@ -795,10 +806,15 @@ def _get_rhs(
     flow_: CartesianFlow,
 ) -> Array:
     """Evaluate non-linear RHS terms."""
+    bf, cbf = flow_.base_flow, flow_.curl_base_flow
+    if sharding.ny_y_pad:
+        ypad = ((0, 0), (0, sharding.ny_y_pad), (0, 0), (0, 0))
+        bf = jnp.pad(bf, ypad)
+        cbf = jnp.pad(cbf, ypad)
     nonlin = get_nonlin(
         state,
-        flow_.base_flow,
-        flow_.curl_base_flow,
+        bf,
+        cbf,
         spec_to_phys_2d,
         phys_to_spec_2d,
         lambda s: _curl_fn(s, fourier_, flow_),
@@ -922,6 +938,24 @@ def _imm_iteration(
 
     Steps 7--9 are orthogonal projections and do not
     interfere.
+
+    Mathematical equivalence
+    ~~~~~~~~~~~~~~~~~~~~~~~~
+    The IMM is a **Schur-complement (capacitance-matrix)
+    reduction**.  The coupled pressure--velocity system has a
+    `$2 \times 2$` block structure with interior unknowns
+    (`$I$`) and boundary unknowns (`$B$`).  The influence
+    matrix `$M$` is the Schur complement
+    `$S = A_{BB} - A_{BI}\,A_{II}^{-1}\,A_{IB}$`; the
+    homogeneous data (``p1, p2, v1, v2, q1, q2``) are the
+    columns of `$A_{II}^{-1}\,A_{IB}$`.  The correction
+    (stage 6) is a **rank-2 low-rank update** to the particular
+    solution -- the same algebraic structure as the **Woodbury
+    matrix identity** applied to boundary conditions.  The
+    bulk-velocity correction (step 8) is a **rank-1
+    Sherman--Morrison update**.  Cylindrical: same structure
+    with a `$1 \times 1$` Schur complement (one wall at
+    `$r = 1$`).
     """
     c = params.step.implicitness
     dt = params.step.dt

@@ -90,6 +90,21 @@ def _strip_kx(a: Array) -> Array:
     return a[:, :, : a.shape[2] - sharding.nx_spec_pad]
 
 
+def _pad_y(a: Array, out_shard) -> Array:
+    """Append ``ny_y_pad`` zero rows along axis 0 (y)."""
+    pad = jnp.zeros(
+        (sharding.ny_y_pad, a.shape[1], a.shape[2]),
+        dtype=a.dtype,
+        out_sharding=out_shard,
+    )
+    return jnp.concatenate([a, pad], axis=0)
+
+
+def _strip_y(a: Array) -> Array:
+    """Remove the trailing ``ny_y_pad`` rows along axis 0."""
+    return a[: a.shape[0] - sharding.ny_y_pad, :, :]
+
+
 # ── Dealiasing padding / truncation ─────────────────────────
 
 
@@ -252,7 +267,7 @@ def _rfft2d(x: Array) -> Array:
     ----------
     x:
         Real-valued scalar field of shape
-        ``(ny, nz_padded, nx_padded)``, with
+        ``(ny + ny_y_pad, nz_padded, nx_padded)``, with
         ``P(a0, a1, None)`` sharding.
 
     Returns
@@ -307,6 +322,10 @@ def _rfft2d(x: Array) -> Array:
     if sharding.a0 is not None:
         y = reshard(y, spec)
 
+    # Strip y-padding (appended zeros for np0 divisibility).
+    if sharding.ny_y_pad:
+        y = _strip_y(y)
+
     return y
 
 
@@ -329,12 +348,16 @@ def _irfft2d(x: Array) -> Array:
     -------
     :
         Real-valued scalar field of shape
-        ``(ny, nz_padded, nx_padded)`` with
+        ``(ny + ny_y_pad, nz_padded, nx_padded)`` with
         ``P(a0, a1, None)`` sharding.
     """
     phys = sharding._fft_phys_scalar_shard
     mid = sharding._fft_mid_scalar_shard
     spec = sharding._fft_spec_scalar_shard
+
+    # Pad y for np0 divisibility (stripped after forward reshard).
+    if sharding.ny_y_pad:
+        x = _pad_y(x, spec)
 
     # ---- Reshard #2 reverse: kz <-> y (skipped when np0==1) --
     if sharding.a0 is not None:

@@ -104,8 +104,8 @@ class Sharding:
     definition time, so this acts as a module-level singleton
     once ``sharding = Sharding()`` is executed.
 
-    Spectral padding
-    ~~~~~~~~~~~~~~~~
+    Auto-padding for ``np0``
+    ~~~~~~~~~~~~~~~~~~~~~~~
     When the spectral mode count (``nz - 1`` for `$k_z$` or
     ``nx // 2`` for `$k_x$`) is not evenly divisible by the
     corresponding mesh axis (``np0`` or ``np1``), the dimension
@@ -115,15 +115,22 @@ class Sharding:
     ``nz_spec`` and ``nx_spec``.  Padding and stripping are
     handled inside :mod:`dnsjax.fft`.
 
-    Physical dimensions (``ny``, ``ny_padded``, ``nz_padded``)
-    cannot be padded (it would change the FFT size and
-    normalisation), so divisibility by the mesh axis is a hard
-    requirement validated at startup.
+    For the physical `$y$` axis (sharded by ``np0``): for
+    wall-bounded flows, ``ny_y_pad`` zero rows are appended
+    before the `$y \leftrightarrow k_z$` reshard and stripped
+    afterwards (analogous to spectral padding, handled in
+    :mod:`dnsjax.fft`).  For periodic flows, ``ny_padded`` is
+    bumped to the next multiple of ``np0`` (marginally more
+    oversampling, physically neutral).  ``nz_padded``
+    (sharded by ``np1``) is *not* auto-padded: choose ``nz``
+    and ``oversampling_factor`` so that
+    ``nz_padded = oversampling_factor * nz // 2`` is divisible
+    by ``np1``.
     """
 
     np0: int = params.dist.np0
     np1: int = params.dist.np1
-    n_devices: int = params.dist.np
+    n_devices: int = params.dist.np0 * params.dist.np1
     main_device: bool = bool(jax.process_index() == 0)
 
     devices = jax.devices()
@@ -132,7 +139,7 @@ class Sharding:
         if main_device:
             print(
                 f"# of devices visible ({n_devices_reported}) "
-                f"is not equal to np = {n_devices}.",
+                f"is not equal to np0*np1 = {n_devices}.",
                 flush=True,
             )
         sys.exit(1)
@@ -158,30 +165,35 @@ class Sharding:
     a0: str | None = "np0" if np0 > 1 else None
     a1: str | None = "np1" if np1 > 1 else None
 
-    # ── Hard divisibility constraints on physical dims ─────────
+    # ── Physical y-axis padding (auto) ──────────────────────────
     _is_periodic: bool = params.phys.system in periodic_systems
 
+    ny_y_pad: int = 0
     if not _is_periodic and np0 > 1 and params.res.ny % np0 != 0:
-        print(
-            f"Wall-bounded ny={params.res.ny} is not divisible by "
-            f"np0={np0}. Use a tanh grid with power-of-2 ny, or "
-            f"choose np0 to divide ny.",
-            flush=True,
-        )
-        sys.exit(1)
+        _ny_phys: int = _pad_to_multiple(params.res.ny, np0)
+        ny_y_pad = _ny_phys - params.res.ny
+        if main_device:
+            print(
+                f"Physical y padded from {params.res.ny} to "
+                f"{_ny_phys} (+{ny_y_pad} zeros) for np0 "
+                f"divisibility.",
+                flush=True,
+            )
 
     if _is_periodic and np0 > 1:
         _ny_padded_check: int | None = padded_res.ny_padded
         if _ny_padded_check is not None and _ny_padded_check % np0 != 0:
-            print(
-                f"ny_padded={_ny_padded_check} is not divisible by "
-                f"np0={np0}. Choose ny and oversampling_factor so "
-                f"that ny_padded = oversampling_factor * ny // 2 is "
-                f"a multiple of np0.",
-                flush=True,
-            )
-            sys.exit(1)
+            _ny_padded_new: int = _pad_to_multiple(_ny_padded_check, np0)
+            if main_device:
+                print(
+                    f"ny_padded bumped from {_ny_padded_check} to "
+                    f"{_ny_padded_new} for np0 divisibility.",
+                    flush=True,
+                )
+            padded_res.ny_padded = _ny_padded_new
 
+    # nz_padded is not auto-padded: user must choose nz and
+    # oversampling_factor so that nz_padded divides np1.
     if np1 > 1 and padded_res.nz_padded % np1 != 0:
         print(
             f"nz_padded={padded_res.nz_padded} is not divisible by "

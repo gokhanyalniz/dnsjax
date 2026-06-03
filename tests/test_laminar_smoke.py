@@ -19,7 +19,8 @@ Usage (two devices via MPI)::
     uv run python tests/test_laminar_smoke.py --np 2
 
 With ``--np N`` (N > 1), each test invokes
-``mpirun -np N python -m dnsjax --dist.np N ...``.
+``mpirun -np N python -m dnsjax --dist.np0 NP0 --dist.np1 NP1 ...``
+where ``NP0 * NP1 == N``.
 """
 
 from __future__ import annotations
@@ -174,10 +175,10 @@ def _build_command(
         sys.executable,
         "-m",
         "dnsjax",
-        "--dist.np",
-        str(np_count),
         "--dist.np0",
         str(np0),
+        "--dist.np1",
+        str(np_count // np0),
     ]
     return base + system_args
 

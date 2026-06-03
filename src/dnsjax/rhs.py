@@ -107,7 +107,8 @@ def get_nonlin(
     base_flow:
         Base-flow velocity `$\mathbf{U}$` in physical space,
         shape ``(3, ny_phys, 1, 1)`` where ``ny_phys`` is
-        ``ny_padded`` (periodic) or ``ny`` (wall-bounded).
+        ``ny_padded`` (periodic) or ``ny + ny_y_pad``
+        (wall-bounded).
     curl_base_flow:
         `$\nabla \times \mathbf{U}$` in physical space,
         same shape.

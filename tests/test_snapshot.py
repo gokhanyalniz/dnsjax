@@ -165,7 +165,6 @@ def _worker(
     params.res.ny = ny_override if ny_override is not None else NY
     params.res.nz = NZ
     params.res.double_precision = True
-    params.dist.np = npv
     params.dist.np0 = np0
     params.dist.np1 = npv // np0
     params.dist.platform = "cpu"
