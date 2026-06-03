@@ -75,6 +75,18 @@ Write modes (``params.outs.snapshot_write_mode``):
 - ``"serial"``: rank-ordered (token-passing) writes, one process
   at a time, for filesystems such as NFS where concurrent writes
   can corrupt data.  No effect for single-process runs.
+
+Metadata and versioning
+-----------------------
+``_dnsjax_meta.json`` sits alongside the zarr3 store and
+embeds ``t``, ``it``, the on-disk ``layout`` name, the global
+(true, unpadded) shapes, ``wall_normal_grid`` (the
+wall-normal grid points as a float array for wall-bounded
+flows, ``None`` for periodic), and the full
+``params.model_dump()`` for resume validation.
+
+The on-disk format is ``format_version: 2``; version-1
+snapshots are not readable.
 """
 
 import json

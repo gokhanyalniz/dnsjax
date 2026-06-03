@@ -1,12 +1,15 @@
 """Shared spectral utilities: FFT wrappers and wavenumber helpers.
 
 Provides wavenumber generation functions (``real_harmonics``,
-``complex_harmonics``), vmapped FFT wrappers for 3D / 2D transforms,
-and the vector cross product.
+``complex_harmonics``), vmapped FFT wrappers for 3D
+(triply-periodic) and 2D (wall-bounded) transforms, and the
+vector cross product.
 
-Geometry-specific ``Fourier`` dataclasses live in the corresponding
-geometry modules (``geometries.triply_periodic``,
-``geometries.wall_bounded.cartesian``).
+Geometry-specific ``Fourier`` dataclasses live in the
+corresponding geometry modules
+(``geometries.triply_periodic``,
+``geometries.wall_bounded.cartesian``,
+``geometries.wall_bounded.cylindrical``).
 """
 
 from jax import Array, jit, vmap

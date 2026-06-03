@@ -420,6 +420,11 @@ def build_cylindrical_grid(
         Finite-difference stencil half-bandwidth.
     wall_grid:
         Optional path to a custom radial grid file.
+        File format: one coordinate per line in
+        wall-to-interior order (first line = pipe wall
+        `$r = 1$`, last line = closest to centre).
+        All `$r > 0$`; `$r = 0$` is excluded.  The code
+        reverses to ascending order internally.
     grid_type:
         Named grid type (``"cgl"`` or ``"tanh"``).
     grid_stretch:

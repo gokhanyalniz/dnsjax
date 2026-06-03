@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
 """Entry point for the dnsjax DNS solver.
 
-Execution proceeds in two phases:
+Import order
+------------
+JAX platform and distributed backend must be configured
+*before* importing any module that reads ``sharding`` or a
+geometry module, because those modules instantiate global
+singletons (``params``, ``derived_params``, ``sharding``,
+``fourier``) at import time.  This module enforces the
+constraint by deferring ``import jax`` and all flow-module
+imports until after CLI / TOML configuration is applied.
 
-1. **Initialisation** (module level, under ``if __name__ == "__main__"``):
-   parse CLI arguments, load ``parameters.toml`` if present, configure
-   JAX platform and distributed backend, print the final parameter set.
+Execution phases
+----------------
+1. **Initialisation** (module level, ``__main__`` guard):
+   parse CLI arguments, load ``parameters.toml`` if present,
+   configure JAX, print the final parameter set.
 
 2. **Main loop** (:func:`main`):
-   initialise velocity (from laminar or snapshot), then iterate:
+   initialise velocity (from laminar or snapshot), then
+   iterate:
 
    - Fused predictor + corrector loop
      (:func:`predict_and_fully_correct`)
@@ -18,6 +29,27 @@ Execution proceeds in two phases:
 
    The loop terminates when the simulation time, wall-clock
    time, or corrector divergence criterion is reached.
+
+Diagnostics (``stats.dat``)
+---------------------------
+``get_stats`` output is accumulated on-device in a fixed
+``(nstats, n_cols)`` buffer (one row every ``it_stats``
+steps) and flushed to ``stats.dat`` when the buffer fills or
+at shutdown (``_flush_stats``).  Buffering avoids a
+host-device sync per sample.  ``stats.dat`` (written by the
+main device, appended) has a header row of column names
+(``t`` plus the ``get_stats`` keys) followed by
+whitespace-aligned rows at ``stats_precision`` significant
+digits.
+
+Snapshot resume
+---------------
+Loading a zarr3 snapshot directory overrides ``params.init.t0``
+and ``params.init.it0`` from the snapshot metadata.  Legacy
+``.npz`` files go through geometry-specific ``init_state``.
+When the current wall-normal grid differs from the snapshot's,
+``_interpolate_if_needed`` interpolates the state at load time
+(see :mod:`dnsjax.fd` for the interpolation methods).
 
 Benchmarking
 ------------

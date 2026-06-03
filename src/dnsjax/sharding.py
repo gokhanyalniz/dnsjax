@@ -62,6 +62,21 @@ def _pad_to_multiple(n: int, divisor: int) -> int:
 
 
 def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
+    """Register a dataclass as a JAX pytree.
+
+    JAX array fields become tree children (traced / donated /
+    transformed by JAX); string, ``None``, and callable fields
+    are stored as static aux_data (embedded in the trace as
+    constants).
+
+    Used by the geometry base dataclasses
+    (``TriplyPeriodicFlow``, ``CartesianFlow``,
+    ``CylindricalFlow``), their flow subclasses, the
+    geometry-specific ``Fourier`` classes, and the solver
+    dataclasses (``DenseJAXSolver``,
+    ``PerModeBandedOperator``).
+    """
+
     def _tree_flatten(obj: T) -> tuple[tuple[object, ...], dict[str, object]]:
         children: list[object] = []
         aux_data: dict[str, object] = {}
