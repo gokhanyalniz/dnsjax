@@ -2,43 +2,42 @@
 
 Stores the spectral perturbation velocity in zarr3 format as
 **three combined per-component files** (one zarr3 chunk per
-velocity component), each a clean global array with the `$k_x$`
-axis de-interleaved across devices.  Because each file holds the
-full `$k_x$` range, a snapshot can be resumed at **any** device
-count (np-agnostic): on load, every device reads its own `$k_x$`
-sub-range.
+velocity component), each a clean global array with the `$k_z$`
+and `$k_x$` axes de-interleaved across devices.  Only **true**
+(unpadded) spectral modes are stored; zero-padded dummy modes
+added for 2D mesh divisibility are stripped on save and
+re-introduced on load.  Because each file holds the full mode
+range, a snapshot can be resumed at **any** ``(np0, np1)``
+configuration (np-agnostic).
 
 On-disk layout
 --------------
-All layouts store each component as ``D = (A, kx_global, B)``.
-The wall-bounded layout is user-selectable
-(``params.outs.snapshot_layout``); periodic flows always use a
-single native layout.
+All layouts store each component as ``D = (A, kx_true, B)``
+using the true (unpadded) mode counts.  The wall-bounded layout
+is user-selectable (``params.outs.snapshot_layout``); periodic
+flows always use a single native layout.
 
-================  ==================  ===========================
-layout            D = (A, kx, B)      notes
-================  ==================  ===========================
-``wb_native``     ``(kz, kx, y)``     zero-copy slab writes
-``wb_y_major``    ``(y,  kx, kz)``    y slowest -> fast y-reads
-``periodic_native`` ``(kz, kx, ky)``  (no wall-normal grid axis)
-================  ==================  ===========================
+=================  ==================  ==========================
+layout             D = (A, kx, B)      notes
+=================  ==================  ==========================
+``wb_native``      ``(kz, kx, y)``     contiguous slab writes
+``wb_y_major``     ``(y,  kx, kz)``    y slowest -> fast y-reads
+``periodic_native`` ``(kz, kx, ky)``   (no wall-normal grid axis)
+=================  ==================  ==========================
 
 Memory
 ------
 GPU memory is never doubled.  The field is streamed to disk one
-``(local_kx, len(B))`` slab at a time; a full-array transpose is
-never materialised.
+slab at a time; a full-array transpose is never materialised.
 
 **Definitions** (per device, beyond the resident state;
 multiply by ``itemsize`` -- 16 for complex128, 8 for complex64
 -- for bytes):
 
-- *slab*: ``N_x / (2·np) × len(B)`` complex elements, where
+- *slab*: ``N_x / (2·np1) × len(B)`` complex elements, where
   ``len(B)`` is ``N_y`` (``wb_native``), ``N_z - 1``
   (``wb_y_major``), or ``N_y - 1`` (``periodic_native``).
-- *component*: one velocity component on one device =
-  ``(N_z - 1) × N_x / (2·np) × N_y`` (wall-bounded) or
-  ``(N_y - 1) × (N_z - 1) × N_x / (2·np)`` (periodic).
+- *component*: one velocity component on one device.
 - *shard*: all three components on one device =
   ``3 × component``.
 
@@ -114,6 +113,66 @@ def _is_periodic() -> bool:
     return params.phys.system in periodic_systems
 
 
+def _kz_true() -> int:
+    """True `$k_z$` mode count (unpadded)."""
+    return params.res.nz - 1
+
+
+def _kx_true() -> int:
+    """True `$k_x$` mode count (unpadded)."""
+    return params.res.nx // 2
+
+
+def _true_spec_shape() -> tuple[int, ...]:
+    """Unpadded spectral shape (what goes on disk)."""
+    if _is_periodic():
+        return (params.res.ny - 1, _kz_true(), _kx_true())
+    return (_kz_true(), _kx_true(), params.res.ny)
+
+
+def _device_ranges(
+    flat_idx: int,
+) -> tuple[int, int, int, int]:
+    r"""True `$k_z$` and `$k_x$` ranges for a device.
+
+    Parameters
+    ----------
+    flat_idx:
+        Flat index in ``mesh.devices.flat`` (row-major,
+        ``i0 * np1 + i1``).
+
+    Returns
+    -------
+    kz_start:
+        First true `$k_z$` mode owned by the device.
+    local_kz_true:
+        Number of true `$k_z$` modes (may be fewer than
+        the padded count on the last np0-block device).
+    kx_start:
+        First true `$k_x$` mode owned by the device.
+    local_kx_true:
+        Number of true `$k_x$` modes.
+    """
+    i0 = flat_idx // sharding.np1
+    i1 = flat_idx % sharding.np1
+    local_kz_pad = sharding.nz_spec // sharding.np0
+    kz_start = i0 * local_kz_pad
+    kz_true = _kz_true()
+    local_kz_true = max(0, min(kz_start + local_kz_pad, kz_true) - kz_start)
+    local_kx_pad = sharding.nx_spec // sharding.np1
+    kx_start = i1 * local_kx_pad
+    kx_true = _kx_true()
+    local_kx_true = max(0, min(kx_start + local_kx_pad, kx_true) - kx_start)
+    return kz_start, local_kz_true, kx_start, local_kx_true
+
+
+def _strip_padding(comp, local_kz_true: int, local_kx_true: int):
+    """Slice padding modes off a local component array."""
+    if _is_periodic():
+        return comp[:, :local_kz_true, :local_kx_true]
+    return comp[:local_kz_true, :local_kx_true, :]
+
+
 # ── Layout descriptors ────────────────────────────────────
 #
 # A slab is a contiguous ``(local_kx, b_size)`` block in on-disk
@@ -173,33 +232,38 @@ class _Layout(NamedTuple):
 
 
 def _layout() -> _Layout:
-    """Layout to write, from geometry + ``snapshot_layout``."""
-    spec = sharding.spec_shape
+    """Layout to write, from geometry + ``snapshot_layout``.
+
+    All dimensions use **true** (unpadded) mode counts so that
+    on-disk snapshots never contain dummy padding modes.
+    """
+    kx = _kx_true()
+    kz = _kz_true()
     if _is_periodic():
-        # spec = (ky, kz, kx)
+        ky = params.res.ny - 1
         return _Layout(
             "periodic_native",
-            spec[1],
-            spec[0],
-            spec[2],
+            kz,
+            ky,
+            kx,
             _extract_periodic_native,
             _place_periodic_native,
         )
-    # spec = (kz, kx, y)
+    ny = params.res.ny
     if params.outs.snapshot_layout == "native":
         return _Layout(
             "wb_native",
-            spec[0],
-            spec[2],
-            spec[1],
+            kz,
+            ny,
+            kx,
             _extract_wb_native,
             _place_wb_native,
         )
     return _Layout(
         "wb_y_major",
-        spec[2],
-        spec[0],
-        spec[1],
+        ny,
+        kz,
+        kx,
         _extract_wb_y_major,
         _place_wb_y_major,
     )
@@ -216,32 +280,33 @@ def _layout_from_meta(meta: dict) -> _Layout:
 # ── Geometry / shape helpers ──────────────────────────────
 
 
-def _kx_axis_in_component() -> int:
-    """kx axis within a single-component native array."""
-    return 2 if _is_periodic() else 1
+def _padded_local_shape() -> tuple[int, ...]:
+    """Padded per-device vector shape for the current mesh.
 
-
-def _native_local_shape(local_kx: int) -> tuple[int, ...]:
-    """Native vector-shard shape for a device owning ``local_kx``
-    streamwise modes (the result of a load)."""
-    spec = list(sharding.spec_shape)
-    spec[_kx_axis_in_component()] = local_kx
-    return (3, *spec)
-
-
-def _native_local_shape_from_meta(
-    meta: dict, local_kx: int
-) -> tuple[int, ...]:
-    """Native vector-shard shape using the **snapshot's** shape.
-
-    Used when loading a snapshot whose wall-normal resolution
-    (``ny``) differs from the current run.
+    Used for allocating load buffers.  Each axis that is
+    sharded (``kz`` by ``np0``, ``kx`` by ``np1``) is divided
+    by its mesh axis size; unsharded axes keep their full
+    (potentially padded) extent.
     """
-    native = meta["native_shape"]
-    spec = list(native[1:])  # drop leading 3
-    ax = 2 if meta.get("geometry") == "triply_periodic" else 1
-    spec[ax] = local_kx
-    return (3, *spec)
+    local_kz = sharding.nz_spec // sharding.np0
+    local_kx = sharding.nx_spec // sharding.np1
+    if _is_periodic():
+        return (3, params.res.ny - 1, local_kz, local_kx)
+    return (3, local_kz, local_kx, params.res.ny)
+
+
+def _padded_local_shape_snap_ny(snap_ny: int) -> tuple[int, ...]:
+    """Padded per-device shape with the *snapshot's* ``ny``.
+
+    Used when loading a wall-bounded snapshot whose ``ny``
+    differs from the current run.  ``kz`` and ``kx`` use the
+    current mesh padding; ``ny`` comes from the snapshot.
+    """
+    local_kz = sharding.nz_spec // sharding.np0
+    local_kx = sharding.nx_spec // sharding.np1
+    if _is_periodic():
+        return (3, snap_ny - 1, local_kz, local_kx)
+    return (3, local_kz, local_kx, snap_ny)
 
 
 def _shard_device_index(shard) -> int:
@@ -278,6 +343,19 @@ def _slab_offset(layout: _Layout, i: int, kx_start: int) -> int:
     """Element offset of slab ``i`` for a device whose kx block
     starts at ``kx_start`` in the combined component file."""
     return (i * layout.kx_global + kx_start) * layout.b_size
+
+
+def _place_into_padded(comp_buf, li: int, slab, nkx: int) -> None:
+    r"""Place a true-sized slab into a padded component buffer.
+
+    ``slab`` has shape ``(nkx, b_size)`` (true modes only).
+    ``comp_buf`` has the padded local shape; ``li`` is the local
+    `$k_z$` slab index.
+    """
+    if _is_periodic():
+        comp_buf[:, li, :nkx] = slab.T
+    else:
+        comp_buf[li, :nkx, :] = slab
 
 
 # ── Barrier ───────────────────────────────────────────────
@@ -361,7 +439,7 @@ def _write_metadata(path: Path, t: float, it: int, layout: _Layout) -> None:
             layout.kx_global,
             layout.b_size,
         ],
-        "native_shape": [3, *sharding.spec_shape],
+        "native_shape": [3, *_true_spec_shape()],
         "dtype": _zarr3_dtype_name(),
         "n_devices": sharding.n_devices,
         "wall_normal_grid": derived_params.wall_normal_grid,
@@ -387,19 +465,32 @@ def _write_chunks_gds(
     import cupy as cp
     import kvikio
 
-    local_kx = layout.kx_global // sharding.n_devices
+    is_y_major = layout.name == "wb_y_major"
     for shard in state.addressable_shards:
+        flat_idx = _shard_device_index(shard)
+        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
+        if nkz == 0 or nkx == 0:
+            continue
         cp_vec = cp.from_dlpack(shard.data)
-        kx_start = _shard_device_index(shard) * local_kx
         with cp_vec.device:
             for comp in range(3):
-                comp_arr = cp_vec[comp]
+                comp_true = _strip_padding(cp_vec[comp], nkz, nkx)
                 chunk_path = _chunk_file(store_path, comp)
                 with kvikio.CuFile(str(chunk_path), "r+") as f:
-                    for i in range(layout.a_size):
-                        slab = layout.extract(comp_arr, i, cp)
-                        off = _slab_offset(layout, i, kx_start)
-                        f.write(slab, file_offset=off * itemsize)
+                    if is_y_major:
+                        for i in range(layout.a_size):
+                            slab = layout.extract(comp_true, i, cp)
+                            for lkx in range(nkx):
+                                row = cp.ascontiguousarray(slab[lkx])
+                                off = (
+                                    i * layout.kx_global + kx_start + lkx
+                                ) * layout.b_size + kz_start
+                                f.write(row, file_offset=off * itemsize)
+                    else:
+                        for li in range(nkz):
+                            slab = layout.extract(comp_true, li, cp)
+                            off = _slab_offset(layout, kz_start + li, kx_start)
+                            f.write(slab, file_offset=off * itemsize)
 
 
 def _read_chunks_gds(
@@ -408,29 +499,46 @@ def _read_chunks_gds(
     dtype: np.dtype,
     local_shape: tuple[int, ...] | None = None,
 ) -> list[Array]:
-    """Read each device's kx sub-range via kvikIO into a native
-    vector shard (np-agnostic)."""
+    r"""Read each device's `$k_z$`/`$k_x$` sub-range via kvikIO
+    into a padded vector shard (np-agnostic)."""
     import cupy as cp
     import kvikio
 
-    local_kx = layout.kx_global // sharding.n_devices
     itemsize = dtype.itemsize
     if local_shape is None:
-        local_shape = _native_local_shape(local_kx)
+        local_shape = _padded_local_shape()
+    is_y_major = layout.name == "wb_y_major"
     per_device: list[Array] = []
     for local_idx, device in enumerate(jax.local_devices()):
-        kx_start = _mesh_device_index(device) * local_kx
+        flat_idx = _mesh_device_index(device)
+        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
         with cp.cuda.Device(local_idx):
-            vec = cp.empty(local_shape, dtype=dtype)
-            slab = cp.empty((local_kx, layout.b_size), dtype=dtype)
-            for comp in range(3):
-                comp_buf = vec[comp]
-                chunk_path = _chunk_file(store_path, comp)
-                with kvikio.CuFile(str(chunk_path), "r") as f:
-                    for i in range(layout.a_size):
-                        off = _slab_offset(layout, i, kx_start)
-                        f.read(slab, file_offset=off * itemsize)
-                        layout.place(comp_buf, i, slab)
+            vec = cp.zeros(local_shape, dtype=dtype)
+            if nkz > 0 and nkx > 0:
+                for comp in range(3):
+                    comp_buf = vec[comp]
+                    chunk_path = _chunk_file(store_path, comp)
+                    with kvikio.CuFile(str(chunk_path), "r") as f:
+                        if is_y_major:
+                            row_gpu = cp.empty(nkz, dtype=dtype)
+                            for i in range(layout.a_size):
+                                for lkx in range(nkx):
+                                    off = (
+                                        i * layout.kx_global + kx_start + lkx
+                                    ) * layout.b_size + kz_start
+                                    f.read(
+                                        row_gpu,
+                                        file_offset=off * itemsize,
+                                    )
+                                    comp_buf[:nkz, lkx, i] = row_gpu
+                        else:
+                            slab = cp.empty((nkx, layout.b_size), dtype=dtype)
+                            for li in range(nkz):
+                                off = _slab_offset(
+                                    layout, kz_start + li, kx_start
+                                )
+                                f.read(slab, file_offset=off * itemsize)
+                                _place_into_padded(comp_buf, li, slab, nkx)
             per_device.append(jnp.from_dlpack(vec))
     return per_device
 
@@ -478,13 +586,16 @@ def _write_chunks_host(
     is copied with ``np.asarray`` and slabs are extracted on the
     host (extra host memory: one shard per device).
     """
-    local_kx = layout.kx_global // sharding.n_devices
+    is_y_major = layout.name == "wb_y_major"
     try:
         import cupy as cp
     except ImportError:
         cp = None
     for shard in state.addressable_shards:
-        kx_start = _shard_device_index(shard) * local_kx
+        flat_idx = _shard_device_index(shard)
+        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
+        if nkz == 0 or nkx == 0:
+            continue
         if cp is not None:
             try:
                 vec = cp.from_dlpack(shard.data)
@@ -495,17 +606,31 @@ def _write_chunks_host(
             vec = np.asarray(shard.data)
             xp = np
         for comp in range(3):
-            comp_arr = vec[comp]
+            comp_true = _strip_padding(vec[comp], nkz, nkx)
             chunk_path = _chunk_file(store_path, comp)
             with open(chunk_path, "r+b") as f:
-                for i in range(layout.a_size):
-                    slab = layout.extract(comp_arr, i, xp)
-                    off = _slab_offset(layout, i, kx_start)
-                    f.seek(off * itemsize)
-                    if cp is not None:
-                        f.write(cp.asnumpy(slab))
-                    else:
-                        f.write(slab)
+                if is_y_major:
+                    for i in range(layout.a_size):
+                        slab = layout.extract(comp_true, i, xp)
+                        for lkx in range(nkx):
+                            row = xp.ascontiguousarray(slab[lkx])
+                            off = (
+                                i * layout.kx_global + kx_start + lkx
+                            ) * layout.b_size + kz_start
+                            f.seek(off * itemsize)
+                            if cp is not None:
+                                f.write(cp.asnumpy(row))
+                            else:
+                                f.write(row)
+                else:
+                    for li in range(nkz):
+                        slab = layout.extract(comp_true, li, xp)
+                        off = _slab_offset(layout, kz_start + li, kx_start)
+                        f.seek(off * itemsize)
+                        if cp is not None:
+                            f.write(cp.asnumpy(slab))
+                        else:
+                            f.write(slab)
 
 
 def _read_chunks_host(
@@ -514,8 +639,8 @@ def _read_chunks_host(
     dtype: np.dtype,
     local_shape: tuple[int, ...] | None = None,
 ) -> list[Array]:
-    """Read each device's kx sub-range via host I/O into a native
-    vector shard (np-agnostic).
+    r"""Read each device's `$k_z$`/`$k_x$` sub-range via host I/O
+    into a padded vector shard (np-agnostic).
 
     When cupy is available (NVIDIA GPU platforms), the output
     buffer and a reusable slab buffer are allocated on GPU; each
@@ -526,54 +651,104 @@ def _read_chunks_host(
     and transferred at the end via ``jax.device_put`` (extra host
     memory: one shard per device).
     """
-    local_kx = layout.kx_global // sharding.n_devices
     itemsize = dtype.itemsize
-    slab_bytes = local_kx * layout.b_size * itemsize
     if local_shape is None:
-        local_shape = _native_local_shape(local_kx)
+        local_shape = _padded_local_shape()
+    is_y_major = layout.name == "wb_y_major"
     try:
         import cupy as cp
     except ImportError:
         cp = None
     per_device: list[Array] = []
     for local_idx, device in enumerate(jax.local_devices()):
-        kx_start = _mesh_device_index(device) * local_kx
+        flat_idx = _mesh_device_index(device)
+        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
         if cp is not None:
             try:
                 with cp.cuda.Device(local_idx):
-                    vec = cp.empty(local_shape, dtype=dtype)
-                    slab_gpu = cp.empty((local_kx, layout.b_size), dtype=dtype)
-                    for comp in range(3):
-                        comp_buf = vec[comp]
-                        chunk_path = _chunk_file(store_path, comp)
-                        with open(chunk_path, "rb") as f:
-                            for i in range(layout.a_size):
-                                off = _slab_offset(layout, i, kx_start)
-                                f.seek(off * itemsize)
-                                raw = f.read(slab_bytes)
-                                slab_gpu.set(
-                                    np.frombuffer(raw, dtype=dtype).reshape(
-                                        local_kx, layout.b_size
-                                    )
-                                )
-                                layout.place(comp_buf, i, slab_gpu)
+                    vec = cp.zeros(local_shape, dtype=dtype)
+                    if nkz > 0 and nkx > 0:
+                        if is_y_major:
+                            row_gpu = cp.empty(nkz, dtype=dtype)
+                            for comp in range(3):
+                                comp_buf = vec[comp]
+                                chunk_path = _chunk_file(store_path, comp)
+                                with open(chunk_path, "rb") as f:
+                                    for i in range(layout.a_size):
+                                        for lkx in range(nkx):
+                                            off = (
+                                                i * layout.kx_global
+                                                + kx_start
+                                                + lkx
+                                            ) * layout.b_size + kz_start
+                                            f.seek(off * itemsize)
+                                            raw = f.read(nkz * itemsize)
+                                            row_gpu.set(
+                                                np.frombuffer(raw, dtype=dtype)
+                                            )
+                                            comp_buf[:nkz, lkx, i] = row_gpu
+                        else:
+                            slab_bytes = nkx * layout.b_size * itemsize
+                            slab_gpu = cp.empty(
+                                (nkx, layout.b_size), dtype=dtype
+                            )
+                            for comp in range(3):
+                                comp_buf = vec[comp]
+                                chunk_path = _chunk_file(store_path, comp)
+                                with open(chunk_path, "rb") as f:
+                                    for li in range(nkz):
+                                        off = _slab_offset(
+                                            layout,
+                                            kz_start + li,
+                                            kx_start,
+                                        )
+                                        f.seek(off * itemsize)
+                                        raw = f.read(slab_bytes)
+                                        slab_gpu.set(
+                                            np.frombuffer(
+                                                raw, dtype=dtype
+                                            ).reshape(nkx, layout.b_size)
+                                        )
+                                        _place_into_padded(
+                                            comp_buf,
+                                            li,
+                                            slab_gpu,
+                                            nkx,
+                                        )
                     per_device.append(jnp.from_dlpack(vec))
                 continue
             except Exception:
                 cp = None
-        vec = np.empty(local_shape, dtype=dtype)
-        for comp in range(3):
-            comp_buf = vec[comp]
-            chunk_path = _chunk_file(store_path, comp)
-            with open(chunk_path, "rb") as f:
-                for i in range(layout.a_size):
-                    off = _slab_offset(layout, i, kx_start)
-                    f.seek(off * itemsize)
-                    raw = f.read(slab_bytes)
-                    slab = np.frombuffer(raw, dtype=dtype).reshape(
-                        local_kx, layout.b_size
-                    )
-                    layout.place(comp_buf, i, slab)
+        vec = np.zeros(local_shape, dtype=dtype)
+        if nkz > 0 and nkx > 0:
+            if is_y_major:
+                for comp in range(3):
+                    comp_buf = vec[comp]
+                    chunk_path = _chunk_file(store_path, comp)
+                    with open(chunk_path, "rb") as f:
+                        for i in range(layout.a_size):
+                            for lkx in range(nkx):
+                                off = (
+                                    i * layout.kx_global + kx_start + lkx
+                                ) * layout.b_size + kz_start
+                                f.seek(off * itemsize)
+                                raw = f.read(nkz * itemsize)
+                                row = np.frombuffer(raw, dtype=dtype)
+                                comp_buf[:nkz, lkx, i] = row
+            else:
+                slab_bytes = nkx * layout.b_size * itemsize
+                for comp in range(3):
+                    comp_buf = vec[comp]
+                    chunk_path = _chunk_file(store_path, comp)
+                    with open(chunk_path, "rb") as f:
+                        for li in range(nkz):
+                            off = _slab_offset(layout, kz_start + li, kx_start)
+                            f.seek(off * itemsize)
+                            raw = f.read(slab_bytes)
+                            slab = np.frombuffer(raw, dtype=dtype).reshape(
+                                nkx, layout.b_size
+                            )
+                            _place_into_padded(comp_buf, li, slab, nkx)
         per_device.append(jax.device_put(vec, device))
     return per_device
 
@@ -636,9 +811,9 @@ def load_snapshot(
 ) -> tuple[Array, float, int]:
     r"""Load a spectral state from a zarr3 snapshot.
 
-    Each current device reads its own `$k_x$` sub-range, so a
-    snapshot can be resumed at any device count.  No full-array
-    inverse transpose is performed.
+    Each current device reads its own `$k_z$`/`$k_x$` sub-range,
+    so a snapshot can be resumed at any ``(np0, np1)``
+    configuration.  No full-array inverse transpose is performed.
 
     Parameters
     ----------
@@ -660,17 +835,33 @@ def load_snapshot(
     layout = _layout_from_meta(meta)
     dtype = _np_dtype(meta["dtype"])
 
-    # When the snapshot's ny differs from the current run,
-    # allocate read buffers at the snapshot's ny.
+    # Detect ny mismatch (wall-bounded only).
     snap_native = tuple(meta["native_shape"])
-    curr_native = (3, *sharding.spec_shape)
-    local_kx = layout.kx_global // sharding.n_devices
-    if snap_native != curr_native:
-        local_shape: tuple[int, ...] | None = _native_local_shape_from_meta(
-            meta, local_kx
+    curr_true = (3, *_true_spec_shape())
+    ny_mismatch = snap_native != curr_true
+
+    if ny_mismatch:
+        snap_ny = meta["params"]["res"]["ny"]
+        local_shape: tuple[int, ...] | None = _padded_local_shape_snap_ny(
+            snap_ny
         )
+        if _is_periodic():
+            assembly_shape = (
+                3,
+                snap_ny - 1,
+                sharding.nz_spec,
+                sharding.nx_spec,
+            )
+        else:
+            assembly_shape = (
+                3,
+                sharding.nz_spec,
+                sharding.nx_spec,
+                snap_ny,
+            )
     else:
-        local_shape = None  # default path
+        local_shape = None
+        assembly_shape = (3, *sharding.spec_shape)
 
     store_path = path / "state"
     if _gds_available():
@@ -680,7 +871,7 @@ def load_snapshot(
         per_device = _read_chunks_host(store_path, layout, dtype, local_shape)
 
     state = jax.make_array_from_single_device_arrays(
-        snap_native,
+        assembly_shape,
         NamedSharding(sharding.mesh, sharding.spec_vector_shard),
         per_device,
     )
@@ -787,7 +978,7 @@ def validate_snapshot_params(
             )
 
     native = meta.get("native_shape")
-    expected = [3, *sharding.spec_shape]
+    expected = [3, *_true_spec_shape()]
     if native is not None and list(native) != expected:
         if _is_periodic():
             raise SnapshotMismatchError(
@@ -807,13 +998,6 @@ def validate_snapshot_params(
         sharding.print(
             f"Info: ny changed: {snap_ny} -> {curr_ny} "
             f"(will interpolate wall-normal grid)"
-        )
-
-    kx_global = params.res.nx // 2
-    if kx_global % sharding.n_devices != 0:
-        raise SnapshotMismatchError(
-            f"kx extent {kx_global} is not divisible by the current "
-            f"device count np={sharding.n_devices}"
         )
 
     # Warnings
@@ -843,5 +1027,6 @@ def validate_snapshot_params(
     if snap_np is not None and snap_np != sharding.n_devices:
         sharding.print(
             f"Info: device count {snap_np} -> {sharding.n_devices} "
-            f"(np-agnostic resume)"
+            f"(np0={sharding.np0}, np1={sharding.np1}; "
+            f"np-agnostic resume)"
         )

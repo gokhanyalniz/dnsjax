@@ -19,6 +19,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
+from jax.sharding import PartitionSpec as P
 
 from ...fd import (
     build_diff_matrices,
@@ -58,17 +59,21 @@ from ._base import (
 @register_dataclass_pytree
 @dataclass
 class Fourier:
-    """Wavenumber grids for the Cartesian wall-bounded geometry.
+    r"""Wavenumber grids for the Cartesian wall-bounded geometry.
 
     Broadcasting shapes match the spectral layout
-    ``(Nkz, Nkx, Ny)``.
+    ``(nz_spec, nx_spec, ny)``.  When ``nz_spec > nz - 1``
+    or ``nx_spec > nx // 2`` (spectral padding for 2D
+    divisibility), the extra trailing entries are zero.
 
     Attributes
     ----------
     kx:
-        Streamwise wavenumber, shape ``(1, nx//2, 1)``.
+        Streamwise wavenumber, shape ``(1, nx_spec, 1)``,
+        sharded on `$k_x$` (``np1``).
     kz:
-        Spanwise wavenumber, shape ``(nz-1, 1, 1)``.
+        Spanwise wavenumber, shape ``(nz_spec, 1, 1)``,
+        sharded on `$k_z$` (``np0``).
     k_metric:
         Hermitian-symmetry weight: 2 for `$k_x > 0$`,
         1 for `$k_x = 0$`.
@@ -86,15 +91,28 @@ class Fourier:
     k2_is_zero: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        kx_vals = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
+        kx_true = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
+        if sharding.nx_spec_pad:
+            kx_vals = jnp.concatenate(
+                [kx_true, jnp.zeros(sharding.nx_spec_pad)]
+            )
+        else:
+            kx_vals = kx_true
         self.kx = jax.device_put(
             kx_vals.reshape([1, -1, 1]).astype(sharding.float_type),
-            sharding.spec_scalar_shard,
+            P(None, sharding.a1, None),
         )
-        kz_vals = complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
+
+        kz_true = complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
+        if sharding.nz_spec_pad:
+            kz_vals = jnp.concatenate(
+                [kz_true, jnp.zeros(sharding.nz_spec_pad)]
+            )
+        else:
+            kz_vals = kz_true
         self.kz = jax.device_put(
             kz_vals.reshape([-1, 1, 1]).astype(sharding.float_type),
-            sharding.no_shard,
+            P(sharding.a0, None, None),
         )
 
         self.k_metric = jnp.where(self.kx == 0, 1, 2).astype(
@@ -553,8 +571,8 @@ class CartesianFlow:
         self.D1_bnd = jax.device_put(D1[[0, -1], :], sharding.no_shard)
         self.D2_bnd = jax.device_put(D2[[0, -1], :], sharding.no_shard)
 
-        Nkz = params.res.nz - 1
-        Nkx = params.res.nx // 2
+        Nkz = sharding.nz_spec
+        Nkx = sharding.nx_spec
         Ny = params.res.ny
 
         p = params.res.fd_order
@@ -603,22 +621,33 @@ class CartesianFlow:
     def _derive_imm_homogeneous_data(
         self, Nkz: int, Nkx: int, Ny: int
     ) -> None:
-        """Fill ``p1..q2`` and ``M_inv`` on-device from the GPU operator.
+        r"""Fill ``p1..q2`` and ``M_inv`` from the factored
+        GPU operator.
 
-        Both backends converge here once :attr:`Lk_op` and :attr:`Hk_op`
-        are in place.  Nothing else on the CPU needs to do another LU
-        solve — everything below runs against the already-factored
-        device operator.
+        Both backends converge here once :attr:`Lk_op` and
+        :attr:`Hk_op` are in place.  Nothing else on the CPU
+        needs to do another LU solve -- everything below runs
+        against the already-factored device operator.
 
-        The mean mode (`$k^2 = 0$`) is handled analytically: ``M`` has a
-        zero second column there (`$p_2 \\equiv 1$` is a pressure gauge),
-        so the 2x2 inverse is replaced by `$[[1/M_{00}, 0], [0, 0]]$`.
-        The ``jnp.where`` around ``safe_det`` keeps the regular branch
-        NaN-free before the selection happens.
+        In Schur-complement notation, the arrays
+        ``p1, p2, v1, v2, q1, q2`` are the columns of
+        `$A_{II}^{-1}\,A_{IB}$` (the interior-to-boundary
+        coupling through the factored interior operator), and
+        ``M_inv`` is `$S^{-1}$` where `$S$` is the `$2 \times
+        2$` Schur complement (influence / capacitance matrix).
+        See :func:`_imm_iteration` for the full context.
 
-        After ``M_inv`` is built, ``v1`` and ``v2`` are zeroed at
-        the mean mode so the IMM velocity correction produces
-        zero there (continuity forces `$v \\equiv 0$` at
+        The mean mode (`$k^2 = 0$`) is handled analytically:
+        ``M`` has a zero second column there
+        (`$p_2 \equiv 1$` is a pressure gauge), so the
+        `$2 \times 2$` inverse is replaced by
+        `$[[1/M_{00}, 0], [0, 0]]$`.  The ``jnp.where``
+        around ``safe_det`` keeps the regular branch NaN-free
+        before the selection happens.
+
+        After ``M_inv`` is built, ``v1`` and ``v2`` are zeroed
+        at the mean mode so the IMM velocity correction produces
+        zero there (continuity forces `$v \equiv 0$` at
         `$k^2 = 0$`).  The zeroing must follow the ``M_inv``
         computation, which uses the original ``v1`` to evaluate
         `$1/M_{00}$`.
@@ -777,10 +806,15 @@ def _get_rhs(
     flow_: CartesianFlow,
 ) -> Array:
     """Evaluate non-linear RHS terms."""
+    bf, cbf = flow_.base_flow, flow_.curl_base_flow
+    if sharding.ny_y_pad:
+        ypad = ((0, 0), (0, sharding.ny_y_pad), (0, 0), (0, 0))
+        bf = jnp.pad(bf, ypad)
+        cbf = jnp.pad(cbf, ypad)
     nonlin = get_nonlin(
         state,
-        flow_.base_flow,
-        flow_.curl_base_flow,
+        bf,
+        cbf,
         spec_to_phys_2d,
         phys_to_spec_2d,
         lambda s: _curl_fn(s, fourier_, flow_),
@@ -904,6 +938,24 @@ def _imm_iteration(
 
     Steps 7--9 are orthogonal projections and do not
     interfere.
+
+    Mathematical equivalence
+    ~~~~~~~~~~~~~~~~~~~~~~~~
+    The IMM is a **Schur-complement (capacitance-matrix)
+    reduction**.  The coupled pressure--velocity system has a
+    `$2 \times 2$` block structure with interior unknowns
+    (`$I$`) and boundary unknowns (`$B$`).  The influence
+    matrix `$M$` is the Schur complement
+    `$S = A_{BB} - A_{BI}\,A_{II}^{-1}\,A_{IB}$`; the
+    homogeneous data (``p1, p2, v1, v2, q1, q2``) are the
+    columns of `$A_{II}^{-1}\,A_{IB}$`.  The correction
+    (stage 6) is a **rank-2 low-rank update** to the particular
+    solution -- the same algebraic structure as the **Woodbury
+    matrix identity** applied to boundary conditions.  The
+    bulk-velocity correction (step 8) is a **rank-1
+    Sherman--Morrison update**.  Cylindrical: same structure
+    with a `$1 \times 1$` Schur complement (one wall at
+    `$r = 1$`).
     """
     c = params.step.implicitness
     dt = params.step.dt

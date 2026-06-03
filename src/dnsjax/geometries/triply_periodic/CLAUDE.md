@@ -21,7 +21,18 @@ Subclasses must set `base_flow` and `curl_base_flow` after calling `super().__po
 
 - Helmholtz inversion is algebraic (pointwise multiply by `$ildt\_2 = (1/\Delta t - c\,\nabla^2/\mathrm{Re})^{-1}$` where `$c$` is the implicitness parameter) -- no matrix solves or LU factorisations
 - Divergence correction is a separate post-step projection (not built into an IMM)
-- Spectral layout: `(ny-1, nz-1, nx//2)`, sharded on last axis (kx)
+- Spectral layout: `(ny-1, nz_spec, nx_spec)` with `[ky, kz, kx]` -- ky fully local, kz sharded by np0, kx sharded by np1. With `np0=1`, collapses to the original 1D scheme (only kx distributed).
+
+### Parallelization (double decomposition)
+
+The 3D FFT uses the same two-reshard pipeline as the wall-bounded 2D FFT, with an additional y-FFT step:
+
+- Forward: x-FFT -> [reshard #1: z<->kx] -> z-FFT -> [reshard #2: y<->kz] -> y-FFT
+- Physical `(y_np0, z_np1, x)` -> spectral `(ky, kz_np0, kx_np1)`
+
+After reshard #2, the full y-extent becomes local on each device, enabling the y-FFT on the full extent. The output ky axis is fully local; kz is sharded by np0; kx is sharded by np1. Wall-bounded keeps y in grid-point space throughout (no y-FFT); triply-periodic adds the y-FFT after reshard #2 brings y local. The two reshard operations handle the same z<->kx and y<->kz exchanges regardless of geometry.
+
+`np0` requires `ny_padded` (= `oversampling_factor * ny // 2`) to be divisible; if not, `ny_padded` is automatically bumped to the next multiple (marginally more oversampling, physically neutral).
 
 ### Pressure projection
 
