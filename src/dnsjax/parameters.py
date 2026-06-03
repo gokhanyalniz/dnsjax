@@ -27,9 +27,47 @@ ns_to_s: float = 10 ** (-9)  # nanoseconds to seconds
 
 
 class Distribution(BaseModel):
-    """Device distribution and backend platform."""
+    r"""Device distribution and backend platform.
 
-    np: int = Field(ge=1, default=1)
+    The total device count is ``np0 * np1``.  Both default
+    to 1 (single device).
+
+    Double parallelisation
+    ----------------------
+    ``np0`` splits the wall-normal axis (`$y$` / `$r$`) in
+    physical space and the spanwise-wavenumber axis
+    (`$k_z$` / `$m$`) in spectral space.  ``np1`` splits
+    the spanwise axis (`$z$`) in physical space and the
+    streamwise-wavenumber axis (`$k_x$`) in spectral space.
+    Each device holds the full wall-normal extent in spectral
+    space, so FD / SPIKE solves are unchanged.
+
+    When ``np0 == 1`` (default), the decomposition collapses
+    to the original 1D scheme (only `$k_x$` / `$z$`
+    distributed).
+
+    Divisibility
+    ------------
+    ``np1`` requires ``nz_padded % np1 == 0`` (where
+    ``nz_padded = oversampling_factor * nz // 2``).
+    ``np0`` auto-pads when needed: the spectral `$k_z$`
+    axis is zero-padded to the next multiple of ``np0``;
+    for wall-bounded flows the physical `$y$` axis is
+    likewise zero-padded (stripped after the
+    `$y \leftrightarrow k_z$` reshard); for periodic flows
+    ``ny_padded`` is bumped to the next multiple of ``np0``
+    (marginally more oversampling, physically neutral).
+    Power-of-2 ``ny`` avoids the padding overhead.  Note
+    that CGL grids traditionally use ``ny = 2^k + 1``
+    (``N + 1`` collocation points for ``N`` Chebyshev
+    polynomials), but any ``ny >= 2`` is valid: the code
+    uses finite differences, not spectral Chebyshev
+    transforms, and the Clenshaw--Curtis quadrature handles
+    both even and odd ``ny``.
+    """
+
+    np0: int = Field(ge=1, default=1)
+    np1: int = Field(ge=1, default=1)
     platform: Literal["cpu", "cuda", "rocm", "tpu"] = "cpu"
 
 
