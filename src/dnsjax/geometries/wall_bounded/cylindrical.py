@@ -975,8 +975,8 @@ class CylindricalFlow:
         m_is_even_v = 1.0 - fourier.m_is_even  # opposite
 
         if params.solver.backend == "banded":
-            P_blk, m_blk = validate_spike_partition(Nr, fd_p, "Nr")
             bt = params.solver.block_thomas
+            P_blk, m_blk = validate_spike_partition(Nr, fd_p, "Nr", bt)
 
             # Lk
             Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(

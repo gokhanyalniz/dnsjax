@@ -134,6 +134,7 @@ def main() -> None:
         total_bytes = block_bytes + reduced_bytes + spike_bytes
 
         cost_per_mode = Ny * Ny / P + 4.0 * P * P * p * p
+        cost_bt = Ny * Ny / P + 4.0 * P * p * p
         ai = (2.0 / 3.0) * m / bpe
 
         import math
@@ -143,6 +144,7 @@ def main() -> None:
                 "P": P,
                 "m": m,
                 "cost": cost_per_mode,
+                "cost_bt": cost_bt,
                 "block": block_bytes,
                 "reduced": reduced_bytes,
                 "spike": spike_bytes,
@@ -158,13 +160,23 @@ def main() -> None:
         print("No valid SPIKE partitions for these parameters.")
         sys.exit(1)
 
-    # Find memory-optimal (excluding P=1).
+    # Find memory-optimal (excluding P=1): dense reduced cost.
     valid_spike = [r for r in rows if r["P"] >= 2]
     if valid_spike:
-        best_total = min(r["total"] for r in valid_spike)
-        best_P = next(r["P"] for r in valid_spike if r["total"] == best_total)
+        best_cost_dense = min(r["cost"] for r in valid_spike)
+        best_P = next(
+            r["P"] for r in valid_spike if r["cost"] == best_cost_dense
+        )
     else:
         best_P = 1
+
+    # Find memory-optimal under block-Thomas cost model.
+    best_bt_P = None
+    if valid_spike:
+        best_cost_bt = min(r["cost_bt"] for r in valid_spike)
+        best_bt_P = next(
+            r["P"] for r in valid_spike if r["cost_bt"] == best_cost_bt
+        )
 
     # Speed-optimal: minimise serial depth ceil(m/p) + P.
     speed_P = None
@@ -194,6 +206,8 @@ def main() -> None:
     for r in rows:
         if r["P"] == best_P:
             marker = ">>>"
+        elif best_bt_P and r["P"] == best_bt_P and best_bt_P != best_P:
+            marker = "bt>"
         elif banded and speed_P and r["P"] == speed_P:
             marker = " v "
         else:
@@ -230,9 +244,14 @@ def main() -> None:
 
     print()
     if best_P >= 2:
-        print(f">>> = memory-optimal default (P={best_P})")
+        print(f">>> = dense-reduced optimal (P={best_P}, block_thomas=False)")
     else:
         print("    Only P=1 (single block) is valid for this Ny and p.")
+    if best_bt_P and best_bt_P != best_P:
+        print(
+            f"bt> = block-Thomas optimal (P={best_bt_P},"
+            f" block_thomas=True, default)"
+        )
     if banded and speed_P and speed_P != best_P:
         print(
             f" v  = speed-optimal (P={speed_P},"
