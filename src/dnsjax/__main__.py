@@ -159,22 +159,22 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         T_p_jax = jnp.asarray(T_p, dtype=state.dtype)
         T_v_jax = jnp.asarray(T_v, dtype=state.dtype)
 
-        # state shape: (3, Nm, Nkz, Nr_old)
-        s0 = jnp.einsum("mij, mkj -> mki", T_p_jax, state[0])
-        s1 = jnp.einsum("mij, mkj -> mki", T_v_jax, state[1])
-        s2 = jnp.einsum("mij, mkj -> mki", T_v_jax, state[2])
+        # state shape: (3, Nr_old, Nm, Nkz)
+        s0 = jnp.einsum("mij, jmk -> imk", T_p_jax, state[0])
+        s1 = jnp.einsum("mij, jmk -> imk", T_v_jax, state[1])
+        s2 = jnp.einsum("mij, jmk -> imk", T_v_jax, state[2])
         state = jnp.stack([s0, s1, s2])
     else:
         T_jax = jnp.asarray(T, dtype=state.dtype)
-        # state shape: (3, kz, kx, ny_old)
-        state = jnp.einsum("ij, ...j -> ...i", T_jax, state)
+        # state shape: (3, ny_old, kz, kx)
+        state = jnp.einsum("ij, cjzx -> cizx", T_jax, state)
 
     # Enforce wall boundary conditions.
     if geometry == "cartesian":
-        state = state.at[..., 0].set(0.0)
-        state = state.at[..., -1].set(0.0)
+        state = state.at[:, 0].set(0.0)
+        state = state.at[:, -1].set(0.0)
     else:
-        state = state.at[..., -1].set(0.0)
+        state = state.at[:, -1].set(0.0)
 
     sharding.print(
         "Interpolated wall-normal grid; first corrector step "

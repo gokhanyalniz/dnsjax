@@ -223,8 +223,8 @@ def test_abase_matvec_matches_dense() -> None:
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
     rng = np.random.default_rng(10)
-    u_np = rng.standard_normal((Nm, Nkz, Nr)) + 1j * rng.standard_normal(
-        (Nm, Nkz, Nr)
+    u_np = rng.standard_normal((Nr, Nm, Nkz)) + 1j * rng.standard_normal(
+        (Nr, Nm, Nkz)
     )
     u = jnp.asarray(u_np)
 
@@ -232,9 +232,9 @@ def test_abase_matvec_matches_dense() -> None:
         ("even", 1.0, A_even),
         ("odd", -1.0, A_odd),
     ]:
-        parity_sign = jnp.full((Nm, 1, 1), parity_val)
+        parity_sign = jnp.full((1, Nm, 1), parity_val)
         got = np.asarray(_abase_matvec(u, flow_, parity_sign))
-        ref = np.einsum("ij, mzj -> mzi", A_ref, u_np)
+        ref = np.einsum("ij, jmz -> imz", A_ref, u_np)
         assert_allclose(
             got,
             ref,
@@ -259,8 +259,8 @@ def test_lk_matvec_matches_reference() -> None:
     Nm = len(m_vals)
     Nkz = len(kz_vals)
     rng = np.random.default_rng(60)
-    u_np = rng.standard_normal((Nm, Nkz, Nr)) + 1j * rng.standard_normal(
-        (Nm, Nkz, Nr)
+    u_np = rng.standard_normal((Nr, Nm, Nkz)) + 1j * rng.standard_normal(
+        (Nr, Nm, Nkz)
     )
 
     # Reference: build Lk per mode and apply.
@@ -275,11 +275,11 @@ def test_lk_matvec_matches_reference() -> None:
                 D1_wall_row,
                 inv_r2,
             )
-            ref[mi, ki] = Lk @ u_np[mi, ki]
+            ref[:, mi, ki] = Lk @ u_np[:, mi, ki]
 
     u = jax.device_put(
         jnp.asarray(u_np),
-        sharding.spec_imm_corr_shard,
+        sharding.spec_scalar_shard,
     )
     got = np.asarray(_lk_matvec(u, pipe_flow, fourier))
     assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
@@ -291,12 +291,18 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
     p = params.res.fd_order
     P_blk, m_blk = validate_spike_partition(Nr, p, "Nr")
 
-    m_is_even_p = fourier.m_is_even
-    m_is_even_v = 1.0 - fourier.m_is_even
+    # Solver-internal shapes from field-layout fourier arrays.
+    m_s = fourier.m[0, ..., None]
+    kz2_s = fourier.kz2[0, ..., None]
+    k2z_s = fourier.k2_is_zero[0, ..., None]
+    m_is_even_s = fourier.m_is_even[0, ..., None]
 
-    m_sq = fourier.m2
-    m_plus_1_sq = (fourier.m + 1) ** 2
-    m_minus_1_sq = (fourier.m - 1) ** 2
+    m_is_even_p = m_is_even_s
+    m_is_even_v = 1.0 - m_is_even_s
+
+    m_sq = m_s**2
+    m_plus_1_sq = (m_s + 1) ** 2
+    m_minus_1_sq = (m_s - 1) ** 2
 
     dt = params.step.dt
     c = params.step.implicitness
@@ -305,8 +311,8 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
     A_even = pipe_flow.A_base_even
     A_odd = pipe_flow.A_base_odd
     inv_r2 = pipe_flow.inv_r2
-    kz2 = fourier.kz2
-    k2_is_zero = fourier.k2_is_zero
+    kz2 = kz2_s
+    k2_is_zero = k2z_s
     D1_wall = pipe_flow.D1_wall.ravel()
 
     Nm = params.res.nz - 1
@@ -470,7 +476,7 @@ def test_get_norm2_cyl() -> None:
     Nr = params.res.ny
 
     rng = np.random.default_rng(80)
-    s_shape = (3, Nm, Nkz, Nr)
+    s_shape = (3, Nr, Nm, Nkz)
     state_np = rng.standard_normal(s_shape) + 1j * rng.standard_normal(s_shape)
     state = jnp.asarray(state_np)
 
