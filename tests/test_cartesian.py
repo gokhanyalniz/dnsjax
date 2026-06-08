@@ -104,25 +104,27 @@ def test_spike_vs_dense_on_cartesian_operators() -> None:
     dt, c, nu = 0.01, 0.5, 1.0 / 1000.0
     P_opt, m_opt = _choose_block_partition(Ny, p)
 
+    # Solver-internal (Nkz, Nkx, 1) from field-layout (1, Nkz, Nkx).
+    k2_s = fourier.k2[0, ..., None]
+    k2z_s = fourier.k2_is_zero[0, ..., None]
+
     # SPIKE path.
     Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-        D1, D2, fourier.k2, fourier.k2_is_zero, p, P_opt, m_opt
+        D1, D2, k2_s, k2z_s, p, P_opt, m_opt
     )
     Lk_banded = _spike_factor(Lk_A, Lk_B, Lk_C)
 
     Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
-        D2, fourier.k2, dt, c, nu, p, P_opt, m_opt
+        D2, k2_s, dt, c, nu, p, P_opt, m_opt
     )
     Hk_banded = _spike_factor(Hk_A, Hk_B, Hk_C)
 
     # Dense path (reference).
-    Lk_dense = DenseJAXSolver(
-        _build_Lk_dense_gpu(D1, D2, fourier.k2, fourier.k2_is_zero)
-    )
-    Hk_dense = DenseJAXSolver(_build_Hk_dense_gpu(D2, fourier.k2, dt, c, nu))
+    Lk_dense = DenseJAXSolver(_build_Lk_dense_gpu(D1, D2, k2_s, k2z_s))
+    Hk_dense = DenseJAXSolver(_build_Hk_dense_gpu(D2, k2_s, dt, c, nu))
 
     # Solve same complex RHS with both backends.
-    Nkz, Nkx = int(fourier.k2.shape[0]), int(fourier.k2.shape[1])
+    Nkz, Nkx = int(fourier.k2.shape[1]), int(fourier.k2.shape[2])
     rng = np.random.default_rng(20)
     b = rng.standard_normal((Nkz, Nkx, Ny)) + 1j * rng.standard_normal(
         (Nkz, Nkx, Ny)
@@ -153,12 +155,12 @@ def test_lk_matvec_matches_reference() -> None:
         u = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
         ref = Lk @ u
 
-        u_j = jnp.asarray(u)[None, None, :]
+        u_j = jnp.asarray(u)[:, None, None]
         fourier_ = SimpleNamespace(
             k2=jnp.asarray([[[k2_val]]]),
             k2_is_zero=jnp.asarray([[[k2_val]]]) == 0.0,
         )
-        got = np.asarray(_lk_matvec(u_j, flow_, fourier_))[0, 0]
+        got = np.asarray(_lk_matvec(u_j, flow_, fourier_))[:, 0, 0]
         assert_allclose(
             got,
             ref,
@@ -186,9 +188,9 @@ def test_hk_minus_matvec_matches_reference() -> None:
         u = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
         ref = Hk_minus @ u
 
-        u_j = jnp.asarray(u)[None, None, :]
+        u_j = jnp.asarray(u)[:, None, None]
         fourier_ = SimpleNamespace(k2=jnp.asarray([[[k2_val]]]))
-        got = np.asarray(_hk_minus_matvec(u_j, flow_, fourier_))[0, 0]
+        got = np.asarray(_hk_minus_matvec(u_j, flow_, fourier_))[:, 0, 0]
         assert_allclose(
             got,
             ref,
@@ -214,12 +216,12 @@ def test_lk_matvec_on_custom_grid() -> None:
         u = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
         ref = Lk @ u
 
-        u_j = jnp.asarray(u)[None, None, :]
+        u_j = jnp.asarray(u)[:, None, None]
         fourier_ = SimpleNamespace(
             k2=jnp.asarray([[[k2_val]]]),
             k2_is_zero=jnp.asarray([[[k2_val]]]) == 0.0,
         )
-        got = np.asarray(_lk_matvec(u_j, flow_, fourier_))[0, 0]
+        got = np.asarray(_lk_matvec(u_j, flow_, fourier_))[:, 0, 0]
         assert_allclose(
             got,
             ref,

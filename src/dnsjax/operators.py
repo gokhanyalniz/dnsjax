@@ -125,10 +125,10 @@ if sharding.np0 > 1:
         -------
         :
             Spectral field of shape
-            ``(C, nz_spec, nx_spec, ny)`` in
-            ``[kz, kx, y]`` layout.
+            ``(C, ny, nz_spec, nx_spec)`` in
+            ``[y, kz, kx]`` layout.
         """
-        return vmap(_rfft2d)(velocity_phys).transpose(0, 2, 3, 1)
+        return vmap(_rfft2d)(velocity_phys)
 
     @jit
     def spec_to_phys_2d(velocity_spec: Array) -> Array:
@@ -139,8 +139,8 @@ if sharding.np0 > 1:
         ----------
         velocity_spec:
             Spectral field of shape
-            ``(C, nz_spec, nx_spec, ny)`` in
-            ``[kz, kx, y]`` layout.
+            ``(C, ny, nz_spec, nx_spec)`` in
+            ``[y, kz, kx]`` layout.
 
         Returns
         -------
@@ -149,7 +149,7 @@ if sharding.np0 > 1:
             ``(C, ny + ny_y_pad, nz_padded, nx_padded)``
             in ``[y, z, x]`` layout.
         """
-        return vmap(_irfft2d)(velocity_spec.transpose(0, 3, 1, 2))
+        return vmap(_irfft2d)(velocity_spec)
 
 else:
     # np0 == 1: y is replicated, so merging the component axis
@@ -175,15 +175,13 @@ else:
         -------
         :
             Spectral field of shape
-            ``(C, nz_spec, nx_spec, ny)`` in
-            ``[kz, kx, y]`` layout.
+            ``(C, ny, nz_spec, nx_spec)`` in
+            ``[y, kz, kx]`` layout.
         """
         C, ny = velocity_phys.shape[0], velocity_phys.shape[1]
         flat = velocity_phys.reshape(C * ny, *velocity_phys.shape[2:])
         spec_flat = _rfft2d(flat)
-        return spec_flat.reshape(C, ny, *spec_flat.shape[1:]).transpose(
-            0, 2, 3, 1
-        )
+        return spec_flat.reshape(C, ny, *spec_flat.shape[1:])
 
     @jit
     def spec_to_phys_2d(velocity_spec: Array) -> Array:
@@ -198,8 +196,8 @@ else:
         ----------
         velocity_spec:
             Spectral field of shape
-            ``(C, nz_spec, nx_spec, ny)`` in
-            ``[kz, kx, y]`` layout.
+            ``(C, ny, nz_spec, nx_spec)`` in
+            ``[y, kz, kx]`` layout.
 
         Returns
         -------
@@ -208,10 +206,8 @@ else:
             ``(C, ny, nz_padded, nx_padded)`` in
             ``[y, z, x]`` layout.
         """
-        C, ny = velocity_spec.shape[0], velocity_spec.shape[-1]
-        flat = velocity_spec.transpose(0, 3, 1, 2).reshape(
-            C * ny, *velocity_spec.shape[1:3]
-        )
+        C, ny = velocity_spec.shape[0], velocity_spec.shape[1]
+        flat = velocity_spec.reshape(C * ny, *velocity_spec.shape[2:])
         phys_flat = _irfft2d(flat)
         return phys_flat.reshape(C, ny, *phys_flat.shape[1:])
 

@@ -33,7 +33,7 @@ def extract_mean_mode(state: Array) -> Array:
     r"""Extract the mean Fourier mode from a spectral state.
 
     Given a wall-bounded spectral state of shape
-    ``(C, N_{k_z}, N_{k_x}, N_y)`` where `$k_z$` is sharded
+    ``(C, N_y, N_{k_z}, N_{k_x})`` where `$k_z$` is sharded
     by ``np0`` and `$k_x$` by ``np1``, returns the
     `$k_z = k_x = 0$` mode of shape ``(C, N_y)`` in
     `$O(N_y)$` work per device via ``shard_map`` + ``psum``.
@@ -41,7 +41,7 @@ def extract_mean_mode(state: Array) -> Array:
     Parameters
     ----------
     state:
-        Shape ``(C, N_{k_z}, N_{k_x}, N_y)``.
+        Shape ``(C, N_y, N_{k_z}, N_{k_x})``.
 
     Returns
     -------
@@ -50,7 +50,7 @@ def extract_mean_mode(state: Array) -> Array:
     """
 
     def _local(shard: Array) -> Array:
-        first = shard[:, 0, 0, :]
+        first = shard[:, :, 0, 0]
         is_source = (lax.axis_index("np0") == 0) & (lax.axis_index("np1") == 0)
         return lax.psum(
             jnp.where(is_source, first, jnp.zeros_like(first)),
@@ -103,7 +103,7 @@ def get_inprod(
     ----------
     vector_spec_1, vector_spec_2:
         Spectral velocity fields, shape
-        ``(C, N_mode1, N_mode2, N_wall)``.
+        ``(C, N_wall, N_mode1, N_mode2)``.
     k_metric:
         Hermitian-symmetry weight for the real FFT axis.
     y_weights:
@@ -113,7 +113,7 @@ def get_inprod(
         integrate_scalar(
             jnp.sum(
                 jnp.conj(vector_spec_1) * k_metric * vector_spec_2,
-                axis=(0, 1, 2),
+                axis=(0, 2, 3),
             ).real,
             y_weights,
         )
@@ -160,18 +160,18 @@ def get_pert_enstrophy(
     Parameters
     ----------
     state:
-        Spectral velocity, shape ``(3, Nkz, Nkx, Ny)``.
+        Spectral velocity, shape ``(3, Ny, Nkz, Nkx)``.
     D1:
         First-derivative FD matrix, shape ``(Ny, Ny)``.
     k2:
-        `$k_x^2 + k_z^2$`, shape ``(Nkz, Nkx, 1)``.
+        `$k_x^2 + k_z^2$`, shape ``(1, Nkz, Nkx)``.
     k_metric:
         Hermitian-symmetry weight for the real FFT axis.
     y_weights:
         Quadrature weights for wall-normal integration.
     """
     horiz = get_norm2(state, k2 * k_metric, y_weights)
-    dy_state = jnp.einsum("ij, czxj -> czxi", D1, state)
+    dy_state = jnp.einsum("ij, cjzx -> cizx", D1, state)
     wall_normal = get_norm2(dy_state, k_metric, y_weights)
     return horiz + wall_normal
 

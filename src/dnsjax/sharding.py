@@ -34,7 +34,7 @@ with axes ``[y, z, x]``.  ``y`` is sharded by ``np0``, ``z`` by
 Spectral arrays have shape
 
 - ``(ny-1, nz_spec, nx_spec)`` ``[ky, kz, kx]`` for triply-periodic,
-- ``(nz_spec, nx_spec, ny)`` ``[kz, kx, y]`` for wall-bounded.
+- ``(ny, nz_spec, nx_spec)`` ``[y, kz, kx]`` for wall-bounded.
 
 ``kz`` is sharded by ``np0``, ``kx`` by ``np1``, and ``y`` / ``ky``
 are local.  ``nz_spec`` and ``nx_spec`` may exceed the true mode
@@ -256,10 +256,10 @@ class Sharding:
         spec_vector_shard = P(None, None, a0, a1)
         spec_scalar_shard = P(None, a0, a1)
     else:
-        # Spectral layout [kz, kx, y]:
-        # kz by np0, kx by np1, y fully local.
-        spec_vector_shard = P(None, a0, a1, None)
-        spec_scalar_shard = P(a0, a1, None)
+        # Spectral layout [y, kz, kx]:
+        # y fully local, kz by np0, kx by np1.
+        spec_vector_shard = P(None, None, a0, a1)
+        spec_scalar_shard = P(None, a0, a1)
 
     # ── Physical partition specs ──────────────────────────────
     # [y, z, x] or [C, y, z, x]:
@@ -303,11 +303,11 @@ class Sharding:
         )
         scalar_mean_mode: tuple[slice, ...] = tuple([slice(0, 1)] * 3)
     else:
-        # Spectral [kz, kx, y] — y is unpadded (not sharded).
+        # Spectral [y, kz, kx] — y is unpadded (not sharded).
         spec_shape = (
+            params.res.ny,
             nz_spec,
             nx_spec,
-            params.res.ny,
         )
         # Physical [y, z, x]
         phys_shape = (
@@ -316,10 +316,10 @@ class Sharding:
             padded_res.nx_padded,
         )
         vector_mean_mode: tuple[slice, ...] = tuple(
-            [slice(None)] + [slice(0, 1)] * 2 + [slice(None)]
+            [slice(None)] * 2 + [slice(0, 1)] * 2
         )
         scalar_mean_mode: tuple[slice, ...] = tuple(
-            [slice(0, 1)] * 2 + [slice(None)]
+            [slice(None)] + [slice(0, 1)] * 2
         )
 
     def exit(self, code: int = 1) -> None:

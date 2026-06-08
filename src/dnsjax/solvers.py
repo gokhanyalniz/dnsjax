@@ -454,12 +454,12 @@ def _spike_memory_per_mode(
     r"""Per-mode SPIKE storage estimate.
 
     Block LU factors dominate at `$N_y^2 / P$`.  The reduced-system
-    cost is `$O(P p^2)$` for block-Thomas or `$O(P^2 p^2)$` for
-    the dense reduced path.
+    cost is `$(3P{-}2) \cdot 4 p^2$` for block-Thomas or
+    `$4 P^2 p^2$` for the dense reduced path.
     """
     block_cost = Ny * Ny / P
     if block_thomas:
-        return block_cost + 4 * P * p * p
+        return block_cost + (3 * P - 2) * 4 * p * p
     return block_cost + 4 * P * P * p * p
 
 

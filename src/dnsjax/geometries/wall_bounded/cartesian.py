@@ -62,17 +62,17 @@ class Fourier:
     r"""Wavenumber grids for the Cartesian wall-bounded geometry.
 
     Broadcasting shapes match the spectral layout
-    ``(nz_spec, nx_spec, ny)``.  When ``nz_spec > nz - 1``
+    ``(ny, nz_spec, nx_spec)``.  When ``nz_spec > nz - 1``
     or ``nx_spec > nx // 2`` (spectral padding for 2D
     divisibility), the extra trailing entries are zero.
 
     Attributes
     ----------
     kx:
-        Streamwise wavenumber, shape ``(1, nx_spec, 1)``,
+        Streamwise wavenumber, shape ``(1, 1, nx_spec)``,
         sharded on `$k_x$` (``np1``).
     kz:
-        Spanwise wavenumber, shape ``(nz_spec, 1, 1)``,
+        Spanwise wavenumber, shape ``(1, nz_spec, 1)``,
         sharded on `$k_z$` (``np0``).
     k_metric:
         Hermitian-symmetry weight: 2 for `$k_x > 0$`,
@@ -99,8 +99,8 @@ class Fourier:
         else:
             kx_vals = kx_true
         self.kx = jax.device_put(
-            kx_vals.reshape([1, -1, 1]).astype(sharding.float_type),
-            P(None, sharding.a1, None),
+            kx_vals.reshape([1, 1, -1]).astype(sharding.float_type),
+            P(None, None, sharding.a1),
         )
 
         kz_true = complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
@@ -111,8 +111,8 @@ class Fourier:
         else:
             kz_vals = kz_true
         self.kz = jax.device_put(
-            kz_vals.reshape([-1, 1, 1]).astype(sharding.float_type),
-            P(sharding.a0, None, None),
+            kz_vals.reshape([1, -1, 1]).astype(sharding.float_type),
+            P(None, sharding.a0, None),
         )
 
         self.k_metric = jnp.where(self.kx == 0, 1, 2).astype(
@@ -587,21 +587,25 @@ class CartesianFlow:
         c = params.step.implicitness
         nu = 1.0 / params.phys.re
 
+        # Solver-internal wavenumber arrays: (Nkz, Nkx, 1).
+        k2_s = fourier.k2[0, ..., None]
+        k2z_s = fourier.k2_is_zero[0, ..., None]
+
         if params.solver.backend == "banded":
             bt = params.solver.block_thomas
             P_blk, m_blk = validate_spike_partition(Ny, p, "Ny", bt)
             Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
                 self.D1,
                 self.D2,
-                fourier.k2,
-                fourier.k2_is_zero,
+                k2_s,
+                k2z_s,
                 p,
                 P_blk,
                 m_blk,
             )
             Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
                 self.D2,
-                fourier.k2,
+                k2_s,
                 dt,
                 c,
                 nu,
@@ -615,10 +619,8 @@ class CartesianFlow:
             # Dense backend: parity/reference path.  Full
             # `(Nkz, Nkx, Ny, Ny)` matrices are built, LU-factored,
             # then discarded — only the factors are kept.
-            Lk_dense = _build_Lk_dense_gpu(
-                self.D1, self.D2, fourier.k2, fourier.k2_is_zero
-            )
-            Hk_dense = _build_Hk_dense_gpu(self.D2, fourier.k2, dt, c, nu)
+            Lk_dense = _build_Lk_dense_gpu(self.D1, self.D2, k2_s, k2z_s)
+            Hk_dense = _build_Hk_dense_gpu(self.D2, k2_s, dt, c, nu)
             self.Lk_op = DenseJAXSolver(Lk_dense)
             self.Hk_op = DenseJAXSolver(Hk_dense)
 
@@ -659,7 +661,8 @@ class CartesianFlow:
         computation, which uses the original ``v1`` to evaluate
         `$1/M_{00}$`.
         """
-        # Homogeneous pressure solutions `$L_k p_i = e_i$`.
+        # All solver work uses (Nkz, Nkx, Ny) layout; results
+        # are transposed to field layout (Ny, Nkz, Nkx) at the end.
         e1_b = (
             jnp.zeros(
                 (Nkz, Nkx, Ny),
@@ -678,32 +681,28 @@ class CartesianFlow:
             .at[..., -1]
             .set(1.0)
         )
-        self.p1 = self.Lk_op.solve(e1_b)
-        self.p2 = self.Lk_op.solve(e2_b)
+        p1_s = self.Lk_op.solve(e1_b)
+        p2_s = self.Lk_op.solve(e2_b)
 
-        # Homogeneous velocity solutions `$v_i = H_k^{-1} (-D_1 p_i)$`
-        # with zero Dirichlet BCs (no-slip).
-        rhs_v1 = -jnp.einsum("ij, zxj -> zxi", self.D1, self.p1)
-        rhs_v2 = -jnp.einsum("ij, zxj -> zxi", self.D1, self.p2)
+        rhs_v1 = -jnp.einsum("ij, zxj -> zxi", self.D1, p1_s)
+        rhs_v2 = -jnp.einsum("ij, zxj -> zxi", self.D1, p2_s)
         rhs_v1 = rhs_v1.at[..., 0].set(0.0).at[..., -1].set(0.0)
         rhs_v2 = rhs_v2.at[..., 0].set(0.0).at[..., -1].set(0.0)
-        self.v1 = self.Hk_op.solve(rhs_v1)
-        self.v2 = self.Hk_op.solve(rhs_v2)
+        v1_s = self.Hk_op.solve(rhs_v1)
+        v2_s = self.Hk_op.solve(rhs_v2)
 
-        # Homogeneous velocity potentials `$q_i = H_k^{-1} p_i$` with
-        # zero Dirichlet BCs.
-        q_rhs1 = self.p1.at[..., 0].set(0.0).at[..., -1].set(0.0)
-        q_rhs2 = self.p2.at[..., 0].set(0.0).at[..., -1].set(0.0)
-        self.q1 = self.Hk_op.solve(q_rhs1)
-        self.q2 = self.Hk_op.solve(q_rhs2)
+        q_rhs1 = p1_s.at[..., 0].set(0.0).at[..., -1].set(0.0)
+        q_rhs2 = p2_s.at[..., 0].set(0.0).at[..., -1].set(0.0)
+        q1_s = self.Hk_op.solve(q_rhs1)
+        q2_s = self.Hk_op.solve(q_rhs2)
 
         # Influence matrix `$M_{ji} = (D_1 v_i)|_{\\text{wall}_j}$`.
-        M00 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], self.v1)
-        M01 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], self.v2)
-        M10 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], self.v1)
-        M11 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], self.v2)
+        M00 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], v1_s)
+        M01 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], v2_s)
+        M10 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], v1_s)
+        M11 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], v2_s)
 
-        is_mean = fourier.k2_is_zero[..., 0]
+        is_mean = fourier.k2_is_zero[0]
         det = M00 * M11 - M01 * M10
         safe_det = jnp.where(is_mean, 1.0, det)
         inv_00 = jnp.where(is_mean, 1.0 / M00, M11 / safe_det)
@@ -717,6 +716,14 @@ class CartesianFlow:
             ],
             axis=-2,
         )
+
+        # Transpose to field layout (Ny, Nkz, Nkx).
+        self.p1 = p1_s.transpose(2, 0, 1)
+        self.p2 = p2_s.transpose(2, 0, 1)
+        self.v1 = v1_s.transpose(2, 0, 1)
+        self.v2 = v2_s.transpose(2, 0, 1)
+        self.q1 = q1_s.transpose(2, 0, 1)
+        self.q2 = q2_s.transpose(2, 0, 1)
 
         # Zero homogeneous wall-normal velocity at the mean mode.
         self.v1 = jnp.where(fourier.k2_is_zero, 0.0, self.v1)
@@ -760,6 +767,7 @@ class CartesianFlow:
             return
 
         # Unit uniform RHS at the mean mode only, zero wall BCs.
+        # Solver-internal layout (Nkz, Nkx, Ny).
         ones_vec = (
             jnp.ones(Ny, dtype=sharding.float_type)
             .at[0]
@@ -767,12 +775,12 @@ class CartesianFlow:
             .at[-1]
             .set(0.0)
         )
-        rhs = jnp.where(fourier.k2_is_zero, ones_vec, 0.0)
+        rhs = jnp.where(fourier.k2_is_zero[0, ..., None], ones_vec, 0.0)
 
         h_full = self.Hk_op.solve(rhs)
 
         self.h_bulk_response = jax.device_put(
-            extract_mean_mode(h_full[None])[0],
+            extract_mean_mode(h_full.transpose(2, 0, 1)[None])[0],
             sharding.no_shard,
         )
         H_bulk = jnp.dot(self.y_weights, self.h_bulk_response) / 2
@@ -792,7 +800,7 @@ def _curl_fn(
 
     # Stack (u, w) so the two D1 y-derivatives needed for the curl
     # are one batched GEMM rather than two separate kernel launches.
-    dy_uw = jnp.einsum("ij, czxj -> czxi", flow_.D1, jnp.stack([u, w]))
+    dy_uw = jnp.einsum("ij, cjzx -> cizx", flow_.D1, jnp.stack([u, w]))
     dy_u, dy_w = dy_uw[0], dy_uw[1]
 
     dx_v = 1j * fourier_.kx * v
@@ -846,18 +854,18 @@ def _lk_matvec(
     Parameters
     ----------
     u:
-        Field, shape ``(Nkz, Nkx, Ny)``.
+        Field, shape ``(Ny, Nkz, Nkx)``.
     flow\_:
         Cartesian flow data (uses ``D2``, ``D1_bnd``).
     fourier\_:
         Wavenumber grids (uses ``k2``, ``k2_is_zero``).
     """
-    D2u = jnp.einsum("ij, zxj -> zxi", flow_.D2, u)
+    D2u = jnp.einsum("ij, jzx -> izx", flow_.D2, u)
     out = D2u - fourier_.k2 * u
-    bot = jnp.einsum("j, zxj -> zx", flow_.D1_bnd[0], u)
-    top_neumann = jnp.einsum("j, zxj -> zx", flow_.D1_bnd[-1], u)
-    top = jnp.where(fourier_.k2_is_zero[..., 0], u[..., -1], top_neumann)
-    return out.at[..., 0].set(bot).at[..., -1].set(top)
+    bot = jnp.einsum("j, jzx -> zx", flow_.D1_bnd[0], u)
+    top_neumann = jnp.einsum("j, jzx -> zx", flow_.D1_bnd[-1], u)
+    top = jnp.where(fourier_.k2_is_zero[0], u[-1], top_neumann)
+    return out.at[0].set(bot).at[-1].set(top)
 
 
 def _hk_minus_matvec(
@@ -876,7 +884,7 @@ def _hk_minus_matvec(
     Parameters
     ----------
     u:
-        Field, shape ``(Nkz, Nkx, Ny)``.
+        Field, shape ``(Ny, Nkz, Nkx)``.
     flow\_:
         Cartesian flow data (uses ``D2``).
     fourier\_:
@@ -885,9 +893,9 @@ def _hk_minus_matvec(
     dt = params.step.dt
     c = params.step.implicitness
     nu = 1.0 / params.phys.re
-    D2u = jnp.einsum("ij, zxj -> zxi", flow_.D2, u)
+    D2u = jnp.einsum("ij, jzx -> izx", flow_.D2, u)
     out = (1.0 / dt) * u + (1.0 - c) * nu * (D2u - fourier_.k2 * u)
-    return out.at[..., 0].set(u[..., 0]).at[..., -1].set(u[..., -1])
+    return out.at[0].set(u[0]).at[-1].set(u[-1])
 
 
 def _imm_iteration(
@@ -980,7 +988,7 @@ def _imm_iteration(
 
     # Batch the three D1 y-derivatives into one GEMM.
     dy_stack = jnp.einsum(
-        "ij, czxj -> czxi",
+        "ij, cjzx -> cizx",
         flow_.D1,
         jnp.stack([v_n, Nv_j, Nv_n]),
     )
@@ -998,8 +1006,8 @@ def _imm_iteration(
     f_hat = d_hat_n / dt + c * div_Nj + (1 - c) * div_Nn + (1 - c) * nu * Lk_d
 
     # Stage 2: particular pressure with ZERO Neumann BCs.
-    f_hat_P = f_hat.at[..., 0].set(0.0).at[..., -1].set(0.0)
-    pP = flow_.Lk_op.solve(f_hat_P)
+    f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
+    pP = flow_.Lk_op.solve(f_hat_P.transpose(1, 2, 0)).transpose(2, 0, 1)
 
     # Stage 3: Helmholtz solves for all three velocity components
     # against the particular pressure p_P (zero Dirichlet BCs).  The
@@ -1008,9 +1016,9 @@ def _imm_iteration(
     # solve are all batched over the component axis — one kernel
     # launch each instead of three sequential ones.
     dx_pP = ikx * pP
-    dy_pP = jnp.einsum("ij, zxj -> zxi", flow_.D1, pP)
+    dy_pP = jnp.einsum("ij, jzx -> izx", flow_.D1, pP)
     dz_pP = ikz * pP
-    grad_pP = jnp.stack([dx_pP, dy_pP, dz_pP])  # (3, Nkz, Nkx, Ny)
+    grad_pP = jnp.stack([dx_pP, dy_pP, dz_pP])  # (3, Ny, Nkz, Nkx)
 
     Hk_minus_stack = jax.vmap(
         _hk_minus_matvec,
@@ -1018,28 +1026,30 @@ def _imm_iteration(
     )(velocity_n, flow_, fourier_)
 
     R_stack = Hk_minus_stack - grad_pP + c * nonlin_j + (1 - c) * nonlin_n
-    R_stack = R_stack.at[..., 0].set(0.0).at[..., -1].set(0.0)
+    R_stack = R_stack.at[:, 0].set(0.0).at[:, -1].set(0.0)
 
     # Zero v-component RHS at the mean mode so the Helmholtz
     # solve itself returns v = 0 there.
     R_stack = R_stack.at[1].set(jnp.where(k2_is_zero, 0.0, R_stack[1]))
 
-    arb_stack = flow_.Hk_op.solve(R_stack)
+    arb_stack = flow_.Hk_op.solve(R_stack.transpose(0, 2, 3, 1)).transpose(
+        0, 3, 1, 2
+    )
     u_arb, v_arb, w_arb = arb_stack[0], arb_stack[1], arb_stack[2]
 
     # Stage 4: wall divergence residual. At walls u=w=0 (no-slip),
     # so div u|_wall = D1 v|_wall.
-    d_wall = jnp.einsum("bj, zxj -> zxb", flow_.D1_bnd, v_arb)
+    d_wall = jnp.einsum("bj, jzx -> zxb", flow_.D1_bnd, v_arb)
 
     # Mean mode (k²=0) top-wall residual is a pressure gauge; zero it.
     d_wall = d_wall.at[..., 1].set(
-        jnp.where(k2_is_zero[..., 0], 0.0, d_wall[..., 1])
+        jnp.where(k2_is_zero[0], 0.0, d_wall[..., 1])
     )
 
     # Stage 5: influence matrix algebra alpha = -M_inv @ d_wall.
     alpha = -jnp.einsum("zxab, zxb -> zxa", flow_.M_inv, d_wall)
-    alpha1 = alpha[..., 0][..., None]
-    alpha2 = alpha[..., 1][..., None]
+    alpha1 = alpha[..., 0][None]
+    alpha2 = alpha[..., 1][None]
 
     # Stage 6: corrected pressure and all three velocity components
     # via Helmholtz linearity — no additional Helmholtz solves.
@@ -1093,8 +1103,8 @@ def _imm_iteration(
             u_corr = u_corr - G_n * derived_params.sin_tilt
             w_corr = w_corr + G_n * derived_params.cos_tilt
 
-        u_new = u_new + jnp.where(k2_is_zero, u_corr, 0.0)
-        w_new = w_new + jnp.where(k2_is_zero, w_corr, 0.0)
+        u_new = u_new + jnp.where(k2_is_zero, u_corr[:, None, None], 0.0)
+        w_new = w_new + jnp.where(k2_is_zero, w_corr[:, None, None], 0.0)
 
     velocity_new = jnp.array([u_new, v_new, w_new])
 

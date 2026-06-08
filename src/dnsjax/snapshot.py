@@ -13,17 +13,14 @@ configuration (np-agnostic).
 On-disk layout
 --------------
 All layouts store each component as ``D = (A, kx_true, B)``
-using the true (unpadded) mode counts.  The wall-bounded layout
-is user-selectable (``params.outs.snapshot_layout``); periodic
-flows always use a single native layout.
+using the true (unpadded) mode counts.
 
-=================  ==================  ==========================
-layout             D = (A, kx, B)      notes
-=================  ==================  ==========================
-``wb_native``      ``(kz, kx, y)``     contiguous slab writes
-``wb_y_major``     ``(y,  kx, kz)``    y slowest -> fast y-reads
-``periodic_native`` ``(kz, kx, ky)``   (no wall-normal grid axis)
-=================  ==================  ==========================
+==============  ==================  ==========================
+layout          D = (A, kx, B)      notes
+==============  ==================  ==========================
+``walled``      ``(y,  kx, kz)``    wall-bounded (y slowest)
+``periodic``    ``(kz, kx, ky)``    triply-periodic
+==============  ==================  ==========================
 
 Memory
 ------
@@ -35,8 +32,8 @@ multiply by ``itemsize`` -- 16 for complex128, 8 for complex64
 -- for bytes):
 
 - *slab*: ``N_x / (2·np1) × len(B)`` complex elements, where
-  ``len(B)`` is ``N_y`` (``wb_native``), ``N_z - 1``
-  (``wb_y_major``), or ``N_y - 1`` (``periodic_native``).
+  ``len(B)`` is ``N_z - 1`` (``walled``) or ``N_y - 1``
+  (``periodic``).
 - *component*: one velocity component on one device.
 - *shard*: all three components on one device =
   ``3 × component``.
@@ -85,8 +82,7 @@ wall-normal grid points as a float array for wall-bounded
 flows, ``None`` for periodic), and the full
 ``params.model_dump()`` for resume validation.
 
-The on-disk format is ``format_version: 2``; version-1
-snapshots are not readable.
+The on-disk format is ``format_version: 2``.
 """
 
 import json
@@ -139,7 +135,7 @@ def _true_spec_shape() -> tuple[int, ...]:
     """Unpadded spectral shape (what goes on disk)."""
     if _is_periodic():
         return (params.res.ny - 1, _kz_true(), _kx_true())
-    return (_kz_true(), _kx_true(), params.res.ny)
+    return (params.res.ny, _kz_true(), _kx_true())
 
 
 def _device_ranges(
@@ -180,9 +176,7 @@ def _device_ranges(
 
 def _strip_padding(comp, local_kz_true: int, local_kx_true: int):
     """Slice padding modes off a local component array."""
-    if _is_periodic():
-        return comp[:, :local_kz_true, :local_kx_true]
-    return comp[:local_kz_true, :local_kx_true, :]
+    return comp[:, :local_kz_true, :local_kx_true]
 
 
 # ── Layout descriptors ────────────────────────────────────
@@ -195,39 +189,29 @@ def _strip_padding(comp, local_kz_true: int, local_kx_true: int):
 # ``ascontiguousarray``).
 
 
-def _extract_wb_native(comp, i, xp):
-    """native ``(kz, kx, y)`` -> slab ``(kx, y)`` at ``kz = i``."""
-    return xp.ascontiguousarray(comp[i])
+def _extract_walled(comp, i, xp):
+    """native ``(y, kz, kx)`` -> slab ``(kx, kz)`` at ``y = i``."""
+    return xp.ascontiguousarray(comp[i].T)
 
 
-def _place_wb_native(comp, i, slab):
-    comp[i] = slab
+def _place_walled(comp, i, slab):
+    comp[i] = slab.T
 
 
-def _extract_wb_y_major(comp, i, xp):
-    """native ``(kz, kx, y)`` -> slab ``(kx, kz)`` at ``y = i``."""
-    return xp.ascontiguousarray(comp[:, :, i].T)
-
-
-def _place_wb_y_major(comp, i, slab):
-    comp[:, :, i] = slab.T
-
-
-def _extract_periodic_native(comp, i, xp):
+def _extract_periodic(comp, i, xp):
     """native ``(ky, kz, kx)`` -> slab ``(kx, ky)`` at ``kz = i``."""
     return xp.ascontiguousarray(comp[:, i, :].T)
 
 
-def _place_periodic_native(comp, i, slab):
+def _place_periodic(comp, i, slab):
     comp[:, i, :] = slab.T
 
 
 _LAYOUT_FNS: dict[str, tuple[Callable, Callable]] = {
-    "wb_native": (_extract_wb_native, _place_wb_native),
-    "wb_y_major": (_extract_wb_y_major, _place_wb_y_major),
-    "periodic_native": (
-        _extract_periodic_native,
-        _place_periodic_native,
+    "walled": (_extract_walled, _place_walled),
+    "periodic": (
+        _extract_periodic,
+        _place_periodic,
     ),
 }
 
@@ -244,7 +228,7 @@ class _Layout(NamedTuple):
 
 
 def _layout() -> _Layout:
-    """Layout to write, from geometry + ``snapshot_layout``.
+    """Layout to write from the current geometry.
 
     All dimensions use **true** (unpadded) mode counts so that
     on-disk snapshots never contain dummy padding modes.
@@ -254,30 +238,20 @@ def _layout() -> _Layout:
     if _is_periodic():
         ky = params.res.ny - 1
         return _Layout(
-            "periodic_native",
+            "periodic",
             kz,
             ky,
             kx,
-            _extract_periodic_native,
-            _place_periodic_native,
-        )
-    ny = params.res.ny
-    if params.outs.snapshot_layout == "native":
-        return _Layout(
-            "wb_native",
-            kz,
-            ny,
-            kx,
-            _extract_wb_native,
-            _place_wb_native,
+            _extract_periodic,
+            _place_periodic,
         )
     return _Layout(
-        "wb_y_major",
-        ny,
+        "walled",
+        params.res.ny,
         kz,
         kx,
-        _extract_wb_y_major,
-        _place_wb_y_major,
+        _extract_walled,
+        _place_walled,
     )
 
 
@@ -304,7 +278,7 @@ def _padded_local_shape() -> tuple[int, ...]:
     local_kx = sharding.nx_spec // sharding.np1
     if _is_periodic():
         return (3, params.res.ny - 1, local_kz, local_kx)
-    return (3, local_kz, local_kx, params.res.ny)
+    return (3, params.res.ny, local_kz, local_kx)
 
 
 def _padded_local_shape_snap_ny(snap_ny: int) -> tuple[int, ...]:
@@ -318,7 +292,7 @@ def _padded_local_shape_snap_ny(snap_ny: int) -> tuple[int, ...]:
     local_kx = sharding.nx_spec // sharding.np1
     if _is_periodic():
         return (3, snap_ny - 1, local_kz, local_kx)
-    return (3, local_kz, local_kx, snap_ny)
+    return (3, snap_ny, local_kz, local_kx)
 
 
 def _shard_device_index(shard) -> int:
@@ -362,12 +336,9 @@ def _place_into_padded(comp_buf, li: int, slab, nkx: int) -> None:
 
     ``slab`` has shape ``(nkx, b_size)`` (true modes only).
     ``comp_buf`` has the padded local shape; ``li`` is the local
-    `$k_z$` slab index.
+    `$k_z$` slab index.  Only used for ``periodic``.
     """
-    if _is_periodic():
-        comp_buf[:, li, :nkx] = slab.T
-    else:
-        comp_buf[li, :nkx, :] = slab
+    comp_buf[:, li, :nkx] = slab.T
 
 
 # ── Barrier ───────────────────────────────────────────────
@@ -477,7 +448,7 @@ def _write_chunks_gds(
     import cupy as cp
     import kvikio
 
-    is_y_major = layout.name == "wb_y_major"
+    is_walled = layout.name == "walled"
     for shard in state.addressable_shards:
         flat_idx = _shard_device_index(shard)
         kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
@@ -489,7 +460,7 @@ def _write_chunks_gds(
                 comp_true = _strip_padding(cp_vec[comp], nkz, nkx)
                 chunk_path = _chunk_file(store_path, comp)
                 with kvikio.CuFile(str(chunk_path), "r+") as f:
-                    if is_y_major:
+                    if is_walled:
                         for i in range(layout.a_size):
                             slab = layout.extract(comp_true, i, cp)
                             for lkx in range(nkx):
@@ -519,7 +490,7 @@ def _read_chunks_gds(
     itemsize = dtype.itemsize
     if local_shape is None:
         local_shape = _padded_local_shape()
-    is_y_major = layout.name == "wb_y_major"
+    is_walled = layout.name == "walled"
     per_device: list[Array] = []
     for local_idx, device in enumerate(jax.local_devices()):
         flat_idx = _mesh_device_index(device)
@@ -531,7 +502,7 @@ def _read_chunks_gds(
                     comp_buf = vec[comp]
                     chunk_path = _chunk_file(store_path, comp)
                     with kvikio.CuFile(str(chunk_path), "r") as f:
-                        if is_y_major:
+                        if is_walled:
                             row_gpu = cp.empty(nkz, dtype=dtype)
                             for i in range(layout.a_size):
                                 for lkx in range(nkx):
@@ -542,7 +513,7 @@ def _read_chunks_gds(
                                         row_gpu,
                                         file_offset=off * itemsize,
                                     )
-                                    comp_buf[:nkz, lkx, i] = row_gpu
+                                    comp_buf[i, :nkz, lkx] = row_gpu
                         else:
                             slab = cp.empty((nkx, layout.b_size), dtype=dtype)
                             for li in range(nkz):
@@ -598,7 +569,7 @@ def _write_chunks_host(
     is copied with ``np.asarray`` and slabs are extracted on the
     host (extra host memory: one shard per device).
     """
-    is_y_major = layout.name == "wb_y_major"
+    is_walled = layout.name == "walled"
     try:
         import cupy as cp
     except ImportError:
@@ -621,7 +592,7 @@ def _write_chunks_host(
             comp_true = _strip_padding(vec[comp], nkz, nkx)
             chunk_path = _chunk_file(store_path, comp)
             with open(chunk_path, "r+b") as f:
-                if is_y_major:
+                if is_walled:
                     for i in range(layout.a_size):
                         slab = layout.extract(comp_true, i, xp)
                         for lkx in range(nkx):
@@ -666,7 +637,7 @@ def _read_chunks_host(
     itemsize = dtype.itemsize
     if local_shape is None:
         local_shape = _padded_local_shape()
-    is_y_major = layout.name == "wb_y_major"
+    is_walled = layout.name == "walled"
     try:
         import cupy as cp
     except ImportError:
@@ -680,7 +651,7 @@ def _read_chunks_host(
                 with cp.cuda.Device(local_idx):
                     vec = cp.zeros(local_shape, dtype=dtype)
                     if nkz > 0 and nkx > 0:
-                        if is_y_major:
+                        if is_walled:
                             row_gpu = cp.empty(nkz, dtype=dtype)
                             for comp in range(3):
                                 comp_buf = vec[comp]
@@ -698,7 +669,7 @@ def _read_chunks_host(
                                             row_gpu.set(
                                                 np.frombuffer(raw, dtype=dtype)
                                             )
-                                            comp_buf[:nkz, lkx, i] = row_gpu
+                                            comp_buf[i, :nkz, lkx] = row_gpu
                         else:
                             slab_bytes = nkx * layout.b_size * itemsize
                             slab_gpu = cp.empty(
@@ -733,7 +704,7 @@ def _read_chunks_host(
                 cp = None
         vec = np.zeros(local_shape, dtype=dtype)
         if nkz > 0 and nkx > 0:
-            if is_y_major:
+            if is_walled:
                 for comp in range(3):
                     comp_buf = vec[comp]
                     chunk_path = _chunk_file(store_path, comp)
@@ -746,7 +717,7 @@ def _read_chunks_host(
                                 f.seek(off * itemsize)
                                 raw = f.read(nkz * itemsize)
                                 row = np.frombuffer(raw, dtype=dtype)
-                                comp_buf[:nkz, lkx, i] = row
+                                comp_buf[i, :nkz, lkx] = row
             else:
                 slab_bytes = nkx * layout.b_size * itemsize
                 for comp in range(3):
@@ -867,9 +838,9 @@ def load_snapshot(
         else:
             assembly_shape = (
                 3,
+                snap_ny,
                 sharding.nz_spec,
                 sharding.nx_spec,
-                snap_ny,
             )
     else:
         local_shape = None
@@ -891,7 +862,7 @@ def load_snapshot(
 
 
 def load_y_slice(path: str | Path, y_index: int) -> Array:
-    r"""Read a single wall-normal coordinate from a ``y_major``
+    r"""Read a single wall-normal coordinate from a ``walled``
     snapshot without loading the full array.
 
     With the `$y$`-slowest layout, a y-slice of each component is
@@ -913,14 +884,14 @@ def load_y_slice(path: str | Path, y_index: int) -> Array:
     Raises
     ------
     ValueError
-        Unless the snapshot uses the ``y_major`` layout.
+        Unless the snapshot uses the ``walled`` layout.
     """
     path = Path(path)
     meta = read_metadata(path)
 
-    if meta["layout"] != "wb_y_major":
+    if meta["layout"] != "walled":
         raise ValueError(
-            "Partial y-reads require a 'y_major' wall-bounded snapshot."
+            "Partial y-reads require a 'walled' wall-bounded snapshot."
         )
 
     _, _, kx_global, b_size = meta["on_disk_shape"]
@@ -996,11 +967,13 @@ def validate_snapshot_params(
             raise SnapshotMismatchError(
                 f"Shape: snapshot {native}, expected {expected}"
             )
-        # Wall-bounded: allow ny mismatch (last axis).
-        if list(native)[:3] != expected[:3]:
+        # Wall-bounded: allow ny mismatch (axis 1).
+        non_ny_snap = [native[0], *native[2:]]
+        non_ny_exp = [expected[0], *expected[2:]]
+        if non_ny_snap != non_ny_exp:
             raise SnapshotMismatchError(
                 f"Shape (non-ny axes): snapshot "
-                f"{native[:3]}, expected {expected[:3]}"
+                f"{non_ny_snap}, expected {non_ny_exp}"
             )
 
     # ny mismatch: info (wall-normal interpolation will handle it)

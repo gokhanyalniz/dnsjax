@@ -26,8 +26,6 @@ it0 = 0 # Initial discrete time
 # it_stats = 1000 # How often to compute stats (in number of time steps)
 # nstats = 100          # Flush stats to stats.dat every nstats lines
 # stats_precision = 9   # Significant digits (9 = float32, 17 = float64 lossless)
-# snapshot_layout = "y_major"  # "y_major" (fast y-slice reads) or "native"
-#                              # (wall-bounded only; periodic always native)
 # snapshot_write_mode = "concurrent"  # "concurrent" (all processes at once) or
 #                                     # "serial" (rank-ordered, safe on NFS)
 

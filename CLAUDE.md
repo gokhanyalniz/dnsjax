@@ -108,7 +108,7 @@ See `parameters.py` classes for full documentation. Key sections:
 | `[geo]`    | `lx`, `lz`, `tilt_degree`, `wall_grid` (custom grid file), `grid_type` (`"tanh"` / `"cgl"`), `grid_stretch` |
 | `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`                                                      |
 | `[init]`   | `start_from_laminar`, `snapshot`, `t0`, `it0`                                                          |
-| `[outs]`   | `it_stats`, `it_snapshot`, `nstats`, `stats_precision`, `snapshot_layout` (`"y_major"` / `"native"`), `snapshot_write_mode` (`"concurrent"` / `"serial"`) |
+| `[outs]`   | `it_stats`, `it_snapshot`, `nstats`, `stats_precision`, `snapshot_write_mode` (`"concurrent"` / `"serial"`) |
 | `[step]`   | `dt`, `implicitness`, `corrector_tolerance`, `max_corrector_iterations`                                |
 | `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601)                                                            |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform`                                 |

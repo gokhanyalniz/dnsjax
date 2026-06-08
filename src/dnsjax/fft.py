@@ -3,9 +3,9 @@ and truncation, plus double-parallelisation reshards.
 
 For the 2D case:
 The forward transform (physical -> spectral) is ``_rfft2d``; the inverse
-is ``_irfft2d``. They operate on scalar fields of layout ``[y, z, x]``,
-and ``[y, kz, kx]`` respectively. The public-facing part of the code
-in `operators.py` transposes the spectral output to layout ``[kz, kx, y]``.
+is ``_irfft2d``. They operate on scalar fields of layout ``[y, z, x]``
+and ``[y, kz, kx]`` respectively.  The spectral layout ``[y, kz, kx]``
+is the same as the public-facing convention.
 
 For the 3D case:
 The forward transform (physical -> spectral) is ``_rfft3d``; the inverse
