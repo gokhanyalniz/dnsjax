@@ -2,13 +2,13 @@
 
 Exercises the host (non-GDS) I/O path:
 
-- save -> load equality for ``wb_native``, ``wb_y_major`` and
-  ``periodic_native`` layouts;
+- save -> load equality for ``walled`` and
+  ``periodic`` layouts;
 - **np-agnostic** resume: save at one ``(np0, np1)``
   configuration, load at a different one (clean global
   per-component files with true modes only);
 - ``load_y_slice`` matches the corresponding y-plane for a
-  ``y_major`` snapshot and raises otherwise;
+  ``walled`` snapshot and raises otherwise;
 - ``serial`` write mode produces a byte-identical snapshot
   (true cross-process ordering needs MPI multi-process and is not
   exercised here -- single-process serial reduces to one write);
@@ -45,50 +45,38 @@ T_SAVE, IT_SAVE = 1.5, 7
 #  save_np0, load_np0)
 CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
     # ── 1D (np0=1) ──
-    ("wb_native", "plane-couette", "native", "concurrent", 1, 1, 1, 1),
-    ("wb_y_major", "plane-couette", "y_major", "concurrent", 1, 1, 1, 1),
-    ("periodic", "kolmogorov", "native", "concurrent", 1, 1, 1, 1),
+    ("walled", "plane-couette", "walled", "concurrent", 1, 1, 1, 1),
+    ("periodic", "kolmogorov", "periodic", "concurrent", 1, 1, 1, 1),
     (
-        "wb_y_major np 1->2",
+        "walled np 1->2",
         "plane-couette",
-        "y_major",
+        "walled",
         "concurrent",
         1,
         2,
         1,
         1,
     ),
-    ("periodic np 2->1", "kolmogorov", "native", "concurrent", 2, 1, 1, 1),
+    ("periodic np 2->1", "kolmogorov", "periodic", "concurrent", 2, 1, 1, 1),
     (
-        "wb_y_major serial",
+        "walled serial",
         "plane-couette",
-        "y_major",
+        "walled",
         "serial",
         1,
         1,
         1,
         1,
     ),
-    ("periodic serial", "kolmogorov", "native", "serial", 1, 1, 1, 1),
+    ("periodic serial", "kolmogorov", "periodic", "serial", 1, 1, 1, 1),
     # ── 2D (np0 > 1) ──
-    ("wb_native 2D", "plane-couette", "native", "concurrent", 4, 4, 2, 2),
-    ("wb_y_major 2D", "plane-couette", "y_major", "concurrent", 4, 4, 2, 2),
-    ("periodic 2D", "kolmogorov", "native", "concurrent", 4, 4, 2, 2),
+    ("walled 2D", "plane-couette", "walled", "concurrent", 4, 4, 2, 2),
+    ("periodic 2D", "kolmogorov", "periodic", "concurrent", 4, 4, 2, 2),
     # ── cross-mesh resume ──
-    (
-        "wb_native 2D->1D",
-        "plane-couette",
-        "native",
-        "concurrent",
-        4,
-        4,
-        2,
-        1,
-    ),
     (
         "periodic 1D->2D",
         "kolmogorov",
-        "native",
+        "periodic",
         "concurrent",
         1,
         4,
@@ -96,14 +84,24 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
         2,
     ),
     (
-        "wb_y_major 1D->2D",
+        "walled 1D->2D",
         "plane-couette",
-        "y_major",
+        "walled",
         "concurrent",
         1,
         4,
         1,
         2,
+    ),
+    (
+        "walled 2D->1D",
+        "plane-couette",
+        "walled",
+        "concurrent",
+        4,
+        4,
+        2,
+        1,
     ),
 ]
 
@@ -127,7 +125,7 @@ def _true_shape(system: str, ny: int) -> tuple[int, ...]:
     kz, kx = NZ - 1, NX // 2
     if system in _PERIODIC:
         return (3, ny - 1, kz, kx)
-    return (3, kz, kx, ny)
+    return (3, ny, kz, kx)
 
 
 def _embed_true_into_padded(true_arr, padded_shape, system):
@@ -139,7 +137,7 @@ def _embed_true_into_padded(true_arr, padded_shape, system):
     if system in _PERIODIC:
         out[:, :, :kz, :kx] = true_arr
     else:
-        out[:, :kz, :kx, :] = true_arr
+        out[:, :, :kz, :kx] = true_arr
     return out
 
 
@@ -168,7 +166,6 @@ def _worker(
     params.dist.np0 = np0
     params.dist.np1 = npv // np0
     params.dist.platform = "cpu"
-    params.outs.snapshot_layout = layout
     params.outs.snapshot_write_mode = write_mode
     padded_res.set_padded_resolution(params)
 
@@ -203,8 +200,8 @@ def _worker(
         derived_params.wall_normal_grid = y.tolist()
         poly = 1 - y**2
         state_np = np.zeros(padded_shape, dtype=np.complex128)
-        state_np[0, 0, 0, :] = poly
-        state_np[1, 0, 0, :] = poly * 0.5
+        state_np[0, :, 0, 0] = poly
+        state_np[1, :, 0, 0] = poly * 0.5
         state = jax.device_put(state_np, vshard)
         snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
         return
@@ -229,13 +226,13 @@ def _worker(
         got = np.asarray(state)
         expected_poly = 1 - y_curr**2
         np.testing.assert_allclose(
-            got[0, 0, 0, :].real, expected_poly, atol=1e-10
+            got[0, :, 0, 0].real, expected_poly, atol=1e-10
         )
         np.testing.assert_allclose(
-            got[1, 0, 0, :].real, expected_poly * 0.5, atol=1e-10
+            got[1, :, 0, 0].real, expected_poly * 0.5, atol=1e-10
         )
         assert got[0, 0, 0, 0].real == 0.0
-        assert got[0, 0, 0, -1].real == 0.0
+        assert got[0, -1, 0, 0].real == 0.0
         assert t == T_SAVE
         print("worker-load-interp-ok", flush=True)
         return
@@ -252,11 +249,10 @@ def _worker(
     assert t == T_SAVE, (t, T_SAVE)
     assert it == IT_SAVE, (it, IT_SAVE)
 
-    is_y_major = system not in _PERIODIC and layout == "y_major"
-    if is_y_major:
+    if system not in _PERIODIC:
         for yi in (0, ny // 2, ny - 1):
             sl = np.asarray(snapshot.load_y_slice(d, yi))
-            assert np.array_equal(sl, ref_true[:, :, :, yi]), (
+            assert np.array_equal(sl, ref_true[:, yi]), (
                 f"y_slice mismatch at y={yi}"
             )
     else:
@@ -265,7 +261,7 @@ def _worker(
             snapshot.load_y_slice(d, 0)
         except ValueError:
             raised = True
-        assert raised, "load_y_slice should reject non-y_major"
+        assert raised, "load_y_slice should reject periodic"
 
     print("worker-load-ok", flush=True)
 
@@ -368,7 +364,7 @@ def run_ny_mismatch_case(
         r_save = _run_worker(
             "save_poly",
             "plane-couette",
-            "y_major",
+            "walled",
             "concurrent",
             save_np,
             snap_dir,
@@ -381,7 +377,7 @@ def run_ny_mismatch_case(
         r_load = _run_worker(
             "load_interp",
             "plane-couette",
-            "y_major",
+            "walled",
             "concurrent",
             load_np,
             snap_dir,

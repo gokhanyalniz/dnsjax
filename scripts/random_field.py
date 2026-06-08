@@ -73,11 +73,6 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--fd-order", type=int, default=4)
     ap.add_argument("--tilt-degree", type=float, default=0.0)
     ap.add_argument("--wall-grid", type=str, default=None)
-    ap.add_argument(
-        "--snapshot-layout",
-        choices=["y_major", "native"],
-        default="y_major",
-    )
     ap.add_argument("--single-precision", action="store_true")
     ap.add_argument(
         "--driving",
@@ -189,7 +184,7 @@ def _setup_jax_and_params(args: argparse.Namespace) -> None:
             "fd_order": args.fd_order,
             "double_precision": double,
         },
-        outs={"snapshot_layout": args.snapshot_layout},
+        outs={},
     )
     update_parameters(cli_params)
     padded_res.set_padded_resolution(params)
@@ -244,7 +239,7 @@ def _enforce_hermitian_slice(
 def _generate_cartesian(args: argparse.Namespace):
     """Generate a random divergence-free Cartesian perturbation.
 
-    Returns a JAX array of shape ``(3, Nkz, Nkx, Ny)``.
+    Returns a JAX array of shape ``(3, Ny, Nkz, Nkx)``.
     """
     import jax
     from jax import numpy as jnp
@@ -279,14 +274,14 @@ def _generate_cartesian(args: argparse.Namespace):
     mode_decay = decay ** (np.abs(kz_np[:, None]) + np.abs(kx_np[None, :]))
 
     rng = np.random.default_rng(args.seed)
-    shape = (3, Nkz, Nkx, ny)
+    shape = (3, ny, Nkz, Nkx)
     raw = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
 
     # Apply no-slip window to all components: f(+/-1) = 0.
-    raw *= window_noslip
+    raw *= window_noslip[np.newaxis, :, np.newaxis, np.newaxis]
 
     # Apply wavenumber decay.
-    raw *= mode_decay[np.newaxis, :, :, np.newaxis]
+    raw *= mode_decay[np.newaxis, np.newaxis, :, :]
 
     # Fix v so D1@v is exactly zero at both walls.  This is
     # necessary because the derived component (w or u) gets
@@ -302,7 +297,7 @@ def _generate_cartesian(args: argparse.Namespace):
     A_fix_inv = np.linalg.inv(A_fix)
     for iz in range(Nkz):
         for ix in range(Nkx):
-            v_mode = raw[1, iz, ix, :]
+            v_mode = raw[1, :, iz, ix]
             dv_wall = D1_np[[0, -1], :] @ v_mode  # (2,)
             delta = -A_fix_inv @ dv_wall
             v_mode[1] += delta[0]
@@ -316,24 +311,24 @@ def _generate_cartesian(args: argparse.Namespace):
         for ix in range(Nkx):
             kx_val = kx_np[ix]
             if kx_val == 0 and kz_val == 0:
-                raw[1, iz, ix, :] = 0.0
+                raw[1, :, iz, ix] = 0.0
             elif kz_val != 0:
-                dv_dy = D1_np @ raw[1, iz, ix, :]
-                raw[2, iz, ix, :] = -(
-                    1j * kx_val * raw[0, iz, ix, :] + dv_dy
+                dv_dy = D1_np @ raw[1, :, iz, ix]
+                raw[2, :, iz, ix] = -(
+                    1j * kx_val * raw[0, :, iz, ix] + dv_dy
                 ) / (1j * kz_val)
             else:
-                dv_dy = D1_np @ raw[1, iz, ix, :]
-                raw[0, iz, ix, :] = -dv_dy / (1j * kx_val)
+                dv_dy = D1_np @ raw[1, :, iz, ix]
+                raw[0, :, iz, ix] = -dv_dy / (1j * kx_val)
 
     # Hermitian symmetry at kx=0: fix kz axis for each component.
-    # raw shape: (3, Nkz, Nkx, Ny); kx=0 is index 0 on axis 2.
+    # raw shape: (3, Ny, Nkz, Nkx); kx=0 is index 3.
     for c in range(3):
-        _enforce_hermitian_slice(raw[c, :, 0, :], params.res.nz)
+        _enforce_hermitian_slice(raw[c, :, :, 0].T, params.res.nz)
 
     # Zero mean mode unless --mean-flow.
     if not args.mean_flow:
-        raw[:, 0, 0, :] = 0.0
+        raw[:, :, 0, 0] = 0.0
 
     # ── JAX: normalise and return ────────────────────────────
     state = jax.device_put(
@@ -351,7 +346,7 @@ def _generate_cartesian(args: argparse.Namespace):
 def _generate_cylindrical(args: argparse.Namespace):
     r"""Generate a random perturbation for pipe flow.
 
-    Returns a JAX array of shape ``(3, Nm, Nkz, Nr)`` in
+    Returns a JAX array of shape ``(3, Nr, Nm, Nkz)`` in
     `$(u_z, u_+, u_-)$` form.
 
     For `$k_z \neq 0$` modes the field is divergence-free by
@@ -396,23 +391,23 @@ def _generate_cylindrical(args: argparse.Namespace):
     mode_decay = decay ** (kz_abs[None, :] + m_abs[:, None])
 
     rng = np.random.default_rng(args.seed)
-    shape = (3, Nm, Nkz, Nr)
+    shape = (3, Nr, Nm, Nkz)
     raw = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
 
     # Apply wall window (r=1).
-    raw *= window_wall
+    raw *= window_wall[np.newaxis, :, np.newaxis, np.newaxis]
 
     # Apply parity windows near r=0 and wavenumber decay.
     for im in range(Nm):
         m_val = int(m_np[im])
         # u_z parity: (-1)^m -> odd when m odd
         if m_val % 2 != 0:
-            raw[0, im, :, :] *= rs_np
+            raw[0, :, im, :] *= rs_np[:, np.newaxis]
         # u+, u- parity: (-1)^{m+1} -> odd when m even
         if m_val % 2 == 0:
-            raw[1, im, :, :] *= rs_np
-            raw[2, im, :, :] *= rs_np
-        raw[:, im, :, :] *= mode_decay[im, :][np.newaxis, :, np.newaxis]
+            raw[1, :, im, :] *= rs_np[:, np.newaxis]
+            raw[2, :, im, :] *= rs_np[:, np.newaxis]
+        raw[:, :, im, :] *= mode_decay[im, :][np.newaxis, np.newaxis, :]
 
     # Enforce divergence-free for kz != 0 (NumPy loop).
     # Continuity: i*kz*uz + [D1(u+) + (m+1)*u+/r
@@ -426,25 +421,25 @@ def _generate_cylindrical(args: argparse.Namespace):
             kz_val = kz_np[ik]
             if kz_val == 0:
                 continue
-            u_plus = raw[1, im, ik, :]
-            u_minus = raw[2, im, ik, :]
+            u_plus = raw[1, :, im, ik]
+            u_minus = raw[2, :, im, ik]
             div_radial = (
                 D1_pm @ u_plus
                 + (m_val + 1) * inv_r_np * u_plus
                 + D1_pm @ u_minus
                 + (1 - m_val) * inv_r_np * u_minus
             ) / 2.0
-            raw[0, im, ik, :] = -div_radial / (1j * kz_val)
+            raw[0, :, im, ik] = -div_radial / (1j * kz_val)
 
     # Zero mean mode unless --mean-flow.
     if not args.mean_flow:
-        raw[:, 0, 0, :] = 0.0
+        raw[:, :, 0, 0] = 0.0
 
-    # Hermitian symmetry at kz=0 (real-FFT axis is axis 2):
+    # Hermitian symmetry at kz=0 (real-FFT axis):
     # fix m axis for each component.
-    # raw shape: (3, Nm, Nkz, Nr); kz=0 is index 0 on axis 2.
+    # raw shape: (3, Nr, Nm, Nkz); kz=0 is index 3.
     for c in range(3):
-        _enforce_hermitian_slice(raw[c, :, 0, :], params.res.nz)
+        _enforce_hermitian_slice(raw[c, :, :, 0].T, params.res.nz)
 
     # ── JAX: normalise and return ────────────────────────────
     state = jax.device_put(
@@ -590,19 +585,19 @@ def _run_tests() -> None:
         for ix in range(Nkx):
             kx_v = kx_np[ix]
             kz_v = kz_np[iz]
-            dv_dy = D1_np @ state_np[1, iz, ix, :]
+            dv_dy = D1_np @ state_np[1, :, iz, ix]
             div = (
-                1j * kx_v * state_np[0, iz, ix, :]
+                1j * kx_v * state_np[0, :, iz, ix]
                 + dv_dy
-                + 1j * kz_v * state_np[2, iz, ix, :]
+                + 1j * kz_v * state_np[2, :, iz, ix]
             )
             max_div = max(max_div, float(np.max(np.abs(div))))
     _check("divergence-free", max_div < 1e-10, f"max |div| = {max_div:.2e}")
 
     # Wall BCs.
     bc_err = max(
-        float(np.max(np.abs(state_np[:, :, :, 0]))),
-        float(np.max(np.abs(state_np[:, :, :, -1]))),
+        float(np.max(np.abs(state_np[:, 0]))),
+        float(np.max(np.abs(state_np[:, -1]))),
     )
     _check("wall BCs", bc_err < 1e-14, f"max |BC| = {bc_err:.2e}")
 
@@ -618,7 +613,7 @@ def _run_tests() -> None:
     )
 
     # Mean mode zero.
-    mean_err = float(np.max(np.abs(state_np[:, 0, 0, :])))
+    mean_err = float(np.max(np.abs(state_np[:, :, 0, 0])))
     _check("mean mode zero", mean_err < 1e-30, f"max |mean| = {mean_err:.2e}")
 
     # Hermitian symmetry at kx=0.
@@ -626,9 +621,9 @@ def _run_tests() -> None:
     sym_err = 0.0
     for i in range(1, n_pos):
         j = Nkz - i
-        diff = state_np[:, j, 0, :] - np.conj(state_np[:, i, 0, :])
+        diff = state_np[:, :, j, 0] - np.conj(state_np[:, :, i, 0])
         sym_err = max(sym_err, float(np.max(np.abs(diff))))
-    kz0_imag = float(np.max(np.abs(state_np[:, 0, 0, :].imag)))
+    kz0_imag = float(np.max(np.abs(state_np[:, :, 0, 0].imag)))
     sym_err = max(sym_err, kz0_imag)
     _check(
         "Hermitian symmetry at kx=0",

@@ -11,6 +11,10 @@ Usage::
     python scripts/spike_partition_info.py --nx 128 --ny 128 --nz 128
     python scripts/spike_partition_info.py \\
         --ny 256 --nz 256 --nx 512 --fd-order 6
+    python scripts/spike_partition_info.py \\
+        --ny 128 --nz 128 --nx 128 --no-block-thomas
+    python scripts/spike_partition_info.py \\
+        --ny 128 --nz 128 --nx 128 --n-operators 4
 """
 
 from __future__ import annotations
@@ -46,16 +50,6 @@ def _gpu_rating(ai: float) -> str:
     return "excellent"
 
 
-def _serial_depth(m: int, p: int, P: int, banded: bool) -> str:
-    """Total sequential scan depth (for --banded mode)."""
-    if not banded:
-        return "--"
-    import math
-
-    blk_depth = math.ceil(m / p)
-    return f"{blk_depth}+{P}"
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="SPIKE block-partition trade-off table.",
@@ -70,9 +64,19 @@ def main() -> None:
         default="double",
     )
     ap.add_argument(
-        "--banded",
+        "--no-block-thomas",
         action="store_true",
-        help="Show post-item-B banded-block cost model.",
+        dest="no_block_thomas",
+        help="Use dense reduced system (matches --solver.block_thomas False).",
+    )
+    ap.add_argument(
+        "--n-operators",
+        type=int,
+        default=2,
+        dest="n_operators",
+        help="Number of SPIKE operator equivalents: "
+        "2 for Cartesian (1 Lk + 1 Hk, default), "
+        "4 for cylindrical (1 Lk + 3 stacked Hk).",
     )
     args = ap.parse_args()
 
@@ -81,30 +85,31 @@ def main() -> None:
     Nkz = args.nz - 1
     Nkx = args.nx // 2
     n_modes = Nkz * Nkx
-    bpe = 16 if args.precision == "double" else 8  # bytes per element
+    bpe = 16 if args.precision == "double" else 8
     min_m = max(2 * p, 1)
-
-    banded = args.banded
+    block_thomas = not args.no_block_thomas
+    n_ops = args.n_operators
 
     print(f"\nResolution: nx={args.nx}, ny={Ny}, nz={args.nz}")
     print(f"Fourier modes: Nkz={Nkz}, Nkx={Nkx} ({n_modes} total)")
     print(f"FD order (half-bandwidth): p={p}")
     print(f"Precision: {args.precision} ({bpe} bytes/element)")
     print(f"Minimum block size: m >= 2p = {min_m}")
-    if banded:
-        print(f"Banded-block threshold: m > 3p+1 = {3 * p + 1}")
+    print(f"Operators: {n_ops} (Cartesian=2, cylindrical=4)")
+    bt_label = (
+        "block-Thomas (default)"
+        if block_thomas
+        else "dense (--no-block-thomas)"
+    )
+    print(f"Reduced system: {bt_label}")
     print()
-    if banded:
+    if block_thomas:
         print(
-            "Block storage = ~3*Ny*p (banded, m > 3p+1)"
-            " or Ny^2/P (dense, m <= 3p+1)"
+            "Per-mode cost = Ny^2/P + (3P-2)*4*p^2"
+            "  (block LU + block-Thomas reduced)"
         )
-        print("Reduced storage = ~12*P*p^2 (block-tridiagonal)")
     else:
-        print(
-            "Per-mode SPIKE storage = Ny^2/P + 4*P^2*p^2"
-            "  (block LU + reduced system)"
-        )
+        print("Per-mode cost = Ny^2/P + 4*P^2*p^2  (block LU + dense reduced)")
     print(
         "Arithmetic intensity of per-block LU solve"
         " ~ (2/3)*m / bytes_per_element"
@@ -118,41 +123,41 @@ def main() -> None:
         if m < min_m and P > 1:
             continue
 
-        banded_ok = m > 3 * p + 1
+        # Block LU: P dense (m, m) blocks per mode per operator.
+        block_bytes = n_modes * P * m * m * bpe * n_ops
 
-        if banded and banded_ok:
-            # Banded blocks: ~3*m*p per block.
-            block_bytes = n_modes * P * 3 * m * p * bpe * 2
-            # Block-tridiagonal reduced: ~(3P-2)*(2p)^2 entries
+        # Reduced system (per mode per operator).
+        if block_thomas:
+            # P diag + (P-1) super + (P-1) sub, each (2p, 2p).
             red_entries = (3 * P - 2) * (2 * p) ** 2
         else:
-            block_bytes = n_modes * P * m * m * bpe * 2
+            # Full (2Pp, 2Pp) dense LU.
             red_entries = (2 * P * p) ** 2
+        reduced_bytes = n_modes * red_entries * bpe * n_ops
 
-        reduced_bytes = n_modes * red_entries * bpe * 2
-        spike_bytes = 2 * n_modes * P * m * p * bpe * 2
+        # Spike matrices V, W: 2 * P * m * p per mode.
+        spike_bytes = 2 * n_modes * P * m * p * bpe * n_ops
         total_bytes = block_bytes + reduced_bytes + spike_bytes
 
-        cost_per_mode = Ny * Ny / P + 4.0 * P * P * p * p
-        cost_bt = Ny * Ny / P + 4.0 * P * p * p
+        # Per-mode cost for optimisation (spike cost 2*Ny*p
+        # is P-independent and cancels out).
+        cost_bt = Ny * Ny / P + (3 * P - 2) * 4.0 * p * p
+        cost_dense = Ny * Ny / P + 4.0 * P * P * p * p
+        cost = cost_bt if block_thomas else cost_dense
+        cost_alt = cost_dense if block_thomas else cost_bt
         ai = (2.0 / 3.0) * m / bpe
-
-        import math
 
         rows.append(
             {
                 "P": P,
                 "m": m,
-                "cost": cost_per_mode,
-                "cost_bt": cost_bt,
+                "cost": cost,
+                "cost_alt": cost_alt,
                 "block": block_bytes,
                 "reduced": reduced_bytes,
                 "spike": spike_bytes,
                 "total": total_bytes,
                 "ai": ai,
-                "m_over_p": m / p,
-                "banded_ok": banded_ok,
-                "serial": math.ceil(m / p) + P,
             }
         )
 
@@ -160,65 +165,43 @@ def main() -> None:
         print("No valid SPIKE partitions for these parameters.")
         sys.exit(1)
 
-    # Find memory-optimal (excluding P=1): dense reduced cost.
+    # Find memory-optimal (excluding P=1).
     valid_spike = [r for r in rows if r["P"] >= 2]
     if valid_spike:
-        best_cost_dense = min(r["cost"] for r in valid_spike)
-        best_P = next(
-            r["P"] for r in valid_spike if r["cost"] == best_cost_dense
-        )
+        best_cost = min(r["cost"] for r in valid_spike)
+        best_P = next(r["P"] for r in valid_spike if r["cost"] == best_cost)
     else:
         best_P = 1
 
-    # Find memory-optimal under block-Thomas cost model.
-    best_bt_P = None
+    # Find optimal under alternative cost model.
+    alt_P = None
     if valid_spike:
-        best_cost_bt = min(r["cost_bt"] for r in valid_spike)
-        best_bt_P = next(
-            r["P"] for r in valid_spike if r["cost_bt"] == best_cost_bt
-        )
-
-    # Speed-optimal: minimise serial depth ceil(m/p) + P.
-    speed_P = None
-    if banded and valid_spike:
-        best_serial = min(r["serial"] for r in valid_spike)
-        speed_P = next(
-            r["P"] for r in valid_spike if r["serial"] == best_serial
+        best_cost_alt = min(r["cost_alt"] for r in valid_spike)
+        alt_P = next(
+            r["P"] for r in valid_spike if r["cost_alt"] == best_cost_alt
         )
 
     # Dense backend row for comparison.
-    dense_lu_bytes = n_modes * Ny * Ny * bpe * 2
-    dense_total = dense_lu_bytes
+    dense_lu_bytes = n_modes * Ny * Ny * bpe * n_ops
 
     # Print table.
-    extra = ""
-    if banded:
-        extra = f"  {'m/p':>5}  {'banded':>6}  {'depth':>7}"
     hdr = (
         f"{'':>3}  {'P':>4}  {'m':>4}  "
         f"{'Block':>10}  {'Reduced':>10}  "
         f"{'Spikes':>10}  {'Total':>10}  "
-        f"{'AI':>7}  {'GPU':<10}" + extra
+        f"{'AI':>7}  {'GPU':<10}"
     )
     print(hdr)
     print("-" * len(hdr))
 
+    alt_marker = "dn>" if block_thomas else "bt>"
     for r in rows:
         if r["P"] == best_P:
             marker = ">>>"
-        elif best_bt_P and r["P"] == best_bt_P and best_bt_P != best_P:
-            marker = "bt>"
-        elif banded and speed_P and r["P"] == speed_P:
-            marker = " v "
+        elif alt_P and r["P"] == alt_P and alt_P != best_P:
+            marker = alt_marker
         else:
             marker = "   "
-        extra_cols = ""
-        if banded:
-            extra_cols = (
-                f"  {r['m_over_p']:>5.1f}  "
-                f"{'yes' if r['banded_ok'] else 'no':>6}  "
-                f"{_serial_depth(r['m'], p, r['P'], banded):>7}"
-            )
         print(
             f"{marker}  {r['P']:>4}  {r['m']:>4}  "
             f"{_format_bytes(r['block']):>10}  "
@@ -226,44 +209,33 @@ def main() -> None:
             f"{_format_bytes(r['spike']):>10}  "
             f"{_format_bytes(r['total']):>10}  "
             f"{r['ai']:>5.2f}  "
-            f"{_gpu_rating(r['ai']):<10}" + extra_cols
+            f"{_gpu_rating(r['ai']):<10}"
         )
 
     print("-" * len(hdr))
-    dense_extra = ""
-    if banded:
-        dense_extra = f"  {'':>5}  {'':>6}  {'':>7}"
     print(
         f"     {'dense':>9}  "
         f"{_format_bytes(dense_lu_bytes):>10}  "
         f"{'--':>10}  {'--':>10}  "
-        f"{_format_bytes(dense_total):>10}  "
+        f"{_format_bytes(dense_lu_bytes):>10}  "
         f"{(2.0 / 3.0) * Ny / bpe:>5.2f}  "
-        f"{_gpu_rating((2.0 / 3.0) * Ny / bpe):<10}" + dense_extra
+        f"{_gpu_rating((2.0 / 3.0) * Ny / bpe):<10}"
     )
 
     print()
+    mode = "block-Thomas" if block_thomas else "dense reduced"
     if best_P >= 2:
-        print(f">>> = dense-reduced optimal (P={best_P}, block_thomas=False)")
+        default = " (code default)" if block_thomas else ""
+        print(f">>> = {mode} optimal (P={best_P}){default}")
     else:
         print("    Only P=1 (single block) is valid for this Ny and p.")
-    if best_bt_P and best_bt_P != best_P:
-        print(
-            f"bt> = block-Thomas optimal (P={best_bt_P},"
-            f" block_thomas=True, default)"
-        )
-    if banded and speed_P and speed_P != best_P:
-        print(
-            f" v  = speed-optimal (P={speed_P},"
-            f" serial depth"
-            f" {_serial_depth(Ny // speed_P, p, speed_P, True)})"
-        )
+    if alt_P and alt_P != best_P:
+        alt_mode = "dense reduced" if block_thomas else "block-Thomas"
+        print(f"{alt_marker} = {alt_mode} optimal (P={alt_P})")
     print(
-        "    Total column = both Lk + Hk operators"
-        " (block + reduced + spike matrices)"
+        f"    Total = all SPIKE operators"
+        f" ({n_ops}x: block + reduced + spike matrices)"
     )
-    if banded:
-        print("    depth = ceil(m/p) + P (per-block + reduced scan steps)")
     print(
         "    AI = arithmetic intensity of per-block LU"
         " (FLOP/byte; higher is better for GPU)"

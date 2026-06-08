@@ -130,11 +130,11 @@ class Fourier:
     r"""Wavenumber grids for the cylindrical geometry.
 
     Broadcasting shapes match the spectral layout
-    ``(Nm, Nkz, Nr)`` = ``(nz-1, nx//2, ny)``:
+    ``(Nr, Nm, Nkz)`` = ``(ny, nz-1, nx//2)``:
 
-    - ``kz``: shape ``(1, nx//2, 1)`` -- axial wavenumber
+    - ``kz``: shape ``(1, 1, nx//2)`` -- axial wavenumber
       (real FFT on the streamwise ``x`` parameter direction).
-    - ``m``: shape ``(nz-1, 1, 1)`` -- azimuthal mode number
+    - ``m``: shape ``(1, nz-1, 1)`` -- azimuthal mode number
       (complex FFT on the ``z`` parameter direction with
       `$l_z = 2\pi$`, so integer-valued).
 
@@ -152,7 +152,7 @@ class Fourier:
     `$k_z = 0$`, accounting for the Hermitian symmetry of
     the real FFT.
 
-    ``m_is_even`` is a boolean mask ``(nz-1, 1, 1)``
+    ``m_is_even`` is a boolean mask ``(1, nz-1, 1)``
     selecting the azimuthal modes where `$m$` is even, used
     to choose the correct parity-reduced FD matrices.
     """
@@ -174,8 +174,8 @@ class Fourier:
         else:
             kz_vals = kz_true
         self.kz = jax.device_put(
-            kz_vals.reshape([1, -1, 1]).astype(sharding.float_type),
-            P(None, sharding.a1, None),
+            kz_vals.reshape([1, 1, -1]).astype(sharding.float_type),
+            P(None, None, sharding.a1),
         )
 
         m_true = complex_harmonics(params.res.nz)
@@ -184,8 +184,8 @@ class Fourier:
         else:
             m_vals = m_true
         self.m = jax.device_put(
-            m_vals.reshape([-1, 1, 1]).astype(sharding.float_type),
-            P(sharding.a0, None, None),
+            m_vals.reshape([1, -1, 1]).astype(sharding.float_type),
+            P(None, sharding.a0, None),
         )
 
         self.k_metric = jnp.where(self.kz == 0, 1, 2).astype(
@@ -240,19 +240,19 @@ def get_pert_enstrophy_cyl(
     ----------
     state:
         Spectral velocity in `$(u_z, u_+, u_-)$` form,
-        shape ``(3, Nm, Nkz, Nr)``.
+        shape ``(3, Nr, Nm, Nkz)``.
     D1_pos:
         Common part of first-derivative FD matrix.
     D1_ghost:
         Ghost correction for `$D_1$`.
     m_is_even:
-        Boolean mask for even `$m$`, shape ``(Nm, 1, 1)``.
+        Boolean mask for even `$m$`, shape ``(1, Nm, 1)``.
     inv_r:
         `$1/r$` on the radial grid.
     m:
-        Azimuthal mode number, shape ``(Nm, 1, 1)``.
+        Azimuthal mode number, shape ``(1, Nm, 1)``.
     kz2:
-        `$k_z^2$`, shape ``(1, Nkz, 1)``.
+        `$k_z^2$`, shape ``(1, 1, Nkz)``.
     k_metric:
         Hermitian-symmetry weight for the real FFT axis.
     y_weights:
@@ -263,19 +263,20 @@ def get_pert_enstrophy_cyl(
     p_sign_pm = -p_sign_z
 
     # Batched D1 matvecs (2 GEMMs for all 3 components).
-    dy_pos = jnp.einsum("ij, cmzj -> cmzi", D1_pos, state)
-    dy_ghost = jnp.einsum("ij, cmzj -> cmzi", D1_ghost, state)
+    dy_pos = jnp.einsum("ij, cjmz -> cimz", D1_pos, state)
+    dy_ghost = jnp.einsum("ij, cjmz -> cimz", D1_ghost, state)
     p_signs = jnp.stack([p_sign_z, p_sign_pm, p_sign_pm])
     dy_state = dy_pos + p_signs * dy_ghost
 
     enstrophy_D1 = get_norm2_cyl(dy_state, k_metric, y_weights)
 
     # Azimuthal term: m_eff/r * u for each component.
+    inv_r_3d = inv_r[:, None, None]
     state_m = jnp.stack(
         [
-            m * inv_r * state[0],
-            (m + 1) * inv_r * state[1],
-            (m - 1) * inv_r * state[2],
+            m * inv_r_3d * state[0],
+            (m + 1) * inv_r_3d * state[1],
+            (m - 1) * inv_r_3d * state[2],
         ]
     )
     enstrophy_m = get_norm2_cyl(state_m, k_metric, y_weights)
@@ -299,7 +300,7 @@ def get_norm2_cyl(state: Array, k_metric: Array, y_weights: Array) -> Array:
     ----------
     state:
         Spectral velocity in `$(u_z, u_+, u_-)$` form,
-        shape ``(3, Nm, Nkz, Nr)``.
+        shape ``(3, Nr, Nm, Nkz)``.
     k_metric:
         Hermitian-symmetry weight for the real FFT axis.
     y_weights:
@@ -968,16 +969,22 @@ class CylindricalFlow:
         c_impl = params.step.implicitness
         nu = 1.0 / params.phys.re
 
-        # Effective azimuthal mode squared for each component.
-        m_plus_1_sq = (fourier.m + 1) ** 2  # (Nm, 1, 1)
-        m_minus_1_sq = (fourier.m - 1) ** 2
-        m_sq = fourier.m2
+        # Solver-internal wavenumber arrays: squeeze y dim
+        # from field layout (1, Nm, ...) to (Nm, ..., 1).
+        m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
+        kz2_s = fourier.kz2[0, ..., None]  # (1, Nkz, 1)
+        k2z_s = fourier.k2_is_zero[0, ..., None]  # (Nm, Nkz, 1)
+        m_is_even_s = fourier.m_is_even[0, ..., None]  # (Nm, 1, 1)
+
+        m_plus_1_sq = (m_s + 1) ** 2
+        m_minus_1_sq = (m_s - 1) ** 2
+        m_sq = m_s**2
 
         # Parity masks:
         # pressure / u_z use (-1)^m  -> m_is_even
         # u_+, u_- use (-1)^{m+1}   -> ~m_is_even (opposite)
-        m_is_even_p = fourier.m_is_even  # (Nm, 1, 1)
-        m_is_even_v = 1.0 - fourier.m_is_even  # opposite
+        m_is_even_p = m_is_even_s
+        m_is_even_v = 1.0 - m_is_even_s
 
         if params.solver.backend == "banded":
             bt = params.solver.block_thomas
@@ -991,8 +998,8 @@ class CylindricalFlow:
                 m_is_even_p,
                 m_sq,
                 self.inv_r2,
-                fourier.kz2,
-                fourier.k2_is_zero,
+                kz2_s,
+                k2z_s,
                 fd_p,
                 P_blk,
                 m_blk,
@@ -1006,7 +1013,7 @@ class CylindricalFlow:
                 m_is_even_v,
                 m_plus_1_sq,
                 self.inv_r2,
-                fourier.kz2,
+                kz2_s,
                 dt,
                 c_impl,
                 nu,
@@ -1023,7 +1030,7 @@ class CylindricalFlow:
                 m_is_even_v,
                 m_minus_1_sq,
                 self.inv_r2,
-                fourier.kz2,
+                kz2_s,
                 dt,
                 c_impl,
                 nu,
@@ -1040,7 +1047,7 @@ class CylindricalFlow:
                 m_is_even_p,
                 m_sq,
                 self.inv_r2,
-                fourier.kz2,
+                kz2_s,
                 dt,
                 c_impl,
                 nu,
@@ -1062,8 +1069,8 @@ class CylindricalFlow:
                 m_is_even_p,
                 m_sq,
                 self.inv_r2,
-                fourier.kz2,
-                fourier.k2_is_zero,
+                kz2_s,
+                k2z_s,
             )
             self.Lk_op = DenseJAXSolver(Lk_dense)
 
@@ -1073,7 +1080,7 @@ class CylindricalFlow:
                 m_is_even_v,
                 m_plus_1_sq,
                 self.inv_r2,
-                fourier.kz2,
+                kz2_s,
                 dt,
                 c_impl,
                 nu,
@@ -1086,7 +1093,7 @@ class CylindricalFlow:
                 m_is_even_v,
                 m_minus_1_sq,
                 self.inv_r2,
-                fourier.kz2,
+                kz2_s,
                 dt,
                 c_impl,
                 nu,
@@ -1099,7 +1106,7 @@ class CylindricalFlow:
                 m_is_even_p,
                 m_sq,
                 self.inv_r2,
-                fourier.kz2,
+                kz2_s,
                 dt,
                 c_impl,
                 nu,
@@ -1157,7 +1164,8 @@ class CylindricalFlow:
         (continuity forces `$u_r \\equiv 0$` there), while
         preserving the `$u_\\theta$` part.
         """
-        # Unit RHS at wall (last grid point).
+        # All solver work uses (Nm, Nkz, Nr) layout; results
+        # are transposed to field layout (Nr, Nm, Nkz) at the end.
         e_wall = (
             jnp.zeros(
                 (Nm, Nkz, Nr),
@@ -1167,51 +1175,49 @@ class CylindricalFlow:
             .at[..., -1]
             .set(1.0)
         )
-        self.p1 = self.Lk_op.solve(e_wall)
+        p1_s = self.Lk_op.solve(e_wall)
 
         # Pressure gradient components for the +/- equations.
-        # (nabla p)_+ = D1 p - (m/r) p
-        # (nabla p)_- = D1 p + (m/r) p
-        # p1 has parity (-1)^m -> use parity-corrected D1.
-        parity_sign_p = fourier.m_is_even * 2 - 1
+        parity_sign_p_s = fourier.m_is_even[0, ..., None] * 2 - 1
         D1_p1 = jnp.einsum(
-            "ij, mzj -> mzi", self.D1_pos, self.p1
-        ) + parity_sign_p * jnp.einsum(
-            "ij, mzj -> mzi", self.D1_ghost, self.p1
-        )
-        m_over_r = fourier.m * self.inv_r  # (Nm, 1, Nr)
+            "ij, mzj -> mzi", self.D1_pos, p1_s
+        ) + parity_sign_p_s * jnp.einsum("ij, mzj -> mzi", self.D1_ghost, p1_s)
+        m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
+        m_over_r_s = m_s * self.inv_r  # (Nm, 1, Nr)
 
-        rhs_v_plus = -(D1_p1 - m_over_r * self.p1)
-        rhs_v_minus = -(D1_p1 + m_over_r * self.p1)
+        rhs_v_plus = -(D1_p1 - m_over_r_s * p1_s)
+        rhs_v_minus = -(D1_p1 + m_over_r_s * p1_s)
         rhs_v_plus = rhs_v_plus.at[..., -1].set(0.0)
         rhs_v_minus = rhs_v_minus.at[..., -1].set(0.0)
-        q_rhs = self.p1.at[..., -1].set(0.0)
+        q_rhs = p1_s.at[..., -1].set(0.0)
 
         # Batched solve: component order (plus, minus, z).
         rhs_stack = jnp.stack([rhs_v_plus, rhs_v_minus, q_rhs])
         result_stack = self.Hk_op.solve(rhs_stack)
-        self.v_plus_1 = result_stack[0]
-        self.v_minus_1 = result_stack[1]
-        self.q_z_1 = result_stack[2]
+        vp1_s = result_stack[0]
+        vm1_s = result_stack[1]
+        qz1_s = result_stack[2]
 
         # Zero the u_r part at the mean mode, preserving u_theta.
-        vr_corr = jnp.where(
-            fourier.k2_is_zero,
-            (self.v_plus_1 + self.v_minus_1) / 2,
-            0.0,
-        )
-        self.v_plus_1 = self.v_plus_1 - vr_corr
-        self.v_minus_1 = self.v_minus_1 - vr_corr
+        k2z_s = fourier.k2_is_zero[0, ..., None]  # (Nm, Nkz, 1)
+        vr_corr = jnp.where(k2z_s, (vp1_s + vm1_s) / 2, 0.0)
+        vp1_s = vp1_s - vr_corr
+        vm1_s = vm1_s - vr_corr
 
-        # 1x1 influence matrix:
-        # M = D1_wall . (v_plus_1 + v_minus_1) / 2
+        # 1x1 influence matrix.
         D1_wall_row = self.D1_wall.ravel()  # (Nr,)
-        ur_1 = (self.v_plus_1 + self.v_minus_1) / 2
+        ur_1 = (vp1_s + vm1_s) / 2
         M = jnp.einsum("j, mzj -> mz", D1_wall_row, ur_1)
 
-        is_mean = fourier.k2_is_zero[..., 0]  # (Nm, Nkz)
+        is_mean = fourier.k2_is_zero[0]  # (Nm, Nkz)
         safe_M = jnp.where(is_mean, 1.0, M)
         self.M_inv = jnp.where(is_mean, 0.0, 1.0 / safe_M)
+
+        # Transpose to field layout (Nr, Nm, Nkz).
+        self.p1 = p1_s.transpose(2, 0, 1)
+        self.v_plus_1 = vp1_s.transpose(2, 0, 1)
+        self.v_minus_1 = vm1_s.transpose(2, 0, 1)
+        self.q_z_1 = qz1_s.transpose(2, 0, 1)
 
     def _precompute_bulk_response(self, Nm: int, Nkz: int, Nr: int) -> None:
         r"""Precompute the Helmholtz response for constant-bulk-
@@ -1241,8 +1247,9 @@ class CylindricalFlow:
             return
 
         # Unit uniform RHS at the mean mode only, zero wall BC.
+        # Solver-internal layout (Nm, Nkz, Nr).
         ones_vec = jnp.ones(Nr, dtype=sharding.float_type).at[-1].set(0.0)
-        rhs = jnp.where(fourier.k2_is_zero, ones_vec, 0.0)
+        rhs = jnp.where(fourier.k2_is_zero[0, ..., None], ones_vec, 0.0)
 
         # Solve using the z-component (index 2) of the combined
         # Hk operator via a padded batch (one-time init cost).
@@ -1250,7 +1257,7 @@ class CylindricalFlow:
         h_full = self.Hk_op.solve(jnp.stack([zeros, zeros, rhs]))[2]
 
         self.h_bulk_response = jax.device_put(
-            extract_mean_mode(h_full[None])[0],
+            extract_mean_mode(h_full.transpose(2, 0, 1)[None])[0],
             sharding.no_shard,
         )
         H_bulk = 2 * jnp.dot(self.y_weights, self.h_bulk_response)
@@ -1288,7 +1295,7 @@ def _curl_fn(
 
     im = 1j * fourier_.m
     ikz = 1j * fourier_.kz
-    inv_r = flow_.inv_r  # (Nr,)
+    inv_r = flow_.inv_r[:, None, None]
 
     # Parity signs: u_theta has parity (-1)^{m+1},
     # u_z has parity (-1)^m.
@@ -1297,8 +1304,8 @@ def _curl_fn(
 
     # Batch D1_pos and D1_ghost into two GEMMs.
     fields = jnp.stack([utheta, uz])
-    dy_common = jnp.einsum("ij, cmzj -> cmzi", flow_.D1_pos, fields)
-    dy_ghost = jnp.einsum("ij, cmzj -> cmzi", flow_.D1_ghost, fields)
+    dy_common = jnp.einsum("ij, cjmz -> cimz", flow_.D1_pos, fields)
+    dy_ghost = jnp.einsum("ij, cjmz -> cimz", flow_.D1_ghost, fields)
     dy_utheta = dy_common[0] + parity_sign_v * dy_ghost[0]
     dy_uz = dy_common[1] + parity_sign_p * dy_ghost[1]
 
@@ -1381,22 +1388,23 @@ def _abase_matvec(
     Parameters
     ----------
     u:
-        Field, shape ``(Nm, Nkz, Nr)``.
+        Field, shape ``(Nr, Nm, Nkz)``.
     flow\_:
         Cylindrical flow data (uses ``D1_pos``,
         ``D2_pos``, ``D1_ghost``, ``D2_ghost``,
         ``inv_r``).
     parity_sign:
         `$(-1)^{m_{\mathrm{eff}}}$`, shape
-        ``(Nm, 1, 1)``.
+        ``(1, Nm, 1)``.
     """
-    D2_u = jnp.einsum("ij, mzj -> mzi", flow_.D2_pos, u)
-    D1_u = jnp.einsum("ij, mzj -> mzi", flow_.D1_pos, u)
-    common = D2_u + flow_.inv_r * D1_u
+    inv_r = flow_.inv_r[:, None, None]
+    D2_u = jnp.einsum("ij, jmz -> imz", flow_.D2_pos, u)
+    D1_u = jnp.einsum("ij, jmz -> imz", flow_.D1_pos, u)
+    common = D2_u + inv_r * D1_u
 
-    D2g_u = jnp.einsum("ij, mzj -> mzi", flow_.D2_ghost, u)
-    D1g_u = jnp.einsum("ij, mzj -> mzi", flow_.D1_ghost, u)
-    ghost = D2g_u + flow_.inv_r * D1g_u
+    D2g_u = jnp.einsum("ij, jmz -> imz", flow_.D2_ghost, u)
+    D1g_u = jnp.einsum("ij, jmz -> imz", flow_.D1_ghost, u)
+    ghost = D2g_u + inv_r * D1g_u
 
     return common + parity_sign * ghost
 
@@ -1419,13 +1427,14 @@ def _lk_matvec(
     parity_sign = fourier_.m_is_even * 2 - 1
 
     Abase_u = _abase_matvec(u, flow_, parity_sign)
-    out = Abase_u - (fourier_.m2 * flow_.inv_r2 + fourier_.kz2) * u
+    inv_r2 = flow_.inv_r2[:, None, None]
+    out = Abase_u - (fourier_.m2 * inv_r2 + fourier_.kz2) * u
 
     # Wall row: Neumann D1[-1,:] for non-mean, pin for mean.
     D1_wall_row = flow_.D1_wall.ravel()
-    wall_val = jnp.einsum("j, mzj -> mz", D1_wall_row, u)
-    bot = jnp.where(fourier_.k2_is_zero[..., 0], u[..., -1], wall_val)
-    return out.at[..., -1].set(bot)
+    wall_val = jnp.einsum("j, jmz -> mz", D1_wall_row, u)
+    bot = jnp.where(fourier_.k2_is_zero[0], u[-1], wall_val)
+    return out.at[-1].set(bot)
 
 
 # ── IMM iteration (1x1) ─────────────────────────────────────────
@@ -1491,7 +1500,7 @@ def _imm_iteration(
     NLz_j, NLp_j, NLm_j = nonlin_j[0], nonlin_j[1], nonlin_j[2]
 
     ikz = 1j * fourier_.kz
-    inv_r = flow_.inv_r
+    inv_r = flow_.inv_r[:, None, None]
     m = fourier_.m
 
     # Parity signs for each component type.
@@ -1505,8 +1514,8 @@ def _imm_iteration(
     # Batch all D1 y-derivatives with (-1)^{m+1} parity into
     # one GEMM each for D1_pos and D1_ghost (2 instead of 4).
     all_vparity = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n])
-    dy_common = jnp.einsum("ij, cmzj -> cmzi", flow_.D1_pos, all_vparity)
-    dy_ghost = jnp.einsum("ij, cmzj -> cmzi", flow_.D1_ghost, all_vparity)
+    dy_common = jnp.einsum("ij, cjmz -> cimz", flow_.D1_pos, all_vparity)
+    dy_ghost = jnp.einsum("ij, cjmz -> cimz", flow_.D1_ghost, all_vparity)
     dy_all = dy_common + parity_sign_v * dy_ghost
 
     # Cylindrical divergence at time n.
@@ -1533,20 +1542,20 @@ def _imm_iteration(
     f_hat = div_n / dt + c * div_NLj + (1 - c) * div_NLn + (1 - c) * nu * Lk_d
 
     # Stage 2: particular pressure.
-    f_hat_P = f_hat.at[..., -1].set(0.0)
-    pP = flow_.Lk_op.solve(f_hat_P)
+    f_hat_P = f_hat.at[-1].set(0.0)
+    pP = flow_.Lk_op.solve(f_hat_P.transpose(1, 2, 0)).transpose(2, 0, 1)
 
     # Stage 3: Helmholtz solves for each component.
     # Batch the D1 derivatives of pP and vel_n into shared
     # GEMMs (2 D1 GEMMs instead of 4 separate ones).
     vel_n_stack = jnp.stack([up_n, um_n, uz_n])
     pP_and_vel = jnp.concatenate([pP[None], vel_n_stack])
-    D1_batch = jnp.einsum("ij, cmzj -> cmzi", flow_.D1_pos, pP_and_vel)
-    D1g_batch = jnp.einsum("ij, cmzj -> cmzi", flow_.D1_ghost, pP_and_vel)
+    D1_batch = jnp.einsum("ij, cjmz -> cimz", flow_.D1_pos, pP_and_vel)
+    D1g_batch = jnp.einsum("ij, cjmz -> cimz", flow_.D1_ghost, pP_and_vel)
 
     # pP pressure gradient (parity (-1)^m -> parity_sign_p).
     D1_pP = D1_batch[0] + parity_sign_p * D1g_batch[0]
-    m_over_r = m * inv_r
+    m_over_r = m * inv_r  # (1, Nm, 1) * (Nr, 1, 1) → (Nr, Nm, 1)
 
     grad_pP_plus = D1_pP - m_over_r * pP
     grad_pP_minus = D1_pP + m_over_r * pP
@@ -1555,18 +1564,19 @@ def _imm_iteration(
     # Batched `$H_k^-$` matvec for all three components.
     D1_vel = D1_batch[1:]
     D1g_vel = D1g_batch[1:]
-    D2_all = jnp.einsum("ij, cmzj -> cmzi", flow_.D2_pos, vel_n_stack)
-    D2g_all = jnp.einsum("ij, cmzj -> cmzi", flow_.D2_ghost, vel_n_stack)
-    common_hk = D2_all + flow_.inv_r * D1_vel
-    ghost_hk = D2g_all + flow_.inv_r * D1g_vel
+    D2_all = jnp.einsum("ij, cjmz -> cimz", flow_.D2_pos, vel_n_stack)
+    D2g_all = jnp.einsum("ij, cjmz -> cimz", flow_.D2_ghost, vel_n_stack)
+    common_hk = D2_all + inv_r * D1_vel
+    ghost_hk = D2g_all + inv_r * D1g_vel
     parity_hk = jnp.stack([parity_sign_v, parity_sign_v, parity_sign_p])
     Abase_stack = common_hk + parity_hk * ghost_hk
     meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq])
+    inv_r2 = flow_.inv_r2[:, None, None]
     lapl_stack = (
-        Abase_stack - (meff2_stack * flow_.inv_r2 + fourier_.kz2) * vel_n_stack
+        Abase_stack - (meff2_stack * inv_r2 + fourier_.kz2) * vel_n_stack
     )
     Hk_minus_stack = (1.0 / dt) * vel_n_stack + (1.0 - c) * nu * lapl_stack
-    Hk_minus_stack = Hk_minus_stack.at[..., -1].set(vel_n_stack[..., -1])
+    Hk_minus_stack = Hk_minus_stack.at[:, -1].set(vel_n_stack[:, -1])
 
     R_stack = (
         Hk_minus_stack
@@ -1576,7 +1586,7 @@ def _imm_iteration(
     )
 
     # Zero wall BC (Dirichlet no-slip).
-    R_stack = R_stack.at[..., -1].set(0.0)
+    R_stack = R_stack.at[:, -1].set(0.0)
 
     # Zero the u_r part of the +/- RHS at the mean mode so
     # the Helmholtz solves produce u_r = 0 there.  At m=0,
@@ -1589,20 +1599,22 @@ def _imm_iteration(
     R_stack = R_stack.at[1].add(-Rr_corr)
 
     # Batched Helmholtz solve: component order (plus, minus, z).
-    arb_stack = flow_.Hk_op.solve(R_stack)
+    arb_stack = flow_.Hk_op.solve(R_stack.transpose(0, 2, 3, 1)).transpose(
+        0, 3, 1, 2
+    )
     up_arb, um_arb, uz_arb = arb_stack[0], arb_stack[1], arb_stack[2]
 
     # Stage 4: wall divergence residual.
     D1_wall_row = flow_.D1_wall.ravel()
     ur_arb = (up_arb + um_arb) / 2
-    d_wall = jnp.einsum("j, mzj -> mz", D1_wall_row, ur_arb)
+    d_wall = jnp.einsum("j, jmz -> mz", D1_wall_row, ur_arb)
 
     # Mean mode: pressure is a gauge; zero the residual.
-    d_wall = jnp.where(fourier_.k2_is_zero[..., 0], 0.0, d_wall)
+    d_wall = jnp.where(fourier_.k2_is_zero[0], 0.0, d_wall)
 
     # Stage 5: influence matrix correction (scalar per mode).
     alpha = -flow_.M_inv * d_wall  # (Nm, Nkz)
-    alpha = alpha[..., None]  # (Nm, Nkz, 1)
+    alpha = alpha[None]  # (1, Nm, Nkz)
 
     # Stage 6: corrected velocity.
     up_new = up_arb + alpha * flow_.v_plus_1
@@ -1630,7 +1642,9 @@ def _imm_iteration(
             - ikz * alpha * flow_.q_z_1
             + jnp.where(
                 fourier_.k2_is_zero,
-                -bulk_uz * flow_.H_bulk_inv * flow_.h_bulk_response,
+                -bulk_uz
+                * flow_.H_bulk_inv
+                * flow_.h_bulk_response[:, None, None],
                 0.0,
             )
         )
