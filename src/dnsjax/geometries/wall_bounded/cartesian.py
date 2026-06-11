@@ -28,6 +28,7 @@ from ...fd import (
 )
 from ...operators import (
     complex_harmonics,
+    pad_harmonics,
     phys_to_spec_2d,
     real_harmonics,
     spec_to_phys_2d,
@@ -66,7 +67,14 @@ class Fourier:
     Broadcasting shapes match the spectral layout
     ``(ny, nz_spec, nx_spec)``.  When ``nz_spec > nz - 1``
     or ``nx_spec > nx // 2`` (spectral padding for 2D
-    divisibility), the extra trailing entries are zero.
+    divisibility), the trailing padding entries carry nonzero
+    beyond-resolution placeholder wavenumbers (see
+    ``pad_harmonics`` in :mod:`dnsjax.operators`): every
+    per-mode operator assembled at a padding slot is then
+    regular, and the fields there are identically zero (the
+    forward FFT re-zeroes the padding slots on every
+    evaluation), so zero RHS gives zero solution and the
+    padding modes need no special-casing.
 
     Attributes
     ----------
@@ -78,53 +86,53 @@ class Fourier:
         sharded on `$k_z$` (``np0``).
     k_metric:
         Hermitian-symmetry weight: 2 for `$k_x > 0$`,
-        1 for `$k_x = 0$`.
+        1 for `$k_x = 0$` (padding columns get 2 — inert,
+        they only ever weight zero fields).
     k2:
         Squared horizontal wavenumber
         `$k_x^2 + k_z^2$`.
-    k2_is_zero:
-        Boolean mask for the mean mode (`$k^2 = 0$`).
-        Also ``True`` at the zero-padded dummy modes
-        appended for 2D mesh divisibility (their stored
-        `$k_x$`/`$k_z$` values are zero) — intended for
-        operator gauge fixing, where the padded systems
-        need the pin row to stay nonsingular.
     mean_mask:
-        Boolean mask that is ``True`` only at the **true**
-        mean mode `$(k_z, k_x) = (0, 0)$` (global index
-        ``(0, 0)``; padding modes are appended at the end).
-        Mean-mode *writes* (bulk-velocity corrections) must
-        use this mask instead of ``k2_is_zero`` so the dummy
-        padding modes stay exactly zero.
+        Boolean mask that is ``True`` only at the mean mode
+        `$(k_z, k_x) = (0, 0)$` (global index ``(0, 0)``;
+        padding modes are appended at the end).  The mean
+        mode is the only `$k^2 = 0$` mode, so this single
+        mask serves the operator pin row, the
+        influence-matrix mean branch, and all mean-mode
+        physics (projections and bulk-velocity writes).
     """
 
     kx: Array = field(init=False)
     kz: Array = field(init=False)
     k_metric: Array = field(init=False)
     k2: Array = field(init=False)
-    k2_is_zero: Array = field(init=False)
     mean_mask: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        kx_true = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
-        if sharding.nx_spec_pad:
-            kx_vals = jnp.concatenate(
-                [kx_true, jnp.zeros(sharding.nx_spec_pad)]
+        kx_vals = (
+            pad_harmonics(
+                real_harmonics(params.res.nx),
+                params.res.nx,
+                sharding.nx_spec_pad,
             )
-        else:
-            kx_vals = kx_true
+            * 2
+            * jnp.pi
+            / params.geo.lx
+        )
         self.kx = jax.device_put(
             kx_vals.reshape([1, 1, -1]).astype(sharding.float_type),
             P(None, None, sharding.a1),
         )
 
-        kz_true = complex_harmonics(params.res.nz) * 2 * jnp.pi / params.geo.lz
-        if sharding.nz_spec_pad:
-            kz_vals = jnp.concatenate(
-                [kz_true, jnp.zeros(sharding.nz_spec_pad)]
+        kz_vals = (
+            pad_harmonics(
+                complex_harmonics(params.res.nz),
+                params.res.nz,
+                sharding.nz_spec_pad,
             )
-        else:
-            kz_vals = kz_true
+            * 2
+            * jnp.pi
+            / params.geo.lz
+        )
         self.kz = jax.device_put(
             kz_vals.reshape([1, -1, 1]).astype(sharding.float_type),
             P(None, sharding.a0, None),
@@ -135,12 +143,11 @@ class Fourier:
         )
 
         self.k2 = self.kx**2 + self.kz**2
-        self.k2_is_zero = self.k2 == 0.0
 
-        # One-hot at the true mean mode (kz, kx) = (0, 0): the
-        # true modes precede the padding, so it is global index
-        # (0, 0).  See the class docstring (mean_mask vs
-        # k2_is_zero).
+        # One-hot at the mean mode (kz, kx) = (0, 0): the true
+        # modes precede the padding, so it is global index (0, 0).
+        # The mean mode is the only k^2 = 0 mode (padding slots
+        # carry nonzero placeholder wavenumbers).
         e_kx = (
             jnp.zeros(kx_vals.shape[0], dtype=sharding.float_type)
             .at[0]
@@ -312,7 +319,7 @@ def _build_Lk_blocks_gpu(
     D1: Array,
     D2: Array,
     k2: Array,
-    k2_is_zero: Array,
+    mean_mask: Array,
     p: int,
     P: int,
     m: int,
@@ -321,10 +328,11 @@ def _build_Lk_blocks_gpu(
 
     The Neumann-BC pressure Poisson operator
     `$L_k = D_2 - k^2 I$` (with `$D_1$` wall rows for
-    `$k^2 \ne 0$` and a top-wall pin for the `$k^2 = 0$`
-    mean mode) is assembled directly into per-block dense
-    form for the SPIKE factorisation.  No
-    `$(N_y, N_y)$` matrix is materialised.
+    `$k^2 \ne 0$` and a top-wall pin for the mean mode,
+    the only `$k^2 = 0$` system) is assembled directly
+    into per-block dense form for the SPIKE
+    factorisation.  No `$(N_y, N_y)$` matrix is
+    materialised.
 
     Parameters
     ----------
@@ -334,7 +342,7 @@ def _build_Lk_blocks_gpu(
         Second-derivative matrix, shape ``(Ny, Ny)``.
     k2:
         `$k_x^2 + k_z^2$`, shape ``(Nkz, Nkx, 1)``.
-    k2_is_zero:
+    mean_mask:
         Mean-mode boolean mask, same shape as *k2*.
     p:
         FD order (half-bandwidth).
@@ -375,10 +383,10 @@ def _build_Lk_blocks_gpu(
     A_blocks = A_blocks.at[:, :, 0, 0, :].set(D1_row0[None, None])
 
     # Row Ny-1 (block P-1, local row m-1): D1[-1,:] for
-    # k2 != 0, pin row [...,0,1] for k2 == 0.
+    # all modes, pin row [...,0,1] at the mean mode.
     D1_rowN = D1[-1, (P - 1) * m :]
     pin_row = jnp.zeros(m, dtype=dtype).at[-1].set(1.0)
-    rowN = jnp.where(k2_is_zero, pin_row, D1_rowN)
+    rowN = jnp.where(mean_mask, pin_row, D1_rowN)
     A_blocks = A_blocks.at[:, :, -1, -1, :].set(rowN)
 
     # Coupling corners (mode-independent, from D2).
@@ -470,7 +478,7 @@ def _build_Hk_blocks_gpu(
 
 
 def _build_Lk_dense_gpu(
-    D1: Array, D2: Array, k2: Array, k2_is_zero: Array
+    D1: Array, D2: Array, k2: Array, mean_mask: Array
 ) -> Array:
     """Build the Neumann-BC Laplacian `$L_k$` in dense form on GPU.
 
@@ -489,11 +497,11 @@ def _build_Lk_dense_gpu(
     # Row 0: D1[0, :] for all modes (Neumann).
     Lk = Lk.at[..., 0, :].set(D1[0, :])
 
-    # Row -1: D1[-1, :] for k2 != 0; pin row [0, ..., 0, 1]
-    # for k2 == 0.  k2_is_zero is (Nkz, Nkx, 1); `jnp.where`
+    # Row -1: D1[-1, :] for all modes; pin row [0, ..., 0, 1]
+    # at the mean mode.  mean_mask is (Nkz, Nkx, 1); `jnp.where`
     # broadcasts the (Ny,) branches to (Nkz, Nkx, Ny).
     pin = eye[-1, :]  # (Ny,)
-    row_N = jnp.where(k2_is_zero, pin, D1[-1, :])
+    row_N = jnp.where(mean_mask, pin, D1[-1, :])
     Lk = Lk.at[..., -1, :].set(row_N)
 
     return Lk
@@ -627,7 +635,7 @@ class CartesianFlow:
 
         # Solver-internal wavenumber arrays: (Nkz, Nkx, 1).
         k2_s = fourier.k2[0, ..., None]
-        k2z_s = fourier.k2_is_zero[0, ..., None]
+        mean_s = fourier.mean_mask[0, ..., None]
 
         if params.solver.backend == "banded":
             bt = params.solver.block_thomas
@@ -640,7 +648,7 @@ class CartesianFlow:
                 self.D1,
                 self.D2,
                 k2_s,
-                k2z_s,
+                mean_s,
                 p,
                 P_blk,
                 m_blk,
@@ -664,7 +672,7 @@ class CartesianFlow:
             # `(Nkz, Nkx, Ny, Ny)` matrices are built, LU-factored
             # (donated, so the factors reuse their buffers), then
             # dropped — only the factors are kept.
-            Lk_dense = _build_Lk_dense_gpu(self.D1, self.D2, k2_s, k2z_s)
+            Lk_dense = _build_Lk_dense_gpu(self.D1, self.D2, k2_s, mean_s)
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
             Hk_dense = _build_Hk_dense_gpu(self.D2, k2_s, dt, c, nu)
@@ -696,13 +704,17 @@ class CartesianFlow:
         within this derivation (the IMM never assembles the
         pressure), so they are not stored on the dataclass.
 
-        The mean mode (`$k^2 = 0$`) is handled analytically:
-        ``M`` has a zero second column there
-        (`$p_2 \equiv 1$` is a pressure gauge), so the
+        The mean mode (the only `$k^2 = 0$` system) is
+        handled analytically: ``M`` has a zero second column
+        there (`$p_2 \equiv 1$` is a pressure gauge), so the
         `$2 \times 2$` inverse is replaced by
         `$[[1/M_{00}, 0], [0, 0]]$`.  The ``jnp.where``
         around ``safe_det`` keeps the regular branch NaN-free
-        before the selection happens.
+        before the selection happens.  Padding modes take the
+        regular branch (their placeholder `$k^2 \ne 0$`
+        systems are as well-posed as physical ones); the
+        values are inert, multiplied only by the exactly-zero
+        wall residuals of zero fields.
 
         After ``M_inv`` is built, ``v1`` and ``v2`` are zeroed
         at the mean mode so the IMM velocity correction produces
@@ -752,7 +764,7 @@ class CartesianFlow:
         M10 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], v1_s)
         M11 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], v2_s)
 
-        is_mean = fourier.k2_is_zero[0]
+        is_mean = fourier.mean_mask[0]
         det = M00 * M11 - M01 * M10
         safe_det = jnp.where(is_mean, 1.0, det)
         inv_00 = jnp.where(is_mean, 1.0 / M00, M11 / safe_det)
@@ -774,8 +786,8 @@ class CartesianFlow:
         self.q2 = q2_s.transpose(2, 0, 1)
 
         # Zero homogeneous wall-normal velocity at the mean mode.
-        self.v1 = jnp.where(fourier.k2_is_zero, 0.0, self.v1)
-        self.v2 = jnp.where(fourier.k2_is_zero, 0.0, self.v2)
+        self.v1 = jnp.where(fourier.mean_mask, 0.0, self.v1)
+        self.v2 = jnp.where(fourier.mean_mask, 0.0, self.v2)
 
     def _precompute_bulk_response(self, Nkz: int, Nkx: int, Ny: int) -> None:
         r"""Precompute the Helmholtz response for mean-mode
@@ -814,9 +826,9 @@ class CartesianFlow:
             self.H_bulk_inv = jnp.zeros((), dtype=sharding.float_type)
             return
 
-        # Unit uniform RHS at the true mean mode only
-        # (``mean_mask``; zero-padded dummy modes get zero RHS),
-        # zero wall BCs.  Solver-internal layout (Nkz, Nkx, Ny).
+        # Unit uniform RHS at the mean mode only (``mean_mask``;
+        # all other modes, padding included, get zero RHS), zero
+        # wall BCs.  Solver-internal layout (Nkz, Nkx, Ny).
         ones_vec = (
             jnp.ones(Ny, dtype=sharding.float_type)
             .at[0]
@@ -891,9 +903,10 @@ def _lk_matvec(
     Matrix-free evaluation that avoids storing the per-mode
     ``(Nkz, Nkx, Ny, Ny)`` operator.  The interior of the
     output is `$D_2 u - k^2 u$`; the wall rows use `$D_1$`
-    to encode Neumann BCs, except for the `$k^2 = 0$` mean
-    mode where the top-wall row pins `$p_{N_y-1} = 0$`
-    (matching :func:`_build_Lk_dense_gpu`).
+    to encode Neumann BCs, except for the mean mode (the
+    only `$k^2 = 0$` mode) where the top-wall row pins
+    `$p_{N_y-1} = 0$` (matching
+    :func:`_build_Lk_dense_gpu`).
 
     Parameters
     ----------
@@ -902,13 +915,13 @@ def _lk_matvec(
     flow\_:
         Cartesian flow data (uses ``D2``, ``D1_bnd``).
     fourier\_:
-        Wavenumber grids (uses ``k2``, ``k2_is_zero``).
+        Wavenumber grids (uses ``k2``, ``mean_mask``).
     """
     D2u = apply_y_matrix(flow_.D2, u)
     out = D2u - fourier_.k2 * u
     bot = jnp.einsum("j, jzx -> zx", flow_.D1_bnd[0], u)
     top_neumann = jnp.einsum("j, jzx -> zx", flow_.D1_bnd[-1], u)
-    top = jnp.where(fourier_.k2_is_zero[0], u[-1], top_neumann)
+    top = jnp.where(fourier_.mean_mask[0], u[-1], top_neumann)
     return out.at[0].set(bot).at[-1].set(top)
 
 
@@ -983,11 +996,11 @@ def _imm_iteration(
        factorisation `$u^{(i)} = -i k_x q_i$`,
        `$w^{(i)} = -i k_z q_i$` (the scalar `$-i k_x$`,
        `$-i k_z$` commute with `$H_k^{-1}$` per mode).
-    7. Zero the mean-mode (`$k^2 = 0$`) wall-normal velocity
-       `$v$`.  Continuity `$\partial v / \partial y = 0$`
-       plus no-slip at both walls forces `$v \equiv 0$` there;
-       the projection prevents accumulation of numerical noise
-       from the Helmholtz RHS.
+    7. Zero the mean-mode wall-normal velocity `$v$`.
+       Continuity `$\partial v / \partial y = 0$` plus
+       no-slip at both walls forces `$v \equiv 0$` there;
+       the projection prevents accumulation of numerical
+       noise from the Helmholtz RHS.
     8. *(optional)* If ``constant_bulk_velocity``, zero the
        mean-mode perturbation bulk velocity in the streamwise
        direction `$(\cos\theta, 0, \sin\theta)$`.
@@ -996,12 +1009,12 @@ def _imm_iteration(
        spanwise direction `$(-\sin\theta, 0, \cos\theta)$`.
 
     Steps 7--9 are orthogonal projections and do not
-    interfere.  The bulk-velocity writes in steps 8--9 use
-    ``mean_mask`` (true mean mode only) rather than
-    ``k2_is_zero``: the latter is also ``True`` at the
-    zero-padded dummy modes appended for 2D mesh
-    divisibility, which would otherwise accumulate the
-    corrections across steps.
+    interfere; all mean-mode projections and writes go
+    through ``mean_mask``.  Padding modes need no writes:
+    their fields are identically zero (the forward FFT
+    re-zeroes the padding slots on every evaluation), their
+    placeholder-wavenumber operators are regular, and the
+    IMM corrections vanish there.
 
     Mathematical equivalence
     ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1029,7 +1042,7 @@ def _imm_iteration(
     Nu_n, Nv_n, Nw_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]
     Nu_j, Nv_j, Nw_j = nonlin_j[0], nonlin_j[1], nonlin_j[2]
 
-    k2_is_zero = fourier_.k2_is_zero
+    mean_mask = fourier_.mean_mask
 
     # Horizontal spectral-derivative factors, reused across every stage.
     ikx = 1j * fourier_.kx
@@ -1075,7 +1088,7 @@ def _imm_iteration(
 
     # Zero v-component RHS at the mean mode so the Helmholtz
     # solve itself returns v = 0 there.
-    R_stack = R_stack.at[1].set(jnp.where(k2_is_zero, 0.0, R_stack[1]))
+    R_stack = R_stack.at[1].set(jnp.where(mean_mask, 0.0, R_stack[1]))
 
     arb_stack = flow_.Hk_op.solve(R_stack.transpose(0, 2, 3, 1)).transpose(
         0, 3, 1, 2
@@ -1086,9 +1099,9 @@ def _imm_iteration(
     # so div u|_wall = D1 v|_wall.
     d_wall = jnp.einsum("bj, jzx -> zxb", flow_.D1_bnd, v_arb)
 
-    # Mean mode (k²=0) top-wall residual is a pressure gauge; zero it.
+    # Mean-mode top-wall residual is a pressure gauge; zero it.
     d_wall = d_wall.at[..., 1].set(
-        jnp.where(k2_is_zero[0], 0.0, d_wall[..., 1])
+        jnp.where(mean_mask[0], 0.0, d_wall[..., 1])
     )
 
     # Stage 5: influence matrix algebra alpha = -M_inv @ d_wall.
@@ -1103,7 +1116,7 @@ def _imm_iteration(
     v_new = v_arb + alpha1 * flow_.v1 + alpha2 * flow_.v2
 
     # Stage 7: zero mean-mode wall-normal velocity.
-    v_new = jnp.where(k2_is_zero, 0.0, v_new)
+    v_new = jnp.where(mean_mask, 0.0, v_new)
 
     # Horizontal corrections factor through the scalar potential Δq,
     # since u^(i) = -ikx q_i and w^(i) = -ikz q_i (the -ikx, -ikz
@@ -1149,7 +1162,6 @@ def _imm_iteration(
             u_corr = u_corr - G_n * derived_params.sin_tilt
             w_corr = w_corr + G_n * derived_params.cos_tilt
 
-        mean_mask = fourier_.mean_mask
         u_new = u_new + jnp.where(mean_mask, u_corr[:, None, None], 0.0)
         w_new = w_new + jnp.where(mean_mask, w_corr[:, None, None], 0.0)
 

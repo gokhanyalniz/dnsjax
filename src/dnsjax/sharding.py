@@ -39,7 +39,7 @@ Spectral arrays have shape
 ``kz`` is sharded by ``np0``, ``kx`` by ``np1``, and ``y`` / ``ky``
 are local.  ``nz_spec`` and ``nx_spec`` may exceed the true mode
 counts (``nz - 1`` and ``nx // 2``) by up to ``np0 - 1`` or
-``np1 - 1`` zero-padded dummy modes; see :mod:`dnsjax.fft`.
+``np1 - 1`` zero-valued padding modes; see :mod:`dnsjax.fft`.
 """
 
 import dataclasses
@@ -127,8 +127,9 @@ class Sharding:
     When the spectral mode count (``nz - 1`` for `$k_z$` or
     ``nx // 2`` for `$k_x$`) is not evenly divisible by the
     corresponding mesh axis (``np0`` or ``np1``), the dimension
-    is padded to the next multiple with zero (physics-neutral)
-    dummy modes.  The padding amount is stored in ``nz_spec_pad``
+    is padded to the next multiple with zero-valued
+    (physics-neutral) padding modes.  The padding amount is
+    stored in ``nz_spec_pad``
     and ``nx_spec_pad``; the total stored mode count in
     ``nz_spec`` and ``nx_spec``.  Padding and stripping are
     handled inside :mod:`dnsjax.fft`.

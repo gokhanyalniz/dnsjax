@@ -28,10 +28,10 @@ layouts are identical and the first reshard is skipped.
 Spectral padding
 ~~~~~~~~~~~~~~~~
 If the true mode count (`$n_z - 1$` or `$n_x / 2$`) is not
-divisible by the mesh axis, zero dummy modes are appended after
-dealiasing truncation (forward) and stripped before oversampling
-zero-pad (inverse).  The padding amount is read from
-``sharding.nz_spec_pad`` and ``sharding.nx_spec_pad``.
+divisible by the mesh axis, zero-valued padding modes are
+appended after dealiasing truncation (forward) and stripped
+before oversampling zero-pad (inverse).  The padding amount is
+read from ``sharding.nz_spec_pad`` and ``sharding.nx_spec_pad``.
 
 Dealiasing
 ----------

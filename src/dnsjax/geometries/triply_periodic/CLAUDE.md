@@ -22,3 +22,7 @@ See `fft.py` module docstring for the full reshard pipeline. `np0` requires `ny_
 ### Flows
 
 - `flows/triply_periodic/monochromatic.py`: MonochromaticFlow(TriplyPeriodicFlow) -- base flow and forcing for Kolmogorov / Waleffe / decaying-box; diagnostics (E, I, D, E')
+
+### Tests
+
+No dedicated triply-periodic test files yet. Smoke-test manually via `mpirun -np 1 python -m dnsjax --phys.system kolmogorov ...` (or `waleffe` / `decaying-box`).

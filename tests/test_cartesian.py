@@ -106,11 +106,11 @@ def test_spike_vs_dense_on_cartesian_operators() -> None:
 
     # Solver-internal (Nkz, Nkx, 1) from field-layout (1, Nkz, Nkx).
     k2_s = fourier.k2[0, ..., None]
-    k2z_s = fourier.k2_is_zero[0, ..., None]
+    mean_s = fourier.mean_mask[0, ..., None]
 
     # SPIKE path.
     Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-        D1, D2, k2_s, k2z_s, p, P_opt, m_opt
+        D1, D2, k2_s, mean_s, p, P_opt, m_opt
     )
     Lk_banded = _spike_factor(Lk_A, Lk_B, Lk_C)
 
@@ -120,7 +120,7 @@ def test_spike_vs_dense_on_cartesian_operators() -> None:
     Hk_banded = _spike_factor(Hk_A, Hk_B, Hk_C)
 
     # Dense path (reference).
-    Lk_dense = DenseJAXSolver(_build_Lk_dense_gpu(D1, D2, k2_s, k2z_s))
+    Lk_dense = DenseJAXSolver(_build_Lk_dense_gpu(D1, D2, k2_s, mean_s))
     Hk_dense = DenseJAXSolver(_build_Hk_dense_gpu(D2, k2_s, dt, c, nu))
 
     # Solve same complex RHS with both backends.
@@ -158,7 +158,7 @@ def test_lk_matvec_matches_reference() -> None:
         u_j = jnp.asarray(u)[:, None, None]
         fourier_ = SimpleNamespace(
             k2=jnp.asarray([[[k2_val]]]),
-            k2_is_zero=jnp.asarray([[[k2_val]]]) == 0.0,
+            mean_mask=jnp.asarray([[[k2_val]]]) == 0.0,
         )
         got = np.asarray(_lk_matvec(u_j, flow_, fourier_))[:, 0, 0]
         assert_allclose(
@@ -219,7 +219,7 @@ def test_lk_matvec_on_custom_grid() -> None:
         u_j = jnp.asarray(u)[:, None, None]
         fourier_ = SimpleNamespace(
             k2=jnp.asarray([[[k2_val]]]),
-            k2_is_zero=jnp.asarray([[[k2_val]]]) == 0.0,
+            mean_mask=jnp.asarray([[[k2_val]]]) == 0.0,
         )
         got = np.asarray(_lk_matvec(u_j, flow_, fourier_))[:, 0, 0]
         assert_allclose(
