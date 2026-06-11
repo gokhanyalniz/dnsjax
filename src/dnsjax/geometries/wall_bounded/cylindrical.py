@@ -170,6 +170,17 @@ class Fourier:
     ``m_is_even`` is a boolean mask ``(1, nz-1, 1)``
     selecting the azimuthal modes where `$m$` is even, used
     to choose the correct parity-reduced FD matrices.
+
+    ``mean_mask`` is a boolean mask that is ``True`` only at
+    the **true** mean mode `$(m, k_z) = (0, 0)$` (global
+    index ``(0, 0)``).  It differs from ``k2_is_zero`` at the
+    zero-padded dummy modes appended for 2D mesh divisibility
+    (their stored `$m$`/`$k_z$` values are also zero):
+    mean-mode *writes* (the constant-bulk-velocity
+    correction) must use ``mean_mask`` so the dummy modes
+    stay exactly zero, while operator gauge fixing keeps
+    using ``k2_is_zero`` (padded systems need the pin row to
+    stay nonsingular).
     """
 
     kz: Array = field(init=False)
@@ -179,6 +190,7 @@ class Fourier:
     m2: Array = field(init=False)
     k2_is_zero: Array = field(init=False)
     m_is_even: Array = field(init=False)
+    mean_mask: Array = field(init=False)
 
     def __post_init__(self) -> None:
         kz_true = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
@@ -211,6 +223,27 @@ class Fourier:
         self.m2 = self.m**2
         self.k2_is_zero = (self.kz2 + self.m2) == 0.0
         self.m_is_even = (self.m % 2 == 0).astype(sharding.float_type)
+
+        # One-hot at the true mean mode (m, kz) = (0, 0): the
+        # true modes precede the padding, so it is global index
+        # (0, 0).  See the class docstring (mean_mask vs
+        # k2_is_zero).
+        e_m = (
+            jnp.zeros(m_vals.shape[0], dtype=sharding.float_type)
+            .at[0]
+            .set(1.0)
+        )
+        e_kz = (
+            jnp.zeros(kz_vals.shape[0], dtype=sharding.float_type)
+            .at[0]
+            .set(1.0)
+        )
+        self.mean_mask = (
+            jax.device_put(e_m.reshape([1, -1, 1]), P(None, sharding.a0, None))
+            * jax.device_put(
+                e_kz.reshape([1, 1, -1]), P(None, None, sharding.a1)
+            )
+        ) == 1.0
 
 
 fourier: Fourier = Fourier()
@@ -461,7 +494,13 @@ def build_cylindrical_grid(
         Common (parity-independent) part, ``(ny, ny)``.
     y_weights:
         Integration weights with radial Jacobian
-        `$w_j r_j$`, shape ``(ny,)``.
+        `$w_j r_j$`, shape ``(ny,)``, satisfying
+        `$\sum_j w_j r_j f_j \approx \int_0^1 f\,r\,dr$`
+        over the **full** disc: the segment
+        `$[0, r_0]$` below the first grid point is covered
+        by the first-stencil interpolant
+        (``left_edge=0.0`` in
+        :func:`~dnsjax.fd.build_integration_weights`).
     inv_r:
         `$1/r$` on the grid, shape ``(ny,)``.
     """
@@ -488,7 +527,11 @@ def build_cylindrical_grid(
     else:
         rs = build_half_cgl_grid(ny)
     inv_r = 1.0 / rs
-    w = build_integration_weights(rs, fd_order)
+    # left_edge=0.0 extends the composite rule over [0, r_0]
+    # (the axis is not a grid point); without it every radial
+    # integral would miss the [0, r_0] mass, an O(N_r^{-2})
+    # bias independent of the FD order.
+    w = build_integration_weights(rs, fd_order, left_edge=0.0)
     y_weights = w * rs
 
     D1_even, _, D1_odd, _, D1_pos, _ = build_parity_reduced_matrices(
@@ -1301,10 +1344,11 @@ class CylindricalFlow:
             self.H_bulk_inv = jnp.zeros((), dtype=sharding.float_type)
             return
 
-        # Unit uniform RHS at the mean mode only, zero wall BC.
-        # Solver-internal layout (Nm, Nkz, Nr).
+        # Unit uniform RHS at the true mean mode only
+        # (``mean_mask``; zero-padded dummy modes get zero RHS),
+        # zero wall BC.  Solver-internal layout (Nm, Nkz, Nr).
         ones_vec = jnp.ones(Nr, dtype=sharding.float_type).at[-1].set(0.0)
-        rhs = jnp.where(fourier.k2_is_zero[0, ..., None], ones_vec, 0.0)
+        rhs = jnp.where(fourier.mean_mask[0, ..., None], ones_vec, 0.0)
 
         # Solve using the z-component (index 2) of the combined
         # Hk operator via a padded batch (one-time init cost).
@@ -1332,9 +1376,11 @@ def _curl_fn(
     Input/output in `$(u_z, u_r, u_\theta)$` representation.
     All operations are spectral multiplications (`$im$`,
     `$ik_z$`), diagonal scalings (`$1/r$`), and FD
-    matrix-vector products (`$D_1$`).  Uses `$D_{1,pos}$`
-    (parity-independent, since the curl is applied to fields
-    that already have correct parity).
+    matrix-vector products (`$D_1$`).  Radial derivatives use
+    the parity-reduced `$D_1$`: the common
+    `$D_{1,\mathrm{pos}}$` part plus the ghost correction
+    signed by each field's parity (`$(-1)^m$` for `$u_z$`,
+    `$(-1)^{m+1}$` for `$u_\theta$`).
 
     .. math::
         \omega_r = \frac{im}{r}\,u_z - ik_z\,u_\theta
@@ -1689,7 +1735,10 @@ def _imm_iteration(
     # At the mean mode alpha = 0 and ikz = 0, so uz_arb
     # already equals the uncorrected uz_new there; reading
     # the bulk from uz_arb lets the IMM correction and the
-    # bulk correction fuse into a single expression.
+    # bulk correction fuse into a single expression.  The
+    # write mask is ``mean_mask`` (true mean mode only), not
+    # ``k2_is_zero``: the latter is also True at zero-padded
+    # dummy modes, which would accumulate the correction.
     if params.phys.driving == "constant_bulk_velocity":
         mean_uz = extract_mean_mode(uz_arb[None])[0].real
         bulk_uz = 2 * jnp.dot(flow_.y_weights, mean_uz)
@@ -1697,7 +1746,7 @@ def _imm_iteration(
             uz_arb
             - ikz * alpha * flow_.q_z_1
             + jnp.where(
-                fourier_.k2_is_zero,
+                fourier_.mean_mask,
                 -bulk_uz
                 * flow_.H_bulk_inv
                 * flow_.h_bulk_response[:, None, None],

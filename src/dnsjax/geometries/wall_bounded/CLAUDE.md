@@ -18,6 +18,10 @@ See `_imm_iteration` in `cartesian.py` for the full 9-stage algorithm, mathemati
 - Both backends apply `Lk` and `Hk_minus` matvecs matrix-free via `_lk_matvec` / `_hk_minus_matvec`, reconstructing from shared `D1`/`D2` FD matrices.
 - All IMM homogeneous data is derived from the GPU operator by `CartesianFlow._derive_imm_homogeneous_data`.
 
+### Mean-mode writes vs gauge fixing
+
+`Fourier.k2_is_zero` is also True at zero-padded dummy modes (any `np0 > 1` run pads kz). Nonzero writes targeting the mean mode (e.g. bulk-velocity corrections) must use `Fourier.mean_mask` (one-hot at the true (0,0) mode). `k2_is_zero` must **stay** in the operator pin rows, `_lk_matvec`, and the `M_inv` mean branches: dummy-mode systems are mean-mode-like and singular without them (Inf/NaN factors, and `NaN * 0 = NaN` then poisons all modes). The zero-projections (mean-mode `v`/`u_r` and `d_wall` zeroing) also keep `k2_is_zero` deliberately — they pin dummy modes to zero each iteration. See the `Fourier` docstrings in `cartesian.py` / `cylindrical.py`.
+
 ### Cylindrical geometry
 
 Documented in the `cylindrical.py` module docstring: decoupled `u+`/`u-` velocity formulation (Willis 2017), effective azimuthal modes, parity-reduced FD matrices, half-CGL radial grid, 1x1 influence matrix, and constant-bulk-velocity enforcement.
@@ -45,4 +49,5 @@ When the aim is to operate on a quantity derivable from the mean mode (streamwis
 - `tests/test_cartesian.py`: Cartesian operator and matvec tests
 - `tests/test_cylindrical.py`: cylindrical operator and matvec tests
 - `tests/test_integration.py`: quadrature weight and interpolation matrix tests
+- `tests/test_mean_mask.py`: `mean_mask` vs `k2_is_zero` under forced spectral padding
 - `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows
