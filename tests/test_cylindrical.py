@@ -49,6 +49,7 @@ from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _build_Hk_dense_gpu,
     _build_Lk_blocks_gpu,
     _build_Lk_dense_gpu,
+    _ghost_row_count,
     _lk_matvec,
     build_half_cgl_grid,
     build_parity_reduced_matrices,
@@ -207,8 +208,15 @@ def test_abase_matvec_matches_dense() -> None:
     D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos = (
         build_parity_reduced_matrices(rs, p)
     )
-    D1_ghost = D1_even - D1_pos
-    D2_ghost = D2_even - D2_pos
+    # Row-sliced ghost storage, as in CylindricalFlow.__post_init__.
+    D1_ghost_full = D1_even - D1_pos
+    D2_ghost_full = D2_even - D2_pos
+    g_rows = _ghost_row_count(
+        np.asarray(D1_ghost_full), np.asarray(D2_ghost_full)
+    )
+    assert g_rows < Nr, "ghost matrices unexpectedly full"
+    D1_ghost = D1_ghost_full[:g_rows]
+    D2_ghost = D2_ghost_full[:g_rows]
     A_even = np.asarray(_build_A_base(D1_even, D2_even, inv_r))
     A_odd = np.asarray(_build_A_base(D1_odd, D2_odd, inv_r))
 

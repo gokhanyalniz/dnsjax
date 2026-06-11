@@ -43,6 +43,7 @@ from ...solvers import (
     validate_spike_partition,
 )
 from ._base import (
+    apply_y_matrix,
     build_wall_bounded_stepper,
     extract_mean_mode,
     get_inprod,  # noqa: F401 — re-exported
@@ -51,6 +52,7 @@ from ._base import (
     get_pert_enstrophy,  # noqa: F401 — re-exported
     init_state,  # noqa: F401 — re-exported
     integrate_scalar,
+    pad_base_flow,  # noqa: F401 — re-exported
     phys_to_spec,  # noqa: F401 — re-exported
     spec_to_phys,  # noqa: F401 — re-exported
 )
@@ -520,14 +522,14 @@ class CartesianFlow:
     y_weights: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
+    base_flow_padded: Array = field(init=False)
+    curl_base_flow_padded: Array = field(init=False)
     D1: Array = field(init=False)
     D2: Array = field(init=False)
     D1_bnd: Array = field(init=False)
     D2_bnd: Array = field(init=False)
     Lk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
     Hk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
-    p1: Array = field(init=False)
-    p2: Array = field(init=False)
     v1: Array = field(init=False)
     v2: Array = field(init=False)
     q1: Array = field(init=False)
@@ -594,6 +596,10 @@ class CartesianFlow:
         if params.solver.backend == "banded":
             bt = params.solver.block_thomas
             P_blk, m_blk = validate_spike_partition(Ny, p, "Ny", bt)
+            # Build and factor one operator at a time, dropping
+            # the block arrays immediately (their buffers are
+            # donated into the factorisation), so the setup peak
+            # never holds two unfactored operators at once.
             Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
                 self.D1,
                 self.D2,
@@ -603,6 +609,8 @@ class CartesianFlow:
                 P_blk,
                 m_blk,
             )
+            self.Lk_op = _spike_factor(Lk_A, Lk_B, Lk_C, bt)
+            del Lk_A, Lk_B, Lk_C
             Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
                 self.D2,
                 k2_s,
@@ -613,16 +621,19 @@ class CartesianFlow:
                 P_blk,
                 m_blk,
             )
-            self.Lk_op = _spike_factor(Lk_A, Lk_B, Lk_C, bt)
             self.Hk_op = _spike_factor(Hk_A, Hk_B, Hk_C, bt)
+            del Hk_A, Hk_B, Hk_C
         else:
             # Dense backend: parity/reference path.  Full
-            # `(Nkz, Nkx, Ny, Ny)` matrices are built, LU-factored,
-            # then discarded — only the factors are kept.
+            # `(Nkz, Nkx, Ny, Ny)` matrices are built, LU-factored
+            # (donated, so the factors reuse their buffers), then
+            # dropped — only the factors are kept.
             Lk_dense = _build_Lk_dense_gpu(self.D1, self.D2, k2_s, k2z_s)
-            Hk_dense = _build_Hk_dense_gpu(self.D2, k2_s, dt, c, nu)
             self.Lk_op = DenseJAXSolver(Lk_dense)
+            del Lk_dense
+            Hk_dense = _build_Hk_dense_gpu(self.D2, k2_s, dt, c, nu)
             self.Hk_op = DenseJAXSolver(Hk_dense)
+            del Hk_dense
 
         self._derive_imm_homogeneous_data(Nkz, Nkx, Ny)
         self._precompute_bulk_response(Nkz, Nkx, Ny)
@@ -630,8 +641,8 @@ class CartesianFlow:
     def _derive_imm_homogeneous_data(
         self, Nkz: int, Nkx: int, Ny: int
     ) -> None:
-        r"""Fill ``p1..q2`` and ``M_inv`` from the factored
-        GPU operator.
+        r"""Fill ``v1``, ``v2``, ``q1``, ``q2``, and ``M_inv``
+        from the factored GPU operator.
 
         Both backends converge here once :attr:`Lk_op` and
         :attr:`Hk_op` are in place.  Nothing else on the CPU
@@ -644,7 +655,10 @@ class CartesianFlow:
         coupling through the factored interior operator), and
         ``M_inv`` is `$S^{-1}$` where `$S$` is the `$2 \times
         2$` Schur complement (influence / capacitance matrix).
-        See :func:`_imm_iteration` for the full context.
+        See :func:`_imm_iteration` for the full context.  The
+        homogeneous pressures ``p1``, ``p2`` are needed only
+        within this derivation (the IMM never assembles the
+        pressure), so they are not stored on the dataclass.
 
         The mean mode (`$k^2 = 0$`) is handled analytically:
         ``M`` has a zero second column there
@@ -718,8 +732,6 @@ class CartesianFlow:
         )
 
         # Transpose to field layout (Ny, Nkz, Nkx).
-        self.p1 = p1_s.transpose(2, 0, 1)
-        self.p2 = p2_s.transpose(2, 0, 1)
         self.v1 = v1_s.transpose(2, 0, 1)
         self.v2 = v2_s.transpose(2, 0, 1)
         self.q1 = q1_s.transpose(2, 0, 1)
@@ -800,7 +812,7 @@ def _curl_fn(
 
     # Stack (u, w) so the two D1 y-derivatives needed for the curl
     # are one batched GEMM rather than two separate kernel launches.
-    dy_uw = jnp.einsum("ij, cjzx -> cizx", flow_.D1, jnp.stack([u, w]))
+    dy_uw = apply_y_matrix(flow_.D1, jnp.stack([u, w]))
     dy_u, dy_w = dy_uw[0], dy_uw[1]
 
     dx_v = 1j * fourier_.kx * v
@@ -821,15 +833,10 @@ def _get_rhs(
     flow_: CartesianFlow,
 ) -> Array:
     """Evaluate non-linear RHS terms."""
-    bf, cbf = flow_.base_flow, flow_.curl_base_flow
-    if sharding.ny_y_pad:
-        ypad = ((0, 0), (0, sharding.ny_y_pad), (0, 0), (0, 0))
-        bf = jnp.pad(bf, ypad)
-        cbf = jnp.pad(cbf, ypad)
     nonlin = get_nonlin(
         state,
-        bf,
-        cbf,
+        flow_.base_flow_padded,
+        flow_.curl_base_flow_padded,
         spec_to_phys_2d,
         phys_to_spec_2d,
         lambda s: _curl_fn(s, fourier_, flow_),
@@ -860,7 +867,7 @@ def _lk_matvec(
     fourier\_:
         Wavenumber grids (uses ``k2``, ``k2_is_zero``).
     """
-    D2u = jnp.einsum("ij, jzx -> izx", flow_.D2, u)
+    D2u = apply_y_matrix(flow_.D2, u)
     out = D2u - fourier_.k2 * u
     bot = jnp.einsum("j, jzx -> zx", flow_.D1_bnd[0], u)
     top_neumann = jnp.einsum("j, jzx -> zx", flow_.D1_bnd[-1], u)
@@ -893,7 +900,7 @@ def _hk_minus_matvec(
     dt = params.step.dt
     c = params.step.implicitness
     nu = 1.0 / params.phys.re
-    D2u = jnp.einsum("ij, jzx -> izx", flow_.D2, u)
+    D2u = apply_y_matrix(flow_.D2, u)
     out = (1.0 / dt) * u + (1.0 - c) * nu * (D2u - fourier_.k2 * u)
     return out.at[0].set(u[0]).at[-1].set(u[-1])
 
@@ -987,11 +994,7 @@ def _imm_iteration(
     ikz = 1j * fourier_.kz
 
     # Batch the three D1 y-derivatives into one GEMM.
-    dy_stack = jnp.einsum(
-        "ij, cjzx -> cizx",
-        flow_.D1,
-        jnp.stack([v_n, Nv_j, Nv_n]),
-    )
+    dy_stack = apply_y_matrix(flow_.D1, jnp.stack([v_n, Nv_j, Nv_n]))
     dy_v_n, dy_Nv_j, dy_Nv_n = dy_stack[0], dy_stack[1], dy_stack[2]
 
     # d_hat^n (discrete divergence at time n; ~0 after first step).
@@ -1016,7 +1019,7 @@ def _imm_iteration(
     # solve are all batched over the component axis — one kernel
     # launch each instead of three sequential ones.
     dx_pP = ikx * pP
-    dy_pP = jnp.einsum("ij, jzx -> izx", flow_.D1, pP)
+    dy_pP = apply_y_matrix(flow_.D1, pP)
     dz_pP = ikz * pP
     grad_pP = jnp.stack([dx_pP, dy_pP, dz_pP])  # (3, Ny, Nkz, Nkx)
 
@@ -1051,9 +1054,10 @@ def _imm_iteration(
     alpha1 = alpha[..., 0][None]
     alpha2 = alpha[..., 1][None]
 
-    # Stage 6: corrected pressure and all three velocity components
-    # via Helmholtz linearity — no additional Helmholtz solves.
-    # p_new = pP + alpha1 * flow_.p1 + alpha2 * flow_.p2
+    # Stage 6: corrected velocity components via Helmholtz
+    # linearity — no additional Helmholtz solves.  The corrected
+    # pressure (pP + alpha1 p1 + alpha2 p2) is never assembled:
+    # only velocity is stepped.
     v_new = v_arb + alpha1 * flow_.v1 + alpha2 * flow_.v2
 
     # Stage 7: zero mean-mode wall-normal velocity.
