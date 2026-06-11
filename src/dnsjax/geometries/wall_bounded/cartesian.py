@@ -84,6 +84,18 @@ class Fourier:
         `$k_x^2 + k_z^2$`.
     k2_is_zero:
         Boolean mask for the mean mode (`$k^2 = 0$`).
+        Also ``True`` at the zero-padded dummy modes
+        appended for 2D mesh divisibility (their stored
+        `$k_x$`/`$k_z$` values are zero) — intended for
+        operator gauge fixing, where the padded systems
+        need the pin row to stay nonsingular.
+    mean_mask:
+        Boolean mask that is ``True`` only at the **true**
+        mean mode `$(k_z, k_x) = (0, 0)$` (global index
+        ``(0, 0)``; padding modes are appended at the end).
+        Mean-mode *writes* (bulk-velocity corrections) must
+        use this mask instead of ``k2_is_zero`` so the dummy
+        padding modes stay exactly zero.
     """
 
     kx: Array = field(init=False)
@@ -91,6 +103,7 @@ class Fourier:
     k_metric: Array = field(init=False)
     k2: Array = field(init=False)
     k2_is_zero: Array = field(init=False)
+    mean_mask: Array = field(init=False)
 
     def __post_init__(self) -> None:
         kx_true = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
@@ -123,6 +136,29 @@ class Fourier:
 
         self.k2 = self.kx**2 + self.kz**2
         self.k2_is_zero = self.k2 == 0.0
+
+        # One-hot at the true mean mode (kz, kx) = (0, 0): the
+        # true modes precede the padding, so it is global index
+        # (0, 0).  See the class docstring (mean_mask vs
+        # k2_is_zero).
+        e_kx = (
+            jnp.zeros(kx_vals.shape[0], dtype=sharding.float_type)
+            .at[0]
+            .set(1.0)
+        )
+        e_kz = (
+            jnp.zeros(kz_vals.shape[0], dtype=sharding.float_type)
+            .at[0]
+            .set(1.0)
+        )
+        self.mean_mask = (
+            jax.device_put(
+                e_kz.reshape([1, -1, 1]), P(None, sharding.a0, None)
+            )
+            * jax.device_put(
+                e_kx.reshape([1, 1, -1]), P(None, None, sharding.a1)
+            )
+        ) == 1.0
 
 
 fourier: Fourier = Fourier()
@@ -778,8 +814,9 @@ class CartesianFlow:
             self.H_bulk_inv = jnp.zeros((), dtype=sharding.float_type)
             return
 
-        # Unit uniform RHS at the mean mode only, zero wall BCs.
-        # Solver-internal layout (Nkz, Nkx, Ny).
+        # Unit uniform RHS at the true mean mode only
+        # (``mean_mask``; zero-padded dummy modes get zero RHS),
+        # zero wall BCs.  Solver-internal layout (Nkz, Nkx, Ny).
         ones_vec = (
             jnp.ones(Ny, dtype=sharding.float_type)
             .at[0]
@@ -787,7 +824,7 @@ class CartesianFlow:
             .at[-1]
             .set(0.0)
         )
-        rhs = jnp.where(fourier.k2_is_zero[0, ..., None], ones_vec, 0.0)
+        rhs = jnp.where(fourier.mean_mask[0, ..., None], ones_vec, 0.0)
 
         h_full = self.Hk_op.solve(rhs)
 
@@ -959,7 +996,12 @@ def _imm_iteration(
        spanwise direction `$(-\sin\theta, 0, \cos\theta)$`.
 
     Steps 7--9 are orthogonal projections and do not
-    interfere.
+    interfere.  The bulk-velocity writes in steps 8--9 use
+    ``mean_mask`` (true mean mode only) rather than
+    ``k2_is_zero``: the latter is also ``True`` at the
+    zero-padded dummy modes appended for 2D mesh
+    divisibility, which would otherwise accumulate the
+    corrections across steps.
 
     Mathematical equivalence
     ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1107,8 +1149,9 @@ def _imm_iteration(
             u_corr = u_corr - G_n * derived_params.sin_tilt
             w_corr = w_corr + G_n * derived_params.cos_tilt
 
-        u_new = u_new + jnp.where(k2_is_zero, u_corr[:, None, None], 0.0)
-        w_new = w_new + jnp.where(k2_is_zero, w_corr[:, None, None], 0.0)
+        mean_mask = fourier_.mean_mask
+        u_new = u_new + jnp.where(mean_mask, u_corr[:, None, None], 0.0)
+        w_new = w_new + jnp.where(mean_mask, w_corr[:, None, None], 0.0)
 
     velocity_new = jnp.array([u_new, v_new, w_new])
 
