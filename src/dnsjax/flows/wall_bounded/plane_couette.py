@@ -50,6 +50,7 @@ from ...geometries.wall_bounded.cartesian import (
     get_norm2,
     get_pert_enstrophy,
     integrate_scalar,
+    pad_base_flow,
 )
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
@@ -113,6 +114,7 @@ class PlaneCouetteFlow(CartesianFlow):
             .at[2]
             .set(-dy_Us * derived_params.cos_tilt)[:, :, None, None]
         )
+        pad_base_flow(self)
 
 
 flow: PlaneCouetteFlow = PlaneCouetteFlow()

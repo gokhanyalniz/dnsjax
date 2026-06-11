@@ -40,6 +40,7 @@ from ...geometries.wall_bounded.cylindrical import (
     get_norm2_cyl,
     get_pert_enstrophy_cyl,
     integrate_scalar,
+    pad_base_flow,
 )
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
@@ -100,6 +101,7 @@ class PipeFlow(CylindricalFlow):
             .at[2]
             .set(omega_theta)[:, :, None, None]
         )
+        pad_base_flow(self)
 
 
 flow: PipeFlow = PipeFlow()

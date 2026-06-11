@@ -112,6 +112,7 @@ from ...solvers import (
     validate_spike_partition,
 )
 from ._base import (
+    apply_y_matrix,
     build_wall_bounded_stepper,
     extract_mean_mode,
     get_inprod,  # noqa: F401 — re-exported
@@ -119,9 +120,23 @@ from ._base import (
     get_norm2,
     init_state,  # noqa: F401 — re-exported
     integrate_scalar,
+    pad_base_flow,  # noqa: F401 — re-exported
     phys_to_spec,  # noqa: F401 — re-exported
     spec_to_phys,  # noqa: F401 — re-exported
 )
+
+
+def _ghost_row_count(D1_ghost: np.ndarray, D2_ghost: np.ndarray) -> int:
+    r"""Number of leading nonzero rows of the ghost matrices.
+
+    Stencils cross `$r = 0$` only for the first
+    `$\sim (p+2)//2$` radial points, so all later rows of the
+    ghost corrections vanish and need not be stored or applied.
+    """
+    nz = np.nonzero(
+        np.any(D1_ghost != 0.0, axis=1) | np.any(D2_ghost != 0.0, axis=1)
+    )[0]
+    return int(nz[-1]) + 1 if nz.size else 1
 
 
 @register_dataclass_pytree
@@ -244,7 +259,8 @@ def get_pert_enstrophy_cyl(
     D1_pos:
         Common part of first-derivative FD matrix.
     D1_ghost:
-        Ghost correction for `$D_1$`.
+        Ghost correction for `$D_1$`, row-sliced to its
+        `$g$` nonzero rows: shape ``(g, Nr)``.
     m_is_even:
         Boolean mask for even `$m$`, shape ``(1, Nm, 1)``.
     inv_r:
@@ -262,11 +278,13 @@ def get_pert_enstrophy_cyl(
     p_sign_z = m_is_even * 2 - 1
     p_sign_pm = -p_sign_z
 
-    # Batched D1 matvecs (2 GEMMs for all 3 components).
-    dy_pos = jnp.einsum("ij, cjmz -> cimz", D1_pos, state)
-    dy_ghost = jnp.einsum("ij, cjmz -> cimz", D1_ghost, state)
+    # Batched D1 matvecs (2 GEMMs for all 3 components; the
+    # ghost GEMM covers only its g nonzero rows).
+    g = D1_ghost.shape[0]
+    dy_pos = apply_y_matrix(D1_pos, state)
+    dy_ghost = apply_y_matrix(D1_ghost, state)
     p_signs = jnp.stack([p_sign_z, p_sign_pm, p_sign_pm])
-    dy_state = dy_pos + p_signs * dy_ghost
+    dy_state = dy_pos.at[:, :g].add(p_signs * dy_ghost)
 
     enstrophy_D1 = get_norm2_cyl(dy_state, k_metric, y_weights)
 
@@ -864,13 +882,16 @@ class CylindricalFlow:
         shape ``(Nr, Nr)``.
     D1_ghost:
         Ghost correction for `$D_1$`
-        (`$D_{1,\mathrm{even}} - D_{1,\mathrm{pos}}$`);
-        nonzero only in the first `$\sim p$` rows near
-        `$r = 0$`, shape ``(Nr, Nr)``.
+        (`$D_{1,\mathrm{even}} - D_{1,\mathrm{pos}}$`).
+        Nonzero only in the first
+        `$g \sim (p+2)//2$` rows near `$r = 0$`, so only
+        those rows are stored: shape ``(g, Nr)``.  Applied
+        via ``out.at[:g].add(...)`` so the ghost GEMM cost
+        is `$g/N_r$` of the pos part instead of doubling it.
     D2_ghost:
         Ghost correction for `$D_2$`
         (`$D_{2,\mathrm{even}} - D_{2,\mathrm{pos}}$`),
-        shape ``(Nr, Nr)``.
+        shape ``(g, Nr)`` (same row count).
     D1_wall:
         Last row of `$D_1$` (parity-independent),
         shape ``(1, Nr)``.
@@ -886,6 +907,8 @@ class CylindricalFlow:
     y_weights: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
+    base_flow_padded: Array = field(init=False)
+    curl_base_flow_padded: Array = field(init=False)
     D1_pos: Array = field(init=False)
     D2_pos: Array = field(init=False)
     D1_ghost: Array = field(init=False)
@@ -895,7 +918,6 @@ class CylindricalFlow:
     A_base_odd: Array = field(init=False)
     Lk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
     Hk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
-    p1: Array = field(init=False)
     v_plus_1: Array = field(init=False)
     v_minus_1: Array = field(init=False)
     q_z_1: Array = field(init=False)
@@ -942,11 +964,16 @@ class CylindricalFlow:
         self.D2_pos = jax.device_put(D2_pos, sharding.no_shard)
 
         # Ghost correction matrices: the difference between the
-        # parity-reduced and the common (pos) part.  Only the first
-        # ~p rows are nonzero; we store the full (Nr, Nr) shape for
-        # simplicity (matvec cost is dominated by D1_pos/D2_pos).
-        self.D1_ghost = jax.device_put(D1_even - D1_pos, sharding.no_shard)
-        self.D2_ghost = jax.device_put(D2_even - D2_pos, sharding.no_shard)
+        # parity-reduced and the common (pos) part.  Stencils cross
+        # r = 0 only near the axis, so just the first g rows are
+        # nonzero; only those rows are stored and applied (a full
+        # (Nr, Nr) ghost GEMM would cost as much as its pos
+        # counterpart, doubling every FD matvec).
+        D1_ghost_np = np.asarray(D1_even - D1_pos)
+        D2_ghost_np = np.asarray(D2_even - D2_pos)
+        g_rows = _ghost_row_count(D1_ghost_np, D2_ghost_np)
+        self.D1_ghost = jax.device_put(D1_ghost_np[:g_rows], sharding.no_shard)
+        self.D2_ghost = jax.device_put(D2_ghost_np[:g_rows], sharding.no_shard)
 
         # Wall row of D1 (parity-independent, last row).
         self.D1_wall = jax.device_put(D1_pos[-1:, :], sharding.no_shard)
@@ -990,6 +1017,10 @@ class CylindricalFlow:
             bt = params.solver.block_thomas
             P_blk, m_blk = validate_spike_partition(Nr, fd_p, "Nr", bt)
 
+            # Build and factor one operator at a time, dropping
+            # the block arrays immediately (their buffers are
+            # donated into the factorisation), so the setup peak
+            # never holds two unfactored operators at once.
             # Lk
             Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
                 self.D1_wall.ravel(),
@@ -1005,6 +1036,7 @@ class CylindricalFlow:
                 m_blk,
             )
             self.Lk_op = _spike_factor(Lk_A, Lk_B, Lk_C, bt)
+            del Lk_A, Lk_B, Lk_C
 
             # Hk_plus (meff = m+1, parity = (-1)^{m+1})
             Hp_A, Hp_B, Hp_C = _build_Hk_blocks_gpu(
@@ -1022,6 +1054,7 @@ class CylindricalFlow:
                 m_blk,
             )
             op_p = _spike_factor(Hp_A, Hp_B, Hp_C, bt)
+            del Hp_A, Hp_B, Hp_C
 
             # Hk_minus (meff = m-1, parity = (-1)^{m+1})
             Hm_A, Hm_B, Hm_C = _build_Hk_blocks_gpu(
@@ -1039,6 +1072,7 @@ class CylindricalFlow:
                 m_blk,
             )
             op_m = _spike_factor(Hm_A, Hm_B, Hm_C, bt)
+            del Hm_A, Hm_B, Hm_C
 
             # Hk_z (meff = m, parity = (-1)^m)
             Hz_A, Hz_B, Hz_C = _build_Hk_blocks_gpu(
@@ -1056,12 +1090,19 @@ class CylindricalFlow:
                 m_blk,
             )
             op_z = _spike_factor(Hz_A, Hz_B, Hz_C, bt)
+            del Hz_A, Hz_B, Hz_C
 
             # Combined Hk: component order (plus, minus, z).
+            # Drop the per-component operators right after
+            # stacking copies them, halving the H-factor
+            # footprint for the rest of setup.
             self.Hk_op = _stack_banded_operators(op_p, op_m, op_z)
+            del op_p, op_m, op_z
 
         else:
-            # Dense backend
+            # Dense backend: full matrices are built, LU-factored
+            # (donated, so the factors reuse their buffers), then
+            # dropped — only the factors are kept.
             Lk_dense = _build_Lk_dense_gpu(
                 self.D1_wall,
                 self.A_base_even,
@@ -1073,6 +1114,7 @@ class CylindricalFlow:
                 k2z_s,
             )
             self.Lk_op = DenseJAXSolver(Lk_dense)
+            del Lk_dense
 
             Hp_dense = _build_Hk_dense_gpu(
                 self.A_base_even,
@@ -1086,6 +1128,7 @@ class CylindricalFlow:
                 nu,
             )
             Hk_plus_solver = DenseJAXSolver(Hp_dense)
+            del Hp_dense
 
             Hm_dense = _build_Hk_dense_gpu(
                 self.A_base_even,
@@ -1099,6 +1142,7 @@ class CylindricalFlow:
                 nu,
             )
             Hk_minus_solver = DenseJAXSolver(Hm_dense)
+            del Hm_dense
 
             Hz_dense = _build_Hk_dense_gpu(
                 self.A_base_even,
@@ -1112,8 +1156,11 @@ class CylindricalFlow:
                 nu,
             )
             Hk_z_solver = DenseJAXSolver(Hz_dense)
+            del Hz_dense
 
             # Combined Hk: component order (plus, minus, z).
+            # Drop the per-component solvers right after stacking
+            # copies their factors.
             self.Hk_op = DenseJAXSolver.from_factors(
                 lu=jnp.stack(
                     [
@@ -1122,21 +1169,27 @@ class CylindricalFlow:
                         Hk_z_solver.lu,
                     ]
                 ),
-                piv=jnp.stack(
+                perm=jnp.stack(
                     [
-                        Hk_plus_solver.piv,
-                        Hk_minus_solver.piv,
-                        Hk_z_solver.piv,
+                        Hk_plus_solver.perm,
+                        Hk_minus_solver.perm,
+                        Hk_z_solver.perm,
                     ]
                 ),
             )
+            del Hk_plus_solver, Hk_minus_solver, Hk_z_solver
 
         self._derive_imm_homogeneous_data(Nm, Nkz, Nr)
         self._precompute_bulk_response(Nm, Nkz, Nr)
 
     def _derive_imm_homogeneous_data(self, Nm: int, Nkz: int, Nr: int) -> None:
-        r"""Fill ``p1``, ``v_plus_1``, ``v_minus_1``,
-        ``q_z_1``, and ``M_inv`` on-device.
+        r"""Fill ``v_plus_1``, ``v_minus_1``, ``q_z_1``, and
+        ``M_inv`` on-device.
+
+        The homogeneous pressure `$p_1$` stays local: only the
+        velocity responses derived from it are needed at runtime
+        (the commented-out pressure assembly in the Cartesian
+        IMM would be its only consumer).
 
         The pipe has a single wall at `$r = 1$` (last grid
         point), giving a `$1 \times 1$` influence matrix.
@@ -1178,10 +1231,13 @@ class CylindricalFlow:
         p1_s = self.Lk_op.solve(e_wall)
 
         # Pressure gradient components for the +/- equations.
+        # The ghost matrix holds only its g nonzero rows; its
+        # contribution lands in the first g radial entries.
         parity_sign_p_s = fourier.m_is_even[0, ..., None] * 2 - 1
-        D1_p1 = jnp.einsum(
-            "ij, mzj -> mzi", self.D1_pos, p1_s
-        ) + parity_sign_p_s * jnp.einsum("ij, mzj -> mzi", self.D1_ghost, p1_s)
+        g = self.D1_ghost.shape[0]
+        ghost_p1 = jnp.einsum("ij, mzj -> mzi", self.D1_ghost, p1_s)
+        D1_p1 = jnp.einsum("ij, mzj -> mzi", self.D1_pos, p1_s)
+        D1_p1 = D1_p1.at[..., :g].add(parity_sign_p_s * ghost_p1)
         m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
         m_over_r_s = m_s * self.inv_r  # (Nm, 1, Nr)
 
@@ -1214,7 +1270,6 @@ class CylindricalFlow:
         self.M_inv = jnp.where(is_mean, 0.0, 1.0 / safe_M)
 
         # Transpose to field layout (Nr, Nm, Nkz).
-        self.p1 = p1_s.transpose(2, 0, 1)
         self.v_plus_1 = vp1_s.transpose(2, 0, 1)
         self.v_minus_1 = vm1_s.transpose(2, 0, 1)
         self.q_z_1 = qz1_s.transpose(2, 0, 1)
@@ -1302,12 +1357,15 @@ def _curl_fn(
     parity_sign_p = fourier_.m_is_even * 2 - 1
     parity_sign_v = -parity_sign_p
 
-    # Batch D1_pos and D1_ghost into two GEMMs.
+    # Batch D1_pos and D1_ghost into two GEMMs; the ghost GEMM
+    # covers only its g nonzero rows near the axis.
+    g = flow_.D1_ghost.shape[0]
     fields = jnp.stack([utheta, uz])
-    dy_common = jnp.einsum("ij, cjmz -> cimz", flow_.D1_pos, fields)
-    dy_ghost = jnp.einsum("ij, cjmz -> cimz", flow_.D1_ghost, fields)
-    dy_utheta = dy_common[0] + parity_sign_v * dy_ghost[0]
-    dy_uz = dy_common[1] + parity_sign_p * dy_ghost[1]
+    dy_common = apply_y_matrix(flow_.D1_pos, fields)
+    dy_ghost = apply_y_matrix(flow_.D1_ghost, fields)
+    p_signs = jnp.stack([parity_sign_v, parity_sign_p])
+    dy_fields = dy_common.at[:, :g].add(p_signs * dy_ghost)
+    dy_utheta, dy_uz = dy_fields[0], dy_fields[1]
 
     omega_r = im * inv_r * uz - ikz * utheta
     omega_theta = ikz * ur - dy_uz
@@ -1336,16 +1394,10 @@ def _get_rhs(
 
     state_rthz = jnp.array([u_z, ur, utheta])
 
-    bf, cbf = flow_.base_flow, flow_.curl_base_flow
-    if sharding.ny_y_pad:
-        ypad = ((0, 0), (0, sharding.ny_y_pad), (0, 0), (0, 0))
-        bf = jnp.pad(bf, ypad)
-        cbf = jnp.pad(cbf, ypad)
-
     nonlin_rthz = get_nonlin(
         state_rthz,
-        bf,
-        cbf,
+        flow_.base_flow_padded,
+        flow_.curl_base_flow_padded,
         spec_to_phys_2d,
         phys_to_spec_2d,
         lambda s: _curl_fn(s, fourier_, flow_),
@@ -1381,9 +1433,10 @@ def _abase_matvec(
           + (1/r)\,\widetilde{D}_{1,\mathrm{ghost}})
           \,u}_{\text{ghost correction}}
 
-    The ghost correction matrices have nonzero entries only
-    in the first `$\sim p$` rows (near the pipe centre, where
-    stencils cross `$r = 0$`).
+    The ghost correction matrices are stored row-sliced to
+    their `$g \sim p/2$` nonzero rows (near the pipe centre,
+    where stencils cross `$r = 0$`), so the ghost GEMMs and
+    the scatter-add touch only the first `$g$` radial points.
 
     Parameters
     ----------
@@ -1398,15 +1451,16 @@ def _abase_matvec(
         ``(1, Nm, 1)``.
     """
     inv_r = flow_.inv_r[:, None, None]
-    D2_u = jnp.einsum("ij, jmz -> imz", flow_.D2_pos, u)
-    D1_u = jnp.einsum("ij, jmz -> imz", flow_.D1_pos, u)
+    D2_u = apply_y_matrix(flow_.D2_pos, u)
+    D1_u = apply_y_matrix(flow_.D1_pos, u)
     common = D2_u + inv_r * D1_u
 
-    D2g_u = jnp.einsum("ij, jmz -> imz", flow_.D2_ghost, u)
-    D1g_u = jnp.einsum("ij, jmz -> imz", flow_.D1_ghost, u)
-    ghost = D2g_u + inv_r * D1g_u
+    g = flow_.D1_ghost.shape[0]
+    D2g_u = apply_y_matrix(flow_.D2_ghost, u)
+    D1g_u = apply_y_matrix(flow_.D1_ghost, u)
+    ghost = D2g_u + inv_r[:g] * D1g_u
 
-    return common + parity_sign * ghost
+    return common.at[:g].add(parity_sign * ghost)
 
 
 def _lk_matvec(
@@ -1512,11 +1566,13 @@ def _imm_iteration(
     m_sq = fourier_.m2
 
     # Batch all D1 y-derivatives with (-1)^{m+1} parity into
-    # one GEMM each for D1_pos and D1_ghost (2 instead of 4).
+    # one GEMM each for D1_pos and D1_ghost (2 instead of 4);
+    # the ghost GEMM covers only its g nonzero rows.
+    g = flow_.D1_ghost.shape[0]
     all_vparity = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n])
-    dy_common = jnp.einsum("ij, cjmz -> cimz", flow_.D1_pos, all_vparity)
-    dy_ghost = jnp.einsum("ij, cjmz -> cimz", flow_.D1_ghost, all_vparity)
-    dy_all = dy_common + parity_sign_v * dy_ghost
+    dy_common = apply_y_matrix(flow_.D1_pos, all_vparity)
+    dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity)
+    dy_all = dy_common.at[:, :g].add(parity_sign_v * dy_ghost)
 
     # Cylindrical divergence at time n.
     div_n = (
@@ -1550,11 +1606,11 @@ def _imm_iteration(
     # GEMMs (2 D1 GEMMs instead of 4 separate ones).
     vel_n_stack = jnp.stack([up_n, um_n, uz_n])
     pP_and_vel = jnp.concatenate([pP[None], vel_n_stack])
-    D1_batch = jnp.einsum("ij, cjmz -> cimz", flow_.D1_pos, pP_and_vel)
-    D1g_batch = jnp.einsum("ij, cjmz -> cimz", flow_.D1_ghost, pP_and_vel)
+    D1_batch = apply_y_matrix(flow_.D1_pos, pP_and_vel)
+    D1g_batch = apply_y_matrix(flow_.D1_ghost, pP_and_vel)
 
     # pP pressure gradient (parity (-1)^m -> parity_sign_p).
-    D1_pP = D1_batch[0] + parity_sign_p * D1g_batch[0]
+    D1_pP = D1_batch[0].at[:g].add(parity_sign_p * D1g_batch[0])
     m_over_r = m * inv_r  # (1, Nm, 1) * (Nr, 1, 1) → (Nr, Nm, 1)
 
     grad_pP_plus = D1_pP - m_over_r * pP
@@ -1564,12 +1620,12 @@ def _imm_iteration(
     # Batched `$H_k^-$` matvec for all three components.
     D1_vel = D1_batch[1:]
     D1g_vel = D1g_batch[1:]
-    D2_all = jnp.einsum("ij, cjmz -> cimz", flow_.D2_pos, vel_n_stack)
-    D2g_all = jnp.einsum("ij, cjmz -> cimz", flow_.D2_ghost, vel_n_stack)
+    D2_all = apply_y_matrix(flow_.D2_pos, vel_n_stack)
+    D2g_all = apply_y_matrix(flow_.D2_ghost, vel_n_stack)
     common_hk = D2_all + inv_r * D1_vel
-    ghost_hk = D2g_all + inv_r * D1g_vel
+    ghost_hk = D2g_all + inv_r[:g] * D1g_vel
     parity_hk = jnp.stack([parity_sign_v, parity_sign_v, parity_sign_p])
-    Abase_stack = common_hk + parity_hk * ghost_hk
+    Abase_stack = common_hk.at[:, :g].add(parity_hk * ghost_hk)
     meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq])
     inv_r2 = flow_.inv_r2[:, None, None]
     lapl_stack = (

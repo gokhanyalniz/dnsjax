@@ -17,35 +17,97 @@ off-block coupling, and a small dense reduced system of size
 solves, a tiny reduced solve, and a spike reconstruction replace
 a full dense solve -- all cuSOLVER-batched.
 
+Complex right-hand sides
+------------------------
+All operators here are **real**; only the RHS may be complex.  To
+avoid promoting the (large) factors to complex on every solve --
+which `jax.scipy.linalg.lu_solve` would do, tripling the factor
+memory traffic and doubling the triangular-solve FLOPs -- a complex
+RHS is split into a real array with a trailing re/im axis of
+length 2 (`$\\ldots, N_y$` complex `$\\to \\ldots, N_y, 2$` real)
+and solved as two real RHS columns, then recombined.  The split
+and merge are single fused elementwise passes over the RHS, far
+cheaper than the factor-sized conversion they replace.  The
+permutations are precomputed at factorisation time so the solve
+path (:func:`_permuted_tri_solve`: permutation gather + two
+batched :func:`jax.lax.linalg.triangular_solve` calls) needs no
+per-call pivot conversion.
+
 Utility helpers :func:`_extract_banded_corners` and
 :func:`_choose_block_partition` support the block decomposition and
 optimal partitioning.
 """
 
 from dataclasses import dataclass, field
+from functools import partial
 
 import jax
 import jax.scipy.linalg as sla
 from jax import Array, lax
 from jax import numpy as jnp
+from jax.lax import linalg as lax_linalg
 
 from .parameters import params
 from .sharding import register_dataclass_pytree, sharding
+
+
+def _real_rhs_view(rhs: Array) -> Array:
+    r"""Split a complex array into real with a trailing re/im axis.
+
+    A complex array of shape ``(..., N)`` becomes a real array of
+    shape ``(..., N, 2)``.  One fused elementwise pass (XLA has
+    no zero-copy complex bitcast); the inverse is
+    :func:`_complex_from_view`.
+    """
+    return jnp.stack([rhs.real, rhs.imag], axis=-1)
+
+
+def _complex_from_view(x: Array) -> Array:
+    """Recombine the trailing re/im axis of length 2 into a
+    complex array (inverse of :func:`_real_rhs_view`)."""
+    return lax.complex(x[..., 0], x[..., 1])
+
+
+def _permuted_tri_solve(lu: Array, perm: Array, b: Array) -> Array:
+    """LU solve from factors and precomputed permutations.
+
+    Row-permutes *b*, then runs two batched triangular solves.
+    Equivalent to ``lu_solve`` but takes permutations instead of
+    pivots, skipping the per-call pivot conversion.
+
+    Parameters
+    ----------
+    lu:
+        LU factors, ``(..., m, m)``.
+    perm:
+        Permutation indices, ``(..., m)``.
+    b:
+        Right-hand side with a trailing column axis,
+        ``(..., m, k)``.  Leading batch dims must match *lu*.
+    """
+    x = jnp.take_along_axis(b, perm[..., None], axis=-2)
+    x = lax_linalg.triangular_solve(
+        lu, x, left_side=True, lower=True, unit_diagonal=True
+    )
+    return lax_linalg.triangular_solve(lu, x, left_side=True, lower=False)
+
 
 # ── Dense LU solver ───────────────────────────────────────────────
 
 
 @jax.jit
-def _lu_solve(lu_pivots: tuple[Array, Array], b: Array) -> Array:
-    """Batched LU solve across 2D `$(k_z, k_x)$` Fourier modes."""
-    lu, piv = lu_pivots
-    dtype = jnp.result_type(lu, b)
-    lu = lu.astype(dtype)
+def _lu_solve(lu_perm: tuple[Array, Array], b: Array) -> Array:
+    """Batched LU solve across 2D `$(k_z, k_x)$` Fourier modes.
 
-    def solve_single(lu_piv, vec):
-        return sla.lu_solve(lu_piv, vec)
-
-    return jax.vmap(jax.vmap(solve_single))((lu, piv), b)
+    The factors are real; a complex *b* is solved as two real
+    RHS columns via a re/im split (see module docstring), so no
+    complex copy of the factors is ever made.
+    """
+    lu, perm = lu_perm
+    if jnp.iscomplexobj(b):
+        x = _permuted_tri_solve(lu, perm, _real_rhs_view(b))
+        return _complex_from_view(x)
+    return _permuted_tri_solve(lu, perm, b[..., None])[..., 0]
 
 
 @register_dataclass_pytree
@@ -54,8 +116,10 @@ class DenseJAXSolver:
     """Batched dense LU cache for per-mode operators.
 
     On construction, the input matrix is LU-factored over all
-    `$(k_z, k_x)$` modes via cuSOLVER batched LU, then
-    discarded.  Only the factors are retained.
+    `$(k_z, k_x)$` modes via cuSOLVER batched LU (the input
+    buffer is donated, so the factors reuse its memory), then
+    discarded.  Pivots are converted to permutations once so the
+    solve path needs no per-call pivot conversion.
 
     Two storage layouts are supported:
 
@@ -71,20 +135,22 @@ class DenseJAXSolver:
 
     matrix: Array
     lu: Array = field(init=False)
-    piv: Array = field(init=False)
+    perm: Array = field(init=False)
 
     def __post_init__(self) -> None:
         """Batch LU-factor over all ``(kz, kx)`` modes."""
 
-        @jax.jit
+        @partial(jax.jit, donate_argnums=0)
         def batched_lu_factor(A: Array) -> tuple[Array, Array]:
-            return jax.vmap(jax.vmap(sla.lu_factor))(A)
+            lu, piv = jax.vmap(jax.vmap(sla.lu_factor))(A)
+            perm = lax_linalg.lu_pivots_to_permutation(piv, A.shape[-1])
+            return lu, perm
 
-        self.lu, self.piv = batched_lu_factor(self.matrix)
+        self.lu, self.perm = batched_lu_factor(self.matrix)
         self.matrix = None
 
     @classmethod
-    def from_factors(cls, lu: Array, piv: Array) -> DenseJAXSolver:
+    def from_factors(cls, lu: Array, perm: Array) -> DenseJAXSolver:
         """Construct from pre-factored LU arrays.
 
         Bypasses the ``__post_init__`` factorisation, useful for
@@ -97,13 +163,13 @@ class DenseJAXSolver:
         lu:
             LU factors, shape ``(Nkz, Nkx, Ny, Ny)`` or
             ``(C, Nkz, Nkx, Ny, Ny)`` for batched operators.
-        piv:
-            Pivot indices matching *lu*.
+        perm:
+            Permutation indices matching *lu*.
         """
         obj = object.__new__(cls)
         obj.matrix = None
         obj.lu = lu
-        obj.piv = piv
+        obj.perm = perm
         return obj
 
     def solve(self, rhs: Array) -> Array:
@@ -122,20 +188,21 @@ class DenseJAXSolver:
         rhs:
             Right-hand side, shape ``(Nkz, Nkx, Ny)`` or
             ``(C, Nkz, Nkx, Ny)`` for a leading batch axis
-            ``C``.
+            ``C``.  May be real or complex; complex RHS are
+            solved in real arithmetic via a re/im split.
 
         Returns
         -------
         :
-            Solution array, same shape as *rhs*.
+            Solution array, same shape and dtype as *rhs*.
         """
         if self.lu.ndim == 5:
-            return jax.vmap(_lu_solve)((self.lu, self.piv), rhs)
+            return jax.vmap(_lu_solve)((self.lu, self.perm), rhs)
         if rhs.ndim == 4:
             return jax.vmap(_lu_solve, in_axes=(None, 0))(
-                (self.lu, self.piv), rhs
+                (self.lu, self.perm), rhs
             )
-        return _lu_solve((self.lu, self.piv), rhs)
+        return _lu_solve((self.lu, self.perm), rhs)
 
 
 # ── SPIKE banded solver ──────────────────────────────────────────
@@ -144,11 +211,11 @@ class DenseJAXSolver:
 @jax.jit
 def _spike_solve(
     lu: Array,
-    piv: Array,
+    perm: Array,
     V: Array,
     W: Array,
     red_lu: Array,
-    red_piv: Array,
+    red_perm: Array,
     rhs: Array,
 ) -> Array:
     r"""Solve `$A x = b$` via the SPIKE algorithm, single 3D RHS.
@@ -159,6 +226,12 @@ def _spike_solve(
     `$W_i = A_i^{-1} C_i$` capture the off-block coupling, and a
     small reduced system of size ``2 P p`` resolves the spike
     weights at block boundaries.
+
+    A complex *rhs* is split into a real ``(..., N_y, 2)`` view
+    and carried through every stage as a trailing RHS-column axis
+    ``k``, so all solves and GEMMs run in real arithmetic against
+    the real factors (see module docstring).  A real *rhs* takes
+    the same path with ``k = 1``.
 
     Stages:
 
@@ -175,15 +248,15 @@ def _spike_solve(
 
     Parameters
     ----------
-    lu, piv:
-        Per-block dense LU factors and pivots,
+    lu, perm:
+        Per-block dense LU factors and permutations,
         ``(N_{kz}, N_{kx}, P, m, m)`` and
         ``(N_{kz}, N_{kx}, P, m)``.
     V, W:
         Spike matrices ``(N_{kz}, N_{kx}, P, m, p)``.
-    red_lu, red_piv:
+    red_lu, red_perm:
         Dense LU of the `$2 P p \\times 2 P p$` reduced system
-        per ``(kz, kx)`` mode.
+        per ``(kz, kx)`` mode, with its permutations.
     rhs:
         Right-hand side, shape ``(N_{kz}, N_{kx}, N_y)``.
 
@@ -196,43 +269,50 @@ def _spike_solve(
     p = V.shape[-1]
     Ny = P * m
 
+    is_complex = jnp.iscomplexobj(rhs)
+    b = _real_rhs_view(rhs) if is_complex else rhs[..., None]
+    k = b.shape[-1]
+
     # Stage 1: local solve A_i g_i = f_i in parallel across blocks.
-    rhs_blocks = rhs.reshape(rhs.shape[:-1] + (P, m))
-    g = jax.vmap(jax.vmap(jax.vmap(sla.lu_solve)))((lu, piv), rhs_blocks)
+    b_blocks = b.reshape(b.shape[:-2] + (P, m, k))
+    g = _permuted_tri_solve(lu, perm, b_blocks)
 
     # Stage 2: reduced RHS from g top/bottom slices.
-    g_top = g[..., :p]
-    g_bot = g[..., m - p :]
-    b_red_blocks = jnp.stack([g_top, g_bot], axis=-2)
-    b_red = b_red_blocks.reshape(b_red_blocks.shape[:-3] + (2 * P * p,))
+    g_top = g[..., :p, :]
+    g_bot = g[..., m - p :, :]
+    b_red_blocks = jnp.stack([g_top, g_bot], axis=-3)
+    b_red = b_red_blocks.reshape(b_red_blocks.shape[:-4] + (2 * P * p, k))
 
     # Stage 3: reduced solve.
-    alpha = jax.vmap(jax.vmap(sla.lu_solve))((red_lu, red_piv), b_red)
+    alpha = _permuted_tri_solve(red_lu, red_perm, b_red)
 
     # Stage 4: extract per-block alpha^T / alpha^B, then shift.
-    alpha_blocks = alpha.reshape(alpha.shape[:-1] + (P, 2, p))
-    alpha_T = alpha_blocks[..., 0, :]
-    alpha_B = alpha_blocks[..., 1, :]
-    zeros_p = jnp.zeros_like(alpha_T[..., :1, :])
-    alpha_T_next = jnp.concatenate([alpha_T[..., 1:, :], zeros_p], axis=-2)
-    alpha_B_prev = jnp.concatenate([zeros_p, alpha_B[..., :-1, :]], axis=-2)
+    alpha_blocks = alpha.reshape(alpha.shape[:-2] + (P, 2, p, k))
+    alpha_T = alpha_blocks[..., 0, :, :]
+    alpha_B = alpha_blocks[..., 1, :, :]
+    zeros_p = jnp.zeros_like(alpha_T[..., :1, :, :])
+    alpha_T_next = jnp.concatenate([alpha_T[..., 1:, :, :], zeros_p], axis=-3)
+    alpha_B_prev = jnp.concatenate([zeros_p, alpha_B[..., :-1, :, :]], axis=-3)
 
     # Stage 5: x_i = g_i - V_i alpha^T(i+1) - W_i alpha^B(i-1).
-    V_contrib = jnp.einsum("...irc,...ic->...ir", V, alpha_T_next)
-    W_contrib = jnp.einsum("...irc,...ic->...ir", W, alpha_B_prev)
+    V_contrib = jnp.einsum("...irc,...ick->...irk", V, alpha_T_next)
+    W_contrib = jnp.einsum("...irc,...ick->...irk", W, alpha_B_prev)
     x_blocks = g - V_contrib - W_contrib
 
-    return x_blocks.reshape(x_blocks.shape[:-2] + (Ny,))
+    x = x_blocks.reshape(x_blocks.shape[:-3] + (Ny, k))
+    if is_complex:
+        return _complex_from_view(x)
+    return x[..., 0]
 
 
 @jax.jit
 def _spike_solve_bt(
     lu: Array,
-    piv: Array,
+    perm: Array,
     V: Array,
     W: Array,
     red_diag_lu: Array,
-    red_diag_piv: Array,
+    red_diag_perm: Array,
     red_mod_super: Array,
     red_sub: Array,
     rhs: Array,
@@ -242,16 +322,17 @@ def _spike_solve_bt(
     Identical to :func:`_spike_solve` except the reduced
     solve (Stage 3) uses a pre-factored block-tridiagonal
     system via :func:`_block_thomas_solve` instead of a
-    dense ``lu_solve``.
+    dense ``lu_solve``.  Complex RHS handling is the same
+    (real re/im split with a trailing column axis ``k``).
 
     Parameters
     ----------
-    lu, piv:
-        Per-block dense LU factors and pivots.
+    lu, perm:
+        Per-block dense LU factors and permutations.
     V, W:
         Spike matrices.
-    red_diag_lu, red_diag_piv:
-        Block-Thomas diagonal LU factors and pivots,
+    red_diag_lu, red_diag_perm:
+        Block-Thomas diagonal LU factors and permutations,
         ``(N_{kz}, N_{kx}, P, 2p, 2p)`` and
         ``(N_{kz}, N_{kx}, P, 2p)``.
     red_mod_super:
@@ -266,39 +347,46 @@ def _spike_solve_bt(
     Returns
     -------
     :
-        Solution, same shape as *rhs*.
+        Solution, same shape and dtype as *rhs*.
     """
     P, m = lu.shape[-3], lu.shape[-2]
     p = V.shape[-1]
     Ny = P * m
 
+    is_complex = jnp.iscomplexobj(rhs)
+    b = _real_rhs_view(rhs) if is_complex else rhs[..., None]
+    k = b.shape[-1]
+
     # Stage 1: local solve (identical to _spike_solve).
-    rhs_blocks = rhs.reshape(rhs.shape[:-1] + (P, m))
-    g = jax.vmap(jax.vmap(jax.vmap(sla.lu_solve)))((lu, piv), rhs_blocks)
+    b_blocks = b.reshape(b.shape[:-2] + (P, m, k))
+    g = _permuted_tri_solve(lu, perm, b_blocks)
 
     # Stage 2: reduced RHS.
-    g_top = g[..., :p]
-    g_bot = g[..., m - p :]
-    b_red = jnp.concatenate([g_top, g_bot], axis=-1)
+    g_top = g[..., :p, :]
+    g_bot = g[..., m - p :, :]
+    b_red = jnp.concatenate([g_top, g_bot], axis=-2)
 
     # Stage 3: block-Thomas reduced solve.
     alpha_blocks = _block_thomas_solve(
-        red_diag_lu, red_diag_piv, red_mod_super, red_sub, b_red
+        red_diag_lu, red_diag_perm, red_mod_super, red_sub, b_red
     )
 
     # Stage 4: extract and shift.
-    alpha_T = alpha_blocks[..., :p]
-    alpha_B = alpha_blocks[..., p:]
-    zeros_p = jnp.zeros_like(alpha_T[..., :1, :])
-    alpha_T_next = jnp.concatenate([alpha_T[..., 1:, :], zeros_p], axis=-2)
-    alpha_B_prev = jnp.concatenate([zeros_p, alpha_B[..., :-1, :]], axis=-2)
+    alpha_T = alpha_blocks[..., :p, :]
+    alpha_B = alpha_blocks[..., p:, :]
+    zeros_p = jnp.zeros_like(alpha_T[..., :1, :, :])
+    alpha_T_next = jnp.concatenate([alpha_T[..., 1:, :, :], zeros_p], axis=-3)
+    alpha_B_prev = jnp.concatenate([zeros_p, alpha_B[..., :-1, :, :]], axis=-3)
 
     # Stage 5: reconstruction.
-    V_contrib = jnp.einsum("...irc,...ic->...ir", V, alpha_T_next)
-    W_contrib = jnp.einsum("...irc,...ic->...ir", W, alpha_B_prev)
+    V_contrib = jnp.einsum("...irc,...ick->...irk", V, alpha_T_next)
+    W_contrib = jnp.einsum("...irc,...ick->...irk", W, alpha_B_prev)
     x_blocks = g - V_contrib - W_contrib
 
-    return x_blocks.reshape(x_blocks.shape[:-2] + (Ny,))
+    x = x_blocks.reshape(x_blocks.shape[:-3] + (Ny, k))
+    if is_complex:
+        return _complex_from_view(x)
+    return x[..., 0]
 
 
 @register_dataclass_pytree
@@ -325,13 +413,15 @@ class PerModeBandedOperator:
     Two reduced-system storage layouts are available:
 
     - **Dense** (``red_lu is not None``): full
-      `$2Pp \times 2Pp$` LU (the original path).
+      `$2Pp \times 2Pp$` LU (the default: one batched
+      solve, no sequential scan rounds).
     - **Block-Thomas** (``red_bt_diag_lu is not None``):
       block-tridiagonal factorisation storing `$P$` blocks
       of `$(2p, 2p)$` LU plus `$P{-}1$` modified
       super-diagonal and sub-diagonal blocks.
       Memory scales as `$O(P p^2)$` instead of
-      `$O(P^2 p^2)$`.
+      `$O(P^2 p^2)$`, at the cost of `$2(P-1)$`
+      sequential ``lax.scan`` steps per solve.
 
     Two operator storage layouts are supported:
 
@@ -346,21 +436,23 @@ class PerModeBandedOperator:
         Per-block dense LU factors, shape
         ``(N_{kz}, N_{kx}, P, m, m)`` or
         ``(C, N_{kz}, N_{kx}, P, m, m)``.
-    piv:
-        Per-block pivot indices.
+    perm:
+        Per-block permutation indices (precomputed from the
+        LU pivots, so the solve path skips the per-call
+        pivot conversion).
     V, W:
         Spike matrices, ``(N_{kz}, N_{kx}, P, m, p)``.
     red_lu:
         Dense LU of the reduced system (``None`` when
         block-Thomas is active).
-    red_piv:
-        Pivots for the dense reduced LU.
+    red_perm:
+        Permutations for the dense reduced LU.
     red_bt_diag_lu:
         Block-Thomas diagonal LU factors,
         ``(..., P, 2p, 2p)`` (``None`` when dense is
         active).
-    red_bt_diag_piv:
-        Block-Thomas diagonal pivots.
+    red_bt_diag_perm:
+        Block-Thomas diagonal permutations.
     red_bt_mod_super:
         Modified super-diagonal blocks
         `$D_i^{-1} U_i$`, ``(..., P-1, 2p, 2p)``.
@@ -370,13 +462,13 @@ class PerModeBandedOperator:
     """
 
     lu: Array
-    piv: Array
+    perm: Array
     V: Array
     W: Array
     red_lu: Array | None = None
-    red_piv: Array | None = None
+    red_perm: Array | None = None
     red_bt_diag_lu: Array | None = None
-    red_bt_diag_piv: Array | None = None
+    red_bt_diag_perm: Array | None = None
     red_bt_mod_super: Array | None = None
     red_bt_sub: Array | None = None
 
@@ -401,7 +493,8 @@ class PerModeBandedOperator:
             Right-hand side, shape ``(N_{kz}, N_{kx}, N_y)`` or
             ``(C, N_{kz}, N_{kx}, N_y)`` for a leading batch
             axis ``C``.  May be real or complex; the dtype is
-            preserved.
+            preserved (complex RHS are solved in real
+            arithmetic via a re/im split).
 
         Returns
         -------
@@ -413,11 +506,11 @@ class PerModeBandedOperator:
         if self._use_bt:
             args = (
                 self.lu,
-                self.piv,
+                self.perm,
                 self.V,
                 self.W,
                 self.red_bt_diag_lu,
-                self.red_bt_diag_piv,
+                self.red_bt_diag_perm,
                 self.red_bt_mod_super,
                 self.red_bt_sub,
                 rhs,
@@ -426,11 +519,11 @@ class PerModeBandedOperator:
         else:
             args = (
                 self.lu,
-                self.piv,
+                self.perm,
                 self.V,
                 self.W,
                 self.red_lu,
-                self.red_piv,
+                self.red_perm,
                 rhs,
             )
             none_axes = (None,) * 6
@@ -508,7 +601,7 @@ def _choose_block_partition(
 
 
 def validate_spike_partition(
-    N: int, p: int, label: str = "N", block_thomas: bool = True
+    N: int, p: int, label: str = "N", block_thomas: bool = False
 ) -> tuple[int, int]:
     r"""Validate and resolve the SPIKE block partition.
 
@@ -872,7 +965,7 @@ def _block_thomas_factor(
 
 def _block_thomas_solve(
     diag_lu: Array,
-    diag_piv: Array,
+    diag_perm: Array,
     mod_super: Array,
     sub_diag: Array,
     rhs: Array,
@@ -880,71 +973,80 @@ def _block_thomas_solve(
     r"""Block-Thomas solve for a pre-factored block-tridiagonal
     system via ``lax.scan``.
 
+    The right-hand side carries a trailing column axis ``k``
+    (``k = 2`` for the real view of a complex RHS, ``k = 1``
+    for a real RHS), so all block solves and GEMMs stay in
+    real arithmetic.
+
     Parameters
     ----------
     diag_lu:
         LU of modified diagonal blocks, ``(..., P, b, b)``.
-    diag_piv:
-        Pivots, ``(..., P, b)``.
+    diag_perm:
+        Permutations, ``(..., P, b)``.
     mod_super:
         Modified super-diagonal ``D_i^{-1} U_i``,
         ``(..., P-1, b, b)``.
     sub_diag:
         Original sub-diagonal blocks, ``(..., P-1, b, b)``.
     rhs:
-        Right-hand side, ``(..., P, b)``.
+        Right-hand side, ``(..., P, b, k)``.
 
     Returns
     -------
     :
-        Solution, ``(..., P, b)``.
+        Solution, ``(..., P, b, k)``.
     """
     P = diag_lu.shape[-3]
 
     if P == 1:
-        x = sla.lu_solve(
-            (diag_lu[..., 0, :, :], diag_piv[..., 0, :]),
-            rhs[..., 0, :],
+        x = _permuted_tri_solve(
+            diag_lu[..., 0, :, :],
+            diag_perm[..., 0, :],
+            rhs[..., 0, :, :],
         )
-        return x[..., None, :]
+        return x[..., None, :, :]
 
     # Forward substitution: y_i = D_i^{-1} (b_i - L_i y_{i-1})
     def fwd_sub(y_prev, xs):
-        lu_i, piv_i, sub_i, b_i = xs
-        r_i = b_i - jnp.einsum("...ij,...j->...i", sub_i, y_prev)
-        y_i = sla.lu_solve((lu_i, piv_i), r_i)
+        lu_i, perm_i, sub_i, b_i = xs
+        r_i = b_i - jnp.einsum("...ij,...jk->...ik", sub_i, y_prev)
+        y_i = _permuted_tri_solve(lu_i, perm_i, r_i)
         return y_i, y_i
 
-    y0 = sla.lu_solve(
-        (diag_lu[..., 0, :, :], diag_piv[..., 0, :]),
-        rhs[..., 0, :],
+    y0 = _permuted_tri_solve(
+        diag_lu[..., 0, :, :],
+        diag_perm[..., 0, :],
+        rhs[..., 0, :, :],
     )
 
     scan_lu = jnp.moveaxis(diag_lu[..., 1:, :, :], -3, 0)
-    scan_piv = jnp.moveaxis(diag_piv[..., 1:, :], -2, 0)
+    scan_perm = jnp.moveaxis(diag_perm[..., 1:, :], -2, 0)
     scan_sub = jnp.moveaxis(sub_diag, -3, 0)
-    scan_rhs = jnp.moveaxis(rhs[..., 1:, :], -2, 0)
+    scan_rhs = jnp.moveaxis(rhs[..., 1:, :, :], -3, 0)
 
-    _, ys_rest = lax.scan(fwd_sub, y0, (scan_lu, scan_piv, scan_sub, scan_rhs))
+    _, ys_rest = lax.scan(
+        fwd_sub, y0, (scan_lu, scan_perm, scan_sub, scan_rhs)
+    )
     y_all = jnp.concatenate(
-        [y0[..., None, :], jnp.moveaxis(ys_rest, 0, -2)], axis=-2
+        [y0[..., None, :, :], jnp.moveaxis(ys_rest, 0, -3)], axis=-3
     )
 
     # Backward substitution: x_i = y_i - U_i' x_{i+1}
     def bwd_sub(x_next, xs):
         y_i, u_i = xs
-        x_i = y_i - jnp.einsum("...ij,...j->...i", u_i, x_next)
+        x_i = y_i - jnp.einsum("...ij,...jk->...ik", u_i, x_next)
         return x_i, x_i
 
-    x_last = y_all[..., -1, :]
+    x_last = y_all[..., -1, :, :]
     # Reverse: process blocks P-2 down to 0.
-    scan_y_rev = jnp.moveaxis(y_all[..., :-1, :], -2, 0)
+    scan_y_rev = jnp.moveaxis(y_all[..., :-1, :, :], -3, 0)
     scan_y_rev = scan_y_rev[::-1]
     scan_u_rev = jnp.moveaxis(mod_super, -3, 0)[::-1]
 
     _, xs_rev = lax.scan(bwd_sub, x_last, (scan_y_rev, scan_u_rev))
-    xs_fwd = jnp.moveaxis(xs_rev[::-1], 0, -2)
-    x_all = jnp.concatenate([xs_fwd, x_last[..., None, :]], axis=-2)
+    xs_fwd = jnp.moveaxis(xs_rev[::-1], 0, -3)
+    x_all = jnp.concatenate([xs_fwd, x_last[..., None, :, :]], axis=-3)
 
     return x_all
 
@@ -953,19 +1055,21 @@ def _spike_factor(
     A_blocks: Array,
     B_corner: Array,
     C_corner: Array,
-    block_thomas: bool = True,
+    block_thomas: bool = False,
 ) -> PerModeBandedOperator:
     r"""SPIKE factorisation of a block-partitioned banded operator.
 
     Performs per-block dense LU (cuSOLVER batched), spike
     matrix solves `$V_i = A_i^{-1} B_i$`,
     `$W_i = A_i^{-1} C_i$`, and reduced-system factorisation
-    -- all on the GPU with no `$(N_y, N_y)$` array.
+    -- all on the GPU with no `$(N_y, N_y)$` array.  The input
+    block arrays are donated (their buffers are reused for the
+    factors), so callers must not use them afterwards.
 
     When *block_thomas* is ``True``, the reduced system is
     stored and solved in block-tridiagonal form
     (`$O(P p^2)$` memory) via :func:`_block_thomas_factor`.
-    When ``False``, the original dense
+    When ``False`` (default), the dense
     `$2Pp \times 2Pp$` LU is used.
 
     Parameters
@@ -1009,50 +1113,58 @@ def _spike_factor(
 
     if block_thomas:
 
-        @jax.jit
+        @partial(jax.jit, donate_argnums=(0, 1, 2))
         def _do_factor_bt(A, B, C):
             lu, piv = jax.vmap(jax.vmap(jax.vmap(sla.lu_factor)))(A)
             V = jax.vmap(jax.vmap(jax.vmap(sla.lu_solve)))((lu, piv), B)
             W = jax.vmap(jax.vmap(jax.vmap(sla.lu_solve)))((lu, piv), C)
+            perm = lax_linalg.lu_pivots_to_permutation(piv, A.shape[-1])
             diag, sup, sub = _build_reduced_blocks(V, W, p)
             bt_lu, bt_piv, bt_sup, bt_sub = jax.vmap(
                 jax.vmap(_block_thomas_factor)
             )(diag, sup, sub)
-            return lu, piv, V, W, bt_lu, bt_piv, bt_sup, bt_sub
+            bt_perm = lax_linalg.lu_pivots_to_permutation(
+                bt_piv, bt_lu.shape[-1]
+            )
+            return lu, perm, V, W, bt_lu, bt_perm, bt_sup, bt_sub
 
         (
             lu,
-            piv,
+            perm,
             V,
             W,
             bt_lu,
-            bt_piv,
+            bt_perm,
             bt_sup,
             bt_sub,
         ) = _do_factor_bt(A_blocks, B_full, C_full)
         return PerModeBandedOperator(
             lu=lu,
-            piv=piv,
+            perm=perm,
             V=V,
             W=W,
             red_bt_diag_lu=bt_lu,
-            red_bt_diag_piv=bt_piv,
+            red_bt_diag_perm=bt_perm,
             red_bt_mod_super=bt_sup,
             red_bt_sub=bt_sub,
         )
 
-    @jax.jit
+    @partial(jax.jit, donate_argnums=(0, 1, 2))
     def _do_factor(A, B, C):
         lu, piv = jax.vmap(jax.vmap(jax.vmap(sla.lu_factor)))(A)
         V = jax.vmap(jax.vmap(jax.vmap(sla.lu_solve)))((lu, piv), B)
         W = jax.vmap(jax.vmap(jax.vmap(sla.lu_solve)))((lu, piv), C)
+        perm = lax_linalg.lu_pivots_to_permutation(piv, A.shape[-1])
         A_red = _build_reduced_matrix(V, W, p)
         red_lu, red_piv = jax.vmap(jax.vmap(sla.lu_factor))(A_red)
-        return lu, piv, V, W, red_lu, red_piv
+        red_perm = lax_linalg.lu_pivots_to_permutation(
+            red_piv, A_red.shape[-1]
+        )
+        return lu, perm, V, W, red_lu, red_perm
 
-    lu, piv, V, W, red_lu, red_piv = _do_factor(A_blocks, B_full, C_full)
+    lu, perm, V, W, red_lu, red_perm = _do_factor(A_blocks, B_full, C_full)
     return PerModeBandedOperator(
-        lu=lu, piv=piv, V=V, W=W, red_lu=red_lu, red_piv=red_piv
+        lu=lu, perm=perm, V=V, W=W, red_lu=red_lu, red_perm=red_perm
     )
 
 
@@ -1073,13 +1185,13 @@ def _stack_banded_operators(
 
     return PerModeBandedOperator(
         lu=jnp.stack([o.lu for o in ops]),
-        piv=jnp.stack([o.piv for o in ops]),
+        perm=jnp.stack([o.perm for o in ops]),
         V=jnp.stack([o.V for o in ops]),
         W=jnp.stack([o.W for o in ops]),
         red_lu=_maybe_stack([o.red_lu for o in ops]),
-        red_piv=_maybe_stack([o.red_piv for o in ops]),
+        red_perm=_maybe_stack([o.red_perm for o in ops]),
         red_bt_diag_lu=_maybe_stack([o.red_bt_diag_lu for o in ops]),
-        red_bt_diag_piv=_maybe_stack([o.red_bt_diag_piv for o in ops]),
+        red_bt_diag_perm=_maybe_stack([o.red_bt_diag_perm for o in ops]),
         red_bt_mod_super=_maybe_stack([o.red_bt_mod_super for o in ops]),
         red_bt_sub=_maybe_stack([o.red_bt_sub for o in ops]),
     )

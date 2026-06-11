@@ -28,7 +28,12 @@ Execution phases
    - Periodic diagnostic output (:func:`get_stats`)
 
    The loop terminates when the simulation time, wall-clock
-   time, or corrector divergence criterion is reached.
+   time, or corrector divergence criterion is reached.  The
+   corrector error and iteration counters stay on the device;
+   the error is synced to the host only every
+   ``outs.it_error_check`` steps so that JAX async dispatch can
+   pipeline steps (divergence is detected at most
+   ``it_error_check`` steps late).
 
 Diagnostics (``stats.dat``)
 ---------------------------
@@ -185,6 +190,7 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
 
 def main() -> None:
     """Run the time-stepping loop after parameters and JAX are initialised."""
+    import jax
     from jax import numpy as jnp
 
     from .sharding import sharding
@@ -268,12 +274,19 @@ def main() -> None:
     it: int = params.init.it0
     t: float = params.init.t0
 
-    rhs_tot: int = 0
-    c_tot: int = 0
     dt_first: float = params.step.dt
     wall_time_now: int = perf_counter_ns()
     last_error: float = 0.0
-    last_c: int = 0
+
+    # Corrector counters stay on the device and accumulate lazily;
+    # they are synced to the host only every ``it_error_check``
+    # steps (error) or at shutdown (totals), so the host can keep
+    # enqueueing steps ahead of the device (JAX async dispatch).
+    it_error_check: int = params.outs.it_error_check
+    c_sum = jnp.zeros((), dtype=jnp.int32)
+    c_first = None
+    error_dev = None
+    c_dev = None
 
     # Warm-up call so that JIT compilation does not affect benchmarks
     stats = get_stats(state)
@@ -320,7 +333,11 @@ def main() -> None:
         and last_error < params.step.corrector_tolerance
     ):
         if it == params.init.it0 + 1:
-            # Start the benchmark clock after the first (JIT-heavy) iteration
+            # Start the benchmark clock after the first (JIT-heavy)
+            # iteration.  Block explicitly: with async dispatch the
+            # first step may still be executing here, and it must
+            # stay excluded from the wall-clock statistics.
+            jax.block_until_ready(state)
             bench_start = perf_counter_ns()
 
             sharding.print("First iteration over at", datetime.now())
@@ -351,7 +368,7 @@ def main() -> None:
                 py_idx = 0
 
         # Fused predictor + all corrector iterations (single JIT scope).
-        state, error, c = predict_and_fully_correct(state)
+        state, error_dev, c_dev = predict_and_fully_correct(state)
 
         if params.phys.system in periodic_systems:
             # Divergence correction and mean-mode zeroing
@@ -370,18 +387,31 @@ def main() -> None:
 
             save_snapshot(state, t, it, f"snapshot_it{it:09d}")
 
-        last_error = error
-        c_int = int(c)
-        last_c = c_int
-        c_tot += c_int
+        # On-device accumulation (no host sync).
+        c_sum = c_sum + c_dev
+        if it == params.init.it0 + 1:
+            c_first = c_dev
 
-        if it > params.init.it0:
-            # 2 RHS evals per predict_and_correct + 1 per corrector iteration
-            rhs_tot += c_int + 2
+        if (it - params.init.it0) % it_error_check == 0:
+            # Periodic host sync for the convergence check.
+            last_error = float(error_dev)
 
         wall_time_now = perf_counter_ns()
 
     # --- Post-processing -----------------------------------------------------
+    # Single shutdown sync of the device-side corrector counters
+    # (this also waits for all in-flight steps to complete).
+    n_steps: int = it - params.init.it0
+    if n_steps > 0:
+        last_error = float(error_dev)
+        last_c = int(c_dev)
+        c_tot = int(c_sum)
+        c_first_int = int(c_first)
+    else:
+        last_c = 0
+        c_tot = 0
+        c_first_int = 0
+
     if last_error > params.step.corrector_tolerance:
         sharding.print(
             f"Corrector failed to converge at t={t}, it={it}, c={last_c}, "
@@ -402,11 +432,15 @@ def main() -> None:
     if it > params.init.it0 + 1:
         wall_time = ns_to_s * (wall_time_now - bench_start)
         wall_time_per_sim_time = wall_time / (t - dt_first - params.init.t0)
+        # RHS evaluations within the benchmark window, excluding
+        # the first (JIT-heavy) step: 2 per step plus 1 per extra
+        # corrector iteration.
+        rhs_tot = (c_tot - c_first_int) + 2 * (n_steps - 1)
         wall_time_per_rhs = wall_time / rhs_tot
 
         # Final diagnostic output
         stats = get_stats(state)
-        c_per_it = c_tot / (it - params.init.it0)
+        c_per_it = c_tot / n_steps
 
         if params.outs.it_stats is not None:
             stat_vals = jnp.stack(list(stats.values()))

@@ -156,13 +156,16 @@ def zeropad_fft(a: Array, n: int, axis: int, out_shard) -> Array:
     return out
 
 
-def truncate_fft(a: Array, n: int, axis: int, out_shard) -> Array:
+def truncate_fft(a: Array, n: int, axis: int) -> Array:
     """Truncate a full-complex FFT output along *axis*, dropping
     aliased modes.
 
     Keeps the lowest `$n / 2$` positive and `$n / 2 - 1$` negative
-    modes, discarding all higher modes including the Nyquist mode.  The
-    output has `$n - 1$` stored modes.
+    modes, discarding all higher modes including the Nyquist mode.
+    The output has `$n - 1$` stored modes, formed by concatenating
+    the two kept slices (one copy; no zero-init plus scatters).
+    The truncated axis is locally stored in every pipeline stage,
+    so the input sharding carries over to the output.
 
     Parameters
     ----------
@@ -173,8 +176,6 @@ def truncate_fft(a: Array, n: int, axis: int, out_shard) -> Array:
         `$(N - n) \\pmod 2 = 0$`.
     axis:
         Axis along which to truncate (0 for y, 1 for z).
-    out_shard:
-        Partition spec for the output array.
     """
     if axis not in (0, 1):
         raise ValueError(f"axis must be 0 or 1; got {axis}.")
@@ -184,24 +185,12 @@ def truncate_fft(a: Array, n: int, axis: int, out_shard) -> Array:
     if (N - n) % 2 != 0:
         raise ValueError(f"Difference (N - n) = {N - n} cannot be odd.")
 
-    out_shape = list(a.shape)
-    out_shape[axis] = n - 1  # Omit the Nyquist mode
-    out = jnp.zeros(shape=out_shape, dtype=a.dtype, out_sharding=out_shard)
-
-    idx_in = [slice(None)] * 3
-    idx_out = [slice(None)] * 3
-
-    # positive modes
-    idx_in[axis] = slice(None, n // 2)
-    idx_out[axis] = slice(None, n // 2)
-    out = out.at[tuple(idx_out)].set(a[tuple(idx_in)])
-
-    # negative modes (skip the Nyquist modes)
-    idx_in[axis] = slice(N - n // 2 + 1, None)
-    idx_out[axis] = slice(n // 2, None)
-    out = out.at[tuple(idx_out)].set(a[tuple(idx_in)])
-
-    return out
+    idx_pos = [slice(None)] * 3
+    idx_neg = [slice(None)] * 3
+    # positive modes; negative modes (skip the Nyquist modes)
+    idx_pos[axis] = slice(None, n // 2)
+    idx_neg[axis] = slice(N - n // 2 + 1, None)
+    return jnp.concatenate([a[tuple(idx_pos)], a[tuple(idx_neg)]], axis=axis)
 
 
 def zeropad_rfft(a: Array, n: int, out_shard) -> Array:
@@ -226,27 +215,17 @@ def zeropad_rfft(a: Array, n: int, out_shard) -> Array:
     return out
 
 
-def truncate_rfft(a: Array, n: int, out_shard) -> Array:
+def truncate_rfft(a: Array, n: int) -> Array:
     """Truncate a real-FFT output along axis 2 (kx) to *n* modes.
 
-    Keeps only the lowest *n* non-negative frequencies.
+    Keeps only the lowest *n* non-negative frequencies (a plain
+    slice; the kx axis is locally stored in this pipeline stage,
+    so the input sharding carries over).
     """
-    axis = 2
-    N = a.shape[axis]
+    N = a.shape[2]
     if n > N:
         raise ValueError(f"Target mode count {n} is larger than input {N}.")
-
-    out_shape = list(a.shape)
-    out_shape[axis] = n
-    out = jnp.zeros(shape=out_shape, dtype=a.dtype, out_sharding=out_shard)
-
-    idx_in = [slice(None)] * 3
-    idx_out = [slice(None)] * 3
-    idx_in[axis] = slice(None, n)
-    idx_out[axis] = slice(None, n)
-    out = out.at[tuple(idx_out)].set(a[tuple(idx_in)])
-
-    return out
+    return a[:, :, :n]
 
 
 # ── 2D FFT (wall-bounded) ───────────────────────────────────
@@ -290,7 +269,6 @@ def _rfft2d(x: Array) -> Array:
             out_specs=phys,
         )(x),
         params.res.nx // 2,
-        phys,
     )
 
     # Pad kx for np1 divisibility (appends zeros after nx//2).
@@ -311,7 +289,6 @@ def _rfft2d(x: Array) -> Array:
         )(y),
         params.res.nz,
         1,
-        mid,
     )
 
     # Pad kz for np0 divisibility (appends zeros after nz-1).
@@ -434,7 +411,6 @@ def _rfft3d(x: Array) -> Array:
             out_specs=phys,
         )(x),
         params.res.nx // 2,
-        phys,
     )
 
     if sharding.nx_spec_pad:
@@ -454,7 +430,6 @@ def _rfft3d(x: Array) -> Array:
         )(y),
         params.res.nz,
         1,
-        mid,
     )
 
     if sharding.nz_spec_pad:
@@ -474,7 +449,6 @@ def _rfft3d(x: Array) -> Array:
         )(y),
         params.res.ny,
         0,
-        spec,
     )
 
     return y
