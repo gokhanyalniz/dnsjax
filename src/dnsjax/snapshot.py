@@ -4,7 +4,7 @@ Stores the spectral perturbation velocity in zarr3 format as
 **three combined per-component files** (one zarr3 chunk per
 velocity component), each a clean global array with the `$k_z$`
 and `$k_x$` axes de-interleaved across devices.  Only **true**
-(unpadded) spectral modes are stored; zero-padded dummy modes
+(unpadded) spectral modes are stored; zero-valued padding modes
 added for 2D mesh divisibility are stripped on save and
 re-introduced on load.  Because each file holds the full mode
 range, a snapshot can be resumed at **any** ``(np0, np1)``
@@ -231,7 +231,7 @@ def _layout() -> _Layout:
     """Layout to write from the current geometry.
 
     All dimensions use **true** (unpadded) mode counts so that
-    on-disk snapshots never contain dummy padding modes.
+    on-disk snapshots never contain padding modes.
     """
     kx = _kx_true()
     kz = _kz_true()

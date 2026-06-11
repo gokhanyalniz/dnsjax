@@ -146,6 +146,6 @@ All to be kept up-to-date as the respective modules change:
 - `tests/test_cartesian.py` contains Cartesian operator and matvec tests.
 - `tests/test_cylindrical.py` contains cylindrical operator and matvec tests.
 - `tests/test_integration.py` contains quadrature weight tests.
-- `tests/test_mean_mask.py` checks `Fourier.mean_mask` vs `k2_is_zero` under forced spectral padding (subprocess, forced CPU devices).
+- `tests/test_mean_mask.py` checks that padding slots carry nonzero placeholder wavenumbers and `Fourier.mean_mask` is the unique k^2 = 0 (mean) mode under forced spectral padding (subprocess, forced CPU devices).
 - `tests/test_laminar_smoke.py` runs all wall-bounded flows from laminar state (via subprocess/mpirun) checking stepping error and perturbation energy.
 - `tests/test_snapshot.py` round-trips snapshots (save/load equality, np-agnostic resume, `load_y_slice`) for all on-disk layouts via the host I/O path (subprocess per system/device-count, multi-device via forced CPU devices).
