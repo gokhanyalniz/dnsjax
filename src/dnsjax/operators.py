@@ -60,6 +60,42 @@ def complex_harmonics(n: int) -> Array:
     return qs_out
 
 
+def pad_harmonics(harmonics: Array, n: int, pad: int) -> Array:
+    """Append placeholder wavenumbers for divisibility-padding slots.
+
+    Spectral axes are padded so the mode count divides the device
+    mesh (see :mod:`dnsjax.sharding`).  The padding slots receive
+    the beyond-resolution wavenumbers
+    `$[n/2, n/2 + 1, \\dots, n/2 + \\text{pad} - 1]$` (the omitted
+    Nyquist magnitude and up; both generators above have maximum
+    magnitude `$n/2 - 1$`).  They must be nonzero integers so the
+    per-mode operators assembled at padding slots stay regular
+    (only `$k^2 = 0$` systems are singular); the values are
+    otherwise arbitrary because padded fields are identically zero
+    (the forward FFT re-zeroes the padding slots on every
+    evaluation; see :mod:`dnsjax.fft`).
+
+    Parameters
+    ----------
+    harmonics:
+        True wavenumbers from ``real_harmonics`` or
+        ``complex_harmonics``.
+    n:
+        Full mode count along the axis.
+    pad:
+        Number of padding slots to append.
+
+    Returns
+    -------
+    :
+        ``harmonics`` with ``pad`` placeholder wavenumbers appended.
+    """
+    if not pad:
+        return harmonics
+    placeholder = jnp.arange(n // 2, n // 2 + pad, dtype=int)
+    return jnp.concatenate([harmonics, placeholder])
+
+
 @jit
 @vmap
 def phys_to_spec(velocity_phys: Array) -> Array:

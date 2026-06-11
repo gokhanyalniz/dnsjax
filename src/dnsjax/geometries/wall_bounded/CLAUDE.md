@@ -18,9 +18,9 @@ See `_imm_iteration` in `cartesian.py` for the full 9-stage algorithm, mathemati
 - Both backends apply `Lk` and `Hk_minus` matvecs matrix-free via `_lk_matvec` / `_hk_minus_matvec`, reconstructing from shared `D1`/`D2` FD matrices.
 - All IMM homogeneous data is derived from the GPU operator by `CartesianFlow._derive_imm_homogeneous_data`.
 
-### Mean-mode writes vs gauge fixing
+### Mean mode and padding modes
 
-`Fourier.k2_is_zero` is also True at zero-padded dummy modes (any `np0 > 1` run pads kz). Nonzero writes targeting the mean mode (e.g. bulk-velocity corrections) must use `Fourier.mean_mask` (one-hot at the true (0,0) mode). `k2_is_zero` must **stay** in the operator pin rows, `_lk_matvec`, and the `M_inv` mean branches: dummy-mode systems are mean-mode-like and singular without them (Inf/NaN factors, and `NaN * 0 = NaN` then poisons all modes). The zero-projections (mean-mode `v`/`u_r` and `d_wall` zeroing) also keep `k2_is_zero` deliberately — they pin dummy modes to zero each iteration. See the `Fourier` docstrings in `cartesian.py` / `cylindrical.py`.
+Spectral padding slots (any `np0 > 1` run pads kz/m; `np1 > 1` pads the streamwise axis) carry nonzero beyond-resolution placeholder wavenumbers (`pad_harmonics` in `operators.py`), so the mean mode is the only k^2 = 0 mode and `Fourier.mean_mask` (one-hot at global index (0,0)) is the single mask: it selects the operator pin row (`_build_Lk_*`, `_lk_matvec`), the `M_inv` mean branch, and all mean-mode physics (the `v`/`u_r` projections, `d_wall` gauge zeroing, bulk-velocity writes). Padding modes need no special-casing: their per-mode operators are regular, the forward FFT re-zeroes their slots on every evaluation (zero RHS -> zero solution), and the IMM corrections vanish there. See the `Fourier` docstrings in `cartesian.py` / `cylindrical.py`.
 
 ### Cylindrical geometry
 
@@ -49,5 +49,5 @@ When the aim is to operate on a quantity derivable from the mean mode (streamwis
 - `tests/test_cartesian.py`: Cartesian operator and matvec tests
 - `tests/test_cylindrical.py`: cylindrical operator and matvec tests
 - `tests/test_integration.py`: quadrature weight and interpolation matrix tests
-- `tests/test_mean_mask.py`: `mean_mask` vs `k2_is_zero` under forced spectral padding
+- `tests/test_mean_mask.py`: placeholder padding wavenumbers and `mean_mask` as the unique k^2 = 0 mode under forced spectral padding
 - `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows

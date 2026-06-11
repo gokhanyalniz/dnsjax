@@ -302,7 +302,7 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
     # Solver-internal shapes from field-layout fourier arrays.
     m_s = fourier.m[0, ..., None]
     kz2_s = fourier.kz2[0, ..., None]
-    k2z_s = fourier.k2_is_zero[0, ..., None]
+    mean_s = fourier.mean_mask[0, ..., None]
     m_is_even_s = fourier.m_is_even[0, ..., None]
 
     m_is_even_p = m_is_even_s
@@ -320,7 +320,7 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
     A_odd = pipe_flow.A_base_odd
     inv_r2 = pipe_flow.inv_r2
     kz2 = kz2_s
-    k2_is_zero = k2z_s
+    mean_mask = mean_s
     D1_wall = pipe_flow.D1_wall.ravel()
 
     Nm = params.res.nz - 1
@@ -340,7 +340,7 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
         m_sq,
         inv_r2,
         kz2,
-        k2_is_zero,
+        mean_mask,
         p,
         P_blk,
         m_blk,
@@ -355,7 +355,7 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
             m_sq,
             inv_r2,
             kz2,
-            k2_is_zero,
+            mean_mask,
         )
     )
     x_b = np.array(Lk_banded.solve(rhs))

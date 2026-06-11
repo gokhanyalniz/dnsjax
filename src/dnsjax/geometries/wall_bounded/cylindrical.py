@@ -96,6 +96,7 @@ from ...fd import (
 )
 from ...operators import (
     complex_harmonics,
+    pad_harmonics,
     phys_to_spec_2d,
     real_harmonics,
     spec_to_phys_2d,
@@ -165,22 +166,33 @@ class Fourier:
 
     ``k_metric`` equals 2 for `$k_z > 0$` and 1 for
     `$k_z = 0$`, accounting for the Hermitian symmetry of
-    the real FFT.
+    the real FFT (padding columns get 2 — inert, they only
+    ever weight zero fields).
 
-    ``m_is_even`` is a boolean mask ``(1, nz-1, 1)``
+    ``m_is_even`` is a boolean mask ``(1, nz_spec, 1)``
     selecting the azimuthal modes where `$m$` is even, used
-    to choose the correct parity-reduced FD matrices.
+    to choose the correct parity-reduced FD matrices.  At
+    padding slots it follows the parity of the placeholder
+    `$m$` values; the selected operators are regular either
+    way.
+
+    Padding slots (``nz_spec > nz - 1`` or
+    ``nx_spec > nx // 2``, spectral padding for 2D
+    divisibility) carry nonzero beyond-resolution
+    placeholder wavenumbers (see ``pad_harmonics`` in
+    :mod:`dnsjax.operators`): every per-mode operator
+    assembled at a padding slot is regular, and the fields
+    there are identically zero (the forward FFT re-zeroes
+    the padding slots on every evaluation), so the padding
+    modes need no special-casing.
 
     ``mean_mask`` is a boolean mask that is ``True`` only at
-    the **true** mean mode `$(m, k_z) = (0, 0)$` (global
-    index ``(0, 0)``).  It differs from ``k2_is_zero`` at the
-    zero-padded dummy modes appended for 2D mesh divisibility
-    (their stored `$m$`/`$k_z$` values are also zero):
-    mean-mode *writes* (the constant-bulk-velocity
-    correction) must use ``mean_mask`` so the dummy modes
-    stay exactly zero, while operator gauge fixing keeps
-    using ``k2_is_zero`` (padded systems need the pin row to
-    stay nonsingular).
+    the mean mode `$(m, k_z) = (0, 0)$` (global index
+    ``(0, 0)``; padding modes are appended at the end).  The
+    mean mode is the only `$m^2 + k_z^2 = 0$` mode, so this
+    single mask serves the operator pin row, the
+    influence-matrix mean branch, and all mean-mode physics
+    (projections and the constant-bulk-velocity write).
     """
 
     kz: Array = field(init=False)
@@ -188,28 +200,30 @@ class Fourier:
     k_metric: Array = field(init=False)
     kz2: Array = field(init=False)
     m2: Array = field(init=False)
-    k2_is_zero: Array = field(init=False)
     m_is_even: Array = field(init=False)
     mean_mask: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        kz_true = real_harmonics(params.res.nx) * 2 * jnp.pi / params.geo.lx
-        if sharding.nx_spec_pad:
-            kz_vals = jnp.concatenate(
-                [kz_true, jnp.zeros(sharding.nx_spec_pad)]
+        kz_vals = (
+            pad_harmonics(
+                real_harmonics(params.res.nx),
+                params.res.nx,
+                sharding.nx_spec_pad,
             )
-        else:
-            kz_vals = kz_true
+            * 2
+            * jnp.pi
+            / params.geo.lx
+        )
         self.kz = jax.device_put(
             kz_vals.reshape([1, 1, -1]).astype(sharding.float_type),
             P(None, None, sharding.a1),
         )
 
-        m_true = complex_harmonics(params.res.nz)
-        if sharding.nz_spec_pad:
-            m_vals = jnp.concatenate([m_true, jnp.zeros(sharding.nz_spec_pad)])
-        else:
-            m_vals = m_true
+        m_vals = pad_harmonics(
+            complex_harmonics(params.res.nz),
+            params.res.nz,
+            sharding.nz_spec_pad,
+        )
         self.m = jax.device_put(
             m_vals.reshape([1, -1, 1]).astype(sharding.float_type),
             P(None, sharding.a0, None),
@@ -221,13 +235,12 @@ class Fourier:
 
         self.kz2 = self.kz**2
         self.m2 = self.m**2
-        self.k2_is_zero = (self.kz2 + self.m2) == 0.0
         self.m_is_even = (self.m % 2 == 0).astype(sharding.float_type)
 
-        # One-hot at the true mean mode (m, kz) = (0, 0): the
-        # true modes precede the padding, so it is global index
-        # (0, 0).  See the class docstring (mean_mask vs
-        # k2_is_zero).
+        # One-hot at the mean mode (m, kz) = (0, 0): the true
+        # modes precede the padding, so it is global index (0, 0).
+        # The mean mode is the only m^2 + kz^2 = 0 mode (padding
+        # slots carry nonzero placeholder wavenumbers).
         e_m = (
             jnp.zeros(m_vals.shape[0], dtype=sharding.float_type)
             .at[0]
@@ -569,7 +582,7 @@ def _build_Lk_blocks_gpu(
     m2: Array,
     inv_r2: Array,
     kz2: Array,
-    k2_is_zero: Array,
+    mean_mask: Array,
     p: int,
     P: int,
     m_blk: int,
@@ -612,7 +625,7 @@ def _build_Lk_blocks_gpu(
         `$1/r_j^2$`, shape ``(Nr,)``.
     kz2:
         `$k_z^2$`, shape ``(1, Nkz, 1)``.
-    k2_is_zero:
+    mean_mask:
         Mean-mode boolean mask.
     p:
         FD order (half-bandwidth).
@@ -678,10 +691,10 @@ def _build_Lk_blocks_gpu(
     A_blocks = jnp.stack(blocks, axis=2)
 
     # BC: wall row (last row of last block) -> Neumann D1[-1,:]
-    # for non-mean modes, pin [...,0,1] for (m,kz) = (0,0).
+    # for all modes, pin [...,0,1] at the mean mode (m,kz) = (0,0).
     D1_wall_row = D1_wall[-m_blk:]  # last m_blk entries
     pin_row = jnp.zeros(m_blk, dtype=dtype).at[-1].set(1.0)
-    wall_row = jnp.where(k2_is_zero, pin_row, D1_wall_row)
+    wall_row = jnp.where(mean_mask, pin_row, D1_wall_row)
     A_blocks = A_blocks.at[:, :, -1, -1, :].set(wall_row)
 
     # Coupling corners (parity-independent: from A_base_even
@@ -818,7 +831,7 @@ def _build_Lk_dense_gpu(
     m2: Array,
     inv_r2: Array,
     kz2: Array,
-    k2_is_zero: Array,
+    mean_mask: Array,
 ) -> Array:
     r"""Build dense `$L_k$` on GPU (dense backend only).
 
@@ -837,10 +850,10 @@ def _build_Lk_dense_gpu(
     Lk_odd = A_base_odd[None, None] + diag_shift[..., None] * eye_Nr
     Lk = jnp.where(m_is_even[..., None], Lk_even, Lk_odd)
 
-    # Wall BC: Neumann D1[-1,:] for non-mean, pin for mean.
+    # Wall BC: Neumann D1[-1,:] for all modes, pin at the mean.
     D1_wall_1d = D1_wall.ravel()
     pin = eye_Nr[-1, :]
-    wall_row = jnp.where(k2_is_zero, pin, D1_wall_1d)
+    wall_row = jnp.where(mean_mask, pin, D1_wall_1d)
     Lk = Lk.at[..., -1, :].set(wall_row)
 
     return Lk
@@ -1043,7 +1056,7 @@ class CylindricalFlow:
         # from field layout (1, Nm, ...) to (Nm, ..., 1).
         m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
         kz2_s = fourier.kz2[0, ..., None]  # (1, Nkz, 1)
-        k2z_s = fourier.k2_is_zero[0, ..., None]  # (Nm, Nkz, 1)
+        mean_s = fourier.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
         m_is_even_s = fourier.m_is_even[0, ..., None]  # (Nm, 1, 1)
 
         m_plus_1_sq = (m_s + 1) ** 2
@@ -1073,7 +1086,7 @@ class CylindricalFlow:
                 m_sq,
                 self.inv_r2,
                 kz2_s,
-                k2z_s,
+                mean_s,
                 fd_p,
                 P_blk,
                 m_blk,
@@ -1154,7 +1167,7 @@ class CylindricalFlow:
                 m_sq,
                 self.inv_r2,
                 kz2_s,
-                k2z_s,
+                mean_s,
             )
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
@@ -1252,13 +1265,20 @@ class CylindricalFlow:
             \frac{v_{+,1} + v_{-,1}}{2}
 
         measures `$\partial u_r / \partial r|_{\mathrm{wall}}$`.
-        `$M^{-1} = 1/M$` for non-mean modes; `$M^{-1} = 0$`
-        for `$(m, k_z) = (0, 0)$`.
+        `$M^{-1} = 1/M$` for all modes except the mean mode
+        `$(m, k_z) = (0, 0)$`, where `$M^{-1} = 0$` (the
+        `$u_r$` zeroing below makes `$M = 0$` there).
+        Padding modes take the regular `$1/M$` branch (their
+        placeholder-wavenumber systems are as well-posed as
+        physical ones); the values are inert, multiplied
+        only by the exactly-zero wall residuals of zero
+        fields.
 
         After the solves, the `$u_r$` part of ``v_plus_1``
         and ``v_minus_1`` is zeroed at the mean mode
         (continuity forces `$u_r \\equiv 0$` there), while
-        preserving the `$u_\\theta$` part.
+        preserving the `$u_\\theta$` part.  The zeroing runs
+        before ``M`` is assembled.
         """
         # All solver work uses (Nm, Nkz, Nr) layout; results
         # are transposed to field layout (Nr, Nm, Nkz) at the end.
@@ -1298,8 +1318,8 @@ class CylindricalFlow:
         qz1_s = result_stack[2]
 
         # Zero the u_r part at the mean mode, preserving u_theta.
-        k2z_s = fourier.k2_is_zero[0, ..., None]  # (Nm, Nkz, 1)
-        vr_corr = jnp.where(k2z_s, (vp1_s + vm1_s) / 2, 0.0)
+        mean_s = fourier.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
+        vr_corr = jnp.where(mean_s, (vp1_s + vm1_s) / 2, 0.0)
         vp1_s = vp1_s - vr_corr
         vm1_s = vm1_s - vr_corr
 
@@ -1308,7 +1328,7 @@ class CylindricalFlow:
         ur_1 = (vp1_s + vm1_s) / 2
         M = jnp.einsum("j, mzj -> mz", D1_wall_row, ur_1)
 
-        is_mean = fourier.k2_is_zero[0]  # (Nm, Nkz)
+        is_mean = fourier.mean_mask[0]  # (Nm, Nkz)
         safe_M = jnp.where(is_mean, 1.0, M)
         self.M_inv = jnp.where(is_mean, 0.0, 1.0 / safe_M)
 
@@ -1344,9 +1364,9 @@ class CylindricalFlow:
             self.H_bulk_inv = jnp.zeros((), dtype=sharding.float_type)
             return
 
-        # Unit uniform RHS at the true mean mode only
-        # (``mean_mask``; zero-padded dummy modes get zero RHS),
-        # zero wall BC.  Solver-internal layout (Nm, Nkz, Nr).
+        # Unit uniform RHS at the mean mode only (``mean_mask``;
+        # all other modes, padding included, get zero RHS), zero
+        # wall BC.  Solver-internal layout (Nm, Nkz, Nr).
         ones_vec = jnp.ones(Nr, dtype=sharding.float_type).at[-1].set(0.0)
         rhs = jnp.where(fourier.mean_mask[0, ..., None], ones_vec, 0.0)
 
@@ -1530,10 +1550,10 @@ def _lk_matvec(
     inv_r2 = flow_.inv_r2[:, None, None]
     out = Abase_u - (fourier_.m2 * inv_r2 + fourier_.kz2) * u
 
-    # Wall row: Neumann D1[-1,:] for non-mean, pin for mean.
+    # Wall row: Neumann D1[-1,:] for all modes, pin at the mean.
     D1_wall_row = flow_.D1_wall.ravel()
     wall_val = jnp.einsum("j, jmz -> mz", D1_wall_row, u)
-    bot = jnp.where(fourier_.k2_is_zero[0], u[-1], wall_val)
+    bot = jnp.where(fourier_.mean_mask[0], u[-1], wall_val)
     return out.at[-1].set(bot)
 
 
@@ -1694,9 +1714,7 @@ def _imm_iteration(
     # the Helmholtz solves produce u_r = 0 there.  At m=0,
     # Hk_plus and Hk_minus are identical (m_eff^2 = 1, same
     # parity), so the antisymmetric RHS gives up = -um.
-    Rr_corr = jnp.where(
-        fourier_.k2_is_zero, (R_stack[0] + R_stack[1]) / 2, 0.0
-    )
+    Rr_corr = jnp.where(fourier_.mean_mask, (R_stack[0] + R_stack[1]) / 2, 0.0)
     R_stack = R_stack.at[0].add(-Rr_corr)
     R_stack = R_stack.at[1].add(-Rr_corr)
 
@@ -1712,7 +1730,7 @@ def _imm_iteration(
     d_wall = jnp.einsum("j, jmz -> mz", D1_wall_row, ur_arb)
 
     # Mean mode: pressure is a gauge; zero the residual.
-    d_wall = jnp.where(fourier_.k2_is_zero[0], 0.0, d_wall)
+    d_wall = jnp.where(fourier_.mean_mask[0], 0.0, d_wall)
 
     # Stage 5: influence matrix correction (scalar per mode).
     alpha = -flow_.M_inv * d_wall  # (Nm, Nkz)
@@ -1723,7 +1741,7 @@ def _imm_iteration(
     um_new = um_arb + alpha * flow_.v_minus_1
 
     # Stage 7: zero mean-mode u_r, preserving u_theta.
-    ur_corr = jnp.where(fourier_.k2_is_zero, (up_new + um_new) / 2, 0.0)
+    ur_corr = jnp.where(fourier_.mean_mask, (up_new + um_new) / 2, 0.0)
     up_new = up_new - ur_corr
     um_new = um_new - ur_corr
 
@@ -1736,9 +1754,8 @@ def _imm_iteration(
     # already equals the uncorrected uz_new there; reading
     # the bulk from uz_arb lets the IMM correction and the
     # bulk correction fuse into a single expression.  The
-    # write mask is ``mean_mask`` (true mean mode only), not
-    # ``k2_is_zero``: the latter is also True at zero-padded
-    # dummy modes, which would accumulate the correction.
+    # write mask is ``mean_mask``: no other mode (padding
+    # included) receives the correction.
     if params.phys.driving == "constant_bulk_velocity":
         mean_uz = extract_mean_mode(uz_arb[None])[0].real
         bulk_uz = 2 * jnp.dot(flow_.y_weights, mean_uz)
