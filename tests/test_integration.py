@@ -34,6 +34,7 @@ from dnsjax.fd import (  # noqa: E402
     build_integration_weights,
     chebyshev_interpolation_matrix,
     half_cgl_interpolation_matrices,
+    tanh_one_sided_grid,
 )
 from dnsjax.geometries.wall_bounded import integrate_scalar  # noqa: E402
 from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
@@ -194,6 +195,88 @@ def test_composite_convergence_rate():
     for i in range(1, len(errors)):
         ratio = errors[i - 1] / max(errors[i], 1e-16)
         assert ratio > 4, f"ny={nys[i]}: ratio {ratio:.1f} (expected >> 4)"
+
+
+def _radial_weights(rs: np.ndarray, p: int) -> np.ndarray:
+    """Radial weights as built by ``build_cylindrical_grid``:
+    composite rule over the full disc (``left_edge=0.0``)
+    times the radial Jacobian."""
+    return build_integration_weights(rs, p, left_edge=0.0) * rs
+
+
+def test_radial_weights_full_disc():
+    r"""Radial weights must cover [0, 1] including the
+    `$[0, r_0]$` segment below the first grid point.
+
+    The integrand `$g = r f$` is interpolated per interval,
+    so the rule is exact whenever `$g$` is a polynomial of
+    degree `$\le p$`: checks `$\int_0^1 r\,dr = 1/2$`,
+    `$\int_0^1 r^3\,dr = 1/4$`, and the laminar pipe bulk
+    `$2\int_0^1 (1-r^2)\,r\,dr = 1/2$`.
+    """
+    cases = [
+        ("half-cgl", _half_cgl_grid),
+        ("tanh", lambda nr: tanh_one_sided_grid(nr, 1.5)),
+    ]
+    for name, grid_fn in cases:
+        for nr in [8, 16, 32, 64]:
+            rs = np.asarray(grid_fn(nr), dtype=np.float64)
+            for p in [4, 8]:
+                if nr < 2 * p:
+                    continue
+                yw = _radial_weights(rs, p)
+                assert_allclose(
+                    yw.sum(),
+                    0.5,
+                    atol=1e-12,
+                    err_msg=f"int r dr, {name}, nr={nr}, p={p}",
+                )
+                assert_allclose(
+                    (yw * rs**2).sum(),
+                    0.25,
+                    atol=1e-12,
+                    err_msg=f"int r^3 dr, {name}, nr={nr}, p={p}",
+                )
+                assert_allclose(
+                    2 * (yw * (1 - rs**2)).sum(),
+                    0.5,
+                    atol=1e-12,
+                    err_msg=f"laminar bulk, {name}, nr={nr}, p={p}",
+                )
+
+
+def test_radial_weights_convergence_rate():
+    r"""Full-disc radial error must decrease as
+    `$O(h^{p+1})$` for a non-polynomial smooth-even
+    integrand (no `$O(N_r^{-2})$` floor from a missing
+    `$[0, r_0]$` segment).
+
+    Uses `$\int_0^1 e^{r^2} r\,dr = (e-1)/2$`.
+    """
+    exact = (np.exp(1.0) - 1.0) / 2.0
+    for p in [2, 4]:
+        errors = []
+        nrs = [8, 16, 32, 64]
+        for nr in nrs:
+            rs = np.asarray(_half_cgl_grid(nr), dtype=np.float64)
+            yw = _radial_weights(rs, p)
+            errors.append(abs((yw * np.exp(rs**2)).sum() - exact))
+        for i in range(1, len(errors)):
+            ratio = errors[i - 1] / max(errors[i], 1e-16)
+            assert ratio > 4, (
+                f"p={p}, nr={nrs[i]}: ratio {ratio:.1f} (expected >> 4)"
+            )
+
+
+def test_radial_weights_left_edge_validation():
+    """left_edge above the first grid point must raise."""
+    rs = np.asarray(_half_cgl_grid(8), dtype=np.float64)
+    raised = False
+    try:
+        build_integration_weights(rs, 4, left_edge=2 * rs[0])
+    except ValueError:
+        raised = True
+    assert raised, "left_edge > y[0] should raise ValueError"
 
 
 def test_composite_vs_cc_on_cgl():

@@ -128,7 +128,9 @@ def build_diff_matrices(
     return D1, D2
 
 
-def build_integration_weights(y: ndarray, p: int) -> ndarray:
+def build_integration_weights(
+    y: ndarray, p: int, left_edge: float | None = None
+) -> ndarray:
     r"""Composite polynomial quadrature weights on a non-uniform
     grid.
 
@@ -142,8 +144,10 @@ def build_integration_weights(y: ndarray, p: int) -> ndarray:
     summed to give global weights `$w_j$` satisfying
 
     .. math::
-        \int_{y_0}^{y_{N}} f(y)\,dy
-        \;\approx\; \sum_j w_j\,f(y_j).
+        \int_{a}^{y_{N}} f(y)\,dy
+        \;\approx\; \sum_j w_j\,f(y_j),
+
+    where `$a = y_0$` by default, or *left_edge* when given.
 
     Composite accuracy is `$O(h^{p+1})$` for smooth
     integrands, consistent with the FD derivative order `$p$`
@@ -155,6 +159,20 @@ def build_integration_weights(y: ndarray, p: int) -> ndarray:
         Grid-point coordinates, shape ``(Ny,)``.
     p:
         Accuracy order.  Uses ``(p+1)``-point stencils.
+    left_edge:
+        Optional lower integration bound below the first grid
+        point (``left_edge <= y[0]``).  The extra interval
+        `$[\mathrm{left\_edge}, y_0]$` is covered by the
+        first-stencil interpolant, keeping the composite
+        order `$p+1$` for integrands that are smooth across
+        the edge.  Used for the cylindrical radial direction,
+        where the axis `$r = 0$` is not a grid point yet the
+        integral runs over the full disc: without it, every
+        radial integral would drop the `$[0, r_0]$` mass and
+        carry an `$O(r_0^2) = O(N_r^{-2})$` bias regardless
+        of *p*.  (The extrapolation distance `$r_0$` is small
+        compared to the stencil width, so conditioning is not
+        an issue.)
 
     Returns
     -------
@@ -167,15 +185,26 @@ def build_integration_weights(y: ndarray, p: int) -> ndarray:
     h = s // 2
     w = np.zeros(Ny, dtype=y.dtype)
 
-    for i in range(Ny - 1):
-        j0 = max(0, min(i + 1 - h, Ny - s))
+    # (a, b, j0): integrate the interpolant through the stencil
+    # y[j0 : j0 + s] over [a, b].
+    intervals = [
+        (y[i], y[i + 1], max(0, min(i + 1 - h, Ny - s))) for i in range(Ny - 1)
+    ]
+    if left_edge is not None:
+        if left_edge > y[0]:
+            raise ValueError(
+                f"left_edge={left_edge} must not exceed y[0]={y[0]}"
+            )
+        intervals.append((left_edge, y[0], 0))
+
+    for a, b, j0 in intervals:
         xs = y[j0 : j0 + s]
 
         mid = (xs[0] + xs[-1]) / 2
         half = (xs[-1] - xs[0]) / 2
         t = (xs - mid) / half
-        a_n = (y[i] - mid) / half
-        b_n = (y[i + 1] - mid) / half
+        a_n = (a - mid) / half
+        b_n = (b - mid) / half
 
         V = np.vander(t, N=s, increasing=True)
         ks = np.arange(s, dtype=y.dtype)

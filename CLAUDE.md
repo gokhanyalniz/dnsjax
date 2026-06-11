@@ -24,7 +24,7 @@ Laminar smoke (2D multi-device): `uv run python tests/test_laminar_smoke.py --np
 
 ### Smoke test (laminar time stepping)
 
-Any `python -m dnsjax` run must be launched via `mpirun` (even single-process: `mpirun -np 1 ...`); `__main__` unconditionally initializes the JAX distributed backend.
+Any `python -m dnsjax` run must be launched via `mpirun` (even single-process: `mpirun -np 1 ...`); `__main__` unconditionally initializes the JAX distributed backend. Under `mpirun`, invoke the interpreter as `.venv/bin/python` directly (`uv run` does not compose with `mpirun`).
 
 `mpirun -np 2 python -m dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
 
@@ -37,7 +37,7 @@ The laminar state should time step with a single corrector step, with stepping e
 
 `uv run python scripts/random_field.py --system plane-couette --nx 128 --ny 65 --nz 128 --amplitude 0.1 --smoothness 0.4 --seed 1 --output random_ic`
 
-Generates a divergence-free random perturbation (obeying BCs) and saves it as a zarr3 snapshot. Load with `--init.snapshot random_ic --init.start_from_laminar False`. Supports all flow systems. Run `--test` for self-verification. See `scripts/random_field.py` docstring for the full algorithm and CLI options.
+Generates a divergence-free random perturbation (obeying BCs) and saves it as a zarr3 snapshot. Load with `--init.snapshot random_ic --init.start_from_laminar False`. Supports all flow systems. Run `--test` for self-verification (`--output` is still required and written). See `scripts/random_field.py` docstring for the full algorithm and CLI options.
 
 ## Documentation instructions
 
@@ -57,7 +57,7 @@ operators.py          Wavenumber helpers; vmapped 3D/2D FFT wrappers; vector cro
 fft.py                3D/2D real FFT with 3/2-rule dealiasing; shard_map; double-parallelisation reshards
 rhs.py                Rotational-form perturbation nonlinear term (shared across flow types)
 timestep.py           make_stepper() factory; JIT-compiled predict_and_correct / predict_and_fully_correct
-fd.py                 FD utilities (Fornberg weights, D1/D2, quadrature weights, interpolation matrices)
+fd.py                 FD utilities (Fornberg weights, D1/D2, quadrature weights, interpolation matrices); NumPy-only, importable standalone without JAX/params setup
 solvers.py            Geometry-independent linear solvers: DenseJAXSolver, PerModeBandedOperator (SPIKE)
 snapshot.py           Snapshot save/load: zarr3, np-agnostic resume, raw offset I/O (GDS or host)
 geometries/
@@ -146,5 +146,6 @@ All to be kept up-to-date as the respective modules change:
 - `tests/test_cartesian.py` contains Cartesian operator and matvec tests.
 - `tests/test_cylindrical.py` contains cylindrical operator and matvec tests.
 - `tests/test_integration.py` contains quadrature weight tests.
+- `tests/test_mean_mask.py` checks `Fourier.mean_mask` vs `k2_is_zero` under forced spectral padding (subprocess, forced CPU devices).
 - `tests/test_laminar_smoke.py` runs all wall-bounded flows from laminar state (via subprocess/mpirun) checking stepping error and perturbation energy.
 - `tests/test_snapshot.py` round-trips snapshots (save/load equality, np-agnostic resume, `load_y_slice`) for all on-disk layouts via the host I/O path (subprocess per system/device-count, multi-device via forced CPU devices).
