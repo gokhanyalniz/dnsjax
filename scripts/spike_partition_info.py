@@ -12,7 +12,7 @@ Usage::
     python scripts/spike_partition_info.py \\
         --ny 256 --nz 256 --nx 512 --fd-order 6
     python scripts/spike_partition_info.py \\
-        --ny 128 --nz 128 --nx 128 --no-block-thomas
+        --ny 128 --nz 128 --nx 128 --block-thomas
     python scripts/spike_partition_info.py \\
         --ny 128 --nz 128 --nx 128 --n-operators 4
 """
@@ -64,10 +64,11 @@ def main() -> None:
         default="double",
     )
     ap.add_argument(
-        "--no-block-thomas",
+        "--block-thomas",
         action="store_true",
-        dest="no_block_thomas",
-        help="Use dense reduced system (matches --solver.block_thomas False).",
+        dest="block_thomas",
+        help="Use the block-Thomas reduced system "
+        "(matches --solver.block_thomas True).",
     )
     ap.add_argument(
         "--n-operators",
@@ -85,21 +86,22 @@ def main() -> None:
     Nkz = args.nz - 1
     Nkx = args.nx // 2
     n_modes = Nkz * Nkx
-    bpe = 16 if args.precision == "double" else 8
+    # Factors are stored and solved in real arithmetic (the
+    # operators are real; a complex RHS is split into re/im
+    # columns at solve time), so bytes/element is the real size.
+    bpe = 8 if args.precision == "double" else 4
     min_m = max(2 * p, 1)
-    block_thomas = not args.no_block_thomas
+    block_thomas = args.block_thomas
     n_ops = args.n_operators
 
     print(f"\nResolution: nx={args.nx}, ny={Ny}, nz={args.nz}")
     print(f"Fourier modes: Nkz={Nkz}, Nkx={Nkx} ({n_modes} total)")
     print(f"FD order (half-bandwidth): p={p}")
-    print(f"Precision: {args.precision} ({bpe} bytes/element)")
+    print(f"Precision: {args.precision} ({bpe} bytes/element, real factors)")
     print(f"Minimum block size: m >= 2p = {min_m}")
     print(f"Operators: {n_ops} (Cartesian=2, cylindrical=4)")
     bt_label = (
-        "block-Thomas (default)"
-        if block_thomas
-        else "dense (--no-block-thomas)"
+        "block-Thomas (--block-thomas)" if block_thomas else "dense (default)"
     )
     print(f"Reduced system: {bt_label}")
     print()
@@ -225,7 +227,7 @@ def main() -> None:
     print()
     mode = "block-Thomas" if block_thomas else "dense reduced"
     if best_P >= 2:
-        default = " (code default)" if block_thomas else ""
+        default = "" if block_thomas else " (code default)"
         print(f">>> = {mode} optimal (P={best_P}){default}")
     else:
         print("    Only P=1 (single block) is valid for this Ny and p.")
@@ -240,6 +242,14 @@ def main() -> None:
         "    AI = arithmetic intensity of per-block LU"
         " (FLOP/byte; higher is better for GPU)"
     )
+    if block_thomas:
+        print(
+            "    Latency: block-Thomas runs 2(P-1) sequential scan"
+            " steps per solve;\n    prefer a larger m"
+            " (--solver.spike_block_size) or the dense reduced"
+            " system\n    (the code default) when kernel-launch"
+            " latency dominates."
+        )
     print()
 
 

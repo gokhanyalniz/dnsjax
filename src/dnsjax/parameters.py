@@ -135,6 +135,14 @@ class Outputs(BaseModel):
     # All outputs are with respect to the number of time steps taken
     it_stats: int | None = None  # How often to compute stats
     it_snapshot: int | None = None  # How often to save snapshots
+    # How often (in steps) to sync the corrector error to the host
+    # for the convergence check.  Between checks the host enqueues
+    # steps ahead of the device (JAX async dispatch); corrector
+    # divergence is therefore detected up to ``it_error_check``
+    # steps late, each late step bounded by
+    # ``max_corrector_iterations``.  1 restores a per-step check
+    # (and a per-step host-device sync).
+    it_error_check: int = Field(ge=1, default=10)
     nstats: int = Field(ge=1, default=100)
     stats_precision: int = Field(ge=1, le=17, default=9)
     # How processes write a snapshot's shared chunk files:
@@ -178,15 +186,22 @@ class Solver(BaseModel):
     backend: Literal["banded", "dense"] = "banded"
     # Target SPIKE block size `$m$`.  When set, `$P = N_y / m$`.
     # When ``None`` (default), the block partition that minimises
-    # total per-mode SPIKE storage is chosen automatically.
-    # Use ``scripts/spike_partition_info.py`` to explore the
-    # memory / performance trade-off for a given resolution.
+    # total per-mode SPIKE storage under the selected
+    # reduced-system form (``block_thomas``) is chosen
+    # automatically.  Use ``scripts/spike_partition_info.py`` to
+    # explore the memory / latency trade-off for a resolution.
     spike_block_size: int | None = None
     # Use block-Thomas ``lax.scan`` solves for the SPIKE reduced
-    # system (and, when applicable, the per-block banded solves).
-    # When ``False``, the original batched cuSOLVER ``lu_solve``
-    # paths are used instead.
-    block_thomas: bool = True
+    # system: `$O(P p^2)$` memory, but `$2(P-1)$` *sequential*
+    # scan steps of kernel-launch latency per solve, and its
+    # memory-optimal partitions drift to large `$P$` / small
+    # stage-1 blocks.  The default ``False`` solves the reduced
+    # system as one batched dense LU solve (`$O(P^2 p^2)$`
+    # memory): no sequential launches and larger stage-1 blocks,
+    # costing ~28-30% more total SPIKE factor storage at the
+    # respective memory-optimal partitions (p = 4).  Set ``True``
+    # for memory-tight runs.
+    block_thomas: bool = False
 
 
 class Parameters(BaseModel):

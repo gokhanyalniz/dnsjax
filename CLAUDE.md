@@ -24,6 +24,8 @@ Laminar smoke (2D multi-device): `uv run python tests/test_laminar_smoke.py --np
 
 ### Smoke test (laminar time stepping)
 
+Any `python -m dnsjax` run must be launched via `mpirun` (even single-process: `mpirun -np 1 ...`); `__main__` unconditionally initializes the JAX distributed backend.
+
 `mpirun -np 2 python -m dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
 
 For double parallelisation (tanh grid recommended for clean ny divisibility):
@@ -108,7 +110,7 @@ See `parameters.py` classes for full documentation. Key sections:
 | `[geo]`    | `lx`, `lz`, `tilt_degree`, `wall_grid` (custom grid file), `grid_type` (`"tanh"` / `"cgl"`), `grid_stretch` |
 | `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`                                                      |
 | `[init]`   | `start_from_laminar`, `snapshot`, `t0`, `it0`                                                          |
-| `[outs]`   | `it_stats`, `it_snapshot`, `nstats`, `stats_precision`, `snapshot_write_mode` (`"concurrent"` / `"serial"`) |
+| `[outs]`   | `it_stats`, `it_snapshot`, `it_error_check` (host-sync cadence for corrector convergence), `nstats`, `stats_precision`, `snapshot_write_mode` (`"concurrent"` / `"serial"`) |
 | `[step]`   | `dt`, `implicitness`, `corrector_tolerance`, `max_corrector_iterations`                                |
 | `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601)                                                            |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform`                                 |
@@ -129,6 +131,7 @@ Zarr3 format with 3 combined per-component files (np-agnostic resume at any `(np
 - Explicit mode sharding is used globally rather than Auto mode, which propagates shardings on arrays for most operations. Do not use `jax.lax.with_sharding_constraint`.
 - Avoid allocating a global array first and then distributing it with `jax.device_put` to devices after when such an array can be directly allocated on individual devices via the `out_sharding` argument for array-allocating calls like `jnp.zeros`, `ndarray.at.get(...)` and `ndarray.at.set(...)` etc. When this is not possible, do not use `jnp.asarray` just to avoid a `jax.device_put`.
 - `jax_enable_x64` is set from `params.res.double_precision` before JAX initializes arrays.
+- JAX has no zero-copy complex<->real bitcast (`lax.bitcast_convert_type` rejects complex; `.view()` lowers to scatter). Real-operator x complex-field GEMMs/solves use an explicit trailing re/im split at half the promoted-complex FLOPs — reuse `apply_y_matrix` (`geometries/wall_bounded/_base.py`) or the `solvers.py` pattern.
 - Buffer donation (`donate_argnums`) is used on main time-stepping functions to reuse memory.
 - The first time step is excluded from benchmark statistics because it includes JIT compilation overhead.
 - FFT normalization uses `norm="forward"` (divides by N on forward, no factor on inverse).

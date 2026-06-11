@@ -64,10 +64,13 @@ def _pad_to_multiple(n: int, divisor: int) -> int:
 def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     """Register a dataclass as a JAX pytree.
 
-    JAX array fields become tree children (traced / donated /
-    transformed by JAX); string, ``None``, and callable fields
-    are stored as static aux_data (embedded in the trace as
-    constants).
+    All fields except strings, ``None``, and callables become
+    tree children (traced / donated / transformed by JAX) --
+    including plain ``int`` / ``float`` fields, which are
+    therefore tracers inside ``jit`` and unusable for static
+    slicing (read an array's ``.shape`` instead).  String,
+    ``None``, and callable fields are stored as static
+    aux_data (embedded in the trace as constants).
 
     Used by the geometry base dataclasses
     (``TriplyPeriodicFlow``, ``CartesianFlow``,
