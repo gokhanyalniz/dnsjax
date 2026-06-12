@@ -134,6 +134,11 @@ class Outputs(BaseModel):
 
     # All outputs are with respect to the number of time steps taken
     it_stats: int | None = None  # How often to compute stats
+    # How often (in steps) to record the time-step (CFL) diagnostic
+    # into ``steps.dat``.  The measurement is taken from the current
+    # state `$u^n$` at the step's first nonlinear-term evaluation
+    # (no extra Fourier transforms).  ``None`` disables it.
+    it_steps: int | None = None
     it_snapshot: int | None = None  # How often to save snapshots
     # How often (in steps) to sync the corrector error to the host
     # for the convergence check.  Between checks the host enqueues
@@ -143,7 +148,9 @@ class Outputs(BaseModel):
     # ``max_corrector_iterations``.  1 restores a per-step check
     # (and a per-step host-device sync).
     it_error_check: int = Field(ge=1, default=10)
-    nstats: int = Field(ge=1, default=100)
+    # Rows buffered on device before flushing ``stats.dat`` /
+    # ``steps.dat`` to disk.
+    nbuffer: int = Field(ge=1, default=100)
     stats_precision: int = Field(ge=1, le=17, default=9)
     # How processes write a snapshot's shared chunk files:
     #   "concurrent": all processes write their disjoint byte ranges
@@ -281,8 +288,10 @@ def update_parameters(params_new: Parameters) -> None:
         derived_params.volume_fac = 2
     elif system in cylindrical_systems:
         derived_params.ly = 2  # Diameter = 2*radius
-        # Force a full 2*pi spanwise extent for the cylindrical geometry
-        params_new.geo.lz = 2 * pi
+        # Force a full 2*pi spanwise extent for the cylindrical
+        # geometry, overriding any user-supplied value (the
+        # azimuthal modes are integer harmonics over 2*pi).
+        params.geo.lz = 2 * pi
         # To compansate for the (1/Lz) factor
         derived_params.volume_fac = 0.5
     else:

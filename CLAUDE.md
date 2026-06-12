@@ -55,8 +55,9 @@ parameters.py         Pydantic parameter models; global singletons params, deriv
 sharding.py           JAX multi-device mesh; global singleton sharding; pytree registration
 operators.py          Wavenumber helpers; vmapped 3D/2D FFT wrappers; vector cross product
 fft.py                3D/2D real FFT with 3/2-rule dealiasing; shard_map; double-parallelisation reshards
-rhs.py                Rotational-form perturbation nonlinear term (shared across flow types)
-timestep.py           make_stepper() factory; JIT-compiled predict_and_correct / predict_and_fully_correct
+rhs.py                Rotational-form perturbation nonlinear term (shared across flow types); measure_fn hook for physical-space measurements
+measurements.py       Physical-space measurements consumed via the rhs.py hook (currently the CFL diagnostic, get_cfl)
+timestep.py           make_stepper() factory; JIT-compiled predict_and_correct / predict_and_fully_correct (+ _measured variant)
 fd.py                 FD utilities (Fornberg weights, D1/D2, quadrature weights, interpolation matrices); NumPy-only, importable standalone without JAX/params setup
 solvers.py            Geometry-independent linear solvers: DenseJAXSolver, PerModeBandedOperator (SPIKE)
 snapshot.py           Snapshot save/load: zarr3, np-agnostic resume, raw offset I/O (GDS or host)
@@ -110,7 +111,7 @@ See `parameters.py` classes for full documentation. Key sections:
 | `[geo]`    | `lx`, `lz`, `tilt_degree`, `wall_grid` (custom grid file), `grid_type` (`"tanh"` / `"cgl"`), `grid_stretch` |
 | `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`                                                      |
 | `[init]`   | `start_from_laminar`, `snapshot`, `t0`, `it0`                                                          |
-| `[outs]`   | `it_stats`, `it_snapshot`, `it_error_check` (host-sync cadence for corrector convergence), `nstats`, `stats_precision`, `snapshot_write_mode` (`"concurrent"` / `"serial"`) |
+| `[outs]`   | `it_stats`, `it_steps` (CFL diagnostic cadence -> `steps.dat`), `it_snapshot`, `it_error_check` (host-sync cadence for corrector convergence), `nbuffer`, `stats_precision`, `snapshot_write_mode` (`"concurrent"` / `"serial"`) |
 | `[step]`   | `dt`, `implicitness`, `corrector_tolerance`, `max_corrector_iterations`                                |
 | `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601)                                                            |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform`                                 |
@@ -118,9 +119,9 @@ See `parameters.py` classes for full documentation. Key sections:
 
 The default `parameters.toml` contains only `[phys] [geo] [res] [init] [outs] [step] [stop]`; `[dist]` and `[solver]` rely on model defaults -- set them via CLI (e.g. `--dist.np1 2`, `--solver.backend dense`) or by adding the section.
 
-### Diagnostics (`stats.dat`)
+### Diagnostics (`stats.dat`, `steps.dat`)
 
-On-device buffered stats, flushed periodically to `stats.dat`. See `__main__.py` module docstring for the buffering mechanism and file format.
+On-device buffered stats, flushed periodically to `stats.dat`. The CFL diagnostic (every `outs.it_steps` steps, measured from physical-space velocity inside the nonlinear-term evaluation -- see `measurements.py` and the `rhs.py` `measure_fn` hook) is buffered and flushed to `steps.dat` the same way. See `__main__.py` module docstring for the buffering mechanism and file format.
 
 ### Snapshots
 
@@ -135,6 +136,7 @@ Zarr3 format with 3 combined per-component files (np-agnostic resume at any `(np
 - Buffer donation (`donate_argnums`) is used on main time-stepping functions to reuse memory.
 - The first time step is excluded from benchmark statistics because it includes JIT compilation overhead.
 - FFT normalization uses `norm="forward"` (divides by N on forward, no factor on inverse).
+- Dicts returned from jitted functions (`get_stats`, measurement dicts) are canonicalized to **sorted key order** by pytree flattening — this sets the column order of `stats.dat` / `steps.dat`; never assume insertion order.
 
 ## Scripts
 - `scripts/spike_partition_info.py`: display SPIKE block-partition trade-offs for a given resolution.
@@ -147,5 +149,5 @@ All to be kept up-to-date as the respective modules change:
 - `tests/test_cylindrical.py` contains cylindrical operator and matvec tests.
 - `tests/test_integration.py` contains quadrature weight tests.
 - `tests/test_mean_mask.py` checks that padding slots carry nonzero placeholder wavenumbers and `Fourier.mean_mask` is the unique k^2 = 0 (mean) mode under forced spectral padding (subprocess, forced CPU devices).
-- `tests/test_laminar_smoke.py` runs all wall-bounded flows from laminar state (via subprocess/mpirun) checking stepping error and perturbation energy.
+- `tests/test_laminar_smoke.py` runs all wall-bounded flows from laminar state (via subprocess/mpirun) checking stepping error, perturbation energy, and the `steps.dat` CFL columns against analytic laminar values. Each subprocess runs in a temp dir: `parameters.toml` is not loaded (model defaults + CLI args only).
 - `tests/test_snapshot.py` round-trips snapshots (save/load equality, np-agnostic resume, `load_y_slice`) for all on-disk layouts via the host I/O path (subprocess per system/device-count, multi-device via forced CPU devices).
