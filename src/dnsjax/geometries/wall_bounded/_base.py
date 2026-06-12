@@ -278,16 +278,19 @@ def build_wall_bounded_stepper(
     norm_fn: Callable,
     fourier: object,
     flow: object,
+    get_rhs_measured_fn: Callable,
 ) -> tuple[
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
+    Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
 ]:
     """Build time-stepping functions for a wall-bounded flow.
 
     Returns ``(predict_and_correct, iterate_correction,
-    init_state_bound, predict_and_fully_correct)`` with the
+    init_state_bound, predict_and_fully_correct,
+    predict_and_fully_correct_measured)`` with the
     *fourier* and *flow* singletons already bound.
 
     Parameters
@@ -299,12 +302,19 @@ def build_wall_bounded_stepper(
         Geometry-specific ``Fourier`` singleton.
     flow:
         Geometry-specific flow dataclass instance.
+    get_rhs_measured_fn:
+        Measured RHS variant (returns the RHS plus a dict of
+        physical-space measurements; see
+        :mod:`dnsjax.measurements`).
     """
     (
         _predict_and_correct_jit,
         _iterate_correction_jit,
         _predict_and_fully_correct_jit,
-    ) = make_stepper(get_rhs_fn, predict_fn, correct_fn, norm_fn)
+        _predict_and_fully_correct_measured_jit,
+    ) = make_stepper(
+        get_rhs_fn, predict_fn, correct_fn, norm_fn, get_rhs_measured_fn
+    )
 
     def predict_and_correct(
         state: Array,
@@ -328,6 +338,12 @@ def build_wall_bounded_stepper(
         """Fused predict + corrector loop with bound singletons."""
         return _predict_and_fully_correct_jit(state, fourier, flow)
 
+    def predict_and_fully_correct_measured(
+        state: Array,
+    ) -> tuple[Array, Array, Array, dict[str, Array]]:
+        """Fused step + physical-space measurements (at `$u^n$`)."""
+        return _predict_and_fully_correct_measured_jit(state, fourier, flow)
+
     def init_state_bound(snapshot: str | None) -> Array:
         """Initialize the flow state."""
         return init_state(snapshot)
@@ -337,4 +353,5 @@ def build_wall_bounded_stepper(
         iterate_correction,
         init_state_bound,
         predict_and_fully_correct,
+        predict_and_fully_correct_measured,
     )

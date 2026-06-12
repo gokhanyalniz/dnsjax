@@ -24,8 +24,10 @@ from jax.sharding import PartitionSpec as P
 from ...fd import (
     build_diff_matrices,
     build_integration_weights,
+    local_grid_spacing,
     tanh_two_sided_grid,
 )
+from ...measurements import get_cfl
 from ...operators import (
     complex_harmonics,
     pad_harmonics,
@@ -564,6 +566,7 @@ class CartesianFlow:
 
     ys: Array = field(init=False)
     y_weights: Array = field(init=False)
+    cfl_inv_spacing: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
     base_flow_padded: Array = field(init=False)
@@ -618,6 +621,26 @@ class CartesianFlow:
         derived_params.wall_normal_grid = [
             float(v) for v in np.asarray(self.ys)
         ]
+
+        # Inverse local advection length scales for the CFL
+        # diagnostic (:func:`dnsjax.measurements.get_cfl`),
+        # per component (u, v, w), zero in the ny_y_pad rows.
+        # Uniform directions use the spectral-resolution
+        # spacing `$\Delta = L/n$`; switch to
+        # ``padded_res.nx_padded`` / ``nz_padded`` for the
+        # dealiased-grid convention.
+        inv_sp = np.zeros(
+            (3, params.res.ny + sharding.ny_y_pad),
+            dtype=sharding.float_type,
+        )
+        inv_sp[0, : params.res.ny] = params.res.nx / params.geo.lx
+        inv_sp[1, : params.res.ny] = 1.0 / local_grid_spacing(
+            np.asarray(self.ys)
+        )
+        inv_sp[2, : params.res.ny] = params.res.nz / params.geo.lz
+        self.cfl_inv_spacing = jax.device_put(
+            inv_sp[:, :, None, None], sharding.no_shard
+        )
 
         self.D1 = jax.device_put(D1, sharding.no_shard)
         self.D2 = jax.device_put(D2, sharding.no_shard)
@@ -876,21 +899,54 @@ def _curl_fn(
     return jnp.array([omega_x, omega_y, omega_z])
 
 
-def _get_rhs(
+# Per-direction CFL column names, matching the physical-space
+# component order (u, v, w) = (x, y, z).
+CFL_NAMES: tuple[str, str, str] = ("CFL_x", "CFL_y", "CFL_z")
+
+
+def _get_rhs_core(
     state: Array,
     fourier_: Fourier,
     flow_: CartesianFlow,
-) -> Array:
-    """Evaluate non-linear RHS terms."""
-    nonlin = get_nonlin(
+    measure_fn: Callable[[Array, Array], dict[str, Array]] | None,
+) -> Array | tuple[Array, dict[str, Array]]:
+    """Evaluate non-linear RHS terms (optionally measured)."""
+    return get_nonlin(
         state,
         flow_.base_flow_padded,
         flow_.curl_base_flow_padded,
         spec_to_phys_2d,
         phys_to_spec_2d,
         lambda s: _curl_fn(s, fourier_, flow_),
+        measure_fn,
     )
-    return nonlin
+
+
+def _get_rhs(
+    state: Array,
+    fourier_: Fourier,
+    flow_: CartesianFlow,
+) -> Array:
+    """Evaluate non-linear RHS terms."""
+    return _get_rhs_core(state, fourier_, flow_, None)
+
+
+def _get_rhs_measured(
+    state: Array,
+    fourier_: Fourier,
+    flow_: CartesianFlow,
+) -> tuple[Array, dict[str, Array]]:
+    """Evaluate non-linear RHS terms + CFL measurements."""
+
+    def _measure(u_phys: Array, omega_phys: Array) -> dict[str, Array]:
+        return get_cfl(
+            u_phys,
+            flow_.base_flow_padded,
+            flow_.cfl_inv_spacing,
+            CFL_NAMES,
+        )
+
+    return _get_rhs_core(state, fourier_, flow_, _measure)
 
 
 def _lk_matvec(
@@ -1227,14 +1283,16 @@ def build_cartesian_stepper(
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
+    Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
 ]:
     """Build time-stepping functions for a Cartesian
     wall-bounded flow.
 
     Returns ``(predict_and_correct, iterate_correction,
-    init_state_bound, predict_and_fully_correct)`` with the
+    init_state_bound, predict_and_fully_correct,
+    predict_and_fully_correct_measured)`` with the
     ``fourier`` and *flow* singletons already bound.
     """
     return build_wall_bounded_stepper(
-        _get_rhs, _predict, _correct, _norm, fourier, flow
+        _get_rhs, _predict, _correct, _norm, fourier, flow, _get_rhs_measured
     )

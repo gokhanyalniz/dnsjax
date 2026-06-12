@@ -35,10 +35,10 @@ Execution phases
    pipeline steps (divergence is detected at most
    ``it_error_check`` steps late).
 
-Diagnostics (``stats.dat``)
----------------------------
+Diagnostics (``stats.dat``, ``steps.dat``)
+------------------------------------------
 ``get_stats`` output is accumulated on-device in a fixed
-``(nstats, n_cols)`` buffer (one row every ``it_stats``
+``(nbuffer, n_cols)`` buffer (one row every ``it_stats``
 steps) and flushed to ``stats.dat`` when the buffer fills or
 at shutdown (``_flush_stats``).  Buffering avoids a
 host-device sync per sample.  ``stats.dat`` (written by the
@@ -46,6 +46,18 @@ main device, appended) has a header row of column names
 (``t`` plus the ``get_stats`` keys) followed by
 whitespace-aligned rows at ``stats_precision`` significant
 digits.
+
+``steps.dat`` records the CFL diagnostic every ``it_steps``
+steps with the same buffering and file format.  Each row is
+measured from the pre-step state `$u^n$` inside the step's
+first nonlinear-term evaluation
+(:func:`predict_and_fully_correct_measured`; no extra Fourier
+transforms, see :mod:`dnsjax.measurements`), so its timestamp
+is the time *before* that step.  Column names come from the
+measurement dict keys of a warm-up call, which also compiles
+the measured program outside the benchmark window (its
+outputs are discarded).  Unlike stats, no extra row is
+recorded after the final step.
 
 Snapshot resume
 ---------------
@@ -202,24 +214,28 @@ def main() -> None:
             get_stats,
             init_state,
             predict_and_fully_correct,
+            predict_and_fully_correct_measured,
         )
     elif params.phys.system == "plane-couette":
         from .flows.wall_bounded.plane_couette import (
             get_stats,
             init_state,
             predict_and_fully_correct,
+            predict_and_fully_correct_measured,
         )
     elif params.phys.system == "plane-poiseuille":
         from .flows.wall_bounded.plane_poiseuille import (
             get_stats,
             init_state,
             predict_and_fully_correct,
+            predict_and_fully_correct_measured,
         )
     elif params.phys.system == "pipe":
         from .flows.wall_bounded.pipe import (
             get_stats,
             init_state,
             predict_and_fully_correct,
+            predict_and_fully_correct_measured,
         )
     else:
         sharding.print(
@@ -297,17 +313,18 @@ def main() -> None:
     )
 
     # --- Stats buffer setup ------------------------------------------------
+    p = params.outs.stats_precision - 1
+    val_width = params.outs.stats_precision + 7
+
     if params.outs.it_stats is not None:
         stat_names = list(stats.keys())
         n_stat_cols = len(stat_names)
         buffer = jnp.zeros(
-            (params.outs.nstats, n_stat_cols),
+            (params.outs.nbuffer, n_stat_cols),
             dtype=sharding.float_type,
         )
         ts_buf: list[float] = []
         py_idx: int = 0
-        p = params.outs.stats_precision - 1
-        val_width = params.outs.stats_precision + 7
         col_width = max(
             val_width,
             max(len(n) for n in ["t"] + stat_names),
@@ -323,6 +340,41 @@ def main() -> None:
         buffer = buffer.at[py_idx].set(stat_vals)
         ts_buf.append(t)
         py_idx += 1
+
+    # --- Steps (CFL) buffer setup --------------------------------------
+    measure_steps: bool = params.outs.it_steps is not None
+    if measure_steps:
+        # Warm-up call (all ranks; collective FFTs): provides the
+        # measurement names and compiles the measured program
+        # outside the benchmark window.  Outputs are discarded (no
+        # buffers are donated); the t0 row itself is recorded by
+        # the first loop iteration when it0 % it_steps == 0.
+        _, _, _, meas = predict_and_fully_correct_measured(state)
+        if params.outs.it_steps > 1 and it % params.outs.it_steps == 0:
+            # The first loop iteration (excluded from benchmarks)
+            # runs the measured variant, so the unmeasured program
+            # would otherwise compile on the second iteration,
+            # inside the benchmark window.  Pre-compile it here.
+            predict_and_fully_correct(state)
+        steps_names = list(meas.keys())
+        steps_buffer = jnp.zeros(
+            (params.outs.nbuffer, len(steps_names)),
+            dtype=sharding.float_type,
+        )
+        steps_ts: list[float] = []
+        steps_idx: int = 0
+        steps_col_width = max(
+            val_width,
+            max(len(n) for n in ["t"] + steps_names),
+        )
+        steps_file = Path("steps.dat")
+
+        if sharding.main_device and not steps_file.exists():
+            header = " ".join(
+                n.rjust(steps_col_width) for n in ["t"] + steps_names
+            )
+            with open(steps_file, "w") as f:
+                f.write(header + "\n")
 
     sharding.print("Started timestepping at", datetime.now())
 
@@ -354,7 +406,7 @@ def main() -> None:
             ts_buf.append(t)
             py_idx += 1
 
-            if py_idx == params.outs.nstats:
+            if py_idx == params.outs.nbuffer:
                 if sharding.main_device:
                     _flush_stats(
                         buffer,
@@ -368,7 +420,32 @@ def main() -> None:
                 py_idx = 0
 
         # Fused predictor + all corrector iterations (single JIT scope).
-        state, error_dev, c_dev = predict_and_fully_correct(state)
+        if measure_steps and it % params.outs.it_steps == 0:
+            # Measured variant: also records the CFL of the
+            # pre-step state u^n, timestamped at the current t.
+            state, error_dev, c_dev, meas = predict_and_fully_correct_measured(
+                state
+            )
+            steps_buffer = steps_buffer.at[steps_idx].set(
+                jnp.stack(list(meas.values()))
+            )
+            steps_ts.append(t)
+            steps_idx += 1
+
+            if steps_idx == params.outs.nbuffer:
+                if sharding.main_device:
+                    _flush_stats(
+                        steps_buffer,
+                        steps_idx,
+                        steps_ts,
+                        steps_file,
+                        p,
+                        steps_col_width,
+                    )
+                steps_ts.clear()
+                steps_idx = 0
+        else:
+            state, error_dev, c_dev = predict_and_fully_correct(state)
 
         if params.phys.system in periodic_systems:
             # Divergence correction and mean-mode zeroing
@@ -484,6 +561,17 @@ def main() -> None:
             stats_file,
             p,
             col_width,
+        )
+
+    # Flush remaining buffered steps (CFL) rows
+    if measure_steps and steps_idx > 0 and sharding.main_device:
+        _flush_stats(
+            steps_buffer,
+            steps_idx,
+            steps_ts,
+            steps_file,
+            p,
+            steps_col_width,
         )
 
 

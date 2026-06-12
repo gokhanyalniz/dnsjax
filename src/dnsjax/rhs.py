@@ -89,7 +89,8 @@ def get_nonlin(
     spec_to_phys_fn: Callable[[Array], Array],
     phys_to_spec_fn: Callable[[Array], Array],
     curl_fn: Callable[[Array], Array],
-) -> Array:
+    measure_fn: Callable[[Array, Array], dict[str, Array]] | None = None,
+) -> Array | tuple[Array, dict[str, Array]]:
     r"""Compute the perturbation nonlinear term in spectral space.
 
     Evaluates the three cross-product contributions in physical
@@ -98,6 +99,13 @@ def get_nonlin(
 
     Cost: 3 inverse FFTs (velocity, vorticity components) + 3
     forward FFTs (nonlinear term components).
+
+    This is the single site where the physical-space fields
+    exist, so it also hosts the *measure_fn* hook for
+    physical-space measurements (see
+    :mod:`dnsjax.measurements`): diagnostics computed here
+    reuse the inverse FFTs already paid for by the nonlinear
+    term.
 
     Parameters
     ----------
@@ -122,12 +130,19 @@ def get_nonlin(
         Spectral curl operator
         ``velocity_spec -> curl_spec``, with wavenumbers
         already bound.
+    measure_fn:
+        Optional physical-space measurement callback
+        ``(velocity_phys, vorticity_phys) -> dict`` of
+        replicated scalars (static structure; see
+        :mod:`dnsjax.measurements`).  The branch is resolved
+        at trace time, so the unmeasured path is unchanged.
 
     Returns
     -------
     :
-        Nonlinear term in spectral space,
-        shape ``(3, *spec_shape)``.
+        Nonlinear term in spectral space, shape
+        ``(3, *spec_shape)``; with *measure_fn* set, the tuple
+        ``(nonlinear term, measurements dict)``.
     """
 
     # Batch velocity (3) + vorticity (3) into one transform call
@@ -146,4 +161,7 @@ def get_nonlin(
         curl_base_flow,
     )
 
-    return phys_to_spec_fn(nonlin_phys)
+    if measure_fn is None:
+        return phys_to_spec_fn(nonlin_phys)
+    measurements = measure_fn(velocity_phys, vorticity_phys)
+    return phys_to_spec_fn(nonlin_phys), measurements

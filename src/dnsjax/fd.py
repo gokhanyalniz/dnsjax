@@ -216,6 +216,44 @@ def build_integration_weights(
     return w
 
 
+def local_grid_spacing(nodes: ndarray) -> ndarray:
+    r"""Per-node local spacing of a 1-D non-uniform grid.
+
+    Returns, for each node, the distance to its nearest
+    neighbour:
+
+    .. math::
+        \Delta_j = \min(y_j - y_{j-1},\; y_{j+1} - y_j),
+
+    with one-sided values at the ends
+    (`$\Delta_0 = y_1 - y_0$`,
+    `$\Delta_{N-1} = y_{N-1} - y_{N-2}$`).  Used as the local
+    advection length scale of the CFL diagnostic
+    (:mod:`dnsjax.measurements`).  Note the one-sided end
+    convention also applies to the first node of the half-CGL
+    radial grid, whose distance to the (excluded) axis
+    `$r = 0$` is not considered.
+
+    Parameters
+    ----------
+    nodes:
+        Strictly increasing grid coordinates, shape ``(N,)``
+        with ``N >= 2``.
+
+    Returns
+    -------
+    :
+        Local spacings, shape ``(N,)``.
+    """
+    nodes = np.asarray(nodes)
+    gaps = np.diff(nodes)
+    spacing = np.empty_like(nodes)
+    spacing[0] = gaps[0]
+    spacing[-1] = gaps[-1]
+    spacing[1:-1] = np.minimum(gaps[:-1], gaps[1:])
+    return spacing
+
+
 # ── Stretched grid generation ────────────────────────────────
 
 

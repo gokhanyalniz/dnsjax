@@ -8,7 +8,7 @@
 
 ### Stepper factory (wall-bounded layer)
 
-`build_wall_bounded_stepper()` in `_base.py` wraps `timestep.make_stepper()` and binds the `fourier` and `flow` singletons, returning `(predict_and_correct, iterate_correction, init_state_bound, predict_and_fully_correct)`. Each geometry module provides a thin `build_*_stepper(flow)` that passes geometry-specific callables to it.
+`build_wall_bounded_stepper()` in `_base.py` wraps `timestep.make_stepper()` and binds the `fourier` and `flow` singletons, returning `(predict_and_correct, iterate_correction, init_state_bound, predict_and_fully_correct, predict_and_fully_correct_measured)`. Each geometry module provides a thin `build_*_stepper(flow)` that passes geometry-specific callables to it, including the measured RHS variant (`_get_rhs_measured`, which computes the CFL via the `rhs.py` `measure_fn` hook from the per-flow `cfl_inv_spacing` profile).
 
 ### Influence-matrix method (IMM)
 

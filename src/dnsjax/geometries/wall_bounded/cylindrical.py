@@ -92,8 +92,10 @@ from jax.sharding import PartitionSpec as P
 from ...fd import (
     build_diff_matrices,
     build_integration_weights,
+    local_grid_spacing,
     tanh_one_sided_grid,
 )
+from ...measurements import get_cfl
 from ...operators import (
     complex_harmonics,
     pad_harmonics,
@@ -961,6 +963,7 @@ class CylindricalFlow:
     inv_r: Array = field(init=False)
     inv_r2: Array = field(init=False)
     y_weights: Array = field(init=False)
+    cfl_inv_spacing: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
     base_flow_padded: Array = field(init=False)
@@ -1005,6 +1008,26 @@ class CylindricalFlow:
         derived_params.wall_normal_grid = [
             float(v) for v in np.asarray(self.rs)
         ]
+
+        # Inverse local advection length scales for the CFL
+        # diagnostic (:func:`dnsjax.measurements.get_cfl`),
+        # per component (u_z, u_r, u_theta), zero in the
+        # ny_y_pad rows.  The azimuthal scale is the arc length
+        # `$r \Delta\theta$` with `$\Delta\theta = 2\pi/n_z$`
+        # (theta period is the literal `$2\pi$`: ``geo.lz`` is
+        # not read by this geometry).  Uniform directions use
+        # the spectral-resolution spacing `$\Delta = L/n$`;
+        # switch to ``padded_res.nx_padded`` / ``nz_padded``
+        # for the dealiased-grid convention.
+        inv_sp = np.zeros(
+            (3, Nr + sharding.ny_y_pad), dtype=sharding.float_type
+        )
+        inv_sp[0, :Nr] = params.res.nx / params.geo.lx
+        inv_sp[1, :Nr] = 1.0 / local_grid_spacing(np.asarray(self.rs))
+        inv_sp[2, :Nr] = np.asarray(self.inv_r) * params.res.nz / (2 * np.pi)
+        self.cfl_inv_spacing = jax.device_put(
+            inv_sp[:, :, None, None], sharding.no_shard
+        )
 
         # Full parity-reduced matrices (D2 needed for operators).
         (
@@ -1440,17 +1463,23 @@ def _curl_fn(
     return jnp.array([omega_z, omega_r, omega_theta])
 
 
-def _get_rhs(
+# Per-direction CFL column names, matching the physical-space
+# component order (u_z, u_r, u_theta).
+CFL_NAMES: tuple[str, str, str] = ("CFL_z", "CFL_r", "CFL_th")
+
+
+def _get_rhs_core(
     state: Array,
     fourier_: Fourier,
     flow_: CylindricalFlow,
-) -> Array:
+    measure_fn: Callable[[Array, Array], dict[str, Array]] | None,
+) -> Array | tuple[Array, dict[str, Array]]:
     r"""Evaluate the nonlinear RHS in `$(u_z, u_+, u_-)$` form.
 
     1. Convert `$(u_z, u_+, u_-) \to (u_z, u_r, u_\theta)$`.
     2. Compute the rotational-form nonlinear term via
        :func:`~dnsjax.rhs.get_nonlin` with the cylindrical
-       curl.
+       curl (and the optional physical-space *measure_fn*).
     3. Convert `$(NL_z, NL_r, NL_\theta)
        \to (NL_z, NL_+, NL_-)$`.
     """
@@ -1467,7 +1496,10 @@ def _get_rhs(
         spec_to_phys_2d,
         phys_to_spec_2d,
         lambda s: _curl_fn(s, fourier_, flow_),
+        measure_fn,
     )
+    if measure_fn is not None:
+        nonlin_rthz, measurements = nonlin_rthz
 
     NL_z, NL_r, NL_theta = (
         nonlin_rthz[0],
@@ -1477,7 +1509,37 @@ def _get_rhs(
     NL_plus = NL_r + 1j * NL_theta
     NL_minus = NL_r - 1j * NL_theta
 
-    return jnp.array([NL_z, NL_plus, NL_minus])
+    rhs = jnp.array([NL_z, NL_plus, NL_minus])
+    if measure_fn is None:
+        return rhs
+    return rhs, measurements
+
+
+def _get_rhs(
+    state: Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> Array:
+    r"""Evaluate the nonlinear RHS in `$(u_z, u_+, u_-)$` form."""
+    return _get_rhs_core(state, fourier_, flow_, None)
+
+
+def _get_rhs_measured(
+    state: Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> tuple[Array, dict[str, Array]]:
+    """Evaluate the nonlinear RHS + CFL measurements."""
+
+    def _measure(u_phys: Array, omega_phys: Array) -> dict[str, Array]:
+        return get_cfl(
+            u_phys,
+            flow_.base_flow_padded,
+            flow_.cfl_inv_spacing,
+            CFL_NAMES,
+        )
+
+    return _get_rhs_core(state, fourier_, flow_, _measure)
 
 
 # ── Matrix-free matvecs ──────────────────────────────────────────
@@ -1834,13 +1896,15 @@ def build_cylindrical_stepper(
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
+    Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
 ]:
     """Build time-stepping functions for a cylindrical flow.
 
     Returns ``(predict_and_correct, iterate_correction,
-    init_state_bound, predict_and_fully_correct)`` with the
+    init_state_bound, predict_and_fully_correct,
+    predict_and_fully_correct_measured)`` with the
     ``fourier`` and *flow* singletons already bound.
     """
     return build_wall_bounded_stepper(
-        _get_rhs, _predict, _correct, _norm, fourier, flow
+        _get_rhs, _predict, _correct, _norm, fourier, flow, _get_rhs_measured
     )

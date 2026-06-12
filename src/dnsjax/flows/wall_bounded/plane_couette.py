@@ -9,6 +9,8 @@ inherited from ``geometries.wall_bounded.cartesian.CartesianFlow``.
 It also exports the flow interface consumed by ``__main__``:
 
 - ``predict_and_fully_correct`` -- fused predictor + corrector
+- ``predict_and_fully_correct_measured`` -- fused step + CFL
+  measurements (``steps.dat``)
 - ``init_state`` -- initial state from laminar or snapshot
 - ``get_stats`` -- diagnostic statistics
 
@@ -124,6 +126,7 @@ flow: PlaneCouetteFlow = PlaneCouetteFlow()
     iterate_correction,
     init_state,
     predict_and_fully_correct,
+    predict_and_fully_correct_measured,
 ) = build_cartesian_stepper(flow)
 
 

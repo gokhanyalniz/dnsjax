@@ -22,13 +22,14 @@ from jax import Array, device_put, jit, vmap
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
+from ...measurements import get_cfl
 from ...operators import (
     complex_harmonics,
     phys_to_spec,
     real_harmonics,
     spec_to_phys,
 )
-from ...parameters import derived_params, params
+from ...parameters import derived_params, padded_res, params
 from ...rhs import get_nonlin
 from ...sharding import register_dataclass_pytree, sharding
 from ...timestep import make_stepper
@@ -197,6 +198,7 @@ class TriplyPeriodicFlow:
 
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
+    cfl_inv_spacing: Array = field(init=False)
     ldt_1: Array = field(init=False)
     ildt_2: Array = field(init=False)
 
@@ -234,6 +236,29 @@ class TriplyPeriodicFlow:
         )
         self.ildt_2 = ildt_2.at[sharding.scalar_mean_mode].set(
             0, out_sharding=sharding.spec_scalar_shard
+        )
+
+        # Inverse local advection length scales for the CFL
+        # diagnostic (:func:`dnsjax.measurements.get_cfl`),
+        # per component (u, v, w); all three directions are
+        # uniform.  Uses the spectral-resolution spacing
+        # `$\Delta = L/n$`; switch to ``padded_res.nx_padded``
+        # / ``ny_padded`` / ``nz_padded`` for the
+        # dealiased-grid convention.
+        inv_vals = jnp.array(
+            [
+                params.res.nx / params.geo.lx,
+                params.res.ny / derived_params.ly,
+                params.res.nz / params.geo.lz,
+            ],
+            dtype=sharding.float_type,
+        )
+        self.cfl_inv_spacing = device_put(
+            jnp.broadcast_to(
+                inv_vals[:, None, None, None],
+                (3, padded_res.ny_padded, 1, 1),
+            ),
+            sharding.no_shard,
         )
 
 
@@ -309,9 +334,17 @@ def _curl_fn(state: Array, fourier_: Fourier) -> Array:
     return curl(state, fourier_.kx, fourier_.ky, fourier_.kz)
 
 
-def _get_rhs(
-    state: Array, fourier_: Fourier, flow_: TriplyPeriodicFlow
-) -> Array:
+# Per-direction CFL column names, matching the physical-space
+# component order (u, v, w) = (x, y, z).
+CFL_NAMES: tuple[str, str, str] = ("CFL_x", "CFL_y", "CFL_z")
+
+
+def _get_rhs_core(
+    state: Array,
+    fourier_: Fourier,
+    flow_: TriplyPeriodicFlow,
+    measure_fn: Callable[[Array, Array], dict[str, Array]] | None,
+) -> Array | tuple[Array, dict[str, Array]]:
     """Divergence-free RHS: nonlinear term + algebraic pressure projection."""
     nonlin = get_nonlin(
         state,
@@ -320,7 +353,10 @@ def _get_rhs(
         spec_to_phys,
         phys_to_spec,
         lambda s: _curl_fn(s, fourier_),
+        measure_fn,
     )
+    if measure_fn is not None:
+        nonlin, measurements = nonlin
     # Pressure Poisson: `$\\nabla^2 p = \\nabla \\cdot \\mathbf{NL}$`
     lapl_pressure = divergence(nonlin, fourier_.kx, fourier_.ky, fourier_.kz)
     # Subtract pressure gradient to enforce incompressibility
@@ -330,7 +366,32 @@ def _get_rhs(
         fourier_.ky,
         fourier_.kz,
     )
-    return rhs_no_lapl
+    if measure_fn is None:
+        return rhs_no_lapl
+    return rhs_no_lapl, measurements
+
+
+def _get_rhs(
+    state: Array, fourier_: Fourier, flow_: TriplyPeriodicFlow
+) -> Array:
+    """Divergence-free RHS: nonlinear term + algebraic pressure projection."""
+    return _get_rhs_core(state, fourier_, flow_, None)
+
+
+def _get_rhs_measured(
+    state: Array, fourier_: Fourier, flow_: TriplyPeriodicFlow
+) -> tuple[Array, dict[str, Array]]:
+    """Divergence-free RHS + CFL measurements."""
+
+    def _measure(u_phys: Array, omega_phys: Array) -> dict[str, Array]:
+        return get_cfl(
+            u_phys,
+            flow_.base_flow,
+            flow_.cfl_inv_spacing,
+            CFL_NAMES,
+        )
+
+    return _get_rhs_core(state, fourier_, flow_, _measure)
 
 
 def _predict(
@@ -421,19 +482,21 @@ def build_triply_periodic_stepper(
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], Array],
+    Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
 ]:
     """Build time-stepping functions for a triply-periodic flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
-    correct_velocity)`` with the ``fourier`` and *flow*
-    singletons already bound.
+    correct_velocity, predict_and_fully_correct_measured)``
+    with the ``fourier`` and *flow* singletons already bound.
     """
     (
         _predict_and_correct_jit,
         _iterate_correction_jit,
         _predict_and_fully_correct_jit,
-    ) = make_stepper(_get_rhs, _predict, _correct, _norm)
+        _predict_and_fully_correct_measured_jit,
+    ) = make_stepper(_get_rhs, _predict, _correct, _norm, _get_rhs_measured)
 
     def predict_and_correct(
         state: Array,
@@ -457,6 +520,12 @@ def build_triply_periodic_stepper(
         """Fused predict + corrector loop with bound singletons."""
         return _predict_and_fully_correct_jit(state, fourier, flow)
 
+    def predict_and_fully_correct_measured(
+        state: Array,
+    ) -> tuple[Array, Array, Array, dict[str, Array]]:
+        """Fused step + physical-space measurements (at `$u^n$`)."""
+        return _predict_and_fully_correct_measured_jit(state, fourier, flow)
+
     def init_state_bound(snapshot: str | None) -> Array:
         """Initialize the flow state with bound flow singleton."""
         return init_state(snapshot, flow)
@@ -472,4 +541,5 @@ def build_triply_periodic_stepper(
         init_state_bound,
         predict_and_fully_correct,
         correct_velocity,
+        predict_and_fully_correct_measured,
     )

@@ -10,6 +10,8 @@ solvers, divergence correction) is inherited from
 It also exports the flow interface consumed by ``__main__``:
 
 - ``predict_and_fully_correct`` -- fused predictor + corrector
+- ``predict_and_fully_correct_measured`` -- fused step + CFL
+  measurements (``steps.dat``)
 - ``init_state`` -- initial state from laminar or snapshot
 - ``get_stats`` -- diagnostic statistics
 - ``correct_velocity`` -- divergence correction + mean-mode zeroing
@@ -199,6 +201,7 @@ flow: MonochromaticFlow = MonochromaticFlow()
     init_state,
     predict_and_fully_correct,
     correct_velocity,
+    predict_and_fully_correct_measured,
 ) = build_triply_periodic_stepper(flow)
 
 
