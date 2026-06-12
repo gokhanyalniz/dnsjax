@@ -27,10 +27,13 @@ def make_stepper(
     predict_fn: Callable[..., Array],
     correct_fn: Callable[..., tuple[Array, Array]],
     norm_fn: Callable[..., Array],
+    get_rhs_measured_fn: Callable[..., tuple[Array, dict[str, Array]]]
+    | None = None,
 ) -> tuple[
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array]],
+    Callable[..., tuple[Array, Array, Array, dict[str, Array]]] | None,
 ]:
     """Build JIT-compiled predict-and-correct and iterate-correction functions.
 
@@ -54,6 +57,10 @@ def make_stepper(
     norm_fn:
         ``correction -> error``.  Convergence norm (L2 norm of the
         correction vector).
+    get_rhs_measured_fn:
+        Optional ``state -> (rhs_no_lapl, measurements)`` variant
+        of *get_rhs_fn* that also returns a dict of physical-space
+        measurements (see :mod:`dnsjax.measurements`).
 
     Returns
     -------
@@ -70,6 +77,14 @@ def make_stepper(
         Fused predict + corrector loop in a single JIT scope
         via ``lax.while_loop``.  Signature:
         ``state -> (prediction_state, error, num_c)``.
+    predict_and_fully_correct_measured:
+        As ``predict_and_fully_correct``, but the step's first
+        RHS evaluation (at the accepted state `$u^n$`) also
+        computes the physical-space measurements.  Signature:
+        ``state -> (prediction_state, error, num_c,
+        measurements)``.  No buffers are donated, so a warm-up
+        call may safely discard its outputs.  ``None`` when
+        *get_rhs_measured_fn* is not given.
     """
 
     @jit
@@ -122,17 +137,15 @@ def make_stepper(
 
         return prediction_state, rhs_next, error
 
-    @jit
-    def predict_and_fully_correct(
-        state: Array, *args
+    def _step_core(
+        state: Array, rhs_prev: Array, *args
     ) -> tuple[Array, Array, Array]:
-        """Predict + all corrector iterations in one JIT scope.
+        """Predictor + corrector loop, given the RHS at `$u^n$`.
 
         Uses ``lax.while_loop`` so that the corrector convergence
         check stays on-device, eliminating per-iteration
         GPU-to-CPU synchronisation.
         """
-        rhs_prev = get_rhs_fn(state, *args)
         prediction = predict_fn(state, rhs_prev, *args)
 
         rhs_next = get_rhs_fn(prediction, *args)
@@ -160,4 +173,36 @@ def make_stepper(
         )
         return prediction, error, num_c
 
-    return predict_and_correct, iterate_correction, predict_and_fully_correct
+    @jit
+    def predict_and_fully_correct(
+        state: Array, *args
+    ) -> tuple[Array, Array, Array]:
+        """Predict + all corrector iterations in one JIT scope."""
+        rhs_prev = get_rhs_fn(state, *args)
+        return _step_core(state, rhs_prev, *args)
+
+    if get_rhs_measured_fn is None:
+        predict_and_fully_correct_measured = None
+    else:
+
+        @jit
+        def predict_and_fully_correct_measured(
+            state: Array, *args
+        ) -> tuple[Array, Array, Array, dict[str, Array]]:
+            """Fused step that also measures physical-space data.
+
+            The measurements come from the step's first RHS
+            evaluation, i.e. from the accepted state `$u^n$`
+            (outside the corrector loop).  No buffers are
+            donated.
+            """
+            rhs_prev, measurements = get_rhs_measured_fn(state, *args)
+            prediction, error, num_c = _step_core(state, rhs_prev, *args)
+            return prediction, error, num_c, measurements
+
+    return (
+        predict_and_correct,
+        iterate_correction,
+        predict_and_fully_correct,
+        predict_and_fully_correct_measured,
+    )

@@ -34,6 +34,7 @@ from dnsjax.fd import (  # noqa: E402
     build_integration_weights,
     chebyshev_interpolation_matrix,
     half_cgl_interpolation_matrices,
+    local_grid_spacing,
     tanh_one_sided_grid,
 )
 from dnsjax.geometries.wall_bounded import integrate_scalar  # noqa: E402
@@ -414,6 +415,30 @@ def test_barycentric_vs_chebyshev():
         T_bary @ f_old,
         atol=1e-10,
     )
+
+
+# ── Local grid spacing (CFL diagnostic) ────────────────────────────
+
+
+def test_local_grid_spacing():
+    """Min-neighbour spacing, one-sided at the ends."""
+    nodes = np.array([0.0, 1.0, 3.0, 4.0, 8.0])
+    expected = np.array([1.0, 1.0, 1.0, 1.0, 4.0])
+    assert_allclose(local_grid_spacing(nodes), expected)
+
+    # Uniform grid: constant spacing everywhere.
+    uniform = np.linspace(-1.0, 1.0, 9)
+    assert_allclose(local_grid_spacing(uniform), 0.25)
+
+    # CGL grid: finest near the walls, coarsest in the centre;
+    # one-sided ends equal the first/last gap.
+    cgl = np.asarray(_cgl_grid(11))
+    sp = local_grid_spacing(cgl)
+    gaps = np.diff(cgl)
+    assert_allclose(sp[0], gaps[0])
+    assert_allclose(sp[-1], gaps[-1])
+    assert_allclose(sp[1:-1], np.minimum(gaps[:-1], gaps[1:]))
+    assert np.argmax(sp) == 5  # centre of the grid
 
 
 # ── Runner ─────────────────────────────────────────────────────────
