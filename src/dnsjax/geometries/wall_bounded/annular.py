@@ -399,7 +399,7 @@ def build_annular_grid(
 def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
     r"""Build the radial base operator
     `$A_{\mathrm{base}} = D_2 + \mathrm{diag}(1/r)\,D_1$`."""
-    return D2 + jnp.diag(inv_r) @ D1
+    return D2 + inv_r[:, None] * D1
 
 
 def _build_Lk_blocks_gpu(
@@ -1125,8 +1125,10 @@ def _imm_iteration(
     m_minus_1_sq = (m - 1) ** 2
     m_sq = fourier_.m2
 
-    # Batch the D1 derivatives needed for the divergence.
-    all_v = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n])
+    # Batch the D1 derivatives for the divergence and the explicit
+    # Hk^- matvec (u_z included) into a single GEMM; only the
+    # just-solved pP needs a second D1 after the Poisson solve below.
+    all_v = jnp.stack([up_n, um_n, uz_n, NLp_j, NLp_n, NLm_j, NLm_n])
     dy_all = apply_y_matrix(flow_.D1, all_v)
 
     div_n = (
@@ -1135,13 +1137,13 @@ def _imm_iteration(
         + ikz * uz_n
     )
     div_NLj = (
-        (dy_all[2] + (m + 1) * inv_r * NLp_j) / 2
-        + (dy_all[4] + (1 - m) * inv_r * NLm_j) / 2
+        (dy_all[3] + (m + 1) * inv_r * NLp_j) / 2
+        + (dy_all[5] + (1 - m) * inv_r * NLm_j) / 2
         + ikz * NLz_j
     )
     div_NLn = (
-        (dy_all[3] + (m + 1) * inv_r * NLp_n) / 2
-        + (dy_all[5] + (1 - m) * inv_r * NLm_n) / 2
+        (dy_all[4] + (m + 1) * inv_r * NLp_n) / 2
+        + (dy_all[6] + (1 - m) * inv_r * NLm_n) / 2
         + ikz * NLz_n
     )
 
@@ -1152,12 +1154,12 @@ def _imm_iteration(
     f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
     pP = flow_.Lk_op.solve(f_hat_P.transpose(1, 2, 0)).transpose(2, 0, 1)
 
-    # Stage 3: pressure gradient and explicit Hk^- matvec.
+    # Stage 3: pressure gradient and explicit Hk^- matvec.  D1 of the
+    # velocity (u_+, u_-, u_z) was already formed above as dy_all[:3];
+    # only the just-solved pP needs a fresh D1.
     vel_n_stack = jnp.stack([up_n, um_n, uz_n])
-    pP_and_vel = jnp.concatenate([pP[None], vel_n_stack])
-    D1_batch = apply_y_matrix(flow_.D1, pP_and_vel)
-    D1_pP = D1_batch[0]
-    D1_vel = D1_batch[1:]
+    D1_pP = apply_y_matrix(flow_.D1, pP)
+    D1_vel = dy_all[:3]
     m_over_r = m * inv_r
 
     grad_pP_plus = D1_pP - m_over_r * pP

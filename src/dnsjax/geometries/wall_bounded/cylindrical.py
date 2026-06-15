@@ -573,7 +573,7 @@ def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
     inv_r:
         `$1/r_j$`, shape ``(Nr,)``.
     """
-    return D2 + jnp.diag(inv_r) @ D1
+    return D2 + inv_r[:, None] * D1
 
 
 def _build_Lk_blocks_gpu(
