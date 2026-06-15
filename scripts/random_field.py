@@ -124,17 +124,22 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--output",
         type=str,
-        required=True,
-        help="Output directory for the zarr3 snapshot.",
+        default=None,
+        help="Output directory for the zarr3 snapshot. Required "
+        "unless --test is given.",
     )
 
     # Self-test
     ap.add_argument(
         "--test",
         action="store_true",
-        help="Run self-contained verification tests and exit.",
+        help="Run self-contained verification tests and exit "
+        "(no snapshot is written).",
     )
-    return ap.parse_args()
+    args = ap.parse_args()
+    if not args.test and args.output is None:
+        ap.error("--output is required unless --test is given")
+    return args
 
 
 # ── JAX + singleton setup ────────────────────────────────────────
