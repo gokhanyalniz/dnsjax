@@ -327,6 +327,51 @@ def test_ccf_coefficients() -> None:
     )
 
 
+def test_narrow_gap_limit() -> None:
+    r"""``I_lam`` reduces to the plane-Couette value as `$\eta \to 1$`.
+
+    For pure inner rotation (``re2 = 0``) the laminar constant
+    `$I_{\mathrm{lam}} = 4 B_0^2 / (\mathrm{Re}\,r_1^2 r_2^2)$` satisfies
+    the closed form `$I_{\mathrm{lam}}\,\mathrm{Re} = 4/(1+\eta)^2$`
+    (``ccf_B`` already carries the `$1/\mathrm{Re}$` factor, so this is
+    Reynolds-independent), which tends to the plane-Couette value 1 as
+    the gap narrows.
+    """
+    re = 100.0
+    prev_err = None
+    for eta in (0.9, 0.99, 0.999):
+        update_parameters(
+            Parameters(
+                phys={"system": "taylor-couette", "re1": re, "re2": 0.0},
+                geo={"eta": eta},
+            )
+        )
+        B0 = derived_params.ccf_B
+        r1 = derived_params.r_inner
+        r2 = derived_params.r_outer
+        I_lam_Re = 4.0 * B0**2 / (r1**2 * r2**2)  # = I_lam * Re
+        assert_allclose(
+            I_lam_Re,
+            4.0 / (1 + eta) ** 2,
+            rtol=1e-9,
+            atol=1e-12,
+            err_msg=f"eta={eta}: I_lam*Re closed form",
+        )
+        err = abs(I_lam_Re - 1.0)
+        if prev_err is not None:
+            assert err < prev_err, f"eta={eta}: I_lam*Re not converging to 1"
+        prev_err = err
+    assert prev_err < 2e-3, "eta=0.999: I_lam*Re not within 2e-3 of 1"
+
+    # Restore the module-level case-1 configuration.
+    update_parameters(
+        Parameters(
+            phys={"system": "taylor-couette", "re1": 100.0, "re2": 0.0},
+            geo={"eta": 0.5},
+        )
+    )
+
+
 # Group E: Integration
 
 
