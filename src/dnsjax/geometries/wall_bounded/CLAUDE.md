@@ -5,6 +5,7 @@
 - `_base.py`: shared wall-bounded infrastructure (norms, integration, init_state, `build_wall_bounded_stepper`, `extract_mean_mode`)
 - `cartesian.py`: Cartesian geometry (Fourier, CGL grid, `CartesianFlow`, Kleiser-Schumann IMM, Lk/Hk operator builders)
 - `cylindrical.py`: cylindrical geometry (Fourier, half-CGL grid, `CylindricalFlow`, decoupled u+/u- formulation, parity-reduced FD, 1x1 IMM)
+- `annular.py`: annular geometry / concentric cylinders (Fourier, CGL grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2 IMM)
 
 ### Stepper factory (wall-bounded layer)
 
@@ -26,13 +27,17 @@ Spectral padding slots (any `np0 > 1` run pads kz/m; `np1 > 1` pads the streamwi
 
 Documented in the `cylindrical.py` module docstring: decoupled `u+`/`u-` velocity formulation (Willis 2017), effective azimuthal modes, parity-reduced FD matrices, half-CGL radial grid, 1x1 influence matrix, and constant-bulk-velocity enforcement.
 
+### Annular geometry
+
+Documented in the `annular.py` module docstring: the same decoupled `u+`/`u-` formulation and azimuthal/axial Fourier layout as cylindrical, but with **two walls** and **no `r=0` axis** (`r1 > 0`). Consequences: a single CGL grid affinely mapped to `[r1, r2]` (no parity-reduced FD, no ghost matrices, no `m_is_even` operator selection), Dirichlet/Neumann BCs at both walls, and a **2x2 influence matrix** (the cylindrical `u+`/`u-` divergence and pressure gradient combined with the Cartesian two-wall Schur reduction). Shear-driven (no mean pressure gradient): base coupling enters only through `base_flow`/`curl_base_flow` in the rotational-form `rhs.py` (no hand-coded coupling terms); the optional `block_mean_spanwise_velocity` zeroes the mean **axial** velocity. The mean mode keeps `u_r ≡ 0` (continuity + both no-slip walls) with `M_inv = 0` there (the wall divergence residual vanishes, so the IMM correction does too).
+
 ### Custom wall-normal grids
 
-Grid selection (precedence): (1) `params.geo.wall_grid` file path, (2) `params.geo.grid_type` (`"tanh"` / `"cgl"`), (3) default CGL/half-CGL. See `build_cartesian_grid` and `build_cylindrical_grid` docstrings for file format, validation, and integration weights. Tanh grid properties (conditioning, CFL) are documented in `fd.py` (`tanh_two_sided_grid`, `tanh_one_sided_grid`).
+Grid selection (precedence): (1) `params.geo.wall_grid` file path, (2) `params.geo.grid_type` (`"tanh"` / `"cgl"`), (3) default CGL/half-CGL (annular: CGL mapped to `[r1, r2]`). See `build_cartesian_grid`, `build_cylindrical_grid`, and `build_annular_grid` docstrings for file format, validation, and integration weights. Tanh grid properties (conditioning, CFL) are documented in `fd.py` (`tanh_two_sided_grid`, `tanh_one_sided_grid`).
 
 ### Wall-normal interpolation
 
-When loading a snapshot with a different wall-normal grid, `_interpolate_if_needed` in `__main__.py` applies the optimal method: CGL-to-CGL (Chebyshev coefficients), half-CGL-to-half-CGL (parity-aware), or general (barycentric Lagrange). See `fd.py` functions: `chebyshev_interpolation_matrix`, `half_cgl_interpolation_matrices`, `barycentric_interpolation_matrix`, `build_interpolation_matrix`.
+When loading a snapshot with a different wall-normal grid, `_interpolate_if_needed` in `__main__.py` applies the optimal method: CGL-to-CGL (Chebyshev coefficients; for annular, the affine map `[r1,r2] -> [-1,1]` is detected so the same Chebyshev path applies), half-CGL-to-half-CGL (parity-aware), or general (barycentric Lagrange). See `fd.py` functions: `chebyshev_interpolation_matrix`, `half_cgl_interpolation_matrices`, `barycentric_interpolation_matrix`, `build_interpolation_matrix`.
 
 ### Optimization patterns
 
@@ -43,11 +48,13 @@ When the aim is to operate on a quantity derivable from the mean mode (streamwis
 - `flows/wall_bounded/plane_couette.py`: PlaneCouetteFlow(CartesianFlow) -- base flow U(y) = y with tilt
 - `flows/wall_bounded/plane_poiseuille.py`: PlanePoiseuilleFlow(CartesianFlow) -- base flow Us = 1-y^2 with tilt
 - `flows/wall_bounded/pipe.py`: PipeFlow(CylindricalFlow) -- base flow Uz = 1 - r^2
+- `flows/wall_bounded/taylor_couette.py`: TaylorCouetteFlow(AnnularFlow) -- circular-Couette base flow Uθ = A0 r + B0/r from `(re1, re2, eta)`; shear-driven stats (I_lam = D_lam = 4 B0^2 / (Re r1^2 r2^2))
 
 ### Tests
 
 - `tests/test_cartesian.py`: Cartesian operator and matvec tests
 - `tests/test_cylindrical.py`: cylindrical operator and matvec tests
+- `tests/test_annular.py`: annular operator/matvec tests, 2x2 SPIKE-vs-dense parity, circular-Couette A0/B0 coefficient checks
 - `tests/test_integration.py`: quadrature weight and interpolation matrix tests
 - `tests/test_mean_mask.py`: placeholder padding wavenumbers and `mean_mask` as the unique k^2 = 0 mode under forced spectral padding
-- `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows
+- `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows (incl. taylor-couette)
