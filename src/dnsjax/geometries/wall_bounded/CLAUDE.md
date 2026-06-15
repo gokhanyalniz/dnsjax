@@ -43,6 +43,8 @@ When loading a snapshot with a different wall-normal grid, `_interpolate_if_need
 
 When the aim is to operate on a quantity derivable from the mean mode (streamwise *and* spanwise wavenumber equal to zero), first index to the mean mode, and then operate, when this indexing and the desired operations commute. You can use the function `extract_mean_mode` for this purpose.
 
+FD matvecs via `apply_y_matrix` batch over the leading component axis (a pure batch dim), so `D1`/`D2` GEMMs can be regrouped or deduplicated across IMM stages without changing numerics (bit-identical); the laminar smoke test's `err=0.00e+00` confirms such refactors.
+
 ### Flows
 
 - `flows/wall_bounded/plane_couette.py`: PlaneCouetteFlow(CartesianFlow) -- base flow U(y) = y with tilt
