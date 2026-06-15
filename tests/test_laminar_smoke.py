@@ -166,6 +166,31 @@ SYSTEMS: list[dict] = [
             "27",
         ],
     },
+    {
+        "name": "taylor-couette",
+        "args": [
+            "--phys.system",
+            "taylor-couette",
+            "--phys.re1",
+            "100",
+            "--phys.re2",
+            "0",
+            "--geo.eta",
+            "0.5",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nx",
+            "4",
+            "--res.nz",
+            "4",
+            "--res.ny",
+            "27",
+        ],
+    },
 ]
 
 ERR_PATTERN = re.compile(r"err\s*=\s*([\d.eE+\-]+)")
@@ -179,10 +204,16 @@ EP_THRESHOLD = 1e-28
 # directories, so no parameters.toml interferes).
 SMOKE_DT = 0.01
 SMOKE_NX = 4
+SMOKE_NZ = 4
 SMOKE_LX = 4.0
 SMOKE_N_STEPS = 4  # max_sim_time 0.04 / dt 0.01
 # Spectral-grid spacing convention: Delta_x = lx / nx.
 CFL_X_LAMINAR = SMOKE_DT * SMOKE_NX / SMOKE_LX
+# Taylor-Couette laminar azimuthal CFL: dt * max(U_theta/r) * nz/(2 pi)
+# (theta period is the literal 2*pi).  For re1=100, re2=0, eta=0.5 the
+# maximum of U_theta/r is 1, at the inner wall r1 = 1 where
+# U_theta(r1) = 1.
+CFL_TH_LAMINAR_TC = SMOKE_DT * 1.0 * SMOKE_NZ / (2 * math.pi)
 CFL_REL_TOL = 1e-7
 CFL_ZERO_TOL = 1e-12  # roundoff-sized perturbation columns
 
@@ -239,7 +270,8 @@ def _check_steps_file(workdir: Path, name: str) -> None:
     # key order, so compare as sets and index columns by name
     # ("t" is always written first by ``_flush_stats``).
     cylindrical = name.startswith("pipe")
-    if cylindrical:
+    annular = name.startswith("taylor-couette")
+    if cylindrical or annular:
         per_dir = ("CFL_z", "CFL_r", "CFL_th")
     else:
         per_dir = ("CFL_x", "CFL_y", "CFL_z")
@@ -260,42 +292,51 @@ def _check_steps_file(workdir: Path, name: str) -> None:
             f"{name}: first steps.dat row at t={rows[0][col['t']]}, not 0"
         )
 
+    # Index of the laminar (base-flow) direction within ``per_dir``:
+    # the streamwise/axial column (0) for Cartesian and pipe, but the
+    # azimuthal CFL_th column (2) for the Taylor-Couette base flow.
+    active_i = 2 if annular else 0
+
     for row in rows:
-        streamwise = row[col[per_dir[0]]]
-        second = row[col[per_dir[1]]]
-        third = row[col[per_dir[2]]]
-        total = row[col["CFL"]]
         if not all(math.isfinite(v) and v >= 0.0 for v in row):
             raise AssertionError(f"{name}: bad steps.dat row {row}")
-        # Perturbation-only columns: roundoff-sized for the
-        # laminar state (not exactly zero after the first step).
-        if second > CFL_ZERO_TOL or third > CFL_ZERO_TOL:
+        vals = [row[col[d]] for d in per_dir]
+        total = row[col["CFL"]]
+        active = vals[active_i]
+        # Perturbation-only columns: roundoff-sized for the laminar
+        # state (not exactly zero after the first step).
+        roundoff = [v for i, v in enumerate(vals) if i != active_i]
+        if any(v > CFL_ZERO_TOL for v in roundoff):
             raise AssertionError(
                 f"{name}: nonzero perturbation CFL in row {row}"
             )
         if cylindrical:
             # max U_z = max (1 - r^2) < 1 on the half-CGL grid
             # (r = 0 is not a node), but only barely below it.
-            if not 0.9 * CFL_X_LAMINAR < streamwise < CFL_X_LAMINAR:
+            if not 0.9 * CFL_X_LAMINAR < active < CFL_X_LAMINAR:
                 raise AssertionError(
-                    f"{name}: CFL_z {streamwise} outside "
+                    f"{name}: CFL_z {active} outside "
                     f"(0.9, 1) x {CFL_X_LAMINAR}"
                 )
-            if abs(total - streamwise) > CFL_REL_TOL * streamwise:
+        elif annular:
+            # max U_theta/r = 1 at the inner wall r1 = 1.
+            if abs(active - CFL_TH_LAMINAR_TC) > (
+                CFL_REL_TOL * CFL_TH_LAMINAR_TC
+            ):
                 raise AssertionError(
-                    f"{name}: CFL total {total} != CFL_z {streamwise}"
+                    f"{name}: CFL_th {active} != {CFL_TH_LAMINAR_TC}"
                 )
         else:
             # max |U_x| = 1: at the walls (Couette) or at the
             # y = 0 node (Poiseuille; ny = 27 is odd).
-            if abs(streamwise - CFL_X_LAMINAR) > CFL_REL_TOL * CFL_X_LAMINAR:
+            if abs(active - CFL_X_LAMINAR) > CFL_REL_TOL * CFL_X_LAMINAR:
                 raise AssertionError(
-                    f"{name}: CFL_x {streamwise} != {CFL_X_LAMINAR}"
+                    f"{name}: CFL_x {active} != {CFL_X_LAMINAR}"
                 )
-            if abs(total - CFL_X_LAMINAR) > CFL_REL_TOL * CFL_X_LAMINAR:
-                raise AssertionError(
-                    f"{name}: CFL total {total} != {CFL_X_LAMINAR}"
-                )
+        if abs(total - active) > CFL_REL_TOL * active:
+            raise AssertionError(
+                f"{name}: CFL total {total} != active {active}"
+            )
 
 
 # ── test runner ──────────────────────────────────────────────────────

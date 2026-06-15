@@ -59,6 +59,7 @@ def _parse_args() -> argparse.Namespace:
             "plane-couette",
             "plane-poiseuille",
             "pipe",
+            "taylor-couette",
             "kolmogorov",
             "waleffe",
             "decaying-box",
@@ -70,6 +71,10 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--lx", type=float, default=4.0)
     ap.add_argument("--lz", type=float, default=4.0)
     ap.add_argument("--re", type=float, default=1000.0)
+    # Taylor-Couette control parameters.
+    ap.add_argument("--re1", type=float, default=None)
+    ap.add_argument("--re2", type=float, default=None)
+    ap.add_argument("--eta", type=float, default=None)
     ap.add_argument("--fd-order", type=int, default=4)
     ap.add_argument("--tilt-degree", type=float, default=0.0)
     ap.add_argument("--wall-grid", type=str, default=None)
@@ -166,6 +171,8 @@ def _setup_jax_and_params(args: argparse.Namespace) -> None:
         phys={
             "system": args.system,
             "re": args.re,
+            "re1": args.re1,
+            "re2": args.re2,
             "driving": args.driving,
             "block_mean_spanwise_velocity": (
                 args.block_mean_spanwise_velocity
@@ -175,6 +182,7 @@ def _setup_jax_and_params(args: argparse.Namespace) -> None:
             "lx": args.lx,
             "lz": args.lz,
             "tilt_degree": args.tilt_degree,
+            "eta": args.eta,
             "wall_grid": args.wall_grid,
         },
         res={
@@ -453,6 +461,124 @@ def _generate_cylindrical(args: argparse.Namespace):
     return state
 
 
+# ── Annular generation ───────────────────────────────────────────
+
+
+def _generate_annular(args: argparse.Namespace):
+    r"""Generate a random perturbation for Taylor-Couette flow.
+
+    Returns a JAX array of shape ``(3, Nr, Nm, Nkz)`` in
+    `$(u_z, u_+, u_-)$` form, with no-slip at both walls.
+
+    For `$k_z \neq 0$` modes the field is divergence-free by
+    construction (`$u_z$` derived from continuity, with the near-wall
+    `$u_\pm$` points adjusted so `$D_1 u_r = 0$` at both walls, so the
+    derived `$u_z$` inherits exact zero wall values).  For `$k_z = 0$`
+    modes a small residual divergence may remain; the first corrector
+    step of the solver projects it out via the IMM.
+    """
+    import jax
+    from jax import numpy as jnp
+
+    from dnsjax.geometries.wall_bounded.annular import (
+        build_annular_grid,
+        fourier,
+        get_norm2_annular,
+    )
+    from dnsjax.parameters import derived_params, params
+    from dnsjax.sharding import sharding
+
+    Nr = params.res.ny
+    Nm = params.res.nz - 1
+    Nkz = params.res.nx // 2
+
+    r1 = derived_params.r_inner
+    r2 = derived_params.r_outer
+    rs, D1, _, y_weights, inv_r = build_annular_grid(
+        Nr, params.res.fd_order, r1, r2, params.geo.wall_grid
+    )
+    derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
+
+    # ── NumPy: per-mode construction (non-JAX) ──────────────
+    rs_np = np.asarray(rs)
+    inv_r_np = np.asarray(inv_r)
+    D1_np = np.asarray(D1)
+    kz_np = np.asarray(fourier.kz).ravel()  # (Nkz,)
+    m_np = np.asarray(fourier.m).ravel()  # (Nm,)
+
+    decay = 1.0 - args.smoothness
+    # No-slip window: zero at both walls, peak in the interior.
+    window = (rs_np - r1) * (r2 - rs_np)
+    window = window / np.max(window)
+
+    kz_abs = np.abs(kz_np)
+    m_abs = np.abs(m_np) * 2 * pi / params.geo.lz
+    mode_decay = decay ** (kz_abs[None, :] + m_abs[:, None])
+
+    rng = np.random.default_rng(args.seed)
+    shape = (3, Nr, Nm, Nkz)
+    raw = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+    raw *= window[np.newaxis, :, np.newaxis, np.newaxis]
+    for im in range(Nm):
+        raw[:, :, im, :] *= mode_decay[im, :][np.newaxis, np.newaxis, :]
+
+    # Adjust the two near-wall interior points of u_+ and u_- so that
+    # D1 @ u_pm = 0 at both walls; then D1 @ u_r = 0 there, and the
+    # u_z derived from continuity inherits exact zero wall values.
+    A_fix = np.array(
+        [
+            [D1_np[0, 1], D1_np[0, -2]],
+            [D1_np[-1, 1], D1_np[-1, -2]],
+        ]
+    )
+    A_fix_inv = np.linalg.inv(A_fix)
+
+    # Enforce divergence-free for kz != 0 (NumPy loop).
+    # Continuity: i*kz*uz + [D1(u+) + (m+1)*u+/r
+    #                       + D1(u-) + (1-m)*u-/r] / 2 = 0
+    for im in range(Nm):
+        m_val = int(m_np[im])
+        for ik in range(Nkz):
+            for comp in (1, 2):  # u_+, u_-
+                f = raw[comp, :, im, ik]
+                d_wall = D1_np[[0, -1], :] @ f  # (2,)
+                delta = -A_fix_inv @ d_wall
+                f[1] += delta[0]
+                f[-2] += delta[1]
+
+            kz_val = kz_np[ik]
+            if kz_val == 0:
+                continue
+            u_plus = raw[1, :, im, ik]
+            u_minus = raw[2, :, im, ik]
+            div_radial = (
+                D1_np @ u_plus
+                + (m_val + 1) * inv_r_np * u_plus
+                + D1_np @ u_minus
+                + (1 - m_val) * inv_r_np * u_minus
+            ) / 2.0
+            raw[0, :, im, ik] = -div_radial / (1j * kz_val)
+
+    # Zero mean mode unless --mean-flow.
+    if not args.mean_flow:
+        raw[:, :, 0, 0] = 0.0
+
+    # Hermitian symmetry at kz=0 (real-FFT axis): fix m axis.
+    for c in range(3):
+        _enforce_hermitian_slice(raw[c, :, :, 0].T, params.res.nz)
+
+    # ── JAX: normalise and return ────────────────────────────
+    state = jax.device_put(
+        jnp.asarray(raw, dtype=sharding.complex_type),
+        sharding.spec_vector_shard,
+    )
+
+    norm2 = get_norm2_annular(state, fourier.k_metric, y_weights)
+    norm = jnp.sqrt(norm2)
+    state = state * (args.amplitude / norm)
+    return state
+
+
 # ── Triply-periodic generation ───────────────────────────────────
 
 
@@ -555,7 +681,11 @@ def _run_tests() -> None:
     """Run self-contained verification for all geometries."""
     from jax import numpy as jnp
 
-    from dnsjax.parameters import params
+    from dnsjax.parameters import (
+        annular_systems,
+        cartesian_systems,
+        params,
+    )
 
     passed = 0
     failed = 0
@@ -569,90 +699,182 @@ def _run_tests() -> None:
             failed += 1
             print(f"  FAIL: {name}  {detail}")
 
-    # ── Cartesian tests ──────────────────────────────────────
-    print("Cartesian (plane-couette):")
-    state, ys, D1_np, y_weights, fourier = _generate_cartesian(args)
+    # The generation singletons (Fourier / sharding) are built from
+    # ``params`` at import time, so the self-test runs the block for the
+    # configured ``--system`` rather than switching systems mid-process.
+    system = params.phys.system
 
-    Nkz = params.res.nz - 1
-    Nkx = params.res.nx // 2
-    state_np = np.asarray(state)
-    kx_np = np.asarray(fourier.kx).ravel()
-    kz_np = np.asarray(fourier.kz).ravel()
+    if system in cartesian_systems:
+        print(f"Cartesian ({system}):")
+        state, ys, D1_np, y_weights, fourier = _generate_cartesian(args)
 
-    # Divergence-free.
-    max_div = 0.0
-    for iz in range(Nkz):
-        for ix in range(Nkx):
-            kx_v = kx_np[ix]
-            kz_v = kz_np[iz]
-            dv_dy = D1_np @ state_np[1, :, iz, ix]
-            div = (
-                1j * kx_v * state_np[0, :, iz, ix]
-                + dv_dy
-                + 1j * kz_v * state_np[2, :, iz, ix]
-            )
-            max_div = max(max_div, float(np.max(np.abs(div))))
-    _check("divergence-free", max_div < 1e-10, f"max |div| = {max_div:.2e}")
+        Nkz = params.res.nz - 1
+        Nkx = params.res.nx // 2
+        state_np = np.asarray(state)
+        kx_np = np.asarray(fourier.kx).ravel()
+        kz_np = np.asarray(fourier.kz).ravel()
 
-    # Wall BCs.
-    bc_err = max(
-        float(np.max(np.abs(state_np[:, 0]))),
-        float(np.max(np.abs(state_np[:, -1]))),
-    )
-    _check("wall BCs", bc_err < 1e-14, f"max |BC| = {bc_err:.2e}")
+        # Divergence-free.
+        max_div = 0.0
+        for iz in range(Nkz):
+            for ix in range(Nkx):
+                kx_v = kx_np[ix]
+                kz_v = kz_np[iz]
+                dv_dy = D1_np @ state_np[1, :, iz, ix]
+                div = (
+                    1j * kx_v * state_np[0, :, iz, ix]
+                    + dv_dy
+                    + 1j * kz_v * state_np[2, :, iz, ix]
+                )
+                max_div = max(max_div, float(np.max(np.abs(div))))
+        _check(
+            "divergence-free", max_div < 1e-10, f"max |div| = {max_div:.2e}"
+        )
 
-    # Norm.
-    from dnsjax.geometries.wall_bounded._base import get_norm
+        # Wall BCs.
+        bc_err = max(
+            float(np.max(np.abs(state_np[:, 0]))),
+            float(np.max(np.abs(state_np[:, -1]))),
+        )
+        _check("wall BCs", bc_err < 1e-14, f"max |BC| = {bc_err:.2e}")
 
-    norm = float(get_norm(state, fourier.k_metric, y_weights))
-    norm_err = abs(norm - args.amplitude) / args.amplitude
-    _check(
-        "norm matches target",
-        norm_err < 1e-12,
-        f"|norm - target| / target = {norm_err:.2e}",
-    )
+        # Norm.
+        from dnsjax.geometries.wall_bounded._base import get_norm
 
-    # Mean mode zero.
-    mean_err = float(np.max(np.abs(state_np[:, :, 0, 0])))
-    _check("mean mode zero", mean_err < 1e-30, f"max |mean| = {mean_err:.2e}")
+        norm = float(get_norm(state, fourier.k_metric, y_weights))
+        norm_err = abs(norm - args.amplitude) / args.amplitude
+        _check(
+            "norm matches target",
+            norm_err < 1e-12,
+            f"|norm - target| / target = {norm_err:.2e}",
+        )
 
-    # Hermitian symmetry at kx=0.
-    n_pos = params.res.nz // 2
-    sym_err = 0.0
-    for i in range(1, n_pos):
-        j = Nkz - i
-        diff = state_np[:, :, j, 0] - np.conj(state_np[:, :, i, 0])
-        sym_err = max(sym_err, float(np.max(np.abs(diff))))
-    kz0_imag = float(np.max(np.abs(state_np[:, :, 0, 0].imag)))
-    sym_err = max(sym_err, kz0_imag)
-    _check(
-        "Hermitian symmetry at kx=0",
-        sym_err < 1e-14,
-        f"max sym error = {sym_err:.2e}",
-    )
+        # Mean mode zero.
+        mean_err = float(np.max(np.abs(state_np[:, :, 0, 0])))
+        _check(
+            "mean mode zero", mean_err < 1e-30, f"max |mean| = {mean_err:.2e}"
+        )
 
-    # Seed determinism.
-    state2, *_ = _generate_cartesian(args)
-    det_err = float(jnp.max(jnp.abs(state - state2)))
-    _check(
-        "seed determinism",
-        det_err == 0.0,
-        f"max diff = {det_err:.2e}",
-    )
+        # Hermitian symmetry at kx=0.
+        n_pos = params.res.nz // 2
+        sym_err = 0.0
+        for i in range(1, n_pos):
+            j = Nkz - i
+            diff = state_np[:, :, j, 0] - np.conj(state_np[:, :, i, 0])
+            sym_err = max(sym_err, float(np.max(np.abs(diff))))
+        kz0_imag = float(np.max(np.abs(state_np[:, :, 0, 0].imag)))
+        sym_err = max(sym_err, kz0_imag)
+        _check(
+            "Hermitian symmetry at kx=0",
+            sym_err < 1e-14,
+            f"max sym error = {sym_err:.2e}",
+        )
 
-    # ── Triply-periodic tests ────────────────────────────────
-    print("\nTriply-periodic (kolmogorov):")
-    # Temporarily switch system.
-    saved_system = params.phys.system
-    from dnsjax.parameters import Parameters, update_parameters
+        # Seed determinism.
+        state2, *_ = _generate_cartesian(args)
+        det_err = float(jnp.max(jnp.abs(state - state2)))
+        _check("seed determinism", det_err == 0.0, f"max diff = {det_err:.2e}")
 
-    update_parameters(Parameters(phys={"system": "kolmogorov"}))
-    # Re-import to get fresh Fourier with periodic layout.
-    # For the test we just verify the generation function works.
-    # (Full test would require re-initialising sharding, which
-    # is not feasible in a single process.)
-    print("  (skipped: requires sharding re-init for periodic layout)")
-    update_parameters(Parameters(phys={"system": saved_system}))
+    elif system in annular_systems:
+        print(f"Annular ({system}):")
+        from dnsjax.geometries.wall_bounded.annular import (
+            build_annular_grid,
+            fourier,
+            get_norm2_annular,
+        )
+        from dnsjax.parameters import derived_params
+
+        state = _generate_annular(args)
+        state_np = np.asarray(state)
+
+        Nm = params.res.nz - 1
+        Nkz = params.res.nx // 2
+        rs, D1, _, y_weights, inv_r = build_annular_grid(
+            params.res.ny,
+            params.res.fd_order,
+            derived_params.r_inner,
+            derived_params.r_outer,
+            params.geo.wall_grid,
+        )
+        D1_np = np.asarray(D1)
+        inv_r_np = np.asarray(inv_r)
+        kz_np = np.asarray(fourier.kz).ravel()
+        m_np = np.asarray(fourier.m).ravel()
+
+        # Divergence-free for kz != 0 (kz = 0 modes carry a residual
+        # divergence projected out by the first corrector step).
+        max_div = 0.0
+        for im in range(Nm):
+            m_val = int(m_np[im])
+            for ik in range(Nkz):
+                kz_v = kz_np[ik]
+                if kz_v == 0:
+                    continue
+                up = state_np[1, :, im, ik]
+                um = state_np[2, :, im, ik]
+                div_r = (
+                    D1_np @ up
+                    + (m_val + 1) * inv_r_np * up
+                    + D1_np @ um
+                    + (1 - m_val) * inv_r_np * um
+                ) / 2.0
+                div = 1j * kz_v * state_np[0, :, im, ik] + div_r
+                max_div = max(max_div, float(np.max(np.abs(div))))
+        _check(
+            "divergence-free (kz!=0)",
+            max_div < 1e-10,
+            f"max |div| = {max_div:.2e}",
+        )
+
+        # Wall BCs (both walls).
+        bc_err = max(
+            float(np.max(np.abs(state_np[:, 0]))),
+            float(np.max(np.abs(state_np[:, -1]))),
+        )
+        _check("wall BCs", bc_err < 1e-13, f"max |BC| = {bc_err:.2e}")
+
+        # Norm.
+        norm = float(
+            jnp.sqrt(get_norm2_annular(state, fourier.k_metric, y_weights))
+        )
+        norm_err = abs(norm - args.amplitude) / args.amplitude
+        _check(
+            "norm matches target",
+            norm_err < 1e-12,
+            f"|norm - target| / target = {norm_err:.2e}",
+        )
+
+        # Mean mode zero.
+        mean_err = float(np.max(np.abs(state_np[:, :, 0, 0])))
+        _check(
+            "mean mode zero", mean_err < 1e-30, f"max |mean| = {mean_err:.2e}"
+        )
+
+        # Hermitian symmetry at kz=0 (over the azimuthal m axis).
+        n_pos = params.res.nz // 2
+        sym_err = 0.0
+        for i in range(1, n_pos):
+            j = Nm - i
+            diff = state_np[:, :, j, 0] - np.conj(state_np[:, :, i, 0])
+            sym_err = max(sym_err, float(np.max(np.abs(diff))))
+        kz0_imag = float(np.max(np.abs(state_np[:, :, 0, 0].imag)))
+        sym_err = max(sym_err, kz0_imag)
+        _check(
+            "Hermitian symmetry at kz=0",
+            sym_err < 1e-14,
+            f"max sym error = {sym_err:.2e}",
+        )
+
+        # Seed determinism.
+        state2 = _generate_annular(args)
+        det_err = float(jnp.max(jnp.abs(state - state2)))
+        _check("seed determinism", det_err == 0.0, f"max diff = {det_err:.2e}")
+
+    else:
+        print(
+            f"  (self-test implemented for cartesian and annular systems; "
+            f"'{system}' skipped)"
+        )
 
     print(f"\n{passed} passed, {failed} failed.")
     sys.exit(1 if failed > 0 else 0)
@@ -667,6 +889,7 @@ def main() -> None:
     _setup_jax_and_params(args)
 
     from dnsjax.parameters import (
+        annular_systems,
         cartesian_systems,
         cylindrical_systems,
         params,
@@ -685,6 +908,8 @@ def main() -> None:
         state, ys, _, _, _ = _generate_cartesian(args)
     elif system in cylindrical_systems:
         state = _generate_cylindrical(args)
+    elif system in annular_systems:
+        state = _generate_annular(args)
     elif system in periodic_systems:
         state = _generate_triply_periodic(args)
     else:

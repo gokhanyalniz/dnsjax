@@ -66,6 +66,7 @@ geometries/
     _base.py          Shared wall-bounded infrastructure (norms, init_state, stepper builder)
     cartesian.py      Cartesian: Fourier, CGL grid, CartesianFlow, IMM, Lk/Hk operators
     cylindrical.py    Cylindrical: Fourier, half-CGL grid, CylindricalFlow, decoupled u+/u-/uz, 1x1 IMM
+    annular.py        Annular (concentric cylinders): Fourier, CGL grid on [r1,r2], AnnularFlow, decoupled u+/u-/uz (no parity/ghost, no r=0), 2x2 IMM
   triply_periodic/    Triply-periodic geometry family (see triply_periodic/CLAUDE.md)
     triply_periodic.py  Fourier, spectral diff ops, TriplyPeriodicFlow, algebraic Helmholtz, divergence correction
 flows/
@@ -73,6 +74,7 @@ flows/
     plane_couette.py    PlaneCouetteFlow(CartesianFlow): U(y) = y with tilt
     plane_poiseuille.py PlanePoiseuilleFlow(CartesianFlow): Us = 1-y^2 with tilt
     pipe.py             PipeFlow(CylindricalFlow): Uz = 1 - r^2
+    taylor_couette.py   TaylorCouetteFlow(AnnularFlow): circular-Couette Uθ = A0 r + B0/r (shear-driven, no pressure gradient)
   triply_periodic/
     monochromatic.py    MonochromaticFlow(TriplyPeriodicFlow): Kolmogorov / Waleffe / decaying-box
 ```
@@ -107,8 +109,8 @@ See `parameters.py` classes for full documentation. Key sections:
 
 | Section    | Key fields                                                                                             |
 |------------|--------------------------------------------------------------------------------------------------------|
-| `[phys]`   | `re`, `system`, `oversampling_factor`, `oversample_y`, `driving` (`"constant_pressure_gradient"` / `"constant_bulk_velocity"`), `block_mean_spanwise_velocity` |
-| `[geo]`    | `lx`, `lz`, `tilt_degree`, `wall_grid` (custom grid file), `grid_type` (`"tanh"` / `"cgl"`), `grid_stretch` |
+| `[phys]`   | `re`, `re1`/`re2` (Taylor-Couette inner/outer cylinder Reynolds numbers; derive `re := Re_ref`), `system`, `oversampling_factor`, `oversample_y`, `driving` (`"constant_pressure_gradient"` / `"constant_bulk_velocity"`), `block_mean_spanwise_velocity` (Taylor-Couette: blocks the mean axial velocity) |
+| `[geo]`    | `lx`, `lz`, `tilt_degree`, `eta` (Taylor-Couette radius ratio r1/r2), `wall_grid` (custom grid file), `grid_type` (`"tanh"` / `"cgl"`), `grid_stretch` |
 | `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`                                                      |
 | `[init]`   | `start_from_laminar`, `snapshot`, `t0`, `it0`                                                          |
 | `[outs]`   | `it_stats`, `it_steps` (CFL diagnostic cadence -> `steps.dat`), `it_snapshot`, `it_error_check` (host-sync cadence for corrector convergence), `nbuffer`, `stats_precision`, `snapshot_write_mode` (`"concurrent"` / `"serial"`) |
@@ -140,13 +142,14 @@ Zarr3 format with 3 combined per-component files (np-agnostic resume at any `(np
 
 ## Scripts
 - `scripts/spike_partition_info.py`: display SPIKE block-partition trade-offs for a given resolution.
-- `scripts/random_field.py`: generate a random divergence-free perturbation and save as a zarr3 snapshot. Supports all flow systems (Cartesian wall-bounded, cylindrical, triply-periodic). Uses `build_cartesian_grid` / `build_cylindrical_grid` from the geometry modules for grid/FD setup without constructing the full flow dataclass. Per-mode divergence-free enforcement uses NumPy loops (not JAX) to avoid tracing overhead; all other array work uses JAX. Run with `--test` for self-verification (divergence-free, wall BCs, norm, Hermitian symmetry, seed determinism).
+- `scripts/random_field.py`: generate a random divergence-free perturbation and save as a zarr3 snapshot. Supports all flow systems (Cartesian wall-bounded, cylindrical, annular, triply-periodic). Uses `build_cartesian_grid` / `build_cylindrical_grid` / `build_annular_grid` from the geometry modules for grid/FD setup without constructing the full flow dataclass. Taylor-Couette needs `--re1 --re2 --eta`. Per-mode divergence-free enforcement uses NumPy loops (not JAX) to avoid tracing overhead; all other array work uses JAX. Run with `--test` for self-verification (divergence-free, wall BCs, norm, Hermitian symmetry, seed determinism); the self-test runs the block for the configured `--system` (cartesian or annular).
 
 ## Tests
 All to be kept up-to-date as the respective modules change:
 - `tests/test_banded_solver.py` contains geometry-independent SPIKE solver tests.
 - `tests/test_cartesian.py` contains Cartesian operator and matvec tests.
 - `tests/test_cylindrical.py` contains cylindrical operator and matvec tests.
+- `tests/test_annular.py` contains annular (Taylor-Couette) operator/matvec tests, the 2x2 SPIKE-vs-dense parity, and circular-Couette coefficient (A0/B0) checks.
 - `tests/test_integration.py` contains quadrature weight tests.
 - `tests/test_mean_mask.py` checks that padding slots carry nonzero placeholder wavenumbers and `Fourier.mean_mask` is the unique k^2 = 0 (mean) mode under forced spectral padding (subprocess, forced CPU devices).
 - `tests/test_laminar_smoke.py` runs all wall-bounded flows from laminar state (via subprocess/mpirun) checking stepping error, perturbation energy, and the `steps.dat` CFL columns against analytic laminar values. Each subprocess runs in a temp dir: `parameters.toml` is not loaded (model defaults + CLI args only).

@@ -85,6 +85,7 @@ from pydantic_settings import CliApp
 
 from .parameters import (
     CLIParameters,
+    annular_systems,
     cylindrical_systems,
     derived_params,
     ns_to_s,
@@ -153,14 +154,21 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
             N_full = 2 * snap_ny
             s = -np.cos(np.arange(N_full) * np.pi / (N_full - 1))
             old_grid = s[snap_ny:]
+        elif params.phys.system in annular_systems:
+            # CGL of [-1, 1] mapped to [r_inner, r_outer].
+            xi = -np.cos(np.arange(snap_ny) * np.pi / (snap_ny - 1))
+            mid = 0.5 * (derived_params.r_inner + derived_params.r_outer)
+            half = 0.5 * (derived_params.r_outer - derived_params.r_inner)
+            old_grid = mid + half * xi
         else:
             old_grid = -np.cos(np.arange(snap_ny) * np.pi / (snap_ny - 1))
 
-    geometry = (
-        "cylindrical"
-        if params.phys.system in cylindrical_systems
-        else "cartesian"
-    )
+    if params.phys.system in cylindrical_systems:
+        geometry = "cylindrical"
+    elif params.phys.system in annular_systems:
+        geometry = "annular"
+    else:
+        geometry = "cartesian"
     T = build_interpolation_matrix(old_grid, curr_grid_np, geometry)
 
     if isinstance(T, tuple):
@@ -187,10 +195,12 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         state = jnp.einsum("ij, cjzx -> cizx", T_jax, state)
 
     # Enforce wall boundary conditions.
-    if geometry == "cartesian":
-        state = state.at[:, 0].set(0.0)
+    if geometry == "cylindrical":
+        # Single wall at r = 1 (axis handled by parity).
         state = state.at[:, -1].set(0.0)
     else:
+        # Two walls (Cartesian: y = +/-1; annular: r = r1, r2).
+        state = state.at[:, 0].set(0.0)
         state = state.at[:, -1].set(0.0)
 
     sharding.print(
@@ -232,6 +242,13 @@ def main() -> None:
         )
     elif params.phys.system == "pipe":
         from .flows.wall_bounded.pipe import (
+            get_stats,
+            init_state,
+            predict_and_fully_correct,
+            predict_and_fully_correct_measured,
+        )
+    elif params.phys.system == "taylor-couette":
+        from .flows.wall_bounded.taylor_couette import (
             get_stats,
             init_state,
             predict_and_fully_correct,
