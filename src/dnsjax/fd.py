@@ -586,6 +586,11 @@ def build_interpolation_matrix(
       truncation/extension (spectrally optimal).
     - Cylindrical with both grids half-CGL: parity-aware
       Chebyshev interpolation (spectrally optimal).
+    - Annular with both grids CGL on `$[r_1, r_2]$`: Chebyshev
+      coefficient truncation/extension after affine mapping to
+      `$[-1, 1]$` (spectrally optimal; the Chebyshev matrix is
+      domain-independent, so the same path applies under the affine
+      map).
     - Otherwise: barycentric Lagrange interpolation.
 
     Parameters
@@ -595,7 +600,7 @@ def build_interpolation_matrix(
     y_new:
         Target grid, shape ``(N_new,)``.
     geometry:
-        ``"cartesian"`` or ``"cylindrical"``.
+        ``"cartesian"``, ``"cylindrical"``, or ``"annular"``.
 
     Returns
     -------
@@ -616,5 +621,17 @@ def build_interpolation_matrix(
         and is_half_cgl_grid(y_new)
     ):
         return half_cgl_interpolation_matrices(len(y_old), len(y_new))
+
+    if geometry == "annular":
+        # The annular grid is a CGL grid affinely mapped to [r1, r2];
+        # normalise each grid to [-1, 1] to detect it.  The Chebyshev
+        # interpolation matrix depends only on the point counts (it
+        # works in coefficient space), so it is invariant under the
+        # affine domain map.
+        def _to_unit(g: ndarray) -> ndarray:
+            return (2.0 * g - g[0] - g[-1]) / (g[-1] - g[0])
+
+        if is_cgl_grid(_to_unit(y_old)) and is_cgl_grid(_to_unit(y_new)):
+            return chebyshev_interpolation_matrix(len(y_old), len(y_new))
 
     return barycentric_interpolation_matrix(y_old, y_new)

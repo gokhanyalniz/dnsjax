@@ -21,7 +21,12 @@ periodic_systems: list[str] = ["decaying-box", *monochromatic_systems]
 
 cartesian_systems: list[str] = ["plane-couette", "plane-poiseuille"]
 cylindrical_systems: list[str] = ["pipe"]
-walled_systems: list[str] = [*cartesian_systems, *cylindrical_systems]
+annular_systems: list[str] = ["taylor-couette"]
+walled_systems: list[str] = [
+    *cartesian_systems,
+    *cylindrical_systems,
+    *annular_systems,
+]
 
 ns_to_s: float = 10 ** (-9)  # nanoseconds to seconds
 
@@ -75,6 +80,19 @@ class Physics(BaseModel):
     """Physical parameters: Reynolds number, flow system, dealiasing."""
 
     re: float = Field(gt=0, default=1000)  # Reynolds number
+    # Taylor-Couette control parameters (system == "taylor-couette").
+    # Inner / outer cylinder Reynolds numbers, with gap d = r2 - r1:
+    #   re1 = Omega1 * r1_dim * d / nu,  re2 = Omega2 * r2_dim * d / nu.
+    # Sign convention: re1 >= 0; re2 may be negative (counter-rotation).
+    # Case 1 (inner-driven): re1 > 0  -> Re_ref = re1.
+    # Case 2 (outer-driven): re1 == 0, re2 > 0 -> Re_ref = re2.
+    # ``update_parameters`` validates these, derives the circular-Couette
+    # coefficients A0, B0 and radii (onto ``derived_params``), and sets
+    # ``re = Re_ref`` so every downstream 1/re viscous/IMM/stats path is
+    # reused unchanged.  See the annular branch of ``update_parameters``
+    # and ``flows.wall_bounded.taylor_couette``.
+    re1: float | None = None
+    re2: float | None = None
     # Kolmogorov: sine forcing
     # Waleffe: cosine forcing + Ry symmetry (not yet implemented)
     system: Literal[*periodic_systems, *walled_systems] = "kolmogorov"
@@ -86,6 +104,10 @@ class Physics(BaseModel):
     driving: Literal[
         "constant_pressure_gradient", "constant_bulk_velocity"
     ] = "constant_pressure_gradient"
+    # Zero the mean velocity in the undriven homogeneous direction.
+    # Cartesian: the spanwise (z) direction.  Taylor-Couette: the axial
+    # (z) direction (no axial bulk velocity); the azimuthal mean evolves
+    # freely.  Independent of ``driving``.
     block_mean_spanwise_velocity: bool = False
 
 
@@ -104,6 +126,10 @@ class Geometry(BaseModel):
     lx: float = Field(gt=0, default=4.0)
     lz: float = Field(gt=0, default=4.0)
     tilt_degree: float = Field(gt=-180, le=180, default=0)
+    # Radius ratio eta = r1/r2 for the annular (Taylor-Couette)
+    # geometry.  Non-dim radii r1 = eta/(1-eta), r2 = 1/(1-eta) on the
+    # gap d = r2 - r1 = 1.  Required for system == "taylor-couette".
+    eta: float | None = Field(default=None, gt=0, lt=1)
     wall_grid: Path | None = None
     grid_type: Literal["cgl", "tanh"] | None = None
     grid_stretch: float = Field(gt=0, default=1.5)
@@ -241,9 +267,14 @@ class CLIParameters(
 class DerivedParameters:
     """Parameters derived from the user-facing configuration.
 
-    ``ly`` is fixed by the geometry (4 for triply-periodic, 2 for walled).
+    ``ly`` is fixed by the geometry (4 for triply-periodic, 2 for walled;
+    only read by triply-periodic code).
     ``volume_fac`` is also fixed by the geometry
-        (1 for periodic, 2 for Cartesian, 0.5 for cylindrical)
+        (1 for periodic, 2 for Cartesian, 0.5 for cylindrical, and
+        ``(r2^2 - r1^2)/2`` for the annulus).
+    ``ccf_A``, ``ccf_B`` are the circular-Couette base-flow coefficients
+    ``U_theta = ccf_A * r + ccf_B / r`` and ``r_inner``, ``r_outer`` the
+    non-dim annular radii (set for system == "taylor-couette").
     """
 
     ly: float = 4
@@ -252,6 +283,10 @@ class DerivedParameters:
     cos_tilt: float = 0
     sin_tilt: float = 0
     wall_normal_grid: list[float] | None = None
+    ccf_A: float = 0
+    ccf_B: float = 0
+    r_inner: float = 0
+    r_outer: float = 0
 
 
 params: Parameters = Parameters()
@@ -294,6 +329,50 @@ def update_parameters(params_new: Parameters) -> None:
         params.geo.lz = 2 * pi
         # To compansate for the (1/Lz) factor
         derived_params.volume_fac = 0.5
+    elif system in annular_systems:
+        # Taylor-Couette: validate the (re1, re2, eta) control
+        # parameters and derive the circular-Couette base flow
+        # U_theta = A0 r + B0/r on the annulus [r1, r2] (gap = 1).
+        re1, re2, eta = params.phys.re1, params.phys.re2, params.geo.eta
+        if eta is None:
+            raise ValueError(
+                "taylor-couette requires geo.eta (radius ratio r1/r2)"
+            )
+        if re1 is None or re2 is None:
+            raise ValueError("taylor-couette requires phys.re1 and phys.re2")
+        if re1 < 0:
+            raise ValueError(
+                "taylor-couette: re1 must be >= 0 (sign convention)"
+            )
+        if re1 > 0:
+            re_ref = re1  # Case 1: inner-driven
+        elif re2 > 0:
+            re_ref = re2  # Case 2: outer-driven (re1 == 0)
+        else:
+            raise ValueError(
+                "taylor-couette needs re1 > 0, or re1 == 0 and re2 > 0 "
+                f"(got re1={re1}, re2={re2})"
+            )
+        # Set the reference Reynolds number so every downstream 1/re
+        # viscous/IMM/stats path is reused unchanged.
+        params.phys.re = re_ref
+        # Non-dim radii on the gap d = r2 - r1 = 1.
+        r1 = eta / (1 - eta)
+        r2 = 1 / (1 - eta)
+        derived_params.r_inner = r1
+        derived_params.r_outer = r2
+        # Gap-scaled circular-Couette coefficients (divided by Re_ref):
+        #   A0 = (re2 - eta re1) / [(1+eta) Re_ref]
+        #   B0 = eta (re1 - eta re2) / [(1+eta)(1-eta)^2 Re_ref]
+        derived_params.ccf_A = (re2 - eta * re1) / ((1 + eta) * re_ref)
+        derived_params.ccf_B = (
+            eta * (re1 - eta * re2) / ((1 + eta) * (1 - eta) ** 2 * re_ref)
+        )
+        derived_params.ly = 2 * r2  # cosmetic (unread by wall-bounded)
+        # Force a full 2*pi azimuthal extent (integer harmonics).
+        params.geo.lz = 2 * pi
+        # Annular area normalisation: volume_fac = int_{r1}^{r2} r dr.
+        derived_params.volume_fac = (r2**2 - r1**2) / 2
     else:
         raise NotImplementedError
 
