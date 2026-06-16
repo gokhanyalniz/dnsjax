@@ -77,7 +77,7 @@ def main() -> None:
         dest="n_operators",
         help="Number of SPIKE operator equivalents: "
         "2 for Cartesian (1 Lk + 1 Hk, default), "
-        "4 for cylindrical (1 Lk + 3 stacked Hk).",
+        "4 for cylindrical/annular (1 Lk + 3 stacked Hk).",
     )
     args = ap.parse_args()
 

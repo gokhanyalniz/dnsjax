@@ -69,6 +69,29 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
         1,
     ),
     ("periodic serial", "kolmogorov", "periodic", "serial", 1, 1, 1, 1),
+    # ── other wall-bounded geometries (same `walled` on-disk path) ──
+    ("pipe", "pipe", "walled", "concurrent", 1, 1, 1, 1),
+    ("pipe np 1->2", "pipe", "walled", "concurrent", 1, 2, 1, 1),
+    (
+        "taylor-couette",
+        "taylor-couette",
+        "walled",
+        "concurrent",
+        1,
+        1,
+        1,
+        1,
+    ),
+    (
+        "taylor-couette np 1->2",
+        "taylor-couette",
+        "walled",
+        "concurrent",
+        1,
+        2,
+        1,
+        1,
+    ),
     # ── 2D (np0 > 1) ──
     ("walled 2D", "plane-couette", "walled", "concurrent", 4, 4, 2, 2),
     ("periodic 2D", "kolmogorov", "periodic", "concurrent", 4, 4, 2, 2),
@@ -159,6 +182,14 @@ def _worker(
     from dnsjax.parameters import padded_res, params
 
     params.phys.system = system
+    if system == "taylor-couette":
+        # Taylor-Couette needs inner/outer Reynolds numbers and a radius
+        # ratio set before the geometry singletons build; the snapshot
+        # round-trip itself is geometry-independent, so fixed values
+        # suffice (save and load workers reconstruct identically).
+        params.phys.re1 = 100.0
+        params.phys.re2 = 0.0
+        params.geo.eta = 0.5
     params.res.nx = NX
     params.res.ny = ny_override if ny_override is not None else NY
     params.res.nz = NZ
