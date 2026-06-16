@@ -70,26 +70,61 @@ def apply_y_matrix(mat: Array, field: Array) -> Array:
 
 
 def pad_base_flow(flow: object) -> None:
-    """Precompute the y-padded base flow used by the RHS path.
+    r"""Precompute the y-padded base flows used by the RHS path.
 
-    Sets ``flow.base_flow_padded`` and
-    ``flow.curl_base_flow_padded``: zero-padded along the
+    Sets ``flow.base_flow_padded``, ``flow.curl_base_flow_padded``,
+    and ``flow.base_flow_adv_padded``: zero-padded along the
     wall-normal axis by ``sharding.ny_y_pad`` rows (matching the
     physical-space fields of :mod:`dnsjax.fft`), so the RHS path
-    needs no per-call ``jnp.pad``.  When no padding is needed
-    the fields alias the originals (no extra memory; the padded
-    profiles are tiny ``(3, ny + pad, 1, 1)`` arrays otherwise).
+    needs no per-call ``jnp.pad``.  When no padding is needed the
+    fields alias the originals (no extra memory; the padded profiles
+    are tiny ``(3, ny + pad, 1, 1)`` arrays otherwise).
+
+    ``base_flow_adv_padded`` is the base velocity *as seen in the
+    moving frame of reference*, `$\mathbf{U} - U_{grid}\,
+    \hat{\mathbf{e}}_0$`, where component 0 is the grid-translation
+    direction (streamwise `$x$` for Cartesian, axial `$z$` for
+    cylindrical / annular).  It is the velocity that enters the
+    rotational nonlinear cross product
+    (:func:`dnsjax.rhs.get_nonlin`) and the CFL diagnostic
+    (:func:`dnsjax.measurements.get_cfl`).  Subtracting a constant
+    `$U_{grid}$` from the cross-product velocity slot is exactly
+    equivalent to adding the frame term `$+U_{grid}\,
+    \partial_{x_0}\mathbf{u}'$` to the RHS: for constant
+    `$\mathbf{c} = U_{grid}\hat{\mathbf{e}}_0$` the identity
+    `$(\mathbf{c}\cdot\nabla)\mathbf{u}'
+    = \boldsymbol{\omega}'\times\mathbf{c}
+    + \nabla(\mathbf{c}\cdot\mathbf{u}')$` splits it into the kept
+    rotational part `$\boldsymbol{\omega}'\times\mathbf{c}$` (the
+    change `$\mathbf{U}\times\boldsymbol{\omega}' \to
+    (\mathbf{U}-\mathbf{c})\times\boldsymbol{\omega}'$`) and a pure
+    gradient absorbed by the pressure projection.  ``curl_base_flow``
+    is frame-invariant (`$\nabla\times\mathbf{c} = 0$`).  When
+    `$U_{grid} = 0$` the field aliases ``base_flow_padded`` (the lab
+    frame, byte-identical to the pre-frame behaviour).
 
     Called by each flow subclass at the end of its
     ``__post_init__``, after ``base_flow`` is set.
     """
+    # Shift component 0 (grid direction) on the unpadded profile so
+    # the wall-normal padding rows stay zero.
+    u_grid = derived_params.u_grid
+    base_flow_adv = (
+        flow.base_flow if u_grid == 0 else flow.base_flow.at[0].add(-u_grid)
+    )
     if sharding.ny_y_pad:
         ypad = ((0, 0), (0, sharding.ny_y_pad), (0, 0), (0, 0))
         flow.base_flow_padded = jnp.pad(flow.base_flow, ypad)
         flow.curl_base_flow_padded = jnp.pad(flow.curl_base_flow, ypad)
+        flow.base_flow_adv_padded = (
+            flow.base_flow_padded
+            if u_grid == 0
+            else jnp.pad(base_flow_adv, ypad)
+        )
     else:
         flow.base_flow_padded = flow.base_flow
         flow.curl_base_flow_padded = flow.curl_base_flow
+        flow.base_flow_adv_padded = base_flow_adv
 
 
 # ── Mean-mode extraction ───────────────────────────────────────
