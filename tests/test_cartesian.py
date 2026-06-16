@@ -6,6 +6,7 @@ Tests cover:
    Fourier modes.
 2. ``_lk_matvec`` matches a NumPy reference on CGL and custom grids.
 3. ``_hk_minus_matvec`` matches a NumPy reference.
+4. ``get_norm2`` matches a manual Parseval/quadrature sum.
 
 Run as a script via ``uv run python tests/test_cartesian.py``.
 """
@@ -18,7 +19,7 @@ import jax
 
 jax.config.update("jax_enable_x64", True)
 
-from dnsjax.parameters import params  # noqa: E402
+from dnsjax.parameters import derived_params, params  # noqa: E402
 
 params.phys.system = "plane-couette"
 params.res.nx = 4
@@ -32,6 +33,7 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.fd import build_diff_matrices  # noqa: E402
+from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
     _build_Hk_blocks_gpu,
     _build_Hk_dense_gpu,
@@ -39,6 +41,7 @@ from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
     _build_Lk_dense_gpu,
     _hk_minus_matvec,
     _lk_matvec,
+    build_cartesian_grid,
     fourier,
 )
 from dnsjax.sharding import sharding  # noqa: E402
@@ -229,6 +232,37 @@ def test_lk_matvec_on_custom_grid() -> None:
             rtol=1e-10,
             err_msg=f"kz={kz}, kx={kx}",
         )
+
+
+def test_get_norm2_cartesian() -> None:
+    r"""``get_norm2`` matches a manual Parseval/quadrature sum.
+
+    Pins the spectral contraction: sum `$|u|^2$` over components and the
+    two periodic wavenumber axes with the real-FFT multiplicity
+    ``k_metric``, integrate over `$y$` with the CGL quadrature weights,
+    and normalise by ``derived_params.volume_fac``.
+    """
+    Ny = params.res.ny
+    Nkz = params.res.nz - 1
+    Nkx = params.res.nx // 2
+
+    _, _, _, y_weights = build_cartesian_grid(Ny, params.res.fd_order)
+
+    rng = np.random.default_rng(80)
+    s_shape = (3, Ny, Nkz, Nkx)
+    state_np = rng.standard_normal(s_shape) + 1j * rng.standard_normal(s_shape)
+    state = jnp.asarray(state_np)
+
+    k_metric = fourier.k_metric
+    got = float(get_norm2(state, k_metric, y_weights))
+
+    # Manual reference mirroring ``get_inprod`` in _base.py.
+    k_metric_np = np.asarray(k_metric)
+    y_w_np = np.asarray(y_weights)
+    integrand = (np.abs(state_np) ** 2 * k_metric_np).sum(axis=(0, 2, 3))
+    ref = float(y_w_np @ integrand) / derived_params.volume_fac
+
+    assert_allclose(got, ref, atol=1e-12, err_msg="get_norm2 (cartesian)")
 
 
 # ── Runner ───────────────────────────────────────────────────────────
