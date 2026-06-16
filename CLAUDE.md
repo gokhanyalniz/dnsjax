@@ -16,6 +16,8 @@ Python >=3.14, `uv`, MPI (for multi-device runs).
 
 `uv run ruff check --fix`
 
+Line length is 79 for **all** lines (ruff `line-length = 79`, E501), not only docstrings/comments.
+
 ### Run tests
 
 Single file: `uv run python tests/test_cartesian.py`
@@ -127,7 +129,7 @@ On-device buffered stats, flushed periodically to `stats.dat`. The CFL diagnosti
 
 ### Snapshots
 
-Zarr3 format with 3 combined per-component files (np-agnostic resume at any `(np0, np1)` configuration). `_dnsjax_meta.json` stores simulation time, iteration, layout, grid, and full params. When the wall-normal grid differs from the snapshot's, the state is interpolated at load time (`_interpolate_if_needed` in `__main__.py`; interpolation methods in `fd.py`). See `snapshot.py` module docstring for on-disk layouts, I/O engines, memory, and write modes.
+Zarr3 format with 3 combined per-component files (np-agnostic resume at any `(np0, np1)` configuration). The stored state is the spectral **perturbation** `u'` only — the base flow lives in `flow.base_flow`, not the state, so a laminar snapshot is a zero array. `_dnsjax_meta.json` stores simulation time, iteration, layout, grid, and full params. When the wall-normal grid differs from the snapshot's, the state is interpolated at load time (`_interpolate_if_needed` in `__main__.py`; interpolation methods in `fd.py`). See `snapshot.py` module docstring for on-disk layouts, I/O engines, memory, and write modes.
 
 ### JAX-specific notes
 
@@ -143,6 +145,7 @@ Zarr3 format with 3 combined per-component files (np-agnostic resume at any `(np
 ## Scripts
 - `scripts/spike_partition_info.py`: display SPIKE block-partition trade-offs for a given resolution.
 - `scripts/random_field.py`: generate a random divergence-free perturbation and save as a zarr3 snapshot. Supports all flow systems (Cartesian wall-bounded, cylindrical, annular, triply-periodic). Uses `build_cartesian_grid` / `build_cylindrical_grid` / `build_annular_grid` from the geometry modules for grid/FD setup without constructing the full flow dataclass. Taylor-Couette needs `--re1 --re2 --eta`. Per-mode divergence-free enforcement uses NumPy loops (not JAX) to avoid tracing overhead; all other array work uses JAX. Run with `--test` for self-verification (divergence-free, wall BCs, norm, Hermitian symmetry, seed determinism); the self-test runs the block for the configured `--system` (cartesian, cylindrical, or annular).
+- `scripts/snapshot_import.py`: **library** (not a CLI) for converting an external simulator's velocity field (physical- or spectral-space, no dealiasing padding, layout `[component, streamwise, wall-normal, spanwise]`) into a dnsjax zarr3 snapshot, for import into future per-simulator CLIs. Public API: `configure_target` (JAX/params singleton setup, one system per process like `random_field.py`), `to_spectral_state`, `write_snapshot`, `convert_field_to_snapshot`, `validate_state`. Stores the field on the supplied wall-normal grid (recorded in metadata, interpolated at load). **Perturbation only** — no base-flow subtraction; input must already be a perturbation. For pipe/TC it forms `u_± = u_r ± i u_θ` and follows dnsjax's axial→`nx`/azimuthal→`nz` mapping (so for Taylor-Couette streamwise resolution is `nz`, spanwise `nx`). See the module docstring for the per-system layout tables, the FFT/normalization algorithm, and the `real_axis`/`input_norm` options for spectral input.
 
 ## Tests
 All to be kept up-to-date as the respective modules change:
@@ -154,5 +157,6 @@ All to be kept up-to-date as the respective modules change:
 - `tests/test_mean_mask.py` checks that padding slots carry nonzero placeholder wavenumbers and `Fourier.mean_mask` is the unique k^2 = 0 (mean) mode under forced spectral padding (subprocess, forced CPU devices).
 - `tests/test_laminar_smoke.py` runs all wall-bounded flows from laminar state (via subprocess/mpirun) checking stepping error, perturbation energy, and the `steps.dat` CFL columns against analytic laminar values. Each subprocess runs in a temp dir: `parameters.toml` is not loaded (model defaults + CLI args only).
 - `tests/test_snapshot.py` round-trips snapshots (save/load equality, np-agnostic resume, `load_y_slice`) for all on-disk layouts via the host I/O path (subprocess per system/device-count, multi-device via forced CPU devices).
+- `tests/test_snapshot_import.py` validates `scripts/snapshot_import.py` (subprocess per geometry family): single-mode placement (axis mapping, component basis incl. the TC axial/azimuthal swap, normalization), mode order vs the `fourier` singleton, `u_±` mixing, spectral-input round-trips (both `real_axis`, several `input_norm`), and snapshot save/load. Offline (no `mpirun`).
 - In-process geometry tests (`test_{cartesian,cylindrical,annular}.py`) build their `flow`/`fourier` singletons **once** from a module-top `update_parameters()`; a test that re-calls `update_parameters()` mutates the shared `params`/`derived_params` (the singletons keep the import-time config, so read a re-derived value off `derived_params`, not `flow.*`) and must restore the module config before returning (tests run in definition order, so an unrestored mutation leaks into later tests).
 - Any test exercising `taylor-couette` must set `params.phys.re1`/`re2` and `params.geo.eta` (suite-standard `100`/`0`/`0.5`) before resolution derivation / singleton construction — all three default to `None` and the TC branch of `update_parameters()` raises otherwise.
