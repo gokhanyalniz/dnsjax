@@ -31,6 +31,8 @@ Documented in the `cylindrical.py` module docstring: decoupled `u+`/`u-` velocit
 
 ### Annular geometry
 
+Fourier slot mapping (cylindrical and annular): `nx`→axial (real-FFT `k_z`), `nz`→azimuthal (complex `m`), `ny`→radial. So for Taylor-Couette the streamwise (azimuthal) resolution is `nz` and spanwise (axial) is `nx` — swapped vs. the Cartesian `nx`=streamwise convention (see the `Fourier` coordinate-mapping tables in `annular.py`/`cylindrical.py`).
+
 Documented in the `annular.py` module docstring: the same decoupled `u+`/`u-` formulation and azimuthal/axial Fourier layout as cylindrical, but with **two walls** and **no `r=0` axis** (`r1 > 0`). Consequences: a single CGL grid affinely mapped to `[r1, r2]` (no parity-reduced FD, no ghost matrices, no `m_is_even` operator selection), Dirichlet/Neumann BCs at both walls, and a **2x2 influence matrix** (the cylindrical `u+`/`u-` divergence and pressure gradient combined with the Cartesian two-wall Schur reduction). Shear-driven (no mean pressure gradient): base coupling enters only through `base_flow`/`curl_base_flow` in the rotational-form `rhs.py` (no hand-coded coupling terms); the optional `block_mean_spanwise_velocity` zeroes the mean **axial** velocity. The mean mode keeps `u_r ≡ 0` (continuity + both no-slip walls) with `M_inv = 0` there (the wall divergence residual vanishes, so the IMM correction does too).
 
 ### Custom wall-normal grids
