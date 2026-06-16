@@ -360,12 +360,16 @@ def _generate_cylindrical(args: argparse.Namespace):
     r"""Generate a random perturbation for pipe flow.
 
     Returns a JAX array of shape ``(3, Nr, Nm, Nkz)`` in
-    `$(u_z, u_+, u_-)$` form.
+    `$(u_z, u_+, u_-)$` form, with no-slip at the wall `$r = 1$`.
 
     For `$k_z \neq 0$` modes the field is divergence-free by
-    construction.  For `$k_z = 0$` modes a small residual
-    divergence may remain; the first corrector step of the
-    solver projects it out via the IMM.
+    construction (`$u_z$` derived from continuity, with the near-wall
+    `$u_\pm$` point adjusted so `$D_1 u_r = 0$` at the wall `$r = 1$`,
+    so the derived `$u_z$` inherits an exact zero wall value).  The
+    inner end `$r = 0$` is the axis (regularity via parity), not a
+    wall.  For `$k_z = 0$` modes a small residual divergence may
+    remain; the first corrector step of the solver projects it out
+    via the IMM.
     """
     import jax
     from jax import numpy as jnp
@@ -425,12 +429,22 @@ def _generate_cylindrical(args: argparse.Namespace):
     # Enforce divergence-free for kz != 0 (NumPy loop).
     # Continuity: i*kz*uz + [D1(u+) + (m+1)*u+/r
     #                       + D1(u-) + (1-m)*u-/r] / 2 = 0
+    # The near-(outer-)wall interior point of u_+ and u_- is first
+    # adjusted so D1_pm @ u_pm = 0 at the wall r=1; since u_pm already
+    # vanish at the wall (wall window), D1_pm @ u_r = 0 there too, so
+    # the u_z derived from continuity inherits an exact zero wall
+    # value.  The inner end r=0 is the axis (regularity via parity),
+    # not a wall, so it needs no adjustment.
     for im in range(Nm):
         m_val = int(m_np[im])
         # u+, u-: parity (-1)^{m+1}
         D1_pm = D1_even_np if (m_val + 1) % 2 == 0 else D1_odd_np
 
         for ik in range(Nkz):
+            for comp in (1, 2):  # u_+, u_-
+                f = raw[comp, :, im, ik]
+                f[-2] += -(D1_pm[-1, :] @ f) / D1_pm[-1, -2]
+
             kz_val = kz_np[ik]
             if kz_val == 0:
                 continue
@@ -689,6 +703,7 @@ def _run_tests() -> None:
     from dnsjax.parameters import (
         annular_systems,
         cartesian_systems,
+        cylindrical_systems,
         params,
     )
 
@@ -875,9 +890,101 @@ def _run_tests() -> None:
         det_err = float(jnp.max(jnp.abs(state - state2)))
         _check("seed determinism", det_err == 0.0, f"max diff = {det_err:.2e}")
 
+    elif system in cylindrical_systems:
+        print(f"Cylindrical ({system}):")
+        from dnsjax.geometries.wall_bounded.cylindrical import (
+            build_cylindrical_grid,
+            fourier,
+            get_norm2_cyl,
+        )
+
+        state = _generate_cylindrical(args)
+        state_np = np.asarray(state)
+
+        Nm = params.res.nz - 1
+        Nkz = params.res.nx // 2
+        rs, D1_even, D1_odd, _, y_weights, inv_r = build_cylindrical_grid(
+            params.res.ny, params.res.fd_order, params.geo.wall_grid
+        )
+        D1_even_np = np.asarray(D1_even)
+        D1_odd_np = np.asarray(D1_odd)
+        inv_r_np = np.asarray(inv_r)
+        kz_np = np.asarray(fourier.kz).ravel()
+        m_np = np.asarray(fourier.m).ravel()
+
+        # Divergence-free for kz != 0 (kz = 0 modes carry a residual
+        # divergence projected out by the first corrector step).  The
+        # radial-derivative operator is parity-selected: u_pm have
+        # parity (-1)^{m+1}.
+        max_div = 0.0
+        for im in range(Nm):
+            m_val = int(m_np[im])
+            D1_pm = D1_even_np if (m_val + 1) % 2 == 0 else D1_odd_np
+            for ik in range(Nkz):
+                kz_v = kz_np[ik]
+                if kz_v == 0:
+                    continue
+                up = state_np[1, :, im, ik]
+                um = state_np[2, :, im, ik]
+                div_r = (
+                    D1_pm @ up
+                    + (m_val + 1) * inv_r_np * up
+                    + D1_pm @ um
+                    + (1 - m_val) * inv_r_np * um
+                ) / 2.0
+                div = 1j * kz_v * state_np[0, :, im, ik] + div_r
+                max_div = max(max_div, float(np.max(np.abs(div))))
+        _check(
+            "divergence-free (kz!=0)",
+            max_div < 1e-10,
+            f"max |div| = {max_div:.2e}",
+        )
+
+        # Wall BC (outer wall r=1 only; the inner end r=0 is the axis,
+        # governed by parity/regularity, not a Dirichlet BC).
+        bc_err = float(np.max(np.abs(state_np[:, -1])))
+        _check("wall BC (r=1)", bc_err < 1e-13, f"max |BC| = {bc_err:.2e}")
+
+        # Norm.
+        norm = float(
+            jnp.sqrt(get_norm2_cyl(state, fourier.k_metric, y_weights))
+        )
+        norm_err = abs(norm - args.amplitude) / args.amplitude
+        _check(
+            "norm matches target",
+            norm_err < 1e-12,
+            f"|norm - target| / target = {norm_err:.2e}",
+        )
+
+        # Mean mode zero.
+        mean_err = float(np.max(np.abs(state_np[:, :, 0, 0])))
+        _check(
+            "mean mode zero", mean_err < 1e-30, f"max |mean| = {mean_err:.2e}"
+        )
+
+        # Hermitian symmetry at kz=0 (over the azimuthal m axis).
+        n_pos = params.res.nz // 2
+        sym_err = 0.0
+        for i in range(1, n_pos):
+            j = Nm - i
+            diff = state_np[:, :, j, 0] - np.conj(state_np[:, :, i, 0])
+            sym_err = max(sym_err, float(np.max(np.abs(diff))))
+        kz0_imag = float(np.max(np.abs(state_np[:, :, 0, 0].imag)))
+        sym_err = max(sym_err, kz0_imag)
+        _check(
+            "Hermitian symmetry at kz=0",
+            sym_err < 1e-14,
+            f"max sym error = {sym_err:.2e}",
+        )
+
+        # Seed determinism.
+        state2 = _generate_cylindrical(args)
+        det_err = float(jnp.max(jnp.abs(state - state2)))
+        _check("seed determinism", det_err == 0.0, f"max diff = {det_err:.2e}")
+
     else:
         print(
-            f"  (self-test implemented for cartesian and annular systems; "
+            f"  (self-test implemented for the wall-bounded systems; "
             f"'{system}' skipped)"
         )
 

@@ -34,8 +34,10 @@ NY = 9
 CASES = [
     ("cartesian kz-pad", "plane-couette", 4, 4, 2, 1),
     ("cylindrical kz-pad", "pipe", 4, 4, 2, 1),
+    ("annular kz-pad", "taylor-couette", 4, 4, 2, 1),
     ("cartesian both-pad", "plane-couette", 6, 4, 2, 2),
     ("cylindrical both-pad", "pipe", 6, 4, 2, 2),
+    ("annular both-pad", "taylor-couette", 6, 4, 2, 2),
 ]
 
 
@@ -52,6 +54,13 @@ def _worker(system: str, nx: int, nz: int, np0: int, np1: int) -> None:
     from dnsjax.parameters import padded_res, params
 
     params.phys.system = system
+    if system == "taylor-couette":
+        # Taylor-Couette needs inner/outer Reynolds numbers and a
+        # radius ratio; their values do not affect the mask (which
+        # depends only on resolution/wavenumbers), so fix them here.
+        params.phys.re1 = 100.0
+        params.phys.re2 = 0.0
+        params.geo.eta = 0.5
     params.res.nx = nx
     params.res.ny = NY
     params.res.nz = nz
@@ -76,8 +85,13 @@ def _worker(system: str, nx: int, nz: int, np0: int, np1: int) -> None:
     assert sharding.nx_spec_pad == pad1, sharding.nx_spec_pad
     assert pad0 > 0  # every case forces at least kz/m padding
 
-    if system == "pipe":
-        from dnsjax.geometries.wall_bounded.cylindrical import fourier
+    if system in ("pipe", "taylor-couette"):
+        # Cylindrical and annular share the decoupled azimuthal/axial
+        # Fourier layout (m on the kz axis, kz on the kx axis).
+        if system == "pipe":
+            from dnsjax.geometries.wall_bounded.cylindrical import fourier
+        else:
+            from dnsjax.geometries.wall_bounded.annular import fourier
 
         w0 = np.asarray(fourier.m).ravel()  # (nz_spec,)
         w1 = np.asarray(fourier.kz).ravel()  # (nx_spec,)
