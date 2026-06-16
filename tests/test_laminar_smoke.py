@@ -7,11 +7,16 @@ time steps at low resolution, verifying that:
 - The stepping error is `$O(10^{-18})$` or less.
 - The perturbation energy stays at `$O(10^{-32})$` or less.
 - The CFL diagnostic (``steps.dat``, written every
-  ``it_steps = 1`` steps) matches the laminar base flow: for
-  the Cartesian flows `$\\mathrm{CFL}_x
-  = \\Delta t \\, \\max|U_x| \\, n_x / l_x$` exactly (the
-  wall-normal and spanwise columns are roundoff-sized), for
-  the pipe `$0 < \\mathrm{CFL}_z < \\Delta t \\, n_x / l_x$`.
+  ``it_steps = 1`` steps) matches the laminar base flow in the
+  (default) moving frame of reference: the active grid-direction
+  column is `$\\Delta t \\, \\max|U - U_{grid}| \\, n / l$` and the
+  remaining columns are roundoff-sized.  ``phys.u_grid`` defaults to
+  the laminar bulk velocity, so the active CFL is `$\\max|U_x| = 1$`
+  for plane-Couette (`$U_{grid} = 0$`), `$2/3$` of it for
+  plane-Poiseuille (`$U_{grid} = 2/3$`, max at the walls), `$1/2$` of
+  it for the pipe (`$U_{grid} = 1/2$`, max at the `$r = 1$` wall), and
+  the azimuthal `$\\max|U_\\theta/r| = 1$` for Taylor-Couette
+  (`$U_{grid} = 0$`).
 
 Each system is tested in a separate subprocess because the
 geometry modules capture global singletons at import time.
@@ -278,6 +283,14 @@ SMOKE_LX = 4.0
 SMOKE_N_STEPS = 4  # max_sim_time 0.04 / dt 0.01
 # Spectral-grid spacing convention: Delta_x = lx / nx.
 CFL_X_LAMINAR = SMOKE_DT * SMOKE_NX / SMOKE_LX
+# Moving-frame laminar CFL in the grid direction.  phys.u_grid defaults
+# to the laminar bulk velocity, so pipe / Poiseuille evolve in a moving
+# frame and the active CFL measures dt * max|U - U_grid| * n / l:
+#   pipe:        max|(1 - r^2) - 1/2| = 1/2 at the r = 1 wall node.
+#   Poiseuille:  max|(1 - y^2) - 2/3| = 2/3 at the y = +/-1 walls.
+# Couette keeps U_grid = 0 (max|y| = 1), i.e. the unchanged CFL_X_LAMINAR.
+CFL_GRID_LAMINAR_PIPE = 0.5 * CFL_X_LAMINAR
+CFL_GRID_LAMINAR_POISEUILLE = (2.0 / 3.0) * CFL_X_LAMINAR
 # Taylor-Couette laminar azimuthal CFL: dt * max(U_theta/r) * nz/(2 pi)
 # (theta period is the literal 2*pi).  For re1=100, re2=0, eta=0.5 the
 # maximum of U_theta/r is 1, at the inner wall r1 = 1 where
@@ -366,6 +379,20 @@ def _check_steps_file(workdir: Path, name: str) -> None:
     # azimuthal CFL_th column (2) for the Taylor-Couette base flow.
     active_i = 2 if annular else 0
 
+    # Expected active CFL = dt * max|U_adv| * n / l, with U_adv the
+    # moving-frame advecting base flow (see module docstring).  The
+    # maxima are attained exactly at grid nodes, so the comparison is
+    # tight: pipe at r = 1, Poiseuille at the walls, Couette at the
+    # walls, Taylor-Couette at the inner wall.
+    if annular:
+        expected_active = CFL_TH_LAMINAR_TC
+    elif cylindrical:
+        expected_active = CFL_GRID_LAMINAR_PIPE
+    elif name.startswith("plane-poiseuille"):
+        expected_active = CFL_GRID_LAMINAR_POISEUILLE
+    else:  # plane-couette (U_grid = 0)
+        expected_active = CFL_X_LAMINAR
+
     for row in rows:
         if not all(math.isfinite(v) and v >= 0.0 for v in row):
             raise AssertionError(f"{name}: bad steps.dat row {row}")
@@ -379,29 +406,10 @@ def _check_steps_file(workdir: Path, name: str) -> None:
             raise AssertionError(
                 f"{name}: nonzero perturbation CFL in row {row}"
             )
-        if cylindrical:
-            # max U_z = max (1 - r^2) < 1 on the half-CGL grid
-            # (r = 0 is not a node), but only barely below it.
-            if not 0.9 * CFL_X_LAMINAR < active < CFL_X_LAMINAR:
-                raise AssertionError(
-                    f"{name}: CFL_z {active} outside "
-                    f"(0.9, 1) x {CFL_X_LAMINAR}"
-                )
-        elif annular:
-            # max U_theta/r = 1 at the inner wall r1 = 1.
-            if abs(active - CFL_TH_LAMINAR_TC) > (
-                CFL_REL_TOL * CFL_TH_LAMINAR_TC
-            ):
-                raise AssertionError(
-                    f"{name}: CFL_th {active} != {CFL_TH_LAMINAR_TC}"
-                )
-        else:
-            # max |U_x| = 1: at the walls (Couette) or at the
-            # y = 0 node (Poiseuille; ny = 27 is odd).
-            if abs(active - CFL_X_LAMINAR) > CFL_REL_TOL * CFL_X_LAMINAR:
-                raise AssertionError(
-                    f"{name}: CFL_x {active} != {CFL_X_LAMINAR}"
-                )
+        if abs(active - expected_active) > CFL_REL_TOL * expected_active:
+            raise AssertionError(
+                f"{name}: active CFL {active} != {expected_active}"
+            )
         if abs(total - active) > CFL_REL_TOL * active:
             raise AssertionError(
                 f"{name}: CFL total {total} != active {active}"

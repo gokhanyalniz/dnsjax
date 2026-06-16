@@ -97,6 +97,8 @@ The two geometry families are **completely independent**. The directory structur
 
 **Perturbation formulation**: the solver evolves `u'` around laminar `U(y)`. The rotational-form nonlinear term and base-flow gradient elimination are documented in the `rhs.py` module docstring.
 
+**Moving frame of reference**: `phys.u_grid` translates the wall-bounded frame along the grid direction (`∂_t → ∂_t − U_grid ∂_grid`). It is treated *explicitly* by advecting with `U − U_grid ê₀` (physical component 0) in both the rotational nonlinear term and the CFL diagnostic — the precomputed `base_flow_adv_padded` (see `geometries/wall_bounded/_base.py` `pad_base_flow`, which documents the rotational-form identity). Lowers the advective CFL and de-advects snapshots; the stored `u'` and all stats are frame-invariant.
+
 **JAX pytree registration**: `register_dataclass_pytree()` in `sharding.py` registers geometry dataclasses, flow subclasses, solver classes, and Fourier classes as JAX pytrees. See its docstring for details.
 
 ### Parameter layering
@@ -109,7 +111,7 @@ See `parameters.py` classes for full documentation. Key sections:
 
 | Section    | Key fields                                                                                             |
 |------------|--------------------------------------------------------------------------------------------------------|
-| `[phys]`   | `re`, `re1`/`re2` (Taylor-Couette inner/outer cylinder Reynolds numbers; derive `re := Re_ref`), `system`, `oversampling_factor`, `oversample_y`, `driving` (`"constant_pressure_gradient"` / `"constant_bulk_velocity"`), `block_mean_spanwise_velocity` (Taylor-Couette: blocks the mean axial velocity) |
+| `[phys]`   | `re`, `re1`/`re2` (Taylor-Couette inner/outer cylinder Reynolds numbers; derive `re := Re_ref`), `system`, `oversampling_factor`, `oversample_y`, `driving` (`"constant_pressure_gradient"` / `"constant_bulk_velocity"`), `block_mean_spanwise_velocity` (Taylor-Couette: blocks the mean axial velocity), `u_grid` (moving-frame speed along the grid direction -- streamwise `x` for Cartesian, axial `z` for cyl/annular; `None` -> laminar bulk: 1/2 pipe, 2/3 plane-Poiseuille, 0 otherwise; resolved onto `derived_params.u_grid`) |
 | `[geo]`    | `lx`, `lz`, `tilt_degree`, `eta` (Taylor-Couette radius ratio r1/r2), `wall_grid` (custom grid file), `grid_type` (`"tanh"` / `"cgl"`), `grid_stretch` |
 | `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`                                                      |
 | `[init]`   | `start_from_laminar`, `snapshot`, `t0`, `it0`                                                          |
@@ -152,7 +154,7 @@ All to be kept up-to-date as the respective modules change:
 - `tests/test_annular.py` contains annular (Taylor-Couette) operator/matvec tests, the 2x2 SPIKE-vs-dense parity, and circular-Couette coefficient (A0/B0) checks.
 - `tests/test_integration.py` contains quadrature weight tests.
 - `tests/test_mean_mask.py` checks that padding slots carry nonzero placeholder wavenumbers and `Fourier.mean_mask` is the unique k^2 = 0 (mean) mode under forced spectral padding (subprocess, forced CPU devices).
-- `tests/test_laminar_smoke.py` runs all wall-bounded flows from laminar state (via subprocess/mpirun) checking stepping error, perturbation energy, and the `steps.dat` CFL columns against analytic laminar values. Each subprocess runs in a temp dir: `parameters.toml` is not loaded (model defaults + CLI args only).
+- `tests/test_laminar_smoke.py` runs all wall-bounded flows from laminar state (via subprocess/mpirun) checking stepping error, perturbation energy, and the `steps.dat` CFL columns against analytic laminar values. Each subprocess runs in a temp dir: `parameters.toml` is not loaded (model defaults + CLI args only). Caveat: the laminar state has `u'=0`, so all `ω'`/`u'`-proportional terms vanish — this checks the base-flow fixed point, time-stepping, and CFL diagnostic but **not** the rotational nonlinear term (a wrong `rhs.py`/advection change can still report `err=0`). Validate such changes with a non-laminar run (e.g. a `scripts/random_field.py` IC), comparing a transform-invariant diagnostic (e.g. `E'`) across configs and confirming convergence as `dt → 0`.
 - `tests/test_snapshot.py` round-trips snapshots (save/load equality, np-agnostic resume, `load_y_slice`) for all on-disk layouts via the host I/O path (subprocess per system/device-count, multi-device via forced CPU devices).
 - In-process geometry tests (`test_{cartesian,cylindrical,annular}.py`) build their `flow`/`fourier` singletons **once** from a module-top `update_parameters()`; a test that re-calls `update_parameters()` mutates the shared `params`/`derived_params` (the singletons keep the import-time config, so read a re-derived value off `derived_params`, not `flow.*`) and must restore the module config before returning (tests run in definition order, so an unrestored mutation leaks into later tests).
 - Any test exercising `taylor-couette` must set `params.phys.re1`/`re2` and `params.geo.eta` (suite-standard `100`/`0`/`0.5`) before resolution derivation / singleton construction — all three default to `None` and the TC branch of `update_parameters()` raises otherwise.

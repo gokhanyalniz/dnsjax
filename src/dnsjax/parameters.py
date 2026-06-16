@@ -109,6 +109,16 @@ class Physics(BaseModel):
     # (z) direction (no axial bulk velocity); the azimuthal mean evolves
     # freely.  Independent of ``driving``.
     block_mean_spanwise_velocity: bool = False
+    # Speed U_grid of the moving frame of reference, translating along
+    # the homogeneous "grid" direction: streamwise x (Cartesian) or
+    # axial z (cylindrical / annular).  The time derivative becomes
+    # d/dt - U_grid d/dx_grid, i.e. +U_grid d/dx_grid u' is added to the
+    # RHS; this lowers the advective CFL and de-advects snapshots.  When
+    # ``None`` (default) it resolves to the laminar bulk velocity in the
+    # grid direction (1/2 pipe, 2/3 plane-Poiseuille, 0 otherwise); see
+    # ``update_parameters`` and ``derived_params.u_grid``.  Only
+    # meaningful for wall-bounded systems (periodic flows reject it).
+    u_grid: float | None = None
 
 
 class Geometry(BaseModel):
@@ -275,6 +285,8 @@ class DerivedParameters:
     ``ccf_A``, ``ccf_B`` are the circular-Couette base-flow coefficients
     ``U_theta = ccf_A * r + ccf_B / r`` and ``r_inner``, ``r_outer`` the
     non-dim annular radii (set for system == "taylor-couette").
+    ``u_grid`` is the resolved moving-frame speed (always a concrete
+    float; see ``params.phys.u_grid`` and ``update_parameters``).
     """
 
     ly: float = 4
@@ -287,6 +299,7 @@ class DerivedParameters:
     ccf_B: float = 0
     r_inner: float = 0
     r_outer: float = 0
+    u_grid: float = 0
 
 
 params: Parameters = Parameters()
@@ -375,6 +388,23 @@ def update_parameters(params_new: Parameters) -> None:
         derived_params.volume_fac = (r2**2 - r1**2) / 2
     else:
         raise NotImplementedError
+
+    # Resolve the moving-frame speed U_grid.  A user-set value wins (but
+    # the moving frame is only implemented for wall-bounded systems);
+    # otherwise default to the laminar bulk velocity in the grid
+    # direction so the mean advection is removed.
+    if params.phys.u_grid is not None:
+        if system in periodic_systems:
+            raise ValueError(
+                "phys.u_grid (moving frame) is only supported for "
+                "wall-bounded systems"
+            )
+        derived_params.u_grid = params.phys.u_grid
+    else:
+        derived_params.u_grid = {
+            "pipe": 0.5,
+            "plane-poiseuille": 2.0 / 3.0,
+        }.get(system, 0.0)
 
     # Select tilting parameters to exact precision for special angles
     if abs(params.geo.tilt_degree) == 0:

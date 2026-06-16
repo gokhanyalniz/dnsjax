@@ -11,6 +11,8 @@
 
 `build_wall_bounded_stepper()` in `_base.py` wraps `timestep.make_stepper()` and binds the `fourier` and `flow` singletons, returning `(predict_and_correct, iterate_correction, init_state_bound, predict_and_fully_correct, predict_and_fully_correct_measured)`. Each geometry module provides a thin `build_*_stepper(flow)` that passes geometry-specific callables to it, including the measured RHS variant (`_get_rhs_measured`, which computes the CFL via the `rhs.py` `measure_fn` hook from the per-flow `cfl_inv_spacing` profile).
 
+**Moving frame (`phys.u_grid`)**: both `_get_rhs_core` (nonlinear term) and `_get_rhs_measured` (CFL) advect with `flow.base_flow_adv_padded` = `U − U_grid ê₀` (physical component 0 = grid direction), *not* the lab-frame `base_flow_padded`. This realises the frame term `+U_grid ∂_grid u'` explicitly (rotational-form identity) and gives the frame-relative CFL with no change to `get_cfl`. `pad_base_flow` builds `base_flow_adv_padded` (aliasing `base_flow_padded` when `U_grid = 0`) and documents the identity; `curl_base_flow` is frame-invariant.
+
 ### Influence-matrix method (IMM)
 
 See `_imm_iteration` in `cartesian.py` for the full 9-stage algorithm, mathematical equivalence (Schur complement / Woodbury), and the optional constant-bulk-velocity and block-mean-spanwise-velocity corrections.

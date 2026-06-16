@@ -113,10 +113,16 @@ def get_nonlin(
         Perturbation velocity in spectral space,
         shape ``(3, *spec_shape)``.
     base_flow:
-        Base-flow velocity `$\mathbf{U}$` in physical space,
-        shape ``(3, ny_phys, 1, 1)`` where ``ny_phys`` is
-        ``ny_padded`` (periodic) or ``ny + ny_y_pad``
-        (wall-bounded).
+        Base-flow velocity `$\mathbf{U}$` used as the advecting
+        velocity in the cross product, in physical space, shape
+        ``(3, ny_phys, 1, 1)`` where ``ny_phys`` is ``ny_padded``
+        (periodic) or ``ny + ny_y_pad`` (wall-bounded).  In a moving
+        frame of reference the wall-bounded flows pass the
+        frame-relative value `$\mathbf{U} - U_{grid}\hat{\mathbf
+        {e}}_0$` here (component 0 is the translation direction);
+        this realises the frame term `$+U_{grid}\partial_{x_0}
+        \mathbf{u}'$` (see
+        :func:`dnsjax.geometries.wall_bounded._base.pad_base_flow`).
     curl_base_flow:
         `$\nabla \times \mathbf{U}$` in physical space,
         same shape.
