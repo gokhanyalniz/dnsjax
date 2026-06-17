@@ -24,6 +24,11 @@ where `$s$` is the ``--smoothness`` parameter and `$k_x, k_z$`
 are the physical wavenumbers.  The field is then normalised
 so that the volume-averaged L2 norm equals ``--amplitude``.
 
+**Dean flow** (``--system dean``) integrates the *total* field, so the
+generated divergence-free perturbation is added to the analytical laminar
+Dean profile (``dean_laminar_u_theta``, placed at the mean mode) to form
+the total-field IC; ``--amplitude`` still sets the perturbation norm.
+
 **Non-JAX operations**: The per-mode divergence-free
 enforcement (step 4) loops over Fourier modes and uses NumPy
 for the `$D_1 \mathbf{v}$` matvecs, because Python-level
@@ -60,6 +65,7 @@ def _parse_args() -> argparse.Namespace:
             "plane-poiseuille",
             "pipe",
             "taylor-couette",
+            "dean",
             "kolmogorov",
             "waleffe",
             "decaying-box",
@@ -598,6 +604,47 @@ def _generate_annular(args: argparse.Namespace):
     return state
 
 
+def _add_dean_laminar(state):
+    r"""Add the analytical laminar Dean profile to a perturbation.
+
+    Dean flow integrates the **total** velocity, so a usable initial
+    condition is the closed-form laminar azimuthal profile (placed at
+    the mean mode) plus the divergence-free random perturbation from
+    :func:`_generate_annular`.  The laminar profile is axisymmetric and
+    zero at both walls, so it preserves the perturbation's
+    divergence-free and no-slip properties.  Returns the total spectral
+    state in `$(u_z, u_+, u_-)$` form.
+    """
+    from jax import numpy as jnp
+
+    from dnsjax.geometries.wall_bounded.annular import (
+        build_annular_grid,
+        dean_laminar_u_theta,
+        fourier,
+    )
+    from dnsjax.parameters import derived_params, params
+    from dnsjax.sharding import sharding
+
+    rs, *_ = build_annular_grid(
+        params.res.ny,
+        params.res.fd_order,
+        derived_params.r_inner,
+        derived_params.r_outer,
+        params.geo.wall_grid,
+    )
+    u_theta = dean_laminar_u_theta(rs, params.geo.eta)  # (Nr,) real
+    # Place U_theta at the mean mode: u_+ = i U_theta, u_- = -i U_theta.
+    u_spec = jnp.where(fourier.mean_mask, u_theta[:, None, None], 0.0)
+    laminar = jnp.stack(
+        [
+            jnp.zeros_like(u_spec, dtype=sharding.complex_type),
+            (1j * u_spec).astype(sharding.complex_type),
+            (-1j * u_spec).astype(sharding.complex_type),
+        ]
+    )
+    return state + laminar
+
+
 # ── Triply-periodic generation ───────────────────────────────────
 
 
@@ -890,6 +937,21 @@ def _run_tests() -> None:
         det_err = float(jnp.max(jnp.abs(state - state2)))
         _check("seed determinism", det_err == 0.0, f"max diff = {det_err:.2e}")
 
+        # Dean total-field IC: the laminar profile (added to the
+        # perturbation) is axisymmetric and zero at both walls, so the
+        # total field must still satisfy no-slip.
+        if system == "dean":
+            total_np = np.asarray(_add_dean_laminar(state))
+            bc_err = max(
+                float(np.max(np.abs(total_np[:, 0]))),
+                float(np.max(np.abs(total_np[:, -1]))),
+            )
+            _check(
+                "dean total-field wall BCs",
+                bc_err < 1e-12,
+                f"max |BC| = {bc_err:.2e}",
+            )
+
     elif system in cylindrical_systems:
         print(f"Cylindrical ({system}):")
         from dnsjax.geometries.wall_bounded.cylindrical import (
@@ -1022,6 +1084,9 @@ def main() -> None:
         state = _generate_cylindrical(args)
     elif system in annular_systems:
         state = _generate_annular(args)
+        # Dean integrates the total field: add the laminar profile.
+        if system == "dean":
+            state = _add_dean_laminar(state)
     elif system in periodic_systems:
         state = _generate_triply_periodic(args)
     else:
@@ -1029,8 +1094,13 @@ def main() -> None:
         sys.exit(1)
 
     save_snapshot(state, t=0.0, it=0, path=args.output)
+    label = (
+        "Dean total-field IC (laminar + perturbation)"
+        if system == "dean"
+        else "random perturbation"
+    )
     sharding.print(
-        f"Saved random perturbation to {args.output}/\n"
+        f"Saved {label} to {args.output}/\n"
         f"  system={system}, "
         f"resolution=({args.nx}, {args.ny}, {args.nz}), "
         f"amplitude={args.amplitude}, "

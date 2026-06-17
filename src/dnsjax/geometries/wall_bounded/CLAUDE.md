@@ -5,7 +5,7 @@
 - `_base.py`: shared wall-bounded infrastructure (norms, integration, init_state, `build_wall_bounded_stepper`, `extract_mean_mode`)
 - `cartesian.py`: Cartesian geometry (Fourier, CGL grid, `CartesianFlow`, Kleiser-Schumann IMM, Lk/Hk operator builders)
 - `cylindrical.py`: cylindrical geometry (Fourier, half-CGL grid, `CylindricalFlow`, decoupled u+/u- formulation, parity-reduced FD, 1x1 IMM)
-- `annular.py`: annular geometry / concentric cylinders (Fourier, CGL grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2 IMM)
+- `annular.py`: annular geometry / concentric cylinders (Fourier, CGL grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2 IMM, optional mean-mode azimuthal body force `pi_theta`, `dean_laminar_u_theta`)
 
 ### Stepper factory (wall-bounded layer)
 
@@ -33,7 +33,9 @@ Documented in the `cylindrical.py` module docstring: decoupled `u+`/`u-` velocit
 
 Fourier slot mapping (cylindrical and annular): `nx`→axial (real-FFT `k_z`), `nz`→azimuthal (complex `m`), `ny`→radial. So for Taylor-Couette the streamwise (azimuthal) resolution is `nz` and spanwise (axial) is `nx` — swapped vs. the Cartesian `nx`=streamwise convention (see the `Fourier` coordinate-mapping tables in `annular.py`/`cylindrical.py`).
 
-Documented in the `annular.py` module docstring: the same decoupled `u+`/`u-` formulation and azimuthal/axial Fourier layout as cylindrical, but with **two walls** and **no `r=0` axis** (`r1 > 0`). Consequences: a single CGL grid affinely mapped to `[r1, r2]` (no parity-reduced FD, no ghost matrices, no `m_is_even` operator selection), Dirichlet/Neumann BCs at both walls, and a **2x2 influence matrix** (the cylindrical `u+`/`u-` divergence and pressure gradient combined with the Cartesian two-wall Schur reduction). Shear-driven (no mean pressure gradient): base coupling enters only through `base_flow`/`curl_base_flow` in the rotational-form `rhs.py` (no hand-coded coupling terms); the optional `block_mean_spanwise_velocity` zeroes the mean **axial** velocity. The mean mode keeps `u_r ≡ 0` (continuity + both no-slip walls) with `M_inv = 0` there (the wall divergence residual vanishes, so the IMM correction does too).
+Documented in the `annular.py` module docstring: the same decoupled `u+`/`u-` formulation and azimuthal/axial Fourier layout as cylindrical, but with **two walls** and **no `r=0` axis** (`r1 > 0`). Consequences: a single CGL grid affinely mapped to `[r1, r2]` (no parity-reduced FD, no ghost matrices, no `m_is_even` operator selection), Dirichlet/Neumann BCs at both walls, and a **2x2 influence matrix** (the cylindrical `u+`/`u-` divergence and pressure gradient combined with the Cartesian two-wall Schur reduction). The optional `block_mean_spanwise_velocity` zeroes the mean **axial** velocity. The mean mode keeps `u_r ≡ 0` (continuity + both no-slip walls) with `M_inv = 0` there (the wall divergence residual vanishes, so the IMM correction does too).
+
+The family supports two driving modes via the same infrastructure (see the `annular.py` module docstring): **shear-driven** Taylor-Couette (rotating walls, integrate the perturbation `u'`; base coupling only via `base_flow`/`curl_base_flow` in the rotational-form `rhs.py`, no hand-coded coupling terms), and **force-driven** Dean flow (stationary walls, integrate the **total** field with `base_flow = curl_base_flow = 0`, driven by a mean-mode azimuthal body force `AnnularFlow.pi_theta` added in `_get_rhs_core`). The radial centripetal nonlinear term of an axisymmetric azimuthal mean is purely `u_r` at the mean mode, so the existing IMM routes it into pressure (zeroing `u_r`) with no effect on `u_θ` — the Dean laminar profile is preserved up to FD truncation with no special-casing.
 
 ### Custom wall-normal grids
 
@@ -55,6 +57,7 @@ FD matvecs via `apply_y_matrix` batch over the leading component axis (a pure ba
 - `flows/wall_bounded/plane_poiseuille.py`: PlanePoiseuilleFlow(CartesianFlow) -- base flow Us = 1-y^2 with tilt
 - `flows/wall_bounded/pipe.py`: PipeFlow(CylindricalFlow) -- base flow Uz = 1 - r^2
 - `flows/wall_bounded/taylor_couette.py`: TaylorCouetteFlow(AnnularFlow) -- circular-Couette base flow Uθ = A0 r + B0/r from `(re1, re2, eta)`; shear-driven stats (I_lam = D_lam = 4 B0^2 / (Re r1^2 r2^2))
+- `flows/wall_bounded/dean.py`: DeanFlow(AnnularFlow) -- force-driven Dean flow from `(re, eta)`, azimuthal body force `Π_θ = (2η+2)/(r Re (1−η))`; integrates the **total** field (`base_flow = curl_base_flow = 0`, `pi_theta` set), `start_from_laminar` uses the analytical `dean_laminar_u_theta`; total-field stats (E, I, D, `dU` deviation-from-laminar, wall stresses, bulk velocities — no `E'`)
 
 ### Tests
 
@@ -63,4 +66,4 @@ FD matvecs via `apply_y_matrix` batch over the leading component axis (a pure ba
 - `tests/test_annular.py`: annular operator/matvec tests, 2x2 SPIKE-vs-dense parity, circular-Couette A0/B0 coefficient checks
 - `tests/test_integration.py`: quadrature weight and interpolation matrix tests
 - `tests/test_mean_mask.py`: placeholder padding wavenumbers and `mean_mask` as the unique k^2 = 0 mode under forced spectral padding
-- `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows (incl. taylor-couette)
+- `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows (incl. taylor-couette and dean; Dean is total-field, so it checks the deviation `dU` from the analytical laminar profile, corrector convergence, energy balance `I ≈ D`, and near-steady energy instead of `E'`/O(1e-18))

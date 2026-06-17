@@ -18,6 +18,13 @@ time steps at low resolution, verifying that:
   the azimuthal `$\\max|U_\\theta/r| = 1$` for Taylor-Couette
   (`$U_{grid} = 0$`).
 
+Dean flow is force-driven and integrates the **total** field, so it is
+checked differently (there is no `$E'$`): started from the *analytical*
+laminar profile, the deviation from that profile ``dU`` stays tiny, the
+corrector still converges (``err`` `$O(10^{-14})$`), the energy balance
+`$I \\approx D$` holds, and the total energy is near-steady.  Its
+azimuthal ``CFL_th`` is the active column (radial / axial are roundoff).
+
 Each system is tested in a separate subprocess because the
 geometry modules capture global singletons at import time.
 Each subprocess runs in its own temporary directory, so
@@ -265,6 +272,54 @@ SYSTEMS: list[dict] = [
             "27",
         ],
     },
+    {
+        "name": "dean",
+        "args": [
+            "--phys.system",
+            "dean",
+            "--geo.eta",
+            "0.5",
+            "--phys.re",
+            "100",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nx",
+            "4",
+            "--res.nz",
+            "4",
+            "--res.ny",
+            "27",
+        ],
+    },
+    {
+        "name": "dean-block-spanwise",
+        "args": [
+            "--phys.system",
+            "dean",
+            "--geo.eta",
+            "0.5",
+            "--phys.re",
+            "100",
+            "--phys.block_mean_spanwise_velocity",
+            "True",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nx",
+            "4",
+            "--res.nz",
+            "4",
+            "--res.ny",
+            "27",
+        ],
+    },
 ]
 
 ERR_PATTERN = re.compile(r"err\s*=\s*([\d.eE+\-]+)")
@@ -272,6 +327,22 @@ EP_PATTERN = re.compile(r"E'\s*=\s*([\d.eE+\-]+)")
 
 ERR_THRESHOLD = 1e-14
 EP_THRESHOLD = 1e-28
+
+# Dean-flow diagnostics (total-field, analytical near-steady laminar
+# profile).  ``\b`` + uppercase isolates the E / I / D keys from E',
+# Ub_*, tau_*, and the lowercase 'e' of scientific notation.
+DU_PATTERN = re.compile(r"\bdU\s*=\s*([\d.eE+\-]+)")
+E_PATTERN = re.compile(r"\bE\s*=\s*([\d.eE+\-]+)")
+I_PATTERN = re.compile(r"\bI\s*=\s*([\d.eE+\-]+)")
+D_PATTERN = re.compile(r"\bD\s*=\s*([\d.eE+\-]+)")
+
+# Deviation from the analytical laminar Dean profile (observed ~6e-9 at
+# ny=27, fd_order=4); the energy balance |I-D|/D (~8e-6) and total-energy
+# drift (~3e-8).  Margins are generous so the checks are robust but still
+# catch a wrong forcing sign/magnitude (which give O(1) departures).
+DEAN_DU_THRESHOLD = 1e-6
+DEAN_IB_TOL = 1e-3
+DEAN_E_DRIFT_TOL = 1e-4
 
 # Values shared by every smoke system (dt and lx are the
 # parameter-model defaults; the subprocesses run in temporary
@@ -353,7 +424,8 @@ def _check_steps_file(workdir: Path, name: str) -> None:
     # ("t" is always written first by ``_flush_stats``).
     cylindrical = name.startswith("pipe")
     annular = name.startswith("taylor-couette")
-    if cylindrical or annular:
+    dean = name.startswith("dean")
+    if cylindrical or annular or dean:
         per_dir = ("CFL_z", "CFL_r", "CFL_th")
     else:
         per_dir = ("CFL_x", "CFL_y", "CFL_z")
@@ -376,15 +448,20 @@ def _check_steps_file(workdir: Path, name: str) -> None:
 
     # Index of the laminar (base-flow) direction within ``per_dir``:
     # the streamwise/axial column (0) for Cartesian and pipe, but the
-    # azimuthal CFL_th column (2) for the Taylor-Couette base flow.
-    active_i = 2 if annular else 0
+    # azimuthal CFL_th column (2) for the annular (Taylor-Couette /
+    # Dean) base flow.
+    active_i = 2 if (annular or dean) else 0
 
     # Expected active CFL = dt * max|U_adv| * n / l, with U_adv the
     # moving-frame advecting base flow (see module docstring).  The
     # maxima are attained exactly at grid nodes, so the comparison is
     # tight: pipe at r = 1, Poiseuille at the walls, Couette at the
-    # walls, Taylor-Couette at the inner wall.
-    if annular:
+    # walls, Taylor-Couette at the inner wall.  Dean has no simple
+    # analytic laminar CFL, so its active column is instead checked to
+    # be positive and constant across steps (near-steady) below.
+    if dean:
+        expected_active = None
+    elif annular:
         expected_active = CFL_TH_LAMINAR_TC
     elif cylindrical:
         expected_active = CFL_GRID_LAMINAR_PIPE
@@ -393,20 +470,22 @@ def _check_steps_file(workdir: Path, name: str) -> None:
     else:  # plane-couette (U_grid = 0)
         expected_active = CFL_X_LAMINAR
 
+    active_vals = []
     for row in rows:
         if not all(math.isfinite(v) and v >= 0.0 for v in row):
             raise AssertionError(f"{name}: bad steps.dat row {row}")
         vals = [row[col[d]] for d in per_dir]
         total = row[col["CFL"]]
         active = vals[active_i]
-        # Perturbation-only columns: roundoff-sized for the laminar
-        # state (not exactly zero after the first step).
+        active_vals.append(active)
+        # Off-axis columns: roundoff-sized for the laminar state (not
+        # exactly zero after the first step).
         roundoff = [v for i, v in enumerate(vals) if i != active_i]
         if any(v > CFL_ZERO_TOL for v in roundoff):
-            raise AssertionError(
-                f"{name}: nonzero perturbation CFL in row {row}"
-            )
-        if abs(active - expected_active) > CFL_REL_TOL * expected_active:
+            raise AssertionError(f"{name}: nonzero off-axis CFL in row {row}")
+        if expected_active is not None and (
+            abs(active - expected_active) > CFL_REL_TOL * expected_active
+        ):
             raise AssertionError(
                 f"{name}: active CFL {active} != {expected_active}"
             )
@@ -414,6 +493,77 @@ def _check_steps_file(workdir: Path, name: str) -> None:
             raise AssertionError(
                 f"{name}: CFL total {total} != active {active}"
             )
+
+    if dean:
+        # Near-steady: azimuthal CFL positive and constant across steps.
+        a_min, a_max = min(active_vals), max(active_vals)
+        if a_min <= 0.0:
+            raise AssertionError(f"{name}: non-positive azimuthal CFL {a_min}")
+        if a_max - a_min > CFL_REL_TOL * a_max:
+            raise AssertionError(
+                f"{name}: azimuthal CFL not constant ([{a_min}, {a_max}])"
+            )
+
+
+def _check_dean(stdout: str, name: str) -> tuple[float, float]:
+    """Validate a Dean (analytical near-steady laminar) run.
+
+    Dean integrates the total field, so there is no ``E'``; the error
+    metric is the deviation ``dU`` from the analytical laminar profile,
+    alongside corrector convergence (``err``), the energy balance
+    ``I ~= D``, and a near-steady total energy ``E``.  Returns
+    ``(last_err, last_dU)`` for the PASS summary.
+    """
+    last_err: float | None = None
+    dU_vals: list[float] = []
+    e_vals: list[float] = []
+    i_vals: list[float] = []
+    d_vals: list[float] = []
+    for line in stdout.splitlines():
+        m = ERR_PATTERN.search(line)
+        if m:
+            last_err = float(m.group(1))
+        for pat, acc in (
+            (DU_PATTERN, dU_vals),
+            (E_PATTERN, e_vals),
+            (I_PATTERN, i_vals),
+            (D_PATTERN, d_vals),
+        ):
+            m = pat.search(line)
+            if m:
+                acc.append(float(m.group(1)))
+
+    if last_err is None or not (dU_vals and e_vals and i_vals and d_vals):
+        raise AssertionError(f"{name}: could not parse Dean diagnostics")
+
+    if last_err > ERR_THRESHOLD:
+        raise AssertionError(
+            f"{name}: stepping error {last_err:.3e} > {ERR_THRESHOLD:.0e}"
+        )
+
+    last_dU = dU_vals[-1]
+    if last_dU > DEAN_DU_THRESHOLD:
+        raise AssertionError(
+            f"{name}: deviation from laminar {last_dU:.3e} "
+            f"> {DEAN_DU_THRESHOLD:.0e}"
+        )
+
+    last_i, last_d = i_vals[-1], d_vals[-1]
+    if last_i <= 0.0 or last_d <= 0.0:
+        raise AssertionError(
+            f"{name}: non-positive I={last_i:.3e} or D={last_d:.3e}"
+        )
+    if abs(last_i - last_d) > DEAN_IB_TOL * last_d:
+        raise AssertionError(
+            f"{name}: energy balance off: I={last_i:.6e}, D={last_d:.6e}"
+        )
+
+    if abs(e_vals[-1] - e_vals[0]) > DEAN_E_DRIFT_TOL * e_vals[0]:
+        raise AssertionError(
+            f"{name}: energy drift {e_vals[0]:.6e} -> {e_vals[-1]:.6e}"
+        )
+
+    return last_err, last_dU
 
 
 # ── test runner ──────────────────────────────────────────────────────
@@ -440,6 +590,12 @@ def run_smoke_test(system: dict, np_count: int, np0: int = 1) -> None:
             raise AssertionError(
                 f"{name} exited with code {result.returncode}"
             )
+
+        if name.startswith("dean"):
+            last_err, last_dU = _check_dean(result.stdout, name)
+            _check_steps_file(Path(workdir), name)
+            print(f"  PASS  {name}  (err={last_err:.2e}, dU={last_dU:.2e})")
+            return
 
         last_err, last_ep = _parse_diagnostics(result.stdout)
 

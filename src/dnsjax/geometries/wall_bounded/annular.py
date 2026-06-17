@@ -55,21 +55,32 @@ wall) -- the same structure as the Cartesian Kleiser-Schumann method, but
 with the cylindrical `$u_\pm$` divergence and pressure-gradient operators.
 See :func:`_imm_iteration`.
 
-Base flow and driving
----------------------
-The flow is **shear-driven** by the rotating walls (no mean axial
-pressure gradient), so its diagnostics resemble plane-Couette rather than
-pipe.  The base flow is the azimuthal circular-Couette profile
-`$U_\theta(r) = A_0 r + B_0/r$` set by the flow subclass; the only base
-coupling enters through the rotational-form nonlinear term (see
-``rhs.py``) via ``base_flow`` and ``curl_base_flow``, exactly as for the
-other wall-bounded flows -- no hand-coded coupling terms.  An optional
-``block_mean_spanwise_velocity`` zeroes the mean **axial** velocity (the
-undriven homogeneous direction); the azimuthal mean evolves freely.
+Driving: shear-driven and force-driven flows
+--------------------------------------------
+The geometry supports two driving modes via the same infrastructure:
 
-Flow-specific modules (e.g. ``flows.wall_bounded.taylor_couette``)
-subclass ``AnnularFlow`` to define the base flow, then call
-``build_annular_stepper`` to obtain ready-to-use time-stepping functions.
+- **Shear-driven** (Taylor-Couette): the rotating walls set an azimuthal
+  circular-Couette base flow `$U_\theta(r) = A_0 r + B_0/r$` and the
+  perturbation `$\mathbf{u}'$` is integrated.  The base coupling enters
+  only through the rotational-form nonlinear term (see ``rhs.py``) via
+  ``base_flow`` and ``curl_base_flow`` -- no hand-coded coupling terms.
+- **Force-driven** (Dean flow): both walls are stationary and the
+  **total** velocity is integrated (``base_flow = curl_base_flow = 0``,
+  so the rotational term computes the full `$(\nabla\times\mathbf{u})
+  \times\mathbf{u}$`).  An azimuthally-/axially-uniform, radius-dependent
+  azimuthal body force is supplied through ``AnnularFlow.pi_theta`` (a
+  radial profile, zero by default) and added at the mean mode by
+  :func:`_get_rhs_core`.  See ``flows.wall_bounded.dean`` and
+  :func:`dean_laminar_u_theta`.
+
+An optional ``block_mean_spanwise_velocity`` zeroes the mean **axial**
+velocity (the undriven homogeneous direction); the azimuthal mean
+evolves freely.
+
+Flow-specific modules (e.g. ``flows.wall_bounded.taylor_couette``,
+``flows.wall_bounded.dean``) subclass ``AnnularFlow``, set the base flow
+and/or ``pi_theta``, then call ``build_annular_stepper`` to obtain
+ready-to-use time-stepping functions.
 """
 
 from collections.abc import Callable
@@ -250,7 +261,7 @@ def get_norm2_annular(
     return pm_norm2 / 2 + uz_norm2
 
 
-def get_pert_enstrophy_annular(
+def get_enstrophy_annular(
     state: Array,
     D1: Array,
     inv_r: Array,
@@ -259,16 +270,19 @@ def get_pert_enstrophy_annular(
     k_metric: Array,
     y_weights: Array,
 ) -> Array:
-    r"""Perturbation enstrophy for the annular geometry.
+    r"""Enstrophy `$\langle |\nabla \mathbf{u}|^2 \rangle$` of the
+    given annular state.
 
-    Uses the identity
-    `$\Omega' = \langle |\nabla \mathbf{u}'|^2 \rangle$`, split into
+    Geometry-general: the *state* may be a perturbation `$\mathbf{u}'$`
+    (shear-driven Taylor-Couette) or the total field `$\mathbf{u}$`
+    (force-driven Dean flow).  Uses the identity split into
     radial-derivative, azimuthal, and axial terms:
 
     .. math::
-        \Omega' = \langle |D_1 \mathbf{u}'|^2 \rangle
-        + \langle |m_{\mathrm{eff}}/r\;\mathbf{u}'|^2 \rangle
-        + \langle k_z^2\,|\mathbf{u}'|^2 \rangle
+        \langle |\nabla \mathbf{u}|^2 \rangle
+        = \langle |D_1 \mathbf{u}|^2 \rangle
+        + \langle |m_{\mathrm{eff}}/r\;\mathbf{u}|^2 \rangle
+        + \langle k_z^2\,|\mathbf{u}|^2 \rangle
 
     where `$m_{\mathrm{eff}} = m$` for `$u_z$`, `$m + 1$` for `$u_+$`,
     `$m - 1$` for `$u_-$`.  Unlike the cylindrical version the radial
@@ -391,6 +405,52 @@ def build_annular_grid(
     y_weights = jnp.asarray(w, dtype=sharding.float_type) * rs
     D1, D2 = build_diff_matrices(np.asarray(rs), fd_order)
     return rs, D1, D2, y_weights, inv_r
+
+
+def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
+    r"""Analytical laminar Dean-flow azimuthal profile `$U_\theta(r)$`.
+
+    Closed-form steady solution of the azimuthal momentum balance
+    `$(1/\mathrm{Re})\,(\nabla^2 \mathbf{U})_\theta + \Pi_\theta = 0$`
+    for the radius-dependent body force
+    `$\Pi_\theta = (2\eta + 2) / (r\,\mathrm{Re}\,(1 - \eta))$` with
+    no-slip walls `$U_\theta(r_1) = U_\theta(r_2) = 0$`.  The
+    `$1/\mathrm{Re}$` cancels, so the profile is
+    **Reynolds-independent**:
+
+    .. math::
+        U_\theta(r) = -\tfrac{C}{2}\,r\ln r + \alpha\,r
+        + \frac{\beta}{r}, \qquad C = \frac{2(\eta + 1)}{1 - \eta},
+
+    with `$r_1 = \eta/(1-\eta)$`, `$r_2 = 1/(1-\eta)$` (gap
+    `$d = 1$`) and the wall conditions fixing
+
+    .. math::
+        \alpha = \frac{C}{2}\,
+        \frac{r_1^2 \ln r_1 - r_2^2 \ln r_2}{r_1^2 - r_2^2},
+        \qquad
+        \beta = \frac{C}{2}\,
+        \frac{(r_1 r_2)^2 (\ln r_2 - \ln r_1)}{r_1^2 - r_2^2}.
+
+    Pure function (no flow construction), so it is importable both by
+    :mod:`dnsjax.flows.wall_bounded.dean` (the ``start_from_laminar``
+    state) and by ``scripts/random_field.py`` (the total-field IC =
+    laminar profile + perturbation).
+
+    Parameters
+    ----------
+    rs:
+        Radial grid on `$[r_1, r_2]$`, shape ``(Nr,)``.
+    eta:
+        Radius ratio `$\eta = r_1/r_2$`.
+    """
+    C = 2.0 * (eta + 1.0) / (1.0 - eta)
+    r1 = eta / (1.0 - eta)
+    r2 = 1.0 / (1.0 - eta)
+    denom = r1**2 - r2**2
+    alpha = (C / 2.0) * (r1**2 * np.log(r1) - r2**2 * np.log(r2)) / denom
+    beta = (C / 2.0) * (r1 * r2) ** 2 * (np.log(r2) - np.log(r1)) / denom
+    return -(C / 2.0) * rs * jnp.log(rs) + alpha * rs + beta / rs
 
 
 # ── Operator builders ──────────────────────────────────────────────
@@ -585,6 +645,10 @@ class AnnularFlow:
         Radial grid `$r_j$`, `$1/r_j$`, `$1/r_j^2$`.
     y_weights:
         Integration weights with radial Jacobian `$w_j r_j$`.
+    pi_theta:
+        Mean-mode azimuthal body force on the radial grid, shape
+        ``(Nr,)``; zero for shear-driven flows, set by force-driven
+        subclasses (Dean flow).
     D1, D2:
         First/second-derivative FD matrices, shape ``(Nr, Nr)``.
     D1_bnd:
@@ -608,6 +672,7 @@ class AnnularFlow:
     inv_r2: Array = field(init=False)
     y_weights: Array = field(init=False)
     cfl_inv_spacing: Array = field(init=False)
+    pi_theta: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
     base_flow_padded: Array = field(init=False)
@@ -674,6 +739,13 @@ class AnnularFlow:
         self.inv_r = jax.device_put(self.inv_r, sharding.no_shard)
         self.inv_r2 = jax.device_put(self.inv_r2, sharding.no_shard)
         self.y_weights = jax.device_put(self.y_weights, sharding.no_shard)
+
+        # Mean-mode azimuthal body force on the radial grid, zero by
+        # default.  Force-driven subclasses (Dean flow) overwrite it;
+        # applied at the mean mode by ``_get_rhs_core``.
+        self.pi_theta = jnp.zeros(
+            Nr, dtype=sharding.float_type, out_sharding=sharding.no_shard
+        )
 
         Nm = sharding.nz_spec
         Nkz = sharding.nx_spec
@@ -986,8 +1058,13 @@ def _get_rhs_core(
        optional physical-space *measure_fn*).  The base coupling enters
        here through ``base_flow_adv_padded`` -- the moving-frame base
        velocity `$\mathbf{U} - U_{grid}\hat{\mathbf{z}}$` (see
-       :func:`pad_base_flow`) -- and ``curl_base_flow_padded``.
-    3. Convert `$(NL_z, NL_r, NL_\theta) \to (NL_z, NL_+, NL_-)$`.
+       :func:`pad_base_flow`) -- and ``curl_base_flow_padded``.  For
+       force-driven flows (Dean) ``base_flow`` is zero, so this is the
+       full `$(\nabla\times\mathbf{u})\times\mathbf{u}$` of the total
+       field.
+    3. Add the mean-mode azimuthal body force ``flow_.pi_theta`` to
+       `$NL_\theta$` (zero for shear-driven Taylor-Couette).
+    4. Convert `$(NL_z, NL_r, NL_\theta) \to (NL_z, NL_+, NL_-)$`.
     """
     u_z, u_plus, u_minus = state[0], state[1], state[2]
     ur = (u_plus + u_minus) / 2
@@ -1008,6 +1085,13 @@ def _get_rhs_core(
         nonlin_rthz, measurements = nonlin_rthz
 
     NL_z, NL_r, NL_theta = nonlin_rthz[0], nonlin_rthz[1], nonlin_rthz[2]
+    # Mean-mode azimuthal body force (Dean flow), applied only at the
+    # mean mode (m, k_z) = (0, 0); zero for shear-driven Taylor-Couette.
+    # get_nonlin returns the +u x omega rotational term, so the force
+    # enters the RHS with a + sign (and into NL_+/- via NL_theta below).
+    NL_theta = NL_theta + jnp.where(
+        fourier_.mean_mask, flow_.pi_theta[:, None, None], 0.0
+    )
     NL_plus = NL_r + 1j * NL_theta
     NL_minus = NL_r - 1j * NL_theta
 

@@ -60,8 +60,8 @@ from ...geometries.wall_bounded.annular import (
     build_annular_stepper,
     extract_mean_mode,
     fourier,
+    get_enstrophy_annular,
     get_norm2_annular,
-    get_pert_enstrophy_annular,
     integrate_scalar,
     pad_base_flow,
 )
@@ -212,7 +212,7 @@ def _get_stats_jit(
 
     # ── Dissipation D ───────────────────────────────────────
     # nabla^2 U = 0 => cross-dissipation = 0; D = D_lam + Omega'/Re.
-    pert_enstrophy = get_pert_enstrophy_annular(
+    pert_enstrophy = get_enstrophy_annular(
         state,
         flow_.D1,
         flow_.inv_r,
