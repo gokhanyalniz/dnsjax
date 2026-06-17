@@ -41,7 +41,7 @@ The laminar state should time step with a single corrector step, with stepping e
 
 `uv run python scripts/random_field.py --system plane-couette --nx 128 --ny 65 --nz 128 --amplitude 0.1 --smoothness 0.4 --seed 1 --output random_ic`
 
-Generates a divergence-free random perturbation (obeying BCs) and saves it as a zarr3 snapshot. Load with `--init.snapshot random_ic --init.start_from_laminar False`. Supports all flow systems. Run `--test` for self-verification: it checks the configured system's generator and exits with a pass/fail status, writing no snapshot (so `--output` is not needed in this mode). See `scripts/random_field.py` docstring for the full algorithm and CLI options.
+Generates a divergence-free random perturbation (obeying BCs) and saves it as a zarr3 snapshot. Load with `--init.snapshot random_ic --init.start_from_laminar False`. Supports all flow systems. For Dean (`--system dean`, total-field) the analytical laminar profile is added to the perturbation. Run `--test` for self-verification: it checks the configured system's generator and exits with a pass/fail status, writing no snapshot (so `--output` is not needed in this mode). See `scripts/random_field.py` docstring for the full algorithm and CLI options.
 
 ## Documentation instructions
 
@@ -70,7 +70,7 @@ geometries/
     _base.py          Shared wall-bounded infrastructure (norms, init_state, stepper builder)
     cartesian.py      Cartesian: Fourier, CGL grid, CartesianFlow, IMM, Lk/Hk operators
     cylindrical.py    Cylindrical: Fourier, half-CGL grid, CylindricalFlow, decoupled u+/u-/uz, 1x1 IMM
-    annular.py        Annular (concentric cylinders): Fourier, CGL grid on [r1,r2], AnnularFlow, decoupled u+/u-/uz (no parity/ghost, no r=0), 2x2 IMM
+    annular.py        Annular (concentric cylinders): Fourier, CGL grid on [r1,r2], AnnularFlow, decoupled u+/u-/uz (no parity/ghost, no r=0), 2x2 IMM, optional mean-mode azimuthal body force (pi_theta); dean_laminar_u_theta
   triply_periodic/    Triply-periodic geometry family (see triply_periodic/CLAUDE.md)
     triply_periodic.py  Fourier, spectral diff ops, TriplyPeriodicFlow, algebraic Helmholtz, divergence correction
 flows/
@@ -79,6 +79,7 @@ flows/
     plane_poiseuille.py PlanePoiseuilleFlow(CartesianFlow): Us = 1-y^2 with tilt
     pipe.py             PipeFlow(CylindricalFlow): Uz = 1 - r^2
     taylor_couette.py   TaylorCouetteFlow(AnnularFlow): circular-Couette Uθ = A0 r + B0/r (shear-driven, no pressure gradient)
+    dean.py             DeanFlow(AnnularFlow): force-driven Dean flow between stationary cylinders (azimuthal body force; integrates the TOTAL field, no base flow / no E')
   triply_periodic/
     monochromatic.py    MonochromaticFlow(TriplyPeriodicFlow): Kolmogorov / Waleffe / decaying-box
 ```
@@ -90,6 +91,10 @@ The two geometry families are **completely independent**. The directory structur
 - `geometries/wall_bounded/` and `flows/wall_bounded/` are unrelated to `geometries/triply_periodic/` and `flows/triply_periodic/`. Do not explore across families unless explicitly prompted.
 - Wall-bounded family documentation: `src/dnsjax/geometries/wall_bounded/CLAUDE.md`
 - Triply-periodic family documentation: `src/dnsjax/geometries/triply_periodic/CLAUDE.md`
+
+### Adding a flow system
+
+To add a flow `X`: (1) add `"X"` to the relevant `*_systems` list in `parameters.py` (this auto-extends the `phys.system` Literal); (2) add/extend the geometry branch in `update_parameters()` if it needs derived params; (3) create `flows/<family>/X.py` exporting `predict_and_fully_correct`, `predict_and_fully_correct_measured`, `init_state`, `get_stats` (periodic flows also export `correct_velocity`); (4) add an `elif` to the flow dispatch in `__main__.py`; (5) add a `tests/test_laminar_smoke.py` SYSTEMS entry. The smoke test parses `err=`/`E'=` from stdout — a flow without a perturbation energy `E'` (e.g. total-field) needs its own check branch.
 
 ### Key design patterns
 
@@ -145,10 +150,11 @@ Zarr3 format with 3 combined per-component files (np-agnostic resume at any `(np
 - The first time step is excluded from benchmark statistics because it includes JIT compilation overhead.
 - FFT normalization uses `norm="forward"` (divides by N on forward, no factor on inverse).
 - Dicts returned from jitted functions (`get_stats`, measurement dicts) are canonicalized to **sorted key order** by pytree flattening — this sets the column order of `stats.dat` / `steps.dat`; never assume insertion order.
+- A flow dataclass is a registered pytree, so every array field is traced into the jitted steppers; keep data needed only *outside* jit (e.g. a precomputed initial/laminar state) at module level, not as a flow field.
 
 ## Scripts
 - `scripts/spike_partition_info.py`: display SPIKE block-partition trade-offs for a given resolution.
-- `scripts/random_field.py`: generate a random divergence-free perturbation and save as a zarr3 snapshot. Supports all flow systems (Cartesian wall-bounded, cylindrical, annular, triply-periodic). Uses `build_cartesian_grid` / `build_cylindrical_grid` / `build_annular_grid` from the geometry modules for grid/FD setup without constructing the full flow dataclass. Taylor-Couette needs `--re1 --re2 --eta`. Per-mode divergence-free enforcement uses NumPy loops (not JAX) to avoid tracing overhead; all other array work uses JAX. Run with `--test` for self-verification (divergence-free, wall BCs, norm, Hermitian symmetry, seed determinism); the self-test runs the block for the configured `--system` (cartesian, cylindrical, or annular).
+- `scripts/random_field.py`: generate a random divergence-free perturbation and save as a zarr3 snapshot. Supports all flow systems (Cartesian wall-bounded, cylindrical, annular, triply-periodic). Uses `build_cartesian_grid` / `build_cylindrical_grid` / `build_annular_grid` from the geometry modules for grid/FD setup without constructing the full flow dataclass. Taylor-Couette needs `--re1 --re2 --eta`; Dean needs `--eta` (and `--re`) and adds the analytical laminar profile (`dean_laminar_u_theta`) to the perturbation to form the total-field IC. Per-mode divergence-free enforcement uses NumPy loops (not JAX) to avoid tracing overhead; all other array work uses JAX. Run with `--test` for self-verification (divergence-free, wall BCs, norm, Hermitian symmetry, seed determinism, and for Dean the total-field wall BCs); the self-test runs the block for the configured `--system` (cartesian, cylindrical, or annular).
 - `scripts/snapshot_import.py`: **library** (not a CLI) for converting an external simulator's velocity field (physical- or spectral-space, no dealiasing padding, layout `[component, streamwise, wall-normal, spanwise]`) into a dnsjax zarr3 snapshot, for import into future per-simulator CLIs. Public API: `configure_target` (JAX/params singleton setup, one system per process like `random_field.py`), `to_spectral_state`, `write_snapshot`, `convert_field_to_snapshot`, `validate_state`. Stores the field on the supplied wall-normal grid (recorded in metadata, interpolated at load). **Perturbation only** — no base-flow subtraction; input must already be a perturbation. For pipe/TC it forms `u_± = u_r ± i u_θ` and follows dnsjax's axial→`nx`/azimuthal→`nz` mapping (so for Taylor-Couette streamwise resolution is `nz`, spanwise `nx`). See the module docstring for the per-system layout tables, the FFT/normalization algorithm, and the `real_axis`/`input_norm` options for spectral input.
 
 ## Tests
@@ -159,7 +165,7 @@ All to be kept up-to-date as the respective modules change:
 - `tests/test_annular.py` contains annular (Taylor-Couette) operator/matvec tests, the 2x2 SPIKE-vs-dense parity, and circular-Couette coefficient (A0/B0) checks.
 - `tests/test_integration.py` contains quadrature weight tests.
 - `tests/test_mean_mask.py` checks that padding slots carry nonzero placeholder wavenumbers and `Fourier.mean_mask` is the unique k^2 = 0 (mean) mode under forced spectral padding (subprocess, forced CPU devices).
-- `tests/test_laminar_smoke.py` runs all wall-bounded flows from laminar state (via subprocess/mpirun) checking stepping error, perturbation energy, and the `steps.dat` CFL columns against analytic laminar values. Each subprocess runs in a temp dir: `parameters.toml` is not loaded (model defaults + CLI args only). Caveat: the laminar state has `u'=0`, so all `ω'`/`u'`-proportional terms vanish — this checks the base-flow fixed point, time-stepping, and CFL diagnostic but **not** the rotational nonlinear term (a wrong `rhs.py`/advection change can still report `err=0`). Validate such changes with a non-laminar run (e.g. a `scripts/random_field.py` IC), comparing a transform-invariant diagnostic (e.g. `E'`) across configs and confirming convergence as `dt → 0`.
+- `tests/test_laminar_smoke.py` runs all wall-bounded flows from laminar state (via subprocess/mpirun) checking stepping error, perturbation energy, and the `steps.dat` CFL columns against analytic laminar values. Each subprocess runs in a temp dir: `parameters.toml` is not loaded (model defaults + CLI args only). Caveat: the laminar state has `u'=0`, so all `ω'`/`u'`-proportional terms vanish — this checks the base-flow fixed point, time-stepping, and CFL diagnostic but **not** the rotational nonlinear term (a wrong `rhs.py`/advection change can still report `err=0`). Validate such changes with a non-laminar run (e.g. a `scripts/random_field.py` IC), comparing a transform-invariant diagnostic (e.g. `E'`) across configs and confirming convergence as `dt → 0`. **Dean** is checked differently (total-field, no `E'`): started from the *analytical* laminar profile (only a near-fixed-point on the FD grid), it verifies the deviation `dU` from that profile stays tiny, the corrector converges, the energy balance `I ≈ D` holds, and the energy is near-steady; its azimuthal `CFL_th` is the active column. (Note: the FD enstrophy diagnostic `D` underestimates the true dissipation for under-resolved rough fields, so the `dE/dt = I − D` budget is exact only for resolved/smooth fields — confirmed by convergence as the field smooths.)
 - `tests/test_snapshot.py` round-trips snapshots (save/load equality, np-agnostic resume, `load_y_slice`) for all on-disk layouts via the host I/O path (subprocess per system/device-count, multi-device via forced CPU devices).
 - `tests/test_snapshot_import.py` validates `scripts/snapshot_import.py` (subprocess per geometry family): single-mode placement (axis mapping, component basis incl. the TC axial/azimuthal swap, normalization), mode order vs the `fourier` singleton, `u_±` mixing, spectral-input round-trips (both `real_axis`, several `input_norm`), and snapshot save/load. Offline (no `mpirun`).
 - In-process geometry tests (`test_{cartesian,cylindrical,annular}.py`) build their `flow`/`fourier` singletons **once** from a module-top `update_parameters()`; a test that re-calls `update_parameters()` mutates the shared `params`/`derived_params` (the singletons keep the import-time config, so read a re-derived value off `derived_params`, not `flow.*`) and must restore the module config before returning (tests run in definition order, so an unrestored mutation leaks into later tests).

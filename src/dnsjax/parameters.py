@@ -21,7 +21,7 @@ periodic_systems: list[str] = ["decaying-box", *monochromatic_systems]
 
 cartesian_systems: list[str] = ["plane-couette", "plane-poiseuille"]
 cylindrical_systems: list[str] = ["pipe"]
-annular_systems: list[str] = ["taylor-couette"]
+annular_systems: list[str] = ["taylor-couette", "dean"]
 walled_systems: list[str] = [
     *cartesian_systems,
     *cylindrical_systems,
@@ -343,49 +343,58 @@ def update_parameters(params_new: Parameters) -> None:
         # To compansate for the (1/Lz) factor
         derived_params.volume_fac = 0.5
     elif system in annular_systems:
-        # Taylor-Couette: validate the (re1, re2, eta) control
-        # parameters and derive the circular-Couette base flow
-        # U_theta = A0 r + B0/r on the annulus [r1, r2] (gap = 1).
-        re1, re2, eta = params.phys.re1, params.phys.re2, params.geo.eta
+        # Annular geometry (two concentric cylinders).  Shared by
+        # shear-driven Taylor-Couette (perturbation form) and
+        # force-driven Dean flow (total-field form).  Validate the
+        # radius ratio eta and derive the non-dim radii on the gap
+        # d = r2 - r1 = 1, the azimuthal extent, and the area norm.
+        eta = params.geo.eta
         if eta is None:
-            raise ValueError(
-                "taylor-couette requires geo.eta (radius ratio r1/r2)"
-            )
-        if re1 is None or re2 is None:
-            raise ValueError("taylor-couette requires phys.re1 and phys.re2")
-        if re1 < 0:
-            raise ValueError(
-                "taylor-couette: re1 must be >= 0 (sign convention)"
-            )
-        if re1 > 0:
-            re_ref = re1  # Case 1: inner-driven
-        elif re2 > 0:
-            re_ref = re2  # Case 2: outer-driven (re1 == 0)
-        else:
-            raise ValueError(
-                "taylor-couette needs re1 > 0, or re1 == 0 and re2 > 0 "
-                f"(got re1={re1}, re2={re2})"
-            )
-        # Set the reference Reynolds number so every downstream 1/re
-        # viscous/IMM/stats path is reused unchanged.
-        params.phys.re = re_ref
+            raise ValueError(f"{system} requires geo.eta (radius ratio r1/r2)")
         # Non-dim radii on the gap d = r2 - r1 = 1.
         r1 = eta / (1 - eta)
         r2 = 1 / (1 - eta)
         derived_params.r_inner = r1
         derived_params.r_outer = r2
-        # Gap-scaled circular-Couette coefficients (divided by Re_ref):
-        #   A0 = (re2 - eta re1) / [(1+eta) Re_ref]
-        #   B0 = eta (re1 - eta re2) / [(1+eta)(1-eta)^2 Re_ref]
-        derived_params.ccf_A = (re2 - eta * re1) / ((1 + eta) * re_ref)
-        derived_params.ccf_B = (
-            eta * (re1 - eta * re2) / ((1 + eta) * (1 - eta) ** 2 * re_ref)
-        )
         derived_params.ly = 2 * r2  # cosmetic (unread by wall-bounded)
         # Force a full 2*pi azimuthal extent (integer harmonics).
         params.geo.lz = 2 * pi
         # Annular area normalisation: volume_fac = int_{r1}^{r2} r dr.
         derived_params.volume_fac = (r2**2 - r1**2) / 2
+
+        if system == "taylor-couette":
+            # Validate the (re1, re2) control parameters and derive the
+            # circular-Couette base flow U_theta = A0 r + B0/r.
+            re1, re2 = params.phys.re1, params.phys.re2
+            if re1 is None or re2 is None:
+                raise ValueError(
+                    "taylor-couette requires phys.re1 and phys.re2"
+                )
+            if re1 < 0:
+                raise ValueError(
+                    "taylor-couette: re1 must be >= 0 (sign convention)"
+                )
+            if re1 > 0:
+                re_ref = re1  # Case 1: inner-driven
+            elif re2 > 0:
+                re_ref = re2  # Case 2: outer-driven (re1 == 0)
+            else:
+                raise ValueError(
+                    "taylor-couette needs re1 > 0, or re1 == 0 and re2 > 0 "
+                    f"(got re1={re1}, re2={re2})"
+                )
+            # Set the reference Reynolds number so every downstream 1/re
+            # viscous/IMM/stats path is reused unchanged.
+            params.phys.re = re_ref
+            # Gap-scaled circular-Couette coefficients (divided by Re_ref):
+            #   A0 = (re2 - eta re1) / [(1+eta) Re_ref]
+            #   B0 = eta (re1 - eta re2) / [(1+eta)(1-eta)^2 Re_ref]
+            derived_params.ccf_A = (re2 - eta * re1) / ((1 + eta) * re_ref)
+            derived_params.ccf_B = (
+                eta * (re1 - eta * re2) / ((1 + eta) * (1 - eta) ** 2 * re_ref)
+            )
+        # Dean flow uses phys.re directly (both walls stationary); its
+        # azimuthal body force lives in flows.wall_bounded.dean.
     else:
         raise NotImplementedError
 
