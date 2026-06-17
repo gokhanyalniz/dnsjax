@@ -254,6 +254,13 @@ def main() -> None:
             predict_and_fully_correct,
             predict_and_fully_correct_measured,
         )
+    elif params.phys.system == "dean":
+        from .flows.wall_bounded.dean import (
+            get_stats,
+            init_state,
+            predict_and_fully_correct,
+            predict_and_fully_correct_measured,
+        )
     else:
         sharding.print(
             f"System '{params.phys.system}' is not yet implemented."
