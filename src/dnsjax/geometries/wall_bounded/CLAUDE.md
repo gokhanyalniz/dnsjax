@@ -67,3 +67,4 @@ FD matvecs via `apply_y_matrix` batch over the leading component axis (a pure ba
 - `tests/test_integration.py`: quadrature weight and interpolation matrix tests
 - `tests/test_mean_mask.py`: placeholder padding wavenumbers and `mean_mask` as the unique k^2 = 0 mode under forced spectral padding
 - `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows (incl. taylor-couette and dean; Dean is total-field, so it checks the deviation `dU` from the analytical laminar profile, corrector convergence, energy balance `I ≈ D`, and near-steady energy instead of `E'`/O(1e-18))
+- `tests/test_random_smoke.py`: random-IC integration smoke test for all flows (the wall-bounded family + Kolmogorov), driving the **nonlinear** path that the laminar test cannot (`u'=0` there); checks each run completes to `t = 1` with a finite, converged state (no NaN/blow-up)
