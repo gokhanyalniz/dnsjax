@@ -35,17 +35,18 @@ Execution phases
    pipeline steps (divergence is detected at most
    ``it_error_check`` steps late).
 
-Diagnostics (``stats.dat``, ``steps.dat``)
-------------------------------------------
+Diagnostics (``stats.dat``, ``steps.dat``, ``corrector.dat``)
+-------------------------------------------------------------
 ``get_stats`` output is accumulated on-device in a fixed
 ``(nbuffer, n_cols)`` buffer (one row every ``it_stats``
 steps) and flushed to ``stats.dat`` when the buffer fills or
 at shutdown (``_flush_stats``).  Buffering avoids a
-host-device sync per sample.  ``stats.dat`` (written by the
-main device, appended) has a header row of column names
-(``t`` plus the ``get_stats`` keys) followed by
-whitespace-aligned rows at ``stats_precision`` significant
-digits.
+host-device sync per sample; each flush is then ``fsync``-ed,
+so the rows are on disk immediately once the on-device buffer
+is flushed.  ``stats.dat`` (written by the main device,
+appended) has a header row of column names (``t`` plus the
+``get_stats`` keys) followed by whitespace-aligned rows at
+``stats_precision`` significant digits.
 
 ``steps.dat`` records the CFL diagnostic every ``it_steps``
 steps with the same buffering and file format.  Each row is
@@ -59,12 +60,25 @@ the measured program outside the benchmark window (its
 outputs are discarded).  Unlike stats, no extra row is
 recorded after the final step.
 
+``corrector.dat`` records the corrector diagnostic every
+``it_corrector`` steps (same buffering and file format): the
+corrector iteration count ``c`` and the final corrector error
+``error``, both already returned by every step, timestamped at
+the pre-step time.  ``outs.it_error_check`` must not exceed
+``it_corrector`` (:func:`dnsjax.parameters.validate_parameters`).
+
 Snapshot resume
 ---------------
-Loading a zarr3 snapshot directory overrides ``params.init.t0``
-and ``params.init.it0`` from the snapshot metadata.  Legacy
-``.npz`` files go through geometry-specific ``init_state``.
-When the current wall-normal grid differs from the snapshot's,
+When ``init.snapshot`` points at a zarr3 directory, the
+parameters embedded in its metadata are merged in as a
+configuration layer above the code defaults but below
+``parameters.toml`` and the CLI (``read_snapshot_params``;
+the JAX-setup fields ``np0``/``np1``/``platform``/
+``double_precision`` are not inherited).  Loading the snapshot
+then overrides ``params.init.t0`` / ``params.init.it0`` from the
+snapshot's ``t`` / ``it`` (not the embedded ``init.t0``).  Legacy
+``.npz`` files go through geometry-specific ``init_state``.  When
+the current wall-normal grid differs from the snapshot's,
 ``_interpolate_if_needed`` interpolates the state at load time
 (see :mod:`dnsjax.fd` for the interpolation methods).
 
@@ -85,6 +99,7 @@ from pydantic_settings import CliApp
 
 from .parameters import (
     CLIParameters,
+    Parameters,
     annular_systems,
     cylindrical_systems,
     derived_params,
@@ -93,13 +108,23 @@ from .parameters import (
     params,
     periodic_systems,
     read_parameters,
+    read_snapshot_params,
     update_parameters,
+    validate_parameters,
     walled_systems,
 )
 
 
 def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width):
-    """Write *n_valid* buffered stats rows to *file_path*."""
+    """Write *n_valid* buffered rows to *file_path*, durably.
+
+    The on-device ``buffer`` is the only batching layer: once it fills
+    (``nbuffer`` rows) this transfers it to the host and appends the
+    rows.  An explicit ``flush`` + ``fsync`` then forces the bytes out of
+    the process and OS buffers so each device-buffer flush is immediately
+    on disk (and visible to other clients on networked filesystems).
+    Shared by every measurement stream (stats, steps, corrector).
+    """
     import numpy as np
 
     data = np.asarray(buffer[:n_valid])
@@ -110,6 +135,28 @@ def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width):
                 f"{v:.{p}e}".rjust(col_width) for v in data[i]
             )
             f.write(f"{t_str} {stat_strs}\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _resume_snapshot_path(
+    params_cli: Parameters, params_in: Parameters | None
+) -> Path | None:
+    """Return the snapshot path to resume from (CLI over TOML).
+
+    Inspects only the *explicitly set* ``init.snapshot`` of each layer
+    (via ``exclude_unset``), so an unset field never shadows a lower
+    layer.  Returns ``None`` when neither layer sets it (a laminar start,
+    or the path lives only in the code defaults -- which is ``None``).
+    """
+    for layer in (params_cli, params_in):
+        if layer is None:
+            continue
+        init = layer.model_dump(exclude_unset=True).get("init") or {}
+        snap = init.get("snapshot")
+        if snap is not None:
+            return Path(snap)
+    return None
 
 
 def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
@@ -400,6 +447,33 @@ def main() -> None:
             with open(steps_file, "w") as f:
                 f.write(header + "\n")
 
+    # --- Corrector buffer setup ----------------------------------------
+    # Records the corrector iteration count ``c`` and final error every
+    # ``it_corrector`` steps; both are already returned by every step
+    # (no measured stepper variant needed).  Same buffering / format as
+    # the stats and steps streams.
+    measure_corrector: bool = params.outs.it_corrector is not None
+    if measure_corrector:
+        corr_names = ["c", "error"]
+        corr_buffer = jnp.zeros(
+            (params.outs.nbuffer, len(corr_names)),
+            dtype=sharding.float_type,
+        )
+        corr_ts: list[float] = []
+        corr_idx: int = 0
+        corr_col_width = max(
+            val_width,
+            max(len(n) for n in ["t"] + corr_names),
+        )
+        corr_file = Path("corrector.dat")
+
+        if sharding.main_device and not corr_file.exists():
+            header = " ".join(
+                n.rjust(corr_col_width) for n in ["t"] + corr_names
+            )
+            with open(corr_file, "w") as f:
+                f.write(header + "\n")
+
     sharding.print("Started timestepping at", datetime.now())
 
     # --- Main time-stepping loop ---------------------------------------------
@@ -470,6 +544,33 @@ def main() -> None:
                 steps_idx = 0
         else:
             state, error_dev, c_dev = predict_and_fully_correct(state)
+
+        # Corrector diagnostic -> GPU buffer: this step's iteration
+        # count and final error, timestamped at the pre-step time.
+        if measure_corrector and it % params.outs.it_corrector == 0:
+            corr_buffer = corr_buffer.at[corr_idx].set(
+                jnp.stack(
+                    [
+                        c_dev.astype(corr_buffer.dtype),
+                        error_dev.astype(corr_buffer.dtype),
+                    ]
+                )
+            )
+            corr_ts.append(t)
+            corr_idx += 1
+
+            if corr_idx == params.outs.nbuffer:
+                if sharding.main_device:
+                    _flush_stats(
+                        corr_buffer,
+                        corr_idx,
+                        corr_ts,
+                        corr_file,
+                        p,
+                        corr_col_width,
+                    )
+                corr_ts.clear()
+                corr_idx = 0
 
         if params.phys.system in periodic_systems:
             # Divergence correction and mean-mode zeroing
@@ -598,6 +699,17 @@ def main() -> None:
             steps_col_width,
         )
 
+    # Flush remaining buffered corrector rows
+    if measure_corrector and corr_idx > 0 and sharding.main_device:
+        _flush_stats(
+            corr_buffer,
+            corr_idx,
+            corr_ts,
+            corr_file,
+            p,
+            corr_col_width,
+        )
+
 
 if __name__ == "__main__":
     print("Alive at", datetime.now(), flush=True)
@@ -605,13 +717,30 @@ if __name__ == "__main__":
     params_cli = CliApp.run(CLIParameters)
 
     params_file = Path("parameters.toml")
-    params_from_disk = False
-    if Path.is_file(params_file):
-        params_from_disk = True
-        params_in = read_parameters(params_file)
-        update_parameters(params_in)
+    params_in = (
+        read_parameters(params_file) if Path.is_file(params_file) else None
+    )
+    params_from_disk = params_in is not None
 
+    # Configuration layers, lowest priority first.  The snapshot to
+    # resume from is whichever ``init.snapshot`` the user set explicitly
+    # (CLI over TOML); its embedded parameters form the lowest layer
+    # above the code defaults, so a resume inherits the snapshot's
+    # configuration unless TOML or the CLI override it.
+    snapshot_path = _resume_snapshot_path(params_cli, params_in)
+    snapshot_params_used = False
+    if snapshot_path is not None:
+        snap_params = read_snapshot_params(snapshot_path)
+        if snap_params is not None:
+            update_parameters(snap_params)
+            snapshot_params_used = True
+
+    # Higher-priority layers: parameters.toml, then CLI arguments.
+    if params_in is not None:
+        update_parameters(params_in)
     update_parameters(params_cli)
+
+    validate_parameters()
     padded_res.set_padded_resolution(params)
 
     if params.dist.platform == "cpu":
@@ -629,10 +758,18 @@ if __name__ == "__main__":
 
     if main_device:
         print("Distribution initialized at", datetime.now(), flush=True)
+        if snapshot_params_used:
+            print(
+                f"Inherited parameters embedded in snapshot "
+                f"'{snapshot_path}' (except np0/np1/platform/"
+                "double_precision); parameters.toml and command-line "
+                "arguments override them.",
+                flush=True,
+            )
         if params_from_disk:
             print(
                 "Loaded parameters.toml, "
-                "which override the default parameters. "
+                "which override the snapshot and default parameters. "
                 "Command-line arguments will further override "
                 "the loaded parameters.",
                 flush=True,

@@ -1,11 +1,17 @@
 """Simulation parameter management via Pydantic models and TOML files.
 
-Configuration is layered: hard-coded defaults -> ``parameters.toml`` (if
-present) -> command-line arguments.  The global singletons ``params``,
+Configuration is layered, lowest priority first: hard-coded defaults ->
+parameters embedded in a resumed snapshot (:func:`read_snapshot_params`)
+-> ``parameters.toml`` (if present) -> command-line arguments.  The
+snapshot layer is skipped for the parameters that must be known to
+configure JAX *before* the snapshot is read (``dist.np0``, ``dist.np1``,
+``dist.platform``, ``res.double_precision``); those come only from
+defaults / TOML / CLI.  The global singletons ``params``,
 ``derived_params``, and ``padded_res`` are mutated in-place by
 :func:`update_parameters` so that every module sees the same state.
 """
 
+import json
 import tomllib
 from dataclasses import dataclass
 from datetime import timedelta
@@ -176,16 +182,25 @@ class Outputs(BaseModel):
     # (no extra Fourier transforms).  ``None`` disables it.
     it_steps: int | None = None
     it_snapshot: int | None = None  # How often to save snapshots
+    # How often (in steps) to record the corrector diagnostic (the
+    # corrector iteration count ``c`` and the final corrector error)
+    # into ``corrector.dat``, with the same on-device buffering and file
+    # format as ``stats.dat``.  ``None`` disables it.  When set,
+    # ``it_error_check`` must be <= ``it_corrector`` (see
+    # ``validate_parameters``) so the convergence check is at least as
+    # frequent as the logging.
+    it_corrector: int | None = Field(default=None, ge=1)
     # How often (in steps) to sync the corrector error to the host
     # for the convergence check.  Between checks the host enqueues
     # steps ahead of the device (JAX async dispatch); corrector
     # divergence is therefore detected up to ``it_error_check``
     # steps late, each late step bounded by
     # ``max_corrector_iterations``.  1 restores a per-step check
-    # (and a per-step host-device sync).
+    # (and a per-step host-device sync).  Must be <= ``it_corrector``
+    # when the corrector diagnostic is enabled.
     it_error_check: int = Field(ge=1, default=10)
     # Rows buffered on device before flushing ``stats.dat`` /
-    # ``steps.dat`` to disk.
+    # ``steps.dat`` / ``corrector.dat`` to disk.
     nbuffer: int = Field(ge=1, default=100)
     stats_precision: int = Field(ge=1, le=17, default=9)
     # How processes write a snapshot's shared chunk files:
@@ -311,6 +326,48 @@ def read_parameters(path: Path) -> Parameters:
     with open(path, "rb") as f:
         raw = tomllib.load(f)
     return Parameters(**raw)
+
+
+# Parameters that must be known to configure JAX *before* a snapshot is
+# read (precision, platform, device mesh); they are never inherited from
+# a snapshot's embedded parameters (resume is device- and
+# precision-agnostic, and the precision mismatch is caught by
+# ``snapshot.validate_snapshot_params``).
+_SNAPSHOT_SKIP_FIELDS: tuple[tuple[str, str], ...] = (
+    ("dist", "np0"),
+    ("dist", "np1"),
+    ("dist", "platform"),
+    ("res", "double_precision"),
+)
+
+
+def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
+    """Build a ``Parameters`` from a snapshot's embedded parameters.
+
+    Reads ``<snapshot_path>/_dnsjax_meta.json`` (plain JSON; no JAX
+    import, so it is safe to call before the distributed backend is
+    configured) and returns the embedded ``params`` as a
+    :class:`Parameters`, with the JAX-setup fields in
+    :data:`_SNAPSHOT_SKIP_FIELDS` removed so they are not inherited.
+
+    Returns ``None`` when *snapshot_path* has no metadata file (legacy
+    ``.npz`` snapshots, a laminar start, or a missing directory), so the
+    caller simply skips the snapshot layer.  Unknown fields in the stored
+    dump are ignored (Pydantic ``extra="ignore"``), making this robust to
+    parameter-schema drift across versions.
+    """
+    meta_file = Path(snapshot_path) / "_dnsjax_meta.json"
+    if not meta_file.is_file():
+        return None
+    with open(meta_file) as f:
+        meta = json.load(f)
+    snap = meta.get("params")
+    if not snap:
+        return None
+    for section, key in _SNAPSHOT_SKIP_FIELDS:
+        if section in snap and key in snap[section]:
+            snap[section].pop(key)
+    return Parameters.model_validate(snap)
 
 
 def update_parameters(params_new: Parameters) -> None:
@@ -449,6 +506,23 @@ def update_parameters(params_new: Parameters) -> None:
         raise ValueError(
             "Cannot set both wall_grid and grid_type"
             " (wall_grid takes precedence; remove one)"
+        )
+
+
+def validate_parameters() -> None:
+    """Validate cross-field constraints on the merged global ``params``.
+
+    Run once, after every configuration layer (snapshot, TOML, CLI) has
+    been applied -- not as a Pydantic validator, which would fire on each
+    partial layer and reject, e.g., a ``it_corrector`` set in TOML while
+    ``it_error_check`` is still at its default.
+    """
+    o = params.outs
+    if o.it_corrector is not None and o.it_error_check > o.it_corrector:
+        raise ValueError(
+            f"outs.it_error_check ({o.it_error_check}) must be <= "
+            f"outs.it_corrector ({o.it_corrector}) so the corrector "
+            "convergence is checked at least as often as it is logged."
         )
 
 
