@@ -17,6 +17,9 @@ time steps at low resolution, verifying that:
   it for the pipe (`$U_{grid} = 1/2$`, max at the `$r = 1$` wall), and
   the azimuthal `$\\max|U_\\theta/r| = 1$` for Taylor-Couette
   (`$U_{grid} = 0$`).
+- The corrector diagnostic (``corrector.dat``, written every
+  ``it_corrector = 1`` steps) records ``c = 0`` (a single corrector
+  step) and a roundoff-sized error for every step.
 
 Dean flow is force-driven and integrates the **total** field, so it is
 checked differently (there is no `$E'$`): started from the *analytical*
@@ -28,9 +31,9 @@ azimuthal ``CFL_th`` is the active column (radial / axial are roundoff).
 Each system is tested in a separate subprocess because the
 geometry modules capture global singletons at import time.
 Each subprocess runs in its own temporary directory, so
-``stats.dat`` / ``steps.dat`` are per-system (and the repo's
-``parameters.toml`` is not loaded; the smoke runs use the
-parameter-model defaults plus the CLI arguments).
+``stats.dat`` / ``steps.dat`` / ``corrector.dat`` are per-system
+(and the repo's ``parameters.toml`` is not loaded; the smoke runs
+use the parameter-model defaults plus the CLI arguments).
 
 Usage (single device)::
 
@@ -390,6 +393,11 @@ def _build_command(
         str(np_count // np0),
         "--outs.it_steps",
         "1",
+        # Corrector diagnostic every step; it_error_check <= it_corrector.
+        "--outs.it_corrector",
+        "1",
+        "--outs.it_error_check",
+        "1",
     ]
     return base + system_args
 
@@ -505,6 +513,51 @@ def _check_steps_file(workdir: Path, name: str) -> None:
             )
 
 
+def _check_corrector_file(workdir: Path, name: str) -> None:
+    """Validate ``corrector.dat`` for a laminar run.
+
+    The laminar state converges in a single corrector step, so for every
+    recorded step the iteration count ``c`` (iterations *beyond* the
+    first) is 0 and the final corrector error is roundoff-sized.  With
+    ``it_corrector = 1`` there is one row per step, the first at
+    ``t = 0`` (same cadence/format as ``steps.dat``).
+    """
+    corr_file = workdir / "corrector.dat"
+    if not corr_file.exists():
+        raise AssertionError(f"{name}: corrector.dat was not written")
+
+    lines = [ln for ln in corr_file.read_text().splitlines() if ln.strip()]
+    header = lines[0].split()
+    if header[0] != "t" or set(header) != {"t", "c", "error"}:
+        raise AssertionError(
+            f"{name}: corrector.dat header {header} != [t, c, error]"
+        )
+    col = {n: i for i, n in enumerate(header)}
+
+    rows = [[float(v) for v in ln.split()] for ln in lines[1:]]
+    if len(rows) != SMOKE_N_STEPS:
+        raise AssertionError(
+            f"{name}: expected {SMOKE_N_STEPS} corrector.dat rows, "
+            f"got {len(rows)}"
+        )
+    if rows[0][col["t"]] != 0.0:
+        raise AssertionError(
+            f"{name}: first corrector.dat row at t={rows[0][col['t']]}, not 0"
+        )
+    for row in rows:
+        c_val = row[col["c"]]
+        err_val = row[col["error"]]
+        if c_val != 0.0:
+            raise AssertionError(
+                f"{name}: corrector count c={c_val} != 0 (row {row})"
+            )
+        if not (math.isfinite(err_val) and 0.0 <= err_val <= ERR_THRESHOLD):
+            raise AssertionError(
+                f"{name}: corrector error {err_val} not in "
+                f"[0, {ERR_THRESHOLD:.0e}] (row {row})"
+            )
+
+
 def _check_dean(stdout: str, name: str) -> tuple[float, float]:
     """Validate a Dean (analytical near-steady laminar) run.
 
@@ -594,6 +647,7 @@ def run_smoke_test(system: dict, np_count: int, np0: int = 1) -> None:
         if name.startswith("dean"):
             last_err, last_dU = _check_dean(result.stdout, name)
             _check_steps_file(Path(workdir), name)
+            _check_corrector_file(Path(workdir), name)
             print(f"  PASS  {name}  (err={last_err:.2e}, dU={last_dU:.2e})")
             return
 
@@ -615,6 +669,7 @@ def run_smoke_test(system: dict, np_count: int, np0: int = 1) -> None:
             )
 
         _check_steps_file(Path(workdir), name)
+        _check_corrector_file(Path(workdir), name)
 
     print(f"  PASS  {name}  (err={last_err:.2e}, E'={last_ep:.2e})")
 
