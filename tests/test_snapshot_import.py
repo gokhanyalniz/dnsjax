@@ -244,7 +244,7 @@ def _run_one(system: str) -> int:
     from dnsjax.snapshot import load_snapshot, read_metadata
 
     with tempfile.TemporaryDirectory() as tmp:
-        out = str(Path(tmp) / "snap")
+        out = str(Path(tmp) / "snap.tar")
         si.write_snapshot(s_phys, out, t=1.5, it=7)
         state2, t2, it2 = load_snapshot(out)
         meta = read_metadata(Path(out))

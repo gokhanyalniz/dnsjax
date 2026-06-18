@@ -1,4 +1,4 @@
-"""Round-trip tests for the zarr3 snapshot module.
+"""Round-trip tests for the single-file (tar) snapshot module.
 
 Exercises the host (non-GDS) I/O path:
 
@@ -6,11 +6,16 @@ Exercises the host (non-GDS) I/O path:
   ``periodic`` layouts;
 - **np-agnostic** resume: save at one ``(np0, np1)``
   configuration, load at a different one (clean global
-  per-component files with true modes only);
+  per-component chunks with true modes only);
+- the snapshot is a single uncompressed tar wrapping a zarr3 store,
+  readable with **standard tools and no dnsjax**: the metadata
+  member parses as plain JSON (stdlib ``tarfile`` + ``json``), and
+  after ``tar xf`` the ``state/`` store reads back via TensorStore
+  with exactly the stored data;
 - ``load_y_slice`` matches the corresponding y-plane for a
   ``walled`` snapshot and raises otherwise;
-- ``serial`` write mode produces a byte-identical snapshot
-  (true cross-process ordering needs MPI multi-process and is not
+- ``serial`` write mode produces a valid snapshot (true
+  cross-process ordering needs MPI multi-process and is not
   exercised here -- single-process serial reduces to one write);
 - 2D mesh round-trips: save and load with ``np0 > 1``, including
   padding-mode stripping and re-padding.
@@ -164,6 +169,88 @@ def _embed_true_into_padded(true_arr, padded_shape, system):
     return out
 
 
+def _on_disk_from_true(ref_true, system):
+    """Map a true-shaped reference into the on-disk ``(3, A, kx, B)``
+    layout that the zarr3 chunks store (see ``snapshot._extract_*``).
+
+    ``walled`` stores ``comp[y, kx, kz]`` (last two axes swapped);
+    ``periodic`` stores ``comp[kz, kx, ky]`` (native ``(ky, kz, kx)``).
+    """
+    import numpy as np
+
+    if system in _PERIODIC:
+        # (3, ky, kz, kx) -> (3, kz, kx, ky)
+        return np.transpose(ref_true, (0, 2, 3, 1)).copy()
+    # (3, y, kz, kx) -> (3, y, kx, kz)
+    return np.transpose(ref_true, (0, 1, 3, 2)).copy()
+
+
+def _read_state_with_tensorstore(state_dir):
+    """Read the extracted zarr3 ``state/`` store without dnsjax."""
+    import numpy as np
+    import tensorstore as ts
+
+    arr = (
+        ts.open(
+            {
+                "driver": "zarr3",
+                "kvstore": {"driver": "file", "path": state_dir},
+            }
+        )
+        .result()
+        .read()
+        .result()
+    )
+    return np.asarray(arr)
+
+
+def _check_standard_tools(d, ref_true, system):
+    """The snapshot is a single tar readable with stdlib + zarr3.
+
+    Validates the user-facing guarantee: ``_dnsjax_meta.json`` parses
+    with the standard library alone, and ``tar xf`` + a zarr3 reader
+    (TensorStore) recovers exactly the stored component data.
+    """
+    import json
+    import os
+    import tarfile
+    import tempfile
+
+    import numpy as np
+
+    assert os.path.isfile(d), f"snapshot must be a single file: {d}"
+    assert tarfile.is_tarfile(d), "snapshot must be a valid tar archive"
+
+    with tarfile.open(d, "r") as tf:
+        names = set(tf.getnames())
+        expected = {
+            "_dnsjax_meta.json",
+            "state/zarr.json",
+            "state/c/0/0/0/0",
+            "state/c/1/0/0/0",
+            "state/c/2/0/0/0",
+        }
+        assert expected <= names, (sorted(names), sorted(expected))
+        # stdlib-only metadata read (no dnsjax).
+        meta = json.loads(tf.extractfile("_dnsjax_meta.json").read())
+        assert meta["format_version"] == 3, meta["format_version"]
+
+    with tempfile.TemporaryDirectory() as ex:
+        with tarfile.open(d, "r") as tf:
+            tf.extractall(ex, filter="data")
+        on_disk = _read_state_with_tensorstore(os.path.join(ex, "state"))
+
+    assert list(on_disk.shape) == meta["on_disk_shape"], (
+        on_disk.shape,
+        meta["on_disk_shape"],
+    )
+    expected_on_disk = _on_disk_from_true(ref_true, system)
+    assert np.array_equal(on_disk, expected_on_disk), (
+        "TensorStore read of the extracted zarr3 store does not match "
+        "the stored data"
+    )
+
+
 def _worker(
     action: str,
     system: str,
@@ -280,6 +367,9 @@ def _worker(
     assert t == T_SAVE, (t, T_SAVE)
     assert it == IT_SAVE, (it, IT_SAVE)
 
+    # Single uncompressed tar, readable with standard tools / no dnsjax.
+    _check_standard_tools(d, ref_true, system)
+
     if system not in _PERIODIC:
         for yi in (0, ny // 2, ny - 1):
             sl = np.asarray(snapshot.load_y_slice(d, yi))
@@ -352,14 +442,14 @@ def run_case(
 ) -> bool:
     """Save then load a snapshot in separate processes."""
     with tempfile.TemporaryDirectory() as tmp:
-        snap_dir = os.path.join(tmp, "snap")
+        snap_path = os.path.join(tmp, "snap.tar")
         r_save = _run_worker(
             "save",
             system,
             layout,
             write_mode,
             save_np,
-            snap_dir,
+            snap_path,
             np0=save_np0,
         )
         if r_save.returncode != 0:
@@ -371,7 +461,7 @@ def run_case(
             layout,
             write_mode,
             load_np,
-            snap_dir,
+            snap_path,
             np0=load_np0,
         )
         if r_load.returncode != 0:
@@ -391,14 +481,14 @@ def run_ny_mismatch_case(
     """Save at ny=8, load at ny=16 with interpolation."""
     name = f"wb ny 8->16 interp{label}"
     with tempfile.TemporaryDirectory() as tmp:
-        snap_dir = os.path.join(tmp, "snap")
+        snap_path = os.path.join(tmp, "snap.tar")
         r_save = _run_worker(
             "save_poly",
             "plane-couette",
             "walled",
             "concurrent",
             save_np,
-            snap_dir,
+            snap_path,
             ny=8,
             np0=save_np0,
         )
@@ -411,7 +501,7 @@ def run_ny_mismatch_case(
             "walled",
             "concurrent",
             load_np,
-            snap_dir,
+            snap_path,
             ny=16,
             np0=load_np0,
         )
