@@ -163,12 +163,30 @@ class Resolution(BaseModel):
 
 
 class Initiation(BaseModel):
-    """Initial condition: start from laminar or load a snapshot."""
+    """Initial condition: start from laminar, a random field, or a
+    snapshot.
+
+    Start-mode precedence (resolved in ``__main__.py``): an explicit
+    ``snapshot`` directory wins; otherwise ``random_field`` (an
+    in-process random divergence-free perturbation, no snapshot file);
+    otherwise the laminar / legacy-``.npz`` path.  The ``random_*``
+    knobs mirror the ``scripts/random_field.py`` CLI and feed
+    :func:`dnsjax.random_field.generate_random_state`.
+    """
 
     start_from_laminar: bool = True
     snapshot: Path | None = None
     t0: float = 0  # Initial value of time
     it0: int = 0  # Initial value of number of time steps taken
+    # Generate an in-process random divergence-free perturbation of the
+    # base flow as the initial condition (takes precedence over the
+    # laminar start; ignored when a snapshot is given).  For Dean the
+    # analytical laminar profile is added (total-field IC).
+    random_field: bool = False
+    random_amplitude: float = 0.1  # target L2 norm of the perturbation
+    random_smoothness: float = 0.4  # spectral decay rate (0 < s < 1)
+    random_seed: int = 1  # NumPy PRNG seed (device-count independent)
+    random_mean_flow: bool = False  # also perturb the mean (kx=kz=0) mode
 
 
 class Outputs(BaseModel):

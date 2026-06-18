@@ -341,6 +341,24 @@ def main() -> None:
                 sharding,
                 jnp,
             )
+    elif params.init.random_field:
+        # In-process random divergence-free IC (no snapshot file). The
+        # flow dispatch above already built the geometry ``fourier``
+        # singleton this consumes.
+        from .random_field import generate_random_state
+
+        state = generate_random_state(
+            params.init.random_amplitude,
+            params.init.random_smoothness,
+            params.init.random_seed,
+            params.init.random_mean_flow,
+        )
+        sharding.print(
+            "Started from an in-process random IC: "
+            f"amplitude={params.init.random_amplitude}, "
+            f"smoothness={params.init.random_smoothness}, "
+            f"seed={params.init.random_seed}."
+        )
     else:
         # Legacy .npz or laminar start
         state = init_state(params.init.snapshot)

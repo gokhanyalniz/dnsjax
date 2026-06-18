@@ -1,0 +1,375 @@
+"""Random-IC smoke tests: exercise time integration for all flows.
+
+Starts every implemented flow from a random divergence-free perturbation
+of its base flow (the in-process ``init.random_field`` start mode, no
+snapshot file), at a Reynolds number above the onset of transition, on a
+small domain at low resolution, and integrates a short time -- verifying
+the run completes with no error, NaN, or blow-up.
+
+Unlike ``tests/test_laminar_smoke.py`` (which starts from ``u' = 0``, so
+all `$\\omega'$`/`$u'$`-proportional terms -- including the rotational
+nonlinear term -- vanish), this test feeds a non-trivial field through
+the full nonlinear path, catching advection / ``rhs.py`` regressions a
+laminar run reports as ``err = 0``.  It is also the triply-periodic
+family's first stepping test (via Kolmogorov).
+
+Transition to turbulence is **not** expected to develop by the default
+``t = 1`` at this resolution/box; the success metric is purely that
+integration completes cleanly, not that the flow becomes turbulent.
+
+Each system steps at ``--dt`` (default 0.01), capped per-system where the
+corrector needs a smaller step (Kolmogorov: 0.005 -- a corrector-rate,
+not advective-CFL, limit; see ``SYSTEMS``).
+
+Each system runs in a separate subprocess (the geometry modules capture
+global singletons at import time) in its own temporary directory, so
+``parameters.toml`` is not loaded (model defaults + CLI args only) and
+the per-system ``stats.dat`` does not collide.
+
+Success criteria per system:
+
+1. subprocess exit code 0 (catches hard crashes / exceptions);
+2. the run reached the end (final ``t`` `$\\geq$`
+   ``max_sim_time - dt``): it was not cut short by corrector
+   divergence (the main loop stops once ``err`` reaches
+   ``corrector_tolerance``);
+3. ``"Corrector failed to converge"`` absent from stdout;
+4. the final corrector error is finite and below ``corrector_tolerance``
+   (catches a late divergence in the last ``it_error_check`` steps);
+5. every numeric value on the final summary line is finite (NaN/Inf
+   print as ``nan``/``inf``).
+
+Usage (single device)::
+
+    uv run python tests/test_random_smoke.py
+
+Faster subset (one system, coarse / short)::
+
+    uv run python tests/test_random_smoke.py \
+        --systems plane-couette --res 16 --max-sim-time 0.2
+
+Two devices via MPI::
+
+    uv run python tests/test_random_smoke.py --np 2
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import re
+import subprocess
+import sys
+import tempfile
+
+# ── configuration ────────────────────────────────────────────────────
+
+# Reynolds numbers above the onset of (subcritical) transition.  TC is
+# counter-rotating (re1 = 400 > 0 so update_parameters sets Re_ref = re1);
+# Dean is force-driven at re = 1000.  eta = 0.5 for the annular family.
+# For pipe / TC / Dean the azimuthal extent is forced to 2*pi by the
+# code and the radius / gap is fixed by geometry, so only the axial lx
+# is set; Cartesian / periodic set both lx and lz (periodic ly is
+# hardwired to 4 in update_parameters).
+SYSTEMS: list[dict] = [
+    {
+        "name": "kolmogorov",
+        # The iterative Crank-Nicolson corrector contracts to the 1e-5
+        # tolerance within max_corrector_iterations only for dt <~ 0.005
+        # here (at dt = 0.01 it stalls at ~1.4e-5 after 10 iterations);
+        # cap dt so the global default does not exceed it.  The CFL is
+        # tiny (~0.08), so this is a corrector-rate limit, not advective.
+        "max_dt": 0.005,
+        "args": [
+            "--phys.system",
+            "kolmogorov",
+            "--phys.re",
+            "620",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+        ],
+    },
+    {
+        "name": "plane-couette",
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+        ],
+    },
+    {
+        "name": "plane-poiseuille",
+        "args": [
+            "--phys.system",
+            "plane-poiseuille",
+            "--phys.re",
+            "660",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+        ],
+    },
+    {
+        "name": "pipe",
+        "args": [
+            "--phys.system",
+            "pipe",
+            "--phys.re",
+            "1800",
+            "--geo.lx",
+            "5",
+        ],
+    },
+    {
+        "name": "taylor-couette",
+        "args": [
+            "--phys.system",
+            "taylor-couette",
+            "--phys.re1",
+            "400",
+            "--phys.re2",
+            "-400",
+            "--geo.eta",
+            "0.5",
+            "--geo.lx",
+            "5",
+        ],
+    },
+    {
+        "name": "dean",
+        "args": [
+            "--phys.system",
+            "dean",
+            "--phys.re",
+            "1000",
+            "--geo.eta",
+            "0.5",
+            "--geo.lx",
+            "5",
+        ],
+    },
+]
+
+# Default time-stepping ``corrector_tolerance`` (TimeStepping model
+# default; the subprocesses run in temp dirs, so no parameters.toml).
+CORRECTOR_TOLERANCE = 1e-5
+
+# A signed float, or ``nan`` / ``inf`` (how non-finite values print).
+_NUM = r"[-+]?(?:nan|inf|\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)"
+# ``\bt`` avoids matching the ``t`` in ``c/it =`` ('i' is a word char, so
+# there is no word boundary before that ``t``).
+T_PATTERN = re.compile(rf"\bt\s*=\s*({_NUM})")
+ERR_PATTERN = re.compile(rf"\berr\s*=\s*({_NUM})")
+VALUE_PATTERN = re.compile(rf"=\s*({_NUM})")
+
+# ── helpers ──────────────────────────────────────────────────────────
+
+
+def _build_command(
+    system_args: list[str], args: argparse.Namespace, dt: float
+) -> list[str]:
+    """Build the ``mpirun ... -m dnsjax`` command for one system."""
+    res = str(args.res)
+    base = [
+        "mpirun",
+        "-np",
+        str(args.np),
+        sys.executable,
+        "-m",
+        "dnsjax",
+        "--dist.np0",
+        str(args.np0),
+        "--dist.np1",
+        str(args.np // args.np0),
+        # In-process random divergence-free IC (no snapshot file).
+        "--init.random_field",
+        "True",
+        "--init.random_amplitude",
+        str(args.amplitude),
+        "--init.random_smoothness",
+        str(args.smoothness),
+        "--init.random_seed",
+        str(args.seed),
+        "--res.nx",
+        res,
+        "--res.ny",
+        res,
+        "--res.nz",
+        res,
+        "--step.dt",
+        str(dt),
+        "--stop.max_sim_time",
+        str(args.max_sim_time),
+        "--outs.it_stats",
+        str(args.it_stats),
+    ]
+    return base + system_args
+
+
+def _final_summary_line(stdout: str) -> str | None:
+    """Return the final ``t = ... err = ...`` summary line, if any.
+
+    The per-step error appears only on the end-of-run summary line, so
+    the last line carrying ``err =`` is that summary (the initial
+    warm-up ``t = 0.00 ...`` print has no ``err``).
+    """
+    summary: str | None = None
+    for line in stdout.splitlines():
+        if ERR_PATTERN.search(line):
+            summary = line
+    return summary
+
+
+def _check_run(stdout: str, name: str, max_sim_time: float, dt: float) -> str:
+    """Validate one completed run; return the summary line for the PASS.
+
+    Raises ``AssertionError`` on any failed criterion.
+    """
+    if "failed to converge" in stdout:
+        raise AssertionError(f"{name}: corrector failed to converge")
+
+    summary = _final_summary_line(stdout)
+    if summary is None:
+        raise AssertionError(
+            f"{name}: no end-of-run summary line found\n{stdout[-2000:]}"
+        )
+
+    t_match = T_PATTERN.search(summary)
+    err_match = ERR_PATTERN.search(summary)
+    if t_match is None or err_match is None:
+        raise AssertionError(f"{name}: cannot parse summary line: {summary!r}")
+
+    t_final = float(t_match.group(1))
+    err = float(err_match.group(1))
+
+    # Reached the end (not cut short by corrector divergence).  The last
+    # step lands t on (or just past) max_sim_time; allow one dt of slack.
+    if not (t_final >= max_sim_time - dt):
+        raise AssertionError(
+            f"{name}: run ended early at t={t_final} (< {max_sim_time}); "
+            "integration did not complete"
+        )
+
+    # Final corrector error finite and converged (catches a divergence
+    # in the last it_error_check steps that the loop did not stop on).
+    if not (math.isfinite(err) and err < CORRECTOR_TOLERANCE):
+        raise AssertionError(
+            f"{name}: final corrector error {err:.3e} not in "
+            f"[0, {CORRECTOR_TOLERANCE:.0e})"
+        )
+
+    # No NaN / Inf anywhere on the summary line (every diagnostic finite).
+    values = [float(v) for v in VALUE_PATTERN.findall(summary)]
+    if not all(math.isfinite(v) for v in values):
+        raise AssertionError(
+            f"{name}: non-finite value on summary line: {summary!r}"
+        )
+
+    return summary
+
+
+# ── test runner ──────────────────────────────────────────────────────
+
+
+def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
+    """Run a single random-IC smoke test (in a fresh directory)."""
+    name = system["name"]
+    # Per-system dt cap: some systems need a smaller step than the
+    # global default for the corrector to converge (see SYSTEMS).
+    dt = min(args.dt, system.get("max_dt", math.inf))
+    cmd = _build_command(system["args"], args, dt)
+
+    with tempfile.TemporaryDirectory(prefix=f"rand_{name}_") as workdir:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=args.timeout,
+            cwd=workdir,
+        )
+
+        if result.returncode != 0:
+            print(f"  FAIL  {name}: exit code {result.returncode}")
+            print(result.stdout[-2000:] if result.stdout else "(no stdout)")
+            print(result.stderr[-2000:] if result.stderr else "(no stderr)")
+            raise AssertionError(
+                f"{name} exited with code {result.returncode}"
+            )
+
+        summary = _check_run(result.stdout, name, args.max_sim_time, dt)
+
+    print(f"  PASS  {name}  ({summary.strip()})")
+
+
+# ── main ─────────────────────────────────────────────────────────────
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Random-IC smoke tests for all flows",
+    )
+    parser.add_argument(
+        "--np", type=int, default=1, help="Number of devices (mpirun -np)"
+    )
+    parser.add_argument(
+        "--np0",
+        type=int,
+        default=1,
+        help="np0 mesh axis (wall-normal / kz split)",
+    )
+    parser.add_argument(
+        "--res", type=int, default=32, help="Cubic resolution nx=ny=nz"
+    )
+    parser.add_argument("--max-sim-time", type=float, default=1.0)
+    parser.add_argument("--dt", type=float, default=0.01)
+    parser.add_argument("--amplitude", type=float, default=0.1)
+    parser.add_argument("--smoothness", type=float, default=0.4)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--it-stats", type=int, default=10)
+    parser.add_argument(
+        "--systems",
+        nargs="*",
+        default=None,
+        help="Subset of system names to run (default: all)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=600.0,
+        help="Per-system subprocess timeout in seconds",
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+
+    systems = SYSTEMS
+    if args.systems:
+        wanted = set(args.systems)
+        systems = [s for s in SYSTEMS if s["name"] in wanted]
+        unknown = wanted - {s["name"] for s in SYSTEMS}
+        if unknown:
+            print(f"Unknown system(s): {sorted(unknown)}")
+            sys.exit(2)
+
+    passed = 0
+    failed = 0
+    for system in systems:
+        try:
+            run_smoke_test(system, args)
+            passed += 1
+        except (AssertionError, subprocess.TimeoutExpired) as exc:
+            print(f"  FAIL  {system['name']}: {exc}")
+            failed += 1
+
+    print(f"\n{passed} passed, {failed} failed.")
+    sys.exit(1 if failed else 0)

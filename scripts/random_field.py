@@ -2,6 +2,12 @@
 r"""Generate a random divergence-free perturbation and save as a
 zarr3 snapshot.
 
+This is a thin CLI wrapper over :mod:`dnsjax.random_field`, which holds
+the actual generators (shared with the in-process ``init.random_field``
+start mode of ``dnsjax.__main__``).  See that module's docstring for the
+generation algorithm, array shapes, and the divergence-free / boundary
+enforcement details.
+
 The output snapshot is immediately usable as initial condition::
 
     uv run python scripts/random_field.py \
@@ -26,14 +32,13 @@ so that the volume-averaged L2 norm equals ``--amplitude``.
 
 **Dean flow** (``--system dean``) integrates the *total* field, so the
 generated divergence-free perturbation is added to the analytical laminar
-Dean profile (``dean_laminar_u_theta``, placed at the mean mode) to form
-the total-field IC; ``--amplitude`` still sets the perturbation norm.
+Dean profile to form the total-field IC; ``--amplitude`` still sets the
+perturbation norm.
 
-**Non-JAX operations**: The per-mode divergence-free
-enforcement (step 4) loops over Fourier modes and uses NumPy
-for the `$D_1 \mathbf{v}$` matvecs, because Python-level
-looping in JAX would incur tracing overhead.  All other
-array work uses JAX.
+Run ``--test`` for self-verification: it checks the configured system's
+generator (divergence-free, wall BCs, norm, mean-mode, Hermitian
+symmetry, seed determinism, and for Dean the total-field wall BCs) and
+exits with a pass/fail status, writing no snapshot.
 """
 
 from __future__ import annotations
@@ -41,7 +46,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from math import pi
 from pathlib import Path
 
 import numpy as np
@@ -209,542 +213,19 @@ def _setup_jax_and_params(args: argparse.Namespace) -> None:
     padded_res.set_padded_resolution(params)
 
 
-# ── Hermitian-symmetry enforcement ───────────────────────────────
-
-# The real-FFT axis (kx for Cartesian/periodic, kz for cylindrical)
-# stores only non-negative wavenumbers.  On the complex-FFT axis
-# at kx=0 (or kz=0 for cylindrical), the stored modes must satisfy
-# conjugate symmetry for the physical field to be real.  The helper
-# below is pure NumPy (no JAX) since it works on the host array.
-
-
-def _enforce_hermitian_slice(
-    slc: np.ndarray,
-    n_physical: int,
-) -> None:
-    """Enforce conjugate symmetry in-place on a 1-D slice.
-
-    ``slc`` has leading shape ``(Nc, ...)`` where
-    ``Nc = n_physical - 1`` (Nyquist omitted), indexed by
-    ``complex_harmonics(n_physical)``:
-    ``[0, 1, ..., n//2-1, -n//2+1, ..., -1]``.
-
-    Parameters
-    ----------
-    slc:
-        The complex-FFT axis slice to fix, with the
-        complex-FFT axis as axis 0.
-    n_physical:
-        Physical-space size of this direction.
-    """
-    n_pos = n_physical // 2
-    Nc = n_physical - 1
-
-    # Index 0 (wavenumber 0) must be real.
-    slc[0] = slc[0].real
-
-    # Pair positive kz at index i with negative kz at Nc-i.
-    for i in range(1, n_pos):
-        slc[Nc - i] = np.conj(slc[i])
-
-    # Odd n: unpaired negative mode (Nyquist partner omitted).
-    if n_physical % 2 == 1:
-        slc[n_pos] = 0.0
-
-
-# ── Cartesian wall-bounded generation ────────────────────────────
-
-
-def _generate_cartesian(args: argparse.Namespace):
-    """Generate a random divergence-free Cartesian perturbation.
-
-    Returns a JAX array of shape ``(3, Ny, Nkz, Nkx)``.
-    """
-    import jax
-    from jax import numpy as jnp
-
-    from dnsjax.geometries.wall_bounded._base import get_norm
-    from dnsjax.geometries.wall_bounded.cartesian import (
-        build_cartesian_grid,
-        fourier,
-    )
-    from dnsjax.parameters import derived_params, params
-    from dnsjax.sharding import sharding
-
-    ny = params.res.ny
-    Nkz = params.res.nz - 1
-    Nkx = params.res.nx // 2
-
-    ys, D1, _, y_weights = build_cartesian_grid(
-        ny, params.res.fd_order, params.geo.wall_grid
-    )
-    derived_params.wall_normal_grid = [float(v) for v in np.asarray(ys)]
-
-    # ── NumPy: per-mode construction (non-JAX) ──────────────
-    ys_np = np.asarray(ys)
-    D1_np = np.asarray(D1)
-    kx_np = np.asarray(fourier.kx).ravel()  # (Nkx,)
-    kz_np = np.asarray(fourier.kz).ravel()  # (Nkz,)
-
-    decay = 1.0 - args.smoothness
-    window_noslip = 1.0 - ys_np**2
-
-    # Wavenumber decay factors: shape (Nkz, Nkx).
-    mode_decay = decay ** (np.abs(kz_np[:, None]) + np.abs(kx_np[None, :]))
-
-    rng = np.random.default_rng(args.seed)
-    shape = (3, ny, Nkz, Nkx)
-    raw = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-
-    # Apply no-slip window to all components: f(+/-1) = 0.
-    raw *= window_noslip[np.newaxis, :, np.newaxis, np.newaxis]
-
-    # Apply wavenumber decay.
-    raw *= mode_decay[np.newaxis, np.newaxis, :, :]
-
-    # Fix v so D1@v is exactly zero at both walls.  This is
-    # necessary because the derived component (w or u) gets
-    # its wall value from D1@v via the continuity equation.
-    # Adjust the two near-wall interior points v[1] and
-    # v[N-2] to cancel the D1@v residual at the boundaries.
-    A_fix = np.array(
-        [
-            [D1_np[0, 1], D1_np[0, -2]],
-            [D1_np[-1, 1], D1_np[-1, -2]],
-        ]
-    )
-    A_fix_inv = np.linalg.inv(A_fix)
-    for iz in range(Nkz):
-        for ix in range(Nkx):
-            v_mode = raw[1, :, iz, ix]
-            dv_wall = D1_np[[0, -1], :] @ v_mode  # (2,)
-            delta = -A_fix_inv @ dv_wall
-            v_mode[1] += delta[0]
-            v_mode[-2] += delta[1]
-
-    # Enforce divergence-free per mode (NumPy loop).
-    # D1@v is now exactly zero at the walls, so the derived
-    # component inherits exact zero wall BCs from u(+/-1)=0.
-    for iz in range(Nkz):
-        kz_val = kz_np[iz]
-        for ix in range(Nkx):
-            kx_val = kx_np[ix]
-            if kx_val == 0 and kz_val == 0:
-                raw[1, :, iz, ix] = 0.0
-            elif kz_val != 0:
-                dv_dy = D1_np @ raw[1, :, iz, ix]
-                raw[2, :, iz, ix] = -(
-                    1j * kx_val * raw[0, :, iz, ix] + dv_dy
-                ) / (1j * kz_val)
-            else:
-                dv_dy = D1_np @ raw[1, :, iz, ix]
-                raw[0, :, iz, ix] = -dv_dy / (1j * kx_val)
-
-    # Hermitian symmetry at kx=0: fix kz axis for each component.
-    # raw shape: (3, Ny, Nkz, Nkx); kx=0 is index 3.
-    for c in range(3):
-        _enforce_hermitian_slice(raw[c, :, :, 0].T, params.res.nz)
-
-    # Zero mean mode unless --mean-flow.
-    if not args.mean_flow:
-        raw[:, :, 0, 0] = 0.0
-
-    # ── JAX: normalise and return ────────────────────────────
-    state = jax.device_put(
-        jnp.asarray(raw, dtype=sharding.complex_type),
-        sharding.spec_vector_shard,
-    )
-    norm = get_norm(state, fourier.k_metric, y_weights)
-    state = state * (args.amplitude / norm)
-    return state, ys, D1_np, y_weights, fourier
-
-
-# ── Cylindrical generation ───────────────────────────────────────
-
-
-def _generate_cylindrical(args: argparse.Namespace):
-    r"""Generate a random perturbation for pipe flow.
-
-    Returns a JAX array of shape ``(3, Nr, Nm, Nkz)`` in
-    `$(u_z, u_+, u_-)$` form, with no-slip at the wall `$r = 1$`.
-
-    For `$k_z \neq 0$` modes the field is divergence-free by
-    construction (`$u_z$` derived from continuity, with the near-wall
-    `$u_\pm$` point adjusted so `$D_1 u_r = 0$` at the wall `$r = 1$`,
-    so the derived `$u_z$` inherits an exact zero wall value).  The
-    inner end `$r = 0$` is the axis (regularity via parity), not a
-    wall.  For `$k_z = 0$` modes a small residual divergence may
-    remain; the first corrector step of the solver projects it out
-    via the IMM.
-    """
-    import jax
-    from jax import numpy as jnp
-
-    from dnsjax.geometries.wall_bounded.cylindrical import (
-        build_cylindrical_grid,
-        fourier,
-        get_norm2_cyl,
-    )
-    from dnsjax.parameters import derived_params, params
-    from dnsjax.sharding import sharding
-
-    Nr = params.res.ny
-    Nm = params.res.nz - 1
-    Nkz = params.res.nx // 2
-
-    rs, D1_even, D1_odd, D1_pos, y_weights, inv_r = build_cylindrical_grid(
-        Nr, params.res.fd_order, params.geo.wall_grid
-    )
-    derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
-
-    # ── NumPy: per-mode construction (non-JAX) ──────────────
-    rs_np = np.asarray(rs)
-    inv_r_np = np.asarray(inv_r)
-    D1_even_np = np.asarray(D1_even)
-    D1_odd_np = np.asarray(D1_odd)
-    kz_np = np.asarray(fourier.kz).ravel()  # (Nkz,)
-    m_np = np.asarray(fourier.m).ravel()  # (Nm,)
-
-    decay = 1.0 - args.smoothness
-    window_wall = 1.0 - rs_np  # f(1) = 0
-
-    # Wavenumber decay: |kz_phys| + |m|*2*pi/lz.
-    kz_abs = np.abs(kz_np)
-    m_abs = np.abs(m_np) * 2 * pi / params.geo.lz
-    mode_decay = decay ** (kz_abs[None, :] + m_abs[:, None])
-
-    rng = np.random.default_rng(args.seed)
-    shape = (3, Nr, Nm, Nkz)
-    raw = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-
-    # Apply wall window (r=1).
-    raw *= window_wall[np.newaxis, :, np.newaxis, np.newaxis]
-
-    # Apply parity windows near r=0 and wavenumber decay.
-    for im in range(Nm):
-        m_val = int(m_np[im])
-        # u_z parity: (-1)^m -> odd when m odd
-        if m_val % 2 != 0:
-            raw[0, :, im, :] *= rs_np[:, np.newaxis]
-        # u+, u- parity: (-1)^{m+1} -> odd when m even
-        if m_val % 2 == 0:
-            raw[1, :, im, :] *= rs_np[:, np.newaxis]
-            raw[2, :, im, :] *= rs_np[:, np.newaxis]
-        raw[:, :, im, :] *= mode_decay[im, :][np.newaxis, np.newaxis, :]
-
-    # Enforce divergence-free for kz != 0 (NumPy loop).
-    # Continuity: i*kz*uz + [D1(u+) + (m+1)*u+/r
-    #                       + D1(u-) + (1-m)*u-/r] / 2 = 0
-    # The near-(outer-)wall interior point of u_+ and u_- is first
-    # adjusted so D1_pm @ u_pm = 0 at the wall r=1; since u_pm already
-    # vanish at the wall (wall window), D1_pm @ u_r = 0 there too, so
-    # the u_z derived from continuity inherits an exact zero wall
-    # value.  The inner end r=0 is the axis (regularity via parity),
-    # not a wall, so it needs no adjustment.
-    for im in range(Nm):
-        m_val = int(m_np[im])
-        # u+, u-: parity (-1)^{m+1}
-        D1_pm = D1_even_np if (m_val + 1) % 2 == 0 else D1_odd_np
-
-        for ik in range(Nkz):
-            for comp in (1, 2):  # u_+, u_-
-                f = raw[comp, :, im, ik]
-                f[-2] += -(D1_pm[-1, :] @ f) / D1_pm[-1, -2]
-
-            kz_val = kz_np[ik]
-            if kz_val == 0:
-                continue
-            u_plus = raw[1, :, im, ik]
-            u_minus = raw[2, :, im, ik]
-            div_radial = (
-                D1_pm @ u_plus
-                + (m_val + 1) * inv_r_np * u_plus
-                + D1_pm @ u_minus
-                + (1 - m_val) * inv_r_np * u_minus
-            ) / 2.0
-            raw[0, :, im, ik] = -div_radial / (1j * kz_val)
-
-    # Zero mean mode unless --mean-flow.
-    if not args.mean_flow:
-        raw[:, :, 0, 0] = 0.0
-
-    # Hermitian symmetry at kz=0 (real-FFT axis):
-    # fix m axis for each component.
-    # raw shape: (3, Nr, Nm, Nkz); kz=0 is index 3.
-    for c in range(3):
-        _enforce_hermitian_slice(raw[c, :, :, 0].T, params.res.nz)
-
-    # ── JAX: normalise and return ────────────────────────────
-    state = jax.device_put(
-        jnp.asarray(raw, dtype=sharding.complex_type),
-        sharding.spec_vector_shard,
-    )
-
-    norm2 = get_norm2_cyl(state, fourier.k_metric, y_weights)
-    norm = jnp.sqrt(norm2)
-    state = state * (args.amplitude / norm)
-    return state
-
-
-# ── Annular generation ───────────────────────────────────────────
-
-
-def _generate_annular(args: argparse.Namespace):
-    r"""Generate a random perturbation for Taylor-Couette flow.
-
-    Returns a JAX array of shape ``(3, Nr, Nm, Nkz)`` in
-    `$(u_z, u_+, u_-)$` form, with no-slip at both walls.
-
-    For `$k_z \neq 0$` modes the field is divergence-free by
-    construction (`$u_z$` derived from continuity, with the near-wall
-    `$u_\pm$` points adjusted so `$D_1 u_r = 0$` at both walls, so the
-    derived `$u_z$` inherits exact zero wall values).  For `$k_z = 0$`
-    modes a small residual divergence may remain; the first corrector
-    step of the solver projects it out via the IMM.
-    """
-    import jax
-    from jax import numpy as jnp
-
-    from dnsjax.geometries.wall_bounded.annular import (
-        build_annular_grid,
-        fourier,
-        get_norm2_annular,
-    )
-    from dnsjax.parameters import derived_params, params
-    from dnsjax.sharding import sharding
-
-    Nr = params.res.ny
-    Nm = params.res.nz - 1
-    Nkz = params.res.nx // 2
-
-    r1 = derived_params.r_inner
-    r2 = derived_params.r_outer
-    rs, D1, _, y_weights, inv_r = build_annular_grid(
-        Nr, params.res.fd_order, r1, r2, params.geo.wall_grid
-    )
-    derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
-
-    # ── NumPy: per-mode construction (non-JAX) ──────────────
-    rs_np = np.asarray(rs)
-    inv_r_np = np.asarray(inv_r)
-    D1_np = np.asarray(D1)
-    kz_np = np.asarray(fourier.kz).ravel()  # (Nkz,)
-    m_np = np.asarray(fourier.m).ravel()  # (Nm,)
-
-    decay = 1.0 - args.smoothness
-    # No-slip window: zero at both walls, peak in the interior.
-    window = (rs_np - r1) * (r2 - rs_np)
-    window = window / np.max(window)
-
-    kz_abs = np.abs(kz_np)
-    m_abs = np.abs(m_np) * 2 * pi / params.geo.lz
-    mode_decay = decay ** (kz_abs[None, :] + m_abs[:, None])
-
-    rng = np.random.default_rng(args.seed)
-    shape = (3, Nr, Nm, Nkz)
-    raw = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-    raw *= window[np.newaxis, :, np.newaxis, np.newaxis]
-    for im in range(Nm):
-        raw[:, :, im, :] *= mode_decay[im, :][np.newaxis, np.newaxis, :]
-
-    # Adjust the two near-wall interior points of u_+ and u_- so that
-    # D1 @ u_pm = 0 at both walls; then D1 @ u_r = 0 there, and the
-    # u_z derived from continuity inherits exact zero wall values.
-    A_fix = np.array(
-        [
-            [D1_np[0, 1], D1_np[0, -2]],
-            [D1_np[-1, 1], D1_np[-1, -2]],
-        ]
-    )
-    A_fix_inv = np.linalg.inv(A_fix)
-
-    # Enforce divergence-free for kz != 0 (NumPy loop).
-    # Continuity: i*kz*uz + [D1(u+) + (m+1)*u+/r
-    #                       + D1(u-) + (1-m)*u-/r] / 2 = 0
-    for im in range(Nm):
-        m_val = int(m_np[im])
-        for ik in range(Nkz):
-            for comp in (1, 2):  # u_+, u_-
-                f = raw[comp, :, im, ik]
-                d_wall = D1_np[[0, -1], :] @ f  # (2,)
-                delta = -A_fix_inv @ d_wall
-                f[1] += delta[0]
-                f[-2] += delta[1]
-
-            kz_val = kz_np[ik]
-            if kz_val == 0:
-                continue
-            u_plus = raw[1, :, im, ik]
-            u_minus = raw[2, :, im, ik]
-            div_radial = (
-                D1_np @ u_plus
-                + (m_val + 1) * inv_r_np * u_plus
-                + D1_np @ u_minus
-                + (1 - m_val) * inv_r_np * u_minus
-            ) / 2.0
-            raw[0, :, im, ik] = -div_radial / (1j * kz_val)
-
-    # Zero mean mode unless --mean-flow.
-    if not args.mean_flow:
-        raw[:, :, 0, 0] = 0.0
-
-    # Hermitian symmetry at kz=0 (real-FFT axis): fix m axis.
-    for c in range(3):
-        _enforce_hermitian_slice(raw[c, :, :, 0].T, params.res.nz)
-
-    # ── JAX: normalise and return ────────────────────────────
-    state = jax.device_put(
-        jnp.asarray(raw, dtype=sharding.complex_type),
-        sharding.spec_vector_shard,
-    )
-
-    norm2 = get_norm2_annular(state, fourier.k_metric, y_weights)
-    norm = jnp.sqrt(norm2)
-    state = state * (args.amplitude / norm)
-    return state
-
-
-def _add_dean_laminar(state):
-    r"""Add the analytical laminar Dean profile to a perturbation.
-
-    Dean flow integrates the **total** velocity, so a usable initial
-    condition is the closed-form laminar azimuthal profile (placed at
-    the mean mode) plus the divergence-free random perturbation from
-    :func:`_generate_annular`.  The laminar profile is axisymmetric and
-    zero at both walls, so it preserves the perturbation's
-    divergence-free and no-slip properties.  Returns the total spectral
-    state in `$(u_z, u_+, u_-)$` form.
-    """
-    from jax import numpy as jnp
-
-    from dnsjax.geometries.wall_bounded.annular import (
-        build_annular_grid,
-        dean_laminar_u_theta,
-        fourier,
-    )
-    from dnsjax.parameters import derived_params, params
-    from dnsjax.sharding import sharding
-
-    rs, *_ = build_annular_grid(
-        params.res.ny,
-        params.res.fd_order,
-        derived_params.r_inner,
-        derived_params.r_outer,
-        params.geo.wall_grid,
-    )
-    u_theta = dean_laminar_u_theta(rs, params.geo.eta)  # (Nr,) real
-    # Place U_theta at the mean mode: u_+ = i U_theta, u_- = -i U_theta.
-    u_spec = jnp.where(fourier.mean_mask, u_theta[:, None, None], 0.0)
-    laminar = jnp.stack(
-        [
-            jnp.zeros_like(u_spec, dtype=sharding.complex_type),
-            (1j * u_spec).astype(sharding.complex_type),
-            (-1j * u_spec).astype(sharding.complex_type),
-        ]
-    )
-    return state + laminar
-
-
-# ── Triply-periodic generation ───────────────────────────────────
-
-
-def _generate_triply_periodic(args: argparse.Namespace):
-    """Generate a random divergence-free periodic perturbation.
-
-    Returns a JAX array of shape ``(3, Nky, Nkz, Nkx)``.
-    Uses the Leray projection to enforce incompressibility.
-    """
-    import jax
-    from jax import numpy as jnp
-
-    from dnsjax.geometries.triply_periodic.triply_periodic import (
-        fourier,
-        get_norm,
-    )
-    from dnsjax.parameters import params
-    from dnsjax.sharding import sharding
-
-    Nky = params.res.ny - 1
-    Nkz = params.res.nz - 1
-    Nkx = params.res.nx // 2
-
-    # ── NumPy: generate and project (non-JAX) ───────────────
-    kx_np = np.asarray(fourier.kx).ravel()  # (Nkx,)
-    kz_np = np.asarray(fourier.kz).ravel()  # (Nkz,)
-    ky_np = np.asarray(fourier.ky).ravel()  # (Nky,)
-
-    decay = 1.0 - args.smoothness
-
-    # 3D L1-norm decay.
-    mode_decay = decay ** (
-        np.abs(ky_np[:, None, None])
-        + np.abs(kz_np[None, :, None])
-        + np.abs(kx_np[None, None, :])
-    )
-
-    rng = np.random.default_rng(args.seed)
-    shape = (3, Nky, Nkz, Nkx)
-    raw = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-    raw *= mode_decay[np.newaxis]
-
-    # Leray projection: u_proj = u - k (k . u) / |k|^2.
-    kx_3d = kx_np[np.newaxis, np.newaxis, :]
-    ky_3d = ky_np[:, np.newaxis, np.newaxis]
-    kz_3d = kz_np[np.newaxis, :, np.newaxis]
-    k2 = kx_3d**2 + ky_3d**2 + kz_3d**2
-    k2_safe = np.where(k2 > 0, k2, 1.0)
-    k_dot_u = kx_3d * raw[0] + ky_3d * raw[1] + kz_3d * raw[2]
-    proj = k_dot_u / k2_safe
-    raw[0] -= kx_3d * proj
-    raw[1] -= ky_3d * proj
-    raw[2] -= kz_3d * proj
-
-    # Zero mean mode.
-    if not args.mean_flow:
-        raw[:, 0, 0, 0] = 0.0
-
-    # Hermitian symmetry at kx=0: joint 2D constraint
-    # f_hat(ky, kz, 0) = conj(f_hat(-ky, -kz, 0)).
-    from dnsjax.operators import complex_harmonics as _ch
-
-    ky_idx = np.asarray(_ch(params.res.ny))
-    kz_idx = np.asarray(_ch(params.res.nz))
-    ky_map = {int(k): i for i, k in enumerate(ky_idx)}
-    kz_map = {int(k): i for i, k in enumerate(kz_idx)}
-    visited = set()
-    for iy in range(Nky):
-        for iz in range(Nkz):
-            if (iy, iz) in visited:
-                continue
-            ky_v, kz_v = int(ky_idx[iy]), int(kz_idx[iz])
-            jy = ky_map.get(-ky_v)
-            jz = kz_map.get(-kz_v)
-            if jy is None or jz is None:
-                raw[:, iy, iz, 0] = 0.0
-                visited.add((iy, iz))
-                continue
-            if (iy, iz) == (jy, jz):
-                raw[:, iy, iz, 0] = raw[:, iy, iz, 0].real
-            else:
-                raw[:, jy, jz, 0] = np.conj(raw[:, iy, iz, 0])
-            visited.add((iy, iz))
-            visited.add((jy, jz))
-
-    # ── JAX: normalise and return ────────────────────────────
-    state = jax.device_put(
-        jnp.asarray(raw, dtype=sharding.complex_type),
-        sharding.spec_vector_shard,
-    )
-    norm = get_norm(state, fourier.k_metric)
-    state = state * (args.amplitude / norm)
-    return state
-
-
 # ── Self-test ────────────────────────────────────────────────────
 
 
 def _run_tests() -> None:
-    """Run self-contained verification for all geometries."""
+    """Run self-contained verification for the configured geometry.
+
+    The generation singletons (Fourier / sharding) are built from
+    ``params`` at import time, so the self-test runs the block for the
+    configured ``--system`` rather than switching systems mid-process.
+    Generators come from :mod:`dnsjax.random_field`; grids/operators
+    used by the checks are rebuilt here via the ``build_*_grid``
+    helpers.
+    """
     from jax import numpy as jnp
 
     from dnsjax.parameters import (
@@ -752,6 +233,12 @@ def _run_tests() -> None:
         cartesian_systems,
         cylindrical_systems,
         params,
+    )
+    from dnsjax.random_field import (
+        add_dean_laminar,
+        generate_annular,
+        generate_cartesian,
+        generate_cylindrical,
     )
 
     passed = 0
@@ -766,14 +253,23 @@ def _run_tests() -> None:
             failed += 1
             print(f"  FAIL: {name}  {detail}")
 
-    # The generation singletons (Fourier / sharding) are built from
-    # ``params`` at import time, so the self-test runs the block for the
-    # configured ``--system`` rather than switching systems mid-process.
     system = params.phys.system
 
     if system in cartesian_systems:
         print(f"Cartesian ({system}):")
-        state, ys, D1_np, y_weights, fourier = _generate_cartesian(args)
+        from dnsjax.geometries.wall_bounded._base import get_norm
+        from dnsjax.geometries.wall_bounded.cartesian import (
+            build_cartesian_grid,
+            fourier,
+        )
+
+        state = generate_cartesian(
+            args.amplitude, args.smoothness, args.seed, args.mean_flow
+        )
+        _, D1, _, y_weights = build_cartesian_grid(
+            params.res.ny, params.res.fd_order, params.geo.wall_grid
+        )
+        D1_np = np.asarray(D1)
 
         Nkz = params.res.nz - 1
         Nkx = params.res.nx // 2
@@ -806,8 +302,6 @@ def _run_tests() -> None:
         _check("wall BCs", bc_err < 1e-14, f"max |BC| = {bc_err:.2e}")
 
         # Norm.
-        from dnsjax.geometries.wall_bounded._base import get_norm
-
         norm = float(get_norm(state, fourier.k_metric, y_weights))
         norm_err = abs(norm - args.amplitude) / args.amplitude
         _check(
@@ -838,7 +332,9 @@ def _run_tests() -> None:
         )
 
         # Seed determinism.
-        state2, *_ = _generate_cartesian(args)
+        state2 = generate_cartesian(
+            args.amplitude, args.smoothness, args.seed, args.mean_flow
+        )
         det_err = float(jnp.max(jnp.abs(state - state2)))
         _check("seed determinism", det_err == 0.0, f"max diff = {det_err:.2e}")
 
@@ -851,7 +347,9 @@ def _run_tests() -> None:
         )
         from dnsjax.parameters import derived_params
 
-        state = _generate_annular(args)
+        state = generate_annular(
+            args.amplitude, args.smoothness, args.seed, args.mean_flow
+        )
         state_np = np.asarray(state)
 
         Nm = params.res.nz - 1
@@ -933,7 +431,9 @@ def _run_tests() -> None:
         )
 
         # Seed determinism.
-        state2 = _generate_annular(args)
+        state2 = generate_annular(
+            args.amplitude, args.smoothness, args.seed, args.mean_flow
+        )
         det_err = float(jnp.max(jnp.abs(state - state2)))
         _check("seed determinism", det_err == 0.0, f"max diff = {det_err:.2e}")
 
@@ -941,7 +441,7 @@ def _run_tests() -> None:
         # perturbation) is axisymmetric and zero at both walls, so the
         # total field must still satisfy no-slip.
         if system == "dean":
-            total_np = np.asarray(_add_dean_laminar(state))
+            total_np = np.asarray(add_dean_laminar(state))
             bc_err = max(
                 float(np.max(np.abs(total_np[:, 0]))),
                 float(np.max(np.abs(total_np[:, -1]))),
@@ -960,7 +460,9 @@ def _run_tests() -> None:
             get_norm2_cyl,
         )
 
-        state = _generate_cylindrical(args)
+        state = generate_cylindrical(
+            args.amplitude, args.smoothness, args.seed, args.mean_flow
+        )
         state_np = np.asarray(state)
 
         Nm = params.res.nz - 1
@@ -1040,7 +542,9 @@ def _run_tests() -> None:
         )
 
         # Seed determinism.
-        state2 = _generate_cylindrical(args)
+        state2 = generate_cylindrical(
+            args.amplitude, args.smoothness, args.seed, args.mean_flow
+        )
         det_err = float(jnp.max(jnp.abs(state - state2)))
         _check("seed determinism", det_err == 0.0, f"max diff = {det_err:.2e}")
 
@@ -1062,36 +566,20 @@ def main() -> None:
     args = _parse_args()
     _setup_jax_and_params(args)
 
-    from dnsjax.parameters import (
-        annular_systems,
-        cartesian_systems,
-        cylindrical_systems,
-        params,
-        periodic_systems,
-    )
+    from dnsjax.parameters import params
 
     if args.test:
         _run_tests()
         return
 
+    from dnsjax.random_field import generate_random_state
     from dnsjax.sharding import sharding
     from dnsjax.snapshot import save_snapshot
 
     system = params.phys.system
-    if system in cartesian_systems:
-        state, ys, _, _, _ = _generate_cartesian(args)
-    elif system in cylindrical_systems:
-        state = _generate_cylindrical(args)
-    elif system in annular_systems:
-        state = _generate_annular(args)
-        # Dean integrates the total field: add the laminar profile.
-        if system == "dean":
-            state = _add_dean_laminar(state)
-    elif system in periodic_systems:
-        state = _generate_triply_periodic(args)
-    else:
-        print(f"Unknown system: {system}")
-        sys.exit(1)
+    state = generate_random_state(
+        args.amplitude, args.smoothness, args.seed, args.mean_flow
+    )
 
     save_snapshot(state, t=0.0, it=0, path=args.output)
     label = (
