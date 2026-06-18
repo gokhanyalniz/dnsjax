@@ -69,10 +69,11 @@ the pre-step time.  ``outs.it_error_check`` must not exceed
 
 Snapshot resume
 ---------------
-When ``init.snapshot`` points at a zarr3 directory, the
-parameters embedded in its metadata are merged in as a
-configuration layer above the code defaults but below
-``parameters.toml`` and the CLI (``read_snapshot_params``;
+When ``init.snapshot`` points at a snapshot tar file (an
+uncompressed tar wrapping a zarr3 store; see
+:mod:`dnsjax.snapshot`), the parameters embedded in its metadata
+are merged in as a configuration layer above the code defaults but
+below ``parameters.toml`` and the CLI (``read_snapshot_params``;
 the JAX-setup fields ``np0``/``np1``/``platform``/
 ``double_precision`` are not inherited).  Loading the snapshot
 then overrides ``params.init.t0`` / ``params.init.it0`` from the
@@ -315,11 +316,12 @@ def main() -> None:
         sharding.exit(code=1)
 
     # --- Initial condition ---------------------------------------------------
-    if (
-        params.init.snapshot is not None
-        and Path(params.init.snapshot).is_dir()
+    from .snapshot_meta import is_snapshot_file
+
+    if params.init.snapshot is not None and is_snapshot_file(
+        params.init.snapshot
     ):
-        # zarr3 snapshot (new format)
+        # single-file (tar-wrapped zarr3) snapshot
         from .snapshot import (
             load_snapshot,
             read_metadata,
@@ -605,7 +607,7 @@ def main() -> None:
         ):
             from .snapshot import save_snapshot
 
-            save_snapshot(state, t, it, f"snapshot_it{it:09d}")
+            save_snapshot(state, t, it, f"snapshot_it{it:09d}.tar")
 
         # On-device accumulation (no host sync).
         c_sum = c_sum + c_dev
@@ -644,7 +646,7 @@ def main() -> None:
     if params.outs.it_snapshot is not None and it > params.init.it0:
         from .snapshot import save_snapshot
 
-        save_snapshot(state, t, it, f"snapshot_it{it:09d}")
+        save_snapshot(state, t, it, f"snapshot_it{it:09d}.tar")
 
     wall_time_now = perf_counter_ns()
     alive_time = ns_to_s * (wall_time_now - wall_time_start)

@@ -11,7 +11,6 @@ defaults / TOML / CLI.  The global singletons ``params``,
 :func:`update_parameters` so that every module sees the same state.
 """
 
-import json
 import tomllib
 from dataclasses import dataclass
 from datetime import timedelta
@@ -167,7 +166,8 @@ class Initiation(BaseModel):
     snapshot.
 
     Start-mode precedence (resolved in ``__main__.py``): an explicit
-    ``snapshot`` directory wins; otherwise ``random_field`` (an
+    ``snapshot`` file (a single-file tar snapshot; see
+    :mod:`dnsjax.snapshot`) wins; otherwise ``random_field`` (an
     in-process random divergence-free perturbation, no snapshot file);
     otherwise the laminar / legacy-``.npz`` path.  The ``random_*``
     knobs mirror the ``scripts/random_field.py`` CLI and feed
@@ -221,7 +221,7 @@ class Outputs(BaseModel):
     # ``steps.dat`` / ``corrector.dat`` to disk.
     nbuffer: int = Field(ge=1, default=100)
     stats_precision: int = Field(ge=1, le=17, default=9)
-    # How processes write a snapshot's shared chunk files:
+    # How processes write the snapshot's shared tar file:
     #   "concurrent": all processes write their disjoint byte ranges
     #                 at once (fast; POSIX/parallel filesystems).
     #   "serial":     rank-ordered (token-passing) writes, one
@@ -362,23 +362,24 @@ _SNAPSHOT_SKIP_FIELDS: tuple[tuple[str, str], ...] = (
 def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
     """Build a ``Parameters`` from a snapshot's embedded parameters.
 
-    Reads ``<snapshot_path>/_dnsjax_meta.json`` (plain JSON; no JAX
-    import, so it is safe to call before the distributed backend is
-    configured) and returns the embedded ``params`` as a
-    :class:`Parameters`, with the JAX-setup fields in
-    :data:`_SNAPSHOT_SKIP_FIELDS` removed so they are not inherited.
+    Reads the ``_dnsjax_meta.json`` member of the snapshot tar (via the
+    standard-library :mod:`dnsjax.snapshot_meta`; no JAX import, so it is
+    safe to call before the distributed backend is configured) and
+    returns the embedded ``params`` as a :class:`Parameters`, with the
+    JAX-setup fields in :data:`_SNAPSHOT_SKIP_FIELDS` removed so they are
+    not inherited.
 
-    Returns ``None`` when *snapshot_path* has no metadata file (legacy
-    ``.npz`` snapshots, a laminar start, or a missing directory), so the
-    caller simply skips the snapshot layer.  Unknown fields in the stored
-    dump are ignored (Pydantic ``extra="ignore"``), making this robust to
-    parameter-schema drift across versions.
+    Returns ``None`` when *snapshot_path* is not a dnsjax snapshot file
+    (legacy ``.npz`` snapshots, a laminar start, or a missing path), so
+    the caller simply skips the snapshot layer.  Unknown fields in the
+    stored dump are ignored (Pydantic ``extra="ignore"``), making this
+    robust to parameter-schema drift across versions.
     """
-    meta_file = Path(snapshot_path) / "_dnsjax_meta.json"
-    if not meta_file.is_file():
+    from .snapshot_meta import is_snapshot_file, read_snapshot_meta
+
+    if not is_snapshot_file(snapshot_path):
         return None
-    with open(meta_file) as f:
-        meta = json.load(f)
+    meta = read_snapshot_meta(snapshot_path)
     snap = meta.get("params")
     if not snap:
         return None

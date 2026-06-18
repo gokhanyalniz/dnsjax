@@ -5,10 +5,10 @@ This is a **library** (not a CLI): it exposes functions that future,
 per-simulator CLIs import to pack a velocity field produced by another
 DNS code (Fourier x finite-difference x Fourier for wall-bounded flows,
 or Fourier x Fourier x Fourier for triply-periodic flows) into dnsjax's
-native zarr3 snapshot format.  It mirrors how ``scripts/random_field.py``
-configures the global parameter singletons and calls
-``snapshot.save_snapshot``, but instead of *generating* a field it
-*packs a supplied one*.
+native single-file (tar-wrapped zarr3) snapshot format.  It mirrors how
+``scripts/random_field.py`` configures the global parameter singletons
+and calls ``snapshot.save_snapshot``, but instead of *generating* a
+field it *packs a supplied one*.
 
 Input field layout
 ------------------
@@ -603,11 +603,11 @@ def to_spectral_state(
 def write_snapshot(
     state: Any, output_path: str, *, t: float = 0.0, it: int = 0
 ) -> None:
-    """Write a spectral state to a zarr3 snapshot.
+    """Write a spectral state to a single-file (tar) snapshot.
 
     Thin wrapper over ``snapshot.save_snapshot``; records the configured
-    parameters, the wall-normal grid, ``t`` and ``it`` in
-    ``_dnsjax_meta.json``.
+    parameters, the wall-normal grid, ``t`` and ``it`` in the snapshot's
+    ``_dnsjax_meta.json`` member.  *output_path* is the tar file path.
     """
     from dnsjax.snapshot import save_snapshot
 

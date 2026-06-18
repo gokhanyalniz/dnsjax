@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""Generate a random divergence-free perturbation and save as a
-zarr3 snapshot.
+single-file (tar-wrapped zarr3) snapshot.
 
 This is a thin CLI wrapper over :mod:`dnsjax.random_field`, which holds
 the actual generators (shared with the in-process ``init.random_field``
@@ -14,10 +14,10 @@ The output snapshot is immediately usable as initial condition::
         --system plane-couette \
         --nx 128 --ny 65 --nz 128 \
         --amplitude 0.1 --smoothness 0.4 --seed 1 \
-        --output random_ic
+        --output random_ic.tar
 
     uv run python -m dnsjax \
-        --init.snapshot random_ic \
+        --init.snapshot random_ic.tar \
         --init.start_from_laminar False ...
 
 The wavenumber-dependent amplitude of each Fourier mode
@@ -135,8 +135,8 @@ def _parse_args() -> argparse.Namespace:
         "--output",
         type=str,
         default=None,
-        help="Output directory for the zarr3 snapshot. Required "
-        "unless --test is given.",
+        help="Output path for the snapshot tar file (e.g. "
+        "random_ic.tar). Required unless --test is given.",
     )
 
     # Self-test
@@ -588,7 +588,7 @@ def main() -> None:
         else "random perturbation"
     )
     sharding.print(
-        f"Saved {label} to {args.output}/\n"
+        f"Saved {label} to {args.output}\n"
         f"  system={system}, "
         f"resolution=({args.nx}, {args.ny}, {args.nz}), "
         f"amplitude={args.amplitude}, "
