@@ -361,6 +361,23 @@ def main() -> None:
             f"smoothness={params.init.random_smoothness}, "
             f"seed={params.init.random_seed}."
         )
+    elif params.init.localized_rolls:
+        # In-process deterministic localized-rolls ("spot") IC (no
+        # snapshot file). The flow dispatch above already built the
+        # geometry ``fourier`` singleton this consumes.
+        from .localized_rolls import generate_localized_rolls
+
+        state = generate_localized_rolls(
+            params.init.localized_rolls_amplitude,
+            params.init.localized_rolls_width,
+            params.init.localized_rolls_wavelength,
+        )
+        sharding.print(
+            "Started from an in-process localized-rolls IC: "
+            f"amplitude={params.init.localized_rolls_amplitude}, "
+            f"width={params.init.localized_rolls_width}, "
+            f"wavelength={params.init.localized_rolls_wavelength}."
+        )
     else:
         # Legacy .npz or laminar start
         state = init_state(params.init.snapshot)
