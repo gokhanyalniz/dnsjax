@@ -571,7 +571,6 @@ class CartesianFlow:
     curl_base_flow: Array = field(init=False)
     base_flow_padded: Array = field(init=False)
     curl_base_flow_padded: Array = field(init=False)
-    base_flow_adv_padded: Array = field(init=False)
     D1: Array = field(init=False)
     D2: Array = field(init=False)
     D1_bnd: Array = field(init=False)
@@ -911,15 +910,10 @@ def _get_rhs_core(
     flow_: CartesianFlow,
     measure_fn: Callable[[Array, Array], dict[str, Array]] | None,
 ) -> Array | tuple[Array, dict[str, Array]]:
-    r"""Evaluate non-linear RHS terms (optionally measured).
-
-    Advection uses ``base_flow_adv_padded``, the moving-frame base
-    velocity `$\mathbf{U} - U_{grid}\hat{\mathbf{x}}$` (see
-    :func:`pad_base_flow`).
-    """
+    """Evaluate non-linear RHS terms (optionally measured)."""
     return get_nonlin(
         state,
-        flow_.base_flow_adv_padded,
+        flow_.base_flow_padded,
         flow_.curl_base_flow_padded,
         spec_to_phys_2d,
         phys_to_spec_2d,
@@ -947,7 +941,7 @@ def _get_rhs_measured(
     def _measure(u_phys: Array, omega_phys: Array) -> dict[str, Array]:
         return get_cfl(
             u_phys,
-            flow_.base_flow_adv_padded,
+            flow_.base_flow_padded,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
         )

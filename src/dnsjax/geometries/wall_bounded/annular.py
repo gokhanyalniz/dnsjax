@@ -677,7 +677,6 @@ class AnnularFlow:
     curl_base_flow: Array = field(init=False)
     base_flow_padded: Array = field(init=False)
     curl_base_flow_padded: Array = field(init=False)
-    base_flow_adv_padded: Array = field(init=False)
     D1: Array = field(init=False)
     D2: Array = field(init=False)
     D1_bnd: Array = field(init=False)
@@ -1056,12 +1055,10 @@ def _get_rhs_core(
     2. Compute the rotational-form nonlinear term via
        :func:`~dnsjax.rhs.get_nonlin` with the cylindrical curl (and the
        optional physical-space *measure_fn*).  The base coupling enters
-       here through ``base_flow_adv_padded`` -- the moving-frame base
-       velocity `$\mathbf{U} - U_{grid}\hat{\mathbf{z}}$` (see
-       :func:`pad_base_flow`) -- and ``curl_base_flow_padded``.  For
-       force-driven flows (Dean) ``base_flow`` is zero, so this is the
-       full `$(\nabla\times\mathbf{u})\times\mathbf{u}$` of the total
-       field.
+       here through ``base_flow_padded`` / ``curl_base_flow_padded``.
+       For force-driven flows (Dean) ``base_flow`` is zero, so this is
+       the full `$(\nabla\times\mathbf{u})\times\mathbf{u}$` of the
+       total field.
     3. Add the mean-mode azimuthal body force ``flow_.pi_theta`` to
        `$NL_\theta$` (zero for shear-driven Taylor-Couette).
     4. Convert `$(NL_z, NL_r, NL_\theta) \to (NL_z, NL_+, NL_-)$`.
@@ -1074,7 +1071,7 @@ def _get_rhs_core(
 
     nonlin_rthz = get_nonlin(
         state_rthz,
-        flow_.base_flow_adv_padded,
+        flow_.base_flow_padded,
         flow_.curl_base_flow_padded,
         spec_to_phys_2d,
         phys_to_spec_2d,
@@ -1120,7 +1117,7 @@ def _get_rhs_measured(
     def _measure(u_phys: Array, omega_phys: Array) -> dict[str, Array]:
         return get_cfl(
             u_phys,
-            flow_.base_flow_adv_padded,
+            flow_.base_flow_padded,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
         )

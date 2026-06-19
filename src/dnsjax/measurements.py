@@ -41,14 +41,11 @@ def get_cfl(
     inv_spacing: Array,
     names: tuple[str, str, str],
 ) -> dict[str, Array]:
-    r"""CFL numbers of the advecting velocity on the current grid.
+    r"""CFL numbers of the total velocity on the current grid.
 
-    With the advecting velocity
-    `$\mathbf{u} = \mathbf{u}' + \mathbf{U}_{\!adv}$` -- where
-    *base_flow* is the advection base velocity, which in a moving
-    frame of reference is `$\mathbf{U}_{\!adv} = \mathbf{U}
-    - U_{grid}\hat{\mathbf{e}}_0$` -- and the local advection length
-    scale `$\Delta_i$` of each direction
+    With the total advecting velocity
+    `$\mathbf{u} = \mathbf{U} + \mathbf{u}'$` and the local
+    advection length scale `$\Delta_i$` of each direction
     (encoded in *inv_spacing*), computes the per-direction CFL
     numbers and the sum-form total
 
@@ -72,11 +69,8 @@ def get_cfl(
         Perturbation velocity in physical space,
         ``(3, ny_phys, nz_padded, nx_padded)``.
     base_flow:
-        Advection base velocity `$\mathbf{U}_{\!adv}$` in physical
-        space, ``(3, ny_phys, 1, 1)``, same component order.  The
-        wall-bounded geometries pass ``base_flow_adv_padded`` (the
-        moving-frame `$\mathbf{U} - U_{grid}\hat{\mathbf{e}}_0$`),
-        so the CFL reflects the frame-relative advection.
+        Base-flow velocity `$\mathbf{U}$` in physical space,
+        ``(3, ny_phys, 1, 1)``, same component order.
     inv_spacing:
         Inverse local advection length scale per component,
         ``(3, ny_phys, 1, 1)``: e.g. `$1/\Delta x$` (uniform

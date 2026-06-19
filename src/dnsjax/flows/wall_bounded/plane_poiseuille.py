@@ -27,15 +27,6 @@ angle.  Its derived quantities:
 - `$\mathbf{U} \times \nabla \times \mathbf{U}
   = (0,\; -2y(1-y^2),\; 0)$` (tilt-independent)
 
-Moving frame
------------
-``phys.u_grid`` defaults to the laminar bulk velocity
-`$U_{b,\mathrm{lam}} = 2/3$` for plane-Poiseuille flow, so by default
-the run evolves in the frame translating in `$x$` at
-`$U_{grid} = 2/3$` (see ``parameters.update_parameters`` and
-``geometries.wall_bounded._base.pad_base_flow``).  Set
-``--phys.u_grid 0`` for the lab frame.
-
 Driving
 -------
 With ``driving = "constant_pressure_gradient"`` (default), the base
