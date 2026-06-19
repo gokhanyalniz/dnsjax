@@ -366,6 +366,54 @@ def _place_into_padded(comp_buf, li: int, slab, nkx: int) -> None:
     comp_buf[:, li, :nkx] = slab.T
 
 
+# ── In-memory per-device assembly ─────────────────────────
+
+
+def assemble_local_shards(
+    fill_local: Callable[[np.ndarray, int, int, int, int], None],
+    *,
+    dtype: np.dtype | None = None,
+) -> Array:
+    r"""Assemble a sharded spectral state from per-device-generated shards.
+
+    The generator counterpart of :func:`load_snapshot`'s per-device read:
+    each local device's padded shard is allocated zero-filled (shape
+    :func:`_padded_local_shape`) and handed to
+    ``fill_local(buf, kz_start, nkz, kx_start, nkx)``, which fills
+    ``buf[:, :, :nkz, :nkx]`` with that device's **true** modes -- the
+    global axis-2 (`$k_z$` / `$m$`, ``np0``) range
+    ``[kz_start, kz_start + nkz)`` and the global axis-3 (`$k_x$` /
+    `$k_{z,\mathrm{ax}}$`, ``np1``) range ``[kx_start, kx_start + nkx)``;
+    the trailing padding modes stay zero.  Shards are placed onto
+    ``sharding.spec_vector_shard`` with
+    ``jax.make_array_from_single_device_arrays`` -- np-agnostic, and **no
+    full array is ever materialised** on any device (so in-process random /
+    rolls ICs match dnsjax's per-device construction idiom).
+
+    Parameters
+    ----------
+    fill_local:
+        Callback filling one device's local buffer in place.
+    dtype:
+        Buffer dtype; defaults to the configured complex type.
+    """
+    if dtype is None:
+        dtype = _np_dtype(_zarr3_dtype_name())
+    local_shape = _padded_local_shape()
+    per_device: list[Array] = []
+    for device in jax.local_devices():
+        flat_idx = _mesh_device_index(device)
+        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
+        buf = np.zeros(local_shape, dtype=dtype)
+        fill_local(buf, kz_start, nkz, kx_start, nkx)
+        per_device.append(jax.device_put(buf, device))
+    return jax.make_array_from_single_device_arrays(
+        (3, *sharding.spec_shape),
+        NamedSharding(sharding.mesh, sharding.spec_vector_shard),
+        per_device,
+    )
+
+
 # ── Barrier ───────────────────────────────────────────────
 
 
