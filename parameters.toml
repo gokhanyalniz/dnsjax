@@ -39,3 +39,8 @@ max_corrector_iterations = 10
 [stop]
 # max_sim_time = 100.0
 # max_wall_time = "PT10M" # ISO 8601 format
+# Terminate once perturbation kinetic energy E' falls below the
+# threshold (the flow has relaminarized).  Enabled by default; set
+# check_laminarization = false to disable.
+# check_laminarization = true
+# laminarization_threshold = 1e-9

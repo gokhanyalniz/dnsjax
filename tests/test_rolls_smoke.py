@@ -192,6 +192,10 @@ def _build_command(
         str(args.max_sim_time),
         "--outs.it_stats",
         str(args.it_stats),
+        # Laminarization check off: a decaying transient must not cut
+        # the run short before max_sim_time.
+        "--stop.check_laminarization",
+        "False",
     ]
     return base + system["args"]
 

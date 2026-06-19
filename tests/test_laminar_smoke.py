@@ -17,11 +17,12 @@ time steps at low resolution, verifying that:
   step) and a roundoff-sized error for every step.
 
 Dean flow is force-driven and integrates the **total** field, so it is
-checked differently (there is no `$E'$`): started from the *analytical*
-laminar profile, the deviation from that profile ``dU`` stays tiny, the
-corrector still converges (``err`` `$O(10^{-14})$`), the energy balance
-`$I \\approx D$` holds, and the total energy is near-steady.  Its
-azimuthal ``CFL_th`` is the active column (radial / axial are roundoff).
+checked differently: started from the *analytical* laminar profile, its
+``E'`` (the perturbation kinetic energy of the deviation from that
+profile) stays tiny, the corrector still converges (``err``
+`$O(10^{-14})$`), the energy balance `$I \\approx D$` holds, and the
+total energy is near-steady.  Its azimuthal ``CFL_th`` is the active
+column (radial / axial are roundoff).
 
 Each system is tested in a separate subprocess because the
 geometry modules capture global singletons at import time.
@@ -327,18 +328,19 @@ ERR_THRESHOLD = 1e-14
 EP_THRESHOLD = 1e-28
 
 # Dean-flow diagnostics (total-field, analytical near-steady laminar
-# profile).  ``\b`` + uppercase isolates the E / I / D keys from E',
-# Ub_*, tau_*, and the lowercase 'e' of scientific notation.
-DU_PATTERN = re.compile(r"\bdU\s*=\s*([\d.eE+\-]+)")
+# profile).  E' (deviation kinetic energy) is matched by ``EP_PATTERN``
+# above; ``\b`` + uppercase isolates the E / I / D keys from E', Ub_*,
+# tau_*, and the lowercase 'e' of scientific notation.
 E_PATTERN = re.compile(r"\bE\s*=\s*([\d.eE+\-]+)")
 I_PATTERN = re.compile(r"\bI\s*=\s*([\d.eE+\-]+)")
 D_PATTERN = re.compile(r"\bD\s*=\s*([\d.eE+\-]+)")
 
-# Deviation from the analytical laminar Dean profile (observed ~6e-9 at
-# ny=27, fd_order=4); the energy balance |I-D|/D (~8e-6) and total-energy
-# drift (~3e-8).  Margins are generous so the checks are robust but still
-# catch a wrong forcing sign/magnitude (which give O(1) departures).
-DEAN_DU_THRESHOLD = 1e-6
+# E' is the deviation energy ||u - U_lam||^2 / 2 from the analytical
+# laminar Dean profile.  Observed ~2e-17 at ny=27, fd_order=4 (the old
+# norm deviation ~6e-9, squared and halved).  The energy balance
+# |I-D|/D (~8e-6) and total-energy drift (~3e-8) have generous margins,
+# still catching a wrong forcing sign/magnitude (O(1) departures).
+DEAN_EP_THRESHOLD = 5e-13
 DEAN_IB_TOL = 1e-3
 DEAN_E_DRIFT_TOL = 1e-4
 
@@ -385,6 +387,9 @@ def _build_command(
         "1",
         "--outs.it_error_check",
         "1",
+        # Laminarization check off: laminar runs sit at E' ~ 1e-32.
+        "--stop.check_laminarization",
+        "False",
     ]
     return base + system_args
 
@@ -551,14 +556,14 @@ def _check_corrector_file(workdir: Path, name: str) -> None:
 def _check_dean(stdout: str, name: str) -> tuple[float, float]:
     """Validate a Dean (analytical near-steady laminar) run.
 
-    Dean integrates the total field, so there is no ``E'``; the error
-    metric is the deviation ``dU`` from the analytical laminar profile,
-    alongside corrector convergence (``err``), the energy balance
-    ``I ~= D``, and a near-steady total energy ``E``.  Returns
-    ``(last_err, last_dU)`` for the PASS summary.
+    Dean integrates the total field; the error metric is ``E'``, the
+    perturbation kinetic energy of the deviation from the analytical
+    laminar profile, alongside corrector convergence (``err``), the
+    energy balance ``I ~= D``, and a near-steady total energy ``E``.
+    Returns ``(last_err, last_ep)`` for the PASS summary.
     """
     last_err: float | None = None
-    dU_vals: list[float] = []
+    ep_vals: list[float] = []
     e_vals: list[float] = []
     i_vals: list[float] = []
     d_vals: list[float] = []
@@ -567,7 +572,7 @@ def _check_dean(stdout: str, name: str) -> tuple[float, float]:
         if m:
             last_err = float(m.group(1))
         for pat, acc in (
-            (DU_PATTERN, dU_vals),
+            (EP_PATTERN, ep_vals),
             (E_PATTERN, e_vals),
             (I_PATTERN, i_vals),
             (D_PATTERN, d_vals),
@@ -576,7 +581,7 @@ def _check_dean(stdout: str, name: str) -> tuple[float, float]:
             if m:
                 acc.append(float(m.group(1)))
 
-    if last_err is None or not (dU_vals and e_vals and i_vals and d_vals):
+    if last_err is None or not (ep_vals and e_vals and i_vals and d_vals):
         raise AssertionError(f"{name}: could not parse Dean diagnostics")
 
     if last_err > ERR_THRESHOLD:
@@ -584,11 +589,11 @@ def _check_dean(stdout: str, name: str) -> tuple[float, float]:
             f"{name}: stepping error {last_err:.3e} > {ERR_THRESHOLD:.0e}"
         )
 
-    last_dU = dU_vals[-1]
-    if last_dU > DEAN_DU_THRESHOLD:
+    last_ep = ep_vals[-1]
+    if last_ep > DEAN_EP_THRESHOLD:
         raise AssertionError(
-            f"{name}: deviation from laminar {last_dU:.3e} "
-            f"> {DEAN_DU_THRESHOLD:.0e}"
+            f"{name}: deviation energy from laminar {last_ep:.3e} "
+            f"> {DEAN_EP_THRESHOLD:.0e}"
         )
 
     last_i, last_d = i_vals[-1], d_vals[-1]
@@ -606,7 +611,7 @@ def _check_dean(stdout: str, name: str) -> tuple[float, float]:
             f"{name}: energy drift {e_vals[0]:.6e} -> {e_vals[-1]:.6e}"
         )
 
-    return last_err, last_dU
+    return last_err, last_ep
 
 
 # ── test runner ──────────────────────────────────────────────────────
@@ -635,10 +640,10 @@ def run_smoke_test(system: dict, np_count: int, np0: int = 1) -> None:
             )
 
         if name.startswith("dean"):
-            last_err, last_dU = _check_dean(result.stdout, name)
+            last_err, last_ep = _check_dean(result.stdout, name)
             _check_steps_file(Path(workdir), name)
             _check_corrector_file(Path(workdir), name)
-            print(f"  PASS  {name}  (err={last_err:.2e}, dU={last_dU:.2e})")
+            print(f"  PASS  {name}  (err={last_err:.2e}, E'={last_ep:.2e})")
             return
 
         last_err, last_ep = _parse_diagnostics(result.stdout)

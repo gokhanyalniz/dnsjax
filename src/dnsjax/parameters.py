@@ -257,6 +257,16 @@ class Termination(BaseModel):
 
     max_sim_time: float | None = None
     max_wall_time: timedelta | None = None  # ISO 8601 format for durations
+    # Laminarization (relaminarization) check.  When enabled, the run
+    # terminates once the perturbation kinetic energy ``E'`` drops
+    # below ``laminarization_threshold`` (the flow has returned to
+    # laminar).  ``E'`` is read on the host every
+    # ``outs.it_error_check`` steps (the corrector-error sync point),
+    # so detection lags by up to that many steps.  For Dean (total
+    # field) ``E'`` is the kinetic energy of the deviation from the
+    # analytical laminar profile.  Disabled in all tests.
+    check_laminarization: bool = True
+    laminarization_threshold: float = Field(gt=0, default=1e-9)
 
 
 class Solver(BaseModel):
