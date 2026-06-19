@@ -156,6 +156,27 @@ SYSTEMS: list[dict] = [
             "5",
         ],
     },
+    {
+        # Regression guard for the per-device (no-replication) random
+        # build with spectral padding: always multi-device on the kx axis
+        # (np1 = 2), with nx // 2 = 17 not divisible by np1 (padded to
+        # 18).  Exercises the fixed multi-device spectral-padding path.
+        "name": "plane-couette-mpi-pad",
+        "force_np": 2,
+        "force_np0": 1,
+        "oversubscribe": True,
+        "res": {"nx": 34, "ny": 32, "nz": 32},
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+        ],
+    },
 ]
 
 # Default time-stepping ``corrector_tolerance`` (TimeStepping model
@@ -174,21 +195,33 @@ VALUE_PATTERN = re.compile(rf"=\s*({_NUM})")
 
 
 def _build_command(
-    system_args: list[str], args: argparse.Namespace, dt: float
+    system: dict, args: argparse.Namespace, dt: float
 ) -> list[str]:
-    """Build the ``mpirun ... -m dnsjax`` command for one system."""
-    res = str(args.res)
-    base = [
-        "mpirun",
+    """Build the ``mpirun ... -m dnsjax`` command for one system.
+
+    Per-system ``force_np`` / ``force_np0`` / ``res`` / ``oversubscribe``
+    override the suite defaults (used by the multi-device padded entry).
+    """
+    np_count = system.get("force_np", args.np)
+    np0 = system.get("force_np0", args.np0)
+    res = system.get("res", {})
+    nx = str(res.get("nx", args.res))
+    ny = str(res.get("ny", args.res))
+    nz = str(res.get("nz", args.res))
+
+    base = ["mpirun"]
+    if system.get("oversubscribe"):
+        base.append("--oversubscribe")
+    base += [
         "-np",
-        str(args.np),
+        str(np_count),
         sys.executable,
         "-m",
         "dnsjax",
         "--dist.np0",
-        str(args.np0),
+        str(np0),
         "--dist.np1",
-        str(args.np // args.np0),
+        str(np_count // np0),
         # In-process random divergence-free IC (no snapshot file).
         "--init.random_field",
         "True",
@@ -199,11 +232,11 @@ def _build_command(
         "--init.random_seed",
         str(args.seed),
         "--res.nx",
-        res,
+        nx,
         "--res.ny",
-        res,
+        ny,
         "--res.nz",
-        res,
+        nz,
         "--step.dt",
         str(dt),
         "--stop.max_sim_time",
@@ -211,7 +244,7 @@ def _build_command(
         "--outs.it_stats",
         str(args.it_stats),
     ]
-    return base + system_args
+    return base + system["args"]
 
 
 def _final_summary_line(stdout: str) -> str | None:
@@ -285,7 +318,7 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
     # Per-system dt cap: some systems need a smaller step than the
     # global default for the corrector to converge (see SYSTEMS).
     dt = min(args.dt, system.get("max_dt", math.inf))
-    cmd = _build_command(system["args"], args, dt)
+    cmd = _build_command(system, args, dt)
 
     with tempfile.TemporaryDirectory(prefix=f"rand_{name}_") as workdir:
         result = subprocess.run(

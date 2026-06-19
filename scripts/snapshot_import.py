@@ -1,48 +1,52 @@
 #!/usr/bin/env python3
-r"""Convert external-simulator velocity fields into dnsjax snapshots.
+r"""Convert a native-layout velocity field into a dnsjax snapshot.
 
 This is a **library** (not a CLI): it exposes functions that future,
-per-simulator CLIs import to pack a velocity field produced by another
-DNS code (Fourier x finite-difference x Fourier for wall-bounded flows,
-or Fourier x Fourier x Fourier for triply-periodic flows) into dnsjax's
-native single-file (tar-wrapped zarr3) snapshot format.  It mirrors how
+per-simulator CLIs import to pack a velocity field -- already arranged in
+dnsjax's **native** component/axis structure -- into dnsjax's single-file
+(tar-wrapped zarr3) snapshot format.  It mirrors how
 ``scripts/random_field.py`` configures the global parameter singletons
-and calls ``snapshot.save_snapshot``, but instead of *generating* a
-field it *packs a supplied one*.
+and calls ``snapshot.save_snapshot``, but instead of *generating* a field
+it *packs a supplied one*.  Conversion runs single-device (``np = 1``);
+any external ``[streamwise, wall-normal, spanwise]`` -> native
+permutation and component mixing is the **caller's** responsibility, not
+this module's.
 
-Input field layout
-------------------
-The input velocity field is array-like with layout
+Native input layout (physical and spectral)
+-------------------------------------------
+The input is array-like with shape ``(3, axis1, axis2, axis3)`` in
+dnsjax's native ordering for every geometry:
 
-    ``[component, streamwise, wall-normal, spanwise]``
+=================  =====================  =========================
+system family      components (axis 0)    axes (1, 2, 3)
+=================  =====================  =========================
+Cartesian          `$(u_x, u_y, u_z)$`    `$(y, z, x)$`
+triply-periodic    `$(u_x, u_y, u_z)$`    `$(y, z, x)$`
+pipe / TC          `$(u_z, u_+, u_-)$`    `$(r, \theta, z_{ax})$`
+=================  =====================  =========================
 
-(for triply-periodic flows the wall-normal direction is the "shearwise"
-direction).  Components are ordered streamwise / wall-normal / spanwise.
-Concretely, per system:
+with `$u_\pm = u_r \pm i\,u_\theta$` (formed by the caller).  Axis 3 is
+the real-FFT (``nx``) slot, axis 2 the complex-FFT (``nz``) slot, axis 1
+the wall-normal (``ny``; untransformed for wall-bounded) or `$k_y$`
+(periodic) slot.  **Pipe and Taylor-Couette share the same native layout**
+``(r, θ, z_ax)``: dnsjax maps the axial direction to the real-FFT (``nx``)
+slot and the azimuthal to the complex (``nz``) slot, so for
+Taylor-Couette the spanwise (axial) resolution is ``nx`` and the
+streamwise (azimuthal) ``nz``.
 
-=================  =====================  =============================
-system family      input components       input axes (1, 2, 3)
-=================  =====================  =============================
-Cartesian          `$(u_x, u_y, u_z)$`    `$(x, y, z)$`
-triply-periodic    `$(u_x, u_y, u_z)$`    `$(x, y, z)$`
-pipe               `$(u_z, u_r, u_\theta)$`   `$(z_{ax}, r, \theta)$`
-Taylor-Couette     `$(u_\theta, u_r, u_z)$`   `$(\theta, r, z_{ax})$`
-=================  =====================  =============================
+Physical input has shape ``(3, ny, nz, nx)`` -- real for
+Cartesian/periodic, complex for pipe/TC (``u_pm`` are complex).  Spectral
+input has the same native layout with the Fourier axes transformed (no
+3/2 dealiasing padding): the real axis (3) holds ``nx//2`` non-negative
+modes (or ``nx//2 + 1`` with Nyquist), the complex axis (2) ``nz - 1``
+modes in ``complex_harmonics`` order (or ``nz`` in numpy-FFT order with
+Nyquist), and for periodic the `$k_y$` axis (1) likewise; ``input_norm``
+(numpy naming) is the source's forward-FFT normalisation.
 
-The field may be supplied in **physical** space or in **spectral**
-(Fourier-transformed) space.  In both cases it must be at the native
-resolution -- **no 3/2 dealiasing expansion / padding**.  For spectral
-input, either the streamwise *or* the spanwise axis may be the
-real-to-complex (rfft) axis holding only non-negative wavenumbers; pick
-it with ``real_axis`` (``"streamwise"`` <-> `$k_x$`, ``"spanwise"`` <->
-`$k_z$`).
-
-dnsjax native layout (what is stored)
--------------------------------------
+dnsjax native state (what is stored)
+------------------------------------
 The snapshot stores the **complex spectral perturbation velocity** at
-true (unpadded) resolution; with ``np=1`` here there is no device
-padding, so the in-memory state is exactly what is written.  Components
-and axes per family:
+true (unpadded) resolution (``np = 1`` -> no device padding):
 
 =================  ==================  ====================
 system family      state components    state axes
@@ -52,40 +56,25 @@ triply-periodic    `$(u_x,u_y,u_z)$`   `$(k_y, k_z, k_x)$`
 pipe / TC          `$(u_z,u_+,u_-)$`   `$(r, m, k_z)$`
 =================  ==================  ====================
 
-True (unpadded) shapes are ``(ny, nz-1, nx//2)`` (Cartesian, pipe,
-TC) and ``(ny-1, nz-1, nx//2)`` (triply-periodic).
+True shapes are ``(ny, nz-1, nx//2)`` (Cartesian, pipe, TC) and
+``(ny-1, nz-1, nx//2)`` (triply-periodic).
 
-with `$u_\pm = u_r \pm i\,u_\theta$`.  dnsjax always maps the ``nx`` /
-real-FFT slot to the streamwise direction for Cartesian/periodic/pipe,
-but for **Taylor-Couette the axial direction is the real-FFT (``nx``)
-axis and the azimuthal direction the complex (``nz``) axis** -- so the
-streamwise (azimuthal) resolution is ``nz`` and the spanwise (axial)
-resolution is ``nx`` (confirmed from the ``annular.py`` ``Fourier``
-coordinate-mapping table).  This module encapsulates that mapping so
-callers always pass the natural ``[streamwise, wall-normal, spanwise]``
-field.
-
-Algorithm (single forward path; spectral input adds an inverse pre-step)
------------------------------------------------------------------------
-1. If ``space == "spectral"``: inverse-transform the input to physical
-   space -- ``ifft`` along the full-complex Fourier axes, ``irfft``
-   along ``real_axis`` (last, to yield a real field) -- using the
-   source's normalisation (``input_norm``, numpy naming).  The
-   wall-normal / radial axis is never transformed for wall-bounded
-   flows.  A missing Nyquist mode is tolerated (zero-filled).
-2. Permute the input axes to the dnsjax physical layout
-   ``[c, (y|r), (z|theta), (x|z_ax)]`` (axis sizes ``(ny, nz, nx)``).
-3. Form the dnsjax component basis: identity for Cartesian/periodic;
-   `$(u_z, u_+, u_-)$` for pipe/TC.
-4. Forward-transform with ``norm="forward"`` (dnsjax convention): a full
-   ``fft`` along every Fourier axis, then drop the Nyquist mode -- keep
-   the non-negative half `$[0, n/2)$` on the real axis
-   (``operators.real_harmonics``) and ``operators.complex_harmonics``
-   order on the full axes.  Using a *full* ``fft`` then truncating the
-   real axis (rather than ``rfft``) is required because `$u_\pm$` are
-   complex, and is identity-equivalent for real components.  The
-   wall-normal / radial axis is left as grid samples for wall-bounded
-   flows.
+Algorithm
+---------
+- **physical**: forward-transform with ``norm="forward"`` (dnsjax
+  convention) -- a full ``fft`` along every Fourier axis, then keep
+  ``operators.real_harmonics`` on the real axis and
+  ``operators.complex_harmonics`` on the full axes (dropping Nyquist).  A
+  *full* ``fft`` then truncation (rather than ``rfft``) is required
+  because `$u_\pm$` are complex; it is identity-equivalent for real
+  components.  The wall-normal / radial axis is left as grid samples.
+- **spectral**: the input is already native, so no transform and **no
+  inverse-to-physical** is performed (an ``irfft`` would be invalid --
+  the `$(u_+, u_-)$` pair is not individually Hermitian on the real axis;
+  only the joint `$\hat u_+(-k)=\overline{\hat u_-(k)}$` holds).  Each
+  Fourier axis is reordered to native order (dropping any Nyquist mode)
+  and the field is rescaled from ``input_norm`` to dnsjax's ``"forward"``
+  convention.
 
 Perturbation only
 -----------------
@@ -124,7 +113,6 @@ or, for finer control::
     import snapshot_import as si
     si.configure_target("kolmogorov", 64, 64, 64, lx=4.0, lz=4.0)
     state = si.to_spectral_state(field, space="spectral",
-                                 real_axis="streamwise",
                                  input_norm="backward")
     si.write_snapshot(state, "ic_snapshot", t=0.0, it=0)
 """
@@ -145,7 +133,6 @@ __all__ = [
 ]
 
 Space = Literal["physical", "spectral"]
-RealAxis = Literal["streamwise", "spanwise"]
 InputNorm = Literal["backward", "forward", "ortho"]
 
 
@@ -177,31 +164,6 @@ def _geo_family(system: str) -> str:
     raise ValueError(f"unknown system: {system!r}")
 
 
-def _input_axis_sizes(
-    family: str, nx: int, ny: int, nz: int
-) -> tuple[int, int, int]:
-    """Physical sizes of the input axes ``(streamwise, wn, spanwise)``.
-
-    dnsjax maps the ``nx`` (real-FFT) slot to the streamwise direction
-    for every family *except* Taylor-Couette, whose streamwise
-    (azimuthal) direction is the ``nz`` slot and spanwise (axial) the
-    ``nx`` slot.
-    """
-    if family == "annular":
-        return (nz, ny, nx)
-    return (nx, ny, nz)
-
-
-def _permute(family: str) -> tuple[int, int, int, int]:
-    """Axis permutation: input ``[c, stream, wn, span]`` ->
-    dnsjax physical ``[c, (y|r), (z|theta), (x|z_ax)]``."""
-    if family == "annular":
-        # input [c, theta, r, z_ax] -> [c, r, theta, z_ax]
-        return (0, 2, 1, 3)
-    # input [c, x|z_ax, y|r, z|theta] -> [c, y|r, z|theta, x|z_ax]
-    return (0, 2, 3, 1)
-
-
 # ── Wavenumber gather (numpy FFT order -> dnsjax order) ──────────
 
 
@@ -230,81 +192,67 @@ def _real_axis_gather(n: int) -> np.ndarray:
     return np.asarray(real_harmonics(n)).astype(int)
 
 
-# ── Component basis ──────────────────────────────────────────────
-
-
-def _make_components(family: str, arr: Any) -> Any:
-    r"""Map input components (axis 0) to the dnsjax basis.
-
-    Cartesian / periodic: identity ``(u_x, u_y, u_z)``.  Pipe / TC:
-    ``(u_z, u_+, u_-)`` with `$u_\pm = u_r \pm i\,u_\theta$`.  ``arr`` is
-    the post-permute dnsjax-physical array (axis 0 still in input order).
-    """
-    from jax import numpy as jnp
-
-    if family in ("cartesian", "periodic"):
-        return arr
-    if family == "pipe":  # input (u_z, u_r, u_theta)
-        u_z, u_r, u_th = arr[0], arr[1], arr[2]
-    else:  # annular / TC, input (u_theta, u_r, u_z)
-        u_th, u_r, u_z = arr[0], arr[1], arr[2]
-    return jnp.stack([u_z, u_r + 1j * u_th, u_r - 1j * u_th], axis=0)
-
-
 # ── Transforms ───────────────────────────────────────────────────
 
 
-def _reinsert_full_nyquist(field: Any, axis: int, n: int) -> Any:
-    """Restore numpy FFT order (length ``n``) on a full-complex axis.
+def _to_native_full_axis(field: Any, axis: int, n: int) -> Any:
+    """Reorder a full-complex spectral axis to native
+    (``complex_harmonics``) order, dropping the Nyquist mode.
 
-    A standard numpy-order axis (length ``n``) is returned unchanged; a
-    dnsjax-style axis with the Nyquist dropped (length ``n - 1``,
-    ``complex_harmonics`` order) gets a zero re-inserted at index
-    ``n // 2``.
+    Length ``n - 1`` is already native (pass through); length ``n`` is
+    numpy-FFT order (gather, which also drops the Nyquist mode).
     """
     from jax import numpy as jnp
 
     m = field.shape[axis]
-    if m == n:
-        return field
     if m == n - 1:
-        return jnp.insert(field, n // 2, 0, axis=axis)
+        return field
+    if m == n:
+        return jnp.take(field, _full_axis_gather(n), axis=axis)
     raise ValueError(
-        f"spectral axis {axis} has length {m}; expected n={n} or n-1"
+        f"full spectral axis {axis} length {m}; expected {n} or {n - 1}"
     )
 
 
-def _inverse_to_physical(
+def _norm_factor(input_norm: InputNorm, axis_sizes: list[int]) -> float:
+    """Scalar mapping a forward transform in ``input_norm`` to dnsjax's
+    ``norm="forward"`` convention, over the transformed ``axis_sizes``."""
+    if input_norm == "forward":
+        return 1.0
+    if input_norm == "backward":
+        return float(np.prod([1.0 / n for n in axis_sizes]))
+    if input_norm == "ortho":
+        return float(np.prod([1.0 / np.sqrt(n) for n in axis_sizes]))
+    raise ValueError(
+        f"input_norm must be 'backward'/'forward'/'ortho'; got {input_norm!r}"
+    )
+
+
+def _spectral_to_native(
     field: Any,
-    real_axis: RealAxis,
     input_norm: InputNorm,
     periodic: bool,
-    sizes: tuple[int, int, int],
+    nx: int,
+    ny: int,
+    nz: int,
 ) -> Any:
-    """Inverse-transform a spectral input to a real physical field.
+    r"""Convert a native-layout spectral input to the dnsjax state.
 
-    Operates in input-axis order ``[c, stream(1), wn(2), span(3)]``.
-    The full-complex Fourier axes are inverted with ``ifft``; the
-    ``real_axis`` is inverted last with ``irfft`` to produce a real
-    field.  ``input_norm`` is the source's forward-transform
-    normalisation (numpy naming).
+    The input is already in native component/axis order; only the Fourier
+    mode order / Nyquist presence and the normalisation differ.  Reorders
+    each Fourier axis to native order (real axis -> ``[0, nx//2)``; full
+    axes -> ``complex_harmonics``, Nyquist dropped) and rescales
+    ``input_norm`` -> dnsjax's ``"forward"``.  No inverse-to-physical
+    transform is used: `$(u_+, u_-)$` are not individually Hermitian on
+    the real axis (see the module docstring).
     """
-    from jax import numpy as jnp
-
-    phys_size = {1: sizes[0], 2: sizes[1], 3: sizes[2]}
-    fourier_axes = {1, 2, 3} if periodic else {1, 3}
-    real_ax = 1 if real_axis == "streamwise" else 3
-    if real_ax not in fourier_axes:
-        raise ValueError(f"real_axis {real_axis!r} is not a Fourier axis")
-
-    out = field
-    for ax in sorted(fourier_axes - {real_ax}):
-        out = _reinsert_full_nyquist(out, ax, phys_size[ax])
-        out = jnp.fft.ifft(out, axis=ax, norm=input_norm)
-    out = jnp.fft.irfft(
-        out, n=phys_size[real_ax], axis=real_ax, norm=input_norm
-    )
-    return out
+    field = field[..., : nx // 2]  # real axis (3): keep [0, nx//2)
+    field = _to_native_full_axis(field, 2, nz)  # k_z / m
+    axis_sizes = [nx, nz]
+    if periodic:
+        field = _to_native_full_axis(field, 1, ny)  # k_y
+        axis_sizes.append(ny)
+    return field * _norm_factor(input_norm, axis_sizes)
 
 
 def _forward_to_spectral(
@@ -336,21 +284,22 @@ def _forward_to_spectral(
 def _validate_input_shape(
     field: Any,
     space: Space,
-    real_axis: RealAxis,
     periodic: bool,
-    sizes: tuple[int, int, int],
+    nx: int,
+    ny: int,
+    nz: int,
 ) -> None:
-    """Check the input field shape against the configured resolution."""
+    """Check the native input field shape against the resolution."""
     if field.ndim != 4 or field.shape[0] != 3:
         raise ValueError(
-            f"field must have shape (3, stream, wn, span); got {field.shape}"
+            f"field must have shape (3, axis1, axis2, axis3); got "
+            f"{field.shape}"
         )
-    n1, n2, n3 = sizes
     if space == "physical":
-        if tuple(field.shape[1:]) != (n1, n2, n3):
+        if tuple(field.shape[1:]) != (ny, nz, nx):
             raise ValueError(
-                f"physical field shape {tuple(field.shape[1:])} != "
-                f"expected ({n1}, {n2}, {n3})"
+                f"physical field shape {tuple(field.shape[1:])} != native "
+                f"(ny, nz, nx) = ({ny}, {nz}, {nx})"
             )
         return
     if space != "spectral":
@@ -358,27 +307,23 @@ def _validate_input_shape(
             f"space must be 'physical' or 'spectral'; got {space!r}"
         )
 
-    real_ax = 1 if real_axis == "streamwise" else 3
-    fourier_axes = {1, 2, 3} if periodic else {1, 3}
-    phys = {1: n1, 2: n2, 3: n3}
-    for ax in (1, 2, 3):
-        m = field.shape[ax]
-        n = phys[ax]
-        if ax == real_ax:
-            if m not in (n // 2, n // 2 + 1):
-                raise ValueError(
-                    f"spectral real axis {ax} length {m}; expected "
-                    f"{n // 2} or {n // 2 + 1}"
-                )
-        elif ax in fourier_axes:
-            if m not in (n, n - 1):
-                raise ValueError(
-                    f"spectral full axis {ax} length {m}; expected {n} or "
-                    f"{n - 1}"
-                )
-        else:  # untransformed wall-normal axis
-            if m != n:
-                raise ValueError(f"wall-normal axis {ax} length {m} != ny {n}")
+    a1, a2, a3 = field.shape[1], field.shape[2], field.shape[3]
+    if periodic:
+        if a1 not in (ny - 1, ny):
+            raise ValueError(
+                f"spectral k_y axis length {a1}; expected {ny - 1} or {ny}"
+            )
+    elif a1 != ny:
+        raise ValueError(f"wall-normal axis length {a1} != ny {ny}")
+    if a2 not in (nz - 1, nz):
+        raise ValueError(
+            f"spectral k_z axis length {a2}; expected {nz - 1} or {nz}"
+        )
+    if a3 not in (nx // 2, nx // 2 + 1):
+        raise ValueError(
+            f"spectral real axis length {a3}; expected {nx // 2} or "
+            f"{nx // 2 + 1}"
+        )
 
 
 def _validate_grid_domain(system: str, family: str, grid: list[float]) -> None:
@@ -544,24 +489,19 @@ def to_spectral_state(
     field: Any,
     *,
     space: Space = "physical",
-    real_axis: RealAxis = "streamwise",
     input_norm: InputNorm = "backward",
 ) -> Any:
-    r"""Pack an input velocity field into dnsjax's spectral state.
+    r"""Pack a native-layout velocity field into dnsjax's spectral state.
 
-    Requires ``configure_target`` to have been called.  ``field`` has
-    layout ``[component, streamwise, wall-normal, spanwise]`` at the
-    native (unpadded) resolution.
+    Requires ``configure_target`` to have been called.  ``field`` is in
+    dnsjax's native component/axis order at the native (unpadded)
+    resolution -- physical ``(3, ny, nz, nx)`` or spectral with the
+    Fourier axes transformed (see the module docstring).
 
     Parameters
     ----------
     space:
-        ``"physical"`` or ``"spectral"`` (Fourier-transformed in the
-        periodic directions, no 3/2 padding).
-    real_axis:
-        For ``space="spectral"``: which axis holds only non-negative
-        wavenumbers -- ``"streamwise"`` (`$k_x$`) or ``"spanwise"``
-        (`$k_z$`).  Ignored for physical input.
+        ``"physical"`` or ``"spectral"`` (native layout, no 3/2 padding).
     input_norm:
         For ``space="spectral"``: the source's forward-FFT normalisation
         (numpy naming; default ``"backward"``).  Ignored for physical
@@ -579,23 +519,16 @@ def to_spectral_state(
     from dnsjax.parameters import params
     from dnsjax.sharding import sharding
 
-    system = params.phys.system
-    family = _geo_family(system)
-    periodic = family == "periodic"
+    periodic = _geo_family(params.phys.system) == "periodic"
     nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
-    sizes = _input_axis_sizes(family, nx, ny, nz)
 
     field = jnp.asarray(field)
-    _validate_input_shape(field, space, real_axis, periodic, sizes)
+    _validate_input_shape(field, space, periodic, nx, ny, nz)
 
-    if space == "spectral":
-        field = _inverse_to_physical(
-            field, real_axis, input_norm, periodic, sizes
-        )
-
-    arr = jnp.transpose(field, _permute(family))
-    arr = _make_components(family, arr)
-    state = _forward_to_spectral(arr, periodic, nx, ny, nz)
+    if space == "physical":
+        state = _forward_to_spectral(field, periodic, nx, ny, nz)
+    else:
+        state = _spectral_to_native(field, input_norm, periodic, nx, ny, nz)
     state = state.astype(sharding.complex_type)
     return jax.device_put(state, sharding.spec_vector_shard)
 
@@ -623,7 +556,6 @@ def convert_field_to_snapshot(
     ny: int,
     nz: int,
     space: Space = "physical",
-    real_axis: RealAxis = "streamwise",
     input_norm: InputNorm = "backward",
     t: float = 0.0,
     it: int = 0,
@@ -631,15 +563,14 @@ def convert_field_to_snapshot(
 ) -> None:
     """One-shot conversion: configure, pack, and write a snapshot.
 
+    ``field`` is in dnsjax native layout (see the module docstring).
     ``**config`` is forwarded to ``configure_target`` (``lx``, ``lz``,
     ``wall_normal_grid``, ``re``, ``re1``, ``re2``, ``eta``,
     ``tilt_degree``, ``driving``, ``double_precision``, ``fd_order``,
     ``extra_params``, ...).
     """
     configure_target(system, nx, ny, nz, **config)
-    state = to_spectral_state(
-        field, space=space, real_axis=real_axis, input_norm=input_norm
-    )
+    state = to_spectral_state(field, space=space, input_norm=input_norm)
     write_snapshot(state, output_path, t=t, it=it)
 
 

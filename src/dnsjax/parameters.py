@@ -169,9 +169,13 @@ class Initiation(BaseModel):
     ``snapshot`` file (a single-file tar snapshot; see
     :mod:`dnsjax.snapshot`) wins; otherwise ``random_field`` (an
     in-process random divergence-free perturbation, no snapshot file);
-    otherwise the laminar / legacy-``.npz`` path.  The ``random_*``
-    knobs mirror the ``scripts/random_field.py`` CLI and feed
-    :func:`dnsjax.random_field.generate_random_state`.
+    otherwise ``localized_rolls`` (an in-process deterministic
+    streamwise-localized-rolls perturbation, wall-bounded only, no
+    snapshot file); otherwise the laminar / legacy-``.npz`` path.  The
+    ``random_*`` knobs mirror the ``scripts/random_field.py`` CLI and
+    feed :func:`dnsjax.random_field.generate_random_state`; the
+    ``localized_rolls_*`` knobs feed
+    :func:`dnsjax.localized_rolls.generate_localized_rolls`.
     """
 
     start_from_laminar: bool = True
@@ -187,6 +191,19 @@ class Initiation(BaseModel):
     random_smoothness: float = 0.4  # spectral decay rate (0 < s < 1)
     random_seed: int = 1  # NumPy PRNG seed (device-count independent)
     random_mean_flow: bool = False  # also perturb the mean (kx=kz=0) mode
+    # Generate an in-process deterministic localized-rolls ("turbulent
+    # spot") perturbation (wall-bounded only; lower precedence than
+    # ``random_field``).  A compact fixed-physical structure normalized so
+    # peak |u'| = amplitude, localized in every homogeneous direction
+    # (growing a box length adds laminar around the spot).  ``width`` is
+    # the physical localization half-width (flow units); ``wavelength`` is
+    # the cross-roll spanwise wavelength (flow units; ignored by the pipe,
+    # whose cross-section is the fixed m = +-1 mode).  For Dean the
+    # analytical laminar profile is added (total-field IC).
+    localized_rolls: bool = False
+    localized_rolls_amplitude: float = 0.1  # peak perturbation velocity
+    localized_rolls_width: float = 2.0  # physical localization width
+    localized_rolls_wavelength: float = 4.0  # cross-roll wavelength
 
 
 class Outputs(BaseModel):
