@@ -222,3 +222,16 @@ def _get_stats_jit(
 def get_stats(state: Array) -> dict[str, Array]:
     """Wrapper around ``_get_stats_jit``."""
     return _get_stats_jit(state, fourier, flow)
+
+
+@jit
+def _get_perturbation_energy_jit(
+    state: Array, fourier_: Fourier, flow_: PlaneCouetteFlow
+) -> Array:
+    r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
+    return get_norm2(state, fourier_.k_metric, flow_.y_weights) / 2
+
+
+def get_perturbation_energy(state: Array) -> Array:
+    """Perturbation kinetic energy E' (for the laminarization check)."""
+    return _get_perturbation_energy_jit(state, fourier, flow)

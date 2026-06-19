@@ -269,6 +269,7 @@ def main() -> None:
     if params.phys.system in periodic_systems:
         from .flows.triply_periodic.monochromatic import (
             correct_velocity,
+            get_perturbation_energy,
             get_stats,
             init_state,
             predict_and_fully_correct,
@@ -276,6 +277,7 @@ def main() -> None:
         )
     elif params.phys.system == "plane-couette":
         from .flows.wall_bounded.plane_couette import (
+            get_perturbation_energy,
             get_stats,
             init_state,
             predict_and_fully_correct,
@@ -283,6 +285,7 @@ def main() -> None:
         )
     elif params.phys.system == "plane-poiseuille":
         from .flows.wall_bounded.plane_poiseuille import (
+            get_perturbation_energy,
             get_stats,
             init_state,
             predict_and_fully_correct,
@@ -290,6 +293,7 @@ def main() -> None:
         )
     elif params.phys.system == "pipe":
         from .flows.wall_bounded.pipe import (
+            get_perturbation_energy,
             get_stats,
             init_state,
             predict_and_fully_correct,
@@ -297,6 +301,7 @@ def main() -> None:
         )
     elif params.phys.system == "taylor-couette":
         from .flows.wall_bounded.taylor_couette import (
+            get_perturbation_energy,
             get_stats,
             init_state,
             predict_and_fully_correct,
@@ -304,6 +309,7 @@ def main() -> None:
         )
     elif params.phys.system == "dean":
         from .flows.wall_bounded.dean import (
+            get_perturbation_energy,
             get_stats,
             init_state,
             predict_and_fully_correct,
@@ -402,6 +408,16 @@ def main() -> None:
     wall_time_now: int = perf_counter_ns()
     last_error: float = 0.0
 
+    # Laminarization (relaminarization) termination: stop once the
+    # perturbation kinetic energy E' falls below the threshold.  E' is
+    # read on the host at the it_error_check cadence (below), so the
+    # flag lags the device by up to that many steps -- the same
+    # semantics as the corrector-divergence stop.
+    check_laminarization: bool = params.stop.check_laminarization
+    laminarization_threshold: float = params.stop.laminarization_threshold
+    laminarized: bool = False
+    e_prime_host: float = float("inf")
+
     # Corrector counters stay on the device and accumulate lazily;
     # they are synced to the host only every ``it_error_check``
     # steps (error) or at shutdown (totals), so the host can keep
@@ -419,6 +435,11 @@ def main() -> None:
         f"t = {t:.2f}",
         *[f"{x}={y:.3e}" for x, y in stats.items()],
     )
+
+    if check_laminarization:
+        # Compile the E' kernel outside the benchmark window; it is
+        # read at the it_error_check cadence in the main loop.
+        jax.block_until_ready(get_perturbation_energy(state))
 
     # --- Stats buffer setup ------------------------------------------------
     p = params.outs.stats_precision - 1
@@ -518,6 +539,7 @@ def main() -> None:
         t < t_stop
         and wall_time_now - wall_time_start < wall_time_stop
         and last_error < params.step.corrector_tolerance
+        and not laminarized
     ):
         if it == params.init.it0 + 1:
             # Start the benchmark clock after the first (JIT-heavy)
@@ -635,6 +657,29 @@ def main() -> None:
             # Periodic host sync for the convergence check.
             last_error = float(error_dev)
 
+            if check_laminarization:
+                # Laminarization (relaminarization) trigger: stop once
+                # the perturbation kinetic energy E' falls below the
+                # threshold.  ``state`` here is the fully updated
+                # post-step field (post divergence-correction for
+                # periodic systems).
+                #
+                # Future feature: a sharper relaminarization signal is
+                # the norm of the *complete* RHS (Laplacian included)
+                # going to zero -- it vanishes only at a genuine fixed
+                # point, not merely at low energy.  The complete RHS is
+                # never explicitly formed (the viscous term is implicit
+                # in the Helmholtz solve), but the increment-norm proxy
+                # ``||u^{n+1} - u^n|| / dt`` is essentially free: by
+                # construction of the Crank-Nicolson update it equals
+                # the time-average of the complete projected RHS, needs
+                # only states already in hand (one extra norm, no
+                # operator evaluations, no pressure solve), and goes to
+                # zero at the laminar fixed point.  Tracking it would
+                # mean keeping the pre-step state for the difference.
+                e_prime_host = float(get_perturbation_energy(state))
+                laminarized = e_prime_host < laminarization_threshold
+
         wall_time_now = perf_counter_ns()
 
     # --- Post-processing -----------------------------------------------------
@@ -655,6 +700,12 @@ def main() -> None:
         sharding.print(
             f"Corrector failed to converge at t={t}, it={it}, c={last_c}, "
             f"with error = {last_error:.3e}."
+        )
+
+    if laminarized:
+        sharding.print(
+            f"Laminarized: E' = {e_prime_host:.3e} < "
+            f"{laminarization_threshold:.3e} at t={t}, it={it}."
         )
 
     sharding.print("Stopped timestepping at", datetime.now())

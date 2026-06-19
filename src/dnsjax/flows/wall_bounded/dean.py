@@ -25,8 +25,11 @@ realised with **no special stepper**: the flow sets
 `$(\nabla\times\mathbf{u})\times\mathbf{u}$` of the total field, and the
 azimuthal body force is supplied through ``AnnularFlow.pi_theta``
 (applied at the mean mode inside ``annular._get_rhs_core``).  Because
-there is no base flow, **no perturbation kinetic energy `$E'$`** is
-reported; ``get_stats`` reports total quantities.
+there is no base flow, the reported perturbation kinetic energy `$E'$`
+is the energy of the **deviation** from the analytical laminar Dean
+profile, `$\|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$`;
+``get_stats`` also reports total quantities (`$E$`, `$I$`, `$D$`, and
+the wall stresses).
 
 Like the (shear-driven) Taylor-Couette flow, the "streamwise" direction
 is azimuthal; the optional ``block_mean_spanwise_velocity`` zeroes the
@@ -168,9 +171,11 @@ def _get_stats_jit(
 
     - `$E$`: total kinetic energy (annular norm with radial Jacobian
       `$r$` and `$u_\pm$` half-factor).
-    - `$dU$`: L2 norm of the deviation from the laminar Dean profile,
-      `$\|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|$` (zero at
-      ``start_from_laminar``; the laminar-smoke error metric).
+    - `$E'$`: perturbation kinetic energy of the deviation from the
+      laminar Dean profile,
+      `$\|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$` (near zero
+      at ``start_from_laminar``; the laminar-smoke error metric and the
+      laminarization-check quantity).
     - `$I$`: energy input rate from the body force,
       `$I = \langle u_\theta\,\Pi_\theta \rangle$` (mean-mode only, as
       `$\Pi_\theta$` is azimuthally/axially uniform).
@@ -186,10 +191,11 @@ def _get_stats_jit(
     total_energy = (
         get_norm2_annular(state, fourier_.k_metric, flow_.y_weights) / 2
     )
-    deviation = jnp.sqrt(
+    perturbation_energy = (
         get_norm2_annular(
             state - laminar_state, fourier_.k_metric, flow_.y_weights
         )
+        / 2
     )
 
     # ── Mean velocity profiles ───────────────────────────────
@@ -223,7 +229,7 @@ def _get_stats_jit(
 
     return {
         "E": total_energy,
-        "dU": deviation,
+        "E'": perturbation_energy,
         "I": energy_input,
         "D": dissipation,
         "tau_th,i": tau_theta[0] / Re,
@@ -238,3 +244,29 @@ def _get_stats_jit(
 def get_stats(state: Array) -> dict[str, Array]:
     """Wrapper around ``_get_stats_jit``."""
     return _get_stats_jit(state, _laminar_state, fourier, flow)
+
+
+@jit
+def _get_perturbation_energy_jit(
+    state: Array,
+    laminar_state: Array,
+    fourier_: Fourier,
+    flow_: DeanFlow,
+) -> Array:
+    r"""Perturbation kinetic energy of the deviation from laminar.
+
+    `$E' = \|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$` (Dean
+    integrates the total field, so the perturbation is the deviation
+    from the analytical laminar Dean profile).
+    """
+    return (
+        get_norm2_annular(
+            state - laminar_state, fourier_.k_metric, flow_.y_weights
+        )
+        / 2
+    )
+
+
+def get_perturbation_energy(state: Array) -> Array:
+    """Perturbation kinetic energy E' (for the laminarization check)."""
+    return _get_perturbation_energy_jit(state, _laminar_state, fourier, flow)
