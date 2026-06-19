@@ -968,7 +968,6 @@ class CylindricalFlow:
     curl_base_flow: Array = field(init=False)
     base_flow_padded: Array = field(init=False)
     curl_base_flow_padded: Array = field(init=False)
-    base_flow_adv_padded: Array = field(init=False)
     D1_pos: Array = field(init=False)
     D2_pos: Array = field(init=False)
     D1_ghost: Array = field(init=False)
@@ -1480,11 +1479,7 @@ def _get_rhs_core(
     1. Convert `$(u_z, u_+, u_-) \to (u_z, u_r, u_\theta)$`.
     2. Compute the rotational-form nonlinear term via
        :func:`~dnsjax.rhs.get_nonlin` with the cylindrical
-       curl (and the optional physical-space *measure_fn*),
-       advecting with ``base_flow_adv_padded`` -- the
-       moving-frame base velocity
-       `$\mathbf{U} - U_{grid}\hat{\mathbf{z}}$` (see
-       :func:`pad_base_flow`).
+       curl (and the optional physical-space *measure_fn*).
     3. Convert `$(NL_z, NL_r, NL_\theta)
        \to (NL_z, NL_+, NL_-)$`.
     """
@@ -1496,7 +1491,7 @@ def _get_rhs_core(
 
     nonlin_rthz = get_nonlin(
         state_rthz,
-        flow_.base_flow_adv_padded,
+        flow_.base_flow_padded,
         flow_.curl_base_flow_padded,
         spec_to_phys_2d,
         phys_to_spec_2d,
@@ -1539,7 +1534,7 @@ def _get_rhs_measured(
     def _measure(u_phys: Array, omega_phys: Array) -> dict[str, Array]:
         return get_cfl(
             u_phys,
-            flow_.base_flow_adv_padded,
+            flow_.base_flow_padded,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
         )

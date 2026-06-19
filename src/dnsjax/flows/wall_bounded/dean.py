@@ -101,7 +101,7 @@ class DeanFlow(AnnularFlow):
 
         # Total-field formulation: there is no base flow to subtract, so
         # the rotational term computes the full (curl u) x u of the total
-        # field.  Both walls are stationary, hence U_grid = 0 (default).
+        # field.
         self.base_flow = jnp.zeros(
             (3, params.res.ny),
             dtype=sharding.float_type,
