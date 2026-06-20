@@ -18,6 +18,9 @@ from pathlib import Path
 #: Tar member holding the JSON metadata.
 META_MEMBER = "_dnsjax_meta.json"
 
+#: Optional tar member holding the embedded ``get_stats`` diagnostics.
+STATS_MEMBER = "_dnsjax_stats.json"
+
 #: Tar member prefix for the zarr3 component chunks
 #: (``state/c/{component}/0/0/0``).
 _CHUNK_PREFIX = "state/c/"
@@ -48,6 +51,23 @@ def read_snapshot_meta(path: str | Path) -> dict:
         member = tf.extractfile(META_MEMBER)
         if member is None:
             raise ValueError(f"{path} has no {META_MEMBER} member.")
+        return json.loads(member.read())
+
+
+def read_snapshot_stats(path: str | Path) -> dict | None:
+    """Return the parsed ``_dnsjax_stats.json`` member of a snapshot.
+
+    Returns ``None`` when the snapshot carries no embedded stats (the
+    member is optional, written only when ``outs.snapshot_embed_stats``
+    is on and stats were supplied to :func:`dnsjax.snapshot.save_snapshot`).
+    """
+    path = Path(path)
+    with tarfile.open(path, "r") as tf:
+        if STATS_MEMBER not in tf.getnames():
+            return None
+        member = tf.extractfile(STATS_MEMBER)
+        if member is None:
+            return None
         return json.loads(member.read())
 
 

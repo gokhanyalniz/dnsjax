@@ -67,17 +67,34 @@ corrector iteration count ``c`` and the final corrector error
 the pre-step time.  ``outs.it_error_check`` must not exceed
 ``it_corrector`` (:func:`dnsjax.parameters.validate_parameters`).
 
-Snapshot resume
----------------
+Snapshots and resume
+--------------------
+Snapshots are named ``state{isnap}.tar`` (``isnap`` zero-padded to
+``outs.snapshot_pad_width``), where ``isnap`` is a per-run counter
+(start ``init.isnap0``) bumped on every write by
+:func:`_save_numbered_snapshot`.  By default the IC is saved as
+``state00000.tar`` for any non-continuation start and the final
+state is saved on termination (both independent of
+``outs.it_snapshot``, deduped against a periodic write at the same
+``it``); the periodic save runs at the **top** of the loop so it
+shares the ``it_stats`` computation.  Each snapshot embeds the
+state's ``get_stats`` as ``_dnsjax_stats.json``
+(``outs.snapshot_embed_stats``).
+
 When ``init.snapshot`` points at a snapshot tar file (an
 uncompressed tar wrapping a zarr3 store; see
 :mod:`dnsjax.snapshot`), the parameters embedded in its metadata
 are merged in as a configuration layer above the code defaults but
 below ``parameters.toml`` and the CLI (``read_snapshot_params``;
 the JAX-setup fields ``np0``/``np1``/``platform``/
-``double_precision`` are not inherited).  Loading the snapshot
-then overrides ``params.init.t0`` / ``params.init.it0`` from the
-snapshot's ``t`` / ``it`` (not the embedded ``init.t0``).  Legacy
+``double_precision`` are not inherited).  The resume is a
+*continuation* (inherit ``t`` / ``it`` / ``isnap`` from the
+snapshot, do not re-save the IC) only when
+:func:`dnsjax.parameters.trajectory_defining_changes` is empty -- no
+Physics/Geometry/Resolution parameter was overridden to a value
+different from the snapshot's.  Any such change starts a NEW
+trajectory (``t = it = isnap = 0``, IC re-saved as
+``state00000.tar``) unless ``init.force_resume`` is set.  Legacy
 ``.npz`` files go through geometry-specific ``init_state``.  When
 the current wall-normal grid differs from the snapshot's,
 ``_interpolate_if_needed`` interpolates the state at load time
@@ -110,6 +127,7 @@ from .parameters import (
     periodic_systems,
     read_parameters,
     read_snapshot_params,
+    trajectory_defining_changes,
     update_parameters,
     validate_parameters,
     walled_systems,
@@ -324,6 +342,13 @@ def main() -> None:
     # --- Initial condition ---------------------------------------------------
     from .snapshot_meta import is_snapshot_file
 
+    # A *continuation* resume (dnsjax snapshot with unchanged trajectory
+    # params) inherits t/it/isnap and does not re-save the IC.  Every
+    # other start is a fresh trajectory: isnap begins at init.isnap0 and
+    # the IC is saved as state00000.tar (see the IC-save block below).
+    resumed_continuation: bool = False
+    isnap_start: int = params.init.isnap0
+
     if params.init.snapshot is not None and is_snapshot_file(
         params.init.snapshot
     ):
@@ -336,9 +361,37 @@ def main() -> None:
 
         validate_snapshot_params(params.init.snapshot)
         state, t_snap, it_snap = load_snapshot(params.init.snapshot)
-        params.init.t0 = t_snap
-        params.init.it0 = it_snap
-        sharding.print(f"Resumed from snapshot: t={t_snap:.6e}, it={it_snap}")
+        meta = read_metadata(params.init.snapshot)
+
+        # Continuation vs new trajectory: any override of a Physics /
+        # Geometry / Resolution parameter to a value different from the
+        # snapshot's starts a new trajectory (reset t/it/isnap) unless
+        # init.force_resume is set.
+        changes = trajectory_defining_changes(meta["params"])
+        if changes and not params.init.force_resume:
+            sharding.print(
+                "Resume: trajectory-defining parameters changed; "
+                "starting a NEW trajectory (t=it=isnap=0). Set "
+                "init.force_resume=True to continue. Changes: "
+                + "; ".join(changes)
+            )
+            params.init.t0 = 0.0
+            params.init.it0 = 0
+            isnap_start = 0
+        else:
+            if changes:
+                sharding.print(
+                    "Resume: force_resume set; continuing despite "
+                    "changes (" + "; ".join(changes) + ")."
+                )
+            params.init.t0 = t_snap
+            params.init.it0 = it_snap
+            isnap_start = meta["isnap"] + 1
+            resumed_continuation = True
+        sharding.print(
+            f"Resumed from snapshot: t={params.init.t0:.6e}, "
+            f"it={params.init.it0}"
+        )
 
         # --- Wall-normal grid interpolation ---
         if params.phys.system in walled_systems:
@@ -404,6 +457,28 @@ def main() -> None:
     it: int = params.init.it0
     t: float = params.init.t0
 
+    # Snapshot lineage counter: the index of the *next* snapshot file
+    # (state{isnap}.tar).  ``last_saved_it`` is the iteration of the most
+    # recent write, used to avoid writing the final state twice.
+    isnap: int = isnap_start
+    last_saved_it: int | None = None
+
+    def _save_numbered_snapshot(state, t, it, snap_stats, isnap):
+        """Write state{isnap}.tar (stats embedded per outs.*), return the
+        next isnap."""
+        from .snapshot import save_snapshot
+
+        width = params.outs.snapshot_pad_width
+        save_snapshot(
+            state,
+            t,
+            it,
+            f"state{isnap:0{width}d}.tar",
+            stats=(snap_stats if params.outs.snapshot_embed_stats else None),
+            isnap=isnap,
+        )
+        return isnap + 1
+
     dt_first: float = params.step.dt
     wall_time_now: int = perf_counter_ns()
     last_error: float = 0.0
@@ -440,6 +515,13 @@ def main() -> None:
         # Compile the E' kernel outside the benchmark window; it is
         # read at the it_error_check cadence in the main loop.
         jax.block_until_ready(get_perturbation_energy(state))
+
+    # Save the initial condition (state00000.tar) unless this run is a
+    # continuation of a dnsjax snapshot trajectory (whose IC is already
+    # on disk as that snapshot).  ``stats`` here is the IC's stats.
+    if params.outs.snapshot_save_initial and not resumed_continuation:
+        isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
+        last_saved_it = it
 
     # --- Stats buffer setup ------------------------------------------------
     p = params.outs.stats_precision - 1
@@ -576,6 +658,25 @@ def main() -> None:
                 ts_buf.clear()
                 py_idx = 0
 
+        # Periodic snapshot save (top of loop: same (state, it, t) as the
+        # stats row above, so a fresh ``it_stats`` computation is reused;
+        # the final state after the last step is covered by the
+        # final-snapshot block after the loop).
+        if (
+            params.outs.it_snapshot is not None
+            and it % params.outs.it_snapshot == 0
+            and it > params.init.it0
+        ):
+            if (
+                params.outs.it_stats is not None
+                and it % params.outs.it_stats == 0
+            ):
+                snap_stats = stats  # just computed above for this state
+            else:
+                snap_stats = get_stats(state)
+            isnap = _save_numbered_snapshot(state, t, it, snap_stats, isnap)
+            last_saved_it = it
+
         # Fused predictor + all corrector iterations (single JIT scope).
         if measure_steps and it % params.outs.it_steps == 0:
             # Measured variant: also records the CFL of the
@@ -637,16 +738,6 @@ def main() -> None:
 
         t += params.step.dt
         it += 1
-
-        # Periodic snapshot save
-        if (
-            params.outs.it_snapshot is not None
-            and it % params.outs.it_snapshot == 0
-            and it > params.init.it0
-        ):
-            from .snapshot import save_snapshot
-
-            save_snapshot(state, t, it, f"snapshot_it{it:09d}.tar")
 
         # On-device accumulation (no host sync).
         c_sum = c_sum + c_dev
@@ -710,11 +801,21 @@ def main() -> None:
 
     sharding.print("Stopped timestepping at", datetime.now())
 
-    # Final snapshot (if snapshotting is active and we stepped)
-    if params.outs.it_snapshot is not None and it > params.init.it0:
-        from .snapshot import save_snapshot
+    # Final-state stats: computed once when the run stepped, reused by
+    # both the final snapshot and the benchmark diagnostic below.
+    if it > params.init.it0:
+        stats = get_stats(state)
 
-        save_snapshot(state, t, it, f"snapshot_it{it:09d}.tar")
+    # Final snapshot (default-on, independent of it_snapshot); skipped
+    # when the final state was just written (a periodic or IC write at
+    # this same iteration).
+    if (
+        params.outs.snapshot_save_final
+        and it > params.init.it0
+        and it != last_saved_it
+    ):
+        isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
+        last_saved_it = it
 
     wall_time_now = perf_counter_ns()
     alive_time = ns_to_s * (wall_time_now - wall_time_start)
@@ -728,8 +829,8 @@ def main() -> None:
         rhs_tot = (c_tot - c_first_int) + 2 * (n_steps - 1)
         wall_time_per_rhs = wall_time / rhs_tot
 
-        # Final diagnostic output
-        stats = get_stats(state)
+        # Final diagnostic output (``stats`` was computed above for the
+        # final state).
         c_per_it = c_tot / n_steps
 
         if params.outs.it_stats is not None:

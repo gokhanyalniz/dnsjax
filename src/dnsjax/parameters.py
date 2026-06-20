@@ -166,12 +166,31 @@ class Initiation(BaseModel):
     feed :func:`dnsjax.random_field.generate_random_state`; the
     ``localized_rolls_*`` knobs feed
     :func:`dnsjax.localized_rolls.generate_localized_rolls`.
+
+    Resume policy: when ``snapshot`` is a dnsjax snapshot, ``it``/``t``/
+    ``isnap`` are inherited only when none of the Physics/Geometry/
+    Resolution parameters were overridden to a value different from the
+    snapshot's (a *continuation*).  Any such change starts a NEW
+    trajectory by default (``it = t = isnap = 0``); ``force_resume``
+    keeps the run continuous instead.  See
+    :func:`trajectory_defining_changes`.
     """
 
     start_from_laminar: bool = True
     snapshot: Path | None = None
     t0: float = 0  # Initial value of time
     it0: int = 0  # Initial value of number of time steps taken
+    # Initial value of the snapshot counter ``isnap`` (snapshots are
+    # named ``state{isnap}.tar``).  Mirrors ``it0``/``t0``: this is the
+    # fresh-start value, and on a *continuation* resume it is inherited
+    # from the snapshot (the resumed file's index + 1) instead.
+    isnap0: int = Field(ge=0, default=0)
+    # Continue the resumed trajectory (inherit ``it``/``t``/``isnap``)
+    # even when Physics/Geometry/Resolution parameters differ from the
+    # snapshot, instead of starting a new trajectory.  Does not bypass
+    # the hard nx/nz/system/precision mismatches that
+    # ``snapshot.validate_snapshot_params`` rejects.
+    force_resume: bool = False
     # Generate an in-process random divergence-free perturbation of the
     # base flow as the initial condition (takes precedence over the
     # laminar start; ignored when a snapshot is given).  For Dean the
@@ -228,6 +247,25 @@ class Outputs(BaseModel):
     # ``steps.dat`` / ``corrector.dat`` to disk.
     nbuffer: int = Field(ge=1, default=100)
     stats_precision: int = Field(ge=1, le=17, default=9)
+    # Snapshot filenames are ``state{isnap:0Nd}.tar`` with N =
+    # ``snapshot_pad_width`` (a *minimum* width; a larger ``isnap`` is
+    # not truncated).  ``isnap`` starts at ``init.isnap0`` and is
+    # incremented on every snapshot written.
+    snapshot_pad_width: int = Field(ge=1, default=5)
+    # Embed the state's stats (``get_stats``) into every snapshot as a
+    # ``_dnsjax_stats.json`` member.  The periodic-snapshot path reuses
+    # the ``it_stats`` computation when the iterations coincide, else it
+    # computes the stats once for the snapshot.
+    snapshot_embed_stats: bool = True
+    # Save the initial condition as ``state00000.tar`` when the run does
+    # not *continue* a dnsjax snapshot trajectory (random / localized-
+    # rolls / legacy-``.npz`` / laminar start, or a resume that changed
+    # the Physics/Geometry/Resolution).  Independent of ``it_snapshot``.
+    snapshot_save_initial: bool = True
+    # Save the final state as a snapshot when the simulation terminates.
+    # Independent of ``it_snapshot``; skipped when the final state was
+    # just written (e.g. it coincided with a periodic snapshot).
+    snapshot_save_final: bool = True
     # How processes write the snapshot's shared tar file:
     #   "concurrent": all processes write their disjoint byte ranges
     #                 at once (fast; POSIX/parallel filesystems).
@@ -401,6 +439,42 @@ def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
         if section in snap and key in snap[section]:
             snap[section].pop(key)
     return Parameters.model_validate(snap)
+
+
+# Parameter sections that *define* the trajectory: on resume, a change to
+# any of their fields (other than the JAX-setup skip fields) marks a new
+# trajectory (reset ``it``/``t``/``isnap``) rather than a continuation.
+_TRAJECTORY_SECTIONS: tuple[str, ...] = ("phys", "geo", "res")
+
+
+def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
+    """List the trajectory-defining params the run overrides on resume.
+
+    Compares the snapshot's embedded ``phys``/``geo``/``res`` parameters
+    (``snapshot_params`` is the ``params`` sub-dict of
+    ``_dnsjax_meta.json``) against the live global :data:`params`,
+    skipping the JAX-setup fields in :data:`_SNAPSHOT_SKIP_FIELDS` (of
+    which only ``res.double_precision`` lies in these sections).  Returns
+    a human-readable ``"section.key: old -> new"`` description per
+    differing field; an empty list means the resume is a pure
+    *continuation* (inherit ``it``/``t``/``isnap``).  The comparison is
+    against the snapshot's stored ``model_dump(mode="json")`` (taken
+    after :func:`update_parameters`, so geometry-forced fields such as
+    cylindrical ``lz = 2*pi`` match and do not register as changes).
+    """
+    skip = set(_SNAPSHOT_SKIP_FIELDS)
+    changes: list[str] = []
+    for section in _TRAJECTORY_SECTIONS:
+        snap = snapshot_params.get(section, {})
+        cur = getattr(params, section).model_dump(mode="json")
+        for key in sorted(set(snap) | set(cur)):
+            if (section, key) in skip:
+                continue
+            if snap.get(key) != cur.get(key):
+                changes.append(
+                    f"{section}.{key}: {snap.get(key)!r} -> {cur.get(key)!r}"
+                )
+    return changes
 
 
 def update_parameters(params_new: Parameters) -> None:
