@@ -53,6 +53,7 @@ from ...geometries.triply_periodic.triply_periodic import (
     fourier,
     get_norm2,
     laplacian,
+    ly,
 )
 from ...operators import phys_to_spec  # noqa: F401 – public re-export
 from ...parameters import (
@@ -121,9 +122,7 @@ class MonochromaticFlow(TriplyPeriodicFlow):
             raise NotImplementedError
 
         # dU/dy in Fourier space: spectral derivative = i * ky * U_hat
-        dy_base_flow_complex = (
-            1j * (2 * jnp.pi / derived_params.ly) * base_flow_complex
-        )
+        dy_base_flow_complex = 1j * (2 * jnp.pi / ly) * base_flow_complex
 
         Us = jnp.fft.irfft(
             base_flow_complex,

@@ -29,10 +29,12 @@ from ...operators import (
     real_harmonics,
     spec_to_phys,
 )
-from ...parameters import derived_params, padded_res, params
+from ...parameters import padded_res, params
 from ...rhs import get_nonlin
 from ...sharding import register_dataclass_pytree, sharding
 from ...timestep import make_stepper
+
+ly = 4  # Shear-direction box length is the length reference and fixed
 
 
 @register_dataclass_pytree
@@ -97,7 +99,7 @@ class Fourier:
             )
             * 2
             * jnp.pi
-            / derived_params.ly
+            / ly
         )
 
         self.k_metric = jnp.where(self.kx == 0, 1, 2).astype(
@@ -248,7 +250,7 @@ class TriplyPeriodicFlow:
         inv_vals = jnp.array(
             [
                 params.res.nx / params.geo.lx,
-                params.res.ny / derived_params.ly,
+                params.res.ny / ly,
                 params.res.nz / params.geo.lz,
             ],
             dtype=sharding.float_type,

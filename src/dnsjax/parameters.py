@@ -507,18 +507,15 @@ def update_parameters(params_new: Parameters) -> None:
     # Set derived parameters:
     system = params.phys.system
     if system in periodic_systems:
-        derived_params.ly = 4
-        derived_params.volume_fac = 1
+        derived_params.volume_fac = 1  # sum over ky comes as density
     elif system in cartesian_systems:
-        derived_params.ly = 2
-        derived_params.volume_fac = 2
+        derived_params.volume_fac = 2  # int_{-1]^{1} dy.
     elif system in cylindrical_systems:
-        derived_params.ly = 2  # Diameter = 2*radius
         # Force a full 2*pi spanwise extent for the cylindrical
         # geometry, overriding any user-supplied value (the
         # azimuthal modes are integer harmonics over 2*pi).
         params.geo.lz = 2 * pi
-        # To compansate for the (1/Lz) factor
+        # Cylindrical area normalisation: int_0^1 r dr.
         derived_params.volume_fac = 0.5
     elif system in annular_systems:
         # Annular geometry (two concentric cylinders).  Shared by
@@ -534,10 +531,9 @@ def update_parameters(params_new: Parameters) -> None:
         r2 = 1 / (1 - eta)
         derived_params.r_inner = r1
         derived_params.r_outer = r2
-        derived_params.ly = 2 * r2  # cosmetic (unread by wall-bounded)
         # Force a full 2*pi azimuthal extent (integer harmonics).
         params.geo.lz = 2 * pi
-        # Annular area normalisation: volume_fac = int_{r1}^{r2} r dr.
+        # Annular area normalisation: int_{r1}^{r2} r dr.
         derived_params.volume_fac = (r2**2 - r1**2) / 2
 
         if system == "taylor-couette":

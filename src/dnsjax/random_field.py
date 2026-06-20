@@ -591,6 +591,7 @@ def generate_triply_periodic(
     from .geometries.triply_periodic.triply_periodic import (
         fourier,
         get_norm,
+        ly,
     )
     from .snapshot import assemble_local_shards
 
@@ -601,7 +602,7 @@ def generate_triply_periodic(
 
     kx_np = _real_harmonics_np(nx) * (2 * pi / params.geo.lx)  # (Nkx,)
     kz_np = _complex_harmonics_np(nz) * (2 * pi / params.geo.lz)  # (Nkz,)
-    ky_np = _complex_harmonics_np(ny) * (2 * pi / derived_params.ly)  # (Nky,)
+    ky_np = _complex_harmonics_np(ny) * (2 * pi / ly)  # (Nky,)
 
     decay = 1.0 - smoothness
     # k_y conjugate-partner permutation (index i <-> ny-1-i, 0 -> 0).
