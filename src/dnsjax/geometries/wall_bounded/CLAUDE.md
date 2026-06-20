@@ -55,7 +55,7 @@ FD matvecs via `apply_y_matrix` batch over the leading component axis (a pure ba
 - `flows/wall_bounded/plane_poiseuille.py`: PlanePoiseuilleFlow(CartesianFlow) -- base flow Us = 1-y^2 with tilt
 - `flows/wall_bounded/pipe.py`: PipeFlow(CylindricalFlow) -- base flow Uz = 1 - r^2
 - `flows/wall_bounded/taylor_couette.py`: TaylorCouetteFlow(AnnularFlow) -- circular-Couette base flow Uθ = A0 r + B0/r from `(re1, re2, eta)`; shear-driven stats (I_lam = D_lam = 4 B0^2 / (Re r1^2 r2^2))
-- `flows/wall_bounded/dean.py`: DeanFlow(AnnularFlow) -- force-driven Dean flow from `(re, eta)`, azimuthal body force `Π_θ = (2η+2)/(r Re (1−η))`; integrates the **total** field (`base_flow = curl_base_flow = 0`, `pi_theta` set), `start_from_laminar` uses the analytical `dean_laminar_u_theta`; total-field stats (E, I, D, `dU` deviation-from-laminar, wall stresses, bulk velocities — no `E'`)
+- `flows/wall_bounded/dean.py`: DeanFlow(AnnularFlow) -- force-driven Dean flow from `(re, eta)`, azimuthal body force `Π_θ = (2η+2)/(r Re (1−η))`; integrates the **total** field (`base_flow = curl_base_flow = 0`, `pi_theta` set), `start_from_laminar` uses the analytical `dean_laminar_u_theta`; total-field stats (E, E', I, D, wall stresses, bulk velocities; E' is the kinetic energy of the deviation from the analytical laminar profile)
 
 ### Tests
 
@@ -64,5 +64,5 @@ FD matvecs via `apply_y_matrix` batch over the leading component axis (a pure ba
 - `tests/test_annular.py`: annular operator/matvec tests, 2x2 SPIKE-vs-dense parity, circular-Couette A0/B0 coefficient checks
 - `tests/test_integration.py`: quadrature weight and interpolation matrix tests
 - `tests/test_mean_mask.py`: placeholder padding wavenumbers and `mean_mask` as the unique k^2 = 0 mode under forced spectral padding
-- `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows (incl. taylor-couette and dean; Dean is total-field, so it checks the deviation `dU` from the analytical laminar profile, corrector convergence, energy balance `I ≈ D`, and near-steady energy instead of `E'`/O(1e-18))
+- `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows (incl. taylor-couette and dean; Dean is total-field, so its `E'` is the kinetic energy of the deviation from the analytical laminar profile — it checks that `E'` stays tiny, corrector convergence, energy balance `I ≈ D`, and near-steady energy, rather than the perturbation flows' `E'`≈O(1e-32) / `err`≈O(1e-18))
 - `tests/test_random_smoke.py`: random-IC integration smoke test for all flows (the wall-bounded family + Kolmogorov), driving the **nonlinear** path that the laminar test cannot (`u'=0` there); checks each run completes to `t = 1` with a finite, converged state (no NaN/blow-up)

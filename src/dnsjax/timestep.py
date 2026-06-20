@@ -1,8 +1,10 @@
 """Predictor-corrector time integration factory.
 
-Provides :func:`make_stepper`, which builds JIT-compiled
-``predict_and_correct`` and ``iterate_correction`` functions from
-flow-specific callables.  The overall iteration structure (Euler
+Provides :func:`make_stepper`, which builds JIT-compiled stepping
+functions from flow-specific callables -- ``predict_and_correct``,
+``iterate_correction``, ``predict_and_fully_correct`` (the fused
+corrector loop and primary path), and an optional measured variant.
+The overall iteration structure (Euler
 predictor + iterative Crank-Nicolson corrector, Willis 2017) is shared
 across all flow types; only the RHS evaluation, Helmholtz solve, and
 norm computation differ.
@@ -35,7 +37,7 @@ def make_stepper(
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array, dict[str, Array]]] | None,
 ]:
-    """Build JIT-compiled predict-and-correct and iterate-correction functions.
+    """Build the JIT-compiled predictor-corrector stepping functions.
 
     The returned functions close over the flow-specific callables, so
     precomputed data (wavenumbers, time-stepping coefficients, base flow)
