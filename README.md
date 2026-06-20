@@ -13,12 +13,14 @@ Currently implemented are:
 - **Waleffe flow** — a *fully-periodic* geometry with monochromatic cosine forcing (the Ry symmetry constraint is not yet enforced).
 - **Decaying-box turbulence** — a *fully-periodic* geometry with no forcing.
 - **Plane-Couette flow** — a *wall-bounded* channel geometry driven by wall motion, with laminar base flow $U(y) = y$ on $y \in [-1, 1]$.
-
-Intent is to eventually add other wall-bounded flows, such as plane-Poiseuille flow, pipe flow, and Taylor-Couette flow.
+- **Plane-Poiseuille flow** — a *wall-bounded* channel geometry driven by a pressure gradient, with laminar base flow $U(y) = 1 - y^2$ on $y \in [-1, 1]$.
+- **Pipe flow** — a *wall-bounded* cylindrical geometry driven by a pressure gradient, with laminar base flow $U_z(r) = 1 - r^2$.
+- **Taylor–Couette flow** — a *wall-bounded* annular geometry (concentric cylinders) driven by wall rotation, with circular-Couette base flow $U_\theta(r) = A_0 r + B_0 / r$.
+- **Dean flow** — a *wall-bounded* annular geometry between stationary cylinders driven by an azimuthal body force, integrated as a total field.
 
 ## Usage
 
-Parameters are layered: Pydantic defaults → optional `parameters.toml` in the working directory → command-line arguments (see `uv run dnsjax --help`). Keys are grouped by section — `[phys]`, `[geo]`, `[res]`, `[step]`, `[stop]`, `[dist]`, `[solver]`, `[debug]`, `[outs]`, `[init]` — mirroring the Pydantic models in `src/dnsjax/parameters.py`.
+Parameters are layered: Pydantic defaults → optional `parameters.toml` in the working directory → command-line arguments (see `uv run dnsjax --help`). Keys are grouped by section — `[phys]`, `[geo]`, `[res]`, `[step]`, `[stop]`, `[dist]`, `[solver]`, `[outs]`, `[init]` — mirroring the Pydantic models in `src/dnsjax/parameters.py`.
 
 ## Implementation details
 
@@ -75,9 +77,9 @@ Physical arrays are sharded on the $z$ axis, spectral arrays on the $k_x$ axis; 
 ## To-do
 
 ### Features
-- [ ] Initialize from random states
-- [ ] Save to disk stats with a cache
-- [ ] Save to disk states
+- [x] Initialize from random states
+- [x] Save to disk stats with a cache
+- [x] Save to disk states
 - [ ] Include the [periodic orbits for Kolmogorov flow](https://github.com/gokhanyalniz/dnsbox/wiki/Periodic-orbits)
 - [ ] Enforce the Ry symmetry for Waleffe flow
 - [x] Banded LU with split-complex solves for wall-bounded flows
