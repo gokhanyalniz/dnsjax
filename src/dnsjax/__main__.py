@@ -39,8 +39,11 @@ Diagnostics (``stats.dat``, ``steps.dat``, ``corrector.dat``)
 -------------------------------------------------------------
 ``get_stats`` output is accumulated on-device in a fixed
 ``(nbuffer, n_cols)`` buffer (one row every ``it_stats``
-steps) and flushed to ``stats.dat`` when the buffer fills or
-at shutdown (``_flush_stats``).  Buffering avoids a
+steps) and flushed to ``stats.dat`` when the buffer fills, at
+shutdown, after the first (JIT-heavy) step, after every
+snapshot write, and on a termination signal
+(``flush_all_buffers``, which calls the shared
+``_flush_stats``).  Buffering avoids a
 host-device sync per sample; each flush is then ``fsync``-ed,
 so the rows are on disk immediately once the on-device buffer
 is flushed.  ``stats.dat`` (written by the main device,
@@ -67,17 +70,37 @@ corrector iteration count ``c`` and the final corrector error
 the pre-step time.  ``outs.it_error_check`` must not exceed
 ``it_corrector`` (:func:`dnsjax.parameters.validate_parameters`).
 
-Snapshot resume
----------------
+Snapshots and resume
+--------------------
+Snapshots are named ``state{isnap}.tar`` (``isnap`` zero-padded to
+``outs.snapshot_pad_width``), where ``isnap`` is a per-run counter
+(start ``init.isnap0``) bumped on every write by
+:func:`_save_numbered_snapshot`.  By default the IC is saved as
+``state00000.tar`` for any non-continuation start and the final
+state is saved on termination (both independent of
+``outs.it_snapshot``, deduped against a periodic write at the same
+``it``); the periodic save runs at the **top** of the loop so it
+shares the ``it_stats`` computation.  Each snapshot embeds the
+state's ``get_stats`` as ``_dnsjax_stats.json``
+(``outs.snapshot_embed_stats``).  Every snapshot write also
+flushes the buffered stats / steps / corrector rows to their
+``.dat`` files (``flush_all_buffers``), keeping them consistent
+with the snapshot.
+
 When ``init.snapshot`` points at a snapshot tar file (an
 uncompressed tar wrapping a zarr3 store; see
 :mod:`dnsjax.snapshot`), the parameters embedded in its metadata
 are merged in as a configuration layer above the code defaults but
 below ``parameters.toml`` and the CLI (``read_snapshot_params``;
 the JAX-setup fields ``np0``/``np1``/``platform``/
-``double_precision`` are not inherited).  Loading the snapshot
-then overrides ``params.init.t0`` / ``params.init.it0`` from the
-snapshot's ``t`` / ``it`` (not the embedded ``init.t0``).  Legacy
+``double_precision`` are not inherited).  The resume is a
+*continuation* (inherit ``t`` / ``it`` / ``isnap`` from the
+snapshot, do not re-save the IC) only when
+:func:`dnsjax.parameters.trajectory_defining_changes` is empty -- no
+Physics/Geometry/Resolution parameter was overridden to a value
+different from the snapshot's.  Any such change starts a NEW
+trajectory (``t = it = isnap = 0``, IC re-saved as
+``state00000.tar``) unless ``init.force_resume`` is set.  Legacy
 ``.npz`` files go through geometry-specific ``init_state``.  When
 the current wall-normal grid differs from the snapshot's,
 ``_interpolate_if_needed`` interpolates the state at load time
@@ -90,6 +113,7 @@ because it includes JAX's JIT compilation overhead.
 """
 
 import os
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -110,6 +134,7 @@ from .parameters import (
     periodic_systems,
     read_parameters,
     read_snapshot_params,
+    trajectory_defining_changes,
     update_parameters,
     validate_parameters,
     walled_systems,
@@ -324,6 +349,13 @@ def main() -> None:
     # --- Initial condition ---------------------------------------------------
     from .snapshot_meta import is_snapshot_file
 
+    # A *continuation* resume (dnsjax snapshot with unchanged trajectory
+    # params) inherits t/it/isnap and does not re-save the IC.  Every
+    # other start is a fresh trajectory: isnap begins at init.isnap0 and
+    # the IC is saved as state00000.tar (see the IC-save block below).
+    resumed_continuation: bool = False
+    isnap_start: int = params.init.isnap0
+
     if params.init.snapshot is not None and is_snapshot_file(
         params.init.snapshot
     ):
@@ -336,9 +368,37 @@ def main() -> None:
 
         validate_snapshot_params(params.init.snapshot)
         state, t_snap, it_snap = load_snapshot(params.init.snapshot)
-        params.init.t0 = t_snap
-        params.init.it0 = it_snap
-        sharding.print(f"Resumed from snapshot: t={t_snap:.6e}, it={it_snap}")
+        meta = read_metadata(params.init.snapshot)
+
+        # Continuation vs new trajectory: any override of a Physics /
+        # Geometry / Resolution parameter to a value different from the
+        # snapshot's starts a new trajectory (reset t/it/isnap) unless
+        # init.force_resume is set.
+        changes = trajectory_defining_changes(meta["params"])
+        if changes and not params.init.force_resume:
+            sharding.print(
+                "Resume: trajectory-defining parameters changed; "
+                "starting a NEW trajectory (t=it=isnap=0). Set "
+                "init.force_resume=True to continue. Changes: "
+                + "; ".join(changes)
+            )
+            params.init.t0 = 0.0
+            params.init.it0 = 0
+            isnap_start = 0
+        else:
+            if changes:
+                sharding.print(
+                    "Resume: force_resume set; continuing despite "
+                    "changes (" + "; ".join(changes) + ")."
+                )
+            params.init.t0 = t_snap
+            params.init.it0 = it_snap
+            isnap_start = meta["isnap"] + 1
+            resumed_continuation = True
+        sharding.print(
+            f"Resumed from snapshot: t={params.init.t0:.6e}, "
+            f"it={params.init.it0}"
+        )
 
         # --- Wall-normal grid interpolation ---
         if params.phys.system in walled_systems:
@@ -404,6 +464,28 @@ def main() -> None:
     it: int = params.init.it0
     t: float = params.init.t0
 
+    # Snapshot lineage counter: the index of the *next* snapshot file
+    # (state{isnap}.tar).  ``last_saved_it`` is the iteration of the most
+    # recent write, used to avoid writing the final state twice.
+    isnap: int = isnap_start
+    last_saved_it: int | None = None
+
+    def _save_numbered_snapshot(state, t, it, snap_stats, isnap):
+        """Write state{isnap}.tar (stats embedded per outs.*), return the
+        next isnap."""
+        from .snapshot import save_snapshot
+
+        width = params.outs.snapshot_pad_width
+        save_snapshot(
+            state,
+            t,
+            it,
+            f"state{isnap:0{width}d}.tar",
+            stats=(snap_stats if params.outs.snapshot_embed_stats else None),
+            isnap=isnap,
+        )
+        return isnap + 1
+
     dt_first: float = params.step.dt
     wall_time_now: int = perf_counter_ns()
     last_error: float = 0.0
@@ -440,6 +522,13 @@ def main() -> None:
         # Compile the E' kernel outside the benchmark window; it is
         # read at the it_error_check cadence in the main loop.
         jax.block_until_ready(get_perturbation_energy(state))
+
+    # Save the initial condition (state00000.tar) unless this run is a
+    # continuation of a dnsjax snapshot trajectory (whose IC is already
+    # on disk as that snapshot).  ``stats`` here is the IC's stats.
+    if params.outs.snapshot_save_initial and not resumed_continuation:
+        isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
+        last_saved_it = it
 
     # --- Stats buffer setup ------------------------------------------------
     p = params.outs.stats_precision - 1
@@ -532,6 +621,74 @@ def main() -> None:
             with open(corr_file, "w") as f:
                 f.write(header + "\n")
 
+    def flush_all_buffers() -> None:
+        """Flush every buffered diagnostic stream to disk and reset it.
+
+        Called at shutdown, after every snapshot write, after the
+        first (JIT-heavy) step, and on a termination signal, so the
+        ``.dat`` files stay consistent with the snapshots and survive
+        an interruption.  The disk write is main-device only; the
+        index / timestamp-list reset runs on all ranks (matching the
+        in-loop fill-flush) so the ranks stay in lockstep.
+        """
+        nonlocal py_idx, steps_idx, corr_idx
+        if params.outs.it_stats is not None and py_idx > 0:
+            if sharding.main_device:
+                _flush_stats(
+                    buffer,
+                    py_idx,
+                    ts_buf,
+                    stats_file,
+                    p,
+                    col_width,
+                )
+            ts_buf.clear()
+            py_idx = 0
+        if measure_steps and steps_idx > 0:
+            if sharding.main_device:
+                _flush_stats(
+                    steps_buffer,
+                    steps_idx,
+                    steps_ts,
+                    steps_file,
+                    p,
+                    steps_col_width,
+                )
+            steps_ts.clear()
+            steps_idx = 0
+        if measure_corrector and corr_idx > 0:
+            if sharding.main_device:
+                _flush_stats(
+                    corr_buffer,
+                    corr_idx,
+                    corr_ts,
+                    corr_file,
+                    p,
+                    corr_col_width,
+                )
+            corr_ts.clear()
+            corr_idx = 0
+
+    # On a termination signal (e.g. a scheduler wall-time kill or
+    # Ctrl-C) flush the buffers before exiting so no diagnostics are
+    # lost.  ``_terminating`` guards against a second signal re-entering
+    # the handler mid-flush.  SIGKILL cannot be caught.
+    _terminating: bool = False
+
+    def _flush_and_exit(signum: int, frame: object) -> None:
+        nonlocal _terminating
+        if _terminating:
+            return
+        _terminating = True
+        sharding.print(
+            f"Received signal {signum}; flushing buffers and exiting."
+        )
+        flush_all_buffers()
+        sys.exit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _flush_and_exit)
+    signal.signal(signal.SIGINT, _flush_and_exit)
+
     sharding.print("Started timestepping at", datetime.now())
 
     # --- Main time-stepping loop ---------------------------------------------
@@ -547,6 +704,13 @@ def main() -> None:
             # first step may still be executing here, and it must
             # stay excluded from the wall-clock statistics.
             jax.block_until_ready(state)
+
+            # Flush the diagnostics buffered during the first step (the
+            # t0 stats row plus any first CFL / corrector rows) to disk
+            # now, before the benchmark clock starts so the flush I/O is
+            # excluded from the timing.
+            flush_all_buffers()
+
             bench_start = perf_counter_ns()
 
             sharding.print("First iteration over at", datetime.now())
@@ -575,6 +739,27 @@ def main() -> None:
                     )
                 ts_buf.clear()
                 py_idx = 0
+
+        # Periodic snapshot save (top of loop: same (state, it, t) as the
+        # stats row above, so a fresh ``it_stats`` computation is reused;
+        # the final state after the last step is covered by the
+        # final-snapshot block after the loop).
+        if (
+            params.outs.it_snapshot is not None
+            and it % params.outs.it_snapshot == 0
+            and it > params.init.it0
+        ):
+            if (
+                params.outs.it_stats is not None
+                and it % params.outs.it_stats == 0
+            ):
+                snap_stats = stats  # just computed above for this state
+            else:
+                snap_stats = get_stats(state)
+            isnap = _save_numbered_snapshot(state, t, it, snap_stats, isnap)
+            last_saved_it = it
+            # Keep the .dat files consistent with this snapshot.
+            flush_all_buffers()
 
         # Fused predictor + all corrector iterations (single JIT scope).
         if measure_steps and it % params.outs.it_steps == 0:
@@ -638,16 +823,6 @@ def main() -> None:
         t += params.step.dt
         it += 1
 
-        # Periodic snapshot save
-        if (
-            params.outs.it_snapshot is not None
-            and it % params.outs.it_snapshot == 0
-            and it > params.init.it0
-        ):
-            from .snapshot import save_snapshot
-
-            save_snapshot(state, t, it, f"snapshot_it{it:09d}.tar")
-
         # On-device accumulation (no host sync).
         c_sum = c_sum + c_dev
         if it == params.init.it0 + 1:
@@ -710,11 +885,23 @@ def main() -> None:
 
     sharding.print("Stopped timestepping at", datetime.now())
 
-    # Final snapshot (if snapshotting is active and we stepped)
-    if params.outs.it_snapshot is not None and it > params.init.it0:
-        from .snapshot import save_snapshot
+    # Final-state stats: computed once when the run stepped, reused by
+    # both the final snapshot and the benchmark diagnostic below.
+    if it > params.init.it0:
+        stats = get_stats(state)
 
-        save_snapshot(state, t, it, f"snapshot_it{it:09d}.tar")
+    # Final snapshot (default-on, independent of it_snapshot); skipped
+    # when the final state was just written (a periodic or IC write at
+    # this same iteration).
+    if (
+        params.outs.snapshot_save_final
+        and it > params.init.it0
+        and it != last_saved_it
+    ):
+        isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
+        last_saved_it = it
+        # Keep the .dat files consistent with this snapshot.
+        flush_all_buffers()
 
     wall_time_now = perf_counter_ns()
     alive_time = ns_to_s * (wall_time_now - wall_time_start)
@@ -728,8 +915,8 @@ def main() -> None:
         rhs_tot = (c_tot - c_first_int) + 2 * (n_steps - 1)
         wall_time_per_rhs = wall_time / rhs_tot
 
-        # Final diagnostic output
-        stats = get_stats(state)
+        # Final diagnostic output (``stats`` was computed above for the
+        # final state).
         c_per_it = c_tot / n_steps
 
         if params.outs.it_stats is not None:
@@ -761,42 +948,8 @@ def main() -> None:
                 f"{wall_time_per_rhs:.3e} s/rhs.",
             )
 
-    # Flush remaining buffered stats
-    if (
-        params.outs.it_stats is not None
-        and py_idx > 0
-        and sharding.main_device
-    ):
-        _flush_stats(
-            buffer,
-            py_idx,
-            ts_buf,
-            stats_file,
-            p,
-            col_width,
-        )
-
-    # Flush remaining buffered steps (CFL) rows
-    if measure_steps and steps_idx > 0 and sharding.main_device:
-        _flush_stats(
-            steps_buffer,
-            steps_idx,
-            steps_ts,
-            steps_file,
-            p,
-            steps_col_width,
-        )
-
-    # Flush remaining buffered corrector rows
-    if measure_corrector and corr_idx > 0 and sharding.main_device:
-        _flush_stats(
-            corr_buffer,
-            corr_idx,
-            corr_ts,
-            corr_file,
-            p,
-            corr_col_width,
-        )
+    # Flush any remaining buffered diagnostic rows.
+    flush_all_buffers()
 
 
 if __name__ == "__main__":
