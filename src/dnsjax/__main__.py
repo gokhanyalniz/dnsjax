@@ -39,8 +39,11 @@ Diagnostics (``stats.dat``, ``steps.dat``, ``corrector.dat``)
 -------------------------------------------------------------
 ``get_stats`` output is accumulated on-device in a fixed
 ``(nbuffer, n_cols)`` buffer (one row every ``it_stats``
-steps) and flushed to ``stats.dat`` when the buffer fills or
-at shutdown (``_flush_stats``).  Buffering avoids a
+steps) and flushed to ``stats.dat`` when the buffer fills, at
+shutdown, after the first (JIT-heavy) step, after every
+snapshot write, and on a termination signal
+(``flush_all_buffers``, which calls the shared
+``_flush_stats``).  Buffering avoids a
 host-device sync per sample; each flush is then ``fsync``-ed,
 so the rows are on disk immediately once the on-device buffer
 is flushed.  ``stats.dat`` (written by the main device,
@@ -79,7 +82,10 @@ state is saved on termination (both independent of
 ``it``); the periodic save runs at the **top** of the loop so it
 shares the ``it_stats`` computation.  Each snapshot embeds the
 state's ``get_stats`` as ``_dnsjax_stats.json``
-(``outs.snapshot_embed_stats``).
+(``outs.snapshot_embed_stats``).  Every snapshot write also
+flushes the buffered stats / steps / corrector rows to their
+``.dat`` files (``flush_all_buffers``), keeping them consistent
+with the snapshot.
 
 When ``init.snapshot`` points at a snapshot tar file (an
 uncompressed tar wrapping a zarr3 store; see
@@ -107,6 +113,7 @@ because it includes JAX's JIT compilation overhead.
 """
 
 import os
+import signal
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -614,6 +621,74 @@ def main() -> None:
             with open(corr_file, "w") as f:
                 f.write(header + "\n")
 
+    def flush_all_buffers() -> None:
+        """Flush every buffered diagnostic stream to disk and reset it.
+
+        Called at shutdown, after every snapshot write, after the
+        first (JIT-heavy) step, and on a termination signal, so the
+        ``.dat`` files stay consistent with the snapshots and survive
+        an interruption.  The disk write is main-device only; the
+        index / timestamp-list reset runs on all ranks (matching the
+        in-loop fill-flush) so the ranks stay in lockstep.
+        """
+        nonlocal py_idx, steps_idx, corr_idx
+        if params.outs.it_stats is not None and py_idx > 0:
+            if sharding.main_device:
+                _flush_stats(
+                    buffer,
+                    py_idx,
+                    ts_buf,
+                    stats_file,
+                    p,
+                    col_width,
+                )
+            ts_buf.clear()
+            py_idx = 0
+        if measure_steps and steps_idx > 0:
+            if sharding.main_device:
+                _flush_stats(
+                    steps_buffer,
+                    steps_idx,
+                    steps_ts,
+                    steps_file,
+                    p,
+                    steps_col_width,
+                )
+            steps_ts.clear()
+            steps_idx = 0
+        if measure_corrector and corr_idx > 0:
+            if sharding.main_device:
+                _flush_stats(
+                    corr_buffer,
+                    corr_idx,
+                    corr_ts,
+                    corr_file,
+                    p,
+                    corr_col_width,
+                )
+            corr_ts.clear()
+            corr_idx = 0
+
+    # On a termination signal (e.g. a scheduler wall-time kill or
+    # Ctrl-C) flush the buffers before exiting so no diagnostics are
+    # lost.  ``_terminating`` guards against a second signal re-entering
+    # the handler mid-flush.  SIGKILL cannot be caught.
+    _terminating: bool = False
+
+    def _flush_and_exit(signum: int, frame: object) -> None:
+        nonlocal _terminating
+        if _terminating:
+            return
+        _terminating = True
+        sharding.print(
+            f"Received signal {signum}; flushing buffers and exiting."
+        )
+        flush_all_buffers()
+        sys.exit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _flush_and_exit)
+    signal.signal(signal.SIGINT, _flush_and_exit)
+
     sharding.print("Started timestepping at", datetime.now())
 
     # --- Main time-stepping loop ---------------------------------------------
@@ -629,6 +704,13 @@ def main() -> None:
             # first step may still be executing here, and it must
             # stay excluded from the wall-clock statistics.
             jax.block_until_ready(state)
+
+            # Flush the diagnostics buffered during the first step (the
+            # t0 stats row plus any first CFL / corrector rows) to disk
+            # now, before the benchmark clock starts so the flush I/O is
+            # excluded from the timing.
+            flush_all_buffers()
+
             bench_start = perf_counter_ns()
 
             sharding.print("First iteration over at", datetime.now())
@@ -676,6 +758,8 @@ def main() -> None:
                 snap_stats = get_stats(state)
             isnap = _save_numbered_snapshot(state, t, it, snap_stats, isnap)
             last_saved_it = it
+            # Keep the .dat files consistent with this snapshot.
+            flush_all_buffers()
 
         # Fused predictor + all corrector iterations (single JIT scope).
         if measure_steps and it % params.outs.it_steps == 0:
@@ -816,6 +900,8 @@ def main() -> None:
     ):
         isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
         last_saved_it = it
+        # Keep the .dat files consistent with this snapshot.
+        flush_all_buffers()
 
     wall_time_now = perf_counter_ns()
     alive_time = ns_to_s * (wall_time_now - wall_time_start)
@@ -862,42 +948,8 @@ def main() -> None:
                 f"{wall_time_per_rhs:.3e} s/rhs.",
             )
 
-    # Flush remaining buffered stats
-    if (
-        params.outs.it_stats is not None
-        and py_idx > 0
-        and sharding.main_device
-    ):
-        _flush_stats(
-            buffer,
-            py_idx,
-            ts_buf,
-            stats_file,
-            p,
-            col_width,
-        )
-
-    # Flush remaining buffered steps (CFL) rows
-    if measure_steps and steps_idx > 0 and sharding.main_device:
-        _flush_stats(
-            steps_buffer,
-            steps_idx,
-            steps_ts,
-            steps_file,
-            p,
-            steps_col_width,
-        )
-
-    # Flush remaining buffered corrector rows
-    if measure_corrector and corr_idx > 0 and sharding.main_device:
-        _flush_stats(
-            corr_buffer,
-            corr_idx,
-            corr_ts,
-            corr_file,
-            p,
-            corr_col_width,
-        )
+    # Flush any remaining buffered diagnostic rows.
+    flush_all_buffers()
 
 
 if __name__ == "__main__":
