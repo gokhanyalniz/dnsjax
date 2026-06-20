@@ -1,12 +1,15 @@
 [phys]
 re = 1000 # Reynolds number
-system = "kolmogorov"
-# "none" or "kolmogorov" (sine), "waleffe" (cosine + Ry symmetry)
+system = "plane-couette"
+# Triply-periodic: "kolmogorov" (sine), "waleffe" (cosine + Ry
+# symmetry), "decaying-box".  Wall-bounded: "plane-couette",
+# "plane-poiseuille", "pipe", "taylor-couette", "dean".
 
 [geo]
 lx = 4.0
 lz = 4.0
-# ... in units where Ly = 4.0 is fixed.
+# Box lengths.  Ly is fixed by the geometry (2 for wall-bounded
+# flows; 4 for triply-periodic).
 
 [res]
 nx = 128
@@ -17,8 +20,14 @@ nz = 128
 # to delias the 2nd order nonlinearity
 
 [init]
-start_from_laminar = true
-# snapshot = "u0.npz"
+# Initial-condition precedence: a provided snapshot wins over every
+# in-process mode; otherwise start_from_laminar, then localized_rolls,
+# then random_field -- the default.  With nothing set below, the run
+# starts from an in-process random divergence-free perturbation.
+# snapshot = "u0.npz"        # resume from a snapshot (tar or legacy .npz)
+# start_from_laminar = true  # start from the laminar base state instead
+# random_amplitude = 0.1     # target L2 norm of the random perturbation
+# random_seed = 1            # PRNG seed (device-count independent)
 t0 = 0 # Initial time
 it0 = 0 # Initial discrete time
 

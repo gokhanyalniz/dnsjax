@@ -246,14 +246,13 @@ def get_pert_enstrophy(
 
 
 def init_state(snapshot: str | None) -> Array:
-    """Initialise the flow state (velocity_spec)."""
-    if params.init.start_from_laminar:
-        velocity_spec = jnp.zeros(
-            shape=(3, *sharding.spec_shape),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.spec_vector_shard,
-        )
-    elif snapshot is not None:
+    """Initialise the flow state (velocity_spec).
+
+    A provided snapshot path (legacy ``.npz``) takes precedence over
+    ``start_from_laminar`` so a supplied snapshot always wins; zarr3
+    snapshot resume is handled in ``__main__`` before this is called.
+    """
+    if snapshot is not None:
         snapshot_arr = jnp.load(snapshot)["velocity_phys_nonexpanded"].astype(
             sharding.float_type
         )
@@ -261,6 +260,12 @@ def init_state(snapshot: str | None) -> Array:
             snapshot_arr, sharding.phys_vector_shard
         )
         velocity_spec = phys_to_spec_2d(velocity_phys)
+    elif params.init.start_from_laminar:
+        velocity_spec = jnp.zeros(
+            shape=(3, *sharding.spec_shape),
+            dtype=sharding.complex_type,
+            out_sharding=sharding.spec_vector_shard,
+        )
     else:
         sharding.print("Provide an initial condition.")
         sharding.exit(code=1)

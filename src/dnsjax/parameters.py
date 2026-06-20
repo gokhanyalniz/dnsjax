@@ -98,9 +98,12 @@ class Physics(BaseModel):
     # and ``flows.wall_bounded.taylor_couette``.
     re1: float | None = None
     re2: float | None = None
-    # Kolmogorov: sine forcing
-    # Waleffe: cosine forcing + Ry symmetry (not yet implemented)
-    system: Literal[*periodic_systems, *walled_systems] = "kolmogorov"
+    # Default "plane-couette": a wall-bounded flow that integrates
+    # cleanly from the default random IC at the default dt (Kolmogorov +
+    # random needs a smaller dt; see the random-IC corrector note in the
+    # root CLAUDE.md).  Kolmogorov: sine forcing.  Waleffe: cosine
+    # forcing + Ry symmetry (not yet implemented).
+    system: Literal[*periodic_systems, *walled_systems] = "plane-couette"
     # (n + 1) / 2 oversampling in each direction
     # to dealias the n'th order nonlinearity
     # oversampling_factor = n + 1
@@ -152,18 +155,20 @@ class Resolution(BaseModel):
 
 
 class Initiation(BaseModel):
-    """Initial condition: start from laminar, a random field, or a
-    snapshot.
+    """Initial condition: from a snapshot, a random field (default), or
+    laminar.
 
-    Start-mode precedence (resolved in ``__main__.py``): an explicit
-    ``snapshot`` file (a single-file tar snapshot; see
-    :mod:`dnsjax.snapshot`) wins; otherwise ``random_field`` (an
-    in-process random divergence-free perturbation, no snapshot file);
-    otherwise ``localized_rolls`` (an in-process deterministic
-    streamwise-localized-rolls perturbation, wall-bounded only, no
-    snapshot file); otherwise the laminar / legacy-``.npz`` path.  The
-    ``random_*`` knobs mirror the ``scripts/random_field.py`` CLI and
-    feed :func:`dnsjax.random_field.generate_random_state`; the
+    Start-mode precedence (resolved in ``__main__.py``): a provided
+    ``snapshot`` file (a single-file tar snapshot, or a legacy ``.npz``;
+    see :mod:`dnsjax.snapshot`) wins over every in-process mode;
+    otherwise ``start_from_laminar`` (the laminar / closed-form base
+    state); otherwise ``localized_rolls`` (an in-process deterministic
+    streamwise-localized-rolls perturbation, wall-bounded only);
+    otherwise ``random_field`` -- an in-process random divergence-free
+    perturbation, which is **the default**: a run with no snapshot and
+    no explicit mode selected starts from a random IC.  The ``random_*``
+    knobs mirror the ``scripts/random_field.py`` CLI and feed
+    :func:`dnsjax.random_field.generate_random_state`; the
     ``localized_rolls_*`` knobs feed
     :func:`dnsjax.localized_rolls.generate_localized_rolls`.
 
@@ -176,7 +181,12 @@ class Initiation(BaseModel):
     :func:`trajectory_defining_changes`.
     """
 
-    start_from_laminar: bool = True
+    # Start from the laminar / closed-form base state (zero
+    # perturbation; for Dean the analytical laminar profile).  Defaults
+    # off -- it must be set explicitly; when set it takes precedence over
+    # ``localized_rolls`` and the default ``random_field`` (but not a
+    # provided snapshot).
+    start_from_laminar: bool = False
     snapshot: Path | None = None
     t0: float = 0  # Initial value of time
     it0: int = 0  # Initial value of number of time steps taken
@@ -192,17 +202,20 @@ class Initiation(BaseModel):
     # ``snapshot.validate_snapshot_params`` rejects.
     force_resume: bool = False
     # Generate an in-process random divergence-free perturbation of the
-    # base flow as the initial condition (takes precedence over the
-    # laminar start; ignored when a snapshot is given).  For Dean the
-    # analytical laminar profile is added (total-field IC).
-    random_field: bool = False
+    # base flow as the initial condition.  This is the **default** start
+    # mode (lowest precedence among the non-snapshot modes): it is used
+    # when no snapshot is given and neither ``start_from_laminar`` nor
+    # ``localized_rolls`` is set.  Ignored when a snapshot is given.  For
+    # Dean the analytical laminar profile is added (total-field IC).
+    random_field: bool = True
     random_amplitude: float = 0.1  # target L2 norm of the perturbation
     random_smoothness: float = 0.4  # spectral decay rate (0 < s < 1)
     random_seed: int = 1  # NumPy PRNG seed (device-count independent)
     random_mean_flow: bool = False  # also perturb the mean (kx=kz=0) mode
     # Generate an in-process deterministic localized-rolls ("turbulent
-    # spot") perturbation (wall-bounded only; lower precedence than
-    # ``random_field``).  A compact fixed-physical structure normalized so
+    # spot") perturbation (wall-bounded only; higher precedence than the
+    # default ``random_field``, lower than ``start_from_laminar``).  A
+    # compact fixed-physical structure normalized so
     # peak |u'| = amplitude, localized in every homogeneous direction
     # (growing a box length adds laminar around the spot).  ``width`` is
     # the physical localization half-width (flow units); ``wavelength`` is

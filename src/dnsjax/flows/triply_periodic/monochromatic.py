@@ -12,7 +12,7 @@ It also exports the flow interface consumed by ``__main__``:
 - ``predict_and_fully_correct`` -- fused predictor + corrector
 - ``predict_and_fully_correct_measured`` -- fused step + CFL
   measurements (``steps.dat``)
-- ``init_state`` -- initial state from laminar or snapshot
+- ``init_state`` -- initial state from a snapshot or laminar
 - ``get_stats`` -- diagnostic statistics
 - ``correct_velocity`` -- divergence correction + mean-mode zeroing
 

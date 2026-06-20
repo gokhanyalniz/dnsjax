@@ -217,11 +217,19 @@ def run_integration(timeout: float) -> bool:
         assert read_snapshot_stats(final_path), "final snapshot lacks stats"
 
         # --- Run 2: continuation resume (same params, same dir) ------
+        # Also pass competing in-process init flags (random_field +
+        # start_from_laminar): a provided snapshot must take precedence
+        # over every other init mode, so this still resumes (and, with
+        # unchanged params, continues the trajectory).
         r2 = _run_dnsjax(
             work1,
             [
                 "--init.snapshot",
                 final_path,
+                "--init.random_field",
+                "True",
+                "--init.start_from_laminar",
+                "True",
                 "--outs.it_snapshot",
                 "1",
                 "--stop.max_sim_time",
@@ -234,6 +242,11 @@ def run_integration(timeout: float) -> bool:
             return False
         assert "NEW trajectory" not in r2.stdout, "unexpected new trajectory"
         assert "Resumed from snapshot" in r2.stdout, r2.stdout[-1500:]
+        # Snapshot precedence: neither in-process IC was used despite the
+        # competing flags above.
+        assert "in-process random IC" not in r2.stdout, (
+            "snapshot must take precedence over --init.random_field"
+        )
         idx2 = _snap_indices(work1)
         assert (final1 + 1) in idx2, (final1, idx2)
         assert max(idx2) > final1, (final1, idx2)

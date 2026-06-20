@@ -17,8 +17,10 @@ The output snapshot is immediately usable as initial condition::
         --output random_ic.tar
 
     uv run python -m dnsjax \
-        --init.snapshot random_ic.tar \
-        --init.start_from_laminar False ...
+        --init.snapshot random_ic.tar ...
+
+A provided snapshot takes precedence over every in-process init mode,
+so no other init flag is needed.
 
 The wavenumber-dependent amplitude of each Fourier mode
 `$(k_x, k_z)$` decays as
