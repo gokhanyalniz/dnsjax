@@ -5,6 +5,7 @@ zarr3 store plus a JSON metadata member::
 
     snapshot.tar                 (uncompressed tar; format_version 3)
       _dnsjax_meta.json          plain JSON metadata
+      _dnsjax_stats.json         plain JSON stats (optional)
       state/zarr.json            zarr3 array metadata
       state/c/0/0/0/0            component 0 chunk: raw LE complex
       state/c/1/0/0/0            component 1 chunk
@@ -101,13 +102,19 @@ Write modes (``params.outs.snapshot_write_mode``):
 
 Metadata and versioning
 -----------------------
-The ``_dnsjax_meta.json`` member embeds ``t``, ``it``, the on-disk
+The ``_dnsjax_meta.json`` member embeds ``t``, ``it``, ``isnap`` (the
+snapshot-lineage index this file was written with), the on-disk
 ``layout`` name, the global (true, unpadded) shapes,
 ``wall_normal_grid`` (the wall-normal grid points as a float array
 for wall-bounded flows, ``None`` for periodic), and the full
 ``params.model_dump()`` for resume validation.  It is read with the
 standard library (no JAX) via :mod:`dnsjax.snapshot_meta`, shared
 with :func:`dnsjax.parameters.read_snapshot_params`.
+
+When stats are supplied, an optional ``_dnsjax_stats.json`` member
+holds the state's physical diagnostics (the ``get_stats`` dict as
+``{name: value}``); readers that do not need it simply ignore the
+extra member.
 
 The on-disk format is ``format_version: 3``.
 """
@@ -509,23 +516,25 @@ def _write_tar_skeleton(
     itemsize: int,
     meta_bytes: bytes,
     zarr_bytes: bytes,
+    stats_bytes: bytes | None = None,
 ) -> None:
     """Lay out the whole uncompressed tar (process 0 only).
 
-    Small members (metadata, ``zarr.json``) are written in full; the
-    three component members get a correct header followed by a
-    sparse-reserved, zero-filled data region padded to the 512-byte
-    block boundary.  The archive ends with the two zero blocks tar
-    expects.  After this the file is full-length, so every device can
+    Small members (metadata, the optional stats JSON, ``zarr.json``) are
+    written in full; the three component members get a correct header
+    followed by a sparse-reserved, zero-filled data region padded to the
+    512-byte block boundary.  The archive ends with the two zero blocks
+    tar expects.  After this the file is full-length, so every device can
     safely write its disjoint byte ranges into the component regions.
     """
     comp_nbytes = layout.a_size * layout.kx_global * layout.b_size * itemsize
     comp_padded = comp_nbytes + (-comp_nbytes) % 512
+    members = [("_dnsjax_meta.json", meta_bytes)]
+    if stats_bytes is not None:
+        members.append(("_dnsjax_stats.json", stats_bytes))
+    members.append(("state/zarr.json", zarr_bytes))
     with open(tar_path, "wb") as f:
-        for name, data in (
-            ("_dnsjax_meta.json", meta_bytes),
-            ("state/zarr.json", zarr_bytes),
-        ):
+        for name, data in members:
             f.write(_tar_header(name, len(data)))
             f.write(data)
             f.write(b"\x00" * ((-len(data)) % 512))
@@ -540,12 +549,15 @@ def _write_tar_skeleton(
 # ── Snapshot metadata ─────────────────────────────────────
 
 
-def _metadata_bytes(t: float, it: int, layout: _Layout) -> bytes:
+def _metadata_bytes(
+    t: float, it: int, layout: _Layout, isnap: int = 0
+) -> bytes:
     """Serialise the ``_dnsjax_meta.json`` member content."""
     meta = {
         "format_version": 3,
         "t": t,
         "it": it,
+        "isnap": isnap,
         "geometry": ("triply_periodic" if _is_periodic() else "wall_bounded"),
         "system": params.phys.system,
         "layout": layout.name,
@@ -567,6 +579,14 @@ def _metadata_bytes(t: float, it: int, layout: _Layout) -> bytes:
 def read_metadata(path: Path) -> dict:
     """Read the ``_dnsjax_meta.json`` member of a snapshot tar."""
     return read_snapshot_meta(path)
+
+
+def _stats_json_bytes(stats: dict) -> bytes:
+    """Serialise a ``get_stats`` dict for the ``_dnsjax_stats.json``
+    member, converting the (replicated) device scalars to host floats."""
+    return json.dumps(
+        {k: float(v) for k, v in stats.items()}, indent=2
+    ).encode("utf-8")
 
 
 # ── GDS I/O ───────────────────────────────────────────────
@@ -884,7 +904,15 @@ def _read_chunks_host(
 # ── Public API ────────────────────────────────────────────
 
 
-def save_snapshot(state: Array, t: float, it: int, path: str | Path) -> None:
+def save_snapshot(
+    state: Array,
+    t: float,
+    it: int,
+    path: str | Path,
+    *,
+    stats: dict | None = None,
+    isnap: int = 0,
+) -> None:
     r"""Save the spectral state to a single-file snapshot.
 
     The field is streamed to the three per-component zarr3 chunks
@@ -904,6 +932,11 @@ def save_snapshot(state: Array, t: float, it: int, path: str | Path) -> None:
         Current iteration count.
     path:
         Output path for the snapshot tar file.
+    stats:
+        Optional ``get_stats`` dict embedded as the
+        ``_dnsjax_stats.json`` member (``None`` omits the member).
+    isnap:
+        Snapshot-lineage index recorded in the metadata.
     """
     path = Path(path)
     layout = _layout()
@@ -914,8 +947,11 @@ def save_snapshot(state: Array, t: float, it: int, path: str | Path) -> None:
     if sharding.main_device:
         path.parent.mkdir(parents=True, exist_ok=True)
         zarr_bytes = _zarr_json_bytes(on_disk, (1, *on_disk[1:]), dtype_name)
-        meta_bytes = _metadata_bytes(t, it, layout)
-        _write_tar_skeleton(path, layout, itemsize, meta_bytes, zarr_bytes)
+        meta_bytes = _metadata_bytes(t, it, layout, isnap)
+        stats_bytes = None if stats is None else _stats_json_bytes(stats)
+        _write_tar_skeleton(
+            path, layout, itemsize, meta_bytes, zarr_bytes, stats_bytes
+        )
     _barrier("snapshot_create")
 
     comp_offsets = snapshot_component_offsets(path)
@@ -932,8 +968,6 @@ def save_snapshot(state: Array, t: float, it: int, path: str | Path) -> None:
     else:
         write_fn(state, path, comp_offsets, layout, itemsize)
     _barrier("snapshot_write")
-
-    sharding.print(f"Snapshot saved to {path}")
 
 
 def load_snapshot(

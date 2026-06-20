@@ -18,7 +18,10 @@ Exercises the host (non-GDS) I/O path:
   cross-process ordering needs MPI multi-process and is not
   exercised here -- single-process serial reduces to one write);
 - 2D mesh round-trips: save and load with ``np0 > 1``, including
-  padding-mode stripping and re-padding.
+  padding-mode stripping and re-padding;
+- the ``isnap`` lineage index round-trips through the metadata, and the
+  optional ``_dnsjax_stats.json`` member is written when stats are
+  supplied and omitted otherwise.
 
 Each (system, device count) needs its own process because the
 geometry/sharding singletons are captured at import time, and
@@ -45,6 +48,8 @@ import tempfile
 NX, NY, NZ = 8, 8, 8  # nx // 2 = 4 (shardable by 1, 2, 4)
 SEED = 1234
 T_SAVE, IT_SAVE = 1.5, 7
+ISNAP_SAVE = 7  # snapshot-lineage index round-tripped via metadata
+STATS_SAVE = {"D": -3.5, "E": 1.25}  # embedded _dnsjax_stats.json values
 
 # (name, system, layout, write_mode, save_np, load_np,
 #  save_np0, load_np0)
@@ -309,6 +314,24 @@ def _worker(
         snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
         return
 
+    if action == "save_stats":
+        import jax.numpy as jnp
+
+        ref_true = _make_reference(np, tshape)
+        state_np = _embed_true_into_padded(ref_true, padded_shape, system)
+        state = jax.device_put(state_np, vshard)
+        # Embedded stats are (replicated) device scalars in production;
+        # exercise the float() host conversion in ``save_snapshot``.
+        stats = {k: jnp.asarray(v) for k, v in STATS_SAVE.items()}
+        snapshot.save_snapshot(
+            state, T_SAVE, IT_SAVE, d, stats=stats, isnap=ISNAP_SAVE
+        )
+        # A second snapshot with no stats: the member must be omitted and
+        # ``isnap`` defaults to 0.
+        snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d + ".nostats")
+        print("worker-save-stats-ok", flush=True)
+        return
+
     if action == "save_poly":
         from dnsjax.parameters import derived_params
 
@@ -471,6 +494,40 @@ def run_case(
     return True
 
 
+def run_stats_isnap_case() -> bool:
+    """``save_snapshot`` embeds ``_dnsjax_stats.json`` + ``isnap``, and
+    omits the stats member (with ``isnap`` defaulting to 0) when no stats
+    are supplied.  Verified with the standard library alone (no dnsjax)."""
+    import json
+    import tarfile
+
+    name = "isnap + embedded stats"
+    with tempfile.TemporaryDirectory() as tmp:
+        snap = os.path.join(tmp, "snap.tar")
+        r = _run_worker(
+            "save_stats", "plane-couette", "walled", "concurrent", 1, snap
+        )
+        if r.returncode != 0:
+            _fail(name, "save_stats", r)
+            return False
+
+        with tarfile.open(snap, "r") as tf:
+            names = set(tf.getnames())
+            assert "_dnsjax_stats.json" in names, sorted(names)
+            meta = json.loads(tf.extractfile("_dnsjax_meta.json").read())
+            stats = json.loads(tf.extractfile("_dnsjax_stats.json").read())
+        assert meta["isnap"] == ISNAP_SAVE, meta["isnap"]
+        assert stats == STATS_SAVE, stats
+
+        with tarfile.open(snap + ".nostats", "r") as tf:
+            names = set(tf.getnames())
+            assert "_dnsjax_stats.json" not in names, sorted(names)
+            meta = json.loads(tf.extractfile("_dnsjax_meta.json").read())
+        assert meta["isnap"] == 0, meta["isnap"]
+    print(f"  PASS  {name}")
+    return True
+
+
 def run_ny_mismatch_case(
     save_np: int = 1,
     save_np0: int = 1,
@@ -520,7 +577,7 @@ if __name__ == "__main__":
     parser.add_argument("--worker", action="store_true")
     parser.add_argument(
         "--action",
-        choices=["save", "load", "save_poly", "load_interp"],
+        choices=["save", "load", "save_poly", "load_interp", "save_stats"],
     )
     parser.add_argument("--system")
     parser.add_argument("--layout")
@@ -560,6 +617,12 @@ if __name__ == "__main__":
     if run_ny_mismatch_case(
         save_np=4, save_np0=2, load_np=4, load_np0=2, label=" 2D"
     ):
+        passed += 1
+    else:
+        failed += 1
+
+    # isnap metadata + optional embedded-stats member
+    if run_stats_isnap_case():
         passed += 1
     else:
         failed += 1
