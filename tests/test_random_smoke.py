@@ -13,6 +13,12 @@ the full nonlinear path, catching advection / ``rhs.py`` regressions a
 laminar run reports as ``err = 0``.  It is also the triply-periodic
 family's first stepping test (via Kolmogorov).
 
+One entry (``plane-couette-default-ic``) omits ``--init.random_field``
+to verify random is the **default** start mode -- with no snapshot and
+no explicit mode selected, the run must start from a random field (not
+the laminar state), guarding the snapshot-first / random-default
+precedence in ``__main__.py``.
+
 Transition to turbulence is **not** expected to develop by the default
 ``t = 1`` at this resolution/box; the success metric is purely that
 integration completes cleanly, not that the flow becomes turbulent.
@@ -177,6 +183,27 @@ SYSTEMS: list[dict] = [
             "5",
         ],
     },
+    {
+        # Default start mode: no --init.random_field flag is passed, so
+        # the run must fall through to the random-IC default
+        # (start_from_laminar defaults off).  Guards the snapshot-first /
+        # random-default precedence in __main__.py: with no snapshot and
+        # no explicit mode, the IC is a random field, not the laminar
+        # state.  run_smoke_test additionally asserts the random-IC
+        # startup line is present.
+        "name": "plane-couette-default-ic",
+        "omit_random_flag": True,
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+        ],
+    },
 ]
 
 # Default time-stepping ``corrector_tolerance`` (TimeStepping model
@@ -222,9 +249,13 @@ def _build_command(
         str(np0),
         "--dist.np1",
         str(np_count // np0),
-        # In-process random divergence-free IC (no snapshot file).
-        "--init.random_field",
-        "True",
+    ]
+    # In-process random divergence-free IC (no snapshot file).  The
+    # default-IC entry omits this flag to verify that random is the
+    # default start mode when nothing else is selected.
+    if not system.get("omit_random_flag"):
+        base += ["--init.random_field", "True"]
+    base += [
         "--init.random_amplitude",
         str(args.amplitude),
         "--init.random_smoothness",
@@ -339,6 +370,16 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
             print(result.stderr[-2000:] if result.stderr else "(no stderr)")
             raise AssertionError(
                 f"{name} exited with code {result.returncode}"
+            )
+
+        # Default-IC entry: confirm the run actually took the random
+        # branch (no snapshot, no explicit mode => random default).
+        if system.get("omit_random_flag") and (
+            "Started from an in-process random IC" not in result.stdout
+        ):
+            raise AssertionError(
+                f"{name}: default start mode did not select the random IC "
+                "('Started from an in-process random IC' missing from stdout)"
             )
 
         summary = _check_run(result.stdout, name, args.max_sim_time, dt)

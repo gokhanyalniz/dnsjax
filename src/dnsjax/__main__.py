@@ -18,8 +18,9 @@ Execution phases
    configure JAX, print the final parameter set.
 
 2. **Main loop** (:func:`main`):
-   initialise velocity (from laminar or snapshot), then
-   iterate:
+   initialise velocity (a provided snapshot wins; otherwise an
+   in-process random / localized-rolls / laminar IC, with random
+   the default), then iterate:
 
    - Fused predictor + corrector loop
      (:func:`predict_and_fully_correct`)
@@ -349,10 +350,14 @@ def main() -> None:
     # --- Initial condition ---------------------------------------------------
     from .snapshot_meta import is_snapshot_file
 
-    # A *continuation* resume (dnsjax snapshot with unchanged trajectory
-    # params) inherits t/it/isnap and does not re-save the IC.  Every
-    # other start is a fresh trajectory: isnap begins at init.isnap0 and
-    # the IC is saved as state00000.tar (see the IC-save block below).
+    # Start-mode precedence: a provided snapshot file (tar resume or
+    # legacy .npz) wins over every in-process mode; then
+    # start_from_laminar, then localized_rolls, then random_field (the
+    # default).  A *continuation* resume (dnsjax snapshot with unchanged
+    # trajectory params) inherits t/it/isnap and does not re-save the IC;
+    # every other start is a fresh trajectory: isnap begins at
+    # init.isnap0 and the IC is saved as state00000.tar (see the IC-save
+    # block below).
     resumed_continuation: bool = False
     isnap_start: int = params.init.isnap0
 
@@ -409,24 +414,14 @@ def main() -> None:
                 sharding,
                 jnp,
             )
-    elif params.init.random_field:
-        # In-process random divergence-free IC (no snapshot file). The
-        # flow dispatch above already built the geometry ``fourier``
-        # singleton this consumes.
-        from .random_field import generate_random_state
-
-        state = generate_random_state(
-            params.init.random_amplitude,
-            params.init.random_smoothness,
-            params.init.random_seed,
-            params.init.random_mean_flow,
-        )
-        sharding.print(
-            "Started from an in-process random IC: "
-            f"amplitude={params.init.random_amplitude}, "
-            f"smoothness={params.init.random_smoothness}, "
-            f"seed={params.init.random_seed}."
-        )
+    elif params.init.snapshot is not None:
+        # Legacy .npz snapshot.  A provided snapshot still wins over every
+        # in-process mode (start_from_laminar / localized_rolls /
+        # random_field).
+        state = init_state(params.init.snapshot)
+    elif params.init.start_from_laminar:
+        # Laminar / closed-form base state (snapshot is None here).
+        state = init_state(params.init.snapshot)
     elif params.init.localized_rolls:
         # In-process deterministic localized-rolls ("spot") IC (no
         # snapshot file). The flow dispatch above already built the
@@ -444,9 +439,31 @@ def main() -> None:
             f"width={params.init.localized_rolls_width}, "
             f"wavelength={params.init.localized_rolls_wavelength}."
         )
+    elif params.init.random_field:
+        # In-process random divergence-free IC -- the default start mode
+        # (no snapshot file). The flow dispatch above already built the
+        # geometry ``fourier`` singleton this consumes.
+        from .random_field import generate_random_state
+
+        state = generate_random_state(
+            params.init.random_amplitude,
+            params.init.random_smoothness,
+            params.init.random_seed,
+            params.init.random_mean_flow,
+        )
+        sharding.print(
+            "Started from an in-process random IC: "
+            f"amplitude={params.init.random_amplitude}, "
+            f"smoothness={params.init.random_smoothness}, "
+            f"seed={params.init.random_seed}."
+        )
     else:
-        # Legacy .npz or laminar start
-        state = init_state(params.init.snapshot)
+        # No snapshot and all in-process modes disabled.
+        sharding.print(
+            "Provide an initial condition: no snapshot given and all "
+            "in-process init modes are disabled."
+        )
+        sharding.exit(code=1)
 
     # --- Stopping criteria ---------------------------------------------------
     wall_time_stop = (

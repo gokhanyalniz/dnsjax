@@ -266,20 +266,25 @@ class TriplyPeriodicFlow:
 
 
 def init_state(snapshot: str | None, flow: TriplyPeriodicFlow) -> Array:
-    """Initialise the flow state (velocity_spec)."""
-    if params.init.start_from_laminar:
-        return jnp.zeros(
-            shape=(3, *sharding.spec_shape),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.spec_vector_shard,
-        )
-    elif snapshot is not None:
+    """Initialise the flow state (velocity_spec).
+
+    A provided snapshot path (legacy ``.npz``) takes precedence over
+    ``start_from_laminar``; zarr3 snapshot resume is handled in
+    ``__main__`` before this is called.
+    """
+    if snapshot is not None:
         snapshot_arr = jnp.load(snapshot)["velocity_phys"].astype(
             sharding.float_type
         )
         velocity_phys = device_put(snapshot_arr, sharding.phys_vector_shard)
         velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
         return phys_to_spec(velocity_phys)
+    elif params.init.start_from_laminar:
+        return jnp.zeros(
+            shape=(3, *sharding.spec_shape),
+            dtype=sharding.complex_type,
+            out_sharding=sharding.spec_vector_shard,
+        )
     else:
         sharding.print("Provide an initial condition.")
         sharding.exit(code=1)

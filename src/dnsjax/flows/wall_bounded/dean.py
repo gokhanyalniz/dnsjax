@@ -147,12 +147,13 @@ _laminar_state: Array = _build_laminar_state()
 def init_state(snapshot: str | None) -> Array:
     """Initialise the flow state (the total velocity).
 
-    For ``start_from_laminar`` returns the closed-form laminar Dean
-    profile (a nonzero total field).  Otherwise delegates to the base
-    ``init_state`` (legacy ``.npz`` path); zarr3 snapshot resume is
-    handled in ``__main__`` before this is called.
+    A provided snapshot path (legacy ``.npz``) takes precedence: it is
+    delegated to the base ``init_state``.  Otherwise, for
+    ``start_from_laminar``, returns the closed-form laminar Dean profile
+    (a nonzero total field).  zarr3 snapshot resume is handled in
+    ``__main__`` before this is called.
     """
-    if params.init.start_from_laminar:
+    if snapshot is None and params.init.start_from_laminar:
         return _laminar_state
     return _base_init_state(snapshot)
 
