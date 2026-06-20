@@ -1123,7 +1123,7 @@ def validate_snapshot_params(
     Parameters
     ----------
     path:
-        Directory of the zarr3 store.
+        Path to the snapshot tar file.
     """
     meta = read_metadata(Path(path))
     snap_params = meta.get("params", {})

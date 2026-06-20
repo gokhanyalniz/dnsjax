@@ -1025,7 +1025,7 @@ def _imm_iteration(
     equation for pressure; the wall BC is determined indirectly by
     enforcing continuity `$\nabla \cdot u = 0$` at the walls.
 
-    Six stages (plus mean-mode projections):
+    Nine stages (six core IMM stages, then three mean-mode projections):
 
     1. Build the interior Poisson RHS from divergence of momentum.
     2. Solve Poisson for the particular pressure `$p_P$` with

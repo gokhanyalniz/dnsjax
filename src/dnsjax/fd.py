@@ -14,6 +14,14 @@ build_diff_matrices:
     Assemble first- and second-derivative matrices D1, D2.
 build_integration_weights:
     Composite polynomial quadrature weights on a non-uniform grid.
+local_grid_spacing:
+    Per-node local grid spacing (the CFL advective length scale).
+tanh_two_sided_grid:
+    Symmetric tanh-stretched wall-normal grid on [-1, 1]
+    (clustering at both walls).
+tanh_one_sided_grid:
+    One-sided tanh-stretched radial grid on (0, 1] (clustering
+    at the outer wall, no point at r = 0).
 is_cgl_grid:
     Detect whether a grid is Chebyshev-Gauss-Lobatto.
 is_half_cgl_grid:

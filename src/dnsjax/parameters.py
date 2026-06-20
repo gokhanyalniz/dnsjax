@@ -378,7 +378,8 @@ class CLIParameters(
 class DerivedParameters:
     """Parameters derived from the user-facing configuration.
 
-    ``ly`` is fixed by the geometry (4 for triply-periodic, 2 for walled;
+    ``ly`` is fixed by the geometry (4 for triply-periodic, 2 for
+    Cartesian/cylindrical, ``2*r2`` for the annulus; cosmetic there --
     only read by triply-periodic code).
     ``volume_fac`` is also fixed by the geometry
         (1 for periodic, 2 for Cartesian, 0.5 for cylindrical, and
