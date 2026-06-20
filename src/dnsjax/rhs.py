@@ -97,7 +97,7 @@ def get_nonlin(
     space on the dealiased (3/2-oversampled) grid and transforms
     the result back to spectral space.
 
-    Cost: 3 inverse FFTs (velocity, vorticity components) + 3
+    Cost: 6 inverse FFTs (3 velocity + 3 vorticity components) + 3
     forward FFTs (nonlinear term components).
 
     This is the single site where the physical-space fields

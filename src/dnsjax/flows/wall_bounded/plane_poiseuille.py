@@ -1,4 +1,4 @@
-"""Plane Poiseuille (channel) flow: pressure-driven flow between plates.
+r"""Plane Poiseuille (channel) flow: pressure-driven flow between plates.
 
 This module defines the ``PlanePoiseuilleFlow`` dataclass that holds
 the plane-Poiseuille-specific base flow.  Geometry-general
@@ -17,7 +17,7 @@ It also exports the flow interface consumed by ``__main__``:
 
 Base flow
 ---------
-The laminar base flow is `$U_s(y) = 1 - y^2$` on `$y \\in [-1, 1]$`,
+The laminar base flow is `$U_s(y) = 1 - y^2$` on `$y \in [-1, 1]$`,
 oriented in the streamwise direction
 `$(\cos\theta, 0, \sin\theta)$` where `$\theta$` is the tilt
 angle.  Its derived quantities:
