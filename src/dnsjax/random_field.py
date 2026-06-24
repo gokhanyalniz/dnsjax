@@ -2,12 +2,9 @@ r"""Random divergence-free initial-condition generators.
 
 Builds a random divergence-free perturbation of the base flow for any
 implemented flow system, returned as a sharded spectral state ready to
-time step.  This is the shared implementation behind both:
-
-- ``scripts/random_field.py`` -- the CLI that saves the state as a
-  zarr3 snapshot (and runs the per-geometry self-tests), and
-- ``dnsjax.__main__`` -- the in-process random initial-condition start
-  mode (``init.random_field``), which avoids a snapshot disk round-trip.
+time step.  This is the implementation behind ``dnsjax.__main__``'s
+in-process random initial-condition start mode (``init.random_field``,
+the default when no snapshot is given) -- there is no offline CLI.
 
 The energy of each Fourier mode follows the wavenumber-dependent envelope
 

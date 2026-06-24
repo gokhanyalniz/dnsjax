@@ -16,48 +16,31 @@ from jax import Array, jit, vmap
 from jax import numpy as jnp
 
 from .fft import _irfft2d, _irfft3d, _rfft2d, _rfft3d
+from .harmonics import complex_harmonics as _complex_harmonics_np
+from .harmonics import real_harmonics as _real_harmonics_np
 from .sharding import sharding
 
 
 def real_harmonics(n: int) -> Array:
-    """Non-negative integer wavenumbers for a real-FFT axis.
+    r"""Non-negative integer wavenumbers for a real-FFT axis.
 
-    The Nyquist mode is omitted, leaving `$n / 2$` modes.
-
-    Parameters
-    ----------
-    n:
-        Full mode count along the axis.
-
-    Returns
-    -------
-    :
-        Wavenumber array `$[0, 1, \\dots, n/2 - 1]$`, shape ``(n // 2,)``.
+    Thin device-array wrapper over
+    :func:`dnsjax.harmonics.real_harmonics` (the JAX-free source of
+    truth, shared with :mod:`dnsjax.analysis`): the Nyquist mode is
+    omitted, leaving `$n / 2$` modes `$[0, 1, \dots, n/2 - 1]$`.
     """
-    # Omits the Nyquist mode
-    return jnp.arange(0, n // 2, dtype=int)
+    return jnp.asarray(_real_harmonics_np(n))
 
 
 def complex_harmonics(n: int) -> Array:
-    """Full-complex integer wavenumbers with the Nyquist mode omitted.
+    r"""Full-complex integer wavenumbers with the Nyquist mode omitted.
 
-    Parameters
-    ----------
-    n:
-        Full mode count along the axis.
-
-    Returns
-    -------
-    :
-        `$n - 1$` wavenumbers in FFT order:
-        `$[0, 1, \\dots, n/2-1, -n/2+1, \\dots, -1]$`.
+    Thin device-array wrapper over
+    :func:`dnsjax.harmonics.complex_harmonics` (the JAX-free source of
+    truth, shared with :mod:`dnsjax.analysis`): `$n - 1$` wavenumbers in
+    FFT order `$[0, 1, \dots, n/2-1, -n/2+1, \dots, -1]$`.
     """
-    qs = (jnp.arange(n, dtype=int) + n // 2) % n - n // 2
-    # Omits the Nyquist mode
-    qs_out = jnp.zeros(n - 1, dtype=int)
-    qs_out = qs_out.at[: n // 2].set(qs[: n // 2])
-    qs_out = qs_out.at[n // 2 :].set(qs[n // 2 + 1 :])
-    return qs_out
+    return jnp.asarray(_complex_harmonics_np(n))
 
 
 def pad_harmonics(harmonics: Array, n: int, pad: int) -> Array:

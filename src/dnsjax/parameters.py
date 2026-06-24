@@ -167,8 +167,7 @@ class Initiation(BaseModel):
     otherwise ``random_field`` -- an in-process random divergence-free
     perturbation, which is **the default**: a run with no snapshot and
     no explicit mode selected starts from a random IC.  The ``random_*``
-    knobs mirror the ``scripts/random_field.py`` CLI and feed
-    :func:`dnsjax.random_field.generate_random_state`; the
+    knobs feed :func:`dnsjax.random_field.generate_random_state`; the
     ``localized_rolls_*`` knobs feed
     :func:`dnsjax.localized_rolls.generate_localized_rolls`.
 
