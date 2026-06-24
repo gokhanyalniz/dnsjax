@@ -2,8 +2,8 @@
 r"""Tests for ``scripts/snapshot_import.py`` (native-field converter).
 
 Each flow family is exercised in its own subprocess (the geometry
-``fourier`` singleton is built once at import, as in
-``scripts/random_field.py``).  Run directly::
+``fourier`` singleton is built once at import, one system per
+process).  Run directly::
 
     uv run python tests/test_snapshot_import.py            # all families
     uv run python tests/test_snapshot_import.py --system pipe   # one

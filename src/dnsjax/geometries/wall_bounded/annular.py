@@ -434,7 +434,7 @@ def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
 
     Pure function (no flow construction), so it is importable both by
     :mod:`dnsjax.flows.wall_bounded.dean` (the ``start_from_laminar``
-    state) and by ``scripts/random_field.py`` (the total-field IC =
+    state) and by :mod:`dnsjax.random_field` (the total-field IC =
     laminar profile + perturbation).
 
     Parameters
