@@ -47,7 +47,7 @@ SYSTEMS = [
 
 CURL_TOL = 1e-10  # vs dnsjax _curl_fn (expect machine precision)
 DIV_TOL = 1e-8  # divergence of the divergence-free modes (k != 0)
-RT_TOL = 1e-10  # transform round-trip (cartesian / periodic)
+RT_TOL = 1e-10  # transform round-trip (all families)
 VOL_TOL = 1e-10  # integrate(ones) vs analytic volume
 
 
@@ -194,11 +194,14 @@ def _check_system(system: str, family: str, outdir: str) -> None:
     assert st.stats is not None, system
     _ = st.stats[next(iter(st.stats.keys()))]  # item access works
 
-    # transform round-trip (exact only for cartesian / periodic)
-    if family in ("cartesian", "triply_periodic"):
-        back = to_spectral(to_physical(st.spectral, st.params), st.params)
-        rt = max(_relerr(back[i], st.spectral[i]) for i in range(3))
-        assert rt < RT_TOL, f"{system}: roundtrip {rt:.2e}"
+    # transform round-trip: machine-precision exact for every family.
+    # The transform requires u_theta Hermitian on the real (k_z) axis;
+    # the cyl/annular IC draws the k_z=0 plane with u_r, u_theta Hermitian
+    # (u_+/u_- conjugate partners), so the returned (u_z, u_r, u_theta)
+    # basis round-trips like cartesian/periodic.
+    back = to_spectral(to_physical(st.spectral, st.params), st.params)
+    rt = max(_relerr(back[i], st.spectral[i]) for i in range(3))
+    assert rt < RT_TOL, f"{system}: roundtrip {rt:.2e}"
 
     # curl vs dnsjax _curl_fn (raw chunks, same basis/order)
     omega_path = d / "omega.tar"

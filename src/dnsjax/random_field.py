@@ -154,7 +154,9 @@ def _column_draw(seed: int, i2: int, i3: int, n: int) -> np.ndarray:
     return rng.standard_normal((3, n)) + 1j * rng.standard_normal((3, n))
 
 
-def _hermitian_column(seed: int, i2: int, n2: int, n: int) -> np.ndarray:
+def _hermitian_column(
+    seed: int, i2: int, n2: int, n: int, pm_pair: bool = False
+) -> np.ndarray:
     r"""Conjugate-consistent ``(3, n)`` draw for the real-FFT-axis-0 plane.
 
     Mirrors :func:`enforce_hermitian_slice`'s pairing over the length
@@ -162,17 +164,40 @@ def _hermitian_column(seed: int, i2: int, n2: int, n: int) -> np.ndarray:
     ``i <-> n2-1-i`` conjugate pairs (the negative member is the conjugate
     of the same canonical draw, so both owning devices agree without
     communication), and the unpaired mode (odd ``n2``) zeroed.
+
+    The reality constraint is on the **physical** components.  In the
+    Cartesian/periodic `$(u_x, u_y, u_z)$` basis (``pm_pair=False``) all
+    three are real fields, so each is made Hermitian individually.  In the
+    cylindrical/annular `$(u_z, u_+, u_-)$` basis (``pm_pair=True``) the
+    real fields are `$u_z$` and `$u_r = (u_+ + u_-)/2$`,
+    `$u_\theta = (u_+ - u_-)/(2i)$`; making *those* Hermitian requires
+    `$u_+$` and `$u_-$` to be conjugate **partners** across `$m$`
+    (`$u_+(-m) = \overline{u_-(m)}$`, `$u_+(0) = \overline{u_-(0)}$`), not
+    each individually Hermitian -- which would instead force `$u_\theta$`
+    anti-Hermitian: a non-physical azimuthal velocity whose axial-mean
+    plane the real-FFT inverse cannot represent (it is dropped, losing the
+    mean swirl).  `$u_z$` (component 0, a real field) stays self-conjugate
+    either way.
     """
     n_pos = n2 // 2
     if i2 == 0:
         rng = np.random.default_rng((seed, 0, 0))
-        return rng.standard_normal((3, n)).astype(np.complex128)
+        if not pm_pair:
+            return rng.standard_normal((3, n)).astype(np.complex128)
+        d = rng.standard_normal((3, n)) + 1j * rng.standard_normal((3, n))
+        # u_z real; u_- = conj(u_+) makes u_r, u_theta real at m = 0.
+        return np.array([d[0].real, d[1], np.conj(d[1])])
     if n2 % 2 == 1 and i2 == n_pos:
         return np.zeros((3, n), dtype=np.complex128)
     canonical = i2 if i2 < n_pos else (n2 - 1) - i2
     rng = np.random.default_rng((seed, canonical, 0))
     d = rng.standard_normal((3, n)) + 1j * rng.standard_normal((3, n))
-    return d if i2 < n_pos else np.conj(d)
+    if i2 < n_pos:
+        return d
+    if pm_pair:
+        # Negative m: u_z self-conjugate; u_+ <-> u_- conjugate partners.
+        return np.array([np.conj(d[0]), np.conj(d[2]), np.conj(d[1])])
+    return np.conj(d)
 
 
 def _leray(
@@ -353,7 +378,10 @@ def generate_cylindrical(
     truncation-level wall value (projected by the first corrector step).
     The inner end `$r = 0$` is the axis (regularity via parity), not a
     wall.  For `$k_z = 0$` a small residual divergence remains and is
-    projected out by the corrector.
+    projected out by the corrector.  The `$k_z = 0$` plane is drawn with
+    `$u_z, u_r, u_\theta$` Hermitian (`$u_+ \leftrightarrow u_-$` conjugate
+    partners; see :func:`_hermitian_column` ``pm_pair``) so the physical
+    azimuthal velocity -- including its axial mean -- is real.
     """
     from .geometries.wall_bounded.cylindrical import (
         build_cylindrical_grid,
@@ -394,7 +422,7 @@ def generate_cylindrical(
                 g3 = kz_start + lj  # global k_z index (axis 3, real)
                 kz_val = kz_np[g3]
                 if g3 == 0:
-                    col = _hermitian_column(seed, g2, nz, Nr)
+                    col = _hermitian_column(seed, g2, nz, Nr, pm_pair=True)
                 else:
                     col = _column_draw(seed, g2, g3, Nr)
                 col[0] *= window_wall
@@ -452,7 +480,10 @@ def generate_annular(
     `$u_z$` inherits a truncation-level wall value (projected by the first
     corrector step); the independent components keep exact wall zeros.
     For `$k_z = 0$` a small residual divergence remains and is projected
-    out by the corrector.
+    out by the corrector.  The `$k_z = 0$` plane is drawn with
+    `$u_z, u_r, u_\theta$` Hermitian (`$u_+ \leftrightarrow u_-$` conjugate
+    partners; see :func:`_hermitian_column` ``pm_pair``) so the physical
+    azimuthal velocity -- including its axial mean -- is real.
     """
     from .geometries.wall_bounded.annular import (
         build_annular_grid,
@@ -494,7 +525,7 @@ def generate_annular(
                 g3 = kz_start + lj  # global k_z index (axis 3, real)
                 kz_val = kz_np[g3]
                 if g3 == 0:
-                    col = _hermitian_column(seed, g2, nz, Nr)
+                    col = _hermitian_column(seed, g2, nz, Nr, pm_pair=True)
                 else:
                     col = _column_draw(seed, g2, g3, Nr)
                 col[0] *= window_lin
