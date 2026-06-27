@@ -184,6 +184,81 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # Regression guard for the Pallas banded backend
+        # (solver.backend=pallas) on a sharded, padded mode axis:
+        # multi-device on the kx/axial axis (np1 = 2) with nx // 2 = 3
+        # not divisible by np1 (padded to 4).  The per-mode banded
+        # operators are built and the nonlinear path solved on the
+        # sharded axis -- catching sharding bugs the single-device run
+        # misses.  On CPU the backend runs the pure-JAX banded sweep
+        # (the Triton kernel is GPU-only; see the GPU-validation plan).
+        "name": "pipe-pallas-mpi-pad",
+        "force_np": 2,
+        "force_np0": 1,
+        "oversubscribe": True,
+        "res": {"nx": 6, "ny": 24, "nz": 8},
+        "args": [
+            "--phys.system",
+            "pipe",
+            "--phys.re",
+            "1800",
+            "--geo.lx",
+            "5",
+            "--solver.backend",
+            "pallas",
+        ],
+    },
+    {
+        # Pallas banded backend on the Cartesian (plane-couette)
+        # geometry, same sharded/padded mode-axis guard as
+        # pipe-pallas-mpi-pad (np1 = 2, nx // 2 = 3 padded to 4): builds
+        # the single shared Hk and the Lk pressure operator in banded
+        # storage and solves the nonlinear path on the sharded axis.  On
+        # CPU the pure-JAX banded sweep runs (Triton kernel is GPU-only).
+        "name": "plane-couette-pallas-mpi-pad",
+        "force_np": 2,
+        "force_np0": 1,
+        "oversubscribe": True,
+        "res": {"nx": 6, "ny": 24, "nz": 8},
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+            "--solver.backend",
+            "pallas",
+        ],
+    },
+    {
+        # Pallas banded backend on the annular (taylor-couette)
+        # geometry, same sharded/padded guard: builds the Lk and the
+        # three stacked Hk (m+1, m-1, m) operators in banded storage and
+        # solves on the sharded axis.  CPU runs the pure-JAX banded sweep.
+        "name": "taylor-couette-pallas-mpi-pad",
+        "force_np": 2,
+        "force_np0": 1,
+        "oversubscribe": True,
+        "res": {"nx": 6, "ny": 24, "nz": 8},
+        "args": [
+            "--phys.system",
+            "taylor-couette",
+            "--phys.re1",
+            "400",
+            "--phys.re2",
+            "-400",
+            "--geo.eta",
+            "0.5",
+            "--geo.lx",
+            "5",
+            "--solver.backend",
+            "pallas",
+        ],
+    },
+    {
         # Default start mode: no --init.random_field flag is passed, so
         # the run must fall through to the random-IC default
         # (start_from_laminar defaults off).  Guards the snapshot-first /
