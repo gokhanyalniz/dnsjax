@@ -326,7 +326,50 @@ class Solver(BaseModel):
     # exploits the known stencil bandwidth of D1, D2).
     # ``"dense"``: full ``Ny x Ny`` LU factors per Fourier mode
     # (legacy path, kept for verification against the banded path).
-    backend: Literal["banded", "dense"] = "banded"
+    # ``"pallas"``: one-program-per-mode sequential banded sweep via a
+    # Pallas/Triton kernel (GPU); CPU runs the same banded math in pure
+    # JAX.  Uses a no-pivot banded LU, falling back per operator group
+    # to the pivoted ``"banded"`` (SPIKE) solver when unstable or when
+    # ``pallas_force_pivoting`` is set (see ``solvers.py``).  Implemented
+    # for all wall-bounded geometries (cartesian, cylindrical, annular);
+    # the operators are assembled directly in banded storage by each
+    # geometry's ``_build_{Lk,Hk}_band_gpu`` via the shared
+    # ``solvers._assemble_banded_operator`` helper.
+    backend: Literal["banded", "dense", "pallas"] = "banded"
+    # ``"pallas"`` backend only: force the pivoted SPIKE fallback for
+    # every operator group instead of the no-pivot banded LU.  Default
+    # ``False`` decides per group from a setup-time stability residual
+    # (a diagnostic line is printed either way).
+    pallas_force_pivoting: bool = False
+    # ``"pallas"`` backend only: Pallas mode-tile size along the ``k_z``
+    # mode axis (one Pallas program solves a ``bm0 x bm1`` tile of
+    # Fourier modes, vectorising the banded sweep across the tile).  ``1``
+    # is one program per mode; ``> 1`` coalesces mode loads and fills more
+    # SIMD lanes.  The default ``2`` is the H100 tuning (4 warps/program
+    # with ``k = 2``).  Partial boundary tiles are padded to full tiles
+    # inside the kernel (a masked partial-tile band load miscompiles on
+    # real Triton -- see ``solvers._pallas_banded_solve``).  Must be a
+    # power of two.
+    pallas_block_m0: int = Field(ge=1, default=2)
+    # ``"pallas"`` backend only: Pallas mode-tile size along the
+    # contiguous ``k_x`` mode axis (the innermost, coalesced axis).  The
+    # default ``32`` is the H100 tuning -- one warp wide, so a warp's band
+    # load fully coalesces.  Same internal padding to full tiles as
+    # ``pallas_block_m0``.  Must be a power of two.
+    pallas_block_m1: int = Field(ge=1, default=32)
+    # ``"pallas"`` backend only: no-pivot banded-LU stability threshold
+    # (max relative solve residual ``||A x - b|| / ||b||`` over modes,
+    # measured once at setup).  Above it, the operator group falls back
+    # to the pivoted SPIKE solver.
+    pallas_stability_tol: float = Field(gt=0, default=1e-6)
+    # ``"pallas"`` backend only: Triton ``num_warps`` for the kernel
+    # (warps per Pallas program).  ``None`` lets Triton choose; ``1``
+    # forces the whole mode tile into a single warp (a cross-warp
+    # diagnostic knob, exercised by ``scripts/pallas_tiling_diagnostic.py``).
+    pallas_num_warps: int | None = Field(default=None, ge=1)
+    # ``"pallas"`` backend only: Triton ``num_stages`` (software
+    # pipelining depth) for the kernel.  ``None`` lets Triton choose.
+    pallas_num_stages: int | None = Field(default=None, ge=1)
     # Target SPIKE block size `$m$`.  When set, `$P = N_y / m$`.
     # When ``None`` (default), the block partition that minimises
     # total per-mode SPIKE storage under the selected
@@ -623,6 +666,16 @@ def validate_parameters() -> None:
             f"outs.it_corrector ({o.it_corrector}) so the corrector "
             "convergence is checked at least as often as it is logged."
         )
+
+    # The Pallas kernel tiles the mode plane in ``bm0 x bm1`` blocks;
+    # Triton block loads require power-of-two tile dims.
+    for name in ("pallas_block_m0", "pallas_block_m1"):
+        v = getattr(params.solver, name)
+        if v & (v - 1) != 0:
+            raise ValueError(
+                f"solver.{name} ({v}) must be a power of two "
+                "(Triton block-load constraint)."
+            )
 
 
 @dataclass
