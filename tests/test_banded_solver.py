@@ -36,7 +36,17 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.sharding import sharding  # noqa: E402
-from dnsjax.solvers import _spike_factor  # noqa: E402
+from dnsjax.solvers import (  # noqa: E402
+    PerModeBandedOperator,
+    PerModeBandedPallasOperator,
+    _banded_factor,
+    _banded_from_dense,
+    _banded_solve_batched,
+    _decide_pallas_or_spike,
+    _pallas_banded_solve,
+    _spike_factor,
+    _stack_pallas_operators,
+)
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -136,6 +146,231 @@ def test_spike_solve_block_thomas_p2() -> None:
     P, m = 2, 8
     A = _make_random_banded(Ny, p, seed=42)
     _run_spike_solve(A, P, m, p, block_thomas=True)
+
+
+# ── Pallas banded backend tests (CPU: pure-JAX path + interpret) ──────
+
+
+def _tile_modes(arr: np.ndarray, Nkz: int, Nkx: int) -> jnp.ndarray:
+    """Tile a single operator/RHS over the ``(Nkz, Nkx)`` mode axes."""
+    return jnp.tile(
+        jnp.asarray(arr)[None, None], (Nkz, Nkx) + (1,) * arr.ndim
+    )
+
+
+def _pallas_op_from_dense(
+    A: np.ndarray, p: int, Nkz: int, Nkx: int
+) -> PerModeBandedPallasOperator:
+    """Build a Pallas banded operator from one dense banded matrix."""
+    band = _banded_from_dense(_tile_modes(A, Nkz, Nkx), p)
+    L, U = _banded_factor(band)
+    return PerModeBandedPallasOperator.from_banded_factors(L, U)
+
+
+def _spike_op_from_dense(
+    A: np.ndarray, P: int, m: int, p: int, Nkz: int, Nkx: int
+) -> PerModeBandedOperator:
+    """Build a SPIKE operator from one dense banded matrix."""
+    A_blk, B_crn, C_crn = _extract_spike_blocks(A, P, m, p)
+    A_j = jax.device_put(
+        jnp.tile(jnp.asarray(A_blk)[None, None], (Nkz, Nkx, 1, 1, 1)),
+        sharding.spec_dy_blocks_shard,
+    )
+    B_j = jnp.tile(jnp.asarray(B_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
+    C_j = jnp.tile(jnp.asarray(C_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
+    return _spike_factor(A_j, B_j, C_j, block_thomas=False)
+
+
+def test_pallas_banded_matches_dense() -> None:
+    """Pallas banded operator (CPU path) matches ``np.linalg.solve``
+    across a sweep of half-bandwidth ``p``, real and complex RHS."""
+    Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
+    for p in (2, 4, 6):
+        Ny = 5 * p
+        A = _make_random_banded(Ny, p, seed=p)
+        op = _pallas_op_from_dense(A, p, Nkz, Nkx)
+        rng = np.random.default_rng(100 + p)
+
+        b = rng.standard_normal(Ny)
+        rhs = jnp.tile(jnp.asarray(b)[None, None, :], (Nkz, Nkx, 1))
+        x = np.asarray(op.solve(rhs))[0, 0]
+        assert_allclose(x, np.linalg.solve(A, b), atol=1e-9, rtol=1e-9)
+
+        bc = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
+        rhs_c = jnp.tile(jnp.asarray(bc)[None, None, :], (Nkz, Nkx, 1))
+        x_c = np.asarray(op.solve(rhs_c))[0, 0]
+        assert_allclose(x_c, np.linalg.solve(A, bc), atol=1e-9, rtol=1e-9)
+
+
+def test_pallas_interpret_matches_cpu_path() -> None:
+    """The Pallas kernel (interpret mode) reproduces the pure-JAX
+    banded sweep used on CPU.
+
+    Swept over half-bandwidth ``p``, wall-normal size ``Ny``, real
+    (``k=1``) / complex-as-real (``k=2``) RHS, and two mode-plane sizes --
+    exercising the mode-tiled forward/back ``fori_loop`` sweep (band
+    offsets, the reciprocated-diagonal vs super-band split-by-index, the
+    y stash) and, crucially, the **pad-to-full-tiles** path: the
+    ``(bm0, bm1) = (2, 32)`` tile (now the default, set explicitly here)
+    divides neither ``(3, 2)`` nor ``(5, 40)``, so the kernel zero-pads
+    the mode plane up to whole tiles, solves, and crops -- the pad/crop
+    result is checked against the CPU sweep.  Factors are converted to the
+    kernel's mode-inner layout (``from_banded_factors``); RHS/solution are
+    moved between mode-outer and mode-inner around the kernel.
+
+    Run with the global Explicit mesh cleared: the kernel's indexed ref
+    stores discharge (interpret only) to ``dynamic_update_slice``, which
+    rejects the ``{Explicit}`` vs ``{}`` sharding pair under that mesh.
+    The real Triton path lowers the store natively (no discharge), so
+    this is an interpret-mode artifact; the mesh is a trivial 1-device
+    mesh here, so clearing it leaves the numerics unchanged."""
+    rng = np.random.default_rng(3)
+    orig_mesh = sharding.mesh
+    orig_bm = (params.solver.pallas_block_m0, params.solver.pallas_block_m1)
+    params.solver.pallas_block_m0 = 2
+    params.solver.pallas_block_m1 = 32
+    jax.set_mesh(None)
+    try:
+        mode_dims = [(params.res.nz - 1, params.res.nx // 2), (5, 40)]
+        for Nkz, Nkx in mode_dims:
+            for p in (2, 3, 4, 6):
+                for Ny in (16, 20):
+                    A = _make_random_banded(Ny, p, seed=7 + p)
+                    Lo, Uo = _banded_factor(
+                        _banded_from_dense(_tile_modes(A, Nkz, Nkx), p)
+                    )
+                    op = (
+                        PerModeBandedPallasOperator.from_banded_factors(
+                            Lo, Uo
+                        )
+                    )
+                    for k in (1, 2):
+                        b = jnp.asarray(
+                            rng.standard_normal((Nkz, Nkx, Ny, k))
+                        )
+                        x_cpu = _banded_solve_batched(Lo, Uo, b, p)
+                        bi = jnp.moveaxis(b, (0, 1), (-2, -1))
+                        x_pl = _pallas_banded_solve(
+                            op.L, op.U, bi, p, interpret=True
+                        )
+                        x_pl = jnp.moveaxis(x_pl, (0, 1), (-2, -1))
+                        assert_allclose(
+                            np.asarray(x_pl), np.asarray(x_cpu),
+                            atol=1e-12, rtol=0,
+                        )
+    finally:
+        jax.set_mesh(orig_mesh)
+        params.solver.pallas_block_m0 = orig_bm[0]
+        params.solver.pallas_block_m1 = orig_bm[1]
+
+
+def test_pallas_cuda_lowering() -> None:
+    """The Triton kernel lowers for the GPU target (compile-only).
+
+    Lowers ``_pallas_banded_solve(interpret=False)`` for ``cuda`` and
+    asserts a Triton custom call is produced.  This is the compile stage
+    that rejected the earlier kernel designs (f64 TMA, non-power-of-two
+    block loads, value slices / reversal / scan ``xs``); the mode-tiled
+    ``fori_loop`` kernel passes it.  Triton IR generation needs no GPU,
+    so this runs on the CPU dev box -- a regression guard for the exact
+    class of errors hit on the cluster.  ``Ny`` and ``p`` are
+    deliberately non-powers-of-two (the band axes), and the
+    ``(bm0, bm1) = (2, 32)`` tile (now the default, set explicitly here)
+    does not divide ``(Nkz, Nkx)``, so the kernel zero-pads the plane up to
+    whole tiles; this guards the padded-plane lowering.  The factors are in
+    the kernel's mode-inner layout; the mesh is cleared as in the interpret
+    test."""
+    Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
+    p, Ny, k = 3, 17, 2  # both non-power-of-two
+    orig_mesh = sharding.mesh
+    orig_bm = (params.solver.pallas_block_m0, params.solver.pallas_block_m1)
+    params.solver.pallas_block_m0 = 2
+    params.solver.pallas_block_m1 = 32
+    jax.set_mesh(None)
+    try:
+        A = _make_random_banded(Ny, p, seed=1)
+        op = PerModeBandedPallasOperator.from_banded_factors(
+            *_banded_factor(_banded_from_dense(_tile_modes(A, Nkz, Nkx), p))
+        )
+        b = jnp.zeros((Ny, k, Nkz, Nkx))  # mode-inner RHS
+
+        def solve(L: jnp.ndarray, U: jnp.ndarray, b: jnp.ndarray):
+            return _pallas_banded_solve(L, U, b, p, interpret=False)
+
+        lowered = (
+            jax.jit(solve)
+            .trace(op.L, op.U, b)
+            .lower(lowering_platforms=("cuda",))
+        )
+        assert "triton" in lowered.as_text().lower()
+    finally:
+        jax.set_mesh(orig_mesh)
+        params.solver.pallas_block_m0 = orig_bm[0]
+        params.solver.pallas_block_m1 = orig_bm[1]
+
+
+def test_pallas_stacked_operators() -> None:
+    """Stacked multi-component Pallas operator solves each component
+    with its own factors."""
+    Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
+    p, Ny = 4, 16
+    As = [_make_random_banded(Ny, p, seed=s) for s in (1, 2, 3)]
+    stk = _stack_pallas_operators(
+        *[_pallas_op_from_dense(A, p, Nkz, Nkx) for A in As]
+    )
+    rng = np.random.default_rng(11)
+    bs = [rng.standard_normal(Ny) for _ in range(3)]
+    rhs = jnp.stack(
+        [jnp.tile(jnp.asarray(b)[None, None, :], (Nkz, Nkx, 1)) for b in bs]
+    )  # (3, Nkz, Nkx, Ny)
+    X = np.asarray(stk.solve(rhs))
+    for c in range(3):
+        assert_allclose(
+            X[c, 0, 0], np.linalg.solve(As[c], bs[c]), atol=1e-9, rtol=1e-9
+        )
+
+
+def test_decide_pallas_auto_force_and_fallback() -> None:
+    """``_decide_pallas_or_spike``: auto picks Pallas for a
+    well-conditioned operator, ``force_pivoting`` picks SPIKE, and a
+    no-pivot breakdown falls back to SPIKE -- all solving correctly."""
+    Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
+    p, Ny, P, m = 4, 16, 2, 8
+    A = _make_random_banded(Ny, p, seed=0)
+    band = _banded_from_dense(_tile_modes(A, Nkz, Nkx), p)
+    rng = np.random.default_rng(5)
+    b = rng.standard_normal(Ny)
+    rhs = jnp.tile(jnp.asarray(b)[None, None, :], (Nkz, Nkx, 1))
+    ref = np.linalg.solve(A, b)
+
+    def make_spike() -> PerModeBandedOperator:
+        return _spike_op_from_dense(A, P, m, p, Nkz, Nkx)
+
+    op_auto = _decide_pallas_or_spike([band], False, "auto", make_spike)
+    assert isinstance(op_auto, PerModeBandedPallasOperator)
+    assert_allclose(np.asarray(op_auto.solve(rhs))[0, 0], ref, atol=1e-9)
+
+    op_force = _decide_pallas_or_spike([band], True, "force", make_spike)
+    assert isinstance(op_force, PerModeBandedOperator)
+    assert_allclose(np.asarray(op_force.solve(rhs))[0, 0], ref, atol=1e-9)
+
+    # Zero leading pivot: no-pivot LU breaks -> fall back to SPIKE.
+    A_bad = _make_random_banded(Ny, p, seed=0)
+    A_bad[0, 0] = 0.0
+    band_bad = _banded_from_dense(_tile_modes(A_bad, Nkz, Nkx), p)
+    b2 = rng.standard_normal(Ny)
+    rhs2 = jnp.tile(jnp.asarray(b2)[None, None, :], (Nkz, Nkx, 1))
+
+    def make_spike_bad() -> PerModeBandedOperator:
+        return _spike_op_from_dense(A_bad, P, m, p, Nkz, Nkx)
+
+    op_fb = _decide_pallas_or_spike([band_bad], False, "fb", make_spike_bad)
+    assert isinstance(op_fb, PerModeBandedOperator)
+    assert_allclose(
+        np.asarray(op_fb.solve(rhs2))[0, 0],
+        np.linalg.solve(A_bad, b2),
+        atol=1e-9,
+    )
 
 
 # ── Runner ───────────────────────────────────────────────────────────

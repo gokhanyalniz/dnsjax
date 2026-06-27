@@ -45,8 +45,10 @@ from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _abase_matvec,
     _build_A_base,
+    _build_Hk_band_gpu,
     _build_Hk_blocks_gpu,
     _build_Hk_dense_gpu,
+    _build_Lk_band_gpu,
     _build_Lk_blocks_gpu,
     _build_Lk_dense_gpu,
     _ghost_row_count,
@@ -59,6 +61,9 @@ from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
     DenseJAXSolver,
+    PerModeBandedPallasOperator,
+    _banded_factor,
+    _banded_from_dense,
     _spike_factor,
     validate_spike_partition,
 )
@@ -472,6 +477,99 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
         rtol=1e-9,
         err_msg="Hk_z",
     )
+
+
+def test_pallas_vs_dense_on_cylindrical_operators() -> None:
+    r"""``PerModeBandedPallasOperator`` matches ``DenseJAXSolver`` on
+    cylindrical Lk/Hk_plus/Hk_minus/Hk_z.
+
+    Guards the parity-reduced Pallas band assembly
+    (``_build_{Lk,Hk}_band_gpu``, refactored onto the shared
+    ``solvers._assemble_banded_operator``): the banded operator equals
+    ``banded(dense)`` exactly and the no-pivot banded sweep reproduces
+    the dense solve on a complex RHS.
+    """
+    Nr = params.res.ny
+    p = params.res.fd_order
+
+    m_s = fourier.m[0, ..., None]
+    kz2 = fourier.kz2[0, ..., None]
+    mean_mask = fourier.mean_mask[0, ..., None]
+    m_is_even_s = fourier.m_is_even[0, ..., None]
+    m_is_even_p = m_is_even_s
+    m_is_even_v = 1.0 - m_is_even_s
+
+    m_sq = m_s**2
+    m_plus_1_sq = (m_s + 1) ** 2
+    m_minus_1_sq = (m_s - 1) ** 2
+
+    dt = params.step.dt
+    c = params.step.implicitness
+    nu = 1.0 / params.phys.re
+
+    A_even = pipe_flow.A_base_even
+    A_odd = pipe_flow.A_base_odd
+    inv_r2 = pipe_flow.inv_r2
+    D1_wall = pipe_flow.D1_wall.ravel()
+    band_even = _banded_from_dense(A_even, p)
+    band_odd = _banded_from_dense(A_odd, p)
+
+    Nm = params.res.nz - 1
+    Nkz = params.res.nx // 2
+    rng = np.random.default_rng(71)
+    b = rng.standard_normal((Nm, Nkz, Nr)) + 1j * rng.standard_normal(
+        (Nm, Nkz, Nr)
+    )
+    rhs = jax.device_put(jnp.asarray(b), sharding.spec_imm_corr_shard)
+
+    to_band = jax.vmap(jax.vmap(lambda A: _banded_from_dense(A, p)))
+
+    def _check(label: str, band: jax.Array, full: jax.Array) -> None:
+        assert_allclose(
+            np.asarray(band),
+            np.asarray(to_band(full)),
+            atol=1e-12,
+            err_msg=f"{label} assembly",
+        )
+        pallas = PerModeBandedPallasOperator.from_banded_factors(
+            *_banded_factor(band)
+        )
+        dense = DenseJAXSolver(full)
+        assert_allclose(
+            np.asarray(pallas.solve(rhs)),
+            np.asarray(dense.solve(rhs)),
+            atol=1e-9,
+            rtol=1e-9,
+            err_msg=label,
+        )
+
+    _check(
+        "Lk",
+        _build_Lk_band_gpu(
+            D1_wall, band_even, band_odd, m_is_even_p,
+            m_sq, inv_r2, kz2, mean_mask, p,
+        ),
+        _build_Lk_dense_gpu(
+            D1_wall, A_even, A_odd, m_is_even_p,
+            m_sq, inv_r2, kz2, mean_mask,
+        ),
+    )
+    for label, meff2, parity in [
+        ("Hk_plus", m_plus_1_sq, m_is_even_v),
+        ("Hk_minus", m_minus_1_sq, m_is_even_v),
+        ("Hk_z", m_sq, m_is_even_p),
+    ]:
+        _check(
+            label,
+            _build_Hk_band_gpu(
+                band_even, band_odd, parity, meff2,
+                inv_r2, kz2, dt, c, nu, p,
+            ),
+            _build_Hk_dense_gpu(
+                A_even, A_odd, parity, meff2,
+                inv_r2, kz2, dt, c, nu,
+            ),
+        )
 
 
 # Group C: Norms

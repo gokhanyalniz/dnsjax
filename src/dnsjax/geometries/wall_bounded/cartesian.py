@@ -41,6 +41,12 @@ from ...sharding import register_dataclass_pytree, sharding
 from ...solvers import (
     DenseJAXSolver,
     PerModeBandedOperator,
+    PerModeBandedPallasOperator,
+    _assemble_banded_operator,
+    _banded_diag_column,
+    _banded_from_dense,
+    _banded_wall_row,
+    _decide_pallas_or_spike,
     _extract_banded_corners,
     _spike_factor,
     validate_spike_partition,
@@ -479,6 +485,77 @@ def _build_Hk_blocks_gpu(
     return A_blocks, B_corner, C_corner
 
 
+# ── Pallas-backend banded operator builders ───────────────────────
+
+
+def _build_Lk_band_gpu(
+    D1: Array,
+    D2: Array,
+    k2: Array,
+    mean_mask: Array,
+    p: int,
+) -> Array:
+    r"""Build `$L_k$` in banded storage for the Pallas backend.
+
+    Same Neumann-BC pressure Poisson operator
+    `$L_k = D_2 - k^2 I$` as :func:`_build_Lk_blocks_gpu` /
+    :func:`_build_Lk_dense_gpu`, but assembled directly in banded
+    layout ``(Nkz, Nkx, Ny, 2p+1)``
+    (``band[..., i, d] = L_k[..., i, i-p+d]``) from the base band
+    ``_banded_from_dense(D2, p)``, with no ``(Ny, Ny)`` per mode.  The
+    `$-k^2$` shift is constant across rows; Neumann `$D_1$` rows sit at
+    **both** walls (rows 0 and ``Ny-1``), with a mean-mode identity pin
+    at the outer wall (the only `$k^2 = 0$` system).
+
+    Parameters
+    ----------
+    D1, D2:
+        First/second-derivative matrices, ``(Ny, Ny)``.
+    k2:
+        `$k_x^2 + k_z^2$`, ``(Nkz, Nkx, 1)``.
+    mean_mask:
+        Mean-mode boolean mask, same shape as *k2*.
+    p:
+        FD order (half-bandwidth).
+    """
+    Ny = D2.shape[-1]
+    band_D2 = _banded_from_dense(D2, p)  # (Ny, 2p+1)
+    diag = -k2  # (Nkz, Nkx, 1), constant across rows
+    inner = _banded_wall_row(D1[0], 0, p)  # Neumann, inner wall
+    neumann_outer = _banded_wall_row(D1[-1], Ny - 1, p)  # Neumann, outer
+    outer = jnp.where(
+        mean_mask, _banded_diag_column(p, band_D2.dtype), neumann_outer
+    )  # (Nkz, Nkx, 2p+1)
+    return _assemble_banded_operator(
+        band_D2, 1.0, diag, [(0, inner), (Ny - 1, outer)]
+    )
+
+
+def _build_Hk_band_gpu(
+    D2: Array,
+    k2: Array,
+    dt: float,
+    c: float,
+    nu: float,
+    p: int,
+) -> Array:
+    r"""Build `$H_k$` in banded storage for the Pallas backend.
+
+    Banded analogue of :func:`_build_Hk_blocks_gpu` /
+    :func:`_build_Hk_dense_gpu`, layout ``(Nkz, Nkx, Ny, 2p+1)``:
+    `$H_k = (1/\Delta t) I - c \nu (D_2 - k^2 I)$` with Dirichlet
+    no-slip identity rows at **both** walls.  The single `$H_k$` is
+    shared by all three velocity components.
+    """
+    Ny = D2.shape[-1]
+    band_D2 = _banded_from_dense(D2, p)
+    diag = 1.0 / dt + c * nu * k2  # (Nkz, Nkx, 1)
+    eN = _banded_diag_column(p, band_D2.dtype)  # identity wall row
+    return _assemble_banded_operator(
+        band_D2, -c * nu, diag, [(0, eN), (Ny - 1, eN)]
+    )
+
+
 def _build_Lk_dense_gpu(
     D1: Array, D2: Array, k2: Array, mean_mask: Array
 ) -> Array:
@@ -537,6 +614,10 @@ def _build_Hk_dense_gpu(
 
 # ── CartesianFlow base dataclass ─────────────────────────────────────────
 
+_WallBoundedOp = (
+    DenseJAXSolver | PerModeBandedOperator | PerModeBandedPallasOperator
+)
+
 
 @register_dataclass_pytree
 @dataclass
@@ -575,8 +656,8 @@ class CartesianFlow:
     D2: Array = field(init=False)
     D1_bnd: Array = field(init=False)
     D2_bnd: Array = field(init=False)
-    Lk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
-    Hk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
+    Lk_op: _WallBoundedOp = field(init=False)
+    Hk_op: _WallBoundedOp = field(init=False)
     v1: Array = field(init=False)
     v2: Array = field(init=False)
     q1: Array = field(init=False)
@@ -690,6 +771,43 @@ class CartesianFlow:
             )
             self.Hk_op = _spike_factor(Hk_A, Hk_B, Hk_C, bt)
             del Hk_A, Hk_B, Hk_C
+        elif params.solver.backend == "pallas":
+            # Pallas backend: one-program-per-mode banded sweep, with a
+            # pivoted SPIKE fallback per operator group (forced via
+            # solver.pallas_force_pivoting, or auto on an unstable
+            # no-pivot banded LU).  Operators are assembled directly in
+            # banded storage (no (Ny, Ny) per mode); the fallback reuses
+            # the SPIKE block builders.  Lk and the single shared Hk are
+            # each one operator group.
+            bt = params.solver.block_thomas
+            P_blk, m_blk = validate_spike_partition(Ny, p, "Ny", bt)
+            force = params.solver.pallas_force_pivoting
+
+            Lk_band = _build_Lk_band_gpu(self.D1, self.D2, k2_s, mean_s, p)
+
+            def _make_Lk_spike() -> PerModeBandedOperator:
+                Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
+                    self.D1, self.D2, k2_s, mean_s, p, P_blk, m_blk
+                )
+                return _spike_factor(Lk_A, Lk_B, Lk_C, bt)
+
+            self.Lk_op = _decide_pallas_or_spike(
+                [Lk_band], force, "Lk", _make_Lk_spike
+            )
+            del Lk_band
+
+            Hk_band = _build_Hk_band_gpu(self.D2, k2_s, dt, c, nu, p)
+
+            def _make_Hk_spike() -> PerModeBandedOperator:
+                Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
+                    self.D2, k2_s, dt, c, nu, p, P_blk, m_blk
+                )
+                return _spike_factor(Hk_A, Hk_B, Hk_C, bt)
+
+            self.Hk_op = _decide_pallas_or_spike(
+                [Hk_band], force, "Hk", _make_Hk_spike
+            )
+            del Hk_band
         else:
             # Dense backend: parity/reference path.  Full
             # `(Nkz, Nkx, Ny, Ny)` matrices are built, LU-factored

@@ -15,7 +15,7 @@
 
 See `_imm_iteration` in `cartesian.py` for the full 9-stage algorithm, mathematical equivalence (Schur complement / Woodbury), and the optional constant-bulk-velocity and block-mean-spanwise-velocity corrections.
 
-- `params.solver.backend` selects the operator storage: `"banded"` (default, SPIKE algorithm -- see `solvers.py`) or `"dense"` (full `(Ny, Ny)` matrices via `DenseJAXSolver`).
+- `params.solver.backend` selects the operator storage: `"banded"` (default, SPIKE algorithm -- see `solvers.py`), `"dense"` (full `(Ny, Ny)` matrices via `DenseJAXSolver`), or `"pallas"` (mode-tiled per-mode banded sweep via a Pallas/Triton kernel on GPU / pure-JAX banded sweep on CPU, `PerModeBandedPallasOperator`; mode-inner coalesced factors + pre-inverted U diagonal -- see `solvers.py`). `"pallas"` is wired in all three geometries: each `_build_{Lk,Hk}_band_gpu` assembles the operator directly in banded storage via the shared `solvers._assemble_banded_operator` / `_banded_wall_row` / `_banded_diag_column` helpers (cartesian: single shared `Hk`, two walls, mode-constant diagonal shift; annular: three stacked `Hk`, two walls; cylindrical: parity-selected base band, single wall), dispatched by `_decide_pallas_or_spike` which falls back to pivoted SPIKE on an unstable no-pivot LU or when `solver.pallas_force_pivoting` is set.
 - Both backends apply `Lk` and `Hk_minus` matvecs matrix-free via `_lk_matvec` / `_hk_minus_matvec`, reconstructing from shared `D1`/`D2` FD matrices.
 - All IMM homogeneous data is derived from the GPU operator by `CartesianFlow._derive_imm_homogeneous_data`.
 
@@ -59,9 +59,9 @@ FD matvecs via `apply_y_matrix` batch over the leading component axis (a pure ba
 
 ### Tests
 
-- `tests/test_cartesian.py`: Cartesian operator and matvec tests
-- `tests/test_cylindrical.py`: cylindrical operator and matvec tests
-- `tests/test_annular.py`: annular operator/matvec tests, 2x2 SPIKE-vs-dense parity, circular-Couette A0/B0 coefficient checks
+- `tests/test_cartesian.py`: Cartesian operator and matvec tests, Pallas-band-vs-dense parity
+- `tests/test_cylindrical.py`: cylindrical operator and matvec tests, Pallas-band-vs-dense parity
+- `tests/test_annular.py`: annular operator/matvec tests, 2x2 SPIKE-vs-dense parity, Pallas-band-vs-dense parity, circular-Couette A0/B0 coefficient checks
 - `tests/test_integration.py`: quadrature weight and interpolation matrix tests
 - `tests/test_mean_mask.py`: placeholder padding wavenumbers and `mean_mask` as the unique k^2 = 0 mode under forced spectral padding
 - `tests/test_laminar_smoke.py`: laminar time-stepping smoke tests for all wall-bounded flows (incl. taylor-couette and dean; Dean is total-field, so its `E'` is the kinetic energy of the deviation from the analytical laminar profile — it checks that `E'` stays tiny, corrector convergence, energy balance `I ≈ D`, and near-steady energy, rather than the perturbation flows' `E'`≈O(1e-32) / `err`≈O(1e-18))
