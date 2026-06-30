@@ -864,8 +864,14 @@ class CartesianFlow:
         computation, which uses the original ``v1`` to evaluate
         `$1/M_{00}$`.
         """
-        # All solver work uses (Nkz, Nkx, Ny) layout; results
-        # are transposed to field layout (Ny, Nkz, Nkx) at the end.
+        # This run-once setup stays in the mode-outer (Nkz, Nkx, Ny)
+        # layout: the influence-matrix einsums below operate on it and
+        # the results are transposed to field layout (Ny, Nkz, Nkx) at
+        # the end.  ``.solve`` now takes a mode-inner field, so each
+        # setup solve is wrapped (transpose in, transpose out) to keep
+        # this layout.  FUTURE: rebuild this setup natively mode-inner to
+        # drop the wrappers -- the hot path already is; here it only
+        # relocates a one-time transpose, so it is deferred.
         e1_b = (
             jnp.zeros(
                 (Nkz, Nkx, Ny),
@@ -884,20 +890,20 @@ class CartesianFlow:
             .at[..., -1]
             .set(1.0)
         )
-        p1_s = self.Lk_op.solve(e1_b)
-        p2_s = self.Lk_op.solve(e2_b)
+        p1_s = self.Lk_op.solve(e1_b.transpose(2, 0, 1)).transpose(1, 2, 0)
+        p2_s = self.Lk_op.solve(e2_b.transpose(2, 0, 1)).transpose(1, 2, 0)
 
         rhs_v1 = -jnp.einsum("ij, zxj -> zxi", self.D1, p1_s)
         rhs_v2 = -jnp.einsum("ij, zxj -> zxi", self.D1, p2_s)
         rhs_v1 = rhs_v1.at[..., 0].set(0.0).at[..., -1].set(0.0)
         rhs_v2 = rhs_v2.at[..., 0].set(0.0).at[..., -1].set(0.0)
-        v1_s = self.Hk_op.solve(rhs_v1)
-        v2_s = self.Hk_op.solve(rhs_v2)
+        v1_s = self.Hk_op.solve(rhs_v1.transpose(2, 0, 1)).transpose(1, 2, 0)
+        v2_s = self.Hk_op.solve(rhs_v2.transpose(2, 0, 1)).transpose(1, 2, 0)
 
         q_rhs1 = p1_s.at[..., 0].set(0.0).at[..., -1].set(0.0)
         q_rhs2 = p2_s.at[..., 0].set(0.0).at[..., -1].set(0.0)
-        q1_s = self.Hk_op.solve(q_rhs1)
-        q2_s = self.Hk_op.solve(q_rhs2)
+        q1_s = self.Hk_op.solve(q_rhs1.transpose(2, 0, 1)).transpose(1, 2, 0)
+        q2_s = self.Hk_op.solve(q_rhs2.transpose(2, 0, 1)).transpose(1, 2, 0)
 
         # Influence matrix `$M_{ji} = (D_1 v_i)|_{\\text{wall}_j}$`.
         M00 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], v1_s)
@@ -979,7 +985,9 @@ class CartesianFlow:
         )
         rhs = jnp.where(fourier.mean_mask[0, ..., None], ones_vec, 0.0)
 
-        h_full = self.Hk_op.solve(rhs)
+        # Mode-outer setup RHS; wrap the mode-inner ``.solve`` (run once;
+        # see ``_derive_imm_homogeneous_data`` for the FUTURE note).
+        h_full = self.Hk_op.solve(rhs.transpose(2, 0, 1)).transpose(1, 2, 0)
 
         self.h_bulk_response = jax.device_put(
             extract_mean_mode(h_full.transpose(2, 0, 1)[None])[0],
@@ -1239,7 +1247,7 @@ def _imm_iteration(
 
     # Stage 2: particular pressure with ZERO Neumann BCs.
     f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
-    pP = flow_.Lk_op.solve(f_hat_P.transpose(1, 2, 0)).transpose(2, 0, 1)
+    pP = flow_.Lk_op.solve(f_hat_P)
 
     # Stage 3: Helmholtz solves for all three velocity components
     # against the particular pressure p_P (zero Dirichlet BCs).  The
@@ -1264,9 +1272,7 @@ def _imm_iteration(
     # solve itself returns v = 0 there.
     R_stack = R_stack.at[1].set(jnp.where(mean_mask, 0.0, R_stack[1]))
 
-    arb_stack = flow_.Hk_op.solve(R_stack.transpose(0, 2, 3, 1)).transpose(
-        0, 3, 1, 2
-    )
+    arb_stack = flow_.Hk_op.solve(R_stack)
     u_arb, v_arb, w_arb = arb_stack[0], arb_stack[1], arb_stack[2]
 
     # Stage 4: wall divergence residual. At walls u=w=0 (no-slip),

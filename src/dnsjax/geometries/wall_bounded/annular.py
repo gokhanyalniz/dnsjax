@@ -1062,7 +1062,14 @@ class AnnularFlow:
         mean mode (where `$d_{\mathrm{wall}} = 0$`, so the correction
         vanishes regardless).
         """
-        # Solver-internal layout (Nm, Nkz, Nr).
+        # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
+        # layout: the influence-matrix einsums below operate on it and
+        # the results are transposed to field layout (Nr, Nm, Nkz) at
+        # the end.  ``.solve`` now takes a mode-inner field, so each
+        # setup solve is wrapped (transpose in, transpose out) to keep
+        # this layout.  FUTURE: rebuild this setup natively mode-inner to
+        # drop the wrappers -- the hot path already is; here it only
+        # relocates a one-time transpose, so it is deferred.
         e_inner = (
             jnp.zeros(
                 (Nm, Nkz, Nr),
@@ -1081,8 +1088,8 @@ class AnnularFlow:
             .at[..., -1]
             .set(1.0)
         )
-        p1_s = self.Lk_op.solve(e_inner)
-        p2_s = self.Lk_op.solve(e_outer)
+        p1_s = self.Lk_op.solve(e_inner.transpose(2, 0, 1)).transpose(1, 2, 0)
+        p2_s = self.Lk_op.solve(e_outer.transpose(2, 0, 1)).transpose(1, 2, 0)
 
         m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
         m_over_r_s = m_s * self.inv_r  # (Nm, 1, Nr)
@@ -1095,7 +1102,10 @@ class AnnularFlow:
             rhs_v_plus = rhs_v_plus.at[..., 0].set(0.0).at[..., -1].set(0.0)
             rhs_v_minus = rhs_v_minus.at[..., 0].set(0.0).at[..., -1].set(0.0)
             q_rhs = p_s.at[..., 0].set(0.0).at[..., -1].set(0.0)
-            res = self.Hk_op.solve(jnp.stack([rhs_v_plus, rhs_v_minus, q_rhs]))
+            stacked = jnp.stack([rhs_v_plus, rhs_v_minus, q_rhs])
+            res = self.Hk_op.solve(
+                stacked.transpose(0, 3, 1, 2)
+            ).transpose(0, 2, 3, 1)
             vp, vm = res[0], res[1]
             # Zero the u_r part at the mean mode, preserving u_theta.
             vr = jnp.where(mean_s, (vp + vm) / 2, 0.0)
@@ -1165,7 +1175,9 @@ class AnnularFlow:
         )
         rhs = jnp.where(fourier.mean_mask[0, ..., None], ones_vec, 0.0)
         zeros = jnp.zeros_like(rhs)
-        h_full = self.Hk_op.solve(jnp.stack([zeros, zeros, rhs]))[2]
+        h_full = self.Hk_op.solve(
+            jnp.stack([zeros, zeros, rhs]).transpose(0, 3, 1, 2)
+        ).transpose(0, 2, 3, 1)[2]
 
         self.h_bulk_response = jax.device_put(
             extract_mean_mode(h_full.transpose(2, 0, 1)[None])[0],
@@ -1410,7 +1422,7 @@ def _imm_iteration(
 
     # Stage 2: particular pressure (both Neumann wall rows zeroed).
     f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
-    pP = flow_.Lk_op.solve(f_hat_P.transpose(1, 2, 0)).transpose(2, 0, 1)
+    pP = flow_.Lk_op.solve(f_hat_P)
 
     # Stage 3: pressure gradient and explicit Hk^- matvec.  D1 of the
     # velocity (u_+, u_-, u_z) was already formed above as dy_all[:3];
@@ -1450,9 +1462,7 @@ def _imm_iteration(
     R_stack = R_stack.at[0].add(-Rr_corr)
     R_stack = R_stack.at[1].add(-Rr_corr)
 
-    arb_stack = flow_.Hk_op.solve(R_stack.transpose(0, 2, 3, 1)).transpose(
-        0, 3, 1, 2
-    )
+    arb_stack = flow_.Hk_op.solve(R_stack)
     up_arb, um_arb, uz_arb = arb_stack[0], arb_stack[1], arb_stack[2]
 
     # Stage 4: wall divergence residual (inner, outer).

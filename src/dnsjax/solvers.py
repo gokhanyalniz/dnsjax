@@ -188,23 +188,35 @@ class DenseJAXSolver:
         Parameters
         ----------
         rhs:
-            Right-hand side, shape ``(Nkz, Nkx, Ny)`` or
-            ``(C, Nkz, Nkx, Ny)`` for a leading batch axis
-            ``C``.  May be real or complex; complex RHS are
-            solved in real arithmetic via a re/im split.
+            Right-hand side, **mode-inner** shape ``(Ny, Nkz, Nkx)``
+            or ``(C, Ny, Nkz, Nkx)`` for a leading batch axis ``C``
+            (the velocity field's native layout).  May be real or
+            complex; complex RHS are solved in real arithmetic via a
+            re/im split.
 
         Returns
         -------
         :
             Solution array, same shape and dtype as *rhs*.
+
+        Notes
+        -----
+        The dense LU is inherently mode-outer (``Ny`` on the matrix
+        axes), so the mode-inner field is moved to ``(Nkz, Nkx, Ny)``
+        on entry and back on exit -- a pure axis permutation, relocated
+        here from the old call-site transpose so the Pallas backend can
+        drop it (see :func:`_banded_mode_solve`).
         """
+        b = jnp.moveaxis(rhs, -3, -1)  # mode-inner -> (.., Nkz, Nkx, Ny)
         if self.lu.ndim == 5:
-            return jax.vmap(_lu_solve)((self.lu, self.perm), rhs)
-        if rhs.ndim == 4:
-            return jax.vmap(_lu_solve, in_axes=(None, 0))(
-                (self.lu, self.perm), rhs
+            x = jax.vmap(_lu_solve)((self.lu, self.perm), b)
+        elif b.ndim == 4:
+            x = jax.vmap(_lu_solve, in_axes=(None, 0))(
+                (self.lu, self.perm), b
             )
-        return _lu_solve((self.lu, self.perm), rhs)
+        else:
+            x = _lu_solve((self.lu, self.perm), b)
+        return jnp.moveaxis(x, -1, -3)  # -> mode-inner (.., Ny, Nkz, Nkx)
 
 
 # ── SPIKE banded solver ──────────────────────────────────────────
@@ -492,17 +504,26 @@ class PerModeBandedOperator:
         Parameters
         ----------
         rhs:
-            Right-hand side, shape ``(N_{kz}, N_{kx}, N_y)`` or
-            ``(C, N_{kz}, N_{kx}, N_y)`` for a leading batch
-            axis ``C``.  May be real or complex; the dtype is
-            preserved (complex RHS are solved in real
-            arithmetic via a re/im split).
+            Right-hand side, **mode-inner** shape ``(N_y, N_{kz},
+            N_{kx})`` or ``(C, N_y, N_{kz}, N_{kx})`` for a leading
+            batch axis ``C`` (the velocity field's native layout).
+            May be real or complex; the dtype is preserved (complex
+            RHS are solved in real arithmetic via a re/im split).
 
         Returns
         -------
         :
             Solution array, same shape and dtype as *rhs*.
+
+        Notes
+        -----
+        SPIKE is inherently mode-outer (``N_y`` on the block axes), so
+        the mode-inner field is moved to ``(N_{kz}, N_{kx}, N_y)`` on
+        entry and back on exit -- a pure axis permutation, relocated
+        here from the old call-site transpose so the Pallas backend can
+        drop it (see :func:`_banded_mode_solve`).
         """
+        b = jnp.moveaxis(rhs, -3, -1)  # mode-inner -> (.., Nkz, Nkx, Ny)
         solve_fn = _spike_solve_bt if self._use_bt else _spike_solve
 
         if self._use_bt:
@@ -515,7 +536,7 @@ class PerModeBandedOperator:
                 self.red_bt_diag_perm,
                 self.red_bt_mod_super,
                 self.red_bt_sub,
-                rhs,
+                b,
             )
             none_axes = (None,) * 8
         else:
@@ -526,18 +547,20 @@ class PerModeBandedOperator:
                 self.W,
                 self.red_lu,
                 self.red_perm,
-                rhs,
+                b,
             )
             none_axes = (None,) * 6
 
         if self.lu.ndim == 6:
-            return jax.vmap(solve_fn)(*args)
-        if rhs.ndim == 4:
-            return jax.vmap(
+            x = jax.vmap(solve_fn)(*args)
+        elif b.ndim == 4:
+            x = jax.vmap(
                 solve_fn,
                 in_axes=(*none_axes, 0),
             )(*args)
-        return solve_fn(*args)
+        else:
+            x = solve_fn(*args)
+        return jnp.moveaxis(x, -1, -3)  # -> mode-inner (.., Ny, Nkz, Nkx)
 
 
 # ── SPIKE block partitioning and factorisation ───────────────────
@@ -1684,53 +1707,46 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     ``L``/``U`` are the **mode-inner** factors stored by
     :class:`PerModeBandedPallasOperator` (``(N, p, Nkz, Nkx)`` /
     ``(N, p+1, Nkz, Nkx)``, ``U`` diagonal reciprocated).  ``rhs`` is the
-    mode-**outer** spectral field ``(Nkz, Nkx, N)`` of the public
-    ``.solve`` contract.  A complex RHS is split into ``k = 2`` real
-    columns (the factors are real), solved, and recombined.
+    **mode-inner** spectral field ``(N, Nkz, Nkx)`` of the public
+    ``.solve`` contract -- the velocity field's native layout
+    (``sharding.spec_scalar_shard``).  A complex RHS is split into
+    ``k = 2`` real columns (the factors are real), solved, and recombined.
 
-    On GPU the re/im split **doubles as the layout transform** into the
-    kernel's ``(N, k, Nkz, Nkx)`` layout (one fused pass), and the
-    recombine undoes it.
+    On GPU the re/im split is the **only** layout touch: stacking the real
+    and imaginary parts on a new axis 1 lands directly in the kernel's
+    ``(N, k, Nkz, Nkx)`` layout (no transpose), and the recombine reads the
+    two columns back.  Because the contract is mode-inner the hot path
+    feeds this with no transpose at all -- it previously round-tripped
+    ``(N,Nkz,Nkx) <-> (Nkz,Nkx,N)`` around every ``.solve`` (a round-trip
+    XLA did not fuse away, ~half this memory-bound solve's HBM traffic).
 
-    DEFERRED OPTIMISATION.  The spectral field is *natively* mode-inner
-    ``(N, Nkz, Nkx)``, but the public ``.solve`` contract is mode-outer
-    (the geometry hot path transposes ``(N,Nkz,Nkx)->(Nkz,Nkx,N)`` before
-    ``.solve`` and back after -- e.g. ``cartesian.py`` ``f_hat_P.transpose
-    (1,2,0)``).  With this mode-inner kernel that round-trip is pure waste
-    for the Pallas backend, and it is **not** removed by the compiler:
-    XLA:CPU's optimised HLO retains the transposes (a CPU proxy of the
-    pre-``pallas_call`` prep keeps ~13 transposes vs 0 for a native split;
-    XLA:GPU is unverified here -- no GPU -- but should not be assumed to
-    fuse).  Eliminating it means flipping ``.solve`` to a uniform
-    mode-inner contract for **all** backends: the inherently mode-outer
-    dense/SPIKE solvers (``Ny`` on matrix axis -2) would transpose
-    internally (relocated, not removed -- no speedup for them) and the
-    mode-outer Kleiser-Schumann IMM-setup solves would transpose at their
-    (setup) ``.solve`` sites across all three geometries.  That is a
-    cross-cutting refactor, left as a focused follow-up once this kernel is
-    settled (the win is Pallas-only).
-
-    On CPU the factors are moved back to mode-outer (and the ``U``
-    diagonal un-inverted) for the standard :func:`_banded_solve_batched`.
+    On CPU the factors *and* RHS are moved back to mode-outer (and the
+    ``U`` diagonal un-inverted) for the standard
+    :func:`_banded_solve_batched` (``N_y`` on matrix axis -2); the CPU path
+    is the oracle / fallback, not the performance target, so it absorbs the
+    transpose internally.
     """
     p = L.shape[1]
     is_complex = jnp.iscomplexobj(rhs)
     if jax.default_backend() == "gpu":
         if is_complex:
-            # (Nkz, Nkx, N) complex -> (N, k, Nkz, Nkx) real.
-            b = jnp.moveaxis(jnp.stack([rhs.real, rhs.imag], 0), -1, 0)
+            # (N, Nkz, Nkx) complex -> (N, k, Nkz, Nkx) real, re/im on
+            # axis 1: already the kernel layout, no transpose.
+            b = jnp.stack([rhs.real, rhs.imag], axis=1)
         else:
-            b = jnp.moveaxis(rhs, -1, 0)[:, None]
+            b = rhs[:, None]  # (N, 1, Nkz, Nkx)
         x = _pallas_banded_solve(L, U, b, p)  # (N, k, Nkz, Nkx)
-        x = jnp.moveaxis(x, 0, -1)  # (k, Nkz, Nkx, N)
-        return lax.complex(x[0], x[1]) if is_complex else x[0]
-    # CPU fallback: standard mode-outer banded sweep.
+        return lax.complex(x[:, 0], x[:, 1]) if is_complex else x[:, 0]
+    # CPU fallback: standard mode-outer banded sweep (RHS and factors
+    # moved to (Nkz, Nkx, N, .) internally).
     Lo = jnp.moveaxis(L, (0, 1), (-2, -1))  # (Nkz, Nkx, N, p)
     Uo = jnp.moveaxis(U, (0, 1), (-2, -1))  # (Nkz, Nkx, N, p+1)
     Uo = Uo.at[..., 0].set(1.0 / Uo[..., 0])  # un-invert the diagonal
-    b = _real_rhs_view(rhs) if is_complex else rhs[..., None]
-    x = _banded_solve_batched(Lo, Uo, b, p)
-    return _complex_from_view(x) if is_complex else x[..., 0]
+    rhs_o = jnp.moveaxis(rhs, 0, -1)  # (N, Nkz, Nkx) -> (Nkz, Nkx, N)
+    b = _real_rhs_view(rhs_o) if is_complex else rhs_o[..., None]
+    x = _banded_solve_batched(Lo, Uo, b, p)  # (Nkz, Nkx, N, k)
+    x = _complex_from_view(x) if is_complex else x[..., 0]  # (Nkz,Nkx,N)
+    return jnp.moveaxis(x, -1, 0)  # -> (N, Nkz, Nkx)
 
 
 @register_dataclass_pytree
@@ -1782,11 +1798,19 @@ class PerModeBandedPallasOperator:
     def solve(self, rhs: Array) -> Array:
         """Batched banded solve across ``(kz, kx)`` modes.
 
+        ``rhs`` is **mode-inner** -- ``(N, Nkz, Nkx)`` or
+        ``(C, N, Nkz, Nkx)`` for a leading batch axis ``C`` -- the
+        velocity field's native spectral layout
+        (``sharding.spec_scalar_shard`` / ``spec_vector_shard``); the
+        result has the same shape and dtype.  This is the layout the
+        Pallas kernel stores its factors in, so the GPU path feeds the
+        kernel with no transpose (see :func:`_banded_mode_solve`).
+
         Dispatch mirrors :meth:`PerModeBandedOperator.solve`:
         ``L.ndim == 5`` (batched/stacked operators) vmaps over both
         the operator and RHS leading axis; ``rhs.ndim == 4`` (shared
         operator) vmaps over the RHS leading axis; otherwise a single
-        operator / single RHS.  Dtype is preserved.
+        operator / single RHS.
         """
         if self.L.ndim == 5:
             return jax.vmap(_banded_mode_solve)(self.L, self.U, rhs)

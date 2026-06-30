@@ -109,18 +109,18 @@ def _run_spike_solve(
     rng = np.random.default_rng(seed_rhs)
     b = rng.standard_normal(Ny)
     rhs = jax.device_put(
-        jnp.tile(jnp.asarray(b)[None, None, :], (Nkz, Nkx, 1)),
-        sharding.spec_imm_corr_shard,
+        jnp.tile(jnp.asarray(b)[:, None, None], (1, Nkz, Nkx)),
+        sharding.spec_scalar_shard,
     )
-    x = np.asarray(op.solve(rhs))[0, 0]
+    x = np.asarray(op.solve(rhs))[:, 0, 0]
     assert_allclose(x, np.linalg.solve(A, b), atol=1e-10, rtol=1e-10)
 
     b_c = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
     rhs_c = jax.device_put(
-        jnp.tile(jnp.asarray(b_c)[None, None, :], (Nkz, Nkx, 1)),
-        sharding.spec_imm_corr_shard,
+        jnp.tile(jnp.asarray(b_c)[:, None, None], (1, Nkz, Nkx)),
+        sharding.spec_scalar_shard,
     )
-    x_c = np.asarray(op.solve(rhs_c))[0, 0]
+    x_c = np.asarray(op.solve(rhs_c))[:, 0, 0]
     assert_allclose(x_c, np.linalg.solve(A, b_c), atol=1e-10, rtol=1e-10)
 
 
@@ -192,13 +192,13 @@ def test_pallas_banded_matches_dense() -> None:
         rng = np.random.default_rng(100 + p)
 
         b = rng.standard_normal(Ny)
-        rhs = jnp.tile(jnp.asarray(b)[None, None, :], (Nkz, Nkx, 1))
-        x = np.asarray(op.solve(rhs))[0, 0]
+        rhs = jnp.tile(jnp.asarray(b)[:, None, None], (1, Nkz, Nkx))
+        x = np.asarray(op.solve(rhs))[:, 0, 0]
         assert_allclose(x, np.linalg.solve(A, b), atol=1e-9, rtol=1e-9)
 
         bc = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
-        rhs_c = jnp.tile(jnp.asarray(bc)[None, None, :], (Nkz, Nkx, 1))
-        x_c = np.asarray(op.solve(rhs_c))[0, 0]
+        rhs_c = jnp.tile(jnp.asarray(bc)[:, None, None], (1, Nkz, Nkx))
+        x_c = np.asarray(op.solve(rhs_c))[:, 0, 0]
         assert_allclose(x_c, np.linalg.solve(A, bc), atol=1e-9, rtol=1e-9)
 
 
@@ -321,12 +321,12 @@ def test_pallas_stacked_operators() -> None:
     rng = np.random.default_rng(11)
     bs = [rng.standard_normal(Ny) for _ in range(3)]
     rhs = jnp.stack(
-        [jnp.tile(jnp.asarray(b)[None, None, :], (Nkz, Nkx, 1)) for b in bs]
-    )  # (3, Nkz, Nkx, Ny)
+        [jnp.tile(jnp.asarray(b)[:, None, None], (1, Nkz, Nkx)) for b in bs]
+    )  # (3, Ny, Nkz, Nkx)
     X = np.asarray(stk.solve(rhs))
     for c in range(3):
         assert_allclose(
-            X[c, 0, 0], np.linalg.solve(As[c], bs[c]), atol=1e-9, rtol=1e-9
+            X[c, :, 0, 0], np.linalg.solve(As[c], bs[c]), atol=1e-9, rtol=1e-9
         )
 
 
@@ -340,7 +340,7 @@ def test_decide_pallas_auto_force_and_fallback() -> None:
     band = _banded_from_dense(_tile_modes(A, Nkz, Nkx), p)
     rng = np.random.default_rng(5)
     b = rng.standard_normal(Ny)
-    rhs = jnp.tile(jnp.asarray(b)[None, None, :], (Nkz, Nkx, 1))
+    rhs = jnp.tile(jnp.asarray(b)[:, None, None], (1, Nkz, Nkx))
     ref = np.linalg.solve(A, b)
 
     def make_spike() -> PerModeBandedOperator:
@@ -348,18 +348,18 @@ def test_decide_pallas_auto_force_and_fallback() -> None:
 
     op_auto = _decide_pallas_or_spike([band], False, "auto", make_spike)
     assert isinstance(op_auto, PerModeBandedPallasOperator)
-    assert_allclose(np.asarray(op_auto.solve(rhs))[0, 0], ref, atol=1e-9)
+    assert_allclose(np.asarray(op_auto.solve(rhs))[:, 0, 0], ref, atol=1e-9)
 
     op_force = _decide_pallas_or_spike([band], True, "force", make_spike)
     assert isinstance(op_force, PerModeBandedOperator)
-    assert_allclose(np.asarray(op_force.solve(rhs))[0, 0], ref, atol=1e-9)
+    assert_allclose(np.asarray(op_force.solve(rhs))[:, 0, 0], ref, atol=1e-9)
 
     # Zero leading pivot: no-pivot LU breaks -> fall back to SPIKE.
     A_bad = _make_random_banded(Ny, p, seed=0)
     A_bad[0, 0] = 0.0
     band_bad = _banded_from_dense(_tile_modes(A_bad, Nkz, Nkx), p)
     b2 = rng.standard_normal(Ny)
-    rhs2 = jnp.tile(jnp.asarray(b2)[None, None, :], (Nkz, Nkx, 1))
+    rhs2 = jnp.tile(jnp.asarray(b2)[:, None, None], (1, Nkz, Nkx))
 
     def make_spike_bad() -> PerModeBandedOperator:
         return _spike_op_from_dense(A_bad, P, m, p, Nkz, Nkx)
@@ -367,7 +367,7 @@ def test_decide_pallas_auto_force_and_fallback() -> None:
     op_fb = _decide_pallas_or_spike([band_bad], False, "fb", make_spike_bad)
     assert isinstance(op_fb, PerModeBandedOperator)
     assert_allclose(
-        np.asarray(op_fb.solve(rhs2))[0, 0],
+        np.asarray(op_fb.solve(rhs2))[:, 0, 0],
         np.linalg.solve(A_bad, b2),
         atol=1e-9,
     )

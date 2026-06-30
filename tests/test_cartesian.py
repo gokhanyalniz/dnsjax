@@ -134,10 +134,10 @@ def test_spike_vs_dense_on_cartesian_operators() -> None:
     # Solve same complex RHS with both backends.
     Nkz, Nkx = int(fourier.k2.shape[1]), int(fourier.k2.shape[2])
     rng = np.random.default_rng(20)
-    b = rng.standard_normal((Nkz, Nkx, Ny)) + 1j * rng.standard_normal(
-        (Nkz, Nkx, Ny)
+    b = rng.standard_normal((Ny, Nkz, Nkx)) + 1j * rng.standard_normal(
+        (Ny, Nkz, Nkx)
     )
-    rhs = jax.device_put(jnp.asarray(b), sharding.spec_imm_corr_shard)
+    rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
 
     x_b = np.asarray(Lk_banded.solve(rhs))
     x_d = np.asarray(Lk_dense.solve(rhs))
@@ -313,10 +313,10 @@ def test_pallas_vs_dense_on_cartesian_operators() -> None:
 
     Nkz, Nkx = int(fourier.k2.shape[1]), int(fourier.k2.shape[2])
     rng = np.random.default_rng(21)
-    b = rng.standard_normal((Nkz, Nkx, Ny)) + 1j * rng.standard_normal(
-        (Nkz, Nkx, Ny)
+    b = rng.standard_normal((Ny, Nkz, Nkx)) + 1j * rng.standard_normal(
+        (Ny, Nkz, Nkx)
     )
-    rhs = jax.device_put(jnp.asarray(b), sharding.spec_imm_corr_shard)
+    rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
 
     assert_allclose(
         np.asarray(Lk_pallas.solve(rhs)),
