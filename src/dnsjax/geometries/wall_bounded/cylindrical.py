@@ -1914,9 +1914,7 @@ def _imm_iteration(
     g = flow_.D1_ghost.shape[0]
     # Stack y-leading (N_r, 6, ...) so the batched D1 GEMM contracts the
     # leading wall-normal axis transpose-free; the component axis is 1.
-    all_vparity = jnp.stack(
-        [up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1
-    )
+    all_vparity = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1)
     dy_common = apply_y_matrix(flow_.D1_pos, all_vparity, component_axis=1)
     dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity, component_axis=1)
     dy_all = dy_common.at[:g].add(parity_sign_v * dy_ghost)
@@ -1948,60 +1946,73 @@ def _imm_iteration(
     f_hat_P = f_hat.at[-1].set(0.0)
     pP = flow_.Lk_op.solve(f_hat_P)
 
-    # Stage 3: Helmholtz solves for each component.
-    # Batch the D1 derivatives of pP and vel_n into shared
-    # GEMMs (2 D1 GEMMs instead of 4 separate ones).
-    vel_n_stack = jnp.stack([up_n, um_n, uz_n])
-    pP_and_vel = jnp.concatenate([pP[None], vel_n_stack])
-    D1_batch = apply_y_matrix(flow_.D1_pos, pP_and_vel)
-    D1g_batch = apply_y_matrix(flow_.D1_ghost, pP_and_vel)
+    # Stage 3: Helmholtz solves for each component.  The Hk construction
+    # is built **y-leading** ``(N_r, C, ...)`` so the batched D1/D2 GEMMs
+    # contract the leading wall-normal axis transpose-free (component axis
+    # 1); the solve takes that layout directly (``component_axis=1``) and
+    # we unstack.  ``inv_r``/``inv_r2`` get a trailing axis to broadcast
+    # over the C axis; ``kz2``/``mean_mask`` are trailing-mode broadcasts
+    # (layout-invariant).
+    inv_r_y = inv_r[..., None]  # (N_r, 1, 1, 1) over the C axis
+    vel_n_stack = jnp.stack([up_n, um_n, uz_n], axis=1)  # (N_r, 3, ...)
+    pP_and_vel = jnp.concatenate([pP[:, None], vel_n_stack], axis=1)
+    D1_batch = apply_y_matrix(flow_.D1_pos, pP_and_vel, component_axis=1)
+    D1g_batch = apply_y_matrix(flow_.D1_ghost, pP_and_vel, component_axis=1)
 
     # pP pressure gradient (parity (-1)^m -> parity_sign_p).
-    D1_pP = D1_batch[0].at[:g].add(parity_sign_p * D1g_batch[0])
+    D1_pP = D1_batch[:, 0].at[:g].add(parity_sign_p * D1g_batch[:, 0])
     m_over_r = m * inv_r  # (1, Nm, 1) * (Nr, 1, 1) → (Nr, Nm, 1)
 
     grad_pP_plus = D1_pP - m_over_r * pP
     grad_pP_minus = D1_pP + m_over_r * pP
     grad_pP_z = ikz * pP
 
-    # Batched `$H_k^-$` matvec for all three components.
-    D1_vel = D1_batch[1:]
-    D1g_vel = D1g_batch[1:]
-    D2_all = apply_y_matrix(flow_.D2_pos, vel_n_stack)
-    D2g_all = apply_y_matrix(flow_.D2_ghost, vel_n_stack)
-    common_hk = D2_all + inv_r * D1_vel
-    ghost_hk = D2g_all + inv_r[:g] * D1g_vel
-    parity_hk = jnp.stack([parity_sign_v, parity_sign_v, parity_sign_p])
-    Abase_stack = common_hk.at[:, :g].add(parity_hk * ghost_hk)
-    meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq])
-    inv_r2 = flow_.inv_r2[:, None, None]
+    # Batched `$H_k^-$` matvec for all three components (y-leading).
+    D1_vel = D1_batch[:, 1:]
+    D1g_vel = D1g_batch[:, 1:]
+    D2_all = apply_y_matrix(flow_.D2_pos, vel_n_stack, component_axis=1)
+    D2g_all = apply_y_matrix(flow_.D2_ghost, vel_n_stack, component_axis=1)
+    common_hk = D2_all + inv_r_y * D1_vel
+    ghost_hk = D2g_all + inv_r_y[:g] * D1g_vel
+    parity_hk = jnp.stack(
+        [parity_sign_v, parity_sign_v, parity_sign_p], axis=1
+    )
+    Abase_stack = common_hk.at[:g].add(parity_hk * ghost_hk)
+    meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq], axis=1)
+    inv_r2 = flow_.inv_r2[:, None, None, None]  # (N_r, 1, 1, 1)
     lapl_stack = (
         Abase_stack - (meff2_stack * inv_r2 + fourier_.kz2) * vel_n_stack
     )
     Hk_minus_stack = (1.0 / dt) * vel_n_stack + (1.0 - c) * nu * lapl_stack
-    Hk_minus_stack = Hk_minus_stack.at[:, -1].set(vel_n_stack[:, -1])
+    Hk_minus_stack = Hk_minus_stack.at[-1].set(vel_n_stack[-1])
 
     R_stack = (
         Hk_minus_stack
-        - jnp.stack([grad_pP_plus, grad_pP_minus, grad_pP_z])
-        + c * jnp.stack([NLp_j, NLm_j, NLz_j])
-        + (1 - c) * jnp.stack([NLp_n, NLm_n, NLz_n])
+        - jnp.stack([grad_pP_plus, grad_pP_minus, grad_pP_z], axis=1)
+        + c * jnp.stack([NLp_j, NLm_j, NLz_j], axis=1)
+        + (1 - c) * jnp.stack([NLp_n, NLm_n, NLz_n], axis=1)
     )
 
     # Zero wall BC (Dirichlet no-slip).
-    R_stack = R_stack.at[:, -1].set(0.0)
+    R_stack = R_stack.at[-1].set(0.0)
 
     # Zero the u_r part of the +/- RHS at the mean mode so
     # the Helmholtz solves produce u_r = 0 there.  At m=0,
     # Hk_plus and Hk_minus are identical (m_eff^2 = 1, same
     # parity), so the antisymmetric RHS gives up = -um.
-    Rr_corr = jnp.where(fourier_.mean_mask, (R_stack[0] + R_stack[1]) / 2, 0.0)
-    R_stack = R_stack.at[0].add(-Rr_corr)
-    R_stack = R_stack.at[1].add(-Rr_corr)
+    Rr_corr = jnp.where(
+        fourier_.mean_mask, (R_stack[:, 0] + R_stack[:, 1]) / 2, 0.0
+    )
+    R_stack = R_stack.at[:, 0].add(-Rr_corr)
+    R_stack = R_stack.at[:, 1].add(-Rr_corr)
 
-    # Batched Helmholtz solve: component order (plus, minus, z).
-    arb_stack = flow_.Hk_op.solve(R_stack)
-    up_arb, um_arb, uz_arb = arb_stack[0], arb_stack[1], arb_stack[2]
+    # Batched Helmholtz solve (y-leading, component axis 1).
+    arb_stack = flow_.Hk_op.solve(R_stack, component_axis=1)
+    up_arb, um_arb, uz_arb = (
+        arb_stack[:, 0],
+        arb_stack[:, 1],
+        arb_stack[:, 2],
+    )
 
     # Stage 4: wall divergence residual.
     D1_wall_row = flow_.D1_wall.ravel()
@@ -2114,13 +2125,16 @@ def build_cylindrical_stepper(
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array]],
+    Callable[[Array, Array], tuple[Array, Array, dict[str, Array]]],
 ]:
     """Build time-stepping functions for a cylindrical flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
-    predict_and_fully_correct_measured)`` with the
-    ``fourier`` and *flow* singletons already bound.
+    predict_and_fully_correct_measured, step_cnab2,
+    step_cnab2_measured)`` with the ``fourier`` and *flow*
+    singletons already bound.
     """
     return build_wall_bounded_stepper(
         _get_rhs, _predict, _correct, _norm, fourier, flow, _get_rhs_measured

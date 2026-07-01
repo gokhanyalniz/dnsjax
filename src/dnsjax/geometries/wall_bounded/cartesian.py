@@ -1261,6 +1261,14 @@ def _imm_iteration(
     # so the explicit matvec, the wall-row zeroing, and the final
     # solve are all batched over the component axis — one kernel
     # launch each instead of three sequential ones.
+    #
+    # This Hk path stays **component-leading** (unlike the y-leading
+    # curl/divergence matvecs above): it has a single D2 GEMM (the
+    # vmapped _hk_minus_matvec), and velocity_n / nonlin_j / nonlin_n
+    # all arrive component-leading, so a y-leading conversion would add
+    # three transposes to remove the one matvec's two -- a net loss.
+    # (Cylindrical/annular convert theirs -- several batched matvecs to
+    # amortise; see those modules.)
     dx_pP = ikx * pP
     dy_pP = apply_y_matrix(flow_.D1, pP)
     dz_pP = ikz * pP
@@ -1414,14 +1422,17 @@ def build_cartesian_stepper(
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array]],
+    Callable[[Array, Array], tuple[Array, Array, dict[str, Array]]],
 ]:
     """Build time-stepping functions for a Cartesian
     wall-bounded flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
-    predict_and_fully_correct_measured)`` with the
-    ``fourier`` and *flow* singletons already bound.
+    predict_and_fully_correct_measured, step_cnab2,
+    step_cnab2_measured)`` with the ``fourier`` and *flow*
+    singletons already bound.
     """
     return build_wall_bounded_stepper(
         _get_rhs, _predict, _correct, _norm, fourier, flow, _get_rhs_measured

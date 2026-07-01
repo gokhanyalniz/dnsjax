@@ -389,6 +389,7 @@ def _expected_fail(probe: str, mlabel: str) -> bool:
     -- is a real regression."""
     return probe in BUG_DEMO and mlabel == "partial"
 
+
 # (bm0, bm1, num_warps)
 TILES = [
     (1, 1, None),
@@ -529,6 +530,7 @@ def _dump(probe: str, got: np.ndarray, ref: np.ndarray) -> None:
     """Full got-vs-ref for two modes of the first regression."""
     print(f"\n  --- first-failure dump [{probe}] (component k=0) ---")
     Nkz, Nkx = got.shape[-2], got.shape[-1]
+
     def fmt(v: np.ndarray) -> str:
         return np.array2string(v, precision=4, max_line_width=66)
 
@@ -551,8 +553,7 @@ def _summary(xfails, regs, runs, first_reg, results, modes, tiles) -> None:
         "(bcast_*/"
     )
     print(
-        "  window_carry/forward_only) XFAIL on partial planes = the raw "
-        "Triton"
+        "  window_carry/forward_only) XFAIL on partial planes = the raw Triton"
     )
     print("  partial-tile bug the real solve pads around (not a regression).")
 
