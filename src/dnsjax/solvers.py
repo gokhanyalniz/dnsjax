@@ -1833,8 +1833,27 @@ class PerModeBandedPallasOperator:
         ``0`` (default, ``(C, N, ...)``) or ``1`` (``(N, C, ...)``,
         the y-leading layout the IMM's Hk construction uses so the
         matvecs stay transpose-free -- see ``apply_y_matrix``).  The
-        Pallas kernel is per-mode, so this is just the ``vmap`` axis
-        (no transpose either way); the output preserves it.
+        Pallas kernel is per-mode, so *component_axis* only picks the
+        ``vmap`` axis; the kernel itself never transposes and the
+        output preserves the input layout.
+
+        Deferred optimization (stacked ``component_axis=1`` path).  For
+        the stacked Hk solve (``L.ndim == 5``), ``out_axes=1`` makes XLA
+        emit one output-repositioning transpose
+        `$(C, N, \ldots) \to (N, C, \ldots)$` on the complex-
+        reconstructed result (seen on the H100 optimized HLO as a
+        ``c128[N, C, 1, Nkz, Nkx]`` ``dimensions={1,0,2,3,4}`` transpose
+        under ``vmap()/complex``).  This is the **only** IMM transpose
+        the y-leading contract leaves, and it is a net win: feeding
+        ``R_stack`` y-leading removes the three larger ``D1``/``D2``
+        matvec transposes at the cost of this one (measured as a
+        corrector-step 252 -> 177 optimized-HLO transpose drop), and
+        ``component_axis=0`` would merely move it back to the input side
+        *and* reintroduce those matvec transposes.  Eliminating it
+        entirely means folding the 3-component stack into the kernel's
+        `$(k_z, k_x)$` batch so there is no ``vmap`` over components at
+        all -- a solve-kernel refactor worth ~2% of the step, deferred
+        as low-ROI and cross-cutting.
         """
         ca = component_axis
         if self.L.ndim == 5:
