@@ -683,6 +683,10 @@ def generate_random_state(
     generator's import).
     """
     system = params.phys.system
+    if system not in periodic_systems:
+        assert 0 < smoothness < 1, (
+            "0 < smoothness < 1 required for wall-bounded random states"
+        )
     if system in cartesian_systems:
         return generate_cartesian(amplitude, smoothness, seed, mean_flow)
     if system in cylindrical_systems:
