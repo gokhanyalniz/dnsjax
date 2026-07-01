@@ -122,6 +122,8 @@ flow: DeanFlow = DeanFlow()
     _init_state_laminar_zero,  # overridden below (Dean laminar != 0)
     predict_and_fully_correct,
     predict_and_fully_correct_measured,
+    step_cnab2,
+    step_cnab2_measured,
 ) = build_annular_stepper(flow)
 
 

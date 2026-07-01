@@ -1103,9 +1103,9 @@ class AnnularFlow:
             rhs_v_minus = rhs_v_minus.at[..., 0].set(0.0).at[..., -1].set(0.0)
             q_rhs = p_s.at[..., 0].set(0.0).at[..., -1].set(0.0)
             stacked = jnp.stack([rhs_v_plus, rhs_v_minus, q_rhs])
-            res = self.Hk_op.solve(
-                stacked.transpose(0, 3, 1, 2)
-            ).transpose(0, 2, 3, 1)
+            res = self.Hk_op.solve(stacked.transpose(0, 3, 1, 2)).transpose(
+                0, 2, 3, 1
+            )
             vp, vm = res[0], res[1]
             # Zero the u_r part at the mean mode, preserving u_theta.
             vr = jnp.where(mean_s, (vp + vm) / 2, 0.0)
@@ -1402,22 +1402,25 @@ def _imm_iteration(
     # Batch the D1 derivatives for the divergence and the explicit
     # Hk^- matvec (u_z included) into a single GEMM; only the
     # just-solved pP needs a second D1 after the Poisson solve below.
-    all_v = jnp.stack([up_n, um_n, uz_n, NLp_j, NLp_n, NLm_j, NLm_n])
-    dy_all = apply_y_matrix(flow_.D1, all_v)
+    # Stack y-leading (N_r, 7, ...) so the batched D1 GEMM (shared by
+    # the divergence and the Hk^- matvec below) contracts the leading
+    # wall-normal axis transpose-free; the component axis is 1.
+    all_v = jnp.stack([up_n, um_n, uz_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1)
+    dy_all = apply_y_matrix(flow_.D1, all_v, component_axis=1)
 
     div_n = (
-        (dy_all[0] + (m + 1) * inv_r * up_n) / 2
-        + (dy_all[1] + (1 - m) * inv_r * um_n) / 2
+        (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
+        + (dy_all[:, 1] + (1 - m) * inv_r * um_n) / 2
         + ikz * uz_n
     )
     div_NLj = (
-        (dy_all[3] + (m + 1) * inv_r * NLp_j) / 2
-        + (dy_all[5] + (1 - m) * inv_r * NLm_j) / 2
+        (dy_all[:, 3] + (m + 1) * inv_r * NLp_j) / 2
+        + (dy_all[:, 5] + (1 - m) * inv_r * NLm_j) / 2
         + ikz * NLz_j
     )
     div_NLn = (
-        (dy_all[4] + (m + 1) * inv_r * NLp_n) / 2
-        + (dy_all[6] + (1 - m) * inv_r * NLm_n) / 2
+        (dy_all[:, 4] + (m + 1) * inv_r * NLp_n) / 2
+        + (dy_all[:, 6] + (1 - m) * inv_r * NLm_n) / 2
         + ikz * NLz_n
     )
 
@@ -1431,43 +1434,53 @@ def _imm_iteration(
     # Stage 3: pressure gradient and explicit Hk^- matvec.  D1 of the
     # velocity (u_+, u_-, u_z) was already formed above as dy_all[:3];
     # only the just-solved pP needs a fresh D1.
-    vel_n_stack = jnp.stack([up_n, um_n, uz_n])
+    # y-leading (N_r, 3, ...) Hk construction: the D2 GEMM and the
+    # reused D1_vel stay transpose-free (component axis 1); the solve
+    # takes this layout (component_axis=1) and we unstack.  inv_r/inv_r2
+    # get a trailing axis to broadcast over C; kz2/mean_mask are
+    # trailing-mode broadcasts (layout-invariant).
+    vel_n_stack = jnp.stack([up_n, um_n, uz_n], axis=1)  # (N_r, 3, ...)
     D1_pP = apply_y_matrix(flow_.D1, pP)
-    D1_vel = dy_all[:3]
+    D1_vel = dy_all[:, :3]
     m_over_r = m * inv_r
 
     grad_pP_plus = D1_pP - m_over_r * pP
     grad_pP_minus = D1_pP + m_over_r * pP
     grad_pP_z = ikz * pP
 
-    D2_all = apply_y_matrix(flow_.D2, vel_n_stack)
-    Abase_stack = D2_all + inv_r * D1_vel
-    meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq])
-    inv_r2 = flow_.inv_r2[:, None, None]
+    inv_r_y = inv_r[..., None]  # (N_r, 1, 1, 1) over the C axis
+    D2_all = apply_y_matrix(flow_.D2, vel_n_stack, component_axis=1)
+    Abase_stack = D2_all + inv_r_y * D1_vel
+    meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq], axis=1)
+    inv_r2 = flow_.inv_r2[:, None, None, None]  # (N_r, 1, 1, 1)
     lapl_stack = (
         Abase_stack - (meff2_stack * inv_r2 + fourier_.kz2) * vel_n_stack
     )
     Hk_minus_stack = (1.0 / dt) * vel_n_stack + (1.0 - c) * nu * lapl_stack
     # Identity wall rows at both walls.
-    Hk_minus_stack = Hk_minus_stack.at[:, 0].set(vel_n_stack[:, 0])
-    Hk_minus_stack = Hk_minus_stack.at[:, -1].set(vel_n_stack[:, -1])
+    Hk_minus_stack = Hk_minus_stack.at[0].set(vel_n_stack[0])
+    Hk_minus_stack = Hk_minus_stack.at[-1].set(vel_n_stack[-1])
 
     R_stack = (
         Hk_minus_stack
-        - jnp.stack([grad_pP_plus, grad_pP_minus, grad_pP_z])
-        + c * jnp.stack([NLp_j, NLm_j, NLz_j])
-        + (1 - c) * jnp.stack([NLp_n, NLm_n, NLz_n])
+        - jnp.stack([grad_pP_plus, grad_pP_minus, grad_pP_z], axis=1)
+        + c * jnp.stack([NLp_j, NLm_j, NLz_j], axis=1)
+        + (1 - c) * jnp.stack([NLp_n, NLm_n, NLz_n], axis=1)
     )
     # Zero Dirichlet wall rows (both walls).
-    R_stack = R_stack.at[:, 0].set(0.0).at[:, -1].set(0.0)
+    R_stack = R_stack.at[0].set(0.0).at[-1].set(0.0)
 
     # Mean mode: zero the u_r part of the +/- RHS so u_r = 0 there.
-    Rr_corr = jnp.where(mean_mask, (R_stack[0] + R_stack[1]) / 2, 0.0)
-    R_stack = R_stack.at[0].add(-Rr_corr)
-    R_stack = R_stack.at[1].add(-Rr_corr)
+    Rr_corr = jnp.where(mean_mask, (R_stack[:, 0] + R_stack[:, 1]) / 2, 0.0)
+    R_stack = R_stack.at[:, 0].add(-Rr_corr)
+    R_stack = R_stack.at[:, 1].add(-Rr_corr)
 
-    arb_stack = flow_.Hk_op.solve(R_stack)
-    up_arb, um_arb, uz_arb = arb_stack[0], arb_stack[1], arb_stack[2]
+    arb_stack = flow_.Hk_op.solve(R_stack, component_axis=1)
+    up_arb, um_arb, uz_arb = (
+        arb_stack[:, 0],
+        arb_stack[:, 1],
+        arb_stack[:, 2],
+    )
 
     # Stage 4: wall divergence residual (inner, outer).
     ur_arb = (up_arb + um_arb) / 2
@@ -1569,13 +1582,16 @@ def build_annular_stepper(
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array]],
+    Callable[[Array, Array], tuple[Array, Array, dict[str, Array]]],
 ]:
     """Build time-stepping functions for an annular flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
-    predict_and_fully_correct_measured)`` with the ``fourier`` and
-    *flow* singletons already bound.
+    predict_and_fully_correct_measured, step_cnab2,
+    step_cnab2_measured)`` with the ``fourier`` and *flow*
+    singletons already bound.
     """
     return build_wall_bounded_stepper(
         _get_rhs, _predict, _correct, _norm, fourier, flow, _get_rhs_measured

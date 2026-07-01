@@ -153,9 +153,7 @@ def test_spike_solve_block_thomas_p2() -> None:
 
 def _tile_modes(arr: np.ndarray, Nkz: int, Nkx: int) -> jnp.ndarray:
     """Tile a single operator/RHS over the ``(Nkz, Nkx)`` mode axes."""
-    return jnp.tile(
-        jnp.asarray(arr)[None, None], (Nkz, Nkx) + (1,) * arr.ndim
-    )
+    return jnp.tile(jnp.asarray(arr)[None, None], (Nkz, Nkx) + (1,) * arr.ndim)
 
 
 def _pallas_op_from_dense(
@@ -239,15 +237,11 @@ def test_pallas_interpret_matches_cpu_path() -> None:
                     Lo, Uo = _banded_factor(
                         _banded_from_dense(_tile_modes(A, Nkz, Nkx), p)
                     )
-                    op = (
-                        PerModeBandedPallasOperator.from_banded_factors(
-                            Lo, Uo
-                        )
+                    op = PerModeBandedPallasOperator.from_banded_factors(
+                        Lo, Uo
                     )
                     for k in (1, 2):
-                        b = jnp.asarray(
-                            rng.standard_normal((Nkz, Nkx, Ny, k))
-                        )
+                        b = jnp.asarray(rng.standard_normal((Nkz, Nkx, Ny, k)))
                         x_cpu = _banded_solve_batched(Lo, Uo, b, p)
                         bi = jnp.moveaxis(b, (0, 1), (-2, -1))
                         x_pl = _pallas_banded_solve(
@@ -255,8 +249,10 @@ def test_pallas_interpret_matches_cpu_path() -> None:
                         )
                         x_pl = jnp.moveaxis(x_pl, (0, 1), (-2, -1))
                         assert_allclose(
-                            np.asarray(x_pl), np.asarray(x_cpu),
-                            atol=1e-12, rtol=0,
+                            np.asarray(x_pl),
+                            np.asarray(x_cpu),
+                            atol=1e-12,
+                            rtol=0,
                         )
     finally:
         jax.set_mesh(orig_mesh)

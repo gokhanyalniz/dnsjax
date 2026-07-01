@@ -289,13 +289,35 @@ class Outputs(BaseModel):
 
 
 class TimeStepping(BaseModel):
-    """Time integration parameters.
+    r"""Time integration parameters.
 
-    The ``implicitness`` parameter *c* controls the implicit/explicit split
-    of the viscous term.  ``c = 0.5`` gives a standard Crank-Nicolson
-    scheme (second-order).
+    Two schemes (``scheme``), both semi-implicit (implicit viscous,
+    IMM pressure) and both second-order:
+
+    - ``"iterative-cn"`` (default): Euler predictor + iterative
+      Crank-Nicolson corrector (Willis 2017).  Implicitness *c* is
+      applied to **both** the viscous *and* the nonlinear term; the
+      nonlinear ``c N^{n+1}`` is resolved by the corrector fixed-point
+      iteration (the RHS is re-evaluated until the correction converges).
+      Stable well past the advective CFL; costs ``2 + num_corrector``
+      RHS/FFT evaluations per step.
+    - ``"cnab2"``: Crank-Nicolson viscous (implicitness *c*) + 2nd-order
+      Adams-Bashforth nonlinear (explicit ``1.5 N^n - 0.5 N^{n-1}``).
+      **One** RHS/FFT evaluation per step (no corrector iteration); the
+      previous nonlinear RHS is carried by the main loop, seeded with a
+      forward-Euler first step.  Explicit-nonlinear, so ``dt`` is
+      advective-CFL-limited -- a net win (~3x fewer FFTs) on CFL-limited
+      (turbulent) runs.  ``corrector_tolerance`` /
+      ``max_corrector_iterations`` are unused.
+
+    ``implicitness`` *c* is the Crank-Nicolson split weight
+    (``c = 0.5`` = second-order trapezoidal): in ``"iterative-cn"`` it
+    weights both the viscous *and* the nonlinear term (see the geometry
+    ``_imm_iteration``); in ``"cnab2"`` it weights only the viscous term
+    (the nonlinear is the explicit AB2 extrapolation, independent of *c*).
     """
 
+    scheme: Literal["iterative-cn", "cnab2"] = "iterative-cn"
     dt: float = Field(gt=0, default=0.01)
     implicitness: float = Field(ge=0, le=1, default=0.5)
     corrector_tolerance: float = Field(gt=0, default=1e-5)

@@ -168,6 +168,26 @@ def _bench_step(step, state, n: int, warmup: int = 3):
     return (time.perf_counter() - t0) / n, int(cc), s
 
 
+def _bench_step_cnab2(step_cnab2, state, n: int, warmup: int = 3):
+    """Time the CN/AB2 step by chaining ``(state, rhs_prev)``.
+
+    Seeds the AB2 history with ``N(u^0)`` via a priming call (the same
+    forward-Euler self-start the driver uses), then chains the carry.
+    """
+    import jax.numpy as jnp
+
+    s = state
+    _, rp = step_cnab2(s, jnp.zeros_like(s))  # seed rhs_prev = N(u^0)
+    for _ in range(warmup):
+        s, rp = step_cnab2(s, rp)
+    jax.block_until_ready(s)
+    t0 = time.perf_counter()
+    for _ in range(n):
+        s, rp = step_cnab2(s, rp)
+    jax.block_until_ready(s)
+    return (time.perf_counter() - t0) / n, s
+
+
 def _ms(sec: float) -> str:
     return f"{sec * 1e3:8.3f} ms"
 
@@ -210,8 +230,10 @@ def _part_a(flow, sharding, reps: int) -> None:
     print("PART A -- one Lk solve, broken down (the H1 test)")
     print("-" * 72)
     if not isinstance(op, PerModeBandedPallasOperator):
-        print(f"  Lk_op is {type(op).__name__}, not the Pallas operator -- "
-              "run with the pallas backend.  Skipping.")
+        print(
+            f"  Lk_op is {type(op).__name__}, not the Pallas operator -- "
+            "run with the pallas backend.  Skipping."
+        )
         return
 
     L, U = op.L, op.U  # mode-inner (N, p, Nkz, Nkx) / (N, p+1, Nkz, Nkx)
@@ -221,18 +243,27 @@ def _part_a(flow, sharding, reps: int) -> None:
     print(f"  operator: N(y)={N} p={p} mode-plane (Nkz,Nkx)=({Nkz},{Nkx})")
 
     # Distinct complex RHS fields, and their pre-split real buffers.
-    zs = [_make_complex((N, Nkz, Nkx), 100 + i, sharding, spec)
-          for i in range(reps)]
-    bs = [jax.block_until_ready(jax.jit(
-        lambda z: jnp.stack([z.real, z.imag], axis=1))(z)) for z in zs]
+    zs = [
+        _make_complex((N, Nkz, Nkx), 100 + i, sharding, spec)
+        for i in range(reps)
+    ]
+    bs = [
+        jax.block_until_ready(
+            jax.jit(lambda z: jnp.stack([z.real, z.imag], axis=1))(z)
+        )
+        for z in zs
+    ]
 
     t_full = _bench(lambda z: op.solve(z), [(z,) for z in zs])
-    t_kern = _bench(lambda b: _pallas_banded_solve(L, U, b, p),
-                    [(b,) for b in bs])
-    t_split = _bench(lambda z: jnp.stack([z.real, z.imag], axis=1),
-                     [(z,) for z in zs])
-    t_recomb = _bench(lambda x: lax.complex(x[:, 0], x[:, 1]),
-                      [(b,) for b in bs])
+    t_kern = _bench(
+        lambda b: _pallas_banded_solve(L, U, b, p), [(b,) for b in bs]
+    )
+    t_split = _bench(
+        lambda z: jnp.stack([z.real, z.imag], axis=1), [(z,) for z in zs]
+    )
+    t_recomb = _bench(
+        lambda x: lax.complex(x[:, 0], x[:, 1]), [(b,) for b in bs]
+    )
 
     # Essential HBM traffic (f64 = 8 B), per call.
     m = N * Nkz * Nkx
@@ -244,46 +275,66 @@ def _part_a(flow, sharding, reps: int) -> None:
     def _pct(t):
         return f"({100 * t / t_full:4.1f}% of full)"
 
-    print(f"  full   op.solve(z)            {_ms(t_full)}   "
-          f"{_bw(full_bytes, t_full)}")
-    print(f"  kernel _pallas_banded_solve   {_ms(t_kern)}   "
-          f"{_bw(kern_bytes, t_kern)}   {_pct(t_kern)}")
-    print(f"  split  stack([re, im])        {_ms(t_split)}   "
-          f"{_bw(split_bytes, t_split)}   {_pct(t_split)}")
-    print(f"  recomb lax.complex(x0, x1)    {_ms(t_recomb)}   "
-          f"{_bw(recomb_bytes, t_recomb)}   {_pct(t_recomb)}")
+    print(
+        f"  full   op.solve(z)            {_ms(t_full)}   "
+        f"{_bw(full_bytes, t_full)}"
+    )
+    print(
+        f"  kernel _pallas_banded_solve   {_ms(t_kern)}   "
+        f"{_bw(kern_bytes, t_kern)}   {_pct(t_kern)}"
+    )
+    print(
+        f"  split  stack([re, im])        {_ms(t_split)}   "
+        f"{_bw(split_bytes, t_split)}   {_pct(t_split)}"
+    )
+    print(
+        f"  recomb lax.complex(x0, x1)    {_ms(t_recomb)}   "
+        f"{_bw(recomb_bytes, t_recomb)}   {_pct(t_recomb)}"
+    )
 
     plumb = (t_split + t_recomb) / t_full
     summ = t_kern + t_split + t_recomb
     marginal = t_full - t_kern  # true fused cost of split+recombine
     kern_frac = t_kern / t_full
     kern_peak = (kern_bytes / t_kern) / HBM_PEAK
-    print(f"\n  isolated split+recombine = {100 * plumb:4.1f}% of full, but "
-          f"sum(pieces)/full = {summ / t_full:4.2f}.")
-    print("  A ratio >1 means the isolated ops OVER-count (each pays a launch "
-          "+ a full\n  HBM round-trip it does NOT pay when fused into the "
-          "solve).  The TRUE cost of")
-    print(f"  the split+recombine fused in the solve is full - kernel = "
-          f"{_ms(marginal)} ({100 * marginal / t_full:4.1f}% of full).")
-    print(f"  kernel = {100 * kern_frac:4.1f}% of the solve, running at "
-          f"{kern_bytes / t_kern / GBPS:.0f} GB/s = {100 * kern_peak:.0f}% "
-          "of H100 HBM3 peak.")
+    print(
+        f"\n  isolated split+recombine = {100 * plumb:4.1f}% of full, but "
+        f"sum(pieces)/full = {summ / t_full:4.2f}."
+    )
+    print(
+        "  A ratio >1 means the isolated ops OVER-count (each pays a launch "
+        "+ a full\n  HBM round-trip it does NOT pay when fused into the "
+        "solve).  The TRUE cost of"
+    )
+    print(
+        f"  the split+recombine fused in the solve is full - kernel = "
+        f"{_ms(marginal)} ({100 * marginal / t_full:4.1f}% of full)."
+    )
+    print(
+        f"  kernel = {100 * kern_frac:4.1f}% of the solve, running at "
+        f"{kern_bytes / t_kern / GBPS:.0f} GB/s = {100 * kern_peak:.0f}% "
+        "of H100 HBM3 peak."
+    )
     if kern_frac >= 0.70:
-        print("  => The solve is KERNEL-bound; the plumbing (and the removed "
-              "transpose,\n     fused into it) is ~free -- THAT is why the "
-              "contract change gave 0%, not\n     because the split "
-              "dominates.  The kernel sits far below peak BW, so it\n     is "
-              "limited by the sequential banded recurrence / occupancy, not "
-              "bandwidth.\n     A faster SOLVE needs the kernel itself: tune "
-              "pallas_block_m0/m1 /\n     num_warps / num_stages, or "
-              "parallelize along Ny.  But first: Part B --\n     is the solve "
-              "even the step's bottleneck?")
+        print(
+            "  => The solve is KERNEL-bound; the plumbing (and the removed "
+            "transpose,\n     fused into it) is ~free -- THAT is why the "
+            "contract change gave 0%, not\n     because the split "
+            "dominates.  The kernel sits far below peak BW, so it\n     is "
+            "limited by the sequential banded recurrence / occupancy, not "
+            "bandwidth.\n     A faster SOLVE needs the kernel itself: tune "
+            "pallas_block_m0/m1 /\n     num_warps / num_stages, or "
+            "parallelize along Ny.  But first: Part B --\n     is the solve "
+            "even the step's bottleneck?"
+        )
     else:
-        print("  => The plumbing is a real share of the solve; the split/"
-              "recombine round-trips\n     (mandatory: the kernel cannot "
-              "ingest c128) are worth attacking -- carry\n     the field "
-              "split-real, or batch the launches.  See Part B for whether the"
-              "\n     solve matters to the step at all.")
+        print(
+            "  => The plumbing is a real share of the solve; the split/"
+            "recombine round-trips\n     (mandatory: the kernel cannot "
+            "ingest c128) are worth attacking -- carry\n     the field "
+            "split-real, or batch the launches.  See Part B for whether the"
+            "\n     solve matters to the step at all."
+        )
 
 
 # ── Part B: solve share of a corrector step ──────────────────────────
@@ -306,8 +357,10 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
     )
     t_step, c, _ = _bench_step(m.predict_and_fully_correct, state, steps)
     n = 2 + c  # RHS evals AND IMM applies per step (predict + correct loop)
-    print(f"  predict_and_fully_correct     {_ms(t_step)}   "
-          f"(c={c} corrector iters => n={n} RHS evals + {n} IMM applies)")
+    print(
+        f"  predict_and_fully_correct     {_ms(t_step)}   "
+        f"(c={c} corrector iters => n={n} RHS evals + {n} IMM applies)"
+    )
 
     # Phase costs: one nonlinear RHS (FFT-heavy) and one IMM apply (FD
     # matvecs + banded solves + influence matrix + reshard transposes).
@@ -328,17 +381,22 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
     lk, hk = flow.Lk_op, flow.Hk_op
     if isinstance(lk, PerModeBandedPallasOperator):
         N, _p, Nkz, Nkx = lk.L.shape
-        sspec, vspec = (sharding.spec_scalar_shard,
-                        sharding.spec_vector_shard)
-        zs = [_make_complex((N, Nkz, Nkx), 200 + i, sharding, sspec)
-              for i in range(reps)]
-        z3s = [_make_complex((3, N, Nkz, Nkx), 300 + i, sharding, vspec)
-               for i in range(reps)]
+        sspec, vspec = (sharding.spec_scalar_shard, sharding.spec_vector_shard)
+        zs = [
+            _make_complex((N, Nkz, Nkx), 200 + i, sharding, sspec)
+            for i in range(reps)
+        ]
+        z3s = [
+            _make_complex((3, N, Nkz, Nkx), 300 + i, sharding, vspec)
+            for i in range(reps)
+        ]
         t_lk = _bench(lambda z: lk.solve(z), [(z,) for z in zs])
         t_hk = _bench(lambda z: hk.solve(z), [(z,) for z in z3s])
         t_solve = t_lk + t_hk
-        print(f"    of which banded solve Lk+Hk {_ms(t_solve)}  "
-              f"(Lk {_ms(t_lk)}, Hk {_ms(t_hk)})")
+        print(
+            f"    of which banded solve Lk+Hk {_ms(t_solve)}  "
+            f"(Lk {_ms(t_lk)}, Hk {_ms(t_hk)})"
+        )
 
     # Step composition (each phase runs n times); 'other' is the
     # unmodelled remainder (norm, predictor/corrector arithmetic, the
@@ -353,11 +411,15 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
         solve = n * t_solve / t_step
         print(f"        banded solve           {100 * solve:5.1f}%")
         print(f"        matvec+transpose+infl. {100 * (imm - solve):5.1f}%")
-    print(f"    other (norm/predict/loop)  {100 * other:5.1f}%   "
-          "<- non-kernel remainder")
-    print(f"    [trust: FFT+IMM = {100 * (fft + imm):.0f}% of the step; the "
-          "rest is 'other'.\n     Isolated timing != the fused step, so treat "
-          "these as indicative.]")
+    print(
+        f"    other (norm/predict/loop)  {100 * other:5.1f}%   "
+        "<- non-kernel remainder"
+    )
+    print(
+        f"    [trust: FFT+IMM = {100 * (fft + imm):.0f}% of the step; the "
+        "rest is 'other'.\n     Isolated timing != the fused step, so treat "
+        "these as indicative.]"
+    )
 
     shares = {
         "FFT / nonlinear transforms (cuFFT)": fft,
@@ -365,17 +427,45 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
         "non-kernel overhead (while_loop carry / dispatch)": other,
     }
     top = max(shares, key=shares.get)
-    print(f"\n  => H2: the banded solve is a small slice; the step's largest "
-          f"bucket is\n     {top}.\n     That -- not the Pallas kernel -- is "
-          "the target for a faster step.")
+    print(
+        f"\n  => H2: the banded solve is a small slice; the step's largest "
+        f"bucket is\n     {top}.\n     That -- not the Pallas kernel -- is "
+        "the target for a faster step."
+    )
+
+    # Scheme A/B: CN/AB2 does ONE RHS/FFT eval per step (no corrector
+    # loop) vs n = 2+c for iterative-cn -- the primary throughput lever.
+    if hasattr(m, "step_cnab2"):
+        t_cnab2, _ = _bench_step_cnab2(m.step_cnab2, state, steps)
+        print(f"\n  scheme A/B (same state, {steps} steps):")
+        print(
+            f"    iterative-cn  {_ms(t_step)}   "
+            f"({n} RHS/FFT evals + {n} IMM applies per step)"
+        )
+        print(
+            f"    cnab2         {_ms(t_cnab2)}   "
+            "(1 RHS/FFT eval + 1 IMM apply per step, no while_loop)"
+        )
+        print(
+            f"    => step speedup {t_step / t_cnab2:.2f}x  "
+            f"(FFT/IMM invocation count {n} -> 1); explicit nonlinear, "
+            "so dt is advective-CFL-limited."
+        )
 
 
 # ── Part C: HLO census + optional profiler trace ─────────────────────
 
 
 def _hlo_census(label, jitted, args, hlo_out) -> None:
-    keys = ["transpose", "copy", "bitcast", "fusion", "custom-call",
-            "convert", "triton"]
+    keys = [
+        "transpose",
+        "copy",
+        "bitcast",
+        "fusion",
+        "custom-call",
+        "convert",
+        "triton",
+    ]
     try:
         txt = jitted.lower(*args).compile().as_text()
     except Exception as e:  # noqa: BLE001
@@ -394,11 +484,13 @@ def _part_c(flow, m, sharding, trace_dir, hlo_out) -> None:
     print("\n" + "-" * 72)
     print("PART C -- optimized-HLO census (static) + optional trace")
     print("-" * 72)
-    print("  Census is for the ACTIVE backend: on GPU the 'triton' /"
-          " 'custom-call'\n  counts are the solve; a near-absence of a "
-          "standalone 'transpose' feeding\n  it is the point (the transpose "
-          "fused into the mandatory split copy).  On\n  CPU it shows the "
-          "pure-JAX fallback instead (its own mode-outer moveaxes).")
+    print(
+        "  Census is for the ACTIVE backend: on GPU the 'triton' /"
+        " 'custom-call'\n  counts are the solve; a near-absence of a "
+        "standalone 'transpose' feeding\n  it is the point (the transpose "
+        "fused into the mandatory split copy).  On\n  CPU it shows the "
+        "pure-JAX fallback instead (its own mode-outer moveaxes)."
+    )
 
     from dnsjax.random_field import generate_random_state
     from dnsjax.solvers import PerModeBandedPallasOperator
@@ -409,16 +501,22 @@ def _part_c(flow, m, sharding, trace_dir, hlo_out) -> None:
         params.init.random_seed,
         params.init.random_mean_flow,
     )
-    _hlo_census("corrector-step", jax.jit(m.predict_and_fully_correct),
-                (state,), hlo_out)
+    _hlo_census(
+        "corrector-step",
+        jax.jit(m.predict_and_fully_correct),
+        (state,),
+        hlo_out,
+    )
 
     op = flow.Lk_op
     if isinstance(op, PerModeBandedPallasOperator):
         N, _p, Nkz, Nkx = op.L.shape
-        z = _make_complex((N, Nkz, Nkx), 7, sharding,
-                          sharding.spec_scalar_shard)
-        _hlo_census("Lk.solve", jax.jit(lambda zz: op.solve(zz)), (z,),
-                    hlo_out)
+        z = _make_complex(
+            (N, Nkz, Nkx), 7, sharding, sharding.spec_scalar_shard
+        )
+        _hlo_census(
+            "Lk.solve", jax.jit(lambda zz: op.solve(zz)), (z,), hlo_out
+        )
 
     if trace_dir:
         if jax.default_backend() != "gpu":
@@ -433,13 +531,15 @@ def _part_c(flow, m, sharding, trace_dir, hlo_out) -> None:
             for _ in range(20):
                 s, _e, _c = m.predict_and_fully_correct(s)
             jax.block_until_ready(s)
-        print(f"  trace written.  View per-kernel times with:\n"
-              f"    tensorboard --logdir {trace_dir}\n"
-              "  (Profile tab -> trace_viewer), or open the .pb in "
-              "https://ui.perfetto.dev .\n"
-              "  Look at the kernel-category split: triton custom-call "
-              "(the solve) vs\n  cuFFT vs cublas/GEMM (matvec) vs "
-              "copy/fusion (the split/recombine).")
+        print(
+            f"  trace written.  View per-kernel times with:\n"
+            f"    tensorboard --logdir {trace_dir}\n"
+            "  (Profile tab -> trace_viewer), or open the .pb in "
+            "https://ui.perfetto.dev .\n"
+            "  Look at the kernel-category split: triton custom-call "
+            "(the solve) vs\n  cuFFT vs cublas/GEMM (matvec) vs "
+            "copy/fusion (the split/recombine)."
+        )
 
 
 # ── env banner + main ────────────────────────────────────────────────
@@ -467,25 +567,40 @@ def _print_env() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--system", default="plane-couette",
-                    help="plane-couette/plane-poiseuille/pipe/"
-                    "taylor-couette/dean")
+    ap.add_argument(
+        "--system",
+        default="plane-couette",
+        help="plane-couette/plane-poiseuille/pipe/taylor-couette/dean",
+    )
     ap.add_argument("--ny", type=int, default=128)
     ap.add_argument("--nx", type=int, default=128)
     ap.add_argument("--nz", type=int, default=128)
     ap.add_argument("--fd-order", type=int, default=4)
-    ap.add_argument("--reps", type=int, default=8,
-                    help="distinct RHS fields per timed batch")
-    ap.add_argument("--steps", type=int, default=20,
-                    help="corrector steps timed in Part B")
-    ap.add_argument("--steps-only", type=int, default=0,
-                    help="run N steps and exit (skips A/B/C); a clean "
-                    "driver to wrap in an external profiler, e.g. "
-                    "`nsys profile --stats=true`")
-    ap.add_argument("--trace", default=None,
-                    help="dir for a jax.profiler trace (Part C)")
-    ap.add_argument("--hlo-out", default=None,
-                    help="file to append the full optimized HLO to")
+    ap.add_argument(
+        "--reps",
+        type=int,
+        default=8,
+        help="distinct RHS fields per timed batch",
+    )
+    ap.add_argument(
+        "--steps", type=int, default=20, help="corrector steps timed in Part B"
+    )
+    ap.add_argument(
+        "--steps-only",
+        type=int,
+        default=0,
+        help="run N steps and exit (skips A/B/C); a clean "
+        "driver to wrap in an external profiler, e.g. "
+        "`nsys profile --stats=true`",
+    )
+    ap.add_argument(
+        "--trace", default=None, help="dir for a jax.profiler trace (Part C)"
+    )
+    ap.add_argument(
+        "--hlo-out",
+        default=None,
+        help="file to append the full optimized HLO to",
+    )
     args = ap.parse_args()
 
     _configure_system(args.system, args.ny, args.nx, args.nz, args.fd_order)
@@ -515,14 +630,18 @@ def main() -> None:
         for _ in range(args.steps_only):
             s, _e, _c = m.predict_and_fully_correct(s)
         jax.block_until_ready(s)
-        print(f"ran {args.steps_only} steps (steps-only mode); wrap this "
-              "invocation in a profiler.")
+        print(
+            f"ran {args.steps_only} steps (steps-only mode); wrap this "
+            "invocation in a profiler."
+        )
         return
 
     gpu = jax.default_backend() == "gpu"
     if not gpu:
-        print("No GPU backend -> timings skipped (they need real hardware).\n"
-              "Running the HLO census only; launch on the cluster for A/B.\n")
+        print(
+            "No GPU backend -> timings skipped (they need real hardware).\n"
+            "Running the HLO census only; launch on the cluster for A/B.\n"
+        )
         _part_c(flow, m, sharding, None, args.hlo_out)
         return
 
@@ -530,9 +649,11 @@ def main() -> None:
     _part_b(geom, m, flow, sharding, args.reps, args.steps)
     _part_c(flow, m, sharding, args.trace, args.hlo_out)
     print("\n" + "=" * 72)
-    print("Done.  Paste the full stdout back.  Key numbers: Part A "
-          "'split+recombine\n% of the solve' (H1) and Part B 'c*(Lk+Hk) / "
-          "step' (H2).")
+    print(
+        "Done.  Paste the full stdout back.  Key numbers: Part A "
+        "'split+recombine\n% of the solve' (H1) and Part B 'c*(Lk+Hk) / "
+        "step' (H2)."
+    )
     print("=" * 72)
 
 

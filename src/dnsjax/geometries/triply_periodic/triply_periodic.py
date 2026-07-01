@@ -490,19 +490,25 @@ def build_triply_periodic_stepper(
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], Array],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array]],
+    Callable[[Array, Array], tuple[Array, Array, dict[str, Array]]],
 ]:
     """Build time-stepping functions for a triply-periodic flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
-    correct_velocity, predict_and_fully_correct_measured)``
-    with the ``fourier`` and *flow* singletons already bound.
+    correct_velocity, predict_and_fully_correct_measured,
+    step_cnab2, step_cnab2_measured)`` with the ``fourier`` and
+    *flow* singletons already bound.  The last two are the CN/AB2
+    scheme (``step.scheme == "cnab2"``).
     """
     (
         _predict_and_correct_jit,
         _iterate_correction_jit,
         _predict_and_fully_correct_jit,
         _predict_and_fully_correct_measured_jit,
+        _step_cnab2_jit,
+        _step_cnab2_measured_jit,
     ) = make_stepper(_get_rhs, _predict, _correct, _norm, _get_rhs_measured)
 
     def predict_and_correct(
@@ -533,6 +539,19 @@ def build_triply_periodic_stepper(
         """Fused step + physical-space measurements (at `$u^n$`)."""
         return _predict_and_fully_correct_measured_jit(state, fourier, flow)
 
+    def step_cnab2(state: Array, rhs_prev: Array) -> tuple[Array, Array]:
+        """One CN/AB2 step with bound singletons (returns
+        ``(state_next, rhs_n)``).  The divergence projection is applied
+        by ``correct_velocity`` in the main loop, as for the corrector
+        scheme."""
+        return _step_cnab2_jit(state, rhs_prev, fourier, flow)
+
+    def step_cnab2_measured(
+        state: Array, rhs_prev: Array
+    ) -> tuple[Array, Array, dict[str, Array]]:
+        """CN/AB2 step + physical-space measurements (at `$u^n$`)."""
+        return _step_cnab2_measured_jit(state, rhs_prev, fourier, flow)
+
     def init_state_bound(snapshot: str | None) -> Array:
         """Initialize the flow state with bound flow singleton."""
         return init_state(snapshot, flow)
@@ -549,4 +568,6 @@ def build_triply_periodic_stepper(
         predict_and_fully_correct,
         correct_velocity,
         predict_and_fully_correct_measured,
+        step_cnab2,
+        step_cnab2_measured,
     )

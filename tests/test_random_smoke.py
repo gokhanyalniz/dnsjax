@@ -17,7 +17,10 @@ One entry (``plane-couette-default-ic``) omits ``--init.random_field``
 to verify random is the **default** start mode -- with no snapshot and
 no explicit mode selected, the run must start from a random field (not
 the laminar state), guarding the snapshot-first / random-default
-precedence in ``__main__.py``.
+precedence in ``__main__.py``.  Another (``plane-couette-cnab2``) passes
+``--step.scheme cnab2`` to drive the alternative CN/AB2 time-stepping
+scheme (explicit Adams-Bashforth nonlinear, one eval per step, no
+corrector) through the same nonlinear path.
 
 Transition to turbulence is **not** expected to develop by the default
 ``t = 1`` at this resolution/box; the success metric is purely that
@@ -277,6 +280,31 @@ SYSTEMS: list[dict] = [
             "5",
             "--geo.lz",
             "5",
+        ],
+    },
+    {
+        # Time-stepping scheme guard: the CN/AB2 scheme
+        # (step.scheme=cnab2 -- Crank-Nicolson viscous + 2nd-order
+        # Adams-Bashforth nonlinear, one nonlinear/FFT eval per step,
+        # no corrector loop) driven through the full nonlinear path.
+        # Same clean-integration criteria as the iterative-cn entries;
+        # cnab2 has no corrector, so the driver reports err = 0 and
+        # criterion 4 (err < tol) is trivially met -- the real guard is
+        # exit 0, reaching t = max_sim_time, and a finite final state.
+        # Explicit nonlinear => advective-CFL-limited; dt = 0.01 is well
+        # within the CFL here (same box / Re as the plane-couette entry).
+        "name": "plane-couette-cnab2",
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+            "--step.scheme",
+            "cnab2",
         ],
     },
 ]

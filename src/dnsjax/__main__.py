@@ -300,6 +300,8 @@ def main() -> None:
             init_state,
             predict_and_fully_correct,
             predict_and_fully_correct_measured,
+            step_cnab2,
+            step_cnab2_measured,
         )
     elif params.phys.system == "plane-couette":
         from .flows.wall_bounded.plane_couette import (
@@ -308,6 +310,8 @@ def main() -> None:
             init_state,
             predict_and_fully_correct,
             predict_and_fully_correct_measured,
+            step_cnab2,
+            step_cnab2_measured,
         )
     elif params.phys.system == "plane-poiseuille":
         from .flows.wall_bounded.plane_poiseuille import (
@@ -316,6 +320,8 @@ def main() -> None:
             init_state,
             predict_and_fully_correct,
             predict_and_fully_correct_measured,
+            step_cnab2,
+            step_cnab2_measured,
         )
     elif params.phys.system == "pipe":
         from .flows.wall_bounded.pipe import (
@@ -324,6 +330,8 @@ def main() -> None:
             init_state,
             predict_and_fully_correct,
             predict_and_fully_correct_measured,
+            step_cnab2,
+            step_cnab2_measured,
         )
     elif params.phys.system == "taylor-couette":
         from .flows.wall_bounded.taylor_couette import (
@@ -332,6 +340,8 @@ def main() -> None:
             init_state,
             predict_and_fully_correct,
             predict_and_fully_correct_measured,
+            step_cnab2,
+            step_cnab2_measured,
         )
     elif params.phys.system == "dean":
         from .flows.wall_bounded.dean import (
@@ -340,6 +350,8 @@ def main() -> None:
             init_state,
             predict_and_fully_correct,
             predict_and_fully_correct_measured,
+            step_cnab2,
+            step_cnab2_measured,
         )
     else:
         sharding.print(
@@ -576,6 +588,20 @@ def main() -> None:
         ts_buf.append(t)
         py_idx += 1
 
+    # --- CN/AB2 scheme: seed the Adams-Bashforth history ---------------
+    # ``step.scheme == "cnab2"`` carries the previous nonlinear RHS
+    # ``rhs_prev = N^{n-1}`` across steps.  Seed it with ``N(u^0)`` (one
+    # priming eval, which also compiles ``step_cnab2`` outside the
+    # benchmark window) so the first step is a forward-Euler self-start
+    # (``F = N^0``).  CN/AB2 has no corrector, so it reports ``c = 0``,
+    # ``err = 0`` to the corrector diagnostic.
+    scheme: str = params.step.scheme
+    is_cnab2: bool = scheme == "cnab2"
+    if is_cnab2:
+        cnab2_err = jnp.asarray(0.0)
+        cnab2_c = jnp.asarray(0, dtype=jnp.int32)
+        _, rhs_prev = step_cnab2(state, jnp.zeros_like(state))
+
     # --- Steps (CFL) buffer setup --------------------------------------
     measure_steps: bool = params.outs.it_steps is not None
     if measure_steps:
@@ -584,13 +610,19 @@ def main() -> None:
         # outside the benchmark window.  Outputs are discarded (no
         # buffers are donated); the t0 row itself is recorded by
         # the first loop iteration when it0 % it_steps == 0.
-        _, _, _, meas = predict_and_fully_correct_measured(state)
+        if is_cnab2:
+            _, _, meas = step_cnab2_measured(state, rhs_prev)
+        else:
+            _, _, _, meas = predict_and_fully_correct_measured(state)
         if params.outs.it_steps > 1 and it % params.outs.it_steps == 0:
             # The first loop iteration (excluded from benchmarks)
             # runs the measured variant, so the unmeasured program
             # would otherwise compile on the second iteration,
             # inside the benchmark window.  Pre-compile it here.
-            predict_and_fully_correct(state)
+            if is_cnab2:
+                step_cnab2(state, rhs_prev)
+            else:
+                predict_and_fully_correct(state)
         steps_names = list(meas.keys())
         steps_buffer = jnp.zeros(
             (params.outs.nbuffer, len(steps_names)),
@@ -778,13 +810,25 @@ def main() -> None:
             # Keep the .dat files consistent with this snapshot.
             flush_all_buffers()
 
-        # Fused predictor + all corrector iterations (single JIT scope).
-        if measure_steps and it % params.outs.it_steps == 0:
-            # Measured variant: also records the CFL of the
-            # pre-step state u^n, timestamped at the current t.
+        # Time step (single JIT scope): iterative Crank-Nicolson
+        # corrector, or one CN/AB2 step carrying the nonlinear-RHS
+        # history.  The measured variant also records the CFL of the
+        # pre-step state u^n, timestamped at the current t.
+        do_measure = measure_steps and it % params.outs.it_steps == 0
+        if is_cnab2:
+            if do_measure:
+                state, rhs_prev, meas = step_cnab2_measured(state, rhs_prev)
+            else:
+                state, rhs_prev = step_cnab2(state, rhs_prev)
+            error_dev, c_dev = cnab2_err, cnab2_c
+        elif do_measure:
             state, error_dev, c_dev, meas = predict_and_fully_correct_measured(
                 state
             )
+        else:
+            state, error_dev, c_dev = predict_and_fully_correct(state)
+
+        if do_measure:
             steps_buffer = steps_buffer.at[steps_idx].set(
                 jnp.stack(list(meas.values()))
             )
@@ -803,8 +847,6 @@ def main() -> None:
                     )
                 steps_ts.clear()
                 steps_idx = 0
-        else:
-            state, error_dev, c_dev = predict_and_fully_correct(state)
 
         # Corrector diagnostic -> GPU buffer: this step's iteration
         # count and final error, timestamped at the pre-step time.

@@ -546,12 +546,25 @@ def test_pallas_vs_dense_on_cylindrical_operators() -> None:
     _check(
         "Lk",
         _build_Lk_band_gpu(
-            D1_wall, band_even, band_odd, m_is_even_p,
-            m_sq, inv_r2, kz2, mean_mask, p,
+            D1_wall,
+            band_even,
+            band_odd,
+            m_is_even_p,
+            m_sq,
+            inv_r2,
+            kz2,
+            mean_mask,
+            p,
         ),
         _build_Lk_dense_gpu(
-            D1_wall, A_even, A_odd, m_is_even_p,
-            m_sq, inv_r2, kz2, mean_mask,
+            D1_wall,
+            A_even,
+            A_odd,
+            m_is_even_p,
+            m_sq,
+            inv_r2,
+            kz2,
+            mean_mask,
         ),
     )
     for label, meff2, parity in [
@@ -562,12 +575,27 @@ def test_pallas_vs_dense_on_cylindrical_operators() -> None:
         _check(
             label,
             _build_Hk_band_gpu(
-                band_even, band_odd, parity, meff2,
-                inv_r2, kz2, dt, c, nu, p,
+                band_even,
+                band_odd,
+                parity,
+                meff2,
+                inv_r2,
+                kz2,
+                dt,
+                c,
+                nu,
+                p,
             ),
             _build_Hk_dense_gpu(
-                A_even, A_odd, parity, meff2,
-                inv_r2, kz2, dt, c, nu,
+                A_even,
+                A_odd,
+                parity,
+                meff2,
+                inv_r2,
+                kz2,
+                dt,
+                c,
+                nu,
             ),
         )
 

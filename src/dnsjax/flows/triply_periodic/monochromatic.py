@@ -201,6 +201,8 @@ flow: MonochromaticFlow = MonochromaticFlow()
     predict_and_fully_correct,
     correct_velocity,
     predict_and_fully_correct_measured,
+    step_cnab2,
+    step_cnab2_measured,
 ) = build_triply_periodic_stepper(flow)
 
 

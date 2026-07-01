@@ -114,6 +114,8 @@ flow: PipeFlow = PipeFlow()
     init_state,
     predict_and_fully_correct,
     predict_and_fully_correct_measured,
+    step_cnab2,
+    step_cnab2_measured,
 ) = build_cylindrical_stepper(flow)
 
 

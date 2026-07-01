@@ -36,6 +36,8 @@ def make_stepper(
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array, dict[str, Array]]] | None,
+    Callable[..., tuple[Array, Array]],
+    Callable[..., tuple[Array, Array, dict[str, Array]]] | None,
 ]:
     """Build the JIT-compiled predictor-corrector stepping functions.
 
@@ -87,6 +89,17 @@ def make_stepper(
         measurements)``.  No buffers are donated, so a warm-up
         call may safely discard its outputs.  ``None`` when
         *get_rhs_measured_fn* is not given.
+    step_cnab2:
+        One CN/AB2 step (Crank-Nicolson viscous + explicit 2nd-order
+        Adams-Bashforth nonlinear), selected by ``step.scheme ==
+        "cnab2"``.  One RHS/FFT evaluation, no corrector loop.
+        Signature: ``(state, rhs_prev) -> (state_next, rhs_n)``; the
+        caller carries ``rhs_n`` back as the next *rhs_prev*.
+    step_cnab2_measured:
+        As ``step_cnab2``, but its single RHS evaluation (at `$u^n$`)
+        also returns the physical-space measurements.  Signature:
+        ``(state, rhs_prev) -> (state_next, rhs_n, measurements)``.
+        ``None`` when *get_rhs_measured_fn* is not given.
     """
 
     @jit
@@ -202,9 +215,48 @@ def make_stepper(
             prediction, error, num_c = _step_core(state, rhs_prev, *args)
             return prediction, error, num_c, measurements
 
+    @jit
+    def step_cnab2(
+        state: Array, rhs_prev: Array, *args
+    ) -> tuple[Array, Array]:
+        r"""One CN/AB2 step (``step.scheme == "cnab2"``).
+
+        Crank-Nicolson viscous + 2nd-order Adams-Bashforth explicit
+        nonlinear.  Reuses the predictor solve (implicit viscous + IMM
+        pressure) with the AB2 forcing `$\tfrac{3}{2} N^n
+        - \tfrac{1}{2} N^{n-1}$` in place of the plain `$N^n$` -- the
+        predictor is exactly ``_imm_iteration(u, u, F, F)``, so this is
+        one solve and **one** RHS/FFT evaluation, no corrector loop.
+
+        *rhs_prev* is the previous step's nonlinear RHS `$N^{n-1}$`,
+        carried by the caller; seed it with ``get_rhs_fn(state_0)`` so
+        the first step (``F = N^0``) is a forward-Euler self-start.
+        Returns ``(state_next, rhs_n)``; feed ``rhs_n`` back as the next
+        *rhs_prev*.
+        """
+        rhs_n = get_rhs_fn(state, *args)
+        forcing = 1.5 * rhs_n - 0.5 * rhs_prev
+        return predict_fn(state, forcing, *args), rhs_n
+
+    if get_rhs_measured_fn is None:
+        step_cnab2_measured = None
+    else:
+
+        @jit
+        def step_cnab2_measured(
+            state: Array, rhs_prev: Array, *args
+        ) -> tuple[Array, Array, dict[str, Array]]:
+            """CN/AB2 step that also returns physical-space measurements
+            from its single RHS evaluation (at `$u^n$`)."""
+            rhs_n, measurements = get_rhs_measured_fn(state, *args)
+            forcing = 1.5 * rhs_n - 0.5 * rhs_prev
+            return predict_fn(state, forcing, *args), rhs_n, measurements
+
     return (
         predict_and_correct,
         iterate_correction,
         predict_and_fully_correct,
         predict_and_fully_correct_measured,
+        step_cnab2,
+        step_cnab2_measured,
     )
