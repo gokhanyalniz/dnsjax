@@ -208,7 +208,9 @@ class Initiation(BaseModel):
     # Dean the analytical laminar profile is added (total-field IC).
     random_field: bool = True
     random_amplitude: float = 0.1  # target L2 norm of the perturbation
-    random_smoothness: float = 0.4  # spectral decay rate (0 < s < 1)
+    random_smoothness: float = Field(
+        gt=0, lt=1, default=0.4
+    )  # spectral decay rate (0 < s < 1)
     random_seed: int = 1  # NumPy PRNG seed (device-count independent)
     random_mean_flow: bool = False  # also perturb the mean (kx=kz=0) mode
     # Generate an in-process deterministic localized-rolls ("turbulent
