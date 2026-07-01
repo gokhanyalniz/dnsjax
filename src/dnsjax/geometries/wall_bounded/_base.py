@@ -90,6 +90,41 @@ def apply_y_matrix(mat: Array, field: Array, component_axis: int = 0) -> Array:
     return jnp.einsum("ij, cjzx -> cizx", mat, field)
 
 
+# ── Base-flow coupling (FFT-free, for the CN/AB2 scheme) ─────────
+
+
+def base_flow_coupling(
+    u: Array, omega: Array, base_flow: Array, curl_base_flow: Array
+) -> Array:
+    r"""Linear base-flow coupling `$\mathbf{u}' \times \nabla\times
+    \mathbf{U} + \mathbf{U} \times \boldsymbol{\omega}'$`.
+
+    The two base-flow cross-product terms of the rotational nonlinear
+    form (:mod:`dnsjax.rhs`), as a component-wise expression in a local
+    orthonormal basis -- Cartesian `$(x, y, z)$` or the cylindrical
+    `$(z, r, \theta)$` triad (both right-handed, so the standard
+    cross-product formula applies).  All inputs are in the **same**
+    representation; *base_flow* / *curl_base_flow* are the wall-normal
+    (or radial) profiles `$(3, N, 1, 1)$`, broadcast over the Fourier
+    axes.  Evaluated with `$\boldsymbol{\omega}'$` already in hand
+    (spectral curl), this needs **no Fourier transform** -- used by the
+    CN/AB2 scheme to make the (stiff) base-flow coupling implicit; see
+    ``step_cnab2`` in :mod:`dnsjax.timestep` and each geometry's
+    ``_l_bf``.
+    """
+    u0, u1, u2 = u[0], u[1], u[2]
+    w0, w1, w2 = omega[0], omega[1], omega[2]
+    U0, U1, U2 = base_flow[0], base_flow[1], base_flow[2]
+    c0, c1, c2 = curl_base_flow[0], curl_base_flow[1], curl_base_flow[2]
+    return jnp.array(
+        [
+            (u1 * c2 - u2 * c1) + (U1 * w2 - U2 * w1),
+            (u2 * c0 - u0 * c2) + (U2 * w0 - U0 * w2),
+            (u0 * c1 - u1 * c0) + (U0 * w1 - U1 * w0),
+        ]
+    )
+
+
 # ── Base-flow padding ───────────────────────────────────────────
 
 
@@ -308,14 +343,17 @@ def build_wall_bounded_stepper(
     fourier: object,
     flow: object,
     get_rhs_measured_fn: Callable,
+    l_bf_fn: Callable | None = None,
 ) -> tuple[
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
-    Callable[[Array, Array], tuple[Array, Array]],
-    Callable[[Array, Array], tuple[Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
 ]:
     """Build time-stepping functions for a wall-bounded flow.
 
@@ -339,6 +377,11 @@ def build_wall_bounded_stepper(
         Measured RHS variant (returns the RHS plus a dict of
         physical-space measurements; see
         :mod:`dnsjax.measurements`).
+    l_bf_fn:
+        FFT-free linear base-flow coupling ``state -> L_bf`` (see the
+        geometry ``_l_bf``), treated implicitly by the CN/AB2 scheme
+        so its stiff wall-normal derivative does not force a tiny
+        time step.  Passed through to :func:`~dnsjax.timestep.make_stepper`.
     """
     (
         _predict_and_correct_jit,
@@ -348,7 +391,12 @@ def build_wall_bounded_stepper(
         _step_cnab2_jit,
         _step_cnab2_measured_jit,
     ) = make_stepper(
-        get_rhs_fn, predict_fn, correct_fn, norm_fn, get_rhs_measured_fn
+        get_rhs_fn,
+        predict_fn,
+        correct_fn,
+        norm_fn,
+        get_rhs_measured_fn,
+        l_bf_fn,
     )
 
     def predict_and_correct(
@@ -379,16 +427,20 @@ def build_wall_bounded_stepper(
         """Fused step + physical-space measurements (at `$u^n$`)."""
         return _predict_and_fully_correct_measured_jit(state, fourier, flow)
 
-    def step_cnab2(state: Array, rhs_prev: Array) -> tuple[Array, Array]:
-        """One CN/AB2 step with bound singletons (returns
-        ``(state_next, rhs_n)``; carry ``rhs_n`` as next ``rhs_prev``)."""
-        return _step_cnab2_jit(state, rhs_prev, fourier, flow)
+    def step_cnab2(
+        state: Array, carry: Array
+    ) -> tuple[Array, Array, Array, Array]:
+        """One CN/AB2 step with bound singletons.  Returns
+        ``(state_next, carry, error, num_c)``; feed ``carry`` back
+        unchanged.  ``error``/``num_c`` are the FFT-free base-flow
+        coupling corrector's (see ``step_cnab2`` in ``timestep.py``)."""
+        return _step_cnab2_jit(state, carry, fourier, flow)
 
     def step_cnab2_measured(
-        state: Array, rhs_prev: Array
-    ) -> tuple[Array, Array, dict[str, Array]]:
+        state: Array, carry: Array
+    ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
         """CN/AB2 step + physical-space measurements (at `$u^n$`)."""
-        return _step_cnab2_measured_jit(state, rhs_prev, fourier, flow)
+        return _step_cnab2_measured_jit(state, carry, fourier, flow)
 
     def init_state_bound(snapshot: str | None) -> Array:
         """Initialize the flow state."""

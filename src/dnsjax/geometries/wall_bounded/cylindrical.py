@@ -122,6 +122,7 @@ from ...solvers import (
 )
 from ._base import (
     apply_y_matrix,
+    base_flow_coupling,
     build_wall_bounded_stepper,
     extract_mean_mode,
     get_inprod,  # noqa: F401 — re-exported
@@ -1678,6 +1679,36 @@ def _curl_fn(
     return jnp.array([omega_z, omega_r, omega_theta])
 
 
+def _l_bf(
+    state: Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> Array:
+    r"""Linear base-flow coupling (FFT-free), in `$(u_z, u_+, u_-)$`.
+
+    Mirrors :func:`_get_rhs_core`'s conversion to the `$(u_z, u_r,
+    u_\theta)$` triad, but evaluates only the two *linear* base-flow
+    cross-product terms (:func:`base_flow_coupling`) -- no Fourier
+    transform (the base flow is a radial profile, and
+    `$\boldsymbol{\omega}'$` is the spectral :func:`_curl_fn`).  The
+    pure self-advection `$\mathbf{u}' \times \boldsymbol{\omega}' =
+    \text{get\_rhs} - \text{\_l\_bf}$` stays explicit; this term (with
+    its stiff radial derivative on the wall-clustered grid) is made
+    implicit by the CN/AB2 scheme -- see ``step_cnab2`` in
+    :mod:`dnsjax.timestep`.
+    """
+    u_z, u_plus, u_minus = state[0], state[1], state[2]
+    ur = (u_plus + u_minus) / 2
+    utheta = -1j * (u_plus - u_minus) / 2
+    state_rthz = jnp.array([u_z, ur, utheta])
+
+    omega = _curl_fn(state_rthz, fourier_, flow_)
+    l_z, l_r, l_theta = base_flow_coupling(
+        state_rthz, omega, flow_.base_flow, flow_.curl_base_flow
+    )
+    return jnp.array([l_z, l_r + 1j * l_theta, l_r - 1j * l_theta])
+
+
 # Per-direction CFL column names, matching the physical-space
 # component order (u_z, u_r, u_theta).
 CFL_NAMES: tuple[str, str, str] = ("CFL_z", "CFL_r", "CFL_th")
@@ -2125,8 +2156,10 @@ def build_cylindrical_stepper(
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
-    Callable[[Array, Array], tuple[Array, Array]],
-    Callable[[Array, Array], tuple[Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
 ]:
     """Build time-stepping functions for a cylindrical flow.
 
@@ -2134,8 +2167,16 @@ def build_cylindrical_stepper(
     init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,
     step_cnab2_measured)`` with the ``fourier`` and *flow*
-    singletons already bound.
+    singletons already bound.  ``_l_bf`` (the FFT-free base-flow
+    coupling) is passed so the CN/AB2 scheme treats it implicitly.
     """
     return build_wall_bounded_stepper(
-        _get_rhs, _predict, _correct, _norm, fourier, flow, _get_rhs_measured
+        _get_rhs,
+        _predict,
+        _correct,
+        _norm,
+        fourier,
+        flow,
+        _get_rhs_measured,
+        _l_bf,
     )

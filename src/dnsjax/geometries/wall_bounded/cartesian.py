@@ -53,6 +53,7 @@ from ...solvers import (
 )
 from ._base import (
     apply_y_matrix,
+    base_flow_coupling,
     build_wall_bounded_stepper,
     extract_mean_mode,
     get_inprod,  # noqa: F401 — re-exported
@@ -1028,6 +1029,43 @@ def _curl_fn(
     return jnp.array([omega_x, omega_y, omega_z])
 
 
+def _l_bf(
+    state: Array,
+    fourier_: Fourier,
+    flow_: CartesianFlow,
+) -> Array:
+    r"""Linear base-flow coupling `$\mathbf{u}' \times \nabla\times
+    \mathbf{U} + \mathbf{U} \times \boldsymbol{\omega}'$` (FFT-free).
+
+    The two base-flow terms of the rotational nonlinear form (see
+    :mod:`dnsjax.rhs`), evaluated entirely in spectral space: the base
+    flow `$\mathbf{U}$` and its curl are `$y$`-only profiles
+    (``flow.base_flow`` / ``flow.curl_base_flow``, shape
+    ``(3, Ny, 1, 1)``), so multiplying by them is a
+    wall-normal-pointwise multiply that does not mix the
+    `$(k_x, k_z)$` modes -- no Fourier transform (and, since they are
+    `$k_x = k_z = 0$`, no dealiasing either, so this equals the
+    corresponding physical-space terms inside :func:`get_nonlin`
+    exactly).  `$\boldsymbol{\omega}' = \nabla\times\mathbf{u}'$`
+    reuses :func:`_curl_fn` (also FFT-free).
+
+    The CN/AB2 scheme (``step.scheme == "cnab2"``) advances this
+    *linear* term implicitly (Crank-Nicolson) while the pure
+    self-advection `$\mathbf{u}' \times \boldsymbol{\omega}' =
+    \text{get\_rhs} - L_{bf}$` stays explicit (Adams-Bashforth) --
+    the base-flow coupling carries the stiff wall-normal derivative
+    `$U\,\partial_y u'$` that would otherwise impose a `$1/N^2$`
+    time-step limit on the wall-clustered grid.  See the
+    ``step_cnab2`` docstring in :mod:`dnsjax.timestep`.
+    """
+    omega = _curl_fn(state, fourier_, flow_)
+    # base_flow / curl_base_flow are (3, Ny, 1, 1); broadcast over
+    # (k_z, k_x).
+    return base_flow_coupling(
+        state, omega, flow_.base_flow, flow_.curl_base_flow
+    )
+
+
 # Per-direction CFL column names, matching the physical-space
 # component order (u, v, w) = (x, y, z).
 CFL_NAMES: tuple[str, str, str] = ("CFL_x", "CFL_y", "CFL_z")
@@ -1422,8 +1460,10 @@ def build_cartesian_stepper(
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
-    Callable[[Array, Array], tuple[Array, Array]],
-    Callable[[Array, Array], tuple[Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
 ]:
     """Build time-stepping functions for a Cartesian
     wall-bounded flow.
@@ -1432,8 +1472,16 @@ def build_cartesian_stepper(
     init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,
     step_cnab2_measured)`` with the ``fourier`` and *flow*
-    singletons already bound.
+    singletons already bound.  ``_l_bf`` (the FFT-free base-flow
+    coupling) is passed so the CN/AB2 scheme treats it implicitly.
     """
     return build_wall_bounded_stepper(
-        _get_rhs, _predict, _correct, _norm, fourier, flow, _get_rhs_measured
+        _get_rhs,
+        _predict,
+        _correct,
+        _norm,
+        fourier,
+        flow,
+        _get_rhs_measured,
+        _l_bf,
     )

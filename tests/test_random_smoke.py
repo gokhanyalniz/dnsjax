@@ -285,15 +285,19 @@ SYSTEMS: list[dict] = [
     {
         # Time-stepping scheme guard: the CN/AB2 scheme
         # (step.scheme=cnab2 -- Crank-Nicolson viscous + 2nd-order
-        # Adams-Bashforth nonlinear, one nonlinear/FFT eval per step,
-        # no corrector loop) driven through the full nonlinear path.
-        # Same clean-integration criteria as the iterative-cn entries;
-        # cnab2 has no corrector, so the driver reports err = 0 and
-        # criterion 4 (err < tol) is trivially met -- the real guard is
-        # exit 0, reaching t = max_sim_time, and a finite final state.
-        # Explicit nonlinear => advective-CFL-limited; dt = 0.01 is well
-        # within the CFL here (same box / Re as the plane-couette entry).
+        # Adams-Bashforth nonlinear, one FFT eval per step) driven
+        # through the full nonlinear path.  Run at a **higher
+        # wall-normal resolution** (ny=48) than the other Cartesian
+        # entries on purpose: on the wall-clustered CGL grid the
+        # rotational base-flow coupling ``U d(u')/dy`` is a stiff
+        # explicit term, so a naive explicit-AB2 nonlinear blows up at
+        # dt=0.01 once ny >~ 40 (CFL << 1).  This guards the fix that
+        # makes the base-flow coupling implicit (FFT-free corrector; see
+        # ``_l_bf`` / ``step_cnab2``), so cnab2 now reports a *real*
+        # corrector count/error and criterion 4 (err < tol) is a genuine
+        # check, integrating cleanly like the iterative-cn entries.
         "name": "plane-couette-cnab2",
+        "res": {"nx": 32, "ny": 48, "nz": 32},
         "args": [
             "--phys.system",
             "plane-couette",
@@ -302,6 +306,33 @@ SYSTEMS: list[dict] = [
             "--geo.lx",
             "5",
             "--geo.lz",
+            "5",
+            "--step.scheme",
+            "cnab2",
+        ],
+    },
+    {
+        # CN/AB2 on a strongly sheared, moving-wall flow
+        # (counter-rotating Taylor-Couette): the azimuthal base flow
+        # makes ``U_theta d(u')/dr`` stiff *and* pushes the FFT-free
+        # base-flow-coupling corrector's Picard rate toward 1 (so it can
+        # stall).  This exercises the two robustness pieces that keep
+        # cnab2 usable here -- the iterative-CN self-start of the first
+        # step and the automatic per-step iterative-CN fallback when the
+        # cheap corrector fails (ny=48 to stress the wall-normal
+        # stiffness).  Same clean-integration criteria as the others.
+        "name": "taylor-couette-cnab2",
+        "res": {"nx": 32, "ny": 48, "nz": 32},
+        "args": [
+            "--phys.system",
+            "taylor-couette",
+            "--phys.re1",
+            "400",
+            "--phys.re2",
+            "-400",
+            "--geo.eta",
+            "0.5",
+            "--geo.lx",
             "5",
             "--step.scheme",
             "cnab2",

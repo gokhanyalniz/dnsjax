@@ -31,13 +31,14 @@ def make_stepper(
     norm_fn: Callable[..., Array],
     get_rhs_measured_fn: Callable[..., tuple[Array, dict[str, Array]]]
     | None = None,
+    l_bf_fn: Callable[..., Array] | None = None,
 ) -> tuple[
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array, dict[str, Array]]] | None,
-    Callable[..., tuple[Array, Array]],
-    Callable[..., tuple[Array, Array, dict[str, Array]]] | None,
+    Callable[..., tuple[Array, Array, Array, Array]],
+    Callable[..., tuple[Array, Array, Array, Array, dict[str, Array]]] | None,
 ]:
     """Build the JIT-compiled predictor-corrector stepping functions.
 
@@ -65,6 +66,19 @@ def make_stepper(
         Optional ``state -> (rhs_no_lapl, measurements)`` variant
         of *get_rhs_fn* that also returns a dict of physical-space
         measurements (see :mod:`dnsjax.measurements`).
+    l_bf_fn:
+        Optional ``state -> l_bf`` giving the *linear* base-flow
+        coupling term (``u' x curl(U) + U x omega'``) evaluated
+        **without** any FFT (spectral/matrix-free), used only by the
+        CN/AB2 scheme.  When provided, ``step_cnab2`` advances the
+        pure self-advection ``u' x omega' = get_rhs_fn - l_bf_fn``
+        explicitly (AB2) while treating ``l_bf_fn`` implicitly
+        (Crank-Nicolson) via an FFT-free corrector -- required for
+        wall-bounded flows, where the base-flow coupling carries a
+        stiff wall-normal derivative on the wall-clustered grid (see
+        ``step_cnab2`` below).  When ``None`` (triply-periodic, whose
+        Fourier ``y`` makes the coupling non-stiff) ``step_cnab2`` is
+        the plain explicit-AB2 step.
 
     Returns
     -------
@@ -92,14 +106,27 @@ def make_stepper(
     step_cnab2:
         One CN/AB2 step (Crank-Nicolson viscous + explicit 2nd-order
         Adams-Bashforth nonlinear), selected by ``step.scheme ==
-        "cnab2"``.  One RHS/FFT evaluation, no corrector loop.
-        Signature: ``(state, rhs_prev) -> (state_next, rhs_n)``; the
-        caller carries ``rhs_n`` back as the next *rhs_prev*.
+        "cnab2"``.  Signature: ``(state, carry) -> (state_next, carry,
+        error, num_c)``; the caller carries ``carry`` back unchanged.
+        **One FFT/step** either way (the single expensive nonlinear
+        transform).  Without *l_bf_fn* (triply-periodic): the plain
+        explicit-AB2 step, ``carry`` is the previous full nonlinear
+        RHS `$N^{n-1}$`, ``error = 0``, ``num_c = 0`` (no corrector).
+        With *l_bf_fn* (wall-bounded): ``carry`` is the previous
+        **self-advection** RHS `$N_{nl}^{n-1} = (u' \times
+        \omega')^{n-1}$`; the step forms the AB2 forcing
+        `$\tfrac{3}{2} N_{nl}^n - \tfrac{1}{2} N_{nl}^{n-1}$` (fixed,
+        one FFT) and makes the base-flow coupling implicit
+        (Crank-Nicolson) via an **FFT-free** corrector loop (a
+        converged linear corrector is the exact CN-implicit `$L_{bf}$`
+        solve), reporting its iteration count ``num_c`` and final
+        ``error``.
     step_cnab2_measured:
-        As ``step_cnab2``, but its single RHS evaluation (at `$u^n$`)
+        As ``step_cnab2``, but its first RHS evaluation (at `$u^n$`)
         also returns the physical-space measurements.  Signature:
-        ``(state, rhs_prev) -> (state_next, rhs_n, measurements)``.
-        ``None`` when *get_rhs_measured_fn* is not given.
+        ``(state, carry) -> (state_next, carry, error, num_c,
+        measurements)``.  ``None`` when *get_rhs_measured_fn* is not
+        given.
     """
 
     @jit
@@ -215,28 +242,123 @@ def make_stepper(
             prediction, error, num_c = _step_core(state, rhs_prev, *args)
             return prediction, error, num_c, measurements
 
+    def _cnab2_lbf_core(
+        state: Array, nnl_prev: Array, full_rhs: Array, *args
+    ) -> tuple[Array, Array, Array, Array]:
+        r"""CN/AB2 body with implicit base-flow coupling.
+
+        Splits the nonlinear RHS ``full_rhs = get_rhs_fn(u^n)`` into
+        the FFT-free base-flow coupling ``L_bf`` and the pure
+        self-advection ``N_nl = full_rhs - L_bf``.  ``N_nl`` is
+        advanced explicitly (AB2 forcing `$\tfrac{3}{2} N_{nl}^n -
+        \tfrac{1}{2} N_{nl}^{n-1}$`, fixed across the loop); the
+        linear ``L_bf`` is made implicit (Crank-Nicolson) by an
+        **FFT-free** corrector that re-evaluates only ``l_bf_fn`` each
+        iteration -- a converged linear corrector is the exact
+        CN-implicit ``L_bf`` solve.  Returns
+        ``(state_next, N_nl^n, error, num_c)``.
+        """
+        l_n = l_bf_fn(state, *args)
+        nnl_n = full_rhs - l_n
+        f_ab2 = 1.5 * nnl_n - 0.5 * nnl_prev
+        rhs_prev = f_ab2 + l_n  # effective RHS R(u) = F_ab2 + L_bf(u), at u^n
+
+        tol = params.step.corrector_tolerance
+        max_c = params.step.max_corrector_iterations
+
+        def _rel_error(correction: Array, pred: Array) -> Array:
+            r"""Relative corrector error `$\|\delta\| / (\|u\| + tol)$`.
+
+            An *absolute* tolerance is met prematurely for a
+            small-amplitude field, which would hide a base-flow-coupling
+            corrector whose Picard contraction rate is near 1 (e.g.
+            strongly counter-rotating Taylor-Couette): it "converges"
+            without actually making `$L_{bf}$` implicit, leaving a
+            residual explicit stiff term that blows up undetected.
+            Normalising by the field norm (with a ``tol``-sized floor
+            for the laminar `$u' = 0$` limit) makes the fallback fire
+            whenever the corrector truly stalls.
+            """
+            return norm_fn(correction, *args) / (norm_fn(pred, *args) + tol)
+
+        prediction = predict_fn(state, rhs_prev, *args)
+        rhs_next = f_ab2 + l_bf_fn(prediction, *args)
+        prediction, correction = correct_fn(
+            state, prediction, rhs_prev, rhs_next, *args
+        )
+        error = _rel_error(correction, prediction)
+
+        def cond_fn(carry):
+            _, err, c = carry
+            return jnp.logical_and(err > tol, c < max_c)
+
+        def body_fn(carry):
+            pred, _, c = carry
+            rhs_n = f_ab2 + l_bf_fn(pred, *args)
+            pred, corr = correct_fn(state, pred, rhs_prev, rhs_n, *args)
+            return pred, _rel_error(corr, pred), c + 1
+
+        prediction, error, num_c = jax.lax.while_loop(
+            cond_fn, body_fn, (prediction, error, jnp.int32(0))
+        )
+
+        # Hybrid auto-fallback.  The FFT-free base-flow-coupling corrector
+        # is a Picard iteration whose contraction rate can reach 1 for a
+        # strongly sheared base flow (e.g. counter-rotating
+        # Taylor-Couette): it then stalls above ``max_corrector_iterations``.
+        # When that happens, redo *this* step with the robust full
+        # iterative-CN corrector (``_step_core``, reusing the RHS already
+        # evaluated at `$u^n$`); ``lax.cond`` runs that branch -- and its
+        # extra FFTs -- only on the hard steps, so the cheap 1-FFT path is
+        # unchanged elsewhere.
+        def _fallback(_):
+            jax.debug.print(
+                "cnab2: base-flow-coupling corrector did not converge "
+                "(err={e:.2e} after {c} it); using iterative-cn this step.",
+                e=error,
+                c=num_c,
+            )
+            return _step_core(state, full_rhs, *args)
+
+        def _keep(_):
+            return prediction, error, num_c
+
+        prediction, error, num_c = jax.lax.cond(
+            error > params.step.corrector_tolerance, _fallback, _keep, None
+        )
+        return prediction, nnl_n, error, num_c
+
+    _zero_err = jnp.zeros(())
+    _zero_c = jnp.int32(0)
+
     @jit
     def step_cnab2(
-        state: Array, rhs_prev: Array, *args
-    ) -> tuple[Array, Array]:
+        state: Array, carry: Array, *args
+    ) -> tuple[Array, Array, Array, Array]:
         r"""One CN/AB2 step (``step.scheme == "cnab2"``).
 
         Crank-Nicolson viscous + 2nd-order Adams-Bashforth explicit
-        nonlinear.  Reuses the predictor solve (implicit viscous + IMM
-        pressure) with the AB2 forcing `$\tfrac{3}{2} N^n
-        - \tfrac{1}{2} N^{n-1}$` in place of the plain `$N^n$` -- the
-        predictor is exactly ``_imm_iteration(u, u, F, F)``, so this is
-        one solve and **one** RHS/FFT evaluation, no corrector loop.
+        nonlinear, **one FFT/step**.  ``carry`` is threaded by the
+        caller (feed the returned ``carry`` back unchanged); seed it
+        with the first output of ``step_cnab2(state_0, zeros)`` so the
+        first step is a forward-Euler self-start.  Returns
+        ``(state_next, carry, error, num_c)``.
 
-        *rhs_prev* is the previous step's nonlinear RHS `$N^{n-1}$`,
-        carried by the caller; seed it with ``get_rhs_fn(state_0)`` so
-        the first step (``F = N^0``) is a forward-Euler self-start.
-        Returns ``(state_next, rhs_n)``; feed ``rhs_n`` back as the next
-        *rhs_prev*.
+        With *l_bf_fn* (wall-bounded) the base-flow coupling is made
+        implicit via an FFT-free corrector (see ``_cnab2_lbf_core``);
+        ``carry`` is the self-advection RHS `$N_{nl}^{n-1}$`.  Without
+        it (triply-periodic) this is the plain explicit-AB2 step whose
+        predictor is exactly ``_imm_iteration(u, u, F, F)`` with
+        `$F = \tfrac{3}{2} N^n - \tfrac{1}{2} N^{n-1}$`; ``carry`` is
+        `$N^{n-1}$` and there is no corrector (``error = 0``,
+        ``num_c = 0``).
         """
-        rhs_n = get_rhs_fn(state, *args)
-        forcing = 1.5 * rhs_n - 0.5 * rhs_prev
-        return predict_fn(state, forcing, *args), rhs_n
+        full_rhs = get_rhs_fn(state, *args)
+        if l_bf_fn is None:
+            forcing = 1.5 * full_rhs - 0.5 * carry
+            state_next = predict_fn(state, forcing, *args)
+            return state_next, full_rhs, _zero_err, _zero_c
+        return _cnab2_lbf_core(state, carry, full_rhs, *args)
 
     if get_rhs_measured_fn is None:
         step_cnab2_measured = None
@@ -244,13 +366,17 @@ def make_stepper(
 
         @jit
         def step_cnab2_measured(
-            state: Array, rhs_prev: Array, *args
-        ) -> tuple[Array, Array, dict[str, Array]]:
+            state: Array, carry: Array, *args
+        ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
             """CN/AB2 step that also returns physical-space measurements
-            from its single RHS evaluation (at `$u^n$`)."""
-            rhs_n, measurements = get_rhs_measured_fn(state, *args)
-            forcing = 1.5 * rhs_n - 0.5 * rhs_prev
-            return predict_fn(state, forcing, *args), rhs_n, measurements
+            from its first RHS evaluation (at `$u^n$`)."""
+            full_rhs, measurements = get_rhs_measured_fn(state, *args)
+            if l_bf_fn is None:
+                forcing = 1.5 * full_rhs - 0.5 * carry
+                state_next = predict_fn(state, forcing, *args)
+                return state_next, full_rhs, _zero_err, _zero_c, measurements
+            out = _cnab2_lbf_core(state, carry, full_rhs, *args)
+            return (*out, measurements)
 
     return (
         predict_and_correct,
