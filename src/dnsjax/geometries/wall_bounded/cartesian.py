@@ -1008,10 +1008,13 @@ def _curl_fn(
     """Spectral curl with 1D FD in y and spectral derivatives in x and z."""
     u, v, w = state[0], state[1], state[2]
 
-    # Stack (u, w) so the two D1 y-derivatives needed for the curl
-    # are one batched GEMM rather than two separate kernel launches.
-    dy_uw = apply_y_matrix(flow_.D1, jnp.stack([u, w]))
-    dy_u, dy_w = dy_uw[0], dy_uw[1]
+    # Stack (u, w) y-leading (N_y, 2, ...) so the two D1 y-derivatives
+    # for the curl are one batched GEMM that contracts the leading
+    # wall-normal axis transpose-free; unstack back to 3-d.
+    dy_uw = apply_y_matrix(
+        flow_.D1, jnp.stack([u, w], axis=1), component_axis=1
+    )
+    dy_u, dy_w = dy_uw[:, 0], dy_uw[:, 1]
 
     dx_v = 1j * fourier_.kx * v
     dz_v = 1j * fourier_.kz * v
@@ -1230,9 +1233,12 @@ def _imm_iteration(
     ikx = 1j * fourier_.kx
     ikz = 1j * fourier_.kz
 
-    # Batch the three D1 y-derivatives into one GEMM.
-    dy_stack = apply_y_matrix(flow_.D1, jnp.stack([v_n, Nv_j, Nv_n]))
-    dy_v_n, dy_Nv_j, dy_Nv_n = dy_stack[0], dy_stack[1], dy_stack[2]
+    # Batch the three D1 y-derivatives into one GEMM, stacked y-leading
+    # (N_y, 3, ...) so the contraction is transpose-free; unstack to 3-d.
+    dy_stack = apply_y_matrix(
+        flow_.D1, jnp.stack([v_n, Nv_j, Nv_n], axis=1), component_axis=1
+    )
+    dy_v_n, dy_Nv_j, dy_Nv_n = dy_stack[:, 0], dy_stack[:, 1], dy_stack[:, 2]
 
     # d_hat^n (discrete divergence at time n; ~0 after first step).
     d_hat_n = ikx * u_n + dy_v_n + ikz * w_n

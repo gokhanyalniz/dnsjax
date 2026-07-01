@@ -29,12 +29,26 @@ spec_to_phys = spec_to_phys_2d
 # ── Wall-normal matrix application ──────────────────────────────
 
 
-def apply_y_matrix(mat: Array, field: Array) -> Array:
+def apply_y_matrix(
+    mat: Array, field: Array, component_axis: int = 0
+) -> Array:
     r"""Left-multiply along the wall-normal axis with a real matrix.
 
     Computes ``einsum("ij, jzx -> izx", mat, field)`` for a 3-d
-    *field*, or ``einsum("ij, cjzx -> cizx", ...)`` for a 4-d
-    *field* with a leading component axis.
+    *field*, or a component-batched contraction for a 4-d *field*.
+
+    **Layout / transposes.**  The contraction runs as a cuBLAS GEMM
+    over the wall-normal axis.  When that axis is **leading** (the 3-d
+    case, or 4-d with ``component_axis == 1`` so *field* is
+    `$(N_y, C, N_1, N_2)$`) it is already in GEMM contraction position
+    and **no transpose is emitted**.  With ``component_axis == 0``
+    (*field* `$(C, N_y, N_1, N_2)$`) the wall-normal axis is interior,
+    so XLA transposes it into position and back -- two field-sized
+    transposes per call.  The batched IMM/RHS matvecs therefore stack
+    their inputs **y-leading** and pass ``component_axis=1``; this keeps
+    the single batched GEMM (one per ``D1``/``D2``) yet emits zero
+    transposes (confirmed: ``ij, jczx -> iczx`` lowers transpose-free
+    for ``cuda``, vs one transpose for ``ij, cjzx -> cizx``).
 
     A complex *field* is first split into a real trailing re/im
     axis so the contraction runs as a real GEMM: half the FLOPs
@@ -51,18 +65,30 @@ def apply_y_matrix(mat: Array, field: Array) -> Array:
         Real matrix, shape ``(M, N_y)``.  ``M = N_y`` for full
         FD matrices; fewer rows for partial-row corrections.
     field:
-        Real or complex field of shape ``(N_y, N_1, N_2)`` or
-        ``(C, N_y, N_1, N_2)``.
+        Real or complex field of shape ``(N_y, N_1, N_2)`` (3-d), or
+        4-d with the wall-normal axis at position ``component_axis + 1``
+        (so ``(C, N_y, N_1, N_2)`` for ``component_axis == 0``, the
+        default, or the transpose-free ``(N_y, C, N_1, N_2)`` for
+        ``component_axis == 1``).
+    component_axis:
+        Position of the leading batch (component) axis of a 4-d
+        *field*: ``0`` (wall-normal interior) or ``1`` (wall-normal
+        leading, transpose-free).  Ignored for a 3-d *field*.  The
+        output preserves the input layout.
     """
     if jnp.iscomplexobj(field) and not jnp.iscomplexobj(mat):
         f = jnp.stack([field.real, field.imag], axis=-1)
         if field.ndim == 3:
             out = jnp.einsum("ij, jzxr -> izxr", mat, f)
+        elif component_axis == 1:
+            out = jnp.einsum("ij, jczxr -> iczxr", mat, f)
         else:
             out = jnp.einsum("ij, cjzxr -> cizxr", mat, f)
         return lax.complex(out[..., 0], out[..., 1])
     if field.ndim == 3:
         return jnp.einsum("ij, jzx -> izx", mat, field)
+    if component_axis == 1:
+        return jnp.einsum("ij, jczx -> iczx", mat, field)
     return jnp.einsum("ij, cjzx -> cizx", mat, field)
 
 

@@ -1663,12 +1663,13 @@ def _curl_fn(
     # Batch D1_pos and D1_ghost into two GEMMs; the ghost GEMM
     # covers only its g nonzero rows near the axis.
     g = flow_.D1_ghost.shape[0]
-    fields = jnp.stack([utheta, uz])
-    dy_common = apply_y_matrix(flow_.D1_pos, fields)
-    dy_ghost = apply_y_matrix(flow_.D1_ghost, fields)
-    p_signs = jnp.stack([parity_sign_v, parity_sign_p])
-    dy_fields = dy_common.at[:, :g].add(p_signs * dy_ghost)
-    dy_utheta, dy_uz = dy_fields[0], dy_fields[1]
+    # Stack y-leading (N_r, 2, ...) so the batched D1 GEMM contracts the
+    # leading wall-normal axis transpose-free, then unstack to 3-d.
+    fields = jnp.stack([utheta, uz], axis=1)
+    dy_common = apply_y_matrix(flow_.D1_pos, fields, component_axis=1)
+    dy_ghost = apply_y_matrix(flow_.D1_ghost, fields, component_axis=1)
+    dy_utheta = dy_common[:, 0].at[:g].add(parity_sign_v * dy_ghost[:, 0])
+    dy_uz = dy_common[:, 1].at[:g].add(parity_sign_p * dy_ghost[:, 1])
 
     omega_r = im * inv_r * uz - ikz * utheta
     omega_theta = ikz * ur - dy_uz
@@ -1911,27 +1912,31 @@ def _imm_iteration(
     # one GEMM each for D1_pos and D1_ghost (2 instead of 4);
     # the ghost GEMM covers only its g nonzero rows.
     g = flow_.D1_ghost.shape[0]
-    all_vparity = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n])
-    dy_common = apply_y_matrix(flow_.D1_pos, all_vparity)
-    dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity)
-    dy_all = dy_common.at[:, :g].add(parity_sign_v * dy_ghost)
+    # Stack y-leading (N_r, 6, ...) so the batched D1 GEMM contracts the
+    # leading wall-normal axis transpose-free; the component axis is 1.
+    all_vparity = jnp.stack(
+        [up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1
+    )
+    dy_common = apply_y_matrix(flow_.D1_pos, all_vparity, component_axis=1)
+    dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity, component_axis=1)
+    dy_all = dy_common.at[:g].add(parity_sign_v * dy_ghost)
 
     # Cylindrical divergence at time n.
     div_n = (
-        (dy_all[0] + (m + 1) * inv_r * up_n) / 2
-        + (dy_all[1] + (1 - m) * inv_r * um_n) / 2
+        (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
+        + (dy_all[:, 1] + (1 - m) * inv_r * um_n) / 2
         + ikz * uz_n
     )
 
     # Divergence of nonlinear terms at times n and j.
     div_NLj = (
-        (dy_all[2] + (m + 1) * inv_r * NLp_j) / 2
-        + (dy_all[4] + (1 - m) * inv_r * NLm_j) / 2
+        (dy_all[:, 2] + (m + 1) * inv_r * NLp_j) / 2
+        + (dy_all[:, 4] + (1 - m) * inv_r * NLm_j) / 2
         + ikz * NLz_j
     )
     div_NLn = (
-        (dy_all[3] + (m + 1) * inv_r * NLp_n) / 2
-        + (dy_all[5] + (1 - m) * inv_r * NLm_n) / 2
+        (dy_all[:, 3] + (m + 1) * inv_r * NLp_n) / 2
+        + (dy_all[:, 5] + (1 - m) * inv_r * NLm_n) / 2
         + ikz * NLz_n
     )
 
