@@ -49,6 +49,8 @@ When the aim is to operate on a quantity derivable from the mean mode (streamwis
 
 FD matvecs via `apply_y_matrix` batch over the leading component axis (a pure batch dim), so `D1`/`D2` GEMMs can be regrouped or deduplicated across IMM stages without changing numerics (bit-identical); the laminar smoke test's `err=0.00e+00` confirms such refactors.
 
+**Matvec layout (transpose-free GEMMs).** A batched `apply_y_matrix` contracts the wall-normal axis; when that axis is **leading** the cuBLAS GEMM emits no transpose, when it is interior (the default `(C, N_y, ...)` stack) XLA transposes it into position and back. So the curl/divergence matvecs whose outputs feed per-component 3-d combos stack their inputs **y-leading** `(N_y, C, ...)` and pass `apply_y_matrix(..., component_axis=1)`, then unstack (`out[:, k]`) — same single batched GEMM, zero transposes (see the `apply_y_matrix` docstring; profiled as the dominant `dot_general` transpose source via `scripts/pallas_solve_profile.py`). Bit-identical up to summation-order ULP (parity tests + laminar `err=0.00e+00` are the guard). The **Hk-construction** matvecs (and annular's Hk-shared divergence `dy_all[:3]`) stay component-leading — flipping them needs the stacked-`.solve` contract (hot path + IMM-setup solves) to accept y-leading `(N_y, C, ...)`, a deferred larger increment.
+
 ### Flows
 
 - `flows/wall_bounded/plane_couette.py`: PlaneCouetteFlow(CartesianFlow) -- base flow U(y) = y with tilt

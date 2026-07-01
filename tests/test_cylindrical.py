@@ -331,10 +331,10 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
     rng = np.random.default_rng(70)
-    b = rng.standard_normal((Nm, Nkz, Nr)) + 1j * rng.standard_normal(
-        (Nm, Nkz, Nr)
+    b = rng.standard_normal((Nr, Nm, Nkz)) + 1j * rng.standard_normal(
+        (Nr, Nm, Nkz)
     )
-    rhs = jax.device_put(jnp.asarray(b), sharding.spec_imm_corr_shard)
+    rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
 
     # --- Lk ---
     Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
@@ -517,10 +517,10 @@ def test_pallas_vs_dense_on_cylindrical_operators() -> None:
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
     rng = np.random.default_rng(71)
-    b = rng.standard_normal((Nm, Nkz, Nr)) + 1j * rng.standard_normal(
-        (Nm, Nkz, Nr)
+    b = rng.standard_normal((Nr, Nm, Nkz)) + 1j * rng.standard_normal(
+        (Nr, Nm, Nkz)
     )
-    rhs = jax.device_put(jnp.asarray(b), sharding.spec_imm_corr_shard)
+    rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
 
     to_band = jax.vmap(jax.vmap(lambda A: _banded_from_dense(A, p)))
 

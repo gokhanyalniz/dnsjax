@@ -1507,8 +1507,14 @@ class CylindricalFlow:
         preserving the `$u_\\theta$` part.  The zeroing runs
         before ``M`` is assembled.
         """
-        # All solver work uses (Nm, Nkz, Nr) layout; results
-        # are transposed to field layout (Nr, Nm, Nkz) at the end.
+        # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
+        # layout: the influence-matrix einsums below operate on it and
+        # the results are transposed to field layout (Nr, Nm, Nkz) at
+        # the end.  ``.solve`` now takes a mode-inner field, so each
+        # setup solve is wrapped (transpose in, transpose out) to keep
+        # this layout.  FUTURE: rebuild this setup natively mode-inner to
+        # drop the wrappers -- the hot path already is; here it only
+        # relocates a one-time transpose, so it is deferred.
         e_wall = (
             jnp.zeros(
                 (Nm, Nkz, Nr),
@@ -1518,7 +1524,7 @@ class CylindricalFlow:
             .at[..., -1]
             .set(1.0)
         )
-        p1_s = self.Lk_op.solve(e_wall)
+        p1_s = self.Lk_op.solve(e_wall.transpose(2, 0, 1)).transpose(1, 2, 0)
 
         # Pressure gradient components for the +/- equations.
         # The ghost matrix holds only its g nonzero rows; its
@@ -1539,7 +1545,9 @@ class CylindricalFlow:
 
         # Batched solve: component order (plus, minus, z).
         rhs_stack = jnp.stack([rhs_v_plus, rhs_v_minus, q_rhs])
-        result_stack = self.Hk_op.solve(rhs_stack)
+        result_stack = self.Hk_op.solve(
+            rhs_stack.transpose(0, 3, 1, 2)
+        ).transpose(0, 2, 3, 1)
         vp1_s = result_stack[0]
         vm1_s = result_stack[1]
         qz1_s = result_stack[2]
@@ -1600,7 +1608,9 @@ class CylindricalFlow:
         # Solve using the z-component (index 2) of the combined
         # Hk operator via a padded batch (one-time init cost).
         zeros = jnp.zeros_like(rhs)
-        h_full = self.Hk_op.solve(jnp.stack([zeros, zeros, rhs]))[2]
+        h_full = self.Hk_op.solve(
+            jnp.stack([zeros, zeros, rhs]).transpose(0, 3, 1, 2)
+        ).transpose(0, 2, 3, 1)[2]
 
         self.h_bulk_response = jax.device_put(
             extract_mean_mode(h_full.transpose(2, 0, 1)[None])[0],
@@ -1653,12 +1663,13 @@ def _curl_fn(
     # Batch D1_pos and D1_ghost into two GEMMs; the ghost GEMM
     # covers only its g nonzero rows near the axis.
     g = flow_.D1_ghost.shape[0]
-    fields = jnp.stack([utheta, uz])
-    dy_common = apply_y_matrix(flow_.D1_pos, fields)
-    dy_ghost = apply_y_matrix(flow_.D1_ghost, fields)
-    p_signs = jnp.stack([parity_sign_v, parity_sign_p])
-    dy_fields = dy_common.at[:, :g].add(p_signs * dy_ghost)
-    dy_utheta, dy_uz = dy_fields[0], dy_fields[1]
+    # Stack y-leading (N_r, 2, ...) so the batched D1 GEMM contracts the
+    # leading wall-normal axis transpose-free, then unstack to 3-d.
+    fields = jnp.stack([utheta, uz], axis=1)
+    dy_common = apply_y_matrix(flow_.D1_pos, fields, component_axis=1)
+    dy_ghost = apply_y_matrix(flow_.D1_ghost, fields, component_axis=1)
+    dy_utheta = dy_common[:, 0].at[:g].add(parity_sign_v * dy_ghost[:, 0])
+    dy_uz = dy_common[:, 1].at[:g].add(parity_sign_p * dy_ghost[:, 1])
 
     omega_r = im * inv_r * uz - ikz * utheta
     omega_theta = ikz * ur - dy_uz
@@ -1901,27 +1912,31 @@ def _imm_iteration(
     # one GEMM each for D1_pos and D1_ghost (2 instead of 4);
     # the ghost GEMM covers only its g nonzero rows.
     g = flow_.D1_ghost.shape[0]
-    all_vparity = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n])
-    dy_common = apply_y_matrix(flow_.D1_pos, all_vparity)
-    dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity)
-    dy_all = dy_common.at[:, :g].add(parity_sign_v * dy_ghost)
+    # Stack y-leading (N_r, 6, ...) so the batched D1 GEMM contracts the
+    # leading wall-normal axis transpose-free; the component axis is 1.
+    all_vparity = jnp.stack(
+        [up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1
+    )
+    dy_common = apply_y_matrix(flow_.D1_pos, all_vparity, component_axis=1)
+    dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity, component_axis=1)
+    dy_all = dy_common.at[:g].add(parity_sign_v * dy_ghost)
 
     # Cylindrical divergence at time n.
     div_n = (
-        (dy_all[0] + (m + 1) * inv_r * up_n) / 2
-        + (dy_all[1] + (1 - m) * inv_r * um_n) / 2
+        (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
+        + (dy_all[:, 1] + (1 - m) * inv_r * um_n) / 2
         + ikz * uz_n
     )
 
     # Divergence of nonlinear terms at times n and j.
     div_NLj = (
-        (dy_all[2] + (m + 1) * inv_r * NLp_j) / 2
-        + (dy_all[4] + (1 - m) * inv_r * NLm_j) / 2
+        (dy_all[:, 2] + (m + 1) * inv_r * NLp_j) / 2
+        + (dy_all[:, 4] + (1 - m) * inv_r * NLm_j) / 2
         + ikz * NLz_j
     )
     div_NLn = (
-        (dy_all[3] + (m + 1) * inv_r * NLp_n) / 2
-        + (dy_all[5] + (1 - m) * inv_r * NLm_n) / 2
+        (dy_all[:, 3] + (m + 1) * inv_r * NLp_n) / 2
+        + (dy_all[:, 5] + (1 - m) * inv_r * NLm_n) / 2
         + ikz * NLz_n
     )
 
@@ -1931,7 +1946,7 @@ def _imm_iteration(
 
     # Stage 2: particular pressure.
     f_hat_P = f_hat.at[-1].set(0.0)
-    pP = flow_.Lk_op.solve(f_hat_P.transpose(1, 2, 0)).transpose(2, 0, 1)
+    pP = flow_.Lk_op.solve(f_hat_P)
 
     # Stage 3: Helmholtz solves for each component.
     # Batch the D1 derivatives of pP and vel_n into shared
@@ -1985,9 +2000,7 @@ def _imm_iteration(
     R_stack = R_stack.at[1].add(-Rr_corr)
 
     # Batched Helmholtz solve: component order (plus, minus, z).
-    arb_stack = flow_.Hk_op.solve(R_stack.transpose(0, 2, 3, 1)).transpose(
-        0, 3, 1, 2
-    )
+    arb_stack = flow_.Hk_op.solve(R_stack)
     up_arb, um_arb, uz_arb = arb_stack[0], arb_stack[1], arb_stack[2]
 
     # Stage 4: wall divergence residual.
