@@ -174,7 +174,7 @@ class DenseJAXSolver:
         obj.perm = perm
         return obj
 
-    def solve(self, rhs: Array) -> Array:
+    def solve(self, rhs: Array, component_axis: int = 0) -> Array:
         """Batched LU solve.
 
         Dispatch:
@@ -205,17 +205,25 @@ class DenseJAXSolver:
         axes), so the mode-inner field is moved to ``(Nkz, Nkx, Ny)``
         on entry and back on exit -- a pure axis permutation, relocated
         here from the old call-site transpose so the Pallas backend can
-        drop it (see :func:`_banded_mode_solve`).
+        drop it (see :func:`_banded_mode_solve`).  *component_axis*
+        selects the batched RHS axis: ``0`` (default, ``(C, Ny, ...)``)
+        or ``1`` (``(Ny, C, ...)``, the IMM Hk construction's y-leading
+        layout); either way one ``moveaxis`` brings ``Ny`` to the block
+        axis (this backend is mode-outer regardless -- the Pallas
+        backend is the one that stays transpose-free).
         """
-        b = jnp.moveaxis(rhs, -3, -1)  # mode-inner -> (.., Nkz, Nkx, Ny)
+        if component_axis == 1:  # y-leading (Ny, C, Nkz, Nkx) stacked RHS
+            b = jnp.moveaxis(rhs, 0, -1)  # -> (C, Nkz, Nkx, Ny)
+        else:
+            b = jnp.moveaxis(rhs, -3, -1)  # mode-inner -> (.., Nkz, Nkx, Ny)
         if self.lu.ndim == 5:
             x = jax.vmap(_lu_solve)((self.lu, self.perm), b)
         elif b.ndim == 4:
-            x = jax.vmap(_lu_solve, in_axes=(None, 0))(
-                (self.lu, self.perm), b
-            )
+            x = jax.vmap(_lu_solve, in_axes=(None, 0))((self.lu, self.perm), b)
         else:
             x = _lu_solve((self.lu, self.perm), b)
+        if component_axis == 1:
+            return jnp.moveaxis(x, -1, 0)  # -> (Ny, C, Nkz, Nkx)
         return jnp.moveaxis(x, -1, -3)  # -> mode-inner (.., Ny, Nkz, Nkx)
 
 
@@ -490,7 +498,7 @@ class PerModeBandedOperator:
     def _use_bt(self) -> bool:
         return self.red_bt_diag_lu is not None
 
-    def solve(self, rhs: Array) -> Array:
+    def solve(self, rhs: Array, component_axis: int = 0) -> Array:
         """Batched SPIKE solve across ``(kz, kx)`` modes.
 
         Dispatch:
@@ -521,9 +529,16 @@ class PerModeBandedOperator:
         the mode-inner field is moved to ``(N_{kz}, N_{kx}, N_y)`` on
         entry and back on exit -- a pure axis permutation, relocated
         here from the old call-site transpose so the Pallas backend can
-        drop it (see :func:`_banded_mode_solve`).
+        drop it (see :func:`_banded_mode_solve`).  *component_axis*
+        selects the batched RHS axis (``0`` default ``(C, Ny, ...)`` /
+        ``1`` y-leading ``(Ny, C, ...)`` for the IMM Hk construction);
+        SPIKE is mode-outer regardless, so either way one ``moveaxis``
+        brings ``Ny`` to the block axis.
         """
-        b = jnp.moveaxis(rhs, -3, -1)  # mode-inner -> (.., Nkz, Nkx, Ny)
+        if component_axis == 1:  # y-leading (Ny, C, Nkz, Nkx) stacked RHS
+            b = jnp.moveaxis(rhs, 0, -1)  # -> (C, Nkz, Nkx, Ny)
+        else:
+            b = jnp.moveaxis(rhs, -3, -1)  # mode-inner -> (.., Nkz, Nkx, Ny)
         solve_fn = _spike_solve_bt if self._use_bt else _spike_solve
 
         if self._use_bt:
@@ -560,6 +575,8 @@ class PerModeBandedOperator:
             )(*args)
         else:
             x = solve_fn(*args)
+        if component_axis == 1:
+            return jnp.moveaxis(x, -1, 0)  # -> (Ny, C, Nkz, Nkx)
         return jnp.moveaxis(x, -1, -3)  # -> mode-inner (.., Ny, Nkz, Nkx)
 
 
@@ -1795,7 +1812,7 @@ class PerModeBandedPallasOperator:
         Ui = Ui.at[:, 0].set(1.0 / Ui[:, 0])  # reciprocate diagonal slot
         return cls(L=Li, U=Ui)
 
-    def solve(self, rhs: Array) -> Array:
+    def solve(self, rhs: Array, component_axis: int = 0) -> Array:
         """Batched banded solve across ``(kz, kx)`` modes.
 
         ``rhs`` is **mode-inner** -- ``(N, Nkz, Nkx)`` or
@@ -1811,13 +1828,23 @@ class PerModeBandedPallasOperator:
         the operator and RHS leading axis; ``rhs.ndim == 4`` (shared
         operator) vmaps over the RHS leading axis; otherwise a single
         operator / single RHS.
+
+        *component_axis* is the position of that batched RHS axis:
+        ``0`` (default, ``(C, N, ...)``) or ``1`` (``(N, C, ...)``,
+        the y-leading layout the IMM's Hk construction uses so the
+        matvecs stay transpose-free -- see ``apply_y_matrix``).  The
+        Pallas kernel is per-mode, so this is just the ``vmap`` axis
+        (no transpose either way); the output preserves it.
         """
+        ca = component_axis
         if self.L.ndim == 5:
-            return jax.vmap(_banded_mode_solve)(self.L, self.U, rhs)
+            return jax.vmap(
+                _banded_mode_solve, in_axes=(0, 0, ca), out_axes=ca
+            )(self.L, self.U, rhs)
         if rhs.ndim == 4:
-            return jax.vmap(_banded_mode_solve, in_axes=(None, None, 0))(
-                self.L, self.U, rhs
-            )
+            return jax.vmap(
+                _banded_mode_solve, in_axes=(None, None, ca), out_axes=ca
+            )(self.L, self.U, rhs)
         return _banded_mode_solve(self.L, self.U, rhs)
 
 
