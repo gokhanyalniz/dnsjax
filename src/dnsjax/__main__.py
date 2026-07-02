@@ -589,18 +589,25 @@ def main() -> None:
         py_idx += 1
 
     # --- CN/AB2 scheme: seed the Adams-Bashforth history ---------------
-    # ``step.scheme == "cnab2"`` carries the previous nonlinear RHS
-    # ``rhs_prev = N^{n-1}`` across steps.  Seed it with ``N(u^0)`` (one
-    # priming eval, which also compiles ``step_cnab2`` outside the
-    # benchmark window) so the first step is a forward-Euler self-start
-    # (``F = N^0``).  CN/AB2 has no corrector, so it reports ``c = 0``,
-    # ``err = 0`` to the corrector diagnostic.
+    # ``step.scheme == "cnab2"`` carries a nonlinear-RHS history across
+    # steps (``rhs_prev``): the full ``N^{n-1}`` for triply-periodic, or
+    # the self-advection ``N_nl^{n-1} = (u' x omega')^{n-1}`` for
+    # wall-bounded (whose base-flow coupling is made implicit; see
+    # ``step_cnab2`` in ``timestep.py``).  The priming ``step_cnab2``
+    # call (state discarded) both computes that history at ``u^0`` and
+    # compiles ``step_cnab2`` outside the benchmark window.  The very
+    # first *time step* is then taken with iterative-CN (a self-starting,
+    # non-CFL-bound corrector), after which CN/AB2 uses this history (see
+    # the loop's ``it > it0`` guard).  ``step_cnab2`` returns ``(state,
+    # carry, error, num_c)``: triply-periodic reports ``error = num_c =
+    # 0`` (no corrector); wall-bounded reports its FFT-free
+    # base-flow-coupling corrector's count / error (with an automatic
+    # iterative-CN fallback on non-convergence), so the corrector
+    # diagnostic and the convergence-stop apply to it too.
     scheme: str = params.step.scheme
     is_cnab2: bool = scheme == "cnab2"
     if is_cnab2:
-        cnab2_err = jnp.asarray(0.0)
-        cnab2_c = jnp.asarray(0, dtype=jnp.int32)
-        _, rhs_prev = step_cnab2(state, jnp.zeros_like(state))
+        _, rhs_prev, _, _ = step_cnab2(state, jnp.zeros_like(state))
 
     # --- Steps (CFL) buffer setup --------------------------------------
     measure_steps: bool = params.outs.it_steps is not None
@@ -611,7 +618,7 @@ def main() -> None:
         # buffers are donated); the t0 row itself is recorded by
         # the first loop iteration when it0 % it_steps == 0.
         if is_cnab2:
-            _, _, meas = step_cnab2_measured(state, rhs_prev)
+            *_, meas = step_cnab2_measured(state, rhs_prev)
         else:
             _, _, _, meas = predict_and_fully_correct_measured(state)
         if params.outs.it_steps > 1 and it % params.outs.it_steps == 0:
@@ -815,12 +822,17 @@ def main() -> None:
         # history.  The measured variant also records the CFL of the
         # pre-step state u^n, timestamped at the current t.
         do_measure = measure_steps and it % params.outs.it_steps == 0
-        if is_cnab2:
+        # CN/AB2 self-start: take the very first step with the robust
+        # iterative-CN corrector (it needs no RHS history and is not
+        # advective-CFL bound), then switch to CN/AB2 with the
+        # ``rhs_prev`` history seeded from ``u^0`` below.
+        if is_cnab2 and it > params.init.it0:
             if do_measure:
-                state, rhs_prev, meas = step_cnab2_measured(state, rhs_prev)
+                state, rhs_prev, error_dev, c_dev, meas = step_cnab2_measured(
+                    state, rhs_prev
+                )
             else:
-                state, rhs_prev = step_cnab2(state, rhs_prev)
-            error_dev, c_dev = cnab2_err, cnab2_c
+                state, rhs_prev, error_dev, c_dev = step_cnab2(state, rhs_prev)
         elif do_measure:
             state, error_dev, c_dev, meas = predict_and_fully_correct_measured(
                 state
@@ -968,10 +980,15 @@ def main() -> None:
     if it > params.init.it0 + 1:
         wall_time = ns_to_s * (wall_time_now - bench_start)
         wall_time_per_sim_time = wall_time / (t - dt_first - params.init.t0)
-        # RHS evaluations within the benchmark window, excluding
-        # the first (JIT-heavy) step: 2 per step plus 1 per extra
-        # corrector iteration.
-        rhs_tot = (c_tot - c_first_int) + 2 * (n_steps - 1)
+        # Nonlinear/FFT evaluations within the benchmark window,
+        # excluding the first (JIT-heavy) step.  iterative-cn: 2 per
+        # step plus 1 per extra corrector iteration.  cnab2: exactly
+        # one FFT per step -- its base-flow-coupling corrector
+        # iterations (counted in c) are FFT-free.
+        if is_cnab2:
+            rhs_tot = n_steps - 1
+        else:
+            rhs_tot = (c_tot - c_first_int) + 2 * (n_steps - 1)
         wall_time_per_rhs = wall_time / rhs_tot
 
         # Final diagnostic output (``stats`` was computed above for the

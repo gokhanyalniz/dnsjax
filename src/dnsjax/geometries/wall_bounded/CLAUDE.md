@@ -9,7 +9,7 @@
 
 ### Stepper factory (wall-bounded layer)
 
-`build_wall_bounded_stepper()` in `_base.py` wraps `timestep.make_stepper()` and binds the `fourier` and `flow` singletons, returning `(predict_and_correct, iterate_correction, init_state_bound, predict_and_fully_correct, predict_and_fully_correct_measured)`. Each geometry module provides a thin `build_*_stepper(flow)` that passes geometry-specific callables to it, including the measured RHS variant (`_get_rhs_measured`, which computes the CFL via the `rhs.py` `measure_fn` hook from the per-flow `cfl_inv_spacing` profile).
+`build_wall_bounded_stepper()` in `_base.py` wraps `timestep.make_stepper()` and binds the `fourier` and `flow` singletons, returning `(predict_and_correct, iterate_correction, init_state_bound, predict_and_fully_correct, predict_and_fully_correct_measured, step_cnab2, step_cnab2_measured)`. Each geometry module provides a thin `build_*_stepper(flow)` that passes geometry-specific callables to it, including the measured RHS variant (`_get_rhs_measured`, which computes the CFL via the `rhs.py` `measure_fn` hook from the per-flow `cfl_inv_spacing` profile) and — for the CN/AB2 scheme — an `l_bf_fn` (each geometry's `_l_bf`) giving the FFT-free linear base-flow coupling `L_bf = u'×curl(U) + U×ω'` that wall-bounded cnab2 makes implicit. `_l_bf` is built from the shared `base_flow_coupling` helper (component-wise cross products `u'×curl(U) + U×ω'`) applied to `_curl_fn(state)`; cylindrical/annular convert `u_±→(u_r,u_θ)` for the cross product and back. See the root CLAUDE.md "Time-stepping scheme" note for why the coupling is stiff (and the residual explicit-CFL caveat).
 
 ### Influence-matrix method (IMM)
 
