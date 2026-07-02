@@ -490,8 +490,10 @@ def build_triply_periodic_stepper(
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], Array],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
-    Callable[[Array, Array], tuple[Array, Array]],
-    Callable[[Array, Array], tuple[Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
 ]:
     """Build time-stepping functions for a triply-periodic flow.
 
@@ -539,18 +541,22 @@ def build_triply_periodic_stepper(
         """Fused step + physical-space measurements (at `$u^n$`)."""
         return _predict_and_fully_correct_measured_jit(state, fourier, flow)
 
-    def step_cnab2(state: Array, rhs_prev: Array) -> tuple[Array, Array]:
-        """One CN/AB2 step with bound singletons (returns
-        ``(state_next, rhs_n)``).  The divergence projection is applied
-        by ``correct_velocity`` in the main loop, as for the corrector
-        scheme."""
-        return _step_cnab2_jit(state, rhs_prev, fourier, flow)
+    def step_cnab2(
+        state: Array, carry: Array
+    ) -> tuple[Array, Array, Array, Array]:
+        """One CN/AB2 step with bound singletons.  Returns
+        ``(state_next, carry, error, num_c)`` (``error``/``num_c`` are
+        ``0`` -- triply-periodic needs no base-flow-coupling corrector,
+        its Fourier ``y`` making that term non-stiff).  The divergence
+        projection is applied by ``correct_velocity`` in the main loop,
+        as for the corrector scheme."""
+        return _step_cnab2_jit(state, carry, fourier, flow)
 
     def step_cnab2_measured(
-        state: Array, rhs_prev: Array
-    ) -> tuple[Array, Array, dict[str, Array]]:
+        state: Array, carry: Array
+    ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
         """CN/AB2 step + physical-space measurements (at `$u^n$`)."""
-        return _step_cnab2_measured_jit(state, rhs_prev, fourier, flow)
+        return _step_cnab2_measured_jit(state, carry, fourier, flow)
 
     def init_state_bound(snapshot: str | None) -> Array:
         """Initialize the flow state with bound flow singleton."""
