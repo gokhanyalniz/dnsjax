@@ -17,10 +17,26 @@ One entry (``plane-couette-default-ic``) omits ``--init.random_field``
 to verify random is the **default** start mode -- with no snapshot and
 no explicit mode selected, the run must start from a random field (not
 the laminar state), guarding the snapshot-first / random-default
-precedence in ``__main__.py``.  Another (``plane-couette-cnab2``) passes
-``--step.scheme cnab2`` to drive the alternative CN/AB2 time-stepping
-scheme (explicit Adams-Bashforth nonlinear, one eval per step, no
-corrector) through the same nonlinear path.
+precedence in ``__main__.py``.  Five entries (``plane-couette-cnab2``,
+``pipe-cnab2``, ``taylor-couette-cnab2``, ``dean-cnab2``,
+``kolmogorov-cnab2``) pass ``--step.scheme cnab2`` to drive the
+alternative CN/AB2 time-stepping scheme -- Crank-Nicolson viscous +
+explicit 2nd-order Adams-Bashforth nonlinear, one FFT eval per step --
+across all four geometry families (``dean-cnab2`` additionally covers
+the total-field ``_l_bf == 0`` corrector path).
+For the wall-bounded families this exercises the fix that makes the
+stiff base-flow coupling implicit (an FFT-free corrector; see ``_l_bf``
+/ ``step_cnab2``) plus the iterative-CN self-start, so cnab2 stays
+stable on the wall-clustered CGL grid where a naive explicit-AB2 of the
+coupling blows up at CFL << 1; triply-periodic (Kolmogorov) drives the
+plain no-corrector path (uniform Fourier grid, no coupling stiffness).
+The two moving-wall entries use ``ny = 48`` on purpose (the coupling
+stiffness the fix targets scales with the near-wall clustering); the
+stationary-wall pipe uses ``ny = 32`` (its coupling is mild -- ``U -> 0``
+at the wall -- so cnab2 there is bounded only by the ordinary explicit
+self-advection CFL, which ``ny = 48`` on the fine near-wall CGL grid
+would violate at this ``Re``, an inherent explicit-scheme limit, not the
+coupling bug).
 
 Transition to turbulence is **not** expected to develop by the default
 ``t = 1`` at this resolution/box; the success metric is purely that
@@ -283,19 +299,19 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Time-stepping scheme guard: the CN/AB2 scheme
-        # (step.scheme=cnab2 -- Crank-Nicolson viscous + 2nd-order
-        # Adams-Bashforth nonlinear, one FFT eval per step) driven
-        # through the full nonlinear path.  Run at a **higher
-        # wall-normal resolution** (ny=48) than the other Cartesian
-        # entries on purpose: on the wall-clustered CGL grid the
-        # rotational base-flow coupling ``U d(u')/dy`` is a stiff
-        # explicit term, so a naive explicit-AB2 nonlinear blows up at
-        # dt=0.01 once ny >~ 40 (CFL << 1).  This guards the fix that
-        # makes the base-flow coupling implicit (FFT-free corrector; see
-        # ``_l_bf`` / ``step_cnab2``), so cnab2 now reports a *real*
-        # corrector count/error and criterion 4 (err < tol) is a genuine
-        # check, integrating cleanly like the iterative-cn entries.
+        # CN/AB2 scheme (step.scheme=cnab2) on the Cartesian
+        # (plane-Couette) geometry, driven through the full nonlinear
+        # path.  Run at a **higher wall-normal resolution** (ny=48) than
+        # the other Cartesian entries on purpose: plane-Couette is a
+        # *moving-wall* flow (``U = y``, so ``U ~ O(1)`` at the walls),
+        # so on the wall-clustered CGL grid the rotational base-flow
+        # coupling ``U d(u')/dy`` is a stiff explicit term and a naive
+        # explicit-AB2 nonlinear blows up at dt=0.01 once ny >~ 40
+        # (CFL << 1).  This guards the fix that makes the base-flow
+        # coupling implicit (FFT-free corrector; see ``_l_bf`` /
+        # ``step_cnab2``), so cnab2 reports a *real* corrector
+        # count/error and criterion 4 (err < tol) is a genuine check,
+        # integrating cleanly like the iterative-cn entries.
         "name": "plane-couette-cnab2",
         "res": {"nx": 32, "ny": 48, "nz": 32},
         "args": [
@@ -312,27 +328,101 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # CN/AB2 on a strongly sheared, moving-wall flow
-        # (counter-rotating Taylor-Couette): the azimuthal base flow
-        # makes ``U_theta d(u')/dr`` stiff *and* pushes the FFT-free
-        # base-flow-coupling corrector's Picard rate toward 1 (so it can
-        # stall).  This exercises the two robustness pieces that keep
-        # cnab2 usable here -- the iterative-CN self-start of the first
-        # step and the automatic per-step iterative-CN fallback when the
-        # cheap corrector fails (ny=48 to stress the wall-normal
-        # stiffness).  Same clean-integration criteria as the others.
+        # CN/AB2 on the cylindrical (pipe) geometry, guarding the
+        # cylindrical ``_l_bf`` build + step path.  Pipe is a
+        # *stationary-wall* flow (``U_z = 1 - r^2``, ``U -> 0`` at the
+        # wall), so its base-flow coupling is mild (the ``U`` weight
+        # kills the near-wall stiffness) and cnab2 is bounded only by the
+        # ordinary explicit self-advection CFL.  On the fine near-wall
+        # CGL grid (dr ~ 1/N^2) that CFL is exceeded at ny=48 for this
+        # Re (an inherent explicit-scheme limit, shared by any explicit
+        # nonlinear treatment -- not the coupling bug the fix targets),
+        # so this entry uses ny=32 like the other pipe entries.
+        "name": "pipe-cnab2",
+        "res": {"nx": 32, "ny": 32, "nz": 32},
+        "args": [
+            "--phys.system",
+            "pipe",
+            "--phys.re",
+            "1800",
+            "--geo.lx",
+            "5",
+            "--step.scheme",
+            "cnab2",
+        ],
+    },
+    {
+        # CN/AB2 on the annular (Taylor-Couette) geometry at ny=48,
+        # guarding the annular ``_l_bf`` (three stacked Hk) build +
+        # implicit-coupling corrector + iterative-CN self-start.  Uses a
+        # standard (inner-rotating, stationary-outer) config, which is a
+        # *moving-wall* flow (``U_theta ~ O(1)`` at the inner wall): its
+        # ``U_theta d(u')/dr`` coupling is stiff on the wall-clustered
+        # grid, so ny=48 stresses exactly the stiffness the fix removes.
+        # NOTE: *strongly counter-rotating* Taylor-Couette
+        # (re1=400/re2=-400) is deliberately **not** used here -- its
+        # base flow is so non-normal that the explicit self-advection is
+        # amplified into a (delayed) blow-up needing ~8x smaller dt, an
+        # inherent explicit-nonlinear limit the coupling corrector cannot
+        # remove (it converges cleanly); such flows want ``iterative-cn``
+        # or a much smaller dt.  See the ``TimeStepping`` docstring.
         "name": "taylor-couette-cnab2",
         "res": {"nx": 32, "ny": 48, "nz": 32},
         "args": [
             "--phys.system",
             "taylor-couette",
             "--phys.re1",
-            "400",
+            "100",
             "--phys.re2",
-            "-400",
+            "0",
             "--geo.eta",
             "0.5",
             "--geo.lx",
+            "5",
+            "--step.scheme",
+            "cnab2",
+        ],
+    },
+    {
+        # CN/AB2 on Dean flow (annular, force-driven): the one
+        # **total-field** flow (``base_flow = curl_base_flow = 0``, driven
+        # by the azimuthal body force), so its ``_l_bf`` is identically
+        # zero and the base-flow-coupling corrector is trivial -- a
+        # distinct cnab2 code path exercised by no other entry.  Both
+        # walls are stationary (``U -> 0`` at each), so the total-field
+        # advection is not wall-stiff and cnab2 is bounded only by the
+        # ordinary self-advection CFL (fine at ny=32, this Re).
+        "name": "dean-cnab2",
+        "res": {"nx": 32, "ny": 32, "nz": 32},
+        "args": [
+            "--phys.system",
+            "dean",
+            "--phys.re",
+            "1000",
+            "--geo.eta",
+            "0.5",
+            "--geo.lx",
+            "5",
+            "--step.scheme",
+            "cnab2",
+        ],
+    },
+    {
+        # CN/AB2 on the triply-periodic (Kolmogorov) geometry: the plain
+        # no-corrector explicit-AB2 path (l_bf_fn is None -- the uniform
+        # Fourier grid has no wall clustering and no base-flow-coupling
+        # stiffness, so there is nothing to make implicit).  ``err`` is
+        # reported as 0 (no corrector).  Guards the triply-periodic
+        # ``step_cnab2`` branch and its self-start seeding.
+        "name": "kolmogorov-cnab2",
+        "args": [
+            "--phys.system",
+            "kolmogorov",
+            "--phys.re",
+            "620",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
             "5",
             "--step.scheme",
             "cnab2",

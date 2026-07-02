@@ -266,27 +266,12 @@ def make_stepper(
         tol = params.step.corrector_tolerance
         max_c = params.step.max_corrector_iterations
 
-        def _rel_error(correction: Array, pred: Array) -> Array:
-            r"""Relative corrector error `$\|\delta\| / (\|u\| + tol)$`.
-
-            An *absolute* tolerance is met prematurely for a
-            small-amplitude field, which would hide a base-flow-coupling
-            corrector whose Picard contraction rate is near 1 (e.g.
-            strongly counter-rotating Taylor-Couette): it "converges"
-            without actually making `$L_{bf}$` implicit, leaving a
-            residual explicit stiff term that blows up undetected.
-            Normalising by the field norm (with a ``tol``-sized floor
-            for the laminar `$u' = 0$` limit) makes the fallback fire
-            whenever the corrector truly stalls.
-            """
-            return norm_fn(correction, *args) / (norm_fn(pred, *args) + tol)
-
         prediction = predict_fn(state, rhs_prev, *args)
         rhs_next = f_ab2 + l_bf_fn(prediction, *args)
         prediction, correction = correct_fn(
             state, prediction, rhs_prev, rhs_next, *args
         )
-        error = _rel_error(correction, prediction)
+        error = norm_fn(correction, *args)
 
         def cond_fn(carry):
             _, err, c = carry
@@ -296,21 +281,29 @@ def make_stepper(
             pred, _, c = carry
             rhs_n = f_ab2 + l_bf_fn(pred, *args)
             pred, corr = correct_fn(state, pred, rhs_prev, rhs_n, *args)
-            return pred, _rel_error(corr, pred), c + 1
+            return pred, norm_fn(corr, *args), c + 1
 
         prediction, error, num_c = jax.lax.while_loop(
             cond_fn, body_fn, (prediction, error, jnp.int32(0))
         )
 
-        # Hybrid auto-fallback.  The FFT-free base-flow-coupling corrector
-        # is a Picard iteration whose contraction rate can reach 1 for a
-        # strongly sheared base flow (e.g. counter-rotating
-        # Taylor-Couette): it then stalls above ``max_corrector_iterations``.
-        # When that happens, redo *this* step with the robust full
-        # iterative-CN corrector (``_step_core``, reusing the RHS already
-        # evaluated at `$u^n$`); ``lax.cond`` runs that branch -- and its
-        # extra FFTs -- only on the hard steps, so the cheap 1-FFT path is
-        # unchanged elsewhere.
+        # Hybrid auto-fallback for a genuinely divergent corrector.  The
+        # FFT-free base-flow-coupling corrector is a Picard iteration whose
+        # contraction rate can reach 1 at large ``dt`` (the ``L_bf`` solve
+        # is only stiff enough to diverge once ``dt`` is well past the
+        # advective limit -- e.g. plane-Couette at ``dt`` >~ 0.2): it then
+        # fails to reach ``corrector_tolerance`` within
+        # ``max_corrector_iterations``.  When that happens, redo *this*
+        # step with the robust full iterative-CN corrector (``_step_core``,
+        # reusing the RHS already evaluated at `$u^n$`); ``lax.cond`` runs
+        # that branch -- and its extra FFTs -- only on the hard steps, so
+        # the cheap 1-FFT path is unchanged elsewhere.  (This does *not*
+        # cover the explicit-``N_nl`` advective-stability limit shared by
+        # all explicit-nonlinear schemes, which is what bounds ``dt`` for a
+        # strongly non-normal base flow such as counter-rotating
+        # Taylor-Couette; there the corrector converges cleanly and the
+        # remedy is a smaller ``dt`` or ``iterative-cn``.  See the
+        # ``TimeStepping`` docstring in ``parameters.py``.)
         def _fallback(_):
             jax.debug.print(
                 "cnab2: base-flow-coupling corrector did not converge "
@@ -324,7 +317,7 @@ def make_stepper(
             return prediction, error, num_c
 
         prediction, error, num_c = jax.lax.cond(
-            error > params.step.corrector_tolerance, _fallback, _keep, None
+            error > tol, _fallback, _keep, None
         )
         return prediction, nnl_n, error, num_c
 

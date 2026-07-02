@@ -305,18 +305,49 @@ class TimeStepping(BaseModel):
       RHS/FFT evaluations per step.
     - ``"cnab2"``: Crank-Nicolson viscous (implicitness *c*) + 2nd-order
       Adams-Bashforth nonlinear (explicit ``1.5 N^n - 0.5 N^{n-1}``).
-      **One** RHS/FFT evaluation per step (no corrector iteration); the
-      previous nonlinear RHS is carried by the main loop, seeded with a
-      forward-Euler first step.  Explicit-nonlinear, so ``dt`` is
-      advective-CFL-limited -- a net win (~3x fewer FFTs) on CFL-limited
-      (turbulent) runs.  ``corrector_tolerance`` /
-      ``max_corrector_iterations`` are unused.
+      **One** expensive nonlinear/FFT evaluation per step; the previous
+      nonlinear RHS is carried by the main loop, seeded by an
+      ``iterative-cn`` self-start on the very first step.  Explicit
+      *self-advection*, so ``dt`` is advective-CFL-limited -- a net win
+      (~3x fewer FFTs) on CFL-limited (turbulent) runs.
+
+      Wall-bounded caveat and coupling corrector.  In the rotational
+      perturbation form the nonlinear term includes the *linear*
+      base-flow coupling ``L_bf = u' x curl(U) + U x omega'``, whose
+      ``U d(u')/dy`` piece is a wall-normal derivative.  On the
+      wall-clustered CGL grid (``dy ~ 1/N^2`` near the wall) treating
+      ``L_bf`` explicitly gives it a Chebyshev-type CFL ``dt <~ 1/N^2``
+      -- far below the advective limit and *amplitude-independent* -- so
+      a naive explicit-AB2 cnab2 blows up at CFL << 1 for moving-wall
+      flows (plane-Couette, Taylor-Couette, where ``U ~ O(1)`` at the
+      wall).  To restore the advective limit, wall-bounded cnab2 makes
+      only the *self-advection* ``u' x omega'`` explicit (AB2) and treats
+      ``L_bf`` implicitly (Crank-Nicolson) via an **FFT-free** fixed-point
+      corrector (it re-evaluates only the matrix-free ``L_bf``, no FFT),
+      so ``corrector_tolerance`` / ``max_corrector_iterations`` **do**
+      apply here.  The first step self-starts with ``iterative-cn``
+      (also seeding ``N^{n-1}``), and if the coupling corrector fails to
+      converge on a step (its Picard rate reaches 1 -- only at ``dt`` well
+      past the advective limit) that step automatically falls back to a
+      full ``iterative-cn`` step (a stdout diagnostic is printed).  The
+      residual ``dt`` bound is then the ordinary explicit self-advection
+      CFL, which the wall-clustered grid still makes ``dt ~ 1/N^2`` near
+      the wall (stationary-wall flows -- Poiseuille, pipe, Dean -- are
+      bounded only by this, their ``L_bf`` being mild as ``U -> 0`` at the
+      wall) and which a strongly non-normal base flow (counter-rotating
+      Taylor-Couette) amplifies further into a delayed blow-up needing a
+      much smaller ``dt``.  These are inherent explicit-nonlinear limits,
+      not the coupling bug: such regimes want ``iterative-cn`` or a
+      smaller ``dt``.  Triply-periodic cnab2 has none of this (uniform
+      Fourier grid, no coupling stiffness): it is the plain one-FFT
+      no-corrector explicit-AB2 step.
 
     ``implicitness`` *c* is the Crank-Nicolson split weight
     (``c = 0.5`` = second-order trapezoidal): in ``"iterative-cn"`` it
     weights both the viscous *and* the nonlinear term (see the geometry
-    ``_imm_iteration``); in ``"cnab2"`` it weights only the viscous term
-    (the nonlinear is the explicit AB2 extrapolation, independent of *c*).
+    ``_imm_iteration``); in ``"cnab2"`` it weights the viscous term (and,
+    wall-bounded, the implicit base-flow coupling), while the explicit
+    AB2 self-advection is independent of *c*.
     """
 
     scheme: Literal["iterative-cn", "cnab2"] = "iterative-cn"
