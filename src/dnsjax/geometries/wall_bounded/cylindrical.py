@@ -1054,6 +1054,7 @@ class CylindricalFlow:
     curl_base_flow: Array = field(init=False)
     base_flow_padded: Array = field(init=False)
     curl_base_flow_padded: Array = field(init=False)
+    base_flow_adv_padded: Array = field(init=False)
     D1_pos: Array = field(init=False)
     D2_pos: Array = field(init=False)
     D1_ghost: Array = field(init=False)
@@ -1696,6 +1697,16 @@ def _l_bf(
     its stiff radial derivative on the wall-clustered grid) is made
     implicit by the CN/AB2 scheme -- see ``step_cnab2`` in
     :mod:`dnsjax.timestep`.
+
+    With ``params.step.implicit_mean_coupling`` (default on) the
+    *instantaneous mean-flow* coupling is folded in by adding the
+    `$m = k_z = 0$` mean profiles of the `$(u_z, u_r, u_\theta)$`
+    state and of `$\boldsymbol{\omega}'$` (the curl being linear and
+    mode-diagonal, the mean of the curl *is* the curl of the mean)
+    onto the base-flow profiles -- FFT-free
+    (``extract_mean_mode`` is a ``psum``); see the Cartesian
+    ``_l_bf`` and the ``TimeStepping`` docstring in
+    :mod:`dnsjax.parameters`.
     """
     u_z, u_plus, u_minus = state[0], state[1], state[2]
     ur = (u_plus + u_minus) / 2
@@ -1703,10 +1714,20 @@ def _l_bf(
     state_rthz = jnp.array([u_z, ur, utheta])
 
     omega = _curl_fn(state_rthz, fourier_, flow_)
-    l_z, l_r, l_theta = base_flow_coupling(
-        state_rthz, omega, flow_.base_flow, flow_.curl_base_flow
-    )
-    return jnp.array([l_z, l_r + 1j * l_theta, l_r - 1j * l_theta])
+    base = flow_.base_flow
+    curl_base = flow_.curl_base_flow
+    if params.step.implicit_mean_coupling:
+        base = base + extract_mean_mode(state_rthz)[:, :, None, None]
+        curl_base = curl_base + extract_mean_mode(omega)[:, :, None, None]
+    l_z, l_r, l_theta = base_flow_coupling(state_rthz, omega, base, curl_base)
+    l_bf = jnp.array([l_z, l_r + 1j * l_theta, l_r - 1j * l_theta])
+    # Moving frame: the convective frame term (the same expression
+    # ``_get_rhs_core`` adds, diagonal in the native basis) belongs
+    # to the linear coupling, so CN/AB2 integrates it implicitly.
+    u_grid = derived_params.u_grid
+    if u_grid == 0:
+        return l_bf
+    return l_bf + (1j * u_grid) * fourier_.kz * state
 
 
 # Per-direction CFL column names, matching the physical-space
@@ -1756,6 +1777,14 @@ def _get_rhs_core(
     NL_minus = NL_r - 1j * NL_theta
 
     rhs = jnp.array([NL_z, NL_plus, NL_minus])
+    # Moving frame: convective-form frame term
+    # `$+ i k_z U_{grid} \mathbf{u}'$` -- the axial derivative is
+    # component-diagonal in the `$(u_z, u_+, u_-)$` basis, so it is
+    # added on the native state (mode-diagonal, divergence-free; see
+    # ``pad_base_flow``).
+    u_grid = derived_params.u_grid
+    if u_grid != 0:
+        rhs = rhs + (1j * u_grid) * fourier_.kz * state
     if measure_fn is None:
         return rhs
     return rhs, measurements
@@ -1780,7 +1809,7 @@ def _get_rhs_measured(
     def _measure(u_phys: Array, omega_phys: Array) -> dict[str, Array]:
         return get_cfl(
             u_phys,
-            flow_.base_flow_padded,
+            flow_.base_flow_adv_padded,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
         )

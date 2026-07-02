@@ -604,32 +604,36 @@ def main() -> None:
     # base-flow-coupling corrector's count / error (with an automatic
     # iterative-CN fallback on non-convergence), so the corrector
     # diagnostic and the convergence-stop apply to it too.
+    # (The steppers donate their array arguments, so every
+    # pre-loop call that must keep ``state`` / ``rhs_prev`` alive
+    # passes ``jnp.copy``-ies; the main loop rebinds and needs none.)
     scheme: str = params.step.scheme
     is_cnab2: bool = scheme == "cnab2"
     if is_cnab2:
-        _, rhs_prev, _, _ = step_cnab2(state, jnp.zeros_like(state))
+        _, rhs_prev, _, _ = step_cnab2(jnp.copy(state), jnp.zeros_like(state))
 
     # --- Steps (CFL) buffer setup --------------------------------------
     measure_steps: bool = params.outs.it_steps is not None
     if measure_steps:
         # Warm-up call (all ranks; collective FFTs): provides the
         # measurement names and compiles the measured program
-        # outside the benchmark window.  Outputs are discarded (no
-        # buffers are donated); the t0 row itself is recorded by
-        # the first loop iteration when it0 % it_steps == 0.
+        # outside the benchmark window.  Outputs are discarded; the
+        # donated inputs are copies so ``state`` / ``rhs_prev`` stay
+        # alive.  The t0 row itself is recorded by the first loop
+        # iteration when it0 % it_steps == 0.
         if is_cnab2:
-            *_, meas = step_cnab2_measured(state, rhs_prev)
+            *_, meas = step_cnab2_measured(jnp.copy(state), jnp.copy(rhs_prev))
         else:
-            _, _, _, meas = predict_and_fully_correct_measured(state)
+            _, _, _, meas = predict_and_fully_correct_measured(jnp.copy(state))
         if params.outs.it_steps > 1 and it % params.outs.it_steps == 0:
             # The first loop iteration (excluded from benchmarks)
             # runs the measured variant, so the unmeasured program
             # would otherwise compile on the second iteration,
             # inside the benchmark window.  Pre-compile it here.
             if is_cnab2:
-                step_cnab2(state, rhs_prev)
+                step_cnab2(jnp.copy(state), jnp.copy(rhs_prev))
             else:
-                predict_and_fully_correct(state)
+                predict_and_fully_correct(jnp.copy(state))
         steps_names = list(meas.keys())
         steps_buffer = jnp.zeros(
             (params.outs.nbuffer, len(steps_names)),

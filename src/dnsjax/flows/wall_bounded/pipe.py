@@ -26,6 +26,18 @@ on `$r \in (0, 1]$`, the Hagen-Poiseuille parabolic profile.
   (only `$\omega_\theta = -dU_z/dr = 2r$`)
 - `$\mathbf{U} \times \nabla \times \mathbf{U}
   = (0,\; -2r(1 - r^2),\; 0)$`
+
+Moving frame
+------------
+``phys.u_grid`` defaults to the laminar bulk velocity
+`$U_{b,\mathrm{lam}} = 1/2$` for pipe flow, so by default the run
+evolves in the frame translating axially at `$U_{grid} = 1/2$`: the
+convective frame term `$+ i k_z U_{grid} \mathbf{u}'$` is added in
+the cylindrical ``_get_rhs_core`` / ``_l_bf`` and the CFL diagnostic
+advects with `$\mathbf{U} - U_{grid}\hat{\mathbf{z}}$` (see
+``parameters.update_parameters`` and
+``geometries.wall_bounded._base.pad_base_flow``).  Set
+``--phys.u_grid 0`` for the lab frame.
 """
 
 from dataclasses import dataclass

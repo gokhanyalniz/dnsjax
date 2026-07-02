@@ -95,19 +95,25 @@ def make_stepper(
         Fused predict + corrector loop in a single JIT scope
         via ``lax.while_loop``.  Signature:
         ``state -> (prediction_state, error, num_c)``.
+        **Donates** *state* (the main-loop rebind pattern
+        ``state, ... = step(state, ...)``); a caller that reuses
+        its state afterwards -- e.g. a warm-up call -- must pass
+        ``jnp.copy(state)``.
     predict_and_fully_correct_measured:
         As ``predict_and_fully_correct``, but the step's first
         RHS evaluation (at the accepted state `$u^n$`) also
         computes the physical-space measurements.  Signature:
         ``state -> (prediction_state, error, num_c,
-        measurements)``.  No buffers are donated, so a warm-up
-        call may safely discard its outputs.  ``None`` when
+        measurements)``.  Donates *state* like
+        ``predict_and_fully_correct``.  ``None`` when
         *get_rhs_measured_fn* is not given.
     step_cnab2:
         One CN/AB2 step (Crank-Nicolson viscous + explicit 2nd-order
         Adams-Bashforth nonlinear), selected by ``step.scheme ==
         "cnab2"``.  Signature: ``(state, carry) -> (state_next, carry,
         error, num_c)``; the caller carries ``carry`` back unchanged.
+        **Donates** *state* and *carry* (both are rebound by the main
+        loop); callers that reuse either afterwards must pass copies.
         **One FFT/step** either way (the single expensive nonlinear
         transform).  Without *l_bf_fn* (triply-periodic): the plain
         explicit-AB2 step, ``carry`` is the previous full nonlinear
@@ -215,11 +221,17 @@ def make_stepper(
         )
         return prediction, error, num_c
 
-    @jit
+    @jit(donate_argnums=0)
     def predict_and_fully_correct(
         state: Array, *args
     ) -> tuple[Array, Array, Array]:
-        """Predict + all corrector iterations in one JIT scope."""
+        """Predict + all corrector iterations in one JIT scope.
+
+        *state* is donated: the output state may reuse its buffer
+        (one field-sized allocation saved per step in the main
+        loop).  Callers that keep using their input must pass a
+        copy (see the ``__main__`` warm-up calls).
+        """
         rhs_prev = get_rhs_fn(state, *args)
         return _step_core(state, rhs_prev, *args)
 
@@ -227,7 +239,7 @@ def make_stepper(
         predict_and_fully_correct_measured = None
     else:
 
-        @jit
+        @jit(donate_argnums=0)
         def predict_and_fully_correct_measured(
             state: Array, *args
         ) -> tuple[Array, Array, Array, dict[str, Array]]:
@@ -235,8 +247,8 @@ def make_stepper(
 
             The measurements come from the step's first RHS
             evaluation, i.e. from the accepted state `$u^n$`
-            (outside the corrector loop).  No buffers are
-            donated.
+            (outside the corrector loop).  *state* is donated
+            (warm-up callers pass a copy).
             """
             rhs_prev, measurements = get_rhs_measured_fn(state, *args)
             prediction, error, num_c = _step_core(state, rhs_prev, *args)
@@ -324,7 +336,7 @@ def make_stepper(
     _zero_err = jnp.zeros(())
     _zero_c = jnp.int32(0)
 
-    @jit
+    @jit(donate_argnums=(0, 1))
     def step_cnab2(
         state: Array, carry: Array, *args
     ) -> tuple[Array, Array, Array, Array]:
@@ -332,10 +344,15 @@ def make_stepper(
 
         Crank-Nicolson viscous + 2nd-order Adams-Bashforth explicit
         nonlinear, **one FFT/step**.  ``carry`` is threaded by the
-        caller (feed the returned ``carry`` back unchanged); seed it
-        with the first output of ``step_cnab2(state_0, zeros)`` so the
-        first step is a forward-Euler self-start.  Returns
-        ``(state_next, carry, error, num_c)``.
+        caller (feed the returned ``carry`` back unchanged).  The
+        returned ``carry`` is independent of the ``carry`` argument
+        (it is `$N_{nl}(u^n)$`, recomputed from *state* alone), so the
+        caller can prime it with a discarded
+        ``step_cnab2(state_0, zeros)`` call and take the *first*
+        integration step with ``iterative-cn`` (the ``__main__``
+        bootstrap) -- no forward-Euler start is involved.  Returns
+        ``(state_next, carry, error, num_c)``.  *state* and *carry*
+        are both donated (callers reusing either pass copies).
 
         With *l_bf_fn* (wall-bounded) the base-flow coupling is made
         implicit via an FFT-free corrector (see ``_cnab2_lbf_core``);
@@ -357,12 +374,13 @@ def make_stepper(
         step_cnab2_measured = None
     else:
 
-        @jit
+        @jit(donate_argnums=(0, 1))
         def step_cnab2_measured(
             state: Array, carry: Array, *args
         ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
             """CN/AB2 step that also returns physical-space measurements
-            from its first RHS evaluation (at `$u^n$`)."""
+            from its first RHS evaluation (at `$u^n$`).  *state* and
+            *carry* are donated (warm-up callers pass copies)."""
             full_rhs, measurements = get_rhs_measured_fn(state, *args)
             if l_bf_fn is None:
                 forcing = 1.5 * full_rhs - 0.5 * carry

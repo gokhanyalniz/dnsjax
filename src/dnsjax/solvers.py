@@ -1777,8 +1777,9 @@ class PerModeBandedPallasOperator:
     mode-tiled banded substitution (Pallas/Triton on GPU, pure-JAX
     mode-outer sweep on CPU).  Build via :meth:`from_banded_factors` from
     the standard mode-outer factors of :func:`_banded_factor`.  Same
-    public ``.solve`` contract (mode-outer ``(Nkz, Nkx, N)`` spectral
-    field) and component-axis dispatch as :class:`PerModeBandedOperator`.
+    public ``.solve`` contract (**mode-inner** ``(N, Nkz, Nkx)`` spectral
+    field, the velocity's native layout -- see :meth:`solve`) and
+    component-axis dispatch as :class:`PerModeBandedOperator`.
 
     Attributes
     ----------

@@ -7,11 +7,16 @@ time steps at low resolution, verifying that:
 - The stepping error is `$O(10^{-18})$` or less.
 - The perturbation energy stays at `$O(10^{-32})$` or less.
 - The CFL diagnostic (``steps.dat``, written every
-  ``it_steps = 1`` steps) matches the laminar base flow: for
-  the Cartesian flows `$\\mathrm{CFL}_x
-  = \\Delta t \\, \\max|U_x| \\, n_x / l_x$` exactly (the
-  wall-normal and spanwise columns are roundoff-sized), for
-  the pipe `$0 < \\mathrm{CFL}_z < \\Delta t \\, n_x / l_x$`.
+  ``it_steps = 1`` steps) matches the laminar base flow in the
+  (default) moving frame of reference: the active grid-direction
+  column is `$\\Delta t \\, \\max|U - U_{grid}| \\, n / l$` and the
+  remaining columns are roundoff-sized.  ``phys.u_grid`` defaults to
+  the laminar bulk velocity, so the active CFL is `$\\max|U_x| = 1$`
+  for plane-Couette (`$U_{grid} = 0$`), `$2/3$` of it for
+  plane-Poiseuille (`$U_{grid} = 2/3$`, max at the walls), `$1/2$` of
+  it for the pipe (`$U_{grid} = 1/2$`, max at the `$r = 1$` wall), and
+  the azimuthal `$\\max|U_\\theta/r| = 1$` for Taylor-Couette
+  (`$U_{grid} = 0$`).
 - The corrector diagnostic (``corrector.dat``, written every
   ``it_corrector = 1`` steps) records ``c = 0`` (a single corrector
   step) and a roundoff-sized error for every step.
@@ -354,6 +359,17 @@ SMOKE_LX = 4.0
 SMOKE_N_STEPS = 4  # max_sim_time 0.04 / dt 0.01
 # Spectral-grid spacing convention: Delta_x = lx / nx.
 CFL_X_LAMINAR = SMOKE_DT * SMOKE_NX / SMOKE_LX
+# Moving-frame laminar CFL in the grid direction.  phys.u_grid defaults
+# to the laminar bulk velocity, so pipe / Poiseuille evolve in a moving
+# frame and the active CFL measures dt * max|U - U_grid| * n / l:
+#   pipe:        max|(1 - r^2) - 1/2| = 1/2 at the r = 1 wall node.
+#   Poiseuille:  max|(1 - y^2) - 2/3| = 2/3 at the y = +/-1 walls.
+# Couette keeps U_grid = 0 (max|y| = 1), i.e. the unchanged
+# CFL_X_LAMINAR.  Both maxima sit exactly on grid nodes, so (unlike the
+# lab-frame pipe, whose max between nodes was only range-checkable)
+# these are tight equalities.
+CFL_GRID_LAMINAR_PIPE = 0.5 * CFL_X_LAMINAR
+CFL_GRID_LAMINAR_POISEUILLE = (2.0 / 3.0) * CFL_X_LAMINAR
 # Taylor-Couette laminar azimuthal CFL: dt * max(U_theta/r) * nz/(2 pi)
 # (theta period is the literal 2*pi).  For re1=100, re2=0, eta=0.5 the
 # maximum of U_theta/r is 1, at the inner wall r1 = 1 where
@@ -452,20 +468,23 @@ def _check_steps_file(workdir: Path, name: str) -> None:
     # Dean) base flow.
     active_i = 2 if (annular or dean) else 0
 
-    # Expected active CFL = dt * max|U| * n / l for the laminar base
-    # flow.  Couette / Poiseuille attain max|U_x| = 1 exactly at a grid
-    # node (the walls, or the y = 0 centreline for odd ny) and
-    # Taylor-Couette attains max|U_theta/r| = 1 at the inner wall, so
-    # those are tight equalities.  The pipe's max (1 - r^2) falls
-    # between nodes (r = 0 is not a half-CGL node), so it is range-
-    # checked below.  Dean has no simple analytic laminar CFL, so its
-    # active column is instead checked to be positive and constant
+    # Expected active CFL = dt * max|U - U_grid| * n / l for the
+    # laminar base flow in the (default) moving frame: pipe at the
+    # r = 1 wall node, Poiseuille and Couette at the walls, and
+    # Taylor-Couette (U_grid = 0) at the inner wall via
+    # max|U_theta/r| = 1 -- all attained exactly at grid nodes, so
+    # tight equalities.  Dean has no simple analytic laminar CFL, so
+    # its active column is instead checked to be positive and constant
     # across steps (near-steady) below.
-    if dean or cylindrical:
+    if dean:
         expected_active = None
+    elif cylindrical:
+        expected_active = CFL_GRID_LAMINAR_PIPE
     elif annular:
         expected_active = CFL_TH_LAMINAR_TC
-    else:  # plane-couette / plane-poiseuille
+    elif name.startswith("plane-poiseuille"):
+        expected_active = CFL_GRID_LAMINAR_POISEUILLE
+    else:  # plane-couette (U_grid = 0)
         expected_active = CFL_X_LAMINAR
 
     active_vals = []
@@ -486,11 +505,6 @@ def _check_steps_file(workdir: Path, name: str) -> None:
         ):
             raise AssertionError(
                 f"{name}: active CFL {active} != {expected_active}"
-            )
-        # Pipe: max (1 - r^2) sits just below 1 (r = 0 is not a node).
-        if cylindrical and not (0.9 * CFL_X_LAMINAR < active < CFL_X_LAMINAR):
-            raise AssertionError(
-                f"{name}: CFL_z {active} outside (0.9, 1) x {CFL_X_LAMINAR}"
             )
         if abs(total - active) > CFL_REL_TOL * active:
             raise AssertionError(

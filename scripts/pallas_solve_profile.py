@@ -154,8 +154,14 @@ def _bench(fn, args_list, warmup: int = 3) -> float:
 
 
 def _bench_step(step, state, n: int, warmup: int = 3):
-    """Time the donating corrector step by chaining ``state``."""
-    s = state
+    """Time the donating corrector step by chaining ``state``.
+
+    Starts from a copy: the step donates its state argument, and the
+    caller's ``state`` is reused by later benchmark sections.
+    """
+    import jax.numpy as jnp
+
+    s = jnp.copy(state)
     for _ in range(warmup):
         s, _err, _c = step(s)
     jax.block_until_ready(s)
@@ -172,18 +178,21 @@ def _bench_step_cnab2(step_cnab2, state, n: int, warmup: int = 3):
     """Time the CN/AB2 step by chaining ``(state, rhs_prev)``.
 
     Seeds the AB2 history with ``N(u^0)`` via a priming call (the same
-    forward-Euler self-start the driver uses), then chains the carry.
+    discarded-priming bootstrap the driver uses), then chains the
+    carry.  Starts from copies (the step donates both arguments).
     """
     import jax.numpy as jnp
 
-    s = state
-    _, rp = step_cnab2(s, jnp.zeros_like(s))  # seed rhs_prev = N(u^0)
+    s = jnp.copy(state)
+    # seed rhs_prev = N(u^0); step_cnab2 returns (state, carry,
+    # error, num_c)
+    _, rp, _, _ = step_cnab2(jnp.copy(s), jnp.zeros_like(s))
     for _ in range(warmup):
-        s, rp = step_cnab2(s, rp)
+        s, rp, _err, _c = step_cnab2(s, rp)
     jax.block_until_ready(s)
     t0 = time.perf_counter()
     for _ in range(n):
-        s, rp = step_cnab2(s, rp)
+        s, rp, _err, _c = step_cnab2(s, rp)
     jax.block_until_ready(s)
     return (time.perf_counter() - t0) / n, s
 
@@ -481,6 +490,8 @@ def _hlo_census(label, jitted, args, hlo_out) -> None:
 
 
 def _part_c(flow, m, sharding, trace_dir, hlo_out) -> None:
+    import jax.numpy as jnp
+
     print("\n" + "-" * 72)
     print("PART C -- optimized-HLO census (static) + optional trace")
     print("-" * 72)
@@ -523,7 +534,7 @@ def _part_c(flow, m, sharding, trace_dir, hlo_out) -> None:
             print("  --trace ignored (no GPU backend).")
             return
         print(f"\n  capturing a profiler trace of 20 steps to {trace_dir} ...")
-        s = state
+        s = jnp.copy(state)  # the step donates its state argument
         for _ in range(3):  # warm up before tracing
             s, _e, _c = m.predict_and_fully_correct(s)
         jax.block_until_ready(s)
@@ -623,7 +634,7 @@ def main() -> None:
             params.init.random_seed,
             params.init.random_mean_flow,
         )
-        s = state
+        s = state  # chained (donated) from here on; state unused after
         for _ in range(3):
             s, _e, _c = m.predict_and_fully_correct(s)
         jax.block_until_ready(s)
