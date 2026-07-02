@@ -129,26 +129,58 @@ def base_flow_coupling(
 
 
 def pad_base_flow(flow: object) -> None:
-    """Precompute the y-padded base flow used by the RHS path.
+    r"""Precompute the y-padded base flows used by the RHS path.
 
-    Sets ``flow.base_flow_padded`` and
-    ``flow.curl_base_flow_padded``: zero-padded along the
+    Sets ``flow.base_flow_padded``, ``flow.curl_base_flow_padded``,
+    and ``flow.base_flow_adv_padded``: zero-padded along the
     wall-normal axis by ``sharding.ny_y_pad`` rows (matching the
     physical-space fields of :mod:`dnsjax.fft`), so the RHS path
     needs no per-call ``jnp.pad``.  When no padding is needed
     the fields alias the originals (no extra memory; the padded
     profiles are tiny ``(3, ny + pad, 1, 1)`` arrays otherwise).
 
+    ``base_flow_adv_padded`` is the base velocity *as seen in the
+    moving frame of reference*, `$\mathbf{U} - U_{grid}\,
+    \hat{\mathbf{e}}_0$` (``derived_params.u_grid``; component 0 is
+    the grid-translation direction -- streamwise `$x$` for
+    Cartesian, axial `$z$` for cylindrical / annular).  It is read
+    **only** by the CFL diagnostic
+    (:func:`dnsjax.measurements.get_cfl` via each geometry's
+    ``_get_rhs_measured``), so the reported CFL is the
+    frame-relative advection.  The rotational cross product
+    (:func:`dnsjax.rhs.get_nonlin`) keeps the lab-frame
+    ``base_flow_padded``: the frame term is applied in *convective*
+    form, `$+ i k_0 U_{grid} \mathbf{u}'$`, added spectrally in each
+    geometry's ``_get_rhs_core`` / ``_l_bf`` (mode-diagonal and
+    divergence-free, hence projection-neutral and non-stiff --
+    unlike the rotational split `$\boldsymbol{\omega}' \times
+    \mathbf{c} + \nabla(\mathbf{c} \cdot \mathbf{u}')$`, whose
+    explicit `$c\,\partial_y u'$` half is wall-stiff).  When
+    `$U_{grid} = 0$` the field aliases ``base_flow_padded``
+    (byte-identical to the frame-free behaviour).
+
     Called by each flow subclass at the end of its
     ``__post_init__``, after ``base_flow`` is set.
     """
+    # Shift component 0 (grid direction) on the unpadded profile so
+    # the wall-normal padding rows stay zero.
+    u_grid = derived_params.u_grid
+    base_flow_adv = (
+        flow.base_flow if u_grid == 0 else flow.base_flow.at[0].add(-u_grid)
+    )
     if sharding.ny_y_pad:
         ypad = ((0, 0), (0, sharding.ny_y_pad), (0, 0), (0, 0))
         flow.base_flow_padded = jnp.pad(flow.base_flow, ypad)
         flow.curl_base_flow_padded = jnp.pad(flow.curl_base_flow, ypad)
+        flow.base_flow_adv_padded = (
+            flow.base_flow_padded
+            if u_grid == 0
+            else jnp.pad(base_flow_adv, ypad)
+        )
     else:
         flow.base_flow_padded = flow.base_flow
         flow.curl_base_flow_padded = flow.curl_base_flow
+        flow.base_flow_adv_padded = base_flow_adv
 
 
 # ── Mean-mode extraction ───────────────────────────────────────

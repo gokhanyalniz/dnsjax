@@ -653,6 +653,7 @@ class CartesianFlow:
     curl_base_flow: Array = field(init=False)
     base_flow_padded: Array = field(init=False)
     curl_base_flow_padded: Array = field(init=False)
+    base_flow_adv_padded: Array = field(init=False)
     D1: Array = field(init=False)
     D2: Array = field(init=False)
     D1_bnd: Array = field(init=False)
@@ -1057,13 +1058,42 @@ def _l_bf(
     `$U\,\partial_y u'$` that would otherwise impose a `$1/N^2$`
     time-step limit on the wall-clustered grid.  See the
     ``step_cnab2`` docstring in :mod:`dnsjax.timestep`.
+
+    In a moving frame (``derived_params.u_grid``) the convective
+    frame term `$+ i k_x U_{grid} \mathbf{u}'$` -- the same
+    expression ``_get_rhs_core`` adds -- is included here, so CN/AB2
+    integrates it implicitly and the explicit split stays the pure
+    self-advection.
+
+    With ``params.step.implicit_mean_coupling`` (default on) the
+    *instantaneous mean-flow* coupling `$L_{mf} = \mathbf{u}' \times
+    \nabla\times\bar{\mathbf{u}}' + \bar{\mathbf{u}}' \times
+    \boldsymbol{\omega}'$` is folded in by adding the mean profiles
+    onto the base-flow profiles (the coupling is linear in the
+    profile pair).  `$\bar{\mathbf{u}}' =$` ``extract_mean_mode(u')``
+    is a ``psum`` (FFT-free), and `$\nabla\times\bar{\mathbf{u}}' =
+    \overline{\boldsymbol{\omega}}'$` because the curl is linear and
+    mode-diagonal -- no extra derivative needed.  See the
+    ``TimeStepping`` docstring in :mod:`dnsjax.parameters` for the
+    split-consistency argument.
     """
     omega = _curl_fn(state, fourier_, flow_)
     # base_flow / curl_base_flow are (3, Ny, 1, 1); broadcast over
     # (k_z, k_x).
-    return base_flow_coupling(
-        state, omega, flow_.base_flow, flow_.curl_base_flow
-    )
+    base = flow_.base_flow
+    curl_base = flow_.curl_base_flow
+    if params.step.implicit_mean_coupling:
+        base = base + extract_mean_mode(state)[:, :, None, None]
+        curl_base = curl_base + extract_mean_mode(omega)[:, :, None, None]
+    l_bf = base_flow_coupling(state, omega, base, curl_base)
+    # Moving frame: the convective-form frame term (the same
+    # expression ``_get_rhs_core`` adds) belongs to the linear
+    # coupling, so CN/AB2 integrates it implicitly and the explicit
+    # split stays the pure self-advection.
+    u_grid = derived_params.u_grid
+    if u_grid == 0:
+        return l_bf
+    return l_bf + (1j * u_grid) * fourier_.kx * state
 
 
 # Per-direction CFL column names, matching the physical-space
@@ -1077,8 +1107,15 @@ def _get_rhs_core(
     flow_: CartesianFlow,
     measure_fn: Callable[[Array, Array], dict[str, Array]] | None,
 ) -> Array | tuple[Array, dict[str, Array]]:
-    """Evaluate non-linear RHS terms (optionally measured)."""
-    return get_nonlin(
+    r"""Evaluate non-linear RHS terms (optionally measured).
+
+    In a moving frame (``derived_params.u_grid`` `$= U_{grid} \ne
+    0$`) the convective-form frame term `$+ i k_x U_{grid}
+    \mathbf{u}'$` is added spectrally -- mode-diagonal and
+    divergence-free, so the pressure projection is untouched (see
+    :func:`~dnsjax.geometries.wall_bounded._base.pad_base_flow`).
+    """
+    rhs = get_nonlin(
         state,
         flow_.base_flow_padded,
         flow_.curl_base_flow_padded,
@@ -1087,6 +1124,14 @@ def _get_rhs_core(
         lambda s: _curl_fn(s, fourier_, flow_),
         measure_fn,
     )
+    u_grid = derived_params.u_grid
+    if u_grid == 0:
+        return rhs
+    frame = (1j * u_grid) * fourier_.kx * state
+    if measure_fn is None:
+        return rhs + frame
+    nonlin, measurements = rhs
+    return nonlin + frame, measurements
 
 
 def _get_rhs(
@@ -1108,7 +1153,7 @@ def _get_rhs_measured(
     def _measure(u_phys: Array, omega_phys: Array) -> dict[str, Array]:
         return get_cfl(
             u_phys,
-            flow_.base_flow_padded,
+            flow_.base_flow_adv_padded,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
         )
