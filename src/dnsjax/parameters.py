@@ -117,6 +117,26 @@ class Physics(BaseModel):
     # (z) direction (no axial bulk velocity); the azimuthal mean evolves
     # freely.  Independent of ``driving``.
     block_mean_spanwise_velocity: bool = False
+    # Speed U_grid of the moving frame of reference, translating along
+    # the homogeneous "grid" direction: streamwise x (Cartesian) or
+    # axial z (cylindrical / annular).  The time derivative becomes
+    # d/dt - U_grid d/dx_0, i.e. the *convective-form* frame term
+    # +U_grid d/dx_0 u' = i k_0 U_grid u' is added to the RHS -- a
+    # mode-diagonal, non-stiff, divergence-free (projection-neutral)
+    # term, integrated implicitly (inside the iterative-CN corrector;
+    # via ``_l_bf`` for CN/AB2).  It de-advects snapshots, improves
+    # temporal accuracy, and relaxes the corrector-contraction dt limit
+    # (the advecting velocity drops to ``U - U_grid``).  NOT the
+    # rotational-form splitting `omega' x c + grad(c . u')` of the
+    # removed first implementation, whose explicit `c d/dy u'` piece
+    # was wall-stiff and blew up.  When ``None`` (default) it resolves
+    # to the laminar bulk velocity in the grid direction (1/2 pipe,
+    # 2/3 plane-Poiseuille, 0 otherwise); see ``update_parameters`` and
+    # ``derived_params.u_grid``.  Only meaningful for wall-bounded
+    # systems (periodic flows reject it).  A changed ``u_grid`` on
+    # resume is trajectory-defining (the stored fields drift between
+    # frames); pre-feature snapshots resume into the new default.
+    u_grid: float | None = None
 
 
 class Geometry(BaseModel):
@@ -331,16 +351,43 @@ class TimeStepping(BaseModel):
       past the advective limit) that step automatically falls back to a
       full ``iterative-cn`` step (a stdout diagnostic is printed).  The
       residual ``dt`` bound is then the ordinary explicit self-advection
-      CFL, which the wall-clustered grid still makes ``dt ~ 1/N^2`` near
-      the wall (stationary-wall flows -- Poiseuille, pipe, Dean -- are
-      bounded only by this, their ``L_bf`` being mild as ``U -> 0`` at the
-      wall) and which a strongly non-normal base flow (counter-rotating
-      Taylor-Couette) amplifies further into a delayed blow-up needing a
-      much smaller ``dt``.  These are inherent explicit-nonlinear limits,
-      not the coupling bug: such regimes want ``iterative-cn`` or a
-      smaller ``dt``.  Triply-periodic cnab2 has none of this (uniform
+      CFL of the *fluctuations* on the clustered grid (stationary-wall
+      flows -- Poiseuille, pipe, Dean -- are bounded only by this, their
+      ``L_bf`` being mild as ``U -> 0`` at the wall).  Where it binds is
+      geometry-specific: for the **pipe** it is the *near-axis
+      azimuthal* advection (the half-CGL first node ``r_0 ~ pi/(4 ny)``
+      makes ``CFL_th = dt |u_th(r_0)| nz/(2 pi r_0)`` the dominant
+      column -- linear in ``nz`` and in the fluctuation amplitude, and
+      a *weak* AB2 imaginary-axis instability, so it needs sustained
+      ``CFL_th >~ 0.5`` and pass/fail is trajectory-marginal near the
+      boundary); Cartesian flows feel the near-wall ``dy ~ 1/N^2``
+      spacing instead.  A strongly non-normal base flow
+      (counter-rotating Taylor-Couette) amplifies the explicit
+      self-advection error further into a delayed blow-up needing a
+      much smaller ``dt``.  These are inherent explicit-nonlinear
+      limits, not the coupling bug: such regimes want ``iterative-cn``
+      or a smaller ``dt``.  Triply-periodic cnab2 has none of this (uniform
       Fourier grid, no coupling stiffness): it is the plain one-FFT
       no-corrector explicit-AB2 step.
+
+      ``implicit_mean_coupling`` (wall-bounded cnab2 only, default on)
+      additionally folds the coupling with the *instantaneous mean
+      flow* -- ``L_mf = u' x curl(mean u') + (mean u') x omega'``, the
+      same cross-product structure as ``L_bf`` with the time-varying
+      mean profile ``extract_mean_mode(u')`` in place of ``U`` -- into
+      the implicit coupling term, still FFT-free (the mean mode is a
+      ``psum``; each geometry ``_l_bf`` adds the mean profiles onto the
+      base-flow profiles, the coupling being linear in the profile
+      pair).  The explicit AB2 remainder is then the pure
+      fluctuation-fluctuation advection: the mean-flow *distortion*
+      (streaks; for total-field Dean the entire evolving mean profile,
+      whose ``L_bf`` is otherwise zero) no longer rides the explicit
+      term, removing its advective-CFL contribution.  The double-counted
+      mean-mean product is a purely wall-normal (radial) profile at the
+      mean mode, absorbed by the mean pressure in the projection -- and
+      the AB2/CN split is second-order consistent for *any* choice of
+      the implicit functional, since the explicit part is always the
+      exact remainder ``get_rhs - l_bf``.
 
     ``implicitness`` *c* is the Crank-Nicolson split weight
     (``c = 0.5`` = second-order trapezoidal): in ``"iterative-cn"`` it
@@ -355,6 +402,11 @@ class TimeStepping(BaseModel):
     implicitness: float = Field(ge=0, le=1, default=0.5)
     corrector_tolerance: float = Field(gt=0, default=1e-5)
     max_corrector_iterations: int = Field(ge=1, default=10)
+    # Fold the instantaneous mean-flow coupling ``L_mf`` into the
+    # implicit (FFT-free) coupling term of the wall-bounded CN/AB2
+    # scheme; no effect on ``"iterative-cn"`` or triply-periodic flows.
+    # See the class docstring.
+    implicit_mean_coupling: bool = True
 
 
 class Termination(BaseModel):
@@ -484,6 +536,8 @@ class DerivedParameters:
     ``ccf_A``, ``ccf_B`` are the circular-Couette base-flow coefficients
     ``U_theta = ccf_A * r + ccf_B / r`` and ``r_inner``, ``r_outer`` the
     non-dim annular radii (set for system == "taylor-couette").
+    ``u_grid`` is the resolved moving-frame speed (always a concrete
+    float; see ``params.phys.u_grid`` and ``update_parameters``).
     """
 
     ly: float = 4
@@ -496,6 +550,7 @@ class DerivedParameters:
     ccf_B: float = 0
     r_inner: float = 0
     r_outer: float = 0
+    u_grid: float = 0
 
 
 params: Parameters = Parameters()
@@ -668,6 +723,23 @@ def update_parameters(params_new: Parameters) -> None:
         # azimuthal body force lives in flows.wall_bounded.dean.
     else:
         raise NotImplementedError
+
+    # Resolve the moving-frame speed U_grid.  A user-set value wins (but
+    # the moving frame is only implemented for wall-bounded systems);
+    # otherwise default to the laminar bulk velocity in the grid
+    # direction so the mean advection is removed.
+    if params.phys.u_grid is not None:
+        if system in periodic_systems:
+            raise ValueError(
+                "phys.u_grid (moving frame) is only supported for "
+                "wall-bounded systems"
+            )
+        derived_params.u_grid = params.phys.u_grid
+    else:
+        derived_params.u_grid = {
+            "pipe": 0.5,
+            "plane-poiseuille": 2.0 / 3.0,
+        }.get(system, 0.0)
 
     # Select tilting parameters to exact precision for special angles
     if abs(params.geo.tilt_degree) == 0:

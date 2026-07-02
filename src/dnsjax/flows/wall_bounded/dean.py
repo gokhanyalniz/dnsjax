@@ -156,7 +156,10 @@ def init_state(snapshot: str | None) -> Array:
     ``__main__`` before this is called.
     """
     if snapshot is None and params.init.start_from_laminar:
-        return _laminar_state
+        # Copy: the steppers donate their state argument, and the
+        # module-level ``_laminar_state`` must survive for the E'
+        # deviation in ``get_stats`` / ``get_perturbation_energy``.
+        return jnp.copy(_laminar_state)
     return _base_init_state(snapshot)
 
 
