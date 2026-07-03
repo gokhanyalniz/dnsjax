@@ -2,7 +2,8 @@
 
 Tests cover:
 
-1. Half-CGL grid properties (positive, monotone, endpoint).
+1. Radial CGL grid: ``axis_gap`` ladder (innermost-point formula,
+   monotonicity, endpoint) and bit-exact legacy ``g = 0`` equality.
 2. Parity-reduced FD matrices vs full auxiliary grid reference.
 3. `$A_{\\mathrm{base}}$` dense operator vs NumPy reference.
 4. ``_abase_matvec`` matrix-free vs dense reference.
@@ -10,7 +11,12 @@ Tests cover:
 6. SPIKE vs dense parity for `$L_k$`, `$H_{k,+}$`,
    `$H_{k,-}$`, `$H_{k,z}$`.
 7. ``get_norm2_cyl`` correctness.
-8. Composite integration weights on the half-CGL grid.
+8. Composite integration weights on the radial CGL grid.
+9. ``interpolate_to_axis``: polynomial exactness, parity paths,
+   multi-dimensional/complex inputs.
+10. Centreline mean axial velocity under time stepping (a small
+    random perturbation keeps the interpolated ``r = 0`` mean
+    axial velocity near the laminar centreline value 1).
 
 Run as a script via ``uv run python tests/test_cylindrical.py``.
 """
@@ -23,14 +29,26 @@ import jax
 
 jax.config.update("jax_enable_x64", True)
 
-from dnsjax.parameters import params  # noqa: E402
+from dnsjax.parameters import (  # noqa: E402
+    Parameters,
+    padded_res,
+    params,
+    update_parameters,
+)
 
-params.phys.system = "pipe"
-params.res.nx = 4
-params.res.ny = 16
-params.res.nz = 4
-params.res.fd_order = 4
-params.res.double_precision = True
+update_parameters(
+    Parameters(
+        phys={"system": "pipe"},
+        res={
+            "nx": 4,
+            "ny": 16,
+            "nz": 4,
+            "fd_order": 4,
+            "double_precision": True,
+        },
+    )
+)
+padded_res.set_padded_resolution(params)
 
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
@@ -53,10 +71,12 @@ from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _build_Lk_dense_gpu,
     _ghost_row_count,
     _lk_matvec,
-    build_half_cgl_grid,
     build_parity_reduced_matrices,
+    build_radial_cgl_grid,
+    extract_mean_mode,
     fourier,
     get_norm2_cyl,
+    interpolate_to_axis,
 )
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
@@ -99,27 +119,55 @@ def _build_Lk_reference_cyl(
 # Group A: Grid and FD matrices
 
 
-def test_half_cgl_grid_properties() -> None:
-    """Half-CGL grid: strictly positive, monotone, endpoint = 1."""
+def test_radial_cgl_grid_ladder() -> None:
+    """Radial CGL grid: axis_gap ladder + legacy g = 0 equality."""
     for Nr in [8, 16, 32]:
-        rs = np.asarray(build_half_cgl_grid(Nr))
-        assert rs.shape == (Nr,), f"Nr={Nr}: wrong shape {rs.shape}"
-        assert np.all(rs > 0), f"Nr={Nr}: non-positive point"
-        assert_allclose(
-            rs[-1],
-            1.0,
-            atol=1e-14,
-            err_msg=f"Nr={Nr}: last point != 1",
-        )
-        diffs = np.diff(rs)
-        assert np.all(diffs > 0), f"Nr={Nr}: not monotonically increasing"
+        # g = 0 reproduces the legacy half-CGL grid bit-exactly
+        # (identical expression: even auxiliary total 2 Nr).
+        legacy = -jnp.cos(
+            jnp.arange(2 * Nr, dtype=jnp.float64) * jnp.pi / (2 * Nr - 1)
+        )[Nr:]
+        assert np.array_equal(
+            np.asarray(build_radial_cgl_grid(Nr, axis_gap=0)),
+            np.asarray(legacy),
+        ), f"Nr={Nr}: g=0 != legacy half-CGL grid"
+
+        r0_prev = 0.0
+        for g in range(5):
+            rs = np.asarray(build_radial_cgl_grid(Nr, g))
+            assert rs.shape == (Nr,), f"g={g}: wrong shape {rs.shape}"
+            assert np.all(rs > 0), f"Nr={Nr}, g={g}: non-positive"
+            assert np.all(np.diff(rs) > 0), f"g={g}: not increasing"
+            assert_allclose(
+                rs[-1],
+                1.0,
+                atol=1e-14,
+                err_msg=f"Nr={Nr}, g={g}: last point != 1",
+            )
+            # Innermost point on the ladder:
+            # r_0 = sin(pi (g+1) / (2 (2 Nr + g - 1)))
+            r0 = np.sin(np.pi * (g + 1) / (2 * (2 * Nr + g - 1)))
+            assert_allclose(
+                rs[0],
+                r0,
+                atol=1e-14,
+                err_msg=f"Nr={Nr}, g={g}: innermost point",
+            )
+            assert rs[0] > r0_prev, f"g={g}: ladder not monotone"
+            r0_prev = rs[0]
+
+    # The default axis_gap is 1.
+    assert np.array_equal(
+        np.asarray(build_radial_cgl_grid(16)),
+        np.asarray(build_radial_cgl_grid(16, axis_gap=1)),
+    )
 
 
 def test_parity_reduced_matrices_vs_full_grid() -> None:
     """Parity-reduced matrices match the full auxiliary grid."""
     Nr = params.res.ny
     p = params.res.fd_order
-    rs = build_half_cgl_grid(Nr)
+    rs = build_radial_cgl_grid(Nr)
 
     D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos = (
         build_parity_reduced_matrices(rs, p)
@@ -182,7 +230,7 @@ def test_A_base_matches_reference() -> None:
     r"""``_build_A_base`` matches `$D_2 + \mathrm{diag}(1/r) D_1$`."""
     Nr = params.res.ny
     p = params.res.fd_order
-    rs = build_half_cgl_grid(Nr)
+    rs = build_radial_cgl_grid(Nr)
     inv_r = 1.0 / rs
 
     D1_even, D2_even, D1_odd, D2_odd, _, _ = build_parity_reduced_matrices(
@@ -207,7 +255,7 @@ def test_abase_matvec_matches_dense() -> None:
     """``_abase_matvec`` matches dense ``A_base @ u``."""
     Nr = params.res.ny
     p = params.res.fd_order
-    rs = build_half_cgl_grid(Nr)
+    rs = build_radial_cgl_grid(Nr)
     inv_r = 1.0 / rs
 
     D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos = (
@@ -631,10 +679,10 @@ def test_get_norm2_cyl() -> None:
 
 
 def test_cylindrical_integration_weights() -> None:
-    """Composite weights on half-CGL: sum and polynomial exactness."""
+    """Composite weights on the radial CGL grid: sum + exactness."""
     p = params.res.fd_order
     for Nr in [8, 16, 32]:
-        rs = build_half_cgl_grid(Nr)
+        rs = build_radial_cgl_grid(Nr)
         rs_np = np.asarray(rs)
         w = build_integration_weights(rs, p=p)
         w_np = np.asarray(w)
@@ -657,6 +705,141 @@ def test_cylindrical_integration_weights() -> None:
                 atol=1e-10,
                 err_msg=f"Nr={Nr}, degree={d}",
             )
+
+    # Full-disc y_weights (interior rule + even-parity axis-gap
+    # completion): strictly positive for every axis_gap -- the
+    # energy norm must be definite -- and exact for even
+    # integrands (sum = int r dr = 1/2, int r^2 r dr = 1/4).
+    from dnsjax.geometries.wall_bounded.cylindrical import (
+        build_cylindrical_grid,
+    )
+
+    for g in (0, 1, 2, 3):
+        _, _, _, _, yw, _ = build_cylindrical_grid(16, p, axis_gap=g)
+        rs_g = np.asarray(build_radial_cgl_grid(16, g))
+        yw_np = np.asarray(yw)
+        assert np.all(yw_np > 0), f"g={g}: negative y_weights"
+        assert_allclose(float(yw_np.sum()), 0.5, atol=1e-12, err_msg=f"g={g}")
+        assert_allclose(
+            float(yw_np @ rs_g**2), 0.25, atol=1e-12, err_msg=f"g={g}"
+        )
+
+
+# Group E: Centreline (r = 0) interpolation
+
+
+def test_interpolate_to_axis_polynomials() -> None:
+    """Fornberg extrapolation to r = 0: polynomial exactness."""
+    Nr = 16
+    rs = np.asarray(build_radial_cgl_grid(Nr))
+    order = params.res.fd_order
+
+    # One-sided: exact for degree <= order.
+    for d in range(order + 1):
+        val = float(interpolate_to_axis(jnp.asarray(rs**d), rs))
+        exact = 1.0 if d == 0 else 0.0
+        assert_allclose(val, exact, atol=1e-11, err_msg=f"deg {d}")
+
+    # The pipe base-flow profile 1 - r^2 has centreline value 1
+    # (quadratic: exact one-sided and via the even path).
+    prof = jnp.asarray(1.0 - rs**2)
+    assert_allclose(float(interpolate_to_axis(prof, rs)), 1.0, atol=1e-12)
+    assert_allclose(
+        float(interpolate_to_axis(prof, rs, parity="even")),
+        1.0,
+        atol=1e-12,
+    )
+
+    # Even path interpolates in x = r^2: exact for even
+    # polynomials up to degree 2 * order.
+    val = float(
+        interpolate_to_axis(jnp.asarray(rs ** (2 * order)), rs, parity="even")
+    )
+    assert_allclose(val, 0.0, atol=1e-11, err_msg="even r^(2p)")
+
+    # Odd parity: identically zero on the axis.
+    v = interpolate_to_axis(jnp.asarray(rs**3), rs, parity="odd")
+    assert float(v) == 0.0
+
+    try:
+        interpolate_to_axis(prof, rs, parity="both")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown parity accepted")
+
+
+def test_interpolate_to_axis_even_superconvergence() -> None:
+    """Even-parity stencil (in r^2) beats one-sided on even data."""
+    Nr = 16
+    rs = np.asarray(build_radial_cgl_grid(Nr))
+    f = jnp.asarray(np.exp(-(rs**2)))  # even, f(0) = 1
+    err_even = abs(float(interpolate_to_axis(f, rs, parity="even")) - 1.0)
+    err_side = abs(float(interpolate_to_axis(f, rs)) - 1.0)
+    assert err_even < 1e-7, f"even-path error {err_even:.3e}"
+    assert err_side < 5e-3, f"one-sided error {err_side:.3e}"
+    assert err_even < err_side
+
+
+def test_interpolate_to_axis_multidim() -> None:
+    """Any radial-axis position; complex data; matches manual dot."""
+    from dnsjax.fd import fornberg_weights
+
+    Nr = 16
+    rs = np.asarray(build_radial_cgl_grid(Nr))
+    rng = np.random.default_rng(7)
+    a = rng.standard_normal((Nr, 3, 5)) + 1j * rng.standard_normal((Nr, 3, 5))
+    v0 = np.asarray(interpolate_to_axis(jnp.asarray(a), rs, axis=0))
+    assert v0.shape == (3, 5)
+    v1 = np.asarray(
+        interpolate_to_axis(jnp.asarray(np.moveaxis(a, 0, 1)), rs, axis=1)
+    )
+    assert_allclose(v1, v0, atol=1e-13)
+
+    # Manual reference: interpolation weights on the innermost
+    # order + 1 points.
+    n = params.res.fd_order + 1
+    w = fornberg_weights(0.0, rs[:n], 0)[:, 0]
+    ref = np.tensordot(w, a[:n], axes=(0, 0))
+    assert_allclose(v0, ref, atol=1e-13)
+
+
+def test_centerline_mean_axial_velocity() -> None:
+    """Centreline mean axial velocity stays laminar while stepping.
+
+    Steps a small random perturbation (iterative-cn) and
+    interpolates the axially+azimuthally averaged axial velocity
+    (base flow + mean-mode ``u_z`` perturbation, an even profile)
+    to the missing ``r = 0`` point: it must stay near the laminar
+    centreline value ``U_z(0) = 1`` while the perturbation is
+    small.
+    """
+    from dnsjax.flows.wall_bounded.pipe import (
+        predict_and_fully_correct,
+    )
+    from dnsjax.random_field import generate_random_state
+
+    amp = 1e-3
+    state = generate_random_state(amp, 0.4, 3)
+    rs = np.asarray(pipe_flow.rs)
+
+    def centreline(s) -> float:
+        mean_uz = jnp.real(extract_mean_mode(s)[0])
+        profile = pipe_flow.base_flow[0, :, 0, 0] + mean_uz
+        return float(interpolate_to_axis(profile, rs, parity="even"))
+
+    tol = 10.0 * amp
+    v0 = centreline(state)
+    assert abs(v0 - 1.0) < tol, f"t=0 centreline {v0}"
+    for _ in range(20):
+        # predict_and_fully_correct donates its argument; the loop
+        # rebinds state, so nothing reuses the donated buffer.
+        state, err, _ = predict_and_fully_correct(state)
+        assert float(err) < params.step.corrector_tolerance, (
+            f"corrector not converged (err {float(err):.3e})"
+        )
+    v1 = centreline(state)
+    assert abs(v1 - 1.0) < tol, f"t=0.2 centreline {v1}"
 
 
 # ── Runner ───────────────────────────────────────────────────────────

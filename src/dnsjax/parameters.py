@@ -140,15 +140,47 @@ class Physics(BaseModel):
 
 
 class Geometry(BaseModel):
-    """Domain size and optional tilt angle for the forcing direction.
+    r"""Domain size and optional tilt angle for the forcing direction.
 
     Wall-normal grid selection (precedence order):
 
     1. ``wall_grid`` (file path): load a custom grid from file.
+       A custom grid always overrides dnsjax's grid generation.
     2. ``grid_type``: generate a named grid at startup.
-    3. Default: CGL (Cartesian) or half-CGL (cylindrical).
+    3. Default: CGL (Cartesian) or radial CGL (cylindrical; shaped
+       by ``axis_gap``).
 
     Setting both ``wall_grid`` and ``grid_type`` is an error.
+
+    ``axis_gap`` (cylindrical geometry only) sets how far the
+    innermost *generated* radial point sits from the axis: the
+    radial grid keeps the ``ny`` outermost positive points of a
+    `$(2 n_y + g)$`-point CGL grid on `$[-1, 1]$` (``g =
+    axis_gap``), so with the near-axis spacing `$\Delta r \approx
+    \pi/(2 n_y)$` the innermost point is `$r_0 \approx
+    (g{+}1)\,\Delta r/2$` (exactly `$r_0 = \sin(\pi (g{+}1) /
+    (2\,(2 n_y + g - 1)))$`).  ``g = 0`` is the legacy half-CGL
+    grid (even auxiliary total, staggered `$r_0 = \Delta r/2$`);
+    the default ``g = 1`` uses an odd total whose centre point
+    falls exactly on the coordinate-singular axis and drops it,
+    doubling `$r_0$`.  Rationale: the near-axis *azimuthal*
+    advection CFL `$\propto 1/r_0$` is a stability artifact of
+    explicit stepping evaluated at grid points only -- no degree
+    of freedom lives in `$[0, r_0)$` (parity ghosts close the FD
+    stencils across the axis; the quadrature covers the segment
+    with an even-parity gap rule) -- so that CFL relaxes
+    `$\propto (g{+}1)$` at a truncation-level accuracy cost (the
+    parity-mirrored gap across the axis widens to
+    `$(g{+}1)\,\Delta r$`).  The default ``g = 1`` realises the
+    full 2x on the admissible cnab2 ``dt`` (measured); ``g >= 2``
+    keeps relaxing the azimuthal CFL but its wider mirrored axis
+    hole introduces its own explicit near-axis instability
+    (radially growing, coupling-corrector-stressing) that
+    *lowers* cnab2's admissible ``dt`` below the ``g = 1`` value
+    -- ``iterative-cn`` integrates ``g >= 2`` cleanly, so larger
+    gaps are for that scheme.  Ignored by ``wall_grid`` /
+    ``grid_type`` grids; a non-default value is rejected for
+    non-cylindrical systems.
     """
 
     lx: float = Field(gt=0, default=4.0)
@@ -161,6 +193,7 @@ class Geometry(BaseModel):
     wall_grid: Path | None = None
     grid_type: Literal["cgl", "tanh"] | None = None
     grid_stretch: float = Field(gt=0, default=1.5)
+    axis_gap: int = Field(ge=0, default=1)
 
 
 class Resolution(BaseModel):
@@ -355,13 +388,18 @@ class TimeStepping(BaseModel):
       flows -- Poiseuille, pipe, Dean -- are bounded only by this, their
       ``L_bf`` being mild as ``U -> 0`` at the wall).  Where it binds is
       geometry-specific: for the **pipe** it is the *near-axis
-      azimuthal* advection (the half-CGL first node ``r_0 ~ pi/(4 ny)``
-      makes ``CFL_th = dt |u_th(r_0)| nz/(2 pi r_0)`` the dominant
+      azimuthal* advection (the innermost radial node
+      ``r_0 ~ (geo.axis_gap + 1) pi/(4 ny)`` makes
+      ``CFL_th = dt |u_th(r_0)| nz/(2 pi r_0)`` the dominant
       column -- linear in ``nz`` and in the fluctuation amplitude, and
       a *weak* AB2 imaginary-axis instability, so it needs sustained
       ``CFL_th >~ 0.5`` and pass/fail is trajectory-marginal near the
-      boundary); Cartesian flows feel the near-wall ``dy ~ 1/N^2``
-      spacing instead.  A strongly non-normal base flow
+      boundary; the default ``geo.axis_gap = 1`` doubles ``r_0`` and
+      -- measured -- the admissible ``dt``, but ``axis_gap >= 2``
+      trades it for a different explicit near-axis instability and
+      suits only ``iterative-cn``); Cartesian flows feel the
+      near-wall ``dy ~ 1/N^2`` spacing instead.  A strongly
+      non-normal base flow
       (counter-rotating Taylor-Couette) amplifies the explicit
       self-advection error further into a delayed blow-up needing a
       much smaller ``dt``.  These are inherent explicit-nonlinear
@@ -627,6 +665,13 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
     against the snapshot's stored ``model_dump(mode="json")`` (taken
     after :func:`update_parameters`, so geometry-forced fields such as
     cylindrical ``lz = 2*pi`` match and do not register as changes).
+
+    ``geo.axis_gap`` is compared only for cylindrical-family systems
+    (it shapes only the cylindrical radial grid).  A pre-``axis_gap``
+    pipe snapshot therefore flags ``geo.axis_gap: None -> 1`` -- its
+    grid really did change under the current default -- resume with
+    ``--geo.axis_gap 0`` for a continuation on the legacy grid, or
+    ``init.force_resume`` to continue interpolated.
     """
     skip = set(_SNAPSHOT_SKIP_FIELDS)
     changes: list[str] = []
@@ -635,6 +680,10 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
         cur = getattr(params, section).model_dump(mode="json")
         for key in sorted(set(snap) | set(cur)):
             if (section, key) in skip:
+                continue
+            if (section, key) == ("geo", "axis_gap") and (
+                params.phys.system not in cylindrical_systems
+            ):
                 continue
             if snap.get(key) != cur.get(key):
                 changes.append(
@@ -792,6 +841,18 @@ def validate_parameters() -> None:
             f"outs.it_error_check ({o.it_error_check}) must be <= "
             f"outs.it_corrector ({o.it_corrector}) so the corrector "
             "convergence is checked at least as often as it is logged."
+        )
+
+    # axis_gap shapes only the cylindrical radial grid (the pipe's
+    # coordinate axis); reject a non-default value elsewhere to catch
+    # confusion early (wall_grid / tanh grids simply ignore it).
+    if (
+        params.geo.axis_gap != 1
+        and params.phys.system not in cylindrical_systems
+    ):
+        raise ValueError(
+            "geo.axis_gap applies only to the cylindrical geometry "
+            f"(system {params.phys.system!r} has no axis)."
         )
 
     # The Pallas kernel tiles the mode plane in ``bm0 x bm1`` blocks;

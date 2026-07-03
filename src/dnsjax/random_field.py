@@ -308,7 +308,11 @@ def generate_cartesian(
     nz = params.res.nz
 
     ys, D1, _, y_weights = build_cartesian_grid(
-        ny, params.res.fd_order, params.geo.wall_grid
+        ny,
+        params.res.fd_order,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
     )
     derived_params.wall_normal_grid = [float(v) for v in np.asarray(ys)]
 
@@ -395,7 +399,12 @@ def generate_cylindrical(
     nz = params.res.nz
 
     rs, D1_even, D1_odd, _, y_weights, inv_r = build_cylindrical_grid(
-        Nr, params.res.fd_order, params.geo.wall_grid
+        Nr,
+        params.res.fd_order,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+        params.geo.axis_gap,
     )
     derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
 
@@ -499,7 +508,13 @@ def generate_annular(
     r1 = derived_params.r_inner
     r2 = derived_params.r_outer
     rs, D1, _, y_weights, inv_r = build_annular_grid(
-        Nr, params.res.fd_order, r1, r2, params.geo.wall_grid
+        Nr,
+        params.res.fd_order,
+        r1,
+        r2,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
     )
     derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
 

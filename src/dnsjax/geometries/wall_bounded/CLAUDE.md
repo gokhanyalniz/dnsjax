@@ -4,7 +4,7 @@
 
 - `_base.py`: shared wall-bounded infrastructure (norms, integration, init_state, `build_wall_bounded_stepper`, `extract_mean_mode`)
 - `cartesian.py`: Cartesian geometry (Fourier, CGL grid, `CartesianFlow`, Kleiser-Schumann IMM, Lk/Hk operator builders)
-- `cylindrical.py`: cylindrical geometry (Fourier, half-CGL grid, `CylindricalFlow`, decoupled u+/u- formulation, parity-reduced FD, 1x1 IMM)
+- `cylindrical.py`: cylindrical geometry (Fourier, radial CGL grid shaped by `geo.axis_gap`, `CylindricalFlow`, decoupled u+/u- formulation, parity-reduced FD, 1x1 IMM, `interpolate_to_axis` r=0 evaluation)
 - `annular.py`: annular geometry / concentric cylinders (Fourier, CGL grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2 IMM, optional mean-mode azimuthal body force `pi_theta`, `dean_laminar_u_theta`)
 
 ### Stepper factory (wall-bounded layer)
@@ -27,7 +27,7 @@ Spectral padding slots (any `np0 > 1` run pads kz/m; `np1 > 1` pads the streamwi
 
 ### Cylindrical geometry
 
-Documented in the `cylindrical.py` module docstring: decoupled `u+`/`u-` velocity formulation (Willis 2017), effective azimuthal modes, parity-reduced FD matrices, half-CGL radial grid, 1x1 influence matrix, and constant-bulk-velocity enforcement.
+Documented in the `cylindrical.py` module docstring: decoupled `u+`/`u-` velocity formulation (Willis 2017), effective azimuthal modes, parity-reduced FD matrices, radial CGL grid, 1x1 influence matrix, and constant-bulk-velocity enforcement. The radial grid keeps the `ny` outermost positive points of a `2·ny + axis_gap`-point CGL grid (`build_radial_cgl_grid`; default `geo.axis_gap = 1` — the innermost point sits at `r₀ ≈ (g+1)·Δr/2`, doubling the pipe's measured admissible cnab2 `dt`; `g = 0` is the legacy half-CGL grid; `g ≥ 2` trades the azimuthal relief for a different explicit near-axis instability and suits only iterative-cn). The `[0, r₀]` quadrature mass is added by the even-parity (`x = r²`) gap rule `fd.radial_axis_gap_weights` — the retired r-space `left_edge=0.0` extrapolation went **negative** for `axis_gap ≥ 1` gaps, making the energy norm indefinite (NaN via `sqrt`); positivity is verified at build. There is no grid point at `r = 0`; `interpolate_to_axis` evaluates r-dependent arrays (spectral or physical, any shape) at the centreline by Fornberg extrapolation with optional per-mode parity (`"even"` interpolates in `r²`, `"odd"` is identically zero) — see its docstring in `cylindrical.py`.
 
 ### Annular geometry
 
@@ -39,11 +39,11 @@ The family supports two driving modes via the same infrastructure (see the `annu
 
 ### Custom wall-normal grids
 
-Grid selection (precedence): (1) `params.geo.wall_grid` file path, (2) `params.geo.grid_type` (`"tanh"` / `"cgl"`), (3) default CGL/half-CGL (annular: CGL mapped to `[r1, r2]`). See `build_cartesian_grid`, `build_cylindrical_grid`, and `build_annular_grid` docstrings for file format, validation, and integration weights. Tanh grid properties (conditioning, CFL) are documented in `fd.py` (`tanh_two_sided_grid`, `tanh_one_sided_grid`).
+Grid selection (precedence): (1) `params.geo.wall_grid` file path (a custom grid always overrides dnsjax's grid generation), (2) `params.geo.grid_type` (`"tanh"` / `"cgl"`), (3) default CGL / radial CGL shaped by `geo.axis_gap` (cylindrical; annular: CGL mapped to `[r1, r2]`). `axis_gap` applies only to the generated cylindrical CGL grid (ignored by `wall_grid`/tanh; a non-default value is rejected for non-cylindrical systems). See `build_cartesian_grid`, `build_cylindrical_grid`, and `build_annular_grid` docstrings for file format, validation, and integration weights. Tanh grid properties (conditioning, CFL) are documented in `fd.py` (`tanh_two_sided_grid`, `tanh_one_sided_grid`).
 
 ### Wall-normal interpolation
 
-When loading a snapshot with a different wall-normal grid, `_interpolate_if_needed` in `__main__.py` applies the optimal method: CGL-to-CGL (Chebyshev coefficients; for annular, the affine map `[r1,r2] -> [-1,1]` is detected so the same Chebyshev path applies), half-CGL-to-half-CGL (parity-aware), or general (barycentric Lagrange). See `fd.py` functions: `chebyshev_interpolation_matrix`, `half_cgl_interpolation_matrices`, `barycentric_interpolation_matrix`, `build_interpolation_matrix`.
+When loading a snapshot with a different wall-normal grid, `_interpolate_if_needed` in `__main__.py` applies the optimal method: CGL-to-CGL (Chebyshev coefficients; for annular, the affine map `[r1,r2] -> [-1,1]` is detected so the same Chebyshev path applies) or, for everything else (every cylindrical pair — including `axis_gap` changes, the default-triggered case — and any custom stretched grid), a **local `fd_order`-stencil Fornberg interpolation** (`local_interpolation_matrix`). A *global* barycentric Lagrange fit is spectrally optimal only on a true CGL grid; on the lopsided radial half-CGL point set its Lebesgue constant reaches `1e9`–`1e15` and blows the field up on resume, so the local stencil (Lebesgue `O(10)`) is used. The half-CGL-specific parity-aware path (`is_half_cgl_grid`, `half_cgl_interpolation_matrices`) is retired — commented out pending removal once the `axis_gap=1` default proves stable; parity mirroring is unnecessary for pure interpolation (the positive-side nodes determine the local interpolant). See `fd.py` functions: `chebyshev_interpolation_matrix`, `local_interpolation_matrix`, `barycentric_interpolation_matrix`, `build_interpolation_matrix`.
 
 ### Optimization patterns
 

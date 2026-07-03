@@ -201,7 +201,9 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     import numpy as np
 
     from .fd import build_interpolation_matrix
-    from .operators import complex_harmonics
+
+    # RETIRED with the half-CGL parity interpolation (below):
+    # from .operators import complex_harmonics
 
     meta = read_metadata(Path(snap_path))
     snap_grid = meta.get("wall_normal_grid")
@@ -223,7 +225,9 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     if snap_grid is not None:
         old_grid = np.array(snap_grid)
     else:
-        # Legacy snapshot without grid: assume default grid.
+        # Legacy snapshot without grid metadata: such snapshots
+        # predate ``geo.axis_gap``, so assume the default grid of
+        # their era (cylindrical: the g = 0 half-CGL grid).
         if params.phys.system in cylindrical_systems:
             N_full = 2 * snap_ny
             s = -np.cos(np.arange(N_full) * np.pi / (N_full - 1))
@@ -243,30 +247,35 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         geometry = "annular"
     else:
         geometry = "cartesian"
-    T = build_interpolation_matrix(old_grid, curr_grid_np, geometry)
+    T = build_interpolation_matrix(
+        old_grid, curr_grid_np, geometry, params.res.fd_order
+    )
 
-    if isinstance(T, tuple):
-        # Parity-aware cylindrical interpolation.
-        T_even, T_odd = T
-        m_vals = np.asarray(complex_harmonics(params.res.nz))
-        m_is_even = m_vals % 2 == 0
-
-        # T_p: parity (-1)^m for u_z (component 0)
-        # T_v: parity (-1)^{m+1} for u_+, u_- (components 1, 2)
-        T_p = np.where(m_is_even[:, None, None], T_even, T_odd)
-        T_v = np.where(m_is_even[:, None, None], T_odd, T_even)
-        T_p_jax = jnp.asarray(T_p, dtype=state.dtype)
-        T_v_jax = jnp.asarray(T_v, dtype=state.dtype)
-
-        # state shape: (3, Nr_old, Nm, Nkz)
-        s0 = jnp.einsum("mij, jmk -> imk", T_p_jax, state[0])
-        s1 = jnp.einsum("mij, jmk -> imk", T_v_jax, state[1])
-        s2 = jnp.einsum("mij, jmk -> imk", T_v_jax, state[2])
-        state = jnp.stack([s0, s1, s2])
-    else:
-        T_jax = jnp.asarray(T, dtype=state.dtype)
-        # state shape: (3, ny_old, kz, kx)
-        state = jnp.einsum("ij, cjzx -> cizx", T_jax, state)
+    # RETIRED (half-CGL parity-aware interpolation; see the note in
+    # ``dnsjax.fd``): ``build_interpolation_matrix`` no longer
+    # returns a ``(T_even, T_odd)`` tuple for cylindrical grids.
+    # if isinstance(T, tuple):
+    #     # Parity-aware cylindrical interpolation.
+    #     T_even, T_odd = T
+    #     m_vals = np.asarray(complex_harmonics(params.res.nz))
+    #     m_is_even = m_vals % 2 == 0
+    #
+    #     # T_p: parity (-1)^m for u_z (component 0)
+    #     # T_v: parity (-1)^{m+1} for u_+, u_- (components 1, 2)
+    #     T_p = np.where(m_is_even[:, None, None], T_even, T_odd)
+    #     T_v = np.where(m_is_even[:, None, None], T_odd, T_even)
+    #     T_p_jax = jnp.asarray(T_p, dtype=state.dtype)
+    #     T_v_jax = jnp.asarray(T_v, dtype=state.dtype)
+    #
+    #     # state shape: (3, Nr_old, Nm, Nkz)
+    #     s0 = jnp.einsum("mij, jmk -> imk", T_p_jax, state[0])
+    #     s1 = jnp.einsum("mij, jmk -> imk", T_v_jax, state[1])
+    #     s2 = jnp.einsum("mij, jmk -> imk", T_v_jax, state[2])
+    #     state = jnp.stack([s0, s1, s2])
+    T_jax = jnp.asarray(T, dtype=state.dtype)
+    # state: (3, ny_old, ...) -- the wall-normal axis is axis 1 in
+    # every geometry's spectral layout.
+    state = jnp.einsum("ij, cjzx -> cizx", T_jax, state)
 
     # Enforce wall boundary conditions.
     if geometry == "cylindrical":

@@ -2,9 +2,9 @@ r"""Pipe flow: pressure-driven flow through a circular pipe.
 
 This module defines the ``PipeFlow`` dataclass that holds the
 pipe-flow-specific base flow.  Geometry-general infrastructure
-(half-CGL grid, parity-reduced FD matrices, IMM operators,
-cylindrical IMM iteration, predict / correct / norm, banded /
-dense LU solvers) is inherited from
+(radial CGL grid shaped by ``geo.axis_gap``, parity-reduced FD
+matrices, IMM operators, cylindrical IMM iteration, predict /
+correct / norm, banded / dense LU solvers) is inherited from
 ``geometries.wall_bounded.cylindrical.CylindricalFlow``.
 
 It also exports the flow interface consumed by ``__main__``:
@@ -80,8 +80,8 @@ class PipeFlow(CylindricalFlow):
     def __post_init__(self) -> None:
         r"""Build radial grid, base flow, and IMM operators.
 
-        Delegates the half-CGL grid, parity-reduced FD matrices,
-        and per-mode IMM operator setup to
+        Delegates the radial CGL grid, parity-reduced FD
+        matrices, and per-mode IMM operator setup to
         :meth:`CylindricalFlow.__post_init__`, then defines the
         pipe base flow `$U_z = 1 - r^2$` and its derived
         quantities.

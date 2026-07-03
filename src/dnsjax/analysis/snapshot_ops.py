@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..fd import build_integration_weights
+from ..fd import build_integration_weights, radial_axis_gap_weights
 from . import _core
 from ._core import to_physical, to_spectral  # re-exported helpers
 
@@ -211,12 +211,14 @@ def _axis_weights(info, ax, coords, params):
     """Quadrature weights for integrating a physical field over *ax*."""
     if info.kind[ax] == "grid":
         grid = np.asarray(coords[ax], dtype=float)
-        left_edge = 0.0 if info.family == "cylindrical" else None
-        w = build_integration_weights(
-            grid, int(params.res.fd_order), left_edge=left_edge
-        )
+        p = int(params.res.fd_order)
+        w = build_integration_weights(grid, p)
         if info.family in ("cylindrical", "annular"):
             w = w * grid  # radial Jacobian r
+        if info.family == "cylindrical":
+            # The [0, r_0] axis gap, by the same even-parity
+            # (x = r^2) rule as the solver (fd docstring).
+            w = w + radial_axis_gap_weights(grid, p)
         return w
     n = info.n[ax]
     return np.full(n, info.length[ax] / n)

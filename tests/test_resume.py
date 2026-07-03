@@ -120,6 +120,24 @@ def run_unit_checks() -> bool:
         changes = trajectory_defining_changes(snap)
         params.step.dt = old_dt
         assert changes == [], ("step.dt", changes)
+
+        # geo.axis_gap is compared only for cylindrical-family
+        # systems: a snapshot lacking the key (pre-axis_gap era) is
+        # not a change for a system without an axis, but *is* one
+        # for the pipe (its grid really changed under the
+        # axis_gap = 1 default).
+        snap_no_gap = params.model_dump(mode="json")
+        del snap_no_gap["geo"]["axis_gap"]
+        changes = trajectory_defining_changes(snap_no_gap)
+        assert changes == [], ("axis_gap non-cylindrical", changes)
+        old_system = params.phys.system
+        params.phys.system = "pipe"
+        changes = trajectory_defining_changes(snap_no_gap)
+        params.phys.system = old_system
+        assert any(c.startswith("geo.axis_gap:") for c in changes), (
+            "axis_gap pipe",
+            changes,
+        )
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
         return False

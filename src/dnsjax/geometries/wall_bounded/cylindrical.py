@@ -2,10 +2,11 @@ r"""Cylindrical geometry: Fourier class, norms, IMM, and solvers.
 
 Provides all geometry-general infrastructure for wall-bounded
 cylindrical flows: the ``Fourier`` wavenumber class, the
-``CylindricalFlow`` base dataclass (half-diameter radial grid,
-parity-reduced FD matrices, IMM operators), spectral solvers
-(influence-matrix method, predictor-corrector time stepping), and
-diagnostic helpers (norms, perturbation energy).
+``CylindricalFlow`` base dataclass (radial CGL grid shaped by
+``geo.axis_gap``, parity-reduced FD matrices, IMM operators),
+spectral solvers (influence-matrix method, predictor-corrector
+time stepping), and diagnostic helpers (norms, perturbation
+energy, centreline interpolation).
 
 Decoupled velocity formulation
 ------------------------------
@@ -92,7 +93,9 @@ from jax.sharding import PartitionSpec as P
 from ...fd import (
     build_diff_matrices,
     build_integration_weights,
+    fornberg_weights,
     local_grid_spacing,
+    radial_axis_gap_weights,
     tanh_one_sided_grid,
 )
 from ...measurements import get_cfl
@@ -388,38 +391,69 @@ def get_norm2_cyl(state: Array, k_metric: Array, y_weights: Array) -> Array:
 # ── Half-diameter grid and parity-reduced FD matrices ──────────────
 
 
-def build_half_cgl_grid(Nr: int) -> Array:
-    r"""Build the half-CGL radial grid on `$(0, 1]$`.
+def build_radial_cgl_grid(Nr: int, axis_gap: int = 1) -> Array:
+    r"""Build the radial CGL grid on `$(0, 1]$`.
 
-    Takes the positive half of a `$2 N_r$`-point CGL grid on
-    `$[-1, 1]$`:
+    Takes the `$N_r$` outermost positive points of a
+    `$(2 N_r + g)$`-point CGL grid on `$[-1, 1]$`
+    (`$g$` = *axis_gap*):
 
     .. math::
-        s_j = -\cos\!\bigl(j\pi/(2N_r - 1)\bigr),
-        \quad j = 0, \ldots, 2N_r - 1.
+        s_j = -\cos\!\bigl(j\pi/(2N_r + g - 1)\bigr),
+        \quad j = N_r + g, \ldots, 2N_r + g - 1,
 
-    Since `$2 N_r$` is always even, no `$s_j$` falls on
-    `$s = 0$`.  The `$N_r$` points with `$s_j > 0$`
-    (indices `$j = N_r, \ldots, 2N_r - 1$`) form the radial
-    grid `$r_0 < r_1 < \cdots < r_{N_r - 1} = 1$`, with CGL
-    clustering near the pipe wall and widest spacing near
-    the centre.
+    giving `$r_0 < r_1 < \cdots < r_{N_r-1} = 1$` with CGL
+    clustering near the pipe wall, near-uniform spacing
+    `$\Delta r \approx \pi/(2 N_r)$` near the centre, and
+    innermost point
+
+    .. math::
+        r_0 = \sin\!\Bigl(\frac{(g+1)\,\pi}{2\,(2N_r+g-1)}\Bigr)
+        \approx (g+1)\,\frac{\Delta r}{2}.
+
+    `$g = 0$` is the legacy *half-CGL* grid (even auxiliary
+    total, no point on the axis, staggered
+    `$r_0 = \Delta r/2$`).  The default `$g = 1$` uses an odd
+    total whose centre point falls exactly on `$r = 0$` -- a
+    coordinate singularity, not a boundary -- and drops it,
+    landing `$r_0 = \Delta r$`; larger `$g$` drops further
+    innermost points.  No degree of freedom lives in
+    `$[0, r_0)$`: the parity ghosts close the FD stencils
+    across the axis and the quadrature covers the segment with
+    the even-parity gap rule
+    (:func:`dnsjax.fd.radial_axis_gap_weights`), so `$r_0$` is
+    a free discretisation choice.  It bounds the near-axis azimuthal
+    advection CFL `$\propto 1/r_0$` -- the pipe's explicit
+    (cnab2) timestep limit -- so that CFL relaxes
+    `$\propto (g+1)$`, at the truncation-level accuracy cost
+    of widening the parity-mirrored axis gap to
+    `$(g+1)\,\Delta r$`.  In practice the default `$g = 1$`
+    realises the full 2x on the admissible cnab2 ``dt``
+    (measured); `$g \ge 2$` trades the azimuthal relief for a
+    different explicit near-axis instability seeded by the
+    wider mirrored hole (radially growing,
+    coupling-corrector-stressing) and suits only
+    ``iterative-cn``, which integrates such grids cleanly.
 
     Parameters
     ----------
     Nr:
-        Number of radial grid points.
+        Number of radial grid points kept.
+    axis_gap:
+        Number of extra auxiliary CGL points
+        (``params.geo.axis_gap``).
 
     Returns
     -------
     :
-        Radial grid array, shape ``(Nr,)``.
+        Radial grid array, shape ``(Nr,)``, ascending, all
+        `$r > 0$`, last point `$r = 1$`.
     """
-    N_full = 2 * Nr
+    N_full = 2 * Nr + axis_gap
     s = -jnp.cos(
         jnp.arange(N_full, dtype=sharding.float_type) * jnp.pi / (N_full - 1)
     )
-    return s[Nr:]
+    return s[Nr + axis_gap :]
 
 
 def build_parity_reduced_matrices(
@@ -475,16 +509,21 @@ def build_cylindrical_grid(
     wall_grid: str | None = None,
     grid_type: str | None = None,
     grid_stretch: float = 1.5,
+    axis_gap: int = 1,
 ) -> tuple[Array, Array, Array, Array, Array, Array]:
     r"""Build radial grid, parity-reduced D1 matrices, weights,
     and `$1/r$` for the cylindrical geometry.
 
     Grid selection (precedence):
 
-    1. *wall_grid*: load from file.
-    2. *grid_type*: ``"tanh"`` for one-sided tanh stretching,
-       ``"cgl"`` for default half-CGL.
-    3. Default: half-CGL grid.
+    1. *wall_grid*: load from file (a custom grid always
+       overrides dnsjax's grid generation; *axis_gap* is
+       ignored).
+    2. *grid_type*: ``"tanh"`` for one-sided tanh stretching
+       (*axis_gap* ignored), ``"cgl"`` for the default radial
+       CGL grid.
+    3. Default: radial CGL grid shaped by *axis_gap* (see
+       :func:`build_radial_cgl_grid`).
 
     Parameters
     ----------
@@ -503,6 +542,11 @@ def build_cylindrical_grid(
         Named grid type (``"cgl"`` or ``"tanh"``).
     grid_stretch:
         Stretching parameter for ``grid_type="tanh"``.
+    axis_gap:
+        Extra auxiliary CGL points shifting the innermost
+        generated point off the axis (``params.geo.axis_gap``;
+        see :func:`build_radial_cgl_grid`).  Only the generated
+        CGL grid honours it.
 
     Returns
     -------
@@ -515,14 +559,16 @@ def build_cylindrical_grid(
     D1_pos:
         Common (parity-independent) part, ``(ny, ny)``.
     y_weights:
-        Integration weights with radial Jacobian
-        `$w_j r_j$`, shape ``(ny,)``, satisfying
-        `$\sum_j w_j r_j f_j \approx \int_0^1 f\,r\,dr$`
-        over the **full** disc: the segment
-        `$[0, r_0]$` below the first grid point is covered
-        by the first-stencil interpolant
-        (``left_edge=0.0`` in
-        :func:`~dnsjax.fd.build_integration_weights`).
+        Integration weights with radial Jacobian, shape
+        ``(ny,)``, satisfying
+        `$\sum_j W_j f_j \approx \int_0^1 f\,r\,dr$`
+        over the **full** disc: the `$[r_0, 1]$` composite
+        rule times `$r_j$`, plus the even-parity
+        (`$x = r^2$`) gap rule for the segment `$[0, r_0]$`
+        below the first grid point
+        (:func:`~dnsjax.fd.radial_axis_gap_weights`).
+        Strict positivity (a definite energy norm) is
+        verified at build and raises otherwise.
     inv_r:
         `$1/r$` on the grid, shape ``(ny,)``.
     """
@@ -547,19 +593,95 @@ def build_cylindrical_grid(
         grid = tanh_one_sided_grid(ny, grid_stretch)
         rs = jnp.asarray(grid, dtype=sharding.float_type)
     else:
-        rs = build_half_cgl_grid(ny)
+        rs = build_radial_cgl_grid(ny, axis_gap)
     inv_r = 1.0 / rs
-    # left_edge=0.0 extends the composite rule over [0, r_0]
-    # (the axis is not a grid point); without it every radial
-    # integral would miss the [0, r_0] mass, an O(N_r^{-2})
-    # bias independent of the FD order.
-    w = build_integration_weights(rs, fd_order, left_edge=0.0)
-    y_weights = w * rs
+    # The axis is not a grid point: the [0, r_0] mass (an
+    # O(N_r^{-2}) bias if dropped) is added by the even-parity
+    # gap rule in x = r^2.  An r-space left_edge=0.0 extension
+    # would go strongly negative for axis_gap >= 1 gaps, making
+    # the discrete energy norm indefinite (NaN via sqrt) -- see
+    # fd.radial_axis_gap_weights.
+    w = build_integration_weights(rs, fd_order)
+    y_weights = w * rs + jnp.asarray(
+        radial_axis_gap_weights(np.asarray(rs), fd_order),
+        dtype=sharding.float_type,
+    )
+    if not np.all(np.asarray(y_weights) > 0):
+        raise ValueError(
+            "Radial quadrature weights are not strictly positive "
+            "(the discrete energy norm would be indefinite): "
+            "geo.axis_gap is too large for this ny, or the custom "
+            "wall grid is pathological near the axis."
+        )
 
     D1_even, _, D1_odd, _, D1_pos, _ = build_parity_reduced_matrices(
         rs, fd_order
     )
     return rs, D1_even, D1_odd, D1_pos, y_weights, inv_r
+
+
+def interpolate_to_axis(
+    arr: Array,
+    rs: Array,
+    axis: int = 0,
+    order: int | None = None,
+    parity: str | None = None,
+) -> Array:
+    r"""Interpolate an r-dependent array to the centreline `$r = 0$`.
+
+    The radial grid excludes `$r = 0$` by construction (see
+    :func:`build_radial_cgl_grid`); this evaluates radial data at
+    the axis by Fornberg extrapolation from the ``order + 1``
+    innermost grid points, for any array carrying an r-varying
+    axis (spectral or physical, real or complex, any number of
+    other axes).  Runs host-side (weights are NumPy); pass
+    addressable (single-device or fully replicated) arrays.
+
+    Parameters
+    ----------
+    arr:
+        Input array with ``arr.shape[axis] == len(rs)``.
+    rs:
+        Ascending radial grid on `$(0, 1]$` (host-readable, e.g.
+        ``np.asarray(derived_params.wall_normal_grid)``).
+    axis:
+        The radial axis of *arr*.
+    order:
+        Stencil width minus one; defaults to
+        ``params.res.fd_order``.
+    parity:
+        ``None`` (default): one-sided extrapolation -- the only
+        safe general choice for *physical-space* arrays, whose
+        `$r \to -r$` continuation pairs with
+        `$\theta \to \theta + \pi$` and is therefore not a
+        per-column symmetry.  ``"even"``: the data is smooth and
+        even in `$r$` (an `$m_{\mathrm{eff}}$`-even spectral
+        component, e.g. the mean mode of `$u_z$`); an even
+        analytic function is a function of `$r^2$`, so the
+        stencil interpolates in `$x = r^2$` (exact for even
+        polynomials of degree `$\le 2\,\mathrm{order}$`).
+        ``"odd"``: the data vanishes on the axis identically
+        (`$m_{\mathrm{eff}}$`-odd components); returns zeros.
+
+    Returns
+    -------
+    :
+        *arr* with the radial axis removed, evaluated at
+        `$r = 0$`.
+    """
+    if parity not in (None, "even", "odd"):
+        raise ValueError(f"unknown parity {parity!r}")
+    if order is None:
+        order = params.res.fd_order
+    moved = jnp.moveaxis(arr, axis, 0)
+    if parity == "odd":
+        return jnp.zeros_like(moved[0])
+    rs_np = np.asarray(rs, dtype=np.float64)
+    n = min(order + 1, len(rs_np))
+    nodes = rs_np[:n] ** 2 if parity == "even" else rs_np[:n]
+    w = fornberg_weights(0.0, nodes, 0)[:, 0]
+    w_jax = jnp.asarray(w, dtype=sharding.float_type)
+    return jnp.tensordot(w_jax, moved[:n], axes=(0, 0))
 
 
 # ── SPIKE block-partitioned operator builders ─────────────────────
@@ -991,9 +1113,9 @@ class CylindricalFlow:
 
     Subclasses must set ``base_flow`` and ``curl_base_flow``
     *after* calling
-    ``super().__post_init__()``, which builds the half-CGL
-    radial grid, parity-reduced FD matrices, and all per-mode
-    IMM operators.
+    ``super().__post_init__()``, which builds the radial CGL
+    grid (``geo.axis_gap``), parity-reduced FD matrices, and
+    all per-mode IMM operators.
 
     The velocity state is stored in decoupled form
     `$(u_z, u_+, u_-)$` where
@@ -1074,11 +1196,11 @@ class CylindricalFlow:
     def __post_init__(self) -> None:
         r"""Build radial grid, FD matrices, and IMM operators.
 
-        Constructs the half-CGL grid on `$(0, 1]$`, builds
-        parity-reduced FD matrices, assembles and factorises
-        `$L_k$`, `$H_{k,+}$`, `$H_{k,-}$`, `$H_{k,z}$`
-        directly on the device, then derives all homogeneous
-        IMM data.
+        Constructs the radial CGL grid on `$(0, 1]$` (shaped by
+        ``geo.axis_gap``), builds parity-reduced FD matrices,
+        assembles and factorises `$L_k$`, `$H_{k,+}$`,
+        `$H_{k,-}$`, `$H_{k,z}$` directly on the device, then
+        derives all homogeneous IMM data.
         """
         Nr = params.res.ny
         self.rs, D1_even, D1_odd, D1_pos, self.y_weights, self.inv_r = (
@@ -1088,6 +1210,7 @@ class CylindricalFlow:
                 params.geo.wall_grid,
                 params.geo.grid_type,
                 params.geo.grid_stretch,
+                params.geo.axis_gap,
             )
         )
         self.inv_r2 = self.inv_r**2
