@@ -121,21 +121,23 @@ def run_unit_checks() -> bool:
         params.step.dt = old_dt
         assert changes == [], ("step.dt", changes)
 
-        # geo.axis_gap is compared only for cylindrical-family
-        # systems: a snapshot lacking the key (pre-axis_gap era) is
-        # not a change for a system without an axis, but *is* one
-        # for the pipe (its grid really changed under the
-        # axis_gap = 1 default).
-        snap_no_gap = params.model_dump(mode="json")
-        del snap_no_gap["geo"]["axis_gap"]
-        changes = trajectory_defining_changes(snap_no_gap)
-        assert changes == [], ("axis_gap non-cylindrical", changes)
-        old_system = params.phys.system
-        params.phys.system = "pipe"
-        changes = trajectory_defining_changes(snap_no_gap)
-        params.phys.system = old_system
-        assert any(c.startswith("geo.axis_gap:") for c in changes), (
-            "axis_gap pipe",
+        # A legacy key the current model no longer defines (e.g. the
+        # retired geo.axis_gap) is ignored -- it is absent from the
+        # current model_dump, so a pre-grid_type snapshot resumes as
+        # a clean continuation.
+        snap_legacy = params.model_dump(mode="json")
+        snap_legacy["geo"]["axis_gap"] = 0
+        changes = trajectory_defining_changes(snap_legacy)
+        assert changes == [], ("legacy axis_gap ignored", changes)
+
+        # Switching geo.grid_type (rigged <-> half-CGL) *is* a
+        # trajectory change (the radial grid differs).
+        old_gt = params.geo.grid_type
+        params.geo.grid_type = "half-cgl"
+        changes = trajectory_defining_changes(snap)
+        params.geo.grid_type = old_gt
+        assert any(c.startswith("geo.grid_type:") for c in changes), (
+            "grid_type change",
             changes,
         )
     except AssertionError as exc:
@@ -144,6 +146,48 @@ def run_unit_checks() -> bool:
 
     print(f"  PASS  {name}")
     return True
+
+
+def run_grid_validation_checks() -> bool:
+    """Offline unit: ``geo.grid_type='half-cgl'`` validation rules."""
+    from dnsjax.parameters import params, validate_parameters
+
+    name = "grid_type half-cgl validation"
+    save = (
+        params.phys.system,
+        params.geo.grid_type,
+        params.step.scheme,
+    )
+
+    def raises() -> bool:
+        try:
+            validate_parameters()
+        except ValueError:
+            return True
+        return False
+
+    ok = True
+    try:
+        # half-CGL on a non-cylindrical system -> rejected.
+        params.phys.system = "plane-couette"
+        params.geo.grid_type = "half-cgl"
+        params.step.scheme = "iterative-cn"
+        ok = ok and raises()
+
+        # half-CGL on the pipe with the explicit cnab2 scheme ->
+        # rejected (destabilises the explicit scheme near the axis).
+        params.phys.system = "pipe"
+        params.step.scheme = "cnab2"
+        ok = ok and raises()
+
+        # half-CGL on the pipe with iterative-cn -> accepted.
+        params.step.scheme = "iterative-cn"
+        ok = ok and not raises()
+    finally:
+        (params.phys.system, params.geo.grid_type, params.step.scheme) = save
+
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}")
+    return ok
 
 
 # ── integration helpers ──────────────────────────────────────────────
@@ -351,10 +395,9 @@ if __name__ == "__main__":
     cli = parser.parse_args()
 
     passed = failed = 0
+    offline = [run_unit_checks(), run_grid_validation_checks()]
     for ok in (
-        [run_unit_checks()]
-        if cli.unit_only
-        else [run_unit_checks(), run_integration(cli.timeout)]
+        offline if cli.unit_only else [*offline, run_integration(cli.timeout)]
     ):
         if ok:
             passed += 1

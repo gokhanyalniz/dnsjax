@@ -2,8 +2,8 @@
 
 Tests cover:
 
-1. Radial CGL grid: ``axis_gap`` ladder (innermost-point formula,
-   monotonicity, endpoint) and bit-exact legacy ``g = 0`` equality.
+1. Radial CGL grid: rigged-CGL (g=1, default) vs half-CGL (g=0)
+   innermost-point formula, ~2x r_0 ratio, and bit-exact legacy g=0.
 2. Parity-reduced FD matrices vs full auxiliary grid reference.
 3. `$A_{\\mathrm{base}}$` dense operator vs NumPy reference.
 4. ``_abase_matvec`` matrix-free vs dense reference.
@@ -119,8 +119,8 @@ def _build_Lk_reference_cyl(
 # Group A: Grid and FD matrices
 
 
-def test_radial_cgl_grid_ladder() -> None:
-    """Radial CGL grid: axis_gap ladder + legacy g = 0 equality."""
+def test_radial_cgl_grid_rigged_vs_half() -> None:
+    """Radial CGL grid: rigged (g=1, default) vs half-CGL (g=0)."""
     for Nr in [8, 16, 32]:
         # g = 0 reproduces the legacy half-CGL grid bit-exactly
         # (identical expression: even auxiliary total 2 Nr).
@@ -132,31 +132,23 @@ def test_radial_cgl_grid_ladder() -> None:
             np.asarray(legacy),
         ), f"Nr={Nr}: g=0 != legacy half-CGL grid"
 
-        r0_prev = 0.0
-        for g in range(5):
+        for g in (0, 1):
             rs = np.asarray(build_radial_cgl_grid(Nr, g))
             assert rs.shape == (Nr,), f"g={g}: wrong shape {rs.shape}"
             assert np.all(rs > 0), f"Nr={Nr}, g={g}: non-positive"
             assert np.all(np.diff(rs) > 0), f"g={g}: not increasing"
-            assert_allclose(
-                rs[-1],
-                1.0,
-                atol=1e-14,
-                err_msg=f"Nr={Nr}, g={g}: last point != 1",
-            )
-            # Innermost point on the ladder:
-            # r_0 = sin(pi (g+1) / (2 (2 Nr + g - 1)))
+            assert_allclose(rs[-1], 1.0, atol=1e-14)
+            # Innermost point r_0 = sin(pi (g+1) / (2 (2 Nr + g - 1))).
             r0 = np.sin(np.pi * (g + 1) / (2 * (2 * Nr + g - 1)))
-            assert_allclose(
-                rs[0],
-                r0,
-                atol=1e-14,
-                err_msg=f"Nr={Nr}, g={g}: innermost point",
-            )
-            assert rs[0] > r0_prev, f"g={g}: ladder not monotone"
-            r0_prev = rs[0]
+            assert_allclose(rs[0], r0, atol=1e-14, err_msg=f"g={g} r0")
 
-    # The default axis_gap is 1.
+        # Rigged r0 is ~2x the half-CGL r0 (the cnab2 CFL relief);
+        # the ratio approaches 2 from below as Nr grows.
+        r0_half = np.asarray(build_radial_cgl_grid(Nr, 0))[0]
+        r0_rig = np.asarray(build_radial_cgl_grid(Nr, 1))[0]
+        assert 1.8 < r0_rig / r0_half < 2.0, f"Nr={Nr}: ratio"
+
+    # The default axis_gap is 1 (rigged-CGL).
     assert np.array_equal(
         np.asarray(build_radial_cgl_grid(16)),
         np.asarray(build_radial_cgl_grid(16, axis_gap=1)),
@@ -706,23 +698,27 @@ def test_cylindrical_integration_weights() -> None:
                 err_msg=f"Nr={Nr}, degree={d}",
             )
 
-    # Full-disc y_weights (interior rule + even-parity axis-gap
-    # completion): strictly positive for every axis_gap -- the
-    # energy norm must be definite -- and exact for even
-    # integrands (sum = int r dr = 1/2, int r^2 r dr = 1/4).
+    # Full-disc y_weights (the parity-free axis-augmented rule):
+    # strictly positive (definite energy norm) for both grids and
+    # exact for BOTH even and odd integrands -- sum = int r dr = 1/2,
+    # int r^2 * r dr = 1/4, and int r * r dr = 1/3 (the ODD guard the
+    # retired even-parity gap rule failed on, e.g. the mean u_theta).
     from dnsjax.geometries.wall_bounded.cylindrical import (
         build_cylindrical_grid,
     )
 
-    for g in (0, 1, 2, 3):
-        _, _, _, _, yw, _ = build_cylindrical_grid(16, p, axis_gap=g)
+    for gt, g in (("half-cgl", 0), (None, 1)):
+        _, _, _, _, yw, _ = build_cylindrical_grid(16, p, grid_type=gt)
         rs_g = np.asarray(build_radial_cgl_grid(16, g))
         yw_np = np.asarray(yw)
-        assert np.all(yw_np > 0), f"g={g}: negative y_weights"
-        assert_allclose(float(yw_np.sum()), 0.5, atol=1e-12, err_msg=f"g={g}")
+        assert np.all(yw_np > 0), f"grid_type={gt}: negative y_weights"
+        assert_allclose(float(yw_np.sum()), 0.5, atol=1e-12)  # f=1
         assert_allclose(
-            float(yw_np @ rs_g**2), 0.25, atol=1e-12, err_msg=f"g={g}"
+            float(yw_np @ rs_g),
+            1.0 / 3.0,
+            atol=1e-12,  # f=r (ODD)
         )
+        assert_allclose(float(yw_np @ rs_g**2), 0.25, atol=1e-12)  # r^2
 
 
 # Group E: Centreline (r = 0) interpolation
@@ -802,6 +798,65 @@ def test_interpolate_to_axis_multidim() -> None:
     w = fornberg_weights(0.0, rs[:n], 0)[:, 0]
     ref = np.tensordot(w, a[:n], axes=(0, 0))
     assert_allclose(v0, ref, atol=1e-13)
+
+
+def test_axis_extrapolation_weights_shared_leaf() -> None:
+    """``interpolate_to_axis`` and the JAX-free
+    ``fd.axis_extrapolation_weights`` leaf (also used by the rigged
+    interpolation matrix) agree on the even-parity axis value."""
+    from dnsjax.fd import axis_extrapolation_weights
+
+    Nr = 16
+    rs = np.asarray(build_radial_cgl_grid(Nr))
+    order = params.res.fd_order
+    f = np.cos(0.7 * rs**2) + 0.2 * rs**2  # even in r
+    via_leaf = float(axis_extrapolation_weights(rs, order, "even") @ f)
+    via_interp = float(interpolate_to_axis(jnp.asarray(f), rs, parity="even"))
+    assert_allclose(via_leaf, via_interp, atol=1e-13)
+    # Odd parity: the leaf returns all-zero weights (f(0) = 0).
+    assert np.all(axis_extrapolation_weights(rs, order, "odd") == 0.0)
+
+
+def test_parity_dispatch_interpolation() -> None:
+    """The ``__main__`` spectral parity-tuple resume dispatch: applying
+    ``T_even``/``T_odd`` per azimuthal mode (u_z parity ``(-1)^m``,
+    u_pm parity ``(-1)^{m+1}``) to a parity-consistent state recovers
+    the field on the new radial grid to machine precision.  Mirrors
+    ``_interpolate_if_needed``'s tuple branch and layout (3, r, m, kz)."""
+    from dnsjax.fd import cgl_parity_interpolation_matrices
+    from dnsjax.operators import complex_harmonics
+
+    ny_old, ny_new, nz, nkz = 16, 24, 8, 3
+    ro = np.asarray(build_radial_cgl_grid(ny_old, 1))
+    rn = np.asarray(build_radial_cgl_grid(ny_new, 1))
+    m = np.asarray(complex_harmonics(nz))
+    nm = len(m)  # azimuthal-mode axis length (state layout)
+
+    def field(rr, sigma):  # smooth, parity sigma in r
+        return np.cos(0.5 * np.pi * rr) if sigma > 0 else rr * np.cos(rr)
+
+    def build(grid):
+        s = np.zeros((3, len(grid), nm, nkz), dtype=np.complex128)
+        for j, mm in enumerate(m):
+            sig_z = 1.0 if mm % 2 == 0 else -1.0
+            for k in range(nkz):
+                s[0, :, j, k] = field(grid, sig_z) * (1 + 0.1 * k)
+                s[1, :, j, k] = field(grid, -sig_z) * (1 + 0.1 * k)
+                s[2, :, j, k] = field(grid, -sig_z) * (0.5 + 0.1 * k)
+        return s
+
+    src = jnp.asarray(build(ro))
+    t_even, t_odd = cgl_parity_interpolation_matrices(ny_old, ny_new, 1, 1, 4)
+    m_is_even = m % 2 == 0
+    t_p = np.where(m_is_even[:, None, None], t_even, t_odd)  # u_z
+    t_v = np.where(m_is_even[:, None, None], t_odd, t_even)  # u_pm
+    t_p_j = jnp.asarray(t_p, dtype=src.dtype)
+    t_v_j = jnp.asarray(t_v, dtype=src.dtype)
+    s0 = jnp.einsum("mij, jmk -> imk", t_p_j, src[0])
+    s1 = jnp.einsum("mij, jmk -> imk", t_v_j, src[1])
+    s2 = jnp.einsum("mij, jmk -> imk", t_v_j, src[2])
+    out = np.asarray(jnp.stack([s0, s1, s2]))
+    assert_allclose(out, build(rn), atol=1e-8)
 
 
 def test_centerline_mean_axial_velocity() -> None:

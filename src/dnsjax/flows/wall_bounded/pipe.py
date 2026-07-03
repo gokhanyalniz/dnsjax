@@ -2,7 +2,8 @@ r"""Pipe flow: pressure-driven flow through a circular pipe.
 
 This module defines the ``PipeFlow`` dataclass that holds the
 pipe-flow-specific base flow.  Geometry-general infrastructure
-(radial CGL grid shaped by ``geo.axis_gap``, parity-reduced FD
+(radial CGL grid -- rigged-CGL by default, half-CGL via
+``geo.grid_type``, parity-reduced FD
 matrices, IMM operators, cylindrical IMM iteration, predict /
 correct / norm, banded / dense LU solvers) is inherited from
 ``geometries.wall_bounded.cylindrical.CylindricalFlow``.

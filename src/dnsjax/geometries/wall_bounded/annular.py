@@ -95,6 +95,7 @@ from jax.sharding import PartitionSpec as P
 from ...fd import (
     build_diff_matrices,
     build_integration_weights,
+    clenshaw_curtis_weights,
     local_grid_spacing,
     tanh_two_sided_grid,
 )
@@ -379,7 +380,11 @@ def build_annular_grid(
         Integration weights with radial Jacobian `$w_j r_j$`,
         satisfying `$\sum_j w_j r_j f_j \approx
         \int_{r_1}^{r_2} f\,r\,dr$` (the grid spans the full annulus,
-        so no edge extension is needed).
+        so no edge extension is needed).  For the default CGL grid
+        these are affine-mapped **Clenshaw-Curtis** weights
+        (spectral for smooth integrands, exact for the smooth
+        base/mean profiles); custom / tanh grids fall back to the
+        ``fd_order`` composite rule.
     inv_r:
         `$1/r$` on the grid, shape ``(ny,)``.
     """
@@ -403,13 +408,33 @@ def build_annular_grid(
     elif grid_type == "tanh":
         xi = tanh_two_sided_grid(ny, grid_stretch)  # [-1, 1]
         rs = jnp.asarray(mid + half * xi, dtype=sharding.float_type)
+        is_cgl = False
     else:
         xi = -np.cos(np.arange(ny) * np.pi / (ny - 1))  # CGL [-1, 1]
         rs = jnp.asarray(mid + half * xi, dtype=sharding.float_type)
+        is_cgl = True
 
     inv_r = 1.0 / rs
-    w = build_integration_weights(np.asarray(rs), fd_order)
-    y_weights = jnp.asarray(w, dtype=sharding.float_type) * rs
+    if is_cgl:
+        # The default annular grid is a CGL grid affinely mapped to
+        # [r1, r2], so Clenshaw-Curtis quadrature applies: with
+        # dr = half * dxi,  int_{r1}^{r2} f r dr = half * int_{-1}^1
+        # f(r(xi)) r(xi) dxi.  Fold the affine scale and the Jacobian
+        # r_j into the CC weights.  Spectral for smooth integrands
+        # (exact for the smooth base / mean profiles: flow rate,
+        # bulk-velocity response) -- there is no axis, so no parity
+        # subtlety.
+        y_weights = (
+            jnp.asarray(
+                half * clenshaw_curtis_weights(ny), dtype=sharding.float_type
+            )
+            * rs
+        )
+    else:
+        # Custom / tanh grids are not CGL: use the general fd_order
+        # composite rule times the Jacobian.
+        w = build_integration_weights(np.asarray(rs), fd_order)
+        y_weights = jnp.asarray(w, dtype=sharding.float_type) * rs
     D1, D2 = build_diff_matrices(np.asarray(rs), fd_order)
     return rs, D1, D2, y_weights, inv_r
 

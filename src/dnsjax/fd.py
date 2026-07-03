@@ -13,10 +13,18 @@ fornberg_weights:
 build_diff_matrices:
     Assemble first- and second-derivative matrices D1, D2.
 build_integration_weights:
-    Composite polynomial quadrature weights on a non-uniform grid.
-radial_axis_gap_weights:
-    Even-parity (in `$x = r^2$`) quadrature completion of the
-    cylindrical axis gap `$[0, r_0]$`.
+    Composite polynomial quadrature weights on a non-uniform grid
+    (``fd_order``-accurate; the general-purpose rule).
+clenshaw_curtis_weights:
+    Clenshaw-Curtis quadrature weights on a CGL grid (spectral for
+    smooth integrands; used by the full-CGL Cartesian and annular
+    grids, where it is exact for smooth base/mean profiles).
+cgl_radial_quadrature_weights:
+    Parity-specific spectral radial quadrature ``(w_even, w_odd)`` for
+    a cylindrical half-CGL / rigged-CGL grid (Clenshaw-Curtis with
+    weight ``r`` on ``[0,1]``, baking in the ``r=0`` reconstruction;
+    positive). The pipe's spectral analogue of the Cartesian/annular
+    CC; ``None`` for a non-CGL grid (caller uses the composite rule).
 local_grid_spacing:
     Per-node local grid spacing (the CFL advective length scale).
 tanh_two_sided_grid:
@@ -25,35 +33,36 @@ tanh_two_sided_grid:
 tanh_one_sided_grid:
     One-sided tanh-stretched radial grid on (0, 1] (clustering
     at the outer wall, no point at r = 0).
+axis_extrapolation_weights:
+    Weights to evaluate a radial field at the axis `$r = 0$` (even /
+    odd / one-sided); a shared JAX-free leaf.
 is_cgl_grid:
     Detect whether a grid is Chebyshev-Gauss-Lobatto.
+cgl_axis_gap:
+    Detect a cylindrical radial CGL grid's axis gap (0 = half-CGL,
+    1 = rigged-CGL, None = neither).
 chebyshev_interpolation_matrix:
     CGL-to-CGL interpolation via Chebyshev coefficient
     truncation/extension.
-barycentric_interpolation_matrix:
-    General interpolation via barycentric Lagrange formula (global
-    degree-``N-1`` polynomial; safe only on true CGL grids).
+cgl_parity_interpolation_matrices:
+    Spectral parity interpolation between cylindrical radial CGL
+    grids (half / rigged, any combination); returns
+    ``(T_even, T_odd)``.
 local_interpolation_matrix:
     General interpolation via local ``fd_order+1``-point Fornberg
     stencils (bounded Lebesgue constant on any monotone grid; the
-    fallback used by ``build_interpolation_matrix``).
+    fallback for custom / tanh / undetected grids).
 build_interpolation_matrix:
     Dispatcher selecting the optimal interpolation method.
 
-The half-CGL-specific helpers (``is_half_cgl_grid``,
-``half_cgl_interpolation_matrices`` and their
-``build_interpolation_matrix`` dispatch branch) are retired --
-commented out pending full removal once the ``geo.axis_gap = 1``
-default radial grid proves stable.  Cylindrical wall-normal
-interpolation now takes the local ``fd_order``-stencil path
-(``local_interpolation_matrix``): a *global* barycentric Lagrange
-fit on the lopsided half-CGL point set has a Lebesgue constant of
-``1e9``--``1e15`` (growing with ``ny``) and amplifies any
-non-polynomial field content into a blow-up on resume; the local
-stencil keeps it ``O(10)``.  The retired parity fast-path avoided
-this by mirroring across the axis into a full symmetric grid --
-unnecessary for pure interpolation, where the positive-side nodes
-determine a smooth local interpolant on their own.
+Cylindrical wall-normal interpolation on resume takes the spectral
+parity path (``cgl_parity_interpolation_matrices``) for the detected
+half-CGL / rigged-CGL grids (near machine precision); custom / tanh /
+undetected grids use the local ``fd_order`` stencil
+(``local_interpolation_matrix``).  A *global* barycentric Lagrange
+fit is spectrally optimal only on a true CGL grid and blows up on the
+lopsided half-CGL point set (Lebesgue ``1e9``--``1e15``), so it is
+not used here.
 """
 
 import numpy as np
@@ -194,9 +203,11 @@ def build_integration_weights(
         the edge.  Note: the extrapolated weights oscillate
         and turn **negative** once the gap approaches the
         local spacing -- the cylindrical radial direction
-        (whose ``geo.axis_gap >= 1`` grids have exactly such
-        a gap at the axis) therefore no longer uses this;
-        it adds :func:`radial_axis_gap_weights` instead.
+        (with a gap `$[0, r_0]$` at the axis) therefore does
+        **not** use this; ``build_cylindrical_grid`` instead
+        integrates `$f\,r$` on the axis-*augmented* grid
+        `$[0, r_0, \ldots]$` (the axis `$r=0$` is a real,
+        interpolated node, so the weights stay positive).
 
     Returns
     -------
@@ -240,73 +251,111 @@ def build_integration_weights(
     return w
 
 
-def radial_axis_gap_weights(r: ndarray, p: int) -> ndarray:
-    r"""Axis-gap quadrature weights for `$[0, r_0]$` by even parity.
+def clenshaw_curtis_weights(ny: int) -> ndarray:
+    r"""Clenshaw-Curtis quadrature weights for a CGL grid.
 
-    Completes the `$[r_0, 1]$` composite rule
-    (:func:`build_integration_weights` *without* ``left_edge``,
-    times the Jacobian `$r_j$`) to the full-disc integral
-    `$\int_0^1 f\,r\,dr$` of a radial grid that excludes the axis.
+    For ``ny`` Chebyshev-Gauss-Lobatto points
+    `$y_j = -\cos(j\pi / N)$`, `$j = 0, \ldots, N$` with
+    `$N = \texttt{ny} - 1$`, returns the weights `$w_j$` such that
+    `$\int_{-1}^{1} f(y)\,dy \approx \sum_j w_j f(y_j)$`, exact for
+    polynomials of degree `$\le N$` (spectral accuracy for smooth
+    integrands).  Works for both odd and even *ny*.
 
-    Every radial integrand of the solver is *even* in `$r$` under
-    the parity continuation (energies and dissipation are
-    quadratic forms `$|u|^2$` of fields with `$u(-r) = \pm u(r)$`
-    per mode), and a smooth even function is a function of
-    `$x = r^2$`.  The gap mass is therefore
-
-    .. math::
-        \int_0^{r_0} f(r)\,r\,dr
-        = \tfrac{1}{2} \int_0^{x_0} f(\sqrt{x})\,dx,
-        \qquad x_0 = r_0^2,
-
-    integrated exactly for the *quadratic* interpolant of `$f$`
-    in `$x$` through the innermost 3 nodes `$x_j = r_j^2$`
-    (exact for even polynomials of degree `$\le 4$` in `$r$`;
-    for odd integrands the term is an `$O(r_0^3)$`-small model
-    error -- such integrands do not occur in the solver's
-    integrals).  The stencil is deliberately *low order*: the
-    gap mass is only `$O(r_0^2)$`, so the quadratic rule's
-    error is already subdominant to the interior composite rule
-    at any ``fd_order``, while higher-order stencils in `$x$`
-    oscillate into **negative** combined weights once the gap
-    ratio `$x_0/(x_1 - x_0) = (g{+}1)^2/(4g+8)$` approaches 1
-    (``geo.axis_gap`` `$g \ge 3$`, independent of resolution).
-    The retired r-space ``left_edge=0.0`` extrapolation went
-    negative already at `$g \ge 1$`, making the discrete energy
-    norm indefinite.  The quadratic rule keeps all weights
-    positive for every `$g \le 3$` (and `$g = 4$` at
-    `$N_r \ge 12$`); the caller verifies positivity at build.
+    Used by the full-CGL wall-normal grids (Cartesian) and, after an
+    affine map `$[-1,1] \to [r_1, r_2]$` with the Jacobian folded in,
+    the annular radial grid; there it is spectral for smooth
+    integrands and exact for the smooth base/mean profiles (flow
+    rate, bulk-velocity response).  The **cylindrical** radial grid
+    (half of a CGL, with the coordinate axis) cannot use it: the
+    `$r$`-Jacobian makes the even extension of `$g = f r$` kink at the
+    axis, so a single Clenshaw-Curtis vector is spectral for only one
+    parity of `$f$` -- that grid uses the axis-augmented
+    ``build_integration_weights`` rule instead (correct for both
+    parities).
 
     Parameters
     ----------
-    r:
-        Radial grid on `$(0, 1]$`, ascending, shape ``(Nr,)``.
-    p:
-        Accuracy order of the surrounding rule (unused beyond a
-        stencil cap; kept for signature symmetry).
+    ny:
+        Number of CGL grid points (`$N + 1$`).
 
     Returns
     -------
     :
-        Weights of shape ``(Nr,)`` (only the innermost 3 entries
-        nonzero), to be **added** to the ``w * r`` weights of
-        the `$[r_0, 1]$` rule.
+        Weight array of shape ``(ny,)``.
+
+    References
+    ----------
+    Trefethen, *Spectral Methods in MATLAB* (2000), ch. 12.
     """
+    N = ny - 1
+    theta = np.arange(ny, dtype=np.float64) * np.pi / N
+
+    if N % 2 == 0:  # N even (ny odd)
+        M = N // 2 - 1
+        w_end = 1.0 / (N * N - 1)
+    else:  # N odd (ny even)
+        M = (N - 1) // 2
+        w_end = 1.0 / (N * N)
+
+    if M > 0:
+        k = np.arange(1, M + 1, dtype=np.float64)
+        cos_terms = np.cos(2 * k[None, :] * theta[:, None])
+        coeffs = 2.0 / (4 * k**2 - 1)
+        v = 1.0 - np.sum(cos_terms * coeffs[None, :], axis=1)
+    else:
+        v = np.ones(ny, dtype=np.float64)
+
+    if N % 2 == 0:
+        v = v - np.cos(N * theta) / (N * N - 1)
+
+    w = (2.0 / N) * v
+    w[0] = w_end
+    w[-1] = w_end
+    return w
+
+
+def axis_extrapolation_weights(
+    r: ndarray, order: int, parity: str | None = "even"
+) -> ndarray:
+    r"""Weights to evaluate a radial field at the axis `$r = 0$`.
+
+    Returns ``w`` of shape ``(len(r),)`` with
+    `$f(0) \approx \sum_j w_j\,f(r_j)$` for a radial grid that
+    excludes the axis (the cylindrical ``build_radial_cgl_grid``).
+    Only the innermost ``order + 1`` entries are nonzero (Fornberg
+    weights evaluated at the point 0):
+
+    - ``parity="even"``: the field is smooth and even in `$r$`, so
+      a function of `$x = r^2$`; the stencil interpolates in `$x$`
+      (exact for even polynomials of degree
+      `$\le 2\,\mathrm{order}$` -- superconvergent).
+    - ``parity="odd"``: the field vanishes at the axis identically;
+      returns zeros.
+    - ``parity=None``: one-sided Lagrange extrapolation in `$r$`
+      (no symmetry assumption).
+
+    JAX-free shared leaf: used by ``interpolate_to_axis`` (runtime,
+    cylindrical) and by :func:`cgl_parity_interpolation_matrices` to
+    reconstruct the rigged grid's dropped centre node.
+    """
+    if parity not in (None, "even", "odd"):
+        raise ValueError(f"unknown parity {parity!r}")
     r = np.asarray(r, dtype=np.float64)
-    n = min(3, p + 1, len(r))
-    x = r[:n] ** 2
-    # Normalise by the outermost stencil node for conditioning.
-    scale = x[-1]
-    s = x / scale
-    s0 = s[0]
-    ks = np.arange(n)
-    # (1/2) int_0^{x_0} s^k dx  with  dx = scale * ds.
-    mu = 0.5 * scale * s0 ** (ks + 1) / (ks + 1)
-    V = np.vander(s, N=n, increasing=True)
-    g = np.linalg.solve(V.T, mu)
     out = np.zeros(len(r))
-    out[:n] = g
+    if parity == "odd":
+        return out
+    n = min(order + 1, len(r))
+    nodes = r[:n] ** 2 if parity == "even" else r[:n]
+    out[:n] = fornberg_weights(0.0, nodes, 0)[:, 0]
     return out
+
+
+# RETIRED (superseded by the parity-free axis-augmented rule in
+# ``build_cylindrical_grid``: integrate ``g = f*r`` on ``[0, *rs]``
+# with the axis ``r=0`` as a free node, ``g(0)=0`` for any bounded
+# ``f``).  The even-parity (``x = r^2``) rule silently assumed every
+# radial integrand is even in ``r`` -- wrong for the odd mean
+# ``u_theta`` -- and is removed; see ``build_cylindrical_grid``.
 
 
 def local_grid_spacing(nodes: ndarray) -> ndarray:
@@ -438,24 +487,32 @@ def is_cgl_grid(y: ndarray) -> bool:
     return bool(np.allclose(y, expected, atol=1e-12))
 
 
-# RETIRED (pending removal once the ``geo.axis_gap = 1`` default
-# radial grid proves stable): the default cylindrical grid is no
-# longer the exact half-CGL grid, so nothing may special-case it;
-# cylindrical wall-normal interpolation takes the general
-# barycentric path.
-#
-# def is_half_cgl_grid(r: ndarray) -> bool:
-#     r"""Detect whether ``r`` is a half-CGL grid on `$(0, 1]$`.
-#
-#     Compares against the positive half of a `$2 N_r$`-point
-#     CGL grid.
-#     """
-#     r = np.asarray(r)
-#     Nr = len(r)
-#     N_full = 2 * Nr
-#     s = -np.cos(np.arange(N_full) * np.pi / (N_full - 1))
-#     expected = s[Nr:]
-#     return bool(np.allclose(r, expected, atol=1e-12))
+def cgl_axis_gap(r: ndarray) -> int | None:
+    r"""Detect a cylindrical radial CGL grid's axis gap.
+
+    Returns the auxiliary axis gap `$g$` such that ``r`` is the
+    positive half of a `$(2 N_r + g)$`-point CGL grid on
+    `$[-1, 1]$` (`$N_r$` = ``len(r)``):
+
+    - ``0`` -- half-CGL (even total, staggered `$r_0 = \Delta r/2$`),
+    - ``1`` -- rigged-CGL (odd total, axis centre node dropped,
+      `$r_0 = \Delta r$`),
+    - ``None`` -- neither (a tanh or custom grid).
+
+    Used to dispatch the spectral parity interpolation
+    (:func:`cgl_parity_interpolation_matrices`); a ``None`` grid
+    falls back to :func:`local_interpolation_matrix`.
+    """
+    r = np.asarray(r)
+    Nr = len(r)
+    if Nr < 2:
+        return None
+    for g in (0, 1):
+        N_full = 2 * Nr + g
+        s = -np.cos(np.arange(N_full) * np.pi / (N_full - 1))
+        if np.allclose(r, s[Nr + g :], atol=1e-12):
+            return g
+    return None
 
 
 # ── Interpolation matrices ───────────────────────────────────
@@ -532,148 +589,181 @@ def chebyshev_interpolation_matrix(ny_old: int, ny_new: int) -> ndarray:
     return S @ A
 
 
-# RETIRED -- see the note above ``is_half_cgl_grid``.
-#
-# def half_cgl_interpolation_matrices(
-#     nr_old: int, nr_new: int
-# ) -> tuple[ndarray, ndarray]:
-#     r"""Parity-aware half-CGL-to-half-CGL interpolation.
-#
-#     Each velocity component at azimuthal mode `$m$` has
-#     definite parity `$\sigma = \pm 1$` under `$r \to -r$` on
-#     the auxiliary grid:
-#
-#     1.  **Extend** `$N_r^{\mathrm{old}}$` half-grid values to
-#         `$2 N_r^{\mathrm{old}}$` full CGL values via
-#         `$f(-r_j) = \sigma\,f(r_j)$`.
-#
-#     2.  **Interpolate** via full CGL Chebyshev:
-#         `$2 N_r^{\mathrm{old}} \to 2 N_r^{\mathrm{new}}$`.
-#
-#     3.  **Restrict** to the positive half
-#         (`$N_r^{\mathrm{new}}$` points).
-#
-#     The combined matrix
-#     `$T_\sigma = R\,T_{\mathrm{full}}\,E_\sigma$` has shape
-#     `$(N_r^{\mathrm{new}}, N_r^{\mathrm{old}})$`.
-#
-#     Parity assignment per velocity component:
-#
-#     ========  ======================  ==========================
-#     field     `$m_{\mathrm{eff}}$`    parity `$\sigma$`
-#     ========  ======================  ==========================
-#     `$u_z$`   `$m$`                   `$(-1)^m$`
-#     `$u_+$`   `$m + 1$`              `$(-1)^{m+1}$`
-#     `$u_-$`   `$m - 1$`              `$(-1)^{m+1}$`
-#     ========  ======================  ==========================
-#
-#     Parameters
-#     ----------
-#     nr_old:
-#         Number of source half-CGL radial points.
-#     nr_new:
-#         Number of target half-CGL radial points.
-#
-#     Returns
-#     -------
-#     T_even:
-#         Interpolation matrix for even-parity fields
-#         (`$\sigma = +1$`), shape ``(nr_new, nr_old)``.
-#     T_odd:
-#         Interpolation matrix for odd-parity fields
-#         (`$\sigma = -1$`), shape ``(nr_new, nr_old)``.
-#     """
-#     # Full CGL interpolation: 2*nr_old -> 2*nr_new
-#     T_full = chebyshev_interpolation_matrix(2 * nr_old, 2 * nr_new)
-#
-#     # Extension matrices E_sigma: (2*nr_old, nr_old)
-#     # Ghost half = sigma * physical half reversed.
-#     E_even = np.zeros((2 * nr_old, nr_old))
-#     E_odd = np.zeros((2 * nr_old, nr_old))
-#     for k in range(nr_old):
-#         # Physical half (indices nr_old .. 2*nr_old-1)
-#         E_even[nr_old + k, k] = 1.0
-#         E_odd[nr_old + k, k] = 1.0
-#         # Ghost half (indices 0 .. nr_old-1): mirror
-#         ghost_idx = nr_old - 1 - k
-#         E_even[ghost_idx, k] = 1.0  # sigma = +1
-#         E_odd[ghost_idx, k] = -1.0  # sigma = -1
-#
-#     # Restriction: take positive half (rows nr_new .. 2*nr_new-1)
-#     R = np.zeros((nr_new, 2 * nr_new))
-#     for k in range(nr_new):
-#         R[k, nr_new + k] = 1.0
-#
-#     T_even = R @ T_full @ E_even
-#     T_odd = R @ T_full @ E_odd
-#     return T_even, T_odd
+def _cgl_completion_matrices(
+    nr: int, gap: int, order: int
+) -> tuple[ndarray, ndarray]:
+    r"""Even/odd completion matrices for a radial CGL grid.
+
+    ``E_even``, ``E_odd`` of shape ``(2*nr + gap, nr)`` map the
+    positive-half values of a half-CGL (``gap=0``) or rigged-CGL
+    (``gap=1``) grid to the full CGL grid: the negative half by parity
+    `$f(-r) = \sigma f(r)$`, and (rigged only) the dropped axis centre
+    node by :func:`axis_extrapolation_weights` for `$\sigma = +1$` (an
+    even field, smooth in `$r^2$`) or `$0$` for `$\sigma = -1$` (an odd
+    field vanishes at the axis).  Shared by the spectral parity
+    interpolation and quadrature.
+    """
+    n_full = 2 * nr + gap
+    s = -np.cos(np.arange(n_full) * np.pi / (n_full - 1))
+    rs = s[nr + gap :]
+    E_even = np.zeros((n_full, nr))
+    E_odd = np.zeros((n_full, nr))
+    for k in range(nr):
+        pos = nr + gap + k  # positive-half index
+        neg = n_full - 1 - pos  # its r -> -r mirror
+        E_even[pos, k] = 1.0
+        E_odd[pos, k] = 1.0
+        E_even[neg, k] = 1.0  # sigma = +1
+        E_odd[neg, k] = -1.0  # sigma = -1
+    if gap == 1:
+        E_even[nr, :] = axis_extrapolation_weights(rs, order, "even")
+    return E_even, E_odd
 
 
-def barycentric_interpolation_matrix(
-    y_old: ndarray, y_new: ndarray
-) -> ndarray:
-    r"""General interpolation via barycentric Lagrange formula.
+def _halfrange_r_moments(s: ndarray) -> ndarray:
+    r"""Full-CGL Lagrange moments `$W_i = \int_0^1 L_i(r)\,r\,dr$`.
 
-    Barycentric weights (Berrut & Trefethen, *SIAM Rev.* 2004):
+    A Clenshaw-Curtis rule with weight `$r$` on the half-interval
+    `$[0, 1]$`: `$\sum_i W_i P(s_i) = \int_0^1 P(r)\,r\,dr$` exactly
+    for `$P$` of degree `$\le \mathrm{len}(s) - 1$`.  Computed stably
+    in the Chebyshev basis (``W = A^T m``, `$A$` the CGL analysis
+    matrix, `$m_k = \int_0^1 T_k(r)\,r\,dr$`) -- **not** by a
+    Vandermonde solve, which is catastrophically ill-conditioned at
+    the degrees involved.
+    """
+    import numpy.polynomial.chebyshev as npc
 
-    .. math::
-        w_j = \frac{1}{\prod_{k \neq j}(x_j - x_k)}.
+    n = len(s)
+    n_cheb = n - 1
+    kk = np.arange(n)
+    cbar = np.ones(n)
+    cbar[0] = 2.0
+    cbar[-1] = 2.0
+    # Analysis matrix A: grid values -> Chebyshev coefficients.
+    a_mat = (
+        (2.0 / n_cheb)
+        * np.cos(np.outer(kk, kk) * np.pi / n_cheb)
+        / np.outer(cbar, cbar)
+    )
+    # Moments m_k = int_0^1 T_k(r) r dr (r = T_1; chebmul/chebint),
+    # with the (-1)^k from the CGL grid convention s_j = -cos(...):
+    # T_k(s_j) = (-1)^k cos(k j pi / N), so ``a_mat`` returns the
+    # coefficients up to (-1)^k (this cancels in interpolation but not
+    # against the true moments here).
+    m = np.empty(n)
+    for k in range(n):
+        t_k = np.zeros(k + 1)
+        t_k[k] = 1.0
+        anti = npc.chebint(npc.chebmul([0.0, 1.0], t_k))
+        m[k] = ((-1) ** k) * (npc.chebval(1.0, anti) - npc.chebval(0.0, anti))
+    return a_mat.T @ m
 
-    Computed in log-space for numerical stability at large
-    `$N$`.  The interpolation matrix entry is
 
-    .. math::
-        T_{ij} = L_j(x_i^{\,\mathrm{new}})
-        = \frac{w_j / (x_i - x_j)}
-               {\sum_k w_k / (x_i - x_k)},
+def cgl_radial_quadrature_weights(
+    rs: ndarray, order: int
+) -> tuple[ndarray, ndarray] | None:
+    r"""Parity-specific spectral radial quadrature weights.
 
-    with the convention `$L_j = \delta_{jk}$` when `$x_i$`
-    coincides with `$x_k$` (within tolerance ``1e-14``).
+    For a cylindrical radial CGL grid (half-CGL or rigged-CGL,
+    detected by :func:`cgl_axis_gap`) returns ``(w_even, w_odd)`` with
+    `$\sum_j w_{\sigma,j} f_j \approx \int_0^1 f(r)\,r\,dr$`
+    **spectrally** exact for a smooth field of parity `$\sigma$` in
+    `$r$`.  It completes the positive-half values to the full CGL grid
+    by parity -- baking in the `$r = 0$` reconstruction
+    (:func:`axis_extrapolation_weights`) exactly as the interpolation
+    does -- and applies the full-grid Clenshaw-Curtis rule with weight
+    `$r$` on `$[0, 1]$` (:func:`_halfrange_r_moments`):
+    `$w_\sigma = E_\sigma^{\mathsf T} W$`.  Both vectors are strictly
+    positive (a definite energy norm).
+
+    A *single* vector cannot be spectral for both parities (an even
+    and an odd integrand need different completions, and a
+    parity-agnostic radial rule needs the unavailable `$f(-r)$` -- an
+    ill-conditioned mirror extrapolation).  So the caller integrates
+    each diagnostic with the vector matching its **known** parity
+    (energy `$|u|^2$`, mean `$u_z$`, dissipation: even; mean
+    `$u_\theta$`: odd).  Returns ``None`` for a non-CGL grid (custom /
+    tanh), where the caller uses the parity-agnostic axis-augmented
+    composite rule instead.
+    """
+    g = cgl_axis_gap(rs)
+    if g is None:
+        return None
+    nr = len(rs)
+    n_full = 2 * nr + g
+    s = -np.cos(np.arange(n_full) * np.pi / (n_full - 1))
+    w_moments = _halfrange_r_moments(s)
+    e_even, e_odd = _cgl_completion_matrices(nr, g, order)
+    return e_even.T @ w_moments, e_odd.T @ w_moments
+
+
+def cgl_parity_interpolation_matrices(
+    nr_old: int,
+    nr_new: int,
+    gap_old: int,
+    gap_new: int,
+    order: int = 4,
+) -> tuple[ndarray, ndarray]:
+    r"""Spectral parity interpolation between cylindrical CGL grids.
+
+    Interpolates between two radial CGL grids -- half-CGL
+    (``gap = 0``) or rigged-CGL (``gap = 1``), in any source/target
+    combination -- at **spectral** accuracy, exploiting that each
+    velocity component at azimuthal mode `$m$` has a definite parity
+    `$\sigma = \pm 1$` under `$r \to -r$`:
+
+    1.  **Complete** the source positive half to its full CGL grid
+        (`$2 N_r^{\mathrm{old}} + g_{\mathrm{old}}$` points): the
+        negative half by parity `$f(-r) = \sigma f(r)$`, and (only
+        when `$g_{\mathrm{old}} = 1$`) the dropped axis centre node
+        by :func:`axis_extrapolation_weights` for `$\sigma = +1$`
+        (an even field is smooth in `$r^2$`) or `$0$` for
+        `$\sigma = -1$` (an odd field vanishes at the axis).
+    2.  **Interpolate** full CGL `$\to$` full CGL by Chebyshev
+        coefficients (:func:`chebyshev_interpolation_matrix`).
+    3.  **Restrict** to the target's positive half (drop its centre
+        node, if any, and the negative half).
+
+    Each step is linear, so the result is the pair of matrices
+    `$T_\sigma = R\,T_{\mathrm{full}}\,E_\sigma$`, shape
+    ``(nr_new, nr_old)``.  Parity assignment per component (the
+    caller applies `$T_{\mathrm{even}}$`/`$T_{\mathrm{odd}}$`
+    per mode): `$u_z$` `$\sigma = (-1)^m$`; `$u_\pm$`
+    `$\sigma = (-1)^{m+1}$`.
+
+    This is machine-precision for a resolved field, vastly better
+    than the ``fd_order`` :func:`local_interpolation_matrix` on
+    these grids -- used for every half/rigged cylindrical resume;
+    ``local`` handles only custom / tanh / undetected grids.
 
     Parameters
     ----------
-    y_old:
-        Source grid points, shape ``(N_old,)``.
-    y_new:
-        Target grid points, shape ``(N_new,)``.
+    nr_old, nr_new:
+        Source / target radial point counts.
+    gap_old, gap_new:
+        Source / target axis gap (0 = half-CGL, 1 = rigged-CGL).
+    order:
+        FD order for the rigged-grid axis reconstruction.
 
     Returns
     -------
-    :
-        Interpolation matrix, shape ``(N_new, N_old)``.
+    T_even, T_odd:
+        Interpolation matrices for `$\sigma = +1$` / `$\sigma = -1$`
+        fields, each shape ``(nr_new, nr_old)``.
     """
-    y_old = np.asarray(y_old, dtype=np.float64)
-    y_new = np.asarray(y_new, dtype=np.float64)
-    N_old = len(y_old)
-    N_new = len(y_new)
+    n_new_full = 2 * nr_new + gap_new
+    T_full = chebyshev_interpolation_matrix(2 * nr_old + gap_old, n_new_full)
 
-    # Barycentric weights in log-space
-    log_abs = np.zeros(N_old)
-    signs = np.ones(N_old)
-    for j in range(N_old):
-        for k in range(N_old):
-            if k == j:
-                continue
-            d = y_old[j] - y_old[k]
-            log_abs[j] += np.log(abs(d))
-            if d < 0:
-                signs[j] *= -1
-    # w_j = signs[j] * exp(-log_abs[j])
-    log_abs -= np.mean(log_abs)  # centre for overflow safety
-    w = signs * np.exp(-log_abs)
+    # Extension E_sigma: full source-CGL values from the positive half
+    # (shared with the quadrature).
+    E_even, E_odd = _cgl_completion_matrices(nr_old, gap_old, order)
 
-    T = np.zeros((N_new, N_old))
-    tol = 1e-14
-    for i in range(N_new):
-        diffs = y_new[i] - y_old
-        exact = np.where(np.abs(diffs) < tol)[0]
-        if len(exact) > 0:
-            T[i, exact[0]] = 1.0
-        else:
-            terms = w / diffs
-            T[i, :] = terms / terms.sum()
+    # Restriction R: target positive half (drops centre + negative).
+    R = np.zeros((nr_new, n_new_full))
+    for k in range(nr_new):
+        R[k, nr_new + gap_new + k] = 1.0
 
-    return T
+    return R @ T_full @ E_even, R @ T_full @ E_odd
 
 
 def local_interpolation_matrix(
@@ -685,19 +775,21 @@ def local_interpolation_matrix(
     nodes is chosen -- centred on the target where possible, clamped
     to the grid ends near the boundaries -- and the 0-th Fornberg
     weights (:func:`fornberg_weights`) evaluate the local Lagrange
-    interpolant.  Unlike :func:`barycentric_interpolation_matrix`
-    (a single global degree-``N-1`` polynomial), the local stencil
-    has a bounded Lebesgue constant on *any* monotone grid, so it is
-    safe on the lopsided radial CGL / half-CGL grids and on custom
-    stretched grids, where the global fit's Lebesgue constant reaches
-    ``1e9``--``1e15``.  Accuracy is ``order``-th order (matching the
-    solver's FD order), converging under grid refinement.
+    interpolant.  Unlike a single global degree-``N-1`` polynomial
+    fit, the local stencil has a bounded Lebesgue constant on *any*
+    monotone grid (``O(10)`` vs the global fit's ``1e9``--``1e15`` on
+    the lopsided radial CGL point set, which blows the field up on
+    resume).  Accuracy is ``order``-th order.  It is the fallback for
+    custom / tanh / undetected grids; the spectral
+    :func:`cgl_parity_interpolation_matrices` handles the detected
+    half-CGL / rigged-CGL cylindrical grids.
 
     Near the axis a target below the innermost source node (e.g. a
-    ``geo.axis_gap`` *decrease* on resume) is extrapolated by the
-    same one-sided window; the short (sub-spacing) reach keeps the
-    Lebesgue constant ``O(10)`` -- parity mirroring would sharpen it
-    but is not needed for stability.
+    rigged-to-half radial-grid change on resume of a custom grid) is
+    extrapolated by the same one-sided window; the short (sub-spacing)
+    reach keeps the Lebesgue constant ``O(10)``.  (Detected radial CGL
+    grids take the spectral :func:`cgl_parity_interpolation_matrices`
+    path, not this fallback.)
 
     Parameters
     ----------
@@ -737,24 +829,26 @@ def build_interpolation_matrix(
     y_new: ndarray,
     geometry: str,
     order: int = 4,
-) -> ndarray:
+) -> ndarray | tuple[ndarray, ndarray]:
     r"""Select the optimal interpolation method for the grids.
 
     - Cartesian with both grids CGL: Chebyshev coefficient
       truncation/extension (spectrally optimal).
+    - Cylindrical with both grids detected radial CGL grids
+      (half-CGL or rigged-CGL, :func:`cgl_axis_gap`): the spectral
+      parity interpolation :func:`cgl_parity_interpolation_matrices`,
+      returning an ``(T_even, T_odd)`` **tuple** applied per
+      azimuthal mode by the caller (near machine precision, vs
+      ``order`` for the local stencil).
     - Annular with both grids CGL on `$[r_1, r_2]$`: Chebyshev
       coefficient truncation/extension after affine mapping to
       `$[-1, 1]$` (spectrally optimal; the Chebyshev matrix is
       domain-independent, so the same path applies under the affine
       map).
-    - Otherwise (including every cylindrical pair, e.g. a
-      ``geo.axis_gap`` change, and any custom stretched grid): local
+    - Otherwise (custom / tanh / undetected grid): local
       ``order``-stencil Fornberg interpolation
-      (:func:`local_interpolation_matrix`).  The *global* barycentric
-      fit is spectrally optimal only on a true CGL grid (handled
-      above); on the lopsided radial half-CGL point set its Lebesgue
-      constant reaches ``1e9``--``1e15`` and blows the field up on
-      resume, so the local stencil is used instead.
+      (:func:`local_interpolation_matrix`), whose Lebesgue constant
+      stays bounded on any monotone grid.
 
     Parameters
     ----------
@@ -766,12 +860,14 @@ def build_interpolation_matrix(
         ``"cartesian"``, ``"cylindrical"``, or ``"annular"``.
     order:
         FD order for the local-stencil fallback (stencil width
-        ``order + 1``); ignored on the CGL Chebyshev paths.
+        ``order + 1``) and the rigged-grid axis reconstruction;
+        ignored on the CGL Chebyshev path.
 
     Returns
     -------
     :
-        Interpolation matrix, shape ``(N_new, N_old)``.
+        Interpolation matrix ``(N_new, N_old)``, or -- for a detected
+        cylindrical CGL pair -- an ``(T_even, T_odd)`` parity tuple.
     """
     y_old = np.asarray(y_old, dtype=np.float64)
     y_new = np.asarray(y_new, dtype=np.float64)
@@ -779,16 +875,18 @@ def build_interpolation_matrix(
     if geometry == "cartesian" and is_cgl_grid(y_old) and is_cgl_grid(y_new):
         return chebyshev_interpolation_matrix(len(y_old), len(y_new))
 
-    # RETIRED (half-CGL parity-aware fast path) -- see the note
-    # above ``is_half_cgl_grid``:
-    # if (
-    #     geometry == "cylindrical"
-    #     and is_half_cgl_grid(y_old)
-    #     and is_half_cgl_grid(y_new)
-    # ):
-    #     return half_cgl_interpolation_matrices(
-    #         len(y_old), len(y_new)
-    #     )
+    if geometry == "cylindrical":
+        # Spectral parity interpolation when both grids are detected
+        # radial CGL grids (half-CGL or rigged-CGL, any combination);
+        # returns an (T_even, T_odd) parity pair applied per azimuthal
+        # mode by the caller.  A custom / tanh grid (gap None) falls
+        # through to the local stencil.
+        gap_old = cgl_axis_gap(y_old)
+        gap_new = cgl_axis_gap(y_new)
+        if gap_old is not None and gap_new is not None:
+            return cgl_parity_interpolation_matrices(
+                len(y_old), len(y_new), gap_old, gap_new, order
+            )
 
     if geometry == "annular":
         # The annular grid is a CGL grid affinely mapped to [r1, r2];

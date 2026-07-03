@@ -24,6 +24,7 @@ from jax.sharding import PartitionSpec as P
 from ...fd import (
     build_diff_matrices,
     build_integration_weights,
+    clenshaw_curtis_weights,
     local_grid_spacing,
     tanh_two_sided_grid,
 )
@@ -184,63 +185,10 @@ fourier: Fourier = Fourier()
 integrate_scalar_in_y = integrate_scalar
 
 
-def clenshaw_curtis_weights(ny: int) -> Array:
-    r"""Clenshaw-Curtis quadrature weights for a CGL grid.
-
-    For ``ny`` Chebyshev-Gauss-Lobatto points
-    `$y_j = -\cos(j\pi / N)$`, `$j = 0, \ldots, N$` with
-    `$N = \texttt{ny} - 1$`, returns the exact quadrature
-    weights `$w_j$` such that
-
-    .. math::
-        \int_{-1}^{1} f(y)\,dy
-        \;\approx\; \sum_{j=0}^{N} w_j\,f(y_j).
-
-    The rule is exact for polynomials of degree `$\le N$`
-    (spectral accuracy for smooth integrands).  Works for
-    both odd and even *ny*.
-
-    Parameters
-    ----------
-    ny:
-        Number of CGL grid points (`$N + 1$`).
-
-    Returns
-    -------
-    :
-        Weight array of shape ``(ny,)`` with dtype
-        ``sharding.float_type``.
-
-    References
-    ----------
-    Trefethen, *Spectral Methods in MATLAB* (2000), ch. 12.
-    """
-    N = ny - 1
-    theta = jnp.arange(ny, dtype=sharding.float_type) * jnp.pi / N
-
-    if N % 2 == 0:  # N even (ny odd)
-        M = N // 2 - 1
-        w_end = 1.0 / (N * N - 1)
-    else:  # N odd (ny even)
-        M = (N - 1) // 2
-        w_end = 1.0 / (N * N)
-
-    if M > 0:
-        k = jnp.arange(1, M + 1, dtype=sharding.float_type)
-        cos_terms = jnp.cos(2 * k[None, :] * theta[:, None])
-        coeffs = 2.0 / (4 * k**2 - 1)
-        v = 1.0 - jnp.sum(cos_terms * coeffs[None, :], axis=1)
-    else:
-        v = jnp.ones(ny, dtype=sharding.float_type)
-
-    if N % 2 == 0:
-        v = v - jnp.cos(N * theta) / (N * N - 1)
-
-    w = (2.0 / N) * v
-    w = w.at[0].set(w_end)
-    w = w.at[-1].set(w_end)
-
-    return w
+# ``clenshaw_curtis_weights`` now lives in ``dnsjax.fd`` (JAX-free,
+# beside ``build_integration_weights``) so the full-CGL Cartesian and
+# annular grids share it; re-exported above for callers/tests that
+# import it from this module.
 
 
 def build_cartesian_grid(
@@ -315,7 +263,9 @@ def build_cartesian_grid(
         ys = -jnp.cos(
             jnp.arange(ny, dtype=sharding.float_type) * jnp.pi / (ny - 1)
         )
-        y_weights = clenshaw_curtis_weights(ny)
+        y_weights = jnp.asarray(
+            clenshaw_curtis_weights(ny), dtype=sharding.float_type
+        )
 
     D1, D2 = build_diff_matrices(ys, fd_order)
     return ys, D1, D2, y_weights

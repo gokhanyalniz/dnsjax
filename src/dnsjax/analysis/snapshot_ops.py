@@ -29,7 +29,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..fd import build_integration_weights, radial_axis_gap_weights
+from ..fd import (
+    build_integration_weights,
+    clenshaw_curtis_weights,
+    is_cgl_grid,
+)
 from . import _core
 from ._core import to_physical, to_spectral  # re-exported helpers
 
@@ -212,14 +216,26 @@ def _axis_weights(info, ax, coords, params):
     if info.kind[ax] == "grid":
         grid = np.asarray(coords[ax], dtype=float)
         p = int(params.res.fd_order)
-        w = build_integration_weights(grid, p)
-        if info.family in ("cylindrical", "annular"):
-            w = w * grid  # radial Jacobian r
         if info.family == "cylindrical":
-            # The [0, r_0] axis gap, by the same even-parity
-            # (x = r^2) rule as the solver (fd docstring).
-            w = w + radial_axis_gap_weights(grid, p)
-        return w
+            # Full-disc rule on the axis-augmented grid, matching the
+            # solver (build_cylindrical_grid): integrate g = f*r with
+            # the axis r=0 as a free node, g(0)=0 for any bounded f
+            # (no parity assumption).  Drop the axis node, fold in r_j.
+            r_aug = np.concatenate([[0.0], grid])
+            return build_integration_weights(r_aug, p)[1:] * grid
+        if info.family == "annular":
+            # Affine-mapped Clenshaw-Curtis on the CGL grid (matching
+            # the solver); composite fd_order for a custom/tanh grid.
+            unit = (2.0 * grid - grid[0] - grid[-1]) / (grid[-1] - grid[0])
+            if is_cgl_grid(unit):
+                half = 0.5 * (grid[-1] - grid[0])
+                return half * clenshaw_curtis_weights(len(grid)) * grid
+            return build_integration_weights(grid, p) * grid
+        # Cartesian: Clenshaw-Curtis on the CGL grid (matching the
+        # solver), composite fd_order otherwise.
+        if is_cgl_grid(grid):
+            return clenshaw_curtis_weights(len(grid))
+        return build_integration_weights(grid, p)
     n = info.n[ax]
     return np.full(n, info.length[ax] / n)
 
