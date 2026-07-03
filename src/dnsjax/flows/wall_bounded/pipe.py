@@ -173,11 +173,13 @@ def _get_stats_jit(
     D1_wall_row = flow_.D1_wall.ravel()
     tau_z = jnp.dot(D1_wall_row, mean_uz)
     tau_theta = jnp.dot(D1_wall_row, mean_utheta)
+    # mean u_z is even in r (m=0, parity (-1)^m), mean u_theta is odd
+    # (parity (-1)^{m+1}): integrate each with its parity's weights.
     U_bulk_z = (
         integrate_scalar(mean_uz, flow_.y_weights) / derived_params.volume_fac
     )
     U_bulk_theta = (
-        integrate_scalar(mean_utheta, flow_.y_weights)
+        integrate_scalar(mean_utheta, flow_.y_weights_odd)
         / derived_params.volume_fac
     )
 

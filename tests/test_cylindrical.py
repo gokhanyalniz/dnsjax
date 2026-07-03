@@ -698,27 +698,37 @@ def test_cylindrical_integration_weights() -> None:
                 err_msg=f"Nr={Nr}, degree={d}",
             )
 
-    # Full-disc y_weights (the parity-free axis-augmented rule):
-    # strictly positive (definite energy norm) for both grids and
-    # exact for BOTH even and odd integrands -- sum = int r dr = 1/2,
-    # int r^2 * r dr = 1/4, and int r * r dr = 1/3 (the ODD guard the
-    # retired even-parity gap rule failed on, e.g. the mean u_theta).
+    # Full-disc radial quadrature: the parity-specific spectral
+    # Clenshaw-Curtis weights (rigged / half-CGL).  y_weights (even)
+    # and y_weights_odd (odd) are BOTH strictly positive (definite
+    # energy norm), and each is *spectral* for its parity -- exact for
+    # the polynomial moments int r^d * r dr = 1/(d+2): even d via
+    # y_weights, odd d via y_weights_odd (the ODD guard the retired
+    # even-parity rule failed on, e.g. the mean u_theta), and machine
+    # precision on a smooth integrand.
     from dnsjax.geometries.wall_bounded.cylindrical import (
         build_cylindrical_grid,
     )
 
     for gt, g in (("half-cgl", 0), (None, 1)):
-        _, _, _, _, yw, _ = build_cylindrical_grid(16, p, grid_type=gt)
+        _, _, _, _, yw, yw_odd, _ = build_cylindrical_grid(16, p, grid_type=gt)
         rs_g = np.asarray(build_radial_cgl_grid(16, g))
-        yw_np = np.asarray(yw)
-        assert np.all(yw_np > 0), f"grid_type={gt}: negative y_weights"
-        assert_allclose(float(yw_np.sum()), 0.5, atol=1e-12)  # f=1
+        we = np.asarray(yw)
+        wo = np.asarray(yw_odd)
+        assert np.all(we > 0), f"grid_type={gt}: negative y_weights"
+        assert np.all(wo > 0), f"grid_type={gt}: negative y_weights_odd"
+        assert_allclose(float(we.sum()), 0.5, atol=1e-12)  # f=1 (even)
+        assert_allclose(float(we @ rs_g**2), 0.25, atol=1e-12)  # r^2
+        assert_allclose(float(wo @ rs_g), 1.0 / 3.0, atol=1e-12)  # r odd
         assert_allclose(
-            float(yw_np @ rs_g),
-            1.0 / 3.0,
-            atol=1e-12,  # f=r (ODD)
+            float(wo @ rs_g**3),
+            0.2,
+            atol=1e-12,  # r^3 (odd)
         )
-        assert_allclose(float(yw_np @ rs_g**2), 0.25, atol=1e-12)  # r^2
+        # Spectral on a smooth integrand (vs fd_order for a composite).
+        fine = np.linspace(0.0, 1.0, 2_000_001)
+        ref = float(np.trapezoid(np.cos(2.0 * fine) * fine, fine))
+        assert abs(float(we @ np.cos(2.0 * rs_g)) - ref) < 1e-10
 
 
 # Group E: Centreline (r = 0) interpolation

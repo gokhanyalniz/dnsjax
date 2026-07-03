@@ -398,7 +398,7 @@ def generate_cylindrical(
     Nr = params.res.ny
     nz = params.res.nz
 
-    rs, D1_even, D1_odd, _, y_weights, inv_r = build_cylindrical_grid(
+    rs, D1_even, D1_odd, _, y_weights, _, inv_r = build_cylindrical_grid(
         Nr,
         params.res.fd_order,
         params.geo.wall_grid,

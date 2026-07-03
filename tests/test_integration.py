@@ -39,6 +39,7 @@ from dnsjax.fd import (  # noqa: E402
     build_integration_weights,
     cgl_axis_gap,
     cgl_parity_interpolation_matrices,
+    cgl_radial_quadrature_weights,
     chebyshev_interpolation_matrix,
     clenshaw_curtis_weights,
     local_grid_spacing,
@@ -204,9 +205,11 @@ def test_composite_convergence_rate():
 
 
 def _radial_weights(rs: np.ndarray, p: int) -> np.ndarray:
-    """Radial weights as built by ``build_cylindrical_grid``:
-    composite rule over the full disc (``left_edge=0.0``)
-    times the radial Jacobian."""
+    """Exercise ``build_integration_weights``'s ``left_edge`` option:
+    the composite rule over the full disc (``left_edge=0.0``) times
+    the radial Jacobian.  (The cylindrical solver no longer uses this
+    -- it uses the spectral parity CC / axis-augmented rule -- but
+    ``left_edge`` remains a supported feature.)"""
     return build_integration_weights(rs, p, left_edge=0.0) * rs
 
 
@@ -389,6 +392,40 @@ def test_augmented_axis_quadrature():
                     atol=1e-12,
                     err_msg=f"gap={gap} nr={nr} d={d}",
                 )
+
+
+def test_cgl_radial_quadrature_weights():
+    """Parity-specific spectral radial quadrature (the pipe's CC):
+    (w_even, w_odd) are both strictly positive (definite energy norm)
+    and each is spectral for its parity -- exact for the polynomial
+    moments int r^d * r dr = 1/(d+2) (even d via w_even, odd d via
+    w_odd) and machine precision on a smooth integrand.  None for a
+    non-CGL grid (caller falls back to the composite rule)."""
+    fine = np.linspace(0.0, 1.0, 2_000_001)
+    ref_even = float(np.trapezoid(np.cos(2.0 * fine) * fine, fine))
+    ref_odd = float(np.trapezoid(fine * np.cos(2.0 * fine) * fine, fine))
+    for gap in (0, 1):
+        for nr in (8, 16, 48):
+            rs = _radial_cgl_grid(nr, gap)
+            w_even, w_odd = cgl_radial_quadrature_weights(rs, 4)
+            assert np.all(w_even > 0), f"gap={gap} nr={nr}: w_even<0"
+            assert np.all(w_odd > 0), f"gap={gap} nr={nr}: w_odd<0"
+            for d in (0, 2):  # even moments via w_even
+                assert_allclose(
+                    float(w_even @ rs**d), 1.0 / (d + 2), atol=1e-12
+                )
+            for d in (1, 3):  # odd moments via w_odd
+                assert_allclose(
+                    float(w_odd @ rs**d), 1.0 / (d + 2), atol=1e-12
+                )
+            # Spectral on smooth integrands (once resolved: nr=8 is too
+            # coarse for cos(2r), but the polynomial moments are exact
+            # at every nr).
+            if nr >= 16:
+                assert abs(w_even @ np.cos(2.0 * rs) - ref_even) < 1e-10
+                assert abs(w_odd @ (rs * np.cos(2.0 * rs)) - ref_odd) < 1e-10
+    # Non-CGL grid -> None (caller uses the composite fallback).
+    assert cgl_radial_quadrature_weights(np.linspace(0.1, 1.0, 20), 4) is None
 
 
 def test_cgl_axis_gap_detector():

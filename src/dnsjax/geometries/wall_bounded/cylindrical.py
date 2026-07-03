@@ -95,6 +95,7 @@ from ...fd import (
     axis_extrapolation_weights,
     build_diff_matrices,
     build_integration_weights,
+    cgl_radial_quadrature_weights,
     local_grid_spacing,
     tanh_one_sided_grid,
 )
@@ -421,9 +422,10 @@ def build_radial_cgl_grid(Nr: int, axis_gap: int = 1) -> Array:
 
     No degree of freedom lives in `$[0, r_0)$` (the parity
     ghosts close the FD stencils across the axis and the
-    quadrature covers the segment via the axis-augmented rule
-    in :func:`build_cylindrical_grid`), so `$r_0$` is a free
-    discretisation choice.  It bounds the near-axis azimuthal
+    quadrature covers the segment via the parity-specific
+    spectral rule in :func:`build_cylindrical_grid` /
+    :func:`~dnsjax.fd.cgl_radial_quadrature_weights`), so
+    `$r_0$` is a free discretisation choice.  It bounds the near-axis azimuthal
     advection CFL `$\propto 1/r_0$` -- the pipe's explicit
     (cnab2) timestep limit -- so the rigged grid's
     `$2\times$`-larger `$r_0$` doubles the admissible cnab2
@@ -555,18 +557,24 @@ def build_cylindrical_grid(
     D1_pos:
         Common (parity-independent) part, ``(ny, ny)``.
     y_weights:
-        Integration weights with radial Jacobian, shape
-        ``(ny,)``, satisfying
-        `$\sum_j W_j f_j \approx \int_0^1 f\,r\,dr$`
-        over the **full** disc.  The axis `$r = 0$` is not a
-        grid point; the rule integrates `$g(r) = f(r)\,r$` on
-        the axis-augmented grid `$[0, r_0, \ldots, 1]$`, where
-        `$g(0) = 0$` for any bounded `$f$` (the Jacobian's own
-        `$r$` vanishes there) makes the axis a free, exact
-        quadrature node -- **no parity assumption** and no
-        negative weights from extrapolating below `$r_0$`.
-        Strict positivity (a definite energy norm) is verified
-        at build and raises otherwise.
+        **Even-parity** radial quadrature weights, shape ``(ny,)``,
+        `$\sum_j W_j f_j \approx \int_0^1 f\,r\,dr$` over the full
+        disc for an *even* integrand `$f$` -- the energy norm
+        (`$|u|^2$`), mean `$u_z$`, dissipation.  On a detected radial
+        CGL grid these are the spectral Clenshaw-Curtis-with-weight
+        `$r$` weights that bake in the `$r = 0$` reconstruction
+        (:func:`~dnsjax.fd.cgl_radial_quadrature_weights`); on a
+        custom / tanh grid the parity-agnostic axis-augmented
+        composite rule (`$g = f r$` on `$[0, r_0, \ldots]$`, the axis
+        a free node since `$g(0) = 0$`).  Strictly positive (a
+        definite energy norm), verified at build.
+    y_weights_odd:
+        **Odd-parity** radial quadrature weights, shape ``(ny,)``,
+        for an *odd* integrand (the mean `$u_\theta$`); equal to
+        ``y_weights`` on custom / tanh grids (the composite rule is
+        parity-agnostic).  A single vector cannot be spectral for
+        both parities, so each diagnostic uses the vector matching
+        its known parity.
     inv_r:
         `$1/r$` on the grid, shape ``(ny,)``.
     """
@@ -596,29 +604,40 @@ def build_cylindrical_grid(
         axis_gap = 0 if grid_type == "half-cgl" else 1
         rs = build_radial_cgl_grid(ny, axis_gap)
     inv_r = 1.0 / rs
-    # Full-disc quadrature without an axis grid point: integrate
-    # g(r) = f(r)*r on the axis-augmented grid [0, r_0, ..., 1].
-    # g(0) = 0 for any bounded f, so the axis is a free, exact
-    # quadrature node -- this needs no parity assumption on f (an
-    # even-in-r rule mis-handles odd integrands such as the mean
-    # u_theta) and, since [0, r_0] is now interpolated rather than
-    # extrapolated, keeps the weights positive at every gap width.
-    # Drop the axis node (g(0) = 0) and fold the Jacobian r_j back in.
-    r_aug = np.concatenate([[0.0], np.asarray(rs)])
-    w_aug = build_integration_weights(r_aug, fd_order)
-    y_weights = jnp.asarray(w_aug[1:], dtype=sharding.float_type) * rs
-    if not np.all(np.asarray(y_weights) > 0):
+    rs_np = np.asarray(rs)
+    # Full-disc quadrature int_0^1 f r dr with no axis grid point.
+    qc = cgl_radial_quadrature_weights(rs_np, fd_order)
+    if qc is not None:
+        # Detected radial CGL grid (rigged / half): spectral
+        # parity-specific weights, baking in the r=0 reconstruction
+        # (positive).  A single vector cannot be spectral for both
+        # parities, so w_even serves the energy norm and even
+        # integrands (mean u_z, dissipation), w_odd the odd mean
+        # u_theta -- the caller picks by each diagnostic's known
+        # parity.  See fd.cgl_radial_quadrature_weights.
+        w_even_np, w_odd_np = qc
+    else:
+        # Custom / tanh grid: the parity-agnostic axis-augmented
+        # composite rule (integrate g = f*r on [0, *rs] with the axis
+        # r=0 as a free node, g(0)=0 for any bounded f; fd_order,
+        # positive, correct for either parity).
+        r_aug = np.concatenate([[0.0], rs_np])
+        w_aug = build_integration_weights(r_aug, fd_order)[1:] * rs_np
+        w_even_np = w_odd_np = w_aug
+    if not (np.all(w_even_np > 0) and np.all(w_odd_np > 0)):
         raise ValueError(
             "Radial quadrature weights are not strictly positive "
             "(the discrete energy norm would be indefinite): the "
             "fd_order is too high for this ny, or the custom wall "
             "grid is pathological near the axis."
         )
+    y_weights = jnp.asarray(w_even_np, dtype=sharding.float_type)
+    y_weights_odd = jnp.asarray(w_odd_np, dtype=sharding.float_type)
 
     D1_even, _, D1_odd, _, D1_pos, _ = build_parity_reduced_matrices(
         rs, fd_order
     )
-    return rs, D1_even, D1_odd, D1_pos, y_weights, inv_r
+    return rs, D1_even, D1_odd, D1_pos, y_weights, y_weights_odd, inv_r
 
 
 def interpolate_to_axis(
@@ -1167,7 +1186,8 @@ class CylindricalFlow:
     rs: Array = field(init=False)
     inv_r: Array = field(init=False)
     inv_r2: Array = field(init=False)
-    y_weights: Array = field(init=False)
+    y_weights: Array = field(init=False)  # even-parity (energy norm)
+    y_weights_odd: Array = field(init=False)  # odd-parity (mean u_theta)
     cfl_inv_spacing: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
@@ -1201,14 +1221,20 @@ class CylindricalFlow:
         derives all homogeneous IMM data.
         """
         Nr = params.res.ny
-        self.rs, D1_even, D1_odd, D1_pos, self.y_weights, self.inv_r = (
-            build_cylindrical_grid(
-                Nr,
-                params.res.fd_order,
-                params.geo.wall_grid,
-                params.geo.grid_type,
-                params.geo.grid_stretch,
-            )
+        (
+            self.rs,
+            D1_even,
+            D1_odd,
+            D1_pos,
+            self.y_weights,
+            self.y_weights_odd,
+            self.inv_r,
+        ) = build_cylindrical_grid(
+            Nr,
+            params.res.fd_order,
+            params.geo.wall_grid,
+            params.geo.grid_type,
+            params.geo.grid_stretch,
         )
         self.inv_r2 = self.inv_r**2
 
@@ -1273,6 +1299,9 @@ class CylindricalFlow:
         self.inv_r = jax.device_put(self.inv_r, sharding.no_shard)
         self.inv_r2 = jax.device_put(self.inv_r2, sharding.no_shard)
         self.y_weights = jax.device_put(self.y_weights, sharding.no_shard)
+        self.y_weights_odd = jax.device_put(
+            self.y_weights_odd, sharding.no_shard
+        )
 
         Nm = sharding.nz_spec
         Nkz = sharding.nx_spec

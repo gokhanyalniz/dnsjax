@@ -217,10 +217,12 @@ def _axis_weights(info, ax, coords, params):
         grid = np.asarray(coords[ax], dtype=float)
         p = int(params.res.fd_order)
         if info.family == "cylindrical":
-            # Full-disc rule on the axis-augmented grid, matching the
-            # solver (build_cylindrical_grid): integrate g = f*r with
-            # the axis r=0 as a free node, g(0)=0 for any bounded f
-            # (no parity assumption).  Drop the axis node, fold in r_j.
+            # Parity-agnostic full-disc rule: a *physical* radial
+            # profile (at fixed theta) has no definite r-parity, so the
+            # solver's per-mode spectral parity weights do not apply
+            # here.  Integrate g = f*r on the axis-augmented grid with
+            # the axis r=0 as a free node (g(0)=0 for any bounded f);
+            # drop the axis node, fold in r_j.
             r_aug = np.concatenate([[0.0], grid])
             return build_integration_weights(r_aug, p)[1:] * grid
         if info.family == "annular":
