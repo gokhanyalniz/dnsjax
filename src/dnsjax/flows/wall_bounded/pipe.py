@@ -2,9 +2,10 @@ r"""Pipe flow: pressure-driven flow through a circular pipe.
 
 This module defines the ``PipeFlow`` dataclass that holds the
 pipe-flow-specific base flow.  Geometry-general infrastructure
-(half-CGL grid, parity-reduced FD matrices, IMM operators,
-cylindrical IMM iteration, predict / correct / norm, banded /
-dense LU solvers) is inherited from
+(radial CGL grid -- rigged-CGL by default, half-CGL via
+``geo.grid_type``, parity-reduced FD
+matrices, IMM operators, cylindrical IMM iteration, predict /
+correct / norm, banded / dense LU solvers) is inherited from
 ``geometries.wall_bounded.cylindrical.CylindricalFlow``.
 
 It also exports the flow interface consumed by ``__main__``:
@@ -80,8 +81,8 @@ class PipeFlow(CylindricalFlow):
     def __post_init__(self) -> None:
         r"""Build radial grid, base flow, and IMM operators.
 
-        Delegates the half-CGL grid, parity-reduced FD matrices,
-        and per-mode IMM operator setup to
+        Delegates the radial CGL grid, parity-reduced FD
+        matrices, and per-mode IMM operator setup to
         :meth:`CylindricalFlow.__post_init__`, then defines the
         pipe base flow `$U_z = 1 - r^2$` and its derived
         quantities.
@@ -172,11 +173,13 @@ def _get_stats_jit(
     D1_wall_row = flow_.D1_wall.ravel()
     tau_z = jnp.dot(D1_wall_row, mean_uz)
     tau_theta = jnp.dot(D1_wall_row, mean_utheta)
+    # mean u_z is even in r (m=0, parity (-1)^m), mean u_theta is odd
+    # (parity (-1)^{m+1}): integrate each with its parity's weights.
     U_bulk_z = (
         integrate_scalar(mean_uz, flow_.y_weights) / derived_params.volume_fac
     )
     U_bulk_theta = (
-        integrate_scalar(mean_utheta, flow_.y_weights)
+        integrate_scalar(mean_utheta, flow_.y_weights_odd)
         / derived_params.volume_fac
     )
 

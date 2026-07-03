@@ -12,7 +12,8 @@ Tests cover:
 6. ``get_norm2_annular`` correctness.
 7. Circular-Couette coefficients `$A_0$`, `$B_0$` vs the per-case
    reference forms and wall values.
-8. Composite integration weights with radial Jacobian on ``[r1, r2]``.
+8. Affine-mapped Clenshaw-Curtis integration weights (spectral) with
+   the radial Jacobian on ``[r1, r2]``.
 
 Run as a script via ``uv run python tests/test_annular.py``.
 """
@@ -51,7 +52,6 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
-from dnsjax.fd import build_integration_weights  # noqa: E402
 from dnsjax.flows.wall_bounded.taylor_couette import (  # noqa: E402
     flow as tc_flow,
 )
@@ -454,33 +454,37 @@ def test_narrow_gap_limit() -> None:
 
 
 def test_annular_integration_weights() -> None:
-    """Composite weights and radial Jacobian integrate r-moments."""
+    """Default annular grid uses affine-mapped Clenshaw-Curtis:
+    ``y_weights`` integrate ``f * r`` spectrally -- exact for the
+    radial measure and polynomial moments, and near machine precision
+    for a smooth non-polynomial (an ``fd_order`` composite rule would
+    be only ``~1e-7`` at this resolution)."""
     p = params.res.fd_order
     for ny in [8, 16, 33]:
         rs, _, _, y_weights, _ = build_annular_grid(ny, p, R1, R2)
         rs_np = np.asarray(rs)
         yw = np.asarray(y_weights)
-        w = np.asarray(build_integration_weights(rs_np, p=p))
-
-        # Raw weights: exact for polynomials up to degree p.
-        for d in range(p + 1):
-            computed = float(np.dot(w, rs_np**d))
-            exact = (R2 ** (d + 1) - R1 ** (d + 1)) / (d + 1)
-            assert_allclose(
-                computed,
-                exact,
-                atol=1e-10,
-                rtol=1e-10,
-                err_msg=f"ny={ny}, raw degree={d}",
-            )
-        # Jacobian weights integrate the radial measure:
-        # sum(w_j r_j) = int_{r1}^{r2} r dr = (r2^2 - r1^2)/2.
+        # sum(w_j r_j) = int_{r1}^{r2} r dr = (r2^2 - r1^2)/2 (exact).
         assert_allclose(
             np.sum(yw),
             (R2**2 - R1**2) / 2,
-            atol=1e-10,
-            err_msg=f"ny={ny}: sum(y_weights)",
+            atol=1e-12,
+            err_msg=f"ny={ny}: radial measure",
         )
+        # int r^2 * r dr = (r2^4 - r1^4)/4 (CC exact for this poly).
+        assert_allclose(
+            float(yw @ rs_np**2),
+            (R2**4 - R1**4) / 4,
+            atol=1e-12,
+            err_msg=f"ny={ny}: r^3 moment",
+        )
+        # Smooth non-polynomial: affine CC is spectral, so near
+        # machine precision once resolved.
+        grid = np.linspace(R1, R2, 2_000_001)
+        ref = np.trapezoid(np.cos(2.0 * grid) * grid, grid)
+        err = abs(float(yw @ np.cos(2.0 * rs_np)) - ref)
+        if ny == 33:
+            assert err < 1e-9, f"ny={ny}: CC not spectral, err={err:.2e}"
 
 
 # ── Runner ───────────────────────────────────────────────────────────
