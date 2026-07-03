@@ -223,7 +223,9 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     if snap_grid is not None:
         old_grid = np.array(snap_grid)
     else:
-        # Legacy snapshot without grid: assume default grid.
+        # Legacy snapshot without grid metadata: such snapshots
+        # predate ``geo.axis_gap``, so assume the default grid of
+        # their era (cylindrical: the g = 0 half-CGL grid).
         if params.phys.system in cylindrical_systems:
             N_full = 2 * snap_ny
             s = -np.cos(np.arange(N_full) * np.pi / (N_full - 1))
@@ -243,29 +245,30 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         geometry = "annular"
     else:
         geometry = "cartesian"
-    T = build_interpolation_matrix(old_grid, curr_grid_np, geometry)
+    T = build_interpolation_matrix(
+        old_grid, curr_grid_np, geometry, params.res.fd_order
+    )
 
     if isinstance(T, tuple):
-        # Parity-aware cylindrical interpolation.
+        # Spectral parity-aware cylindrical interpolation: apply the
+        # even / odd radial matrix per azimuthal mode m by component
+        # parity.  State layout (component, r, m, kz): u_z parity
+        # (-1)^m; u_+/u_- parity (-1)^{m+1}.
         T_even, T_odd = T
-        m_vals = np.asarray(complex_harmonics(params.res.nz))
-        m_is_even = m_vals % 2 == 0
-
-        # T_p: parity (-1)^m for u_z (component 0)
-        # T_v: parity (-1)^{m+1} for u_+, u_- (components 1, 2)
-        T_p = np.where(m_is_even[:, None, None], T_even, T_odd)
-        T_v = np.where(m_is_even[:, None, None], T_odd, T_even)
+        m_is_even = np.asarray(complex_harmonics(params.res.nz)) % 2 == 0
+        T_p = np.where(m_is_even[:, None, None], T_even, T_odd)  # u_z
+        T_v = np.where(m_is_even[:, None, None], T_odd, T_even)  # u_+/-
         T_p_jax = jnp.asarray(T_p, dtype=state.dtype)
         T_v_jax = jnp.asarray(T_v, dtype=state.dtype)
-
-        # state shape: (3, Nr_old, Nm, Nkz)
+        # (m, i_new, j_old) x (j_old, m, k_kz) -> (i_new, m, k_kz)
         s0 = jnp.einsum("mij, jmk -> imk", T_p_jax, state[0])
         s1 = jnp.einsum("mij, jmk -> imk", T_v_jax, state[1])
         s2 = jnp.einsum("mij, jmk -> imk", T_v_jax, state[2])
         state = jnp.stack([s0, s1, s2])
     else:
         T_jax = jnp.asarray(T, dtype=state.dtype)
-        # state shape: (3, ny_old, kz, kx)
+        # state: (3, ny_old, ...) -- the wall-normal axis is axis 1 in
+        # every geometry's spectral layout.
         state = jnp.einsum("ij, cjzx -> cizx", T_jax, state)
 
     # Enforce wall boundary conditions.

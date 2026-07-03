@@ -159,7 +159,7 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
             build_cylindrical_grid,
         )
 
-        _, d1_even, d1_odd, _, _, inv_r = build_cylindrical_grid(ny, fd)
+        _, d1_even, d1_odd, _, _, _, inv_r = build_cylindrical_grid(ny, fd)
         d1_even, d1_odd = np.asarray(d1_even), np.asarray(d1_odd)
         inv_r = np.asarray(inv_r)
     else:  # taylor-couette / dean

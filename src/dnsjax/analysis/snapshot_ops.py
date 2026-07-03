@@ -29,7 +29,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..fd import build_integration_weights
+from ..fd import (
+    build_integration_weights,
+    clenshaw_curtis_weights,
+    is_cgl_grid,
+)
 from . import _core
 from ._core import to_physical, to_spectral  # re-exported helpers
 
@@ -211,13 +215,29 @@ def _axis_weights(info, ax, coords, params):
     """Quadrature weights for integrating a physical field over *ax*."""
     if info.kind[ax] == "grid":
         grid = np.asarray(coords[ax], dtype=float)
-        left_edge = 0.0 if info.family == "cylindrical" else None
-        w = build_integration_weights(
-            grid, int(params.res.fd_order), left_edge=left_edge
-        )
-        if info.family in ("cylindrical", "annular"):
-            w = w * grid  # radial Jacobian r
-        return w
+        p = int(params.res.fd_order)
+        if info.family == "cylindrical":
+            # Parity-agnostic full-disc rule: a *physical* radial
+            # profile (at fixed theta) has no definite r-parity, so the
+            # solver's per-mode spectral parity weights do not apply
+            # here.  Integrate g = f*r on the axis-augmented grid with
+            # the axis r=0 as a free node (g(0)=0 for any bounded f);
+            # drop the axis node, fold in r_j.
+            r_aug = np.concatenate([[0.0], grid])
+            return build_integration_weights(r_aug, p)[1:] * grid
+        if info.family == "annular":
+            # Affine-mapped Clenshaw-Curtis on the CGL grid (matching
+            # the solver); composite fd_order for a custom/tanh grid.
+            unit = (2.0 * grid - grid[0] - grid[-1]) / (grid[-1] - grid[0])
+            if is_cgl_grid(unit):
+                half = 0.5 * (grid[-1] - grid[0])
+                return half * clenshaw_curtis_weights(len(grid)) * grid
+            return build_integration_weights(grid, p) * grid
+        # Cartesian: Clenshaw-Curtis on the CGL grid (matching the
+        # solver), composite fd_order otherwise.
+        if is_cgl_grid(grid):
+            return clenshaw_curtis_weights(len(grid))
+        return build_integration_weights(grid, p)
     n = info.n[ax]
     return np.full(n, info.length[ax] / n)
 

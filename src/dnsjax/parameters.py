@@ -140,15 +140,51 @@ class Physics(BaseModel):
 
 
 class Geometry(BaseModel):
-    """Domain size and optional tilt angle for the forcing direction.
+    r"""Domain size and optional tilt angle for the forcing direction.
 
     Wall-normal grid selection (precedence order):
 
     1. ``wall_grid`` (file path): load a custom grid from file.
+       A custom grid always overrides dnsjax's grid generation.
     2. ``grid_type``: generate a named grid at startup.
-    3. Default: CGL (Cartesian) or half-CGL (cylindrical).
+    3. Default: full CGL (Cartesian / annular) or the **rigged-CGL**
+       radial grid (cylindrical, see below).
 
     Setting both ``wall_grid`` and ``grid_type`` is an error.
+
+    ``grid_type`` values: ``"cgl"`` the plain Chebyshev-Gauss-Lobatto
+    grid (Cartesian / annular; for the cylindrical family it is a
+    synonym for the default rigged-CGL grid); ``"half-cgl"`` the
+    legacy half-CGL radial grid (**cylindrical family only, and only
+    with** ``step.scheme == "iterative-cn"``); ``"tanh"`` a
+    tanh-stretched grid.  ``None`` is the family default.
+
+    **Cylindrical radial grids.**  Both keep the ``ny`` outermost
+    *positive* points of an auxiliary CGL grid on `$[-1, 1]$`, so the
+    near-axis spacing is `$\Delta r \approx \pi/(2 n_y)$` and no
+    degree of freedom lives in `$[0, r_0)$` (parity ghosts close the
+    FD stencils across the axis; the quadrature covers the segment):
+
+    - **rigged-CGL** (default): the positive half of a
+      `$(2 n_y + 1)$`-point grid.  The odd total's centre point falls
+      exactly on the coordinate-singular axis and is dropped, so the
+      innermost point sits at `$r_0 \approx \Delta r$`
+      (`$= \sin(\pi/(2 n_y))$`).
+    - **half-CGL** (opt-in): the positive half of a `$2 n_y$`-point
+      grid, staggered so `$r_0 \approx \Delta r/2$`
+      (`$= \sin(\pi/(2\,(2 n_y - 1)))$`) -- half the rigged value.
+
+    Rationale: the near-axis *azimuthal* advection CFL
+    `$\propto 1/r_0$` is a stability artifact of explicit stepping
+    evaluated at grid points only, so it relaxes `$\propto r_0$` at a
+    truncation-level accuracy cost.  The rigged grid's `$2\times$`
+    larger `$r_0$` doubles the admissible explicit-``cnab2`` ``dt``
+    (measured), which is why it is the default; the tighter half-CGL
+    axis makes ``cnab2`` blow up at low ``dt`` (near-axis explicit
+    instability), so half-CGL is restricted to the implicitly-iterated
+    ``iterative-cn`` scheme, which integrates it cleanly and gains its
+    finer near-axis resolution.  See ``build_radial_cgl_grid`` in
+    ``cylindrical.py``.
     """
 
     lx: float = Field(gt=0, default=4.0)
@@ -159,7 +195,7 @@ class Geometry(BaseModel):
     # gap d = r2 - r1 = 1.  Required for system == "taylor-couette".
     eta: float | None = Field(default=None, gt=0, lt=1)
     wall_grid: Path | None = None
-    grid_type: Literal["cgl", "tanh"] | None = None
+    grid_type: Literal["cgl", "half-cgl", "tanh"] | None = None
     grid_stretch: float = Field(gt=0, default=1.5)
 
 
@@ -355,13 +391,20 @@ class TimeStepping(BaseModel):
       flows -- Poiseuille, pipe, Dean -- are bounded only by this, their
       ``L_bf`` being mild as ``U -> 0`` at the wall).  Where it binds is
       geometry-specific: for the **pipe** it is the *near-axis
-      azimuthal* advection (the half-CGL first node ``r_0 ~ pi/(4 ny)``
-      makes ``CFL_th = dt |u_th(r_0)| nz/(2 pi r_0)`` the dominant
+      azimuthal* advection (the innermost radial node
+      ``r_0 ~ pi/(2 ny)`` on the default rigged-CGL grid makes
+      ``CFL_th = dt |u_th(r_0)| nz/(2 pi r_0)`` the dominant
       column -- linear in ``nz`` and in the fluctuation amplitude, and
       a *weak* AB2 imaginary-axis instability, so it needs sustained
       ``CFL_th >~ 0.5`` and pass/fail is trajectory-marginal near the
-      boundary); Cartesian flows feel the near-wall ``dy ~ 1/N^2``
-      spacing instead.  A strongly non-normal base flow
+      boundary; the default **rigged-CGL** radial grid sits at
+      ``r_0 ~ Delta r`` -- twice the legacy half-CGL ``Delta r/2`` --
+      which doubles the admissible cnab2 ``dt`` (measured) and is why
+      it is the default, whereas the tighter half-CGL grid
+      (``geo.grid_type = 'half-cgl'``) destabilises cnab2 and is
+      restricted to ``iterative-cn``); Cartesian flows feel the
+      near-wall ``dy ~ 1/N^2`` spacing instead.  A strongly
+      non-normal base flow
       (counter-rotating Taylor-Couette) amplifies the explicit
       self-advection error further into a delayed blow-up needing a
       much smaller ``dt``.  These are inherent explicit-nonlinear
@@ -627,6 +670,13 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
     against the snapshot's stored ``model_dump(mode="json")`` (taken
     after :func:`update_parameters`, so geometry-forced fields such as
     cylindrical ``lz = 2*pi`` match and do not register as changes).
+
+    The cylindrical radial grid choice lives in ``geo.grid_type``
+    (``None``/``"cgl"`` = rigged-CGL, ``"half-cgl"`` = legacy half),
+    which is compared like any other ``geo`` field.  Legacy keys a
+    snapshot carries but the current model no longer defines (e.g. the
+    retired ``geo.axis_gap``) are ignored -- they are absent from the
+    current ``model_dump`` and skipped below.
     """
     skip = set(_SNAPSHOT_SKIP_FIELDS)
     changes: list[str] = []
@@ -635,6 +685,10 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
         cur = getattr(params, section).model_dump(mode="json")
         for key in sorted(set(snap) | set(cur)):
             if (section, key) in skip:
+                continue
+            if key not in cur:
+                # Legacy field no longer in the model (e.g. the
+                # retired geo.axis_gap): not trajectory-defining.
                 continue
             if snap.get(key) != cur.get(key):
                 changes.append(
@@ -793,6 +847,28 @@ def validate_parameters() -> None:
             f"outs.it_corrector ({o.it_corrector}) so the corrector "
             "convergence is checked at least as often as it is logged."
         )
+
+    # The half-CGL radial grid is a cylindrical-only option, and its
+    # tighter near-axis point makes the explicit cnab2 scheme blow up
+    # at low dt (near-axis instability); restrict it to iterative-cn,
+    # which integrates it cleanly.  The default rigged-CGL grid has no
+    # such restriction.
+    if params.geo.grid_type == "half-cgl":
+        if params.phys.system not in cylindrical_systems:
+            raise ValueError(
+                "geo.grid_type='half-cgl' applies only to the "
+                "cylindrical geometry (system "
+                f"{params.phys.system!r} has no axis); use the "
+                "default rigged-CGL grid."
+            )
+        if params.step.scheme != "iterative-cn":
+            raise ValueError(
+                "geo.grid_type='half-cgl' requires "
+                "step.scheme='iterative-cn' (the tighter half-CGL "
+                "axis destabilises the explicit "
+                f"{params.step.scheme!r} scheme at low dt); use the "
+                "default rigged-CGL grid instead."
+            )
 
     # The Pallas kernel tiles the mode plane in ``bm0 x bm1`` blocks;
     # Triton block loads require power-of-two tile dims.

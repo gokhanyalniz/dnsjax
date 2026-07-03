@@ -335,8 +335,9 @@ SYSTEMS: list[dict] = [
         # kills the near-wall stiffness) and cnab2 is bounded only by
         # the ordinary explicit self-advection CFL.  For the pipe the
         # binding term is the **near-axis azimuthal** advection: the
-        # half-CGL first radial node sits at ``r_0 ~ pi/(4 ny)`` where
-        # the azimuthal arc length ``r_0 dtheta`` is tiny, so
+        # innermost radial node sits at ``r_0 ~ pi/(2 ny)`` (the
+        # default rigged-CGL grid) where the azimuthal arc length
+        # ``r_0 dtheta`` is tiny, so
         # ``CFL_th = dt |u_th(r_0)| nz / (2 pi r_0)`` (the dominant
         # ``steps.dat`` column) scales linearly with nz and with the
         # perturbation amplitude -- *not* the near-wall ``1/N^2``
@@ -346,9 +347,13 @@ SYSTEMS: list[dict] = [
         # marginal at ny>=48 for this Re/amplitude.  It is fluctuation
         # (m = +-1) driven, so neither the implicit ``L_bf`` corrector
         # (which converges cleanly throughout) nor
-        # ``step.implicit_mean_coupling`` can remove it -- an inherent
-        # explicit-scheme limit, hence ny=32 here like the other pipe
-        # entries.
+        # ``step.implicit_mean_coupling`` can remove it -- but the
+        # default **rigged-CGL** radial grid doubles ``r_0`` vs the
+        # legacy half-CGL grid, doubling the admissible ``dt``
+        # (measured dt* ~ 0.0125 -> 0.0175 at 32^3/Re=1800); the
+        # tighter half-CGL grid (``geo.grid_type = "half-cgl"``)
+        # destabilises cnab2 and is iterative-cn-only.  ny=32 here
+        # like the other pipe entries.
         "name": "pipe-cnab2",
         "res": {"nx": 32, "ny": 32, "nz": 32},
         "args": [
