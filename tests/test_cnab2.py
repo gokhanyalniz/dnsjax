@@ -73,6 +73,7 @@ SYSTEMS = [
     "pipe",
     "taylor-couette",
     "dean",
+    "viscoelastic-dean",
     "kolmogorov",
 ]
 
@@ -81,6 +82,7 @@ FLOW_MODULES = {
     "pipe": "dnsjax.flows.wall_bounded.pipe",
     "taylor-couette": "dnsjax.flows.wall_bounded.taylor_couette",
     "dean": "dnsjax.flows.wall_bounded.dean",
+    "viscoelastic-dean": "dnsjax.flows.wall_bounded.viscoelastic_dean",
     "kolmogorov": "dnsjax.flows.triply_periodic.monochromatic",
 }
 
@@ -89,6 +91,9 @@ GEO_MODULES = {
     "pipe": "dnsjax.geometries.wall_bounded.cylindrical",
     "taylor-couette": "dnsjax.geometries.wall_bounded.annular",
     "dean": "dnsjax.geometries.wall_bounded.annular",
+    "viscoelastic-dean": (
+        "dnsjax.geometries.wall_bounded.annular_viscoelastic"
+    ),
     "kolmogorov": "dnsjax.geometries.triply_periodic.triply_periodic",
 }
 
@@ -122,6 +127,19 @@ def _configure(system: str) -> None:
         geo["eta"] = 0.5
     elif system == "dean":
         geo["eta"] = 0.5
+    elif system == "viscoelastic-dean":
+        # Re = wi/el is derived (no explicit re); eps = kappa = 0 so the
+        # mean-only conformation invariant is exact (no nonlinear
+        # relaxation, no diffusion).  delta defaults to 11.
+        phys = {
+            "system": system,
+            "el": 20.0,
+            "wi": 20.0,
+            "beta": 0.8,
+            "epsilon": 0.0,
+            "kappa": 0.0,
+        }
+        geo = {"lx": LX}
 
     update_parameters(
         Parameters(
@@ -195,6 +213,107 @@ def _count_ffts(jaxpr, in_cond: bool = False) -> tuple[int, int, list]:
     return outside, inside, loops
 
 
+# ── viscoelastic-dean split checks (9-component, total field) ────
+
+
+def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
+    r"""Viscoelastic-dean CN/AB2 ``_l_bf`` split guards.
+
+    The 9-component split differs from the perturbation flows: the
+    velocity slice adds the polymer-stress divergence, the conformation
+    slice is mean advection / stretching (gated by
+    ``implicit_mean_coupling``) plus the always-implicit linear
+    relaxation.  Checks: (a) ``_l_bf`` is FFT-free; (b) with the mean
+    coupling off, ``_l_bf`` is exactly the polymer divergence (velocity)
+    + linear relaxation (conformation), bitwise; (c) a mean-only state
+    at `$\epsilon = 0$` has a vanishing explicit conformation remainder
+    (``get_rhs`` conf == ``_l_bf`` conf), validating the mean advection
+    and stretching jointly.  The velocity mean-flow coupling reuses the
+    annular ``_l_bf`` already pinned by the ``dean`` entry.
+    """
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from dnsjax.parameters import params
+
+    coef = (1.0 - params.phys.beta) / (params.phys.re * params.phys.wi)
+    faclin = (1.0 - 3.0 * params.phys.epsilon) / params.phys.wi
+
+    rhs = np.asarray(gmod._get_rhs(state, fourier_, flow_))
+    scale = float(np.max(np.abs(rhs)))
+    assert np.isfinite(scale) and scale > 0
+
+    # (a) _l_bf is FFT-free (the premise of the 1-FFT/step scheme).
+    lbf_jaxpr = jax.make_jaxpr(lambda s: gmod._l_bf(s, fourier_, flow_))(
+        state
+    ).jaxpr
+    lbf_ffts, _, _ = _count_ffts(lbf_jaxpr)
+    assert lbf_ffts == 0, f"viscoelastic _l_bf not FFT-free ({lbf_ffts})"
+    print("viscoelastic-dean: _l_bf is FFT-free")
+
+    # l_bf with the instantaneous mean-flow coupling off (the velocity
+    # mean-flow coupling itself is pinned by the ``dean`` entry).
+    assert params.step.implicit_mean_coupling
+    params.step.implicit_mean_coupling = False
+    try:
+        l_off = np.asarray(gmod._l_bf(state, fourier_, flow_))
+    finally:
+        params.step.implicit_mean_coupling = True
+
+    # (b) Mean coupling off => l_bf == polymer divergence (velocity) +
+    # linear relaxation (conformation), to machine precision.
+    cs = gmod._spin_to_phys_combos(
+        state[3], state[4], state[5], state[6], state[7], state[8]
+    )
+    div_r, div_th, div_z = gmod._div_c(*cs, fourier_, flow_)
+    vel_div = coef * np.asarray(
+        jnp.array([div_z, div_r + 1j * div_th, div_r - 1j * div_th])
+    )
+    d_pd = float(np.max(np.abs(l_off[:3] - vel_div)))
+    assert d_pd <= SPLIT_RTOL * scale, (
+        f"polymer-divergence oracle off by {d_pd:.3e} (scale {scale:.3e})"
+    )
+
+    # Linear relaxation in the spin basis: -(1 - 3 eps)/Wi (c - I), with
+    # I_spin = (c_zz, c_+-) = (1, 2), other components 0 -- and the
+    # identity supported at the mean mode only (constant field).
+    ident_mm = np.asarray(jnp.where(fourier_.mean_mask, 1.0, 0.0))
+    i_spin = np.zeros((6, *state.shape[1:]), dtype=np.asarray(state).dtype)
+    i_spin[0] = ident_mm
+    i_spin[3] = 2.0 * ident_mm
+    relax = -faclin * (np.asarray(state[3:]) - i_spin)
+    conf_scale = float(np.max(np.abs(np.asarray(state[3:]))))
+    d_rel = float(np.max(np.abs(l_off[3:] - relax)))
+    assert d_rel <= SPLIT_RTOL * conf_scale, (
+        f"linear-relaxation oracle off by {d_rel:.3e} (scale {conf_scale})"
+    )
+    print("viscoelastic-dean: l_bf(mean off) == polymer div + linear relax")
+
+    # (c) Mean-only conformation invariant at eps = 0: the explicit
+    # conformation remainder get_rhs - l_bf vanishes for a mean-only
+    # state (no fluctuation advection/stretching, no nonlinear
+    # relaxation), so get_rhs conf == l_bf conf.  Velocity = laminar
+    # profile (u_r == 0 exactly, so the dropped u_r d_r c term is truly
+    # zero); conformation = 2x the laminar tensor -- a valid mean-mode
+    # (Hermitian-partner) tensor that is *not* the equilibrium, so the
+    # remainder scale is O(1/Wi) rather than machine zero.
+    lam = fmod._laminar_state
+    mstate = jnp.concatenate([lam[:3], 2.0 * lam[3:]])
+    rhs_m = np.asarray(gmod._get_rhs(mstate, fourier_, flow_))[3:]
+    lbf_m = np.asarray(gmod._l_bf(mstate, fourier_, flow_))[3:]
+    cscale = float(np.max(np.abs(rhs_m)))
+    d_mo = float(np.max(np.abs(rhs_m - lbf_m)))
+    assert d_mo <= 1e-10 * cscale, (
+        f"mean-only conformation invariant off by {d_mo:.3e} "
+        f"(conf scale {cscale:.3e})"
+    )
+    print(
+        "viscoelastic-dean: mean-only conf get_rhs == l_bf "
+        f"(rel {d_mo / cscale:.2e})"
+    )
+
+
 # ── worker (one system, singletons owned by this process) ────────
 
 
@@ -214,7 +333,9 @@ def _worker(system: str) -> None:
     wall_bounded = system != "kolmogorov"
 
     # -- split exactness ------------------------------------------
-    if wall_bounded:
+    if system == "viscoelastic-dean":
+        _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_)
+    elif wall_bounded:
         from dnsjax.parameters import derived_params, params
 
         rhs = np.asarray(gmod._get_rhs(state, fourier_, flow_))

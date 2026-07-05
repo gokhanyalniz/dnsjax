@@ -17,13 +17,15 @@ One entry (``plane-couette-default-ic``) omits ``--init.random_field``
 to verify random is the **default** start mode -- with no snapshot and
 no explicit mode selected, the run must start from a random field (not
 the laminar state), guarding the snapshot-first / random-default
-precedence in ``__main__.py``.  Five entries (``plane-couette-cnab2``,
+precedence in ``__main__.py``.  Six entries (``plane-couette-cnab2``,
 ``pipe-cnab2``, ``taylor-couette-cnab2``, ``dean-cnab2``,
-``kolmogorov-cnab2``) pass ``--step.scheme cnab2`` to drive the
-alternative CN/AB2 time-stepping scheme -- Crank-Nicolson viscous +
-explicit 2nd-order Adams-Bashforth nonlinear, one FFT eval per step --
-across all four geometry families (``dean-cnab2`` additionally covers
-the total-field ``_l_bf == 0`` corrector path).
+``viscoelastic-dean-cnab2``, ``kolmogorov-cnab2``) pass
+``--step.scheme cnab2`` to drive the alternative CN/AB2 time-stepping
+scheme -- Crank-Nicolson viscous + explicit 2nd-order Adams-Bashforth
+nonlinear, one FFT eval per step -- across all four geometry families
+(``dean-cnab2`` additionally covers the total-field ``_l_bf == 0``
+corrector path; ``viscoelastic-dean-cnab2`` the 9-component tensor
+coupling).
 For the wall-bounded families this exercises the fix that makes the
 stiff base-flow coupling implicit (an FFT-free corrector; see ``_l_bf``
 / ``step_cnab2``) plus the iterative-CN self-start, so cnab2 stays
@@ -182,6 +184,33 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # Viscoelastic (sPTT) Dean flow: the 9-component state (3 velocity
+        # + 6 conformation-tensor) driven through the full coupled
+        # nonlinear path (advection Christoffels, stretching, relaxation,
+        # polymer-stress divergence).  Total-field IC = analytical laminar
+        # pair + windowed tensor noise (``random_conformation_amplitude``).
+        # Re = wi/el is derived (no --phys.re).  The kappa > 0 default
+        # also builds the conformation Helmholtz operator (``Hc_op``).
+        # wi = el = 20 (Re = 1) and a reduced conformation-noise amplitude
+        # (10, vs the Dedalus restart default 700) keep the coupled system
+        # robust at the coarse smoke resolution -- the Dedalus-native
+        # wi = 105 with the full noise is a genuinely stiff elastic
+        # instability on a 32^3 grid, not a solver defect.
+        "name": "viscoelastic-dean",
+        "args": [
+            "--phys.system",
+            "viscoelastic-dean",
+            "--phys.wi",
+            "20",
+            "--phys.el",
+            "20",
+            "--init.random_conformation_amplitude",
+            "10",
+            "--geo.lx",
+            "5",
+        ],
+    },
+    {
         # Regression guard for the per-device (no-replication) random
         # build with spectral padding: always multi-device on the kx axis
         # (np1 = 2), with nx // 2 = 17 not divisible by np1 (padded to
@@ -271,6 +300,36 @@ SYSTEMS: list[dict] = [
             "-400",
             "--geo.eta",
             "0.5",
+            "--geo.lx",
+            "5",
+            "--solver.backend",
+            "pallas",
+        ],
+    },
+    {
+        # Pallas banded backend on the viscoelastic annular
+        # (viscoelastic-dean) geometry, same sharded/padded mode-axis
+        # guard (np1 = 2, nx // 2 = 3 padded to 4): builds the annular Lk
+        # / 2x2-IMM Hk operators **and** the 6-component stacked
+        # conformation Helmholtz operator ``Hc_op`` (kappa > 0) in banded
+        # storage on the sharded axis, and solves the 9-component coupled
+        # nonlinear path.  CPU runs the pure-JAX banded sweep (the Triton
+        # kernel is GPU-only).  Same robust reduced parameters as the
+        # single-device ``viscoelastic-dean`` entry.
+        "name": "viscoelastic-dean-pallas-mpi-pad",
+        "force_np": 2,
+        "force_np0": 1,
+        "oversubscribe": True,
+        "res": {"nx": 6, "ny": 24, "nz": 8},
+        "args": [
+            "--phys.system",
+            "viscoelastic-dean",
+            "--phys.wi",
+            "20",
+            "--phys.el",
+            "20",
+            "--init.random_conformation_amplitude",
+            "10",
             "--geo.lx",
             "5",
             "--solver.backend",
@@ -417,6 +476,34 @@ SYSTEMS: list[dict] = [
             "1000",
             "--geo.eta",
             "0.5",
+            "--geo.lx",
+            "5",
+            "--step.scheme",
+            "cnab2",
+        ],
+    },
+    {
+        # CN/AB2 on the viscoelastic (sPTT) Dean flow: the 9-component
+        # total-field tensor path.  Its ``_l_bf`` is the viscoelastic
+        # coupling (velocity mean-flow + polymer-stress divergence;
+        # conformation mean advection / stretching + linear relaxation),
+        # all FFT-free, so the explicit AB2 remainder is the pure
+        # fluctuation-fluctuation nonlinearity -- a distinct cnab2 code
+        # path (9 components, elastic coupling) exercised by no other
+        # entry.  Same robust reduced parameters as the iterative-cn
+        # ``viscoelastic-dean`` entry; cnab2 matches iterative-cn to
+        # O(dt^2) at ~1 FFT/step vs its ~4.
+        "name": "viscoelastic-dean-cnab2",
+        "res": {"nx": 32, "ny": 32, "nz": 32},
+        "args": [
+            "--phys.system",
+            "viscoelastic-dean",
+            "--phys.wi",
+            "20",
+            "--phys.el",
+            "20",
+            "--init.random_conformation_amplitude",
+            "10",
             "--geo.lx",
             "5",
             "--step.scheme",

@@ -324,6 +324,42 @@ SYSTEMS: list[dict] = [
             "27",
         ],
     },
+    {
+        # Viscoelastic (sPTT) Dean flow: total-field 9-component state.
+        # At epsilon = kappa = 0 the analytical laminar pair (azimuthal
+        # velocity + pointwise sPTT-equilibrium conformation) is the
+        # *exact* discrete steady state, so E' (velocity deviation) stays
+        # ~1e-18 and the corrector converges in a single step.  A modest
+        # wi = el (=> Re = 1) keeps the conformation magnitude O(10) so
+        # the corrector error is FD-truncation-, not overflow-, limited.
+        # Checked differently from the perturbation flows (own branch):
+        # near-steady energy and the polymer energy balance I = D_s - W_p.
+        "name": "viscoelastic-dean",
+        "args": [
+            "--phys.system",
+            "viscoelastic-dean",
+            "--phys.epsilon",
+            "0",
+            "--phys.kappa",
+            "0",
+            "--phys.wi",
+            "5",
+            "--phys.el",
+            "5",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nx",
+            "4",
+            "--res.nz",
+            "4",
+            "--res.ny",
+            "27",
+        ],
+    },
 ]
 
 ERR_PATTERN = re.compile(r"err\s*=\s*([\d.eE+\-]+)")
@@ -348,6 +384,19 @@ D_PATTERN = re.compile(r"\bD\s*=\s*([\d.eE+\-]+)")
 DEAN_EP_THRESHOLD = 5e-13
 DEAN_IB_TOL = 1e-3
 DEAN_E_DRIFT_TOL = 1e-4
+
+# Viscoelastic-dean diagnostics (total-field, 9-component).  The
+# conformation carries magnitude O(10) (TrC ~ 70 at wi = 5), so the
+# corrector error and E' floor sit at FD truncation (~1e-10 / ~1e-17),
+# well above the perturbation flows' roundoff but far below the
+# corrector tolerance.  The polymer energy balance is I = D_s - W_p
+# (solvent dissipation minus polymer work; W_p < 0 as polymers dissipate).
+DS_PATTERN = re.compile(r"D_s\s*=\s*([\d.eE+\-]+)")
+WP_PATTERN = re.compile(r"W_p\s*=\s*([\d.eE+\-]+)")
+VE_ERR_THRESHOLD = 1e-7
+VE_EP_THRESHOLD = 1e-12
+VE_BALANCE_TOL = 5e-3
+VE_E_DRIFT_TOL = 1e-4
 
 # Values shared by every smoke system (dt and lx are the
 # parameter-model defaults; the subprocesses run in temporary
@@ -440,12 +489,18 @@ def _check_steps_file(workdir: Path, name: str) -> None:
     # ("t" is always written first by ``_flush_stats``).
     cylindrical = name.startswith("pipe")
     annular = name.startswith("taylor-couette")
-    dean = name.startswith("dean")
+    # Viscoelastic-dean is a force-driven annular (total-field) flow: it
+    # shares Dean's near-steady azimuthal-CFL structure but additionally
+    # writes a ``TrC_max`` column (the max conformation trace).
+    viscoelastic = name.startswith("viscoelastic")
+    dean = name.startswith("dean") or viscoelastic
     if cylindrical or annular or dean:
         per_dir = ("CFL_z", "CFL_r", "CFL_th")
     else:
         per_dir = ("CFL_x", "CFL_y", "CFL_z")
     expected_cols = {"t", "CFL", *per_dir}
+    if viscoelastic:
+        expected_cols = expected_cols | {"TrC_max"}
     if header[0] != "t" or set(header) != expected_cols:
         raise AssertionError(
             f"{name}: steps.dat header {header} != {expected_cols}"
@@ -522,14 +577,19 @@ def _check_steps_file(workdir: Path, name: str) -> None:
             )
 
 
-def _check_corrector_file(workdir: Path, name: str) -> None:
+def _check_corrector_file(
+    workdir: Path, name: str, err_threshold: float = ERR_THRESHOLD
+) -> None:
     """Validate ``corrector.dat`` for a laminar run.
 
     The laminar state converges in a single corrector step, so for every
     recorded step the iteration count ``c`` (iterations *beyond* the
     first) is 0 and the final corrector error is roundoff-sized.  With
     ``it_corrector = 1`` there is one row per step, the first at
-    ``t = 0`` (same cadence/format as ``steps.dat``).
+    ``t = 0`` (same cadence/format as ``steps.dat``).  ``err_threshold``
+    is relaxed for the viscoelastic total field, whose large
+    conformation magnitude puts the corrector-error floor at FD
+    truncation rather than roundoff.
     """
     corr_file = workdir / "corrector.dat"
     if not corr_file.exists():
@@ -560,10 +620,10 @@ def _check_corrector_file(workdir: Path, name: str) -> None:
             raise AssertionError(
                 f"{name}: corrector count c={c_val} != 0 (row {row})"
             )
-        if not (math.isfinite(err_val) and 0.0 <= err_val <= ERR_THRESHOLD):
+        if not (math.isfinite(err_val) and 0.0 <= err_val <= err_threshold):
             raise AssertionError(
                 f"{name}: corrector error {err_val} not in "
-                f"[0, {ERR_THRESHOLD:.0e}] (row {row})"
+                f"[0, {err_threshold:.0e}] (row {row})"
             )
 
 
@@ -628,6 +688,74 @@ def _check_dean(stdout: str, name: str) -> tuple[float, float]:
     return last_err, last_ep
 
 
+def _check_viscoelastic_dean(stdout: str, name: str) -> tuple[float, float]:
+    r"""Validate a viscoelastic-dean laminar run (`$\epsilon=\kappa=0$`).
+
+    The analytical laminar pair is the exact discrete steady state, so
+    ``E'`` (velocity deviation energy) is FD-truncation-tiny and the
+    corrector converges; additionally the polymer energy balance
+    ``I = D_s - W_p`` holds and the total energy is near-steady.  Returns
+    ``(last_err, last_ep)`` for the PASS summary.
+    """
+    last_err: float | None = None
+    ep_vals: list[float] = []
+    e_vals: list[float] = []
+    i_vals: list[float] = []
+    ds_vals: list[float] = []
+    wp_vals: list[float] = []
+    for line in stdout.splitlines():
+        m = ERR_PATTERN.search(line)
+        if m:
+            last_err = float(m.group(1))
+        for pat, acc in (
+            (EP_PATTERN, ep_vals),
+            (E_PATTERN, e_vals),
+            (I_PATTERN, i_vals),
+            (DS_PATTERN, ds_vals),
+            (WP_PATTERN, wp_vals),
+        ):
+            m = pat.search(line)
+            if m:
+                acc.append(float(m.group(1)))
+
+    if last_err is None or not (
+        ep_vals and e_vals and i_vals and ds_vals and wp_vals
+    ):
+        raise AssertionError(
+            f"{name}: could not parse viscoelastic diagnostics"
+        )
+
+    if last_err > VE_ERR_THRESHOLD:
+        raise AssertionError(
+            f"{name}: stepping error {last_err:.3e} > {VE_ERR_THRESHOLD:.0e}"
+        )
+
+    last_ep = ep_vals[-1]
+    if last_ep > VE_EP_THRESHOLD:
+        raise AssertionError(
+            f"{name}: deviation energy from laminar {last_ep:.3e} "
+            f"> {VE_EP_THRESHOLD:.0e}"
+        )
+
+    # Polymer energy balance I = D_s - W_p at the near-steady state.
+    last_i, last_ds, last_wp = i_vals[-1], ds_vals[-1], wp_vals[-1]
+    balance = last_ds - last_wp
+    if last_i <= 0.0:
+        raise AssertionError(f"{name}: non-positive I={last_i:.3e}")
+    if abs(last_i - balance) > VE_BALANCE_TOL * abs(last_i):
+        raise AssertionError(
+            f"{name}: energy balance off: I={last_i:.6e}, "
+            f"D_s - W_p={balance:.6e}"
+        )
+
+    if abs(e_vals[-1] - e_vals[0]) > VE_E_DRIFT_TOL * e_vals[0]:
+        raise AssertionError(
+            f"{name}: energy drift {e_vals[0]:.6e} -> {e_vals[-1]:.6e}"
+        )
+
+    return last_err, last_ep
+
+
 # ── test runner ──────────────────────────────────────────────────────
 
 
@@ -652,6 +780,15 @@ def run_smoke_test(system: dict, np_count: int, np0: int = 1) -> None:
             raise AssertionError(
                 f"{name} exited with code {result.returncode}"
             )
+
+        if name.startswith("viscoelastic"):
+            last_err, last_ep = _check_viscoelastic_dean(result.stdout, name)
+            _check_steps_file(Path(workdir), name)
+            _check_corrector_file(
+                Path(workdir), name, err_threshold=VE_ERR_THRESHOLD
+            )
+            print(f"  PASS  {name}  (err={last_err:.2e}, E'={last_ep:.2e})")
+            return
 
         if name.startswith("dean"):
             last_err, last_ep = _check_dean(result.stdout, name)

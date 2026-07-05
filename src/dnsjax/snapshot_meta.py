@@ -72,11 +72,14 @@ def read_snapshot_stats(path: str | Path) -> dict | None:
 
 
 def snapshot_component_offsets(path: str | Path) -> dict[int, int]:
-    """Map each velocity component to its data byte offset in the tar.
+    """Map each state component to its data byte offset in the tar.
 
     The returned offset is ``tarfile.TarInfo.offset_data`` -- the first
     byte of the component's raw chunk inside the archive -- used as the
-    base for the raw offset I/O in :mod:`dnsjax.snapshot`.
+    base for the raw offset I/O in :mod:`dnsjax.snapshot`.  The component
+    count is the number of chunks: 3 for the velocity-only systems, 9
+    for the viscoelastic system (3 velocity + 6 conformation); the chunks
+    must be a contiguous range ``0..N-1``.
     """
     path = Path(path)
     offsets: dict[int, int] = {}
@@ -86,7 +89,7 @@ def snapshot_component_offsets(path: str | Path) -> dict[int, int]:
             if name.startswith(_CHUNK_PREFIX) and name.endswith(_CHUNK_SUFFIX):
                 comp = int(name[len(_CHUNK_PREFIX) :].split("/", 1)[0])
                 offsets[comp] = m.offset_data
-    if set(offsets) != {0, 1, 2}:
+    if not offsets or set(offsets) != set(range(len(offsets))):
         raise ValueError(
             f"{path} is missing component chunks (found {sorted(offsets)})."
         )
