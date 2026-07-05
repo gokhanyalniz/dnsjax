@@ -34,6 +34,7 @@ the stored axes -- no transpose.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,6 +56,10 @@ from ..snapshot_meta import (
 CARTESIAN_SYSTEMS = frozenset({"plane-couette", "plane-poiseuille"})
 CYLINDRICAL_SYSTEMS = frozenset({"pipe"})
 ANNULAR_SYSTEMS = frozenset({"taylor-couette", "dean"})
+#: Viscoelastic annular systems (9-component state: 3 velocity + 6
+#: symmetric conformation-tensor components).  Annular *geometry*, but a
+#: distinct component schema, so kept separate from ``ANNULAR_SYSTEMS``.
+VISCOELASTIC_SYSTEMS = frozenset({"viscoelastic-dean"})
 PERIODIC_SYSTEMS = frozenset({"kolmogorov", "waleffe", "decaying-box"})
 
 #: Triply-periodic shear-direction box length (fixed length reference;
@@ -137,7 +142,10 @@ class GeometryInfo:
     name: tuple[str, str, str]  # direction name per axis
     n: tuple[int, int, int]  # full physical size per axis
     length: tuple[float | None, ...]  # physical length (None for grid axis)
-    components: tuple[str, str, str]  # velocity labels (chunk / axis-0 order)
+    # Returned component labels (axis-0 order).  Length 3 for the
+    # velocity-only systems; 9 for the viscoelastic system (velocity +
+    # physical conformation-tensor components).
+    components: tuple[str, ...]
     wall_normal_axis: int  # physical axis carrying the wall-normal direction
     grid_axis: int | None  # spectral axis stored as a grid (None if periodic)
 
@@ -170,8 +178,28 @@ def geometry_info(params: Namespace) -> GeometryInfo:
             wall_normal_axis=0,
             grid_axis=0,
         )
-    if system in CYLINDRICAL_SYSTEMS or system in ANNULAR_SYSTEMS:
+    if (
+        system in CYLINDRICAL_SYSTEMS
+        or system in ANNULAR_SYSTEMS
+        or system in VISCOELASTIC_SYSTEMS
+    ):
         family = "cylindrical" if system in CYLINDRICAL_SYSTEMS else "annular"
+        if system in VISCOELASTIC_SYSTEMS:
+            # Velocity + physical conformation-tensor components (the
+            # stored spin combos are converted in ``to_returned_basis``).
+            components = (
+                "u_z",
+                "u_r",
+                "u_theta",
+                "c_zz",
+                "c_rz",
+                "c_theta_z",
+                "c_rr",
+                "c_theta_theta",
+                "c_r_theta",
+            )
+        else:
+            components = ("u_z", "u_r", "u_theta")
         # Azimuthal length is always 2*pi; the real axis is axial (lx).
         return GeometryInfo(
             family=family,
@@ -180,7 +208,7 @@ def geometry_info(params: Namespace) -> GeometryInfo:
             name=("r", "z", "theta"),
             n=(ny, nx, nz),
             length=(None, lx, 2.0 * np.pi),
-            components=("u_z", "u_r", "u_theta"),
+            components=components,
             wall_normal_axis=0,
             grid_axis=0,
         )
@@ -236,20 +264,59 @@ def _np_dtype(name: str) -> np.dtype:
         raise ValueError(f"Unsupported snapshot dtype {name!r}.") from None
 
 
+def _component_recipes(
+    info: GeometryInfo,
+) -> list[tuple[tuple[int, ...], Callable[[dict[int, ndarray]], ndarray]]]:
+    r"""Per-returned-component ``(native chunks, combine)`` recipes.
+
+    Cartesian / periodic: identity (component ``i`` is native chunk
+    ``i``).  Cylindrical / annular: the velocity triad converts the
+    stored ``u_±`` pair (`$u_r = (u_+ + u_-)/2$`,
+    `$u_\theta = (u_+ - u_-)/2i$`); the **viscoelastic** system adds the
+    6 physical conformation components from the stored spin combos
+    (`$c_{rz} = (c_{z+} + c_{z-})/2$`, `$c_{rr} = c_{+-}/2 +
+    (c_{++} + c_{--})/4$`, etc.).
+    """
+    if info.family in ("cylindrical", "annular"):
+        recipes: list = [
+            ((0,), lambda r: r[0]),  # u_z
+            ((1, 2), lambda r: (r[1] + r[2]) / 2.0),  # u_r
+            ((1, 2), lambda r: (r[1] - r[2]) / 2.0j),  # u_theta
+        ]
+        if len(info.components) > 3:  # viscoelastic (9 components)
+            recipes += [
+                ((3,), lambda r: r[3]),  # c_zz
+                ((4, 5), lambda r: (r[4] + r[5]) / 2.0),  # c_rz
+                ((4, 5), lambda r: (r[4] - r[5]) / 2.0j),  # c_theta_z
+                # c_rr, c_theta_theta from c_+-, c_++, c_--.
+                ((6, 7, 8), lambda r: r[6] / 2.0 + (r[7] + r[8]) / 4.0),
+                ((6, 7, 8), lambda r: r[6] / 2.0 - (r[7] + r[8]) / 4.0),
+                ((7, 8), lambda r: (r[7] - r[8]) / 4.0j),  # c_r_theta
+            ]
+        return recipes
+    return [((i,), _pick(i)) for i in range(len(info.components))]
+
+
+def _pick(i: int) -> Callable[[dict[int, ndarray]], ndarray]:
+    """Identity combine for native chunk ``i`` (Cartesian / periodic)."""
+    return lambda r: r[i]
+
+
 def native_components_needed(
     info: GeometryInfo, out_components: tuple[int, ...]
 ) -> list[int]:
     """Native chunk indices required to build *out_components*.
 
     For cylindrical/annular, ``u_r`` and ``u_θ`` are each formed from
-    the ``u_±`` pair, so requesting either pulls native chunks 1 and 2.
+    the ``u_±`` pair, so requesting either pulls native chunks 1 and 2;
+    the viscoelastic conformation components similarly pull their spin
+    chunks (see :func:`_component_recipes`).
     """
-    if info.family in ("cylindrical", "annular"):
-        need: set[int] = set()
-        for c in out_components:
-            need.add(0) if c == 0 else need.update((1, 2))
-        return sorted(need)
-    return sorted(set(out_components))
+    recipes = _component_recipes(info)
+    need: set[int] = set()
+    for c in out_components:
+        need.update(recipes[c][0])
+    return sorted(need)
 
 
 def read_chunks(
@@ -307,21 +374,13 @@ def to_returned_basis(
 ) -> dict[int, ndarray]:
     r"""Map native chunks to the returned component basis.
 
-    Cylindrical/annular: ``u_z`` is chunk 0;
-    ``u_r = (u_+ + u_-)/2``, ``u_θ = (u_+ - u_-)/(2i)`` from chunks
-    1 and 2.  All other families are identity.
+    Cylindrical/annular convert the stored ``u_±`` (and, for the
+    viscoelastic system, the conformation spin combos) to the physical
+    components; all other families are identity.  See
+    :func:`_component_recipes`.
     """
-    if info.family in ("cylindrical", "annular"):
-        result: dict[int, ndarray] = {}
-        for c in out_components:
-            if c == 0:
-                result[0] = raw[0]
-            elif c == 1:
-                result[1] = (raw[1] + raw[2]) / 2.0
-            else:
-                result[2] = (raw[1] - raw[2]) / 2.0j
-        return result
-    return {c: raw[c] for c in out_components}
+    recipes = _component_recipes(info)
+    return {c: recipes[c][1](raw) for c in out_components}
 
 
 # ── Nearest wall-normal grid points ──────────────────────────

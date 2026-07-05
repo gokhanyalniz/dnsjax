@@ -138,6 +138,7 @@ from .parameters import (
     trajectory_defining_changes,
     update_parameters,
     validate_parameters,
+    viscoelastic_systems,
     walled_systems,
 )
 
@@ -241,7 +242,10 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
 
     if params.phys.system in cylindrical_systems:
         geometry = "cylindrical"
-    elif params.phys.system in annular_systems:
+    elif (
+        params.phys.system in annular_systems
+        or params.phys.system in viscoelastic_systems
+    ):
         geometry = "annular"
     else:
         geometry = "cartesian"
@@ -271,14 +275,19 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         # every geometry's spectral layout.
         state = jnp.einsum("ij, cjzx -> cizx", T_jax, state)
 
-    # Enforce wall boundary conditions.
+    # Enforce wall boundary conditions on the *velocity* only (the first
+    # 3 components).  A viscoelastic state carries 6 conformation-tensor
+    # components after the velocity; their wall BC is ``div(grad c) = 0``
+    # (handled by the Hc operator during stepping), not a Dirichlet zero,
+    # so they must not be zeroed here.  For the 3-component systems
+    # ``[:3]`` is the whole state.
     if geometry == "cylindrical":
         # Single wall at r = 1 (axis handled by parity).
-        state = state.at[:, -1].set(0.0)
+        state = state.at[:3, -1].set(0.0)
     else:
         # Two walls (Cartesian: y = +/-1; annular: r = r1, r2).
-        state = state.at[:, 0].set(0.0)
-        state = state.at[:, -1].set(0.0)
+        state = state.at[:3, 0].set(0.0)
+        state = state.at[:3, -1].set(0.0)
 
     sharding.print(
         "Interpolated wall-normal grid; first corrector step "
@@ -348,6 +357,16 @@ def main() -> None:
         )
     elif params.phys.system == "dean":
         from .flows.wall_bounded.dean import (
+            get_perturbation_energy,
+            get_stats,
+            init_state,
+            predict_and_fully_correct,
+            predict_and_fully_correct_measured,
+            step_cnab2,
+            step_cnab2_measured,
+        )
+    elif params.phys.system == "viscoelastic-dean":
+        from .flows.wall_bounded.viscoelastic_dean import (
             get_perturbation_energy,
             get_stats,
             init_state,

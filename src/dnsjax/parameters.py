@@ -14,7 +14,7 @@ defaults / TOML / CLI.  The global singletons ``params``,
 import tomllib
 from dataclasses import dataclass
 from datetime import timedelta
-from math import cos, pi, sin
+from math import cos, isclose, pi, sin
 from pathlib import Path
 from typing import Literal
 
@@ -27,10 +27,19 @@ periodic_systems: list[str] = ["decaying-box", *monochromatic_systems]
 cartesian_systems: list[str] = ["plane-couette", "plane-poiseuille"]
 cylindrical_systems: list[str] = ["pipe"]
 annular_systems: list[str] = ["taylor-couette", "dean"]
+# Viscoelastic flows living on the annular *geometry* (grid on
+# [r1, r2], u_+/u_- velocity formulation) but integrating a coupled
+# 9-component state (3 velocity + 6 symmetric conformation-tensor
+# components).  Kept separate from ``annular_systems`` so the
+# eta-based annular derivation and the 3-component annular IC
+# generators / analysis reader do not accidentally catch them; the
+# annular-*geometry* routing sites explicitly include this list.
+viscoelastic_systems: list[str] = ["viscoelastic-dean"]
 walled_systems: list[str] = [
     *cartesian_systems,
     *cylindrical_systems,
     *annular_systems,
+    *viscoelastic_systems,
 ]
 
 ns_to_s: float = 10 ** (-9)  # nanoseconds to seconds
@@ -98,6 +107,28 @@ class Physics(BaseModel):
     # and ``flows.wall_bounded.taylor_couette``.
     re1: float | None = None
     re2: float | None = None
+    # Viscoelastic (sPTT) control parameters (system ==
+    # "viscoelastic-dean"; see ``flows.wall_bounded.viscoelastic_dean``
+    # and ``geometries.wall_bounded.annular_viscoelastic``).  All
+    # ``None`` for other systems and default to the reference
+    # configuration when unset for the viscoelastic system (applied in
+    # the ``update_parameters`` viscoelastic branch):
+    #   el   -- elasticity number El (defines Re := Wi/El, so
+    #           ``phys.re`` is derived, not set directly).  Default 80.
+    #   wi   -- Weissenberg number.  Default 105.
+    #   beta -- solvent-to-total viscosity ratio in (0, 1]; the solvent
+    #           viscosity is nu = beta/Re (``derived_params.nu``) and
+    #           the polymer stress carries (1-beta)/(Re Wi).  Default
+    #           0.8.
+    #   epsilon -- sPTT extensibility parameter (>= 0).  Default 0.001.
+    #   kappa   -- artificial stress diffusivity (>= 0); kappa = 0 makes
+    #              the conformation transport purely hyperbolic (no
+    #              wall BC on c).  Default 5e-5.
+    el: float | None = Field(default=None, gt=0)
+    wi: float | None = Field(default=None, gt=0)
+    beta: float | None = Field(default=None, gt=0, le=1)
+    epsilon: float | None = Field(default=None, ge=0)
+    kappa: float | None = Field(default=None, ge=0)
     # Default "plane-couette": a wall-bounded flow that integrates
     # cleanly from the default random IC at the default dt (Kolmogorov +
     # random needs a smaller dt; see the random-IC corrector note in the
@@ -194,6 +225,11 @@ class Geometry(BaseModel):
     # geometry.  Non-dim radii r1 = eta/(1-eta), r2 = 1/(1-eta) on the
     # gap d = r2 - r1 = 1.  Required for system == "taylor-couette".
     eta: float | None = Field(default=None, gt=0, lt=1)
+    # Inner radius delta for the viscoelastic annular geometry
+    # (system == "viscoelastic-dean").  The gap is fixed at 2 (half-gap
+    # length unit), so r1 = delta, r2 = delta + 2.  Default 11 (applied
+    # in the ``update_parameters`` viscoelastic branch).
+    delta: float | None = Field(default=None, gt=0)
     wall_grid: Path | None = None
     grid_type: Literal["cgl", "half-cgl", "tanh"] | None = None
     grid_stretch: float = Field(gt=0, default=1.5)
@@ -269,6 +305,13 @@ class Initiation(BaseModel):
     )  # spectral decay rate (0 < s < 1)
     random_seed: int = 1  # NumPy PRNG seed (device-count independent)
     random_mean_flow: bool = False  # also perturb the mean (kx=kz=0) mode
+    # Amplitude of the random symmetric-tensor perturbation added to the
+    # laminar conformation for the viscoelastic random IC
+    # (system == "viscoelastic-dean"); shares ``random_smoothness`` for
+    # the spectral envelope and is radially windowed to zero at both
+    # walls (the Dedalus restart-branch recipe).  Ignored by every other
+    # system (which has no conformation field).
+    random_conformation_amplitude: float = 700.0
     # Generate an in-process deterministic localized-rolls ("turbulent
     # spot") perturbation (wall-bounded only; higher precedence than the
     # default ``random_field``, lower than ``start_from_laminar``).  A
@@ -581,6 +624,10 @@ class DerivedParameters:
     non-dim annular radii (set for system == "taylor-couette").
     ``u_grid`` is the resolved moving-frame speed (always a concrete
     float; see ``params.phys.u_grid`` and ``update_parameters``).
+    ``nu`` is the (solvent) kinematic viscosity multiplying the velocity
+    Laplacian: ``1/re`` for the Newtonian systems, ``beta/re`` for the
+    viscoelastic system (whose polymer stress carries the remaining
+    ``(1-beta)/(re wi)``).
     """
 
     ly: float = 4
@@ -594,6 +641,7 @@ class DerivedParameters:
     r_inner: float = 0
     r_outer: float = 0
     u_grid: float = 0
+    nu: float = 0
 
 
 params: Parameters = Parameters()
@@ -697,17 +745,31 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
     return changes
 
 
+# ``(section, key)`` of every field explicitly provided through any
+# configuration layer (snapshot / TOML / CLI), accumulated across all
+# :func:`update_parameters` calls.  Read by per-system defaults that
+# must distinguish "left at the class default" from "explicitly set to
+# the class default" (currently the viscoelastic ``geo.lx`` axial
+# period and the ``phys.re`` consistency check).
+_user_set_fields: set[tuple[str, str]] = set()
+
+
 def update_parameters(params_new: Parameters) -> None:
     """Merge *params_new* into the global ``params``
     and recompute derived values.
 
     Only fields that were explicitly set in *params_new* are applied, so
-    unset fields retain their previous values.
+    unset fields retain their previous values.  The ``(section, key)`` of
+    every explicitly-set field is recorded (across all layers) in the
+    module-level :data:`_user_set_fields`, so a per-system default (e.g.
+    the viscoelastic axial period ``geo.lx``) can be applied only when
+    the user / snapshot / TOML never set it.
     """
     for category, dict in params_new.model_dump(exclude_unset=True).items():
         if dict is not None:
             for key, value in dict.items():
                 if value is not None:
+                    _user_set_fields.add((category, key))
                     setattr(getattr(params, category), key, value)
 
     # Set derived parameters:
@@ -775,8 +837,62 @@ def update_parameters(params_new: Parameters) -> None:
             )
         # Dean flow uses phys.re directly (both walls stationary); its
         # azimuthal body force lives in flows.wall_bounded.dean.
+    elif system in viscoelastic_systems:
+        # Viscoelastic (sPTT) flow on the annular geometry.  Adopt the
+        # Dedalus reference normalisation: a half-gap length unit
+        # (gap = 2), so r1 = delta, r2 = delta + 2, the Reynolds number
+        # is derived as Re := Wi/El, and the axial period defaults to
+        # 2*pi (Dedalus ``Lz``).  Any unset control parameter falls back
+        # to the reference configuration.
+        if params.phys.el is None:
+            params.phys.el = 80.0
+        if params.phys.wi is None:
+            params.phys.wi = 105.0
+        if params.phys.beta is None:
+            params.phys.beta = 0.8
+        if params.phys.epsilon is None:
+            params.phys.epsilon = 0.001
+        if params.phys.kappa is None:
+            params.phys.kappa = 5.0e-5
+        if params.geo.delta is None:
+            params.geo.delta = 11.0
+        # Axial period: default to 2*pi (Dedalus Lz) unless the user /
+        # snapshot / TOML set geo.lx explicitly (it is a genuine domain
+        # length, unlike the azimuthal lz which is always forced 2*pi).
+        if ("geo", "lx") not in _user_set_fields:
+            params.geo.lx = 2 * pi
+        r1 = params.geo.delta
+        r2 = params.geo.delta + 2.0
+        derived_params.r_inner = r1
+        derived_params.r_outer = r2
+        # Force a full 2*pi azimuthal extent (integer harmonics).
+        params.geo.lz = 2 * pi
+        # Annular area normalisation: int_{r1}^{r2} r dr.
+        derived_params.volume_fac = (r2**2 - r1**2) / 2
+        # Re := Wi/El.  A directly-set phys.re is accepted only when it
+        # matches (a snapshot resume replays a consistent value); set it
+        # so every downstream 1/re path is reused.
+        re_derived = params.phys.wi / params.phys.el
+        if ("phys", "re") in _user_set_fields and not isclose(
+            params.phys.re, re_derived, rel_tol=1e-9
+        ):
+            raise ValueError(
+                "viscoelastic-dean derives phys.re := wi/el "
+                f"(= {re_derived:g}); do not set phys.re directly "
+                f"(got {params.phys.re}).  Set phys.wi / phys.el instead."
+            )
+        params.phys.re = re_derived
     else:
         raise NotImplementedError
+
+    # Solvent viscosity multiplying the velocity Laplacian: 1/re for the
+    # Newtonian systems; beta/re for the viscoelastic system (the polymer
+    # stress carries the remaining (1-beta)/(re wi)).  Read by the
+    # annular geometry's operator builders and IMM.
+    if system in viscoelastic_systems:
+        derived_params.nu = params.phys.beta / params.phys.re
+    else:
+        derived_params.nu = 1.0 / params.phys.re
 
     # Resolve the moving-frame speed U_grid.  A user-set value wins (but
     # the moving frame is only implemented for wall-bounded systems);

@@ -439,23 +439,23 @@ def build_annular_grid(
     return rs, D1, D2, y_weights, inv_r
 
 
-def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
-    r"""Analytical laminar Dean-flow azimuthal profile `$U_\theta(r)$`.
+def annular_forced_laminar_u_theta(
+    rs: Array, r1: float, r2: float, C: float
+) -> Array:
+    r"""Analytical laminar azimuthal profile for an annular body force.
 
     Closed-form steady solution of the azimuthal momentum balance
     `$(1/\mathrm{Re})\,(\nabla^2 \mathbf{U})_\theta + \Pi_\theta = 0$`
-    for the radius-dependent body force
-    `$\Pi_\theta = (2\eta + 2) / (r\,\mathrm{Re}\,(1 - \eta))$` with
-    no-slip walls `$U_\theta(r_1) = U_\theta(r_2) = 0$`.  The
-    `$1/\mathrm{Re}$` cancels, so the profile is
-    **Reynolds-independent**:
+    for a radius-dependent azimuthal body force
+    `$\Pi_\theta = C/(r\,\mathrm{Re})$` with no-slip walls
+    `$U_\theta(r_1) = U_\theta(r_2) = 0$`.  The `$1/\mathrm{Re}$`
+    cancels, so the profile is **Reynolds-independent**:
 
     .. math::
         U_\theta(r) = -\tfrac{C}{2}\,r\ln r + \alpha\,r
-        + \frac{\beta}{r}, \qquad C = \frac{2(\eta + 1)}{1 - \eta},
+        + \frac{\beta}{r},
 
-    with `$r_1 = \eta/(1-\eta)$`, `$r_2 = 1/(1-\eta)$` (gap
-    `$d = 1$`) and the wall conditions fixing
+    where the wall conditions fix
 
     .. math::
         \alpha = \frac{C}{2}\,
@@ -464,10 +464,37 @@ def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
         \beta = \frac{C}{2}\,
         \frac{(r_1 r_2)^2 (\ln r_2 - \ln r_1)}{r_1^2 - r_2^2}.
 
-    Pure function (no flow construction), so it is importable both by
-    :mod:`dnsjax.flows.wall_bounded.dean` (the ``start_from_laminar``
-    state) and by :mod:`dnsjax.random_field` (the total-field IC =
-    laminar profile + perturbation).
+    Shared by the two force-driven annular flows: Newtonian Dean
+    (:func:`dean_laminar_u_theta`, `$C = 2(r_1 + r_2)$`) and the
+    viscoelastic sPTT flow (`$C = r_1 + r_2$`, the Dedalus
+    normalisation).  Pure function (no flow construction), so it is
+    importable both by the ``start_from_laminar`` state and by
+    :mod:`dnsjax.random_field` (the total-field IC = laminar profile +
+    perturbation).
+
+    Parameters
+    ----------
+    rs:
+        Radial grid on `$[r_1, r_2]$`, shape ``(Nr,)``.
+    r1, r2:
+        Inner / outer non-dim radii.
+    C:
+        Body-force coefficient (`$\Pi_\theta = C/(r\,\mathrm{Re})$`).
+    """
+    denom = r1**2 - r2**2
+    alpha = (C / 2.0) * (r1**2 * np.log(r1) - r2**2 * np.log(r2)) / denom
+    beta = (C / 2.0) * (r1 * r2) ** 2 * (np.log(r2) - np.log(r1)) / denom
+    return -(C / 2.0) * rs * jnp.log(rs) + alpha * rs + beta / rs
+
+
+def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
+    r"""Analytical laminar Dean-flow azimuthal profile `$U_\theta(r)$`.
+
+    Thin wrapper over :func:`annular_forced_laminar_u_theta` for the
+    Newtonian Dean body force
+    `$\Pi_\theta = (2\eta + 2)/(r\,\mathrm{Re}\,(1 - \eta))$`, i.e.
+    `$C = 2(\eta + 1)/(1 - \eta) = 2(r_1 + r_2)$` on the gap-1 radii
+    `$r_1 = \eta/(1-\eta)$`, `$r_2 = 1/(1-\eta)$`.
 
     Parameters
     ----------
@@ -479,10 +506,7 @@ def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
     C = 2.0 * (eta + 1.0) / (1.0 - eta)
     r1 = eta / (1.0 - eta)
     r2 = 1.0 / (1.0 - eta)
-    denom = r1**2 - r2**2
-    alpha = (C / 2.0) * (r1**2 * np.log(r1) - r2**2 * np.log(r2)) / denom
-    beta = (C / 2.0) * (r1 * r2) ** 2 * (np.log(r2) - np.log(r1)) / denom
-    return -(C / 2.0) * rs * jnp.log(rs) + alpha * rs + beta / rs
+    return annular_forced_laminar_u_theta(rs, r1, r2, C)
 
 
 # ── Operator builders ──────────────────────────────────────────────
@@ -854,7 +878,10 @@ class AnnularFlow:
         fd_p = params.res.fd_order
         dt = params.step.dt
         c_impl = params.step.implicitness
-        nu = 1.0 / params.phys.re
+        # Solvent viscosity: 1/re for Newtonian Taylor-Couette / Dean,
+        # beta/re for the viscoelastic subclass (see
+        # ``derived_params.nu`` in ``parameters.update_parameters``).
+        nu = derived_params.nu
 
         # Solver-internal wavenumber arrays.
         m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
@@ -1472,7 +1499,7 @@ def _imm_iteration(
     """
     c = params.step.implicitness
     dt = params.step.dt
-    nu = 1.0 / params.phys.re
+    nu = derived_params.nu  # solvent viscosity (see AnnularFlow.__post_init__)
 
     uz_n, up_n, um_n = velocity_n[0], velocity_n[1], velocity_n[2]
     NLz_n, NLp_n, NLm_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]

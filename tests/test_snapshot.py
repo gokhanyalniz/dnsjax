@@ -102,6 +102,27 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
         1,
         1,
     ),
+    # ── viscoelastic (9-component state: 3 velocity + 6 tensor) ──
+    (
+        "viscoelastic-dean",
+        "viscoelastic-dean",
+        "walled",
+        "concurrent",
+        1,
+        1,
+        1,
+        1,
+    ),
+    (
+        "viscoelastic-dean np 1->2",
+        "viscoelastic-dean",
+        "walled",
+        "concurrent",
+        1,
+        2,
+        1,
+        1,
+    ),
     # ── 2D (np0 > 1) ──
     ("walled 2D", "plane-couette", "walled", "concurrent", 4, 4, 2, 2),
     ("periodic 2D", "kolmogorov", "periodic", "concurrent", 4, 4, 2, 2),
@@ -141,6 +162,15 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
 # Periodic systems (must match dnsjax.parameters.periodic_systems).
 _PERIODIC = {"kolmogorov", "waleffe", "decaying-box"}
 
+# Viscoelastic systems carry 9 state components (3 velocity + 6
+# symmetric conformation-tensor); must match ``snapshot._n_components``.
+_VISCOELASTIC = {"viscoelastic-dean"}
+
+
+def _n_comp(system: str) -> int:
+    """Number of stacked state components for *system* (3 or 9)."""
+    return 9 if system in _VISCOELASTIC else 3
+
 
 # ── worker (runs in its own process) ─────────────────────────────────
 
@@ -156,9 +186,10 @@ def _make_reference(np_mod, shape):
 def _true_shape(system: str, ny: int) -> tuple[int, ...]:
     """True (unpadded) spectral vector shape."""
     kz, kx = NZ - 1, NX // 2
+    nc = _n_comp(system)
     if system in _PERIODIC:
-        return (3, ny - 1, kz, kx)
-    return (3, ny, kz, kx)
+        return (nc, ny - 1, kz, kx)
+    return (nc, ny, kz, kx)
 
 
 def _embed_true_into_padded(true_arr, padded_shape, system):
@@ -228,12 +259,8 @@ def _check_standard_tools(d, ref_true, system):
 
     with tarfile.open(d, "r") as tf:
         names = set(tf.getnames())
-        expected = {
-            "_dnsjax_meta.json",
-            "state/zarr.json",
-            "state/c/0/0/0/0",
-            "state/c/1/0/0/0",
-            "state/c/2/0/0/0",
+        expected = {"_dnsjax_meta.json", "state/zarr.json"} | {
+            f"state/c/{i}/0/0/0" for i in range(_n_comp(system))
         }
         assert expected <= names, (sorted(names), sorted(expected))
         # stdlib-only metadata read (no dnsjax).
@@ -302,7 +329,7 @@ def _worker(
     from dnsjax import snapshot
     from dnsjax.sharding import sharding
 
-    padded_shape = (3, *sharding.spec_shape)
+    padded_shape = (_n_comp(system), *sharding.spec_shape)
     ny = ny_override if ny_override is not None else NY
     tshape = _true_shape(system, ny)
     vshard = NamedSharding(sharding.mesh, sharding.spec_vector_shard)

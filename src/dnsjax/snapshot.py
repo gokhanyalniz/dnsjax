@@ -304,6 +304,20 @@ def _layout_from_meta(meta: dict) -> _Layout:
 # ── Geometry / shape helpers ──────────────────────────────
 
 
+def _n_components() -> int:
+    """Number of stacked state components for the current system.
+
+    3 velocity components for the Newtonian systems; 9 (3 velocity + 6
+    symmetric conformation-tensor components) for the viscoelastic
+    system.  ``validate_snapshot_params`` enforces the ``phys.system``
+    match, so a resumed snapshot's component count always equals this --
+    the single source of truth for both save and load.
+    """
+    from .parameters import viscoelastic_systems
+
+    return 9 if params.phys.system in viscoelastic_systems else 3
+
+
 def _padded_local_shape() -> tuple[int, ...]:
     """Padded per-device vector shape for the current mesh.
 
@@ -314,9 +328,10 @@ def _padded_local_shape() -> tuple[int, ...]:
     """
     local_kz = sharding.nz_spec // sharding.np0
     local_kx = sharding.nx_spec // sharding.np1
+    nc = _n_components()
     if _is_periodic():
-        return (3, params.res.ny - 1, local_kz, local_kx)
-    return (3, params.res.ny, local_kz, local_kx)
+        return (nc, params.res.ny - 1, local_kz, local_kx)
+    return (nc, params.res.ny, local_kz, local_kx)
 
 
 def _padded_local_shape_snap_ny(snap_ny: int) -> tuple[int, ...]:
@@ -328,9 +343,10 @@ def _padded_local_shape_snap_ny(snap_ny: int) -> tuple[int, ...]:
     """
     local_kz = sharding.nz_spec // sharding.np0
     local_kx = sharding.nx_spec // sharding.np1
+    nc = _n_components()
     if _is_periodic():
-        return (3, snap_ny - 1, local_kz, local_kx)
-    return (3, snap_ny, local_kz, local_kx)
+        return (nc, snap_ny - 1, local_kz, local_kx)
+    return (nc, snap_ny, local_kz, local_kx)
 
 
 def _shard_device_index(shard) -> int:
@@ -415,7 +431,7 @@ def assemble_local_shards(
         fill_local(buf, kz_start, nkz, kx_start, nkx)
         per_device.append(jax.device_put(buf, device))
     return jax.make_array_from_single_device_arrays(
-        (3, *sharding.spec_shape),
+        (_n_components(), *sharding.spec_shape),
         NamedSharding(sharding.mesh, sharding.spec_vector_shard),
         per_device,
     )
@@ -538,7 +554,7 @@ def _write_tar_skeleton(
             f.write(_tar_header(name, len(data)))
             f.write(data)
             f.write(b"\x00" * ((-len(data)) % 512))
-        for comp in range(3):
+        for comp in range(_n_components()):
             f.write(_tar_header(f"state/c/{comp}/0/0/0", comp_nbytes))
             # Sparse-reserve the (zeroed) data + block padding.
             f.seek(comp_padded - 1, 1)
@@ -562,12 +578,12 @@ def _metadata_bytes(
         "system": params.phys.system,
         "layout": layout.name,
         "on_disk_shape": [
-            3,
+            _n_components(),
             layout.a_size,
             layout.kx_global,
             layout.b_size,
         ],
-        "native_shape": [3, *_true_spec_shape()],
+        "native_shape": [_n_components(), *_true_spec_shape()],
         "dtype": _zarr3_dtype_name(),
         "n_devices": sharding.n_devices,
         "wall_normal_grid": derived_params.wall_normal_grid,
@@ -616,7 +632,7 @@ def _write_chunks_gds(
             continue
         cp_vec = cp.from_dlpack(shard.data)
         with cp_vec.device:
-            for comp in range(3):
+            for comp in range(_n_components()):
                 comp_true = _strip_padding(cp_vec[comp], nkz, nkx)
                 base = comp_offsets[comp]
                 with kvikio.CuFile(str(tar_path), "r+") as f:
@@ -659,7 +675,7 @@ def _read_chunks_gds(
         with cp.cuda.Device(local_idx):
             vec = cp.zeros(local_shape, dtype=dtype)
             if nkz > 0 and nkx > 0:
-                for comp in range(3):
+                for comp in range(_n_components()):
                     comp_buf = vec[comp]
                     base = comp_offsets[comp]
                     with kvikio.CuFile(str(tar_path), "r") as f:
@@ -755,7 +771,7 @@ def _write_chunks_host(
             vec = np.asarray(shard.data)
             xp = np
         with open(tar_path, "r+b") as f:
-            for comp in range(3):
+            for comp in range(_n_components()):
                 comp_true = _strip_padding(vec[comp], nkz, nkx)
                 base = comp_offsets[comp]
                 if is_walled:
@@ -821,7 +837,7 @@ def _read_chunks_host(
                         with open(tar_path, "rb") as f:
                             if is_walled:
                                 row_gpu = cp.empty(nkz, dtype=dtype)
-                                for comp in range(3):
+                                for comp in range(_n_components()):
                                     comp_buf = vec[comp]
                                     base = comp_offsets[comp]
                                     for i in range(layout.a_size):
@@ -842,7 +858,7 @@ def _read_chunks_host(
                                 slab_gpu = cp.empty(
                                     (nkx, layout.b_size), dtype=dtype
                                 )
-                                for comp in range(3):
+                                for comp in range(_n_components()):
                                     comp_buf = vec[comp]
                                     base = comp_offsets[comp]
                                     for li in range(nkz):
@@ -872,7 +888,7 @@ def _read_chunks_host(
         if nkz > 0 and nkx > 0:
             with open(tar_path, "rb") as f:
                 if is_walled:
-                    for comp in range(3):
+                    for comp in range(_n_components()):
                         comp_buf = vec[comp]
                         base = comp_offsets[comp]
                         for i in range(layout.a_size):
@@ -886,7 +902,7 @@ def _read_chunks_host(
                                 comp_buf[i, :nkz, lkx] = row
                 else:
                     slab_bytes = nkx * layout.b_size * itemsize
-                    for comp in range(3):
+                    for comp in range(_n_components()):
                         comp_buf = vec[comp]
                         base = comp_offsets[comp]
                         for li in range(nkz):
@@ -942,7 +958,7 @@ def save_snapshot(
     layout = _layout()
     dtype_name = _zarr3_dtype_name()
     itemsize = _np_dtype(dtype_name).itemsize
-    on_disk = (3, layout.a_size, layout.kx_global, layout.b_size)
+    on_disk = (_n_components(), layout.a_size, layout.kx_global, layout.b_size)
 
     if sharding.main_device:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1001,7 +1017,7 @@ def load_snapshot(
 
     # Detect ny mismatch (wall-bounded only).
     snap_native = tuple(meta["native_shape"])
-    curr_true = (3, *_true_spec_shape())
+    curr_true = (_n_components(), *_true_spec_shape())
     ny_mismatch = snap_native != curr_true
 
     if ny_mismatch:
@@ -1025,7 +1041,7 @@ def load_snapshot(
             )
     else:
         local_shape = None
-        assembly_shape = (3, *sharding.spec_shape)
+        assembly_shape = (_n_components(), *sharding.spec_shape)
 
     comp_offsets = snapshot_component_offsets(path)
     if _gds_available():
@@ -1093,14 +1109,14 @@ def load_y_slice(path: str | Path, y_index: int) -> Array:
         import cupy as cp
         import kvikio
 
-        for comp in range(3):
+        for comp in range(_n_components()):
             buf = cp.empty((kx_global, b_size), dtype=dtype)
             with kvikio.CuFile(str(path), "r") as f:
                 f.read(buf, file_offset=comp_offsets[comp] + offset)
             comps.append(buf.T)  # (kz, kx)
         return jnp.from_dlpack(cp.stack(comps))
 
-    for comp in range(3):
+    for comp in range(_n_components()):
         with open(path, "rb") as f:
             f.seek(comp_offsets[comp] + offset)
             raw = f.read(nbytes)
@@ -1145,7 +1161,7 @@ def validate_snapshot_params(
             )
 
     native = meta.get("native_shape")
-    expected = [3, *_true_spec_shape()]
+    expected = [_n_components(), *_true_spec_shape()]
     if native is not None and list(native) != expected:
         if _is_periodic():
             raise SnapshotMismatchError(

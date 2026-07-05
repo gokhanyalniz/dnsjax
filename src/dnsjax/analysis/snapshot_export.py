@@ -57,12 +57,14 @@ class StateData(NamedTuple):
     stats: _core.Namespace | None
 
 
-def _validate_components(components) -> tuple[int, ...]:
+def _validate_components(components, ncomp: int) -> tuple[int, ...]:
     out: list[int] = []
     for c in components:
         c = int(c)
-        if c not in (0, 1, 2):
-            raise ValueError(f"component {c} out of range; must be 0, 1 or 2.")
+        if not 0 <= c < ncomp:
+            raise ValueError(
+                f"component {c} out of range; must be in [0, {ncomp - 1}]."
+            )
         if c not in out:
             out.append(c)
     if not out:
@@ -91,11 +93,14 @@ def read_state(
         Return the stored spectral velocity and its wavenumbers (default
         ``False``).
     components:
-        Which velocity components to read from disk (default all three).
-        Order is preserved and duplicates removed.  For
+        Which components to read from disk (default the 3 velocity
+        components).  Order is preserved and duplicates removed.  For
         cylindrical/annular, requesting ``u_r`` (1) or ``u_θ`` (2) reads
         the stored ``u_±`` pair (chunks 1 and 2), since each is formed
-        from both.
+        from both.  The **viscoelastic** system exposes 9 components
+        (velocity ``0..2`` plus the physical conformation tensor
+        ``c_zz, c_rz, c_θz, c_rr, c_θθ, c_rθ`` = ``3..8``); requesting a
+        conformation component reads its stored spin combos.
     wall_normal_points:
         Optional list/array of wall-normal coordinate *values*.  The
         nearest unique grid points are selected (de-duplicated, sorted)
@@ -129,7 +134,7 @@ def read_state(
     stats = _core.Namespace(stats_raw) if stats_raw is not None else None
     info = _core.geometry_info(params)
 
-    out_components = _validate_components(components)
+    out_components = _validate_components(components, len(info.components))
     native_needed = _core.native_components_needed(info, out_components)
     wall_normal_grid = meta.get("wall_normal_grid")
 
