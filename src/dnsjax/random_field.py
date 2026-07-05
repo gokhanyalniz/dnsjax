@@ -61,6 +61,7 @@ from .parameters import (
     derived_params,
     params,
     periodic_systems,
+    viscoelastic_systems,
 )
 
 if TYPE_CHECKING:
@@ -611,6 +612,216 @@ def add_dean_laminar(state: Array) -> Array:
     return state + laminar
 
 
+# Conformation-noise Hermitian pairing on the k_z = 0 plane (the
+# 6-component slice ``[c_zz, c_z+, c_z-, c_+-, c_++, c_--]``): the real
+# physical fields c_zz and c_+- are self-Hermitian; (c_z+, c_z-) and
+# (c_++, c_--) are conjugate partners across ``m`` (the tensor analogue
+# of the velocity ``pm_pair``).
+_VE_CONF_SELF: tuple[int, ...] = (0, 3)
+_VE_CONF_PAIR: tuple[tuple[int, int], ...] = ((1, 2), (4, 5))
+
+
+def _ve_conf_draw(seed: int, i2: int, i3: int, n: int) -> np.ndarray:
+    """Independent complex ``(6, n)`` conformation-noise draw keyed by
+    global ``(i2, i3)`` (a trailing ``1`` keeps the stream distinct from
+    the velocity draw's ``(seed, i2, i3)``)."""
+    rng = np.random.default_rng((seed, i2, i3, 1))
+    return rng.standard_normal((6, n)) + 1j * rng.standard_normal((6, n))
+
+
+def _ve_conf_hermitian(seed: int, i2: int, n2: int, n: int) -> np.ndarray:
+    """Conjugate-consistent ``(6, n)`` conformation draw for the
+    ``k_z = 0`` plane (self rows real, pair rows conjugate partners; see
+    :func:`_hermitian_column`)."""
+    n_pos = n2 // 2
+    if i2 == 0:
+        rng = np.random.default_rng((seed, 0, 0, 1))
+        d = rng.standard_normal((6, n)) + 1j * rng.standard_normal((6, n))
+        for s in _VE_CONF_SELF:
+            d[s] = d[s].real
+        for a, b in _VE_CONF_PAIR:
+            d[b] = np.conj(d[a])
+        return d
+    if n2 % 2 == 1 and i2 == n_pos:
+        return np.zeros((6, n), dtype=np.complex128)
+    canonical = i2 if i2 < n_pos else (n2 - 1) - i2
+    rng = np.random.default_rng((seed, canonical, 0, 1))
+    d = rng.standard_normal((6, n)) + 1j * rng.standard_normal((6, n))
+    if i2 < n_pos:
+        return d
+    out = np.conj(d)  # self rows: conjugate
+    for a, b in _VE_CONF_PAIR:  # pair rows: swap + conjugate
+        out[a] = np.conj(d[b])
+        out[b] = np.conj(d[a])
+    return out
+
+
+def add_viscoelastic_laminar(vel_state: Array) -> Array:
+    r"""Turn a 3-component velocity perturbation into a 9-component
+    viscoelastic total-field state.
+
+    Adds the analytical laminar velocity profile to *vel_state* and
+    appends the laminar sPTT-equilibrium conformation (both at the mean
+    mode), giving the total-field IC in the layout
+    `$(u_z, u_+, u_-, c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++}, c_{--})$`.
+    Used by the localized-rolls IC (a velocity-only perturbation); the
+    random IC builds its 9 components directly.
+    """
+    from jax import numpy as jnp
+
+    from .geometries.wall_bounded.annular import build_annular_grid, fourier
+    from .geometries.wall_bounded.annular_viscoelastic import (
+        viscoelastic_laminar_profiles,
+    )
+
+    r1 = derived_params.r_inner
+    r2 = derived_params.r_outer
+    rs, D1, *_ = build_annular_grid(
+        params.res.ny,
+        params.res.fd_order,
+        r1,
+        r2,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+    )
+    prof = viscoelastic_laminar_profiles(
+        rs, D1, r1, r2, params.phys.wi, params.phys.epsilon
+    )
+    prof_jax = jnp.asarray(prof, dtype=vel_state.dtype)
+    laminar = jnp.where(
+        fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0
+    )
+    total_vel = vel_state + laminar[:3]
+    return jnp.concatenate([total_vel, laminar[3:]])
+
+
+def generate_viscoelastic_dean(
+    amplitude: float,
+    conf_amplitude: float,
+    smoothness: float,
+    seed: int,
+    mean_flow: bool,
+) -> Array:
+    r"""Random 9-component IC for viscoelastic (sPTT) Dean flow.
+
+    Built per device (no full-array replication): the velocity part is
+    the divergence-free annular draw of :func:`generate_annular` (rows
+    ``0:3``); the conformation part (rows ``3:9``) is windowed,
+    spectrally-decaying symmetric-tensor noise (the Dedalus
+    restart-branch recipe).  Velocity and conformation noise are
+    rescaled to *amplitude* / *conf_amplitude* separately, then the
+    analytical laminar pair (velocity profile + sPTT-equilibrium
+    conformation) is added at the mean mode (total-field IC).  The
+    conformation noise vanishes at both walls and at the mean mode (so
+    the laminar wall / mean values are preserved).
+    """
+    from jax import numpy as jnp
+
+    from .geometries.wall_bounded.annular import (
+        build_annular_grid,
+        fourier,
+        get_norm2_annular,
+    )
+    from .geometries.wall_bounded.annular_viscoelastic import (
+        get_norm2_conformation,
+        viscoelastic_laminar_profiles,
+    )
+    from .snapshot import assemble_local_shards
+
+    nx = params.res.nx
+    Nr = params.res.ny
+    nz = params.res.nz
+    r1 = derived_params.r_inner
+    r2 = derived_params.r_outer
+    rs, D1, _, y_weights, inv_r = build_annular_grid(
+        Nr,
+        params.res.fd_order,
+        r1,
+        r2,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+    )
+    derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
+
+    rs_np = np.asarray(rs)
+    inv_r_np = np.asarray(inv_r)
+    D1_np = np.asarray(D1)
+    yw_np = np.asarray(y_weights)
+    kz_np = _real_harmonics_np(nx) * (2 * pi / params.geo.lx)  # axial
+    m_np = _complex_harmonics_np(nz)  # azimuthal integer modes
+
+    decay = 1.0 - smoothness
+    window_lin = (rs_np - r1) * (r2 - rs_np)
+    window_lin = window_lin / np.max(window_lin)
+    window_wn = window_lin**2
+    m_decay = 2 * pi / params.geo.lz
+
+    def fill_local(buf, m_start, n_m, kz_start, n_kz):
+        for li in range(n_m):
+            g2 = m_start + li
+            m_val = int(m_np[g2])
+            for lj in range(n_kz):
+                g3 = kz_start + lj
+                kz_val = kz_np[g3]
+                envelope = decay ** (abs(kz_val) + abs(m_val) * m_decay)
+
+                # Velocity (rows 0:3): divergence-free draw.
+                if g3 == 0:
+                    vcol = _hermitian_column(seed, g2, nz, Nr, pm_pair=True)
+                else:
+                    vcol = _column_draw(seed, g2, g3, Nr)
+                vcol[0] *= window_lin
+                vcol[1] *= window_wn
+                vcol[2] *= window_wn
+                if kz_val != 0:
+                    u_plus = vcol[1]
+                    u_minus = vcol[2]
+                    div_radial = (
+                        D1_np @ u_plus
+                        + (m_val + 1) * inv_r_np * u_plus
+                        + D1_np @ u_minus
+                        + (1 - m_val) * inv_r_np * u_minus
+                    ) / 2.0
+                    vcol[0] = -div_radial / (1j * kz_val)
+                vcol = _normalize_mode(vcol, yw_np, envelope)
+                if g2 == 0 and g3 == 0 and not mean_flow:
+                    vcol[:] = 0.0
+                buf[0:3, :, li, lj] = vcol
+
+                # Conformation (rows 3:9): windowed, wall-vanishing noise;
+                # zero at the mean mode (laminar added below).
+                if g3 == 0:
+                    ccol = _ve_conf_hermitian(seed, g2, nz, Nr)
+                else:
+                    ccol = _ve_conf_draw(seed, g2, g3, Nr)
+                ccol = ccol * window_wn
+                ccol = _normalize_mode(ccol, yw_np, envelope)
+                if g2 == 0 and g3 == 0:
+                    ccol[:] = 0.0
+                buf[3:9, :, li, lj] = ccol
+
+    state = assemble_local_shards(fill_local)
+
+    # Rescale velocity and conformation noise separately.
+    vel_norm2 = get_norm2_annular(state[:3], fourier.k_metric, y_weights)
+    conf_norm2 = get_norm2_conformation(state[3:], fourier.k_metric, y_weights)
+    scale_v = amplitude / vel_norm2**0.5
+    scale_c = conf_amplitude / conf_norm2**0.5
+    state = jnp.concatenate([state[:3] * scale_v, state[3:] * scale_c])
+
+    # Add the laminar pair at the mean mode (total-field IC).
+    prof = viscoelastic_laminar_profiles(
+        rs, D1, r1, r2, params.phys.wi, params.phys.epsilon
+    )
+    prof_jax = jnp.asarray(prof, dtype=state.dtype)
+    laminar = jnp.where(
+        fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0
+    )
+    return state + laminar
+
+
 # ── Triply-periodic generation ───────────────────────────────────
 
 
@@ -710,6 +921,14 @@ def generate_random_state(
         if system == "dean":
             state = add_dean_laminar(state)
         return state
+    if system in viscoelastic_systems:
+        return generate_viscoelastic_dean(
+            amplitude,
+            params.init.random_conformation_amplitude,
+            smoothness,
+            seed,
+            mean_flow,
+        )
     if system in periodic_systems:
         return generate_triply_periodic(amplitude, smoothness, seed, mean_flow)
     raise ValueError(f"Unknown system: {system}")

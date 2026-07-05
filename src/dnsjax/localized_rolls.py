@@ -77,6 +77,7 @@ from .parameters import (
     cylindrical_systems,
     derived_params,
     params,
+    viscoelastic_systems,
 )
 
 if TYPE_CHECKING:
@@ -501,4 +502,12 @@ def generate_localized_rolls(
 
             state = add_dean_laminar(state)
         return state
+    if system in viscoelastic_systems:
+        # Velocity-only rolls perturbation on the total-field IC: add the
+        # laminar velocity profile and the laminar conformation.
+        from .random_field import add_viscoelastic_laminar
+
+        return add_viscoelastic_laminar(
+            generate_annular_rolls(amplitude, width, wavelength)
+        )
     raise ValueError(f"Localized rolls are not defined for system: {system}")

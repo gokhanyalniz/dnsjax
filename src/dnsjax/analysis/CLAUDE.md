@@ -26,6 +26,7 @@ to match these axes (no transpose to "fix" layout).
 |---------------------------------------------------|-------------------------|---------------|-------------------|
 | cartesian (plane-couette/poiseuille)              | (y, k_x, k_z)           | (y, x, z)     | (u_x, u_y, u_z)   |
 | cylindrical/annular (pipe, taylor-couette, dean)  | (r, k_z(axial), m)      | (r, z, θ)     | (u_z, u_r, u_θ)   |
+| viscoelastic (viscoelastic-dean)                  | (r, k_z(axial), m)      | (r, z, θ)     | (u_z, u_r, u_θ, c_zz, c_rz, c_θz, c_rr, c_θθ, c_rθ) |
 | triply-periodic (kolmogorov/waleffe/decaying-box) | (k_z, k_x, k_y)         | (z, x, y)     | (u_x, u_y, u_z)   |
 
 - Cylindrical/annular: the stored basis is `(u_z, u_+, u_-)`; the reader
@@ -33,6 +34,14 @@ to match these axes (no transpose to "fix" layout).
   (`u_r=(u_++u_-)/2`, `u_θ=(u_+-u_-)/2i`), and the operators **expect
   `(u_z, u_r, u_θ)` in spectral space too** — `u_±` is never exposed.
   Requesting `u_r` or `u_θ` reads the `u_±` pair (chunks 1 and 2).
+- Viscoelastic annular: the stored state has **9 components** — the 3
+  velocity components above plus the 6 symmetric conformation-tensor
+  spin projections `(c_zz, c_z+, c_z-, c_+-, c_++, c_--)`; the reader
+  exposes the physical tensor `(c_zz, c_rz, c_θz, c_rr, c_θθ, c_rθ)` as
+  components `3..8` (each combined from its stored spin combos, the same
+  pairing idea as `u_±`; `read_state(components=...)` selects any
+  subset). Tensor differential operators are out of scope in
+  `snapshot_ops` (velocity operators unchanged).
 - Azimuthal length is `2π` (so `m` is integer); periodic shear length is
   `LY_PERIODIC = 4`; the `r`/`y` grid comes from `meta["wall_normal_grid"]`.
 
@@ -75,10 +84,13 @@ checks `curl` against the solver's own `_curl_fn` at machine precision
 ## System → family mapping
 
 `_core.py` holds `CARTESIAN_SYSTEMS` / `CYLINDRICAL_SYSTEMS` /
-`ANNULAR_SYSTEMS` / `PERIODIC_SYSTEMS` frozensets that **mirror the
-`*_systems` lists in `parameters.py`**. Adding a flow system there
-requires adding it here too (unknown system → explicit error). This is
-the only place the analysis package re-encodes solver knowledge.
+`ANNULAR_SYSTEMS` / `VISCOELASTIC_SYSTEMS` / `PERIODIC_SYSTEMS` frozensets
+that **mirror the `*_systems` lists in `parameters.py`**. Adding a flow
+system there requires adding it here too (unknown system → explicit
+error). This is the only place the analysis package re-encodes solver
+knowledge. `geometry_info` maps a viscoelastic system to the annular
+geometry family but with the 9-component schema; the per-component read
+recipe (native chunks + combine function) lives in `_component_recipes`.
 
 ## Modules
 
