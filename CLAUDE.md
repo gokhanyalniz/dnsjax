@@ -488,6 +488,19 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
 - `scripts/pallas_solve_profile.py`: GPU diagnostic for where the
   Pallas banded solve's time goes (profiled the matvec transpose
   sources).
+- `scripts/solver_benchmark.py`: solver-backend bake-off
+  (pallas/banded/dense step + solve timing, factor and peak memory,
+  cross-backend parity) plus multi-GPU Pallas correctness validation
+  via mpirun runs and JAX-free `dnsjax.analysis` snapshot diffs;
+  `--cpu-bench` CPU backend timing, `--cpu-smoke` GPU-less harness
+  self-check. Data source for the SPIKE-retirement gates.
+- `scripts/pivot_stability_survey.py`: CPU survey of the no-pivot
+  banded-LU residual per operator group across the supported config
+  space -- does any real configuration trigger the pivoted SPIKE
+  fallback? (Finding: only near-singular-Poisson *conditioning* on
+  the smallest-nonzero-`k²` `Lk` mode crosses the tolerance -- huge
+  boxes / large `ny` / strong tanh stretch -- not pivot instability;
+  pivoting gains only ~8x there.)
 
 ## Tests
 
