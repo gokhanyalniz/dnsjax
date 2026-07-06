@@ -18,6 +18,9 @@ annular geometry (see
 4. `$H_c$` band-vs-dense-vs-SPIKE parity including the narrow Laplacian
    BC wall rows (mirrors ``test_annular``'s operator parity).
 5. ``get_norm2_conformation`` reproduces the tensor Frobenius norm.
+6. Fused-RHS transform-count guard: the 9-component nonlinear RHS
+   keeps a bounded, batched FFT count (fused evaluation, not one
+   transform per field).
 
 Run as a script via ``uv run python tests/test_viscoelastic.py``.
 """

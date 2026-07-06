@@ -40,6 +40,18 @@ self-advection CFL, which ``ny = 48`` on the fine near-wall CGL grid
 would violate at this ``Re``, an inherent explicit-scheme limit, not the
 coupling bug).
 
+A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
+``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
+divisible by ``np1``) is the regression guard for the per-device
+(no-replication) random-IC build with spectral padding.  Four
+``*-pallas-mpi-pad`` entries repeat that shape with
+``--solver.backend pallas`` to guard the sharded per-mode banded
+operator build/solve (the CPU pure-JAX banded path; the Triton kernel
+itself is GPU-only): ``pipe`` (parity-selected base band),
+``plane-couette`` (single shared ``Hk``), ``taylor-couette`` (three
+stacked ``Hk``), and ``viscoelastic-dean`` (additionally the
+conformation Helmholtz operator ``Hc``, `$\\kappa > 0$`).
+
 Transition to turbulence is **not** expected to develop by the default
 ``t = 1`` at this resolution/box; the success metric is purely that
 integration completes cleanly, not that the flow becomes turbulent.

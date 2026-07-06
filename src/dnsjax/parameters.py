@@ -405,8 +405,10 @@ class TimeStepping(BaseModel):
     - ``"cnab2"``: Crank-Nicolson viscous (implicitness *c*) + 2nd-order
       Adams-Bashforth nonlinear (explicit ``1.5 N^n - 0.5 N^{n-1}``).
       **One** expensive nonlinear/FFT evaluation per step; the previous
-      nonlinear RHS is carried by the main loop, seeded by an
-      ``iterative-cn`` self-start on the very first step.  Explicit
+      nonlinear RHS is carried by the main loop, seeded by a discarded
+      priming ``step_cnab2(state, zeros)`` call while ``iterative-cn``
+      takes the very first integration step (see ``step_cnab2`` in
+      ``timestep.py``).  Explicit
       *self-advection*, so ``dt`` is advective-CFL-limited -- a net win
       (~3x fewer FFTs) on CFL-limited (turbulent) runs.
 
@@ -424,11 +426,12 @@ class TimeStepping(BaseModel):
       ``L_bf`` implicitly (Crank-Nicolson) via an **FFT-free** fixed-point
       corrector (it re-evaluates only the matrix-free ``L_bf``, no FFT),
       so ``corrector_tolerance`` / ``max_corrector_iterations`` **do**
-      apply here.  The first step self-starts with ``iterative-cn``
-      (also seeding ``N^{n-1}``), and if the coupling corrector fails to
-      converge on a step (its Picard rate reaches 1 -- only at ``dt`` well
-      past the advective limit) that step automatically falls back to a
-      full ``iterative-cn`` step (a stdout diagnostic is printed).  The
+      apply here.  The first step self-starts with ``iterative-cn``,
+      and if the coupling corrector fails to converge on a step (its
+      Picard rate reaches 1 -- only at ``dt`` well past the advective
+      limit, e.g. plane-Couette ``dt >~ 0.2``) that step automatically
+      falls back to a full ``iterative-cn`` step (a stdout diagnostic
+      is printed).  The
       residual ``dt`` bound is then the ordinary explicit self-advection
       CFL of the *fluctuations* on the clustered grid (stationary-wall
       flows -- Poiseuille, pipe, Dean -- are bounded only by this, their
@@ -442,15 +445,24 @@ class TimeStepping(BaseModel):
       ``CFL_th >~ 0.5`` and pass/fail is trajectory-marginal near the
       boundary; the default **rigged-CGL** radial grid sits at
       ``r_0 ~ Delta r`` -- twice the legacy half-CGL ``Delta r/2`` --
-      which doubles the admissible cnab2 ``dt`` (measured) and is why
-      it is the default, whereas the tighter half-CGL grid
-      (``geo.grid_type = 'half-cgl'``) destabilises cnab2 and is
+      which raises the admissible cnab2 ``dt`` (measured ``dt* ~
+      0.0125 -> 0.0175`` at the 32^3 / Re = 1800 reference config;
+      ``iterative-cn`` rides ``CFL_th ~ 1.5--2`` there at growing
+      corrector cost) and is why it is the default, whereas the
+      tighter half-CGL grid (``geo.grid_type = 'half-cgl'``)
+      destabilises cnab2 and is
       restricted to ``iterative-cn``); Cartesian flows feel the
       near-wall ``dy ~ 1/N^2`` spacing instead.  A strongly
       non-normal base flow
       (counter-rotating Taylor-Couette) amplifies the explicit
-      self-advection error further into a delayed blow-up needing a
-      much smaller ``dt``.  These are inherent explicit-nonlinear
+      self-advection error further into a delayed blow-up needing
+      ~8x smaller ``dt``; the coupling corrector converges throughout
+      (it is *not* a corrector failure), so the fallback typically
+      does not fire -- at coarser resolution the induced corrector
+      stress can trip it into rescuing single steps (``ny = 32``
+      completes via fallbacks; ``ny = 48`` diverges with the
+      corrector still converged).  These are inherent
+      explicit-nonlinear
       limits, not the coupling bug: such regimes want ``iterative-cn``
       or a smaller ``dt``.  Triply-periodic cnab2 has none of this (uniform
       Fourier grid, no coupling stiffness): it is the plain one-FFT
@@ -468,7 +480,13 @@ class TimeStepping(BaseModel):
       fluctuation-fluctuation advection: the mean-flow *distortion*
       (streaks; for total-field Dean the entire evolving mean profile,
       whose ``L_bf`` is otherwise zero) no longer rides the explicit
-      term, removing its advective-CFL contribution.  The double-counted
+      term, removing its advective-CFL contribution.  Decisive for
+      Dean: at ``nz = 64, dt = 0.15`` (mean-flow ``CFL_th ~ 0.5``)
+      coupling-off NaNs by ``t ~ 4`` while coupling-on runs clean,
+      matching ``iterative-cn`` at ~4 FFT-free Picard iterations per
+      step vs its ~4 FFT evaluations; neutral where the limit is
+      fluctuation-driven (the pipe near-axis) and only mildly slowing
+      the counter-rotating-TC blow-up.  The double-counted
       mean-mean product is a purely wall-normal (radial) profile at the
       mean mode, absorbed by the mean pressure in the projection -- and
       the AB2/CN split is second-order consistent for *any* choice of

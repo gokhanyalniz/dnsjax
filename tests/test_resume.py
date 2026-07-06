@@ -2,12 +2,18 @@
 
 Two layers:
 
-1. **Offline unit** of
-   :func:`dnsjax.parameters.trajectory_defining_changes` (pure Pydantic,
-   no JAX / no ``mpirun``): identical params yield no change; a
-   ``phys``/``geo``/``res`` override is reported; the JAX-setup skip
-   field ``res.double_precision`` and non-trajectory sections (``step``)
-   are ignored.
+1. **Offline units** (pure Pydantic, no JAX / no ``mpirun``):
+   :func:`dnsjax.parameters.trajectory_defining_changes` -- identical
+   params yield no change; a ``phys``/``geo``/``res`` override is
+   reported; the JAX-setup skip field ``res.double_precision`` and
+   non-trajectory sections (``step``) are ignored; a legacy key the
+   current model no longer defines (e.g. the retired ``geo.axis_gap``)
+   is skipped, so a pre-``grid_type`` snapshot resumes as a clean
+   continuation, while switching ``geo.grid_type`` (rigged <->
+   half-CGL) *is* a trajectory change.  Plus
+   ``run_grid_validation_checks``: the ``validate_parameters``
+   half-CGL rules (rejected for non-cylindrical systems, rejected
+   with ``cnab2``, accepted on the pipe with ``iterative-cn``).
 
 2. **Subprocess integration** driving ``python -m dnsjax`` (via
    ``mpirun``, one device) end to end in temporary directories,
@@ -18,7 +24,9 @@ Two layers:
      metadata field and an embedded ``_dnsjax_stats.json`` member;
    - a resume with unchanged Physics/Geometry/Resolution **continues**
      the lineage (no IC re-save; numbering picks up at the resumed
-     index + 1);
+     index + 1) -- even with competing ``--init.random_field`` /
+     ``--init.start_from_laminar`` flags passed, confirming a provided
+     snapshot takes precedence over every in-process init mode;
    - a resume with a changed ``phys.re`` starts a **new trajectory**
      (``t=it=isnap=0``, a fresh ``state00000.tar``, diagnostic on
      stdout) unless ``init.force_resume`` is set, which forces a

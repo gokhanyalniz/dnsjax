@@ -7,6 +7,9 @@ Tests cover:
 2. ``_lk_matvec`` matches a NumPy reference on CGL and custom grids.
 3. ``_hk_minus_matvec`` matches a NumPy reference.
 4. ``get_norm2`` matches a manual Parseval/quadrature sum.
+5. Pallas band-vs-dense parity: the ``_build_{Lk,Hk}_band_gpu``
+   banded storage equals ``banded(dense)``, and the no-pivot banded
+   solve equals the dense solve.
 
 Run as a script via ``uv run python tests/test_cartesian.py``.
 """

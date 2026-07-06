@@ -9,10 +9,13 @@ Tests cover:
    pin at the mean mode).
 5. SPIKE vs dense parity for `$L_k$`, `$H_{k,+}$`, `$H_{k,-}$`,
    `$H_{k,z}$`.
-6. ``get_norm2_annular`` correctness.
-7. Circular-Couette coefficients `$A_0$`, `$B_0$` vs the per-case
+6. Pallas band-vs-dense parity for `$L_k$` and the three `$H_k$`
+   operators (banded storage == ``banded(dense)``, no-pivot banded
+   solve == dense solve).
+7. ``get_norm2_annular`` correctness.
+8. Circular-Couette coefficients `$A_0$`, `$B_0$` vs the per-case
    reference forms and wall values.
-8. Affine-mapped Clenshaw-Curtis integration weights (spectral) with
+9. Affine-mapped Clenshaw-Curtis integration weights (spectral) with
    the radial Jacobian on ``[r1, r2]``.
 
 Run as a script via ``uv run python tests/test_annular.py``.

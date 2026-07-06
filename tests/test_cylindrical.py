@@ -10,11 +10,15 @@ Tests cover:
 5. ``_lk_matvec`` vs per-mode NumPy reference.
 6. SPIKE vs dense parity for `$L_k$`, `$H_{k,+}$`,
    `$H_{k,-}$`, `$H_{k,z}$`.
-7. ``get_norm2_cyl`` correctness.
-8. Composite integration weights on the radial CGL grid.
-9. ``interpolate_to_axis``: polynomial exactness, parity paths,
-   multi-dimensional/complex inputs.
-10. Centreline mean axial velocity under time stepping (a small
+7. Pallas band-vs-dense parity (banded storage == ``banded(dense)``,
+   no-pivot banded solve == dense solve) -- also the regression
+   guard for the parity-reduced builders' refactor onto the shared
+   ``solvers._assemble_banded_operator`` helpers.
+8. ``get_norm2_cyl`` correctness.
+9. Composite integration weights on the radial CGL grid.
+10. ``interpolate_to_axis``: polynomial exactness, parity paths,
+    multi-dimensional/complex inputs.
+11. Centreline mean axial velocity under time stepping (a small
     random perturbation keeps the interpolated ``r = 0`` mean
     axial velocity near the laminar centreline value 1).
 

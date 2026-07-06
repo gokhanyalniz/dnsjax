@@ -48,18 +48,15 @@ to match these axes (no transpose to "fix" layout).
 ## Operator convention — matches the solver's discrete operators
 
 **Transform round-trip is machine-precision exact for every family**
-(pipe / Taylor-Couette included). `to_physical`/`to_spectral` act on the
-returned `(u_z, u_r, u_θ)` basis (converted from `u_±` at read time) —
-each a real field, hence Hermitian on the real (`k_z`) axis, so `irfft`
-reconstructs it losslessly; `test_snapshot_export.py` asserts this for
-all families. The `u_±` pair is **not** individually Hermitian (only the
-joint `u_+(-k) = conj(u_-(k))` holds), so `u_+`/`u_-` must never be
-`irfft`-ed directly — the reader converts to `u_r`/`u_θ` first
-(`snapshot_import.py` documents the same for spectral input). This
-relies on the IC building the `k_z=0` plane with `u_r, u_θ` Hermitian
-(`random_field._hermitian_column` `pm_pair`): an anti-Hermitian `u_θ`
-there is non-physical — its axial-mean azimuthal velocity is
-unrepresentable by the real FFT and would be silently dropped.
+(pipe / Taylor-Couette included): `to_physical`/`to_spectral` act on
+the returned `(u_z, u_r, u_θ)` basis, each a real field, Hermitian on
+the real (`k_z`) axis. The `u_±` pair is **not** individually
+Hermitian (only the joint `u_+(-k) = conj(u_-(k))` holds), so
+`u_+`/`u_-` must never be `irfft`-ed directly — the reader converts
+first. Underlying reality structure:
+`random_field._hermitian_column` (`pm_pair`) and the `_core.py`
+transform docstrings; `test_snapshot_export.py` asserts the
+round-trip for all families.
 
 `divergence`/`curl` reproduce dnsjax's **discrete** operators
 node-for-node, not just the continuous formulae: the cylindrical/annular

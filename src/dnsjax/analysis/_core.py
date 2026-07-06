@@ -18,13 +18,19 @@ family              spectral axes (as read)  physical axes
 ==================  =======================  =================
 cartesian           (y, kx, kz)              (y, x, z)
 cylindrical/annular (r, k_axial, m)          (r, z, θ)
+viscoelastic (dean) (r, k_axial, m)          (r, z, θ)
 triply-periodic     (kz, kx, ky)             (z, x, y)
 ==================  =======================  =================
 
 Components are ``(u_x, u_y, u_z)`` for cartesian / triply-periodic and
 ``(u_z, u_r, u_θ)`` for cylindrical / annular (the stored ``u_±`` basis
 is converted to ``u_r, u_θ`` at read time; see
-:func:`to_returned_basis`).
+:func:`to_returned_basis`).  The viscoelastic-dean system shares the
+cylindrical/annular axes with **9 components**: the 3 velocity
+components plus the physical conformation tensor
+``(c_zz, c_rz, c_θz, c_rr, c_θθ, c_rθ)`` as components ``3..8``, each
+combined at read time from its stored spin components (recipes in
+``_component_recipes`` / :func:`geometry_info`).
 
 Transforms reinstate the omitted Nyquist mode as zero and use NumPy
 ``ifft`` / ``irfft`` with ``norm="forward"`` (the inverse of the

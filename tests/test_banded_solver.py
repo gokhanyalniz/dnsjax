@@ -1,11 +1,35 @@
-"""Unit tests for the geometry-independent SPIKE solver.
+"""Unit tests for the geometry-independent linear solvers.
 
-Tests that SPIKE factorisation + solve round-trips correctly
-for a random banded matrix with both real and complex RHS
-(multi-block ``P >= 2`` partition).
+SPIKE: factorisation + solve round-trips for a random banded matrix
+with both real and complex RHS (multi-block ``P >= 2`` partition).
 
-Geometry-specific operator tests live in ``test_cartesian.py``
-and ``test_cylindrical.py``.
+Pallas banded backend (``PerModeBandedPallasOperator``):
+
+1. Pure-JAX banded-sweep path and Pallas interpret-mode parity vs
+   SPIKE/dense over an ``fd_order`` sweep, real + complex RHS, single
+   + stacked operators (built via ``from_banded_factors`` into the
+   mode-inner layout).
+2. The interpret-parity test sweeps two mode-plane sizes so the
+   ``(bm0, bm1)`` tile does *not* divide the plane, exercising the
+   kernel's pad-to-whole-tiles path (pad/crop checked against the
+   CPU sweep).
+3. ``test_pallas_cuda_lowering``: compile-only guard (no GPU needed)
+   -- lowers the mode-tiled kernel for ``cuda`` and asserts a Triton
+   custom call, catching the f64-TMA / non-power-of-two /
+   value-slice lowering regressions and the padded-plane lowering at
+   IR generation.
+4. ``_decide_pallas_or_spike``: auto no-pivot choice,
+   ``force_pivoting``, and the unstable-LU fallback to pivoted SPIKE.
+
+The interpret/lowering tests clear the Explicit mesh
+(``jax.set_mesh(None)``) because the kernel's indexed ref stores
+discharge to a sharding-checked ``dynamic_update_slice`` only in
+interpret mode.  Real-GPU execution and perf (tile tuning) are
+deferred to the ``gpu-validation-pallas-banded`` plan, not this
+suite.
+
+Geometry-specific operator tests live in ``test_cartesian.py``,
+``test_cylindrical.py``, and ``test_annular.py``.
 
 Run as a script via ``uv run python tests/test_banded_solver.py``.
 """

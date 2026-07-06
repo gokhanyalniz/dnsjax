@@ -40,7 +40,7 @@ def make_stepper(
     Callable[..., tuple[Array, Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array, Array, dict[str, Array]]] | None,
 ]:
-    """Build the JIT-compiled predictor-corrector stepping functions.
+    r"""Build the JIT-compiled predictor-corrector stepping functions.
 
     The returned functions close over the flow-specific callables, so
     precomputed data (wavenumbers, time-stepping coefficients, base flow)
