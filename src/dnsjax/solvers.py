@@ -36,6 +36,13 @@ per-call pivot conversion.
 Utility helpers :func:`_extract_banded_corners` and
 :func:`_choose_block_partition` support the block decomposition and
 optimal partitioning.
+
+The Pallas backend's solve is a ``shard_map``-local region (mirroring
+the :mod:`dnsjax.fft` pipeline): the per-mode systems are independent,
+so each device runs the kernel/sweep on its local mode-plane block
+with zero communication, and all tile pad/crop bookkeeping happens on
+local arrays where no Explicit-mesh sharding rules apply.  See
+:meth:`PerModeBandedPallasOperator.solve`.
 """
 
 from collections.abc import Callable
@@ -44,9 +51,10 @@ from functools import partial
 
 import jax
 import jax.scipy.linalg as sla
-from jax import Array, lax
+from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.lax import linalg as lax_linalg
+from jax.sharding import PartitionSpec as P
 from jax.typing import DTypeLike
 
 from .parameters import params
@@ -1742,15 +1750,17 @@ def _pallas_banded_solve(
 
 
 def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
-    r"""Solve one mode-inner banded operator over all ``(Nkz, Nkx)`` modes.
+    r"""Solve one mode-inner banded operator over a ``(Nkz, Nkx)`` block.
 
-    ``L``/``U`` are the **mode-inner** factors stored by
-    :class:`PerModeBandedPallasOperator` (``(N, p, Nkz, Nkx)`` /
-    ``(N, p+1, Nkz, Nkx)``, ``U`` diagonal reciprocated).  ``rhs`` is the
-    **mode-inner** spectral field ``(N, Nkz, Nkx)`` of the public
-    ``.solve`` contract -- the velocity field's native layout
-    (``sharding.spec_scalar_shard``).  A complex RHS is split into
-    ``k = 2`` real columns (the factors are real), solved, and recombined.
+    **Local body** of the ``shard_map`` region in
+    :meth:`PerModeBandedPallasOperator.solve`: every argument is a
+    device-local block (on one device, local = global).  ``L``/``U``
+    are the **mode-inner** factors (``(N, p, nkz*, nkx*)`` /
+    ``(N, p+1, nkz*, nkx*)``, ``U`` diagonal reciprocated, mode plane
+    possibly tile-padded per shard); ``rhs`` is the **mode-inner**
+    spectral block ``(N, nkz, nkx)`` at the true local plane.  A
+    complex RHS is split into ``k = 2`` real columns (the factors are
+    real), solved, and recombined.
 
     On GPU the re/im split is the **only** layout touch: stacking the real
     and imaginary parts on a new axis 1 lands directly in the kernel's
@@ -1779,10 +1789,10 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
         return lax.complex(x[:, 0], x[:, 1]) if is_complex else x[:, 0]
     # CPU fallback: standard mode-outer banded sweep (RHS and factors
     # moved to (Nkz, Nkx, N, .) internally).  The stored factors may be
-    # pre-padded to whole Pallas tiles (see ``from_banded_factors``);
-    # slice them back to the RHS's true mode plane first.  Only ever a
-    # local slice: pre-padding is gated to unsharded mode axes, so a
-    # sharded axis always arrives at the true plane already.
+    # tile-padded (see ``from_banded_factors``); slice them back to the
+    # RHS's true plane first -- a plain local slice (this whole
+    # function is a shard_map body).  Slice *before* un-inverting: the
+    # padded diagonal slots are 0, and 1/0 would poison the sweep.
     Nkz, Nkx = rhs.shape[1], rhs.shape[2]
     if L.shape[2:] != (Nkz, Nkx):
         L = L[:, :, :Nkz, :Nkx]
@@ -1822,12 +1832,12 @@ class PerModeBandedPallasOperator:
         ``(N, p+1, Nkz*, Nkx*)`` or ``(C, ...)``.
 
     ``Nkz* x Nkx*`` is the mode plane rounded up to whole Pallas tiles
-    at construction (zero-filled padded modes; see
+    **per device shard** at construction (zero-filled padded modes; see
     :meth:`from_banded_factors`) -- slightly larger persistent storage
-    in exchange for no per-solve factor pad/copy.  Only **unsharded**
-    mode axes are pre-padded (sharded ones stay at the true plane; see
-    :meth:`from_banded_factors`).  ``.solve`` takes and returns the
-    **true** mode plane; the CPU path slices the factors back to it.
+    in exchange for no per-solve factor pad/copy.  ``.solve`` takes and
+    returns the **true** mode plane and runs as a ``shard_map``-local
+    region (the CPU sweep slices the local factors back to the local
+    true plane).
     """
 
     L: Array
@@ -1859,30 +1869,40 @@ class PerModeBandedPallasOperator:
         re-copied the factors into a padded transient duplicate, so
         both the step's HBM traffic and its transient peak shrink.
 
-        A mode axis is pre-padded **only when it is unsharded** (the
-        tile roundup is not divisibility-aligned with the mesh, so
-        padding/slicing a sharded mode axis is unresolvable under the
-        Explicit mesh without collectives).  A multi-device run
-        therefore keeps true-plane factors on its sharded axes --
-        byte-identical to the pre-padding behaviour there: the CPU
-        sweep needs no padding, and the per-call fallback pad in
-        :func:`_pallas_banded_solve` concerns only the (deferred)
-        multi-device-GPU path.
+        The padding is **per device shard** (a ``shard_map`` region,
+        like the FFT pipeline): the whole-tile requirement applies to
+        each device's *local* mode plane -- the plane its kernel grid
+        covers -- so each local block is padded to
+        ``(ceil(nkz_loc / bm0) * bm0, ceil(nkx_loc / bm1) * bm1)``,
+        entirely locally (no communication, no Explicit-mesh sharding
+        rules involved).  Local plane sizes are uniform across devices
+        (``sharding.nz_spec`` / ``nx_spec`` are divisibility-padded to
+        the mesh), so the stored global plane is well-formed:
+        ``np0 * nkz_loc_pad x np1 * nkx_loc_pad`` -- the **sum of
+        local roundups**, not the global roundup.  On one device
+        local = global and this reduces to the plain whole-tile pad.
         """
         Li = jnp.moveaxis(L, (-2, -1), (0, 1))  # (N, p, Nkz, Nkx)
         Ui = jnp.moveaxis(U, (-2, -1), (0, 1))  # (N, p+1, Nkz, Nkx)
         Ui = Ui.at[:, 0].set(1.0 / Ui[:, 0])  # reciprocate diagonal slot
         bm0 = params.solver.pallas_block_m0
         bm1 = params.solver.pallas_block_m1
-        Nkz, Nkx = Li.shape[2], Li.shape[3]
-        Nkz_pad = ((Nkz + bm0 - 1) // bm0) * bm0
-        Nkx_pad = ((Nkx + bm1 - 1) // bm1) * bm1
-        pad_kz = Nkz_pad - Nkz if sharding.a0 is None else 0
-        pad_kx = Nkx_pad - Nkx if sharding.a1 is None else 0
-        if pad_kz or pad_kx:
+
+        def _pad_local(L_l: Array, U_l: Array) -> tuple[Array, Array]:
+            pad_kz = -L_l.shape[2] % bm0
+            pad_kx = -L_l.shape[3] % bm1
+            if not (pad_kz or pad_kx):
+                return L_l, U_l
             pad = [(0, 0), (0, 0), (0, pad_kz), (0, pad_kx)]
-            Li = jnp.pad(Li, pad)
-            Ui = jnp.pad(Ui, pad)
+            return jnp.pad(L_l, pad), jnp.pad(U_l, pad)
+
+        spec = P(None, None, sharding.a0, sharding.a1)
+        Li, Ui = shard_map(
+            _pad_local,
+            mesh=sharding.mesh,
+            in_specs=(spec, spec),
+            out_specs=(spec, spec),
+        )(Li, Ui)
         return cls(L=Li, U=Ui)
 
     def solve(self, rhs: Array, component_axis: int = 0) -> Array:
@@ -1901,6 +1921,17 @@ class PerModeBandedPallasOperator:
         the operator and RHS leading axis; ``rhs.ndim == 4`` (shared
         operator) vmaps over the RHS leading axis; otherwise a single
         operator / single RHS.
+
+        The whole solve is one ``shard_map`` region (mirroring the FFT
+        pipeline): the per-mode systems are independent, so each device
+        runs the kernel (GPU) or sweep (CPU) on its **local** mode-plane
+        block with zero communication.  The component-``vmap`` dispatch
+        and all tile pad/crop bookkeeping happen *inside* the body on
+        local arrays, where no Explicit-mesh sharding rules apply --
+        this is what makes the per-shard factor pre-padding and the
+        true-plane crop legal on sharded mode axes, and what wires the
+        multi-device-GPU Pallas path (real multi-GPU execution pending
+        cluster validation).
 
         *component_axis* is the position of that batched RHS axis:
         ``0`` (default, ``(C, N, ...)``) or ``1`` (``(N, C, ...)``,
@@ -1929,15 +1960,28 @@ class PerModeBandedPallasOperator:
         as low-ROI and cross-cutting.
         """
         ca = component_axis
-        if self.L.ndim == 5:
-            return jax.vmap(
-                _banded_mode_solve, in_axes=(0, 0, ca), out_axes=ca
-            )(self.L, self.U, rhs)
-        if rhs.ndim == 4:
-            return jax.vmap(
-                _banded_mode_solve, in_axes=(None, None, ca), out_axes=ca
-            )(self.L, self.U, rhs)
-        return _banded_mode_solve(self.L, self.U, rhs)
+
+        def _local(L_l: Array, U_l: Array, rhs_l: Array) -> Array:
+            if L_l.ndim == 5:
+                return jax.vmap(
+                    _banded_mode_solve, in_axes=(0, 0, ca), out_axes=ca
+                )(L_l, U_l, rhs_l)
+            if rhs_l.ndim == 4:
+                return jax.vmap(
+                    _banded_mode_solve, in_axes=(None, None, ca), out_axes=ca
+                )(L_l, U_l, rhs_l)
+            return _banded_mode_solve(L_l, U_l, rhs_l)
+
+        # kz/kx are the two trailing axes of every operand rank and of
+        # the result, for either component_axis.
+        fac_spec = P(*(None,) * (self.L.ndim - 2), sharding.a0, sharding.a1)
+        rhs_spec = P(*(None,) * (rhs.ndim - 2), sharding.a0, sharding.a1)
+        return shard_map(
+            _local,
+            mesh=sharding.mesh,
+            in_specs=(fac_spec, fac_spec, rhs_spec),
+            out_specs=rhs_spec,
+        )(self.L, self.U, rhs)
 
 
 def _stack_pallas_operators(

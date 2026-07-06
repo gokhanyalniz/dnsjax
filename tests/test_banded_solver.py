@@ -21,12 +21,16 @@ Pallas banded backend (``PerModeBandedPallasOperator``):
 4. ``_decide_pallas_or_spike``: auto no-pivot choice,
    ``force_pivoting``, and the unstable-LU fallback to pivoted SPIKE.
 
-The interpret/lowering tests clear the Explicit mesh
-(``jax.set_mesh(None)``) because the kernel's indexed ref stores
-discharge to a sharding-checked ``dynamic_update_slice`` only in
-interpret mode.  Real-GPU execution and perf (tile tuning) are
+The interpret/lowering tests call ``_pallas_banded_solve`` directly
+with local, uncommitted factors (``_mode_inner_factors``; in
+production the kernel runs only inside the ``.solve`` shard_map
+region, where arrays are local by construction) and clear the
+Explicit mesh (``jax.set_mesh(None)``): the kernel's indexed ref
+stores discharge to a sharding-checked ``dynamic_update_slice`` only
+in interpret mode.  Real-GPU execution and perf (tile tuning) are
 deferred to the ``gpu-validation-pallas-banded`` plan, not this
-suite.
+suite.  Multi-device solve coverage (per-shard factor padding on a
+(2, 2) mesh) lives in ``test_banded_solver_sharded.py``.
 
 Geometry-specific operator tests live in ``test_cartesian.py``,
 ``test_cylindrical.py``, and ``test_annular.py``.
@@ -189,6 +193,22 @@ def _pallas_op_from_dense(
     return PerModeBandedPallasOperator.from_banded_factors(L, U)
 
 
+def _mode_inner_factors(Lo: jnp.ndarray, Uo: jnp.ndarray):
+    """Kernel-layout (mode-inner, reciprocated-diagonal) factors from
+    the mode-outer ``_banded_factor`` output, as plain local arrays.
+
+    Bypasses ``from_banded_factors``, whose shard_map commits the
+    result to the Explicit mesh: the direct ``_pallas_banded_solve``
+    calls below unit-test the *local* kernel function with local,
+    uncommitted inputs (in production the kernel only ever runs inside
+    the ``.solve`` shard_map region).  Leaving the factors unpadded
+    also exercises the kernel's internal pad-to-whole-tiles fallback.
+    """
+    Li = jnp.moveaxis(Lo, (-2, -1), (0, 1))
+    Ui = jnp.moveaxis(Uo, (-2, -1), (0, 1))
+    return Li, Ui.at[:, 0].set(1.0 / Ui[:, 0])
+
+
 def _spike_op_from_dense(
     A: np.ndarray, P: int, m: int, p: int, Nkz: int, Nkx: int
 ) -> PerModeBandedOperator:
@@ -291,15 +311,13 @@ def test_pallas_interpret_matches_cpu_path() -> None:
                     Lo, Uo = _banded_factor(
                         _banded_from_dense(_tile_modes(A, Nkz, Nkx), p)
                     )
-                    op = PerModeBandedPallasOperator.from_banded_factors(
-                        Lo, Uo
-                    )
+                    Li, Ui = _mode_inner_factors(Lo, Uo)
                     for k in (1, 2):
                         b = jnp.asarray(rng.standard_normal((Nkz, Nkx, Ny, k)))
                         x_cpu = _banded_solve_batched(Lo, Uo, b, p)
                         bi = jnp.moveaxis(b, (0, 1), (-2, -1))
                         x_pl = _pallas_banded_solve(
-                            op.L, op.U, bi, p, interpret=True
+                            Li, Ui, bi, p, interpret=True
                         )
                         x_pl = jnp.moveaxis(x_pl, (0, 1), (-2, -1))
                         assert_allclose(
@@ -339,7 +357,7 @@ def test_pallas_cuda_lowering() -> None:
     jax.set_mesh(None)
     try:
         A = _make_random_banded(Ny, p, seed=1)
-        op = PerModeBandedPallasOperator.from_banded_factors(
+        Li, Ui = _mode_inner_factors(
             *_banded_factor(_banded_from_dense(_tile_modes(A, Nkz, Nkx), p))
         )
         b = jnp.zeros((Ny, k, Nkz, Nkx))  # mode-inner RHS
@@ -348,9 +366,7 @@ def test_pallas_cuda_lowering() -> None:
             return _pallas_banded_solve(L, U, b, p, interpret=False)
 
         lowered = (
-            jax.jit(solve)
-            .trace(op.L, op.U, b)
-            .lower(lowering_platforms=("cuda",))
+            jax.jit(solve).trace(Li, Ui, b).lower(lowering_platforms=("cuda",))
         )
         assert "triton" in lowered.as_text().lower()
     finally:
