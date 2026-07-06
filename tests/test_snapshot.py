@@ -19,6 +19,10 @@ Exercises the host (non-GDS) I/O path:
   exercised here -- single-process serial reduces to one write);
 - 2D mesh round-trips: save and load with ``np0 > 1``, including
   padding-mode stripping and re-padding;
+- a **viscoelastic-dean** case (single-device and ``np 1 -> 2``)
+  exercises the 9-component chunk count -- the test helpers derive
+  the component count from the system via ``_n_comp``, mirroring the
+  metadata-driven ``snapshot._n_components``;
 - the ``isnap`` lineage index round-trips through the metadata, and the
   optional ``_dnsjax_stats.json`` member is written when stats are
   supplied and omitted otherwise.

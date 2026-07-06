@@ -41,6 +41,16 @@ subprocess smoke tests cannot check directly:
   costs exactly one RHS evaluation per iteration (the ``2 + c``
   model).  Triply-periodic ``step_cnab2`` (no ``l_bf_fn``) has no
   loop and no cond -- exactly one RHS evaluation total.
+- **Viscoelastic-dean split** (9-component total field, distinct
+  split): ``_l_bf`` is FFT-free (jaxpr); with the mean coupling off
+  it is exactly the polymer-stress divergence (velocity) + linear
+  relaxation (conformation) to machine precision; and a mean-only
+  state at `$\epsilon = 0$` has a vanishing explicit conformation
+  remainder (``get_rhs`` conf == ``_l_bf`` conf), validating the
+  conformation mean advection + stretching jointly (the identity
+  `$I$` in the relaxation is gated to the mean mode -- a spectral
+  subtlety ``_get_rhs_core`` gets for free in physical space).  See
+  ``_check_viscoelastic_split``.
 
 Each system runs in its own subprocess (import-time singletons), on a
 single forced-CPU device, mirroring ``tests/test_localized_rolls.py``::
@@ -225,7 +235,8 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     ``implicit_mean_coupling``) plus the always-implicit linear
     relaxation.  Checks: (a) ``_l_bf`` is FFT-free; (b) with the mean
     coupling off, ``_l_bf`` is exactly the polymer divergence (velocity)
-    + linear relaxation (conformation), bitwise; (c) a mean-only state
+    + linear relaxation (conformation), to machine precision
+    (``SPLIT_RTOL``); (c) a mean-only state
     at `$\epsilon = 0$` has a vanishing explicit conformation remainder
     (``get_rhs`` conf == ``_l_bf`` conf), validating the mean advection
     and stretching jointly.  The velocity mean-flow coupling reuses the

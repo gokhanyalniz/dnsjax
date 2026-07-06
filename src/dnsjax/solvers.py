@@ -1814,7 +1814,7 @@ class PerModeBandedPallasOperator:
         return cls(L=Li, U=Ui)
 
     def solve(self, rhs: Array, component_axis: int = 0) -> Array:
-        """Batched banded solve across ``(kz, kx)`` modes.
+        r"""Batched banded solve across ``(kz, kx)`` modes.
 
         ``rhs`` is **mode-inner** -- ``(N, Nkz, Nkx)`` or
         ``(C, N, Nkz, Nkx)`` for a leading batch axis ``C`` -- the

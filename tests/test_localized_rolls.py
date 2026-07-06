@@ -17,7 +17,15 @@ wall-bounded flow and checks the *construction* properties the smoke test
 - a **loose truncation-level discrete-divergence bound** (the analytic
   profiles are continuously divergence-free; the discrete divergence is
   only FD-truncation-sized and is projected out by the first corrector
-  step at run start).
+  step at run start): Cartesian is ~machine-zero (the FD order
+  differentiates the quartic profile exactly), the rational-profile
+  annular/pipe are `$O(10^{-5})$`;
+- a **peak-velocity / domain-scaling guard** (``_check_peak_scaling``,
+  subprocess ``--peak``): built at two resolved box sizes, the sampled
+  ``max|u'|`` is within ``PEAK_TOL`` (12%) of ``amplitude`` and
+  domain-independent -- guarding against a regression to the old
+  single-mode rolls whose amplitude grew in proportion to the box
+  length.
 
 Each ``(system, np0, np1)`` configuration runs in its own subprocess with
 forced CPU devices

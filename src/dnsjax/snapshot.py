@@ -931,8 +931,9 @@ def save_snapshot(
 ) -> None:
     r"""Save the spectral state to a single-file snapshot.
 
-    The field is streamed to the three per-component zarr3 chunks
-    inside one uncompressed tar (clean global arrays, `$k_x$`
+    The field is streamed to the per-component zarr3 chunks (one per
+    state component: 3, or 9 for the viscoelastic tensor state) inside
+    one uncompressed tar (clean global arrays, `$k_x$`
     de-interleaved) without ever materialising a full-array transpose.
     Process 0 lays out the whole archive first; every device then
     writes its disjoint byte ranges into the reserved chunk regions.
@@ -940,8 +941,11 @@ def save_snapshot(
     Parameters
     ----------
     state:
-        Spectral perturbation velocity, shape ``(3, *spec_shape)``,
-        complex dtype.
+        Spectral state, shape ``(n_components, *spec_shape)``, complex
+        dtype: the perturbation velocity for the base-flow systems,
+        the **total** field for the force-driven dean /
+        viscoelastic-dean systems (the latter 9 components --
+        velocity + conformation spins).
     t:
         Current simulation time.
     it:
