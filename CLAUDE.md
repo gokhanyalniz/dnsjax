@@ -178,9 +178,10 @@ solvers.py            Geometry-independent solvers: DenseJAXSolver,
                       PerModeBandedPallasOperator (mode-tiled Triton
                       banded sweep on GPU, pure-JAX sweep on CPU;
                       no-pivot LU + pivoted-SPIKE fallback; mode-inner
-                      .solve contract; shared banded-assembly helpers
-                      used by every geometry) -- see
-                      _pallas_banded_solve / .solve docstrings
+                      .solve contract, a shard_map-local region with
+                      per-shard tile-padded factors; shared
+                      banded-assembly helpers used by every geometry)
+                      -- see _pallas_banded_solve / .solve docstrings
 snapshot.py           Single-file (tar/zarr3) snapshot save/load, raw
                       offset I/O (GDS or host); assemble_local_shards
 snapshot_meta.py      Stdlib-only (JAX-free) snapshot tar metadata
@@ -336,7 +337,8 @@ banded < dense (`solver.backend` comments in `parameters.py`); SPIKE
 reduced-system memory vs latency (`solver.block_thomas` /
 `spike_block_size` comments, `scripts/spike_partition_info.py`);
 Pallas whole-tile mode-plane padding — factors pre-padded once at
-construction, overhead matters only for small planes
+construction, per device shard inside the shard_map-local solve,
+overhead matters only for small planes
 (`from_banded_factors` in `solvers.py`, `pallas_block_m0` comments);
 the viscoelastic 36-field RHS transform batch vs peak memory
 (`solver.rhs_transform_chunks`; `_get_rhs_core` in
@@ -514,6 +516,9 @@ one-liners. Cross-cutting notes:
 - `tests/test_banded_solver.py`: geometry-independent SPIKE + Pallas
   banded backend (interpret parity incl. pad-to-whole-tiles,
   compile-only cuda-lowering guard, `_decide_pallas_or_spike`).
+- `tests/test_banded_solver_sharded.py`: shard_map-local Pallas solve
+  on a forced (2, 2) mesh (per-shard factor tile padding, sharded
+  `.solve` oracle parity, component-axis layouts).
 - `tests/test_cartesian.py`: Cartesian operator/matvec tests + Pallas
   band-vs-dense parity.
 - `tests/test_cylindrical.py`: cylindrical operator/matvec tests +

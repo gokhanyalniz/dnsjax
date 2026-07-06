@@ -550,13 +550,15 @@ class Solver(BaseModel):
     # geometries (cartesian, cylindrical, annular); the operators are
     # assembled directly in banded storage by each geometry's
     # ``_build_{Lk,Hk}_band_gpu`` via the shared
-    # ``solvers._assemble_banded_operator`` helper.  Caveats: on CPU
-    # the same banded math runs as a sequential pure-JAX sweep (the
-    # correctness oracle, slower than SPIKE -- set ``"banded"`` for
-    # CPU-heavy production work), and multi-device **GPU** validation
-    # of the Pallas call is still pending (multi-device CPU is
-    # test-covered) -- prefer ``"banded"`` for multi-GPU production
-    # until then.
+    # ``solvers._assemble_banded_operator`` helper.  The solve is a
+    # shard_map-local region (each device runs the kernel on its local
+    # mode-plane block; no communication), so the multi-device wiring
+    # is in place and CPU-multi-device is test-covered.  Caveats: on
+    # CPU the same banded math runs as a sequential pure-JAX sweep
+    # (the correctness oracle, slower than SPIKE -- set ``"banded"``
+    # for CPU-heavy production work), and real multi-**GPU** execution
+    # of the Pallas kernel is still pending cluster validation --
+    # prefer ``"banded"`` for multi-GPU production until then.
     # ``"banded"``: SPIKE block-partitioned solver (memory-efficient,
     # exploits the known stencil bandwidth of D1, D2; pivoted, robust
     # on every platform and device count).
