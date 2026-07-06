@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 
-from jax import Array, device_put, jit, vmap
+from jax import Array, device_put, vmap
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
@@ -441,7 +441,10 @@ def correct_divergence(state: Array, fourier_: Fourier) -> Array:
     where the pressure Poisson solve removes the divergent
     part of the nonlinear term before the Helmholtz step.
     This second projection removes any residual divergence
-    accumulated during the corrector iterations.
+    accumulated during the corrector iterations.  It runs
+    *inside* the stepper's jit scope (:func:`_finalize_state`
+    via ``make_stepper``'s *finalize_fn*), fused with the
+    step's tail rather than as a separate per-step dispatch.
     """
     correction = -gradient(
         inverse_laplacian(
@@ -462,20 +465,21 @@ def correct_divergence(state: Array, fourier_: Fourier) -> Array:
     return velocity_corrected
 
 
-@jit(donate_argnums=0)
-def _correct_velocity_jit(state: Array, fourier_: Fourier) -> Array:
-    """Divergence correction + mean-mode zeroing.
+def _finalize_state(
+    state: Array, fourier_: Fourier, flow_: TriplyPeriodicFlow
+) -> Array:
+    """Divergence correction + mean-mode zeroing (post-step).
 
-    Returned as ``correct_velocity`` by the stepper builder
-    and called once per time step after the corrector loop.
+    Passed to ``make_stepper`` as *finalize_fn*: applied once to the
+    accepted state at the end of every step, inside the stepper's jit
+    scope (fused; no separate per-step dispatch or extra state-sized
+    read/write pass).
     """
     velocity_corrected = correct_divergence(state, fourier_)
 
-    velocity_corrected = velocity_corrected.at[sharding.vector_mean_mode].set(
+    return velocity_corrected.at[sharding.vector_mean_mode].set(
         0, out_sharding=sharding.spec_vector_shard
     )
-
-    return velocity_corrected
 
 
 # ── Stepper factory ─────────────────────────────────────────────────────
@@ -488,7 +492,6 @@ def build_triply_periodic_stepper(
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
-    Callable[[Array], Array],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
     Callable[[Array, Array], tuple[Array, Array, Array, Array]],
     Callable[
@@ -499,10 +502,15 @@ def build_triply_periodic_stepper(
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
-    correct_velocity, predict_and_fully_correct_measured,
-    step_cnab2, step_cnab2_measured)`` with the ``fourier`` and
-    *flow* singletons already bound.  The last two are the CN/AB2
-    scheme (``step.scheme == "cnab2"``).
+    predict_and_fully_correct_measured, step_cnab2,
+    step_cnab2_measured)`` with the ``fourier`` and *flow*
+    singletons already bound -- the same 7-tuple as the
+    wall-bounded builder.  The last two are the CN/AB2 scheme
+    (``step.scheme == "cnab2"``).  The post-step divergence
+    projection + mean-mode zeroing (:func:`_finalize_state`) is
+    fused into every step via ``make_stepper``'s *finalize_fn*,
+    so the accepted state is already projected on return (no
+    separate per-step call).
     """
     (
         _predict_and_correct_jit,
@@ -511,7 +519,14 @@ def build_triply_periodic_stepper(
         _predict_and_fully_correct_measured_jit,
         _step_cnab2_jit,
         _step_cnab2_measured_jit,
-    ) = make_stepper(_get_rhs, _predict, _correct, _norm, _get_rhs_measured)
+    ) = make_stepper(
+        _get_rhs,
+        _predict,
+        _correct,
+        _norm,
+        _get_rhs_measured,
+        finalize_fn=_finalize_state,
+    )
 
     def predict_and_correct(
         state: Array,
@@ -548,7 +563,7 @@ def build_triply_periodic_stepper(
         ``(state_next, carry, error, num_c)`` (``error``/``num_c`` are
         ``0`` -- triply-periodic needs no base-flow-coupling corrector,
         its Fourier ``y`` making that term non-stiff).  The divergence
-        projection is applied by ``correct_velocity`` in the main loop,
+        projection (:func:`_finalize_state`) is fused into the step,
         as for the corrector scheme."""
         return _step_cnab2_jit(state, carry, fourier, flow)
 
@@ -562,17 +577,11 @@ def build_triply_periodic_stepper(
         """Initialize the flow state with bound flow singleton."""
         return init_state(snapshot, flow)
 
-    def correct_velocity(
-        state: Array,
-    ) -> Array:
-        return _correct_velocity_jit(state, fourier)
-
     return (
         predict_and_correct,
         iterate_correction,
         init_state_bound,
         predict_and_fully_correct,
-        correct_velocity,
         predict_and_fully_correct_measured,
         step_cnab2,
         step_cnab2_measured,

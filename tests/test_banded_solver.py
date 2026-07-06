@@ -224,6 +224,36 @@ def test_pallas_banded_matches_dense() -> None:
         assert_allclose(x_c, np.linalg.solve(A, bc), atol=1e-9, rtol=1e-9)
 
 
+def test_pallas_factors_prepadded_to_tiles() -> None:
+    """``from_banded_factors`` stores whole-tile factors; ``.solve``
+    keeps the true-plane contract.
+
+    The stored mode plane must be rounded up to the ``(bm0, bm1)``
+    Pallas tile at construction (so no per-solve factor pad/copy
+    remains -- see the ``from_banded_factors`` docstring), while
+    ``.solve`` still takes and returns the true (non-tiling) plane and
+    matches the dense oracle on its last true mode (adjacent to the
+    padding).
+    """
+    Nkz, Nkx = params.res.nz - 1, params.res.nx // 2  # (3, 2): no tile
+    bm0 = params.solver.pallas_block_m0
+    bm1 = params.solver.pallas_block_m1
+    assert Nkz % bm0 != 0 or Nkx % bm1 != 0  # plane must not tile
+    p = 4
+    Ny = 5 * p
+    A = _make_random_banded(Ny, p, seed=11)
+    op = _pallas_op_from_dense(A, p, Nkz, Nkx)
+    assert op.L.shape[2] % bm0 == 0 and op.L.shape[3] % bm1 == 0
+    assert op.U.shape[2] % bm0 == 0 and op.U.shape[3] % bm1 == 0
+    assert op.L.shape[2] >= Nkz and op.L.shape[3] >= Nkx
+
+    b = np.random.default_rng(12).standard_normal(Ny)
+    rhs = jnp.tile(jnp.asarray(b)[:, None, None], (1, Nkz, Nkx))
+    x = np.asarray(op.solve(rhs))
+    assert x.shape == (Ny, Nkz, Nkx)
+    assert_allclose(x[:, -1, -1], np.linalg.solve(A, b), atol=1e-9, rtol=1e-9)
+
+
 def test_pallas_interpret_matches_cpu_path() -> None:
     """The Pallas kernel (interpret mode) reproduces the pure-JAX
     banded sweep used on CPU.

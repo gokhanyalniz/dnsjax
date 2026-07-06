@@ -107,6 +107,14 @@ def get_nonlin(
     reuse the inverse FFTs already paid for by the nonlinear
     term.
 
+    The 6-field batched inverse transform (plus its padded
+    intermediate stage buffers inside :mod:`dnsjax.fft`) sets the
+    transient memory peak of a Newtonian RHS evaluation.  The batch is
+    small, so no chunking knob is offered here; the 36-field
+    viscoelastic variant, where the batch dominates the step's peak,
+    has one (``solver.rhs_transform_chunks`` -- see ``_get_rhs_core``
+    in ``geometries/wall_bounded/annular_viscoelastic.py``).
+
     Parameters
     ----------
     velocity_spec:

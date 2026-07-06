@@ -457,6 +457,41 @@ def test_fused_rhs_transform_count() -> None:
     )
 
 
+def test_rhs_transform_chunks_parity() -> None:
+    r"""``solver.rhs_transform_chunks`` does not change the RHS.
+
+    The chunked inverse transform (a memory knob: it splits the
+    36-field batch into balanced groups to cap the transform-stage
+    transient) must reproduce the fused evaluation -- the per-field
+    transforms are independent, so any difference is a chunking bug.
+    Checked at ``k = 3`` (uneven 12/12/12 over the concatenated
+    9+27-field stack) and ``k = 5`` (uneven group sizes).  The module
+    config (``rhs_transform_chunks = 1``) is restored on exit.
+    """
+    Nr = params.res.ny
+    Nm = params.res.nz - 1
+    Nkz = params.res.nx // 2
+    rng = np.random.default_rng(7)
+    state = jax.device_put(
+        jnp.asarray(_random_tensor(rng, (9, Nr, Nm, Nkz))),
+        sharding.spec_vector_shard,
+    )
+    fused = np.asarray(_get_rhs(state, fourier, flow))
+    try:
+        for k in (3, 5):
+            params.solver.rhs_transform_chunks = k
+            chunked = np.asarray(_get_rhs(state, fourier, flow))
+            assert_allclose(
+                chunked,
+                fused,
+                rtol=1e-14,
+                atol=1e-14 * np.max(np.abs(fused)),
+                err_msg=f"chunked (k={k}) RHS != fused RHS",
+            )
+    finally:
+        params.solver.rhs_transform_chunks = 1
+
+
 # ── Runner ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

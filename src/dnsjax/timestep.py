@@ -32,6 +32,7 @@ def make_stepper(
     get_rhs_measured_fn: Callable[..., tuple[Array, dict[str, Array]]]
     | None = None,
     l_bf_fn: Callable[..., Array] | None = None,
+    finalize_fn: Callable[..., Array] | None = None,
 ) -> tuple[
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array]],
@@ -79,6 +80,20 @@ def make_stepper(
         ``step_cnab2`` below).  When ``None`` (triply-periodic, whose
         Fourier ``y`` makes the coupling non-stiff) ``step_cnab2`` is
         the plain explicit-AB2 step.
+    finalize_fn:
+        Optional ``(state, *args) -> state`` applied **once** to the
+        accepted state of every completed step -- at the end of
+        ``predict_and_fully_correct(_measured)`` and
+        ``step_cnab2(_measured)`` (after the fallback ``lax.cond``),
+        inside the step's jit scope.  Triply-periodic flows pass their
+        post-step divergence projection + mean-mode zeroing here so it
+        fuses with the step (no separate dispatch, one fewer
+        state-sized read/write pass); wall-bounded flows pass ``None``
+        (the IMM already enforces continuity exactly), which leaves
+        their traces unchanged.  The legacy manual-iteration pair
+        ``predict_and_correct`` / ``iterate_correction`` does **not**
+        apply it (mid-iteration states are not accepted steps); a
+        caller driving those directly must finalize itself.
 
     Returns
     -------
@@ -134,6 +149,16 @@ def make_stepper(
         measurements)``.  ``None`` when *get_rhs_measured_fn* is not
         given.
     """
+
+    def _finalized(state: Array, *args) -> Array:
+        """Apply *finalize_fn* to an accepted step output.
+
+        Identity (trace-time branch, zero ops) when no finalizer is
+        configured, so wall-bounded traces are unchanged.
+        """
+        if finalize_fn is None:
+            return state
+        return finalize_fn(state, *args)
 
     @jit
     def predict_and_correct(state: Array, *args) -> tuple[Array, Array, Array]:
@@ -233,7 +258,8 @@ def make_stepper(
         copy (see the ``__main__`` warm-up calls).
         """
         rhs_prev = get_rhs_fn(state, *args)
-        return _step_core(state, rhs_prev, *args)
+        prediction, error, num_c = _step_core(state, rhs_prev, *args)
+        return _finalized(prediction, *args), error, num_c
 
     if get_rhs_measured_fn is None:
         predict_and_fully_correct_measured = None
@@ -252,7 +278,7 @@ def make_stepper(
             """
             rhs_prev, measurements = get_rhs_measured_fn(state, *args)
             prediction, error, num_c = _step_core(state, rhs_prev, *args)
-            return prediction, error, num_c, measurements
+            return _finalized(prediction, *args), error, num_c, measurements
 
     def _cnab2_lbf_core(
         state: Array, nnl_prev: Array, full_rhs: Array, *args
@@ -270,6 +296,14 @@ def make_stepper(
         CN-implicit ``L_bf`` solve.  Returns
         ``(state_next, N_nl^n, error, num_c)``.
         """
+        # ``l_bf_fn(state)`` re-derives the spectral curl (and, in the
+        # cylindrical/annular geometries, the u_+/- conversion) that
+        # ``get_rhs_fn(state)`` already built for ``full_rhs``.  This
+        # costs nothing: both live in one jit scope on the same input,
+        # and XLA CSE merges the identical subgraphs -- verified on the
+        # optimized HLO (Cartesian and annular: the pair compiles to
+        # ONE curl D1 GEMM, not two), so no fused get_rhs+l_bf contract
+        # is needed.
         l_n = l_bf_fn(state, *args)
         nnl_n = full_rhs - l_n
         f_ab2 = 1.5 * nnl_n - 0.5 * nnl_prev
@@ -331,7 +365,7 @@ def make_stepper(
         prediction, error, num_c = jax.lax.cond(
             error > tol, _fallback, _keep, None
         )
-        return prediction, nnl_n, error, num_c
+        return _finalized(prediction, *args), nnl_n, error, num_c
 
     _zero_err = jnp.zeros(())
     _zero_c = jnp.int32(0)
@@ -362,12 +396,20 @@ def make_stepper(
         `$F = \tfrac{3}{2} N^n - \tfrac{1}{2} N^{n-1}$`; ``carry`` is
         `$N^{n-1}$` and there is no corrector (``error = 0``,
         ``num_c = 0``).
+
+        **Memory**: cnab2 is a *throughput* optimisation (1 vs
+        `$2 + c$` FFT evaluations per step), not a peak-memory one --
+        it carries one extra state-sized array (``carry``) across
+        steps, and for wall-bounded flows the compiled step still
+        reserves buffers for the ``lax.cond`` iterative-cn fallback
+        branch (XLA allocates the max over branches), so its allocated
+        peak is about the iterative-cn step's.
         """
         full_rhs = get_rhs_fn(state, *args)
         if l_bf_fn is None:
             forcing = 1.5 * full_rhs - 0.5 * carry
             state_next = predict_fn(state, forcing, *args)
-            return state_next, full_rhs, _zero_err, _zero_c
+            return _finalized(state_next, *args), full_rhs, _zero_err, _zero_c
         return _cnab2_lbf_core(state, carry, full_rhs, *args)
 
     if get_rhs_measured_fn is None:
@@ -385,7 +427,13 @@ def make_stepper(
             if l_bf_fn is None:
                 forcing = 1.5 * full_rhs - 0.5 * carry
                 state_next = predict_fn(state, forcing, *args)
-                return state_next, full_rhs, _zero_err, _zero_c, measurements
+                return (
+                    _finalized(state_next, *args),
+                    full_rhs,
+                    _zero_err,
+                    _zero_c,
+                    measurements,
+                )
             out = _cnab2_lbf_core(state, carry, full_rhs, *args)
             return (*out, measurements)
 

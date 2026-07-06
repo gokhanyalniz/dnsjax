@@ -543,8 +543,18 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         Five distinct `$m_{\mathrm{eff}}^2$` operators
         (`$m, m\pm1, m\pm2$`) are built and stacked into the 6-component
         order `$(c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++}, c_{--})$`, so the
-        `$m_{\mathrm{eff}} = m$` operator is reused for `$c_{zz}$` and
+        `$m_{\mathrm{eff}} = m$` operator serves both `$c_{zz}$` and
         `$c_{+-}$`.
+
+        The stacked storage **duplicates** that shared operator's
+        factors (slot 0 and slot 3 hold the same data -- ~1/6 of the
+        ``Hc_op`` memory), because the uniform stacked ``.solve``
+        contract pairs component ``i`` of the RHS with operator ``i``.
+        Deduplicating would need a nonuniform component-to-operator
+        solve mapping (5 operators against 6 RHS components) in every
+        backend -- deferred as not worth the contract complexity for a
+        small, setup-persistent array (the velocity ``Hk_op`` stack and
+        the per-step transform transients are far larger).
         """
         dt = params.step.dt
         c_impl = params.step.implicitness
@@ -676,13 +686,25 @@ def _get_rhs_core(
     are absent here.  See the module docstring.
 
     The two radial-derivative GEMMs (3 velocity + 6 conformation combos)
-    are fused into one ``apply_y_matrix`` call, and the inverse/forward
-    transforms are each a **single batched** FFT over all fields (pinned
-    by ``test_fused_rhs_transform_count``).  The peak physical-space
-    footprint is the ~36 padded inverse-transform fields held at once;
-    chunking the transform in field groups would lower that peak but
-    multiply the FFT launches (and defeat the fused single-transform
-    guarantee), a memory-vs-throughput trade-off left batched.
+    are fused into one ``apply_y_matrix`` call, and at the default
+    ``solver.rhs_transform_chunks = 1`` the inverse/forward transforms
+    are each a **single batched** FFT over all fields (pinned by
+    ``test_fused_rhs_transform_count``).
+
+    **Memory vs throughput** (``solver.rhs_transform_chunks``): this
+    36-field inverse transform dominates a viscoelastic step's peak
+    memory -- not the held physical outputs themselves, but the
+    transform's padded intermediate stage buffers (~2 complex copies
+    of the whole batch at the dealiased size; see :mod:`dnsjax.fft`).
+    ``rhs_transform_chunks = k`` splits the inverse transform into
+    ``k`` balanced groups, cutting that transient by ~``k`` at the
+    cost of ``k``x the FFT dispatches (and ``k`` smaller reshard
+    rounds per stage on multi-device runs); the results are identical.
+    The 36 physical output fields are still held at once for the
+    pointwise stage, and the 9-output forward transform stays fused --
+    a deeper restructure that accumulates chunk contributions and
+    frees derivative groups early would cut the held set too, but
+    breaks the single pointwise stage and is deferred.
     """
     im = 1j * fourier_.m
     ikz = 1j * fourier_.kz
@@ -721,11 +743,26 @@ def _get_rhs_core(
     dth_c = im * combos
     dz_c = ikz * combos
 
-    # ── Single batched inverse transform (36 fields) ──
+    # ── Batched inverse transform (36 fields) ──
+    # One fused batch by default; ``solver.rhs_transform_chunks = k``
+    # (trace-time, static) splits it into k balanced groups to cap the
+    # transform-stage transient -- see the docstring.
     L_spec = jnp.array([Lrr, Lrth, Lrz, Lthr, Lthth, Lthz, Lzr, Lzth, Lzz])
     u_spec = jnp.array([u_z, u_r, u_th])
     stack = jnp.concatenate([u_spec, L_spec, combos, dr_c, dth_c, dz_c])
-    phys = spec_to_phys_2d(stack)
+    n_chunks = params.solver.rhs_transform_chunks
+    if n_chunks <= 1:
+        phys = spec_to_phys_2d(stack)
+    else:
+        n_fields = stack.shape[0]
+        bounds = [n_fields * i // n_chunks for i in range(n_chunks + 1)]
+        phys = jnp.concatenate(
+            [
+                spec_to_phys_2d(stack[lo:hi])
+                for lo, hi in zip(bounds[:-1], bounds[1:], strict=True)
+                if hi > lo
+            ]
+        )
 
     uz_p, ur_p, uth_p = phys[0], phys[1], phys[2]
     Lrr_p, Lrth_p, Lrz_p = phys[3], phys[4], phys[5]
