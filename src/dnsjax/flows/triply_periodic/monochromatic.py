@@ -14,7 +14,11 @@ It also exports the flow interface consumed by ``__main__``:
   measurements (``steps.dat``)
 - ``init_state`` -- initial state from a snapshot or laminar
 - ``get_stats`` -- diagnostic statistics
-- ``correct_velocity`` -- divergence correction + mean-mode zeroing
+
+The post-step divergence correction + mean-mode zeroing is fused
+into every stepper (``_finalize_state`` via ``make_stepper``'s
+*finalize_fn*), so the returned state is already projected and no
+separate ``correct_velocity`` export exists.
 
 Base flow construction
 ----------------------
@@ -199,7 +203,6 @@ flow: MonochromaticFlow = MonochromaticFlow()
     iterate_correction,
     init_state,
     predict_and_fully_correct,
-    correct_velocity,
     predict_and_fully_correct_measured,
     step_cnab2,
     step_cnab2_measured,

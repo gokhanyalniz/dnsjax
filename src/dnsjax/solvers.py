@@ -1592,23 +1592,34 @@ def _pallas_banded_solve(
     localised it: only trivial copy/round-trip kernels survive a partial
     plane; full tiles (no partial boundary anywhere) are always correct at
     ``(2, 32)``.  The fix is to **pad the mode plane up to whole tiles**
-    (below) so the kernel only ever runs the correct full-tile path; the
-    padded modes get zero
+    so the kernel only ever runs the correct full-tile path; the padded
+    modes get zero
     ``L``/``U``/``b`` and -- because the ``U`` diagonal is pre-inverted, so
     the backward sweep multiplies, never divides -- solve to a clean zero
-    (no NaN) and are cropped off the result.  The sequential `$N$`-loop
+    (no NaN) and are cropped off the result.  The **factors are padded
+    once at construction** (:meth:`PerModeBandedPallasOperator.
+    from_banded_factors`), not per call: ``Nkz = nz - 1`` is odd, so the
+    plane virtually never tiles evenly, and a per-call ``jnp.pad`` of the
+    factors would re-copy them (holding a transient duplicate) on every
+    solve of every step.  Only the RHS is padded here per call (with a
+    fallback factor pad for direct callers passing true-plane factors).
+    The sequential `$N$`-loop
     itself is an intrinsic recurrence (no Triton-lowerable parallel scan);
     the only parallelism is across modes, which the tiling + grid maximise.
 
     Parameters
     ----------
     L, U:
-        Mode-inner banded factors, ``(N, p, Nkz, Nkx)`` (strict lower,
-        ``L[i, d] = L_{i, i-p+d}``) / ``(N, p+1, Nkz, Nkx)`` (diagonal
+        Mode-inner banded factors, ``(N, p, Nkz*, Nkx*)`` (strict lower,
+        ``L[i, d] = L_{i, i-p+d}``) / ``(N, p+1, Nkz*, Nkx*)`` (diagonal
         first and **reciprocated**: ``U[i, 0] = 1/U_{i,i}``,
-        ``U[i, d] = U_{i, i+d}`` for ``d >= 1``).
+        ``U[i, d] = U_{i, i+d}`` for ``d >= 1``).  The mode plane is
+        normally already padded to whole tiles (the stored form); a
+        true-plane factor pair is padded here as a fallback.
     b:
-        Mode-inner right-hand side, ``(N, k, Nkz, Nkx)`` (real).
+        Mode-inner right-hand side, ``(N, k, Nkz, Nkx)`` (real), at the
+        **true** mode plane (its trailing dims set the crop of the
+        result).
     p:
         Half-bandwidth.
     interpret:
@@ -1617,24 +1628,36 @@ def _pallas_banded_solve(
     from jax.experimental import pallas as pl
     from jax.experimental.pallas import triton as pltriton
 
-    N, _, Nkz, Nkx = L.shape
+    N = L.shape[0]
     k = b.shape[1]
+    Nkz, Nkx = b.shape[2], b.shape[3]
     bm0 = params.solver.pallas_block_m0
     bm1 = params.solver.pallas_block_m1
 
-    # Pad the mode plane up to whole ``(bm0, bm1)`` tiles so no boundary
-    # tile is partial (a masked partial-tile band load miscompiles on real
+    # Whole-``(bm0, bm1)``-tile mode plane, so no boundary tile is
+    # partial (a masked partial-tile band load miscompiles on real
     # Triton -- see the docstring).  Zero-fill is NaN-safe: padded modes
     # solve to zero (the backward sweep multiplies by the pre-inverted
-    # diagonal, never divides).  The result is cropped back to the original
-    # ``(Nkz, Nkx)``.  A no-op when the plane already tiles evenly.
+    # diagonal, never divides).  The **stored factors are already padded
+    # to this plane at construction** (``from_banded_factors``), so only
+    # the per-call RHS is padded here; factors from a direct caller that
+    # are still at the true plane take the same pad as a fallback.  The
+    # result is cropped back to the RHS's ``(Nkz, Nkx)``.
     Nkz_pad = ((Nkz + bm0 - 1) // bm0) * bm0
     Nkx_pad = ((Nkx + bm1 - 1) // bm1) * bm1
+    if (L.shape[2], L.shape[3]) != (Nkz_pad, Nkx_pad):
+        fac_pad = [
+            (0, 0),
+            (0, 0),
+            (0, Nkz_pad - L.shape[2]),
+            (0, Nkx_pad - L.shape[3]),
+        ]
+        L = jnp.pad(L, fac_pad)
+        U = jnp.pad(U, fac_pad)
     if (Nkz_pad, Nkx_pad) != (Nkz, Nkx):
-        mode_pad = [(0, 0), (0, 0), (0, Nkz_pad - Nkz), (0, Nkx_pad - Nkx)]
-        L = jnp.pad(L, mode_pad)
-        U = jnp.pad(U, mode_pad)
-        b = jnp.pad(b, mode_pad)
+        b = jnp.pad(
+            b, [(0, 0), (0, 0), (0, Nkz_pad - Nkz), (0, Nkx_pad - Nkx)]
+        )
 
     def kernel(l_ref, u_ref, b_ref, x_ref):
         # Window row of zeros, vectorised over the (bm0, bm1) mode tile.
@@ -1755,7 +1778,15 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
         x = _pallas_banded_solve(L, U, b, p)  # (N, k, Nkz, Nkx)
         return lax.complex(x[:, 0], x[:, 1]) if is_complex else x[:, 0]
     # CPU fallback: standard mode-outer banded sweep (RHS and factors
-    # moved to (Nkz, Nkx, N, .) internally).
+    # moved to (Nkz, Nkx, N, .) internally).  The stored factors may be
+    # pre-padded to whole Pallas tiles (see ``from_banded_factors``);
+    # slice them back to the RHS's true mode plane first.  Only ever a
+    # local slice: pre-padding is gated to unsharded mode axes, so a
+    # sharded axis always arrives at the true plane already.
+    Nkz, Nkx = rhs.shape[1], rhs.shape[2]
+    if L.shape[2:] != (Nkz, Nkx):
+        L = L[:, :, :Nkz, :Nkx]
+        U = U[:, :, :Nkz, :Nkx]
     Lo = jnp.moveaxis(L, (0, 1), (-2, -1))  # (Nkz, Nkx, N, p)
     Uo = jnp.moveaxis(U, (0, 1), (-2, -1))  # (Nkz, Nkx, N, p+1)
     Uo = Uo.at[..., 0].set(1.0 / Uo[..., 0])  # un-invert the diagonal
@@ -1785,10 +1816,18 @@ class PerModeBandedPallasOperator:
     ----------
     L:
         Strict-lower factor band, mode-inner,
-        ``(N, p, Nkz, Nkx)`` or ``(C, N, p, Nkz, Nkx)``.
+        ``(N, p, Nkz*, Nkx*)`` or ``(C, N, p, Nkz*, Nkx*)``.
     U:
         Upper factor band (reciprocated diagonal first), mode-inner,
-        ``(N, p+1, Nkz, Nkx)`` or ``(C, ...)``.
+        ``(N, p+1, Nkz*, Nkx*)`` or ``(C, ...)``.
+
+    ``Nkz* x Nkx*`` is the mode plane rounded up to whole Pallas tiles
+    at construction (zero-filled padded modes; see
+    :meth:`from_banded_factors`) -- slightly larger persistent storage
+    in exchange for no per-solve factor pad/copy.  Only **unsharded**
+    mode axes are pre-padded (sharded ones stay at the true plane; see
+    :meth:`from_banded_factors`).  ``.solve`` takes and returns the
+    **true** mode plane; the CPU path slices the factors back to it.
     """
 
     L: Array
@@ -1803,14 +1842,47 @@ class PerModeBandedPallasOperator:
         Transposes the factors from the mode-outer layout produced by
         :func:`_banded_factor` (``(Nkz, Nkx, N, p)`` /
         ``(..., N, p+1)``) to the mode-inner storage solved here
-        (``(N, p, Nkz, Nkx)`` / ``(N, p+1, Nkz, Nkx)``), and
-        reciprocates the ``U`` diagonal so the GPU backward sweep
-        multiplies instead of dividing (see :func:`_pallas_banded_solve`).
-        Mirrors :meth:`DenseJAXSolver.from_factors`.
+        (``(N, p, Nkz, Nkx)`` / ``(N, p+1, Nkz, Nkx)``), reciprocates
+        the ``U`` diagonal so the GPU backward sweep multiplies instead
+        of dividing (see :func:`_pallas_banded_solve`), and **pre-pads
+        the mode plane up to whole ``(pallas_block_m0,
+        pallas_block_m1)`` tiles** with zeros (zero factor rows solve
+        padded modes to a clean zero -- the reciprocated diagonal makes
+        the backward sweep multiply, never divide).  Mirrors
+        :meth:`DenseJAXSolver.from_factors`.
+
+        Padding here is a memory-for-memory (and time) trade: the
+        persistent factors grow by the tile-roundup fraction (typically
+        one ``k_z`` row -- ``Nkz = nz - 1`` is odd -- and up to
+        ``bm1 - 1`` ``k_x`` columns), but the per-solve ``jnp.pad`` of
+        the factors disappears: previously every solve of every step
+        re-copied the factors into a padded transient duplicate, so
+        both the step's HBM traffic and its transient peak shrink.
+
+        A mode axis is pre-padded **only when it is unsharded** (the
+        tile roundup is not divisibility-aligned with the mesh, so
+        padding/slicing a sharded mode axis is unresolvable under the
+        Explicit mesh without collectives).  A multi-device run
+        therefore keeps true-plane factors on its sharded axes --
+        byte-identical to the pre-padding behaviour there: the CPU
+        sweep needs no padding, and the per-call fallback pad in
+        :func:`_pallas_banded_solve` concerns only the (deferred)
+        multi-device-GPU path.
         """
         Li = jnp.moveaxis(L, (-2, -1), (0, 1))  # (N, p, Nkz, Nkx)
         Ui = jnp.moveaxis(U, (-2, -1), (0, 1))  # (N, p+1, Nkz, Nkx)
         Ui = Ui.at[:, 0].set(1.0 / Ui[:, 0])  # reciprocate diagonal slot
+        bm0 = params.solver.pallas_block_m0
+        bm1 = params.solver.pallas_block_m1
+        Nkz, Nkx = Li.shape[2], Li.shape[3]
+        Nkz_pad = ((Nkz + bm0 - 1) // bm0) * bm0
+        Nkx_pad = ((Nkx + bm1 - 1) // bm1) * bm1
+        pad_kz = Nkz_pad - Nkz if sharding.a0 is None else 0
+        pad_kx = Nkx_pad - Nkx if sharding.a1 is None else 0
+        if pad_kz or pad_kx:
+            pad = [(0, 0), (0, 0), (0, pad_kz), (0, pad_kx)]
+            Li = jnp.pad(Li, pad)
+            Ui = jnp.pad(Ui, pad)
         return cls(L=Li, U=Ui)
 
     def solve(self, rhs: Array, component_axis: int = 0) -> Array:

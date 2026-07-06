@@ -114,6 +114,12 @@ def zeropad_fft(a: Array, n: int, axis: int, out_shard) -> Array:
     Inserts zeros between the positive and negative Fourier modes,
     reinstating the (previously omitted) Nyquist mode as zero.  This is
     the spectral-space equivalent of interpolation to a finer grid.
+    Built as a single ``concatenate`` of the two kept slices around a
+    zeros block (one output write pass, mirroring :func:`truncate_fft`;
+    the zero-init + two scatter passes it replaces wrote the padded
+    array roughly twice).  The padded axis is locally stored in the
+    stage where each pad happens, so the zeros block created with
+    *out_shard* concatenates without a reshard.
 
     Parameters
     ----------
@@ -126,7 +132,7 @@ def zeropad_fft(a: Array, n: int, axis: int, out_shard) -> Array:
     axis:
         Axis along which to pad (0 for y, 1 for z).
     out_shard:
-        Partition spec for the output array.
+        Partition spec for the zeros block (and thus the output).
     """
     if axis not in (0, 1):
         raise ValueError(f"axis must be 0 or 1; got {axis}.")
@@ -136,24 +142,18 @@ def zeropad_fft(a: Array, n: int, axis: int, out_shard) -> Array:
     if (n - N) % 2 != 0:
         raise ValueError(f"Difference (n - N) = {n - N} cannot be odd.")
 
-    out_shape = list(a.shape)
-    out_shape[axis] = n
-    out = jnp.zeros(shape=out_shape, dtype=a.dtype, out_sharding=out_shard)
+    mid_shape = list(a.shape)
+    mid_shape[axis] = n - N + 1  # inserted zeros incl. the Nyquist slot
+    mid = jnp.zeros(shape=mid_shape, dtype=a.dtype, out_sharding=out_shard)
 
-    idx_in = [slice(None)] * 3
-    idx_out = [slice(None)] * 3
-
-    # positive modes
-    idx_in[axis] = slice(None, N // 2)
-    idx_out[axis] = slice(None, N // 2)
-    out = out.at[tuple(idx_out)].set(a[tuple(idx_in)])
-
-    # negative modes (skip the Nyquist modes)
-    idx_in[axis] = slice(N // 2, None)
-    idx_out[axis] = slice(n - N // 2 + 1, None)
-    out = out.at[tuple(idx_out)].set(a[tuple(idx_in)])
-
-    return out
+    idx_pos = [slice(None)] * 3
+    idx_neg = [slice(None)] * 3
+    # positive modes; negative modes (the Nyquist slot is in ``mid``)
+    idx_pos[axis] = slice(None, N // 2)
+    idx_neg[axis] = slice(N // 2, None)
+    return jnp.concatenate(
+        [a[tuple(idx_pos)], mid, a[tuple(idx_neg)]], axis=axis
+    )
 
 
 def truncate_fft(a: Array, n: int, axis: int) -> Array:
@@ -197,22 +197,22 @@ def zeropad_rfft(a: Array, n: int, out_shard) -> Array:
     """Zero-pad a real-FFT spectral array along axis 2 (kx) to *n* modes.
 
     Unlike ``zeropad_fft``, only positive frequencies exist in a real FFT,
-    so padding simply appends zeros at the high-frequency end.
+    so padding simply appends a zeros block at the high-frequency end
+    (single ``concatenate``, one output write pass -- see
+    :func:`zeropad_fft`; the kx axis is locally stored in this pipeline
+    stage).
     """
     axis = 2
     N = a.shape[axis]
     if n < N:
         raise ValueError(f"Target mode count {n} is smaller than input {N}.")
+    if n == N:
+        return a
 
-    out_shape = list(a.shape)
-    out_shape[axis] = n
-    out = jnp.zeros(shape=out_shape, dtype=a.dtype, out_sharding=out_shard)
-
-    idx = [slice(None)] * 3
-    idx[axis] = slice(None, N)
-    out = out.at[tuple(idx)].set(a)
-
-    return out
+    tail_shape = list(a.shape)
+    tail_shape[axis] = n - N
+    tail = jnp.zeros(shape=tail_shape, dtype=a.dtype, out_sharding=out_shard)
+    return jnp.concatenate([a, tail], axis=axis)
 
 
 def truncate_rfft(a: Array, n: int) -> Array:

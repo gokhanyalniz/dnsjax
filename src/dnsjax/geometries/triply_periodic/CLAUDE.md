@@ -7,7 +7,7 @@
 ### Key differences from wall-bounded
 
 - Helmholtz inversion is algebraic (pointwise multiply by `ildt_2`) -- no matrix solves. See `TriplyPeriodicFlow.__post_init__` docstring.
-- Divergence correction is a separate post-step projection, not built into an IMM. Two-stage enforcement: inside `_get_rhs` (pressure Poisson) and after time stepping (`correct_divergence`). See `correct_divergence` docstring.
+- Divergence correction is a two-stage projection, not built into an IMM: inside `_get_rhs` (pressure Poisson) and post-step (`correct_divergence` + mean-mode zeroing, fused into every stepper via `make_stepper`'s `finalize_fn` -- `_finalize_state`, no separate per-step dispatch). See the `correct_divergence` docstring.
 - Spectral layout: `(ny-1, nz_spec, nx_spec)` with `[ky, kz, kx]` -- ky fully local, kz sharded by np0, kx sharded by np1.
 
 ### Parallelization (double decomposition)

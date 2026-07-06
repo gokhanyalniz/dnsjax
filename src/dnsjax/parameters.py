@@ -531,22 +531,38 @@ class Termination(BaseModel):
 
 
 class Solver(BaseModel):
-    """Linear algebraic solver configurations."""
+    """Numerical-kernel execution configuration.
 
+    Linear-solver backends (banded / dense / pallas) and
+    pseudo-spectral transform batching.  These knobs select *how* the
+    numerics are executed (speed / memory trade-offs), never the
+    results.
+    """
+
+    # ``"pallas"`` (default): one-program-per-mode sequential banded
+    # sweep via a Pallas/Triton kernel (GPU) -- the single-GPU
+    # throughput target *and* the smallest operator storage
+    # (``O(N_y p)`` banded factors per mode; storage ordering:
+    # pallas < banded < dense).  Uses a no-pivot banded LU, falling
+    # back per operator group to the pivoted ``"banded"`` (SPIKE)
+    # solver when unstable or when ``pallas_force_pivoting`` is set
+    # (see ``solvers.py``).  Implemented for all wall-bounded
+    # geometries (cartesian, cylindrical, annular); the operators are
+    # assembled directly in banded storage by each geometry's
+    # ``_build_{Lk,Hk}_band_gpu`` via the shared
+    # ``solvers._assemble_banded_operator`` helper.  Caveats: on CPU
+    # the same banded math runs as a sequential pure-JAX sweep (the
+    # correctness oracle, slower than SPIKE -- set ``"banded"`` for
+    # CPU-heavy production work), and multi-device **GPU** validation
+    # of the Pallas call is still pending (multi-device CPU is
+    # test-covered) -- prefer ``"banded"`` for multi-GPU production
+    # until then.
     # ``"banded"``: SPIKE block-partitioned solver (memory-efficient,
-    # exploits the known stencil bandwidth of D1, D2).
+    # exploits the known stencil bandwidth of D1, D2; pivoted, robust
+    # on every platform and device count).
     # ``"dense"``: full ``Ny x Ny`` LU factors per Fourier mode
-    # (legacy path, kept for verification against the banded path).
-    # ``"pallas"``: one-program-per-mode sequential banded sweep via a
-    # Pallas/Triton kernel (GPU); CPU runs the same banded math in pure
-    # JAX.  Uses a no-pivot banded LU, falling back per operator group
-    # to the pivoted ``"banded"`` (SPIKE) solver when unstable or when
-    # ``pallas_force_pivoting`` is set (see ``solvers.py``).  Implemented
-    # for all wall-bounded geometries (cartesian, cylindrical, annular);
-    # the operators are assembled directly in banded storage by each
-    # geometry's ``_build_{Lk,Hk}_band_gpu`` via the shared
-    # ``solvers._assemble_banded_operator`` helper.
-    backend: Literal["banded", "dense", "pallas"] = "banded"
+    # (legacy path, kept for verification against the banded paths).
+    backend: Literal["banded", "dense", "pallas"] = "pallas"
     # ``"pallas"`` backend only: force the pivoted SPIKE fallback for
     # every operator group instead of the no-pivot banded LU.  Default
     # ``False`` decides per group from a setup-time stability residual
@@ -557,10 +573,13 @@ class Solver(BaseModel):
     # Fourier modes, vectorising the banded sweep across the tile).  ``1``
     # is one program per mode; ``> 1`` coalesces mode loads and fills more
     # SIMD lanes.  The default ``2`` is the H100 tuning (4 warps/program
-    # with ``k = 2``).  Partial boundary tiles are padded to full tiles
-    # inside the kernel (a masked partial-tile band load miscompiles on
-    # real Triton -- see ``solvers._pallas_banded_solve``).  Must be a
-    # power of two.
+    # with ``k = 2``).  The mode plane is padded up to whole tiles (a
+    # masked partial-tile band load miscompiles on real Triton -- see
+    # ``solvers._pallas_banded_solve``): factors once at construction,
+    # the RHS per solve.  The padded modes cost memory and solve work
+    # proportional to the roundup fraction -- negligible at DNS mode
+    # counts, but worth shrinking the tile for when the plane is small
+    # relative to it (e.g. ``nx/2 < 32``).  Must be a power of two.
     pallas_block_m0: int = Field(ge=1, default=2)
     # ``"pallas"`` backend only: Pallas mode-tile size along the
     # contiguous ``k_x`` mode axis (the innermost, coalesced axis).  The
@@ -599,6 +618,19 @@ class Solver(BaseModel):
     # respective memory-optimal partitions (p = 4).  Set ``True``
     # for memory-tight runs.
     block_thomas: bool = False
+    # Chunk count for the batched inverse transform of the fused
+    # viscoelastic RHS (~36 fields; see ``_get_rhs_core`` in
+    # ``geometries/wall_bounded/annular_viscoelastic.py``).  ``1``
+    # (default): one fused batch -- throughput-optimal (one FFT
+    # dispatch and one reshard round per pipeline stage).  ``k > 1``
+    # splits the batch into ``k`` balanced groups, cutting the
+    # transform-stage transient (the padded intermediate buffers,
+    # which dominate a viscoelastic step's peak memory) by ~``k`` at
+    # the cost of ``k``x the FFT dispatches (and ``k`` smaller
+    # reshard rounds per stage on multi-device runs).  Results are
+    # identical (per-field transforms are independent).  Ignored by
+    # the 3-velocity-component flows, whose 6-field batch is small.
+    rhs_transform_chunks: int = Field(ge=1, default=1)
 
 
 class Parameters(BaseModel):
