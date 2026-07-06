@@ -29,12 +29,31 @@ profile) stays tiny, the corrector still converges (``err``
 total energy is near-steady.  Its azimuthal ``CFL_th`` is the active
 column (radial / axial are roundoff).
 
+Viscoelastic-dean (total-field, 9-component) has its own branch: at
+`$\\epsilon = \\kappa = 0$` the analytical laminar velocity + sPTT
+equilibrium conformation pair is the *exact* discrete fixed point, so
+``E'`` stays tiny, the corrector converges (its error floor sits at FD
+truncation, `$O(10^{-10})$`, not roundoff, because the conformation
+carries magnitude `$O(10)$` -- hence a relaxed error threshold), the
+polymer energy balance `$I \\approx D_s - W_p$` holds, the energy is
+near-steady, and ``steps.dat`` carries the extra ``TrC_max`` column.
+
+Caveat: the laminar state has ``u' = 0``, so every `$\\omega'$`/
+`$u'$`-proportional term vanishes -- this checks the base-flow fixed
+point, time stepping, and the CFL diagnostic, but **not** the
+rotational nonlinear term (a wrong ``rhs.py``/advection change can
+still report ``err = 0``); ``tests/test_random_smoke.py`` drives that
+path.
+
 Each system is tested in a separate subprocess because the
 geometry modules capture global singletons at import time.
 Each subprocess runs in its own temporary directory, so
 ``stats.dat`` / ``steps.dat`` / ``corrector.dat`` are per-system
 (and the repo's ``parameters.toml`` is not loaded; the smoke runs
-use the parameter-model defaults plus the CLI arguments).
+use the parameter-model defaults plus the CLI arguments).  Every
+entry passes ``--stop.check_laminarization False``: the laminar
+``E'`` `$\\approx 10^{-32}$` would otherwise trip the default
+laminarization check and terminate the run immediately.
 
 Usage (single device)::
 

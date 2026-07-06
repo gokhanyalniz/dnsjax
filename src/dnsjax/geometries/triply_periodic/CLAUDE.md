@@ -25,4 +25,11 @@ See `fft.py` module docstring for the full reshard pipeline. `np0` requires `ny_
 
 ### Tests
 
-`tests/test_random_smoke.py` exercises Kolmogorov time integration from a random IC (the family's first automated stepping test; it caps `dt` at 0.005 there, a corrector-rate limit). No operator-level unit tests yet; smoke-test the other periodic flows manually via `mpirun -np 1 python -m dnsjax --phys.system waleffe ...` (or `decaying-box`).
+Kolmogorov is stepped by `tests/test_random_smoke.py` (random-IC
+integration, incl. a cnab2 entry; `dt` capped at 0.005 there, a
+corrector-rate limit), `tests/test_cnab2.py` (the plain no-corrector
+AB2 path), and `tests/test_temporal_order.py` (the cnab2
+self-convergence study). No operator-level unit tests yet; smoke-test
+the other periodic flows manually via
+`mpirun -np 1 python -m dnsjax --phys.system waleffe ...` (or
+`decaying-box`).
