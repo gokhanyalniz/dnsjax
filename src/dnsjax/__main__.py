@@ -23,9 +23,10 @@ Execution phases
    the default), then iterate:
 
    - Fused predictor + corrector loop
-     (:func:`predict_and_fully_correct`)
-   - Divergence correction + mean-mode zeroing for
-     triply-periodic flows (:func:`correct_velocity`)
+     (:func:`predict_and_fully_correct`); for triply-periodic
+     flows the post-step divergence correction + mean-mode
+     zeroing is fused into the step itself (``finalize_fn`` in
+     :mod:`dnsjax.timestep`)
    - Periodic diagnostic output (:func:`get_stats`)
 
    The loop terminates when the simulation time, wall-clock
@@ -306,7 +307,6 @@ def main() -> None:
     # --- Flow dispatch -------------------------------------------------------
     if params.phys.system in periodic_systems:
         from .flows.triply_periodic.monochromatic import (
-            correct_velocity,
             get_perturbation_energy,
             get_stats,
             init_state,
@@ -913,10 +913,6 @@ def main() -> None:
                 corr_ts.clear()
                 corr_idx = 0
 
-        if params.phys.system in periodic_systems:
-            # Divergence correction and mean-mode zeroing
-            state = correct_velocity(state)
-
         t += params.step.dt
         it += 1
 
@@ -933,8 +929,8 @@ def main() -> None:
                 # Laminarization (relaminarization) trigger: stop once
                 # the perturbation kinetic energy E' falls below the
                 # threshold.  ``state`` here is the fully updated
-                # post-step field (post divergence-correction for
-                # periodic systems).
+                # post-step field (the periodic divergence correction
+                # is fused into the step itself).
                 #
                 # Future feature: a sharper relaminarization signal is
                 # the norm of the *complete* RHS (Laplacian included)

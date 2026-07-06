@@ -225,7 +225,7 @@ derived params; (3) create `flows/<family>/X.py` exporting
 `predict_and_fully_correct`, `predict_and_fully_correct_measured`,
 `step_cnab2`, `step_cnab2_measured`, `init_state`, `get_stats`,
 `get_perturbation_energy` (the cheap `E'` read for the laminarization
-check; periodic flows also export `correct_velocity`); (4) add an
+check); (4) add an
 `elif` to the flow dispatch in `__main__.py`; (5) add SYSTEMS entries
 to `tests/test_laminar_smoke.py` (a flow without a perturbation `E'`
 needs its own check branch) and `tests/test_random_smoke.py` (pick a
@@ -330,6 +330,22 @@ changed `u_grid` on resume is trajectory-defining. Detail: the
 `sharding.py` registers geometry dataclasses, flow subclasses, solver
 classes, and Fourier classes as JAX pytrees. See its docstring.
 
+**Performance/memory trade-offs** (detail lives in the owning
+docstrings/comments): operator storage & GPU speed order pallas <
+banded < dense (`solver.backend` comments in `parameters.py`); SPIKE
+reduced-system memory vs latency (`solver.block_thomas` /
+`spike_block_size` comments, `scripts/spike_partition_info.py`);
+Pallas whole-tile mode-plane padding — factors pre-padded once at
+construction, overhead matters only for small planes
+(`from_banded_factors` in `solvers.py`, `pallas_block_m0` comments);
+the viscoelastic 36-field RHS transform batch vs peak memory
+(`solver.rhs_transform_chunks`; `_get_rhs_core` in
+`annular_viscoelastic.py`); cnab2 is a throughput win, not a
+peak-memory one (`step_cnab2` docstring in `timestep.py`); the
+dominant global memory multipliers are `phys.oversampling_factor`
+(dealiased grid, ~2.25x physical points at the default 3) and
+`res.double_precision` (2x).
+
 ### Parameter layering
 
 Lowest priority first: defaults (Pydantic models) -> parameters
@@ -359,7 +375,7 @@ the schemes, `Solver` for the Pallas knobs). Key fields:
 | `[step]`   | `dt`, `scheme` (`"iterative-cn"` / `"cnab2"`, both supported for every flow), `implicitness`, `corrector_tolerance`, `max_corrector_iterations`, `implicit_mean_coupling` |
 | `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601), `check_laminarization` (default on; terminate when `E'` < `laminarization_threshold`, default `1e-9`) |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
-| `[solver]` | `backend` (`"banded"` / `"dense"` / `"pallas"`), `pallas_force_pivoting`, `pallas_block_m0`/`m1` (mode tile, default 2/32), `pallas_stability_tol`, `pallas_num_warps`/`pallas_num_stages`, `spike_block_size`, `block_thomas` |
+| `[solver]` | `backend` (`"pallas"` default / `"banded"` / `"dense"`; `banded` recommended for CPU-heavy or multi-GPU work until multi-GPU Pallas is validated), `pallas_force_pivoting`, `pallas_block_m0`/`m1` (mode tile, default 2/32), `pallas_stability_tol`, `pallas_num_warps`/`pallas_num_stages`, `spike_block_size`, `block_thomas`, `rhs_transform_chunks` (viscoelastic RHS memory knob) |
 
 The default `parameters.toml` contains only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`; `[dist]` and

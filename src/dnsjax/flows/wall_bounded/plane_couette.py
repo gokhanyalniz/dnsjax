@@ -14,10 +14,11 @@ It also exports the flow interface consumed by ``__main__``:
 - ``init_state`` -- initial state from a snapshot or laminar
 - ``get_stats`` -- diagnostic statistics
 
-Unlike the triply-periodic interface, no ``correct_velocity`` is
-exported: the influence-matrix method enforces `$\\nabla \\cdot
-\\mathbf{u} = 0$` and the no-slip wall BCs exactly at every time
-step, so no separate divergence projection is required.
+The influence-matrix method enforces `$\\nabla \\cdot \\mathbf{u}
+= 0$` and the no-slip wall BCs exactly at every time step, so no
+post-step divergence projection is fused into the stepper here
+(the triply-periodic geometry fuses one via ``make_stepper``'s
+*finalize_fn*).
 
 Base flow
 ---------

@@ -20,7 +20,9 @@
   (3 velocity + 6 conformation-tensor **spin** components, the tensor
   analogue of `u_± = u_r ± i u_θ`); the tensor Laplacian diagonalises
   per spin (`m_eff = m + s`), each diffusing through a scalar
-  Helmholtz solve (`Hc`); one fused pseudo-spectral RHS; both schemes
+  Helmholtz solve (`Hc`); one fused pseudo-spectral RHS
+  (`solver.rhs_transform_chunks` splits its 36-field inverse
+  transform to cap peak memory; see `_get_rhs_core`); both schemes
   supported (FFT-free viscoelastic `_l_bf`). Spin diagonalisation,
   state layout, reality structure, cnab2 split: module docstring.
 
