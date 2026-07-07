@@ -58,6 +58,13 @@ visible):
                         (band reads + stores + window combined).
   * ``full``         -- the real ``_pallas_banded_solve`` (set via
                         ``params.solver.pallas_*``).
+  * ``full_vmap_shared`` -- the real solve **vmapped over an RHS
+                        component axis with unmapped (shared) factor
+                        refs**, the Cartesian shared-``Hk`` dispatch
+                        (``in_axes=(None, None, 0)``): the one
+                        production ``pallas_call`` batching pattern no
+                        other probe or geometry exercises on a padded
+                        partial plane.
 """
 
 from __future__ import annotations
@@ -228,7 +235,7 @@ def _build_probe(name, dims, bm0, bm1, num_warps, interpret=False):
     serves both execute and ``lower``); ``ref_np`` is the NumPy truth.
     """
     N, p, k, Nkz, Nkx = dims
-    if name == "full":
+    if name in ("full", "full_vmap_shared"):
         # Set the probe's tile *before* building the inputs:
         # ``from_banded_factors`` pads the stored factors to the
         # ``params`` tile, so setting it only afterwards left the
@@ -369,6 +376,28 @@ def _build_probe(name, dims, bm0, bm1, num_warps, interpret=False):
         x = np.linalg.solve(d["A"], d["base_b"])
         return fn, (d["Lp"], d["Up"], b), _scaled(x, d["scale"])
 
+    if name == "full_vmap_shared":
+        # The Cartesian shared-``Hk`` dispatch: ONE operator vmapped
+        # over the RHS component axis (``.solve``'s
+        # ``in_axes=(None, None, 0)`` branch) -- the only production
+        # pattern that batches ``pallas_call`` with **unmapped** factor
+        # refs.  Stacked geometries (pipe/annular) map the factors too,
+        # so on a padded partial plane this composition runs nowhere
+        # else on real Triton; it is the prime suspect for a
+        # Cartesian-only cross-backend divergence at ``nx = 34``
+        # (``Nkx = 17 -> 32``).
+        def fn(L_, U_, b3_):
+            return jax.vmap(
+                lambda bb: _pallas_banded_solve(
+                    L_, U_, bb, p, interpret=interpret
+                )
+            )(b3_)
+
+        b3 = jnp.stack([b, 2.0 * b, -0.5 * b])
+        x = _scaled(np.linalg.solve(d["A"], d["base_b"]), d["scale"])
+        ref = np.stack([x, 2.0 * x, -0.5 * x])
+        return fn, (d["Lp"], d["Up"], b3), ref
+
     raise ValueError(f"unknown probe {name}")
 
 
@@ -398,9 +427,11 @@ PROBES = [
     "roundtrip_bar",
     "forward_only",
     "full",
+    "full_vmap_shared",
 ]
 
-# Probes that must pass at every config: the real solve (`full`, which pads
+# Probes that must pass at every config: the real solve (`full` and its
+# shared-operator vmap dispatch `full_vmap_shared`, both of which pad
 # the plane to whole tiles) and the trivial baselines (copy/round-trip
 # survive partial tiles -- lane-local, no cross-lane mixing).
 MUST_PASS = frozenset(
@@ -411,6 +442,7 @@ MUST_PASS = frozenset(
         "roundtrip_nobar",
         "roundtrip_bar",
         "full",
+        "full_vmap_shared",
     }
 )
 # Probes that run the raw Triton partial-tile bug WITHOUT padding, so they

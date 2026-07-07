@@ -62,6 +62,10 @@ interpreter as `.venv/bin/python` directly (`uv run` does not compose
 with `mpirun`). A run writes `stats.dat`/`steps.dat` (and any
 snapshots) to the cwd, so launch manual smoke/debug runs from a
 scratch dir, using the absolute path to the repo's `.venv/bin/python`.
+`np0 * np1` counts devices, not processes: on a multi-GPU node a
+single process can address all GPUs (validated topology; launch
+recipe, SLURM discipline, and the per-task-visibility trap are in the
+`Distribution` docstring in `parameters.py`).
 
 `mpirun -np 2 python -m dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
 

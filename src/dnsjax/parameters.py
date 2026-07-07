@@ -83,6 +83,41 @@ class Distribution(BaseModel):
     uses finite differences, not spectral Chebyshev
     transforms, and the Clenshaw--Curtis quadrature handles
     both even and odd ``ny``.
+
+    Process topology
+    ----------------
+    ``np0 * np1`` counts *devices*, not processes: the mesh
+    only requires ``jax.device_count() == np0 * np1``, so a
+    multi-GPU run may be one process per device (the usual
+    ``mpirun``/``srun -n N`` launch) **or a single process
+    addressing all devices** -- launch one task with
+    ``JAX_LOCAL_DEVICE_IDS=0,1,...`` spanning the GPUs
+    (overrides the SLURM one-device-per-task heuristic),
+    e.g. ``srun -n 1 --overlap`` inside a 4-GPU allocation
+    with ``JAX_LOCAL_DEVICE_IDS=0,1,2,3 --dist.np0 2
+    --dist.np1 2``.  Both topologies produce identical
+    global meshes, trajectories, and snapshots (resume is
+    np-agnostic), and both are validated on real multi-GPU
+    hardware (``scripts/solver_benchmark.py``, 2026-07).
+    The single-process form avoids cross-process NCCL
+    entirely -- the reliable choice on single-node
+    allocations whose multi-process collective stack is
+    broken (observed: JAX 0.10.2 + NCCL 2.30 H100 nodes
+    hang in the first execution of a large multi-collective
+    program while every small-program collective works).
+    Multi-node runs necessarily remain multi-process; use
+    one task per node spanning that node's GPUs.
+
+    In multi-process launches, never narrow per-task GPU
+    visibility (SLURM ``--gpus-per-task`` and the like):
+    NCCL's cuMem cross-process P2P import requires the peer
+    device to be visible to the importing process and fails
+    hard otherwise (``ncclP2pImportShareableBuffer ...
+    Cuda failure 101 'invalid device ordinal'``).  Leave
+    every job GPU visible to every task and select the
+    per-task device explicitly (``JAX_LOCAL_DEVICE_IDS``;
+    JAX's SLURM detection uses ``[SLURM_LOCALID]`` by
+    default, which is correct under full visibility).
     """
 
     np0: int = Field(ge=1, default=1)
