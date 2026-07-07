@@ -526,6 +526,13 @@ def main() -> None:
         _worker(args.worker)
         return
 
+    print(
+        "CN/AB2 scheme guards: offline, 1 forced CPU device per system "
+        "(structural jaxpr / split checks; device-agnostic, no GPU "
+        "path -- real GPU runs use `python -m dnsjax --dist.platform "
+        "cuda`).",
+        flush=True,
+    )
     systems = [args.system] if args.system else SYSTEMS
     for system in systems:
         print(f"=== {system} ===", flush=True)

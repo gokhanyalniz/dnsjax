@@ -83,6 +83,41 @@ class Distribution(BaseModel):
     uses finite differences, not spectral Chebyshev
     transforms, and the Clenshaw--Curtis quadrature handles
     both even and odd ``ny``.
+
+    Process topology
+    ----------------
+    ``np0 * np1`` counts *devices*, not processes: the mesh
+    only requires ``jax.device_count() == np0 * np1``, so a
+    multi-GPU run may be one process per device (the usual
+    ``mpirun``/``srun -n N`` launch) **or a single process
+    addressing all devices** -- launch one task with
+    ``JAX_LOCAL_DEVICE_IDS=0,1,...`` spanning the GPUs
+    (overrides the SLURM one-device-per-task heuristic),
+    e.g. ``srun -n 1 --overlap`` inside a 4-GPU allocation
+    with ``JAX_LOCAL_DEVICE_IDS=0,1,2,3 --dist.np0 2
+    --dist.np1 2``.  Both topologies produce identical
+    global meshes, trajectories, and snapshots (resume is
+    np-agnostic), and both are validated on real multi-GPU
+    hardware (``scripts/solver_benchmark.py``, 2026-07).
+    The single-process form avoids cross-process NCCL
+    entirely -- the reliable choice on single-node
+    allocations whose multi-process collective stack is
+    broken (observed: JAX 0.10.2 + NCCL 2.30 H100 nodes
+    hang in the first execution of a large multi-collective
+    program while every small-program collective works).
+    Multi-node runs necessarily remain multi-process; use
+    one task per node spanning that node's GPUs.
+
+    In multi-process launches, never narrow per-task GPU
+    visibility (SLURM ``--gpus-per-task`` and the like):
+    NCCL's cuMem cross-process P2P import requires the peer
+    device to be visible to the importing process and fails
+    hard otherwise (``ncclP2pImportShareableBuffer ...
+    Cuda failure 101 'invalid device ordinal'``).  Leave
+    every job GPU visible to every task and select the
+    per-task device explicitly (``JAX_LOCAL_DEVICE_IDS``;
+    JAX's SLURM detection uses ``[SLURM_LOCALID]`` by
+    default, which is correct under full visibility).
     """
 
     np0: int = Field(ge=1, default=1)
@@ -705,6 +740,71 @@ def read_parameters(path: Path) -> Parameters:
     with open(path, "rb") as f:
         raw = tomllib.load(f)
     return Parameters(**raw)
+
+
+# ── Single-process JAX platform selection (scripts / offline tests) ──
+# ``python -m dnsjax`` configures the JAX backend from ``dist.platform``
+# in ``__main__`` (alongside ``jax.distributed.initialize`` and the
+# CPU-threading ``XLA_FLAGS``).  Diagnostic scripts and offline tests are
+# single-process and do the same platform/precision half through these
+# two helpers, so ``--dist.platform cuda`` selects the GPU from any entry
+# point -- not only the production one.
+
+_VALID_PLATFORMS: tuple[str, ...] = ("cpu", "cuda", "rocm", "tpu")
+
+
+def platform_from_argv(
+    argv: list[str] | None = None, default: str = "cpu"
+) -> str:
+    """Extract ``--dist.platform`` from *argv* (default ``sys.argv``).
+
+    A single-process script or offline test must know its JAX backend
+    *before* importing :mod:`dnsjax.sharding` or any geometry module
+    (which capture the platform at import), i.e. before its own
+    ``argparse`` runs.  This does a minimal early parse of the same
+    ``--dist.platform`` flag ``python -m dnsjax`` accepts -- both
+    ``--dist.platform cuda`` and ``--dist.platform=cuda`` -- and returns
+    *default* when it is absent (unknown flags are ignored).  Pair it
+    with :func:`configure_jax_platform`.
+    """
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--dist.platform", dest="platform", default=default)
+    known, _ = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
+    return known.platform
+
+
+def configure_jax_platform(
+    platform: str, *, double_precision: bool = True
+) -> None:
+    """Select the JAX backend for a single-process script or offline test.
+
+    Records *platform* on :data:`params` (``params.dist.platform``) and
+    configures JAX for the platform/precision exactly as
+    ``python -m dnsjax`` does, **minus** the multi-process
+    ``jax.distributed.initialize`` and the CPU-threading ``XLA_FLAGS``
+    that only the production entry point needs.  Must be called *before*
+    importing :mod:`dnsjax.sharding` or any geometry module.
+
+    After this, :data:`sharding` reports the active device unambiguously
+    (its banner reads the live device, so a stale ``params.dist.platform``
+    can no longer contradict it), and ``--dist.platform cuda`` (via
+    :func:`platform_from_argv`) runs the real Pallas / Triton kernels on a
+    GPU from any script or test, not just ``python -m dnsjax``.
+    """
+    if platform not in _VALID_PLATFORMS:
+        raise ValueError(
+            f"unknown platform {platform!r}; expected one of "
+            f"{_VALID_PLATFORMS}"
+        )
+    params.dist.platform = platform
+
+    import jax
+
+    jax.config.update("jax_enable_x64", double_precision)
+    jax.config.update("jax_platforms", platform)
 
 
 # Parameters that must be known to configure JAX *before* a snapshot is

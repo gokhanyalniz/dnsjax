@@ -40,18 +40,23 @@ Run as a script via ``uv run python tests/test_banded_solver.py``.
 
 from __future__ import annotations
 
-# Enable float64 *before* any JAX array is created; otherwise JAX
-# silently downcasts to float32 and the comparisons below fail.
-import jax  # noqa: E402
+# Select the JAX backend from --dist.platform (default cpu) and enable
+# float64 *before* importing any dnsjax module that captures the platform
+# (``sharding.Sharding`` does so at class-definition time) or creating any
+# JAX array (float64 avoids a silent float32 downcast that fails the
+# comparisons below).  ``--dist.platform cuda`` then executes the real
+# Pallas kernels on a GPU.
+from dnsjax.parameters import (
+    configure_jax_platform,
+    params,
+    platform_from_argv,
+)
 
-jax.config.update("jax_enable_x64", True)
+configure_jax_platform(platform_from_argv())
 
 # Mutate global ``params`` before importing any dnsjax module that
-# captures values from it (``sharding.Sharding`` does so at class
-# definition time).  Ny = 16 allows a genuine multi-block SPIKE
+# captures values from it.  Ny = 16 allows a genuine multi-block SPIKE
 # partition (P = 2, m = 8) at fd_order = 4.
-from dnsjax.parameters import params  # noqa: E402
-
 params.phys.system = "plane-couette"
 params.res.nx = 4
 params.res.ny = 16
@@ -59,6 +64,7 @@ params.res.nz = 4
 params.res.fd_order = 4
 params.res.double_precision = True
 
+import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
@@ -373,6 +379,45 @@ def test_pallas_cuda_lowering() -> None:
         jax.set_mesh(orig_mesh)
         params.solver.pallas_block_m0 = orig_bm[0]
         params.solver.pallas_block_m1 = orig_bm[1]
+
+
+def test_pallas_cuda_lowering_sharded_solve() -> None:
+    """The full ``.solve`` shard_map region lowers for cuda
+    (compile-only, no GPU).
+
+    Forces the Pallas-kernel branch (``solvers._force_kernel_path``) so
+    tracing on a CPU box reaches ``pallas_call`` *inside* the ``.solve``
+    ``shard_map`` -- the composition ``test_pallas_cuda_lowering`` above
+    cannot cover (it calls the kernel standalone), and where trace-time
+    rules differ: under shard_map's default ``check_vma=True`` the
+    kernel's ``ShapeDtypeStruct`` out-shape must carry a
+    ``manual_axis_type`` or tracing raises.  That failure mode crashed
+    every real-GPU pallas run at flow construction while the whole CPU
+    suite stayed green (the CPU branch never calls ``pallas_call``);
+    ``.solve`` now opts out via ``check_vma=False`` (the region is
+    communication-free).  This guards the composition end to end --
+    stored pre-padded factors, complex re/im split, live Explicit mesh.
+    """
+    import dnsjax.solvers as solvers_mod
+
+    Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
+    p, Ny = 4, 16
+    A = _make_random_banded(Ny, p, seed=21)
+    op = _pallas_op_from_dense(A, p, Nkz, Nkx)
+    rng = np.random.default_rng(22)
+    bc = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
+    rhs = jnp.tile(jnp.asarray(bc)[:, None, None], (1, Nkz, Nkx))
+
+    solvers_mod._force_kernel_path = True
+    try:
+        lowered = (
+            jax.jit(lambda r: op.solve(r))
+            .trace(rhs)
+            .lower(lowering_platforms=("cuda",))
+        )
+        assert "triton" in lowered.as_text().lower()
+    finally:
+        solvers_mod._force_kernel_path = False
 
 
 def test_pallas_stacked_operators() -> None:

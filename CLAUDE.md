@@ -62,6 +62,10 @@ interpreter as `.venv/bin/python` directly (`uv run` does not compose
 with `mpirun`). A run writes `stats.dat`/`steps.dat` (and any
 snapshots) to the cwd, so launch manual smoke/debug runs from a
 scratch dir, using the absolute path to the repo's `.venv/bin/python`.
+`np0 * np1` counts devices, not processes: on a multi-GPU node a
+single process can address all GPUs (validated topology; launch
+recipe, SLURM discipline, and the per-task-visibility trap are in the
+`Distribution` docstring in `parameters.py`).
 
 `mpirun -np 2 python -m dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
 
@@ -154,7 +158,9 @@ __main__.py           Entry point: import-order enforcement, stats
                       buffering, snapshot resume/lineage
 parameters.py         Pydantic parameter models; singletons params,
                       derived_params, padded_res;
-                      trajectory_defining_changes
+                      trajectory_defining_changes;
+                      configure_jax_platform/platform_from_argv
+                      (single-process --dist.platform for scripts/tests)
 sharding.py           Multi-device (np0, np1) mesh; singleton sharding;
                       register_dataclass_pytree; layouts + specs
 operators.py          Wavenumber helpers (re-exports harmonics.py in
@@ -461,6 +467,16 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
 - A `dt` / resolution / `params` sweep needs a **subprocess per
   value**: they are captured into the singletons and jitted steppers
   at import/trace time (the `test_*` subprocess-per-config idiom).
+- Diagnostic scripts and offline / in-process tests select the JAX
+  backend from `--dist.platform` (default cpu) via
+  `configure_jax_platform` / `platform_from_argv` (`parameters.py`),
+  called before importing `sharding` or any geometry module -- so
+  `... --dist.platform cuda` runs the real Pallas kernels on a GPU, not
+  only `python -m dnsjax`. The `sharding` banner reports the live
+  device, so it can never contradict the hardware; in-process
+  multi-device tests force CPU (`--xla_force_host_platform_device_count`
+  is CPU-only) and real multi-GPU runs use `mpirun`
+  (`test_random_smoke.py --np`).
 - Pallas/Triton GPU kernels: interpret mode (CPU) validates numerics
   but **not** Triton's lowering restrictions; compile-check on the
   GPU-less dev box with
@@ -468,7 +484,12 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
   restrictions, layout rules, and the partial-tile miscompile (pad
   tiled arrays to whole tiles) are documented in the
   `_pallas_banded_solve` docstring; `test_pallas_cuda_lowering` is the
-  regression guard.
+  regression guard. A `pallas_call` **inside a shard_map** additionally
+  needs `check_vma=False` (its out-shape carries no varying-mesh-axes
+  annotation) -- a trace-time, GPU-branch-only failure; guard such
+  compositions by forcing the kernel branch
+  (`solvers._force_kernel_path`) and cuda-lowering on CPU
+  (`test_pallas_cuda_lowering_sharded_solve`).
 
 ## Scripts
 
@@ -488,6 +509,19 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
 - `scripts/pallas_solve_profile.py`: GPU diagnostic for where the
   Pallas banded solve's time goes (profiled the matvec transpose
   sources).
+- `scripts/solver_benchmark.py`: solver-backend bake-off
+  (pallas/banded/dense step + solve timing, factor and peak memory,
+  cross-backend parity) plus multi-GPU Pallas correctness validation
+  via mpirun runs and JAX-free `dnsjax.analysis` snapshot diffs;
+  `--cpu-bench` CPU backend timing, `--cpu-smoke` GPU-less harness
+  self-check. Data source for the SPIKE-retirement gates.
+- `scripts/pivot_stability_survey.py`: CPU survey of the no-pivot
+  banded-LU residual per operator group across the supported config
+  space -- does any real configuration trigger the pivoted SPIKE
+  fallback? (Finding: only near-singular-Poisson *conditioning* on
+  the smallest-nonzero-`k²` `Lk` mode crosses the tolerance -- huge
+  boxes / large `ny` / strong tanh stretch -- not pivot instability;
+  pivoting gains only ~8x there.)
 
 ## Tests
 
