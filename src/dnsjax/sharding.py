@@ -163,9 +163,24 @@ class Sharding:
             )
         sys.exit(1)
 
+    # Report the *actual* device platform / kind read from the
+    # initialised backend, not the requested ``params.dist.platform``:
+    # once JAX is configured the two agree, and reading the live device
+    # means this banner can never contradict the hardware (the old
+    # "1 cpu devices ... cuda:0" arose when a script left
+    # ``params.dist.platform`` at its default while JAX auto-selected a
+    # GPU).  The requested platform is shown alongside so any genuine
+    # mismatch stays visible instead of being hidden.  ``Device.platform``
+    # is 'cpu'/'gpu'/'tpu' ('gpu' for a CUDA device); the device reprs and
+    # ``device_kind`` below name the concrete hardware.
+    actual_platform: str = devices[0].platform if devices else "?"
+    device_kind: str = (
+        getattr(devices[0], "device_kind", "?") if devices else "?"
+    )
     print(
-        f"Working with {n_devices} {params.dist.platform} devices"
-        f" (np0={np0}, np1={np1}):",
+        f"Working with {n_devices} '{actual_platform}' device(s) "
+        f"[{device_kind}] (requested platform "
+        f"'{params.dist.platform}', np0={np0}, np1={np1}):",
         *devices,
         flush=True,
     )

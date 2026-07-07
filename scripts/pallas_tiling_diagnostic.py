@@ -58,21 +58,35 @@ visible):
                         (band reads + stores + window combined).
   * ``full``         -- the real ``_pallas_banded_solve`` (set via
                         ``params.solver.pallas_*``).
+  * ``full_vmap_shared`` -- the real solve **vmapped over an RHS
+                        component axis with unmapped (shared) factor
+                        refs**, the Cartesian shared-``Hk`` dispatch
+                        (``in_axes=(None, None, 0)``): the one
+                        production ``pallas_call`` batching pattern no
+                        other probe or geometry exercises on a padded
+                        partial plane.
 """
 
 from __future__ import annotations
 
 import argparse
 
-import jax
+from dnsjax.parameters import (
+    configure_jax_platform,
+    params,
+    platform_from_argv,
+)
 
-jax.config.update("jax_enable_x64", True)
+# Select the JAX backend from --dist.platform (default cpu) BEFORE
+# importing any dnsjax module that captures it (sharding / solvers), so
+# ``... --dist.platform cuda`` executes the probes on a real GPU and the
+# device banner is unambiguous.  It is parsed early here (before this
+# script's own argparse) and re-declared in ``main`` for --help.
+configure_jax_platform(platform_from_argv())
 
 # Mutate the global params singleton before importing any dnsjax module
-# that captures it (sharding / solvers).  A small wall-bounded system is
-# enough -- the probes build their own arrays.
-from dnsjax.parameters import params  # noqa: E402
-
+# that captures it.  A small wall-bounded system is enough -- the probes
+# build their own arrays.
 params.phys.system = "plane-couette"
 params.res.nx = 4
 params.res.ny = 16
@@ -80,6 +94,7 @@ params.res.nz = 4
 params.res.fd_order = 4
 params.res.double_precision = True
 
+import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from jax import lax  # noqa: E402
@@ -87,7 +102,6 @@ from jax.experimental import pallas as pl  # noqa: E402
 from jax.experimental.pallas import triton as pltriton  # noqa: E402
 
 from dnsjax.solvers import (  # noqa: E402
-    PerModeBandedPallasOperator,
     _banded_factor,
     _banded_from_dense,
     _pallas_banded_solve,
@@ -147,14 +161,36 @@ def _build_inputs(N, p, k, Nkz, Nkx, seed=0):
     band = _banded_from_dense(
         jnp.tile(jnp.asarray(A)[None, None], (Nkz, Nkx, 1, 1)), p
     )
-    op = PerModeBandedPallasOperator.from_banded_factors(*_banded_factor(band))
+    # Kernel-layout factors as **plain local arrays** -- the uncommitted
+    # equivalent of ``from_banded_factors``, whose shard_map commits its
+    # result to the Explicit mesh: interpret mode's indexed-store
+    # discharge rejects committed operands whenever the grid needs
+    # internal padding (partial planes), and this script probes the
+    # *local* kernel by design (single device, kernel-local arrays --
+    # the unit tests' ``_mode_inner_factors`` pattern).  ``L``/``U`` are
+    # at the **true** mode plane: the micro-probes' partial tiles must
+    # come from the probe grid itself (that is what they demonstrate),
+    # and their NumPy references broadcast against the true-plane ``b``
+    # (construction-padded factors here raised shape errors in the
+    # ``bcast_*`` references on partial planes).  ``Lp``/``Up`` add the
+    # whole-``(bm0, bm1)``-tile zero pad -- the stored-factor form the
+    # real solve keeps -- for the ``full`` probe.
+    Lo, Uo = _banded_factor(band)
+    Li = jnp.moveaxis(Lo, (-2, -1), (0, 1))
+    Ui = jnp.moveaxis(Uo, (-2, -1), (0, 1))
+    Ui = Ui.at[:, 0].set(1.0 / Ui[:, 0])
+    bm0 = params.solver.pallas_block_m0
+    bm1 = params.solver.pallas_block_m1
+    fac_pad = [(0, 0), (0, 0), (0, -Nkz % bm0), (0, -Nkx % bm1)]
     return {
         "A": A,
         "base_b": base_b,
         "scale": scale,
         "b": jnp.asarray(b_np),
-        "L": op.L,
-        "U": op.U,
+        "L": Li,
+        "U": Ui,
+        "Lp": jnp.pad(Li, fac_pad),
+        "Up": jnp.pad(Ui, fac_pad),
     }
 
 
@@ -199,8 +235,20 @@ def _build_probe(name, dims, bm0, bm1, num_warps, interpret=False):
     serves both execute and ``lower``); ``ref_np`` is the NumPy truth.
     """
     N, p, k, Nkz, Nkx = dims
+    if name in ("full", "full_vmap_shared"):
+        # Set the probe's tile *before* building the inputs:
+        # ``from_banded_factors`` pads the stored factors to the
+        # ``params`` tile, so setting it only afterwards left the
+        # factors padded for the *previous* config's tile (a smaller
+        # runtime tile then drove the solve's fallback factor pad
+        # negative -- the ``full (1, 1)`` partial-plane crash on the
+        # cluster; the solve now also grows such factors instead of
+        # raising, see ``_pallas_banded_solve``).
+        params.solver.pallas_block_m0 = bm0
+        params.solver.pallas_block_m1 = bm1
+        params.solver.pallas_num_warps = num_warps
     d = _build_inputs(N, p, k, Nkz, Nkx)
-    b, L, U = d["b"], d["L"], d["U"]
+    b, L = d["b"], d["L"]
     out_shape = (N, k, Nkz, Nkx)
 
     def runner(kernel, inputs):
@@ -319,15 +367,36 @@ def _build_probe(name, dims, bm0, bm1, num_warps, interpret=False):
         return fn, inputs, _scaled(y, d["scale"])
 
     if name == "full":
-        params.solver.pallas_block_m0 = bm0
-        params.solver.pallas_block_m1 = bm1
-        params.solver.pallas_num_warps = num_warps
-
+        # The params tile was set before ``_build_inputs`` (above), so
+        # the stored padded factors match this config; pass them (the
+        # production form) rather than the true-plane slices.
         def fn(L_, U_, b_):
             return _pallas_banded_solve(L_, U_, b_, p, interpret=interpret)
 
         x = np.linalg.solve(d["A"], d["base_b"])
-        return fn, (L, U, b), _scaled(x, d["scale"])
+        return fn, (d["Lp"], d["Up"], b), _scaled(x, d["scale"])
+
+    if name == "full_vmap_shared":
+        # The Cartesian shared-``Hk`` dispatch: ONE operator vmapped
+        # over the RHS component axis (``.solve``'s
+        # ``in_axes=(None, None, 0)`` branch) -- the only production
+        # pattern that batches ``pallas_call`` with **unmapped** factor
+        # refs.  Stacked geometries (pipe/annular) map the factors too,
+        # so on a padded partial plane this composition runs nowhere
+        # else on real Triton; it is the prime suspect for a
+        # Cartesian-only cross-backend divergence at ``nx = 34``
+        # (``Nkx = 17 -> 32``).
+        def fn(L_, U_, b3_):
+            return jax.vmap(
+                lambda bb: _pallas_banded_solve(
+                    L_, U_, bb, p, interpret=interpret
+                )
+            )(b3_)
+
+        b3 = jnp.stack([b, 2.0 * b, -0.5 * b])
+        x = _scaled(np.linalg.solve(d["A"], d["base_b"]), d["scale"])
+        ref = np.stack([x, 2.0 * x, -0.5 * x])
+        return fn, (d["Lp"], d["Up"], b3), ref
 
     raise ValueError(f"unknown probe {name}")
 
@@ -358,9 +427,11 @@ PROBES = [
     "roundtrip_bar",
     "forward_only",
     "full",
+    "full_vmap_shared",
 ]
 
-# Probes that must pass at every config: the real solve (`full`, which pads
+# Probes that must pass at every config: the real solve (`full` and its
+# shared-operator vmap dispatch `full_vmap_shared`, both of which pad
 # the plane to whole tiles) and the trivial baselines (copy/round-trip
 # survive partial tiles -- lane-local, no cross-lane mixing).
 MUST_PASS = frozenset(
@@ -371,6 +442,7 @@ MUST_PASS = frozenset(
         "roundtrip_nobar",
         "roundtrip_bar",
         "full",
+        "full_vmap_shared",
     }
 )
 # Probes that run the raw Triton partial-tile bug WITHOUT padding, so they
@@ -433,6 +505,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--quick", action="store_true", help="short sweep")
     ap.add_argument(
+        "--dist.platform",
+        dest="platform",
+        default="cpu",
+        choices=["cpu", "cuda", "rocm", "tpu"],
+        help="JAX backend (default cpu; already applied at import via "
+        "platform_from_argv).  Use cuda to execute the probes on a GPU.",
+    )
+    ap.add_argument(
         "--interpret",
         action="store_true",
         help="run probes in Pallas interpret mode on CPU (validates the "
@@ -485,7 +565,12 @@ def main() -> None:
                         probe, dims, bm0, bm1, nw, interpret
                     )
                 except Exception as e:  # noqa: BLE001
+                    # A probe that cannot even be constructed is a
+                    # harness regression regardless of expectations.
                     print(f"{tag} -> BUILD_ERROR: {type(e).__name__}: {e}")
+                    regs[probe] += 1
+                    if first_reg is None:
+                        first_reg = tag
                     continue
                 try:
                     if execute:
@@ -520,7 +605,21 @@ def main() -> None:
                 except Exception as e:  # noqa: BLE001
                     kind = "RUNTIME_ERROR" if execute else "LOWERING_ERROR"
                     msg = str(e).replace("\n", " ")[:160]
-                    print(f"{tag} -> {kind}: {type(e).__name__}: {msg}")
+                    # A crash is an acceptable manifestation of the raw
+                    # partial-tile bug for a bug-demo probe (XFAIL);
+                    # anywhere else it is a regression -- errors must
+                    # not silently drop out of the verdict tally.
+                    if execute and _expected_fail(probe, mlabel):
+                        xfails[probe] += 1
+                        print(
+                            f"{tag} -> XFAIL({kind}): "
+                            f"{type(e).__name__}: {msg}"
+                        )
+                    else:
+                        regs[probe] += 1
+                        if first_reg is None:
+                            first_reg = tag
+                        print(f"{tag} -> {kind}: {type(e).__name__}: {msg}")
 
     if execute:
         _summary(xfails, regs, runs, first_reg, results, modes, tiles)

@@ -29,16 +29,19 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import jax
-
-jax.config.update("jax_enable_x64", True)
-
+# Select the JAX backend from --dist.platform (default cpu) before the
+# geometry import below builds sharding.  --dist.platform cuda runs the
+# Pallas band-vs-dense parity on a GPU.
 from dnsjax.parameters import (  # noqa: E402
     Parameters,
+    configure_jax_platform,
     padded_res,
     params,
+    platform_from_argv,
     update_parameters,
 )
+
+configure_jax_platform(platform_from_argv())
 
 update_parameters(
     Parameters(
@@ -54,6 +57,7 @@ update_parameters(
 )
 padded_res.set_padded_resolution(params)
 
+import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402

@@ -94,7 +94,12 @@ def main() -> None:
     block_thomas = args.block_thomas
     n_ops = args.n_operators
 
-    print(f"\nResolution: nx={args.nx}, ny={Ny}, nz={args.nz}")
+    print(
+        "\nSPIKE partition calculator "
+        "(pure arithmetic; device-independent, no JAX -- "
+        "no --dist.platform needed)."
+    )
+    print(f"Resolution: nx={args.nx}, ny={Ny}, nz={args.nz}")
     print(f"Fourier modes: Nkz={Nkz}, Nkx={Nkx} ({n_modes} total)")
     print(f"FD order (half-bandwidth): p={p}")
     print(f"Precision: {args.precision} ({bpe} bytes/element, real factors)")

@@ -450,9 +450,17 @@ CFL_ZERO_TOL = 1e-12  # roundoff-sized perturbation columns
 
 
 def _build_command(
-    system_args: list[str], np_count: int, np0: int = 1
+    system_args: list[str],
+    np_count: int,
+    np0: int = 1,
+    platform: str = "cpu",
 ) -> list[str]:
-    """Build the subprocess command for a single system."""
+    """Build the subprocess command for a single system.
+
+    *platform* is forwarded as ``--dist.platform`` so the whole suite
+    can run on a GPU (``--dist.platform cuda``); with ``--np N`` this is
+    ``mpirun -np N`` processes, one device each.
+    """
     base = [
         "mpirun",
         "-np",
@@ -460,6 +468,8 @@ def _build_command(
         sys.executable,
         "-m",
         "dnsjax",
+        "--dist.platform",
+        platform,
         "--dist.np0",
         str(np0),
         "--dist.np1",
@@ -778,10 +788,12 @@ def _check_viscoelastic_dean(stdout: str, name: str) -> tuple[float, float]:
 # ── test runner ──────────────────────────────────────────────────────
 
 
-def run_smoke_test(system: dict, np_count: int, np0: int = 1) -> None:
+def run_smoke_test(
+    system: dict, np_count: int, np0: int = 1, platform: str = "cpu"
+) -> None:
     """Run a single laminar smoke test (in a fresh directory)."""
     name = system["name"]
-    cmd = _build_command(system["args"], np_count, np0)
+    cmd = _build_command(system["args"], np_count, np0, platform)
 
     with tempfile.TemporaryDirectory(prefix=f"smoke_{name}_") as workdir:
         result = subprocess.run(
@@ -857,13 +869,29 @@ if __name__ == "__main__":
         default=1,
         help="np0 mesh axis (wall-normal / kz split)",
     )
+    parser.add_argument(
+        "--dist.platform",
+        dest="platform",
+        default="cpu",
+        choices=["cpu", "cuda", "rocm", "tpu"],
+        help="JAX backend forwarded to each `python -m dnsjax` child "
+        "(default cpu).  Use cuda to run the suite on GPU(s).",
+    )
     args = parser.parse_args()
+
+    print(
+        f"Laminar smoke tests on platform '{args.platform}' via "
+        f"mpirun -np {args.np} (np0={args.np0}, "
+        f"np1={args.np // args.np0}); each child prints its own device "
+        "banner.",
+        flush=True,
+    )
 
     passed = 0
     failed = 0
     for system in SYSTEMS:
         try:
-            run_smoke_test(system, args.np, args.np0)
+            run_smoke_test(system, args.np, args.np0, args.platform)
             passed += 1
         except (AssertionError, subprocess.TimeoutExpired) as exc:
             print(f"  FAIL  {system['name']}: {exc}")

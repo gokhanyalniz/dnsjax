@@ -255,6 +255,12 @@ def main() -> None:
         _worker(args.worker, args.scheme, args.dt, args.out)
         return
 
+    print(
+        "Temporal-order guards: offline, 1 forced CPU device per "
+        "(system, scheme, dt) (device-agnostic convergence checks; no "
+        "GPU path).",
+        flush=True,
+    )
     studies = [args.study] if args.study else STUDIES
     with tempfile.TemporaryDirectory() as tmp:
         tdir = Path(tmp)

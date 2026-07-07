@@ -18,11 +18,18 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import jax
+# Select the JAX backend from --dist.platform (default cpu) and enable
+# float64 before importing any dnsjax module that captures the platform
+# (sharding does so at import).  ``--dist.platform cuda`` runs the Pallas
+# band-vs-dense parity on a GPU.
+from dnsjax.parameters import (  # noqa: E402
+    configure_jax_platform,
+    derived_params,
+    params,
+    platform_from_argv,
+)
 
-jax.config.update("jax_enable_x64", True)
-
-from dnsjax.parameters import derived_params, params  # noqa: E402
+configure_jax_platform(platform_from_argv())
 
 params.phys.system = "plane-couette"
 params.res.nx = 4
@@ -31,6 +38,7 @@ params.res.nz = 4
 params.res.fd_order = 4
 params.res.double_precision = True
 
+import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402

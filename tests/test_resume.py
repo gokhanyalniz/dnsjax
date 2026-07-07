@@ -211,6 +211,11 @@ def _snap_indices(workdir: str) -> list[int]:
     return sorted(out)
 
 
+# JAX backend for the mpirun integration children; set from
+# --dist.platform in __main__ (cuda runs the resume integration on a GPU).
+_PLATFORM = "cpu"
+
+
 def _run_dnsjax(
     workdir: str, extra_args: list[str], timeout: float
 ) -> subprocess.CompletedProcess:
@@ -222,6 +227,8 @@ def _run_dnsjax(
         sys.executable,
         "-m",
         "dnsjax",
+        "--dist.platform",
+        _PLATFORM,
         "--dist.np0",
         "1",
         "--dist.np1",
@@ -400,7 +407,24 @@ if __name__ == "__main__":
         default=300.0,
         help="Per-run subprocess timeout in seconds",
     )
+    parser.add_argument(
+        "--dist.platform",
+        dest="platform",
+        default="cpu",
+        choices=["cpu", "cuda", "rocm", "tpu"],
+        help="JAX backend for the mpirun integration children "
+        "(default cpu; cuda runs the resume integration on a GPU).",
+    )
     cli = parser.parse_args()
+    _PLATFORM = cli.platform
+
+    if not cli.unit_only:
+        print(
+            f"Resume integration on platform '{_PLATFORM}' via "
+            "mpirun -np 1; each child prints its own device banner. "
+            "(Offline units are device-independent.)",
+            flush=True,
+        )
 
     passed = failed = 0
     offline = [run_unit_checks(), run_grid_validation_checks()]

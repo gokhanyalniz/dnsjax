@@ -126,6 +126,12 @@ def _worker(system: str, nx: int, nz: int, np0: int, np1: int) -> None:
 
 
 def main() -> None:
+    print(
+        "mean-mask padding tests: offline, forced CPU devices per case "
+        "(multiple devices via --xla_force_host_platform_device_count; "
+        "device-agnostic, no GPU path).",
+        flush=True,
+    )
     for label, system, nx, nz, np0, np1 in CASES:
         proc = subprocess.run(
             [

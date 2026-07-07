@@ -282,6 +282,13 @@ def main() -> int:
         _generate(args.gen[0], args.gen[1])
         return 0
 
+    print(
+        "Snapshot-export API tests: offline, 1 forced CPU device per "
+        "system (the analysis API is JAX-free; device-independent, no "
+        "GPU path).",
+        flush=True,
+    )
+
     # The import-time JAX-free guarantee: importing the API in this
     # process must not pull in JAX.
     import dnsjax.analysis  # noqa: F401

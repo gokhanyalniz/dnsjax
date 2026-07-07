@@ -27,16 +27,19 @@ Run as a script via ``uv run python tests/test_viscoelastic.py``.
 
 from __future__ import annotations
 
-import jax
-
-jax.config.update("jax_enable_x64", True)
-
+# Select the JAX backend from --dist.platform (default cpu) before the
+# geometry import below builds sharding.  --dist.platform cuda runs the
+# Pallas / SPIKE Hc parity on a GPU.
 from dnsjax.parameters import (  # noqa: E402
     Parameters,
+    configure_jax_platform,
     padded_res,
     params,
+    platform_from_argv,
     update_parameters,
 )
+
+configure_jax_platform(platform_from_argv())
 
 # Module config: viscoelastic-dean with epsilon = kappa = 0 (the exact
 # discrete laminar fixed point, test 3) and a modest Weissenberg number.
@@ -64,6 +67,7 @@ update_parameters(
 )
 padded_res.set_padded_resolution(params)
 
+import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402

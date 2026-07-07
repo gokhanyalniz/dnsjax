@@ -1650,9 +1650,16 @@ def _pallas_banded_solve(
     # to this plane at construction** (``from_banded_factors``), so only
     # the per-call RHS is padded here; factors from a direct caller that
     # are still at the true plane take the same pad as a fallback.  The
-    # result is cropped back to the RHS's ``(Nkz, Nkx)``.
-    Nkz_pad = ((Nkz + bm0 - 1) // bm0) * bm0
-    Nkx_pad = ((Nkx + bm1 - 1) // bm1) * bm1
+    # kernel plane is the whole-tile roundup of the **larger** of the
+    # RHS's true plane and the stored factor plane: factors padded at
+    # construction under a *different* (larger) tile than the runtime
+    # one are grown, never shrunk (a negative ``jnp.pad`` raises) --
+    # their extra rows are valid zero-solving padded modes either way.
+    # The result is cropped back to the RHS's ``(Nkz, Nkx)``.
+    Nkz_need = max(Nkz, L.shape[2])
+    Nkx_need = max(Nkx, L.shape[3])
+    Nkz_pad = ((Nkz_need + bm0 - 1) // bm0) * bm0
+    Nkx_pad = ((Nkx_need + bm1 - 1) // bm1) * bm1
     if (L.shape[2], L.shape[3]) != (Nkz_pad, Nkx_pad):
         fac_pad = [
             (0, 0),
@@ -1749,6 +1756,16 @@ def _pallas_banded_solve(
     return out[:, :, :Nkz, :Nkx]
 
 
+# Test-only override: force :func:`_banded_mode_solve` onto the Pallas
+# kernel branch while tracing on a CPU-only box (the branch condition is
+# trace-time Python).  Lets the CPU test suite *lower* the
+# ``shard_map(pallas_call)`` composition for cuda -- the composition
+# whose trace-time failures (e.g. the ``check_vma`` out-shape rule) are
+# otherwise reachable only on a real GPU, because the CPU branch never
+# calls ``pallas_call``.  See ``test_pallas_cuda_lowering_sharded_solve``.
+_force_kernel_path: bool = False
+
+
 def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     r"""Solve one mode-inner banded operator over a ``(Nkz, Nkx)`` block.
 
@@ -1778,7 +1795,7 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     """
     p = L.shape[1]
     is_complex = jnp.iscomplexobj(rhs)
-    if jax.default_backend() == "gpu":
+    if _force_kernel_path or jax.default_backend() == "gpu":
         if is_complex:
             # (N, Nkz, Nkx) complex -> (N, k, Nkz, Nkx) real, re/im on
             # axis 1: already the kernel layout, no transpose.
@@ -1976,11 +1993,24 @@ class PerModeBandedPallasOperator:
         # the result, for either component_axis.
         fac_spec = P(*(None,) * (self.L.ndim - 2), sharding.a0, sharding.a1)
         rhs_spec = P(*(None,) * (rhs.ndim - 2), sharding.a0, sharding.a1)
+        # ``check_vma=False``: under the default varying-mesh-axes
+        # checking, ``pl.pallas_call``'s ``ShapeDtypeStruct`` out-shape
+        # inside a shard_map must carry a ``manual_axis_type``
+        # annotation, or tracing raises -- a GPU-only failure (the CPU
+        # branch never reaches ``pallas_call``), first hit on the real
+        # cluster.  The body is communication-free (independent
+        # per-mode solves on local blocks), so the check guards
+        # nothing here, and disabling it keeps ``_pallas_banded_solve``
+        # callable both inside this region and standalone (where no
+        # mesh axes exist to annotate).  Regression guard:
+        # ``test_pallas_cuda_lowering_sharded_solve`` (forces the
+        # kernel branch and lowers this region for cuda on CPU).
         return shard_map(
             _local,
             mesh=sharding.mesh,
             in_specs=(fac_spec, fac_spec, rhs_spec),
             out_specs=rhs_spec,
+            check_vma=False,
         )(self.L, self.U, rhs)
 
 

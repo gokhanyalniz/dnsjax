@@ -632,6 +632,13 @@ if __name__ == "__main__":
         )
         sys.exit(0)
 
+    print(
+        "Snapshot round-trip tests: offline, forced CPU device(s) "
+        "(multiple devices via --xla_force_host_platform_device_count; "
+        "the GDS/GPU I/O path is not unit-tested here).",
+        flush=True,
+    )
+
     passed = failed = 0
     for case in CASES:
         if run_case(*case):
