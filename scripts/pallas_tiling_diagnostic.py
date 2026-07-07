@@ -64,15 +64,22 @@ from __future__ import annotations
 
 import argparse
 
-import jax
+from dnsjax.parameters import (
+    configure_jax_platform,
+    params,
+    platform_from_argv,
+)
 
-jax.config.update("jax_enable_x64", True)
+# Select the JAX backend from --dist.platform (default cpu) BEFORE
+# importing any dnsjax module that captures it (sharding / solvers), so
+# ``... --dist.platform cuda`` executes the probes on a real GPU and the
+# device banner is unambiguous.  It is parsed early here (before this
+# script's own argparse) and re-declared in ``main`` for --help.
+configure_jax_platform(platform_from_argv())
 
 # Mutate the global params singleton before importing any dnsjax module
-# that captures it (sharding / solvers).  A small wall-bounded system is
-# enough -- the probes build their own arrays.
-from dnsjax.parameters import params  # noqa: E402
-
+# that captures it.  A small wall-bounded system is enough -- the probes
+# build their own arrays.
 params.phys.system = "plane-couette"
 params.res.nx = 4
 params.res.ny = 16
@@ -80,6 +87,7 @@ params.res.nz = 4
 params.res.fd_order = 4
 params.res.double_precision = True
 
+import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from jax import lax  # noqa: E402
@@ -432,6 +440,14 @@ def _print_env() -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--quick", action="store_true", help="short sweep")
+    ap.add_argument(
+        "--dist.platform",
+        dest="platform",
+        default="cpu",
+        choices=["cpu", "cuda", "rocm", "tpu"],
+        help="JAX backend (default cpu; already applied at import via "
+        "platform_from_argv).  Use cuda to execute the probes on a GPU.",
+    )
     ap.add_argument(
         "--interpret",
         action="store_true",

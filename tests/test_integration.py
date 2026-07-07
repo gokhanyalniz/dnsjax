@@ -19,11 +19,17 @@ Run as a script via ``uv run python tests/test_integration.py``.
 
 from __future__ import annotations
 
-import jax
+# Select the JAX backend from --dist.platform (default cpu) before
+# importing any dnsjax module that captures the platform (the geometry
+# import below builds sharding).  This suite is quadrature / interpolation
+# math -- device-agnostic -- but honours --dist.platform for consistency.
+from dnsjax.parameters import (  # noqa: E402
+    configure_jax_platform,
+    params,
+    platform_from_argv,
+)
 
-jax.config.update("jax_enable_x64", True)
-
-from dnsjax.parameters import params  # noqa: E402
+configure_jax_platform(platform_from_argv())
 
 params.phys.system = "plane-couette"
 params.res.nx = 4

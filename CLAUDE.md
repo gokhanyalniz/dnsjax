@@ -154,7 +154,9 @@ __main__.py           Entry point: import-order enforcement, stats
                       buffering, snapshot resume/lineage
 parameters.py         Pydantic parameter models; singletons params,
                       derived_params, padded_res;
-                      trajectory_defining_changes
+                      trajectory_defining_changes;
+                      configure_jax_platform/platform_from_argv
+                      (single-process --dist.platform for scripts/tests)
 sharding.py           Multi-device (np0, np1) mesh; singleton sharding;
                       register_dataclass_pytree; layouts + specs
 operators.py          Wavenumber helpers (re-exports harmonics.py in
@@ -461,6 +463,16 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
 - A `dt` / resolution / `params` sweep needs a **subprocess per
   value**: they are captured into the singletons and jitted steppers
   at import/trace time (the `test_*` subprocess-per-config idiom).
+- Diagnostic scripts and offline / in-process tests select the JAX
+  backend from `--dist.platform` (default cpu) via
+  `configure_jax_platform` / `platform_from_argv` (`parameters.py`),
+  called before importing `sharding` or any geometry module -- so
+  `... --dist.platform cuda` runs the real Pallas kernels on a GPU, not
+  only `python -m dnsjax`. The `sharding` banner reports the live
+  device, so it can never contradict the hardware; in-process
+  multi-device tests force CPU (`--xla_force_host_platform_device_count`
+  is CPU-only) and real multi-GPU runs use `mpirun`
+  (`test_random_smoke.py --np`).
 - Pallas/Triton GPU kernels: interpret mode (CPU) validates numerics
   but **not** Triton's lowering restrictions; compile-check on the
   GPU-less dev box with

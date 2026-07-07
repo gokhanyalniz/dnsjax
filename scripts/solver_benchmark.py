@@ -214,19 +214,23 @@ def _make_complex(jax, shape, seed, sharding, spec):
 
 def run_child(a: argparse.Namespace) -> None:
     """One (system, backend, resolution) measurement, single device."""
-    import jax
-
-    jax.config.update("jax_enable_x64", True)
-
-    import jaxlib
-
     from dnsjax.parameters import (
         Parameters,
+        configure_jax_platform,
         padded_res,
         params,
         update_parameters,
         validate_parameters,
     )
+
+    # Select the backend explicitly (the driver passes --platform;
+    # CUDA_VISIBLE_DEVICES / JAX_PLATFORMS in the child env still pin the
+    # concrete device) so the child's sharding banner and
+    # params.dist.platform match the hardware it actually runs on.
+    configure_jax_platform(a.platform)
+
+    import jax
+    import jaxlib
 
     params.phys.system = a.system
     for dotted, v in SYS_ARGS[a.system].items():
@@ -471,6 +475,10 @@ def _spawn_child(
     ]
     if bm is not None:
         cmd += ["--bm0", str(bm[0]), "--bm1", str(bm[1])]
+    # The section's env carries the platform: JAX_PLATFORMS=cpu for the
+    # CPU sections, otherwise a GPU pinned via CUDA_VISIBLE_DEVICES.  Pass
+    # it through explicitly so the child records the right platform.
+    cmd += ["--platform", env_extra.get("JAX_PLATFORMS", "cuda")]
     env = dict(os.environ)
     env.update(env_extra)
     t0 = time.perf_counter()
@@ -1333,6 +1341,14 @@ def main() -> None:
     # child flags
     ap.add_argument("--system", choices=sorted(SYS_ARGS))
     ap.add_argument("--backend", choices=BACKENDS, default="pallas")
+    # Child JAX backend, set by the driver from the section's env
+    # (JAX_PLATFORMS=cpu for the CPU sections, cuda otherwise).
+    ap.add_argument(
+        "--platform",
+        default="cpu",
+        choices=["cpu", "cuda", "rocm", "tpu"],
+        help=argparse.SUPPRESS,
+    )
     ap.add_argument("--nx", type=int, default=64)
     ap.add_argument("--ny", type=int, default=48)
     ap.add_argument("--nz", type=int, default=64)

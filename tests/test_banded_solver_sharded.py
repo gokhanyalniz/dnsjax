@@ -187,6 +187,13 @@ def test_sharded_stacked_component_axes() -> None:
 # ── Runner ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    print(
+        "Sharded Pallas banded-solve tests: offline, 4 forced CPU "
+        "devices simulating a (2, 2) mesh (the device banner above is "
+        "CPU by design; real multi-GPU kernel execution is the "
+        "cluster-validation item -- see the module docstring).",
+        flush=True,
+    )
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     for t in tests:
         t()

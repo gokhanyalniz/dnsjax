@@ -54,6 +54,7 @@ jax.config.update("jax_enable_x64", True)
 
 from dnsjax.parameters import (  # noqa: E402
     Parameters,
+    configure_jax_platform,
     padded_res,
     params,
     update_parameters,
@@ -612,7 +613,19 @@ def main() -> None:
         default=None,
         help="file to append the full optimized HLO to",
     )
+    ap.add_argument(
+        "--dist.platform",
+        dest="platform",
+        default="cpu",
+        choices=["cpu", "cuda", "rocm", "tpu"],
+        help="JAX backend (default cpu).  Use cuda to run the profile on "
+        "a real GPU (Parts A/B need real hardware).",
+    )
     args = ap.parse_args()
+
+    # Select the backend before importing any geometry / sharding module
+    # (they capture the platform at import, all deferred into main here).
+    configure_jax_platform(args.platform)
 
     _configure_system(args.system, args.ny, args.nx, args.nz, args.fd_order)
     geom = _geom_module(args.system)

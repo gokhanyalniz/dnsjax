@@ -297,6 +297,12 @@ def main() -> None:
         system = sys.argv[sys.argv.index("--system") + 1]
         sys.exit(_run_one(system))
 
+    print(
+        "snapshot_import native-contract tests: offline, "
+        "device-independent (native layout/normalisation checks; no "
+        "GPU path).",
+        flush=True,
+    )
     failures = 0
     for system in SYSTEMS:
         print(f"=== {system} ===")

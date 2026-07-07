@@ -415,6 +415,12 @@ def main() -> None:
         a = p.parse_args()
         sys.exit(_run_worker(a.system, a.np0, a.np1, a.out))
 
+    print(
+        "Localized-rolls construction self-test: offline, forced CPU "
+        "devices (device-count independence is the property under test; "
+        "no GPU path).",
+        flush=True,
+    )
     failures = 0
     for system in SYSTEMS:
         if not _run_system(system):

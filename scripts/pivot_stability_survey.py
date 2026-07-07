@@ -205,18 +205,19 @@ def run_child(a: argparse.Namespace) -> None:
     import contextlib
     import io
 
-    import jax
-
-    # x64 before any dnsjax module creates arrays.
-    jax.config.update("jax_enable_x64", True)
-
     from dnsjax.parameters import (
         Parameters,
+        configure_jax_platform,
         padded_res,
         params,
         update_parameters,
         validate_parameters,
     )
+
+    # CPU-only survey (no-pivot-LU conditioning; no time stepping, no
+    # GPU kernels).  The parent also pins JAX_PLATFORMS=cpu in the child
+    # env; this records it on params and sets x64 before any array.
+    configure_jax_platform("cpu")
 
     cfg = _child_config(a)
 

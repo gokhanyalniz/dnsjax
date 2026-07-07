@@ -167,6 +167,8 @@ def _build_command(
         sys.executable,
         "-m",
         "dnsjax",
+        "--dist.platform",
+        args.platform,
         "--dist.np0",
         str(np0),
         "--dist.np1",
@@ -248,6 +250,14 @@ def _parse_args() -> argparse.Namespace:
         help="np0 mesh axis (wall-normal / kz split)",
     )
     parser.add_argument(
+        "--dist.platform",
+        dest="platform",
+        default="cpu",
+        choices=["cpu", "cuda", "rocm", "tpu"],
+        help="JAX backend forwarded to each `python -m dnsjax` child "
+        "(default cpu).  Use cuda to run the suite on GPU(s).",
+    )
+    parser.add_argument(
         "--res", type=int, default=32, help="Cubic resolution nx=ny=nz"
     )
     parser.add_argument("--max-sim-time", type=float, default=1.0)
@@ -282,6 +292,14 @@ if __name__ == "__main__":
         if unknown:
             print(f"Unknown system(s): {sorted(unknown)}")
             sys.exit(2)
+
+    print(
+        f"Localized-rolls smoke tests on platform '{args.platform}' via "
+        f"mpirun (default -np {args.np}, np0={args.np0}; the mpi-pad "
+        "entry forces its own device count).  Each child prints its own "
+        "device banner.",
+        flush=True,
+    )
 
     passed = 0
     failed = 0
