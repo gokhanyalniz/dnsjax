@@ -381,6 +381,45 @@ def test_pallas_cuda_lowering() -> None:
         params.solver.pallas_block_m1 = orig_bm[1]
 
 
+def test_pallas_cuda_lowering_sharded_solve() -> None:
+    """The full ``.solve`` shard_map region lowers for cuda
+    (compile-only, no GPU).
+
+    Forces the Pallas-kernel branch (``solvers._force_kernel_path``) so
+    tracing on a CPU box reaches ``pallas_call`` *inside* the ``.solve``
+    ``shard_map`` -- the composition ``test_pallas_cuda_lowering`` above
+    cannot cover (it calls the kernel standalone), and where trace-time
+    rules differ: under shard_map's default ``check_vma=True`` the
+    kernel's ``ShapeDtypeStruct`` out-shape must carry a
+    ``manual_axis_type`` or tracing raises.  That failure mode crashed
+    every real-GPU pallas run at flow construction while the whole CPU
+    suite stayed green (the CPU branch never calls ``pallas_call``);
+    ``.solve`` now opts out via ``check_vma=False`` (the region is
+    communication-free).  This guards the composition end to end --
+    stored pre-padded factors, complex re/im split, live Explicit mesh.
+    """
+    import dnsjax.solvers as solvers_mod
+
+    Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
+    p, Ny = 4, 16
+    A = _make_random_banded(Ny, p, seed=21)
+    op = _pallas_op_from_dense(A, p, Nkz, Nkx)
+    rng = np.random.default_rng(22)
+    bc = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
+    rhs = jnp.tile(jnp.asarray(bc)[:, None, None], (1, Nkz, Nkx))
+
+    solvers_mod._force_kernel_path = True
+    try:
+        lowered = (
+            jax.jit(lambda r: op.solve(r))
+            .trace(rhs)
+            .lower(lowering_platforms=("cuda",))
+        )
+        assert "triton" in lowered.as_text().lower()
+    finally:
+        solvers_mod._force_kernel_path = False
+
+
 def test_pallas_stacked_operators() -> None:
     """Stacked multi-component Pallas operator solves each component
     with its own factors."""

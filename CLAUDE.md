@@ -480,7 +480,12 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
   restrictions, layout rules, and the partial-tile miscompile (pad
   tiled arrays to whole tiles) are documented in the
   `_pallas_banded_solve` docstring; `test_pallas_cuda_lowering` is the
-  regression guard.
+  regression guard. A `pallas_call` **inside a shard_map** additionally
+  needs `check_vma=False` (its out-shape carries no varying-mesh-axes
+  annotation) -- a trace-time, GPU-branch-only failure; guard such
+  compositions by forcing the kernel branch
+  (`solvers._force_kernel_path`) and cuda-lowering on CPU
+  (`test_pallas_cuda_lowering_sharded_solve`).
 
 ## Scripts
 

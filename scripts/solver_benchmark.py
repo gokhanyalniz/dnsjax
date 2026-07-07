@@ -31,11 +31,25 @@ mpirun stdout is logged under ``{workdir}/logs``, results stream as
 run ends in summary tables plus a ``VERDICT`` section mapping the
 data onto the retirement gates.
 
-Run **on the GPU cluster** (single node, >= 1 GPU; 4 for the full
-mesh cases) and **paste the full stdout back**::
+Run **on the GPU cluster** from inside a single-node allocation with
+>= 1 GPU (4 for the full mesh cases) and generous **host** memory --
+the production-size children compile large XLA programs, and the
+observed SLURM cgroup OOM kills (exit -9) were host memory, not HBM;
+request e.g. ``--mem 64G`` or more.  Then **paste the full stdout
+back**::
 
+    salloc -N1 --gpus=4 --mem=64G ...        # or an sbatch wrapper
     .venv/bin/python scripts/solver_benchmark.py --max-gpus 4
     .venv/bin/python scripts/solver_benchmark.py --skip-mpi-timing
+
+The driver is a **single process**: do not fan it out
+(``srun -n 4 python ...`` runs four interleaved drivers fighting over
+the same GPU; surplus SLURM tasks now exit at startup).  The
+multi-process ``-m dnsjax`` runs are launched via ``--launcher``
+(default ``auto``: ``mpirun`` when on PATH, else ``srun -n N
+--overlap`` job steps inside the surrounding allocation;
+site-specific step flags go through ``--srun-args``, e.g.
+``--srun-args "--gpus-per-task=1"``).
 
 On a CPU node (or the dev laptop)::
 
@@ -53,6 +67,8 @@ import json
 import math
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -492,10 +508,12 @@ def _spawn_child(
             cwd=REPO,
         )
         stdout, stderr, rc = proc.stdout, proc.stderr, proc.returncode
+        timed_out = False
     except subprocess.TimeoutExpired as e:
         stdout = e.stdout if isinstance(e.stdout, str) else ""
         stderr = "TIMEOUT"
         rc = -1
+        timed_out = True
     _log(
         workdir,
         tag,
@@ -506,15 +524,22 @@ def _spawn_child(
         if line.startswith(RESULT_TAG):
             result = json.loads(line[len(RESULT_TAG) :])
     if result is None:
+        cfg = {
+            "system": entry["system"],
+            "backend": backend,
+            **{k: entry[k] for k in ("nx", "ny", "nz")},
+        }
+        if bm is not None:
+            cfg["bm0"], cfg["bm1"] = bm
         result = {
             "kind": "single",
             "status": "crash",
-            "config": {
-                "system": entry["system"],
-                "backend": backend,
-                **{k: entry[k] for k in ("nx", "ny", "nz")},
-            },
-            "error": f"exit {rc}, no result line",
+            "config": cfg,
+            "error": (
+                f"timeout after {args.child_timeout:.0f}s"
+                if timed_out
+                else f"exit {rc}, no result line"
+            ),
             "stderr_tail": stderr[-1200:],
         }
     result["entry"] = tag
@@ -530,15 +555,50 @@ def _sys_cli_flags(system: str) -> list[str]:
     return flags
 
 
+def _resolve_launcher(choice: str) -> str:
+    """Resolve ``--launcher auto`` to whichever launcher exists."""
+    if choice != "auto":
+        return choice
+    if shutil.which("mpirun"):
+        return "mpirun"
+    if shutil.which("srun"):
+        return "srun"
+    raise SystemExit(
+        "neither mpirun nor srun found on PATH; pass --launcher explicitly"
+    )
+
+
+def _launch_prefix(
+    n: int, args: argparse.Namespace, platform: str
+) -> list[str]:
+    """Multi-process launch prefix for one ``n``-process dnsjax run.
+
+    ``srun`` starts an ``n``-task job step inside the surrounding SLURM
+    allocation; ``--overlap`` lets the step share the allocation with
+    the driver's own step when the driver itself was launched via srun.
+    ``mpirun`` is the plain OpenMPI path (``--oversubscribe`` on CPU /
+    when requested).  Site-specific step flags (GPU binding, gres) go
+    through ``--srun-args``.
+    """
+    if args.launcher == "srun":
+        prefix = ["srun", "-n", str(n), "--overlap"]
+        if args.srun_args:
+            prefix += shlex.split(args.srun_args)
+        return prefix
+    prefix = ["mpirun"]
+    if args.oversubscribe or platform == "cpu":
+        prefix.append("--oversubscribe")
+    prefix += ["-np", str(n)]
+    return prefix
+
+
 def _run_mpi(
     run: dict, args: argparse.Namespace, workdir: Path, platform: str
 ) -> dict:
-    """One ``mpirun ... -m dnsjax`` run in its own scratch dir."""
+    """One multi-process ``-m dnsjax`` run in its own scratch dir."""
     n = run["np0"] * run["np1"]
-    cmd = ["mpirun"]
-    if args.oversubscribe or platform == "cpu":
-        cmd.append("--oversubscribe")
-    cmd += ["-np", str(n), str(PY), "-m", "dnsjax"]
+    cmd = _launch_prefix(n, args, platform)
+    cmd += [str(PY), "-m", "dnsjax"]
     cmd += ["--dist.platform", platform]
     cmd += ["--dist.np0", str(run["np0"]), "--dist.np1", str(run["np1"])]
     cmd += _sys_cli_flags(run["system"])
@@ -591,8 +651,10 @@ def _run_mpi(
             cwd=rundir,
         )
         stdout, stderr, rc = proc.stdout, proc.stderr, proc.returncode
+        timed_out = False
     except subprocess.TimeoutExpired:
         stdout, stderr, rc = "", "TIMEOUT", -1
+        timed_out = True
     _log(
         workdir,
         run["name"],
@@ -608,7 +670,11 @@ def _run_mpi(
         "rundir": str(rundir),
     }
     if rc != 0:
-        rec["error"] = f"exit {rc}"
+        rec["error"] = (
+            f"timeout after {args.mpi_timeout:.0f}s"
+            if timed_out
+            else f"exit {rc}"
+        )
         rec["stderr_tail"] = stderr[-1200:]
         _record(workdir, rec)
         return rec
@@ -736,6 +802,10 @@ def _single_device_section(
                             "config": {
                                 "system": entry["system"],
                                 "backend": "dense",
+                                **{
+                                    k: entry[k]
+                                    for k in ("nx", "ny", "nz", "fd_order")
+                                },
                             },
                             "error": (
                                 f"dense estimate {est:.1f} GB > budget "
@@ -1409,6 +1479,20 @@ def main() -> None:
     ap.add_argument("--skip-single", action="store_true")
     ap.add_argument("--skip-mpi", action="store_true")
     ap.add_argument("--skip-mpi-timing", action="store_true")
+    ap.add_argument(
+        "--launcher",
+        default="auto",
+        choices=["auto", "mpirun", "srun"],
+        help="multi-process launcher for the -m dnsjax runs "
+        "(auto: mpirun when on PATH, else srun job steps)",
+    )
+    ap.add_argument(
+        "--srun-args",
+        dest="srun_args",
+        default="",
+        help="extra flags for each srun step, e.g. "
+        '"--gpus-per-task=1" (site-specific binding/gres)',
+    )
     ap.add_argument("--oversubscribe", action="store_true")
     ap.add_argument("--cpu-smoke", action="store_true")
     ap.add_argument("--cpu-bench", action="store_true")
@@ -1428,12 +1512,35 @@ def main() -> None:
         run_child(a)
         return
 
+    # Duplicate-driver guard: `srun -n N python .../solver_benchmark.py`
+    # would run N full drivers in parallel (interleaved output, N x
+    # children contending for the same GPU and host memory -- the
+    # observed cluster failure).  Only SLURM task 0 proceeds; launch the
+    # driver as a single task (or a plain process inside the
+    # allocation).  Children/steps are unaffected: subprocess children
+    # inherit task 0's id, and srun steps get fresh per-step ids.
+    slurm_procid = os.environ.get("SLURM_PROCID")
+    if slurm_procid not in (None, "0"):
+        print(
+            f"solver_benchmark: surplus SLURM task {slurm_procid} "
+            "exiting (the driver runs as a single task; use srun -n 1)."
+        )
+        return
+    if os.environ.get("SLURM_NTASKS") not in (None, "1"):
+        print(
+            "solver_benchmark: launched with SLURM_NTASKS="
+            f"{os.environ['SLURM_NTASKS']}; only task 0 runs the "
+            "driver -- prefer a single-task launch."
+        )
+    a.launcher = _resolve_launcher(a.launcher)
+
     workdir = a.workdir or Path(
         tempfile.mkdtemp(prefix="dnsjax_solver_bench_")
     )
     workdir.mkdir(parents=True, exist_ok=True)
     env = _probe_env()
     _print_banner(env, workdir)
+    print(f"  launcher {a.launcher}")
 
     if a.cpu_smoke:
         sys.exit(_cpu_smoke(a, workdir))

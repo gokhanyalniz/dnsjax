@@ -651,6 +651,17 @@ def main() -> None:
         run_child(a)
         return
 
+    # Duplicate-driver guard (as in solver_benchmark.py): under
+    # `srun -n N python .../pivot_stability_survey.py` every task would
+    # run the full survey; only SLURM task 0 proceeds.
+    slurm_procid = os.environ.get("SLURM_PROCID")
+    if slurm_procid not in (None, "0"):
+        print(
+            f"pivot_stability_survey: surplus SLURM task {slurm_procid} "
+            "exiting (the driver runs as a single task; use srun -n 1)."
+        )
+        return
+
     configs = build_configs(a.quick, a.corners)
     print("=" * 72)
     print("Pivot-stability survey (no-pivot banded LU vs SPIKE fallback)")

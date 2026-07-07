@@ -95,7 +95,6 @@ from jax.experimental import pallas as pl  # noqa: E402
 from jax.experimental.pallas import triton as pltriton  # noqa: E402
 
 from dnsjax.solvers import (  # noqa: E402
-    PerModeBandedPallasOperator,
     _banded_factor,
     _banded_from_dense,
     _pallas_banded_solve,
@@ -155,14 +154,36 @@ def _build_inputs(N, p, k, Nkz, Nkx, seed=0):
     band = _banded_from_dense(
         jnp.tile(jnp.asarray(A)[None, None], (Nkz, Nkx, 1, 1)), p
     )
-    op = PerModeBandedPallasOperator.from_banded_factors(*_banded_factor(band))
+    # Kernel-layout factors as **plain local arrays** -- the uncommitted
+    # equivalent of ``from_banded_factors``, whose shard_map commits its
+    # result to the Explicit mesh: interpret mode's indexed-store
+    # discharge rejects committed operands whenever the grid needs
+    # internal padding (partial planes), and this script probes the
+    # *local* kernel by design (single device, kernel-local arrays --
+    # the unit tests' ``_mode_inner_factors`` pattern).  ``L``/``U`` are
+    # at the **true** mode plane: the micro-probes' partial tiles must
+    # come from the probe grid itself (that is what they demonstrate),
+    # and their NumPy references broadcast against the true-plane ``b``
+    # (construction-padded factors here raised shape errors in the
+    # ``bcast_*`` references on partial planes).  ``Lp``/``Up`` add the
+    # whole-``(bm0, bm1)``-tile zero pad -- the stored-factor form the
+    # real solve keeps -- for the ``full`` probe.
+    Lo, Uo = _banded_factor(band)
+    Li = jnp.moveaxis(Lo, (-2, -1), (0, 1))
+    Ui = jnp.moveaxis(Uo, (-2, -1), (0, 1))
+    Ui = Ui.at[:, 0].set(1.0 / Ui[:, 0])
+    bm0 = params.solver.pallas_block_m0
+    bm1 = params.solver.pallas_block_m1
+    fac_pad = [(0, 0), (0, 0), (0, -Nkz % bm0), (0, -Nkx % bm1)]
     return {
         "A": A,
         "base_b": base_b,
         "scale": scale,
         "b": jnp.asarray(b_np),
-        "L": op.L,
-        "U": op.U,
+        "L": Li,
+        "U": Ui,
+        "Lp": jnp.pad(Li, fac_pad),
+        "Up": jnp.pad(Ui, fac_pad),
     }
 
 
@@ -207,8 +228,20 @@ def _build_probe(name, dims, bm0, bm1, num_warps, interpret=False):
     serves both execute and ``lower``); ``ref_np`` is the NumPy truth.
     """
     N, p, k, Nkz, Nkx = dims
+    if name == "full":
+        # Set the probe's tile *before* building the inputs:
+        # ``from_banded_factors`` pads the stored factors to the
+        # ``params`` tile, so setting it only afterwards left the
+        # factors padded for the *previous* config's tile (a smaller
+        # runtime tile then drove the solve's fallback factor pad
+        # negative -- the ``full (1, 1)`` partial-plane crash on the
+        # cluster; the solve now also grows such factors instead of
+        # raising, see ``_pallas_banded_solve``).
+        params.solver.pallas_block_m0 = bm0
+        params.solver.pallas_block_m1 = bm1
+        params.solver.pallas_num_warps = num_warps
     d = _build_inputs(N, p, k, Nkz, Nkx)
-    b, L, U = d["b"], d["L"], d["U"]
+    b, L = d["b"], d["L"]
     out_shape = (N, k, Nkz, Nkx)
 
     def runner(kernel, inputs):
@@ -327,15 +360,14 @@ def _build_probe(name, dims, bm0, bm1, num_warps, interpret=False):
         return fn, inputs, _scaled(y, d["scale"])
 
     if name == "full":
-        params.solver.pallas_block_m0 = bm0
-        params.solver.pallas_block_m1 = bm1
-        params.solver.pallas_num_warps = num_warps
-
+        # The params tile was set before ``_build_inputs`` (above), so
+        # the stored padded factors match this config; pass them (the
+        # production form) rather than the true-plane slices.
         def fn(L_, U_, b_):
             return _pallas_banded_solve(L_, U_, b_, p, interpret=interpret)
 
         x = np.linalg.solve(d["A"], d["base_b"])
-        return fn, (L, U, b), _scaled(x, d["scale"])
+        return fn, (d["Lp"], d["Up"], b), _scaled(x, d["scale"])
 
     raise ValueError(f"unknown probe {name}")
 
@@ -501,7 +533,12 @@ def main() -> None:
                         probe, dims, bm0, bm1, nw, interpret
                     )
                 except Exception as e:  # noqa: BLE001
+                    # A probe that cannot even be constructed is a
+                    # harness regression regardless of expectations.
                     print(f"{tag} -> BUILD_ERROR: {type(e).__name__}: {e}")
+                    regs[probe] += 1
+                    if first_reg is None:
+                        first_reg = tag
                     continue
                 try:
                     if execute:
@@ -536,7 +573,21 @@ def main() -> None:
                 except Exception as e:  # noqa: BLE001
                     kind = "RUNTIME_ERROR" if execute else "LOWERING_ERROR"
                     msg = str(e).replace("\n", " ")[:160]
-                    print(f"{tag} -> {kind}: {type(e).__name__}: {msg}")
+                    # A crash is an acceptable manifestation of the raw
+                    # partial-tile bug for a bug-demo probe (XFAIL);
+                    # anywhere else it is a regression -- errors must
+                    # not silently drop out of the verdict tally.
+                    if execute and _expected_fail(probe, mlabel):
+                        xfails[probe] += 1
+                        print(
+                            f"{tag} -> XFAIL({kind}): "
+                            f"{type(e).__name__}: {msg}"
+                        )
+                    else:
+                        regs[probe] += 1
+                        if first_reg is None:
+                            first_reg = tag
+                        print(f"{tag} -> {kind}: {type(e).__name__}: {msg}")
 
     if execute:
         _summary(xfails, regs, runs, first_reg, results, modes, tiles)
