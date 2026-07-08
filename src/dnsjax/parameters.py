@@ -446,9 +446,9 @@ class TimeStepping(BaseModel):
       Stable well past the advective CFL; costs ``2 + num_corrector``
       RHS/FFT evaluations per step.
 
-      Wall-bounded split corrector (``split_corrector``, default on).
-      In the rotational perturbation form the iterated RHS contains
-      the *linear* coupling -- ``L_bf``, the frame term, and (per
+      Wall-bounded split corrector (``split_corrector``).  In the
+      rotational perturbation form the iterated RHS contains the
+      *linear* coupling -- ``L_bf``, the frame term, and (per
       ``implicit_mean_coupling``) ``L_mf`` -- i.e. exactly the
       FFT-free ``_l_bf`` the CN/AB2 scheme makes implicit.  The split
       corrector iterates that part FFT-free: each outer (FFT)
@@ -461,23 +461,29 @@ class TimeStepping(BaseModel):
       within ``corrector_tolerance`` and the reported ``num_c`` /
       ``error`` keep their meaning (extra FFT evaluations / last
       fresh-RHS correction norm) -- ``corrector.dat`` is comparable
-      across the gate.  Coupling-dominated regimes (Dean /
-      viscoelastic-dean mean-flow advection, moving-wall flows and
-      strongly non-normal Taylor-Couette at large ``dt``) converge in
-      fewer FFT evaluations; fluctuation-dominated corrector cost
-      (the pipe near-axis ``CFL_th``) is unchanged -- the tail
-      launches an implicit solve only while the coupling estimate
-      still moves the state (``c dt ||l_bf(u_j) - l_bf(u_{j-1})|| >
-      tol``, a cheap test), so a fluctuation-driven iteration adds
-      one ``l_bf`` evaluation and a norm, not a solve -- and a step
-      whose first correction already meets tolerance costs 2 FFT
-      evaluations either way.  A split corrector that fails to reach
-      tolerance automatically redoes the step with the unsplit
-      corrector (``lax.cond``, stdout diagnostic), pinning the worst
-      case to the unsplit path.  ``split_corrector = False`` restores
-      the unsplit corrector exactly (an A/B gate, to be removed once
-      the benefit is established); triply-periodic flows have no
-      coupling (``l_bf_fn = None``) and always run unsplit.
+      across the setting.  It is an **opt-in** (``split_corrector``,
+      default **off**): at realistic ``dt`` the corrector converges in
+      ~1--2 iterations for *every* flow (measured, including the
+      total-field Dean and high-Wi viscoelastic-dean -- unsplit ``c``
+      stays 2--3, far from the cap, at ``dt = 0.01``), so the unsplit
+      corrector is both correct and faster (the split is measured a
+      few % slower at production sizes on GPU, up to tens of % on small
+      problems).  The split only pays off once ``dt`` is pushed far
+      enough that the unsplit corrector approaches
+      ``max_corrector_iterations`` -- e.g. Dean at ``dt = 0.15`` (an
+      unrealistically large step), where the unsplit corrector hits the
+      cap (``c = 10``) and fails while the split converges it FFT-free.
+      When enabled: the tail launches an implicit solve only while the
+      coupling estimate still moves the state
+      (``c dt ||l_bf(u_j) - l_bf(u_{j-1})|| > tol``, a cheap test), so a
+      fluctuation-driven iteration adds one ``l_bf`` evaluation and a
+      norm, not a solve -- and a step whose first correction already
+      meets tolerance costs 2 FFT evaluations either way.  A split
+      corrector that fails to reach tolerance automatically redoes the
+      step with the unsplit corrector (``lax.cond``, stdout
+      diagnostic), pinning the worst case to the unsplit path.
+      Triply-periodic flows have no coupling (``l_bf_fn = None``) and
+      always run unsplit.
     - ``"cnab2"``: Crank-Nicolson viscous (implicitness *c*) + 2nd-order
       Adams-Bashforth nonlinear (explicit ``1.5 N^n - 0.5 N^{n-1}``).
       **One** expensive nonlinear/FFT evaluation per step; the previous
@@ -589,14 +595,17 @@ class TimeStepping(BaseModel):
     # (``split_corrector``); no effect on triply-periodic flows.
     # See the class docstring.
     implicit_mean_coupling: bool = True
-    # Wall-bounded ``"iterative-cn"`` only: iterate the linear
-    # coupling ``_l_bf`` FFT-free between full-RHS corrector
-    # refreshes (same CN fixed point; coupling-driven corrector
-    # iterations stop costing one FFT evaluation each).  ``False``
-    # restores the unsplit corrector exactly -- an A/B comparison
-    # gate, to be removed once the benefit is established.  No effect
-    # on cnab2 or triply-periodic flows.  See the class docstring.
-    split_corrector: bool = True
+    # Wall-bounded ``"iterative-cn"`` only, **opt-in** (default off):
+    # iterate the linear coupling ``_l_bf`` FFT-free between full-RHS
+    # corrector refreshes (same CN fixed point; coupling-driven
+    # corrector iterations stop costing one FFT evaluation each).  At
+    # realistic ``dt`` the corrector converges in ~1--2 iterations for
+    # every flow (measured, incl. Dean and high-Wi viscoelastic-dean),
+    # so the unsplit corrector is both correct and faster -- the split
+    # only pays off if ``dt`` is pushed far enough that the unsplit
+    # corrector approaches its iteration cap.  No effect on cnab2 or
+    # triply-periodic flows.  See the class docstring.
+    split_corrector: bool = False
 
 
 class Termination(BaseModel):

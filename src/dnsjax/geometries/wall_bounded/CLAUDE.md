@@ -37,9 +37,9 @@ step_cnab2, step_cnab2_measured)`. Each geometry module provides a
 thin `build_*_stepper(flow)` passing its callables: the measured RHS
 (CFL via the `rhs.py` `measure_fn` hook) and `_l_bf` -- the FFT-free
 linear base-flow coupling `L_bf = u'×curl(U) + U×ω'` that wall-bounded
-cnab2 **and** the split iterative-cn corrector (`step.split_corrector`,
-default on; `_split_core` in `timestep.py`) make implicit, built from
-the shared `base_flow_coupling`
+cnab2 **and** the opt-in split iterative-cn corrector
+(`step.split_corrector`, default off; `_split_core` in `timestep.py`)
+make implicit, built from the shared `base_flow_coupling`
 helper. With `step.implicit_mean_coupling` (default on) each `_l_bf`
 also folds in the instantaneous mean-flow coupling `L_mf` by adding
 the `extract_mean_mode` profiles onto the base/curl profiles (still

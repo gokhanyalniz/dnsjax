@@ -14,13 +14,15 @@ A.  **Single-device matrix** (one subprocess per config x backend --
     a fixed-seed parity scalar (perturbation energy + ``get_stats``
     after a few steps) compared across backends.  Every child also
     runs the split-vs-unsplit iterative-cn corrector A/B
-    (``step.split_corrector`` on -- the wall-bounded default -- vs
-    off, via an in-child stepper rebuild on the same operators and
-    IC; see ``_split_core`` in ``timestep.py``), reported per row and
-    as a verdict section; a dedicated coupling-stressed
-    ``dean-split-stress`` entry (``nz = 64``, ``dt = 0.15``, the
-    ``TimeStepping``-docstring reference regime) shows the split's
-    FFT-refresh savings, while the default-``dt`` entries pin the
+    (``step.split_corrector`` forced on vs off, via an in-child
+    stepper rebuild on the same operators and IC, so the comparison is
+    independent of the default -- which is off, an opt-in; see
+    ``_split_core`` in ``timestep.py``), reported per row and as a
+    verdict section; a dedicated coupling-stressed
+    ``dean-split-stress`` entry
+    (``nz = 64``, ``dt = 0.15``, the ``TimeStepping``-docstring
+    reference regime) shows the split's FFT-refresh savings, while the
+    default-``dt`` entries pin the
     no-regression claim (corrector converges in ~1 iteration either
     way).
 B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
@@ -438,19 +440,25 @@ def run_child(a: argparse.Namespace) -> None:
     )
     t_cnab2 = _bench_step_cnab2(jax, jnp, m.step_cnab2, state, a.steps)
 
-    # Split-corrector A/B: the module stepper above runs the split
-    # corrector (the wall-bounded iterative-cn default); rebuild with
-    # the gate off and time the unsplit corrector on the same IC --
-    # the on/off comparison for ``step.split_corrector`` on real
-    # hardware (the corrector counts show where the FFT-refresh
-    # savings come from).
-    params.step.split_corrector = False
+    # Split-corrector A/B: ``t_icn`` above ran the *default* corrector
+    # (``step.split_corrector`` is off by default, so that is normally
+    # the unsplit corrector).  Rebuild and time the *opposite* gate
+    # value on the same IC, then label both by gate, so the [3] verdict
+    # always compares split vs unsplit regardless of the default (the
+    # corrector counts show where the FFT-refresh savings come from).
+    default_split = params.step.split_corrector
+    params.step.split_corrector = not default_split
     try:
-        t_icn_unsplit, corrs_unsplit = _bench_step(
+        t_other, corrs_other = _bench_step(
             jax, jnp, _rebuild_pfc(a.system, flow), state, a.steps
         )
     finally:
-        params.step.split_corrector = True
+        params.step.split_corrector = default_split
+    (t_icn_split, corrs_split), (t_icn_unsplit, corrs_unsplit) = (
+        ((t_icn, corrs), (t_other, corrs_other))
+        if default_split
+        else ((t_other, corrs_other), (t_icn, corrs))
+    )
     mem_peak = _mem_stats(jax)
 
     record = {
@@ -483,6 +491,8 @@ def run_child(a: argparse.Namespace) -> None:
         "step_ms": {
             "icn": round(1e3 * t_icn, 3),
             "icn_correctors": corrs,
+            "icn_split": round(1e3 * t_icn_split, 3),
+            "icn_split_correctors": corrs_split,
             "icn_unsplit": round(1e3 * t_icn_unsplit, 3),
             "icn_unsplit_correctors": corrs_unsplit,
             "cnab2": round(1e3 * t_cnab2, 3),
@@ -1708,30 +1718,22 @@ def _mpi_runs(args: argparse.Namespace, platform: str) -> list[dict]:
                 }
             )
     if args.max_gpus >= 4 and platform == "cuda":
-        # 2x2 mesh: plane-couette on a tanh grid (the documented
-        # clean-ny-divisibility recipe for np0 > 1) with its own 1x1
-        # tanh reference; pipe keeps its default (rigged-CGL) grid.
-        tanh = (("--geo.grid_type", "tanh"),)
+        # 2x2 mesh (wall-normal + spanwise split) on each geometry's
+        # own default CGL grid -- no tanh: plane-couette (full-CGL)
+        # and pipe (rigged-CGL), each diffed against its 1x1 pallas
+        # reference from the main loop above.  ny=48 splits cleanly
+        # over np0=2 (and the sharding layer auto-pads the y-axis
+        # otherwise), so the default grid needs no divisibility
+        # workaround -- the pipe np2x2/np1x4 runs already validate
+        # wall-normal splitting on their default grid.
         if "plane-couette" in systems:
             runs.append(
                 {
-                    "name": "corr-plane-couette-pallas-np1x1-tanh",
-                    "system": "plane-couette",
-                    "backend": "pallas",
-                    "np0": 1,
-                    "np1": 1,
-                    "extra": tanh,
-                    **base,
-                }
-            )
-            runs.append(
-                {
-                    "name": "corr-plane-couette-pallas-np2x2-tanh",
+                    "name": "corr-plane-couette-pallas-np2x2",
                     "system": "plane-couette",
                     "backend": "pallas",
                     "np0": 2,
                     "np1": 2,
-                    "extra": tanh,
                     **base,
                 }
             )
@@ -1783,8 +1785,6 @@ def _diff_pairs(names: set[str]) -> list[tuple[str, str, str]]:
             ref, label = f"corr-{system}-pallas-np1x1", "mesh-2x2"
         elif rest == "-pallas-np1x4":
             ref, label = f"corr-{system}-pallas-np1x1", "mesh-1x4"
-        elif rest == "-pallas-np2x2-tanh":
-            ref, label = f"corr-{system}-pallas-np1x1-tanh", "mesh-2x2"
         if ref in names:
             pairs.append((name, ref, label))
     return pairs
@@ -2097,6 +2097,7 @@ def _verdict(
         r
         for r in single
         if r.get("status") == "ok"
+        and r.get("step_ms", {}).get("icn_split")
         and r.get("step_ms", {}).get("icn_unsplit")
         and r["config"].get("bm0") is None
     ]
@@ -2104,11 +2105,11 @@ def _verdict(
         print("    (no split-corrector measurements)")
     for r in ab_rows:
         sm = r["step_ms"]
-        ratio = sm["icn"] / sm["icn_unsplit"]
+        ratio = sm["icn_split"] / sm["icn_unsplit"]
         print(
-            f"    {r['entry']:34s} split {sm['icn']:9.2f} ms  unsplit "
-            f"{sm['icn_unsplit']:9.2f} ms  x{ratio:5.2f}  c "
-            f"{sm.get('icn_correctors')}/"
+            f"    {r['entry']:34s} split {sm['icn_split']:9.2f} ms  "
+            f"unsplit {sm['icn_unsplit']:9.2f} ms  x{ratio:5.2f}  c "
+            f"{sm.get('icn_split_correctors')}/"
             f"{sm.get('icn_unsplit_correctors')}  "
             f"dt {r['config'].get('dt')}"
         )
@@ -2243,13 +2244,14 @@ def _cpu_smoke(args: argparse.Namespace, workdir: Path) -> int:
         if de > 1e-8:
             failures.append(f"parity delta {de:.2e} > 1e-8")
         sm = recs["pallas"]["step_ms"]
-        if sm.get("icn_unsplit") is None:
+        if sm.get("icn_split") is None or sm.get("icn_unsplit") is None:
             failures.append("split-corrector A/B fields missing")
         else:
             print(
-                f"  split-corrector A/B: split {sm['icn']} ms vs "
+                f"  split-corrector A/B: split {sm['icn_split']} ms vs "
                 f"unsplit {sm['icn_unsplit']} ms (correctors "
-                f"{sm['icn_correctors']}/{sm['icn_unsplit_correctors']})"
+                f"{sm['icn_split_correctors']}/"
+                f"{sm['icn_unsplit_correctors']})"
             )
 
     # mpirun pair + snapshot diff on CPU (validates the parsers and
@@ -2356,13 +2358,13 @@ def _cpu_bench(args: argparse.Namespace, workdir: Path) -> int:
     )
     for r in results:
         sm = r.get("step_ms", {})
-        if r.get("status") != "ok" or not sm.get("icn_unsplit"):
+        if r.get("status") != "ok" or not sm.get("icn_split"):
             continue
         print(
-            f"  {r['entry']:34s} split {sm['icn']:9.1f} ms  unsplit "
+            f"  {r['entry']:34s} split {sm['icn_split']:9.1f} ms  unsplit "
             f"{sm['icn_unsplit']:9.1f} ms  "
-            f"x{sm['icn'] / sm['icn_unsplit']:5.2f}  c "
-            f"{sm.get('icn_correctors')}/"
+            f"x{sm['icn_split'] / sm['icn_unsplit']:5.2f}  c "
+            f"{sm.get('icn_split_correctors')}/"
             f"{sm.get('icn_unsplit_correctors')}"
         )
     return 0 if all(r["status"] == "ok" for r in results) else 1

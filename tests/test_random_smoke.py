@@ -40,12 +40,14 @@ self-advection CFL, which ``ny = 48`` on the fine near-wall CGL grid
 would violate at this ``Re``, an inherent explicit-scheme limit, not the
 coupling bug).
 
-Every wall-bounded iterative-cn entry runs the **split** corrector (the
-``step.split_corrector`` default: the linear coupling iterates FFT-free
-between full-RHS refreshes; see ``_split_core`` in ``timestep.py``); a
-trailing ``dean-unsplit-corrector`` entry passes
-``--step.split_corrector False`` to keep the legacy unsplit corrector
-integration-covered while the A/B gate exists.
+The wall-bounded iterative-cn entries run the **unsplit** corrector
+(``step.split_corrector`` defaults off).  A trailing
+``dean-split-corrector`` entry passes ``--step.split_corrector True``
+to cover the opt-in split corrector (linear coupling iterated FFT-free
+between full-RHS refreshes; see ``_split_core`` in ``timestep.py``) on
+the force-driven Dean flow, where the coupling is the pure
+instantaneous mean-flow term (``l_bf == L_mf``) -- the regime where the
+two corrector structures most differ.
 
 A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
 ``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
@@ -553,15 +555,14 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Unsplit iterative-cn corrector (step.split_corrector=False):
-        # every wall-bounded iterative-cn entry above runs the split
-        # corrector (the default), so this keeps the legacy unsplit
-        # corrector integration-covered while the A/B gate exists.
-        # Dean, because its coupling is the pure instantaneous
-        # mean-flow term (l_bf == L_mf) -- the regime the split
-        # targets -- so the two corrector structures genuinely differ
-        # here.  Same config as the iterative-cn ``dean`` entry.
-        "name": "dean-unsplit-corrector",
+        # Split iterative-cn corrector (step.split_corrector=True):
+        # every other iterative-cn entry runs the unsplit corrector
+        # (the default), so this opt-in override keeps the split
+        # corrector integration-covered.  Dean, because its coupling is
+        # the pure instantaneous mean-flow term (l_bf == L_mf) -- the
+        # regime where the two corrector structures most differ.  Same
+        # config as the iterative-cn ``dean`` entry.
+        "name": "dean-split-corrector",
         "res": {"nx": 32, "ny": 32, "nz": 32},
         "args": [
             "--phys.system",
@@ -573,7 +574,7 @@ SYSTEMS: list[dict] = [
             "--geo.lx",
             "5",
             "--step.split_corrector",
-            "False",
+            "True",
         ],
     },
 ]

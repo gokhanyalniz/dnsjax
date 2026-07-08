@@ -69,10 +69,11 @@ recipe, SLURM discipline, and the per-task-visibility trap are in the
 
 `mpirun -np 2 python -m dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
 
-For double parallelisation (tanh grid recommended for clean ny
-divisibility):
+For double parallelisation, on the geometry's default CGL grid (pick
+`ny` divisible by `np0` for an even split; the sharding layer auto-pads
+the wall-normal axis otherwise):
 
-`mpirun -np 4 python -m dnsjax --dist.np0 2 --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 28 --geo.grid_type tanh`
+`mpirun -np 4 python -m dnsjax --dist.np0 2 --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 28`
 
 The laminar state should time step with a single corrector step, with
 stepping error of O(-18) or less, and perturbation energy of O(-32) or
@@ -281,14 +282,20 @@ See the `make_stepper` docstring, `_base.py`, and
 and share the predictor/IMM-pressure solve. `"iterative-cn"`
 (default): nonlinear term implicit via the corrector fixed-point
 iteration; `2+c ≈ 3` FFT evals/step; stable well past the advective
-CFL. Wall-bounded iterative-cn runs a **split** corrector by default
-(`step.split_corrector`): the linear coupling (the geometry `_l_bf`:
-`L_bf` + frame term + `L_mf` per `implicit_mean_coupling`) iterates
-FFT-free between full-RHS refreshes — same CN fixed point, `num_c`
-counts the FFT refreshes, non-convergence falls back to the unsplit
-corrector (`lax.cond`), and `split_corrector False` restores the
-legacy corrector exactly (an A/B gate, to be removed once the benefit
-is established). `"cnab2"`: explicit AB2 nonlinear, **one** FFT eval/step (~3×
+CFL. Wall-bounded iterative-cn has an **opt-in** split corrector
+(`step.split_corrector`, default **off**): the linear coupling (the
+geometry `_l_bf`: `L_bf` + frame term + `L_mf` per
+`implicit_mean_coupling`) iterates FFT-free between full-RHS refreshes
+— same CN fixed point, `num_c` counts the FFT refreshes,
+non-convergence falls back to the unsplit corrector (`lax.cond`). At
+realistic `dt` the corrector converges in ~1–2 iterations for every
+flow (measured, incl. total-field Dean and high-Wi viscoelastic-dean:
+unsplit `c` stays 2–3 at `dt=0.01`), so the unsplit default is correct
+and faster (the split is a few % slower at production sizes, more on
+small problems). The split only pays off once `dt` is pushed near the
+corrector's iteration cap (e.g. Dean at an unrealistic `dt=0.15`, where
+the unsplit corrector hits `c=10` and fails while the split converges
+FFT-free). `"cnab2"`: explicit AB2 nonlinear, **one** FFT eval/step (~3×
 fewer FFTs on CFL-limited runs). Wall-bounded cnab2 advances only the
 self-advection `u'×ω'` explicitly; the wall-stiff linear base-flow
 coupling `L_bf` and (default-on `step.implicit_mean_coupling`) the
@@ -320,10 +327,11 @@ step is too large to contract within `max_corrector_iterations` --
 reduce `dt` (or raise the iteration cap); it is not an advective-CFL /
 blow-up. (Random-IC Kolmogorov stalls at ~1.4e-5 at `dt=0.01` but
 converges in one corrector step at `dt=0.005`; the wall-bounded flows
-are fine at 0.01.) With the wall-bounded split corrector (default)
-only the self-advection part drives the FFT-refresh count; the
+are fine at 0.01.) The opt-in wall-bounded split corrector
+(`step.split_corrector`) is aimed at this limit: only the
+self-advection part then drives the FFT-refresh count while the
 coupling contracts in the FFT-free tail, where raising the iteration
-cap is cheap.
+cap is cheap — worthwhile only when `dt` is pushed near the cap.
 
 **Spectral array layout and sharding**: see the `sharding.py` module
 docstring for shapes, partition specs, and the `(np0, np1)` device
@@ -404,7 +412,7 @@ the schemes, `Solver` for the Pallas knobs). Key fields:
 | `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`    |
 | `[init]`   | Start-mode precedence: `snapshot` > `start_from_laminar` > `localized_rolls` > `random_field` (default **on**). `snapshot`, `t0`, `it0`, `isnap0`, `force_resume`, `random_amplitude`/`_smoothness`/`_seed`/`_mean_flow`/`_conformation_amplitude`, `localized_rolls_amplitude`/`_width`/`_wavelength` |
 | `[outs]`   | `it_stats`, `it_steps` (CFL cadence -> `steps.dat`), `it_snapshot`, `it_corrector` (-> `corrector.dat`; requires `it_error_check <= it_corrector`), `it_error_check` (host-sync cadence), `nbuffer`, `stats_precision`, `snapshot_write_mode`, `snapshot_pad_width`, `snapshot_embed_stats`, `snapshot_save_initial`, `snapshot_save_final` (last three default on, independent of `it_snapshot`) |
-| `[step]`   | `dt`, `scheme` (`"iterative-cn"` / `"cnab2"`, both supported for every flow), `implicitness`, `corrector_tolerance`, `max_corrector_iterations`, `implicit_mean_coupling`, `split_corrector` (wall-bounded iterative-cn: FFT-free coupling iteration, default on; A/B gate) |
+| `[step]`   | `dt`, `scheme` (`"iterative-cn"` / `"cnab2"`, both supported for every flow), `implicitness`, `corrector_tolerance`, `max_corrector_iterations`, `implicit_mean_coupling`, `split_corrector` (wall-bounded iterative-cn: FFT-free coupling iteration; **opt-in**, default off — only helps when `dt` is pushed near the corrector iteration cap) |
 | `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601), `check_laminarization` (default on; terminate when `E'` < `laminarization_threshold`, default `1e-9`) |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
 | `[solver]` | `backend` (`"pallas"` default for wall-bounded / `"dense"` reference -- readable + regression oracle, warns on wall-bounded runs; periodic systems resolve to `"dense"`, their only backend), `pallas_block_m0`/`m1` (mode tile, default 2/32), `pallas_stability_tol`, `pallas_num_warps`/`pallas_num_stages`, `rhs_transform_chunks` (viscoelastic RHS memory knob) |

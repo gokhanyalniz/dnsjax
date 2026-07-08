@@ -45,10 +45,11 @@ implicitness = 0.5
 corrector_tolerance = 1e-5
 max_corrector_iterations = 10
 # scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
-# split_corrector = true    # wall-bounded iterative-cn: iterate the
-#                           # linear coupling FFT-free between full-RHS
-#                           # corrector refreshes (A/B gate; false
-#                           # restores the unsplit corrector)
+# split_corrector = true    # wall-bounded iterative-cn opt-in (default
+#                           # off): iterate the linear coupling FFT-free
+#                           # between full-RHS corrector refreshes. Only
+#                           # helps when dt is pushed near the corrector
+#                           # iteration cap; slower at realistic dt.
 
 [stop]
 # max_sim_time = 100.0

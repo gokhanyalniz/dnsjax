@@ -8,7 +8,7 @@ The overall iteration structure (Euler
 predictor + iterative Crank-Nicolson corrector, Willis 2017) is shared
 across all flow types; only the RHS evaluation, Helmholtz solve, and
 norm computation differ.  With *l_bf_fn* provided and
-``step.split_corrector`` on (the wall-bounded default), the fused
+``step.split_corrector`` enabled (an opt-in, default off), the fused
 corrector runs in split form (``_split_core``): the linear coupling
 iterates FFT-free between full-RHS refreshes.
 
@@ -74,8 +74,9 @@ def make_stepper(
         Optional ``state -> l_bf`` giving the *linear* base-flow
         coupling term (``u' x curl(U) + U x omega'``) evaluated
         **without** any FFT (spectral/matrix-free), used by the
-        CN/AB2 scheme and by the split ``iterative-cn`` corrector
-        (``step.split_corrector``, default on).  When provided,
+        CN/AB2 scheme and by the opt-in split ``iterative-cn``
+        corrector (``step.split_corrector``, default off).  When
+        provided,
         ``step_cnab2`` advances the
         pure self-advection ``u' x omega' = get_rhs_fn - l_bf_fn``
         explicitly (AB2) while treating ``l_bf_fn`` implicitly
@@ -120,10 +121,10 @@ def make_stepper(
         Fused predict + corrector loop in a single JIT scope
         via ``lax.while_loop``.  Signature:
         ``state -> (prediction_state, error, num_c)``.
-        With *l_bf_fn* and ``step.split_corrector`` (default on) the
-        corrector runs in split form -- the linear coupling iterates
-        FFT-free between full-RHS refreshes, same converged CN fixed
-        point and ``error``/``num_c`` semantics (see
+        With *l_bf_fn* and ``step.split_corrector`` enabled (opt-in,
+        default off) the corrector runs in split form -- the linear
+        coupling iterates FFT-free between full-RHS refreshes, same
+        converged CN fixed point and ``error``/``num_c`` semantics (see
         ``_split_core``).
         **Donates** *state* (the main-loop rebind pattern
         ``state, ... = step(state, ...)``); a caller that reuses
@@ -395,8 +396,9 @@ def make_stepper(
     ) -> tuple[Array, Array, Array]:
         """Predict + all corrector iterations in one JIT scope.
 
-        Wall-bounded flows run the split corrector by default
-        (``_split_core``; gated by ``step.split_corrector``).
+        Wall-bounded flows run the split corrector (``_split_core``)
+        when the opt-in ``step.split_corrector`` is enabled (default
+        off), else the unsplit corrector.
         *state* is donated: the output state may reuse its buffer
         (one field-sized allocation saved per step in the main
         loop).  Callers that keep using their input must pass a
