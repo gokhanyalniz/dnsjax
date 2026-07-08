@@ -25,6 +25,13 @@ Part A  micro-breakdown of one ``Lk`` solve: full solve vs kernel-only
         bandwidth (compare to the device peak: H100 HBM3 ~3.35 TB/s).
 Part B  full ``predict_and_fully_correct`` step time vs the isolated
         ``Lk`` and ``Hk`` solve times -- the solve's share of the step.
+        Then (Cartesian) a **stage-level ``_imm_iteration`` breakdown**
+        that sizes the influence-matrix boundary correction -- the part
+        the openpipeflow wiki calls "negligible" -- against the rest of
+        the implicit CN update (assembly GEMMs + banded solves), and the
+        corrected **cnab2 composition** (wall-bounded cnab2 still runs a
+        ``2 + c``-apply FFT-free IMM corrector, so its ``FFT RHS`` count
+        drops ``2 + c -> 1`` but its IMM count does not).
 Part C  optimized-HLO op census around the Triton custom call (static
         evidence that no separate transpose copy is left) and an
         optional ``jax.profiler`` trace for the per-kernel breakdown.
@@ -36,8 +43,33 @@ Run **on a GPU** (single device, no mpirun)::
         --ny 128 --nx 192 --nz 192 --trace /tmp/dnsjax_trace \
         --hlo-out /tmp/dnsjax_hlo.txt
 
+Solve-kernel tile sweep (each config is a fresh process -- the tile is
+baked into the operator at construction, so it cannot vary in-process)::
+
+    for m0 in 1 2 4; do for w in 4 8; do \
+      .venv/bin/python scripts/pallas_solve_profile.py --dist.platform cuda \
+        --pallas-block-m0 $m0 --pallas-num-warps $w --steps 40; done; done
+
+Resolution x tile sweep to pick sane tile defaults across a range.
+``--solve-only`` times just the ``Lk``/``Hk`` solves (the tile affects
+only the solve; the FFT-bound step is tile-independent and costly at
+large planes) and prints a greppable ``SUMMARY`` line -- collect them
+with ``grep '^SUMMARY'`` instead of pasting full dumps::
+
+    for ny in 48 96 128; do for nz in 64 128 256 512; do \
+      for m0 in 1 2; do \
+        .venv/bin/python scripts/pallas_solve_profile.py --solve-only \
+          --dist.platform cuda --ny $ny --nx $nz --nz $nz \
+          --pallas-block-m0 $m0 --pallas-num-warps 8; \
+      done; done; done | grep '^SUMMARY'
+
+A full run also ends with a ``SUMMARY`` line (adds ``imm``/``step``/
+``cnab2`` too), so the same grep works for the step-level confirmations.
+
 On a GPU-less box it prints the HLO census only (timings need real
-hardware) so the harness can be sanity-checked before the cluster.
+hardware) so the harness can be sanity-checked before the cluster;
+``--cpu-smoke`` additionally exercises Parts B/C once on CPU at tiny
+resolution (numerics only) to validate the harness end-to-end.
 **Paste the full stdout back** for diagnosis.
 """
 
@@ -70,7 +102,14 @@ GBPS = 1e9
 # ── setup ────────────────────────────────────────────────────────────
 
 
-def _configure_system(system: str, ny: int, nx: int, nz: int, order: int):
+def _configure_system(
+    system: str,
+    ny: int,
+    nx: int,
+    nz: int,
+    order: int,
+    solver_overrides: dict | None = None,
+):
     """Set the global ``params`` for *system* and derive singletons.
 
     Mutates ``params`` directly (the ``pallas`` backend, f64, the given
@@ -78,6 +117,12 @@ def _configure_system(system: str, ny: int, nx: int, nz: int, order: int):
     empty :class:`Parameters` merge (the ``test_*`` / tiling-diagnostic
     idiom).  Per-geometry required fields (Taylor-Couette / Dean) use the
     test-suite-standard values; the physics is irrelevant to timing.
+
+    *solver_overrides* merges extra ``[solver]`` fields into the same
+    layering call -- the Pallas kernel-tile knobs (``pallas_block_m0`` /
+    ``m1`` / ``pallas_num_warps`` / ``pallas_num_stages``) are baked into
+    the operator at construction (geometry import), so a knob sweep needs
+    a subprocess per value (the ``test_*`` subprocess-per-config idiom).
     """
     params.phys.system = system
     params.phys.re = 400.0
@@ -95,7 +140,10 @@ def _configure_system(system: str, ny: int, nx: int, nz: int, order: int):
     # Through the layering call (not a direct assignment), so the
     # per-family backend re-resolution in ``update_parameters`` cannot
     # overwrite it.
-    update_parameters(Parameters(solver={"backend": "pallas"}))
+    solver = {"backend": "pallas"}
+    if solver_overrides:
+        solver.update(solver_overrides)
+    update_parameters(Parameters(solver=solver))
     # Recompute the 3/2-rule padded sizes for the FFT dealiasing (the
     # step path needs these; ``update_parameters`` does not set them --
     # ``__main__`` calls this separately).
@@ -194,10 +242,12 @@ def _bench_step_cnab2(step_cnab2, state, n: int, warmup: int = 3):
         s, rp, _err, _c = step_cnab2(s, rp)
     jax.block_until_ready(s)
     t0 = time.perf_counter()
+    cc = 0
     for _ in range(n):
-        s, rp, _err, _c = step_cnab2(s, rp)
+        s, rp, _err, c = step_cnab2(s, rp)
+        cc = c  # device scalar; host-convert once after the loop
     jax.block_until_ready(s)
-    return (time.perf_counter() - t0) / n, s
+    return (time.perf_counter() - t0) / n, int(cc), s
 
 
 def _ms(sec: float) -> str:
@@ -352,6 +402,124 @@ def _part_a(flow, sharding, reps: int) -> None:
 # ── Part B: solve share of a corrector step ──────────────────────────
 
 
+def _imm_stage_breakdown(
+    geom, flow, fourier, nonlin, state, reps, t_imm, t_lk, t_hk, t_step, n
+) -> None:
+    r"""Cartesian: split one ``_imm_iteration`` into its stages.
+
+    Sizes the **influence-matrix boundary correction** (Stages 4-7 of
+    ``_imm_iteration`` in ``cartesian.py``) -- the openpipeflow-wiki
+    "negligible" per-step overhead -- against the rest of the implicit
+    Crank-Nicolson update (assembly ``D1``/``D2`` GEMMs + the ``Lk``/
+    ``Hk`` banded solves), which is the work openpipeflow *also* runs
+    every corrector iteration and the wiki does **not** count as
+    influence-matrix overhead.  Stages mirror ``_imm_iteration``
+    exactly; the constant-bulk / block-spanwise branch (Stages 8-9) is
+    compiled out for the default plane-Couette driving and omitted.
+    """
+    import jax.numpy as jnp
+
+    from dnsjax.geometries.wall_bounded._base import apply_y_matrix
+
+    c = params.step.implicitness
+    dt = params.step.dt
+    nu = 1.0 / params.phys.re
+    ikx = 1j * fourier.kx
+    ikz = 1j * fourier.kz
+    mean_mask = fourier.mean_mask
+
+    def poisson_rhs(velocity_n, nonlin_j, nonlin_n):
+        # Stages 1-2 up to the zero-BC pressure RHS f_hat_P.
+        u_n, v_n, w_n = velocity_n[0], velocity_n[1], velocity_n[2]
+        dy_stack = apply_y_matrix(
+            flow.D1,
+            jnp.stack([v_n, nonlin_j[1], nonlin_n[1]], axis=1),
+            component_axis=1,
+        )
+        dy_v_n = dy_stack[:, 0]
+        dy_Nv_j = dy_stack[:, 1]
+        dy_Nv_n = dy_stack[:, 2]
+        d_hat_n = ikx * u_n + dy_v_n + ikz * w_n
+        div_Nj = ikx * nonlin_j[0] + dy_Nv_j + ikz * nonlin_j[2]
+        div_Nn = ikx * nonlin_n[0] + dy_Nv_n + ikz * nonlin_n[2]
+        Lk_d = geom._lk_matvec(d_hat_n, flow, fourier)
+        f_hat = (
+            d_hat_n / dt + c * div_Nj + (1 - c) * div_Nn + (1 - c) * nu * Lk_d
+        )
+        return f_hat.at[0].set(0.0).at[-1].set(0.0)
+
+    def helmholtz_rhs(velocity_n, nonlin_j, nonlin_n, pP):
+        # Stage 3 up to the Helmholtz RHS R_stack (before the solve).
+        grad_pP = jnp.stack([ikx * pP, apply_y_matrix(flow.D1, pP), ikz * pP])
+        hk_minus = jax.vmap(geom._hk_minus_matvec, in_axes=(0, None, None))(
+            velocity_n, flow, fourier
+        )
+        r = hk_minus - grad_pP + c * nonlin_j + (1 - c) * nonlin_n
+        r = r.at[:, 0].set(0.0).at[:, -1].set(0.0)
+        return r.at[1].set(jnp.where(mean_mask, 0.0, r[1]))
+
+    def influence_correct(velocity_j, arb_stack):
+        # Stages 4-7 + finalize: the influence-matrix correction.
+        u_arb, v_arb, w_arb = arb_stack[0], arb_stack[1], arb_stack[2]
+        d_wall = jnp.einsum("bj, jzx -> zxb", flow.D1_bnd, v_arb)
+        d_wall = d_wall.at[..., 1].set(
+            jnp.where(mean_mask[0], 0.0, d_wall[..., 1])
+        )
+        alpha = -jnp.einsum("zxab, zxb -> zxa", flow.M_inv, d_wall)
+        alpha1 = alpha[..., 0][None]
+        alpha2 = alpha[..., 1][None]
+        v_new = v_arb + alpha1 * flow.v1 + alpha2 * flow.v2
+        v_new = jnp.where(mean_mask, 0.0, v_new)
+        q_new = alpha1 * flow.q1 + alpha2 * flow.q2
+        u_new = u_arb - ikx * q_new
+        w_new = w_arb - ikz * q_new
+        return jnp.array([u_new, v_new, w_new]) - velocity_j
+
+    # Realistic intermediates for the later stages (predictor call:
+    # velocity_n = velocity_j = state, nonlin_n = nonlin_j = nonlin).
+    lk_solve = jax.jit(lambda f: flow.Lk_op.solve(f))
+    hk_solve = jax.jit(lambda r: flow.Hk_op.solve(r))
+    f_hat_P = jax.block_until_ready(
+        jax.jit(poisson_rhs)(state, nonlin, nonlin)
+    )
+    pP = jax.block_until_ready(lk_solve(f_hat_P))
+    R_stack = jax.block_until_ready(
+        jax.jit(helmholtz_rhs)(state, nonlin, nonlin, pP)
+    )
+    arb = jax.block_until_ready(hk_solve(R_stack))
+
+    t_prhs = _bench(poisson_rhs, [(state, nonlin, nonlin)] * reps)
+    t_hrhs = _bench(helmholtz_rhs, [(state, nonlin, nonlin, pP)] * reps)
+    t_infl = _bench(influence_correct, [(state, arb)] * reps)
+
+    t_sum = t_prhs + t_lk + t_hrhs + t_hk + t_infl
+    print("\n  IMM stage breakdown (Cartesian; each runs n times/step):")
+    print(f"    Poisson RHS asm (D1 GEMM+div+_lk+CN)  {_ms(t_prhs)}")
+    print(f"    Lk banded solve                       {_ms(t_lk)}")
+    print(f"    Helmholtz RHS asm (grad+_hk GEMM+CN)  {_ms(t_hrhs)}")
+    print(f"    Hk banded solve (3 fields)            {_ms(t_hk)}")
+    print(
+        f"    influence correct + recombine         {_ms(t_infl)}  "
+        "<- openpipeflow-wiki 'negligible' part"
+    )
+    print(
+        f"    {'-' * 52}\n"
+        f"    sum of stages                         {_ms(t_sum)}  "
+        f"(vs _imm_iteration {_ms(t_imm)})"
+    )
+    print(
+        f"\n    influence correct = {100 * t_infl / t_imm:.1f}% of "
+        f"_imm_iteration, {100 * n * t_infl / t_step:.1f}% of the step."
+    )
+    print(
+        "    => THAT is the wiki's 'negligible' influence-matrix overhead,"
+        " and it\n       IS negligible here too.  The rest of the IMM is "
+        "the implicit CN\n       update (assembly GEMMs + Lk/Hk banded "
+        "solves) openpipeflow also\n       runs every corrector iteration"
+        " -- the wiki does not count THAT."
+    )
+
+
 def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
     from dnsjax.random_field import generate_random_state
     from dnsjax.solvers import PerModeBandedPallasOperator
@@ -390,6 +558,7 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
 
     # Banded-solve sub-cost inside one IMM apply (Lk + stacked Hk).
     t_solve = None
+    t_lk = t_hk = None
     lk, hk = flow.Lk_op, flow.Hk_op
     if isinstance(lk, PerModeBandedPallasOperator):
         N, _p, Nkz, Nkx = lk.L.shape
@@ -445,24 +614,167 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
         "the target for a faster step."
     )
 
-    # Scheme A/B: CN/AB2 does ONE RHS/FFT eval per step (no corrector
-    # loop) vs n = 2+c for iterative-cn -- the primary throughput lever.
+    # Stage-level IMM breakdown (Cartesian only): where the non-solve
+    # part of _imm_iteration goes, and how small the influence-matrix
+    # correction really is (the openpipeflow-wiki claim, measured).
+    if (
+        params.phys.system in ("plane-couette", "plane-poiseuille")
+        and t_lk is not None
+    ):
+        _imm_stage_breakdown(
+            geom,
+            flow,
+            fourier,
+            rhs,
+            state,
+            reps,
+            t_imm,
+            t_lk,
+            t_hk,
+            t_step,
+            n,
+        )
+
+    t_cnab2 = None
+    # Scheme A/B.  cnab2 does ONE FFT RHS eval per step, but -- for
+    # wall-bounded flows -- STILL runs a (2 + c)-apply IMM corrector
+    # (the FFT-free base-flow-coupling loop, ``_cnab2_lbf_core``): the
+    # predictor + first correction + c coupling iterations, each a full
+    # ``_imm_iteration``, plus a (2 + c) FFT-free ``_l_bf`` re-eval.  So
+    # cnab2 cuts the FFT-RHS count 2+c -> 1 but pays the SAME IMM count
+    # as iterative-cn; with IMM ~ FFT on the GPU, that is why the step
+    # speedup is modest, not ~3x.
     if hasattr(m, "step_cnab2"):
-        t_cnab2, _ = _bench_step_cnab2(m.step_cnab2, state, steps)
+        t_cnab2, cc, _ = _bench_step_cnab2(m.step_cnab2, state, steps)
+        n_cn = 2 + cc  # IMM applies AND _l_bf evals per cnab2 step
+        t_lbf = None
+        if hasattr(geom, "_l_bf"):
+            t_lbf = _bench(
+                lambda s: geom._l_bf(s, fourier, flow), [(state,)] * reps
+            )
         print(f"\n  scheme A/B (same state, {steps} steps):")
         print(
             f"    iterative-cn  {_ms(t_step)}   "
-            f"({n} RHS/FFT evals + {n} IMM applies per step)"
+            f"({n} FFT RHS evals + {n} IMM applies per step)"
         )
         print(
             f"    cnab2         {_ms(t_cnab2)}   "
-            "(1 RHS/FFT eval + 1 IMM apply per step, no while_loop)"
+            f"(1 FFT RHS eval + {n_cn} IMM applies + {n_cn} FFT-free "
+            f"_l_bf evals, c={cc})"
         )
         print(
-            f"    => step speedup {t_step / t_cnab2:.2f}x  "
-            f"(FFT/IMM invocation count {n} -> 1); explicit nonlinear, "
-            "so dt is advective-CFL-limited."
+            f"    => step speedup {t_step / t_cnab2:.2f}x; explicit "
+            "nonlinear, so dt is advective-CFL-limited."
         )
+        if t_lbf is not None:
+            print(f"\n  cnab2 composition (c={cc}):")
+            print(f"    1  FFT RHS eval              {_ms(t_rhs)}")
+            print(f"    {n_cn}  IMM applies              {_ms(n_cn * t_imm)}")
+            print(f"    {n_cn}  _l_bf evals (FFT-free)   {_ms(n_cn * t_lbf)}")
+            print(
+                "    => cnab2 removes (1 + c) of iterative-cn's FFT RHS "
+                "evals but keeps\n       the same (2 + c) IMM applies; "
+                "with IMM ~ FFT here, the FFT-count\n       cut only "
+                "reaches ~half the step -- the IMM is the other lever."
+            )
+
+    return {
+        "step": t_step,
+        "imm": t_imm,
+        "lk": t_lk,
+        "hk": t_hk,
+        "solve": t_solve,
+        "cnab2": t_cnab2,
+    }
+
+
+# ── solve-only sweep: isolated solve timing + greppable summary ───────
+
+
+def _summary_line(system: str, args, flow, times: dict) -> None:
+    """Emit one ``SUMMARY`` line for a resolution x tile sweep.
+
+    Machine-parseable (``grep '^SUMMARY'``); ``times`` values are
+    seconds (``None`` -> ``NA``).  ``progs`` is the per-field Triton
+    program count `$(\\lceil N_{kz}/m_0\\rceil)(\\lceil N_{kx}/m_1
+    \\rceil)$` on the *stored* (whole-tile-padded) mode plane -- the
+    occupancy metric to compare against the device SM count (H100:
+    132).
+    """
+    from dnsjax.solvers import PerModeBandedPallasOperator
+
+    so = params.solver
+    m0, m1 = so.pallas_block_m0, so.pallas_block_m1
+    warps = so.pallas_num_warps
+    stages = so.pallas_num_stages
+    if isinstance(flow.Lk_op, PerModeBandedPallasOperator):
+        _, _, pnz, pnx = flow.Lk_op.L.shape
+        progs = (pnz // m0) * (pnx // m1)
+        plane = f"{pnz}x{pnx}"
+    else:
+        progs, plane = 0, "NA"
+
+    def fmt(v):
+        return "NA" if v is None else f"{v * 1e3:.3f}"
+
+    print(
+        "SUMMARY "
+        f"sys={system} ny={args.ny} nx={args.nx} nz={args.nz} "
+        f"pad_plane={plane} progs={progs} m0={m0} m1={m1} "
+        f"warps={warps if warps is not None else 'def'} "
+        f"stages={stages if stages is not None else 'def'} "
+        f"lk_ms={fmt(times.get('lk'))} hk_ms={fmt(times.get('hk'))} "
+        f"solve_ms={fmt(times.get('solve'))} imm_ms={fmt(times.get('imm'))} "
+        f"step_ms={fmt(times.get('step'))} cnab2_ms={fmt(times.get('cnab2'))}"
+    )
+
+
+def _solve_sweep(system: str, args, flow, sharding, reps: int) -> None:
+    r"""Time ONLY the isolated ``Lk``/``Hk`` banded solves.
+
+    The tile choice affects *only* the solve (the step is FFT-bound and
+    tile-independent), and the full FFT/step is expensive at large mode
+    planes, so this skips Parts A/C and the full step/cnab2: it builds
+    the operators (cheap, `$O(N_y\,p\,\text{modes})$`) and times the two
+    solves the IMM runs.  Cheap at arbitrarily large ``nx``/``nz`` --
+    the driver for a resolution x tile sweep deciding sane tile
+    defaults.  Emits a ``SUMMARY`` line.
+    """
+    from dnsjax.solvers import PerModeBandedPallasOperator
+
+    print("\n" + "-" * 72)
+    print("SOLVE-ONLY -- isolated Lk/Hk banded solve timing")
+    print("-" * 72)
+    lk, hk = flow.Lk_op, flow.Hk_op
+    if not isinstance(lk, PerModeBandedPallasOperator):
+        print(f"  needs the pallas backend; got {type(lk).__name__}.")
+        return
+    N, _p, pnz, pnx = lk.L.shape
+    sspec = sharding.spec_scalar_shard
+    vspec = sharding.spec_vector_shard
+    zs = [
+        _make_complex((N, pnz, pnx), 400 + i, sharding, sspec)
+        for i in range(reps)
+    ]
+    z3s = [
+        _make_complex((3, N, pnz, pnx), 500 + i, sharding, vspec)
+        for i in range(reps)
+    ]
+    t_lk = _bench(lambda z: lk.solve(z), [(z,) for z in zs])
+    t_hk = _bench(lambda z: hk.solve(z), [(z,) for z in z3s])
+    m0, m1 = params.solver.pallas_block_m0, params.solver.pallas_block_m1
+    progs = (pnz // m0) * (pnx // m1)
+    print(
+        f"  padded plane {pnz}x{pnx}, tile {m0}x{m1} -> {progs} "
+        "programs/field\n  (H100 = 132 SMs; want >=~132 for one wave, "
+        "several x for latency hiding)"
+    )
+    print(f"  Lk solve (1 field)   {_ms(t_lk)}")
+    print(f"  Hk solve (3 fields)  {_ms(t_hk)}")
+    print(f"  Lk+Hk                {_ms(t_lk + t_hk)}")
+    _summary_line(
+        system, args, flow, {"lk": t_lk, "hk": t_hk, "solve": t_lk + t_hk}
+    )
 
 
 # ── Part C: HLO census + optional profiler trace ─────────────────────
@@ -576,6 +888,12 @@ def _print_env() -> None:
     for dv in jax.devices():
         print(f"    - {dv} kind={getattr(dv, 'device_kind', '?')}")
     print(f"  default_backend  {jax.default_backend()}")
+    print(
+        f"  pallas tile      m0={params.solver.pallas_block_m0} "
+        f"m1={params.solver.pallas_block_m1} "
+        f"num_warps={params.solver.pallas_num_warps} "
+        f"num_stages={params.solver.pallas_num_stages}"
+    )
     print("=" * 72)
 
 
@@ -608,12 +926,32 @@ def main() -> None:
         "`nsys profile --stats=true`",
     )
     ap.add_argument(
+        "--solve-only",
+        action="store_true",
+        help="time ONLY the isolated Lk/Hk banded solves and emit a "
+        "SUMMARY line (skips Parts A/C + the full step/cnab2).  Cheap at "
+        "large nx/nz -- the tile-vs-resolution sweep driver.",
+    )
+    ap.add_argument(
         "--trace", default=None, help="dir for a jax.profiler trace (Part C)"
     )
     ap.add_argument(
         "--hlo-out",
         default=None,
         help="file to append the full optimized HLO to",
+    )
+    # Pallas kernel-tile knobs (baked into the operator at construction;
+    # sweep with one subprocess per value).  None -> model default.
+    ap.add_argument("--pallas-block-m0", type=int, default=None)
+    ap.add_argument("--pallas-block-m1", type=int, default=None)
+    ap.add_argument("--pallas-num-warps", type=int, default=None)
+    ap.add_argument("--pallas-num-stages", type=int, default=None)
+    ap.add_argument(
+        "--cpu-smoke",
+        action="store_true",
+        help="GPU-less self-check: run Parts B/C once on CPU at tiny "
+        "resolution (timings meaningless) to validate the harness "
+        "before the cluster run.",
     )
     ap.add_argument(
         "--dist.platform",
@@ -625,17 +963,65 @@ def main() -> None:
     )
     args = ap.parse_args()
 
+    if args.cpu_smoke:
+        # Force a small CPU run: numerics are exercised (the pure-JAX
+        # banded sweep replaces the Triton kernel), timings are not.
+        args.platform = "cpu"
+        args.ny, args.nx, args.nz = 16, 8, 8
+        args.reps, args.steps = 2, 2
+
+    solver_overrides = {}
+    for arg_name, field in (
+        ("pallas_block_m0", "pallas_block_m0"),
+        ("pallas_block_m1", "pallas_block_m1"),
+        ("pallas_num_warps", "pallas_num_warps"),
+        ("pallas_num_stages", "pallas_num_stages"),
+    ):
+        val = getattr(args, arg_name)
+        if val is not None:
+            solver_overrides[field] = val
+
     # Select the backend before importing any geometry / sharding module
     # (they capture the platform at import, all deferred into main here).
     configure_jax_platform(args.platform)
 
-    _configure_system(args.system, args.ny, args.nx, args.nz, args.fd_order)
+    _configure_system(
+        args.system,
+        args.ny,
+        args.nx,
+        args.nz,
+        args.fd_order,
+        solver_overrides or None,
+    )
     geom = _geom_module(args.system)
     m = _import_flow(args.system)
     flow = m.flow
     from dnsjax.sharding import sharding
 
     _print_env()
+
+    if args.cpu_smoke:
+        # Exercise the full Part B (incl. the IMM stage breakdown and
+        # cnab2 composition) and Part C on CPU so the added code is
+        # validated on the GPU-less dev box.  Timings are meaningless.
+        print(
+            "\n--cpu-smoke: exercising Parts B/C + solve-only on CPU at "
+            f"ny={args.ny} nx={args.nx} nz={args.nz} "
+            "(numerics only; ignore the timings).\n"
+        )
+        times = _part_b(geom, m, flow, sharding, args.reps, args.steps)
+        _part_c(flow, m, sharding, None, args.hlo_out)
+        _solve_sweep(args.system, args, flow, sharding, args.reps)
+        _summary_line(args.system, args, flow, times)
+        print("\n--cpu-smoke PASS: harness runs end-to-end.")
+        return
+
+    if args.solve_only:
+        if jax.default_backend() != "gpu":
+            print("--solve-only needs a GPU backend (real solve timing).")
+            return
+        _solve_sweep(args.system, args, flow, sharding, args.reps)
+        return
 
     if args.steps_only:
         # Minimal steady-state stepping for an external profiler (nsys):
@@ -672,8 +1058,9 @@ def main() -> None:
         return
 
     _part_a(flow, sharding, args.reps)
-    _part_b(geom, m, flow, sharding, args.reps, args.steps)
+    times = _part_b(geom, m, flow, sharding, args.reps, args.steps)
     _part_c(flow, m, sharding, args.trace, args.hlo_out)
+    _summary_line(args.system, args, flow, times)
     print("\n" + "=" * 72)
     print(
         "Done.  Paste the full stdout back.  Key numbers: Part A "

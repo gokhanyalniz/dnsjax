@@ -541,7 +541,17 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
   confirms the pad-to-whole-tiles fix (run on real GPU).
 - `scripts/pallas_solve_profile.py`: GPU diagnostic for where the
   Pallas banded solve's time goes (profiled the matvec transpose
-  sources).
+  sources); also stage-profiles `_imm_iteration` (Cartesian) to size
+  the influence-matrix correction vs the CN-update assembly/solves,
+  reports the true wall-bounded cnab2 apply composition, and sweeps
+  the solve-kernel tile knobs (`--pallas-block-m0/m1`,
+  `--pallas-num-warps/-num-stages`; one process per config).
+  `--solve-only` times just the Lk/Hk solves and emits a greppable
+  `SUMMARY` line (a full run appends one too) for a cheap
+  resolution x tile sweep to pick sane tile defaults across a range
+  (the tile affects only the solve; the FFT-bound step is
+  tile-independent and costly at large planes). `--cpu-smoke`
+  self-checks the harness GPU-free.
 - `scripts/solver_benchmark.py`: pallas-backend validation & benchmark
   vs the dense reference (step + solve timing, factor and peak
   memory, cross-backend parity) plus multi-GPU Pallas correctness
