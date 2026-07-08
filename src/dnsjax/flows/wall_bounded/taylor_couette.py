@@ -3,7 +3,7 @@ r"""Taylor-Couette flow: shear-driven flow in a rotating annulus.
 This module defines the ``TaylorCouetteFlow`` dataclass that holds the
 Taylor-Couette-specific base flow.  Geometry-general infrastructure
 (radial grid on `$[r_1, r_2]$`, FD matrices, IMM operators, the
-`$2 \times 2$` annular IMM iteration, predict / correct / norm, banded /
+`$2 \times 2$` annular IMM iteration, predict / correct / norm, Pallas /
 dense LU solvers) is inherited from
 ``geometries.wall_bounded.annular.AnnularFlow``.
 

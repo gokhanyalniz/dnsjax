@@ -92,7 +92,8 @@ _SNAP_RE = re.compile(r"^state(\d+)\.tar$")
 
 
 def run_unit_checks() -> bool:
-    """Offline unit of ``trajectory_defining_changes`` (no JAX/mpirun)."""
+    """Offline units of ``trajectory_defining_changes`` and the
+    ``read_snapshot_params`` solver-section skip (no JAX/mpirun)."""
     from dnsjax.parameters import params, trajectory_defining_changes
 
     name = "trajectory_defining_changes"
@@ -147,6 +148,37 @@ def run_unit_checks() -> bool:
         assert any(c.startswith("geo.grid_type:") for c in changes), (
             "grid_type change",
             changes,
+        )
+
+        # A legacy snapshot embedding solver params the current model
+        # no longer defines (a retired backend name and its knobs)
+        # must still resume: ``read_snapshot_params`` drops the
+        # execution-only [solver] section before validation.
+        import io
+        import json
+        import tarfile
+        import tempfile
+        from pathlib import Path
+
+        from dnsjax.parameters import read_snapshot_params
+        from dnsjax.snapshot_meta import META_MEMBER
+
+        legacy = params.model_dump(mode="json")
+        legacy["solver"] = {
+            "backend": "some-retired-backend",
+            "retired_knob": 8,
+        }
+        payload = json.dumps({"params": legacy}).encode()
+        with tempfile.NamedTemporaryFile(suffix=".tar") as fh:
+            with tarfile.open(fh.name, "w") as tf:
+                info = tarfile.TarInfo(META_MEMBER)
+                info.size = len(payload)
+                tf.addfile(info, io.BytesIO(payload))
+            loaded = read_snapshot_params(Path(fh.name))
+        assert loaded is not None, "legacy snapshot params unreadable"
+        assert loaded.solver.backend == "pallas", (
+            "retired solver params inherited",
+            loaded.solver,
         )
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")

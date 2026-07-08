@@ -59,7 +59,7 @@ class Distribution(BaseModel):
     the spanwise axis (`$z$`) in physical space and the
     streamwise-wavenumber axis (`$k_x$`) in spectral space.
     Each device holds the full wall-normal extent in spectral
-    space, so FD / SPIKE solves are unchanged.
+    space, so FD solves are unchanged.
 
     When ``np0 == 1`` (default), the decomposition collapses
     to the original 1D scheme (only `$k_x$` / `$z$`
@@ -568,43 +568,37 @@ class Termination(BaseModel):
 class Solver(BaseModel):
     """Numerical-kernel execution configuration.
 
-    Linear-solver backends (banded / dense / pallas) and
-    pseudo-spectral transform batching.  These knobs select *how* the
-    numerics are executed (speed / memory trade-offs), never the
-    results.
+    Linear-solver backends (pallas / dense) and pseudo-spectral
+    transform batching.  These knobs select *how* the numerics are
+    executed (speed / memory trade-offs), never the results.
     """
 
-    # ``"pallas"`` (default): one-program-per-mode sequential banded
-    # sweep via a Pallas/Triton kernel (GPU) -- the single-GPU
-    # throughput target *and* the smallest operator storage
-    # (``O(N_y p)`` banded factors per mode; storage ordering:
-    # pallas < banded < dense).  Uses a no-pivot banded LU, falling
-    # back per operator group to the pivoted ``"banded"`` (SPIKE)
-    # solver when unstable or when ``pallas_force_pivoting`` is set
-    # (see ``solvers.py``).  Implemented for all wall-bounded
-    # geometries (cartesian, cylindrical, annular); the operators are
-    # assembled directly in banded storage by each geometry's
-    # ``_build_{Lk,Hk}_band_gpu`` via the shared
-    # ``solvers._assemble_banded_operator`` helper.  The solve is a
-    # shard_map-local region (each device runs the kernel on its local
-    # mode-plane block; no communication), so the multi-device wiring
-    # is in place and CPU-multi-device is test-covered.  Caveats: on
-    # CPU the same banded math runs as a sequential pure-JAX sweep
-    # (the correctness oracle, slower than SPIKE -- set ``"banded"``
-    # for CPU-heavy production work), and real multi-**GPU** execution
-    # of the Pallas kernel is still pending cluster validation --
-    # prefer ``"banded"`` for multi-GPU production until then.
-    # ``"banded"``: SPIKE block-partitioned solver (memory-efficient,
-    # exploits the known stencil bandwidth of D1, D2; pivoted, robust
-    # on every platform and device count).
-    # ``"dense"``: full ``Ny x Ny`` LU factors per Fourier mode
-    # (legacy path, kept for verification against the banded paths).
-    backend: Literal["banded", "dense", "pallas"] = "pallas"
-    # ``"pallas"`` backend only: force the pivoted SPIKE fallback for
-    # every operator group instead of the no-pivot banded LU.  Default
-    # ``False`` decides per group from a setup-time stability residual
-    # (a diagnostic line is printed either way).
-    pallas_force_pivoting: bool = False
+    # ``"pallas"`` (the default for all wall-bounded systems): the
+    # production backend -- a one-program-per-mode sequential banded
+    # sweep via a Pallas/Triton kernel on GPU (single- and multi-GPU
+    # validated 2026-07), the same banded math as a sequential
+    # pure-JAX sweep on CPU, and the smallest operator storage
+    # (``O(N_y p)`` no-pivot banded factors per mode vs the dense
+    # ``O(N_y^2)``).  Operators are assembled directly in banded
+    # storage by each geometry's ``_build_{Lk,Hk}_band_gpu`` via the
+    # shared ``solvers._assemble_banded_operator`` helper, then
+    # factored and stability-checked once at setup by
+    # ``solvers._build_pallas_operator`` (an unstable no-pivot LU is
+    # a hard error; a merely ill-conditioned operator prints a notice
+    # -- see ``pallas_stability_tol``).  The solve is a
+    # shard_map-local region (each device runs the kernel on its
+    # local mode-plane block; no communication).
+    # ``"dense"``: full ``Ny x Ny`` pivoted LU factors per Fourier
+    # mode.  The *reference* backend: the mathematically readable
+    # formulation of the operators and the regression oracle the
+    # Pallas path is tested against -- not a production backend (a
+    # wall-bounded run selecting it prints a warning).
+    # Triply-periodic systems have no wall-normal matrix solves (the
+    # implicit step is diagonal in spectral space): ``"dense"`` (the
+    # reference semantics) is their only backend, the default
+    # resolves to it in ``update_parameters()``, and ``"pallas"`` is
+    # rejected there.
+    backend: Literal["pallas", "dense"] = "pallas"
     # ``"pallas"`` backend only: Pallas mode-tile size along the ``k_z``
     # mode axis (one Pallas program solves a ``bm0 x bm1`` tile of
     # Fourier modes, vectorising the banded sweep across the tile).  ``1``
@@ -624,10 +618,13 @@ class Solver(BaseModel):
     # load fully coalesces.  Same internal padding to full tiles as
     # ``pallas_block_m0``.  Must be a power of two.
     pallas_block_m1: int = Field(ge=1, default=32)
-    # ``"pallas"`` backend only: no-pivot banded-LU stability threshold
-    # (max relative solve residual ``||A x - b|| / ||b||`` over modes,
-    # measured once at setup).  Above it, the operator group falls back
-    # to the pivoted SPIKE solver.
+    # ``"pallas"`` backend only: solve-residual threshold for the
+    # setup-time no-pivot banded-LU stability check (max relative
+    # residual ``||A x - b|| / ||b||`` over modes, measured once per
+    # operator group).  Above it, ``solvers._build_pallas_operator``
+    # prints an ill-conditioning notice (benign LU element growth) or
+    # raises on genuine no-pivot instability (see
+    # ``solvers._NO_PIVOT_GROWTH_TOL``).
     pallas_stability_tol: float = Field(gt=0, default=1e-6)
     # ``"pallas"`` backend only: Triton ``num_warps`` for the kernel
     # (warps per Pallas program).  ``None`` lets Triton choose; ``1``
@@ -637,24 +634,6 @@ class Solver(BaseModel):
     # ``"pallas"`` backend only: Triton ``num_stages`` (software
     # pipelining depth) for the kernel.  ``None`` lets Triton choose.
     pallas_num_stages: int | None = Field(default=None, ge=1)
-    # Target SPIKE block size `$m$`.  When set, `$P = N_y / m$`.
-    # When ``None`` (default), the block partition that minimises
-    # total per-mode SPIKE storage under the selected
-    # reduced-system form (``block_thomas``) is chosen
-    # automatically.  Use ``scripts/spike_partition_info.py`` to
-    # explore the memory / latency trade-off for a resolution.
-    spike_block_size: int | None = None
-    # Use block-Thomas ``lax.scan`` solves for the SPIKE reduced
-    # system: `$O(P p^2)$` memory, but `$2(P-1)$` *sequential*
-    # scan steps of kernel-launch latency per solve, and its
-    # memory-optimal partitions drift to large `$P$` / small
-    # stage-1 blocks.  The default ``False`` solves the reduced
-    # system as one batched dense LU solve (`$O(P^2 p^2)$`
-    # memory): no sequential launches and larger stage-1 blocks,
-    # costing ~28-30% more total SPIKE factor storage at the
-    # respective memory-optimal partitions (p = 4).  Set ``True``
-    # for memory-tight runs.
-    block_thomas: bool = False
     # Chunk count for the batched inverse transform of the fused
     # viscoelastic RHS (~36 fields; see ``_get_rhs_core`` in
     # ``geometries/wall_bounded/annular_viscoelastic.py``).  ``1``
@@ -827,8 +806,8 @@ def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
     standard-library :mod:`dnsjax.snapshot_meta`; no JAX import, so it is
     safe to call before the distributed backend is configured) and
     returns the embedded ``params`` as a :class:`Parameters`, with the
-    JAX-setup fields in :data:`_SNAPSHOT_SKIP_FIELDS` removed so they are
-    not inherited.
+    JAX-setup fields in :data:`_SNAPSHOT_SKIP_FIELDS` and the whole
+    ``solver`` section removed so they are not inherited.
 
     Returns ``None`` when *snapshot_path* is not a dnsjax snapshot file
     (legacy ``.npz`` snapshots, a laminar start, or a missing path), so
@@ -847,6 +826,11 @@ def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
     for section, key in _SNAPSHOT_SKIP_FIELDS:
         if section in snap and key in snap[section]:
             snap[section].pop(key)
+    # Solver knobs are execution-only (they select *how* the numerics
+    # run, never the results), so they are never inherited from a
+    # snapshot -- which also keeps snapshots that embed a retired
+    # backend/field resumable.
+    snap.pop("solver", None)
     return Parameters.model_validate(snap)
 
 
@@ -1063,6 +1047,26 @@ def update_parameters(params_new: Parameters) -> None:
             "plane-poiseuille": 2.0 / 3.0,
         }.get(system, 0.0)
 
+    # Resolve the solver backend's per-family default.  Triply-periodic
+    # systems have no wall-normal matrix solves (the implicit step is
+    # diagonal in spectral space), so ``"dense"`` (the reference
+    # semantics) is their only backend; wall-bounded systems default to
+    # the ``"pallas"`` production backend.  Re-resolved on every layer
+    # application, so a later ``system`` override cannot inherit a
+    # stale family default.
+    if ("solver", "backend") not in _user_set_fields:
+        params.solver.backend = (
+            "dense" if system in periodic_systems else "pallas"
+        )
+    elif system in periodic_systems and params.solver.backend == "pallas":
+        raise ValueError(
+            "solver.backend='pallas' is not available for "
+            "triply-periodic systems: their implicit solves are "
+            "diagonal in spectral space, with no banded structure to "
+            "solve; 'dense' (the reference semantics) is the only "
+            "backend there."
+        )
+
     # Select tilting parameters to exact precision for special angles
     if abs(params.geo.tilt_degree) == 0:
         derived_params.tilt_rad = 0
@@ -1147,6 +1151,20 @@ def validate_parameters() -> None:
                 f"solver.{name} ({v}) must be a power of two "
                 "(Triton block-load constraint)."
             )
+
+    # The dense backend is a readability/regression reference, not a
+    # production path; nudge wall-bounded production runs back to the
+    # default.  Plain ``print``: this runs before JAX is configured.
+    if (
+        params.solver.backend == "dense"
+        and params.phys.system in walled_systems
+    ):
+        print(
+            "[solver] backend='dense' selected: full Ny x Ny per-mode "
+            "LU factors -- a reference backend kept for readability "
+            "and regression checks; prefer the default 'pallas' "
+            "backend for production runs."
+        )
 
 
 @dataclass

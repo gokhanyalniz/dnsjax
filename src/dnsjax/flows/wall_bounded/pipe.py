@@ -5,7 +5,7 @@ pipe-flow-specific base flow.  Geometry-general infrastructure
 (radial CGL grid -- rigged-CGL by default, half-CGL via
 ``geo.grid_type``, parity-reduced FD
 matrices, IMM operators, cylindrical IMM iteration, predict /
-correct / norm, banded / dense LU solvers) is inherited from
+correct / norm, Pallas / dense LU solvers) is inherited from
 ``geometries.wall_bounded.cylindrical.CylindricalFlow``.
 
 It also exports the flow interface consumed by ``__main__``:

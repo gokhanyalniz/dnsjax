@@ -179,15 +179,18 @@ timestep.py           make_stepper() factory:
 fd.py                 NumPy-only FD utilities (JAX-free): Fornberg
                       D1/D2, quadrature rules, interpolation matrices,
                       tanh grids
-solvers.py            Geometry-independent solvers: DenseJAXSolver,
-                      PerModeBandedOperator (SPIKE),
-                      PerModeBandedPallasOperator (mode-tiled Triton
-                      banded sweep on GPU, pure-JAX sweep on CPU;
-                      no-pivot LU + pivoted-SPIKE fallback; mode-inner
-                      .solve contract, a shard_map-local region with
-                      per-shard tile-padded factors; shared
-                      banded-assembly helpers used by every geometry)
-                      -- see _pallas_banded_solve / .solve docstrings
+solvers.py            Geometry-independent solvers: DenseJAXSolver
+                      (reference/oracle), PerModeBandedPallasOperator
+                      (production: mode-tiled Triton banded sweep on
+                      GPU, pure-JAX sweep on CPU; no-pivot LU checked
+                      once at setup by _build_pallas_operator --
+                      hard error on genuine instability,
+                      notice-and-proceed on ill-conditioning;
+                      mode-inner .solve contract, a shard_map-local
+                      region with per-shard tile-padded factors;
+                      shared banded-assembly helpers used by every
+                      geometry) -- see _pallas_banded_solve / .solve
+                      docstrings
 snapshot.py           Single-file (tar/zarr3) snapshot save/load, raw
                       offset I/O (GDS or host); assemble_local_shards
 snapshot_meta.py      Stdlib-only (JAX-free) snapshot tar metadata
@@ -338,10 +341,8 @@ changed `u_grid` on resume is trajectory-defining. Detail: the
 classes, and Fourier classes as JAX pytrees. See its docstring.
 
 **Performance/memory trade-offs** (detail lives in the owning
-docstrings/comments): operator storage & GPU speed order pallas <
-banded < dense (`solver.backend` comments in `parameters.py`); SPIKE
-reduced-system memory vs latency (`solver.block_thomas` /
-`spike_block_size` comments, `scripts/spike_partition_info.py`);
+docstrings/comments): the pallas backend beats dense in both operator
+storage and speed (`solver.backend` comments in `parameters.py`);
 Pallas whole-tile mode-plane padding — factors pre-padded once at
 construction, per device shard inside the shard_map-local solve,
 overhead matters only for small planes
@@ -383,7 +384,7 @@ the schemes, `Solver` for the Pallas knobs). Key fields:
 | `[step]`   | `dt`, `scheme` (`"iterative-cn"` / `"cnab2"`, both supported for every flow), `implicitness`, `corrector_tolerance`, `max_corrector_iterations`, `implicit_mean_coupling` |
 | `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601), `check_laminarization` (default on; terminate when `E'` < `laminarization_threshold`, default `1e-9`) |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
-| `[solver]` | `backend` (`"pallas"` default / `"banded"` / `"dense"`; `banded` recommended for CPU-heavy or multi-GPU work until multi-GPU Pallas is validated), `pallas_force_pivoting`, `pallas_block_m0`/`m1` (mode tile, default 2/32), `pallas_stability_tol`, `pallas_num_warps`/`pallas_num_stages`, `spike_block_size`, `block_thomas`, `rhs_transform_chunks` (viscoelastic RHS memory knob) |
+| `[solver]` | `backend` (`"pallas"` default for wall-bounded / `"dense"` reference -- readable + regression oracle, warns on wall-bounded runs; periodic systems resolve to `"dense"`, their only backend), `pallas_block_m0`/`m1` (mode tile, default 2/32), `pallas_stability_tol`, `pallas_num_warps`/`pallas_num_stages`, `rhs_transform_chunks` (viscoelastic RHS memory knob) |
 
 The default `parameters.toml` contains only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`; `[dist]` and
@@ -493,8 +494,6 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
 
 ## Scripts
 
-- `scripts/spike_partition_info.py`: display SPIKE block-partition
-  trade-offs for a given resolution.
 - `scripts/snapshot_import.py`: **library** (not a CLI) converting a
   velocity field already in dnsjax's native component/axis structure
   into a single-file snapshot. Public API: `configure_target`,
@@ -509,19 +508,20 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
 - `scripts/pallas_solve_profile.py`: GPU diagnostic for where the
   Pallas banded solve's time goes (profiled the matvec transpose
   sources).
-- `scripts/solver_benchmark.py`: solver-backend bake-off
-  (pallas/banded/dense step + solve timing, factor and peak memory,
-  cross-backend parity) plus multi-GPU Pallas correctness validation
-  via mpirun runs and JAX-free `dnsjax.analysis` snapshot diffs;
-  `--cpu-bench` CPU backend timing, `--cpu-smoke` GPU-less harness
-  self-check. Data source for the SPIKE-retirement gates.
+- `scripts/solver_benchmark.py`: pallas-backend validation & benchmark
+  vs the dense reference (step + solve timing, factor and peak
+  memory, cross-backend parity) plus multi-GPU Pallas correctness
+  validation via mpirun runs and JAX-free `dnsjax.analysis` snapshot
+  diffs, with a SLURM launch-preflight ladder; `--cpu-bench` CPU
+  backend timing, `--cpu-smoke` GPU-less harness self-check.
 - `scripts/pivot_stability_survey.py`: CPU survey of the no-pivot
-  banded-LU residual per operator group across the supported config
-  space -- does any real configuration trigger the pivoted SPIKE
-  fallback? (Finding: only near-singular-Poisson *conditioning* on
-  the smallest-nonzero-`k²` `Lk` mode crosses the tolerance -- huge
-  boxes / large `ny` / strong tanh stretch -- not pivot instability;
-  pivoting gains only ~8x there.)
+  banded-LU residual and LU element growth per operator group across
+  the supported config space -- does any real configuration trip the
+  pallas setup stability error or the ill-conditioning notice?
+  (Finding: none; only near-singular-Poisson *conditioning* on the
+  smallest-nonzero-`k²` `Lk` mode approaches the residual tolerance
+  -- huge boxes / large `ny` / strong tanh stretch -- with `O(1)`
+  element growth throughout, orders below the hard-error bound.)
 
 ## Tests
 
@@ -547,9 +547,9 @@ one-liners. Cross-cutting notes:
   odd" in the 3/2-rule dealiasing (nz=6 fails, nz=8/32 work; the real
   axis nx=6 is fine -- different rule).
 
-- `tests/test_banded_solver.py`: geometry-independent SPIKE + Pallas
-  banded backend (interpret parity incl. pad-to-whole-tiles,
-  compile-only cuda-lowering guard, `_decide_pallas_or_spike`).
+- `tests/test_banded_solver.py`: geometry-independent Pallas banded
+  backend (interpret parity incl. pad-to-whole-tiles, compile-only
+  cuda-lowering guard, `_build_pallas_operator` check contract).
 - `tests/test_banded_solver_sharded.py`: shard_map-local Pallas solve
   on a forced (2, 2) mesh (per-shard factor tile padding, sharded
   `.solve` oracle parity, component-axis layouts).
@@ -557,7 +557,7 @@ one-liners. Cross-cutting notes:
   band-vs-dense parity.
 - `tests/test_cylindrical.py`: cylindrical operator/matvec tests +
   Pallas band-vs-dense parity (guards the shared-assembly refactor).
-- `tests/test_annular.py`: annular operator/matvec tests, SPIKE- and
+- `tests/test_annular.py`: annular operator/matvec tests,
   Pallas-vs-dense parity, circular-Couette A0/B0 checks.
 - `tests/test_viscoelastic.py`: sPTT conformation-tensor machinery
   (spin conversions, tensor Laplacian vs reference, laminar fixed
@@ -583,8 +583,9 @@ one-liners. Cross-cutting notes:
   standard-tools readability, 9-component viscoelastic case, isnap /
   stats members.
 - `tests/test_resume.py`: snapshot lineage and resume policy (offline
-  `trajectory_defining_changes` + grid-validation units; mpirun
-  integration; `--unit-only` to skip the latter).
+  `trajectory_defining_changes` + solver-section-skip +
+  grid-validation units; mpirun integration; `--unit-only` to skip
+  the latter).
 - `tests/test_snapshot_import.py`: `scripts/snapshot_import.py`
   native-contract validation (offline).
 - `tests/test_snapshot_export.py`: `dnsjax.analysis` API vs solver

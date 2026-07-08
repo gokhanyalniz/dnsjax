@@ -12,7 +12,7 @@ azimuthal pressure gradient)
 with no-slip walls (all velocity components vanish at `$r_1$` and
 `$r_2$`).  Geometry-general infrastructure (radial grid on
 `$[r_1, r_2]$`, FD matrices, IMM operators, the `$2 \times 2$` annular
-IMM iteration, predict / correct / norm, banded / dense solvers) is
+IMM iteration, predict / correct / norm, Pallas / dense solvers) is
 inherited from :class:`~dnsjax.geometries.wall_bounded.annular.AnnularFlow`.
 
 Total-field formulation

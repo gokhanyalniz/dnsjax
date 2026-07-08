@@ -1,13 +1,10 @@
 """Unit tests for the geometry-independent linear solvers.
 
-SPIKE: factorisation + solve round-trips for a random banded matrix
-with both real and complex RHS (multi-block ``P >= 2`` partition).
-
 Pallas banded backend (``PerModeBandedPallasOperator``):
 
 1. Pure-JAX banded-sweep path and Pallas interpret-mode parity vs
-   SPIKE/dense over an ``fd_order`` sweep, real + complex RHS, single
-   + stacked operators (built via ``from_banded_factors`` into the
+   dense over an ``fd_order`` sweep, real + complex RHS, single +
+   stacked operators (built via ``from_banded_factors`` into the
    mode-inner layout).
 2. The interpret-parity test sweeps two mode-plane sizes so the
    ``(bm0, bm1)`` tile does *not* divide the plane, exercising the
@@ -18,8 +15,10 @@ Pallas banded backend (``PerModeBandedPallasOperator``):
    custom call, catching the f64-TMA / non-power-of-two /
    value-slice lowering regressions and the padded-plane lowering at
    IR generation.
-4. ``_decide_pallas_or_spike``: auto no-pivot choice,
-   ``force_pivoting``, and the unstable-LU fallback to pivoted SPIKE.
+4. ``_build_pallas_operator``: a healthy operator builds and solves;
+   a no-pivot breakdown or genuine element growth hard-errors; an
+   above-tolerance residual with benign growth prints the
+   ill-conditioning notice and proceeds.
 
 The interpret/lowering tests call ``_pallas_banded_solve`` directly
 with local, uncommitted factors (``_mode_inner_factors``; in
@@ -55,14 +54,16 @@ from dnsjax.parameters import (
 configure_jax_platform(platform_from_argv())
 
 # Mutate global ``params`` before importing any dnsjax module that
-# captures values from it.  Ny = 16 allows a genuine multi-block SPIKE
-# partition (P = 2, m = 8) at fd_order = 4.
+# captures values from it.
 params.phys.system = "plane-couette"
 params.res.nx = 4
 params.res.ny = 16
 params.res.nz = 4
 params.res.fd_order = 4
 params.res.double_precision = True
+
+import contextlib  # noqa: E402
+import io  # noqa: E402
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
@@ -71,14 +72,12 @@ from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
-    PerModeBandedOperator,
     PerModeBandedPallasOperator,
     _banded_factor,
     _banded_from_dense,
     _banded_solve_batched,
-    _decide_pallas_or_spike,
+    _build_pallas_operator,
     _pallas_banded_solve,
-    _spike_factor,
     _stack_pallas_operators,
 )
 
@@ -95,91 +94,6 @@ def _make_random_banded(Ny: int, p: int, seed: int) -> np.ndarray:
         A[i, j_lo:j_hi] = rng.standard_normal(j_hi - j_lo)
     A += 10.0 * np.eye(Ny)
     return A
-
-
-def _extract_spike_blocks(
-    A: np.ndarray, P: int, m: int, p: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Extract diagonal blocks and coupling corners from a banded matrix."""
-    A_blocks = np.zeros((P, m, m))
-    B_corner = np.zeros((P, p, p))
-    C_corner = np.zeros((P, p, p))
-    for i in range(P):
-        r0 = i * m
-        A_blocks[i] = A[r0 : r0 + m, r0 : r0 + m]
-        if i < P - 1:
-            B_corner[i] = A[r0 + m - p : r0 + m, r0 + m : r0 + m + p]
-        if i > 0:
-            C_corner[i] = A[r0 : r0 + p, r0 - p : r0]
-    return A_blocks, B_corner, C_corner
-
-
-# ── tests ────────────────────────────────────────────────────────────
-
-
-def _run_spike_solve(
-    A: np.ndarray,
-    P: int,
-    m: int,
-    p: int,
-    block_thomas: bool,
-    seed_rhs: int = 10,
-) -> None:
-    """Check SPIKE solve matches np.linalg.solve (both paths)."""
-    Ny = P * m
-    A_blk, B_crn, C_crn = _extract_spike_blocks(A, P, m, p)
-
-    Nkz = params.res.nz - 1
-    Nkx = params.res.nx // 2
-    A_j = jax.device_put(
-        jnp.tile(jnp.asarray(A_blk)[None, None], (Nkz, Nkx, 1, 1, 1)),
-        sharding.spec_dy_blocks_shard,
-    )
-    B_j = jnp.tile(jnp.asarray(B_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
-    C_j = jnp.tile(jnp.asarray(C_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
-
-    op = _spike_factor(A_j, B_j, C_j, block_thomas=block_thomas)
-
-    rng = np.random.default_rng(seed_rhs)
-    b = rng.standard_normal(Ny)
-    rhs = jax.device_put(
-        jnp.tile(jnp.asarray(b)[:, None, None], (1, Nkz, Nkx)),
-        sharding.spec_scalar_shard,
-    )
-    x = np.asarray(op.solve(rhs))[:, 0, 0]
-    assert_allclose(x, np.linalg.solve(A, b), atol=1e-10, rtol=1e-10)
-
-    b_c = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
-    rhs_c = jax.device_put(
-        jnp.tile(jnp.asarray(b_c)[:, None, None], (1, Nkz, Nkx)),
-        sharding.spec_scalar_shard,
-    )
-    x_c = np.asarray(op.solve(rhs_c))[:, 0, 0]
-    assert_allclose(x_c, np.linalg.solve(A, b_c), atol=1e-10, rtol=1e-10)
-
-
-def test_spike_solve_random() -> None:
-    """SPIKE solve (dense reduced) matches np.linalg.solve."""
-    Ny, p = 32, 4
-    P, m = 4, 8
-    A = _make_random_banded(Ny, p, seed=0)
-    _run_spike_solve(A, P, m, p, block_thomas=False)
-
-
-def test_spike_solve_block_thomas() -> None:
-    """SPIKE solve (block-Thomas reduced) matches np.linalg.solve."""
-    Ny, p = 32, 4
-    P, m = 4, 8
-    A = _make_random_banded(Ny, p, seed=0)
-    _run_spike_solve(A, P, m, p, block_thomas=True)
-
-
-def test_spike_solve_block_thomas_p2() -> None:
-    """Block-Thomas with minimum P=2."""
-    Ny, p = 16, 4
-    P, m = 2, 8
-    A = _make_random_banded(Ny, p, seed=42)
-    _run_spike_solve(A, P, m, p, block_thomas=True)
 
 
 # ── Pallas banded backend tests (CPU: pure-JAX path + interpret) ──────
@@ -213,20 +127,6 @@ def _mode_inner_factors(Lo: jnp.ndarray, Uo: jnp.ndarray):
     Li = jnp.moveaxis(Lo, (-2, -1), (0, 1))
     Ui = jnp.moveaxis(Uo, (-2, -1), (0, 1))
     return Li, Ui.at[:, 0].set(1.0 / Ui[:, 0])
-
-
-def _spike_op_from_dense(
-    A: np.ndarray, P: int, m: int, p: int, Nkz: int, Nkx: int
-) -> PerModeBandedOperator:
-    """Build a SPIKE operator from one dense banded matrix."""
-    A_blk, B_crn, C_crn = _extract_spike_blocks(A, P, m, p)
-    A_j = jax.device_put(
-        jnp.tile(jnp.asarray(A_blk)[None, None], (Nkz, Nkx, 1, 1, 1)),
-        sharding.spec_dy_blocks_shard,
-    )
-    B_j = jnp.tile(jnp.asarray(B_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
-    C_j = jnp.tile(jnp.asarray(C_crn)[None, None], (Nkz, Nkx, 1, 1, 1))
-    return _spike_factor(A_j, B_j, C_j, block_thomas=False)
 
 
 def test_pallas_banded_matches_dense() -> None:
@@ -441,12 +341,14 @@ def test_pallas_stacked_operators() -> None:
         )
 
 
-def test_decide_pallas_auto_force_and_fallback() -> None:
-    """``_decide_pallas_or_spike``: auto picks Pallas for a
-    well-conditioned operator, ``force_pivoting`` picks SPIKE, and a
-    no-pivot breakdown falls back to SPIKE -- all solving correctly."""
+def test_build_pallas_operator_checks() -> None:
+    """``_build_pallas_operator``: a healthy operator builds a working
+    Pallas operator; a no-pivot breakdown (zero leading pivot) and
+    genuine element growth (tiny leading pivot) hard-error; an
+    above-tolerance residual with benign growth prints the
+    ill-conditioning notice and still builds."""
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
-    p, Ny, P, m = 4, 16, 2, 8
+    p, Ny = 4, 16
     A = _make_random_banded(Ny, p, seed=0)
     band = _banded_from_dense(_tile_modes(A, Nkz, Nkx), p)
     rng = np.random.default_rng(5)
@@ -454,34 +356,48 @@ def test_decide_pallas_auto_force_and_fallback() -> None:
     rhs = jnp.tile(jnp.asarray(b)[:, None, None], (1, Nkz, Nkx))
     ref = np.linalg.solve(A, b)
 
-    def make_spike() -> PerModeBandedOperator:
-        return _spike_op_from_dense(A, P, m, p, Nkz, Nkx)
+    op = _build_pallas_operator([band], "auto")
+    assert isinstance(op, PerModeBandedPallasOperator)
+    assert_allclose(np.asarray(op.solve(rhs))[:, 0, 0], ref, atol=1e-9)
 
-    op_auto = _decide_pallas_or_spike([band], False, "auto", make_spike)
-    assert isinstance(op_auto, PerModeBandedPallasOperator)
-    assert_allclose(np.asarray(op_auto.solve(rhs))[:, 0, 0], ref, atol=1e-9)
-
-    op_force = _decide_pallas_or_spike([band], True, "force", make_spike)
-    assert isinstance(op_force, PerModeBandedOperator)
-    assert_allclose(np.asarray(op_force.solve(rhs))[:, 0, 0], ref, atol=1e-9)
-
-    # Zero leading pivot: no-pivot LU breaks -> fall back to SPIKE.
+    # Zero leading pivot: the no-pivot LU breaks down (non-finite
+    # factors) -> hard error.
     A_bad = _make_random_banded(Ny, p, seed=0)
     A_bad[0, 0] = 0.0
     band_bad = _banded_from_dense(_tile_modes(A_bad, Nkz, Nkx), p)
-    b2 = rng.standard_normal(Ny)
-    rhs2 = jnp.tile(jnp.asarray(b2)[:, None, None], (1, Nkz, Nkx))
+    try:
+        _build_pallas_operator([band_bad], "breakdown")
+    except RuntimeError as err:
+        assert "unstable" in str(err)
+    else:
+        raise AssertionError("zero-pivot breakdown did not raise")
 
-    def make_spike_bad() -> PerModeBandedOperator:
-        return _spike_op_from_dense(A_bad, P, m, p, Nkz, Nkx)
+    # Tiny leading pivot: finite factors, but the elimination
+    # multiplies through 1/A[0,0] -> explosive element growth.
+    A_grow = _make_random_banded(Ny, p, seed=1)
+    A_grow[0, 0] = 1e-12
+    band_grow = _banded_from_dense(_tile_modes(A_grow, Nkz, Nkx), p)
+    try:
+        _build_pallas_operator([band_grow], "growth")
+    except RuntimeError as err:
+        assert "unstable" in str(err)
+    else:
+        raise AssertionError("element growth did not raise")
 
-    op_fb = _decide_pallas_or_spike([band_bad], False, "fb", make_spike_bad)
-    assert isinstance(op_fb, PerModeBandedOperator)
-    assert_allclose(
-        np.asarray(op_fb.solve(rhs2))[:, 0, 0],
-        np.linalg.solve(A_bad, b2),
-        atol=1e-9,
-    )
+    # Residual above tolerance with benign growth (tolerance squeezed
+    # below any attainable float64 residual): the ill-conditioning
+    # notice is printed and a working Pallas operator is still built.
+    tol0 = params.solver.pallas_stability_tol
+    params.solver.pallas_stability_tol = 1e-300
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            op_cond = _build_pallas_operator([band], "cond")
+    finally:
+        params.solver.pallas_stability_tol = tol0
+    assert isinstance(op_cond, PerModeBandedPallasOperator)
+    assert "ill-conditioned" in buf.getvalue()
+    assert_allclose(np.asarray(op_cond.solve(rhs))[:, 0, 0], ref, atol=1e-9)
 
 
 # ── Runner ───────────────────────────────────────────────────────────

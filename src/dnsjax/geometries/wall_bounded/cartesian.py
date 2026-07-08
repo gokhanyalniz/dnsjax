@@ -41,16 +41,12 @@ from ...rhs import get_nonlin
 from ...sharding import register_dataclass_pytree, sharding
 from ...solvers import (
     DenseJAXSolver,
-    PerModeBandedOperator,
     PerModeBandedPallasOperator,
     _assemble_banded_operator,
     _banded_diag_column,
     _banded_from_dense,
     _banded_wall_row,
-    _decide_pallas_or_spike,
-    _extract_banded_corners,
-    _spike_factor,
-    validate_spike_partition,
+    _build_pallas_operator,
 )
 from ._base import (
     apply_y_matrix,
@@ -271,171 +267,6 @@ def build_cartesian_grid(
     return ys, D1, D2, y_weights
 
 
-# ── SPIKE block-partitioned operator builders ─────────────────────
-
-
-def _build_Lk_blocks_gpu(
-    D1: Array,
-    D2: Array,
-    k2: Array,
-    mean_mask: Array,
-    p: int,
-    P: int,
-    m: int,
-) -> tuple[Array, Array, Array]:
-    r"""Build SPIKE block-partitioned `$L_k$` on GPU.
-
-    The Neumann-BC pressure Poisson operator
-    `$L_k = D_2 - k^2 I$` (with `$D_1$` wall rows for
-    `$k^2 \ne 0$` and a top-wall pin for the mean mode,
-    the only `$k^2 = 0$` system) is assembled directly
-    into per-block dense form for the SPIKE
-    factorisation.  No `$(N_y, N_y)$` matrix is
-    materialised.
-
-    Parameters
-    ----------
-    D1:
-        First-derivative matrix, shape ``(Ny, Ny)``.
-    D2:
-        Second-derivative matrix, shape ``(Ny, Ny)``.
-    k2:
-        `$k_x^2 + k_z^2$`, shape ``(Nkz, Nkx, 1)``.
-    mean_mask:
-        Mean-mode boolean mask, same shape as *k2*.
-    p:
-        FD order (half-bandwidth).
-    P:
-        Number of SPIKE blocks.
-    m:
-        Block size (``Ny // P``).
-
-    Returns
-    -------
-    A_blocks:
-        Diagonal blocks, shape
-        ``(N_{kz}, N_{kx}, P, m, m)``.
-    B_corner:
-        Right-coupling corners, shape
-        ``(N_{kz}, N_{kx}, P, p, p)``.
-        Zero for the last block.
-    C_corner:
-        Left-coupling corners, shape
-        ``(N_{kz}, N_{kx}, P, p, p)``.
-        Zero for the first block.
-    """
-    dtype = D2.dtype
-    eye_m = jnp.eye(m, dtype=dtype)
-
-    # Diagonal blocks of D2 (mode-independent).
-    A_D2 = jnp.stack(
-        [D2[i * m : (i + 1) * m, i * m : (i + 1) * m] for i in range(P)]
-    )  # (P, m, m)
-
-    # Lk = D2 - k2 * I, broadcast across (Nkz, Nkx).
-    A_blocks = (
-        A_D2[None, None] - k2[..., None, None] * eye_m
-    )  # (Nkz, Nkx, P, m, m)
-
-    # Row 0 (block 0, local row 0): D1[0,:m] for all modes.
-    D1_row0 = D1[0, :m]
-    A_blocks = A_blocks.at[:, :, 0, 0, :].set(D1_row0[None, None])
-
-    # Row Ny-1 (block P-1, local row m-1): D1[-1,:] for
-    # all modes, pin row [...,0,1] at the mean mode.
-    D1_rowN = D1[-1, (P - 1) * m :]
-    pin_row = jnp.zeros(m, dtype=dtype).at[-1].set(1.0)
-    rowN = jnp.where(mean_mask, pin_row, D1_rowN)
-    A_blocks = A_blocks.at[:, :, -1, -1, :].set(rowN)
-
-    # Coupling corners (mode-independent, from D2).
-    B_raw, C_raw = _extract_banded_corners(D2, P, m, p)
-    batch = k2.shape[:2] + (P, p, p)
-    B_corner = jnp.broadcast_to(B_raw[None, None], batch)
-    C_corner = jnp.broadcast_to(C_raw[None, None], batch)
-
-    return A_blocks, B_corner, C_corner
-
-
-def _build_Hk_blocks_gpu(
-    D2: Array,
-    k2: Array,
-    dt: float,
-    c: float,
-    nu: float,
-    p: int,
-    P: int,
-    m: int,
-) -> tuple[Array, Array, Array]:
-    r"""Build SPIKE block-partitioned `$H_k$` on GPU.
-
-    The implicit Helmholtz operator
-    `$H_k = (1/\Delta t) I - c \nu (D_2 - k^2 I)$`
-    with identity (Dirichlet) wall rows is assembled
-    directly into per-block dense form.  No
-    `$(N_y, N_y)$` matrix is materialised.
-
-    Parameters
-    ----------
-    D2:
-        Second-derivative matrix, shape ``(Ny, Ny)``.
-    k2:
-        `$k_x^2 + k_z^2$`, shape ``(Nkz, Nkx, 1)``.
-    dt:
-        Time step.
-    c:
-        Implicitness parameter.
-    nu:
-        Kinematic viscosity `$1/\mathrm{Re}$`.
-    p:
-        FD order (half-bandwidth).
-    P:
-        Number of SPIKE blocks.
-    m:
-        Block size (``Ny // P``).
-
-    Returns
-    -------
-    A_blocks:
-        Diagonal blocks, shape
-        ``(N_{kz}, N_{kx}, P, m, m)``.
-    B_corner:
-        Right-coupling corners, shape
-        ``(N_{kz}, N_{kx}, P, p, p)``.
-        Zero for the last block.
-    C_corner:
-        Left-coupling corners, shape
-        ``(N_{kz}, N_{kx}, P, p, p)``.
-        Zero for the first block.
-    """
-    dtype = D2.dtype
-    eye_m = jnp.eye(m, dtype=dtype)
-
-    A_D2 = jnp.stack(
-        [D2[i * m : (i + 1) * m, i * m : (i + 1) * m] for i in range(P)]
-    )  # (P, m, m)
-
-    # Hk = (1/dt + c*nu*k2) I - c*nu*D2
-    diag_coeff = (1.0 / dt) + c * nu * k2  # (Nkz, Nkx, 1)
-    A_blocks = (
-        diag_coeff[..., None, None] * eye_m - c * nu * A_D2[None, None]
-    )  # (Nkz, Nkx, P, m, m)
-
-    # Dirichlet identity wall rows.
-    e0 = jnp.zeros(m, dtype=dtype).at[0].set(1.0)
-    eN = jnp.zeros(m, dtype=dtype).at[-1].set(1.0)
-    A_blocks = A_blocks.at[:, :, 0, 0, :].set(e0)
-    A_blocks = A_blocks.at[:, :, -1, -1, :].set(eN)
-
-    # Coupling corners: -c*nu * D2 sub-blocks.
-    B_raw, C_raw = _extract_banded_corners(D2, P, m, p, scale=-c * nu)
-    batch = k2.shape[:2] + (P, p, p)
-    B_corner = jnp.broadcast_to(B_raw[None, None], batch)
-    C_corner = jnp.broadcast_to(C_raw[None, None], batch)
-
-    return A_blocks, B_corner, C_corner
-
-
 # ── Pallas-backend banded operator builders ───────────────────────
 
 
@@ -449,8 +280,8 @@ def _build_Lk_band_gpu(
     r"""Build `$L_k$` in banded storage for the Pallas backend.
 
     Same Neumann-BC pressure Poisson operator
-    `$L_k = D_2 - k^2 I$` as :func:`_build_Lk_blocks_gpu` /
-    :func:`_build_Lk_dense_gpu`, but assembled directly in banded
+    `$L_k = D_2 - k^2 I$` as :func:`_build_Lk_dense_gpu`,
+    but assembled directly in banded
     layout ``(Nkz, Nkx, Ny, 2p+1)``
     (``band[..., i, d] = L_k[..., i, i-p+d]``) from the base band
     ``_banded_from_dense(D2, p)``, with no ``(Ny, Ny)`` per mode.  The
@@ -492,8 +323,8 @@ def _build_Hk_band_gpu(
 ) -> Array:
     r"""Build `$H_k$` in banded storage for the Pallas backend.
 
-    Banded analogue of :func:`_build_Hk_blocks_gpu` /
-    :func:`_build_Hk_dense_gpu`, layout ``(Nkz, Nkx, Ny, 2p+1)``:
+    Banded analogue of :func:`_build_Hk_dense_gpu`, laid out as
+    ``(Nkz, Nkx, Ny, 2p+1)``:
     `$H_k = (1/\Delta t) I - c \nu (D_2 - k^2 I)$` with Dirichlet
     no-slip identity rows at **both** walls.  The single `$H_k$` is
     shared by all three velocity components.
@@ -515,9 +346,8 @@ def _build_Lk_dense_gpu(
     Used only by the ``"dense"`` solver backend; allocates
     `$(N_{kz}, N_{kx}, N_y, N_y)$`.  No CPU path.
 
-    Parameters / returns follow
-    :func:`_build_Lk_blocks_gpu`, but the output is the
-    full dense operator.
+    Parameters follow :func:`_build_Lk_band_gpu` (sans ``p``);
+    the output is the full dense operator.
     """
     Ny = D2.shape[-1]
     eye = jnp.eye(Ny, dtype=D2.dtype)
@@ -565,9 +395,7 @@ def _build_Hk_dense_gpu(
 
 # ── CartesianFlow base dataclass ─────────────────────────────────────────
 
-_WallBoundedOp = (
-    DenseJAXSolver | PerModeBandedOperator | PerModeBandedPallasOperator
-)
+_WallBoundedOp = DenseJAXSolver | PerModeBandedPallasOperator
 
 
 @register_dataclass_pytree
@@ -629,11 +457,12 @@ class CartesianFlow:
         in the wall-normal direction, then builds
         FD matrices `$D_1$` and `$D_2$`, and all per-mode
         IMM operators directly on the device.  Under the
-        banded backend, `$L_k$` and `$H_k$` are assembled
-        into per-block dense form and factorised via the
-        SPIKE algorithm (:func:`_spike_factor`): per-block
-        dense LU on `$(m, m)$` blocks (cuSOLVER batched)
-        plus a small reduced system, with no
+        default pallas backend, `$L_k$` and `$H_k$` are
+        assembled directly in banded storage
+        (:func:`_build_Lk_band_gpu` /
+        :func:`_build_Hk_band_gpu`) and factored by the
+        setup-checked no-pivot banded LU
+        (:func:`solvers._build_pallas_operator`), with no
         `$(N_y, N_y)$` array materialised.  Under the
         dense backend they are built as full
         `$(N_y, N_y)$` blocks via
@@ -693,72 +522,20 @@ class CartesianFlow:
         k2_s = fourier.k2[0, ..., None]
         mean_s = fourier.mean_mask[0, ..., None]
 
-        if params.solver.backend == "banded":
-            bt = params.solver.block_thomas
-            P_blk, m_blk = validate_spike_partition(Ny, p, "Ny", bt)
-            # Build and factor one operator at a time, dropping
-            # the block arrays immediately (their buffers are
-            # donated into the factorisation), so the setup peak
-            # never holds two unfactored operators at once.
-            Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-                self.D1,
-                self.D2,
-                k2_s,
-                mean_s,
-                p,
-                P_blk,
-                m_blk,
-            )
-            self.Lk_op = _spike_factor(Lk_A, Lk_B, Lk_C, bt)
-            del Lk_A, Lk_B, Lk_C
-            Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
-                self.D2,
-                k2_s,
-                dt,
-                c,
-                nu,
-                p,
-                P_blk,
-                m_blk,
-            )
-            self.Hk_op = _spike_factor(Hk_A, Hk_B, Hk_C, bt)
-            del Hk_A, Hk_B, Hk_C
-        elif params.solver.backend == "pallas":
-            # Pallas backend: one-program-per-mode banded sweep, with a
-            # pivoted SPIKE fallback per operator group (forced via
-            # solver.pallas_force_pivoting, or auto on an unstable
-            # no-pivot banded LU).  Operators are assembled directly in
-            # banded storage (no (Ny, Ny) per mode); the fallback reuses
-            # the SPIKE block builders.  Lk and the single shared Hk are
-            # each one operator group.
-            bt = params.solver.block_thomas
-            P_blk, m_blk = validate_spike_partition(Ny, p, "Ny", bt)
-            force = params.solver.pallas_force_pivoting
-
+        if params.solver.backend == "pallas":
+            # Pallas backend: one-program-per-mode banded sweep.
+            # Operators are assembled directly in banded storage (no
+            # (Ny, Ny) per mode) and factored by the setup-checked
+            # no-pivot banded LU (_build_pallas_operator).  Lk and the
+            # single shared Hk are each one operator group; build one
+            # at a time so the setup peak never holds two unfactored
+            # operators at once.
             Lk_band = _build_Lk_band_gpu(self.D1, self.D2, k2_s, mean_s, p)
-
-            def _make_Lk_spike() -> PerModeBandedOperator:
-                Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-                    self.D1, self.D2, k2_s, mean_s, p, P_blk, m_blk
-                )
-                return _spike_factor(Lk_A, Lk_B, Lk_C, bt)
-
-            self.Lk_op = _decide_pallas_or_spike(
-                [Lk_band], force, "Lk", _make_Lk_spike
-            )
+            self.Lk_op = _build_pallas_operator([Lk_band], "Lk")
             del Lk_band
 
             Hk_band = _build_Hk_band_gpu(self.D2, k2_s, dt, c, nu, p)
-
-            def _make_Hk_spike() -> PerModeBandedOperator:
-                Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
-                    self.D2, k2_s, dt, c, nu, p, P_blk, m_blk
-                )
-                return _spike_factor(Hk_A, Hk_B, Hk_C, bt)
-
-            self.Hk_op = _decide_pallas_or_spike(
-                [Hk_band], force, "Hk", _make_Hk_spike
-            )
+            self.Hk_op = _build_pallas_operator([Hk_band], "Hk")
             del Hk_band
         else:
             # Dense backend: parity/reference path.  Full

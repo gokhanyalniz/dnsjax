@@ -62,17 +62,19 @@ mathematical equivalence (Schur complement / Woodbury), and the
 optional constant-bulk-velocity and block-mean-spanwise-velocity
 corrections.
 
-- `params.solver.backend` selects the operator storage: `"banded"`
-  (default, SPIKE), `"dense"` (`DenseJAXSolver`), or `"pallas"`
-  (per-mode banded sweep, `PerModeBandedPallasOperator` -- see the
-  `solvers.py` docstrings). `"pallas"` is wired in all three
-  geometries: each `_build_{Lk,Hk}_band_gpu` assembles directly in
-  banded storage via the shared `solvers._assemble_banded_operator`
-  helpers (cartesian: single shared `Hk`, row-constant diagonal shift
-  (per-mode `k²`); annular: three stacked `Hk`; cylindrical:
-  parity-selected base band), dispatched by `_decide_pallas_or_spike`
-  (pivoted-SPIKE fallback on an unstable no-pivot LU or
-  `pallas_force_pivoting`).
+- `params.solver.backend` selects the operator storage: `"pallas"`
+  (default; per-mode banded sweep, `PerModeBandedPallasOperator`) or
+  the `"dense"` reference (`DenseJAXSolver`, mathematically readable
+  and the parity-test oracle; a wall-bounded run selecting it prints
+  a warning) -- see the `solvers.py` docstrings. The pallas build is
+  wired in all three geometries: each `_build_{Lk,Hk}_band_gpu`
+  assembles directly in banded storage via the shared
+  `solvers._assemble_banded_operator` helpers (cartesian: single
+  shared `Hk`, row-constant diagonal shift (per-mode `k²`); annular:
+  three stacked `Hk`; cylindrical: parity-selected base band),
+  factored by the setup-checked no-pivot banded LU
+  (`solvers._build_pallas_operator`: hard error on genuine LU
+  instability, notice-and-proceed on mere ill-conditioning).
 - Both backends apply `Lk` and `Hk_minus` matvecs matrix-free via
   `_lk_matvec` / `_hk_minus_matvec`, reconstructing from shared
   `D1`/`D2` FD matrices.
@@ -175,7 +177,7 @@ refactors.
 
 **Matvec layout (transpose-free GEMMs)**: stacking matvec inputs
 y-leading and passing `apply_y_matrix(..., component_axis=1)` (and the
-matching `.solve` `component_axis` arg of all three solver backends)
+matching `.solve` `component_axis` arg of both solver backends)
 keeps the cuBLAS GEMMs transpose-free. The curl/divergence matvecs and
 the cylindrical/annular Hk-construction stacks are y-leading;
 Cartesian's Hk stays component-leading on purpose (converting would be

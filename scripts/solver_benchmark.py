@@ -1,41 +1,40 @@
-r"""Linear-solver backend bake-off + multi-GPU Pallas validation.
+r"""Pallas-backend validation & benchmark vs the dense reference.
 
-Produces the data gating the SPIKE (``banded``) backend's retirement
-(see the pivot-stability companion,
+Measures the production (``pallas``) solver backend against the
+``dense`` reference on real hardware, and validates multi-GPU
+execution (stability-check companion:
 ``scripts/pivot_stability_survey.py``):
 
 A.  **Single-device matrix** (one subprocess per config x backend --
     the singletons capture the backend at import): per operator group
-    (``Lk``/``Hk``/``Hc``) the operator class actually built (detects
-    a silent SPIKE fallback), exact persistent factor bytes, device
-    memory after setup and peak after stepping, isolated ``.solve``
-    times, and per-step times for **both** schemes
-    (``predict_and_fully_correct`` and ``step_cnab2``), plus a
-    fixed-seed parity scalar (perturbation energy + ``get_stats``
+    (``Lk``/``Hk``/``Hc``) the operator class built, exact persistent
+    factor bytes, device memory after setup and peak after stepping,
+    isolated ``.solve`` times, and per-step times for **both**
+    schemes (``predict_and_fully_correct`` and ``step_cnab2``), plus
+    a fixed-seed parity scalar (perturbation energy + ``get_stats``
     after a few steps) compared across backends.
 B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
-    from scratch dirs): the first real multi-GPU execution of the
-    Pallas Triton kernel -- correctness via JAX-free
-    ``dnsjax.analysis`` snapshot diffs across device counts and
-    backends (including a padding-inducing ``nx = 34`` plane, a
-    ``2 x 2`` mesh, and a ``1 x 4`` case), and production-size
-    timing runs parsed from the ``__main__`` benchmark summary.
+    from scratch dirs): multi-GPU execution of the Pallas Triton
+    kernel -- correctness via JAX-free ``dnsjax.analysis`` snapshot
+    diffs across device counts and vs the dense oracle (including a
+    padding-inducing ``nx = 34`` plane, a ``2 x 2`` mesh, and a
+    ``1 x 4`` case), and production-size timing runs parsed from the
+    ``__main__`` benchmark summary.
     A preflight ladder bisects the launch stack first (task launch,
     distributed init, collectives, Explicit-mesh reshard, then real
-    micro-runs over launch topology / scheme / backend / NCCL env;
-    see :func:`_preflight_launcher`) and locks the first working
+    micro-runs over launch topology / scheme / NCCL env; see
+    :func:`_preflight_launcher`) and locks the first working
     configuration -- including a single-process multi-GPU fallback
     (``--launch-mode sp``) when multi-process launches hang.
 C.  **CPU bench** (``--cpu-bench``): the same child measurements with
     ``JAX_PLATFORMS=cpu`` on a reduced matrix -- what CPU production
-    would pay per backend after retirement (SPIKE vs the pallas
-    pure-JAX sweep vs dense).
+    pays per backend (the pallas pure-JAX sweep vs dense).
 
 The driver is JAX-free (children own the devices); every child /
 mpirun stdout is logged under ``{workdir}/logs``, results stream as
 ``@@RESULT`` JSON lines (also ``{workdir}/results.jsonl``), and the
-run ends in summary tables plus a ``VERDICT`` section mapping the
-data onto the retirement gates.
+run ends in summary tables plus a ``VERDICT`` section (parity,
+multi-GPU health, stability notices).
 
 Run **on the GPU cluster** from inside a single-node allocation with
 >= 1 GPU (4 for the full mesh cases) and generous **host** memory --
@@ -126,7 +125,7 @@ N_OPS = {
     "viscoelastic-dean": 10,
 }
 
-BACKENDS = ("pallas", "banded", "dense")
+BACKENDS = ("pallas", "dense")
 
 TILE_SWEEP = ((1, 32), (2, 16), (2, 64), (4, 32))  # + the (2, 32) default
 
@@ -322,15 +321,12 @@ def run_child(a: argparse.Namespace) -> None:
         "device_kind": getattr(dev, "device_kind", "?"),
     }
 
-    # Operator classes + exact persistent factor bytes; a
-    # PerModeBandedOperator under backend=pallas is a (silent) SPIKE
-    # fallback, recorded independently of the [pallas] stdout lines.
+    # Operator classes + exact persistent factor bytes.
     groups = {"Lk": flow.Lk_op, "Hk": flow.Hk_op}
     if a.system == "viscoelastic-dean":
         groups["Hc"] = flow.Hc_op
     operators: dict[str, str | None] = {}
     factor_bytes: dict[str, int] = {}
-    fallbacks: list[str] = []
     for g, op in groups.items():
         if op is None:  # viscoelastic kappa == 0: no Hc group
             operators[g] = None
@@ -340,8 +336,6 @@ def run_child(a: argparse.Namespace) -> None:
         factor_bytes[g] = int(
             sum(x.nbytes for x in jax.tree_util.tree_leaves(op))
         )
-        if a.backend == "pallas" and operators[g] == "PerModeBandedOperator":
-            fallbacks.append(g)
     factor_bytes["total"] = sum(
         v for k, v in factor_bytes.items() if k != "total"
     )
@@ -419,7 +413,6 @@ def run_child(a: argparse.Namespace) -> None:
         },
         "env": env,
         "operators": operators,
-        "fallbacks": fallbacks,
         "setup_s": round(setup_s, 3),
         "factor_bytes": factor_bytes,
         "mem": {
@@ -581,6 +574,9 @@ def _spawn_child(
         _echo_tail(tag, stdout, stderr)
     result["entry"] = tag
     result["wall_s"] = round(time.perf_counter() - t0, 1)
+    # Setup check lines ([pallas] residual/growth, and any notice) --
+    # scanned by the verdict's stability-notice check.
+    result["pallas_lines"] = PALLAS_PATTERN.findall(stdout)
     _record(workdir, result)
     return result
 
@@ -921,13 +917,13 @@ def _preflight_launcher(
       reshard / while_loop-corrector skeleton); on a hang the
       :data:`NCCL_VARIANTS` are bisected on this cheap repro.
     - ``L5``: real 2-device dnsjax micro-runs through
-      :func:`_run_mpi`, bisecting launch topology / scheme / backend:
+      :func:`_run_mpi`, bisecting launch topology / scheme:
       ``mp-icn-pallas`` (the production baseline), ``sp-icn-pallas``
       (single-process multi-GPU -- the offline-test topology on real
-      devices, no cross-process NCCL), ``mp-cnab2-pallas``,
-      ``mp-icn-banded``, then NCCL-variant retries of the baseline
-      and a ``--xla_gpu_nccl_termination_timeout_seconds`` diagnosis
-      leg.  Any passing leg unlocks the matrix; lock preference is
+      devices, no cross-process NCCL), ``mp-cnab2-pallas``, then
+      NCCL-variant retries of the baseline and a
+      ``--xla_gpu_nccl_termination_timeout_seconds`` diagnosis leg.
+      Any passing leg unlocks the matrix; lock preference is
       mp-icn > mp+NCCL-variant > single-process > mp-cnab2 (recorded
       in ``args.launch_mode`` / ``args.locked_scheme`` /
       ``args.extra_run_env``).
@@ -1136,12 +1132,11 @@ def _preflight_launcher(
                     return True, ""
                 continue
 
-        cn_rec = bd_rec = None
+        cn_rec = None
         env_fixed = False
         if want in ("auto", "mp") and not _ok(a_rec):
             cn_rec = _leg("mp-cnab2-pallas", scheme="cnab2")
-            bd_rec = _leg("mp-icn-banded", backend="banded")
-            if not args.extra_run_env and not (_ok(cn_rec) or _ok(bd_rec)):
+            if not args.extra_run_env and not _ok(cn_rec):
                 for vname, venv in NCCL_VARIANTS:
                     rec = _leg(f"mp-icn-pallas-{vname}", env=venv, timeout=150)
                     if _ok(rec):
@@ -1153,7 +1148,7 @@ def _preflight_launcher(
                             f"runs: {venv}"
                         )
                         break
-            if not env_fixed and not (_ok(cn_rec) or _ok(bd_rec)):
+            if not env_fixed and not _ok(cn_rec):
                 # Pure diagnosis: ask XLA to abort collectives stuck
                 # > 45 s.  A recognized flag turns the silent hang
                 # into an error naming the collective; an unknown
@@ -1186,18 +1181,9 @@ def _preflight_launcher(
             print(
                 f"[preflight] locked in: gpu mode '{mode}', "
                 "multi-process + cnab2 (iterative-cn hangs; the "
-                "parity gate runs within cnab2)"
+                "parity checks run within cnab2)"
             )
             return True, ""
-        if _ok(bd_rec):
-            fails.append(
-                (
-                    f"{mode}/L5",
-                    "only the banded backend passes multi-process: the "
-                    "hang is pallas-specific on multi-GPU -- a G1 "
-                    "answer, not a launch problem",
-                )
-            )
 
     detail = "\n".join(f"  {name}: {why}" for name, why in fails)
     return False, (
@@ -1532,11 +1518,10 @@ def _single_device_section(
         results.append(rec)
         if rec["status"] == "ok":
             sm = rec["step_ms"]
-            fb = f"  FALLBACK={rec['fallbacks']}" if rec["fallbacks"] else ""
             print(
                 f"          icn {sm['icn']:9.2f} ms  cnab2 "
                 f"{sm['cnab2']:9.2f} ms  factors "
-                f"{rec['factor_bytes']['total'] / 2**20:8.1f} MB{fb}",
+                f"{rec['factor_bytes']['total'] / 2**20:8.1f} MB",
                 flush=True,
             )
         else:
@@ -1598,8 +1583,6 @@ def _mpi_runs(args: argparse.Namespace, platform: str) -> list[dict]:
         for backend, np1 in (
             ("pallas", 1),
             ("pallas", 2),
-            ("banded", 1),
-            ("banded", 2),
             ("dense", 1),
         ):
             if np1 > args.max_gpus and platform == "cuda":
@@ -1684,9 +1667,7 @@ def _diff_pairs(names: set[str]) -> list[tuple[str, str, str]]:
         label = None
         if rest == "-pallas-np1x2":
             ref, label = f"corr-{system}-pallas-np1x1", "device-count"
-        elif rest == "-banded-np1x2":
-            ref, label = f"corr-{system}-banded-np1x1", "device-count"
-        elif rest == "-pallas-np1x1" or rest == "-banded-np1x1":
+        elif rest == "-pallas-np1x1":
             ref, label = f"corr-{system}-dense-np1x1", "vs-dense"
         elif rest == "-pallas-np2x2":
             ref, label = f"corr-{system}-pallas-np1x1", "mesh-2x2"
@@ -1696,11 +1677,6 @@ def _diff_pairs(names: set[str]) -> list[tuple[str, str, str]]:
             ref, label = f"corr-{system}-pallas-np1x1-tanh", "mesh-2x2"
         if ref in names:
             pairs.append((name, ref, label))
-        # Cross-backend at np1 = 2 (both sharded).
-        if rest == "-pallas-np1x2":
-            other = f"corr-{system}-banded-np1x2"
-            if other in names:
-                pairs.append((name, other, "pallas-vs-banded"))
     return pairs
 
 
@@ -1804,7 +1780,7 @@ def _mpi_timing_section(args: argparse.Namespace, workdir: Path) -> list[dict]:
         if system not in args.systems:
             continue
         nx, ny, nz = SIZES[system]["prod"]
-        for backend in ("pallas", "banded"):
+        for backend in ("pallas",):
             for np1 in (1, 2):
                 if np1 > args.max_gpus:
                     continue
@@ -1855,7 +1831,7 @@ def _mb(nbytes: int | None) -> str:
 
 
 def _single_tables(results: list[dict], parity_tol: float) -> list[str]:
-    """Human tables + the pallas/banded ratio lines for the verdict."""
+    """Human tables + the pallas/dense ratio lines for the verdict."""
     by_entry: dict[str, list[dict]] = {}
     for r in results:
         if r["kind"] != "single":
@@ -1876,7 +1852,7 @@ def _single_tables(results: list[dict], parity_tol: float) -> list[str]:
             for r in rows
             if r["status"] == "ok" and r["config"].get("bm0") is None
         }
-        ref = oks.get("dense") or oks.get("banded")
+        ref = oks.get("dense")
         cfg = next(
             (r["config"] for r in rows if r["status"] == "ok"),
             rows[0]["config"],
@@ -1920,17 +1896,15 @@ def _single_tables(results: list[dict], parity_tol: float) -> list[str]:
                 f"{_mb(r['factor_bytes']['total']):>10s} {peak_mb:>10s} "
                 f"{delta:>9s}"
             )
-            if r["fallbacks"]:
-                print(f"  {'':22s} ^ SPIKE FALLBACK: {r['fallbacks']}")
-        if "pallas" in oks and "banded" in oks:
-            p, b = oks["pallas"], oks["banded"]
-            r_icn = p["step_ms"]["icn"] / b["step_ms"]["icn"]
-            r_ab = p["step_ms"]["cnab2"] / b["step_ms"]["cnab2"]
-            r_fac = p["factor_bytes"]["total"] / b["factor_bytes"]["total"]
-            pk_p, pk_b = p["mem"]["peak"], b["mem"]["peak"]
+        if "pallas" in oks and "dense" in oks:
+            p, d = oks["pallas"], oks["dense"]
+            r_icn = p["step_ms"]["icn"] / d["step_ms"]["icn"]
+            r_ab = p["step_ms"]["cnab2"] / d["step_ms"]["cnab2"]
+            r_fac = p["factor_bytes"]["total"] / d["factor_bytes"]["total"]
+            pk_p, pk_d = p["mem"]["peak"], d["mem"]["peak"]
             r_peak = (
-                pk_p["peak_bytes_in_use"] / pk_b["peak_bytes_in_use"]
-                if pk_p["available"] and pk_b["available"]
+                pk_p["peak_bytes_in_use"] / pk_d["peak_bytes_in_use"]
+                if pk_p["available"] and pk_d["available"]
                 else float("nan")
             )
             verdict_lines.append(
@@ -1949,11 +1923,11 @@ def _verdict(
     args: argparse.Namespace | None = None,
 ) -> int:
     print("\n" + "=" * 78)
-    print("VERDICT (retirement gates; see the plan)")
+    print("VERDICT (pallas health checks)")
     print("=" * 78)
     code = 0
 
-    print("\nG1  multi-GPU Pallas parity (snapshot diffs):")
+    print("\n[1] multi-GPU Pallas parity (snapshot diffs):")
     if args is not None and diffs:
         if getattr(args, "launch_mode", "mp") == "sp":
             print(
@@ -1981,9 +1955,9 @@ def _verdict(
         if d["status"] != "PASS":
             code = 1
 
-    print("\nG2/G3  pallas vs banded ratios (<1 = pallas better):")
+    print("\n[2] pallas vs dense-reference ratios (<1 = pallas better):")
     if not ratio_lines:
-        print("    (no completed pallas+banded pairs)")
+        print("    (no completed pallas+dense pairs)")
     for line in ratio_lines:
         print(f"    {line}")
 
@@ -1997,20 +1971,19 @@ def _verdict(
             if r["status"] not in ("ok",):
                 code = 1
 
-    print("\nG5  SPIKE fallbacks under backend=pallas:")
-    fb = [
-        f"{r['entry']}: {r['fallbacks']}"
-        for r in single
-        if r.get("status") == "ok" and r.get("fallbacks")
+    print("\n[3] stability notices under backend=pallas:")
+    notices = [
+        f"{r.get('entry', r.get('name'))}: {line}"
+        for r in single + mpi_recs
+        for line in r.get("pallas_lines", [])
+        if "ill-conditioned" in line
     ]
-    for r in mpi_recs:
-        for line in r.get("pallas_lines", []):
-            if "SPIKE" in line:
-                fb.append(f"{r['name']}: {line}")
-    if fb:
+    if notices:
+        # A notice is proceed-semantics, but at benchmark sizes none
+        # should fire -- flag it for a look.
         code = 1
-        for line in fb:
-            print(f"    FALLBACK {line}")
+        for line in notices:
+            print(f"    NOTICE {line}")
     else:
         print("    none observed -> PASS")
 
@@ -2027,21 +2000,21 @@ def _verdict(
             )
 
     print(
-        "\n(G4 = scripts/pivot_stability_survey.py; G6 = --cpu-bench "
-        "data + user judgement.)"
+        "\n(No-pivot stability coverage across the supported config "
+        "space: scripts/pivot_stability_survey.py.)"
     )
     if not diffs:
         # No multi-device parity data was produced: an all-green code
-        # here means only "nothing measured failed", not "G1 passed".
+        # here means only "nothing measured failed".
         print(
-            "\nOverall: INCOMPLETE -- G1 (multi-GPU parity) was not "
-            "measured; no retirement claim from this run."
+            "\nOverall: INCOMPLETE -- multi-GPU parity was not "
+            "measured by this run."
         )
         return max(code, 1)
     print(
-        "\nOverall: data "
-        + ("SUPPORTS" if code == 0 else "DOES NOT (yet) SUPPORT")
-        + " SPIKE retirement on the gates measurable here."
+        "\nOverall: "
+        + ("PASS" if code == 0 else "FAIL")
+        + " on the checks measurable here."
     )
     return code
 
@@ -2135,8 +2108,7 @@ def _cpu_smoke(args: argparse.Namespace, workdir: Path) -> int:
     for name, backend, np1 in (
         ("corr-plane-couette-pallas-np1x1", "pallas", 1),
         ("corr-plane-couette-pallas-np1x2", "pallas", 2),
-        ("corr-plane-couette-banded-np1x2", "banded", 2),
-        ("corr-plane-couette-banded-np1x1", "banded", 1),
+        ("corr-plane-couette-dense-np1x1", "dense", 1),
     ):
         run = {
             "name": name,
@@ -2182,7 +2154,7 @@ def _cpu_smoke(args: argparse.Namespace, workdir: Path) -> int:
 
 
 def _cpu_bench(args: argparse.Namespace, workdir: Path) -> int:
-    """CPU backend timing (the CPU-production question, gate G6)."""
+    """CPU backend timing (the CPU-production cost per backend)."""
     print("\n--cpu-bench: CPU step/solve timing per backend")
     env_extra = {"JAX_PLATFORMS": "cpu"}
     entries = []
@@ -2221,7 +2193,7 @@ def _cpu_bench(args: argparse.Namespace, workdir: Path) -> int:
             else:
                 print(f"          {rec['status']}: {rec.get('error')}")
     ratio_lines = _single_tables(results, args.parity_tol)
-    print("\nCPU pallas/banded ratios (>1 = SPIKE faster on CPU):")
+    print("\nCPU pallas/dense ratios (<1 = pallas faster on CPU):")
     for line in ratio_lines:
         print(f"  {line}")
     return 0 if all(r["status"] == "ok" for r in results) else 1

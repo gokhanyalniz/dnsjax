@@ -6,7 +6,7 @@
 
 ### Key differences from wall-bounded
 
-- Helmholtz inversion is algebraic (pointwise multiply by `ildt_2`) -- no matrix solves. See `TriplyPeriodicFlow.__post_init__` docstring.
+- Helmholtz inversion is algebraic (pointwise multiply by `ildt_2`) -- no matrix solves, so `dnsjax.solvers` is never involved. `solver.backend` resolves to `"dense"` (the reference semantics) for periodic systems in `update_parameters()`; an explicit `"pallas"` is rejected there. See `TriplyPeriodicFlow.__post_init__` docstring.
 - Divergence correction is a two-stage projection, not built into an IMM: inside `_get_rhs` (pressure Poisson) and post-step (`correct_divergence` + mean-mode zeroing, fused into every stepper via `make_stepper`'s `finalize_fn` -- `_finalize_state`, no separate per-step dispatch). See the `correct_divergence` docstring.
 - Spectral layout: `(ny-1, nz_spec, nx_spec)` with `[ky, kz, kx]` -- ky fully local, kz sharded by np0, kx sharded by np1.
 

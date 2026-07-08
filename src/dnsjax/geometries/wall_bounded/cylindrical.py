@@ -112,17 +112,12 @@ from ...rhs import get_nonlin
 from ...sharding import register_dataclass_pytree, sharding
 from ...solvers import (
     DenseJAXSolver,
-    PerModeBandedOperator,
     PerModeBandedPallasOperator,
     _assemble_banded_operator,
     _banded_diag_column,
     _banded_from_dense,
     _banded_wall_row,
-    _decide_pallas_or_spike,
-    _extract_banded_corners,
-    _spike_factor,
-    _stack_banded_operators,
-    validate_spike_partition,
+    _build_pallas_operator,
 )
 from ._base import (
     apply_y_matrix,
@@ -700,7 +695,7 @@ def interpolate_to_axis(
     return jnp.tensordot(w_jax, moved, axes=(0, 0))
 
 
-# ── SPIKE block-partitioned operator builders ─────────────────────
+# ── Shared radial base operator ───────────────────────────────────
 
 
 def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
@@ -721,252 +716,6 @@ def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
     return D2 + inv_r[:, None] * D1
 
 
-def _build_Lk_blocks_gpu(
-    D1_wall: Array,
-    A_base_even: Array,
-    A_base_odd: Array,
-    m_is_even: Array,
-    m2: Array,
-    inv_r2: Array,
-    kz2: Array,
-    mean_mask: Array,
-    p: int,
-    P: int,
-    m_blk: int,
-) -> tuple[Array, Array, Array]:
-    r"""Build SPIKE block-partitioned `$L_k$` on GPU.
-
-    The pressure Poisson operator uses `$m_{\mathrm{eff}} = m$`
-    (same parity as pressure / `$u_z$`):
-
-    .. math::
-        L_k = A_{\mathrm{base}}^{(\sigma_p)}
-        - (m^2/r^2 + k_z^2)\,I
-
-    where `$\sigma_p$` is even when `$m$` is even, odd when
-    `$m$` is odd.  The `$m^2/r^2$` diagonal shift is
-    **per-point** (varies with `$j$`), unlike the uniform
-    `$k^2$` in the Cartesian case.
-
-    The first block (`$i = 0$`) depends on parity (its first
-    `$\sim p$` rows differ between even/odd FD matrices); all
-    other blocks are parity-independent.  Per-mode selection
-    uses ``jnp.where`` on the parity mask.
-
-    Parameters
-    ----------
-    D1_wall:
-        Last row of `$D_1$` (parity-independent), shape
-        ``(Nr,)`` or ``(1, Nr)``.
-    A_base_even:
-        Base operator with even-parity FD matrices,
-        shape ``(Nr, Nr)``.
-    A_base_odd:
-        Base operator with odd-parity FD matrices,
-        shape ``(Nr, Nr)``.
-    m_is_even:
-        Boolean mask for even `$m$`, shape ``(Nm, 1, 1)``.
-    m2:
-        `$m^2$`, shape ``(Nm, 1, 1)``.
-    inv_r2:
-        `$1/r_j^2$`, shape ``(Nr,)``.
-    kz2:
-        `$k_z^2$`, shape ``(1, Nkz, 1)``.
-    mean_mask:
-        Mean-mode boolean mask.
-    p:
-        FD order (half-bandwidth).
-    P:
-        Number of SPIKE blocks.
-    m_blk:
-        Block size (``Nr // P``).
-
-    Returns
-    -------
-    A_blocks:
-        Diagonal blocks, ``(Nm, Nkz, P, m_blk, m_blk)``.
-    B_corner:
-        Right-coupling corners, ``(Nm, Nkz, P, p, p)``.
-    C_corner:
-        Left-coupling corners, ``(Nm, Nkz, P, p, p)``.
-    """
-    dtype = A_base_even.dtype
-
-    eye_m = jnp.eye(m_blk, dtype=dtype)
-
-    # Per-point diagonal shift: -(m^2/r_j^2 + kz^2) for each
-    # radial point in each block.
-    # m2_over_r2 has shape (Nm, 1, Nr) after broadcast.
-    m2_over_r2 = m2 * inv_r2  # (Nm, 1, Nr)
-
-    # Build even/odd diagonal blocks from A_base.
-    def extract_blocks(A_base):
-        return jnp.stack(
-            [
-                A_base[
-                    i * m_blk : (i + 1) * m_blk, i * m_blk : (i + 1) * m_blk
-                ]
-                for i in range(P)
-            ]
-        )  # (P, m_blk, m_blk)
-
-    A_blks_even = extract_blocks(A_base_even)  # (P, m_blk, m_blk)
-    A_blks_odd = extract_blocks(A_base_odd)
-
-    # Block 0 differs by parity; blocks 1..P-1 are identical.
-    # Select block 0 per-mode via m_is_even.
-    blk0_even = A_blks_even[0]  # (m_blk, m_blk)
-    blk0_odd = A_blks_odd[0]
-    # Squeeze m_is_even from (Nm, 1, 1) to (Nm, 1, 1)
-    # for correct broadcast to (Nm, m_blk, m_blk).
-    blk0 = jnp.where(
-        m_is_even.ravel()[:, None, None], blk0_even, blk0_odd
-    )  # (Nm, m_blk, m_blk)
-
-    # Build each block with its diagonal shift incorporated.
-    # Arithmetic with kz2 drives the kx-sharding.
-    blocks = []
-    for i in range(P):
-        r_slice = slice(i * m_blk, (i + 1) * m_blk)
-        shift = -(m2_over_r2[..., r_slice] + kz2)
-        shift_diag = shift[..., None] * eye_m
-        if i == 0:
-            block = blk0[:, None, :, :] + shift_diag
-        else:
-            block = A_blks_even[i][None, None] + shift_diag
-        blocks.append(block)
-    A_blocks = jnp.stack(blocks, axis=2)
-
-    # BC: wall row (last row of last block) -> Neumann D1[-1,:]
-    # for all modes, pin [...,0,1] at the mean mode (m,kz) = (0,0).
-    D1_wall_row = D1_wall[-m_blk:]  # last m_blk entries
-    pin_row = jnp.zeros(m_blk, dtype=dtype).at[-1].set(1.0)
-    wall_row = jnp.where(mean_mask, pin_row, D1_wall_row)
-    A_blocks = A_blocks.at[:, :, -1, -1, :].set(wall_row)
-
-    # Coupling corners (parity-independent: from A_base_even
-    # which equals A_base_odd for blocks > 0).
-    B_raw, C_raw = _extract_banded_corners(A_base_even, P, m_blk, p)
-    # Apply the per-point diagonal shift to corners: the shift is
-    # diagonal so it doesn't affect off-diagonal coupling corners.
-    batch = m2.shape[:1] + kz2.shape[1:2] + (P, p, p)
-    B_corner = jnp.broadcast_to(B_raw[None, None], batch)
-    C_corner = jnp.broadcast_to(C_raw[None, None], batch)
-
-    return A_blocks, B_corner, C_corner
-
-
-def _build_Hk_blocks_gpu(
-    A_base_even: Array,
-    A_base_odd: Array,
-    m_is_even_vel: Array,
-    meff2: Array,
-    inv_r2: Array,
-    kz2: Array,
-    dt: float,
-    c: float,
-    nu: float,
-    p: int,
-    P: int,
-    m_blk: int,
-) -> tuple[Array, Array, Array]:
-    r"""Build SPIKE block-partitioned `$H_k$` on GPU.
-
-    Builds one of the three Helmholtz operators (`$H_{k,+}$`,
-    `$H_{k,-}$`, or `$H_{k,z}$`).  The caller supplies the
-    appropriate `$m_{\mathrm{eff}}^2$` and parity mask.
-
-    .. math::
-        H_k = \frac{1}{\Delta t}\,I
-        + c\nu\bigl(m_{\mathrm{eff}}^2/r^2 + k_z^2\bigr)\,I
-        - c\nu\,A_{\mathrm{base}}^{(\sigma)}
-
-    The effective azimuthal mode `$m_{\mathrm{eff}}$`
-    determines which `$1/r^2$` coefficient appears in the
-    diagonal and which parity-reduced FD matrices are used
-    for the first block.
-
-    Parameters
-    ----------
-    A_base_even, A_base_odd:
-        Base operators with even/odd parity FD matrices.
-    m_is_even_vel:
-        Parity mask for this velocity component.
-    meff2:
-        `$m_{\mathrm{eff}}^2$`, shape ``(Nm, 1, 1)``.
-    inv_r2:
-        `$1/r_j^2$`, shape ``(Nr,)``.
-    kz2:
-        `$k_z^2$`, shape ``(1, Nkz, 1)``.
-    dt:
-        Time step.
-    c:
-        Implicitness parameter.
-    nu:
-        Kinematic viscosity `$1/\mathrm{Re}$`.
-    p, P, m_blk:
-        FD order, block count, block size.
-
-    Returns
-    -------
-    A_blocks, B_corner, C_corner:
-        SPIKE block data with the same layout as
-        :func:`_build_Lk_blocks_gpu`.
-    """
-    dtype = A_base_even.dtype
-    eye_m = jnp.eye(m_blk, dtype=dtype)
-
-    meff2_over_r2 = meff2 * inv_r2  # (Nm, 1, Nr)
-
-    def extract_blocks(A_base):
-        return jnp.stack(
-            [
-                A_base[
-                    i * m_blk : (i + 1) * m_blk, i * m_blk : (i + 1) * m_blk
-                ]
-                for i in range(P)
-            ]
-        )
-
-    A_blks_even = extract_blocks(A_base_even)
-    A_blks_odd = extract_blocks(A_base_odd)
-
-    blk0_even = A_blks_even[0]
-    blk0_odd = A_blks_odd[0]
-    blk0 = jnp.where(
-        m_is_even_vel.ravel()[:, None, None], blk0_even, blk0_odd
-    )  # (Nm, m_blk, m_blk)
-
-    # Build each block with diagonal shift incorporated.
-    # Arithmetic with kz2 drives the kx-sharding.
-    blocks = []
-    for i in range(P):
-        r_slice = slice(i * m_blk, (i + 1) * m_blk)
-        diag_val = 1.0 / dt + c * nu * (meff2_over_r2[..., r_slice] + kz2)
-        diag_mat = diag_val[..., None] * eye_m
-        if i == 0:
-            block = -c * nu * blk0[:, None, :, :] + diag_mat
-        else:
-            block = -c * nu * A_blks_even[i][None, None] + diag_mat
-        blocks.append(block)
-    A_blocks = jnp.stack(blocks, axis=2)
-
-    # Dirichlet no-slip wall BC: identity row at r = 1
-    # (last row of last block).
-    eN = jnp.zeros(m_blk, dtype=dtype).at[-1].set(1.0)
-    A_blocks = A_blocks.at[:, :, -1, -1, :].set(eN[None, None])
-
-    # Coupling corners: -c*nu * A_base sub-blocks.
-    B_raw, C_raw = _extract_banded_corners(
-        A_base_even, P, m_blk, p, scale=-c * nu
-    )
-    batch = meff2.shape[:1] + kz2.shape[1:2] + (P, p, p)
-    B_corner = jnp.broadcast_to(B_raw[None, None], batch)
-    C_corner = jnp.broadcast_to(C_raw[None, None], batch)
-
-    return A_blocks, B_corner, C_corner
-
-
 # ── Pallas-backend banded operator builders ───────────────────────
 
 
@@ -983,7 +732,7 @@ def _build_Lk_band_gpu(
 ) -> Array:
     r"""Build `$L_k$` in banded storage for the Pallas backend.
 
-    Same operator as :func:`_build_Lk_dense_gpu` / the SPIKE blocks,
+    Same operator as :func:`_build_Lk_dense_gpu`,
     but assembled directly in banded layout
     ``(Nm, Nkz, Nr, 2p+1)`` (``band[..., i, d] = L_k[..., i, i-p+d]``)
     from the base-operator bands, with no ``(Nr, Nr)`` per mode.
@@ -995,8 +744,16 @@ def _build_Lk_band_gpu(
     band_even, band_odd:
         Banded `$A_{\mathrm{base}}$` for even/odd parity,
         shape ``(Nr, 2p+1)``.
-    m_is_even, m2, inv_r2, kz2, mean_mask, p:
-        As in :func:`_build_Lk_blocks_gpu`.
+    m_is_even, m2:
+        Pressure parity selector and `$m^2$`, shape ``(Nm, 1, 1)``.
+    inv_r2:
+        `$1/r_j^2$`, shape ``(Nr,)``.
+    kz2:
+        `$k_z^2$`, shape ``(1, Nkz, 1)``.
+    mean_mask:
+        Mean-mode boolean mask, shape ``(Nm, Nkz, 1)``.
+    p:
+        FD order (half-bandwidth).
     """
     Nr = band_even.shape[0]
     band_base = jnp.where(m_is_even, band_even[None], band_odd[None])
@@ -1027,8 +784,8 @@ def _build_Hk_band_gpu(
 ) -> Array:
     r"""Build one `$H_k$` Helmholtz operator in banded storage.
 
-    Banded analogue of :func:`_build_Hk_dense_gpu` /
-    :func:`_build_Hk_blocks_gpu`, layout ``(Nm, Nkz, Nr, 2p+1)``.
+    Banded analogue of :func:`_build_Hk_dense_gpu`, laid out as
+    ``(Nm, Nkz, Nr, 2p+1)``.
     """
     Nr = band_even.shape[0]
     band_base = jnp.where(m_is_even_vel, band_even[None], band_odd[None])
@@ -1114,9 +871,7 @@ def _build_Hk_dense_gpu(
 
 
 # Operator backends sharing the ``.solve()`` contract.
-_WallBoundedOp = (
-    DenseJAXSolver | PerModeBandedOperator | PerModeBandedPallasOperator
-)
+_WallBoundedOp = DenseJAXSolver | PerModeBandedPallasOperator
 
 
 # ── CylindricalFlow base dataclass ─────────────────────────────────
@@ -1328,103 +1083,11 @@ class CylindricalFlow:
         m_is_even_p = m_is_even_s
         m_is_even_v = 1.0 - m_is_even_s
 
-        if params.solver.backend == "banded":
-            bt = params.solver.block_thomas
-            P_blk, m_blk = validate_spike_partition(Nr, fd_p, "Nr", bt)
-
-            # Build and factor one operator at a time, dropping
-            # the block arrays immediately (their buffers are
-            # donated into the factorisation), so the setup peak
-            # never holds two unfactored operators at once.
-            # Lk
-            Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-                self.D1_wall.ravel(),
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_p,
-                m_sq,
-                self.inv_r2,
-                kz2_s,
-                mean_s,
-                fd_p,
-                P_blk,
-                m_blk,
-            )
-            self.Lk_op = _spike_factor(Lk_A, Lk_B, Lk_C, bt)
-            del Lk_A, Lk_B, Lk_C
-
-            # Hk_plus (meff = m+1, parity = (-1)^{m+1})
-            Hp_A, Hp_B, Hp_C = _build_Hk_blocks_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_v,
-                m_plus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-                P_blk,
-                m_blk,
-            )
-            op_p = _spike_factor(Hp_A, Hp_B, Hp_C, bt)
-            del Hp_A, Hp_B, Hp_C
-
-            # Hk_minus (meff = m-1, parity = (-1)^{m+1})
-            Hm_A, Hm_B, Hm_C = _build_Hk_blocks_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_v,
-                m_minus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-                P_blk,
-                m_blk,
-            )
-            op_m = _spike_factor(Hm_A, Hm_B, Hm_C, bt)
-            del Hm_A, Hm_B, Hm_C
-
-            # Hk_z (meff = m, parity = (-1)^m)
-            Hz_A, Hz_B, Hz_C = _build_Hk_blocks_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_p,
-                m_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-                P_blk,
-                m_blk,
-            )
-            op_z = _spike_factor(Hz_A, Hz_B, Hz_C, bt)
-            del Hz_A, Hz_B, Hz_C
-
-            # Combined Hk: component order (plus, minus, z).
-            # Drop the per-component operators right after
-            # stacking copies them, halving the H-factor
-            # footprint for the rest of setup.
-            self.Hk_op = _stack_banded_operators(op_p, op_m, op_z)
-            del op_p, op_m, op_z
-
-        elif params.solver.backend == "pallas":
-            # Pallas backend: one-program-per-mode banded sweep, with a
-            # pivoted SPIKE fallback per operator group (forced via
-            # solver.pallas_force_pivoting, or auto on an unstable
-            # no-pivot banded LU).  Operators are assembled directly in
-            # banded storage (no (Nr, Nr) per mode); the fallback reuses
-            # the SPIKE block builders.
-            bt = params.solver.block_thomas
-            P_blk, m_blk = validate_spike_partition(Nr, fd_p, "Nr", bt)
-            force = params.solver.pallas_force_pivoting
-
+        if params.solver.backend == "pallas":
+            # Pallas backend: one-program-per-mode banded sweep.
+            # Operators are assembled directly in banded storage (no
+            # (Nr, Nr) per mode) and factored by the setup-checked
+            # no-pivot banded LU (_build_pallas_operator).
             band_even = _banded_from_dense(self.A_base_even, fd_p)
             band_odd = _banded_from_dense(self.A_base_odd, fd_p)
             D1_wall_1d = self.D1_wall.ravel()
@@ -1441,30 +1104,11 @@ class CylindricalFlow:
                 mean_s,
                 fd_p,
             )
-
-            def _make_Lk_spike() -> PerModeBandedOperator:
-                Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-                    D1_wall_1d,
-                    self.A_base_even,
-                    self.A_base_odd,
-                    m_is_even_p,
-                    m_sq,
-                    self.inv_r2,
-                    kz2_s,
-                    mean_s,
-                    fd_p,
-                    P_blk,
-                    m_blk,
-                )
-                return _spike_factor(Lk_A, Lk_B, Lk_C, bt)
-
-            self.Lk_op = _decide_pallas_or_spike(
-                [Lk_band], force, "Lk", _make_Lk_spike
-            )
+            self.Lk_op = _build_pallas_operator([Lk_band], "Lk")
             del Lk_band
 
-            # Hk group (plus, minus, z): one backend decision keeps the
-            # stacked operator homogeneous.
+            # Hk group (plus, minus, z): stacked into one homogeneous
+            # operator and stability-checked as a single group.
             Hp_band = _build_Hk_band_gpu(
                 band_even,
                 band_odd,
@@ -1501,35 +1145,8 @@ class CylindricalFlow:
                 nu,
                 fd_p,
             )
-
-            def _make_Hk_spike() -> PerModeBandedOperator:
-                def _spike(
-                    meff2: Array, parity: Array
-                ) -> PerModeBandedOperator:
-                    A, B, C = _build_Hk_blocks_gpu(
-                        self.A_base_even,
-                        self.A_base_odd,
-                        parity,
-                        meff2,
-                        self.inv_r2,
-                        kz2_s,
-                        dt,
-                        c_impl,
-                        nu,
-                        fd_p,
-                        P_blk,
-                        m_blk,
-                    )
-                    return _spike_factor(A, B, C, bt)
-
-                return _stack_banded_operators(
-                    _spike(m_plus_1_sq, m_is_even_v),
-                    _spike(m_minus_1_sq, m_is_even_v),
-                    _spike(m_sq, m_is_even_p),
-                )
-
-            self.Hk_op = _decide_pallas_or_spike(
-                [Hp_band, Hm_band, Hz_band], force, "Hk", _make_Hk_spike
+            self.Hk_op = _build_pallas_operator(
+                [Hp_band, Hm_band, Hz_band], "Hk"
             )
             del Hp_band, Hm_band, Hz_band
 

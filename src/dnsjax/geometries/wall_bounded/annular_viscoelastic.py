@@ -41,7 +41,7 @@ with spin weights `$s = 0$` for `$c_{zz}, c_{+-}$`, `$s = \pm1$` for
 `$c_{z\pm}$`, and `$s = \pm2$` for `$c_{\pm\pm}$` -- the same mechanism as
 `$u_\pm$` (`$m_{\mathrm{eff}} = m \pm 1$`).  Each spin component therefore
 diffuses through a scalar Helmholtz solve with its own
-`$m_{\mathrm{eff}}$`, reusing the annular banded/dense/Pallas machinery.
+`$m_{\mathrm{eff}}$`, reusing the annular dense/Pallas machinery.
 
 Governing equations (sPTT)
 --------------------------
@@ -109,17 +109,12 @@ from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
 from ...solvers import (
     DenseJAXSolver,
-    PerModeBandedOperator,
     PerModeBandedPallasOperator,
     _assemble_banded_operator,
     _banded_diag_column,
     _banded_from_dense,
     _banded_wall_row,
-    _decide_pallas_or_spike,
-    _extract_banded_corners,
-    _spike_factor,
-    _stack_banded_operators,
-    validate_spike_partition,
+    _build_pallas_operator,
 )
 from ._base import (
     apply_y_matrix,
@@ -354,61 +349,6 @@ def _build_Hc_band_gpu(
     )
 
 
-def _build_Hc_blocks_gpu(
-    A_base: Array,
-    narrow0: Array,
-    narrowN: Array,
-    meff2: Array,
-    inv_r2: Array,
-    kz2: Array,
-    dt: float,
-    c: float,
-    kappa: float,
-    p: int,
-    P: int,
-    m_blk: int,
-) -> tuple[Array, Array, Array]:
-    r"""SPIKE block-partitioned `$H_c$` for one spin component (banded
-    backend).  Same structure as
-    :func:`~dnsjax.geometries.wall_bounded.annular._build_Hk_blocks_gpu`
-    with `$\kappa$` and the narrow Laplacian BC wall rows (which fit
-    block 0 / block `$P-1$` since `$m_{\mathrm{blk}} \ge 2p$`)."""
-    dtype = A_base.dtype
-    eye_m = jnp.eye(m_blk, dtype=dtype)
-    meff2_over_r2 = meff2 * inv_r2  # (Nm, 1, Nr)
-
-    A_blks = jnp.stack(
-        [
-            A_base[i * m_blk : (i + 1) * m_blk, i * m_blk : (i + 1) * m_blk]
-            for i in range(P)
-        ]
-    )
-    blocks = []
-    ck = c * kappa
-    for i in range(P):
-        r_slice = slice(i * m_blk, (i + 1) * m_blk)
-        diag_val = 1.0 / dt + ck * (meff2_over_r2[..., r_slice] + kz2)
-        block = -ck * A_blks[i][None, None] + diag_val[..., None] * eye_m
-        blocks.append(block)
-    A_blocks = jnp.stack(blocks, axis=2)  # (Nm, Nkz, P, m_blk, m_blk)
-
-    # Narrow Laplacian BC wall rows (mode-dependent diagonal shift).
-    e0 = jnp.zeros(m_blk, dtype=dtype).at[0].set(1.0)
-    eN = jnp.zeros(m_blk, dtype=dtype).at[-1].set(1.0)
-    shift0 = meff2 * inv_r2[0] + kz2  # (Nm, Nkz, 1)
-    shiftN = meff2 * inv_r2[-1] + kz2
-    row0 = narrow0[:m_blk][None, None] - shift0 * e0  # (Nm, Nkz, m_blk)
-    rowN = narrowN[(P - 1) * m_blk :][None, None] - shiftN * eN
-    A_blocks = A_blocks.at[:, :, 0, 0, :].set(row0)
-    A_blocks = A_blocks.at[:, :, -1, -1, :].set(rowN)
-
-    B_raw, C_raw = _extract_banded_corners(A_base, P, m_blk, p, scale=-ck)
-    batch = meff2.shape[:1] + kz2.shape[1:2] + (P, p, p)
-    B_corner = jnp.broadcast_to(B_raw[None, None], batch)
-    C_corner = jnp.broadcast_to(C_raw[None, None], batch)
-    return A_blocks, B_corner, C_corner
-
-
 # ── Spectral tensor operators (FFT-free) ────────────────────────────
 
 
@@ -483,9 +423,7 @@ def get_norm2_conformation(
 
 # ── Viscoelastic annular flow dataclass ─────────────────────────────
 
-_WallBoundedOp = (
-    DenseJAXSolver | PerModeBandedOperator | PerModeBandedPallasOperator
-)
+_WallBoundedOp = DenseJAXSolver | PerModeBandedPallasOperator
 
 
 @register_dataclass_pytree
@@ -572,36 +510,10 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         narrowN = jax.device_put(rowN_np, sharding.no_shard)
 
         backend = params.solver.backend
-        if backend == "banded":
-            bt = params.solver.block_thomas
-            P_blk, m_blk = validate_spike_partition(Nr, fd_p, "Nr", bt)
-
-            def _op(s: int) -> PerModeBandedOperator:
-                A, B, C = _build_Hc_blocks_gpu(
-                    self.A_base,
-                    narrow0,
-                    narrowN,
-                    meff2[s],
-                    self.inv_r2,
-                    kz2_s,
-                    dt,
-                    c_impl,
-                    kappa,
-                    fd_p,
-                    P_blk,
-                    m_blk,
-                )
-                return _spike_factor(A, B, C, bt)
-
-            ops = {s: _op(s) for s in (0, 1, -1, 2, -2)}
-            self.Hc_op = _stack_banded_operators(
-                ops[0], ops[1], ops[-1], ops[0], ops[2], ops[-2]
-            )
-        elif backend == "pallas":
-            bt = params.solver.block_thomas
-            P_blk, m_blk = validate_spike_partition(Nr, fd_p, "Nr", bt)
-            force = params.solver.pallas_force_pivoting
-
+        if backend == "pallas":
+            # Six per-spin banded operators (slot 3 repeats s = 0),
+            # stacked into one homogeneous operator and
+            # stability-checked as a single group.
             bands = [
                 _build_Hc_band_gpu(
                     self.A_base,
@@ -617,32 +529,7 @@ class ViscoelasticAnnularFlow(AnnularFlow):
                 )
                 for s in (0, 1, -1, 0, 2, -2)
             ]
-
-            def _make_spike() -> PerModeBandedOperator:
-                def _op(s: int) -> PerModeBandedOperator:
-                    A, B, C = _build_Hc_blocks_gpu(
-                        self.A_base,
-                        narrow0,
-                        narrowN,
-                        meff2[s],
-                        self.inv_r2,
-                        kz2_s,
-                        dt,
-                        c_impl,
-                        kappa,
-                        fd_p,
-                        P_blk,
-                        m_blk,
-                    )
-                    return _spike_factor(A, B, C, bt)
-
-                return _stack_banded_operators(
-                    _op(0), _op(1), _op(-1), _op(0), _op(2), _op(-2)
-                )
-
-            self.Hc_op = _decide_pallas_or_spike(
-                bands, force, "Hc", _make_spike
-            )
+            self.Hc_op = _build_pallas_operator(bands, "Hc")
         else:
 
             def _dense(s: int) -> DenseJAXSolver:
