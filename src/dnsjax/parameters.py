@@ -213,17 +213,24 @@ class Geometry(BaseModel):
     1. ``wall_grid`` (file path): load a custom grid from file.
        A custom grid always overrides dnsjax's grid generation.
     2. ``grid_type``: generate a named grid at startup.
-    3. Default: full CGL (Cartesian / annular) or the **rigged-CGL**
-       radial grid (cylindrical, see below).
+    3. Default (``grid_type`` unset): ``update_parameters`` resolves
+       it to a concrete value -- full CGL (``"cgl"``) for the
+       Cartesian / annular families, and for the cylindrical family
+       **half-CGL** under the default ``iterative-cn`` scheme or
+       **rigged-CGL** (``"cgl"``) under ``cnab2`` (see below).
+       Because the resolved value is concrete, snapshots embed the
+       grid they actually ran and a resume pins it -- the
+       scheme-dependent default never silently re-grids an old
+       trajectory (see :func:`_snapshot_grid_type`).
 
     Setting both ``wall_grid`` and ``grid_type`` is an error.
 
     ``grid_type`` values: ``"cgl"`` the plain Chebyshev-Gauss-Lobatto
     grid (Cartesian / annular; for the cylindrical family it is a
-    synonym for the default rigged-CGL grid); ``"half-cgl"`` the
-    legacy half-CGL radial grid (**cylindrical family only, and only
-    with** ``step.scheme == "iterative-cn"``); ``"tanh"`` a
-    tanh-stretched grid.  ``None`` is the family default.
+    synonym for the rigged-CGL grid); ``"half-cgl"`` the half-CGL
+    radial grid (**cylindrical family only, and only with**
+    ``step.scheme == "iterative-cn"``); ``"tanh"`` a tanh-stretched
+    grid.
 
     **Cylindrical radial grids.**  Both keep the ``ny`` outermost
     *positive* points of an auxiliary CGL grid on `$[-1, 1]$`, so the
@@ -231,13 +238,14 @@ class Geometry(BaseModel):
     degree of freedom lives in `$[0, r_0)$` (parity ghosts close the
     FD stencils across the axis; the quadrature covers the segment):
 
-    - **rigged-CGL** (default): the positive half of a
+    - **rigged-CGL** (the ``cnab2`` default): the positive half of a
       `$(2 n_y + 1)$`-point grid.  The odd total's centre point falls
       exactly on the coordinate-singular axis and is dropped, so the
       innermost point sits at `$r_0 \approx \Delta r$`
       (`$= \sin(\pi/(2 n_y))$`).
-    - **half-CGL** (opt-in): the positive half of a `$2 n_y$`-point
-      grid, staggered so `$r_0 \approx \Delta r/2$`
+    - **half-CGL** (the ``iterative-cn`` default): the positive half
+      of a `$2 n_y$`-point grid, staggered so
+      `$r_0 \approx \Delta r/2$`
       (`$= \sin(\pi/(2\,(2 n_y - 1)))$`) -- half the rigged value.
 
     Rationale: the near-axis *azimuthal* advection CFL
@@ -245,12 +253,12 @@ class Geometry(BaseModel):
     evaluated at grid points only, so it relaxes `$\propto r_0$` at a
     truncation-level accuracy cost.  The rigged grid's `$2\times$`
     larger `$r_0$` doubles the admissible explicit-``cnab2`` ``dt``
-    (measured), which is why it is the default; the tighter half-CGL
-    axis makes ``cnab2`` blow up at low ``dt`` (near-axis explicit
-    instability), so half-CGL is restricted to the implicitly-iterated
-    ``iterative-cn`` scheme, which integrates it cleanly and gains its
-    finer near-axis resolution.  See ``build_radial_cgl_grid`` in
-    ``cylindrical.py``.
+    (measured), which is why it is the ``cnab2`` default; the tighter
+    half-CGL axis makes ``cnab2`` blow up at low ``dt`` (near-axis
+    explicit instability), so half-CGL is restricted to the
+    implicitly-iterated ``iterative-cn`` scheme, which integrates it
+    cleanly, gains its finer near-axis resolution, and defaults to
+    it.  See ``build_radial_cgl_grid`` in ``cylindrical.py``.
     """
 
     lx: float = Field(gt=0, default=4.0)
@@ -437,6 +445,39 @@ class TimeStepping(BaseModel):
       iteration (the RHS is re-evaluated until the correction converges).
       Stable well past the advective CFL; costs ``2 + num_corrector``
       RHS/FFT evaluations per step.
+
+      Wall-bounded split corrector (``split_corrector``, default on).
+      In the rotational perturbation form the iterated RHS contains
+      the *linear* coupling -- ``L_bf``, the frame term, and (per
+      ``implicit_mean_coupling``) ``L_mf`` -- i.e. exactly the
+      FFT-free ``_l_bf`` the CN/AB2 scheme makes implicit.  The split
+      corrector iterates that part FFT-free: each outer (FFT)
+      iteration freezes the pure self-advection ``N_nl = get_rhs -
+      l_bf`` at the last full evaluation, converges the coupling by
+      re-evaluating only ``l_bf`` (matvecs / a mean-mode ``psum``, no
+      transform), then refreshes the full RHS once and corrects.  The
+      composite fixed point is the same CN equation and the loop
+      always exits on a fresh-RHS correction, so trajectories agree
+      within ``corrector_tolerance`` and the reported ``num_c`` /
+      ``error`` keep their meaning (extra FFT evaluations / last
+      fresh-RHS correction norm) -- ``corrector.dat`` is comparable
+      across the gate.  Coupling-dominated regimes (Dean /
+      viscoelastic-dean mean-flow advection, moving-wall flows and
+      strongly non-normal Taylor-Couette at large ``dt``) converge in
+      fewer FFT evaluations; fluctuation-dominated corrector cost
+      (the pipe near-axis ``CFL_th``) is unchanged -- the tail
+      launches an implicit solve only while the coupling estimate
+      still moves the state (``c dt ||l_bf(u_j) - l_bf(u_{j-1})|| >
+      tol``, a cheap test), so a fluctuation-driven iteration adds
+      one ``l_bf`` evaluation and a norm, not a solve -- and a step
+      whose first correction already meets tolerance costs 2 FFT
+      evaluations either way.  A split corrector that fails to reach
+      tolerance automatically redoes the step with the unsplit
+      corrector (``lax.cond``, stdout diagnostic), pinning the worst
+      case to the unsplit path.  ``split_corrector = False`` restores
+      the unsplit corrector exactly (an A/B gate, to be removed once
+      the benefit is established); triply-periodic flows have no
+      coupling (``l_bf_fn = None``) and always run unsplit.
     - ``"cnab2"``: Crank-Nicolson viscous (implicitness *c*) + 2nd-order
       Adams-Bashforth nonlinear (explicit ``1.5 N^n - 0.5 N^{n-1}``).
       **One** expensive nonlinear/FFT evaluation per step; the previous
@@ -478,13 +519,14 @@ class TimeStepping(BaseModel):
       column -- linear in ``nz`` and in the fluctuation amplitude, and
       a *weak* AB2 imaginary-axis instability, so it needs sustained
       ``CFL_th >~ 0.5`` and pass/fail is trajectory-marginal near the
-      boundary; the default **rigged-CGL** radial grid sits at
-      ``r_0 ~ Delta r`` -- twice the legacy half-CGL ``Delta r/2`` --
+      boundary; the **rigged-CGL** radial grid sits at
+      ``r_0 ~ Delta r`` -- twice the half-CGL ``Delta r/2`` --
       which raises the admissible cnab2 ``dt`` (measured ``dt* ~
       0.0125 -> 0.0175`` at the 32^3 / Re = 1800 reference config;
       ``iterative-cn`` rides ``CFL_th ~ 1.5--2`` there at growing
-      corrector cost) and is why it is the default, whereas the
-      tighter half-CGL grid (``geo.grid_type = 'half-cgl'``)
+      corrector cost) and is why it is the ``cnab2``-default radial
+      grid, whereas the tighter half-CGL grid
+      (``geo.grid_type = 'half-cgl'``, the ``iterative-cn`` default)
       destabilises cnab2 and is
       restricted to ``iterative-cn``); Cartesian flows feel the
       near-wall ``dy ~ 1/N^2`` spacing instead.  A strongly
@@ -542,10 +584,19 @@ class TimeStepping(BaseModel):
     corrector_tolerance: float = Field(gt=0, default=1e-5)
     max_corrector_iterations: int = Field(ge=1, default=10)
     # Fold the instantaneous mean-flow coupling ``L_mf`` into the
-    # implicit (FFT-free) coupling term of the wall-bounded CN/AB2
-    # scheme; no effect on ``"iterative-cn"`` or triply-periodic flows.
+    # FFT-free coupling term ``_l_bf`` shared by the wall-bounded
+    # CN/AB2 scheme and the split ``iterative-cn`` corrector
+    # (``split_corrector``); no effect on triply-periodic flows.
     # See the class docstring.
     implicit_mean_coupling: bool = True
+    # Wall-bounded ``"iterative-cn"`` only: iterate the linear
+    # coupling ``_l_bf`` FFT-free between full-RHS corrector
+    # refreshes (same CN fixed point; coupling-driven corrector
+    # iterations stop costing one FFT evaluation each).  ``False``
+    # restores the unsplit corrector exactly -- an A/B comparison
+    # gate, to be removed once the benefit is established.  No effect
+    # on cnab2 or triply-periodic flows.  See the class docstring.
+    split_corrector: bool = True
 
 
 class Termination(BaseModel):
@@ -799,6 +850,35 @@ _SNAPSHOT_SKIP_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _snapshot_grid_type(snapshot_params: dict) -> str | None:
+    r"""Effective ``geo.grid_type`` of a snapshot's embedded params.
+
+    ``update_parameters`` resolves the wall-normal grid default to a
+    concrete value, so current snapshots embed the grid they ran
+    (``"cgl"`` / ``"half-cgl"`` / ``"tanh"``).  Older wall-bounded
+    snapshots embed ``null`` (or, before ``grid_type`` existed, the
+    retired ``geo.axis_gap`` key) although they ran a definite grid:
+    the then-default full/rigged CGL (both spelled ``"cgl"``), or the
+    grid ``axis_gap`` selected (``0`` = half-CGL, ``1`` = rigged).
+    This helper maps a stored params dict to that effective value, so
+    :func:`read_snapshot_params` can pin the original grid on resume
+    and :func:`trajectory_defining_changes` compares grids rather than
+    storage conventions.  Returns the stored value unchanged when it
+    is concrete, and ``None`` for periodic systems and custom
+    ``wall_grid`` runs (where ``grid_type`` is genuinely unset).
+    """
+    geo = snapshot_params.get("geo") or {}
+    grid_type = geo.get("grid_type")
+    if grid_type is not None:
+        return grid_type
+    system = (snapshot_params.get("phys") or {}).get("system")
+    if system not in walled_systems or geo.get("wall_grid") is not None:
+        return None
+    if geo.get("axis_gap") == 0:  # retired pre-``grid_type`` field
+        return "half-cgl"
+    return "cgl"
+
+
 def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
     """Build a ``Parameters`` from a snapshot's embedded parameters.
 
@@ -814,6 +894,12 @@ def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
     the caller simply skips the snapshot layer.  Unknown fields in the
     stored dump are ignored (Pydantic ``extra="ignore"``), making this
     robust to parameter-schema drift across versions.
+
+    A stored-``null`` wall-bounded ``geo.grid_type`` is backfilled to
+    its effective value (:func:`_snapshot_grid_type`), so the snapshot
+    layer pins the grid the trajectory actually ran -- the
+    scheme-dependent grid default of ``update_parameters`` cannot
+    silently re-grid an old run on resume.
     """
     from .snapshot_meta import is_snapshot_file, read_snapshot_meta
 
@@ -831,6 +917,9 @@ def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
     # snapshot -- which also keeps snapshots that embed a retired
     # backend/field resumable.
     snap.pop("solver", None)
+    grid_type = _snapshot_grid_type(snap)
+    if grid_type is not None:
+        snap.setdefault("geo", {})["grid_type"] = grid_type
     return Parameters.model_validate(snap)
 
 
@@ -855,12 +944,18 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
     after :func:`update_parameters`, so geometry-forced fields such as
     cylindrical ``lz = 2*pi`` match and do not register as changes).
 
-    The cylindrical radial grid choice lives in ``geo.grid_type``
-    (``None``/``"cgl"`` = rigged-CGL, ``"half-cgl"`` = legacy half),
-    which is compared like any other ``geo`` field.  Legacy keys a
-    snapshot carries but the current model no longer defines (e.g. the
-    retired ``geo.axis_gap``) are ignored -- they are absent from the
-    current ``model_dump`` and skipped below.
+    The wall-normal grid choice lives in ``geo.grid_type``
+    (``"cgl"`` = full CGL, or rigged-CGL for the cylindrical family;
+    ``"half-cgl"`` = the cylindrical half grid) and is compared by its
+    *effective* value: when the current side is concrete (the resolved
+    wall-bounded default), the stored side is normalised through
+    :func:`_snapshot_grid_type`, so an old snapshot's stored ``null``
+    (which ran the then-default ``"cgl"``) matches a current explicit
+    ``"cgl"`` and continues cleanly, while a genuine grid switch
+    (rigged <-> half-CGL) is flagged.  Legacy keys a snapshot carries
+    but the current model no longer defines (e.g. the retired
+    ``geo.axis_gap``) are otherwise ignored -- they are absent from
+    the current ``model_dump`` and skipped below.
     """
     skip = set(_SNAPSHOT_SKIP_FIELDS)
     changes: list[str] = []
@@ -874,10 +969,21 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
                 # Legacy field no longer in the model (e.g. the
                 # retired geo.axis_gap): not trajectory-defining.
                 continue
-            if snap.get(key) != cur.get(key):
-                changes.append(
-                    f"{section}.{key}: {snap.get(key)!r} -> {cur.get(key)!r}"
-                )
+            old = snap.get(key)
+            if (
+                section == "geo"
+                and key == "grid_type"
+                and cur.get(key) is not None
+            ):
+                # Old snapshots store ``null`` although they ran a
+                # definite grid; compare effective values (see
+                # ``_snapshot_grid_type``).  Skipped when the current
+                # side is ``None`` (periodic / ``wall_grid`` runs, or
+                # a not-yet-resolved offline ``params``), where a
+                # stored ``null`` genuinely matches.
+                old = _snapshot_grid_type(snapshot_params)
+            if old != cur.get(key):
+                changes.append(f"{section}.{key}: {old!r} -> {cur.get(key)!r}")
     return changes
 
 
@@ -1067,6 +1173,35 @@ def update_parameters(params_new: Parameters) -> None:
             "backend there."
         )
 
+    # Resolve the wall-normal grid's per-family default when the user /
+    # snapshot / TOML never set ``geo.grid_type``: half-CGL for the
+    # cylindrical family under ``iterative-cn`` (which integrates its
+    # tighter axis cleanly and gains the finer near-axis resolution),
+    # rigged-CGL (``"cgl"``) for cylindrical cnab2 (the tighter
+    # half-CGL axis destabilises the explicit scheme -- see the
+    # ``Geometry`` docstring), and the full CGL grid (``"cgl"``) for
+    # the Cartesian / annular families.  Resolving to a *concrete*
+    # value here (rather than interpreting ``None`` at grid
+    # construction) makes every snapshot embed the grid it actually
+    # ran, so a resume pins the trajectory's grid independently of
+    # later defaults.  Re-resolved on every layer application (a later
+    # ``system`` / ``scheme`` override cannot inherit a stale
+    # default); assigned directly -- not via the merge loop -- so the
+    # field never enters ``_user_set_fields``.  A custom
+    # ``geo.wall_grid`` file forces ``grid_type = None`` (setting both
+    # is an error); periodic systems have no wall-normal grid and stay
+    # ``None``.
+    if ("geo", "grid_type") not in _user_set_fields:
+        if params.geo.wall_grid is not None or system not in walled_systems:
+            params.geo.grid_type = None
+        elif (
+            system in cylindrical_systems
+            and params.step.scheme == "iterative-cn"
+        ):
+            params.geo.grid_type = "half-cgl"
+        else:
+            params.geo.grid_type = "cgl"
+
     # Select tilting parameters to exact precision for special angles
     if abs(params.geo.tilt_degree) == 0:
         derived_params.tilt_rad = 0
@@ -1123,15 +1258,15 @@ def validate_parameters() -> None:
     # The half-CGL radial grid is a cylindrical-only option, and its
     # tighter near-axis point makes the explicit cnab2 scheme blow up
     # at low dt (near-axis instability); restrict it to iterative-cn,
-    # which integrates it cleanly.  The default rigged-CGL grid has no
-    # such restriction.
+    # which integrates it cleanly (and defaults to it).  The rigged
+    # grid (the cnab2 default) has no such restriction.
     if params.geo.grid_type == "half-cgl":
         if params.phys.system not in cylindrical_systems:
             raise ValueError(
                 "geo.grid_type='half-cgl' applies only to the "
                 "cylindrical geometry (system "
                 f"{params.phys.system!r} has no axis); use the "
-                "default rigged-CGL grid."
+                "default 'cgl' grid."
             )
         if params.step.scheme != "iterative-cn":
             raise ValueError(
@@ -1139,7 +1274,7 @@ def validate_parameters() -> None:
                 "step.scheme='iterative-cn' (the tighter half-CGL "
                 "axis destabilises the explicit "
                 f"{params.step.scheme!r} scheme at low dt); use the "
-                "default rigged-CGL grid instead."
+                "rigged-CGL grid ('cgl', the cnab2 default) instead."
             )
 
     # The Pallas kernel tiles the mode plane in ``bm0 x bm1`` blocks;

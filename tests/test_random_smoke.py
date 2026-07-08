@@ -40,6 +40,13 @@ self-advection CFL, which ``ny = 48`` on the fine near-wall CGL grid
 would violate at this ``Re``, an inherent explicit-scheme limit, not the
 coupling bug).
 
+Every wall-bounded iterative-cn entry runs the **split** corrector (the
+``step.split_corrector`` default: the linear coupling iterates FFT-free
+between full-RHS refreshes; see ``_split_core`` in ``timestep.py``); a
+trailing ``dean-unsplit-corrector`` entry passes
+``--step.split_corrector False`` to keep the legacy unsplit corrector
+integration-covered while the A/B gate exists.
+
 A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
 ``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
 divisible by ``np1``) is the regression guard for the per-device
@@ -407,7 +414,8 @@ SYSTEMS: list[dict] = [
         # the ordinary explicit self-advection CFL.  For the pipe the
         # binding term is the **near-axis azimuthal** advection: the
         # innermost radial node sits at ``r_0 ~ pi/(2 ny)`` (the
-        # default rigged-CGL grid) where the azimuthal arc length
+        # rigged-CGL grid, the cnab2 default this entry resolves to)
+        # where the azimuthal arc length
         # ``r_0 dtheta`` is tiny, so
         # ``CFL_th = dt |u_th(r_0)| nz / (2 pi r_0)`` (the dominant
         # ``steps.dat`` column) scales linearly with nz and with the
@@ -419,8 +427,9 @@ SYSTEMS: list[dict] = [
         # (m = +-1) driven, so neither the implicit ``L_bf`` corrector
         # (which converges cleanly throughout) nor
         # ``step.implicit_mean_coupling`` can remove it -- but the
-        # default **rigged-CGL** radial grid doubles ``r_0`` vs the
-        # legacy half-CGL grid, doubling the admissible ``dt``
+        # **rigged-CGL** radial grid (the cnab2 default) doubles
+        # ``r_0`` vs the half-CGL grid (the iterative-cn default),
+        # doubling the admissible ``dt``
         # (measured dt* ~ 0.0125 -> 0.0175 at 32^3/Re=1800); the
         # tighter half-CGL grid (``geo.grid_type = "half-cgl"``)
         # destabilises cnab2 and is iterative-cn-only.  ny=32 here
@@ -541,6 +550,30 @@ SYSTEMS: list[dict] = [
             "5",
             "--step.scheme",
             "cnab2",
+        ],
+    },
+    {
+        # Unsplit iterative-cn corrector (step.split_corrector=False):
+        # every wall-bounded iterative-cn entry above runs the split
+        # corrector (the default), so this keeps the legacy unsplit
+        # corrector integration-covered while the A/B gate exists.
+        # Dean, because its coupling is the pure instantaneous
+        # mean-flow term (l_bf == L_mf) -- the regime the split
+        # targets -- so the two corrector structures genuinely differ
+        # here.  Same config as the iterative-cn ``dean`` entry.
+        "name": "dean-unsplit-corrector",
+        "res": {"nx": 32, "ny": 32, "nz": 32},
+        "args": [
+            "--phys.system",
+            "dean",
+            "--phys.re",
+            "1000",
+            "--geo.eta",
+            "0.5",
+            "--geo.lx",
+            "5",
+            "--step.split_corrector",
+            "False",
         ],
     },
 ]

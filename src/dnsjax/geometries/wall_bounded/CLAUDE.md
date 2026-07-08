@@ -8,7 +8,8 @@
 - `cartesian.py`: Cartesian geometry (Fourier, CGL grid,
   `CartesianFlow`, Kleiser-Schumann IMM, Lk/Hk operator builders)
 - `cylindrical.py`: cylindrical geometry (Fourier, radial CGL grid --
-  rigged-CGL default, half-CGL via `geo.grid_type`, `CylindricalFlow`,
+  half-CGL default under `iterative-cn`, rigged-CGL under `cnab2`
+  (`geo.grid_type`), `CylindricalFlow`,
   decoupled u+/u- formulation, parity-reduced FD, 1x1 IMM,
   `interpolate_to_axis` r=0 evaluation)
 - `annular.py`: annular geometry / concentric cylinders (Fourier, CGL
@@ -36,14 +37,17 @@ step_cnab2, step_cnab2_measured)`. Each geometry module provides a
 thin `build_*_stepper(flow)` passing its callables: the measured RHS
 (CFL via the `rhs.py` `measure_fn` hook) and `_l_bf` -- the FFT-free
 linear base-flow coupling `L_bf = u'×curl(U) + U×ω'` that wall-bounded
-cnab2 makes implicit, built from the shared `base_flow_coupling`
+cnab2 **and** the split iterative-cn corrector (`step.split_corrector`,
+default on; `_split_core` in `timestep.py`) make implicit, built from
+the shared `base_flow_coupling`
 helper. With `step.implicit_mean_coupling` (default on) each `_l_bf`
 also folds in the instantaneous mean-flow coupling `L_mf` by adding
 the `extract_mean_mode` profiles onto the base/curl profiles (still
 FFT-free; for total-field Dean it is the *only* coupling). Why the
 coupling is stiff: the `TimeStepping` docstring.
 `tests/test_cnab2.py` pins the split exactness, the
-machine-precision `L_mf` oracle, and the FFT counts.
+machine-precision `L_mf` oracle, the FFT counts, and the
+split-vs-unsplit corrector fixed-point equivalence.
 
 **Moving frame (`phys.u_grid`)**: the convective-form frame term
 `+i k₀ U_grid u'` is added spectrally in each geometry's
@@ -100,8 +104,9 @@ Documented in the `cylindrical.py` module docstring: decoupled
 `u+`/`u-` formulation (Willis 2017), effective azimuthal modes,
 parity-reduced FD matrices, radial CGL grid, 1x1 influence matrix,
 constant-bulk-velocity enforcement. Radial grid construction
-(rigged-CGL default vs legacy half-CGL, near-axis spacing, cnab2
-rationale): the `build_radial_cgl_grid` and `TimeStepping` docstrings.
+(half-CGL: the `iterative-cn` default; rigged-CGL: the `cnab2`
+default; near-axis spacing, cnab2 rationale): the
+`build_radial_cgl_grid` and `TimeStepping` docstrings.
 Full-disc radial quadrature is **parity-specific** spectral
 Clenshaw-Curtis (`fd.cgl_radial_quadrature_weights` →
 `y_weights`/`y_weights_odd`; each diagnostic integrates with its known
@@ -140,8 +145,11 @@ above).
 Grid selection precedence: (1) `params.geo.wall_grid` file path
 (always overrides generation), (2) `params.geo.grid_type` (`"cgl"` /
 `"half-cgl"` / `"tanh"`; half-CGL is cylindrical + `iterative-cn`
-only, enforced by `validate_parameters`), (3) default: full CGL
-(Cartesian/annular) or rigged-CGL (cylindrical). Quadrature: spectral
+only, enforced by `validate_parameters`), (3) default, resolved to a
+concrete `grid_type` by `update_parameters` (so snapshots embed the
+grid they ran and resumes pin it): full CGL (Cartesian/annular);
+cylindrical half-CGL under `iterative-cn`, rigged-CGL under `cnab2`.
+Quadrature: spectral
 Clenshaw-Curtis on the CGL grids (`fd.clenshaw_curtis_weights`,
 annular affine-mapped; cylindrical: the parity-specific
 `fd.cgl_radial_quadrature_weights`), the parity-agnostic `fd_order`

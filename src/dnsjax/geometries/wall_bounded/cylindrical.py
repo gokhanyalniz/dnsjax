@@ -2,8 +2,9 @@ r"""Cylindrical geometry: Fourier class, norms, IMM, and solvers.
 
 Provides all geometry-general infrastructure for wall-bounded
 cylindrical flows: the ``Fourier`` wavenumber class, the
-``CylindricalFlow`` base dataclass (radial CGL grid -- rigged-CGL
-by default or half-CGL via ``geo.grid_type``, parity-reduced FD
+``CylindricalFlow`` base dataclass (radial CGL grid -- half-CGL
+under the default ``iterative-cn`` scheme, rigged-CGL under
+``cnab2``, selected by ``geo.grid_type``, parity-reduced FD
 matrices, IMM operators),
 spectral solvers (influence-matrix method, predictor-corrector
 time stepping), and diagnostic helpers (norms, perturbation
@@ -407,13 +408,14 @@ def build_radial_cgl_grid(Nr: int, axis_gap: int = 1) -> Array:
         r_0 = \sin\!\Bigl(\frac{(g+1)\,\pi}{2\,(2N_r+g-1)}\Bigr)
         \approx (g+1)\,\frac{\Delta r}{2}.
 
-    - `$g = 1$` -- the default **rigged-CGL** grid.  The odd
-      auxiliary total has a centre point exactly on `$r = 0$`
-      (a coordinate singularity, not a boundary) which is
-      dropped, landing `$r_0 \approx \Delta r$`.
-    - `$g = 0$` -- the legacy **half-CGL** grid (even auxiliary
-      total, no point on the axis, staggered
-      `$r_0 \approx \Delta r/2$`).
+    - `$g = 1$` -- the **rigged-CGL** grid (the ``cnab2``
+      default).  The odd auxiliary total has a centre point
+      exactly on `$r = 0$` (a coordinate singularity, not a
+      boundary) which is dropped, landing
+      `$r_0 \approx \Delta r$`.
+    - `$g = 0$` -- the **half-CGL** grid (the ``iterative-cn``
+      default; even auxiliary total, no point on the axis,
+      staggered `$r_0 \approx \Delta r/2$`).
 
     No degree of freedom lives in `$[0, r_0)$` (the parity
     ghosts close the FD stencils across the axis and the
@@ -424,11 +426,12 @@ def build_radial_cgl_grid(Nr: int, axis_gap: int = 1) -> Array:
     advection CFL `$\propto 1/r_0$` -- the pipe's explicit
     (cnab2) timestep limit -- so the rigged grid's
     `$2\times$`-larger `$r_0$` doubles the admissible cnab2
-    ``dt`` (measured), which is why it is the default; the
-    tighter half-CGL axis destabilises cnab2 (a near-axis
-    explicit instability) and is restricted to ``iterative-cn``
-    (``geo.grid_type = "half-cgl"``), which integrates it
-    cleanly and gains its finer near-axis resolution.
+    ``dt`` (measured), which is why it is the ``cnab2``
+    default; the tighter half-CGL axis destabilises cnab2 (a
+    near-axis explicit instability) and is restricted to
+    ``iterative-cn`` (``geo.grid_type = "half-cgl"``), which
+    integrates it cleanly, gains its finer near-axis
+    resolution, and defaults to it.
 
     Parameters
     ----------
@@ -514,10 +517,14 @@ def build_cylindrical_grid(
     1. *wall_grid*: load from file (a custom grid always
        overrides dnsjax's grid generation).
     2. *grid_type*: ``"tanh"`` for one-sided tanh stretching;
-       ``"half-cgl"`` for the legacy half-CGL radial grid
-       (``axis_gap = 0``); ``"cgl"`` / ``None`` for the default
+       ``"half-cgl"`` for the half-CGL radial grid
+       (``axis_gap = 0``); ``"cgl"`` / ``None`` for the
        **rigged-CGL** radial grid (``axis_gap = 1``).
-    3. Default (``grid_type`` unset): rigged-CGL.
+    3. ``update_parameters`` resolves an unset ``geo.grid_type``
+       to ``"half-cgl"`` under ``iterative-cn`` and ``"cgl"``
+       (rigged) under ``cnab2``, so params-driven callers pass a
+       concrete value; a raw ``None`` here falls back to
+       rigged-CGL.
 
     See :func:`build_radial_cgl_grid` for the rigged vs half-CGL
     construction and the near-axis-CFL rationale.
@@ -594,8 +601,9 @@ def build_cylindrical_grid(
         grid = tanh_one_sided_grid(ny, grid_stretch)
         rs = jnp.asarray(grid, dtype=sharding.float_type)
     else:
-        # Default rigged-CGL (axis_gap = 1); the legacy half-CGL
-        # (axis_gap = 0) is opt-in via grid_type = "half-cgl".
+        # "cgl" / None -> rigged-CGL (axis_gap = 1); half-CGL
+        # (axis_gap = 0) via grid_type = "half-cgl" (the resolved
+        # iterative-cn default; see update_parameters).
         axis_gap = 0 if grid_type == "half-cgl" else 1
         rs = build_radial_cgl_grid(ny, axis_gap)
     inv_r = 1.0 / rs
@@ -885,8 +893,9 @@ class CylindricalFlow:
     Subclasses must set ``base_flow`` and ``curl_base_flow``
     *after* calling
     ``super().__post_init__()``, which builds the radial CGL
-    grid (rigged-CGL, or half-CGL via ``geo.grid_type``),
-    parity-reduced FD matrices, and all per-mode IMM operators.
+    grid (half-CGL or rigged-CGL, per the resolved
+    ``geo.grid_type``), parity-reduced FD matrices, and all
+    per-mode IMM operators.
 
     The velocity state is stored in decoupled form
     `$(u_z, u_+, u_-)$` where
@@ -968,9 +977,9 @@ class CylindricalFlow:
     def __post_init__(self) -> None:
         r"""Build radial grid, FD matrices, and IMM operators.
 
-        Constructs the radial CGL grid on `$(0, 1]$` (rigged-CGL,
-        or half-CGL via ``geo.grid_type``), builds parity-reduced
-        FD matrices,
+        Constructs the radial CGL grid on `$(0, 1]$` (half-CGL or
+        rigged-CGL, per the resolved ``geo.grid_type``), builds
+        parity-reduced FD matrices,
         assembles and factorises `$L_k$`, `$H_{k,+}$`,
         `$H_{k,-}$`, `$H_{k,z}$` directly on the device, then
         derives all homogeneous IMM data.

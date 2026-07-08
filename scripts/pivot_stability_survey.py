@@ -108,9 +108,10 @@ COMMON = {
 }
 
 # Wall-normal grid pool per system: (grid_type, grid_stretch) with
-# None = the family default (full CGL, or rigged-CGL for pipe).
-# half-cgl is cylindrical-only and iterative-cn-only (the survey's
-# fixed scheme).
+# None = the resolved scheme default (full CGL for Cartesian/annular;
+# for the pipe, half-CGL under the survey's fixed iterative-cn
+# scheme), and an explicit "cgl" pipe entry for the rigged-CGL grid
+# (the cnab2 default) so both radial grids stay surveyed.
 GRID_POOL: dict[str, list[tuple[str | None, float | None]]] = {
     "plane-couette": [
         (None, None),
@@ -124,7 +125,7 @@ GRID_POOL: dict[str, list[tuple[str | None, float | None]]] = {
         ("tanh", 1.5),
         ("tanh", 3.0),
     ],
-    "pipe": [(None, None), ("half-cgl", None), ("tanh", 1.5)],
+    "pipe": [(None, None), ("cgl", None), ("tanh", 1.5)],
     "taylor-couette": [(None, None), ("tanh", 1.5)],
     "dean": [(None, None), ("tanh", 1.5)],
     "viscoelastic-dean": [(None, None), ("tanh", 1.5)],
@@ -235,8 +236,6 @@ def run_child(a: argparse.Namespace) -> None:
     params.geo.lx = a.lx
     if a.lz is not None:
         params.geo.lz = a.lz
-    if a.grid_type is not None:
-        params.geo.grid_type = a.grid_type
     params.res.nx = a.nx
     params.res.ny = a.ny
     params.res.nz = a.nz
@@ -245,10 +244,19 @@ def run_child(a: argparse.Namespace) -> None:
     params.step.dt = a.dt
     params.step.implicitness = a.implicitness
     params.step.scheme = "iterative-cn"
-    params.solver.backend = "pallas"
+
+    # grid_type and the backend must go through the layering call, not
+    # direct ``params.*`` assignments: ``update_parameters`` re-resolves
+    # both per-family defaults for any field not recorded in
+    # ``_user_set_fields``, so a direct assignment is overwritten (a
+    # "tanh" pool entry would silently resolve back to the
+    # scheme-default CGL grid).
+    explicit: dict = {"solver": {"backend": "pallas"}}
+    if a.grid_type is not None:
+        explicit["geo"] = {"grid_type": a.grid_type}
 
     try:
-        update_parameters(Parameters())
+        update_parameters(Parameters(**explicit))
         padded_res.set_padded_resolution(params)
         validate_parameters()
     except (ValueError, RuntimeError) as e:

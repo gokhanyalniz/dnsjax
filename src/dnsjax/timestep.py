@@ -7,7 +7,10 @@ corrector loop and primary path), and an optional measured variant.
 The overall iteration structure (Euler
 predictor + iterative Crank-Nicolson corrector, Willis 2017) is shared
 across all flow types; only the RHS evaluation, Helmholtz solve, and
-norm computation differ.
+norm computation differ.  With *l_bf_fn* provided and
+``step.split_corrector`` on (the wall-bounded default), the fused
+corrector runs in split form (``_split_core``): the linear coupling
+iterates FFT-free between full-RHS refreshes.
 
 For triply-periodic flows the Helmholtz solve is algebraic (pointwise
 multiply by ``ldt_1``, ``ildt_2``).  For wall-bounded flows it is a
@@ -70,16 +73,23 @@ def make_stepper(
     l_bf_fn:
         Optional ``state -> l_bf`` giving the *linear* base-flow
         coupling term (``u' x curl(U) + U x omega'``) evaluated
-        **without** any FFT (spectral/matrix-free), used only by the
-        CN/AB2 scheme.  When provided, ``step_cnab2`` advances the
+        **without** any FFT (spectral/matrix-free), used by the
+        CN/AB2 scheme and by the split ``iterative-cn`` corrector
+        (``step.split_corrector``, default on).  When provided,
+        ``step_cnab2`` advances the
         pure self-advection ``u' x omega' = get_rhs_fn - l_bf_fn``
         explicitly (AB2) while treating ``l_bf_fn`` implicitly
         (Crank-Nicolson) via an FFT-free corrector -- required for
         wall-bounded flows, where the base-flow coupling carries a
         stiff wall-normal derivative on the wall-clustered grid (see
-        ``step_cnab2`` below).  When ``None`` (triply-periodic, whose
+        ``step_cnab2`` below) -- and
+        ``predict_and_fully_correct(_measured)`` likewise split their
+        corrector around it (``_split_core``;
+        ``step.split_corrector = False`` restores the unsplit
+        corrector exactly).  When ``None`` (triply-periodic, whose
         Fourier ``y`` makes the coupling non-stiff) ``step_cnab2`` is
-        the plain explicit-AB2 step.
+        the plain explicit-AB2 step and the corrector is always
+        unsplit.
     finalize_fn:
         Optional ``(state, *args) -> state`` applied **once** to the
         accepted state of every completed step -- at the end of
@@ -110,6 +120,11 @@ def make_stepper(
         Fused predict + corrector loop in a single JIT scope
         via ``lax.while_loop``.  Signature:
         ``state -> (prediction_state, error, num_c)``.
+        With *l_bf_fn* and ``step.split_corrector`` (default on) the
+        corrector runs in split form -- the linear coupling iterates
+        FFT-free between full-RHS refreshes, same converged CN fixed
+        point and ``error``/``num_c`` semantics (see
+        ``_split_core``).
         **Donates** *state* (the main-loop rebind pattern
         ``state, ... = step(state, ...)``); a caller that reuses
         its state afterwards -- e.g. a warm-up call -- must pass
@@ -246,19 +261,149 @@ def make_stepper(
         )
         return prediction, error, num_c
 
+    def _split_core(
+        state: Array, rhs_prev: Array, *args
+    ) -> tuple[Array, Array, Array]:
+        r"""Split corrector: FFT-free coupling tail + full refreshes.
+
+        Same CN fixed point as ``_step_core``, reorganised so the
+        corrector iterations driven by the *linear* coupling
+        ``l_bf_fn`` (base-flow coupling + frame term + -- per
+        ``step.implicit_mean_coupling`` -- the instantaneous
+        mean-flow coupling) cost no Fourier transform.  Each outer
+        iteration first converges the coupling for the frozen pure
+        self-advection `$N_{nl} = \text{get\_rhs} - \text{l\_bf}$`
+        (the ``_cnab2_lbf_core`` iteration with `$N_{nl}$` in place
+        of the AB2 forcing), then refreshes the full RHS once and
+        corrects.
+
+        The coupling tail's entry test is *cheap*: an implicit solve
+        is launched only while the coupling estimate still moves the
+        state -- `$c\,\Delta t\,\|l_{bf}(u_j) - l_{bf}(u_{j-1})\| >
+        \text{tol}$` (the CN correction weights the implicit RHS
+        estimate by *c* and its Helmholtz inverse is bounded by
+        `$\Delta t$`, so this bounds the correction the new coupling
+        estimate could induce).  A fluctuation-driven outer iteration
+        therefore adds one ``l_bf_fn`` evaluation and one norm,
+        **not** an extra Helmholtz/IMM solve.  The tail test only
+        routes work (tail solve vs outer refresh): acceptance is
+        always the outer fresh-RHS correction, so ``error`` /
+        ``num_c`` keep their unsplit meaning (last full-refresh
+        correction norm / extra FFT evaluations), and a step whose
+        first correction already meets tolerance never enters the
+        loop -- 2 FFT evaluations, exactly the unsplit path.
+
+        A split corrector that fails to reach tolerance redoes the
+        step with the unsplit ``_step_core`` (``lax.cond``, stdout
+        diagnostic), pinning the worst case to the unsplit
+        corrector's behaviour.
+        """
+        prediction = predict_fn(state, rhs_prev, *args)
+
+        # First correction, exactly as the unsplit corrector; also
+        # form the frozen self-advection remainder and keep the
+        # coupling at the same iterate.  ``l_bf_fn`` here re-derives
+        # the spectral curl ``get_rhs_fn`` already built -- XLA CSE
+        # merges the identical subgraphs (see the ``_cnab2_lbf_core``
+        # note).
+        rhs_next = get_rhs_fn(prediction, *args)
+        l_prev = l_bf_fn(prediction, *args)
+        nnl = rhs_next - l_prev
+        prediction, correction = correct_fn(
+            state, prediction, rhs_prev, rhs_next, *args
+        )
+        error = norm_fn(correction, *args)
+
+        tol = params.step.corrector_tolerance
+        max_c = params.step.max_corrector_iterations
+        # Gain of one correction w.r.t. its implicit RHS estimate.
+        cdt = params.step.implicitness * params.step.dt
+
+        def inner_cond(icarry):
+            _, _, delta, ic = icarry
+            return jnp.logical_and(delta > tol, ic < max_c)
+
+        def outer_cond(carry):
+            _, _, _, err, c = carry
+            return jnp.logical_and(err > tol, c < max_c)
+
+        def outer_body(carry):
+            # ``l_prev_k`` is the coupling used by the last correction
+            # (invariant kept below), so ``delta`` measures how much
+            # the coupling estimate has moved since that correction.
+            pred, nnl_k, l_prev_k, _err, c = carry
+
+            def inner_body(icarry):
+                ipred, l_i, _, ic = icarry
+                ipred, _ = correct_fn(
+                    state, ipred, rhs_prev, nnl_k + l_i, *args
+                )
+                l_next = l_bf_fn(ipred, *args)
+                delta = cdt * norm_fn(l_next - l_i, *args)
+                return ipred, l_next, delta, ic + 1
+
+            # FFT-free coupling tail: converge l_bf for the frozen
+            # self-advection, solving only while the coupling still
+            # moves the state.
+            l_new = l_bf_fn(pred, *args)
+            delta0 = cdt * norm_fn(l_new - l_prev_k, *args)
+            pred, l_last, _, _ = jax.lax.while_loop(
+                inner_cond, inner_body, (pred, l_new, delta0, jnp.int32(0))
+            )
+            # One full refresh + correction: the outer convergence
+            # check (and the reported error) always sees a fresh RHS.
+            # ``l_last`` is the coupling at the refresh state, so the
+            # remainder costs no extra ``l_bf_fn`` evaluation.
+            rhs_k = get_rhs_fn(pred, *args)
+            nnl_k = rhs_k - l_last
+            pred, corr = correct_fn(state, pred, rhs_prev, rhs_k, *args)
+            return pred, nnl_k, l_last, norm_fn(corr, *args), c + 1
+
+        init = (prediction, nnl, l_prev, error, jnp.int32(0))
+        prediction, _, _, error, num_c = jax.lax.while_loop(
+            outer_cond, outer_body, init
+        )
+
+        def _fallback(_):
+            jax.debug.print(
+                "iterative-cn: split corrector did not converge "
+                "(err={e:.2e} after {c} it); redoing the step with "
+                "the unsplit corrector.",
+                e=error,
+                c=num_c,
+            )
+            return _step_core(state, rhs_prev, *args)
+
+        def _keep(_):
+            return prediction, error, num_c
+
+        return jax.lax.cond(error > tol, _fallback, _keep, None)
+
+    # Corrector core for predict_and_fully_correct(_measured): the
+    # split corrector needs the FFT-free coupling (wall-bounded) and
+    # is gated by ``step.split_corrector`` -- an A/B knob, see the
+    # ``TimeStepping`` docstring.  Resolved at construction time (the
+    # geometry builders run after the configuration is final).
+    if l_bf_fn is not None and params.step.split_corrector:
+        _fully_correct_core = _split_core
+    else:
+        _fully_correct_core = _step_core
+
     @jit(donate_argnums=0)
     def predict_and_fully_correct(
         state: Array, *args
     ) -> tuple[Array, Array, Array]:
         """Predict + all corrector iterations in one JIT scope.
 
+        Wall-bounded flows run the split corrector by default
+        (``_split_core``; gated by ``step.split_corrector``).
         *state* is donated: the output state may reuse its buffer
         (one field-sized allocation saved per step in the main
         loop).  Callers that keep using their input must pass a
         copy (see the ``__main__`` warm-up calls).
         """
         rhs_prev = get_rhs_fn(state, *args)
-        prediction, error, num_c = _step_core(state, rhs_prev, *args)
+        prediction, error, num_c = _fully_correct_core(state, rhs_prev, *args)
         return _finalized(prediction, *args), error, num_c
 
     if get_rhs_measured_fn is None:
@@ -277,7 +422,9 @@ def make_stepper(
             (warm-up callers pass a copy).
             """
             rhs_prev, measurements = get_rhs_measured_fn(state, *args)
-            prediction, error, num_c = _step_core(state, rhs_prev, *args)
+            prediction, error, num_c = _fully_correct_core(
+                state, rhs_prev, *args
+            )
             return _finalized(prediction, *args), error, num_c, measurements
 
     def _cnab2_lbf_core(
@@ -341,7 +488,9 @@ def make_stepper(
         # fails to reach ``corrector_tolerance`` within
         # ``max_corrector_iterations``.  When that happens, redo *this*
         # step with the robust full iterative-CN corrector (``_step_core``,
-        # reusing the RHS already evaluated at `$u^n$`); ``lax.cond`` runs
+        # reusing the RHS already evaluated at `$u^n$`; deliberately the
+        # *unsplit* corrector -- the split one's coupling tail is the same
+        # Picard iteration that just failed); ``lax.cond`` runs
         # that branch -- and its extra FFTs -- only on the hard steps, so
         # the cheap 1-FFT path is unchanged elsewhere.  (This does *not*
         # cover the explicit-``N_nl`` advective-stability limit shared by

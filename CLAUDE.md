@@ -281,7 +281,14 @@ See the `make_stepper` docstring, `_base.py`, and
 and share the predictor/IMM-pressure solve. `"iterative-cn"`
 (default): nonlinear term implicit via the corrector fixed-point
 iteration; `2+c ≈ 3` FFT evals/step; stable well past the advective
-CFL. `"cnab2"`: explicit AB2 nonlinear, **one** FFT eval/step (~3×
+CFL. Wall-bounded iterative-cn runs a **split** corrector by default
+(`step.split_corrector`): the linear coupling (the geometry `_l_bf`:
+`L_bf` + frame term + `L_mf` per `implicit_mean_coupling`) iterates
+FFT-free between full-RHS refreshes — same CN fixed point, `num_c`
+counts the FFT refreshes, non-convergence falls back to the unsplit
+corrector (`lax.cond`), and `split_corrector False` restores the
+legacy corrector exactly (an A/B gate, to be removed once the benefit
+is established). `"cnab2"`: explicit AB2 nonlinear, **one** FFT eval/step (~3×
 fewer FFTs on CFL-limited runs). Wall-bounded cnab2 advances only the
 self-advection `u'×ω'` explicitly; the wall-stiff linear base-flow
 coupling `L_bf` and (default-on `step.implicit_mean_coupling`) the
@@ -293,13 +300,15 @@ carried by `__main__.py`, not persisted in snapshots); a
 non-converging coupling corrector auto-falls back to a full
 `iterative-cn` step (`lax.cond`). The residual `dt` bound is the
 explicit self-advection CFL (pipe: near-axis azimuthal `CFL_th` --
-the reason rigged-CGL is the default radial grid; Cartesian: near-wall
+the reason rigged-CGL is the cnab2-default radial grid, while
+`iterative-cn` defaults to half-CGL; Cartesian: near-wall
 `Δy ~ 1/N²`); strongly non-normal regimes (counter-rotating
 Taylor-Couette) want `iterative-cn` or a smaller `dt`; triply-periodic
 cnab2 is the plain no-corrector AB2 step. `implicitness` sets the CN
 weight in both schemes. Full detail incl. measured `dt` limits: the
 `TimeStepping` docstring in `parameters.py`; implementation:
-`step_cnab2`/`_cnab2_lbf_core` (`timestep.py`), `base_flow_coupling`/
+`step_cnab2`/`_cnab2_lbf_core`/`_split_core` (`timestep.py`),
+`base_flow_coupling`/
 `_l_bf` (`geometries/wall_bounded/`); guards: `tests/test_cnab2.py`,
 `tests/test_temporal_order.py`.
 
@@ -311,7 +320,10 @@ step is too large to contract within `max_corrector_iterations` --
 reduce `dt` (or raise the iteration cap); it is not an advective-CFL /
 blow-up. (Random-IC Kolmogorov stalls at ~1.4e-5 at `dt=0.01` but
 converges in one corrector step at `dt=0.005`; the wall-bounded flows
-are fine at 0.01.)
+are fine at 0.01.) With the wall-bounded split corrector (default)
+only the self-advection part drives the FFT-refresh count; the
+coupling contracts in the FFT-free tail, where raising the iteration
+cap is cheap.
 
 **Spectral array layout and sharding**: see the `sharding.py` module
 docstring for shapes, partition specs, and the `(np0, np1)` device
@@ -368,6 +380,17 @@ device-/precision-agnostic). `__main__.py` resolves the resume
 snapshot (explicit CLI `init.snapshot` over TOML) and applies the
 layers in order before JAX/singleton setup.
 
+Two fields carry per-family defaults **re-resolved on every
+`update_parameters()` call** unless explicitly set through a layer:
+`solver.backend` (periodic -> `"dense"`, wall-bounded -> `"pallas"`)
+and `geo.grid_type` (wall-bounded -> `"cgl"`, except cylindrical +
+`iterative-cn` -> `"half-cgl"`; periodic / `wall_grid` -> `None`).
+Scripts and tests must set these via
+`update_parameters(Parameters(solver={...}, geo={...}))` -- a direct
+`params.solver.backend = ...` / `params.geo.grid_type = ...`
+assignment followed by `update_parameters()` is silently overwritten
+by the re-resolution (it never enters `_user_set_fields`).
+
 ### Configuration (`parameters.toml`)
 
 See the `parameters.py` model docstrings for full documentation (the
@@ -377,11 +400,11 @@ the schemes, `Solver` for the Pallas knobs). Key fields:
 | Section    | Key fields                                          |
 |------------|-----------------------------------------------------|
 | `[phys]`   | `re`, `re1`/`re2` (Taylor-Couette inner/outer; derive `re := Re_ref`), `system`, `oversampling_factor`, `oversample_y`, `driving`, `block_mean_spanwise_velocity` (mean spanwise velocity: axial for TC, z for Cartesian), `u_grid`; viscoelastic-dean only: `el`, `wi`, `beta`, `epsilon`, `kappa` (`re := wi/el` derived) |
-| `[geo]`    | `lx`, `lz`, `tilt_degree`, `eta` (TC radius ratio), `delta` (viscoelastic-dean inner radius; radii `(δ, δ+2)`), `wall_grid` (custom grid file; always overrides generation), `grid_type` (`"cgl"` / `"half-cgl"` / `"tanh"`; cylindrical default = rigged-CGL, `"half-cgl"` cylindrical + `iterative-cn` only), `grid_stretch` |
+| `[geo]`    | `lx`, `lz`, `tilt_degree`, `eta` (TC radius ratio), `delta` (viscoelastic-dean inner radius; radii `(δ, δ+2)`), `wall_grid` (custom grid file; always overrides generation), `grid_type` (`"cgl"` / `"half-cgl"` / `"tanh"`; unset resolves per scheme: cylindrical = half-CGL under `iterative-cn` / rigged-CGL (`"cgl"`) under cnab2, Cartesian/annular = full CGL; `"half-cgl"` cylindrical + `iterative-cn` only), `grid_stretch` |
 | `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`    |
 | `[init]`   | Start-mode precedence: `snapshot` > `start_from_laminar` > `localized_rolls` > `random_field` (default **on**). `snapshot`, `t0`, `it0`, `isnap0`, `force_resume`, `random_amplitude`/`_smoothness`/`_seed`/`_mean_flow`/`_conformation_amplitude`, `localized_rolls_amplitude`/`_width`/`_wavelength` |
 | `[outs]`   | `it_stats`, `it_steps` (CFL cadence -> `steps.dat`), `it_snapshot`, `it_corrector` (-> `corrector.dat`; requires `it_error_check <= it_corrector`), `it_error_check` (host-sync cadence), `nbuffer`, `stats_precision`, `snapshot_write_mode`, `snapshot_pad_width`, `snapshot_embed_stats`, `snapshot_save_initial`, `snapshot_save_final` (last three default on, independent of `it_snapshot`) |
-| `[step]`   | `dt`, `scheme` (`"iterative-cn"` / `"cnab2"`, both supported for every flow), `implicitness`, `corrector_tolerance`, `max_corrector_iterations`, `implicit_mean_coupling` |
+| `[step]`   | `dt`, `scheme` (`"iterative-cn"` / `"cnab2"`, both supported for every flow), `implicitness`, `corrector_tolerance`, `max_corrector_iterations`, `implicit_mean_coupling`, `split_corrector` (wall-bounded iterative-cn: FFT-free coupling iteration, default on; A/B gate) |
 | `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601), `check_laminarization` (default on; terminate when `E'` < `laminarization_threshold`, default `1e-9`) |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
 | `[solver]` | `backend` (`"pallas"` default for wall-bounded / `"dense"` reference -- readable + regression oracle, warns on wall-bounded runs; periodic systems resolve to `"dense"`, their only backend), `pallas_block_m0`/`m1` (mode tile, default 2/32), `pallas_stability_tol`, `pallas_num_warps`/`pallas_num_stages`, `rhs_transform_chunks` (viscoelastic RHS memory knob) |
@@ -416,7 +439,10 @@ yields a zarr store + plain-JSON metadata); each device writes its
 disjoint byte ranges directly into the one file (raw offset I/O / GDS
 preserved; never compressed). Resume is np- and precision-agnostic;
 a different wall-normal grid is interpolated at load
-(`_interpolate_if_needed` in `__main__.py`). The stored state is the
+(`_interpolate_if_needed` in `__main__.py`), and an old snapshot's
+unset `geo.grid_type` is backfilled to the grid it actually ran
+(`_snapshot_grid_type` in `parameters.py`), so the scheme-dependent
+grid default never re-grids a resumed trajectory. The stored state is the
 spectral perturbation `u'` for the base-flow systems (a laminar
 snapshot is a zero array) and the **total** field for
 dean/viscoelastic-dean.
@@ -564,9 +590,10 @@ one-liners. Cross-cutting notes:
   point, `Hc` parity, Frobenius norm, fused-RHS FFT count).
 - `tests/test_integration.py`: quadrature weights and interpolation
   matrices.
-- `tests/test_cnab2.py`: CN/AB2 structural guards -- split exactness,
-  `L_mf` oracle, carry-seed independence, jaxpr FFT-count guards,
-  viscoelastic split.
+- `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards --
+  split exactness, `L_mf` oracle, carry-seed independence, jaxpr
+  FFT-count guards, viscoelastic split, split-vs-unsplit corrector
+  fixed-point equivalence and gate-off structure.
 - `tests/test_temporal_order.py`: second-order temporal accuracy
   (Kolmogorov cnab2 self-convergence + icn cross-check, plane-Couette
   scheme-difference slope).
@@ -577,8 +604,9 @@ one-liners. Cross-cutting notes:
   wall-bounded flows (subprocess/mpirun; total-field Dean and
   viscoelastic-dean energy-balance branches).
 - `tests/test_random_smoke.py`: random-IC nonlinear integration for
-  all 7 flows, plus cnab2 entries, the default-IC entry, and the
-  multi-device-padding / Pallas-backend regression entries.
+  all 7 flows, plus cnab2 entries, the default-IC entry, an
+  unsplit-corrector gate-off entry, and the multi-device-padding /
+  Pallas-backend regression entries.
 - `tests/test_snapshot.py`: snapshot round-trips, np-agnostic resume,
   standard-tools readability, 9-component viscoelastic case, isnap /
   stats members.

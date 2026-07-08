@@ -86,14 +86,16 @@ def _configure_system(system: str, ny: int, nx: int, nz: int, order: int):
     params.res.nz = nz
     params.res.fd_order = order
     params.res.double_precision = True
-    params.solver.backend = "pallas"
     if system == "taylor-couette":
         params.phys.re1 = 100.0
         params.phys.re2 = 0.0
         params.geo.eta = 0.5
     elif system == "dean":
         params.geo.eta = 0.5
-    update_parameters(Parameters())
+    # Through the layering call (not a direct assignment), so the
+    # per-family backend re-resolution in ``update_parameters`` cannot
+    # overwrite it.
+    update_parameters(Parameters(solver={"backend": "pallas"}))
     # Recompute the 3/2-rule padded sizes for the FFT dealiasing (the
     # step path needs these; ``update_parameters`` does not set them --
     # ``__main__`` calls this separately).
