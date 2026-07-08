@@ -8,17 +8,15 @@ Tests cover:
 3. `$A_{\\mathrm{base}}$` dense operator vs NumPy reference.
 4. ``_abase_matvec`` matrix-free vs dense reference.
 5. ``_lk_matvec`` vs per-mode NumPy reference.
-6. SPIKE vs dense parity for `$L_k$`, `$H_{k,+}$`,
-   `$H_{k,-}$`, `$H_{k,z}$`.
-7. Pallas band-vs-dense parity (banded storage == ``banded(dense)``,
+6. Pallas band-vs-dense parity (banded storage == ``banded(dense)``,
    no-pivot banded solve == dense solve) -- also the regression
    guard for the parity-reduced builders' refactor onto the shared
    ``solvers._assemble_banded_operator`` helpers.
-8. ``get_norm2_cyl`` correctness.
-9. Composite integration weights on the radial CGL grid.
-10. ``interpolate_to_axis``: polynomial exactness, parity paths,
-    multi-dimensional/complex inputs.
-11. Centreline mean axial velocity under time stepping (a small
+7. ``get_norm2_cyl`` correctness.
+8. Composite integration weights on the radial CGL grid.
+9. ``interpolate_to_axis``: polynomial exactness, parity paths,
+   multi-dimensional/complex inputs.
+10. Centreline mean axial velocity under time stepping (a small
     random perturbation keeps the interpolated ``r = 0`` mean
     axial velocity near the laminar centreline value 1).
 
@@ -72,10 +70,8 @@ from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _abase_matvec,
     _build_A_base,
     _build_Hk_band_gpu,
-    _build_Hk_blocks_gpu,
     _build_Hk_dense_gpu,
     _build_Lk_band_gpu,
-    _build_Lk_blocks_gpu,
     _build_Lk_dense_gpu,
     _ghost_row_count,
     _lk_matvec,
@@ -92,8 +88,6 @@ from dnsjax.solvers import (  # noqa: E402
     PerModeBandedPallasOperator,
     _banded_factor,
     _banded_from_dense,
-    _spike_factor,
-    validate_spike_partition,
 )
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -344,187 +338,6 @@ def test_lk_matvec_matches_reference() -> None:
     )
     got = np.asarray(_lk_matvec(u, pipe_flow, fourier))
     assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
-
-
-def test_spike_vs_dense_on_cylindrical_operators() -> None:
-    """SPIKE matches dense for cylindrical Lk/Hk_plus/Hk_minus/Hk_z."""
-    Nr = params.res.ny
-    p = params.res.fd_order
-    P_blk, m_blk = validate_spike_partition(Nr, p, "Nr")
-
-    # Solver-internal shapes from field-layout fourier arrays.
-    m_s = fourier.m[0, ..., None]
-    kz2_s = fourier.kz2[0, ..., None]
-    mean_s = fourier.mean_mask[0, ..., None]
-    m_is_even_s = fourier.m_is_even[0, ..., None]
-
-    m_is_even_p = m_is_even_s
-    m_is_even_v = 1.0 - m_is_even_s
-
-    m_sq = m_s**2
-    m_plus_1_sq = (m_s + 1) ** 2
-    m_minus_1_sq = (m_s - 1) ** 2
-
-    dt = params.step.dt
-    c = params.step.implicitness
-    nu = 1.0 / params.phys.re
-
-    A_even = pipe_flow.A_base_even
-    A_odd = pipe_flow.A_base_odd
-    inv_r2 = pipe_flow.inv_r2
-    kz2 = kz2_s
-    mean_mask = mean_s
-    D1_wall = pipe_flow.D1_wall.ravel()
-
-    Nm = params.res.nz - 1
-    Nkz = params.res.nx // 2
-    rng = np.random.default_rng(70)
-    b = rng.standard_normal((Nr, Nm, Nkz)) + 1j * rng.standard_normal(
-        (Nr, Nm, Nkz)
-    )
-    rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
-
-    # --- Lk ---
-    Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-        D1_wall,
-        A_even,
-        A_odd,
-        m_is_even_p,
-        m_sq,
-        inv_r2,
-        kz2,
-        mean_mask,
-        p,
-        P_blk,
-        m_blk,
-    )
-    Lk_banded = _spike_factor(Lk_A, Lk_B, Lk_C)
-    Lk_dense = DenseJAXSolver(
-        _build_Lk_dense_gpu(
-            D1_wall,
-            A_even,
-            A_odd,
-            m_is_even_p,
-            m_sq,
-            inv_r2,
-            kz2,
-            mean_mask,
-        )
-    )
-    x_b = np.array(Lk_banded.solve(rhs))
-    x_d = np.array(Lk_dense.solve(rhs))
-    assert_allclose(x_b, x_d, atol=1e-9, rtol=1e-9, err_msg="Lk")
-
-    # --- Hk_plus (meff = m+1, vel parity) ---
-    Hp_A, Hp_B, Hp_C = _build_Hk_blocks_gpu(
-        A_even,
-        A_odd,
-        m_is_even_v,
-        m_plus_1_sq,
-        inv_r2,
-        kz2,
-        dt,
-        c,
-        nu,
-        p,
-        P_blk,
-        m_blk,
-    )
-    Hp_banded = _spike_factor(Hp_A, Hp_B, Hp_C)
-    Hp_dense = DenseJAXSolver(
-        _build_Hk_dense_gpu(
-            A_even,
-            A_odd,
-            m_is_even_v,
-            m_plus_1_sq,
-            inv_r2,
-            kz2,
-            dt,
-            c,
-            nu,
-        )
-    )
-    assert_allclose(
-        np.asarray(Hp_banded.solve(rhs)),
-        np.asarray(Hp_dense.solve(rhs)),
-        atol=1e-9,
-        rtol=1e-9,
-        err_msg="Hk_plus",
-    )
-
-    # --- Hk_minus (meff = m-1, vel parity) ---
-    Hm_A, Hm_B, Hm_C = _build_Hk_blocks_gpu(
-        A_even,
-        A_odd,
-        m_is_even_v,
-        m_minus_1_sq,
-        inv_r2,
-        kz2,
-        dt,
-        c,
-        nu,
-        p,
-        P_blk,
-        m_blk,
-    )
-    Hm_banded = _spike_factor(Hm_A, Hm_B, Hm_C)
-    Hm_dense = DenseJAXSolver(
-        _build_Hk_dense_gpu(
-            A_even,
-            A_odd,
-            m_is_even_v,
-            m_minus_1_sq,
-            inv_r2,
-            kz2,
-            dt,
-            c,
-            nu,
-        )
-    )
-    assert_allclose(
-        np.asarray(Hm_banded.solve(rhs)),
-        np.asarray(Hm_dense.solve(rhs)),
-        atol=1e-9,
-        rtol=1e-9,
-        err_msg="Hk_minus",
-    )
-
-    # --- Hk_z (meff = m, pressure parity) ---
-    Hz_A, Hz_B, Hz_C = _build_Hk_blocks_gpu(
-        A_even,
-        A_odd,
-        m_is_even_p,
-        m_sq,
-        inv_r2,
-        kz2,
-        dt,
-        c,
-        nu,
-        p,
-        P_blk,
-        m_blk,
-    )
-    Hz_banded = _spike_factor(Hz_A, Hz_B, Hz_C)
-    Hz_dense = DenseJAXSolver(
-        _build_Hk_dense_gpu(
-            A_even,
-            A_odd,
-            m_is_even_p,
-            m_sq,
-            inv_r2,
-            kz2,
-            dt,
-            c,
-            nu,
-        )
-    )
-    assert_allclose(
-        np.asarray(Hz_banded.solve(rhs)),
-        np.asarray(Hz_dense.solve(rhs)),
-        atol=1e-9,
-        rtol=1e-9,
-        err_msg="Hk_z",
-    )
 
 
 def test_pallas_vs_dense_on_cylindrical_operators() -> None:

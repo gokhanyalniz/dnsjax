@@ -2,12 +2,10 @@
 
 Tests cover:
 
-1. SPIKE vs dense parity for `$L_k$` and `$H_k$` on Cartesian
-   Fourier modes.
-2. ``_lk_matvec`` matches a NumPy reference on CGL and custom grids.
-3. ``_hk_minus_matvec`` matches a NumPy reference.
-4. ``get_norm2`` matches a manual Parseval/quadrature sum.
-5. Pallas band-vs-dense parity: the ``_build_{Lk,Hk}_band_gpu``
+1. ``_lk_matvec`` matches a NumPy reference on CGL and custom grids.
+2. ``_hk_minus_matvec`` matches a NumPy reference.
+3. ``get_norm2`` matches a manual Parseval/quadrature sum.
+4. Pallas band-vs-dense parity: the ``_build_{Lk,Hk}_band_gpu``
    banded storage equals ``banded(dense)``, and the no-pivot banded
    solve equals the dense solve.
 
@@ -47,10 +45,8 @@ from dnsjax.fd import build_diff_matrices  # noqa: E402
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
     _build_Hk_band_gpu,
-    _build_Hk_blocks_gpu,
     _build_Hk_dense_gpu,
     _build_Lk_band_gpu,
-    _build_Lk_blocks_gpu,
     _build_Lk_dense_gpu,
     _hk_minus_matvec,
     _lk_matvec,
@@ -63,8 +59,6 @@ from dnsjax.solvers import (  # noqa: E402
     PerModeBandedPallasOperator,
     _banded_factor,
     _banded_from_dense,
-    _choose_block_partition,
-    _spike_factor,
 )
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -111,52 +105,6 @@ def _perturbed_cgl_grid(Ny: int, seed: int = 42) -> np.ndarray:
 
 
 # ── tests ────────────────────────────────────────────────────────────
-
-
-def test_spike_vs_dense_on_cartesian_operators() -> None:
-    """``PerModeBandedOperator`` matches ``DenseJAXSolver`` on Lk/Hk."""
-    Ny = params.res.ny
-    p = params.res.fd_order
-    y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))
-    D1, D2 = build_diff_matrices(y, p)
-
-    dt, c, nu = 0.01, 0.5, 1.0 / 1000.0
-    P_opt, m_opt = _choose_block_partition(Ny, p)
-
-    # Solver-internal (Nkz, Nkx, 1) from field-layout (1, Nkz, Nkx).
-    k2_s = fourier.k2[0, ..., None]
-    mean_s = fourier.mean_mask[0, ..., None]
-
-    # SPIKE path.
-    Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-        D1, D2, k2_s, mean_s, p, P_opt, m_opt
-    )
-    Lk_banded = _spike_factor(Lk_A, Lk_B, Lk_C)
-
-    Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
-        D2, k2_s, dt, c, nu, p, P_opt, m_opt
-    )
-    Hk_banded = _spike_factor(Hk_A, Hk_B, Hk_C)
-
-    # Dense path (reference).
-    Lk_dense = DenseJAXSolver(_build_Lk_dense_gpu(D1, D2, k2_s, mean_s))
-    Hk_dense = DenseJAXSolver(_build_Hk_dense_gpu(D2, k2_s, dt, c, nu))
-
-    # Solve same complex RHS with both backends.
-    Nkz, Nkx = int(fourier.k2.shape[1]), int(fourier.k2.shape[2])
-    rng = np.random.default_rng(20)
-    b = rng.standard_normal((Ny, Nkz, Nkx)) + 1j * rng.standard_normal(
-        (Ny, Nkz, Nkx)
-    )
-    rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
-
-    x_b = np.asarray(Lk_banded.solve(rhs))
-    x_d = np.asarray(Lk_dense.solve(rhs))
-    assert_allclose(x_b, x_d, atol=1e-9, rtol=1e-9)
-
-    x_b = np.asarray(Hk_banded.solve(rhs))
-    x_d = np.asarray(Hk_dense.solve(rhs))
-    assert_allclose(x_b, x_d, atol=1e-9, rtol=1e-9)
 
 
 def test_lk_matvec_matches_reference() -> None:

@@ -3,7 +3,7 @@
 This module defines the ``PlaneCouetteFlow`` dataclass that holds the
 plane-Couette-specific base flow.  Geometry-general infrastructure
 (CGL grid, FD matrices, IMM operators, Kleiser-Schumann IMM
-iteration, predict / correct / norm, banded / dense LU solvers) is
+iteration, predict / correct / norm, Pallas / dense LU solvers) is
 inherited from ``geometries.wall_bounded.cartesian.CartesianFlow``.
 
 It also exports the flow interface consumed by ``__main__``:
