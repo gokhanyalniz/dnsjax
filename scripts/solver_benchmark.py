@@ -12,7 +12,19 @@ A.  **Single-device matrix** (one subprocess per config x backend --
     isolated ``.solve`` times, and per-step times for **both**
     schemes (``predict_and_fully_correct`` and ``step_cnab2``), plus
     a fixed-seed parity scalar (perturbation energy + ``get_stats``
-    after a few steps) compared across backends.
+    after a few steps) compared across backends.  Every child also
+    runs the split-vs-unsplit iterative-cn corrector A/B
+    (``step.split_corrector`` forced on vs off, via an in-child
+    stepper rebuild on the same operators and IC, so the comparison is
+    independent of the default -- which is off, an opt-in; see
+    ``_split_core`` in ``timestep.py``), reported per row and as a
+    verdict section; a dedicated coupling-stressed
+    ``dean-split-stress`` entry
+    (``nz = 64``, ``dt = 0.15``, the ``TimeStepping``-docstring
+    reference regime) shows the split's FFT-refresh savings, while the
+    default-``dt`` entries pin the
+    no-regression claim (corrector converges in ~1 iteration either
+    way).
 B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
     from scratch dirs): multi-GPU execution of the Pallas Triton
     kernel -- correctness via JAX-free ``dnsjax.analysis`` snapshot
@@ -25,7 +37,10 @@ B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
     micro-runs over launch topology / scheme / NCCL env; see
     :func:`_preflight_launcher`) and locks the first working
     configuration -- including a single-process multi-GPU fallback
-    (``--launch-mode sp``) when multi-process launches hang.
+    (``--launch-mode sp``) when multi-process launches hang **or**
+    when the allocation cannot host multi-task steps at all (a
+    1-task-per-node allocation runs the multi-GPU sections
+    single-process instead of skipping them).
 C.  **CPU bench** (``--cpu-bench``): the same child measurements with
     ``JAX_PLATFORMS=cpu`` on a reduced matrix -- what CPU production
     pays per backend (the pallas pure-JAX sweep vs dense).
@@ -195,6 +210,32 @@ def _import_flow(system: str):
     return m
 
 
+def _rebuild_pfc(system: str, flow):
+    """Rebuild ``predict_and_fully_correct`` from the geometry stepper
+    builder, picking up the *current* ``params.step.split_corrector``
+    (read at stepper-construction time) -- same operators, same flow,
+    no re-import.  Used for the split-vs-unsplit corrector A/B."""
+    if system in ("plane-couette", "plane-poiseuille"):
+        from dnsjax.geometries.wall_bounded.cartesian import (
+            build_cartesian_stepper as build,
+        )
+    elif system == "pipe":
+        from dnsjax.geometries.wall_bounded.cylindrical import (
+            build_cylindrical_stepper as build,
+        )
+    elif system in ("taylor-couette", "dean"):
+        from dnsjax.geometries.wall_bounded.annular import (
+            build_annular_stepper as build,
+        )
+    elif system == "viscoelastic-dean":
+        from dnsjax.geometries.wall_bounded.annular_viscoelastic import (
+            build_viscoelastic_stepper as build,
+        )
+    else:
+        raise SystemExit(f"unsupported system: {system}")
+    return build(flow)[3]
+
+
 def _mem_stats(jax) -> dict:
     """Guarded device memory stats (absent/None on CPU)."""
     d = jax.local_devices()[0]
@@ -294,12 +335,16 @@ def run_child(a: argparse.Namespace) -> None:
     params.res.double_precision = True
     params.step.dt = a.dt
     params.step.scheme = "iterative-cn"  # both steppers are built
-    params.solver.backend = a.backend
     if a.bm0 is not None:
         params.solver.pallas_block_m0 = a.bm0
     if a.bm1 is not None:
         params.solver.pallas_block_m1 = a.bm1
-    update_parameters(Parameters())
+    # The backend must go through the layering call, not a direct
+    # ``params.solver.backend = ...`` assignment: ``update_parameters``
+    # re-resolves the per-family backend default for any field not
+    # recorded in ``_user_set_fields``, so a direct assignment is
+    # overwritten and the dense children would silently run pallas.
+    update_parameters(Parameters(solver={"backend": a.backend}))
     padded_res.set_padded_resolution(params)
     validate_parameters()
 
@@ -394,6 +439,26 @@ def run_child(a: argparse.Namespace) -> None:
         jax, jnp, m.predict_and_fully_correct, state, a.steps
     )
     t_cnab2 = _bench_step_cnab2(jax, jnp, m.step_cnab2, state, a.steps)
+
+    # Split-corrector A/B: ``t_icn`` above ran the *default* corrector
+    # (``step.split_corrector`` is off by default, so that is normally
+    # the unsplit corrector).  Rebuild and time the *opposite* gate
+    # value on the same IC, then label both by gate, so the [3] verdict
+    # always compares split vs unsplit regardless of the default (the
+    # corrector counts show where the FFT-refresh savings come from).
+    default_split = params.step.split_corrector
+    params.step.split_corrector = not default_split
+    try:
+        t_other, corrs_other = _bench_step(
+            jax, jnp, _rebuild_pfc(a.system, flow), state, a.steps
+        )
+    finally:
+        params.step.split_corrector = default_split
+    (t_icn_split, corrs_split), (t_icn_unsplit, corrs_unsplit) = (
+        ((t_icn, corrs), (t_other, corrs_other))
+        if default_split
+        else ((t_other, corrs_other), (t_icn, corrs))
+    )
     mem_peak = _mem_stats(jax)
 
     record = {
@@ -426,6 +491,10 @@ def run_child(a: argparse.Namespace) -> None:
         "step_ms": {
             "icn": round(1e3 * t_icn, 3),
             "icn_correctors": corrs,
+            "icn_split": round(1e3 * t_icn_split, 3),
+            "icn_split_correctors": corrs_split,
+            "icn_unsplit": round(1e3 * t_icn_unsplit, 3),
+            "icn_unsplit_correctors": corrs_unsplit,
             "cnab2": round(1e3 * t_cnab2, 3),
         },
         "parity": parity,
@@ -508,7 +577,7 @@ def _spawn_child(
         "--fd-order",
         str(entry.get("fd_order", 4)),
         "--dt",
-        str(args.dt),
+        str(entry.get("dt", args.dt)),
         "--steps",
         str(args.steps),
         "--parity-steps",
@@ -903,7 +972,11 @@ def _preflight_launcher(
     per hung run:
 
     - ``L1-tasks``: 2-task step launch + per-task env echo (a step
-      that cannot start makes srun retry silently forever).
+      that cannot start makes srun retry silently forever).  When
+      this rung fails -- the allocation cannot host multi-task steps
+      at all (e.g. 1 task per node) -- the ladder skips straight to
+      the single-process L5 leg instead of giving up: that topology
+      needs only one task.
     - ``L2-init-detected``: bare ``jax.distributed.initialize()`` with
       SLURM auto-detection; prints the world size each rank believes.
     - ``L3-init-explicit``: the same under :func:`_task_wrapper` --
@@ -970,6 +1043,59 @@ def _preflight_launcher(
         base_env.setdefault("NCCL_DEBUG", "WARN")
         base_env["JAX_LOGGING_LEVEL"] = "INFO"
 
+        # L5 micro-run + leg helper, defined before the rung loop so a
+        # failed L1 (an allocation that cannot host multi-task steps
+        # at all) can still probe the single-process leg below.
+        micro = {
+            "system": "plane-couette",
+            "backend": "pallas",
+            "np0": 1,
+            "np1": 2,
+            "nx": 8,
+            "ny": 24,
+            "nz": 8,
+            "dt": 0.01,
+            "tmax": 0.03,
+            "snapshots": False,
+            "timeout": 180,
+            # Legs are expected to hang: trace collective launches
+            # into per-rank nccl.*.log files (tails echoed on
+            # failure) -- the last enqueued collective before silence
+            # names the hung one.
+            "env": {
+                "NCCL_DEBUG": "INFO",
+                "NCCL_DEBUG_SUBSYS": "INIT,COLL",
+            },
+        }
+
+        def _leg(tag: str, _micro=micro, _mode=mode, **over) -> dict:
+            run = dict(_micro)
+            run["env"] = {**_micro["env"], **over.pop("env", {})}
+            run.update(over, name=f"preflight-L5-{_mode}-{tag}")
+            rec = _run_mpi(run, args, workdir, "cuda")
+            print(
+                f"[preflight/{_mode}] L5-{tag}: {rec['status']} "
+                f"{rec.get('error', '')}".rstrip(),
+                flush=True,
+            )
+            if rec["status"] != "ok":
+                fails.append((f"{_mode}/L5-{tag}", rec.get("error", "")))
+            return rec
+
+        def _ok(rec: dict | None) -> bool:
+            return rec is not None and rec["status"] == "ok"
+
+        def _sp_leg() -> dict:
+            # Single-process multi-GPU: 1 task whose PJRT client
+            # addresses both devices (the offline-test topology on
+            # real GPUs).  Identical global mesh / partitioning /
+            # outputs; no cross-process NCCL transport.
+            return _leg(
+                "sp-icn-pallas",
+                tasks=1,
+                env={"JAX_LOCAL_DEVICE_IDS": "0,1"},
+            )
+
         rungs = [
             ("L1-tasks", prefix + _echo_wrapper() + ["true"], 60, ""),
             (
@@ -1015,6 +1141,24 @@ def _preflight_launcher(
                 mode_ok = False
                 break
         if not mode_ok:
+            # A failed L1 means this allocation cannot host multi-task
+            # steps at all (e.g. the 1-task-per-node discipline this
+            # site otherwise prefers) -- every multi-process rung is
+            # then moot, but the single-process multi-GPU topology
+            # needs only one task: probe it directly before giving up
+            # on the mode.
+            if (
+                rung == "L1-tasks"
+                and args.launch_mode in ("auto", "sp")
+                and _ok(_sp_leg())
+            ):
+                args.launch_mode = "sp"
+                print(
+                    f"[preflight] locked in: gpu mode '{mode}', "
+                    "single-process multi-GPU (multi-task steps "
+                    "cannot launch in this allocation)"
+                )
+                return True, ""
             continue
 
         # L4.6: the construct the ladder has never exercised and the
@@ -1060,45 +1204,6 @@ def _preflight_launcher(
         # under bisection sits in the first *execution* of the big
         # jitted step -- it compiles fine, and every small-program
         # collective incl. L4.6 tells its own story above).
-        micro = {
-            "system": "plane-couette",
-            "backend": "pallas",
-            "np0": 1,
-            "np1": 2,
-            "nx": 8,
-            "ny": 24,
-            "nz": 8,
-            "dt": 0.01,
-            "tmax": 0.03,
-            "snapshots": False,
-            "timeout": 180,
-            # Legs are expected to hang: trace collective launches
-            # into per-rank nccl.*.log files (tails echoed on
-            # failure) -- the last enqueued collective before silence
-            # names the hung one.
-            "env": {
-                "NCCL_DEBUG": "INFO",
-                "NCCL_DEBUG_SUBSYS": "INIT,COLL",
-            },
-        }
-
-        def _leg(tag: str, _micro=micro, _mode=mode, **over) -> dict:
-            run = dict(_micro)
-            run["env"] = {**_micro["env"], **over.pop("env", {})}
-            run.update(over, name=f"preflight-L5-{_mode}-{tag}")
-            rec = _run_mpi(run, args, workdir, "cuda")
-            print(
-                f"[preflight/{_mode}] L5-{tag}: {rec['status']} "
-                f"{rec.get('error', '')}".rstrip(),
-                flush=True,
-            )
-            if rec["status"] != "ok":
-                fails.append((f"{_mode}/L5-{tag}", rec.get("error", "")))
-            return rec
-
-        def _ok(rec: dict | None) -> bool:
-            return rec is not None and rec["status"] == "ok"
-
         want = args.launch_mode
         a_rec = None
         if want in ("auto", "mp"):
@@ -1113,15 +1218,7 @@ def _preflight_launcher(
 
         sp_rec = None
         if want in ("auto", "sp"):
-            # Single-process multi-GPU: 1 task whose PJRT client
-            # addresses both devices (the offline-test topology on
-            # real GPUs).  Identical global mesh / partitioning /
-            # outputs; no cross-process NCCL transport.
-            sp_rec = _leg(
-                "sp-icn-pallas",
-                tasks=1,
-                env={"JAX_LOCAL_DEVICE_IDS": "0,1"},
-            )
+            sp_rec = _sp_leg()
             if want == "sp":
                 if _ok(sp_rec):
                     args.launch_mode = "sp"
@@ -1464,6 +1561,27 @@ def _build_entries(args: argparse.Namespace) -> list[dict]:
                 "fd_order": 8,
             }
         )
+    if "small" in args.sizes:
+        # Split-corrector stress case: total-field Dean at the
+        # TimeStepping-docstring reference regime (nz = 64,
+        # dt = 0.15), where the corrector cost is dominated by the
+        # instantaneous mean-flow coupling (l_bf == L_mf) -- the
+        # regime the split corrector targets.  The other entries
+        # carry the split-vs-unsplit A/B too, but at the default
+        # bench dt their correctors converge in ~1 iteration (the
+        # equal-cost regime); this entry shows the FFT-refresh
+        # savings.
+        entries.append(
+            {
+                "name": "dean-split-stress",
+                "system": "dean",
+                "nx": 64,
+                "ny": 48,
+                "nz": 64,
+                "fd_order": 4,
+                "dt": 0.15,
+            }
+        )
     return entries
 
 
@@ -1518,9 +1636,11 @@ def _single_device_section(
         results.append(rec)
         if rec["status"] == "ok":
             sm = rec["step_ms"]
+            uns = sm.get("icn_unsplit")
+            uns_s = f"{uns:9.2f}" if uns is not None else f"{'-':>9s}"
             print(
-                f"          icn {sm['icn']:9.2f} ms  cnab2 "
-                f"{sm['cnab2']:9.2f} ms  factors "
+                f"          icn {sm['icn']:9.2f} ms  unsplit {uns_s} ms  "
+                f"cnab2 {sm['cnab2']:9.2f} ms  factors "
                 f"{rec['factor_bytes']['total'] / 2**20:8.1f} MB",
                 flush=True,
             )
@@ -1598,30 +1718,22 @@ def _mpi_runs(args: argparse.Namespace, platform: str) -> list[dict]:
                 }
             )
     if args.max_gpus >= 4 and platform == "cuda":
-        # 2x2 mesh: plane-couette on a tanh grid (the documented
-        # clean-ny-divisibility recipe for np0 > 1) with its own 1x1
-        # tanh reference; pipe keeps its default (rigged-CGL) grid.
-        tanh = (("--geo.grid_type", "tanh"),)
+        # 2x2 mesh (wall-normal + spanwise split) on each geometry's
+        # own default CGL grid -- no tanh: plane-couette (full-CGL)
+        # and pipe (rigged-CGL), each diffed against its 1x1 pallas
+        # reference from the main loop above.  ny=48 splits cleanly
+        # over np0=2 (and the sharding layer auto-pads the y-axis
+        # otherwise), so the default grid needs no divisibility
+        # workaround -- the pipe np2x2/np1x4 runs already validate
+        # wall-normal splitting on their default grid.
         if "plane-couette" in systems:
             runs.append(
                 {
-                    "name": "corr-plane-couette-pallas-np1x1-tanh",
-                    "system": "plane-couette",
-                    "backend": "pallas",
-                    "np0": 1,
-                    "np1": 1,
-                    "extra": tanh,
-                    **base,
-                }
-            )
-            runs.append(
-                {
-                    "name": "corr-plane-couette-pallas-np2x2-tanh",
+                    "name": "corr-plane-couette-pallas-np2x2",
                     "system": "plane-couette",
                     "backend": "pallas",
                     "np0": 2,
                     "np1": 2,
-                    "extra": tanh,
                     **base,
                 }
             )
@@ -1673,8 +1785,6 @@ def _diff_pairs(names: set[str]) -> list[tuple[str, str, str]]:
             ref, label = f"corr-{system}-pallas-np1x1", "mesh-2x2"
         elif rest == "-pallas-np1x4":
             ref, label = f"corr-{system}-pallas-np1x1", "mesh-1x4"
-        elif rest == "-pallas-np2x2-tanh":
-            ref, label = f"corr-{system}-pallas-np1x1-tanh", "mesh-2x2"
         if ref in names:
             pairs.append((name, ref, label))
     return pairs
@@ -1862,7 +1972,8 @@ def _single_tables(results: list[dict], parity_tol: float) -> list[str]:
             f"nz={cfg.get('nz')})"
         )
         print(
-            f"  {'backend':22s} {'icn ms':>10s} {'cnab2 ms':>10s} "
+            f"  {'backend':22s} {'icn ms':>10s} {'uns ms':>10s} "
+            f"{'c s/u':>6s} {'cnab2 ms':>10s} "
             f"{'Lk ms':>8s} {'Hk ms':>8s} {'Hc ms':>8s} "
             f"{'factor MB':>10s} {'peak MB':>10s} {'parity':>9s}"
         )
@@ -1890,8 +2001,15 @@ def _single_tables(results: list[dict], parity_tol: float) -> list[str]:
                 if de > parity_tol:
                     delta += "!"
             hc = f"{sv['Hc']:8.2f}" if sv["Hc"] is not None else f"{'-':>8s}"
+            uns = sm.get("icn_unsplit")
+            uns_s = f"{uns:10.2f}" if uns is not None else f"{'-':>10s}"
+            csu = (
+                f"{sm.get('icn_correctors', '-')}"
+                f"/{sm.get('icn_unsplit_correctors', '-')}"
+            )
             print(
-                f"  {name:22s} {sm['icn']:10.2f} {sm['cnab2']:10.2f} "
+                f"  {name:22s} {sm['icn']:10.2f} {uns_s} {csu:>6s} "
+                f"{sm['cnab2']:10.2f} "
                 f"{sv['Lk']:8.2f} {sv['Hk']:8.2f} {hc} "
                 f"{_mb(r['factor_bytes']['total']):>10s} {peak_mb:>10s} "
                 f"{delta:>9s}"
@@ -1971,7 +2089,32 @@ def _verdict(
             if r["status"] not in ("ok",):
                 code = 1
 
-    print("\n[3] stability notices under backend=pallas:")
+    print(
+        "\n[3] split vs unsplit iterative-cn corrector "
+        "(step.split_corrector A/B, same child; <1 = split faster):"
+    )
+    ab_rows = [
+        r
+        for r in single
+        if r.get("status") == "ok"
+        and r.get("step_ms", {}).get("icn_split")
+        and r.get("step_ms", {}).get("icn_unsplit")
+        and r["config"].get("bm0") is None
+    ]
+    if not ab_rows:
+        print("    (no split-corrector measurements)")
+    for r in ab_rows:
+        sm = r["step_ms"]
+        ratio = sm["icn_split"] / sm["icn_unsplit"]
+        print(
+            f"    {r['entry']:34s} split {sm['icn_split']:9.2f} ms  "
+            f"unsplit {sm['icn_unsplit']:9.2f} ms  x{ratio:5.2f}  c "
+            f"{sm.get('icn_split_correctors')}/"
+            f"{sm.get('icn_unsplit_correctors')}  "
+            f"dt {r['config'].get('dt')}"
+        )
+
+    print("\n[4] stability notices under backend=pallas:")
     notices = [
         f"{r.get('entry', r.get('name'))}: {line}"
         for r in single + mpi_recs
@@ -2100,6 +2243,16 @@ def _cpu_smoke(args: argparse.Namespace, workdir: Path) -> int:
         print(f"  parity delta pallas vs dense: {de:.2e}")
         if de > 1e-8:
             failures.append(f"parity delta {de:.2e} > 1e-8")
+        sm = recs["pallas"]["step_ms"]
+        if sm.get("icn_split") is None or sm.get("icn_unsplit") is None:
+            failures.append("split-corrector A/B fields missing")
+        else:
+            print(
+                f"  split-corrector A/B: split {sm['icn_split']} ms vs "
+                f"unsplit {sm['icn_unsplit']} ms (correctors "
+                f"{sm['icn_split_correctors']}/"
+                f"{sm['icn_unsplit_correctors']})"
+            )
 
     # mpirun pair + snapshot diff on CPU (validates the parsers and
     # the diff path against real output).
@@ -2185,8 +2338,11 @@ def _cpu_bench(args: argparse.Namespace, workdir: Path) -> int:
             results.append(rec)
             if rec["status"] == "ok":
                 sm = rec["step_ms"]
+                uns = sm.get("icn_unsplit")
+                uns_s = f"{uns:9.1f}" if uns is not None else f"{'-':>9s}"
                 print(
                     f"          icn {sm['icn']:9.1f} ms  "
+                    f"unsplit {uns_s} ms  "
                     f"cnab2 {sm['cnab2']:9.1f} ms",
                     flush=True,
                 )
@@ -2196,6 +2352,21 @@ def _cpu_bench(args: argparse.Namespace, workdir: Path) -> int:
     print("\nCPU pallas/dense ratios (<1 = pallas faster on CPU):")
     for line in ratio_lines:
         print(f"  {line}")
+    print(
+        "\nCPU split vs unsplit iterative-cn corrector "
+        "(step.split_corrector A/B; <1 = split faster):"
+    )
+    for r in results:
+        sm = r.get("step_ms", {})
+        if r.get("status") != "ok" or not sm.get("icn_split"):
+            continue
+        print(
+            f"  {r['entry']:34s} split {sm['icn_split']:9.1f} ms  unsplit "
+            f"{sm['icn_unsplit']:9.1f} ms  "
+            f"x{sm['icn_split'] / sm['icn_unsplit']:5.2f}  c "
+            f"{sm.get('icn_split_correctors')}/"
+            f"{sm.get('icn_unsplit_correctors')}"
+        )
     return 0 if all(r["status"] == "ok" for r in results) else 1
 
 
