@@ -7,15 +7,13 @@ Tests cover:
 3. ``_abase_matvec`` matrix-free vs dense reference.
 4. ``_lk_matvec`` vs per-mode NumPy reference (Neumann at both walls,
    pin at the mean mode).
-5. SPIKE vs dense parity for `$L_k$`, `$H_{k,+}$`, `$H_{k,-}$`,
-   `$H_{k,z}$`.
-6. Pallas band-vs-dense parity for `$L_k$` and the three `$H_k$`
+5. Pallas band-vs-dense parity for `$L_k$` and the three `$H_k$`
    operators (banded storage == ``banded(dense)``, no-pivot banded
    solve == dense solve).
-7. ``get_norm2_annular`` correctness.
-8. Circular-Couette coefficients `$A_0$`, `$B_0$` vs the per-case
+6. ``get_norm2_annular`` correctness.
+7. Circular-Couette coefficients `$A_0$`, `$B_0$` vs the per-case
    reference forms and wall values.
-9. Affine-mapped Clenshaw-Curtis integration weights (spectral) with
+8. Affine-mapped Clenshaw-Curtis integration weights (spectral) with
    the radial Jacobian on ``[r1, r2]``.
 
 Run as a script via ``uv run python tests/test_annular.py``.
@@ -66,10 +64,8 @@ from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.annular import (  # noqa: E402
     _abase_matvec,
     _build_Hk_band_gpu,
-    _build_Hk_blocks_gpu,
     _build_Hk_dense_gpu,
     _build_Lk_band_gpu,
-    _build_Lk_blocks_gpu,
     _build_Lk_dense_gpu,
     _lk_matvec,
     build_annular_grid,
@@ -82,8 +78,6 @@ from dnsjax.solvers import (  # noqa: E402
     PerModeBandedPallasOperator,
     _banded_factor,
     _banded_from_dense,
-    _spike_factor,
-    validate_spike_partition,
 )
 
 R1 = derived_params.r_inner
@@ -195,75 +189,6 @@ def test_lk_matvec_matches_reference() -> None:
     u = jax.device_put(jnp.asarray(u_np), sharding.spec_scalar_shard)
     got = np.asarray(_lk_matvec(u, tc_flow, fourier))
     assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
-
-
-def test_spike_vs_dense_on_annular_operators() -> None:
-    """SPIKE matches dense for annular Lk/Hk_plus/Hk_minus/Hk_z."""
-    Nr = params.res.ny
-    p = params.res.fd_order
-    P_blk, m_blk = validate_spike_partition(Nr, p, "Nr")
-
-    m_s = fourier.m[0, ..., None]
-    kz2_s = fourier.kz2[0, ..., None]
-    mean_s = fourier.mean_mask[0, ..., None]
-    m_sq = m_s**2
-    m_plus_1_sq = (m_s + 1) ** 2
-    m_minus_1_sq = (m_s - 1) ** 2
-
-    dt = params.step.dt
-    c = params.step.implicitness
-    nu = 1.0 / params.phys.re
-
-    D1 = tc_flow.D1
-    A_base = tc_flow.A_base
-    inv_r2 = tc_flow.inv_r2
-
-    Nm = params.res.nz - 1
-    Nkz = params.res.nx // 2
-    rng = np.random.default_rng(70)
-    b = rng.standard_normal((Nr, Nm, Nkz)) + 1j * rng.standard_normal(
-        (Nr, Nm, Nkz)
-    )
-    rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
-
-    # --- Lk ---
-    Lk_banded = _spike_factor(
-        *_build_Lk_blocks_gpu(
-            D1, A_base, m_sq, inv_r2, kz2_s, mean_s, p, P_blk, m_blk
-        )
-    )
-    Lk_dense = DenseJAXSolver(
-        _build_Lk_dense_gpu(D1, A_base, m_sq, inv_r2, kz2_s, mean_s)
-    )
-    assert_allclose(
-        np.asarray(Lk_banded.solve(rhs)),
-        np.asarray(Lk_dense.solve(rhs)),
-        atol=1e-9,
-        rtol=1e-9,
-        err_msg="Lk",
-    )
-
-    # --- Hk_plus / Hk_minus / Hk_z ---
-    for label, meff2 in [
-        ("Hk_plus", m_plus_1_sq),
-        ("Hk_minus", m_minus_1_sq),
-        ("Hk_z", m_sq),
-    ]:
-        Hk_banded = _spike_factor(
-            *_build_Hk_blocks_gpu(
-                A_base, meff2, inv_r2, kz2_s, dt, c, nu, p, P_blk, m_blk
-            )
-        )
-        Hk_dense = DenseJAXSolver(
-            _build_Hk_dense_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu)
-        )
-        assert_allclose(
-            np.asarray(Hk_banded.solve(rhs)),
-            np.asarray(Hk_dense.solve(rhs)),
-            atol=1e-9,
-            rtol=1e-9,
-            err_msg=label,
-        )
 
 
 def test_pallas_vs_dense_on_annular_operators() -> None:

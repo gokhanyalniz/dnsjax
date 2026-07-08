@@ -15,8 +15,8 @@ annular geometry (see
    (advection Christoffels + stretching + relaxation cancel), and a full
    predictor/corrector step reproduces the laminar state (the velocity
    polymer-divergence balance closes too).
-4. `$H_c$` band-vs-dense-vs-SPIKE parity including the narrow Laplacian
-   BC wall rows (mirrors ``test_annular``'s operator parity).
+4. `$H_c$` band-vs-dense parity including the narrow Laplacian BC
+   wall rows (mirrors ``test_annular``'s operator parity).
 5. ``get_norm2_conformation`` reproduces the tensor Frobenius norm.
 6. Fused-RHS transform-count guard: the 9-component nonlinear RHS
    keeps a bounded, batched FFT count (fused evaluation, not one
@@ -29,7 +29,7 @@ from __future__ import annotations
 
 # Select the JAX backend from --dist.platform (default cpu) before the
 # geometry import below builds sharding.  --dist.platform cuda runs the
-# Pallas / SPIKE Hc parity on a GPU.
+# Pallas Hc parity on a GPU.
 from dnsjax.parameters import (  # noqa: E402
     Parameters,
     configure_jax_platform,
@@ -80,7 +80,6 @@ from dnsjax.flows.wall_bounded.viscoelastic_dean import (  # noqa: E402
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.annular_viscoelastic import (  # noqa: E402
     _build_Hc_band_gpu,
-    _build_Hc_blocks_gpu,
     _build_Hc_dense_gpu,
     _get_rhs,
     _narrow_abase_wall_rows,
@@ -97,8 +96,6 @@ from dnsjax.solvers import (  # noqa: E402
     PerModeBandedPallasOperator,
     _banded_factor,
     _banded_from_dense,
-    _spike_factor,
-    validate_spike_partition,
 )
 
 # 6x6 basis-rotation generator R in the physical tensor-component order
@@ -310,19 +307,18 @@ def test_laminar_full_step_fixed_point() -> None:
 # Group D: H_c operator parity
 
 
-def test_Hc_band_vs_dense_vs_spike() -> None:
-    r"""``H_c`` band / Pallas / SPIKE match the dense operator.
+def test_Hc_band_vs_dense() -> None:
+    r"""``H_c`` banded/Pallas matches the dense operator.
 
     Builds the conformation Crank-Nicolson Helmholtz operator with a
     finite `$\kappa$` for representative spin components (the five
     distinct `$m_{\mathrm{eff}} = m + s$`), and checks: the banded
     assembly equals ``banded(dense)`` including the narrow Laplacian BC
-    wall rows, the no-pivot banded (Pallas CPU) solve reproduces the
-    dense solve, and the SPIKE block solve does too.
+    wall rows, and the no-pivot banded (Pallas CPU) solve reproduces
+    the dense solve.
     """
     Nr = params.res.ny
     p = params.res.fd_order
-    P_blk, m_blk = validate_spike_partition(Nr, p, "Nr")
 
     dt = params.step.dt
     c = params.step.implicitness
@@ -355,20 +351,6 @@ def test_Hc_band_vs_dense_vs_spike() -> None:
         band = _build_Hc_band_gpu(
             A_base, narrow0, narrowN, meff2, inv_r2, kz2_s, dt, c, kappa, p
         )
-        blocks = _build_Hc_blocks_gpu(
-            A_base,
-            narrow0,
-            narrowN,
-            meff2,
-            inv_r2,
-            kz2_s,
-            dt,
-            c,
-            kappa,
-            p,
-            P_blk,
-            m_blk,
-        )
 
         assert_allclose(
             np.asarray(band),
@@ -381,7 +363,6 @@ def test_Hc_band_vs_dense_vs_spike() -> None:
         pallas = PerModeBandedPallasOperator.from_banded_factors(
             *_banded_factor(band)
         )
-        spike = _spike_factor(*blocks)
 
         ref = np.asarray(dense_solver.solve(rhs))
         assert_allclose(
@@ -390,13 +371,6 @@ def test_Hc_band_vs_dense_vs_spike() -> None:
             atol=1e-9,
             rtol=1e-9,
             err_msg=f"s={s}: pallas solve",
-        )
-        assert_allclose(
-            np.asarray(spike.solve(rhs)),
-            ref,
-            atol=1e-9,
-            rtol=1e-9,
-            err_msg=f"s={s}: spike solve",
         )
 
 

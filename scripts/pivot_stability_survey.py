@@ -1,25 +1,25 @@
-r"""CPU survey: does any real config need the pivoted SPIKE fallback?
+r"""CPU survey of the pallas backend's no-pivot stability checks.
 
 The ``pallas`` backend factors each per-mode banded operator with a
-**no-pivot** banded LU and decides, per operator group (``Lk`` pressure
-Poisson, ``Hk`` velocity Helmholtz, ``Hc`` viscoelastic conformation
-Helmholtz), whether the factorization is stable: a setup-time relative
-solve residual above ``solver.pallas_stability_tol`` (default 1e-6, or
-a non-finite residual from a breakdown) falls that group back to the
-pivoted SPIKE solver (``solvers._decide_pallas_or_spike``).  Whether
-that fallback ever fires for a *real* configuration is the open
-question gating the SPIKE backend's retirement -- a silent fallback
-would still pass every test (SPIKE matches dense), so test greenness
-proves nothing.
+**no-pivot** banded LU and verifies, per operator group (``Lk``
+pressure Poisson, ``Hk`` velocity Helmholtz, ``Hc`` viscoelastic
+conformation Helmholtz), that the factorisation is sound
+(``solvers._build_pallas_operator``): genuine instability (LU element
+growth above ``solvers._NO_PIVOT_GROWTH_TOL``, or a non-finite
+factor/residual) is a hard ``RuntimeError`` at setup; a solve residual
+above ``solver.pallas_stability_tol`` (default 1e-6) with benign
+growth is mere ill-conditioning and prints a notice-and-proceed line.
+This survey answers empirically whether any *real* configuration trips
+the hard error, prints the notice, or even approaches the thresholds
+-- the evidence backing the tolerance defaults.
 
-This survey answers it empirically: it sweeps the supported
-configuration space (all six wall-bounded flow systems x wall-normal
-grid types/stretching x ``fd_order`` x ``ny`` x ``dt`` x ``Re`` x
-Crank-Nicolson ``implicitness`` x near-zero-``k^2`` boxes x
-viscoelastic ``kappa``/``beta``/``delta``, plus seeded random
+It sweeps the supported configuration space (all six wall-bounded flow
+systems x wall-normal grid types/stretching x ``fd_order`` x ``ny`` x
+``dt`` x ``Re`` x Crank-Nicolson ``implicitness`` x near-zero-``k^2``
+boxes x viscoelastic ``kappa``/``beta``/``delta``, plus seeded random
 joint-corner samples) and records, for every operator group of every
-configuration, the no-pivot residual and the operator class actually
-constructed.  The implicit operators depend only on the grid, ``nu``,
+configuration, the no-pivot residual and LU element growth.  The
+implicit operators depend only on the grid, ``nu``,
 ``dt``/``implicitness``, and the mode wavenumbers -- not on the base
 flow -- so tiny ``nx = 4``/``nz = 8`` mode planes with *large* ``lx``
 (smallest nonzero ``k^2 ~ (2 pi / lx)^2``, the near-singular Poisson
@@ -27,10 +27,10 @@ worst case) cover the conditioning space cheaply.
 
 Everything runs on CPU (``JAX_PLATFORMS=cpu``; no mpirun, no time
 stepping): importing a flow module builds the operators and prints the
-``[pallas] {group}: ...`` decision lines, which the child captures and
-parses, cross-checked against ``type(flow.{Lk,Hk,Hc}_op)``.  One
-subprocess per configuration (the geometry modules capture the global
-singletons at import time).
+``[pallas] {group}: ...`` check lines, which the child captures and
+parses; a setup ``RuntimeError`` is recorded as a ``stability-error``
+result.  One subprocess per configuration (the geometry modules
+capture the global singletons at import time).
 
 Usage (from the repo root; ~150 configs, ~10-25 min)::
 
@@ -40,8 +40,7 @@ Usage (from the repo root; ~150 configs, ~10-25 min)::
 
 Results stream as ``@@RESULT`` JSON lines (also written to ``--out``,
 default ``pivot_survey_results.jsonl``) and end in an aggregation +
-``VERDICT`` section.  **Paste the full stdout back** for the
-retirement decision.
+``VERDICT`` section.
 """
 
 from __future__ import annotations
@@ -66,8 +65,10 @@ RESULT_TAG = "@@RESULT "
 # Mirrors the ``solver.pallas_stability_tol`` default in
 # ``parameters.py`` (the children run with the model default).
 STABILITY_TOL = 1e-6
-# Residuals above tol/MARGIN are flagged as "near-tol" offenders even
-# when the fallback did not fire.
+# Mirrors ``solvers._NO_PIVOT_GROWTH_TOL`` (the hard-error bound).
+GROWTH_TOL = 1e3
+# Residuals above tol/MARGIN (growths above GROWTH_TOL/MARGIN) are
+# flagged as "near-tol" offenders even when no notice/error fired.
 MARGIN = 10.0
 
 SYSTEMS = [
@@ -136,14 +137,15 @@ RES = [1e2, 1e3, 1e4, 1e5]
 IMPLICITNESSES = [0.5, 1.0]
 LXS = [5.0, 100.0, 1000.0]
 
-# The three ``_decide_pallas_or_spike`` diagnostic-line variants
-# (solvers.py): stable no-pivot LU with its residual, residual-driven
-# SPIKE fallback, and forced pivoting.
+# The two ``_build_pallas_operator`` check-line variants (solvers.py):
+# healthy no-pivot LU, and the above-tolerance-residual
+# ill-conditioning notice.  Both carry the residual and the LU element
+# growth.
 _PALLAS_LINE = re.compile(
     r"^\[pallas\] (?P<g>\w+): (?:"
-    r"no-pivot banded LU \(residual (?P<ok>\S+)\)"
-    r"|no-pivot residual (?P<bad>\S+) > \S+ -> pivoted SPIKE fallback"
-    r"|forced pivoting -> SPIKE solver)",
+    r"no-pivot banded LU \(residual (?P<ok>\S+), growth (?P<gok>\S+)\)"
+    r"|residual (?P<bad>\S+) > tol \S+, growth (?P<gbad>\S+) benign"
+    r")",
     re.M,
 )
 
@@ -201,7 +203,7 @@ def _child_config(a: argparse.Namespace) -> dict:
 
 def run_child(a: argparse.Namespace) -> None:
     """Configure the singletons, import the flow, report the
-    per-group no-pivot residuals and operator classes."""
+    per-group no-pivot residuals and LU element growths."""
     import contextlib
     import io
 
@@ -244,7 +246,6 @@ def run_child(a: argparse.Namespace) -> None:
     params.step.implicitness = a.implicitness
     params.step.scheme = "iterative-cn"
     params.solver.backend = "pallas"
-    params.solver.pallas_force_pivoting = False
 
     try:
         update_parameters(Parameters())
@@ -261,29 +262,45 @@ def run_child(a: argparse.Namespace) -> None:
         return
 
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        m = _import_flow(a.system)
+    try:
+        with contextlib.redirect_stdout(buf):
+            m = _import_flow(a.system)
+    except RuntimeError as e:
+        # The setup stability check hard-errored (genuine no-pivot
+        # instability) -- the survey's primary offender signal.
+        print(buf.getvalue(), end="")
+        print(
+            RESULT_TAG
+            + json.dumps(
+                {
+                    "status": "stability-error",
+                    "config": cfg,
+                    "error": str(e),
+                }
+            ),
+            flush=True,
+        )
+        return
     setup_text = buf.getvalue()
     if a.verbose:
         print(setup_text, end="")
 
-    # Parse the decision lines, then cross-check against the operator
-    # classes actually constructed (the authoritative record).
+    # Parse the per-group check lines printed at operator setup.
     groups: dict[str, dict | None] = {}
     for match in _PALLAS_LINE.finditer(setup_text):
         g = match.group("g")
         if match.group("ok") is not None:
             groups[g] = {
                 "residual": float(match.group("ok")),
-                "fallback": False,
+                "growth": float(match.group("gok")),
+                "notice": False,
             }
-        elif match.group("bad") is not None:
+        else:  # above-tol residual: ill-conditioning notice
             groups[g] = {
                 "residual": float(match.group("bad")),
-                "fallback": True,
+                "growth": float(match.group("gbad")),
+                "notice": True,
             }
-        else:  # forced pivoting (not used by the survey)
-            groups[g] = {"residual": None, "fallback": True}
 
     flow = m.flow
     warn: list[str] = []
@@ -296,19 +313,15 @@ def run_child(a: argparse.Namespace) -> None:
             if g == "Hc":
                 groups.setdefault("Hc", None)  # kappa == 0: no group
             continue
-        name = type(op).__name__
         rec = groups.get(g)
         if rec is None:
-            groups[g] = rec = {"residual": None, "fallback": None}
+            groups[g] = rec = {
+                "residual": None,
+                "growth": None,
+                "notice": None,
+            }
             warn.append(f"{g}: no [pallas] line captured")
-        rec["op"] = name
-        is_spike = name == "PerModeBandedOperator"
-        if rec["fallback"] is None:
-            rec["fallback"] = is_spike
-        elif rec["fallback"] != is_spike:
-            warn.append(
-                f"{g}: parsed fallback={rec['fallback']} but op={name}"
-            )
+        rec["op"] = type(op).__name__
     if a.system != "viscoelastic-dean":
         groups.pop("Hc", None)
 
@@ -484,27 +497,38 @@ def _aggregate(results: list[dict], out_path: Path) -> int:
     oks = [r for r in results if r["status"] == "ok"]
     invalid = [r for r in results if r["status"] == "invalid"]
     crashes = [r for r in results if r["status"] == "crash"]
+    stab_errors = [r for r in results if r["status"] == "stability-error"]
 
-    rows: list[tuple[float, str, str, dict]] = []  # (residual, group,...)
+    # (residual, growth, group, label, config) per group record.
+    rows: list[tuple[float, float, str, str, dict]] = []
     offenders: list[str] = []
     warns: list[str] = []
+    for r in stab_errors:
+        offenders.append(
+            f"STABILITY-ERROR  {_cfg_label(r['config'])}: {r['error']}"
+        )
     for r in oks:
         label = _cfg_label(r["config"])
         for g, rec in r["groups"].items():
             if rec is None:  # viscoelastic kappa = 0: no Hc group
                 continue
             resid = rec.get("residual")
-            fell = rec.get("fallback")
-            if fell or resid is None or not math.isfinite(resid):
+            growth = rec.get("growth")
+            if rec.get("notice") or resid is None or not math.isfinite(resid):
                 offenders.append(
-                    f"FALLBACK  {g:2s} residual={_fmt_res(resid)}  {label}"
+                    f"NOTICE    {g:2s} residual={_fmt_res(resid)} "
+                    f"growth={_fmt_res(growth)}  {label}"
                 )
-            elif resid > STABILITY_TOL / MARGIN:
+            elif (
+                resid > STABILITY_TOL / MARGIN
+                or (growth or 0.0) > GROWTH_TOL / MARGIN
+            ):
                 offenders.append(
-                    f"NEAR-TOL  {g:2s} residual={resid:.2e}  {label}"
+                    f"NEAR-TOL  {g:2s} residual={resid:.2e} "
+                    f"growth={_fmt_res(growth)}  {label}"
                 )
             if resid is not None and math.isfinite(resid):
-                rows.append((resid, g, label, r["config"]))
+                rows.append((resid, growth or 0.0, g, label, r["config"]))
         for w in r.get("warn", []):
             warns.append(f"{label}: {w}")
 
@@ -513,23 +537,34 @@ def _aggregate(results: list[dict], out_path: Path) -> int:
     print("=" * 72)
     print(
         f"configs: {len(results)} total = {len(oks)} ok + "
-        f"{len(invalid)} invalid + {len(crashes)} crashed; "
-        f"group records: {len(rows)}"
+        f"{len(invalid)} invalid + {len(stab_errors)} stability-error "
+        f"+ {len(crashes)} crashed; group records: {len(rows)}"
     )
 
     if rows:
         print("\nmax no-pivot residual per (system, group):")
-        per_sys: dict[tuple[str, str], tuple[float, str]] = {}
-        for resid, g, label, cfg in rows:
+        per_sys: dict[tuple[str, str], tuple[float, float, str]] = {}
+        for resid, growth, g, label, cfg in rows:
             key = (cfg["system"], g)
             if key not in per_sys or resid > per_sys[key][0]:
-                per_sys[key] = (resid, label)
-        for (system, g), (resid, label) in sorted(per_sys.items()):
-            print(f"  {system:18s} {g:2s}  {resid:.2e}  at: {label}")
+                per_sys[key] = (resid, growth, label)
+        for (system, g), (resid, growth, label) in sorted(per_sys.items()):
+            print(
+                f"  {system:18s} {g:2s}  {resid:.2e} "
+                f"(growth {growth:.1e})  at: {label}"
+            )
 
         print("\ntop 10 residuals overall:")
-        for resid, g, label, _cfg in sorted(rows, reverse=True)[:10]:
-            print(f"  {resid:.2e}  {g:2s}  {label}")
+        for resid, growth, g, label, _cfg in sorted(rows, reverse=True)[:10]:
+            print(f"  {resid:.2e}  growth {growth:.1e}  {g:2s}  {label}")
+
+        g_max, g_grp, g_label = max(
+            (growth, g, label) for _r, growth, g, label, _c in rows
+        )
+        print(
+            f"\nmax LU element growth: {g_max:.1e} ({g_grp}, {g_label}); "
+            f"hard-error bound {GROWTH_TOL:.0e}"
+        )
 
     if invalid:
         print("\ninvalid configs (rejected by parameter validation):")
@@ -550,20 +585,24 @@ def _aggregate(results: list[dict], out_path: Path) -> int:
     code = 0
     if offenders:
         print(
-            f"{len(offenders)} group record(s) at/near the pivoting "
-            f"threshold (tol {STABILITY_TOL:.0e}, margin {MARGIN:g}x):"
+            f"{len(offenders)} group record(s) at/near the stability "
+            f"thresholds (residual tol {STABILITY_TOL:.0e}, growth "
+            f"bound {GROWTH_TOL:.0e}, margin {MARGIN:g}x):"
         )
         for line in offenders:
             print(f"  {line}")
         code = 1
     elif rows:
-        worst, g, label, _cfg = max(rows)
+        worst, growth, g, label, _cfg = max(rows)
+        g_max = max(gr for _r, gr, _g, _l, _c in rows)
         print(
-            "NO PIVOT FALLBACK TRIGGERED across "
+            "NO STABILITY ERROR OR NOTICE TRIGGERED across "
             f"{len(oks)} configurations.\n"
             f"Max no-pivot residual {worst:.2e} ({g}, {label}); "
-            f"margin to the {STABILITY_TOL:.0e} fallback threshold: "
-            f"{STABILITY_TOL / worst:.1e}x."
+            f"margin to the {STABILITY_TOL:.0e} notice threshold: "
+            f"{STABILITY_TOL / worst:.1e}x.\n"
+            f"Max LU element growth {g_max:.1e}; margin to the "
+            f"{GROWTH_TOL:.0e} hard-error bound: {GROWTH_TOL / g_max:.1e}x."
         )
     else:
         print("No successful configurations -- survey inconclusive.")
@@ -664,14 +703,15 @@ def main() -> None:
 
     configs = build_configs(a.quick, a.corners)
     print("=" * 72)
-    print("Pivot-stability survey (no-pivot banded LU vs SPIKE fallback)")
+    print("Pivot-stability survey (no-pivot banded LU checks)")
     print(
         f"  {len(configs)} configs x 1 subprocess each, CPU only, "
         f"{a.jobs} parallel jobs"
     )
     print(
-        f"  fallback threshold: pallas_stability_tol = "
-        f"{STABILITY_TOL:.0e} (model default)"
+        f"  notice threshold: pallas_stability_tol = "
+        f"{STABILITY_TOL:.0e} (model default); hard-error growth "
+        f"bound: {GROWTH_TOL:.0e}"
     )
     print("=" * 72)
 
@@ -687,7 +727,7 @@ def main() -> None:
                 for g, rec in r["groups"].items():
                     if rec is None:
                         continue
-                    mark = "FALLBACK" if rec.get("fallback") else ""
+                    mark = "NOTICE" if rec.get("notice") else ""
                     bits.append(f"{g}={_fmt_res(rec.get('residual'))}{mark}")
                 detail = "  ".join(bits)
             else:

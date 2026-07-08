@@ -3,7 +3,7 @@ r"""Plane Poiseuille (channel) flow: pressure-driven flow between plates.
 This module defines the ``PlanePoiseuilleFlow`` dataclass that holds
 the plane-Poiseuille-specific base flow.  Geometry-general
 infrastructure (CGL grid, FD matrices, IMM operators,
-Kleiser-Schumann IMM iteration, predict / correct / norm, banded /
+Kleiser-Schumann IMM iteration, predict / correct / norm, Pallas /
 dense LU solvers) is inherited from
 ``geometries.wall_bounded.cartesian.CartesianFlow``.
 

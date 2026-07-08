@@ -15,7 +15,7 @@ The device mesh has shape ``(np0, np1)`` with axes ``"np0"`` and
 - ``np1`` distributes the spanwise axis (`$z$`) in physical space
   and the streamwise-wavenumber axis (`$k_x$`) in spectral space.
 - Each device holds the full wall-normal extent in spectral space,
-  so FD / SPIKE solves are unchanged.
+  so FD solves are unchanged.
 
 When ``np0 == 1`` the ``"np0"`` axis is trivially size-1 and all
 partition specs collapse to the original 1D decomposition on
@@ -77,7 +77,7 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     ``CylindricalFlow``), their flow subclasses, the
     geometry-specific ``Fourier`` classes, and the solver
     dataclasses (``DenseJAXSolver``,
-    ``PerModeBandedOperator``).
+    ``PerModeBandedPallasOperator``).
     """
 
     def _tree_flatten(obj: T) -> tuple[tuple[object, ...], dict[str, object]]:
@@ -292,7 +292,6 @@ class Sharding:
     # Leading spectral axes [kz, kx, ...]:
     spec_imm_corr_shard = NamedSharding(mesh, P(a0, a1, None))
     spec_dy_op_shard = NamedSharding(mesh, P(a0, a1, None, None))
-    spec_dy_blocks_shard = NamedSharding(mesh, P(a0, a1, None, None, None))
     spec_k2_op_shard = NamedSharding(mesh, P(a0, a1))
 
     # ── Precision ─────────────────────────────────────────────
