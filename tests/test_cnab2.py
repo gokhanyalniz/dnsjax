@@ -36,11 +36,25 @@ subprocess smoke tests cannot check directly:
   fallback branch, one ``step_cnab2`` costs exactly one nonlinear
   RHS evaluation's FFTs (**1 FFT eval/step**); the implicit-coupling
   Picard ``while_loop`` body is **FFT-free**; the iterative-CN
-  fallback (with its FFTs) exists only under a ``cond``.  For
-  comparison, ``predict_and_fully_correct``'s corrector loop body
-  costs exactly one RHS evaluation per iteration (the ``2 + c``
-  model).  Triply-periodic ``step_cnab2`` (no ``l_bf_fn``) has no
-  loop and no cond -- exactly one RHS evaluation total.
+  fallback (with its FFTs) exists only under a ``cond``.
+  ``predict_and_fully_correct`` -- wall-bounded: the module stepper is
+  the **unsplit** corrector (``step.split_corrector`` defaults off) --
+  2 RHS evaluations plus one per corrector iteration, no ``cond``.
+  Rebuilt with ``split_corrector = True`` (``_split_core`` in
+  ``timestep.py``) it has the split shape: FFT-free coupling tail and
+  solver loops as 0-FFT bodies, the outer refresh paying one RHS
+  evaluation, and the unsplit-corrector fallback under a ``cond``.
+  Both gate values are built explicitly here (the default is off, so
+  the split shape is only reached via the forced-on rebuild).
+  Triply-periodic ``step_cnab2`` (no ``l_bf_fn``) has no loop and no
+  cond -- exactly one RHS evaluation total -- and its corrector is
+  always unsplit.
+- **Split-corrector equivalence** (wall-bounded): at a tight
+  ``corrector_tolerance`` (1e-12; read at trace time, so no operator
+  rebuild) the split and unsplit correctors converge the same step
+  to the same CN fixed point (states agree to ~1e-10 relative) with
+  the split outer loop genuinely entered (``num_c >= 1``) -- the FFT
+  savings change the iteration path, never the converged answer.
 - **Viscoelastic-dean split** (9-component total field, distinct
   split): ``_l_bf`` is FFT-free (jaxpr); with the mean coupling off
   it is exactly the polymer-stress divergence (velocity) + linear
@@ -105,6 +119,16 @@ GEO_MODULES = {
         "dnsjax.geometries.wall_bounded.annular_viscoelastic"
     ),
     "kolmogorov": "dnsjax.geometries.triply_periodic.triply_periodic",
+}
+
+# Geometry stepper builders (re-invoked to rebuild the steppers with
+# ``step.split_corrector`` off for the gate-off checks).
+STEPPER_BUILDERS = {
+    "plane-couette": "build_cartesian_stepper",
+    "pipe": "build_cylindrical_stepper",
+    "taylor-couette": "build_annular_stepper",
+    "dean": "build_annular_stepper",
+    "viscoelastic-dean": "build_viscoelastic_stepper",
 }
 
 
@@ -194,7 +218,10 @@ def _count_ffts(jaxpr, in_cond: bool = False) -> tuple[int, int, list]:
     ``cond`` branch and not repeated by a loop); ``ffts_inside_cond``
     counts FFT ops under any ``cond`` (the iterative-cn fallback);
     ``loop_body_fft_counts`` lists the per-iteration FFT count of every
-    ``while``/``scan`` sub-jaxpr (cond and body) not inside a ``cond``.
+    ``while``/``scan`` sub-jaxpr (cond and body) not inside a ``cond``,
+    including loops nested inside other loop bodies (the split
+    corrector's FFT-free coupling tail lives inside the outer
+    corrector loop).
     """
     outside = inside = 0
     loops: list[int] = []
@@ -217,6 +244,7 @@ def _count_ffts(jaxpr, in_cond: bool = False) -> tuple[int, int, list]:
                 if is_loop:
                     # Per-iteration cost: not a once-per-call FFT.
                     loops.append(o)
+                    loops.extend(w)
                 else:
                     outside += o
                     loops.extend(w)
@@ -495,22 +523,117 @@ def _worker(system: str) -> None:
         )
         print(f"{system}: plain 1-eval AB2 step ({rhs_ffts} FFT ops)")
 
-    # iterative-cn comparison: each corrector iteration costs one
-    # RHS evaluation (the 2 + c FFT-eval model).
-    # (FFT-free solver ``fori_loop``s also appear as while bodies with
-    # count 0, so compare the *nonzero* loop counts only.)
+    # iterative-cn: 2 evaluations + one per corrector iteration (the
+    # 2 + c FFT-eval model).  ``step.split_corrector`` defaults off, so
+    # the module-level stepper is the *unsplit* corrector for every
+    # system: no inside FFTs, no fallback ``cond`` -- one RHS
+    # evaluation per corrector ``while_loop`` iteration (the forced-on
+    # split shape is checked below, on a rebuild).
     pfc_jaxpr = jax.make_jaxpr(fmod.predict_and_fully_correct)(state).jaxpr
     p_outside, p_inside, p_whiles = _count_ffts(pfc_jaxpr)
+    p_nonzero = [w for w in p_whiles if w]
     assert (
-        p_outside == 2 * rhs_ffts
-        and p_inside == 0
-        and [w for w in p_whiles if w] == [rhs_ffts]
+        p_outside == 2 * rhs_ffts and p_inside == 0 and p_nonzero == [rhs_ffts]
     ), (
         f"{system}: predict_and_fully_correct FFT counts unexpected "
         f"(outside={p_outside}, inside={p_inside}, whiles={p_whiles}, "
         f"rhs={rhs_ffts})"
     )
-    print(f"{system}: iterative-cn = 2 evals + 1 eval/corrector-iter")
+    kind = "unsplit iterative-cn" if wall_bounded else "iterative-cn"
+    print(
+        f"{system}: {kind} (default) = 2 evals + "
+        f"1 eval/corrector-iter ({p_inside} FFT ops)"
+    )
+
+    # -- split corrector: equivalence + gate-off structure ---------
+    if wall_bounded:
+        from dnsjax.parameters import params
+
+        # Tight tolerance so both correctors genuinely iterate to the
+        # shared CN fixed point.  It is read at trace time, so build
+        # *fresh* steppers for both gate values (the module-level
+        # stepper was already traced above with the default tolerance
+        # baked in; no operator rebuild is involved either way).
+        # Force the split path explicitly: its default is now
+        # per-system (off for base-flow systems), and a direct
+        # assignment before ``build`` is safe here -- no intervening
+        # ``update_parameters`` re-resolves it (see the parameter
+        # layering note in the root CLAUDE.md).
+        saved = (
+            params.step.corrector_tolerance,
+            params.step.max_corrector_iterations,
+            params.step.split_corrector,
+        )
+        params.step.corrector_tolerance = 1e-12
+        params.step.max_corrector_iterations = 30
+        build = getattr(gmod, STEPPER_BUILDERS[system])
+        try:
+            params.step.split_corrector = True
+            split_pfc = build(fmod.flow)[3]
+            s_split, err_split, c_split = split_pfc(jnp.copy(state))
+            params.step.split_corrector = False
+            unsplit_pfc = build(fmod.flow)[3]
+            s_plain, err_plain, c_plain = unsplit_pfc(jnp.copy(state))
+        finally:
+            (
+                params.step.corrector_tolerance,
+                params.step.max_corrector_iterations,
+                params.step.split_corrector,
+            ) = saved
+
+        assert int(c_split) >= 1, (
+            f"{system}: split corrector loop never entered "
+            "(equivalence check vacuous)"
+        )
+        assert float(err_split) <= 1e-12 and float(err_plain) <= 1e-12, (
+            f"{system}: corrector(s) not converged "
+            f"(split {float(err_split):.2e}, "
+            f"unsplit {float(err_plain):.2e})"
+        )
+        scale = float(np.max(np.abs(np.asarray(s_plain))))
+        diff = float(np.max(np.abs(np.asarray(s_split - s_plain))))
+        assert diff <= 1e-10 * scale, (
+            f"{system}: split != unsplit fixed point "
+            f"(max diff {diff:.3e}, scale {scale:.3e})"
+        )
+        print(
+            f"{system}: split == unsplit fixed point to "
+            f"{diff / scale:.2e} rel (outer iters {int(c_split)} vs "
+            f"{int(c_plain)})"
+        )
+
+        # Forced-on rebuild has the split-corrector shape: the outer
+        # refresh contributes FFTs, the coupling tail / solver loops
+        # are 0-FFT bodies, and the unsplit fallback sits under a
+        # ``cond`` (the only split-shape coverage, as no system
+        # defaults to the split corrector).
+        on_jaxpr = jax.make_jaxpr(split_pfc)(state).jaxpr
+        n_outside, n_inside, n_whiles = _count_ffts(on_jaxpr)
+        assert (
+            n_outside == 2 * rhs_ffts
+            and n_inside > 0
+            and [w for w in n_whiles if w] == [rhs_ffts]
+        ), (
+            f"{system}: split (forced-on) FFT counts unexpected "
+            f"(outside={n_outside}, inside={n_inside}, "
+            f"whiles={n_whiles}, rhs={rhs_ffts})"
+        )
+        print(f"{system}: split_corrector=True has the split shape")
+
+        # Gate-off rebuild has the legacy unsplit corrector shape:
+        # no fallback cond, one RHS evaluation per loop iteration.
+        off_jaxpr = jax.make_jaxpr(unsplit_pfc)(state).jaxpr
+        o_outside, o_inside, o_whiles = _count_ffts(off_jaxpr)
+        assert (
+            o_outside == 2 * rhs_ffts
+            and o_inside == 0
+            and [w for w in o_whiles if w] == [rhs_ffts]
+        ), (
+            f"{system}: gate-off predict_and_fully_correct FFT counts "
+            f"unexpected (outside={o_outside}, inside={o_inside}, "
+            f"whiles={o_whiles}, rhs={rhs_ffts})"
+        )
+        print(f"{system}: split_corrector=False restores the legacy shape")
 
 
 # ── driver ───────────────────────────────────────────────────────

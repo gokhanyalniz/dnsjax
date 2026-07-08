@@ -8,12 +8,23 @@ Two layers:
    reported; the JAX-setup skip field ``res.double_precision`` and
    non-trajectory sections (``step``) are ignored; a legacy key the
    current model no longer defines (e.g. the retired ``geo.axis_gap``)
-   is skipped, so a pre-``grid_type`` snapshot resumes as a clean
-   continuation, while switching ``geo.grid_type`` (rigged <->
+   is skipped, while switching ``geo.grid_type`` (rigged <->
    half-CGL) *is* a trajectory change.  Plus
-   ``run_grid_validation_checks``: the ``validate_parameters``
-   half-CGL rules (rejected for non-cylindrical systems, rejected
-   with ``cnab2``, accepted on the pipe with ``iterative-cn``).
+   ``run_grid_validation_checks`` (the ``validate_parameters``
+   half-CGL rules: rejected for non-cylindrical systems, rejected
+   with ``cnab2``, accepted on the pipe with ``iterative-cn``);
+   ``run_grid_default_resolution_checks`` (``update_parameters``
+   resolves an unset ``geo.grid_type`` per scheme: cylindrical
+   half-CGL under ``iterative-cn`` / rigged ``"cgl"`` under cnab2,
+   ``"cgl"`` for Cartesian/annular, ``None`` for periodic and
+   ``wall_grid`` runs; a user-set value survives layer flips); and
+   ``run_snapshot_grid_migration_checks`` (a stored-``null``
+   ``grid_type`` reads as the grid the snapshot actually ran:
+   ``_snapshot_grid_type`` backfill in ``read_snapshot_params`` --
+   incl. the retired ``axis_gap`` mapping -- and the normalised
+   comparison in ``trajectory_defining_changes``, so old
+   trajectories continue on their original grid while the
+   scheme-dependent default flags a genuine grid switch).
 
 2. **Subprocess integration** driving ``python -m dnsjax`` (via
    ``mpirun``, one device) end to end in temporary directories,
@@ -228,6 +239,223 @@ def run_grid_validation_checks() -> bool:
 
     print(f"  {'PASS' if ok else 'FAIL'}  {name}")
     return ok
+
+
+def _restore_params(saved_dump: dict, saved_user_set: set) -> None:
+    """Restore the sections the grid units mutate (plus the
+    ``_user_set_fields`` layer bookkeeping)."""
+    import dnsjax.parameters as P
+
+    for section in ("phys", "geo", "res", "step"):
+        model = getattr(P.params, section)
+        for key, value in saved_dump[section].items():
+            setattr(model, key, value)
+    P._user_set_fields.clear()
+    P._user_set_fields.update(saved_user_set)
+
+
+def run_grid_default_resolution_checks() -> bool:
+    """Offline unit: scheme-dependent ``geo.grid_type`` resolution.
+
+    ``update_parameters`` resolves an unset ``grid_type`` to a
+    concrete per-family/per-scheme value (re-resolved on every layer,
+    like ``solver.backend``): cylindrical half-CGL under
+    ``iterative-cn``, rigged (``"cgl"``) under cnab2, ``"cgl"`` for
+    Cartesian/annular, ``None`` for periodic systems and custom
+    ``wall_grid`` runs; an explicitly-set value is never overridden.
+    """
+    import dnsjax.parameters as P
+    from dnsjax.parameters import Parameters, params, update_parameters
+
+    name = "grid_type default resolution"
+    saved_dump = params.model_dump(mode="json")
+    saved_user_set = set(P._user_set_fields)
+
+    def resolve(**layers) -> str | None:
+        update_parameters(Parameters(**layers))
+        return params.geo.grid_type
+
+    try:
+        # Cylindrical + iterative-cn (the defaults) -> half-CGL.
+        P._user_set_fields.discard(("geo", "grid_type"))
+        got = resolve(phys={"system": "pipe"}, step={"scheme": "iterative-cn"})
+        assert got == "half-cgl", ("pipe + iterative-cn", got)
+
+        # A later cnab2 layer re-resolves to rigged ("cgl"), and back.
+        got = resolve(step={"scheme": "cnab2"})
+        assert got == "cgl", ("pipe + cnab2", got)
+        got = resolve(step={"scheme": "iterative-cn"})
+        assert got == "half-cgl", ("pipe + iterative-cn again", got)
+
+        # Cartesian / annular -> full CGL under either scheme.
+        got = resolve(phys={"system": "plane-couette"})
+        assert got == "cgl", ("cartesian", got)
+        got = resolve(phys={"system": "dean"}, geo={"eta": 0.5})
+        assert got == "cgl", ("annular", got)
+
+        # A user-set value survives system / scheme flips.
+        got = resolve(phys={"system": "pipe"}, geo={"grid_type": "tanh"})
+        assert got == "tanh", ("user-set", got)
+        got = resolve(step={"scheme": "cnab2"})
+        assert got == "tanh", ("user-set survives", got)
+
+        # Periodic systems stay None.
+        P._user_set_fields.discard(("geo", "grid_type"))
+        params.geo.grid_type = None
+        got = resolve(phys={"system": "kolmogorov"})
+        assert got is None, ("periodic", got)
+
+        # A custom wall_grid keeps grid_type unset (in particular, no
+        # spurious "cannot set both" from an earlier resolution).
+        got = resolve(
+            phys={"system": "plane-couette"}, step={"scheme": "cnab2"}
+        )
+        assert got == "cgl", ("pre-wall_grid", got)
+        with tempfile.NamedTemporaryFile(suffix=".txt") as fh:
+            got = resolve(geo={"wall_grid": fh.name})
+        assert got is None, ("wall_grid", got)
+    except AssertionError as exc:
+        print(f"  FAIL  {name}: {exc}")
+        return False
+    finally:
+        _restore_params(saved_dump, saved_user_set)
+
+    print(f"  PASS  {name}")
+    return True
+
+
+def run_snapshot_grid_migration_checks() -> bool:
+    """Offline unit: stored-``null`` ``geo.grid_type`` migration.
+
+    Old snapshots embed ``grid_type: null`` although they ran a
+    definite grid (the then-default ``"cgl"``, or the retired
+    ``geo.axis_gap`` choice).  ``_snapshot_grid_type`` maps a stored
+    params dict to that effective value; ``read_snapshot_params``
+    backfills it (so the snapshot layer pins the original grid on
+    resume) and ``trajectory_defining_changes`` compares through it
+    (so such a resume is a clean continuation, while the new
+    half-CGL iterative-cn default against an old rigged snapshot is
+    flagged as a genuine grid switch).
+    """
+    import io
+    import json
+    import tarfile
+    from pathlib import Path
+
+    import dnsjax.parameters as P
+    from dnsjax.parameters import (
+        Parameters,
+        _snapshot_grid_type,
+        params,
+        read_snapshot_params,
+        trajectory_defining_changes,
+        update_parameters,
+    )
+    from dnsjax.snapshot_meta import META_MEMBER
+
+    name = "snapshot grid_type migration"
+    saved_dump = params.model_dump(mode="json")
+    saved_user_set = set(P._user_set_fields)
+
+    def read_back(stored: dict) -> Parameters | None:
+        payload = json.dumps({"params": stored}).encode()
+        with tempfile.NamedTemporaryFile(suffix=".tar") as fh:
+            with tarfile.open(fh.name, "w") as tf:
+                info = tarfile.TarInfo(META_MEMBER)
+                info.size = len(payload)
+                tf.addfile(info, io.BytesIO(payload))
+            return read_snapshot_params(Path(fh.name))
+
+    try:
+        # Effective-value mapping of stored params dicts.
+        for label, snap, expect in (
+            ("null pipe", {"phys": {"system": "pipe"}, "geo": {}}, "cgl"),
+            (
+                "legacy axis_gap 0",
+                {"phys": {"system": "pipe"}, "geo": {"axis_gap": 0}},
+                "half-cgl",
+            ),
+            (
+                "legacy axis_gap 1",
+                {"phys": {"system": "pipe"}, "geo": {"axis_gap": 1}},
+                "cgl",
+            ),
+            (
+                "concrete passthrough",
+                {
+                    "phys": {"system": "pipe"},
+                    "geo": {"grid_type": "half-cgl"},
+                },
+                "half-cgl",
+            ),
+            (
+                "periodic",
+                {"phys": {"system": "kolmogorov"}, "geo": {}},
+                None,
+            ),
+            (
+                "wall_grid",
+                {
+                    "phys": {"system": "pipe"},
+                    "geo": {"wall_grid": "grid.txt"},
+                },
+                None,
+            ),
+        ):
+            got = _snapshot_grid_type(snap)
+            assert got == expect, (label, got, expect)
+
+        # Current side: pipe resolved to the half-CGL iterative-cn
+        # default.  An old snapshot (stored null == ran rigged) is a
+        # genuine grid switch -> flagged.
+        P._user_set_fields.discard(("geo", "grid_type"))
+        params.geo.grid_type = None
+        update_parameters(
+            Parameters(
+                phys={"system": "pipe"}, step={"scheme": "iterative-cn"}
+            )
+        )
+        old_snap = params.model_dump(mode="json")
+        old_snap["geo"]["grid_type"] = None
+        changes = trajectory_defining_changes(old_snap)
+        assert any(c.startswith("geo.grid_type:") for c in changes), (
+            "old rigged vs half-cgl default",
+            changes,
+        )
+
+        # Under cnab2 the current default is rigged again -> the same
+        # old snapshot continues cleanly.
+        update_parameters(Parameters(step={"scheme": "cnab2"}))
+        old_snap = params.model_dump(mode="json")
+        old_snap["geo"]["grid_type"] = None
+        changes = trajectory_defining_changes(old_snap)
+        assert changes == [], ("old rigged vs cnab2 rigged", changes)
+
+        # read_snapshot_params backfills the effective value, so the
+        # snapshot layer pins the original grid on resume.
+        stored = params.model_dump(mode="json")
+        stored["geo"]["grid_type"] = None
+        loaded = read_back(stored)
+        assert loaded is not None, "backfill readable"
+        assert loaded.geo.grid_type == "cgl", (
+            "null backfill",
+            loaded.geo.grid_type,
+        )
+        stored["geo"]["axis_gap"] = 0  # pre-grid_type era: half-CGL
+        loaded = read_back(stored)
+        assert loaded is not None, "axis_gap readable"
+        assert loaded.geo.grid_type == "half-cgl", (
+            "axis_gap backfill",
+            loaded.geo.grid_type,
+        )
+    except AssertionError as exc:
+        print(f"  FAIL  {name}: {exc}")
+        return False
+    finally:
+        _restore_params(saved_dump, saved_user_set)
+
+    print(f"  PASS  {name}")
+    return True
 
 
 # ── integration helpers ──────────────────────────────────────────────
@@ -459,7 +687,12 @@ if __name__ == "__main__":
         )
 
     passed = failed = 0
-    offline = [run_unit_checks(), run_grid_validation_checks()]
+    offline = [
+        run_unit_checks(),
+        run_grid_validation_checks(),
+        run_grid_default_resolution_checks(),
+        run_snapshot_grid_migration_checks(),
+    ]
     for ok in (
         offline if cli.unit_only else [*offline, run_integration(cli.timeout)]
     ):
