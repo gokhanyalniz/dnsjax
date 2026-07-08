@@ -35,7 +35,10 @@ B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
     micro-runs over launch topology / scheme / NCCL env; see
     :func:`_preflight_launcher`) and locks the first working
     configuration -- including a single-process multi-GPU fallback
-    (``--launch-mode sp``) when multi-process launches hang.
+    (``--launch-mode sp``) when multi-process launches hang **or**
+    when the allocation cannot host multi-task steps at all (a
+    1-task-per-node allocation runs the multi-GPU sections
+    single-process instead of skipping them).
 C.  **CPU bench** (``--cpu-bench``): the same child measurements with
     ``JAX_PLATFORMS=cpu`` on a reduced matrix -- what CPU production
     pays per backend (the pallas pure-JAX sweep vs dense).
@@ -959,7 +962,11 @@ def _preflight_launcher(
     per hung run:
 
     - ``L1-tasks``: 2-task step launch + per-task env echo (a step
-      that cannot start makes srun retry silently forever).
+      that cannot start makes srun retry silently forever).  When
+      this rung fails -- the allocation cannot host multi-task steps
+      at all (e.g. 1 task per node) -- the ladder skips straight to
+      the single-process L5 leg instead of giving up: that topology
+      needs only one task.
     - ``L2-init-detected``: bare ``jax.distributed.initialize()`` with
       SLURM auto-detection; prints the world size each rank believes.
     - ``L3-init-explicit``: the same under :func:`_task_wrapper` --
@@ -1026,6 +1033,59 @@ def _preflight_launcher(
         base_env.setdefault("NCCL_DEBUG", "WARN")
         base_env["JAX_LOGGING_LEVEL"] = "INFO"
 
+        # L5 micro-run + leg helper, defined before the rung loop so a
+        # failed L1 (an allocation that cannot host multi-task steps
+        # at all) can still probe the single-process leg below.
+        micro = {
+            "system": "plane-couette",
+            "backend": "pallas",
+            "np0": 1,
+            "np1": 2,
+            "nx": 8,
+            "ny": 24,
+            "nz": 8,
+            "dt": 0.01,
+            "tmax": 0.03,
+            "snapshots": False,
+            "timeout": 180,
+            # Legs are expected to hang: trace collective launches
+            # into per-rank nccl.*.log files (tails echoed on
+            # failure) -- the last enqueued collective before silence
+            # names the hung one.
+            "env": {
+                "NCCL_DEBUG": "INFO",
+                "NCCL_DEBUG_SUBSYS": "INIT,COLL",
+            },
+        }
+
+        def _leg(tag: str, _micro=micro, _mode=mode, **over) -> dict:
+            run = dict(_micro)
+            run["env"] = {**_micro["env"], **over.pop("env", {})}
+            run.update(over, name=f"preflight-L5-{_mode}-{tag}")
+            rec = _run_mpi(run, args, workdir, "cuda")
+            print(
+                f"[preflight/{_mode}] L5-{tag}: {rec['status']} "
+                f"{rec.get('error', '')}".rstrip(),
+                flush=True,
+            )
+            if rec["status"] != "ok":
+                fails.append((f"{_mode}/L5-{tag}", rec.get("error", "")))
+            return rec
+
+        def _ok(rec: dict | None) -> bool:
+            return rec is not None and rec["status"] == "ok"
+
+        def _sp_leg() -> dict:
+            # Single-process multi-GPU: 1 task whose PJRT client
+            # addresses both devices (the offline-test topology on
+            # real GPUs).  Identical global mesh / partitioning /
+            # outputs; no cross-process NCCL transport.
+            return _leg(
+                "sp-icn-pallas",
+                tasks=1,
+                env={"JAX_LOCAL_DEVICE_IDS": "0,1"},
+            )
+
         rungs = [
             ("L1-tasks", prefix + _echo_wrapper() + ["true"], 60, ""),
             (
@@ -1071,6 +1131,24 @@ def _preflight_launcher(
                 mode_ok = False
                 break
         if not mode_ok:
+            # A failed L1 means this allocation cannot host multi-task
+            # steps at all (e.g. the 1-task-per-node discipline this
+            # site otherwise prefers) -- every multi-process rung is
+            # then moot, but the single-process multi-GPU topology
+            # needs only one task: probe it directly before giving up
+            # on the mode.
+            if (
+                rung == "L1-tasks"
+                and args.launch_mode in ("auto", "sp")
+                and _ok(_sp_leg())
+            ):
+                args.launch_mode = "sp"
+                print(
+                    f"[preflight] locked in: gpu mode '{mode}', "
+                    "single-process multi-GPU (multi-task steps "
+                    "cannot launch in this allocation)"
+                )
+                return True, ""
             continue
 
         # L4.6: the construct the ladder has never exercised and the
@@ -1116,45 +1194,6 @@ def _preflight_launcher(
         # under bisection sits in the first *execution* of the big
         # jitted step -- it compiles fine, and every small-program
         # collective incl. L4.6 tells its own story above).
-        micro = {
-            "system": "plane-couette",
-            "backend": "pallas",
-            "np0": 1,
-            "np1": 2,
-            "nx": 8,
-            "ny": 24,
-            "nz": 8,
-            "dt": 0.01,
-            "tmax": 0.03,
-            "snapshots": False,
-            "timeout": 180,
-            # Legs are expected to hang: trace collective launches
-            # into per-rank nccl.*.log files (tails echoed on
-            # failure) -- the last enqueued collective before silence
-            # names the hung one.
-            "env": {
-                "NCCL_DEBUG": "INFO",
-                "NCCL_DEBUG_SUBSYS": "INIT,COLL",
-            },
-        }
-
-        def _leg(tag: str, _micro=micro, _mode=mode, **over) -> dict:
-            run = dict(_micro)
-            run["env"] = {**_micro["env"], **over.pop("env", {})}
-            run.update(over, name=f"preflight-L5-{_mode}-{tag}")
-            rec = _run_mpi(run, args, workdir, "cuda")
-            print(
-                f"[preflight/{_mode}] L5-{tag}: {rec['status']} "
-                f"{rec.get('error', '')}".rstrip(),
-                flush=True,
-            )
-            if rec["status"] != "ok":
-                fails.append((f"{_mode}/L5-{tag}", rec.get("error", "")))
-            return rec
-
-        def _ok(rec: dict | None) -> bool:
-            return rec is not None and rec["status"] == "ok"
-
         want = args.launch_mode
         a_rec = None
         if want in ("auto", "mp"):
@@ -1169,15 +1208,7 @@ def _preflight_launcher(
 
         sp_rec = None
         if want in ("auto", "sp"):
-            # Single-process multi-GPU: 1 task whose PJRT client
-            # addresses both devices (the offline-test topology on
-            # real GPUs).  Identical global mesh / partitioning /
-            # outputs; no cross-process NCCL transport.
-            sp_rec = _leg(
-                "sp-icn-pallas",
-                tasks=1,
-                env={"JAX_LOCAL_DEVICE_IDS": "0,1"},
-            )
+            sp_rec = _sp_leg()
             if want == "sp":
                 if _ok(sp_rec):
                     args.launch_mode = "sp"
