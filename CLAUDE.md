@@ -415,7 +415,7 @@ the schemes, `Solver` for the Pallas knobs). Key fields:
 | `[step]`   | `dt`, `scheme` (`"iterative-cn"` / `"cnab2"`, both supported for every flow), `implicitness`, `corrector_tolerance`, `max_corrector_iterations`, `implicit_mean_coupling`, `split_corrector` (wall-bounded iterative-cn: FFT-free coupling iteration; **opt-in**, default off — only helps when `dt` is pushed near the corrector iteration cap) |
 | `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601), `check_laminarization` (default on; terminate when `E'` < `laminarization_threshold`, default `1e-9`) |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
-| `[solver]` | `backend` (`"pallas"` default for wall-bounded / `"dense"` reference -- readable + regression oracle, warns on wall-bounded runs; periodic systems resolve to `"dense"`, their only backend), `pallas_block_m0`/`m1` (mode tile, default 2/32), `pallas_stability_tol`, `pallas_num_warps`/`pallas_num_stages`, `rhs_transform_chunks` (viscoelastic RHS memory knob) |
+| `[solver]` | `backend` (`"pallas"` default for wall-bounded / `"dense"` reference -- readable + regression oracle, warns on wall-bounded runs; periodic systems resolve to `"dense"`, their only backend), `pallas_block_m0`/`m1` (mode tile, default 2/32), `pallas_stability_tol`, `rhs_transform_chunks` (viscoelastic RHS memory knob) |
 
 The default `parameters.toml` contains only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`; `[dist]` and
@@ -544,9 +544,9 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
   sources); also stage-profiles `_imm_iteration` (Cartesian) to size
   the influence-matrix correction vs the CN-update assembly/solves,
   reports the true wall-bounded cnab2 apply composition, and sweeps
-  the solve-kernel tile knobs (`--pallas-block-m0/m1`,
-  `--pallas-num-warps/-num-stages`; one process per config).
-  `--solve-only` times just the Lk/Hk solves and emits a greppable
+  the solve-kernel mode-tile knobs (`--pallas-block-m0/m1`; one process
+  per config). `--solve-only` times just the Lk/Hk solves and emits a
+  greppable
   `SUMMARY` line (a full run appends one too) for a cheap
   resolution x tile sweep to pick sane tile defaults across a range
   (the tile affects only the solve; the FFT-bound step is

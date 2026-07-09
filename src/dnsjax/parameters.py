@@ -686,14 +686,6 @@ class Solver(BaseModel):
     # raises on genuine no-pivot instability (see
     # ``solvers._NO_PIVOT_GROWTH_TOL``).
     pallas_stability_tol: float = Field(gt=0, default=1e-6)
-    # ``"pallas"`` backend only: Triton ``num_warps`` for the kernel
-    # (warps per Pallas program).  ``None`` lets Triton choose; ``1``
-    # forces the whole mode tile into a single warp (a cross-warp
-    # diagnostic knob, exercised by ``scripts/pallas_tiling_diagnostic.py``).
-    pallas_num_warps: int | None = Field(default=None, ge=1)
-    # ``"pallas"`` backend only: Triton ``num_stages`` (software
-    # pipelining depth) for the kernel.  ``None`` lets Triton choose.
-    pallas_num_stages: int | None = Field(default=None, ge=1)
     # Chunk count for the batched inverse transform of the fused
     # viscoelastic RHS (~36 fields; see ``_get_rhs_core`` in
     # ``geometries/wall_bounded/annular_viscoelastic.py``).  ``1``
