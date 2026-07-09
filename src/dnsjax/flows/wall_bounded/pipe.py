@@ -58,6 +58,9 @@ from ...geometries.wall_bounded.cylindrical import (
     integrate_scalar,
     pad_base_flow,
 )
+from ...geometries.wall_bounded.cylindrical import (
+    frozen_profile_flow as _frozen_flow_copy,
+)
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
 
@@ -131,6 +134,44 @@ flow: PipeFlow = PipeFlow()
     step_cnab2,
     step_cnab2_measured,
 ) = build_cylindrical_stepper(flow)
+
+
+def frozen_profile_flow(uz: Array) -> PipeFlow:
+    r"""Flow linearized around an arbitrary axial profile.
+
+    Transient-growth hook (:mod:`dnsjax.analysis.transient_growth`):
+    given the *total* axial profile `$U_z(r)$` on the code grid
+    (``flow.rs``, shape ``(Nr,)``) in the `$(u_z, u_r, u_\theta)$`
+    basis, build `$\mathbf{U} = (U_z, 0, 0)$` and
+    `$\nabla\times\mathbf{U} = (0, 0, -dU_z/dr)$`.  The radial
+    derivative uses the even-parity FD `$D_1$` (mean mode `$m = 0$`,
+    parity `$(-1)^m = +1$`: the common `$D_{1,\mathrm{pos}}$` plus the
+    near-axis ghost correction, exactly as ``_curl_fn`` differentiates
+    `$u_z$`), so no `$r = 0$` grid point is needed.  Returns a flow copy
+    carrying that base flow (all operators shared; see
+    :func:`~dnsjax.geometries.wall_bounded._base.frozen_profile_flow`).
+    """
+    g = flow.D1_ghost.shape[0]
+    duz = (flow.D1_pos @ uz).at[:g].add(flow.D1_ghost @ uz)
+    base = (
+        jnp.zeros(
+            (3, params.res.ny),
+            dtype=sharding.float_type,
+            out_sharding=sharding.no_shard,
+        )
+        .at[0]
+        .set(uz)[:, :, None, None]
+    )
+    curl = (
+        jnp.zeros(
+            (3, params.res.ny),
+            dtype=sharding.float_type,
+            out_sharding=sharding.no_shard,
+        )
+        .at[2]
+        .set(-duz)[:, :, None, None]
+    )
+    return _frozen_flow_copy(flow, base, curl)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────

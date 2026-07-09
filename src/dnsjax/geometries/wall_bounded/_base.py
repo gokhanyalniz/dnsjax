@@ -7,6 +7,7 @@ iteration, curl, etc.) stays in the respective geometry
 modules.
 """
 
+import copy
 from collections.abc import Callable
 
 import jax
@@ -181,6 +182,45 @@ def pad_base_flow(flow: object) -> None:
         flow.base_flow_padded = flow.base_flow
         flow.curl_base_flow_padded = flow.curl_base_flow
         flow.base_flow_adv_padded = base_flow_adv
+
+
+def frozen_profile_flow(
+    flow: object, base_flow: Array, curl_base_flow: Array
+) -> object:
+    r"""Return a flow copy with the base profile replaced (TG hook).
+
+    Linearize the solver around an arbitrary wall-normal *total*
+    profile `$\mathbf{U}(y)$` by swapping the base flow that the linear
+    coupling `$L_{bf} = \mathbf{u}' \times \nabla\times\mathbf{U} +
+    \mathbf{U} \times \boldsymbol{\omega}'$` reads
+    (:func:`base_flow_coupling`, each geometry's ``_l_bf``).  Only
+    ``base_flow`` / ``curl_base_flow`` (and their padded aliases,
+    refreshed by :func:`pad_base_flow`) depend on the profile; the
+    viscous `$H_k$`, pressure `$L_k$` and influence-matrix operators
+    are profile-independent, so the returned shallow copy shares them.
+
+    Used by :mod:`dnsjax.analysis.transient_growth`; each wall-bounded
+    flow module wraps it in a ``frozen_profile_flow(profile)`` builder
+    that constructs the geometry's ``(3, Ny, 1, 1)`` profile pair.  A
+    flow is a registered pytree, so a stepper built once retraces on
+    neither the copy nor a later profile swap.
+
+    Parameters
+    ----------
+    flow:
+        The module-level flow singleton to copy.
+    base_flow, curl_base_flow:
+        The replacement `$\mathbf{U}$` and `$\nabla\times\mathbf{U}$`,
+        shape ``(3, Ny, 1, 1)`` in the geometry's local basis
+        (Cartesian `$(x, y, z)$`, cylindrical / annular `$(z, r,
+        \theta)$`) -- matching the layout the flow's own base-flow
+        constructor produces.
+    """
+    new = copy.copy(flow)
+    new.base_flow = base_flow
+    new.curl_base_flow = curl_base_flow
+    pad_base_flow(new)
+    return new
 
 
 # ── Mean-mode extraction ───────────────────────────────────────

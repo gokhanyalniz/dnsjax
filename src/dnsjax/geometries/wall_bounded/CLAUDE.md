@@ -219,6 +219,18 @@ profiling harness that attributed the transposes.
   `W_p`, elastic energy `E_p`, mean trace `TrC` (energy balance
   `I ≈ D_s − W_p`).
 
+**Transient-growth hook**: each base-flow flow above (all except
+dean/viscoelastic-dean) exports `frozen_profile_flow(profile)`, used by
+`dnsjax.analysis.transient_growth` to linearise around an arbitrary
+wall-normal *total* profile. It builds the geometry's
+`(base_flow, curl_base_flow)` pair from the profile (Cartesian:
+`tilted_profile_arrays` tilt split; pipe: even-parity `D1_pos+D1_ghost`
+radial derivative; TC: `ω_z = D1·U_θ + U_θ/r`) and returns a shallow
+flow copy via `_base.frozen_profile_flow` -- the Lk/Hk/IMM operators
+are profile-independent, so they are shared and the jitted stepper does
+not retrace. `tests/test_transient_growth.py` pins each hook against
+the builtin laminar coupling.
+
 ### Tests
 
 Relevant files: `test_cartesian.py`, `test_cylindrical.py`,

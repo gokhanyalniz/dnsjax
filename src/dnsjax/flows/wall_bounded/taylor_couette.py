@@ -65,6 +65,9 @@ from ...geometries.wall_bounded.annular import (
     integrate_scalar,
     pad_base_flow,
 )
+from ...geometries.wall_bounded.annular import (
+    frozen_profile_flow as _frozen_flow_copy,
+)
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
 
@@ -148,6 +151,45 @@ flow: TaylorCouetteFlow = TaylorCouetteFlow()
     step_cnab2,
     step_cnab2_measured,
 ) = build_annular_stepper(flow)
+
+
+def frozen_profile_flow(u_theta: Array) -> TaylorCouetteFlow:
+    r"""Flow linearized around an arbitrary azimuthal profile.
+
+    Transient-growth hook (:mod:`dnsjax.analysis.transient_growth`):
+    given the *total* azimuthal profile `$U_\theta(r)$` on the code
+    grid (``flow.rs``, shape ``(Nr,)``) in the `$(u_z, u_r, u_\theta)$`
+    basis, build `$\mathbf{U} = (0, 0, U_\theta)$` and
+    `$\nabla\times\mathbf{U} = (\omega_z, 0, 0)$` with the axial
+    vorticity `$\omega_z = (1/r)\,\partial_r(r U_\theta) = dU_\theta/dr
+    + U_\theta/r$` (reduces to the laminar uniform `$2 A_0$` for
+    `$U_\theta = A_0 r + B_0/r$`).  The derivative uses the flow's FD
+    `$D_1$` (annular has two walls, no `$r = 0$` axis, so no parity
+    reduction).  Returns a flow copy carrying that base flow (all
+    operators shared; see
+    :func:`~dnsjax.geometries.wall_bounded._base.frozen_profile_flow`).
+    """
+    du = flow.D1 @ u_theta
+    omega_z = du + flow.inv_r * u_theta
+    base = (
+        jnp.zeros(
+            (3, params.res.ny),
+            dtype=sharding.float_type,
+            out_sharding=sharding.no_shard,
+        )
+        .at[2]
+        .set(u_theta)[:, :, None, None]
+    )
+    curl = (
+        jnp.zeros(
+            (3, params.res.ny),
+            dtype=sharding.float_type,
+            out_sharding=sharding.no_shard,
+        )
+        .at[0]
+        .set(omega_z)[:, :, None, None]
+    )
+    return _frozen_flow_copy(flow, base, curl)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────
