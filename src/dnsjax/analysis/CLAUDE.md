@@ -6,14 +6,24 @@ by the solver itself.
 
 ## Hard constraint: no JAX
 
-Importing `dnsjax.analysis` must **never import JAX**. It depends only
-on NumPy, the standard library, and dnsjax's JAX-free leaf modules:
-`fd.py`, `snapshot_meta.py`, `harmonics.py`. This works because
+Importing `dnsjax.analysis` must **never import JAX**: nothing on the
+`import dnsjax.analysis` path (i.e. `__init__.py` and everything it
+imports) may pull in JAX. The API depends only on NumPy, the standard
+library, and dnsjax's JAX-free leaf modules: `fd.py`,
+`snapshot_meta.py`, `harmonics.py`. This works because
 `src/dnsjax/__init__.py` is empty (importing a submodule does not run a
 package `__init__` that pulls in JAX). The guarantee is asserted in
 `tests/test_snapshot_export.py` (`assert "jax" not in sys.modules`).
-Do not add a JAX import (even transitively) to any module here or to the
-three leaves it imports.
+Do not add a JAX import (even transitively) to `__init__.py`, any
+module it imports, or the three leaves.
+
+**Exception**: `transient_growth.py` is a JAX-based (GPU-runnable) CLI
+that lives in this directory but is **not** imported by `__init__.py`,
+and defers every JAX / geometry import behind `configure_jax_platform`
+(so `import dnsjax.analysis` stays JAX-free; only `python -m
+dnsjax.analysis.transient_growth` or an explicit
+`from dnsjax.analysis.transient_growth import ...` brings in JAX). Do
+not import it from `__init__.py` or any JAX-free module here.
 
 ## Native (on-disk) layout — never transposed
 
@@ -94,6 +104,11 @@ recipe (native chunks + combine function) lives in `_component_recipes`.
 - `snapshot_export.py` — `read_state` (the entry point) + `StateData`.
 - `snapshot_ops.py` — `derivative`, `gradient`, `divergence`, `curl`,
   `integrate`, and `to_physical`/`to_spectral` (re-exported).
+- `transient_growth.py` — the JAX-based transient-growth CLI (the
+  exception above; not part of the JAX-free API). 3D linear optimal
+  energy growth around an arbitrary wall-normal total profile, reusing
+  the solver's linear step per Fourier mode. See the module docstring
+  and the root CLAUDE.md "Transient-growth analysis" note.
 - `_core.py` — engine: raw chunk I/O (`snapshot_meta` offsets +
   `np.frombuffer`, minimal per-component / per-slab reads), transforms
   (`norm="forward"`, Nyquist reinstated as zero), basis conversion,

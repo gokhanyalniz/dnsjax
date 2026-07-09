@@ -53,6 +53,7 @@ from ._base import (
     base_flow_coupling,
     build_wall_bounded_stepper,
     extract_mean_mode,
+    frozen_profile_flow,  # noqa: F401 — re-exported
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
     get_norm2,
@@ -391,6 +392,45 @@ def _build_Hk_dense_gpu(
     Hk = Hk.at[..., 0, :].set(e_0).at[..., -1, :].set(e_Nm1)
 
     return Hk
+
+
+def tilted_profile_arrays(us: Array, dy_us: Array) -> tuple[Array, Array]:
+    r"""Base-flow / curl pair for a streamwise Cartesian profile.
+
+    Given a streamwise profile `$U_s(y)$` and its wall-normal
+    derivative `$U_s'(y)$` (both shape ``(Ny,)``), build the
+    ``(3, Ny, 1, 1)`` base flow `$\mathbf{U} = U_s\,(\cos\theta, 0,
+    \sin\theta)$` and its curl `$\nabla\times\mathbf{U} =
+    (U_s'\sin\theta,\, 0,\, -U_s'\cos\theta)$`, split into the
+    streamwise `$x$` and spanwise `$z$` components by the tilt angle
+    `$\theta$` (``derived_params.cos_tilt`` / ``sin_tilt``).  Shared by
+    the plane-Couette / plane-Poiseuille laminar constructors and their
+    :mod:`dnsjax.analysis.transient_growth` ``frozen_profile_flow``
+    hooks (an arbitrary total profile reuses the identical tilt split).
+    """
+    base = (
+        jnp.zeros(
+            (3, params.res.ny),
+            dtype=sharding.float_type,
+            out_sharding=sharding.no_shard,
+        )
+        .at[0]
+        .set(us * derived_params.cos_tilt)
+        .at[2]
+        .set(us * derived_params.sin_tilt)[:, :, None, None]
+    )
+    curl = (
+        jnp.zeros(
+            (3, params.res.ny),
+            dtype=sharding.float_type,
+            out_sharding=sharding.no_shard,
+        )
+        .at[0]
+        .set(dy_us * derived_params.sin_tilt)
+        .at[2]
+        .set(-dy_us * derived_params.cos_tilt)[:, :, None, None]
+    )
+    return base, curl
 
 
 # ── CartesianFlow base dataclass ─────────────────────────────────────────

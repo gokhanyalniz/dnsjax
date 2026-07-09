@@ -211,8 +211,29 @@ flows/
                       base flows/driving in wall_bounded/CLAUDE.md
   triply_periodic/    monochromatic.py: Kolmogorov/Waleffe/decaying-box
 analysis/             External-facing JAX-free snapshot post-processing
-                      API -- see analysis/CLAUDE.md
+                      API (+ the JAX-based transient_growth CLI) -- see
+                      analysis/CLAUDE.md
 ```
+
+### Transient-growth analysis
+
+`python -m dnsjax.analysis.transient_growth` computes 3D linear optimal
+energy growth around an arbitrary wall-normal **total** profile
+`U(y)` (a two-column file, or a folder of them; top-wall-first
+descending grid) for the four base-flow wall-bounded flows
+(plane-couette/poiseuille, pipe, taylor-couette; Dean is out of scope).
+It reuses the solver's own linear step -- `make_stepper` fed the
+geometry `_l_bf` with the nonlinear term off, at `theta = 1` /
+`implicit_mean_coupling = False` -- to build the per-mode backward-Euler
+propagator `Phi`, then extracts the generator from `eig(Phi_S)` and
+computes `G(t)`, `G_max`/`t_opt`, the spectral & numerical abscissae,
+eigenvalues, and the optimal input/response. The profile enters only
+through each flow's `frozen_profile_flow(profile)` hook
+(`_base.frozen_profile_flow`; a shallow flow copy with `base_flow` /
+`curl_base_flow` swapped -- all operators are profile-independent). It
+is single-device and GPU-runnable (`--dist.platform cuda`); the linear
+path is FFT-free so dealiasing never runs. Full math + the CLI/output
+spec: the module docstring.
 
 ### Code-exploration constraints
 
@@ -642,3 +663,11 @@ one-liners. Cross-cutting notes:
 - `tests/test_localized_rolls.py`: rolls construction self-test
   (no-slip, determinism, device-count independence, divergence bound,
   peak-scaling guard).
+- `tests/test_transient_growth.py`: transient-growth analysis
+  (`dnsjax.analysis.transient_growth`) -- JAX-free host units, per-flow
+  hook == builtin coupling + block-diagonality workers, CLI feature
+  checks (wall-BC / folder / snapshot export), and the literature
+  anchors (plane-Poiseuille `G~196`, plane-Couette `G~1185`, pipe
+  `G=649` at `t=147` (Schmid & Henningson 1994), Taylor-Couette
+  instability onset + Maretzke et al. 2014 table 3 `G_max=71.58`;
+  `--slow` adds the Orszag eigenvalue).

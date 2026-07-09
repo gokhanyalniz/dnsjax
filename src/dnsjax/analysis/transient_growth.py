@@ -1,0 +1,1387 @@
+r"""Linear transient (optimal energy) growth around arbitrary profiles.
+
+Compute the three-dimensional linear transient-growth spectrum of a
+wall-bounded flow **linearised about an arbitrary wall-normal total
+profile** `$\mathbf{U}(y)$` -- not necessarily a laminar / stationary
+solution.  Supported systems: ``plane-couette`` / ``plane-poiseuille``
+(Cartesian), ``pipe`` (cylindrical), ``taylor-couette`` (annular).  The
+force-driven Dean / viscoelastic-Dean flows are out of scope.
+
+Run as a CLI (single process, single device; GPU with
+``--dist.platform cuda`` and ``CUDA_VISIBLE_DEVICES=0``)::
+
+    python -m dnsjax.analysis.transient_growth --profile U.txt \
+        --phys.system plane-poiseuille --phys.re 1000 \
+        --res.ny 96 --res.nx 4 --res.nz 4 --geo.lz 3.074 --modes "1,0"
+
+The profile file has two whitespace-separated columns: the wall-normal
+grid points **top wall first (descending)** -- the same convention as a
+``geo.wall_grid`` file -- and the *total* profile value there (the
+streamwise `$u_x$` for the Cartesian flows, axial `$u_z$` for pipe,
+azimuthal `$u_\theta$` for Taylor-Couette).  A directory may be given
+instead of a file, in which case every file in it is processed.
+
+Why this reuses the solver exactly
+==================================
+The base profile enters the solver only through the pair of flow arrays
+``base_flow`` / ``curl_base_flow`` that the FFT-free linear coupling
+`$L_{bf} = \mathbf{u}'\times\nabla\times\mathbf{U} +
+\mathbf{U}\times\boldsymbol{\omega}'$` reads (each geometry's ``_l_bf``;
+:func:`dnsjax.geometries.wall_bounded._base.base_flow_coupling`).  This
+coupling is **exact for any wall-parallel `$y$`-only profile**: because
+`$\mathbf{U}\cdot\nabla\mathbf{U}\equiv 0$`, the base self-interaction is
+a pure gradient absorbed by the pressure (see the :mod:`dnsjax.rhs`
+module docstring), so linearising about a *non-solution* profile
+introduces **no extra terms** in the Jacobian -- the base residual is a
+constant forcing that does not enter the linear operator.  Every other
+operator (the viscous Helmholtz `$H_k$`, the pressure Poisson `$L_k$`,
+and the influence-matrix data enforcing `$\nabla\cdot\mathbf{u}'=0$` and
+the wall BCs) is profile-independent, so a per-profile flow is a shallow
+copy with the two arrays swapped
+(:func:`dnsjax.geometries.wall_bounded._base.frozen_profile_flow`; each
+flow module's ``frozen_profile_flow(profile)`` builder).
+
+Mathematical formulation
+========================
+Per non-mean Fourier mode `$(k_2, k_3)$` the linearised dynamics are
+`$d\mathbf{q}/dt = \mathcal{A}\,\mathbf{q}$` on the complex state
+`$\mathbf{q}\in\mathbb{C}^{n}$`, `$n = 3 N_y$` (three velocity
+components on the wall-normal grid), restricted to the discretely
+divergence-free, no-slip subspace `$S$`.  Transient growth measures how
+much the perturbation *energy* can transiently amplify even when every
+eigenvalue of `$\mathcal{A}$` decays (a non-normal-operator effect):
+
+.. math::
+    G(t) = \max_{\mathbf{q}(0)\neq 0}
+    \frac{\lVert \mathbf{q}(t)\rVert_E^2}{\lVert \mathbf{q}(0)\rVert_E^2},
+    \qquad
+    G_{\max} = \max_{t\ge 0} G(t)\ \text{at}\ t = t_{\mathrm{opt}}.
+
+The energy norm `$\lVert\mathbf{q}\rVert_E^2 = \mathbf{q}^{H} W
+\mathbf{q}$` is the solver's own kinetic energy (``get_norm2*``): `$W$`
+is diagonal, `$W = \mathrm{diag}_c(m_c\,w_y)$` with the wall-normal
+quadrature weights `$w_y$` (``flow.y_weights``; the radial Jacobian
+`$r$` is baked in for pipe / Taylor-Couette) and the component metric
+`$m_c = 1$` for Cartesian `$u_x,u_y,u_z$` and cylindrical `$u_z$`,
+`$m_c = \tfrac{1}{2}$` for the `$u_\pm = u_r \pm i u_\theta$`
+components.  The Hermitian ``k_metric`` factor and ``volume_fac`` are
+constants for a fixed mode and cancel in the ratio `$G$`, so they are
+omitted (all reported quantities -- `$G$`, `$G_{\max}$`, the abscissae
+-- are ratios or rates invariant under an overall scaling of `$W$`).
+
+The generator `$\mathcal{A}$` is extracted from **one** solver step.
+With CN weight `$\theta = 1$` (backward Euler,
+``step.implicit_mean_coupling = False``) the converged implicit step is
+
+.. math::
+    \Phi = (I - \Delta t\,\mathcal{A})^{-1}\quad\text{on } S,
+
+realised exactly by the influence-matrix pressure solve (see the
+``_imm_iteration`` docstring in
+:mod:`dnsjax.geometries.wall_bounded.cartesian` and
+:func:`dnsjax.timestep.make_stepper`).  Backward Euler is an *exact
+rational function* of `$\mathcal{A}$`, so inverting the relation
+recovers `$\mathcal{A}$` to rounding -- `$\Delta t$` is a probe, **not**
+an accuracy knob, and there is no time-discretisation error.  The
+pipeline per mode is:
+
+1. **Propagator.**  `$\Phi$` (an `$n\times n$` matrix) is built column
+   by column: the `$j$`-th unit vector `$\mathbf{e}_{(c,j)}$` placed at
+   *every* retained mode at once, stepped once, gives column `$(c,j)$`
+   of *every* mode's `$\Phi$` simultaneously (the linear step is
+   block-diagonal in `$(k_2,k_3)$` because the only `$k=0$` content is
+   the fixed base flow).  So the whole propagator set costs just `$3
+   N_y$` cheap FFT-free linear steps, independent of the mode count.
+
+2. **Subspace reduction.**  `$\Phi$` maps `$\mathbb{C}^n$` into `$S =
+   \mathrm{range}(\Phi)$`.  A singular-value decomposition exposes a
+   clean numerical rank `$r = \dim S$` (`$\approx 2 N_y$`; the null
+   space is the constraint-violating directions the influence matrix
+   projects out).  The leading `$r$` **left** singular vectors `$V$`
+   are an orthonormal basis of `$S$`, and `$\Phi_S = V^{H}\Phi V$` is
+   the exact `$r\times r$` restriction (`$\Phi V \subseteq \mathrm{span}
+   V$`).
+
+3. **Generator.**  `$\mathcal{A} = (I - \Phi_S^{-1})/\Delta t$`.  The
+   self-consistency residual `$\lVert (I-\Delta t\,\mathcal{A})^{-1} -
+   \Phi_S\rVert / \lVert\Phi_S\rVert$` is reported per mode.
+
+4. **Energy metric.**  `$M = V^{H} W V$` (`$r\times r$`, Hermitian
+   positive-definite), `$F = \mathrm{chol}(M)$` upper (so `$M =
+   F^{H}F$` and `$\lVert\mathbf{a}\rVert_E = \lVert F\mathbf{a}
+   \rVert_2$` in the `$V$` coordinates).  In energy-orthonormal
+   coordinates the propagator is `$B(t) = F\,e^{t\mathcal{A}}\,F^{-1}$`.
+
+5. **Growth & optima.**  `$G(t) = \sigma_{\max}(B(t))^2$` (matrix
+   exponential via :func:`jax.scipy.linalg.expm`), with `$G(0)=1$`.
+   `$t_{\mathrm{opt}}$` refines the grid maximum by golden section.  The
+   leading singular triplet of `$B(t_{\mathrm{opt}})$` gives the optimal
+   input (right singular vector `$\mathbf{v}_1$`) and its response (left
+   singular vector `$\mathbf{u}_1$`): in the full state,
+   `$\mathbf{q}(0) = V F^{-1}\mathbf{v}_1$` and `$\mathbf{q}
+   (t_{\mathrm{opt}}) = \sigma_1\, V F^{-1}\mathbf{u}_1$`.
+
+6. **Abscissae & spectrum.**  Spectral abscissa `$\max_i\mathrm{Re}\,
+   \lambda_i(\mathcal{A})$` (asymptotic growth rate; the leading
+   eigenvalues are also stored) and numerical abscissa
+   `$\lambda_{\max}\big((\tilde{\mathcal{A}} +
+   \tilde{\mathcal{A}}^{H})/2\big)$` with `$\tilde{\mathcal{A}} =
+   F\mathcal{A}F^{-1}$` (the maximum instantaneous energy growth rate,
+   `$= \tfrac{1}{2}\,dG/dt|_{0}$`).  The nonsymmetric eigensolve runs on
+   the host (:func:`numpy.linalg.eig`; JAX's ``eig`` is CPU-only).
+
+Conventions and choices
+=======================
+- **Mean mode** `$(0,0)$` is excluded: the influence-matrix mean branch
+  (bulk-velocity / spanwise-blocking projections, mean-mode driving)
+  makes it affine rather than a clean linear block, and it is not part
+  of a `$(k_2,k_3)\neq 0$` optimal-growth analysis.
+- **Dealiasing** needs no action: the linear step is entirely FFT-free
+  (spectral coupling + banded solves), so the 3/2 padding pipeline is
+  never entered -- there is no aliasing to remove.
+- **Moving frame:** ``phys.u_grid`` is forced to `$0$` (lab frame)
+  unless the user sets it.  `$G$` is frame-invariant (a per-mode phase);
+  a moving frame only shifts each eigenvalue by `$-i k_0 U_{grid}$`.
+- **Backward Euler probe** (`$\theta = 1$`): exact generator recovery;
+  the extraction is best conditioned near `$\Delta t \approx 10^{-2}$`
+  (large `$\Delta t$` ill-conditions `$\Phi_S$`; tiny `$\Delta t$`
+  cancels in `$I-\Phi_S^{-1}$`).  A trapezoidal `$\theta=\tfrac12$`
+  Cayley variant `$\mathcal{A} = \tfrac{2}{\Delta t}(\Phi_S -
+  I)(\Phi_S + I)^{-1}$` is an alternative, not implemented here.
+
+Outputs
+=======
+Per profile ``<stem>``: a human-readable ``<stem>_tg_summary.txt`` (one
+row per mode) and a self-describing ``<stem>_tg.npz`` (grids, the
+interpolated profile, the resolved parameters, and per-mode `$G(t)$`,
+`$G_{\max}$`, `$t_{\mathrm{opt}}$`, abscissae, leading eigenvalues,
+singular values, and the optimal input / response at
+`$t_{\mathrm{opt}}$` -- optionally at every requested time with
+``--save-all-times``).  ``--export-snapshot "i2,i3"`` writes the chosen
+mode's optimal perturbation as a standard dnsjax snapshot (with the
+`$k=0$`-plane conjugate partner filled in for a real physical field) to
+seed a DNS run.
+
+Future work: eigenvector output
+================================
+Only the eigen*values* are computed.  To add the eigen*vectors* of
+`$\mathcal{A}$` (the linear-stability modes): take ``lam, Y =
+numpy.linalg.eig(A)`` on the host (JAX ``eig`` is CPU-only), lift each
+to the full state `$\mathbf{y}_i = V\mathbf{y}_i^{(r)}$`,
+energy-normalise so `$\lVert F\mathbf{y}_i^{(r)}\rVert_2 = 1$`, sort by
+`$\mathrm{Re}\,\lambda_i$`, and store alongside ``eigvals`` (adding a
+`$k=0$`-plane conjugate partner for a snapshot export exactly as the
+optimal-perturbation export does).
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+
+from .. import harmonics
+from ..fd import local_interpolation_matrix
+from ..parameters import (
+    Parameters,
+    _user_set_fields,
+    configure_jax_platform,
+    derived_params,
+    padded_res,
+    params,
+    read_parameters,
+    update_parameters,
+    validate_parameters,
+)
+
+if TYPE_CHECKING:
+    from jax import Array
+
+# system -> (flow module suffix, geometry module, family)
+_SYSTEMS: dict[str, tuple[str, str, str]] = {
+    "plane-couette": ("plane_couette", "cartesian", "cartesian"),
+    "plane-poiseuille": ("plane_poiseuille", "cartesian", "cartesian"),
+    "pipe": ("pipe", "cylindrical", "cylindrical"),
+    "taylor-couette": ("taylor_couette", "annular", "annular"),
+}
+WALL_BOUNDED_TG_SYSTEMS = tuple(_SYSTEMS)
+
+# Component labels in the stored state basis, per family.
+_COMPONENT_LABELS = {
+    "cartesian": ("u_x", "u_y", "u_z"),
+    "cylindrical": ("u_z", "u_+", "u_-"),
+    "annular": ("u_z", "u_+", "u_-"),
+}
+# Energy component metric m_c in the stored basis, per family.
+_COMPONENT_METRIC = {
+    "cartesian": (1.0, 1.0, 1.0),
+    "cylindrical": (1.0, 0.5, 0.5),
+    "annular": (1.0, 0.5, 0.5),
+}
+# TG-owned step fields; warn if the user tries to set them.
+_TG_OWNED_STEP = (
+    "dt",
+    "implicitness",
+    "scheme",
+    "implicit_mean_coupling",
+    "corrector_tolerance",
+    "max_corrector_iterations",
+    "split_corrector",
+)
+
+
+# ── Configuration dataclasses ────────────────────────────────────
+
+
+@dataclasses.dataclass
+class TGConfig:
+    """Resolved transient-growth knobs (from the CLI)."""
+
+    modes: str
+    t_max: float | None
+    nt: int
+    tg_dt: float
+    corrector_tolerance: float
+    max_corrector_iterations: int
+    rank_tol: float
+    rank_gap_min: float
+    interp_order: int
+    wall_bc_tol: float
+    grid_match_tol: float
+    n_eig: int
+    t_chunk: int
+    save_all_times: bool
+    export_snapshot: str | None
+    export_amplitude: float
+    export_which: str
+
+    def as_json(self) -> str:
+        return json.dumps(dataclasses.asdict(self), sort_keys=True)
+
+
+@dataclasses.dataclass
+class ModeResult:
+    """Per-mode transient-growth results."""
+
+    i2: int
+    i3: int
+    wn2: float
+    wn3: float
+    rank: int
+    sv_gap: float
+    extraction_residual: float
+    G: np.ndarray  # (nt,)
+    G_max: float
+    t_opt: float
+    sigma_opt: float
+    spectral_abscissa: float
+    numerical_abscissa: float
+    eigvals: np.ndarray  # (n_eig,) complex
+    singular_values: np.ndarray  # (n,) real
+    opt_input: np.ndarray  # (3, Ny) complex, stored basis
+    opt_response: np.ndarray  # (3, Ny) complex, stored basis
+    opt_input_t: np.ndarray | None  # (nt, 3, Ny) or None
+    opt_response_t: np.ndarray | None
+    sigma_t: np.ndarray | None  # (nt,) or None
+
+
+# ── Host-side helpers (JAX-free) ─────────────────────────────────
+
+
+def _parse_args(
+    argv: list[str] | None = None,
+) -> tuple[argparse.Namespace, list[str]]:
+    """Parse the TG-specific flags; return ``(args, dnsjax_argv)``.
+
+    Unknown arguments (the dnsjax ``--section.field`` options) are
+    returned untouched for the pydantic CLI layer.  ``allow_abbrev`` is
+    off so a TG flag never swallows a dnsjax option by prefix.
+    """
+    p = argparse.ArgumentParser(
+        prog="python -m dnsjax.analysis.transient_growth",
+        description="Linear transient growth around an arbitrary "
+        "wall-normal profile.",
+        allow_abbrev=False,
+    )
+    p.add_argument(
+        "--profile",
+        required=True,
+        help="two-column profile file (grid descending from the top "
+        "wall; total profile value), or a folder of such files",
+    )
+    p.add_argument("--out-dir", default=".", help="output directory")
+    p.add_argument(
+        "--parameters",
+        default=None,
+        help="parameters.toml path (default: ./parameters.toml if present)",
+    )
+    p.add_argument(
+        "--dist.platform",
+        dest="platform",
+        default="cpu",
+        choices=("cpu", "cuda", "rocm", "tpu"),
+        help="JAX backend (single device)",
+    )
+    p.add_argument(
+        "--modes",
+        default="all",
+        help='"all" (every non-mean mode) or "i2,i3;i2,i3;..." '
+        "(i2 = kz/m axis, i3 = kx/axial axis)",
+    )
+    p.add_argument(
+        "--t-max",
+        type=float,
+        default=None,
+        help="end of the G(t) grid (default 0.25*Re)",
+    )
+    p.add_argument(
+        "--nt",
+        type=int,
+        default=65,
+        help="number of G(t) grid points including t=0",
+    )
+    p.add_argument(
+        "--tg-dt", type=float, default=0.01, help="backward-Euler probe step"
+    )
+    p.add_argument("--corrector-tolerance", type=float, default=1e-11)
+    p.add_argument("--max-corrector-iterations", type=int, default=200)
+    p.add_argument(
+        "--rank-tol",
+        type=float,
+        default=1e-11,
+        help="relative singular-value cutoff for the rank",
+    )
+    p.add_argument(
+        "--rank-gap-min",
+        type=float,
+        default=1e3,
+        help="required s[r-1]/s[r] gap",
+    )
+    p.add_argument(
+        "--interp-order",
+        type=int,
+        default=8,
+        help="Fornberg stencil order for profile regridding",
+    )
+    p.add_argument(
+        "--wall-bc-tol",
+        type=float,
+        default=1e-6,
+        help="relative wall-value tolerance",
+    )
+    p.add_argument(
+        "--grid-match-tol",
+        type=float,
+        default=1e-12,
+        help="same-grid fast-path tolerance",
+    )
+    p.add_argument(
+        "--n-eig",
+        type=int,
+        default=20,
+        help="leading eigenvalues stored per mode",
+    )
+    p.add_argument(
+        "--t-chunk",
+        type=int,
+        default=16,
+        help="expm vmap chunk over the time grid",
+    )
+    p.add_argument(
+        "--save-all-times",
+        action="store_true",
+        help="store the optimal pair at every grid time",
+    )
+    p.add_argument(
+        "--export-snapshot",
+        default=None,
+        help='"i2,i3": export that mode\'s optimal as a dnsjax snapshot',
+    )
+    p.add_argument(
+        "--export-amplitude",
+        type=float,
+        default=1e-4,
+        help="perturbation energy E' of the exported seed",
+    )
+    p.add_argument(
+        "--export-which", default="input", choices=("input", "response")
+    )
+    return p.parse_known_args(argv)
+
+
+def _gather_profiles(path_str: str) -> list[Path]:
+    """A single file -> ``[file]``; a directory -> its sorted files."""
+    path = Path(path_str)
+    if path.is_dir():
+        files = sorted(f for f in path.iterdir() if f.is_file())
+        if not files:
+            raise SystemExit(f"no files in profile directory {path}")
+        return files
+    if path.is_file():
+        return [path]
+    raise SystemExit(f"profile path not found: {path}")
+
+
+def _read_profile(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Read a two-column profile file into ascending ``(y, u)``.
+
+    Column 0 is the wall-normal grid **descending** from the top wall
+    (the ``geo.wall_grid`` convention); both columns are reversed to the
+    code's ascending order.
+    """
+    data = np.loadtxt(path, dtype=np.float64)
+    if data.ndim != 2 or data.shape[1] != 2:
+        raise SystemExit(
+            f"{path}: expected two columns (grid, profile), got "
+            f"shape {data.shape}"
+        )
+    y_raw = data[:, 0]
+    if not np.all(np.diff(y_raw) < 0):
+        raise SystemExit(
+            f"{path}: first column must be strictly descending "
+            "(top wall first)"
+        )
+    return y_raw[::-1].copy(), data[::-1, 1].copy()
+
+
+def _regrid_profile(
+    y_user: np.ndarray,
+    u_user: np.ndarray,
+    y_code: np.ndarray,
+    order: int,
+    match_tol: float,
+) -> tuple[np.ndarray, bool]:
+    """Interpolate the profile onto the code grid if needed.
+
+    Returns ``(u_on_code_grid, interpolated)``.  Identical grids take a
+    bit-exact fast path.  Otherwise a local Fornberg interpolation
+    (:func:`dnsjax.fd.local_interpolation_matrix`) maps the arbitrary
+    monotone user grid onto the code grid.
+    """
+    if (
+        len(y_user) == len(y_code)
+        and np.max(np.abs(y_user - y_code)) < match_tol
+    ):
+        return u_user.copy(), False
+    span_lo, span_hi = y_user[0], y_user[-1]
+    if y_code[0] < span_lo - 1e-9 or y_code[-1] > span_hi + 1e-9:
+        raise SystemExit(
+            f"profile grid [{span_lo:.4f}, {span_hi:.4f}] does not "
+            f"cover the code grid [{y_code[0]:.4f}, {y_code[-1]:.4f}]"
+        )
+    mat = local_interpolation_matrix(y_user, y_code, order)
+    return mat @ u_user, True
+
+
+def _select_modes(
+    spec: str, n2: int, n3: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve the ``--modes`` spec to index arrays (mean excluded)."""
+    if spec.strip() == "all":
+        pairs = [
+            (i2, i3)
+            for i2 in range(n2)
+            for i3 in range(n3)
+            if not (i2 == 0 and i3 == 0)
+        ]
+    else:
+        pairs = []
+        for tok in spec.split(";"):
+            tok = tok.strip()
+            if not tok:
+                continue
+            a, b = tok.split(",")
+            i2, i3 = int(a), int(b)
+            if i2 == 0 and i3 == 0:
+                raise SystemExit("the mean mode (0,0) is excluded")
+            if not (0 <= i2 < n2 and 0 <= i3 < n3):
+                raise SystemExit(
+                    f"mode ({i2},{i3}) out of range (0..{n2 - 1}, 0..{n3 - 1})"
+                )
+            pairs.append((i2, i3))
+    if not pairs:
+        raise SystemExit("no modes selected")
+    arr = np.asarray(pairs, dtype=np.int64)
+    return arr[:, 0], arr[:, 1]
+
+
+def _wavenumber_arrays(
+    family: str,
+) -> tuple[np.ndarray, np.ndarray, tuple[str, str]]:
+    """Physical wavenumbers for the two spectral axes (host-recompute).
+
+    Axis 2 (from ``nz``) is spanwise `$k_z$` / azimuthal `$m$`; axis 3
+    (from ``nx``, the real-FFT axis) is streamwise `$k_x$` / axial.
+    Recomputed from :mod:`dnsjax.harmonics` scaled by `$2\\pi/L$`, per
+    the global-array caveat in the ``fourier`` singleton docstrings.
+    """
+    nx, nz = params.res.nx, params.res.nz
+    ch = np.asarray(harmonics.complex_harmonics(nz), dtype=np.float64)
+    rh = np.asarray(harmonics.real_harmonics(nx), dtype=np.float64)
+    kax = rh * (2.0 * np.pi / params.geo.lx)
+    if family == "cartesian":
+        return ch * (2.0 * np.pi / params.geo.lz), kax, ("beta", "alpha")
+    return ch, kax, ("m", "k_ax")
+
+
+# ── Parameter layering ───────────────────────────────────────────
+
+
+def _configure_parameters(
+    args: argparse.Namespace, remainder: list[str]
+) -> None:
+    """Apply defaults < parameters.toml < CLI < forced TG overrides.
+
+    The JAX platform is already configured (in :func:`main`).  This
+    layers the TOML and pydantic CLI, then forces the TG-required
+    settings (single device, backward-Euler linear probe, no mean
+    coupling, tight corrector, lab frame, double precision) so the
+    geometry / flow singletons -- imported *after* this returns -- bake
+    them into the operators.
+    """
+    from pydantic_settings import CliApp
+
+    from ..parameters import CLIParameters
+
+    # TOML layer.
+    toml = (
+        Path(args.parameters)
+        if args.parameters is not None
+        else Path("parameters.toml")
+    )
+    if args.parameters is not None and not toml.is_file():
+        raise SystemExit(f"parameters file not found: {toml}")
+    if toml.is_file():
+        update_parameters(read_parameters(toml))
+
+    # CLI layer (the dnsjax --section.field remainder).
+    update_parameters(CliApp.run(CLIParameters, cli_args=remainder))
+
+    # Snapshot user intent *before* forcing.
+    u_grid_user_set = ("phys", "u_grid") in _user_set_fields
+    for f in _TG_OWNED_STEP:
+        if ("step", f) in _user_set_fields:
+            print(
+                f"[tg] note: step.{f} is set by the TG driver; the "
+                "provided value is ignored."
+            )
+    if ("res", "double_precision") in _user_set_fields and not (
+        params.res.double_precision
+    ):
+        print("[tg] note: transient growth always runs double precision.")
+
+    if params.dist.np0 * params.dist.np1 != 1:
+        raise SystemExit(
+            "transient growth is single-device (np0*np1 must be 1); "
+            "parallelise across profiles with separate processes."
+        )
+    if params.phys.system not in WALL_BOUNDED_TG_SYSTEMS:
+        raise SystemExit(
+            f"system {params.phys.system!r} is not supported "
+            f"(choose one of {', '.join(WALL_BOUNDED_TG_SYSTEMS)})"
+        )
+    if params.dist.platform != args.platform:
+        # A TOML dist.platform cannot override the already-configured
+        # backend; keep them consistent.
+        print(
+            f"[tg] note: dist.platform {params.dist.platform!r} from a "
+            f"layer is overridden by --dist.platform {args.platform!r}."
+        )
+
+    phys_force: dict[str, Any] = {}
+    if not u_grid_user_set:
+        phys_force["u_grid"] = 0.0
+    update_parameters(
+        Parameters(
+            dist={"np0": 1, "np1": 1, "platform": args.platform},
+            res={"double_precision": True},
+            step={
+                "dt": args.tg_dt,
+                "implicitness": 1.0,
+                "implicit_mean_coupling": False,
+                "corrector_tolerance": args.corrector_tolerance,
+                "max_corrector_iterations": args.max_corrector_iterations,
+            },
+            phys=phys_force,
+        )
+    )
+    validate_parameters()
+    padded_res.set_padded_resolution(params)
+
+    print(
+        "[tg] forced overrides: scheme=iterative-cn theta=1.0 "
+        f"dt={args.tg_dt} implicit_mean_coupling=False "
+        f"u_grid={derived_params.u_grid} np0=np1=1 "
+        f"platform={args.platform}"
+    )
+
+
+# ── Device-side pipeline ─────────────────────────────────────────
+
+
+def _dispatch(system: str) -> tuple[Any, Any, str]:
+    """Import the flow / geometry modules for *system*."""
+    import importlib
+
+    flow_suffix, geo_name, family = _SYSTEMS[system]
+    fmod = importlib.import_module(f"dnsjax.flows.wall_bounded.{flow_suffix}")
+    gmod = importlib.import_module(
+        f"dnsjax.geometries.wall_bounded.{geo_name}"
+    )
+    return fmod, gmod, family
+
+
+def _linear_step(gmod: Any):
+    """Return the pure-linear implicit step ``(state, fourier, flow)``.
+
+    Feeds the geometry's FFT-free linear coupling ``_l_bf`` as the RHS
+    and no ``l_bf_fn`` (unsplit corrector), so the converged
+    predict-and-fully-correct is the exact `$\\theta$`-implicit linear
+    step of viscous + coupling + influence-matrix pressure, with the
+    nonlinear self-advection never formed.
+    """
+    from ..timestep import make_stepper
+
+    raw = make_stepper(
+        gmod._l_bf, gmod._predict, gmod._correct, gmod._norm, None, None
+    )
+    return raw[2]  # predict_and_fully_correct(state, *args)
+
+
+def _build_propagators(
+    step: Any,
+    fourier: Any,
+    frozen_flow: Any,
+    i2_arr: np.ndarray,
+    i3_arr: np.ndarray,
+    ny: int,
+    tol: float,
+) -> tuple[np.ndarray, float, int]:
+    """Assemble the per-mode propagators over the selected modes.
+
+    Steps the `$3 N_y$` wall-normal unit vectors placed at the selected
+    (non-mean) modes only -- block-diagonality keeps every other mode
+    zero, so the shared corrector norm reflects just these modes (a
+    near-mean mode in a very long box would otherwise stall the whole
+    step) -- reading column `$(c,j)$` off each.  Returns ``(phi,
+    err_max, nc_max)`` with ``phi`` of shape ``(K, n, n)`` complex, `$n
+    = 3 N_y$`, component-major index `$c N_y + j$`.
+    """
+    import jax.numpy as jnp
+
+    from ..sharding import sharding
+
+    n2, n3 = sharding.spec_shape[1], sharding.spec_shape[2]
+    n = 3 * ny
+    k = len(i2_arr)
+    phi = np.empty((k, n, n), dtype=np.complex128)
+    i2_dev = jnp.asarray(i2_arr)
+    i3_dev = jnp.asarray(i3_arr)
+    err_max = 0.0
+    nc_max = 0
+    for c in range(3):
+        for j in range(ny):
+            st = (
+                jnp.zeros(
+                    (3, ny, n2, n3),
+                    dtype=sharding.complex_type,
+                    out_sharding=sharding.spec_vector_shard,
+                )
+                .at[c, j, i2_dev, i3_dev]
+                .set(1.0)  # only the selected (non-mean) modes
+            )
+            out, err, nc = step(st, fourier, frozen_flow)
+            err_f = float(err)
+            if not np.isfinite(err_f) or err_f > tol:
+                raise SystemExit(
+                    f"linear step failed to converge (component {c}, "
+                    f"row {j}: err={err_f:.2e} > {tol:.1e}); reduce "
+                    "--tg-dt or raise --max-corrector-iterations."
+                )
+            err_max = max(err_max, err_f)
+            nc_max = max(nc_max, int(nc))
+            cols = np.asarray(out[:, :, i2_dev, i3_dev])  # (3, ny, K)
+            phi[:, :, c * ny + j] = cols.reshape(n, k).T
+    return phi, err_max, nc_max
+
+
+def _energy_weight_diag(family: str, flow: Any) -> np.ndarray:
+    """Diagonal energy weights `$W$` (component-major, length `$3N_y$`).
+
+    Matches the solver's ``get_norm2*`` kinetic energy up to the
+    per-mode ``k_metric`` / ``volume_fac`` constants (which cancel in
+    `$G$`): `$m_c\\,w_y$` with `$m_c\\in\\{1,\\tfrac12\\}$`.
+    """
+    w_y = np.asarray(flow.y_weights, dtype=np.float64)
+    metric = _COMPONENT_METRIC[family]
+    return np.concatenate([m * w_y for m in metric])
+
+
+def _analyze_mode(
+    phi_k: np.ndarray,
+    w_diag: np.ndarray,
+    dt: float,
+    t_grid: np.ndarray,
+    i2: int,
+    i3: int,
+    wn2: float,
+    wn3: float,
+    cfg: TGConfig,
+    jgrowth: Any,
+    jfull: Any,
+) -> ModeResult:
+    """Full transient-growth analysis of one mode's propagator."""
+    import jax.numpy as jnp
+
+    ny = phi_k.shape[0] // 3
+    n = phi_k.shape[0]
+    # Subspace reduction.  The physical subspace S = range(Phi) is
+    # separated from the constraint-violating null space by a wide
+    # singular-value gap: the physical spectrum spans many orders (the
+    # stiff wall-normal viscous modes reach sigma ~ 1/(dt*|lambda|) ~
+    # 1e-7..1e-9), then a sharp cliff drops to the ~machine-epsilon null
+    # floor (sigma/s0 ~ 1e-14).  ``rank_tol`` (relative, default 1e-11)
+    # sits in that gap; the gap and reduced-conditioning checks catch a
+    # threshold that lands mid-spectrum.
+    u, s, _ = np.linalg.svd(phi_k)
+    rank = int(np.sum(s > cfg.rank_tol * s[0]))
+    rank = min(max(rank, 1), n)
+    gap = (
+        float(s[rank - 1] / s[rank])
+        if rank < n and s[rank] > 0
+        else float("inf")
+    )
+    if gap < cfg.rank_gap_min:
+        raise SystemExit(
+            f"mode ({i2},{i3}): no clean rank gap at rank {rank} "
+            f"(s[{rank - 1}]/s[{rank}] = {gap:.2e} < "
+            f"{cfg.rank_gap_min:.1e}); tail "
+            f"{s[max(rank - 3, 0) : rank + 3]}"
+        )
+    v = u[:, :rank]  # (n, r) range basis
+    phi_s = v.conj().T @ phi_k @ v  # (r, r)
+
+    # Generator via the eigendecomposition of Phi_S (not by inverting
+    # I - dt*A, which would amplify the stiff-mode errors).  Phi_S =
+    # (I - dt A_S)^{-1} shares eigenvectors with A_S, so
+    # eig(Phi_S) = (mu, Y) gives the generator eigenvalues lambda =
+    # (1 - 1/mu)/dt directly.  The stiff FD wall-clustering modes get
+    # huge negative lambda; exp(t*lambda) then *underflows* to 0 for
+    # t > 0 (they decay instantly) rather than overflowing a dense
+    # matrix exponential.
+    mu, y_vec = np.linalg.eig(phi_s)
+    lam = (1.0 - 1.0 / mu) / dt
+    eig_res = float(
+        np.linalg.norm(phi_s @ y_vec - y_vec * mu) / np.linalg.norm(phi_s)
+    )
+    # For the ultra-stiff modes mu ~ 0, and lambda = (1 - 1/mu)/dt
+    # amplifies the eig round-off: a tiny spurious phase in mu can flip
+    # Re(lambda) to a huge *positive* value (unphysical growth that
+    # overflows exp).  A mode the probe cannot resolve (|mu| <= 1/2)
+    # cannot physically grow faster than the resolved spectral abscissa;
+    # clamp any such mode to instant decay (exp(t*lambda) -> 0, t > 0).
+    reliable = np.abs(mu) > 0.5
+    omega_res = float(np.max(lam.real[reliable])) if reliable.any() else 0.0
+    spurious = (~reliable) & (lam.real > omega_res)
+    lam = np.where(spurious, -1e30, lam)
+
+    # Energy metric and the eigenvectors in energy coordinates.
+    m_mat = v.conj().T @ (w_diag[:, None] * v)  # V^H W V
+    f_mat = np.linalg.cholesky(m_mat).conj().T  # upper, M = F^H F
+    f_inv = np.linalg.inv(f_mat)
+    e_mat = f_mat @ y_vec  # eigenvectors in energy coords
+    cond_e = np.linalg.cond(e_mat)
+    if not np.isfinite(cond_e) or cond_e > 1e12:
+        raise SystemExit(
+            f"mode ({i2},{i3}): eigenvector matrix is ill-conditioned "
+            f"(cond = {cond_e:.2e}); Phi_S is (near) defective -- "
+            "reduce --res.ny or change --tg-dt."
+        )
+    w_mat = np.linalg.inv(e_mat)
+    e_dev = jnp.asarray(e_mat)
+    lam_dev = jnp.asarray(lam)
+    w_dev = jnp.asarray(w_mat)
+
+    def geval(t: float) -> float:
+        return float(
+            np.asarray(jgrowth(e_dev, lam_dev, w_dev, jnp.asarray([t])))[0]
+        )
+
+    # Growth curve G(t) = sigma_max(E diag(exp(t*lambda)) W)^2.
+    g_vals = []
+    for lo in range(0, len(t_grid), cfg.t_chunk):
+        ts = jnp.asarray(t_grid[lo : lo + cfg.t_chunk])
+        g_vals.append(np.asarray(jgrowth(e_dev, lam_dev, w_dev, ts)))
+    g_curve = np.concatenate(g_vals) ** 2
+    g_curve[0] = 1.0  # exact at t=0
+
+    # Optimal time by golden-section refinement of the grid maximum.
+    imax = int(np.argmax(g_curve))
+    if 0 < imax < len(t_grid) - 1:
+        t_opt = _golden_max(geval, t_grid[imax - 1], t_grid[imax + 1])
+    else:
+        t_opt = float(t_grid[imax])
+        if imax == len(t_grid) - 1:
+            print(
+                f"[tg] mode ({i2},{i3}): G still rising at t_max; "
+                "increase --t-max."
+            )
+    s_opt, u1, v1 = jfull(e_dev, lam_dev, w_dev, float(t_opt))
+    sigma_opt = float(np.asarray(s_opt)[0])
+    g_max = sigma_opt**2
+
+    # Optimal input / response lifted to the full state (3, Ny).
+    def _lift(vec_r: np.ndarray, scale: float) -> np.ndarray:
+        full = v @ (f_inv @ vec_r)
+        return scale * full.reshape(3, ny)
+
+    opt_input = _lift(np.asarray(v1), 1.0)
+    opt_response = _lift(np.asarray(u1), sigma_opt)
+
+    # Optimal pair at every requested time (optional).
+    opt_input_t = opt_response_t = sigma_t = None
+    if cfg.save_all_times:
+        in_t = np.empty((len(t_grid), 3, ny), dtype=np.complex128)
+        re_t = np.empty_like(in_t)
+        sig_t = np.empty(len(t_grid), dtype=np.float64)
+        for it, t in enumerate(t_grid):
+            st, u1t, v1t = jfull(e_dev, lam_dev, w_dev, float(t))
+            st0 = float(np.asarray(st)[0])
+            sig_t[it] = st0
+            in_t[it] = _lift(np.asarray(v1t), 1.0)
+            re_t[it] = _lift(np.asarray(u1t), st0)
+        opt_input_t, opt_response_t, sigma_t = in_t, re_t, sig_t
+
+    # Spectrum and abscissae.  The spectral abscissa uses all modes; the
+    # numerical abscissa (max instantaneous energy growth) is taken on
+    # the *probe-resolved* subspace |dt*lambda| < 1 (|mu| > 1/2): faster
+    # modes are heavily compressed by the backward-Euler probe (mu -> 0),
+    # so their extracted lambda -- and the near-wall FD modes' spurious
+    # non-normal instantaneous growth -- are unresolved and would swamp
+    # the diagnostic with a mesh-dependent value.
+    order = np.argsort(-lam.real)
+    lam_sorted = lam[order]
+    spectral_abscissa = float(lam_sorted[0].real)
+    slow = np.abs(mu) > 0.5
+    if slow.any():
+        q_mat, r_mat = np.linalg.qr(e_mat[:, slow])
+        a_slow = (r_mat * lam[slow][None, :]) @ np.linalg.inv(r_mat)
+        sym = 0.5 * (a_slow + a_slow.conj().T)
+        numerical_abscissa = float(np.max(np.linalg.eigvalsh(sym)))
+    else:
+        numerical_abscissa = spectral_abscissa
+    extraction_residual = eig_res
+    n_eig = min(cfg.n_eig, rank)
+
+    return ModeResult(
+        i2=i2,
+        i3=i3,
+        wn2=wn2,
+        wn3=wn3,
+        rank=rank,
+        sv_gap=gap,
+        extraction_residual=extraction_residual,
+        G=g_curve,
+        G_max=g_max,
+        t_opt=float(t_opt),
+        sigma_opt=sigma_opt,
+        spectral_abscissa=spectral_abscissa,
+        numerical_abscissa=numerical_abscissa,
+        eigvals=lam_sorted[:n_eig],
+        singular_values=s,
+        opt_input=opt_input,
+        opt_response=opt_response,
+        opt_input_t=opt_input_t,
+        opt_response_t=opt_response_t,
+        sigma_t=sigma_t,
+    )
+
+
+def _golden_max(g: Any, lo: float, hi: float, iters: int = 40) -> float:
+    """Golden-section search for the interior maximum of ``g(t)``."""
+    inv_phi = (np.sqrt(5.0) - 1.0) / 2.0
+
+    c = hi - inv_phi * (hi - lo)
+    d = lo + inv_phi * (hi - lo)
+    gc, gd = g(c), g(d)
+    for _ in range(iters):
+        if gc < gd:
+            lo, c, gc = c, d, gd
+            d = lo + inv_phi * (hi - lo)
+            gd = g(d)
+        else:
+            hi, d, gd = d, c, gc
+            c = hi - inv_phi * (hi - lo)
+            gc = g(c)
+        if hi - lo < 1e-6 * max(1.0, hi):
+            break
+    return 0.5 * (lo + hi)
+
+
+def _to_rtz(q: np.ndarray) -> np.ndarray:
+    """`$(u_z, u_+, u_-)\\to(u_z, u_r, u_\\theta)$` (cyl / annular)."""
+    u_z, u_plus, u_minus = q[0], q[1], q[2]
+    u_r = 0.5 * (u_plus + u_minus)
+    u_theta = (u_plus - u_minus) / 2j
+    return np.stack([u_z, u_r, u_theta])
+
+
+def _wall_bc_check(
+    frozen: Any, builtin: Any, family: str, tol: float
+) -> float:
+    """Verify the profile matches the flow's wall values.
+
+    Compares the frozen base flow to the builtin (laminar) one at the
+    wall rows -- ``[-1]`` for the cylindrical family (the sole wall; no
+    `$r=0$` wall), ``[0, -1]`` otherwise.  Returns the relative wall
+    residual; raises if it exceeds *tol*.
+    """
+    fb = np.asarray(frozen.base_flow[:, :, 0, 0])
+    bb = np.asarray(builtin.base_flow[:, :, 0, 0])
+    rows = [-1] if family == "cylindrical" else [0, -1]
+    scale = float(np.max(np.abs(bb))) + 1e-30
+    resid = float(np.max(np.abs(fb[:, rows] - bb[:, rows]))) / scale
+    if resid > tol:
+        raise SystemExit(
+            f"profile wall values differ from the flow BCs by "
+            f"{resid:.2e} (> {tol:.1e}); the total profile must satisfy "
+            "the same wall boundary conditions as the laminar flow."
+        )
+    return resid
+
+
+# ── Output ───────────────────────────────────────────────────────
+
+
+def _write_summary(
+    path: Path,
+    results: list[ModeResult],
+    family: str,
+    labels: tuple[str, str],
+    profile_file: Path,
+    interpolated: bool,
+    wall_resid: float,
+    err_max: float,
+    nc_max: float,
+) -> None:
+    """Write (and print) the human-readable summary table."""
+    lines: list[str] = []
+    lines.append(f"# transient growth: {params.phys.system}")
+    re_str = f"re={params.phys.re}"
+    if params.phys.system == "taylor-couette":
+        re_str = (
+            f"re1={params.phys.re1} re2={params.phys.re2} eta={params.geo.eta}"
+        )
+    lines.append(
+        f"# {re_str} tilt={params.geo.tilt_degree} "
+        f"lx={params.geo.lx} lz={params.geo.lz}"
+    )
+    lines.append(
+        f"# res: nx={params.res.nx} ny={params.res.ny} "
+        f"nz={params.res.nz} fd_order={params.res.fd_order} "
+        f"grid={params.geo.grid_type}"
+    )
+    lines.append(
+        f"# overrides: theta=1 dt={params.step.dt} "
+        f"u_grid={derived_params.u_grid} "
+        f"corr_tol={params.step.corrector_tolerance}"
+    )
+    lines.append(
+        f"# profile: {profile_file.name} interpolated={interpolated} "
+        f"wall_residual={wall_resid:.2e}"
+    )
+    lines.append(
+        f"# propagator: corrector_error_max={err_max:.2e} "
+        f"corrector_iterations_max={int(nc_max)}"
+    )
+    lines.append(
+        f"# columns: i2 i3 {labels[0]} {labels[1]} rank G_max t_opt "
+        "spec_absc num_absc extract_res sv_gap"
+    )
+    for r in sorted(results, key=lambda m: -m.G_max):
+        lines.append(
+            f"{r.i2:4d} {r.i3:4d} {r.wn2:12.6g} {r.wn3:12.6g} "
+            f"{r.rank:5d} {r.G_max:14.6e} {r.t_opt:12.5g} "
+            f"{r.spectral_abscissa:13.5e} {r.numerical_abscissa:13.5e} "
+            f"{r.extraction_residual:11.2e} {r.sv_gap:9.2e}"
+        )
+    best = max(results, key=lambda m: m.G_max)
+    lines.append(
+        f"# max G_max = {best.G_max:.6e} at mode "
+        f"({best.i2},{best.i3}), t_opt = {best.t_opt:.5g}"
+    )
+    text = "\n".join(lines) + "\n"
+    path.write_text(text)
+    print(text, end="")
+
+
+def _write_npz(
+    path: Path,
+    results: list[ModeResult],
+    family: str,
+    labels: tuple[str, str],
+    cfg: TGConfig,
+    profile_file: Path,
+    y_code: np.ndarray,
+    y_user: np.ndarray,
+    u_user: np.ndarray,
+    u_code: np.ndarray,
+    interpolated: bool,
+    t_grid: np.ndarray,
+    w_diag: np.ndarray,
+    err_max: float,
+    nc_max: float,
+) -> None:
+    """Write the self-describing per-profile ``.npz`` bundle."""
+    results = sorted(results, key=lambda m: (m.i2, m.i3))
+
+    def stack(attr: str) -> np.ndarray:
+        return np.stack([getattr(r, attr) for r in results])
+
+    out: dict[str, Any] = {
+        "readme": (
+            "dnsjax transient growth. Modes indexed (i2, i3): i2 = "
+            "kz/m axis, i3 = kx/axial axis. Vectors are (3, Ny) in the "
+            "stored basis " + str(_COMPONENT_LABELS[family]) + "; the "
+            "_rtz arrays are (u_z, u_r, u_theta) for cyl/annular. G is "
+            "the energy growth on t_grid."
+        ),
+        "system": params.phys.system,
+        "family": family,
+        "params_json": params.model_dump_json(),
+        "tg_config_json": cfg.as_json(),
+        "profile_file": str(profile_file),
+        "component_labels": np.asarray(_COMPONENT_LABELS[family]),
+        "wavenumber_labels": np.asarray(labels),
+        "code_grid": y_code,
+        "user_grid": y_user,
+        "user_values": u_user,
+        "profile_on_grid": u_code,
+        "interpolated": bool(interpolated),
+        "energy_weights": w_diag,
+        "t_grid": t_grid,
+        "corrector_error_max": err_max,
+        "corrector_iterations_max": int(nc_max),
+        "mode_i2": np.asarray([r.i2 for r in results]),
+        "mode_i3": np.asarray([r.i3 for r in results]),
+        "mode_wn2": np.asarray([r.wn2 for r in results]),
+        "mode_wn3": np.asarray([r.wn3 for r in results]),
+        "rank": np.asarray([r.rank for r in results]),
+        "sv_gap": np.asarray([r.sv_gap for r in results]),
+        "extraction_residual": np.asarray(
+            [r.extraction_residual for r in results]
+        ),
+        "G": stack("G"),
+        "G_max": np.asarray([r.G_max for r in results]),
+        "t_opt": np.asarray([r.t_opt for r in results]),
+        "sigma_opt": np.asarray([r.sigma_opt for r in results]),
+        "spectral_abscissa": np.asarray(
+            [r.spectral_abscissa for r in results]
+        ),
+        "numerical_abscissa": np.asarray(
+            [r.numerical_abscissa for r in results]
+        ),
+        "eigvals": stack("eigvals"),
+        "singular_values": stack("singular_values"),
+        "opt_input": stack("opt_input"),
+        "opt_response": stack("opt_response"),
+    }
+    if family != "cartesian":
+        out["opt_input_rtz"] = np.stack(
+            [_to_rtz(r.opt_input) for r in results]
+        )
+        out["opt_response_rtz"] = np.stack(
+            [_to_rtz(r.opt_response) for r in results]
+        )
+    if cfg.save_all_times:
+        out["opt_input_t"] = stack("opt_input_t")
+        out["opt_response_t"] = stack("opt_response_t")
+        out["sigma_t"] = stack("sigma_t")
+    np.savez(path, **out)
+    print(f"[tg] wrote {path}")
+
+
+def _export_snapshot(
+    out_dir: Path,
+    stem: str,
+    results: list[ModeResult],
+    fmod: Any,
+    gmod: Any,
+    family: str,
+    cfg: TGConfig,
+) -> None:
+    """Export a chosen mode's optimal perturbation as a snapshot."""
+    import jax
+    import jax.numpy as jnp
+
+    from ..sharding import sharding
+    from ..snapshot import save_snapshot
+
+    a, b = cfg.export_snapshot.split(",")
+    i2, i3 = int(a), int(b)
+    match = [r for r in results if r.i2 == i2 and r.i3 == i3]
+    if not match:
+        raise SystemExit(
+            f"--export-snapshot mode ({i2},{i3}) was not computed"
+        )
+    r = match[0]
+    vec = r.opt_input if cfg.export_which == "input" else r.opt_response
+    ny = vec.shape[1]
+    n2, n3 = sharding.spec_shape[1], sharding.spec_shape[2]
+    norm2 = getattr(
+        gmod,
+        {
+            "cartesian": "get_norm2",
+            "cylindrical": "get_norm2_cyl",
+            "annular": "get_norm2_annular",
+        }[family],
+    )
+
+    state = jnp.zeros(
+        (3, ny, n2, n3),
+        dtype=sharding.complex_type,
+        out_sharding=sharding.spec_vector_shard,
+    )
+    state = state.at[:, :, i2, i3].set(jnp.asarray(vec))
+    # Conjugate partner on the real-FFT (i3=0) plane for a real field.
+    if i3 == 0 and i2 > 0:
+        if family == "cartesian":
+            partner = np.conj(vec)
+        else:  # swap u_+ <-> u_- and conjugate (pm-pair)
+            partner = np.conj(vec[[0, 2, 1]])
+        state = state.at[:, :, n2 - i2, 0].set(jnp.asarray(partner))
+
+    energy = (
+        float(norm2(state, gmod.fourier.k_metric, fmod.flow.y_weights)) / 2.0
+    )
+    scale = float(np.sqrt(cfg.export_amplitude / energy))
+    state = state * scale
+
+    path = out_dir / f"{stem}_tg_seed_m{i2}_{i3}.tar"
+    save_snapshot(jax.block_until_ready(state), 0.0, 0, path, isnap=0)
+    print(
+        f"[tg] wrote {path} (E'={cfg.export_amplitude:g}); resume with\n"
+        f"     mpirun -np 1 python -m dnsjax "
+        f"--phys.system {params.phys.system} --init.snapshot {path}"
+    )
+
+
+# ── Orchestration ────────────────────────────────────────────────
+
+
+def _make_config(args: argparse.Namespace) -> TGConfig:
+    return TGConfig(
+        modes=args.modes,
+        t_max=args.t_max,
+        nt=args.nt,
+        tg_dt=args.tg_dt,
+        corrector_tolerance=args.corrector_tolerance,
+        max_corrector_iterations=args.max_corrector_iterations,
+        rank_tol=args.rank_tol,
+        rank_gap_min=args.rank_gap_min,
+        interp_order=args.interp_order,
+        wall_bc_tol=args.wall_bc_tol,
+        grid_match_tol=args.grid_match_tol,
+        n_eig=args.n_eig,
+        t_chunk=args.t_chunk,
+        save_all_times=args.save_all_times,
+        export_snapshot=args.export_snapshot,
+        export_amplitude=args.export_amplitude,
+        export_which=args.export_which,
+    )
+
+
+def _run(args: argparse.Namespace, remainder: list[str]) -> int:
+    """Configure, then process every profile file."""
+    _configure_parameters(args, remainder)
+    cfg = _make_config(args)
+
+    import jax
+    import jax.numpy as jnp
+
+    from ..sharding import sharding
+
+    fmod, gmod, family = _dispatch(params.phys.system)
+    fourier = gmod.fourier
+    step = _linear_step(gmod)
+    ny = params.res.ny
+    y_code = np.asarray(derived_params.wall_normal_grid, dtype=np.float64)
+    w_diag = _energy_weight_diag(family, fmod.flow)
+    n2, n3 = sharding.spec_shape[1], sharding.spec_shape[2]
+    i2_arr, i3_arr = _select_modes(cfg.modes, n2, n3)
+    wn2_all, wn3_all, labels = _wavenumber_arrays(family)
+    t_max = cfg.t_max if cfg.t_max is not None else 0.25 * params.phys.re
+    t_grid = np.linspace(0.0, t_max, cfg.nt)
+
+    def _propagator(e_mat: Array, lam: Array, w_mat: Array, t: Array):
+        # B(t) = E diag(exp(t*lambda)) W in energy coordinates; stiff
+        # modes (huge negative Re lambda) underflow to zero for t > 0.
+        return e_mat @ (jnp.exp(t * lam)[:, None] * w_mat)
+
+    @jax.jit
+    def jgrowth(e_mat: Array, lam: Array, w_mat: Array, ts: Array) -> Array:
+        return jax.vmap(
+            lambda t: jnp.linalg.svd(
+                _propagator(e_mat, lam, w_mat, t), compute_uv=False
+            )[0]
+        )(ts)
+
+    @jax.jit
+    def jfull(
+        e_mat: Array, lam: Array, w_mat: Array, t: Array
+    ) -> tuple[Array, Array, Array]:
+        u_m, s_m, vh_m = jnp.linalg.svd(_propagator(e_mat, lam, w_mat, t))
+        return s_m, u_m[:, 0], vh_m[0, :].conj()
+
+    n_bytes = len(i2_arr) * (3 * ny) ** 2 * 16
+    print(
+        f"[tg] {len(i2_arr)} mode(s), n=3*Ny={3 * ny}; propagator "
+        f"host memory ~{n_bytes / 1e6:.0f} MB; {3 * ny} linear steps "
+        "per profile."
+    )
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    failures = 0
+    for profile_file in _gather_profiles(args.profile):
+        try:
+            _process_profile(
+                profile_file,
+                args,
+                cfg,
+                fmod,
+                gmod,
+                family,
+                step,
+                fourier,
+                ny,
+                y_code,
+                w_diag,
+                i2_arr,
+                i3_arr,
+                wn2_all,
+                wn3_all,
+                labels,
+                t_grid,
+                jgrowth,
+                jfull,
+                out_dir,
+            )
+        except SystemExit as exc:
+            failures += 1
+            print(f"[tg] {profile_file.name}: FAILED -- {exc}")
+    if failures:
+        print(f"[tg] {failures} profile(s) failed.")
+        return 1
+    return 0
+
+
+def _process_profile(
+    profile_file: Path,
+    args: argparse.Namespace,
+    cfg: TGConfig,
+    fmod: Any,
+    gmod: Any,
+    family: str,
+    step: Any,
+    fourier: Any,
+    ny: int,
+    y_code: np.ndarray,
+    w_diag: np.ndarray,
+    i2_arr: np.ndarray,
+    i3_arr: np.ndarray,
+    wn2_all: np.ndarray,
+    wn3_all: np.ndarray,
+    labels: tuple[str, str],
+    t_grid: np.ndarray,
+    jgrowth: Any,
+    jfull: Any,
+    out_dir: Path,
+) -> None:
+    """Run the full pipeline for one profile file."""
+    import jax.numpy as jnp
+
+    from ..sharding import sharding
+
+    y_user, u_user = _read_profile(profile_file)
+    u_code, interpolated = _regrid_profile(
+        y_user, u_user, y_code, cfg.interp_order, cfg.grid_match_tol
+    )
+    frozen = fmod.frozen_profile_flow(
+        jnp.asarray(u_code, dtype=sharding.float_type)
+    )
+    wall_resid = _wall_bc_check(frozen, fmod.flow, family, cfg.wall_bc_tol)
+
+    phi, err_max, nc_max = _build_propagators(
+        step,
+        fourier,
+        frozen,
+        i2_arr,
+        i3_arr,
+        ny,
+        params.step.corrector_tolerance,
+    )
+    results = [
+        _analyze_mode(
+            phi[k],
+            w_diag,
+            params.step.dt,
+            t_grid,
+            int(i2_arr[k]),
+            int(i3_arr[k]),
+            float(wn2_all[i2_arr[k]]),
+            float(wn3_all[i3_arr[k]]),
+            cfg,
+            jgrowth,
+            jfull,
+        )
+        for k in range(len(i2_arr))
+    ]
+
+    stem = profile_file.stem
+    _write_summary(
+        out_dir / f"{stem}_tg_summary.txt",
+        results,
+        family,
+        labels,
+        profile_file,
+        interpolated,
+        wall_resid,
+        err_max,
+        nc_max,
+    )
+    _write_npz(
+        out_dir / f"{stem}_tg.npz",
+        results,
+        family,
+        labels,
+        cfg,
+        profile_file,
+        y_code,
+        y_user,
+        u_user,
+        u_code,
+        interpolated,
+        t_grid,
+        w_diag,
+        err_max,
+        nc_max,
+    )
+    if cfg.export_snapshot is not None:
+        _export_snapshot(out_dir, stem, results, fmod, gmod, family, cfg)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point."""
+    args, remainder = _parse_args(argv)
+    configure_jax_platform(args.platform, double_precision=True)
+    return _run(args, remainder)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
