@@ -1,61 +1,39 @@
+# Flagship example: a 100-diameter pipe at Re = 2300, started from a
+# localized-roll perturbation ("puff").  Equivalent to the CLI command in the
+# README.  Command-line flags override any value set here; see
+# `uv run dnsjax --help` and src/dnsjax/parameters.py for the full parameter
+# reference, and the README for the other flow systems.
+
 [phys]
-re = 1000 # Reynolds number
-system = "plane-couette"
-# Triply-periodic: "kolmogorov" (sine), "waleffe" (cosine + Ry
-# symmetry), "decaying-box".  Wall-bounded: "plane-couette",
-# "plane-poiseuille", "pipe", "taylor-couette", "dean".
+system = "pipe"
+re = 2300            # bulk/diameter Reynolds number (= centerline/radius; D = 2)
 
 [geo]
-lx = 4.0
-lz = 4.0
-# Box lengths.  Ly is fixed by the geometry (2 for wall-bounded
-# flows; 4 for triply-periodic).
+lx = 200.0           # axial length = 100 pipe diameters; lz is fixed at 2*pi
+# grid_type defaults to "half-cgl" for pipe + iterative-cn (auto-resolved)
 
 [res]
-nx = 128
-ny = 128
-nz = 128
-# Nx Ny and Nz are the number of Fourier modes
-# (= # of grid points) *before* 3/2 oversampling
-# to delias the 2nd order nonlinearity
+nx = 512             # axial Fourier modes
+ny = 48              # radial finite-difference points
+nz = 96              # azimuthal Fourier modes
+fd_order = 4         # radial finite-difference order (half-bandwidth)
 
 [init]
-# Initial-condition precedence: a provided snapshot wins over every
-# in-process mode; otherwise start_from_laminar, then localized_rolls,
-# then random_field -- the default.  With nothing set below, the run
-# starts from an in-process random divergence-free perturbation.
-# snapshot = "u0.npz"        # resume from a snapshot (tar or legacy .npz)
-# start_from_laminar = true  # start from the laminar base state instead
-# random_amplitude = 0.1     # target L2 norm of the random perturbation
-# random_seed = 1            # PRNG seed (device-count independent)
-t0 = 0 # Initial time
-it0 = 0 # Initial discrete time
-
-[outs]
-# it_stats = 1000 # How often to compute stats (in number of time steps)
-# it_steps = 1000 # How often to record the CFL diagnostic (steps.dat)
-# nbuffer = 100         # Flush stats.dat / steps.dat every nbuffer lines
-# stats_precision = 9   # Significant digits (9 = float32, 17 = float64 lossless)
-# snapshot_write_mode = "concurrent"  # "concurrent" (all processes at once) or
-#                                     # "serial" (rank-ordered, safe on NFS)
+# Start-mode precedence: snapshot > start_from_laminar > localized_rolls >
+# random_field (the default).  Here we seed a finite-amplitude puff.
+localized_rolls = true
+localized_rolls_amplitude = 0.2   # peak |u'| of the puff
+localized_rolls_width = 2.0       # axial localization half-width
 
 [step]
 dt = 0.01
-implicitness = 0.5
-corrector_tolerance = 1e-5
-max_corrector_iterations = 10
-# scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
-# split_corrector = true    # wall-bounded iterative-cn opt-in (default
-#                           # off): iterate the linear coupling FFT-free
-#                           # between full-RHS corrector refreshes. Only
-#                           # helps when dt is pushed near the corrector
-#                           # iteration cap; slower at realistic dt.
+scheme = "iterative-cn"           # or "cnab2" (CN viscous + explicit AB2)
+
+[outs]
+it_stats = 100                    # steps between stats.dat records
+it_snapshot = 5000                # steps between snapshots
 
 [stop]
-# max_sim_time = 100.0
-# max_wall_time = "PT10M" # ISO 8601 format
-# Terminate once perturbation kinetic energy E' falls below the
-# threshold (the flow has relaminarized).  Enabled by default; set
-# check_laminarization = false to disable.
-# check_laminarization = true
-# laminarization_threshold = 1e-9
+max_sim_time = 500.0
+# Transition develops over O(100) advective units; raise for a longer run.
+# check_laminarization = true (default) stops the run if the puff relaminarizes.
