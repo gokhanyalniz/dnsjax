@@ -31,21 +31,15 @@ not only docstrings/comments.
 
 ### Run tests
 
-All tests are standalone scripts run directly
-(`uv run python tests/test_*.py`) -- there is no `pytest`/CI runner,
-and they rely on `__main__` setup plus shared module-level singletons
-(so `pytest` collection misbehaves).
+All tests are standalone scripts (`uv run python tests/test_*.py`) --
+no `pytest`/CI runner (they rely on `__main__` setup + shared
+module-level singletons, so `pytest` collection misbehaves).
 
 Two ways to get multiple devices, and they do **not** mix:
-offline/in-process tests (import modules directly) force CPU devices
-via `XLA_FLAGS=--xla_force_host_platform_device_count=N` + set
-`params.dist.np0`/`np1` before importing `sharding` (the
-`test_snapshot.py` / `test_localized_rolls.py` pattern, no MPI); a
-`python -m dnsjax` run needs real `mpirun -np N` (its distributed init
-gives 1 device/process, so `mpirun -np 1` + forced device count fails
-with "# of devices visible (1) != np0*np1"). Default-suite
-multi-device subprocess entries use `mpirun --oversubscribe -np 2` for
-portability on few cores.
+offline/in-process tests force CPU devices via
+`XLA_FLAGS=--xla_force_host_platform_device_count=N` + set
+`params.dist.np0`/`np1` before importing `sharding` (no MPI); a
+`python -m dnsjax` run needs real `mpirun -np N` (1 device/process).
 
 Single file: `uv run python tests/test_cartesian.py`
 Laminar smoke (1D multi-device):
@@ -56,73 +50,55 @@ Laminar smoke (2D multi-device):
 ### Smoke test (laminar time stepping)
 
 Any `python -m dnsjax` run must be launched via `mpirun` (even
-single-process: `mpirun -np 1 ...`); `__main__` unconditionally
-initializes the JAX distributed backend. Under `mpirun`, invoke the
-interpreter as `.venv/bin/python` directly (`uv run` does not compose
-with `mpirun`). A run writes `stats.dat`/`steps.dat` (and any
-snapshots) to the cwd, so launch manual smoke/debug runs from a
-scratch dir, using the absolute path to the repo's `.venv/bin/python`.
-`np0 * np1` counts devices, not processes: on a multi-GPU node a
-single process can address all GPUs (validated topology; launch
-recipe, SLURM discipline, and the per-task-visibility trap are in the
-`Distribution` docstring in `parameters.py`).
+`mpirun -np 1 ...`); under `mpirun` invoke `.venv/bin/python` directly
+(`uv run` does not compose with `mpirun`). A run writes its `.dat`
+files/snapshots to the cwd, so launch from a scratch dir. `np0 * np1`
+counts devices, not processes (a single process can address all GPUs on
+a node); launch recipe, SLURM discipline, and the per-task-visibility
+trap: the `Distribution` docstring in `parameters.py`.
 
 `mpirun -np 2 python -m dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
 
-For double parallelisation, on the geometry's default CGL grid (pick
-`ny` divisible by `np0` for an even split; the sharding layer auto-pads
-the wall-normal axis otherwise):
+For double parallelisation on the default CGL grid (pick `ny` divisible
+by `np0` for an even split; the sharding layer auto-pads otherwise):
 
 `mpirun -np 4 python -m dnsjax --dist.np0 2 --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 28`
 
-The laminar state should time step with a single corrector step, with
-stepping error of O(-18) or less, and perturbation energy of O(-32) or
-less. Run existing tests listed in section Tests below if you touch
-the modules they test.
+The laminar state should step with a single corrector, stepping error
+O(-18) or less and perturbation energy O(-32) or less. Run the tests in
+the Tests section below if you touch the modules they test.
 
 ### Generate random initial condition
 
 In-process only (no offline script): `--init.random_field True` is the
 **default** start mode when no snapshot is given (with
-`--init.random_amplitude` / `--init.random_smoothness` /
-`--init.random_seed` / `--init.random_mean_flow`; viscoelastic-dean
-adds `--init.random_conformation_amplitude`). All flow systems; the
-total-field dean/viscoelastic-dean add the analytical laminar profile
-(+ the sPTT-equilibrium conformation). Generators live in
-`dnsjax.random_field` (`generate_random_state`): per-device build (no
-replication), device-count-independent, padded-mesh-safe -- see the
-module docstring. Two validation caveats (detail in the
-`random_field.py` docstrings): the real-FFT-axis DC plane is left
-non-divergence-free for the first corrector step (exclude it when
-validating a divergence operator; Cartesian is fully div-free), and
-the cyl/annular `k_z=0` reality constraint is on `u_r`/`u_θ` -- `u_±`
-are conjugate *partners*, not individually Hermitian
-(`random_field._hermitian_column`, `pm_pair`).
+`--init.random_amplitude` / `_smoothness` / `_seed` / `_mean_flow`;
+viscoelastic-dean adds `--init.random_conformation_amplitude`). All
+flow systems; total-field dean/viscoelastic-dean add the analytical
+laminar profile (+ sPTT-equilibrium conformation). Generators
+(`generate_random_state`), the per-device/padded-mesh-safe build, and
+the divergence/Hermitian validation caveats: the `random_field.py`
+module docstring.
 
 ### Generate localized-rolls ("turbulent spot") initial condition
 
 In-process only (no offline script): `--init.localized_rolls True`
 (with `--init.localized_rolls_amplitude` / `_width` / `_wavelength`);
 wall-bounded systems only, higher precedence than the default random
-field. A compact fixed-physical structure, localized in every
-homogeneous direction and peak-normalized so `max|u'| = amplitude` at
-any box size; the total-field dean/viscoelastic-dean add the
-analytical laminar profile (+ conformation). Generators live in
-`dnsjax.localized_rolls` (`generate_localized_rolls`); construction,
-per-geometry pairing, and the sharded separable build are in its
-module docstring.
+field. A compact peak-normalized spot localized in every homogeneous
+direction (total-field dean/viscoelastic-dean add the laminar
+profile). Construction, per-geometry pairing, and the sharded
+separable build: the `localized_rolls.py` module docstring.
 
 ### Triggering transition to turbulence
 
-The solver reproduces the linear physics **quantitatively**
-(Orr-Sommerfeld growth rates, lift-up streak growth), so a flow that
-decays is a *regime/time* matter, **not** a solver bug. Transition
-develops over O(100) advective time units (the smoke tests only reach
-`t=1`); it needs `Re` above the sustainment threshold (plane-Couette
-≳ 350-500), a domain ≳ the minimal flow unit, and a finite-amplitude
-perturbation (random `amplitude ≈ 0.1-0.2`, or a localized spot strong
-enough to break down). Near-minimal boxes give transient (decaying)
-turbulence; robust sustainment needs a larger box / higher `Re`.
+The solver reproduces the linear physics **quantitatively**, so a flow
+that decays is a *regime/time* matter, **not** a solver bug: transition
+develops over O(100) advective units (smoke tests only reach `t=1`) and
+needs `Re` above sustainment (plane-Couette ≳ 350-500), a domain ≳ the
+minimal flow unit, and a finite-amplitude perturbation (random
+`amplitude ≈ 0.1-0.2`, or a strong localized spot). Near-minimal boxes
+give transient (decaying) turbulence.
 
 ## Documentation instructions
 
@@ -180,17 +156,10 @@ timestep.py           make_stepper() factory:
 fd.py                 NumPy-only FD utilities (JAX-free): Fornberg
                       D1/D2, quadrature rules, interpolation matrices,
                       tanh grids
-solvers.py            Geometry-independent solvers: DenseJAXSolver
-                      (reference/oracle), PerModeBandedPallasOperator
-                      (production: mode-tiled Triton banded sweep on
-                      GPU, pure-JAX sweep on CPU; no-pivot LU checked
-                      once at setup by _build_pallas_operator --
-                      hard error on genuine instability,
-                      notice-and-proceed on ill-conditioning;
-                      mode-inner .solve contract, a shard_map-local
-                      region with per-shard tile-padded factors;
-                      shared banded-assembly helpers used by every
-                      geometry) -- see _pallas_banded_solve / .solve
+solvers.py            Geometry-independent linear solvers:
+                      DenseJAXSolver (reference/oracle) and
+                      PerModeBandedPallasOperator (production banded
+                      sweep) -- see _pallas_banded_solve / .solve
                       docstrings
 snapshot.py           Single-file (tar/zarr3) snapshot save/load, raw
                       offset I/O (GDS or host); assemble_local_shards
@@ -218,22 +187,12 @@ analysis/             External-facing JAX-free snapshot post-processing
 ### Transient-growth analysis
 
 `python -m dnsjax.analysis.transient_growth` computes 3D linear optimal
-energy growth around an arbitrary wall-normal **total** profile
-`U(y)` (a two-column file, or a folder of them; top-wall-first
-descending grid) for the four base-flow wall-bounded flows
-(plane-couette/poiseuille, pipe, taylor-couette; Dean is out of scope).
-It reuses the solver's own linear step -- `make_stepper` fed the
-geometry `_l_bf` with the nonlinear term off, at `theta = 1` /
-`implicit_mean_coupling = False` -- to build the per-mode backward-Euler
-propagator `Phi`, then extracts the generator from `eig(Phi_S)` and
-computes `G(t)`, `G_max`/`t_opt`, the spectral & numerical abscissae,
-eigenvalues, and the optimal input/response. The profile enters only
-through each flow's `frozen_profile_flow(profile)` hook
-(`_base.frozen_profile_flow`; a shallow flow copy with `base_flow` /
-`curl_base_flow` swapped -- all operators are profile-independent). It
-is single-device and GPU-runnable (`--dist.platform cuda`); the linear
-path is FFT-free so dealiasing never runs. Full math + the CLI/output
-spec: the module docstring.
+energy growth `G(t)` around an arbitrary wall-normal **total** profile
+`U(y)` for the four base-flow wall-bounded flows (plane-couette/
+poiseuille, pipe, taylor-couette; Dean out of scope), reusing the
+solver's own linear step per Fourier mode. Single-device, GPU-runnable
+(`--dist.platform cuda`). Full math, the `frozen_profile_flow` hook,
+and the CLI/output spec: the module docstring and `analysis/CLAUDE.md`.
 
 ### Code-exploration constraints
 
@@ -274,85 +233,43 @@ state axis replicated).
 ### Key design patterns
 
 **Global singletons and import order**: `params`, `derived_params`,
-`padded_res` (from `parameters.py`), `sharding` (from `sharding.py`),
-and a geometry-specific `fourier` are module-level singletons.
-`update_parameters()` mutates `params`/`derived_params` (with
-`padded_res.set_padded_resolution(params)` applied alongside in
-`__main__.py`); `sharding` and the geometry modules capture the
-configuration at import time -- so JAX must be configured
-(`jax_enable_x64`, platform, distributed) and parameters final
-*before* importing any module that uses `sharding` or a geometry
-module (see the `__main__.py` module docstring). A module that must
-stay importable earlier (e.g. `random_field.py`) keeps `import jax`
-out of module scope (lazy in-function imports; `from jax import
-Array` under `TYPE_CHECKING`). The `fourier` singleton's wavenumber
-arrays are global multi-device arrays: per-process host code cannot
-`np.asarray` them -- recompute host-side from
-`harmonics.real_harmonics`/`complex_harmonics` × `2π/L`.
+`padded_res` (`parameters.py`), `sharding` (`sharding.py`), and a
+geometry `fourier` are module-level singletons captured at import time
+-- so JAX must be configured and parameters final (`update_parameters()`)
+*before* importing `sharding` or any geometry module (the `__main__.py`
+docstring). Earlier-importable modules (e.g. `random_field.py`) keep
+`import jax` out of module scope. `fourier`'s wavenumber arrays are
+global multi-device arrays -- host code recomputes them from
+`harmonics.real_harmonics`/`complex_harmonics` × `2π/L`, never
+`np.asarray`.
 
-**Stepper factory (two layers)**: `timestep.make_stepper()` takes four
-required geometry-general callables plus two optional ones
-(`get_rhs_measured_fn`, `l_bf_fn`) and returns JIT-compiled stepping
-functions, including `predict_and_fully_correct` (fused corrector
-loop, the primary path) and `step_cnab2`. Each geometry family wraps
-it in its own builder that binds the `fourier` and `flow` singletons.
-See the `make_stepper` docstring, `_base.py`, and
-`triply_periodic.py`.
+**Stepper factory (two layers)**: `timestep.make_stepper()` builds the
+JIT-compiled stepping functions (the primary `predict_and_fully_correct`
+and `step_cnab2`) from geometry-general callables; each geometry family
+wraps it in a builder that binds the `fourier`/`flow` singletons. See
+the `make_stepper` docstring, `_base.py`, and `triply_periodic.py`.
 
-**Time-stepping scheme (`step.scheme`)**: both schemes are 2nd-order
-and share the predictor/IMM-pressure solve. `"iterative-cn"`
-(default): nonlinear term implicit via the corrector fixed-point
-iteration; `2+c ≈ 3` FFT evals/step; stable well past the advective
-CFL. Wall-bounded iterative-cn has an **opt-in** split corrector
-(`step.split_corrector`, default **off**): the linear coupling (the
-geometry `_l_bf`: `L_bf` + frame term + `L_mf` per
-`implicit_mean_coupling`) iterates FFT-free between full-RHS refreshes
-— same CN fixed point, `num_c` counts the FFT refreshes,
-non-convergence falls back to the unsplit corrector (`lax.cond`). At
-realistic `dt` the corrector converges in ~1–2 iterations for every
-flow (measured, incl. total-field Dean and high-Wi viscoelastic-dean:
-unsplit `c` stays 2–3 at `dt=0.01`), so the unsplit default is correct
-and faster (the split is a few % slower at production sizes, more on
-small problems). The split only pays off once `dt` is pushed near the
-corrector's iteration cap (e.g. Dean at an unrealistic `dt=0.15`, where
-the unsplit corrector hits `c=10` and fails while the split converges
-FFT-free). `"cnab2"`: explicit AB2 nonlinear, **one** FFT eval/step (~3×
-fewer FFTs on CFL-limited runs). Wall-bounded cnab2 advances only the
-self-advection `u'×ω'` explicitly; the wall-stiff linear base-flow
-coupling `L_bf` and (default-on `step.implicit_mean_coupling`) the
-instantaneous mean-flow coupling `L_mf` stay implicit via an
-**FFT-free** corrector (geometry `_l_bf`; `corrector_tolerance` /
-`max_corrector_iterations` apply). The first step runs `iterative-cn`
-while a discarded priming call seeds the AB2 history (`rhs_prev`,
-carried by `__main__.py`, not persisted in snapshots); a
-non-converging coupling corrector auto-falls back to a full
-`iterative-cn` step (`lax.cond`). The residual `dt` bound is the
-explicit self-advection CFL (pipe: near-axis azimuthal `CFL_th` --
-the reason rigged-CGL is the cnab2-default radial grid, while
-`iterative-cn` defaults to half-CGL; Cartesian: near-wall
-`Δy ~ 1/N²`); strongly non-normal regimes (counter-rotating
-Taylor-Couette) want `iterative-cn` or a smaller `dt`; triply-periodic
-cnab2 is the plain no-corrector AB2 step. `implicitness` sets the CN
-weight in both schemes. Full detail incl. measured `dt` limits: the
-`TimeStepping` docstring in `parameters.py`; implementation:
-`step_cnab2`/`_cnab2_lbf_core`/`_split_core` (`timestep.py`),
-`base_flow_coupling`/
-`_l_bf` (`geometries/wall_bounded/`); guards: `tests/test_cnab2.py`,
+**Time-stepping scheme (`step.scheme`)**: both 2nd-order, sharing the
+predictor/IMM-pressure solve. `"iterative-cn"` (default) makes the
+nonlinear term implicit via the corrector fixed point (`2+c ≈ 3` FFT
+evals/step, stable past the advective CFL); `"cnab2"` advances it
+explicitly (AB2), **one** FFT eval/step (~3× fewer on CFL-limited runs)
+— wall-bounded cnab2 keeps the wall-stiff coupling `_l_bf` implicit via
+an FFT-free corrector, staying advective-CFL-bound. `implicitness` sets
+the CN weight; `implicit_mean_coupling` (default on) and
+`split_corrector` (opt-in, default off) tune the coupling. Full detail
+(measured `dt` limits, per-geometry CFL, the split/mean-coupling
+rationale): the `TimeStepping` docstring (`parameters.py`);
+implementation `timestep.py`; guards `tests/test_cnab2.py`,
 `tests/test_temporal_order.py`.
 
 **Corrector convergence is `dt`-limited, not CFL-limited**: the
-iterative Crank-Nicolson corrector's contraction rate scales with
-`step.dt`. A `corrector failed to converge` at *low* CFL with the
-final error only marginally above `step.corrector_tolerance` means the
-step is too large to contract within `max_corrector_iterations` --
-reduce `dt` (or raise the iteration cap); it is not an advective-CFL /
-blow-up. (Random-IC Kolmogorov stalls at ~1.4e-5 at `dt=0.01` but
-converges in one corrector step at `dt=0.005`; the wall-bounded flows
-are fine at 0.01.) The opt-in wall-bounded split corrector
-(`step.split_corrector`) is aimed at this limit: only the
-self-advection part then drives the FFT-refresh count while the
-coupling contracts in the FFT-free tail, where raising the iteration
-cap is cheap — worthwhile only when `dt` is pushed near the cap.
+iterative-CN corrector's contraction rate scales with `step.dt`, so a
+`corrector failed to converge` at *low* CFL (final error only just above
+`corrector_tolerance`) means the step is too large to contract within
+`max_corrector_iterations` — reduce `dt` (or raise the cap), not a
+blow-up. (Random-IC Kolmogorov needs `dt=0.005`, capped in
+`test_random_smoke.py`; the wall-bounded flows are fine at 0.01.)
 
 **Spectral array layout and sharding**: see the `sharding.py` module
 docstring for shapes, partition specs, and the `(np0, np1)` device
@@ -366,59 +283,45 @@ force-driven dean/viscoelastic-dean systems instead integrate the
 **total** field (`base_flow = 0`, mean-mode body force).
 
 **Moving frame of reference (`phys.u_grid`)**: translates the
-wall-bounded frame along the grid direction (`None` → laminar bulk:
-1/2 pipe, 2/3 plane-Poiseuille, 0 otherwise; periodic systems reject
-it). Implemented in convective form, added spectrally in each
-geometry's `_get_rhs_core` **and** `_l_bf`, so both schemes integrate
-it implicitly; only the CFL diagnostic advects with the frame-relative
-velocity. It does **not** relax cnab2's explicit self-advection CFL
-(`u'×ω'` is frame-invariant). Fields drift between frames, so a
-changed `u_grid` on resume is trajectory-defining. Detail: the
-`u_grid` field docs in `parameters.py` and `pad_base_flow` in
-`_base.py`.
+wall-bounded frame along the grid direction (`None` → laminar bulk;
+periodic systems reject it), integrated implicitly by both schemes. It
+does **not** relax cnab2's explicit self-advection CFL (`u'×ω'` is
+frame-invariant), and a changed `u_grid` on resume is
+trajectory-defining (fields drift between frames). Detail: the `u_grid`
+field docs (`parameters.py`) and `pad_base_flow` (`_base.py`).
 
 **JAX pytree registration**: `register_dataclass_pytree()` in
 `sharding.py` registers geometry dataclasses, flow subclasses, solver
 classes, and Fourier classes as JAX pytrees. See its docstring.
 
-**Performance/memory trade-offs** (detail lives in the owning
-docstrings/comments): the pallas backend beats dense in both operator
-storage and speed (`solver.backend` comments in `parameters.py`);
-Pallas whole-tile mode-plane padding — factors pre-padded once at
-construction, per device shard inside the shard_map-local solve,
-overhead matters only for small planes
-(`from_banded_factors` in `solvers.py`, `pallas_block_m0` comments);
-the viscoelastic 36-field RHS transform batch vs peak memory
-(`solver.rhs_transform_chunks`; `_get_rhs_core` in
-`annular_viscoelastic.py`); cnab2 is a throughput win, not a
-peak-memory one (`step_cnab2` docstring in `timestep.py`); the
-dominant global memory multipliers are `phys.oversampling_factor`
-(dealiased grid, ~2.25x physical points at the default 3) and
-`res.double_precision` (2x).
+**Performance/memory trade-offs** (detail in the owning
+docstrings/comments): pallas beats dense in storage and speed
+(`solver.backend`); whole-tile mode-plane padding (`from_banded_factors`
+/ `pallas_block_m0` in `solvers.py`); the viscoelastic RHS transform
+batch vs peak memory (`solver.rhs_transform_chunks`); cnab2 is a
+throughput win, not a peak-memory one (`step_cnab2` in `timestep.py`).
+The dominant global memory multipliers are `phys.oversampling_factor`
+(~2.25× physical points at the default 3) and `res.double_precision`
+(2×).
 
 ### Parameter layering
 
-Lowest priority first: defaults (Pydantic models) -> parameters
-embedded in a resumed snapshot -> `parameters.toml` -> CLI args.
-`update_parameters()` only applies explicitly-set, non-`None` fields;
-`validate_parameters()` runs once after the final layer. Snapshot
-params are read by `read_snapshot_params()` from the snapshot's
-`_dnsjax_meta.json` -- but the JAX-setup fields `dist.np0`/`np1`/
-`platform` and `res.double_precision` are *not* inherited (resume is
-device-/precision-agnostic). `__main__.py` resolves the resume
-snapshot (explicit CLI `init.snapshot` over TOML) and applies the
-layers in order before JAX/singleton setup.
+Lowest priority first: defaults (Pydantic models) → resumed-snapshot
+params → `parameters.toml` → CLI args. `update_parameters()` applies
+only explicitly-set, non-`None` fields; `validate_parameters()` runs
+once after the final layer. The JAX-setup fields `dist.np0`/`np1`/
+`platform` and `res.double_precision` are *not* inherited from a
+snapshot (resume is device-/precision-agnostic). Detail: `__main__.py`.
 
 Two fields carry per-family defaults **re-resolved on every
 `update_parameters()` call** unless explicitly set through a layer:
-`solver.backend` (periodic -> `"dense"`, wall-bounded -> `"pallas"`)
-and `geo.grid_type` (wall-bounded -> `"cgl"`, except cylindrical +
-`iterative-cn` -> `"half-cgl"`; periodic / `wall_grid` -> `None`).
-Scripts and tests must set these via
-`update_parameters(Parameters(solver={...}, geo={...}))` -- a direct
-`params.solver.backend = ...` / `params.geo.grid_type = ...`
-assignment followed by `update_parameters()` is silently overwritten
-by the re-resolution (it never enters `_user_set_fields`).
+`solver.backend` (periodic → `"dense"`, wall-bounded → `"pallas"`) and
+`geo.grid_type` (wall-bounded → `"cgl"`, except cylindrical +
+`iterative-cn` → `"half-cgl"`; periodic / `wall_grid` → `None`). Scripts
+and tests must set these via `update_parameters(Parameters(solver=...,
+geo=...))` — a direct `params.solver.backend = ...` assignment is
+silently overwritten by the re-resolution (never enters
+`_user_set_fields`).
 
 ### Configuration (`parameters.toml`)
 
@@ -428,15 +331,15 @@ the schemes, `Solver` for the Pallas knobs). Key fields:
 
 | Section    | Key fields                                          |
 |------------|-----------------------------------------------------|
-| `[phys]`   | `re`, `re1`/`re2` (Taylor-Couette inner/outer; derive `re := Re_ref`), `system`, `oversampling_factor`, `oversample_y`, `driving`, `block_mean_spanwise_velocity` (mean spanwise velocity: axial for TC, z for Cartesian), `u_grid`; viscoelastic-dean only: `el`, `wi`, `beta`, `epsilon`, `kappa` (`re := wi/el` derived) |
-| `[geo]`    | `lx`, `lz`, `tilt_degree`, `eta` (TC radius ratio), `delta` (viscoelastic-dean inner radius; radii `(δ, δ+2)`), `wall_grid` (custom grid file; always overrides generation), `grid_type` (`"cgl"` / `"half-cgl"` / `"tanh"`; unset resolves per scheme: cylindrical = half-CGL under `iterative-cn` / rigged-CGL (`"cgl"`) under cnab2, Cartesian/annular = full CGL; `"half-cgl"` cylindrical + `iterative-cn` only), `grid_stretch` |
+| `[phys]`   | `re`, `re1`/`re2` (TC), `system`, `oversampling_factor`, `oversample_y`, `driving`, `block_mean_spanwise_velocity`, `u_grid`; viscoelastic-dean: `el`, `wi`, `beta`, `epsilon`, `kappa` |
+| `[geo]`    | `lx`, `lz`, `tilt_degree`, `eta` (TC), `delta` (viscoelastic-dean), `wall_grid`, `grid_type` (`"cgl"`/`"half-cgl"`/`"tanh"`), `grid_stretch` |
 | `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`    |
-| `[init]`   | Start-mode precedence: `snapshot` > `start_from_laminar` > `localized_rolls` > `random_field` (default **on**). `snapshot`, `t0`, `it0`, `isnap0`, `force_resume`, `random_amplitude`/`_smoothness`/`_seed`/`_mean_flow`/`_conformation_amplitude`, `localized_rolls_amplitude`/`_width`/`_wavelength` |
-| `[outs]`   | `it_stats`, `it_steps` (CFL cadence -> `steps.dat`), `it_snapshot`, `it_corrector` (-> `corrector.dat`; requires `it_error_check <= it_corrector`), `it_error_check` (host-sync cadence), `nbuffer`, `stats_precision`, `snapshot_write_mode`, `snapshot_pad_width`, `snapshot_embed_stats`, `snapshot_save_initial`, `snapshot_save_final` (last three default on, independent of `it_snapshot`) |
-| `[step]`   | `dt`, `scheme` (`"iterative-cn"` / `"cnab2"`, both supported for every flow), `implicitness`, `corrector_tolerance`, `max_corrector_iterations`, `implicit_mean_coupling`, `split_corrector` (wall-bounded iterative-cn: FFT-free coupling iteration; **opt-in**, default off — only helps when `dt` is pushed near the corrector iteration cap) |
-| `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601), `check_laminarization` (default on; terminate when `E'` < `laminarization_threshold`, default `1e-9`) |
+| `[init]`   | Start-mode precedence: `snapshot` > `start_from_laminar` > `localized_rolls` > `random_field` (default **on**). `t0`, `it0`, `isnap0`, `force_resume`, `random_*`, `localized_rolls_*` |
+| `[outs]`   | `it_stats`, `it_steps`, `it_snapshot`, `it_corrector`, `it_error_check`, `nbuffer`, `stats_precision`, `snapshot_write_mode`, `snapshot_pad_width`, `snapshot_embed_stats`, `snapshot_save_initial`, `snapshot_save_final` |
+| `[step]`   | `dt`, `scheme` (`"iterative-cn"`/`"cnab2"`), `implicitness`, `corrector_tolerance`, `max_corrector_iterations`, `implicit_mean_coupling`, `split_corrector` |
+| `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601), `check_laminarization`, `laminarization_threshold` |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
-| `[solver]` | `backend` (`"pallas"` default for wall-bounded / `"dense"` reference -- readable + regression oracle, warns on wall-bounded runs; periodic systems resolve to `"dense"`, their only backend), `pallas_block_m0`/`m1` (mode tile, default 2/32), `pallas_stability_tol`, `rhs_transform_chunks` (viscoelastic RHS memory knob) |
+| `[solver]` | `backend` (`"pallas"`/`"dense"`), `pallas_block_m0`/`m1`, `pallas_stability_tol`, `rhs_transform_chunks` |
 
 The default `parameters.toml` contains only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`; `[dist]` and
@@ -445,49 +348,30 @@ The default `parameters.toml` contains only
 
 ### Diagnostics (`stats.dat`, `steps.dat`, `corrector.dat`)
 
-On-device buffered stats, flushed periodically (fsync-ed) to
-`stats.dat`. The CFL diagnostic (every `outs.it_steps` steps, measured
-inside the nonlinear evaluation via the `rhs.py` `measure_fn` hook --
-see `measurements.py`) goes to `steps.dat`, and the corrector
-diagnostic (every `outs.it_corrector` steps) to `corrector.dat`, the
-same way. All three streams are also flushed at shutdown, after the
-first (JIT-heavy) step, around snapshot writes, and on SIGTERM/SIGINT,
-so the `.dat` files stay consistent with the snapshots and survive an
-interruption. Buffering mechanism and file format: the `__main__.py`
-module docstring.
+Three on-device buffered streams, flushed periodically (fsync-ed):
+`get_stats` → `stats.dat`, the CFL diagnostic (`outs.it_steps`, via the
+`rhs.py` `measure_fn` hook) → `steps.dat`, the corrector diagnostic
+(`outs.it_corrector`) → `corrector.dat`. All are also flushed at
+shutdown, after the first step, around snapshot writes, and on
+SIGTERM/SIGINT, so they stay consistent with snapshots. Buffering
+mechanism and file format: the `__main__.py` module docstring.
 
 ### Snapshots
 
-A snapshot is a single uncompressed tar (`format_version: 3`) wrapping
-a zarr3 store: `_dnsjax_meta.json` (time, iteration, lineage index
-`isnap`, layout, grid, full params; read JAX-free via
+A snapshot is a single uncompressed tar (`format_version: 3`) wrapping a
+zarr3 store — `_dnsjax_meta.json` (params/grid/lineage; JAX-free via
 `snapshot_meta.py`), `state/zarr.json`, and one contiguous chunk per
-state component (3, or 9 for viscoelastic; metadata-driven, validated
-on resume). Readable with standard tools and no dnsjax (`tar xf`
-yields a zarr store + plain-JSON metadata); each device writes its
-disjoint byte ranges directly into the one file (raw offset I/O / GDS
-preserved; never compressed). Resume is np- and precision-agnostic;
-a different wall-normal grid is interpolated at load
-(`_interpolate_if_needed` in `__main__.py`), and an old snapshot's
-unset `geo.grid_type` is backfilled to the grid it actually ran
-(`_snapshot_grid_type` in `parameters.py`), so the scheme-dependent
-grid default never re-grids a resumed trajectory. The stored state is the
-spectral perturbation `u'` for the base-flow systems (a laminar
-snapshot is a zero array) and the **total** field for
-dean/viscoelastic-dean.
-
-Snapshots are named `state{isnap:0Nd}.tar`
-(`N = outs.snapshot_pad_width`); `isnap` starts at `init.isnap0` and
-bumps on every write. By default the IC of any non-continuation start
-is saved as `state00000.tar`, the final state is saved on termination
-(deduped), and every snapshot embeds its `get_stats` dict as
-`_dnsjax_stats.json`. On resume, `t`/`it`/`isnap` continue only when
-`parameters.trajectory_defining_changes(meta["params"])` is empty (no
-`phys`/`geo`/`res` override); any such change starts a **new
-trajectory** at `t=it=isnap=0` unless `init.force_resume` is set --
-orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
-`validate_snapshot_params`. Full detail: `snapshot.py` and
-`__main__.py` module docstrings.
+state component (3, or 9 for viscoelastic; metadata-driven). Readable
+with standard tools and no dnsjax; each device writes its disjoint byte
+ranges directly (raw offset I/O / GDS, never compressed). The stored
+state is the spectral perturbation `u'` for base-flow systems (laminar =
+zero array), the **total** field for dean/viscoelastic-dean. Resume is
+np-/precision-agnostic and re-grids a changed wall-normal grid at load;
+`t`/`it`/`isnap` continue only when
+`trajectory_defining_changes(meta["params"])` is empty — a `phys`/`geo`/
+`res` override starts a **new trajectory** unless `init.force_resume`
+(distinct from the hard `nx`/`nz`/`system`/`precision` rejects). Full
+detail: `snapshot.py` and `__main__.py` module docstrings.
 
 ### JAX-specific notes
 
@@ -526,67 +410,36 @@ orthogonal to the hard `nx`/`nz`/`system`/`precision` rejects of
 - Diagnostic scripts and offline / in-process tests select the JAX
   backend from `--dist.platform` (default cpu) via
   `configure_jax_platform` / `platform_from_argv` (`parameters.py`),
-  called before importing `sharding` or any geometry module -- so
-  `... --dist.platform cuda` runs the real Pallas kernels on a GPU, not
-  only `python -m dnsjax`. The `sharding` banner reports the live
-  device, so it can never contradict the hardware; in-process
-  multi-device tests force CPU (`--xla_force_host_platform_device_count`
-  is CPU-only) and real multi-GPU runs use `mpirun`
-  (`test_random_smoke.py --np`).
+  before importing `sharding` or any geometry module -- so
+  `--dist.platform cuda` runs the real Pallas kernels on GPU. In-process
+  multi-device tests force CPU (`--xla_force_host_platform_device_count`,
+  CPU-only); real multi-GPU uses `mpirun` (`test_random_smoke.py --np`).
 - Pallas/Triton GPU kernels: interpret mode (CPU) validates numerics
-  but **not** Triton's lowering restrictions; compile-check on the
-  GPU-less dev box with
-  `jax.jit(f).trace(*a).lower(lowering_platforms=("cuda",))`. The
-  restrictions, layout rules, and the partial-tile miscompile (pad
-  tiled arrays to whole tiles) are documented in the
-  `_pallas_banded_solve` docstring; `test_pallas_cuda_lowering` is the
-  regression guard. A `pallas_call` **inside a shard_map** additionally
-  needs `check_vma=False` (its out-shape carries no varying-mesh-axes
-  annotation) -- a trace-time, GPU-branch-only failure; guard such
-  compositions by forcing the kernel branch
-  (`solvers._force_kernel_path`) and cuda-lowering on CPU
-  (`test_pallas_cuda_lowering_sharded_solve`).
+  but **not** Triton's lowering; compile-check on the GPU-less dev box
+  with `jax.jit(f).trace(*a).lower(lowering_platforms=("cuda",))`. The
+  lowering/layout rules, the partial-tile miscompile (pad tiled arrays
+  to whole tiles), and the `check_vma=False` a `pallas_call` inside a
+  `shard_map` needs are in the `_pallas_banded_solve` docstring; guards
+  `test_pallas_cuda_lowering`, `test_pallas_cuda_lowering_sharded_solve`.
 
 ## Scripts
 
-- `scripts/snapshot_import.py`: **library** (not a CLI) converting a
-  velocity field already in dnsjax's native component/axis structure
-  into a single-file snapshot. Public API: `configure_target`,
-  `to_spectral_state`, `write_snapshot`, `convert_field_to_snapshot`,
-  `validate_state`. Perturbation-only, velocity-only (viscoelastic
-  rejected); any external layout permutation and `u_±` mixing are the
-  caller's responsibility. See its module docstring for the layout
-  table and normalization options.
-- `scripts/pallas_tiling_diagnostic.py`: GPU construct-bisection
-  harness that localised the Triton partial-tile miscompile and
-  confirms the pad-to-whole-tiles fix (run on real GPU).
-- `scripts/pallas_solve_profile.py`: GPU diagnostic for where the
-  Pallas banded solve's time goes (profiled the matvec transpose
-  sources); also stage-profiles `_imm_iteration` (Cartesian) to size
-  the influence-matrix correction vs the CN-update assembly/solves,
-  reports the true wall-bounded cnab2 apply composition, and sweeps
-  the solve-kernel mode-tile knobs (`--pallas-block-m0/m1`; one process
-  per config). `--solve-only` times just the Lk/Hk solves and emits a
-  greppable
-  `SUMMARY` line (a full run appends one too) for a cheap
-  resolution x tile sweep to pick sane tile defaults across a range
-  (the tile affects only the solve; the FFT-bound step is
-  tile-independent and costly at large planes). `--cpu-smoke`
-  self-checks the harness GPU-free.
-- `scripts/solver_benchmark.py`: pallas-backend validation & benchmark
-  vs the dense reference (step + solve timing, factor and peak
-  memory, cross-backend parity) plus multi-GPU Pallas correctness
-  validation via mpirun runs and JAX-free `dnsjax.analysis` snapshot
-  diffs, with a SLURM launch-preflight ladder; `--cpu-bench` CPU
-  backend timing, `--cpu-smoke` GPU-less harness self-check.
+One line each; full rationale/usage in each script's module docstring.
+
+- `scripts/snapshot_import.py`: **library** (not a CLI) packing a
+  native-layout velocity field into a snapshot (perturbation/velocity
+  only).
+- `scripts/pallas_tiling_diagnostic.py`: GPU harness that localised the
+  Triton partial-tile miscompile and confirms the pad-to-whole-tiles fix.
+- `scripts/pallas_solve_profile.py`: GPU diagnostic for where the Pallas
+  banded solve's time goes (+ `_imm_iteration` stage breakdown, cnab2
+  composition, mode-tile knob sweep; `--cpu-smoke`).
+- `scripts/solver_benchmark.py`: pallas-vs-dense validation & benchmark
+  incl. multi-GPU correctness with a SLURM preflight ladder
+  (`--cpu-bench`, `--cpu-smoke`).
 - `scripts/pivot_stability_survey.py`: CPU survey of the no-pivot
-  banded-LU residual and LU element growth per operator group across
-  the supported config space -- does any real configuration trip the
-  pallas setup stability error or the ill-conditioning notice?
-  (Finding: none; only near-singular-Poisson *conditioning* on the
-  smallest-nonzero-`k²` `Lk` mode approaches the residual tolerance
-  -- huge boxes / large `ny` / strong tanh stretch -- with `O(1)`
-  element growth throughout, orders below the hard-error bound.)
+  banded-LU stability checks across the config space (finding: no real
+  config trips them).
 
 ## Tests
 
@@ -613,61 +466,40 @@ one-liners. Cross-cutting notes:
   axis nx=6 is fine -- different rule).
 
 - `tests/test_banded_solver.py`: geometry-independent Pallas banded
-  backend (interpret parity incl. pad-to-whole-tiles, compile-only
-  cuda-lowering guard, `_build_pallas_operator` check contract).
-- `tests/test_banded_solver_sharded.py`: shard_map-local Pallas solve
-  on a forced (2, 2) mesh (per-shard factor tile padding, sharded
-  `.solve` oracle parity, component-axis layouts).
-- `tests/test_cartesian.py`: Cartesian operator/matvec tests + Pallas
+  backend (interpret parity, cuda-lowering guard, check contract).
+- `tests/test_banded_solver_sharded.py`: shard_map-local Pallas solve on
+  a forced (2, 2) mesh (per-shard tile padding, `.solve` oracle parity).
+- `tests/test_cartesian.py`: Cartesian operator/matvec + Pallas
   band-vs-dense parity.
-- `tests/test_cylindrical.py`: cylindrical operator/matvec tests +
-  Pallas band-vs-dense parity (guards the shared-assembly refactor).
-- `tests/test_annular.py`: annular operator/matvec tests,
-  Pallas-vs-dense parity, circular-Couette A0/B0 checks.
+- `tests/test_cylindrical.py`: cylindrical operator/matvec + Pallas
+  band-vs-dense parity.
+- `tests/test_annular.py`: annular operator/matvec, Pallas-vs-dense
+  parity, circular-Couette A0/B0 checks.
 - `tests/test_viscoelastic.py`: sPTT conformation-tensor machinery
-  (spin conversions, tensor Laplacian vs reference, laminar fixed
-  point, `Hc` parity, Frobenius norm, fused-RHS FFT count).
+  (spins, tensor Laplacian, laminar fixed point, `Hc`, fused-RHS FFTs).
 - `tests/test_integration.py`: quadrature weights and interpolation
   matrices.
-- `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards --
-  split exactness, `L_mf` oracle, carry-seed independence, jaxpr
-  FFT-count guards, viscoelastic split, split-vs-unsplit corrector
-  fixed-point equivalence and gate-off structure.
+- `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards
+  (split exactness, `L_mf` oracle, FFT-count jaxprs, gate-off).
 - `tests/test_temporal_order.py`: second-order temporal accuracy
-  (Kolmogorov cnab2 self-convergence + icn cross-check, plane-Couette
-  scheme-difference slope).
-- `tests/test_mean_mask.py`: padding slots carry placeholder
-  wavenumbers; `mean_mask` is the unique k^2 = 0 mode under forced
-  spectral padding.
+  (Kolmogorov cnab2 self-convergence, plane-Couette scheme slope).
+- `tests/test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
+  forced spectral padding.
 - `tests/test_laminar_smoke.py`: laminar fixed-point smoke for all
-  wall-bounded flows (subprocess/mpirun; total-field Dean and
-  viscoelastic-dean energy-balance branches).
-- `tests/test_random_smoke.py`: random-IC nonlinear integration for
-  all 7 flows, plus cnab2 entries, the default-IC entry, an
-  unsplit-corrector gate-off entry, and the multi-device-padding /
-  Pallas-backend regression entries.
+  wall-bounded flows (subprocess/mpirun; Dean/viscoelastic branches).
+- `tests/test_random_smoke.py`: random-IC nonlinear integration for all
+  7 flows (+ cnab2, default-IC, gate-off, multi-device-padding entries).
 - `tests/test_snapshot.py`: snapshot round-trips, np-agnostic resume,
-  standard-tools readability, 9-component viscoelastic case, isnap /
-  stats members.
+  standard-tools readability, 9-component viscoelastic case.
 - `tests/test_resume.py`: snapshot lineage and resume policy (offline
-  `trajectory_defining_changes` + solver-section-skip +
-  grid-validation units; mpirun integration; `--unit-only` to skip
-  the latter).
+  units + mpirun integration; `--unit-only`).
 - `tests/test_snapshot_import.py`: `scripts/snapshot_import.py`
   native-contract validation (offline).
 - `tests/test_snapshot_export.py`: `dnsjax.analysis` API vs solver
-  ground truth (JAX-free import guarantee, curl parity at machine
-  precision).
-- `tests/test_rolls_smoke.py`: localized-rolls IC integration for the
-  5 wall-bounded flows (incl. a multi-device padding case).
-- `tests/test_localized_rolls.py`: rolls construction self-test
-  (no-slip, determinism, device-count independence, divergence bound,
-  peak-scaling guard).
-- `tests/test_transient_growth.py`: transient-growth analysis
-  (`dnsjax.analysis.transient_growth`) -- JAX-free host units, per-flow
-  hook == builtin coupling + block-diagonality workers, CLI feature
-  checks (wall-BC / folder / snapshot export), and the literature
-  anchors (plane-Poiseuille `G~196`, plane-Couette `G~1185`, pipe
-  `G=649` at `t=147` (Schmid & Henningson 1994), Taylor-Couette
-  instability onset + Maretzke et al. 2014 table 3 `G_max=71.58`;
-  `--slow` adds the Orszag eigenvalue).
+  ground truth (JAX-free import guarantee, curl parity).
+- `tests/test_rolls_smoke.py`: localized-rolls IC integration for the 5
+  wall-bounded flows (incl. a multi-device padding case).
+- `tests/test_localized_rolls.py`: rolls construction self-test (no-slip,
+  determinism, device-count independence, divergence bound).
+- `tests/test_transient_growth.py`: transient-growth analysis (JAX-free
+  host units, per-flow hooks, CLI features, PP/PC/pipe/TC anchors).

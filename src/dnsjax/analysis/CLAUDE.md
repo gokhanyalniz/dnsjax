@@ -58,35 +58,27 @@ to match these axes (no transpose to "fix" layout).
 ## Operator convention — matches the solver's discrete operators
 
 **Transform round-trip is machine-precision exact for every family**
-(pipe / Taylor-Couette included): `to_physical`/`to_spectral` act on
-the returned `(u_z, u_r, u_θ)` basis, each a real field, Hermitian on
-the real (`k_z`) axis. The `u_±` pair is **not** individually
-Hermitian (only the joint `u_+(-k) = conj(u_-(k))` holds), so
+(pipe / Taylor-Couette included): `to_physical`/`to_spectral` act on the
+returned `(u_z, u_r, u_θ)` basis, each real and Hermitian on the real
+(`k_z`) axis. The `u_±` pair is **not** individually Hermitian, so
 `u_+`/`u_-` must never be `irfft`-ed directly — the reader converts
-first. Underlying reality structure:
-`random_field._hermitian_column` (`pm_pair`) and the `_core.py`
-transform docstrings; `test_snapshot_export.py` asserts the
-round-trip for all families.
+first (reality structure: `random_field._hermitian_column` and the
+`_core.py` transform docstrings).
 
 `divergence`/`curl` reproduce dnsjax's **discrete** operators
-node-for-node, not just the continuous formulae: the cylindrical/annular
-forms are the expanded `∂u_r/∂r + u_r/r + (im/r)u_θ + i k_z u_z`
-(not `(1/r)∂(r u_r)/∂r`), and the **pipe** radial `D1` is the
-parity-reduced operator (mirrors `build_parity_reduced_matrices` in
-`cylindrical.py`: `u_z` parity `(-1)^m`, `u_r`/`u_θ` parity `(-1)^{m+1}`).
-The annulus has no axis, so it uses a plain `D1`. `test_snapshot_export.py`
-checks `curl` against the solver's own `_curl_fn` at machine precision
-(incl. the pipe). When changing a primitive, re-run that test.
+node-for-node (not just the continuous formulae) — incl. the
+parity-reduced pipe radial `D1` — so `test_snapshot_export.py` checks
+`curl` against the solver's `_curl_fn` at machine precision; re-run it
+when changing a primitive.
 
 - `derivative`/`gradient` of a single **pipe** component along `r` are
   parity-dependent: pass `cylindrical_parity="u_z"/"u_r"/"u_theta"`
-  (raises if omitted). `divergence`/`curl` set parity internally.
+  (raises if omitted); `divergence`/`curl` set parity internally.
 - Differentiation/integration along the wall-normal axis needs the
   **full** grid — do not subset `wall_normal_points` first.
-- `integrate` works on **physical** fields (form nonlinear integrands
-  like `|u|²` in physical space): `L/n` along Fourier axes, FD quadrature
-  (`build_integration_weights`) along the grid axis, with the radial
-  Jacobian `r` for cylindrical/annular.
+- `integrate` works on **physical** fields (e.g. `|u|²`): `L/n` along
+  Fourier axes, FD quadrature (`build_integration_weights`) along the
+  grid axis, with the radial Jacobian `r` for cylindrical/annular.
 
 ## System → family mapping
 
