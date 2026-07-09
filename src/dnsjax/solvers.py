@@ -730,11 +730,8 @@ def _pallas_banded_solve(
         # via jax_pallas_use_mosaic_gpu=True) rejects f64 in its TMA
         # gmem->smem copy ("unsupported TMA dtype f64").  Triton (this
         # kernel's intended backend, also the ROCm path) has no such
-        # limit.
-        compiler_params=pltriton.CompilerParams(
-            num_warps=params.solver.pallas_num_warps,
-            num_stages=params.solver.pallas_num_stages,
-        ),
+        # limit. ``pltriton.CompilerParams`` selects Triton.
+        compiler_params=pltriton.CompilerParams(),
         interpret=interpret,
     )(L, U, b)
     # Crop the padded modes off (no-op when the plane tiled evenly).

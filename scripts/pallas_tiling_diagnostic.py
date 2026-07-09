@@ -21,7 +21,7 @@ legend at the end of the run).
 
 It runs a ladder of minimal ``pallas_call(interpret=False)`` probes -- each
 exercising one construct the real kernel uses, plus alternative
-formulations -- against a NumPy reference, swept over tile size, warp count
+formulations -- against a NumPy reference, swept over tile size
 and partial-vs-full mode tiles. The first failing probe names the broken
 construct; a passing alternative names the fix.
 
@@ -56,8 +56,8 @@ visible):
                         without / with the ``debug_barrier``.
   * ``forward_only`` -- the real forward sweep ``L y = b`` -> ``y``
                         (band reads + stores + window combined).
-  * ``full``         -- the real ``_pallas_banded_solve`` (set via
-                        ``params.solver.pallas_*``).
+  * ``full``         -- the real ``_pallas_banded_solve`` (tile set via
+                        ``params.solver.pallas_block_*``).
   * ``full_vmap_shared`` -- the real solve **vmapped over an RHS
                         component axis with unmapped (shared) factor
                         refs**, the Cartesian shared-``Hk`` dispatch
@@ -202,7 +202,7 @@ def _scaled(base: np.ndarray, scale: np.ndarray) -> np.ndarray:
 # ── Pallas runner ────────────────────────────────────────────────────
 
 
-def _pallas_run(kernel, inputs, out_shape, bm0, bm1, num_warps, interpret):
+def _pallas_run(kernel, inputs, out_shape, bm0, bm1, interpret):
     """``pallas_call`` over the mode plane with the real kernel's layout."""
     Nkz, Nkx = inputs[0].shape[-2], inputs[0].shape[-1]
     grid = (pl.cdiv(Nkz, bm0), pl.cdiv(Nkx, bm1))
@@ -220,7 +220,7 @@ def _pallas_run(kernel, inputs, out_shape, bm0, bm1, num_warps, interpret):
         in_specs=in_specs,
         out_specs=out_specs,
         out_shape=jax.ShapeDtypeStruct(out_shape, F64),
-        compiler_params=pltriton.CompilerParams(num_warps=num_warps),
+        compiler_params=pltriton.CompilerParams(),
         interpret=interpret,
     )(*inputs)
 
@@ -228,7 +228,7 @@ def _pallas_run(kernel, inputs, out_shape, bm0, bm1, num_warps, interpret):
 # ── probe construction ───────────────────────────────────────────────
 
 
-def _build_probe(name, dims, bm0, bm1, num_warps, interpret=False):
+def _build_probe(name, dims, bm0, bm1, interpret=False):
     """Return ``(fn, inputs, ref_np)`` for one probe at one config.
 
     ``fn(*inputs)`` runs the probe's Pallas kernel (so the same callable
@@ -246,14 +246,13 @@ def _build_probe(name, dims, bm0, bm1, num_warps, interpret=False):
         # raising, see ``_pallas_banded_solve``).
         params.solver.pallas_block_m0 = bm0
         params.solver.pallas_block_m1 = bm1
-        params.solver.pallas_num_warps = num_warps
     d = _build_inputs(N, p, k, Nkz, Nkx)
     b, L = d["b"], d["L"]
     out_shape = (N, k, Nkz, Nkx)
 
     def runner(kernel, inputs):
         return lambda *ins: _pallas_run(
-            kernel, ins, out_shape, bm0, bm1, num_warps, interpret
+            kernel, ins, out_shape, bm0, bm1, interpret
         ), inputs
 
     if name in ("copy_fori", "copy_static", "copy_slice"):
@@ -462,18 +461,14 @@ def _expected_fail(probe: str, mlabel: str) -> bool:
     return probe in BUG_DEMO and mlabel == "partial"
 
 
-# (bm0, bm1, num_warps)
+# (bm0, bm1)
 TILES = [
-    (1, 1, None),
-    (1, 2, None),
-    (1, 2, 1),
-    (1, 32, None),
-    (1, 32, 1),
-    (2, 32, None),
-    (2, 32, 1),
-    (2, 32, 2),
+    (1, 1),
+    (1, 2),
+    (1, 32),
+    (2, 32),
 ]
-TILES_QUICK = [(1, 1, None), (1, 32, None), (1, 32, 1), (2, 32, None)]
+TILES_QUICK = [(1, 1), (1, 32), (2, 32)]
 # (label, Nkz, Nkx): full tiles vs partial boundary tiles.
 MODES = [("full", 4, 64), ("partial", 5, 40)]
 MODES_QUICK = [("partial", 5, 40)]
@@ -550,19 +545,19 @@ def main() -> None:
     runs: dict[str, int] = {pr: 0 for pr in PROBES}
     dumped = False  # dump arrays only on the first *regression*
     first_reg = None
-    results = {}  # (probe, bm0, bm1, nw, mlabel) -> ok
+    results = {}  # (probe, bm0, bm1, mlabel) -> ok
 
     for probe in PROBES:
         for mlabel, Nkz, Nkx in modes:
-            for bm0, bm1, nw in tiles:
+            for bm0, bm1 in tiles:
                 dims = (N_FIXED, P_FIXED, K_FIXED, Nkz, Nkx)
                 tag = (
-                    f"{probe:16s} bm=({bm0},{bm1}) nw={str(nw):4s} "
+                    f"{probe:16s} bm=({bm0},{bm1}) "
                     f"{mlabel:7s} Nkz={Nkz} Nkx={Nkx}"
                 )
                 try:
                     fn, inputs, ref = _build_probe(
-                        probe, dims, bm0, bm1, nw, interpret
+                        probe, dims, bm0, bm1, interpret
                     )
                 except Exception as e:  # noqa: BLE001
                     # A probe that cannot even be constructed is a
@@ -576,7 +571,7 @@ def main() -> None:
                     if execute:
                         got = np.asarray(jax.jit(fn)(*inputs))
                         ok, me, nn, ni, loc = _evaluate(got, ref)
-                        results[(probe, bm0, bm1, nw, mlabel)] = ok
+                        results[(probe, bm0, bm1, mlabel)] = ok
                         runs[probe] += 1
                         if ok:
                             print(f"{tag} -> PASS")
@@ -667,28 +662,6 @@ def _summary(xfails, regs, runs, first_reg, results, modes, tiles) -> None:
         print("\nno regressions -- the kernel fix holds (full passes all).")
     else:
         print(f"\nfirst regression: {first_reg}")
-
-    # num_warps=1 discriminator: for each probe/mode, does forcing one
-    # warp turn a failing tiled config into a pass?  (Informative for the
-    # XFAIL bug-demo probes -- the partial-tile bug is warp-dependent.)
-    print("\nnum_warps=1 discriminator (PASS@nw1 vs result@nwNone):")
-    for pr in PROBES:
-        for mlabel, _, _ in modes:
-            for bm0, bm1 in [(1, 32), (2, 32)]:
-                a = results.get((pr, bm0, bm1, None, mlabel))
-                b = results.get((pr, bm0, bm1, 1, mlabel))
-                if a is None or b is None:
-                    continue
-                if (not a) and b:
-                    print(
-                        f"  {pr:16s} {mlabel:7s} bm=({bm0},{bm1}): "
-                        "FAIL@auto -> PASS@nw1  (cross-warp implicated)"
-                    )
-                elif (not a) and (not b):
-                    print(
-                        f"  {pr:16s} {mlabel:7s} bm=({bm0},{bm1}): "
-                        "FAIL@auto and FAIL@nw1 (not warp-count alone)"
-                    )
 
     # Interpretation legend.  The real solve (`full`, calling
     # `_pallas_banded_solve`) pads the mode plane to whole tiles, so it is

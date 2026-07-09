@@ -46,9 +46,9 @@ Run **on a GPU** (single device, no mpirun)::
 Solve-kernel tile sweep (each config is a fresh process -- the tile is
 baked into the operator at construction, so it cannot vary in-process)::
 
-    for m0 in 1 2 4; do for w in 4 8; do \
+    for m0 in 1 2 4; do for m1 in 16 32; do \
       .venv/bin/python scripts/pallas_solve_profile.py --dist.platform cuda \
-        --pallas-block-m0 $m0 --pallas-num-warps $w --steps 40; done; done
+        --pallas-block-m0 $m0 --pallas-block-m1 $m1 --steps 40; done; done
 
 Resolution x tile sweep to pick sane tile defaults across a range.
 ``--solve-only`` times just the ``Lk``/``Hk`` solves (the tile affects
@@ -60,7 +60,7 @@ with ``grep '^SUMMARY'`` instead of pasting full dumps::
       for m0 in 1 2; do \
         .venv/bin/python scripts/pallas_solve_profile.py --solve-only \
           --dist.platform cuda --ny $ny --nx $nz --nz $nz \
-          --pallas-block-m0 $m0 --pallas-num-warps 8; \
+          --pallas-block-m0 $m0; \
       done; done; done | grep '^SUMMARY'
 
 A full run also ends with a ``SUMMARY`` line (adds ``imm``/``step``/
@@ -119,10 +119,10 @@ def _configure_system(
     test-suite-standard values; the physics is irrelevant to timing.
 
     *solver_overrides* merges extra ``[solver]`` fields into the same
-    layering call -- the Pallas kernel-tile knobs (``pallas_block_m0`` /
-    ``m1`` / ``pallas_num_warps`` / ``pallas_num_stages``) are baked into
-    the operator at construction (geometry import), so a knob sweep needs
-    a subprocess per value (the ``test_*`` subprocess-per-config idiom).
+    layering call -- the Pallas kernel-tile knobs (``pallas_block_m0``
+    / ``pallas_block_m1``) are baked into the operator at construction
+    (geometry import), so a knob sweep needs a subprocess per value
+    (the ``test_*`` subprocess-per-config idiom).
     """
     params.phys.system = system
     params.phys.re = 400.0
@@ -385,9 +385,8 @@ def _part_a(flow, sharding, reps: int) -> None:
             "dominates.  The kernel sits far below peak BW, so it\n     is "
             "limited by the sequential banded recurrence / occupancy, not "
             "bandwidth.\n     A faster SOLVE needs the kernel itself: tune "
-            "pallas_block_m0/m1 /\n     num_warps / num_stages, or "
-            "parallelize along Ny.  But first: Part B --\n     is the solve "
-            "even the step's bottleneck?"
+            "pallas_block_m0/m1, or parallelize along Ny.\n     But first: "
+            "Part B -- is the solve even the step's bottleneck?"
         )
     else:
         print(
@@ -705,8 +704,6 @@ def _summary_line(system: str, args, flow, times: dict) -> None:
 
     so = params.solver
     m0, m1 = so.pallas_block_m0, so.pallas_block_m1
-    warps = so.pallas_num_warps
-    stages = so.pallas_num_stages
     if isinstance(flow.Lk_op, PerModeBandedPallasOperator):
         _, _, pnz, pnx = flow.Lk_op.L.shape
         progs = (pnz // m0) * (pnx // m1)
@@ -721,8 +718,6 @@ def _summary_line(system: str, args, flow, times: dict) -> None:
         "SUMMARY "
         f"sys={system} ny={args.ny} nx={args.nx} nz={args.nz} "
         f"pad_plane={plane} progs={progs} m0={m0} m1={m1} "
-        f"warps={warps if warps is not None else 'def'} "
-        f"stages={stages if stages is not None else 'def'} "
         f"lk_ms={fmt(times.get('lk'))} hk_ms={fmt(times.get('hk'))} "
         f"solve_ms={fmt(times.get('solve'))} imm_ms={fmt(times.get('imm'))} "
         f"step_ms={fmt(times.get('step'))} cnab2_ms={fmt(times.get('cnab2'))}"
@@ -890,9 +885,7 @@ def _print_env() -> None:
     print(f"  default_backend  {jax.default_backend()}")
     print(
         f"  pallas tile      m0={params.solver.pallas_block_m0} "
-        f"m1={params.solver.pallas_block_m1} "
-        f"num_warps={params.solver.pallas_num_warps} "
-        f"num_stages={params.solver.pallas_num_stages}"
+        f"m1={params.solver.pallas_block_m1}"
     )
     print("=" * 72)
 
@@ -944,8 +937,6 @@ def main() -> None:
     # sweep with one subprocess per value).  None -> model default.
     ap.add_argument("--pallas-block-m0", type=int, default=None)
     ap.add_argument("--pallas-block-m1", type=int, default=None)
-    ap.add_argument("--pallas-num-warps", type=int, default=None)
-    ap.add_argument("--pallas-num-stages", type=int, default=None)
     ap.add_argument(
         "--cpu-smoke",
         action="store_true",
@@ -971,13 +962,8 @@ def main() -> None:
         args.reps, args.steps = 2, 2
 
     solver_overrides = {}
-    for arg_name, field in (
-        ("pallas_block_m0", "pallas_block_m0"),
-        ("pallas_block_m1", "pallas_block_m1"),
-        ("pallas_num_warps", "pallas_num_warps"),
-        ("pallas_num_stages", "pallas_num_stages"),
-    ):
-        val = getattr(args, arg_name)
+    for field in ("pallas_block_m0", "pallas_block_m1"):
+        val = getattr(args, field)
         if val is not None:
             solver_overrides[field] = val
 
