@@ -75,9 +75,13 @@ from ...geometries.wall_bounded.cartesian import (
     get_pert_enstrophy,
     integrate_scalar,
     pad_base_flow,
+    tilted_profile_arrays,
+)
+from ...geometries.wall_bounded.cartesian import (
+    frozen_profile_flow as _frozen_flow_copy,
 )
 from ...parameters import derived_params, params
-from ...sharding import register_dataclass_pytree, sharding
+from ...sharding import register_dataclass_pytree
 
 
 @register_dataclass_pytree
@@ -114,30 +118,7 @@ class PlanePoiseuilleFlow(CartesianFlow):
 
         Us = 1.0 - self.ys**2  # U_s(y) = 1 - y^2
         dy_Us = -2.0 * self.ys  # dU_s/dy = -2y
-
-        self.base_flow = (
-            jnp.zeros(
-                (3, params.res.ny),
-                dtype=sharding.float_type,
-                out_sharding=sharding.no_shard,
-            )
-            .at[0]
-            .set(Us * derived_params.cos_tilt)
-            .at[2]
-            .set(Us * derived_params.sin_tilt)[:, :, None, None]
-        )
-        # curl(U) = (dy_Us sin θ, 0, -dy_Us cos θ)
-        self.curl_base_flow = (
-            jnp.zeros(
-                (3, params.res.ny),
-                dtype=sharding.float_type,
-                out_sharding=sharding.no_shard,
-            )
-            .at[0]
-            .set(dy_Us * derived_params.sin_tilt)
-            .at[2]
-            .set(-dy_Us * derived_params.cos_tilt)[:, :, None, None]
-        )
+        self.base_flow, self.curl_base_flow = tilted_profile_arrays(Us, dy_Us)
         pad_base_flow(self)
 
 
@@ -152,6 +133,23 @@ flow: PlanePoiseuilleFlow = PlanePoiseuilleFlow()
     step_cnab2,
     step_cnab2_measured,
 ) = build_cartesian_stepper(flow)
+
+
+def frozen_profile_flow(us: Array) -> PlanePoiseuilleFlow:
+    r"""Flow linearized around an arbitrary streamwise profile.
+
+    Transient-growth hook (:mod:`dnsjax.analysis.transient_growth`):
+    given the *total* streamwise profile `$U_s(y)$` on the code grid
+    (``flow.ys``, shape ``(Ny,)``), tilt-split it exactly as the
+    laminar `$U_s = 1 - y^2$` (:func:`tilted_profile_arrays`),
+    differentiate with the flow's FD `$D_1$` for
+    `$\nabla\times\mathbf{U}$`, and return a flow copy carrying that
+    base flow (all operators shared; see
+    :func:`~dnsjax.geometries.wall_bounded._base.frozen_profile_flow`).
+    """
+    dy_us = flow.D1 @ us
+    base, curl = tilted_profile_arrays(us, dy_us)
+    return _frozen_flow_copy(flow, base, curl)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────────────
