@@ -87,7 +87,7 @@ pipeline per mode is:
 
 1. **Propagator.**  `$\Phi$` (an `$n\times n$` matrix) is built column
    by column: the `$j$`-th unit vector `$\mathbf{e}_{(c,j)}$` placed at
-   *every* retained mode at once, stepped once, gives column `$(c,j)$`
+   *every* selected mode at once, stepped once, gives column `$(c,j)$`
    of *every* mode's `$\Phi$` simultaneously (the linear step is
    block-diagonal in `$(k_2,k_3)$` because the only `$k=0$` content is
    the fixed base flow).  So the whole propagator set costs just `$3
@@ -102,9 +102,18 @@ pipeline per mode is:
    the exact `$r\times r$` restriction (`$\Phi V \subseteq \mathrm{span}
    V$`).
 
-3. **Generator.**  `$\mathcal{A} = (I - \Phi_S^{-1})/\Delta t$`.  The
-   self-consistency residual `$\lVert (I-\Delta t\,\mathcal{A})^{-1} -
-   \Phi_S\rVert / \lVert\Phi_S\rVert$` is reported per mode.
+3. **Generator.**  `$\Phi_S = (I - \Delta t\,\mathcal{A}_S)^{-1}$`
+   shares eigenvectors with `$\mathcal{A}_S$`, so its host
+   eigendecomposition `$\Phi_S Y = Y\,\mathrm{diag}(\mu)$` yields the
+   generator spectrum directly, `$\lambda = (1 - 1/\mu)/\Delta t$`;
+   `$\mathcal{A}$` is never formed or inverted (that would amplify
+   the stiff-mode round-off).  An unresolved stiff mode
+   (`$|\mu| \le \tfrac12$`) whose round-off phase flips
+   `$\mathrm{Re}\,\lambda$` above the resolved spectral abscissa is
+   clamped to instant decay.  The reported ``extraction_residual`` is
+   the relative eigendecomposition residual
+   `$\lVert \Phi_S Y - Y\,\mathrm{diag}(\mu)\rVert_F /
+   \lVert\Phi_S\rVert_F$`.
 
 4. **Energy metric.**  `$M = V^{H} W V$` (`$r\times r$`, Hermitian
    positive-definite), `$F = \mathrm{chol}(M)$` upper (so `$M =
@@ -112,23 +121,35 @@ pipeline per mode is:
    \rVert_2$` in the `$V$` coordinates).  In energy-orthonormal
    coordinates the propagator is `$B(t) = F\,e^{t\mathcal{A}}\,F^{-1}$`.
 
-5. **Growth & optima.**  `$G(t) = \sigma_{\max}(B(t))^2$` (matrix
-   exponential via :func:`jax.scipy.linalg.expm`), with `$G(0)=1$`.
-   `$t_{\mathrm{opt}}$` refines the grid maximum by golden section.  The
-   leading singular triplet of `$B(t_{\mathrm{opt}})$` gives the optimal
-   input (right singular vector `$\mathbf{v}_1$`) and its response (left
-   singular vector `$\mathbf{u}_1$`): in the full state,
-   `$\mathbf{q}(0) = V F^{-1}\mathbf{v}_1$` and `$\mathbf{q}
-   (t_{\mathrm{opt}}) = \sigma_1\, V F^{-1}\mathbf{u}_1$`.
+5. **Growth & optima.**  `$G(t) = \sigma_{\max}(B(t))^2$`, `$B(t)$`
+   assembled from the spectral factorisation `$B(t) = E\,
+   \mathrm{diag}(e^{t\lambda})\,E^{-1}$` with `$E = FY$` -- no dense
+   matrix exponential: the stiff factors `$e^{t\lambda}$` underflow
+   to zero for `$t > 0$` instead of overflowing an ``expm``.  This
+   needs a well-conditioned eigenbasis, so a (near-)defective
+   `$\Phi_S$` is rejected at `$\mathrm{cond}(E) > 10^{12}$`.
+   `$G(0)=1$`.  `$t_{\mathrm{opt}}$` refines the grid maximum by
+   golden section.  The leading singular triplet of
+   `$B(t_{\mathrm{opt}})$` gives the optimal input (right singular
+   vector `$\mathbf{v}_1$`) and its response (left singular vector
+   `$\mathbf{u}_1$`): in the full state, `$\mathbf{q}(0) = V
+   F^{-1}\mathbf{v}_1$` and `$\mathbf{q}(t_{\mathrm{opt}}) =
+   \sigma_1\, V F^{-1}\mathbf{u}_1$`.
 
 6. **Abscissae & spectrum.**  Spectral abscissa `$\max_i\mathrm{Re}\,
-   \lambda_i(\mathcal{A})$` (asymptotic growth rate; the leading
-   eigenvalues are also stored) and numerical abscissa
+   \lambda_i(\mathcal{A})$` (asymptotic growth rate) over the
+   post-clamp -- i.e. *probe-resolved* -- spectrum; the leading
+   eigenvalues are also stored, accurate only inside the resolved
+   window `$|\lambda| \lesssim 1/\Delta t$` (beyond it the probe
+   compresses `$\mu \to 0$`).  Numerical abscissa
    `$\lambda_{\max}\big((\tilde{\mathcal{A}} +
    \tilde{\mathcal{A}}^{H})/2\big)$` with `$\tilde{\mathcal{A}} =
    F\mathcal{A}F^{-1}$` (the maximum instantaneous energy growth rate,
-   `$= \tfrac{1}{2}\,dG/dt|_{0}$`).  The nonsymmetric eigensolve runs on
-   the host (:func:`numpy.linalg.eig`; JAX's ``eig`` is CPU-only).
+   `$= \tfrac{1}{2}\,dG/dt|_{0}$`), compressed onto the resolved
+   eigenspace `$|\mu| > \tfrac12$`: the unresolved near-wall FD modes
+   carry spurious, mesh-dependent instantaneous growth that would
+   otherwise swamp the diagnostic.  The nonsymmetric eigensolve runs
+   on the host (:func:`numpy.linalg.eig`; JAX's ``eig`` is CPU-only).
 
 Conventions and choices
 =======================
@@ -145,9 +166,82 @@ Conventions and choices
 - **Backward Euler probe** (`$\theta = 1$`): exact generator recovery;
   the extraction is best conditioned near `$\Delta t \approx 10^{-2}$`
   (large `$\Delta t$` ill-conditions `$\Phi_S$`; tiny `$\Delta t$`
-  cancels in `$I-\Phi_S^{-1}$`).  A trapezoidal `$\theta=\tfrac12$`
+  cancels in `$(1 - 1/\mu)/\Delta t$`).  A trapezoidal `$\theta=\tfrac12$`
   Cayley variant `$\mathcal{A} = \tfrac{2}{\Delta t}(\Phi_S -
   I)(\Phi_S + I)^{-1}$` is an alternative, not implemented here.
+
+Choosing the knobs
+==================
+The defaults suit the four systems at moderate `$Re$`; every failure
+mode below is guarded per mode with an explicit error.
+
+- ``--tg-dt`` (0.01): the probe step sets *conditioning* and the
+  *resolved spectral window*, not accuracy.  Only eigenvalues with
+  `$|\lambda| \lesssim 1/\Delta t$` are resolved (beyond, the probe
+  compresses `$\mu \to 0$`).  Reduce it to resolve more of the
+  spectrum, to widen a failing rank gap (the physical singular-value
+  floor `$\sim 1/(\Delta t\,|\lambda_{\mathrm{stiff}}|)$` rises), or
+  to speed corrector convergence (contraction `$\propto \Delta t$`);
+  going far below `$10^{-2}$` erodes the extraction through the
+  `$(1 - 1/\mu)/\Delta t$` cancellation.
+- ``--corrector-tolerance`` (1e-11) / ``--max-corrector-iterations``
+  (200): the tolerance bounds each propagator column's error and so
+  floors every reported quantity (the achieved
+  ``corrector_error_max`` is in the outputs).  On the "failed to
+  converge" error reduce ``--tg-dt`` first (faster contraction),
+  raise the iteration cap second.
+- ``--rank-tol`` (1e-11) / ``--rank-gap-min`` (1e3): the relative
+  cutoff must land inside the singular-value cliff between the
+  physical spectrum (whose floor is `$\sigma/\sigma_0 \sim
+  1/(\Delta t\,|\lambda_{\mathrm{stiff}}|)$`) and the
+  constraint-violating null space at the machine floor; the gap
+  check verifies that it did.  On a "no clean rank gap" failure
+  inspect the printed tail: first reduce ``--tg-dt`` (lifts the
+  physical floor), then move ``--rank-tol`` into the observed gap;
+  lower ``--rank-gap-min`` only if the true cliff is genuinely that
+  shallow.
+- ``--t-max`` (default `$0.25\,Re$`): covers the classic optima,
+  `$t_{\mathrm{opt}} \approx 0.05$`--`$0.15\,Re$`, of the four flows
+  (Taylor-Couette uses the derived reference ``re``: ``re1``, or
+  ``re2`` when outer-driven).  Raise it when a mode prints the
+  "G still rising at t_max" warning.
+- ``--nt`` (65): `$G(t)$`-grid density.  The golden-section
+  refinement only polishes the bracket around the *grid* argmax, so
+  raise it when `$G(t)$` may be multimodal or narrow-peaked; it also
+  sets the ``--save-all-times`` storage.
+- ``--t-chunk`` (16): batch size of the device SVDs over the time
+  grid (`$\sim$` ``t_chunk`` `$\times\,r^2$` complex temporaries).
+  Raise on GPU for throughput, lower to bound device memory at
+  large ``ny``.
+- ``--interp-order`` (8): Fornberg stencil width ``order + 1`` for
+  profile regridding.  High order suits smooth profiles; drop to 2-4
+  for noisy (experimental / binned DNS-mean) data, where a wide
+  stencil amplifies the noise.
+- ``--wall-bc-tol`` (1e-6): the perturbation BCs are homogeneous, so
+  the *total* profile must carry the exact laminar wall values -- a
+  real mismatch is a different BC problem, not a tolerance matter.
+  Loosen only for wall values off by numerical artefacts
+  (interpolation, output truncation).
+- ``--grid-match-tol`` (1e-12): identical-grid fast-path detector;
+  raise it (e.g. to 1e-8) when the profile file stores the code grid
+  with fewer printed digits, to skip a pointless interpolation.
+- ``--n-eig`` (20): how many leading eigenvalues are *stored*; no
+  accuracy effect.  Trustworthy only inside the resolved window
+  `$|\lambda| \lesssim 1/\Delta t$` (see ``--tg-dt``).
+- ``--save-all-times``: stores the optimal pair at every grid time,
+  `$2 K n_t (3 N_y)$` complex values over `$K$` modes -- the
+  dominant output for mode sweeps.
+- ``--export-amplitude`` (1e-4): volume-averaged energy `$E'$` of
+  the exported seed (the solver's own measure).  The default keeps
+  the seeded DNS initially linear; raise it for finite-amplitude
+  (nonlinear, transition-triggering) seeding.
+
+Cost & memory: a propagator build is `$3 N_y$` FFT-free linear steps
+(independent of the mode count) plus a host SVD + eigensolve per
+mode; the propagator set is held on the host at `$K (3 N_y)^2$`
+complex128 (the estimate is printed at startup).  For large mode
+sweeps split ``--modes`` across separate processes (one device
+each) -- the pipeline is embarrassingly parallel over modes.
 
 Outputs
 =======
@@ -157,18 +251,24 @@ interpolated profile, the resolved parameters, and per-mode `$G(t)$`,
 `$G_{\max}$`, `$t_{\mathrm{opt}}$`, abscissae, leading eigenvalues,
 singular values, and the optimal input / response at
 `$t_{\mathrm{opt}}$` -- optionally at every requested time with
-``--save-all-times``).  ``--export-snapshot "i2,i3"`` writes the chosen
+``--save-all-times``).  For a linearly *unstable* profile (positive
+spectral abscissa) `$G(t)$` grows without bound, so `$G_{\max}$` /
+`$t_{\mathrm{opt}}$` merely reflect the end of the time grid (the
+"still rising" warning fires) and the abscissae are the meaningful
+outputs.  ``--export-snapshot "i2,i3"`` writes the chosen
 mode's optimal perturbation as a standard dnsjax snapshot (with the
 `$k=0$`-plane conjugate partner filled in for a real physical field) to
 seed a DNS run.
 
 Future work: eigenvector output
 ================================
-Only the eigen*values* are computed.  To add the eigen*vectors* of
-`$\mathcal{A}$` (the linear-stability modes): take ``lam, Y =
-numpy.linalg.eig(A)`` on the host (JAX ``eig`` is CPU-only), lift each
-to the full state `$\mathbf{y}_i = V\mathbf{y}_i^{(r)}$`,
-energy-normalise so `$\lVert F\mathbf{y}_i^{(r)}\rVert_2 = 1$`, sort by
+Only the eigen*values* are stored.  The eigen*vectors* of
+`$\mathcal{A}$` (the linear-stability modes) are already in hand:
+the columns `$\mathbf{y}_i^{(r)}$` of `$Y$` from the `$\Phi_S$`
+eigendecomposition in ``_analyze_mode`` (same eigenvectors as
+`$\mathcal{A}_S$`).  To expose them: energy-normalise so
+`$\lVert F\mathbf{y}_i^{(r)}\rVert_2 = 1$`, lift to the full state
+`$\mathbf{y}_i = V\mathbf{y}_i^{(r)}$`, sort by
 `$\mathrm{Re}\,\lambda_i$`, and store alongside ``eigvals`` (adding a
 `$k=0$`-plane conjugate partner for a snapshot export exactly as the
 optimal-perturbation export does).
@@ -390,7 +490,7 @@ def _parse_args(
         "--t-chunk",
         type=int,
         default=16,
-        help="expm vmap chunk over the time grid",
+        help="SVD batch size over the time grid",
     )
     p.add_argument(
         "--save-all-times",
@@ -469,6 +569,9 @@ def _regrid_profile(
     ):
         return u_user.copy(), False
     span_lo, span_hi = y_user[0], y_user[-1]
+    # 1e-9 absolute slack: endpoint round-off in written profile
+    # files (a printed grid may miss the wall by its format), not
+    # a knob -- interpolation never extrapolates beyond it.
     if y_code[0] < span_lo - 1e-9 or y_code[-1] > span_hi + 1e-9:
         raise SystemExit(
             f"profile grid [{span_lo:.4f}, {span_hi:.4f}] does not "
@@ -761,7 +864,8 @@ def _analyze_mode(
             f"mode ({i2},{i3}): no clean rank gap at rank {rank} "
             f"(s[{rank - 1}]/s[{rank}] = {gap:.2e} < "
             f"{cfg.rank_gap_min:.1e}); tail "
-            f"{s[max(rank - 3, 0) : rank + 3]}"
+            f"{s[max(rank - 3, 0) : rank + 3]}; reduce --tg-dt or "
+            "move --rank-tol into the observed gap."
         )
     v = u[:, :rank]  # (n, r) range basis
     phi_s = v.conj().T @ phi_k @ v  # (r, r)
@@ -961,13 +1065,12 @@ def _wall_bc_check(
 def _write_summary(
     path: Path,
     results: list[ModeResult],
-    family: str,
     labels: tuple[str, str],
     profile_file: Path,
     interpolated: bool,
     wall_resid: float,
     err_max: float,
-    nc_max: float,
+    nc_max: int,
 ) -> None:
     """Write (and print) the human-readable summary table."""
     lines: list[str] = []
@@ -997,7 +1100,7 @@ def _write_summary(
     )
     lines.append(
         f"# propagator: corrector_error_max={err_max:.2e} "
-        f"corrector_iterations_max={int(nc_max)}"
+        f"corrector_iterations_max={nc_max}"
     )
     lines.append(
         f"# columns: i2 i3 {labels[0]} {labels[1]} rank G_max t_opt "
@@ -1035,7 +1138,7 @@ def _write_npz(
     t_grid: np.ndarray,
     w_diag: np.ndarray,
     err_max: float,
-    nc_max: float,
+    nc_max: int,
 ) -> None:
     """Write the self-describing per-profile ``.npz`` bundle."""
     results = sorted(results, key=lambda m: (m.i2, m.i3))
@@ -1066,7 +1169,7 @@ def _write_npz(
         "energy_weights": w_diag,
         "t_grid": t_grid,
         "corrector_error_max": err_max,
-        "corrector_iterations_max": int(nc_max),
+        "corrector_iterations_max": nc_max,
         "mode_i2": np.asarray([r.i2 for r in results]),
         "mode_i3": np.asarray([r.i3 for r in results]),
         "mode_wn2": np.asarray([r.wn2 for r in results]),
@@ -1215,6 +1318,9 @@ def _run(args: argparse.Namespace, remainder: list[str]) -> int:
     n2, n3 = sharding.spec_shape[1], sharding.spec_shape[2]
     i2_arr, i3_arr = _select_modes(cfg.modes, n2, n3)
     wn2_all, wn3_all, labels = _wavenumber_arrays(family)
+    # Forced np0 = np1 = 1 means sharding never pads the spectral
+    # axes, so mode indices map 1:1 onto the harmonic arrays.
+    assert len(wn2_all) == n2 and len(wn3_all) == n3
     t_max = cfg.t_max if cfg.t_max is not None else 0.25 * params.phys.re
     t_grid = np.linspace(0.0, t_max, cfg.nt)
 
@@ -1252,7 +1358,6 @@ def _run(args: argparse.Namespace, remainder: list[str]) -> int:
         try:
             _process_profile(
                 profile_file,
-                args,
                 cfg,
                 fmod,
                 gmod,
@@ -1283,7 +1388,6 @@ def _run(args: argparse.Namespace, remainder: list[str]) -> int:
 
 def _process_profile(
     profile_file: Path,
-    args: argparse.Namespace,
     cfg: TGConfig,
     fmod: Any,
     gmod: Any,
@@ -1347,7 +1451,6 @@ def _process_profile(
     _write_summary(
         out_dir / f"{stem}_tg_summary.txt",
         results,
-        family,
         labels,
         profile_file,
         interpolated,
