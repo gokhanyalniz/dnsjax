@@ -89,7 +89,7 @@ def _write_laminar(system: str, path: Path, **kw) -> None:
 # ── CLI driver ───────────────────────────────────────────────────
 
 
-def _run_tg(profile: Path, out_dir: Path, args: list[str]) -> None:
+def _run_tg(profile: Path, out_dir: Path, args: list[str]) -> str:
     """Invoke the CLI; raise on failure."""
     cmd = [
         sys.executable,
