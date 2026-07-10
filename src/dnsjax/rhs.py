@@ -113,7 +113,9 @@ def get_nonlin(
     small, so no chunking knob is offered here; the 36-field
     viscoelastic variant, where the batch dominates the step's peak,
     has one (``solver.rhs_transform_chunks`` -- see ``_get_rhs_core``
-    in ``geometries/wall_bounded/annular_viscoelastic.py``).
+    in ``geometries/wall_bounded/annular_viscoelastic.py``).  Chunking
+    this batch too is a deferred optimisation (see the memory note in
+    :mod:`dnsjax.fft`).
 
     Parameters
     ----------
