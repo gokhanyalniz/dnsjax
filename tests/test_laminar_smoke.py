@@ -51,9 +51,11 @@ that motivated the entry-point refactor), one smoke case launched
 through the installed ``dnsjax`` script under ``mpirun`` (the
 distributed init through the console path; same
 :func:`dnsjax.__main__.main` as ``python -m dnsjax``), and a
-``plane-couette-nz-pad`` case whose ``nz = 6`` triggers the
-padded-size rounding (``nz_padded`` 9 -> 10) under every device
-layout, asserting the startup diagnostic.  Console-script entries are
+``plane-couette-nz-pad`` case whose ``nz = 6`` yields the odd natural
+``nz_padded = 9`` -- stepped as-is where ``np1`` divides it (asserting
+that no rounding note appears; pad parity is unconstrained), rounded
+up for ``np1`` divisibility otherwise (asserting the startup
+diagnostic, e.g. 9 -> 10 at ``np1 = 2``).  Console-script entries are
 skipped with a notice when the script is not installed (``uv sync``).
 
 Each system is tested in a separate subprocess because the
@@ -91,6 +93,19 @@ from pathlib import Path
 
 # ── configuration ────────────────────────────────────────────────────
 
+
+def _nz_pad_note(np1: int) -> str | None:
+    """Expected rounding note for the nz-pad case (natural size 9).
+
+    ``None`` where ``np1`` divides 9: the odd dealiasing pad runs
+    unrounded and no note must appear.
+    """
+    if 9 % np1 == 0:
+        return None
+    rounded = ((9 + np1 - 1) // np1) * np1
+    return f"nz_padded rounded from 9 to {rounded}"
+
+
 SYSTEMS: list[dict] = [
     {
         "name": "plane-couette",
@@ -112,14 +127,15 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # nz = 6 makes the natural nz_padded = 9 invalid twice over --
-        # odd pad (9 - 6 = 3) on a single device, not divisible by
-        # np1 = 2 on two -- so this exercises the padded-size rounding
-        # (nz_padded 9 -> 10) under every --np layout and asserts the
-        # startup diagnostic.  The laminar CFL checks are nz-agnostic
-        # for plane-Couette (streamwise-active).
+        # nz = 6 gives the odd natural nz_padded = 9: an odd
+        # dealiasing pad (9 - 6 = 3) that steps as-is wherever np1
+        # divides 9 (pad parity is unconstrained), and is rounded up
+        # for np1 divisibility otherwise (np1 = 2: 9 -> 10) -- the
+        # layout-dependent expectation lives in ``_nz_pad_note``.
+        # The laminar CFL checks are nz-agnostic for plane-Couette
+        # (streamwise-active).
         "name": "plane-couette-nz-pad",
-        "expect_stdout": "nz_padded rounded from 9 to 10",
+        "expect_stdout": _nz_pad_note,
         "args": [
             "--phys.system",
             "plane-couette",
@@ -927,6 +943,12 @@ def run_smoke_test(
             )
 
         expect = system.get("expect_stdout")
+        if callable(expect):
+            expect = expect(np_count // np0)
+            if expect is None and "rounded" in result.stdout:
+                raise AssertionError(
+                    f"{name}: unexpected padded-size rounding note"
+                )
         if expect is not None and result.stdout.count(expect) != 1:
             raise AssertionError(
                 f"{name}: expected exactly one {expect!r} in stdout "
