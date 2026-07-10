@@ -12,7 +12,7 @@ defaults / TOML / CLI.  The global singletons ``params``,
 """
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from math import cos, isclose, pi, sin
 from pathlib import Path
@@ -67,22 +67,27 @@ class Distribution(BaseModel):
 
     Divisibility
     ------------
-    ``np1`` requires ``nz_padded % np1 == 0`` (where
-    ``nz_padded = oversampling_factor * nz // 2``).
-    ``np0`` auto-pads when needed: the spectral `$k_z$`
-    axis is zero-padded to the next multiple of ``np0``;
-    for wall-bounded flows the physical `$y$` axis is
-    likewise zero-padded (stripped after the
-    `$y \leftrightarrow k_z$` reshard); for periodic flows
-    ``ny_padded`` is bumped to the next multiple of ``np0``
-    (marginally more oversampling, physically neutral).
-    Power-of-2 ``ny`` avoids the padding overhead.  Note
-    that CGL grids traditionally use ``ny = 2^k + 1``
-    (``N + 1`` collocation points for ``N`` Chebyshev
-    polynomials), but any ``ny >= 2`` is valid: the code
-    uses finite differences, not spectral Chebyshev
-    transforms, and the Clenshaw--Curtis quadrature handles
-    both even and odd ``ny``.
+    No divisibility requirements: every axis a mesh
+    direction splits is auto-padded, and each adjustment is
+    reported by a startup diagnostic (padding costs FFT and
+    solve work, so it is never silent).  The spectral `$k_z$`
+    / `$k_x$` axes are zero-padded to the next multiple of
+    ``np0`` / ``np1``; for wall-bounded flows the physical
+    `$y$` axis is likewise zero-padded (stripped after the
+    `$y \leftrightarrow k_z$` reshard); the padded physical
+    sizes -- ``nz_padded`` (split by ``np1``) and, for
+    periodic flows, ``ny_padded`` (split by ``np0``) -- are
+    rounded up with an even pad (:func:`round_up_padded`;
+    marginally more oversampling, physically neutral).  The
+    sole impossible corner, an odd ``nz`` (or periodic
+    ``ny``) with an even mesh direction, raises with an
+    actionable message.  Divisible sizes avoid the padding
+    overhead entirely.  Note that CGL grids traditionally
+    use ``ny = 2^k + 1`` (``N + 1`` collocation points for
+    ``N`` Chebyshev polynomials), but any ``ny >= 2`` is
+    valid: the code uses finite differences, not spectral
+    Chebyshev transforms, and the Clenshaw--Curtis
+    quadrature handles both even and odd ``ny``.
 
     Process topology
     ----------------
@@ -773,71 +778,6 @@ def read_parameters(path: Path) -> Parameters:
     return Parameters(**raw)
 
 
-# ── Single-process JAX platform selection (scripts / offline tests) ──
-# ``python -m dnsjax`` configures the JAX backend from ``dist.platform``
-# in ``__main__`` (alongside ``jax.distributed.initialize`` and the
-# CPU-threading ``XLA_FLAGS``).  Diagnostic scripts and offline tests are
-# single-process and do the same platform/precision half through these
-# two helpers, so ``--dist.platform cuda`` selects the GPU from any entry
-# point -- not only the production one.
-
-_VALID_PLATFORMS: tuple[str, ...] = ("cpu", "cuda", "rocm", "tpu")
-
-
-def platform_from_argv(
-    argv: list[str] | None = None, default: str = "cpu"
-) -> str:
-    """Extract ``--dist.platform`` from *argv* (default ``sys.argv``).
-
-    A single-process script or offline test must know its JAX backend
-    *before* importing :mod:`dnsjax.sharding` or any geometry module
-    (which capture the platform at import), i.e. before its own
-    ``argparse`` runs.  This does a minimal early parse of the same
-    ``--dist.platform`` flag ``python -m dnsjax`` accepts -- both
-    ``--dist.platform cuda`` and ``--dist.platform=cuda`` -- and returns
-    *default* when it is absent (unknown flags are ignored).  Pair it
-    with :func:`configure_jax_platform`.
-    """
-    import argparse
-    import sys
-
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--dist.platform", dest="platform", default=default)
-    known, _ = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
-    return known.platform
-
-
-def configure_jax_platform(
-    platform: str, *, double_precision: bool = True
-) -> None:
-    """Select the JAX backend for a single-process script or offline test.
-
-    Records *platform* on :data:`params` (``params.dist.platform``) and
-    configures JAX for the platform/precision exactly as
-    ``python -m dnsjax`` does, **minus** the multi-process
-    ``jax.distributed.initialize`` and the CPU-threading ``XLA_FLAGS``
-    that only the production entry point needs.  Must be called *before*
-    importing :mod:`dnsjax.sharding` or any geometry module.
-
-    After this, :data:`sharding` reports the active device unambiguously
-    (its banner reads the live device, so a stale ``params.dist.platform``
-    can no longer contradict it), and ``--dist.platform cuda`` (via
-    :func:`platform_from_argv`) runs the real Pallas / Triton kernels on a
-    GPU from any script or test, not just ``python -m dnsjax``.
-    """
-    if platform not in _VALID_PLATFORMS:
-        raise ValueError(
-            f"unknown platform {platform!r}; expected one of "
-            f"{_VALID_PLATFORMS}"
-        )
-    params.dist.platform = platform
-
-    import jax
-
-    jax.config.update("jax_enable_x64", double_precision)
-    jax.config.update("jax_platforms", platform)
-
-
 # Parameters that must be known to configure JAX *before* a snapshot is
 # read (precision, platform, device mesh); they are never inherited from
 # a snapshot's embedded parameters (resume is device- and
@@ -1303,13 +1243,49 @@ def validate_parameters() -> None:
         )
 
 
+def round_up_padded(n_padded: int, n_source: int, divisor: int) -> int:
+    r"""Round a padded FFT size up for divisibility and pad parity.
+
+    Returns the smallest `$m \ge n_\mathrm{padded}$` with
+    `$m \equiv 0 \pmod d$` (``d = max(divisor, 1)``) and
+    `$m - n_\mathrm{source}$` even.  The parity condition is the
+    :func:`dnsjax.fft.zeropad_fft` / ``truncate_fft`` rule -- the
+    omitted Nyquist mode is re-inserted symmetrically, which needs an
+    even pad on a full-complex axis; the divisibility condition lets
+    the padded physical axis split evenly across *divisor* devices.
+    The padded region carries only zero (dealiased) modes, so rounding
+    up is physically neutral (it costs marginally more FFT work).
+
+    Raises ``ValueError`` for the one impossible combination, an even
+    *divisor* with an odd *n_source*: every multiple of an even number
+    is even, so the pad parity can never match -- choose an even grid
+    size instead.
+    """
+    d = max(divisor, 1)
+    m = -(-n_padded // d) * d
+    if (m - n_source) % 2:
+        if d % 2 == 0:
+            raise ValueError(
+                f"No padded size >= {n_padded} can be both a multiple "
+                f"of {d} and an even pad of the grid size {n_source} "
+                "(every multiple of an even divisor is even); choose "
+                "an even grid size."
+            )
+        m += d
+    return m
+
+
 @dataclass
 class PaddedResolution:
     """Grid sizes after 3/2-rule oversampling for dealiasing.
 
     The oversampled (padded) grid is used when evaluating nonlinear terms
     in physical space.  Each direction is expanded by a factor of
-    ``oversampling_factor / 2`` (typically 3/2).
+    ``oversampling_factor / 2`` (typically 3/2); the full-complex axes
+    are then rounded up for mesh divisibility and even-pad parity
+    (:meth:`apply_rounding`), with every adjustment recorded in
+    :attr:`notes` for the startup diagnostics printed by
+    :mod:`dnsjax.sharding`.
     """
 
     nx_padded: int = params.phys.oversampling_factor * params.res.nx // 2
@@ -1321,29 +1297,74 @@ class PaddedResolution:
             else params.res.ny
         )
     nz_padded: int = params.phys.oversampling_factor * params.res.nz // 2
+    notes: list[str] = field(default_factory=list)
+
+    def apply_rounding(self, parameters: Parameters) -> None:
+        r"""Round padded sizes for mesh divisibility and pad parity.
+
+        Rounds ``nz_padded`` (and ``ny_padded`` for periodic systems)
+        up with :func:`round_up_padded` so the padded physical axis
+        splits evenly across the mesh direction that shards it
+        (``np1`` for `$z$`, ``np0`` for `$y$`) and the pad stays even
+        (the :func:`dnsjax.fft.zeropad_fft` parity rule).  Idempotent;
+        re-applied at :mod:`dnsjax.sharding` import for entry points
+        that set ``params.dist`` after (or without)
+        :meth:`set_padded_resolution`.  Each adjustment appends a
+        diagnostic line to :attr:`notes`, which
+        :mod:`dnsjax.sharding` prints once on the main process.
+        """
+        dist = parameters.dist
+        np0 = dist.np0 if dist is not None else 1
+        np1 = dist.np1 if dist is not None else 1
+
+        if self.ny_padded is not None:
+            ny_new = round_up_padded(self.ny_padded, parameters.res.ny, np0)
+            if ny_new != self.ny_padded:
+                self.notes.append(
+                    f"ny_padded rounded from {self.ny_padded} to "
+                    f"{ny_new} (np0 divisibility / even-pad parity)."
+                )
+                self.ny_padded = ny_new
+        nz_new = round_up_padded(self.nz_padded, parameters.res.nz, np1)
+        if nz_new != self.nz_padded:
+            self.notes.append(
+                f"nz_padded rounded from {self.nz_padded} to "
+                f"{nz_new} (np1 divisibility / even-pad parity)."
+            )
+            self.nz_padded = nz_new
 
     def set_padded_resolution(self, parameters: Parameters) -> None:
-        """Recompute padded sizes from *parameters*."""
+        r"""Recompute padded sizes from *parameters*.
+
+        The natural sizes are ``oversampling_factor * n // 2`` (`$y$`
+        unpadded for wall-bounded flows and only optionally oversampled
+        for periodic ones); :meth:`apply_rounding` then rounds the
+        full-complex axes up for mesh divisibility and even-pad
+        parity.  ``nx_padded`` is exempt (real-FFT axis, never sharded
+        in physical space).
+        """
+        self.notes = []
         if (
-            params.phys.system in periodic_systems
+            parameters.phys.system in periodic_systems
             and not parameters.phys.oversample_y
         ):
             print("WARNING: y is *not* oversampled!")
 
         self.nx_padded = (
-            parameters.phys.oversampling_factor * params.res.nx // 2
+            parameters.phys.oversampling_factor * parameters.res.nx // 2
         )
-        if params.phys.system in periodic_systems:
+        if parameters.phys.system in periodic_systems:
             self.ny_padded = (
-                params.phys.oversampling_factor * params.res.ny // 2
-                if params.phys.oversample_y
-                else params.res.ny
+                parameters.phys.oversampling_factor * parameters.res.ny // 2
+                if parameters.phys.oversample_y
+                else parameters.res.ny
             )
         else:
             self.ny_padded = None
         self.nz_padded = (
-            parameters.phys.oversampling_factor * params.res.nz // 2
+            parameters.phys.oversampling_factor * parameters.res.nz // 2
         )
+        self.apply_rounding(parameters)
 
 
 padded_res: PaddedResolution = PaddedResolution()

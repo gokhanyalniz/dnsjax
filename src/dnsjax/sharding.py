@@ -122,8 +122,8 @@ class Sharding:
     definition time, so this acts as a module-level singleton
     once ``sharding = Sharding()`` is executed.
 
-    Auto-padding for ``np0``
-    ~~~~~~~~~~~~~~~~~~~~~~~
+    Auto-padding
+    ~~~~~~~~~~~~
     When the spectral mode count (``nz - 1`` for `$k_z$` or
     ``nx // 2`` for `$k_x$`) is not evenly divisible by the
     corresponding mesh axis (``np0`` or ``np1``), the dimension
@@ -138,13 +138,15 @@ class Sharding:
     wall-bounded flows, ``ny_y_pad`` zero rows are appended
     before the `$y \leftrightarrow k_z$` reshard and stripped
     afterwards (analogous to spectral padding, handled in
-    :mod:`dnsjax.fft`).  For periodic flows, ``ny_padded`` is
-    bumped to the next multiple of ``np0`` (marginally more
-    oversampling, physically neutral).  ``nz_padded``
-    (sharded by ``np1``) is *not* auto-padded: choose ``nz``
-    and ``oversampling_factor`` so that
-    ``nz_padded = oversampling_factor * nz // 2`` is divisible
-    by ``np1``.
+    :mod:`dnsjax.fft`).  The padded physical sizes --
+    ``nz_padded`` (sharded by ``np1``) and, for periodic
+    flows, ``ny_padded`` (sharded by ``np0``) -- are rounded
+    up for mesh divisibility and even-pad parity by
+    ``padded_res.apply_rounding`` (normally already done by
+    ``set_padded_resolution``; re-applied here for entry
+    points that set ``params.dist`` late).  Every recorded
+    adjustment is printed once on the main process, so no
+    padding is ever silent.
     """
 
     np0: int = params.dist.np0
@@ -214,29 +216,16 @@ class Sharding:
                 flush=True,
             )
 
-    if _is_periodic and np0 > 1:
-        _ny_padded_check: int | None = padded_res.ny_padded
-        if _ny_padded_check is not None and _ny_padded_check % np0 != 0:
-            _ny_padded_new: int = _pad_to_multiple(_ny_padded_check, np0)
-            if main_device:
-                print(
-                    f"ny_padded bumped from {_ny_padded_check} to "
-                    f"{_ny_padded_new} for np0 divisibility.",
-                    flush=True,
-                )
-            padded_res.ny_padded = _ny_padded_new
-
-    # nz_padded is not auto-padded: user must choose nz and
-    # oversampling_factor so that nz_padded divides np1.
-    if np1 > 1 and padded_res.nz_padded % np1 != 0:
-        print(
-            f"nz_padded={padded_res.nz_padded} is not divisible by "
-            f"np1={np1}. Choose nz and oversampling_factor so that "
-            f"nz_padded = oversampling_factor * nz // 2 is a "
-            f"multiple of np1.",
-            flush=True,
-        )
-        sys.exit(1)
+    # ── Padded physical sizes (divisibility + parity rounding) ──
+    # ``set_padded_resolution`` already rounds ``nz_padded`` (and the
+    # periodic ``ny_padded``) for mesh divisibility and even-pad
+    # parity; re-apply idempotently for entry points that set
+    # ``params.dist`` after (or without) calling it, then report
+    # every recorded adjustment once.
+    padded_res.apply_rounding(params)
+    if main_device:
+        for _note in padded_res.notes:
+            print(_note, flush=True)
 
     # ── Spectral mode counts (auto-padded for divisibility) ───
     nz_spec: int = _pad_to_multiple(params.res.nz - 1, np0)

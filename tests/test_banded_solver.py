@@ -45,10 +45,9 @@ from __future__ import annotations
 # JAX array (float64 avoids a silent float32 downcast that fails the
 # comparisons below).  ``--dist.platform cuda`` then executes the real
 # Pallas kernels on a GPU.
+from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
 from dnsjax.parameters import (
-    configure_jax_platform,
     params,
-    platform_from_argv,
 )
 
 configure_jax_platform(platform_from_argv())

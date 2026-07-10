@@ -50,5 +50,5 @@ corrector-rate limit), `tests/test_cnab2.py` (the plain no-corrector
 AB2 path), and `tests/test_temporal_order.py` (the cnab2
 self-convergence study). No operator-level unit tests yet; smoke-test
 the other periodic flows manually via
-`mpirun -np 1 python -m dnsjax --phys.system waleffe ...` (or
+`mpirun -np 1 .venv/bin/dnsjax --phys.system waleffe ...` (or
 `decaying-box`).

@@ -12,6 +12,9 @@ dependencies = [
     "tensorstore>=0.1.71",
 ]
 
+[project.scripts]
+dnsjax = "dnsjax.__main__:main"
+
 [dependency-groups]
 dev = [
     "prek>=0.3.3",

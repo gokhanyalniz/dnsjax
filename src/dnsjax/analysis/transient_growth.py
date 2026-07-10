@@ -286,11 +286,11 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .. import harmonics
+from ..bootstrap import configure_jax_platform
 from ..fd import local_interpolation_matrix
 from ..parameters import (
     Parameters,
     _user_set_fields,
-    configure_jax_platform,
     derived_params,
     padded_res,
     params,

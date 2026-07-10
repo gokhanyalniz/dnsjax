@@ -306,9 +306,9 @@ def _make_complex(jax, shape, seed, sharding, spec):
 
 def run_child(a: argparse.Namespace) -> None:
     """One (system, backend, resolution) measurement, single device."""
+    from dnsjax.bootstrap import configure_jax_platform
     from dnsjax.parameters import (
         Parameters,
-        configure_jax_platform,
         padded_res,
         params,
         update_parameters,
