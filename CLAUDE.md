@@ -471,12 +471,12 @@ one-liners. Cross-cutting notes:
   default to `None` and `update_parameters()` raises otherwise); the
   unit tests use `100`/`0`/`0.5`, the smoke/integration tests
   counter-rotating values.
-- The 3/2-rule pad on a complex FFT axis (z, periodic y) must be even;
-  `set_padded_resolution` auto-rounds the padded sizes for parity and
-  np0/np1 divisibility with a startup note (e.g. nz=6: nz_padded 9->10;
-  `round_up_padded` in `parameters.py`), so those configs run. The one
-  impossible corner -- odd nz (or periodic ny) with an even mesh axis --
-  raises. The real axis nx has no parity rule.
+- The 3/2-rule pad on a complex FFT axis (z, periodic y) has no parity
+  constraint (`zeropad_fft`/`truncate_fft` place modes exactly for odd
+  pads and odd sizes); `set_padded_resolution` auto-rounds the padded
+  sizes only for np1/np0 divisibility with a startup note (e.g. nz=6,
+  np1=2: nz_padded 9->10; `round_up_padded` in `parameters.py`), so
+  every (n, np) combination runs. The real axis nx is never rounded.
 
 - `tests/test_banded_solver.py`: geometry-independent Pallas banded
   backend (interpret parity, cuda-lowering guard, check contract).
@@ -499,8 +499,9 @@ one-liners. Cross-cutting notes:
 - `tests/test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
   forced spectral padding.
 - `tests/test_padding.py`: padded-size rounding (`round_up_padded`
-  units; primary/fallback/parity-rescue subprocess cases with the
-  diagnostic asserted).
+  units; primary/fallback rounding subprocess cases with the diagnostic
+  asserted) + FFT exactness cases (odd-pad, odd-nz, fused spec-pad on a
+  forced (2, 2) mesh).
 - `tests/test_laminar_smoke.py`: laminar fixed-point smoke for all
   wall-bounded flows (subprocess/mpirun; Dean/viscoelastic branches;
   console-script `--help`/run entries and an nz-padding entry).
