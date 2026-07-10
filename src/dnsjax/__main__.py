@@ -8,16 +8,21 @@ JAX platform and distributed backend must be configured
 geometry module, because those modules instantiate global
 singletons (``params``, ``derived_params``, ``sharding``,
 ``fourier``) at import time.  This module enforces the
-constraint by deferring ``import jax`` and all flow-module
-imports until after CLI / TOML configuration is applied.
+constraint by keeping all setup in :func:`main` (via
+:mod:`dnsjax.bootstrap`) and deferring ``import jax`` and all
+flow-module imports until after CLI / TOML configuration is
+applied.
 
 Execution phases
 ----------------
-1. **Initialisation** (module level, ``__main__`` guard):
-   parse CLI arguments, load ``parameters.toml`` if present,
-   configure JAX, print the final parameter set.
+1. **Initialisation** (:func:`main`, via :mod:`dnsjax.bootstrap`):
+   parse CLI arguments (``--help`` exits here, side-effect
+   free), apply the configuration layers, configure the
+   distributed JAX runtime, print the final parameter set.
+   :func:`main` is both the ``dnsjax`` console-script target
+   and the ``python -m dnsjax`` guard target.
 
-2. **Main loop** (:func:`main`):
+2. **Main loop** (:func:`run`):
    initialise velocity (a provided snapshot wins; otherwise an
    in-process random / localized-rolls / laminar IC, with random
    the default), then iterate:
@@ -122,11 +127,8 @@ from pathlib import Path
 from pprint import pp
 from time import perf_counter_ns
 
-from pydantic_settings import CliApp
-
+from .bootstrap import configure_jax_runtime, resolve_parameters
 from .parameters import (
-    CLIParameters,
-    Parameters,
     annular_systems,
     cylindrical_systems,
     derived_params,
@@ -134,11 +136,7 @@ from .parameters import (
     padded_res,
     params,
     periodic_systems,
-    read_parameters,
-    read_snapshot_params,
     trajectory_defining_changes,
-    update_parameters,
-    validate_parameters,
     viscoelastic_systems,
     walled_systems,
 )
@@ -166,26 +164,6 @@ def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width):
             f.write(f"{t_str} {stat_strs}\n")
         f.flush()
         os.fsync(f.fileno())
-
-
-def _resume_snapshot_path(
-    params_cli: Parameters, params_in: Parameters | None
-) -> Path | None:
-    """Return the snapshot path to resume from (CLI over TOML).
-
-    Inspects only the *explicitly set* ``init.snapshot`` of each layer
-    (via ``exclude_unset``), so an unset field never shadows a lower
-    layer.  Returns ``None`` when neither layer sets it (a laminar start,
-    or the path lives only in the code defaults -- which is ``None``).
-    """
-    for layer in (params_cli, params_in):
-        if layer is None:
-            continue
-        init = layer.model_dump(exclude_unset=True).get("init") or {}
-        snap = init.get("snapshot")
-        if snap is not None:
-            return Path(snap)
-    return None
 
 
 def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
@@ -297,8 +275,13 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     return state
 
 
-def main() -> None:
-    """Run the time-stepping loop after parameters and JAX are initialised."""
+def run(wall_time_start: int) -> None:
+    """Run the time-stepping loop after parameters and JAX are initialised.
+
+    *wall_time_start* is the ``perf_counter_ns`` timestamp taken at
+    process start (:func:`main`) -- the reference for the
+    ``stop.max_wall_time`` budget and the shutdown diagnostics.
+    """
     import jax
     from jax import numpy as jnp
 
@@ -1050,62 +1033,34 @@ def main() -> None:
     flush_all_buffers()
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
+    """Production entry point (console script / ``python -m dnsjax``).
+
+    Resolves the configuration layers
+    (:func:`dnsjax.bootstrap.resolve_parameters`; ``--help`` exits
+    here with the full CLI reference and no side effects), configures
+    the distributed JAX runtime
+    (:func:`dnsjax.bootstrap.configure_jax_runtime`), prints the
+    final configuration on the main process, and runs the simulation
+    (:func:`run`).  *argv* defaults to ``sys.argv``.
+    """
     print("Alive at", datetime.now(), flush=True)
     wall_time_start = perf_counter_ns()
-    params_cli = CliApp.run(CLIParameters)
 
-    params_file = Path("parameters.toml")
-    params_in = (
-        read_parameters(params_file) if Path.is_file(params_file) else None
-    )
-    params_from_disk = params_in is not None
-
-    # Configuration layers, lowest priority first.  The snapshot to
-    # resume from is whichever ``init.snapshot`` the user set explicitly
-    # (CLI over TOML); its embedded parameters form the lowest layer
-    # above the code defaults, so a resume inherits the snapshot's
-    # configuration unless TOML or the CLI override it.
-    snapshot_path = _resume_snapshot_path(params_cli, params_in)
-    snapshot_params_used = False
-    if snapshot_path is not None:
-        snap_params = read_snapshot_params(snapshot_path)
-        if snap_params is not None:
-            update_parameters(snap_params)
-            snapshot_params_used = True
-
-    # Higher-priority layers: parameters.toml, then CLI arguments.
-    if params_in is not None:
-        update_parameters(params_in)
-    update_parameters(params_cli)
-
-    validate_parameters()
-    padded_res.set_padded_resolution(params)
-
-    if params.dist.platform == "cpu":
-        os.environ["XLA_FLAGS"] = (
-            "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
-        )
-        os.environ["NPROC"] = "1"
-
-    import jax
-
-    jax.config.update("jax_enable_x64", params.res.double_precision)
-    jax.config.update("jax_platforms", params.dist.platform)
-    jax.distributed.initialize()
-    main_device: bool = bool(jax.process_index() == 0)
+    setup = resolve_parameters(argv)
+    main_device = configure_jax_runtime()
 
     if main_device:
         print("Distribution initialized at", datetime.now(), flush=True)
-        if snapshot_params_used:
+        if setup.snapshot_params_used:
             print(
                 f"Inherited parameters embedded in snapshot "
-                f"'{snapshot_path}' (except np0/np1/platform/"
+                f"'{setup.snapshot_path}' (except np0/np1/platform/"
                 "double_precision); parameters.toml and command-line "
                 "arguments override them.",
                 flush=True,
             )
-        if params_from_disk:
+        if setup.params_from_disk:
             print(
                 "Loaded parameters.toml, "
                 "which override the snapshot and default parameters. "
@@ -1122,8 +1077,7 @@ if __name__ == "__main__":
                 flush=True,
             )
         print("Final working parameters:")
-        if main_device:
-            pp(params.model_dump())
+        pp(params.model_dump())
 
         print(
             "Running with the physical-space (x, y, z) resolution:",
@@ -1135,7 +1089,11 @@ if __name__ == "__main__":
             flush=True,
         )
 
-    main()
+    run(wall_time_start)
 
     print("Shutdown at", datetime.now(), flush=True)
-    sys.exit(0)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
