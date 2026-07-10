@@ -73,6 +73,13 @@ A few conventions worth knowing:
   $Re = Wi/El$; `wi` is the Weissenberg number; `beta` the solvent-to-total
   viscosity ratio; `epsilon` the sPTT extensibility; `kappa` an artificial
   stress diffusivity; `delta` the inner radius (the gap is fixed at 2).
+- **Viscoelastic memory.** With 9 state components, the viscoelastic
+  right-hand side inverse-transforms a 36-field batch every step, and that
+  batch dominates the step's peak memory. `solver.rhs_transform_chunks`
+  (item 4 in [Additional features](#additional-features)) splits it to cut
+  the peak roughly $k$-fold at identical results; it defaults to `1` (the
+  fused batch) because chunking costs throughput — more FFT dispatches and
+  reshard rounds — that is only worth paying when a run is memory-bound.
 - **Grid axes.** For the cylindrical and annular geometries the roles are
   swapped relative to the cartesian intuition: `nx` resolves the axial
   (streamwise) direction, `nz` the azimuthal direction, and `ny` the radial
@@ -257,8 +264,9 @@ the default backends:
   $(3/2)^3 = 3.375$ fields for triply-periodic ones. How much of this
   coexists is decided by XLA's buffer reuse, so treat the upper end as the
   sizing estimate. The viscoelastic right-hand side instead transforms a
-  36-field batch with 9 outputs, and `solver.rhs_transform_chunks = k` cuts
-  its transform-stage share $k$-fold at identical results.
+  36-field batch with 9 outputs, and `solver.rhs_transform_chunks = k` —
+  the knob applies to every flow's batch, but bites here — cuts its
+  transform-stage share $k$-fold at identical results.
 - **Wall-normal operators** — the Pallas backend stores no-pivot banded LU
   factors: $(2p + 1) \cdot n_y$ reals per matrix per Fourier mode, with the
   half-bandwidth $p$ equal to `fd_order`, over the $(n_z - 1)(n_x/2)$ mode
@@ -503,7 +511,7 @@ the laminar bulk velocity: $1/2$ for the pipe, $2/3$ for plane-Poiseuille,
 and zero for the others (Dean's driving is azimuthal, so its axial bulk
 vanishes). The pipe and plane-Poiseuille flows therefore integrate, and
 store snapshots, in the moving frame unless `u_grid` is set to `0` (see also
-item 8 in [Additional features](#additional-features)).
+item 9 in [Additional features](#additional-features)).
 
 ### Grids
 
@@ -621,44 +629,54 @@ A closer look at what is in the box, beyond the core solver:
    keeping the wall-normal solves communication-free — see
    [Parallelization](#parallelization).
 
-4. **Standard-tools-readable snapshots and a JAX-free reader.** The tar +
+4. **A memory–throughput dial for the nonlinear term.**
+   `solver.rhs_transform_chunks = k` splits the batched inverse transform of
+   the pseudo-spectral right-hand side into $k$ balanced groups, cutting its
+   transform-stage working set roughly $k$-fold at identical results — see
+   [Memory footprint](#memory-footprint). The default `1` keeps the single
+   fused batch, which is throughput-optimal (one FFT dispatch and one
+   reshard round per pipeline stage); raise it to fit a memory-bound run,
+   most effectively for viscoelastic Dean, whose 36-field batch dominates
+   the step's peak.
+
+5. **Standard-tools-readable snapshots and a JAX-free reader.** The tar +
    zarr3 format — written in parallel, directly from GPU memory when
    GPUDirect Storage is available — and the NumPy-only `read_state` cleanly
    separate the runtime from the analysis API — see
    [Snapshots and external data access](#snapshots-and-external-data-access).
 
-5. **Robust resume.** Snapshots resume across any device count and precision,
+6. **Robust resume.** Snapshots resume across any device count and precision,
    re-grid a changed wall-normal grid on load, and track lineage,
    distinguishing a genuine continuation from a new trajectory when the
    physics or geometry changes.
 
-6. **Laminarization auto-stop.** A run terminates automatically once the
+7. **Laminarization auto-stop.** A run terminates automatically once the
    perturbation energy drops below a threshold, so relaminarization events
    are captured without babysitting — natural for lifetime and
    edge-of-chaos studies.
 
-7. **Initial-condition generators.** Divergence-free random fields (the
+8. **Initial-condition generators.** Divergence-free random fields (the
    default start mode) and deterministic, compactly localized "turbulent
    spots" are both built in, sharded and reproducible independent of the
    device count.
 
-8. **Moving frame of reference.** The `u_grid` parameter integrates the flow
+9. **Moving frame of reference.** The `u_grid` parameter integrates the flow
    in a frame translating along the streamwise / axial direction, implicitly
    in both time schemes — convenient for following traveling structures. It
    defaults to the laminar bulk velocity ($1/2$ pipe, $2/3$
    plane-Poiseuille, zero otherwise); set it to `0` for the lab frame.
 
-9. **Buffered, crash-consistent diagnostics.** Statistics, CFL, and corrector
-   diagnostics stream to `stats.dat`, `steps.dat`, and `corrector.dat`,
-   buffered on-device and flushed around snapshots and on termination so they
-   stay consistent with the saved state.
+10. **Buffered, crash-consistent diagnostics.** Statistics, CFL, and
+    corrector diagnostics stream to `stats.dat`, `steps.dat`, and
+    `corrector.dat`, buffered on-device and flushed around snapshots and on
+    termination so they stay consistent with the saved state.
 
-10. **Wall-time-aware graceful shutdown.** `stop.max_wall_time` takes an
+11. **Wall-time-aware graceful shutdown.** `stop.max_wall_time` takes an
     ISO 8601 duration and ends the run cleanly — final statistics, a final
     snapshot, flushed diagnostics — before a queue kills it, and
     SIGTERM/SIGINT are caught and flush the diagnostic buffers.
 
-11. **External-data import.** `scripts/snapshot_import.py` is a small
+12. **External-data import.** `scripts/snapshot_import.py` is a small
     library that packs a velocity field produced elsewhere into a valid
     snapshot, so external data enters the solver and the analysis API as a
     first-class state.

@@ -45,24 +45,36 @@ truncates back after the forward transform (``truncate_*``).  Nyquist
 modes are omitted in all stored spectral arrays (`$n - 1$` modes for a
 full-complex axis, `$n / 2$` modes for the real-FFT axis).
 
-Memory (deferred optimisation)
-------------------------------
+Memory
+------
 Beyond its input and output, each transform materialises one to two
 batch-sized intermediates per padded axis: the ``zeropad_*`` /
 ``truncate_*`` concatenate output and the per-axis (i)FFT result,
 plus the reshard copies.  For the batched RHS transforms (6 fields
 Newtonian, ~36 viscoelastic) these stage buffers dominate the
-per-step working set.  Deferred optimisations: fuse the zero-pad
-into the adjacent FFT stage (transform over the padded length while
-reading only the unpadded input) and/or chunk batched transforms
-generally (today only the viscoelastic RHS chunks, via
-``solver.rhs_transform_chunks``).
+per-step working set.  The mitigation is chunking the batch
+(:func:`chunked_transform`, ``solver.rhs_transform_chunks``; default
+off -- a memory/throughput trade).  Fusing the zero-pad into the
+adjacent FFT stage instead (transforming over the padded length
+while reading only the unpadded input) is a dead end: XLA's FFT is
+an opaque custom call (cuFFT/ducc) whose operands must be
+materialised -- ``jnp.fft.irfft(a, n=)`` performs the identical pad
+inside its wrapper (byte-identical compiled HLO), and
+``jnp.fft.ifft(a, n=)`` end-pads, the wrong placement for a
+full-complex axis -- and a hand-written pruned-input (Pallas) FFT
+kernel is not worth it: the 3/2 zero-pattern is decimation-invariant
+(each radix-r input subsequence is again 3/2-padded), so pruning
+only a first stage saves nothing, and a full kernel would have to
+beat cuFFT to reclaim a transient (~-17%) that chunking already
+caps.
 
 Normalisation
 -------------
 All transforms use ``norm="forward"``, which divides by *N* on the
 forward transform and applies no factor on the inverse.
 """
+
+from collections.abc import Callable
 
 from jax import Array, shard_map
 from jax import numpy as jnp
@@ -72,6 +84,56 @@ from .parameters import padded_res, params
 from .sharding import sharding
 
 norm: str = "forward"
+
+
+# ── Batched-transform chunking ──────────────────────────────
+
+
+def chunked_transform(
+    fn: Callable[[Array], Array],
+    fields: Array,
+    n_chunks: int | None = None,
+) -> Array:
+    r"""Apply a batched transform in balanced leading-axis chunks.
+
+    Splits *fields* along axis 0 (the component axis, replicated in
+    every pipeline stage, so slicing and re-concatenating it is
+    sharding-safe) into *n_chunks* balanced groups and concatenates
+    the per-group results of *fn*.  Bit-identical to ``fn(fields)``
+    (per-field transforms are independent), but the transform-stage
+    transient (the module docstring's memory note) scales with the
+    largest group instead of the whole batch, at the cost of
+    ``n_chunks``-times the FFT dispatches (and as many smaller
+    reshard rounds per pipeline stage on multi-device runs).
+
+    Parameters
+    ----------
+    fn:
+        Batched transform mapping ``(C, ...)`` to ``(C, ...)``,
+        e.g. :func:`dnsjax.operators.spec_to_phys_2d`.
+    fields:
+        Stacked fields, components on axis 0.
+    n_chunks:
+        Number of balanced groups; ``None`` (default) reads
+        ``params.solver.rhs_transform_chunks`` at trace time (so a
+        sweep needs a subprocess per value).  ``<= 1`` returns
+        ``fn(fields)`` unchanged; empty groups
+        (``n_chunks > fields.shape[0]``) are skipped, degrading to
+        per-field transforms.
+    """
+    if n_chunks is None:
+        n_chunks = params.solver.rhs_transform_chunks
+    if n_chunks <= 1:
+        return fn(fields)
+    n_fields = fields.shape[0]
+    bounds = [n_fields * i // n_chunks for i in range(n_chunks + 1)]
+    return jnp.concatenate(
+        [
+            fn(fields[lo:hi])
+            for lo, hi in zip(bounds[:-1], bounds[1:], strict=True)
+            if hi > lo
+        ]
+    )
 
 
 # ── Physical y padding / stripping helpers ──────────────────

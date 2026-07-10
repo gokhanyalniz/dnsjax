@@ -103,6 +103,7 @@ from jax import Array
 from jax import numpy as jnp
 
 from ...fd import fornberg_weights
+from ...fft import chunked_transform
 from ...measurements import get_cfl
 from ...operators import phys_to_spec_2d, spec_to_phys_2d
 from ...parameters import derived_params, params
@@ -583,15 +584,36 @@ def _get_rhs_core(
     memory -- not the held physical outputs themselves, but the
     transform's padded intermediate stage buffers (~2 complex copies
     of the whole batch at the dealiased size; see :mod:`dnsjax.fft`).
-    ``rhs_transform_chunks = k`` splits the inverse transform into
-    ``k`` balanced groups, cutting that transient by ~``k`` at the
-    cost of ``k``x the FFT dispatches (and ``k`` smaller reshard
-    rounds per stage on multi-device runs); the results are identical.
-    The 36 physical output fields are still held at once for the
-    pointwise stage, and the 9-output forward transform stays fused --
-    a deeper restructure that accumulates chunk contributions and
-    frees derivative groups early would cut the held set too, but
-    breaks the single pointwise stage and is deferred.
+    The shared :func:`dnsjax.fft.chunked_transform` applies the knob:
+    ``k`` balanced groups cut that transient by ~``k`` at the cost of
+    ``k``x the FFT dispatches (and ``k`` smaller reshard rounds per
+    stage on multi-device runs); the results are identical.
+
+    **Deferred optimisation (interleaved transform/accumulate)**:
+    chunking caps only the transform transient -- all 36 physical
+    fields must still coexist as inputs of the single pointwise
+    stage, so they plus the 9 outputs (~45 oversampled fields) are
+    the floor the knob cannot cut.  That floor is decomposable
+    because the pointwise stage has sparse field incidence: the 18
+    advection derivatives are strictly per-component (only
+    `$\mathrm{adv}(c_i)$` reads the
+    `$(\partial_r, \partial_\theta, \partial_z) c_i$` triple),
+    while the velocities, `$L_{ij}$`, and tensor combos are shared.
+    Interleaving would hold the shared fields, then per component
+    transform its derivative triple, multiply-accumulate its
+    advection contribution into the output, and let the triple die
+    before the next component's transform -- cutting the held floor
+    to ~30 fields (further if the `$L_{ij}$` contributions are
+    accumulated and freed first).  Deferred because it hard-codes
+    chunking's throughput cost even when memory is not tight: the
+    fused one-pass pointwise stage shatters into per-group kernels,
+    the outputs are re-read/re-written once per group, the transform
+    batches become permanently small, the schedule is specific to
+    this RHS's term structure (unlike the flow-agnostic
+    ``chunked_transform``), and the freeing relies on XLA liveness
+    rather than construction.  The 9-output forward transform stays
+    fused for the related reason that all outputs exist before it
+    starts, so chunking it could shave only its own minor transient.
     """
     im = 1j * fourier_.m
     ikz = 1j * fourier_.kz
@@ -637,19 +659,7 @@ def _get_rhs_core(
     L_spec = jnp.array([Lrr, Lrth, Lrz, Lthr, Lthth, Lthz, Lzr, Lzth, Lzz])
     u_spec = jnp.array([u_z, u_r, u_th])
     stack = jnp.concatenate([u_spec, L_spec, combos, dr_c, dth_c, dz_c])
-    n_chunks = params.solver.rhs_transform_chunks
-    if n_chunks <= 1:
-        phys = spec_to_phys_2d(stack)
-    else:
-        n_fields = stack.shape[0]
-        bounds = [n_fields * i // n_chunks for i in range(n_chunks + 1)]
-        phys = jnp.concatenate(
-            [
-                spec_to_phys_2d(stack[lo:hi])
-                for lo, hi in zip(bounds[:-1], bounds[1:], strict=True)
-                if hi > lo
-            ]
-        )
+    phys = chunked_transform(spec_to_phys_2d, stack)
 
     uz_p, ur_p, uth_p = phys[0], phys[1], phys[2]
     Lrr_p, Lrth_p, Lrz_p = phys[3], phys[4], phys[5]
