@@ -462,7 +462,7 @@ def annular_forced_laminar_u_theta(
 
     Shared by the two force-driven annular flows: Newtonian Dean
     (:func:`dean_laminar_u_theta`, `$C = 2(r_1 + r_2)$`) and the
-    viscoelastic sPTT flow (`$C = r_1 + r_2$`, the Dedalus
+    viscoelastic sPTT flow (`$C = r_1 + r_2$`, the reference
     normalisation).  Pure function (no flow construction), so it is
     importable both by the ``start_from_laminar`` state and by
     :mod:`dnsjax.random_field` (the total-field IC = laminar profile +

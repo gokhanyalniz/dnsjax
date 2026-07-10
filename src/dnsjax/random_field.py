@@ -708,8 +708,8 @@ def generate_viscoelastic_dean(
     Built per device (no full-array replication): the velocity part is
     the divergence-free annular draw of :func:`generate_annular` (rows
     ``0:3``); the conformation part (rows ``3:9``) is windowed,
-    spectrally-decaying symmetric-tensor noise (the Dedalus
-    restart-branch recipe).  Velocity and conformation noise are
+    spectrally-decaying symmetric-tensor noise (the reference
+    restart recipe).  Velocity and conformation noise are
     rescaled to *amplitude* / *conf_amplitude* separately, then the
     analytical laminar pair (velocity profile + sPTT-equilibrium
     conformation) is added at the mean mode (total-field IC).  The

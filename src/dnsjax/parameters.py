@@ -352,7 +352,7 @@ class Initiation(BaseModel):
     # laminar conformation for the viscoelastic random IC
     # (system == "viscoelastic-dean"); shares ``random_smoothness`` for
     # the spectral envelope and is radially windowed to zero at both
-    # walls (the Dedalus restart-branch recipe).  Ignored by every other
+    # walls (the reference restart recipe).  Ignored by every other
     # system (which has no conformation field).
     random_conformation_amplitude: float = 700.0
     # Generate an in-process deterministic localized-rolls ("turbulent
@@ -1081,12 +1081,12 @@ def update_parameters(params_new: Parameters) -> None:
         # Dean flow uses phys.re directly (both walls stationary); its
         # azimuthal body force lives in flows.wall_bounded.dean.
     elif system in viscoelastic_systems:
-        # Viscoelastic (sPTT) flow on the annular geometry.  Adopt the
-        # Dedalus reference normalisation: a half-gap length unit
+        # Viscoelastic (sPTT) flow on the annular geometry.  Adopt an
+        # external reference normalisation: a half-gap length unit
         # (gap = 2), so r1 = delta, r2 = delta + 2, the Reynolds number
         # is derived as Re := Wi/El, and the axial period defaults to
-        # 2*pi (Dedalus ``Lz``).  Any unset control parameter falls back
-        # to the reference configuration.
+        # 2*pi.  Any unset control parameter falls back to the
+        # reference configuration.
         if params.phys.el is None:
             params.phys.el = 80.0
         if params.phys.wi is None:
@@ -1099,7 +1099,7 @@ def update_parameters(params_new: Parameters) -> None:
             params.phys.kappa = 5.0e-5
         if params.geo.delta is None:
             params.geo.delta = 11.0
-        # Axial period: default to 2*pi (Dedalus Lz) unless the user /
+        # Axial period: default to 2*pi (reference value) unless the user /
         # snapshot / TOML set geo.lx explicitly (it is a genuine domain
         # length, unlike the azimuthal lz which is always forced 2*pi).
         if ("geo", "lx") not in _user_set_fields:
