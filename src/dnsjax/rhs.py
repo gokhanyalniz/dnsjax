@@ -36,6 +36,8 @@ from collections.abc import Callable
 from jax import Array
 from jax import numpy as jnp
 
+from .fft import chunked_transform
+
 
 def _fused_nonlinear(
     u: Array,
@@ -109,13 +111,15 @@ def get_nonlin(
 
     The 6-field batched inverse transform (plus its padded
     intermediate stage buffers inside :mod:`dnsjax.fft`) sets the
-    transient memory peak of a Newtonian RHS evaluation.  The batch is
-    small, so no chunking knob is offered here; the 36-field
-    viscoelastic variant, where the batch dominates the step's peak,
-    has one (``solver.rhs_transform_chunks`` -- see ``_get_rhs_core``
-    in ``geometries/wall_bounded/annular_viscoelastic.py``).  Chunking
-    this batch too is a deferred optimisation (see the memory note in
-    :mod:`dnsjax.fft`).
+    transient memory peak of a Newtonian RHS evaluation.
+    ``solver.rhs_transform_chunks`` caps that transient by splitting
+    the batch (:func:`dnsjax.fft.chunked_transform`; the default 1
+    keeps the single fused batch, throughput-optimal), while the
+    forward transform of the 3 outputs stays fused.  The knob matters
+    most for the 36-field viscoelastic variant (``_get_rhs_core`` in
+    ``geometries/wall_bounded/annular_viscoelastic.py``), whose batch
+    dominates its step's peak; the trade-off is documented in the
+    :mod:`dnsjax.fft` memory note.
 
     Parameters
     ----------
@@ -156,10 +160,12 @@ def get_nonlin(
     """
 
     # Batch velocity (3) + vorticity (3) into one transform call
-    # so that the FFT reshard happens once for all 6 fields.
+    # so that the FFT reshard happens once for all 6 fields
+    # (``solver.rhs_transform_chunks > 1`` splits it to cap the
+    # transform-stage transient).
     vorticity_spec = curl_fn(velocity_spec)
-    combined_phys = spec_to_phys_fn(
-        jnp.concatenate([velocity_spec, vorticity_spec])
+    combined_phys = chunked_transform(
+        spec_to_phys_fn, jnp.concatenate([velocity_spec, vorticity_spec])
     )
     velocity_phys = combined_phys[:3]
     vorticity_phys = combined_phys[3:]

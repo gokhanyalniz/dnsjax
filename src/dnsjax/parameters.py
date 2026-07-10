@@ -689,18 +689,23 @@ class Solver(BaseModel):
     # raises on genuine no-pivot instability (see
     # ``solvers._NO_PIVOT_GROWTH_TOL``).
     pallas_stability_tol: float = Field(gt=0, default=1e-6)
-    # Chunk count for the batched inverse transform of the fused
-    # viscoelastic RHS (~36 fields; see ``_get_rhs_core`` in
-    # ``geometries/wall_bounded/annular_viscoelastic.py``).  ``1``
-    # (default): one fused batch -- throughput-optimal (one FFT
+    # Chunk count for the batched inverse transform of the
+    # pseudo-spectral RHS, all flows: the 6-field velocity+vorticity
+    # batch of ``rhs.get_nonlin`` and the ~36-field fused viscoelastic
+    # batch (``_get_rhs_core`` in
+    # ``geometries/wall_bounded/annular_viscoelastic.py``), both via
+    # ``fft.chunked_transform``.  A memory/throughput trade-off: ``1``
+    # (default) keeps one fused batch -- throughput-optimal (one FFT
     # dispatch and one reshard round per pipeline stage).  ``k > 1``
     # splits the batch into ``k`` balanced groups, cutting the
-    # transform-stage transient (the padded intermediate buffers,
-    # which dominate a viscoelastic step's peak memory) by ~``k`` at
-    # the cost of ``k``x the FFT dispatches (and ``k`` smaller
-    # reshard rounds per stage on multi-device runs).  Results are
-    # identical (per-field transforms are independent).  Ignored by
-    # the 3-velocity-component flows, whose 6-field batch is small.
+    # transform-stage transient (the padded intermediate buffers; see
+    # the ``fft.py`` memory note) by ~``k`` at the cost of ``k``x the
+    # FFT dispatches (and ``k`` smaller reshard rounds per stage on
+    # multi-device runs).  Results are identical (per-field transforms
+    # are independent).  Raise it only when that transient sets the
+    # device-memory peak: chiefly the viscoelastic batch (it dominates
+    # that step's peak); the Newtonian 6-field transient is ~6x
+    # smaller.  Forward transforms stay fused.
     rhs_transform_chunks: int = Field(ge=1, default=1)
 
 

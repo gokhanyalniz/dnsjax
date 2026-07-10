@@ -11,7 +11,11 @@ sizes feed.  Singleton-dependent cases run in subprocesses (the
 ``test_*`` subprocess-per-config idiom: sharding/geometry singletons
 capture ``params`` at import time); each asserts its rounding
 diagnostic is printed exactly once, or that none appears where the
-natural padded size must pass through unrounded.
+natural padded size must pass through unrounded.  The two exactness
+cases (4 and 6) also pin :func:`dnsjax.fft.chunked_transform`
+bit-exactly against the fused batch (``k = 2`` and ``k = 7`` over a
+6-field stack), single-device and on the (2, 2) mesh (per-chunk
+reshards + the component-axis concatenate of sharded outputs).
 
 1. Unit: ``round_up_padded`` -- divisibility, no-op, and the
    ``divisor <= 1`` passthrough.
@@ -171,6 +175,39 @@ def _fft_exactness(sharding) -> None:
         raise AssertionError(f"mode-placement error {err:.2e}")
 
 
+def _chunked_parity(sharding) -> None:
+    """``chunked_transform`` reproduces the fused batch bit-exactly.
+
+    A 6-field random spectral stack (the ``get_nonlin`` batch size)
+    through the batched inverse transform, at ``k = 2`` (balanced
+    velocity/vorticity split) and ``k = 7`` (> the field count:
+    empty groups skipped, per-field degradation).  Per-field
+    transforms are independent, so any difference is a chunking bug.
+    """
+    import jax
+    import numpy as np
+    from jax.sharding import NamedSharding
+
+    from dnsjax.fft import chunked_transform
+    from dnsjax.operators import spec_to_phys_2d
+
+    rng = np.random.default_rng(11)
+    shape = (6, *sharding.spec_shape)
+    stack = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+    stack = jax.device_put(
+        stack.astype(sharding.complex_type),
+        NamedSharding(sharding.mesh, sharding.spec_vector_shard),
+    )
+    fused = np.asarray(spec_to_phys_2d(stack))
+    for k in (2, 7):
+        chunked = np.asarray(chunked_transform(spec_to_phys_2d, stack, k))
+        if not np.array_equal(chunked, fused):
+            err = float(np.abs(chunked - fused).max())
+            raise AssertionError(
+                f"chunked (k={k}) != fused batch (max err {err:.2e})"
+            )
+
+
 def case_primary() -> None:
     """np1 = 2, nz = 6: primary rounding before the sharding import."""
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=2"
@@ -256,6 +293,7 @@ def case_odd_pad() -> None:
     assert sharding.phys_shape == (9, 9, 6), sharding.phys_shape
     _fft_round_trip(sharding)
     _fft_exactness(sharding)
+    _chunked_parity(sharding)
     print("case-ok")
 
 
@@ -324,6 +362,7 @@ def case_spec_pad() -> None:
     assert sharding.nx_spec_pad == 1, sharding.nx_spec_pad
     _fft_round_trip(sharding)
     _fft_exactness(sharding)
+    _chunked_parity(sharding)
     print("case-ok")
 
 
