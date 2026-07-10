@@ -41,6 +41,19 @@ truncates back after the forward transform (``truncate_*``).  Nyquist
 modes are omitted in all stored spectral arrays (`$n - 1$` modes for a
 full-complex axis, `$n / 2$` modes for the real-FFT axis).
 
+Memory (deferred optimisation)
+------------------------------
+Beyond its input and output, each transform materialises one to two
+batch-sized intermediates per padded axis: the ``zeropad_*`` /
+``truncate_*`` concatenate output and the per-axis (i)FFT result,
+plus the reshard copies.  For the batched RHS transforms (6 fields
+Newtonian, ~36 viscoelastic) these stage buffers dominate the
+per-step working set.  Deferred optimisations: fuse the zero-pad
+into the adjacent FFT stage (transform over the padded length while
+reading only the unpadded input) and/or chunk batched transforms
+generally (today only the viscoelastic RHS chunks, via
+``solver.rhs_transform_chunks``).
+
 Normalisation
 -------------
 All transforms use ``norm="forward"``, which divides by *N* on the

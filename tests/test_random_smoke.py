@@ -213,8 +213,8 @@ SYSTEMS: list[dict] = [
         # Re = wi/el is derived (no --phys.re).  The kappa > 0 default
         # also builds the conformation Helmholtz operator (``Hc_op``).
         # wi = el = 20 (Re = 1) and a reduced conformation-noise amplitude
-        # (10, vs the Dedalus restart default 700) keep the coupled system
-        # robust at the coarse smoke resolution -- the Dedalus-native
+        # (10, vs the reference restart default 700) keep the coupled
+        # system robust at the coarse smoke resolution -- the reference
         # wi = 105 with the full noise is a genuinely stiff elastic
         # instability on a 32^3 grid, not a solver defect.
         "name": "viscoelastic-dean",
