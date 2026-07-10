@@ -49,6 +49,14 @@ the force-driven Dean flow, where the coupling is the pure
 instantaneous mean-flow term (``l_bf == L_mf``) -- the regime where the
 two corrector structures most differ.
 
+A trailing ``plane-couette-chunked`` entry passes
+``--solver.rhs_transform_chunks 2`` to drive the chunked RHS inverse
+transform of ``rhs.get_nonlin`` (``fft.chunked_transform``, the
+memory/throughput knob; every other entry runs the default fused
+6-field batch) end to end through the jitted stepper.  The
+viscoelastic analogue is unit-covered by
+``test_viscoelastic.py::test_rhs_transform_chunks_parity``.
+
 A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
 ``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
 divisible by ``np1``) is the regression guard for the per-device
@@ -575,6 +583,29 @@ SYSTEMS: list[dict] = [
             "5",
             "--step.split_corrector",
             "True",
+        ],
+    },
+    {
+        # Chunked RHS transforms (solver.rhs_transform_chunks=2) on a
+        # Newtonian flow: every other entry runs the default fused
+        # 6-field batch of ``get_nonlin``, so this keeps the
+        # ``fft.chunked_transform`` path integration-covered (k = 2
+        # splits velocity / vorticity into separate inverse
+        # transforms; results are identical, so the standard criteria
+        # apply unchanged).  Same config as the iterative-cn
+        # ``plane-couette`` entry.
+        "name": "plane-couette-chunked",
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+            "--solver.rhs_transform_chunks",
+            "2",
         ],
     },
 ]

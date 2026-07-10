@@ -306,9 +306,12 @@ classes, and Fourier classes as JAX pytrees. See its docstring.
 **Performance/memory trade-offs** (detail in the owning
 docstrings/comments): pallas beats dense in storage and speed
 (`solver.backend`); whole-tile mode-plane padding (`from_banded_factors`
-/ `pallas_block_m0` in `solvers.py`); the viscoelastic RHS transform
-batch vs peak memory (`solver.rhs_transform_chunks`); cnab2 is a
-throughput win, not a peak-memory one (`step_cnab2` in `timestep.py`).
+/ `pallas_block_m0` in `solvers.py`); the RHS transform batch vs peak
+memory, all flows (`solver.rhs_transform_chunks`, applied by
+`fft.chunked_transform`; the ~36-field viscoelastic batch is where it
+bites — the `fft.py` memory note also records why fusing the dealias
+zero-pad into the FFT is a dead end); cnab2 is a throughput win, not a
+peak-memory one (`step_cnab2` in `timestep.py`).
 The dominant global memory multipliers are `phys.oversampling_factor`
 (~2.25× physical points at the default 3) and `res.double_precision`
 (2×).
@@ -501,12 +504,13 @@ one-liners. Cross-cutting notes:
 - `tests/test_padding.py`: padded-size rounding (`round_up_padded`
   units; primary/fallback rounding subprocess cases with the diagnostic
   asserted) + FFT exactness cases (odd-pad, odd-nz, fused spec-pad on a
-  forced (2, 2) mesh).
+  forced (2, 2) mesh) + `chunked_transform` bit-parity.
 - `tests/test_laminar_smoke.py`: laminar fixed-point smoke for all
   wall-bounded flows (subprocess/mpirun; Dean/viscoelastic branches;
   console-script `--help`/run entries and an nz-padding entry).
 - `tests/test_random_smoke.py`: random-IC nonlinear integration for all
-  7 flows (+ cnab2, default-IC, gate-off, multi-device-padding entries).
+  7 flows (+ cnab2, default-IC, gate-off, multi-device-padding,
+  chunked-RHS entries).
 - `tests/test_snapshot.py`: snapshot round-trips, np-agnostic resume,
   standard-tools readability, 9-component viscoelastic case.
 - `tests/test_resume.py`: snapshot lineage and resume policy (offline
