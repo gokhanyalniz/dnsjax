@@ -26,12 +26,14 @@ from types import SimpleNamespace
 # Select the JAX backend from --dist.platform (default cpu) before the
 # geometry import below builds sharding.  --dist.platform cuda runs the
 # Pallas band-vs-dense parity on a GPU.
+from dnsjax.bootstrap import (  # noqa: E402
+    configure_jax_platform,
+    platform_from_argv,
+)
 from dnsjax.parameters import (  # noqa: E402
     Parameters,
-    configure_jax_platform,
     derived_params,
     params,
-    platform_from_argv,
     update_parameters,
 )
 

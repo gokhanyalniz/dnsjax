@@ -110,13 +110,14 @@ problem-defining parameter — the physics, the geometry, the resolution, and
 the time integrator — is written out explicitly, so switching to another flow
 is a matter of editing values rather than learning the defaults.
 
-A `python -m dnsjax` run is always launched through `mpirun` (even for one
-process), invoking the environment's Python directly. Output files
-(`stats.dat`, snapshots, …) are written to the current directory, so launch
-from a scratch directory:
+A `dnsjax` run is always launched through `mpirun` (even for one process),
+invoking the environment's `dnsjax` console script directly — `uv run` does
+not compose with `mpirun`, and `python -m dnsjax` is the equivalent module
+form. Output files (`stats.dat`, snapshots, …) are written to the current
+directory, so launch from a scratch directory:
 
 ```bash
-mpirun -np 1 .venv/bin/python -m dnsjax \
+mpirun -np 1 .venv/bin/dnsjax \
   --phys.system pipe \
   --phys.re 2300 \
   --geo.lx 200 \
@@ -220,9 +221,9 @@ Only explicitly set fields override a lower layer, and validation runs once
 after the final layer. The parameters that must be known before JAX
 initializes — `dist.np0`, `dist.np1`, `dist.platform`, and
 `res.double_precision` — are never inherited from a snapshot, and the entire
-`solver` section is execution-only. Run `uv run python -m dnsjax --help` for
-the full command-line interface (it exits at the parser, so no `mpirun` is
-needed); the authoritative field-by-field documentation lives in
+`solver` section is execution-only. Run `uv run dnsjax --help` for the full
+command-line interface (it exits at the parser, so no `mpirun` is needed);
+the authoritative field-by-field documentation lives in
 [`src/dnsjax/parameters.py`](src/dnsjax/parameters.py).
 
 ## Memory footprint
@@ -312,17 +313,22 @@ differently:
 - **`np1`** splits the spanwise axis ($z$) in physical space and the
   streamwise wavenumber axis ($k_x$) in spectral space. The spectral side
   is auto-padded the same way (padding-free when `np1` divides $n_x/2$);
-  the one hard requirement is on the physical side: `np1` must divide the
-  oversampled size `nz_padded = oversampling_factor * nz / 2` (for the
-  example below, `nz = 96` gives `nz_padded = 144`, which admits many
-  choices).
+  on the physical side the oversampled size
+  `nz_padded = oversampling_factor * nz / 2` is rounded up to a multiple of
+  `np1` when needed (keeping the pad even — see
+  [Spatial discretization](#spatial-discretization)), which amounts to a
+  sliver of extra oversampling.
 - Independently of the device grid, the **Pallas banded solver** tiles each
   device's $(k_z, k_x)$ mode plane in blocks of
-  (`solver.pallas_block_m0`, `solver.pallas_block_m1`) $= (2, 32)$ and
-  silently pads up to whole tiles. The padded modes cost memory and solve
-  work in proportion to the round-up, so per-device mode counts
+  (`solver.pallas_block_m0`, `solver.pallas_block_m1`) $= (2, 32)$ and pads
+  up to whole tiles. The padded modes cost memory and solve work in
+  proportion to the round-up, so per-device mode counts
   $(n_z - 1)/n_{p0}$ and $(n_x/2)/n_{p1}$ near multiples of the block sizes
   are optimal; both knobs are adjustable when the mode plane is small.
+
+No divisibility choice is rejected, and none of the padding is silent:
+every adjustment is reported by a one-line startup diagnostic, so its
+(usually marginal) cost stays visible.
 
 Crucially, **every device holds the full wall-normal extent in spectral
 space**, so the per-mode banded solves need no communication. The forward and
@@ -333,11 +339,11 @@ must equal $n_{p0} \cdot n_{p1}$.
 
 The pipe example above on a $2 \times 2$ device grid (`ny = 48` and
 $n_x/2 = 256$ split evenly; `nz = 96` gives `nz_padded = 144`, divisible
-by 2):
+by 2 — an entirely padding-free choice):
 
 ```bash
 # CPU: one device per process
-mpirun -np 4 .venv/bin/python -m dnsjax \
+mpirun -np 4 .venv/bin/dnsjax \
   --dist.np0 2 --dist.np1 2 --dist.platform cpu \
   --phys.system pipe --phys.re 2300 --geo.lx 200 \
   --res.nx 512 --res.ny 48 --res.nz 96 \
@@ -346,7 +352,7 @@ mpirun -np 4 .venv/bin/python -m dnsjax \
 
 ```bash
 # GPU: a single process addressing all four GPUs on the node
-mpirun -np 1 .venv/bin/python -m dnsjax \
+mpirun -np 1 .venv/bin/dnsjax \
   --dist.np0 2 --dist.np1 2 --dist.platform cuda \
   --phys.system pipe --phys.re 2300 --geo.lx 200 \
   --res.nx 512 --res.ny 48 --res.nz 96 \
@@ -462,11 +468,12 @@ equal to `fd_order`). The quadratic nonlinearity is dealiased with the
 **3/2 rule** — physical fields are evaluated on a
 $\tfrac{3}{2}$-oversampled grid and the product is truncated back — and the
 Nyquist mode is dropped on every stored spectral axis (FFTs use
-`norm="forward"`). One resolution rule follows from re-inserting the omitted
-Nyquist mode symmetrically during the padding: the pad on a full-complex
-axis must be even, which at the default oversampling means choosing the
-spanwise / azimuthal `nz` as a multiple of 4 (and likewise `ny` for the
-triply-periodic box); the streamwise real-FFT axis has no such rule.
+`norm="forward"`). Re-inserting the omitted Nyquist mode symmetrically
+during the padding requires an even pad on a full-complex axis; the solver
+rounds the oversampled sizes up on its own when needed (with a startup
+note), so any spanwise / azimuthal `nz` works — though a multiple of 4
+needs no rounding at the default oversampling (likewise `ny` for the
+triply-periodic box). The streamwise real-FFT axis has no such rule.
 
 ### Temporal discretization
 

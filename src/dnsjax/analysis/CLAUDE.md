@@ -20,7 +20,8 @@ module it imports, or the three leaves.
 **Exception**: `transient_growth.py` is a JAX-based (GPU-runnable) CLI
 that lives in this directory but is **not** imported by `__init__.py`,
 and defers every JAX / geometry import behind `configure_jax_platform`
-(so `import dnsjax.analysis` stays JAX-free; only `python -m
+(from `dnsjax.bootstrap`; so `import dnsjax.analysis` stays JAX-free;
+only `python -m
 dnsjax.analysis.transient_growth` or an explicit
 `from dnsjax.analysis.transient_growth import ...` brings in JAX). Do
 not import it from `__init__.py` or any JAX-free module here.

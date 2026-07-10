@@ -84,9 +84,9 @@ import jax
 # whole point of the question).
 jax.config.update("jax_enable_x64", True)
 
+from dnsjax.bootstrap import configure_jax_platform  # noqa: E402
 from dnsjax.parameters import (  # noqa: E402
     Parameters,
-    configure_jax_platform,
     padded_res,
     params,
     update_parameters,

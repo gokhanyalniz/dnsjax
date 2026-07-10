@@ -208,9 +208,9 @@ def run_child(a: argparse.Namespace) -> None:
     import contextlib
     import io
 
+    from dnsjax.bootstrap import configure_jax_platform
     from dnsjax.parameters import (
         Parameters,
-        configure_jax_platform,
         padded_res,
         params,
         update_parameters,

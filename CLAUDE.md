@@ -20,7 +20,7 @@ Python >=3.14, `uv`, MPI (for multi-device runs).
 
 ### Setup
 
-`uv sync`
+`uv sync` (also installs the `dnsjax` console script into `.venv/bin`)
 
 ### Lint
 
@@ -39,7 +39,7 @@ Two ways to get multiple devices, and they do **not** mix:
 offline/in-process tests force CPU devices via
 `XLA_FLAGS=--xla_force_host_platform_device_count=N` + set
 `params.dist.np0`/`np1` before importing `sharding` (no MPI); a
-`python -m dnsjax` run needs real `mpirun -np N` (1 device/process).
+`dnsjax` run needs real `mpirun -np N` (1 device/process).
 
 Single file: `uv run python tests/test_cartesian.py`
 Laminar smoke (1D multi-device):
@@ -49,20 +49,24 @@ Laminar smoke (2D multi-device):
 
 ### Smoke test (laminar time stepping)
 
-Any `python -m dnsjax` run must be launched via `mpirun` (even
-`mpirun -np 1 ...`); under `mpirun` invoke `.venv/bin/python` directly
-(`uv run` does not compose with `mpirun`). A run writes its `.dat`
+Any solver run must be launched via `mpirun` (even `mpirun -np 1 ...`);
+under `mpirun` invoke `.venv/bin/dnsjax` directly (`uv run` does not
+compose with `mpirun`; `python -m dnsjax` is the equivalent module
+form, same `__main__.main()`). `uv run dnsjax --help` needs no mpirun
+(exits at the parser, no side effects). A run writes its `.dat`
 files/snapshots to the cwd, so launch from a scratch dir. `np0 * np1`
 counts devices, not processes (a single process can address all GPUs on
 a node); launch recipe, SLURM discipline, and the per-task-visibility
 trap: the `Distribution` docstring in `parameters.py`.
 
-`mpirun -np 2 python -m dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
+`mpirun -np 2 .venv/bin/dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
 
 For double parallelisation on the default CGL grid (pick `ny` divisible
-by `np0` for an even split; the sharding layer auto-pads otherwise):
+by `np0` for an even split; the sharding layer auto-pads otherwise, and
+every auto-pad -- spectral, physical, padded-size rounding, Pallas
+tiles -- prints a startup diagnostic):
 
-`mpirun -np 4 python -m dnsjax --dist.np0 2 --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 28`
+`mpirun -np 4 .venv/bin/dnsjax --dist.np0 2 --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 28`
 
 The laminar state should step with a single corrector, stepping error
 O(-18) or less and perturbation energy O(-32) or less. Run the tests in
@@ -131,13 +135,18 @@ docstring.
 Per-module detail lives in each module's docstring; one line each here.
 
 ```
-__main__.py           Entry point: import-order enforcement, stats
-                      buffering, snapshot resume/lineage
-parameters.py         Pydantic parameter models; singletons params,
-                      derived_params, padded_res;
-                      trajectory_defining_changes;
+__main__.py           Entry point main() (console script `dnsjax` +
+                      python -m), stats buffering, snapshot
+                      resume/lineage
+bootstrap.py          Shared entry-point setup, used by all entry
+                      points (solver, scripts, tests):
+                      resolve_parameters (CLI/toml/snapshot layering),
+                      configure_jax_runtime (distributed init),
                       configure_jax_platform/platform_from_argv
-                      (single-process --dist.platform for scripts/tests)
+                      (single-process --dist.platform)
+parameters.py         Pydantic parameter models (JAX-free); singletons
+                      params, derived_params, padded_res;
+                      trajectory_defining_changes; round_up_padded
 sharding.py           Multi-device (np0, np1) mesh; singleton sharding;
                       register_dataclass_pytree; layouts + specs
 operators.py          Wavenumber helpers (re-exports harmonics.py in
@@ -236,8 +245,8 @@ state axis replicated).
 `padded_res` (`parameters.py`), `sharding` (`sharding.py`), and a
 geometry `fourier` are module-level singletons captured at import time
 -- so JAX must be configured and parameters final (`update_parameters()`)
-*before* importing `sharding` or any geometry module (the `__main__.py`
-docstring). Earlier-importable modules (e.g. `random_field.py`) keep
+*before* importing `sharding` or any geometry module (the setup
+contract: the `bootstrap.py` module docstring). Earlier-importable modules (e.g. `random_field.py`) keep
 `import jax` out of module scope. `fourier`'s wavenumber arrays are
 global multi-device arrays -- host code recomputes them from
 `harmonics.real_harmonics`/`complex_harmonics` × `2π/L`, never
@@ -311,7 +320,8 @@ params → `parameters.toml` → CLI args. `update_parameters()` applies
 only explicitly-set, non-`None` fields; `validate_parameters()` runs
 once after the final layer. The JAX-setup fields `dist.np0`/`np1`/
 `platform` and `res.double_precision` are *not* inherited from a
-snapshot (resume is device-/precision-agnostic). Detail: `__main__.py`.
+snapshot (resume is device-/precision-agnostic). Detail:
+`bootstrap.py` (`resolve_parameters`).
 
 Two fields carry per-family defaults **re-resolved on every
 `update_parameters()` call** unless explicitly set through a layer:
@@ -409,7 +419,7 @@ detail: `snapshot.py` and `__main__.py` module docstrings.
   at import/trace time (the `test_*` subprocess-per-config idiom).
 - Diagnostic scripts and offline / in-process tests select the JAX
   backend from `--dist.platform` (default cpu) via
-  `configure_jax_platform` / `platform_from_argv` (`parameters.py`),
+  `configure_jax_platform` / `platform_from_argv` (`bootstrap.py`),
   before importing `sharding` or any geometry module -- so
   `--dist.platform cuda` runs the real Pallas kernels on GPU. In-process
   multi-device tests force CPU (`--xla_force_host_platform_device_count`,
@@ -461,9 +471,12 @@ one-liners. Cross-cutting notes:
   default to `None` and `update_parameters()` raises otherwise); the
   unit tests use `100`/`0`/`0.5`, the smoke/integration tests
   counter-rotating values.
-- A tiny complex-FFT-axis nz trips "Difference (n - N) = 3 cannot be
-  odd" in the 3/2-rule dealiasing (nz=6 fails, nz=8/32 work; the real
-  axis nx=6 is fine -- different rule).
+- The 3/2-rule pad on a complex FFT axis (z, periodic y) must be even;
+  `set_padded_resolution` auto-rounds the padded sizes for parity and
+  np0/np1 divisibility with a startup note (e.g. nz=6: nz_padded 9->10;
+  `round_up_padded` in `parameters.py`), so those configs run. The one
+  impossible corner -- odd nz (or periodic ny) with an even mesh axis --
+  raises. The real axis nx has no parity rule.
 
 - `tests/test_banded_solver.py`: geometry-independent Pallas banded
   backend (interpret parity, cuda-lowering guard, check contract).
@@ -485,8 +498,12 @@ one-liners. Cross-cutting notes:
   (Kolmogorov cnab2 self-convergence, plane-Couette scheme slope).
 - `tests/test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
   forced spectral padding.
+- `tests/test_padding.py`: padded-size rounding (`round_up_padded`
+  units; primary/fallback/parity-rescue subprocess cases with the
+  diagnostic asserted).
 - `tests/test_laminar_smoke.py`: laminar fixed-point smoke for all
-  wall-bounded flows (subprocess/mpirun; Dean/viscoelastic branches).
+  wall-bounded flows (subprocess/mpirun; Dean/viscoelastic branches;
+  console-script `--help`/run entries and an nz-padding entry).
 - `tests/test_random_smoke.py`: random-IC nonlinear integration for all
   7 flows (+ cnab2, default-IC, gate-off, multi-device-padding entries).
 - `tests/test_snapshot.py`: snapshot round-trips, np-agnostic resume,

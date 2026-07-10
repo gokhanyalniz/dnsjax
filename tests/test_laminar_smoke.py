@@ -45,6 +45,17 @@ rotational nonlinear term (a wrong ``rhs.py``/advection change can
 still report ``err = 0``); ``tests/test_random_smoke.py`` drives that
 path.
 
+The suite also guards the ``dnsjax`` console script: a ``--help``
+preflight (exit 0, usage text, **no files created** -- the regression
+that motivated the entry-point refactor), one smoke case launched
+through the installed ``dnsjax`` script under ``mpirun`` (the
+distributed init through the console path; same
+:func:`dnsjax.__main__.main` as ``python -m dnsjax``), and a
+``plane-couette-nz-pad`` case whose ``nz = 6`` triggers the
+padded-size rounding (``nz_padded`` 9 -> 10) under every device
+layout, asserting the startup diagnostic.  Console-script entries are
+skipped with a notice when the script is not installed (``uv sync``).
+
 Each system is tested in a separate subprocess because the
 geometry modules capture global singletons at import time.
 Each subprocess runs in its own temporary directory, so
@@ -83,6 +94,56 @@ from pathlib import Path
 SYSTEMS: list[dict] = [
     {
         "name": "plane-couette",
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nx",
+            "4",
+            "--res.nz",
+            "4",
+            "--res.ny",
+            "27",
+        ],
+    },
+    {
+        # nz = 6 makes the natural nz_padded = 9 invalid twice over --
+        # odd pad (9 - 6 = 3) on a single device, not divisible by
+        # np1 = 2 on two -- so this exercises the padded-size rounding
+        # (nz_padded 9 -> 10) under every --np layout and asserts the
+        # startup diagnostic.  The laminar CFL checks are nz-agnostic
+        # for plane-Couette (streamwise-active).
+        "name": "plane-couette-nz-pad",
+        "expect_stdout": "nz_padded rounded from 9 to 10",
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nx",
+            "4",
+            "--res.nz",
+            "6",
+            "--res.ny",
+            "27",
+        ],
+    },
+    {
+        # The base case launched through the installed ``dnsjax``
+        # console script instead of ``python -m dnsjax``: proves the
+        # CLI parse and the distributed init through the console entry
+        # point (skipped with a notice when not installed).
+        "name": "plane-couette-console-script",
+        "console": True,
         "args": [
             "--phys.system",
             "plane-couette",
@@ -449,25 +510,42 @@ CFL_ZERO_TOL = 1e-12  # roundoff-sized perturbation columns
 # ── helpers ──────────────────────────────────────────────────────────
 
 
+def _console_script() -> Path | None:
+    """The installed ``dnsjax`` console script, or ``None``.
+
+    Looked up next to the running interpreter (``.venv/bin/dnsjax``
+    after ``uv sync``), so the smoke children exercise the same
+    environment either way.
+    """
+    script = Path(sys.executable).with_name("dnsjax")
+    return script if script.exists() else None
+
+
 def _build_command(
     system_args: list[str],
     np_count: int,
     np0: int = 1,
     platform: str = "cpu",
+    console: bool = False,
 ) -> list[str]:
     """Build the subprocess command for a single system.
 
     *platform* is forwarded as ``--dist.platform`` so the whole suite
     can run on a GPU (``--dist.platform cuda``); with ``--np N`` this is
-    ``mpirun -np N`` processes, one device each.
+    ``mpirun -np N`` processes, one device each.  With *console* the
+    child is the installed ``dnsjax`` console script instead of
+    ``python -m dnsjax`` (both run :func:`dnsjax.__main__.main`).
     """
+    entry = (
+        [str(_console_script())]
+        if console
+        else [sys.executable, "-m", "dnsjax"]
+    )
     base = [
         "mpirun",
         "-np",
         str(np_count),
-        sys.executable,
-        "-m",
-        "dnsjax",
+        *entry,
         "--dist.platform",
         platform,
         "--dist.np0",
@@ -788,12 +866,48 @@ def _check_viscoelastic_dean(stdout: str, name: str) -> tuple[float, float]:
 # ── test runner ──────────────────────────────────────────────────────
 
 
+def check_console_help() -> None:
+    """``dnsjax --help`` must print usage, exit 0, and touch nothing.
+
+    Regression guard for the pre-refactor console script, which had no
+    reachable CLI parse and would have silently started a default
+    simulation on ``--help``.  Runs without ``mpirun`` (the help path
+    exits before any JAX / distributed init).
+    """
+    script = _console_script()
+    if script is None:
+        print("  SKIP  console-help: console script not installed")
+        return
+    with tempfile.TemporaryDirectory(prefix="smoke_help_") as workdir:
+        result = subprocess.run(
+            [str(script), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=workdir,
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                f"console-help: exit code {result.returncode}"
+            )
+        if "usage: dnsjax" not in result.stdout:
+            raise AssertionError("console-help: no usage text in stdout")
+        leftovers = sorted(p.name for p in Path(workdir).iterdir())
+        if leftovers:
+            raise AssertionError(f"console-help: created files {leftovers}")
+    print("  PASS  console-help (usage printed, no side effects)")
+
+
 def run_smoke_test(
     system: dict, np_count: int, np0: int = 1, platform: str = "cpu"
 ) -> None:
     """Run a single laminar smoke test (in a fresh directory)."""
     name = system["name"]
-    cmd = _build_command(system["args"], np_count, np0, platform)
+    console = system.get("console", False)
+    if console and _console_script() is None:
+        print(f"  SKIP  {name}: console script not installed (uv sync)")
+        return
+    cmd = _build_command(system["args"], np_count, np0, platform, console)
 
     with tempfile.TemporaryDirectory(prefix=f"smoke_{name}_") as workdir:
         result = subprocess.run(
@@ -810,6 +924,13 @@ def run_smoke_test(
             print(result.stderr[-2000:] if result.stderr else "(no stderr)")
             raise AssertionError(
                 f"{name} exited with code {result.returncode}"
+            )
+
+        expect = system.get("expect_stdout")
+        if expect is not None and result.stdout.count(expect) != 1:
+            raise AssertionError(
+                f"{name}: expected exactly one {expect!r} in stdout "
+                f"(got {result.stdout.count(expect)})"
             )
 
         if name.startswith("viscoelastic"):
@@ -889,6 +1010,12 @@ if __name__ == "__main__":
 
     passed = 0
     failed = 0
+    try:
+        check_console_help()
+        passed += 1
+    except (AssertionError, subprocess.TimeoutExpired) as exc:
+        print(f"  FAIL  console-help: {exc}")
+        failed += 1
     for system in SYSTEMS:
         try:
             run_smoke_test(system, args.np, args.np0, args.platform)

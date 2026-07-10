@@ -806,6 +806,12 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     return jnp.moveaxis(x, -1, 0)  # -> (N, Nkz, Nkx)
 
 
+# Tile-padding diagnostics already reported (one entry per distinct
+# local-plane/tile geometry): every operator built for a run shares the
+# same mode plane, so Lk/Hk/Hc would otherwise repeat the same note.
+_tile_pad_reported: set[tuple[int, int, int, int]] = set()
+
+
 @register_dataclass_pytree
 @dataclass
 class PerModeBandedPallasOperator:
@@ -880,12 +886,32 @@ class PerModeBandedPallasOperator:
         ``np0 * nkz_loc_pad x np1 * nkx_loc_pad`` -- the **sum of
         local roundups**, not the global roundup.  On one device
         local = global and this reduces to the plain whole-tile pad.
+        Any nonzero round-up is reported once at startup (main
+        process), since the padded modes cost solve work and memory.
         """
         Li = jnp.moveaxis(L, (-2, -1), (0, 1))  # (N, p, Nkz, Nkx)
         Ui = jnp.moveaxis(U, (-2, -1), (0, 1))  # (N, p+1, Nkz, Nkx)
         Ui = Ui.at[:, 0].set(1.0 / Ui[:, 0])  # reciprocate diagonal slot
         bm0 = params.solver.pallas_block_m0
         bm1 = params.solver.pallas_block_m1
+
+        # Report the whole-tile round-up once per distinct geometry
+        # (host-side; the pad itself happens per shard below and per
+        # solve for the RHS, both inside traced regions).
+        nkz_loc = Li.shape[2] // sharding.np0
+        nkx_loc = Li.shape[3] // sharding.np1
+        pad_kz = -nkz_loc % bm0
+        pad_kx = -nkx_loc % bm1
+        if pad_kz or pad_kx:
+            key = (nkz_loc, nkx_loc, bm0, bm1)
+            if key not in _tile_pad_reported:
+                _tile_pad_reported.add(key)
+                sharding.print(
+                    f"Pallas mode plane: local ({nkz_loc} x "
+                    f"{nkx_loc}) modes padded to ({nkz_loc + pad_kz} "
+                    f"x {nkx_loc + pad_kx}) for whole ({bm0} x {bm1}) "
+                    "tiles."
+                )
 
         def _pad_local(L_l: Array, U_l: Array) -> tuple[Array, Array]:
             pad_kz = -L_l.shape[2] % bm0

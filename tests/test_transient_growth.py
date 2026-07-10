@@ -205,9 +205,9 @@ def _test_jax_free() -> None:
 
 def _worker(system: str) -> None:
     """Per-system: hook == builtin coupling, and block-diagonality."""
+    from dnsjax.bootstrap import configure_jax_platform
     from dnsjax.parameters import (
         Parameters,
-        configure_jax_platform,
         derived_params,
         padded_res,
         params,

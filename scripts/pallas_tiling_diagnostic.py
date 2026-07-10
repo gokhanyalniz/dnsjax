@@ -71,10 +71,9 @@ from __future__ import annotations
 
 import argparse
 
+from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
 from dnsjax.parameters import (
-    configure_jax_platform,
     params,
-    platform_from_argv,
 )
 
 # Select the JAX backend from --dist.platform (default cpu) BEFORE

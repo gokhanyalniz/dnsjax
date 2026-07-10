@@ -23,10 +23,12 @@ from __future__ import annotations
 # importing any dnsjax module that captures the platform (the geometry
 # import below builds sharding).  This suite is quadrature / interpolation
 # math -- device-agnostic -- but honours --dist.platform for consistency.
-from dnsjax.parameters import (  # noqa: E402
+from dnsjax.bootstrap import (  # noqa: E402
     configure_jax_platform,
-    params,
     platform_from_argv,
+)
+from dnsjax.parameters import (  # noqa: E402
+    params,
 )
 
 configure_jax_platform(platform_from_argv())

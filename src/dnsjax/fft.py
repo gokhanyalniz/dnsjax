@@ -141,7 +141,10 @@ def zeropad_fft(a: Array, n: int, axis: int, out_shard) -> Array:
         omitted), where *$N$* is the original full mode count.
     n:
         Target length (`$\\ge N$`).  Must satisfy
-        `$(n - N) \\pmod 2 = 0$`.
+        `$(n - N) \\pmod 2 = 0$` -- guaranteed for the pipeline's own
+        targets by the padded-size rounding
+        (``PaddedResolution.apply_rounding``); the check below guards
+        direct callers.
     axis:
         Axis along which to pad (0 for y, 1 for z).
     out_shard:
