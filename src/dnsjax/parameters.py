@@ -77,12 +77,10 @@ class Distribution(BaseModel):
     `$y \leftrightarrow k_z$` reshard); the padded physical
     sizes -- ``nz_padded`` (split by ``np1``) and, for
     periodic flows, ``ny_padded`` (split by ``np0``) -- are
-    rounded up with an even pad (:func:`round_up_padded`;
-    marginally more oversampling, physically neutral).  The
-    sole impossible corner, an odd ``nz`` (or periodic
-    ``ny``) with an even mesh direction, raises with an
-    actionable message.  Divisible sizes avoid the padding
-    overhead entirely.  Note that CGL grids traditionally
+    rounded up to the next multiple (:func:`round_up_padded`;
+    marginally more oversampling, physically neutral).
+    Divisible sizes avoid the padding overhead entirely.
+    Note that CGL grids traditionally
     use ``ny = 2^k + 1`` (``N + 1`` collocation points for
     ``N`` Chebyshev polynomials), but any ``ny >= 2`` is
     valid: the code uses finite differences, not spectral
@@ -1243,36 +1241,21 @@ def validate_parameters() -> None:
         )
 
 
-def round_up_padded(n_padded: int, n_source: int, divisor: int) -> int:
-    r"""Round a padded FFT size up for divisibility and pad parity.
+def round_up_padded(n_padded: int, divisor: int) -> int:
+    r"""Round a padded FFT size up to a multiple of *divisor*.
 
     Returns the smallest `$m \ge n_\mathrm{padded}$` with
-    `$m \equiv 0 \pmod d$` (``d = max(divisor, 1)``) and
-    `$m - n_\mathrm{source}$` even.  The parity condition is the
-    :func:`dnsjax.fft.zeropad_fft` / ``truncate_fft`` rule -- the
-    omitted Nyquist mode is re-inserted symmetrically, which needs an
-    even pad on a full-complex axis; the divisibility condition lets
-    the padded physical axis split evenly across *divisor* devices.
-    The padded region carries only zero (dealiased) modes, so rounding
-    up is physically neutral (it costs marginally more FFT work).
-
-    Raises ``ValueError`` for the one impossible combination, an even
-    *divisor* with an odd *n_source*: every multiple of an even number
-    is even, so the pad parity can never match -- choose an even grid
-    size instead.
+    `$m \equiv 0 \pmod d$` (``d = max(divisor, 1)``), so the padded
+    physical axis splits evenly across *divisor* devices.  The padded
+    region carries only zero (dealiased) modes, so rounding up is
+    physically neutral (it costs marginally more FFT work).  The pad
+    parity is unconstrained: the :func:`dnsjax.fft.zeropad_fft` /
+    ``truncate_fft`` wrap-order mode placement is exact for even and
+    odd pads alike, so no combination of grid size and mesh axis is
+    rejected.
     """
     d = max(divisor, 1)
-    m = -(-n_padded // d) * d
-    if (m - n_source) % 2:
-        if d % 2 == 0:
-            raise ValueError(
-                f"No padded size >= {n_padded} can be both a multiple "
-                f"of {d} and an even pad of the grid size {n_source} "
-                "(every multiple of an even divisor is even); choose "
-                "an even grid size."
-            )
-        m += d
-    return m
+    return -(-n_padded // d) * d
 
 
 @dataclass
@@ -1282,10 +1265,9 @@ class PaddedResolution:
     The oversampled (padded) grid is used when evaluating nonlinear terms
     in physical space.  Each direction is expanded by a factor of
     ``oversampling_factor / 2`` (typically 3/2); the full-complex axes
-    are then rounded up for mesh divisibility and even-pad parity
-    (:meth:`apply_rounding`), with every adjustment recorded in
-    :attr:`notes` for the startup diagnostics printed by
-    :mod:`dnsjax.sharding`.
+    are then rounded up for mesh divisibility (:meth:`apply_rounding`),
+    with every adjustment recorded in :attr:`notes` for the startup
+    diagnostics printed by :mod:`dnsjax.sharding`.
     """
 
     nx_padded: int = params.phys.oversampling_factor * params.res.nx // 2
@@ -1300,13 +1282,12 @@ class PaddedResolution:
     notes: list[str] = field(default_factory=list)
 
     def apply_rounding(self, parameters: Parameters) -> None:
-        r"""Round padded sizes for mesh divisibility and pad parity.
+        r"""Round padded sizes for mesh divisibility.
 
         Rounds ``nz_padded`` (and ``ny_padded`` for periodic systems)
         up with :func:`round_up_padded` so the padded physical axis
         splits evenly across the mesh direction that shards it
-        (``np1`` for `$z$`, ``np0`` for `$y$`) and the pad stays even
-        (the :func:`dnsjax.fft.zeropad_fft` parity rule).  Idempotent;
+        (``np1`` for `$z$`, ``np0`` for `$y$`).  Idempotent;
         re-applied at :mod:`dnsjax.sharding` import for entry points
         that set ``params.dist`` after (or without)
         :meth:`set_padded_resolution`.  Each adjustment appends a
@@ -1318,18 +1299,18 @@ class PaddedResolution:
         np1 = dist.np1 if dist is not None else 1
 
         if self.ny_padded is not None:
-            ny_new = round_up_padded(self.ny_padded, parameters.res.ny, np0)
+            ny_new = round_up_padded(self.ny_padded, np0)
             if ny_new != self.ny_padded:
                 self.notes.append(
                     f"ny_padded rounded from {self.ny_padded} to "
-                    f"{ny_new} (np0 divisibility / even-pad parity)."
+                    f"{ny_new} (np0 divisibility)."
                 )
                 self.ny_padded = ny_new
-        nz_new = round_up_padded(self.nz_padded, parameters.res.nz, np1)
+        nz_new = round_up_padded(self.nz_padded, np1)
         if nz_new != self.nz_padded:
             self.notes.append(
                 f"nz_padded rounded from {self.nz_padded} to "
-                f"{nz_new} (np1 divisibility / even-pad parity)."
+                f"{nz_new} (np1 divisibility)."
             )
             self.nz_padded = nz_new
 
@@ -1339,9 +1320,8 @@ class PaddedResolution:
         The natural sizes are ``oversampling_factor * n // 2`` (`$y$`
         unpadded for wall-bounded flows and only optionally oversampled
         for periodic ones); :meth:`apply_rounding` then rounds the
-        full-complex axes up for mesh divisibility and even-pad
-        parity.  ``nx_padded`` is exempt (real-FFT axis, never sharded
-        in physical space).
+        full-complex axes up for mesh divisibility.  ``nx_padded`` is
+        exempt (real-FFT axis, never sharded in physical space).
         """
         self.notes = []
         if (

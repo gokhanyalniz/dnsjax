@@ -1,18 +1,20 @@
-r"""Padded-size rounding tests (mesh divisibility + even-pad parity).
+r"""Padded-size rounding tests (mesh divisibility) and odd-pad FFTs.
 
 Covers :func:`dnsjax.parameters.round_up_padded` and its two
 application sites: ``PaddedResolution.set_padded_resolution`` (the
 primary site -- ``params.dist`` is final at every production call) and
 the idempotent ``padded_res.apply_rounding`` fallback at
 :mod:`dnsjax.sharding` import (entry points that set ``params.dist``
-after -- or without -- ``set_padded_resolution``).  Singleton-dependent
-cases run in subprocesses (the ``test_*`` subprocess-per-config idiom:
-sharding/geometry singletons capture ``params`` at import time), and
-each asserts its rounding diagnostic is printed exactly once.
+after -- or without -- ``set_padded_resolution``), plus the
+parity-free ``zeropad_fft`` / ``truncate_fft`` mode placement those
+sizes feed.  Singleton-dependent cases run in subprocesses (the
+``test_*`` subprocess-per-config idiom: sharding/geometry singletons
+capture ``params`` at import time); each asserts its rounding
+diagnostic is printed exactly once, or that none appears where the
+natural padded size must pass through unrounded.
 
-1. Unit: ``round_up_padded`` -- divisibility, parity (including the
-   ``divisor = 1`` parity-rescue), the odd-divisor double step, no-op,
-   and the impossible corner (even divisor, odd source) raising.
+1. Unit: ``round_up_padded`` -- divisibility, no-op, and the
+   ``divisor <= 1`` passthrough.
 2. ``primary``: nz = 6 with np1 = 2 on 2 forced host CPU devices --
    ``set_padded_resolution`` rounds ``nz_padded`` 9 -> 10 *before* the
    sharding import; ``sharding.phys_shape`` picks it up and a
@@ -20,10 +22,21 @@ each asserts its rounding diagnostic is printed exactly once.
 3. ``fallback``: ``params.dist.np1`` assigned *after*
    ``set_padded_resolution`` (the direct-assignment idiom of
    ``test_banded_solver_sharded``) -- the sharding-import fallback
-   rounds 10 -> 12 for np1 = 4 and records the note.
-4. ``rescue``: single device, nz = 6 -- previously the trace-time
-   ``"Difference (n - N) = 3 cannot be odd"`` failure; now rounds
-   9 -> 10 and the FFT round-trip runs.
+   rounds 9 -> 12 for np1 = 4 and records the note.
+4. ``odd_pad``: single device, nz = 6 -- ``nz_padded`` stays at the
+   natural 9 (an odd dealiasing pad, no rounding note); a random
+   Hermitian field round-trips exactly and a single ``k_z = 1`` mode
+   lands on the analytic physical profile (mode placement is
+   parity-free).
+5. ``odd_nz``: single device, nz = 5 -- ``truncate_fft`` keeps
+   ``(n - 1) - n // 2`` negative modes, matching the ``n - 1`` stored
+   modes of ``harmonics.complex_harmonics`` for odd *n* (formerly a
+   shape mismatch); exactness checks as in ``odd_pad``.
+6. ``spec_pad``: forced (2, 2) host-CPU mesh with nx = 6 / nz = 4 --
+   both spectral divisibility pads engaged, driving the
+   ``pad``/``strip`` arguments fused into ``truncate_*`` /
+   ``zeropad_*`` (no rounding note; the spec-pad diagnostics are
+   expected), with the exactness checks sharded via ``device_put``.
 
 Usage::
 
@@ -43,26 +56,20 @@ def test_round_up_padded() -> None:
     from dnsjax.parameters import round_up_padded
 
     cases = [
-        ((9, 6, 2), 10),  # divisibility + parity (np1 = 2)
-        ((9, 6, 1), 10),  # parity-rescue on a single device
-        ((12, 8, 2), 12),  # already valid: no-op
-        ((24, 16, 5), 30),  # odd divisor: parity forces a second step
-        ((192, 128, 1), 192),  # the defaults are untouched
-        ((16, 16, 4), 16),  # zero pad is even
+        ((9, 2), 10),  # divisibility (np1 = 2)
+        ((9, 1), 9),  # single device: no rounding
+        ((12, 2), 12),  # already valid: no-op
+        ((24, 5), 25),  # odd divisor
+        ((192, 1), 192),  # the defaults are untouched
+        ((16, 4), 16),  # already a multiple
     ]
-    for (n_padded, n_source, divisor), expected in cases:
-        got = round_up_padded(n_padded, n_source, divisor)
+    for (n_padded, divisor), expected in cases:
+        got = round_up_padded(n_padded, divisor)
         if got != expected:
             raise AssertionError(
-                f"round_up_padded{(n_padded, n_source, divisor)} = "
+                f"round_up_padded{(n_padded, divisor)} = "
                 f"{got}, expected {expected}"
             )
-    try:
-        round_up_padded(26, 17, 2)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("even divisor + odd source must raise")
 
 
 # ── subprocess cases (singletons captured at import time) ───────────
@@ -71,9 +78,8 @@ def test_round_up_padded() -> None:
 def _fft_round_trip(sharding) -> None:
     """Zero-field spec -> phys -> spec round-trip on the padded grid.
 
-    Shape-driven: exercises ``zeropad_fft`` / ``truncate_fft`` with the
-    rounded ``nz_padded`` -- the exact path that raised
-    ``"Difference (n - N) ... cannot be odd"`` before the rounding.
+    Shape-driven: exercises ``zeropad_fft`` / ``truncate_fft`` with
+    the padded ``nz_padded`` under the mesh the case forces.
     """
     from jax import numpy as jnp
 
@@ -92,6 +98,77 @@ def _fft_round_trip(sharding) -> None:
         raise AssertionError(f"round-trip shape {back.shape}")
     if float(jnp.abs(back).max()) != 0.0:
         raise AssertionError("round-trip of zeros not zero")
+
+
+def _hermitian_random_spec(sharding):
+    """Random spectral field that a real physical field can carry.
+
+    Free on ``kx > 0`` columns (the real FFT implies the conjugate
+    half); Hermitian-paired in kz on the ``kx = 0`` plane
+    (``c(-kz) = conj(c(kz))``, real mean), with unpaired kz modes
+    (the odd-``nz`` band edge) and divisibility-padding slots zeroed.
+    Any such field is exactly representable on the padded grid, so
+    spec -> phys -> spec must be the identity.
+    """
+    import numpy as np
+
+    from dnsjax.harmonics import complex_harmonics
+    from dnsjax.parameters import params
+
+    rng = np.random.default_rng(7)
+    shape = (3, *sharding.spec_shape)
+    a = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
+    kz = list(complex_harmonics(params.res.nz))
+    a[:, :, len(kz) :, :] = 0.0  # kz divisibility-padding slots
+    a[:, :, :, params.res.nx // 2 :] = 0.0  # kx padding slots
+    for i, q in enumerate(kz):
+        if q == 0:
+            a[:, :, i, 0] = a[:, :, i, 0].real
+        elif -q not in kz:
+            a[:, :, i, 0] = 0.0  # unpaired band edge (odd nz)
+        elif q > 0:
+            a[:, :, kz.index(-q), 0] = np.conj(a[:, :, i, 0])
+    return a
+
+
+def _fft_exactness(sharding) -> None:
+    r"""Identity + analytic mode-placement checks.
+
+    A random Hermitian field must survive spec -> phys -> spec
+    unchanged, and a single `$k_z = 1$` mode must land on
+    `$2 \cos(2 \pi j / n_{z,\mathrm{padded}})$` on the padded
+    physical grid -- an absolute-placement check, so a
+    self-consistent slot swap in the pad/truncate pair cannot pass.
+    """
+    import jax
+    import numpy as np
+    from jax import numpy as jnp
+    from jax.sharding import NamedSharding
+
+    from dnsjax.harmonics import complex_harmonics
+    from dnsjax.operators import phys_to_spec_2d, spec_to_phys_2d
+    from dnsjax.parameters import padded_res, params
+
+    shard = NamedSharding(sharding.mesh, sharding.spec_vector_shard)
+    spec = jax.device_put(
+        _hermitian_random_spec(sharding).astype(sharding.complex_type),
+        shard,
+    )
+    back = phys_to_spec_2d(spec_to_phys_2d(spec))
+    err = float(jnp.abs(back - spec).max())
+    if err > 1e-12:
+        raise AssertionError(f"Hermitian round-trip error {err:.2e}")
+
+    kz = list(complex_harmonics(params.res.nz))
+    one = np.zeros((3, *sharding.spec_shape), dtype=sharding.complex_type)
+    one[0, :, kz.index(1), 0] = 1.0
+    one[0, :, kz.index(-1), 0] = 1.0
+    phys = spec_to_phys_2d(jax.device_put(one, shard))
+    grid = np.arange(padded_res.nz_padded) / padded_res.nz_padded
+    expected = 2.0 * np.cos(2.0 * np.pi * grid)
+    err = float(np.abs(np.asarray(phys[0]) - expected[None, :, None]).max())
+    if err > 1e-12:
+        raise AssertionError(f"mode-placement error {err:.2e}")
 
 
 def case_primary() -> None:
@@ -141,7 +218,7 @@ def case_fallback() -> None:
         )
     )
     padded_res.set_padded_resolution(params)
-    assert padded_res.nz_padded == 10  # parity-rescue at np = 1
+    assert padded_res.nz_padded == 9  # no rounding at np = 1
 
     # The direct-assignment idiom: the mesh axes change *after*
     # ``padded_res`` was computed; the sharding import must re-round.
@@ -153,8 +230,9 @@ def case_fallback() -> None:
     print("case-ok")
 
 
-def case_rescue() -> None:
-    """Single device, nz = 6: the old odd-pad failure now runs."""
+def case_odd_pad() -> None:
+    """Single device, nz = 6: the natural odd pad (9) runs unrounded."""
+    from dnsjax.bootstrap import configure_jax_platform
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -169,26 +247,102 @@ def case_rescue() -> None:
         )
     )
     padded_res.set_padded_resolution(params)
-    assert padded_res.nz_padded == 10, padded_res.nz_padded
+    assert padded_res.nz_padded == 9, padded_res.nz_padded
+    assert padded_res.notes == [], padded_res.notes
 
+    configure_jax_platform("cpu")  # x64 for the exactness thresholds
     from dnsjax.sharding import sharding
 
+    assert sharding.phys_shape == (9, 9, 6), sharding.phys_shape
     _fft_round_trip(sharding)
+    _fft_exactness(sharding)
+    print("case-ok")
+
+
+def case_odd_nz() -> None:
+    """Single device, nz = 5: the odd-``nz`` band round-trips exactly."""
+    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.parameters import (
+        Parameters,
+        padded_res,
+        params,
+        update_parameters,
+    )
+
+    update_parameters(
+        Parameters(
+            phys={"system": "plane-couette"},
+            res={"nx": 4, "ny": 9, "nz": 5},
+        )
+    )
+    padded_res.set_padded_resolution(params)
+    assert padded_res.nz_padded == 7, padded_res.nz_padded
+    assert padded_res.notes == [], padded_res.notes
+
+    configure_jax_platform("cpu")  # x64 for the exactness thresholds
+    from dnsjax.sharding import sharding
+
+    assert sharding.spec_shape == (9, 4, 2), sharding.spec_shape
+    _fft_round_trip(sharding)
+    _fft_exactness(sharding)
+    print("case-ok")
+
+
+def case_spec_pad() -> None:
+    """(2, 2) mesh, nx = 6 / nz = 4: both fused spec pads engaged.
+
+    ``nz - 1 = 3`` and ``nx // 2 = 3`` are odd, so both spectral axes
+    carry one divisibility-padding mode -- the ``pad``/``strip``
+    arguments fused into ``truncate_*`` / ``zeropad_*`` are exercised
+    end to end, with the exactness checks confirming the padded slots
+    stay out of the physical field.
+    """
+    os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
+    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.parameters import (
+        Parameters,
+        padded_res,
+        params,
+        update_parameters,
+    )
+
+    update_parameters(
+        Parameters(
+            phys={"system": "plane-couette"},
+            res={"nx": 6, "ny": 8, "nz": 4},
+            dist={"np0": 2, "np1": 2},
+        )
+    )
+    padded_res.set_padded_resolution(params)
+    assert padded_res.nz_padded == 6, padded_res.nz_padded
+    assert padded_res.notes == [], padded_res.notes
+
+    configure_jax_platform("cpu")  # x64 for the exactness thresholds
+    from dnsjax.sharding import sharding
+
+    assert sharding.nz_spec_pad == 1, sharding.nz_spec_pad
+    assert sharding.nx_spec_pad == 1, sharding.nx_spec_pad
+    _fft_round_trip(sharding)
+    _fft_exactness(sharding)
     print("case-ok")
 
 
 CASES = {
     "primary": case_primary,
     "fallback": case_fallback,
-    "rescue": case_rescue,
+    "odd_pad": case_odd_pad,
+    "odd_nz": case_odd_nz,
+    "spec_pad": case_spec_pad,
 }
-# The rounding diagnostic each case must print exactly once (the
-# fallback's stdout also carries the primary "9 to 10" line -- both
-# notes are reported at the sharding import).
-EXPECT = {
+# The rounding diagnostic each case must print exactly once; ``None``
+# marks cases whose natural padded size must pass through unrounded
+# (no rounding note at all).
+EXPECT: dict[str, str | None] = {
     "primary": "nz_padded rounded from 9 to 10",
-    "fallback": "nz_padded rounded from 10 to 12",
-    "rescue": "nz_padded rounded from 9 to 10",
+    "fallback": "nz_padded rounded from 9 to 12",
+    "odd_pad": None,
+    "odd_nz": None,
+    "spec_pad": None,
 }
 
 
@@ -206,10 +360,17 @@ def _run_case(name: str) -> None:
         raise AssertionError(f"case {name}: exit {result.returncode}")
     if "case-ok" not in result.stdout:
         raise AssertionError(f"case {name}: missing case-ok marker")
-    n_notes = result.stdout.count(EXPECT[name])
+    expect = EXPECT[name]
+    if expect is None:
+        if "rounded" in result.stdout:
+            raise AssertionError(
+                f"case {name}: unexpected rounding note:\n{result.stdout}"
+            )
+        return
+    n_notes = result.stdout.count(expect)
     if n_notes != 1:
         raise AssertionError(
-            f"case {name}: {EXPECT[name]!r} printed {n_notes} times "
+            f"case {name}: {expect!r} printed {n_notes} times "
             f"(expected once):\n{result.stdout}"
         )
 

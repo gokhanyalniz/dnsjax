@@ -51,14 +51,12 @@ from jax import numpy as jnp
 from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from .parameters import padded_res, params, periodic_systems
-
-
-def _pad_to_multiple(n: int, divisor: int) -> int:
-    """Round *n* up to the next multiple of *divisor*."""
-    if divisor <= 1:
-        return n
-    return ((n + divisor - 1) // divisor) * divisor
+from .parameters import (
+    padded_res,
+    params,
+    periodic_systems,
+    round_up_padded,
+)
 
 
 def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
@@ -141,12 +139,11 @@ class Sharding:
     :mod:`dnsjax.fft`).  The padded physical sizes --
     ``nz_padded`` (sharded by ``np1``) and, for periodic
     flows, ``ny_padded`` (sharded by ``np0``) -- are rounded
-    up for mesh divisibility and even-pad parity by
-    ``padded_res.apply_rounding`` (normally already done by
-    ``set_padded_resolution``; re-applied here for entry
-    points that set ``params.dist`` late).  Every recorded
-    adjustment is printed once on the main process, so no
-    padding is ever silent.
+    up for mesh divisibility by ``padded_res.apply_rounding``
+    (normally already done by ``set_padded_resolution``;
+    re-applied here for entry points that set ``params.dist``
+    late).  Every recorded adjustment is printed once on the
+    main process, so no padding is ever silent.
     """
 
     np0: int = params.dist.np0
@@ -206,7 +203,7 @@ class Sharding:
 
     ny_y_pad: int = 0
     if not _is_periodic and np0 > 1 and params.res.ny % np0 != 0:
-        _ny_phys: int = _pad_to_multiple(params.res.ny, np0)
+        _ny_phys: int = round_up_padded(params.res.ny, np0)
         ny_y_pad = _ny_phys - params.res.ny
         if main_device:
             print(
@@ -216,20 +213,20 @@ class Sharding:
                 flush=True,
             )
 
-    # ── Padded physical sizes (divisibility + parity rounding) ──
+    # ── Padded physical sizes (divisibility rounding) ───────────
     # ``set_padded_resolution`` already rounds ``nz_padded`` (and the
-    # periodic ``ny_padded``) for mesh divisibility and even-pad
-    # parity; re-apply idempotently for entry points that set
-    # ``params.dist`` after (or without) calling it, then report
-    # every recorded adjustment once.
+    # periodic ``ny_padded``) for mesh divisibility; re-apply
+    # idempotently for entry points that set ``params.dist`` after
+    # (or without) calling it, then report every recorded adjustment
+    # once.
     padded_res.apply_rounding(params)
     if main_device:
         for _note in padded_res.notes:
             print(_note, flush=True)
 
     # ── Spectral mode counts (auto-padded for divisibility) ───
-    nz_spec: int = _pad_to_multiple(params.res.nz - 1, np0)
-    nx_spec: int = _pad_to_multiple(params.res.nx // 2, np1)
+    nz_spec: int = round_up_padded(params.res.nz - 1, np0)
+    nx_spec: int = round_up_padded(params.res.nx // 2, np1)
     nz_spec_pad: int = nz_spec - (params.res.nz - 1)
     nx_spec_pad: int = nx_spec - (params.res.nx // 2)
 

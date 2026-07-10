@@ -315,9 +315,7 @@ differently:
   is auto-padded the same way (padding-free when `np1` divides $n_x/2$);
   on the physical side the oversampled size
   `nz_padded = oversampling_factor * nz / 2` is rounded up to a multiple of
-  `np1` when needed (keeping the pad even — see
-  [Spatial discretization](#spatial-discretization)), which amounts to a
-  sliver of extra oversampling.
+  `np1` when needed, which amounts to a sliver of extra oversampling.
 - Independently of the device grid, the **Pallas banded solver** tiles each
   device's $(k_z, k_x)$ mode plane in blocks of
   (`solver.pallas_block_m0`, `solver.pallas_block_m1`) $= (2, 32)$ and pads
@@ -468,12 +466,12 @@ equal to `fd_order`). The quadratic nonlinearity is dealiased with the
 **3/2 rule** — physical fields are evaluated on a
 $\tfrac{3}{2}$-oversampled grid and the product is truncated back — and the
 Nyquist mode is dropped on every stored spectral axis (FFTs use
-`norm="forward"`). Re-inserting the omitted Nyquist mode symmetrically
-during the padding requires an even pad on a full-complex axis; the solver
-rounds the oversampled sizes up on its own when needed (with a startup
-note), so any spanwise / azimuthal `nz` works — though a multiple of 4
-needs no rounding at the default oversampling (likewise `ny` for the
-triply-periodic box). The streamwise real-FFT axis has no such rule.
+`norm="forward"`). The dealiasing pad carries no parity constraint — the
+omitted Nyquist mode re-enters as a zero in its exact wrap-order slot for
+even and odd pads alike — so any spanwise / azimuthal `nz` runs as-is on a
+single device (likewise `ny` for the triply-periodic box); the oversampled
+sizes are rounded up (with a startup note) only when a device-grid axis
+must divide them evenly. The streamwise real-FFT axis is never rounded.
 
 ### Temporal discretization
 

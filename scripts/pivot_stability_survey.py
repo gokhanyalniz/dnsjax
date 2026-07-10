@@ -96,8 +96,7 @@ BASELINES: dict[str, dict] = {
 }
 
 # Common numerics baseline.  nx = 4 / nz = 8 keep the mode plane tiny
-# (per-mode conditioning depends on k^2, which lx/lz control; nz = 6
-# would trip the 3/2-rule "difference cannot be odd" check).
+# (per-mode conditioning depends on k^2, which lx/lz control).
 COMMON = {
     "fd_order": 4,
     "ny": 64,
