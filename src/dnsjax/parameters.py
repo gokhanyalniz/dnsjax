@@ -77,9 +77,10 @@ class Distribution(BaseModel):
     `$y \leftrightarrow k_z$` reshard); the padded physical
     sizes -- ``nz_padded`` (split by ``np1``) and, for
     periodic flows, ``ny_padded`` (split by ``np0``) -- are
-    rounded up to the next multiple (:func:`round_up_padded`;
-    marginally more oversampling, physically neutral).
-    Divisible sizes avoid the padding overhead entirely.
+    rounded up to the next FFT-friendly (7-smooth) multiple
+    (:func:`round_up_padded_smooth`; marginally more
+    oversampling, physically neutral).  Divisible,
+    smooth-padding sizes avoid the padding overhead entirely.
     Note that CGL grids traditionally
     use ``ny = 2^k + 1`` (``N + 1`` collocation points for
     ``N`` Chebyshev polynomials), but any ``ny >= 2`` is
@@ -400,7 +401,10 @@ class Outputs(BaseModel):
     # steps late, each late step bounded by
     # ``max_corrector_iterations``.  1 restores a per-step check
     # (and a per-step host-device sync).  Must be <= ``it_corrector``
-    # when the corrector diagnostic is enabled.
+    # when the corrector diagnostic is enabled.  Also the cadence of
+    # the non-finite (NaN/inf) guard on the synced corrector error
+    # and perturbation energy (a hit aborts the run with exit code 3;
+    # the ``__main__`` module docstring documents the full guard).
     it_error_check: int = Field(ge=1, default=10)
     # Rows buffered on device before flushing ``stats.dat`` /
     # ``steps.dat`` / ``corrector.dat`` to disk.
@@ -1263,16 +1267,75 @@ def round_up_padded(n_padded: int, divisor: int) -> int:
     return -(-n_padded // d) * d
 
 
+#: Primes with specialised FFT radix kernels (cuFFT, pocketfft/XLA).
+#: A transform length with only these factors takes the fast kernels;
+#: any larger prime factor falls back to a markedly slower generic
+#: (Bluestein-type) algorithm.
+_FFT_SMOOTH_PRIMES = (2, 3, 5, 7)
+
+
+def is_fft_smooth(n: int) -> bool:
+    r"""True when *n* has no prime factor beyond `$\{2, 3, 5, 7\}$`.
+
+    Such 7-smooth transform lengths take the specialised FFT radix
+    kernels; padded FFT sizes are therefore rounded up to them
+    (:func:`round_up_padded_smooth`).
+    """
+    if n <= 0:
+        return False
+    for prime in _FFT_SMOOTH_PRIMES:
+        while n % prime == 0:
+            n //= prime
+    return n == 1
+
+
+def round_up_padded_smooth(n_padded: int, divisor: int) -> int:
+    r"""Round a padded FFT size up to a 7-smooth multiple of *divisor*.
+
+    The smallest `$m \ge n_\mathrm{padded}$` that is a multiple of
+    ``max(divisor, 1)`` **and** 7-smooth (:func:`is_fft_smooth`), so
+    the FFT at the padded size takes the fast radix-2/3/5/7 kernels
+    while the axis still splits evenly across *divisor* devices.
+    Physically neutral for the same reason as
+    :func:`round_up_padded` -- the extra slots carry only zero
+    (dealiased) modes -- and 7-smooth numbers are dense at practical
+    sizes, so the bump beyond the divisibility rounding is a few
+    percent at most.  When *divisor* itself has a prime factor beyond
+    7 no multiple of it can be smooth; the plain divisibility rounding
+    is returned instead.
+    """
+    d = max(divisor, 1)
+    m = round_up_padded(n_padded, d)
+    if not is_fft_smooth(d):
+        return m
+    while not is_fft_smooth(m):
+        m += d
+    return m
+
+
+def _rounding_note(
+    name: str, old: int, new: int, divisor: int, axis: str
+) -> str:
+    """Compose the startup-diagnostic line for one padded-size bump."""
+    reasons = []
+    if old % max(divisor, 1) != 0:
+        reasons.append(f"{axis} divisibility")
+    if not is_fft_smooth(old) and is_fft_smooth(new):
+        reasons.append("FFT-friendly size")
+    return f"{name} rounded from {old} to {new} ({', '.join(reasons)})."
+
+
 @dataclass
 class PaddedResolution:
     """Grid sizes after 3/2-rule oversampling for dealiasing.
 
     The oversampled (padded) grid is used when evaluating nonlinear terms
     in physical space.  Each direction is expanded by a factor of
-    ``oversampling_factor / 2`` (typically 3/2); the full-complex axes
-    are then rounded up for mesh divisibility (:meth:`apply_rounding`),
-    with every adjustment recorded in :attr:`notes` for the startup
-    diagnostics printed by :mod:`dnsjax.sharding`.
+    ``oversampling_factor / 2`` (typically 3/2); every FFT axis is
+    then rounded up to a mesh-divisible, FFT-friendly 7-smooth length
+    (:meth:`apply_rounding`), with every adjustment recorded in
+    :attr:`notes` for the startup diagnostics printed by
+    :mod:`dnsjax.sharding`.
     """
 
     nx_padded: int = params.phys.oversampling_factor * params.res.nx // 2
@@ -1287,14 +1350,19 @@ class PaddedResolution:
     notes: list[str] = field(default_factory=list)
 
     def apply_rounding(self, parameters: Parameters) -> None:
-        r"""Round padded sizes for mesh divisibility.
+        r"""Round padded sizes for mesh divisibility and FFT speed.
 
-        Rounds ``nz_padded`` (and ``ny_padded`` for periodic systems)
-        up with :func:`round_up_padded` so the padded physical axis
-        splits evenly across the mesh direction that shards it
-        (``np1`` for `$z$`, ``np0`` for `$y$`).  Idempotent;
-        re-applied at :mod:`dnsjax.sharding` import for entry points
-        that set ``params.dist`` after (or without)
+        Rounds every FFT axis up with :func:`round_up_padded_smooth`:
+        ``nz_padded`` and the periodic ``ny_padded`` to 7-smooth
+        multiples of the mesh direction that shards them (``np1`` for
+        `$z$`, ``np0`` for `$y$`), and ``nx_padded`` (the real-FFT
+        axis, never sharded in physical space -- divisor 1) to the
+        next 7-smooth length.  Both roundings insert only zero
+        (dealiased) modes, so they are physically neutral; smoothness
+        keeps every transform on the fast radix-2/3/5/7 kernels
+        regardless of the base resolution.  Idempotent; re-applied at
+        :mod:`dnsjax.sharding` import for entry points that set
+        ``params.dist`` after (or without)
         :meth:`set_padded_resolution`.  Each adjustment appends a
         diagnostic line to :attr:`notes`, which
         :mod:`dnsjax.sharding` prints once on the main process.
@@ -1303,19 +1371,25 @@ class PaddedResolution:
         np0 = dist.np0 if dist is not None else 1
         np1 = dist.np1 if dist is not None else 1
 
+        nx_new = round_up_padded_smooth(self.nx_padded, 1)
+        if nx_new != self.nx_padded:
+            self.notes.append(
+                _rounding_note("nx_padded", self.nx_padded, nx_new, 1, "")
+            )
+            self.nx_padded = nx_new
         if self.ny_padded is not None:
-            ny_new = round_up_padded(self.ny_padded, np0)
+            ny_new = round_up_padded_smooth(self.ny_padded, np0)
             if ny_new != self.ny_padded:
                 self.notes.append(
-                    f"ny_padded rounded from {self.ny_padded} to "
-                    f"{ny_new} (np0 divisibility)."
+                    _rounding_note(
+                        "ny_padded", self.ny_padded, ny_new, np0, "np0"
+                    )
                 )
                 self.ny_padded = ny_new
-        nz_new = round_up_padded(self.nz_padded, np1)
+        nz_new = round_up_padded_smooth(self.nz_padded, np1)
         if nz_new != self.nz_padded:
             self.notes.append(
-                f"nz_padded rounded from {self.nz_padded} to "
-                f"{nz_new} (np1 divisibility)."
+                _rounding_note("nz_padded", self.nz_padded, nz_new, np1, "np1")
             )
             self.nz_padded = nz_new
 
@@ -1324,9 +1398,10 @@ class PaddedResolution:
 
         The natural sizes are ``oversampling_factor * n // 2`` (`$y$`
         unpadded for wall-bounded flows and only optionally oversampled
-        for periodic ones); :meth:`apply_rounding` then rounds the
-        full-complex axes up for mesh divisibility.  ``nx_padded`` is
-        exempt (real-FFT axis, never sharded in physical space).
+        for periodic ones); :meth:`apply_rounding` then rounds every
+        FFT axis up to a mesh-divisible, FFT-friendly 7-smooth length
+        (``nx_padded`` is exempt from the divisibility part only:
+        real-FFT axis, never sharded in physical space).
         """
         self.notes = []
         if (

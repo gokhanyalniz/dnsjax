@@ -77,6 +77,18 @@ corrector iteration count ``c`` and the final corrector error
 the pre-step time.  ``outs.it_error_check`` must not exceed
 ``it_corrector`` (:func:`dnsjax.parameters.validate_parameters`).
 
+Every diagnostic is guarded against non-finite floats: each
+flushed buffer row (stats / steps / corrector) is scanned on the
+host, and the host-synced scalars -- the corrector error and
+``E'`` at the ``it_error_check`` cadence, plus the initial and
+final stats -- are checked directly.  A NaN or inf prints one
+``FATAL: non-finite ...`` line naming the quantity, flushes all
+streams unchecked (the offending rows are already on disk for
+post-mortem), skips the final snapshot (the state is non-finite;
+the last snapshot on disk is the post-mortem artifact), and exits
+with code **3**.  Detection lags the device by at most the flush /
+``it_error_check`` cadence, preserving async dispatch.
+
 Snapshots and resume
 --------------------
 Snapshots are named ``state{isnap}.tar`` (``isnap`` zero-padded to
@@ -119,6 +131,7 @@ The first time step is excluded from wall-clock statistics
 because it includes JAX's JIT compilation overhead.
 """
 
+import math
 import os
 import signal
 import sys
@@ -140,9 +153,10 @@ from .parameters import (
     viscoelastic_systems,
     walled_systems,
 )
+from .snapshot_meta import git_hash, read_snapshot_meta
 
 
-def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width):
+def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width, names=None):
     """Write *n_valid* buffered rows to *file_path*, durably.
 
     The on-device ``buffer`` is the only batching layer: once it fills
@@ -151,6 +165,13 @@ def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width):
     the process and OS buffers so each device-buffer flush is immediately
     on disk (and visible to other clients on networked filesystems).
     Shared by every measurement stream (stats, steps, corrector).
+
+    When *names* (the stream's column names) is given, the flushed
+    rows are also scanned for non-finite values -- after the write, so
+    the offending rows are on disk for post-mortem -- and a diagnostic
+    message naming the first offender is returned (``None`` when all
+    values are finite).  The caller aborts the run on it (see
+    ``_abort_non_finite`` in :func:`run`).
     """
     import numpy as np
 
@@ -164,6 +185,16 @@ def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width):
             f.write(f"{t_str} {stat_strs}\n")
         f.flush()
         os.fsync(f.fileno())
+
+    if names is not None:
+        finite = np.isfinite(data)
+        if not finite.all():
+            i, j = (int(v) for v in np.argwhere(~finite)[0])
+            return (
+                f"non-finite diagnostic in {Path(file_path).name}: "
+                f"{names[j]} = {data[i, j]} at t = {ts_buf[i]:.{p}e}"
+            )
+    return None
 
 
 def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
@@ -552,6 +583,17 @@ def run(wall_time_start: int) -> None:
         *[f"{x}={y:.3e}" for x, y in stats.items()],
     )
 
+    bad_init = [k for k, v in stats.items() if not math.isfinite(float(v))]
+    if bad_init:
+        # A broken initial condition; nothing is buffered yet, so
+        # print and exit directly (the in-run guard proper is
+        # ``_abort_non_finite`` below).
+        sharding.print(
+            f"FATAL: non-finite initial statistic(s) "
+            f"{', '.join(bad_init)} at t = {t:.6e}; aborting."
+        )
+        sys.exit(3)
+
     if check_laminarization:
         # Compile the E' kernel outside the benchmark window; it is
         # read at the it_error_check cadence in the main loop.
@@ -686,53 +728,87 @@ def run(wall_time_start: int) -> None:
             with open(corr_file, "w") as f:
                 f.write(header + "\n")
 
-    def flush_all_buffers() -> None:
+    def flush_all_buffers(check: bool = True) -> None:
         """Flush every buffered diagnostic stream to disk and reset it.
 
-        Called at shutdown, after every snapshot write, after the
+        Called at shutdown, before every snapshot write, after the
         first (JIT-heavy) step, and on a termination signal, so the
         ``.dat`` files stay consistent with the snapshots and survive
         an interruption.  The disk write is main-device only; the
         index / timestamp-list reset runs on all ranks (matching the
-        in-loop fill-flush) so the ranks stay in lockstep.
+        in-loop fill-flush) so the ranks stay in lockstep.  With
+        *check* (the default) the flushed rows are scanned for
+        non-finite values and the run aborts on a hit; the abort path
+        itself re-enters with ``check=False`` to drain the remaining
+        streams (each stream is reset before its abort, so the
+        re-entry cannot double-write).
         """
         nonlocal py_idx, steps_idx, corr_idx
         if params.outs.it_stats is not None and py_idx > 0:
+            bad = None
             if sharding.main_device:
-                _flush_stats(
+                bad = _flush_stats(
                     buffer,
                     py_idx,
                     ts_buf,
                     stats_file,
                     p,
                     col_width,
+                    stat_names if check else None,
                 )
             ts_buf.clear()
             py_idx = 0
+            if bad is not None:
+                _abort_non_finite(bad)
         if measure_steps and steps_idx > 0:
+            bad = None
             if sharding.main_device:
-                _flush_stats(
+                bad = _flush_stats(
                     steps_buffer,
                     steps_idx,
                     steps_ts,
                     steps_file,
                     p,
                     steps_col_width,
+                    steps_names if check else None,
                 )
             steps_ts.clear()
             steps_idx = 0
+            if bad is not None:
+                _abort_non_finite(bad)
         if measure_corrector and corr_idx > 0:
+            bad = None
             if sharding.main_device:
-                _flush_stats(
+                bad = _flush_stats(
                     corr_buffer,
                     corr_idx,
                     corr_ts,
                     corr_file,
                     p,
                     corr_col_width,
+                    corr_names if check else None,
                 )
             corr_ts.clear()
             corr_idx = 0
+            if bad is not None:
+                _abort_non_finite(bad)
+
+    def _abort_non_finite(reason: str) -> None:
+        """Abort the run on a non-finite (NaN/inf) diagnostic value.
+
+        Prints one FATAL line, flushes every stream unchecked (the
+        offending rows are already on disk from the checked flush that
+        found them), and exits with code 3.  Deliberately writes no
+        final snapshot -- the state is non-finite; the last snapshot on
+        disk is the post-mortem artifact.  Buffer-scan aborts fire on
+        the main process only (flushes are main-device-gated) and rely
+        on the launcher to tear down the peers, like
+        ``sharding.exit``; the scalar-guard aborts (corrector error,
+        ``E'``, initial/final stats) fire identically on every rank.
+        """
+        sharding.print(f"FATAL: {reason}; aborting.")
+        flush_all_buffers(check=False)
+        sys.exit(3)
 
     # On a termination signal (e.g. a scheduler wall-time kill or
     # Ctrl-C) flush the buffers before exiting so no diagnostics are
@@ -748,7 +824,9 @@ def run(wall_time_start: int) -> None:
         sharding.print(
             f"Received signal {signum}; flushing buffers and exiting."
         )
-        flush_all_buffers()
+        # Unchecked: a non-finite-abort inside a signal handler would
+        # only obscure the (user- or scheduler-initiated) termination.
+        flush_all_buffers(check=False)
         sys.exit(128 + signum)
 
     signal.signal(signal.SIGTERM, _flush_and_exit)
@@ -793,17 +871,21 @@ def run(wall_time_start: int) -> None:
             py_idx += 1
 
             if py_idx == params.outs.nbuffer:
+                bad = None
                 if sharding.main_device:
-                    _flush_stats(
+                    bad = _flush_stats(
                         buffer,
                         py_idx,
                         ts_buf,
                         stats_file,
                         p,
                         col_width,
+                        stat_names,
                     )
                 ts_buf.clear()
                 py_idx = 0
+                if bad is not None:
+                    _abort_non_finite(bad)
 
         # Periodic snapshot save (top of loop: same (state, it, t) as the
         # stats row above, so a fresh ``it_stats`` computation is reused;
@@ -821,10 +903,13 @@ def run(wall_time_start: int) -> None:
                 snap_stats = stats  # just computed above for this state
             else:
                 snap_stats = get_stats(state)
+            # Flush first (checked; also keeps the .dat files
+            # consistent with this snapshot): a buffered non-finite
+            # diagnostic must abort before a snapshot of the same
+            # broken state is written.
+            flush_all_buffers()
             isnap = _save_numbered_snapshot(state, t, it, snap_stats, isnap)
             last_saved_it = it
-            # Keep the .dat files consistent with this snapshot.
-            flush_all_buffers()
 
         # Time step (single JIT scope): iterative Crank-Nicolson
         # corrector, or one CN/AB2 step carrying the nonlinear-RHS
@@ -857,17 +942,21 @@ def run(wall_time_start: int) -> None:
             steps_idx += 1
 
             if steps_idx == params.outs.nbuffer:
+                bad = None
                 if sharding.main_device:
-                    _flush_stats(
+                    bad = _flush_stats(
                         steps_buffer,
                         steps_idx,
                         steps_ts,
                         steps_file,
                         p,
                         steps_col_width,
+                        steps_names,
                     )
                 steps_ts.clear()
                 steps_idx = 0
+                if bad is not None:
+                    _abort_non_finite(bad)
 
         # Corrector diagnostic -> GPU buffer: this step's iteration
         # count and final error, timestamped at the pre-step time.
@@ -884,17 +973,21 @@ def run(wall_time_start: int) -> None:
             corr_idx += 1
 
             if corr_idx == params.outs.nbuffer:
+                bad = None
                 if sharding.main_device:
-                    _flush_stats(
+                    bad = _flush_stats(
                         corr_buffer,
                         corr_idx,
                         corr_ts,
                         corr_file,
                         p,
                         corr_col_width,
+                        corr_names,
                     )
                 corr_ts.clear()
                 corr_idx = 0
+                if bad is not None:
+                    _abort_non_finite(bad)
 
         t += params.step.dt
         it += 1
@@ -907,6 +1000,11 @@ def run(wall_time_start: int) -> None:
         if (it - params.init.it0) % it_error_check == 0:
             # Periodic host sync for the convergence check.
             last_error = float(error_dev)
+            if not math.isfinite(last_error):
+                _abort_non_finite(
+                    f"non-finite corrector error ({last_error}) at "
+                    f"t = {t:.6e}, it = {it}"
+                )
 
             if check_laminarization:
                 # Laminarization (relaminarization) trigger: stop once
@@ -929,6 +1027,13 @@ def run(wall_time_start: int) -> None:
                 # zero at the laminar fixed point.  Tracking it would
                 # mean keeping the pre-step state for the difference.
                 e_prime_host = float(get_perturbation_energy(state))
+                if not math.isfinite(e_prime_host):
+                    # A NaN would otherwise compare False against the
+                    # threshold and the run would keep going.
+                    _abort_non_finite(
+                        f"non-finite perturbation energy E' "
+                        f"({e_prime_host}) at t = {t:.6e}, it = {it}"
+                    )
                 laminarized = e_prime_host < laminarization_threshold
 
         wall_time_now = perf_counter_ns()
@@ -965,6 +1070,16 @@ def run(wall_time_start: int) -> None:
     # both the final snapshot and the benchmark diagnostic below.
     if it > params.init.it0:
         stats = get_stats(state)
+        bad_final = [
+            k for k, v in stats.items() if not math.isfinite(float(v))
+        ]
+        if bad_final:
+            # Catches a blow-up in the last steps between error
+            # checks, before the final snapshot below could write it.
+            _abort_non_finite(
+                f"non-finite final statistic(s) {', '.join(bad_final)} "
+                f"at t = {t:.6e}, it = {it}"
+            )
 
     # Final snapshot (default-on, independent of it_snapshot); skipped
     # when the final state was just written (a periodic or IC write at
@@ -974,10 +1089,12 @@ def run(wall_time_start: int) -> None:
         and it > params.init.it0
         and it != last_saved_it
     ):
+        # Flush first (checked; also keeps the .dat files consistent
+        # with this snapshot): buffered non-finite rows abort before
+        # the write.
+        flush_all_buffers()
         isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
         last_saved_it = it
-        # Keep the .dat files consistent with this snapshot.
-        flush_all_buffers()
 
     wall_time_now = perf_counter_ns()
     alive_time = ns_to_s * (wall_time_now - wall_time_start)
@@ -1052,6 +1169,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if main_device:
         print("Distribution initialized at", datetime.now(), flush=True)
+        print("Code version:", git_hash(), flush=True)
+        if setup.snapshot_params_used:
+            # The initial-condition snapshot's own provenance, when it
+            # carries one (snapshots predating the git_hash key don't).
+            snap_hash = read_snapshot_meta(setup.snapshot_path).get("git_hash")
+            if snap_hash:
+                print(
+                    "Snapshot was recorded by code version:",
+                    snap_hash,
+                    flush=True,
+                )
         if setup.snapshot_params_used:
             print(
                 f"Inherited parameters embedded in snapshot "

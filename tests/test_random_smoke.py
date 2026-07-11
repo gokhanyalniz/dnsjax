@@ -69,6 +69,14 @@ itself is GPU-only): ``pipe`` (parity-selected base band),
 stacked ``Hk``), and ``viscoelastic-dean`` (additionally the
 conformation Helmholtz operator ``Hc``, `$\\kappa > 0$`).
 
+A trailing ``kolmogorov-nan-guard`` entry inverts the success
+criteria: it forces a genuine blow-up (cnab2 at a dt far past the
+advective limit) and requires the solver's non-finite guard to abort
+the run itself -- exit code 3 and one ``FATAL: non-finite ...``
+diagnostic line (see the ``__main__`` module docstring) -- instead of
+completing or dying uncontrolled.  A small ``nbuffer`` makes the
+in-loop buffered-stats scan see the blow-up promptly.
+
 Transition to turbulence is **not** expected to develop by the default
 ``t = 1`` at this resolution/box; the success metric is purely that
 integration completes cleanly, not that the flow becomes turbulent.
@@ -608,6 +616,36 @@ SYSTEMS: list[dict] = [
             "2",
         ],
     },
+    {
+        # Non-finite guard (inverted criteria; see run_smoke_test):
+        # cnab2 at dt = 1.0 (200x Kolmogorov's iterative-cn limit,
+        # CFL >> 1) blows up within tens of steps; the run must abort
+        # itself with exit code 3 and a "FATAL: non-finite ..." line
+        # (whichever guard layer sees it first).  it_stats = 1 with
+        # nbuffer = 10 makes the in-loop buffered-stats scan the
+        # likely detector; max_sim_time is only the safety ceiling.
+        # force_np = 1 keeps the mpirun exit-code propagation exact.
+        "name": "kolmogorov-nan-guard",
+        "expect_nonfinite_abort": True,
+        "force_np": 1,
+        "force_dt": 1.0,
+        "max_sim_time": 1000.0,
+        "it_stats": 1,
+        "args": [
+            "--phys.system",
+            "kolmogorov",
+            "--phys.re",
+            "620",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+            "--step.scheme",
+            "cnab2",
+            "--outs.nbuffer",
+            "10",
+        ],
+    },
 ]
 
 # Default time-stepping ``corrector_tolerance`` (TimeStepping model
@@ -630,8 +668,10 @@ def _build_command(
 ) -> list[str]:
     """Build the ``mpirun ... -m dnsjax`` command for one system.
 
-    Per-system ``force_np`` / ``force_np0`` / ``res`` / ``oversubscribe``
-    override the suite defaults (used by the multi-device padded entry).
+    Per-system ``force_np`` / ``force_np0`` / ``res`` /
+    ``oversubscribe`` / ``max_sim_time`` / ``it_stats`` override the
+    suite defaults (used by the multi-device padded entry and the
+    nan-guard entry).
     """
     np_count = system.get("force_np", args.np)
     np0 = system.get("force_np0", args.np0)
@@ -639,6 +679,8 @@ def _build_command(
     nx = str(res.get("nx", args.res))
     ny = str(res.get("ny", args.res))
     nz = str(res.get("nz", args.res))
+    max_sim_time = system.get("max_sim_time", args.max_sim_time)
+    it_stats = system.get("it_stats", args.it_stats)
 
     base = ["mpirun"]
     if system.get("oversubscribe"):
@@ -677,9 +719,9 @@ def _build_command(
         "--step.dt",
         str(dt),
         "--stop.max_sim_time",
-        str(args.max_sim_time),
+        str(max_sim_time),
         "--outs.it_stats",
-        str(args.it_stats),
+        str(it_stats),
         # Laminarization check off: a decaying transient must not cut
         # the run short before max_sim_time.
         "--stop.check_laminarization",
@@ -758,7 +800,9 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
     name = system["name"]
     # Per-system dt cap: some systems need a smaller step than the
     # global default for the corrector to converge (see SYSTEMS).
-    dt = min(args.dt, system.get("max_dt", math.inf))
+    # ``force_dt`` overrides outright (the nan-guard entry needs a dt
+    # *larger* than any sane default).
+    dt = system.get("force_dt", min(args.dt, system.get("max_dt", math.inf)))
     cmd = _build_command(system, args, dt)
 
     with tempfile.TemporaryDirectory(prefix=f"rand_{name}_") as workdir:
@@ -769,6 +813,32 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
             timeout=args.timeout,
             cwd=workdir,
         )
+
+        if system.get("expect_nonfinite_abort"):
+            # Inverted criteria: the run must have aborted itself via
+            # the non-finite guard -- exit code 3 (mpirun -np 1
+            # propagates the child's code) and the FATAL diagnostic.
+            fatal_lines = [
+                line
+                for line in result.stdout.splitlines()
+                if "FATAL: non-finite" in line
+            ]
+            if result.returncode != 3 or not fatal_lines:
+                print(f"  FAIL  {name}: exit code {result.returncode}")
+                print(
+                    result.stdout[-2000:] if result.stdout else "(no stdout)"
+                )
+                print(
+                    result.stderr[-2000:] if result.stderr else "(no stderr)"
+                )
+                raise AssertionError(
+                    f"{name}: expected the non-finite guard abort (exit 3 "
+                    f"+ 'FATAL: non-finite ...'), got exit "
+                    f"{result.returncode} with {len(fatal_lines)} FATAL "
+                    "line(s)"
+                )
+            print(f"  PASS  {name}  ({fatal_lines[0].strip()})")
+            return
 
         if result.returncode != 0:
             print(f"  FAIL  {name}: exit code {result.returncode}")

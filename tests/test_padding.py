@@ -1,13 +1,15 @@
-r"""Padded-size rounding tests (mesh divisibility) and odd-pad FFTs.
+r"""Padded-size rounding tests (mesh divisibility, FFT-friendly
+7-smooth lengths) and odd-pad FFTs.
 
-Covers :func:`dnsjax.parameters.round_up_padded` and its two
-application sites: ``PaddedResolution.set_padded_resolution`` (the
-primary site -- ``params.dist`` is final at every production call) and
-the idempotent ``padded_res.apply_rounding`` fallback at
-:mod:`dnsjax.sharding` import (entry points that set ``params.dist``
-after -- or without -- ``set_padded_resolution``), plus the
-parity-free ``zeropad_fft`` / ``truncate_fft`` mode placement those
-sizes feed.  Singleton-dependent cases run in subprocesses (the
+Covers :func:`dnsjax.parameters.round_up_padded` /
+:func:`round_up_padded_smooth` and their two application sites:
+``PaddedResolution.set_padded_resolution`` (the primary site --
+``params.dist`` is final at every production call) and the idempotent
+``padded_res.apply_rounding`` fallback at :mod:`dnsjax.sharding`
+import (entry points that set ``params.dist`` after -- or without --
+``set_padded_resolution``), plus the parity-free ``zeropad_fft`` /
+``truncate_fft`` mode placement those sizes feed.
+Singleton-dependent cases run in subprocesses (the
 ``test_*`` subprocess-per-config idiom: sharding/geometry singletons
 capture ``params`` at import time); each asserts its rounding
 diagnostic is printed exactly once, or that none appears where the
@@ -41,6 +43,10 @@ reshards + the component-axis concatenate of sharded outputs).
    ``pad``/``strip`` arguments fused into ``truncate_*`` /
    ``zeropad_*`` (no rounding note; the spec-pad diagnostics are
    expected), with the exactness checks sharded via ``device_put``.
+7. ``smooth``: single device, nz = 94 -- the natural pad
+   ``141 = 3 * 47`` (a slow generic-radix FFT length) is bumped to
+   the 7-smooth 144 with the FFT-friendly note, and the exactness
+   checks confirm the extra slots stay out of the physical field.
 
 Usage::
 
@@ -72,6 +78,37 @@ def test_round_up_padded() -> None:
         if got != expected:
             raise AssertionError(
                 f"round_up_padded{(n_padded, divisor)} = "
+                f"{got}, expected {expected}"
+            )
+
+
+def test_round_up_padded_smooth() -> None:
+    """Unit-check the 7-smooth rounding helper (JAX-free)."""
+    from dnsjax.parameters import is_fft_smooth, round_up_padded_smooth
+
+    smooth = [1, 2, 6, 7, 9, 10, 144, 147, 150, 2 * 3 * 5 * 7]
+    rough = [-3, 0, 11, 13, 141, 142, 143, 146]  # 141=3*47, 142=2*71
+    for n in smooth:
+        if not is_fft_smooth(n):
+            raise AssertionError(f"is_fft_smooth({n}) should be True")
+    for n in rough:
+        if is_fft_smooth(n):
+            raise AssertionError(f"is_fft_smooth({n}) should be False")
+
+    cases = [
+        ((141, 1), 144),  # 3*47 -> 2^4 * 3^2
+        ((141, 2), 144),  # divisibility (142 = 2*71) + smoothness
+        ((150, 1), 150),  # already smooth: no-op
+        ((9, 2), 10),  # divisibility alone lands smooth (primary case)
+        ((9, 4), 12),  # the fallback case's rounding is unchanged
+        ((143, 11), 143),  # non-smooth divisor: plain rounding only
+        ((192, 1), 192),  # the defaults are untouched
+    ]
+    for (n_padded, divisor), expected in cases:
+        got = round_up_padded_smooth(n_padded, divisor)
+        if got != expected:
+            raise AssertionError(
+                f"round_up_padded_smooth{(n_padded, divisor)} = "
                 f"{got}, expected {expected}"
             )
 
@@ -366,22 +403,59 @@ def case_spec_pad() -> None:
     print("case-ok")
 
 
+def case_smooth() -> None:
+    """Single device, nz = 94: the non-smooth natural pad is bumped.
+
+    ``3 * 94 // 2 = 141 = 3 * 47`` would hit the slow generic-radix
+    FFT path; ``apply_rounding`` bumps it to the next 7-smooth length
+    (144, no divisibility involved on a single device), records the
+    FFT-friendly note, and the exactness checks confirm the extra
+    slots stay out of the physical field.
+    """
+    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.parameters import (
+        Parameters,
+        padded_res,
+        params,
+        update_parameters,
+    )
+
+    update_parameters(
+        Parameters(
+            phys={"system": "plane-couette"},
+            res={"nx": 4, "ny": 9, "nz": 94},
+        )
+    )
+    padded_res.set_padded_resolution(params)
+    assert padded_res.nz_padded == 144, padded_res.nz_padded
+
+    configure_jax_platform("cpu")  # x64 for the exactness thresholds
+    from dnsjax.sharding import sharding
+
+    assert sharding.phys_shape == (9, 144, 6), sharding.phys_shape
+    _fft_round_trip(sharding)
+    _fft_exactness(sharding)
+    print("case-ok")
+
+
 CASES = {
     "primary": case_primary,
     "fallback": case_fallback,
     "odd_pad": case_odd_pad,
     "odd_nz": case_odd_nz,
     "spec_pad": case_spec_pad,
+    "smooth": case_smooth,
 }
 # The rounding diagnostic each case must print exactly once; ``None``
 # marks cases whose natural padded size must pass through unrounded
 # (no rounding note at all).
 EXPECT: dict[str, str | None] = {
-    "primary": "nz_padded rounded from 9 to 10",
-    "fallback": "nz_padded rounded from 9 to 12",
+    "primary": "nz_padded rounded from 9 to 10 (np1 divisibility).",
+    "fallback": "nz_padded rounded from 9 to 12 (np1 divisibility).",
     "odd_pad": None,
     "odd_nz": None,
     "spec_pad": None,
+    "smooth": "nz_padded rounded from 141 to 144 (FFT-friendly size).",
 }
 
 
@@ -423,7 +497,8 @@ if __name__ == "__main__":
         sys.exit(0)
 
     tests: list[tuple[str, object]] = [
-        ("round_up_padded units", test_round_up_padded)
+        ("round_up_padded units", test_round_up_padded),
+        ("round_up_padded_smooth units", test_round_up_padded_smooth),
     ]
     tests += [
         (f"subprocess case {n}", lambda n=n: _run_case(n))

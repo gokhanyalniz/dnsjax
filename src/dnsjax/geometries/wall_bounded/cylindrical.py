@@ -655,11 +655,12 @@ def interpolate_to_axis(
 
     The radial grid excludes `$r = 0$` by construction (see
     :func:`build_radial_cgl_grid`); this evaluates radial data at
-    the axis by Fornberg extrapolation from the ``order + 1``
-    innermost grid points, for any array carrying an r-varying
-    axis (spectral or physical, real or complex, any number of
-    other axes).  Runs host-side (weights are NumPy); pass
-    addressable (single-device or fully replicated) arrays.
+    the axis (spectrally for even-parity data on the CGL grids,
+    by local Fornberg extrapolation otherwise; see *parity*), for
+    any array carrying an r-varying axis (spectral or physical,
+    real or complex, any number of other axes).  Runs host-side
+    (weights are NumPy); pass addressable (single-device or fully
+    replicated) arrays.
 
     Parameters
     ----------
@@ -672,18 +673,23 @@ def interpolate_to_axis(
         The radial axis of *arr*.
     order:
         Stencil width minus one; defaults to
-        ``params.res.fd_order``.
+        ``params.res.fd_order``.  Ignored on the spectral
+        even-parity CGL path.
     parity:
-        ``None`` (default): one-sided extrapolation -- the only
-        safe general choice for *physical-space* arrays, whose
-        `$r \to -r$` continuation pairs with
-        `$\theta \to \theta + \pi$` and is therefore not a
-        per-column symmetry.  ``"even"``: the data is smooth and
-        even in `$r$` (an `$m_{\mathrm{eff}}$`-even spectral
-        component, e.g. the mean mode of `$u_z$`); an even
-        analytic function is a function of `$r^2$`, so the
-        stencil interpolates in `$x = r^2$` (exact for even
-        polynomials of degree `$\le 2\,\mathrm{order}$`).
+        ``None`` (default): one-sided ``order + 1``-point
+        extrapolation -- the only safe general choice for
+        *physical-space* arrays, whose `$r \to -r$` continuation
+        pairs with `$\theta \to \theta + \pi$` and is therefore
+        not a per-column symmetry.  ``"even"``: the data is
+        smooth and even in `$r$` (an `$m_{\mathrm{eff}}$`-even
+        spectral component, e.g. the mean mode of `$u_z$`); an
+        even analytic function is a function of `$x = r^2$` --
+        on a detected radial CGL grid the exact spectral
+        parity-constrained fit in `$x$`
+        (``fd._spectral_even_axis_weights``, exact for even
+        polynomials of degree `$\le 2(N_r - 1)$`), on a
+        custom/tanh grid the ``order + 1``-point stencil in `$x$`
+        (exact to degree `$\le 2\,\mathrm{order}$`).
         ``"odd"``: the data vanishes on the axis identically
         (`$m_{\mathrm{eff}}$`-odd components); returns zeros.
 
@@ -696,9 +702,11 @@ def interpolate_to_axis(
     if order is None:
         order = params.res.fd_order
     moved = jnp.moveaxis(arr, axis, 0)
-    # Shared JAX-free leaf (also used by the rigged-CGL interpolation
-    # matrix): w is zero-padded outside the innermost stencil, so the
-    # full-axis contraction drops the radial axis; odd parity -> zeros.
+    # Shared JAX-free leaf (also behind the rigged-CGL interpolation
+    # matrix): spectral even weights span the whole grid on CGL,
+    # local rules are zero-padded outside their stencil; either way
+    # the full-axis contraction drops the radial axis (odd parity ->
+    # zeros).
     w = axis_extrapolation_weights(np.asarray(rs), order, parity)
     w_jax = jnp.asarray(w, dtype=sharding.float_type)
     return jnp.tensordot(w_jax, moved, axes=(0, 0))

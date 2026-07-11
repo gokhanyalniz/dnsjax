@@ -86,8 +86,12 @@ Cross-cutting gotchas: full-disc radial quadrature is
 `y_weights`/`y_weights_odd`; each diagnostic integrates with its known
 parity), while custom/tanh grids and the JAX-free analysis package use
 the parity-agnostic composite rule; there is no `r=0` grid point, so
-`interpolate_to_axis` evaluates the centreline by Fornberg
-extrapolation.
+`interpolate_to_axis` evaluates the centreline via
+`fd.axis_extrapolation_weights` — the exact spectral
+parity-constrained fit for even-parity data on the detected CGL grids
+(the same weights reconstruct the rigged completion's axis node),
+local Fornberg one-sided/stencil rules for parity-free data and
+custom grids.
 
 ### Annular geometry
 
