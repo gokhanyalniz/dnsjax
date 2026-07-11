@@ -41,9 +41,10 @@ margin for a single FFT evaluation per step.
 - **Portable data** — snapshots are plain tar + zarr3, written in parallel
   directly from device memory, readable with standard tools and a
   dependency-light NumPy reader; resume is device- and precision-agnostic.
-- **Extensively tested** — 19 standalone test scripts pin the numerics, the
-  machinery, and the multi-device behavior, and the optimal-growth module
-  reproduces published values — see
+- **Extensively tested** — 20 standalone test scripts (also runnable
+  through a pytest bridge) pin the numerics, the machinery, and the
+  multi-device behavior, and the optimal-growth module reproduces
+  published values — see
   [Testing and validation](#testing-and-validation).
 
 ## Flows and geometries
@@ -206,16 +207,19 @@ max_sim_time = 500.0
 # check_laminarization = true (default) stops the run if the flow relaminarizes
 ```
 
-What to expect while it runs: the final working parameters and the
-physical-space resolution are printed at startup, the first step takes
-noticeably longer than the rest (JIT compilation), and a timing summary is
-printed at the end. Statistics stream to `stats.dat` (with `steps.dat` and
-`corrector.dat` for the CFL and corrector diagnostics), and snapshots appear
-as `state00000.tar` (the initial condition), `state00001.tar`, and so on.
-Runs end gracefully — at `max_sim_time`, at an ISO 8601
-`stop.max_wall_time` budget (writing a final snapshot first), on
-relaminarization, or on SIGTERM/SIGINT (flushing the diagnostic buffers) —
-so interrupted runs stay consistent with their outputs.
+What to expect while it runs: the code's git revision, the final working
+parameters, and the physical-space resolution are printed at startup, the
+first step takes noticeably longer than the rest (JIT compilation), and a
+timing summary is printed at the end. Statistics stream to `stats.dat`
+(with `steps.dat` and `corrector.dat` for the CFL and corrector
+diagnostics), and snapshots appear as `state00000.tar` (the initial
+condition), `state00001.tar`, and so on. Runs end gracefully — at
+`max_sim_time`, at an ISO 8601 `stop.max_wall_time` budget (writing a
+final snapshot first), on relaminarization, or on SIGTERM/SIGINT (flushing
+the diagnostic buffers) — so interrupted runs stay consistent with their
+outputs; a NaN or inf in any diagnostic instead aborts the run at once
+with a line naming the quantity, rather than spending the budget on a
+broken state.
 
 ## Parameter layering
 
@@ -322,8 +326,10 @@ differently:
   streamwise wavenumber axis ($k_x$) in spectral space. The spectral side
   is auto-padded the same way (padding-free when `np1` divides $n_x/2$);
   on the physical side the oversampled size
-  `nz_padded = oversampling_factor * nz / 2` is rounded up to a multiple of
-  `np1` when needed, which amounts to a sliver of extra oversampling.
+  `nz_padded = oversampling_factor * nz / 2` is rounded up to the next
+  FFT-friendly multiple of `np1` when needed (see
+  [Spatial discretization](#spatial-discretization)), which amounts to a
+  sliver of extra oversampling.
 - Independently of the device grid, the **Pallas banded solver** tiles each
   device's $(k_z, k_x)$ mode plane in blocks of
   (`solver.pallas_block_m0`, `solver.pallas_block_m1`) $= (2, 32)$ and pads
@@ -332,9 +338,10 @@ differently:
   $(n_z - 1)/n_{p0}$ and $(n_x/2)/n_{p1}$ near multiples of the block sizes
   are optimal; both knobs are adjustable when the mode plane is small.
 
-No divisibility choice is rejected, and none of the padding is silent:
-every adjustment is reported by a one-line startup diagnostic, so its
-(usually marginal) cost stays visible.
+No divisibility choice is rejected, and none of the padding — for the
+device grid or for FFT-friendly sizes — is silent: every adjustment is
+reported by a one-line startup diagnostic, so its (usually marginal) cost
+stays visible.
 
 Crucially, **every device holds the full wall-normal extent in spectral
 space**, so the per-mode banded solves need no communication. The forward and
@@ -374,9 +381,10 @@ launch details.
 ## Snapshots and external data access
 
 A snapshot is a **single uncompressed tar archive** (format version 3)
-wrapping a **zarr3** store, a JSON metadata member (parameters, grid, and
-lineage), and one contiguous chunk per state component (three velocity
-components, or nine for the viscoelastic flow). Each device writes its
+wrapping a **zarr3** store, a JSON metadata member (parameters, grid,
+lineage, and the writing code's git revision), and one contiguous chunk
+per state component (three velocity components, or nine for the
+viscoelastic flow). Each device writes its
 disjoint byte ranges into the one file in parallel — directly between GPU
 memory and disk when GPUDirect Storage is available, through the host
 otherwise — with a concurrent mode for POSIX/parallel filesystems and a
@@ -388,7 +396,7 @@ field for Dean and viscoelastic Dean. The archive is readable with ordinary
 tools — `tar xf` yields a valid zarr3 store, and in the worst case each
 chunk is raw little-endian complex data for `numpy.fromfile`. Resume is
 agnostic to the device count and precision, and re-grids a changed
-wall-normal grid on load.
+wall-normal grid on load (spectrally between the CGL-family grids).
 
 For post-processing, `dnsjax.analysis.snapshot_export.read_state` reads a
 snapshot into NumPy arrays **without importing JAX or the solver runtime**,
@@ -476,10 +484,14 @@ $\tfrac{3}{2}$-oversampled grid and the product is truncated back — and the
 Nyquist mode is dropped on every stored spectral axis (FFTs use
 `norm="forward"`). The dealiasing pad carries no parity constraint — the
 omitted Nyquist mode re-enters as a zero in its exact wrap-order slot for
-even and odd pads alike — so any spanwise / azimuthal `nz` runs as-is on a
-single device (likewise `ny` for the triply-periodic box); the oversampled
-sizes are rounded up (with a startup note) only when a device-grid axis
-must divide them evenly. The streamwise real-FFT axis is never rounded.
+even and odd pads alike — so any spanwise / azimuthal `nz` is accepted
+(likewise `ny` for the triply-periodic box). The oversampled sizes are
+then rounded up, with a startup note, to **7-smooth** lengths (no prime
+factor beyond 7, so every transform takes the fast FFT radix kernels
+whatever the base resolution) that also divide evenly across the device
+grid; the streamwise real-FFT axis, never sharded, gets the smoothness
+rounding only. The extra slots carry only zero modes, so the rounding is
+physically neutral.
 
 ### Temporal discretization
 
@@ -549,9 +561,12 @@ at scale.
 
 ## Testing and validation
 
-The test suite is 19 standalone scripts under `tests/`, run directly
-(`uv run python tests/test_cartesian.py` — no test framework), several of
-which launch real `mpirun` multi-device runs. Among the guarantees they pin:
+The test suite is 20 standalone scripts under `tests/`, run directly
+(`uv run python tests/test_cartesian.py`) or through the optional pytest
+bridge — `uv run pytest` shells each script out as a subprocess, with
+`mpi`/`slow` markers and the scripts staying the source of truth — and
+several of them launch real `mpirun` multi-device runs. Among the
+guarantees they pin:
 
 - **Solvers and operators** — the Pallas banded kernel against a dense
   reference solver, per-geometry operators and matvecs against NumPy
@@ -646,9 +661,10 @@ A closer look at what is in the box, beyond the core solver:
    [Snapshots and external data access](#snapshots-and-external-data-access).
 
 6. **Robust resume.** Snapshots resume across any device count and precision,
-   re-grid a changed wall-normal grid on load, and track lineage,
-   distinguishing a genuine continuation from a new trajectory when the
-   physics or geometry changes.
+   re-grid a changed wall-normal grid on load, and track lineage —
+   including the recording code's git revision, echoed at startup when
+   resuming — distinguishing a genuine continuation from a new trajectory
+   when the physics or geometry changes.
 
 7. **Laminarization auto-stop.** A run terminates automatically once the
    perturbation energy drops below a threshold, so relaminarization events
@@ -666,10 +682,14 @@ A closer look at what is in the box, beyond the core solver:
    defaults to the laminar bulk velocity ($1/2$ pipe, $2/3$
    plane-Poiseuille, zero otherwise); set it to `0` for the lab frame.
 
-10. **Buffered, crash-consistent diagnostics.** Statistics, CFL, and
-    corrector diagnostics stream to `stats.dat`, `steps.dat`, and
-    `corrector.dat`, buffered on-device and flushed around snapshots and on
-    termination so they stay consistent with the saved state.
+10. **Buffered, crash-consistent diagnostics with a non-finite guard.**
+    Statistics, CFL, and corrector diagnostics stream to `stats.dat`,
+    `steps.dat`, and `corrector.dat`, buffered on-device and flushed
+    before snapshots and on termination so they stay consistent with the
+    saved state. Every flushed value is checked: a NaN or inf aborts the
+    run with one line naming the quantity (exit code 3), keeping the
+    offending rows on disk for post-mortem and writing no snapshot of the
+    broken state.
 
 11. **Wall-time-aware graceful shutdown.** `stop.max_wall_time` takes an
     ISO 8601 duration and ends the run cleanly — final statistics, a final

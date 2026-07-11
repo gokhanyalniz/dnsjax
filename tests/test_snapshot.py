@@ -270,6 +270,9 @@ def _check_standard_tools(d, ref_true, system):
         # stdlib-only metadata read (no dnsjax).
         meta = json.loads(tf.extractfile("_dnsjax_meta.json").read())
         assert meta["format_version"] == 3, meta["format_version"]
+        # Provenance key present and non-empty (value depends on the
+        # checkout, so only its presence is pinned).
+        assert meta.get("git_hash"), meta
 
     with tempfile.TemporaryDirectory() as ex:
         with tarfile.open(d, "r") as tf:

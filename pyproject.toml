@@ -18,12 +18,24 @@ dnsjax = "dnsjax.__main__:main"
 [dependency-groups]
 dev = [
     "prek>=0.3.3",
+    "pytest>=8",
     "ruff>=0.15.0",
 ]
 
 [build-system]
 requires = ["uv_build>=0.11.4,<0.12.0"]
 build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Only the subprocess bridge is collected: the standalone test_*.py
+# scripts configure JAX / global singletons at module import, so
+# pytest must never import them (see tests/pytest_suite.py).
+python_files = ["pytest_suite.py"]
+markers = [
+    "mpi: launches solver runs via mpirun (skipped when mpirun is missing)",
+    "slow: full solver integration runs / dt sweeps (minutes each)",
+]
 
 [tool.ruff]
 # Set the maximum line length to 79.

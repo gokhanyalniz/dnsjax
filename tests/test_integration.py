@@ -434,6 +434,18 @@ def test_cgl_radial_quadrature_weights():
                 assert abs(w_odd @ (rs * np.cos(2.0 * rs)) - ref_odd) < 1e-10
     # Non-CGL grid -> None (caller uses the composite fallback).
     assert cgl_radial_quadrature_weights(np.linspace(0.1, 1.0, 20), 4) is None
+    # Boundary pin: the *fully exact* even rule (spectral axis
+    # completion) is uniquely determined by its exactness conditions
+    # and goes negative on rigged grids from nr = 48 -- the reason the
+    # quadrature keeps the local axis rule while the interpolation
+    # completion is spectral (fd._cgl_completion_matrices docstring).
+    from dnsjax.fd import _cgl_completion_matrices, _halfrange_r_moments
+
+    n_full = 2 * 48 + 1
+    s = -np.cos(np.arange(n_full) * np.pi / (n_full - 1))
+    e_even_exact, _ = _cgl_completion_matrices(48, 1)
+    w_exact = e_even_exact.T @ _halfrange_r_moments(s)
+    assert np.any(w_exact < 0), "exact-rule positivity boundary moved"
 
 
 def test_cgl_axis_gap_detector():
@@ -447,8 +459,10 @@ def test_cgl_axis_gap_detector():
 
 def test_cgl_parity_interpolation_spectral():
     """Spectral parity interpolation between radial CGL grids (half,
-    rigged, and mixed): near machine precision for both parities and
-    orders of magnitude better than the local fd_order fallback."""
+    rigged, and mixed): machine precision for both parities -- the
+    rigged axis node is reconstructed by the exact parity-constrained
+    fit, so no fd_order-limited ingredient remains -- and orders of
+    magnitude better than the local fd_order fallback."""
 
     def even(r):  # sigma = +1
         return np.cos(0.6 * np.pi * r) + 0.3 * r**2
@@ -461,12 +475,12 @@ def test_cgl_parity_interpolation_spectral():
         ro = _radial_cgl_grid(nr_old, go)
         rn = _radial_cgl_grid(nr_new, gn)
         t_even, t_odd = cgl_parity_interpolation_matrices(
-            nr_old, nr_new, go, gn, 4
+            nr_old, nr_new, go, gn
         )
         e_even = np.max(np.abs(t_even @ even(ro) - even(rn)))
         e_odd = np.max(np.abs(t_odd @ odd(ro) - odd(rn)))
-        assert e_even < 1e-8, f"gap {go}->{gn} even: {e_even:.2e}"
-        assert e_odd < 1e-10, f"gap {go}->{gn} odd: {e_odd:.2e}"
+        assert e_even < 1e-12, f"gap {go}->{gn} even: {e_even:.2e}"
+        assert e_odd < 1e-12, f"gap {go}->{gn} odd: {e_odd:.2e}"
         e_local = np.max(
             np.abs(local_interpolation_matrix(ro, rn, 4) @ even(ro) - even(rn))
         )

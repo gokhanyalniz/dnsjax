@@ -31,9 +31,14 @@ not only docstrings/comments.
 
 ### Run tests
 
-All tests are standalone scripts (`uv run python tests/test_*.py`) --
-no `pytest`/CI runner (they rely on `__main__` setup + shared
-module-level singletons, so `pytest` collection misbehaves).
+All tests are standalone scripts (`uv run python tests/test_*.py`,
+the source of truth; they rely on `__main__` setup + shared
+module-level singletons, so `pytest` must never import them). An
+optional pytest bridge (`tests/pytest_suite.py`, the **only** file
+pytest collects via `[tool.pytest.ini_options] python_files`) runs
+each script as a subprocess: `uv run pytest -m "not slow"` for the
+offline loop, plain `uv run pytest` for everything (`mpi`-marked
+scripts auto-skip without `mpirun`).
 
 Two ways to get multiple devices, and they do **not** mix:
 offline/in-process tests force CPU devices via
@@ -365,14 +370,19 @@ Three on-device buffered streams, flushed periodically (fsync-ed):
 `get_stats` → `stats.dat`, the CFL diagnostic (`outs.it_steps`, via the
 `rhs.py` `measure_fn` hook) → `steps.dat`, the corrector diagnostic
 (`outs.it_corrector`) → `corrector.dat`. All are also flushed at
-shutdown, after the first step, around snapshot writes, and on
-SIGTERM/SIGINT, so they stay consistent with snapshots. Buffering
-mechanism and file format: the `__main__.py` module docstring.
+shutdown, after the first step, before snapshot writes, and on
+SIGTERM/SIGINT, so they stay consistent with snapshots. Every flushed
+row and host-synced scalar is guarded against NaN/inf: a hit prints
+one `FATAL: non-finite ...` line naming the quantity, skips the final
+snapshot, and exits with code 3 (detail: the `__main__.py` module
+docstring). Buffering mechanism and file format: the `__main__.py`
+module docstring.
 
 ### Snapshots
 
 A snapshot is a single uncompressed tar (`format_version: 3`) wrapping a
-zarr3 store — `_dnsjax_meta.json` (params/grid/lineage; JAX-free via
+zarr3 store — `_dnsjax_meta.json` (params/grid/lineage + the writing
+code's git hash, printed at startup too; JAX-free via
 `snapshot_meta.py`), `state/zarr.json`, and one contiguous chunk per
 state component (3, or 9 for viscoelastic; metadata-driven). Readable
 with standard tools and no dnsjax; each device writes its disjoint byte
@@ -476,11 +486,17 @@ one-liners. Cross-cutting notes:
   counter-rotating values.
 - The 3/2-rule pad on a complex FFT axis (z, periodic y) has no parity
   constraint (`zeropad_fft`/`truncate_fft` place modes exactly for odd
-  pads and odd sizes); `set_padded_resolution` auto-rounds the padded
-  sizes only for np1/np0 divisibility with a startup note (e.g. nz=6,
-  np1=2: nz_padded 9->10; `round_up_padded` in `parameters.py`), so
-  every (n, np) combination runs. The real axis nx is never rounded.
+  pads and odd sizes); `set_padded_resolution` auto-rounds every
+  padded FFT size for np1/np0 divisibility **and** to FFT-friendly
+  7-smooth lengths with a startup note (e.g. nz=6, np1=2: nz_padded
+  9->10; nz=94: 141->144; `round_up_padded_smooth` in
+  `parameters.py`), so every (n, np) combination runs. The real axis
+  nx gets only the smoothness rounding (never sharded, so no
+  divisibility part).
 
+- `tests/pytest_suite.py`: the pytest bridge (subprocess per script,
+  `mpi`/`slow` markers; the only pytest-collected file — see Run
+  tests).
 - `tests/test_banded_solver.py`: geometry-independent Pallas banded
   backend (interpret parity, cuda-lowering guard, check contract).
 - `tests/test_banded_solver_sharded.py`: shard_map-local Pallas solve on
@@ -501,16 +517,18 @@ one-liners. Cross-cutting notes:
   (Kolmogorov cnab2 self-convergence, plane-Couette scheme slope).
 - `tests/test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
   forced spectral padding.
-- `tests/test_padding.py`: padded-size rounding (`round_up_padded`
-  units; primary/fallback rounding subprocess cases with the diagnostic
-  asserted) + FFT exactness cases (odd-pad, odd-nz, fused spec-pad on a
-  forced (2, 2) mesh) + `chunked_transform` bit-parity.
+- `tests/test_padding.py`: padded-size rounding (`round_up_padded`/
+  `round_up_padded_smooth` units; primary/fallback/smooth rounding
+  subprocess cases with the diagnostic asserted) + FFT exactness cases
+  (odd-pad, odd-nz, fused spec-pad on a forced (2, 2) mesh) +
+  `chunked_transform` bit-parity.
 - `tests/test_laminar_smoke.py`: laminar fixed-point smoke for all
   wall-bounded flows (subprocess/mpirun; Dean/viscoelastic branches;
   console-script `--help`/run entries and an nz-padding entry).
 - `tests/test_random_smoke.py`: random-IC nonlinear integration for all
   7 flows (+ cnab2, default-IC, gate-off, multi-device-padding,
-  chunked-RHS entries).
+  chunked-RHS entries, and a nan-guard entry asserting the forced
+  blow-up aborts with exit 3).
 - `tests/test_snapshot.py`: snapshot round-trips, np-agnostic resume,
   standard-tools readability, 9-component viscoelastic case.
 - `tests/test_resume.py`: snapshot lineage and resume policy (offline

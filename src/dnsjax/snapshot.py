@@ -133,6 +133,7 @@ from jax.sharding import NamedSharding
 from .parameters import derived_params, params, periodic_systems
 from .sharding import sharding
 from .snapshot_meta import (
+    git_hash,
     read_snapshot_meta,
     snapshot_component_offsets,
 )
@@ -568,9 +569,16 @@ def _write_tar_skeleton(
 def _metadata_bytes(
     t: float, it: int, layout: _Layout, isnap: int = 0
 ) -> bytes:
-    """Serialise the ``_dnsjax_meta.json`` member content."""
+    """Serialise the ``_dnsjax_meta.json`` member content.
+
+    ``git_hash`` records the code revision that wrote the snapshot
+    (provenance only -- never read back on load).  Additive keys like
+    it need no ``format_version`` bump: readers use targeted lookups
+    and ignore unknown keys.
+    """
     meta = {
         "format_version": 3,
+        "git_hash": git_hash(),
         "t": t,
         "it": it,
         "isnap": isnap,
