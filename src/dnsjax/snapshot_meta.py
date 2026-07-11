@@ -8,10 +8,14 @@ using only the standard library (``tarfile`` / ``json``).  It imports
 nothing from the rest of the package, so it is a safe leaf dependency
 for both :mod:`dnsjax.parameters` (which reads a resumed snapshot's
 parameters before the distributed backend is up) and
-:mod:`dnsjax.snapshot` (no import cycle).
+:mod:`dnsjax.snapshot` (no import cycle).  It also hosts the
+stdlib-only :func:`git_hash` provenance helper, printed at solver
+startup and recorded in every snapshot's metadata.
 """
 
+import functools
 import json
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -25,6 +29,39 @@ STATS_MEMBER = "_dnsjax_stats.json"
 #: (``state/c/{component}/0/0/0``).
 _CHUNK_PREFIX = "state/c/"
 _CHUNK_SUFFIX = "/0/0/0"
+
+
+@functools.cache
+def git_hash() -> str:
+    """Best-effort git revision of the running dnsjax source tree.
+
+    Returns ``git describe --always --dirty --abbrev=12`` resolved
+    from this file's directory: the abbreviated commit hash of the
+    checkout the package is imported from, ``-dirty``-suffixed when
+    the tree has uncommitted changes (and tag-prefixed if a tag is
+    reachable).  Returns ``"unknown"`` when the source tree is not a
+    git checkout (e.g. an installed wheel) or git is unavailable.
+    Cached, so at most one subprocess call per process.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(Path(__file__).resolve().parent),
+                "describe",
+                "--always",
+                "--dirty",
+                "--abbrev=12",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except OSError, subprocess.SubprocessError:
+        return "unknown"
+    version = proc.stdout.strip()
+    return version if proc.returncode == 0 and version else "unknown"
 
 
 def is_snapshot_file(path: str | Path) -> bool:

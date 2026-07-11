@@ -558,7 +558,8 @@ def test_cylindrical_integration_weights() -> None:
 
 
 def test_interpolate_to_axis_polynomials() -> None:
-    """Fornberg extrapolation to r = 0: polynomial exactness."""
+    """Axis (r = 0) evaluation: polynomial exactness (one-sided
+    Fornberg; spectral parity-constrained even path)."""
     Nr = 16
     rs = np.asarray(build_radial_cgl_grid(Nr))
     order = params.res.fd_order
@@ -579,12 +580,14 @@ def test_interpolate_to_axis_polynomials() -> None:
         atol=1e-12,
     )
 
-    # Even path interpolates in x = r^2: exact for even
-    # polynomials up to degree 2 * order.
-    val = float(
-        interpolate_to_axis(jnp.asarray(rs ** (2 * order)), rs, parity="even")
-    )
-    assert_allclose(val, 0.0, atol=1e-11, err_msg="even r^(2p)")
+    # Even path on a detected CGL grid: the exact parity-constrained
+    # fit in x = r^2 -- exact for even polynomials up to the full
+    # degree 2 * (Nr - 1), far past the local rule's 2 * order.
+    for d2 in (2 * order, 2 * (Nr - 1)):
+        val = float(
+            interpolate_to_axis(jnp.asarray(rs**d2), rs, parity="even")
+        )
+        assert_allclose(val, 0.0, atol=1e-11, err_msg=f"even r^{d2}")
 
     # Odd parity: identically zero on the axis.
     v = interpolate_to_axis(jnp.asarray(rs**3), rs, parity="odd")
@@ -599,13 +602,13 @@ def test_interpolate_to_axis_polynomials() -> None:
 
 
 def test_interpolate_to_axis_even_superconvergence() -> None:
-    """Even-parity stencil (in r^2) beats one-sided on even data."""
+    """Even-parity path (spectral in r^2 on CGL) beats one-sided."""
     Nr = 16
     rs = np.asarray(build_radial_cgl_grid(Nr))
     f = jnp.asarray(np.exp(-(rs**2)))  # even, f(0) = 1
     err_even = abs(float(interpolate_to_axis(f, rs, parity="even")) - 1.0)
     err_side = abs(float(interpolate_to_axis(f, rs)) - 1.0)
-    assert err_even < 1e-7, f"even-path error {err_even:.3e}"
+    assert err_even < 1e-12, f"even-path error {err_even:.3e}"
     assert err_side < 5e-3, f"one-sided error {err_side:.3e}"
     assert err_even < err_side
 
@@ -635,9 +638,10 @@ def test_interpolate_to_axis_multidim() -> None:
 
 def test_axis_extrapolation_weights_shared_leaf() -> None:
     """``interpolate_to_axis`` and the JAX-free
-    ``fd.axis_extrapolation_weights`` leaf (also used by the rigged
-    interpolation matrix) agree on the even-parity axis value."""
-    from dnsjax.fd import axis_extrapolation_weights
+    ``fd.axis_extrapolation_weights`` leaf (the same spectral even
+    weights behind the rigged completion) agree on the even-parity
+    axis value; the spectral path is gated to detected CGL grids."""
+    from dnsjax.fd import axis_extrapolation_weights, tanh_one_sided_grid
 
     Nr = 16
     rs = np.asarray(build_radial_cgl_grid(Nr))
@@ -648,6 +652,14 @@ def test_axis_extrapolation_weights_shared_leaf() -> None:
     assert_allclose(via_leaf, via_interp, atol=1e-13)
     # Odd parity: the leaf returns all-zero weights (f(0) = 0).
     assert np.all(axis_extrapolation_weights(rs, order, "odd") == 0.0)
+    # CGL even path is the full-grid spectral fit (all weights live);
+    # on a non-CGL (tanh) grid it stays on the local order + 1
+    # stencil (a full-order global fit is ill-conditioned there).
+    w_cgl = axis_extrapolation_weights(rs, order, "even")
+    assert np.count_nonzero(w_cgl) == Nr
+    rt = np.asarray(tanh_one_sided_grid(Nr, 2.0))
+    wt = axis_extrapolation_weights(rt, order, "even")
+    assert np.count_nonzero(wt) <= order + 1
 
 
 def test_parity_dispatch_interpolation() -> None:
@@ -679,7 +691,7 @@ def test_parity_dispatch_interpolation() -> None:
         return s
 
     src = jnp.asarray(build(ro))
-    t_even, t_odd = cgl_parity_interpolation_matrices(ny_old, ny_new, 1, 1, 4)
+    t_even, t_odd = cgl_parity_interpolation_matrices(ny_old, ny_new, 1, 1)
     m_is_even = m % 2 == 0
     t_p = np.where(m_is_even[:, None, None], t_even, t_odd)  # u_z
     t_v = np.where(m_is_even[:, None, None], t_odd, t_even)  # u_pm

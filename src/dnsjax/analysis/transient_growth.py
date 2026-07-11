@@ -298,6 +298,7 @@ from ..parameters import (
     update_parameters,
     validate_parameters,
 )
+from ..snapshot_meta import git_hash
 
 if TYPE_CHECKING:
     from jax import Array
@@ -1483,6 +1484,7 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     args, remainder = _parse_args(argv)
     configure_jax_platform(args.platform, double_precision=True)
+    print("Code version:", git_hash(), flush=True)
     return _run(args, remainder)
 
 
