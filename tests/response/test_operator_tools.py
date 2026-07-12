@@ -259,7 +259,7 @@ def test_export_faithfulness_and_cli() -> None:
         )
         assert result.returncode == 0, result.stdout + result.stderr
         with np.load(cont_npz) as z:
-            lifted = z["cont_modes_1_0"]
+            lifted = z["profiles_1_0"]
             gram_eigvals = z["gram_eigvals_1_0"]
             assert str(np.asarray(z["system"])) == "plane-poiseuille"
             assert_allclose(z["code_grid"], op.y)

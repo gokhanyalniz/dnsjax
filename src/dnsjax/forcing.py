@@ -5,11 +5,12 @@ wall-normal channel profiles to each ``force.modes`` spectral mode --
 a sequence of independent state increments ("kicks"), the
 discrete-time realisation of white-in-time forcing localised at the
 chosen modes.  The drawn coefficients stream to
-``forcing.bin``/``forcing.json`` next to the ``.dat`` diagnostics;
-cross-correlating the probe stream against them identifies the
-mode's linear operator without any hypothesis on the turbulent
-background (:mod:`dnsjax.analysis.response.ssi`, which also holds
-the JAX-free reader).
+``forcing.bin``/``forcing.json`` next to the ``.dat`` diagnostics,
+keeping the run's full forcing history available to any offline
+analysis.  E.g. cross-correlating the probe stream against it
+identifies the mode's linear operator without any hypothesis on the
+turbulent background (:mod:`dnsjax.analysis.response.ssi`, which
+also holds the JAX-free reader).
 
 Why kicks, not a body-force term
 ================================
@@ -296,9 +297,9 @@ class StochasticForcer:
                     "scripts/snapshot_perturb.py's source machinery)."
                 )
             for i2, i3 in self.modes:
-                key = f"cont_modes_{i2}_{i3}"
+                key = f"profiles_{i2}_{i3}"
                 if key not in npz:
-                    have = [k for k in npz.files if k.startswith("cont_modes")]
+                    have = [k for k in npz.files if k.startswith("profiles")]
                     raise SystemExit(
                         f"[force] {path} has no {key!r} for forced "
                         f"mode ({i2},{i3}) (available: {have})"

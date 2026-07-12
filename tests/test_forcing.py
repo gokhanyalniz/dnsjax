@@ -121,7 +121,7 @@ def _write_profiles(path: Path, seed: int = 11) -> np.ndarray:
         system="plane-poiseuille",
         code_grid=np.asarray(derived_params.wall_normal_grid),
         **{
-            f"cont_modes_{i2}_{i3}": arrs[k]
+            f"profiles_{i2}_{i3}": arrs[k]
             for k, (i2, i3) in enumerate(FORCE_MODES)
         },
     )
@@ -280,19 +280,19 @@ def test_profile_bundle_validation() -> None:
             "grid": dict(
                 system="plane-poiseuille",
                 code_grid=good_grid + 1e-3,
-                cont_modes_5_0=arr,
-                cont_modes_3_1=arr,
+                profiles_5_0=arr,
+                profiles_3_1=arr,
             ),
             "system": dict(
                 system="plane-couette",
                 code_grid=good_grid,
-                cont_modes_5_0=arr,
-                cont_modes_3_1=arr,
+                profiles_5_0=arr,
+                profiles_3_1=arr,
             ),
-            "cont_modes_3_1": dict(  # missing forced-mode key
+            "profiles_3_1": dict(  # missing forced-mode key
                 system="plane-poiseuille",
                 code_grid=good_grid,
-                cont_modes_5_0=arr,
+                profiles_5_0=arr,
             ),
         }
         for fragment, payload in cases.items():

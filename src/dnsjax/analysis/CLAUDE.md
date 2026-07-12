@@ -132,7 +132,10 @@ recipe (native chunks + combine function) lives in `_component_recipes`.
   `[force]`-enabled runs, discrete-Lyapunov forced-variance
   prediction). The three identification routes share the fit, basis,
   and output convention (the `response/__init__.py` pipeline
-  section). Detail: the module docstrings; orchestration:
+  section), and the per-function JAX-vs-NumPy/SciPy split is
+  deliberate (rationale: the closing paragraph of
+  `response/__init__.py`). Detail: the module docstrings;
+  orchestration:
   `scripts/ensemble_setup.py`.
 - `_core.py` — engine: raw chunk I/O (`snapshot_meta` offsets +
   `np.frombuffer`, minimal per-component / per-slab reads), transforms

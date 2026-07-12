@@ -743,8 +743,9 @@ class StochasticForcing(BaseModel):
     of independent state increments ("kicks"), the discrete-time
     realisation of white-in-time forcing.  The drawn coefficients
     stream to ``forcing.bin``/``forcing.json`` next to the other
-    diagnostics; the cross-covariance of the probe stream with them
-    identifies the mode's linear operator
+    diagnostics, keeping the run's full forcing history available
+    to offline analysis -- e.g. their cross-covariance with the
+    probe stream identifies the mode's linear operator
     (:mod:`dnsjax.analysis.response.ssi`).
 
     Kicks rather than a body-force term: a forcing term inside the
@@ -757,9 +758,11 @@ class StochasticForcing(BaseModel):
     continuation, amplitude guidance): the :mod:`dnsjax.forcing`
     module docstring.
 
-    Wall-bounded, non-viscoelastic systems only.  The whole section
-    is **trajectory-defining**: resuming with changed forcing starts
-    a new trajectory (like a ``phys`` change).
+    Wall-bounded, non-viscoelastic systems only (the conjugate-
+    partner construction currently encodes the 3-component velocity
+    bases).  The whole section is **trajectory-defining**: resuming
+    with changed forcing starts a new trajectory (like a ``phys``
+    change).
     """
 
     # ``"i2,i3;..."`` global spectral modes to force -- the
@@ -768,9 +771,10 @@ class StochasticForcing(BaseModel):
     # Forced modes should normally also be probed, or the response
     # cannot be identified (a startup note reminds when they are not).
     modes: str | None = None
-    # npz with per-mode channel profiles ``cont_modes_{i2}_{i3}``
+    # npz with per-mode channel profiles ``profiles_{i2}_{i3}``
     # (``(m, C, Ny)`` complex, unit energy norm -- the
-    # ``operator_tools.save_modes_npz`` format, typically the leading
+    # ``operator_tools.save_modes_npz`` bundle format; any
+    # unit-energy profile set works, typically the leading
     # controllability modes) on **this run's** wall-normal grid
     # (exact match required; regrid offline if needed).
     profiles: str | None = None
@@ -1387,9 +1391,9 @@ def validate_parameters() -> None:
         else:
             print(
                 "[force] note: no probe stream configured "
-                "(outs.probe_modes); the forced responses will not be "
-                "recorded, so the run cannot feed the SSI "
-                "identification."
+                "(outs.probe_modes); the forced responses will not "
+                "be recorded (response identification, e.g. "
+                "dnsjax.analysis.response.ssi, needs them)."
             )
 
     # The half-CGL radial grid is a cylindrical-only option, and its

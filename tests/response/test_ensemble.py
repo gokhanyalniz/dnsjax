@@ -419,7 +419,7 @@ def test_direct_identification() -> None:
         op_npz, cont_npz = _operator_artifacts(tmp)
         op = ot.load_operator(op_npz, 3, 0)
         with np.load(cont_npz) as z:
-            lifted = np.asarray(z["cont_modes_3_0"])
+            lifted = np.asarray(z["profiles_3_0"])
         p = (lifted.reshape(4, -1) @ op.T_proj.T).T  # (r_res, 4)
         l_true = ot.restrict(op.A, p)
         t_rel = np.linspace(0.0, 2.0, 9)

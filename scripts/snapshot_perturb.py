@@ -25,8 +25,9 @@ Perturbation sources (exactly one):
   the profile is Fornberg-regridded when the bundle's wall-normal
   grid differs from the snapshot's (with a note; ``--interp-order``).
 - ``--modes-npz FILE --index J``: column ``J`` of the mode's
-  controllability-mode array (``cont_modes_{i2}_{i3}``) from an
-  ``operator_tools.save_modes_npz`` bundle (same regrid rule).
+  profile array (``profiles_{i2}_{i3}``) from an
+  ``operator_tools.save_modes_npz`` bundle (e.g. controllability
+  modes; same regrid rule).
 - ``--npy FILE``: a raw ``(C, Ny)`` complex ``.npy`` profile on the
   snapshot's grid, in the stored component basis (Cartesian
   ``(u_x, u_y, u_z)``; cyl/annular ``(u_z, u_+, u_-)``).
@@ -211,22 +212,22 @@ def load_profile_modes(
     index: int,
     interp_order: int = 8,
 ) -> np.ndarray:
-    """Controllability-mode column ``index`` for mode ``(i2, i3)``.
+    """Profile column ``index`` for mode ``(i2, i3)``.
 
-    Reads ``cont_modes_{i2}_{i3}`` (shape ``(m, C, Ny)``) from an
-    ``operator_tools.save_modes_npz`` bundle (same system / regrid
-    rules as :func:`load_profile_tg`).
+    Reads ``profiles_{i2}_{i3}`` (shape ``(m, C, Ny)``) from an
+    ``operator_tools.save_modes_npz`` bundle (e.g. controllability
+    modes; same system / regrid rules as :func:`load_profile_tg`).
     """
     from dnsjax.parameters import derived_params
 
     npz_path = Path(npz_path)
     with np.load(npz_path) as npz:
         _check_npz_system(npz, npz_path)
-        key = f"cont_modes_{i2}_{i3}"
+        key = f"profiles_{i2}_{i3}"
         if key not in npz:
             raise SystemExit(
                 f"{npz_path} has no {key!r} (available: "
-                f"{[k for k in npz.files if k.startswith('cont_modes')]})"
+                f"{[k for k in npz.files if k.startswith('profiles')]})"
             )
         arr = np.asarray(npz[key])
         if not (0 <= index < arr.shape[0]):

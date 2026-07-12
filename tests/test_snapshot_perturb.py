@@ -318,7 +318,7 @@ def test_tg_npz_source() -> None:
             ]
         )
         with np.load(tmp / "cont.npz") as z:
-            cont_vec = np.asarray(z["cont_modes_3_0"][1])
+            cont_vec = np.asarray(z["profiles_3_0"][1])
         state, _, _ = load_snapshot(tmp / "cm.tar")
         new = np.asarray(state)
         col = new[:, :, 3, 0]

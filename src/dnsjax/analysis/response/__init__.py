@@ -76,4 +76,14 @@ JAX (they are never imported from ``analysis/__init__.py``, so the
 package-level JAX-free import guarantee is unaffected; the
 ``transient_growth`` precedent).  CLIs select the platform via
 ``bootstrap.configure_jax_platform`` before any JAX import.
+
+The JAX/NumPy line is drawn by profitability, not habit: the dense
+time sweeps (batched ``expm``/SVD growth curves) run in JAX and are
+GPU-capable; matrix factorisations (``logm``, the Lyapunov solves,
+non-symmetric ``eig``) stay SciPy/LAPACK, which JAX has no (GPU)
+kernels for; and the stream projections / covariance estimators
+stay NumPy BLAS deliberately -- the identified coordinates are
+small (`$m \lesssim 30$`) and the wall time is dominated by reading
+the multi-GB probe streams.  Revisit that last choice only if
+streams reach `$O(10^7)$` samples.
 """

@@ -43,7 +43,7 @@ for ensemble response experiments)::
     python -m dnsjax.analysis.response.operator_tools \
         --operator U_mean_tg_op.npz --n-modes 30 --out U_mean_cont.npz
 
-writes ``cont_modes_{i2}_{i3}`` (``(m, C, Ny)`` full-state profiles,
+writes ``profiles_{i2}_{i3}`` (``(m, C, Ny)`` full-state profiles,
 unit energy norm, consumable by ``snapshot_perturb.py
 --modes-npz``) and ``gram_eigvals_{i2}_{i3}`` per mode present in the
 operator bundle (or a ``--modes "i2,i3;..."`` subset).  NumPy/SciPy
@@ -267,16 +267,16 @@ def load_modes_npz(
 ) -> np.ndarray:
     """Lifted mode profiles from a :func:`save_modes_npz` bundle.
 
-    Returns the ``cont_modes_{i2}_{i3}`` array (``(m, C, Ny)``
+    Returns the ``profiles_{i2}_{i3}`` array (``(m, C, Ny)``
     full-state profiles), truncated to the leading *n* when given.
     Shared loader for every consumer of an injection basis (the
     ensemble / LIM / SSI identification and the runtime forcing).
     """
     path = Path(path)
-    key = f"cont_modes_{i2}_{i3}"
+    key = f"profiles_{i2}_{i3}"
     with np.load(path, allow_pickle=False) as npz:
         if key not in npz:
-            have = [k for k in npz.files if k.startswith("cont_modes")]
+            have = [k for k in npz.files if k.startswith("profiles")]
             raise KeyError(f"{path} has no {key!r} (available: {have})")
         arr = np.asarray(npz[key])
     if n is not None:
@@ -322,7 +322,7 @@ def save_modes_npz(
 ) -> None:
     """Compute + save leading controllability modes for each *op*.
 
-    Writes ``cont_modes_{i2}_{i3}`` (``(m, C, Ny)`` lifted profiles)
+    Writes ``profiles_{i2}_{i3}`` (``(m, C, Ny)`` lifted profiles)
     and ``gram_eigvals_{i2}_{i3}`` per operator, with the grid /
     system keys ``snapshot_perturb.py --modes-npz`` checks.
     """
@@ -330,7 +330,7 @@ def save_modes_npz(
         raise ValueError("no operators given")
     out: dict[str, Any] = {
         "readme": (
-            "dnsjax controllability modes. cont_modes_{i2}_{i3}: "
+            "dnsjax controllability modes. profiles_{i2}_{i3}: "
             "(m, C, Ny) full-state profiles (stored component "
             "basis, unit energy norm), the leading eigenvectors of "
             "the controllability Gramian of the exported reduced "
@@ -350,7 +350,7 @@ def save_modes_npz(
     for op in ops:
         vals, p = controllability_modes(op.A, n_modes)
         sfx = f"_{op.i2}_{op.i3}"
-        out["cont_modes" + sfx] = lift_modes(op, p)
+        out["profiles" + sfx] = lift_modes(op, p)
         out["gram_eigvals" + sfx] = vals
     np.savez(path, **out)
     print(f"[operator_tools] wrote {path}")
