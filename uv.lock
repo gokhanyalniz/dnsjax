@@ -30,25 +30,34 @@ dependencies = [
     { name = "tensorstore" },
 ]
 
+[package.optional-dependencies]
+analysis = [
+    { name = "scipy" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "prek" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "scipy" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "jax", specifier = ">=0.9.2" },
     { name = "pydantic-settings", specifier = ">=2.13.0" },
+    { name = "scipy", marker = "extra == 'analysis'", specifier = ">=1.14" },
     { name = "tensorstore", specifier = ">=0.1.71" },
 ]
+provides-extras = ["analysis"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "prek", specifier = ">=0.3.3" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.15.0" },
+    { name = "scipy", specifier = ">=1.14" },
 ]
 
 [[package]]
