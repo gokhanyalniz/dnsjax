@@ -42,7 +42,8 @@ Execution phases
    pipeline steps (divergence is detected at most
    ``it_error_check`` steps late).
 
-Diagnostics (``stats.dat``, ``steps.dat``, ``corrector.dat``)
+Diagnostics (``stats.dat``, ``steps.dat``, ``corrector.dat``,
+``probes.bin``, ``forcing.bin``)
 -------------------------------------------------------------
 ``get_stats`` output is accumulated on-device in a fixed
 ``(nbuffer, n_cols)`` buffer (one row every ``it_stats``
@@ -76,6 +77,25 @@ corrector iteration count ``c`` and the final corrector error
 ``error``, both already returned by every step, timestamped at
 the pre-step time.  ``outs.it_error_check`` must not exceed
 ``it_corrector`` (:func:`dnsjax.parameters.validate_parameters`).
+
+``probes.bin`` records the complex wall-normal profiles of the
+``outs.probe_modes`` spectral modes every ``it_probes`` steps
+(wall-bounded only) with the same buffering, but as fixed-size
+binary records with a ``probes.json`` schema sidecar -- see the
+:mod:`dnsjax.probes` module docstring for the format, the
+append-on-resume rules, and the
+:mod:`dnsjax.analysis.response.probes` reader.  The t0 sample is
+recorded at setup, in-loop samples before each step, and a final
+post-step sample only when cadence-aligned (uniform sample
+times).
+
+``forcing.bin`` records the coefficients of the stochastic mode
+kicks (the ``force`` section) every ``it_force`` steps, with a
+``forcing.json`` sidecar.  A kick fires at the top of the loop
+after the equal-``t`` probe sample and any snapshot (both
+pre-kick) and immediately before the step; format, resume
+semantics, and the kick construction: the :mod:`dnsjax.forcing`
+module docstring (reader: :mod:`dnsjax.analysis.response.ssi`).
 
 Every diagnostic is guarded against non-finite floats: each
 flushed buffer row (stats / steps / corrector) is scanned on the
@@ -728,6 +748,35 @@ def run(wall_time_start: int) -> None:
             with open(corr_file, "w") as f:
                 f.write(header + "\n")
 
+    # --- Probe buffer setup ----------------------------------------------
+    # Spectral-mode probe stream (``outs.probe_modes``/``it_probes``):
+    # complex wall-normal mode profiles into the binary ``probes.bin``
+    # (see the :mod:`dnsjax.probes` docstring).  Same buffering state
+    # machine as the streams above; the t0 sample is recorded here (the
+    # in-loop record skips ``it == it0``).  A non-finite message from
+    # this record (possible only at ``nbuffer == 1``) is deferred to
+    # ``_abort_non_finite`` below, which is not yet defined here.
+    measure_probes: bool = params.outs.probe_modes is not None
+    probe_bad_t0: str | None = None
+    if measure_probes:
+        from .probes import ProbeStream
+
+        probe_stream = ProbeStream(state)
+        probe_bad_t0 = probe_stream.record(state, t)
+
+    # --- Stochastic forcing setup ------------------------------------------
+    # White-in-time mode kicks (``force.modes``; see the
+    # :mod:`dnsjax.forcing` docstring for the conventions).  The
+    # forcer holds the channel profiles, the rank-identical
+    # coefficient PRNG (advanced past any kicks already recorded in
+    # an appended ``forcing.bin``), and the buffered coefficient
+    # writer flushed with the other streams.
+    force_on: bool = params.force.modes is not None
+    if force_on:
+        from .forcing import StochasticForcer
+
+        forcer = StochasticForcer(state)
+
     def flush_all_buffers(check: bool = True) -> None:
         """Flush every buffered diagnostic stream to disk and reset it.
 
@@ -792,6 +841,16 @@ def run(wall_time_start: int) -> None:
             corr_idx = 0
             if bad is not None:
                 _abort_non_finite(bad)
+        if measure_probes:
+            # ProbeStream gates disk I/O on the main process and
+            # resets its buffer on all ranks itself.
+            bad = probe_stream.flush(check=check)
+            if bad is not None:
+                _abort_non_finite(bad)
+        if force_on:
+            # Kick coefficients are finite by construction (host-drawn
+            # Gaussians): flushed for durability, never checked.
+            forcer.flush()
 
     def _abort_non_finite(reason: str) -> None:
         """Abort the run on a non-finite (NaN/inf) diagnostic value.
@@ -831,6 +890,10 @@ def run(wall_time_start: int) -> None:
 
     signal.signal(signal.SIGTERM, _flush_and_exit)
     signal.signal(signal.SIGINT, _flush_and_exit)
+
+    if probe_bad_t0 is not None:
+        # Deferred check of the t0 probe record (see the probe setup).
+        _abort_non_finite(probe_bad_t0)
 
     sharding.print("Started timestepping at", datetime.now())
 
@@ -887,6 +950,18 @@ def run(wall_time_start: int) -> None:
                 if bad is not None:
                     _abort_non_finite(bad)
 
+        # Spectral-mode probe sample -> GPU buffer (t0 was recorded at
+        # setup; a cadence-aligned final sample is recorded after the
+        # loop, keeping the time grid uniform).
+        if (
+            measure_probes
+            and it % params.outs.it_probes == 0
+            and it > params.init.it0
+        ):
+            bad = probe_stream.record(state, t)
+            if bad is not None:
+                _abort_non_finite(bad)
+
         # Periodic snapshot save (top of loop: same (state, it, t) as the
         # stats row above, so a fresh ``it_stats`` computation is reused;
         # the final state after the last step is covered by the
@@ -910,6 +985,16 @@ def run(wall_time_start: int) -> None:
             flush_all_buffers()
             isnap = _save_numbered_snapshot(state, t, it, snap_stats, isnap)
             last_saved_it = it
+
+        # Stochastic forcing kick (``force.modes``): fires after the
+        # equal-t probe sample and any snapshot above (both record
+        # the pre-kick state) and immediately before the step, so a
+        # resumed continuation never double-applies a kick (saved
+        # states are pre-kick; the kick belongs to the segment that
+        # steps from them) and the coefficient stream continues
+        # seamlessly (see :mod:`dnsjax.forcing`).
+        if force_on and it % params.force.it_force == 0:
+            state = forcer.kick(state, t)
 
         # Time step (single JIT scope): iterative Crank-Nicolson
         # corrector, or one CN/AB2 step carrying the nonlinear-RHS
@@ -1080,6 +1165,20 @@ def run(wall_time_start: int) -> None:
                 f"non-finite final statistic(s) {', '.join(bad_final)} "
                 f"at t = {t:.6e}, it = {it}"
             )
+
+    # Final probe sample: the loop records *before* each step, so the
+    # post-step final state is never sampled there.  Record it only
+    # when cadence-aligned (a stop.max_sim_time horizon of a whole
+    # number of probe intervals ends exactly on the grid), keeping the
+    # sample times uniform for the readers.
+    if (
+        measure_probes
+        and it > params.init.it0
+        and it % params.outs.it_probes == 0
+    ):
+        bad = probe_stream.record(state, t)
+        if bad is not None:
+            _abort_non_finite(bad)
 
     # Final snapshot (default-on, independent of it_snapshot); skipped
     # when the final state was just written (a periodic or IC write at
