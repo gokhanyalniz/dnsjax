@@ -164,6 +164,14 @@ fft.py                3D/2D real FFT, 3/2-rule dealiasing, shard_map
 rhs.py                Rotational-form perturbation nonlinear term;
                       measure_fn hook
 measurements.py       Physical-space measurements (get_cfl)
+probes.py             Spectral-mode probe stream (outs.probe_modes):
+                      sharded-gather mode extractor + buffered binary
+                      writer (probes.bin + probes.json sidecar)
+forcing.py            White-in-time stochastic mode kicks ([force]
+                      section): sharded scatter-add mode injector
+                      (the extractor's dual) + buffered forcing.bin
+                      coefficient log; reader/identification in
+                      analysis/response/ssi.py
 timestep.py           make_stepper() factory:
                       predict_and_fully_correct (+_measured),
                       step_cnab2 (+_measured), _cnab2_lbf_core
@@ -194,8 +202,10 @@ flows/
                       base flows/driving in wall_bounded/CLAUDE.md
   triply_periodic/    monochromatic.py: Kolmogorov/Waleffe/decaying-box
 analysis/             External-facing JAX-free snapshot post-processing
-                      API (+ the JAX-based transient_growth CLI) -- see
-                      analysis/CLAUDE.md
+                      API (+ the JAX-based transient_growth CLI and the
+                      response/ subpackage: probe reader, operator
+                      tools, ensemble/LIM/SSI operator identification)
+                      -- see analysis/CLAUDE.md
 ```
 
 ### Transient-growth analysis
@@ -207,6 +217,10 @@ poiseuille, pipe, taylor-couette; Dean out of scope), reusing the
 solver's own linear step per Fourier mode. Single-device, GPU-runnable
 (`--dist.platform cuda`). Full math, the `frozen_profile_flow` hook,
 and the CLI/output spec: the module docstring and `analysis/CLAUDE.md`.
+`--save-operator` additionally exports each mode's reduced generator
+(`<stem>_tg_op.npz`) for the `analysis/response/` post-processing
+(controllability modes, growth curves, ensemble/LIM/SSI operator
+identification).
 
 ### Code-exploration constraints
 
@@ -353,23 +367,32 @@ the schemes, `Solver` for the Pallas knobs). Key fields:
 | `[geo]`    | `lx`, `lz`, `tilt_degree`, `eta` (TC), `delta` (viscoelastic-dean), `wall_grid`, `grid_type` (`"cgl"`/`"half-cgl"`/`"tanh"`), `grid_stretch` |
 | `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`    |
 | `[init]`   | Start-mode precedence: `snapshot` > `start_from_laminar` > `localized_rolls` > `random_field` (default **on**). `t0`, `it0`, `isnap0`, `force_resume`, `random_*`, `localized_rolls_*` |
-| `[outs]`   | `it_stats`, `it_steps`, `it_snapshot`, `it_corrector`, `it_error_check`, `nbuffer`, `stats_precision`, `snapshot_write_mode`, `snapshot_pad_width`, `snapshot_embed_stats`, `snapshot_save_initial`, `snapshot_save_final` |
+| `[outs]`   | `it_stats`, `it_steps`, `it_snapshot`, `it_corrector`, `it_error_check`, `probe_modes`, `it_probes`, `nbuffer`, `stats_precision`, `snapshot_write_mode`, `snapshot_pad_width`, `snapshot_embed_stats`, `snapshot_save_initial`, `snapshot_save_final` |
 | `[step]`   | `dt`, `scheme` (`"iterative-cn"`/`"cnab2"`), `implicitness`, `corrector_tolerance`, `max_corrector_iterations`, `implicit_mean_coupling`, `split_corrector` |
+| `[force]`  | White-in-time stochastic mode kicks (all-or-none; trajectory-defining): `modes`, `profiles` (npz of channel profiles), `amplitude`, `it_force` (multiple of `it_probes`), `n_channels`, `seed` — the `StochasticForcing` docstring + `forcing.py` |
 | `[stop]`   | `max_sim_time`, `max_wall_time` (ISO 8601), `check_laminarization`, `laminarization_threshold` |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
 | `[solver]` | `backend` (`"pallas"`/`"dense"`), `pallas_block_m0`/`m1`, `pallas_stability_tol`, `rhs_transform_chunks` |
 
 The default `parameters.toml` contains only
-`[phys] [geo] [res] [init] [outs] [step] [stop]`; `[dist]` and
-`[solver]` rely on model defaults -- set them via CLI (e.g.
-`--dist.np1 2`, `--solver.backend dense`) or by adding the section.
+`[phys] [geo] [res] [init] [outs] [step] [stop]`; `[force]`, `[dist]`
+and `[solver]` rely on model defaults -- set them via CLI (e.g.
+`--dist.np1 2`, `--force.modes "3,0"`) or by adding the section.
 
-### Diagnostics (`stats.dat`, `steps.dat`, `corrector.dat`)
+### Diagnostics (`stats.dat`, `steps.dat`, `corrector.dat`, `probes.bin`, `forcing.bin`)
 
-Three on-device buffered streams, flushed periodically (fsync-ed):
-`get_stats` → `stats.dat`, the CFL diagnostic (`outs.it_steps`, via the
-`rhs.py` `measure_fn` hook) → `steps.dat`, the corrector diagnostic
-(`outs.it_corrector`) → `corrector.dat`. All are also flushed at
+Three on-device buffered scalar streams, flushed periodically
+(fsync-ed): `get_stats` → `stats.dat`, the CFL diagnostic
+(`outs.it_steps`, via the `rhs.py` `measure_fn` hook) → `steps.dat`,
+the corrector diagnostic (`outs.it_corrector`) → `corrector.dat`; plus
+the binary spectral-mode probe stream (`outs.probe_modes`/`it_probes`,
+wall-bounded only) → `probes.bin` + `probes.json` sidecar (format and
+sharded gather: the `probes.py` module docstring; JAX-free reader:
+`dnsjax.analysis.response.probes`), and the stochastic-kick
+coefficient log (`[force]`) → `forcing.bin` + `forcing.json` (format,
+kick timing vs probes/snapshots, resume PRNG continuation: the
+`forcing.py` module docstring; reader:
+`dnsjax.analysis.response.ssi`). All are also flushed at
 shutdown, after the first step, before snapshot writes, and on
 SIGTERM/SIGINT, so they stay consistent with snapshots. Every flushed
 row and host-synced scalar is guarded against NaN/inf: a hit prints
@@ -452,6 +475,15 @@ One line each; full rationale/usage in each script's module docstring.
 - `scripts/snapshot_import.py`: **library** (not a CLI) packing a
   native-layout velocity field into a snapshot (perturbation/velocity
   only).
+- `scripts/snapshot_perturb.py`: CLI + library injecting a scaled
+  single-mode perturbation (transient-growth optimal, controllability
+  mode, or raw profile) into an existing snapshot; solver-exact
+  `--amplitude-energy`, `--negate` for antithetic pairs.
+- `scripts/ensemble_setup.py`: JAX-free `harvest`/`build` CLI turning
+  a snapshot archive into ensemble member run trees (perturbed seeds,
+  per-member `parameters.toml` + probe stream, `run_commands.txt`,
+  antithetic/baseline pairing); aggregation lives in
+  `dnsjax.analysis.response.ensemble`.
 - `scripts/pallas_tiling_diagnostic.py`: GPU harness that localised the
   Triton partial-tile miscompile and confirms the pad-to-whole-tiles fix.
 - `scripts/pallas_solve_profile.py`: GPU diagnostic for where the Pallas
@@ -529,6 +561,35 @@ one-liners. Cross-cutting notes:
   7 flows (+ cnab2, default-IC, gate-off, multi-device-padding,
   chunked-RHS entries, and a nan-guard entry asserting the forced
   blow-up aborts with exit 3).
+- `tests/test_probes.py`: runtime spectral-mode probe stream (sharded
+  extractor exactness on a forced (2, 2) mesh, writer semantics,
+  parameter validation; mpirun laminar/random solver runs behind
+  `--unit-only`).
+- `tests/test_forcing.py`: runtime stochastic kicks (sharded injector
+  + kick placement bit-exactness on a forced (2, 2) mesh, coefficient
+  stream + PRNG resume-skip, profile/parameter validation; mpirun
+  forced-laminar runs behind `--unit-only`: exported-propagator
+  trajectory prediction to ~1e-4 and split-resume stream equality).
+- `tests/test_snapshot_perturb.py`: `scripts/snapshot_perturb.py`
+  injection (bit-exactness + conjugate partner, energy convention,
+  antithesis, real TG/controllability npz sources, error paths).
+- `tests/response/test_probes_reader.py`: JAX-free probe reader
+  (synthetic streams; mean profile, Re_tau, profile-file round trip).
+- `tests/response/test_operator_tools.py`: Gramian/controllability/
+  growth-curve units + `--save-operator` export faithfulness
+  (eig(A), growth_curve vs the stored G) + the controllability CLI.
+- `tests/response/test_ensemble.py`: harvest/build orchestration
+  (real seeds, dry-run), exact antithetic aggregation on synthetic
+  member streams, and direct operator identification recovery
+  against a known restricted operator.
+- `tests/response/test_lim.py`: LIM identification (lag-consistent
+  estimator exactness, conditioning rejection, Ornstein-Uhlenbeck
+  statistical recovery + Gramian covariance identity, file/CLI
+  pipeline on a real operator bundle).
+- `tests/response/test_ssi.py`: SSI identification (cross-covariance
+  estimator exactness + causality, discrete-Lyapunov units and
+  forced-variance prediction, statistical file/CLI pipeline on a
+  real operator bundle, forcing-reader error paths).
 - `tests/test_snapshot.py`: snapshot round-trips, np-agnostic resume,
   standard-tools readability, 9-component viscoelastic case.
 - `tests/test_resume.py`: snapshot lineage and resume policy (offline

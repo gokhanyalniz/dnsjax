@@ -231,6 +231,14 @@ mode below is guarded per mode with an explicit error.
 - ``--save-all-times``: stores the optimal pair at every grid time,
   `$2 K n_t (3 N_y)$` complex values over `$K$` modes -- the
   dominant output for mode sweeps.
+- ``--save-operator``: also writes ``<stem>_tg_op.npz`` with each
+  mode's reduced generator `$\mathcal{A}$` (restricted to the
+  probe-resolved eigenspace, in an orthonormal energy-coordinate
+  basis), the bases `$V, F, Q$`, and the coordinate contract -- the
+  input for controllability / growth-curve / identification
+  post-processing
+  (:mod:`dnsjax.analysis.response.operator_tools`; the storage
+  layout: the ``_write_operator_npz`` docstring).
 - ``--export-amplitude`` (1e-4): volume-averaged energy `$E'$` of
   the exported seed (the solver's own measure).  The default keeps
   the seeded DNS initially linear; raise it for finite-amplitude
@@ -357,6 +365,7 @@ class TGConfig:
     n_eig: int
     t_chunk: int
     save_all_times: bool
+    save_operator: bool
     export_snapshot: str | None
     export_amplitude: float
     export_which: str
@@ -389,6 +398,13 @@ class ModeResult:
     opt_input_t: np.ndarray | None  # (nt, 3, Ny) or None
     opt_response_t: np.ndarray | None
     sigma_t: np.ndarray | None  # (nt,) or None
+    # ``--save-operator`` payload (None otherwise); the coordinate
+    # contract is documented in ``_write_operator_npz``.
+    op_V: np.ndarray | None = None  # (n, r) subspace basis
+    op_F: np.ndarray | None = None  # (r, r) upper Cholesky, M = F^H F
+    op_Q: np.ndarray | None = None  # (r, r_res) resolved basis
+    op_A: np.ndarray | None = None  # (r_res, r_res) reduced generator
+    op_lam: np.ndarray | None = None  # (r_res,) resolved eigenvalues
 
 
 # ── Host-side helpers (JAX-free) ─────────────────────────────────
@@ -497,6 +513,13 @@ def _parse_args(
         "--save-all-times",
         action="store_true",
         help="store the optimal pair at every grid time",
+    )
+    p.add_argument(
+        "--save-operator",
+        action="store_true",
+        help="also write <stem>_tg_op.npz: per-mode reduced generator "
+        "A, resolved basis Q, energy factor F, subspace basis V (see "
+        "the module docstring)",
     )
     p.add_argument(
         "--export-snapshot",
@@ -973,13 +996,28 @@ def _analyze_mode(
     lam_sorted = lam[order]
     spectral_abscissa = float(lam_sorted[0].real)
     slow = np.abs(mu) > 0.5
+    op_v = op_f = op_q = op_a = op_lam = None
     if slow.any():
+        # Orthonormal basis Q of the probe-resolved eigenspace in
+        # energy coordinates; the reduced generator on it follows from
+        # invariance: A_energy (Q R) = (Q R) diag(lam_slow), so
+        # Q^H A_energy Q = R diag(lam_slow) R^{-1}.  Shared by the
+        # numerical abscissa and the ``--save-operator`` export.
         q_mat, r_mat = np.linalg.qr(e_mat[:, slow])
         a_slow = (r_mat * lam[slow][None, :]) @ np.linalg.inv(r_mat)
         sym = 0.5 * (a_slow + a_slow.conj().T)
         numerical_abscissa = float(np.max(np.linalg.eigvalsh(sym)))
+        if cfg.save_operator:
+            op_v, op_f, op_q, op_a = v, f_mat, q_mat, a_slow
+            op_lam = lam[slow]
     else:
         numerical_abscissa = spectral_abscissa
+    if cfg.save_operator and op_a is None:
+        raise SystemExit(
+            f"mode ({i2},{i3}): no probe-resolved eigenvalues "
+            "(every |mu| <= 1/2); reduce --tg-dt to resolve the "
+            "spectrum before --save-operator."
+        )
     extraction_residual = eig_res
     n_eig = min(cfg.n_eig, rank)
 
@@ -1004,6 +1042,11 @@ def _analyze_mode(
         opt_input_t=opt_input_t,
         opt_response_t=opt_response_t,
         sigma_t=sigma_t,
+        op_V=op_v,
+        op_F=op_f,
+        op_Q=op_q,
+        op_A=op_a,
+        op_lam=op_lam,
     )
 
 
@@ -1210,6 +1253,164 @@ def _write_npz(
     print(f"[tg] wrote {path}")
 
 
+def _write_operator_npz(
+    path: Path,
+    results: list[ModeResult],
+    family: str,
+    cfg: TGConfig,
+    profile_file: Path,
+    y_code: np.ndarray,
+    u_code: np.ndarray,
+    w_diag: np.ndarray,
+    t_grid: np.ndarray,
+) -> None:
+    r"""Write the ``--save-operator`` bundle (``<stem>_tg_op.npz``).
+
+    Per mode (keys suffixed ``_{i2}_{i3}``; ranks are ragged across
+    modes, so no stacking):
+
+    - ``A``: the reduced generator (``r_res x r_res``) in an
+      orthonormal basis of the **energy coordinates**, restricted to
+      the probe-resolved eigenspace (`$|\mu| > 1/2$`).  The clamped
+      stiff eigenvalues (`$-10^{30}$`) would poison any explicitly
+      formed operator (a matrix exponential or Lyapunov solve), and
+      truncating modes with `$|\lambda| \gtrsim 1/\Delta t$` changes
+      downstream results by the same `$O(\Delta t)$` class the
+      numerical-abscissa compression already accepts.
+    - ``Q``: that basis (``r x r_res``), ``F``: the upper Cholesky of
+      the subspace energy metric (``M = F^H F``, ``r x r``), ``V``:
+      the divergence-free subspace basis (``n x r``, ``n = C Ny``
+      component-major, index ``c*Ny + j``), ``lam``: ``eig(A)``.
+
+    Coordinate contract (also in the ``readme`` key): full state
+    `$q = V F^{-1} Q\,a$`; projection `$a = Q^H F V^H q$`; the plain
+    2-norm of `$a$` is the energy seminorm `$q^H\,\mathrm{diag}(
+    \mathtt{energy\_weights})\,q$`.  The solver's volume-averaged
+    `$E'$` of a physically real single-``(i2,i3)``-mode state is
+    `$\lVert a\rVert_2^2 / \mathtt{volume\_fac}$` (the real-FFT
+    ``mode_k_metric`` and the ``i3 = 0`` conjugate partner supply the
+    same factor 2).
+
+    Consumers: :mod:`dnsjax.analysis.response.operator_tools`
+    (controllability modes, growth curves, subspace restriction).
+    """
+    results = sorted(results, key=lambda m: (m.i2, m.i3))
+    out: dict[str, Any] = {
+        "readme": (
+            "dnsjax transient-growth operator export. Per mode "
+            "(suffix _{i2}_{i3}): A = reduced generator (r_res x "
+            "r_res) in an orthonormal basis Q of the energy "
+            "coordinates, restricted to the probe-resolved "
+            "eigenspace; F = chol (upper) of the subspace energy "
+            "metric; V = subspace basis (n x r, n = C*Ny, "
+            "component-major c*Ny+j); lam = eig(A). Contract: "
+            "q = V F^-1 Q a; a = Q^H F V^H q; ||a||_2^2 = "
+            "q^H diag(energy_weights) q; solver E' of a real "
+            "single-mode state = ||a||_2^2 / volume_fac."
+        ),
+        "system": params.phys.system,
+        "family": family,
+        "params_json": params.model_dump_json(),
+        "tg_config_json": cfg.as_json(),
+        "profile_file": str(profile_file),
+        "component_labels": np.asarray(_COMPONENT_LABELS[family]),
+        "code_grid": y_code,
+        "profile_on_grid": u_code,
+        "energy_weights": w_diag,
+        "tg_dt": params.step.dt,
+        "volume_fac": float(derived_params.volume_fac),
+        "t_grid": t_grid,
+        "mode_i2": np.asarray([r.i2 for r in results]),
+        "mode_i3": np.asarray([r.i3 for r in results]),
+        "mode_wn2": np.asarray([r.wn2 for r in results]),
+        "mode_wn3": np.asarray([r.wn3 for r in results]),
+        "mode_k_metric": np.asarray(
+            [1.0 if r.i3 == 0 else 2.0 for r in results]
+        ),
+        "rank": np.asarray([r.rank for r in results]),
+        "rank_resolved": np.asarray([r.op_A.shape[0] for r in results]),
+    }
+    for r in results:
+        sfx = f"_{r.i2}_{r.i3}"
+        out["A" + sfx] = r.op_A
+        out["Q" + sfx] = r.op_Q
+        out["F" + sfx] = r.op_F
+        out["V" + sfx] = r.op_V
+        out["lam" + sfx] = r.op_lam
+    np.savez(path, **out)
+    print(f"[tg] wrote {path}")
+
+
+# ── Single-mode state helpers (shared with scripts) ─────────────
+
+#: family -> the geometry module's kinetic-energy norm function.
+_NORM2_BY_FAMILY = {
+    "cartesian": "get_norm2",
+    "cylindrical": "get_norm2_cyl",
+    "annular": "get_norm2_annular",
+}
+
+
+def single_mode_state(vec: np.ndarray, i2: int, i3: int, family: str) -> Array:
+    r"""Zero spectral state carrying *vec* at global mode ``(i2, i3)``.
+
+    *vec* is ``(C, Ny)`` complex in the stored component basis.  On
+    the real-FFT plane (``i3 == 0``, ``i2 > 0``) the conjugate partner
+    at ``((nz-1) - i2, 0)`` is filled so the physical field is real
+    (Cartesian: plain conjugate; cyl/annular: the pm-pair swap
+    ``u_+ <-> u_-`` with the conjugate).  The mean mode ``(0, 0)`` is
+    a valid target (no partner; the caller owns its reality).
+
+    Requires the unpadded single-device spectral layout (storage
+    index == true mode index), which the transient-growth driver and
+    the offline scripts guarantee (``np0 = np1 = 1``).
+
+    Shared by the ``--export-snapshot`` seed writer and
+    ``scripts/snapshot_perturb.py``.
+    """
+    import jax.numpy as jnp
+
+    from ..sharding import sharding
+
+    vec = np.asarray(vec)
+    n2, n3 = sharding.spec_shape[1], sharding.spec_shape[2]
+    n2_true = params.res.nz - 1
+    if n2 != n2_true:
+        raise SystemExit(
+            "single_mode_state requires the unpadded single-device "
+            f"spectral layout (axis 2 holds {n2} slots for {n2_true} "
+            "true modes; run with np0 = np1 = 1)"
+        )
+    state = jnp.zeros(
+        (vec.shape[0], vec.shape[1], n2, n3),
+        dtype=sharding.complex_type,
+        out_sharding=sharding.spec_vector_shard,
+    )
+    state = state.at[:, :, i2, i3].set(jnp.asarray(vec))
+    # Conjugate partner on the real-FFT (i3=0) plane for a real field.
+    if i3 == 0 and i2 > 0:
+        if family == "cartesian":
+            partner = np.conj(vec)
+        else:  # swap u_+ <-> u_- and conjugate (pm-pair)
+            partner = np.conj(vec[[0, 2, 1]])
+        state = state.at[:, :, n2_true - i2, 0].set(jnp.asarray(partner))
+    return state
+
+
+def mode_state_energy(
+    state: Array, family: str, gmod: Any, flow: Any
+) -> float:
+    r"""The solver's volume-averaged perturbation energy `$E'$`.
+
+    ``get_norm2*``-based, so amplitude conventions built on it (the
+    ``--export-amplitude`` seed, ``snapshot_perturb``'s
+    ``--amplitude-energy``) agree exactly with the solver's own
+    ``E'`` diagnostic.
+    """
+    norm2 = getattr(gmod, _NORM2_BY_FAMILY[family])
+    return float(norm2(state, gmod.fourier.k_metric, flow.y_weights)) / 2.0
+
+
 def _export_snapshot(
     out_dir: Path,
     stem: str,
@@ -1221,9 +1422,7 @@ def _export_snapshot(
 ) -> None:
     """Export a chosen mode's optimal perturbation as a snapshot."""
     import jax
-    import jax.numpy as jnp
 
-    from ..sharding import sharding
     from ..snapshot import save_snapshot
 
     a, b = cfg.export_snapshot.split(",")
@@ -1235,34 +1434,8 @@ def _export_snapshot(
         )
     r = match[0]
     vec = r.opt_input if cfg.export_which == "input" else r.opt_response
-    ny = vec.shape[1]
-    n2, n3 = sharding.spec_shape[1], sharding.spec_shape[2]
-    norm2 = getattr(
-        gmod,
-        {
-            "cartesian": "get_norm2",
-            "cylindrical": "get_norm2_cyl",
-            "annular": "get_norm2_annular",
-        }[family],
-    )
-
-    state = jnp.zeros(
-        (3, ny, n2, n3),
-        dtype=sharding.complex_type,
-        out_sharding=sharding.spec_vector_shard,
-    )
-    state = state.at[:, :, i2, i3].set(jnp.asarray(vec))
-    # Conjugate partner on the real-FFT (i3=0) plane for a real field.
-    if i3 == 0 and i2 > 0:
-        if family == "cartesian":
-            partner = np.conj(vec)
-        else:  # swap u_+ <-> u_- and conjugate (pm-pair)
-            partner = np.conj(vec[[0, 2, 1]])
-        state = state.at[:, :, n2 - i2, 0].set(jnp.asarray(partner))
-
-    energy = (
-        float(norm2(state, gmod.fourier.k_metric, fmod.flow.y_weights)) / 2.0
-    )
+    state = single_mode_state(vec, i2, i3, family)
+    energy = mode_state_energy(state, family, gmod, fmod.flow)
     scale = float(np.sqrt(cfg.export_amplitude / energy))
     state = state * scale
 
@@ -1294,6 +1467,7 @@ def _make_config(args: argparse.Namespace) -> TGConfig:
         n_eig=args.n_eig,
         t_chunk=args.t_chunk,
         save_all_times=args.save_all_times,
+        save_operator=args.save_operator,
         export_snapshot=args.export_snapshot,
         export_amplitude=args.export_amplitude,
         export_which=args.export_which,
@@ -1476,6 +1650,18 @@ def _process_profile(
         err_max,
         nc_max,
     )
+    if cfg.save_operator:
+        _write_operator_npz(
+            out_dir / f"{stem}_tg_op.npz",
+            results,
+            family,
+            cfg,
+            profile_file,
+            y_code,
+            u_code,
+            w_diag,
+            t_grid,
+        )
     if cfg.export_snapshot is not None:
         _export_snapshot(out_dir, stem, results, fmod, gmod, family, cfg)
 

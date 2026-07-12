@@ -21,6 +21,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
+from .harmonics import parse_mode_pairs
+
 monochromatic_systems: list[str] = ["kolmogorov", "waleffe"]
 periodic_systems: list[str] = ["decaying-box", *monochromatic_systems]
 
@@ -406,8 +408,25 @@ class Outputs(BaseModel):
     # and perturbation energy (a hit aborts the run with exit code 3;
     # the ``__main__`` module docstring documents the full guard).
     it_error_check: int = Field(ge=1, default=10)
+    # Spectral-mode probe stream: record the complex wall-normal
+    # profiles ``u_hat(y)`` of the listed global spectral modes every
+    # ``it_probes`` steps into a binary ``probes.bin`` (+ a
+    # ``probes.json`` schema sidecar).  ``probe_modes`` is an
+    # ``"i2,i3;i2,i3;..."`` list of stored-layout indices (axis 2 =
+    # complex slot, axis 3 = real-FFT slot -- the transient-growth
+    # CLI ``--modes`` convention); the mean mode ``(0,0)`` is allowed
+    # (it records the instantaneous mean profile).  Wall-bounded
+    # systems only; both fields set together (``validate_parameters``).
+    # ``it_probes`` trades time resolution for disk (a record is
+    # ``8 + K*C*ny*2`` values): sample densely enough for the fastest
+    # statistics of interest -- the buffered writer makes any cadence
+    # cheap at runtime, so disk volume is the only real constraint.
+    # Format, buffering, and the reader: the :mod:`dnsjax.probes` and
+    # :mod:`dnsjax.analysis.response.probes` docstrings.
+    probe_modes: str | None = None
+    it_probes: int | None = Field(default=None, ge=1)
     # Rows buffered on device before flushing ``stats.dat`` /
-    # ``steps.dat`` / ``corrector.dat`` to disk.
+    # ``steps.dat`` / ``corrector.dat`` / ``probes.bin`` to disk.
     nbuffer: int = Field(ge=1, default=100)
     stats_precision: int = Field(ge=1, le=17, default=9)
     # Snapshot filenames are ``state{isnap:0Nd}.tar`` with N =
@@ -713,6 +732,72 @@ class Solver(BaseModel):
     rhs_transform_chunks: int = Field(ge=1, default=1)
 
 
+class StochasticForcing(BaseModel):
+    r"""White-in-time stochastic mode forcing (state kicks), optional.
+
+    Enabled when ``modes`` / ``profiles`` / ``amplitude`` /
+    ``it_force`` are all set (``validate_parameters`` enforces
+    all-or-none): every ``it_force`` steps the main loop adds to each
+    listed spectral mode (plus its real-FFT conjugate partner) a
+    random superposition of the stored channel profiles -- a sequence
+    of independent state increments ("kicks"), the discrete-time
+    realisation of white-in-time forcing.  The drawn coefficients
+    stream to ``forcing.bin``/``forcing.json`` next to the other
+    diagnostics; the cross-covariance of the probe stream with them
+    identifies the mode's linear operator
+    (:mod:`dnsjax.analysis.response.ssi`).
+
+    Kicks rather than a body-force term: a forcing term inside the
+    nonlinear RHS would be AB2-extrapolated under ``cnab2``
+    (colouring the noise) or corrector-iterated under
+    ``iterative-cn``, and would trace into the jitted steppers; a
+    loop-level kick keeps both schemes untouched and makes the
+    per-kick response exactly the solver's own propagator.  Full
+    conventions (timing relative to probes/snapshots, resume
+    continuation, amplitude guidance): the :mod:`dnsjax.forcing`
+    module docstring.
+
+    Wall-bounded, non-viscoelastic systems only.  The whole section
+    is **trajectory-defining**: resuming with changed forcing starts
+    a new trajectory (like a ``phys`` change).
+    """
+
+    # ``"i2,i3;..."`` global spectral modes to force -- the
+    # ``outs.probe_modes`` convention; the mean mode (0,0) is
+    # rejected (real + constrained under bulk-velocity driving).
+    # Forced modes should normally also be probed, or the response
+    # cannot be identified (a startup note reminds when they are not).
+    modes: str | None = None
+    # npz with per-mode channel profiles ``cont_modes_{i2}_{i3}``
+    # (``(m, C, Ny)`` complex, unit energy norm -- the
+    # ``operator_tools.save_modes_npz`` format, typically the leading
+    # controllability modes) on **this run's** wall-normal grid
+    # (exact match required; regrid offline if needed).
+    profiles: str | None = None
+    # Leading channels used per mode (default: all stored).  Fewer
+    # channels = fewer directions identified but less injected energy
+    # and a smaller operator to fit.
+    n_channels: int | None = Field(default=None, ge=1)
+    # Kick coefficient scale eps: each kick adds
+    # ``eps * sum_j w_j profile_j`` with ``w_j ~ CN(0,1)`` i.i.d., so
+    # the expected injected energy is ``eps^2`` per channel per kick.
+    # Pick eps in the linear-response window (halving it must leave
+    # the identified operator unchanged); the predicted stationary
+    # forced energy for planning: ``dnsjax.analysis.response.ssi.
+    # predicted_forced_variance``.
+    amplitude: float | None = Field(default=None, gt=0)
+    # Kick cadence in steps (``Delta_f = it_force * dt``).  Must be a
+    # multiple of ``outs.it_probes`` when probing, so every kick
+    # coincides with a (pre-kick) probe sample.  Larger values give
+    # cleaner per-kick responses; smaller values more statistics per
+    # run time.
+    it_force: int | None = Field(default=None, ge=1)
+    # Seed of the coefficient PRNG (host-side, identical on every
+    # rank; a resumed run skips the already-recorded draws, so the
+    # coefficient stream continues exactly as if uninterrupted).
+    seed: int = 0
+
+
 class Parameters(BaseModel):
     """Top-level parameter container aggregating all categories."""
 
@@ -723,6 +808,7 @@ class Parameters(BaseModel):
     init: Initiation = Initiation()
     outs: Outputs = Outputs()
     step: TimeStepping = TimeStepping()
+    force: StochasticForcing = StochasticForcing()
     stop: Termination | None = Termination()
     solver: Solver = Solver()
 
@@ -874,7 +960,9 @@ def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
 # Parameter sections that *define* the trajectory: on resume, a change to
 # any of their fields (other than the JAX-setup skip fields) marks a new
 # trajectory (reset ``it``/``t``/``isnap``) rather than a continuation.
-_TRAJECTORY_SECTIONS: tuple[str, ...] = ("phys", "geo", "res")
+# ``force`` belongs here: stochastic kicks alter the dynamics exactly
+# like a ``phys`` change would.
+_TRAJECTORY_SECTIONS: tuple[str, ...] = ("phys", "geo", "res", "force")
 
 
 def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
@@ -909,7 +997,9 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
     changes: list[str] = []
     for section in _TRAJECTORY_SECTIONS:
         snap = snapshot_params.get(section, {})
-        cur = getattr(params, section).model_dump(mode="json")
+        model = getattr(params, section)
+        cur = model.model_dump(mode="json")
+        defaults = type(model)().model_dump(mode="json")
         for key in sorted(set(snap) | set(cur)):
             if (section, key) in skip:
                 continue
@@ -917,7 +1007,13 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
                 # Legacy field no longer in the model (e.g. the
                 # retired geo.axis_gap): not trajectory-defining.
                 continue
-            old = snap.get(key)
+            # A key (or whole section, e.g. ``force`` on old
+            # snapshots) absent from the stored dump predates the
+            # field: the old run effectively ran the model default,
+            # so compare against that rather than flagging every
+            # legacy resume when a schema addition has a non-null
+            # default.
+            old = snap[key] if key in snap else defaults.get(key)
             if (
                 section == "geo"
                 and key == "grid_type"
@@ -1202,6 +1298,99 @@ def validate_parameters() -> None:
             f"outs.it_corrector ({o.it_corrector}) so the corrector "
             "convergence is checked at least as often as it is logged."
         )
+
+    # Spectral-mode probe stream: both knobs together, wall-bounded
+    # only, and every probed index must address a *true* (unpadded)
+    # mode -- axis 2 carries ``nz - 1`` complex modes, axis 3 carries
+    # ``nx // 2`` real-FFT modes (Nyquist omitted; ``harmonics``).
+    if (o.probe_modes is None) != (o.it_probes is None):
+        raise ValueError(
+            "outs.probe_modes and outs.it_probes must be set together "
+            "(one selects the modes, the other the cadence)."
+        )
+    if o.probe_modes is not None:
+        if params.phys.system not in walled_systems:
+            raise ValueError(
+                "outs.probe_modes: the spectral-mode probe stream "
+                "supports wall-bounded systems only (system "
+                f"{params.phys.system!r})."
+            )
+        n2, n3 = params.res.nz - 1, params.res.nx // 2
+        for i2, i3 in parse_mode_pairs(o.probe_modes):
+            if i2 >= n2 or i3 >= n3:
+                raise ValueError(
+                    f"outs.probe_modes: mode ({i2},{i3}) out of range "
+                    f"(axis 2 has {n2} modes from res.nz = "
+                    f"{params.res.nz}, axis 3 has {n3} modes from "
+                    f"res.nx = {params.res.nx})."
+                )
+
+    # Stochastic mode forcing (the ``force`` section): all-or-none
+    # knobs, wall-bounded non-viscoelastic only, true-mode indices,
+    # no mean-mode kick, and kick/probe sample alignment.
+    f = params.force
+    f_set = {
+        "modes": f.modes,
+        "profiles": f.profiles,
+        "amplitude": f.amplitude,
+        "it_force": f.it_force,
+    }
+    missing = [k for k, v in f_set.items() if v is None]
+    if missing and len(missing) < len(f_set):
+        raise ValueError(
+            "force.modes, force.profiles, force.amplitude and "
+            "force.it_force enable the stochastic forcing together; "
+            f"missing: {', '.join(missing)}."
+        )
+    if f.modes is not None:
+        if (
+            params.phys.system not in walled_systems
+            or params.phys.system in viscoelastic_systems
+        ):
+            raise ValueError(
+                "force.modes: stochastic forcing supports the "
+                "wall-bounded velocity systems only (system "
+                f"{params.phys.system!r})."
+            )
+        n2, n3 = params.res.nz - 1, params.res.nx // 2
+        force_pairs = parse_mode_pairs(f.modes)
+        for i2, i3 in force_pairs:
+            if i2 >= n2 or i3 >= n3:
+                raise ValueError(
+                    f"force.modes: mode ({i2},{i3}) out of range "
+                    f"(axis 2 has {n2} modes, axis 3 has {n3} modes)."
+                )
+            if (i2, i3) == (0, 0):
+                raise ValueError(
+                    "force.modes: the (0,0) mean mode cannot be "
+                    "forced (its coefficient is real, and under "
+                    "bulk-velocity driving it is constrained)."
+                )
+        if o.it_probes is not None:
+            if f.it_force % o.it_probes != 0:
+                raise ValueError(
+                    f"force.it_force ({f.it_force}) must be a "
+                    f"multiple of outs.it_probes ({o.it_probes}) so "
+                    "every kick coincides with a (pre-kick) probe "
+                    "sample."
+                )
+            probed = set(parse_mode_pairs(o.probe_modes))
+            unprobed = [m for m in force_pairs if m not in probed]
+            if unprobed:
+                # A note, not an error: forcing one mode while probing
+                # another is a legitimate cross-mode experiment.
+                print(
+                    f"[force] note: forced mode(s) {unprobed} are not "
+                    "in outs.probe_modes; their own response will not "
+                    "be recorded."
+                )
+        else:
+            print(
+                "[force] note: no probe stream configured "
+                "(outs.probe_modes); the forced responses will not be "
+                "recorded, so the run cannot feed the SSI "
+                "identification."
+            )
 
     # The half-CGL radial grid is a cylindrical-only option, and its
     # tighter near-axis point makes the explicit cnab2 scheme blow up

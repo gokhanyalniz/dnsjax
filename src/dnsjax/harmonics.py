@@ -36,6 +36,46 @@ def real_harmonics(n: int) -> ndarray:
     return np.arange(0, n // 2, dtype=int)
 
 
+def parse_mode_pairs(spec: str) -> list[tuple[int, int]]:
+    r"""Parse an ``"i2,i3;i2,i3;..."`` spectral-mode list.
+
+    Each pair is a global spectral index: ``i2`` on the complex
+    (axis-2) slot and ``i3`` on the real-FFT (axis-3) slot of the
+    stored spectral layout -- the same convention as the
+    transient-growth CLI ``--modes`` argument.  Whitespace around
+    numbers and separators is ignored.  Purely syntactic (this module
+    is a JAX-free leaf): no range check against a resolution --
+    callers validate bounds themselves.
+
+    Raises ``ValueError`` on malformed pairs, negative indices, or
+    duplicates.
+    """
+    pairs: list[tuple[int, int]] = []
+    for item in spec.split(";"):
+        item = item.strip()
+        if not item:
+            raise ValueError(
+                f"empty mode entry in {spec!r} (expected 'i2,i3;i2,i3')"
+            )
+        parts = item.split(",")
+        if len(parts) != 2:
+            raise ValueError(
+                f"malformed mode {item!r} in {spec!r} (expected 'i2,i3')"
+            )
+        try:
+            i2, i3 = int(parts[0]), int(parts[1])
+        except ValueError:
+            raise ValueError(
+                f"non-integer mode {item!r} in {spec!r}"
+            ) from None
+        if i2 < 0 or i3 < 0:
+            raise ValueError(f"negative mode index in {item!r}")
+        if (i2, i3) in pairs:
+            raise ValueError(f"duplicate mode ({i2},{i3}) in {spec!r}")
+        pairs.append((i2, i3))
+    return pairs
+
+
 def complex_harmonics(n: int) -> ndarray:
     r"""Full-complex integer wavenumbers with the Nyquist mode omitted.
 

@@ -26,6 +26,17 @@ dnsjax.analysis.transient_growth` or an explicit
 `from dnsjax.analysis.transient_growth import ...` brings in JAX). Do
 not import it from `__init__.py` or any JAX-free module here.
 
+The **`response/` subpackage** extends this exception: its modules
+*may* use JAX where it runs performantly on GPUs (batched
+`expm`/SVD time sweeps), keeping JAX imports inside the functions
+that need them and the platform selection in CLIs via
+`configure_jax_platform`; SciPy (`logm`, Lyapunov solves; the
+optional `dnsjax[analysis]` extra, always present in the dev group)
+is imported lazily in-function with an install hint. Nothing under
+`response/` is imported by `analysis/__init__.py` (its own
+`__init__.py` is docstring-only), so the package-level JAX-free
+guarantee is unaffected.
+
 ## Native (on-disk) layout — never transposed
 
 Data is returned exactly as stored. A component chunk reshaped to
@@ -100,8 +111,29 @@ recipe (native chunks + combine function) lives in `_component_recipes`.
 - `transient_growth.py` — the JAX-based transient-growth CLI (the
   exception above; not part of the JAX-free API). 3D linear optimal
   energy growth around an arbitrary wall-normal total profile, reusing
-  the solver's linear step per Fourier mode. See the module docstring
-  and the root CLAUDE.md "Transient-growth analysis" note.
+  the solver's linear step per Fourier mode; `--save-operator` exports
+  the per-mode reduced generators consumed by `response/`, and its
+  `single_mode_state`/`mode_state_energy` helpers are shared with
+  `scripts/snapshot_perturb.py`. See the module docstring and the root
+  CLAUDE.md "Transient-growth analysis" note.
+- `response/` — input-output / response tools (JAX allowed; see the
+  exception above): `probes.py` (NumPy reader for the runtime
+  `probes.bin` mode streams: mean profile, `Re_tau`, TG-ready profile
+  files), `operator_tools.py` (controllability Gramian/modes on the
+  `--save-operator` bundles, growth/input-response curves of arbitrary
+  operators, Galerkin restriction, the shared `load_modes_npz`/
+  `recover_basis` basis plumbing; controllability-mode export CLI),
+  `ensemble.py` (member-tree aggregation `aggregate`, the shared
+  `identify_generator` multi-horizon `logm` fit, and the direct
+  operator-identification CLI `identify`), `lim.py` (linear inverse
+  modeling: the same identification from lagged covariances of an
+  *unforced* probe stream), `ssi.py` (`forcing.bin` reader +
+  kick/response cross-covariance identification for
+  `[force]`-enabled runs, discrete-Lyapunov forced-variance
+  prediction). The three identification routes share the fit, basis,
+  and output convention (the `response/__init__.py` pipeline
+  section). Detail: the module docstrings; orchestration:
+  `scripts/ensemble_setup.py`.
 - `_core.py` — engine: raw chunk I/O (`snapshot_meta` offsets +
   `np.frombuffer`, minimal per-component / per-slab reads), transforms
   (`norm="forward"`, Nyquist reinstated as zero), basis conversion,
