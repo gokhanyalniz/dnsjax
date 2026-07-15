@@ -19,9 +19,10 @@ Two layers:
    (``T_proj @ T_lift = I``), reproduce the stored resolved
    eigenvalues (assignment-free nearest matching), and
    ``growth_curve(A, t_grid)`` must match the stored ``G`` curve
-   (rtol 1e-5; the tiny residual is the documented resolved-subspace
-   truncation).  The controllability CLI then exports lifted modes
-   whose energy Gram matrix is the identity.
+   *exactly* (rtol 1e-9) -- the CLI reports growth on the same
+   resolved-eigenspace restriction it exports, so this doubles as the
+   guard on that restriction.  The controllability CLI then exports
+   lifted modes whose energy Gram matrix is the identity.
 
 Usage::
 
@@ -223,14 +224,20 @@ def test_export_faithfulness_and_cli() -> None:
             d = np.min(np.abs(eig_a - lam)) / (1.0 + np.abs(lam))
             assert d < 1e-8, (lam, d)
 
-        # growth_curve(A) reproduces the stored G(t) (the small
-        # interior residual is the resolved-subspace truncation).
+        # growth_curve(A) reproduces the stored G(t).  The agreement is
+        # exact (not approximate): the CLI measures growth on the same
+        # resolved-eigenspace restriction it exports as ``A``, via its
+        # eigenform rather than ``expm``, so this pins both the export
+        # faithfulness and that restriction.  Admitting the unresolved
+        # modes into the reported G -- which turns the propagator into
+        # a spectral projector at t = 0+ (the ``_analyze_mode`` step-5
+        # note) -- breaks this at small t by orders of magnitude.
         with np.load(tg_npz) as z:
             g_stored = z["G"][0]
             t_grid = z["t_grid"]
         g = ot.growth_curve(op.A, t_grid)
         assert g[0] == 1.0
-        assert_allclose(g, g_stored, rtol=1e-5)
+        assert_allclose(g, g_stored, rtol=1e-9)
 
         # The Gramian of the exported operator solves its Lyapunov
         # equation.

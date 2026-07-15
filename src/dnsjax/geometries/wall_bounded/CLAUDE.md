@@ -117,7 +117,21 @@ derives `lz = 2π/m0`) and resolves only `m = m0·j`: the `Fourier.m`
 construction multiplies the integer harmonics by `m0` (exact), so all
 array/FFT sizes stay `nz`-driven and the wedge genuinely costs `1/m0`
 the azimuthal work of the full circle (the `m ≡ 0 mod m0` subspace is
-dynamically closed). Every `geo.lz` consumer follows automatically (CFL
+dynamically closed).
+
+*In physical space* the wedge is **fully resolved, not decimated** —
+the FFT is purely index-based and never sees `θ`, so it maps mode index
+`j` to grid index `p` and returns one period of the field it was handed.
+Since every retained harmonic is a multiple of `m0`, that period **is**
+the wedge: the `nz` (dealiased `nz_padded`) points span `[0, 2π/m0)` at
+spacing `Δθ = lz/nz`, i.e. `m0`-times *finer* than the full circle at
+the same `nz` — exactly what resolving `m0`-times higher wavenumbers
+requires. Equivalently the code solves in `φ = m0·θ ∈ [0, 2π)`, with
+`m0` entering only where a physical wavenumber (`Fourier.m`) or length
+(`lz`) is needed. Pinned end-to-end by `test_quasi_keplerian.py`'s
+`wedge_nonlinear` case (a wedge decimated over the full azimuth would
+evaluate the pseudo-spectral product on an `m0`-times too coarse grid
+and fail it outright). Every `geo.lz` consumer follows automatically (CFL
 azimuthal spacing `nz/lz`, the `random_field`/`localized_rolls` annular
 and cylindrical generators, `analysis/_core` lengths). Cylindrical
 parity `m_is_even = (m % 2 == 0)` tracks the *physical* `m0·j`, i.e. the

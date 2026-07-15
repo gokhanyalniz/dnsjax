@@ -122,22 +122,39 @@ pipeline per mode is:
    \rVert_2$` in the `$V$` coordinates).  In energy-orthonormal
    coordinates the propagator is `$B(t) = F\,e^{t\mathcal{A}}\,F^{-1}$`.
 
-5. **Growth & optima.**  `$G(t) = \sigma_{\max}(B(t))^2$`, `$B(t)$`
-   assembled from the spectral factorisation `$B(t) = E\,
-   \mathrm{diag}(e^{t\lambda})\,E^{-1}$` with `$E = FY$` -- no dense
-   matrix exponential: the stiff factors `$e^{t\lambda}$` underflow
-   to zero for `$t > 0$` instead of overflowing an ``expm``.  This
-   needs a well-conditioned eigenbasis, so a (near-)defective
-   `$\Phi_S$` is rejected at `$\mathrm{cond}(E) > 10^{12}$`.
-   `$G(0)=1$`.  `$t_{\mathrm{opt}}$` refines the grid maximum by
-   golden section.  The leading singular triplet of
+5. **Restriction to the resolved eigenspace.**  Growth is measured on
+   the probe-*resolved* eigenspace only (`$|\mu| > \tfrac12$`, i.e.
+   `$|\lambda| \lesssim 2/\Delta t$`).  Its energy-coordinate
+   eigenvectors are factorised `$E_{\mathrm{res}} = QR$` (`$Q$`
+   orthonormal, so the 2-norm in `$Q$` coordinates *is* the energy
+   norm), giving the reduced generator `$\mathcal{A}_{\mathrm{res}} =
+   Q^{H}\mathcal{A}Q = R\,\mathrm{diag}(\lambda_{\mathrm{res}})
+   \,R^{-1}$` -- already in eigenform, so no ``expm`` is needed.
+   This restriction is **not** an optimisation: carrying the
+   unresolved modes would turn the propagator into a *non-orthogonal
+   spectral projector* the instant their `$e^{t\lambda}$` dies, so
+   the computed `$G$` would jump from `$1$` to `$\lVert$`projector
+   `$\rVert^2 \ggg 1$` at `$t = 0^{+}$` -- a mesh-dependent
+   discontinuity with no physical meaning that can dominate
+   `$G_{\max}$` outright.  On the restriction `$G(0) = 1$` holds
+   *continuously*, and `$G$` is a rigorous **lower bound** on the
+   full-space growth, converging from below as the resolved window
+   widens.
+
+6. **Growth & optima.**  `$G(t) = \sigma_{\max}(B(t))^2$` with
+   `$B(t) = R\,\mathrm{diag}(e^{t\lambda_{\mathrm{res}}})\,R^{-1}$`;
+   the stiff factors underflow to zero for `$t > 0$` rather than
+   overflowing.  This needs a well-conditioned eigenbasis, so a
+   (near-)defective `$\Phi_S$` is rejected at
+   `$\mathrm{cond}(R) > 10^{12}$`.  `$t_{\mathrm{opt}}$` refines the
+   grid maximum by golden section.  The leading singular triplet of
    `$B(t_{\mathrm{opt}})$` gives the optimal input (right singular
    vector `$\mathbf{v}_1$`) and its response (left singular vector
    `$\mathbf{u}_1$`): in the full state, `$\mathbf{q}(0) = V
-   F^{-1}\mathbf{v}_1$` and `$\mathbf{q}(t_{\mathrm{opt}}) =
-   \sigma_1\, V F^{-1}\mathbf{u}_1$`.
+   F^{-1}Q\mathbf{v}_1$` and `$\mathbf{q}(t_{\mathrm{opt}}) =
+   \sigma_1\, V F^{-1}Q\mathbf{u}_1$`.
 
-6. **Abscissae & spectrum.**  Spectral abscissa `$\max_i\mathrm{Re}\,
+7. **Abscissae & spectrum.**  Spectral abscissa `$\max_i\mathrm{Re}\,
    \lambda_i(\mathcal{A})$` (asymptotic growth rate) over the
    post-clamp -- i.e. *probe-resolved* -- spectrum; the leading
    eigenvalues are also stored, accurate only inside the resolved
@@ -178,13 +195,29 @@ mode below is guarded per mode with an explicit error.
 
 - ``--tg-dt`` (0.01): the probe step sets *conditioning* and the
   *resolved spectral window*, not accuracy.  Only eigenvalues with
-  `$|\lambda| \lesssim 1/\Delta t$` are resolved (beyond, the probe
-  compresses `$\mu \to 0$`).  Reduce it to resolve more of the
-  spectrum, to widen a failing rank gap (the physical singular-value
-  floor `$\sim 1/(\Delta t\,|\lambda_{\mathrm{stiff}}|)$` rises), or
-  to speed corrector convergence (contraction `$\propto \Delta t$`);
-  going far below `$10^{-2}$` erodes the extraction through the
-  `$(1 - 1/\mu)/\Delta t$` cancellation.
+  `$|\lambda| \lesssim 2/\Delta t$` are resolved (beyond, the probe
+  compresses `$\mu \to 0$`), and those are exactly the modes `$G$` is
+  measured on (step 5).  It therefore cuts **both** ways and the
+  default is a balance, not a floor:
+
+  * *Reduce* it to resolve more of the spectrum (a slow mode you need
+    must satisfy `$|\lambda| \lesssim 2/\Delta t$`) or to fix a
+    diverging corrector (contraction `$\propto \Delta t$`).
+  * *Raise* it to tighten the window.  A wider window admits the
+    fast, wall-clustered FD eigenmodes, which are **discretisation
+    artefacts** unless `$N_y$` resolves them: they are strongly
+    non-normal, and their short-time growth is real for the *discrete*
+    operator while having no continuum counterpart.  It shows up as an
+    early, mesh-dependent `$G$` spike that decays long before the
+    physical optimum -- and, being a genuine property of `$\mathcal{A}
+    _{\mathrm{res}}$`, no post-processing can subtract it.  Measured
+    (quasi-Keplerian `$Re_i = 10^4$`, `$m = 4$`, `$N_y = 128$`), the
+    numerical abscissa falls `$+162 \to +82 \to +57$` for `$\Delta t =
+    0.003 \to 0.01 \to 0.03$`, and the rank gap *widens* over the same
+    range (`$1.3\times10^{3} \to 1.4\times10^{3} \to 3.7\times10^{3}$`).
+
+  The fix for a contaminated `$G_{\max}$` is therefore **`$N_y$`, not
+  `$\Delta t$`** (see the convergence recipe below).
 - ``--corrector-tolerance`` (1e-11) / ``--max-corrector-iterations``
   (200): the tolerance bounds each propagator column's error and so
   floors every reported quantity (the achieved
@@ -195,12 +228,16 @@ mode below is guarded per mode with an explicit error.
   cutoff must land inside the singular-value cliff between the
   physical spectrum (whose floor is `$\sigma/\sigma_0 \sim
   1/(\Delta t\,|\lambda_{\mathrm{stiff}}|)$`) and the
-  constraint-violating null space at the machine floor; the gap
-  check verifies that it did.  On a "no clean rank gap" failure
-  inspect the printed tail: first reduce ``--tg-dt`` (lifts the
-  physical floor), then move ``--rank-tol`` into the observed gap;
-  lower ``--rank-gap-min`` only if the true cliff is genuinely that
-  shallow.
+  constraint-violating null space (whose floor is set by
+  ``--corrector-tolerance``, *not* by machine epsilon -- the columns
+  are only converged that far); the gap check verifies that it did.
+  On a "no clean rank gap" failure inspect the printed tail, then
+  move ``--rank-tol`` into the observed gap; lower ``--rank-gap-min``
+  only if the true cliff is genuinely that shallow.  ``--tg-dt`` also
+  moves the gap, but *raising* it is what widens the cliff in
+  practice (measured under ``--tg-dt`` above) -- both floors respond,
+  so the naive "reduce it to lift the physical floor" is unreliable;
+  read the printed tail rather than assuming a direction.
 - ``--t-max`` (default `$0.25\,Re$`): covers the classic optima,
   `$t_{\mathrm{opt}} \approx 0.05$`--`$0.15\,Re$`, of the four flows
   (Taylor-Couette uses the derived reference ``re``: ``re1``, or
@@ -244,6 +281,38 @@ mode below is guarded per mode with an explicit error.
   the exported seed (the solver's own measure).  The default keeps
   the seeded DNS initially linear; raise it for finite-amplitude
   (nonlinear, transition-triggering) seeding.
+
+Converging `$N_y$` (do this before trusting `$G_{\max}$`)
+=========================================================
+The physical `$G(t)$` converges *fast* in `$N_y$`; the artefact of
+step 5 converges *slowly*, so **`$N_y$` is set by the artefact, not by
+the physics**.  Measured for quasi-Keplerian `$Re_i = 10^4$`,
+`$m = 4$`, `$\Delta t = 10^{-2}$` (`$G_{\max} = 13.04$` at
+`$t_{\mathrm{opt}} = 27$`):
+
+===========  =====================  ===================  ==============
+`$N_y$`      `$G$` at `$t \ge 4$`   early spike          `$\omega_
+                                                         {\mathrm{num}}$`
+===========  =====================  ===================  ==============
+64           5 digits correct       `$G \approx 10^{2}$`  `$+516$`
+128          5 digits correct       `$G \approx 8$`       `$+82$`
+===========  =====================  ===================  ==============
+
+So `$N_y = 64$` already nails the physical curve, yet reports
+`$G_{\max} \sim 10^{2}$` at `$t \approx 2$`: the optimum is the
+artefact.  `$N_y = 128$` pushes the spike under the physical peak and
+the reported optimum becomes the physical one.
+
+Recipe: raise `$N_y$` until (a) `$G_{\max}$` and `$t_{\mathrm{opt}}$`
+stop moving, and (b) `$t_{\mathrm{opt}}$` is **not** in the early
+transient.  The sharpest single indicator is the **numerical
+abscissa**: it is `$O(1)$` for the continuum (a Reynolds-Orr
+production bound) but mesh-dependent while the near-wall modes are
+unresolved, so a value orders above the physical shear rate means the
+early `$G$` is artefact-dominated -- regardless of how clean the
+`$G_{\max}$` looks.  Sampling `$G(t)$` densely at small `$t$` (small
+``--t-max``, large ``--nt``) exposes the spike directly; a coarse
+`$t$` grid can *step over* it and report a plausible-looking optimum.
 
 Cost & memory: a propagator build is `$3 N_y$` FFT-free linear steps
 (independent of the mode count) plus a host SVD + eigensolve per
@@ -892,8 +961,8 @@ def _analyze_mode(
             f"mode ({i2},{i3}): no clean rank gap at rank {rank} "
             f"(s[{rank - 1}]/s[{rank}] = {gap:.2e} < "
             f"{cfg.rank_gap_min:.1e}); tail "
-            f"{s[max(rank - 3, 0) : rank + 3]}; reduce --tg-dt or "
-            "move --rank-tol into the observed gap."
+            f"{s[max(rank - 3, 0) : rank + 3]}; move --rank-tol into "
+            "the observed gap, or try raising --tg-dt."
         )
     v = u[:, :rank]  # (n, r) range basis
     phi_s = v.conj().T @ phi_k @ v  # (r, r)
@@ -916,10 +985,17 @@ def _analyze_mode(
     # Re(lambda) to a huge *positive* value (unphysical growth that
     # overflows exp).  A mode the probe cannot resolve (|mu| <= 1/2)
     # cannot physically grow faster than the resolved spectral abscissa;
-    # clamp any such mode to instant decay (exp(t*lambda) -> 0, t > 0).
-    reliable = np.abs(mu) > 0.5
-    omega_res = float(np.max(lam.real[reliable])) if reliable.any() else 0.0
-    spurious = (~reliable) & (lam.real > omega_res)
+    # clamp any such mode to instant decay so it cannot pollute the
+    # reported spectrum.
+    resolved = np.abs(mu) > 0.5
+    if not resolved.any():
+        raise SystemExit(
+            f"mode ({i2},{i3}): no probe-resolved eigenvalues (every "
+            f"|mu| <= 1/2 at --tg-dt {dt:g}); raise --tg-dt to widen "
+            "the resolved window."
+        )
+    omega_res = float(np.max(lam.real[resolved]))
+    spurious = (~resolved) & (lam.real > omega_res)
     lam = np.where(spurious, -1e30, lam)
 
     # Energy metric and the eigenvectors in energy coordinates.
@@ -927,17 +1003,34 @@ def _analyze_mode(
     f_mat = np.linalg.cholesky(m_mat).conj().T  # upper, M = F^H F
     f_inv = np.linalg.inv(f_mat)
     e_mat = f_mat @ y_vec  # eigenvectors in energy coords
-    cond_e = np.linalg.cond(e_mat)
+
+    # Restrict to the probe-resolved eigenspace *before* measuring
+    # growth.  Q is orthonormal in the energy coordinates -- so the
+    # 2-norm there is the energy norm -- and the reduced generator
+    # follows from invariance (E_res = Q R, so A_res = Q^H A Q =
+    # R diag(lam_res) R^{-1}, already in eigenform: no expm needed).
+    # Carrying the *unresolved* modes into G instead would make the
+    # propagator a non-orthogonal spectral projector the instant their
+    # exp(t*lambda) dies: G would jump from 1 to the projector norm at
+    # t = 0+ (a discontinuity of many orders, mesh-dependent and
+    # physically meaningless) and mask the true optimum.  On the
+    # restriction G(0) = 1 holds continuously, and G is a rigorous
+    # *lower bound* on the full-space growth that converges from below
+    # as the resolved window widens (larger --res.ny at fixed --tg-dt).
+    q_mat, r_mat = np.linalg.qr(e_mat[:, resolved])
+    lam_res = lam[resolved]
+    cond_e = np.linalg.cond(r_mat)
     if not np.isfinite(cond_e) or cond_e > 1e12:
         raise SystemExit(
             f"mode ({i2},{i3}): eigenvector matrix is ill-conditioned "
             f"(cond = {cond_e:.2e}); Phi_S is (near) defective -- "
             "reduce --res.ny or change --tg-dt."
         )
-    w_mat = np.linalg.inv(e_mat)
-    e_dev = jnp.asarray(e_mat)
-    lam_dev = jnp.asarray(lam)
-    w_dev = jnp.asarray(w_mat)
+    r_inv = np.linalg.inv(r_mat)
+    a_res = (r_mat * lam_res[None, :]) @ r_inv
+    e_dev = jnp.asarray(r_mat)
+    lam_dev = jnp.asarray(lam_res)
+    w_dev = jnp.asarray(r_inv)
 
     def geval(t: float) -> float:
         return float(
@@ -967,9 +1060,11 @@ def _analyze_mode(
     sigma_opt = float(np.asarray(s_opt)[0])
     g_max = sigma_opt**2
 
-    # Optimal input / response lifted to the full state (3, Ny).
+    # Optimal input / response lifted to the full state (3, Ny), back
+    # out through the resolved eigenspace (Q), the energy factor (F)
+    # and the range basis (V).
     def _lift(vec_r: np.ndarray, scale: float) -> np.ndarray:
-        full = v @ (f_inv @ vec_r)
+        full = v @ (f_inv @ (q_mat @ vec_r))
         return scale * full.reshape(3, ny)
 
     opt_input = _lift(np.asarray(v1), 1.0)
@@ -999,29 +1094,15 @@ def _analyze_mode(
     order = np.argsort(-lam.real)
     lam_sorted = lam[order]
     spectral_abscissa = float(lam_sorted[0].real)
-    slow = np.abs(mu) > 0.5
+    sym = 0.5 * (a_res + a_res.conj().T)
+    numerical_abscissa = float(np.max(np.linalg.eigvalsh(sym)))
     op_v = op_f = op_q = op_a = op_lam = None
-    if slow.any():
-        # Orthonormal basis Q of the probe-resolved eigenspace in
-        # energy coordinates; the reduced generator on it follows from
-        # invariance: A_energy (Q R) = (Q R) diag(lam_slow), so
-        # Q^H A_energy Q = R diag(lam_slow) R^{-1}.  Shared by the
-        # numerical abscissa and the ``--save-operator`` export.
-        q_mat, r_mat = np.linalg.qr(e_mat[:, slow])
-        a_slow = (r_mat * lam[slow][None, :]) @ np.linalg.inv(r_mat)
-        sym = 0.5 * (a_slow + a_slow.conj().T)
-        numerical_abscissa = float(np.max(np.linalg.eigvalsh(sym)))
-        if cfg.save_operator:
-            op_v, op_f, op_q, op_a = v, f_mat, q_mat, a_slow
-            op_lam = lam[slow]
-    else:
-        numerical_abscissa = spectral_abscissa
-    if cfg.save_operator and op_a is None:
-        raise SystemExit(
-            f"mode ({i2},{i3}): no probe-resolved eigenvalues "
-            "(every |mu| <= 1/2); reduce --tg-dt to resolve the "
-            "spectrum before --save-operator."
-        )
+    if cfg.save_operator:
+        # ``A_res`` is exactly the generator whose growth is reported,
+        # so ``operator_tools.growth_curve`` on the exported bundle
+        # reproduces the stored ``G`` (not merely approximates it).
+        op_v, op_f, op_q, op_a = v, f_mat, q_mat, a_res
+        op_lam = lam_res
     extraction_residual = eig_res
     n_eig = min(cfg.n_eig, rank)
 

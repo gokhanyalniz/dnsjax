@@ -218,6 +218,13 @@ poiseuille, pipe, taylor-couette, quasi-keplerian; Dean out of scope),
 reusing the solver's own linear step per Fourier mode. Single-device, GPU-runnable
 (`--dist.platform cuda`). Full math, the `frozen_profile_flow` hook,
 and the CLI/output spec: the module docstring and `analysis/CLAUDE.md`.
+**`G_max` needs a converged `res.ny`**: the physical `G(t)` converges
+fast, but the unresolved near-wall FD modes carry a mesh-dependent
+*early* `G` spike that can beat the physical optimum outright (and no
+post-processing removes it — it is real for the discrete operator).
+`--tg-dt` is the resolved-window/artifact filter, not an accuracy knob,
+and cuts both ways. The convergence recipe (and why `numerical_abscissa`
+is the tell): the "Converging N_y" section of the module docstring.
 `--save-operator` additionally exports each mode's reduced generator
 (`<stem>_tg_op.npz`) for the `analysis/response/` post-processing
 (controllability modes, growth curves, ensemble/LIM/SSI operator
@@ -573,9 +580,12 @@ one-liners. Cross-cutting notes:
   blow-up aborts with exit 3).
 - `tests/test_quasi_keplerian.py`: quasi-keplerian control-parameter
   derivation (Re_o/Re_s/μ/q from re1/r_omega/eta, pinned to the
-  literature line η=0.71, R_Ω=-1.2), regime/validation errors, and the
+  literature line η=0.71, R_Ω=-1.2), regime/validation errors, the
   annular + cylindrical azimuthal-wedge Fourier units (m0-scaled `m`,
-  lz-based CFL, cylindrical physical-parity `m_is_even`); offline,
+  lz-based CFL, cylindrical physical-parity `m_is_even`), and the
+  wedge's nonlinear/physical-space path (`wedge_nonlinear`: one step of
+  the same field as an m0 wedge vs the re-indexed full circle — the
+  only check that reaches the wedge FFT); offline,
   subprocess-per-case.
 - `tests/test_probes.py`: runtime spectral-mode probe stream (sharded
   extractor exactness on a forced (2, 2) mesh, writer semantics,
