@@ -28,7 +28,7 @@ periodic_systems: list[str] = ["decaying-box", *monochromatic_systems]
 
 cartesian_systems: list[str] = ["plane-couette", "plane-poiseuille"]
 cylindrical_systems: list[str] = ["pipe"]
-annular_systems: list[str] = ["taylor-couette", "dean"]
+annular_systems: list[str] = ["taylor-couette", "quasi-keplerian", "dean"]
 # Viscoelastic flows living on the annular *geometry* (grid on
 # [r1, r2], u_+/u_- velocity formulation) but integrating a coupled
 # 9-component state (3 velocity + 6 symmetric conformation-tensor
@@ -146,8 +146,28 @@ class Physics(BaseModel):
     # ``re = Re_ref`` so every downstream 1/re viscous/IMM/stats path is
     # reused unchanged.  See the annular branch of ``update_parameters``
     # and ``flows.wall_bounded.taylor_couette``.
+    #
+    # The quasi-Keplerian system (``system == "quasi-keplerian"``) reuses
+    # ``re1`` as the inner Reynolds number Re_i and takes ``r_omega``
+    # (below) instead of ``re2``; the annular branch derives and stores
+    # ``re2`` so every downstream circular-Couette path is shared with
+    # Taylor-Couette.  See ``flows.wall_bounded.quasi_keplerian``.
     re1: float | None = None
     re2: float | None = None
+    # Rotation number R_Omega (system == "quasi-keplerian"), following
+    # Dubrulle et al. 2005:
+    #   R_Omega = (1 - eta) (Re_i + Re_o) / (eta Re_o - Re_i),
+    # with Re_i = re1 and Re_o the derived outer Reynolds number.  It is
+    # constant along half-lines through the origin of (Re_o, Re_i) space.
+    # The quasi-Keplerian regime (co-rotating, angular momentum
+    # increasing / angular velocity decreasing outward -- linearly stable
+    # by Rayleigh's criterion) is the open half-line -inf < R_Omega < -1,
+    # bounded by the Rayleigh line R_Omega = -1 (Re_o = eta Re_i) and the
+    # solid-body limit R_Omega -> -inf (Re_o = Re_i / eta).  The annular
+    # branch of ``update_parameters`` requires re1 > 0 and r_omega < -1,
+    # then derives re2 = re1 (1 - eta + R_Omega) / (eta R_Omega -
+    # (1 - eta)).
+    r_omega: float | None = None
     # Viscoelastic (sPTT) control parameters (system ==
     # "viscoelastic-dean"; see ``flows.wall_bounded.viscoelastic_dean``
     # and ``geometries.wall_bounded.annular_viscoelastic``).  All
@@ -274,6 +294,17 @@ class Geometry(BaseModel):
     # geometry.  Non-dim radii r1 = eta/(1-eta), r2 = 1/(1-eta) on the
     # gap d = r2 - r1 = 1.  Required for system == "taylor-couette".
     eta: float | None = Field(default=None, gt=0, lt=1)
+    # Azimuthal wedge fundamental wavenumber m0 (annular and cylindrical
+    # families only; rejected elsewhere).  The azimuthal domain is the
+    # reduced wedge theta in [0, 2*pi/m0), so ``update_parameters``
+    # derives lz = 2*pi/m0 and the resolved azimuthal wavenumbers are the
+    # multiples m = m0 * {0, 1, ..., nz/2-1, -(nz/2-1), ..., -1}.  m0 > 1
+    # restricts the simulation to the m0-periodic subspace (invariant
+    # under the dynamics), cutting azimuthal cost/memory by a factor m0
+    # at fixed nz: the same physical azimuthal resolution as a full
+    # circle with m0*nz modes.  Default 1 (full circle).  A changed m0 on
+    # resume is trajectory-defining (geo section).
+    m0: int = Field(ge=1, default=1)
     # Inner radius delta for the viscoelastic annular geometry
     # (system == "viscoelastic-dean").  The gap is fixed at 2 (half-gap
     # length unit), so r1 = delta, r2 = delta + 2.  Default 11 (applied
@@ -841,7 +872,8 @@ class DerivedParameters:
         ``(r2^2 - r1^2)/2`` for the annulus).
     ``ccf_A``, ``ccf_B`` are the circular-Couette base-flow coefficients
     ``U_theta = ccf_A * r + ccf_B / r`` and ``r_inner``, ``r_outer`` the
-    non-dim annular radii (set for system == "taylor-couette").
+    non-dim annular radii (set for the circular-Couette systems
+    "taylor-couette" and "quasi-keplerian").
     ``u_grid`` is the resolved moving-frame speed (always a concrete
     float; see ``params.phys.u_grid`` and ``update_parameters``).
     ``nu`` is the (solvent) kinematic viscosity multiplying the velocity
@@ -1069,10 +1101,11 @@ def update_parameters(params_new: Parameters) -> None:
     elif system in cartesian_systems:
         derived_params.volume_fac = 2  # int_{-1]^{1} dy.
     elif system in cylindrical_systems:
-        # Force a full 2*pi spanwise extent for the cylindrical
-        # geometry, overriding any user-supplied value (the
-        # azimuthal modes are integer harmonics over 2*pi).
-        params.geo.lz = 2 * pi
+        # Force the azimuthal extent to the wedge 2*pi/m0 (m0 = 1 is the
+        # full circle), overriding any user-supplied value: the
+        # azimuthal modes are the integer multiples m = m0 * harmonic
+        # over this extent.  See ``geo.m0`` and ``cylindrical.Fourier``.
+        params.geo.lz = 2 * pi / params.geo.m0
         # Cylindrical area normalisation: int_0^1 r dr.
         derived_params.volume_fac = 0.5
     elif system in annular_systems:
@@ -1089,22 +1122,63 @@ def update_parameters(params_new: Parameters) -> None:
         r2 = 1 / (1 - eta)
         derived_params.r_inner = r1
         derived_params.r_outer = r2
-        # Force a full 2*pi azimuthal extent (integer harmonics).
-        params.geo.lz = 2 * pi
+        # Force the azimuthal extent to the wedge 2*pi/m0 (m0 = 1 is the
+        # full circle); the azimuthal modes are the integer multiples
+        # m = m0 * harmonic over this extent (see ``geo.m0``).
+        params.geo.lz = 2 * pi / params.geo.m0
         # Annular area normalisation: int_{r1}^{r2} r dr.
         derived_params.volume_fac = (r2**2 - r1**2) / 2
 
-        if system == "taylor-couette":
+        if system == "quasi-keplerian":
+            # Quasi-Keplerian: reuse re1 as the inner Reynolds number
+            # Re_i and derive the outer re2 from the rotation number
+            # R_Omega (Dubrulle et al. 2005), then fall through to the
+            # shared circular-Couette derivation below.
+            re1, r_omega = params.phys.re1, params.phys.r_omega
+            if re1 is None or re1 <= 0:
+                raise ValueError(
+                    "quasi-keplerian requires phys.re1 > 0 (= Re_i)"
+                )
+            if r_omega is None:
+                raise ValueError(
+                    "quasi-keplerian requires phys.r_omega (rotation "
+                    "number R_Omega)"
+                )
+            if r_omega >= -1:
+                raise ValueError(
+                    "quasi-keplerian requires R_Omega < -1 (the open "
+                    "half-line -inf < R_Omega < -1 between the Rayleigh "
+                    "line R_Omega = -1 and the solid-body limit "
+                    f"R_Omega -> -inf); got r_omega={r_omega}"
+                )
+            # Invert R_Omega = (1-eta)(Re_i+Re_o)/(eta Re_o - Re_i) for
+            # Re_o (the denominator eta r_omega - (1-eta) < 0 here, so
+            # this is finite and Re_o > 0 on the whole half-line).
+            re2_derived = (
+                re1 * (1 - eta + r_omega) / (eta * r_omega - (1 - eta))
+            )
+            if ("phys", "re2") in _user_set_fields and not isclose(
+                params.phys.re2, re2_derived, rel_tol=1e-9
+            ):
+                raise ValueError(
+                    "quasi-keplerian derives phys.re2 from (re1, "
+                    "r_omega, eta); do not set phys.re2 directly "
+                    f"(got {params.phys.re2}, derived {re2_derived})"
+                )
+            # Store the derived Re_o so every downstream circular-Couette
+            # path is shared with Taylor-Couette (self-describing
+            # snapshots replay this value through the params layers).
+            params.phys.re2 = re2_derived
+
+        if system in ("taylor-couette", "quasi-keplerian"):
             # Validate the (re1, re2) control parameters and derive the
             # circular-Couette base flow U_theta = A0 r + B0/r.
             re1, re2 = params.phys.re1, params.phys.re2
             if re1 is None or re2 is None:
-                raise ValueError(
-                    "taylor-couette requires phys.re1 and phys.re2"
-                )
+                raise ValueError(f"{system} requires phys.re1 and phys.re2")
             if re1 < 0:
                 raise ValueError(
-                    "taylor-couette: re1 must be >= 0 (sign convention)"
+                    f"{system}: re1 must be >= 0 (sign convention)"
                 )
             if re1 > 0:
                 re_ref = re1  # Case 1: inner-driven
@@ -1112,7 +1186,7 @@ def update_parameters(params_new: Parameters) -> None:
                 re_ref = re2  # Case 2: outer-driven (re1 == 0)
             else:
                 raise ValueError(
-                    "taylor-couette needs re1 > 0, or re1 == 0 and re2 > 0 "
+                    f"{system} needs re1 > 0, or re1 == 0 and re2 > 0 "
                     f"(got re1={re1}, re2={re2})"
                 )
             # Set the reference Reynolds number so every downstream 1/re
@@ -1301,6 +1375,38 @@ def validate_parameters() -> None:
             f"outs.it_error_check ({o.it_error_check}) must be <= "
             f"outs.it_corrector ({o.it_corrector}) so the corrector "
             "convergence is checked at least as often as it is logged."
+        )
+
+    # Azimuthal wedge (geo.m0): annular and cylindrical geometries only
+    # (the u_+/u_- integer-harmonic formulation); rejected for the
+    # Cartesian, periodic, and viscoelastic-annular systems.
+    if params.geo.m0 != 1 and params.phys.system not in (
+        annular_systems + cylindrical_systems
+    ):
+        raise ValueError(
+            f"geo.m0 = {params.geo.m0}: the azimuthal wedge is "
+            "supported only for the annular and cylindrical geometries "
+            f"(system {params.phys.system!r})."
+        )
+
+    # Quasi-Keplerian startup summary: the derived outer Reynolds number
+    # Re_o, shear Reynolds number Re_s, rotation ratio mu = Omega_o /
+    # Omega_i, and the local exponent q(r) = -d ln Omega / d ln r =
+    # 2 B0 / (A0 r^2 + B0) at the inner/outer walls (q in (0, 2) on the
+    # quasi-Keplerian half-line, bracketing the Keplerian value 3/2).
+    if params.phys.system == "quasi-keplerian":
+        eta = params.geo.eta
+        re_i, re_o = params.phys.re1, params.phys.re2
+        re_s = 2 * abs(eta * re_o - re_i) / (1 + eta)
+        mu = eta * re_o / re_i
+        A0, B0 = derived_params.ccf_A, derived_params.ccf_B
+        r1, r2 = derived_params.r_inner, derived_params.r_outer
+        q1 = 2 * B0 / (A0 * r1**2 + B0)
+        q2 = 2 * B0 / (A0 * r2**2 + B0)
+        print(
+            f"[quasi-keplerian] derived: Re_o={re_o:.6g} "
+            f"Re_s={re_s:.6g} mu={mu:.6g} "
+            f"q(r) in [{q2:.4g}, {q1:.4g}]"
         )
 
     # Spectral-mode probe stream: both knobs together, wall-bounded
