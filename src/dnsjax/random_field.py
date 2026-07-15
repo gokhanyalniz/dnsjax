@@ -414,12 +414,14 @@ def generate_cylindrical(
     D1_odd_np = np.asarray(D1_odd)
     yw_np = np.asarray(y_weights)
     kz_np = _real_harmonics_np(nx) * (2 * pi / params.geo.lx)  # axial
-    m_np = _complex_harmonics_np(nz)  # azimuthal integer modes
+    # Physical azimuthal wavenumbers m = m0 * harmonic over the wedge
+    # (m0 = 1 full circle): the continuity relation and axis parity need
+    # the physical m; the decay envelope then weights by |m| directly.
+    m_np = params.geo.m0 * _complex_harmonics_np(nz)
 
     decay = 1.0 - smoothness
     window_wall = 1.0 - rs_np  # u_z: f(1) = 0
     window_wn = window_wall**2  # u_pm: value + derivative zero at r=1
-    m_decay = 2 * pi / params.geo.lz
 
     def fill_local(buf, m_start, n_m, kz_start, n_kz):
         for li in range(n_m):
@@ -458,7 +460,7 @@ def generate_cylindrical(
                 col = _normalize_mode(
                     col,
                     yw_np,
-                    decay ** (abs(kz_val) + abs(m_val) * m_decay),
+                    decay ** (abs(kz_val) + abs(m_val)),
                 )
                 if g2 == 0 and g3 == 0 and not mean_flow:
                     col[:] = 0.0
@@ -523,14 +525,16 @@ def generate_annular(
     D1_np = np.asarray(D1)
     yw_np = np.asarray(y_weights)
     kz_np = _real_harmonics_np(nx) * (2 * pi / params.geo.lx)  # axial
-    m_np = _complex_harmonics_np(nz)  # azimuthal integer modes
+    # Physical azimuthal wavenumbers m = m0 * harmonic over the wedge
+    # (m0 = 1 full circle): the continuity relation needs the physical m;
+    # the decay envelope then weights by |m| directly.
+    m_np = params.geo.m0 * _complex_harmonics_np(nz)
 
     decay = 1.0 - smoothness
     # No-slip window: zero at both walls, peak 1 in the interior.
     window_lin = (rs_np - r1) * (r2 - rs_np)
     window_lin = window_lin / np.max(window_lin)
     window_wn = window_lin**2  # u_pm: value + derivative zero at walls
-    m_decay = 2 * pi / params.geo.lz
 
     def fill_local(buf, m_start, n_m, kz_start, n_kz):
         for li in range(n_m):
@@ -561,7 +565,7 @@ def generate_annular(
                 col = _normalize_mode(
                     col,
                     yw_np,
-                    decay ** (abs(kz_val) + abs(m_val) * m_decay),
+                    decay ** (abs(kz_val) + abs(m_val)),
                 )
                 if g2 == 0 and g3 == 0 and not mean_flow:
                     col[:] = 0.0

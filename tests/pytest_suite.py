@@ -60,6 +60,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_padding.py", (), (), 1800),
     ("test_forcing.py", ("--unit-only",), (), 1800),
     ("test_probes.py", ("--unit-only",), (), 1800),
+    ("test_quasi_keplerian.py", (), (), 1800),
     ("response/test_ensemble.py", (), (), 1800),
     ("response/test_lim.py", (), (), 1800),
     ("response/test_operator_tools.py", (), (), 1800),

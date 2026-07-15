@@ -198,8 +198,9 @@ geometries/
   triply_periodic/    triply_periodic.py -- see its CLAUDE.md
 flows/
   wall_bounded/       plane_couette, plane_poiseuille, pipe,
-                      taylor_couette, dean, viscoelastic_dean --
-                      base flows/driving in wall_bounded/CLAUDE.md
+                      taylor_couette, quasi_keplerian, dean,
+                      viscoelastic_dean -- base flows/driving in
+                      wall_bounded/CLAUDE.md
   triply_periodic/    monochromatic.py: Kolmogorov/Waleffe/decaying-box
 analysis/             External-facing JAX-free snapshot post-processing
                       API (+ the JAX-based transient_growth CLI and the
@@ -212,9 +213,9 @@ analysis/             External-facing JAX-free snapshot post-processing
 
 `python -m dnsjax.analysis.transient_growth` computes 3D linear optimal
 energy growth `G(t)` around an arbitrary wall-normal **total** profile
-`U(y)` for the four base-flow wall-bounded flows (plane-couette/
-poiseuille, pipe, taylor-couette; Dean out of scope), reusing the
-solver's own linear step per Fourier mode. Single-device, GPU-runnable
+`U(y)` for the five base-flow wall-bounded flows (plane-couette/
+poiseuille, pipe, taylor-couette, quasi-keplerian; Dean out of scope),
+reusing the solver's own linear step per Fourier mode. Single-device, GPU-runnable
 (`--dist.platform cuda`). Full math, the `frozen_profile_flow` hook,
 and the CLI/output spec: the module docstring and `analysis/CLAUDE.md`.
 `--save-operator` additionally exports each mode's reduced generator
@@ -363,8 +364,8 @@ the schemes, `Solver` for the Pallas knobs). Key fields:
 
 | Section    | Key fields                                          |
 |------------|-----------------------------------------------------|
-| `[phys]`   | `re`, `re1`/`re2` (TC), `system`, `oversampling_factor`, `oversample_y`, `driving`, `block_mean_spanwise_velocity`, `u_grid`; viscoelastic-dean: `el`, `wi`, `beta`, `epsilon`, `kappa` |
-| `[geo]`    | `lx`, `lz`, `tilt_degree`, `eta` (TC), `delta` (viscoelastic-dean), `wall_grid`, `grid_type` (`"cgl"`/`"half-cgl"`/`"tanh"`), `grid_stretch` |
+| `[phys]`   | `re`, `re1`/`re2` (TC), `re1`/`r_omega` (quasi-keplerian; `re2` derived), `system`, `oversampling_factor`, `oversample_y`, `driving`, `block_mean_spanwise_velocity`, `u_grid`; viscoelastic-dean: `el`, `wi`, `beta`, `epsilon`, `kappa` |
+| `[geo]`    | `lx`, `lz`, `tilt_degree`, `eta` (TC), `m0` (annular/cylindrical azimuthal wedge, `lz = 2π/m0`), `delta` (viscoelastic-dean), `wall_grid`, `grid_type` (`"cgl"`/`"half-cgl"`/`"tanh"`), `grid_stretch` |
 | `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`    |
 | `[init]`   | Start-mode precedence: `snapshot` > `start_from_laminar` > `localized_rolls` > `random_field` (default **on**). `t0`, `it0`, `isnap0`, `force_resume`, `random_*`, `localized_rolls_*` |
 | `[outs]`   | `it_stats`, `it_steps`, `it_snapshot`, `it_corrector`, `it_error_check`, `probe_modes`, `it_probes`, `nbuffer`, `stats_precision`, `snapshot_write_mode`, `snapshot_pad_width`, `snapshot_embed_stats`, `snapshot_save_initial`, `snapshot_save_final` |
@@ -515,7 +516,14 @@ one-liners. Cross-cutting notes:
   `re2` and `params.geo.eta` before singleton construction (all three
   default to `None` and `update_parameters()` raises otherwise); the
   unit tests use `100`/`0`/`0.5`, the smoke/integration tests
-  counter-rotating values.
+  counter-rotating values. `quasi-keplerian` is the same annular flow
+  parameterized by `re1`/`r_omega`/`eta` (with `re2` derived on the
+  quasi-Keplerian half-line `R_Ω < -1`); tests use `re1`/`-1.2`/`0.71`.
+- The annular / cylindrical azimuthal wedge (`geo.m0 > 1`) reduces the
+  domain to `θ ∈ [0, 2π/m0)` and resolves only `m = m0·j`; it genuinely
+  cuts azimuthal cost/memory by `m0` at fixed `nz` (all array/FFT sizes
+  are `nz`-driven; `m0` only scales wavenumber values). Cylindrical
+  parity (`m_is_even`) tracks the physical `m0·j`.
 - The 3/2-rule pad on a complex FFT axis (z, periodic y) has no parity
   constraint (`zeropad_fft`/`truncate_fft` place modes exactly for odd
   pads and odd sizes); `set_padded_resolution` auto-rounds every
@@ -556,11 +564,19 @@ one-liners. Cross-cutting notes:
   `chunked_transform` bit-parity.
 - `tests/test_laminar_smoke.py`: laminar fixed-point smoke for all
   wall-bounded flows (subprocess/mpirun; Dean/viscoelastic branches;
-  console-script `--help`/run entries and an nz-padding entry).
+  console-script `--help`/run entries, an nz-padding entry, and
+  annular/cylindrical azimuthal-wedge entries `quasi-keplerian-wedge`
+  / `pipe-wedge`).
 - `tests/test_random_smoke.py`: random-IC nonlinear integration for all
-  7 flows (+ cnab2, default-IC, gate-off, multi-device-padding,
+  8 flows (+ cnab2, default-IC, gate-off, multi-device-padding,
   chunked-RHS entries, and a nan-guard entry asserting the forced
   blow-up aborts with exit 3).
+- `tests/test_quasi_keplerian.py`: quasi-keplerian control-parameter
+  derivation (Re_o/Re_s/μ/q from re1/r_omega/eta, pinned to the
+  literature line η=0.71, R_Ω=-1.2), regime/validation errors, and the
+  annular + cylindrical azimuthal-wedge Fourier units (m0-scaled `m`,
+  lz-based CFL, cylindrical physical-parity `m_is_even`); offline,
+  subprocess-per-case.
 - `tests/test_probes.py`: runtime spectral-mode probe stream (sharded
   extractor exactness on a forced (2, 2) mesh, writer semantics,
   parameter validation; mpirun laminar/random solver runs behind
@@ -603,4 +619,7 @@ one-liners. Cross-cutting notes:
 - `tests/test_localized_rolls.py`: rolls construction self-test (no-slip,
   determinism, device-count independence, divergence bound).
 - `tests/test_transient_growth.py`: transient-growth analysis (JAX-free
-  host units, per-flow hooks, CLI features, PP/PC/pipe/TC anchors).
+  host units, per-flow hooks, CLI features, PP/PC/pipe/TC/quasi-keplerian
+  anchors -- the QK anchor pins the axially-periodic quasi-Keplerian
+  optimal growth G_opt=13.04 -- plus an m0-wedge-vs-full-circle
+  equivalence check).

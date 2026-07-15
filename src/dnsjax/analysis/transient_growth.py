@@ -4,8 +4,9 @@ Compute the three-dimensional linear transient-growth spectrum of a
 wall-bounded flow **linearised about an arbitrary wall-normal total
 profile** `$\mathbf{U}(y)$` -- not necessarily a laminar / stationary
 solution.  Supported systems: ``plane-couette`` / ``plane-poiseuille``
-(Cartesian), ``pipe`` (cylindrical), ``taylor-couette`` (annular).  The
-force-driven Dean / viscoelastic-Dean flows are out of scope.
+(Cartesian), ``pipe`` (cylindrical), ``taylor-couette`` and
+``quasi-keplerian`` (annular).  The force-driven Dean / viscoelastic-Dean
+flows are out of scope.
 
 Run as a CLI (single process, single device; GPU with
 ``--dist.platform cuda`` and ``CUDA_VISIBLE_DEVICES=0``)::
@@ -317,6 +318,7 @@ _SYSTEMS: dict[str, tuple[str, str, str]] = {
     "plane-poiseuille": ("plane_poiseuille", "cartesian", "cartesian"),
     "pipe": ("pipe", "cylindrical", "cylindrical"),
     "taylor-couette": ("taylor_couette", "annular", "annular"),
+    "quasi-keplerian": ("quasi_keplerian", "annular", "annular"),
 }
 WALL_BOUNDED_TG_SYSTEMS = tuple(_SYSTEMS)
 
@@ -653,7 +655,9 @@ def _wavenumber_arrays(
     kax = rh * (2.0 * np.pi / params.geo.lx)
     if family == "cartesian":
         return ch * (2.0 * np.pi / params.geo.lz), kax, ("beta", "alpha")
-    return ch, kax, ("m", "k_ax")
+    # Annular / cylindrical: physical azimuthal wavenumber m = m0 * j
+    # over the wedge (m0 = 1 full circle; see geo.m0).
+    return ch * params.geo.m0, kax, ("m", "k_ax")
 
 
 # ── Parameter layering ───────────────────────────────────────────
@@ -1123,6 +1127,11 @@ def _write_summary(
     if params.phys.system == "taylor-couette":
         re_str = (
             f"re1={params.phys.re1} re2={params.phys.re2} eta={params.geo.eta}"
+        )
+    elif params.phys.system == "quasi-keplerian":
+        re_str = (
+            f"re1={params.phys.re1} r_omega={params.phys.r_omega} "
+            f"eta={params.geo.eta} (re2={params.phys.re2})"
         )
     lines.append(
         f"# {re_str} tilt={params.geo.tilt_degree} "

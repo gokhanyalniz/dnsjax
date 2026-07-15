@@ -149,7 +149,9 @@ class Fourier:
     - ``kz``: shape ``(1, 1, nx//2)`` -- axial wavenumber (real FFT on
       the streamwise ``x`` parameter direction, period ``geo.lx``).
     - ``m``: shape ``(1, nz-1, 1)`` -- azimuthal mode number (complex
-      FFT on the ``z`` parameter direction with `$l_z = 2\pi$`).
+      FFT on the ``z`` parameter direction with `$l_z = 2\pi/m_0$`);
+      the resolved modes are the integer multiples `$m = m_0 j$` of the
+      wedge fundamental `$m_0$` (``geo.m0``; `$m_0 = 1$` full circle).
 
     The coordinate mapping is:
 
@@ -191,10 +193,16 @@ class Fourier:
             P(None, None, sharding.a1),
         )
 
-        m_vals = pad_harmonics(
-            complex_harmonics(params.res.nz),
-            params.res.nz,
-            sharding.nz_spec_pad,
+        # Azimuthal wavenumbers m = m0 * harmonic over the wedge
+        # l_z = 2*pi/m0 (m0 = 1 is the full circle).  The integer
+        # multiply is exact and keeps the padding placeholders nonzero.
+        m_vals = (
+            pad_harmonics(
+                complex_harmonics(params.res.nz),
+                params.res.nz,
+                sharding.nz_spec_pad,
+            )
+            * params.geo.m0
         )
         self.m = jax.device_put(
             m_vals.reshape([1, -1, 1]).astype(sharding.float_type),
@@ -721,13 +729,13 @@ class AnnularFlow:
         # per physical component (u_z, u_r, u_theta), zero in the
         # ny_y_pad rows.  Axial uses the spectral spacing L/n; radial the
         # local grid spacing; azimuthal the arc length r*dtheta with
-        # dtheta = 2*pi/nz (theta period is the literal 2*pi).
+        # dtheta = lz/nz (theta period lz = 2*pi/m0 over the wedge).
         inv_sp = np.zeros(
             (3, Nr + sharding.ny_y_pad), dtype=sharding.float_type
         )
         inv_sp[0, :Nr] = params.res.nx / params.geo.lx
         inv_sp[1, :Nr] = 1.0 / local_grid_spacing(np.asarray(self.rs))
-        inv_sp[2, :Nr] = np.asarray(self.inv_r) * params.res.nz / (2 * np.pi)
+        inv_sp[2, :Nr] = np.asarray(self.inv_r) * params.res.nz / params.geo.lz
         self.cfl_inv_spacing = jax.device_put(
             inv_sp[:, :, None, None], sharding.no_shard
         )

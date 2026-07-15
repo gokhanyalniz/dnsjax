@@ -47,7 +47,7 @@ to match these axes (no transpose to "fix" layout).
 | family (systems)                                  | spectral axes (as read) | physical axes | components        |
 |---------------------------------------------------|-------------------------|---------------|-------------------|
 | cartesian (plane-couette/poiseuille)              | (y, k_x, k_z)           | (y, x, z)     | (u_x, u_y, u_z)   |
-| cylindrical/annular (pipe, taylor-couette, dean)  | (r, k_z(axial), m)      | (r, z, θ)     | (u_z, u_r, u_θ)   |
+| cylindrical/annular (pipe, taylor-couette, quasi-keplerian, dean) | (r, k_z(axial), m) | (r, z, θ) | (u_z, u_r, u_θ) |
 | viscoelastic (viscoelastic-dean)                  | (r, k_z(axial), m)      | (r, z, θ)     | (u_z, u_r, u_θ, c_zz, c_rz, c_θz, c_rr, c_θθ, c_rθ) |
 | triply-periodic (kolmogorov/waleffe/decaying-box) | (k_z, k_x, k_y)         | (z, x, y)     | (u_x, u_y, u_z)   |
 
@@ -64,8 +64,10 @@ to match these axes (no transpose to "fix" layout).
   pairing idea as `u_±`; `read_state(components=...)` selects any
   subset). Tensor differential operators are out of scope in
   `snapshot_ops` (velocity operators unchanged).
-- Azimuthal length is `2π` (so `m` is integer); periodic shear length is
-  `LY_PERIODIC = 4`; the `r`/`y` grid comes from `meta["wall_normal_grid"]`.
+- Azimuthal length is the wedge extent `lz = 2π/m0` (`geo.m0`, stored in
+  the snapshot; `m0 = 1` is the full circle, so `m = m0·j`); periodic
+  shear length is `LY_PERIODIC = 4`; the `r`/`y` grid comes from
+  `meta["wall_normal_grid"]`.
 
 ## Operator convention — matches the solver's discrete operators
 

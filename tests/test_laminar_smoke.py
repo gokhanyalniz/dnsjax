@@ -321,6 +321,30 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # Cylindrical azimuthal wedge (geo.m0 > 1): the axisymmetric
+        # laminar pipe profile is a fixed point on any wedge, exercising
+        # the m0-scaled cylindrical Fourier / parity path.
+        "name": "pipe-wedge",
+        "args": [
+            "--phys.system",
+            "pipe",
+            "--geo.m0",
+            "3",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nx",
+            "4",
+            "--res.nz",
+            "4",
+            "--res.ny",
+            "27",
+        ],
+    },
+    {
         "name": "taylor-couette",
         "args": [
             "--phys.system",
@@ -358,6 +382,61 @@ SYSTEMS: list[dict] = [
             "0.5",
             "--phys.block_mean_spanwise_velocity",
             "True",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nx",
+            "4",
+            "--res.nz",
+            "4",
+            "--res.ny",
+            "27",
+        ],
+    },
+    {
+        "name": "quasi-keplerian",
+        "args": [
+            "--phys.system",
+            "quasi-keplerian",
+            "--phys.re1",
+            "100",
+            "--phys.r_omega",
+            "-1.2",
+            "--geo.eta",
+            "0.71",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nx",
+            "4",
+            "--res.nz",
+            "4",
+            "--res.ny",
+            "27",
+        ],
+    },
+    {
+        # Annular azimuthal wedge (geo.m0 = 2): the circular-Couette
+        # profile is a laminar fixed point on the half-annulus wedge,
+        # and the azimuthal CFL doubles (lz = pi).
+        "name": "quasi-keplerian-wedge",
+        "args": [
+            "--phys.system",
+            "quasi-keplerian",
+            "--phys.re1",
+            "100",
+            "--phys.r_omega",
+            "-1.2",
+            "--geo.eta",
+            "0.71",
+            "--geo.m0",
+            "2",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -520,6 +599,16 @@ CFL_GRID_LAMINAR_POISEUILLE = (2.0 / 3.0) * CFL_X_LAMINAR
 # maximum of U_theta/r is 1, at the inner wall r1 = 1 where
 # U_theta(r1) = 1.
 CFL_TH_LAMINAR_TC = SMOKE_DT * 1.0 * SMOKE_NZ / (2 * math.pi)
+# Quasi-Keplerian laminar azimuthal CFL: dt * max(U_theta/r) * nz/lz.
+# Omega(r) = A0 + B0/r^2 is monotone decreasing (B0 > 0), so the maximum
+# of U_theta/r is Omega(r1) = 1/r1 = (1-eta)/eta at the inner wall node
+# (eta = 0.71).  The full circle (m0 = 1) uses lz = 2*pi; the m0 = 2
+# wedge halves lz, doubling the azimuthal CFL.
+_QK_ETA = 0.71
+CFL_TH_LAMINAR_QK = (
+    SMOKE_DT * ((1 - _QK_ETA) / _QK_ETA) * SMOKE_NZ / (2 * math.pi)
+)
+CFL_TH_LAMINAR_QK_WEDGE = 2 * CFL_TH_LAMINAR_QK
 CFL_REL_TOL = 1e-7
 CFL_ZERO_TOL = 1e-12  # roundoff-sized perturbation columns
 
@@ -611,7 +700,7 @@ def _check_steps_file(workdir: Path, name: str) -> None:
     # key order, so compare as sets and index columns by name
     # ("t" is always written first by ``_flush_stats``).
     cylindrical = name.startswith("pipe")
-    annular = name.startswith("taylor-couette")
+    annular = name.startswith(("taylor-couette", "quasi-keplerian"))
     # Viscoelastic-dean is a force-driven annular (total-field) flow: it
     # shares Dean's near-steady azimuthal-CFL structure but additionally
     # writes a ``TrC_max`` column (the max conformation trace).
@@ -658,7 +747,11 @@ def _check_steps_file(workdir: Path, name: str) -> None:
         expected_active = None
     elif cylindrical:
         expected_active = CFL_GRID_LAMINAR_PIPE
-    elif annular:
+    elif name.startswith("quasi-keplerian-wedge"):
+        expected_active = CFL_TH_LAMINAR_QK_WEDGE
+    elif name.startswith("quasi-keplerian"):
+        expected_active = CFL_TH_LAMINAR_QK
+    elif annular:  # taylor-couette
         expected_active = CFL_TH_LAMINAR_TC
     elif name.startswith("plane-poiseuille"):
         expected_active = CFL_GRID_LAMINAR_POISEUILLE

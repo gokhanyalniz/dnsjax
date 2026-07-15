@@ -105,10 +105,24 @@ convention (see the `Fourier` coordinate-mapping tables in
 Same decoupled `u+`/`u-` formulation as cylindrical but **two walls**,
 **no `r=0` axis** (`r1 > 0`), no parity reduction, and a **2×2
 influence matrix**. Three driving modes share the infrastructure (see
-the `annular.py` module docstring): shear-driven Taylor-Couette
-(perturbation `u'`), force-driven Dean (total field, mean-mode body
-force `AnnularFlow.pi_theta`), and the viscoelastic total-field mode
-with the coupled conformation tensor (`annular_viscoelastic.py`).
+the `annular.py` module docstring): shear-driven Taylor-Couette /
+quasi-Keplerian (perturbation `u'`), force-driven Dean (total field,
+mean-mode body force `AnnularFlow.pi_theta`), and the viscoelastic
+total-field mode with the coupled conformation tensor
+(`annular_viscoelastic.py`).
+
+**Azimuthal wedge (`geo.m0`, annular and cylindrical).** `geo.m0 > 1`
+reduces the azimuthal domain to `θ ∈ [0, 2π/m0)` (`update_parameters`
+derives `lz = 2π/m0`) and resolves only `m = m0·j`: the `Fourier.m`
+construction multiplies the integer harmonics by `m0` (exact), so all
+array/FFT sizes stay `nz`-driven and the wedge genuinely costs `1/m0`
+the azimuthal work of the full circle (the `m ≡ 0 mod m0` subspace is
+dynamically closed). Every `geo.lz` consumer follows automatically (CFL
+azimuthal spacing `nz/lz`, the `random_field`/`localized_rolls` annular
+and cylindrical generators, `analysis/_core` lengths). Cylindrical
+parity `m_is_even = (m % 2 == 0)` tracks the *physical* `m0·j`, i.e. the
+correct r=0 axis-regularity per mode. Rejected for Cartesian / periodic
+/ viscoelastic in `validate_parameters`.
 
 ### Custom wall-normal grids
 
@@ -154,6 +168,12 @@ See its docstring and the `fd.py` interpolation docstrings.
 - `pipe.py`: PipeFlow(CylindricalFlow) -- `Uz = 1 - r^2`.
 - `taylor_couette.py`: TaylorCouetteFlow(AnnularFlow) --
   circular-Couette `Uθ = A0 r + B0/r` from `(re1, re2, eta)`.
+- `quasi_keplerian.py`: QuasiKeplerianFlow(AnnularFlow) -- the same
+  circular-Couette base flow / operators / stats as taylor_couette, but
+  parameterized by `(re1 = Re_i, r_omega = R_Ω, eta)` on the
+  quasi-Keplerian half-line `R_Ω < -1` (co-rotating, linearly stable;
+  `re2` derived in the annular branch of `update_parameters`). Standalone
+  sibling module (does not import taylor_couette).
 - `dean.py`: DeanFlow(AnnularFlow) -- force-driven **total** field from
   `(re, eta)`; `start_from_laminar` uses `dean_laminar_u_theta`.
 - `viscoelastic_dean.py`: ViscoelasticDeanFlow(ViscoelasticAnnularFlow)

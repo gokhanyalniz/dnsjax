@@ -446,7 +446,10 @@ def generate_annular_rolls(
     pp_over_r = pp / rs_np  # P' / r
 
     r_mid = 0.5 * (r1 + r2)
-    az_sig = _envelope(nz, width / r_mid, 2.0 * pi)  # azimuthal localization
+    # Azimuthal localization over the wedge extent l_z = 2*pi/m0 (m0 = 1
+    # full circle); the physical angular half-width width/r_mid is
+    # preserved regardless of the period (see ``_envelope``).
+    az_sig = _envelope(nz, width / r_mid, params.geo.lz)
     z_sig = _roll(nx, wavelength, lx) * _envelope(nx, width, lx)  # Z(z_ax)
     z_dz = _ddz(z_sig, lx)  # Z'(z_ax) (for the peak)
 

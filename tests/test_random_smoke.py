@@ -208,6 +208,24 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # Quasi-Keplerian (co-rotating, linearly stable): the random
+        # perturbation decays, but the run still drives the full
+        # rotational-nonlinear path for the new system.
+        "name": "quasi-keplerian",
+        "args": [
+            "--phys.system",
+            "quasi-keplerian",
+            "--phys.re1",
+            "400",
+            "--phys.r_omega",
+            "-1.2",
+            "--geo.eta",
+            "0.71",
+            "--geo.lx",
+            "5",
+        ],
+    },
+    {
         "name": "dean",
         "args": [
             "--phys.system",

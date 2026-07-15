@@ -56,7 +56,13 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
 MODULE = "dnsjax.analysis.transient_growth"
-SYSTEMS = ["plane-couette", "plane-poiseuille", "pipe", "taylor-couette"]
+SYSTEMS = [
+    "plane-couette",
+    "plane-poiseuille",
+    "pipe",
+    "taylor-couette",
+    "quasi-keplerian",
+]
 
 
 # ── laminar profile files (top-wall-first / descending) ──────────
@@ -70,6 +76,11 @@ def _ccf(re1: float, re2: float, eta: float) -> tuple[float, float]:
     return a0, b0
 
 
+def _qk_re2(re1: float, eta: float, r_omega: float) -> float:
+    """Quasi-Keplerian derived outer Reynolds number Re_o."""
+    return re1 * (1 - eta + r_omega) / (eta * r_omega - (1 - eta))
+
+
 def _write_laminar(system: str, path: Path, **kw) -> None:
     """Write the analytic laminar total profile for *system*."""
     if system in ("plane-couette", "plane-poiseuille"):
@@ -79,9 +90,14 @@ def _write_laminar(system: str, path: Path, **kw) -> None:
     elif system == "pipe":
         r = np.linspace(1.0, 1e-3, 401)
         np.savetxt(path, np.column_stack([r, 1.0 - r**2]))
-    else:  # taylor-couette
+    else:  # taylor-couette / quasi-keplerian (circular-Couette)
         eta = kw["eta"]
-        a0, b0 = _ccf(kw["re1"], kw["re2"], eta)
+        re2 = (
+            _qk_re2(kw["re1"], eta, kw["r_omega"])
+            if system == "quasi-keplerian"
+            else kw["re2"]
+        )
+        a0, b0 = _ccf(kw["re1"], re2, eta)
         r = np.linspace(1.0 / (1 - eta), eta / (1 - eta), 401)  # r2 -> r1
         np.savetxt(path, np.column_stack([r, a0 * r + b0 / r]))
 
@@ -221,6 +237,9 @@ def _worker(system: str) -> None:
     if system == "taylor-couette":
         phys = {"system": system, "re1": 100.0, "re2": 0.0}
         geo = {"eta": 0.5}
+    elif system == "quasi-keplerian":
+        phys = {"system": system, "re1": 100.0, "r_omega": -1.2}
+        geo = {"eta": 0.71}
     update_parameters(
         Parameters(
             phys=phys,
@@ -259,6 +278,7 @@ def _worker(system: str) -> None:
         "plane-poiseuille": "cartesian",
         "pipe": "cylindrical",
         "taylor-couette": "annular",
+        "quasi-keplerian": "annular",
     }[system]
     gmod = importlib.import_module(
         f"dnsjax.geometries.wall_bounded.{geo_name}"
@@ -284,8 +304,9 @@ def _worker(system: str) -> None:
     dc = float(
         np.max(np.abs(np.asarray(frozen.curl_base_flow - flow.curl_base_flow)))
     )
-    # Polynomial profiles are FD-exact; TC's B0/r curl carries FD error.
-    ctol = 3e-4 if system == "taylor-couette" else 1e-12
+    # Polynomial profiles are FD-exact; the circular-Couette B0/r curl
+    # (taylor-couette / quasi-keplerian) carries FD error.
+    ctol = 3e-4 if system in ("taylor-couette", "quasi-keplerian") else 1e-12
     assert db < 1e-12, f"{system}: base_flow hook != builtin ({db:.2e})"
     assert dc < ctol, f"{system}: curl hook != builtin ({dc:.2e})"
 
@@ -358,6 +379,18 @@ def _test_cli_smoke(system: str) -> None:
                 "0",
                 "--geo.eta",
                 "0.5",
+                "--geo.lx",
+                "6.2832",
+            ]
+        elif system == "quasi-keplerian":
+            _write_laminar(system, prof, re1=50.0, r_omega=-1.2, eta=0.71)
+            extra += [
+                "--phys.re1",
+                "50",
+                "--phys.r_omega",
+                "-1.2",
+                "--geo.eta",
+                "0.71",
                 "--geo.lx",
                 "6.2832",
             ]
@@ -707,6 +740,119 @@ def _anchor_tc() -> None:
         _close(float(z["G_max"][0]), 71.58, 0.01, "Maretzke G_max")
 
 
+def _anchor_qk() -> None:
+    print("  quasi-Keplerian (annular):")
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d)
+        # Axially-periodic quasi-Keplerian optimal transient growth,
+        # Shi et al., Phys. Fluids 29, 044107 (2017), Table III case I:
+        # eta = 0.71, R_Omega = -1.2, Re_i = 1e4, axial wavenumber
+        # k_z = 0, azimuthal m = 4 -> G_opt = 13.04 at t_opt/tau_d = 27.
+        # The regime is linearly stable (negative spectral abscissa); the
+        # growth is purely non-modal.  Code time == tau_d, so t_opt is in
+        # the paper's units.  m = 4 sits at index i2 = 4 for nz = 10.
+        _write_laminar(
+            "quasi-keplerian", p / "k.txt", re1=1.0e4, r_omega=-1.2, eta=0.71
+        )
+        _run_tg(
+            p / "k.txt",
+            p,
+            [
+                "--phys.system",
+                "quasi-keplerian",
+                "--phys.re1",
+                "10000",
+                "--phys.r_omega",
+                "-1.2",
+                "--geo.eta",
+                "0.71",
+                "--res.ny",
+                "128",
+                "--res.nx",
+                "4",
+                "--res.nz",
+                "10",
+                "--res.fd_order",
+                "8",
+                "--geo.lx",
+                "0.5",
+                "--modes",
+                "4,0",
+                "--t-max",
+                "60",
+                "--nt",
+                "60",
+            ],
+        )
+        z = _load(p, "k")
+        assert float(z["spectral_abscissa"][0]) < 0, "QK must be stable"
+        _close(float(z["G_max"][0]), 13.04, 0.01, "QK G_opt")
+        _close(float(z["t_opt"][0]), 27.0, 0.02, "QK t_opt")
+
+
+def _test_wedge_equivalence() -> None:
+    """The m0 wedge reproduces the full-circle physics for mode m = m0.
+
+    The TG linear step is FFT-free and block-diagonal per Fourier mode,
+    so the reduced operator for physical wavenumber m = 4 is identical
+    whether it sits at index i2 = 4 on the full circle (m0 = 1) or at
+    i2 = 1 on the quarter-annulus wedge (m0 = 4).  G(t) must agree.
+    """
+    print("  wedge equivalence (m0 = 4 vs full circle, m = 4):")
+    # Re-independent structural check; a mild Re_i (with non-trivial
+    # transient growth G_max ~ 1.47) keeps the linear step well
+    # conditioned at coarse resolution.
+    common = [
+        "--phys.system",
+        "quasi-keplerian",
+        "--phys.re1",
+        "1000",
+        "--phys.r_omega",
+        "-1.2",
+        "--geo.eta",
+        "0.71",
+        "--res.ny",
+        "48",
+        "--res.nx",
+        "4",
+        "--res.fd_order",
+        "6",
+        "--geo.lx",
+        "0.5",
+        "--t-max",
+        "60",
+        "--nt",
+        "30",
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d)
+        _write_laminar(
+            "quasi-keplerian", p / "w.txt", re1=1000.0, r_omega=-1.2, eta=0.71
+        )
+        _run_tg(
+            p / "w.txt",
+            p,
+            [*common, "--res.nz", "10", "--modes", "4,0"],
+        )
+        full = _load(p, "w")
+        _run_tg(
+            p / "w.txt",
+            p,
+            [*common, "--geo.m0", "4", "--res.nz", "4", "--modes", "1,0"],
+        )
+        wedge = _load(p, "w")
+    gf, gw = float(full["G_max"][0]), float(wedge["G_max"][0])
+    assert abs(gf - gw) <= 1e-9 * max(1.0, abs(gf)), (
+        f"wedge G_max {gw} != full-circle {gf}"
+    )
+    # Both resolve the same physical azimuthal wavenumber m = 4, from
+    # different stored indices (i2 = 4 full circle, i2 = 1 on the wedge).
+    assert float(full["mode_wn2"][0]) == 4.0, full["mode_wn2"]
+    assert float(wedge["mode_wn2"][0]) == 4.0, wedge["mode_wn2"]
+    assert int(full["mode_i2"][0]) == 4 and int(wedge["mode_i2"][0]) == 1
+    print(f"    G_max wedge {gw:.6f} == full circle {gf:.6f} (m=4)  OK")
+
+
 def _anchor_orszag() -> None:
     """Orszag 1971 unstable OS eigenvalue (spectrum check)."""
     print("  Orszag PP Re=1e4 alpha=1 (leading eigenvalue):")
@@ -797,6 +943,8 @@ def main() -> None:
     print("[CLI features]", flush=True)
     for system in systems:
         _test_cli_smoke(system)
+    if "quasi-keplerian" in systems:
+        _test_wedge_equivalence()
     _test_wall_bc()
     _test_folder()
     _test_export()
@@ -808,6 +956,7 @@ def main() -> None:
             "plane-couette": _anchor_pc,
             "pipe": _anchor_pipe,
             "taylor-couette": _anchor_tc,
+            "quasi-keplerian": _anchor_qk,
         }
         for system in systems:
             anchors[system]()
