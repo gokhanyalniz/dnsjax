@@ -162,7 +162,9 @@ class Fourier:
       (real FFT on the streamwise ``x`` parameter direction).
     - ``m``: shape ``(1, nz-1, 1)`` -- azimuthal mode number
       (complex FFT on the ``z`` parameter direction with
-      `$l_z = 2\pi$`, so integer-valued).
+      `$l_z = 2\pi/m_0$`); the resolved modes are the integer
+      multiples `$m = m_0 j$` of the wedge fundamental `$m_0$`
+      (``geo.m0``; `$m_0 = 1$` is the full circle).
 
     The coordinate mapping is:
 
@@ -229,10 +231,18 @@ class Fourier:
             P(None, None, sharding.a1),
         )
 
-        m_vals = pad_harmonics(
-            complex_harmonics(params.res.nz),
-            params.res.nz,
-            sharding.nz_spec_pad,
+        # Azimuthal wavenumbers m = m0 * harmonic over the wedge
+        # l_z = 2*pi/m0 (m0 = 1 is the full circle).  The integer
+        # multiply is exact and keeps the padding placeholders nonzero;
+        # ``m_is_even`` below then tracks the parity of the *physical* m,
+        # i.e. the correct r = 0 axis-regularity condition per mode.
+        m_vals = (
+            pad_harmonics(
+                complex_harmonics(params.res.nz),
+                params.res.nz,
+                sharding.nz_spec_pad,
+            )
+            * params.geo.m0
         )
         self.m = jax.device_put(
             m_vals.reshape([1, -1, 1]).astype(sharding.float_type),
@@ -1019,9 +1029,9 @@ class CylindricalFlow:
         # diagnostic (:func:`dnsjax.measurements.get_cfl`),
         # per component (u_z, u_r, u_theta), zero in the
         # ny_y_pad rows.  The azimuthal scale is the arc length
-        # `$r \Delta\theta$` with `$\Delta\theta = 2\pi/n_z$`
-        # (theta period is the literal `$2\pi$`: ``geo.lz`` is
-        # not read by this geometry).  Uniform directions use
+        # `$r \Delta\theta$` with `$\Delta\theta = l_z/n_z$`
+        # (theta period `$l_z = 2\pi/m_0$` over the wedge;
+        # ``geo.lz`` carries this).  Uniform directions use
         # the spectral-resolution spacing `$\Delta = L/n$`;
         # switch to ``padded_res.nx_padded`` / ``nz_padded``
         # for the dealiased-grid convention.
@@ -1030,7 +1040,7 @@ class CylindricalFlow:
         )
         inv_sp[0, :Nr] = params.res.nx / params.geo.lx
         inv_sp[1, :Nr] = 1.0 / local_grid_spacing(np.asarray(self.rs))
-        inv_sp[2, :Nr] = np.asarray(self.inv_r) * params.res.nz / (2 * np.pi)
+        inv_sp[2, :Nr] = np.asarray(self.inv_r) * params.res.nz / params.geo.lz
         self.cfl_inv_spacing = jax.device_put(
             inv_sp[:, :, None, None], sharding.no_shard
         )

@@ -389,6 +389,16 @@ def run(wall_time_start: int) -> None:
             step_cnab2,
             step_cnab2_measured,
         )
+    elif params.phys.system == "quasi-keplerian":
+        from .flows.wall_bounded.quasi_keplerian import (
+            get_perturbation_energy,
+            get_stats,
+            init_state,
+            predict_and_fully_correct,
+            predict_and_fully_correct_measured,
+            step_cnab2,
+            step_cnab2_measured,
+        )
     elif params.phys.system == "dean":
         from .flows.wall_bounded.dean import (
             get_perturbation_energy,

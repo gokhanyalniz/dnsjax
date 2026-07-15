@@ -61,7 +61,7 @@ from ..snapshot_meta import (
 # flow system is added there.
 CARTESIAN_SYSTEMS = frozenset({"plane-couette", "plane-poiseuille"})
 CYLINDRICAL_SYSTEMS = frozenset({"pipe"})
-ANNULAR_SYSTEMS = frozenset({"taylor-couette", "dean"})
+ANNULAR_SYSTEMS = frozenset({"taylor-couette", "quasi-keplerian", "dean"})
 #: Viscoelastic annular systems (9-component state: 3 velocity + 6
 #: symmetric conformation-tensor components).  Annular *geometry*, but a
 #: distinct component schema, so kept separate from ``ANNULAR_SYSTEMS``.
@@ -206,14 +206,15 @@ def geometry_info(params: Namespace) -> GeometryInfo:
             )
         else:
             components = ("u_z", "u_r", "u_theta")
-        # Azimuthal length is always 2*pi; the real axis is axial (lx).
+        # Azimuthal length is the wedge extent lz = 2*pi/m0 (m0 = 1 full
+        # circle; stored in geo.lz); the real axis is axial (lx).
         return GeometryInfo(
             family=family,
             walled=True,
             kind=("grid", "real", "complex"),
             name=("r", "z", "theta"),
             n=(ny, nx, nz),
-            length=(None, lx, 2.0 * np.pi),
+            length=(None, lx, lz),
             components=components,
             wall_normal_axis=0,
             grid_axis=0,
