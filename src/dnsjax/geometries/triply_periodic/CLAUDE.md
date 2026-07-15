@@ -22,19 +22,11 @@
   docstring.
 - Spectral layout: `(ny-1, nz_spec, nx_spec)` with `[ky, kz, kx]` --
   ky fully local, kz sharded by np0, kx sharded by np1.
-
-### Parallelization (double decomposition)
-
-The 3D FFT extends the wall-bounded 2D reshard pipeline with a y-FFT
-step after reshard #2 brings the full y-extent local on each device:
-
-- Forward: x-FFT -> [reshard #1: z<->kx] -> z-FFT ->
-  [reshard #2: y<->kz] -> y-FFT
-- Physical `(y_np0, z_np1, x)` -> spectral `(ky, kz_np0, kx_np1)`
-
-See the `fft.py` module docstring for the full pipeline. `np0` requires
-`ny_padded` divisibility; if unmet, `ny_padded` bumps to the next
-multiple.
+- The 3D FFT extends the wall-bounded 2D reshard pipeline with a y-FFT
+  step after reshard #2 brings the full y-extent local on each device
+  (full pipeline: the `fft.py` module docstring). `np0` requires
+  `ny_padded` divisibility; if unmet, `ny_padded` bumps to the next
+  multiple.
 
 ### Flows
 
