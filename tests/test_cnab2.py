@@ -554,11 +554,11 @@ def _worker(system: str) -> None:
         # *fresh* steppers for both gate values (the module-level
         # stepper was already traced above with the default tolerance
         # baked in; no operator rebuild is involved either way).
-        # Force the split path explicitly: its default is now
-        # per-system (off for base-flow systems), and a direct
-        # assignment before ``build`` is safe here -- no intervening
-        # ``update_parameters`` re-resolves it (see the parameter
-        # layering note in the root CLAUDE.md).
+        # Force the split path explicitly (it is opt-in, default off
+        # for every system).  A direct assignment before ``build`` is
+        # safe here: unlike ``solver.backend`` / ``geo.grid_type``, no
+        # intervening ``update_parameters`` re-resolves it (see the
+        # parameter layering note in the root CLAUDE.md).
         saved = (
             params.step.corrector_tolerance,
             params.step.max_corrector_iterations,

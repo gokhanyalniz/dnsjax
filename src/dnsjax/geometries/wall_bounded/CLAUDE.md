@@ -5,38 +5,29 @@
 - `_base.py`: shared wall-bounded infrastructure (norms, integration,
   `init_state`, `apply_y_matrix`, `extract_mean_mode`, `pad_base_flow`,
   `base_flow_coupling`, `build_wall_bounded_stepper`)
-- `cartesian.py`: Cartesian geometry (Fourier, CGL grid,
-  `CartesianFlow`, Kleiser-Schumann IMM, Lk/Hk operator builders)
-- `cylindrical.py`: cylindrical geometry (Fourier, radial CGL grid --
-  half-CGL default under `iterative-cn`, rigged-CGL under `cnab2`
-  (`geo.grid_type`), `CylindricalFlow`,
-  decoupled u+/u- formulation, parity-reduced FD, 1x1 IMM,
-  `interpolate_to_axis` r=0 evaluation)
+- `cartesian.py`: Cartesian geometry (Fourier, CGL grid, `CartesianFlow`,
+  Kleiser-Schumann IMM, Lk/Hk operator builders)
+- `cylindrical.py`: cylindrical geometry (Fourier, radial CGL grid,
+  `CylindricalFlow`, decoupled u+/u- formulation, parity-reduced FD,
+  1x1 IMM, `interpolate_to_axis` r=0 evaluation)
 - `annular.py`: annular geometry / concentric cylinders (Fourier, CGL
-  grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation,
-  2x2 IMM, optional mean-mode azimuthal body force `pi_theta`,
-  `annular_forced_laminar_u_theta` / `dean_laminar_u_theta`)
+  grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2
+  IMM, optional mean-mode azimuthal body force `pi_theta`)
 - `annular_viscoelastic.py`: viscoelastic (sPTT) extension of the
-  annular geometry (`ViscoelasticAnnularFlow`): 9-component state
-  (3 velocity + 6 conformation-tensor spin components), one fused
-  pseudo-spectral RHS, both schemes supported. Spin diagonalisation,
-  state layout, reality structure, cnab2 split: module docstring.
+  annular geometry (`ViscoelasticAnnularFlow`): 9-component state, one
+  fused pseudo-spectral RHS, both schemes supported
 
 ### Stepper factory (wall-bounded layer)
 
 `build_wall_bounded_stepper()` in `_base.py` wraps
 `timestep.make_stepper()`, binds the `fourier`/`flow` singletons, and
-returns the stepping functions (see its docstring for the tuple). Each
-geometry provides a thin `build_*_stepper(flow)` passing its measured
-RHS (CFL via the `rhs.py` `measure_fn` hook) and `_l_bf` — the FFT-free
-linear base-flow coupling `L_bf = u'×curl(U) + U×ω'` (from the shared
-`base_flow_coupling` helper) that wall-bounded cnab2 and the opt-in
-split iterative-cn corrector (`_split_core`) make implicit; with
-`implicit_mean_coupling` (default on) `_l_bf` also folds in the
-instantaneous mean-flow coupling `L_mf`. Why it is stiff: the
-`TimeStepping` docstring. `tests/test_cnab2.py` pins the split
-exactness, the `L_mf` oracle, FFT counts, and split-vs-unsplit
-equivalence.
+returns the stepping functions. Each geometry provides a thin
+`build_*_stepper(flow)` passing its measured RHS (CFL via the `rhs.py`
+`measure_fn` hook) and `_l_bf` — the FFT-free linear base-flow coupling
+(from the shared `base_flow_coupling` helper) that wall-bounded cnab2
+and the opt-in split iterative-cn corrector make implicit. Why it is
+stiff, and what `implicit_mean_coupling` folds in: the `TimeStepping`
+docstring. Guards: `tests/test_cnab2.py`.
 
 **Moving frame (`phys.u_grid`)**: the convective frame term is added
 spectrally in each geometry's `_get_rhs_core` *and* `_l_bf`
@@ -52,13 +43,11 @@ that instability removed the first implementation).
 algorithm, its Schur-complement/Woodbury equivalence, and the optional
 constant-bulk-velocity / block-mean-spanwise-velocity corrections.
 
-- `params.solver.backend` selects operator storage: `"pallas"`
-  (default banded sweep) or the `"dense"` reference/oracle -- see the
+- `params.solver.backend` selects operator storage: `"pallas"` (default
+  banded sweep) or the `"dense"` reference/oracle -- see the
   `solvers.py` docstrings. The pallas build is wired in all three
   geometries: each `_build_{Lk,Hk}_band_gpu` assembles directly in
-  banded storage via the shared `solvers._assemble_banded_operator`
-  (cartesian: one shared `Hk` + per-mode `k²` diagonal shift; annular:
-  three stacked `Hk`; cylindrical: parity-selected band).
+  banded storage via the shared `solvers._assemble_banded_operator`.
 - Both backends apply `Lk`/`Hk_minus` matvecs matrix-free
   (`_lk_matvec`/`_hk_minus_matvec`) from shared `D1`/`D2`; IMM
   homogeneous data comes from
@@ -66,41 +55,34 @@ constant-bulk-velocity / block-mean-spanwise-velocity corrections.
 
 ### Mean mode and padding modes
 
-Spectral padding slots carry nonzero beyond-resolution placeholder
-wavenumbers (`pad_harmonics` in `operators.py`), so the mean mode is
-the only `k²=0` mode and `Fourier.mean_mask` (one-hot at global (0,0))
-is the single mask selecting the operator pin row, the `M_inv` mean
-branch, and all mean-mode physics. Padding modes need no special-casing
-(regular per-mode operators; the forward FFT re-zeroes their slots; IMM
-corrections vanish there). See the `Fourier` docstrings.
+Spectral padding slots carry nonzero placeholder wavenumbers
+(`pad_harmonics` in `operators.py`), so the mean mode is the only `k²=0`
+mode and `Fourier.mean_mask` is the single mask selecting the operator
+pin row, the `M_inv` mean branch, and all mean-mode physics. Padding
+modes need no special-casing. See the `Fourier` docstrings.
 
 ### Cylindrical geometry
 
-The `cylindrical.py` module docstring documents the decoupled
-`u+`/`u-` formulation (Willis 2017), effective azimuthal modes,
-parity-reduced FD, radial CGL grid (half-CGL default under
-`iterative-cn`, rigged-CGL under `cnab2`; see `build_radial_cgl_grid`),
-1×1 influence matrix, and constant-bulk-velocity enforcement.
-Cross-cutting gotchas: full-disc radial quadrature is
-**parity-specific** (`fd.cgl_radial_quadrature_weights` →
-`y_weights`/`y_weights_odd`; each diagnostic integrates with its known
-parity), while custom/tanh grids and the JAX-free analysis package use
-the parity-agnostic composite rule; there is no `r=0` grid point, so
-`interpolate_to_axis` evaluates the centreline via
-`fd.axis_extrapolation_weights` — the exact spectral
-parity-constrained fit for even-parity data on the detected CGL grids
-(the same weights reconstruct the rigged completion's axis node),
-local Fornberg one-sided/stencil rules for parity-free data and
-custom grids.
+The `cylindrical.py` module docstring documents the decoupled `u+`/`u-`
+formulation, effective azimuthal modes, parity-reduced FD, the radial
+CGL grid, the 1×1 influence matrix, and constant-bulk-velocity
+enforcement. Cross-cutting gotchas:
+
+- Full-disc radial quadrature is **parity-specific**
+  (`fd.cgl_radial_quadrature_weights` → `y_weights`/`y_weights_odd`;
+  each diagnostic integrates with its known parity), while custom/tanh
+  grids and the JAX-free analysis package use the parity-agnostic
+  composite rule.
+- There is no `r=0` grid point: `interpolate_to_axis` evaluates the
+  centreline via `fd.axis_extrapolation_weights`.
 
 ### Annular geometry
 
 Fourier slot mapping (cylindrical and annular): `nx`→axial (real-FFT
-`k_z`), `nz`→azimuthal (complex `m`), `ny`→radial. So for
-Taylor-Couette the streamwise (azimuthal) resolution is `nz` and
-spanwise (axial) is `nx` -- swapped vs. the Cartesian `nx`=streamwise
-convention (see the `Fourier` coordinate-mapping tables in
-`annular.py`/`cylindrical.py`).
+`k_z`), `nz`→azimuthal (complex `m`), `ny`→radial. So for Taylor-Couette
+the streamwise (azimuthal) resolution is `nz` and spanwise (axial) is
+`nx` -- **swapped vs. the Cartesian `nx`=streamwise convention** (see the
+`Fourier` coordinate-mapping tables in `annular.py`/`cylindrical.py`).
 
 Same decoupled `u+`/`u-` formulation as cylindrical but **two walls**,
 **no `r=0` axis** (`r1 > 0`), no parity reduction, and a **2×2
@@ -108,55 +90,34 @@ influence matrix**. Three driving modes share the infrastructure (see
 the `annular.py` module docstring): shear-driven Taylor-Couette /
 quasi-Keplerian (perturbation `u'`), force-driven Dean (total field,
 mean-mode body force `AnnularFlow.pi_theta`), and the viscoelastic
-total-field mode with the coupled conformation tensor
-(`annular_viscoelastic.py`).
+total-field mode (`annular_viscoelastic.py`).
 
-**Azimuthal wedge (`geo.m0`, annular and cylindrical).** `geo.m0 > 1`
-reduces the azimuthal domain to `θ ∈ [0, 2π/m0)` (`update_parameters`
-derives `lz = 2π/m0`) and resolves only `m = m0·j`: the `Fourier.m`
-construction multiplies the integer harmonics by `m0` (exact), so all
-array/FFT sizes stay `nz`-driven and the wedge genuinely costs `1/m0`
-the azimuthal work of the full circle (the `m ≡ 0 mod m0` subspace is
-dynamically closed).
-
-*In physical space* the wedge is **fully resolved, not decimated** —
-the FFT is purely index-based and never sees `θ`, so it maps mode index
-`j` to grid index `p` and returns one period of the field it was handed.
-Since every retained harmonic is a multiple of `m0`, that period **is**
-the wedge: the `nz` (dealiased `nz_padded`) points span `[0, 2π/m0)` at
-spacing `Δθ = lz/nz`, i.e. `m0`-times *finer* than the full circle at
-the same `nz` — exactly what resolving `m0`-times higher wavenumbers
-requires. Equivalently the code solves in `φ = m0·θ ∈ [0, 2π)`, with
-`m0` entering only where a physical wavenumber (`Fourier.m`) or length
-(`lz`) is needed. Pinned end-to-end by `test_quasi_keplerian.py`'s
-`wedge_nonlinear` case (a wedge decimated over the full azimuth would
-evaluate the pseudo-spectral product on an `m0`-times too coarse grid
-and fail it outright). Every `geo.lz` consumer follows automatically (CFL
-azimuthal spacing `nz/lz`, the `random_field`/`localized_rolls` annular
-and cylindrical generators, `analysis/_core` lengths). Cylindrical
-parity `m_is_even = (m % 2 == 0)` tracks the *physical* `m0·j`, i.e. the
-correct r=0 axis-regularity per mode. Rejected for Cartesian / periodic
-/ viscoelastic in `validate_parameters`.
+**Azimuthal wedge (`geo.m0`, annular and cylindrical)**: `geo.m0 > 1`
+reduces the azimuthal domain to `θ ∈ [0, 2π/m0)` and resolves only
+`m = m0·j`, genuinely cutting azimuthal cost/memory by `m0` at fixed
+`nz` (all array/FFT sizes stay `nz`-driven; `m0` only scales wavenumber
+values). Every `geo.lz` consumer follows automatically. Cylindrical
+parity `m_is_even` tracks the *physical* `m0·j`, i.e. the correct r=0
+axis-regularity per mode. Rejected for Cartesian / periodic /
+viscoelastic in `validate_parameters`. The physical-space picture (why
+the wedge is fully resolved rather than decimated) and the cost
+argument: the `geo.m0` field docs (`parameters.py`).
 
 ### Custom wall-normal grids
 
 Grid selection precedence: (1) `params.geo.wall_grid` file (always
 overrides), (2) `params.geo.grid_type` (`"cgl"`/`"half-cgl"`/`"tanh"`;
-half-CGL is cylindrical + `iterative-cn` only), (3) default, resolved
-to a concrete `grid_type` by `update_parameters` (so snapshots embed
-the grid they ran): full CGL for Cartesian/annular, cylindrical
-half-CGL under `iterative-cn` / rigged-CGL under `cnab2`. Quadrature is
-spectral Clenshaw-Curtis on CGL grids, the `fd_order` composite rule on
+half-CGL is cylindrical + `iterative-cn` only), (3) default, resolved to
+a concrete `grid_type` by `update_parameters` (so snapshots embed the
+grid they ran): full CGL for Cartesian/annular, cylindrical half-CGL
+under `iterative-cn` / rigged-CGL under `cnab2`. Quadrature is spectral
+Clenshaw-Curtis on CGL grids, the `fd_order` composite rule on
 custom/tanh grids. File format, validation, weights, and tanh-grid
 properties: the `build_*_grid` and `fd.py` docstrings.
 
-### Wall-normal interpolation
-
 When a loaded snapshot's wall-normal grid differs,
-`_interpolate_if_needed` (`__main__.py`) picks the optimal method
-(Chebyshev for Cartesian/annular CGL, spectral parity interpolation for
-cylindrical half/rigged-CGL, local Fornberg fallback for custom/tanh).
-See its docstring and the `fd.py` interpolation docstrings.
+`_interpolate_if_needed` (`__main__.py`) picks the optimal method; see
+its docstring and the `fd.py` interpolation docstrings.
 
 ### Optimization patterns
 
@@ -169,9 +130,9 @@ See its docstring and the `fd.py` interpolation docstrings.
   `apply_y_matrix(..., component_axis=1)` (and the matching `.solve`
   arg) keeps the cuBLAS GEMMs transpose-free (curl/divergence and the
   cyl/annular Hk stacks are y-leading; Cartesian's Hk stays
-  component-leading on purpose). Full rationale: the `apply_y_matrix`
+  component-leading on purpose). Rationale: the `apply_y_matrix`
   (`_base.py`) and `PerModeBandedPallasOperator.solve` (`solvers.py`)
-  docstrings; `scripts/pallas_solve_profile.py` profiled it.
+  docstrings.
 
 ### Flows
 
@@ -183,25 +144,21 @@ See its docstring and the `fd.py` interpolation docstrings.
 - `taylor_couette.py`: TaylorCouetteFlow(AnnularFlow) --
   circular-Couette `Uθ = A0 r + B0/r` from `(re1, re2, eta)`.
 - `quasi_keplerian.py`: QuasiKeplerianFlow(AnnularFlow) -- the same
-  circular-Couette base flow / operators / stats as taylor_couette, but
-  parameterized by `(re1 = Re_i, r_omega = R_Ω, eta)` on the
-  quasi-Keplerian half-line `R_Ω < -1` (co-rotating, linearly stable;
-  `re2` derived in the annular branch of `update_parameters`). Standalone
-  sibling module (does not import taylor_couette).
-- `dean.py`: DeanFlow(AnnularFlow) -- force-driven **total** field from
-  `(re, eta)`; `start_from_laminar` uses `dean_laminar_u_theta`.
+  circular-Couette base flow as taylor_couette but parameterized by
+  `(re1, r_omega, eta)` on the quasi-Keplerian half-line `R_Ω < -1`
+  (`re2` derived in `update_parameters`). Standalone sibling module
+  (does not import taylor_couette).
+- `dean.py`: DeanFlow(AnnularFlow) -- force-driven **total** field.
 - `viscoelastic_dean.py`: ViscoelasticDeanFlow(ViscoelasticAnnularFlow)
-  -- force-driven sPTT Dean, 9-component **total** field, radii
-  `(δ, δ+2)`; stats add polymer work/elastic energy/mean trace.
+  -- force-driven sPTT Dean, 9-component **total** field.
 
 **Transient-growth hook**: each base-flow flow (all except
 dean/viscoelastic-dean) exports `frozen_profile_flow(profile)`, used by
 `dnsjax.analysis.transient_growth` to linearise around an arbitrary
-wall-normal *total* profile: it builds the geometry's
-`(base_flow, curl_base_flow)` pair and returns a shallow flow copy via
-`_base.frozen_profile_flow` (operators are profile-independent, so the
-jitted stepper does not retrace). `tests/test_transient_growth.py` pins
-each hook against the builtin laminar coupling.
+wall-normal *total* profile via `_base.frozen_profile_flow` (operators
+are profile-independent, so the jitted stepper does not retrace).
+`tests/test_transient_growth.py` pins each hook against the builtin
+laminar coupling.
 
 ### Tests
 

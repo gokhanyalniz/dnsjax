@@ -1,10 +1,11 @@
 """Pytest bridge over the standalone test scripts.
 
-The ``tests/test_*.py`` files are standalone scripts (module-level
-singleton / JAX setup plus their own ``__main__`` runners; the root
-CLAUDE.md Tests section explains why pytest must never import them)
-and remain the source of truth, each runnable directly as
-``uv run python tests/test_X.py``.  This module is the only file
+The ``tests/test_*.py`` files are standalone scripts and remain the
+source of truth, each runnable directly as
+``uv run python tests/test_X.py``.  They rely on module-level singleton
+/ JAX setup performed by their own ``__main__`` runners, so pytest must
+never **import** them -- collection would execute the module top level
+with the singletons unconfigured.  This module is the only file
 pytest collects (``[tool.pytest.ini_options] python_files`` in
 ``pyproject.toml``): every case shells one script out as a subprocess
 in its default invocation, asserts a zero exit code, and surfaces the

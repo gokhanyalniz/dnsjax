@@ -192,9 +192,9 @@ class Physics(BaseModel):
     kappa: float | None = Field(default=None, ge=0)
     # Default "plane-couette": a wall-bounded flow that integrates
     # cleanly from the default random IC at the default dt (Kolmogorov +
-    # random needs a smaller dt; see the random-IC corrector note in the
-    # root CLAUDE.md).  Kolmogorov: sine forcing.  Waleffe: cosine
-    # forcing + Ry symmetry (not yet implemented).
+    # random needs a smaller dt; see the corrector-contraction note in
+    # the ``TimeStepping`` docstring).  Kolmogorov: sine forcing.
+    # Waleffe: cosine forcing + Ry symmetry (not yet implemented).
     system: Literal[*periodic_systems, *walled_systems] = "plane-couette"
     # (n + 1) / 2 oversampling in each direction
     # to dealias the n'th order nonlinearity
@@ -304,6 +304,24 @@ class Geometry(BaseModel):
     # at fixed nz: the same physical azimuthal resolution as a full
     # circle with m0*nz modes.  Default 1 (full circle).  A changed m0 on
     # resume is trajectory-defining (geo section).
+    #
+    # In *physical* space the wedge is fully resolved, not decimated: the
+    # FFT is purely index-based and never sees theta, so it maps mode
+    # index j to grid index p and returns one period of the field it was
+    # handed.  Every retained harmonic being a multiple of m0, that
+    # period *is* the wedge -- the nz (dealiased nz_padded) points span
+    # [0, 2*pi/m0) at spacing dtheta = lz/nz, i.e. m0-times *finer* than
+    # the full circle at the same nz, exactly what resolving m0-times
+    # higher wavenumbers requires.  Equivalently the code solves in
+    # phi = m0*theta in [0, 2*pi), with m0 entering only where a physical
+    # wavenumber (``Fourier.m``) or length (``lz``) is needed; every
+    # ``geo.lz`` consumer then follows automatically (the CFL azimuthal
+    # spacing nz/lz, the random_field / localized_rolls generators,
+    # ``analysis/_core`` lengths).  Pinned end-to-end by the
+    # ``wedge_nonlinear`` case in ``tests/test_quasi_keplerian.py``: a
+    # wedge decimated over the full azimuth would evaluate the
+    # pseudo-spectral product on an m0-times too coarse grid and fail it
+    # outright.
     m0: int = Field(ge=1, default=1)
     # Inner radius delta for the viscoelastic annular geometry
     # (system == "viscoelastic-dean").  The gap is fixed at 2 (half-gap
@@ -639,6 +657,20 @@ class TimeStepping(BaseModel):
     ``_imm_iteration``); in ``"cnab2"`` it weights the viscous term (and,
     wall-bounded, the implicit base-flow coupling), while the explicit
     AB2 self-advection is independent of *c*.
+
+    Corrector convergence is ``dt``-limited, not CFL-limited
+    ------------------------------------------------------------
+    The corrector is a fixed-point iteration whose contraction rate
+    scales with ``dt``, so a ``corrector failed to converge`` at *low*
+    CFL -- the final error only just above ``corrector_tolerance`` --
+    means the step is too large to contract within
+    ``max_corrector_iterations``, **not** a blow-up: reduce ``dt`` (or
+    raise the cap).  The limit is per-flow and unrelated to the
+    advective CFL bounding ``cnab2``: random-IC Kolmogorov needs
+    ``dt = 0.005`` (capped in ``tests/test_random_smoke.py``) while the
+    wall-bounded flows contract fine at the default ``dt = 0.01``.
+    ``phys.u_grid`` relaxes it (the advecting velocity drops to
+    ``U - U_grid``).
     """
 
     scheme: Literal["iterative-cn", "cnab2"] = "iterative-cn"
