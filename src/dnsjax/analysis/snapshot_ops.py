@@ -103,7 +103,7 @@ def derivative(field, direction, params, coords, cylindrical_parity=None):
         ax,
         info,
         coords[ax],
-        params.res.fd_order,
+        params.res.get("fd_order"),
         parity=parity,
     )
 
@@ -119,7 +119,7 @@ def gradient(component, params, coords, cylindrical_parity=None):
     """
     info = _core.geometry_info(params)
     arr = np.asarray(component)
-    fd = params.res.fd_order
+    fd = params.res.get("fd_order")
     out = []
     for ax in range(3):
         parity = _resolve_parity(info, ax, cylindrical_parity)
@@ -140,7 +140,7 @@ def divergence(field, params, coords):
     parity-reduced radial ``D1``).
     """
     info = _core.geometry_info(params)
-    fd = params.res.fd_order
+    fd = params.res.get("fd_order")
 
     if info.family in ("cylindrical", "annular"):
         u_z, u_r, u_th = (np.asarray(f) for f in field)
@@ -174,7 +174,7 @@ def curl(field, params, coords):
     parity-reduced radial ``D1``.
     """
     info = _core.geometry_info(params)
-    fd = params.res.fd_order
+    fd = params.res.get("fd_order")
 
     if info.family in ("cylindrical", "annular"):
         u_z, u_r, u_th = (np.asarray(f) for f in field)

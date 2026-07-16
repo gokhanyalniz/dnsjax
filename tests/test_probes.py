@@ -17,8 +17,9 @@ genuinely sharded:
    ``dnsjax.analysis.response.probes`` reader), append-on-matching-
    sidecar, hard rejection of a mismatched sidecar and of a
    sidecar-less ``probes.bin``, and the non-finite scan message.
-3. ``harmonics.parse_mode_pairs`` syntax errors and the
-   ``validate_parameters`` probe checks (pairing, range).
+3. ``harmonics.parse_mode_pairs`` syntax errors and the ``probes``
+   extension's validate (pairing, range), dispatched through
+   ``validate_parameters``.
 
 MPI part (skipped with ``--unit-only`` or when ``mpirun`` is absent):
 solver-integration runs in temporary directories,
@@ -48,9 +49,10 @@ import jax  # noqa: E402
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_platforms", "cpu")
 
-# Mutate global ``params`` before importing any dnsjax module that
-# captures values from it (``sharding.Sharding`` does so at class
-# definition time).
+# Mutate global ``params`` (and the ``probes`` extension singleton)
+# before importing any dnsjax module that captures values from them
+# (``sharding.Sharding`` does so at class definition time).
+from dnsjax.extensions import probes_params  # noqa: E402
 from dnsjax.parameters import derived_params, params  # noqa: E402
 
 NY = 6
@@ -66,8 +68,8 @@ params.dist.np1 = 2
 # (0,0); (5,0) owned by np0-shard 1; (0,2) by np1-shard 1; (5,2) by
 # the (1,1) corner; (3,1) interior of shard (0,0).
 MODES = [(0, 0), (5, 0), (0, 2), (5, 2), (3, 1)]
-params.outs.probe_modes = ";".join(f"{a},{b}" for a, b in MODES)
-params.outs.it_probes = 1
+probes_params.modes = ";".join(f"{a},{b}" for a, b in MODES)
+probes_params.it_probes = 1
 params.outs.nbuffer = 3
 # The sidecar records the wall-normal grid; no geometry module is
 # imported in the offline part, so provide it directly.
@@ -230,21 +232,22 @@ def test_parse_mode_pairs() -> None:
 
 
 def test_validate_probe_params() -> None:
-    """Pairing and range checks in ``validate_parameters``."""
-    saved = (params.outs.probe_modes, params.outs.it_probes)
+    """Pairing and range checks (the ``probes`` extension validate,
+    dispatched through ``validate_parameters``)."""
+    saved = (probes_params.modes, probes_params.it_probes)
     try:
         validate_parameters()  # the module configuration is valid
 
-        params.outs.it_probes = None  # modes without cadence
+        probes_params.it_probes = None  # modes without cadence
         _expect_value_error("set together")
 
-        params.outs.it_probes = 1
-        params.outs.probe_modes = "7,0"  # i2 == nz - 1 out of range
+        probes_params.it_probes = 1
+        probes_params.modes = "7,0"  # i2 == nz - 1 out of range
         _expect_value_error("out of range")
-        params.outs.probe_modes = "0,4"  # i3 == nx // 2 out of range
+        probes_params.modes = "0,4"  # i3 == nx // 2 out of range
         _expect_value_error("out of range")
     finally:
-        params.outs.probe_modes, params.outs.it_probes = saved
+        probes_params.modes, probes_params.it_probes = saved
 
 
 def _expect_value_error(fragment: str) -> None:
@@ -255,7 +258,7 @@ def _expect_value_error(fragment: str) -> None:
     else:
         raise AssertionError(
             f"validate_parameters accepted probe config "
-            f"{params.outs.probe_modes!r}/{params.outs.it_probes!r}"
+            f"{probes_params.modes!r}/{probes_params.it_probes!r}"
         )
 
 
@@ -320,9 +323,9 @@ def test_mpi_laminar_probes() -> None:
                 "15",
                 "--outs.it_stats",
                 "1",
-                "--outs.probe_modes",
+                "--probes.modes",
                 "0,0;1,0;0,1",
-                "--outs.it_probes",
+                "--probes.it_probes",
                 "1",
             ],
         )
@@ -367,9 +370,9 @@ def test_mpi_random_probes_np2() -> None:
                 "--outs.it_stats",
                 "1",
                 # (0,3): i3 = 3 lives on np1-shard 1 (nx_spec = 4).
-                "--outs.probe_modes",
+                "--probes.modes",
                 "0,0;1,0;0,3",
-                "--outs.it_probes",
+                "--probes.it_probes",
                 "1",
             ],
         )

@@ -17,8 +17,9 @@ genuinely sharded:
    uninterrupted sequence; a tampered sidecar / sidecar-less binary
    is rejected.
 4. Profile-bundle validation (grid/system/mode/channel checks) and
-   the ``validate_parameters`` force checks (all-or-none, range,
-   mean mode, kick/probe alignment, wall-bounded only).
+   the ``force`` extension's validate (all-or-none, range, mean
+   mode, kick/probe alignment, wall-bounded only), dispatched
+   through ``validate_parameters``.
 
 MPI part (skipped with ``--unit-only`` or when ``mpirun`` is absent):
 solver-integration runs in temporary directories on a real
@@ -54,9 +55,10 @@ import jax  # noqa: E402
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_platforms", "cpu")
 
-# Mutate global ``params`` before importing any dnsjax module that
-# captures values from it (``sharding.Sharding`` does so at class
-# definition time).
+# Mutate global ``params`` (and the ``force``/``probes`` extension
+# singletons) before importing any dnsjax module that captures values
+# from them (``sharding.Sharding`` does so at class definition time).
+from dnsjax.extensions import force_params, probes_params  # noqa: E402
 from dnsjax.parameters import derived_params, params  # noqa: E402
 
 NY = 6
@@ -74,10 +76,10 @@ FORCE_MODES = [(5, 0), (3, 1)]
 M_CHANNELS = 2
 AMPLITUDE = 0.05
 SEED = 7
-params.force.modes = ";".join(f"{a},{b}" for a, b in FORCE_MODES)
-params.force.amplitude = AMPLITUDE
-params.force.it_force = 2
-params.force.seed = SEED
+force_params.modes = ";".join(f"{a},{b}" for a, b in FORCE_MODES)
+force_params.amplitude = AMPLITUDE
+force_params.it_force = 2
+force_params.seed = SEED
 params.outs.nbuffer = 100
 
 import numpy as np  # noqa: E402
@@ -185,7 +187,7 @@ def test_kick_bit_exact_and_stream() -> None:
     the coefficient records round-trip through read_forcing."""
     with tempfile.TemporaryDirectory() as tmp:
         arrs = _write_profiles(Path(tmp) / "prof.npz")
-        params.force.profiles = str(Path(tmp) / "prof.npz")
+        force_params.profiles = str(Path(tmp) / "prof.npz")
         forcer = StochasticForcer(_zero_state(), tmp)
 
         state_dev = forcer.kick(_zero_state(), 0.0)
@@ -222,7 +224,7 @@ def test_resume_skip_and_mismatch() -> None:
     sequence; a tampered sidecar / sidecar-less binary is rejected."""
     with tempfile.TemporaryDirectory() as tmp:
         _write_profiles(Path(tmp) / "prof.npz")
-        params.force.profiles = str(Path(tmp) / "prof.npz")
+        force_params.profiles = str(Path(tmp) / "prof.npz")
 
         forcer = StochasticForcer(_zero_state(), tmp)
         state = _zero_state()
@@ -297,7 +299,7 @@ def test_profile_bundle_validation() -> None:
         }
         for fragment, payload in cases.items():
             np.savez(tmp / "bad.npz", **payload)
-            params.force.profiles = str(tmp / "bad.npz")
+            force_params.profiles = str(tmp / "bad.npz")
             try:
                 StochasticForcer(_zero_state(), tmp)
             except SystemExit as e:
@@ -307,8 +309,8 @@ def test_profile_bundle_validation() -> None:
 
         # n_channels beyond the stored count.
         _write_profiles(tmp / "prof.npz")
-        params.force.profiles = str(tmp / "prof.npz")
-        params.force.n_channels = M_CHANNELS + 1
+        force_params.profiles = str(tmp / "prof.npz")
+        force_params.n_channels = M_CHANNELS + 1
         try:
             StochasticForcer(_zero_state(), tmp)
         except SystemExit as e:
@@ -316,7 +318,7 @@ def test_profile_bundle_validation() -> None:
         else:
             raise AssertionError("oversized n_channels accepted")
         finally:
-            params.force.n_channels = None
+            force_params.n_channels = None
 
 
 # ── Offline: parameter validation ────────────────────────────────────
@@ -324,36 +326,36 @@ def test_profile_bundle_validation() -> None:
 
 def test_validate_force_params() -> None:
     saved = (
-        params.force.modes,
-        params.force.profiles,
-        params.force.amplitude,
-        params.force.it_force,
-        params.outs.probe_modes,
-        params.outs.it_probes,
+        force_params.modes,
+        force_params.profiles,
+        force_params.amplitude,
+        force_params.it_force,
+        probes_params.modes,
+        probes_params.it_probes,
         params.phys.system,
     )
     try:
-        params.force.profiles = "prof.npz"
+        force_params.profiles = "prof.npz"
         validate_parameters()  # the module configuration is valid
 
-        params.force.it_force = None  # partial force config
+        force_params.it_force = None  # partial force config
         _expect_value_error("together")
-        params.force.it_force = 2
+        force_params.it_force = 2
 
-        params.force.modes = "7,0"  # i2 == nz - 1 out of range
+        force_params.modes = "7,0"  # i2 == nz - 1 out of range
         _expect_value_error("out of range")
-        params.force.modes = "0,0"
+        force_params.modes = "0,0"
         _expect_value_error("mean mode")
-        params.force.modes = "5,0"
+        force_params.modes = "5,0"
 
         # Kick cadence must be a whole number of probe intervals.
-        params.outs.probe_modes = "5,0"
-        params.outs.it_probes = 4
-        params.force.it_force = 6
+        probes_params.modes = "5,0"
+        probes_params.it_probes = 4
+        force_params.it_force = 6
         _expect_value_error("multiple")
-        params.outs.probe_modes = None
-        params.outs.it_probes = None
-        params.force.it_force = 2
+        probes_params.modes = None
+        probes_params.it_probes = None
+        force_params.it_force = 2
 
         params.phys.system = "kolmogorov"  # periodic: rejected
         _expect_value_error("wall-bounded")
@@ -361,12 +363,12 @@ def test_validate_force_params() -> None:
         _expect_value_error("wall-bounded")
     finally:
         (
-            params.force.modes,
-            params.force.profiles,
-            params.force.amplitude,
-            params.force.it_force,
-            params.outs.probe_modes,
-            params.outs.it_probes,
+            force_params.modes,
+            force_params.profiles,
+            force_params.amplitude,
+            force_params.it_force,
+            probes_params.modes,
+            probes_params.it_probes,
             params.phys.system,
         ) = saved
 
@@ -379,13 +381,26 @@ def _expect_value_error(fragment: str) -> None:
     else:
         raise AssertionError(
             f"validate_parameters accepted force config "
-            f"{params.force.modes!r}/{params.force.it_force!r}"
+            f"{force_params.modes!r}/{force_params.it_force!r}"
         )
 
 
 # ── MPI integration ──────────────────────────────────────────────────
 
-MPI_RES = ("--res.nx", "4", "--res.nz", "4", "--res.ny", "15")
+# fd_order is pinned here (not left to the model default) because
+# test_mpi_forced_laminar_prediction compares the DNS against the
+# exported generator's expm: the TG export and the solver children
+# must step with the same discrete operator.
+MPI_RES = (
+    "--res.nx",
+    "4",
+    "--res.nz",
+    "4",
+    "--res.ny",
+    "15",
+    "--res.fd_order",
+    "4",
+)
 MPI_RE = ("--phys.re", "500")
 MPI_DT = 0.01
 
@@ -426,9 +441,9 @@ def _run_solver(workdir: Path, args: list[str]) -> None:
         *MPI_RES,
         "--outs.it_stats",
         "10",
-        "--outs.probe_modes",
+        "--probes.modes",
         "1,0",
-        "--outs.it_probes",
+        "--probes.it_probes",
         "1",
         "--force.modes",
         "1,0",
@@ -447,10 +462,11 @@ def _run_solver(workdir: Path, args: list[str]) -> None:
 
 
 def _mpi_artifacts(tmp: Path) -> tuple[Path, Path]:
-    """TG --save-operator + controllability bundle on the MPI grid.
+    """TG operator export + controllability bundle on the MPI grid.
 
-    Both pin ``--step.dt`` (the exported generator is the log of the
-    dt-propagator, so the solver run must step with the same dt)."""
+    ``--tg.dt`` is pinned to the solver step (the exported generator
+    is the log of the dt-propagator, so the solver run must step with
+    the same dt)."""
     ny = 15
     y = np.cos(np.pi * np.arange(ny) / (ny - 1))
     with open(tmp / "lam.txt", "w") as f:
@@ -461,22 +477,21 @@ def _mpi_artifacts(tmp: Path) -> tuple[Path, Path]:
             sys.executable,
             "-m",
             "dnsjax.analysis.transient_growth",
-            "--profile",
+            "--tg.profile",
             str(tmp / "lam.txt"),
-            "--out-dir",
+            "--tg.out_dir",
             str(tmp),
-            "--modes",
+            "--tg.modes",
             "1,0",
-            "--nt",
+            "--tg.nt",
             "5",
-            "--save-operator",
+            "--tg.save_operator",
+            "True",
             "--phys.system",
             "plane-poiseuille",
             *MPI_RE,
             *MPI_RES,
-            "--res.fd_order",
-            "4",
-            "--step.dt",
+            "--tg.dt",
             str(MPI_DT),
         ],
         cwd=tmp,

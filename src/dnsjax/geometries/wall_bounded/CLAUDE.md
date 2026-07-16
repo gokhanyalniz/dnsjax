@@ -106,9 +106,11 @@ argument: the `geo.m0` field docs (`parameters.py`).
 ### Custom wall-normal grids
 
 Grid selection precedence: (1) `params.geo.wall_grid` file (always
-overrides), (2) `params.geo.grid_type` (`"cgl"`/`"half-cgl"`/`"tanh"`;
-half-CGL is cylindrical + `iterative-cn` only), (3) default, resolved to
-a concrete `grid_type` by `update_parameters` (so snapshots embed the
+overrides), (2) `params.geo.grid_type` — Cartesian/annular choices
+`"cgl"`/`"tanh"`, cylindrical choices `"half-cgl"`/`"rigged-cgl"`/
+`"half-tanh"` (half-CGL is `iterative-cn` only; each flow's surface
+narrows the Literal), (3) the flow spec's default, resolved to a
+concrete `grid_type` by `update_parameters` (so snapshots embed the
 grid they ran): full CGL for Cartesian/annular, cylindrical half-CGL
 under `iterative-cn` / rigged-CGL under `cnab2`. Quadrature is spectral
 Clenshaw-Curtis on CGL grids, the `fd_order` composite rule on

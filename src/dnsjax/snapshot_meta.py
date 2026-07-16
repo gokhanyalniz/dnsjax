@@ -81,14 +81,36 @@ def is_snapshot_file(path: str | Path) -> bool:
         return META_MEMBER in tf.getnames()
 
 
+#: Oldest readable snapshot ``format_version``.  Version 4 switched the
+#: embedded ``params`` dump to the flow-relevant public-named surface
+#: representation; the internal-named full dumps of earlier versions
+#: are not translated (no compatibility shim by design).
+MIN_FORMAT_VERSION: int = 4
+
+
 def read_snapshot_meta(path: str | Path) -> dict:
-    """Return the parsed ``_dnsjax_meta.json`` member of a snapshot."""
+    """Return the parsed ``_dnsjax_meta.json`` member of a snapshot.
+
+    The single version choke point: every consumer (resume, offline
+    analysis, scripts) reads metadata through here, and a snapshot
+    older than :data:`MIN_FORMAT_VERSION` is rejected with a clear
+    message rather than misread under the wrong params convention.
+    """
     path = Path(path)
     with tarfile.open(path, "r") as tf:
         member = tf.extractfile(META_MEMBER)
         if member is None:
             raise ValueError(f"{path} has no {META_MEMBER} member.")
-        return json.loads(member.read())
+        meta = json.loads(member.read())
+    version = meta.get("format_version", 0)
+    if version < MIN_FORMAT_VERSION:
+        raise ValueError(
+            f"{path} has snapshot format_version {version}; this code "
+            f"reads version {MIN_FORMAT_VERSION}+ only (the embedded "
+            "parameter dump changed representation, and old snapshots "
+            "are not translated)."
+        )
+    return meta
 
 
 def read_snapshot_stats(path: str | Path) -> dict | None:

@@ -16,32 +16,43 @@ parameters and stored precision, so every untouched mode round-trips
 **bit-identically** (the injection changes exactly the target column
 and, for ``i3 = 0``, its conjugate partner).  Supported systems: the
 transient-growth set (plane-couette, plane-poiseuille, pipe,
-taylor-couette).
+taylor-couette, quasi-keplerian).
+
+The CLI rides the shared per-flow surface
+(:func:`dnsjax.bootstrap.resolve_parameters`) with the script's own
+knobs as the ``[perturb]`` extension section (``--perturb.<field>``;
+:class:`PerturbParams`): the snapshot is ``--init.snapshot`` and the
+backend ``--dist.platform``, exactly as on a solver run.  The
+configuration is snapshot + CLI only -- no ``parameters.toml`` is
+read (``toml_path=False``), so a production TOML in the working
+directory cannot re-layer the snapshot's parameters and break the
+bit-identical round-trip.
 
 Perturbation sources (exactly one):
 
-- ``--tg-npz FILE --which input|response``: the mode's optimal
-  perturbation from a transient-growth bundle (``<stem>_tg.npz``);
-  the profile is Fornberg-regridded when the bundle's wall-normal
-  grid differs from the snapshot's (with a note; ``--interp-order``).
-- ``--modes-npz FILE --index J``: column ``J`` of the mode's
-  profile array (``profiles_{i2}_{i3}``) from an
+- ``--perturb.tg_npz FILE --perturb.which input|response``: the
+  mode's optimal perturbation from a transient-growth bundle
+  (``<stem>_tg.npz``); the profile is Fornberg-regridded when the
+  bundle's wall-normal grid differs from the snapshot's (with a
+  note; ``--perturb.interp_order``).
+- ``--perturb.modes_npz FILE --perturb.index J``: column ``J`` of
+  the mode's profile array (``profiles_{i2}_{i3}``) from an
   ``operator_tools.save_modes_npz`` bundle (e.g. controllability
   modes; same regrid rule).
-- ``--npy FILE``: a raw ``(C, Ny)`` complex ``.npy`` profile on the
-  snapshot's grid, in the stored component basis (Cartesian
+- ``--perturb.npy FILE``: a raw ``(C, Ny)`` complex ``.npy`` profile
+  on the snapshot's grid, in the stored component basis (Cartesian
   ``(u_x, u_y, u_z)``; cyl/annular ``(u_z, u_+, u_-)``).
 
 Amplitude (exactly one):
 
-- ``--amplitude-energy E0``: scale the injected single-mode field
-  (conjugate partner included) so its solver-measure perturbation
-  energy is ``E0`` -- the same convention as the transient-growth
-  ``--export-amplitude`` seed, evaluated with the solver's own
-  ``get_norm2*`` (:func:`~dnsjax.analysis.transient_growth.
-  mode_state_energy`), so the injected ``E'`` matches the solver's
-  diagnostic exactly.
-- ``--amplitude-scale S``: a raw multiplier.
+- ``--perturb.amplitude_energy E0``: scale the injected single-mode
+  field (conjugate partner included) so its solver-measure
+  perturbation energy is ``E0`` -- the same convention as the
+  transient-growth ``--tg.export_amplitude`` seed, evaluated with
+  the solver's own ``get_norm2*``
+  (:func:`~dnsjax.analysis.transient_growth.mode_state_energy`), so
+  the injected ``E'`` matches the solver's diagnostic exactly.
+- ``--perturb.amplitude_scale S``: a raw multiplier.
 
 Choosing ``E0``: small enough for a *linear* response (the check:
 halving ``E0`` must leave the amplitude-normalised ensemble response
@@ -50,8 +61,8 @@ ensemble noise at the chosen member count.  Antithetic pairing
 cancels the even-order nonlinear contributions, which widens the
 usable window considerably.
 
-``--negate`` flips the sign after scaling (antithetic ``+/-`` pairs
-for ensemble variance cancellation).
+``--perturb.negate True`` flips the sign after scaling (antithetic
+``+/-`` pairs for ensemble variance cancellation).
 
 The injected profile need not be discretely divergence-free: the
 influence-matrix pressure solve projects any residual divergence out
@@ -65,20 +76,27 @@ mean mode affine.
 Usage::
 
     uv run python scripts/snapshot_perturb.py \
-        --snapshot state00042.tar --out member/seed.tar \
-        --mode 3,0 --tg-npz U_mean_tg.npz --which input \
-        --amplitude-energy 1e-6 [--negate] [--dist.platform cpu]
+        --init.snapshot state00042.tar --perturb.out member/seed.tar \
+        --perturb.mode 3,0 --perturb.tg_npz U_mean_tg.npz \
+        --perturb.which input --perturb.amplitude_energy 1e-6 \
+        [--perturb.negate True] [--dist.platform cpu]
 """
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field
+
+from dnsjax.analysis.transient_growth import WALL_BOUNDED_TG_SYSTEMS
+from dnsjax.extensions import ParamExtension, register_extension
+from dnsjax.harmonics import parse_mode_pairs
 
 __all__ = [
+    "PerturbParams",
+    "PERTURB_EXTENSION",
     "configure_from_snapshot",
     "load_profile_tg",
     "load_profile_modes",
@@ -86,6 +104,168 @@ __all__ = [
     "perturb_state",
     "main",
 ]
+
+_PROG = "python scripts/snapshot_perturb.py"
+
+
+# ── The [perturb] extension section ──────────────────────────────
+
+
+class PerturbParams(BaseModel):
+    r"""Injection knobs: the ``[perturb]`` extension section.
+
+    Parsed as ``--perturb.<field>`` CLI flags on the shared per-flow
+    surface (:func:`dnsjax.bootstrap.resolve_parameters`; snapshot +
+    CLI only, no TOML).  Source and amplitude selections are
+    exactly-one-of groups (:func:`_validate_perturb`); knob guidance:
+    the module docstring.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    out: str | None = Field(
+        default=None, description="Output snapshot tar.  Required."
+    )
+    mode: str | None = Field(
+        default=None,
+        description=(
+            "'i2,i3' global spectral index of the injected mode.  Required."
+        ),
+    )
+    tg_npz: str | None = Field(
+        default=None,
+        description=("Source: transient-growth <stem>_tg.npz (see 'which')."),
+    )
+    modes_npz: str | None = Field(
+        default=None,
+        description=(
+            "Source: controllability-modes npz "
+            "(operator_tools.save_modes_npz; see 'index')."
+        ),
+    )
+    npy: str | None = Field(
+        default=None,
+        description="Source: raw (C, Ny) complex .npy profile.",
+    )
+    which: Literal["input", "response"] = Field(
+        default="input",
+        description="Which TG optimal to inject (tg_npz only).",
+    )
+    index: int = Field(
+        default=0,
+        ge=0,
+        description="Controllability-mode column (modes_npz only).",
+    )
+    amplitude_energy: float | None = Field(
+        default=None,
+        gt=0,
+        description="Perturbation energy E' of the injected field.",
+    )
+    amplitude_scale: float | None = Field(
+        default=None,
+        description="Raw multiplier on the profile.",
+    )
+    negate: bool = Field(
+        default=False,
+        description="Flip the sign after scaling (antithetic pairs).",
+    )
+    interp_order: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Fornberg order for profile regridding (only used when "
+            "the npz grid differs from the snapshot's)."
+        ),
+    )
+
+
+def _validate_perturb(values: PerturbParams, params) -> None:
+    # Structural checks on the configured section: exactly one source,
+    # exactly one amplitude, a supported system, and a single in-range
+    # mode.  File-content checks stay with the profile loaders.
+    probed = (
+        values.out,
+        values.mode,
+        values.tg_npz,
+        values.modes_npz,
+        values.npy,
+        values.amplitude_energy,
+        values.amplitude_scale,
+    )
+    if all(v is None for v in probed):
+        return
+    sources = [
+        k
+        for k, v in (
+            ("tg_npz", values.tg_npz),
+            ("modes_npz", values.modes_npz),
+            ("npy", values.npy),
+        )
+        if v is not None
+    ]
+    if len(sources) != 1:
+        raise ValueError(
+            "perturb: exactly one profile source (perturb.tg_npz / "
+            f"modes_npz / npy) must be set; got {sources or 'none'}."
+        )
+    amplitudes = [
+        k
+        for k, v in (
+            ("amplitude_energy", values.amplitude_energy),
+            ("amplitude_scale", values.amplitude_scale),
+        )
+        if v is not None
+    ]
+    if len(amplitudes) != 1:
+        raise ValueError(
+            "perturb: exactly one of perturb.amplitude_energy / "
+            f"amplitude_scale must be set; got {amplitudes or 'none'}."
+        )
+    if params.phys.system not in WALL_BOUNDED_TG_SYSTEMS:
+        raise ValueError(
+            f"perturb: system {params.phys.system!r} is not supported "
+            f"(one of {', '.join(WALL_BOUNDED_TG_SYSTEMS)}; the "
+            "force-driven/viscoelastic total-field systems have no "
+            "single-mode perturbation convention here)."
+        )
+    if values.mode is None:
+        raise ValueError("perturb.mode ('i2,i3') is required.")
+    pairs = parse_mode_pairs(values.mode)
+    if len(pairs) != 1:
+        raise ValueError("perturb.mode takes exactly one 'i2,i3' pair.")
+    i2, i3 = pairs[0]
+    n2, n3 = params.res.nz - 1, params.res.nx // 2
+    if i2 >= n2 or i3 >= n3:
+        raise ValueError(
+            f"perturb.mode ({i2},{i3}) out of range "
+            f"(0..{n2 - 1}, 0..{n3 - 1})."
+        )
+    if (i2, i3) == (0, 0) and (
+        params.phys.driving == "constant_bulk_velocity"
+    ):
+        raise ValueError(
+            "perturb: injecting the (0,0) mean mode under "
+            "constant_bulk_velocity driving is rejected (the bulk "
+            "constraint makes the mean mode affine)."
+        )
+
+
+PERTURB_EXTENSION = register_extension(
+    ParamExtension(
+        name="perturb",
+        model=PerturbParams,
+        relevant=lambda system: system in WALL_BOUNDED_TG_SYSTEMS,
+        summary="Single-mode snapshot injection (this script's knobs).",
+        validate=_validate_perturb,
+        # Injection-run config, not trajectory state: the written
+        # snapshot must not carry it.
+        record_in_metadata=False,
+    )
+)
+
+#: Live ``[perturb]`` values (resolved by ``resolve_parameters`` in
+#: :func:`main`).
+perturb_params: PerturbParams = PERTURB_EXTENSION.values
 
 
 # ── Setup ────────────────────────────────────────────────────────
@@ -114,9 +294,10 @@ def configure_from_snapshot(
     from dnsjax.snapshot_meta import read_snapshot_meta
 
     snapshot = Path(snapshot)
-    snap_params = read_snapshot_params(snapshot)
-    if snap_params is None:
+    snap = read_snapshot_params(snapshot)
+    if snap is None:
         raise SystemExit(f"{snapshot} is not a dnsjax snapshot")
+    snap_params, _ = snap  # extension overlays are irrelevant offline
     stored_dp = bool(
         read_snapshot_meta(snapshot)["params"]["res"]["double_precision"]
     )
@@ -128,15 +309,19 @@ def configure_from_snapshot(
     if params.dist.np0 * params.dist.np1 != 1:
         raise SystemExit("snapshot_perturb is single-device (np0*np1 = 1)")
 
-    from dnsjax.analysis.transient_growth import _SYSTEMS, _dispatch
+    return _dispatch_supported(params.phys.system)
 
-    system = params.phys.system
-    if system not in _SYSTEMS:
+
+def _dispatch_supported(system: str) -> tuple[Any, Any, str]:
+    """``transient_growth._dispatch`` gated on the supported set."""
+    from dnsjax.analysis.transient_growth import _dispatch
+
+    if system not in WALL_BOUNDED_TG_SYSTEMS:
         raise SystemExit(
             f"system {system!r} is not supported (one of "
-            f"{', '.join(_SYSTEMS)}; the force-driven/viscoelastic "
-            "total-field systems have no single-mode perturbation "
-            "convention here)"
+            f"{', '.join(WALL_BOUNDED_TG_SYSTEMS)}; the force-driven/"
+            "viscoelastic total-field systems have no single-mode "
+            "perturbation convention here)"
         )
     return _dispatch(system)
 
@@ -232,7 +417,7 @@ def load_profile_modes(
         arr = np.asarray(npz[key])
         if not (0 <= index < arr.shape[0]):
             raise SystemExit(
-                f"--index {index} out of range ({key} holds "
+                f"perturb.index {index} out of range ({key} holds "
                 f"{arr.shape[0]} modes)"
             )
         vec = arr[index]
@@ -269,83 +454,41 @@ def perturb_state(
 # ── CLI ──────────────────────────────────────────────────────────
 
 
-def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        prog="python scripts/snapshot_perturb.py",
-        description="Inject a single-mode perturbation into a dnsjax "
-        "snapshot (see the module docstring).",
-        allow_abbrev=False,
-    )
-    p.add_argument("--snapshot", required=True, help="input snapshot tar")
-    p.add_argument("--out", required=True, help="output snapshot tar")
-    p.add_argument(
-        "--mode",
-        required=True,
-        help='"i2,i3" global spectral index of the injected mode',
-    )
-    src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument(
-        "--tg-npz", default=None, help="transient-growth <stem>_tg.npz"
-    )
-    src.add_argument(
-        "--modes-npz",
-        default=None,
-        help="controllability-modes npz (operator_tools.save_modes_npz)",
-    )
-    src.add_argument(
-        "--npy", default=None, help="raw (C, Ny) complex .npy profile"
-    )
-    p.add_argument(
-        "--which",
-        default="input",
-        choices=("input", "response"),
-        help="which TG optimal to inject (--tg-npz only)",
-    )
-    p.add_argument(
-        "--index",
-        type=int,
-        default=0,
-        help="controllability-mode column (--modes-npz only)",
-    )
-    amp = p.add_mutually_exclusive_group(required=True)
-    amp.add_argument(
-        "--amplitude-energy",
-        type=float,
-        default=None,
-        help="perturbation energy E' of the injected field",
-    )
-    amp.add_argument(
-        "--amplitude-scale",
-        type=float,
-        default=None,
-        help="raw multiplier on the profile",
-    )
-    p.add_argument(
-        "--negate",
-        action="store_true",
-        help="flip the sign after scaling (antithetic pairs)",
-    )
-    p.add_argument(
-        "--interp-order",
-        type=int,
-        default=8,
-        help="Fornberg order for profile regridding (only used when "
-        "the npz grid differs from the snapshot's; rarely worth "
-        "changing)",
-    )
-    p.add_argument(
-        "--dist.platform",
-        dest="platform",
-        default="cpu",
-        choices=("cpu", "cuda", "rocm", "tpu"),
-        help="JAX backend (single device)",
-    )
-    return p.parse_args(argv)
-
-
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
-    fmod, gmod, family = configure_from_snapshot(args.snapshot, args.platform)
+    from dnsjax.bootstrap import configure_jax_platform, resolve_parameters
+    from dnsjax.parameters import params
+    from dnsjax.snapshot_meta import read_snapshot_meta
+
+    # Snapshot + CLI layers only (toml_path=False): the [perturb]
+    # section and the shared surface (--init.snapshot,
+    # --dist.platform) parse together; validate_parameters runs the
+    # structural checks (_validate_perturb).
+    resolve_parameters(
+        argv,
+        toml_path=False,
+        extensions=(PERTURB_EXTENSION,),
+        prog=_PROG,
+    )
+    p = perturb_params
+    snapshot = params.init.snapshot
+    if snapshot is None:
+        raise SystemExit(f"{_PROG}: error: --init.snapshot is required")
+    if p.mode is None or p.out is None:
+        raise SystemExit(
+            f"{_PROG}: error: --perturb.mode and --perturb.out are required"
+        )
+    if params.dist.np0 * params.dist.np1 != 1:
+        raise SystemExit("snapshot_perturb is single-device (np0*np1 = 1)")
+
+    # Match the snapshot's stored precision before JAX initializes
+    # arrays (bit-identical round-trip of the untouched modes); the
+    # written snapshot's metadata records it via params.
+    stored_dp = bool(
+        read_snapshot_meta(snapshot)["params"]["res"]["double_precision"]
+    )
+    params.res.double_precision = stored_dp
+    configure_jax_platform(params.dist.platform, double_precision=stored_dp)
+    fmod, gmod, family = _dispatch_supported(params.phys.system)
 
     import jax
 
@@ -353,66 +496,45 @@ def main(argv: list[str] | None = None) -> int:
         mode_state_energy,
         single_mode_state,
     )
-    from dnsjax.harmonics import parse_mode_pairs
-    from dnsjax.parameters import params
     from dnsjax.snapshot import load_snapshot, save_snapshot
 
-    pairs = parse_mode_pairs(args.mode)
-    if len(pairs) != 1:
-        raise SystemExit("--mode takes exactly one 'i2,i3' pair")
-    i2, i3 = pairs[0]
-    n2, n3 = params.res.nz - 1, params.res.nx // 2
-    if i2 >= n2 or i3 >= n3:
-        raise SystemExit(
-            f"mode ({i2},{i3}) out of range (0..{n2 - 1}, 0..{n3 - 1})"
-        )
+    ((i2, i3),) = parse_mode_pairs(p.mode)
 
-    if args.tg_npz is not None:
-        vec = load_profile_tg(
-            args.tg_npz, i2, i3, args.which, args.interp_order
-        )
-    elif args.modes_npz is not None:
-        vec = load_profile_modes(
-            args.modes_npz, i2, i3, args.index, args.interp_order
-        )
+    if p.tg_npz is not None:
+        vec = load_profile_tg(p.tg_npz, i2, i3, p.which, p.interp_order)
+    elif p.modes_npz is not None:
+        vec = load_profile_modes(p.modes_npz, i2, i3, p.index, p.interp_order)
     else:
-        vec = load_profile_npy(args.npy)
+        vec = load_profile_npy(p.npy)
 
-    if (i2, i3) == (0, 0):
-        # The mean of a real field is real; and under constant-bulk-
-        # velocity driving the mean mode is constrained (affine), so
-        # an injected mean would be partially projected away.
-        if np.max(np.abs(vec.imag)) > 1e-13 * max(np.max(np.abs(vec)), 1.0):
-            raise SystemExit(
-                "a (0,0) mean-mode profile must be real "
-                "(the mean of a real field)"
-            )
-        if params.phys.driving == "constant_bulk_velocity":
-            raise SystemExit(
-                "injecting the (0,0) mean mode under "
-                "constant_bulk_velocity driving is rejected (the bulk "
-                "constraint makes the mean mode affine)"
-            )
+    # The mean of a real field is real (the driving restriction is
+    # already checked by _validate_perturb).
+    if (i2, i3) == (0, 0) and np.max(np.abs(vec.imag)) > 1e-13 * max(
+        np.max(np.abs(vec)), 1.0
+    ):
+        raise SystemExit(
+            "a (0,0) mean-mode profile must be real (the mean of a real field)"
+        )
 
     mode_state = single_mode_state(vec, i2, i3, family)
-    if args.amplitude_energy is not None:
+    if p.amplitude_energy is not None:
         energy = mode_state_energy(mode_state, family, gmod, fmod.flow)
         if energy <= 0.0:
             raise SystemExit("the injected profile has zero energy")
-        scale = float(np.sqrt(args.amplitude_energy / energy))
+        scale = float(np.sqrt(p.amplitude_energy / energy))
     else:
-        scale = float(args.amplitude_scale)
-    if args.negate:
+        scale = float(p.amplitude_scale)
+    if p.negate:
         scale = -scale
 
-    state, t, it = load_snapshot(args.snapshot)
+    state, t, it = load_snapshot(snapshot)
     state = state + scale * mode_state
-    out = Path(args.out)
+    out = Path(p.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     save_snapshot(jax.block_until_ready(state), t, it, out, isnap=0)
     print(
         f"[perturb] wrote {out}: mode ({i2},{i3}) "
-        f"scale {scale:+.6e} onto {args.snapshot} (t = {t:g}, "
+        f"scale {scale:+.6e} onto {snapshot} (t = {t:g}, "
         f"it = {it})."
     )
     return 0

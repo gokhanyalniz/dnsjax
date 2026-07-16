@@ -136,6 +136,14 @@ bootstrap.py          Shared entry-point setup for solver, scripts and
 parameters.py         Pydantic parameter models (JAX-free); singletons
                       params, derived_params, padded_res;
                       trajectory_defining_changes; round_up_padded
+flow_spec.py          JAX-free FieldSpec/DeferredSpec/FlowSpec
+                      dataclasses (per-flow surface declarations)
+param_surface.py      Per-flow surface models (CLI/TOML), aliases,
+                      internalize/externalize, recorded_params_dump,
+                      sample-TOML + startup-printout renderers
+extensions.py         ParamExtension registry + built-in [probes] and
+                      [force] section models; singletons
+                      probes_params/force_params
 sharding.py           Multi-device (np0, np1) mesh; singleton sharding;
                       register_dataclass_pytree; layouts + specs
 operators.py          Wavenumber helpers (re-exports harmonics.py in
@@ -148,11 +156,11 @@ fft.py                3D/2D real FFT, 3/2-rule dealiasing, shard_map
 rhs.py                Rotational-form perturbation nonlinear term;
                       measure_fn hook
 measurements.py       Physical-space measurements (get_cfl)
-probes.py             Spectral-mode probe stream (outs.probe_modes):
+probes.py             Spectral-mode probe stream ([probes] extension):
                       sharded-gather extractor + probes.bin writer
-forcing.py            White-in-time stochastic mode kicks ([force]):
-                      sharded scatter-add injector (the extractor's
-                      dual) + forcing.bin coefficient log
+forcing.py            White-in-time stochastic mode kicks ([force]
+                      extension): sharded scatter-add injector (the
+                      extractor's dual) + forcing.bin coefficient log
 timestep.py           make_stepper() factory:
                       predict_and_fully_correct (+_measured),
                       step_cnab2 (+_measured), _cnab2_lbf_core
@@ -177,11 +185,16 @@ geometries/
                       wall_bounded/CLAUDE.md
   triply_periodic/    triply_periodic.py -- see its CLAUDE.md
 flows/
+  registry.py         JAX-free flow-spec registry: SPECS, spec_for,
+                      all_systems, *_systems lists, GLOBAL_FIELDS,
+                      internalize_stored/stored_value
   wall_bounded/       plane_couette, plane_poiseuille, pipe,
                       taylor_couette, quasi_keplerian, dean,
                       viscoelastic_dean -- base flows/driving in
-                      wall_bounded/CLAUDE.md
-  triply_periodic/    monochromatic.py: Kolmogorov/Waleffe/decaying-box
+                      wall_bounded/CLAUDE.md; specs/ holds their
+                      JAX-free parameter FlowSpecs
+  triply_periodic/    monochromatic.py: Kolmogorov/Waleffe/decaying-box;
+                      specs/ holds their JAX-free parameter FlowSpecs
 analysis/             External-facing JAX-free snapshot post-processing
                       API (+ the JAX-based transient_growth CLI and the
                       response/ subpackage) -- see analysis/CLAUDE.md
@@ -194,15 +207,17 @@ energy growth `G(t)` around an arbitrary wall-normal **total** profile
 `U(y)` for the five base-flow wall-bounded flows (plane-couette/
 poiseuille, pipe, taylor-couette, quasi-keplerian; Dean out of scope),
 reusing the solver's own linear step per Fourier mode. Single-device,
-GPU-runnable (`--dist.platform cuda`). **`G_max` needs a converged
-`res.ny`**: unresolved near-wall FD modes carry a mesh-dependent *early*
-`G` spike that can beat the physical optimum outright, and no
-post-processing removes it — it is real for the discrete operator.
-`--save-operator` additionally exports each mode's reduced generator
-(`<stem>_tg_op.npz`) for the `analysis/response/` post-processing. Math,
-the `frozen_profile_flow` hook, the CLI/output spec, the `--tg-dt`
-trade-off, and the convergence recipe: the module docstring and
-`analysis/CLAUDE.md`.
+GPU-runnable (`--dist.platform cuda`). It parses the shared per-flow
+surface (`bootstrap.resolve_parameters`; public names, strict) plus its
+own `[tg]`/`--tg.*` extension section (`TGParams`). **`G_max` needs a
+converged wall-normal resolution (`ny`/`nr`)**: unresolved near-wall FD
+modes carry a mesh-dependent *early* `G` spike that can beat the
+physical optimum outright, and no post-processing removes it — it is
+real for the discrete operator. `--tg.save_operator` additionally
+exports each mode's reduced generator (`<stem>_tg_op.npz`) for the
+`analysis/response/` post-processing. Math, the `frozen_profile_flow`
+hook, the CLI/output spec, the `--tg.dt` trade-off, and the convergence
+recipe: the module docstring and `analysis/CLAUDE.md`.
 
 ### Code-exploration constraints
 
@@ -219,26 +234,27 @@ directory structure enforces this:
 
 ### Adding a flow system
 
-To add a flow `X`: (1) add `"X"` to the relevant `*_systems` list in
-`parameters.py` (this auto-extends the `phys.system` Literal); (2)
-add/extend the geometry branch in `update_parameters()` if it needs
-derived params; (3) create `flows/<family>/X.py` exporting
-`predict_and_fully_correct`, `predict_and_fully_correct_measured`,
-`step_cnab2`, `step_cnab2_measured`, `init_state`, `get_stats`,
-`get_perturbation_energy` (the cheap `E'` read for the laminarization
-check); (4) add an `elif` to the flow dispatch in `__main__.py`; (5) add
-SYSTEMS entries to `tests/test_laminar_smoke.py` (a flow without a
-perturbation `E'` needs its own check branch) and
+To add a flow `X`: (1) create `flows/<family>/specs/X.py` with a
+JAX-free `FlowSpec` (surface fields, defaults, hooks, `flow_module`,
+`n_components` — the `flow_spec.py` docstrings; the existing specs and
+`_family.py` fragments are the template) and add it to `SPECS` in
+`flows/registry.py` — this auto-extends the `phys.system` Literal, the
+`--help`/TOML surface, `--sample-toml`, snapshot metadata, the flow
+dispatch, and the `analysis/_core.py` frozensets; (2) create the
+`flow_module` (`flows/<family>/X.py`) exporting the stepping surface
+(the function list: the `FlowSpec.flow_module` docs; its
+`get_perturbation_energy` is the cheap `E'` laminarization read);
+(3) add SYSTEMS entries to `tests/test_laminar_smoke.py` (a flow
+without a perturbation `E'` needs its own check branch) and
 `tests/test_random_smoke.py` (pick a Reynolds number above transition
-onset, small domain); (6) add `"X"` to the matching `*_SYSTEMS`
-frozenset in `analysis/_core.py` (unknown systems raise there).
+onset, small domain).
 
 A flow whose state is not the 3 velocity components (e.g. the
-9-component viscoelastic state) also drives the component count in
-`snapshot.py`/`snapshot_meta.py` (`_n_components`, metadata-driven) and
-needs an `analysis/_core.py` component schema (`geometry_info` /
-`_component_recipes`); the IC builders and the FFT/sharding/stepper
-machinery are component-count-agnostic (leading state axis replicated).
+9-component viscoelastic state) declares it via `FlowSpec.n_components`
+(the snapshot writer/loader reads it) and needs an `analysis/_core.py`
+component schema (`geometry_info` / `_component_recipes`); the IC
+builders and the FFT/sharding/stepper machinery are
+component-count-agnostic (leading state axis replicated).
 
 ### Key design patterns
 
@@ -306,48 +322,61 @@ The dominant global memory multipliers are `phys.oversampling_factor`
 
 ### Parameter layering
 
-Lowest priority first: defaults (Pydantic models) → resumed-snapshot
-params → `parameters.toml` → CLI args. `update_parameters()` applies
-only explicitly-set, non-`None` fields; `validate_parameters()` runs
-once after the final layer. The JAX-setup fields `dist.np0`/`np1`/
-`platform` and `res.double_precision` are *not* inherited from a
-snapshot (resume is device-/precision-agnostic). Detail:
-`bootstrap.py` (`resolve_parameters`).
+Lowest priority first: defaults (Pydantic models + the flow spec's
+per-flow overrides) → resumed-snapshot params → `parameters.toml` →
+CLI args. `update_parameters()` applies only explicitly-set,
+non-`None` fields; `validate_parameters()` runs once after the final
+layer. Every user-facing layer parses against the **selected flow's
+surface** (`param_surface.py`): irrelevant parameters are hard errors
+on the CLI and in the TOML, aliased fields go by public names
+(cylindrical/annular: `lz`/`nz`/`nr`/`ntheta` for internal
+`geo.lx`/`res.nx`/`res.ny`/`res.nz`), and `--help <system>` /
+`--sample-toml <system>` document each flow. Never inherited from a
+snapshot: the JAX-setup fields `dist.np0`/`np1`/`platform` and
+`res.double_precision` (chosen per run; a precision mismatch with the
+snapshot rejects), and the resume-decision fields
+`init.snapshot`/`init.force_resume` (recorded for lineage only).
+Detail: `bootstrap.py` (`resolve_parameters`; other entry points pass
+`toml_path`/`extensions`/`prog` — the TG CLI is the template).
 
-Two fields carry per-family defaults **re-resolved on every
-`update_parameters()` call** unless explicitly set through a layer:
-`solver.backend` (periodic → `"dense"`, wall-bounded → `"pallas"`) and
-`geo.grid_type` (wall-bounded → `"cgl"`, except cylindrical +
-`iterative-cn` → `"half-cgl"`; periodic / `wall_grid` → `None`). Scripts
-and tests must set these via `update_parameters(Parameters(solver=...,
-geo=...))` — a direct `params.solver.backend = ...` assignment is
-silently overwritten by the re-resolution (never enters
-`_user_set_fields`).
+Per-flow `FieldSpec` defaults (`phys.u_grid`, `geo.grid_type`, the
+viscoelastic rheology values, ...) are **re-materialized on every
+`update_parameters()` call** unless explicitly set through a layer
+(`_materialized_defaults` restore-then-materialize). Scripts and
+tests must set these via `update_parameters(Parameters(...))` — a
+direct `params.geo.grid_type = ...` assignment is silently
+overwritten on the next pass (never enters `_user_set_fields`).
 
 ### Configuration (`parameters.toml`)
 
 Full field documentation: the `parameters.py` model docstrings (the
 `Initiation` docstring for start-mode precedence, `TimeStepping` for the
 schemes, `Solver` for the Pallas knobs, `Distribution` for the launch
-contract).
+contract), surfaced per flow by `--help <system>` /
+`--sample-toml <system>` and validated per flow as in "Parameter
+layering" above.
 
 | Section    | Purpose                                             |
 |------------|-----------------------------------------------------|
 | `[phys]`   | Reynolds numbers, `system`, oversampling, driving, `u_grid`; viscoelastic-dean rheology |
 | `[geo]`    | Domain lengths/tilt, `eta`, `m0` (azimuthal wedge), `delta`, wall-normal grid selection |
-| `[res]`    | `nx`, `ny`, `nz`, `fd_order`, `double_precision`     |
+| `[res]`    | Resolution (`nx`/`ny`/`nz`, or `nz`/`nr`/`ntheta`), `fd_order`, `double_precision` |
 | `[init]`   | Start mode (see "Initial conditions" above) + `t0`/`it0`/`isnap0`/`force_resume` |
-| `[outs]`   | Diagnostic cadences, probe modes, buffering, snapshot write policy |
+| `[outs]`   | Diagnostic cadences, buffering, snapshot write policy |
 | `[step]`   | `dt` + scheme knobs (`TimeStepping`)                 |
-| `[force]`  | White-in-time stochastic mode kicks; all-or-none and trajectory-defining (`StochasticForcing`) |
 | `[stop]`   | Sim-/wall-time limits, laminarization check          |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
-| `[solver]` | Backend selection + Pallas tiling / RHS chunking     |
+| `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
+| `[probes]` | Extension (`extensions.py`): spectral-mode probe stream (wall-bounded) |
+| `[force]`  | Extension: white-in-time stochastic mode kicks; all-or-none and trajectory-defining (wall-bounded, non-viscoelastic) |
 
 The default `parameters.toml` contains only
-`[phys] [geo] [res] [init] [outs] [step] [stop]`; `[force]`, `[dist]`
-and `[solver]` rely on model defaults -- set them via CLI (e.g.
-`--dist.np1 2`, `--force.modes "3,0"`) or by adding the section.
+`[phys] [geo] [res] [init] [outs] [step] [stop]`; the rest rely on
+model defaults -- set them via CLI (e.g. `--dist.np1 2`,
+`--force.modes "3,0"`, `--probes.modes "0,0;3,0"`) or by adding the
+section. Analysis CLIs and scripts register further extension sections
+on their own surfaces (`[tg]` for the transient-growth driver,
+`[perturb]` for `scripts/snapshot_perturb.py`).
 
 ### Diagnostics (`stats.dat`, `steps.dat`, `corrector.dat`, `probes.bin`, `forcing.bin`)
 
@@ -355,7 +384,7 @@ Three on-device buffered scalar streams, flushed periodically
 (fsync-ed): `get_stats` → `stats.dat`, the CFL diagnostic
 (`outs.it_steps`, via the `rhs.py` `measure_fn` hook) → `steps.dat`, the
 corrector diagnostic (`outs.it_corrector`) → `corrector.dat`; plus the
-binary spectral-mode probe stream (`outs.probe_modes`/`it_probes`,
+binary spectral-mode probe stream (`probes.modes`/`probes.it_probes`,
 wall-bounded only) → `probes.bin` + `probes.json` (`probes.py`;
 JAX-free reader `dnsjax.analysis.response.probes`), and the
 stochastic-kick coefficient log (`[force]`) → `forcing.bin` +
@@ -370,20 +399,27 @@ format, and the guard: the `__main__.py` module docstring.
 
 ### Snapshots
 
-A snapshot is a single uncompressed tar (`format_version: 3`) wrapping a
+A snapshot is a single uncompressed tar (`format_version: 4`) wrapping a
 zarr3 store, readable with standard tools and no dnsjax; each device
 writes its disjoint byte ranges directly (raw offset I/O / GDS, never
 compressed). The stored state is the spectral perturbation `u'` for
 base-flow systems (laminar = zero array), the **total** field for
-dean/viscoelastic-dean.
+dean/viscoelastic-dean. The embedded `params` dump is the
+flow-relevant, resolved, **public-named** surface representation plus
+the relevant extension sections (`param_surface.recorded_params_dump`);
+readers map it back via `flows.registry.internalize_stored` /
+`stored_value`, and `snapshot_meta.read_snapshot_meta` rejects
+`format_version < 4` (no translation of old snapshots, by design).
 
-Resume is np-/precision-agnostic and re-grids a changed wall-normal grid
-at load; `t`/`it`/`isnap` continue only when
+Resume is np-agnostic (precision must match — a mismatch rejects) and
+re-grids a changed wall-normal grid at load; `t`/`it`/`isnap` continue
+only when
 `trajectory_defining_changes(meta["params"])` is empty — a `phys`/`geo`/
-`res` override starts a **new trajectory** unless `init.force_resume`
-(distinct from the hard `nx`/`nz`/`system`/`precision` rejects). Archive
-layout, metadata (incl. the writing code's git hash), and the I/O paths:
-the `snapshot.py` and `__main__.py` module docstrings.
+`res` override or a `[force]` change starts a **new trajectory** unless
+`init.force_resume` (distinct from the hard resolution/system/precision
+rejects). Archive layout, metadata (incl. the writing code's git hash),
+and the I/O paths: the `snapshot.py` and `__main__.py` module
+docstrings.
 
 ### JAX-specific notes
 
@@ -507,6 +543,9 @@ one-liners. Cross-cutting notes:
 - `tests/test_quasi_keplerian.py`: quasi-keplerian control-parameter
   derivation, regime/validation errors, and the azimuthal-wedge Fourier
   + nonlinear/physical-space units.
+- `tests/test_param_surface.py`: flow-spec registry + per-flow surface
+  machinery (aliases, strictness, deferred, extensions, sample-TOML,
+  entry-point help smoke).
 - `tests/test_probes.py`: runtime spectral-mode probe stream
   (`--unit-only` skips the mpirun runs).
 - `tests/test_forcing.py`: runtime stochastic kicks (`--unit-only` skips
@@ -515,7 +554,7 @@ one-liners. Cross-cutting notes:
   injection.
 - `tests/response/test_probes_reader.py`: JAX-free probe reader.
 - `tests/response/test_operator_tools.py`: Gramian/controllability/
-  growth-curve units + `--save-operator` export faithfulness.
+  growth-curve units + `--tg.save_operator` export faithfulness.
 - `tests/response/test_ensemble.py`: harvest/build orchestration,
   antithetic aggregation, direct operator identification.
 - `tests/response/test_lim.py`: LIM identification.

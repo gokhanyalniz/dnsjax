@@ -59,6 +59,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_localized_rolls.py", (), (), 1800),
     ("test_mean_mask.py", (), (), 1800),
     ("test_padding.py", (), (), 1800),
+    ("test_param_surface.py", (), (), 1800),
     ("test_forcing.py", ("--unit-only",), (), 1800),
     ("test_probes.py", ("--unit-only",), (), 1800),
     ("test_quasi_keplerian.py", (), (), 1800),

@@ -20,7 +20,11 @@ leaves.
 import either from `__init__.py` or any JAX-free module here.
 
 - `transient_growth.py`: a JAX-based (GPU-runnable) CLI that defers
-  every JAX / geometry import behind `configure_jax_platform`.
+  every JAX / geometry import behind `configure_jax_platform`. Its
+  parameter surface (the shared per-flow surface + a `[tg]` extension;
+  solver-only sections parse-and-ignore) and the production-default
+  metadata embedded in exported seed snapshots: the module docstring
+  and `_seed_metadata_params`.
 - `response/`: **may** use JAX where it runs performantly on GPUs,
   keeping JAX imports inside the functions that need them and platform
   selection in CLIs via `configure_jax_platform`. SciPy (the optional
@@ -46,11 +50,10 @@ function behaviour (the pipe `cylindrical_parity` argument, needing the
 full wall-normal grid, physical-field `integrate` with the radial
 Jacobian): the `snapshot_ops.py` docstrings.
 
-**System → family mapping.** `_core.py` holds the `*_SYSTEMS` frozensets
-that **mirror the `*_systems` lists in `parameters.py`**; adding a flow
-system there requires adding it here too (unknown system → explicit
-error). This is the only place the analysis package re-encodes solver
-knowledge.
+**System → family mapping.** `_core.py` builds its `*_SYSTEMS`
+frozensets from the JAX-free `dnsjax.flows.registry` (the same source
+as `parameters.py`), so a new flow spec extends them automatically;
+unknown systems still raise an explicit error.
 
 ## Modules
 
@@ -58,8 +61,8 @@ knowledge.
 - `snapshot_ops.py` — `derivative`, `gradient`, `divergence`, `curl`,
   `integrate`, and `to_physical`/`to_spectral` (re-exported).
 - `transient_growth.py` — the JAX-based transient-growth CLI (not part
-  of the JAX-free API). `--save-operator` exports the per-mode reduced
-  generators consumed by `response/`; its `single_mode_state` /
+  of the JAX-free API). `--tg.save_operator` exports the per-mode
+  reduced generators consumed by `response/`; its `single_mode_state` /
   `mode_state_energy` helpers are shared with
   `scripts/snapshot_perturb.py`. See the module docstring and the root
   CLAUDE.md "Transient-growth analysis" note.
