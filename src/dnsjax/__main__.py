@@ -79,8 +79,9 @@ the pre-step time.  ``outs.it_error_check`` must not exceed
 ``it_corrector`` (:func:`dnsjax.parameters.validate_parameters`).
 
 ``probes.bin`` records the complex wall-normal profiles of the
-``outs.probe_modes`` spectral modes every ``it_probes`` steps
-(wall-bounded only) with the same buffering, but as fixed-size
+``probes.modes`` spectral modes every ``probes.it_probes`` steps
+(the ``probes`` extension section; :mod:`dnsjax.extensions`;
+wall-bounded only) with the same buffering, but as fixed-size
 binary records with a ``probes.json`` schema sidecar -- see the
 :mod:`dnsjax.probes` module docstring for the format, the
 append-on-resume rules, and the
@@ -90,8 +91,8 @@ post-step sample only when cadence-aligned (uniform sample
 times).
 
 ``forcing.bin`` records the coefficients of the stochastic mode
-kicks (the ``force`` section) every ``it_force`` steps, with a
-``forcing.json`` sidecar.  A kick fires at the top of the loop
+kicks (the ``force`` extension section) every ``force.it_force``
+steps, with a ``forcing.json`` sidecar.  A kick fires at the top of the loop
 after the equal-``t`` probe sample and any snapshot (both
 pre-kick) and immediately before the step; format, resume
 semantics, and the kick construction: the :mod:`dnsjax.forcing`
@@ -157,10 +158,11 @@ import signal
 import sys
 from datetime import datetime
 from pathlib import Path
-from pprint import pp
 from time import perf_counter_ns
 
 from .bootstrap import configure_jax_runtime, resolve_parameters
+from .extensions import force_params, probes_params, relevant_extensions
+from .param_surface import print_resolved_parameters
 from .parameters import (
     annular_systems,
     cylindrical_systems,
@@ -168,7 +170,6 @@ from .parameters import (
     ns_to_s,
     padded_res,
     params,
-    periodic_systems,
     trajectory_defining_changes,
     viscoelastic_systems,
     walled_systems,
@@ -333,97 +334,35 @@ def run(wall_time_start: int) -> None:
     process start (:func:`main`) -- the reference for the
     ``stop.max_wall_time`` budget and the shutdown diagnostics.
     """
+    import importlib
+
     import jax
     from jax import numpy as jnp
 
+    from .flows.registry import spec_for
     from .sharding import sharding
 
     # --- Flow dispatch -------------------------------------------------------
-    if params.phys.system in periodic_systems:
-        from .flows.triply_periodic.monochromatic import (
-            get_perturbation_energy,
-            get_stats,
-            init_state,
-            predict_and_fully_correct,
-            predict_and_fully_correct_measured,
-            step_cnab2,
-            step_cnab2_measured,
-        )
-    elif params.phys.system == "plane-couette":
-        from .flows.wall_bounded.plane_couette import (
-            get_perturbation_energy,
-            get_stats,
-            init_state,
-            predict_and_fully_correct,
-            predict_and_fully_correct_measured,
-            step_cnab2,
-            step_cnab2_measured,
-        )
-    elif params.phys.system == "plane-poiseuille":
-        from .flows.wall_bounded.plane_poiseuille import (
-            get_perturbation_energy,
-            get_stats,
-            init_state,
-            predict_and_fully_correct,
-            predict_and_fully_correct_measured,
-            step_cnab2,
-            step_cnab2_measured,
-        )
-    elif params.phys.system == "pipe":
-        from .flows.wall_bounded.pipe import (
-            get_perturbation_energy,
-            get_stats,
-            init_state,
-            predict_and_fully_correct,
-            predict_and_fully_correct_measured,
-            step_cnab2,
-            step_cnab2_measured,
-        )
-    elif params.phys.system == "taylor-couette":
-        from .flows.wall_bounded.taylor_couette import (
-            get_perturbation_energy,
-            get_stats,
-            init_state,
-            predict_and_fully_correct,
-            predict_and_fully_correct_measured,
-            step_cnab2,
-            step_cnab2_measured,
-        )
-    elif params.phys.system == "quasi-keplerian":
-        from .flows.wall_bounded.quasi_keplerian import (
-            get_perturbation_energy,
-            get_stats,
-            init_state,
-            predict_and_fully_correct,
-            predict_and_fully_correct_measured,
-            step_cnab2,
-            step_cnab2_measured,
-        )
-    elif params.phys.system == "dean":
-        from .flows.wall_bounded.dean import (
-            get_perturbation_energy,
-            get_stats,
-            init_state,
-            predict_and_fully_correct,
-            predict_and_fully_correct_measured,
-            step_cnab2,
-            step_cnab2_measured,
-        )
-    elif params.phys.system == "viscoelastic-dean":
-        from .flows.wall_bounded.viscoelastic_dean import (
-            get_perturbation_energy,
-            get_stats,
-            init_state,
-            predict_and_fully_correct,
-            predict_and_fully_correct_measured,
-            step_cnab2,
-            step_cnab2_measured,
-        )
-    else:
+    # Registry-driven: the flow spec names its runtime module
+    # (``FlowSpec.flow_module``), so registering a spec is the whole
+    # dispatch story -- no per-system branch here.
+
+    _spec = spec_for(params.phys.system)
+    if _spec.flow_module is None:
         sharding.print(
             f"System '{params.phys.system}' is not yet implemented."
         )
         sharding.exit(code=1)
+    _flow_mod = importlib.import_module(_spec.flow_module)
+    get_perturbation_energy = _flow_mod.get_perturbation_energy
+    get_stats = _flow_mod.get_stats
+    init_state = _flow_mod.init_state
+    predict_and_fully_correct = _flow_mod.predict_and_fully_correct
+    predict_and_fully_correct_measured = (
+        _flow_mod.predict_and_fully_correct_measured
+    )
+    step_cnab2 = _flow_mod.step_cnab2
+    step_cnab2_measured = _flow_mod.step_cnab2_measured
 
     # --- Initial condition ---------------------------------------------------
     from .snapshot_meta import is_snapshot_file
@@ -759,14 +698,15 @@ def run(wall_time_start: int) -> None:
                 f.write(header + "\n")
 
     # --- Probe buffer setup ----------------------------------------------
-    # Spectral-mode probe stream (``outs.probe_modes``/``it_probes``):
-    # complex wall-normal mode profiles into the binary ``probes.bin``
-    # (see the :mod:`dnsjax.probes` docstring).  Same buffering state
+    # Spectral-mode probe stream (``probes.modes``/``probes.it_probes``,
+    # the ``probes`` extension section): complex wall-normal mode
+    # profiles into the binary ``probes.bin`` (see the
+    # :mod:`dnsjax.probes` docstring).  Same buffering state
     # machine as the streams above; the t0 sample is recorded here (the
     # in-loop record skips ``it == it0``).  A non-finite message from
     # this record (possible only at ``nbuffer == 1``) is deferred to
     # ``_abort_non_finite`` below, which is not yet defined here.
-    measure_probes: bool = params.outs.probe_modes is not None
+    measure_probes: bool = probes_params.modes is not None
     probe_bad_t0: str | None = None
     if measure_probes:
         from .probes import ProbeStream
@@ -775,13 +715,13 @@ def run(wall_time_start: int) -> None:
         probe_bad_t0 = probe_stream.record(state, t)
 
     # --- Stochastic forcing setup ------------------------------------------
-    # White-in-time mode kicks (``force.modes``; see the
-    # :mod:`dnsjax.forcing` docstring for the conventions).  The
-    # forcer holds the channel profiles, the rank-identical
-    # coefficient PRNG (advanced past any kicks already recorded in
-    # an appended ``forcing.bin``), and the buffered coefficient
-    # writer flushed with the other streams.
-    force_on: bool = params.force.modes is not None
+    # White-in-time mode kicks (``force.modes``, the ``force``
+    # extension section; see the :mod:`dnsjax.forcing` docstring for
+    # the conventions).  The forcer holds the channel profiles, the
+    # rank-identical coefficient PRNG (advanced past any kicks already
+    # recorded in an appended ``forcing.bin``), and the buffered
+    # coefficient writer flushed with the other streams.
+    force_on: bool = force_params.modes is not None
     if force_on:
         from .forcing import StochasticForcer
 
@@ -965,7 +905,7 @@ def run(wall_time_start: int) -> None:
         # loop, keeping the time grid uniform).
         if (
             measure_probes
-            and it % params.outs.it_probes == 0
+            and it % probes_params.it_probes == 0
             and it > params.init.it0
         ):
             bad = probe_stream.record(state, t)
@@ -1003,7 +943,7 @@ def run(wall_time_start: int) -> None:
         # states are pre-kick; the kick belongs to the segment that
         # steps from them) and the coefficient stream continues
         # seamlessly (see :mod:`dnsjax.forcing`).
-        if force_on and it % params.force.it_force == 0:
+        if force_on and it % force_params.it_force == 0:
             state = forcer.kick(state, t)
 
         # Time step (single JIT scope): iterative Crank-Nicolson
@@ -1184,7 +1124,7 @@ def run(wall_time_start: int) -> None:
     if (
         measure_probes
         and it > params.init.it0
-        and it % params.outs.it_probes == 0
+        and it % probes_params.it_probes == 0
     ):
         bad = probe_stream.record(state, t)
         if bad is not None:
@@ -1270,10 +1210,12 @@ def main(argv: list[str] | None = None) -> int:
     final configuration on the main process, and runs the simulation
     (:func:`run`).  *argv* defaults to ``sys.argv``.
     """
-    print("Alive at", datetime.now(), flush=True)
     wall_time_start = perf_counter_ns()
 
+    # Parameters resolve first (fast, pre-JAX): --help / --sample-toml
+    # exit in there with clean output (no banner prefix).
     setup = resolve_parameters(argv)
+    print("Alive at", datetime.now(), flush=True)
     main_device = configure_jax_runtime()
 
     if main_device:
@@ -1313,8 +1255,11 @@ def main(argv: list[str] | None = None) -> int:
                 "the default parameters.",
                 flush=True,
             )
-        print("Final working parameters:")
-        pp(params.model_dump())
+        print_resolved_parameters(
+            params,
+            setup.spec,
+            tuple(relevant_extensions(setup.system).values()),
+        )
 
         print(
             "Running with the physical-space (x, y, z) resolution:",

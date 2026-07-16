@@ -12,8 +12,11 @@ It also exports the flow interface consumed by ``__main__``:
 - ``predict_and_fully_correct`` -- fused predictor + corrector
 - ``predict_and_fully_correct_measured`` -- fused step + CFL
   measurements (``steps.dat``)
+- ``step_cnab2`` / ``step_cnab2_measured`` -- the CN/AB2 stepping pair
 - ``init_state`` -- initial state from a snapshot or laminar
 - ``get_stats`` -- diagnostic statistics
+- ``get_perturbation_energy`` -- the cheap `$E'$` read for the
+  laminarization check
 
 The post-step divergence correction + mean-mode zeroing is fused
 into every stepper (``_finalize_state`` via ``make_stepper``'s

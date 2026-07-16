@@ -11,9 +11,9 @@
 ### Key differences from wall-bounded
 
 - Helmholtz inversion is algebraic (pointwise multiply by `ildt_2`) --
-  no matrix solves, so `dnsjax.solvers` is never involved.
-  `solver.backend` resolves to `"dense"` for periodic systems in
-  `update_parameters()`; an explicit `"pallas"` is rejected there. See
+  no matrix solves, so `dnsjax.solvers` is never involved and
+  `solver.backend` is absent from the periodic parameter surfaces
+  (the geometry never reads it). See
   `TriplyPeriodicFlow.__post_init__`.
 - Divergence correction is a two-stage projection, not an IMM: inside
   `_get_rhs` (pressure Poisson) and post-step (`correct_divergence` +

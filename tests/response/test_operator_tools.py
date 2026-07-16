@@ -156,7 +156,7 @@ def test_restrict() -> None:
 
 
 def _run_tg_with_operator(tmp: Path) -> tuple[Path, Path]:
-    """Laminar plane-Poiseuille TG run with ``--save-operator``."""
+    """Laminar plane-Poiseuille TG run with ``--tg.save_operator``."""
     y = np.cos(np.pi * np.arange(NY) / (NY - 1))
     with open(tmp / "lam.txt", "w") as f:
         for yi, ui in zip(y, 1.0 - y**2, strict=True):
@@ -166,15 +166,16 @@ def _run_tg_with_operator(tmp: Path) -> tuple[Path, Path]:
             sys.executable,
             "-m",
             "dnsjax.analysis.transient_growth",
-            "--profile",
+            "--tg.profile",
             str(tmp / "lam.txt"),
-            "--out-dir",
+            "--tg.out_dir",
             str(tmp),
-            "--modes",
+            "--tg.modes",
             "1,0;3,0",
-            "--nt",
+            "--tg.nt",
             "17",
-            "--save-operator",
+            "--tg.save_operator",
+            "True",
             "--phys.system",
             "plane-poiseuille",
             "--res.nx",

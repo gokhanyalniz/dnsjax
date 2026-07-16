@@ -188,7 +188,7 @@ SYSTEMS: list[dict] = [
             "pipe",
             "--phys.re",
             "1800",
-            "--geo.lx",
+            "--geo.lz",
             "5",
         ],
     },
@@ -203,7 +203,7 @@ SYSTEMS: list[dict] = [
             "-400",
             "--geo.eta",
             "0.5",
-            "--geo.lx",
+            "--geo.lz",
             "5",
         ],
     },
@@ -221,7 +221,7 @@ SYSTEMS: list[dict] = [
             "-1.2",
             "--geo.eta",
             "0.71",
-            "--geo.lx",
+            "--geo.lz",
             "5",
         ],
     },
@@ -234,7 +234,7 @@ SYSTEMS: list[dict] = [
             "1000",
             "--geo.eta",
             "0.5",
-            "--geo.lx",
+            "--geo.lz",
             "5",
         ],
     },
@@ -261,7 +261,7 @@ SYSTEMS: list[dict] = [
             "20",
             "--init.random_conformation_amplitude",
             "10",
-            "--geo.lx",
+            "--geo.lz",
             "5",
         ],
     },
@@ -305,7 +305,7 @@ SYSTEMS: list[dict] = [
             "pipe",
             "--phys.re",
             "1800",
-            "--geo.lx",
+            "--geo.lz",
             "5",
             "--solver.backend",
             "pallas",
@@ -355,7 +355,7 @@ SYSTEMS: list[dict] = [
             "-400",
             "--geo.eta",
             "0.5",
-            "--geo.lx",
+            "--geo.lz",
             "5",
             "--solver.backend",
             "pallas",
@@ -385,7 +385,7 @@ SYSTEMS: list[dict] = [
             "20",
             "--init.random_conformation_amplitude",
             "10",
-            "--geo.lx",
+            "--geo.lz",
             "5",
             "--solver.backend",
             "pallas",
@@ -477,7 +477,7 @@ SYSTEMS: list[dict] = [
             "pipe",
             "--phys.re",
             "1800",
-            "--geo.lx",
+            "--geo.lz",
             "5",
             "--step.scheme",
             "cnab2",
@@ -509,7 +509,7 @@ SYSTEMS: list[dict] = [
             "0",
             "--geo.eta",
             "0.5",
-            "--geo.lx",
+            "--geo.lz",
             "5",
             "--step.scheme",
             "cnab2",
@@ -533,7 +533,7 @@ SYSTEMS: list[dict] = [
             "1000",
             "--geo.eta",
             "0.5",
-            "--geo.lx",
+            "--geo.lz",
             "5",
             "--step.scheme",
             "cnab2",
@@ -561,7 +561,7 @@ SYSTEMS: list[dict] = [
             "20",
             "--init.random_conformation_amplitude",
             "10",
-            "--geo.lx",
+            "--geo.lz",
             "5",
             "--step.scheme",
             "cnab2",
@@ -605,7 +605,7 @@ SYSTEMS: list[dict] = [
             "1000",
             "--geo.eta",
             "0.5",
-            "--geo.lx",
+            "--geo.lz",
             "5",
             "--step.split_corrector",
             "True",
@@ -697,6 +697,24 @@ def _build_command(
     nx = str(res.get("nx", args.res))
     ny = str(res.get("ny", args.res))
     nz = str(res.get("nz", args.res))
+    # Cylindrical/annular flows take the aliased public resolution
+    # names (axial nz, radial nr, azimuthal ntheta); the internal
+    # meaning (nx = axial, ny = radial, nz = azimuthal) is unchanged.
+    cyl_annular = any(
+        s in system["args"]
+        for s in (
+            "pipe",
+            "taylor-couette",
+            "quasi-keplerian",
+            "dean",
+            "viscoelastic-dean",
+        )
+    )
+    res_flags = (
+        ["--res.nz", nx, "--res.nr", ny, "--res.ntheta", nz]
+        if cyl_annular
+        else ["--res.nx", nx, "--res.ny", ny, "--res.nz", nz]
+    )
     max_sim_time = system.get("max_sim_time", args.max_sim_time)
     it_stats = system.get("it_stats", args.it_stats)
 
@@ -728,12 +746,7 @@ def _build_command(
         str(args.smoothness),
         "--init.random_seed",
         str(args.seed),
-        "--res.nx",
-        nx,
-        "--res.ny",
-        ny,
-        "--res.nz",
-        nz,
+        *res_flags,
         "--step.dt",
         str(dt),
         "--stop.max_sim_time",

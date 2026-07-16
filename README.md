@@ -21,8 +21,9 @@ margin for a single FFT evaluation per step.
 
 ## Highlights
 
-- **Seven flow systems across four geometries** — pipe, Taylor–Couette, Dean,
-  viscoelastic Dean, plane-Poiseuille, plane-Couette, and Kolmogorov flow.
+- **Eight flow systems across four geometries** — pipe, Taylor–Couette,
+  quasi-Keplerian, Dean, viscoelastic Dean, plane-Poiseuille,
+  plane-Couette, and Kolmogorov flow.
 - **Runs anywhere JAX runs** — CPU, GPU, or TPU, on one device or many, from
   the same code path.
 - **Second-order semi-implicit time stepping** — an iterative Crank–Nicolson
@@ -40,8 +41,8 @@ margin for a single FFT evaluation per step.
   conformation-tensor flow riding the same component-agnostic machinery.
 - **Portable data** — snapshots are plain tar + zarr3, written in parallel
   directly from device memory, readable with standard tools and a
-  dependency-light NumPy reader; resume is device- and precision-agnostic.
-- **Extensively tested** — 20 standalone test scripts (also runnable
+  dependency-light NumPy reader; resume is device-count-agnostic.
+- **Extensively tested** — 30 standalone test scripts (also runnable
   through a pytest bridge) pin the numerics, the machinery, and the
   multi-device behavior, and the optimal-growth module reproduces
   published values — see
@@ -51,8 +52,9 @@ margin for a single FFT evaluation per step.
 
 | Flow | Geometry | Laminar base / driving | Defining controls |
 |---|---|---|---|
-| **Pipe** | cylindrical | $U_z = 1 - r^2$, pressure-driven | `re`, axial length `lx` |
+| **Pipe** | cylindrical | $U_z = 1 - r^2$, pressure-driven | `re`, axial length `lz` |
 | **Taylor–Couette** | annular | $U_\theta = A_0 r + B_0/r$, wall rotation | `re1`, `re2`, `eta` |
+| **Quasi-Keplerian** | annular | $U_\theta = A_0 r + B_0/r$, Rayleigh-stable co-rotation | `re1`, `r_omega`, `eta` |
 | **Dean** | annular | azimuthal body force, total field | `re`, `eta` |
 | **Viscoelastic Dean** | annular (sPTT) | azimuthal body force, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `delta` |
 | **Plane-Poiseuille** | cartesian | $U = 1 - y^2$, pressure-driven | `re`, `lx`, `lz`, `tilt_degree` |
@@ -69,7 +71,10 @@ A few conventions worth knowing:
   be negative. The sign pattern selects the configuration: inner-driven
   (`re1 > 0, re2 = 0`), outer-driven (`re1 = 0, re2 > 0`), co-rotating (same
   signs), or counter-rotating (`re2 < 0`); `eta = r_1/r_2` is the radius
-  ratio.
+  ratio. The quasi-Keplerian flow is the same annulus parameterized by
+  `re1`, the rotation number `r_omega` on the quasi-Keplerian half-line
+  $R_\Omega < -1$, and `eta`, with the outer Reynolds number `re2`
+  derived from them.
 - **Viscoelastic controls.** `el` is the elasticity number and sets
   $Re = Wi/El$; `wi` is the Weissenberg number; `beta` the solvent-to-total
   viscosity ratio; `epsilon` the sPTT extensibility; `kappa` an artificial
@@ -81,12 +86,14 @@ A few conventions worth knowing:
   the peak roughly $k$-fold at identical results; it defaults to `1` (the
   fused batch) because chunking costs throughput — more FFT dispatches and
   reshard rounds — that is only worth paying when a run is memory-bound.
-- **Grid axes.** For the cylindrical and annular geometries the roles are
-  swapped relative to the cartesian intuition: `nx` resolves the axial
-  (streamwise) direction, `nz` the azimuthal direction, and `ny` the radial
-  direction. The wall-normal extent $L_y$ is fixed by the geometry (the
-  channel spans $[-1, 1]$, the pipe radius is 1, the annulus $[r_1, r_2]$,
-  and the periodic box uses $L_y = 4$).
+- **Grid axes.** Each flow's parameters use the names natural to its
+  geometry: the cylindrical and annular flows expose `lz` (axial
+  length), `nz` (axial modes), `nr` (radial points), and `ntheta`
+  (azimuthal modes); their azimuthal extent is not a free length — it
+  is the full circle, or the $2\pi/m_0$ wedge under `--geo.m0`. The
+  wall-normal extent is fixed by the geometry (the channel spans
+  $[-1, 1]$, the pipe radius is 1, the annulus $[r_1, r_2]$, and the
+  periodic box uses $L_y = 4$).
 
 ## Installation
 
@@ -128,9 +135,9 @@ directory, so launch from a scratch directory:
 mpirun -np 1 .venv/bin/dnsjax \
   --phys.system pipe \
   --phys.re 2300 \
-  --geo.lx 200 \
+  --geo.lz 200 \
   --geo.grid_type half-cgl \
-  --res.nx 512 --res.ny 48 --res.nz 96 --res.fd_order 4 \
+  --res.nz 512 --res.nr 48 --res.ntheta 96 --res.fd_order 8 \
   --step.scheme iterative-cn --step.dt 0.01 \
   --init.localized_rolls True \
   --init.localized_rolls_amplitude 0.2 --init.localized_rolls_width 2.0 \
@@ -139,17 +146,26 @@ mpirun -np 1 .venv/bin/dnsjax \
   --dist.platform cpu
 ```
 
+Every flow exposes only the parameters that apply to it, under the names
+natural to its geometry — `dnsjax --help` lists the global parameters and
+the implemented flows, `dnsjax --help pipe` the pipe's own surface, and
+`dnsjax --sample-toml pipe` prints an annotated configuration template. A
+parameter that does not belong to the selected flow is an error (on the
+command line and in `parameters.toml` alike), not a silently ignored knob.
+
 Reading the flags:
 
 - `--phys.system pipe --phys.re 2300` — the flow and its Reynolds number.
-- `--geo.lx 200` — the axial length is 100 pipe diameters ($D = 2$). The
-  azimuthal length is fixed at $2\pi$, so `--geo.lz` is never set for a pipe.
+- `--geo.lz 200` — the axial length is 100 pipe diameters ($D = 2$). The
+  azimuthal extent is not settable: it is the full circle, or the
+  $2\pi/m_0$ wedge when the `--geo.m0` symmetry restriction is used.
 - `--geo.grid_type half-cgl` — the radial grid; `half-cgl` is the default
-  for a pipe under `iterative-cn`, while `cnab2` uses the rigged-CGL grid
-  instead (both are halves of a Chebyshev grid that avoid the axis — see
+  for a pipe under `iterative-cn`, while `cnab2` uses `rigged-cgl` instead
+  (both are halves of a Chebyshev grid that avoid the axis — see
   [Grids](#grids)).
-- `--res.nx 512 --res.ny 48 --res.nz 96` — axial, radial, and azimuthal
-  resolution, with fourth-order finite differences in the radial direction.
+- `--res.nz 512 --res.nr 48 --res.ntheta 96` — axial, radial, and azimuthal
+  resolution, with eighth-order (the default) finite differences in the
+  radial direction.
 - `--step.scheme iterative-cn --step.dt 0.01` — the default
   predictor–corrector integrator at a wall-bounded-safe step.
 - `--init.localized_rolls …` — a compact, deterministic finite-amplitude
@@ -180,14 +196,14 @@ system = "pipe"
 re = 2300            # bulk/diameter Reynolds number (= centerline/radius; D = 2)
 
 [geo]
-lx = 200.0           # axial length = 100 pipe diameters; lz is fixed at 2*pi
+lz = 200.0           # axial length = 100 pipe diameters
 # grid_type defaults to "half-cgl" for pipe + iterative-cn (auto-resolved)
 
 [res]
-nx = 512             # axial Fourier modes
-ny = 48              # radial finite-difference points
-nz = 96              # azimuthal Fourier modes
-fd_order = 4
+nz = 512             # axial Fourier modes
+nr = 48              # radial finite-difference points
+ntheta = 96          # azimuthal Fourier modes
+fd_order = 8
 
 [init]
 localized_rolls = true
@@ -225,17 +241,29 @@ broken state.
 
 Configuration is applied in layers, lowest priority first:
 
-**Pydantic defaults → parameters embedded in a resumed snapshot →
+**Per-flow defaults → parameters embedded in a resumed snapshot →
 `parameters.toml` → command-line flags.**
 
 Only explicitly set fields override a lower layer, and validation runs once
-after the final layer. The parameters that must be known before JAX
+after the final layer. Every layer is parsed against the **selected flow's
+parameter surface**: only that flow's parameters exist (an irrelevant key is
+a hard error naming the flow), fields go by their geometry-natural public
+names (a pipe has `--geo.lz`/`--res.nz`/`--res.nr`/`--res.ntheta` where a
+plane channel has `--geo.lx`/`--res.nx`/`--res.ny`/`--res.nz`), and per-flow
+defaults (the pipe's moving frame `u_grid = 0.5`, its scheme-dependent
+`grid_type`, the viscoelastic rheology values) are materialized before
+printing or recording. The parameters that must be known before JAX
 initializes — `dist.np0`, `dist.np1`, `dist.platform`, and
 `res.double_precision` — are never inherited from a snapshot, and the entire
-`solver` section is execution-only. Run `uv run dnsjax --help` for the full
-command-line interface (it exits at the parser, so no `mpirun` is needed);
-the authoritative field-by-field documentation lives in
-[`src/dnsjax/parameters.py`](src/dnsjax/parameters.py).
+`solver` section is execution-only.
+
+`uv run dnsjax --help` shows the global parameters and the flow list,
+`--help <system>` one flow's full surface with per-field descriptions, and
+`--sample-toml <system>` an annotated `parameters.toml` template with every
+default commented out (all exit at the parser — no `mpirun` needed). The
+authoritative field-by-field documentation lives in
+[`src/dnsjax/parameters.py`](src/dnsjax/parameters.py) and the per-flow
+specs under `src/dnsjax/flows/*/specs/`.
 
 ## Memory footprint
 
@@ -276,9 +304,10 @@ the default backends:
   half-bandwidth $p$ equal to `fd_order`, over the $(n_z - 1)(n_x/2)$ mode
   plane — that is $m (2p + 1)/2$ fields for $m$ banded matrices, the one
   term that grows with `fd_order`. Here $m = 2$ for
-  plane-Couette/Poiseuille, $4$ for pipe, Taylor–Couette, and Dean, and
-  $10$ for viscoelastic Dean, plus $v = 3\text{–}6$ field-sized
-  boundary-response vectors ($v/2$ fields). Switching to
+  plane-Couette/Poiseuille, $4$ for pipe, Taylor–Couette,
+  quasi-Keplerian, and Dean, and $10$ for viscoelastic Dean, plus
+  $v = 3\text{–}6$ field-sized boundary-response vectors ($v/2$
+  fields). Switching to
   `solver.backend = "dense"` replaces $(2p + 1)$ by $n_y$ per matrix — the
   one super-linear option, and the reason Pallas is the wall-bounded
   default. Triply-periodic systems store no matrices at all (their implicit
@@ -303,12 +332,13 @@ Summing these, the leading-order total per device is
 with $W \approx 15\text{–}21$ as above (for viscoelastic Dean,
 $W \approx 45 + 72/k$ with $k$ = `rhs_transform_chunks`) and
 $(n_c, m, v) = (3, 2, 4)$ for the plane flows, $(3, 4, 3)$ for the pipe,
-$(3, 4, 6)$ for Taylor–Couette and Dean, and $(9, 10, 6)$ for viscoelastic
-Dean. The sum is an upper estimate — XLA's buffer reuse typically realizes
-less — and halves at single precision. Off the stepping path, snapshot
-writes move each device's bytes directly to disk (staging through host
-memory only when GPUDirect Storage is unavailable) and the on-device
-diagnostic buffers are resolution-independent, so the optional I/O adds no
+$(3, 4, 6)$ for Taylor–Couette, quasi-Keplerian, and Dean, and
+$(9, 10, 6)$ for viscoelastic Dean. The sum is an upper estimate —
+XLA's buffer reuse typically realizes less — and halves at single
+precision. Off the stepping path, snapshot writes move each device's
+bytes directly to disk (staging through host memory only when
+GPUDirect Storage is unavailable) and the on-device diagnostic buffers
+are resolution-independent, so the optional I/O adds no
 resolution-scaled device memory.
 
 ## Parallelization
@@ -318,16 +348,19 @@ differently:
 
 - **`np0`** splits the wall-normal axis ($y$ / $r$) in physical space and the
   spanwise / azimuthal wavenumber axis ($k_z$ / $m$) in spectral space. The
-  split is padding-free when `np0` divides both `ny` and the stored mode
-  count $n_z - 1$; otherwise the layer zero-pads to the next multiple and
-  strips the padding around the reshard ($n_z - 1$ is odd, so a one-mode
-  pad is the norm — and harmless).
-- **`np1`** splits the spanwise axis ($z$) in physical space and the
-  streamwise wavenumber axis ($k_x$) in spectral space. The spectral side
-  is auto-padded the same way (padding-free when `np1` divides $n_x/2$);
-  on the physical side the oversampled size
-  `nz_padded = oversampling_factor * nz / 2` is rounded up to the next
-  FFT-friendly multiple of `np1` when needed (see
+  split is padding-free when `np0` divides both the wall-normal point
+  count (`ny`, or `nr`) and the stored mode count ($n_z - 1$, or
+  $n_\theta - 1$); otherwise the layer zero-pads to the next multiple
+  and strips the padding around the reshard (the stored mode count is
+  odd, so a one-mode pad is the norm — and harmless).
+- **`np1`** splits the spanwise / azimuthal axis ($z$ / $\theta$) in
+  physical space and the streamwise / axial wavenumber axis ($k_x$) in
+  spectral space. The spectral side is auto-padded the same way
+  (padding-free when `np1` divides the streamwise / axial mode count,
+  $n_x/2$ or $n_z/2$); on the physical side the oversampled size
+  ($3/2 \times$ the base resolution of that axis at the default
+  oversampling) is rounded up to the next FFT-friendly multiple of
+  `np1` when needed (see
   [Spatial discretization](#spatial-discretization)), which amounts to a
   sliver of extra oversampling.
 - Independently of the device grid, the **Pallas banded solver** tiles each
@@ -350,16 +383,17 @@ inverse FFTs move data between layouts with two reshards implemented as a
 collapses to the one-dimensional $k_x$ / $z$ split. `jax.device_count()`
 must equal $n_{p0} \cdot n_{p1}$.
 
-The pipe example above on a $2 \times 2$ device grid (`ny = 48` and
-$n_x/2 = 256$ split evenly; `nz = 96` gives `nz_padded = 144`, divisible
-by 2 — an entirely padding-free choice):
+The pipe example above on a $2 \times 2$ device grid (`nr = 48` and
+$n_z/2 = 256$ split evenly; `ntheta = 96` gives 144 padded azimuthal
+points, divisible by 2; the only round-up is the harmless one-mode pad
+of the 95 stored azimuthal modes):
 
 ```bash
 # CPU: one device per process
 mpirun -np 4 .venv/bin/dnsjax \
   --dist.np0 2 --dist.np1 2 --dist.platform cpu \
-  --phys.system pipe --phys.re 2300 --geo.lx 200 \
-  --res.nx 512 --res.ny 48 --res.nz 96 \
+  --phys.system pipe --phys.re 2300 --geo.lz 200 \
+  --res.nz 512 --res.nr 48 --res.ntheta 96 \
   --init.localized_rolls True --stop.max_sim_time 500
 ```
 
@@ -367,8 +401,8 @@ mpirun -np 4 .venv/bin/dnsjax \
 # GPU: a single process addressing all four GPUs on the node
 mpirun -np 1 .venv/bin/dnsjax \
   --dist.np0 2 --dist.np1 2 --dist.platform cuda \
-  --phys.system pipe --phys.re 2300 --geo.lx 200 \
-  --res.nx 512 --res.ny 48 --res.nz 96 \
+  --phys.system pipe --phys.re 2300 --geo.lz 200 \
+  --res.nz 512 --res.nr 48 --res.ntheta 96 \
   --init.localized_rolls True --stop.max_sim_time 500
 ```
 
@@ -380,11 +414,15 @@ launch details.
 
 ## Snapshots and external data access
 
-A snapshot is a **single uncompressed tar archive** (format version 3)
+A snapshot is a **single uncompressed tar archive** (format version 4)
 wrapping a **zarr3** store, a JSON metadata member (parameters, grid,
 lineage, and the writing code's git revision), and one contiguous chunk
 per state component (three velocity components, or nine for the
-viscoelastic flow). Each device writes its
+viscoelastic flow). The embedded parameters are the flow-relevant,
+resolved values under their public names — the same representation the
+startup printout and `--sample-toml` use; snapshots written before
+format version 4 embed a different representation and are rejected
+rather than translated. Each device writes its
 disjoint byte ranges into the one file in parallel — directly between GPU
 memory and disk when GPUDirect Storage is available, through the host
 otherwise — with a concurrent mode for POSIX/parallel filesystems and a
@@ -395,8 +433,9 @@ base-flow systems (the laminar state is a zero array) and the **total**
 field for Dean and viscoelastic Dean. The archive is readable with ordinary
 tools — `tar xf` yields a valid zarr3 store, and in the worst case each
 chunk is raw little-endian complex data for `numpy.fromfile`. Resume is
-agnostic to the device count and precision, and re-grids a changed
-wall-normal grid on load (spectrally between the CGL-family grids).
+agnostic to the device count (precision must match — a mismatch
+rejects), and re-grids a changed wall-normal grid on load (spectrally
+between the CGL-family grids).
 
 For post-processing, `dnsjax.analysis.snapshot_export.read_state` reads a
 snapshot into NumPy arrays **without importing JAX or the solver runtime**,
@@ -538,10 +577,11 @@ axis), placing it about half as far. `cnab2` defaults to the rigged grid:
 its explicit azimuthal advection near the axis limits the time step in
 proportion to that innermost radius. `iterative-cn` integrates the
 near-axis coupling implicitly and defaults to the finer-resolving half-CGL
-grid. Optional `tanh` stretching (`grid_stretch`) and fully **custom grids**
-(via a `geo.wall_grid` file) are supported; quadrature is spectral
-Clenshaw–Curtis on CGL grids and an order-`fd_order` composite rule
-otherwise.
+grid. Optional tanh stretching (`grid_type = "tanh"`, or `"half-tanh"` for
+the pipe's one-sided variant, with the `grid_stretch` factor) and fully
+**custom grids** (via a `geo.wall_grid` file) are supported; quadrature is
+spectral Clenshaw–Curtis on CGL grids and an order-`fd_order` composite
+rule otherwise.
 
 ### The influence-matrix method
 
@@ -561,7 +601,7 @@ at scale.
 
 ## Testing and validation
 
-The test suite is 20 standalone scripts under `tests/`, run directly
+The test suite is 30 standalone scripts under `tests/`, run directly
 (`uv run python tests/test_cartesian.py`) or through the optional pytest
 bridge — `uv run pytest` shells each script out as a subprocess, with
 `mpi`/`slow` markers and the scripts staying the source of truth — and
@@ -572,14 +612,15 @@ guarantees they pin:
   reference solver, per-geometry operators and matvecs against NumPy
   constructions, and CUDA-lowering guards that catch Triton compilation
   regressions on CPU-only machines.
-- **The physics** — laminar states step at machine precision, random and
-  localized initial conditions integrate through the full nonlinear path for
-  all seven flows, and both time steppers converge at second order.
+- **The physics** — laminar states step at machine precision, random
+  initial conditions integrate through the full nonlinear path for all
+  eight flows (localized spots for five of the wall-bounded ones), and
+  both time steppers converge at second order.
 - **The machinery** — snapshot round-trips readable by standard tools,
-  device-count- and precision-agnostic resume with lineage checks, and the
-  JAX-free import guarantee of the analysis API.
+  device-count-agnostic resume with lineage checks, and the JAX-free
+  import guarantee of the analysis API.
 - **Physical validation** — the transient-growth module reproduces published
-  optimal-growth values for all four of its flows to about 2%.
+  optimal-growth values for all five of its flows to about 2% or better.
 
 `scripts/` adds benchmark and diagnostic tools: `solver_benchmark.py`
 (Pallas-vs-dense validation and benchmark, including multi-GPU),
@@ -623,10 +664,11 @@ A closer look at what is in the box, beyond the core solver:
 
 1. **Non-modal optimal-growth analysis.** `dnsjax.analysis.transient_growth`
    computes 3D linear optimal energy growth $G(t)$ around an arbitrary
-   wall-normal total profile for the pipe, Taylor–Couette, plane-Poiseuille,
-   and plane-Couette flows, reusing the solver's own linear step for each
-   Fourier mode. It runs on a single device (GPU-capable) and reproduces
-   published optimal-growth values for all four flows to about 2%.
+   wall-normal total profile for the pipe, Taylor–Couette, quasi-Keplerian,
+   plane-Poiseuille, and plane-Couette flows, reusing the solver's own
+   linear step for each Fourier mode. It runs on a single device
+   (GPU-capable) and reproduces published optimal-growth values for all
+   five flows to about 2% or better.
 
    ```bash
    python -m dnsjax.analysis.transient_growth --help
@@ -660,11 +702,12 @@ A closer look at what is in the box, beyond the core solver:
    separate the runtime from the analysis API — see
    [Snapshots and external data access](#snapshots-and-external-data-access).
 
-6. **Robust resume.** Snapshots resume across any device count and precision,
-   re-grid a changed wall-normal grid on load, and track lineage —
-   including the recording code's git revision, echoed at startup when
-   resuming — distinguishing a genuine continuation from a new trajectory
-   when the physics or geometry changes.
+6. **Robust resume.** Snapshots resume across any device count
+   (precision must match), re-grid a changed wall-normal grid on load,
+   and track lineage — including the recording code's git revision,
+   echoed at startup when resuming — distinguishing a genuine
+   continuation from a new trajectory when the physics or geometry
+   changes.
 
 7. **Laminarization auto-stop.** A run terminates automatically once the
    perturbation energy drops below a threshold, so relaminarization events

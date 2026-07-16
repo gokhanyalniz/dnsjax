@@ -5,44 +5,44 @@ parameters embedded in a resumed snapshot (:func:`read_snapshot_params`)
 -> ``parameters.toml`` (if present) -> command-line arguments.  The
 snapshot layer is skipped for the parameters that must be known to
 configure JAX *before* the snapshot is read (``dist.np0``, ``dist.np1``,
-``dist.platform``, ``res.double_precision``); those come only from
+``dist.platform``, ``res.double_precision``) and for the
+resume-decision fields ``init.snapshot`` / ``init.force_resume``
+(recorded for lineage, never inherited); those come only from
 defaults / TOML / CLI.  The global singletons ``params``,
 ``derived_params``, and ``padded_res`` are mutated in-place by
 :func:`update_parameters` so that every module sees the same state.
 """
 
-import tomllib
 from dataclasses import dataclass, field
 from datetime import timedelta
-from math import cos, isclose, pi, sin
+from math import cos, pi, sin
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
 
-from .harmonics import parse_mode_pairs
+from .flow_spec import UNSET
 
-monochromatic_systems: list[str] = ["kolmogorov", "waleffe"]
-periodic_systems: list[str] = ["decaying-box", *monochromatic_systems]
-
-cartesian_systems: list[str] = ["plane-couette", "plane-poiseuille"]
-cylindrical_systems: list[str] = ["pipe"]
-annular_systems: list[str] = ["taylor-couette", "quasi-keplerian", "dean"]
-# Viscoelastic flows living on the annular *geometry* (grid on
-# [r1, r2], u_+/u_- velocity formulation) but integrating a coupled
-# 9-component state (3 velocity + 6 symmetric conformation-tensor
-# components).  Kept separate from ``annular_systems`` so the
-# eta-based annular derivation and the 3-component annular IC
-# generators / analysis reader do not accidentally catch them; the
-# annular-*geometry* routing sites explicitly include this list.
-viscoelastic_systems: list[str] = ["viscoelastic-dean"]
-walled_systems: list[str] = [
-    *cartesian_systems,
-    *cylindrical_systems,
-    *annular_systems,
-    *viscoelastic_systems,
-]
+# The flow registry aggregates the per-flow parameter specs
+# (``flows/*/specs/``) into the system list and family groupings; the
+# groupings are re-exported here for the many existing importers.
+# ``viscoelastic_systems`` stays separate from ``annular_systems``
+# (same geometry, but a 9-component state: the eta-based annular
+# derivation and the 3-component IC generators / analysis reader must
+# not accidentally catch it).  Import direction is strictly
+# ``parameters -> flows.registry -> flows.*.specs -> flow_spec`` (the
+# spec hooks receive ``params``/``derived_params`` as arguments), so
+# no cycle exists.
+from .flows.registry import (
+    annular_systems,  # noqa: F401  (re-export)
+    cartesian_systems,  # noqa: F401  (re-export)
+    cylindrical_systems,  # noqa: F401  (re-export)
+    monochromatic_systems,  # noqa: F401  (re-export)
+    periodic_systems,
+    spec_for,
+    viscoelastic_systems,
+    walled_systems,
+)
 
 ns_to_s: float = 10 ** (-9)  # nanoseconds to seconds
 
@@ -126,15 +126,34 @@ class Distribution(BaseModel):
     default, which is correct under full visibility).
     """
 
-    np0: int = Field(ge=1, default=1)
-    np1: int = Field(ge=1, default=1)
-    platform: Literal["cpu", "cuda", "rocm", "tpu"] = "cpu"
+    np0: int = Field(
+        ge=1,
+        default=1,
+        description=(
+            "Devices splitting the wall-normal physical axis and the "
+            "spanwise/azimuthal spectral axis (np0 * np1 devices total)."
+        ),
+    )
+    np1: int = Field(
+        ge=1,
+        default=1,
+        description=(
+            "Devices splitting the spanwise/azimuthal physical axis and "
+            "the streamwise/axial spectral axis (np0 * np1 devices "
+            "total)."
+        ),
+    )
+    platform: Literal["cpu", "cuda", "rocm", "tpu"] = Field(
+        default="cpu", description="JAX backend platform to run on."
+    )
 
 
 class Physics(BaseModel):
     """Physical parameters: Reynolds number, flow system, dealiasing."""
 
-    re: float = Field(gt=0, default=1000)  # Reynolds number
+    re: float = Field(
+        gt=0, default=1000, description="Reynolds number of the flow."
+    )
     # Taylor-Couette control parameters (system == "taylor-couette").
     # Inner / outer cylinder Reynolds numbers, with gap d = r2 - r1:
     #   re1 = Omega1 * r1_dim * d / nu,  re2 = Omega2 * r2_dim * d / nu.
@@ -152,8 +171,20 @@ class Physics(BaseModel):
     # (below) instead of ``re2``; the annular branch derives and stores
     # ``re2`` so every downstream circular-Couette path is shared with
     # Taylor-Couette.  See ``flows.wall_bounded.quasi_keplerian``.
-    re1: float | None = None
-    re2: float | None = None
+    re1: float | None = Field(
+        default=None,
+        description=(
+            "Inner-cylinder Reynolds number Re_1 = Omega_1 r_1 d / nu "
+            "(>= 0 by sign convention)."
+        ),
+    )
+    re2: float | None = Field(
+        default=None,
+        description=(
+            "Outer-cylinder Reynolds number Re_2 = Omega_2 r_2 d / nu "
+            "(negative = counter-rotating)."
+        ),
+    )
     # Rotation number R_Omega (system == "quasi-keplerian"), following
     # Dubrulle et al. 2005:
     #   R_Omega = (1 - eta) (Re_i + Re_o) / (eta Re_o - Re_i),
@@ -167,48 +198,101 @@ class Physics(BaseModel):
     # branch of ``update_parameters`` requires re1 > 0 and r_omega < -1,
     # then derives re2 = re1 (1 - eta + R_Omega) / (eta R_Omega -
     # (1 - eta)).
-    r_omega: float | None = None
+    r_omega: float | None = Field(
+        default=None,
+        description=(
+            "Rotation number R_Omega < -1 selecting a quasi-Keplerian "
+            "regime; the outer Reynolds number is derived from "
+            "(re1, r_omega, eta)."
+        ),
+    )
     # Viscoelastic (sPTT) control parameters (system ==
     # "viscoelastic-dean"; see ``flows.wall_bounded.viscoelastic_dean``
     # and ``geometries.wall_bounded.annular_viscoelastic``).  All
-    # ``None`` for other systems and default to the reference
-    # configuration when unset for the viscoelastic system (applied in
-    # the ``update_parameters`` viscoelastic branch):
-    #   el   -- elasticity number El (defines Re := Wi/El, so
-    #           ``phys.re`` is derived, not set directly).  Default 80.
-    #   wi   -- Weissenberg number.  Default 105.
-    #   beta -- solvent-to-total viscosity ratio in (0, 1]; the solvent
-    #           viscosity is nu = beta/Re (``derived_params.nu``) and
-    #           the polymer stress carries (1-beta)/(Re Wi).  Default
-    #           0.8.
-    #   epsilon -- sPTT extensibility parameter (>= 0).  Default 0.001.
-    #   kappa   -- artificial stress diffusivity (>= 0); kappa = 0 makes
-    #              the conformation transport purely hyperbolic (no
-    #              wall BC on c).  Default 5e-5.
-    el: float | None = Field(default=None, gt=0)
-    wi: float | None = Field(default=None, gt=0)
-    beta: float | None = Field(default=None, gt=0, le=1)
-    epsilon: float | None = Field(default=None, ge=0)
-    kappa: float | None = Field(default=None, ge=0)
+    # ``None`` for other systems; unset values fall back to the
+    # reference configuration in the viscoelastic ``derive`` hook
+    # (el 80, wi 105, beta 0.8, epsilon 0.001, kappa 5e-5).
+    el: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Elasticity number El; the Reynolds number is derived as "
+            "Re = Wi / El."
+        ),
+    )
+    wi: float | None = Field(
+        default=None, gt=0, description="Weissenberg number Wi."
+    )
+    beta: float | None = Field(
+        default=None,
+        gt=0,
+        le=1,
+        description=(
+            "Solvent-to-total viscosity ratio in (0, 1]: the solvent "
+            "carries nu = beta/Re, the polymer stress (1-beta)/(Re Wi)."
+        ),
+    )
+    epsilon: float | None = Field(
+        default=None,
+        ge=0,
+        description="sPTT extensibility parameter (>= 0).",
+    )
+    kappa: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Artificial conformation stress diffusivity; 0 makes the "
+            "conformation transport purely hyperbolic (no wall BC on "
+            "c)."
+        ),
+    )
     # Default "plane-couette": a wall-bounded flow that integrates
     # cleanly from the default random IC at the default dt (Kolmogorov +
     # random needs a smaller dt; see the corrector-contraction note in
     # the ``TimeStepping`` docstring).  Kolmogorov: sine forcing.
     # Waleffe: cosine forcing + Ry symmetry (not yet implemented).
-    system: Literal[*periodic_systems, *walled_systems] = "plane-couette"
-    # (n + 1) / 2 oversampling in each direction
-    # to dealias the n'th order nonlinearity
-    # oversampling_factor = n + 1
-    oversampling_factor: int = Field(ge=2, default=3)
-    oversample_y: bool = True
+    system: Literal[*periodic_systems, *walled_systems] = Field(
+        default="plane-couette",
+        description=(
+            "Flow system to integrate; `dnsjax --help <system>` lists "
+            "the parameters that apply to it."
+        ),
+    )
+    oversampling_factor: int = Field(
+        ge=2,
+        default=3,
+        description=(
+            "Physical-space oversampling for dealiasing: (n+1)/2 grid "
+            "points per mode dealias an n-th order nonlinearity "
+            "(default 3 = the 3/2 rule)."
+        ),
+    )
+    oversample_y: bool = Field(
+        default=True,
+        description=(
+            "Also oversample the shear (y) direction of the periodic "
+            "box when dealiasing."
+        ),
+    )
     driving: Literal[
         "constant_pressure_gradient", "constant_bulk_velocity"
-    ] = "constant_pressure_gradient"
-    # Zero the mean velocity in the undriven homogeneous direction.
-    # Cartesian: the spanwise (z) direction.  Taylor-Couette: the axial
-    # (z) direction (no axial bulk velocity); the azimuthal mean evolves
-    # freely.  Independent of ``driving``.
-    block_mean_spanwise_velocity: bool = False
+    ] = Field(
+        default="constant_pressure_gradient",
+        description=(
+            "Hold either the mean streamwise/axial pressure gradient "
+            "or the bulk velocity constant."
+        ),
+    )
+    # Independent of ``driving``: Cartesian blocks the spanwise (z)
+    # mean, annular the axial (z) mean; the azimuthal mean evolves
+    # freely.
+    block_mean_spanwise_velocity: bool = Field(
+        default=False,
+        description=(
+            "Zero the mean velocity in the undriven homogeneous "
+            "direction (Cartesian: spanwise z; annular: axial z)."
+        ),
+    )
     # Speed U_grid of the moving frame of reference, translating along
     # the homogeneous "grid" direction: streamwise x (Cartesian) or
     # axial z (cylindrical / annular).  The time derivative becomes
@@ -228,7 +312,14 @@ class Physics(BaseModel):
     # systems (periodic flows reject it).  A changed ``u_grid`` on
     # resume is trajectory-defining (the stored fields drift between
     # frames); pre-feature snapshots resume into the new default.
-    u_grid: float | None = None
+    u_grid: float | None = Field(
+        default=None,
+        description=(
+            "Speed of the moving frame of reference along the "
+            "streamwise/axial grid direction; the default is the "
+            "flow's laminar bulk velocity."
+        ),
+    )
 
 
 class Geometry(BaseModel):
@@ -240,37 +331,41 @@ class Geometry(BaseModel):
        A custom grid always overrides dnsjax's grid generation.
     2. ``grid_type``: generate a named grid at startup.
     3. Default (``grid_type`` unset): ``update_parameters`` resolves
-       it to a concrete value -- full CGL (``"cgl"``) for the
-       Cartesian / annular families, and for the cylindrical family
-       **half-CGL** under the default ``iterative-cn`` scheme or
-       **rigged-CGL** (``"cgl"``) under ``cnab2`` (see below).
+       it to a concrete value from the flow spec
+       (``FlowSpec.grid_type_default``) -- full CGL (``"cgl"``) for
+       the Cartesian / annular families, and for the cylindrical
+       family ``"half-cgl"`` under the default ``iterative-cn``
+       scheme or ``"rigged-cgl"`` under ``cnab2`` (see below).
        Because the resolved value is concrete, snapshots embed the
        grid they actually ran and a resume pins it -- the
        scheme-dependent default never silently re-grids an old
-       trajectory (see :func:`_snapshot_grid_type`).
+       trajectory.
 
-    Setting both ``wall_grid`` and ``grid_type`` is an error.
+    Setting both ``wall_grid`` and ``grid_type`` is an error, and each
+    family accepts only its own grid names (the per-flow surface and
+    ``validate_parameters`` enforce it):
 
-    ``grid_type`` values: ``"cgl"`` the plain Chebyshev-Gauss-Lobatto
-    grid (Cartesian / annular; for the cylindrical family it is a
-    synonym for the rigged-CGL grid); ``"half-cgl"`` the half-CGL
-    radial grid (**cylindrical family only, and only with**
-    ``step.scheme == "iterative-cn"``); ``"tanh"`` a tanh-stretched
-    grid.
+    - Cartesian / annular: ``"cgl"`` (plain Chebyshev-Gauss-Lobatto)
+      or ``"tanh"`` (two-sided tanh-stretched, both walls clustered,
+      strength ``grid_stretch``).
+    - Cylindrical: ``"half-cgl"``, ``"rigged-cgl"``, or
+      ``"half-tanh"`` (a one-sided tanh over `$(0, 1]$` clustering
+      only at the outer wall -- there is no inner wall, so the
+      two-sided ``"tanh"`` name does not apply).
 
-    **Cylindrical radial grids.**  Both keep the ``ny`` outermost
+    **Cylindrical radial CGL grids.**  Both keep the ``ny`` outermost
     *positive* points of an auxiliary CGL grid on `$[-1, 1]$`, so the
     near-axis spacing is `$\Delta r \approx \pi/(2 n_y)$` and no
     degree of freedom lives in `$[0, r_0)$` (parity ghosts close the
     FD stencils across the axis; the quadrature covers the segment):
 
-    - **rigged-CGL** (the ``cnab2`` default): the positive half of a
-      `$(2 n_y + 1)$`-point grid.  The odd total's centre point falls
-      exactly on the coordinate-singular axis and is dropped, so the
-      innermost point sits at `$r_0 \approx \Delta r$`
+    - ``"rigged-cgl"`` (the ``cnab2`` default): the positive half of
+      a `$(2 n_y + 1)$`-point grid.  The odd total's centre point
+      falls exactly on the coordinate-singular axis and is dropped,
+      so the innermost point sits at `$r_0 \approx \Delta r$`
       (`$= \sin(\pi/(2 n_y))$`).
-    - **half-CGL** (the ``iterative-cn`` default): the positive half
-      of a `$2 n_y$`-point grid, staggered so
+    - ``"half-cgl"`` (the ``iterative-cn`` default): the positive
+      half of a `$2 n_y$`-point grid, staggered so
       `$r_0 \approx \Delta r/2$`
       (`$= \sin(\pi/(2\,(2 n_y - 1)))$`) -- half the rigged value.
 
@@ -287,13 +382,37 @@ class Geometry(BaseModel):
     it.  See ``build_radial_cgl_grid`` in ``cylindrical.py``.
     """
 
-    lx: float = Field(gt=0, default=4.0)
-    lz: float = Field(gt=0, default=4.0)
-    tilt_degree: float = Field(gt=-180, le=180, default=0)
-    # Radius ratio eta = r1/r2 for the annular (Taylor-Couette)
-    # geometry.  Non-dim radii r1 = eta/(1-eta), r2 = 1/(1-eta) on the
-    # gap d = r2 - r1 = 1.  Required for system == "taylor-couette".
-    eta: float | None = Field(default=None, gt=0, lt=1)
+    lx: float = Field(
+        gt=0,
+        default=4.0,
+        description="Streamwise period of the domain.",
+    )
+    lz: float = Field(
+        gt=0,
+        default=4.0,
+        description="Spanwise period of the domain.",
+    )
+    tilt_degree: float = Field(
+        gt=-180,
+        le=180,
+        default=0,
+        description=(
+            "Tilt angle (degrees) of the driving direction within the "
+            "homogeneous plane."
+        ),
+    )
+    # Required for every annular system (Taylor-Couette,
+    # quasi-Keplerian, Dean); the viscoelastic annulus uses ``delta``
+    # instead.
+    eta: float | None = Field(
+        default=None,
+        gt=0,
+        lt=1,
+        description=(
+            "Radius ratio eta = r1/r2 of the annulus (unit gap: "
+            "r1 = eta/(1-eta), r2 = 1/(1-eta))."
+        ),
+    )
     # Azimuthal wedge fundamental wavenumber m0 (annular and cylindrical
     # families only; rejected elsewhere).  The azimuthal domain is the
     # reduced wedge theta in [0, 2*pi/m0), so ``update_parameters``
@@ -322,26 +441,98 @@ class Geometry(BaseModel):
     # wedge decimated over the full azimuth would evaluate the
     # pseudo-spectral product on an m0-times too coarse grid and fail it
     # outright.
-    m0: int = Field(ge=1, default=1)
-    # Inner radius delta for the viscoelastic annular geometry
-    # (system == "viscoelastic-dean").  The gap is fixed at 2 (half-gap
-    # length unit), so r1 = delta, r2 = delta + 2.  Default 11 (applied
-    # in the ``update_parameters`` viscoelastic branch).
-    delta: float | None = Field(default=None, gt=0)
-    wall_grid: Path | None = None
-    grid_type: Literal["cgl", "half-cgl", "tanh"] | None = None
-    grid_stretch: float = Field(gt=0, default=1.5)
+    m0: int = Field(
+        ge=1,
+        default=1,
+        description=(
+            "Azimuthal wedge fundamental wavenumber: simulate the "
+            "m0-periodic wedge theta in [0, 2*pi/m0) (1 = full "
+            "circle), cutting azimuthal cost/memory by m0 at fixed "
+            "resolution."
+        ),
+    )
+    # Default 11 (applied in the viscoelastic ``derive`` hook).
+    delta: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Inner radius of the viscoelastic annulus in half-gap "
+            "units (gap fixed at 2: r1 = delta, r2 = delta + 2)."
+        ),
+    )
+    wall_grid: Path | None = Field(
+        default=None,
+        description=(
+            "File with a custom wall-normal grid (one point per "
+            "line, wall first); overrides grid_type."
+        ),
+    )
+    grid_type: (
+        Literal["cgl", "tanh", "half-cgl", "rigged-cgl", "half-tanh"] | None
+    ) = Field(
+        default=None,
+        description=(
+            "Named wall-normal grid; unset resolves to the flow's "
+            "default.  Cartesian/annular: 'cgl', 'tanh'; cylindrical: "
+            "'half-cgl', 'rigged-cgl', 'half-tanh'."
+        ),
+    )
+    grid_stretch: float = Field(
+        gt=0,
+        default=1.5,
+        description=(
+            "Stretching of the tanh grids (larger = stronger wall "
+            "clustering); tanh grids only."
+        ),
+    )
 
 
 class Resolution(BaseModel):
     """Grid resolution (number of Fourier modes before dealiasing)."""
 
-    # Number of grid points = (before oversampling) # of Fourier modes
-    nx: int = Field(ge=1, default=128)
-    ny: int = Field(ge=1, default=128)
-    nz: int = Field(ge=1, default=128)
-    fd_order: int = Field(ge=2, default=4)
-    double_precision: bool = True  # use double-precision floating point
+    nx: int = Field(
+        ge=1,
+        default=128,
+        description=(
+            "Streamwise Fourier modes (= physical grid points before "
+            "dealiasing)."
+        ),
+    )
+    ny: int = Field(
+        ge=1,
+        default=128,
+        description=(
+            "Wall-normal grid points (wall-bounded) or shear-direction "
+            "Fourier modes (periodic box)."
+        ),
+    )
+    nz: int = Field(
+        ge=1,
+        default=128,
+        description=(
+            "Spanwise Fourier modes (= physical grid points before "
+            "dealiasing)."
+        ),
+    )
+    fd_order: int = Field(
+        ge=2,
+        default=8,
+        description=(
+            "Wall-normal finite-difference accuracy order p; "
+            "stencils span p+1 points (D1) / p+2 points (D2), "
+            "one-sided at the walls, so order p holds everywhere. "
+            "openpipeflow's 9-point stencils correspond to "
+            "fd_order = 2*i_KL = 8 (its i_KL = 4 is a stencil "
+            "half-width, not an accuracy order)."
+        ),
+    )
+    double_precision: bool = Field(
+        default=True,
+        description=(
+            "Use double precision (float64/complex128); False runs "
+            "single precision."
+        ),
+    )
 
 
 class Initiation(BaseModel):
@@ -370,141 +561,225 @@ class Initiation(BaseModel):
     :func:`trajectory_defining_changes`.
     """
 
-    # Start from the laminar / closed-form base state (zero
-    # perturbation; for Dean the analytical laminar profile).  Defaults
-    # off -- it must be set explicitly; when set it takes precedence over
-    # ``localized_rolls`` and the default ``random_field`` (but not a
-    # provided snapshot).
-    start_from_laminar: bool = False
-    snapshot: Path | None = None
-    t0: float = 0  # Initial value of time
-    it0: int = 0  # Initial value of number of time steps taken
-    # Initial value of the snapshot counter ``isnap`` (snapshots are
-    # named ``state{isnap}.tar``).  Mirrors ``it0``/``t0``: this is the
-    # fresh-start value, and on a *continuation* resume it is inherited
-    # from the snapshot (the resumed file's index + 1) instead.
-    isnap0: int = Field(ge=0, default=0)
-    # Continue the resumed trajectory (inherit ``it``/``t``/``isnap``)
-    # even when Physics/Geometry/Resolution parameters differ from the
-    # snapshot, instead of starting a new trajectory.  Does not bypass
-    # the hard nx/nz/system/precision mismatches that
-    # ``snapshot.validate_snapshot_params`` rejects.
-    force_resume: bool = False
-    # Generate an in-process random divergence-free perturbation of the
-    # base flow as the initial condition.  This is the **default** start
-    # mode (lowest precedence among the non-snapshot modes): it is used
-    # when no snapshot is given and neither ``start_from_laminar`` nor
-    # ``localized_rolls`` is set.  Ignored when a snapshot is given.  For
-    # Dean the analytical laminar profile is added (total-field IC).
-    random_field: bool = True
-    random_amplitude: float = 0.1  # target L2 norm of the perturbation
+    start_from_laminar: bool = Field(
+        default=False,
+        description=(
+            "Start from the laminar base state (zero perturbation; "
+            "total-field flows start on the analytical laminar "
+            "profile)."
+        ),
+    )
+    snapshot: Path | None = Field(
+        default=None,
+        description=(
+            "Snapshot file to start/resume from; takes precedence "
+            "over every other start mode."
+        ),
+    )
+    t0: float = Field(
+        default=0,
+        description="Initial simulation time of a fresh start.",
+    )
+    it0: int = Field(
+        default=0,
+        description="Initial time-step counter of a fresh start.",
+    )
+    # Mirrors ``it0``/``t0``: the fresh-start value; a *continuation*
+    # resume inherits the resumed file's index + 1 instead.
+    isnap0: int = Field(
+        ge=0,
+        default=0,
+        description=(
+            "Initial snapshot counter (snapshots are named state{isnap}.tar)."
+        ),
+    )
+    force_resume: bool = Field(
+        default=False,
+        description=(
+            "Continue the resumed trajectory (inherit t/it/isnap) even "
+            "when trajectory-defining parameters changed; hard "
+            "resolution/system mismatches still reject."
+        ),
+    )
+    random_field: bool = Field(
+        default=True,
+        description=(
+            "Start from a random divergence-free perturbation -- the "
+            "default start mode when no other mode is selected "
+            "(total-field flows add the analytical laminar profile)."
+        ),
+    )
+    random_amplitude: float = Field(
+        default=0.1,
+        description=("Target L2 norm of the random initial perturbation."),
+    )
     random_smoothness: float = Field(
-        gt=0, lt=1, default=0.4
-    )  # spectral decay rate (0 < s < 1)
-    random_seed: int = 1  # NumPy PRNG seed (device-count independent)
-    random_mean_flow: bool = False  # also perturb the mean (kx=kz=0) mode
-    # Amplitude of the random symmetric-tensor perturbation added to the
-    # laminar conformation for the viscoelastic random IC
-    # (system == "viscoelastic-dean"); shares ``random_smoothness`` for
-    # the spectral envelope and is radially windowed to zero at both
-    # walls (the reference restart recipe).  Ignored by every other
-    # system (which has no conformation field).
-    random_conformation_amplitude: float = 700.0
-    # Generate an in-process deterministic localized-rolls ("turbulent
-    # spot") perturbation (wall-bounded only; higher precedence than the
-    # default ``random_field``, lower than ``start_from_laminar``).  A
-    # compact fixed-physical structure normalized so
-    # peak |u'| = amplitude, localized in every homogeneous direction
-    # (growing a box length adds laminar around the spot).  ``width`` is
-    # the physical localization half-width (flow units); ``wavelength`` is
-    # the cross-roll spanwise wavelength (flow units; ignored by the pipe,
-    # whose cross-section is the fixed m = +-1 mode).  For Dean the
-    # analytical laminar profile is added (total-field IC).
-    localized_rolls: bool = False
-    localized_rolls_amplitude: float = 0.1  # peak perturbation velocity
-    localized_rolls_width: float = 2.0  # physical localization width
-    localized_rolls_wavelength: float = 4.0  # cross-roll wavelength
+        gt=0,
+        lt=1,
+        default=0.4,
+        description=(
+            "Spectral decay rate of the random perturbation "
+            "(0 < s < 1; larger = smoother)."
+        ),
+    )
+    random_seed: int = Field(
+        default=1,
+        description=(
+            "Seed of the random-IC generator (device-count independent)."
+        ),
+    )
+    random_mean_flow: bool = Field(
+        default=False,
+        description=(
+            "Also perturb the mean (kx = kz = 0) profile in the random IC."
+        ),
+    )
+    # Radially windowed to zero at both walls (the reference restart
+    # recipe); shares ``random_smoothness`` for the spectral envelope.
+    random_conformation_amplitude: float = Field(
+        default=700.0,
+        description=(
+            "Amplitude of the random symmetric-tensor perturbation "
+            "added to the laminar conformation in the viscoelastic "
+            "random IC."
+        ),
+    )
+    # A compact fixed-physical structure localized in every homogeneous
+    # direction (growing a box length adds laminar around the spot);
+    # precedence between ``start_from_laminar`` and ``random_field``.
+    localized_rolls: bool = Field(
+        default=False,
+        description=(
+            "Start from a deterministic localized-rolls ('turbulent "
+            "spot') perturbation."
+        ),
+    )
+    localized_rolls_amplitude: float = Field(
+        default=0.1,
+        description="Peak |u'| of the localized-rolls perturbation.",
+    )
+    localized_rolls_width: float = Field(
+        default=2.0,
+        description=(
+            "Physical localization half-width of the rolls (flow units)."
+        ),
+    )
+    localized_rolls_wavelength: float = Field(
+        default=4.0,
+        description=(
+            "Cross-roll spanwise wavelength (flow units; ignored by "
+            "the pipe, whose cross-section is the fixed m = +-1 "
+            "mode)."
+        ),
+    )
 
 
 class Outputs(BaseModel):
     """Output frequency controls (in time-step counts)."""
 
-    # All outputs are with respect to the number of time steps taken
-    it_stats: int | None = None  # How often to compute stats
-    # How often (in steps) to record the time-step (CFL) diagnostic
-    # into ``steps.dat``.  The measurement is taken from the current
-    # state `$u^n$` at the step's first nonlinear-term evaluation
-    # (no extra Fourier transforms).  ``None`` disables it.
-    it_steps: int | None = None
-    it_snapshot: int | None = None  # How often to save snapshots
-    # How often (in steps) to record the corrector diagnostic (the
-    # corrector iteration count ``c`` and the final corrector error)
-    # into ``corrector.dat``, with the same on-device buffering and file
-    # format as ``stats.dat``.  ``None`` disables it.  When set,
-    # ``it_error_check`` must be <= ``it_corrector`` (see
-    # ``validate_parameters``) so the convergence check is at least as
-    # frequent as the logging.
-    it_corrector: int | None = Field(default=None, ge=1)
-    # How often (in steps) to sync the corrector error to the host
-    # for the convergence check.  Between checks the host enqueues
-    # steps ahead of the device (JAX async dispatch); corrector
-    # divergence is therefore detected up to ``it_error_check``
-    # steps late, each late step bounded by
-    # ``max_corrector_iterations``.  1 restores a per-step check
-    # (and a per-step host-device sync).  Must be <= ``it_corrector``
-    # when the corrector diagnostic is enabled.  Also the cadence of
-    # the non-finite (NaN/inf) guard on the synced corrector error
-    # and perturbation energy (a hit aborts the run with exit code 3;
-    # the ``__main__`` module docstring documents the full guard).
-    it_error_check: int = Field(ge=1, default=10)
-    # Spectral-mode probe stream: record the complex wall-normal
-    # profiles ``u_hat(y)`` of the listed global spectral modes every
-    # ``it_probes`` steps into a binary ``probes.bin`` (+ a
-    # ``probes.json`` schema sidecar).  ``probe_modes`` is an
-    # ``"i2,i3;i2,i3;..."`` list of stored-layout indices (axis 2 =
-    # complex slot, axis 3 = real-FFT slot -- the transient-growth
-    # CLI ``--modes`` convention); the mean mode ``(0,0)`` is allowed
-    # (it records the instantaneous mean profile).  Wall-bounded
-    # systems only; both fields set together (``validate_parameters``).
-    # ``it_probes`` trades time resolution for disk (a record is
-    # ``8 + K*C*ny*2`` values): sample densely enough for the fastest
-    # statistics of interest -- the buffered writer makes any cadence
-    # cheap at runtime, so disk volume is the only real constraint.
-    # Format, buffering, and the reader: the :mod:`dnsjax.probes` and
-    # :mod:`dnsjax.analysis.response.probes` docstrings.
-    probe_modes: str | None = None
-    it_probes: int | None = Field(default=None, ge=1)
-    # Rows buffered on device before flushing ``stats.dat`` /
-    # ``steps.dat`` / ``corrector.dat`` / ``probes.bin`` to disk.
-    nbuffer: int = Field(ge=1, default=100)
-    stats_precision: int = Field(ge=1, le=17, default=9)
-    # Snapshot filenames are ``state{isnap:0Nd}.tar`` with N =
-    # ``snapshot_pad_width`` (a *minimum* width; a larger ``isnap`` is
-    # not truncated).  ``isnap`` starts at ``init.isnap0`` and is
-    # incremented on every snapshot written.
-    snapshot_pad_width: int = Field(ge=1, default=5)
-    # Embed the state's stats (``get_stats``) into every snapshot as a
-    # ``_dnsjax_stats.json`` member.  The periodic-snapshot path reuses
-    # the ``it_stats`` computation when the iterations coincide, else it
-    # computes the stats once for the snapshot.
-    snapshot_embed_stats: bool = True
-    # Save the initial condition as ``state00000.tar`` when the run does
-    # not *continue* a dnsjax snapshot trajectory (random / localized-
-    # rolls / legacy-``.npz`` / laminar start, or a resume that changed
-    # the Physics/Geometry/Resolution).  Independent of ``it_snapshot``.
-    snapshot_save_initial: bool = True
-    # Save the final state as a snapshot when the simulation terminates.
-    # Independent of ``it_snapshot``; skipped when the final state was
-    # just written (e.g. it coincided with a periodic snapshot).
-    snapshot_save_final: bool = True
-    # How processes write the snapshot's shared tar file:
-    #   "concurrent": all processes write their disjoint byte ranges
-    #                 at once (fast; POSIX/parallel filesystems).
-    #   "serial":     rank-ordered (token-passing) writes, one
-    #                 process at a time -- safe on filesystems such
-    #                 as NFS where concurrent writes can corrupt
-    #                 data.  No effect for single-process runs.
-    snapshot_write_mode: Literal["concurrent", "serial"] = "concurrent"
+    # All cadences count time steps taken.
+    it_stats: int | None = Field(
+        default=None,
+        description=(
+            "Steps between stats.dat records; unset disables the stream."
+        ),
+    )
+    # Measured from the current state at the step's first
+    # nonlinear-term evaluation (no extra Fourier transforms).
+    it_steps: int | None = Field(
+        default=None,
+        description=(
+            "Steps between CFL time-step diagnostics in steps.dat; "
+            "unset disables the stream."
+        ),
+    )
+    it_snapshot: int | None = Field(
+        default=None,
+        description=("Steps between periodic snapshots; unset disables them."),
+    )
+    # Same on-device buffering and file format as ``stats.dat``.
+    it_corrector: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Steps between corrector diagnostics (iteration count and "
+            "error) in corrector.dat; unset disables the stream; "
+            "requires it_error_check <= it_corrector.  All-zero rows "
+            "under triply-periodic cnab2 (no corrector there)."
+        ),
+    )
+    # Between checks the host enqueues steps ahead of the device (JAX
+    # async dispatch); corrector divergence is therefore detected up
+    # to ``it_error_check`` steps late, each late step bounded by
+    # ``max_corrector_iterations``.  1 restores a per-step check (and
+    # a per-step host-device sync).  Also the cadence of the
+    # non-finite (NaN/inf) guard on the synced corrector error and
+    # perturbation energy (a hit aborts the run with exit code 3; the
+    # ``__main__`` module docstring documents the full guard).
+    it_error_check: int = Field(
+        ge=1,
+        default=10,
+        description=(
+            "Steps between host syncs of the corrector error and "
+            "perturbation energy (convergence, laminarization and "
+            "non-finite guards); larger = deeper async dispatch but "
+            "later detection."
+        ),
+    )
+    nbuffer: int = Field(
+        ge=1,
+        default=100,
+        description=(
+            "Rows buffered on device before each diagnostics flush "
+            "(stats/steps/corrector/probes) to disk."
+        ),
+    )
+    stats_precision: int = Field(
+        ge=1,
+        le=17,
+        default=9,
+        description=("Significant digits of the .dat diagnostic streams."),
+    )
+    # A *minimum* width; a larger ``isnap`` is not truncated.
+    snapshot_pad_width: int = Field(
+        ge=1,
+        default=5,
+        description=(
+            "Minimum zero-padded width of the snapshot counter in "
+            "state{isnap}.tar filenames."
+        ),
+    )
+    # The periodic-snapshot path reuses the ``it_stats`` computation
+    # when the iterations coincide, else it computes the stats once.
+    snapshot_embed_stats: bool = Field(
+        default=True,
+        description=(
+            "Embed the state's stats into every snapshot "
+            "(_dnsjax_stats.json member)."
+        ),
+    )
+    snapshot_save_initial: bool = Field(
+        default=True,
+        description=(
+            "Save the initial condition as a snapshot on a fresh "
+            "(non-continuation) start; independent of it_snapshot."
+        ),
+    )
+    snapshot_save_final: bool = Field(
+        default=True,
+        description=(
+            "Save the final state as a snapshot when the run "
+            "terminates (skipped when it was just written)."
+        ),
+    )
+    snapshot_write_mode: Literal["concurrent", "serial"] = Field(
+        default="concurrent",
+        description=(
+            "How processes write the shared snapshot tar: "
+            "'concurrent' disjoint-range writes (POSIX/parallel "
+            "filesystems) or 'serial' rank-ordered writes (NFS-safe)."
+        ),
+    )
 
 
 class TimeStepping(BaseModel):
@@ -673,45 +948,103 @@ class TimeStepping(BaseModel):
     ``U - U_grid``).
     """
 
-    scheme: Literal["iterative-cn", "cnab2"] = "iterative-cn"
-    dt: float = Field(gt=0, default=0.01)
-    implicitness: float = Field(ge=0, le=1, default=0.5)
-    corrector_tolerance: float = Field(gt=0, default=1e-5)
-    max_corrector_iterations: int = Field(ge=1, default=10)
-    # Fold the instantaneous mean-flow coupling ``L_mf`` into the
-    # FFT-free coupling term ``_l_bf`` shared by the wall-bounded
-    # CN/AB2 scheme and the split ``iterative-cn`` corrector
-    # (``split_corrector``); no effect on triply-periodic flows.
-    # See the class docstring.
-    implicit_mean_coupling: bool = True
-    # Wall-bounded ``"iterative-cn"`` only, **opt-in** (default off):
-    # iterate the linear coupling ``_l_bf`` FFT-free between full-RHS
-    # corrector refreshes (same CN fixed point; coupling-driven
-    # corrector iterations stop costing one FFT evaluation each).  At
-    # realistic ``dt`` the corrector converges in ~1--2 iterations for
-    # every flow (measured, incl. Dean and high-Wi viscoelastic-dean),
-    # so the unsplit corrector is both correct and faster -- the split
-    # only pays off if ``dt`` is pushed far enough that the unsplit
-    # corrector approaches its iteration cap.  No effect on cnab2 or
-    # triply-periodic flows.  See the class docstring.
-    split_corrector: bool = False
+    scheme: Literal["iterative-cn", "cnab2"] = Field(
+        default="iterative-cn",
+        description=(
+            "'iterative-cn': predictor + iterative CN corrector, "
+            "stable past the advective CFL.  'cnab2': explicit AB2 "
+            "nonlinear term, one FFT evaluation per step, "
+            "advective-CFL-limited."
+        ),
+    )
+    dt: float = Field(gt=0, default=0.01, description="Time-step size.")
+    implicitness: float = Field(
+        ge=0,
+        le=1,
+        default=0.5,
+        description=(
+            "Crank-Nicolson implicit weight c (0.5 = second-order "
+            "trapezoidal)."
+        ),
+    )
+    corrector_tolerance: float = Field(
+        gt=0,
+        default=1e-5,
+        description=(
+            "Convergence tolerance of the corrector fixed point: the "
+            "iterative-cn corrector everywhere, and the FFT-free "
+            "wall-coupling corrector of wall-bounded cnab2."
+        ),
+    )
+    max_corrector_iterations: int = Field(
+        ge=1,
+        default=10,
+        description=(
+            "Iteration cap of the same correctors; failure to "
+            "converge at low CFL means dt is too large to contract "
+            "-- reduce dt."
+        ),
+    )
+    # Folds ``L_mf`` into the FFT-free coupling term ``_l_bf`` shared
+    # by the wall-bounded CN/AB2 scheme and the split ``iterative-cn``
+    # corrector.  See the class docstring.
+    implicit_mean_coupling: bool = Field(
+        default=True,
+        description=(
+            "Fold the instantaneous mean-flow coupling into the "
+            "implicit FFT-free coupling term (wall-bounded cnab2 and "
+            "the split iterative-cn corrector)."
+        ),
+    )
+    # Same CN fixed point; coupling-driven corrector iterations stop
+    # costing one FFT evaluation each.  At realistic ``dt`` the
+    # unsplit corrector converges in ~1--2 iterations for every flow
+    # (measured), so the split only pays off once ``dt`` pushes the
+    # unsplit corrector towards its iteration cap.  See the class
+    # docstring.
+    split_corrector: bool = Field(
+        default=False,
+        description=(
+            "Opt-in, wall-bounded iterative-cn only: iterate the "
+            "linear coupling FFT-free between full-RHS corrector "
+            "refreshes; no effect on cnab2."
+        ),
+    )
 
 
 class Termination(BaseModel):
     """Stopping criteria for the simulation."""
 
-    max_sim_time: float | None = None
-    max_wall_time: timedelta | None = None  # ISO 8601 format for durations
-    # Laminarization (relaminarization) check.  When enabled, the run
-    # terminates once the perturbation kinetic energy ``E'`` drops
-    # below ``laminarization_threshold`` (the flow has returned to
-    # laminar).  ``E'`` is read on the host every
-    # ``outs.it_error_check`` steps (the corrector-error sync point),
-    # so detection lags by up to that many steps.  For Dean (total
-    # field) ``E'`` is the kinetic energy of the deviation from the
-    # analytical laminar profile.  Disabled in all tests.
-    check_laminarization: bool = True
-    laminarization_threshold: float = Field(gt=0, default=1e-9)
+    max_sim_time: float | None = Field(
+        default=None,
+        description=("Stop once the simulation time reaches this value."),
+    )
+    max_wall_time: timedelta | None = Field(
+        default=None,
+        description=(
+            "Stop after this much wall-clock time (ISO 8601 "
+            "duration, e.g. 'PT11H30M')."
+        ),
+    )
+    # ``E'`` is read on the host every ``outs.it_error_check`` steps
+    # (the corrector-error sync point), so detection lags by up to
+    # that many steps.  For the total-field flows ``E'`` is the
+    # kinetic energy of the deviation from the analytical laminar
+    # profile.  Disabled in all tests.
+    check_laminarization: bool = Field(
+        default=True,
+        description=(
+            "Stop once the perturbation energy E' drops below "
+            "laminarization_threshold (the flow relaminarized)."
+        ),
+    )
+    laminarization_threshold: float = Field(
+        gt=0,
+        default=1e-9,
+        description=(
+            "Perturbation-energy threshold of the laminarization check."
+        ),
+    )
 
 
 class Solver(BaseModel):
@@ -743,163 +1076,106 @@ class Solver(BaseModel):
     # Pallas path is tested against -- not a production backend (a
     # wall-bounded run selecting it prints a warning).
     # Triply-periodic systems have no wall-normal matrix solves (the
-    # implicit step is diagonal in spectral space): ``"dense"`` (the
-    # reference semantics) is their only backend, the default
-    # resolves to it in ``update_parameters()``, and ``"pallas"`` is
-    # rejected there.
-    backend: Literal["pallas", "dense"] = "pallas"
-    # ``"pallas"`` backend only: Pallas mode-tile size along the ``k_z``
-    # mode axis (one Pallas program solves a ``bm0 x bm1`` tile of
-    # Fourier modes, vectorising the banded sweep across the tile).  ``1``
-    # is one program per mode; ``> 1`` coalesces mode loads and fills more
-    # SIMD lanes.  The default ``2`` is the H100 tuning (4 warps/program
-    # with ``k = 2``).  The mode plane is padded up to whole tiles (a
-    # masked partial-tile band load miscompiles on real Triton -- see
-    # ``solvers._pallas_banded_solve``): factors once at construction,
-    # the RHS per solve.  The padded modes cost memory and solve work
-    # proportional to the roundup fraction -- negligible at DNS mode
-    # counts, but worth shrinking the tile for when the plane is small
-    # relative to it (e.g. ``nx/2 < 32``).  Must be a power of two.
-    pallas_block_m0: int = Field(ge=1, default=2)
-    # ``"pallas"`` backend only: Pallas mode-tile size along the
-    # contiguous ``k_x`` mode axis (the innermost, coalesced axis).  The
-    # default ``32`` is the H100 tuning -- one warp wide, so a warp's band
-    # load fully coalesces.  Same internal padding to full tiles as
-    # ``pallas_block_m0``.  Must be a power of two.
-    pallas_block_m1: int = Field(ge=1, default=32)
-    # ``"pallas"`` backend only: solve-residual threshold for the
-    # setup-time no-pivot banded-LU stability check (max relative
-    # residual ``||A x - b|| / ||b||`` over modes, measured once per
-    # operator group).  Above it, ``solvers._build_pallas_operator``
+    # implicit step is diagonal in spectral space), so no ``solver``
+    # backend applies there: the field is wall-bounded-only (absent
+    # from the periodic parameter surfaces) and the periodic
+    # geometry never reads it.
+    backend: Literal["pallas", "dense"] = Field(
+        default="pallas",
+        description=(
+            "'pallas': the production banded solver (smallest "
+            "storage, fastest).  'dense': the reference Ny x Ny LU "
+            "backend kept for readability and regression checks."
+        ),
+    )
+    # ``"pallas"`` backend only: one Pallas program solves a
+    # ``bm0 x bm1`` tile of Fourier modes, vectorising the banded
+    # sweep across the tile.  ``1`` is one program per mode; ``> 1``
+    # coalesces mode loads and fills more SIMD lanes (default 2: the
+    # H100 tuning, 4 warps/program).  The mode plane is padded up to
+    # whole tiles (a masked partial-tile band load miscompiles on real
+    # Triton -- see ``solvers._pallas_banded_solve``): factors once at
+    # construction, the RHS per solve.  The padded modes cost memory
+    # and solve work proportional to the roundup fraction --
+    # negligible at DNS mode counts, but worth shrinking the tile for
+    # when the plane is small relative to it (e.g. ``nx/2 < 32``).
+    pallas_block_m0: int = Field(
+        ge=1,
+        default=2,
+        description=(
+            "Pallas mode-tile size along the spanwise/azimuthal mode "
+            "axis (power of two; default tuned on H100)."
+        ),
+    )
+    # ``"pallas"`` backend only: the innermost, coalesced mode axis.
+    # The default ``32`` is the H100 tuning -- one warp wide, so a
+    # warp's band load fully coalesces.  Same internal padding to full
+    # tiles as ``pallas_block_m0``.
+    pallas_block_m1: int = Field(
+        ge=1,
+        default=32,
+        description=(
+            "Pallas mode-tile size along the contiguous "
+            "streamwise/axial mode axis (power of two; default tuned "
+            "on H100)."
+        ),
+    )
+    # ``"pallas"`` backend only: max relative residual
+    # ``||A x - b|| / ||b||`` over modes, measured once per operator
+    # group at setup.  Above it, ``solvers._build_pallas_operator``
     # prints an ill-conditioning notice (benign LU element growth) or
     # raises on genuine no-pivot instability (see
     # ``solvers._NO_PIVOT_GROWTH_TOL``).
-    pallas_stability_tol: float = Field(gt=0, default=1e-6)
-    # Chunk count for the batched inverse transform of the
-    # pseudo-spectral RHS, all flows: the 6-field velocity+vorticity
-    # batch of ``rhs.get_nonlin`` and the ~36-field fused viscoelastic
-    # batch (``_get_rhs_core`` in
+    pallas_stability_tol: float = Field(
+        gt=0,
+        default=1e-6,
+        description=(
+            "Residual threshold of the setup-time no-pivot banded-LU "
+            "stability check."
+        ),
+    )
+    # Applies to the 6-field velocity+vorticity batch of
+    # ``rhs.get_nonlin`` and the ~36-field fused viscoelastic batch
+    # (``_get_rhs_core`` in
     # ``geometries/wall_bounded/annular_viscoelastic.py``), both via
-    # ``fft.chunked_transform``.  A memory/throughput trade-off: ``1``
-    # (default) keeps one fused batch -- throughput-optimal (one FFT
-    # dispatch and one reshard round per pipeline stage).  ``k > 1``
-    # splits the batch into ``k`` balanced groups, cutting the
-    # transform-stage transient (the padded intermediate buffers; see
-    # the ``fft.py`` memory note) by ~``k`` at the cost of ``k``x the
-    # FFT dispatches (and ``k`` smaller reshard rounds per stage on
-    # multi-device runs).  Results are identical (per-field transforms
-    # are independent).  Raise it only when that transient sets the
-    # device-memory peak: chiefly the viscoelastic batch (it dominates
-    # that step's peak); the Newtonian 6-field transient is ~6x
-    # smaller.  Forward transforms stay fused.
-    rhs_transform_chunks: int = Field(ge=1, default=1)
-
-
-class StochasticForcing(BaseModel):
-    r"""White-in-time stochastic mode forcing (state kicks), optional.
-
-    Enabled when ``modes`` / ``profiles`` / ``amplitude`` /
-    ``it_force`` are all set (``validate_parameters`` enforces
-    all-or-none): every ``it_force`` steps the main loop adds to each
-    listed spectral mode (plus its real-FFT conjugate partner) a
-    random superposition of the stored channel profiles -- a sequence
-    of independent state increments ("kicks"), the discrete-time
-    realisation of white-in-time forcing.  The drawn coefficients
-    stream to ``forcing.bin``/``forcing.json`` next to the other
-    diagnostics, keeping the run's full forcing history available
-    to offline analysis -- e.g. their cross-covariance with the
-    probe stream identifies the mode's linear operator
-    (:mod:`dnsjax.analysis.response.ssi`).
-
-    Kicks rather than a body-force term: a forcing term inside the
-    nonlinear RHS would be AB2-extrapolated under ``cnab2``
-    (colouring the noise) or corrector-iterated under
-    ``iterative-cn``, and would trace into the jitted steppers; a
-    loop-level kick keeps both schemes untouched and makes the
-    per-kick response exactly the solver's own propagator.  Full
-    conventions (timing relative to probes/snapshots, resume
-    continuation, amplitude guidance): the :mod:`dnsjax.forcing`
-    module docstring.
-
-    Wall-bounded, non-viscoelastic systems only (the conjugate-
-    partner construction currently encodes the 3-component velocity
-    bases).  The whole section is **trajectory-defining**: resuming
-    with changed forcing starts a new trajectory (like a ``phys``
-    change).
-    """
-
-    # ``"i2,i3;..."`` global spectral modes to force -- the
-    # ``outs.probe_modes`` convention; the mean mode (0,0) is
-    # rejected (real + constrained under bulk-velocity driving).
-    # Forced modes should normally also be probed, or the response
-    # cannot be identified (a startup note reminds when they are not).
-    modes: str | None = None
-    # npz with per-mode channel profiles ``profiles_{i2}_{i3}``
-    # (``(m, C, Ny)`` complex, unit energy norm -- the
-    # ``operator_tools.save_modes_npz`` bundle format; any
-    # unit-energy profile set works, typically the leading
-    # controllability modes) on **this run's** wall-normal grid
-    # (exact match required; regrid offline if needed).
-    profiles: str | None = None
-    # Leading channels used per mode (default: all stored).  Fewer
-    # channels = fewer directions identified but less injected energy
-    # and a smaller operator to fit.
-    n_channels: int | None = Field(default=None, ge=1)
-    # Kick coefficient scale eps: each kick adds
-    # ``eps * sum_j w_j profile_j`` with ``w_j ~ CN(0,1)`` i.i.d., so
-    # the expected injected energy is ``eps^2`` per channel per kick.
-    # Pick eps in the linear-response window (halving it must leave
-    # the identified operator unchanged); the predicted stationary
-    # forced energy for planning: ``dnsjax.analysis.response.ssi.
-    # predicted_forced_variance``.
-    amplitude: float | None = Field(default=None, gt=0)
-    # Kick cadence in steps (``Delta_f = it_force * dt``).  Must be a
-    # multiple of ``outs.it_probes`` when probing, so every kick
-    # coincides with a (pre-kick) probe sample.  Larger values give
-    # cleaner per-kick responses; smaller values more statistics per
-    # run time.
-    it_force: int | None = Field(default=None, ge=1)
-    # Seed of the coefficient PRNG (host-side, identical on every
-    # rank; a resumed run skips the already-recorded draws, so the
-    # coefficient stream continues exactly as if uninterrupted).
-    seed: int = 0
+    # ``fft.chunked_transform``.  ``k > 1`` splits the batch into
+    # ``k`` balanced groups, cutting the transform-stage transient
+    # (the padded intermediate buffers; see the ``fft.py`` memory
+    # note) by ~``k`` at the cost of ``k``x the FFT dispatches (and
+    # ``k`` smaller reshard rounds per stage on multi-device runs).
+    # Raise it only when that transient sets the device-memory peak:
+    # chiefly the viscoelastic batch; the Newtonian 6-field transient
+    # is ~6x smaller.  Forward transforms stay fused.
+    rhs_transform_chunks: int = Field(
+        ge=1,
+        default=1,
+        description=(
+            "Split the batched inverse FFT of the nonlinear term "
+            "into k chunks: ~k times smaller transform transient at "
+            "k times the FFT dispatches; results identical."
+        ),
+    )
 
 
 class Parameters(BaseModel):
     """Top-level parameter container aggregating all categories."""
 
-    dist: Distribution | None = Distribution()
+    dist: Distribution = Distribution()
     phys: Physics = Physics()
     geo: Geometry = Geometry()
     res: Resolution = Resolution()
     init: Initiation = Initiation()
     outs: Outputs = Outputs()
     step: TimeStepping = TimeStepping()
-    force: StochasticForcing = StochasticForcing()
-    stop: Termination | None = Termination()
+    stop: Termination = Termination()
     solver: Solver = Solver()
-
-
-class CLIParameters(
-    BaseSettings,
-    Parameters,
-    cli_parse_args=True,
-    cli_avoid_json=True,
-    cli_hide_none_type=True,
-    cli_prog_name="dnsjax",
-):
-    """Command-line arguments override parameters.toml (if present),
-    which overrides the default parameters."""
 
 
 @dataclass
 class DerivedParameters:
     """Parameters derived from the user-facing configuration.
 
-    ``ly`` is fixed by the geometry (4 for triply-periodic, 2 for
-    Cartesian/cylindrical, ``2*r2`` for the annulus; cosmetic there --
-    only read by triply-periodic code).
-    ``volume_fac`` is also fixed by the geometry
+    ``volume_fac`` is fixed by the geometry
         (1 for periodic, 2 for Cartesian, 0.5 for cylindrical, and
         ``(r2^2 - r1^2)/2`` for the annulus).
     ``ccf_A``, ``ccf_B`` are the circular-Couette base-flow coefficients
@@ -914,9 +1190,7 @@ class DerivedParameters:
     ``(1-beta)/(re wi)``).
     """
 
-    ly: float = 4
     volume_fac: float = 1
-    tilt_rad: float = 0
     cos_tilt: float = 0
     sin_tilt: float = 0
     wall_normal_grid: list[float] | None = None
@@ -932,18 +1206,11 @@ params: Parameters = Parameters()
 derived_params: DerivedParameters = DerivedParameters()
 
 
-def read_parameters(path: Path) -> Parameters:
-    """Load a ``Parameters`` instance from a TOML file."""
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
-    return Parameters(**raw)
-
-
 # Parameters that must be known to configure JAX *before* a snapshot is
 # read (precision, platform, device mesh); they are never inherited from
-# a snapshot's embedded parameters (resume is device- and
-# precision-agnostic, and the precision mismatch is caught by
-# ``snapshot.validate_snapshot_params``).
+# a snapshot's embedded parameters.  Resume is device-agnostic;
+# precision is chosen per run, and a mismatch with the snapshot is
+# rejected by ``snapshot.validate_snapshot_params``.
 _SNAPSHOT_SKIP_FIELDS: tuple[tuple[str, str], ...] = (
     ("dist", "np0"),
     ("dist", "np1"),
@@ -951,67 +1218,63 @@ _SNAPSHOT_SKIP_FIELDS: tuple[tuple[str, str], ...] = (
     ("res", "double_precision"),
 )
 
-
-def _snapshot_grid_type(snapshot_params: dict) -> str | None:
-    r"""Effective ``geo.grid_type`` of a snapshot's embedded params.
-
-    ``update_parameters`` resolves the wall-normal grid default to a
-    concrete value, so current snapshots embed the grid they ran
-    (``"cgl"`` / ``"half-cgl"`` / ``"tanh"``).  Older wall-bounded
-    snapshots embed ``null`` (or, before ``grid_type`` existed, the
-    retired ``geo.axis_gap`` key) although they ran a definite grid:
-    the then-default full/rigged CGL (both spelled ``"cgl"``), or the
-    grid ``axis_gap`` selected (``0`` = half-CGL, ``1`` = rigged).
-    This helper maps a stored params dict to that effective value, so
-    :func:`read_snapshot_params` can pin the original grid on resume
-    and :func:`trajectory_defining_changes` compares grids rather than
-    storage conventions.  Returns the stored value unchanged when it
-    is concrete, and ``None`` for periodic systems and custom
-    ``wall_grid`` runs (where ``grid_type`` is genuinely unset).
-    """
-    geo = snapshot_params.get("geo") or {}
-    grid_type = geo.get("grid_type")
-    if grid_type is not None:
-        return grid_type
-    system = (snapshot_params.get("phys") or {}).get("system")
-    if system not in walled_systems or geo.get("wall_grid") is not None:
-        return None
-    if geo.get("axis_gap") == 0:  # retired pre-``grid_type`` field
-        return "half-cgl"
-    return "cgl"
+# Recorded for lineage but never inherited as a layer: the resume
+# *decision* fields.  A stored ``force_resume: true`` (the writing run
+# was itself force-resumed) must not make a later resume silently
+# continue across trajectory-defining changes, and the stored
+# ``snapshot`` path (what the writing run started from) must not leak
+# into the resuming run -- the resume source always comes from the
+# TOML/CLI layers.
+_SNAPSHOT_LINEAGE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("init", "snapshot"),
+    ("init", "force_resume"),
+)
 
 
-def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
-    """Build a ``Parameters`` from a snapshot's embedded parameters.
+def read_snapshot_params(
+    snapshot_path: Path,
+) -> tuple[Parameters, dict[str, dict]] | None:
+    """Read a snapshot's embedded parameters (core + extensions).
 
     Reads the ``_dnsjax_meta.json`` member of the snapshot tar (via the
     standard-library :mod:`dnsjax.snapshot_meta`; no JAX import, so it is
     safe to call before the distributed backend is configured) and
-    returns the embedded ``params`` as a :class:`Parameters`, with the
-    JAX-setup fields in :data:`_SNAPSHOT_SKIP_FIELDS` and the whole
-    ``solver`` section removed so they are not inherited.
+    returns ``(core, extension_overlays)``: the embedded core sections
+    as a :class:`Parameters` -- with the JAX-setup fields in
+    :data:`_SNAPSHOT_SKIP_FIELDS`, the resume-decision fields in
+    :data:`_SNAPSHOT_LINEAGE_FIELDS`, and the whole ``solver`` section
+    removed so they are not inherited -- plus the stored extension
+    sections (e.g. ``force``, ``probes``) keyed by section name, for
+    :func:`dnsjax.extensions.apply_extension_layer`.
 
     Returns ``None`` when *snapshot_path* is not a dnsjax snapshot file
     (legacy ``.npz`` snapshots, a laminar start, or a missing path), so
-    the caller simply skips the snapshot layer.  Unknown fields in the
-    stored dump are ignored (Pydantic ``extra="ignore"``), making this
-    robust to parameter-schema drift across versions.
-
-    A stored-``null`` wall-bounded ``geo.grid_type`` is backfilled to
-    its effective value (:func:`_snapshot_grid_type`), so the snapshot
-    layer pins the grid the trajectory actually ran -- the
-    scheme-dependent grid default of ``update_parameters`` cannot
-    silently re-grid an old run on resume.
+    the caller simply skips the snapshot layer.  Stored (v4) metadata
+    records the flow-relevant **public** names; they are mapped back
+    to internal names via
+    :func:`dnsjax.flows.registry.internalize_stored`, which drops
+    unknown stored keys with a note (schema drift across versions).
+    Snapshots embed the *resolved* configuration (concrete
+    ``geo.grid_type``, materialized per-flow defaults), so the
+    snapshot layer pins the trajectory's actual setup on resume; the
+    hidden-derived internal fields (e.g. the annular azimuthal
+    ``geo.lz``) are *not* rehydrated here -- ``update_parameters``
+    re-derives them from the stored public fields, and rehydrating
+    would mark them explicitly set.
     """
+    from .extensions import EXTENSIONS
+    from .flows.registry import internalize_stored
     from .snapshot_meta import is_snapshot_file, read_snapshot_meta
 
     if not is_snapshot_file(snapshot_path):
         return None
     meta = read_snapshot_meta(snapshot_path)
-    snap = meta.get("params")
-    if not snap:
+    stored = meta.get("params")
+    if not stored:
         return None
-    for section, key in _SNAPSHOT_SKIP_FIELDS:
+    system = meta.get("system") or stored.get("phys", {}).get("system")
+    snap = internalize_stored(stored, system)
+    for section, key in _SNAPSHOT_SKIP_FIELDS + _SNAPSHOT_LINEAGE_FIELDS:
         if section in snap and key in snap[section]:
             snap[section].pop(key)
     # Solver knobs are execution-only (they select *how* the numerics
@@ -1019,18 +1282,21 @@ def read_snapshot_params(snapshot_path: Path) -> Parameters | None:
     # snapshot -- which also keeps snapshots that embed a retired
     # backend/field resumable.
     snap.pop("solver", None)
-    grid_type = _snapshot_grid_type(snap)
-    if grid_type is not None:
-        snap.setdefault("geo", {})["grid_type"] = grid_type
-    return Parameters.model_validate(snap)
+    overlays = {
+        name: snap.pop(name)
+        for name in tuple(snap)
+        if name in EXTENSIONS and isinstance(snap[name], dict)
+    }
+    return Parameters.model_validate(snap), overlays
 
 
-# Parameter sections that *define* the trajectory: on resume, a change to
-# any of their fields (other than the JAX-setup skip fields) marks a new
-# trajectory (reset ``it``/``t``/``isnap``) rather than a continuation.
-# ``force`` belongs here: stochastic kicks alter the dynamics exactly
-# like a ``phys`` change would.
-_TRAJECTORY_SECTIONS: tuple[str, ...] = ("phys", "geo", "res", "force")
+# Core parameter sections that *define* the trajectory: on resume, a
+# change to any of their fields (other than the JAX-setup skip fields)
+# marks a new trajectory (reset ``it``/``t``/``isnap``) rather than a
+# continuation.  Trajectory-defining *extensions* (``force``:
+# stochastic kicks alter the dynamics exactly like a ``phys`` change)
+# are compared alongside in :func:`trajectory_defining_changes`.
+_TRAJECTORY_SECTIONS: tuple[str, ...] = ("phys", "geo", "res")
 
 
 def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
@@ -1038,33 +1304,41 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
 
     Compares the snapshot's embedded ``phys``/``geo``/``res`` parameters
     (``snapshot_params`` is the ``params`` sub-dict of
-    ``_dnsjax_meta.json``) against the live global :data:`params`,
-    skipping the JAX-setup fields in :data:`_SNAPSHOT_SKIP_FIELDS` (of
-    which only ``res.double_precision`` lies in these sections).  Returns
-    a human-readable ``"section.key: old -> new"`` description per
-    differing field; an empty list means the resume is a pure
-    *continuation* (inherit ``it``/``t``/``isnap``).  The comparison is
-    against the snapshot's stored ``model_dump(mode="json")`` (taken
-    after :func:`update_parameters`, so geometry-forced fields such as
-    cylindrical ``lz = 2*pi`` match and do not register as changes).
+    ``_dnsjax_meta.json``, in the stored **public**-named
+    representation) against the live global :data:`params`, and the
+    stored trajectory-defining extension sections (``force``) against
+    their live singletons, skipping the JAX-setup fields in
+    :data:`_SNAPSHOT_SKIP_FIELDS` (of which only
+    ``res.double_precision`` lies in these sections).  Returns a
+    human-readable ``"section.key: old -> new"`` description per
+    differing field (**internal** names -- the code-level identity of
+    the field); an empty list means the resume is a pure
+    *continuation* (inherit ``it``/``t``/``isnap``).
 
-    The wall-normal grid choice lives in ``geo.grid_type``
-    (``"cgl"`` = full CGL, or rigged-CGL for the cylindrical family;
-    ``"half-cgl"`` = the cylindrical half grid) and is compared by its
-    *effective* value: when the current side is concrete (the resolved
-    wall-bounded default), the stored side is normalised through
-    :func:`_snapshot_grid_type`, so an old snapshot's stored ``null``
-    (which ran the then-default ``"cgl"``) matches a current explicit
-    ``"cgl"`` and continues cleanly, while a genuine grid switch
-    (rigged <-> half-CGL) is flagged.  Legacy keys a snapshot carries
-    but the current model no longer defines (e.g. the retired
-    ``geo.axis_gap``) are otherwise ignored -- they are absent from
-    the current ``model_dump`` and skipped below.
+    The stored dump is internalized with ``rehydrate=True``
+    (:func:`dnsjax.flows.registry.internalize_stored`): the
+    hidden-derived internal fields (the annular azimuthal ``geo.lz``,
+    the derived ``phys.re``/``re2``) are recomputed from the stored
+    public fields with the same formulas ``update_parameters`` uses,
+    so on a clean continuation they compare bit-equal instead of
+    flagging spuriously.  Snapshots embed the resolved configuration
+    (a concrete ``geo.grid_type``, materialized per-flow defaults), so
+    values compare directly; a genuine grid switch (e.g. rigged-cgl
+    <-> half-cgl) is flagged.  Stored keys the current surface no
+    longer defines are dropped by the internalization (with a note);
+    fields *added* since the snapshot compare against the model
+    default (the old run effectively ran it).
     """
+    from .extensions import EXTENSIONS
+    from .flows.registry import internalize_stored
+
+    internal = internalize_stored(
+        snapshot_params, params.phys.system, rehydrate=True
+    )
     skip = set(_SNAPSHOT_SKIP_FIELDS)
     changes: list[str] = []
     for section in _TRAJECTORY_SECTIONS:
-        snap = snapshot_params.get(section, {})
+        snap = internal.get(section, {})
         model = getattr(params, section)
         cur = model.model_dump(mode="json")
         defaults = type(model)().model_dump(mode="json")
@@ -1072,40 +1346,52 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
             if (section, key) in skip:
                 continue
             if key not in cur:
-                # Legacy field no longer in the model (e.g. the
-                # retired geo.axis_gap): not trajectory-defining.
                 continue
-            # A key (or whole section, e.g. ``force`` on old
-            # snapshots) absent from the stored dump predates the
-            # field: the old run effectively ran the model default,
-            # so compare against that rather than flagging every
-            # legacy resume when a schema addition has a non-null
-            # default.
             old = snap[key] if key in snap else defaults.get(key)
-            if (
-                section == "geo"
-                and key == "grid_type"
-                and cur.get(key) is not None
-            ):
-                # Old snapshots store ``null`` although they ran a
-                # definite grid; compare effective values (see
-                # ``_snapshot_grid_type``).  Skipped when the current
-                # side is ``None`` (periodic / ``wall_grid`` runs, or
-                # a not-yet-resolved offline ``params``), where a
-                # stored ``null`` genuinely matches.
-                old = _snapshot_grid_type(snapshot_params)
             if old != cur.get(key):
                 changes.append(f"{section}.{key}: {old!r} -> {cur.get(key)!r}")
+    for name, ext in EXTENSIONS.items():
+        if not (ext.trajectory_defining and ext.relevant(params.phys.system)):
+            continue
+        snap = internal.get(name) or {}
+        cur = ext.values.model_dump(mode="json")
+        defaults = ext.model().model_dump(mode="json")
+        for key in sorted(set(snap) | set(cur)):
+            if key not in cur:
+                continue
+            old = snap[key] if key in snap else defaults.get(key)
+            if old != cur.get(key):
+                changes.append(f"{name}.{key}: {old!r} -> {cur.get(key)!r}")
     return changes
 
 
 # ``(section, key)`` of every field explicitly provided through any
 # configuration layer (snapshot / TOML / CLI), accumulated across all
-# :func:`update_parameters` calls.  Read by per-system defaults that
+# :func:`update_parameters` calls.  Read wherever a per-flow default
 # must distinguish "left at the class default" from "explicitly set to
-# the class default" (currently the viscoelastic ``geo.lx`` axial
-# period and the ``phys.re`` consistency check).
+# the class default" (the ``FieldSpec.default`` materialization, the
+# ``grid_type`` resolution, and consumers such as the
+# transient-growth CLI).
 _user_set_fields: set[tuple[str, str]] = set()
+
+# ``(section, key)`` of the per-flow default overrides
+# (``FieldSpec.default``) the *previous* ``update_parameters`` pass
+# materialized onto ``params``.  Restored to the model default before
+# the next pass materializes the (possibly different) current flow's
+# overrides, so a ``system`` switch across layers never leaks another
+# flow's default -- and ``_user_set_fields`` stays clean (a
+# materialized default is not a user choice).
+_materialized_defaults: set[tuple[str, str]] = set()
+
+# ``(section, key)`` of the fields the *previous* pass's derive hook
+# wrote onto ``params`` (the hidden-derived values: the annular /
+# cylindrical azimuthal ``geo.lz``, the circular-Couette ``phys.re``,
+# the quasi-Keplerian ``phys.re2``, the viscoelastic ``phys.re``).
+# Restored alongside :data:`_materialized_defaults` for the same
+# reason: a ``system`` switch across layers must not leak one flow's
+# derived value into another flow's derivation (e.g. a leaked
+# quasi-Keplerian ``re2`` silently parameterizing Taylor-Couette).
+_derive_written: set[tuple[str, str]] = set()
 
 
 def update_parameters(params_new: Parameters) -> None:
@@ -1115,9 +1401,12 @@ def update_parameters(params_new: Parameters) -> None:
     Only fields that were explicitly set in *params_new* are applied, so
     unset fields retain their previous values.  The ``(section, key)`` of
     every explicitly-set field is recorded (across all layers) in the
-    module-level :data:`_user_set_fields`, so a per-system default (e.g.
-    the viscoelastic axial period ``geo.lx``) can be applied only when
-    the user / snapshot / TOML never set it.
+    module-level :data:`_user_set_fields`, so a per-flow default (a
+    ``FieldSpec.default`` override, e.g. the viscoelastic axial period
+    ``geo.lx``) is materialized only when the user / snapshot / TOML
+    never set the field.  The flow-specific parameter math itself lives
+    in the flow specs (``flows/*/specs/``, dispatched via
+    :func:`dnsjax.flows.registry.spec_for`).
     """
     for category, dict in params_new.model_dump(exclude_unset=True).items():
         if dict is not None:
@@ -1126,160 +1415,53 @@ def update_parameters(params_new: Parameters) -> None:
                     _user_set_fields.add((category, key))
                     setattr(getattr(params, category), key, value)
 
-    # Set derived parameters:
+    # Per-flow parameter resolution.  Re-run after every layer, so a
+    # later ``system``/``scheme`` override can never inherit a stale
+    # per-flow default.  First restore any field a previous layer's
+    # spec materialized or its derive hook wrote (unless some layer
+    # has set the field since), then materialize the current spec's
+    # default overrides and run its derive hook -- the flow-specific
+    # parameter math (required-field checks, derived control
+    # parameters, geometry-forced fields, ``derived_params`` entries)
+    # declared in ``flows/*/specs/``.
     system = params.phys.system
-    if system in periodic_systems:
-        derived_params.volume_fac = 1  # sum over ky comes as density
-    elif system in cartesian_systems:
-        derived_params.volume_fac = 2  # int_{-1]^{1} dy.
-    elif system in cylindrical_systems:
-        # Force the azimuthal extent to the wedge 2*pi/m0 (m0 = 1 is the
-        # full circle), overriding any user-supplied value: the
-        # azimuthal modes are the integer multiples m = m0 * harmonic
-        # over this extent.  See ``geo.m0`` and ``cylindrical.Fourier``.
-        params.geo.lz = 2 * pi / params.geo.m0
-        # Cylindrical area normalisation: int_0^1 r dr.
-        derived_params.volume_fac = 0.5
-    elif system in annular_systems:
-        # Annular geometry (two concentric cylinders).  Shared by
-        # shear-driven Taylor-Couette (perturbation form) and
-        # force-driven Dean flow (total-field form).  Validate the
-        # radius ratio eta and derive the non-dim radii on the gap
-        # d = r2 - r1 = 1, the azimuthal extent, and the area norm.
-        eta = params.geo.eta
-        if eta is None:
-            raise ValueError(f"{system} requires geo.eta (radius ratio r1/r2)")
-        # Non-dim radii on the gap d = r2 - r1 = 1.
-        r1 = eta / (1 - eta)
-        r2 = 1 / (1 - eta)
-        derived_params.r_inner = r1
-        derived_params.r_outer = r2
-        # Force the azimuthal extent to the wedge 2*pi/m0 (m0 = 1 is the
-        # full circle); the azimuthal modes are the integer multiples
-        # m = m0 * harmonic over this extent (see ``geo.m0``).
-        params.geo.lz = 2 * pi / params.geo.m0
-        # Annular area normalisation: int_{r1}^{r2} r dr.
-        derived_params.volume_fac = (r2**2 - r1**2) / 2
-
-        if system == "quasi-keplerian":
-            # Quasi-Keplerian: reuse re1 as the inner Reynolds number
-            # Re_i and derive the outer re2 from the rotation number
-            # R_Omega (Dubrulle et al. 2005), then fall through to the
-            # shared circular-Couette derivation below.
-            re1, r_omega = params.phys.re1, params.phys.r_omega
-            if re1 is None or re1 <= 0:
-                raise ValueError(
-                    "quasi-keplerian requires phys.re1 > 0 (= Re_i)"
-                )
-            if r_omega is None:
-                raise ValueError(
-                    "quasi-keplerian requires phys.r_omega (rotation "
-                    "number R_Omega)"
-                )
-            if r_omega >= -1:
-                raise ValueError(
-                    "quasi-keplerian requires R_Omega < -1 (the open "
-                    "half-line -inf < R_Omega < -1 between the Rayleigh "
-                    "line R_Omega = -1 and the solid-body limit "
-                    f"R_Omega -> -inf); got r_omega={r_omega}"
-                )
-            # Invert R_Omega = (1-eta)(Re_i+Re_o)/(eta Re_o - Re_i) for
-            # Re_o (the denominator eta r_omega - (1-eta) < 0 here, so
-            # this is finite and Re_o > 0 on the whole half-line).
-            re2_derived = (
-                re1 * (1 - eta + r_omega) / (eta * r_omega - (1 - eta))
+    spec = spec_for(system)
+    for section, key in tuple(_materialized_defaults | _derive_written):
+        if (section, key) not in _user_set_fields:
+            model = getattr(params, section)
+            setattr(
+                model,
+                key,
+                type(model)
+                .model_fields[key]
+                .get_default(call_default_factory=True),
             )
-            if ("phys", "re2") in _user_set_fields and not isclose(
-                params.phys.re2, re2_derived, rel_tol=1e-9
-            ):
-                raise ValueError(
-                    "quasi-keplerian derives phys.re2 from (re1, "
-                    "r_omega, eta); do not set phys.re2 directly "
-                    f"(got {params.phys.re2}, derived {re2_derived})"
-                )
-            # Store the derived Re_o so every downstream circular-Couette
-            # path is shared with Taylor-Couette (self-describing
-            # snapshots replay this value through the params layers).
-            params.phys.re2 = re2_derived
-
-        if system in ("taylor-couette", "quasi-keplerian"):
-            # Validate the (re1, re2) control parameters and derive the
-            # circular-Couette base flow U_theta = A0 r + B0/r.
-            re1, re2 = params.phys.re1, params.phys.re2
-            if re1 is None or re2 is None:
-                raise ValueError(f"{system} requires phys.re1 and phys.re2")
-            if re1 < 0:
-                raise ValueError(
-                    f"{system}: re1 must be >= 0 (sign convention)"
-                )
-            if re1 > 0:
-                re_ref = re1  # Case 1: inner-driven
-            elif re2 > 0:
-                re_ref = re2  # Case 2: outer-driven (re1 == 0)
-            else:
-                raise ValueError(
-                    f"{system} needs re1 > 0, or re1 == 0 and re2 > 0 "
-                    f"(got re1={re1}, re2={re2})"
-                )
-            # Set the reference Reynolds number so every downstream 1/re
-            # viscous/IMM/stats path is reused unchanged.
-            params.phys.re = re_ref
-            # Gap-scaled circular-Couette coefficients (divided by Re_ref):
-            #   A0 = (re2 - eta re1) / [(1+eta) Re_ref]
-            #   B0 = eta (re1 - eta re2) / [(1+eta)(1-eta)^2 Re_ref]
-            derived_params.ccf_A = (re2 - eta * re1) / ((1 + eta) * re_ref)
-            derived_params.ccf_B = (
-                eta * (re1 - eta * re2) / ((1 + eta) * (1 - eta) ** 2 * re_ref)
-            )
-        # Dean flow uses phys.re directly (both walls stationary); its
-        # azimuthal body force lives in flows.wall_bounded.dean.
-    elif system in viscoelastic_systems:
-        # Viscoelastic (sPTT) flow on the annular geometry.  Adopt an
-        # external reference normalisation: a half-gap length unit
-        # (gap = 2), so r1 = delta, r2 = delta + 2, the Reynolds number
-        # is derived as Re := Wi/El, and the axial period defaults to
-        # 2*pi.  Any unset control parameter falls back to the
-        # reference configuration.
-        if params.phys.el is None:
-            params.phys.el = 80.0
-        if params.phys.wi is None:
-            params.phys.wi = 105.0
-        if params.phys.beta is None:
-            params.phys.beta = 0.8
-        if params.phys.epsilon is None:
-            params.phys.epsilon = 0.001
-        if params.phys.kappa is None:
-            params.phys.kappa = 5.0e-5
-        if params.geo.delta is None:
-            params.geo.delta = 11.0
-        # Axial period: default to 2*pi (reference value) unless the user /
-        # snapshot / TOML set geo.lx explicitly (it is a genuine domain
-        # length, unlike the azimuthal lz which is always forced 2*pi).
-        if ("geo", "lx") not in _user_set_fields:
-            params.geo.lx = 2 * pi
-        r1 = params.geo.delta
-        r2 = params.geo.delta + 2.0
-        derived_params.r_inner = r1
-        derived_params.r_outer = r2
-        # Force a full 2*pi azimuthal extent (integer harmonics).
-        params.geo.lz = 2 * pi
-        # Annular area normalisation: int_{r1}^{r2} r dr.
-        derived_params.volume_fac = (r2**2 - r1**2) / 2
-        # Re := Wi/El.  A directly-set phys.re is accepted only when it
-        # matches (a snapshot resume replays a consistent value); set it
-        # so every downstream 1/re path is reused.
-        re_derived = params.phys.wi / params.phys.el
-        if ("phys", "re") in _user_set_fields and not isclose(
-            params.phys.re, re_derived, rel_tol=1e-9
-        ):
-            raise ValueError(
-                "viscoelastic-dean derives phys.re := wi/el "
-                f"(= {re_derived:g}); do not set phys.re directly "
-                f"(got {params.phys.re}).  Set phys.wi / phys.el instead."
-            )
-        params.phys.re = re_derived
-    else:
-        raise NotImplementedError
+        _materialized_defaults.discard((section, key))
+        _derive_written.discard((section, key))
+    for fs in spec.fields:
+        if fs.default is not UNSET and fs.key not in _user_set_fields:
+            # Direct assignment (not the merge loop): a materialized
+            # default never enters ``_user_set_fields``.
+            setattr(getattr(params, fs.section), fs.name, fs.default)
+            _materialized_defaults.add(fs.key)
+    if spec.derive is not None:
+        # Track what the hook writes onto ``params`` (dump diff) so
+        # the next pass can restore it; like a materialized default,
+        # a derive-written value is not a user choice.  The diff is
+        # taken even when the hook raises (``finally``): a partial
+        # write before a validation error (e.g. the annular ``lz``
+        # ahead of a rejected ``re1``/``re2`` pair) must not escape
+        # the tracking.
+        before = params.model_dump()
+        try:
+            spec.derive(params, derived_params, _user_set_fields)
+        finally:
+            after = params.model_dump()
+            for section, sec_after in after.items():
+                sec_before = before[section]
+                for key, value in sec_after.items():
+                    if value != sec_before[key]:
+                        _derive_written.add((section, key))
 
     # Solvent viscosity multiplying the velocity Laplacian: 1/re for the
     # Newtonian systems; beta/re for the viscoelastic system (the polymer
@@ -1290,52 +1472,28 @@ def update_parameters(params_new: Parameters) -> None:
     else:
         derived_params.nu = 1.0 / params.phys.re
 
-    # Resolve the moving-frame speed U_grid.  A user-set value wins (but
-    # the moving frame is only implemented for wall-bounded systems);
-    # otherwise default to the laminar bulk velocity in the grid
-    # direction so the mean advection is removed.
-    if params.phys.u_grid is not None:
-        if system in periodic_systems:
-            raise ValueError(
-                "phys.u_grid (moving frame) is only supported for "
-                "wall-bounded systems"
-            )
-        derived_params.u_grid = params.phys.u_grid
-    else:
-        derived_params.u_grid = {
-            "pipe": 0.5,
-            "plane-poiseuille": 2.0 / 3.0,
-        }.get(system, 0.0)
-
-    # Resolve the solver backend's per-family default.  Triply-periodic
-    # systems have no wall-normal matrix solves (the implicit step is
-    # diagonal in spectral space), so ``"dense"`` (the reference
-    # semantics) is their only backend; wall-bounded systems default to
-    # the ``"pallas"`` production backend.  Re-resolved on every layer
-    # application, so a later ``system`` override cannot inherit a
-    # stale family default.
-    if ("solver", "backend") not in _user_set_fields:
-        params.solver.backend = (
-            "dense" if system in periodic_systems else "pallas"
-        )
-    elif system in periodic_systems and params.solver.backend == "pallas":
+    # Resolve the moving-frame speed U_grid.  The per-flow default (the
+    # laminar bulk velocity in the grid direction) is a materialized
+    # FieldSpec override; a value on a flow without the field is the
+    # deferred moving-frame feature (the CLI/TOML surfaces reject it at
+    # parse time -- this guards direct assignment and layered dicts).
+    if (
+        params.phys.u_grid is not None
+        and ("phys", "u_grid") not in spec.field_map
+    ):
+        deferred = spec.deferred_map.get(("phys", "u_grid"))
         raise ValueError(
-            "solver.backend='pallas' is not available for "
-            "triply-periodic systems: their implicit solves are "
-            "diagonal in spectral space, with no banded structure to "
-            "solve; 'dense' (the reference semantics) is the only "
-            "backend there."
+            deferred.message
+            if deferred is not None
+            else f"phys.u_grid is not supported for system {system!r}"
         )
+    derived_params.u_grid = (
+        params.phys.u_grid if params.phys.u_grid is not None else 0.0
+    )
 
-    # Resolve the wall-normal grid's per-family default when the user /
-    # snapshot / TOML never set ``geo.grid_type``: half-CGL for the
-    # cylindrical family under ``iterative-cn`` (which integrates its
-    # tighter axis cleanly and gains the finer near-axis resolution),
-    # rigged-CGL (``"cgl"``) for cylindrical cnab2 (the tighter
-    # half-CGL axis destabilises the explicit scheme -- see the
-    # ``Geometry`` docstring), and the full CGL grid (``"cgl"``) for
-    # the Cartesian / annular families.  Resolving to a *concrete*
-    # value here (rather than interpreting ``None`` at grid
+    # Resolve the wall-normal grid's per-flow default when the user /
+    # snapshot / TOML never set ``geo.grid_type``.  Resolving to a
+    # *concrete* value here (rather than interpreting ``None`` at grid
     # construction) makes every snapshot embed the grid it actually
     # ran, so a resume pins the trajectory's grid independently of
     # later defaults.  Re-resolved on every layer application (a later
@@ -1343,40 +1501,33 @@ def update_parameters(params_new: Parameters) -> None:
     # default); assigned directly -- not via the merge loop -- so the
     # field never enters ``_user_set_fields``.  A custom
     # ``geo.wall_grid`` file forces ``grid_type = None`` (setting both
-    # is an error); periodic systems have no wall-normal grid and stay
-    # ``None``.
+    # is an error); flows without a wall-normal grid stay ``None``.
     if ("geo", "grid_type") not in _user_set_fields:
-        if params.geo.wall_grid is not None or system not in walled_systems:
+        default = spec.grid_type_default
+        if params.geo.wall_grid is not None or default is None:
             params.geo.grid_type = None
-        elif (
-            system in cylindrical_systems
-            and params.step.scheme == "iterative-cn"
-        ):
-            params.geo.grid_type = "half-cgl"
+        elif callable(default):
+            params.geo.grid_type = default(params.step.scheme)
         else:
-            params.geo.grid_type = "cgl"
+            params.geo.grid_type = default
 
     # Select tilting parameters to exact precision for special angles
     if abs(params.geo.tilt_degree) == 0:
-        derived_params.tilt_rad = 0
         derived_params.cos_tilt = 1
         derived_params.sin_tilt = 0
     elif abs(params.geo.tilt_degree - 180) == 0:
-        derived_params.tilt_rad = pi
         derived_params.cos_tilt = -1
         derived_params.sin_tilt = 0
     elif abs(params.geo.tilt_degree - 90) == 0:
-        derived_params.tilt_rad = pi / 2
         derived_params.cos_tilt = 0
         derived_params.sin_tilt = 1
     elif abs(params.geo.tilt_degree + 90) == 0:
-        derived_params.tilt_rad = -pi / 2
         derived_params.cos_tilt = 0
         derived_params.sin_tilt = -1
     else:
-        derived_params.tilt_rad = pi * params.geo.tilt_degree / 180
-        derived_params.cos_tilt = cos(derived_params.tilt_rad)
-        derived_params.sin_tilt = sin(derived_params.tilt_rad)
+        tilt_rad = pi * params.geo.tilt_degree / 180
+        derived_params.cos_tilt = cos(tilt_rad)
+        derived_params.sin_tilt = sin(tilt_rad)
 
     if (
         params.geo.wall_grid is not None
@@ -1409,152 +1560,62 @@ def validate_parameters() -> None:
             "convergence is checked at least as often as it is logged."
         )
 
-    # Azimuthal wedge (geo.m0): annular and cylindrical geometries only
-    # (the u_+/u_- integer-harmonic formulation); rejected for the
-    # Cartesian, periodic, and viscoelastic-annular systems.
-    if params.geo.m0 != 1 and params.phys.system not in (
-        annular_systems + cylindrical_systems
-    ):
+    spec = spec_for(params.phys.system)
+
+    # Azimuthal wedge (geo.m0): only flows whose surface carries the
+    # field (the cylindrical/annular geometries, incl. the
+    # viscoelastic annulus -- the u_+/u_- and tensor-spin
+    # integer-harmonic formulations); rejected elsewhere.  Guards
+    # direct assignment; the CLI/TOML surfaces reject it at parse.
+    if params.geo.m0 != 1 and ("geo", "m0") not in spec.field_map:
         raise ValueError(
             f"geo.m0 = {params.geo.m0}: the azimuthal wedge is "
             "supported only for the annular and cylindrical geometries "
             f"(system {params.phys.system!r})."
         )
 
-    # Quasi-Keplerian startup summary: the derived outer Reynolds number
-    # Re_o, shear Reynolds number Re_s, rotation ratio mu = Omega_o /
-    # Omega_i, and the local exponent q(r) = -d ln Omega / d ln r =
-    # 2 B0 / (A0 r^2 + B0) at the inner/outer walls (q in (0, 2) on the
-    # quasi-Keplerian half-line, bracketing the Keplerian value 3/2).
-    if params.phys.system == "quasi-keplerian":
-        eta = params.geo.eta
-        re_i, re_o = params.phys.re1, params.phys.re2
-        re_s = 2 * abs(eta * re_o - re_i) / (1 + eta)
-        mu = eta * re_o / re_i
-        A0, B0 = derived_params.ccf_A, derived_params.ccf_B
-        r1, r2 = derived_params.r_inner, derived_params.r_outer
-        q1 = 2 * B0 / (A0 * r1**2 + B0)
-        q2 = 2 * B0 / (A0 * r2**2 + B0)
-        print(
-            f"[quasi-keplerian] derived: Re_o={re_o:.6g} "
-            f"Re_s={re_s:.6g} mu={mu:.6g} "
-            f"q(r) in [{q2:.4g}, {q1:.4g}]"
-        )
+    # The wall-normal grid name must belong to this flow's family
+    # (Cartesian/annular: cgl, tanh; cylindrical: half-cgl,
+    # rigged-cgl, half-tanh).  Guards direct assignment.
+    if params.geo.grid_type is not None:
+        choices = spec.choices_for("geo", "grid_type") or ()
+        if params.geo.grid_type not in choices:
+            raise ValueError(
+                f"geo.grid_type={params.geo.grid_type!r} is not valid "
+                f"for system {params.phys.system!r}"
+                + (
+                    f"; choose one of: {', '.join(choices)}."
+                    if choices
+                    else " (no wall-normal grid there)."
+                )
+            )
 
-    # Spectral-mode probe stream: both knobs together, wall-bounded
-    # only, and every probed index must address a *true* (unpadded)
-    # mode -- axis 2 carries ``nz - 1`` complex modes, axis 3 carries
-    # ``nx // 2`` real-FFT modes (Nyquist omitted; ``harmonics``).
-    if (o.probe_modes is None) != (o.it_probes is None):
+    # The moving frame is a deferred feature for flows without the
+    # field (triply-periodic).  Guards direct assignment.
+    if params.phys.u_grid is not None and (
+        ("phys", "u_grid") not in spec.field_map
+    ):
+        deferred = spec.deferred_map.get(("phys", "u_grid"))
         raise ValueError(
-            "outs.probe_modes and outs.it_probes must be set together "
-            "(one selects the modes, the other the cadence)."
+            deferred.message
+            if deferred is not None
+            else "phys.u_grid is not supported for system "
+            f"{params.phys.system!r}"
         )
-    if o.probe_modes is not None:
-        if params.phys.system not in walled_systems:
-            raise ValueError(
-                "outs.probe_modes: the spectral-mode probe stream "
-                "supports wall-bounded systems only (system "
-                f"{params.phys.system!r})."
-            )
-        n2, n3 = params.res.nz - 1, params.res.nx // 2
-        for i2, i3 in parse_mode_pairs(o.probe_modes):
-            if i2 >= n2 or i3 >= n3:
-                raise ValueError(
-                    f"outs.probe_modes: mode ({i2},{i3}) out of range "
-                    f"(axis 2 has {n2} modes from res.nz = "
-                    f"{params.res.nz}, axis 3 has {n3} modes from "
-                    f"res.nx = {params.res.nx})."
-                )
 
-    # Stochastic mode forcing (the ``force`` section): all-or-none
-    # knobs, wall-bounded non-viscoelastic only, true-mode indices,
-    # no mean-mode kick, and kick/probe sample alignment.
-    f = params.force
-    f_set = {
-        "modes": f.modes,
-        "profiles": f.profiles,
-        "amplitude": f.amplitude,
-        "it_force": f.it_force,
-    }
-    missing = [k for k, v in f_set.items() if v is None]
-    if missing and len(missing) < len(f_set):
-        raise ValueError(
-            "force.modes, force.profiles, force.amplitude and "
-            "force.it_force enable the stochastic forcing together; "
-            f"missing: {', '.join(missing)}."
-        )
-    if f.modes is not None:
-        if (
-            params.phys.system not in walled_systems
-            or params.phys.system in viscoelastic_systems
-        ):
-            raise ValueError(
-                "force.modes: stochastic forcing supports the "
-                "wall-bounded velocity systems only (system "
-                f"{params.phys.system!r})."
-            )
-        n2, n3 = params.res.nz - 1, params.res.nx // 2
-        force_pairs = parse_mode_pairs(f.modes)
-        for i2, i3 in force_pairs:
-            if i2 >= n2 or i3 >= n3:
-                raise ValueError(
-                    f"force.modes: mode ({i2},{i3}) out of range "
-                    f"(axis 2 has {n2} modes, axis 3 has {n3} modes)."
-                )
-            if (i2, i3) == (0, 0):
-                raise ValueError(
-                    "force.modes: the (0,0) mean mode cannot be "
-                    "forced (its coefficient is real, and under "
-                    "bulk-velocity driving it is constrained)."
-                )
-        if o.it_probes is not None:
-            if f.it_force % o.it_probes != 0:
-                raise ValueError(
-                    f"force.it_force ({f.it_force}) must be a "
-                    f"multiple of outs.it_probes ({o.it_probes}) so "
-                    "every kick coincides with a (pre-kick) probe "
-                    "sample."
-                )
-            probed = set(parse_mode_pairs(o.probe_modes))
-            unprobed = [m for m in force_pairs if m not in probed]
-            if unprobed:
-                # A note, not an error: forcing one mode while probing
-                # another is a legitimate cross-mode experiment.
-                print(
-                    f"[force] note: forced mode(s) {unprobed} are not "
-                    "in outs.probe_modes; their own response will not "
-                    "be recorded."
-                )
-        else:
-            print(
-                "[force] note: no probe stream configured "
-                "(outs.probe_modes); the forced responses will not "
-                "be recorded (response identification, e.g. "
-                "dnsjax.analysis.response.ssi, needs them)."
-            )
+    # Extension sections (the probe stream, stochastic forcing, and
+    # any script-registered section): each relevant extension's
+    # validate hook runs here, with the merged global ``params``.
+    from .extensions import validate_extensions
 
-    # The half-CGL radial grid is a cylindrical-only option, and its
-    # tighter near-axis point makes the explicit cnab2 scheme blow up
-    # at low dt (near-axis instability); restrict it to iterative-cn,
-    # which integrates it cleanly (and defaults to it).  The rigged
-    # grid (the cnab2 default) has no such restriction.
-    if params.geo.grid_type == "half-cgl":
-        if params.phys.system not in cylindrical_systems:
-            raise ValueError(
-                "geo.grid_type='half-cgl' applies only to the "
-                "cylindrical geometry (system "
-                f"{params.phys.system!r} has no axis); use the "
-                "default 'cgl' grid."
-            )
-        if params.step.scheme != "iterative-cn":
-            raise ValueError(
-                "geo.grid_type='half-cgl' requires "
-                "step.scheme='iterative-cn' (the tighter half-CGL "
-                "axis destabilises the explicit "
-                f"{params.step.scheme!r} scheme at low dt); use the "
-                "rigged-CGL grid ('cgl', the cnab2 default) instead."
-            )
+    validate_extensions(params)
+
+    # Flow-specific cross-field checks and startup summaries (e.g.
+    # the pipe's half-cgl/iterative-cn restriction, the plane-Couette
+    # driving restriction, the quasi-Keplerian derived summary) live
+    # in the flow specs.
+    if spec.validate is not None:
+        spec.validate(params, derived_params)
 
     # The Pallas kernel tiles the mode plane in ``bm0 x bm1`` blocks;
     # Triton block loads require power-of-two tile dims.
@@ -1698,9 +1759,8 @@ class PaddedResolution:
         diagnostic line to :attr:`notes`, which
         :mod:`dnsjax.sharding` prints once on the main process.
         """
-        dist = parameters.dist
-        np0 = dist.np0 if dist is not None else 1
-        np1 = dist.np1 if dist is not None else 1
+        np0 = parameters.dist.np0
+        np1 = parameters.dist.np1
 
         nx_new = round_up_padded_smooth(self.nx_padded, 1)
         if nx_new != self.nx_padded:

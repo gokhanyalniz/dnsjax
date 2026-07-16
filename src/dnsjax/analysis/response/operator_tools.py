@@ -1,6 +1,6 @@
 r"""Per-mode linear-operator tools on transient-growth exports.
 
-Post-processing for the ``--save-operator`` bundles written by the
+Post-processing for the ``--tg.save_operator`` bundles written by the
 transient-growth CLI (``<stem>_tg_op.npz``; storage layout and
 coordinate contract: the ``_write_operator_npz`` docstring in
 :mod:`dnsjax.analysis.transient_growth`): controllability Gramians
@@ -324,7 +324,7 @@ def save_modes_npz(
 
     Writes ``profiles_{i2}_{i3}`` (``(m, C, Ny)`` lifted profiles)
     and ``gram_eigvals_{i2}_{i3}`` per operator, with the grid /
-    system keys ``snapshot_perturb.py --modes-npz`` checks.
+    system keys ``snapshot_perturb.py --perturb.modes_npz`` checks.
     """
     if not ops:
         raise ValueError("no operators given")

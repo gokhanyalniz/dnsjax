@@ -20,8 +20,8 @@ mean.  The ensemble mean over parents then gives
 injected mode's entry **is** the injected profile, which is why no
 separate input specification is needed downstream.
 
-With a transient-growth operator bundle (``--operator``,
-``--save-operator`` output) the aggregate also reports the measured
+With a transient-growth operator bundle (``--operator``, the
+``--tg.save_operator`` output) the aggregate also reports the measured
 energy amplification `$E(t)/E(0)$` of the response against the
 linear prediction for *this* input
 (:func:`~dnsjax.analysis.response.operator_tools.

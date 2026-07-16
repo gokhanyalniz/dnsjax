@@ -106,18 +106,25 @@ def _write_laminar(system: str, path: Path, **kw) -> None:
 
 
 def _run_tg(profile: Path, out_dir: Path, args: list[str]) -> str:
-    """Invoke the CLI; raise on failure."""
+    """Invoke the CLI; raise on failure.
+
+    Runs in the profile's directory (always a temp dir here), not the
+    repo root: the CLI loads a ``./parameters.toml`` when present, and
+    the repo's flow-specific one must not leak into these runs.
+    """
     cmd = [
         sys.executable,
         "-m",
         MODULE,
-        "--profile",
+        "--tg.profile",
         str(profile),
-        "--out-dir",
+        "--tg.out_dir",
         str(out_dir),
         *args,
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO)
+    res = subprocess.run(
+        cmd, capture_output=True, text=True, cwd=profile.parent
+    )
     if res.returncode != 0 or "FAILED" in res.stdout:
         sys.stdout.write(res.stdout)
         sys.stderr.write(res.stderr)
@@ -351,23 +358,24 @@ def _worker(system: str) -> None:
 
 def _test_cli_smoke(system: str) -> None:
     """A per-system tiny run: G(0)=1, stable, forced overrides applied."""
+    cyl_annular = system in ("pipe", "taylor-couette", "quasi-keplerian")
     with tempfile.TemporaryDirectory() as d:
         p = Path(d)
         prof = p / "lam.txt"
+        res_flags = (
+            ["--res.nr", "20", "--res.nz", "8", "--res.ntheta", "8"]
+            if cyl_annular
+            else ["--res.ny", "20", "--res.nx", "8", "--res.nz", "8"]
+        )
         extra = [
             "--phys.system",
             system,
-            "--res.ny",
-            "20",
-            "--res.nx",
-            "8",
-            "--res.nz",
-            "8",
-            "--t-max",
+            *res_flags,
+            "--tg.t_max",
             "40",
-            "--nt",
+            "--tg.nt",
             "12",
-            "--modes",
+            "--tg.modes",
             "1,1",
         ]
         if system == "taylor-couette":
@@ -379,7 +387,7 @@ def _test_cli_smoke(system: str) -> None:
                 "0",
                 "--geo.eta",
                 "0.5",
-                "--geo.lx",
+                "--geo.lz",
                 "6.2832",
             ]
         elif system == "quasi-keplerian":
@@ -391,7 +399,7 @@ def _test_cli_smoke(system: str) -> None:
                 "-1.2",
                 "--geo.eta",
                 "0.71",
-                "--geo.lx",
+                "--geo.lz",
                 "6.2832",
             ]
         else:
@@ -418,9 +426,9 @@ def _test_wall_bc() -> None:
             sys.executable,
             "-m",
             MODULE,
-            "--profile",
+            "--tg.profile",
             str(p / "bad.txt"),
-            "--out-dir",
+            "--tg.out_dir",
             str(p),
             "--phys.system",
             "plane-poiseuille",
@@ -430,10 +438,10 @@ def _test_wall_bc() -> None:
             "4",
             "--res.nz",
             "4",
-            "--modes",
+            "--tg.modes",
             "1,0",
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO)
+        res = subprocess.run(cmd, capture_output=True, text=True, cwd=p)
         assert "wall" in res.stdout.lower() and "FAILED" in res.stdout, (
             "wall-BC violation not rejected"
         )
@@ -468,11 +476,11 @@ def _test_folder() -> None:
                 "4",
                 "--geo.lz",
                 "3.073985",
-                "--modes",
+                "--tg.modes",
                 "1,0",
-                "--t-max",
+                "--tg.t_max",
                 "80",
-                "--nt",
+                "--tg.nt",
                 "12",
             ],
         )
@@ -505,15 +513,15 @@ def _test_export() -> None:
                 "4",
                 "--geo.lz",
                 "3.073985",
-                "--modes",
+                "--tg.modes",
                 "1,0",
-                "--t-max",
+                "--tg.t_max",
                 "80",
-                "--nt",
+                "--tg.nt",
                 "12",
-                "--export-snapshot",
+                "--tg.export_snapshot",
                 "1,0",
-                "--export-amplitude",
+                "--tg.export_amplitude",
                 "1e-4",
             ],
         )
@@ -561,11 +569,11 @@ def _anchor_pp() -> None:
                 "6",
                 "--geo.lz",
                 "3.073985",
-                "--modes",
+                "--tg.modes",
                 "1,0",
-                "--t-max",
+                "--tg.t_max",
                 "150",
-                "--nt",
+                "--tg.nt",
                 "60",
             ],
         )
@@ -600,11 +608,11 @@ def _anchor_pc() -> None:
                 "179.5199",
                 "--geo.lz",
                 "3.92699",
-                "--modes",
+                "--tg.modes",
                 "1,1",
-                "--t-max",
+                "--tg.t_max",
                 "230",
-                "--nt",
+                "--tg.nt",
                 "70",
             ],
         )
@@ -626,21 +634,21 @@ def _anchor_pipe() -> None:
                 "pipe",
                 "--phys.re",
                 "3000",
-                "--res.ny",
+                "--res.nr",
                 "72",
-                "--res.nx",
-                "4",
                 "--res.nz",
+                "4",
+                "--res.ntheta",
                 "4",
                 "--res.fd_order",
                 "6",
-                "--geo.lx",
+                "--geo.lz",
                 "12.566",
-                "--modes",
+                "--tg.modes",
                 "1,0",
-                "--t-max",
+                "--tg.t_max",
                 "300",
-                "--nt",
+                "--tg.nt",
                 "60",
             ],
         )
@@ -671,21 +679,21 @@ def _anchor_tc() -> None:
                 "0",
                 "--geo.eta",
                 "0.5",
-                "--res.ny",
+                "--res.nr",
                 "48",
-                "--res.nx",
-                "6",
                 "--res.nz",
+                "6",
+                "--res.ntheta",
                 "6",
                 "--res.fd_order",
                 "6",
-                "--geo.lx",
+                "--geo.lz",
                 "6.2832",
-                "--modes",
+                "--tg.modes",
                 "0,2",
-                "--t-max",
+                "--tg.t_max",
                 "20",
-                "--nt",
+                "--tg.nt",
                 "20",
             ],
         )
@@ -699,9 +707,10 @@ def _anchor_tc() -> None:
         )
         # (b) Maretzke et al. 2014, table 3 (row 1; cross-validated
         # against Meseguer 2002): eta=0.881, Re_i=591, Re_o=-2588 -> the
-        # global optimum is at n=10, k=1.994 with G_max=71.58.  lx is set
-        # so mode i3=1 gives the axial wavenumber k=1.994; nz=22 makes
-        # the azimuthal mode m=10 available at i2=10.
+        # global optimum is at n=10, k=1.994 with G_max=71.58.  The
+        # axial length lz is set so mode i3=1 gives the axial
+        # wavenumber k=1.994; ntheta=22 makes the azimuthal mode m=10
+        # available at i2=10.
         _write_laminar(
             "taylor-couette", p / "m.txt", re1=591.0, re2=-2588.0, eta=0.881
         )
@@ -717,21 +726,21 @@ def _anchor_tc() -> None:
                 "-2588",
                 "--geo.eta",
                 "0.881",
-                "--res.ny",
+                "--res.nr",
                 "64",
-                "--res.nx",
-                "4",
                 "--res.nz",
+                "4",
+                "--res.ntheta",
                 "22",
                 "--res.fd_order",
                 "8",
-                "--geo.lx",
+                "--geo.lz",
                 "3.15108",
-                "--modes",
+                "--tg.modes",
                 "10,1",
-                "--t-max",
+                "--tg.t_max",
                 "40",
-                "--nt",
+                "--tg.nt",
                 "40",
             ],
         )
@@ -750,7 +759,7 @@ def _anchor_qk() -> None:
         # k_z = 0, azimuthal m = 4 -> G_opt = 13.04 at t_opt/tau_d = 27.
         # The regime is linearly stable (negative spectral abscissa); the
         # growth is purely non-modal.  Code time == tau_d, so t_opt is in
-        # the paper's units.  m = 4 sits at index i2 = 4 for nz = 10.
+        # the paper's units.  m = 4 sits at index i2 = 4 for ntheta = 10.
         _write_laminar(
             "quasi-keplerian", p / "k.txt", re1=1.0e4, r_omega=-1.2, eta=0.71
         )
@@ -766,21 +775,21 @@ def _anchor_qk() -> None:
                 "-1.2",
                 "--geo.eta",
                 "0.71",
-                "--res.ny",
+                "--res.nr",
                 "128",
-                "--res.nx",
-                "4",
                 "--res.nz",
+                "4",
+                "--res.ntheta",
                 "10",
                 "--res.fd_order",
                 "8",
-                "--geo.lx",
+                "--geo.lz",
                 "0.5",
-                "--modes",
+                "--tg.modes",
                 "4,0",
-                "--t-max",
+                "--tg.t_max",
                 "60",
-                "--nt",
+                "--tg.nt",
                 "60",
             ],
         )
@@ -811,17 +820,17 @@ def _test_wedge_equivalence() -> None:
         "-1.2",
         "--geo.eta",
         "0.71",
-        "--res.ny",
+        "--res.nr",
         "48",
-        "--res.nx",
+        "--res.nz",
         "4",
         "--res.fd_order",
         "6",
-        "--geo.lx",
+        "--geo.lz",
         "0.5",
-        "--t-max",
+        "--tg.t_max",
         "60",
-        "--nt",
+        "--tg.nt",
         "30",
     ]
     with tempfile.TemporaryDirectory() as d:
@@ -832,13 +841,21 @@ def _test_wedge_equivalence() -> None:
         _run_tg(
             p / "w.txt",
             p,
-            [*common, "--res.nz", "10", "--modes", "4,0"],
+            [*common, "--res.ntheta", "10", "--tg.modes", "4,0"],
         )
         full = _load(p, "w")
         _run_tg(
             p / "w.txt",
             p,
-            [*common, "--geo.m0", "4", "--res.nz", "4", "--modes", "1,0"],
+            [
+                *common,
+                "--geo.m0",
+                "4",
+                "--res.ntheta",
+                "4",
+                "--tg.modes",
+                "1,0",
+            ],
         )
         wedge = _load(p, "w")
     gf, gw = float(full["G_max"][0]), float(wedge["G_max"][0])
@@ -879,11 +896,11 @@ def _anchor_orszag() -> None:
                 "6.2832",
                 "--geo.lx",
                 "6.2832",
-                "--modes",
+                "--tg.modes",
                 "0,1",
-                "--t-max",
+                "--tg.t_max",
                 "5",
-                "--nt",
+                "--tg.nt",
                 "6",
             ],
         )

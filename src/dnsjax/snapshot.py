@@ -3,7 +3,7 @@
 A snapshot is a **single uncompressed tar archive** wrapping a
 zarr3 store plus a JSON metadata member::
 
-    snapshot.tar                 (uncompressed tar; format_version 3)
+    snapshot.tar                 (uncompressed tar; format_version 4)
       _dnsjax_meta.json          plain JSON metadata
       _dnsjax_stats.json         plain JSON stats (optional)
       state/zarr.json            zarr3 array metadata
@@ -106,17 +106,21 @@ The ``_dnsjax_meta.json`` member embeds ``t``, ``it``, ``isnap`` (the
 snapshot-lineage index this file was written with), the on-disk
 ``layout`` name, the global (true, unpadded) shapes,
 ``wall_normal_grid`` (the wall-normal grid points as a float array
-for wall-bounded flows, ``None`` for periodic), and the full
-``params.model_dump()`` for resume validation.  It is read with the
-standard library (no JAX) via :mod:`dnsjax.snapshot_meta`, shared
-with :func:`dnsjax.parameters.read_snapshot_params`.
+for wall-bounded flows, ``None`` for periodic), and the
+flow-relevant, public-named, resolved parameter dump
+(:func:`dnsjax.param_surface.recorded_params_dump`) for resume
+validation.  It is read with the standard library (no JAX) via
+:mod:`dnsjax.snapshot_meta`, shared with
+:func:`dnsjax.parameters.read_snapshot_params`.
 
 When stats are supplied, an optional ``_dnsjax_stats.json`` member
 holds the state's physical diagnostics (the ``get_stats`` dict as
 ``{name: value}``); readers that do not need it simply ignore the
 extra member.
 
-The on-disk format is ``format_version: 3``.
+The on-disk format is ``format_version: 4``; snapshots older than 4
+(internal-named full parameter dumps) are rejected at read
+(:func:`dnsjax.snapshot_meta.read_snapshot_meta`), never translated.
 """
 
 import json
@@ -308,15 +312,15 @@ def _layout_from_meta(meta: dict) -> _Layout:
 def _n_components() -> int:
     """Number of stacked state components for the current system.
 
-    3 velocity components for the Newtonian systems; 9 (3 velocity + 6
-    symmetric conformation-tensor components) for the viscoelastic
-    system.  ``validate_snapshot_params`` enforces the ``phys.system``
-    match, so a resumed snapshot's component count always equals this --
-    the single source of truth for both save and load.
+    The flow spec's ``n_components`` (3 velocity components unless
+    the flow carries more, e.g. the 9-component viscoelastic state).
+    ``validate_snapshot_params`` enforces the ``phys.system`` match,
+    so a resumed snapshot's component count always equals this -- the
+    single source of truth for both save and load.
     """
-    from .parameters import viscoelastic_systems
+    from .flows.registry import spec_for
 
-    return 9 if params.phys.system in viscoelastic_systems else 3
+    return spec_for(params.phys.system).n_components
 
 
 def _padded_local_shape() -> tuple[int, ...]:
@@ -574,10 +578,18 @@ def _metadata_bytes(
     ``git_hash`` records the code revision that wrote the snapshot
     (provenance only -- never read back on load).  Additive keys like
     it need no ``format_version`` bump: readers use targeted lookups
-    and ignore unknown keys.
+    and ignore unknown keys.  Version 4 records ``params`` as the
+    flow-relevant, **public-named**, resolved dump plus the relevant
+    extension sections (e.g. ``force``, ``probes``;
+    :func:`dnsjax.param_surface.recorded_params_dump`); readers map it
+    back via :func:`dnsjax.flows.registry.internalize_stored` /
+    ``stored_value``, and pre-4 snapshots (internal-named full dumps)
+    are rejected at :func:`dnsjax.snapshot_meta.read_snapshot_meta`.
     """
+    from .param_surface import recorded_params_dump
+
     meta = {
-        "format_version": 3,
+        "format_version": 4,
         "git_hash": git_hash(),
         "t": t,
         "it": it,
@@ -595,7 +607,7 @@ def _metadata_bytes(
         "dtype": _zarr3_dtype_name(),
         "n_devices": sharding.n_devices,
         "wall_normal_grid": derived_params.wall_normal_grid,
-        "params": params.model_dump(mode="json"),
+        "params": recorded_params_dump(params),
     }
     return json.dumps(meta, indent=2, default=str).encode("utf-8")
 
@@ -1033,7 +1045,11 @@ def load_snapshot(
     ny_mismatch = snap_native != curr_true
 
     if ny_mismatch:
-        snap_ny = meta["params"]["res"]["ny"]
+        # Stored (v4) params use public names (res.ny is "nr" for the
+        # cylindrical/annular flows); look it up via the alias.
+        from .flows.registry import stored_value
+
+        snap_ny = stored_value(meta["params"], meta["system"], "res", "ny")
         local_shape: tuple[int, ...] | None = _padded_local_shape_snap_ny(
             snap_ny
         )
@@ -1146,21 +1162,34 @@ def validate_snapshot_params(
     (resolution, precision, flow system, or a streamwise extent
     that the current device count cannot evenly shard).  Prints
     warnings for non-critical differences and an info line when
-    the device count differs (resume is np-agnostic).
+    the device count differs (resume is np-agnostic).  Stored (v4)
+    metadata records the *public* field names; comparisons run in
+    internal space (:func:`dnsjax.flows.registry.internalize_stored`)
+    and messages name the public alias.
 
     Parameters
     ----------
     path:
         Path to the snapshot tar file.
     """
+    from .flows.registry import internalize_stored, spec_for
+
     meta = read_metadata(Path(path))
-    snap_params = meta.get("params", {})
+    stored = meta.get("params", {})
+    system = meta.get("system") or stored.get("phys", {}).get("system")
+    spec = spec_for(system or params.phys.system)
+    snap_params = internalize_stored(stored, spec.system)
     current = params.model_dump(mode="json")
 
-    # Critical: must match exactly
+    def _public(section: str, key: str) -> str:
+        return spec.alias(section, key)
+
+    # Critical: must match exactly.  The resolution labels are
+    # axis-neutral: the message names the flow's public field (e.g.
+    # internal ``res.nx`` is the axial ``nz`` on the annular flows).
     critical = {
-        ("res", "nx"): "x resolution",
-        ("res", "nz"): "z resolution",
+        ("res", "nx"): "resolution",
+        ("res", "nz"): "resolution",
         ("res", "double_precision"): "precision",
         ("phys", "system"): "flow system",
     }
@@ -1168,8 +1197,10 @@ def validate_snapshot_params(
         snap_val = snap_params.get(section, {}).get(key)
         curr_val = current.get(section, {}).get(key)
         if snap_val is not None and snap_val != curr_val:
+            name = _public(section, key)
             raise SnapshotMismatchError(
-                f"{label}: snapshot {key}={snap_val}, current {key}={curr_val}"
+                f"{label}: snapshot {name}={snap_val}, "
+                f"current {name}={curr_val}"
             )
 
     native = meta.get("native_shape")
@@ -1202,10 +1233,10 @@ def validate_snapshot_params(
         ("phys", "re"): "Reynolds number",
         ("step", "dt"): "time step",
         ("step", "implicitness"): "implicitness",
-        ("geo", "lx"): "Lx",
-        ("geo", "lz"): "Lz",
+        ("geo", "lx"): "domain extent",
+        ("geo", "lz"): "domain extent",
         ("geo", "tilt_degree"): "tilt angle",
-        ("res", "fd_order"): "FD stencil order",
+        ("res", "fd_order"): "FD accuracy order",
         ("solver", "backend"): "solver backend",
     }
     for (section, key), label in warn_fields.items():
@@ -1217,7 +1248,8 @@ def validate_snapshot_params(
             and snap_val != curr_val
         ):
             sharding.print(
-                f"Warning: {label} changed: {snap_val} -> {curr_val}"
+                f"Warning: {label} {_public(section, key)} changed: "
+                f"{snap_val} -> {curr_val}"
             )
 
     snap_np = meta.get("n_devices")
