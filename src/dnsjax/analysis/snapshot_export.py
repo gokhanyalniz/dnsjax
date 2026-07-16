@@ -129,7 +129,7 @@ def read_state(
     """
     path = Path(path)
     meta = _core.read_meta(path)
-    params = _core.Namespace(meta["params"])
+    params = _core.params_namespace(meta)
     stats_raw = _core.read_stats(path)
     stats = _core.Namespace(stats_raw) if stats_raw is not None else None
     info = _core.geometry_info(params)

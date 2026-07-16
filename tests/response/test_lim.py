@@ -257,7 +257,7 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 
 def _operator_artifacts(tmp: Path) -> tuple[Path, Path]:
-    """Real TG --save-operator + controllability bundles (mode (3,0))."""
+    """Real TG operator export + controllability bundle (mode (3,0))."""
     y = np.cos(np.pi * np.arange(NY) / (NY - 1))
     with open(tmp / "lam.txt", "w") as f:
         for yi, ui in zip(y, 1.0 - y**2, strict=True):
@@ -267,15 +267,16 @@ def _operator_artifacts(tmp: Path) -> tuple[Path, Path]:
             sys.executable,
             "-m",
             "dnsjax.analysis.transient_growth",
-            "--profile",
+            "--tg.profile",
             str(tmp / "lam.txt"),
-            "--out-dir",
+            "--tg.out_dir",
             str(tmp),
-            "--modes",
+            "--tg.modes",
             "3,0",
-            "--nt",
+            "--tg.nt",
             "9",
-            "--save-operator",
+            "--tg.save_operator",
+            "True",
             "--phys.system",
             "plane-poiseuille",
             "--res.nx",

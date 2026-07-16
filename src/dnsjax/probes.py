@@ -1,10 +1,11 @@
 r"""Spectral-mode probe stream: per-step `$\hat{u}(y)$` time series.
 
 Records the complex wall-normal profiles of a small set of global
-spectral modes -- ``outs.probe_modes``, an ``"i2,i3;..."`` list in the
+spectral modes -- ``probes.modes`` (the ``probes`` extension section;
+:mod:`dnsjax.extensions`), an ``"i2,i3;..."`` list in the
 stored-layout index convention (axis 2 = complex slot, axis 3 =
 real-FFT slot; :func:`dnsjax.harmonics.parse_mode_pairs`) -- every
-``outs.it_probes`` steps into a binary ``probes.bin`` next to the
+``probes.it_probes`` steps into a binary ``probes.bin`` next to the
 ``.dat`` diagnostic streams.  Wall-bounded systems only (the state
 layout is ``(C, N_y, N_{k_2}, N_{k_3})``).  Unlike the transient-growth
 CLI, the mean mode ``(0,0)`` **is** allowed: its record is the
@@ -77,7 +78,9 @@ from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
+from .extensions import probes_params
 from .harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
+from .param_surface import recorded_params_dump
 from .parameters import (
     cartesian_systems,
     derived_params,
@@ -182,7 +185,7 @@ class ProbeStream:
     """
 
     def __init__(self, state: Array, directory: str | Path = ".") -> None:
-        self.modes = parse_mode_pairs(params.outs.probe_modes)
+        self.modes = parse_mode_pairs(probes_params.modes)
         self.nbuffer: int = params.outs.nbuffer
         n_components, ny = int(state.shape[0]), int(state.shape[1])
         self.component_labels = _component_labels(n_components)
@@ -214,12 +217,12 @@ class ProbeStream:
             "ny": ny,
             "wall_normal_grid": derived_params.wall_normal_grid,
             "value_dtype": value_dtype,
-            "it_probes": params.outs.it_probes,
+            "it_probes": probes_params.it_probes,
             "dt": params.step.dt,
             "system": params.phys.system,
             "double_precision": params.res.double_precision,
             "git_hash": git_hash(),
-            "params": params.model_dump(mode="json"),
+            "params": recorded_params_dump(params),
         }
         self.bin_path = Path(directory) / "probes.bin"
         self.json_path = Path(directory) / "probes.json"

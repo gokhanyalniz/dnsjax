@@ -84,7 +84,7 @@ SYSTEMS: list[dict] = [
             "pipe",
             "--phys.re",
             "1800",
-            "--geo.lx",
+            "--geo.lz",
             "5",
         ],
     },
@@ -99,7 +99,7 @@ SYSTEMS: list[dict] = [
             "-400",
             "--geo.eta",
             "0.5",
-            "--geo.lx",
+            "--geo.lz",
             "5",
         ],
     },
@@ -112,7 +112,7 @@ SYSTEMS: list[dict] = [
             "1000",
             "--geo.eta",
             "0.5",
-            "--geo.lx",
+            "--geo.lz",
             "5",
         ],
     },
@@ -157,6 +157,24 @@ def _build_command(
     nx = str(res.get("nx", args.res))
     ny = str(res.get("ny", args.res))
     nz = str(res.get("nz", args.res))
+    # Cylindrical/annular flows take the aliased public resolution
+    # names (axial nz, radial nr, azimuthal ntheta); the internal
+    # meaning (nx = axial, ny = radial, nz = azimuthal) is unchanged.
+    cyl_annular = any(
+        s in system["args"]
+        for s in (
+            "pipe",
+            "taylor-couette",
+            "quasi-keplerian",
+            "dean",
+            "viscoelastic-dean",
+        )
+    )
+    res_flags = (
+        ["--res.nz", nx, "--res.nr", ny, "--res.ntheta", nz]
+        if cyl_annular
+        else ["--res.nx", nx, "--res.ny", ny, "--res.nz", nz]
+    )
 
     base = ["mpirun"]
     if system.get("oversubscribe"):
@@ -182,12 +200,7 @@ def _build_command(
         str(args.width),
         "--init.localized_rolls_wavelength",
         str(args.wavelength),
-        "--res.nx",
-        nx,
-        "--res.ny",
-        ny,
-        "--res.nz",
-        nz,
+        *res_flags,
         "--step.dt",
         str(dt),
         "--stop.max_sim_time",

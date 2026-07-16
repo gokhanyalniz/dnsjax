@@ -1,7 +1,8 @@
 r"""White-in-time stochastic mode forcing (state kicks) + coefficient log.
 
 Adds, every ``force.it_force`` steps, a random superposition of
-wall-normal channel profiles to each ``force.modes`` spectral mode --
+wall-normal channel profiles to each ``force.modes`` spectral mode
+(the ``force`` extension section; :mod:`dnsjax.extensions`) --
 a sequence of independent state increments ("kicks"), the
 discrete-time realisation of white-in-time forcing localised at the
 chosen modes.  The drawn coefficients stream to
@@ -101,7 +102,9 @@ from jax import numpy as jnp
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
+from .extensions import force_params
 from .harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
+from .param_surface import recorded_params_dump
 from .parameters import cartesian_systems, derived_params, params
 from .probes import _component_labels
 from .sharding import sharding
@@ -180,7 +183,8 @@ class StochasticForcer:
     r"""Kick generator + buffered coefficient writer (one per run).
 
     Construct once with the initial state (shape/dtype source) after
-    ``params.force`` is validated; then let the main loop call
+    the ``force`` extension section is validated; then let the main
+    loop call
     :meth:`kick` at the ``it_force`` cadence and :meth:`flush` at the
     ``flush_all_buffers`` sites.  All randomness is host-side and
     rank-identical (every rank draws the same sequence); disk I/O is
@@ -189,7 +193,7 @@ class StochasticForcer:
     """
 
     def __init__(self, state: Array, directory: str | Path = ".") -> None:
-        f = params.force
+        f = force_params
         self.modes = parse_mode_pairs(f.modes)
         self.amplitude: float = float(f.amplitude)
         self.nbuffer: int = params.outs.nbuffer
@@ -256,7 +260,7 @@ class StochasticForcer:
                 "partner) with the recorded w ~ CN(0,1)"
             ),
             "git_hash": git_hash(),
-            "params": params.model_dump(mode="json"),
+            "params": recorded_params_dump(params),
         }
         self.bin_path = Path(directory) / "forcing.bin"
         self.json_path = Path(directory) / "forcing.json"

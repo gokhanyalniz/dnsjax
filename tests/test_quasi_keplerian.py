@@ -22,7 +22,9 @@ Cases:
 3. ``err_romega``: a missing ``r_omega`` and the Rayleigh-line /
    co-rotating rejections (R_Omega >= -1).
 4. ``err_re1``: the ``re1`` sign-convention rejections (None, 0, < 0).
-5. ``err_re2``: a conflicting externally-supplied ``phys.re2``.
+5. ``override_re2``: a conflicting externally-supplied ``phys.re2``
+   is silently overwritten by the (re1, r_omega, eta) derivation
+   (``re2`` is not a quasi-Keplerian parameter).
 6. ``err_m0``: the wedge rejected on a non-annular / non-cylindrical
    system.
 7. ``wedge_annular``: m0 = 2 annular Fourier -- lz = pi, the m0-scaled
@@ -195,17 +197,38 @@ def case_err_re1() -> None:
     print("case-ok")
 
 
-def case_err_re2() -> None:
-    """A conflicting externally-supplied re2 is rejected."""
-    _expect_valueerror(
-        {
-            "system": "quasi-keplerian",
-            "re1": 1.0e4,
-            "r_omega": R_OMEGA,
-            "re2": 123.0,
-        },
-        {"eta": ETA},
-        "do not set",
+def case_override_re2() -> None:
+    """A conflicting externally-supplied re2 is silently overwritten.
+
+    ``re2`` is not a quasi-Keplerian parameter (the CLI/TOML surfaces
+    reject it outright); a directly-assigned or layered value is
+    simply replaced by the (re1, r_omega, eta) derivation.
+    """
+    from dnsjax.parameters import (
+        Parameters,
+        params,
+        update_parameters,
+        validate_parameters,
+    )
+
+    re_i = 1.0e4
+    update_parameters(
+        Parameters(
+            phys={
+                "system": "quasi-keplerian",
+                "re1": re_i,
+                "r_omega": R_OMEGA,
+                "re2": 123.0,  # conflicting; the derivation wins
+            },
+            geo={"eta": ETA},
+        )
+    )
+    validate_parameters()
+    expected = _re2(re_i, ETA, R_OMEGA)
+    assert params.phys.re2 == expected, (
+        "conflicting re2 must be overwritten by the derivation",
+        params.phys.re2,
+        expected,
     )
     print("case-ok")
 
@@ -485,7 +508,7 @@ CASES = {
     "resume": case_resume,
     "err_romega": case_err_romega,
     "err_re1": case_err_re1,
-    "err_re2": case_err_re2,
+    "override_re2": case_override_re2,
     "err_m0": case_err_m0,
     "wedge_annular": case_wedge_annular,
     "wedge_cylindrical": case_wedge_cylindrical,

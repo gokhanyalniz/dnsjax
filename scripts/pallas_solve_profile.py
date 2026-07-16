@@ -900,7 +900,7 @@ def main() -> None:
     ap.add_argument("--ny", type=int, default=128)
     ap.add_argument("--nx", type=int, default=128)
     ap.add_argument("--nz", type=int, default=128)
-    ap.add_argument("--fd-order", type=int, default=4)
+    ap.add_argument("--fd-order", type=int, default=8)
     ap.add_argument(
         "--reps",
         type=int,

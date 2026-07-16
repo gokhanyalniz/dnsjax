@@ -48,6 +48,7 @@ import numpy as np
 from numpy import ndarray
 
 from ..fd import build_diff_matrices
+from ..flows import registry as _registry
 from ..harmonics import complex_harmonics, real_harmonics
 from ..snapshot_meta import (
     is_snapshot_file,
@@ -56,17 +57,17 @@ from ..snapshot_meta import (
     snapshot_component_offsets,
 )
 
-# Flow systems per geometry family.  These mirror the ``*_systems``
-# lists in :mod:`dnsjax.parameters` and MUST be kept in sync when a new
-# flow system is added there.
-CARTESIAN_SYSTEMS = frozenset({"plane-couette", "plane-poiseuille"})
-CYLINDRICAL_SYSTEMS = frozenset({"pipe"})
-ANNULAR_SYSTEMS = frozenset({"taylor-couette", "quasi-keplerian", "dean"})
+# Flow systems per geometry family, from the JAX-free flow-spec
+# registry (the single source of truth: a new flow spec extends these
+# automatically).
+CARTESIAN_SYSTEMS = frozenset(_registry.cartesian_systems)
+CYLINDRICAL_SYSTEMS = frozenset(_registry.cylindrical_systems)
+ANNULAR_SYSTEMS = frozenset(_registry.annular_systems)
 #: Viscoelastic annular systems (9-component state: 3 velocity + 6
 #: symmetric conformation-tensor components).  Annular *geometry*, but a
 #: distinct component schema, so kept separate from ``ANNULAR_SYSTEMS``.
-VISCOELASTIC_SYSTEMS = frozenset({"viscoelastic-dean"})
-PERIODIC_SYSTEMS = frozenset({"kolmogorov", "waleffe", "decaying-box"})
+VISCOELASTIC_SYSTEMS = frozenset(_registry.viscoelastic_systems)
+PERIODIC_SYSTEMS = frozenset(_registry.periodic_systems)
 
 #: Triply-periodic shear-direction box length (fixed length reference;
 #: see :mod:`dnsjax.geometries.triply_periodic`).
@@ -130,6 +131,24 @@ class Namespace:
     def __repr__(self) -> str:
         keys = ", ".join(map(str, self.keys()))
         return f"Namespace({keys})"
+
+
+def params_namespace(meta: dict) -> Namespace:
+    """Internal-named parameter view over snapshot metadata.
+
+    Stored (v4) metadata records the flow-relevant **public** names;
+    this maps them back to internal names and rehydrates the
+    hidden-derived internal fields (the annular azimuthal ``geo.lz``,
+    the derived ``phys.re``/``re2``) via
+    :func:`dnsjax.flows.registry.internalize_stored` -- so downstream
+    code reads ``params.res.nx`` / ``params.geo.lz`` etc. exactly as
+    the solver's live singleton would hold them.
+    """
+    stored = meta["params"]
+    system = meta.get("system") or stored.get("phys", {}).get("system")
+    return Namespace(
+        _registry.internalize_stored(stored, system, rehydrate=True)
+    )
 
 
 # ── Geometry descriptor ──────────────────────────────────────
@@ -232,8 +251,9 @@ def geometry_info(params: Namespace) -> GeometryInfo:
             grid_axis=None,
         )
     raise ValueError(
-        f"Unknown system {system!r}; update the *_SYSTEMS sets in "
-        "dnsjax.analysis._core to mirror dnsjax.parameters."
+        f"Unknown system {system!r}: not in any family of the "
+        "dnsjax.flows.registry specs this reader has a component "
+        "schema for (a new family needs a geometry_info branch)."
     )
 
 

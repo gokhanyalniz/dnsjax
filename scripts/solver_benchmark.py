@@ -575,7 +575,7 @@ def _spawn_child(
         "--nz",
         str(entry["nz"]),
         "--fd-order",
-        str(entry.get("fd_order", 4)),
+        str(entry.get("fd_order", 8)),
         "--dt",
         str(entry.get("dt", args.dt)),
         "--steps",
@@ -2390,7 +2390,7 @@ def main() -> None:
     ap.add_argument("--nx", type=int, default=64)
     ap.add_argument("--ny", type=int, default=48)
     ap.add_argument("--nz", type=int, default=64)
-    ap.add_argument("--fd-order", dest="fd_order", type=int, default=4)
+    ap.add_argument("--fd-order", dest="fd_order", type=int, default=8)
     ap.add_argument("--bm0", type=int, default=None)
     ap.add_argument("--bm1", type=int, default=None)
     ap.add_argument("--dt", type=float, default=0.005)

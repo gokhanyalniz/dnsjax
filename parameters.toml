@@ -1,39 +1,45 @@
-# Flagship example: a 100-diameter pipe at Re = 2300, started from a
-# localized-roll perturbation ("puff").  Equivalent to the CLI command in the
-# README.  Command-line flags override any value set here; see
-# `uv run dnsjax --help` and src/dnsjax/parameters.py for the full parameter
-# reference, and the README for the other flow systems.
+# Example configuration: a 100-diameter pipe at Re = 2300, started from
+# a localized-roll perturbation ("puff").  Equivalent to the CLI command
+# in the README.  Command-line flags override any value set here.  Only
+# parameters of the selected flow are accepted: `dnsjax --help pipe`
+# lists them, and `dnsjax --sample-toml pipe` prints an annotated
+# template with every parameter and its default.
 
 [phys]
 system = "pipe"
-re = 2300            # bulk/diameter Reynolds number (= centerline/radius; D = 2)
+re = 2300     # bulk/diameter Reynolds number (= centerline/radius; D = 2)
 
 [geo]
-lx = 200.0           # axial length = 100 pipe diameters; lz is fixed at 2*pi
-# grid_type defaults to "half-cgl" for pipe + iterative-cn (auto-resolved)
+# Axial length = 100 pipe diameters.  (The azimuthal extent is not a
+# free length: it is the wedge 2*pi/m0.)
+lz = 200.0
+# grid_type defaults to "half-cgl" for pipe + iterative-cn
+# ("rigged-cgl" under cnab2).
 
 [res]
-nx = 512             # axial Fourier modes
-ny = 48              # radial finite-difference points
-nz = 96              # azimuthal Fourier modes
-fd_order = 4         # radial finite-difference order (half-bandwidth)
+nz = 512      # axial Fourier modes
+nr = 48       # radial finite-difference points
+ntheta = 96   # azimuthal Fourier modes
+fd_order = 8  # radial finite-difference accuracy order
 
 [init]
-# Start-mode precedence: snapshot > start_from_laminar > localized_rolls >
-# random_field (the default).  Here we seed a finite-amplitude puff.
+# Start-mode precedence: snapshot > start_from_laminar >
+# localized_rolls > random_field (the default).  Here we seed a
+# finite-amplitude puff.
 localized_rolls = true
 localized_rolls_amplitude = 0.2   # peak |u'| of the puff
 localized_rolls_width = 2.0       # axial localization half-width
 
 [step]
 dt = 0.01
-scheme = "iterative-cn"           # or "cnab2" (CN viscous + explicit AB2)
+scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
 
 [outs]
-it_stats = 100                    # steps between stats.dat records
-it_snapshot = 5000                # steps between snapshots
+it_stats = 100      # steps between stats.dat records
+it_snapshot = 5000  # steps between snapshots
 
 [stop]
 max_sim_time = 500.0
-# Transition develops over O(100) advective units; raise for a longer run.
-# check_laminarization = true (default) stops the run if the puff relaminarizes.
+# Transition develops over O(100) advective units; raise for a longer
+# run.  check_laminarization = true (default) stops the run if the
+# puff relaminarizes.

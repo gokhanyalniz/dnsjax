@@ -9,7 +9,7 @@ Submodules (import them explicitly; this ``__init__`` stays empty so
   plus mean-profile / friction-Reynolds-number helpers.
 - :mod:`dnsjax.analysis.response.operator_tools` -- per-mode linear
   operators exported by the transient-growth CLI
-  (``--save-operator``): controllability Gramian / modes, growth
+  (``--tg.save_operator``): controllability Gramian / modes, growth
   curves, subspace restriction.  JAX-based (GPU-capable), SciPy
   imported lazily.
 - :mod:`dnsjax.analysis.response.ensemble` -- ensemble-response
@@ -32,18 +32,19 @@ The full workflow from a turbulent run to a data-driven linear
 operator, in order (per-step detail and knob guidance: the named
 docstrings):
 
-1. **Probe the run.**  Add ``--outs.probe_modes "0,0;3,0"
-   --outs.it_probes 10`` to a DNS run; the listed modes' wall-normal
-   profiles `$\hat{u}(y, t)$` stream to ``probes.bin``
+1. **Probe the run.**  Add ``--probes.modes "0,0;3,0"
+   --probes.it_probes 10`` to a DNS run; the listed modes'
+   wall-normal profiles `$\hat{u}(y, t)$` stream to ``probes.bin``
    (:mod:`dnsjax.probes`).
 2. **Turbulent mean.**  :func:`~dnsjax.analysis.response.probes.
    mean_profile` + ``write_profile_file`` turn the ``(0,0)`` probe
    into a total mean-profile file (cut the transient with ``t_min``;
    sanity-check ``re_tau``).
 3. **Linear operator about the mean.**  ``python -m
-   dnsjax.analysis.transient_growth --profile mean.txt --modes ...
-   --save-operator``: optimal energy growth `$G(t)$` per mode plus
-   the reduced-generator bundle ``<stem>_tg_op.npz``.
+   dnsjax.analysis.transient_growth --tg.profile mean.txt
+   --tg.modes ... --tg.save_operator True``: optimal energy growth
+   `$G(t)$` per mode plus the reduced-generator bundle
+   ``<stem>_tg_op.npz``.
 4. **Injection basis.**  The :mod:`.operator_tools` CLI computes the
    leading controllability modes of each exported generator -- the
    most excitable directions, the natural basis for response

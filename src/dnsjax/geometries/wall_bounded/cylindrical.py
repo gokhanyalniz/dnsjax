@@ -527,15 +527,17 @@ def build_cylindrical_grid(
 
     1. *wall_grid*: load from file (a custom grid always
        overrides dnsjax's grid generation).
-    2. *grid_type*: ``"tanh"`` for one-sided tanh stretching;
-       ``"half-cgl"`` for the half-CGL radial grid
-       (``axis_gap = 0``); ``"cgl"`` / ``None`` for the
-       **rigged-CGL** radial grid (``axis_gap = 1``).
+    2. *grid_type*: ``"half-tanh"`` for one-sided tanh stretching
+       (outer wall only -- there is no inner wall); ``"half-cgl"``
+       for the half-CGL radial grid (``axis_gap = 0``);
+       ``"rigged-cgl"`` / ``None`` for the rigged-CGL radial grid
+       (``axis_gap = 1``).  The Cartesian/annular names
+       (``"cgl"``/``"tanh"``) are rejected.
     3. ``update_parameters`` resolves an unset ``geo.grid_type``
-       to ``"half-cgl"`` under ``iterative-cn`` and ``"cgl"``
-       (rigged) under ``cnab2``, so params-driven callers pass a
-       concrete value; a raw ``None`` here falls back to
-       rigged-CGL.
+       from the pipe spec: ``"half-cgl"`` under ``iterative-cn``
+       and ``"rigged-cgl"`` under ``cnab2``, so params-driven
+       callers pass a concrete value; a raw ``None`` here falls
+       back to rigged-CGL.
 
     See :func:`build_radial_cgl_grid` for the rigged vs half-CGL
     construction and the near-axis-CFL rationale.
@@ -554,10 +556,10 @@ def build_cylindrical_grid(
         All `$r > 0$`; `$r = 0$` is excluded.  The code
         reverses to ascending order internally.
     grid_type:
-        Named grid type (``"cgl"`` / ``None`` = rigged-CGL,
-        ``"half-cgl"``, or ``"tanh"``).
+        Named grid type (``"rigged-cgl"`` / ``None`` = rigged-CGL,
+        ``"half-cgl"``, or ``"half-tanh"``).
     grid_stretch:
-        Stretching parameter for ``grid_type="tanh"``.
+        Stretching parameter for ``grid_type="half-tanh"``.
 
     Returns
     -------
@@ -608,15 +610,24 @@ def build_cylindrical_grid(
                 f" r > 0 (got r[0]={grid[0]})"
             )
         rs = jnp.asarray(grid, dtype=sharding.float_type)
-    elif grid_type == "tanh":
+    elif grid_type == "half-tanh":
         grid = tanh_one_sided_grid(ny, grid_stretch)
         rs = jnp.asarray(grid, dtype=sharding.float_type)
-    else:
-        # "cgl" / None -> rigged-CGL (axis_gap = 1); half-CGL
-        # (axis_gap = 0) via grid_type = "half-cgl" (the resolved
-        # iterative-cn default; see update_parameters).
+    elif grid_type in ("half-cgl", "rigged-cgl", None):
+        # "rigged-cgl" / None -> rigged (axis_gap = 1); "half-cgl" ->
+        # the staggered half grid (axis_gap = 0).  The resolved
+        # default is always concrete (pipe spec: half-cgl under
+        # iterative-cn, rigged-cgl under cnab2).
         axis_gap = 0 if grid_type == "half-cgl" else 1
         rs = build_radial_cgl_grid(ny, axis_gap)
+    else:
+        # The Cartesian/annular names ("cgl"/"tanh") do not select a
+        # cylindrical radial grid; validate_parameters rejects them
+        # upstream -- this guards direct callers.
+        raise ValueError(
+            f"grid_type {grid_type!r} is not a cylindrical radial "
+            "grid; choose 'half-cgl', 'rigged-cgl', or 'half-tanh'."
+        )
     inv_r = 1.0 / rs
     rs_np = np.asarray(rs)
     # Full-disc quadrature int_0^1 f r dr with no axis grid point.

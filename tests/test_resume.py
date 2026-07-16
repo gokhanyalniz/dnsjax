@@ -3,28 +3,24 @@
 Two layers:
 
 1. **Offline units** (pure Pydantic, no JAX / no ``mpirun``):
-   :func:`dnsjax.parameters.trajectory_defining_changes` -- identical
-   params yield no change; a ``phys``/``geo``/``res`` override is
-   reported; the JAX-setup skip field ``res.double_precision`` and
-   non-trajectory sections (``step``) are ignored; a legacy key the
-   current model no longer defines (e.g. the retired ``geo.axis_gap``)
-   is skipped, while switching ``geo.grid_type`` (rigged <->
-   half-CGL) *is* a trajectory change.  Plus
-   ``run_grid_validation_checks`` (the ``validate_parameters``
-   half-CGL rules: rejected for non-cylindrical systems, rejected
-   with ``cnab2``, accepted on the pipe with ``iterative-cn``);
-   ``run_grid_default_resolution_checks`` (``update_parameters``
-   resolves an unset ``geo.grid_type`` per scheme: cylindrical
-   half-CGL under ``iterative-cn`` / rigged ``"cgl"`` under cnab2,
-   ``"cgl"`` for Cartesian/annular, ``None`` for periodic and
-   ``wall_grid`` runs; a user-set value survives layer flips); and
-   ``run_snapshot_grid_migration_checks`` (a stored-``null``
-   ``grid_type`` reads as the grid the snapshot actually ran:
-   ``_snapshot_grid_type`` backfill in ``read_snapshot_params`` --
-   incl. the retired ``axis_gap`` mapping -- and the normalised
-   comparison in ``trajectory_defining_changes``, so old
-   trajectories continue on their original grid while the
-   scheme-dependent default flags a genuine grid switch).
+   :func:`dnsjax.parameters.trajectory_defining_changes` against
+   stored dumps in the public-named (v4) representation
+   (``recorded_params_dump``) -- identical params yield no change; a
+   ``phys``/``geo``/``res`` override is reported; the JAX-setup skip
+   field ``res.double_precision`` and non-trajectory sections
+   (``step``) are ignored; a stored key the current surface no longer
+   defines (e.g. the retired ``geo.axis_gap``) is dropped, while
+   switching ``geo.grid_type`` (rigged <-> half-CGL) *is* a trajectory
+   change; the trajectory-defining ``force`` extension section is
+   compared alongside; a pre-v4 ``format_version`` is rejected.  Plus
+   ``run_grid_validation_checks`` (the half-CGL rules: rejected for
+   non-cylindrical systems and with ``cnab2``, accepted on the pipe
+   with ``iterative-cn``) and ``run_grid_default_resolution_checks``
+   (``update_parameters`` resolves an unset ``geo.grid_type`` from
+   the flow spec: cylindrical ``"half-cgl"`` under ``iterative-cn``
+   / ``"rigged-cgl"`` under cnab2, ``"cgl"`` for Cartesian/annular,
+   ``None`` for periodic and ``wall_grid`` runs; a user-set value
+   survives layer flips).
 
 2. **Subprocess integration** driving ``python -m dnsjax`` (via
    ``mpirun``, one device) end to end in temporary directories,
@@ -104,11 +100,17 @@ _SNAP_RE = re.compile(r"^state(\d+)\.tar$")
 
 def run_unit_checks() -> bool:
     """Offline units of ``trajectory_defining_changes`` and the
-    ``read_snapshot_params`` solver-section skip (no JAX/mpirun)."""
+    ``read_snapshot_params`` solver-section skip (no JAX/mpirun).
+
+    Stored dumps are built with ``recorded_params_dump`` -- the
+    public-named (v4) representation snapshots actually embed -- so
+    these units exercise the internalize-on-compare path.
+    """
+    from dnsjax.param_surface import recorded_params_dump
     from dnsjax.parameters import params, trajectory_defining_changes
 
     name = "trajectory_defining_changes"
-    snap = params.model_dump(mode="json")  # baseline == current params
+    snap = recorded_params_dump(params)  # baseline == current params
 
     try:
         # Identical params -> a continuation (no changes).
@@ -141,11 +143,10 @@ def run_unit_checks() -> bool:
         params.step.dt = old_dt
         assert changes == [], ("step.dt", changes)
 
-        # A legacy key the current model no longer defines (e.g. the
-        # retired geo.axis_gap) is ignored -- it is absent from the
-        # current model_dump, so a pre-grid_type snapshot resumes as
-        # a clean continuation.
-        snap_legacy = params.model_dump(mode="json")
+        # A stored key the current surface no longer defines (e.g. the
+        # retired geo.axis_gap) is dropped by the internalization (with
+        # a note), so such a snapshot resumes as a clean continuation.
+        snap_legacy = recorded_params_dump(params)
         snap_legacy["geo"]["axis_gap"] = 0
         changes = trajectory_defining_changes(snap_legacy)
         assert changes == [], ("legacy axis_gap ignored", changes)
@@ -161,10 +162,28 @@ def run_unit_checks() -> bool:
             changes,
         )
 
-        # A legacy snapshot embedding solver params the current model
-        # no longer defines (a retired backend name and its knobs)
-        # must still resume: ``read_snapshot_params`` drops the
-        # execution-only [solver] section before validation.
+        # The trajectory-defining ``force`` extension: turning kicks
+        # on over a kick-free snapshot is a trajectory change; a
+        # stored section matching the live singleton is not.
+        from dnsjax.extensions import force_params
+
+        force_params.amplitude = 0.5
+        changes = trajectory_defining_changes(snap)
+        assert any(c.startswith("force.amplitude:") for c in changes), (
+            "force extension change",
+            changes,
+        )
+        snap_forced = recorded_params_dump(params)  # embeds [force]
+        changes = trajectory_defining_changes(snap_forced)
+        force_params.amplitude = None
+        assert changes == [], ("force extension match", changes)
+
+        # A snapshot embedding solver params the current model no
+        # longer defines (a retired backend name and its knobs) must
+        # still resume: ``read_snapshot_params`` drops the
+        # execution-only [solver] section before validation.  The
+        # stored [probes]/[force] sections come back as extension
+        # overlays (pure defaults here: nothing was configured).
         import io
         import json
         import tarfile
@@ -174,23 +193,51 @@ def run_unit_checks() -> bool:
         from dnsjax.parameters import read_snapshot_params
         from dnsjax.snapshot_meta import META_MEMBER
 
-        legacy = params.model_dump(mode="json")
+        legacy = recorded_params_dump(params)
         legacy["solver"] = {
             "backend": "some-retired-backend",
             "retired_knob": 8,
         }
-        payload = json.dumps({"params": legacy}).encode()
+        payload = json.dumps(
+            {"format_version": 4, "system": "plane-couette", "params": legacy}
+        ).encode()
         with tempfile.NamedTemporaryFile(suffix=".tar") as fh:
             with tarfile.open(fh.name, "w") as tf:
                 info = tarfile.TarInfo(META_MEMBER)
                 info.size = len(payload)
                 tf.addfile(info, io.BytesIO(payload))
-            loaded = read_snapshot_params(Path(fh.name))
-        assert loaded is not None, "legacy snapshot params unreadable"
+            snap = read_snapshot_params(Path(fh.name))
+        assert snap is not None, "legacy snapshot params unreadable"
+        loaded, ext_overlays = snap
         assert loaded.solver.backend == "pallas", (
             "retired solver params inherited",
             loaded.solver,
         )
+        assert set(ext_overlays) == {"probes", "force"}, ext_overlays
+        from dnsjax.extensions import EXTENSIONS
+
+        for sec_name, sec in ext_overlays.items():
+            defaults = EXTENSIONS[sec_name].model().model_dump(mode="json")
+            assert sec == defaults, (
+                "unconfigured overlay must equal defaults",
+                sec_name,
+                sec,
+            )
+
+        # A pre-v4 snapshot (old params representation) is rejected
+        # outright at the metadata read.
+        payload3 = json.dumps({"format_version": 3, "params": legacy}).encode()
+        with tempfile.NamedTemporaryFile(suffix=".tar") as fh:
+            with tarfile.open(fh.name, "w") as tf:
+                info = tarfile.TarInfo(META_MEMBER)
+                info.size = len(payload3)
+                tf.addfile(info, io.BytesIO(payload3))
+            try:
+                read_snapshot_params(Path(fh.name))
+            except ValueError as exc:
+                assert "format_version" in str(exc), exc
+            else:
+                raise AssertionError("format_version 3 was accepted")
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
         return False
@@ -281,9 +328,9 @@ def run_grid_default_resolution_checks() -> bool:
         got = resolve(phys={"system": "pipe"}, step={"scheme": "iterative-cn"})
         assert got == "half-cgl", ("pipe + iterative-cn", got)
 
-        # A later cnab2 layer re-resolves to rigged ("cgl"), and back.
+        # A later cnab2 layer re-resolves to rigged, and back.
         got = resolve(step={"scheme": "cnab2"})
-        assert got == "cgl", ("pipe + cnab2", got)
+        assert got == "rigged-cgl", ("pipe + cnab2", got)
         got = resolve(step={"scheme": "iterative-cn"})
         assert got == "half-cgl", ("pipe + iterative-cn again", got)
 
@@ -294,10 +341,10 @@ def run_grid_default_resolution_checks() -> bool:
         assert got == "cgl", ("annular", got)
 
         # A user-set value survives system / scheme flips.
-        got = resolve(phys={"system": "pipe"}, geo={"grid_type": "tanh"})
-        assert got == "tanh", ("user-set", got)
+        got = resolve(phys={"system": "pipe"}, geo={"grid_type": "half-tanh"})
+        assert got == "half-tanh", ("user-set", got)
         got = resolve(step={"scheme": "cnab2"})
-        assert got == "tanh", ("user-set survives", got)
+        assert got == "half-tanh", ("user-set survives", got)
 
         # Periodic systems stay None.
         P._user_set_fields.discard(("geo", "grid_type"))
@@ -322,143 +369,6 @@ def run_grid_default_resolution_checks() -> bool:
 
     print(f"  PASS  {name}")
     return True
-
-
-def run_snapshot_grid_migration_checks() -> bool:
-    """Offline unit: stored-``null`` ``geo.grid_type`` migration.
-
-    Old snapshots embed ``grid_type: null`` although they ran a
-    definite grid (the then-default ``"cgl"``, or the retired
-    ``geo.axis_gap`` choice).  ``_snapshot_grid_type`` maps a stored
-    params dict to that effective value; ``read_snapshot_params``
-    backfills it (so the snapshot layer pins the original grid on
-    resume) and ``trajectory_defining_changes`` compares through it
-    (so such a resume is a clean continuation, while the new
-    half-CGL iterative-cn default against an old rigged snapshot is
-    flagged as a genuine grid switch).
-    """
-    import io
-    import json
-    import tarfile
-    from pathlib import Path
-
-    import dnsjax.parameters as P
-    from dnsjax.parameters import (
-        Parameters,
-        _snapshot_grid_type,
-        params,
-        read_snapshot_params,
-        trajectory_defining_changes,
-        update_parameters,
-    )
-    from dnsjax.snapshot_meta import META_MEMBER
-
-    name = "snapshot grid_type migration"
-    saved_dump = params.model_dump(mode="json")
-    saved_user_set = set(P._user_set_fields)
-
-    def read_back(stored: dict) -> Parameters | None:
-        payload = json.dumps({"params": stored}).encode()
-        with tempfile.NamedTemporaryFile(suffix=".tar") as fh:
-            with tarfile.open(fh.name, "w") as tf:
-                info = tarfile.TarInfo(META_MEMBER)
-                info.size = len(payload)
-                tf.addfile(info, io.BytesIO(payload))
-            return read_snapshot_params(Path(fh.name))
-
-    try:
-        # Effective-value mapping of stored params dicts.
-        for label, snap, expect in (
-            ("null pipe", {"phys": {"system": "pipe"}, "geo": {}}, "cgl"),
-            (
-                "legacy axis_gap 0",
-                {"phys": {"system": "pipe"}, "geo": {"axis_gap": 0}},
-                "half-cgl",
-            ),
-            (
-                "legacy axis_gap 1",
-                {"phys": {"system": "pipe"}, "geo": {"axis_gap": 1}},
-                "cgl",
-            ),
-            (
-                "concrete passthrough",
-                {
-                    "phys": {"system": "pipe"},
-                    "geo": {"grid_type": "half-cgl"},
-                },
-                "half-cgl",
-            ),
-            (
-                "periodic",
-                {"phys": {"system": "kolmogorov"}, "geo": {}},
-                None,
-            ),
-            (
-                "wall_grid",
-                {
-                    "phys": {"system": "pipe"},
-                    "geo": {"wall_grid": "grid.txt"},
-                },
-                None,
-            ),
-        ):
-            got = _snapshot_grid_type(snap)
-            assert got == expect, (label, got, expect)
-
-        # Current side: pipe resolved to the half-CGL iterative-cn
-        # default.  An old snapshot (stored null == ran rigged) is a
-        # genuine grid switch -> flagged.
-        P._user_set_fields.discard(("geo", "grid_type"))
-        params.geo.grid_type = None
-        update_parameters(
-            Parameters(
-                phys={"system": "pipe"}, step={"scheme": "iterative-cn"}
-            )
-        )
-        old_snap = params.model_dump(mode="json")
-        old_snap["geo"]["grid_type"] = None
-        changes = trajectory_defining_changes(old_snap)
-        assert any(c.startswith("geo.grid_type:") for c in changes), (
-            "old rigged vs half-cgl default",
-            changes,
-        )
-
-        # Under cnab2 the current default is rigged again -> the same
-        # old snapshot continues cleanly.
-        update_parameters(Parameters(step={"scheme": "cnab2"}))
-        old_snap = params.model_dump(mode="json")
-        old_snap["geo"]["grid_type"] = None
-        changes = trajectory_defining_changes(old_snap)
-        assert changes == [], ("old rigged vs cnab2 rigged", changes)
-
-        # read_snapshot_params backfills the effective value, so the
-        # snapshot layer pins the original grid on resume.
-        stored = params.model_dump(mode="json")
-        stored["geo"]["grid_type"] = None
-        loaded = read_back(stored)
-        assert loaded is not None, "backfill readable"
-        assert loaded.geo.grid_type == "cgl", (
-            "null backfill",
-            loaded.geo.grid_type,
-        )
-        stored["geo"]["axis_gap"] = 0  # pre-grid_type era: half-CGL
-        loaded = read_back(stored)
-        assert loaded is not None, "axis_gap readable"
-        assert loaded.geo.grid_type == "half-cgl", (
-            "axis_gap backfill",
-            loaded.geo.grid_type,
-        )
-    except AssertionError as exc:
-        print(f"  FAIL  {name}: {exc}")
-        return False
-    finally:
-        _restore_params(saved_dump, saved_user_set)
-
-    print(f"  PASS  {name}")
-    return True
-
-
-# ── integration helpers ──────────────────────────────────────────────
 
 
 def _snap_indices(workdir: str) -> list[int]:
@@ -691,7 +601,6 @@ if __name__ == "__main__":
         run_unit_checks(),
         run_grid_validation_checks(),
         run_grid_default_resolution_checks(),
-        run_snapshot_grid_migration_checks(),
     ]
     for ok in (
         offline if cli.unit_only else [*offline, run_integration(cli.timeout)]

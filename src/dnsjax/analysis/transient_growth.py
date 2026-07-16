@@ -11,9 +11,17 @@ flows are out of scope.
 Run as a CLI (single process, single device; GPU with
 ``--dist.platform cuda`` and ``CUDA_VISIBLE_DEVICES=0``)::
 
-    python -m dnsjax.analysis.transient_growth --profile U.txt \
+    python -m dnsjax.analysis.transient_growth --tg.profile U.txt \
         --phys.system plane-poiseuille --phys.re 1000 \
-        --res.ny 96 --res.nx 4 --res.nz 4 --geo.lz 3.074 --modes "1,0"
+        --res.ny 96 --res.nx 4 --res.nz 4 --geo.lz 3.074 \
+        --tg.modes "1,0"
+
+The command line and ``parameters.toml`` go through the shared
+per-flow surface (:func:`dnsjax.bootstrap.resolve_parameters`): flow
+parameters under their public names (``--help <system>`` documents
+them -- e.g. the pipe resolution is ``--res.nr``/``--res.ntheta``),
+strict relevance, plus this driver's own knobs as the ``[tg]``
+extension section (``--tg.<field>``; :class:`TGParams`).
 
 The profile file has two whitespace-separated columns: the wall-normal
 grid points **top wall first (descending)** -- the same convention as a
@@ -193,7 +201,7 @@ Choosing the knobs
 The defaults suit the four systems at moderate `$Re$`; every failure
 mode below is guarded per mode with an explicit error.
 
-- ``--tg-dt`` (0.01): the probe step sets *conditioning* and the
+- ``--tg.dt`` (0.01): the probe step sets *conditioning* and the
   *resolved spectral window*, not accuracy.  Only eigenvalues with
   `$|\lambda| \lesssim 2/\Delta t$` are resolved (beyond, the probe
   compresses `$\mu \to 0$`), and those are exactly the modes `$G$` is
@@ -218,11 +226,11 @@ mode below is guarded per mode with an explicit error.
 
   The fix for a contaminated `$G_{\max}$` is therefore **`$N_y$`, not
   `$\Delta t$`** (see the convergence recipe below).
-- ``--corrector-tolerance`` (1e-11) / ``--max-corrector-iterations``
+- ``--tg.corrector_tolerance`` (1e-11) / ``--tg.max_corrector_iterations``
   (200): the tolerance bounds each propagator column's error and so
   floors every reported quantity (the achieved
   ``corrector_error_max`` is in the outputs).  On the "failed to
-  converge" error reduce ``--tg-dt`` first (faster contraction),
+  converge" error reduce ``--tg.dt`` first (faster contraction),
   raise the iteration cap second.
 - ``--rank-tol`` (1e-11) / ``--rank-gap-min`` (1e3): the relative
   cutoff must land inside the singular-value cliff between the
@@ -233,9 +241,9 @@ mode below is guarded per mode with an explicit error.
   are only converged that far); the gap check verifies that it did.
   On a "no clean rank gap" failure inspect the printed tail, then
   move ``--rank-tol`` into the observed gap; lower ``--rank-gap-min``
-  only if the true cliff is genuinely that shallow.  ``--tg-dt`` also
+  only if the true cliff is genuinely that shallow.  ``--tg.dt`` also
   moves the gap, but *raising* it is what widens the cliff in
-  practice (measured under ``--tg-dt`` above) -- both floors respond,
+  practice (measured under ``--tg.dt`` above) -- both floors respond,
   so the naive "reduce it to lift the physical floor" is unreliable;
   read the printed tail rather than assuming a direction.
 - ``--t-max`` (default `$0.25\,Re$`): covers the classic optima,
@@ -265,11 +273,11 @@ mode below is guarded per mode with an explicit error.
   with fewer printed digits, to skip a pointless interpolation.
 - ``--n-eig`` (20): how many leading eigenvalues are *stored*; no
   accuracy effect.  Trustworthy only inside the resolved window
-  `$|\lambda| \lesssim 1/\Delta t$` (see ``--tg-dt``).
+  `$|\lambda| \lesssim 1/\Delta t$` (see ``--tg.dt``).
 - ``--save-all-times``: stores the optimal pair at every grid time,
   `$2 K n_t (3 N_y)$` complex values over `$K$` modes -- the
   dominant output for mode sweeps.
-- ``--save-operator``: also writes ``<stem>_tg_op.npz`` with each
+- ``--tg.save_operator``: also writes ``<stem>_tg_op.npz`` with each
   mode's reduced generator `$\mathcal{A}$` (restricted to the
   probe-resolved eigenspace, in an orthonormal energy-coordinate
   basis), the bases `$V, F, Q$`, and the coordinate contract -- the
@@ -318,7 +326,7 @@ Cost & memory: a propagator build is `$3 N_y$` FFT-free linear steps
 (independent of the mode count) plus a host SVD + eigensolve per
 mode; the propagator set is held on the host at `$K (3 N_y)^2$`
 complex128 (the estimate is printed at startup).  For large mode
-sweeps split ``--modes`` across separate processes (one device
+sweeps split ``--tg.modes`` across separate processes (one device
 each) -- the pipeline is embarrassingly parallel over modes.
 
 Outputs
@@ -354,17 +362,24 @@ optimal-perturbation export does).
 
 from __future__ import annotations
 
-import argparse
 import dataclasses
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import harmonics
-from ..bootstrap import configure_jax_platform
+from ..bootstrap import (
+    _scan_flag,
+    configure_jax_platform,
+    peek_run_context,
+    resolve_parameters,
+)
+from ..extensions import ParamExtension, register_extension
 from ..fd import local_interpolation_matrix
 from ..parameters import (
     Parameters,
@@ -372,7 +387,6 @@ from ..parameters import (
     derived_params,
     padded_res,
     params,
-    read_parameters,
     update_parameters,
     validate_parameters,
 )
@@ -381,15 +395,20 @@ from ..snapshot_meta import git_hash
 if TYPE_CHECKING:
     from jax import Array
 
-# system -> (flow module suffix, geometry module, family)
-_SYSTEMS: dict[str, tuple[str, str, str]] = {
-    "plane-couette": ("plane_couette", "cartesian", "cartesian"),
-    "plane-poiseuille": ("plane_poiseuille", "cartesian", "cartesian"),
-    "pipe": ("pipe", "cylindrical", "cylindrical"),
-    "taylor-couette": ("taylor_couette", "annular", "annular"),
-    "quasi-keplerian": ("quasi_keplerian", "annular", "annular"),
-}
-WALL_BOUNDED_TG_SYSTEMS = tuple(_SYSTEMS)
+# The TG scope: the wall-bounded *base-flow* (perturbation-form)
+# systems, whose flow modules export ``frozen_profile_flow``.  The
+# force-driven Dean / viscoelastic-Dean flows integrate the total
+# field around ``base_flow = 0`` and are out of scope, so this cannot
+# be derived from the spec families; the modules and geometry come
+# from the registry (``FlowSpec.flow_module`` / ``family``) in
+# :func:`_dispatch`.
+WALL_BOUNDED_TG_SYSTEMS = (
+    "plane-couette",
+    "plane-poiseuille",
+    "pipe",
+    "taylor-couette",
+    "quasi-keplerian",
+)
 
 # Component labels in the stored state basis, per family.
 _COMPONENT_LABELS = {
@@ -414,35 +433,168 @@ _TG_OWNED_STEP = (
     "split_corrector",
 )
 
+#: Program name shown in this CLI's usage / help / error hints.
+_PROG = "python -m dnsjax.analysis.transient_growth"
 
-# ── Configuration dataclasses ────────────────────────────────────
+
+# ── Configuration models ─────────────────────────────────────────
 
 
-@dataclasses.dataclass
-class TGConfig:
-    """Resolved transient-growth knobs (from the CLI)."""
+class TGParams(BaseModel):
+    r"""Transient-growth driver knobs: the ``[tg]`` extension section.
 
-    modes: str
-    t_max: float | None
-    nt: int
-    tg_dt: float
-    corrector_tolerance: float
-    max_corrector_iterations: int
-    rank_tol: float
-    rank_gap_min: float
-    interp_order: int
-    wall_bc_tol: float
-    grid_match_tol: float
-    n_eig: int
-    t_chunk: int
-    save_all_times: bool
-    save_operator: bool
-    export_snapshot: str | None
-    export_amplitude: float
-    export_which: str
+    Parsed as ``--tg.<field>`` CLI flags / a ``[tg]`` TOML section on
+    the shared per-flow parameter surface
+    (:func:`dnsjax.bootstrap.resolve_parameters`), alongside the
+    flow's own parameters under their public names.  Knob guidance
+    (especially the ``dt`` conditioning trade-off and the rank/
+    resolvedness cuts): the module docstring.
+    """
 
-    def as_json(self) -> str:
-        return json.dumps(dataclasses.asdict(self), sort_keys=True)
+    model_config = ConfigDict(extra="forbid")
+
+    profile: str | None = Field(
+        default=None,
+        description=(
+            "Two-column profile file (wall-normal grid descending "
+            "from the top wall; total profile value), or a folder of "
+            "such files.  Required."
+        ),
+    )
+    out_dir: str = Field(
+        default=".",
+        description="Output directory for the *_tg.npz results.",
+    )
+    parameters: str | None = Field(
+        default=None,
+        description=(
+            "Path of the parameters TOML to load (CLI-only; "
+            "default: ./parameters.toml if present)."
+        ),
+    )
+    modes: str = Field(
+        default="all",
+        description=(
+            "'all' (every non-mean mode) or 'i2,i3;i2,i3;...' "
+            "(i2 = kz/m axis, i3 = kx/axial axis)."
+        ),
+    )
+    t_max: float | None = Field(
+        default=None,
+        gt=0,
+        description="End of the G(t) grid (default 0.25*Re).",
+    )
+    nt: int = Field(
+        default=65,
+        ge=2,
+        description="Number of G(t) grid points including t=0.",
+    )
+    dt: float = Field(
+        default=0.01,
+        gt=0,
+        description=(
+            "Backward-Euler probe step; sets conditioning and the "
+            "resolved-mode window |lambda| <~ 1/dt."
+        ),
+    )
+    corrector_tolerance: float = Field(
+        default=1e-11,
+        gt=0,
+        description="Corrector tolerance of the linear probe step.",
+    )
+    max_corrector_iterations: int = Field(
+        default=200,
+        ge=1,
+        description="Corrector iteration cap of the linear probe step.",
+    )
+    rank_tol: float = Field(
+        default=1e-11,
+        gt=0,
+        description="Relative singular-value cutoff for the rank.",
+    )
+    rank_gap_min: float = Field(
+        default=1e3,
+        gt=0,
+        description="Required s[r-1]/s[r] gap at the rank cut.",
+    )
+    interp_order: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Accuracy order of the profile regridding (local "
+            "Fornberg stencils of interp_order+1 points; same "
+            "convention as res.fd_order)."
+        ),
+    )
+    wall_bc_tol: float = Field(
+        default=1e-6,
+        gt=0,
+        description="Relative wall-value tolerance of the profile.",
+    )
+    grid_match_tol: float = Field(
+        default=1e-12,
+        gt=0,
+        description="Same-grid fast-path tolerance.",
+    )
+    n_eig: int = Field(
+        default=20,
+        ge=1,
+        description="Leading eigenvalues stored per mode.",
+    )
+    t_chunk: int = Field(
+        default=16,
+        ge=1,
+        description="SVD batch size over the time grid.",
+    )
+    save_all_times: bool = Field(
+        default=False,
+        description="Store the optimal pair at every grid time.",
+    )
+    save_operator: bool = Field(
+        default=False,
+        description=(
+            "Also write <stem>_tg_op.npz: per-mode reduced generator "
+            "A, resolved basis Q, energy factor F, subspace basis V."
+        ),
+    )
+    export_snapshot: str | None = Field(
+        default=None,
+        description=(
+            "'i2,i3': export that mode's optimal as a dnsjax snapshot."
+        ),
+    )
+    export_amplitude: float = Field(
+        default=1e-4,
+        gt=0,
+        description="Perturbation energy E' of the exported seed.",
+    )
+    export_which: Literal["input", "response"] = Field(
+        default="input",
+        description="Export the optimal input or its t_opt response.",
+    )
+
+
+TG_EXTENSION = register_extension(
+    ParamExtension(
+        name="tg",
+        model=TGParams,
+        relevant=lambda system: system in WALL_BOUNDED_TG_SYSTEMS,
+        summary="Transient-growth driver (this CLI's own knobs).",
+        # Analysis-run config, not trajectory state: never embedded in
+        # snapshot metadata (an exported seed must not carry it).
+        record_in_metadata=False,
+    )
+)
+
+#: Live ``[tg]`` values (resolved by ``resolve_parameters`` in
+#: :func:`main`; registration is import-time, so any entry point that
+#: imports this module ahead of parsing gets the section).
+tg_params: TGParams = TG_EXTENSION.values
+
+
+def _config_json(cfg: TGParams) -> str:
+    """The resolved ``[tg]`` knobs as a provenance JSON blob."""
+    return json.dumps(cfg.model_dump(), sort_keys=True)
 
 
 @dataclasses.dataclass
@@ -469,7 +621,7 @@ class ModeResult:
     opt_input_t: np.ndarray | None  # (nt, 3, Ny) or None
     opt_response_t: np.ndarray | None
     sigma_t: np.ndarray | None  # (nt,) or None
-    # ``--save-operator`` payload (None otherwise); the coordinate
+    # ``--tg.save_operator`` payload (None otherwise); the coordinate
     # contract is documented in ``_write_operator_npz``.
     op_V: np.ndarray | None = None  # (n, r) subspace basis
     op_F: np.ndarray | None = None  # (r, r) upper Cholesky, M = F^H F
@@ -479,134 +631,6 @@ class ModeResult:
 
 
 # ── Host-side helpers (JAX-free) ─────────────────────────────────
-
-
-def _parse_args(
-    argv: list[str] | None = None,
-) -> tuple[argparse.Namespace, list[str]]:
-    """Parse the TG-specific flags; return ``(args, dnsjax_argv)``.
-
-    Unknown arguments (the dnsjax ``--section.field`` options) are
-    returned untouched for the pydantic CLI layer.  ``allow_abbrev`` is
-    off so a TG flag never swallows a dnsjax option by prefix.
-    """
-    p = argparse.ArgumentParser(
-        prog="python -m dnsjax.analysis.transient_growth",
-        description="Linear transient growth around an arbitrary "
-        "wall-normal profile.",
-        allow_abbrev=False,
-    )
-    p.add_argument(
-        "--profile",
-        required=True,
-        help="two-column profile file (grid descending from the top "
-        "wall; total profile value), or a folder of such files",
-    )
-    p.add_argument("--out-dir", default=".", help="output directory")
-    p.add_argument(
-        "--parameters",
-        default=None,
-        help="parameters.toml path (default: ./parameters.toml if present)",
-    )
-    p.add_argument(
-        "--dist.platform",
-        dest="platform",
-        default="cpu",
-        choices=("cpu", "cuda", "rocm", "tpu"),
-        help="JAX backend (single device)",
-    )
-    p.add_argument(
-        "--modes",
-        default="all",
-        help='"all" (every non-mean mode) or "i2,i3;i2,i3;..." '
-        "(i2 = kz/m axis, i3 = kx/axial axis)",
-    )
-    p.add_argument(
-        "--t-max",
-        type=float,
-        default=None,
-        help="end of the G(t) grid (default 0.25*Re)",
-    )
-    p.add_argument(
-        "--nt",
-        type=int,
-        default=65,
-        help="number of G(t) grid points including t=0",
-    )
-    p.add_argument(
-        "--tg-dt", type=float, default=0.01, help="backward-Euler probe step"
-    )
-    p.add_argument("--corrector-tolerance", type=float, default=1e-11)
-    p.add_argument("--max-corrector-iterations", type=int, default=200)
-    p.add_argument(
-        "--rank-tol",
-        type=float,
-        default=1e-11,
-        help="relative singular-value cutoff for the rank",
-    )
-    p.add_argument(
-        "--rank-gap-min",
-        type=float,
-        default=1e3,
-        help="required s[r-1]/s[r] gap",
-    )
-    p.add_argument(
-        "--interp-order",
-        type=int,
-        default=8,
-        help="Fornberg stencil order for profile regridding",
-    )
-    p.add_argument(
-        "--wall-bc-tol",
-        type=float,
-        default=1e-6,
-        help="relative wall-value tolerance",
-    )
-    p.add_argument(
-        "--grid-match-tol",
-        type=float,
-        default=1e-12,
-        help="same-grid fast-path tolerance",
-    )
-    p.add_argument(
-        "--n-eig",
-        type=int,
-        default=20,
-        help="leading eigenvalues stored per mode",
-    )
-    p.add_argument(
-        "--t-chunk",
-        type=int,
-        default=16,
-        help="SVD batch size over the time grid",
-    )
-    p.add_argument(
-        "--save-all-times",
-        action="store_true",
-        help="store the optimal pair at every grid time",
-    )
-    p.add_argument(
-        "--save-operator",
-        action="store_true",
-        help="also write <stem>_tg_op.npz: per-mode reduced generator "
-        "A, resolved basis Q, energy factor F, subspace basis V (see "
-        "the module docstring)",
-    )
-    p.add_argument(
-        "--export-snapshot",
-        default=None,
-        help='"i2,i3": export that mode\'s optimal as a dnsjax snapshot',
-    )
-    p.add_argument(
-        "--export-amplitude",
-        type=float,
-        default=1e-4,
-        help="perturbation energy E' of the exported seed",
-    )
-    p.add_argument(
-        "--export-which", default="input", choices=("input", "response")
-    )
-    return p.parse_known_args(argv)
 
 
 def _gather_profiles(path_str: str) -> list[Path]:
@@ -679,7 +703,7 @@ def _regrid_profile(
 def _select_modes(
     spec: str, n2: int, n3: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Resolve the ``--modes`` spec to index arrays (mean excluded)."""
+    """Resolve the ``--tg.modes`` spec to index arrays (mean excluded)."""
     if spec.strip() == "all":
         pairs = [
             (i2, i3)
@@ -732,43 +756,80 @@ def _wavenumber_arrays(
 # ── Parameter layering ───────────────────────────────────────────
 
 
-def _configure_parameters(
-    args: argparse.Namespace, remainder: list[str]
-) -> None:
+def _configure_parameters(argv: list[str]) -> None:
     """Apply defaults < parameters.toml < CLI < forced TG overrides.
 
-    The JAX platform is already configured (in :func:`main`).  This
-    layers the TOML and pydantic CLI, then forces the TG-required
-    settings (single device, backward-Euler linear probe, no mean
-    coupling, tight corrector, lab frame, double precision) so the
-    geometry / flow singletons -- imported *after* this returns -- bake
-    them into the operators.
+    The layering runs through the shared production surface
+    (:func:`dnsjax.bootstrap.resolve_parameters`): flow parameters
+    under their public names, strict relevance, ``--help`` /
+    ``--help <system>`` / ``--sample-toml``, plus the ``[tg]``
+    extension section carrying this driver's own knobs
+    (``--tg.<field>``).  The flow-relevant *solver-run* extension
+    sections (``[probes]``, ``[force]``) are accepted too, so a
+    ``parameters.toml`` shared with a probed production run parses --
+    the driver ignores them (a note is printed when one is
+    configured); bare ``--help`` shows only ``[tg]``.  It then forces
+    the TG-required settings (single device, backward-Euler linear
+    probe, no mean coupling, tight corrector, lab frame, double
+    precision) so the geometry / flow singletons -- imported *after*
+    the platform is configured -- bake them into the operators.
     """
-    from pydantic_settings import CliApp
+    from ..extensions import relevant_extensions
 
-    from ..parameters import CLIParameters
-
-    # TOML layer.
-    toml = (
-        Path(args.parameters)
-        if args.parameters is not None
-        else Path("parameters.toml")
+    toml_flag = _scan_flag(argv, "--tg.parameters")
+    toml_path = Path(toml_flag) if toml_flag is not None else None
+    ctx = peek_run_context(argv, toml_path=toml_path)
+    if ctx.help_requested and ctx.help_system is None:
+        ext_map = {"tg": TG_EXTENSION}
+    else:
+        # ``tg`` is registered, so it is already relevant for every
+        # TG-supported system; setdefault keeps the section (and its
+        # unknown-flag errors) for unsupported systems too, which the
+        # explicit system check below rejects with a clearer message.
+        ext_map = dict(relevant_extensions(ctx.system))
+        ext_map.setdefault("tg", TG_EXTENSION)
+    resolve_parameters(
+        argv,
+        toml_path=toml_path,
+        extensions=tuple(ext_map.values()),
+        prog=_PROG,
     )
-    if args.parameters is not None and not toml.is_file():
-        raise SystemExit(f"parameters file not found: {toml}")
-    if toml.is_file():
-        update_parameters(read_parameters(toml))
 
-    # CLI layer (the dnsjax --section.field remainder).
-    update_parameters(CliApp.run(CLIParameters, cli_args=remainder))
+    from ..extensions import force_params, probes_params
+
+    ignored = [
+        name
+        for name, values in (
+            ("probes", probes_params),
+            ("force", force_params),
+        )
+        if values.modes is not None
+    ]
+    if ignored:
+        print(
+            f"[tg] note: the {', '.join(ignored)} section(s) configure "
+            "solver runs; the transient-growth driver ignores them."
+        )
+
+    # ``tg.parameters`` names the TOML to load, so it can only come
+    # from the command line -- a value set inside a TOML would name a
+    # (different) file that was never read.
+    if toml_flag is None and tg_params.parameters is not None:
+        raise SystemExit(
+            "dnsjax: error: tg.parameters is CLI-only "
+            "(--tg.parameters PATH selects the TOML to load; setting "
+            "it inside a [tg] section has no effect)."
+        )
 
     # Snapshot user intent *before* forcing.
     u_grid_user_set = ("phys", "u_grid") in _user_set_fields
     for f in _TG_OWNED_STEP:
         if ("step", f) in _user_set_fields:
             print(
-                f"[tg] note: step.{f} is set by the TG driver; the "
-                "provided value is ignored."
+                f"[tg] note: step.{f} is set by the TG driver "
+                "(tg.dt / tg.corrector_tolerance / "
+                "tg.max_corrector_iterations); the provided value "
+                "is ignored."
             )
     if ("res", "double_precision") in _user_set_fields and not (
         params.res.double_precision
@@ -785,27 +846,23 @@ def _configure_parameters(
             f"system {params.phys.system!r} is not supported "
             f"(choose one of {', '.join(WALL_BOUNDED_TG_SYSTEMS)})"
         )
-    if params.dist.platform != args.platform:
-        # A TOML dist.platform cannot override the already-configured
-        # backend; keep them consistent.
-        print(
-            f"[tg] note: dist.platform {params.dist.platform!r} from a "
-            f"layer is overridden by --dist.platform {args.platform!r}."
-        )
 
     phys_force: dict[str, Any] = {}
     if not u_grid_user_set:
         phys_force["u_grid"] = 0.0
     update_parameters(
         Parameters(
-            dist={"np0": 1, "np1": 1, "platform": args.platform},
+            dist={"np0": 1, "np1": 1},
             res={"double_precision": True},
             step={
-                "dt": args.tg_dt,
+                "scheme": "iterative-cn",
+                "dt": tg_params.dt,
                 "implicitness": 1.0,
                 "implicit_mean_coupling": False,
-                "corrector_tolerance": args.corrector_tolerance,
-                "max_corrector_iterations": args.max_corrector_iterations,
+                "corrector_tolerance": tg_params.corrector_tolerance,
+                "max_corrector_iterations": (
+                    tg_params.max_corrector_iterations
+                ),
             },
             phys=phys_force,
         )
@@ -815,9 +872,9 @@ def _configure_parameters(
 
     print(
         "[tg] forced overrides: scheme=iterative-cn theta=1.0 "
-        f"dt={args.tg_dt} implicit_mean_coupling=False "
+        f"dt={tg_params.dt} implicit_mean_coupling=False "
         f"u_grid={derived_params.u_grid} np0=np1=1 "
-        f"platform={args.platform}"
+        f"platform={params.dist.platform}"
     )
 
 
@@ -825,15 +882,23 @@ def _configure_parameters(
 
 
 def _dispatch(system: str) -> tuple[Any, Any, str]:
-    """Import the flow / geometry modules for *system*."""
+    """Import the flow / geometry modules for *system*.
+
+    Both come from the flow spec: the flow module is
+    ``FlowSpec.flow_module``, the geometry module is the family
+    (``cartesian``/``cylindrical``/``annular`` name their
+    ``geometries.wall_bounded`` module directly).
+    """
     import importlib
 
-    flow_suffix, geo_name, family = _SYSTEMS[system]
-    fmod = importlib.import_module(f"dnsjax.flows.wall_bounded.{flow_suffix}")
+    from ..flows.registry import spec_for
+
+    spec = spec_for(system)
+    fmod = importlib.import_module(spec.flow_module)
     gmod = importlib.import_module(
-        f"dnsjax.geometries.wall_bounded.{geo_name}"
+        f"dnsjax.geometries.wall_bounded.{spec.family.replace('-', '_')}"
     )
-    return fmod, gmod, family
+    return fmod, gmod, spec.family
 
 
 def _linear_step(gmod: Any):
@@ -901,7 +966,7 @@ def _build_propagators(
                 raise SystemExit(
                     f"linear step failed to converge (component {c}, "
                     f"row {j}: err={err_f:.2e} > {tol:.1e}); reduce "
-                    "--tg-dt or raise --max-corrector-iterations."
+                    "--tg.dt or raise --tg.max_corrector_iterations."
                 )
             err_max = max(err_max, err_f)
             nc_max = max(nc_max, int(nc))
@@ -931,7 +996,7 @@ def _analyze_mode(
     i3: int,
     wn2: float,
     wn3: float,
-    cfg: TGConfig,
+    cfg: TGParams,
     jgrowth: Any,
     jfull: Any,
 ) -> ModeResult:
@@ -962,7 +1027,7 @@ def _analyze_mode(
             f"(s[{rank - 1}]/s[{rank}] = {gap:.2e} < "
             f"{cfg.rank_gap_min:.1e}); tail "
             f"{s[max(rank - 3, 0) : rank + 3]}; move --rank-tol into "
-            "the observed gap, or try raising --tg-dt."
+            "the observed gap, or try raising --tg.dt."
         )
     v = u[:, :rank]  # (n, r) range basis
     phi_s = v.conj().T @ phi_k @ v  # (r, r)
@@ -991,7 +1056,7 @@ def _analyze_mode(
     if not resolved.any():
         raise SystemExit(
             f"mode ({i2},{i3}): no probe-resolved eigenvalues (every "
-            f"|mu| <= 1/2 at --tg-dt {dt:g}); raise --tg-dt to widen "
+            f"|mu| <= 1/2 at --tg.dt {dt:g}); raise --tg.dt to widen "
             "the resolved window."
         )
     omega_res = float(np.max(lam.real[resolved]))
@@ -1016,7 +1081,8 @@ def _analyze_mode(
     # physically meaningless) and mask the true optimum.  On the
     # restriction G(0) = 1 holds continuously, and G is a rigorous
     # *lower bound* on the full-space growth that converges from below
-    # as the resolved window widens (larger --res.ny at fixed --tg-dt).
+    # as the resolved window widens (larger wall-normal resolution
+    # res.ny/nr at fixed --tg.dt).
     q_mat, r_mat = np.linalg.qr(e_mat[:, resolved])
     lam_res = lam[resolved]
     cond_e = np.linalg.cond(r_mat)
@@ -1024,7 +1090,8 @@ def _analyze_mode(
         raise SystemExit(
             f"mode ({i2},{i3}): eigenvector matrix is ill-conditioned "
             f"(cond = {cond_e:.2e}); Phi_S is (near) defective -- "
-            "reduce --res.ny or change --tg-dt."
+            "reduce the wall-normal resolution (res.ny/nr) or "
+            "change --tg.dt."
         )
     r_inv = np.linalg.inv(r_mat)
     a_res = (r_mat * lam_res[None, :]) @ r_inv
@@ -1262,7 +1329,7 @@ def _write_npz(
     results: list[ModeResult],
     family: str,
     labels: tuple[str, str],
-    cfg: TGConfig,
+    cfg: TGParams,
     profile_file: Path,
     y_code: np.ndarray,
     y_user: np.ndarray,
@@ -1291,7 +1358,7 @@ def _write_npz(
         "system": params.phys.system,
         "family": family,
         "params_json": params.model_dump_json(),
-        "tg_config_json": cfg.as_json(),
+        "tg_config_json": _config_json(cfg),
         "profile_file": str(profile_file),
         "component_labels": np.asarray(_COMPONENT_LABELS[family]),
         "wavenumber_labels": np.asarray(labels),
@@ -1347,14 +1414,14 @@ def _write_operator_npz(
     path: Path,
     results: list[ModeResult],
     family: str,
-    cfg: TGConfig,
+    cfg: TGParams,
     profile_file: Path,
     y_code: np.ndarray,
     u_code: np.ndarray,
     w_diag: np.ndarray,
     t_grid: np.ndarray,
 ) -> None:
-    r"""Write the ``--save-operator`` bundle (``<stem>_tg_op.npz``).
+    r"""Write the ``--tg.save_operator`` bundle (``<stem>_tg_op.npz``).
 
     Per mode (keys suffixed ``_{i2}_{i3}``; ranks are ragged across
     modes, so no stacking):
@@ -1401,7 +1468,7 @@ def _write_operator_npz(
         "system": params.phys.system,
         "family": family,
         "params_json": params.model_dump_json(),
-        "tg_config_json": cfg.as_json(),
+        "tg_config_json": _config_json(cfg),
         "profile_file": str(profile_file),
         "component_labels": np.asarray(_COMPONENT_LABELS[family]),
         "code_grid": y_code,
@@ -1501,6 +1568,51 @@ def mode_state_energy(
     return float(norm2(state, gmod.fourier.k_metric, flow.y_weights)) / 2.0
 
 
+@contextmanager
+def _seed_metadata_params():
+    """Production-default metadata for an exported seed snapshot.
+
+    The driver forces analysis stepping (backward-Euler ``theta = 1``,
+    ``tg.dt``, a tight corrector) and the lab frame onto the live
+    ``params``; embedding those in the exported seed would make a
+    production resume inherit them silently through the snapshot
+    parameter layer.  A seed is pure state plus its
+    trajectory-defining ``phys``/``geo``/``res`` identity, so for the
+    metadata dump the ``step`` section, the moving-frame speed, and
+    the solver-run extension sections (``probes``/``force``, possibly
+    configured by a shared production TOML this driver ignores) are
+    swapped to their production defaults, then restored.
+    """
+    from ..extensions import EXTENSIONS
+    from ..flow_spec import UNSET
+    from ..flows.registry import spec_for
+    from ..parameters import TimeStepping
+
+    recorded = {
+        name: ext for name, ext in EXTENSIONS.items() if ext.record_in_metadata
+    }
+    saved_step = params.step
+    saved_u_grid = params.phys.u_grid
+    saved_ext = {
+        name: ext.values.model_dump() for name, ext in recorded.items()
+    }
+    default_u = spec_for(params.phys.system).default_for("phys", "u_grid")
+    params.step = TimeStepping()
+    params.phys.u_grid = None if default_u is UNSET else default_u
+    for ext in recorded.values():
+        fresh = ext.model()
+        for field_name in ext.model.model_fields:
+            setattr(ext.values, field_name, getattr(fresh, field_name))
+    try:
+        yield
+    finally:
+        params.step = saved_step
+        params.phys.u_grid = saved_u_grid
+        for name, values in saved_ext.items():
+            for field_name, value in values.items():
+                setattr(recorded[name].values, field_name, value)
+
+
 def _export_snapshot(
     out_dir: Path,
     stem: str,
@@ -1508,9 +1620,14 @@ def _export_snapshot(
     fmod: Any,
     gmod: Any,
     family: str,
-    cfg: TGConfig,
+    cfg: TGParams,
 ) -> None:
-    """Export a chosen mode's optimal perturbation as a snapshot."""
+    """Export a chosen mode's optimal perturbation as a snapshot.
+
+    The embedded metadata carries production-default ``step``/frame/
+    extension sections (:func:`_seed_metadata_params`), not this
+    driver's forced analysis configuration.
+    """
     import jax
 
     from ..snapshot import save_snapshot
@@ -1530,7 +1647,8 @@ def _export_snapshot(
     state = state * scale
 
     path = out_dir / f"{stem}_tg_seed_m{i2}_{i3}.tar"
-    save_snapshot(jax.block_until_ready(state), 0.0, 0, path, isnap=0)
+    with _seed_metadata_params():
+        save_snapshot(jax.block_until_ready(state), 0.0, 0, path, isnap=0)
     print(
         f"[tg] wrote {path} (E'={cfg.export_amplitude:g}); resume with\n"
         f"     mpirun -np 1 python -m dnsjax "
@@ -1541,34 +1659,8 @@ def _export_snapshot(
 # ── Orchestration ────────────────────────────────────────────────
 
 
-def _make_config(args: argparse.Namespace) -> TGConfig:
-    return TGConfig(
-        modes=args.modes,
-        t_max=args.t_max,
-        nt=args.nt,
-        tg_dt=args.tg_dt,
-        corrector_tolerance=args.corrector_tolerance,
-        max_corrector_iterations=args.max_corrector_iterations,
-        rank_tol=args.rank_tol,
-        rank_gap_min=args.rank_gap_min,
-        interp_order=args.interp_order,
-        wall_bc_tol=args.wall_bc_tol,
-        grid_match_tol=args.grid_match_tol,
-        n_eig=args.n_eig,
-        t_chunk=args.t_chunk,
-        save_all_times=args.save_all_times,
-        save_operator=args.save_operator,
-        export_snapshot=args.export_snapshot,
-        export_amplitude=args.export_amplitude,
-        export_which=args.export_which,
-    )
-
-
-def _run(args: argparse.Namespace, remainder: list[str]) -> int:
-    """Configure, then process every profile file."""
-    _configure_parameters(args, remainder)
-    cfg = _make_config(args)
-
+def _run(cfg: TGParams) -> int:
+    """Process every profile file (parameters already resolved)."""
     import jax
     import jax.numpy as jnp
 
@@ -1616,10 +1708,10 @@ def _run(args: argparse.Namespace, remainder: list[str]) -> int:
         "per profile."
     )
 
-    out_dir = Path(args.out_dir)
+    out_dir = Path(tg_params.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     failures = 0
-    for profile_file in _gather_profiles(args.profile):
+    for profile_file in _gather_profiles(tg_params.profile):
         try:
             _process_profile(
                 profile_file,
@@ -1653,7 +1745,7 @@ def _run(args: argparse.Namespace, remainder: list[str]) -> int:
 
 def _process_profile(
     profile_file: Path,
-    cfg: TGConfig,
+    cfg: TGParams,
     fmod: Any,
     gmod: Any,
     family: str,
@@ -1758,10 +1850,18 @@ def _process_profile(
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
-    args, remainder = _parse_args(argv)
-    configure_jax_platform(args.platform, double_precision=True)
+    args = list(sys.argv[1:] if argv is None else argv)
+    _configure_parameters(args)  # exits on --help / --sample-toml
+    if tg_params.profile is None:
+        raise SystemExit(
+            f"{_PROG}: error: --tg.profile is required (a profile "
+            "file or a folder of profile files)"
+        )
+    configure_jax_platform(params.dist.platform, double_precision=True)
     print("Code version:", git_hash(), flush=True)
-    return _run(args, remainder)
+    # A frozen copy: later mutation of the singleton (another
+    # entry point, tests) cannot drift a run in progress.
+    return _run(tg_params.model_copy(deep=True))
 
 
 if __name__ == "__main__":

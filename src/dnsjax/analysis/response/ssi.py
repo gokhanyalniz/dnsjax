@@ -56,7 +56,7 @@ Knobs (when to tweak)
   many).
 - The forcing amplitude / channel count are **run-time** knobs
   (``force.amplitude`` / ``force.n_channels``,
-  :class:`dnsjax.parameters.StochasticForcing`); this module reads
+  :class:`dnsjax.extensions.ForceParams`); this module reads
   them from the sidecar.  :func:`predicted_forced_variance` gives
   the stationary forced level for planning the amplitude.
 

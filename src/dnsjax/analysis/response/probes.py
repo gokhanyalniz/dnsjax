@@ -5,7 +5,7 @@ Reads the ``probes.bin``/``probes.json`` pair written by
 writer's append-on-resume rules) and provides the small host-side
 post-processing steps that need no device: time-averaged mean
 profiles, the friction Reynolds number, and profile files consumable
-by the transient-growth CLI (``--profile``).
+by the transient-growth CLI (``--tg.profile``).
 
 Depends only on NumPy, the standard library, and the JAX-free
 :mod:`dnsjax.fd` leaf, so it is safe anywhere the
@@ -209,6 +209,12 @@ def re_tau(data: ProbeData, t_min: float = 0.0) -> float:
     stencils (:func:`dnsjax.fd.build_diff_matrices` boundary rows).
     """
     y, u_s = mean_profile(data, t_min)
+    # Raw public-named sidecar access: ``fd_order``/``re`` are on the
+    # Cartesian surfaces (the only ones ``mean_profile`` admits).  A
+    # flow whose ``re`` is derived (Taylor-Couette / quasi-Keplerian /
+    # viscoelastic-dean) does not record it -- go through
+    # ``flows.registry.internalize_stored(..., rehydrate=True)`` if
+    # this is ever un-gated.
     p = int(data.meta["params"]["res"]["fd_order"])
     d1, _ = build_diff_matrices(y, p)
     re = float(data.meta["params"]["phys"]["re"])
@@ -222,9 +228,9 @@ def write_profile_file(
 ) -> None:
     """Write a two-column total-profile file (top wall first).
 
-    The format the transient-growth CLI ``--profile`` consumes: grid
-    points descending from the top wall, then the total profile value.
-    An ascending input grid is flipped.
+    The format the transient-growth CLI ``--tg.profile`` consumes:
+    grid points descending from the top wall, then the total profile
+    value.  An ascending input grid is flipped.
     """
     y = np.asarray(y, dtype=float)
     profile = np.asarray(profile, dtype=float)

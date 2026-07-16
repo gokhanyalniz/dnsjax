@@ -212,7 +212,8 @@ def test_harvest_build_and_aggregate() -> None:
                 atol=0,
             )
             toml = (tree / f"m{k:04d}_p" / "parameters.toml").read_text()
-            assert 'probe_modes = "3,0"' in toml
+            assert "[probes]" in toml
+            assert 'modes = "3,0"' in toml
             assert f"max_sim_time = {parent_t + NT * IT_PROBES * DT!r}" in toml
 
         # Synthetic member probe streams: huge per-pair background,
@@ -313,7 +314,7 @@ def test_identify_generator_units() -> None:
 
 
 def _operator_artifacts(tmp: Path) -> tuple[Path, Path]:
-    """Real TG --save-operator + controllability bundles (mode (3,0))."""
+    """Real TG operator export + controllability bundle (mode (3,0))."""
     y = np.cos(np.pi * np.arange(NY) / (NY - 1))
     with open(tmp / "lam.txt", "w") as f:
         for yi, ui in zip(y, 1.0 - y**2, strict=True):
@@ -323,15 +324,16 @@ def _operator_artifacts(tmp: Path) -> tuple[Path, Path]:
             sys.executable,
             "-m",
             "dnsjax.analysis.transient_growth",
-            "--profile",
+            "--tg.profile",
             str(tmp / "lam.txt"),
-            "--out-dir",
+            "--tg.out_dir",
             str(tmp),
-            "--modes",
+            "--tg.modes",
             "3,0",
-            "--nt",
+            "--tg.nt",
             "9",
-            "--save-operator",
+            "--tg.save_operator",
+            "True",
             "--phys.system",
             "plane-poiseuille",
             "--res.nx",

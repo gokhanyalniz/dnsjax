@@ -5,20 +5,21 @@ states via ``snapshot.assemble_local_shards`` + ``save_snapshot``),
 runs the injection CLI as a subprocess in a temporary directory, and
 verifies against the reloaded arrays:
 
-1. **Exactness**: a ``--npy`` injection at ``(i2, i3) = (3, 0)`` adds
-   exactly ``scale * vec`` at the target column and ``scale *
-   conj(vec)`` at the real-FFT conjugate partner ``((nz-1)-3, 0)``,
-   leaves every other entry ``==``-identical, and preserves the
-   parent's ``(t, it)``.
-2. **Energy convention**: ``--amplitude-energy E0`` onto a zero
-   snapshot yields a state whose solver-measure ``E'``
+1. **Exactness**: a ``--perturb.npy`` injection at ``(i2, i3) =
+   (3, 0)`` adds exactly ``scale * vec`` at the target column and
+   ``scale * conj(vec)`` at the real-FFT conjugate partner
+   ``((nz-1)-3, 0)``, leaves every other entry ``==``-identical, and
+   preserves the parent's ``(t, it)``.
+2. **Energy convention**: ``--perturb.amplitude_energy E0`` onto a
+   zero snapshot yields a state whose solver-measure ``E'``
    (``get_perturbation_energy``) is ``E0`` to roundoff.
-3. **Antithesis**: ``--negate`` gives the exact mirror perturbation
-   (the ``+``/``-`` deltas cancel identically).
+3. **Antithesis**: ``--perturb.negate`` gives the exact mirror
+   perturbation (the ``+``/``-`` deltas cancel identically).
 4. **Transient-growth source**: a real (subprocess) TG run on the
-   laminar profile produces ``<stem>_tg.npz``; ``--tg-npz`` injects a
-   field collinear with its ``opt_input`` row at the requested
-   energy -- pinning the npz key contract against the actual writer.
+   laminar profile produces ``<stem>_tg.npz``; ``--perturb.tg_npz``
+   injects a field collinear with its ``opt_input`` row at the
+   requested energy -- pinning the npz key contract against the
+   actual writer.
 5. **Error paths**: out-of-range mode, complex ``(0,0)`` profile,
    mode missing from the TG bundle, wrong-system bundle.
 
@@ -123,15 +124,15 @@ def test_npy_injection_exact() -> None:
         np.save(tmp / "vec.npy", vec)
         _run_perturb(
             [
-                "--snapshot",
+                "--init.snapshot",
                 str(tmp / "base.tar"),
-                "--out",
+                "--perturb.out",
                 str(tmp / "out.tar"),
-                "--mode",
+                "--perturb.mode",
                 "3,0",
-                "--npy",
+                "--perturb.npy",
                 str(tmp / "vec.npy"),
-                "--amplitude-scale",
+                "--perturb.amplitude_scale",
                 "0.5",
             ]
         )
@@ -153,15 +154,15 @@ def test_amplitude_energy_convention() -> None:
         np.save(tmp / "vec.npy", vec)
         _run_perturb(
             [
-                "--snapshot",
+                "--init.snapshot",
                 str(tmp / "zero.tar"),
-                "--out",
+                "--perturb.out",
                 str(tmp / "out.tar"),
-                "--mode",
+                "--perturb.mode",
                 "3,0",
-                "--npy",
+                "--perturb.npy",
                 str(tmp / "vec.npy"),
-                "--amplitude-energy",
+                "--perturb.amplitude_energy",
                 "1e-4",
             ]
         )
@@ -178,17 +179,25 @@ def test_negate_antithetic() -> None:
         base = _make_snapshot(tmp / "base.tar")
         np.save(tmp / "vec.npy", vec)
         common = [
-            "--snapshot",
+            "--init.snapshot",
             str(tmp / "base.tar"),
-            "--mode",
+            "--perturb.mode",
             "3,0",
-            "--npy",
+            "--perturb.npy",
             str(tmp / "vec.npy"),
-            "--amplitude-energy",
+            "--perturb.amplitude_energy",
             "1e-6",
         ]
-        _run_perturb([*common, "--out", str(tmp / "plus.tar")])
-        _run_perturb([*common, "--out", str(tmp / "minus.tar"), "--negate"])
+        _run_perturb([*common, "--perturb.out", str(tmp / "plus.tar")])
+        _run_perturb(
+            [
+                *common,
+                "--perturb.out",
+                str(tmp / "minus.tar"),
+                "--perturb.negate",
+                "True",
+            ]
+        )
         plus = np.asarray(load_snapshot(tmp / "plus.tar")[0])
         minus = np.asarray(load_snapshot(tmp / "minus.tar")[0])
         assert_array_equal(plus - base, -(minus - base))
@@ -209,15 +218,16 @@ def test_tg_npz_source() -> None:
                 sys.executable,
                 "-m",
                 "dnsjax.analysis.transient_growth",
-                "--profile",
+                "--tg.profile",
                 str(tmp / "lam.txt"),
-                "--out-dir",
+                "--tg.out_dir",
                 str(tmp),
-                "--modes",
+                "--tg.modes",
                 "3,0",
-                "--nt",
+                "--tg.nt",
                 "9",
-                "--save-operator",
+                "--tg.save_operator",
+                "True",
                 "--phys.system",
                 "plane-poiseuille",
                 "--res.nx",
@@ -241,17 +251,17 @@ def test_tg_npz_source() -> None:
         _make_snapshot(tmp / "zero.tar", zero=True)
         _run_perturb(
             [
-                "--snapshot",
+                "--init.snapshot",
                 str(tmp / "zero.tar"),
-                "--out",
+                "--perturb.out",
                 str(tmp / "out.tar"),
-                "--mode",
+                "--perturb.mode",
                 "3,0",
-                "--tg-npz",
+                "--perturb.tg_npz",
                 str(npz_path),
-                "--which",
+                "--perturb.which",
                 "input",
-                "--amplitude-energy",
+                "--perturb.amplitude_energy",
                 "1e-4",
             ]
         )
@@ -269,22 +279,23 @@ def test_tg_npz_source() -> None:
         # Error: a mode the bundle does not contain.
         _run_perturb(
             [
-                "--snapshot",
+                "--init.snapshot",
                 str(tmp / "zero.tar"),
-                "--out",
+                "--perturb.out",
                 str(tmp / "x.tar"),
-                "--mode",
+                "--perturb.mode",
                 "2,0",
-                "--tg-npz",
+                "--perturb.tg_npz",
                 str(npz_path),
-                "--amplitude-energy",
+                "--perturb.amplitude_energy",
                 "1e-4",
             ],
             expect_fail="is not in",
         )
 
         # Controllability-mode source: operator_tools CLI on the
-        # --save-operator bundle, then --modes-npz injection.
+        # --tg.save_operator bundle, then --perturb.modes_npz
+        # injection.
         result = subprocess.run(
             [
                 sys.executable,
@@ -303,17 +314,17 @@ def test_tg_npz_source() -> None:
         assert result.returncode == 0, result.stdout + result.stderr
         _run_perturb(
             [
-                "--snapshot",
+                "--init.snapshot",
                 str(tmp / "zero.tar"),
-                "--out",
+                "--perturb.out",
                 str(tmp / "cm.tar"),
-                "--mode",
+                "--perturb.mode",
                 "3,0",
-                "--modes-npz",
+                "--perturb.modes_npz",
                 str(tmp / "cont.npz"),
-                "--index",
+                "--perturb.index",
                 "1",
-                "--amplitude-energy",
+                "--perturb.amplitude_energy",
                 "1e-4",
             ]
         )
@@ -330,17 +341,17 @@ def test_tg_npz_source() -> None:
         # --index out of range against the real bundle.
         _run_perturb(
             [
-                "--snapshot",
+                "--init.snapshot",
                 str(tmp / "zero.tar"),
-                "--out",
+                "--perturb.out",
                 str(tmp / "x.tar"),
-                "--mode",
+                "--perturb.mode",
                 "3,0",
-                "--modes-npz",
+                "--perturb.modes_npz",
                 str(tmp / "cont.npz"),
-                "--index",
+                "--perturb.index",
                 "3",
-                "--amplitude-energy",
+                "--perturb.amplitude_energy",
                 "1e-4",
             ],
             expect_fail="out of range",
@@ -355,34 +366,36 @@ def test_error_paths() -> None:
         _make_snapshot(tmp / "base.tar")
         np.save(tmp / "vec.npy", vec)
         common = [
-            "--snapshot",
+            "--init.snapshot",
             str(tmp / "base.tar"),
-            "--out",
+            "--perturb.out",
             str(tmp / "x.tar"),
-            "--npy",
+            "--perturb.npy",
             str(tmp / "vec.npy"),
-            "--amplitude-scale",
+            "--perturb.amplitude_scale",
             "1.0",
         ]
         _run_perturb(
-            [*common, "--mode", f"{N2},0"], expect_fail="out of range"
+            [*common, "--perturb.mode", f"{N2},0"], expect_fail="out of range"
         )
-        _run_perturb([*common, "--mode", "0,0"], expect_fail="must be real")
+        _run_perturb(
+            [*common, "--perturb.mode", "0,0"], expect_fail="must be real"
+        )
 
         # Wrong-system bundle (only the "system" key is read before
         # the rejection fires).
         np.savez(tmp / "wrong.npz", system="plane-couette")
         _run_perturb(
             [
-                "--snapshot",
+                "--init.snapshot",
                 str(tmp / "base.tar"),
-                "--out",
+                "--perturb.out",
                 str(tmp / "x.tar"),
-                "--mode",
+                "--perturb.mode",
                 "3,0",
-                "--tg-npz",
+                "--perturb.tg_npz",
                 str(tmp / "wrong.npz"),
-                "--amplitude-scale",
+                "--perturb.amplitude_scale",
                 "1.0",
             ],
             expect_fail="was computed for system",

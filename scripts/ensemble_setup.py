@@ -160,9 +160,9 @@ def _source_args(args: argparse.Namespace) -> tuple[list[str], dict]:
     if args.tg_npz is not None:
         return (
             [
-                "--tg-npz",
+                "--perturb.tg_npz",
                 str(Path(args.tg_npz).resolve()),
-                "--which",
+                "--perturb.which",
                 args.which,
             ],
             {
@@ -174,9 +174,9 @@ def _source_args(args: argparse.Namespace) -> tuple[list[str], dict]:
     if args.modes_npz is not None:
         return (
             [
-                "--modes-npz",
+                "--perturb.modes_npz",
                 str(Path(args.modes_npz).resolve()),
-                "--index",
+                "--perturb.index",
                 str(args.index),
             ],
             {
@@ -186,7 +186,7 @@ def _source_args(args: argparse.Namespace) -> tuple[list[str], dict]:
             },
         )
     return (
-        ["--npy", str(Path(args.npy).resolve())],
+        ["--perturb.npy", str(Path(args.npy).resolve())],
         {"kind": "npy", "path": str(Path(args.npy).resolve())},
     )
 
@@ -227,10 +227,12 @@ def _member_toml(
         "check_laminarization = false\n"
         "\n"
         "[outs]\n"
-        f'probe_modes = "{probe_modes}"\n'
-        f"it_probes = {it_probes}\n"
         "snapshot_save_initial = false\n"
         "snapshot_save_final = false\n"
+        "\n"
+        "[probes]\n"
+        f'modes = "{probe_modes}"\n'
+        f"it_probes = {it_probes}\n"
     )
 
 
@@ -291,18 +293,18 @@ def build(args: argparse.Namespace) -> int:
             cmd = [
                 sys.executable,
                 str(_PERTURB),
-                "--snapshot",
+                "--init.snapshot",
                 mem["parent"],
-                "--out",
+                "--perturb.out",
                 seed,
-                "--mode",
+                "--perturb.mode",
                 f"{i2},{i3}",
                 *src_args,
-                "--amplitude-energy",
+                "--perturb.amplitude_energy",
                 str(args.amplitude_energy),
             ]
             if mem["sign"] < 0:
-                cmd.append("--negate")
+                cmd += ["--perturb.negate", "True"]
             seed_cmds.append((mem, cmd))
         mem["seed"] = seed
         mem["t_end"] = mem["parent_t"] + args.horizon

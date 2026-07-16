@@ -754,13 +754,15 @@ def generate_viscoelastic_dean(
     D1_np = np.asarray(D1)
     yw_np = np.asarray(y_weights)
     kz_np = _real_harmonics_np(nx) * (2 * pi / params.geo.lx)  # axial
-    m_np = _complex_harmonics_np(nz)  # azimuthal integer modes
+    # Physical azimuthal wavenumbers m = m0 * harmonic over the wedge
+    # (m0 = 1 full circle): the continuity relation needs the physical
+    # m; the decay envelope then weights by |m| directly.
+    m_np = params.geo.m0 * _complex_harmonics_np(nz)
 
     decay = 1.0 - smoothness
     window_lin = (rs_np - r1) * (r2 - rs_np)
     window_lin = window_lin / np.max(window_lin)
     window_wn = window_lin**2
-    m_decay = 2 * pi / params.geo.lz
 
     def fill_local(buf, m_start, n_m, kz_start, n_kz):
         for li in range(n_m):
@@ -769,7 +771,7 @@ def generate_viscoelastic_dean(
             for lj in range(n_kz):
                 g3 = kz_start + lj
                 kz_val = kz_np[g3]
-                envelope = decay ** (abs(kz_val) + abs(m_val) * m_decay)
+                envelope = decay ** (abs(kz_val) + abs(m_val))
 
                 # Velocity (rows 0:3): divergence-free draw.
                 if g3 == 0:

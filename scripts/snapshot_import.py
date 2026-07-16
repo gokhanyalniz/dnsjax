@@ -390,7 +390,7 @@ def configure_target(
     lz: float = 4.0,
     wall_normal_grid: Any | None = None,
     double_precision: bool = True,
-    fd_order: int = 4,
+    fd_order: int = 8,
     tilt_degree: float = 0.0,
     re: float = 1000.0,
     re1: float | None = None,
