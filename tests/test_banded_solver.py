@@ -39,6 +39,8 @@ Run as a script via ``uv run python tests/test_banded_solver.py``.
 
 from __future__ import annotations
 
+import sys
+
 # Select the JAX backend from --dist.platform (default cpu) and enable
 # float64 *before* importing any dnsjax module that captures the platform
 # (``sharding.Sharding`` does so at class-definition time) or creating any
@@ -49,6 +51,8 @@ from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
 from dnsjax.parameters import (
     params,
 )
+
+sys.stdout.reconfigure(line_buffering=True)
 
 configure_jax_platform(platform_from_argv())
 

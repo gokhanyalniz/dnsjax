@@ -68,6 +68,7 @@ import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import numpy as np  # noqa: E402
+from _live import run_live  # noqa: E402
 from numpy.testing import assert_allclose, assert_array_equal  # noqa: E402
 
 import dnsjax.flows.wall_bounded.plane_poiseuille as fmod  # noqa: E402
@@ -76,6 +77,8 @@ from dnsjax.snapshot import (  # noqa: E402
     load_snapshot,
     save_snapshot,
 )
+
+sys.stdout.reconfigure(line_buffering=True)
 
 _REPO = Path(__file__).resolve().parent.parent
 _SCRIPT = _REPO / "scripts" / "snapshot_perturb.py"
@@ -213,7 +216,7 @@ def test_tg_npz_source() -> None:
         with open(tmp / "lam.txt", "w") as f:
             for yi, ui in zip(y, 1.0 - y**2, strict=True):
                 f.write(f"{yi:+.17e} {ui:+.17e}\n")
-        result = subprocess.run(
+        result = run_live(
             [
                 sys.executable,
                 "-m",
@@ -239,8 +242,6 @@ def test_tg_npz_source() -> None:
                 "--res.fd_order",
                 "4",
             ],
-            capture_output=True,
-            text=True,
             cwd=tmp,
         )
         assert result.returncode == 0, result.stdout + result.stderr
@@ -296,7 +297,7 @@ def test_tg_npz_source() -> None:
         # Controllability-mode source: operator_tools CLI on the
         # --tg.save_operator bundle, then --perturb.modes_npz
         # injection.
-        result = subprocess.run(
+        result = run_live(
             [
                 sys.executable,
                 "-m",
@@ -307,9 +308,7 @@ def test_tg_npz_source() -> None:
                 "3",
                 "--out",
                 str(tmp / "cont.npz"),
-            ],
-            capture_output=True,
-            text=True,
+            ]
         )
         assert result.returncode == 0, result.stdout + result.stderr
         _run_perturb(

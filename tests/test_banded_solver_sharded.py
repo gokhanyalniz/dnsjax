@@ -37,6 +37,9 @@ Run as a script via
 from __future__ import annotations
 
 import os
+import sys
+
+sys.stdout.reconfigure(line_buffering=True)
 
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
 

@@ -19,6 +19,10 @@ Run as a script via ``uv run python tests/test_integration.py``.
 
 from __future__ import annotations
 
+import sys
+
+sys.stdout.reconfigure(line_buffering=True)
+
 # Select the JAX backend from --dist.platform (default cpu) before
 # importing any dnsjax module that captures the platform (the geometry
 # import below builds sharding).  This suite is quadrature / interpolation

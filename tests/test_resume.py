@@ -54,6 +54,10 @@ import subprocess
 import sys
 import tempfile
 
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
+
 # ── configuration ────────────────────────────────────────────────────
 
 # A short, low-resolution plane-Couette run from a random IC.  Three
@@ -405,13 +409,7 @@ def _run_dnsjax(
         "1",
         *extra_args,
     ]
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        cwd=workdir,
-    )
+    return run_live(cmd, timeout=timeout, cwd=workdir)
 
 
 def _fail(stage: str, res: subprocess.CompletedProcess) -> None:

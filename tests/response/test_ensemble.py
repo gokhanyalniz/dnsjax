@@ -34,7 +34,11 @@ Usage::
 
 from __future__ import annotations
 
-import jax
+import sys
+
+sys.stdout.reconfigure(line_buffering=True)
+
+import jax  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_platforms", "cpu")
@@ -65,11 +69,13 @@ padded_res.set_padded_resolution(params)
 
 import json  # noqa: E402
 import subprocess  # noqa: E402
-import sys  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import numpy as np  # noqa: E402
+from _live import run_live  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.analysis.response import operator_tools as ot  # noqa: E402
@@ -104,7 +110,7 @@ def _make_parent(path: Path, t: float, it: int, seed: int) -> None:
 
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    result = subprocess.run(cmd, capture_output=True, text=True, **kw)
+    result = run_live(cmd, **kw)
     assert result.returncode == 0, (
         " ".join(str(c) for c in cmd)
         + "\n"

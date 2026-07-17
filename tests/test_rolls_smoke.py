@@ -42,7 +42,10 @@ import subprocess
 import sys
 import tempfile
 
+from _live import run_live
 from test_random_smoke import _check_run
+
+sys.stdout.reconfigure(line_buffering=True)
 
 # ── configuration ────────────────────────────────────────────────────
 
@@ -225,13 +228,7 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
     cmd = _build_command(system, args, dt)
 
     with tempfile.TemporaryDirectory(prefix=f"rolls_{name}_") as workdir:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=args.timeout,
-            cwd=workdir,
-        )
+        result = run_live(cmd, timeout=args.timeout, cwd=workdir)
 
         if result.returncode != 0:
             print(f"  FAIL  {name}: exit code {result.returncode}")

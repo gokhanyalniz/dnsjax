@@ -25,6 +25,7 @@ Run as a script via ``uv run python tests/test_cylindrical.py``.
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 # Select the JAX backend from --dist.platform (default cpu) before the
@@ -40,6 +41,8 @@ from dnsjax.parameters import (  # noqa: E402
     params,
     update_parameters,
 )
+
+sys.stdout.reconfigure(line_buffering=True)
 
 configure_jax_platform(platform_from_argv())
 

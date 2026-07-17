@@ -33,6 +33,8 @@ from pathlib import Path
 
 import numpy as np
 
+sys.stdout.reconfigure(line_buffering=True)
+
 NX, NY, NZ = 8, 24, 8
 LX, LZ = 5.0, 5.0
 RE = 100.0

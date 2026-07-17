@@ -55,8 +55,11 @@ from __future__ import annotations
 
 import argparse
 import math
-import subprocess
 import sys
+
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
 
 ETA = 0.71
 R_OMEGA = -1.2
@@ -488,18 +491,13 @@ def case_wedge_nonlinear() -> None:
     with tempfile.TemporaryDirectory() as d:
         f = str(Path(d) / "wedge.npz")
         for arm in ("wedge_nonlinear_wedge", "wedge_nonlinear_full"):
-            r = subprocess.run(
+            r = run_live(
                 [sys.executable, __file__, "--case", arm, "--state-file", f],
-                capture_output=True,
-                text=True,
                 timeout=600,
             )
             if r.returncode != 0 or "case-ok" not in r.stdout:
                 print(r.stdout[-2000:], r.stderr[-2000:])
                 raise AssertionError(f"arm {arm}: exit {r.returncode}")
-            for line in r.stdout.splitlines():
-                if line.startswith("  wedge=="):
-                    print(line)
     print("case-ok")
 
 
@@ -524,19 +522,14 @@ _ARMS = {
 
 def _run_case(name: str) -> None:
     """Run one subprocess case and check its stdout for the marker."""
-    result = subprocess.run(
+    result = run_live(
         [sys.executable, __file__, "--case", name],
-        capture_output=True,
-        text=True,
         timeout=900,
     )
     if result.returncode != 0 or "case-ok" not in result.stdout:
         print(result.stdout[-2000:] if result.stdout else "(no stdout)")
         print(result.stderr[-2000:] if result.stderr else "(no stderr)")
         raise AssertionError(f"case {name}: exit {result.returncode}")
-    for line in result.stdout.splitlines():
-        if line.startswith("  wedge=="):
-            print(line)
 
 
 if __name__ == "__main__":

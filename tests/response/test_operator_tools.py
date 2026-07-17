@@ -35,13 +35,17 @@ import sys
 
 from dnsjax.analysis.response import operator_tools as ot
 
+sys.stdout.reconfigure(line_buffering=True)
+
 assert "jax" not in sys.modules, "importing operator_tools must not import JAX"
 
-import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import numpy as np  # noqa: E402
+from _live import run_live  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 NX, NY, NZ = 8, 33, 8
@@ -161,7 +165,7 @@ def _run_tg_with_operator(tmp: Path) -> tuple[Path, Path]:
     with open(tmp / "lam.txt", "w") as f:
         for yi, ui in zip(y, 1.0 - y**2, strict=True):
             f.write(f"{yi:+.17e} {ui:+.17e}\n")
-    result = subprocess.run(
+    result = run_live(
         [
             sys.executable,
             "-m",
@@ -187,8 +191,6 @@ def _run_tg_with_operator(tmp: Path) -> tuple[Path, Path]:
             "--res.fd_order",
             "4",
         ],
-        capture_output=True,
-        text=True,
         cwd=tmp,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -248,7 +250,7 @@ def test_export_faithfulness_and_cli() -> None:
 
         # Controllability CLI: lifted modes are W-orthonormal.
         cont_npz = tmp / "cont.npz"
-        result = subprocess.run(
+        result = run_live(
             [
                 sys.executable,
                 "-m",
@@ -261,9 +263,7 @@ def test_export_faithfulness_and_cli() -> None:
                 "5",
                 "--out",
                 str(cont_npz),
-            ],
-            capture_output=True,
-            text=True,
+            ]
         )
         assert result.returncode == 0, result.stdout + result.stderr
         with np.load(cont_npz) as z:

@@ -12,6 +12,14 @@ in its default invocation, asserts a zero exit code, and surfaces the
 output tail on failure.  Adding a test script means adding one row to
 ``_SCRIPTS``.
 
+Output streams live: each case prints a banner, then tees the
+script's stdout/stderr through as it arrives (``tests/_live.py``,
+which also sets ``PYTHONUNBUFFERED=1`` in the child), and pytest runs
+with ``-s`` by default (``addopts`` in ``pyproject.toml``) so the
+stream reaches the terminal immediately -- a tailed run shows
+progress and can be aborted early.  Failures still end with the
+compact output tail in the pytest summary.
+
 Markers:
 
 - ``mpi``: the script launches solver runs via ``mpirun`` (even at
@@ -36,6 +44,10 @@ import pytest
 
 _TESTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _TESTS_DIR.parent
+
+sys.path.insert(0, str(_TESTS_DIR))
+
+from _live import run_live  # noqa: E402
 
 _MPI = (
     pytest.mark.mpi,
@@ -90,6 +102,12 @@ def _case_id(script: str, args: tuple[str, ...]) -> str:
     return Path(script).stem + suffix
 
 
+def _tail(stdout: str, stderr: str) -> str:
+    return "\n".join(
+        stdout.splitlines()[-50:] + stderr.splitlines()[-30:]
+    )
+
+
 @pytest.mark.parametrize(
     ("script", "args", "timeout"),
     [
@@ -101,20 +119,24 @@ def _case_id(script: str, args: tuple[str, ...]) -> str:
 )
 def test_script(script: str, args: tuple[str, ...], timeout: int) -> None:
     """Run one standalone script; PASS is its zero exit code."""
-    result = subprocess.run(
-        [sys.executable, str(_TESTS_DIR / script), *args],
-        cwd=_REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    if result.returncode != 0:
-        tail = "\n".join(
-            (result.stdout or "").splitlines()[-50:]
-            + (result.stderr or "").splitlines()[-30:]
+    invocation = " ".join([f"tests/{script}", *args])
+    print(f"\n=== running {invocation} [timeout {timeout}s] ===", flush=True)
+    try:
+        result = run_live(
+            [sys.executable, str(_TESTS_DIR / script), *args],
+            cwd=_REPO_ROOT,
+            timeout=timeout,
+            echo=False,
         )
+    except subprocess.TimeoutExpired as exc:
         pytest.fail(
-            f"{script} {' '.join(args)} exited with code "
-            f"{result.returncode}\n{tail}",
+            f"{invocation} timed out after {timeout}s\n"
+            f"{_tail(exc.output or '', exc.stderr or '')}",
+            pytrace=False,
+        )
+    if result.returncode != 0:
+        pytest.fail(
+            f"{invocation} exited with code {result.returncode}\n"
+            f"{_tail(result.stdout or '', result.stderr or '')}",
             pytrace=False,
         )

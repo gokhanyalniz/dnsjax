@@ -68,12 +68,14 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
 
 NX, NY, NZ = 8, 17, 8
 NY_PERIODIC = 16
@@ -201,7 +203,7 @@ def _worker(system: str, scheme: str, dt: float, out: str) -> None:
 
 
 def _run(system: str, scheme: str, dt: float, out: Path) -> None:
-    result = subprocess.run(
+    result = run_live(
         [
             sys.executable,
             __file__,
@@ -213,13 +215,9 @@ def _run(system: str, scheme: str, dt: float, out: Path) -> None:
             repr(dt),
             "--out",
             str(out),
-        ],
-        capture_output=True,
-        text=True,
+        ]
     )
     if result.returncode != 0:
-        sys.stderr.write(result.stdout)
-        sys.stderr.write(result.stderr)
         raise SystemExit(f"worker failed: {system} {scheme} dt={dt}")
 
 

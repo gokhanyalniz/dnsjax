@@ -39,6 +39,9 @@ testpaths = ["tests"]
 # scripts configure JAX / global singletons at module import, so
 # pytest must never import them (see tests/pytest_suite.py).
 python_files = ["pytest_suite.py"]
+# Stream the scripts' output live (tests/_live.py tees it); failure
+# reports stay compact via the bridge's own output-tail message.
+addopts = "-s"
 markers = [
     "mpi: launches solver runs via mpirun (skipped when mpirun is missing)",
     "slow: full solver integration runs / dt sweeps (minutes each)",

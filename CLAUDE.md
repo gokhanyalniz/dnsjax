@@ -35,7 +35,11 @@ optional pytest bridge (`tests/pytest_suite.py`, the **only** file
 pytest collects via `[tool.pytest.ini_options] python_files`) runs
 each script as a subprocess: `uv run pytest -m "not slow"` for the
 offline loop, plain `uv run pytest` for everything (`mpi`-marked
-scripts auto-skip without `mpirun`).
+scripts auto-skip without `mpirun`). Output streams live at every
+layer (scripts line-buffer stdout, launch sites tee children through
+`tests/_live.py`, pytest defaults to `-s`), so background a long run
+and tail it for progress -- and kill it early when something is
+clearly wrong instead of waiting out the timeout.
 
 Two ways to get multiple devices, and they do **not** mix:
 offline/in-process tests force CPU devices via
@@ -515,6 +519,9 @@ one-liners. Cross-cutting notes:
 
 - `tests/pytest_suite.py`: the pytest bridge (subprocess per script,
   `mpi`/`slow` markers; the only pytest-collected file — see Run tests).
+- `tests/_live.py`: shared tee-ing subprocess runner (`run_live`: live
+  stream + captured `CompletedProcess`, `PYTHONUNBUFFERED=1` children)
+  behind every long-running test launch site.
 - `tests/test_banded_solver.py`: geometry-independent Pallas banded
   backend.
 - `tests/test_banded_solver_sharded.py`: shard_map-local Pallas solve on

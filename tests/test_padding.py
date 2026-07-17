@@ -57,8 +57,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
+
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
 
 
 def test_round_up_padded() -> None:
@@ -461,10 +464,8 @@ EXPECT: dict[str, str | None] = {
 
 def _run_case(name: str) -> None:
     """Run one subprocess case and check its stdout."""
-    result = subprocess.run(
+    result = run_live(
         [sys.executable, __file__, "--case", name],
-        capture_output=True,
-        text=True,
         timeout=300,
     )
     if result.returncode != 0:

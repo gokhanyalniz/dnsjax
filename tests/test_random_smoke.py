@@ -126,6 +126,10 @@ import subprocess
 import sys
 import tempfile
 
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
+
 # ── configuration ────────────────────────────────────────────────────
 
 # Reynolds numbers above the onset of (subcritical) transition.  TC is
@@ -837,13 +841,7 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
     cmd = _build_command(system, args, dt)
 
     with tempfile.TemporaryDirectory(prefix=f"rand_{name}_") as workdir:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=args.timeout,
-            cwd=workdir,
-        )
+        result = run_live(cmd, timeout=args.timeout, cwd=workdir)
 
         if system.get("expect_nonfinite_abort"):
             # Inverted criteria: the run must have aborted itself via

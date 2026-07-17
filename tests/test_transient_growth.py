@@ -53,6 +53,9 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
 
 REPO = Path(__file__).resolve().parent.parent
 MODULE = "dnsjax.analysis.transient_growth"
@@ -122,12 +125,8 @@ def _run_tg(profile: Path, out_dir: Path, args: list[str]) -> str:
         str(out_dir),
         *args,
     ]
-    res = subprocess.run(
-        cmd, capture_output=True, text=True, cwd=profile.parent
-    )
+    res = run_live(cmd, cwd=profile.parent)
     if res.returncode != 0 or "FAILED" in res.stdout:
-        sys.stdout.write(res.stdout)
-        sys.stderr.write(res.stderr)
         raise SystemExit(f"tg run failed: {' '.join(args)}")
     return res.stdout
 
@@ -946,15 +945,10 @@ def main() -> None:
 
     print("[hooks + block-diagonality]", flush=True)
     for system in systems:
-        res = subprocess.run(
-            [sys.executable, __file__, "--worker", system],
-            capture_output=True,
-            text=True,
-            cwd=REPO,
+        res = run_live(
+            [sys.executable, __file__, "--worker", system], cwd=REPO
         )
-        sys.stdout.write(res.stdout)
         if res.returncode != 0:
-            sys.stderr.write(res.stderr)
             raise SystemExit(f"{system}: worker failed")
 
     print("[CLI features]", flush=True)
