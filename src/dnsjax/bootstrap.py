@@ -111,7 +111,14 @@ def configure_jax_platform(
     can no longer contradict it), and ``--dist.platform cuda`` (via
     :func:`platform_from_argv`) runs the real Pallas / Triton kernels on a
     GPU from any script or test, not just the production entry point.
+
+    Also line-buffers ``sys.stdout``, so piped output (agent-tailed
+    runs, SLURM logs) arrives per line instead of in 8 KiB blocks.
     """
+    # Guarded: wrapped/captured stdout objects may lack
+    # ``reconfigure``; the switch flushes anything already buffered.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     if platform not in _VALID_PLATFORMS:
         raise ValueError(
             f"unknown platform {platform!r}; expected one of "

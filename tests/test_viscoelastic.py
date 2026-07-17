@@ -27,6 +27,8 @@ Run as a script via ``uv run python tests/test_viscoelastic.py``.
 
 from __future__ import annotations
 
+import sys
+
 # Select the JAX backend from --dist.platform (default cpu) before the
 # geometry import below builds sharding.  --dist.platform cuda runs the
 # Pallas Hc parity on a GPU.
@@ -40,6 +42,8 @@ from dnsjax.parameters import (  # noqa: E402
     params,
     update_parameters,
 )
+
+sys.stdout.reconfigure(line_buffering=True)
 
 configure_jax_platform(platform_from_argv())
 

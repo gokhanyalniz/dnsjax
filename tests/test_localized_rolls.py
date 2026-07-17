@@ -50,6 +50,9 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
 
 # Small resolutions chosen so the multi-device cases exercise spectral
 # padding: nx // 2 = 5 (odd -> k_x padded for np1 = 2); nz - 1 = 11 (odd
@@ -259,7 +262,7 @@ def _run_config(
         "--out",
         out_npy,
     ]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    return run_live(cmd, timeout=300)
 
 
 def _run_system(system: str) -> bool:
@@ -278,10 +281,6 @@ def _run_system(system: str) -> bool:
                 print(proc.stdout[-1500:])
                 print(proc.stderr[-1500:])
                 continue
-            # Echo the worker's own per-config checks.
-            for line in proc.stdout.splitlines():
-                if line.lstrip().startswith(("PASS", "FAIL")):
-                    print(f"  [{tag}] {line.strip()}")
             arr = np.load(out)
             if ref is None:
                 ref = arr
@@ -366,9 +365,7 @@ def _check_peak_scaling() -> bool:
                 "--n",
                 str(n),
             ]
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300
-            )
+            proc = run_live(cmd, timeout=300)
             line = next(
                 (
                     ln

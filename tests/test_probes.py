@@ -41,6 +41,9 @@ Usage::
 from __future__ import annotations
 
 import os
+import sys
+
+sys.stdout.reconfigure(line_buffering=True)
 
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
 
@@ -80,11 +83,10 @@ derived_params.wall_normal_grid = [
 ]
 
 import shutil  # noqa: E402
-import subprocess  # noqa: E402
-import sys  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+from _live import run_live  # noqa: E402
 from numpy.testing import assert_array_equal  # noqa: E402
 
 from dnsjax.analysis.response.probes import (  # noqa: E402
@@ -287,9 +289,7 @@ def _run_solver(workdir: Path, np_count: int, np1: int, args: list[str]):
     # The forced-host-device XLA_FLAGS of the offline part must not
     # leak into the solver children (mpirun: one real device each).
     env = {k: v for k, v in os.environ.items() if k != "XLA_FLAGS"}
-    result = subprocess.run(
-        cmd, cwd=workdir, env=env, capture_output=True, text=True
-    )
+    result = run_live(cmd, cwd=workdir, env=env)
     if result.returncode != 0:
         raise AssertionError(
             f"solver run failed ({result.returncode}):\n"

@@ -37,6 +37,8 @@ from pathlib import Path
 
 import numpy as np
 
+sys.stdout.reconfigure(line_buffering=True)
+
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(_SCRIPTS))
 
