@@ -47,6 +47,9 @@ Usage::
 from __future__ import annotations
 
 import os
+import sys
+
+sys.stdout.reconfigure(line_buffering=True)
 
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=4"
 
@@ -90,10 +93,10 @@ derived_params.wall_normal_grid = [
 
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
-import sys  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
+from _live import run_live  # noqa: E402
 from numpy.testing import assert_array_equal  # noqa: E402
 
 from dnsjax.analysis.response.probes import read_probes  # noqa: E402
@@ -406,7 +409,7 @@ MPI_DT = 0.01
 
 
 def _run_cmd(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    result = subprocess.run(cmd, capture_output=True, text=True, **kw)
+    result = run_live(cmd, **kw)
     if result.returncode != 0:
         raise AssertionError(
             f"{' '.join(str(c) for c in cmd)} failed "

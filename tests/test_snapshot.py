@@ -47,6 +47,10 @@ import subprocess
 import sys
 import tempfile
 
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
+
 # ── configuration ────────────────────────────────────────────────────
 
 NX, NY, NZ = 8, 8, 8  # nx // 2 = 4 (shardable by 1, 2, 4)
@@ -478,7 +482,7 @@ def _run_worker(
     ]
     if ny is not None:
         cmd.extend(["--ny", str(ny)])
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    return run_live(cmd, timeout=300)
 
 
 def _fail(name: str, stage: str, res: subprocess.CompletedProcess) -> None:

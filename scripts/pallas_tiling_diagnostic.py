@@ -109,6 +109,23 @@ from dnsjax.solvers import (  # noqa: E402
 F64 = jnp.float64
 TOL = 1e-9
 
+# JAX >= 0.11: a Triton ``pallas_call`` resolves the target GPU's compute
+# capability from the mesh context's abstract device, so the GPU-less
+# ``lower(lowering_platforms=("cuda",))`` compile-check below must run
+# under an abstract GPU mesh or it raises "No supported GPU devices
+# found".  The ``NVIDIA H100`` device_kind selects ``sm_90`` (the cluster
+# target); it is used *only* for the lowering branch, never around the
+# real-GPU execute path (which must read the actual hardware).  Twin of
+# ``_abstract_gpu_mesh`` in ``tests/test_banded_solver.py``.
+_ABSTRACT_GPU_MESH = jax.sharding.AbstractMesh(
+    (1,),
+    ("x",),
+    axis_types=(jax.sharding.AxisType.Explicit,),
+    abstract_device=jax.sharding.AbstractDevice(
+        device_kind="NVIDIA H100", num_cores=None, platform="cuda"
+    ),
+)
+
 
 # ── reference helpers (NumPy) ────────────────────────────────────────
 
@@ -592,9 +609,14 @@ def main() -> None:
                                 _dump(probe, got, ref)
                                 dumped = True
                     else:
-                        jax.jit(fn).trace(*inputs).lower(
-                            lowering_platforms=("cuda",)
-                        )
+                        # Abstract GPU mesh so Triton can resolve the
+                        # target on this GPU-less box (JAX >= 0.11).
+                        with jax.sharding.use_abstract_mesh(
+                            _ABSTRACT_GPU_MESH
+                        ):
+                            jax.jit(fn).trace(*inputs).lower(
+                                lowering_platforms=("cuda",)
+                            )
                         print(f"{tag} -> LOWERS_OK")
                 except Exception as e:  # noqa: BLE001
                     kind = "RUNTIME_ERROR" if execute else "LOWERING_ERROR"

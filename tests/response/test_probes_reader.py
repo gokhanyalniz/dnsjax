@@ -26,6 +26,8 @@ import sys
 
 from dnsjax.analysis.response import probes as rp
 
+sys.stdout.reconfigure(line_buffering=True)
+
 assert "jax" not in sys.modules, (
     "importing dnsjax.analysis.response.probes must not import JAX"
 )

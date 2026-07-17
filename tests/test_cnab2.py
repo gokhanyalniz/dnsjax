@@ -79,8 +79,11 @@ import argparse
 import copy
 import importlib
 import os
-import subprocess
 import sys
+
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
 
 # Small but nontrivial resolutions (nz = 8: the complex-FFT axis
 # rejects nz = 6 in the 3/2-rule padding).  Wall-bounded ny is the FD
@@ -659,14 +662,8 @@ def main() -> None:
     systems = [args.system] if args.system else SYSTEMS
     for system in systems:
         print(f"=== {system} ===", flush=True)
-        result = subprocess.run(
-            [sys.executable, __file__, "--worker", system],
-            capture_output=True,
-            text=True,
-        )
-        sys.stdout.write(result.stdout)
+        result = run_live([sys.executable, __file__, "--worker", system])
         if result.returncode != 0:
-            sys.stderr.write(result.stderr)
             raise SystemExit(f"{system}: worker failed")
     print("ALL PASSED")
 

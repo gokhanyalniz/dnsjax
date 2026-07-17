@@ -27,9 +27,12 @@ Run as a script::
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import tomllib
+
+sys.stdout.reconfigure(line_buffering=True)
 
 FAILURES: list[str] = []
 
@@ -687,6 +690,9 @@ def case_entry_smoke() -> None:
             text=True,
             timeout=120,
             cwd=tmp,
+            # Deterministic plain help: a FORCE_COLOR in the host env
+            # (agent harnesses set one) breaks the substring checks.
+            env={**os.environ, "NO_COLOR": "1"},
         )
 
     r = run("--help")

@@ -85,11 +85,16 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
 
 # ── configuration ────────────────────────────────────────────────────
 
@@ -1008,6 +1013,9 @@ def check_console_help() -> None:
             text=True,
             timeout=120,
             cwd=workdir,
+            # Deterministic plain help: a FORCE_COLOR in the host env
+            # (agent harnesses set one) breaks the substring checks.
+            env={**os.environ, "NO_COLOR": "1"},
         )
         if result.returncode != 0:
             raise AssertionError(
@@ -1033,13 +1041,7 @@ def run_smoke_test(
     cmd = _build_command(system["args"], np_count, np0, platform, console)
 
     with tempfile.TemporaryDirectory(prefix=f"smoke_{name}_") as workdir:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=workdir,
-        )
+        result = run_live(cmd, timeout=300, cwd=workdir)
 
         if result.returncode != 0:
             print(f"  FAIL  {name}: exit code {result.returncode}")
