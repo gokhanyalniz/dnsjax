@@ -1215,7 +1215,18 @@ def main(argv: list[str] | None = None) -> int:
     # Parameters resolve first (fast, pre-JAX): --help / --sample-toml
     # exit in there with clean output (no banner prefix).
     setup = resolve_parameters(argv)
-    print("Alive at", datetime.now(), flush=True)
+    # Per-rank lifecycle heartbeats bracket the whole process (this one
+    # fires before ``configure_jax_runtime`` -- i.e. before the main
+    # device is even known -- so it cannot be main-device-gated).  They
+    # go to *stderr* so the main rank stays the sole writer of *stdout*:
+    # a peer's ``Shutdown at`` on stdout could otherwise be spliced into
+    # the middle of the main rank's final summary line by ``mpirun``'s
+    # stream merging (the two are separate ranks writing one merged
+    # stdout), which no downstream stdout parser can reassemble.  A
+    # barrier is *not* usable here -- the buffer-scan non-finite abort
+    # exits the main rank only (peers are torn down by the launcher), so
+    # a collective would deadlock.
+    print("Alive at", datetime.now(), flush=True, file=sys.stderr)
     main_device = configure_jax_runtime()
 
     if main_device:
@@ -1255,11 +1266,18 @@ def main(argv: list[str] | None = None) -> int:
                 "the default parameters.",
                 flush=True,
             )
-        print_resolved_parameters(
-            params,
-            setup.spec,
-            tuple(relevant_extensions(setup.system).values()),
-        )
+        # The full resolved-parameter dump is provenance for a real run
+        # but pure repeated noise when a test launches the solver dozens
+        # of times (the launching command already carries every argument
+        # and a failing test dumps the child output).  The mpirun smoke
+        # tests set ``DNSJAX_QUIET_STARTUP=1`` (``tests/_live.run_live``)
+        # to skip it; a normal run is unaffected.
+        if os.environ.get("DNSJAX_QUIET_STARTUP") != "1":
+            print_resolved_parameters(
+                params,
+                setup.spec,
+                tuple(relevant_extensions(setup.system).values()),
+            )
 
         print(
             "Running with the physical-space (x, y, z) resolution:",
@@ -1273,7 +1291,9 @@ def main(argv: list[str] | None = None) -> int:
 
     run(wall_time_start)
 
-    print("Shutdown at", datetime.now(), flush=True)
+    # Per-rank shutdown heartbeat -- stderr, see the "Alive at" note
+    # above (keeps the main rank's stdout summary line un-spliced).
+    print("Shutdown at", datetime.now(), flush=True, file=sys.stderr)
     return 0
 
 

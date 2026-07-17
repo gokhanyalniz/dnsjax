@@ -132,6 +132,34 @@ def _mode_inner_factors(Lo: jnp.ndarray, Uo: jnp.ndarray):
     return Li, Ui.at[:, 0].set(1.0 / Ui[:, 0])
 
 
+# ── cuda lowering on a GPU-less box (JAX >= 0.11) ────────────────────
+# ``pl.pallas_call``'s Triton lowering resolves the target GPU's compute
+# capability from the mesh context's abstract device
+# (:class:`jax.sharding.AbstractDevice`); with no physical GPU *and* no
+# abstract device in context it raises "No supported GPU devices found".
+# The two compile-only guards below therefore lower under an abstract
+# H100 mesh (the cluster target, ``sm_90``) via
+# ``jax.sharding.use_abstract_mesh`` -- the recipe from that API's own
+# docstring.  ``num_cores`` is unused by the lowering (the compute
+# capability comes from ``device_kind``); the Explicit axis types are
+# what let the context take effect at trace time.
+_ABSTRACT_H100 = jax.sharding.AbstractDevice(
+    device_kind="NVIDIA H100", num_cores=None, platform="cuda"
+)
+
+
+def _abstract_gpu_mesh(
+    axis_sizes: tuple[int, ...], axis_names: tuple[str, ...]
+) -> jax.sharding.AbstractMesh:
+    """Abstract GPU mesh carrying the H100 device for cuda lowering."""
+    return jax.sharding.AbstractMesh(
+        axis_sizes,
+        axis_names,
+        axis_types=(jax.sharding.AxisType.Explicit,) * len(axis_names),
+        abstract_device=_ABSTRACT_H100,
+    )
+
+
 def test_pallas_banded_matches_dense() -> None:
     """Pallas banded operator (CPU path) matches ``np.linalg.solve``
     across a sweep of half-bandwidth ``p``, real and complex RHS."""
@@ -255,8 +283,9 @@ def test_pallas_cuda_lowering() -> None:
     ``(bm0, bm1) = (2, 32)`` tile (now the default, set explicitly here)
     does not divide ``(Nkz, Nkx)``, so the kernel zero-pads the plane up to
     whole tiles; this guards the padded-plane lowering.  The factors are in
-    the kernel's mode-inner layout; the mesh is cleared as in the interpret
-    test."""
+    the kernel's mode-inner layout; the Explicit mesh is cleared as in the
+    interpret test and the lowering runs under an abstract H100 mesh
+    (:func:`_abstract_gpu_mesh`) so Triton can resolve the target GPU."""
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
     p, Ny, k = 3, 17, 2  # both non-power-of-two
     orig_mesh = sharding.mesh
@@ -274,9 +303,12 @@ def test_pallas_cuda_lowering() -> None:
         def solve(L: jnp.ndarray, U: jnp.ndarray, b: jnp.ndarray):
             return _pallas_banded_solve(L, U, b, p, interpret=False)
 
-        lowered = (
-            jax.jit(solve).trace(Li, Ui, b).lower(lowering_platforms=("cuda",))
-        )
+        with jax.sharding.use_abstract_mesh(_abstract_gpu_mesh((1,), ("x",))):
+            lowered = (
+                jax.jit(solve)
+                .trace(Li, Ui, b)
+                .lower(lowering_platforms=("cuda",))
+            )
         assert "triton" in lowered.as_text().lower()
     finally:
         jax.set_mesh(orig_mesh)
@@ -299,7 +331,17 @@ def test_pallas_cuda_lowering_sharded_solve() -> None:
     suite stayed green (the CPU branch never calls ``pallas_call``);
     ``.solve`` now opts out via ``check_vma=False`` (the region is
     communication-free).  This guards the composition end to end --
-    stored pre-padded factors, complex re/im split, live Explicit mesh.
+    stored pre-padded factors, complex re/im split, Explicit-mesh
+    shard_map wiring.
+
+    Because ``.solve``'s ``shard_map`` binds ``mesh=sharding.mesh``,
+    the abstract H100 device that lets Triton lower on a GPU-less box
+    (see :func:`_abstract_gpu_mesh`) must live *inside* that mesh:
+    ``sharding.mesh`` is swapped to the matching abstract GPU mesh for
+    the lowering (shard_map also requires the context mesh to match its
+    own), and restored afterwards.  The operator is built on the real
+    Explicit mesh first, so its stored factors keep their concrete
+    sharding.
     """
     import dnsjax.solvers as solvers_mod
 
@@ -311,15 +353,22 @@ def test_pallas_cuda_lowering_sharded_solve() -> None:
     bc = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
     rhs = jnp.tile(jnp.asarray(bc)[:, None, None], (1, Nkz, Nkx))
 
+    orig_mesh = sharding.mesh
+    gpu_mesh = _abstract_gpu_mesh(
+        orig_mesh.devices.shape, orig_mesh.axis_names
+    )
     solvers_mod._force_kernel_path = True
     try:
-        lowered = (
-            jax.jit(lambda r: op.solve(r))
-            .trace(rhs)
-            .lower(lowering_platforms=("cuda",))
-        )
+        sharding.mesh = gpu_mesh
+        with jax.sharding.use_abstract_mesh(gpu_mesh):
+            lowered = (
+                jax.jit(lambda r: op.solve(r))
+                .trace(rhs)
+                .lower(lowering_platforms=("cuda",))
+            )
         assert "triton" in lowered.as_text().lower()
     finally:
+        sharding.mesh = orig_mesh
         solvers_mod._force_kernel_path = False
 
 

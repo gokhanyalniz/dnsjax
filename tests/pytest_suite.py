@@ -103,9 +103,7 @@ def _case_id(script: str, args: tuple[str, ...]) -> str:
 
 
 def _tail(stdout: str, stderr: str) -> str:
-    return "\n".join(
-        stdout.splitlines()[-50:] + stderr.splitlines()[-30:]
-    )
+    return "\n".join(stdout.splitlines()[-50:] + stderr.splitlines()[-30:])
 
 
 @pytest.mark.parametrize(

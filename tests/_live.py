@@ -7,11 +7,15 @@ stdout/stderr *while* accumulating both, so callers keep reading
 ``result.stdout`` / ``result.stderr`` exactly as before, and an agent
 tailing the run sees progress immediately (and can abort early).
 
-The child environment gets ``PYTHONUNBUFFERED=1`` -- added to *env*,
-or to a copy of ``os.environ`` when *env* is ``None``; a given *env*
-is otherwise passed through unchanged, so deliberately stripped
-environments stay stripped -- which makes the child and its own
-children (e.g. ``mpirun`` ranks) emit promptly.
+The child environment gets ``PYTHONUNBUFFERED=1`` (prompt output from
+the child and its own children, e.g. ``mpirun`` ranks) and, unless the
+caller's environment already sets it, ``DNSJAX_QUIET_STARTUP=1`` (skip
+the dnsjax solver's ~60-80 line startup parameter dump, which is pure
+repeated noise across the many solver launches of a smoke test; inert
+for non-solver children).  Both are added to *env*, or to a copy of
+``os.environ`` when *env* is ``None``; a given *env* is otherwise
+passed through unchanged, so deliberately stripped environments stay
+stripped.
 
 Semantics mirrored from ``subprocess.run``: on *timeout* expiry the
 child is killed and :class:`subprocess.TimeoutExpired` is raised with
@@ -59,6 +63,12 @@ def run_live(
     """
     child_env = dict(os.environ if env is None else env)
     child_env["PYTHONUNBUFFERED"] = "1"
+    # Quiet the dnsjax solver's verbose startup parameter dump: a smoke
+    # test may spawn the solver dozens of times and the dump (~60-80
+    # lines) is redundant with the launched command.  ``setdefault`` so
+    # ``DNSJAX_QUIET_STARTUP=0`` in the environment can re-enable it when
+    # debugging.  Inert for non-solver children (they ignore it).
+    child_env.setdefault("DNSJAX_QUIET_STARTUP", "1")
     if echo:
         print("+", " ".join(str(c) for c in cmd), flush=True)
     proc = subprocess.Popen(
