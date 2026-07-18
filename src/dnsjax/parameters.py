@@ -37,7 +37,6 @@ from .flows.registry import (
     annular_systems,  # noqa: F401  (re-export)
     cartesian_systems,  # noqa: F401  (re-export)
     cylindrical_systems,  # noqa: F401  (re-export)
-    monochromatic_systems,  # noqa: F401  (re-export)
     periodic_systems,
     spec_for,
     viscoelastic_systems,
@@ -249,8 +248,7 @@ class Physics(BaseModel):
     # Default "plane-couette": a wall-bounded flow that integrates
     # cleanly from the default random IC at the default dt (Kolmogorov +
     # random needs a smaller dt; see the corrector-contraction note in
-    # the ``TimeStepping`` docstring).  Kolmogorov: sine forcing.
-    # Waleffe: cosine forcing + Ry symmetry (not yet implemented).
+    # the ``TimeStepping`` docstring).
     system: Literal[*periodic_systems, *walled_systems] = Field(
         default="plane-couette",
         description=(
@@ -1902,8 +1900,9 @@ class PaddedResolution:
         r"""Recompute padded sizes from *parameters*.
 
         The natural sizes are ``oversampling_factor * n // 2`` (`$y$`
-        unpadded for wall-bounded flows and only optionally oversampled
-        for periodic ones); :meth:`apply_rounding` then rounds every
+        oversampled for periodic flows, never for wall-bounded ones --
+        their wall-normal direction is FD, not Fourier);
+        :meth:`apply_rounding` then rounds every
         FFT axis up to a mesh-divisible, FFT-friendly 7-smooth length
         (``nx_padded`` is exempt from the divisibility part only:
         real-FFT axis, never sharded in physical space).

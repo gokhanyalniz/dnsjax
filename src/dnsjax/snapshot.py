@@ -1027,8 +1027,9 @@ def load_snapshot(
     Returns
     -------
     state:
-        Spectral perturbation velocity, shape ``(3, *spec_shape)``,
-        correctly sharded.
+        Spectral state, shape ``(n_components, *spec_shape)`` (the
+        perturbation velocity, or the 9-component viscoelastic total
+        field), correctly sharded.
     t:
         Simulation time at snapshot.
     it:
@@ -1055,14 +1056,14 @@ def load_snapshot(
         )
         if _is_periodic():
             assembly_shape = (
-                3,
+                _n_components(),
                 snap_ny - 1,
                 sharding.nz_spec,
                 sharding.nx_spec,
             )
         else:
             assembly_shape = (
-                3,
+                _n_components(),
                 snap_ny,
                 sharding.nz_spec,
                 sharding.nx_spec,
@@ -1088,69 +1089,6 @@ def load_snapshot(
         per_device,
     )
     return state, meta["t"], meta["it"]
-
-
-def load_y_slice(path: str | Path, y_index: int) -> Array:
-    r"""Read a single wall-normal coordinate from a ``walled``
-    snapshot without loading the full array.
-
-    With the `$y$`-slowest layout, a y-slice of each component is
-    one contiguous byte range within its chunk, readable with a
-    single seek + read per component (offset by the component's base
-    in the archive).
-
-    Parameters
-    ----------
-    path:
-        Path to the snapshot tar file.
-    y_index:
-        Wall-normal grid-point index.
-
-    Returns
-    -------
-    :
-        Complex array of shape ``(3, N_{k_z}, N_{k_x})``.
-
-    Raises
-    ------
-    ValueError
-        Unless the snapshot uses the ``walled`` layout.
-    """
-    path = Path(path)
-    meta = read_metadata(path)
-
-    if meta["layout"] != "walled":
-        raise ValueError(
-            "Partial y-reads require a 'walled' wall-bounded snapshot."
-        )
-
-    _, _, kx_global, b_size = meta["on_disk_shape"]
-    dtype = _np_dtype(meta["dtype"])
-    itemsize = dtype.itemsize
-    plane = kx_global * b_size  # one component's y-slice, (kx, kz)
-    offset = y_index * plane * itemsize
-    nbytes = plane * itemsize
-    comp_offsets = snapshot_component_offsets(path)
-
-    comps: list = []
-    if _gds_available():
-        import cupy as cp
-        import kvikio
-
-        for comp in range(_n_components()):
-            buf = cp.empty((kx_global, b_size), dtype=dtype)
-            with kvikio.CuFile(str(path), "r") as f:
-                f.read(buf, file_offset=comp_offsets[comp] + offset)
-            comps.append(buf.T)  # (kz, kx)
-        return jnp.from_dlpack(cp.stack(comps))
-
-    for comp in range(_n_components()):
-        with open(path, "rb") as f:
-            f.seek(comp_offsets[comp] + offset)
-            raw = f.read(nbytes)
-        arr = np.frombuffer(raw, dtype=dtype).reshape(kx_global, b_size)
-        comps.append(arr.T)  # (kz, kx)
-    return jnp.asarray(np.stack(comps))
 
 
 def validate_snapshot_params(

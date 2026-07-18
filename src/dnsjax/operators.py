@@ -96,7 +96,7 @@ def phys_to_spec(velocity_phys: Array) -> Array:
     Returns
     -------
     :
-        Spectral field of shape ``(3, ny-1, nz-1, nx//2)`` in
+        Spectral field of shape ``(3, ny-1, nz_spec, nx_spec)`` in
         ``[ky, kz, kx]`` layout, sharded on the kx axis.
     """
     return _rfft3d(velocity_phys)
@@ -112,7 +112,7 @@ def spec_to_phys(velocity_spec: Array) -> Array:
     Parameters
     ----------
     velocity_spec:
-        Spectral field of shape ``(3, ny-1, nz-1, nx//2)`` in
+        Spectral field of shape ``(3, ny-1, nz_spec, nx_spec)`` in
         ``[ky, kz, kx]`` layout, sharded on the kx axis.
 
     Returns

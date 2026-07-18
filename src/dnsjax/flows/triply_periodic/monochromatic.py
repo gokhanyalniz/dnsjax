@@ -1,4 +1,4 @@
-"""Triply-periodic flows: Kolmogorov and Waleffe.
+"""Triply-periodic Kolmogorov flow (monochromatic sine forcing).
 
 This module defines the ``MonochromaticFlow`` dataclass that holds all
 precomputed, flow-specific data: base flow, forcing, and laminar-state
@@ -27,13 +27,9 @@ separate ``correct_velocity`` export exists.
 
 Base flow construction
 ----------------------
-The monochromatic base flow `$U(y)$` is defined analytically via a single
-Fourier harmonic (`$q_f = 1$`):
-
-- Kolmogorov: `$U = \\sin(2\\pi y/L_y)$`
-    -- coefficient `-0.5j` at mode `$q_f$`
-- Waleffe:    `$U = \\cos(2\\pi y/L_y)$`
-    -- coefficient `+0.5` at mode `$q_f$`
+The monochromatic base flow `$U(y)$` is a single Fourier harmonic
+(`$q_f = 1$`): the Kolmogorov profile `$U = \\sin(2\\pi y/L_y)$`,
+coefficient `-0.5j` at mode `$q_f$`.
 
 The base flow is transformed to physical space on the 3/2-oversampled
 grid for use in the nonlinear term.  Its curl
@@ -60,30 +56,22 @@ from ...geometries.triply_periodic.triply_periodic import (
     build_triply_periodic_stepper,
     fourier,
     get_norm2,
-    laplacian,
     ly,
 )
 from ...operators import phys_to_spec  # noqa: F401 – public re-export
-from ...parameters import (
-    derived_params,
-    monochromatic_systems,
-    padded_res,
-    params,
-)
+from ...parameters import derived_params, padded_res, params
 from ...sharding import register_dataclass_pytree, sharding
 
 
 @register_dataclass_pytree
 @dataclass
 class MonochromaticFlow(TriplyPeriodicFlow):
-    """Precomputed data for monochromatic triply-periodic flows.
+    """Precomputed data for the monochromatic (Kolmogorov) flow.
 
-    All class-level attributes are computed eagerly at definition time so
-    that the module-level singleton ``flow = MonochromaticFlow()`` is
-    fully initialised at import.
+    All attributes are built by ``__post_init__``, so the module-level
+    singleton ``flow = MonochromaticFlow()`` is fully initialised at
+    import.
     """
-
-    _system: str = field(init=False)
 
     qf: int = field(init=False)
     force_amplitude: Array = field(init=False)
@@ -97,33 +85,24 @@ class MonochromaticFlow(TriplyPeriodicFlow):
     def __post_init__(self) -> None:
         super().__post_init__()
 
-        self._system = params.phys.system
+        self.qf = 1  # Forcing harmonic
 
-        # Fourier coefficients of the streamwise base flow U_x(y).
-        base_flow_complex = jnp.zeros(
-            padded_res.ny_padded // 2 + 1, dtype=sharding.complex_type
+        # Fourier coefficients of the streamwise base flow U_x(y):
+        # sin(qf * 2pi y / Ly) -> -0.5j at +qf.
+        base_flow_complex = (
+            jnp.zeros(
+                padded_res.ny_padded // 2 + 1, dtype=sharding.complex_type
+            )
+            .at[self.qf]
+            .add(-0.5j)
         )
-        if self._system in monochromatic_systems:
-            self.qf = 1  # Forcing harmonic
 
-            # Kolmogorov: sin(qf * 2pi y / Ly) -> -0.5j at +qf
-            # Waleffe:    cos(qf * 2pi y / Ly) ->  0.5  at +qf
-            if self._system == "kolmogorov":
-                base_flow_complex = base_flow_complex.at[self.qf].add(-0.5j)
-            elif self._system == "waleffe":
-                base_flow_complex = base_flow_complex.at[self.qf].add(0.5)
-            else:
-                raise NotImplementedError
-
-            # Forcing amplitude that sustains the laminar state:
-            # `$F = \\nu k^2 U$`
-            self.force_amplitude = jnp.pi**2 / (4 * params.phys.re)
-            self.ekin_lam = 1.0 / 4.0
-            self.input_lam = jnp.pi**2 / (8 * params.phys.re)
-            self.dissip_lam = self.input_lam
-
-        else:
-            raise NotImplementedError
+        # Forcing amplitude that sustains the laminar state:
+        # `$F = \\nu k^2 U$`
+        self.force_amplitude = jnp.pi**2 / (4 * params.phys.re)
+        self.ekin_lam = 1.0 / 4.0
+        self.input_lam = jnp.pi**2 / (8 * params.phys.re)
+        self.dissip_lam = self.input_lam
 
         # dU/dy in Fourier space: spectral derivative = i * ky * U_hat
         dy_base_flow_complex = 1j * (2 * jnp.pi / ly) * base_flow_complex
@@ -165,35 +144,23 @@ class MonochromaticFlow(TriplyPeriodicFlow):
             .set(-dy_Us * derived_params.cos_tilt)[:, :, None, None]
         )
 
-        # Forced modes and unit forcing Fourier coefficients
-        if self._system in monochromatic_systems:
-            self.forced_modes = (
-                (0, 0, 2, 2),
-                (self.qf, -self.qf, self.qf, -self.qf),
-                (0, 0, 0, 0),
-                (0, 0, 0, 0),
-            )
-
-            if self._system == "kolmogorov":
-                self.unit_force = jnp.array(
-                    [
-                        -0.5j * derived_params.cos_tilt,
-                        0.5j * derived_params.cos_tilt,
-                        -0.5j * derived_params.sin_tilt,
-                        0.5j * derived_params.sin_tilt,
-                    ],
-                    dtype=sharding.complex_type,
-                )
-            elif self._system == "waleffe":
-                self.unit_force = jnp.array(
-                    [
-                        0.5 * derived_params.cos_tilt,
-                        0.5 * derived_params.cos_tilt,
-                        0.5 * derived_params.sin_tilt,
-                        0.5 * derived_params.sin_tilt,
-                    ],
-                    dtype=sharding.complex_type,
-                )
+        # Forced modes and unit forcing Fourier coefficients: the
+        # (+-qf, 0, 0) pair on the x and z components (tilt split).
+        self.forced_modes = (
+            (0, 0, 2, 2),
+            (self.qf, -self.qf, self.qf, -self.qf),
+            (0, 0, 0, 0),
+            (0, 0, 0, 0),
+        )
+        self.unit_force = jnp.array(
+            [
+                -0.5j * derived_params.cos_tilt,
+                0.5j * derived_params.cos_tilt,
+                -0.5j * derived_params.sin_tilt,
+                0.5j * derived_params.sin_tilt,
+            ],
+            dtype=sharding.complex_type,
+        )
 
 
 flow: MonochromaticFlow = MonochromaticFlow()
@@ -221,14 +188,7 @@ def get_energy(
     flow_: MonochromaticFlow,
 ) -> Array:
     """Total kinetic energy"""
-    if params.phys.system in monochromatic_systems:
-        return (
-            perturbation_energy
-            - flow_.ekin_lam
-            + input / flow_.force_amplitude
-        )
-    else:
-        return perturbation_energy
+    return perturbation_energy - flow_.ekin_lam + input / flow_.force_amplitude
 
 
 def get_enstrophy(
@@ -237,12 +197,16 @@ def get_enstrophy(
     fourier_: Fourier,
     flow_: MonochromaticFlow,
 ) -> Array:
-    """Total enstrophy times Re"""
+    r"""Total enstrophy times Re.
+
+    The perturbation part is the Parseval sum
+    `$\sum_k k^2 |\hat{u}'_k|^2$` over the full mode set --
+    ``get_norm2`` with the `$k^2$`-weighted metric carries the
+    Hermitian real-FFT weight (2 for `$k_x > 0$`), matching the other
+    energy diagnostics.
+    """
     return (
-        jnp.sum(
-            -laplacian(jnp.conj(state) * state, fourier_.lapl),
-            dtype=sharding.float_type,
-        )
+        get_norm2(state, -fourier_.lapl * fourier_.k_metric)
         + 2 * input * params.phys.re
         - flow_.input_lam * params.phys.re
     )

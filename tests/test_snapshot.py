@@ -12,8 +12,14 @@ Exercises the host (non-GDS) I/O path:
   member parses as plain JSON (stdlib ``tarfile`` + ``json``), and
   after ``tar xf`` the ``state/`` store reads back via TensorStore
   with exactly the stored data;
-- ``load_y_slice`` matches the corresponding y-plane for a
-  ``walled`` snapshot and raises otherwise;
+- wall-normal regrid on load: the Cartesian case interpolates a
+  polynomial profile ny 8 -> 16, and the **pipe** case additionally
+  pins the alias-aware stored-``nr`` lookup (v4 metadata stores
+  public names) plus the spectral parity interpolation across a
+  rigged-CGL -> half-CGL radial-grid change;
+- a viscoelastic ``nr``-mismatch load assembles the 9-component
+  state at the snapshot's radial count (``_n_components``-driven
+  assembly shape);
 - ``serial`` write mode produces a valid snapshot (true
   cross-process ordering needs MPI multi-process and is not
   exercised here -- single-process serial reduces to one write);
@@ -168,7 +174,7 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
 ]
 
 # Periodic systems (must match dnsjax.parameters.periodic_systems).
-_PERIODIC = {"kolmogorov", "waleffe"}
+_PERIODIC = {"kolmogorov"}
 
 # Viscoelastic systems carry 9 state components (3 velocity + 6
 # symmetric conformation-tensor); must match ``snapshot._n_components``.
@@ -416,6 +422,73 @@ def _worker(
         print("worker-load-interp-ok", flush=True)
         return
 
+    if action == "save_poly_pipe":
+        from dnsjax.parameters import derived_params
+
+        # Rigged-CGL radial grid (axis gap 1) at this worker's nr, with
+        # parity-definite mean-mode profiles: u_z even in r, u_+/- odd.
+        n_full = 2 * ny + 1
+        s = -np.cos(np.arange(n_full, dtype=np.float64) * np.pi / (n_full - 1))
+        rs = s[ny + 1 :]
+        derived_params.wall_normal_grid = rs.tolist()
+        state_np = np.zeros(padded_shape, dtype=np.complex128)
+        state_np[0, :, 0, 0] = 1.0 - rs**2
+        state_np[1, :, 0, 0] = 0.5 * rs * (1.0 - rs**2)
+        state_np[2, :, 0, 0] = 0.25 * rs * (1.0 - rs**2)
+        state = jax.device_put(state_np, vshard)
+        snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
+        return
+
+    if action == "load_interp_pipe":
+        from dnsjax.__main__ import _interpolate_if_needed
+        from dnsjax.parameters import derived_params
+
+        # Half-CGL radial grid (axis gap 0) at this worker's nr: both
+        # the point count and the grid family differ from the save.
+        n_full = 2 * ny
+        s = -np.cos(np.arange(n_full, dtype=np.float64) * np.pi / (n_full - 1))
+        rs = s[ny:]
+        derived_params.wall_normal_grid = rs.tolist()
+
+        snapshot.validate_snapshot_params(d)
+        state, t, it = snapshot.load_snapshot(d)
+        state = _interpolate_if_needed(
+            state,
+            os.path.join(d),
+            snapshot.read_metadata,
+            sharding,
+            jax.numpy,
+        )
+        got = np.asarray(state)
+        # v4 metadata stores the radial count under its public name
+        # ("nr"); a non-alias-aware lookup would skip the regrid and
+        # leave the old-count state (the shape assert below).  The
+        # spectral parity interpolation is near machine precision for
+        # these low-degree parity-definite profiles.
+        assert got.shape[1] == ny, (got.shape, ny)
+        np.testing.assert_allclose(
+            got[0, :, 0, 0].real, 1.0 - rs**2, atol=1e-10
+        )
+        np.testing.assert_allclose(
+            got[1, :, 0, 0].real, 0.5 * rs * (1.0 - rs**2), atol=1e-10
+        )
+        np.testing.assert_allclose(
+            got[2, :, 0, 0].real, 0.25 * rs * (1.0 - rs**2), atol=1e-10
+        )
+        assert t == T_SAVE
+        print("worker-load-interp-pipe-ok", flush=True)
+        return
+
+    if action == "load_shape":
+        # ny-mismatch load only: the assembled global state must carry
+        # the flow's component count (9 for viscoelastic-dean) at the
+        # *snapshot's* radial count; interpolation is a separate step.
+        snapshot.validate_snapshot_params(d)
+        state, t, it = snapshot.load_snapshot(d)
+        assert state.shape[:2] == (_n_comp(system), NY), state.shape
+        print("worker-load-shape-ok", flush=True)
+        return
+
     # action == "load"
     ref_true = _make_reference(np, tshape)
     reference = _embed_true_into_padded(ref_true, padded_shape, system)
@@ -430,20 +503,6 @@ def _worker(
 
     # Single uncompressed tar, readable with standard tools / no dnsjax.
     _check_standard_tools(d, ref_true, system)
-
-    if system not in _PERIODIC:
-        for yi in (0, ny // 2, ny - 1):
-            sl = np.asarray(snapshot.load_y_slice(d, yi))
-            assert np.array_equal(sl, ref_true[:, yi]), (
-                f"y_slice mismatch at y={yi}"
-            )
-    else:
-        raised = False
-        try:
-            snapshot.load_y_slice(d, 0)
-        except ValueError:
-            raised = True
-        assert raised, "load_y_slice should reject periodic"
 
     print("worker-load-ok", flush=True)
 
@@ -607,6 +666,71 @@ def run_ny_mismatch_case(
     return True
 
 
+def run_pipe_regrid_case() -> bool:
+    """Pipe nr 8 (rigged-CGL) -> 10 (half-CGL) regrid on load.
+
+    Pins the alias-aware stored-``nr`` lookup (public-named v4
+    metadata) and the spectral parity interpolation across a radial
+    grid-family change."""
+    name = "pipe nr 8->10 regrid (rigged->half)"
+    with tempfile.TemporaryDirectory() as tmp:
+        snap_path = os.path.join(tmp, "snap.tar")
+        r_save = _run_worker(
+            "save_poly_pipe",
+            "pipe",
+            "walled",
+            "concurrent",
+            1,
+            snap_path,
+            ny=8,
+        )
+        if r_save.returncode != 0:
+            _fail(name, "save_poly_pipe", r_save)
+            return False
+        r_load = _run_worker(
+            "load_interp_pipe",
+            "pipe",
+            "walled",
+            "concurrent",
+            1,
+            snap_path,
+            ny=10,
+        )
+        if r_load.returncode != 0:
+            _fail(name, "load_interp_pipe", r_load)
+            return False
+    print(f"  PASS  {name}")
+    return True
+
+
+def run_ve_ny_mismatch_case() -> bool:
+    """Viscoelastic nr-mismatch load: the assembled state must carry 9
+    components at the snapshot's radial count."""
+    name = "viscoelastic nr 8->16 load shape"
+    with tempfile.TemporaryDirectory() as tmp:
+        snap_path = os.path.join(tmp, "snap.tar")
+        r_save = _run_worker(
+            "save", "viscoelastic-dean", "walled", "concurrent", 1, snap_path
+        )
+        if r_save.returncode != 0:
+            _fail(name, "save", r_save)
+            return False
+        r_load = _run_worker(
+            "load_shape",
+            "viscoelastic-dean",
+            "walled",
+            "concurrent",
+            1,
+            snap_path,
+            ny=16,
+        )
+        if r_load.returncode != 0:
+            _fail(name, "load_shape", r_load)
+            return False
+    print(f"  PASS  {name}")
+    return True
+
+
 # ── main ─────────────────────────────────────────────────────────────
 
 
@@ -615,7 +739,16 @@ if __name__ == "__main__":
     parser.add_argument("--worker", action="store_true")
     parser.add_argument(
         "--action",
-        choices=["save", "load", "save_poly", "load_interp", "save_stats"],
+        choices=[
+            "save",
+            "load",
+            "save_poly",
+            "load_interp",
+            "save_poly_pipe",
+            "load_interp_pipe",
+            "load_shape",
+            "save_stats",
+        ],
     )
     parser.add_argument("--system")
     parser.add_argument("--layout")
@@ -662,6 +795,18 @@ if __name__ == "__main__":
     if run_ny_mismatch_case(
         save_np=4, save_np0=2, load_np=4, load_np0=2, label=" 2D"
     ):
+        passed += 1
+    else:
+        failed += 1
+
+    # Pipe regrid (public-named nr + parity interpolation) and the
+    # viscoelastic 9-component ny-mismatch assembly.
+    if run_pipe_regrid_case():
+        passed += 1
+    else:
+        failed += 1
+
+    if run_ve_ny_mismatch_case():
         passed += 1
     else:
         failed += 1

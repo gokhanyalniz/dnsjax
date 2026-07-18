@@ -42,7 +42,7 @@ margin for a single FFT evaluation per step.
 - **Portable data** — snapshots are plain tar + zarr3, written in parallel
   directly from device memory, readable with standard tools and a
   dependency-light NumPy reader; resume is device-count-agnostic.
-- **Extensively tested** — 30 standalone test scripts (also runnable
+- **Extensively tested** — 32 standalone test scripts (also runnable
   through a pytest bridge) pin the numerics, the machinery, and the
   multi-device behavior, and the optimal-growth module reproduces
   published values — see
@@ -555,6 +555,18 @@ is pushed near the corrector iteration cap and is otherwise slower, hence the
 default. A related `implicit_mean_coupling` (on by default) folds the
 instantaneous mean-flow coupling into the implicit term.
 
+Both schemes can run at a fixed `step.dt` or under **adaptive CFL time
+stepping** (`step.adaptive`): the main loop re-reads the measured total
+CFL every `cfl_cadence` steps and rescales the step toward the
+`cfl_target` setpoint, bounded by `dt_min`/`dt_max`, a per-change
+growth limiter, and a relative deadband that suppresses churn from CFL
+noise. An accepted change rebuilds the $\Delta t$-dependent implicit
+operators on the device — a few implicit solves, no recompilation —
+and the following Adams–Bashforth step is ratio-weighted
+(variable-step AB2), so both schemes remain second-order accurate.
+Snapshots embed the live `dt`, so a resume continues at the adapted
+step.
+
 A moving frame of reference (`u_grid`) translates the domain along the
 streamwise / axial direction and is integrated implicitly by both schemes —
 convenient for following traveling structures. By default the frame moves at
@@ -601,7 +613,7 @@ at scale.
 
 ## Testing and validation
 
-The test suite is 30 standalone scripts under `tests/`, run directly
+The test suite is 32 standalone scripts under `tests/`, run directly
 (`uv run python tests/test_cartesian.py`) or through the optional pytest
 bridge — `uv run pytest` shells each script out as a subprocess, with
 `mpi`/`slow` markers and the scripts staying the source of truth — and
@@ -743,6 +755,13 @@ A closer look at what is in the box, beyond the core solver:
     library that packs a velocity field produced elsewhere into a valid
     snapshot, so external data enters the solver and the analysis API as a
     first-class state.
+
+13. **Adaptive CFL time stepping.** `step.adaptive` re-selects the time
+    step at runtime from the measured CFL (setpoint `cfl_target`,
+    bounds `dt_min`/`dt_max`, growth and deadband limiters), rebuilding
+    the $\Delta t$-dependent implicit operators on the device with no
+    recompilation and ratio-weighting the next Adams–Bashforth step —
+    see [Temporal discretization](#temporal-discretization).
 
 ## Use of AI
 

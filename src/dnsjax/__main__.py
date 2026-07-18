@@ -248,43 +248,30 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     import numpy as np
 
     from .fd import build_interpolation_matrix
+    from .flows.registry import stored_value
     from .operators import complex_harmonics
 
     meta = read_metadata(Path(snap_path))
     snap_grid = meta.get("wall_normal_grid")
-    snap_ny = meta.get("params", {}).get("res", {}).get("ny")
+    # Stored (v4) params use public names (res.ny is "nr" for the
+    # cylindrical/annular flows); look it up via the alias.
+    snap_ny = stored_value(meta.get("params", {}), meta["system"], "res", "ny")
     curr_grid = derived_params.wall_normal_grid
 
-    if snap_ny is None or curr_grid is None:
+    if snap_ny is None or snap_grid is None or curr_grid is None:
+        # Readable (v4+) walled snapshots always embed both; bail
+        # defensively if not.
         return state
 
-    needs_interp = snap_ny != params.res.ny or (
-        snap_grid is not None
-        and not np.allclose(snap_grid, curr_grid, atol=1e-12)
+    needs_interp = snap_ny != params.res.ny or not np.allclose(
+        snap_grid, curr_grid, atol=1e-12
     )
 
     if not needs_interp:
         return state
 
     curr_grid_np = np.array(curr_grid)
-    if snap_grid is not None:
-        old_grid = np.array(snap_grid)
-    else:
-        # Legacy snapshot without grid metadata: such snapshots
-        # predate ``geo.axis_gap``, so assume the default grid of
-        # their era (cylindrical: the g = 0 half-CGL grid).
-        if params.phys.system in cylindrical_systems:
-            N_full = 2 * snap_ny
-            s = -np.cos(np.arange(N_full) * np.pi / (N_full - 1))
-            old_grid = s[snap_ny:]
-        elif params.phys.system in annular_systems:
-            # CGL of [-1, 1] mapped to [r_inner, r_outer].
-            xi = -np.cos(np.arange(snap_ny) * np.pi / (snap_ny - 1))
-            mid = 0.5 * (derived_params.r_inner + derived_params.r_outer)
-            half = 0.5 * (derived_params.r_outer - derived_params.r_inner)
-            old_grid = mid + half * xi
-        else:
-            old_grid = -np.cos(np.arange(snap_ny) * np.pi / (snap_ny - 1))
+    old_grid = np.array(snap_grid)
 
     if params.phys.system in cylindrical_systems:
         geometry = "cylindrical"
