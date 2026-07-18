@@ -34,7 +34,7 @@
 
 - `flows/triply_periodic/monochromatic.py`:
   MonochromaticFlow(TriplyPeriodicFlow) -- base flow and forcing for
-  Kolmogorov / Waleffe / decaying-box; diagnostics (E, I, D, E').
+  Kolmogorov / Waleffe; diagnostics (E, I, D, E').
 
 ### Tests
 
@@ -44,5 +44,4 @@ corrector-rate limit), `tests/test_cnab2.py` (the plain no-corrector
 AB2 path), and `tests/test_temporal_order.py` (the cnab2
 self-convergence study). No operator-level unit tests yet; smoke-test
 the other periodic flows manually via
-`mpirun -np 1 .venv/bin/dnsjax --phys.system waleffe ...` (or
-`decaying-box`).
+`mpirun -np 1 .venv/bin/dnsjax --phys.system waleffe ...`.

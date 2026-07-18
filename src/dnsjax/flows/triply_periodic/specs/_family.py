@@ -1,6 +1,6 @@
 r"""Shared spec fragments for the triply-periodic flows.
 
-All three systems (decaying-box, kolmogorov, waleffe) share one
+All systems (kolmogorov, waleffe) share one
 surface: the periodic box lengths/tilt, the identity-named resolution,
 the Reynolds number, and the optional shear-direction oversampling.
 The moving frame and the localized-rolls IC are deferred features
@@ -27,7 +27,6 @@ def periodic_fields() -> tuple[FieldSpec, ...]:
         ),
         FieldSpec("res", "nz"),
         FieldSpec("phys", "re"),
-        FieldSpec("phys", "oversample_y"),
         # The periodic random-IC generator honours the mean-mode
         # perturbation too (the kx = kz = 0 shear profile).
         FieldSpec("init", "random_mean_flow"),
