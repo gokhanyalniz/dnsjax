@@ -423,11 +423,10 @@ def _irfft2d(x: Array) -> Array:
     if sharding.ny_y_pad:
         x = _pad_y(x, spec)
 
-    # ---- Reshard #2 reverse: kz <-> y (skipped when np0==1) --
+    # ---- Reshard #2 reverse: kz <-> y (skipped when np0==1;
+    # the mid and spec layouts are then identical) --
     if sharding.a0 is not None:
         x = reshard(x, mid)
-    else:
-        mid = spec  # layouts are identical when np0==1
 
     # ---- Step 1: zero-pad z then inverse FFT in z ------------
     # (kz divisibility padding skipped by the zero-pad slices)

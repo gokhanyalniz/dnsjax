@@ -255,16 +255,11 @@ class Sharding:
     _fft_spec_scalar_shard = P(None, a0, a1)
 
     # ── Spectral partition specs ──────────────────────────────
-    if _is_periodic:
-        # Spectral layout [ky, kz, kx]:
-        # ky fully local, kz by np0, kx by np1.
-        spec_vector_shard = P(None, None, a0, a1)
-        spec_scalar_shard = P(None, a0, a1)
-    else:
-        # Spectral layout [y, kz, kx]:
-        # y fully local, kz by np0, kx by np1.
-        spec_vector_shard = P(None, None, a0, a1)
-        spec_scalar_shard = P(None, a0, a1)
+    # Spectral layout [ky, kz, kx] (periodic) or [y, kz, kx]
+    # (wall-bounded): the leading axis is fully local either way,
+    # kz by np0, kx by np1.
+    spec_vector_shard = P(None, None, a0, a1)
+    spec_scalar_shard = P(None, a0, a1)
 
     # ── Physical partition specs ──────────────────────────────
     # [y, z, x] or [C, y, z, x]:

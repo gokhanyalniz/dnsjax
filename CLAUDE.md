@@ -2,7 +2,7 @@
 
 `dnsjax` is a GPU-accelerated pseudo-spectral + finite-differences DNS
 solver for the 3D incompressible Navier-Stokes equations, written in
-JAX. Flow systems: triply-periodic (Kolmogorov, Waleffe)
+JAX. Flow systems: triply-periodic (Kolmogorov)
 and wall-bounded (plane-Couette, plane-Poiseuille, pipe, Taylor-Couette,
 quasi-Keplerian, force-driven Dean, and viscoelastic (sPTT) Dean with a
 coupled conformation tensor). Two selectable second-order time
@@ -195,11 +195,12 @@ flows/
                       all_systems, *_systems lists, GLOBAL_FIELDS,
                       internalize_stored/stored_value
   wall_bounded/       plane_couette, plane_poiseuille, pipe,
-                      taylor_couette, quasi_keplerian, dean,
+                      taylor_couette, quasi_keplerian (both bind the
+                      shared _circular_couette.py machinery), dean,
                       viscoelastic_dean -- base flows/driving in
                       wall_bounded/CLAUDE.md; specs/ holds their
                       JAX-free parameter FlowSpecs
-  triply_periodic/    monochromatic.py: Kolmogorov/Waleffe;
+  triply_periodic/    monochromatic.py: Kolmogorov;
                       specs/ holds their JAX-free parameter FlowSpecs
 analysis/             External-facing JAX-free snapshot post-processing
                       API (+ the JAX-based transient_growth CLI and the
@@ -548,6 +549,8 @@ one-liners. Cross-cutting notes:
   (fixed and variable step).
 - `tests/test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
   forced spectral padding.
+- `tests/test_monochromatic.py`: Kolmogorov `get_stats` identities
+  (full-spectrum Parseval E/I/D/E' references + laminar limits).
 - `tests/test_padding.py`: padded-size rounding + FFT exactness
   (odd-pad, odd-nz, fused spec-pad) + `chunked_transform` bit-parity.
 - `tests/test_laminar_smoke.py`: laminar fixed-point smoke for all

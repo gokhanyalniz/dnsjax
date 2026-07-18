@@ -1,11 +1,10 @@
 r"""Shared spec fragments for the triply-periodic flows.
 
-All systems (kolmogorov, waleffe) share one
-surface: the periodic box lengths/tilt, the identity-named resolution,
-the Reynolds number, and the optional shear-direction oversampling.
-The moving frame and the localized-rolls IC are deferred features
-here; the wall-bounded-only fields (grids, probes, forcing, ...) are
-simply not part of the surface.
+One surface for the family (currently kolmogorov alone): the periodic
+box lengths/tilt, the identity-named resolution, and the Reynolds
+number.  The moving frame and the localized-rolls IC are deferred
+features here; the wall-bounded-only fields (grids, probes,
+forcing, ...) are simply not part of the surface.
 """
 
 from ....flow_spec import DeferredSpec, FieldSpec
