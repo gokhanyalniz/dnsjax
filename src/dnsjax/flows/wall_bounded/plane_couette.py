@@ -11,6 +11,8 @@ It also exports the flow interface consumed by ``__main__``:
 - ``predict_and_fully_correct`` -- fused predictor + corrector
 - ``predict_and_fully_correct_measured`` -- fused step + CFL
   measurements (``steps.dat``)
+- ``set_dt`` / ``reset_ab2_kappa`` -- adaptive-dt hooks
+  (``step.adaptive``; on-device operator rebuild, no recompile)
 - ``init_state`` -- initial state from a snapshot or laminar
 - ``get_stats`` -- diagnostic statistics
 
@@ -111,6 +113,8 @@ flow: PlaneCouetteFlow = PlaneCouetteFlow()
     predict_and_fully_correct_measured,
     step_cnab2,
     step_cnab2_measured,
+    set_dt,
+    reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
 
 

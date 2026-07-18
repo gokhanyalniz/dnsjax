@@ -12,6 +12,7 @@ Flow-specific modules (e.g. ``flows.wall_bounded.plane_couette``) subclass
 functions.
 """
 
+import copy
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -47,6 +48,7 @@ from ...solvers import (
     _banded_from_dense,
     _banded_wall_row,
     _build_pallas_operator,
+    _factor_pallas_operator,
 )
 from ._base import (
     apply_y_matrix,
@@ -462,8 +464,17 @@ class CartesianFlow:
     D2_bnd:
         Boundary rows `$D_2[0,:],\\; D_2[-1,:]$`,
         shape ``(2, Ny)``.
+    dt:
+        Current time step, a 0-d array leaf: the steppers read it
+        (instead of ``params.step.dt``) so the builder's ``set_dt``
+        can change the step without retracing.  ``ab2_kappa`` is
+        the companion AB2 step ratio
+        `$\\kappa = \\Delta t_n/\\Delta t_{n-1}$` (1 at fixed
+        step).
     """
 
+    dt: Array = field(init=False)
+    ab2_kappa: Array = field(init=False)
     ys: Array = field(init=False)
     y_weights: Array = field(init=False)
     cfl_inv_spacing: Array = field(init=False)
@@ -555,8 +566,11 @@ class CartesianFlow:
 
         p = params.res.fd_order
         dt = params.step.dt
-        c = params.step.implicitness
-        nu = 1.0 / params.phys.re
+
+        # Live-dt pytree leaves (class docstring; rebuilt by the
+        # builder's ``set_dt`` with identical dtype/shape).
+        self.dt = jnp.asarray(dt, dtype=sharding.float_type)
+        self.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
 
         # Solver-internal wavenumber arrays: (Nkz, Nkx, 1).
         k2_s = fourier.k2[0, ..., None]
@@ -574,9 +588,18 @@ class CartesianFlow:
             self.Lk_op = _build_pallas_operator([Lk_band], "Lk")
             del Lk_band
 
-            Hk_band = _build_Hk_band_gpu(self.D2, k2_s, dt, c, nu, p)
-            self.Hk_op = _build_pallas_operator([Hk_band], "Hk")
-            del Hk_band
+            if params.step.adaptive:
+                # Verify the no-pivot LU where the Helmholtz
+                # diagonal is least dominant; adaptive rebuilds at
+                # dt <= dt_max then skip the check
+                # (solvers._factor_pallas_operator).
+                _build_pallas_operator(
+                    _hk_bands(params.step.dt_max, fourier, self),
+                    "Hk(dt_max)",
+                )
+            self.Hk_op = _build_pallas_operator(
+                _hk_bands(dt, fourier, self), "Hk"
+            )
         else:
             # Dense backend: parity/reference path.  Full
             # `(Nkz, Nkx, Ny, Ny)` matrices are built, LU-factored
@@ -585,15 +608,13 @@ class CartesianFlow:
             Lk_dense = _build_Lk_dense_gpu(self.D1, self.D2, k2_s, mean_s)
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
-            Hk_dense = _build_Hk_dense_gpu(self.D2, k2_s, dt, c, nu)
-            self.Hk_op = DenseJAXSolver(Hk_dense)
-            del Hk_dense
+            self.Hk_op = _hk_dense_op(dt, fourier, self)
 
-        self._derive_imm_homogeneous_data(Nkz, Nkx, Ny)
-        self._precompute_bulk_response(Nkz, Nkx, Ny)
+        self._derive_imm_homogeneous_data(fourier, Nkz, Nkx, Ny)
+        self._precompute_bulk_response(fourier, Nkz, Nkx, Ny)
 
     def _derive_imm_homogeneous_data(
-        self, Nkz: int, Nkx: int, Ny: int
+        self, fourier_: Fourier, Nkz: int, Nkx: int, Ny: int
     ) -> None:
         r"""Fill ``v1``, ``v2``, ``q1``, ``q2``, and ``M_inv``
         from the factored GPU operator.
@@ -680,7 +701,7 @@ class CartesianFlow:
         M10 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], v1_s)
         M11 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], v2_s)
 
-        is_mean = fourier.mean_mask[0]
+        is_mean = fourier_.mean_mask[0]
         det = M00 * M11 - M01 * M10
         safe_det = jnp.where(is_mean, 1.0, det)
         inv_00 = jnp.where(is_mean, 1.0 / M00, M11 / safe_det)
@@ -702,10 +723,12 @@ class CartesianFlow:
         self.q2 = q2_s.transpose(2, 0, 1)
 
         # Zero homogeneous wall-normal velocity at the mean mode.
-        self.v1 = jnp.where(fourier.mean_mask, 0.0, self.v1)
-        self.v2 = jnp.where(fourier.mean_mask, 0.0, self.v2)
+        self.v1 = jnp.where(fourier_.mean_mask, 0.0, self.v1)
+        self.v2 = jnp.where(fourier_.mean_mask, 0.0, self.v2)
 
-    def _precompute_bulk_response(self, Nkz: int, Nkx: int, Ny: int) -> None:
+    def _precompute_bulk_response(
+        self, fourier_: Fourier, Nkz: int, Nkx: int, Ny: int
+    ) -> None:
         r"""Precompute the Helmholtz response for mean-mode
         velocity enforcement.
 
@@ -752,18 +775,107 @@ class CartesianFlow:
             .at[-1]
             .set(0.0)
         )
-        rhs = jnp.where(fourier.mean_mask[0, ..., None], ones_vec, 0.0)
+        rhs = jnp.where(fourier_.mean_mask[0, ..., None], ones_vec, 0.0)
 
         # Mode-outer setup RHS; wrap the mode-inner ``.solve`` (run once;
         # see ``_derive_imm_homogeneous_data`` for the FUTURE note).
         h_full = self.Hk_op.solve(rhs.transpose(2, 0, 1)).transpose(1, 2, 0)
 
-        self.h_bulk_response = jax.device_put(
+        # ``reshard`` (not ``device_put``): this method also runs
+        # inside the jitted ``set_dt`` rebuild, where placing a
+        # traced value is expressed as a resharding.
+        self.h_bulk_response = jax.sharding.reshard(
             extract_mean_mode(h_full.transpose(2, 0, 1)[None])[0],
             sharding.no_shard,
         )
         H_bulk = jnp.dot(self.y_weights, self.h_bulk_response) / 2
         self.H_bulk_inv = 1.0 / H_bulk
+
+
+def _hk_bands(
+    dt: float | Array,
+    fourier_: Fourier,
+    flow_: CartesianFlow,
+) -> list[Array]:
+    r"""Assemble the banded `$H_k$` group at *dt* (pallas backend).
+
+    Single-sources the band assembly for the setup-checked build, the
+    adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
+    rebuild (:func:`_build_dt_leaves`).
+    """
+    k2_s = fourier_.k2[0, ..., None]
+    return [
+        _build_Hk_band_gpu(
+            flow_.D2,
+            k2_s,
+            dt,
+            params.step.implicitness,
+            1.0 / params.phys.re,
+            params.res.fd_order,
+        )
+    ]
+
+
+def _hk_dense_op(
+    dt: float | Array,
+    fourier_: Fourier,
+    flow_: CartesianFlow,
+) -> DenseJAXSolver:
+    r"""Factored dense `$H_k$` at *dt* (dense backend)."""
+    k2_s = fourier_.k2[0, ..., None]
+    return DenseJAXSolver(
+        _build_Hk_dense_gpu(
+            flow_.D2,
+            k2_s,
+            dt,
+            params.step.implicitness,
+            1.0 / params.phys.re,
+        )
+    )
+
+
+def _build_dt_leaves(
+    dt: Array,
+    fourier_: Fourier,
+    flow_: CartesianFlow,
+) -> dict[str, object]:
+    r"""Rebuild every ``dt``-dependent flow leaf at the traced *dt*.
+
+    The pure counterpart of the ``__post_init__`` operator/IMM setup,
+    jitted by the builder's ``set_dt``: assemble the `$H_k$` band(s)
+    at *dt*, factor them **unchecked**
+    (:func:`solvers._factor_pallas_operator` -- the checked build ran
+    at setup, and under ``step.adaptive`` additionally at ``dt_max``,
+    the dominance-weakest point), then re-run the unmodified IMM
+    derivation on a trace-local shallow copy of *flow_* and collect
+    the refreshed leaves.  `$L_k$` is ``dt``-independent and shared.
+    The returned leaves match the stored ones in
+    shape/dtype/sharding, so swapping them onto the flow singleton
+    retraces nothing.
+    """
+    new = copy.copy(flow_)
+    new.dt = dt
+    if params.solver.backend == "pallas":
+        new.Hk_op = _factor_pallas_operator(_hk_bands(dt, fourier_, new))
+    else:
+        new.Hk_op = _hk_dense_op(dt, fourier_, new)
+    new._derive_imm_homogeneous_data(
+        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
+    )
+    new._precompute_bulk_response(
+        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
+    )
+    return {
+        "dt": new.dt,
+        "Hk_op": new.Hk_op,
+        "v1": new.v1,
+        "v2": new.v2,
+        "q1": new.q1,
+        "q2": new.q2,
+        "M_inv": new.M_inv,
+        "h_bulk_response": new.h_bulk_response,
+        "H_bulk_inv": new.H_bulk_inv,
+    }
 
 
 # ── Solver functions ─────────────────────────────────────────────────────
@@ -923,6 +1035,7 @@ def _get_rhs_measured(
             flow_.base_flow_adv_padded,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
+            flow_.dt,
         )
 
     return _get_rhs_core(state, fourier_, flow_, _measure)
@@ -982,7 +1095,7 @@ def _hk_minus_matvec(
     fourier\_:
         Wavenumber grids (uses ``k2``).
     """
-    dt = params.step.dt
+    dt = flow_.dt
     c = params.step.implicitness
     nu = 1.0 / params.phys.re
     D2u = apply_y_matrix(flow_.D2, u)
@@ -1070,7 +1183,7 @@ def _imm_iteration(
     `$r = 1$`).
     """
     c = params.step.implicitness
-    dt = params.step.dt
+    dt = flow_.dt
     nu = 1.0 / params.phys.re
 
     u_n, v_n, w_n = velocity_n[0], velocity_n[1], velocity_n[2]
@@ -1276,6 +1389,8 @@ def build_cartesian_stepper(
     Callable[
         [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
     ],
+    Callable[[float], None],
+    Callable[[], None],
 ]:
     """Build time-stepping functions for a Cartesian
     wall-bounded flow.
@@ -1283,9 +1398,11 @@ def build_cartesian_stepper(
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,
-    step_cnab2_measured)`` with the ``fourier`` and *flow*
-    singletons already bound.  ``_l_bf`` (the FFT-free base-flow
-    coupling) is passed so the CN/AB2 scheme treats it implicitly.
+    step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
+    ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the
+    FFT-free base-flow coupling) is passed so the CN/AB2 scheme
+    treats it implicitly; ``_build_dt_leaves`` backs the adaptive-dt
+    ``set_dt`` rebuild.
     """
     return build_wall_bounded_stepper(
         _get_rhs,
@@ -1296,4 +1413,5 @@ def build_cartesian_stepper(
         flow,
         _get_rhs_measured,
         _l_bf,
+        dt_leaves_fn=_build_dt_leaves,
     )

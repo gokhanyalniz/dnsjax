@@ -69,7 +69,21 @@ is the time *before* that step.  Column names come from the
 measurement dict keys of a warm-up call, which also compiles
 the measured program outside the benchmark window (its
 outputs are discarded).  Unlike stats, no extra row is
-recorded after the final step.
+recorded after the final step.  The ``dt`` column always
+records the step's live time step.
+
+With ``step.adaptive`` the measured stepper additionally runs
+every ``step.cfl_cadence`` steps and the loop host-syncs
+``meas["CFL"]`` there: an accepted
+:func:`dnsjax.adaptive.propose_dt` proposal switches the live
+``dt`` -- the flow module's ``set_dt`` rebuilds the
+``dt``-dependent operator/IMM pytree leaves on device (no
+stepper recompilation), ``params.step.dt`` is mutated (time
+accounting, snapshot embedding, and resume all read it), one
+``[adaptive] ...`` line is printed, and the next CN/AB2 step
+runs with the ratio-weighted AB2 history
+(``reset_ab2_kappa`` after exactly one step).  Semantics and
+knobs: the ``TimeStepping`` docstring.
 
 ``corrector.dat`` records the corrector diagnostic every
 ``it_corrector`` steps (same buffering and file format): the
@@ -160,6 +174,7 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter_ns
 
+from .adaptive import propose_dt
 from .bootstrap import configure_jax_runtime, resolve_parameters
 from .extensions import force_params, probes_params, relevant_extensions
 from .param_surface import print_resolved_parameters
@@ -363,6 +378,8 @@ def run(wall_time_start: int) -> None:
     )
     step_cnab2 = _flow_mod.step_cnab2
     step_cnab2_measured = _flow_mod.step_cnab2_measured
+    set_dt = _flow_mod.set_dt
+    reset_ab2_kappa = _flow_mod.reset_ab2_kappa
 
     # --- Initial condition ---------------------------------------------------
     from .snapshot_meta import is_snapshot_file
@@ -524,6 +541,18 @@ def run(wall_time_start: int) -> None:
     wall_time_now: int = perf_counter_ns()
     last_error: float = 0.0
 
+    # Adaptive CFL controller (``step.adaptive``): the loop reads the
+    # measured total CFL every ``cfl_cadence`` steps, asks
+    # ``propose_dt`` for the next step, and on an accepted change
+    # rebuilds the dt-dependent flow leaves on device (``set_dt``) and
+    # mutates the live ``params.step.dt`` (time accounting, snapshot
+    # embedding, and resume all read it).  ``kappa_pending`` tracks
+    # the one step that runs with the AB2 ratio ``dt_new/dt_old``
+    # before ``reset_ab2_kappa`` restores 1 (see ``TimeStepping``).
+    adaptive: bool = params.step.adaptive
+    cfl_cadence: int = params.step.cfl_cadence
+    kappa_pending: bool = False
+
     # Laminarization (relaminarization) termination: stop once the
     # perturbation kinetic energy E' falls below the threshold.  E' is
     # read on the host at the it_error_check cadence (below), so the
@@ -629,8 +658,13 @@ def run(wall_time_start: int) -> None:
         _, rhs_prev, _, _ = step_cnab2(jnp.copy(state), jnp.zeros_like(state))
 
     # --- Steps (CFL) buffer setup --------------------------------------
+    # The measured stepper serves two consumers: the ``steps.dat``
+    # record (``outs.it_steps``) and the adaptive-dt controller's CFL
+    # read (``step.cfl_cadence``); either enables it.  ``steps.dat``
+    # itself stays tied to ``outs.it_steps`` alone.
     measure_steps: bool = params.outs.it_steps is not None
-    if measure_steps:
+    needs_measured: bool = measure_steps or adaptive
+    if needs_measured:
         # Warm-up call (all ranks; collective FFTs): provides the
         # measurement names and compiles the measured program
         # outside the benchmark window.  Outputs are discarded; the
@@ -641,7 +675,13 @@ def run(wall_time_start: int) -> None:
             *_, meas = step_cnab2_measured(jnp.copy(state), jnp.copy(rhs_prev))
         else:
             _, _, _, meas = predict_and_fully_correct_measured(jnp.copy(state))
-        if params.outs.it_steps > 1 and it % params.outs.it_steps == 0:
+        first_measured = (
+            measure_steps and it % params.outs.it_steps == 0
+        ) or (adaptive and it % cfl_cadence == 0)
+        every_measured = (measure_steps and params.outs.it_steps == 1) or (
+            adaptive and cfl_cadence == 1
+        )
+        if first_measured and not every_measured:
             # The first loop iteration (excluded from benchmarks)
             # runs the measured variant, so the unmeasured program
             # would otherwise compile on the second iteration,
@@ -650,6 +690,7 @@ def run(wall_time_start: int) -> None:
                 step_cnab2(jnp.copy(state), jnp.copy(rhs_prev))
             else:
                 predict_and_fully_correct(jnp.copy(state))
+    if measure_steps:
         steps_names = list(meas.keys())
         steps_buffer = jnp.zeros(
             (params.outs.nbuffer, len(steps_names)),
@@ -949,8 +990,11 @@ def run(wall_time_start: int) -> None:
         # Time step (single JIT scope): iterative Crank-Nicolson
         # corrector, or one CN/AB2 step carrying the nonlinear-RHS
         # history.  The measured variant also records the CFL of the
-        # pre-step state u^n, timestamped at the current t.
-        do_measure = measure_steps and it % params.outs.it_steps == 0
+        # pre-step state u^n, timestamped at the current t; it runs
+        # for the steps.dat record and/or the adaptive controller.
+        do_record = measure_steps and it % params.outs.it_steps == 0
+        do_cfl = adaptive and it % cfl_cadence == 0
+        do_measure = do_record or do_cfl
         # CN/AB2 self-start: take the very first step with the robust
         # iterative-CN corrector (it needs no RHS history and is not
         # advective-CFL bound), then switch to CN/AB2 with the
@@ -969,7 +1013,7 @@ def run(wall_time_start: int) -> None:
         else:
             state, error_dev, c_dev = predict_and_fully_correct(state)
 
-        if do_measure:
+        if do_record:
             steps_buffer = steps_buffer.at[steps_idx].set(
                 jnp.stack(list(meas.values()))
             )
@@ -1026,6 +1070,44 @@ def run(wall_time_start: int) -> None:
 
         t += params.step.dt
         it += 1
+
+        # Adaptive-dt controller: consume the CFL measured at the
+        # just-completed step's pre-step state (that step is booked
+        # at the old dt above) and, on an accepted proposal, switch
+        # the live dt -- an on-device leaf rebuild (``set_dt``), no
+        # recompilation.  ``reset_ab2_kappa`` restores the AB2 ratio
+        # to 1 after exactly one step at the new dt.
+        if adaptive:
+            changed = False
+            if do_cfl:
+                cfl_host = float(meas["CFL"])  # host sync
+                if not math.isfinite(cfl_host):
+                    _abort_non_finite(
+                        f"non-finite CFL ({cfl_host}) at "
+                        f"t = {t:.6e}, it = {it}"
+                    )
+                new_dt = propose_dt(
+                    cfl_host,
+                    params.step.dt,
+                    cfl_target=params.step.cfl_target,
+                    dt_min=params.step.dt_min,
+                    dt_max=params.step.dt_max,
+                    dt_min_change=params.step.dt_min_change,
+                    dt_max_change=params.step.dt_max_change,
+                    dt_threshold=params.step.dt_threshold,
+                )
+                if new_dt != params.step.dt:
+                    set_dt(new_dt)
+                    sharding.print(
+                        f"[adaptive] t = {t:.6e}, it = {it}: "
+                        f"CFL = {cfl_host:.3f}, dt "
+                        f"{params.step.dt:.4e} -> {new_dt:.4e}"
+                    )
+                    params.step.dt = new_dt
+                    changed = True
+            if kappa_pending and not changed:
+                reset_ab2_kappa()
+            kappa_pending = changed
 
         # On-device accumulation (no host sync).
         c_sum = c_sum + c_dev

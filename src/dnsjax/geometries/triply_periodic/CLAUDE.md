@@ -14,7 +14,9 @@
   no matrix solves, so `dnsjax.solvers` is never involved and
   `solver.backend` is absent from the periodic parameter surfaces
   (the geometry never reads it). See
-  `TriplyPeriodicFlow.__post_init__`.
+  `TriplyPeriodicFlow.__post_init__`. Adaptive dt (`set_dt`) just
+  recomputes `ldt_1`/`ildt_2` (`_build_dt_leaves`) -- no stability
+  check, fully continuous dt.
 - Divergence correction is a two-stage projection, not an IMM: inside
   `_get_rhs` (pressure Poisson) and post-step (`correct_divergence` +
   mean-mode zeroing, fused into every stepper via `make_stepper`'s

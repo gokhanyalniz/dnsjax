@@ -351,6 +351,18 @@ def test_validate_force_params() -> None:
         _expect_value_error("mean mode")
         force_params.modes = "5,0"
 
+        # Adaptive dt: the kick statistics and their readers
+        # hard-code the uniform interval it_force * dt.  (dt_max set
+        # too, so the step-section validation passes and the
+        # rejection genuinely comes from the force hook.)
+        params.step.adaptive = True
+        params.step.dt_max = 0.02
+        try:
+            _expect_value_error("fixed time step")
+        finally:
+            params.step.adaptive = False
+            params.step.dt_max = None
+
         # Kick cadence must be a whole number of probe intervals.
         probes_params.modes = "5,0"
         probes_params.it_probes = 4

@@ -32,14 +32,13 @@ numbers, :func:`get_cfl`.
 from jax import Array
 from jax import numpy as jnp
 
-from .parameters import params
-
 
 def get_cfl(
     velocity_phys: Array,
     base_flow: Array,
     inv_spacing: Array,
     names: tuple[str, str, str],
+    dt: Array,
 ) -> dict[str, Array]:
     r"""CFL numbers of the advecting velocity on the current grid.
 
@@ -85,19 +84,26 @@ def get_cfl(
     names:
         Per-direction column names matching the component
         order (e.g. ``("CFL_x", "CFL_y", "CFL_z")``).
+    dt:
+        The step's time step as a 0-d array -- the callers pass the
+        ``flow.dt`` pytree leaf, so an adaptive-``dt`` run reports
+        the live value without retracing.
 
     Returns
     -------
     :
         ``{names[0]: ..., names[1]: ..., names[2]: ...,
-        "CFL": ...}`` of replicated scalars.
+        "CFL": ..., "dt": dt}`` of replicated scalars.  The ``dt``
+        column records the step size the CFL was evaluated at (and,
+        under ``step.adaptive``, the varying step itself).
     """
     scaled = jnp.abs(velocity_phys + base_flow) * inv_spacing
-    dir_max = params.step.dt * jnp.max(scaled, axis=(1, 2, 3))
-    total = params.step.dt * jnp.max(jnp.sum(scaled, axis=0))
+    dir_max = dt * jnp.max(scaled, axis=(1, 2, 3))
+    total = dt * jnp.max(jnp.sum(scaled, axis=0))
     return {
         names[0]: dir_max[0],
         names[1]: dir_max[1],
         names[2]: dir_max[2],
         "CFL": total,
+        "dt": dt,
     }

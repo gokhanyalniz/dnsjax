@@ -83,6 +83,7 @@ Flow-specific modules (e.g. ``flows.wall_bounded.pipe``) subclass
 time-stepping functions.
 """
 
+import copy
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -119,6 +120,7 @@ from ...solvers import (
     _banded_from_dense,
     _banded_wall_row,
     _build_pallas_operator,
+    _factor_pallas_operator,
 )
 from ._base import (
     apply_y_matrix,
@@ -975,8 +977,13 @@ class CylindricalFlow:
         `$1/r$` on the radial grid.
     inv_r2:
         `$1/r^2$` on the radial grid.
+    dt, ab2_kappa:
+        Live time step and AB2 step ratio, 0-d array leaves (see
+        ``CartesianFlow`` and the builder ``set_dt``).
     """
 
+    dt: Array = field(init=False)
+    ab2_kappa: Array = field(init=False)
     rs: Array = field(init=False)
     inv_r: Array = field(init=False)
     inv_r2: Array = field(init=False)
@@ -1102,8 +1109,11 @@ class CylindricalFlow:
 
         fd_p = params.res.fd_order
         dt = params.step.dt
-        c_impl = params.step.implicitness
-        nu = 1.0 / params.phys.re
+
+        # Live-dt pytree leaves (class docstring; rebuilt by the
+        # builder's ``set_dt`` with identical dtype/shape).
+        self.dt = jnp.asarray(dt, dtype=sharding.float_type)
+        self.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
 
         # Solver-internal wavenumber arrays: squeeze y dim
         # from field layout (1, Nm, ...) to (Nm, ..., 1).
@@ -1112,15 +1122,11 @@ class CylindricalFlow:
         mean_s = fourier.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
         m_is_even_s = fourier.m_is_even[0, ..., None]  # (Nm, 1, 1)
 
-        m_plus_1_sq = (m_s + 1) ** 2
-        m_minus_1_sq = (m_s - 1) ** 2
         m_sq = m_s**2
 
-        # Parity masks:
-        # pressure / u_z use (-1)^m  -> m_is_even
-        # u_+, u_- use (-1)^{m+1}   -> ~m_is_even (opposite)
+        # Parity mask: pressure / u_z use (-1)^m -> m_is_even (the
+        # u_+/u_- masks live in ``_hk_bands`` / ``_hk_dense_op``).
         m_is_even_p = m_is_even_s
-        m_is_even_v = 1.0 - m_is_even_s
 
         if params.solver.backend == "pallas":
             # Pallas backend: one-program-per-mode banded sweep.
@@ -1148,46 +1154,18 @@ class CylindricalFlow:
 
             # Hk group (plus, minus, z): stacked into one homogeneous
             # operator and stability-checked as a single group.
-            Hp_band = _build_Hk_band_gpu(
-                band_even,
-                band_odd,
-                m_is_even_v,
-                m_plus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-            )
-            Hm_band = _build_Hk_band_gpu(
-                band_even,
-                band_odd,
-                m_is_even_v,
-                m_minus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-            )
-            Hz_band = _build_Hk_band_gpu(
-                band_even,
-                band_odd,
-                m_is_even_p,
-                m_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-            )
+            if params.step.adaptive:
+                # Verify the no-pivot LU where the Helmholtz
+                # diagonal is least dominant; adaptive rebuilds at
+                # dt <= dt_max then skip the check
+                # (solvers._factor_pallas_operator).
+                _build_pallas_operator(
+                    _hk_bands(params.step.dt_max, fourier, self),
+                    "Hk(dt_max)",
+                )
             self.Hk_op = _build_pallas_operator(
-                [Hp_band, Hm_band, Hz_band], "Hk"
+                _hk_bands(dt, fourier, self), "Hk"
             )
-            del Hp_band, Hm_band, Hz_band
 
         else:
             # Dense backend: full matrices are built, LU-factored
@@ -1206,73 +1184,15 @@ class CylindricalFlow:
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
 
-            Hp_dense = _build_Hk_dense_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_v,
-                m_plus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-            )
-            Hk_plus_solver = DenseJAXSolver(Hp_dense)
-            del Hp_dense
-
-            Hm_dense = _build_Hk_dense_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_v,
-                m_minus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-            )
-            Hk_minus_solver = DenseJAXSolver(Hm_dense)
-            del Hm_dense
-
-            Hz_dense = _build_Hk_dense_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_p,
-                m_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-            )
-            Hk_z_solver = DenseJAXSolver(Hz_dense)
-            del Hz_dense
-
             # Combined Hk: component order (plus, minus, z).
-            # Drop the per-component solvers right after stacking
-            # copies their factors.
-            self.Hk_op = DenseJAXSolver.from_factors(
-                lu=jnp.stack(
-                    [
-                        Hk_plus_solver.lu,
-                        Hk_minus_solver.lu,
-                        Hk_z_solver.lu,
-                    ]
-                ),
-                perm=jnp.stack(
-                    [
-                        Hk_plus_solver.perm,
-                        Hk_minus_solver.perm,
-                        Hk_z_solver.perm,
-                    ]
-                ),
-            )
-            del Hk_plus_solver, Hk_minus_solver, Hk_z_solver
+            self.Hk_op = _hk_dense_op(dt, fourier, self)
 
-        self._derive_imm_homogeneous_data(Nm, Nkz, Nr)
-        self._precompute_bulk_response(Nm, Nkz, Nr)
+        self._derive_imm_homogeneous_data(fourier, Nm, Nkz, Nr)
+        self._precompute_bulk_response(fourier, Nm, Nkz, Nr)
 
-    def _derive_imm_homogeneous_data(self, Nm: int, Nkz: int, Nr: int) -> None:
+    def _derive_imm_homogeneous_data(
+        self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
+    ) -> None:
         r"""Fill ``v_plus_1``, ``v_minus_1``, ``q_z_1``, and
         ``M_inv`` on-device.
 
@@ -1336,12 +1256,12 @@ class CylindricalFlow:
         # Pressure gradient components for the +/- equations.
         # The ghost matrix holds only its g nonzero rows; its
         # contribution lands in the first g radial entries.
-        parity_sign_p_s = fourier.m_is_even[0, ..., None] * 2 - 1
+        parity_sign_p_s = fourier_.m_is_even[0, ..., None] * 2 - 1
         g = self.D1_ghost.shape[0]
         ghost_p1 = jnp.einsum("ij, mzj -> mzi", self.D1_ghost, p1_s)
         D1_p1 = jnp.einsum("ij, mzj -> mzi", self.D1_pos, p1_s)
         D1_p1 = D1_p1.at[..., :g].add(parity_sign_p_s * ghost_p1)
-        m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
+        m_s = fourier_.m[0, ..., None]  # (Nm, 1, 1)
         m_over_r_s = m_s * self.inv_r  # (Nm, 1, Nr)
 
         rhs_v_plus = -(D1_p1 - m_over_r_s * p1_s)
@@ -1360,7 +1280,7 @@ class CylindricalFlow:
         qz1_s = result_stack[2]
 
         # Zero the u_r part at the mean mode, preserving u_theta.
-        mean_s = fourier.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
+        mean_s = fourier_.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
         vr_corr = jnp.where(mean_s, (vp1_s + vm1_s) / 2, 0.0)
         vp1_s = vp1_s - vr_corr
         vm1_s = vm1_s - vr_corr
@@ -1370,7 +1290,7 @@ class CylindricalFlow:
         ur_1 = (vp1_s + vm1_s) / 2
         M = jnp.einsum("j, mzj -> mz", D1_wall_row, ur_1)
 
-        is_mean = fourier.mean_mask[0]  # (Nm, Nkz)
+        is_mean = fourier_.mean_mask[0]  # (Nm, Nkz)
         safe_M = jnp.where(is_mean, 1.0, M)
         self.M_inv = jnp.where(is_mean, 0.0, 1.0 / safe_M)
 
@@ -1379,7 +1299,9 @@ class CylindricalFlow:
         self.v_minus_1 = vm1_s.transpose(2, 0, 1)
         self.q_z_1 = qz1_s.transpose(2, 0, 1)
 
-    def _precompute_bulk_response(self, Nm: int, Nkz: int, Nr: int) -> None:
+    def _precompute_bulk_response(
+        self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
+    ) -> None:
         r"""Precompute the Helmholtz response for constant-bulk-
         velocity enforcement.
 
@@ -1410,7 +1332,7 @@ class CylindricalFlow:
         # all other modes, padding included, get zero RHS), zero
         # wall BC.  Solver-internal layout (Nm, Nkz, Nr).
         ones_vec = jnp.ones(Nr, dtype=sharding.float_type).at[-1].set(0.0)
-        rhs = jnp.where(fourier.mean_mask[0, ..., None], ones_vec, 0.0)
+        rhs = jnp.where(fourier_.mean_mask[0, ..., None], ones_vec, 0.0)
 
         # Solve using the z-component (index 2) of the combined
         # Hk operator via a padded batch (one-time init cost).
@@ -1419,12 +1341,137 @@ class CylindricalFlow:
             jnp.stack([zeros, zeros, rhs]).transpose(0, 3, 1, 2)
         ).transpose(0, 2, 3, 1)[2]
 
-        self.h_bulk_response = jax.device_put(
+        # ``reshard`` (not ``device_put``): this method also runs
+        # inside the jitted ``set_dt`` rebuild, where placing a
+        # traced value is expressed as a resharding.
+        self.h_bulk_response = jax.sharding.reshard(
             extract_mean_mode(h_full.transpose(2, 0, 1)[None])[0],
             sharding.no_shard,
         )
         H_bulk = 2 * jnp.dot(self.y_weights, self.h_bulk_response)
         self.H_bulk_inv = 1.0 / H_bulk
+
+
+def _hk_bands(
+    dt: float | Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> list[Array]:
+    r"""Assemble the banded `$H_k$` group (+, -, z) at *dt*.
+
+    Single-sources the band assembly for the setup-checked build, the
+    adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
+    rebuild (:func:`_build_dt_leaves`).  Pallas backend only.
+    """
+    fd_p = params.res.fd_order
+    m_s = fourier_.m[0, ..., None]
+    kz2_s = fourier_.kz2[0, ..., None]
+    m_is_even_s = fourier_.m_is_even[0, ..., None]
+    # u_+/u_- carry parity (-1)^{m+1}; u_z carries (-1)^m.
+    m_is_even_v = 1.0 - m_is_even_s
+    band_even = _banded_from_dense(flow_.A_base_even, fd_p)
+    band_odd = _banded_from_dense(flow_.A_base_odd, fd_p)
+    groups = (
+        (m_is_even_v, (m_s + 1) ** 2),
+        (m_is_even_v, (m_s - 1) ** 2),
+        (m_is_even_s, m_s**2),
+    )
+    return [
+        _build_Hk_band_gpu(
+            band_even,
+            band_odd,
+            parity,
+            meff2,
+            flow_.inv_r2,
+            kz2_s,
+            dt,
+            params.step.implicitness,
+            1.0 / params.phys.re,
+            fd_p,
+        )
+        for parity, meff2 in groups
+    ]
+
+
+def _hk_dense_op(
+    dt: float | Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> DenseJAXSolver:
+    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense
+    backend)."""
+    m_s = fourier_.m[0, ..., None]
+    kz2_s = fourier_.kz2[0, ..., None]
+    m_is_even_s = fourier_.m_is_even[0, ..., None]
+    m_is_even_v = 1.0 - m_is_even_s
+    groups = (
+        (m_is_even_v, (m_s + 1) ** 2),
+        (m_is_even_v, (m_s - 1) ** 2),
+        (m_is_even_s, m_s**2),
+    )
+    ops = [
+        DenseJAXSolver(
+            _build_Hk_dense_gpu(
+                flow_.A_base_even,
+                flow_.A_base_odd,
+                parity,
+                meff2,
+                flow_.inv_r2,
+                kz2_s,
+                dt,
+                params.step.implicitness,
+                1.0 / params.phys.re,
+            )
+        )
+        for parity, meff2 in groups
+    ]
+    return DenseJAXSolver.from_factors(
+        lu=jnp.stack([o.lu for o in ops]),
+        perm=jnp.stack([o.perm for o in ops]),
+    )
+
+
+def _build_dt_leaves(
+    dt: Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> dict[str, object]:
+    r"""Rebuild every ``dt``-dependent flow leaf at the traced *dt*.
+
+    The pure counterpart of the ``__post_init__`` operator/IMM setup,
+    jitted by the builder's ``set_dt``: assemble the `$H_k$` group at
+    *dt*, factor it **unchecked**
+    (:func:`solvers._factor_pallas_operator` -- the checked build ran
+    at setup, and under ``step.adaptive`` additionally at ``dt_max``,
+    the dominance-weakest point), then re-run the unmodified IMM
+    derivation on a trace-local shallow copy of *flow_* and collect
+    the refreshed leaves.  `$L_k$` is ``dt``-independent and shared.
+    The returned leaves match the stored ones in
+    shape/dtype/sharding, so swapping them onto the flow singleton
+    retraces nothing.
+    """
+    new = copy.copy(flow_)
+    new.dt = dt
+    if params.solver.backend == "pallas":
+        new.Hk_op = _factor_pallas_operator(_hk_bands(dt, fourier_, new))
+    else:
+        new.Hk_op = _hk_dense_op(dt, fourier_, new)
+    new._derive_imm_homogeneous_data(
+        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
+    )
+    new._precompute_bulk_response(
+        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
+    )
+    return {
+        "dt": new.dt,
+        "Hk_op": new.Hk_op,
+        "v_plus_1": new.v_plus_1,
+        "v_minus_1": new.v_minus_1,
+        "q_z_1": new.q_z_1,
+        "M_inv": new.M_inv,
+        "h_bulk_response": new.h_bulk_response,
+        "H_bulk_inv": new.H_bulk_inv,
+    }
 
 
 # ── Solver functions ─────────────────────────────────────────────
@@ -1617,6 +1664,7 @@ def _get_rhs_measured(
             flow_.base_flow_adv_padded,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
+            flow_.dt,
         )
 
     return _get_rhs_core(state, fourier_, flow_, _measure)
@@ -1754,7 +1802,7 @@ def _imm_iteration(
        mean-mode perturbation bulk `$u_z$`.
     """
     c = params.step.implicitness
-    dt = params.step.dt
+    dt = flow_.dt
     nu = 1.0 / params.phys.re
 
     uz_n, up_n, um_n = velocity_n[0], velocity_n[1], velocity_n[2]
@@ -1994,15 +2042,19 @@ def build_cylindrical_stepper(
     Callable[
         [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
     ],
+    Callable[[float], None],
+    Callable[[], None],
 ]:
     """Build time-stepping functions for a cylindrical flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,
-    step_cnab2_measured)`` with the ``fourier`` and *flow*
-    singletons already bound.  ``_l_bf`` (the FFT-free base-flow
-    coupling) is passed so the CN/AB2 scheme treats it implicitly.
+    step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
+    ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the
+    FFT-free base-flow coupling) is passed so the CN/AB2 scheme
+    treats it implicitly; ``_build_dt_leaves`` backs the adaptive-dt
+    ``set_dt`` rebuild.
     """
     return build_wall_bounded_stepper(
         _get_rhs,
@@ -2013,4 +2065,5 @@ def build_cylindrical_stepper(
         flow,
         _get_rhs_measured,
         _l_bf,
+        dt_leaves_fn=_build_dt_leaves,
     )

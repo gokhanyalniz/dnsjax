@@ -322,6 +322,16 @@ def _validate_probes(values: ProbesParams, params) -> None:
         )
     if values.modes is None:
         return
+    if params.step.adaptive:
+        # probes.bin records carry t, but every reader reconstructs
+        # the uniform sample interval as it_probes * dt from the
+        # sidecar (and dt is an append-resume match key), so the
+        # stream is a fixed-dt feature.
+        raise ValueError(
+            "probes.modes: the probe stream requires a fixed time "
+            "step (step.adaptive = False); its readers assume the "
+            "uniform sample interval it_probes * dt."
+        )
     if params.phys.system not in walled_systems:
         raise ValueError(
             "probes.modes: the spectral-mode probe stream supports "
@@ -376,6 +386,15 @@ def _validate_force(values: ForceParams, params) -> None:
                 "it_force quartet (no forcing is configured)."
             )
         return
+    if params.step.adaptive:
+        # The white-in-time kick statistics and their readers
+        # hard-code the uniform kick interval it_force * dt (and dt
+        # is an append-resume match key of forcing.json).
+        raise ValueError(
+            "force.modes: stochastic forcing requires a fixed time "
+            "step (step.adaptive = False); the kick interval "
+            "it_force * dt must be uniform."
+        )
     if (
         params.phys.system not in walled_systems
         or params.phys.system in viscoelastic_systems
