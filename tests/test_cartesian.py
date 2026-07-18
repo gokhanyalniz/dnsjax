@@ -151,7 +151,7 @@ def test_hk_minus_matvec_matches_reference() -> None:
     y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))
     _, D2 = build_diff_matrices(y, p)
 
-    flow_ = SimpleNamespace(D2=D2)
+    flow_ = SimpleNamespace(D2=D2, dt=jnp.asarray(dt))
 
     rng = np.random.default_rng(40)
     for kz, kx in [(0.0, 0.0), (0.0, 1.7), (2.0, 3.0)]:

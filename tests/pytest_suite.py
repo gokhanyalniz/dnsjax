@@ -61,6 +61,7 @@ _SLOW = (pytest.mark.slow,)
 # ``test_resume`` appears twice: the MPI-free ``--unit-only`` subset
 # and the full run (offline units + mpirun integration).
 _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
+    ("test_adaptive.py", (), (), 1800),
     ("test_annular.py", (), (), 1800),
     ("test_banded_solver.py", (), (), 1800),
     ("test_banded_solver_sharded.py", (), (), 1800),

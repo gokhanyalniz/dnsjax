@@ -248,6 +248,19 @@ def test_validate_probe_params() -> None:
         _expect_value_error("out of range")
         probes_params.modes = "0,4"  # i3 == nx // 2 out of range
         _expect_value_error("out of range")
+
+        # Adaptive dt: the readers reconstruct the uniform sample
+        # interval as it_probes * dt, so the stream is fixed-dt only.
+        # (dt_max set too, so the step-section validation passes and
+        # the rejection genuinely comes from the probes hook.)
+        probes_params.modes = "0,0"
+        params.step.adaptive = True
+        params.step.dt_max = 0.02
+        try:
+            _expect_value_error("fixed time step")
+        finally:
+            params.step.adaptive = False
+            params.step.dt_max = None
     finally:
         probes_params.modes, probes_params.it_probes = saved
 

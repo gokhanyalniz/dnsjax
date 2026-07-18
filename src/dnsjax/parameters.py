@@ -946,6 +946,42 @@ class TimeStepping(BaseModel):
     wall-bounded flows contract fine at the default ``dt = 0.01``.
     ``phys.u_grid`` relaxes it (the advecting velocity drops to
     ``U - U_grid``).
+
+    Adaptive CFL time stepping (``adaptive``)
+    -----------------------------------------
+    With ``adaptive = True`` the main loop re-selects ``dt`` from the
+    measured total CFL every ``cfl_cadence`` steps (a one-scalar host
+    sync, the same stall class as ``outs.it_error_check``).  The
+    controller (:mod:`dnsjax.adaptive`) proposes
+    `$\Delta t \, \mathrm{CFL}_{\mathrm{target}} / \mathrm{CFL}$`,
+    caps it by ``dt_max`` and the per-evaluation growth ratio
+    ``dt_max_change``, floors it by ``dt_min`` and the shrink ratio
+    ``dt_min_change`` (``0`` = uncapped shrink, the safe default),
+    and accepts only when the result moves ``dt`` by more than the
+    relative deadband ``dt_threshold`` (suppressing rebuild churn
+    from CFL noise).  An accepted change rebuilds the
+    ``dt``-dependent implicit-operator / IMM pytree leaves on device
+    (the flow module's ``set_dt``: a jitted rebuild costing a few
+    implicit solves -- no FFTs, no stepper recompilation) and, under
+    ``cnab2``, weights the next AB2 step with
+    `$\kappa = \Delta t_n / \Delta t_{n-1}$` (variable-step AB2; see
+    ``make_stepper`` in ``timestep.py``).  ``params.step.dt`` tracks
+    the live value: every snapshot embeds it, so a resume continues
+    at the adapted ``dt`` unless an explicit TOML/CLI ``step.dt``
+    overrides it, and ``steps.dat`` always carries a ``dt`` column.
+
+    ``dt_max`` is required when adaptive: besides bounding the step
+    it anchors the setup-time no-pivot stability check -- the
+    Helmholtz diagonal `$1/\Delta t + c\,\nu\,k^2$` is least
+    dominant at ``dt_max``, so one checked factorization there
+    covers every ``dt <= dt_max`` and the runtime rebuilds skip the
+    check.  Pick ``cfl_target`` for the scheme: ``cnab2``'s explicit
+    self-advection is CFL-limited (target well below 1), while
+    ``iterative-cn`` tolerates CFL above 1 but stays bound by the
+    corrector-contraction ``dt`` limit above -- enforce that through
+    ``dt_max``.  The ``[probes]`` / ``[force]`` extensions reject
+    adaptive runs: their streams and readers assume a uniform
+    sample/kick interval ``it_* x dt``.
     """
 
     scheme: Literal["iterative-cn", "cnab2"] = Field(
@@ -1008,6 +1044,71 @@ class TimeStepping(BaseModel):
             "Opt-in, wall-bounded iterative-cn only: iterate the "
             "linear coupling FFT-free between full-RHS corrector "
             "refreshes; no effect on cnab2."
+        ),
+    )
+    # Adaptive CFL controller knobs; semantics in the class docstring
+    # and :mod:`dnsjax.adaptive`.
+    adaptive: bool = Field(
+        default=False,
+        description=(
+            "Re-select dt at runtime from the measured total CFL "
+            "(see the TimeStepping docstring); requires dt_max."
+        ),
+    )
+    cfl_target: float = Field(
+        gt=0,
+        default=0.5,
+        description=(
+            "Total-CFL setpoint of the adaptive controller (safety "
+            "folded in; cnab2 needs a target well below 1)."
+        ),
+    )
+    dt_min: float = Field(
+        gt=0,
+        default=1e-6,
+        description=(
+            "Adaptive floor on dt; the run continues at the floor "
+            "(the non-finite diagnostics still abort a blow-up)."
+        ),
+    )
+    dt_max: float | None = Field(
+        gt=0,
+        default=None,
+        description=(
+            "Adaptive cap on dt; required when adaptive (also "
+            "anchors the setup-time no-pivot stability check)."
+        ),
+    )
+    dt_min_change: float = Field(
+        ge=0,
+        default=0.0,
+        description=(
+            "Adaptive floor on the per-evaluation ratio "
+            "dt_new/dt_old (0 = shrink uncapped, the safe default)."
+        ),
+    )
+    dt_max_change: float = Field(
+        gt=0,
+        default=1.2,
+        description=(
+            "Adaptive cap on the per-evaluation ratio "
+            "dt_new/dt_old (growth-rate limiter)."
+        ),
+    )
+    dt_threshold: float = Field(
+        ge=0,
+        default=0.05,
+        description=(
+            "Relative deadband: keep dt unless the restricted "
+            "proposal moves it by more than dt_threshold * dt."
+        ),
+    )
+    cfl_cadence: int = Field(
+        ge=1,
+        default=10,
+        description=(
+            "Steps between CFL reads / adaptive-controller "
+            "evaluations (each read is a host sync)."
         ),
     )
 
@@ -1559,6 +1660,30 @@ def validate_parameters() -> None:
             f"outs.it_corrector ({o.it_corrector}) so the corrector "
             "convergence is checked at least as often as it is logged."
         )
+
+    s = params.step
+    if s.adaptive:
+        if s.dt_max is None:
+            raise ValueError(
+                "step.adaptive requires step.dt_max: it bounds the "
+                "adapted dt and anchors the setup-time no-pivot "
+                "stability check (see the TimeStepping docstring)."
+            )
+        if not s.dt_min < s.dt_max:
+            raise ValueError(
+                f"step.dt_min ({s.dt_min}) must be < step.dt_max ({s.dt_max})."
+            )
+        if not s.dt_min <= s.dt <= s.dt_max:
+            raise ValueError(
+                f"step.dt ({s.dt}) must lie in [step.dt_min, "
+                f"step.dt_max] = [{s.dt_min}, {s.dt_max}] when "
+                "step.adaptive is enabled."
+            )
+        if s.dt_min_change > s.dt_max_change:
+            raise ValueError(
+                f"step.dt_min_change ({s.dt_min_change}) must be "
+                f"<= step.dt_max_change ({s.dt_max_change})."
+            )
 
     spec = spec_for(params.phys.system)
 

@@ -116,6 +116,7 @@ from ...solvers import (
     _banded_from_dense,
     _banded_wall_row,
     _build_pallas_operator,
+    _factor_pallas_operator,
 )
 from ._base import (
     apply_y_matrix,
@@ -130,6 +131,9 @@ from .annular import (
     _imm_iteration,
     fourier,
     get_norm2_annular,
+)
+from .annular import (
+    _build_dt_leaves as _annular_dt_leaves,
 )
 from .annular import (
     _l_bf as _annular_l_bf,
@@ -450,6 +454,12 @@ class ViscoelasticAnnularFlow(AnnularFlow):
     tensor_spin: Array = field(init=False)
     inv_r_padded: Array = field(init=False)
     Hc_op: _WallBoundedOp | None = field(init=False, default=None)
+    # Narrow Laplacian BC wall rows of Hc, stored as leaves so the
+    # jitted adaptive-dt rebuild (``_build_dt_leaves``) can reuse
+    # them (their NumPy build cannot run on tracers).  ``None`` (aux)
+    # while kappa == 0, where no Hc exists.
+    hc_narrow0: Array | None = field(init=False, default=None)
+    hc_narrowN: Array | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         # Build velocity grid / FD matrices / 2x2 IMM (nu = beta/re).
@@ -474,85 +484,139 @@ class ViscoelasticAnnularFlow(AnnularFlow):
             self.Hc_op = None
             return
 
-        self._build_conformation_operator(Nr, kappa)
+        self._build_conformation_operator()
 
-    def _build_conformation_operator(self, Nr: int, kappa: float) -> None:
+    def _build_conformation_operator(self) -> None:
         r"""Build the stacked 6-component `$H_c$` Crank-Nicolson operator.
 
-        Five distinct `$m_{\mathrm{eff}}^2$` operators
-        (`$m, m\pm1, m\pm2$`) are built and stacked into the 6-component
-        order `$(c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++}, c_{--})$`, so the
-        `$m_{\mathrm{eff}} = m$` operator serves both `$c_{zz}$` and
-        `$c_{+-}$`.
-
-        The stacked storage **duplicates** that shared operator's
-        factors (slot 0 and slot 3 hold the same data -- ~1/6 of the
-        ``Hc_op`` memory), because the uniform stacked ``.solve``
-        contract pairs component ``i`` of the RHS with operator ``i``.
-        Deduplicating would need a nonuniform component-to-operator
-        solve mapping (5 operators against 6 RHS components) in every
-        backend -- deferred as not worth the contract complexity for a
-        small, setup-persistent array (the velocity ``Hk_op`` stack and
-        the per-step transform transients are far larger).
+        Stores the narrow Laplacian BC wall rows as the
+        ``hc_narrow0`` / ``hc_narrowN`` leaves (their JAX-free NumPy
+        build cannot run on tracers, so the jitted adaptive-``dt``
+        rebuild reuses them), optionally pre-checks the no-pivot LU
+        at ``dt_max`` (``step.adaptive``; the velocity `$H_k$`
+        analogue), and delegates the assembly/factorization to
+        :func:`_build_hc_operator`.
         """
-        dt = params.step.dt
-        c_impl = params.step.implicitness
-        fd_p = params.res.fd_order
-
-        m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
-        kz2_s = fourier.kz2[0, ..., None]  # (1, Nkz, 1)
-        # m_eff^2 for spin s = 0, +1, -1, +2, -2 (the 5 distinct values).
-        meff2 = {s: (m_s + s) ** 2 for s in (0, 1, -1, 2, -2)}
         # Full narrow Laplacian BC wall rows (JAX-free build).
         row0_np, rowN_np = _narrow_abase_wall_rows(
-            np.asarray(self.rs), np.asarray(self.D1), fd_p
+            np.asarray(self.rs), np.asarray(self.D1), params.res.fd_order
         )
-        narrow0 = jax.device_put(row0_np, sharding.no_shard)
-        narrowN = jax.device_put(rowN_np, sharding.no_shard)
+        self.hc_narrow0 = jax.device_put(row0_np, sharding.no_shard)
+        self.hc_narrowN = jax.device_put(rowN_np, sharding.no_shard)
 
-        backend = params.solver.backend
-        if backend == "pallas":
-            # Six per-spin banded operators (slot 3 repeats s = 0),
-            # stacked into one homogeneous operator and
-            # stability-checked as a single group.
-            bands = [
-                _build_Hc_band_gpu(
-                    self.A_base,
-                    narrow0,
-                    narrowN,
-                    meff2[s],
-                    self.inv_r2,
-                    kz2_s,
-                    dt,
-                    c_impl,
-                    kappa,
-                    fd_p,
-                )
-                for s in (0, 1, -1, 0, 2, -2)
-            ]
-            self.Hc_op = _build_pallas_operator(bands, "Hc")
-        else:
-
-            def _dense(s: int) -> DenseJAXSolver:
-                H = _build_Hc_dense_gpu(
-                    self.A_base,
-                    narrow0,
-                    narrowN,
-                    meff2[s],
-                    self.inv_r2,
-                    kz2_s,
-                    dt,
-                    c_impl,
-                    kappa,
-                )
-                return DenseJAXSolver(H)
-
-            solvers = {s: _dense(s) for s in (0, 1, -1, 2, -2)}
-            order = [0, 1, -1, 0, 2, -2]
-            self.Hc_op = DenseJAXSolver.from_factors(
-                lu=jnp.stack([solvers[s].lu for s in order]),
-                perm=jnp.stack([solvers[s].perm for s in order]),
+        if params.step.adaptive and params.solver.backend == "pallas":
+            # Verify the no-pivot LU where the Helmholtz diagonal is
+            # least dominant; adaptive rebuilds at dt <= dt_max then
+            # skip the check (solvers._factor_pallas_operator).
+            _build_hc_operator(
+                params.step.dt_max, fourier, self, label="Hc(dt_max)"
             )
+        self.Hc_op = _build_hc_operator(self.dt, fourier, self, label="Hc")
+
+
+def _build_hc_operator(
+    dt: float | Array,
+    fourier_: Fourier,
+    flow_: ViscoelasticAnnularFlow,
+    *,
+    label: str | None,
+) -> _WallBoundedOp:
+    r"""Factored 6-component `$H_c$` at *dt*.
+
+    Five distinct `$m_{\mathrm{eff}}^2$` operators (`$m, m\pm1,
+    m\pm2$`) are built and stacked into the 6-component order
+    `$(c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++}, c_{--})$`, so the
+    `$m_{\mathrm{eff}} = m$` operator serves both `$c_{zz}$` and
+    `$c_{+-}$`.
+
+    The stacked storage **duplicates** that shared operator's
+    factors (slot 0 and slot 3 hold the same data -- ~1/6 of the
+    ``Hc_op`` memory), because the uniform stacked ``.solve``
+    contract pairs component ``i`` of the RHS with operator ``i``.
+    Deduplicating would need a nonuniform component-to-operator
+    solve mapping (5 operators against 6 RHS components) in every
+    backend -- deferred as not worth the contract complexity for a
+    small, setup-persistent array (the velocity ``Hk_op`` stack and
+    the per-step transform transients are far larger).
+
+    *label* selects the pallas factorization path: a string runs the
+    setup-checked :func:`solvers._build_pallas_operator` under that
+    diagnostic label; ``None`` runs the unchecked, jittable
+    :func:`solvers._factor_pallas_operator` (the ``set_dt``
+    rebuild).  The dense backend is pivoted and ignores *label*.
+    Wall rows come from the ``hc_narrow0``/``hc_narrowN`` leaves.
+    """
+    kappa = params.phys.kappa
+    c_impl = params.step.implicitness
+    fd_p = params.res.fd_order
+    m_s = fourier_.m[0, ..., None]  # (Nm, 1, 1)
+    kz2_s = fourier_.kz2[0, ..., None]  # (1, Nkz, 1)
+    # m_eff^2 for spin s = 0, +1, -1, +2, -2 (the 5 distinct values).
+    meff2 = {s: (m_s + s) ** 2 for s in (0, 1, -1, 2, -2)}
+
+    if params.solver.backend == "pallas":
+        # Six per-spin banded operators (slot 3 repeats s = 0),
+        # stacked into one homogeneous operator.
+        bands = [
+            _build_Hc_band_gpu(
+                flow_.A_base,
+                flow_.hc_narrow0,
+                flow_.hc_narrowN,
+                meff2[s],
+                flow_.inv_r2,
+                kz2_s,
+                dt,
+                c_impl,
+                kappa,
+                fd_p,
+            )
+            for s in (0, 1, -1, 0, 2, -2)
+        ]
+        if label is not None:
+            return _build_pallas_operator(bands, label)
+        return _factor_pallas_operator(bands)
+
+    def _dense(s: int) -> DenseJAXSolver:
+        H = _build_Hc_dense_gpu(
+            flow_.A_base,
+            flow_.hc_narrow0,
+            flow_.hc_narrowN,
+            meff2[s],
+            flow_.inv_r2,
+            kz2_s,
+            dt,
+            c_impl,
+            kappa,
+        )
+        return DenseJAXSolver(H)
+
+    solvers_by_spin = {s: _dense(s) for s in (0, 1, -1, 2, -2)}
+    order = [0, 1, -1, 0, 2, -2]
+    return DenseJAXSolver.from_factors(
+        lu=jnp.stack([solvers_by_spin[s].lu for s in order]),
+        perm=jnp.stack([solvers_by_spin[s].perm for s in order]),
+    )
+
+
+def _build_dt_leaves(
+    dt: Array,
+    fourier_: Fourier,
+    flow_: ViscoelasticAnnularFlow,
+) -> dict[str, object]:
+    r"""Rebuild every ``dt``-dependent flow leaf at the traced *dt*.
+
+    The annular velocity set (`$H_k$` group + IMM leaves;
+    ``annular._build_dt_leaves``, with the solvent
+    `$\nu = \beta/\mathrm{Re}$` via ``derived_params.nu``) plus the
+    conformation `$H_c$` (unchecked factorization,
+    :func:`_build_hc_operator`) when diffusion is active.  At
+    `$\kappa = 0$` ``Hc_op`` is ``None`` (static aux) and stays out
+    of the rebuild -- the trace-time branch matches construction.
+    """
+    leaves = _annular_dt_leaves(dt, fourier_, flow_)
+    if flow_.Hc_op is not None:
+        leaves["Hc_op"] = _build_hc_operator(dt, fourier_, flow_, label=None)
+    return leaves
 
 
 # ── Fused pseudo-spectral RHS ───────────────────────────────────────
@@ -831,6 +895,7 @@ def _get_rhs_measured(
             flow_.base_flow_adv_padded,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
+            flow_.dt,
         )
         meas["TrC_max"] = jnp.max(trc)
         return meas
@@ -1002,7 +1067,7 @@ def _c_cn_update(
     no diffusion / wall BC and the update degenerates to
     `$c^{new} = c^n + \Delta t(\theta N_c^j + (1-\theta) N_c^n)$`.
     """
-    dt = params.step.dt
+    dt = flow_.dt
     c_impl = params.step.implicitness
     nl = c_impl * Nc_j + (1.0 - c_impl) * Nc_n
     if flow_.Hc_op is None:  # kappa == 0 (trace-time branch)
@@ -1082,8 +1147,10 @@ def _norm(
 def build_viscoelastic_stepper(flow: ViscoelasticAnnularFlow):
     """Build time-stepping functions for a viscoelastic annular flow.
 
-    Returns the same 7-tuple as
-    :func:`~dnsjax.geometries.wall_bounded._base.build_wall_bounded_stepper`.
+    Returns the same 9-tuple as
+    :func:`~dnsjax.geometries.wall_bounded._base.build_wall_bounded_stepper`
+    (incl. the adaptive-dt ``set_dt`` / ``reset_ab2_kappa``, backed
+    by this module's ``_build_dt_leaves``).
     ``_l_bf`` (the FFT-free linear/mean coupling: velocity mean-flow
     coupling + polymer-stress divergence, conformation mean advection /
     stretching / linear relaxation) is passed so the CN/AB2 scheme treats
@@ -1101,4 +1168,5 @@ def build_viscoelastic_stepper(flow: ViscoelasticAnnularFlow):
         flow,
         _get_rhs_measured,
         _l_bf,
+        dt_leaves_fn=_build_dt_leaves,
     )

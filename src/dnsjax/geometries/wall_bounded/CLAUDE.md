@@ -21,7 +21,11 @@
 
 `build_wall_bounded_stepper()` in `_base.py` wraps
 `timestep.make_stepper()`, binds the `fourier`/`flow` singletons, and
-returns the stepping functions. Each geometry provides a thin
+returns the stepping functions — plus the adaptive-dt hooks
+`set_dt`/`reset_ab2_kappa`: a jitted rebuild of the dt-dependent
+operator/IMM leaves (each geometry's `_build_dt_leaves`, unchecked
+pallas factorization) swapped onto the flow in place, no stepper
+recompilation. Each geometry provides a thin
 `build_*_stepper(flow)` passing its measured RHS (CFL via the `rhs.py`
 `measure_fn` hook) and `_l_bf` — the FFT-free linear base-flow coupling
 (from the shared `base_flow_coupling` helper) that wall-bounded cnab2

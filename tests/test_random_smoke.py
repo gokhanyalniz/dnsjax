@@ -639,6 +639,97 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # Adaptive CFL dt (iterative-cn, Cartesian): a deliberately
+        # small initial dt keeps the measured CFL far below
+        # cfl_target, so the controller must grow dt (1.2x per
+        # accepted evaluation) up to dt_max during the run -- the
+        # asserted "[adaptive]" log line.  Guards the on-device
+        # Hk/IMM leaf rebuild (set_dt) inside a full solver run --
+        # on 2 devices (np1 = 2), so the sharded rebuild (shard_map
+        # tile pad, sharded IMM solves) is integration-covered.
+        "name": "plane-couette-adaptive",
+        "force_np": 2,
+        "oversubscribe": True,
+        "force_dt": 0.002,
+        "slack_dt": 0.01,
+        "expect_pattern": r"\[adaptive\] .*dt .*->",
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+            "--step.adaptive",
+            "True",
+            "--step.dt_max",
+            "0.01",
+            "--step.cfl_target",
+            "0.5",
+            "--step.cfl_cadence",
+            "2",
+        ],
+    },
+    {
+        # Adaptive CFL dt under CN/AB2 on the cylindrical geometry:
+        # exercises the kappa-weighted AB2 step and the stacked
+        # (+,-,z) Hk rebuild.  dt_max stays below the rigged-grid
+        # cnab2 stability step (~0.0125 at 32^3; see pipe-cnab2) and
+        # cfl_target below the azimuthal AB2 limit.
+        "name": "pipe-adaptive-cnab2",
+        "force_dt": 0.002,
+        "slack_dt": 0.008,
+        "expect_pattern": r"\[adaptive\] .*dt .*->",
+        "args": [
+            "--phys.system",
+            "pipe",
+            "--phys.re",
+            "1800",
+            "--geo.lz",
+            "5",
+            "--step.scheme",
+            "cnab2",
+            "--step.adaptive",
+            "True",
+            "--step.dt_max",
+            "0.008",
+            "--step.cfl_target",
+            "0.3",
+            "--step.cfl_cadence",
+            "2",
+        ],
+    },
+    {
+        # Adaptive CFL dt on the triply-periodic path: the
+        # ldt_1/ildt_2 recompute.  dt_max respects the Kolmogorov
+        # corrector-contraction cap (~0.005; see the kolmogorov
+        # entry).
+        "name": "kolmogorov-adaptive",
+        "force_dt": 0.002,
+        "slack_dt": 0.004,
+        "expect_pattern": r"\[adaptive\] .*dt .*->",
+        "args": [
+            "--phys.system",
+            "kolmogorov",
+            "--phys.re",
+            "620",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+            "--step.adaptive",
+            "True",
+            "--step.dt_max",
+            "0.004",
+            "--step.cfl_target",
+            "0.5",
+            "--step.cfl_cadence",
+            "2",
+        ],
+    },
+    {
         # Non-finite guard (inverted criteria; see run_smoke_test):
         # cnab2 at dt = 1.0 (200x Kolmogorov's iterative-cn limit,
         # CFL >> 1) blows up within tens of steps; the run must abort
@@ -831,7 +922,13 @@ def _check_run(stdout: str, name: str, max_sim_time: float, dt: float) -> str:
 
 
 def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
-    """Run a single random-IC smoke test (in a fresh directory)."""
+    """Run a single random-IC smoke test (in a fresh directory).
+
+    Further per-entry keys: ``expect_pattern`` (regex that must match
+    the run's stdout, e.g. the adaptive-dt "[adaptive]" change line)
+    and ``slack_dt`` (the end-of-run ``t`` slack for runs whose step
+    grows -- the adaptive entries pass their ``dt_max``).
+    """
     name = system["name"]
     # Per-system dt cap: some systems need a smaller step than the
     # global default for the corrector to converge (see SYSTEMS).
@@ -887,7 +984,18 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
                 "('Started from an in-process random IC' missing from stdout)"
             )
 
-        summary = _check_run(result.stdout, name, args.max_sim_time, dt)
+        summary = _check_run(
+            result.stdout,
+            name,
+            args.max_sim_time,
+            system.get("slack_dt", dt),
+        )
+
+        pattern = system.get("expect_pattern")
+        if pattern and re.search(pattern, result.stdout) is None:
+            raise AssertionError(
+                f"{name}: expected pattern {pattern!r} not found in stdout"
+            )
 
     print(f"  PASS  {name}  ({summary.strip()})")
 

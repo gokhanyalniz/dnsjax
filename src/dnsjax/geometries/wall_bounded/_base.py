@@ -416,6 +416,8 @@ def build_wall_bounded_stepper(
     flow: object,
     get_rhs_measured_fn: Callable,
     l_bf_fn: Callable | None = None,
+    *,
+    dt_leaves_fn: Callable,
 ) -> tuple[
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
@@ -426,15 +428,19 @@ def build_wall_bounded_stepper(
     Callable[
         [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
     ],
+    Callable[[float], None],
+    Callable[[], None],
 ]:
-    """Build time-stepping functions for a wall-bounded flow.
+    r"""Build time-stepping functions for a wall-bounded flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,
-    step_cnab2_measured)`` with the *fourier* and *flow*
-    singletons already bound.  The last two are the CN/AB2
-    scheme (``step.scheme == "cnab2"``).
+    step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
+    *fourier* and *flow* singletons already bound.  ``step_cnab2``
+    and ``step_cnab2_measured`` are the CN/AB2 scheme
+    (``step.scheme == "cnab2"``); ``set_dt`` / ``reset_ab2_kappa``
+    are the adaptive-dt hooks (``step.adaptive``).
 
     Parameters
     ----------
@@ -454,7 +460,31 @@ def build_wall_bounded_stepper(
         geometry ``_l_bf``), treated implicitly by the CN/AB2 scheme
         so its stiff wall-normal derivative does not force a tiny
         time step.  Passed through to :func:`~dnsjax.timestep.make_stepper`.
+    dt_leaves_fn:
+        The geometry's pure ``(dt, fourier, flow) -> {name: leaf}``
+        rebuild of every ``dt``-dependent flow leaf (each geometry's
+        ``_build_dt_leaves``); jitted here and driven by ``set_dt``.
+
+    Notes
+    -----
+    ``set_dt(new_dt)`` runs the jitted leaf rebuild on device (a few
+    implicit solves, no FFTs) and assigns the returned leaves onto
+    the *flow* singleton in place -- the stepper closures bind the
+    instance and pytree flattening reads the current attributes on
+    every call, so the change is visible to the next step with **no**
+    recompilation (identical shapes/dtypes/shardings).  It also sets
+    ``flow.ab2_kappa`` to the step ratio
+    `$\kappa = \Delta t_{new}/\Delta t_{old}$` for the *next* CN/AB2
+    step; the caller resets it to 1 with ``reset_ab2_kappa()`` after
+    exactly one step at the new ``dt``.  The rebuild donates nothing
+    (rare path): old and new factors briefly coexist, the same
+    transient class as the setup peak.
     """
+
+    def _step_scales(fourier_: object, flow_: object) -> tuple:
+        """Live ``(dt, kappa)`` from the flow leaves (adaptive dt)."""
+        return flow_.dt, flow_.ab2_kappa
+
     (
         _predict_and_correct_jit,
         _iterate_correction_jit,
@@ -469,6 +499,7 @@ def build_wall_bounded_stepper(
         norm_fn,
         get_rhs_measured_fn,
         l_bf_fn,
+        step_scales_fn=_step_scales,
     )
 
     def predict_and_correct(
@@ -518,6 +549,30 @@ def build_wall_bounded_stepper(
         """Initialize the flow state."""
         return init_state(snapshot)
 
+    _dt_leaves_jit = jax.jit(dt_leaves_fn)
+    _dt_box = [float(params.step.dt)]
+
+    def set_dt(new_dt: float) -> None:
+        """Switch the live time step to *new_dt* (adaptive dt).
+
+        Jitted on-device rebuild of the ``dt``-dependent leaves +
+        in-place assignment on the bound flow singleton; also sets
+        ``ab2_kappa = new_dt / dt_prev`` for the next CN/AB2 step
+        (see the builder docstring).  No stepper recompiles.
+        """
+        kappa = new_dt / _dt_box[0]
+        leaves = _dt_leaves_jit(
+            jnp.asarray(new_dt, dtype=sharding.float_type), fourier, flow
+        )
+        for name, val in leaves.items():
+            setattr(flow, name, val)
+        flow.ab2_kappa = jnp.asarray(kappa, dtype=sharding.float_type)
+        _dt_box[0] = new_dt
+
+    def reset_ab2_kappa() -> None:
+        """Reset the AB2 step ratio to 1 (one step after ``set_dt``)."""
+        flow.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
+
     return (
         predict_and_correct,
         iterate_correction,
@@ -526,4 +581,6 @@ def build_wall_bounded_stepper(
         predict_and_fully_correct_measured,
         step_cnab2,
         step_cnab2_measured,
+        set_dt,
+        reset_ab2_kappa,
     )

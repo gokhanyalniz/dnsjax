@@ -123,6 +123,7 @@ class FlowSpec:
     ``flow_module`` is the dotted path of the runtime flow module
     exporting the stepping surface (``init_state``, ``get_stats``,
     ``predict_and_fully_correct(_measured)``, ``step_cnab2(_measured)``,
+    ``set_dt`` / ``reset_ab2_kappa`` (the adaptive-dt hooks),
     ``get_perturbation_energy``) -- a string, so the spec stays
     JAX-free; consumers import it lazily (the ``__main__`` flow
     dispatch, the transient-growth driver).  ``n_components`` is the

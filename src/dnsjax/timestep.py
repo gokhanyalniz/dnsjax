@@ -36,6 +36,7 @@ def make_stepper(
     | None = None,
     l_bf_fn: Callable[..., Array] | None = None,
     finalize_fn: Callable[..., Array] | None = None,
+    step_scales_fn: Callable[..., tuple[Array, Array]] | None = None,
 ) -> tuple[
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array]],
@@ -105,6 +106,20 @@ def make_stepper(
         ``predict_and_correct`` / ``iterate_correction`` does **not**
         apply it (mid-iteration states are not accepted steps); a
         caller driving those directly must finalize itself.
+    step_scales_fn:
+        Optional ``(*args) -> (dt, kappa)`` returning the current
+        time step and the Adams-Bashforth step ratio
+        `$\kappa = \Delta t_n / \Delta t_{n-1}$` as 0-d arrays.  The
+        geometry builders read the ``flow.dt`` / ``flow.ab2_kappa``
+        pytree leaves, so ``step.adaptive`` can change both between
+        calls without retracing.  The AB2 forcing becomes the
+        variable-step
+        `$(1 + \kappa/2)\,N^n - (\kappa/2)\,N^{n-1}$` (second order
+        for any `$\kappa$`, exactly `$\tfrac{3}{2}/\tfrac{1}{2}$` at
+        `$\kappa = 1$`), and the split corrector's tail-entry gain
+        uses the live ``dt``.  ``None`` (the default) freezes both
+        at ``params.step.dt`` / ``1`` -- the constant-dt behaviour,
+        bit-identical to the literal `$3/2$`, `$1/2$` weights.
 
     Returns
     -------
@@ -165,6 +180,15 @@ def make_stepper(
         measurements)``.  ``None`` when *get_rhs_measured_fn* is not
         given.
     """
+
+    if step_scales_fn is not None:
+        _step_scales = step_scales_fn
+    else:
+        # Constant-dt fallback for direct callers without the flow
+        # leaves (e.g. the transient-growth probe stepper): trace-time
+        # constants that XLA folds to the classic 3/2, 1/2 weights.
+        def _step_scales(*args: object) -> tuple[Array, Array]:
+            return jnp.asarray(params.step.dt), jnp.ones(())
 
     def _finalized(state: Array, *args) -> Array:
         """Apply *finalize_fn* to an accepted step output.
@@ -317,8 +341,10 @@ def make_stepper(
 
         tol = params.step.corrector_tolerance
         max_c = params.step.max_corrector_iterations
-        # Gain of one correction w.r.t. its implicit RHS estimate.
-        cdt = params.step.implicitness * params.step.dt
+        # Gain of one correction w.r.t. its implicit RHS estimate;
+        # the live dt (a flow leaf under ``step.adaptive``).
+        dt_n, _ = _step_scales(*args)
+        cdt = params.step.implicitness * dt_n
 
         def inner_cond(icarry):
             _, _, delta, ic = icarry
@@ -437,8 +463,10 @@ def make_stepper(
         Splits the nonlinear RHS ``full_rhs = get_rhs_fn(u^n)`` into
         the FFT-free base-flow coupling ``L_bf`` and the pure
         self-advection ``N_nl = full_rhs - L_bf``.  ``N_nl`` is
-        advanced explicitly (AB2 forcing `$\tfrac{3}{2} N_{nl}^n -
-        \tfrac{1}{2} N_{nl}^{n-1}$`, fixed across the loop); the
+        advanced explicitly (variable-step AB2 forcing
+        `$(1 + \kappa/2)\,N_{nl}^n - (\kappa/2)\,N_{nl}^{n-1}$` with
+        `$\kappa = \Delta t_n/\Delta t_{n-1}$` from
+        *step_scales_fn*, fixed across the loop); the
         linear ``L_bf`` is made implicit (Crank-Nicolson) by an
         **FFT-free** corrector that re-evaluates only ``l_bf_fn`` each
         iteration -- a converged linear corrector is the exact
@@ -455,7 +483,8 @@ def make_stepper(
         # is needed.
         l_n = l_bf_fn(state, *args)
         nnl_n = full_rhs - l_n
-        f_ab2 = 1.5 * nnl_n - 0.5 * nnl_prev
+        _, kappa = _step_scales(*args)
+        f_ab2 = (1.0 + 0.5 * kappa) * nnl_n - (0.5 * kappa) * nnl_prev
         rhs_prev = f_ab2 + l_n  # effective RHS R(u) = F_ab2 + L_bf(u), at u^n
 
         tol = params.step.corrector_tolerance
@@ -544,7 +573,9 @@ def make_stepper(
         ``carry`` is the self-advection RHS `$N_{nl}^{n-1}$`.  Without
         it (triply-periodic) this is the plain explicit-AB2 step whose
         predictor is exactly ``_imm_iteration(u, u, F, F)`` with
-        `$F = \tfrac{3}{2} N^n - \tfrac{1}{2} N^{n-1}$`; ``carry`` is
+        `$F = (1 + \kappa/2)\,N^n - (\kappa/2)\,N^{n-1}$`
+        (`$\kappa = \Delta t_n/\Delta t_{n-1}$`, see
+        *step_scales_fn*); ``carry`` is
         `$N^{n-1}$` and there is no corrector (``error = 0``,
         ``num_c = 0``).
 
@@ -558,7 +589,8 @@ def make_stepper(
         """
         full_rhs = get_rhs_fn(state, *args)
         if l_bf_fn is None:
-            forcing = 1.5 * full_rhs - 0.5 * carry
+            _, kappa = _step_scales(*args)
+            forcing = (1.0 + 0.5 * kappa) * full_rhs - (0.5 * kappa) * carry
             state_next = predict_fn(state, forcing, *args)
             return _finalized(state_next, *args), full_rhs, _zero_err, _zero_c
         return _cnab2_lbf_core(state, carry, full_rhs, *args)
@@ -576,7 +608,10 @@ def make_stepper(
             *carry* are donated (warm-up callers pass copies)."""
             full_rhs, measurements = get_rhs_measured_fn(state, *args)
             if l_bf_fn is None:
-                forcing = 1.5 * full_rhs - 0.5 * carry
+                _, kappa = _step_scales(*args)
+                forcing = (1.0 + 0.5 * kappa) * full_rhs - (
+                    0.5 * kappa
+                ) * carry
                 state_next = predict_fn(state, forcing, *args)
                 return (
                     _finalized(state_next, *args),

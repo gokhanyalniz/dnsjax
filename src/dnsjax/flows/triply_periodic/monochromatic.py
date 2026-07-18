@@ -13,6 +13,8 @@ It also exports the flow interface consumed by ``__main__``:
 - ``predict_and_fully_correct_measured`` -- fused step + CFL
   measurements (``steps.dat``)
 - ``step_cnab2`` / ``step_cnab2_measured`` -- the CN/AB2 stepping pair
+- ``set_dt`` / ``reset_ab2_kappa`` -- adaptive-dt hooks
+  (``step.adaptive``; ``ldt_1``/``ildt_2`` recompute, no recompile)
 - ``init_state`` -- initial state from a snapshot or laminar
 - ``get_stats`` -- diagnostic statistics
 - ``get_perturbation_energy`` -- the cheap `$E'$` read for the
@@ -209,6 +211,8 @@ flow: MonochromaticFlow = MonochromaticFlow()
     predict_and_fully_correct_measured,
     step_cnab2,
     step_cnab2_measured,
+    set_dt,
+    reset_ab2_kappa,
 ) = build_triply_periodic_stepper(flow)
 
 

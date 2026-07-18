@@ -729,7 +729,7 @@ def _check_steps_file(workdir: Path, name: str) -> None:
         per_dir = ("CFL_z", "CFL_r", "CFL_th")
     else:
         per_dir = ("CFL_x", "CFL_y", "CFL_z")
-    expected_cols = {"t", "CFL", *per_dir}
+    expected_cols = {"t", "dt", "CFL", *per_dir}
     if viscoelastic:
         expected_cols = expected_cols | {"TrC_max"}
     if header[0] != "t" or set(header) != expected_cols:
@@ -783,6 +783,13 @@ def _check_steps_file(workdir: Path, name: str) -> None:
             raise AssertionError(f"{name}: bad steps.dat row {row}")
         vals = [row[col[d]] for d in per_dir]
         total = row[col["CFL"]]
+        # Fixed-dt run: the dt column must hold --step.dt in every
+        # row (relative tolerance covers the single-precision store
+        # + text round-trip).
+        if abs(row[col["dt"]] - SMOKE_DT) > 1e-6 * SMOKE_DT:
+            raise AssertionError(
+                f"{name}: dt column {row[col['dt']]} != {SMOKE_DT}"
+            )
         active = vals[active_i]
         active_vals.append(active)
         # Off-axis columns: roundoff-sized for the laminar state (not
