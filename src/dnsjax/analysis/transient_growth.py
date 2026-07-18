@@ -232,49 +232,49 @@ mode below is guarded per mode with an explicit error.
   ``corrector_error_max`` is in the outputs).  On the "failed to
   converge" error reduce ``--tg.dt`` first (faster contraction),
   raise the iteration cap second.
-- ``--rank-tol`` (1e-11) / ``--rank-gap-min`` (1e3): the relative
+- ``--tg.rank_tol`` (1e-11) / ``--tg.rank_gap_min`` (1e3): the relative
   cutoff must land inside the singular-value cliff between the
   physical spectrum (whose floor is `$\sigma/\sigma_0 \sim
   1/(\Delta t\,|\lambda_{\mathrm{stiff}}|)$`) and the
   constraint-violating null space (whose floor is set by
-  ``--corrector-tolerance``, *not* by machine epsilon -- the columns
+  ``--tg.corrector_tolerance``, *not* by machine epsilon -- the columns
   are only converged that far); the gap check verifies that it did.
   On a "no clean rank gap" failure inspect the printed tail, then
-  move ``--rank-tol`` into the observed gap; lower ``--rank-gap-min``
+  move ``--tg.rank_tol`` into the observed gap; lower ``--tg.rank_gap_min``
   only if the true cliff is genuinely that shallow.  ``--tg.dt`` also
   moves the gap, but *raising* it is what widens the cliff in
   practice (measured under ``--tg.dt`` above) -- both floors respond,
   so the naive "reduce it to lift the physical floor" is unreliable;
   read the printed tail rather than assuming a direction.
-- ``--t-max`` (default `$0.25\,Re$`): covers the classic optima,
+- ``--tg.t_max`` (default `$0.25\,Re$`): covers the classic optima,
   `$t_{\mathrm{opt}} \approx 0.05$`--`$0.15\,Re$`, of the four flows
   (Taylor-Couette uses the derived reference ``re``: ``re1``, or
   ``re2`` when outer-driven).  Raise it when a mode prints the
   "G still rising at t_max" warning.
-- ``--nt`` (65): `$G(t)$`-grid density.  The golden-section
+- ``--tg.nt`` (65): `$G(t)$`-grid density.  The golden-section
   refinement only polishes the bracket around the *grid* argmax, so
   raise it when `$G(t)$` may be multimodal or narrow-peaked; it also
-  sets the ``--save-all-times`` storage.
-- ``--t-chunk`` (16): batch size of the device SVDs over the time
+  sets the ``--tg.save_all_times`` storage.
+- ``--tg.t_chunk`` (16): batch size of the device SVDs over the time
   grid (`$\sim$` ``t_chunk`` `$\times\,r^2$` complex temporaries).
   Raise on GPU for throughput, lower to bound device memory at
   large ``ny``.
-- ``--interp-order`` (8): Fornberg stencil width ``order + 1`` for
+- ``--tg.interp_order`` (8): Fornberg stencil width ``order + 1`` for
   profile regridding.  High order suits smooth profiles; drop to 2-4
   for noisy (experimental / binned DNS-mean) data, where a wide
   stencil amplifies the noise.
-- ``--wall-bc-tol`` (1e-6): the perturbation BCs are homogeneous, so
+- ``--tg.wall_bc_tol`` (1e-6): the perturbation BCs are homogeneous, so
   the *total* profile must carry the exact laminar wall values -- a
   real mismatch is a different BC problem, not a tolerance matter.
   Loosen only for wall values off by numerical artefacts
   (interpolation, output truncation).
-- ``--grid-match-tol`` (1e-12): identical-grid fast-path detector;
+- ``--tg.grid_match_tol`` (1e-12): identical-grid fast-path detector;
   raise it (e.g. to 1e-8) when the profile file stores the code grid
   with fewer printed digits, to skip a pointless interpolation.
-- ``--n-eig`` (20): how many leading eigenvalues are *stored*; no
+- ``--tg.n_eig`` (20): how many leading eigenvalues are *stored*; no
   accuracy effect.  Trustworthy only inside the resolved window
   `$|\lambda| \lesssim 1/\Delta t$` (see ``--tg.dt``).
-- ``--save-all-times``: stores the optimal pair at every grid time,
+- ``--tg.save_all_times``: stores the optimal pair at every grid time,
   `$2 K n_t (3 N_y)$` complex values over `$K$` modes -- the
   dominant output for mode sweeps.
 - ``--tg.save_operator``: also writes ``<stem>_tg_op.npz`` with each
@@ -285,7 +285,7 @@ mode below is guarded per mode with an explicit error.
   post-processing
   (:mod:`dnsjax.analysis.response.operator_tools`; the storage
   layout: the ``_write_operator_npz`` docstring).
-- ``--export-amplitude`` (1e-4): volume-averaged energy `$E'$` of
+- ``--tg.export_amplitude`` (1e-4): volume-averaged energy `$E'$` of
   the exported seed (the solver's own measure).  The default keeps
   the seeded DNS initially linear; raise it for finite-amplitude
   (nonlinear, transition-triggering) seeding.
@@ -319,7 +319,7 @@ production bound) but mesh-dependent while the near-wall modes are
 unresolved, so a value orders above the physical shear rate means the
 early `$G$` is artefact-dominated -- regardless of how clean the
 `$G_{\max}$` looks.  Sampling `$G(t)$` densely at small `$t$` (small
-``--t-max``, large ``--nt``) exposes the spike directly; a coarse
+``--tg.t_max``, large ``--tg.nt``) exposes the spike directly; a coarse
 `$t$` grid can *step over* it and report a plausible-looking optimum.
 
 Cost & memory: a propagator build is `$3 N_y$` FFT-free linear steps
@@ -337,11 +337,11 @@ interpolated profile, the resolved parameters, and per-mode `$G(t)$`,
 `$G_{\max}$`, `$t_{\mathrm{opt}}$`, abscissae, leading eigenvalues,
 singular values, and the optimal input / response at
 `$t_{\mathrm{opt}}$` -- optionally at every requested time with
-``--save-all-times``).  For a linearly *unstable* profile (positive
+``--tg.save_all_times``).  For a linearly *unstable* profile (positive
 spectral abscissa) `$G(t)$` grows without bound, so `$G_{\max}$` /
 `$t_{\mathrm{opt}}$` merely reflect the end of the time grid (the
 "still rising" warning fires) and the abscissae are the meaningful
-outputs.  ``--export-snapshot "i2,i3"`` writes the chosen
+outputs.  ``--tg.export_snapshot "i2,i3"`` writes the chosen
 mode's optimal perturbation as a standard dnsjax snapshot (with the
 `$k=0$`-plane conjugate partner filled in for a real physical field) to
 seed a DNS run.
@@ -712,13 +712,12 @@ def _select_modes(
             if not (i2 == 0 and i3 == 0)
         ]
     else:
+        try:
+            parsed = harmonics.parse_mode_pairs(spec)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
         pairs = []
-        for tok in spec.split(";"):
-            tok = tok.strip()
-            if not tok:
-                continue
-            a, b = tok.split(",")
-            i2, i3 = int(a), int(b)
+        for i2, i3 in parsed:
             if i2 == 0 and i3 == 0:
                 raise SystemExit("the mean mode (0,0) is excluded")
             if not (0 <= i2 < n2 and 0 <= i3 < n3):
@@ -1026,7 +1025,7 @@ def _analyze_mode(
             f"mode ({i2},{i3}): no clean rank gap at rank {rank} "
             f"(s[{rank - 1}]/s[{rank}] = {gap:.2e} < "
             f"{cfg.rank_gap_min:.1e}); tail "
-            f"{s[max(rank - 3, 0) : rank + 3]}; move --rank-tol into "
+            f"{s[max(rank - 3, 0) : rank + 3]}; move --tg.rank_tol into "
             "the observed gap, or try raising --tg.dt."
         )
     v = u[:, :rank]  # (n, r) range basis
@@ -1121,7 +1120,7 @@ def _analyze_mode(
         if imax == len(t_grid) - 1:
             print(
                 f"[tg] mode ({i2},{i3}): G still rising at t_max; "
-                "increase --t-max."
+                "increase --tg.t_max."
             )
     s_opt, u1, v1 = jfull(e_dev, lam_dev, w_dev, float(t_opt))
     sigma_opt = float(np.asarray(s_opt)[0])
@@ -1522,7 +1521,7 @@ def single_mode_state(vec: np.ndarray, i2: int, i3: int, family: str) -> Array:
     index == true mode index), which the transient-growth driver and
     the offline scripts guarantee (``np0 = np1 = 1``).
 
-    Shared by the ``--export-snapshot`` seed writer and
+    Shared by the ``--tg.export_snapshot`` seed writer and
     ``scripts/snapshot_perturb.py``.
     """
     import jax.numpy as jnp
@@ -1560,7 +1559,7 @@ def mode_state_energy(
     r"""The solver's volume-averaged perturbation energy `$E'$`.
 
     ``get_norm2*``-based, so amplitude conventions built on it (the
-    ``--export-amplitude`` seed, ``snapshot_perturb``'s
+    ``--tg.export_amplitude`` seed, ``snapshot_perturb``'s
     ``--amplitude-energy``) agree exactly with the solver's own
     ``E'`` diagnostic.
     """
@@ -1632,12 +1631,17 @@ def _export_snapshot(
 
     from ..snapshot import save_snapshot
 
-    a, b = cfg.export_snapshot.split(",")
-    i2, i3 = int(a), int(b)
+    try:
+        (pair,) = harmonics.parse_mode_pairs(cfg.export_snapshot)
+    except ValueError as exc:
+        raise SystemExit(
+            f"--tg.export_snapshot takes one 'i2,i3' pair: {exc}"
+        ) from None
+    i2, i3 = pair
     match = [r for r in results if r.i2 == i2 and r.i3 == i3]
     if not match:
         raise SystemExit(
-            f"--export-snapshot mode ({i2},{i3}) was not computed"
+            f"--tg.export_snapshot mode ({i2},{i3}) was not computed"
         )
     r = match[0]
     vec = r.opt_input if cfg.export_which == "input" else r.opt_response

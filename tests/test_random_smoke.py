@@ -1,10 +1,17 @@
 """Random-IC smoke tests: exercise time integration for all flows.
 
-Starts every implemented flow from a random divergence-free perturbation
-of its base flow (the in-process ``init.random_field`` start mode, no
-snapshot file), at a Reynolds number above the onset of transition, on a
-small domain at low resolution, and integrates a short time -- verifying
-the run completes with no error, NaN, or blow-up.
+Starts every distinct stepping machinery (kolmogorov, plane-couette,
+pipe, taylor-couette, dean, viscoelastic-dean) from a random
+divergence-free perturbation of its base flow (the in-process
+``init.random_field`` start mode, no snapshot file), at a Reynolds
+number above the onset of transition, on a small domain at low
+resolution, and integrates a short time -- verifying the run
+completes with no error, NaN, or blow-up.  ``plane-poiseuille`` and
+``quasi-keplerian`` need no entries of their own: they bind the
+plane-couette / taylor-couette machinery respectively (see the SYSTEMS
+comments), with their flow-specific pieces covered by
+``test_laminar_smoke.py``, ``test_quasi_keplerian.py``, and the
+transient-growth anchors.
 
 Unlike ``tests/test_laminar_smoke.py`` (which starts from ``u' = 0``, so
 all `$\\omega'$`/`$u'$`-proportional terms -- including the rotational
@@ -13,11 +20,18 @@ the full nonlinear path, catching advection / ``rhs.py`` regressions a
 laminar run reports as ``err = 0``.  It is also the triply-periodic
 family's first stepping test (via Kolmogorov).
 
-One entry (``plane-couette-default-ic``) omits ``--init.random_field``
-to verify random is the **default** start mode -- with no snapshot and
-no explicit mode selected, the run must start from a random field (not
-the laminar state), guarding the snapshot-first / random-default
-precedence in ``__main__.py``.  Six entries (``plane-couette-cnab2``,
+The base ``plane-couette`` entry doubles as two extra guards: it
+omits ``--init.random_field`` to verify random is the **default**
+start mode (with no snapshot and no explicit mode selected, the run
+must start from a random field, not the laminar state -- the
+snapshot-first / random-default precedence in ``__main__.py``), and
+it passes ``--solver.rhs_transform_chunks 2`` to drive the chunked
+RHS inverse transform of ``rhs.get_nonlin`` (``fft.chunked_transform``)
+through the jitted stepper -- every other entry runs the default
+fused 6-field batch, and the chunk-vs-fused bit-parity is
+unit-covered by ``test_padding.py`` and
+``test_viscoelastic.py::test_rhs_transform_chunks_parity``.
+Six entries (``plane-couette-cnab2``,
 ``pipe-cnab2``, ``taylor-couette-cnab2``, ``dean-cnab2``,
 ``viscoelastic-dean-cnab2``, ``kolmogorov-cnab2``) pass
 ``--step.scheme cnab2`` to drive the alternative CN/AB2 time-stepping
@@ -49,25 +63,21 @@ the force-driven Dean flow, where the coupling is the pure
 instantaneous mean-flow term (``l_bf == L_mf``) -- the regime where the
 two corrector structures most differ.
 
-A trailing ``plane-couette-chunked`` entry passes
-``--solver.rhs_transform_chunks 2`` to drive the chunked RHS inverse
-transform of ``rhs.get_nonlin`` (``fft.chunked_transform``, the
-memory/throughput knob; every other entry runs the default fused
-6-field batch) end to end through the jitted stepper.  The
-viscoelastic analogue is unit-covered by
-``test_viscoelastic.py::test_rhs_transform_chunks_parity``.
-
 A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
 ``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
 divisible by ``np1``) is the regression guard for the per-device
-(no-replication) random-IC build with spectral padding.  Four
-``*-pallas-mpi-pad`` entries repeat that shape with
-``--solver.backend pallas`` to guard the sharded per-mode banded
-operator build/solve (the CPU pure-JAX banded path; the Triton kernel
-itself is GPU-only): ``pipe`` (parity-selected base band),
-``plane-couette`` (single shared ``Hk``), ``taylor-couette`` (three
-stacked ``Hk``), and ``viscoelastic-dean`` (additionally the
-conformation Helmholtz operator ``Hc``, `$\\kappa > 0$`).
+(no-replication) random-IC build with spectral padding -- and, since
+``solver.backend`` defaults to pallas, it also runs the *cartesian*
+banded operator build/solve on that sharded padded axis.  Two
+``*-pallas-mpi-pad`` entries repeat the sharded/padded shape for the
+banded-operator variants that entry does not reach (the CPU pure-JAX
+banded path; the Triton kernel itself is GPU-only): ``pipe``
+(parity-selected base band) and ``viscoelastic-dean`` (the annular
+stacked ``Hk`` plus the conformation Helmholtz operator ``Hc``,
+`$\\kappa > 0$`); single-device band-vs-dense parity per geometry is
+unit-covered by ``test_cartesian.py`` / ``test_cylindrical.py`` /
+``test_annular.py``, the shard_map-local solve by
+``test_banded_solver_sharded.py``.
 
 A trailing ``kolmogorov-nan-guard`` entry inverts the success
 criteria: it forces a genuine blow-up (cnab2 at a dt far past the
@@ -160,7 +170,24 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # The base Cartesian entry doubles as two extra guards.  It
+        # OMITS --init.random_field: with no snapshot and no explicit
+        # mode the run must fall through to the random-IC default
+        # (start_from_laminar defaults off) -- the snapshot-first /
+        # random-default precedence in __main__.py; run_smoke_test
+        # asserts the random-IC startup line.  And it passes
+        # --solver.rhs_transform_chunks 2 to drive the chunked RHS
+        # inverse transform of rhs.get_nonlin (fft.chunked_transform)
+        # end to end through the jitted stepper -- every other entry
+        # runs the default fused 6-field batch, and chunk-vs-fused
+        # bit-parity is unit-guarded (test_padding.py,
+        # test_viscoelastic.py::test_rhs_transform_chunks_parity).
+        # plane-poiseuille needs no entry of its own: it shares this
+        # entry's Cartesian nonlinear machinery, and its
+        # driving/base-flow specifics are covered by the laminar
+        # smoke (pp + pp-cbv) and the transient-growth PP anchors.
         "name": "plane-couette",
+        "omit_random_flag": True,
         "args": [
             "--phys.system",
             "plane-couette",
@@ -170,19 +197,8 @@ SYSTEMS: list[dict] = [
             "5",
             "--geo.lz",
             "5",
-        ],
-    },
-    {
-        "name": "plane-poiseuille",
-        "args": [
-            "--phys.system",
-            "plane-poiseuille",
-            "--phys.re",
-            "660",
-            "--geo.lx",
-            "5",
-            "--geo.lz",
-            "5",
+            "--solver.rhs_transform_chunks",
+            "2",
         ],
     },
     {
@@ -197,6 +213,12 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # Also stands in for quasi-keplerian: since the TC/QK dedup
+        # (_circular_couette.py) the two share the stepping machinery;
+        # the QK-specific parameter derivation and the wedge Fourier +
+        # in-process nonlinear wedge step live in
+        # test_quasi_keplerian.py, the laminar fixed point in
+        # test_laminar_smoke.py.
         "name": "taylor-couette",
         "args": [
             "--phys.system",
@@ -207,24 +229,6 @@ SYSTEMS: list[dict] = [
             "-400",
             "--geo.eta",
             "0.5",
-            "--geo.lz",
-            "5",
-        ],
-    },
-    {
-        # Quasi-Keplerian (co-rotating, linearly stable): the random
-        # perturbation decays, but the run still drives the full
-        # rotational-nonlinear path for the new system.
-        "name": "quasi-keplerian",
-        "args": [
-            "--phys.system",
-            "quasi-keplerian",
-            "--phys.re1",
-            "400",
-            "--phys.r_omega",
-            "-1.2",
-            "--geo.eta",
-            "0.71",
             "--geo.lz",
             "5",
         ],
@@ -316,56 +320,14 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Pallas banded backend on the Cartesian (plane-couette)
-        # geometry, same sharded/padded mode-axis guard as
-        # pipe-pallas-mpi-pad (np1 = 2, nx // 2 = 3 padded to 4): builds
-        # the single shared Hk and the Lk pressure operator in banded
-        # storage and solves the nonlinear path on the sharded axis.  On
-        # CPU the pure-JAX banded sweep runs (Triton kernel is GPU-only).
-        "name": "plane-couette-pallas-mpi-pad",
-        "force_np": 2,
-        "force_np0": 1,
-        "oversubscribe": True,
-        "res": {"nx": 6, "ny": 24, "nz": 8},
-        "args": [
-            "--phys.system",
-            "plane-couette",
-            "--phys.re",
-            "330",
-            "--geo.lx",
-            "5",
-            "--geo.lz",
-            "5",
-            "--solver.backend",
-            "pallas",
-        ],
-    },
-    {
-        # Pallas banded backend on the annular (taylor-couette)
-        # geometry, same sharded/padded guard: builds the Lk and the
-        # three stacked Hk (m+1, m-1, m) operators in banded storage and
-        # solves on the sharded axis.  CPU runs the pure-JAX banded sweep.
-        "name": "taylor-couette-pallas-mpi-pad",
-        "force_np": 2,
-        "force_np0": 1,
-        "oversubscribe": True,
-        "res": {"nx": 6, "ny": 24, "nz": 8},
-        "args": [
-            "--phys.system",
-            "taylor-couette",
-            "--phys.re1",
-            "400",
-            "--phys.re2",
-            "-400",
-            "--geo.eta",
-            "0.5",
-            "--geo.lz",
-            "5",
-            "--solver.backend",
-            "pallas",
-        ],
-    },
-    {
+        # No dedicated cartesian / plain-annular pallas-pad entries:
+        # solver.backend already *defaults* to pallas, so
+        # plane-couette-mpi-pad above runs the cartesian banded
+        # build/solve on the sharded padded axis at 32^3, and the
+        # viscoelastic entry below covers the annular stacked-Hk (+
+        # Hc) sharded build; single-device band-vs-dense parity is
+        # unit-covered per geometry (test_cartesian / test_annular)
+        # and the shard_map-local solve by test_banded_solver_sharded.
         # Pallas banded backend on the viscoelastic annular
         # (viscoelastic-dean) geometry, same sharded/padded mode-axis
         # guard (np1 = 2, nx // 2 = 3 padded to 4): builds the annular Lk
@@ -393,27 +355,6 @@ SYSTEMS: list[dict] = [
             "5",
             "--solver.backend",
             "pallas",
-        ],
-    },
-    {
-        # Default start mode: no --init.random_field flag is passed, so
-        # the run must fall through to the random-IC default
-        # (start_from_laminar defaults off).  Guards the snapshot-first /
-        # random-default precedence in __main__.py: with no snapshot and
-        # no explicit mode, the IC is a random field, not the laminar
-        # state.  run_smoke_test additionally asserts the random-IC
-        # startup line is present.
-        "name": "plane-couette-default-ic",
-        "omit_random_flag": True,
-        "args": [
-            "--phys.system",
-            "plane-couette",
-            "--phys.re",
-            "330",
-            "--geo.lx",
-            "5",
-            "--geo.lz",
-            "5",
         ],
     },
     {
@@ -613,29 +554,6 @@ SYSTEMS: list[dict] = [
             "5",
             "--step.split_corrector",
             "True",
-        ],
-    },
-    {
-        # Chunked RHS transforms (solver.rhs_transform_chunks=2) on a
-        # Newtonian flow: every other entry runs the default fused
-        # 6-field batch of ``get_nonlin``, so this keeps the
-        # ``fft.chunked_transform`` path integration-covered (k = 2
-        # splits velocity / vorticity into separate inverse
-        # transforms; results are identical, so the standard criteria
-        # apply unchanged).  Same config as the iterative-cn
-        # ``plane-couette`` entry.
-        "name": "plane-couette-chunked",
-        "args": [
-            "--phys.system",
-            "plane-couette",
-            "--phys.re",
-            "330",
-            "--geo.lx",
-            "5",
-            "--geo.lz",
-            "5",
-            "--solver.rhs_transform_chunks",
-            "2",
         ],
     },
     {

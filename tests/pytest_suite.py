@@ -24,7 +24,8 @@ Markers:
 
 - ``mpi``: the script launches solver runs via ``mpirun`` (even at
   ``-np 1``); skipped automatically when ``mpirun`` is not on PATH.
-- ``slow``: full solver integration runs / dt sweeps (minutes each).
+- ``slow``: full solver integration runs / dt sweeps / the
+  transient-growth literature anchors (minutes each).
 
 Usage::
 
@@ -56,10 +57,22 @@ _MPI = (
     ),
 )
 _SLOW = (pytest.mark.slow,)
+# ``--unit-only`` fallback rows: they exist so the unit halves still
+# run where mpirun is absent; with mpirun present the full (mpi) rows
+# re-run those same units, so the fallback would be pure duplication.
+_NO_MPI_ONLY = (
+    pytest.mark.skipif(
+        shutil.which("mpirun") is not None,
+        reason="the full (mpi) row covers the unit subset",
+    ),
+)
 
 # One row per invocation: (script, extra args, marks, timeout in s).
-# ``test_resume`` appears twice: the MPI-free ``--unit-only`` subset
-# and the full run (offline units + mpirun integration).
+# Scripts appearing twice: ``test_resume`` (offline ``--unit-only``
+# subset + full mpirun run), ``test_forcing``/``test_probes`` (the
+# no-mpirun unit fallback + the full run), and
+# ``test_transient_growth`` (offline ``--fast`` structure checks +
+# the slow full run with the literature anchors).
 _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_adaptive.py", (), (), 1800),
     ("test_annular.py", (), (), 1800),
@@ -71,10 +84,11 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_integration.py", (), (), 1800),
     ("test_localized_rolls.py", (), (), 1800),
     ("test_mean_mask.py", (), (), 1800),
+    ("test_monochromatic.py", (), (), 1800),
     ("test_padding.py", (), (), 1800),
     ("test_param_surface.py", (), (), 1800),
-    ("test_forcing.py", ("--unit-only",), (), 1800),
-    ("test_probes.py", ("--unit-only",), (), 1800),
+    ("test_forcing.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
+    ("test_probes.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_quasi_keplerian.py", (), (), 1800),
     ("response/test_ensemble.py", (), (), 1800),
     ("response/test_lim.py", (), (), 1800),
@@ -86,7 +100,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_snapshot_export.py", (), (), 1800),
     ("test_snapshot_import.py", (), (), 1800),
     ("test_snapshot_perturb.py", (), (), 1800),
-    ("test_transient_growth.py", (), (), 1800),
+    ("test_transient_growth.py", ("--fast",), (), 1800),
     ("test_viscoelastic.py", (), (), 1800),
     ("test_temporal_order.py", (), _SLOW, 3600),
     ("test_forcing.py", (), _MPI, 1800),
@@ -95,6 +109,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_random_smoke.py", (), _MPI + _SLOW, 3600),
     ("test_resume.py", (), _MPI + _SLOW, 3600),
     ("test_rolls_smoke.py", (), _MPI + _SLOW, 3600),
+    ("test_transient_growth.py", (), _SLOW, 3600),
 ]
 
 

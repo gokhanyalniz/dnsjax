@@ -585,11 +585,14 @@ def radial_derivative(
         d1, _ = build_diff_matrices(gr, int(fd_order))
         return _matmul_axis(d1, field, 0)
     d1_even, d1_odd = parity_radial_d1(grid, fd_order)
-    even = _matmul_axis(d1_even, field, 0)
-    odd = _matmul_axis(d1_odd, field, 0)
     m_even = complex_harmonics(info.n[2]) % 2 == 0
     use_even = m_even if parity == "uz" else ~m_even
-    return np.where(use_even.reshape(1, 1, -1), even, odd)
+    # One matmul per parity class on its own m-subset (not both
+    # operators on the full field and a select).
+    out = np.empty_like(field)
+    out[:, :, use_even] = _matmul_axis(d1_even, field[:, :, use_even], 0)
+    out[:, :, ~use_even] = _matmul_axis(d1_odd, field[:, :, ~use_even], 0)
+    return out
 
 
 def derivative_axis(

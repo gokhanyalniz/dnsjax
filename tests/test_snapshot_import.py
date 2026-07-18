@@ -24,8 +24,9 @@ over ``(r, theta, z_ax)``), so the checks pin the *native* contract:
 - **spectral-input round-trip**: a numpy ``fft`` of the native field
   (real axis always axis 3; several ``input_norm``) converts to the same
   state as the physical path.
-- **loadability**: ``save`` then ``load_snapshot`` round-trips the state
-  and records the wall-normal grid.
+- **loadability**: ``convert_field_to_snapshot`` (the documented
+  one-shot configure + pack + write entry point) then ``load_snapshot``
+  round-trips the state and records the wall-normal grid.
 """
 
 from __future__ import annotations
@@ -251,12 +252,30 @@ def _run_one(system: str) -> int:
         max_err = max(max_err, _amax(s_spec - s_phys))
     check("spectral-input round-trip", max_err < 1e-9, f"err {max_err:.1e}")
 
-    # ── loadability ─────────────────────────────────────────────
+    # ── loadability (via the one-shot entry point) ──────────────
     from dnsjax.snapshot import load_snapshot, read_metadata
 
     with tempfile.TemporaryDirectory() as tmp:
         out = str(Path(tmp) / "snap.tar")
-        si.write_snapshot(s_phys, out, t=1.5, it=7)
+        # The documented one-call API (configure + pack + write); the
+        # target was configured identically above, so the re-configure
+        # is idempotent and the packed state must equal s_phys.
+        si.convert_field_to_snapshot(
+            p0,
+            out,
+            system=system,
+            nx=NX,
+            ny=ny,
+            nz=NZ,
+            space="physical",
+            t=1.5,
+            it=7,
+            lx=4.0,
+            lz=4.0,
+            wall_normal_grid=_wall_normal_grid(family, ny),
+            re=200.0,
+            **extra,
+        )
         state2, t2, it2 = load_snapshot(out)
         meta = read_metadata(Path(out))
         e = _amax(state2 - s_phys)
@@ -273,7 +292,7 @@ def _run_one(system: str) -> int:
             and meta["system"] == system
             and grid_ok
         )
-        check("snapshot save/load round-trip", ok, f"{e:.1e}")
+        check("one-shot convert + save/load round-trip", ok, f"{e:.1e}")
 
     print(f"\n[{system}] {passed} passed, {failed} failed.")
     return 1 if failed else 0

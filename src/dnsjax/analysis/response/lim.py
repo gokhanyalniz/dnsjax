@@ -85,8 +85,13 @@ from pathlib import Path
 
 import numpy as np
 
-from .ensemble import identify_generator, project_series, stability_report
-from .probes import ProbeData, read_probes
+from .ensemble import (
+    identify_generator,
+    project_series,
+    snap_sample_lags,
+    stability_report,
+)
+from .probes import ProbeData, _time_mask, read_probes
 
 __all__ = [
     "projected_fluctuations",
@@ -116,12 +121,7 @@ def projected_fluctuations(
     re-ran a segment must be cut with *t_min* first).
     """
     k = data.mode_index(i2, i3)
-    mask = data.t >= t_min
-    if not mask.any():
-        raise ValueError(
-            f"no probe samples at t >= {t_min} (stream covers "
-            f"t = {data.t[0]:g} .. {data.t[-1]:g})"
-        )
+    mask = _time_mask(data, t_min)
     t = data.t[mask]
     if len(t) > 1:
         steps = np.diff(t)
@@ -244,13 +244,7 @@ def identify_lim(
             )
         segments.append(b)
 
-    sample_lags = sorted({max(1, round(tau / delta)) for tau in lags})
-    if len(sample_lags) < len(lags):
-        print(
-            "[lim] note: requested lags collapse to "
-            f"{[lag * delta for lag in sample_lags]} on the "
-            f"{delta:g}-spaced probe grid."
-        )
+    sample_lags = snap_sample_lags(lags, delta, "lim")
     pairs, est_diag = lagged_propagators(segments, sample_lags, delta)
     l_mat, fit_diag = identify_generator(pairs)
     report = stability_report(l_mat)

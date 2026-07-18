@@ -129,7 +129,6 @@ __all__ = [
     "to_spectral_state",
     "write_snapshot",
     "convert_field_to_snapshot",
-    "validate_state",
 ]
 
 Space = Literal["physical", "spectral"]
@@ -579,44 +578,3 @@ def convert_field_to_snapshot(
     configure_target(system, nx, ny, nz, **config)
     state = to_spectral_state(field, space=space, input_norm=input_norm)
     write_snapshot(state, output_path, t=t, it=it)
-
-
-def validate_state(state: Any, *, atol: float = 1e-8) -> dict[str, float]:
-    """Light sanity checks on a converted spectral state (warn-only).
-
-    Checks finiteness and, for wall-bounded flows, the no-slip wall
-    boundary condition magnitude (the perturbation should vanish at the
-    walls).  Does **not** modify the state and does **not** check
-    divergence -- the solver projects residual divergence on the first
-    corrector step at load.  Returns the measured metrics.
-    """
-    import numpy as _np
-
-    s = _np.asarray(state)
-    metrics: dict[str, float] = {}
-    finite = bool(_np.all(_np.isfinite(s)))
-    metrics["all_finite"] = float(finite)
-    if not finite:
-        print("  warning: state contains non-finite values")
-
-    from dnsjax.parameters import params
-
-    family = _geo_family(params.phys.system)
-    if family in ("cartesian", "annular"):
-        bc = max(
-            float(_np.max(_np.abs(s[:, 0]))),
-            float(_np.max(_np.abs(s[:, -1]))),
-        )
-        metrics["wall_bc"] = bc
-        if bc > atol:
-            print(
-                f"  warning: nonzero perturbation at walls (max |u'|={bc:.2e})"
-            )
-    elif family == "pipe":
-        bc = float(_np.max(_np.abs(s[:, -1])))  # outer wall r = 1
-        metrics["wall_bc"] = bc
-        if bc > atol:
-            print(
-                f"  warning: nonzero perturbation at r=1 (max |u'|={bc:.2e})"
-            )
-    return metrics

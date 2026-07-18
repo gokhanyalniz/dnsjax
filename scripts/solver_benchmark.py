@@ -2415,7 +2415,11 @@ def main() -> None:
         help="distinct RHS per solve timing (default 6 GPU / 4 CPU)",
     )
     # driver flags
-    ap.add_argument("--systems", nargs="*", default=sorted(SIZES))
+    # Driver entries need a SIZES row; systems outside it (e.g.
+    # plane-poiseuille) stay reachable via ``--child --system``.
+    ap.add_argument(
+        "--systems", nargs="*", default=sorted(SIZES), choices=sorted(SIZES)
+    )
     ap.add_argument(
         "--sizes",
         nargs="*",

@@ -223,31 +223,16 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # The spanwise-blocking projection is implemented once per
+        # geometry family, so one entry per family covers the branch:
+        # this Cartesian one (also standing in for plane-poiseuille)
+        # and dean-block-spanwise (annular; also standing in for
+        # taylor-couette, and the only combination of blocking with
+        # the force-driven mean).
         "name": "plane-couette-block-spanwise",
         "args": [
             "--phys.system",
             "plane-couette",
-            "--phys.block_mean_spanwise_velocity",
-            "True",
-            "--init.start_from_laminar",
-            "True",
-            "--stop.max_sim_time",
-            "0.04",
-            "--outs.it_stats",
-            "1",
-            "--res.nx",
-            "4",
-            "--res.nz",
-            "4",
-            "--res.ny",
-            "27",
-        ],
-    },
-    {
-        "name": "plane-poiseuille-block-spanwise",
-        "args": [
-            "--phys.system",
-            "plane-poiseuille",
             "--phys.block_mean_spanwise_velocity",
             "True",
             "--init.start_from_laminar",
@@ -339,33 +324,6 @@ SYSTEMS: list[dict] = [
             "0",
             "--geo.eta",
             "0.5",
-            "--init.start_from_laminar",
-            "True",
-            "--stop.max_sim_time",
-            "0.04",
-            "--outs.it_stats",
-            "1",
-            "--res.nz",
-            "4",
-            "--res.ntheta",
-            "4",
-            "--res.nr",
-            "27",
-        ],
-    },
-    {
-        "name": "taylor-couette-block-spanwise",
-        "args": [
-            "--phys.system",
-            "taylor-couette",
-            "--phys.re1",
-            "100",
-            "--phys.re2",
-            "0",
-            "--geo.eta",
-            "0.5",
-            "--phys.block_mean_spanwise_velocity",
-            "True",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
