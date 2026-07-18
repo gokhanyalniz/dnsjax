@@ -36,9 +36,13 @@ Exercises the host (non-GDS) I/O path:
 Each (system, device count) needs its own process because the
 geometry/sharding singletons are captured at import time, and
 multiple CPU devices are obtained via
-``--xla_force_host_platform_device_count``.  The GDS path needs a
-GPU + kvikIO and is not unit-tested here; it shares the same slab
-offsets/layout as the host path.
+``--xla_force_host_platform_device_count``.  A case whose save and
+load np-config is identical runs save + reload in **one** worker
+process (one JAX init); the cross-np cases keep the separate
+cold-process load, so the fresh-process read path stays covered for
+both layouts.  The GDS path needs a GPU + kvikIO and is not
+unit-tested here; it shares the same slab offsets/layout as the host
+path.
 
 Run as a script::
 
@@ -93,29 +97,13 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
         1,
     ),
     ("periodic serial", "kolmogorov", "periodic", "serial", 1, 1, 1, 1),
-    # ── other wall-bounded geometries (same `walled` on-disk path) ──
+    # ── other wall-bounded geometries (same `walled` on-disk path;
+    # taylor-couette needs no cases of its own -- the layout is
+    # geometry-independent, the public-name alias metadata is pinned
+    # by the pipe regrid case, and the component-count machinery by
+    # the viscoelastic cases) ──
     ("pipe", "pipe", "walled", "concurrent", 1, 1, 1, 1),
     ("pipe np 1->2", "pipe", "walled", "concurrent", 1, 2, 1, 1),
-    (
-        "taylor-couette",
-        "taylor-couette",
-        "walled",
-        "concurrent",
-        1,
-        1,
-        1,
-        1,
-    ),
-    (
-        "taylor-couette np 1->2",
-        "taylor-couette",
-        "walled",
-        "concurrent",
-        1,
-        2,
-        1,
-        1,
-    ),
     # ── viscoelastic (9-component state: 3 velocity + 6 tensor) ──
     (
         "viscoelastic-dean",
@@ -318,14 +306,6 @@ def _worker(
     from dnsjax.parameters import padded_res, params
 
     params.phys.system = system
-    if system == "taylor-couette":
-        # Taylor-Couette needs inner/outer Reynolds numbers and a radius
-        # ratio set before the geometry singletons build; the snapshot
-        # round-trip itself is geometry-independent, so fixed values
-        # suffice (save and load workers reconstruct identically).
-        params.phys.re1 = 100.0
-        params.phys.re2 = 0.0
-        params.geo.eta = 0.5
     params.res.nx = NX
     params.res.ny = ny_override if ny_override is not None else NY
     params.res.nz = NZ
@@ -351,12 +331,16 @@ def _worker(
     tshape = _true_shape(system, ny)
     vshard = NamedSharding(sharding.mesh, sharding.spec_vector_shard)
 
-    if action == "save":
+    if action in ("save", "roundtrip"):
         ref_true = _make_reference(np, tshape)
         state_np = _embed_true_into_padded(ref_true, padded_shape, system)
         state = jax.device_put(state_np, vshard)
         snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
-        return
+        if action == "save":
+            return
+        # "roundtrip": same-np case -- fall through to the load checks
+        # in this same process (one JAX init instead of two; the
+        # cold-process load path stays covered by the cross-np cases).
 
     if action == "save_stats":
         import jax.numpy as jnp
@@ -489,7 +473,7 @@ def _worker(
         print("worker-load-shape-ok", flush=True)
         return
 
-    # action == "load"
+    # action == "load" (or the "roundtrip" fall-through)
     ref_true = _make_reference(np, tshape)
     reference = _embed_true_into_padded(ref_true, padded_shape, system)
     snapshot.validate_snapshot_params(d)
@@ -560,33 +544,48 @@ def run_case(
     save_np0: int = 1,
     load_np0: int = 1,
 ) -> bool:
-    """Save then load a snapshot in separate processes."""
+    """Save then load a snapshot (one process when the np config is
+    unchanged, separate save/load processes across np configs)."""
     with tempfile.TemporaryDirectory() as tmp:
         snap_path = os.path.join(tmp, "snap.tar")
-        r_save = _run_worker(
-            "save",
-            system,
-            layout,
-            write_mode,
-            save_np,
-            snap_path,
-            np0=save_np0,
-        )
-        if r_save.returncode != 0:
-            _fail(name, "save", r_save)
-            return False
-        r_load = _run_worker(
-            "load",
-            system,
-            layout,
-            write_mode,
-            load_np,
-            snap_path,
-            np0=load_np0,
-        )
-        if r_load.returncode != 0:
-            _fail(name, "load", r_load)
-            return False
+        if (save_np, save_np0) == (load_np, load_np0):
+            r = _run_worker(
+                "roundtrip",
+                system,
+                layout,
+                write_mode,
+                save_np,
+                snap_path,
+                np0=save_np0,
+            )
+            if r.returncode != 0:
+                _fail(name, "roundtrip", r)
+                return False
+        else:
+            r_save = _run_worker(
+                "save",
+                system,
+                layout,
+                write_mode,
+                save_np,
+                snap_path,
+                np0=save_np0,
+            )
+            if r_save.returncode != 0:
+                _fail(name, "save", r_save)
+                return False
+            r_load = _run_worker(
+                "load",
+                system,
+                layout,
+                write_mode,
+                load_np,
+                snap_path,
+                np0=load_np0,
+            )
+            if r_load.returncode != 0:
+                _fail(name, "load", r_load)
+                return False
     print(f"  PASS  {name}")
     return True
 
@@ -742,6 +741,7 @@ if __name__ == "__main__":
         choices=[
             "save",
             "load",
+            "roundtrip",
             "save_poly",
             "load_interp",
             "save_poly_pipe",

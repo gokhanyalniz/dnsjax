@@ -258,18 +258,22 @@ def integrate(field, params, coords, directions=None):
         e = 0.5 * integrate(sum(np.abs(u) ** 2 for u in physical),
                             params, coords)
     """
-    if isinstance(field, (tuple, list)):
-        return tuple(integrate(f, params, coords, directions) for f in field)
-
     info = _core.geometry_info(params)
     if directions is None:
-        axes = list(range(3))
+        axes = [2, 1, 0]
     else:
-        axes = [info.axis_of(d) for d in directions]
+        # Descending so the original axis indices stay valid as axes
+        # drop.
+        axes = sorted({info.axis_of(d) for d in directions}, reverse=True)
+    # Weights built once and shared across a tuple's components.
+    weights = [(ax, _axis_weights(info, ax, coords, params)) for ax in axes]
 
-    out = np.asarray(field)
-    # Descending so the original axis indices stay valid as axes drop.
-    for ax in sorted(set(axes), reverse=True):
-        w = _axis_weights(info, ax, coords, params)
-        out = np.tensordot(w, out, axes=([0], [ax]))
-    return out
+    def _reduce(f):
+        out = np.asarray(f)
+        for ax, w in weights:
+            out = np.tensordot(w, out, axes=([0], [ax]))
+        return out
+
+    if isinstance(field, (tuple, list)):
+        return tuple(_reduce(f) for f in field)
+    return _reduce(field)
