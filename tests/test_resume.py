@@ -37,7 +37,13 @@ Two layers:
    - a resume with a changed ``phys.re`` starts a **new trajectory**
      (``t=it=isnap=0``, a fresh ``state00000.tar``, diagnostic on
      stdout) unless ``init.force_resume`` is set, which forces a
-     continuation (no fresh ``state00000.tar``).
+     continuation (no fresh ``state00000.tar``);
+   - an adaptive-dt run (``step.adaptive``) embeds its live (grown)
+     ``dt`` in every snapshot; a resume with no explicit ``--step.dt``
+     continues at the adapted value (and keeps adapting), while an
+     explicit ``--step.dt`` / ``--step.adaptive False`` override beats
+     the snapshot layer -- in both cases the lineage continues
+     (``step.*`` is not trajectory-defining).
 
 Run as a script::
 
@@ -140,12 +146,18 @@ def run_unit_checks() -> bool:
         params.res.double_precision = old_dp
         assert changes == [], ("double_precision", changes)
 
-        # A non-trajectory section (step) is ignored entirely.
+        # A non-trajectory section (step) is ignored entirely -- incl.
+        # the adaptive-dt knobs, so a resumed run may adapt onward.
         old_dt = params.step.dt
         params.step.dt = old_dt + 1
         changes = trajectory_defining_changes(snap)
         params.step.dt = old_dt
         assert changes == [], ("step.dt", changes)
+        old_ad = params.step.adaptive
+        params.step.adaptive = not old_ad
+        changes = trajectory_defining_changes(snap)
+        params.step.adaptive = old_ad
+        assert changes == [], ("step.adaptive", changes)
 
         # A stored key the current surface no longer defines (e.g. the
         # retired geo.axis_gap) is dropped by the internalization (with
@@ -547,6 +559,106 @@ def run_integration(timeout: float) -> bool:
         assert 0 not in _snap_indices(work_force), (
             "force_resume continuation must not save state00000"
         )
+
+        # --- Run 5: adaptive dt -> snapshots embed the live dt -------
+        # cfl_cadence 1 + dt_threshold 0 with a tiny CFL grows dt by
+        # 1.2x after every step, so the final snapshot must embed an
+        # adapted dt > the initial 0.01.
+        work_ad = os.path.join(base, "adaptive")
+        work_override = os.path.join(base, "override")
+        os.makedirs(work_ad)
+        os.makedirs(work_override)
+        r5 = _run_dnsjax(
+            work_ad,
+            RUN1_ARGS
+            + [
+                "--step.adaptive",
+                "True",
+                "--step.dt_max",
+                "0.02",
+                "--step.cfl_cadence",
+                "1",
+                "--step.dt_threshold",
+                "0",
+            ],
+            timeout,
+        )
+        if r5.returncode != 0:
+            _fail("run5 (adaptive)", r5)
+            return False
+        assert "[adaptive]" in r5.stdout, "no adaptive dt change logged"
+        idx5 = _snap_indices(work_ad)
+        final5 = max(idx5)
+        final5_path = os.path.abspath(
+            os.path.join(work_ad, f"state{final5:05d}.tar")
+        )
+        meta5 = read_snapshot_meta(final5_path)
+        ad_dt = meta5["params"]["step"]["dt"]
+        assert ad_dt > 0.01, f"live dt not embedded: {ad_dt}"
+        assert meta5["params"]["step"]["adaptive"] is True, meta5["params"]
+
+        # --- Run 6: resume with no --step.dt -> continues at the
+        # adapted dt (snapshot layer) and keeps adapting -------------
+        r6 = _run_dnsjax(
+            work_ad,
+            [
+                "--init.snapshot",
+                final5_path,
+                "--outs.it_snapshot",
+                "1",
+                "--stop.max_sim_time",
+                "0.1",
+            ],
+            timeout,
+        )
+        if r6.returncode != 0:
+            _fail("run6 (adaptive resume)", r6)
+            return False
+        assert "NEW trajectory" not in r6.stdout, "adaptive dt reset lineage"
+        assert "Resumed from snapshot" in r6.stdout, r6.stdout[-1500:]
+        idx6 = _snap_indices(work_ad)
+        assert max(idx6) > final5, (final5, idx6)
+        meta6 = read_snapshot_meta(
+            os.path.join(work_ad, f"state{max(idx6):05d}.tar")
+        )
+        assert meta6["params"]["step"]["dt"] >= ad_dt, (
+            "resume did not continue at the adapted dt",
+            ad_dt,
+            meta6["params"]["step"]["dt"],
+        )
+
+        # --- Run 7: an explicit --step.dt / --step.adaptive override
+        # beats the snapshot layer (still a continuation: step.* is
+        # not trajectory-defining) -----------------------------------
+        r7 = _run_dnsjax(
+            work_override,
+            [
+                "--init.snapshot",
+                final5_path,
+                "--step.dt",
+                "0.005",
+                "--step.adaptive",
+                "False",
+                "--outs.it_snapshot",
+                "1",
+                "--stop.max_sim_time",
+                "0.1",
+            ],
+            timeout,
+        )
+        if r7.returncode != 0:
+            _fail("run7 (dt override)", r7)
+            return False
+        assert "NEW trajectory" not in r7.stdout, "dt override reset lineage"
+        assert "[adaptive]" not in r7.stdout, "adaptive off yet controller ran"
+        last7 = max(_snap_indices(work_override))
+        meta7 = read_snapshot_meta(
+            os.path.join(work_override, f"state{last7:05d}.tar")
+        )
+        assert meta7["params"]["step"]["dt"] == 0.005, meta7["params"]["step"]
+        assert meta7["params"]["step"]["adaptive"] is False, meta7["params"][
+            "step"
+        ]
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
         return False

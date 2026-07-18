@@ -168,6 +168,8 @@ forcing.py            White-in-time stochastic mode kicks ([force]
 timestep.py           make_stepper() factory:
                       predict_and_fully_correct (+_measured),
                       step_cnab2 (+_measured), _cnab2_lbf_core
+adaptive.py           JAX-free CFL time-step controller
+                      (propose_dt) behind step.adaptive
 fd.py                 NumPy-only FD utilities (JAX-free): Fornberg
                       D1/D2, quadrature rules, interpolation matrices,
                       tanh grids
@@ -290,7 +292,11 @@ per-geometry CFL, `implicitness`, `implicit_mean_coupling`,
 `corrector failed to converge` at *low* CFL means reduce `dt`, not a
 blow-up): the `TimeStepping` docstring (`parameters.py`); implementation
 `timestep.py`; guards `tests/test_cnab2.py`,
-`tests/test_temporal_order.py`.
+`tests/test_temporal_order.py`. Adaptive CFL `dt` (`step.adaptive`,
+knobs + controller law in the `TimeStepping` docstring and
+`adaptive.py`; on-device operator rebuild via the builders'
+`set_dt`, no recompile): guards `tests/test_adaptive.py` and the
+vardt studies in `tests/test_temporal_order.py`.
 
 **Spectral array layout and sharding**: see the `sharding.py` module
 docstring for shapes, partition specs, and the `(np0, np1)` device
@@ -367,7 +373,7 @@ layering" above.
 | `[res]`    | Resolution (`nx`/`ny`/`nz`, or `nz`/`nr`/`ntheta`), `fd_order`, `double_precision` |
 | `[init]`   | Start mode (see "Initial conditions" above) + `t0`/`it0`/`isnap0`/`force_resume` |
 | `[outs]`   | Diagnostic cadences, buffering, snapshot write policy |
-| `[step]`   | `dt` + scheme knobs (`TimeStepping`)                 |
+| `[step]`   | `dt` + scheme knobs + adaptive-CFL knobs (`TimeStepping`) |
 | `[stop]`   | Sim-/wall-time limits, laminarization check          |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
 | `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
@@ -536,7 +542,10 @@ one-liners. Cross-cutting notes:
 - `tests/test_integration.py`: quadrature weights and interpolation
   matrices.
 - `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards.
-- `tests/test_temporal_order.py`: second-order temporal accuracy.
+- `tests/test_adaptive.py`: adaptive-dt machinery (controller units,
+  rebuild-vs-fresh/step parity, no-recompile guard, kappa identity).
+- `tests/test_temporal_order.py`: second-order temporal accuracy
+  (fixed and variable step).
 - `tests/test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
   forced spectral padding.
 - `tests/test_padding.py`: padded-size rounding + FFT exactness

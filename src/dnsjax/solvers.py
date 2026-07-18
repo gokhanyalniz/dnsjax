@@ -1031,6 +1031,46 @@ def _stack_pallas_operators(
     )
 
 
+def _pack_banded_factors(
+    factors: list[tuple[Array, Array]],
+) -> PerModeBandedPallasOperator:
+    """Assemble factored band pairs into one Pallas operator.
+
+    One pair becomes a plain operator; several are stacked along a
+    leading component axis (:func:`_stack_pallas_operators`).  Shared
+    tail of the checked :func:`_build_pallas_operator` and the
+    unchecked :func:`_factor_pallas_operator`.
+    """
+    ops = [
+        PerModeBandedPallasOperator.from_banded_factors(L, U)
+        for (L, U) in factors
+    ]
+    return ops[0] if len(ops) == 1 else _stack_pallas_operators(*ops)
+
+
+def _factor_pallas_operator(
+    a_bands: list[Array],
+) -> PerModeBandedPallasOperator:
+    r"""Factor one operator group for the Pallas backend, unchecked.
+
+    The jittable counterpart of :func:`_build_pallas_operator`: the
+    same no-pivot banded LU (:func:`_banded_factor`) and operator
+    assembly, with **no** setup-time residual/growth verification (no
+    host syncs, no raise) -- so it can run inside ``jit``, e.g. the
+    adaptive-``dt`` operator rebuild (the flow builders'
+    ``set_dt``).
+
+    Skipping the check is sound only when an equivalent operator was
+    already verified by the checked build: the adaptive setup runs
+    :func:`_build_pallas_operator` on the same band structure at
+    ``step.dt_max``, where the Helmholtz diagonal
+    `$1/\Delta t + c\,\nu\,k^2$` is least dominant, so the no-pivot
+    element growth of every rebuild at ``dt <= dt_max`` is bounded by
+    the verified case.
+    """
+    return _pack_banded_factors([_banded_factor(A) for A in a_bands])
+
+
 def _banded_residual(a_band: Array, L: Array, U: Array) -> float:
     """Max relative residual ``||A x - b|| / ||b||`` of the no-pivot
     banded solve (``b = 1``), as a host float for the stability check."""
@@ -1122,8 +1162,4 @@ def _build_pallas_operator(
             f"[pallas] {label}: no-pivot banded LU "
             f"(residual {resid:.2e}, growth {growth:.1e})"
         )
-    ops = [
-        PerModeBandedPallasOperator.from_banded_factors(L, U)
-        for (L, U) in factors
-    ]
-    return ops[0] if len(ops) == 1 else _stack_pallas_operators(*ops)
+    return _pack_banded_factors(factors)

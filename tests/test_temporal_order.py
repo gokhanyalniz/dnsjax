@@ -58,9 +58,42 @@ reduction), not proximity to cnab2's error.
 cnab2 self-starts exactly like ``__main__``: prime the AB2 history
 with a discarded ``step_cnab2(copy(u0), zeros)`` call, take the first
 step with iterative-CN, then chain cnab2 (the steppers donate their
-arguments, hence the copies)::
+arguments, hence the copies).
 
-    uv run python tests/test_temporal_order.py            # both studies
+**Variable-step (vardt) studies.**  Two further studies drive the
+adaptive-dt machinery under a *prescribed* dt sequence (no
+controller) through the flow module's ``set_dt`` /
+``reset_ab2_kappa`` hooks, sweeping the AB2 step ratio
+`$\kappa = \Delta t_n / \Delta t_{n-1}$` through 1/2, 1, and 2 with
+an on-device operator rebuild at every change.  Both must fall at
+slope ~2 under base-dt halving -- a first-order-in-``dt`` kappa bug
+shows up directly here.
+
+- ``kolmogorov-vardt``: the dense dyadic pattern ``(d, d/2, d/2)``
+  (a dt change at 2 of every 3 steps; each period sums exactly to
+  ``2d``), measured as absolute order against the fixed-fine-dt
+  reference -- pins the kappa-weighted plain-AB2 forcing and the
+  ``ldt_1``/``ildt_2`` rebuild.
+- ``plane-couette-vardt``: four equal-duration blocks
+  ``(d, d/2, d, d/2)`` -- a **fixed count** of dt changes (3) for
+  every base ``d`` -- measured as the cnab2-vs-icn difference order
+  at the *matched* sequence; pins ``_cnab2_lbf_core``'s kappa, the
+  Hk/IMM rebuild, and iterative-CN under mid-run ``set_dt``.  The
+  change count must stay fixed because the wall-bounded IMM
+  projection-splitting error -- the schemes' *shared*, dominant
+  absolute error (measured ~6e-2 at ``dt = 0.01`` here, at fixed
+  and variable dt alike; the periodic projection is algebraically
+  exact and has no analogue) -- decorrelates between the schemes by
+  `$O(\Delta t^2)$` per dt change: under per-step alternation
+  (`$O(1/\Delta t)$` changes) their difference degrades to
+  `$O(\Delta t)$` even with exact kappa weights, while a fixed
+  change count keeps it `$O(\Delta t^2)$`.  The exact-kappa
+  application at the change steps themselves is pinned separately by
+  ``tests/test_adaptive.py``'s carry-cancellation identity.
+
+::
+
+    uv run python tests/test_temporal_order.py            # all studies
     uv run python tests/test_temporal_order.py --study kolmogorov
 """
 
@@ -106,7 +139,13 @@ KOLM_FLOOR = 0.05  # * dt^2
 # Accepted slope band for order 2 (log2 error ratio per dt halving).
 ORDER_LO, ORDER_HI = 1.6, 2.4
 
-STUDIES = ["kolmogorov", "plane-couette"]
+STUDIES = [
+    "kolmogorov",
+    "plane-couette",
+    "kolmogorov-vardt",
+    "plane-couette-vardt",
+]
+WORKER_SYSTEMS = ["kolmogorov", "plane-couette"]
 
 FLOW_MODULES = {
     "plane-couette": "dnsjax.flows.wall_bounded.plane_couette",
@@ -114,9 +153,12 @@ FLOW_MODULES = {
 }
 
 
-def _worker(system: str, scheme: str, dt: float, out: str) -> None:
+def _worker(
+    system: str, scheme: str, dt: float, out: str, vardt: bool
+) -> None:
     """Integrate to ``T_END`` with (*system*, *scheme*, *dt*); save the
-    final spectral state to *out* (.npy)."""
+    final spectral state to *out* (.npy).  With *vardt*, step the
+    dyadic ``(dt, dt/2, dt/2)`` pattern via ``set_dt`` (docstring)."""
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
 
     import jax
@@ -163,8 +205,24 @@ def _worker(system: str, scheme: str, dt: float, out: str) -> None:
 
     amp = AMP_KOLM if system == "kolmogorov" else AMP_PC
     state = generate_random_state(amp, SMOOTH, SEED)
-    n_steps = round(T_END / dt)
-    assert abs(n_steps * dt - T_END) < 1e-12
+    if vardt and system == "kolmogorov":
+        # Dense dyadic alternation: a change at 2 of every 3 steps.
+        n_periods = round(T_END / (2 * dt))
+        assert abs(2 * dt * n_periods - T_END) < 1e-12
+        seq = [dt, dt / 2, dt / 2] * n_periods
+    elif vardt:
+        # Wall-bounded: four equal-duration blocks (d, d/2, d, d/2)
+        # -- a fixed count of dt changes (3) for every base d, so the
+        # per-change projection-splitting decorrelation stays
+        # O(dt^2) total (module docstring).
+        n_hi = round(T_END / 4 / dt)
+        n_lo = 2 * n_hi
+        seq = ([dt] * n_hi + [dt / 2] * n_lo) * 2
+        assert abs(sum(seq) - T_END) < 1e-12
+    else:
+        n_steps = round(T_END / dt)
+        assert abs(n_steps * dt - T_END) < 1e-12
+        seq = [dt] * n_steps
 
     # Kolmogorov's corrector-bearing steps stall at the pre-existing
     # dt^2-scaled floor (module docstring); its cnab2 steps have no
@@ -183,40 +241,65 @@ def _worker(system: str, scheme: str, dt: float, out: str) -> None:
             f"step {i} (err {float(err):.3e} > {thresh:.1e})"
         )
 
+    # The dt-change discipline mirrors ``__main__``'s controller:
+    # ``set_dt`` before the first step at a new dt (it also sets the
+    # AB2 ratio kappa = new/old), ``reset_ab2_kappa`` after exactly
+    # one step at the new dt.
+    prev_dt = dt
+    kappa_pending = False
     if scheme == "cnab2":
         # __main__ bootstrap: discarded priming call seeds the AB2
         # history, the first integration step is iterative-CN.
         _, carry, _, _ = fmod.step_cnab2(
             jnp.copy(state), jnp.zeros_like(state)
         )
-        state, err, _ = fmod.predict_and_fully_correct(state)
-        _converged(err, 0)
-        for i in range(n_steps - 1):
-            state, carry, err, _ = fmod.step_cnab2(state, carry)
-            _converged(err, i + 1)
+        for i, step_dt in enumerate(seq):
+            if step_dt != prev_dt:
+                fmod.set_dt(step_dt)
+                kappa_pending = True
+            elif kappa_pending:
+                fmod.reset_ab2_kappa()
+                kappa_pending = False
+            if i == 0:
+                state, err, _ = fmod.predict_and_fully_correct(state)
+            else:
+                state, carry, err, _ = fmod.step_cnab2(state, carry)
+            _converged(err, i)
+            prev_dt = step_dt
     else:
-        for i in range(n_steps):
+        for i, step_dt in enumerate(seq):
+            if step_dt != prev_dt:
+                fmod.set_dt(step_dt)
             state, err, _ = fmod.predict_and_fully_correct(state)
             _converged(err, i)
+            prev_dt = step_dt
 
     np.save(out, np.asarray(state))
 
 
-def _run(system: str, scheme: str, dt: float, out: Path) -> None:
-    result = run_live(
-        [
-            sys.executable,
-            __file__,
-            "--worker",
-            system,
-            "--scheme",
-            scheme,
-            "--dt",
-            repr(dt),
-            "--out",
-            str(out),
-        ]
-    )
+def _run(
+    system: str,
+    scheme: str,
+    dt: float,
+    out: Path,
+    *,
+    vardt: bool = False,
+) -> None:
+    cmd = [
+        sys.executable,
+        __file__,
+        "--worker",
+        system,
+        "--scheme",
+        scheme,
+        "--dt",
+        repr(dt),
+        "--out",
+        str(out),
+    ]
+    if vardt:
+        cmd.append("--vardt")
+    result = run_live(cmd)
     if result.returncode != 0:
         raise SystemExit(f"worker failed: {system} {scheme} dt={dt}")
 
@@ -243,14 +326,15 @@ def _check_orders(errs: list[float], label: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--study", choices=STUDIES, default=None)
-    parser.add_argument("--worker", choices=STUDIES, default=None)
+    parser.add_argument("--worker", choices=WORKER_SYSTEMS, default=None)
     parser.add_argument("--scheme", default=None)
     parser.add_argument("--dt", type=float, default=None)
     parser.add_argument("--out", default=None)
+    parser.add_argument("--vardt", action="store_true")
     args = parser.parse_args()
 
     if args.worker:
-        _worker(args.worker, args.scheme, args.dt, args.out)
+        _worker(args.worker, args.scheme, args.dt, args.out, args.vardt)
         return
 
     print(
@@ -263,10 +347,18 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tdir = Path(tmp)
 
+        def _kolm_ref() -> Path:
+            # Corrector-free fixed-fine-dt cnab2 reference, shared by
+            # the kolmogorov and kolmogorov-vardt studies (built on
+            # first use).
+            ref = tdir / "kolm_ref.npy"
+            if not ref.exists():
+                _run("kolmogorov", "cnab2", DT_REF, ref)
+            return ref
+
         if "kolmogorov" in studies:
             print("=== kolmogorov: cnab2 order (corrector-free ref) ===")
-            ref = tdir / "kolm_ref.npy"
-            _run("kolmogorov", "cnab2", DT_REF, ref)
+            ref = _kolm_ref()
             errs = []
             for dt in DTS_KOLM:
                 out = tdir / f"kolm_cnab2_{dt}.npy"
@@ -305,6 +397,27 @@ def main() -> None:
                 _run("plane-couette", "cnab2", dt, b)
                 errs.append(_err(b, a))
             _check_orders(errs, "plane-couette cnab2-icn")
+
+        if "kolmogorov-vardt" in studies:
+            print("=== kolmogorov: cnab2 vardt order (set_dt seq) ===")
+            ref = _kolm_ref()
+            errs = []
+            for dt in DTS_KOLM:
+                out = tdir / f"kolm_cnab2_var_{dt}.npy"
+                _run("kolmogorov", "cnab2", dt, out, vardt=True)
+                errs.append(_err(out, ref))
+            _check_orders(errs, "kolmogorov cnab2-vardt")
+
+        if "plane-couette-vardt" in studies:
+            print("=== plane-couette: vardt cnab2 vs icn difference ===")
+            errs = []
+            for dt in DTS_PC:
+                a = tdir / f"pc_icn_var_{dt}.npy"
+                b = tdir / f"pc_cnab2_var_{dt}.npy"
+                _run("plane-couette", "iterative-cn", dt, a, vardt=True)
+                _run("plane-couette", "cnab2", dt, b, vardt=True)
+                errs.append(_err(b, a))
+            _check_orders(errs, "plane-couette vardt cnab2-icn")
 
     print("ALL PASSED")
 
