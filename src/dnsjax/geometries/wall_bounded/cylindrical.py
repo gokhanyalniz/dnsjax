@@ -521,7 +521,7 @@ def build_cylindrical_grid(
     wall_grid: str | None = None,
     grid_type: str | None = None,
     grid_stretch: float = 1.5,
-) -> tuple[Array, Array, Array, Array, Array, Array]:
+) -> tuple[Array, Array, Array, Array, Array, Array, Array]:
     r"""Build radial grid, parity-reduced D1 matrices, weights,
     and `$1/r$` for the cylindrical geometry.
 
@@ -1198,8 +1198,8 @@ class CylindricalFlow:
 
         The homogeneous pressure `$p_1$` stays local: only the
         velocity responses derived from it are needed at runtime
-        (the commented-out pressure assembly in the Cartesian
-        IMM would be its only consumer).
+        (the corrected pressure is never assembled -- see the
+        Cartesian ``_imm_iteration`` stage-6 note).
 
         The pipe has a single wall at `$r = 1$` (last grid
         point), giving a `$1 \times 1$` influence matrix.

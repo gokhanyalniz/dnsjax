@@ -106,7 +106,6 @@ def _by_family(family: str) -> list[str]:
 # Family groupings, historically defined in ``dnsjax.parameters`` and
 # still re-exported there for the many existing importers.
 periodic_systems: list[str] = _by_family("triply-periodic")
-monochromatic_systems: list[str] = ["kolmogorov", "waleffe"]
 cartesian_systems: list[str] = _by_family("cartesian")
 cylindrical_systems: list[str] = _by_family("cylindrical")
 annular_systems: list[str] = _by_family("annular")

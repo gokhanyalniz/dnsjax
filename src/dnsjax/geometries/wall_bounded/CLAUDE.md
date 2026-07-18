@@ -147,13 +147,14 @@ its docstring and the `fd.py` interpolation docstrings.
 - `plane_poiseuille.py`: PlanePoiseuilleFlow(CartesianFlow) --
   `Us = 1 - y^2` with tilt.
 - `pipe.py`: PipeFlow(CylindricalFlow) -- `Uz = 1 - r^2`.
-- `taylor_couette.py`: TaylorCouetteFlow(AnnularFlow) --
-  circular-Couette `Uθ = A0 r + B0/r` from `(re1, re2, eta)`.
-- `quasi_keplerian.py`: QuasiKeplerianFlow(AnnularFlow) -- the same
-  circular-Couette base flow as taylor_couette but parameterized by
-  `(re1, r_omega, eta)` on the quasi-Keplerian half-line `R_Ω < -1`
-  (`re2` derived in `update_parameters`). Standalone sibling module
-  (does not import taylor_couette).
+- `taylor_couette.py`: circular-Couette `Uθ = A0 r + B0/r` from
+  `(re1, re2, eta)` -- a thin binding of the shared
+  `flows/wall_bounded/_circular_couette.py`
+  (`CircularCouetteFlow(AnnularFlow)`, diagnostics, TG hook).
+- `quasi_keplerian.py`: the same circular-Couette flow parameterized
+  by `(re1, r_omega, eta)` on the quasi-Keplerian half-line `R_Ω < -1`
+  (`re2` derived by its spec); binds the same `_circular_couette.py`
+  machinery and differs only in its documented conventions.
 - `dean.py`: DeanFlow(AnnularFlow) -- force-driven **total** field.
 - `viscoelastic_dean.py`: ViscoelasticDeanFlow(ViscoelasticAnnularFlow)
   -- force-driven sPTT Dean, 9-component **total** field.

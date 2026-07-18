@@ -602,6 +602,8 @@ def add_dean_laminar(state: Array) -> Array:
         derived_params.r_inner,
         derived_params.r_outer,
         params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
     )
     u_theta = dean_laminar_u_theta(rs, params.geo.eta)  # (Nr,) real
     # Place U_theta at the mean mode: u_+ = i U_theta, u_- = -i U_theta.
