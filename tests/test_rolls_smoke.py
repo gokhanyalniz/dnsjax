@@ -1,12 +1,16 @@
 """Localized-rolls IC smoke tests: nonlinear integration, wall-bounded.
 
-Starts each wall-bounded flow from the deterministic
+Starts each wall-bounded rolls-builder variant (plane-couette for the
+Cartesian builder, pipe, taylor-couette, dean) from the deterministic
 streamwise-localized-rolls IC (the in-process ``init.localized_rolls``
-start mode, no snapshot file) at a transitional Reynolds number on a small
-domain, and integrates a short time -- verifying the run completes with no
-error, NaN, or blow-up.  The rolls drive the full **nonlinear** path (the
-laminar smoke test cannot, since ``u' = 0`` there), like
-``tests/test_random_smoke.py`` but with a deterministic IC.
+start mode, no snapshot file) at a transitional Reynolds number on a
+small domain, and integrates a short time (``t = 0.25``; the
+long-horizon integration of the same flows is
+``test_random_smoke.py``'s job at ``t = 1``) -- verifying the run
+completes with no error, NaN, or blow-up.  The rolls drive the full
+**nonlinear** path (the laminar smoke test cannot, since ``u' = 0``
+there), like ``tests/test_random_smoke.py`` but with a deterministic
+IC.
 
 Reuses ``test_random_smoke``'s ``_check_run`` (the five success criteria:
 exit 0, reached the end, no ``"Corrector failed"``, finite + converged
@@ -68,19 +72,10 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        "name": "plane-poiseuille",
-        "args": [
-            "--phys.system",
-            "plane-poiseuille",
-            "--phys.re",
-            "660",
-            "--geo.lx",
-            "5",
-            "--geo.lz",
-            "5",
-        ],
-    },
-    {
+        # plane-poiseuille needs no entry: the Cartesian rolls builder
+        # is shared with plane-couette (above), rolls construction is
+        # unit-tested in test_localized_rolls.py, and per-flow
+        # nonlinear integration lives in test_random_smoke.py.
         "name": "pipe",
         "args": [
             "--phys.system",
@@ -270,7 +265,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--res", type=int, default=32, help="Cubic resolution nx=ny=nz"
     )
-    parser.add_argument("--max-sim-time", type=float, default=1.0)
+    # Shorter than test_random_smoke's t = 1.0 on purpose: the unique
+    # content here is the rolls IC *through* the solver (construction
+    # + the first stretch of nonlinear evolution); the long-horizon
+    # integration of the same flows is the random smoke's job.
+    parser.add_argument("--max-sim-time", type=float, default=0.25)
     parser.add_argument("--dt", type=float, default=0.01)
     parser.add_argument("--amplitude", type=float, default=0.1)
     parser.add_argument("--width", type=float, default=1.5)

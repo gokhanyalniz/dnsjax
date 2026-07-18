@@ -86,8 +86,13 @@ from pathlib import Path
 
 import numpy as np
 
-from .ensemble import identify_generator, project_series, stability_report
-from .probes import ProbeData, read_probes
+from .ensemble import (
+    identify_generator,
+    project_series,
+    snap_sample_lags,
+    stability_report,
+)
+from .probes import ProbeData, _resolve_pair, read_probes
 
 __all__ = [
     "ForcingData",
@@ -134,13 +139,7 @@ class ForcingData:
 
 def read_forcing(path: str | Path = ".") -> ForcingData:
     """Load a kick stream (a run directory or the ``forcing.bin``)."""
-    path = Path(path)
-    if path.is_dir():
-        bin_path, json_path = path / "forcing.bin", path / "forcing.json"
-    elif path.suffix == ".json":
-        bin_path, json_path = path.with_suffix(".bin"), path
-    else:
-        bin_path, json_path = path, path.with_suffix(".json")
+    bin_path, json_path = _resolve_pair(path, "forcing")
     if not json_path.exists():
         raise FileNotFoundError(f"forcing sidecar {json_path} not found")
     with open(json_path) as f:
@@ -149,14 +148,15 @@ def read_forcing(path: str | Path = ".") -> ForcingData:
     modes = np.asarray(meta["modes"], dtype=int)
     m = int(meta["n_channels"])
     record_dtype = np.dtype([("t", "<f8"), ("w", "<f8", (len(modes), m, 2))])
-    raw = np.fromfile(bin_path, dtype=np.uint8)
-    n_rec, rem = divmod(raw.size, record_dtype.itemsize)
+    # Sized read straight into the record dtype (no byte-array
+    # copies; the ``read_probes`` idiom).
+    n_rec, rem = divmod(bin_path.stat().st_size, record_dtype.itemsize)
     if rem:
         print(
             f"[ssi] {bin_path}: dropping a truncated trailing record "
             f"({rem} of {record_dtype.itemsize} bytes)."
         )
-    rec = np.frombuffer(raw.tobytes(), dtype=record_dtype, count=n_rec)
+    rec = np.fromfile(bin_path, dtype=record_dtype, count=n_rec)
     t = rec["t"].astype(np.float64)
     if n_rec > 1 and not (np.diff(t) > 0).all():
         print(
@@ -365,7 +365,8 @@ def identify_ssi(
         raise ValueError("no runs given")
     op = load_operator(operator, i2, i3)
 
-    probes = [read_probes(r) for r in runs]
+    # Kick logs are small; read them all up front for the config
+    # checks and the sidecar-recorded channel bundle.
     forcings = [read_forcing(r) for r in runs]
     f0 = forcings[0].meta
     eps = float(f0["amplitude"])
@@ -387,27 +388,29 @@ def identify_ssi(
             )
     p = recover_basis(op, load_modes_npz(modes_npz, i2, i3, n_ch))
 
-    delta = float(probes[0].meta["it_probes"]) * float(probes[0].meta["dt"])
-    for r, pd in zip(runs, probes, strict=True):
+    # Probe streams can be multi-GB: read one run at a time and
+    # reduce it to its (small) kick/response windows immediately, so
+    # peak memory is one stream, not the whole pool.
+    delta: float | None = None
+    sample_lags: list[int] = []
+    max_lag = 0
+    windows = []
+    for r, fd in zip(runs, forcings, strict=True):
+        pd = read_probes(r)
         d = float(pd.meta["it_probes"]) * float(pd.meta["dt"])
-        if not np.isclose(d, delta, rtol=0, atol=1e-12):
+        if delta is None:
+            delta = d
+            sample_lags = snap_sample_lags(lags, delta, "ssi")
+            max_lag = max(sample_lags)
+        elif not np.isclose(d, delta, rtol=0, atol=1e-12):
             raise ValueError(
                 f"{r}: probe interval {d:g} differs from the first "
                 f"run's {delta:g}"
             )
-
-    sample_lags = sorted({max(1, round(tau / delta)) for tau in lags})
-    if len(sample_lags) < len(lags):
-        print(
-            "[ssi] note: requested lags collapse to "
-            f"{[lag * delta for lag in sample_lags]} on the "
-            f"{delta:g}-spaced probe grid."
+        windows.append(
+            kick_response_windows(pd, fd, op.T_proj, i2, i3, max_lag, p, t_min)
         )
-    max_lag = max(sample_lags)
-    windows = [
-        kick_response_windows(pd, fd, op.T_proj, i2, i3, max_lag, p, t_min)
-        for pd, fd in zip(probes, forcings, strict=True)
-    ]
+        del pd  # drop the full stream before reading the next run
     pairs, est_diag = cross_propagators(
         windows, sample_lags, delta, eps, demean
     )

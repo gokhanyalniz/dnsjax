@@ -78,11 +78,15 @@ class ProbeData:
         return int(hits[0])
 
 
-def _resolve_pair(path: str | Path) -> tuple[Path, Path]:
-    """Map a run directory / ``probes.bin`` path to the file pair."""
+def _resolve_pair(path: str | Path, stem: str = "probes") -> tuple[Path, Path]:
+    """Map a run directory / ``<stem>.bin`` path to the file pair.
+
+    Shared with the forcing-stream reader (``stem="forcing"``,
+    :mod:`dnsjax.analysis.response.ssi`).
+    """
     path = Path(path)
     if path.is_dir():
-        return path / "probes.bin", path / "probes.json"
+        return path / f"{stem}.bin", path / f"{stem}.json"
     if path.suffix == ".json":
         return path.with_suffix(".bin"), path
     return path, path.with_suffix(".json")
@@ -121,14 +125,15 @@ def read_probes(path: str | Path = ".") -> ProbeData:
         ]
     )
 
-    raw = np.fromfile(bin_path, dtype=np.uint8)
-    n_rec, rem = divmod(raw.size, record_dtype.itemsize)
+    # Sized read straight into the record dtype: no intermediate
+    # byte-array copies (the streams reach multi-GB).
+    n_rec, rem = divmod(bin_path.stat().st_size, record_dtype.itemsize)
     if rem:
         print(
             f"[probes] {bin_path}: dropping a truncated trailing "
             f"record ({rem} of {record_dtype.itemsize} bytes)."
         )
-    rec = np.frombuffer(raw.tobytes(), dtype=record_dtype, count=n_rec)
+    rec = np.fromfile(bin_path, dtype=record_dtype, count=n_rec)
 
     t = rec["t"].astype(np.float64)
     if n_rec > 1:

@@ -4,10 +4,14 @@ r"""Tests for the JAX-free snapshot analysis API (``dnsjax.analysis``).
 Validates :func:`dnsjax.analysis.read_state` (spectral<->physical
 transforms, the snapshot-native layout / component basis, the
 coordinate tuples, component and wall-normal subsetting, and
-object-like params/stats access) plus the field operators
-(``derivative`` family and ``integrate``) -- all **without importing
-JAX in the test process**, so the import-time JAX-free guarantee is
-asserted directly.
+object-like params/stats access) plus the field operators: the
+public ``derivative``/``gradient`` wrappers (axis wiring, ``ik``
+scaling, plain ``D1``, the pipe parity requirement), ``curl`` against
+the solver's ``_curl_fn`` node-for-node, the **viscoelastic**
+conformation recipes (components 3..8) against the solver's
+``_spin_to_phys_combos``, and ``integrate`` -- all **without
+importing JAX in the test process**, so the import-time JAX-free
+guarantee is asserted directly.
 
 Fixtures are generated in JAX subprocesses (forced CPU devices, one per
 flow system, no MPI), mirroring ``tests/test_localized_rolls.py``: each
@@ -39,11 +43,13 @@ NX, NY, NZ = 8, 24, 8
 LX, LZ = 5.0, 5.0
 RE = 100.0
 
-# (system, family); families exercise both basis paths + parity (pipe).
+# (system, family); families exercise both basis paths + parity
+# (pipe) + the 9-component conformation schema (viscoelastic-dean).
 SYSTEMS = [
     ("plane-couette", "cartesian"),
     ("pipe", "cylindrical"),
     ("taylor-couette", "annular"),
+    ("viscoelastic-dean", "annular"),
     ("kolmogorov", "triply_periodic"),
 ]
 
@@ -75,13 +81,18 @@ def _generate(system: str, outdir: str) -> None:
         validate_parameters,
     )
 
-    phys: dict = {"system": system, "re": RE}
+    phys: dict = {"system": system}
     geo: dict = {"lx": LX, "lz": LZ}
+    init: dict = {}
     if system == "taylor-couette":
-        phys.update(re1=RE, re2=-RE)
+        phys.update(re1=RE, re2=-RE)  # re derives from re1
         geo["eta"] = 0.5
-    elif system == "dean":
+    elif system == "viscoelastic-dean":
+        phys.update(wi=5.0, el=5.0)  # re = wi/el = 1 (derived)
         geo["eta"] = 0.5
+        init["random_conformation_amplitude"] = 10.0
+    else:
+        phys["re"] = RE
 
     update_parameters(
         Parameters(
@@ -95,6 +106,7 @@ def _generate(system: str, outdir: str) -> None:
                 "fd_order": 4,
                 "double_precision": True,
             },
+            init=init,
             outs={},
         )
     )
@@ -123,13 +135,35 @@ def _generate(system: str, outdir: str) -> None:
         uz, up, um = state[0], state[1], state[2]
         srthz = jnp.array([uz, (up + um) / 2, -1j * (up - um) / 2])
         omega = _curl_fn(srthz, fourier, flow)
-    elif system in ("taylor-couette", "dean"):
+    elif system == "taylor-couette":
         from dnsjax.flows.wall_bounded.taylor_couette import flow, get_stats
         from dnsjax.geometries.wall_bounded.annular import _curl_fn, fourier
 
         uz, up, um = state[0], state[1], state[2]
         srthz = jnp.array([uz, (up + um) / 2, -1j * (up - um) / 2])
         omega = _curl_fn(srthz, fourier, flow)
+    elif system == "viscoelastic-dean":
+        # 9-component state; the velocity curl path is the annular one
+        # (pinned by the taylor-couette case).  The ground truth here
+        # is the *conformation* conversion: the solver's spin -> phys
+        # combos on the stored chunks, saved in the analysis component
+        # order 3..8 (c_zz, c_rz, c_thz, c_rr, c_thth, c_rth).
+        from dnsjax.flows.wall_bounded.viscoelastic_dean import get_stats
+        from dnsjax.geometries.wall_bounded.annular_viscoelastic import (
+            _spin_to_phys_combos,
+        )
+
+        c_rr, c_thth, c_rth, c_rz, c_thz, c_zz = _spin_to_phys_combos(
+            state[3], state[4], state[5], state[6], state[7], state[8]
+        )
+        conf_true = jnp.stack([c_zz, c_rz, c_thz, c_rr, c_thth, c_rth])
+        # Solver state axes (r, m, k_ax) -> snapshot-native (r, k_ax, m)
+        # (the walled on-disk layout read_state returns).
+        np.save(
+            os.path.join(outdir, "conf_true.npy"),
+            np.asarray(conf_true).transpose(0, 1, 3, 2),
+        )
+        omega = None
     else:  # triply-periodic: curl is pure Fourier, no ground-truth dump
         from dnsjax.flows.triply_periodic.monochromatic import get_stats
 
@@ -168,7 +202,9 @@ def _check_system(system: str, family: str, outdir: str) -> None:
     from dnsjax.analysis import (
         _core,
         curl,
+        derivative,
         divergence,
+        gradient,
         integrate,
         read_state,
         to_physical,
@@ -190,8 +226,10 @@ def _check_system(system: str, family: str, outdir: str) -> None:
     pshape = np.asarray(st.physical[0]).shape
     assert tuple(len(c) for c in st.physical_coords) == pshape, system
 
-    # params / stats object-like access
-    assert float(st.params.phys.re) == RE, system
+    # params / stats object-like access (viscoelastic re = wi/el = 1,
+    # rehydrated by params_namespace from the derived internal field)
+    exp_re = 1.0 if system == "viscoelastic-dean" else RE
+    assert float(st.params.phys.re) == exp_re, system
     assert st.params.phys.system == system, system
     assert st.stats is not None, system
     _ = st.stats[next(iter(st.stats.keys()))]  # item access works
@@ -214,13 +252,63 @@ def _check_system(system: str, family: str, outdir: str) -> None:
         cerr = max(_relerr(my_omega[i], raw[i]) for i in range(3))
         assert cerr < CURL_TOL, f"{system}: curl vs dnsjax {cerr:.2e}"
 
+    # viscoelastic conformation recipes vs the solver's spin -> phys
+    # conversion (components 3..8; ground truth from _generate)
+    conf_path = d / "conf_true.npy"
+    if conf_path.exists():
+        conf = read_state(
+            d / "state.tar",
+            return_physical=False,
+            return_spectral=True,
+            components=tuple(range(3, 9)),
+        )
+        truth = np.load(conf_path)
+        cerr = max(_relerr(conf.spectral[i], truth[i]) for i in range(6))
+        assert cerr < 1e-13, f"{system}: conformation recipes {cerr:.2e}"
+
+    # public derivative/gradient wrappers (wiring: axis mapping, the
+    # coord pairing, and the pipe parity requirement); u0 is u_x / u_z.
+    info = _core.geometry_info(st.params)
+    u0 = np.asarray(st.spectral[0])
+    par = {"cylindrical_parity": "u_z"} if info.family == "cylindrical" else {}
+    grad = gradient(u0, st.params, st.spectral_coords, **par)
+    for ax in range(3):
+        dax = derivative(
+            u0, info.name[ax], st.params, st.spectral_coords, **par
+        )
+        assert _relerr(grad[ax], dax) == 0.0, f"{system} grad[{ax}]"
+        if info.kind[ax] != "grid":
+            # Fourier axis: exact ik against the returned wavenumbers.
+            k = np.asarray(st.spectral_coords[ax])
+            kshape = [1, 1, 1]
+            kshape[ax] = len(k)
+            ref = 1j * k.reshape(kshape) * u0
+            assert _relerr(grad[ax], ref) < 1e-13, f"{system} d ax{ax}"
+    if info.walled and info.family != "cylindrical":
+        # Plain-D1 grid axis (the pipe's parity path is pinned by the
+        # curl-vs-solver check above).
+        from dnsjax.fd import build_diff_matrices
+
+        d1, _ = build_diff_matrices(
+            np.asarray(st.spectral_coords[0], dtype=float),
+            int(st.params.res.fd_order),
+        )
+        ref = np.einsum("ij,jkl->ikl", d1, u0)
+        assert _relerr(grad[0], ref) < 1e-12, f"{system} d1 axis"
+    if info.family == "cylindrical":
+        try:
+            derivative(u0, "r", st.params, st.spectral_coords)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("pipe radial derivative needs parity")
+
     # divergence of the divergence-free modes (drop the real-axis DC
     # plane: random_field solves continuity per axis-1 mode via 1/k, so
     # only its k=0 plane carries divergence -- left to the corrector).
     div = np.asarray(divergence(st.spectral, st.params, st.spectral_coords))
     om = curl(st.spectral, st.params, st.spectral_coords)
     scale = max(np.linalg.norm(np.asarray(o).ravel()) for o in om)
-    info = _core.geometry_info(st.params)
     div_nz = div[:, 1:, :] if info.walled else div
     rel_div = np.linalg.norm(div_nz.ravel()) / scale
     assert rel_div < DIV_TOL, f"{system}: div {rel_div:.2e}"

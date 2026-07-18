@@ -43,6 +43,18 @@ import jax  # noqa: E402
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_platforms", "cpu")
 
+from _common import (  # noqa: E402
+    IT_PROBES,
+    NX,
+    NY,
+    NZ,
+    write_probe_stream,
+)
+from _common import (  # noqa: E402
+    operator_artifacts as _operator_artifacts,
+)
+from _common import run as _run  # noqa: E402
+
 from dnsjax.parameters import (  # noqa: E402
     Parameters,
     padded_res,
@@ -51,7 +63,6 @@ from dnsjax.parameters import (  # noqa: E402
     validate_parameters,
 )
 
-NX, NY, NZ = 8, 25, 8
 update_parameters(
     Parameters(
         phys={"system": "plane-poiseuille"},
@@ -68,14 +79,10 @@ validate_parameters()
 padded_res.set_padded_resolution(params)
 
 import json  # noqa: E402
-import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 import numpy as np  # noqa: E402
-from _live import run_live  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.analysis.response import operator_tools as ot  # noqa: E402
@@ -92,7 +99,6 @@ from dnsjax.snapshot import (  # noqa: E402
 
 _REPO = Path(__file__).resolve().parent.parent.parent
 _SETUP = _REPO / "scripts" / "ensemble_setup.py"
-IT_PROBES = 10
 DT = float(params.step.dt)
 NT = 6  # probe samples per member (t_rel = 0 .. 5*IT_PROBES*DT)
 
@@ -107,17 +113,6 @@ def _make_parent(path: Path, t: float, it: int, seed: int) -> None:
         ) + 1j * rng.standard_normal(shape)
 
     save_snapshot(assemble_local_shards(fill_local), t, it, path, isnap=0)
-
-
-def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    result = run_live(cmd, **kw)
-    assert result.returncode == 0, (
-        " ".join(str(c) for c in cmd)
-        + "\n"
-        + result.stdout[-3000:]
-        + result.stderr[-3000:]
-    )
-    return result
 
 
 def _build_tree(tmp: Path) -> Path:
@@ -235,10 +230,11 @@ def test_harvest_build_and_aggregate() -> None:
                 + 1j * rng.standard_normal((NT, 1, 3, NY))
             )
             for tag, sign in (("p", +1), ("m", -1)):
-                _write_probe_stream(
+                write_probe_stream(
                     tree / f"m{k:04d}_{tag}",
-                    parent_t,
                     base + sign * eps * resp,
+                    DT,
+                    t0=parent_t,
                 )
 
         out = tmp / "response.npz"
@@ -250,37 +246,6 @@ def test_harvest_build_and_aggregate() -> None:
             assert_allclose(
                 z["t_rel"], np.arange(NT) * IT_PROBES * DT, atol=1e-12
             )
-
-
-def _write_probe_stream(directory: Path, t0: float, u: np.ndarray) -> None:
-    """Hand-written probes.bin/json for one member (mode (3,0))."""
-    nt = u.shape[0]
-    sidecar = {
-        "format_version": 1,
-        "modes": [[3, 0]],
-        "wavenumbers": [[3, 0]],
-        "n_components": 3,
-        "component_labels": ["u_x", "u_y", "u_z"],
-        "ny": NY,
-        "wall_normal_grid": [
-            float(v) for v in np.cos(np.pi * np.arange(NY) / (NY - 1))
-        ],
-        "value_dtype": "<f8",
-        "it_probes": IT_PROBES,
-        "dt": DT,
-        "system": "plane-poiseuille",
-        "double_precision": True,
-        "git_hash": "synthetic",
-        "params": {},
-    }
-    rec_dtype = np.dtype([("t", "<f8"), ("u", "<f8", (1, 3, NY, 2))])
-    rec = np.zeros(nt, dtype=rec_dtype)
-    rec["t"] = t0 + np.arange(nt) * IT_PROBES * DT
-    rec["u"][..., 0] = u.real
-    rec["u"][..., 1] = u.imag
-    with open(directory / "probes.json", "w") as f:
-        json.dump(sidecar, f)
-    (directory / "probes.bin").write_bytes(rec.tobytes())
 
 
 def test_identify_generator_units() -> None:
@@ -317,58 +282,6 @@ def test_identify_generator_units() -> None:
         pass
     else:
         raise AssertionError("mismatched shapes were accepted")
-
-
-def _operator_artifacts(tmp: Path) -> tuple[Path, Path]:
-    """Real TG operator export + controllability bundle (mode (3,0))."""
-    y = np.cos(np.pi * np.arange(NY) / (NY - 1))
-    with open(tmp / "lam.txt", "w") as f:
-        for yi, ui in zip(y, 1.0 - y**2, strict=True):
-            f.write(f"{yi:+.17e} {ui:+.17e}\n")
-    _run(
-        [
-            sys.executable,
-            "-m",
-            "dnsjax.analysis.transient_growth",
-            "--tg.profile",
-            str(tmp / "lam.txt"),
-            "--tg.out_dir",
-            str(tmp),
-            "--tg.modes",
-            "3,0",
-            "--tg.nt",
-            "9",
-            "--tg.save_operator",
-            "True",
-            "--phys.system",
-            "plane-poiseuille",
-            "--res.nx",
-            str(NX),
-            "--res.ny",
-            str(NY),
-            "--res.nz",
-            str(NZ),
-            "--res.fd_order",
-            "4",
-        ],
-        cwd=tmp,
-    )
-    op_npz = tmp / "lam_tg_op.npz"
-    cont_npz = tmp / "cont.npz"
-    _run(
-        [
-            sys.executable,
-            "-m",
-            "dnsjax.analysis.response.operator_tools",
-            "--operator",
-            str(op_npz),
-            "--n-modes",
-            "4",
-            "--out",
-            str(cont_npz),
-        ]
-    )
-    return op_npz, cont_npz
 
 
 def _synthetic_responses(

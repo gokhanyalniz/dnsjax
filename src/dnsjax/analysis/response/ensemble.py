@@ -73,6 +73,7 @@ from .probes import read_probes
 __all__ = [
     "project_series",
     "identify_generator",
+    "snap_sample_lags",
     "stability_report",
     "aggregate_tree",
     "identify_from_responses",
@@ -159,6 +160,26 @@ def identify_generator(
         "horizons": [tau for tau, _ in pairs],
         "residuals": residuals,
     }
+
+
+def snap_sample_lags(
+    lags: list[float], delta: float, prefix: str
+) -> list[int]:
+    """Snap requested lag times onto the probe grid (``>= 1`` sample).
+
+    Returns the sorted unique integer sample lags for a
+    ``delta``-spaced stream; prints a ``[prefix]`` note when distinct
+    requests collapse onto the same grid point.  Shared by the LIM
+    and SSI identification pipelines.
+    """
+    sample_lags = sorted({max(1, round(tau / delta)) for tau in lags})
+    if len(sample_lags) < len(lags):
+        print(
+            f"[{prefix}] note: requested lags collapse to "
+            f"{[lag * delta for lag in sample_lags]} on the "
+            f"{delta:g}-spaced probe grid."
+        )
+    return sample_lags
 
 
 def stability_report(l_mat: np.ndarray) -> dict:
@@ -325,7 +346,6 @@ def identify_from_responses(
     :func:`identify_generator`; the per-horizon residuals show which
     end is failing, so widen or trim the list accordingly.
     """
-    op = None
     responses: dict[int, dict] = {}
     i2 = i3 = None
     for path in response_files:

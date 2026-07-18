@@ -529,6 +529,9 @@ one-liners. Cross-cutting notes:
 - `tests/_live.py`: shared tee-ing subprocess runner (`run_live`: live
   stream + captured `CompletedProcess`, `PYTHONUNBUFFERED=1` children)
   behind every long-running test launch site.
+- `tests/response/_common.py`: shared fixtures of the response
+  identification tests (checked runner, real TG operator/basis
+  bundle, synthetic probe streams).
 - `tests/test_banded_solver.py`: geometry-independent Pallas banded
   backend.
 - `tests/test_banded_solver_sharded.py`: shard_map-local Pallas solve on
@@ -556,9 +559,10 @@ one-liners. Cross-cutting notes:
 - `tests/test_laminar_smoke.py`: laminar fixed-point smoke for all
   wall-bounded flows (subprocess/mpirun; incl. console-script,
   nz-padding and azimuthal-wedge entries).
-- `tests/test_random_smoke.py`: random-IC nonlinear integration for all
-  8 flows (+ cnab2, default-IC, multi-device-padding, chunked-RHS and
-  nan-guard entries).
+- `tests/test_random_smoke.py`: random-IC nonlinear integration for
+  the 6 distinct stepping machineries (+ cnab2, adaptive,
+  split-corrector, multi-device-padding and nan-guard entries;
+  default-IC + chunked-RHS ride the base plane-couette entry).
 - `tests/test_quasi_keplerian.py`: quasi-keplerian control-parameter
   derivation, regime/validation errors, and the azimuthal-wedge Fourier
   + nonlinear/physical-space units.
@@ -585,9 +589,10 @@ one-liners. Cross-cutting notes:
 - `tests/test_snapshot_import.py`: `scripts/snapshot_import.py`
   native-contract validation (offline).
 - `tests/test_snapshot_export.py`: `dnsjax.analysis` API vs solver
-  ground truth (JAX-free import guarantee, curl parity).
-- `tests/test_rolls_smoke.py`: localized-rolls IC integration for the 5
-  wall-bounded flows.
+  ground truth (JAX-free import guarantee, curl + viscoelastic-
+  conformation parity, derivative/gradient wiring).
+- `tests/test_rolls_smoke.py`: localized-rolls IC integration for the
+  4 wall-bounded rolls-builder variants (short horizon).
 - `tests/test_localized_rolls.py`: rolls construction self-test.
 - `tests/test_transient_growth.py`: transient-growth analysis (host
   units, per-flow hooks, CLI features, per-flow literature anchors, and
