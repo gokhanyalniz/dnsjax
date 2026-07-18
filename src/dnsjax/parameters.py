@@ -267,13 +267,6 @@ class Physics(BaseModel):
             "(default 3 = the 3/2 rule)."
         ),
     )
-    oversample_y: bool = Field(
-        default=True,
-        description=(
-            "Also oversample the shear (y) direction of the periodic "
-            "box when dealiasing."
-        ),
-    )
     driving: Literal[
         "constant_pressure_gradient", "constant_bulk_velocity"
     ] = Field(
@@ -1858,11 +1851,7 @@ class PaddedResolution:
     nx_padded: int = params.phys.oversampling_factor * params.res.nx // 2
     ny_padded: int | None = None
     if params.phys.system in periodic_systems:
-        ny_padded = (
-            params.phys.oversampling_factor * params.res.ny // 2
-            if params.phys.oversample_y
-            else params.res.ny
-        )
+        ny_padded = params.phys.oversampling_factor * params.res.ny // 2
     nz_padded: int = params.phys.oversampling_factor * params.res.nz // 2
     notes: list[str] = field(default_factory=list)
 
@@ -1920,11 +1909,6 @@ class PaddedResolution:
         real-FFT axis, never sharded in physical space).
         """
         self.notes = []
-        if (
-            parameters.phys.system in periodic_systems
-            and not parameters.phys.oversample_y
-        ):
-            print("WARNING: y is *not* oversampled!")
 
         self.nx_padded = (
             parameters.phys.oversampling_factor * parameters.res.nx // 2
@@ -1932,8 +1916,6 @@ class PaddedResolution:
         if parameters.phys.system in periodic_systems:
             self.ny_padded = (
                 parameters.phys.oversampling_factor * parameters.res.ny // 2
-                if parameters.phys.oversample_y
-                else parameters.res.ny
             )
         else:
             self.ny_padded = None

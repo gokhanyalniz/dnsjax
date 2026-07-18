@@ -168,7 +168,7 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
 ]
 
 # Periodic systems (must match dnsjax.parameters.periodic_systems).
-_PERIODIC = {"kolmogorov", "waleffe", "decaying-box"}
+_PERIODIC = {"kolmogorov", "waleffe"}
 
 # Viscoelastic systems carry 9 state components (3 velocity + 6
 # symmetric conformation-tensor); must match ``snapshot._n_components``.

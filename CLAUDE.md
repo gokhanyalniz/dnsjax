@@ -2,7 +2,7 @@
 
 `dnsjax` is a GPU-accelerated pseudo-spectral + finite-differences DNS
 solver for the 3D incompressible Navier-Stokes equations, written in
-JAX. Flow systems: triply-periodic (Kolmogorov, Waleffe, decaying-box)
+JAX. Flow systems: triply-periodic (Kolmogorov, Waleffe)
 and wall-bounded (plane-Couette, plane-Poiseuille, pipe, Taylor-Couette,
 quasi-Keplerian, force-driven Dean, and viscoelastic (sPTT) Dean with a
 coupled conformation tensor). Two selectable second-order time
@@ -199,7 +199,7 @@ flows/
                       viscoelastic_dean -- base flows/driving in
                       wall_bounded/CLAUDE.md; specs/ holds their
                       JAX-free parameter FlowSpecs
-  triply_periodic/    monochromatic.py: Kolmogorov/Waleffe/decaying-box;
+  triply_periodic/    monochromatic.py: Kolmogorov/Waleffe;
                       specs/ holds their JAX-free parameter FlowSpecs
 analysis/             External-facing JAX-free snapshot post-processing
                       API (+ the JAX-based transient_growth CLI and the

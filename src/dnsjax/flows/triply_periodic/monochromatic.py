@@ -1,4 +1,4 @@
-"""Triply-periodic flows: Kolmogorov, Waleffe, and decaying-box.
+"""Triply-periodic flows: Kolmogorov and Waleffe.
 
 This module defines the ``MonochromaticFlow`` dataclass that holds all
 precomputed, flow-specific data: base flow, forcing, and laminar-state
@@ -34,7 +34,6 @@ Fourier harmonic (`$q_f = 1$`):
     -- coefficient `-0.5j` at mode `$q_f$`
 - Waleffe:    `$U = \\cos(2\\pi y/L_y)$`
     -- coefficient `+0.5` at mode `$q_f$`
-- Decaying-box: `$U = 0$`
 
 The base flow is transformed to physical space on the 3/2-oversampled
 grid for use in the nonlinear term.  Its curl
@@ -123,10 +122,6 @@ class MonochromaticFlow(TriplyPeriodicFlow):
             self.input_lam = jnp.pi**2 / (8 * params.phys.re)
             self.dissip_lam = self.input_lam
 
-        elif self._system == "decaying-box":
-            self.ekin_lam = 0.0
-            self.input_lam = 0.0
-            self.dissip_lam = 0.0
         else:
             raise NotImplementedError
 
