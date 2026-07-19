@@ -55,23 +55,35 @@ wall) -- the same structure as the Cartesian Kleiser-Schumann method, but
 with the cylindrical `$u_\pm$` divergence and pressure-gradient operators.
 See :func:`_imm_iteration`.
 
-Base flow and driving
----------------------
-The flow is **shear-driven** by the rotating walls (no mean axial
-pressure gradient), so its diagnostics resemble plane-Couette rather than
-pipe.  The base flow is the azimuthal circular-Couette profile
-`$U_\theta(r) = A_0 r + B_0/r$` set by the flow subclass; the only base
-coupling enters through the rotational-form nonlinear term (see
-``rhs.py``) via ``base_flow`` and ``curl_base_flow``, exactly as for the
-other wall-bounded flows -- no hand-coded coupling terms.  An optional
-``block_mean_spanwise_velocity`` zeroes the mean **axial** velocity (the
-undriven homogeneous direction); the azimuthal mean evolves freely.
+Driving: shear-driven and force-driven flows
+--------------------------------------------
+The geometry supports two driving modes via the same infrastructure:
 
-Flow-specific modules (e.g. ``flows.wall_bounded.taylor_couette``)
-subclass ``AnnularFlow`` to define the base flow, then call
-``build_annular_stepper`` to obtain ready-to-use time-stepping functions.
+- **Shear-driven** (Taylor-Couette): the rotating walls set an azimuthal
+  circular-Couette base flow `$U_\theta(r) = A_0 r + B_0/r$` and the
+  perturbation `$\mathbf{u}'$` is integrated.  The base coupling enters
+  only through the rotational-form nonlinear term (see ``rhs.py``) via
+  ``base_flow`` and ``curl_base_flow`` -- no hand-coded coupling terms.
+- **Force-driven** (Dean flow): both walls are stationary and the
+  **total** velocity is integrated (``base_flow = curl_base_flow = 0``,
+  so the rotational term computes the full `$(\nabla\times\mathbf{u})
+  \times\mathbf{u}$`).  An azimuthally-/axially-uniform, radius-dependent
+  azimuthal body force is supplied through ``AnnularFlow.pi_theta`` (a
+  radial profile, zero by default) and added at the mean mode by
+  :func:`_get_rhs_core`.  See ``flows.wall_bounded.dean`` and
+  :func:`dean_laminar_u_theta`.
+
+An optional ``block_mean_spanwise_velocity`` zeroes the mean **axial**
+velocity (the undriven homogeneous direction); the azimuthal mean
+evolves freely.
+
+Flow-specific modules (e.g. ``flows.wall_bounded.taylor_couette``,
+``flows.wall_bounded.dean``) subclass ``AnnularFlow``, set the base flow
+and/or ``pi_theta``, then call ``build_annular_stepper`` to obtain
+ready-to-use time-stepping functions.
 """
 
+import copy
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -84,6 +96,7 @@ from jax.sharding import PartitionSpec as P
 from ...fd import (
     build_diff_matrices,
     build_integration_weights,
+    clenshaw_curtis_weights,
     local_grid_spacing,
     tanh_two_sided_grid,
 )
@@ -100,16 +113,20 @@ from ...rhs import get_nonlin
 from ...sharding import register_dataclass_pytree, sharding
 from ...solvers import (
     DenseJAXSolver,
-    PerModeBandedOperator,
-    _extract_banded_corners,
-    _spike_factor,
-    _stack_banded_operators,
-    validate_spike_partition,
+    PerModeBandedPallasOperator,
+    _assemble_banded_operator,
+    _banded_diag_column,
+    _banded_from_dense,
+    _banded_wall_row,
+    _build_pallas_operator,
+    _factor_pallas_operator,
 )
 from ._base import (
     apply_y_matrix,
+    base_flow_coupling,
     build_wall_bounded_stepper,
     extract_mean_mode,
+    frozen_profile_flow,  # noqa: F401 — re-exported
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
     get_norm2,
@@ -134,7 +151,9 @@ class Fourier:
     - ``kz``: shape ``(1, 1, nx//2)`` -- axial wavenumber (real FFT on
       the streamwise ``x`` parameter direction, period ``geo.lx``).
     - ``m``: shape ``(1, nz-1, 1)`` -- azimuthal mode number (complex
-      FFT on the ``z`` parameter direction with `$l_z = 2\pi$`).
+      FFT on the ``z`` parameter direction with `$l_z = 2\pi/m_0$`);
+      the resolved modes are the integer multiples `$m = m_0 j$` of the
+      wedge fundamental `$m_0$` (``geo.m0``; `$m_0 = 1$` full circle).
 
     The coordinate mapping is:
 
@@ -176,10 +195,16 @@ class Fourier:
             P(None, None, sharding.a1),
         )
 
-        m_vals = pad_harmonics(
-            complex_harmonics(params.res.nz),
-            params.res.nz,
-            sharding.nz_spec_pad,
+        # Azimuthal wavenumbers m = m0 * harmonic over the wedge
+        # l_z = 2*pi/m0 (m0 = 1 is the full circle).  The integer
+        # multiply is exact and keeps the padding placeholders nonzero.
+        m_vals = (
+            pad_harmonics(
+                complex_harmonics(params.res.nz),
+                params.res.nz,
+                sharding.nz_spec_pad,
+            )
+            * params.geo.m0
         )
         self.m = jax.device_put(
             m_vals.reshape([1, -1, 1]).astype(sharding.float_type),
@@ -250,7 +275,7 @@ def get_norm2_annular(
     return pm_norm2 / 2 + uz_norm2
 
 
-def get_pert_enstrophy_annular(
+def get_enstrophy_annular(
     state: Array,
     D1: Array,
     inv_r: Array,
@@ -259,16 +284,19 @@ def get_pert_enstrophy_annular(
     k_metric: Array,
     y_weights: Array,
 ) -> Array:
-    r"""Perturbation enstrophy for the annular geometry.
+    r"""Enstrophy `$\langle |\nabla \mathbf{u}|^2 \rangle$` of the
+    given annular state.
 
-    Uses the identity
-    `$\Omega' = \langle |\nabla \mathbf{u}'|^2 \rangle$`, split into
+    Geometry-general: the *state* may be a perturbation `$\mathbf{u}'$`
+    (shear-driven Taylor-Couette) or the total field `$\mathbf{u}$`
+    (force-driven Dean flow).  Uses the identity split into
     radial-derivative, azimuthal, and axial terms:
 
     .. math::
-        \Omega' = \langle |D_1 \mathbf{u}'|^2 \rangle
-        + \langle |m_{\mathrm{eff}}/r\;\mathbf{u}'|^2 \rangle
-        + \langle k_z^2\,|\mathbf{u}'|^2 \rangle
+        \langle |\nabla \mathbf{u}|^2 \rangle
+        = \langle |D_1 \mathbf{u}|^2 \rangle
+        + \langle |m_{\mathrm{eff}}/r\;\mathbf{u}|^2 \rangle
+        + \langle k_z^2\,|\mathbf{u}|^2 \rangle
 
     where `$m_{\mathrm{eff}} = m$` for `$u_z$`, `$m + 1$` for `$u_+$`,
     `$m - 1$` for `$u_-$`.  Unlike the cylindrical version the radial
@@ -358,7 +386,11 @@ def build_annular_grid(
         Integration weights with radial Jacobian `$w_j r_j$`,
         satisfying `$\sum_j w_j r_j f_j \approx
         \int_{r_1}^{r_2} f\,r\,dr$` (the grid spans the full annulus,
-        so no edge extension is needed).
+        so no edge extension is needed).  For the default CGL grid
+        these are affine-mapped **Clenshaw-Curtis** weights
+        (spectral for smooth integrands, exact for the smooth
+        base/mean profiles); custom / tanh grids fall back to the
+        ``fd_order`` composite rule.
     inv_r:
         `$1/r$` on the grid, shape ``(ny,)``.
     """
@@ -382,15 +414,105 @@ def build_annular_grid(
     elif grid_type == "tanh":
         xi = tanh_two_sided_grid(ny, grid_stretch)  # [-1, 1]
         rs = jnp.asarray(mid + half * xi, dtype=sharding.float_type)
+        is_cgl = False
     else:
         xi = -np.cos(np.arange(ny) * np.pi / (ny - 1))  # CGL [-1, 1]
         rs = jnp.asarray(mid + half * xi, dtype=sharding.float_type)
+        is_cgl = True
 
     inv_r = 1.0 / rs
-    w = build_integration_weights(np.asarray(rs), fd_order)
-    y_weights = jnp.asarray(w, dtype=sharding.float_type) * rs
+    if is_cgl:
+        # The default annular grid is a CGL grid affinely mapped to
+        # [r1, r2], so Clenshaw-Curtis quadrature applies: with
+        # dr = half * dxi,  int_{r1}^{r2} f r dr = half * int_{-1}^1
+        # f(r(xi)) r(xi) dxi.  Fold the affine scale and the Jacobian
+        # r_j into the CC weights.  Spectral for smooth integrands
+        # (exact for the smooth base / mean profiles: flow rate,
+        # bulk-velocity response) -- there is no axis, so no parity
+        # subtlety.
+        y_weights = (
+            jnp.asarray(
+                half * clenshaw_curtis_weights(ny), dtype=sharding.float_type
+            )
+            * rs
+        )
+    else:
+        # Custom / tanh grids are not CGL: use the general fd_order
+        # composite rule times the Jacobian.
+        w = build_integration_weights(np.asarray(rs), fd_order)
+        y_weights = jnp.asarray(w, dtype=sharding.float_type) * rs
     D1, D2 = build_diff_matrices(np.asarray(rs), fd_order)
     return rs, D1, D2, y_weights, inv_r
+
+
+def annular_forced_laminar_u_theta(
+    rs: Array, r1: float, r2: float, C: float
+) -> Array:
+    r"""Analytical laminar azimuthal profile for an annular body force.
+
+    Closed-form steady solution of the azimuthal momentum balance
+    `$(1/\mathrm{Re})\,(\nabla^2 \mathbf{U})_\theta + \Pi_\theta = 0$`
+    for a radius-dependent azimuthal body force
+    `$\Pi_\theta = C/(r\,\mathrm{Re})$` with no-slip walls
+    `$U_\theta(r_1) = U_\theta(r_2) = 0$`.  The `$1/\mathrm{Re}$`
+    cancels, so the profile is **Reynolds-independent**:
+
+    .. math::
+        U_\theta(r) = -\tfrac{C}{2}\,r\ln r + \alpha\,r
+        + \frac{\beta}{r},
+
+    where the wall conditions fix
+
+    .. math::
+        \alpha = \frac{C}{2}\,
+        \frac{r_1^2 \ln r_1 - r_2^2 \ln r_2}{r_1^2 - r_2^2},
+        \qquad
+        \beta = \frac{C}{2}\,
+        \frac{(r_1 r_2)^2 (\ln r_2 - \ln r_1)}{r_1^2 - r_2^2}.
+
+    Shared by the two force-driven annular flows: Newtonian Dean
+    (:func:`dean_laminar_u_theta`, `$C = 2(r_1 + r_2)$`) and the
+    viscoelastic sPTT flow (`$C = r_1 + r_2$`, the reference
+    normalisation).  Pure function (no flow construction), so it is
+    importable both by the ``start_from_laminar`` state and by
+    :mod:`dnsjax.random_field` (the total-field IC = laminar profile +
+    perturbation).
+
+    Parameters
+    ----------
+    rs:
+        Radial grid on `$[r_1, r_2]$`, shape ``(Nr,)``.
+    r1, r2:
+        Inner / outer non-dim radii.
+    C:
+        Body-force coefficient (`$\Pi_\theta = C/(r\,\mathrm{Re})$`).
+    """
+    denom = r1**2 - r2**2
+    alpha = (C / 2.0) * (r1**2 * np.log(r1) - r2**2 * np.log(r2)) / denom
+    beta = (C / 2.0) * (r1 * r2) ** 2 * (np.log(r2) - np.log(r1)) / denom
+    return -(C / 2.0) * rs * jnp.log(rs) + alpha * rs + beta / rs
+
+
+def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
+    r"""Analytical laminar Dean-flow azimuthal profile `$U_\theta(r)$`.
+
+    Thin wrapper over :func:`annular_forced_laminar_u_theta` for the
+    Newtonian Dean body force
+    `$\Pi_\theta = (2\eta + 2)/(r\,\mathrm{Re}\,(1 - \eta))$`, i.e.
+    `$C = 2(\eta + 1)/(1 - \eta) = 2(r_1 + r_2)$` on the gap-1 radii
+    `$r_1 = \eta/(1-\eta)$`, `$r_2 = 1/(1-\eta)$`.
+
+    Parameters
+    ----------
+    rs:
+        Radial grid on `$[r_1, r_2]$`, shape ``(Nr,)``.
+    eta:
+        Radius ratio `$\eta = r_1/r_2$`.
+    """
+    C = 2.0 * (eta + 1.0) / (1.0 - eta)
+    r1 = eta / (1.0 - eta)
+    r2 = 1.0 / (1.0 - eta)
+    return annular_forced_laminar_u_theta(rs, r1, r2, C)
 
 
 # ── Operator builders ──────────────────────────────────────────────
@@ -402,7 +524,10 @@ def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
     return D2 + inv_r[:, None] * D1
 
 
-def _build_Lk_blocks_gpu(
+# ── Pallas-backend banded operator builders ───────────────────────
+
+
+def _build_Lk_band_gpu(
     D1: Array,
     A_base: Array,
     m2: Array,
@@ -410,58 +535,32 @@ def _build_Lk_blocks_gpu(
     kz2: Array,
     mean_mask: Array,
     p: int,
-    P: int,
-    m_blk: int,
-) -> tuple[Array, Array, Array]:
-    r"""Build SPIKE block-partitioned `$L_k$` on GPU.
+) -> Array:
+    r"""Build `$L_k$` in banded storage for the Pallas backend.
 
-    .. math::
-        L_k = A_{\mathrm{base}} - (m^2/r^2 + k_z^2)\,I
-
-    with Neumann wall rows at both walls (inner row 0 = `$D_1[0,:]$`,
-    outer row -1 = `$D_1[-1,:]$`) and a pin `$[0,\ldots,0,1]$` at the
-    outer wall for the mean mode (the only `$k^2 = 0$` system).  The
-    `$m^2/r^2$` shift is per radial point.  No parity selection (single
-    `$A_{\mathrm{base}}$` for all blocks); the two-wall row-setting
-    mirrors the Cartesian builder.
+    Same operator as :func:`_build_Lk_dense_gpu`
+    (`$L_k = A_{\mathrm{base}} - (m^2/r^2 + k_z^2) I$`), assembled
+    directly in banded layout ``(Nm, Nkz, Nr, 2p+1)`` from the base
+    band ``_banded_from_dense(A_base, p)``, with no ``(Nr, Nr)`` per
+    mode.  The two-wall row-setting mirrors the Cartesian builder:
+    Neumann `$D_1$` rows at the inner (row 0) and outer (row Nr-1)
+    walls, with a mean-mode identity pin at the outer wall.  No parity
+    selection (single `$A_{\mathrm{base}}$`).
     """
-    dtype = A_base.dtype
-    eye_m = jnp.eye(m_blk, dtype=dtype)
-    m2_over_r2 = m2 * inv_r2  # (Nm, 1, Nr)
-
-    A_blks = jnp.stack(
-        [
-            A_base[i * m_blk : (i + 1) * m_blk, i * m_blk : (i + 1) * m_blk]
-            for i in range(P)
-        ]
-    )  # (P, m_blk, m_blk)
-
-    blocks = []
-    for i in range(P):
-        r_slice = slice(i * m_blk, (i + 1) * m_blk)
-        shift = -(m2_over_r2[..., r_slice] + kz2)  # (Nm, Nkz, m_blk)
-        block = A_blks[i][None, None] + shift[..., None] * eye_m
-        blocks.append(block)
-    A_blocks = jnp.stack(blocks, axis=2)  # (Nm, Nkz, P, m_blk, m_blk)
-
-    # Inner wall (block 0, local row 0): Neumann D1[0, :m_blk].
-    A_blocks = A_blocks.at[:, :, 0, 0, :].set(D1[0, :m_blk][None, None])
-
-    # Outer wall (block P-1, local row m_blk-1): Neumann D1[-1, ...] for
-    # all modes, pin [...,0,1] at the mean mode.
-    D1_rowN = D1[-1, (P - 1) * m_blk :]
-    pin_row = jnp.zeros(m_blk, dtype=dtype).at[-1].set(1.0)
-    rowN = jnp.where(mean_mask, pin_row, D1_rowN)
-    A_blocks = A_blocks.at[:, :, -1, -1, :].set(rowN)
-
-    B_raw, C_raw = _extract_banded_corners(A_base, P, m_blk, p)
-    batch = m2.shape[:1] + kz2.shape[1:2] + (P, p, p)
-    B_corner = jnp.broadcast_to(B_raw[None, None], batch)
-    C_corner = jnp.broadcast_to(C_raw[None, None], batch)
-    return A_blocks, B_corner, C_corner
+    Nr = A_base.shape[0]
+    band_base = _banded_from_dense(A_base, p)  # (Nr, 2p+1)
+    diag = -(m2 * inv_r2 + kz2)  # (Nm, Nkz, Nr)
+    inner = _banded_wall_row(D1[0], 0, p)  # Neumann, inner wall
+    neumann_outer = _banded_wall_row(D1[-1], Nr - 1, p)  # Neumann, outer
+    outer = jnp.where(
+        mean_mask, _banded_diag_column(p, band_base.dtype), neumann_outer
+    )  # (Nm, Nkz, 2p+1)
+    return _assemble_banded_operator(
+        band_base, 1.0, diag, [(0, inner), (Nr - 1, outer)]
+    )
 
 
-def _build_Hk_blocks_gpu(
+def _build_Hk_band_gpu(
     A_base: Array,
     meff2: Array,
     inv_r2: Array,
@@ -470,49 +569,23 @@ def _build_Hk_blocks_gpu(
     c: float,
     nu: float,
     p: int,
-    P: int,
-    m_blk: int,
-) -> tuple[Array, Array, Array]:
-    r"""Build SPIKE block-partitioned `$H_k$` on GPU.
+) -> Array:
+    r"""Build one `$H_k$` Helmholtz operator in banded storage.
 
-    .. math::
-        H_k = \frac{1}{\Delta t}\,I
-        + c\nu\bigl(m_{\mathrm{eff}}^2/r^2 + k_z^2\bigr)\,I
-        - c\nu\,A_{\mathrm{base}}
-
-    with Dirichlet no-slip identity rows at **both** walls (rows 0 and
-    -1).  The caller supplies `$m_{\mathrm{eff}}^2$` for the component.
+    Banded analogue of :func:`_build_Hk_dense_gpu`, laid out as
+    ``(Nm, Nkz, Nr, 2p+1)``:
+    `$H_k = (1/\Delta t) I + c\nu (m_{\mathrm{eff}}^2/r^2 + k_z^2) I
+    - c\nu A_{\mathrm{base}}$` with Dirichlet no-slip identity rows at
+    **both** walls.  The caller supplies `$m_{\mathrm{eff}}^2$` for the
+    component.
     """
-    dtype = A_base.dtype
-    eye_m = jnp.eye(m_blk, dtype=dtype)
-    meff2_over_r2 = meff2 * inv_r2  # (Nm, 1, Nr)
-
-    A_blks = jnp.stack(
-        [
-            A_base[i * m_blk : (i + 1) * m_blk, i * m_blk : (i + 1) * m_blk]
-            for i in range(P)
-        ]
+    Nr = A_base.shape[0]
+    band_base = _banded_from_dense(A_base, p)
+    diag = 1.0 / dt + c * nu * (meff2 * inv_r2 + kz2)  # (Nm, Nkz, Nr)
+    eN = _banded_diag_column(p, band_base.dtype)  # identity wall row
+    return _assemble_banded_operator(
+        band_base, -c * nu, diag, [(0, eN), (Nr - 1, eN)]
     )
-
-    blocks = []
-    for i in range(P):
-        r_slice = slice(i * m_blk, (i + 1) * m_blk)
-        diag_val = 1.0 / dt + c * nu * (meff2_over_r2[..., r_slice] + kz2)
-        block = -c * nu * A_blks[i][None, None] + diag_val[..., None] * eye_m
-        blocks.append(block)
-    A_blocks = jnp.stack(blocks, axis=2)
-
-    # Dirichlet no-slip wall rows at both walls.
-    e0 = jnp.zeros(m_blk, dtype=dtype).at[0].set(1.0)
-    eN = jnp.zeros(m_blk, dtype=dtype).at[-1].set(1.0)
-    A_blocks = A_blocks.at[:, :, 0, 0, :].set(e0[None, None])
-    A_blocks = A_blocks.at[:, :, -1, -1, :].set(eN[None, None])
-
-    B_raw, C_raw = _extract_banded_corners(A_base, P, m_blk, p, scale=-c * nu)
-    batch = meff2.shape[:1] + kz2.shape[1:2] + (P, p, p)
-    B_corner = jnp.broadcast_to(B_raw[None, None], batch)
-    C_corner = jnp.broadcast_to(C_raw[None, None], batch)
-    return A_blocks, B_corner, C_corner
 
 
 def _build_Lk_dense_gpu(
@@ -564,6 +637,8 @@ def _build_Hk_dense_gpu(
 
 # ── AnnularFlow base dataclass ─────────────────────────────────────
 
+_WallBoundedOp = DenseJAXSolver | PerModeBandedPallasOperator
+
 
 @register_dataclass_pytree
 @dataclass
@@ -585,6 +660,10 @@ class AnnularFlow:
         Radial grid `$r_j$`, `$1/r_j$`, `$1/r_j^2$`.
     y_weights:
         Integration weights with radial Jacobian `$w_j r_j$`.
+    pi_theta:
+        Mean-mode azimuthal body force on the radial grid, shape
+        ``(Nr,)``; zero for shear-driven flows, set by force-driven
+        subclasses (Dean flow).
     D1, D2:
         First/second-derivative FD matrices, shape ``(Nr, Nr)``.
     D1_bnd:
@@ -601,13 +680,19 @@ class AnnularFlow:
     h_bulk_response, H_bulk_inv:
         Axial-bulk-blocking response (zero unless
         ``block_mean_spanwise_velocity``).
+    dt, ab2_kappa:
+        Live time step and AB2 step ratio, 0-d array leaves (see
+        ``CartesianFlow`` and the builder ``set_dt``).
     """
 
+    dt: Array = field(init=False)
+    ab2_kappa: Array = field(init=False)
     rs: Array = field(init=False)
     inv_r: Array = field(init=False)
     inv_r2: Array = field(init=False)
     y_weights: Array = field(init=False)
     cfl_inv_spacing: Array = field(init=False)
+    pi_theta: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
     base_flow_padded: Array = field(init=False)
@@ -617,8 +702,8 @@ class AnnularFlow:
     D2: Array = field(init=False)
     D1_bnd: Array = field(init=False)
     A_base: Array = field(init=False)
-    Lk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
-    Hk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
+    Lk_op: _WallBoundedOp = field(init=False)
+    Hk_op: _WallBoundedOp = field(init=False)
     v_plus_1: Array = field(init=False)
     v_minus_1: Array = field(init=False)
     q_z_1: Array = field(init=False)
@@ -651,13 +736,13 @@ class AnnularFlow:
         # per physical component (u_z, u_r, u_theta), zero in the
         # ny_y_pad rows.  Axial uses the spectral spacing L/n; radial the
         # local grid spacing; azimuthal the arc length r*dtheta with
-        # dtheta = 2*pi/nz (theta period is the literal 2*pi).
+        # dtheta = lz/nz (theta period lz = 2*pi/m0 over the wedge).
         inv_sp = np.zeros(
             (3, Nr + sharding.ny_y_pad), dtype=sharding.float_type
         )
         inv_sp[0, :Nr] = params.res.nx / params.geo.lx
         inv_sp[1, :Nr] = 1.0 / local_grid_spacing(np.asarray(self.rs))
-        inv_sp[2, :Nr] = np.asarray(self.inv_r) * params.res.nz / (2 * np.pi)
+        inv_sp[2, :Nr] = np.asarray(self.inv_r) * params.res.nz / params.geo.lz
         self.cfl_inv_spacing = jax.device_put(
             inv_sp[:, :, None, None], sharding.no_shard
         )
@@ -675,27 +760,36 @@ class AnnularFlow:
         self.inv_r2 = jax.device_put(self.inv_r2, sharding.no_shard)
         self.y_weights = jax.device_put(self.y_weights, sharding.no_shard)
 
+        # Mean-mode azimuthal body force on the radial grid, zero by
+        # default.  Force-driven subclasses (Dean flow) overwrite it;
+        # applied at the mean mode by ``_get_rhs_core``.
+        self.pi_theta = jnp.zeros(
+            Nr, dtype=sharding.float_type, out_sharding=sharding.no_shard
+        )
+
         Nm = sharding.nz_spec
         Nkz = sharding.nx_spec
 
         fd_p = params.res.fd_order
         dt = params.step.dt
-        c_impl = params.step.implicitness
-        nu = 1.0 / params.phys.re
+
+        # Live-dt pytree leaves (class docstring; rebuilt by the
+        # builder's ``set_dt`` with identical dtype/shape).
+        self.dt = jnp.asarray(dt, dtype=sharding.float_type)
+        self.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
 
         # Solver-internal wavenumber arrays.
         m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
         kz2_s = fourier.kz2[0, ..., None]  # (1, Nkz, 1)
         mean_s = fourier.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
-        m_plus_1_sq = (m_s + 1) ** 2
-        m_minus_1_sq = (m_s - 1) ** 2
         m_sq = m_s**2
 
-        if params.solver.backend == "banded":
-            bt = params.solver.block_thomas
-            P_blk, m_blk = validate_spike_partition(Nr, fd_p, "Nr", bt)
-
-            Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
+        if params.solver.backend == "pallas":
+            # Pallas backend: one-program-per-mode banded sweep.
+            # Operators are assembled directly in banded storage (no
+            # (Nr, Nr) per mode) and factored by the setup-checked
+            # no-pivot banded LU (_build_pallas_operator).
+            Lk_band = _build_Lk_band_gpu(
                 self.D1,
                 self.A_base,
                 m_sq,
@@ -703,59 +797,24 @@ class AnnularFlow:
                 kz2_s,
                 mean_s,
                 fd_p,
-                P_blk,
-                m_blk,
             )
-            self.Lk_op = _spike_factor(Lk_A, Lk_B, Lk_C, bt)
-            del Lk_A, Lk_B, Lk_C
+            self.Lk_op = _build_pallas_operator([Lk_band], "Lk")
+            del Lk_band
 
-            Hp_A, Hp_B, Hp_C = _build_Hk_blocks_gpu(
-                self.A_base,
-                m_plus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-                P_blk,
-                m_blk,
+            # Hk group (plus, minus, z): stacked into one homogeneous
+            # operator and stability-checked as a single group.
+            if params.step.adaptive:
+                # Verify the no-pivot LU where the Helmholtz
+                # diagonal is least dominant; adaptive rebuilds at
+                # dt <= dt_max then skip the check
+                # (solvers._factor_pallas_operator).
+                _build_pallas_operator(
+                    _hk_bands(params.step.dt_max, fourier, self),
+                    "Hk(dt_max)",
+                )
+            self.Hk_op = _build_pallas_operator(
+                _hk_bands(dt, fourier, self), "Hk"
             )
-            op_p = _spike_factor(Hp_A, Hp_B, Hp_C, bt)
-            del Hp_A, Hp_B, Hp_C
-
-            Hm_A, Hm_B, Hm_C = _build_Hk_blocks_gpu(
-                self.A_base,
-                m_minus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-                P_blk,
-                m_blk,
-            )
-            op_m = _spike_factor(Hm_A, Hm_B, Hm_C, bt)
-            del Hm_A, Hm_B, Hm_C
-
-            Hz_A, Hz_B, Hz_C = _build_Hk_blocks_gpu(
-                self.A_base,
-                m_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-                P_blk,
-                m_blk,
-            )
-            op_z = _spike_factor(Hz_A, Hz_B, Hz_C, bt)
-            del Hz_A, Hz_B, Hz_C
-
-            self.Hk_op = _stack_banded_operators(op_p, op_m, op_z)
-            del op_p, op_m, op_z
         else:
             Lk_dense = _build_Lk_dense_gpu(
                 self.D1, self.A_base, m_sq, self.inv_r2, kz2_s, mean_s
@@ -763,46 +822,15 @@ class AnnularFlow:
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
 
-            Hp_dense = _build_Hk_dense_gpu(
-                self.A_base, m_plus_1_sq, self.inv_r2, kz2_s, dt, c_impl, nu
-            )
-            Hk_plus_solver = DenseJAXSolver(Hp_dense)
-            del Hp_dense
+            # Combined Hk: component order (plus, minus, z).
+            self.Hk_op = _hk_dense_op(dt, fourier, self)
 
-            Hm_dense = _build_Hk_dense_gpu(
-                self.A_base, m_minus_1_sq, self.inv_r2, kz2_s, dt, c_impl, nu
-            )
-            Hk_minus_solver = DenseJAXSolver(Hm_dense)
-            del Hm_dense
+        self._derive_imm_homogeneous_data(fourier, Nm, Nkz, Nr)
+        self._precompute_bulk_response(fourier, Nm, Nkz, Nr)
 
-            Hz_dense = _build_Hk_dense_gpu(
-                self.A_base, m_sq, self.inv_r2, kz2_s, dt, c_impl, nu
-            )
-            Hk_z_solver = DenseJAXSolver(Hz_dense)
-            del Hz_dense
-
-            self.Hk_op = DenseJAXSolver.from_factors(
-                lu=jnp.stack(
-                    [
-                        Hk_plus_solver.lu,
-                        Hk_minus_solver.lu,
-                        Hk_z_solver.lu,
-                    ]
-                ),
-                perm=jnp.stack(
-                    [
-                        Hk_plus_solver.perm,
-                        Hk_minus_solver.perm,
-                        Hk_z_solver.perm,
-                    ]
-                ),
-            )
-            del Hk_plus_solver, Hk_minus_solver, Hk_z_solver
-
-        self._derive_imm_homogeneous_data(Nm, Nkz, Nr)
-        self._precompute_bulk_response(Nm, Nkz, Nr)
-
-    def _derive_imm_homogeneous_data(self, Nm: int, Nkz: int, Nr: int) -> None:
+    def _derive_imm_homogeneous_data(
+        self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
+    ) -> None:
         r"""Fill the homogeneous responses and the `$2 \times 2$`
         ``M_inv`` on-device.
 
@@ -817,7 +845,14 @@ class AnnularFlow:
         mean mode (where `$d_{\mathrm{wall}} = 0$`, so the correction
         vanishes regardless).
         """
-        # Solver-internal layout (Nm, Nkz, Nr).
+        # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
+        # layout: the influence-matrix einsums below operate on it and
+        # the results are transposed to field layout (Nr, Nm, Nkz) at
+        # the end.  ``.solve`` now takes a mode-inner field, so each
+        # setup solve is wrapped (transpose in, transpose out) to keep
+        # this layout.  FUTURE: rebuild this setup natively mode-inner to
+        # drop the wrappers -- the hot path already is; here it only
+        # relocates a one-time transpose, so it is deferred.
         e_inner = (
             jnp.zeros(
                 (Nm, Nkz, Nr),
@@ -836,12 +871,12 @@ class AnnularFlow:
             .at[..., -1]
             .set(1.0)
         )
-        p1_s = self.Lk_op.solve(e_inner)
-        p2_s = self.Lk_op.solve(e_outer)
+        p1_s = self.Lk_op.solve(e_inner.transpose(2, 0, 1)).transpose(1, 2, 0)
+        p2_s = self.Lk_op.solve(e_outer.transpose(2, 0, 1)).transpose(1, 2, 0)
 
-        m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
+        m_s = fourier_.m[0, ..., None]  # (Nm, 1, 1)
         m_over_r_s = m_s * self.inv_r  # (Nm, 1, Nr)
-        mean_s = fourier.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
+        mean_s = fourier_.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
 
         def _helm_responses(p_s: Array) -> tuple[Array, Array, Array]:
             D1_p = jnp.einsum("ij, mzj -> mzi", self.D1, p_s)
@@ -850,7 +885,10 @@ class AnnularFlow:
             rhs_v_plus = rhs_v_plus.at[..., 0].set(0.0).at[..., -1].set(0.0)
             rhs_v_minus = rhs_v_minus.at[..., 0].set(0.0).at[..., -1].set(0.0)
             q_rhs = p_s.at[..., 0].set(0.0).at[..., -1].set(0.0)
-            res = self.Hk_op.solve(jnp.stack([rhs_v_plus, rhs_v_minus, q_rhs]))
+            stacked = jnp.stack([rhs_v_plus, rhs_v_minus, q_rhs])
+            res = self.Hk_op.solve(stacked.transpose(0, 3, 1, 2)).transpose(
+                0, 2, 3, 1
+            )
             vp, vm = res[0], res[1]
             # Zero the u_r part at the mean mode, preserving u_theta.
             vr = jnp.where(mean_s, (vp + vm) / 2, 0.0)
@@ -867,7 +905,7 @@ class AnnularFlow:
         M10 = jnp.einsum("j, mzj -> mz", self.D1_bnd[1], ur1)
         M11 = jnp.einsum("j, mzj -> mz", self.D1_bnd[1], ur2)
 
-        is_mean = fourier.mean_mask[0]  # (Nm, Nkz)
+        is_mean = fourier_.mean_mask[0]  # (Nm, Nkz)
         det = M00 * M11 - M01 * M10
         safe_det = jnp.where(is_mean, 1.0, det)
         # Mean mode: u_r is zeroed and d_wall = 0 there, so the
@@ -892,7 +930,9 @@ class AnnularFlow:
         self.v_minus_2 = vm2.transpose(2, 0, 1)
         self.q_z_2 = qz2.transpose(2, 0, 1)
 
-    def _precompute_bulk_response(self, Nm: int, Nkz: int, Nr: int) -> None:
+    def _precompute_bulk_response(
+        self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
+    ) -> None:
         r"""Precompute the Helmholtz response for blocking the mean
         axial velocity.
 
@@ -918,11 +958,16 @@ class AnnularFlow:
             .at[-1]
             .set(0.0)
         )
-        rhs = jnp.where(fourier.mean_mask[0, ..., None], ones_vec, 0.0)
+        rhs = jnp.where(fourier_.mean_mask[0, ..., None], ones_vec, 0.0)
         zeros = jnp.zeros_like(rhs)
-        h_full = self.Hk_op.solve(jnp.stack([zeros, zeros, rhs]))[2]
+        h_full = self.Hk_op.solve(
+            jnp.stack([zeros, zeros, rhs]).transpose(0, 3, 1, 2)
+        ).transpose(0, 2, 3, 1)[2]
 
-        self.h_bulk_response = jax.device_put(
+        # ``reshard`` (not ``device_put``): this method also runs
+        # inside the jitted ``set_dt`` rebuild, where placing a
+        # traced value is expressed as a resharding.
+        self.h_bulk_response = jax.sharding.reshard(
             extract_mean_mode(h_full.transpose(2, 0, 1)[None])[0],
             sharding.no_shard,
         )
@@ -931,6 +976,111 @@ class AnnularFlow:
             / derived_params.volume_fac
         )
         self.H_bulk_inv = 1.0 / H_bulk
+
+
+def _hk_bands(
+    dt: float | Array,
+    fourier_: Fourier,
+    flow_: AnnularFlow,
+) -> list[Array]:
+    r"""Assemble the banded `$H_k$` group (+, -, z) at *dt*.
+
+    Single-sources the band assembly for the setup-checked build, the
+    adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
+    rebuild (:func:`_build_dt_leaves`).  Pallas backend only.
+    """
+    m_s = fourier_.m[0, ..., None]
+    kz2_s = fourier_.kz2[0, ..., None]
+    # Solvent viscosity ``derived_params.nu``: 1/re for Newtonian
+    # Taylor-Couette / Dean, beta/re for the viscoelastic subclass.
+    return [
+        _build_Hk_band_gpu(
+            flow_.A_base,
+            meff2,
+            flow_.inv_r2,
+            kz2_s,
+            dt,
+            params.step.implicitness,
+            derived_params.nu,
+            params.res.fd_order,
+        )
+        for meff2 in ((m_s + 1) ** 2, (m_s - 1) ** 2, m_s**2)
+    ]
+
+
+def _hk_dense_op(
+    dt: float | Array,
+    fourier_: Fourier,
+    flow_: AnnularFlow,
+) -> DenseJAXSolver:
+    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense
+    backend)."""
+    m_s = fourier_.m[0, ..., None]
+    kz2_s = fourier_.kz2[0, ..., None]
+    ops = [
+        DenseJAXSolver(
+            _build_Hk_dense_gpu(
+                flow_.A_base,
+                meff2,
+                flow_.inv_r2,
+                kz2_s,
+                dt,
+                params.step.implicitness,
+                derived_params.nu,
+            )
+        )
+        for meff2 in ((m_s + 1) ** 2, (m_s - 1) ** 2, m_s**2)
+    ]
+    return DenseJAXSolver.from_factors(
+        lu=jnp.stack([o.lu for o in ops]),
+        perm=jnp.stack([o.perm for o in ops]),
+    )
+
+
+def _build_dt_leaves(
+    dt: Array,
+    fourier_: Fourier,
+    flow_: AnnularFlow,
+) -> dict[str, object]:
+    r"""Rebuild every ``dt``-dependent flow leaf at the traced *dt*.
+
+    The pure counterpart of the ``__post_init__`` operator/IMM setup,
+    jitted by the builder's ``set_dt``: assemble the `$H_k$` group at
+    *dt*, factor it **unchecked**
+    (:func:`solvers._factor_pallas_operator` -- the checked build ran
+    at setup, and under ``step.adaptive`` additionally at ``dt_max``,
+    the dominance-weakest point), then re-run the unmodified IMM
+    derivation on a trace-local shallow copy of *flow_* and collect
+    the refreshed leaves.  `$L_k$` is ``dt``-independent and shared.
+    The returned leaves match the stored ones in
+    shape/dtype/sharding, so swapping them onto the flow singleton
+    retraces nothing.
+    """
+    new = copy.copy(flow_)
+    new.dt = dt
+    if params.solver.backend == "pallas":
+        new.Hk_op = _factor_pallas_operator(_hk_bands(dt, fourier_, new))
+    else:
+        new.Hk_op = _hk_dense_op(dt, fourier_, new)
+    new._derive_imm_homogeneous_data(
+        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
+    )
+    new._precompute_bulk_response(
+        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
+    )
+    return {
+        "dt": new.dt,
+        "Hk_op": new.Hk_op,
+        "v_plus_1": new.v_plus_1,
+        "v_minus_1": new.v_minus_1,
+        "q_z_1": new.q_z_1,
+        "v_plus_2": new.v_plus_2,
+        "v_minus_2": new.v_minus_2,
+        "q_z_2": new.q_z_2,
+        "M_inv": new.M_inv,
+        "h_bulk_response": new.h_bulk_response,
+        "H_bulk_inv": new.H_bulk_inv,
+    }
 
 
 # ── Solver functions ─────────────────────────────────────────────
@@ -957,14 +1107,71 @@ def _curl_fn(
     ikz = 1j * fourier_.kz
     inv_r = flow_.inv_r[:, None, None]
 
-    dy_fields = apply_y_matrix(flow_.D1, jnp.stack([utheta, uz]))
-    dy_utheta, dy_uz = dy_fields[0], dy_fields[1]
+    # Stack y-leading (N_r, 2, ...) so the batched D1 GEMM contracts the
+    # leading wall-normal axis transpose-free; unstack back to 3-d.
+    dy_fields = apply_y_matrix(
+        flow_.D1, jnp.stack([utheta, uz], axis=1), component_axis=1
+    )
+    dy_utheta, dy_uz = dy_fields[:, 0], dy_fields[:, 1]
 
     omega_r = im * inv_r * uz - ikz * utheta
     omega_theta = ikz * ur - dy_uz
     omega_z = dy_utheta + inv_r * utheta - im * inv_r * ur
 
     return jnp.array([omega_z, omega_r, omega_theta])
+
+
+def _l_bf(
+    state: Array,
+    fourier_: Fourier,
+    flow_: AnnularFlow,
+) -> Array:
+    r"""Linear base-flow coupling (FFT-free), in `$(u_z, u_+, u_-)$`.
+
+    As in cylindrical: convert to the `$(u_z, u_r, u_\theta)$` triad and
+    evaluate only the two *linear* base-flow cross-product terms
+    (:func:`base_flow_coupling`) with the spectral :func:`_curl_fn` --
+    no Fourier transform.  For shear-driven Taylor-Couette (rotating
+    walls) the azimuthal base flow makes `$U_\theta\,\partial_r u'$`
+    stiff on the wall-clustered grid, so the CN/AB2 scheme advances this
+    term implicitly while the self-advection `$\mathbf{u}' \times
+    \boldsymbol{\omega}' = \text{get\_rhs} - \text{\_l\_bf}$` stays
+    explicit (the constant Dean body force ``pi_theta`` is not part of
+    this coupling; it rides in the explicit term).
+
+    With ``params.step.implicit_mean_coupling`` (default on) the
+    *instantaneous mean-flow* coupling is folded in by adding the
+    `$m = k_z = 0$` mean profiles of the `$(u_z, u_r, u_\theta)$`
+    state and of `$\boldsymbol{\omega}'$` onto the base-flow profiles
+    -- FFT-free; see the Cartesian ``_l_bf``.  For force-driven Dean
+    (total field, ``base_flow = 0``) this is the *only* coupling:
+    without it ``_l_bf`` is identically zero in the default lab frame
+    (a moving frame adds its diagonal term), i.e. the entire evolving
+    mean profile -- laminar included -- would ride the explicit AB2
+    term; with it the mean-flow advection is implicit, as ``L_bf`` is
+    for the perturbation-form flows.  See ``step_cnab2`` in
+    :mod:`dnsjax.timestep`.
+    """
+    u_z, u_plus, u_minus = state[0], state[1], state[2]
+    ur = (u_plus + u_minus) / 2
+    utheta = -1j * (u_plus - u_minus) / 2
+    state_rthz = jnp.array([u_z, ur, utheta])
+
+    omega = _curl_fn(state_rthz, fourier_, flow_)
+    base = flow_.base_flow
+    curl_base = flow_.curl_base_flow
+    if params.step.implicit_mean_coupling:
+        base = base + extract_mean_mode(state_rthz)[:, :, None, None]
+        curl_base = curl_base + extract_mean_mode(omega)[:, :, None, None]
+    l_z, l_r, l_theta = base_flow_coupling(state_rthz, omega, base, curl_base)
+    l_bf = jnp.array([l_z, l_r + 1j * l_theta, l_r - 1j * l_theta])
+    # Moving frame: the convective frame term (the same expression
+    # ``_get_rhs_core`` adds, diagonal in the native basis) belongs
+    # to the linear coupling, so CN/AB2 integrates it implicitly.
+    u_grid = derived_params.u_grid
+    if u_grid == 0:
+        return l_bf
+    return l_bf + (1j * u_grid) * fourier_.kz * state
 
 
 # Per-direction CFL column names, matching the physical-space component
@@ -984,10 +1191,13 @@ def _get_rhs_core(
     2. Compute the rotational-form nonlinear term via
        :func:`~dnsjax.rhs.get_nonlin` with the cylindrical curl (and the
        optional physical-space *measure_fn*).  The base coupling enters
-       here through ``base_flow_adv_padded`` -- the moving-frame base
-       velocity `$\mathbf{U} - U_{grid}\hat{\mathbf{z}}$` (see
-       :func:`pad_base_flow`) -- and ``curl_base_flow_padded``.
-    3. Convert `$(NL_z, NL_r, NL_\theta) \to (NL_z, NL_+, NL_-)$`.
+       here through ``base_flow_padded`` / ``curl_base_flow_padded``.
+       For force-driven flows (Dean) ``base_flow`` is zero, so this is
+       the full `$(\nabla\times\mathbf{u})\times\mathbf{u}$` of the
+       total field.
+    3. Add the mean-mode azimuthal body force ``flow_.pi_theta`` to
+       `$NL_\theta$` (zero for shear-driven Taylor-Couette).
+    4. Convert `$(NL_z, NL_r, NL_\theta) \to (NL_z, NL_+, NL_-)$`.
     """
     u_z, u_plus, u_minus = state[0], state[1], state[2]
     ur = (u_plus + u_minus) / 2
@@ -997,7 +1207,7 @@ def _get_rhs_core(
 
     nonlin_rthz = get_nonlin(
         state_rthz,
-        flow_.base_flow_adv_padded,
+        flow_.base_flow_padded,
         flow_.curl_base_flow_padded,
         spec_to_phys_2d,
         phys_to_spec_2d,
@@ -1008,10 +1218,25 @@ def _get_rhs_core(
         nonlin_rthz, measurements = nonlin_rthz
 
     NL_z, NL_r, NL_theta = nonlin_rthz[0], nonlin_rthz[1], nonlin_rthz[2]
+    # Mean-mode azimuthal body force (Dean flow), applied only at the
+    # mean mode (m, k_z) = (0, 0); zero for shear-driven Taylor-Couette.
+    # get_nonlin returns the +u x omega rotational term, so the force
+    # enters the RHS with a + sign (and into NL_+/- via NL_theta below).
+    NL_theta = NL_theta + jnp.where(
+        fourier_.mean_mask, flow_.pi_theta[:, None, None], 0.0
+    )
     NL_plus = NL_r + 1j * NL_theta
     NL_minus = NL_r - 1j * NL_theta
 
     rhs = jnp.array([NL_z, NL_plus, NL_minus])
+    # Moving frame: convective-form frame term
+    # `$+ i k_z U_{grid} \mathbf{u}'$` -- the axial derivative is
+    # component-diagonal in the `$(u_z, u_+, u_-)$` basis, so it is
+    # added on the native state (mode-diagonal, divergence-free; see
+    # ``pad_base_flow``).
+    u_grid = derived_params.u_grid
+    if u_grid != 0:
+        rhs = rhs + (1j * u_grid) * fourier_.kz * state
     if measure_fn is None:
         return rhs
     return rhs, measurements
@@ -1039,6 +1264,7 @@ def _get_rhs_measured(
             flow_.base_flow_adv_padded,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
+            flow_.dt,
         )
 
     return _get_rhs_core(state, fourier_, flow_, _measure)
@@ -1112,8 +1338,8 @@ def _imm_iteration(
        mean-mode perturbation bulk axial velocity `$u_z$`.
     """
     c = params.step.implicitness
-    dt = params.step.dt
-    nu = 1.0 / params.phys.re
+    dt = flow_.dt
+    nu = derived_params.nu  # solvent viscosity (see AnnularFlow.__post_init__)
 
     uz_n, up_n, um_n = velocity_n[0], velocity_n[1], velocity_n[2]
     NLz_n, NLp_n, NLm_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]
@@ -1131,22 +1357,25 @@ def _imm_iteration(
     # Batch the D1 derivatives for the divergence and the explicit
     # Hk^- matvec (u_z included) into a single GEMM; only the
     # just-solved pP needs a second D1 after the Poisson solve below.
-    all_v = jnp.stack([up_n, um_n, uz_n, NLp_j, NLp_n, NLm_j, NLm_n])
-    dy_all = apply_y_matrix(flow_.D1, all_v)
+    # Stack y-leading (N_r, 7, ...) so the batched D1 GEMM (shared by
+    # the divergence and the Hk^- matvec below) contracts the leading
+    # wall-normal axis transpose-free; the component axis is 1.
+    all_v = jnp.stack([up_n, um_n, uz_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1)
+    dy_all = apply_y_matrix(flow_.D1, all_v, component_axis=1)
 
     div_n = (
-        (dy_all[0] + (m + 1) * inv_r * up_n) / 2
-        + (dy_all[1] + (1 - m) * inv_r * um_n) / 2
+        (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
+        + (dy_all[:, 1] + (1 - m) * inv_r * um_n) / 2
         + ikz * uz_n
     )
     div_NLj = (
-        (dy_all[3] + (m + 1) * inv_r * NLp_j) / 2
-        + (dy_all[5] + (1 - m) * inv_r * NLm_j) / 2
+        (dy_all[:, 3] + (m + 1) * inv_r * NLp_j) / 2
+        + (dy_all[:, 5] + (1 - m) * inv_r * NLm_j) / 2
         + ikz * NLz_j
     )
     div_NLn = (
-        (dy_all[4] + (m + 1) * inv_r * NLp_n) / 2
-        + (dy_all[6] + (1 - m) * inv_r * NLm_n) / 2
+        (dy_all[:, 4] + (m + 1) * inv_r * NLp_n) / 2
+        + (dy_all[:, 6] + (1 - m) * inv_r * NLm_n) / 2
         + ikz * NLz_n
     )
 
@@ -1155,50 +1384,58 @@ def _imm_iteration(
 
     # Stage 2: particular pressure (both Neumann wall rows zeroed).
     f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
-    pP = flow_.Lk_op.solve(f_hat_P.transpose(1, 2, 0)).transpose(2, 0, 1)
+    pP = flow_.Lk_op.solve(f_hat_P)
 
     # Stage 3: pressure gradient and explicit Hk^- matvec.  D1 of the
     # velocity (u_+, u_-, u_z) was already formed above as dy_all[:3];
     # only the just-solved pP needs a fresh D1.
-    vel_n_stack = jnp.stack([up_n, um_n, uz_n])
+    # y-leading (N_r, 3, ...) Hk construction: the D2 GEMM and the
+    # reused D1_vel stay transpose-free (component axis 1); the solve
+    # takes this layout (component_axis=1) and we unstack.  inv_r/inv_r2
+    # get a trailing axis to broadcast over C; kz2/mean_mask are
+    # trailing-mode broadcasts (layout-invariant).
+    vel_n_stack = jnp.stack([up_n, um_n, uz_n], axis=1)  # (N_r, 3, ...)
     D1_pP = apply_y_matrix(flow_.D1, pP)
-    D1_vel = dy_all[:3]
+    D1_vel = dy_all[:, :3]
     m_over_r = m * inv_r
 
     grad_pP_plus = D1_pP - m_over_r * pP
     grad_pP_minus = D1_pP + m_over_r * pP
     grad_pP_z = ikz * pP
 
-    D2_all = apply_y_matrix(flow_.D2, vel_n_stack)
-    Abase_stack = D2_all + inv_r * D1_vel
-    meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq])
-    inv_r2 = flow_.inv_r2[:, None, None]
+    inv_r_y = inv_r[..., None]  # (N_r, 1, 1, 1) over the C axis
+    D2_all = apply_y_matrix(flow_.D2, vel_n_stack, component_axis=1)
+    Abase_stack = D2_all + inv_r_y * D1_vel
+    meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq], axis=1)
+    inv_r2 = flow_.inv_r2[:, None, None, None]  # (N_r, 1, 1, 1)
     lapl_stack = (
         Abase_stack - (meff2_stack * inv_r2 + fourier_.kz2) * vel_n_stack
     )
     Hk_minus_stack = (1.0 / dt) * vel_n_stack + (1.0 - c) * nu * lapl_stack
     # Identity wall rows at both walls.
-    Hk_minus_stack = Hk_minus_stack.at[:, 0].set(vel_n_stack[:, 0])
-    Hk_minus_stack = Hk_minus_stack.at[:, -1].set(vel_n_stack[:, -1])
+    Hk_minus_stack = Hk_minus_stack.at[0].set(vel_n_stack[0])
+    Hk_minus_stack = Hk_minus_stack.at[-1].set(vel_n_stack[-1])
 
     R_stack = (
         Hk_minus_stack
-        - jnp.stack([grad_pP_plus, grad_pP_minus, grad_pP_z])
-        + c * jnp.stack([NLp_j, NLm_j, NLz_j])
-        + (1 - c) * jnp.stack([NLp_n, NLm_n, NLz_n])
+        - jnp.stack([grad_pP_plus, grad_pP_minus, grad_pP_z], axis=1)
+        + c * jnp.stack([NLp_j, NLm_j, NLz_j], axis=1)
+        + (1 - c) * jnp.stack([NLp_n, NLm_n, NLz_n], axis=1)
     )
     # Zero Dirichlet wall rows (both walls).
-    R_stack = R_stack.at[:, 0].set(0.0).at[:, -1].set(0.0)
+    R_stack = R_stack.at[0].set(0.0).at[-1].set(0.0)
 
     # Mean mode: zero the u_r part of the +/- RHS so u_r = 0 there.
-    Rr_corr = jnp.where(mean_mask, (R_stack[0] + R_stack[1]) / 2, 0.0)
-    R_stack = R_stack.at[0].add(-Rr_corr)
-    R_stack = R_stack.at[1].add(-Rr_corr)
+    Rr_corr = jnp.where(mean_mask, (R_stack[:, 0] + R_stack[:, 1]) / 2, 0.0)
+    R_stack = R_stack.at[:, 0].add(-Rr_corr)
+    R_stack = R_stack.at[:, 1].add(-Rr_corr)
 
-    arb_stack = flow_.Hk_op.solve(R_stack.transpose(0, 2, 3, 1)).transpose(
-        0, 3, 1, 2
+    arb_stack = flow_.Hk_op.solve(R_stack, component_axis=1)
+    up_arb, um_arb, uz_arb = (
+        arb_stack[:, 0],
+        arb_stack[:, 1],
+        arb_stack[:, 2],
     )
-    up_arb, um_arb, uz_arb = arb_stack[0], arb_stack[1], arb_stack[2]
 
     # Stage 4: wall divergence residual (inner, outer).
     ur_arb = (up_arb + um_arb) / 2
@@ -1300,14 +1537,32 @@ def build_annular_stepper(
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
+    Callable[[float], None],
+    Callable[[], None],
 ]:
     """Build time-stepping functions for an annular flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
-    predict_and_fully_correct_measured)`` with the ``fourier`` and
-    *flow* singletons already bound.
+    predict_and_fully_correct_measured, step_cnab2,
+    step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
+    ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the
+    FFT-free base-flow coupling) is passed so the CN/AB2 scheme
+    treats it implicitly; ``_build_dt_leaves`` backs the adaptive-dt
+    ``set_dt`` rebuild.
     """
     return build_wall_bounded_stepper(
-        _get_rhs, _predict, _correct, _norm, fourier, flow, _get_rhs_measured
+        _get_rhs,
+        _predict,
+        _correct,
+        _norm,
+        fourier,
+        flow,
+        _get_rhs_measured,
+        _l_bf,
+        dt_leaves_fn=_build_dt_leaves,
     )

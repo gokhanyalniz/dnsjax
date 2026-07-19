@@ -1,14 +1,33 @@
 """Snapshot save/load for simulation checkpointing.
 
-Stores the spectral perturbation velocity in zarr3 format as
-**three combined per-component files** (one zarr3 chunk per
-velocity component), each a clean global array with the `$k_z$`
-and `$k_x$` axes de-interleaved across devices.  Only **true**
-(unpadded) spectral modes are stored; zero-valued padding modes
-added for 2D mesh divisibility are stripped on save and
-re-introduced on load.  Because each file holds the full mode
-range, a snapshot can be resumed at **any** ``(np0, np1)``
-configuration (np-agnostic).
+A snapshot is a **single uncompressed tar archive** wrapping a
+zarr3 store plus a JSON metadata member::
+
+    snapshot.tar                 (uncompressed tar; format_version 4)
+      _dnsjax_meta.json          plain JSON metadata
+      _dnsjax_stats.json         plain JSON stats (optional)
+      state/zarr.json            zarr3 array metadata
+      state/c/0/0/0/0            component 0 chunk: raw LE complex
+      state/c/1/0/0/0            component 1 chunk
+      state/c/2/0/0/0            component 2 chunk
+
+The spectral perturbation velocity is stored as **three combined
+per-component zarr3 chunks** (one chunk per velocity component),
+each a clean global array with the `$k_z$` and `$k_x$` axes
+de-interleaved across devices.  Only **true** (unpadded) spectral
+modes are stored; zero-valued padding modes added for 2D mesh
+divisibility are stripped on save and re-introduced on load.
+Because each chunk holds the full mode range, a snapshot can be
+resumed at **any** ``(np0, np1)`` configuration (np-agnostic).
+
+Because the tar is uncompressed and each chunk is stored
+contiguously, the archive is readable with standard tools and no
+dnsjax: ``tar xf snapshot.tar`` yields a directory whose ``state/``
+is a valid zarr3 store (open with zarr-python or TensorStore), with
+``_dnsjax_meta.json`` describing the axis interpretation.  Worst
+case (no zarr library) each chunk is raw little-endian complex with
+shape/dtype from ``state/zarr.json`` -- ``numpy.fromfile`` plus a
+reshape.
 
 On-disk layout
 --------------
@@ -52,8 +71,16 @@ I/O engine
 ----------
 Data is written and read with **raw offset I/O** on both backends
 (TensorStore writes at chunk granularity, so per-device sub-range
-writes to a shared chunk would race / read-modify-write).
-TensorStore is used only to create the zarr3 metadata.
+writes to a shared chunk would race / read-modify-write).  Process
+0 lays out the whole archive once -- the tar headers plus
+sparse-reserved (zero-filled) component data regions -- and every
+device then writes its disjoint byte ranges directly into the one
+file at ``component_offset + within_component_offset``.  The
+component base offsets are the tar members' ``offset_data`` (read
+back via ``tarfile``; 512-aligned, so GDS alignment is preserved).
+TensorStore is used only to generate the ``zarr.json`` bytes (in a
+throwaway temporary directory); compression is never used (it would
+break random-access streaming).
 
 - **GDS** (NVIDIA GPUDirect Storage): when ``kvikio`` and ``cupy``
   are available, slabs move directly between GPU memory and disk.
@@ -75,14 +102,25 @@ Write modes (``params.outs.snapshot_write_mode``):
 
 Metadata and versioning
 -----------------------
-``_dnsjax_meta.json`` sits alongside the zarr3 store and
-embeds ``t``, ``it``, the on-disk ``layout`` name, the global
-(true, unpadded) shapes, ``wall_normal_grid`` (the
-wall-normal grid points as a float array for wall-bounded
-flows, ``None`` for periodic), and the full
-``params.model_dump()`` for resume validation.
+The ``_dnsjax_meta.json`` member embeds ``t``, ``it``, ``isnap`` (the
+snapshot-lineage index this file was written with), the on-disk
+``layout`` name, the global (true, unpadded) shapes,
+``wall_normal_grid`` (the wall-normal grid points as a float array
+for wall-bounded flows, ``None`` for periodic), and the
+flow-relevant, public-named, resolved parameter dump
+(:func:`dnsjax.param_surface.recorded_params_dump`) for resume
+validation.  It is read with the standard library (no JAX) via
+:mod:`dnsjax.snapshot_meta`, shared with
+:func:`dnsjax.parameters.read_snapshot_params`.
 
-The on-disk format is ``format_version: 2``.
+When stats are supplied, an optional ``_dnsjax_stats.json`` member
+holds the state's physical diagnostics (the ``get_stats`` dict as
+``{name: value}``); readers that do not need it simply ignore the
+extra member.
+
+The on-disk format is ``format_version: 4``; snapshots older than 4
+(internal-named full parameter dumps) are rejected at read
+(:func:`dnsjax.snapshot_meta.read_snapshot_meta`), never translated.
 """
 
 import json
@@ -98,6 +136,11 @@ from jax.sharding import NamedSharding
 
 from .parameters import derived_params, params, periodic_systems
 from .sharding import sharding
+from .snapshot_meta import (
+    git_hash,
+    read_snapshot_meta,
+    snapshot_component_offsets,
+)
 
 
 class SnapshotMismatchError(Exception):
@@ -266,6 +309,20 @@ def _layout_from_meta(meta: dict) -> _Layout:
 # ── Geometry / shape helpers ──────────────────────────────
 
 
+def _n_components() -> int:
+    """Number of stacked state components for the current system.
+
+    The flow spec's ``n_components`` (3 velocity components unless
+    the flow carries more, e.g. the 9-component viscoelastic state).
+    ``validate_snapshot_params`` enforces the ``phys.system`` match,
+    so a resumed snapshot's component count always equals this -- the
+    single source of truth for both save and load.
+    """
+    from .flows.registry import spec_for
+
+    return spec_for(params.phys.system).n_components
+
+
 def _padded_local_shape() -> tuple[int, ...]:
     """Padded per-device vector shape for the current mesh.
 
@@ -276,9 +333,10 @@ def _padded_local_shape() -> tuple[int, ...]:
     """
     local_kz = sharding.nz_spec // sharding.np0
     local_kx = sharding.nx_spec // sharding.np1
+    nc = _n_components()
     if _is_periodic():
-        return (3, params.res.ny - 1, local_kz, local_kx)
-    return (3, params.res.ny, local_kz, local_kx)
+        return (nc, params.res.ny - 1, local_kz, local_kx)
+    return (nc, params.res.ny, local_kz, local_kx)
 
 
 def _padded_local_shape_snap_ny(snap_ny: int) -> tuple[int, ...]:
@@ -290,9 +348,10 @@ def _padded_local_shape_snap_ny(snap_ny: int) -> tuple[int, ...]:
     """
     local_kz = sharding.nz_spec // sharding.np0
     local_kx = sharding.nx_spec // sharding.np1
+    nc = _n_components()
     if _is_periodic():
-        return (3, snap_ny - 1, local_kz, local_kx)
-    return (3, snap_ny, local_kz, local_kx)
+        return (nc, snap_ny - 1, local_kz, local_kx)
+    return (nc, snap_ny, local_kz, local_kx)
 
 
 def _shard_device_index(shard) -> int:
@@ -319,12 +378,6 @@ def _np_dtype(name: str) -> np.dtype:
     return np.dtype(name)
 
 
-def _chunk_file(store_path: Path, component: int) -> Path:
-    """Zarr3 chunk file for one velocity component (single chunk
-    per component => chunk grid index ``(comp, 0, 0, 0)``)."""
-    return store_path / "c" / str(component) / "0" / "0" / "0"
-
-
 def _slab_offset(layout: _Layout, i: int, kx_start: int) -> int:
     """Element offset of slab ``i`` for a device whose kx block
     starts at ``kx_start`` in the combined component file."""
@@ -341,6 +394,54 @@ def _place_into_padded(comp_buf, li: int, slab, nkx: int) -> None:
     comp_buf[:, li, :nkx] = slab.T
 
 
+# ── In-memory per-device assembly ─────────────────────────
+
+
+def assemble_local_shards(
+    fill_local: Callable[[np.ndarray, int, int, int, int], None],
+    *,
+    dtype: np.dtype | None = None,
+) -> Array:
+    r"""Assemble a sharded spectral state from per-device-generated shards.
+
+    The generator counterpart of :func:`load_snapshot`'s per-device read:
+    each local device's padded shard is allocated zero-filled (shape
+    :func:`_padded_local_shape`) and handed to
+    ``fill_local(buf, kz_start, nkz, kx_start, nkx)``, which fills
+    ``buf[:, :, :nkz, :nkx]`` with that device's **true** modes -- the
+    global axis-2 (`$k_z$` / `$m$`, ``np0``) range
+    ``[kz_start, kz_start + nkz)`` and the global axis-3 (`$k_x$` /
+    `$k_{z,\mathrm{ax}}$`, ``np1``) range ``[kx_start, kx_start + nkx)``;
+    the trailing padding modes stay zero.  Shards are placed onto
+    ``sharding.spec_vector_shard`` with
+    ``jax.make_array_from_single_device_arrays`` -- np-agnostic, and **no
+    full array is ever materialised** on any device (so in-process random /
+    rolls ICs match dnsjax's per-device construction idiom).
+
+    Parameters
+    ----------
+    fill_local:
+        Callback filling one device's local buffer in place.
+    dtype:
+        Buffer dtype; defaults to the configured complex type.
+    """
+    if dtype is None:
+        dtype = _np_dtype(_zarr3_dtype_name())
+    local_shape = _padded_local_shape()
+    per_device: list[Array] = []
+    for device in jax.local_devices():
+        flat_idx = _mesh_device_index(device)
+        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
+        buf = np.zeros(local_shape, dtype=dtype)
+        fill_local(buf, kz_start, nkz, kx_start, nkx)
+        per_device.append(jax.device_put(buf, device))
+    return jax.make_array_from_single_device_arrays(
+        (_n_components(), *sharding.spec_shape),
+        NamedSharding(sharding.mesh, sharding.spec_vector_shard),
+        per_device,
+    )
+
+
 # ── Barrier ───────────────────────────────────────────────
 
 
@@ -354,7 +455,7 @@ def _barrier(tag: str) -> None:
         sync_global_devices(tag)
 
 
-# ── Zarr3 store creation + chunk pre-sizing ───────────────
+# ── Zarr3 metadata + tar skeleton ─────────────────────────
 
 
 def _create_store(
@@ -393,58 +494,153 @@ def _create_store(
     ts.open(spec, create=True, delete_existing=True).result()
 
 
-def _presize_files(store_path: Path, layout: _Layout, itemsize: int) -> None:
-    """Create and size the 3 chunk files so that every device can
-    safely write its disjoint byte ranges (incl. multi-host)."""
-    nbytes = layout.a_size * layout.kx_global * layout.b_size * itemsize
-    for comp in range(3):
-        chunk_path = _chunk_file(store_path, comp)
-        chunk_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(chunk_path, "wb") as f:
-            f.truncate(nbytes)
+def _zarr_json_bytes(
+    on_disk: tuple[int, ...], chunk_shape: tuple[int, ...], dtype: str
+) -> bytes:
+    """Generate the zarr3 ``zarr.json`` bytes for the component store.
+
+    TensorStore only writes metadata to a *directory* kvstore, so the
+    store is created in a throwaway temporary directory and its
+    ``zarr.json`` is read back.  This keeps the embedded zarr3 metadata
+    spec-valid without hand-rolling the schema.
+    """
+    import shutil
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp(prefix="dnsjax_zarr_"))
+    try:
+        _create_store(tmp / "state", on_disk, chunk_shape, dtype)
+        return (tmp / "state" / "zarr.json").read_bytes()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _tar_header(name: str, size: int) -> bytes:
+    """Deterministic 512-byte (or PAX multi-block) tar header.
+
+    ``mtime``/ownership are pinned to ``0`` so the skeleton is
+    byte-reproducible (the ``serial`` vs ``concurrent`` write modes must
+    yield identical archives).  PAX format keeps the ``size`` field
+    exact for components larger than 8 GiB.
+    """
+    import tarfile
+
+    info = tarfile.TarInfo(name)
+    info.size = size
+    info.mtime = 0
+    return info.tobuf(format=tarfile.PAX_FORMAT)
+
+
+def _write_tar_skeleton(
+    tar_path: Path,
+    layout: _Layout,
+    itemsize: int,
+    meta_bytes: bytes,
+    zarr_bytes: bytes,
+    stats_bytes: bytes | None = None,
+) -> None:
+    """Lay out the whole uncompressed tar (process 0 only).
+
+    Small members (metadata, the optional stats JSON, ``zarr.json``) are
+    written in full; the three component members get a correct header
+    followed by a sparse-reserved, zero-filled data region padded to the
+    512-byte block boundary.  The archive ends with the two zero blocks
+    tar expects.  After this the file is full-length, so every device can
+    safely write its disjoint byte ranges into the component regions.
+    """
+    comp_nbytes = layout.a_size * layout.kx_global * layout.b_size * itemsize
+    comp_padded = comp_nbytes + (-comp_nbytes) % 512
+    members = [("_dnsjax_meta.json", meta_bytes)]
+    if stats_bytes is not None:
+        members.append(("_dnsjax_stats.json", stats_bytes))
+    members.append(("state/zarr.json", zarr_bytes))
+    with open(tar_path, "wb") as f:
+        for name, data in members:
+            f.write(_tar_header(name, len(data)))
+            f.write(data)
+            f.write(b"\x00" * ((-len(data)) % 512))
+        for comp in range(_n_components()):
+            f.write(_tar_header(f"state/c/{comp}/0/0/0", comp_nbytes))
+            # Sparse-reserve the (zeroed) data + block padding.
+            f.seek(comp_padded - 1, 1)
+            f.write(b"\x00")
+        f.write(b"\x00" * 1024)  # end-of-archive marker
 
 
 # ── Snapshot metadata ─────────────────────────────────────
 
 
-def _write_metadata(path: Path, t: float, it: int, layout: _Layout) -> None:
-    """Write ``_dnsjax_meta.json`` (process 0 only)."""
+def _metadata_bytes(
+    t: float, it: int, layout: _Layout, isnap: int = 0
+) -> bytes:
+    """Serialise the ``_dnsjax_meta.json`` member content.
+
+    ``git_hash`` records the code revision that wrote the snapshot
+    (provenance only -- never read back on load).  Additive keys like
+    it need no ``format_version`` bump: readers use targeted lookups
+    and ignore unknown keys.  Version 4 records ``params`` as the
+    flow-relevant, **public-named**, resolved dump plus the relevant
+    extension sections (e.g. ``force``, ``probes``;
+    :func:`dnsjax.param_surface.recorded_params_dump`); readers map it
+    back via :func:`dnsjax.flows.registry.internalize_stored` /
+    ``stored_value``, and pre-4 snapshots (internal-named full dumps)
+    are rejected at :func:`dnsjax.snapshot_meta.read_snapshot_meta`.
+    """
+    from .param_surface import recorded_params_dump
+
     meta = {
-        "format_version": 2,
+        "format_version": 4,
+        "git_hash": git_hash(),
         "t": t,
         "it": it,
+        "isnap": isnap,
         "geometry": ("triply_periodic" if _is_periodic() else "wall_bounded"),
         "system": params.phys.system,
         "layout": layout.name,
         "on_disk_shape": [
-            3,
+            _n_components(),
             layout.a_size,
             layout.kx_global,
             layout.b_size,
         ],
-        "native_shape": [3, *_true_spec_shape()],
+        "native_shape": [_n_components(), *_true_spec_shape()],
         "dtype": _zarr3_dtype_name(),
         "n_devices": sharding.n_devices,
         "wall_normal_grid": derived_params.wall_normal_grid,
-        "params": params.model_dump(mode="json"),
+        "params": recorded_params_dump(params),
     }
-    with open(path / "_dnsjax_meta.json", "w") as f:
-        json.dump(meta, f, indent=2, default=str)
+    return json.dumps(meta, indent=2, default=str).encode("utf-8")
 
 
 def read_metadata(path: Path) -> dict:
-    """Read ``_dnsjax_meta.json``."""
-    with open(path / "_dnsjax_meta.json") as f:
-        return json.load(f)
+    """Read the ``_dnsjax_meta.json`` member of a snapshot tar."""
+    return read_snapshot_meta(path)
+
+
+def _stats_json_bytes(stats: dict) -> bytes:
+    """Serialise a ``get_stats`` dict for the ``_dnsjax_stats.json``
+    member, converting the (replicated) device scalars to host floats."""
+    return json.dumps(
+        {k: float(v) for k, v in stats.items()}, indent=2
+    ).encode("utf-8")
 
 
 # ── GDS I/O ───────────────────────────────────────────────
 
 
 def _write_chunks_gds(
-    state: Array, store_path: Path, layout: _Layout, itemsize: int
+    state: Array,
+    tar_path: Path,
+    comp_offsets: dict[int, int],
+    layout: _Layout,
+    itemsize: int,
 ) -> None:
-    """Stream each local shard to disk slab-by-slab via kvikIO."""
+    """Stream each local shard to the tar slab-by-slab via kvikIO.
+
+    Each component's chunk lives at ``comp_offsets[comp]`` inside the
+    single archive; all writes are at that base plus the in-component
+    byte offset.
+    """
     import cupy as cp
     import kvikio
 
@@ -456,10 +652,10 @@ def _write_chunks_gds(
             continue
         cp_vec = cp.from_dlpack(shard.data)
         with cp_vec.device:
-            for comp in range(3):
+            for comp in range(_n_components()):
                 comp_true = _strip_padding(cp_vec[comp], nkz, nkx)
-                chunk_path = _chunk_file(store_path, comp)
-                with kvikio.CuFile(str(chunk_path), "r+") as f:
+                base = comp_offsets[comp]
+                with kvikio.CuFile(str(tar_path), "r+") as f:
                     if is_walled:
                         for i in range(layout.a_size):
                             slab = layout.extract(comp_true, i, cp)
@@ -468,16 +664,17 @@ def _write_chunks_gds(
                                 off = (
                                     i * layout.kx_global + kx_start + lkx
                                 ) * layout.b_size + kz_start
-                                f.write(row, file_offset=off * itemsize)
+                                f.write(row, file_offset=base + off * itemsize)
                     else:
                         for li in range(nkz):
                             slab = layout.extract(comp_true, li, cp)
                             off = _slab_offset(layout, kz_start + li, kx_start)
-                            f.write(slab, file_offset=off * itemsize)
+                            f.write(slab, file_offset=base + off * itemsize)
 
 
 def _read_chunks_gds(
-    store_path: Path,
+    tar_path: Path,
+    comp_offsets: dict[int, int],
     layout: _Layout,
     dtype: np.dtype,
     local_shape: tuple[int, ...] | None = None,
@@ -498,10 +695,10 @@ def _read_chunks_gds(
         with cp.cuda.Device(local_idx):
             vec = cp.zeros(local_shape, dtype=dtype)
             if nkz > 0 and nkx > 0:
-                for comp in range(3):
+                for comp in range(_n_components()):
                     comp_buf = vec[comp]
-                    chunk_path = _chunk_file(store_path, comp)
-                    with kvikio.CuFile(str(chunk_path), "r") as f:
+                    base = comp_offsets[comp]
+                    with kvikio.CuFile(str(tar_path), "r") as f:
                         if is_walled:
                             row_gpu = cp.empty(nkz, dtype=dtype)
                             for i in range(layout.a_size):
@@ -511,7 +708,7 @@ def _read_chunks_gds(
                                     ) * layout.b_size + kz_start
                                     f.read(
                                         row_gpu,
-                                        file_offset=off * itemsize,
+                                        file_offset=base + off * itemsize,
                                     )
                                     comp_buf[i, :nkz, lkx] = row_gpu
                         else:
@@ -520,7 +717,7 @@ def _read_chunks_gds(
                                 off = _slab_offset(
                                     layout, kz_start + li, kx_start
                                 )
-                                f.read(slab, file_offset=off * itemsize)
+                                f.read(slab, file_offset=base + off * itemsize)
                                 _place_into_padded(comp_buf, li, slab, nkx)
             per_device.append(jnp.from_dlpack(vec))
     return per_device
@@ -532,18 +729,19 @@ def _read_chunks_gds(
 def _write_serialized(
     write_fn: Callable,
     state: Array,
-    store_path: Path,
+    tar_path: Path,
+    comp_offsets: dict[int, int],
     layout: _Layout,
     itemsize: int,
 ) -> None:
     """Rank-ordered (token-passing) write across processes.
 
     Process ``r`` writes its shards only on its turn, so no two
-    processes hold a chunk file open for writing at the same time.
+    processes hold the archive open for writing at the same time.
     This is safe on filesystems such as NFS where concurrent
     disjoint-range writes can corrupt data: each process opens,
-    writes and *closes* every chunk file within its turn, so the
-    next process sees flushed bytes (close-to-open consistency).
+    writes and *closes* the file within its turn, so the next process
+    sees flushed bytes (close-to-open consistency).
 
     All processes call the same ordered sequence of barrier tags;
     only the write itself is gated on ``process_index``, so the
@@ -553,14 +751,18 @@ def _write_serialized(
     me = jax.process_index()
     for r in range(jax.process_count()):
         if me == r:
-            write_fn(state, store_path, layout, itemsize)
+            write_fn(state, tar_path, comp_offsets, layout, itemsize)
         _barrier(f"snapshot_serial_{r}")
 
 
 def _write_chunks_host(
-    state: Array, store_path: Path, layout: _Layout, itemsize: int
+    state: Array,
+    tar_path: Path,
+    comp_offsets: dict[int, int],
+    layout: _Layout,
+    itemsize: int,
 ) -> None:
-    """Stream each local shard to disk slab-by-slab via host I/O.
+    """Stream each local shard to the tar slab-by-slab via host I/O.
 
     When cupy is available (NVIDIA GPU platforms), slabs are
     extracted on GPU and transferred one at a time via
@@ -588,10 +790,10 @@ def _write_chunks_host(
         if cp is None:
             vec = np.asarray(shard.data)
             xp = np
-        for comp in range(3):
-            comp_true = _strip_padding(vec[comp], nkz, nkx)
-            chunk_path = _chunk_file(store_path, comp)
-            with open(chunk_path, "r+b") as f:
+        with open(tar_path, "r+b") as f:
+            for comp in range(_n_components()):
+                comp_true = _strip_padding(vec[comp], nkz, nkx)
+                base = comp_offsets[comp]
                 if is_walled:
                     for i in range(layout.a_size):
                         slab = layout.extract(comp_true, i, xp)
@@ -600,7 +802,7 @@ def _write_chunks_host(
                             off = (
                                 i * layout.kx_global + kx_start + lkx
                             ) * layout.b_size + kz_start
-                            f.seek(off * itemsize)
+                            f.seek(base + off * itemsize)
                             if cp is not None:
                                 f.write(cp.asnumpy(row))
                             else:
@@ -609,7 +811,7 @@ def _write_chunks_host(
                     for li in range(nkz):
                         slab = layout.extract(comp_true, li, xp)
                         off = _slab_offset(layout, kz_start + li, kx_start)
-                        f.seek(off * itemsize)
+                        f.seek(base + off * itemsize)
                         if cp is not None:
                             f.write(cp.asnumpy(slab))
                         else:
@@ -617,7 +819,8 @@ def _write_chunks_host(
 
 
 def _read_chunks_host(
-    store_path: Path,
+    tar_path: Path,
+    comp_offsets: dict[int, int],
     layout: _Layout,
     dtype: np.dtype,
     local_shape: tuple[int, ...] | None = None,
@@ -651,12 +854,12 @@ def _read_chunks_host(
                 with cp.cuda.Device(local_idx):
                     vec = cp.zeros(local_shape, dtype=dtype)
                     if nkz > 0 and nkx > 0:
-                        if is_walled:
-                            row_gpu = cp.empty(nkz, dtype=dtype)
-                            for comp in range(3):
-                                comp_buf = vec[comp]
-                                chunk_path = _chunk_file(store_path, comp)
-                                with open(chunk_path, "rb") as f:
+                        with open(tar_path, "rb") as f:
+                            if is_walled:
+                                row_gpu = cp.empty(nkz, dtype=dtype)
+                                for comp in range(_n_components()):
+                                    comp_buf = vec[comp]
+                                    base = comp_offsets[comp]
                                     for i in range(layout.a_size):
                                         for lkx in range(nkx):
                                             off = (
@@ -664,28 +867,27 @@ def _read_chunks_host(
                                                 + kx_start
                                                 + lkx
                                             ) * layout.b_size + kz_start
-                                            f.seek(off * itemsize)
+                                            f.seek(base + off * itemsize)
                                             raw = f.read(nkz * itemsize)
                                             row_gpu.set(
                                                 np.frombuffer(raw, dtype=dtype)
                                             )
                                             comp_buf[i, :nkz, lkx] = row_gpu
-                        else:
-                            slab_bytes = nkx * layout.b_size * itemsize
-                            slab_gpu = cp.empty(
-                                (nkx, layout.b_size), dtype=dtype
-                            )
-                            for comp in range(3):
-                                comp_buf = vec[comp]
-                                chunk_path = _chunk_file(store_path, comp)
-                                with open(chunk_path, "rb") as f:
+                            else:
+                                slab_bytes = nkx * layout.b_size * itemsize
+                                slab_gpu = cp.empty(
+                                    (nkx, layout.b_size), dtype=dtype
+                                )
+                                for comp in range(_n_components()):
+                                    comp_buf = vec[comp]
+                                    base = comp_offsets[comp]
                                     for li in range(nkz):
                                         off = _slab_offset(
                                             layout,
                                             kz_start + li,
                                             kx_start,
                                         )
-                                        f.seek(off * itemsize)
+                                        f.seek(base + off * itemsize)
                                         raw = f.read(slab_bytes)
                                         slab_gpu.set(
                                             np.frombuffer(
@@ -704,29 +906,28 @@ def _read_chunks_host(
                 cp = None
         vec = np.zeros(local_shape, dtype=dtype)
         if nkz > 0 and nkx > 0:
-            if is_walled:
-                for comp in range(3):
-                    comp_buf = vec[comp]
-                    chunk_path = _chunk_file(store_path, comp)
-                    with open(chunk_path, "rb") as f:
+            with open(tar_path, "rb") as f:
+                if is_walled:
+                    for comp in range(_n_components()):
+                        comp_buf = vec[comp]
+                        base = comp_offsets[comp]
                         for i in range(layout.a_size):
                             for lkx in range(nkx):
                                 off = (
                                     i * layout.kx_global + kx_start + lkx
                                 ) * layout.b_size + kz_start
-                                f.seek(off * itemsize)
+                                f.seek(base + off * itemsize)
                                 raw = f.read(nkz * itemsize)
                                 row = np.frombuffer(raw, dtype=dtype)
                                 comp_buf[i, :nkz, lkx] = row
-            else:
-                slab_bytes = nkx * layout.b_size * itemsize
-                for comp in range(3):
-                    comp_buf = vec[comp]
-                    chunk_path = _chunk_file(store_path, comp)
-                    with open(chunk_path, "rb") as f:
+                else:
+                    slab_bytes = nkx * layout.b_size * itemsize
+                    for comp in range(_n_components()):
+                        comp_buf = vec[comp]
+                        base = comp_offsets[comp]
                         for li in range(nkz):
                             off = _slab_offset(layout, kz_start + li, kx_start)
-                            f.seek(off * itemsize)
+                            f.seek(base + off * itemsize)
                             raw = f.read(slab_bytes)
                             slab = np.frombuffer(raw, dtype=dtype).reshape(
                                 nkx, layout.b_size
@@ -739,37 +940,61 @@ def _read_chunks_host(
 # ── Public API ────────────────────────────────────────────
 
 
-def save_snapshot(state: Array, t: float, it: int, path: str | Path) -> None:
-    r"""Save the spectral state to a zarr3 snapshot.
+def save_snapshot(
+    state: Array,
+    t: float,
+    it: int,
+    path: str | Path,
+    *,
+    stats: dict | None = None,
+    isnap: int = 0,
+) -> None:
+    r"""Save the spectral state to a single-file snapshot.
 
-    The field is streamed to three combined per-component files
-    (clean global arrays, `$k_x$` de-interleaved) without ever
-    materialising a full-array transpose.
+    The field is streamed to the per-component zarr3 chunks (one per
+    state component: 3, or 9 for the viscoelastic tensor state) inside
+    one uncompressed tar (clean global arrays, `$k_x$`
+    de-interleaved) without ever materialising a full-array transpose.
+    Process 0 lays out the whole archive first; every device then
+    writes its disjoint byte ranges into the reserved chunk regions.
 
     Parameters
     ----------
     state:
-        Spectral perturbation velocity, shape ``(3, *spec_shape)``,
-        complex dtype.
+        Spectral state, shape ``(n_components, *spec_shape)``, complex
+        dtype: the perturbation velocity for the base-flow systems,
+        the **total** field for the force-driven dean /
+        viscoelastic-dean systems (the latter 9 components --
+        velocity + conformation spins).
     t:
         Current simulation time.
     it:
         Current iteration count.
     path:
-        Directory for the zarr3 store.
+        Output path for the snapshot tar file.
+    stats:
+        Optional ``get_stats`` dict embedded as the
+        ``_dnsjax_stats.json`` member (``None`` omits the member).
+    isnap:
+        Snapshot-lineage index recorded in the metadata.
     """
     path = Path(path)
     layout = _layout()
     dtype_name = _zarr3_dtype_name()
     itemsize = _np_dtype(dtype_name).itemsize
-    on_disk = (3, layout.a_size, layout.kx_global, layout.b_size)
+    on_disk = (_n_components(), layout.a_size, layout.kx_global, layout.b_size)
 
-    store_path = path / "state"
     if sharding.main_device:
-        path.mkdir(parents=True, exist_ok=True)
-        _create_store(store_path, on_disk, (1, *on_disk[1:]), dtype_name)
-        _presize_files(store_path, layout, itemsize)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        zarr_bytes = _zarr_json_bytes(on_disk, (1, *on_disk[1:]), dtype_name)
+        meta_bytes = _metadata_bytes(t, it, layout, isnap)
+        stats_bytes = None if stats is None else _stats_json_bytes(stats)
+        _write_tar_skeleton(
+            path, layout, itemsize, meta_bytes, zarr_bytes, stats_bytes
+        )
     _barrier("snapshot_create")
+
+    comp_offsets = snapshot_component_offsets(path)
 
     use_gds = _gds_available()
     if use_gds:
@@ -777,22 +1002,18 @@ def save_snapshot(state: Array, t: float, it: int, path: str | Path) -> None:
     write_fn = _write_chunks_gds if use_gds else _write_chunks_host
 
     if params.outs.snapshot_write_mode == "serial":
-        _write_serialized(write_fn, state, store_path, layout, itemsize)
+        _write_serialized(
+            write_fn, state, path, comp_offsets, layout, itemsize
+        )
     else:
-        write_fn(state, store_path, layout, itemsize)
+        write_fn(state, path, comp_offsets, layout, itemsize)
     _barrier("snapshot_write")
-
-    if sharding.main_device:
-        _write_metadata(path, t, it, layout)
-    _barrier("snapshot_done")
-
-    sharding.print(f"Snapshot saved to {path}")
 
 
 def load_snapshot(
     path: str | Path,
 ) -> tuple[Array, float, int]:
-    r"""Load a spectral state from a zarr3 snapshot.
+    r"""Load a spectral state from a single-file snapshot.
 
     Each current device reads its own `$k_z$`/`$k_x$` sub-range,
     so a snapshot can be resumed at any ``(np0, np1)``
@@ -801,13 +1022,14 @@ def load_snapshot(
     Parameters
     ----------
     path:
-        Directory of the zarr3 store.
+        Path to the snapshot tar file.
 
     Returns
     -------
     state:
-        Spectral perturbation velocity, shape ``(3, *spec_shape)``,
-        correctly sharded.
+        Spectral state, shape ``(n_components, *spec_shape)`` (the
+        perturbation velocity, or the 9-component viscoelastic total
+        field), correctly sharded.
     t:
         Simulation time at snapshot.
     it:
@@ -820,38 +1042,46 @@ def load_snapshot(
 
     # Detect ny mismatch (wall-bounded only).
     snap_native = tuple(meta["native_shape"])
-    curr_true = (3, *_true_spec_shape())
+    curr_true = (_n_components(), *_true_spec_shape())
     ny_mismatch = snap_native != curr_true
 
     if ny_mismatch:
-        snap_ny = meta["params"]["res"]["ny"]
+        # Stored (v4) params use public names (res.ny is "nr" for the
+        # cylindrical/annular flows); look it up via the alias.
+        from .flows.registry import stored_value
+
+        snap_ny = stored_value(meta["params"], meta["system"], "res", "ny")
         local_shape: tuple[int, ...] | None = _padded_local_shape_snap_ny(
             snap_ny
         )
         if _is_periodic():
             assembly_shape = (
-                3,
+                _n_components(),
                 snap_ny - 1,
                 sharding.nz_spec,
                 sharding.nx_spec,
             )
         else:
             assembly_shape = (
-                3,
+                _n_components(),
                 snap_ny,
                 sharding.nz_spec,
                 sharding.nx_spec,
             )
     else:
         local_shape = None
-        assembly_shape = (3, *sharding.spec_shape)
+        assembly_shape = (_n_components(), *sharding.spec_shape)
 
-    store_path = path / "state"
+    comp_offsets = snapshot_component_offsets(path)
     if _gds_available():
         sharding.print("Snapshot: using GDS path")
-        per_device = _read_chunks_gds(store_path, layout, dtype, local_shape)
+        per_device = _read_chunks_gds(
+            path, comp_offsets, layout, dtype, local_shape
+        )
     else:
-        per_device = _read_chunks_host(store_path, layout, dtype, local_shape)
+        per_device = _read_chunks_host(
+            path, comp_offsets, layout, dtype, local_shape
+        )
 
     state = jax.make_array_from_single_device_arrays(
         assembly_shape,
@@ -859,70 +1089,6 @@ def load_snapshot(
         per_device,
     )
     return state, meta["t"], meta["it"]
-
-
-def load_y_slice(path: str | Path, y_index: int) -> Array:
-    r"""Read a single wall-normal coordinate from a ``walled``
-    snapshot without loading the full array.
-
-    With the `$y$`-slowest layout, a y-slice of each component is
-    one contiguous byte range in its chunk file, readable with a
-    single seek + read per component.
-
-    Parameters
-    ----------
-    path:
-        Directory of the zarr3 store.
-    y_index:
-        Wall-normal grid-point index.
-
-    Returns
-    -------
-    :
-        Complex array of shape ``(3, N_{k_z}, N_{k_x})``.
-
-    Raises
-    ------
-    ValueError
-        Unless the snapshot uses the ``walled`` layout.
-    """
-    path = Path(path)
-    meta = read_metadata(path)
-
-    if meta["layout"] != "walled":
-        raise ValueError(
-            "Partial y-reads require a 'walled' wall-bounded snapshot."
-        )
-
-    _, _, kx_global, b_size = meta["on_disk_shape"]
-    dtype = _np_dtype(meta["dtype"])
-    itemsize = dtype.itemsize
-    plane = kx_global * b_size  # one component's y-slice, (kx, kz)
-    offset = y_index * plane * itemsize
-    nbytes = plane * itemsize
-    store_path = path / "state"
-
-    comps: list = []
-    if _gds_available():
-        import cupy as cp
-        import kvikio
-
-        for comp in range(3):
-            buf = cp.empty((kx_global, b_size), dtype=dtype)
-            chunk_path = _chunk_file(store_path, comp)
-            with kvikio.CuFile(str(chunk_path), "r") as f:
-                f.read(buf, file_offset=offset)
-            comps.append(buf.T)  # (kz, kx)
-        return jnp.from_dlpack(cp.stack(comps))
-
-    for comp in range(3):
-        chunk_path = _chunk_file(store_path, comp)
-        with open(chunk_path, "rb") as f:
-            f.seek(offset)
-            raw = f.read(nbytes)
-        arr = np.frombuffer(raw, dtype=dtype).reshape(kx_global, b_size)
-        comps.append(arr.T)  # (kz, kx)
-    return jnp.asarray(np.stack(comps))
 
 
 def validate_snapshot_params(
@@ -934,21 +1100,34 @@ def validate_snapshot_params(
     (resolution, precision, flow system, or a streamwise extent
     that the current device count cannot evenly shard).  Prints
     warnings for non-critical differences and an info line when
-    the device count differs (resume is np-agnostic).
+    the device count differs (resume is np-agnostic).  Stored (v4)
+    metadata records the *public* field names; comparisons run in
+    internal space (:func:`dnsjax.flows.registry.internalize_stored`)
+    and messages name the public alias.
 
     Parameters
     ----------
     path:
-        Directory of the zarr3 store.
+        Path to the snapshot tar file.
     """
+    from .flows.registry import internalize_stored, spec_for
+
     meta = read_metadata(Path(path))
-    snap_params = meta.get("params", {})
+    stored = meta.get("params", {})
+    system = meta.get("system") or stored.get("phys", {}).get("system")
+    spec = spec_for(system or params.phys.system)
+    snap_params = internalize_stored(stored, spec.system)
     current = params.model_dump(mode="json")
 
-    # Critical: must match exactly
+    def _public(section: str, key: str) -> str:
+        return spec.alias(section, key)
+
+    # Critical: must match exactly.  The resolution labels are
+    # axis-neutral: the message names the flow's public field (e.g.
+    # internal ``res.nx`` is the axial ``nz`` on the annular flows).
     critical = {
-        ("res", "nx"): "x resolution",
-        ("res", "nz"): "z resolution",
+        ("res", "nx"): "resolution",
+        ("res", "nz"): "resolution",
         ("res", "double_precision"): "precision",
         ("phys", "system"): "flow system",
     }
@@ -956,12 +1135,14 @@ def validate_snapshot_params(
         snap_val = snap_params.get(section, {}).get(key)
         curr_val = current.get(section, {}).get(key)
         if snap_val is not None and snap_val != curr_val:
+            name = _public(section, key)
             raise SnapshotMismatchError(
-                f"{label}: snapshot {key}={snap_val}, current {key}={curr_val}"
+                f"{label}: snapshot {name}={snap_val}, "
+                f"current {name}={curr_val}"
             )
 
     native = meta.get("native_shape")
-    expected = [3, *_true_spec_shape()]
+    expected = [_n_components(), *_true_spec_shape()]
     if native is not None and list(native) != expected:
         if _is_periodic():
             raise SnapshotMismatchError(
@@ -990,10 +1171,10 @@ def validate_snapshot_params(
         ("phys", "re"): "Reynolds number",
         ("step", "dt"): "time step",
         ("step", "implicitness"): "implicitness",
-        ("geo", "lx"): "Lx",
-        ("geo", "lz"): "Lz",
+        ("geo", "lx"): "domain extent",
+        ("geo", "lz"): "domain extent",
         ("geo", "tilt_degree"): "tilt angle",
-        ("res", "fd_order"): "FD stencil order",
+        ("res", "fd_order"): "FD accuracy order",
         ("solver", "backend"): "solver backend",
     }
     for (section, key), label in warn_fields.items():
@@ -1005,7 +1186,8 @@ def validate_snapshot_params(
             and snap_val != curr_val
         ):
             sharding.print(
-                f"Warning: {label} changed: {snap_val} -> {curr_val}"
+                f"Warning: {label} {_public(section, key)} changed: "
+                f"{snap_val} -> {curr_val}"
             )
 
     snap_np = meta.get("n_devices")

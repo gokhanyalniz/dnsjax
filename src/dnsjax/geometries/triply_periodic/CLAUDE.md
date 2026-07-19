@@ -2,27 +2,46 @@
 
 ### Module layout
 
-- `triply_periodic.py`: Fourier class, spectral differential operators (derivative, curl, div, grad, laplacian, inverse_laplacian), norms, `TriplyPeriodicFlow` base dataclass, `init_state`, algebraic Helmholtz predict/correct, `correct_divergence`, `build_triply_periodic_stepper` factory
+- `triply_periodic.py`: Fourier class, spectral differential operators
+  (derivative/curl/div/grad/laplacian/inverse-laplacian), norms,
+  `TriplyPeriodicFlow` base dataclass, `init_state`, the algebraic
+  Helmholtz predict/correct, `correct_divergence`, and
+  `build_triply_periodic_stepper`.
 
 ### Key differences from wall-bounded
 
-- Helmholtz inversion is algebraic (pointwise multiply by `ildt_2`) -- no matrix solves. See `TriplyPeriodicFlow.__post_init__` docstring.
-- Divergence correction is a separate post-step projection, not built into an IMM. Two-stage enforcement: inside `_get_rhs` (pressure Poisson) and after time stepping (`correct_divergence`). See `correct_divergence` docstring.
-- Spectral layout: `(ny-1, nz_spec, nx_spec)` with `[ky, kz, kx]` -- ky fully local, kz sharded by np0, kx sharded by np1.
-
-### Parallelization (double decomposition)
-
-The 3D FFT extends the wall-bounded 2D reshard pipeline with an additional y-FFT step after reshard #2 brings the full y-extent local on each device:
-
-- Forward: x-FFT -> [reshard #1: z<->kx] -> z-FFT -> [reshard #2: y<->kz] -> y-FFT
-- Physical `(y_np0, z_np1, x)` -> spectral `(ky, kz_np0, kx_np1)`
-
-See `fft.py` module docstring for the full reshard pipeline. `np0` requires `ny_padded` divisibility; if not met, `ny_padded` is automatically bumped to the next multiple.
+- Helmholtz inversion is algebraic (pointwise multiply by `ildt_2`) --
+  no matrix solves, so `dnsjax.solvers` is never involved and
+  `solver.backend` is absent from the periodic parameter surfaces
+  (the geometry never reads it). See
+  `TriplyPeriodicFlow.__post_init__`. Adaptive dt (`set_dt`) just
+  recomputes `ldt_1`/`ildt_2` (`_build_dt_leaves`) -- no stability
+  check, fully continuous dt.
+- Divergence correction is a two-stage projection, not an IMM: inside
+  `_get_rhs` (pressure Poisson) and post-step (`correct_divergence` +
+  mean-mode zeroing, fused into every stepper via `make_stepper`'s
+  `finalize_fn` -- `_finalize_state`). See the `correct_divergence`
+  docstring.
+- Spectral layout: `(ny-1, nz_spec, nx_spec)` with `[ky, kz, kx]` --
+  ky fully local, kz sharded by np0, kx sharded by np1.
+- The 3D FFT extends the wall-bounded 2D reshard pipeline with a y-FFT
+  step after reshard #2 brings the full y-extent local on each device
+  (full pipeline: the `fft.py` module docstring). `np0` requires
+  `ny_padded` divisibility; if unmet, `ny_padded` bumps to the next
+  multiple.
 
 ### Flows
 
-- `flows/triply_periodic/monochromatic.py`: MonochromaticFlow(TriplyPeriodicFlow) -- base flow and forcing for Kolmogorov / Waleffe / decaying-box; diagnostics (E, I, D, E')
+- `flows/triply_periodic/monochromatic.py`:
+  MonochromaticFlow(TriplyPeriodicFlow) -- base flow and forcing for
+  Kolmogorov; diagnostics (E, I, D, E').
 
 ### Tests
 
-No dedicated triply-periodic test files yet. Smoke-test manually via `mpirun -np 1 python -m dnsjax --phys.system kolmogorov ...` (or `waleffe` / `decaying-box`).
+Kolmogorov is stepped by `tests/test_random_smoke.py` (random-IC
+integration, incl. a cnab2 entry; `dt` capped at 0.005 there, a
+corrector-rate limit), `tests/test_cnab2.py` (the plain no-corrector
+AB2 path), and `tests/test_temporal_order.py` (the cnab2
+self-convergence study); `tests/test_monochromatic.py` pins the
+`get_stats` diagnostics (Parseval/physical-space enstrophy identity,
+laminar limits).

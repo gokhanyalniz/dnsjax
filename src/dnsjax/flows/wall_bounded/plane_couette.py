@@ -3,7 +3,7 @@
 This module defines the ``PlaneCouetteFlow`` dataclass that holds the
 plane-Couette-specific base flow.  Geometry-general infrastructure
 (CGL grid, FD matrices, IMM operators, Kleiser-Schumann IMM
-iteration, predict / correct / norm, banded / dense LU solvers) is
+iteration, predict / correct / norm, Pallas / dense LU solvers) is
 inherited from ``geometries.wall_bounded.cartesian.CartesianFlow``.
 
 It also exports the flow interface consumed by ``__main__``:
@@ -11,13 +11,16 @@ It also exports the flow interface consumed by ``__main__``:
 - ``predict_and_fully_correct`` -- fused predictor + corrector
 - ``predict_and_fully_correct_measured`` -- fused step + CFL
   measurements (``steps.dat``)
-- ``init_state`` -- initial state from laminar or snapshot
+- ``set_dt`` / ``reset_ab2_kappa`` -- adaptive-dt hooks
+  (``step.adaptive``; on-device operator rebuild, no recompile)
+- ``init_state`` -- initial state from a snapshot or laminar
 - ``get_stats`` -- diagnostic statistics
 
-Unlike the triply-periodic interface, no ``correct_velocity`` is
-exported: the influence-matrix method enforces `$\\nabla \\cdot
-\\mathbf{u} = 0$` and the no-slip wall BCs exactly at every time
-step, so no separate divergence projection is required.
+The influence-matrix method enforces `$\\nabla \\cdot \\mathbf{u}
+= 0$` and the no-slip wall BCs exactly at every time step, so no
+post-step divergence projection is fused into the stepper here
+(the triply-periodic geometry fuses one via ``make_stepper``'s
+*finalize_fn*).
 
 Base flow
 ---------
@@ -53,6 +56,10 @@ from ...geometries.wall_bounded.cartesian import (
     get_pert_enstrophy,
     integrate_scalar,
     pad_base_flow,
+    tilted_profile_arrays,
+)
+from ...geometries.wall_bounded.cartesian import (
+    frozen_profile_flow as _frozen_flow_copy,
 )
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
@@ -92,30 +99,7 @@ class PlaneCouetteFlow(CartesianFlow):
 
         Us = self.ys.copy()  # U_s(y) = y
         dy_Us = jnp.ones(params.res.ny, dtype=sharding.float_type)
-
-        self.base_flow = (
-            jnp.zeros(
-                (3, params.res.ny),
-                dtype=sharding.float_type,
-                out_sharding=sharding.no_shard,
-            )
-            .at[0]
-            .set(Us * derived_params.cos_tilt)
-            .at[2]
-            .set(Us * derived_params.sin_tilt)[:, :, None, None]
-        )
-        # curl(U) = (dy_Us sin θ, 0, -dy_Us cos θ)
-        self.curl_base_flow = (
-            jnp.zeros(
-                (3, params.res.ny),
-                dtype=sharding.float_type,
-                out_sharding=sharding.no_shard,
-            )
-            .at[0]
-            .set(dy_Us * derived_params.sin_tilt)
-            .at[2]
-            .set(-dy_Us * derived_params.cos_tilt)[:, :, None, None]
-        )
+        self.base_flow, self.curl_base_flow = tilted_profile_arrays(Us, dy_Us)
         pad_base_flow(self)
 
 
@@ -127,7 +111,27 @@ flow: PlaneCouetteFlow = PlaneCouetteFlow()
     init_state,
     predict_and_fully_correct,
     predict_and_fully_correct_measured,
+    step_cnab2,
+    step_cnab2_measured,
+    set_dt,
+    reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
+
+
+def frozen_profile_flow(us: Array) -> PlaneCouetteFlow:
+    r"""Flow linearized around an arbitrary streamwise profile.
+
+    Transient-growth hook (:mod:`dnsjax.analysis.transient_growth`):
+    given the *total* streamwise profile `$U_s(y)$` on the code grid
+    (``flow.ys``, shape ``(Ny,)``), tilt-split it exactly as the
+    laminar `$U_s = y$` (:func:`tilted_profile_arrays`), differentiate
+    with the flow's FD `$D_1$` for `$\nabla\times\mathbf{U}$`, and
+    return a flow copy carrying that base flow (all operators shared;
+    see :func:`~dnsjax.geometries.wall_bounded._base.frozen_profile_flow`).
+    """
+    dy_us = flow.D1 @ us
+    base, curl = tilted_profile_arrays(us, dy_us)
+    return _frozen_flow_copy(flow, base, curl)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────────────
@@ -222,3 +226,16 @@ def _get_stats_jit(
 def get_stats(state: Array) -> dict[str, Array]:
     """Wrapper around ``_get_stats_jit``."""
     return _get_stats_jit(state, fourier, flow)
+
+
+@jit
+def _get_perturbation_energy_jit(
+    state: Array, fourier_: Fourier, flow_: PlaneCouetteFlow
+) -> Array:
+    r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
+    return get_norm2(state, fourier_.k_metric, flow_.y_weights) / 2
+
+
+def get_perturbation_energy(state: Array) -> Array:
+    """Perturbation kinetic energy E' (for the laminarization check)."""
+    return _get_perturbation_energy_jit(state, fourier, flow)

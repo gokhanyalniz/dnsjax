@@ -15,7 +15,7 @@ The device mesh has shape ``(np0, np1)`` with axes ``"np0"`` and
 - ``np1`` distributes the spanwise axis (`$z$`) in physical space
   and the streamwise-wavenumber axis (`$k_x$`) in spectral space.
 - Each device holds the full wall-normal extent in spectral space,
-  so FD / SPIKE solves are unchanged.
+  so FD solves are unchanged.
 
 When ``np0 == 1`` the ``"np0"`` axis is trivially size-1 and all
 partition specs collapse to the original 1D decomposition on
@@ -51,14 +51,12 @@ from jax import numpy as jnp
 from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from .parameters import padded_res, params, periodic_systems
-
-
-def _pad_to_multiple(n: int, divisor: int) -> int:
-    """Round *n* up to the next multiple of *divisor*."""
-    if divisor <= 1:
-        return n
-    return ((n + divisor - 1) // divisor) * divisor
+from .parameters import (
+    padded_res,
+    params,
+    periodic_systems,
+    round_up_padded,
+)
 
 
 def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
@@ -77,7 +75,7 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     ``CylindricalFlow``), their flow subclasses, the
     geometry-specific ``Fourier`` classes, and the solver
     dataclasses (``DenseJAXSolver``,
-    ``PerModeBandedOperator``).
+    ``PerModeBandedPallasOperator``).
     """
 
     def _tree_flatten(obj: T) -> tuple[tuple[object, ...], dict[str, object]]:
@@ -122,8 +120,8 @@ class Sharding:
     definition time, so this acts as a module-level singleton
     once ``sharding = Sharding()`` is executed.
 
-    Auto-padding for ``np0``
-    ~~~~~~~~~~~~~~~~~~~~~~~
+    Auto-padding
+    ~~~~~~~~~~~~
     When the spectral mode count (``nz - 1`` for `$k_z$` or
     ``nx // 2`` for `$k_x$`) is not evenly divisible by the
     corresponding mesh axis (``np0`` or ``np1``), the dimension
@@ -138,13 +136,14 @@ class Sharding:
     wall-bounded flows, ``ny_y_pad`` zero rows are appended
     before the `$y \leftrightarrow k_z$` reshard and stripped
     afterwards (analogous to spectral padding, handled in
-    :mod:`dnsjax.fft`).  For periodic flows, ``ny_padded`` is
-    bumped to the next multiple of ``np0`` (marginally more
-    oversampling, physically neutral).  ``nz_padded``
-    (sharded by ``np1``) is *not* auto-padded: choose ``nz``
-    and ``oversampling_factor`` so that
-    ``nz_padded = oversampling_factor * nz // 2`` is divisible
-    by ``np1``.
+    :mod:`dnsjax.fft`).  The padded physical sizes --
+    ``nz_padded`` (sharded by ``np1``) and, for periodic
+    flows, ``ny_padded`` (sharded by ``np0``) -- are rounded
+    up for mesh divisibility by ``padded_res.apply_rounding``
+    (normally already done by ``set_padded_resolution``;
+    re-applied here for entry points that set ``params.dist``
+    late).  Every recorded adjustment is printed once on the
+    main process, so no padding is ever silent.
     """
 
     np0: int = params.dist.np0
@@ -163,9 +162,24 @@ class Sharding:
             )
         sys.exit(1)
 
+    # Report the *actual* device platform / kind read from the
+    # initialised backend, not the requested ``params.dist.platform``:
+    # once JAX is configured the two agree, and reading the live device
+    # means this banner can never contradict the hardware (the old
+    # "1 cpu devices ... cuda:0" arose when a script left
+    # ``params.dist.platform`` at its default while JAX auto-selected a
+    # GPU).  The requested platform is shown alongside so any genuine
+    # mismatch stays visible instead of being hidden.  ``Device.platform``
+    # is 'cpu'/'gpu'/'tpu' ('gpu' for a CUDA device); the device reprs and
+    # ``device_kind`` below name the concrete hardware.
+    actual_platform: str = devices[0].platform if devices else "?"
+    device_kind: str = (
+        getattr(devices[0], "device_kind", "?") if devices else "?"
+    )
     print(
-        f"Working with {n_devices} {params.dist.platform} devices"
-        f" (np0={np0}, np1={np1}):",
+        f"Working with {n_devices} '{actual_platform}' device(s) "
+        f"[{device_kind}] (requested platform "
+        f"'{params.dist.platform}', np0={np0}, np1={np1}):",
         *devices,
         flush=True,
     )
@@ -189,7 +203,7 @@ class Sharding:
 
     ny_y_pad: int = 0
     if not _is_periodic and np0 > 1 and params.res.ny % np0 != 0:
-        _ny_phys: int = _pad_to_multiple(params.res.ny, np0)
+        _ny_phys: int = round_up_padded(params.res.ny, np0)
         ny_y_pad = _ny_phys - params.res.ny
         if main_device:
             print(
@@ -199,33 +213,20 @@ class Sharding:
                 flush=True,
             )
 
-    if _is_periodic and np0 > 1:
-        _ny_padded_check: int | None = padded_res.ny_padded
-        if _ny_padded_check is not None and _ny_padded_check % np0 != 0:
-            _ny_padded_new: int = _pad_to_multiple(_ny_padded_check, np0)
-            if main_device:
-                print(
-                    f"ny_padded bumped from {_ny_padded_check} to "
-                    f"{_ny_padded_new} for np0 divisibility.",
-                    flush=True,
-                )
-            padded_res.ny_padded = _ny_padded_new
-
-    # nz_padded is not auto-padded: user must choose nz and
-    # oversampling_factor so that nz_padded divides np1.
-    if np1 > 1 and padded_res.nz_padded % np1 != 0:
-        print(
-            f"nz_padded={padded_res.nz_padded} is not divisible by "
-            f"np1={np1}. Choose nz and oversampling_factor so that "
-            f"nz_padded = oversampling_factor * nz // 2 is a "
-            f"multiple of np1.",
-            flush=True,
-        )
-        sys.exit(1)
+    # ── Padded physical sizes (divisibility rounding) ───────────
+    # ``set_padded_resolution`` already rounds ``nz_padded`` (and the
+    # periodic ``ny_padded``) for mesh divisibility; re-apply
+    # idempotently for entry points that set ``params.dist`` after
+    # (or without) calling it, then report every recorded adjustment
+    # once.
+    padded_res.apply_rounding(params)
+    if main_device:
+        for _note in padded_res.notes:
+            print(_note, flush=True)
 
     # ── Spectral mode counts (auto-padded for divisibility) ───
-    nz_spec: int = _pad_to_multiple(params.res.nz - 1, np0)
-    nx_spec: int = _pad_to_multiple(params.res.nx // 2, np1)
+    nz_spec: int = round_up_padded(params.res.nz - 1, np0)
+    nx_spec: int = round_up_padded(params.res.nx // 2, np1)
     nz_spec_pad: int = nz_spec - (params.res.nz - 1)
     nx_spec_pad: int = nx_spec - (params.res.nx // 2)
 
@@ -254,16 +255,11 @@ class Sharding:
     _fft_spec_scalar_shard = P(None, a0, a1)
 
     # ── Spectral partition specs ──────────────────────────────
-    if _is_periodic:
-        # Spectral layout [ky, kz, kx]:
-        # ky fully local, kz by np0, kx by np1.
-        spec_vector_shard = P(None, None, a0, a1)
-        spec_scalar_shard = P(None, a0, a1)
-    else:
-        # Spectral layout [y, kz, kx]:
-        # y fully local, kz by np0, kx by np1.
-        spec_vector_shard = P(None, None, a0, a1)
-        spec_scalar_shard = P(None, a0, a1)
+    # Spectral layout [ky, kz, kx] (periodic) or [y, kz, kx]
+    # (wall-bounded): the leading axis is fully local either way,
+    # kz by np0, kx by np1.
+    spec_vector_shard = P(None, None, a0, a1)
+    spec_scalar_shard = P(None, a0, a1)
 
     # ── Physical partition specs ──────────────────────────────
     # [y, z, x] or [C, y, z, x]:
@@ -277,7 +273,6 @@ class Sharding:
     # Leading spectral axes [kz, kx, ...]:
     spec_imm_corr_shard = NamedSharding(mesh, P(a0, a1, None))
     spec_dy_op_shard = NamedSharding(mesh, P(a0, a1, None, None))
-    spec_dy_blocks_shard = NamedSharding(mesh, P(a0, a1, None, None, None))
     spec_k2_op_shard = NamedSharding(mesh, P(a0, a1))
 
     # ── Precision ─────────────────────────────────────────────

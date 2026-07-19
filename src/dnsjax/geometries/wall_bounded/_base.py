@@ -7,6 +7,7 @@ iteration, curl, etc.) stays in the respective geometry
 modules.
 """
 
+import copy
 from collections.abc import Callable
 
 import jax
@@ -29,12 +30,24 @@ spec_to_phys = spec_to_phys_2d
 # ── Wall-normal matrix application ──────────────────────────────
 
 
-def apply_y_matrix(mat: Array, field: Array) -> Array:
+def apply_y_matrix(mat: Array, field: Array, component_axis: int = 0) -> Array:
     r"""Left-multiply along the wall-normal axis with a real matrix.
 
     Computes ``einsum("ij, jzx -> izx", mat, field)`` for a 3-d
-    *field*, or ``einsum("ij, cjzx -> cizx", ...)`` for a 4-d
-    *field* with a leading component axis.
+    *field*, or a component-batched contraction for a 4-d *field*.
+
+    **Layout / transposes.**  The contraction runs as a cuBLAS GEMM
+    over the wall-normal axis.  When that axis is **leading** (the 3-d
+    case, or 4-d with ``component_axis == 1`` so *field* is
+    `$(N_y, C, N_1, N_2)$`) it is already in GEMM contraction position
+    and **no transpose is emitted**.  With ``component_axis == 0``
+    (*field* `$(C, N_y, N_1, N_2)$`) the wall-normal axis is interior,
+    so XLA transposes it into position and back -- two field-sized
+    transposes per call.  The batched IMM/RHS matvecs therefore stack
+    their inputs **y-leading** and pass ``component_axis=1``; this keeps
+    the single batched GEMM (one per ``D1``/``D2``) yet emits zero
+    transposes (confirmed: ``ij, jczx -> iczx`` lowers transpose-free
+    for ``cuda``, vs one transpose for ``ij, cjzx -> cizx``).
 
     A complex *field* is first split into a real trailing re/im
     axis so the contraction runs as a real GEMM: half the FLOPs
@@ -51,19 +64,66 @@ def apply_y_matrix(mat: Array, field: Array) -> Array:
         Real matrix, shape ``(M, N_y)``.  ``M = N_y`` for full
         FD matrices; fewer rows for partial-row corrections.
     field:
-        Real or complex field of shape ``(N_y, N_1, N_2)`` or
-        ``(C, N_y, N_1, N_2)``.
+        Real or complex field of shape ``(N_y, N_1, N_2)`` (3-d), or
+        4-d with the wall-normal axis at position ``component_axis + 1``
+        (so ``(C, N_y, N_1, N_2)`` for ``component_axis == 0``, the
+        default, or the transpose-free ``(N_y, C, N_1, N_2)`` for
+        ``component_axis == 1``).
+    component_axis:
+        Position of the leading batch (component) axis of a 4-d
+        *field*: ``0`` (wall-normal interior) or ``1`` (wall-normal
+        leading, transpose-free).  Ignored for a 3-d *field*.  The
+        output preserves the input layout.
     """
     if jnp.iscomplexobj(field) and not jnp.iscomplexobj(mat):
         f = jnp.stack([field.real, field.imag], axis=-1)
         if field.ndim == 3:
             out = jnp.einsum("ij, jzxr -> izxr", mat, f)
+        elif component_axis == 1:
+            out = jnp.einsum("ij, jczxr -> iczxr", mat, f)
         else:
             out = jnp.einsum("ij, cjzxr -> cizxr", mat, f)
         return lax.complex(out[..., 0], out[..., 1])
     if field.ndim == 3:
         return jnp.einsum("ij, jzx -> izx", mat, field)
+    if component_axis == 1:
+        return jnp.einsum("ij, jczx -> iczx", mat, field)
     return jnp.einsum("ij, cjzx -> cizx", mat, field)
+
+
+# ── Base-flow coupling (FFT-free, for the CN/AB2 scheme) ─────────
+
+
+def base_flow_coupling(
+    u: Array, omega: Array, base_flow: Array, curl_base_flow: Array
+) -> Array:
+    r"""Linear base-flow coupling `$\mathbf{u}' \times \nabla\times
+    \mathbf{U} + \mathbf{U} \times \boldsymbol{\omega}'$`.
+
+    The two base-flow cross-product terms of the rotational nonlinear
+    form (:mod:`dnsjax.rhs`), as a component-wise expression in a local
+    orthonormal basis -- Cartesian `$(x, y, z)$` or the cylindrical
+    `$(z, r, \theta)$` triad (both right-handed, so the standard
+    cross-product formula applies).  All inputs are in the **same**
+    representation; *base_flow* / *curl_base_flow* are the wall-normal
+    (or radial) profiles `$(3, N, 1, 1)$`, broadcast over the Fourier
+    axes.  Evaluated with `$\boldsymbol{\omega}'$` already in hand
+    (spectral curl), this needs **no Fourier transform** -- used by the
+    CN/AB2 scheme to make the (stiff) base-flow coupling implicit; see
+    ``step_cnab2`` in :mod:`dnsjax.timestep` and each geometry's
+    ``_l_bf``.
+    """
+    u0, u1, u2 = u[0], u[1], u[2]
+    w0, w1, w2 = omega[0], omega[1], omega[2]
+    U0, U1, U2 = base_flow[0], base_flow[1], base_flow[2]
+    c0, c1, c2 = curl_base_flow[0], curl_base_flow[1], curl_base_flow[2]
+    return jnp.array(
+        [
+            (u1 * c2 - u2 * c1) + (U1 * w2 - U2 * w1),
+            (u2 * c0 - u0 * c2) + (U2 * w0 - U0 * w2),
+            (u0 * c1 - u1 * c0) + (U0 * w1 - U1 * w0),
+        ]
+    )
 
 
 # ── Base-flow padding ───────────────────────────────────────────
@@ -76,32 +136,29 @@ def pad_base_flow(flow: object) -> None:
     and ``flow.base_flow_adv_padded``: zero-padded along the
     wall-normal axis by ``sharding.ny_y_pad`` rows (matching the
     physical-space fields of :mod:`dnsjax.fft`), so the RHS path
-    needs no per-call ``jnp.pad``.  When no padding is needed the
-    fields alias the originals (no extra memory; the padded profiles
-    are tiny ``(3, ny + pad, 1, 1)`` arrays otherwise).
+    needs no per-call ``jnp.pad``.  When no padding is needed
+    the fields alias the originals (no extra memory; the padded
+    profiles are tiny ``(3, ny + pad, 1, 1)`` arrays otherwise).
 
     ``base_flow_adv_padded`` is the base velocity *as seen in the
     moving frame of reference*, `$\mathbf{U} - U_{grid}\,
-    \hat{\mathbf{e}}_0$`, where component 0 is the grid-translation
-    direction (streamwise `$x$` for Cartesian, axial `$z$` for
-    cylindrical / annular).  It is the velocity that enters the
-    rotational nonlinear cross product
-    (:func:`dnsjax.rhs.get_nonlin`) and the CFL diagnostic
-    (:func:`dnsjax.measurements.get_cfl`).  Subtracting a constant
-    `$U_{grid}$` from the cross-product velocity slot is exactly
-    equivalent to adding the frame term `$+U_{grid}\,
-    \partial_{x_0}\mathbf{u}'$` to the RHS: for constant
-    `$\mathbf{c} = U_{grid}\hat{\mathbf{e}}_0$` the identity
-    `$(\mathbf{c}\cdot\nabla)\mathbf{u}'
-    = \boldsymbol{\omega}'\times\mathbf{c}
-    + \nabla(\mathbf{c}\cdot\mathbf{u}')$` splits it into the kept
-    rotational part `$\boldsymbol{\omega}'\times\mathbf{c}$` (the
-    change `$\mathbf{U}\times\boldsymbol{\omega}' \to
-    (\mathbf{U}-\mathbf{c})\times\boldsymbol{\omega}'$`) and a pure
-    gradient absorbed by the pressure projection.  ``curl_base_flow``
-    is frame-invariant (`$\nabla\times\mathbf{c} = 0$`).  When
-    `$U_{grid} = 0$` the field aliases ``base_flow_padded`` (the lab
-    frame, byte-identical to the pre-frame behaviour).
+    \hat{\mathbf{e}}_0$` (``derived_params.u_grid``; component 0 is
+    the grid-translation direction -- streamwise `$x$` for
+    Cartesian, axial `$z$` for cylindrical / annular).  It is read
+    **only** by the CFL diagnostic
+    (:func:`dnsjax.measurements.get_cfl` via each geometry's
+    ``_get_rhs_measured``), so the reported CFL is the
+    frame-relative advection.  The rotational cross product
+    (:func:`dnsjax.rhs.get_nonlin`) keeps the lab-frame
+    ``base_flow_padded``: the frame term is applied in *convective*
+    form, `$+ i k_0 U_{grid} \mathbf{u}'$`, added spectrally in each
+    geometry's ``_get_rhs_core`` / ``_l_bf`` (mode-diagonal and
+    divergence-free, hence projection-neutral and non-stiff --
+    unlike the rotational split `$\boldsymbol{\omega}' \times
+    \mathbf{c} + \nabla(\mathbf{c} \cdot \mathbf{u}')$`, whose
+    explicit `$c\,\partial_y u'$` half is wall-stiff).  When
+    `$U_{grid} = 0$` the field aliases ``base_flow_padded``
+    (byte-identical to the frame-free behaviour).
 
     Called by each flow subclass at the end of its
     ``__post_init__``, after ``base_flow`` is set.
@@ -125,6 +182,45 @@ def pad_base_flow(flow: object) -> None:
         flow.base_flow_padded = flow.base_flow
         flow.curl_base_flow_padded = flow.curl_base_flow
         flow.base_flow_adv_padded = base_flow_adv
+
+
+def frozen_profile_flow(
+    flow: object, base_flow: Array, curl_base_flow: Array
+) -> object:
+    r"""Return a flow copy with the base profile replaced (TG hook).
+
+    Linearize the solver around an arbitrary wall-normal *total*
+    profile `$\mathbf{U}(y)$` by swapping the base flow that the linear
+    coupling `$L_{bf} = \mathbf{u}' \times \nabla\times\mathbf{U} +
+    \mathbf{U} \times \boldsymbol{\omega}'$` reads
+    (:func:`base_flow_coupling`, each geometry's ``_l_bf``).  Only
+    ``base_flow`` / ``curl_base_flow`` (and their padded aliases,
+    refreshed by :func:`pad_base_flow`) depend on the profile; the
+    viscous `$H_k$`, pressure `$L_k$` and influence-matrix operators
+    are profile-independent, so the returned shallow copy shares them.
+
+    Used by :mod:`dnsjax.analysis.transient_growth`; each wall-bounded
+    flow module wraps it in a ``frozen_profile_flow(profile)`` builder
+    that constructs the geometry's ``(3, Ny, 1, 1)`` profile pair.  A
+    flow is a registered pytree, so a stepper built once retraces on
+    neither the copy nor a later profile swap.
+
+    Parameters
+    ----------
+    flow:
+        The module-level flow singleton to copy.
+    base_flow, curl_base_flow:
+        The replacement `$\mathbf{U}$` and `$\nabla\times\mathbf{U}$`,
+        shape ``(3, Ny, 1, 1)`` in the geometry's local basis
+        (Cartesian `$(x, y, z)$`, cylindrical / annular `$(z, r,
+        \theta)$`) -- matching the layout the flow's own base-flow
+        constructor produces.
+    """
+    new = copy.copy(flow)
+    new.base_flow = base_flow
+    new.curl_base_flow = curl_base_flow
+    pad_base_flow(new)
+    return new
 
 
 # ── Mean-mode extraction ───────────────────────────────────────
@@ -281,14 +377,13 @@ def get_pert_enstrophy(
 
 
 def init_state(snapshot: str | None) -> Array:
-    """Initialise the flow state (velocity_spec)."""
-    if params.init.start_from_laminar:
-        velocity_spec = jnp.zeros(
-            shape=(3, *sharding.spec_shape),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.spec_vector_shard,
-        )
-    elif snapshot is not None:
+    """Initialise the flow state (velocity_spec).
+
+    A provided snapshot path (legacy ``.npz``) takes precedence over
+    ``start_from_laminar`` so a supplied snapshot always wins; zarr3
+    snapshot resume is handled in ``__main__`` before this is called.
+    """
+    if snapshot is not None:
         snapshot_arr = jnp.load(snapshot)["velocity_phys_nonexpanded"].astype(
             sharding.float_type
         )
@@ -296,6 +391,12 @@ def init_state(snapshot: str | None) -> Array:
             snapshot_arr, sharding.phys_vector_shard
         )
         velocity_spec = phys_to_spec_2d(velocity_phys)
+    elif params.init.start_from_laminar:
+        velocity_spec = jnp.zeros(
+            shape=(3, *sharding.spec_shape),
+            dtype=sharding.complex_type,
+            out_sharding=sharding.spec_vector_shard,
+        )
     else:
         sharding.print("Provide an initial condition.")
         sharding.exit(code=1)
@@ -314,19 +415,32 @@ def build_wall_bounded_stepper(
     fourier: object,
     flow: object,
     get_rhs_measured_fn: Callable,
+    l_bf_fn: Callable | None = None,
+    *,
+    dt_leaves_fn: Callable,
 ) -> tuple[
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
+    Callable[[float], None],
+    Callable[[], None],
 ]:
-    """Build time-stepping functions for a wall-bounded flow.
+    r"""Build time-stepping functions for a wall-bounded flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
-    predict_and_fully_correct_measured)`` with the
-    *fourier* and *flow* singletons already bound.
+    predict_and_fully_correct_measured, step_cnab2,
+    step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
+    *fourier* and *flow* singletons already bound.  ``step_cnab2``
+    and ``step_cnab2_measured`` are the CN/AB2 scheme
+    (``step.scheme == "cnab2"``); ``set_dt`` / ``reset_ab2_kappa``
+    are the adaptive-dt hooks (``step.adaptive``).
 
     Parameters
     ----------
@@ -341,14 +455,51 @@ def build_wall_bounded_stepper(
         Measured RHS variant (returns the RHS plus a dict of
         physical-space measurements; see
         :mod:`dnsjax.measurements`).
+    l_bf_fn:
+        FFT-free linear base-flow coupling ``state -> L_bf`` (see the
+        geometry ``_l_bf``), treated implicitly by the CN/AB2 scheme
+        so its stiff wall-normal derivative does not force a tiny
+        time step.  Passed through to :func:`~dnsjax.timestep.make_stepper`.
+    dt_leaves_fn:
+        The geometry's pure ``(dt, fourier, flow) -> {name: leaf}``
+        rebuild of every ``dt``-dependent flow leaf (each geometry's
+        ``_build_dt_leaves``); jitted here and driven by ``set_dt``.
+
+    Notes
+    -----
+    ``set_dt(new_dt)`` runs the jitted leaf rebuild on device (a few
+    implicit solves, no FFTs) and assigns the returned leaves onto
+    the *flow* singleton in place -- the stepper closures bind the
+    instance and pytree flattening reads the current attributes on
+    every call, so the change is visible to the next step with **no**
+    recompilation (identical shapes/dtypes/shardings).  It also sets
+    ``flow.ab2_kappa`` to the step ratio
+    `$\kappa = \Delta t_{new}/\Delta t_{old}$` for the *next* CN/AB2
+    step; the caller resets it to 1 with ``reset_ab2_kappa()`` after
+    exactly one step at the new ``dt``.  The rebuild donates nothing
+    (rare path): old and new factors briefly coexist, the same
+    transient class as the setup peak.
     """
+
+    def _step_scales(fourier_: object, flow_: object) -> tuple:
+        """Live ``(dt, kappa)`` from the flow leaves (adaptive dt)."""
+        return flow_.dt, flow_.ab2_kappa
+
     (
         _predict_and_correct_jit,
         _iterate_correction_jit,
         _predict_and_fully_correct_jit,
         _predict_and_fully_correct_measured_jit,
+        _step_cnab2_jit,
+        _step_cnab2_measured_jit,
     ) = make_stepper(
-        get_rhs_fn, predict_fn, correct_fn, norm_fn, get_rhs_measured_fn
+        get_rhs_fn,
+        predict_fn,
+        correct_fn,
+        norm_fn,
+        get_rhs_measured_fn,
+        l_bf_fn,
+        step_scales_fn=_step_scales,
     )
 
     def predict_and_correct(
@@ -379,9 +530,48 @@ def build_wall_bounded_stepper(
         """Fused step + physical-space measurements (at `$u^n$`)."""
         return _predict_and_fully_correct_measured_jit(state, fourier, flow)
 
+    def step_cnab2(
+        state: Array, carry: Array
+    ) -> tuple[Array, Array, Array, Array]:
+        """One CN/AB2 step with bound singletons.  Returns
+        ``(state_next, carry, error, num_c)``; feed ``carry`` back
+        unchanged.  ``error``/``num_c`` are the FFT-free base-flow
+        coupling corrector's (see ``step_cnab2`` in ``timestep.py``)."""
+        return _step_cnab2_jit(state, carry, fourier, flow)
+
+    def step_cnab2_measured(
+        state: Array, carry: Array
+    ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
+        """CN/AB2 step + physical-space measurements (at `$u^n$`)."""
+        return _step_cnab2_measured_jit(state, carry, fourier, flow)
+
     def init_state_bound(snapshot: str | None) -> Array:
         """Initialize the flow state."""
         return init_state(snapshot)
+
+    _dt_leaves_jit = jax.jit(dt_leaves_fn)
+    _dt_box = [float(params.step.dt)]
+
+    def set_dt(new_dt: float) -> None:
+        """Switch the live time step to *new_dt* (adaptive dt).
+
+        Jitted on-device rebuild of the ``dt``-dependent leaves +
+        in-place assignment on the bound flow singleton; also sets
+        ``ab2_kappa = new_dt / dt_prev`` for the next CN/AB2 step
+        (see the builder docstring).  No stepper recompiles.
+        """
+        kappa = new_dt / _dt_box[0]
+        leaves = _dt_leaves_jit(
+            jnp.asarray(new_dt, dtype=sharding.float_type), fourier, flow
+        )
+        for name, val in leaves.items():
+            setattr(flow, name, val)
+        flow.ab2_kappa = jnp.asarray(kappa, dtype=sharding.float_type)
+        _dt_box[0] = new_dt
+
+    def reset_ab2_kappa() -> None:
+        """Reset the AB2 step ratio to 1 (one step after ``set_dt``)."""
+        flow.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
 
     return (
         predict_and_correct,
@@ -389,4 +579,8 @@ def build_wall_bounded_stepper(
         init_state_bound,
         predict_and_fully_correct,
         predict_and_fully_correct_measured,
+        step_cnab2,
+        step_cnab2_measured,
+        set_dt,
+        reset_ab2_kappa,
     )

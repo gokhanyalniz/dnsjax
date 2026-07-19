@@ -2,24 +2,37 @@
 
 Tests cover:
 
-1. SPIKE vs dense parity for `$L_k$` and `$H_k$` on Cartesian
-   Fourier modes.
-2. ``_lk_matvec`` matches a NumPy reference on CGL and custom grids.
-3. ``_hk_minus_matvec`` matches a NumPy reference.
-4. ``get_norm2`` matches a manual Parseval/quadrature sum.
+1. ``_lk_matvec`` matches a NumPy reference on CGL and custom grids.
+2. ``_hk_minus_matvec`` matches a NumPy reference.
+3. ``get_norm2`` matches a manual Parseval/quadrature sum.
+4. Pallas band-vs-dense parity: the ``_build_{Lk,Hk}_band_gpu``
+   banded storage equals ``banded(dense)``, and the no-pivot banded
+   solve equals the dense solve.
 
 Run as a script via ``uv run python tests/test_cartesian.py``.
 """
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
-import jax
+# Select the JAX backend from --dist.platform (default cpu) and enable
+# float64 before importing any dnsjax module that captures the platform
+# (sharding does so at import).  ``--dist.platform cuda`` runs the Pallas
+# band-vs-dense parity on a GPU.
+from dnsjax.bootstrap import (  # noqa: E402
+    configure_jax_platform,
+    platform_from_argv,
+)
+from dnsjax.parameters import (  # noqa: E402
+    derived_params,
+    params,
+)
 
-jax.config.update("jax_enable_x64", True)
+sys.stdout.reconfigure(line_buffering=True)
 
-from dnsjax.parameters import derived_params, params  # noqa: E402
+configure_jax_platform(platform_from_argv())
 
 params.phys.system = "plane-couette"
 params.res.nx = 4
@@ -28,6 +41,7 @@ params.res.nz = 4
 params.res.fd_order = 4
 params.res.double_precision = True
 
+import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
@@ -35,9 +49,9 @@ from numpy.testing import assert_allclose  # noqa: E402
 from dnsjax.fd import build_diff_matrices  # noqa: E402
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
-    _build_Hk_blocks_gpu,
+    _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
-    _build_Lk_blocks_gpu,
+    _build_Lk_band_gpu,
     _build_Lk_dense_gpu,
     _hk_minus_matvec,
     _lk_matvec,
@@ -47,8 +61,9 @@ from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
     DenseJAXSolver,
-    _choose_block_partition,
-    _spike_factor,
+    PerModeBandedPallasOperator,
+    _banded_factor,
+    _banded_from_dense,
 )
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -97,52 +112,6 @@ def _perturbed_cgl_grid(Ny: int, seed: int = 42) -> np.ndarray:
 # ── tests ────────────────────────────────────────────────────────────
 
 
-def test_spike_vs_dense_on_cartesian_operators() -> None:
-    """``PerModeBandedOperator`` matches ``DenseJAXSolver`` on Lk/Hk."""
-    Ny = params.res.ny
-    p = params.res.fd_order
-    y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))
-    D1, D2 = build_diff_matrices(y, p)
-
-    dt, c, nu = 0.01, 0.5, 1.0 / 1000.0
-    P_opt, m_opt = _choose_block_partition(Ny, p)
-
-    # Solver-internal (Nkz, Nkx, 1) from field-layout (1, Nkz, Nkx).
-    k2_s = fourier.k2[0, ..., None]
-    mean_s = fourier.mean_mask[0, ..., None]
-
-    # SPIKE path.
-    Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-        D1, D2, k2_s, mean_s, p, P_opt, m_opt
-    )
-    Lk_banded = _spike_factor(Lk_A, Lk_B, Lk_C)
-
-    Hk_A, Hk_B, Hk_C = _build_Hk_blocks_gpu(
-        D2, k2_s, dt, c, nu, p, P_opt, m_opt
-    )
-    Hk_banded = _spike_factor(Hk_A, Hk_B, Hk_C)
-
-    # Dense path (reference).
-    Lk_dense = DenseJAXSolver(_build_Lk_dense_gpu(D1, D2, k2_s, mean_s))
-    Hk_dense = DenseJAXSolver(_build_Hk_dense_gpu(D2, k2_s, dt, c, nu))
-
-    # Solve same complex RHS with both backends.
-    Nkz, Nkx = int(fourier.k2.shape[1]), int(fourier.k2.shape[2])
-    rng = np.random.default_rng(20)
-    b = rng.standard_normal((Nkz, Nkx, Ny)) + 1j * rng.standard_normal(
-        (Nkz, Nkx, Ny)
-    )
-    rhs = jax.device_put(jnp.asarray(b), sharding.spec_imm_corr_shard)
-
-    x_b = np.asarray(Lk_banded.solve(rhs))
-    x_d = np.asarray(Lk_dense.solve(rhs))
-    assert_allclose(x_b, x_d, atol=1e-9, rtol=1e-9)
-
-    x_b = np.asarray(Hk_banded.solve(rhs))
-    x_d = np.asarray(Hk_dense.solve(rhs))
-    assert_allclose(x_b, x_d, atol=1e-9, rtol=1e-9)
-
-
 def test_lk_matvec_matches_reference() -> None:
     r"""``_lk_matvec`` matches reference `$L_k u$` from D1/D2."""
     Ny, p = 17, 4
@@ -182,7 +151,7 @@ def test_hk_minus_matvec_matches_reference() -> None:
     y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))
     _, D2 = build_diff_matrices(y, p)
 
-    flow_ = SimpleNamespace(D2=D2)
+    flow_ = SimpleNamespace(D2=D2, dt=jnp.asarray(dt))
 
     rng = np.random.default_rng(40)
     for kz, kx in [(0.0, 0.0), (0.0, 1.7), (2.0, 3.0)]:
@@ -263,6 +232,68 @@ def test_get_norm2_cartesian() -> None:
     ref = float(y_w_np @ integrand) / derived_params.volume_fac
 
     assert_allclose(got, ref, atol=1e-12, err_msg="get_norm2 (cartesian)")
+
+
+def test_pallas_vs_dense_on_cartesian_operators() -> None:
+    r"""``PerModeBandedPallasOperator`` matches ``DenseJAXSolver``.
+
+    Validates the Pallas band assembly (``_build_{Lk,Hk}_band_gpu``):
+    the banded operator equals ``banded(dense)`` exactly, and the
+    no-pivot banded sweep (CPU pure-JAX path) reproduces the dense
+    solve on a complex RHS.
+    """
+    Ny = params.res.ny
+    p = params.res.fd_order
+    y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))
+    D1, D2 = build_diff_matrices(y, p)
+
+    dt, c, nu = 0.01, 0.5, 1.0 / 1000.0
+    k2_s = fourier.k2[0, ..., None]
+    mean_s = fourier.mean_mask[0, ..., None]
+
+    Lk_band = _build_Lk_band_gpu(D1, D2, k2_s, mean_s, p)
+    Hk_band = _build_Hk_band_gpu(D2, k2_s, dt, c, nu, p)
+    Lk_full = _build_Lk_dense_gpu(D1, D2, k2_s, mean_s)
+    Hk_full = _build_Hk_dense_gpu(D2, k2_s, dt, c, nu)
+
+    # Band assembly equals banded(dense).
+    to_band = jax.vmap(jax.vmap(lambda A: _banded_from_dense(A, p)))
+    assert_allclose(
+        np.asarray(Lk_band), np.asarray(to_band(Lk_full)), atol=1e-12
+    )
+    assert_allclose(
+        np.asarray(Hk_band), np.asarray(to_band(Hk_full)), atol=1e-12
+    )
+
+    # No-pivot banded solve reproduces the dense solve.
+    Lk_pallas = PerModeBandedPallasOperator.from_banded_factors(
+        *_banded_factor(Lk_band)
+    )
+    Hk_pallas = PerModeBandedPallasOperator.from_banded_factors(
+        *_banded_factor(Hk_band)
+    )
+    Lk_dense = DenseJAXSolver(Lk_full)
+    Hk_dense = DenseJAXSolver(Hk_full)
+
+    Nkz, Nkx = int(fourier.k2.shape[1]), int(fourier.k2.shape[2])
+    rng = np.random.default_rng(21)
+    b = rng.standard_normal((Ny, Nkz, Nkx)) + 1j * rng.standard_normal(
+        (Ny, Nkz, Nkx)
+    )
+    rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
+
+    assert_allclose(
+        np.asarray(Lk_pallas.solve(rhs)),
+        np.asarray(Lk_dense.solve(rhs)),
+        atol=1e-9,
+        rtol=1e-9,
+    )
+    assert_allclose(
+        np.asarray(Hk_pallas.solve(rhs)),
+        np.asarray(Hk_dense.solve(rhs)),
+        atol=1e-9,
+        rtol=1e-9,
+    )
 
 
 # ── Runner ───────────────────────────────────────────────────────────

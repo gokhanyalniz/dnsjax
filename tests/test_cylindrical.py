@@ -2,36 +2,65 @@
 
 Tests cover:
 
-1. Half-CGL grid properties (positive, monotone, endpoint).
+1. Radial CGL grid: rigged-CGL (g=1, default) vs half-CGL (g=0)
+   innermost-point formula, ~2x r_0 ratio, and bit-exact legacy g=0.
 2. Parity-reduced FD matrices vs full auxiliary grid reference.
 3. `$A_{\\mathrm{base}}$` dense operator vs NumPy reference.
 4. ``_abase_matvec`` matrix-free vs dense reference.
 5. ``_lk_matvec`` vs per-mode NumPy reference.
-6. SPIKE vs dense parity for `$L_k$`, `$H_{k,+}$`,
-   `$H_{k,-}$`, `$H_{k,z}$`.
+6. Pallas band-vs-dense parity (banded storage == ``banded(dense)``,
+   no-pivot banded solve == dense solve) -- also the regression
+   guard for the parity-reduced builders' refactor onto the shared
+   ``solvers._assemble_banded_operator`` helpers.
 7. ``get_norm2_cyl`` correctness.
-8. Composite integration weights on the half-CGL grid.
+8. Composite integration weights on the radial CGL grid.
+9. ``interpolate_to_axis``: polynomial exactness, parity paths,
+   multi-dimensional/complex inputs.
+10. Centreline mean axial velocity under time stepping (a small
+    random perturbation keeps the interpolated ``r = 0`` mean
+    axial velocity near the laminar centreline value 1).
 
 Run as a script via ``uv run python tests/test_cylindrical.py``.
 """
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
-import jax
+# Select the JAX backend from --dist.platform (default cpu) before the
+# geometry import below builds sharding.  --dist.platform cuda runs the
+# Pallas band-vs-dense parity on a GPU.
+from dnsjax.bootstrap import (  # noqa: E402
+    configure_jax_platform,
+    platform_from_argv,
+)
+from dnsjax.parameters import (  # noqa: E402
+    Parameters,
+    padded_res,
+    params,
+    update_parameters,
+)
 
-jax.config.update("jax_enable_x64", True)
+sys.stdout.reconfigure(line_buffering=True)
 
-from dnsjax.parameters import params  # noqa: E402
+configure_jax_platform(platform_from_argv())
 
-params.phys.system = "pipe"
-params.res.nx = 4
-params.res.ny = 16
-params.res.nz = 4
-params.res.fd_order = 4
-params.res.double_precision = True
+update_parameters(
+    Parameters(
+        phys={"system": "pipe"},
+        res={
+            "nx": 4,
+            "ny": 16,
+            "nz": 4,
+            "fd_order": 4,
+            "double_precision": True,
+        },
+    )
+)
+padded_res.set_padded_resolution(params)
 
+import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
@@ -45,22 +74,25 @@ from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _abase_matvec,
     _build_A_base,
-    _build_Hk_blocks_gpu,
+    _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
-    _build_Lk_blocks_gpu,
+    _build_Lk_band_gpu,
     _build_Lk_dense_gpu,
     _ghost_row_count,
     _lk_matvec,
-    build_half_cgl_grid,
     build_parity_reduced_matrices,
+    build_radial_cgl_grid,
+    extract_mean_mode,
     fourier,
     get_norm2_cyl,
+    interpolate_to_axis,
 )
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
     DenseJAXSolver,
-    _spike_factor,
-    validate_spike_partition,
+    PerModeBandedPallasOperator,
+    _banded_factor,
+    _banded_from_dense,
 )
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -94,27 +126,47 @@ def _build_Lk_reference_cyl(
 # Group A: Grid and FD matrices
 
 
-def test_half_cgl_grid_properties() -> None:
-    """Half-CGL grid: strictly positive, monotone, endpoint = 1."""
+def test_radial_cgl_grid_rigged_vs_half() -> None:
+    """Radial CGL grid: rigged (g=1, default) vs half-CGL (g=0)."""
     for Nr in [8, 16, 32]:
-        rs = np.asarray(build_half_cgl_grid(Nr))
-        assert rs.shape == (Nr,), f"Nr={Nr}: wrong shape {rs.shape}"
-        assert np.all(rs > 0), f"Nr={Nr}: non-positive point"
-        assert_allclose(
-            rs[-1],
-            1.0,
-            atol=1e-14,
-            err_msg=f"Nr={Nr}: last point != 1",
-        )
-        diffs = np.diff(rs)
-        assert np.all(diffs > 0), f"Nr={Nr}: not monotonically increasing"
+        # g = 0 reproduces the legacy half-CGL grid bit-exactly
+        # (identical expression: even auxiliary total 2 Nr).
+        legacy = -jnp.cos(
+            jnp.arange(2 * Nr, dtype=jnp.float64) * jnp.pi / (2 * Nr - 1)
+        )[Nr:]
+        assert np.array_equal(
+            np.asarray(build_radial_cgl_grid(Nr, axis_gap=0)),
+            np.asarray(legacy),
+        ), f"Nr={Nr}: g=0 != legacy half-CGL grid"
+
+        for g in (0, 1):
+            rs = np.asarray(build_radial_cgl_grid(Nr, g))
+            assert rs.shape == (Nr,), f"g={g}: wrong shape {rs.shape}"
+            assert np.all(rs > 0), f"Nr={Nr}, g={g}: non-positive"
+            assert np.all(np.diff(rs) > 0), f"g={g}: not increasing"
+            assert_allclose(rs[-1], 1.0, atol=1e-14)
+            # Innermost point r_0 = sin(pi (g+1) / (2 (2 Nr + g - 1))).
+            r0 = np.sin(np.pi * (g + 1) / (2 * (2 * Nr + g - 1)))
+            assert_allclose(rs[0], r0, atol=1e-14, err_msg=f"g={g} r0")
+
+        # Rigged r0 is ~2x the half-CGL r0 (the cnab2 CFL relief);
+        # the ratio approaches 2 from below as Nr grows.
+        r0_half = np.asarray(build_radial_cgl_grid(Nr, 0))[0]
+        r0_rig = np.asarray(build_radial_cgl_grid(Nr, 1))[0]
+        assert 1.8 < r0_rig / r0_half < 2.0, f"Nr={Nr}: ratio"
+
+    # The default axis_gap is 1 (rigged-CGL).
+    assert np.array_equal(
+        np.asarray(build_radial_cgl_grid(16)),
+        np.asarray(build_radial_cgl_grid(16, axis_gap=1)),
+    )
 
 
 def test_parity_reduced_matrices_vs_full_grid() -> None:
     """Parity-reduced matrices match the full auxiliary grid."""
     Nr = params.res.ny
     p = params.res.fd_order
-    rs = build_half_cgl_grid(Nr)
+    rs = build_radial_cgl_grid(Nr)
 
     D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos = (
         build_parity_reduced_matrices(rs, p)
@@ -177,7 +229,7 @@ def test_A_base_matches_reference() -> None:
     r"""``_build_A_base`` matches `$D_2 + \mathrm{diag}(1/r) D_1$`."""
     Nr = params.res.ny
     p = params.res.fd_order
-    rs = build_half_cgl_grid(Nr)
+    rs = build_radial_cgl_grid(Nr)
     inv_r = 1.0 / rs
 
     D1_even, D2_even, D1_odd, D2_odd, _, _ = build_parity_reduced_matrices(
@@ -202,7 +254,7 @@ def test_abase_matvec_matches_dense() -> None:
     """``_abase_matvec`` matches dense ``A_base @ u``."""
     Nr = params.res.ny
     p = params.res.fd_order
-    rs = build_half_cgl_grid(Nr)
+    rs = build_radial_cgl_grid(Nr)
     inv_r = 1.0 / rs
 
     D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos = (
@@ -293,18 +345,23 @@ def test_lk_matvec_matches_reference() -> None:
     assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
 
 
-def test_spike_vs_dense_on_cylindrical_operators() -> None:
-    """SPIKE matches dense for cylindrical Lk/Hk_plus/Hk_minus/Hk_z."""
+def test_pallas_vs_dense_on_cylindrical_operators() -> None:
+    r"""``PerModeBandedPallasOperator`` matches ``DenseJAXSolver`` on
+    cylindrical Lk/Hk_plus/Hk_minus/Hk_z.
+
+    Guards the parity-reduced Pallas band assembly
+    (``_build_{Lk,Hk}_band_gpu``, refactored onto the shared
+    ``solvers._assemble_banded_operator``): the banded operator equals
+    ``banded(dense)`` exactly and the no-pivot banded sweep reproduces
+    the dense solve on a complex RHS.
+    """
     Nr = params.res.ny
     p = params.res.fd_order
-    P_blk, m_blk = validate_spike_partition(Nr, p, "Nr")
 
-    # Solver-internal shapes from field-layout fourier arrays.
     m_s = fourier.m[0, ..., None]
-    kz2_s = fourier.kz2[0, ..., None]
-    mean_s = fourier.mean_mask[0, ..., None]
+    kz2 = fourier.kz2[0, ..., None]
+    mean_mask = fourier.mean_mask[0, ..., None]
     m_is_even_s = fourier.m_is_even[0, ..., None]
-
     m_is_even_p = m_is_even_s
     m_is_even_v = 1.0 - m_is_even_s
 
@@ -319,34 +376,52 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
     A_even = pipe_flow.A_base_even
     A_odd = pipe_flow.A_base_odd
     inv_r2 = pipe_flow.inv_r2
-    kz2 = kz2_s
-    mean_mask = mean_s
     D1_wall = pipe_flow.D1_wall.ravel()
+    band_even = _banded_from_dense(A_even, p)
+    band_odd = _banded_from_dense(A_odd, p)
 
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
-    rng = np.random.default_rng(70)
-    b = rng.standard_normal((Nm, Nkz, Nr)) + 1j * rng.standard_normal(
-        (Nm, Nkz, Nr)
+    rng = np.random.default_rng(71)
+    b = rng.standard_normal((Nr, Nm, Nkz)) + 1j * rng.standard_normal(
+        (Nr, Nm, Nkz)
     )
-    rhs = jax.device_put(jnp.asarray(b), sharding.spec_imm_corr_shard)
+    rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
 
-    # --- Lk ---
-    Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-        D1_wall,
-        A_even,
-        A_odd,
-        m_is_even_p,
-        m_sq,
-        inv_r2,
-        kz2,
-        mean_mask,
-        p,
-        P_blk,
-        m_blk,
-    )
-    Lk_banded = _spike_factor(Lk_A, Lk_B, Lk_C)
-    Lk_dense = DenseJAXSolver(
+    to_band = jax.vmap(jax.vmap(lambda A: _banded_from_dense(A, p)))
+
+    def _check(label: str, band: jax.Array, full: jax.Array) -> None:
+        assert_allclose(
+            np.asarray(band),
+            np.asarray(to_band(full)),
+            atol=1e-12,
+            err_msg=f"{label} assembly",
+        )
+        pallas = PerModeBandedPallasOperator.from_banded_factors(
+            *_banded_factor(band)
+        )
+        dense = DenseJAXSolver(full)
+        assert_allclose(
+            np.asarray(pallas.solve(rhs)),
+            np.asarray(dense.solve(rhs)),
+            atol=1e-9,
+            rtol=1e-9,
+            err_msg=label,
+        )
+
+    _check(
+        "Lk",
+        _build_Lk_band_gpu(
+            D1_wall,
+            band_even,
+            band_odd,
+            m_is_even_p,
+            m_sq,
+            inv_r2,
+            kz2,
+            mean_mask,
+            p,
+        ),
         _build_Lk_dense_gpu(
             D1_wall,
             A_even,
@@ -356,122 +431,39 @@ def test_spike_vs_dense_on_cylindrical_operators() -> None:
             inv_r2,
             kz2,
             mean_mask,
+        ),
+    )
+    for label, meff2, parity in [
+        ("Hk_plus", m_plus_1_sq, m_is_even_v),
+        ("Hk_minus", m_minus_1_sq, m_is_even_v),
+        ("Hk_z", m_sq, m_is_even_p),
+    ]:
+        _check(
+            label,
+            _build_Hk_band_gpu(
+                band_even,
+                band_odd,
+                parity,
+                meff2,
+                inv_r2,
+                kz2,
+                dt,
+                c,
+                nu,
+                p,
+            ),
+            _build_Hk_dense_gpu(
+                A_even,
+                A_odd,
+                parity,
+                meff2,
+                inv_r2,
+                kz2,
+                dt,
+                c,
+                nu,
+            ),
         )
-    )
-    x_b = np.array(Lk_banded.solve(rhs))
-    x_d = np.array(Lk_dense.solve(rhs))
-    assert_allclose(x_b, x_d, atol=1e-9, rtol=1e-9, err_msg="Lk")
-
-    # --- Hk_plus (meff = m+1, vel parity) ---
-    Hp_A, Hp_B, Hp_C = _build_Hk_blocks_gpu(
-        A_even,
-        A_odd,
-        m_is_even_v,
-        m_plus_1_sq,
-        inv_r2,
-        kz2,
-        dt,
-        c,
-        nu,
-        p,
-        P_blk,
-        m_blk,
-    )
-    Hp_banded = _spike_factor(Hp_A, Hp_B, Hp_C)
-    Hp_dense = DenseJAXSolver(
-        _build_Hk_dense_gpu(
-            A_even,
-            A_odd,
-            m_is_even_v,
-            m_plus_1_sq,
-            inv_r2,
-            kz2,
-            dt,
-            c,
-            nu,
-        )
-    )
-    assert_allclose(
-        np.asarray(Hp_banded.solve(rhs)),
-        np.asarray(Hp_dense.solve(rhs)),
-        atol=1e-9,
-        rtol=1e-9,
-        err_msg="Hk_plus",
-    )
-
-    # --- Hk_minus (meff = m-1, vel parity) ---
-    Hm_A, Hm_B, Hm_C = _build_Hk_blocks_gpu(
-        A_even,
-        A_odd,
-        m_is_even_v,
-        m_minus_1_sq,
-        inv_r2,
-        kz2,
-        dt,
-        c,
-        nu,
-        p,
-        P_blk,
-        m_blk,
-    )
-    Hm_banded = _spike_factor(Hm_A, Hm_B, Hm_C)
-    Hm_dense = DenseJAXSolver(
-        _build_Hk_dense_gpu(
-            A_even,
-            A_odd,
-            m_is_even_v,
-            m_minus_1_sq,
-            inv_r2,
-            kz2,
-            dt,
-            c,
-            nu,
-        )
-    )
-    assert_allclose(
-        np.asarray(Hm_banded.solve(rhs)),
-        np.asarray(Hm_dense.solve(rhs)),
-        atol=1e-9,
-        rtol=1e-9,
-        err_msg="Hk_minus",
-    )
-
-    # --- Hk_z (meff = m, pressure parity) ---
-    Hz_A, Hz_B, Hz_C = _build_Hk_blocks_gpu(
-        A_even,
-        A_odd,
-        m_is_even_p,
-        m_sq,
-        inv_r2,
-        kz2,
-        dt,
-        c,
-        nu,
-        p,
-        P_blk,
-        m_blk,
-    )
-    Hz_banded = _spike_factor(Hz_A, Hz_B, Hz_C)
-    Hz_dense = DenseJAXSolver(
-        _build_Hk_dense_gpu(
-            A_even,
-            A_odd,
-            m_is_even_p,
-            m_sq,
-            inv_r2,
-            kz2,
-            dt,
-            c,
-            nu,
-        )
-    )
-    assert_allclose(
-        np.asarray(Hz_banded.solve(rhs)),
-        np.asarray(Hz_dense.solve(rhs)),
-        atol=1e-9,
-        rtol=1e-9,
-        err_msg="Hk_z",
-    )
 
 
 # Group C: Norms
@@ -505,10 +497,10 @@ def test_get_norm2_cyl() -> None:
 
 
 def test_cylindrical_integration_weights() -> None:
-    """Composite weights on half-CGL: sum and polynomial exactness."""
+    """Composite weights on the radial CGL grid: sum + exactness."""
     p = params.res.fd_order
     for Nr in [8, 16, 32]:
-        rs = build_half_cgl_grid(Nr)
+        rs = build_radial_cgl_grid(Nr)
         rs_np = np.asarray(rs)
         w = build_integration_weights(rs, p=p)
         w_np = np.asarray(w)
@@ -531,6 +523,226 @@ def test_cylindrical_integration_weights() -> None:
                 atol=1e-10,
                 err_msg=f"Nr={Nr}, degree={d}",
             )
+
+    # Full-disc radial quadrature: the parity-specific spectral
+    # Clenshaw-Curtis weights (rigged / half-CGL).  y_weights (even)
+    # and y_weights_odd (odd) are BOTH strictly positive (definite
+    # energy norm), and each is *spectral* for its parity -- exact for
+    # the polynomial moments int r^d * r dr = 1/(d+2): even d via
+    # y_weights, odd d via y_weights_odd (the ODD guard the retired
+    # even-parity rule failed on, e.g. the mean u_theta), and machine
+    # precision on a smooth integrand.
+    from dnsjax.geometries.wall_bounded.cylindrical import (
+        build_cylindrical_grid,
+    )
+
+    for gt, g in (("half-cgl", 0), (None, 1)):
+        _, _, _, _, yw, yw_odd, _ = build_cylindrical_grid(16, p, grid_type=gt)
+        rs_g = np.asarray(build_radial_cgl_grid(16, g))
+        we = np.asarray(yw)
+        wo = np.asarray(yw_odd)
+        assert np.all(we > 0), f"grid_type={gt}: negative y_weights"
+        assert np.all(wo > 0), f"grid_type={gt}: negative y_weights_odd"
+        assert_allclose(float(we.sum()), 0.5, atol=1e-12)  # f=1 (even)
+        assert_allclose(float(we @ rs_g**2), 0.25, atol=1e-12)  # r^2
+        assert_allclose(float(wo @ rs_g), 1.0 / 3.0, atol=1e-12)  # r odd
+        assert_allclose(
+            float(wo @ rs_g**3),
+            0.2,
+            atol=1e-12,  # r^3 (odd)
+        )
+        # Spectral on a smooth integrand (vs fd_order for a composite).
+        fine = np.linspace(0.0, 1.0, 2_000_001)
+        ref = float(np.trapezoid(np.cos(2.0 * fine) * fine, fine))
+        assert abs(float(we @ np.cos(2.0 * rs_g)) - ref) < 1e-10
+
+
+# Group E: Centreline (r = 0) interpolation
+
+
+def test_interpolate_to_axis_polynomials() -> None:
+    """Axis (r = 0) evaluation: polynomial exactness (one-sided
+    Fornberg; spectral parity-constrained even path)."""
+    Nr = 16
+    rs = np.asarray(build_radial_cgl_grid(Nr))
+    order = params.res.fd_order
+
+    # One-sided: exact for degree <= order.
+    for d in range(order + 1):
+        val = float(interpolate_to_axis(jnp.asarray(rs**d), rs))
+        exact = 1.0 if d == 0 else 0.0
+        assert_allclose(val, exact, atol=1e-11, err_msg=f"deg {d}")
+
+    # The pipe base-flow profile 1 - r^2 has centreline value 1
+    # (quadratic: exact one-sided and via the even path).
+    prof = jnp.asarray(1.0 - rs**2)
+    assert_allclose(float(interpolate_to_axis(prof, rs)), 1.0, atol=1e-12)
+    assert_allclose(
+        float(interpolate_to_axis(prof, rs, parity="even")),
+        1.0,
+        atol=1e-12,
+    )
+
+    # Even path on a detected CGL grid: the exact parity-constrained
+    # fit in x = r^2 -- exact for even polynomials up to the full
+    # degree 2 * (Nr - 1), far past the local rule's 2 * order.
+    for d2 in (2 * order, 2 * (Nr - 1)):
+        val = float(
+            interpolate_to_axis(jnp.asarray(rs**d2), rs, parity="even")
+        )
+        assert_allclose(val, 0.0, atol=1e-11, err_msg=f"even r^{d2}")
+
+    # Odd parity: identically zero on the axis.
+    v = interpolate_to_axis(jnp.asarray(rs**3), rs, parity="odd")
+    assert float(v) == 0.0
+
+    try:
+        interpolate_to_axis(prof, rs, parity="both")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown parity accepted")
+
+
+def test_interpolate_to_axis_even_superconvergence() -> None:
+    """Even-parity path (spectral in r^2 on CGL) beats one-sided."""
+    Nr = 16
+    rs = np.asarray(build_radial_cgl_grid(Nr))
+    f = jnp.asarray(np.exp(-(rs**2)))  # even, f(0) = 1
+    err_even = abs(float(interpolate_to_axis(f, rs, parity="even")) - 1.0)
+    err_side = abs(float(interpolate_to_axis(f, rs)) - 1.0)
+    assert err_even < 1e-12, f"even-path error {err_even:.3e}"
+    assert err_side < 5e-3, f"one-sided error {err_side:.3e}"
+    assert err_even < err_side
+
+
+def test_interpolate_to_axis_multidim() -> None:
+    """Any radial-axis position; complex data; matches manual dot."""
+    from dnsjax.fd import fornberg_weights
+
+    Nr = 16
+    rs = np.asarray(build_radial_cgl_grid(Nr))
+    rng = np.random.default_rng(7)
+    a = rng.standard_normal((Nr, 3, 5)) + 1j * rng.standard_normal((Nr, 3, 5))
+    v0 = np.asarray(interpolate_to_axis(jnp.asarray(a), rs, axis=0))
+    assert v0.shape == (3, 5)
+    v1 = np.asarray(
+        interpolate_to_axis(jnp.asarray(np.moveaxis(a, 0, 1)), rs, axis=1)
+    )
+    assert_allclose(v1, v0, atol=1e-13)
+
+    # Manual reference: interpolation weights on the innermost
+    # order + 1 points.
+    n = params.res.fd_order + 1
+    w = fornberg_weights(0.0, rs[:n], 0)[:, 0]
+    ref = np.tensordot(w, a[:n], axes=(0, 0))
+    assert_allclose(v0, ref, atol=1e-13)
+
+
+def test_axis_extrapolation_weights_shared_leaf() -> None:
+    """``interpolate_to_axis`` and the JAX-free
+    ``fd.axis_extrapolation_weights`` leaf (the same spectral even
+    weights behind the rigged completion) agree on the even-parity
+    axis value; the spectral path is gated to detected CGL grids."""
+    from dnsjax.fd import axis_extrapolation_weights, tanh_one_sided_grid
+
+    Nr = 16
+    rs = np.asarray(build_radial_cgl_grid(Nr))
+    order = params.res.fd_order
+    f = np.cos(0.7 * rs**2) + 0.2 * rs**2  # even in r
+    via_leaf = float(axis_extrapolation_weights(rs, order, "even") @ f)
+    via_interp = float(interpolate_to_axis(jnp.asarray(f), rs, parity="even"))
+    assert_allclose(via_leaf, via_interp, atol=1e-13)
+    # Odd parity: the leaf returns all-zero weights (f(0) = 0).
+    assert np.all(axis_extrapolation_weights(rs, order, "odd") == 0.0)
+    # CGL even path is the full-grid spectral fit (all weights live);
+    # on a non-CGL (tanh) grid it stays on the local order + 1
+    # stencil (a full-order global fit is ill-conditioned there).
+    w_cgl = axis_extrapolation_weights(rs, order, "even")
+    assert np.count_nonzero(w_cgl) == Nr
+    rt = np.asarray(tanh_one_sided_grid(Nr, 2.0))
+    wt = axis_extrapolation_weights(rt, order, "even")
+    assert np.count_nonzero(wt) <= order + 1
+
+
+def test_parity_dispatch_interpolation() -> None:
+    """The ``__main__`` spectral parity-tuple resume dispatch: applying
+    ``T_even``/``T_odd`` per azimuthal mode (u_z parity ``(-1)^m``,
+    u_pm parity ``(-1)^{m+1}``) to a parity-consistent state recovers
+    the field on the new radial grid to machine precision.  Mirrors
+    ``_interpolate_if_needed``'s tuple branch and layout (3, r, m, kz)."""
+    from dnsjax.fd import cgl_parity_interpolation_matrices
+    from dnsjax.operators import complex_harmonics
+
+    ny_old, ny_new, nz, nkz = 16, 24, 8, 3
+    ro = np.asarray(build_radial_cgl_grid(ny_old, 1))
+    rn = np.asarray(build_radial_cgl_grid(ny_new, 1))
+    m = np.asarray(complex_harmonics(nz))
+    nm = len(m)  # azimuthal-mode axis length (state layout)
+
+    def field(rr, sigma):  # smooth, parity sigma in r
+        return np.cos(0.5 * np.pi * rr) if sigma > 0 else rr * np.cos(rr)
+
+    def build(grid):
+        s = np.zeros((3, len(grid), nm, nkz), dtype=np.complex128)
+        for j, mm in enumerate(m):
+            sig_z = 1.0 if mm % 2 == 0 else -1.0
+            for k in range(nkz):
+                s[0, :, j, k] = field(grid, sig_z) * (1 + 0.1 * k)
+                s[1, :, j, k] = field(grid, -sig_z) * (1 + 0.1 * k)
+                s[2, :, j, k] = field(grid, -sig_z) * (0.5 + 0.1 * k)
+        return s
+
+    src = jnp.asarray(build(ro))
+    t_even, t_odd = cgl_parity_interpolation_matrices(ny_old, ny_new, 1, 1)
+    m_is_even = m % 2 == 0
+    t_p = np.where(m_is_even[:, None, None], t_even, t_odd)  # u_z
+    t_v = np.where(m_is_even[:, None, None], t_odd, t_even)  # u_pm
+    t_p_j = jnp.asarray(t_p, dtype=src.dtype)
+    t_v_j = jnp.asarray(t_v, dtype=src.dtype)
+    s0 = jnp.einsum("mij, jmk -> imk", t_p_j, src[0])
+    s1 = jnp.einsum("mij, jmk -> imk", t_v_j, src[1])
+    s2 = jnp.einsum("mij, jmk -> imk", t_v_j, src[2])
+    out = np.asarray(jnp.stack([s0, s1, s2]))
+    assert_allclose(out, build(rn), atol=1e-8)
+
+
+def test_centerline_mean_axial_velocity() -> None:
+    """Centreline mean axial velocity stays laminar while stepping.
+
+    Steps a small random perturbation (iterative-cn) and
+    interpolates the axially+azimuthally averaged axial velocity
+    (base flow + mean-mode ``u_z`` perturbation, an even profile)
+    to the missing ``r = 0`` point: it must stay near the laminar
+    centreline value ``U_z(0) = 1`` while the perturbation is
+    small.
+    """
+    from dnsjax.flows.wall_bounded.pipe import (
+        predict_and_fully_correct,
+    )
+    from dnsjax.random_field import generate_random_state
+
+    amp = 1e-3
+    state = generate_random_state(amp, 0.4, 3)
+    rs = np.asarray(pipe_flow.rs)
+
+    def centreline(s) -> float:
+        mean_uz = jnp.real(extract_mean_mode(s)[0])
+        profile = pipe_flow.base_flow[0, :, 0, 0] + mean_uz
+        return float(interpolate_to_axis(profile, rs, parity="even"))
+
+    tol = 10.0 * amp
+    v0 = centreline(state)
+    assert abs(v0 - 1.0) < tol, f"t=0 centreline {v0}"
+    for _ in range(20):
+        # predict_and_fully_correct donates its argument; the loop
+        # rebinds state, so nothing reuses the donated buffer.
+        state, err, _ = predict_and_fully_correct(state)
+        assert float(err) < params.step.corrector_tolerance, (
+            f"corrector not converged (err {float(err):.3e})"
+        )
+    v1 = centreline(state)
+    assert abs(v1 - 1.0) < tol, f"t=0.2 centreline {v1}"
 
 
 # ── Runner ───────────────────────────────────────────────────────────

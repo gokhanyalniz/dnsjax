@@ -2,10 +2,13 @@ r"""Cylindrical geometry: Fourier class, norms, IMM, and solvers.
 
 Provides all geometry-general infrastructure for wall-bounded
 cylindrical flows: the ``Fourier`` wavenumber class, the
-``CylindricalFlow`` base dataclass (half-diameter radial grid,
-parity-reduced FD matrices, IMM operators), spectral solvers
-(influence-matrix method, predictor-corrector time stepping), and
-diagnostic helpers (norms, perturbation energy).
+``CylindricalFlow`` base dataclass (radial CGL grid -- half-CGL
+under the default ``iterative-cn`` scheme, rigged-CGL under
+``cnab2``, selected by ``geo.grid_type``, parity-reduced FD
+matrices, IMM operators),
+spectral solvers (influence-matrix method, predictor-corrector
+time stepping), and diagnostic helpers (norms, perturbation
+energy, centreline interpolation).
 
 Decoupled velocity formulation
 ------------------------------
@@ -80,6 +83,7 @@ Flow-specific modules (e.g. ``flows.wall_bounded.pipe``) subclass
 time-stepping functions.
 """
 
+import copy
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -90,8 +94,10 @@ from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
 from ...fd import (
+    axis_extrapolation_weights,
     build_diff_matrices,
     build_integration_weights,
+    cgl_radial_quadrature_weights,
     local_grid_spacing,
     tanh_one_sided_grid,
 )
@@ -108,16 +114,20 @@ from ...rhs import get_nonlin
 from ...sharding import register_dataclass_pytree, sharding
 from ...solvers import (
     DenseJAXSolver,
-    PerModeBandedOperator,
-    _extract_banded_corners,
-    _spike_factor,
-    _stack_banded_operators,
-    validate_spike_partition,
+    PerModeBandedPallasOperator,
+    _assemble_banded_operator,
+    _banded_diag_column,
+    _banded_from_dense,
+    _banded_wall_row,
+    _build_pallas_operator,
+    _factor_pallas_operator,
 )
 from ._base import (
     apply_y_matrix,
+    base_flow_coupling,
     build_wall_bounded_stepper,
     extract_mean_mode,
+    frozen_profile_flow,  # noqa: F401 — re-exported
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
     get_norm2,
@@ -154,7 +164,9 @@ class Fourier:
       (real FFT on the streamwise ``x`` parameter direction).
     - ``m``: shape ``(1, nz-1, 1)`` -- azimuthal mode number
       (complex FFT on the ``z`` parameter direction with
-      `$l_z = 2\pi$`, so integer-valued).
+      `$l_z = 2\pi/m_0$`); the resolved modes are the integer
+      multiples `$m = m_0 j$` of the wedge fundamental `$m_0$`
+      (``geo.m0``; `$m_0 = 1$` is the full circle).
 
     The coordinate mapping is:
 
@@ -221,10 +233,18 @@ class Fourier:
             P(None, None, sharding.a1),
         )
 
-        m_vals = pad_harmonics(
-            complex_harmonics(params.res.nz),
-            params.res.nz,
-            sharding.nz_spec_pad,
+        # Azimuthal wavenumbers m = m0 * harmonic over the wedge
+        # l_z = 2*pi/m0 (m0 = 1 is the full circle).  The integer
+        # multiply is exact and keeps the padding placeholders nonzero;
+        # ``m_is_even`` below then tracks the parity of the *physical* m,
+        # i.e. the correct r = 0 axis-regularity condition per mode.
+        m_vals = (
+            pad_harmonics(
+                complex_harmonics(params.res.nz),
+                params.res.nz,
+                sharding.nz_spec_pad,
+            )
+            * params.geo.m0
         )
         self.m = jax.device_put(
             m_vals.reshape([1, -1, 1]).astype(sharding.float_type),
@@ -381,38 +401,71 @@ def get_norm2_cyl(state: Array, k_metric: Array, y_weights: Array) -> Array:
 # ── Half-diameter grid and parity-reduced FD matrices ──────────────
 
 
-def build_half_cgl_grid(Nr: int) -> Array:
-    r"""Build the half-CGL radial grid on `$(0, 1]$`.
+def build_radial_cgl_grid(Nr: int, axis_gap: int = 1) -> Array:
+    r"""Build the radial CGL grid on `$(0, 1]$` (rigged or half).
 
-    Takes the positive half of a `$2 N_r$`-point CGL grid on
-    `$[-1, 1]$`:
+    Takes the `$N_r$` outermost positive points of a
+    `$(2 N_r + g)$`-point CGL grid on `$[-1, 1]$`
+    (`$g$` = *axis_gap* `$\in \{0, 1\}$`):
 
     .. math::
-        s_j = -\cos\!\bigl(j\pi/(2N_r - 1)\bigr),
-        \quad j = 0, \ldots, 2N_r - 1.
+        s_j = -\cos\!\bigl(j\pi/(2N_r + g - 1)\bigr),
+        \quad j = N_r + g, \ldots, 2N_r + g - 1,
 
-    Since `$2 N_r$` is always even, no `$s_j$` falls on
-    `$s = 0$`.  The `$N_r$` points with `$s_j > 0$`
-    (indices `$j = N_r, \ldots, 2N_r - 1$`) form the radial
-    grid `$r_0 < r_1 < \cdots < r_{N_r - 1} = 1$`, with CGL
-    clustering near the pipe wall and widest spacing near
-    the centre.
+    giving `$r_0 < r_1 < \cdots < r_{N_r-1} = 1$` with CGL
+    clustering near the pipe wall, near-uniform spacing
+    `$\Delta r \approx \pi/(2 N_r)$` near the centre, and
+    innermost point
+
+    .. math::
+        r_0 = \sin\!\Bigl(\frac{(g+1)\,\pi}{2\,(2N_r+g-1)}\Bigr)
+        \approx (g+1)\,\frac{\Delta r}{2}.
+
+    - `$g = 1$` -- the **rigged-CGL** grid (the ``cnab2``
+      default).  The odd auxiliary total has a centre point
+      exactly on `$r = 0$` (a coordinate singularity, not a
+      boundary) which is dropped, landing
+      `$r_0 \approx \Delta r$`.
+    - `$g = 0$` -- the **half-CGL** grid (the ``iterative-cn``
+      default; even auxiliary total, no point on the axis,
+      staggered `$r_0 \approx \Delta r/2$`).
+
+    No degree of freedom lives in `$[0, r_0)$` (the parity
+    ghosts close the FD stencils across the axis and the
+    quadrature covers the segment via the parity-specific
+    spectral rule in :func:`build_cylindrical_grid` /
+    :func:`~dnsjax.fd.cgl_radial_quadrature_weights`), so
+    `$r_0$` is a free discretisation choice.  It bounds the near-axis azimuthal
+    advection CFL `$\propto 1/r_0$` -- the pipe's explicit
+    (cnab2) timestep limit -- so the rigged grid's
+    `$2\times$`-larger `$r_0$` doubles the admissible cnab2
+    ``dt`` (measured), which is why it is the ``cnab2``
+    default; the tighter half-CGL axis destabilises cnab2 (a
+    near-axis explicit instability) and is restricted to
+    ``iterative-cn`` (``geo.grid_type = "half-cgl"``), which
+    integrates it cleanly, gains its finer near-axis
+    resolution, and defaults to it.
 
     Parameters
     ----------
     Nr:
-        Number of radial grid points.
+        Number of radial grid points kept.
+    axis_gap:
+        `$0$` = half-CGL, `$1$` = rigged-CGL.  Selected from
+        ``geo.grid_type`` by :func:`build_cylindrical_grid`
+        (not a user-facing config field).
 
     Returns
     -------
     :
-        Radial grid array, shape ``(Nr,)``.
+        Radial grid array, shape ``(Nr,)``, ascending, all
+        `$r > 0$`, last point `$r = 1$`.
     """
-    N_full = 2 * Nr
+    N_full = 2 * Nr + axis_gap
     s = -jnp.cos(
         jnp.arange(N_full, dtype=sharding.float_type) * jnp.pi / (N_full - 1)
     )
-    return s[Nr:]
+    return s[Nr + axis_gap :]
 
 
 def build_parity_reduced_matrices(
@@ -468,16 +521,28 @@ def build_cylindrical_grid(
     wall_grid: str | None = None,
     grid_type: str | None = None,
     grid_stretch: float = 1.5,
-) -> tuple[Array, Array, Array, Array, Array, Array]:
+) -> tuple[Array, Array, Array, Array, Array, Array, Array]:
     r"""Build radial grid, parity-reduced D1 matrices, weights,
     and `$1/r$` for the cylindrical geometry.
 
     Grid selection (precedence):
 
-    1. *wall_grid*: load from file.
-    2. *grid_type*: ``"tanh"`` for one-sided tanh stretching,
-       ``"cgl"`` for default half-CGL.
-    3. Default: half-CGL grid.
+    1. *wall_grid*: load from file (a custom grid always
+       overrides dnsjax's grid generation).
+    2. *grid_type*: ``"half-tanh"`` for one-sided tanh stretching
+       (outer wall only -- there is no inner wall); ``"half-cgl"``
+       for the half-CGL radial grid (``axis_gap = 0``);
+       ``"rigged-cgl"`` / ``None`` for the rigged-CGL radial grid
+       (``axis_gap = 1``).  The Cartesian/annular names
+       (``"cgl"``/``"tanh"``) are rejected.
+    3. ``update_parameters`` resolves an unset ``geo.grid_type``
+       from the pipe spec: ``"half-cgl"`` under ``iterative-cn``
+       and ``"rigged-cgl"`` under ``cnab2``, so params-driven
+       callers pass a concrete value; a raw ``None`` here falls
+       back to rigged-CGL.
+
+    See :func:`build_radial_cgl_grid` for the rigged vs half-CGL
+    construction and the near-axis-CFL rationale.
 
     Parameters
     ----------
@@ -493,9 +558,10 @@ def build_cylindrical_grid(
         All `$r > 0$`; `$r = 0$` is excluded.  The code
         reverses to ascending order internally.
     grid_type:
-        Named grid type (``"cgl"`` or ``"tanh"``).
+        Named grid type (``"rigged-cgl"`` / ``None`` = rigged-CGL,
+        ``"half-cgl"``, or ``"half-tanh"``).
     grid_stretch:
-        Stretching parameter for ``grid_type="tanh"``.
+        Stretching parameter for ``grid_type="half-tanh"``.
 
     Returns
     -------
@@ -508,14 +574,24 @@ def build_cylindrical_grid(
     D1_pos:
         Common (parity-independent) part, ``(ny, ny)``.
     y_weights:
-        Integration weights with radial Jacobian
-        `$w_j r_j$`, shape ``(ny,)``, satisfying
-        `$\sum_j w_j r_j f_j \approx \int_0^1 f\,r\,dr$`
-        over the **full** disc: the segment
-        `$[0, r_0]$` below the first grid point is covered
-        by the first-stencil interpolant
-        (``left_edge=0.0`` in
-        :func:`~dnsjax.fd.build_integration_weights`).
+        **Even-parity** radial quadrature weights, shape ``(ny,)``,
+        `$\sum_j W_j f_j \approx \int_0^1 f\,r\,dr$` over the full
+        disc for an *even* integrand `$f$` -- the energy norm
+        (`$|u|^2$`), mean `$u_z$`, dissipation.  On a detected radial
+        CGL grid these are the spectral Clenshaw-Curtis-with-weight
+        `$r$` weights that bake in the `$r = 0$` reconstruction
+        (:func:`~dnsjax.fd.cgl_radial_quadrature_weights`); on a
+        custom / tanh grid the parity-agnostic axis-augmented
+        composite rule (`$g = f r$` on `$[0, r_0, \ldots]$`, the axis
+        a free node since `$g(0) = 0$`).  Strictly positive (a
+        definite energy norm), verified at build.
+    y_weights_odd:
+        **Odd-parity** radial quadrature weights, shape ``(ny,)``,
+        for an *odd* integrand (the mean `$u_\theta$`); equal to
+        ``y_weights`` on custom / tanh grids (the composite rule is
+        parity-agnostic).  A single vector cannot be spectral for
+        both parities, so each diagnostic uses the vector matching
+        its known parity.
     inv_r:
         `$1/r$` on the grid, shape ``(ny,)``.
     """
@@ -536,26 +612,130 @@ def build_cylindrical_grid(
                 f" r > 0 (got r[0]={grid[0]})"
             )
         rs = jnp.asarray(grid, dtype=sharding.float_type)
-    elif grid_type == "tanh":
+    elif grid_type == "half-tanh":
         grid = tanh_one_sided_grid(ny, grid_stretch)
         rs = jnp.asarray(grid, dtype=sharding.float_type)
+    elif grid_type in ("half-cgl", "rigged-cgl", None):
+        # "rigged-cgl" / None -> rigged (axis_gap = 1); "half-cgl" ->
+        # the staggered half grid (axis_gap = 0).  The resolved
+        # default is always concrete (pipe spec: half-cgl under
+        # iterative-cn, rigged-cgl under cnab2).
+        axis_gap = 0 if grid_type == "half-cgl" else 1
+        rs = build_radial_cgl_grid(ny, axis_gap)
     else:
-        rs = build_half_cgl_grid(ny)
+        # The Cartesian/annular names ("cgl"/"tanh") do not select a
+        # cylindrical radial grid; validate_parameters rejects them
+        # upstream -- this guards direct callers.
+        raise ValueError(
+            f"grid_type {grid_type!r} is not a cylindrical radial "
+            "grid; choose 'half-cgl', 'rigged-cgl', or 'half-tanh'."
+        )
     inv_r = 1.0 / rs
-    # left_edge=0.0 extends the composite rule over [0, r_0]
-    # (the axis is not a grid point); without it every radial
-    # integral would miss the [0, r_0] mass, an O(N_r^{-2})
-    # bias independent of the FD order.
-    w = build_integration_weights(rs, fd_order, left_edge=0.0)
-    y_weights = w * rs
+    rs_np = np.asarray(rs)
+    # Full-disc quadrature int_0^1 f r dr with no axis grid point.
+    qc = cgl_radial_quadrature_weights(rs_np, fd_order)
+    if qc is not None:
+        # Detected radial CGL grid (rigged / half): spectral
+        # parity-specific weights, baking in the r=0 reconstruction
+        # (positive).  A single vector cannot be spectral for both
+        # parities, so w_even serves the energy norm and even
+        # integrands (mean u_z, dissipation), w_odd the odd mean
+        # u_theta -- the caller picks by each diagnostic's known
+        # parity.  See fd.cgl_radial_quadrature_weights.
+        w_even_np, w_odd_np = qc
+    else:
+        # Custom / tanh grid: the parity-agnostic axis-augmented
+        # composite rule (integrate g = f*r on [0, *rs] with the axis
+        # r=0 as a free node, g(0)=0 for any bounded f; fd_order,
+        # positive, correct for either parity).
+        r_aug = np.concatenate([[0.0], rs_np])
+        w_aug = build_integration_weights(r_aug, fd_order)[1:] * rs_np
+        w_even_np = w_odd_np = w_aug
+    if not (np.all(w_even_np > 0) and np.all(w_odd_np > 0)):
+        raise ValueError(
+            "Radial quadrature weights are not strictly positive "
+            "(the discrete energy norm would be indefinite): the "
+            "fd_order is too high for this ny, or the custom wall "
+            "grid is pathological near the axis."
+        )
+    y_weights = jnp.asarray(w_even_np, dtype=sharding.float_type)
+    y_weights_odd = jnp.asarray(w_odd_np, dtype=sharding.float_type)
 
     D1_even, _, D1_odd, _, D1_pos, _ = build_parity_reduced_matrices(
         rs, fd_order
     )
-    return rs, D1_even, D1_odd, D1_pos, y_weights, inv_r
+    return rs, D1_even, D1_odd, D1_pos, y_weights, y_weights_odd, inv_r
 
 
-# ── SPIKE block-partitioned operator builders ─────────────────────
+def interpolate_to_axis(
+    arr: Array,
+    rs: Array,
+    axis: int = 0,
+    order: int | None = None,
+    parity: str | None = None,
+) -> Array:
+    r"""Interpolate an r-dependent array to the centreline `$r = 0$`.
+
+    The radial grid excludes `$r = 0$` by construction (see
+    :func:`build_radial_cgl_grid`); this evaluates radial data at
+    the axis (spectrally for even-parity data on the CGL grids,
+    by local Fornberg extrapolation otherwise; see *parity*), for
+    any array carrying an r-varying axis (spectral or physical,
+    real or complex, any number of other axes).  Runs host-side
+    (weights are NumPy); pass addressable (single-device or fully
+    replicated) arrays.
+
+    Parameters
+    ----------
+    arr:
+        Input array with ``arr.shape[axis] == len(rs)``.
+    rs:
+        Ascending radial grid on `$(0, 1]$` (host-readable, e.g.
+        ``np.asarray(derived_params.wall_normal_grid)``).
+    axis:
+        The radial axis of *arr*.
+    order:
+        Stencil width minus one; defaults to
+        ``params.res.fd_order``.  Ignored on the spectral
+        even-parity CGL path.
+    parity:
+        ``None`` (default): one-sided ``order + 1``-point
+        extrapolation -- the only safe general choice for
+        *physical-space* arrays, whose `$r \to -r$` continuation
+        pairs with `$\theta \to \theta + \pi$` and is therefore
+        not a per-column symmetry.  ``"even"``: the data is
+        smooth and even in `$r$` (an `$m_{\mathrm{eff}}$`-even
+        spectral component, e.g. the mean mode of `$u_z$`); an
+        even analytic function is a function of `$x = r^2$` --
+        on a detected radial CGL grid the exact spectral
+        parity-constrained fit in `$x$`
+        (``fd._spectral_even_axis_weights``, exact for even
+        polynomials of degree `$\le 2(N_r - 1)$`), on a
+        custom/tanh grid the ``order + 1``-point stencil in `$x$`
+        (exact to degree `$\le 2\,\mathrm{order}$`).
+        ``"odd"``: the data vanishes on the axis identically
+        (`$m_{\mathrm{eff}}$`-odd components); returns zeros.
+
+    Returns
+    -------
+    :
+        *arr* with the radial axis removed, evaluated at
+        `$r = 0$`.
+    """
+    if order is None:
+        order = params.res.fd_order
+    moved = jnp.moveaxis(arr, axis, 0)
+    # Shared JAX-free leaf (also behind the rigged-CGL interpolation
+    # matrix): spectral even weights span the whole grid on CGL,
+    # local rules are zero-padded outside their stencil; either way
+    # the full-axis contraction drops the radial axis (odd parity ->
+    # zeros).
+    w = axis_extrapolation_weights(np.asarray(rs), order, parity)
+    w_jax = jnp.asarray(w, dtype=sharding.float_type)
+    return jnp.tensordot(w_jax, moved, axes=(0, 0))
+
+
+# ── Shared radial base operator ───────────────────────────────────
 
 
 def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
@@ -576,144 +756,63 @@ def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
     return D2 + inv_r[:, None] * D1
 
 
-def _build_Lk_blocks_gpu(
+# ── Pallas-backend banded operator builders ───────────────────────
+
+
+def _build_Lk_band_gpu(
     D1_wall: Array,
-    A_base_even: Array,
-    A_base_odd: Array,
+    band_even: Array,
+    band_odd: Array,
     m_is_even: Array,
     m2: Array,
     inv_r2: Array,
     kz2: Array,
     mean_mask: Array,
     p: int,
-    P: int,
-    m_blk: int,
-) -> tuple[Array, Array, Array]:
-    r"""Build SPIKE block-partitioned `$L_k$` on GPU.
+) -> Array:
+    r"""Build `$L_k$` in banded storage for the Pallas backend.
 
-    The pressure Poisson operator uses `$m_{\mathrm{eff}} = m$`
-    (same parity as pressure / `$u_z$`):
-
-    .. math::
-        L_k = A_{\mathrm{base}}^{(\sigma_p)}
-        - (m^2/r^2 + k_z^2)\,I
-
-    where `$\sigma_p$` is even when `$m$` is even, odd when
-    `$m$` is odd.  The `$m^2/r^2$` diagonal shift is
-    **per-point** (varies with `$j$`), unlike the uniform
-    `$k^2$` in the Cartesian case.
-
-    The first block (`$i = 0$`) depends on parity (its first
-    `$\sim p$` rows differ between even/odd FD matrices); all
-    other blocks are parity-independent.  Per-mode selection
-    uses ``jnp.where`` on the parity mask.
+    Same operator as :func:`_build_Lk_dense_gpu`,
+    but assembled directly in banded layout
+    ``(Nm, Nkz, Nr, 2p+1)`` (``band[..., i, d] = L_k[..., i, i-p+d]``)
+    from the base-operator bands, with no ``(Nr, Nr)`` per mode.
 
     Parameters
     ----------
     D1_wall:
-        Last row of `$D_1$` (parity-independent), shape
-        ``(Nr,)`` or ``(1, Nr)``.
-    A_base_even:
-        Base operator with even-parity FD matrices,
-        shape ``(Nr, Nr)``.
-    A_base_odd:
-        Base operator with odd-parity FD matrices,
-        shape ``(Nr, Nr)``.
-    m_is_even:
-        Boolean mask for even `$m$`, shape ``(Nm, 1, 1)``.
-    m2:
-        `$m^2$`, shape ``(Nm, 1, 1)``.
+        Last row of `$D_1$` (parity-independent), shape ``(Nr,)``.
+    band_even, band_odd:
+        Banded `$A_{\mathrm{base}}$` for even/odd parity,
+        shape ``(Nr, 2p+1)``.
+    m_is_even, m2:
+        Pressure parity selector and `$m^2$`, shape ``(Nm, 1, 1)``.
     inv_r2:
         `$1/r_j^2$`, shape ``(Nr,)``.
     kz2:
         `$k_z^2$`, shape ``(1, Nkz, 1)``.
     mean_mask:
-        Mean-mode boolean mask.
+        Mean-mode boolean mask, shape ``(Nm, Nkz, 1)``.
     p:
         FD order (half-bandwidth).
-    P:
-        Number of SPIKE blocks.
-    m_blk:
-        Block size (``Nr // P``).
-
-    Returns
-    -------
-    A_blocks:
-        Diagonal blocks, ``(Nm, Nkz, P, m_blk, m_blk)``.
-    B_corner:
-        Right-coupling corners, ``(Nm, Nkz, P, p, p)``.
-    C_corner:
-        Left-coupling corners, ``(Nm, Nkz, P, p, p)``.
     """
-    dtype = A_base_even.dtype
-
-    eye_m = jnp.eye(m_blk, dtype=dtype)
-
-    # Per-point diagonal shift: -(m^2/r_j^2 + kz^2) for each
-    # radial point in each block.
-    # m2_over_r2 has shape (Nm, 1, Nr) after broadcast.
-    m2_over_r2 = m2 * inv_r2  # (Nm, 1, Nr)
-
-    # Build even/odd diagonal blocks from A_base.
-    def extract_blocks(A_base):
-        return jnp.stack(
-            [
-                A_base[
-                    i * m_blk : (i + 1) * m_blk, i * m_blk : (i + 1) * m_blk
-                ]
-                for i in range(P)
-            ]
-        )  # (P, m_blk, m_blk)
-
-    A_blks_even = extract_blocks(A_base_even)  # (P, m_blk, m_blk)
-    A_blks_odd = extract_blocks(A_base_odd)
-
-    # Block 0 differs by parity; blocks 1..P-1 are identical.
-    # Select block 0 per-mode via m_is_even.
-    blk0_even = A_blks_even[0]  # (m_blk, m_blk)
-    blk0_odd = A_blks_odd[0]
-    # Squeeze m_is_even from (Nm, 1, 1) to (Nm, 1, 1)
-    # for correct broadcast to (Nm, m_blk, m_blk).
-    blk0 = jnp.where(
-        m_is_even.ravel()[:, None, None], blk0_even, blk0_odd
-    )  # (Nm, m_blk, m_blk)
-
-    # Build each block with its diagonal shift incorporated.
-    # Arithmetic with kz2 drives the kx-sharding.
-    blocks = []
-    for i in range(P):
-        r_slice = slice(i * m_blk, (i + 1) * m_blk)
-        shift = -(m2_over_r2[..., r_slice] + kz2)
-        shift_diag = shift[..., None] * eye_m
-        if i == 0:
-            block = blk0[:, None, :, :] + shift_diag
-        else:
-            block = A_blks_even[i][None, None] + shift_diag
-        blocks.append(block)
-    A_blocks = jnp.stack(blocks, axis=2)
-
-    # BC: wall row (last row of last block) -> Neumann D1[-1,:]
-    # for all modes, pin [...,0,1] at the mean mode (m,kz) = (0,0).
-    D1_wall_row = D1_wall[-m_blk:]  # last m_blk entries
-    pin_row = jnp.zeros(m_blk, dtype=dtype).at[-1].set(1.0)
-    wall_row = jnp.where(mean_mask, pin_row, D1_wall_row)
-    A_blocks = A_blocks.at[:, :, -1, -1, :].set(wall_row)
-
-    # Coupling corners (parity-independent: from A_base_even
-    # which equals A_base_odd for blocks > 0).
-    B_raw, C_raw = _extract_banded_corners(A_base_even, P, m_blk, p)
-    # Apply the per-point diagonal shift to corners: the shift is
-    # diagonal so it doesn't affect off-diagonal coupling corners.
-    batch = m2.shape[:1] + kz2.shape[1:2] + (P, p, p)
-    B_corner = jnp.broadcast_to(B_raw[None, None], batch)
-    C_corner = jnp.broadcast_to(C_raw[None, None], batch)
-
-    return A_blocks, B_corner, C_corner
+    Nr = band_even.shape[0]
+    band_base = jnp.where(m_is_even, band_even[None], band_odd[None])
+    diag = -(m2 * inv_r2 + kz2)  # (Nm, Nkz, Nr)
+    # Single wall (r = 1): Neumann D1[-1, :] in band form, identity
+    # (pin) at the mean mode; r = 0 regularity is built into the
+    # parity-reduced base band, so no inner-wall row.
+    neumann = _banded_wall_row(D1_wall, Nr - 1, p)
+    wall = jnp.where(
+        mean_mask, _banded_diag_column(p, band_base.dtype), neumann
+    )  # (Nm, Nkz, 2p+1)
+    return _assemble_banded_operator(
+        band_base[:, None], 1.0, diag, [(Nr - 1, wall)]
+    )
 
 
-def _build_Hk_blocks_gpu(
-    A_base_even: Array,
-    A_base_odd: Array,
+def _build_Hk_band_gpu(
+    band_even: Array,
+    band_odd: Array,
     m_is_even_vel: Array,
     meff2: Array,
     inv_r2: Array,
@@ -722,104 +821,20 @@ def _build_Hk_blocks_gpu(
     c: float,
     nu: float,
     p: int,
-    P: int,
-    m_blk: int,
-) -> tuple[Array, Array, Array]:
-    r"""Build SPIKE block-partitioned `$H_k$` on GPU.
+) -> Array:
+    r"""Build one `$H_k$` Helmholtz operator in banded storage.
 
-    Builds one of the three Helmholtz operators (`$H_{k,+}$`,
-    `$H_{k,-}$`, or `$H_{k,z}$`).  The caller supplies the
-    appropriate `$m_{\mathrm{eff}}^2$` and parity mask.
-
-    .. math::
-        H_k = \frac{1}{\Delta t}\,I
-        + c\nu\bigl(m_{\mathrm{eff}}^2/r^2 + k_z^2\bigr)\,I
-        - c\nu\,A_{\mathrm{base}}^{(\sigma)}
-
-    The effective azimuthal mode `$m_{\mathrm{eff}}$`
-    determines which `$1/r^2$` coefficient appears in the
-    diagonal and which parity-reduced FD matrices are used
-    for the first block.
-
-    Parameters
-    ----------
-    A_base_even, A_base_odd:
-        Base operators with even/odd parity FD matrices.
-    m_is_even_vel:
-        Parity mask for this velocity component.
-    meff2:
-        `$m_{\mathrm{eff}}^2$`, shape ``(Nm, 1, 1)``.
-    inv_r2:
-        `$1/r_j^2$`, shape ``(Nr,)``.
-    kz2:
-        `$k_z^2$`, shape ``(1, Nkz, 1)``.
-    dt:
-        Time step.
-    c:
-        Implicitness parameter.
-    nu:
-        Kinematic viscosity `$1/\mathrm{Re}$`.
-    p, P, m_blk:
-        FD order, block count, block size.
-
-    Returns
-    -------
-    A_blocks, B_corner, C_corner:
-        SPIKE block data with the same layout as
-        :func:`_build_Lk_blocks_gpu`.
+    Banded analogue of :func:`_build_Hk_dense_gpu`, laid out as
+    ``(Nm, Nkz, Nr, 2p+1)``.
     """
-    dtype = A_base_even.dtype
-    eye_m = jnp.eye(m_blk, dtype=dtype)
-
-    meff2_over_r2 = meff2 * inv_r2  # (Nm, 1, Nr)
-
-    def extract_blocks(A_base):
-        return jnp.stack(
-            [
-                A_base[
-                    i * m_blk : (i + 1) * m_blk, i * m_blk : (i + 1) * m_blk
-                ]
-                for i in range(P)
-            ]
-        )
-
-    A_blks_even = extract_blocks(A_base_even)
-    A_blks_odd = extract_blocks(A_base_odd)
-
-    blk0_even = A_blks_even[0]
-    blk0_odd = A_blks_odd[0]
-    blk0 = jnp.where(
-        m_is_even_vel.ravel()[:, None, None], blk0_even, blk0_odd
-    )  # (Nm, m_blk, m_blk)
-
-    # Build each block with diagonal shift incorporated.
-    # Arithmetic with kz2 drives the kx-sharding.
-    blocks = []
-    for i in range(P):
-        r_slice = slice(i * m_blk, (i + 1) * m_blk)
-        diag_val = 1.0 / dt + c * nu * (meff2_over_r2[..., r_slice] + kz2)
-        diag_mat = diag_val[..., None] * eye_m
-        if i == 0:
-            block = -c * nu * blk0[:, None, :, :] + diag_mat
-        else:
-            block = -c * nu * A_blks_even[i][None, None] + diag_mat
-        blocks.append(block)
-    A_blocks = jnp.stack(blocks, axis=2)
-
-    # Dirichlet no-slip wall BC: identity row at r = 1
-    # (last row of last block).
-    eN = jnp.zeros(m_blk, dtype=dtype).at[-1].set(1.0)
-    A_blocks = A_blocks.at[:, :, -1, -1, :].set(eN[None, None])
-
-    # Coupling corners: -c*nu * A_base sub-blocks.
-    B_raw, C_raw = _extract_banded_corners(
-        A_base_even, P, m_blk, p, scale=-c * nu
+    Nr = band_even.shape[0]
+    band_base = jnp.where(m_is_even_vel, band_even[None], band_odd[None])
+    diag = 1.0 / dt + c * nu * (meff2 * inv_r2 + kz2)  # (Nm, Nkz, Nr)
+    # Dirichlet no-slip wall: identity row at r = 1.
+    eN = _banded_diag_column(p, band_base.dtype)
+    return _assemble_banded_operator(
+        band_base[:, None], -c * nu, diag, [(Nr - 1, eN)]
     )
-    batch = meff2.shape[:1] + kz2.shape[1:2] + (P, p, p)
-    B_corner = jnp.broadcast_to(B_raw[None, None], batch)
-    C_corner = jnp.broadcast_to(C_raw[None, None], batch)
-
-    return A_blocks, B_corner, C_corner
 
 
 # ── Dense-backend operator builders ───────────────────────────────
@@ -895,6 +910,10 @@ def _build_Hk_dense_gpu(
     return Hk
 
 
+# Operator backends sharing the ``.solve()`` contract.
+_WallBoundedOp = DenseJAXSolver | PerModeBandedPallasOperator
+
+
 # ── CylindricalFlow base dataclass ─────────────────────────────────
 
 
@@ -905,9 +924,10 @@ class CylindricalFlow:
 
     Subclasses must set ``base_flow`` and ``curl_base_flow``
     *after* calling
-    ``super().__post_init__()``, which builds the half-CGL
-    radial grid, parity-reduced FD matrices, and all per-mode
-    IMM operators.
+    ``super().__post_init__()``, which builds the radial CGL
+    grid (half-CGL or rigged-CGL, per the resolved
+    ``geo.grid_type``), parity-reduced FD matrices, and all
+    per-mode IMM operators.
 
     The velocity state is stored in decoupled form
     `$(u_z, u_+, u_-)$` where
@@ -957,12 +977,18 @@ class CylindricalFlow:
         `$1/r$` on the radial grid.
     inv_r2:
         `$1/r^2$` on the radial grid.
+    dt, ab2_kappa:
+        Live time step and AB2 step ratio, 0-d array leaves (see
+        ``CartesianFlow`` and the builder ``set_dt``).
     """
 
+    dt: Array = field(init=False)
+    ab2_kappa: Array = field(init=False)
     rs: Array = field(init=False)
     inv_r: Array = field(init=False)
     inv_r2: Array = field(init=False)
-    y_weights: Array = field(init=False)
+    y_weights: Array = field(init=False)  # even-parity (energy norm)
+    y_weights_odd: Array = field(init=False)  # odd-parity (mean u_theta)
     cfl_inv_spacing: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
@@ -976,8 +1002,8 @@ class CylindricalFlow:
     D1_wall: Array = field(init=False)
     A_base_even: Array = field(init=False)
     A_base_odd: Array = field(init=False)
-    Lk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
-    Hk_op: DenseJAXSolver | PerModeBandedOperator = field(init=False)
+    Lk_op: _WallBoundedOp = field(init=False)
+    Hk_op: _WallBoundedOp = field(init=False)
     v_plus_1: Array = field(init=False)
     v_minus_1: Array = field(init=False)
     q_z_1: Array = field(init=False)
@@ -988,21 +1014,28 @@ class CylindricalFlow:
     def __post_init__(self) -> None:
         r"""Build radial grid, FD matrices, and IMM operators.
 
-        Constructs the half-CGL grid on `$(0, 1]$`, builds
-        parity-reduced FD matrices, assembles and factorises
-        `$L_k$`, `$H_{k,+}$`, `$H_{k,-}$`, `$H_{k,z}$`
-        directly on the device, then derives all homogeneous
-        IMM data.
+        Constructs the radial CGL grid on `$(0, 1]$` (half-CGL or
+        rigged-CGL, per the resolved ``geo.grid_type``), builds
+        parity-reduced FD matrices,
+        assembles and factorises `$L_k$`, `$H_{k,+}$`,
+        `$H_{k,-}$`, `$H_{k,z}$` directly on the device, then
+        derives all homogeneous IMM data.
         """
         Nr = params.res.ny
-        self.rs, D1_even, D1_odd, D1_pos, self.y_weights, self.inv_r = (
-            build_cylindrical_grid(
-                Nr,
-                params.res.fd_order,
-                params.geo.wall_grid,
-                params.geo.grid_type,
-                params.geo.grid_stretch,
-            )
+        (
+            self.rs,
+            D1_even,
+            D1_odd,
+            D1_pos,
+            self.y_weights,
+            self.y_weights_odd,
+            self.inv_r,
+        ) = build_cylindrical_grid(
+            Nr,
+            params.res.fd_order,
+            params.geo.wall_grid,
+            params.geo.grid_type,
+            params.geo.grid_stretch,
         )
         self.inv_r2 = self.inv_r**2
 
@@ -1014,9 +1047,9 @@ class CylindricalFlow:
         # diagnostic (:func:`dnsjax.measurements.get_cfl`),
         # per component (u_z, u_r, u_theta), zero in the
         # ny_y_pad rows.  The azimuthal scale is the arc length
-        # `$r \Delta\theta$` with `$\Delta\theta = 2\pi/n_z$`
-        # (theta period is the literal `$2\pi$`: ``geo.lz`` is
-        # not read by this geometry).  Uniform directions use
+        # `$r \Delta\theta$` with `$\Delta\theta = l_z/n_z$`
+        # (theta period `$l_z = 2\pi/m_0$` over the wedge;
+        # ``geo.lz`` carries this).  Uniform directions use
         # the spectral-resolution spacing `$\Delta = L/n$`;
         # switch to ``padded_res.nx_padded`` / ``nz_padded``
         # for the dealiased-grid convention.
@@ -1025,7 +1058,7 @@ class CylindricalFlow:
         )
         inv_sp[0, :Nr] = params.res.nx / params.geo.lx
         inv_sp[1, :Nr] = 1.0 / local_grid_spacing(np.asarray(self.rs))
-        inv_sp[2, :Nr] = np.asarray(self.inv_r) * params.res.nz / (2 * np.pi)
+        inv_sp[2, :Nr] = np.asarray(self.inv_r) * params.res.nz / params.geo.lz
         self.cfl_inv_spacing = jax.device_put(
             inv_sp[:, :, None, None], sharding.no_shard
         )
@@ -1067,14 +1100,20 @@ class CylindricalFlow:
         self.inv_r = jax.device_put(self.inv_r, sharding.no_shard)
         self.inv_r2 = jax.device_put(self.inv_r2, sharding.no_shard)
         self.y_weights = jax.device_put(self.y_weights, sharding.no_shard)
+        self.y_weights_odd = jax.device_put(
+            self.y_weights_odd, sharding.no_shard
+        )
 
         Nm = sharding.nz_spec
         Nkz = sharding.nx_spec
 
         fd_p = params.res.fd_order
         dt = params.step.dt
-        c_impl = params.step.implicitness
-        nu = 1.0 / params.phys.re
+
+        # Live-dt pytree leaves (class docstring; rebuilt by the
+        # builder's ``set_dt`` with identical dtype/shape).
+        self.dt = jnp.asarray(dt, dtype=sharding.float_type)
+        self.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
 
         # Solver-internal wavenumber arrays: squeeze y dim
         # from field layout (1, Nm, ...) to (Nm, ..., 1).
@@ -1083,101 +1122,50 @@ class CylindricalFlow:
         mean_s = fourier.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
         m_is_even_s = fourier.m_is_even[0, ..., None]  # (Nm, 1, 1)
 
-        m_plus_1_sq = (m_s + 1) ** 2
-        m_minus_1_sq = (m_s - 1) ** 2
         m_sq = m_s**2
 
-        # Parity masks:
-        # pressure / u_z use (-1)^m  -> m_is_even
-        # u_+, u_- use (-1)^{m+1}   -> ~m_is_even (opposite)
+        # Parity mask: pressure / u_z use (-1)^m -> m_is_even (the
+        # u_+/u_- masks live in ``_hk_bands`` / ``_hk_dense_op``).
         m_is_even_p = m_is_even_s
-        m_is_even_v = 1.0 - m_is_even_s
 
-        if params.solver.backend == "banded":
-            bt = params.solver.block_thomas
-            P_blk, m_blk = validate_spike_partition(Nr, fd_p, "Nr", bt)
+        if params.solver.backend == "pallas":
+            # Pallas backend: one-program-per-mode banded sweep.
+            # Operators are assembled directly in banded storage (no
+            # (Nr, Nr) per mode) and factored by the setup-checked
+            # no-pivot banded LU (_build_pallas_operator).
+            band_even = _banded_from_dense(self.A_base_even, fd_p)
+            band_odd = _banded_from_dense(self.A_base_odd, fd_p)
+            D1_wall_1d = self.D1_wall.ravel()
 
-            # Build and factor one operator at a time, dropping
-            # the block arrays immediately (their buffers are
-            # donated into the factorisation), so the setup peak
-            # never holds two unfactored operators at once.
-            # Lk
-            Lk_A, Lk_B, Lk_C = _build_Lk_blocks_gpu(
-                self.D1_wall.ravel(),
-                self.A_base_even,
-                self.A_base_odd,
+            # Lk (meff = m, pressure parity).
+            Lk_band = _build_Lk_band_gpu(
+                D1_wall_1d,
+                band_even,
+                band_odd,
                 m_is_even_p,
                 m_sq,
                 self.inv_r2,
                 kz2_s,
                 mean_s,
                 fd_p,
-                P_blk,
-                m_blk,
             )
-            self.Lk_op = _spike_factor(Lk_A, Lk_B, Lk_C, bt)
-            del Lk_A, Lk_B, Lk_C
+            self.Lk_op = _build_pallas_operator([Lk_band], "Lk")
+            del Lk_band
 
-            # Hk_plus (meff = m+1, parity = (-1)^{m+1})
-            Hp_A, Hp_B, Hp_C = _build_Hk_blocks_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_v,
-                m_plus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-                P_blk,
-                m_blk,
+            # Hk group (plus, minus, z): stacked into one homogeneous
+            # operator and stability-checked as a single group.
+            if params.step.adaptive:
+                # Verify the no-pivot LU where the Helmholtz
+                # diagonal is least dominant; adaptive rebuilds at
+                # dt <= dt_max then skip the check
+                # (solvers._factor_pallas_operator).
+                _build_pallas_operator(
+                    _hk_bands(params.step.dt_max, fourier, self),
+                    "Hk(dt_max)",
+                )
+            self.Hk_op = _build_pallas_operator(
+                _hk_bands(dt, fourier, self), "Hk"
             )
-            op_p = _spike_factor(Hp_A, Hp_B, Hp_C, bt)
-            del Hp_A, Hp_B, Hp_C
-
-            # Hk_minus (meff = m-1, parity = (-1)^{m+1})
-            Hm_A, Hm_B, Hm_C = _build_Hk_blocks_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_v,
-                m_minus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-                P_blk,
-                m_blk,
-            )
-            op_m = _spike_factor(Hm_A, Hm_B, Hm_C, bt)
-            del Hm_A, Hm_B, Hm_C
-
-            # Hk_z (meff = m, parity = (-1)^m)
-            Hz_A, Hz_B, Hz_C = _build_Hk_blocks_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_p,
-                m_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-                fd_p,
-                P_blk,
-                m_blk,
-            )
-            op_z = _spike_factor(Hz_A, Hz_B, Hz_C, bt)
-            del Hz_A, Hz_B, Hz_C
-
-            # Combined Hk: component order (plus, minus, z).
-            # Drop the per-component operators right after
-            # stacking copies them, halving the H-factor
-            # footprint for the rest of setup.
-            self.Hk_op = _stack_banded_operators(op_p, op_m, op_z)
-            del op_p, op_m, op_z
 
         else:
             # Dense backend: full matrices are built, LU-factored
@@ -1196,80 +1184,22 @@ class CylindricalFlow:
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
 
-            Hp_dense = _build_Hk_dense_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_v,
-                m_plus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-            )
-            Hk_plus_solver = DenseJAXSolver(Hp_dense)
-            del Hp_dense
-
-            Hm_dense = _build_Hk_dense_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_v,
-                m_minus_1_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-            )
-            Hk_minus_solver = DenseJAXSolver(Hm_dense)
-            del Hm_dense
-
-            Hz_dense = _build_Hk_dense_gpu(
-                self.A_base_even,
-                self.A_base_odd,
-                m_is_even_p,
-                m_sq,
-                self.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                nu,
-            )
-            Hk_z_solver = DenseJAXSolver(Hz_dense)
-            del Hz_dense
-
             # Combined Hk: component order (plus, minus, z).
-            # Drop the per-component solvers right after stacking
-            # copies their factors.
-            self.Hk_op = DenseJAXSolver.from_factors(
-                lu=jnp.stack(
-                    [
-                        Hk_plus_solver.lu,
-                        Hk_minus_solver.lu,
-                        Hk_z_solver.lu,
-                    ]
-                ),
-                perm=jnp.stack(
-                    [
-                        Hk_plus_solver.perm,
-                        Hk_minus_solver.perm,
-                        Hk_z_solver.perm,
-                    ]
-                ),
-            )
-            del Hk_plus_solver, Hk_minus_solver, Hk_z_solver
+            self.Hk_op = _hk_dense_op(dt, fourier, self)
 
-        self._derive_imm_homogeneous_data(Nm, Nkz, Nr)
-        self._precompute_bulk_response(Nm, Nkz, Nr)
+        self._derive_imm_homogeneous_data(fourier, Nm, Nkz, Nr)
+        self._precompute_bulk_response(fourier, Nm, Nkz, Nr)
 
-    def _derive_imm_homogeneous_data(self, Nm: int, Nkz: int, Nr: int) -> None:
+    def _derive_imm_homogeneous_data(
+        self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
+    ) -> None:
         r"""Fill ``v_plus_1``, ``v_minus_1``, ``q_z_1``, and
         ``M_inv`` on-device.
 
         The homogeneous pressure `$p_1$` stays local: only the
         velocity responses derived from it are needed at runtime
-        (the commented-out pressure assembly in the Cartesian
-        IMM would be its only consumer).
+        (the corrected pressure is never assembled -- see the
+        Cartesian ``_imm_iteration`` stage-6 note).
 
         The pipe has a single wall at `$r = 1$` (last grid
         point), giving a `$1 \times 1$` influence matrix.
@@ -1304,8 +1234,14 @@ class CylindricalFlow:
         preserving the `$u_\\theta$` part.  The zeroing runs
         before ``M`` is assembled.
         """
-        # All solver work uses (Nm, Nkz, Nr) layout; results
-        # are transposed to field layout (Nr, Nm, Nkz) at the end.
+        # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
+        # layout: the influence-matrix einsums below operate on it and
+        # the results are transposed to field layout (Nr, Nm, Nkz) at
+        # the end.  ``.solve`` now takes a mode-inner field, so each
+        # setup solve is wrapped (transpose in, transpose out) to keep
+        # this layout.  FUTURE: rebuild this setup natively mode-inner to
+        # drop the wrappers -- the hot path already is; here it only
+        # relocates a one-time transpose, so it is deferred.
         e_wall = (
             jnp.zeros(
                 (Nm, Nkz, Nr),
@@ -1315,17 +1251,17 @@ class CylindricalFlow:
             .at[..., -1]
             .set(1.0)
         )
-        p1_s = self.Lk_op.solve(e_wall)
+        p1_s = self.Lk_op.solve(e_wall.transpose(2, 0, 1)).transpose(1, 2, 0)
 
         # Pressure gradient components for the +/- equations.
         # The ghost matrix holds only its g nonzero rows; its
         # contribution lands in the first g radial entries.
-        parity_sign_p_s = fourier.m_is_even[0, ..., None] * 2 - 1
+        parity_sign_p_s = fourier_.m_is_even[0, ..., None] * 2 - 1
         g = self.D1_ghost.shape[0]
         ghost_p1 = jnp.einsum("ij, mzj -> mzi", self.D1_ghost, p1_s)
         D1_p1 = jnp.einsum("ij, mzj -> mzi", self.D1_pos, p1_s)
         D1_p1 = D1_p1.at[..., :g].add(parity_sign_p_s * ghost_p1)
-        m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
+        m_s = fourier_.m[0, ..., None]  # (Nm, 1, 1)
         m_over_r_s = m_s * self.inv_r  # (Nm, 1, Nr)
 
         rhs_v_plus = -(D1_p1 - m_over_r_s * p1_s)
@@ -1336,13 +1272,15 @@ class CylindricalFlow:
 
         # Batched solve: component order (plus, minus, z).
         rhs_stack = jnp.stack([rhs_v_plus, rhs_v_minus, q_rhs])
-        result_stack = self.Hk_op.solve(rhs_stack)
+        result_stack = self.Hk_op.solve(
+            rhs_stack.transpose(0, 3, 1, 2)
+        ).transpose(0, 2, 3, 1)
         vp1_s = result_stack[0]
         vm1_s = result_stack[1]
         qz1_s = result_stack[2]
 
         # Zero the u_r part at the mean mode, preserving u_theta.
-        mean_s = fourier.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
+        mean_s = fourier_.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
         vr_corr = jnp.where(mean_s, (vp1_s + vm1_s) / 2, 0.0)
         vp1_s = vp1_s - vr_corr
         vm1_s = vm1_s - vr_corr
@@ -1352,7 +1290,7 @@ class CylindricalFlow:
         ur_1 = (vp1_s + vm1_s) / 2
         M = jnp.einsum("j, mzj -> mz", D1_wall_row, ur_1)
 
-        is_mean = fourier.mean_mask[0]  # (Nm, Nkz)
+        is_mean = fourier_.mean_mask[0]  # (Nm, Nkz)
         safe_M = jnp.where(is_mean, 1.0, M)
         self.M_inv = jnp.where(is_mean, 0.0, 1.0 / safe_M)
 
@@ -1361,7 +1299,9 @@ class CylindricalFlow:
         self.v_minus_1 = vm1_s.transpose(2, 0, 1)
         self.q_z_1 = qz1_s.transpose(2, 0, 1)
 
-    def _precompute_bulk_response(self, Nm: int, Nkz: int, Nr: int) -> None:
+    def _precompute_bulk_response(
+        self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
+    ) -> None:
         r"""Precompute the Helmholtz response for constant-bulk-
         velocity enforcement.
 
@@ -1392,19 +1332,146 @@ class CylindricalFlow:
         # all other modes, padding included, get zero RHS), zero
         # wall BC.  Solver-internal layout (Nm, Nkz, Nr).
         ones_vec = jnp.ones(Nr, dtype=sharding.float_type).at[-1].set(0.0)
-        rhs = jnp.where(fourier.mean_mask[0, ..., None], ones_vec, 0.0)
+        rhs = jnp.where(fourier_.mean_mask[0, ..., None], ones_vec, 0.0)
 
         # Solve using the z-component (index 2) of the combined
         # Hk operator via a padded batch (one-time init cost).
         zeros = jnp.zeros_like(rhs)
-        h_full = self.Hk_op.solve(jnp.stack([zeros, zeros, rhs]))[2]
+        h_full = self.Hk_op.solve(
+            jnp.stack([zeros, zeros, rhs]).transpose(0, 3, 1, 2)
+        ).transpose(0, 2, 3, 1)[2]
 
-        self.h_bulk_response = jax.device_put(
+        # ``reshard`` (not ``device_put``): this method also runs
+        # inside the jitted ``set_dt`` rebuild, where placing a
+        # traced value is expressed as a resharding.
+        self.h_bulk_response = jax.sharding.reshard(
             extract_mean_mode(h_full.transpose(2, 0, 1)[None])[0],
             sharding.no_shard,
         )
         H_bulk = 2 * jnp.dot(self.y_weights, self.h_bulk_response)
         self.H_bulk_inv = 1.0 / H_bulk
+
+
+def _hk_bands(
+    dt: float | Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> list[Array]:
+    r"""Assemble the banded `$H_k$` group (+, -, z) at *dt*.
+
+    Single-sources the band assembly for the setup-checked build, the
+    adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
+    rebuild (:func:`_build_dt_leaves`).  Pallas backend only.
+    """
+    fd_p = params.res.fd_order
+    m_s = fourier_.m[0, ..., None]
+    kz2_s = fourier_.kz2[0, ..., None]
+    m_is_even_s = fourier_.m_is_even[0, ..., None]
+    # u_+/u_- carry parity (-1)^{m+1}; u_z carries (-1)^m.
+    m_is_even_v = 1.0 - m_is_even_s
+    band_even = _banded_from_dense(flow_.A_base_even, fd_p)
+    band_odd = _banded_from_dense(flow_.A_base_odd, fd_p)
+    groups = (
+        (m_is_even_v, (m_s + 1) ** 2),
+        (m_is_even_v, (m_s - 1) ** 2),
+        (m_is_even_s, m_s**2),
+    )
+    return [
+        _build_Hk_band_gpu(
+            band_even,
+            band_odd,
+            parity,
+            meff2,
+            flow_.inv_r2,
+            kz2_s,
+            dt,
+            params.step.implicitness,
+            1.0 / params.phys.re,
+            fd_p,
+        )
+        for parity, meff2 in groups
+    ]
+
+
+def _hk_dense_op(
+    dt: float | Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> DenseJAXSolver:
+    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense
+    backend)."""
+    m_s = fourier_.m[0, ..., None]
+    kz2_s = fourier_.kz2[0, ..., None]
+    m_is_even_s = fourier_.m_is_even[0, ..., None]
+    m_is_even_v = 1.0 - m_is_even_s
+    groups = (
+        (m_is_even_v, (m_s + 1) ** 2),
+        (m_is_even_v, (m_s - 1) ** 2),
+        (m_is_even_s, m_s**2),
+    )
+    ops = [
+        DenseJAXSolver(
+            _build_Hk_dense_gpu(
+                flow_.A_base_even,
+                flow_.A_base_odd,
+                parity,
+                meff2,
+                flow_.inv_r2,
+                kz2_s,
+                dt,
+                params.step.implicitness,
+                1.0 / params.phys.re,
+            )
+        )
+        for parity, meff2 in groups
+    ]
+    return DenseJAXSolver.from_factors(
+        lu=jnp.stack([o.lu for o in ops]),
+        perm=jnp.stack([o.perm for o in ops]),
+    )
+
+
+def _build_dt_leaves(
+    dt: Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> dict[str, object]:
+    r"""Rebuild every ``dt``-dependent flow leaf at the traced *dt*.
+
+    The pure counterpart of the ``__post_init__`` operator/IMM setup,
+    jitted by the builder's ``set_dt``: assemble the `$H_k$` group at
+    *dt*, factor it **unchecked**
+    (:func:`solvers._factor_pallas_operator` -- the checked build ran
+    at setup, and under ``step.adaptive`` additionally at ``dt_max``,
+    the dominance-weakest point), then re-run the unmodified IMM
+    derivation on a trace-local shallow copy of *flow_* and collect
+    the refreshed leaves.  `$L_k$` is ``dt``-independent and shared.
+    The returned leaves match the stored ones in
+    shape/dtype/sharding, so swapping them onto the flow singleton
+    retraces nothing.
+    """
+    new = copy.copy(flow_)
+    new.dt = dt
+    if params.solver.backend == "pallas":
+        new.Hk_op = _factor_pallas_operator(_hk_bands(dt, fourier_, new))
+    else:
+        new.Hk_op = _hk_dense_op(dt, fourier_, new)
+    new._derive_imm_homogeneous_data(
+        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
+    )
+    new._precompute_bulk_response(
+        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
+    )
+    return {
+        "dt": new.dt,
+        "Hk_op": new.Hk_op,
+        "v_plus_1": new.v_plus_1,
+        "v_minus_1": new.v_minus_1,
+        "q_z_1": new.q_z_1,
+        "M_inv": new.M_inv,
+        "h_bulk_response": new.h_bulk_response,
+        "H_bulk_inv": new.H_bulk_inv,
+    }
 
 
 # ── Solver functions ─────────────────────────────────────────────
@@ -1450,18 +1517,69 @@ def _curl_fn(
     # Batch D1_pos and D1_ghost into two GEMMs; the ghost GEMM
     # covers only its g nonzero rows near the axis.
     g = flow_.D1_ghost.shape[0]
-    fields = jnp.stack([utheta, uz])
-    dy_common = apply_y_matrix(flow_.D1_pos, fields)
-    dy_ghost = apply_y_matrix(flow_.D1_ghost, fields)
-    p_signs = jnp.stack([parity_sign_v, parity_sign_p])
-    dy_fields = dy_common.at[:, :g].add(p_signs * dy_ghost)
-    dy_utheta, dy_uz = dy_fields[0], dy_fields[1]
+    # Stack y-leading (N_r, 2, ...) so the batched D1 GEMM contracts the
+    # leading wall-normal axis transpose-free, then unstack to 3-d.
+    fields = jnp.stack([utheta, uz], axis=1)
+    dy_common = apply_y_matrix(flow_.D1_pos, fields, component_axis=1)
+    dy_ghost = apply_y_matrix(flow_.D1_ghost, fields, component_axis=1)
+    dy_utheta = dy_common[:, 0].at[:g].add(parity_sign_v * dy_ghost[:, 0])
+    dy_uz = dy_common[:, 1].at[:g].add(parity_sign_p * dy_ghost[:, 1])
 
     omega_r = im * inv_r * uz - ikz * utheta
     omega_theta = ikz * ur - dy_uz
     omega_z = dy_utheta + inv_r * utheta - im * inv_r * ur
 
     return jnp.array([omega_z, omega_r, omega_theta])
+
+
+def _l_bf(
+    state: Array,
+    fourier_: Fourier,
+    flow_: CylindricalFlow,
+) -> Array:
+    r"""Linear base-flow coupling (FFT-free), in `$(u_z, u_+, u_-)$`.
+
+    Mirrors :func:`_get_rhs_core`'s conversion to the `$(u_z, u_r,
+    u_\theta)$` triad, but evaluates only the two *linear* base-flow
+    cross-product terms (:func:`base_flow_coupling`) -- no Fourier
+    transform (the base flow is a radial profile, and
+    `$\boldsymbol{\omega}'$` is the spectral :func:`_curl_fn`).  The
+    pure self-advection `$\mathbf{u}' \times \boldsymbol{\omega}' =
+    \text{get\_rhs} - \text{\_l\_bf}$` stays explicit; this term (with
+    its stiff radial derivative on the wall-clustered grid) is made
+    implicit by the CN/AB2 scheme -- see ``step_cnab2`` in
+    :mod:`dnsjax.timestep`.
+
+    With ``params.step.implicit_mean_coupling`` (default on) the
+    *instantaneous mean-flow* coupling is folded in by adding the
+    `$m = k_z = 0$` mean profiles of the `$(u_z, u_r, u_\theta)$`
+    state and of `$\boldsymbol{\omega}'$` (the curl being linear and
+    mode-diagonal, the mean of the curl *is* the curl of the mean)
+    onto the base-flow profiles -- FFT-free
+    (``extract_mean_mode`` is a ``psum``); see the Cartesian
+    ``_l_bf`` and the ``TimeStepping`` docstring in
+    :mod:`dnsjax.parameters`.
+    """
+    u_z, u_plus, u_minus = state[0], state[1], state[2]
+    ur = (u_plus + u_minus) / 2
+    utheta = -1j * (u_plus - u_minus) / 2
+    state_rthz = jnp.array([u_z, ur, utheta])
+
+    omega = _curl_fn(state_rthz, fourier_, flow_)
+    base = flow_.base_flow
+    curl_base = flow_.curl_base_flow
+    if params.step.implicit_mean_coupling:
+        base = base + extract_mean_mode(state_rthz)[:, :, None, None]
+        curl_base = curl_base + extract_mean_mode(omega)[:, :, None, None]
+    l_z, l_r, l_theta = base_flow_coupling(state_rthz, omega, base, curl_base)
+    l_bf = jnp.array([l_z, l_r + 1j * l_theta, l_r - 1j * l_theta])
+    # Moving frame: the convective frame term (the same expression
+    # ``_get_rhs_core`` adds, diagonal in the native basis) belongs
+    # to the linear coupling, so CN/AB2 integrates it implicitly.
+    u_grid = derived_params.u_grid
+    if u_grid == 0:
+        return l_bf
+    return l_bf + (1j * u_grid) * fourier_.kz * state
 
 
 # Per-direction CFL column names, matching the physical-space
@@ -1480,11 +1598,7 @@ def _get_rhs_core(
     1. Convert `$(u_z, u_+, u_-) \to (u_z, u_r, u_\theta)$`.
     2. Compute the rotational-form nonlinear term via
        :func:`~dnsjax.rhs.get_nonlin` with the cylindrical
-       curl (and the optional physical-space *measure_fn*),
-       advecting with ``base_flow_adv_padded`` -- the
-       moving-frame base velocity
-       `$\mathbf{U} - U_{grid}\hat{\mathbf{z}}$` (see
-       :func:`pad_base_flow`).
+       curl (and the optional physical-space *measure_fn*).
     3. Convert `$(NL_z, NL_r, NL_\theta)
        \to (NL_z, NL_+, NL_-)$`.
     """
@@ -1496,7 +1610,7 @@ def _get_rhs_core(
 
     nonlin_rthz = get_nonlin(
         state_rthz,
-        flow_.base_flow_adv_padded,
+        flow_.base_flow_padded,
         flow_.curl_base_flow_padded,
         spec_to_phys_2d,
         phys_to_spec_2d,
@@ -1515,6 +1629,14 @@ def _get_rhs_core(
     NL_minus = NL_r - 1j * NL_theta
 
     rhs = jnp.array([NL_z, NL_plus, NL_minus])
+    # Moving frame: convective-form frame term
+    # `$+ i k_z U_{grid} \mathbf{u}'$` -- the axial derivative is
+    # component-diagonal in the `$(u_z, u_+, u_-)$` basis, so it is
+    # added on the native state (mode-diagonal, divergence-free; see
+    # ``pad_base_flow``).
+    u_grid = derived_params.u_grid
+    if u_grid != 0:
+        rhs = rhs + (1j * u_grid) * fourier_.kz * state
     if measure_fn is None:
         return rhs
     return rhs, measurements
@@ -1542,6 +1664,7 @@ def _get_rhs_measured(
             flow_.base_flow_adv_padded,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
+            flow_.dt,
         )
 
     return _get_rhs_core(state, fourier_, flow_, _measure)
@@ -1679,7 +1802,7 @@ def _imm_iteration(
        mean-mode perturbation bulk `$u_z$`.
     """
     c = params.step.implicitness
-    dt = params.step.dt
+    dt = flow_.dt
     nu = 1.0 / params.phys.re
 
     uz_n, up_n, um_n = velocity_n[0], velocity_n[1], velocity_n[2]
@@ -1702,27 +1825,29 @@ def _imm_iteration(
     # one GEMM each for D1_pos and D1_ghost (2 instead of 4);
     # the ghost GEMM covers only its g nonzero rows.
     g = flow_.D1_ghost.shape[0]
-    all_vparity = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n])
-    dy_common = apply_y_matrix(flow_.D1_pos, all_vparity)
-    dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity)
-    dy_all = dy_common.at[:, :g].add(parity_sign_v * dy_ghost)
+    # Stack y-leading (N_r, 6, ...) so the batched D1 GEMM contracts the
+    # leading wall-normal axis transpose-free; the component axis is 1.
+    all_vparity = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1)
+    dy_common = apply_y_matrix(flow_.D1_pos, all_vparity, component_axis=1)
+    dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity, component_axis=1)
+    dy_all = dy_common.at[:g].add(parity_sign_v * dy_ghost)
 
     # Cylindrical divergence at time n.
     div_n = (
-        (dy_all[0] + (m + 1) * inv_r * up_n) / 2
-        + (dy_all[1] + (1 - m) * inv_r * um_n) / 2
+        (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
+        + (dy_all[:, 1] + (1 - m) * inv_r * um_n) / 2
         + ikz * uz_n
     )
 
     # Divergence of nonlinear terms at times n and j.
     div_NLj = (
-        (dy_all[2] + (m + 1) * inv_r * NLp_j) / 2
-        + (dy_all[4] + (1 - m) * inv_r * NLm_j) / 2
+        (dy_all[:, 2] + (m + 1) * inv_r * NLp_j) / 2
+        + (dy_all[:, 4] + (1 - m) * inv_r * NLm_j) / 2
         + ikz * NLz_j
     )
     div_NLn = (
-        (dy_all[3] + (m + 1) * inv_r * NLp_n) / 2
-        + (dy_all[5] + (1 - m) * inv_r * NLm_n) / 2
+        (dy_all[:, 3] + (m + 1) * inv_r * NLp_n) / 2
+        + (dy_all[:, 5] + (1 - m) * inv_r * NLm_n) / 2
         + ikz * NLz_n
     )
 
@@ -1732,64 +1857,75 @@ def _imm_iteration(
 
     # Stage 2: particular pressure.
     f_hat_P = f_hat.at[-1].set(0.0)
-    pP = flow_.Lk_op.solve(f_hat_P.transpose(1, 2, 0)).transpose(2, 0, 1)
+    pP = flow_.Lk_op.solve(f_hat_P)
 
-    # Stage 3: Helmholtz solves for each component.
-    # Batch the D1 derivatives of pP and vel_n into shared
-    # GEMMs (2 D1 GEMMs instead of 4 separate ones).
-    vel_n_stack = jnp.stack([up_n, um_n, uz_n])
-    pP_and_vel = jnp.concatenate([pP[None], vel_n_stack])
-    D1_batch = apply_y_matrix(flow_.D1_pos, pP_and_vel)
-    D1g_batch = apply_y_matrix(flow_.D1_ghost, pP_and_vel)
+    # Stage 3: Helmholtz solves for each component.  The Hk construction
+    # is built **y-leading** ``(N_r, C, ...)`` so the batched D1/D2 GEMMs
+    # contract the leading wall-normal axis transpose-free (component axis
+    # 1); the solve takes that layout directly (``component_axis=1``) and
+    # we unstack.  ``inv_r``/``inv_r2`` get a trailing axis to broadcast
+    # over the C axis; ``kz2``/``mean_mask`` are trailing-mode broadcasts
+    # (layout-invariant).
+    inv_r_y = inv_r[..., None]  # (N_r, 1, 1, 1) over the C axis
+    vel_n_stack = jnp.stack([up_n, um_n, uz_n], axis=1)  # (N_r, 3, ...)
+    pP_and_vel = jnp.concatenate([pP[:, None], vel_n_stack], axis=1)
+    D1_batch = apply_y_matrix(flow_.D1_pos, pP_and_vel, component_axis=1)
+    D1g_batch = apply_y_matrix(flow_.D1_ghost, pP_and_vel, component_axis=1)
 
     # pP pressure gradient (parity (-1)^m -> parity_sign_p).
-    D1_pP = D1_batch[0].at[:g].add(parity_sign_p * D1g_batch[0])
+    D1_pP = D1_batch[:, 0].at[:g].add(parity_sign_p * D1g_batch[:, 0])
     m_over_r = m * inv_r  # (1, Nm, 1) * (Nr, 1, 1) → (Nr, Nm, 1)
 
     grad_pP_plus = D1_pP - m_over_r * pP
     grad_pP_minus = D1_pP + m_over_r * pP
     grad_pP_z = ikz * pP
 
-    # Batched `$H_k^-$` matvec for all three components.
-    D1_vel = D1_batch[1:]
-    D1g_vel = D1g_batch[1:]
-    D2_all = apply_y_matrix(flow_.D2_pos, vel_n_stack)
-    D2g_all = apply_y_matrix(flow_.D2_ghost, vel_n_stack)
-    common_hk = D2_all + inv_r * D1_vel
-    ghost_hk = D2g_all + inv_r[:g] * D1g_vel
-    parity_hk = jnp.stack([parity_sign_v, parity_sign_v, parity_sign_p])
-    Abase_stack = common_hk.at[:, :g].add(parity_hk * ghost_hk)
-    meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq])
-    inv_r2 = flow_.inv_r2[:, None, None]
+    # Batched `$H_k^-$` matvec for all three components (y-leading).
+    D1_vel = D1_batch[:, 1:]
+    D1g_vel = D1g_batch[:, 1:]
+    D2_all = apply_y_matrix(flow_.D2_pos, vel_n_stack, component_axis=1)
+    D2g_all = apply_y_matrix(flow_.D2_ghost, vel_n_stack, component_axis=1)
+    common_hk = D2_all + inv_r_y * D1_vel
+    ghost_hk = D2g_all + inv_r_y[:g] * D1g_vel
+    parity_hk = jnp.stack(
+        [parity_sign_v, parity_sign_v, parity_sign_p], axis=1
+    )
+    Abase_stack = common_hk.at[:g].add(parity_hk * ghost_hk)
+    meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq], axis=1)
+    inv_r2 = flow_.inv_r2[:, None, None, None]  # (N_r, 1, 1, 1)
     lapl_stack = (
         Abase_stack - (meff2_stack * inv_r2 + fourier_.kz2) * vel_n_stack
     )
     Hk_minus_stack = (1.0 / dt) * vel_n_stack + (1.0 - c) * nu * lapl_stack
-    Hk_minus_stack = Hk_minus_stack.at[:, -1].set(vel_n_stack[:, -1])
+    Hk_minus_stack = Hk_minus_stack.at[-1].set(vel_n_stack[-1])
 
     R_stack = (
         Hk_minus_stack
-        - jnp.stack([grad_pP_plus, grad_pP_minus, grad_pP_z])
-        + c * jnp.stack([NLp_j, NLm_j, NLz_j])
-        + (1 - c) * jnp.stack([NLp_n, NLm_n, NLz_n])
+        - jnp.stack([grad_pP_plus, grad_pP_minus, grad_pP_z], axis=1)
+        + c * jnp.stack([NLp_j, NLm_j, NLz_j], axis=1)
+        + (1 - c) * jnp.stack([NLp_n, NLm_n, NLz_n], axis=1)
     )
 
     # Zero wall BC (Dirichlet no-slip).
-    R_stack = R_stack.at[:, -1].set(0.0)
+    R_stack = R_stack.at[-1].set(0.0)
 
     # Zero the u_r part of the +/- RHS at the mean mode so
     # the Helmholtz solves produce u_r = 0 there.  At m=0,
     # Hk_plus and Hk_minus are identical (m_eff^2 = 1, same
     # parity), so the antisymmetric RHS gives up = -um.
-    Rr_corr = jnp.where(fourier_.mean_mask, (R_stack[0] + R_stack[1]) / 2, 0.0)
-    R_stack = R_stack.at[0].add(-Rr_corr)
-    R_stack = R_stack.at[1].add(-Rr_corr)
-
-    # Batched Helmholtz solve: component order (plus, minus, z).
-    arb_stack = flow_.Hk_op.solve(R_stack.transpose(0, 2, 3, 1)).transpose(
-        0, 3, 1, 2
+    Rr_corr = jnp.where(
+        fourier_.mean_mask, (R_stack[:, 0] + R_stack[:, 1]) / 2, 0.0
     )
-    up_arb, um_arb, uz_arb = arb_stack[0], arb_stack[1], arb_stack[2]
+    R_stack = R_stack.at[:, 0].add(-Rr_corr)
+    R_stack = R_stack.at[:, 1].add(-Rr_corr)
+
+    # Batched Helmholtz solve (y-leading, component axis 1).
+    arb_stack = flow_.Hk_op.solve(R_stack, component_axis=1)
+    up_arb, um_arb, uz_arb = (
+        arb_stack[:, 0],
+        arb_stack[:, 1],
+        arb_stack[:, 2],
+    )
 
     # Stage 4: wall divergence residual.
     D1_wall_row = flow_.D1_wall.ravel()
@@ -1902,14 +2038,32 @@ def build_cylindrical_stepper(
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
+    Callable[[float], None],
+    Callable[[], None],
 ]:
     """Build time-stepping functions for a cylindrical flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
-    predict_and_fully_correct_measured)`` with the
-    ``fourier`` and *flow* singletons already bound.
+    predict_and_fully_correct_measured, step_cnab2,
+    step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
+    ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the
+    FFT-free base-flow coupling) is passed so the CN/AB2 scheme
+    treats it implicitly; ``_build_dt_leaves`` backs the adaptive-dt
+    ``set_dt`` rebuild.
     """
     return build_wall_bounded_stepper(
-        _get_rhs, _predict, _correct, _norm, fourier, flow, _get_rhs_measured
+        _get_rhs,
+        _predict,
+        _correct,
+        _norm,
+        fourier,
+        flow,
+        _get_rhs_measured,
+        _l_bf,
+        dt_leaves_fn=_build_dt_leaves,
     )

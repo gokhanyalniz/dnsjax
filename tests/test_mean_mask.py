@@ -23,8 +23,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
+
+from _live import run_live
+
+sys.stdout.reconfigure(line_buffering=True)
 
 NY = 9
 
@@ -126,8 +129,14 @@ def _worker(system: str, nx: int, nz: int, np0: int, np1: int) -> None:
 
 
 def main() -> None:
+    print(
+        "mean-mask padding tests: offline, forced CPU devices per case "
+        "(multiple devices via --xla_force_host_platform_device_count; "
+        "device-agnostic, no GPU path).",
+        flush=True,
+    )
     for label, system, nx, nz, np0, np1 in CASES:
-        proc = subprocess.run(
+        proc = run_live(
             [
                 sys.executable,
                 os.path.abspath(__file__),
@@ -142,13 +151,9 @@ def main() -> None:
                 str(np0),
                 "--np1",
                 str(np1),
-            ],
-            capture_output=True,
-            text=True,
+            ]
         )
         if proc.returncode != 0 or "worker-ok" not in proc.stdout:
-            print(proc.stdout)
-            print(proc.stderr, file=sys.stderr)
             raise SystemExit(f"FAIL  mean_mask {label}")
         print(f"  PASS  mean_mask {label}")
     print(f"\nAll {len(CASES)} mean-mask cases passed.")

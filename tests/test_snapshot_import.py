@@ -1,26 +1,32 @@
 #!/usr/bin/env python3
-r"""Tests for ``scripts/snapshot_import.py`` (external-field converter).
+r"""Tests for ``scripts/snapshot_import.py`` (native-field converter).
 
 Each flow family is exercised in its own subprocess (the geometry
-``fourier`` singleton is built once at import, as in
-``scripts/random_field.py``).  Run directly::
+``fourier`` singleton is built once at import, one system per
+process).  Run directly::
 
     uv run python tests/test_snapshot_import.py            # all families
     uv run python tests/test_snapshot_import.py --system pipe   # one
 
-Per system the checks are:
+The converter takes input already in dnsjax's **native** component/axis
+order (shape ``(3, ny, nz, nx)``; pipe/TC components ``(u_z, u_+, u_-)``
+over ``(r, theta, z_ax)``), so the checks pin the *native* contract:
 
-- **single-mode placement**: a pure cosine along one input axis lands in
-  exactly the expected dnsjax spectral slot with the ``norm="forward"``
-  amplitude 1/2 -- pins the component basis, the axis mapping (including
-  the Taylor-Couette axial/azimuthal swap), and the normalisation.
+- **single-mode placement**: a pure cosine along one native input axis
+  lands in exactly the expected dnsjax spectral slot with the
+  ``norm="forward"`` amplitude 1/2 -- pins the native component basis,
+  the axis mapping, and the normalisation.
+- **no swap / no mixing** (pipe / TC): ``u_z`` -> ``state[0]``, ``u_+``
+  -> ``state[1]``, ``u_-`` -> ``state[2]`` independently (pipe and TC are
+  now identical; the converter neither swaps axes nor mixes ``u_pm``).
 - **mode order**: the converter's truncated `$k_x$` / `$k_z$` / `$m$`
   axes reproduce the geometry ``fourier`` singleton's wavenumbers.
-- **`$u_\pm$` mixing** (pipe / TC): `$u_r = 0 \Rightarrow u_+ = -u_-$`.
-- **spectral-input round-trip**: a numpy ``rfft``/``fft`` of the field
-  (either real axis, several ``input_norm``) converts to the same state.
-- **loadability**: ``save`` then ``load_snapshot`` round-trips the state
-  and records the wall-normal grid.
+- **spectral-input round-trip**: a numpy ``fft`` of the native field
+  (real axis always axis 3; several ``input_norm``) converts to the same
+  state as the physical path.
+- **loadability**: ``convert_field_to_snapshot`` (the documented
+  one-shot configure + pack + write entry point) then ``load_snapshot``
+  round-trips the state and records the wall-normal grid.
 """
 
 from __future__ import annotations
@@ -32,10 +38,12 @@ from pathlib import Path
 
 import numpy as np
 
+sys.stdout.reconfigure(line_buffering=True)
+
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(_SCRIPTS))
 
-# Small, distinct resolutions so axis swaps cannot hide.
+# Small, distinct resolutions so axis mix-ups cannot hide.
 NX, NY, NZ = 8, 9, 12  # ny is grid points (wall-bounded); periodic uses 10
 
 # system -> (family, extra configure kwargs)
@@ -73,21 +81,15 @@ def _wall_normal_grid(family: str, ny: int) -> np.ndarray | None:
     return np.linspace(1.0, 2.0, ny)  # annular [r1, r2] for eta = 0.5
 
 
-def _input_sizes(family: str) -> tuple[int, int, int]:
-    ny = 10 if family == "periodic" else NY
-    if family == "annular":
-        return (NZ, ny, NX)  # streamwise=theta(nz), wn=r(ny), spanwise=ax(nx)
-    return (NX, ny, NZ)
-
-
-def _make_input_spectral(p0, periodic, real_axis, input_norm):
-    """numpy spectral input (rfft along ``real_axis``, fft elsewhere)."""
-    fourier_axes = {1, 2, 3} if periodic else {1, 3}
-    real_ax = 1 if real_axis == "streamwise" else 3
-    out = np.fft.rfft(p0, axis=real_ax, norm=input_norm)
-    for ax in sorted(fourier_axes - {real_ax}):
-        out = np.fft.fft(out, axis=ax, norm=input_norm)
-    return out
+def _make_input_spectral(p0, periodic, input_norm):
+    """numpy native spectral input: full ``fft`` along every Fourier axis
+    (real axis is always axis 3), truncated to ``nx // 2`` on the real
+    axis (the rest is implied by Hermitian / joint symmetry)."""
+    out = np.fft.fft(p0, axis=3, norm=input_norm)  # real axis (nx)
+    out = np.fft.fft(out, axis=2, norm=input_norm)  # complex axis (nz)
+    if periodic:
+        out = np.fft.fft(out, axis=1, norm=input_norm)  # k_y axis (ny)
+    return out[..., : p0.shape[3] // 2]
 
 
 # ── per-system test body ─────────────────────────────────────────
@@ -126,7 +128,8 @@ def _run_one(system: str) -> int:
             failed += 1
             print(f"  FAIL: {name}  {detail}")
 
-    sizes = _input_sizes(family)
+    # Native physical layout is (3, ny, nz, nx) for every family.
+    sizes = (ny, NZ, NX)
 
     def _single_mode_field(comp: int, axis: int, q: int) -> np.ndarray:
         p = np.zeros((3, *sizes))
@@ -140,21 +143,21 @@ def _run_one(system: str) -> int:
 
     # ── single-mode placement (per family) ──────────────────────
     if family in ("cartesian", "periodic"):
-        # The wall-normal axis is untransformed (Cartesian) or the ky
-        # axis (periodic): a field constant in y spans all y rows there
-        # but lives only at ky=0 here.
+        # Native axes (axis1, axis2, axis3) = (y, z, x): streamwise x is
+        # the real axis (3), spanwise z the complex axis (2), wall-normal
+        # y is untransformed (Cartesian) or the k_y axis (periodic).
         ysl = slice(None) if family == "cartesian" else _ch_index(ny, 0)
 
-        # u_x along streamwise x (real axis) at mode qx -> kz=0, kx=qx, 0.5
+        # u_x along streamwise x (real axis 3) at mode qx -> kz=0, kx=qx
         qx = 2
-        s = si.to_spectral_state(_single_mode_field(0, 1, qx))
+        s = si.to_spectral_state(_single_mode_field(0, 3, qx))
         exp = jnp.zeros_like(s).at[0, ysl, 0, qx].set(0.5)
         e = _amax(s - exp)
         check("u_x x-mode placement", e < 1e-10, f"{e:.1e}")
 
-        # u_x along spanwise z (full axis) at mode qz -> +/-qz in kz
+        # u_x along spanwise z (complex axis 2) at mode qz -> +/-qz in kz
         qz = 3
-        s = si.to_spectral_state(_single_mode_field(0, 3, qz))
+        s = si.to_spectral_state(_single_mode_field(0, 2, qz))
         exp = (
             jnp.zeros_like(s)
             .at[0, ysl, _ch_index(NZ, qz), 0]
@@ -166,9 +169,9 @@ def _run_one(system: str) -> int:
         check("u_x z-mode placement", e < 1e-10, f"{e:.1e}")
 
         if family == "periodic":
-            # u_x along shearwise y (full axis) at mode qy -> +/-qy in ky
+            # u_x along shearwise y (k_y axis 1) at mode qy -> +/-qy in ky
             qy = 2
-            s = si.to_spectral_state(_single_mode_field(0, 2, qy))
+            s = si.to_spectral_state(_single_mode_field(0, 1, qy))
             exp = (
                 jnp.zeros_like(s)
                 .at[0, _ch_index(ny, qy), 0, 0]
@@ -179,32 +182,42 @@ def _run_one(system: str) -> int:
             e = _amax(s - exp)
             check("u_x y-mode placement", e < 1e-10, f"{e:.1e}")
 
-    else:  # pipe / annular: (u_z, u_+, u_-) over (r, m, k_z)
-        # u_z along the AXIAL direction (dnsjax real axis k_z) -> [0,:,0,k0]
-        if family == "pipe":
-            uz_comp, ax_axis, th_comp, th_axis = 0, 1, 2, 3
-        else:  # annular / TC: input (u_theta, u_r, u_z); axial is axis 3
-            uz_comp, ax_axis, th_comp, th_axis = 2, 3, 0, 1
+    else:  # pipe / annular: native (u_z, u_+, u_-) over (r, theta, z_ax)
+        # Identical for pipe and TC: u_z is component 0 along the axial
+        # real axis (3); u_+/u_- are components 1/2 along the azimuthal
+        # complex axis (2).  No swap, no u_pm mixing.
         k0 = 2
-        s = si.to_spectral_state(_single_mode_field(uz_comp, ax_axis, k0))
+        s = si.to_spectral_state(_single_mode_field(0, 3, k0))
         exp = jnp.zeros_like(s).at[0, :, 0, k0].set(0.5)
         e = _amax(s - exp)
         check("u_z axial-mode placement", e < 1e-10, f"{e:.1e}")
 
-        # u_theta along the AZIMUTHAL direction (m), u_r = 0 -> u_+ = i
-        # u_theta, u_- = -i u_theta: state[1] = -state[2], |u_+| = 0.5.
         m0 = 3
-        s = si.to_spectral_state(_single_mode_field(th_comp, th_axis, m0))
+        # u_+ (component 1) along azimuthal m -> state[1]; others zero.
+        s = si.to_spectral_state(_single_mode_field(1, 2, m0))
         exp_up = (
             jnp.zeros_like(s[1])
             .at[:, _ch_index(NZ, m0), 0]
-            .set(0.5j)
+            .set(0.5)
             .at[:, _ch_index(NZ, -m0), 0]
-            .set(0.5j)
+            .set(0.5)
         )
         e = _amax(s[1] - exp_up)
-        ok = e < 1e-10 and _amax(s[2] + s[1]) < 1e-12 and _amax(s[0]) < 1e-12
-        check("u_theta azimuthal-mode + u_pm mixing", ok, f"{e:.1e}")
+        ok = e < 1e-10 and _amax(s[0]) < 1e-12 and _amax(s[2]) < 1e-12
+        check("u_+ azimuthal placement (no mixing)", ok, f"{e:.1e}")
+
+        # u_- (component 2) along azimuthal m -> state[2]; others zero.
+        s = si.to_spectral_state(_single_mode_field(2, 2, m0))
+        exp_um = (
+            jnp.zeros_like(s[2])
+            .at[:, _ch_index(NZ, m0), 0]
+            .set(0.5)
+            .at[:, _ch_index(NZ, -m0), 0]
+            .set(0.5)
+        )
+        e = _amax(s[2] - exp_um)
+        ok = e < 1e-10 and _amax(s[0]) < 1e-12 and _amax(s[1]) < 1e-12
+        check("u_- azimuthal placement (no mixing)", ok, f"{e:.1e}")
 
     # ── mode order vs the fourier singleton ─────────────────────
     fourier = _import_fourier(family)
@@ -225,27 +238,44 @@ def _run_one(system: str) -> int:
     # ── spectral-input round-trip ───────────────────────────────
     rng = np.random.default_rng(0)
     p0 = rng.standard_normal((3, *sizes))
+    if family in ("pipe", "annular"):
+        # u_pm are complex: exercise the full-fft (non-Hermitian) path.
+        p0 = p0 + 1j * rng.standard_normal((3, *sizes))
     s_phys = si.to_spectral_state(p0, space="physical")
     periodic = family == "periodic"
     max_err = 0.0
-    for real_axis in ("streamwise", "spanwise"):
-        for input_norm in ("backward", "forward", "ortho"):
-            spec = _make_input_spectral(p0, periodic, real_axis, input_norm)
-            s_spec = si.to_spectral_state(
-                spec,
-                space="spectral",
-                real_axis=real_axis,
-                input_norm=input_norm,
-            )
-            max_err = max(max_err, _amax(s_spec - s_phys))
+    for input_norm in ("backward", "forward", "ortho"):
+        spec = _make_input_spectral(p0, periodic, input_norm)
+        s_spec = si.to_spectral_state(
+            spec, space="spectral", input_norm=input_norm
+        )
+        max_err = max(max_err, _amax(s_spec - s_phys))
     check("spectral-input round-trip", max_err < 1e-9, f"err {max_err:.1e}")
 
-    # ── loadability ─────────────────────────────────────────────
+    # ── loadability (via the one-shot entry point) ──────────────
     from dnsjax.snapshot import load_snapshot, read_metadata
 
     with tempfile.TemporaryDirectory() as tmp:
-        out = str(Path(tmp) / "snap")
-        si.write_snapshot(s_phys, out, t=1.5, it=7)
+        out = str(Path(tmp) / "snap.tar")
+        # The documented one-call API (configure + pack + write); the
+        # target was configured identically above, so the re-configure
+        # is idempotent and the packed state must equal s_phys.
+        si.convert_field_to_snapshot(
+            p0,
+            out,
+            system=system,
+            nx=NX,
+            ny=ny,
+            nz=NZ,
+            space="physical",
+            t=1.5,
+            it=7,
+            lx=4.0,
+            lz=4.0,
+            wall_normal_grid=_wall_normal_grid(family, ny),
+            re=200.0,
+            **extra,
+        )
         state2, t2, it2 = load_snapshot(out)
         meta = read_metadata(Path(out))
         e = _amax(state2 - s_phys)
@@ -262,7 +292,7 @@ def _run_one(system: str) -> int:
             and meta["system"] == system
             and grid_ok
         )
-        check("snapshot save/load round-trip", ok, f"{e:.1e}")
+        check("one-shot convert + save/load round-trip", ok, f"{e:.1e}")
 
     print(f"\n[{system}] {passed} passed, {failed} failed.")
     return 1 if failed else 0
@@ -288,6 +318,12 @@ def main() -> None:
         system = sys.argv[sys.argv.index("--system") + 1]
         sys.exit(_run_one(system))
 
+    print(
+        "snapshot_import native-contract tests: offline, "
+        "device-independent (native layout/normalisation checks; no "
+        "GPU path).",
+        flush=True,
+    )
     failures = 0
     for system in SYSTEMS:
         print(f"=== {system} ===")

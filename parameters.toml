@@ -1,41 +1,45 @@
+# Example configuration: a 100-diameter pipe at Re = 2300, started from
+# a localized-roll perturbation ("puff").  Equivalent to the CLI command
+# in the README.  Command-line flags override any value set here.  Only
+# parameters of the selected flow are accepted: `dnsjax --help pipe`
+# lists them, and `dnsjax --sample-toml pipe` prints an annotated
+# template with every parameter and its default.
+
 [phys]
-re = 1000 # Reynolds number
-system = "kolmogorov"
-# "none" or "kolmogorov" (sine), "waleffe" (cosine + Ry symmetry)
+system = "pipe"
+re = 2300     # bulk/diameter Reynolds number (= centerline/radius; D = 2)
 
 [geo]
-lx = 4.0
-lz = 4.0
-# ... in units where Ly = 4.0 is fixed.
+# Axial length = 100 pipe diameters.  (The azimuthal extent is not a
+# free length: it is the wedge 2*pi/m0.)
+lz = 200.0
+# grid_type defaults to "half-cgl" for pipe + iterative-cn
+# ("rigged-cgl" under cnab2).
 
 [res]
-nx = 128
-ny = 128
-nz = 128
-# Nx Ny and Nz are the number of Fourier modes
-# (= # of grid points) *before* 3/2 oversampling
-# to delias the 2nd order nonlinearity
+nz = 512      # axial Fourier modes
+nr = 48       # radial finite-difference points
+ntheta = 96   # azimuthal Fourier modes
+fd_order = 8  # radial finite-difference accuracy order
 
 [init]
-start_from_laminar = true
-# snapshot = "u0.npz"
-t0 = 0 # Initial time
-it0 = 0 # Initial discrete time
-
-[outs]
-# it_stats = 1000 # How often to compute stats (in number of time steps)
-# it_steps = 1000 # How often to record the CFL diagnostic (steps.dat)
-# nbuffer = 100         # Flush stats.dat / steps.dat every nbuffer lines
-# stats_precision = 9   # Significant digits (9 = float32, 17 = float64 lossless)
-# snapshot_write_mode = "concurrent"  # "concurrent" (all processes at once) or
-#                                     # "serial" (rank-ordered, safe on NFS)
+# Start-mode precedence: snapshot > start_from_laminar >
+# localized_rolls > random_field (the default).  Here we seed a
+# finite-amplitude puff.
+localized_rolls = true
+localized_rolls_amplitude = 0.2   # peak |u'| of the puff
+localized_rolls_width = 2.0       # axial localization half-width
 
 [step]
 dt = 0.01
-implicitness = 0.5
-corrector_tolerance = 1e-5
-max_corrector_iterations = 10
+scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
+
+[outs]
+it_stats = 100      # steps between stats.dat records
+it_snapshot = 5000  # steps between snapshots
 
 [stop]
-# max_sim_time = 100.0
-# max_wall_time = "PT10M" # ISO 8601 format
+max_sim_time = 500.0
+# Transition develops over O(100) advective units; raise for a longer
+# run.  check_laminarization = true (default) stops the run if the
+# puff relaminarizes.

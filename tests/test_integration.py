@@ -1,4 +1,4 @@
-"""Unit tests for quadrature weights.
+"""Unit tests for quadrature weights and interpolation matrices.
 
 Tests cover:
 
@@ -7,17 +7,35 @@ Tests cover:
 2. Composite polynomial weights on arbitrary non-uniform grids
    (``build_integration_weights``): weight sum, polynomial exactness,
    convergence rate.
+3. The parity-free axis-augmented radial quadrature (the cylindrical
+   solver rule): positivity and even+odd exactness.
+4. Interpolation matrices: Chebyshev, the ``cgl_axis_gap`` detector,
+   the spectral ``cgl_parity_interpolation_matrices`` (half / rigged /
+   mixed, both parities), and the local Fornberg fallback (bounded
+   Lebesgue vs a global fit's blow-up).
 
 Run as a script via ``uv run python tests/test_integration.py``.
 """
 
 from __future__ import annotations
 
-import jax
+import sys
 
-jax.config.update("jax_enable_x64", True)
+sys.stdout.reconfigure(line_buffering=True)
 
-from dnsjax.parameters import params  # noqa: E402
+# Select the JAX backend from --dist.platform (default cpu) before
+# importing any dnsjax module that captures the platform (the geometry
+# import below builds sharding).  This suite is quadrature / interpolation
+# math -- device-agnostic -- but honours --dist.platform for consistency.
+from dnsjax.bootstrap import (  # noqa: E402
+    configure_jax_platform,
+    platform_from_argv,
+)
+from dnsjax.parameters import (  # noqa: E402
+    params,
+)
+
+configure_jax_platform(platform_from_argv())
 
 params.phys.system = "plane-couette"
 params.res.nx = 4
@@ -30,17 +48,17 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.fd import (  # noqa: E402
-    barycentric_interpolation_matrix,
     build_integration_weights,
+    cgl_axis_gap,
+    cgl_parity_interpolation_matrices,
+    cgl_radial_quadrature_weights,
     chebyshev_interpolation_matrix,
-    half_cgl_interpolation_matrices,
+    clenshaw_curtis_weights,
     local_grid_spacing,
+    local_interpolation_matrix,
     tanh_one_sided_grid,
 )
 from dnsjax.geometries.wall_bounded import integrate_scalar  # noqa: E402
-from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
-    clenshaw_curtis_weights,
-)
 
 
 def _cgl_grid(ny: int) -> jnp.ndarray:
@@ -199,9 +217,11 @@ def test_composite_convergence_rate():
 
 
 def _radial_weights(rs: np.ndarray, p: int) -> np.ndarray:
-    """Radial weights as built by ``build_cylindrical_grid``:
-    composite rule over the full disc (``left_edge=0.0``)
-    times the radial Jacobian."""
+    """Exercise ``build_integration_weights``'s ``left_edge`` option:
+    the composite rule over the full disc (``left_edge=0.0``) times
+    the radial Jacobian.  (The cylindrical solver no longer uses this
+    -- it uses the spectral parity CC / axis-augmented rule -- but
+    ``left_edge`` remains a supported feature.)"""
     return build_integration_weights(rs, p, left_edge=0.0) * rs
 
 
@@ -348,73 +368,213 @@ def _half_cgl_grid(nr):
     return -s[nr:]
 
 
-def test_half_cgl_interp_even_parity():
-    """Even-parity fields must survive half-CGL interpolation."""
-    nr_old, nr_new = 16, 24
-    T_even, _ = half_cgl_interpolation_matrices(nr_old, nr_new)
-    r_old = _half_cgl_grid(nr_old)
-    r_new = _half_cgl_grid(nr_new)
-    # Even-parity test: f(r) = r^2 (even function of r)
-    for d in [0, 2, 4]:
-        f_old = r_old**d
-        f_new = T_even @ f_old
-        assert_allclose(
-            f_new,
-            r_new**d,
-            atol=1e-10,
-            err_msg=f"even degree={d}",
+def _radial_cgl_grid(nr, gap):
+    """Cylindrical radial grid: outer ``nr`` positive points of a
+    ``2*nr + gap``-point CGL grid (gap 0 = half-CGL, 1 = rigged-CGL)."""
+    n_full = 2 * nr + gap
+    s = -np.cos(np.arange(n_full) * np.pi / (n_full - 1))
+    return s[nr + gap :]
+
+
+def _augmented_radial_weights(rs, p):
+    """The solver's parity-free full-disc rule: integrate g = f*r on
+    the axis-augmented grid [0, *rs], then drop the axis node."""
+    r_aug = np.concatenate([[0.0], rs])
+    return build_integration_weights(r_aug, p)[1:] * rs
+
+
+def test_augmented_axis_quadrature():
+    """Parity-free axis-augmented radial quadrature (the solver rule):
+    strictly positive AND exact for even *and odd* monomials up to the
+    interior order.  The retired even-parity gap rule erred O(r0^3) on
+    odd integrands (e.g. the mean u_theta); the augmented rule uses the
+    axis node g(0)=0, which holds for any bounded f -- no parity."""
+    p = 4
+    for gap in (0, 1):
+        for nr in (8, 16, 32):
+            rs = _radial_cgl_grid(nr, gap)
+            yw = _augmented_radial_weights(rs, p)
+            assert np.all(yw > 0), f"gap={gap} nr={nr}: negative weight"
+            # int_0^1 r^d * r dr = 1/(d+2), exact for d+1 <= p, both
+            # parities (odd d included -- the regression guard).
+            for d in (0, 1, 2, 3):
+                assert_allclose(
+                    float(yw @ rs**d),
+                    1.0 / (d + 2),
+                    atol=1e-12,
+                    err_msg=f"gap={gap} nr={nr} d={d}",
+                )
+
+
+def test_cgl_radial_quadrature_weights():
+    """Parity-specific spectral radial quadrature (the pipe's CC):
+    (w_even, w_odd) are both strictly positive (definite energy norm)
+    and each is spectral for its parity -- exact for the polynomial
+    moments int r^d * r dr = 1/(d+2) (even d via w_even, odd d via
+    w_odd) and machine precision on a smooth integrand.  None for a
+    non-CGL grid (caller falls back to the composite rule)."""
+    fine = np.linspace(0.0, 1.0, 2_000_001)
+    ref_even = float(np.trapezoid(np.cos(2.0 * fine) * fine, fine))
+    ref_odd = float(np.trapezoid(fine * np.cos(2.0 * fine) * fine, fine))
+    for gap in (0, 1):
+        for nr in (8, 16, 48):
+            rs = _radial_cgl_grid(nr, gap)
+            w_even, w_odd = cgl_radial_quadrature_weights(rs, 4)
+            assert np.all(w_even > 0), f"gap={gap} nr={nr}: w_even<0"
+            assert np.all(w_odd > 0), f"gap={gap} nr={nr}: w_odd<0"
+            for d in (0, 2):  # even moments via w_even
+                assert_allclose(
+                    float(w_even @ rs**d), 1.0 / (d + 2), atol=1e-12
+                )
+            for d in (1, 3):  # odd moments via w_odd
+                assert_allclose(
+                    float(w_odd @ rs**d), 1.0 / (d + 2), atol=1e-12
+                )
+            # Spectral on smooth integrands (once resolved: nr=8 is too
+            # coarse for cos(2r), but the polynomial moments are exact
+            # at every nr).
+            if nr >= 16:
+                assert abs(w_even @ np.cos(2.0 * rs) - ref_even) < 1e-10
+                assert abs(w_odd @ (rs * np.cos(2.0 * rs)) - ref_odd) < 1e-10
+    # Non-CGL grid -> None (caller uses the composite fallback).
+    assert cgl_radial_quadrature_weights(np.linspace(0.1, 1.0, 20), 4) is None
+    # Boundary pin: the *fully exact* even rule (spectral axis
+    # completion) is uniquely determined by its exactness conditions
+    # and goes negative on rigged grids from nr = 48 -- the reason the
+    # quadrature keeps the local axis rule while the interpolation
+    # completion is spectral (fd._cgl_completion_matrices docstring).
+    from dnsjax.fd import _cgl_completion_matrices, _halfrange_r_moments
+
+    n_full = 2 * 48 + 1
+    s = -np.cos(np.arange(n_full) * np.pi / (n_full - 1))
+    e_even_exact, _ = _cgl_completion_matrices(48, 1)
+    w_exact = e_even_exact.T @ _halfrange_r_moments(s)
+    assert np.any(w_exact < 0), "exact-rule positivity boundary moved"
+
+
+def test_cgl_axis_gap_detector():
+    """cgl_axis_gap: half-CGL -> 0, rigged-CGL -> 1, non-CGL -> None."""
+    for nr in (12, 24, 48):
+        assert cgl_axis_gap(_radial_cgl_grid(nr, 0)) == 0
+        assert cgl_axis_gap(_radial_cgl_grid(nr, 1)) == 1
+    assert cgl_axis_gap(np.linspace(0.1, 1.0, 24)) is None
+    assert cgl_axis_gap(np.asarray(tanh_one_sided_grid(24, 1.5))) is None
+
+
+def test_cgl_parity_interpolation_spectral():
+    """Spectral parity interpolation between radial CGL grids (half,
+    rigged, and mixed): machine precision for both parities -- the
+    rigged axis node is reconstructed by the exact parity-constrained
+    fit, so no fd_order-limited ingredient remains -- and orders of
+    magnitude better than the local fd_order fallback."""
+
+    def even(r):  # sigma = +1
+        return np.cos(0.6 * np.pi * r) + 0.3 * r**2
+
+    def odd(r):  # sigma = -1
+        return r * np.cos(2.0 * r)
+
+    nr_old, nr_new = 20, 28
+    for go, gn in [(0, 0), (1, 1), (1, 0), (0, 1)]:
+        ro = _radial_cgl_grid(nr_old, go)
+        rn = _radial_cgl_grid(nr_new, gn)
+        t_even, t_odd = cgl_parity_interpolation_matrices(
+            nr_old, nr_new, go, gn
+        )
+        e_even = np.max(np.abs(t_even @ even(ro) - even(rn)))
+        e_odd = np.max(np.abs(t_odd @ odd(ro) - odd(rn)))
+        assert e_even < 1e-12, f"gap {go}->{gn} even: {e_even:.2e}"
+        assert e_odd < 1e-12, f"gap {go}->{gn} odd: {e_odd:.2e}"
+        e_local = np.max(
+            np.abs(local_interpolation_matrix(ro, rn, 4) @ even(ro) - even(rn))
+        )
+        assert e_local > 100 * e_even, (
+            f"gap {go}->{gn}: spectral ({e_even:.2e}) not beating "
+            f"local ({e_local:.2e})"
         )
 
 
-def test_half_cgl_interp_odd_parity():
-    """Odd-parity fields must survive half-CGL interpolation."""
-    nr_old, nr_new = 16, 24
-    _, T_odd = half_cgl_interpolation_matrices(nr_old, nr_new)
-    r_old = _half_cgl_grid(nr_old)
-    r_new = _half_cgl_grid(nr_new)
-    for d in [1, 3, 5]:
-        f_old = r_old**d
-        f_new = T_odd @ f_old
+def test_local_interp_polynomial_exactness():
+    """Local ``order``-stencil interpolation is exact up to degree
+    ``order`` (each stencil is an ``order``-degree Lagrange fit)."""
+    order = 4
+    y_old = np.asarray(_perturbed_grid(19))
+    y_new = np.asarray(_perturbed_grid(27, seed=7))
+    T = local_interpolation_matrix(y_old, y_new, order)
+    for d in range(order + 1):
         assert_allclose(
-            f_new,
-            r_new**d,
-            atol=1e-10,
-            err_msg=f"odd degree={d}",
+            T @ y_old**d, y_new**d, atol=1e-10, err_msg=f"degree={d}"
         )
 
 
-def test_barycentric_polynomial():
-    """Barycentric must exactly interpolate polynomials."""
-    ny_old = 17
-    ny_new = 25
-    y_old = np.asarray(_perturbed_grid(ny_old))
-    y_new = np.asarray(_perturbed_grid(ny_new, seed=99))
-    T = barycentric_interpolation_matrix(y_old, y_new)
-    for d in range(ny_old):
-        f_old = y_old**d
-        f_new = T @ f_old
-        expected = y_new**d
-        assert_allclose(
-            f_new,
-            expected,
-            atol=1e-7,
-            err_msg=f"degree={d}",
+def test_local_interp_bounded_on_radial_grids():
+    """The local Fornberg fallback stays well-conditioned (Lebesgue
+    ``O(10)``) on the lopsided radial CGL grids, in contrast to a
+    *global* Lagrange fit whose Lebesgue constant blows up ``>=1e6``
+    there (the reason the fallback is local, not global; detected CGL
+    grids take the spectral parity path instead)."""
+
+    def global_lagrange_lebesgue(old, new):
+        # Barycentric (global degree-N) interpolation Lebesgue const.
+        w = np.array(
+            [
+                1.0 / np.prod(old[j] - np.delete(old, j))
+                for j in range(len(old))
+            ]
+        )
+        rows = []
+        for x in new:
+            d = x - old
+            if np.any(np.abs(d) < 1e-14):  # x coincides with a node
+                rows.append(1.0)
+                continue
+            t = w / d
+            rows.append(np.abs(t / t.sum()).sum())
+        return max(rows)
+
+    for nr in (24, 32, 48):
+        old = _radial_cgl_grid(nr, 0)  # half-CGL
+        new = _radial_cgl_grid(nr, 1)  # rigged-CGL
+        leb_loc = (
+            np.abs(local_interpolation_matrix(old, new, 4)).sum(axis=1).max()
+        )
+        leb_global = global_lagrange_lebesgue(old, new)
+        assert leb_loc < 20.0, f"nr={nr}: local Lebesgue {leb_loc:.2e}"
+        assert leb_global >= 1e6, (
+            f"nr={nr}: global Lebesgue {leb_global:.2e} "
+            "(guard the motivating blow-up)"
         )
 
 
-def test_barycentric_vs_chebyshev():
-    """On CGL grids, barycentric and Chebyshev must agree."""
-    ny_old, ny_new = 17, 25
-    T_cheb = chebyshev_interpolation_matrix(ny_old, ny_new)
-    y_old = np.asarray(_cgl_grid(ny_old))
-    y_new = np.asarray(_cgl_grid(ny_new))
-    T_bary = barycentric_interpolation_matrix(y_old, y_new)
-    f_old = np.sin(np.pi * y_old)
-    assert_allclose(
-        T_cheb @ f_old,
-        T_bary @ f_old,
-        atol=1e-10,
-    )
+def test_local_interp_radial_convergence():
+    """Local radial interpolation of a smooth field converges under
+    grid refinement (both interpolation and axis-ward extrapolation
+    directions stay bounded and small)."""
+
+    def smooth(r):  # even near r = 0, u_z-like
+        return np.cos(0.5 * np.pi * r) + 0.3 * r**2
+
+    prev = {"up": np.inf, "down": np.inf}
+    for nr in (16, 32, 64):
+        old0, old1 = _radial_cgl_grid(nr, 0), _radial_cgl_grid(nr, 1)
+        # half -> rigged (pure interpolation; new r_0 above old r_0)
+        e_up = np.max(
+            np.abs(
+                local_interpolation_matrix(old0, old1, 4) @ smooth(old0)
+                - smooth(old1)
+            )
+        )
+        # rigged -> half (extrapolation toward the axis)
+        e_down = np.max(
+            np.abs(
+                local_interpolation_matrix(old1, old0, 4) @ smooth(old1)
+                - smooth(old0)
+            )
+        )
+        assert e_up < prev["up"], f"nr={nr}: up err not decreasing"
+        assert e_down < prev["down"], f"nr={nr}: down err not decreasing"
+        prev = {"up": e_up, "down": e_down}
+    assert prev["up"] < 1e-6 and prev["down"] < 1e-4
 
 
 # ── Local grid spacing (CFL diagnostic) ────────────────────────────

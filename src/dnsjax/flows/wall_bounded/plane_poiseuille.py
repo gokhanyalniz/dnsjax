@@ -1,9 +1,9 @@
-"""Plane Poiseuille (channel) flow: pressure-driven flow between plates.
+r"""Plane Poiseuille (channel) flow: pressure-driven flow between plates.
 
 This module defines the ``PlanePoiseuilleFlow`` dataclass that holds
 the plane-Poiseuille-specific base flow.  Geometry-general
 infrastructure (CGL grid, FD matrices, IMM operators,
-Kleiser-Schumann IMM iteration, predict / correct / norm, banded /
+Kleiser-Schumann IMM iteration, predict / correct / norm, Pallas /
 dense LU solvers) is inherited from
 ``geometries.wall_bounded.cartesian.CartesianFlow``.
 
@@ -12,12 +12,12 @@ It also exports the flow interface consumed by ``__main__``:
 - ``predict_and_fully_correct`` -- fused predictor + corrector
 - ``predict_and_fully_correct_measured`` -- fused step + CFL
   measurements (``steps.dat``)
-- ``init_state`` -- initial state from laminar or snapshot
+- ``init_state`` -- initial state from a snapshot or laminar
 - ``get_stats`` -- diagnostic statistics
 
 Base flow
 ---------
-The laminar base flow is `$U_s(y) = 1 - y^2$` on `$y \\in [-1, 1]$`,
+The laminar base flow is `$U_s(y) = 1 - y^2$` on `$y \in [-1, 1]$`,
 oriented in the streamwise direction
 `$(\cos\theta, 0, \sin\theta)$` where `$\theta$` is the tilt
 angle.  Its derived quantities:
@@ -28,11 +28,14 @@ angle.  Its derived quantities:
   = (0,\; -2y(1-y^2),\; 0)$` (tilt-independent)
 
 Moving frame
------------
+------------
 ``phys.u_grid`` defaults to the laminar bulk velocity
 `$U_{b,\mathrm{lam}} = 2/3$` for plane-Poiseuille flow, so by default
 the run evolves in the frame translating in `$x$` at
-`$U_{grid} = 2/3$` (see ``parameters.update_parameters`` and
+`$U_{grid} = 2/3$`: the convective frame term `$+ i k_x U_{grid}
+\mathbf{u}'$` is added in the Cartesian ``_get_rhs_core`` / ``_l_bf``
+and the CFL diagnostic advects with `$\mathbf{U} -
+U_{grid}\hat{\mathbf{x}}$` (see ``parameters.update_parameters`` and
 ``geometries.wall_bounded._base.pad_base_flow``).  Set
 ``--phys.u_grid 0`` for the lab frame.
 
@@ -72,9 +75,13 @@ from ...geometries.wall_bounded.cartesian import (
     get_pert_enstrophy,
     integrate_scalar,
     pad_base_flow,
+    tilted_profile_arrays,
+)
+from ...geometries.wall_bounded.cartesian import (
+    frozen_profile_flow as _frozen_flow_copy,
 )
 from ...parameters import derived_params, params
-from ...sharding import register_dataclass_pytree, sharding
+from ...sharding import register_dataclass_pytree
 
 
 @register_dataclass_pytree
@@ -111,30 +118,7 @@ class PlanePoiseuilleFlow(CartesianFlow):
 
         Us = 1.0 - self.ys**2  # U_s(y) = 1 - y^2
         dy_Us = -2.0 * self.ys  # dU_s/dy = -2y
-
-        self.base_flow = (
-            jnp.zeros(
-                (3, params.res.ny),
-                dtype=sharding.float_type,
-                out_sharding=sharding.no_shard,
-            )
-            .at[0]
-            .set(Us * derived_params.cos_tilt)
-            .at[2]
-            .set(Us * derived_params.sin_tilt)[:, :, None, None]
-        )
-        # curl(U) = (dy_Us sin θ, 0, -dy_Us cos θ)
-        self.curl_base_flow = (
-            jnp.zeros(
-                (3, params.res.ny),
-                dtype=sharding.float_type,
-                out_sharding=sharding.no_shard,
-            )
-            .at[0]
-            .set(dy_Us * derived_params.sin_tilt)
-            .at[2]
-            .set(-dy_Us * derived_params.cos_tilt)[:, :, None, None]
-        )
+        self.base_flow, self.curl_base_flow = tilted_profile_arrays(Us, dy_Us)
         pad_base_flow(self)
 
 
@@ -146,7 +130,28 @@ flow: PlanePoiseuilleFlow = PlanePoiseuilleFlow()
     init_state,
     predict_and_fully_correct,
     predict_and_fully_correct_measured,
+    step_cnab2,
+    step_cnab2_measured,
+    set_dt,
+    reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
+
+
+def frozen_profile_flow(us: Array) -> PlanePoiseuilleFlow:
+    r"""Flow linearized around an arbitrary streamwise profile.
+
+    Transient-growth hook (:mod:`dnsjax.analysis.transient_growth`):
+    given the *total* streamwise profile `$U_s(y)$` on the code grid
+    (``flow.ys``, shape ``(Ny,)``), tilt-split it exactly as the
+    laminar `$U_s = 1 - y^2$` (:func:`tilted_profile_arrays`),
+    differentiate with the flow's FD `$D_1$` for
+    `$\nabla\times\mathbf{U}$`, and return a flow copy carrying that
+    base flow (all operators shared; see
+    :func:`~dnsjax.geometries.wall_bounded._base.frozen_profile_flow`).
+    """
+    dy_us = flow.D1 @ us
+    base, curl = tilted_profile_arrays(us, dy_us)
+    return _frozen_flow_copy(flow, base, curl)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────────────
@@ -257,3 +262,16 @@ def _get_stats_jit(
 def get_stats(state: Array) -> dict[str, Array]:
     """Wrapper around ``_get_stats_jit``."""
     return _get_stats_jit(state, fourier, flow)
+
+
+@jit
+def _get_perturbation_energy_jit(
+    state: Array, fourier_: Fourier, flow_: PlanePoiseuilleFlow
+) -> Array:
+    r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
+    return get_norm2(state, fourier_.k_metric, flow_.y_weights) / 2
+
+
+def get_perturbation_energy(state: Array) -> Array:
+    """Perturbation kinetic energy E' (for the laminarization check)."""
+    return _get_perturbation_energy_jit(state, fourier, flow)

@@ -36,6 +36,8 @@ from collections.abc import Callable
 from jax import Array
 from jax import numpy as jnp
 
+from .fft import chunked_transform
+
 
 def _fused_nonlinear(
     u: Array,
@@ -97,7 +99,7 @@ def get_nonlin(
     space on the dealiased (3/2-oversampled) grid and transforms
     the result back to spectral space.
 
-    Cost: 3 inverse FFTs (velocity, vorticity components) + 3
+    Cost: 6 inverse FFTs (3 velocity + 3 vorticity components) + 3
     forward FFTs (nonlinear term components).
 
     This is the single site where the physical-space fields
@@ -107,22 +109,28 @@ def get_nonlin(
     reuse the inverse FFTs already paid for by the nonlinear
     term.
 
+    The 6-field batched inverse transform (plus its padded
+    intermediate stage buffers inside :mod:`dnsjax.fft`) sets the
+    transient memory peak of a Newtonian RHS evaluation.
+    ``solver.rhs_transform_chunks`` caps that transient by splitting
+    the batch (:func:`dnsjax.fft.chunked_transform`; the default 1
+    keeps the single fused batch, throughput-optimal), while the
+    forward transform of the 3 outputs stays fused.  The knob matters
+    most for the 36-field viscoelastic variant (``_get_rhs_core`` in
+    ``geometries/wall_bounded/annular_viscoelastic.py``), whose batch
+    dominates its step's peak; the trade-off is documented in the
+    :mod:`dnsjax.fft` memory note.
+
     Parameters
     ----------
     velocity_spec:
         Perturbation velocity in spectral space,
         shape ``(3, *spec_shape)``.
     base_flow:
-        Base-flow velocity `$\mathbf{U}$` used as the advecting
-        velocity in the cross product, in physical space, shape
-        ``(3, ny_phys, 1, 1)`` where ``ny_phys`` is ``ny_padded``
-        (periodic) or ``ny + ny_y_pad`` (wall-bounded).  In a moving
-        frame of reference the wall-bounded flows pass the
-        frame-relative value `$\mathbf{U} - U_{grid}\hat{\mathbf
-        {e}}_0$` here (component 0 is the translation direction);
-        this realises the frame term `$+U_{grid}\partial_{x_0}
-        \mathbf{u}'$` (see
-        :func:`dnsjax.geometries.wall_bounded._base.pad_base_flow`).
+        Base-flow velocity `$\mathbf{U}$` in physical space,
+        shape ``(3, ny_phys, 1, 1)`` where ``ny_phys`` is
+        ``ny_padded`` (periodic) or ``ny + ny_y_pad``
+        (wall-bounded).
     curl_base_flow:
         `$\nabla \times \mathbf{U}$` in physical space,
         same shape.
@@ -152,10 +160,12 @@ def get_nonlin(
     """
 
     # Batch velocity (3) + vorticity (3) into one transform call
-    # so that the FFT reshard happens once for all 6 fields.
+    # so that the FFT reshard happens once for all 6 fields
+    # (``solver.rhs_transform_chunks > 1`` splits it to cap the
+    # transform-stage transient).
     vorticity_spec = curl_fn(velocity_spec)
-    combined_phys = spec_to_phys_fn(
-        jnp.concatenate([velocity_spec, vorticity_spec])
+    combined_phys = chunked_transform(
+        spec_to_phys_fn, jnp.concatenate([velocity_spec, vorticity_spec])
     )
     velocity_phys = combined_phys[:3]
     vorticity_phys = combined_phys[3:]

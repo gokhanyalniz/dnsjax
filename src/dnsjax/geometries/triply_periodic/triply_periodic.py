@@ -29,10 +29,12 @@ from ...operators import (
     real_harmonics,
     spec_to_phys,
 )
-from ...parameters import derived_params, padded_res, params
+from ...parameters import padded_res, params
 from ...rhs import get_nonlin
 from ...sharding import register_dataclass_pytree, sharding
 from ...timestep import make_stepper
+
+ly = 4  # Shear-direction box length is the length reference and fixed
 
 
 @register_dataclass_pytree
@@ -97,7 +99,7 @@ class Fourier:
             )
             * 2
             * jnp.pi
-            / derived_params.ly
+            / ly
         )
 
         self.k_metric = jnp.where(self.kx == 0, 1, 2).astype(
@@ -194,8 +196,14 @@ class TriplyPeriodicFlow:
     Subclasses must set ``base_flow`` and ``curl_base_flow``
     *after* calling ``super().__post_init__()``, which builds
     the time-stepping coefficients ``ldt_1`` and ``ildt_2``.
+    ``dt``/``ab2_kappa`` are the live time step and AB2 step
+    ratio as 0-d array leaves (read by the steppers instead of
+    ``params.step.dt``; rebuilt with ``ldt_1``/``ildt_2`` by the
+    builder's ``set_dt``).
     """
 
+    dt: Array = field(init=False)
+    ab2_kappa: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
     cfl_inv_spacing: Array = field(init=False)
@@ -221,13 +229,23 @@ class TriplyPeriodicFlow:
         The mean mode `$(k_y, k_z, k_x) = (0, 0, 0)$` is zeroed out,
         since it is passive (constant shift) for periodic flows.
         """
+        # Live-dt pytree leaves (class docstring; rebuilt by the
+        # builder's ``set_dt`` with identical dtype/shape).
+        self.dt = jnp.asarray(params.step.dt, dtype=sharding.float_type)
+        self.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
+
+        # Strong-typed 1/dt (Python-float division, then cast: the
+        # values are bit-identical to the plain expression) so these
+        # leaves carry the same avals as the jitted
+        # ``_build_dt_leaves`` rebuild -- a weak-typed leaf would
+        # retrace every stepper on the first ``set_dt``.
+        inv_dt = jnp.asarray(1 / params.step.dt, dtype=sharding.float_type)
         ldt_1 = (
-            1 / params.step.dt
+            inv_dt
             + (1 - params.step.implicitness) * fourier.lapl / params.phys.re
         )
         ildt_2 = 1 / (
-            1 / params.step.dt
-            - params.step.implicitness * fourier.lapl / params.phys.re
+            inv_dt - params.step.implicitness * fourier.lapl / params.phys.re
         )
 
         # Zero the mean modes in timestepper matrices
@@ -237,6 +255,9 @@ class TriplyPeriodicFlow:
         self.ildt_2 = ildt_2.at[sharding.scalar_mean_mode].set(
             0, out_sharding=sharding.spec_scalar_shard
         )
+        # (``_build_dt_leaves`` mirrors the two coefficients with a
+        # traced dt for the adaptive-dt rebuild; this eager build
+        # keeps the historical Python-float arithmetic bit-exact.)
 
         # Inverse local advection length scales for the CFL
         # diagnostic (:func:`dnsjax.measurements.get_cfl`),
@@ -248,7 +269,7 @@ class TriplyPeriodicFlow:
         inv_vals = jnp.array(
             [
                 params.res.nx / params.geo.lx,
-                params.res.ny / derived_params.ly,
+                params.res.ny / ly,
                 params.res.nz / params.geo.lz,
             ],
             dtype=sharding.float_type,
@@ -262,24 +283,58 @@ class TriplyPeriodicFlow:
         )
 
 
+def _build_dt_leaves(
+    dt: Array,
+    fourier_: Fourier,
+    flow_: TriplyPeriodicFlow,
+) -> dict[str, Array]:
+    r"""Rebuild the ``dt``-dependent flow leaves at the traced *dt*.
+
+    The pure counterpart of the ``__post_init__`` coefficient setup,
+    jitted by the builder's ``set_dt``: the algebraic Helmholtz
+    inverse `$1/(1/\Delta t - c\,\nabla^2/\mathrm{Re})$` is regular
+    for every `$\Delta t > 0$`, so no stability check is involved and
+    ``dt`` is fully continuous.  *flow_* is unused (uniform
+    ``(dt, fourier, flow)`` rebuild signature across the geometry
+    families).
+    """
+    c = params.step.implicitness
+    ldt_1 = 1 / dt + (1 - c) * fourier_.lapl / params.phys.re
+    ildt_2 = 1 / (1 / dt - c * fourier_.lapl / params.phys.re)
+    return {
+        "dt": dt,
+        "ldt_1": ldt_1.at[sharding.scalar_mean_mode].set(
+            0, out_sharding=sharding.spec_scalar_shard
+        ),
+        "ildt_2": ildt_2.at[sharding.scalar_mean_mode].set(
+            0, out_sharding=sharding.spec_scalar_shard
+        ),
+    }
+
+
 # ── Initialization ────────────────────────────────────────────────────────
 
 
 def init_state(snapshot: str | None, flow: TriplyPeriodicFlow) -> Array:
-    """Initialise the flow state (velocity_spec)."""
-    if params.init.start_from_laminar:
-        return jnp.zeros(
-            shape=(3, *sharding.spec_shape),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.spec_vector_shard,
-        )
-    elif snapshot is not None:
+    """Initialise the flow state (velocity_spec).
+
+    A provided snapshot path (legacy ``.npz``) takes precedence over
+    ``start_from_laminar``; zarr3 snapshot resume is handled in
+    ``__main__`` before this is called.
+    """
+    if snapshot is not None:
         snapshot_arr = jnp.load(snapshot)["velocity_phys"].astype(
             sharding.float_type
         )
         velocity_phys = device_put(snapshot_arr, sharding.phys_vector_shard)
         velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
         return phys_to_spec(velocity_phys)
+    elif params.init.start_from_laminar:
+        return jnp.zeros(
+            shape=(3, *sharding.spec_shape),
+            dtype=sharding.complex_type,
+            out_sharding=sharding.spec_vector_shard,
+        )
     else:
         sharding.print("Provide an initial condition.")
         sharding.exit(code=1)
@@ -389,6 +444,7 @@ def _get_rhs_measured(
             flow_.base_flow,
             flow_.cfl_inv_spacing,
             CFL_NAMES,
+            flow_.dt,
         )
 
     return _get_rhs_core(state, fourier_, flow_, _measure)
@@ -434,7 +490,10 @@ def correct_divergence(state: Array, fourier_: Fourier) -> Array:
     where the pressure Poisson solve removes the divergent
     part of the nonlinear term before the Helmholtz step.
     This second projection removes any residual divergence
-    accumulated during the corrector iterations.
+    accumulated during the corrector iterations.  It runs
+    *inside* the stepper's jit scope (:func:`_finalize_state`
+    via ``make_stepper``'s *finalize_fn*), fused with the
+    step's tail rather than as a separate per-step dispatch.
     """
     correction = -gradient(
         inverse_laplacian(
@@ -455,20 +514,21 @@ def correct_divergence(state: Array, fourier_: Fourier) -> Array:
     return velocity_corrected
 
 
-@jit(donate_argnums=0)
-def _correct_velocity_jit(state: Array, fourier_: Fourier) -> Array:
-    """Divergence correction + mean-mode zeroing.
+def _finalize_state(
+    state: Array, fourier_: Fourier, flow_: TriplyPeriodicFlow
+) -> Array:
+    """Divergence correction + mean-mode zeroing (post-step).
 
-    Returned as ``correct_velocity`` by the stepper builder
-    and called once per time step after the corrector loop.
+    Passed to ``make_stepper`` as *finalize_fn*: applied once to the
+    accepted state at the end of every step, inside the stepper's jit
+    scope (fused; no separate per-step dispatch or extra state-sized
+    read/write pass).
     """
     velocity_corrected = correct_divergence(state, fourier_)
 
-    velocity_corrected = velocity_corrected.at[sharding.vector_mean_mode].set(
+    return velocity_corrected.at[sharding.vector_mean_mode].set(
         0, out_sharding=sharding.spec_vector_shard
     )
-
-    return velocity_corrected
 
 
 # ── Stepper factory ─────────────────────────────────────────────────────
@@ -481,22 +541,52 @@ def build_triply_periodic_stepper(
     Callable[[Array, Array, Array], tuple[Array, Array, Array]],
     Callable[[str | None], Array],
     Callable[[Array], tuple[Array, Array, Array]],
-    Callable[[Array], Array],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
+    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
+    Callable[[float], None],
+    Callable[[], None],
 ]:
     """Build time-stepping functions for a triply-periodic flow.
 
     Returns ``(predict_and_correct, iterate_correction,
     init_state_bound, predict_and_fully_correct,
-    correct_velocity, predict_and_fully_correct_measured)``
-    with the ``fourier`` and *flow* singletons already bound.
+    predict_and_fully_correct_measured, step_cnab2,
+    step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
+    ``fourier`` and *flow* singletons already bound -- the same
+    9-tuple as the wall-bounded builder (``set_dt`` /
+    ``reset_ab2_kappa`` are the adaptive-dt hooks backed by
+    ``_build_dt_leaves``).  ``step_cnab2`` and its measured variant
+    are the CN/AB2 scheme
+    (``step.scheme == "cnab2"``).  The post-step divergence
+    projection + mean-mode zeroing (:func:`_finalize_state`) is
+    fused into every step via ``make_stepper``'s *finalize_fn*,
+    so the accepted state is already projected on return (no
+    separate per-step call).
     """
+
+    def _step_scales(fourier_: Fourier, flow_: TriplyPeriodicFlow) -> tuple:
+        """Live ``(dt, kappa)`` from the flow leaves (adaptive dt)."""
+        return flow_.dt, flow_.ab2_kappa
+
     (
         _predict_and_correct_jit,
         _iterate_correction_jit,
         _predict_and_fully_correct_jit,
         _predict_and_fully_correct_measured_jit,
-    ) = make_stepper(_get_rhs, _predict, _correct, _norm, _get_rhs_measured)
+        _step_cnab2_jit,
+        _step_cnab2_measured_jit,
+    ) = make_stepper(
+        _get_rhs,
+        _predict,
+        _correct,
+        _norm,
+        _get_rhs_measured,
+        finalize_fn=_finalize_state,
+        step_scales_fn=_step_scales,
+    )
 
     def predict_and_correct(
         state: Array,
@@ -526,20 +616,60 @@ def build_triply_periodic_stepper(
         """Fused step + physical-space measurements (at `$u^n$`)."""
         return _predict_and_fully_correct_measured_jit(state, fourier, flow)
 
+    def step_cnab2(
+        state: Array, carry: Array
+    ) -> tuple[Array, Array, Array, Array]:
+        """One CN/AB2 step with bound singletons.  Returns
+        ``(state_next, carry, error, num_c)`` (``error``/``num_c`` are
+        ``0`` -- triply-periodic needs no base-flow-coupling corrector,
+        its Fourier ``y`` making that term non-stiff).  The divergence
+        projection (:func:`_finalize_state`) is fused into the step,
+        as for the corrector scheme."""
+        return _step_cnab2_jit(state, carry, fourier, flow)
+
+    def step_cnab2_measured(
+        state: Array, carry: Array
+    ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
+        """CN/AB2 step + physical-space measurements (at `$u^n$`)."""
+        return _step_cnab2_measured_jit(state, carry, fourier, flow)
+
     def init_state_bound(snapshot: str | None) -> Array:
         """Initialize the flow state with bound flow singleton."""
         return init_state(snapshot, flow)
 
-    def correct_velocity(
-        state: Array,
-    ) -> Array:
-        return _correct_velocity_jit(state, fourier)
+    _dt_leaves_jit = jit(_build_dt_leaves)
+    _dt_box = [float(params.step.dt)]
+
+    def set_dt(new_dt: float) -> None:
+        """Switch the live time step to *new_dt* (adaptive dt).
+
+        Jitted recompute of ``ldt_1``/``ildt_2`` + in-place
+        assignment on the bound flow singleton; also sets
+        ``ab2_kappa = new_dt / dt_prev`` for the next CN/AB2 step
+        (see ``build_wall_bounded_stepper`` for the shared
+        contract).  No stepper recompiles.
+        """
+        kappa = new_dt / _dt_box[0]
+        leaves = _dt_leaves_jit(
+            jnp.asarray(new_dt, dtype=sharding.float_type), fourier, flow
+        )
+        for name, val in leaves.items():
+            setattr(flow, name, val)
+        flow.ab2_kappa = jnp.asarray(kappa, dtype=sharding.float_type)
+        _dt_box[0] = new_dt
+
+    def reset_ab2_kappa() -> None:
+        """Reset the AB2 step ratio to 1 (one step after ``set_dt``)."""
+        flow.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
 
     return (
         predict_and_correct,
         iterate_correction,
         init_state_bound,
         predict_and_fully_correct,
-        correct_velocity,
         predict_and_fully_correct_measured,
+        step_cnab2,
+        step_cnab2_measured,
+        set_dt,
+        reset_ab2_kappa,
     )
