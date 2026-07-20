@@ -157,12 +157,9 @@ def _generate(system: str, outdir: str) -> None:
             state[3], state[4], state[5], state[6], state[7], state[8]
         )
         conf_true = jnp.stack([c_zz, c_rz, c_thz, c_rr, c_thth, c_rth])
-        # Solver state axes (r, m, k_ax) -> snapshot-native (r, k_ax, m)
-        # (the walled on-disk layout read_state returns).
-        np.save(
-            os.path.join(outdir, "conf_true.npy"),
-            np.asarray(conf_true).transpose(0, 1, 3, 2),
-        )
+        # The solver state axes (r, m, k_ax) ARE the snapshot layout
+        # read_state returns (format 5: stored untransposed).
+        np.save(os.path.join(outdir, "conf_true.npy"), np.asarray(conf_true))
         omega = None
     else:  # triply-periodic: curl is pure Fourier, no ground-truth dump
         from dnsjax.flows.triply_periodic.monochromatic import get_stats
@@ -304,12 +301,13 @@ def _check_system(system: str, family: str, outdir: str) -> None:
             raise AssertionError("pipe radial derivative needs parity")
 
     # divergence of the divergence-free modes (drop the real-axis DC
-    # plane: random_field solves continuity per axis-1 mode via 1/k, so
-    # only its k=0 plane carries divergence -- left to the corrector).
+    # plane: random_field solves continuity per real-axis mode via 1/k,
+    # so only its k=0 plane carries divergence -- left to the
+    # corrector).  The real-FFT axis is axis 2 in the native layout.
     div = np.asarray(divergence(st.spectral, st.params, st.spectral_coords))
     om = curl(st.spectral, st.params, st.spectral_coords)
     scale = max(np.linalg.norm(np.asarray(o).ravel()) for o in om)
-    div_nz = div[:, 1:, :] if info.walled else div
+    div_nz = div[:, :, 1:] if info.walled else div
     rel_div = np.linalg.norm(div_nz.ravel()) / scale
     assert rel_div < DIV_TOL, f"{system}: div {rel_div:.2e}"
 

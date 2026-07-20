@@ -46,12 +46,36 @@ sys.path.insert(0, str(_SCRIPTS))
 # Small, distinct resolutions so axis mix-ups cannot hide.
 NX, NY, NZ = 8, 9, 12  # ny is grid points (wall-bounded); periodic uses 10
 
-# system -> (family, extra configure kwargs)
+# system -> (family, full public-named configure kwargs).  The
+# cylindrical/annular flows use their public aliases (nz axial <->
+# internal nx, nr radial <-> ny, ntheta azimuthal <-> nz, lz axial
+# length <-> lx), so the internal sizes stay (NX, NY|10, NZ) for every
+# system.
 SYSTEMS = {
-    "plane-couette": ("cartesian", {}),
-    "kolmogorov": ("periodic", {}),
-    "pipe": ("pipe", {}),
-    "taylor-couette": ("annular", {"re1": 100.0, "re2": 0.0, "eta": 0.5}),
+    "plane-couette": (
+        "cartesian",
+        {"nx": NX, "ny": NY, "nz": NZ, "lx": 4.0, "lz": 4.0, "re": 200.0},
+    ),
+    "kolmogorov": (
+        "periodic",
+        {"nx": NX, "ny": 10, "nz": NZ, "lx": 4.0, "lz": 4.0, "re": 200.0},
+    ),
+    "pipe": (
+        "pipe",
+        {"nz": NX, "nr": NY, "ntheta": NZ, "lz": 4.0, "re": 200.0},
+    ),
+    "taylor-couette": (
+        "annular",
+        {
+            "nz": NX,
+            "nr": NY,
+            "ntheta": NZ,
+            "lz": 4.0,
+            "re1": 100.0,
+            "re2": 0.0,
+            "eta": 0.5,
+        },
+    ),
 }
 
 
@@ -96,21 +120,25 @@ def _make_input_spectral(p0, periodic, input_norm):
 
 
 def _run_one(system: str) -> int:
-    family, extra = SYSTEMS[system]
-    ny = 10 if family == "periodic" else NY
+    family, cfg = SYSTEMS[system]
+    ny = cfg["ny"] if "ny" in cfg else cfg["nr"]
 
     import snapshot_import as si
 
+    # Strictness of the public surface: an internal / irrelevant name
+    # must be rejected before any singleton is touched.
+    bad = "nx" if "nr" in cfg else "ntheta"
+    try:
+        si.configure_target(system, **{**cfg, bad: 4})
+    except ValueError as exc:
+        assert bad in str(exc), exc
+    else:
+        raise AssertionError(f"{system}: {bad!r} accepted")
+
     si.configure_target(
         system,
-        NX,
-        ny,
-        NZ,
-        lx=4.0,
-        lz=4.0,
         wall_normal_grid=_wall_normal_grid(family, ny),
-        re=200.0,
-        **extra,
+        **cfg,
     )
 
     from jax import numpy as jnp
@@ -264,17 +292,11 @@ def _run_one(system: str) -> int:
             p0,
             out,
             system=system,
-            nx=NX,
-            ny=ny,
-            nz=NZ,
             space="physical",
             t=1.5,
             it=7,
-            lx=4.0,
-            lz=4.0,
             wall_normal_grid=_wall_normal_grid(family, ny),
-            re=200.0,
-            **extra,
+            **cfg,
         )
         state2, t2, it2 = load_snapshot(out)
         meta = read_metadata(Path(out))

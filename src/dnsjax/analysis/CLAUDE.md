@@ -33,13 +33,16 @@ import either from `__init__.py` or any JAX-free module here.
 
 ## Conventions
 
-**Native (on-disk) layout — never transposed.** Data is returned exactly
-as stored; a component chunk reshaped to `(a_size, kx_global, b_size)`
-*is* the native layout, and coordinate tuples are ordered to match (no
-transpose to "fix" layout). The per-family axis/component tables, the
-`u_±` → `(u_z, u_r, u_θ)` basis conversion (the stored pair is **not**
-individually Hermitian, so `u_±` must never be `irfft`-ed directly), and
-the 9-component viscoelastic schema: the `_core.py` module docstring.
+**Native layout — never transposed.** Data is returned exactly as
+stored, and (format 5) the stored bytes are the solver's native
+spectral layout: a component chunk reshaped to the native
+`(y|r|ky, kz|m, kx)` per-component shape (`meta["native_shape"]`) *is*
+the layout the solver computes in, and coordinate tuples are ordered
+to match (no transpose to "fix" layout). The per-family
+axis/component tables, the `u_±` → `(u_z, u_r, u_θ)` basis conversion
+(the stored pair is **not** individually Hermitian, so `u_±` must
+never be `irfft`-ed directly), and the 9-component viscoelastic
+schema: the `_core.py` module docstring.
 
 **Operators match the solver's discrete operators.** `divergence`/`curl`
 reproduce dnsjax's **discrete** operators node-for-node (not just the
