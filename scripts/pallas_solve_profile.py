@@ -528,11 +528,16 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
     print("-" * 72)
 
     fourier = m.fourier
-    state = generate_random_state(
-        params.init.random_amplitude,
-        params.init.random_smoothness,
-        params.init.random_seed,
-        params.init.random_mean_flow,
+    # ICs are physical; the steppers work in the geometry's solver
+    # basis (the same single crossing ``__main__`` performs).
+    to_solver = getattr(m, "to_solver_basis", lambda x: x)
+    state = to_solver(
+        generate_random_state(
+            params.init.random_amplitude,
+            params.init.random_smoothness,
+            params.init.random_seed,
+            params.init.random_mean_flow,
+        )
     )
     t_step, c, _ = _bench_step(m.predict_and_fully_correct, state, steps)
     n = 2 + c  # RHS evals AND IMM applies per step (predict + correct loop)
@@ -816,11 +821,13 @@ def _part_c(flow, m, sharding, trace_dir, hlo_out) -> None:
     from dnsjax.random_field import generate_random_state
     from dnsjax.solvers import PerModeBandedPallasOperator
 
-    state = generate_random_state(
-        params.init.random_amplitude,
-        params.init.random_smoothness,
-        params.init.random_seed,
-        params.init.random_mean_flow,
+    state = getattr(m, "to_solver_basis", lambda x: x)(
+        generate_random_state(
+            params.init.random_amplitude,
+            params.init.random_smoothness,
+            params.init.random_seed,
+            params.init.random_mean_flow,
+        )
     )
     _hlo_census(
         "corrector-step",

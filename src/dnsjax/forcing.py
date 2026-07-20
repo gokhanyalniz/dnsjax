@@ -80,9 +80,9 @@ Sharded scatter
 the device owning each static global mode index adds the replicated
 column into its local shard (everyone else adds zeros), so no global
 sharded axis is ever indexed.  The real-FFT conjugate partner
-(``i3 = 0``) is just another scatter target; its column -- the
-conjugate, with the ``u_+ <-> u_-`` swap for the cylindrical/annular
-basis -- is built on the host (the placement rules of
+(``i3 = 0``) is just another scatter target; its column -- the plain
+conjugate (every physical component is the transform of a real field)
+-- is built on the host (the placement rules of
 ``transient_growth.single_mode_state``, here in sharded form).  The
 injector is generic runtime machinery: any future loop-level state
 modification (feedback control, further forcing schemes) can reuse
@@ -103,9 +103,10 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from .extensions import force_params
+from .flows.registry import cartesian_systems
 from .harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
 from .param_surface import recorded_params_dump
-from .parameters import cartesian_systems, derived_params, params
+from .parameters import derived_params, params
 from .probes import _component_labels
 from .sharding import sharding
 from .snapshot_meta import git_hash
@@ -139,8 +140,21 @@ def build_mode_injector(
     :func:`dnsjax.probes.build_mode_extractor` (same owner
     computation from the local shard shape inside a ``shard_map``;
     non-owners add zeros).  ``state`` is donated (the caller rebinds).
+
+    *cols* are given in **physical** components -- the basis of the
+    injection profiles and of the plain-conjugate partner rule -- and
+    converted to the solver basis here, mapped over the mode axis so
+    each ``(C, N_y)`` column goes through the ordinary
+    component-axis-leading map.  Like the extractor's, this touches
+    only the injected columns, never the field.
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
+    if params.phys.system in cartesian_systems:
+        to_solver = None
+    else:  # cylindrical / annular (viscoelastic rejects [force])
+        from .geometries.wall_bounded._base import to_pm_basis
+
+        to_solver = jax.vmap(to_pm_basis)
     # Owner masks only over mesh axes of size > 1: a size-1 axis has
     # owner 0 trivially, and querying its ``axis_index`` would stamp
     # the output as varying over an axis the (then axis-free)
@@ -151,6 +165,8 @@ def build_mode_injector(
 
     def _local(shard: Array, cols: Array) -> Array:
         n2_loc, n3_loc = shard.shape[2], shard.shape[3]
+        if to_solver is not None:
+            cols = to_solver(cols)
         for k, (i2, i3) in enumerate(pairs):
             owner0, l2 = divmod(i2, n2_loc)
             owner1, l3 = divmod(i3, n3_loc)
@@ -203,14 +219,11 @@ class StochasticForcer:
 
         # Scatter placements: per forced mode its target column and,
         # on the real-FFT plane (i3 = 0; validation excludes (0,0)),
-        # the conjugate partner at the mirrored true index.  The
-        # cylindrical/annular stored basis (u_z, u_+, u_-) swaps its
-        # pm pair under conjugation; Cartesian does not
+        # the conjugate partner at the mirrored true index.  Every
+        # physical component is the transform of a real field, so
+        # the partner is the plain conjugate in every geometry
         # (``single_mode_state`` in dnsjax.analysis.transient_growth
-        # is the single-device host-side form of the same rules).
-        self._perm = (
-            (0, 1, 2) if params.phys.system in cartesian_systems else (0, 2, 1)
-        )
+        # is the single-device host-side form of the same rule).
         n2_true = params.res.nz - 1
         placements: list[tuple[int, int]] = []
         self._partner_slot: list[int | None] = []
@@ -421,7 +434,7 @@ class StochasticForcer:
             cols[slot] = prof
             slot += 1
             if self._partner_slot[k] is not None:
-                cols[slot] = np.conj(prof[list(self._perm)])
+                cols[slot] = np.conj(prof)
                 slot += 1
         state = self._inject(state, self._device_cols(cols))
 

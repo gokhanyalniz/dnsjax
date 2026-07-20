@@ -20,6 +20,20 @@ tensor uses the analogous **spin** projections
     c_{+-}   = c_{rr} + c_{\theta\theta}, \qquad
     c_{\pm\pm} = (c_{rr} - c_{\theta\theta}) \pm 2 i c_{r\theta}.
 
+As in the annular geometry this is the solver's **working** basis.
+Outside the time stepper -- snapshots, diagnostics, probes, initial
+conditions, the analysis package -- the state is the physical
+9-component layout
+
+.. math::
+    [\,u_z,\; u_r,\; u_\theta,\;
+      c_{zz},\; c_{rz},\; c_{\theta z},\;
+      c_{rr},\; c_{\theta\theta},\; c_{r\theta}\,],
+
+and a given state crosses between the two at most once
+(:func:`to_spin_basis` / :func:`from_spin_basis`, driven by
+:mod:`dnsjax.__main__`).
+
 Spin diagonalisation of the tensor Laplacian
 --------------------------------------------
 The cylindrical Laplacian couples the physical tensor components through
@@ -130,7 +144,6 @@ from .annular import (
     Fourier,
     _imm_iteration,
     fourier,
-    get_norm2_annular,
 )
 from .annular import (
     _build_dt_leaves as _annular_dt_leaves,
@@ -141,20 +154,30 @@ from .annular import (
 
 # ── State layout ────────────────────────────────────────────────────
 #
-# state[0:3] = velocity (u_z, u_+, u_-); state[3:9] = conformation spin
-# components (c_zz, c_z+, c_z-, c_+-, c_++, c_--).
+# Solver basis: state[0:3] = velocity (u_z, u_+, u_-); state[3:9] =
+# conformation spin components (c_zz, c_z+, c_z-, c_+-, c_++, c_--).
+# Physical (everything outside the stepper): (u_z, u_r, u_theta) +
+# (c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta) -- the
+# to_spin_basis / from_spin_basis pair below.
 N_VE_COMPONENTS = 9
 _N_TENSOR = 6
 
-# Spin weight s per tensor spin component (order c_zz, c_z+, c_z-, c_+-,
-# c_++, c_--); the Laplacian / Helmholtz uses m_eff = m + s.
+# Spin weight s per tensor spin component (solver slot order c_zz,
+# c_z+, c_z-, c_+-, c_++, c_--); the Laplacian / Helmholtz uses
+# m_eff = m + s.
 _TENSOR_SPIN = np.array([0, 1, -1, 0, 2, -2])
 
-# Frobenius weights of the spin components: ||c||_F^2 (mode-summed) =
-# |c_zz|^2 + |c_z+|^2 + |c_z-|^2 + |c_+-|^2/2 + (|c_++|^2 + |c_--|^2)/4.
-_C_FROB_WEIGHT = np.array([1.0, 1.0, 1.0, 0.5, 0.25, 0.25])
+# Frobenius weights of the *physical* tensor components (c_zz, c_rz,
+# c_theta_z, c_rr, c_theta_theta, c_r_theta): off-diagonals count
+# twice in ||c||_F^2 = sum_ij |c_ij|^2.  Used by the diagnostic norm.
+_C_FROB_WEIGHT = np.array([1.0, 2.0, 2.0, 1.0, 1.0, 2.0])
 # sqrt, precomputed (applied per component before the shared get_norm2).
 _C_FROB_SQRT = np.sqrt(_C_FROB_WEIGHT)
+
+# The same physical scalar expressed on the *spin* slots: ||c||_F^2 =
+# |c_zz|^2 + |c_z+|^2 + |c_z-|^2 + |c_+-|^2/2 + (|c_++|^2+|c_--|^2)/4.
+# Used by the corrector ``_norm``, whose arguments are solver-basis.
+_C_FROB_SQRT_SPIN = np.sqrt(np.array([1.0, 1.0, 1.0, 0.5, 0.25, 0.25]))
 
 
 # ── Spin <-> physical tensor conversions (linear, any space) ────────
@@ -198,6 +221,61 @@ def _phys_combos_to_spin(
     return jnp.array([c_zz, c_zp, c_zm, c_pm, c_pp, c_mm])
 
 
+# ── Physical <-> solver basis (the 9-component boundary) ────────────
+
+
+def to_spin_basis(state: Array) -> Array:
+    r"""Physical 9-component state `$\to$` solver spin basis.
+
+    Maps `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
+    c_{\theta\theta}, c_{r\theta})$` to
+    `$(u_z, u_+, u_-, c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++},
+    c_{--})$` -- the per-mode-diagonal basis of the `$H_k$`/`$H_c$`
+    solves in which the whole time stepper works (every entry a spin
+    projection: `$u_\pm$` are the spin-`$\pm1$` components of the
+    velocity vector).  The 9-component counterpart of
+    :func:`~dnsjax.geometries.wall_bounded._base.to_pm_basis`, and
+    like it the boundary crossed at most once per state
+    (:mod:`dnsjax.__main__`); elementwise on the unsharded component
+    axis.  Inverse: :func:`from_spin_basis`.
+    """
+    u_r, u_theta = state[1], state[2]
+    vel = jnp.array([state[0], u_r + 1j * u_theta, u_r - 1j * u_theta])
+    spin = _phys_combos_to_spin(
+        state[6], state[7], state[8], state[4], state[5], state[3]
+    )
+    return jnp.concatenate([vel, spin])
+
+
+def from_spin_basis(state: Array) -> Array:
+    r"""Solver spin basis `$\to$` physical 9-component state.
+
+    Inverse of :func:`to_spin_basis`.
+    """
+    u_plus, u_minus = state[1], state[2]
+    c_rr, c_thth, c_rth, c_rz, c_thz, c_zz = _spin_to_phys_combos(
+        state[3], state[4], state[5], state[6], state[7], state[8]
+    )
+    return jnp.array(
+        [
+            state[0],
+            (u_plus + u_minus) / 2,
+            -1j * (u_plus - u_minus) / 2,
+            c_zz,
+            c_rz,
+            c_thz,
+            c_rr,
+            c_thth,
+            c_rth,
+        ]
+    )
+
+
+#: Role aliases for the basis boundary (see ``cylindrical.py``).
+to_solver_basis = to_spin_basis
+from_solver_basis = from_spin_basis
+
+
 # ── Analytical laminar profiles (JAX-free, build-time) ──────────────
 
 
@@ -219,16 +297,21 @@ def viscoelastic_laminar_profiles(
     rs: np.ndarray, D1: np.ndarray, r1: float, r2: float, wi: float, eps: float
 ) -> np.ndarray:
     r"""9-component laminar `$r$`-profiles for a force-driven annular
-    sPTT flow (complex ``(9, Nr)``), in the state layout
-    `$(u_z, u_+, u_-, c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++}, c_{--})$`.
+    sPTT flow (complex ``(9, Nr)``), in the **physical** state layout
+    `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
+    c_{\theta\theta}, c_{r\theta})$` -- these feed initial conditions
+    and the flow's laminar reference, both of which live outside the
+    solver (:func:`to_spin_basis` converts when one enters it).
 
     Velocity: the azimuthal profile `$U_\theta(r)$` (body-force
-    coefficient `$C = r_1 + r_2$`), `$u_+ = i U_\theta$`, `$u_- = -i
-    U_\theta$`.  Conformation: the pointwise sPTT equilibrium on the
-    **discrete** local shear `$S = D_1 U_\theta - U_\theta/r$` (see the
+    coefficient `$C = r_1 + r_2$`).  Conformation: the pointwise sPTT
+    equilibrium on the **discrete** local shear `$S = D_1 U_\theta -
+    U_\theta/r$` (see the
     :mod:`~dnsjax.flows.wall_bounded.viscoelastic_dean` module
-    docstring).  Pure (NumPy, build-time); shared by the flow's laminar
-    state and the viscoelastic random / rolls ICs.
+    docstring): `$c_{rr} = c_{zz} = 1$`, `$c_{r\theta} =
+    \mathrm{Wi}\,S/f$`, `$c_{\theta\theta} = 1 + 2 c_{r\theta}^2$`.
+    Pure (NumPy, build-time); shared by the flow's laminar state and
+    the viscoelastic random / rolls ICs.
     """
     from .annular import annular_forced_laminar_u_theta
 
@@ -246,14 +329,14 @@ def viscoelastic_laminar_profiles(
     return np.stack(
         [
             zeros,  # u_z
-            1j * u_theta,  # u_+
-            -1j * u_theta,  # u_-
+            zeros,  # u_r
+            u_theta,  # u_theta
             ones,  # c_zz
-            zeros,  # c_z+
-            zeros,  # c_z-
-            1.0 + c_thth,  # c_+- = c_rr + c_theta_theta
-            (1.0 - c_thth) + 2j * x,  # c_++
-            (1.0 - c_thth) - 2j * x,  # c_--
+            zeros,  # c_rz
+            zeros,  # c_theta_z
+            ones,  # c_rr
+            c_thth,  # c_theta_theta
+            x,  # c_r_theta
         ]
     ).astype(np.complex128)
 
@@ -416,14 +499,17 @@ def _div_c(
 
 
 def get_norm2_conformation(
-    c_spin: Array, k_metric: Array, y_weights: Array
+    c_phys: Array, k_metric: Array, y_weights: Array
 ) -> Array:
     r"""Volume-averaged Frobenius norm `$\langle \|c\|_F^2 \rangle$` from
-    the spin components (weights `$1,1,1,\tfrac12,\tfrac14,\tfrac14$`)."""
-    w = jnp.asarray(_C_FROB_SQRT, dtype=c_spin.real.dtype).reshape(
+    the **physical** components `$(c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
+    c_{\theta\theta}, c_{r\theta})$` (off-diagonal weights 2) -- the
+    diagnostic form, applied outside the solver.  Its solver-basis
+    counterpart is the spin weighting in :func:`_norm`."""
+    w = jnp.asarray(_C_FROB_SQRT, dtype=c_phys.real.dtype).reshape(
         _N_TENSOR, 1, 1, 1
     )
-    return get_norm2(c_spin * w, k_metric, y_weights)
+    return get_norm2(c_phys * w, k_metric, y_weights)
 
 
 # ── Viscoelastic annular flow dataclass ─────────────────────────────
@@ -1131,14 +1217,21 @@ def _norm(
     fourier_: Fourier,
     flow_: ViscoelasticAnnularFlow,
 ) -> Array:
-    r"""Combined L2 convergence norm, `$\sqrt{\|u\|^2 + \|c\|_F^2}$`."""
-    err_u2 = get_norm2_annular(
-        correction[:3], fourier_.k_metric, flow_.y_weights
+    r"""Combined L2 convergence norm, `$\sqrt{\|u\|^2 + \|c\|_F^2}$`.
+
+    Corrections live in the solver spin basis, so the `$u_\pm$` pair
+    carries the 1/2 weight and the tensor slots the spin Frobenius
+    weights (``_C_FROB_SQRT_SPIN``) -- the same physical scalar the
+    diagnostic norms report for a physical-basis array.
+    """
+    k_m, y_w = fourier_.k_metric, flow_.y_weights
+    pm2 = get_norm2(correction[1:3], k_m, y_w)
+    uz2 = get_norm2(correction[:1], k_m, y_w)
+    w = jnp.asarray(_C_FROB_SQRT_SPIN, dtype=correction.real.dtype).reshape(
+        _N_TENSOR, 1, 1, 1
     )
-    err_c2 = get_norm2_conformation(
-        correction[3:], fourier_.k_metric, flow_.y_weights
-    )
-    return jnp.sqrt(err_u2 + err_c2)
+    c2 = get_norm2(correction[3:] * w, k_m, y_w)
+    return jnp.sqrt(uz2 + pm2 / 2 + c2)
 
 
 # ── Stepper factory ─────────────────────────────────────────────────

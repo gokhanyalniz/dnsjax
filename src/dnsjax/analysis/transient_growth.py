@@ -413,14 +413,15 @@ WALL_BOUNDED_TG_SYSTEMS = (
 # Component labels in the stored state basis, per family.
 _COMPONENT_LABELS = {
     "cartesian": ("u_x", "u_y", "u_z"),
-    "cylindrical": ("u_z", "u_+", "u_-"),
-    "annular": ("u_z", "u_+", "u_-"),
+    "cylindrical": ("u_z", "u_r", "u_theta"),
+    "annular": ("u_z", "u_r", "u_theta"),
 }
-# Energy component metric m_c in the stored basis, per family.
+# Energy component metric m_c in the stored basis, per family (every
+# native basis is a pointwise orthonormal physical triad).
 _COMPONENT_METRIC = {
     "cartesian": (1.0, 1.0, 1.0),
-    "cylindrical": (1.0, 0.5, 0.5),
-    "annular": (1.0, 0.5, 0.5),
+    "cylindrical": (1.0, 1.0, 1.0),
+    "annular": (1.0, 1.0, 1.0),
 }
 # TG-owned step fields; warn if the user tries to set them.
 _TG_OWNED_STEP = (
@@ -908,13 +909,34 @@ def _linear_step(gmod: Any):
     predict-and-fully-correct is the exact `$\\theta$`-implicit linear
     step of viscous + coupling + influence-matrix pressure, with the
     nonlinear self-advection never formed.
+
+    Every array crossing the raw stepper is in the geometry's solver
+    basis (cylindrical/annular: the decoupled `$u_\\pm$` one); the
+    returned step wraps it so the propagator, and everything this
+    driver exports, is in **physical** components.  Cartesian has no
+    such basis and is returned unwrapped.
     """
     from ..timestep import make_stepper
 
     raw = make_stepper(
-        gmod._l_bf, gmod._predict, gmod._correct, gmod._norm, None, None
+        gmod._l_bf,
+        gmod._predict,
+        gmod._correct,
+        gmod._norm,
+        None,
+        None,
     )
-    return raw[2]  # predict_and_fully_correct(state, *args)
+    step = raw[2]  # predict_and_fully_correct(state, *args)
+    to_solver = getattr(gmod, "to_solver_basis", None)
+    if to_solver is None:
+        return step
+    from_solver = gmod.from_solver_basis
+
+    def step_physical(state, *args):
+        out, err, num_c = step(to_solver(state), *args)
+        return from_solver(out), err, num_c
+
+    return step_physical
 
 
 def _build_propagators(
@@ -979,7 +1001,9 @@ def _energy_weight_diag(family: str, flow: Any) -> np.ndarray:
 
     Matches the solver's ``get_norm2*`` kinetic energy up to the
     per-mode ``k_metric`` / ``volume_fac`` constants (which cancel in
-    `$G$`): `$m_c\\,w_y$` with `$m_c\\in\\{1,\\tfrac12\\}$`.
+    `$G$`): `$m_c\\,w_y$` with `$m_c = 1$` in every native basis (kept
+    as an explicit per-component metric for the exported
+    ``energy_weights``' self-description).
     """
     w_y = np.asarray(flow.y_weights, dtype=np.float64)
     metric = _COMPONENT_METRIC[family]
@@ -1222,14 +1246,6 @@ def _golden_max(g: Any, lo: float, hi: float, iters: int = 40) -> float:
     return 0.5 * (lo + hi)
 
 
-def _to_rtz(q: np.ndarray) -> np.ndarray:
-    """`$(u_z, u_+, u_-)\\to(u_z, u_r, u_\\theta)$` (cyl / annular)."""
-    u_z, u_plus, u_minus = q[0], q[1], q[2]
-    u_r = 0.5 * (u_plus + u_minus)
-    u_theta = (u_plus - u_minus) / 2j
-    return np.stack([u_z, u_r, u_theta])
-
-
 def _wall_bc_check(
     frozen: Any, builtin: Any, family: str, tol: float
 ) -> float:
@@ -1350,9 +1366,9 @@ def _write_npz(
         "readme": (
             "dnsjax transient growth. Modes indexed (i2, i3): i2 = "
             "kz/m axis, i3 = kx/axial axis. Vectors are (3, Ny) in the "
-            "stored basis " + str(_COMPONENT_LABELS[family]) + "; the "
-            "_rtz arrays are (u_z, u_r, u_theta) for cyl/annular. G is "
-            "the energy growth on t_grid."
+            "stored physical basis "
+            + str(_COMPONENT_LABELS[family])
+            + ". G is the energy growth on t_grid."
         ),
         "system": params.phys.system,
         "family": family,
@@ -1394,13 +1410,6 @@ def _write_npz(
         "opt_input": stack("opt_input"),
         "opt_response": stack("opt_response"),
     }
-    if family != "cartesian":
-        out["opt_input_rtz"] = np.stack(
-            [_to_rtz(r.opt_input) for r in results]
-        )
-        out["opt_response_rtz"] = np.stack(
-            [_to_rtz(r.opt_response) for r in results]
-        )
     if cfg.save_all_times:
         out["opt_input_t"] = stack("opt_input_t")
         out["opt_response_t"] = stack("opt_response_t")
@@ -1507,15 +1516,15 @@ _NORM2_BY_FAMILY = {
 }
 
 
-def single_mode_state(vec: np.ndarray, i2: int, i3: int, family: str) -> Array:
+def single_mode_state(vec: np.ndarray, i2: int, i3: int) -> Array:
     r"""Zero spectral state carrying *vec* at global mode ``(i2, i3)``.
 
     *vec* is ``(C, Ny)`` complex in the stored component basis.  On
     the real-FFT plane (``i3 == 0``, ``i2 > 0``) the conjugate partner
-    at ``((nz-1) - i2, 0)`` is filled so the physical field is real
-    (Cartesian: plain conjugate; cyl/annular: the pm-pair swap
-    ``u_+ <-> u_-`` with the conjugate).  The mean mode ``(0, 0)`` is
-    a valid target (no partner; the caller owns its reality).
+    at ``((nz-1) - i2, 0)`` is filled so the physical field is real --
+    the plain conjugate, every native component being the transform of
+    a real field.  The mean mode ``(0, 0)`` is a valid target (no
+    partner; the caller owns its reality).
 
     Requires the unpadded single-device spectral layout (storage
     index == true mode index), which the transient-growth driver and
@@ -1545,10 +1554,7 @@ def single_mode_state(vec: np.ndarray, i2: int, i3: int, family: str) -> Array:
     state = state.at[:, :, i2, i3].set(jnp.asarray(vec))
     # Conjugate partner on the real-FFT (i3=0) plane for a real field.
     if i3 == 0 and i2 > 0:
-        if family == "cartesian":
-            partner = np.conj(vec)
-        else:  # swap u_+ <-> u_- and conjugate (pm-pair)
-            partner = np.conj(vec[[0, 2, 1]])
+        partner = np.conj(vec)
         state = state.at[:, :, n2_true - i2, 0].set(jnp.asarray(partner))
     return state
 
@@ -1645,7 +1651,7 @@ def _export_snapshot(
         )
     r = match[0]
     vec = r.opt_input if cfg.export_which == "input" else r.opt_response
-    state = single_mode_state(vec, i2, i3, family)
+    state = single_mode_state(vec, i2, i3)
     energy = mode_state_energy(state, family, gmod, fmod.flow)
     scale = float(np.sqrt(cfg.export_amplitude / energy))
     state = state * scale

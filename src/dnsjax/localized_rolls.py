@@ -339,22 +339,21 @@ def generate_cylindrical_rolls(
 ) -> Array:
     r"""Axially-localized puff for pipe flow (`$\lambda$` unused).
 
-    Components `$(u_z, u_+, u_-)$` with `$u_\pm = u_r \pm i u_\theta$`,
-    axes `$[r, m, k_z]$`.  The azimuthal cross-section is the `$m = \pm 1$`
-    roll pair (filling the pipe, fixed `$2\pi$` -- so no spanwise
-    blow-up); axial `$z$` (real `$k_z$` axis) carries a fixed-width
-    localization `$X(z)$`.  The reference cross-plane roll
-    (`$g = (1 - r^2)^2$`):
+    Components `$(u_z, u_r, u_\theta)$`, axes `$[r, m, k_z]$`.  The
+    azimuthal cross-section is the `$m = \pm 1$` roll pair (filling the
+    pipe, fixed `$2\pi$` -- so no spanwise blow-up); axial `$z$` (real
+    `$k_z$` axis) carries a fixed-width localization `$X(z)$`.  The
+    reference cross-plane roll (`$g = (1 - r^2)^2$`):
 
     .. math::
         u_r &= g \otimes \sin(m) \otimes \hat X \\
         u_\theta &= (g + r g') \otimes \cos(m) \otimes \hat X \\
         u_z &= 0
 
-    with `$g + r g' = (1 - r^2)(1 - 5 r^2)$`.  Both radial profiles vanish
-    at the wall `$r = 1$`, so `$u_\pm$` is zero there; the field is
-    peak-normalized so `$\max|\mathbf{u}'| = A$`.  ``wavelength`` is
-    ignored (the azimuthal structure is the fixed `$m = \pm 1$` mode).
+    with `$g + r g' = (1 - r^2)(1 - 5 r^2)$`.  Both radial profiles
+    vanish at the wall `$r = 1$`; the field is peak-normalized so
+    `$\max|\mathbf{u}'| = A$`.  ``wavelength`` is ignored (the
+    azimuthal structure is the fixed `$m = \pm 1$` mode).
     """
     from jax import numpy as jnp
 
@@ -383,10 +382,8 @@ def generate_cylindrical_rolls(
 
     u_r = _separable_scalar(g, _complex_axis_spectrum(sin_m), x_spec)
     u_theta = _separable_scalar(g_r, _complex_axis_spectrum(cos_m), x_spec)
-    u_plus = u_r + 1j * u_theta
-    u_minus = u_r - 1j * u_theta
     u_z = jnp.zeros_like(u_r)
-    state = jnp.stack([u_z, u_plus, u_minus]).astype(sharding.complex_type)
+    state = jnp.stack([u_z, u_r, u_theta]).astype(sharding.complex_type)
 
     peak = _peak_velocity([(g, sin_m, x_sig), (g_r, cos_m, x_sig)])
     return state * (amplitude / peak)
@@ -400,7 +397,7 @@ def generate_annular_rolls(
 ) -> Array:
     r"""Localized-spot rolls for Taylor-Couette / Dean flow.
 
-    Components `$(u_z, u_+, u_-)$` with `$u_\pm = u_r \pm i u_\theta$`,
+    Components `$(u_z, u_r, u_\theta)$`,
     axes `$[r, m, k_z]$`.  The streamwise/spanwise roles **swap** versus
     pipe: streamwise azimuthal `$\theta$` (complex `$m$` axis) carries a
     fixed-width localization `$A(\theta)$` (physical width converted to an
@@ -417,8 +414,8 @@ def generate_annular_rolls(
 
     with `$P' = 2 (r - r_1)(r_2 - r)(r_1 + r_2 - 2 r)$`.  `$P$` and `$P'$`
     vanish at both walls, so all components are exactly zero at
-    `$r = r_1, r_2$`.  Since `$u_\theta = 0$`, `$u_+ = u_- = u_r$`; the
-    field is peak-normalized so `$\max|\mathbf{u}'| = A$`.
+    `$r = r_1, r_2$`.  The field is peak-normalized so
+    `$\max|\mathbf{u}'| = A$`.
     """
     from jax import numpy as jnp
 
@@ -459,7 +456,8 @@ def generate_annular_rolls(
 
     u_r = _separable_scalar(-p_over_r, az_spec, z_dz_spec)
     u_z = _separable_scalar(pp_over_r, az_spec, z_spec)
-    state = jnp.stack([u_z, u_r, u_r]).astype(sharding.complex_type)
+    u_theta = jnp.zeros_like(u_r)
+    state = jnp.stack([u_z, u_r, u_theta]).astype(sharding.complex_type)
 
     peak = _peak_velocity(
         [(p_over_r, az_sig, z_dz), (pp_over_r, az_sig, z_sig)]

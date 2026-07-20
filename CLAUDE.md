@@ -309,6 +309,14 @@ spectral padding.
 dean/viscoelastic-dean systems instead integrate the **total** field
 (`base_flow = 0`, mean-mode body force).
 
+**Component basis (cylindrical/annular)**: the state is carried in the
+solver's decoupled `u_±`/spin basis and *observed* in physical
+components; `__main__` crosses that boundary once per state (after the
+IC, and for the diagnostics/snapshot consumers), probes/forcing convert
+their own mode columns, and anything handing a freshly built state to a
+stepper must convert first. Rules and rationale:
+`geometries/wall_bounded/CLAUDE.md`.
+
 **Moving frame of reference (`phys.u_grid`)**: translates the
 wall-bounded frame along the grid direction (`None` → laminar bulk;
 periodic systems reject it), integrated implicitly by both schemes. It
@@ -410,11 +418,15 @@ format, and the guard: the `__main__.py` module docstring.
 
 ### Snapshots
 
-A snapshot is a single uncompressed tar (`format_version: 5`) wrapping a
+A snapshot is a single uncompressed tar (`format_version: 6`) wrapping a
 zarr3 store, readable with standard tools and no dnsjax; each device
 writes its disjoint byte ranges directly (raw offset I/O / GDS, never
-compressed), and the on-disk bytes are the solver's **native**
-spectral layout at true mode counts (no transpose anywhere). The
+compressed), and the on-disk bytes are the solver's spectral layout at
+true mode counts (no transpose anywhere), in **physical components**
+for every family (cyl/annular `(u_z, u_r, u_θ)` + the physical
+conformation tensor; the solver's decoupled `u_±`/spin working basis
+is converted at the write/read boundary — see
+`wall_bounded/CLAUDE.md`). The
 stored state is the spectral perturbation `u'` for
 base-flow systems (laminar = zero array), the **total** field for
 dean/viscoelastic-dean. The embedded `params` dump is the
@@ -422,7 +434,7 @@ flow-relevant, resolved, **public-named** surface representation plus
 the relevant extension sections (`param_surface.recorded_params_dump`);
 readers map it back via `flows.registry.internalize_stored` /
 `stored_value`, and `snapshot_meta.read_snapshot_meta` rejects
-`format_version < 5` (no translation of old snapshots, by design).
+`format_version < 6` (no translation of old snapshots, by design).
 
 Resume is np-agnostic (precision must match — a mismatch rejects) and
 re-grids a changed wall-normal grid at load; `t`/`it`/`isnap` continue
@@ -596,7 +608,8 @@ one-liners. Cross-cutting notes:
   conformation parity, derivative/gradient wiring).
 - `tests/test_rolls_smoke.py`: localized-rolls IC integration for the
   4 wall-bounded rolls-builder variants (short horizon).
-- `tests/test_localized_rolls.py`: rolls construction self-test.
+- `tests/test_localized_rolls.py`: IC construction self-test (rolls +
+  the random-field divergence guard, same subprocesses).
 - `tests/test_transient_growth.py`: transient-growth analysis (host
   units, per-flow hooks, CLI features, per-flow literature anchors, and
   an m0-wedge-vs-full-circle equivalence check).

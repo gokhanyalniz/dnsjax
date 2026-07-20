@@ -251,7 +251,7 @@ def _check_standard_tools(d, ref_true, system):
         assert expected <= names, (sorted(names), sorted(expected))
         # stdlib-only metadata read (no dnsjax).
         meta = json.loads(tf.extractfile("_dnsjax_meta.json").read())
-        assert meta["format_version"] == 5, meta["format_version"]
+        assert meta["format_version"] == 6, meta["format_version"]
         # Provenance key present and non-empty (value depends on the
         # checkout, so only its presence is pinned).
         assert meta.get("git_hash"), meta
@@ -395,7 +395,7 @@ def _worker(
         from dnsjax.parameters import derived_params
 
         # Rigged-CGL radial grid (axis gap 1) at this worker's nr, with
-        # parity-definite mean-mode profiles: u_z even in r, u_+/- odd.
+        # parity-definite mean-mode profiles: u_z even in r, u_r/u_th odd.
         n_full = 2 * ny + 1
         s = -np.cos(np.arange(n_full, dtype=np.float64) * np.pi / (n_full - 1))
         rs = s[ny + 1 :]

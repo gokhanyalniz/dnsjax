@@ -13,6 +13,26 @@
 - `annular.py`: annular geometry / concentric cylinders (Fourier, CGL
   grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2
   IMM, optional mean-mode azimuthal body force `pi_theta`)
+
+**Component basis (cylindrical / annular).** Two representations, one
+boundary. The **solver basis** — decoupled `u_± = u_r ± i u_θ` plus the
+conformation-spin components, which diagonalize the implicit operators
+— is the state's in-memory form: the carried state, the RHS, the cnab2
+carry, and the interior of every stepper. The **physical basis**
+`(u_z, u_r, u_θ)` (+ the physical tensor) is what is observed or
+persisted: snapshots, diagnostics, probes, forcing profiles, ICs, the
+analysis package, the TG export. A given state crosses at most once,
+never back (the physical form is a view, dropped after use), via
+`_base.to_pm_basis`/`from_pm_basis` (aliased `to_solver_basis` /
+`from_solver_basis`, re-exported by the flow modules) or
+`annular_viscoelastic.to_spin_basis`/`from_spin_basis`. `__main__`
+owns the field-level crossings; `probes.py`/`forcing.py` convert their
+own mode columns instead. **Anything that hands a freshly built (i.e.
+physical) state to a stepper must convert first** — `__main__`'s
+post-IC line and `transient_growth._linear_step` are the templates.
+`_get_rhs_core`/`_l_bf` convert internally because the real FFT needs
+per-component Hermitian symmetry, which `u_±` lack — so physical-space
+fields and the CFL measurement are always physical components.
 - `annular_viscoelastic.py`: viscoelastic (sPTT) extension of the
   annular geometry (`ViscoelasticAnnularFlow`): 9-component state, one
   fused pseudo-spectral RHS, both schemes supported
