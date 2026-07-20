@@ -4,7 +4,7 @@ Two layers:
 
 1. **Offline units** (pure Pydantic, no JAX / no ``mpirun``):
    :func:`dnsjax.parameters.trajectory_defining_changes` against
-   stored dumps in the public-named (v4) representation
+   stored dumps in the public-named representation
    (``recorded_params_dump``) -- identical params yield no change; a
    ``phys``/``geo``/``res`` override is reported; the JAX-setup skip
    field ``res.double_precision`` and non-trajectory sections
@@ -12,7 +12,7 @@ Two layers:
    defines (e.g. the retired ``geo.axis_gap``) is dropped, while
    switching ``geo.grid_type`` (rigged <-> half-CGL) *is* a trajectory
    change; the trajectory-defining ``force`` extension section is
-   compared alongside; a pre-v4 ``format_version`` is rejected.  Plus
+   compared alongside; a pre-v5 ``format_version`` is rejected.  Plus
    ``run_grid_validation_checks`` (the half-CGL rules: rejected for
    non-cylindrical systems and with ``cnab2``, accepted on the pipe
    with ``iterative-cn``) and ``run_grid_default_resolution_checks``
@@ -113,7 +113,7 @@ def run_unit_checks() -> bool:
     ``read_snapshot_params`` solver-section skip (no JAX/mpirun).
 
     Stored dumps are built with ``recorded_params_dump`` -- the
-    public-named (v4) representation snapshots actually embed -- so
+    public-named representation snapshots actually embed -- so
     these units exercise the internalize-on-compare path.
     """
     from dnsjax.param_surface import recorded_params_dump
@@ -215,7 +215,7 @@ def run_unit_checks() -> bool:
             "retired_knob": 8,
         }
         payload = json.dumps(
-            {"format_version": 4, "system": "plane-couette", "params": legacy}
+            {"format_version": 5, "system": "plane-couette", "params": legacy}
         ).encode()
         with tempfile.NamedTemporaryFile(suffix=".tar") as fh:
             with tarfile.open(fh.name, "w") as tf:
@@ -240,20 +240,20 @@ def run_unit_checks() -> bool:
                 sec,
             )
 
-        # A pre-v4 snapshot (old params representation) is rejected
+        # A pre-v5 snapshot (old on-disk array layout) is rejected
         # outright at the metadata read.
-        payload3 = json.dumps({"format_version": 3, "params": legacy}).encode()
+        payload4 = json.dumps({"format_version": 4, "params": legacy}).encode()
         with tempfile.NamedTemporaryFile(suffix=".tar") as fh:
             with tarfile.open(fh.name, "w") as tf:
                 info = tarfile.TarInfo(META_MEMBER)
-                info.size = len(payload3)
-                tf.addfile(info, io.BytesIO(payload3))
+                info.size = len(payload4)
+                tf.addfile(info, io.BytesIO(payload4))
             try:
                 read_snapshot_params(Path(fh.name))
             except ValueError as exc:
                 assert "format_version" in str(exc), exc
             else:
-                raise AssertionError("format_version 3 was accepted")
+                raise AssertionError("format_version 4 was accepted")
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
         return False

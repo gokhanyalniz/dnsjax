@@ -1,14 +1,14 @@
 r"""Read a dnsjax snapshot into NumPy arrays (no JAX, no zarr3).
 
 :func:`read_state` opens a single-file snapshot and returns the
-velocity field in physical and/or spectral space (in the
-snapshot-native, on-disk axis layout -- never transposed), the matching
-coordinate arrays, and the embedded parameters and stats.  It reads the
-**least data possible**: only the requested velocity components and, for
-wall-bounded snapshots, only the requested wall-normal slabs are pulled
-off disk.
+velocity field in physical and/or spectral space (in the native axis
+layout -- the on-disk bytes are the solver's spectral layout, and
+nothing is ever transposed), the matching coordinate arrays, and the
+embedded parameters and stats.  It reads the **least data possible**:
+only the requested velocity components and, for wall-bounded
+snapshots, only the requested wall-normal slabs are pulled off disk.
 
-See :mod:`dnsjax.analysis._core` for the on-disk layout table, the
+See :mod:`dnsjax.analysis._core` for the native layout table, the
 component bases, and the transform conventions.
 """
 
@@ -29,7 +29,7 @@ class StateData(NamedTuple):
     ----------
     physical:
         Tuple of physical-space velocity components (one real array
-        each, snapshot-native axis layout), or ``None`` when
+        each, native axis layout), or ``None`` when
         ``return_physical`` is off.
     physical_coords:
         Tuple of physical coordinate arrays, one per axis in the data's

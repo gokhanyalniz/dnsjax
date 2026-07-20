@@ -414,15 +414,18 @@ launch details.
 
 ## Snapshots and external data access
 
-A snapshot is a **single uncompressed tar archive** (format version 4)
+A snapshot is a **single uncompressed tar archive** (format version 5)
 wrapping a **zarr3** store, a JSON metadata member (parameters, grid,
 lineage, and the writing code's git revision), and one contiguous chunk
 per state component (three velocity components, or nine for the
-viscoelastic flow). The embedded parameters are the flow-relevant,
+viscoelastic flow). Each chunk is stored **in the solver's native
+spectral layout** — the bytes on disk are exactly the in-memory
+spectral state at true (unpadded) mode counts, so saving, loading, and
+reading never transpose. The embedded parameters are the flow-relevant,
 resolved values under their public names — the same representation the
 startup printout and `--sample-toml` use; snapshots written before
-format version 4 embed a different representation and are rejected
-rather than translated. Each device writes its
+format version 5 embed a different layout and representation and are
+rejected rather than translated. Each device writes its
 disjoint byte ranges into the one file in parallel — directly between GPU
 memory and disk when GPUDirect Storage is available, through the host
 otherwise — with a concurrent mode for POSIX/parallel filesystems and a
@@ -445,11 +448,11 @@ pulling only the requested data off disk:
 from dnsjax.analysis.snapshot_export import read_state
 
 data = read_state("state00001.tar")   # NumPy only — no JAX, no solver
-u_z, u_r, u_theta = data.physical     # pipe: real fields, native (r, z, θ)
-r, z, theta = data.physical_coords    # matching coordinate arrays
+u_z, u_r, u_theta = data.physical     # pipe: real fields, native (r, θ, z)
+r, theta, z = data.physical_coords    # matching coordinate arrays
 re = data.params.phys.re              # embedded parameters
 
-# Cartesian systems return (u_x, u_y, u_z) in the native (y, x, z) layout:
+# Cartesian systems return (u_x, u_y, u_z) in the native (y, z, x) layout:
 u_x, u_y, u_z = read_state("state00002.tar").physical
 
 # Select components, read just two wall-normal slabs off disk, and also
@@ -465,8 +468,76 @@ data = read_state(
 The companion `dnsjax.analysis.snapshot_ops` module provides `divergence`,
 `curl`, `gradient`, and `integrate` that reproduce the solver's *discrete*
 operators node-for-node, and `scripts/snapshot_import.py` covers the reverse
-direction: packing a velocity field produced elsewhere into a valid
-snapshot.
+direction: packing a velocity field produced elsewhere (by another
+simulator, say) into a valid snapshot.
+
+The importer is a library (not a CLI) and **assumes the field is already
+in dnsjax's native layout**: components leading, axes $(y, z, x)$ for the
+Cartesian and triply-periodic systems and $(r, \theta, z)$ for pipe and
+Taylor-Couette — whose components are $(u_z, u_+, u_-)$ with
+$u_\pm = u_r \pm i u_\theta$ — so any axis permutation and component
+mixing from the source code's conventions is the caller's first step.
+Two conventions to keep in mind. The resolutions are the solver's
+nominal (physical) mode counts *without* the 3/2 dealiasing expansion —
+never include dealiasing zero-padding in the field or the resolution
+parameters. And every wall-bounded flow needs its wall-normal/radial
+grid points, **ascending** in dnsjax's convention: bottom wall $-1$ to
+top wall $+1$ (Cartesian), near-axis to the outer wall on $(0, 1]$
+(pipe), inner to outer radius (Taylor-Couette); the triply-periodic
+systems take no grid. Parameters go by the flow's public names, exactly
+as on the CLI:
+
+```python
+import sys
+
+import numpy as np
+
+sys.path.insert(0, "scripts")   # snapshot_import is a library, not a CLI
+from snapshot_import import convert_field_to_snapshot
+
+# Plane-Couette: perturbation u' with components (u_x, u_y, u_z) over
+# native axes (y, z, x) — shape (3, ny, nz, nx) — already in dnsjax's
+# layout, sampled on the ascending wall-normal grid ys of length ny.
+u = np.load("external_field.npy")           # (3, 65, 128, 128)
+ys = -np.cos(np.linspace(0.0, np.pi, 65))   # CGL: -1 (bottom) → +1 (top)
+convert_field_to_snapshot(
+    u, "ic_plane_couette.tar",
+    system="plane-couette", nx=128, ny=65, nz=128,
+    lx=4.0, lz=4.0, wall_normal_grid=ys, re=400.0,
+    space="physical",
+)
+
+# Pipe: (u_z, u_+, u_-) over (r, θ, z), shape (3, nr, ntheta, nz); lz
+# is the axial period (the sole free length — the azimuthal extent is
+# the wedge 2π/m0), and rs ascends over the radii on (0, 1].
+convert_field_to_snapshot(
+    u_pipe, "ic_pipe.tar",
+    system="pipe", nz=96, nr=49, ntheta=128,
+    lz=6.0, m0=1, wall_normal_grid=rs, re=3000.0,
+    space="physical",
+)
+
+# Taylor-Couette: same layout and resolution names as the pipe, driven
+# by re1/re2/eta; rs_tc ascends from r_in = η/(1−η) to r_out = 1/(1−η).
+convert_field_to_snapshot(
+    u_tc, "ic_taylor_couette.tar",
+    system="taylor-couette", nz=64, nr=49, ntheta=128,
+    lz=4.0, wall_normal_grid=rs_tc,
+    re1=400.0, re2=-200.0, eta=0.875,
+    space="physical",
+)
+```
+
+`space="spectral"` accepts already-transformed input in the same axis
+order, with one restriction on where the half spectrum may sit: only the
+**last** axis (the streamwise `nx` / axial `nz` slot) is the real-FFT
+axis, holding the `nx//2` non-negative modes (Nyquist optional, dropped);
+the other Fourier axes must carry full two-sided spectra, and
+`input_norm` names the source's FFT normalization. A source that
+`rfft`-ed a different axis must be permuted so its half axis lands last.
+The result is an ordinary snapshot: start a run from it with
+`--init.snapshot ic_plane_couette.tar` (a wall-normal grid differing from
+the run's is re-gridded at load).
 
 ## Governing equations and numerics
 

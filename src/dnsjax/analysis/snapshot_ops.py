@@ -148,8 +148,8 @@ def divergence(field, params, coords):
         rinv = _core._broadcast_along(1.0 / r, 0)
         p_ur = "utheta" if info.family == "cylindrical" else None
         d_ur = _core.radial_derivative(u_r, r, fd, info, parity=p_ur)
-        d_th = _core.fourier_derivative(u_th, 2, coords[2])  # im u_θ
-        d_z = _core.fourier_derivative(u_z, 1, coords[1])  # i k_z u_z
+        d_th = _core.fourier_derivative(u_th, 1, coords[1])  # im u_θ
+        d_z = _core.fourier_derivative(u_z, 2, coords[2])  # i k_z u_z
         return d_ur + rinv * u_r + rinv * d_th + d_z
 
     # cartesian / triply-periodic: sum_i ∂u_i/∂x_i
@@ -183,10 +183,10 @@ def curl(field, params, coords):
         cyl = info.family == "cylindrical"
 
         def d_th(f):  # ∂/∂θ = i m
-            return _core.fourier_derivative(f, 2, coords[2])
+            return _core.fourier_derivative(f, 1, coords[1])
 
         def d_z(f):  # ∂/∂z = i k_z
-            return _core.fourier_derivative(f, 1, coords[1])
+            return _core.fourier_derivative(f, 2, coords[2])
 
         def d_r(f, parity):  # ∂/∂r = D1 (parity-reduced for the pipe)
             return _core.radial_derivative(f, r, fd, info, parity=parity)
