@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-r"""Construction self-test for ``dnsjax.localized_rolls``.
+r"""Construction self-test for the in-process IC builders.
 
-Builds the deterministic streamwise-localized-rolls IC for each
-wall-bounded flow and checks the *construction* properties the smoke test
-(``tests/test_rolls_smoke.py``) cannot -- without time-stepping:
+Builds the deterministic streamwise-localized-rolls IC
+(``dnsjax.localized_rolls``) for each wall-bounded flow and checks the
+*construction* properties the smoke test (``tests/test_rolls_smoke.py``)
+cannot -- without time-stepping -- plus, in the same subprocess (no
+extra launch), the divergence guard on the random-field IC
+(``dnsjax.random_field``, the default start mode):
 
 - **finiteness** of the built spectral state;
 - **exact no-slip** at the wall nodes (the wall ``y`` / ``r`` slice is
@@ -74,6 +77,12 @@ CONFIGS = [(1, 1), (1, 2), (2, 1)]
 
 DIV_TOL = 5e-2  # loose truncation-level discrete-divergence bound
 
+# Random-field IC guard: amplitude / smoothness / seed, and the
+# *relative* divergence bound off the k_z = 0 plane (the builders
+# solve continuity there exactly, so this is machine-zero).
+RAND_AMP, RAND_SMOOTH, RAND_SEED = 0.2, 0.4, 7
+RAND_DIV_TOL = 1e-11
+
 # Peak-velocity / domain-scaling guard.  The spot is peak-normalized so
 # max|u'| = amplitude and is domain-independent (the old single-mode
 # construction blew up the cross-stream velocity ~ box length).  Built at
@@ -139,20 +148,36 @@ def _configure(system: str, np0: int, np1: int) -> None:
 # ── per-geometry discrete divergence (host numpy) ────────────────
 
 
-def _max_divergence(true: np.ndarray, system: str) -> float:
-    r"""Max |discrete divergence| of the true-mode state (host numpy)."""
+def _max_divergence(
+    true: np.ndarray, system: str, skip_kz0: bool = False
+) -> float:
+    r"""Max |discrete divergence| of the true-mode state (host numpy).
+
+    The FD matrices are built with the run's **resolved** wall-normal
+    grid selection (``geo.grid_type`` etc.), not the builder defaults
+    -- pipe resolves to ``half-cgl``, whose `$D_1$` differs from the
+    default grid's, and a mismatched reference would silently measure
+    the wrong operator.  With *skip_kz0* the `$k_z = 0$` plane (real
+    axis index 0) is excluded: the random-field builders solve
+    continuity only there (see :mod:`dnsjax.random_field`).
+    """
     from dnsjax.operators import complex_harmonics, real_harmonics
     from dnsjax.parameters import derived_params, params
 
     nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
     fd = params.res.fd_order
+    grid_args = (
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+    )
     kx_real = np.asarray(real_harmonics(nx)) * (2 * np.pi / params.geo.lx)
     if system in ("plane-couette", "plane-poiseuille"):
         from dnsjax.geometries.wall_bounded.cartesian import (
             build_cartesian_grid,
         )
 
-        _, d1, _, _ = build_cartesian_grid(ny, fd)
+        _, d1, _, _ = build_cartesian_grid(ny, fd, *grid_args)
         d1 = np.asarray(d1)
         kz = np.asarray(complex_harmonics(nz)) * (2 * np.pi / params.geo.lz)
         duy = np.einsum("ij,jzx->izx", d1, true[1])
@@ -161,40 +186,39 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
             + 1j * kz[None, :, None] * true[2]
             + 1j * kx_real[None, None, :] * true[0]
         )
-        return float(np.max(np.abs(div)))
+        return float(np.max(np.abs(div[..., 1:] if skip_kz0 else div)))
 
-    # pipe / annular: decoupled (u_z, u_+, u_-) over (r, m, k_z,ax).
-    m = np.asarray(complex_harmonics(nz))
+    # pipe / annular: native (u_z, u_r, u_theta) over (r, m, k_z,ax).
+    m = params.geo.m0 * np.asarray(complex_harmonics(nz))
     if system == "pipe":
         from dnsjax.geometries.wall_bounded.cylindrical import (
             build_cylindrical_grid,
         )
 
-        _, d1_even, d1_odd, _, _, _, inv_r = build_cylindrical_grid(ny, fd)
+        _, d1_even, d1_odd, _, _, _, inv_r = build_cylindrical_grid(
+            ny, fd, *grid_args
+        )
         d1_even, d1_odd = np.asarray(d1_even), np.asarray(d1_odd)
         inv_r = np.asarray(inv_r)
     else:  # taylor-couette / dean
         from dnsjax.geometries.wall_bounded.annular import build_annular_grid
 
         r1, r2 = derived_params.r_inner, derived_params.r_outer
-        _, d1, _, _, inv_r = build_annular_grid(ny, fd, r1, r2)
+        _, d1, _, _, inv_r = build_annular_grid(ny, fd, r1, r2, *grid_args)
         d1, inv_r = np.asarray(d1), np.asarray(inv_r)
 
     div = np.zeros_like(true[0])
     for im, mv in enumerate(m):
         if system == "pipe":
-            d1pm = d1_even if (mv + 1) % 2 == 0 else d1_odd
+            d1v = d1_even if (mv + 1) % 2 == 0 else d1_odd
         else:
-            d1pm = d1
-        up, um, uz = true[1][:, im, :], true[2][:, im, :], true[0][:, im, :]
-        div_rad = (
-            d1pm @ up
-            + (mv + 1) * inv_r[:, None] * up
-            + d1pm @ um
-            + (1 - mv) * inv_r[:, None] * um
-        ) / 2.0
-        div[:, im, :] = div_rad + 1j * kx_real[None, :] * uz
-    return float(np.max(np.abs(div)))
+            d1v = d1
+        ur, uth, uz = true[1][:, im, :], true[2][:, im, :], true[0][:, im, :]
+        div_perp = (
+            d1v @ ur + inv_r[:, None] * ur + 1j * mv * inv_r[:, None] * uth
+        )
+        div[:, im, :] = div_perp + 1j * kx_real[None, :] * uz
+    return float(np.max(np.abs(div[..., 1:] if skip_kz0 else div)))
 
 
 # ── worker ───────────────────────────────────────────────────────
@@ -239,6 +263,23 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
 
     div = _max_divergence(true, system)
     check("divergence truncation-level", div < DIV_TOL, f"max|div|={div:.2e}")
+
+    # ── random-field IC: exact discrete continuity off the k_z = 0
+    # plane.  Unlike the analytic rolls (truncation-level), the random
+    # builders *solve* continuity for one component per mode, so the
+    # residual is machine-zero -- a sharp guard on the per-geometry
+    # divergence expression each builder inverts.
+    from dnsjax.random_field import generate_random_state
+
+    rand = np.asarray(generate_random_state(RAND_AMP, RAND_SMOOTH, RAND_SEED))
+    rand_true = rand[:3, :, : nz - 1, : nx // 2]
+    scale = float(np.max(np.abs(rand_true)))
+    rdiv = _max_divergence(rand_true, system, skip_kz0=True)
+    check(
+        "random IC divergence-free (k_z != 0)",
+        rdiv < RAND_DIV_TOL * scale,
+        f"max|div|={rdiv:.2e} scale={scale:.2e}",
+    )
 
     print(f"\n[{system} {np0}x{np1}] {passed} passed, {failed} failed.")
     return 1 if failed else 0
@@ -337,12 +378,9 @@ def _peak_build(system: str, box: float, n: int) -> int:
 
     state = generate_localized_rolls(PEAK_AMP, PEAK_WIDTH, PEAK_WAVE)
     pf = np.asarray(spec_to_phys_2d(state))
-    if system in ("plane-couette", "plane-poiseuille"):
-        mag = np.sqrt(np.sum(pf**2, axis=0))
-    else:  # (u_z, u_+, u_-): |u'|^2 = |u_z|^2 + (|u_+|^2 + |u_-|^2)/2
-        mag = np.sqrt(
-            np.abs(pf[0]) ** 2 + (np.abs(pf[1]) ** 2 + np.abs(pf[2]) ** 2) / 2
-        )
+    # Native components are orthonormal in every geometry:
+    # |u'|^2 is the plain component sum.
+    mag = np.sqrt(np.sum(pf**2, axis=0))
     print(f"PEAK={float(mag.max())}")
     return 0
 

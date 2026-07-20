@@ -5,7 +5,10 @@ annular geometry (see
 :mod:`dnsjax.geometries.wall_bounded.annular_viscoelastic`):
 
 1. Spin `$\leftrightarrow$` physical tensor conversions are mutual
-   inverses (both directions).
+   inverses (both directions), as are the 9-component
+   ``to_spin_basis``/``from_spin_basis`` maps built on them -- the
+   component-basis boundary crossed once per state (``__main__``),
+   where an inversion error would be silent.
 2. The spin-diagonal tensor Laplacian equals an independently coded
    coupled cylindrical tensor Laplacian (radial/axial scalar part plus
    the `$\tfrac1{r^2}(\mathcal R + im)^2$` angular part built from the
@@ -93,8 +96,9 @@ from dnsjax.geometries.wall_bounded.annular_viscoelastic import (  # noqa: E402
     _spin_to_phys_combos,
     _tensor_laplacian_spin,
     fourier,
-    get_norm2_annular,
+    from_spin_basis,
     get_norm2_conformation,
+    to_spin_basis,
 )
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
@@ -217,6 +221,23 @@ def test_spin_physical_round_trip() -> None:
             err_msg=f"phys->spin->phys c_{name}",
         )
 
+    # The 9-component boundary maps built on them: the pair crossed
+    # once per state by ``__main__``, so a silent inversion error here
+    # would corrupt every snapshot and diagnostic.
+    state = jnp.asarray(_random_tensor(rng, (9, Nr, Nm, Nkz)))
+    assert_allclose(
+        np.asarray(from_spin_basis(to_spin_basis(state))),
+        np.asarray(state),
+        atol=1e-13,
+        err_msg="phys->spin->phys 9-component state",
+    )
+    assert_allclose(
+        np.asarray(to_spin_basis(from_spin_basis(state))),
+        np.asarray(state),
+        atol=1e-13,
+        err_msg="spin->phys->spin 9-component state",
+    )
+
 
 # Group B: tensor Laplacian
 
@@ -262,7 +283,9 @@ def test_laminar_conformation_rhs_vanishes() -> None:
     conformation slice of ``_get_rhs`` (which excludes the diffusion
     Laplacian) is ~0 relative to the conformation magnitude.
     """
-    state = jnp.copy(_laminar_state)
+    # ``_laminar_state`` is physical (the flow hands it to ``__main__``,
+    # which converts once); the RHS is a solver-basis function.
+    state = to_spin_basis(_laminar_state)
     rhs = np.asarray(_get_rhs(state, fourier, flow))
     conf_rhs = rhs[3:]
     conf_scale = float(np.max(np.abs(np.asarray(state[3:]))))
@@ -282,20 +305,21 @@ def test_laminar_full_step_fixed_point() -> None:
     state to FD truncation: velocity deviation energy ~0 and the
     conformation unchanged.
     """
-    state0 = np.asarray(_laminar_state)
+    # Solver basis on both sides of the step (``_laminar_state`` is
+    # physical; ``__main__`` performs this same single conversion).
+    state0 = np.asarray(to_spin_basis(_laminar_state))
     state_new, error, num_c = predict_and_fully_correct(
-        jnp.copy(_laminar_state)
+        to_spin_basis(_laminar_state)
     )
     state_new = np.asarray(state_new)
 
-    # Velocity deviation energy E'.
+    # Velocity deviation energy E' (solver basis: the 1/2 weight on the
+    # u_pm pair makes this the physical energy).
+    dvel = jnp.asarray(state_new[:3] - state0[:3])
     e_prime = (
         float(
-            get_norm2_annular(
-                jnp.asarray(state_new[:3] - state0[:3]),
-                fourier.k_metric,
-                flow.y_weights,
-            )
+            get_norm2(dvel[:1], fourier.k_metric, flow.y_weights)
+            + get_norm2(dvel[1:], fourier.k_metric, flow.y_weights) / 2
         )
         / 2
     )
@@ -388,19 +412,25 @@ def test_conformation_frobenius_norm() -> None:
 
     `$\langle\|c\|_F^2\rangle = \langle c_{rr}^2 + c_{\theta\theta}^2 +
     c_{zz}^2 + 2c_{r\theta}^2 + 2c_{rz}^2 + 2c_{\theta z}^2\rangle$`
-    computed from the physical components equals the spin-weighted norm.
+    computed on the native components equals the explicit off-diagonal
+    x2 reference, and the spin-weighted norm of the spin image gives
+    the same scalar (the metric identity behind the corrector
+    ``_norm``).
     """
     Nr = params.res.ny
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
     rng = np.random.default_rng(5)
 
-    # Random physical symmetric tensor -> spin components.
     phys = [jnp.asarray(_random_tensor(rng, (Nr, Nm, Nkz))) for _ in range(6)]
     c_rr, c_thth, c_rth, c_rz, c_thz, c_zz = phys
-    spin = _phys_combos_to_spin(c_rr, c_thth, c_rth, c_rz, c_thz, c_zz)
 
-    got = float(get_norm2_conformation(spin, fourier.k_metric, flow.y_weights))
+    # Native layout (c_zz, c_rz, c_theta_z, c_rr, c_theta_theta,
+    # c_r_theta).
+    native = jnp.stack([c_zz, c_rz, c_thz, c_rr, c_thth, c_rth])
+    got = float(
+        get_norm2_conformation(native, fourier.k_metric, flow.y_weights)
+    )
 
     # Physical Frobenius: off-diagonal components carry a sqrt(2) so
     # their squared contribution is 2 c^2 (symmetric tensor).
@@ -409,8 +439,15 @@ def test_conformation_frobenius_norm() -> None:
         [c_rr, c_thth, c_zz, root2 * c_rth, root2 * c_rz, root2 * c_thz]
     )
     ref = float(get_norm2(phys_stack, fourier.k_metric, flow.y_weights))
-
     assert_allclose(got, ref, rtol=1e-12, err_msg="Frobenius norm")
+
+    # Spin-image identity: weights (1, 1, 1, 1/2, 1/4, 1/4).
+    spin = _phys_combos_to_spin(c_rr, c_thth, c_rth, c_rz, c_thz, c_zz)
+    w = jnp.asarray(np.sqrt([1.0, 1.0, 1.0, 0.5, 0.25, 0.25]))[
+        :, None, None, None
+    ]
+    spin_ref = float(get_norm2(spin * w, fourier.k_metric, flow.y_weights))
+    assert_allclose(got, spin_ref, rtol=1e-12, err_msg="spin identity")
 
 
 # Group F: fused transform

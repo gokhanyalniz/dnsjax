@@ -8,8 +8,8 @@ object-like params/stats access) plus the field operators: the
 public ``derivative``/``gradient`` wrappers (axis wiring, ``ik``
 scaling, plain ``D1``, the pipe parity requirement), ``curl`` against
 the solver's ``_curl_fn`` node-for-node, the **viscoelastic**
-conformation recipes (components 3..8) against the solver's
-``_spin_to_phys_combos``, and ``integrate`` -- all **without
+conformation read-back (components 3..8) against the solver's stored
+physical tensor slice, and ``integrate`` -- all **without
 importing JAX in the test process**, so the import-time JAX-free
 guarantee is asserted directly.
 
@@ -113,8 +113,6 @@ def _generate(system: str, outdir: str) -> None:
     padded_res.set_padded_resolution(params)
     validate_parameters()
 
-    import jax.numpy as jnp
-
     from dnsjax.random_field import generate_random_state
     from dnsjax.snapshot import save_snapshot
 
@@ -132,33 +130,23 @@ def _generate(system: str, outdir: str) -> None:
             fourier,
         )
 
-        uz, up, um = state[0], state[1], state[2]
-        srthz = jnp.array([uz, (up + um) / 2, -1j * (up - um) / 2])
-        omega = _curl_fn(srthz, fourier, flow)
+        omega = _curl_fn(state, fourier, flow)
     elif system == "taylor-couette":
         from dnsjax.flows.wall_bounded.taylor_couette import flow, get_stats
         from dnsjax.geometries.wall_bounded.annular import _curl_fn, fourier
 
-        uz, up, um = state[0], state[1], state[2]
-        srthz = jnp.array([uz, (up + um) / 2, -1j * (up - um) / 2])
-        omega = _curl_fn(srthz, fourier, flow)
+        omega = _curl_fn(state, fourier, flow)
     elif system == "viscoelastic-dean":
         # 9-component state; the velocity curl path is the annular one
         # (pinned by the taylor-couette case).  The ground truth here
-        # is the *conformation* conversion: the solver's spin -> phys
-        # combos on the stored chunks, saved in the analysis component
-        # order 3..8 (c_zz, c_rz, c_thz, c_rr, c_thth, c_rth).
+        # is the stored conformation slice itself (format 6: the
+        # native components 3..8 are the physical tensor
+        # (c_zz, c_rz, c_thz, c_rr, c_thth, c_rth), read one-to-one).
         from dnsjax.flows.wall_bounded.viscoelastic_dean import get_stats
-        from dnsjax.geometries.wall_bounded.annular_viscoelastic import (
-            _spin_to_phys_combos,
-        )
 
-        c_rr, c_thth, c_rth, c_rz, c_thz, c_zz = _spin_to_phys_combos(
-            state[3], state[4], state[5], state[6], state[7], state[8]
-        )
-        conf_true = jnp.stack([c_zz, c_rz, c_thz, c_rr, c_thth, c_rth])
+        conf_true = state[3:]
         # The solver state axes (r, m, k_ax) ARE the snapshot layout
-        # read_state returns (format 5: stored untransposed).
+        # read_state returns (format 5+: stored untransposed).
         np.save(os.path.join(outdir, "conf_true.npy"), np.asarray(conf_true))
         omega = None
     else:  # triply-periodic: curl is pure Fourier, no ground-truth dump
@@ -232,10 +220,9 @@ def _check_system(system: str, family: str, outdir: str) -> None:
     _ = st.stats[next(iter(st.stats.keys()))]  # item access works
 
     # transform round-trip: machine-precision exact for every family.
-    # The transform requires u_theta Hermitian on the real (k_z) axis;
-    # the cyl/annular IC draws the k_z=0 plane with u_r, u_theta Hermitian
-    # (u_+/u_- conjugate partners), so the returned (u_z, u_r, u_theta)
-    # basis round-trips like cartesian/periodic.
+    # Every stored component is the transform of a real field (the IC
+    # draws the real-FFT-axis-0 plane per-component Hermitian), so the
+    # (u_z, u_r, u_theta) basis round-trips like cartesian/periodic.
     back = to_spectral(to_physical(st.spectral, st.params), st.params)
     rt = max(_relerr(back[i], st.spectral[i]) for i in range(3))
     assert rt < RT_TOL, f"{system}: roundtrip {rt:.2e}"
@@ -249,8 +236,8 @@ def _check_system(system: str, family: str, outdir: str) -> None:
         cerr = max(_relerr(my_omega[i], raw[i]) for i in range(3))
         assert cerr < CURL_TOL, f"{system}: curl vs dnsjax {cerr:.2e}"
 
-    # viscoelastic conformation recipes vs the solver's spin -> phys
-    # conversion (components 3..8; ground truth from _generate)
+    # viscoelastic conformation read-back vs the stored physical
+    # tensor slice (components 3..8; ground truth from _generate)
     conf_path = d / "conf_true.npy"
     if conf_path.exists():
         conf = read_state(
@@ -337,7 +324,7 @@ def _check_subsetting(system, family, d, full) -> None:
     from dnsjax.analysis import _core, read_state
 
     # single-component read returns a 1-tuple equal to the full slice
-    # (cyl/annular u_r pulls the stored u_± pair and reconstructs it).
+    # (each component reads exactly its own stored chunk).
     one = read_state(d / "state.tar", return_spectral=True, components=(1,))
     assert len(one.spectral) == 1 and len(one.physical) == 1, system
     assert _relerr(one.spectral[0], full.spectral[1]) < 1e-14, system

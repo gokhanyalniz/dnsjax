@@ -54,7 +54,12 @@ plane-Couette values `$I_{\mathrm{lam}} = D_{\mathrm{lam}} = 1/\mathrm{Re}$`.)
 
 from jax import Array
 
-from ...geometries.wall_bounded.annular import build_annular_stepper, fourier
+from ...geometries.wall_bounded.annular import (
+    build_annular_stepper,
+    fourier,
+    from_solver_basis,  # noqa: F401 — re-exported (basis boundary)
+    to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
+)
 from ._circular_couette import (
     CircularCouetteFlow,
     _get_perturbation_energy_jit,
@@ -88,10 +93,14 @@ def frozen_profile_flow(u_theta: Array) -> CircularCouetteFlow:
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around the shared circular-Couette ``_get_stats_jit``."""
+    """Shared circular-Couette ``_get_stats_jit`` (physical *state*)."""
     return _get_stats_jit(state, fourier, flow)
 
 
 def get_perturbation_energy(state: Array) -> Array:
-    """Perturbation kinetic energy E' (for the laminarization check)."""
+    r"""Perturbation kinetic energy E' (for the laminarization check).
+
+    Takes the **physical** `$(u_z, u_r, u_\theta)$` view, like
+    :func:`get_stats`, which reports the same number as ``E'``.
+    """
     return _get_perturbation_energy_jit(state, fourier, flow)

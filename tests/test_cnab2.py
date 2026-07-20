@@ -317,9 +317,10 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
         f"polymer-divergence oracle off by {d_pd:.3e} (scale {scale:.3e})"
     )
 
-    # Linear relaxation in the spin basis: -(1 - 3 eps)/Wi (c - I), with
-    # I_spin = (c_zz, c_+-) = (1, 2), other components 0 -- and the
-    # identity supported at the mean mode only (constant field).
+    # Linear relaxation in the solver spin basis: -(1 - 3 eps)/Wi
+    # (c - I), with I_spin = (c_zz, c_+-) = (1, 2), other components
+    # 0 -- and the identity supported at the mean mode only (constant
+    # field).
     ident_mm = np.asarray(jnp.where(fourier_.mean_mask, 1.0, 0.0))
     i_spin = np.zeros((6, *state.shape[1:]), dtype=np.asarray(state).dtype)
     i_spin[0] = ident_mm
@@ -340,7 +341,7 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     # zero); conformation = 2x the laminar tensor -- a valid mean-mode
     # (Hermitian-partner) tensor that is *not* the equilibrium, so the
     # remainder scale is O(1/Wi) rather than machine zero.
-    lam = fmod._laminar_state
+    lam = gmod.to_spin_basis(fmod._laminar_state)
     mstate = jnp.concatenate([lam[:3], 2.0 * lam[3:]])
     rhs_m = np.asarray(gmod._get_rhs(mstate, fourier_, flow_))[3:]
     lbf_m = np.asarray(gmod._l_bf(mstate, fourier_, flow_))[3:]
@@ -370,7 +371,11 @@ def _worker(system: str) -> None:
 
     from dnsjax.random_field import generate_random_state
 
-    state = generate_random_state(AMP, SMOOTH, SEED)
+    # ICs are built in physical components; ``_get_rhs`` / ``_l_bf``
+    # and the steppers work in the geometry's solver basis (the same
+    # single crossing ``__main__`` performs).
+    to_solver = getattr(fmod, "to_solver_basis", lambda s: s)
+    state = to_solver(generate_random_state(AMP, SMOOTH, SEED))
     fourier_, flow_ = gmod.fourier, fmod.flow
     wall_bounded = system != "kolmogorov"
 

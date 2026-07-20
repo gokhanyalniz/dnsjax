@@ -12,11 +12,15 @@ Tests cover:
    no-pivot banded solve == dense solve) -- also the regression
    guard for the parity-reduced builders' refactor onto the shared
    ``solvers._assemble_banded_operator`` helpers.
-7. ``get_norm2_cyl`` correctness.
-8. Composite integration weights on the radial CGL grid.
-9. ``interpolate_to_axis``: polynomial exactness, parity paths,
-   multi-dimensional/complex inputs.
-10. Centreline mean axial velocity under time stepping (a small
+7. ``get_norm2_cyl`` correctness, and the metric identity linking it
+   to the solver basis' 1/2-weighted norm.
+8. ``to_solver_basis``/``from_solver_basis`` round-trip: the
+   physical/solver component-basis boundary crossed once per state
+   (``__main__``), where an inversion error would be silent.
+9. Composite integration weights on the radial CGL grid.
+10. ``interpolate_to_axis``: polynomial exactness, parity paths,
+    multi-dimensional/complex inputs.
+11. Centreline mean axial velocity under time stepping (a small
     random perturbation keeps the interpolated ``r = 0`` mean
     axial velocity near the laminar centreline value 1).
 
@@ -84,8 +88,10 @@ from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     build_radial_cgl_grid,
     extract_mean_mode,
     fourier,
+    from_solver_basis,
     get_norm2_cyl,
     interpolate_to_axis,
+    to_solver_basis,
 )
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
@@ -470,7 +476,14 @@ def test_pallas_vs_dense_on_cylindrical_operators() -> None:
 
 
 def test_get_norm2_cyl() -> None:
-    r"""``get_norm2_cyl`` matches manual `$(|u_+|^2+|u_-|^2)/2+|u_z|^2$`."""
+    r"""``get_norm2_cyl`` is the plain norm of `$(u_z, u_r, u_\theta)$`.
+
+    The native state carries physical components, so the geometry norm
+    is the unweighted component sum -- and equals the 1/2-weighted norm
+    of the solver-basis image `$(u_z, u_+, u_-)$` (the metric identity
+    `$|u_r|^2 + |u_\theta|^2 = (|u_+|^2 + |u_-|^2)/2$` behind the
+    corrector ``_norm``).
+    """
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
     Nr = params.res.ny
@@ -484,13 +497,56 @@ def test_get_norm2_cyl() -> None:
     y_w = pipe_flow.y_weights
     got = float(get_norm2_cyl(state, k_m, y_w))
 
-    # Reference: separate norm2 calls.
-    pm = jnp.stack([state[1], state[2]])
-    pm_norm2 = float(get_norm2(pm, k_m, y_w))
-    uz_norm2 = float(get_norm2(state[0:1], k_m, y_w))
-    ref = pm_norm2 / 2 + uz_norm2
-
+    # Reference: plain per-component norms.
+    ref = float(get_norm2(state[1:], k_m, y_w)) + float(
+        get_norm2(state[0:1], k_m, y_w)
+    )
     assert_allclose(got, ref, atol=1e-12, err_msg="get_norm2_cyl")
+
+    # Metric identity vs the solver-basis image.
+    pm = jnp.stack(
+        [state[0], state[1] + 1j * state[2], state[1] - 1j * state[2]]
+    )
+    pm_ref = float(get_norm2(pm[1:], k_m, y_w)) / 2 + float(
+        get_norm2(pm[0:1], k_m, y_w)
+    )
+    assert_allclose(got, pm_ref, rtol=1e-12, err_msg="pm metric identity")
+
+
+def test_pm_basis_round_trip() -> None:
+    r"""``to_solver_basis`` / ``from_solver_basis`` invert exactly.
+
+    The pair is crossed once per state at the physical/solver boundary
+    (``__main__``), so a silent inversion error would corrupt every
+    snapshot, diagnostic and initial condition without failing loudly.
+    """
+    Nm = params.res.nz - 1
+    Nkz = params.res.nx // 2
+    Nr = params.res.ny
+    rng = np.random.default_rng(11)
+    state = jnp.asarray(
+        rng.standard_normal((3, Nr, Nm, Nkz))
+        + 1j * rng.standard_normal((3, Nr, Nm, Nkz))
+    )
+    assert_allclose(
+        np.asarray(from_solver_basis(to_solver_basis(state))),
+        np.asarray(state),
+        atol=1e-14,
+        err_msg="phys->pm->phys",
+    )
+    assert_allclose(
+        np.asarray(to_solver_basis(from_solver_basis(state))),
+        np.asarray(state),
+        atol=1e-14,
+        err_msg="pm->phys->pm",
+    )
+    # u_z is untouched by the mixing.
+    assert_allclose(
+        np.asarray(to_solver_basis(state)[0]),
+        np.asarray(state[0]),
+        atol=0.0,
+        err_msg="u_z must pass through",
+    )
 
 
 # Group D: Integration
@@ -668,9 +724,10 @@ def test_axis_extrapolation_weights_shared_leaf() -> None:
 def test_parity_dispatch_interpolation() -> None:
     """The ``__main__`` spectral parity-tuple resume dispatch: applying
     ``T_even``/``T_odd`` per azimuthal mode (u_z parity ``(-1)^m``,
-    u_pm parity ``(-1)^{m+1}``) to a parity-consistent state recovers
-    the field on the new radial grid to machine precision.  Mirrors
-    ``_interpolate_if_needed``'s tuple branch and layout (3, r, m, kz)."""
+    u_r/u_theta parity ``(-1)^{m+1}``) to a parity-consistent state
+    recovers the field on the new radial grid to machine precision.
+    Mirrors ``_interpolate_if_needed``'s tuple branch and layout
+    (3, r, m, kz)."""
     from dnsjax.fd import cgl_parity_interpolation_matrices
     from dnsjax.operators import complex_harmonics
 
@@ -697,7 +754,7 @@ def test_parity_dispatch_interpolation() -> None:
     t_even, t_odd = cgl_parity_interpolation_matrices(ny_old, ny_new, 1, 1)
     m_is_even = m % 2 == 0
     t_p = np.where(m_is_even[:, None, None], t_even, t_odd)  # u_z
-    t_v = np.where(m_is_even[:, None, None], t_odd, t_even)  # u_pm
+    t_v = np.where(m_is_even[:, None, None], t_odd, t_even)  # u_r/u_th
     t_p_j = jnp.asarray(t_p, dtype=src.dtype)
     t_v_j = jnp.asarray(t_v, dtype=src.dtype)
     s0 = jnp.einsum("mij, jmk -> imk", t_p_j, src[0])
@@ -719,11 +776,14 @@ def test_centerline_mean_axial_velocity() -> None:
     """
     from dnsjax.flows.wall_bounded.pipe import (
         predict_and_fully_correct,
+        to_solver_basis,
     )
     from dnsjax.random_field import generate_random_state
 
     amp = 1e-3
-    state = generate_random_state(amp, 0.4, 3)
+    # ICs are built in physical components; the stepper works in the
+    # solver basis (``__main__`` performs this same single crossing).
+    state = to_solver_basis(generate_random_state(amp, 0.4, 3))
     rs = np.asarray(pipe_flow.rs)
 
     def centreline(s) -> float:

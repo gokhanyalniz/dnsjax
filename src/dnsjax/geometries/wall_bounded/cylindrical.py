@@ -33,9 +33,28 @@ scalar Laplacian structure: after decoupling, each component
 satisfies a Helmholtz equation whose radial operator is
 `$\partial_r^2 + (1/r)\partial_r - m_{\mathrm{eff}}^2/r^2$`.
 
+This is the solver's **working** basis: the state carried between
+steps, the RHS, the corrector iterates and every operator below
+live in `$(u_z, u_+, u_-)$`.  It is not what anything outside the
+time stepper sees -- snapshots, diagnostics, probes, initial
+conditions and the analysis package all work in the physical
+triad `$(u_z, u_r, u_\theta)$`, and a given state crosses between
+the two at most once, at that boundary (``to_pm_basis`` /
+``from_pm_basis`` in ``_base.py``, driven by
+:mod:`dnsjax.__main__`; the wall-bounded ``CLAUDE.md``).
+
+:func:`_get_rhs_core` and :func:`_l_bf` convert internally because
+the real FFT demands it: every physical component is the
+transform of a real field and is individually Hermitian-symmetric,
+whereas `$u_\pm$` are not
+(`$\overline{\hat u_+(k)} = \hat u_-(-k)$`).  The physical-space
+fields -- and hence the CFL measurement -- are therefore always
+`$(u_z, u_r, u_\theta)$`.
+
 Despite having different `$m_{\mathrm{eff}}$` values, `$u_+$`
-and `$u_-$` share the **same parity** `$(-1)^{m+1}$`.  Parity
-is a kinematic property (how a field transforms under
+and `$u_-$` share the **same parity** `$(-1)^{m+1}$` -- that of
+`$u_r$` and `$u_\theta$`, preserved by the pointwise mixing.
+Parity is a kinematic property (how a field transforms under
 `$r \to -r$` on the auxiliary grid), while `$m_{\mathrm{eff}}$`
 determines the operator spectrum.  The coincidence
 `$(-1)^{m+1} = (-1)^{m-1}$` makes the parity identical.
@@ -58,6 +77,9 @@ field component:
   `$m_{\mathrm{eff}} = m + 1$` in the Helmholtz operator.
 - `$u_- = u_r - i\,u_\theta$`: parity `$(-1)^{m+1}$`,
   `$m_{\mathrm{eff}} = m - 1$` in the Helmholtz operator.
+- `$u_r$` and `$u_\theta$` share that same `$(-1)^{m+1}$`
+  class, so the physical-basis diagnostics and the resume
+  regrid use the parity machinery unchanged.
 
 Even parity (`$m_{\mathrm{eff}}$` even) means `$g$` is
 symmetric about `$r = 0$`: `$g'(0) = 0$` (Neumann-like).
@@ -127,6 +149,7 @@ from ._base import (
     base_flow_coupling,
     build_wall_bounded_stepper,
     extract_mean_mode,
+    from_pm_basis,
     frozen_profile_flow,  # noqa: F401 — re-exported
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
@@ -136,7 +159,16 @@ from ._base import (
     pad_base_flow,  # noqa: F401 — re-exported
     phys_to_spec,  # noqa: F401 — re-exported
     spec_to_phys,  # noqa: F401 — re-exported
+    to_pm_basis,
 )
+
+#: Role aliases for the basis boundary.  The flow modules re-export
+#: these so :mod:`dnsjax.__main__` can move a state between the
+#: physical representation every consumer sees and the solver basis,
+#: without knowing which geometry it is driving (Cartesian and
+#: triply-periodic simply have none).
+to_solver_basis = to_pm_basis
+from_solver_basis = from_pm_basis
 
 
 def _ghost_row_count(D1_ghost: np.ndarray, D2_ghost: np.ndarray) -> int:
@@ -306,23 +338,27 @@ def get_pert_enstrophy_cyl(
 
     Uses the identity
     `$\Omega' = \langle |\nabla \mathbf{u}'|^2 \rangle$`,
-    split into radial derivative, azimuthal, and axial terms:
+    split into radial-derivative, azimuthal, and axial terms.
+    The azimuthal term is the covariant azimuthal gradient in
+    `$(u_z, u_r, u_\theta)$` components,
 
     .. math::
-        \Omega' = \langle |D_1 \mathbf{u}'|^2 \rangle
-        + \langle |m_{\mathrm{eff}}/r\;\mathbf{u}'|^2 \rangle
-        + \langle k_z^2\,|\mathbf{u}'|^2 \rangle
+        \frac{|im\,u_z|^2 + |im\,u_r - u_\theta|^2
+        + |im\,u_\theta + u_r|^2}{r^2},
 
-    where `$m_{\mathrm{eff}} = m$` for `$u_z$`,
-    `$m + 1$` for `$u_+$`, `$m - 1$` for `$u_-$`.
+    pointwise equal to the `$m_{\mathrm{eff}}$`-diagonal form of the
+    solver-interior decoupled basis
+    (`$|m u_z|^2 + \tfrac{1}{2}|(m{+}1)u_+|^2 +
+    \tfrac{1}{2}|(m{-}1)u_-|^2$`).
     The radial derivative uses parity-dependent FD matrices:
     `$D_1 = D_{1,\mathrm{pos}} + (-1)^{m_{\mathrm{eff}}}
-    D_{1,\mathrm{ghost}}$`.
+    D_{1,\mathrm{ghost}}$` (with `$u_r$`, `$u_\theta$` sharing the
+    `$(-1)^{m+1}$` parity class of `$u_\pm$`).
 
     Parameters
     ----------
     state:
-        Spectral velocity in `$(u_z, u_+, u_-)$` form,
+        Spectral velocity in `$(u_z, u_r, u_\theta)$` form,
         shape ``(3, Nr, Nm, Nkz)``.
     D1_pos:
         Common part of first-derivative FD matrix.
@@ -342,27 +378,28 @@ def get_pert_enstrophy_cyl(
     y_weights:
         Radial integration weights `$w_j r_j$`.
     """
-    # Parity signs: u_z has parity (-1)^m, u_± has (-1)^{m+1}.
+    # Parity signs: u_z has parity (-1)^m, u_r/u_theta (-1)^{m+1}.
     p_sign_z = m_is_even * 2 - 1
-    p_sign_pm = -p_sign_z
+    p_sign_v = -p_sign_z
 
     # Batched D1 matvecs (2 GEMMs for all 3 components; the
     # ghost GEMM covers only its g nonzero rows).
     g = D1_ghost.shape[0]
     dy_pos = apply_y_matrix(D1_pos, state)
     dy_ghost = apply_y_matrix(D1_ghost, state)
-    p_signs = jnp.stack([p_sign_z, p_sign_pm, p_sign_pm])
+    p_signs = jnp.stack([p_sign_z, p_sign_v, p_sign_v])
     dy_state = dy_pos.at[:, :g].add(p_signs * dy_ghost)
 
     enstrophy_D1 = get_norm2_cyl(dy_state, k_metric, y_weights)
 
-    # Azimuthal term: m_eff/r * u for each component.
+    # Azimuthal term: covariant azimuthal gradient over r.
     inv_r_3d = inv_r[:, None, None]
+    im = 1j * m
     state_m = jnp.stack(
         [
-            m * inv_r_3d * state[0],
-            (m + 1) * inv_r_3d * state[1],
-            (m - 1) * inv_r_3d * state[2],
+            im * inv_r_3d * state[0],
+            inv_r_3d * (im * state[1] - state[2]),
+            inv_r_3d * (im * state[2] + state[1]),
         ]
     )
     enstrophy_m = get_norm2_cyl(state_m, k_metric, y_weights)
@@ -374,28 +411,24 @@ def get_pert_enstrophy_cyl(
 
 
 def get_norm2_cyl(state: Array, k_metric: Array, y_weights: Array) -> Array:
-    r"""Cylindrical squared L2 norm for `$(u_z, u_+, u_-)$`.
+    r"""Cylindrical squared L2 norm for `$(u_z, u_r, u_\theta)$`.
 
-    The physical velocity magnitude satisfies
-    `$|u_r|^2 + |u_\theta|^2 + |u_z|^2
-    = (|u_+|^2 + |u_-|^2)/2 + |u_z|^2$`,
-    so the `$u_\pm$` components carry a factor of 1/2
-    relative to `$u_z$`.
+    The component axis is a pointwise orthonormal physical triad, so
+    this is the plain component sum of the shared :func:`get_norm2`;
+    kept as a named wrapper for signature symmetry with the other
+    geometry norms (the radial Jacobian `$r$` lives in *y_weights*).
 
     Parameters
     ----------
     state:
-        Spectral velocity in `$(u_z, u_+, u_-)$` form,
-        shape ``(3, Nr, Nm, Nkz)``.
+        Spectral velocity in `$(u_z, u_r, u_\theta)$` form,
+        shape ``(3, Nr, Nm, Nkz)`` (any component count works).
     k_metric:
         Hermitian-symmetry weight for the real FFT axis.
     y_weights:
         Radial integration weights `$w_j r_j$`.
     """
-    u_z, u_plus, u_minus = state[0], state[1], state[2]
-    pm_norm2 = get_norm2(jnp.stack([u_plus, u_minus]), k_metric, y_weights)
-    uz_norm2 = get_norm2(u_z[None], k_metric, y_weights)
-    return pm_norm2 / 2 + uz_norm2
+    return get_norm2(state, k_metric, y_weights)
 
 
 # ── Half-diameter grid and parity-reduced FD matrices ──────────────
@@ -929,12 +962,15 @@ class CylindricalFlow:
     ``geo.grid_type``), parity-reduced FD matrices, and all
     per-mode IMM operators.
 
-    The velocity state is stored in decoupled form
-    `$(u_z, u_+, u_-)$` where
+    The velocity state is carried through the solver in decoupled
+    form `$(u_z, u_+, u_-)$` where
 
     .. math::
         u_+ = u_r + i\,u_\theta, \qquad
-        u_- = u_r - i\,u_\theta.
+        u_- = u_r - i\,u_\theta,
+
+    and in the physical triad everywhere outside it (the module
+    docstring; ``to_pm_basis``/``from_pm_basis``).
 
     Three separate Helmholtz operators are built:
 
@@ -1540,11 +1576,15 @@ def _l_bf(
     r"""Linear base-flow coupling (FFT-free), in `$(u_z, u_+, u_-)$`.
 
     Mirrors :func:`_get_rhs_core`'s conversion to the `$(u_z, u_r,
-    u_\theta)$` triad, but evaluates only the two *linear* base-flow
+    u_\theta)$` triad (the cross products are defined on the
+    physical triad), but evaluates only the two *linear* base-flow
     cross-product terms (:func:`base_flow_coupling`) -- no Fourier
     transform (the base flow is a radial profile, and
-    `$\boldsymbol{\omega}'$` is the spectral :func:`_curl_fn`).  The
-    pure self-advection `$\mathbf{u}' \times \boldsymbol{\omega}' =
+    `$\boldsymbol{\omega}'$` is the spectral :func:`_curl_fn`; that
+    curl is the same subexpression ``get_rhs`` builds, so evaluating
+    both at one state costs one curl -- XLA CSE, see
+    ``_cnab2_lbf_core``).  The pure self-advection
+    `$\mathbf{u}' \times \boldsymbol{\omega}' =
     \text{get\_rhs} - \text{\_l\_bf}$` stays explicit; this term (with
     its stiff radial derivative on the wall-clustered grid) is made
     implicit by the CN/AB2 scheme -- see ``step_cnab2`` in
@@ -1560,10 +1600,7 @@ def _l_bf(
     ``_l_bf`` and the ``TimeStepping`` docstring in
     :mod:`dnsjax.parameters`.
     """
-    u_z, u_plus, u_minus = state[0], state[1], state[2]
-    ur = (u_plus + u_minus) / 2
-    utheta = -1j * (u_plus - u_minus) / 2
-    state_rthz = jnp.array([u_z, ur, utheta])
+    state_rthz = from_pm_basis(state)
 
     omega = _curl_fn(state_rthz, fourier_, flow_)
     base = flow_.base_flow
@@ -1571,10 +1608,9 @@ def _l_bf(
     if params.step.implicit_mean_coupling:
         base = base + extract_mean_mode(state_rthz)[:, :, None, None]
         curl_base = curl_base + extract_mean_mode(omega)[:, :, None, None]
-    l_z, l_r, l_theta = base_flow_coupling(state_rthz, omega, base, curl_base)
-    l_bf = jnp.array([l_z, l_r + 1j * l_theta, l_r - 1j * l_theta])
+    l_bf = to_pm_basis(base_flow_coupling(state_rthz, omega, base, curl_base))
     # Moving frame: the convective frame term (the same expression
-    # ``_get_rhs_core`` adds, diagonal in the native basis) belongs
+    # ``_get_rhs_core`` adds, diagonal in the solver basis) belongs
     # to the linear coupling, so CN/AB2 integrates it implicitly.
     u_grid = derived_params.u_grid
     if u_grid == 0:
@@ -1595,21 +1631,19 @@ def _get_rhs_core(
 ) -> Array | tuple[Array, dict[str, Array]]:
     r"""Evaluate the nonlinear RHS in `$(u_z, u_+, u_-)$` form.
 
-    1. Convert `$(u_z, u_+, u_-) \to (u_z, u_r, u_\theta)$`.
+    1. Convert `$(u_z, u_+, u_-) \to (u_z, u_r, u_\theta)$` -- the
+       real FFTs need components that are individually
+       Hermitian-symmetric, which `$u_\pm$` are not, so the
+       physical-space fields (and the *measure_fn* CFL) are always
+       the physical triad.
     2. Compute the rotational-form nonlinear term via
        :func:`~dnsjax.rhs.get_nonlin` with the cylindrical
        curl (and the optional physical-space *measure_fn*).
     3. Convert `$(NL_z, NL_r, NL_\theta)
        \to (NL_z, NL_+, NL_-)$`.
     """
-    u_z, u_plus, u_minus = state[0], state[1], state[2]
-    ur = (u_plus + u_minus) / 2
-    utheta = -1j * (u_plus - u_minus) / 2
-
-    state_rthz = jnp.array([u_z, ur, utheta])
-
     nonlin_rthz = get_nonlin(
-        state_rthz,
+        from_pm_basis(state),
         flow_.base_flow_padded,
         flow_.curl_base_flow_padded,
         spec_to_phys_2d,
@@ -1620,20 +1654,12 @@ def _get_rhs_core(
     if measure_fn is not None:
         nonlin_rthz, measurements = nonlin_rthz
 
-    NL_z, NL_r, NL_theta = (
-        nonlin_rthz[0],
-        nonlin_rthz[1],
-        nonlin_rthz[2],
-    )
-    NL_plus = NL_r + 1j * NL_theta
-    NL_minus = NL_r - 1j * NL_theta
-
-    rhs = jnp.array([NL_z, NL_plus, NL_minus])
+    rhs = to_pm_basis(nonlin_rthz)
     # Moving frame: convective-form frame term
     # `$+ i k_z U_{grid} \mathbf{u}'$` -- the axial derivative is
     # component-diagonal in the `$(u_z, u_+, u_-)$` basis, so it is
-    # added on the native state (mode-diagonal, divergence-free; see
-    # ``pad_base_flow``).
+    # added on the solver-basis state (mode-diagonal,
+    # divergence-free; see ``pad_base_flow``).
     u_grid = derived_params.u_grid
     if u_grid != 0:
         rhs = rhs + (1j * u_grid) * fourier_.kz * state
@@ -2021,10 +2047,17 @@ def _norm(
     fourier_: Fourier,
     flow_: CylindricalFlow,
 ) -> Array:
-    """L2 convergence norm with cylindrical weighting."""
-    return jnp.sqrt(
-        get_norm2_cyl(correction, fourier_.k_metric, flow_.y_weights)
-    )
+    r"""L2 convergence norm of a solver-basis correction.
+
+    Corrections live in the decoupled `$(u_z, u_+, u_-)$` basis, so
+    the 1/2 weight on the pair makes this the *physical* norm of the
+    corresponding correction
+    (`$|u_r|^2 + |u_\theta|^2 = (|u_+|^2 + |u_-|^2)/2$`) -- the same
+    scalar :func:`get_norm2_cyl` reports for a physical-basis array.
+    """
+    pm2 = get_norm2(correction[1:], fourier_.k_metric, flow_.y_weights)
+    uz2 = get_norm2(correction[:1], fourier_.k_metric, flow_.y_weights)
+    return jnp.sqrt(uz2 + pm2 / 2)
 
 
 # ── Stepper factory ─────────────────────────────────────────────
@@ -2054,7 +2087,9 @@ def build_cylindrical_stepper(
     ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the
     FFT-free base-flow coupling) is passed so the CN/AB2 scheme
     treats it implicitly; ``_build_dt_leaves`` backs the adaptive-dt
-    ``set_dt`` rebuild.
+    ``set_dt`` rebuild.  Every array crossing these steppers is in
+    the decoupled `$(u_z, u_+, u_-)$` solver basis (the module
+    docstring).
     """
     return build_wall_bounded_stepper(
         _get_rhs,

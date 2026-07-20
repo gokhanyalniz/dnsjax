@@ -149,16 +149,21 @@ def _complex_harmonics_np(n: int) -> np.ndarray:
     return np.concatenate([qs[: n // 2], qs[n // 2 + 1 :]])
 
 
-def _column_draw(seed: int, i2: int, i3: int, n: int) -> np.ndarray:
-    """Independent complex ``(3, n)`` draw keyed by global ``(i2, i3)``."""
-    rng = np.random.default_rng((seed, i2, i3))
-    return rng.standard_normal((3, n)) + 1j * rng.standard_normal((3, n))
+def _column_draw(
+    seed: int, i2: int, i3: int, n: int, rows: int = 3, stream: tuple = ()
+) -> np.ndarray:
+    """Independent complex ``(rows, n)`` draw keyed by global
+    ``(i2, i3)``; *stream* extends the PRNG key to keep e.g. the
+    viscoelastic conformation draw distinct from the velocity draw."""
+    rng = np.random.default_rng((seed, i2, i3, *stream))
+    return rng.standard_normal((rows, n)) + 1j * rng.standard_normal((rows, n))
 
 
 def _hermitian_column(
-    seed: int, i2: int, n2: int, n: int, pm_pair: bool = False
+    seed: int, i2: int, n2: int, n: int, rows: int = 3, stream: tuple = ()
 ) -> np.ndarray:
-    r"""Conjugate-consistent ``(3, n)`` draw for the real-FFT-axis-0 plane.
+    r"""Conjugate-consistent ``(rows, n)`` draw for the real-FFT-axis-0
+    plane.
 
     Mirrors :func:`enforce_hermitian_slice`'s pairing over the length
     ``n2 - 1`` complex axis (axis-2 index ``i2``): index 0 real,
@@ -166,38 +171,24 @@ def _hermitian_column(
     of the same canonical draw, so both owning devices agree without
     communication), and the unpaired mode (odd ``n2``) zeroed.
 
-    The reality constraint is on the **physical** components.  In the
-    Cartesian/periodic `$(u_x, u_y, u_z)$` basis (``pm_pair=False``) all
-    three are real fields, so each is made Hermitian individually.  In the
-    cylindrical/annular `$(u_z, u_+, u_-)$` basis (``pm_pair=True``) the
-    real fields are `$u_z$` and `$u_r = (u_+ + u_-)/2$`,
-    `$u_\theta = (u_+ - u_-)/(2i)$`; making *those* Hermitian requires
-    `$u_+$` and `$u_-$` to be conjugate **partners** across `$m$`
-    (`$u_+(-m) = \overline{u_-(m)}$`, `$u_+(0) = \overline{u_-(0)}$`), not
-    each individually Hermitian -- which would instead force `$u_\theta$`
-    anti-Hermitian: a non-physical azimuthal velocity whose axial-mean
-    plane the real-FFT inverse cannot represent (it is dropped, losing the
-    mean swirl).  `$u_z$` (component 0, a real field) stays self-conjugate
-    either way.
+    Every component built here -- Cartesian `$(u_x, u_y, u_z)$`,
+    cylindrical / annular `$(u_z, u_r, u_\theta)$`, and the physical
+    conformation tensor -- is the transform of a real field, so each
+    row is made Hermitian individually.  (ICs are built in physical
+    components throughout; ``__main__`` converts the finished state
+    into the solver basis once.)
     """
     n_pos = n2 // 2
     if i2 == 0:
-        rng = np.random.default_rng((seed, 0, 0))
-        if not pm_pair:
-            return rng.standard_normal((3, n)).astype(np.complex128)
-        d = rng.standard_normal((3, n)) + 1j * rng.standard_normal((3, n))
-        # u_z real; u_- = conj(u_+) makes u_r, u_theta real at m = 0.
-        return np.array([d[0].real, d[1], np.conj(d[1])])
+        rng = np.random.default_rng((seed, 0, 0, *stream))
+        return rng.standard_normal((rows, n)).astype(np.complex128)
     if n2 % 2 == 1 and i2 == n_pos:
-        return np.zeros((3, n), dtype=np.complex128)
+        return np.zeros((rows, n), dtype=np.complex128)
     canonical = i2 if i2 < n_pos else (n2 - 1) - i2
-    rng = np.random.default_rng((seed, canonical, 0))
-    d = rng.standard_normal((3, n)) + 1j * rng.standard_normal((3, n))
+    rng = np.random.default_rng((seed, canonical, 0, *stream))
+    d = rng.standard_normal((rows, n)) + 1j * rng.standard_normal((rows, n))
     if i2 < n_pos:
         return d
-    if pm_pair:
-        # Negative m: u_z self-conjugate; u_+ <-> u_- conjugate partners.
-        return np.array([np.conj(d[0]), np.conj(d[2]), np.conj(d[1])])
     return np.conj(d)
 
 
@@ -377,16 +368,16 @@ def generate_cylindrical(
     Built per device (no full-array replication): each device fills only
     its own ``(m, k_z)`` modes, keyed by the global mode index.  Returns
     the sharded spectral state of shape ``(3, Nr, Nm, Nkz)`` in
-    `$(u_z, u_+, u_-)$` form.  The radial `$u_\pm$` carry a squared wall
-    window `$(1-r)^2$` (value and first derivative vanish at `$r = 1$`),
-    so for `$k_z \neq 0$` the continuity-derived `$u_z$` inherits a
-    truncation-level wall value (projected by the first corrector step).
-    The inner end `$r = 0$` is the axis (regularity via parity), not a
-    wall.  For `$k_z = 0$` a small residual divergence remains and is
-    projected out by the corrector.  The `$k_z = 0$` plane is drawn with
-    `$u_z, u_r, u_\theta$` Hermitian (`$u_+ \leftrightarrow u_-$` conjugate
-    partners; see :func:`_hermitian_column` ``pm_pair``) so the physical
-    azimuthal velocity -- including its axial mean -- is real.
+    `$(u_z, u_r, u_\theta)$` form.  `$u_r$` and `$u_\theta$` carry a
+    squared wall window `$(1-r)^2$` (value and first derivative vanish
+    at `$r = 1$`), so for `$k_z \neq 0$` the continuity-derived `$u_z$`
+    inherits a truncation-level wall value (projected by the first
+    corrector step).  The inner end `$r = 0$` is the axis (regularity
+    via parity), not a wall.  For `$k_z = 0$` a small residual
+    divergence remains and is projected out by the corrector.  The
+    `$k_z = 0$` plane is drawn per-component Hermitian
+    (:func:`_hermitian_column`) so every physical component --
+    including the axial-mean swirl -- is real.
     """
     from .geometries.wall_bounded.cylindrical import (
         build_cylindrical_grid,
@@ -421,19 +412,20 @@ def generate_cylindrical(
 
     decay = 1.0 - smoothness
     window_wall = 1.0 - rs_np  # u_z: f(1) = 0
-    window_wn = window_wall**2  # u_pm: value + derivative zero at r=1
+    window_wn = window_wall**2  # u_r/u_th: value + derivative zero at r=1
 
     def fill_local(buf, m_start, n_m, kz_start, n_kz):
         for li in range(n_m):
             g2 = m_start + li  # global m index (axis 2)
             m_val = int(m_np[g2])
-            # u_pm parity (-1)^{m+1}: even D1 when m odd, else odd D1.
-            D1_pm = D1_even_np if (m_val + 1) % 2 == 0 else D1_odd_np
+            # u_r/u_theta parity (-1)^{m+1}: even D1 when m odd, else
+            # odd D1.
+            D1_v = D1_even_np if (m_val + 1) % 2 == 0 else D1_odd_np
             for lj in range(n_kz):
                 g3 = kz_start + lj  # global k_z index (axis 3, real)
                 kz_val = kz_np[g3]
                 if g3 == 0:
-                    col = _hermitian_column(seed, g2, nz, Nr, pm_pair=True)
+                    col = _hermitian_column(seed, g2, nz, Nr)
                 else:
                     col = _column_draw(seed, g2, g3, Nr)
                 col[0] *= window_wall
@@ -442,20 +434,18 @@ def generate_cylindrical(
                 # Parity windows at the axis r=0.
                 if m_val % 2 != 0:  # u_z odd when m odd
                     col[0] *= rs_np
-                else:  # u_+, u_- odd when m even
+                else:  # u_r, u_theta odd when m even
                     col[1] *= rs_np
                     col[2] *= rs_np
-                # Continuity-derived u_z for k_z != 0 (same operators).
+                # Continuity-derived u_z for k_z != 0: the cylindrical
+                # divergence D1 u_r + u_r/r + (im/r) u_theta.
                 if kz_val != 0:
-                    u_plus = col[1]
-                    u_minus = col[2]
-                    div_radial = (
-                        D1_pm @ u_plus
-                        + (m_val + 1) * inv_r_np * u_plus
-                        + D1_pm @ u_minus
-                        + (1 - m_val) * inv_r_np * u_minus
-                    ) / 2.0
-                    col[0] = -div_radial / (1j * kz_val)
+                    div_perp = (
+                        D1_v @ col[1]
+                        + inv_r_np * col[1]
+                        + 1j * m_val * inv_r_np * col[2]
+                    )
+                    col[0] = -div_perp / (1j * kz_val)
                 # Energy = envelope^2 (no continuity 1/k low-k inflation).
                 col = _normalize_mode(
                     col,
@@ -485,16 +475,16 @@ def generate_annular(
     Built per device (no full-array replication): each device fills only
     its own ``(m, k_z)`` modes, keyed by the global mode index.  Returns
     the sharded spectral state of shape ``(3, Nr, Nm, Nkz)`` in
-    `$(u_z, u_+, u_-)$` form.  The radial `$u_\pm$` carry a squared
-    no-slip window `$((r-r_1)(r_2-r))^2$` (value and first derivative
-    vanish at both walls), so for `$k_z \neq 0$` the continuity-derived
-    `$u_z$` inherits a truncation-level wall value (projected by the first
-    corrector step); the independent components keep exact wall zeros.
-    For `$k_z = 0$` a small residual divergence remains and is projected
-    out by the corrector.  The `$k_z = 0$` plane is drawn with
-    `$u_z, u_r, u_\theta$` Hermitian (`$u_+ \leftrightarrow u_-$` conjugate
-    partners; see :func:`_hermitian_column` ``pm_pair``) so the physical
-    azimuthal velocity -- including its axial mean -- is real.
+    `$(u_z, u_r, u_\theta)$` form.  `$u_r$` and `$u_\theta$` carry a
+    squared no-slip window `$((r-r_1)(r_2-r))^2$` (value and first
+    derivative vanish at both walls), so for `$k_z \neq 0$` the
+    continuity-derived `$u_z$` inherits a truncation-level wall value
+    (projected by the first corrector step); the independent components
+    keep exact wall zeros.  For `$k_z = 0$` a small residual divergence
+    remains and is projected out by the corrector.  The `$k_z = 0$`
+    plane is drawn per-component Hermitian (:func:`_hermitian_column`)
+    so every physical component -- including the axial-mean swirl --
+    is real.
     """
     from .geometries.wall_bounded.annular import (
         build_annular_grid,
@@ -534,7 +524,7 @@ def generate_annular(
     # No-slip window: zero at both walls, peak 1 in the interior.
     window_lin = (rs_np - r1) * (r2 - rs_np)
     window_lin = window_lin / np.max(window_lin)
-    window_wn = window_lin**2  # u_pm: value + derivative zero at walls
+    window_wn = window_lin**2  # u_r/u_th: value + derivative zero at walls
 
     def fill_local(buf, m_start, n_m, kz_start, n_kz):
         for li in range(n_m):
@@ -544,23 +534,21 @@ def generate_annular(
                 g3 = kz_start + lj  # global k_z index (axis 3, real)
                 kz_val = kz_np[g3]
                 if g3 == 0:
-                    col = _hermitian_column(seed, g2, nz, Nr, pm_pair=True)
+                    col = _hermitian_column(seed, g2, nz, Nr)
                 else:
                     col = _column_draw(seed, g2, g3, Nr)
                 col[0] *= window_lin
                 col[1] *= window_wn
                 col[2] *= window_wn
-                # Continuity-derived u_z for k_z != 0 (same operators).
+                # Continuity-derived u_z for k_z != 0: the cylindrical
+                # divergence D1 u_r + u_r/r + (im/r) u_theta.
                 if kz_val != 0:
-                    u_plus = col[1]
-                    u_minus = col[2]
-                    div_radial = (
-                        D1_np @ u_plus
-                        + (m_val + 1) * inv_r_np * u_plus
-                        + D1_np @ u_minus
-                        + (1 - m_val) * inv_r_np * u_minus
-                    ) / 2.0
-                    col[0] = -div_radial / (1j * kz_val)
+                    div_perp = (
+                        D1_np @ col[1]
+                        + inv_r_np * col[1]
+                        + 1j * m_val * inv_r_np * col[2]
+                    )
+                    col[0] = -div_perp / (1j * kz_val)
                 # Energy = envelope^2 (no continuity 1/k low-k inflation).
                 col = _normalize_mode(
                     col,
@@ -585,7 +573,7 @@ def add_dean_laminar(state: Array) -> Array:
     :func:`generate_annular`.  The laminar profile is axisymmetric and
     zero at both walls, so it preserves the perturbation's
     divergence-free and no-slip properties.  Returns the total spectral
-    state in `$(u_z, u_+, u_-)$` form.
+    state in `$(u_z, u_r, u_\theta)$` form.
     """
     from jax import numpy as jnp
 
@@ -606,60 +594,19 @@ def add_dean_laminar(state: Array) -> Array:
         params.geo.grid_stretch,
     )
     u_theta = dean_laminar_u_theta(rs, params.geo.eta)  # (Nr,) real
-    # Place U_theta at the mean mode: u_+ = i U_theta, u_- = -i U_theta.
+    # Place U_theta at the mean mode as the u_theta component.
     u_spec = jnp.where(fourier.mean_mask, u_theta[:, None, None], 0.0)
-    laminar = jnp.stack(
-        [
-            jnp.zeros_like(u_spec, dtype=sharding.complex_type),
-            (1j * u_spec).astype(sharding.complex_type),
-            (-1j * u_spec).astype(sharding.complex_type),
-        ]
-    )
+    zeros = jnp.zeros_like(u_spec, dtype=sharding.complex_type)
+    laminar = jnp.stack([zeros, zeros, u_spec.astype(sharding.complex_type)])
     return state + laminar
 
 
-# Conformation-noise Hermitian pairing on the k_z = 0 plane (the
-# 6-component slice ``[c_zz, c_z+, c_z-, c_+-, c_++, c_--]``): the real
-# physical fields c_zz and c_+- are self-Hermitian; (c_z+, c_z-) and
-# (c_++, c_--) are conjugate partners across ``m`` (the tensor analogue
-# of the velocity ``pm_pair``).
-_VE_CONF_SELF: tuple[int, ...] = (0, 3)
-_VE_CONF_PAIR: tuple[tuple[int, int], ...] = ((1, 2), (4, 5))
-
-
-def _ve_conf_draw(seed: int, i2: int, i3: int, n: int) -> np.ndarray:
-    """Independent complex ``(6, n)`` conformation-noise draw keyed by
-    global ``(i2, i3)`` (a trailing ``1`` keeps the stream distinct from
-    the velocity draw's ``(seed, i2, i3)``)."""
-    rng = np.random.default_rng((seed, i2, i3, 1))
-    return rng.standard_normal((6, n)) + 1j * rng.standard_normal((6, n))
-
-
-def _ve_conf_hermitian(seed: int, i2: int, n2: int, n: int) -> np.ndarray:
-    """Conjugate-consistent ``(6, n)`` conformation draw for the
-    ``k_z = 0`` plane (self rows real, pair rows conjugate partners; see
-    :func:`_hermitian_column`)."""
-    n_pos = n2 // 2
-    if i2 == 0:
-        rng = np.random.default_rng((seed, 0, 0, 1))
-        d = rng.standard_normal((6, n)) + 1j * rng.standard_normal((6, n))
-        for s in _VE_CONF_SELF:
-            d[s] = d[s].real
-        for a, b in _VE_CONF_PAIR:
-            d[b] = np.conj(d[a])
-        return d
-    if n2 % 2 == 1 and i2 == n_pos:
-        return np.zeros((6, n), dtype=np.complex128)
-    canonical = i2 if i2 < n_pos else (n2 - 1) - i2
-    rng = np.random.default_rng((seed, canonical, 0, 1))
-    d = rng.standard_normal((6, n)) + 1j * rng.standard_normal((6, n))
-    if i2 < n_pos:
-        return d
-    out = np.conj(d)  # self rows: conjugate
-    for a, b in _VE_CONF_PAIR:  # pair rows: swap + conjugate
-        out[a] = np.conj(d[b])
-        out[b] = np.conj(d[a])
-    return out
+# Viscoelastic conformation noise: every physical tensor
+# component (c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta) is
+# the transform of a real field, so its draws use the same
+# per-component machinery as the velocity -- with a trailing ``1`` in
+# the PRNG key (the ``stream`` argument) to keep the conformation
+# stream distinct from the velocity draw at the same mode.
 
 
 def add_viscoelastic_laminar(vel_state: Array) -> Array:
@@ -668,8 +615,9 @@ def add_viscoelastic_laminar(vel_state: Array) -> Array:
 
     Adds the analytical laminar velocity profile to *vel_state* and
     appends the laminar sPTT-equilibrium conformation (both at the mean
-    mode), giving the total-field IC in the layout
-    `$(u_z, u_+, u_-, c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++}, c_{--})$`.
+    mode), giving the total-field IC in the physical layout
+    `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
+    c_{\theta\theta}, c_{r\theta})$`.
     Used by the localized-rolls IC (a velocity-only perturbation); the
     random IC builds its 9 components directly.
     """
@@ -777,22 +725,19 @@ def generate_viscoelastic_dean(
 
                 # Velocity (rows 0:3): divergence-free draw.
                 if g3 == 0:
-                    vcol = _hermitian_column(seed, g2, nz, Nr, pm_pair=True)
+                    vcol = _hermitian_column(seed, g2, nz, Nr)
                 else:
                     vcol = _column_draw(seed, g2, g3, Nr)
                 vcol[0] *= window_lin
                 vcol[1] *= window_wn
                 vcol[2] *= window_wn
                 if kz_val != 0:
-                    u_plus = vcol[1]
-                    u_minus = vcol[2]
-                    div_radial = (
-                        D1_np @ u_plus
-                        + (m_val + 1) * inv_r_np * u_plus
-                        + D1_np @ u_minus
-                        + (1 - m_val) * inv_r_np * u_minus
-                    ) / 2.0
-                    vcol[0] = -div_radial / (1j * kz_val)
+                    div_perp = (
+                        D1_np @ vcol[1]
+                        + inv_r_np * vcol[1]
+                        + 1j * m_val * inv_r_np * vcol[2]
+                    )
+                    vcol[0] = -div_perp / (1j * kz_val)
                 vcol = _normalize_mode(vcol, yw_np, envelope)
                 if g2 == 0 and g3 == 0 and not mean_flow:
                     vcol[:] = 0.0
@@ -801,9 +746,11 @@ def generate_viscoelastic_dean(
                 # Conformation (rows 3:9): windowed, wall-vanishing noise;
                 # zero at the mean mode (laminar added below).
                 if g3 == 0:
-                    ccol = _ve_conf_hermitian(seed, g2, nz, Nr)
+                    ccol = _hermitian_column(
+                        seed, g2, nz, Nr, rows=6, stream=(1,)
+                    )
                 else:
-                    ccol = _ve_conf_draw(seed, g2, g3, Nr)
+                    ccol = _column_draw(seed, g2, g3, Nr, rows=6, stream=(1,))
                 ccol = ccol * window_wn
                 ccol = _normalize_mode(ccol, yw_np, envelope)
                 if g2 == 0 and g3 == 0:

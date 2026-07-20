@@ -9,16 +9,18 @@ process).  Run directly::
     uv run python tests/test_snapshot_import.py --system pipe   # one
 
 The converter takes input already in dnsjax's **native** component/axis
-order (shape ``(3, ny, nz, nx)``; pipe/TC components ``(u_z, u_+, u_-)``
-over ``(r, theta, z_ax)``), so the checks pin the *native* contract:
+order (shape ``(3, ny, nz, nx)``; pipe/TC components
+``(u_z, u_r, u_theta)`` over ``(r, theta, z_ax)``, every component a
+real field), so the checks pin the *native* contract:
 
 - **single-mode placement**: a pure cosine along one native input axis
   lands in exactly the expected dnsjax spectral slot with the
   ``norm="forward"`` amplitude 1/2 -- pins the native component basis,
   the axis mapping, and the normalisation.
-- **no swap / no mixing** (pipe / TC): ``u_z`` -> ``state[0]``, ``u_+``
-  -> ``state[1]``, ``u_-`` -> ``state[2]`` independently (pipe and TC are
-  now identical; the converter neither swaps axes nor mixes ``u_pm``).
+- **no swap / no mixing** (pipe / TC): ``u_z`` -> ``state[0]``,
+  ``u_r`` -> ``state[1]``, ``u_theta`` -> ``state[2]`` independently
+  (pipe and TC are identical; the converter neither swaps axes nor
+  mixes components).
 - **mode order**: the converter's truncated `$k_x$` / `$k_z$` / `$m$`
   axes reproduce the geometry ``fourier`` singleton's wavenumbers.
 - **spectral-input round-trip**: a numpy ``fft`` of the native field
@@ -210,10 +212,10 @@ def _run_one(system: str) -> int:
             e = _amax(s - exp)
             check("u_x y-mode placement", e < 1e-10, f"{e:.1e}")
 
-    else:  # pipe / annular: native (u_z, u_+, u_-) over (r, theta, z_ax)
+    else:  # pipe / annular: native (u_z, u_r, u_theta) over (r, th, z_ax)
         # Identical for pipe and TC: u_z is component 0 along the axial
-        # real axis (3); u_+/u_- are components 1/2 along the azimuthal
-        # complex axis (2).  No swap, no u_pm mixing.
+        # real axis (3); u_r/u_theta are components 1/2 along the
+        # azimuthal complex axis (2).  No swap, no component mixing.
         k0 = 2
         s = si.to_spectral_state(_single_mode_field(0, 3, k0))
         exp = jnp.zeros_like(s).at[0, :, 0, k0].set(0.5)
@@ -221,31 +223,31 @@ def _run_one(system: str) -> int:
         check("u_z axial-mode placement", e < 1e-10, f"{e:.1e}")
 
         m0 = 3
-        # u_+ (component 1) along azimuthal m -> state[1]; others zero.
+        # u_r (component 1) along azimuthal m -> state[1]; others zero.
         s = si.to_spectral_state(_single_mode_field(1, 2, m0))
-        exp_up = (
+        exp_ur = (
             jnp.zeros_like(s[1])
             .at[:, _ch_index(NZ, m0), 0]
             .set(0.5)
             .at[:, _ch_index(NZ, -m0), 0]
             .set(0.5)
         )
-        e = _amax(s[1] - exp_up)
+        e = _amax(s[1] - exp_ur)
         ok = e < 1e-10 and _amax(s[0]) < 1e-12 and _amax(s[2]) < 1e-12
-        check("u_+ azimuthal placement (no mixing)", ok, f"{e:.1e}")
+        check("u_r azimuthal placement (no mixing)", ok, f"{e:.1e}")
 
-        # u_- (component 2) along azimuthal m -> state[2]; others zero.
+        # u_theta (component 2) along azimuthal m -> state[2]; rest zero.
         s = si.to_spectral_state(_single_mode_field(2, 2, m0))
-        exp_um = (
+        exp_uth = (
             jnp.zeros_like(s[2])
             .at[:, _ch_index(NZ, m0), 0]
             .set(0.5)
             .at[:, _ch_index(NZ, -m0), 0]
             .set(0.5)
         )
-        e = _amax(s[2] - exp_um)
+        e = _amax(s[2] - exp_uth)
         ok = e < 1e-10 and _amax(s[0]) < 1e-12 and _amax(s[1]) < 1e-12
-        check("u_- azimuthal placement (no mixing)", ok, f"{e:.1e}")
+        check("u_theta azimuthal placement (no mixing)", ok, f"{e:.1e}")
 
     # ── mode order vs the fourier singleton ─────────────────────
     fourier = _import_fourier(family)
@@ -264,11 +266,9 @@ def _run_one(system: str) -> int:
         check("axial-kz/azimuthal-m order matches fourier", ok)
 
     # ── spectral-input round-trip ───────────────────────────────
+    # Physical input is real in every family (native components).
     rng = np.random.default_rng(0)
     p0 = rng.standard_normal((3, *sizes))
-    if family in ("pipe", "annular"):
-        # u_pm are complex: exercise the full-fft (non-Hermitian) path.
-        p0 = p0 + 1j * rng.standard_normal((3, *sizes))
     s_phys = si.to_spectral_state(p0, space="physical")
     periodic = family == "periodic"
     max_err = 0.0

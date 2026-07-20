@@ -25,14 +25,15 @@ triply-periodic     (ky, kz, kx)             (y, z, x)
 ==================  =======================  =================
 
 Components are ``(u_x, u_y, u_z)`` for cartesian / triply-periodic and
-``(u_z, u_r, u_θ)`` for cylindrical / annular (the stored ``u_±`` basis
-is converted to ``u_r, u_θ`` at read time; see
-:func:`to_returned_basis`).  The viscoelastic-dean system shares the
-cylindrical/annular axes with **9 components**: the 3 velocity
-components plus the physical conformation tensor
-``(c_zz, c_rz, c_θz, c_rr, c_θθ, c_rθ)`` as components ``3..8``, each
-combined at read time from its stored spin components (recipes in
-``_component_recipes`` / :func:`geometry_info`).
+``(u_z, u_r, u_θ)`` for cylindrical / annular -- as of snapshot format
+6 the stored components *are* these physical components (each the
+transform of a real field; the solver confines its decoupled
+``u_±`` / spin bases to the implicit solves).  The viscoelastic-dean
+system shares the cylindrical/annular axes with **9 components**: the
+3 velocity components plus the physical conformation tensor
+``(c_zz, c_rz, c_θz, c_rr, c_θθ, c_rθ)`` as components ``3..8``.
+Returned components are stored components, one-to-one
+(:func:`geometry_info`).
 
 Transforms reinstate the omitted Nyquist mode as zero and use NumPy
 ``ifft`` / ``irfft`` with ``norm="forward"`` (the inverse of the
@@ -214,7 +215,7 @@ def geometry_info(params: Namespace) -> GeometryInfo:
         family = "cylindrical" if system in CYLINDRICAL_SYSTEMS else "annular"
         if system in VISCOELASTIC_SYSTEMS:
             # Velocity + physical conformation-tensor components (the
-            # stored spin combos are converted in ``to_returned_basis``).
+            # stored basis, one-to-one).
             components = (
                 "u_z",
                 "u_r",
@@ -299,31 +300,11 @@ def _component_recipes(
 ) -> list[tuple[tuple[int, ...], Callable[[dict[int, ndarray]], ndarray]]]:
     r"""Per-returned-component ``(native chunks, combine)`` recipes.
 
-    Cartesian / periodic: identity (component ``i`` is native chunk
-    ``i``).  Cylindrical / annular: the velocity triad converts the
-    stored ``u_±`` pair (`$u_r = (u_+ + u_-)/2$`,
-    `$u_\theta = (u_+ - u_-)/2i$`); the **viscoelastic** system adds the
-    6 physical conformation components from the stored spin combos
-    (`$c_{rz} = (c_{z+} + c_{z-})/2$`, `$c_{rr} = c_{+-}/2 +
-    (c_{++} + c_{--})/4$`, etc.).
+    Identity in every family: as of snapshot format 6 the stored
+    components are the returned physical components, one-to-one.
+    Kept as an explicit recipe layer so a future family whose stored
+    basis differs from its returned basis only has to add a branch.
     """
-    if info.family in ("cylindrical", "annular"):
-        recipes: list = [
-            ((0,), lambda r: r[0]),  # u_z
-            ((1, 2), lambda r: (r[1] + r[2]) / 2.0),  # u_r
-            ((1, 2), lambda r: (r[1] - r[2]) / 2.0j),  # u_theta
-        ]
-        if len(info.components) > 3:  # viscoelastic (9 components)
-            recipes += [
-                ((3,), lambda r: r[3]),  # c_zz
-                ((4, 5), lambda r: (r[4] + r[5]) / 2.0),  # c_rz
-                ((4, 5), lambda r: (r[4] - r[5]) / 2.0j),  # c_theta_z
-                # c_rr, c_theta_theta from c_+-, c_++, c_--.
-                ((6, 7, 8), lambda r: r[6] / 2.0 + (r[7] + r[8]) / 4.0),
-                ((6, 7, 8), lambda r: r[6] / 2.0 - (r[7] + r[8]) / 4.0),
-                ((7, 8), lambda r: (r[7] - r[8]) / 4.0j),  # c_r_theta
-            ]
-        return recipes
     return [((i,), _pick(i)) for i in range(len(info.components))]
 
 
@@ -337,10 +318,9 @@ def native_components_needed(
 ) -> list[int]:
     """Native chunk indices required to build *out_components*.
 
-    For cylindrical/annular, ``u_r`` and ``u_θ`` are each formed from
-    the ``u_±`` pair, so requesting either pulls native chunks 1 and 2;
-    the viscoelastic conformation components similarly pull their spin
-    chunks (see :func:`_component_recipes`).
+    One-to-one under the identity recipes (see
+    :func:`_component_recipes`): requesting a component reads exactly
+    its own chunk.
     """
     recipes = _component_recipes(info)
     need: set[int] = set()
@@ -402,10 +382,8 @@ def to_returned_basis(
 ) -> dict[int, ndarray]:
     r"""Map native chunks to the returned component basis.
 
-    Cylindrical/annular convert the stored ``u_±`` (and, for the
-    viscoelastic system, the conformation spin combos) to the physical
-    components; all other families are identity.  See
-    :func:`_component_recipes`.
+    Identity in every family (the stored components are the returned
+    physical components); see :func:`_component_recipes`.
     """
     recipes = _component_recipes(info)
     return {c: recipes[c][1](raw) for c in out_components}

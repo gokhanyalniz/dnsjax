@@ -317,7 +317,10 @@ def _worker(system: str) -> None:
     assert dc < ctol, f"{system}: curl hook != builtin ({dc:.2e})"
 
     # Block-diagonality: a basis vector at all modes vs one mode gives
-    # the identical column at that mode.
+    # the identical column at that mode.  Everything here stays in the
+    # geometry's solver basis (the property is about modes, not
+    # components, and both runs use the same stepper); the physical
+    # wrapper lives in ``transient_growth._linear_step``.
     raw = make_stepper(
         gmod._l_bf, gmod._predict, gmod._correct, gmod._norm, None, None
     )

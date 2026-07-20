@@ -273,7 +273,12 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
 
 
 def test_get_norm2_annular() -> None:
-    r"""``get_norm2_annular`` matches `$(|u_+|^2+|u_-|^2)/2+|u_z|^2$`."""
+    r"""``get_norm2_annular`` is the plain norm of `$(u_z, u_r, u_\theta)$`.
+
+    The native state carries physical components; the norm also equals
+    the 1/2-weighted norm of the solver-basis image `$(u_z, u_+, u_-)$`
+    (the metric identity behind the corrector ``_norm``).
+    """
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
     Nr = params.res.ny
@@ -287,11 +292,18 @@ def test_get_norm2_annular() -> None:
     y_w = tc_flow.y_weights
     got = float(get_norm2_annular(state, k_m, y_w))
 
-    pm = jnp.stack([state[1], state[2]])
-    ref = float(get_norm2(pm, k_m, y_w)) / 2 + float(
+    ref = float(get_norm2(state[1:], k_m, y_w)) + float(
         get_norm2(state[0:1], k_m, y_w)
     )
     assert_allclose(got, ref, atol=1e-12, err_msg="get_norm2_annular")
+
+    pm = jnp.stack(
+        [state[0], state[1] + 1j * state[2], state[1] - 1j * state[2]]
+    )
+    pm_ref = float(get_norm2(pm[1:], k_m, y_w)) / 2 + float(
+        get_norm2(pm[0:1], k_m, y_w)
+    )
+    assert_allclose(got, pm_ref, rtol=1e-12, err_msg="pm metric identity")
 
 
 # Group D: Control parameters

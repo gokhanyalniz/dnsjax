@@ -204,7 +204,11 @@ def _worker(
     from dnsjax.random_field import generate_random_state
 
     amp = AMP_KOLM if system == "kolmogorov" else AMP_PC
-    state = generate_random_state(amp, SMOOTH, SEED)
+    # ICs are physical; the steppers work in the solver basis (the
+    # same single crossing ``__main__`` performs).  The order study
+    # compares states to each other, so it stays in that one basis.
+    to_solver = getattr(fmod, "to_solver_basis", lambda s: s)
+    state = to_solver(generate_random_state(amp, SMOOTH, SEED))
     if vardt and system == "kolmogorov":
         # Dense dyadic alternation: a change at 2 of every 3 steps.
         n_periods = round(T_END / (2 * dt))

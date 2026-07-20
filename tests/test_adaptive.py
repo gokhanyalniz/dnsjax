@@ -268,7 +268,10 @@ def _worker(system: str, backend: str) -> None:
     from dnsjax.parameters import params
     from dnsjax.random_field import generate_random_state
 
-    state0 = generate_random_state(AMP, SMOOTH, SEED)
+    # ICs are physical; the steppers work in the solver basis (the
+    # same single crossing ``__main__`` performs).
+    to_solver = getattr(fmod, "to_solver_basis", lambda s: s)
+    state0 = to_solver(generate_random_state(AMP, SMOOTH, SEED))
 
     # Warm every stepper variant at DT0 (donated args -> copies).
     _, carry, _, _ = fmod.step_cnab2(jnp.copy(state0), jnp.zeros_like(state0))

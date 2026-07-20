@@ -53,10 +53,12 @@ from ...geometries.wall_bounded.cylindrical import (
     build_cylindrical_stepper,
     extract_mean_mode,
     fourier,
+    from_solver_basis,  # noqa: F401 — re-exported (basis boundary)
     get_norm2_cyl,
     get_pert_enstrophy_cyl,
     integrate_scalar,
     pad_base_flow,
+    to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
 )
 from ...geometries.wall_bounded.cylindrical import (
     frozen_profile_flow as _frozen_flow_copy,
@@ -179,14 +181,31 @@ def frozen_profile_flow(uz: Array) -> PipeFlow:
 # ── Diagnostic statistics ────────────────────────────────────────
 
 
+def _perturbation_energy(
+    state: Array, fourier_: Fourier, flow_: PipeFlow
+) -> Array:
+    r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`.
+
+    The single definition, shared by :func:`get_stats` (which reports
+    it as ``E'``) and the laminarization read
+    :func:`get_perturbation_energy`.
+    """
+    return get_norm2_cyl(state, fourier_.k_metric, flow_.y_weights) / 2
+
+
 @jit
 def _get_stats_jit(
     state: Array, fourier_: Fourier, flow_: PipeFlow
 ) -> dict[str, Array]:
     r"""Compute diagnostic statistics.
 
+    *state* is the **physical** `$(u_z, u_r, u_\theta)$` view of the
+    field -- diagnostics sit outside the solver, whose working basis
+    is the decoupled `$(u_z, u_+, u_-)$` one (the ``cylindrical.py``
+    module docstring).
+
     - `$E'$`: perturbation kinetic energy (cylindrical norm
-      with radial Jacobian `$r$` and `$u_\pm$` half-factor).
+      with radial Jacobian `$r$`).
     - `$I$`: energy input rate.
     - `$D$`: energy dissipation rate.  For
       `$-\nabla^2 U = 4$` (constant), the cross-enstrophy
@@ -203,15 +222,12 @@ def _get_stats_jit(
     constructing `$\mathbf{u}' + \mathbf{U}$`.
     """
     Re = params.phys.re
-    perturbation_energy = (
-        get_norm2_cyl(state, fourier_.k_metric, flow_.y_weights) / 2
-    )
+    perturbation_energy = _perturbation_energy(state, fourier_, flow_)
 
     # ── Mean velocity profiles ───────────────────────────────
     mean_state = extract_mean_mode(state)  # (3, Nr)
     mean_uz = mean_state[0].real  # (Nr,)
-    mean_uplus = mean_state[1]  # (Nr,), complex
-    mean_utheta = mean_uplus.imag  # (Nr,)
+    mean_utheta = mean_state[2].real  # (Nr,)
 
     # ── Wall shear & bulk velocity ──────────────────────────
     D1_wall_row = flow_.D1_wall.ravel()
@@ -274,7 +290,7 @@ def _get_stats_jit(
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around ``_get_stats_jit``."""
+    """Wrapper around ``_get_stats_jit`` (physical-basis *state*)."""
     return _get_stats_jit(state, fourier, flow)
 
 
@@ -283,9 +299,13 @@ def _get_perturbation_energy_jit(
     state: Array, fourier_: Fourier, flow_: PipeFlow
 ) -> Array:
     r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
-    return get_norm2_cyl(state, fourier_.k_metric, flow_.y_weights) / 2
+    return _perturbation_energy(state, fourier_, flow_)
 
 
 def get_perturbation_energy(state: Array) -> Array:
-    """Perturbation kinetic energy E' (for the laminarization check)."""
+    r"""Perturbation kinetic energy E' (for the laminarization check).
+
+    Takes the **physical** `$(u_z, u_r, u_\theta)$` view, like
+    :func:`get_stats`, which reports the same number as ``E'``.
+    """
     return _get_perturbation_energy_jit(state, fourier, flow)

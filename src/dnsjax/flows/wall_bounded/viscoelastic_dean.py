@@ -59,10 +59,11 @@ from ...geometries.wall_bounded.annular_viscoelastic import (
     Fourier,
     ViscoelasticAnnularFlow,
     _div_c,
-    _spin_to_phys_combos,
     build_viscoelastic_stepper,
     fourier,
+    from_solver_basis,  # noqa: F401 — re-exported (basis boundary)
     get_norm2_conformation,  # noqa: F401 -- available for callers
+    to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
     viscoelastic_laminar_profiles,
 )
 from ...parameters import derived_params, params
@@ -137,7 +138,34 @@ def _build_laminar_state() -> Array:
     return jnp.where(fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0)
 
 
+#: Physical-basis laminar reference.  It never enters the solver as
+#: itself -- ``init_state`` hands it to ``__main__``, which converts
+#: the initial state once -- so the ``state - laminar_state``
+#: deviations below are both physical.
 _laminar_state: Array = _build_laminar_state()
+
+
+def _perturbation_energy(
+    state: Array,
+    laminar_state: Array,
+    fourier_: Fourier,
+    flow_: ViscoelasticDeanFlow,
+) -> Array:
+    r"""Velocity-only deviation energy `$E' = \|u -
+    U_{\mathrm{lam}}\|^2/2$`.
+
+    The single definition, shared by :func:`get_stats` (which reports
+    it as ``E'``) and the laminarization read
+    :func:`get_perturbation_energy`.
+    """
+    return (
+        get_norm2_annular(
+            state[:3] - laminar_state[:3],
+            fourier_.k_metric,
+            flow_.y_weights,
+        )
+        / 2
+    )
 
 
 def init_state(snapshot: str | None) -> Array:
@@ -175,6 +203,12 @@ def _get_stats_jit(
 ) -> dict[str, Array]:
     r"""Total-field diagnostics + polymer quantities.
 
+    *state* and *laminar_state* are the **physical** 9-component view
+    `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
+    c_{\theta\theta}, c_{r\theta})$` -- diagnostics sit outside the
+    solver, whose working basis is the `$u_\pm$`/spin one (the
+    ``annular_viscoelastic.py`` module docstring).
+
     - `$E$`: total kinetic energy; `$E'$`: velocity-only deviation from
       the laminar profile (laminarization quantity).
     - `$I = \langle u_\theta \Pi_\theta \rangle$`: body-force input.
@@ -196,17 +230,14 @@ def _get_stats_jit(
     total_energy = (
         get_norm2_annular(vel, fourier_.k_metric, flow_.y_weights) / 2
     )
-    perturbation_energy = (
-        get_norm2_annular(
-            vel - laminar_state[:3], fourier_.k_metric, flow_.y_weights
-        )
-        / 2
+    perturbation_energy = _perturbation_energy(
+        state, laminar_state, fourier_, flow_
     )
 
     # Mean velocity profiles.
     mean_vel = extract_mean_mode(vel)  # (3, Nr)
     mean_uz = mean_vel[0].real
-    mean_utheta = mean_vel[1].imag  # u_theta = Im(u_+)
+    mean_utheta = mean_vel[2].real
 
     tau_theta = flow_.D1_bnd @ mean_utheta  # (2,) [inner, outer]
     tau_z = flow_.D1_bnd @ mean_uz
@@ -228,21 +259,23 @@ def _get_stats_jit(
     )
     dissipation = nu * enstrophy
 
-    # Polymer diagnostics.
-    u_z, u_plus, u_minus = vel[0], vel[1], vel[2]
-    u_r = (u_plus + u_minus) / 2
-    u_th = -0.5j * (u_plus - u_minus)
-    cs = _spin_to_phys_combos(
-        state[3], state[4], state[5], state[6], state[7], state[8]
+    # Polymer diagnostics (native components throughout).
+    div_r, div_th, div_z = _div_c(
+        state[6],
+        state[7],
+        state[8],
+        state[4],
+        state[5],
+        state[3],
+        fourier_,
+        flow_,
     )
-    div_r, div_th, div_z = _div_c(*cs, fourier_, flow_)
     # <u . div c> as a spectral inner product in (z, r, theta).
-    u_rthz = jnp.array([u_z, u_r, u_th])
     div_rthz = jnp.array([div_z, div_r, div_th])
     polymer_work = coef * (
         integrate_scalar(
             jnp.sum(
-                jnp.conj(u_rthz) * fourier_.k_metric * div_rthz, axis=(0, 2, 3)
+                jnp.conj(vel) * fourier_.k_metric * div_rthz, axis=(0, 2, 3)
             ).real,
             flow_.y_weights,
         )
@@ -250,7 +283,8 @@ def _get_stats_jit(
     )
 
     mean_c = extract_mean_mode(state[3:])  # (6, Nr)
-    trace_profile = (mean_c[3] + mean_c[0]).real  # c_+- + c_zz = tr c
+    # tr c = c_zz + c_rr + c_theta_theta.
+    trace_profile = (mean_c[0] + mean_c[3] + mean_c[4]).real
     mean_trace = integrate_scalar(trace_profile, flow_.y_weights) / volfac
     elastic_energy = (
         (1.0 - params.phys.beta)
@@ -276,7 +310,7 @@ def _get_stats_jit(
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around ``_get_stats_jit``."""
+    """Wrapper around ``_get_stats_jit`` (physical-basis *state*)."""
     return _get_stats_jit(state, _laminar_state, fourier, flow)
 
 
@@ -287,18 +321,14 @@ def _get_perturbation_energy_jit(
     fourier_: Fourier,
     flow_: ViscoelasticDeanFlow,
 ) -> Array:
-    r"""Velocity-only deviation energy `$E' = \|u -
-    U_{\mathrm{lam}}\|^2/2$` (laminarization check)."""
-    return (
-        get_norm2_annular(
-            state[:3] - laminar_state[:3],
-            fourier_.k_metric,
-            flow_.y_weights,
-        )
-        / 2
-    )
+    r"""Velocity-only deviation energy (laminarization check)."""
+    return _perturbation_energy(state, laminar_state, fourier_, flow_)
 
 
 def get_perturbation_energy(state: Array) -> Array:
-    """Velocity-only perturbation energy E' (laminarization check)."""
+    r"""Velocity-only perturbation energy E' (laminarization check).
+
+    Takes the **physical** 9-component view, like :func:`get_stats`,
+    which reports the same number as ``E'``.
+    """
     return _get_perturbation_energy_jit(state, _laminar_state, fourier, flow)

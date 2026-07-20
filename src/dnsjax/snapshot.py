@@ -3,7 +3,7 @@
 A snapshot is a **single uncompressed tar archive** wrapping a
 zarr3 store plus a JSON metadata member::
 
-    snapshot.tar                 (uncompressed tar; format_version 5)
+    snapshot.tar                 (uncompressed tar; format_version 6)
       _dnsjax_meta.json          plain JSON metadata
       _dnsjax_stats.json         plain JSON stats (optional)
       state/zarr.json            zarr3 array metadata
@@ -149,7 +149,11 @@ holds the state's physical diagnostics (the ``get_stats`` dict as
 ``{name: value}``); readers that do not need it simply ignore the
 extra member.
 
-The on-disk format is ``format_version: 5`` (5 switched the array
+The on-disk format is ``format_version: 6`` (6 switched the
+cylindrical/annular component basis to physical components --
+`$u_r$`, `$u_\theta$` and the physical conformation tensor; the
+solver's decoupled `$u_\pm$` / spin working basis is converted by the
+caller, so these functions stay basis-agnostic; 5 switched the array
 layout to the solver's native spectral layout; 4 introduced the
 public-named parameter dump); older snapshots are rejected at read
 (:func:`dnsjax.snapshot_meta.read_snapshot_meta`), never translated.
@@ -567,20 +571,23 @@ def _metadata_bytes(t: float, it: int, isnap: int = 0) -> bytes:
     ``git_hash`` records the code revision that wrote the snapshot
     (provenance only -- never read back on load).  Additive keys like
     it need no ``format_version`` bump: readers use targeted lookups
-    and ignore unknown keys.  Version 5 stores the state in the
-    solver's native spectral layout, so ``native_shape`` **is** the
-    on-disk per-component chunk shape.  Version 4 introduced
+    and ignore unknown keys.  Version 6 stores the cylindrical/annular
+    components in the physical basis (`$u_r$`, `$u_\theta$`, physical
+    conformation tensor -- the solver's native state; same byte
+    layout, changed component meaning).  Version 5 stores the state
+    in the solver's native spectral layout, so ``native_shape`` **is**
+    the on-disk per-component chunk shape.  Version 4 introduced
     ``params`` as the flow-relevant, **public-named**, resolved dump
     plus the relevant extension sections (e.g. ``force``, ``probes``;
     :func:`dnsjax.param_surface.recorded_params_dump`); readers map it
     back via :func:`dnsjax.flows.registry.internalize_stored` /
-    ``stored_value``.  Pre-5 snapshots are rejected at
+    ``stored_value``.  Pre-6 snapshots are rejected at
     :func:`dnsjax.snapshot_meta.read_snapshot_meta`.
     """
     from .param_surface import recorded_params_dump
 
     meta = {
-        "format_version": 5,
+        "format_version": 6,
         "git_hash": git_hash(),
         "t": t,
         "it": it,

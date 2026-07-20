@@ -390,14 +390,21 @@ def _azimuthal_index_map(m0: int, nz_wedge: int, nz_full: int):
 
 
 def _wedge_step(state):
-    """One full nonlinear step of the configured quasi-Keplerian flow."""
+    """One full nonlinear step of the configured quasi-Keplerian flow.
+
+    *state* is physical, as the IC builders produce it; the crossing
+    into and out of the solver basis mirrors ``__main__``'s, so both
+    arms of the comparison stay in physical components.
+    """
     from dnsjax.flows.wall_bounded.quasi_keplerian import (
+        from_solver_basis,
         predict_and_fully_correct,
+        to_solver_basis,
     )
 
-    out, err, _ = predict_and_fully_correct(state)
+    out, err, _ = predict_and_fully_correct(to_solver_basis(state))
     assert float(err) < 1e-13, f"corrector did not converge: err={float(err)}"
-    return out
+    return from_solver_basis(out)
 
 
 def case_wedge_nonlinear_wedge() -> None:

@@ -66,10 +66,12 @@ from ...geometries.wall_bounded.annular import (
     dean_laminar_u_theta,
     extract_mean_mode,
     fourier,
+    from_solver_basis,  # noqa: F401 — re-exported (basis boundary)
     get_enstrophy_annular,
     get_norm2_annular,
     integrate_scalar,
     pad_base_flow,
+    to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
 )
 from ...geometries.wall_bounded.annular import (
     init_state as _base_init_state,
@@ -133,19 +135,46 @@ def _build_laminar_state() -> Array:
     r"""Spectral laminar Dean state: `$U_\theta(r)$` at the mean mode.
 
     Places the analytical azimuthal profile at the mean mode in
-    `$(u_z, u_+, u_-)$` form (`$u_\pm = \pm i\,U_\theta$`, `$u_z = 0$`).
+    `$(u_z, u_r, u_\theta)$` form (`$u_\theta = U_\theta$`,
+    `$u_z = u_r = 0$`).
     """
     u_theta = dean_laminar_u_theta(flow.rs, params.geo.eta)  # (Nr,) real
     # Broadcast onto the mean mode (m, k_z) = (0, 0) only.
     u_spec = jnp.where(fourier.mean_mask, u_theta[:, None, None], 0.0)
     zeros = jnp.zeros_like(u_spec)
-    u_z = lax.complex(zeros, zeros)
-    u_plus = lax.complex(zeros, u_spec)  # i * U_theta
-    u_minus = lax.complex(zeros, -u_spec)  # -i * U_theta
-    return jnp.stack([u_z, u_plus, u_minus])
+    complex_zeros = lax.complex(zeros, zeros)
+    u_theta_spec = lax.complex(u_spec, zeros)
+    return jnp.stack([complex_zeros, complex_zeros, u_theta_spec])
 
 
+#: Physical-basis laminar reference.  It never enters the solver as
+#: itself -- ``init_state`` hands it to ``__main__``, which converts
+#: the initial state once -- so the ``state - laminar_state``
+#: deviations below are both physical.
 _laminar_state: Array = _build_laminar_state()
+
+
+def _perturbation_energy(
+    state: Array,
+    laminar_state: Array,
+    fourier_: Fourier,
+    flow_: DeanFlow,
+) -> Array:
+    r"""Perturbation kinetic energy of the deviation from laminar,
+    `$E' = \|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$` (Dean
+    integrates the total field, so the perturbation is the deviation
+    from the analytical laminar Dean profile).
+
+    The single definition, shared by :func:`get_stats` (which reports
+    it as ``E'``) and the laminarization read
+    :func:`get_perturbation_energy`.
+    """
+    return (
+        get_norm2_annular(
+            state - laminar_state, fourier_.k_metric, flow_.y_weights
+        )
+        / 2
+    )
 
 
 def init_state(snapshot: str | None) -> Array:
@@ -177,8 +206,14 @@ def _get_stats_jit(
 ) -> dict[str, Array]:
     r"""Compute diagnostic statistics (total-field quantities).
 
+    *state* is the **physical** `$(u_z, u_r, u_\theta)$` view of the
+    field -- diagnostics sit outside the solver, whose working basis
+    is the decoupled `$(u_z, u_+, u_-)$` one (the ``annular.py``
+    module docstring); *laminar_state* is physical for the same
+    reason.
+
     - `$E$`: total kinetic energy (annular norm with radial Jacobian
-      `$r$` and `$u_\pm$` half-factor).
+      `$r$`).
     - `$E'$`: perturbation kinetic energy of the deviation from the
       laminar Dean profile,
       `$\|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$` (near zero
@@ -199,17 +234,14 @@ def _get_stats_jit(
     total_energy = (
         get_norm2_annular(state, fourier_.k_metric, flow_.y_weights) / 2
     )
-    perturbation_energy = (
-        get_norm2_annular(
-            state - laminar_state, fourier_.k_metric, flow_.y_weights
-        )
-        / 2
+    perturbation_energy = _perturbation_energy(
+        state, laminar_state, fourier_, flow_
     )
 
     # ── Mean velocity profiles ───────────────────────────────
     mean_state = extract_mean_mode(state)  # (3, Nr)
     mean_uz = mean_state[0].real  # (Nr,)
-    mean_utheta = mean_state[1].imag  # u_theta = Im(u_+), (Nr,)
+    mean_utheta = mean_state[2].real  # (Nr,)
 
     # ── Wall shear & bulk velocity ──────────────────────────
     tau_theta = flow_.D1_bnd @ mean_utheta  # (2,) [inner, outer]
@@ -250,7 +282,7 @@ def _get_stats_jit(
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around ``_get_stats_jit``."""
+    """Wrapper around ``_get_stats_jit`` (physical-basis *state*)."""
     return _get_stats_jit(state, _laminar_state, fourier, flow)
 
 
@@ -261,20 +293,14 @@ def _get_perturbation_energy_jit(
     fourier_: Fourier,
     flow_: DeanFlow,
 ) -> Array:
-    r"""Perturbation kinetic energy of the deviation from laminar.
-
-    `$E' = \|\mathbf{u} - \mathbf{U}_{\mathrm{lam}}\|^2 / 2$` (Dean
-    integrates the total field, so the perturbation is the deviation
-    from the analytical laminar Dean profile).
-    """
-    return (
-        get_norm2_annular(
-            state - laminar_state, fourier_.k_metric, flow_.y_weights
-        )
-        / 2
-    )
+    r"""Perturbation kinetic energy of the deviation from laminar."""
+    return _perturbation_energy(state, laminar_state, fourier_, flow_)
 
 
 def get_perturbation_energy(state: Array) -> Array:
-    """Perturbation kinetic energy E' (for the laminarization check)."""
+    r"""Perturbation kinetic energy E' (for the laminarization check).
+
+    Takes the **physical** `$(u_z, u_r, u_\theta)$` view, like
+    :func:`get_stats`, which reports the same number as ``E'``.
+    """
     return _get_perturbation_energy_jit(state, _laminar_state, fourier, flow)

@@ -17,49 +17,50 @@ Native input layout (physical and spectral)
 The input is array-like with shape ``(3, axis1, axis2, axis3)`` in
 dnsjax's native ordering for every geometry:
 
-=================  =====================  =========================
-system family      components (axis 0)    axes (1, 2, 3)
-=================  =====================  =========================
-Cartesian          `$(u_x, u_y, u_z)$`    `$(y, z, x)$`
-triply-periodic    `$(u_x, u_y, u_z)$`    `$(y, z, x)$`
-pipe / TC          `$(u_z, u_+, u_-)$`    `$(r, \theta, z_{ax})$`
-=================  =====================  =========================
+=================  ==========================  =========================
+system family      components (axis 0)         axes (1, 2, 3)
+=================  ==========================  =========================
+Cartesian          `$(u_x, u_y, u_z)$`         `$(y, z, x)$`
+triply-periodic    `$(u_x, u_y, u_z)$`         `$(y, z, x)$`
+pipe / TC          `$(u_z, u_r, u_\theta)$`    `$(r, \theta, z_{ax})$`
+=================  ==========================  =========================
 
-with `$u_\pm = u_r \pm i\,u_\theta$` (formed by the caller).  Axis 3 is
-the real-FFT (``nx``) slot, axis 2 the complex-FFT (``nz``) slot, axis 1
-the wall-normal (``ny``; untransformed for wall-bounded) or `$k_y$`
-(periodic) slot.  **Pipe and Taylor-Couette share the same native layout**
-``(r, θ, z_ax)``: dnsjax maps the axial direction to the real-FFT (``nx``)
-slot and the azimuthal to the complex (``nz``) slot, so for
-Taylor-Couette the spanwise (axial) resolution is ``nx`` and the
-streamwise (azimuthal) ``nz``.
+Axis 3 is the real-FFT (``nx``) slot, axis 2 the complex-FFT (``nz``)
+slot, axis 1 the wall-normal (``ny``; untransformed for wall-bounded)
+or `$k_y$` (periodic) slot.  **Pipe and Taylor-Couette share the same
+native layout** ``(r, θ, z_ax)``: dnsjax maps the axial direction to
+the real-FFT (``nx``) slot and the azimuthal to the complex (``nz``)
+slot, so for Taylor-Couette the spanwise (axial) resolution is ``nx``
+and the streamwise (azimuthal) ``nz``.
 
-Physical input has shape ``(3, ny, nz, nx)`` -- real for
-Cartesian/periodic, complex for pipe/TC (``u_pm`` are complex).  Spectral
-input has the same native layout with the Fourier axes transformed (no
-3/2 dealiasing padding): the real axis (3) holds ``nx//2`` non-negative
-modes (or ``nx//2 + 1`` with Nyquist), the complex axis (2) ``nz - 1``
-modes in ``complex_harmonics`` order (or ``nz`` in numpy-FFT order with
-Nyquist), and for periodic the `$k_y$` axis (1) likewise; ``input_norm``
-(numpy naming) is the source's forward-FFT normalisation.
+Physical input has shape ``(3, ny, nz, nx)`` and is **real** in every
+family (all native components are physical velocity components).
+Spectral input has the same native layout with the Fourier axes
+transformed (no 3/2 dealiasing padding): the real axis (3) holds
+``nx//2`` non-negative modes (or ``nx//2 + 1`` with Nyquist), the
+complex axis (2) ``nz - 1`` modes in ``complex_harmonics`` order (or
+``nz`` in numpy-FFT order with Nyquist), and for periodic the `$k_y$`
+axis (1) likewise; ``input_norm`` (numpy naming) is the source's
+forward-FFT normalisation.
 
-dnsjax native state (what is stored)
-------------------------------------
+dnsjax stored state (the on-disk contract)
+------------------------------------------
 The snapshot stores the **complex spectral perturbation velocity** at
 true (unpadded) resolution (``np = 1`` -> no device padding):
 
-=================  ==================  ====================
-system family      state components    state axes
-=================  ==================  ====================
-Cartesian          `$(u_x,u_y,u_z)$`   `$(y, k_z, k_x)$`
-triply-periodic    `$(u_x,u_y,u_z)$`   `$(k_y, k_z, k_x)$`
-pipe / TC          `$(u_z,u_+,u_-)$`   `$(r, m, k_z)$`
-=================  ==================  ====================
+=================  =======================  ====================
+system family      state components         state axes
+=================  =======================  ====================
+Cartesian          `$(u_x,u_y,u_z)$`        `$(y, k_z, k_x)$`
+triply-periodic    `$(u_x,u_y,u_z)$`        `$(k_y, k_z, k_x)$`
+pipe / TC          `$(u_z,u_r,u_\theta)$`   `$(r, m, k_z)$`
+=================  =======================  ====================
 
 True shapes are ``(ny, nz-1, nx//2)`` (Cartesian, pipe, TC) and
 ``(ny-1, nz-1, nx//2)`` (triply-periodic).  As of snapshot format 5
 this table is literal: the on-disk chunk bytes *are* this native
-state (the solver's spectral layout, no transpose).
+state (the solver's spectral layout, no transpose; format 6 made the
+cylindrical/annular components the physical basis above).
 
 Parameter surface
 -----------------
@@ -80,19 +81,15 @@ resolution); never include dealiasing padding.
 Algorithm
 ---------
 - **physical**: forward-transform with ``norm="forward"`` (dnsjax
-  convention) -- a full ``fft`` along every Fourier axis, then keep
+  convention) -- ``rfft`` along the real axis (every native component
+  is a real field), a full ``fft`` along the complex axes, then keep
   ``operators.real_harmonics`` on the real axis and
-  ``operators.complex_harmonics`` on the full axes (dropping Nyquist).  A
-  *full* ``fft`` then truncation (rather than ``rfft``) is required
-  because `$u_\pm$` are complex; it is identity-equivalent for real
-  components.  The wall-normal / radial axis is left as grid samples.
-- **spectral**: the input is already native, so no transform and **no
-  inverse-to-physical** is performed (an ``irfft`` would be invalid --
-  the `$(u_+, u_-)$` pair is not individually Hermitian on the real axis;
-  only the joint `$\hat u_+(-k)=\overline{\hat u_-(k)}$` holds).  Each
-  Fourier axis is reordered to native order (dropping any Nyquist mode)
-  and the field is rescaled from ``input_norm`` to dnsjax's ``"forward"``
-  convention.
+  ``operators.complex_harmonics`` on the full axes (dropping
+  Nyquist).  The wall-normal / radial axis is left as grid samples.
+- **spectral**: the input is already native, so no transform is
+  performed.  Each Fourier axis is reordered to native order
+  (dropping any Nyquist mode) and the field is rescaled from
+  ``input_norm`` to dnsjax's ``"forward"`` convention.
 
 Perturbation only
 -----------------
@@ -209,15 +206,6 @@ def _full_axis_gather(n: int) -> np.ndarray:
     return np.array([index_of[int(q)] for q in target], dtype=int)
 
 
-def _real_axis_gather(n: int) -> np.ndarray:
-    """Indices selecting ``real_harmonics(n)`` from a length ``n`` FFT
-    output: the non-negative half ``[0, n//2)`` (FFT index == wavenumber
-    for non-negative modes)."""
-    from dnsjax.operators import real_harmonics
-
-    return np.asarray(real_harmonics(n)).astype(int)
-
-
 # ── Transforms ───────────────────────────────────────────────────
 
 
@@ -268,9 +256,7 @@ def _spectral_to_native(
     mode order / Nyquist presence and the normalisation differ.  Reorders
     each Fourier axis to native order (real axis -> ``[0, nx//2)``; full
     axes -> ``complex_harmonics``, Nyquist dropped) and rescales
-    ``input_norm`` -> dnsjax's ``"forward"``.  No inverse-to-physical
-    transform is used: `$(u_+, u_-)$` are not individually Hermitian on
-    the real axis (see the module docstring).
+    ``input_norm`` -> dnsjax's ``"forward"``.
     """
     field = field[..., : nx // 2]  # real axis (3): keep [0, nx//2)
     field = _to_native_full_axis(field, 2, nz)  # k_z / m
@@ -287,17 +273,24 @@ def _forward_to_spectral(
     """Forward-transform a dnsjax-physical array to the spectral state.
 
     ``arr`` has layout ``[c, (y|r), (z|theta), (x|z_ax)]`` with axis
-    sizes ``(ny, nz, nx)``.  Returns the spectral state
+    sizes ``(ny, nz, nx)`` and is real (every native component is a
+    physical velocity component).  Returns the spectral state
     ``[c, (y|k_y), k_z, k_x]`` at true (unpadded) shape.
     """
     from jax import numpy as jnp
 
-    out = jnp.fft.fft(arr, axis=3, norm="forward")  # real axis (nx)
+    if jnp.iscomplexobj(arr):
+        raise ValueError(
+            "physical input must be real: the native components "
+            "(u_x, u_y, u_z) / (u_z, u_r, u_theta) are physical "
+            "velocity components"
+        )
+    out = jnp.fft.rfft(arr, axis=3, norm="forward")  # real axis (nx)
     out = jnp.fft.fft(out, axis=2, norm="forward")  # full axis (nz)
     if periodic:
         out = jnp.fft.fft(out, axis=1, norm="forward")  # full axis (ny)
 
-    out = jnp.take(out, _real_axis_gather(nx), axis=3)
+    out = out[..., : nx // 2]  # drop the Nyquist slot
     out = jnp.take(out, _full_axis_gather(nz), axis=2)
     if periodic:
         out = jnp.take(out, _full_axis_gather(ny), axis=1)
