@@ -57,7 +57,25 @@ pipe / TC          `$(u_z,u_+,u_-)$`   `$(r, m, k_z)$`
 =================  ==================  ====================
 
 True shapes are ``(ny, nz-1, nx//2)`` (Cartesian, pipe, TC) and
-``(ny-1, nz-1, nx//2)`` (triply-periodic).
+``(ny-1, nz-1, nx//2)`` (triply-periodic).  As of snapshot format 5
+this table is literal: the on-disk chunk bytes *are* this native
+state (the solver's spectral layout, no transpose).
+
+Parameter surface
+-----------------
+``configure_target`` / ``convert_field_to_snapshot`` take the flow's
+**public-named** physics / geometry / resolution parameters as
+keyword arguments -- exactly the names the solver CLI documents
+(``dnsjax --help <system>``): ``nx``/``ny``/``nz``/``lx``/``lz``/
+``re`` for the Cartesian and periodic flows; ``nz`` (axial), ``nr``
+(radial), ``ntheta`` (azimuthal), ``lz`` (axial length), optional
+``m0`` (azimuthal wedge) and ``re`` (pipe) or ``re1``/``re2``/``eta``
+(Taylor-Couette) for the cylindrical/annular flows.  The three
+resolutions are required (they fix the input shape); anything omitted
+falls to the flow's defaults, and a name not on the flow's surface is
+a hard error, as on the CLI.  Resolutions count the physical modes /
+grid points *before* 3/2 dealiasing (the solver's nominal
+resolution); never include dealiasing padding.
 
 Algorithm
 ---------
@@ -102,19 +120,21 @@ at import, the :mod:`dnsjax.random_field` idiom)::
     from snapshot_import import convert_field_to_snapshot
 
     convert_field_to_snapshot(
-        field, "ic_snapshot",
+        field, "ic_snapshot.tar",
         system="plane-couette", nx=128, ny=65, nz=128,
         lx=4.0, lz=4.0, wall_normal_grid=ys, re=400.0,
         space="physical",
     )
 
-or, for finer control::
+(pipe: ``system="pipe", nz=..., nr=..., ntheta=..., lz=...,
+re=..., wall_normal_grid=rs``) or, for finer control::
 
     import snapshot_import as si
-    si.configure_target("kolmogorov", 64, 64, 64, lx=4.0, lz=4.0)
+    si.configure_target("kolmogorov", nx=64, ny=64, nz=64,
+                        lx=4.0, lz=4.0)
     state = si.to_spectral_state(field, space="spectral",
                                  input_norm="backward")
-    si.write_snapshot(state, "ic_snapshot", t=0.0, it=0)
+    si.write_snapshot(state, "ic_snapshot.tar", t=0.0, it=0)
 """
 
 from __future__ import annotations
@@ -379,27 +399,38 @@ def _validate_grid_domain(system: str, family: str, grid: list[float]) -> None:
 # ── Public API ───────────────────────────────────────────────────
 
 
+def _public_field_map(system: str) -> dict[str, tuple[str, str]]:
+    """Public name -> ``(section, internal name)`` over the flow's
+    physics / geometry / resolution surface.
+
+    Built from the flow spec (plus the unaliased global fields), so
+    the accepted keyword names are exactly the solver's public surface
+    for *system* (``--help <system>``); the converter-owned fields
+    (``phys.system``, ``res.double_precision``) are excluded.
+    """
+    from dnsjax.flows.registry import GLOBAL_FIELDS, spec_for
+
+    owned = {("phys", "system"), ("res", "double_precision")}
+    sections = ("phys", "geo", "res")
+    out: dict[str, tuple[str, str]] = {}
+    for fs in spec_for(system).fields:
+        if fs.section in sections and fs.key not in owned:
+            out[fs.public_name] = fs.key
+    for key in GLOBAL_FIELDS:
+        if key[0] in sections and key not in owned:
+            out.setdefault(key[1], key)
+    return out
+
+
 def configure_target(
     system: str,
-    nx: int,
-    ny: int,
-    nz: int,
     *,
-    lx: float = 4.0,
-    lz: float = 4.0,
     wall_normal_grid: Any | None = None,
     double_precision: bool = True,
-    fd_order: int = 8,
-    tilt_degree: float = 0.0,
-    re: float = 1000.0,
-    re1: float | None = None,
-    re2: float | None = None,
-    eta: float | None = None,
-    driving: str = "constant_pressure_gradient",
-    block_mean_spanwise_velocity: bool = False,
     extra_params: dict[str, Any] | None = None,
+    **fields: Any,
 ) -> None:
-    """Configure JAX and the global dnsjax parameter singletons.
+    r"""Configure JAX and the global dnsjax parameter singletons.
 
     Must be called **once per process, before** ``to_spectral_state`` /
     ``write_snapshot`` (the geometry ``fourier`` singleton is built at
@@ -408,24 +439,27 @@ def configure_target(
 
     Parameters
     ----------
-    system, nx, ny, nz:
-        Flow system and dnsjax resolution.  For Taylor-Couette ``nx`` is
-        the axial (spanwise) and ``nz`` the azimuthal (streamwise)
-        resolution; for all other systems ``nx`` is streamwise and ``nz``
-        spanwise.  See the module docstring.
-    lx, lz:
-        Streamwise / spanwise domain lengths (recorded in metadata;
-        forced to `$2\\pi$` internally for pipe/TC).
+    system:
+        Flow system (``phys.system``).
     wall_normal_grid:
-        Wall-normal / radial grid (length ``ny``) for wall-bounded flows;
-        must be ``None`` for triply-periodic.  Stored in the snapshot and
-        interpolated to the run grid at load.
-    re, re1, re2, eta:
-        Reynolds number(s).  Taylor-Couette requires ``re1``, ``re2``,
-        ``eta``.
+        Wall-normal / radial grid for wall-bounded flows, in dnsjax's
+        **ascending** convention (Cartesian: bottom wall `$-1$` to top
+        wall `$+1$`; pipe: near-axis to the wall on `$(0, 1]$`;
+        annular: inner to outer radius) and of the flow's wall-normal
+        length (``ny`` / ``nr``); must be ``None`` for
+        triply-periodic.  Stored in the snapshot and interpolated to
+        the run grid at load.
+    double_precision:
+        Sets ``jax_enable_x64`` and ``res.double_precision``.
     extra_params:
-        Optional nested dict (e.g. ``{"step": {"dt": 0.01}}``) of any
-        further parameters to record in the snapshot metadata.
+        Optional nested dict of *internal-named* further sections
+        (e.g. ``{"step": {"dt": 0.01}}``) to record in the snapshot
+        metadata.
+    **fields:
+        The flow's **public-named** physics / geometry / resolution
+        parameters (see "Parameter surface" in the module docstring).
+        The three resolutions are required; unknown names are hard
+        errors; omitted fields fall to the flow's defaults.
     """
     os.environ.setdefault(
         "XLA_FLAGS",
@@ -438,6 +472,7 @@ def configure_target(
     jax.config.update("jax_enable_x64", double_precision)
     jax.config.update("jax_platforms", "cpu")
 
+    from dnsjax.flows.registry import spec_for
     from dnsjax.parameters import (
         Parameters,
         derived_params,
@@ -447,23 +482,35 @@ def configure_target(
         update_parameters,
     )
 
+    field_map = _public_field_map(system)
+    unknown = sorted(set(fields) - set(field_map))
+    if unknown:
+        raise ValueError(
+            f"{system}: unknown parameter(s) {unknown}; valid public "
+            f"names: {sorted(field_map)}"
+        )
+    res_keys = {("res", "nx"), ("res", "ny"), ("res", "nz")}
+    missing = sorted(
+        public
+        for public, key in field_map.items()
+        if key in res_keys and public not in fields
+    )
+    if missing:
+        raise ValueError(
+            f"{system}: resolution parameter(s) {missing} are required"
+        )
+    sections: dict[str, dict[str, Any]] = {}
+    for public, value in fields.items():
+        section, internal = field_map[public]
+        sections.setdefault(section, {})[internal] = value
+
     cli = Parameters(
         dist={"np": 1, "platform": "cpu"},
-        phys={
-            "system": system,
-            "re": re,
-            "re1": re1,
-            "re2": re2,
-            "driving": driving,
-            "block_mean_spanwise_velocity": block_mean_spanwise_velocity,
-        },
-        geo={"lx": lx, "lz": lz, "tilt_degree": tilt_degree, "eta": eta},
+        phys={"system": system, **sections.get("phys", {})},
+        geo=sections.get("geo", {}),
         res={
-            "nx": nx,
-            "ny": ny,
-            "nz": nz,
-            "fd_order": fd_order,
             "double_precision": double_precision,
+            **sections.get("res", {}),
         },
         outs={},
     )
@@ -473,6 +520,8 @@ def configure_target(
     padded_res.set_padded_resolution(params)
 
     family = _geo_family(system)
+    ny = params.res.ny
+    ny_public = spec_for(system).alias("res", "ny")
     if system in periodic_systems:
         if wall_normal_grid is not None:
             raise ValueError(
@@ -482,11 +531,14 @@ def configure_target(
     else:
         if wall_normal_grid is None:
             raise ValueError(
-                f"{system} requires wall_normal_grid (length {ny})"
+                f"{system} requires wall_normal_grid "
+                f"(length {ny_public}={ny}, ascending)"
             )
         grid = [float(v) for v in np.asarray(wall_normal_grid).ravel()]
         if len(grid) != ny:
-            raise ValueError(f"wall_normal_grid length {len(grid)} != ny {ny}")
+            raise ValueError(
+                f"wall_normal_grid length {len(grid)} != {ny_public} {ny}"
+            )
         _validate_grid_domain(system, family, grid)
         derived_params.wall_normal_grid = grid
 
@@ -558,9 +610,6 @@ def convert_field_to_snapshot(
     output_path: str,
     *,
     system: str,
-    nx: int,
-    ny: int,
-    nz: int,
     space: Space = "physical",
     input_norm: InputNorm = "backward",
     t: float = 0.0,
@@ -570,11 +619,11 @@ def convert_field_to_snapshot(
     """One-shot conversion: configure, pack, and write a snapshot.
 
     ``field`` is in dnsjax native layout (see the module docstring).
-    ``**config`` is forwarded to ``configure_target`` (``lx``, ``lz``,
-    ``wall_normal_grid``, ``re``, ``re1``, ``re2``, ``eta``,
-    ``tilt_degree``, ``driving``, ``double_precision``, ``fd_order``,
-    ``extra_params``, ...).
+    ``**config`` is forwarded to ``configure_target``: the flow's
+    **public-named** surface fields (the three resolutions are
+    required) plus ``wall_normal_grid`` / ``double_precision`` /
+    ``extra_params``.
     """
-    configure_target(system, nx, ny, nz, **config)
+    configure_target(system, **config)
     state = to_spectral_state(field, space=space, input_norm=input_norm)
     write_snapshot(state, output_path, t=t, it=it)

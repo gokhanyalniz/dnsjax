@@ -14,7 +14,7 @@ Exercises the host (non-GDS) I/O path:
   with exactly the stored data;
 - wall-normal regrid on load: the Cartesian case interpolates a
   polynomial profile ny 8 -> 16, and the **pipe** case additionally
-  pins the alias-aware stored-``nr`` lookup (v4 metadata stores
+  pins the alias-aware stored-``nr`` lookup (the metadata stores
   public names) plus the spectral parity interpolation across a
   rigged-CGL -> half-CGL radial-grid change;
 - a viscoelastic ``nr``-mismatch load assembles the 9-component
@@ -40,9 +40,9 @@ multiple CPU devices are obtained via
 load np-config is identical runs save + reload in **one** worker
 process (one JAX init); the cross-np cases keep the separate
 cold-process load, so the fresh-process read path stays covered for
-both layouts.  The GDS path needs a GPU + kvikIO and is not
-unit-tested here; it shares the same slab offsets/layout as the host
-path.
+both families.  The GDS path needs a GPU + kvikIO and is not
+unit-tested here; it shares the same span generator (offsets and
+coalescing tiers) as the host path.
 
 Run as a script::
 
@@ -207,22 +207,6 @@ def _embed_true_into_padded(true_arr, padded_shape, system):
     return out
 
 
-def _on_disk_from_true(ref_true, system):
-    """Map a true-shaped reference into the on-disk ``(3, A, kx, B)``
-    layout that the zarr3 chunks store (see ``snapshot._extract_*``).
-
-    ``walled`` stores ``comp[y, kx, kz]`` (last two axes swapped);
-    ``periodic`` stores ``comp[kz, kx, ky]`` (native ``(ky, kz, kx)``).
-    """
-    import numpy as np
-
-    if system in _PERIODIC:
-        # (3, ky, kz, kx) -> (3, kz, kx, ky)
-        return np.transpose(ref_true, (0, 2, 3, 1)).copy()
-    # (3, y, kz, kx) -> (3, y, kx, kz)
-    return np.transpose(ref_true, (0, 1, 3, 2)).copy()
-
-
 def _read_state_with_tensorstore(state_dir):
     """Read the extracted zarr3 ``state/`` store without dnsjax."""
     import numpy as np
@@ -267,7 +251,7 @@ def _check_standard_tools(d, ref_true, system):
         assert expected <= names, (sorted(names), sorted(expected))
         # stdlib-only metadata read (no dnsjax).
         meta = json.loads(tf.extractfile("_dnsjax_meta.json").read())
-        assert meta["format_version"] == 4, meta["format_version"]
+        assert meta["format_version"] == 5, meta["format_version"]
         # Provenance key present and non-empty (value depends on the
         # checkout, so only its presence is pinned).
         assert meta.get("git_hash"), meta
@@ -277,14 +261,15 @@ def _check_standard_tools(d, ref_true, system):
             tf.extractall(ex, filter="data")
         on_disk = _read_state_with_tensorstore(os.path.join(ex, "state"))
 
-    assert list(on_disk.shape) == meta["on_disk_shape"], (
+    assert list(on_disk.shape) == meta["native_shape"], (
         on_disk.shape,
-        meta["on_disk_shape"],
+        meta["native_shape"],
     )
-    expected_on_disk = _on_disk_from_true(ref_true, system)
-    assert np.array_equal(on_disk, expected_on_disk), (
+    # The on-disk bytes ARE the native (solver) spectral layout at
+    # true mode counts -- no transpose between memory and disk.
+    assert np.array_equal(on_disk, ref_true), (
         "TensorStore read of the extracted zarr3 store does not match "
-        "the stored data"
+        "the native-layout reference"
     )
 
 

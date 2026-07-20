@@ -11,7 +11,7 @@ Read a snapshot::
     from dnsjax.analysis import read_state
     st = read_state("state00000.tar")
     (ux, uy, uz) = st.physical          # physical-space components
-    (y, x, z) = st.physical_coords      # matching coordinate arrays
+    (y, z, x) = st.physical_coords      # matching coordinate arrays
     re = st.params.phys.re
 
 Operate on fields::

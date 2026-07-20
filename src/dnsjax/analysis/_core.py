@@ -6,20 +6,22 @@ standard library, and dnsjax's JAX-free leaf modules
 (:mod:`dnsjax.snapshot_meta`, :mod:`dnsjax.harmonics`,
 :mod:`dnsjax.fd`) -- importing it never pulls in JAX.
 
-Snapshot-native (on-disk) layout
---------------------------------
+Snapshot-native layout
+----------------------
 A component chunk read straight off disk and reshaped to
-``(a_size, kx_global, b_size)`` *is* the snapshot-native layout; we
-never transpose it.  Axis 1 is always the real-FFT axis
-(``kx_global = nx // 2``).  Per family:
+``(a_size, n_kz, n_kx)`` *is* the snapshot-native layout -- which,
+as of snapshot format 5, is also the solver's in-memory spectral
+layout (the state is stored untransposed); we never transpose it.
+Axis 2 is always the real-FFT axis (``n_kx = nx // 2``).  Per
+family:
 
 ==================  =======================  =================
 family              spectral axes (as read)  physical axes
 ==================  =======================  =================
-cartesian           (y, kx, kz)              (y, x, z)
-cylindrical/annular (r, k_axial, m)          (r, z, θ)
-viscoelastic (dean) (r, k_axial, m)          (r, z, θ)
-triply-periodic     (kz, kx, ky)             (z, x, y)
+cartesian           (y, kz, kx)              (y, z, x)
+cylindrical/annular (r, m, k_axial)          (r, θ, z)
+viscoelastic (dean) (r, m, k_axial)          (r, θ, z)
+triply-periodic     (ky, kz, kx)             (y, z, x)
 ==================  =======================  =================
 
 Components are ``(u_x, u_y, u_z)`` for cartesian / triply-periodic and
@@ -136,7 +138,7 @@ class Namespace:
 def params_namespace(meta: dict) -> Namespace:
     """Internal-named parameter view over snapshot metadata.
 
-    Stored (v4) metadata records the flow-relevant **public** names;
+    Stored metadata records the flow-relevant **public** names;
     this maps them back to internal names and rehydrates the
     hidden-derived internal fields (the annular azimuthal ``geo.lz``,
     the derived ``phys.re``/``re2``) via
@@ -156,7 +158,8 @@ def params_namespace(meta: dict) -> Namespace:
 
 @dataclass(frozen=True)
 class GeometryInfo:
-    r"""Axis semantics for a snapshot, in snapshot-native axis order.
+    r"""Axis semantics for a snapshot, in the native axis order
+    (identical on disk and in the solver's spectral state).
 
     All tuples are indexed by the on-disk axis (0, 1, 2).
     """
@@ -195,10 +198,10 @@ def geometry_info(params: Namespace) -> GeometryInfo:
         return GeometryInfo(
             family="cartesian",
             walled=True,
-            kind=("grid", "real", "complex"),
-            name=("y", "x", "z"),
-            n=(ny, nx, nz),
-            length=(None, lx, lz),
+            kind=("grid", "complex", "real"),
+            name=("y", "z", "x"),
+            n=(ny, nz, nx),
+            length=(None, lz, lx),
             components=("u_x", "u_y", "u_z"),
             wall_normal_axis=0,
             grid_axis=0,
@@ -226,14 +229,14 @@ def geometry_info(params: Namespace) -> GeometryInfo:
         else:
             components = ("u_z", "u_r", "u_theta")
         # Azimuthal length is the wedge extent lz = 2*pi/m0 (m0 = 1 full
-        # circle; stored in geo.lz); the real axis is axial (lx).
+        # circle; stored in geo.lz); the real axis (2) is axial (lx).
         return GeometryInfo(
             family=family,
             walled=True,
-            kind=("grid", "real", "complex"),
-            name=("r", "z", "theta"),
-            n=(ny, nx, nz),
-            length=(None, lx, lz),
+            kind=("grid", "complex", "real"),
+            name=("r", "theta", "z"),
+            n=(ny, nz, nx),
+            length=(None, lz, lx),
             components=components,
             wall_normal_axis=0,
             grid_axis=0,
@@ -242,12 +245,12 @@ def geometry_info(params: Namespace) -> GeometryInfo:
         return GeometryInfo(
             family="triply_periodic",
             walled=False,
-            kind=("complex", "real", "complex"),
-            name=("z", "x", "y"),
-            n=(nz, nx, ny),
-            length=(lz, lx, LY_PERIODIC),
+            kind=("complex", "complex", "real"),
+            name=("y", "z", "x"),
+            n=(ny, nz, nx),
+            length=(LY_PERIODIC, lz, lx),
             components=("u_x", "u_y", "u_z"),
-            wall_normal_axis=2,
+            wall_normal_axis=0,
             grid_axis=None,
         )
     raise ValueError(
@@ -354,19 +357,19 @@ def read_chunks(
 ) -> dict[int, ndarray]:
     r"""Read native spectral chunks straight off disk (no transpose).
 
-    Each returned component has the snapshot-native shape
-    ``(a_size, kx_global, b_size)`` (or ``(len(slab_indices),
-    kx_global, b_size)`` when *slab_indices* selects outer-axis slabs).
+    Each returned component has the native shape
+    ``(a_size, n_kz, n_kx)`` (or ``(len(slab_indices), n_kz, n_kx)``
+    when *slab_indices* selects outer-axis slabs).
 
-    *slab_indices* is only valid for the ``walled`` layout, whose outer
-    axis is the wall-normal direction (a slab is contiguous on disk, so
-    each is a single ``seek`` + ``read``).
+    *slab_indices* is only valid for the wall-bounded families, whose
+    outer axis is the wall-normal direction (a slab is contiguous on
+    disk, so each is a single ``seek`` + ``read``).
     """
     offsets = snapshot_component_offsets(path)
-    _, a_size, kx_global, b_size = meta["on_disk_shape"]
+    _, a_size, n_kz, n_kx = meta["native_shape"]
     dtype = _np_dtype(meta["dtype"])
     itemsize = dtype.itemsize
-    plane = kx_global * b_size
+    plane = n_kz * n_kx
 
     out: dict[int, ndarray] = {}
     with open(path, "rb") as f:
@@ -377,7 +380,7 @@ def read_chunks(
                 raw = f.read(a_size * plane * itemsize)
                 out[c] = (
                     np.frombuffer(raw, dtype=dtype)
-                    .reshape(a_size, kx_global, b_size)
+                    .reshape(a_size, n_kz, n_kx)
                     .copy()
                 )
             else:
@@ -386,9 +389,7 @@ def read_chunks(
                     f.seek(base + int(i) * plane * itemsize)
                     raw = f.read(plane * itemsize)
                     slabs.append(
-                        np.frombuffer(raw, dtype=dtype).reshape(
-                            kx_global, b_size
-                        )
+                        np.frombuffer(raw, dtype=dtype).reshape(n_kz, n_kx)
                     )
                 out[c] = np.stack(slabs, axis=0)
     return out
@@ -575,7 +576,7 @@ def radial_derivative(
 
     *parity* is ``None`` for the cartesian wall-normal axis and the
     annular radius (a plain ``D1`` matmul).  For the pipe it selects the
-    parity-reduced operator per azimuthal mode ``m`` (axis 2): ``"uz"``
+    parity-reduced operator per azimuthal mode ``m`` (axis 1): ``"uz"``
     for the ``(-1)^m`` parity of ``u_z``; ``"utheta"`` for the
     ``(-1)^{m+1}`` parity of ``u_r`` / ``u_θ``.
     """
@@ -585,13 +586,13 @@ def radial_derivative(
         d1, _ = build_diff_matrices(gr, int(fd_order))
         return _matmul_axis(d1, field, 0)
     d1_even, d1_odd = parity_radial_d1(grid, fd_order)
-    m_even = complex_harmonics(info.n[2]) % 2 == 0
+    m_even = complex_harmonics(info.n[1]) % 2 == 0
     use_even = m_even if parity == "uz" else ~m_even
     # One matmul per parity class on its own m-subset (not both
     # operators on the full field and a select).
     out = np.empty_like(field)
-    out[:, :, use_even] = _matmul_axis(d1_even, field[:, :, use_even], 0)
-    out[:, :, ~use_even] = _matmul_axis(d1_odd, field[:, :, ~use_even], 0)
+    out[:, use_even, :] = _matmul_axis(d1_even, field[:, use_even, :], 0)
+    out[:, ~use_even, :] = _matmul_axis(d1_odd, field[:, ~use_even, :], 0)
     return out
 
 

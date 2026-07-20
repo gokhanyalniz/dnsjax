@@ -410,17 +410,19 @@ format, and the guard: the `__main__.py` module docstring.
 
 ### Snapshots
 
-A snapshot is a single uncompressed tar (`format_version: 4`) wrapping a
+A snapshot is a single uncompressed tar (`format_version: 5`) wrapping a
 zarr3 store, readable with standard tools and no dnsjax; each device
 writes its disjoint byte ranges directly (raw offset I/O / GDS, never
-compressed). The stored state is the spectral perturbation `u'` for
+compressed), and the on-disk bytes are the solver's **native**
+spectral layout at true mode counts (no transpose anywhere). The
+stored state is the spectral perturbation `u'` for
 base-flow systems (laminar = zero array), the **total** field for
 dean/viscoelastic-dean. The embedded `params` dump is the
 flow-relevant, resolved, **public-named** surface representation plus
 the relevant extension sections (`param_surface.recorded_params_dump`);
 readers map it back via `flows.registry.internalize_stored` /
 `stored_value`, and `snapshot_meta.read_snapshot_meta` rejects
-`format_version < 4` (no translation of old snapshots, by design).
+`format_version < 5` (no translation of old snapshots, by design).
 
 Resume is np-agnostic (precision must match — a mismatch rejects) and
 re-grids a changed wall-normal grid at load; `t`/`it`/`isnap` continue
@@ -486,7 +488,8 @@ docstrings.
 One line each; full rationale/usage in each script's module docstring.
 
 - `scripts/snapshot_import.py`: **library** (not a CLI) packing a
-  native-layout velocity field into a snapshot.
+  native-layout velocity field into a snapshot (public-named per-flow
+  kwargs).
 - `scripts/snapshot_perturb.py`: CLI + library injecting a scaled
   single-mode perturbation into an existing snapshot.
 - `scripts/ensemble_setup.py`: JAX-free `harvest`/`build` CLI turning a
