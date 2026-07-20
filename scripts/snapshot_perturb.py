@@ -41,7 +41,7 @@ Perturbation sources (exactly one):
   modes; same regrid rule).
 - ``--perturb.npy FILE``: a raw ``(C, Ny)`` complex ``.npy`` profile
   on the snapshot's grid, in the stored component basis (Cartesian
-  ``(u_x, u_y, u_z)``; cyl/annular ``(u_z, u_+, u_-)``).
+  ``(u_x, u_y, u_z)``; cyl/annular ``(u_z, u_r, u_theta)``).
 
 Amplitude (exactly one):
 
@@ -448,7 +448,7 @@ def perturb_state(
     """``state + scale * single_mode_state(vec, i2, i3)``."""
     from dnsjax.analysis.transient_growth import single_mode_state
 
-    return state + scale * single_mode_state(vec, i2, i3, family)
+    return state + scale * single_mode_state(vec, i2, i3)
 
 
 # ── CLI ──────────────────────────────────────────────────────────
@@ -516,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
             "a (0,0) mean-mode profile must be real (the mean of a real field)"
         )
 
-    mode_state = single_mode_state(vec, i2, i3, family)
+    mode_state = single_mode_state(vec, i2, i3)
     if p.amplitude_energy is not None:
         energy = mode_state_energy(mode_state, family, gmod, fmod.flow)
         if energy <= 0.0:

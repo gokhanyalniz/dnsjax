@@ -126,6 +126,47 @@ def base_flow_coupling(
     )
 
 
+# ── Decoupled u± solver basis (cylindrical / annular) ───────────
+
+
+def to_pm_basis(state: Array) -> Array:
+    r"""Physical components `$\to$` decoupled solver basis.
+
+    Maps `$(u_z, u_r, u_\theta)$` to the solver's decoupled form
+    `$(u_z, u_+, u_-)$` with `$u_\pm = u_r \pm i\,u_\theta$` -- the
+    basis that diagonalizes the cylindrical/annular vector Laplacian
+    per azimuthal mode (the geometry module docstrings), in which the
+    whole time stepper works.
+
+    This is the boundary between the two representations: physical
+    outside the solver (snapshots, diagnostics, probes, initial
+    conditions, analysis), decoupled inside it, crossed at most once
+    per state (:mod:`dnsjax.__main__`).  Elementwise on the leading,
+    unsharded component axis, so it needs no collective and applies
+    unchanged to a single mode column ``(3, N_y)``.  The viscoelastic
+    geometry supplies its own 9-component map covering the
+    conformation spin components; inverse: :func:`from_pm_basis`.
+    """
+    u_r, u_theta = state[1], state[2]
+    return jnp.stack([state[0], u_r + 1j * u_theta, u_r - 1j * u_theta])
+
+
+def from_pm_basis(state: Array) -> Array:
+    r"""Decoupled solver basis `$\to$` physical components.
+
+    Inverse of :func:`to_pm_basis`: `$u_r = (u_+ + u_-)/2$`,
+    `$u_\theta = (u_+ - u_-)/(2i)$`.
+    """
+    u_plus, u_minus = state[1], state[2]
+    return jnp.stack(
+        [
+            state[0],
+            (u_plus + u_minus) / 2,
+            -1j * (u_plus - u_minus) / 2,
+        ]
+    )
+
+
 # ── Base-flow padding ───────────────────────────────────────────
 
 

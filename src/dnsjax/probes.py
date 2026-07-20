@@ -111,20 +111,21 @@ def _component_labels(n_components: int) -> list[str]:
     if params.phys.system in cartesian_systems:
         labels = ["u_x", "u_y", "u_z"]
     elif params.phys.system in viscoelastic_systems:
-        # Velocity + the 6 stored conformation-tensor spin components.
+        # Velocity + the 6 stored physical conformation-tensor
+        # components (the stored/physical layout).
         labels = [
             "u_z",
-            "u_+",
-            "u_-",
+            "u_r",
+            "u_theta",
             "c_zz",
-            "c_z+",
-            "c_z-",
-            "c_+-",
-            "c_++",
-            "c_--",
+            "c_rz",
+            "c_theta_z",
+            "c_rr",
+            "c_theta_theta",
+            "c_r_theta",
         ]
     else:  # cylindrical / annular velocity basis
-        labels = ["u_z", "u_+", "u_-"]
+        labels = ["u_z", "u_r", "u_theta"]
     if len(labels) != n_components:  # pragma: no cover - defensive
         labels = [f"c{i}" for i in range(n_components)]
     return labels
@@ -141,8 +142,28 @@ def build_mode_extractor(
     ``np0``/``np1``; per probed mode the owning device is computed
     from the local shard shape at trace time (the indices are static)
     and contributes the column to a ``psum`` over both mesh axes.
+
+    *state* arrives in the **solver** basis (the stream samples the
+    live field), and each column is converted to physical components
+    -- the basis of ``_component_labels`` and of the written stream --
+    *after* the gather, on a ``(C, N_y)`` slice rather than the whole
+    spectral field, so the probe stream stays affordable even at
+    ``it_probes = 1``.  (The map is linear and maps zero to zero, so
+    it commutes with the owner mask and the ``psum``.)
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
+    if params.phys.system in cartesian_systems:
+        to_physical = None
+    elif params.phys.system in viscoelastic_systems:
+        from .geometries.wall_bounded.annular_viscoelastic import (
+            from_solver_basis as _from_solver,
+        )
+
+        to_physical = _from_solver
+    else:  # cylindrical / annular velocity basis
+        from .geometries.wall_bounded._base import from_pm_basis
+
+        to_physical = from_pm_basis
 
     def _local(shard: Array) -> Array:
         n2_loc, n3_loc = shard.shape[2], shard.shape[3]
@@ -154,12 +175,11 @@ def build_mode_extractor(
             is_owner = (lax.axis_index("np0") == owner0) & (
                 lax.axis_index("np1") == owner1
             )
-            cols.append(
-                lax.psum(
-                    jnp.where(is_owner, col, jnp.zeros_like(col)),
-                    ("np0", "np1"),
-                )
+            col = lax.psum(
+                jnp.where(is_owner, col, jnp.zeros_like(col)),
+                ("np0", "np1"),
             )
+            cols.append(col if to_physical is None else to_physical(col))
         return jnp.stack(cols)
 
     return jax.jit(

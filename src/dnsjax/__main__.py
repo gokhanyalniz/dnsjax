@@ -290,11 +290,11 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         # Spectral parity-aware cylindrical interpolation: apply the
         # even / odd radial matrix per azimuthal mode m by component
         # parity.  State layout (component, r, m, kz): u_z parity
-        # (-1)^m; u_+/u_- parity (-1)^{m+1}.
+        # (-1)^m; u_r/u_theta parity (-1)^{m+1}.
         T_even, T_odd = T
         m_is_even = np.asarray(complex_harmonics(params.res.nz)) % 2 == 0
         T_p = np.where(m_is_even[:, None, None], T_even, T_odd)  # u_z
-        T_v = np.where(m_is_even[:, None, None], T_odd, T_even)  # u_+/-
+        T_v = np.where(m_is_even[:, None, None], T_odd, T_even)  # u_r/th
         T_p_jax = jnp.asarray(T_p, dtype=state.dtype)
         T_v_jax = jnp.asarray(T_v, dtype=state.dtype)
         # (m, i_new, j_old) x (j_old, m, k_kz) -> (i_new, m, k_kz)
@@ -367,6 +367,25 @@ def run(wall_time_start: int) -> None:
     step_cnab2_measured = _flow_mod.step_cnab2_measured
     set_dt = _flow_mod.set_dt
     reset_ab2_kappa = _flow_mod.reset_ab2_kappa
+
+    # --- Component-basis boundary --------------------------------------------
+    # The cylindrical/annular solvers work in a decoupled basis
+    # (``u_± = u_r ± i u_θ``, plus the conformation spin components)
+    # that diagonalizes their implicit operators, while everything
+    # outside the time stepper -- snapshots, diagnostics, probes,
+    # initial conditions, the analysis package -- works in physical
+    # components.  These two maps are that boundary; a given state
+    # crosses it at most once and never crosses back (the physical
+    # form is a *view* built for the consumers and dropped, so no
+    # re-encode is needed).  Cartesian and triply-periodic flows have
+    # no such basis, hence the identity fallback.
+    def _identity_basis(state):
+        return state
+
+    to_solver_basis = getattr(_flow_mod, "to_solver_basis", _identity_basis)
+    from_solver_basis = getattr(
+        _flow_mod, "from_solver_basis", _identity_basis
+    )
 
     # --- Initial condition ---------------------------------------------------
     from .snapshot_meta import is_snapshot_file
@@ -510,7 +529,8 @@ def run(wall_time_start: int) -> None:
 
     def _save_numbered_snapshot(state, t, it, snap_stats, isnap):
         """Write state{isnap}.tar (stats embedded per outs.*), return the
-        next isnap."""
+        next isnap.  *state* is the physical view -- the on-disk basis
+        is physical components (see the component-basis boundary)."""
         from .snapshot import save_snapshot
 
         width = params.outs.snapshot_pad_width
@@ -590,6 +610,15 @@ def run(wall_time_start: int) -> None:
     if params.outs.snapshot_save_initial and not resumed_continuation:
         isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
         last_saved_it = it
+
+    # --- Into the solver -----------------------------------------------------
+    # Every start mode above (snapshot resume + regrid, ``init_state``,
+    # localized rolls, random field) builds the state in physical
+    # components, and so did the diagnostics and the IC snapshot just
+    # taken from it.  This is where it enters the solver, once (see the
+    # component-basis boundary above); from here on ``state`` is in the
+    # solver basis until a consumer asks for the physical view.
+    state = to_solver_basis(state)
 
     # --- Stats buffer setup ------------------------------------------------
     p = params.outs.stats_precision - 1
@@ -899,13 +928,29 @@ def run(wall_time_start: int) -> None:
 
             sharding.print("First iteration over at", datetime.now())
 
-        # Periodic diagnostic output -> GPU buffer
-        if (
+        # Physical view of u^n, built at most once per iteration and
+        # shared by every full-field consumer below (the component-basis
+        # boundary; the probe stream converts its own extracted columns
+        # instead, which are far smaller than the field).  ``None`` on
+        # an ordinary step, and the identity on the geometries whose
+        # solver basis *is* the physical one.
+        do_stats = (
             params.outs.it_stats is not None
             and it % params.outs.it_stats == 0
             and it > params.init.it0
-        ):
-            stats = get_stats(state)
+        )
+        do_snapshot = (
+            params.outs.it_snapshot is not None
+            and it % params.outs.it_snapshot == 0
+            and it > params.init.it0
+        )
+        state_phys = (
+            from_solver_basis(state) if (do_stats or do_snapshot) else None
+        )
+
+        # Periodic diagnostic output -> GPU buffer
+        if do_stats:
+            stats = get_stats(state_phys)
             stat_vals = jnp.stack(list(stats.values()))
             buffer = buffer.at[py_idx].set(stat_vals)
             ts_buf.append(t)
@@ -944,25 +989,23 @@ def run(wall_time_start: int) -> None:
         # stats row above, so a fresh ``it_stats`` computation is reused;
         # the final state after the last step is covered by the
         # final-snapshot block after the loop).
-        if (
-            params.outs.it_snapshot is not None
-            and it % params.outs.it_snapshot == 0
-            and it > params.init.it0
-        ):
-            if (
-                params.outs.it_stats is not None
-                and it % params.outs.it_stats == 0
-            ):
-                snap_stats = stats  # just computed above for this state
-            else:
-                snap_stats = get_stats(state)
+        if do_snapshot:
+            # ``stats`` was just computed above for this same state.
+            snap_stats = stats if do_stats else get_stats(state_phys)
             # Flush first (checked; also keeps the .dat files
             # consistent with this snapshot): a buffered non-finite
             # diagnostic must abort before a snapshot of the same
             # broken state is written.
             flush_all_buffers()
-            isnap = _save_numbered_snapshot(state, t, it, snap_stats, isnap)
+            isnap = _save_numbered_snapshot(
+                state_phys, t, it, snap_stats, isnap
+            )
             last_saved_it = it
+
+        # Release the physical view before the step: it is a
+        # field-sized array, and holding it across the step would add
+        # to the step's peak allocation for nothing.
+        state_phys = None
 
         # Stochastic forcing kick (``force.modes``): fires after the
         # equal-t probe sample and any snapshot above (both record
@@ -1115,7 +1158,10 @@ def run(wall_time_start: int) -> None:
                 # the perturbation kinetic energy E' falls below the
                 # threshold.  ``state`` here is the fully updated
                 # post-step field (the periodic divergence correction
-                # is fused into the step itself).
+                # is fused into the step itself), so this is a second
+                # state and gets its own single crossing of the
+                # component-basis boundary -- the top-of-loop view was
+                # of u^n and is long gone.
                 #
                 # Future feature: a sharper relaminarization signal is
                 # the norm of the *complete* RHS (Laplacian included)
@@ -1130,7 +1176,9 @@ def run(wall_time_start: int) -> None:
                 # operator evaluations, no pressure solve), and goes to
                 # zero at the laminar fixed point.  Tracking it would
                 # mean keeping the pre-step state for the difference.
-                e_prime_host = float(get_perturbation_energy(state))
+                e_prime_host = float(
+                    get_perturbation_energy(from_solver_basis(state))
+                )
                 if not math.isfinite(e_prime_host):
                     # A NaN would otherwise compare False against the
                     # threshold and the run would keep going.
@@ -1170,10 +1218,15 @@ def run(wall_time_start: int) -> None:
 
     sharding.print("Stopped timestepping at", datetime.now())
 
+    # Out of the solver, once, for the final state: the physical view
+    # shared by the final stats and the final snapshot below (the probe
+    # stream converts its own columns).
+    state_phys = from_solver_basis(state)
+
     # Final-state stats: computed once when the run stepped, reused by
     # both the final snapshot and the benchmark diagnostic below.
     if it > params.init.it0:
-        stats = get_stats(state)
+        stats = get_stats(state_phys)
         bad_final = [
             k for k, v in stats.items() if not math.isfinite(float(v))
         ]
@@ -1211,7 +1264,7 @@ def run(wall_time_start: int) -> None:
         # with this snapshot): buffered non-finite rows abort before
         # the write.
         flush_all_buffers()
-        isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
+        isnap = _save_numbered_snapshot(state_phys, t, it, stats, isnap)
         last_saved_it = it
 
     wall_time_now = perf_counter_ns()

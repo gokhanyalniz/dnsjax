@@ -156,14 +156,31 @@ def frozen_profile_flow(
 # ── Diagnostic statistics ────────────────────────────────────────
 
 
+def _perturbation_energy(
+    state: Array, fourier_: Fourier, flow_: CircularCouetteFlow
+) -> Array:
+    r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`.
+
+    The single definition, shared by :func:`get_stats` (which reports
+    it as ``E'``) and the laminarization read
+    ``get_perturbation_energy``.
+    """
+    return get_norm2_annular(state, fourier_.k_metric, flow_.y_weights) / 2
+
+
 @jit
 def _get_stats_jit(
     state: Array, fourier_: Fourier, flow_: CircularCouetteFlow
 ) -> dict[str, Array]:
     r"""Compute diagnostic statistics.
 
+    *state* is the **physical** `$(u_z, u_r, u_\theta)$` view of the
+    field -- diagnostics sit outside the solver, whose working basis
+    is the decoupled `$(u_z, u_+, u_-)$` one (the ``annular.py``
+    module docstring).
+
     - `$E'$`: perturbation kinetic energy (annular norm with radial
-      Jacobian `$r$` and `$u_\pm$` half-factor).
+      Jacobian `$r$`).
     - `$I$`: energy input rate from the wall torques.  At the rotating
       walls the perturbation azimuthal traction
       `$\tau'_\theta = \partial_r u'_\theta / \mathrm{Re}$` does work
@@ -188,14 +205,12 @@ def _get_stats_jit(
     """
     Re = params.phys.re
     volfac = derived_params.volume_fac
-    perturbation_energy = (
-        get_norm2_annular(state, fourier_.k_metric, flow_.y_weights) / 2
-    )
+    perturbation_energy = _perturbation_energy(state, fourier_, flow_)
 
     # ── Mean velocity profiles ───────────────────────────────
     mean_state = extract_mean_mode(state)  # (3, Nr)
     mean_uz = mean_state[0].real  # (Nr,)
-    mean_utheta = mean_state[1].imag  # u_theta = Im(u_+), (Nr,)
+    mean_utheta = mean_state[2].real  # (Nr,)
 
     # ── Wall shear & bulk velocity ──────────────────────────
     # D1_bnd @ profile -> [inner (r1), outer (r2)] wall-normal deriv.
@@ -255,4 +270,4 @@ def _get_perturbation_energy_jit(
     state: Array, fourier_: Fourier, flow_: CircularCouetteFlow
 ) -> Array:
     r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
-    return get_norm2_annular(state, fourier_.k_metric, flow_.y_weights) / 2
+    return _perturbation_energy(state, fourier_, flow_)

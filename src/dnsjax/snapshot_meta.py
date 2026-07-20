@@ -81,12 +81,17 @@ def is_snapshot_file(path: str | Path) -> bool:
         return META_MEMBER in tf.getnames()
 
 
-#: Oldest readable snapshot ``format_version``.  Version 5 switched
-#: the on-disk array layout to the solver's native spectral layout;
-#: version 4 switched the embedded ``params`` dump to the
-#: flow-relevant public-named surface representation.  Earlier
-#: versions are not translated (no compatibility shim by design).
-MIN_FORMAT_VERSION: int = 5
+#: Oldest readable snapshot ``format_version``.  Version 6 switched
+#: the stored cylindrical/annular component basis from the solver's
+#: decoupled `$u_\pm$` / conformation-spin form to physical components
+#: (`$u_r$`, `$u_\theta$`, physical tensor) -- byte-layout unchanged,
+#: component *meaning* changed, so version-5 files would be silently
+#: misread; version 5 switched the on-disk array layout to the
+#: solver's native spectral layout; version 4 switched the embedded
+#: ``params`` dump to the flow-relevant public-named surface
+#: representation.  Earlier versions are not translated (no
+#: compatibility shim by design).
+MIN_FORMAT_VERSION: int = 6
 
 
 def read_snapshot_meta(path: str | Path) -> dict:
@@ -107,9 +112,10 @@ def read_snapshot_meta(path: str | Path) -> dict:
     if version < MIN_FORMAT_VERSION:
         raise ValueError(
             f"{path} has snapshot format_version {version}; this code "
-            f"reads version {MIN_FORMAT_VERSION}+ only (the on-disk "
-            "array layout and the embedded parameter dump changed "
-            "representation, and old snapshots are not translated)."
+            f"reads version {MIN_FORMAT_VERSION}+ only (the stored "
+            "component basis, the on-disk array layout, and the "
+            "embedded parameter dump changed representation across "
+            "versions, and old snapshots are not translated)."
         )
     return meta
 

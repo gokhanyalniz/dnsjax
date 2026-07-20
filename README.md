@@ -474,9 +474,9 @@ simulator, say) into a valid snapshot.
 The importer is a library (not a CLI) and **assumes the field is already
 in dnsjax's native layout**: components leading, axes $(y, z, x)$ for the
 Cartesian and triply-periodic systems and $(r, \theta, z)$ for pipe and
-Taylor-Couette — whose components are $(u_z, u_+, u_-)$ with
-$u_\pm = u_r \pm i u_\theta$ — so any axis permutation and component
-mixing from the source code's conventions is the caller's first step.
+Taylor-Couette — whose components are $(u_z, u_r, u_\theta)$ — so any
+axis permutation and component reordering from the source code's
+conventions is the caller's first step.
 Two conventions to keep in mind. The resolutions are the solver's
 nominal (physical) mode counts *without* the 3/2 dealiasing expansion —
 never include dealiasing zero-padding in the field or the resolution
@@ -507,7 +507,7 @@ convert_field_to_snapshot(
     space="physical",
 )
 
-# Pipe: (u_z, u_+, u_-) over (r, θ, z), shape (3, nr, ntheta, nz); lz
+# Pipe: (u_z, u_r, u_θ) over (r, θ, z), shape (3, nr, ntheta, nz); lz
 # is the axial period (the sole free length — the azimuthal extent is
 # the wedge 2π/m0), and rs ascends over the radii on (0, 1].
 convert_field_to_snapshot(

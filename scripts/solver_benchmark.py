@@ -394,15 +394,22 @@ def run_child(a: argparse.Namespace) -> None:
         a.seed,
         False,
     )
-    s = jnp.copy(state)  # the step donates its argument
+    # The IC and the diagnostics are physical; the steppers work in
+    # the geometry's solver basis (as ``__main__`` does, one crossing
+    # each way).
+    to_solver = getattr(m, "to_solver_basis", lambda x: x)
+    from_solver = getattr(m, "from_solver_basis", lambda x: x)
+    s = to_solver(state)  # a fresh array: the step donates its argument
     for _ in range(a.parity_steps):
         s, _err, _c = m.predict_and_fully_correct(s)
     jax.block_until_ready(s)
+    s_phys = from_solver(s)
     parity = {
         "steps": a.parity_steps,
-        "energy": float(m.get_perturbation_energy(s)),
-        "stats": {k: float(v) for k, v in m.get_stats(s).items()},
+        "energy": float(m.get_perturbation_energy(s_phys)),
+        "stats": {k: float(v) for k, v in m.get_stats(s_phys).items()},
     }
+    del s_phys
     del s
 
     # Isolated solve timings (distinct operands, CSE-safe).
