@@ -12,6 +12,10 @@ fornberg_weights:
     grids.
 build_diff_matrices:
     Assemble first- and second-derivative matrices D1, D2.
+matrix_half_bandwidth:
+    Measured half-bandwidth of an assembled operator, ignoring the
+    rows a caller overwrites with boundary rows (the banded-storage
+    size).
 build_integration_weights:
     Composite polynomial quadrature weights on a non-uniform grid
     (``fd_order``-accurate; the general-purpose rule).
@@ -72,6 +76,8 @@ completion's axis-node reconstruction (the *quadrature* completion
 keeps the local rule: full exactness and weight positivity are
 incompatible there, see :func:`_cgl_completion_matrices`).
 """
+
+from collections.abc import Sequence
 
 import numpy as np
 from numpy import ndarray
@@ -169,6 +175,42 @@ def build_diff_matrices(
         D2[i, j0 : j0 + s2] = w[:, 2]
 
     return D1, D2
+
+
+def matrix_half_bandwidth(A: ndarray, skip_rows: Sequence[int] = ()) -> int:
+    r"""Measured half-bandwidth of an assembled wall-normal operator.
+
+    Returns `$\max |i - j|$` over the nonzero entries of *A*, ignoring
+    the rows in *skip_rows* -- the rows the caller replaces wholesale
+    with boundary rows before the operator reaches banded storage
+    (:func:`dnsjax.solvers._assemble_banded_operator`), so their own
+    stencil width never has to fit.
+
+    This is what sizes `$2p+1$` banded storage.  The default
+    ``fd_order``-wide band is *exactly* right for the direct-fit
+    `$D_2$` (a `$(p+2)$`-point one-sided row reaches offset `$p$` at
+    row 1), but not for a composed operator: `$D_1 D_1$` reaches
+    `$p + \lceil p/2 \rceil - 1$` (11 at ``fd_order = 8``).  Measuring
+    instead of assuming keeps the two cases on one code path and makes
+    a silent band truncation impossible.
+
+    Parameters
+    ----------
+    A:
+        Assembled real operator, shape ``(N, N)``.
+    skip_rows:
+        Row indices to ignore; negative indices count from the end.
+    """
+    N = A.shape[-1]
+    skip = {i % N for i in skip_rows}
+    half = 0
+    for i in range(N):
+        if i in skip:
+            continue
+        nz = np.nonzero(A[i])[0]
+        if nz.size:
+            half = max(half, abs(int(nz[0]) - i), abs(int(nz[-1]) - i))
+    return half
 
 
 def build_integration_weights(

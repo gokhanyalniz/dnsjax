@@ -81,6 +81,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_cartesian.py", (), (), 1800),
     ("test_cnab2.py", (), (), 1800),
     ("test_cylindrical.py", (), (), 1800),
+    # Offline (no mpirun), but it runs five full solver steps in
+    # subprocesses, so it is a slow row.
+    ("test_imm_continuity.py", (), _SLOW, 3600),
     ("test_integration.py", (), (), 1800),
     ("test_localized_rolls.py", (), (), 1800),
     ("test_mean_mask.py", (), (), 1800),

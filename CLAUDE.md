@@ -41,6 +41,32 @@ layer (scripts line-buffer stdout, launch sites tee children through
 and tail it for progress -- and kill it early when something is
 clearly wrong instead of waiting out the timeout.
 
+Let a backgrounded run's own completion signal reach you;
+**never poll for it** with `until ! pgrep -f "tests/test_x"`. The
+polling shell's own command line contains the pattern, so `pgrep -f`
+matches itself, the condition never goes false, and the loop
+outlives the run it was watching. Queue several suites by chaining
+them with `&&` inside one backgrounded command, not by waiting in
+between. Where a process check is genuinely unavoidable, bracket the
+pattern so it cannot match its own text (`tes[t]_x`) and cap the
+iteration count.
+
+Run **one** heavy suite at a time. Each invocation is already serial
+internally (no xdist; the smoke suites loop one `mpirun` at a time)
+and deliberately leaves JAX's CPU thread pool unpinned -- a
+single-process test *should* use the box, which is why
+`configure_jax_platform` omits the production `XLA_FLAGS` pinning
+that `configure_jax_runtime` sets, so do not "fix" that. Concurrent
+invocations oversubscribe instead, and have produced spurious aborts
+(a signal-6 in an `mpirun` child; a smoke entry that failed once and
+passed identically on rerun). Corollaries: never read a *verdict*
+from a `tail` of a run you have not seen in full -- capture it
+(`> log 2>&1`) and grep the file; never edit a test file while a
+suite is running, since each script is launched as a subprocess and
+will pick up a half-finished edit; and a failure that does not
+reproduce on a clean serial rerun was contention -- say so rather
+than silently re-running.
+
 Two ways to get multiple devices, and they do **not** mix:
 offline/in-process tests force CPU devices via
 `XLA_FLAGS=--xla_force_host_platform_device_count=N` + set
@@ -379,7 +405,7 @@ layering" above.
 |------------|-----------------------------------------------------|
 | `[phys]`   | Reynolds numbers, `system`, oversampling, driving, `u_grid`; viscoelastic-dean rheology |
 | `[geo]`    | Domain lengths/tilt, `eta`, `m0` (azimuthal wedge), `delta`, wall-normal grid selection |
-| `[res]`    | Resolution (`nx`/`ny`/`nz`, or `nz`/`nr`/`ntheta`), `fd_order`, `double_precision` |
+| `[res]`    | Resolution (`nx`/`ny`/`nz`, or `nz`/`nr`/`ntheta`), `fd_order`, `consistent_imm`, `double_precision` |
 | `[init]`   | Start mode (see "Initial conditions" above) + `t0`/`it0`/`isnap0`/`force_resume` |
 | `[outs]`   | Diagnostic cadences, buffering, snapshot write policy |
 | `[step]`   | `dt` + scheme knobs + adaptive-CFL knobs (`TimeStepping`) |
@@ -571,6 +597,8 @@ one-liners. Cross-cutting notes:
 - `tests/test_integration.py`: quadrature weights and interpolation
   matrices.
 - `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards.
+- `tests/test_imm_continuity.py`: stepped-state discrete divergence
+  with/without `res.consistent_imm` (+ the pipe's deferral).
 - `tests/test_adaptive.py`: adaptive-dt machinery (controller units,
   rebuild-vs-fresh/step parity, no-recompile guard, kappa identity).
 - `tests/test_temporal_order.py`: second-order temporal accuracy

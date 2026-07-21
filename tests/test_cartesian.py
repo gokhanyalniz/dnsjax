@@ -44,9 +44,13 @@ params.res.double_precision = True
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
+from jax import Array  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
-from dnsjax.fd import build_diff_matrices  # noqa: E402
+from dnsjax.fd import (  # noqa: E402
+    build_diff_matrices,
+    matrix_half_bandwidth,
+)
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
     _build_Hk_band_gpu,
@@ -234,6 +238,37 @@ def test_get_norm2_cartesian() -> None:
     assert_allclose(got, ref, atol=1e-12, err_msg="get_norm2 (cartesian)")
 
 
+def test_measured_band_half_width() -> None:
+    r"""``matrix_half_bandwidth`` sizes the band correctly.
+
+    The banded builders take the half-width from the *assembled*
+    operator rather than assuming ``fd_order`` (``CartesianFlow.
+    __post_init__``).  Two properties matter: with
+    ``res.consistent_imm`` **off** it must reproduce ``fd_order``
+    exactly -- that is what pins the default path byte-identical -- and
+    with it on it must be wide enough for `$D_1 D_1$`, whose
+    boundary-adjacent rows reach further than the direct-fit `$D_2$`.
+    Rows 0 and Ny-1 are excluded because every operator overwrites
+    them with BC rows.
+    """
+    for ny in (25, 49):
+        for p in (4, 6, 8):
+            y = -np.cos(np.arange(ny) * np.pi / (ny - 1))
+            D1, D2 = build_diff_matrices(y, p)
+            assert matrix_half_bandwidth(D2, (0, -1)) == p, (ny, p)
+            wide = matrix_half_bandwidth(D1 @ D1, (0, -1))
+            assert wide > p, (ny, p, wide)
+            # Nothing outside the measured band survives truncation.
+            band = np.asarray(_banded_from_dense(jnp.asarray(D1 @ D1), wide))
+            rebuilt = np.zeros_like(D1)
+            for d in range(2 * wide + 1):
+                for i in range(ny):
+                    j = i - wide + d
+                    if 0 <= j < ny:
+                        rebuilt[i, j] = band[i, d]
+            assert_allclose(rebuilt[1:-1], (D1 @ D1)[1:-1], atol=0.0)
+
+
 def test_pallas_vs_dense_on_cartesian_operators() -> None:
     r"""``PerModeBandedPallasOperator`` matches ``DenseJAXSolver``.
 
@@ -241,12 +276,22 @@ def test_pallas_vs_dense_on_cartesian_operators() -> None:
     the banded operator equals ``banded(dense)`` exactly, and the
     no-pivot banded sweep (CPU pure-JAX path) reproduces the dense
     solve on a complex RHS.
+
+    Run twice: with the direct-fit `$D_2$` at the ``fd_order`` band,
+    and with the ``res.consistent_imm`` `$D_2 = D_1 D_1$` at its wider
+    measured band -- the assembly, the no-pivot factorisation and the
+    Pallas sweep all have to hold at both widths.
     """
     Ny = params.res.ny
-    p = params.res.fd_order
     y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))
-    D1, D2 = build_diff_matrices(y, p)
+    D1, D2_fit = build_diff_matrices(y, params.res.fd_order)
+    for D2 in (D2_fit, D1 @ D1):
+        _check_band_vs_dense(D1, D2, matrix_half_bandwidth(D2, (0, -1)))
 
+
+def _check_band_vs_dense(D1: Array, D2: Array, p: int) -> None:
+    """One (operator pair, band width) case of the parity check."""
+    Ny = params.res.ny
     dt, c, nu = 0.01, 0.5, 1.0 / 1000.0
     k2_s = fourier.k2[0, ..., None]
     mean_s = fourier.mean_mask[0, ..., None]

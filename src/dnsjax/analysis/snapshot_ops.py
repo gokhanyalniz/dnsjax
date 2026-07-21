@@ -105,6 +105,7 @@ def derivative(field, direction, params, coords, cylindrical_parity=None):
         coords[ax],
         params.res.get("fd_order"),
         parity=parity,
+        consistent_imm=bool(params.res.get("consistent_imm")),
     )
 
 
@@ -120,11 +121,20 @@ def gradient(component, params, coords, cylindrical_parity=None):
     info = _core.geometry_info(params)
     arr = np.asarray(component)
     fd = params.res.get("fd_order")
+    cimm = bool(params.res.get("consistent_imm"))
     out = []
     for ax in range(3):
         parity = _resolve_parity(info, ax, cylindrical_parity)
         out.append(
-            _core.derivative_axis(arr, ax, info, coords[ax], fd, parity=parity)
+            _core.derivative_axis(
+                arr,
+                ax,
+                info,
+                coords[ax],
+                fd,
+                parity=parity,
+                consistent_imm=cimm,
+            )
         )
     return tuple(out)
 
@@ -147,7 +157,14 @@ def divergence(field, params, coords):
         r = np.asarray(coords[0], dtype=float)
         rinv = _core._broadcast_along(1.0 / r, 0)
         p_ur = "utheta" if info.family == "cylindrical" else None
-        d_ur = _core.radial_derivative(u_r, r, fd, info, parity=p_ur)
+        d_ur = _core.radial_derivative(
+            u_r,
+            r,
+            fd,
+            info,
+            parity=p_ur,
+            consistent_imm=bool(params.res.get("consistent_imm")),
+        )
         d_th = _core.fourier_derivative(u_th, 1, coords[1])  # im u_θ
         d_z = _core.fourier_derivative(u_z, 2, coords[2])  # i k_z u_z
         return d_ur + rinv * u_r + rinv * d_th + d_z
@@ -188,8 +205,12 @@ def curl(field, params, coords):
         def d_z(f):  # ∂/∂z = i k_z
             return _core.fourier_derivative(f, 2, coords[2])
 
+        cimm = bool(params.res.get("consistent_imm"))
+
         def d_r(f, parity):  # ∂/∂r = D1 (parity-reduced for the pipe)
-            return _core.radial_derivative(f, r, fd, info, parity=parity)
+            return _core.radial_derivative(
+                f, r, fd, info, parity=parity, consistent_imm=cimm
+            )
 
         p_uz = "uz" if cyl else None
         p_uth = "utheta" if cyl else None

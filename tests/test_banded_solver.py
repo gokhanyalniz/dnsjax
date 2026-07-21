@@ -285,31 +285,41 @@ def test_pallas_cuda_lowering() -> None:
     whole tiles; this guards the padded-plane lowering.  The factors are in
     the kernel's mode-inner layout; the Explicit mesh is cleared as in the
     interpret test and the lowering runs under an abstract H100 mesh
-    (:func:`_abstract_gpu_mesh`) so Triton can resolve the target GPU."""
+    (:func:`_abstract_gpu_mesh`) so Triton can resolve the target GPU.
+
+    ``p`` is a **static loop bound** in the kernel, so every band width
+    the geometries can produce needs its own lowering: ``p = 3`` for the
+    default operators and ``p = 11`` for the wider ``res.consistent_imm``
+    `$D_1 D_1$` band (measured at ``fd_order = 8``)."""
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
-    p, Ny, k = 3, 17, 2  # both non-power-of-two
+    Ny, k = 17, 2  # non-power-of-two
     orig_mesh = sharding.mesh
     orig_bm = (params.solver.pallas_block_m0, params.solver.pallas_block_m1)
     params.solver.pallas_block_m0 = 2
     params.solver.pallas_block_m1 = 32
     jax.set_mesh(None)
     try:
-        A = _make_random_banded(Ny, p, seed=1)
-        Li, Ui = _mode_inner_factors(
-            *_banded_factor(_banded_from_dense(_tile_modes(A, Nkz, Nkx), p))
-        )
-        b = jnp.zeros((Ny, k, Nkz, Nkx))  # mode-inner RHS
-
-        def solve(L: jnp.ndarray, U: jnp.ndarray, b: jnp.ndarray):
-            return _pallas_banded_solve(L, U, b, p, interpret=False)
-
-        with jax.sharding.use_abstract_mesh(_abstract_gpu_mesh((1,), ("x",))):
-            lowered = (
-                jax.jit(solve)
-                .trace(Li, Ui, b)
-                .lower(lowering_platforms=("cuda",))
+        for p in (3, 11):  # default band, consistent_imm band
+            A = _make_random_banded(Ny, p, seed=1)
+            Li, Ui = _mode_inner_factors(
+                *_banded_factor(
+                    _banded_from_dense(_tile_modes(A, Nkz, Nkx), p)
+                )
             )
-        assert "triton" in lowered.as_text().lower()
+            b = jnp.zeros((Ny, k, Nkz, Nkx))  # mode-inner RHS
+
+            def solve(L: jnp.ndarray, U: jnp.ndarray, b: jnp.ndarray, p=p):
+                return _pallas_banded_solve(L, U, b, p, interpret=False)
+
+            with jax.sharding.use_abstract_mesh(
+                _abstract_gpu_mesh((1,), ("x",))
+            ):
+                lowered = (
+                    jax.jit(solve)
+                    .trace(Li, Ui, b)
+                    .lower(lowering_platforms=("cuda",))
+                )
+            assert "triton" in lowered.as_text().lower(), f"p={p}"
     finally:
         jax.set_mesh(orig_mesh)
         params.solver.pallas_block_m0 = orig_bm[0]

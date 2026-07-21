@@ -87,6 +87,26 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # ``res.consistent_imm`` on the pipe: the nonlinear-stability
+        # guard for the x = r^2 axis operators + 1-wall closure.  It runs
+        # here (a *resolved* rolls IC), not in ``test_random_smoke.py``:
+        # the gate's composed D2 = D1*D1 is deliberately less dissipative
+        # at the grid scale, so a grid-white random IC (under-resolved
+        # noise) makes the near-axis corrector diverge -- the opt-in is
+        # for resolved runs (see the ``Resolution.consistent_imm`` docs).
+        "name": "pipe-consistent-imm",
+        "args": [
+            "--phys.system",
+            "pipe",
+            "--phys.re",
+            "1800",
+            "--res.consistent_imm",
+            "True",
+            "--geo.lz",
+            "5",
+        ],
+    },
+    {
         "name": "taylor-couette",
         "args": [
             "--phys.system",

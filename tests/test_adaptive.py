@@ -138,6 +138,24 @@ LEAVES = {
 }
 LEAVES["viscoelastic-dean"] = LEAVES["taylor-couette"] + ("Hc_op",)
 
+# The extra dt-dependent leaves ``res.consistent_imm`` adds (the
+# boundary-closure columns).  A missing key here would be silent:
+# ``set_dt`` only assigns what the rebuild returns, so a stale
+# column would pair a new-dt ``Hk_op`` with an old-dt response.
+CLOSURE_LEAVES = {
+    "plane-couette": ("v3", "v4", "q3", "q4"),
+    "taylor-couette": (
+        "v_plus_3",
+        "v_minus_3",
+        "q_z_3",
+        "v_plus_4",
+        "v_minus_4",
+        "q_z_4",
+    ),
+    # The pipe's single wall gives one closure column (a 2x2 matrix).
+    "pipe": ("v_plus_2", "v_minus_2", "q_z_2"),
+}
+
 
 # ── controller units (JAX-free) ──────────────────────────────────
 
@@ -181,7 +199,9 @@ def run_unit_checks() -> None:
 # ── worker (subprocess per system, forced 1 CPU device) ──────────
 
 
-def _configure(system: str, backend: str) -> None:
+def _configure(
+    system: str, backend: str, consistent_imm: bool = False
+) -> None:
     """Configure JAX + the parameter singletons (1 CPU device, x64)."""
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
 
@@ -225,6 +245,7 @@ def _configure(system: str, backend: str) -> None:
                 "ny": NY_PERIODIC if system == "kolmogorov" else NY,
                 "nz": NZ,
                 "fd_order": 4,
+                "consistent_imm": consistent_imm,
                 "double_precision": True,
             },
             step={"scheme": "cnab2", "dt": DT0},
@@ -255,8 +276,8 @@ def _leaf_arrays(val: object) -> dict[str, object]:
     return {"": val}
 
 
-def _worker(system: str, backend: str) -> None:
-    _configure(system, backend)
+def _worker(system: str, backend: str, consistent_imm: bool = False) -> None:
+    _configure(system, backend, consistent_imm)
 
     import jax
     import jax.numpy as jnp
@@ -288,7 +309,10 @@ def _worker(system: str, backend: str) -> None:
     # -- rebuild-vs-fresh leaf parity ------------------------------
     params.step.dt = DT1  # direct assignment before construction
     fresh = type(fmod.flow)()
-    for name in LEAVES[system]:
+    leaf_names = LEAVES[system] + (
+        CLOSURE_LEAVES[system] if consistent_imm else ()
+    )
+    for name in leaf_names:
         got_leaf = getattr(fmod.flow, name)
         want_leaf = getattr(fresh, name)
         for suffix, got in _leaf_arrays(got_leaf).items():
@@ -306,7 +330,7 @@ def _worker(system: str, backend: str) -> None:
                 err_msg=f"{system}: leaf {name}{suffix}",
             )
     print(
-        f"{system}: {len(LEAVES[system])} rebuilt leaves match a "
+        f"{system}: {len(leaf_names)} rebuilt leaves match a "
         f"fresh dt={DT1} build"
     )
 
@@ -415,8 +439,12 @@ def _worker(system: str, backend: str) -> None:
 # ── runner ───────────────────────────────────────────────────────
 
 
-def _run_worker(system: str, backend: str) -> None:
+def _run_worker(
+    system: str, backend: str, consistent_imm: bool = False
+) -> None:
     label = f"{system}[{backend}]"
+    if consistent_imm:
+        label += "[consistent_imm]"
     print(f"=== {label} ===")
     result = run_live(
         [
@@ -427,6 +455,7 @@ def _run_worker(system: str, backend: str) -> None:
             "--backend",
             backend,
         ]
+        + (["--consistent-imm"] if consistent_imm else [])
     )
     if result.returncode != 0:
         raise AssertionError(
@@ -448,6 +477,9 @@ def main() -> None:
         help="restrict to one or more systems (repeatable)",
     )
     parser.add_argument(
+        "--consistent-imm", action="store_true", help=argparse.SUPPRESS
+    )
+    parser.add_argument(
         "--unit-only",
         action="store_true",
         help="run only the JAX-free controller units",
@@ -455,7 +487,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.worker:
-        _worker(args.worker, args.backend)
+        _worker(args.worker, args.backend, args.consistent_imm)
         return
 
     run_unit_checks()
@@ -470,8 +502,15 @@ def main() -> None:
         # The dense backend shares the rebuild contract; one geometry
         # covers its DenseJAXSolver/from_factors path.
         cases.append(("plane-couette", "dense"))
-    for system, backend in cases:
-        _run_worker(system, backend)
+    # ``res.consistent_imm`` adds dt-dependent leaves (the closure
+    # columns) and widens the operators; one case per implementation.
+    cases += [
+        (s, "pallas", True)
+        for s in ("plane-couette", "taylor-couette", "pipe")
+        if s in systems
+    ]
+    for system, backend, *rest in cases:
+        _run_worker(system, backend, bool(rest and rest[0]))
     print("\nAll adaptive-dt checks passed.")
 
 

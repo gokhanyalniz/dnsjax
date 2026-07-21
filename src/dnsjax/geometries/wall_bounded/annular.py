@@ -109,6 +109,7 @@ from ...fd import (
     build_integration_weights,
     clenshaw_curtis_weights,
     local_grid_spacing,
+    matrix_half_bandwidth,
     tanh_two_sided_grid,
 )
 from ...measurements import get_cfl
@@ -366,6 +367,7 @@ def build_annular_grid(
     wall_grid: str | None = None,
     grid_type: str | None = None,
     grid_stretch: float = 1.5,
+    consistent_imm: bool = False,
 ) -> tuple[Array, np.ndarray, np.ndarray, Array, Array]:
     r"""Build the radial grid, FD matrices, weights, and `$1/r$`.
 
@@ -459,6 +461,17 @@ def build_annular_grid(
         w = build_integration_weights(np.asarray(rs), fd_order)
         y_weights = jnp.asarray(w, dtype=sharding.float_type) * rs
     D1, D2 = build_diff_matrices(np.asarray(rs), fd_order)
+    if consistent_imm:
+        # `$D_2 := D_1 D_1$`, so the IMM's discrete identities
+        # `$\nabla\cdot\nabla = L_k$` and `$[D_1, D_2] = 0$` hold
+        # exactly (see ``_imm_iteration``).  The `$1/r$` factors of
+        # the cylindrical divergence/gradient are diagonal and cancel
+        # in the `$u_\pm$` combination, so this is the *same*
+        # condition as Cartesian -- but the discrete commutator
+        # `$[D_1, 1/r] \ne -1/r^2$` survives and bounds the gain (it
+        # is what excludes the pipe entirely; see
+        # ``Resolution.consistent_imm``).
+        D2 = D1 @ D1
     return rs, D1, D2, y_weights, inv_r
 
 
@@ -721,6 +734,7 @@ class AnnularFlow:
     D2: Array = field(init=False)
     D1_bnd: Array = field(init=False)
     A_base: Array = field(init=False)
+    A_base_bnd: Array = field(init=False)
     Lk_op: _WallBoundedOp = field(init=False)
     Hk_op: _WallBoundedOp = field(init=False)
     v_plus_1: Array = field(init=False)
@@ -729,6 +743,12 @@ class AnnularFlow:
     v_plus_2: Array = field(init=False)
     v_minus_2: Array = field(init=False)
     q_z_2: Array = field(init=False)
+    v_plus_3: Array | None = field(init=False)
+    v_minus_3: Array | None = field(init=False)
+    q_z_3: Array | None = field(init=False)
+    v_plus_4: Array | None = field(init=False)
+    v_minus_4: Array | None = field(init=False)
+    q_z_4: Array | None = field(init=False)
     M_inv: Array = field(init=False)
     h_bulk_response: Array = field(init=False)
     H_bulk_inv: Array = field(init=False)
@@ -744,6 +764,7 @@ class AnnularFlow:
             params.geo.wall_grid,
             params.geo.grid_type,
             params.geo.grid_stretch,
+            params.res.consistent_imm,
         )
         self.inv_r2 = self.inv_r**2
 
@@ -773,6 +794,10 @@ class AnnularFlow:
             np.stack([D1_np[0], D1_np[-1]]), sharding.no_shard
         )
         self.A_base = _build_A_base(self.D1, self.D2, self.inv_r)
+        # Wall rows of the base operator: the ``consistent_imm``
+        # closure needs `$(A_{base} u_r)|_{wall}$` (the annular
+        # analogue of Cartesian's ``D2_bnd``).
+        self.A_base_bnd = self.A_base[jnp.array([0, -1])]
 
         self.rs = jax.device_put(self.rs, sharding.no_shard)
         self.inv_r = jax.device_put(self.inv_r, sharding.no_shard)
@@ -789,7 +814,10 @@ class AnnularFlow:
         Nm = sharding.nz_spec
         Nkz = sharding.nx_spec
 
-        fd_p = params.res.fd_order
+        # Banded half-width: measured, not assumed (see the Cartesian
+        # ``__post_init__`` note).  Both wall rows are overwritten with
+        # BC rows, so their own stencil width need not fit.
+        fd_p = matrix_half_bandwidth(np.asarray(self.A_base), (0, -1))
         dt = params.step.dt
 
         # Live-dt pytree leaves (class docstring; rebuilt by the
@@ -863,6 +891,23 @@ class AnnularFlow:
         is `$2 \times 2$`; ``M_inv`` is its inverse, set to zero at the
         mean mode (where `$d_{\mathrm{wall}} = 0$`, so the correction
         vanishes regardless).
+
+        **``res.consistent_imm``**: two further columns are derived,
+        seeded by the *interior* sources `$(D_1 e_j)_P$` -- the
+        pressure-Poisson image of a unit boundary correction
+        `$\hat\sigma$` at wall row `$j$` -- and ``M_inv`` becomes
+        `$4 \times 4$`, its two new rows imposing
+        `$\beta_j = \hat\sigma_j$`.  The derivation is the Cartesian one
+        (:func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`
+        and ``_derive_imm_closure``); the annular differences are that
+        the closure acts on `$u_r = (u_+ + u_-)/2$` with
+        `$A_{\mathrm{base}}$` in place of `$D_2$`, and that the `$m/r$`
+        halves of the pressure gradient cancel in that radial
+        combination, leaving `$(D_1 p)|_{\mathrm{wall}_j} = \alpha_j$`
+        exactly.  Unlike Cartesian the result is **not** exact: the
+        discrete commutator `$[D_1, 1/r] \ne -1/r^2$` survives and
+        bounds the residual (measured 2-4 orders of gain, degrading as
+        `$\eta \to 0$`; it is why the pipe defers the flag).
         """
         # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
         # layout: the influence-matrix einsums below operate on it and
@@ -916,6 +961,50 @@ class AnnularFlow:
         vp1, vm1, qz1 = _helm_responses(p1_s)
         vp2, vm2, qz2 = _helm_responses(p2_s)
 
+        if params.res.consistent_imm:
+            # Two more columns, seeded by the *interior* sources
+            # `$(D_1 e_j)_P$` -- the pressure-Poisson image of a unit
+            # boundary correction at wall row j -- then the same
+            # response chain.  See the Cartesian
+            # ``_derive_imm_closure`` for the full derivation; the only
+            # annular differences are `$u_r = (u_+ + u_-)/2$` in place
+            # of `$v$` and `$A_{base}$` in place of `$D_2$` (the
+            # `$m/r$` parts of the pressure gradient cancel in the
+            # radial combination).
+            c = params.step.implicitness
+            nu = derived_params.nu
+            cols = [(vp1, vm1, qz1), (vp2, vm2, qz2)]
+            zero_s = jnp.zeros_like(e_inner)
+            for col in (self.D1[:, 0], self.D1[:, -1]):
+                src = zero_s + col.at[0].set(0.0).at[-1].set(0.0)
+                p_s = self.Lk_op.solve(src.transpose(2, 0, 1)).transpose(
+                    1, 2, 0
+                )
+                cols.append(_helm_responses(p_s))
+
+            ur = jnp.stack([(vp + vm) / 2 for vp, vm, _ in cols])
+            eye4 = jnp.eye(4, dtype=sharding.float_type)
+            M = jnp.concatenate(
+                [
+                    jnp.einsum("bj, nmzj -> mzbn", self.D1_bnd, ur),
+                    c
+                    * nu
+                    * jnp.einsum("bj, nmzj -> mzbn", self.A_base_bnd, ur)
+                    + (eye4[2:4] - eye4[0:2]),
+                ],
+                axis=-2,
+            )
+            is_mean = fourier_.mean_mask[0][..., None, None]
+            self.M_inv = jnp.where(
+                is_mean, 0.0, jnp.linalg.inv(jnp.where(is_mean, eye4, M))
+            )
+            names = ("1", "2", "3", "4")
+            for name, (vp, vm, qz) in zip(names, cols, strict=True):
+                setattr(self, f"v_plus_{name}", vp.transpose(2, 0, 1))
+                setattr(self, f"v_minus_{name}", vm.transpose(2, 0, 1))
+                setattr(self, f"q_z_{name}", qz.transpose(2, 0, 1))
+            return
+
         # 2x2 influence matrix M[j, i] = D1_bnd[j] . u_r^(i).
         ur1 = (vp1 + vm1) / 2
         ur2 = (vp2 + vm2) / 2
@@ -948,6 +1037,10 @@ class AnnularFlow:
         self.v_plus_2 = vp2.transpose(2, 0, 1)
         self.v_minus_2 = vm2.transpose(2, 0, 1)
         self.q_z_2 = qz2.transpose(2, 0, 1)
+
+        # Static aux-data (not traced leaves) with the closure off.
+        self.v_plus_3 = self.v_minus_3 = self.q_z_3 = None
+        self.v_plus_4 = self.v_minus_4 = self.q_z_4 = None
 
     def _precompute_bulk_response(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
@@ -1007,6 +1100,12 @@ def _hk_bands(
     Single-sources the band assembly for the setup-checked build, the
     adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
     rebuild (:func:`_build_dt_leaves`).  Pallas backend only.
+
+    The half-width is read back from the already-factored (and
+    ``dt``-independent) `$L_k$`, whose ``L`` factor is
+    ``(Nr, p, Nm, Nkz)`` -- a static shape, so this works inside
+    ``jit`` where a host-side measurement on the traced ``A_base``
+    could not.
     """
     m_s = fourier_.m[0, ..., None]
     kz2_s = fourier_.kz2[0, ..., None]
@@ -1021,7 +1120,7 @@ def _hk_bands(
             dt,
             params.step.implicitness,
             derived_params.nu,
-            params.res.fd_order,
+            flow_.Lk_op.L.shape[1],
         )
         for meff2 in ((m_s + 1) ** 2, (m_s - 1) ** 2, m_s**2)
     ]
@@ -1087,7 +1186,7 @@ def _build_dt_leaves(
     new._precompute_bulk_response(
         fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
     )
-    return {
+    leaves = {
         "dt": new.dt,
         "Hk_op": new.Hk_op,
         "v_plus_1": new.v_plus_1,
@@ -1100,6 +1199,16 @@ def _build_dt_leaves(
         "h_bulk_response": new.h_bulk_response,
         "H_bulk_inv": new.H_bulk_inv,
     }
+    if params.res.consistent_imm:
+        leaves |= {
+            "v_plus_3": new.v_plus_3,
+            "v_minus_3": new.v_minus_3,
+            "q_z_3": new.q_z_3,
+            "v_plus_4": new.v_plus_4,
+            "v_minus_4": new.v_minus_4,
+            "q_z_4": new.q_z_4,
+        }
+    return leaves
 
 
 # ── Solver functions ─────────────────────────────────────────────
@@ -1454,7 +1563,40 @@ def _imm_iteration(
     d_wall = jnp.einsum("bj, jmz -> mzb", flow_.D1_bnd, ur_arb)  # (Nm, Nkz, 2)
     d_wall = jnp.where(mean_mask[0][..., None], 0.0, d_wall)
 
-    # Stage 5: 2x2 influence-matrix algebra.
+    if params.res.consistent_imm:
+        # Boundary-closure rows: the correction must equal the residual
+        # of the interior-form radial momentum equation on the wall
+        # rows the Dirichlet replacement discards (Kleiser-Schumann /
+        # CHQZ tau correction; see ``_derive_imm_homogeneous_data``).
+        # `$u_\pm|_{wall} = 0$` kills every `$m_{eff}^2/r^2$` and
+        # `$k_z^2$` piece of `$\tilde H u_r$`, leaving the base
+        # operator's wall rows.
+        wall = jnp.array([0, -1])
+        up_w, um_w = up_n[wall], um_n[wall]  # (2, Nm, Nkz)
+        ur_w = ((up_w + um_w) / 2).transpose(1, 2, 0)
+        meff_w = ((m_plus_1_sq * up_w + m_minus_1_sq * um_w) / 2).transpose(
+            1, 2, 0
+        ) * flow_.inv_r2[wall]
+        ur_n = (up_n + um_n) / 2
+        hm_ur = ur_w / dt + (1 - c) * nu * (
+            jnp.einsum("bj, jmz -> mzb", flow_.A_base_bnd, ur_n)
+            - meff_w
+            - fourier_.kz2[0][..., None] * ur_w
+        )
+        nl_r = (c * (NLp_j + NLm_j) + (1 - c) * (NLp_n + NLm_n))[
+            wall
+        ].transpose(1, 2, 0) / 2
+        d_wall = jnp.concatenate(
+            [
+                d_wall,
+                c * nu * jnp.einsum("bj, jmz -> mzb", flow_.A_base_bnd, ur_arb)
+                + hm_ur
+                + nl_r,
+            ],
+            axis=-1,
+        )
+
+    # Stage 5: influence-matrix algebra (2x2, or 4x4 with the closure).
     alpha = -jnp.einsum("mzab, mzb -> mza", flow_.M_inv, d_wall)
     alpha1 = alpha[..., 0][None]  # (1, Nm, Nkz)
     alpha2 = alpha[..., 1][None]
@@ -1462,13 +1604,20 @@ def _imm_iteration(
     # Stage 6: corrected velocity.
     up_new = up_arb + alpha1 * flow_.v_plus_1 + alpha2 * flow_.v_plus_2
     um_new = um_arb + alpha1 * flow_.v_minus_1 + alpha2 * flow_.v_minus_2
+    q_corr = alpha1 * flow_.q_z_1 + alpha2 * flow_.q_z_2
+
+    if params.res.consistent_imm:
+        alpha3 = alpha[..., 2][None]
+        alpha4 = alpha[..., 3][None]
+        up_new = up_new + alpha3 * flow_.v_plus_3 + alpha4 * flow_.v_plus_4
+        um_new = um_new + alpha3 * flow_.v_minus_3 + alpha4 * flow_.v_minus_4
+        q_corr = q_corr + alpha3 * flow_.q_z_3 + alpha4 * flow_.q_z_4
 
     # Stage 7: zero mean-mode u_r, preserving u_theta.
     ur_corr = jnp.where(mean_mask, (up_new + um_new) / 2, 0.0)
     up_new = up_new - ur_corr
     um_new = um_new - ur_corr
 
-    q_corr = alpha1 * flow_.q_z_1 + alpha2 * flow_.q_z_2
     if params.phys.block_mean_spanwise_velocity:
         # Zero the mean-mode perturbation bulk axial velocity.  At the
         # mean mode alpha = 0 and ikz = 0, so uz_arb already equals the
