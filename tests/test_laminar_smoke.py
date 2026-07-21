@@ -511,6 +511,84 @@ SYSTEMS: list[dict] = [
             "27",
         ],
     },
+    {
+        # res.consistent_imm on: the boundary closure and the wider
+        # D2 = D1*D1 operators must leave the laminar fixed point
+        # exactly fixed.  Every correction term is linear in u', so it
+        # vanishes identically at u' = 0 -- err = 0 here is the cheap
+        # structural proof that the closure adds nothing spurious.
+        # One Cartesian, one annular, and one pipe entry cover all
+        # three implementations.
+        "name": "plane-couette-consistent-imm",
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--res.consistent_imm",
+            "True",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nx",
+            "4",
+            "--res.nz",
+            "4",
+            "--res.ny",
+            "27",
+        ],
+    },
+    {
+        "name": "taylor-couette-consistent-imm",
+        "args": [
+            "--phys.system",
+            "taylor-couette",
+            "--phys.re1",
+            "100",
+            "--phys.re2",
+            "-50",
+            "--geo.eta",
+            "0.5",
+            "--res.consistent_imm",
+            "True",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nz",
+            "4",
+            "--res.ntheta",
+            "4",
+            "--res.nr",
+            "27",
+        ],
+    },
+    {
+        # Pipe opt-in (x = r^2 axis operators + 1-wall closure): same
+        # cheap structural proof that the closure leaves u' = 0 fixed.
+        "name": "pipe-consistent-imm",
+        "args": [
+            "--phys.system",
+            "pipe",
+            "--res.consistent_imm",
+            "True",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nz",
+            "4",
+            "--res.ntheta",
+            "4",
+            "--res.nr",
+            "27",
+        ],
+    },
 ]
 
 ERR_PATTERN = re.compile(r"err\s*=\s*([\d.eE+\-]+)")

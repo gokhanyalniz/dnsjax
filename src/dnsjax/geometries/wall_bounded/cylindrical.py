@@ -121,6 +121,7 @@ from ...fd import (
     build_integration_weights,
     cgl_radial_quadrature_weights,
     local_grid_spacing,
+    matrix_half_bandwidth,
     tanh_one_sided_grid,
 )
 from ...measurements import get_cfl
@@ -502,7 +503,7 @@ def build_radial_cgl_grid(Nr: int, axis_gap: int = 1) -> Array:
 
 
 def build_parity_reduced_matrices(
-    rs: Array, p: int
+    rs: Array, p: int, consistent_imm: bool = False
 ) -> tuple[Array, Array, Array, Array, Array, Array]:
     r"""Build parity-reduced FD matrices from the auxiliary grid.
 
@@ -521,6 +522,34 @@ def build_parity_reduced_matrices(
     is the positive-row, ghost-column block with columns
     flipped.
 
+    With *consistent_imm* the matrices are instead built from a single
+    Fornberg fit on `$x = r^2$` (an axis-regular field is analytic in
+    `$x$`):
+
+    .. math::
+        D_{1,\mathrm{even}} = 2\,\mathrm{diag}(r)\,D_x, \qquad
+        D_{1,\mathrm{odd}} = S
+          + \mathrm{diag}(r)\,D_{1,\mathrm{even}}\,S, \quad
+        S = \mathrm{diag}(1/r),
+
+    whose discrete `$1/r$` commutator
+    `$D_{1,\mathrm{even}}S - S D_{1,\mathrm{odd}} + S^2$` vanishes to
+    round-off -- the axis identity the influence-matrix continuity
+    argument needs (the mirrored fold above leaves it
+    `$O(10^2\text{--}10^3)$`).  `$D_2$` is then the **composed**
+    `$D_1 D_1$`, parity-flipping (even data
+    `$\to D_{1,\mathrm{even}} \to$` odd `$\to D_{1,\mathrm{odd}} \to$`
+    even, and vice versa), so `$\nabla\!\cdot\!\nabla = L_k$` holds
+    discretely; the common part is the parity average
+    `$D_{\mathrm{pos}} = (D_{\mathrm{even}} + D_{\mathrm{odd}})/2$`, so
+    the same ghost machinery applies -- but the ghost
+    `$(D_{\mathrm{even}} - D_{\mathrm{odd}})/2$` is now full, not
+    near-axis-sparse, and the band widens (`$A_{\mathrm{base}}$` 12 vs 8
+    at ``fd_order = 8``; the assembler measures it).  Off by default and
+    only ever reached through ``res.consistent_imm`` (the
+    ``Resolution.consistent_imm`` docs carry the trade); see the pipe
+    branch of :func:`_imm_iteration`.
+
     Returns
     -------
     D1_even, D2_even:
@@ -529,9 +558,26 @@ def build_parity_reduced_matrices(
         Parity-reduced matrices for odd `$m_{\mathrm{eff}}$`.
     D1_pos, D2_pos:
         Common (parity-independent) part: positive-row,
-        positive-column block of the full-grid matrices.
+        positive-column block of the full-grid matrices (the parity
+        average under *consistent_imm*).
     """
     Nr = len(rs)
+    if consistent_imm:
+        # Single Fornberg fit on x = r^2 (see the docstring): the
+        # resulting even/odd D1 pair makes the near-axis 1/r commutator
+        # exact, and D2 is the composed D1.D1 for discrete continuity.
+        rs_np = np.asarray(rs)
+        DX, _ = build_diff_matrices(rs_np**2, p)
+        R = np.diag(rs_np)
+        S = np.diag(1.0 / rs_np)
+        D1_even = 2.0 * (R @ DX)
+        D1_odd = S + R @ D1_even @ S
+        D2_even = D1_odd @ D1_even  # even -> odd -> even
+        D2_odd = D1_even @ D1_odd  # odd -> even -> odd
+        D1_pos = (D1_even + D1_odd) / 2
+        D2_pos = (D2_even + D2_odd) / 2
+        return D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos
+
     aux_grid = jnp.concatenate([-rs[::-1], rs])
     D1_full, D2_full = build_diff_matrices(aux_grid, p)
 
@@ -554,6 +600,7 @@ def build_cylindrical_grid(
     wall_grid: str | None = None,
     grid_type: str | None = None,
     grid_stretch: float = 1.5,
+    consistent_imm: bool = False,
 ) -> tuple[Array, Array, Array, Array, Array, Array, Array]:
     r"""Build radial grid, parity-reduced D1 matrices, weights,
     and `$1/r$` for the cylindrical geometry.
@@ -595,6 +642,13 @@ def build_cylindrical_grid(
         ``"half-cgl"``, or ``"half-tanh"``).
     grid_stretch:
         Stretching parameter for ``grid_type="half-tanh"``.
+    consistent_imm:
+        ``params.res.consistent_imm``: return the `$x = r^2$`
+        parity-reduced ``D1`` pair (see
+        :func:`build_parity_reduced_matrices`) instead of the mirrored
+        fold, so a consumer that reconstructs the divergence operator
+        (the random-IC generator, the analysis package) matches the
+        gated solver.  Off by default.
 
     Returns
     -------
@@ -695,7 +749,7 @@ def build_cylindrical_grid(
     y_weights_odd = jnp.asarray(w_odd_np, dtype=sharding.float_type)
 
     D1_even, _, D1_odd, _, D1_pos, _ = build_parity_reduced_matrices(
-        rs, fd_order
+        rs, fd_order, consistent_imm
     )
     return rs, D1_even, D1_odd, D1_pos, y_weights, y_weights_odd, inv_r
 
@@ -1043,6 +1097,14 @@ class CylindricalFlow:
     v_plus_1: Array = field(init=False)
     v_minus_1: Array = field(init=False)
     q_z_1: Array = field(init=False)
+    # Second IMM column of the ``res.consistent_imm`` boundary closure
+    # (the 1-wall analogue of the Cartesian ``v3``/``v4``); ``None`` --
+    # and therefore static pytree aux-data, not traced leaves -- when
+    # the flag is off.  ``M_inv`` is then the ``2 x 2`` influence
+    # matrix instead of the ``1 x 1`` scalar.
+    v_plus_2: Array | None = field(init=False)
+    v_minus_2: Array | None = field(init=False)
+    q_z_2: Array | None = field(init=False)
     M_inv: Array = field(init=False)
     h_bulk_response: Array = field(init=False)
     H_bulk_inv: Array = field(init=False)
@@ -1072,6 +1134,7 @@ class CylindricalFlow:
             params.geo.wall_grid,
             params.geo.grid_type,
             params.geo.grid_stretch,
+            params.res.consistent_imm,
         )
         self.inv_r2 = self.inv_r**2
 
@@ -1107,7 +1170,9 @@ class CylindricalFlow:
             D2_odd,
             D1_pos,
             D2_pos,
-        ) = build_parity_reduced_matrices(self.rs, params.res.fd_order)
+        ) = build_parity_reduced_matrices(
+            self.rs, params.res.fd_order, params.res.consistent_imm
+        )
 
         self.D1_pos = jax.device_put(D1_pos, sharding.no_shard)
         self.D2_pos = jax.device_put(D2_pos, sharding.no_shard)
@@ -1143,7 +1208,17 @@ class CylindricalFlow:
         Nm = sharding.nz_spec
         Nkz = sharding.nx_spec
 
-        fd_p = params.res.fd_order
+        # Banded half-width: measured from the assembled base operator,
+        # not assumed.  The wall row (r = 1) is replaced by a BC row in
+        # every operator, so its own stencil need not fit.  Equals
+        # ``fd_order`` for the mirrored fold's direct-fit D2 and is
+        # wider for the ``consistent_imm`` composed D1.D1 (12 vs 8 at
+        # ``fd_order = 8``).  Mirrors the Cartesian build; ``_hk_bands``
+        # reads it back from the factored ``Lk``.
+        p_band = max(
+            matrix_half_bandwidth(np.asarray(self.A_base_even), (-1,)),
+            matrix_half_bandwidth(np.asarray(self.A_base_odd), (-1,)),
+        )
         dt = params.step.dt
 
         # Live-dt pytree leaves (class docstring; rebuilt by the
@@ -1169,8 +1244,8 @@ class CylindricalFlow:
             # Operators are assembled directly in banded storage (no
             # (Nr, Nr) per mode) and factored by the setup-checked
             # no-pivot banded LU (_build_pallas_operator).
-            band_even = _banded_from_dense(self.A_base_even, fd_p)
-            band_odd = _banded_from_dense(self.A_base_odd, fd_p)
+            band_even = _banded_from_dense(self.A_base_even, p_band)
+            band_odd = _banded_from_dense(self.A_base_odd, p_band)
             D1_wall_1d = self.D1_wall.ravel()
 
             # Lk (meff = m, pressure parity).
@@ -1183,7 +1258,7 @@ class CylindricalFlow:
                 self.inv_r2,
                 kz2_s,
                 mean_s,
-                fd_p,
+                p_band,
             )
             self.Lk_op = _build_pallas_operator([Lk_band], "Lk")
             del Lk_band
@@ -1315,6 +1390,22 @@ class CylindricalFlow:
         vm1_s = result_stack[1]
         qz1_s = result_stack[2]
 
+        # ``res.consistent_imm``: a second homogeneous column (seeded by
+        # the interior source, the image of a unit wall correction
+        # sigma_hat) and a 2x2 influence matrix -- see
+        # :meth:`_derive_imm_closure` and the pipe branch of
+        # :func:`_imm_iteration`.
+        if params.res.consistent_imm:
+            self._derive_imm_closure(
+                fourier_,
+                p1_s,
+                (vp1_s, vm1_s, qz1_s),
+                m_over_r_s,
+                parity_sign_p_s,
+                g,
+            )
+            return
+
         # Zero the u_r part at the mean mode, preserving u_theta.
         mean_s = fourier_.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
         vr_corr = jnp.where(mean_s, (vp1_s + vm1_s) / 2, 0.0)
@@ -1334,6 +1425,112 @@ class CylindricalFlow:
         self.v_plus_1 = vp1_s.transpose(2, 0, 1)
         self.v_minus_1 = vm1_s.transpose(2, 0, 1)
         self.q_z_1 = qz1_s.transpose(2, 0, 1)
+
+        # Static aux-data (not traced leaves) with the closure off.
+        self.v_plus_2 = self.v_minus_2 = self.q_z_2 = None
+
+    def _derive_imm_closure(
+        self,
+        fourier_: Fourier,
+        p1_s: Array,
+        neumann_cols: tuple[Array, Array, Array],
+        m_over_r_s: Array,
+        parity_sign_p_s: Array,
+        g: int,
+    ) -> None:
+        r"""Second homogeneous column and the `$2 \times 2$` influence
+        matrix (``res.consistent_imm``; the pipe's 1-wall analogue of
+        :meth:`CartesianFlow._derive_imm_closure`).
+
+        Extends the single Neumann-data column already derived by
+        :meth:`_derive_imm_homogeneous_data` with one column seeded by
+        the interior source -- the image, in the pressure Poisson RHS,
+        of a unit boundary correction `$\hat\sigma$` at the wall row of
+        the `$u_r$` momentum.  A unit `$u_r = \hat\sigma$` at `$r = 1$`
+        enters the (parity-`$(-1)^{m+1}$`) divergence as the wall column
+        of `$D_{1,v}$` (the `$u_r/r$` term lives only on the wall row,
+        which the interior source zeroes), so the source is
+        `$(D_{1,v}[:, -1])_P$`.  Everything downstream is the same solve
+        chain as the Neumann column (`$L_k$` for the pressure, `$H_k$`
+        for the velocity response and the axial potential).
+
+        Rows of the `$2 \times 2$` influence system, in the
+        ``alpha = -M^{-1} d`` convention of :func:`_imm_iteration`:
+
+        - row ``0``: wall divergence `$M_{0,j} = D_{1,\mathrm{wall}}
+          \cdot u_r^{(j)}$` -- the pre-existing condition.
+        - row ``1``: the closure `$\hat\sigma_1 = $` correction, i.e.
+          `$M_{1,j} = c\nu (A_{\mathrm{base},v} u_r^{(j)})|_{\mathrm{wall}}
+          + \delta_{j,1} - \delta_{j,0}$`.  `$A_{\mathrm{base},v}$` is the
+          `$u_r$` viscous operator (parity `$(-1)^{m+1}$`); at the wall
+          `$u_\pm = 0$`, so the Helmholtz diagonal drops and only
+          `$A_{\mathrm{base}}$` survives.  The `$-\delta_{j,0}$` is the
+          Neumann pressure's own `$(D_1 p)|_{\mathrm{wall}} = \alpha_0$`.
+
+        At the mean mode ``M_inv`` is zeroed outright (`$u_r \equiv 0$`
+        and `$i k_z = 0$` there, so every column is inert).
+        """
+        c = params.step.implicitness
+        nu = 1.0 / params.phys.re
+        vp1_s, vm1_s, qz1_s = neumann_cols
+
+        # --- Closure column, seeded by the interior source ---
+        parity_sign_v_s = -parity_sign_p_s  # (-1)^{m+1}, (Nm, 1, 1)
+        src = jnp.zeros_like(p1_s) + self.D1_pos[:, -1]  # (Nm, Nkz, Nr)
+        src = src.at[..., :g].add(parity_sign_v_s * self.D1_ghost[:, -1])
+        src = src.at[..., -1].set(0.0)  # interior source (wall row zeroed)
+        pb_s = self.Lk_op.solve(src.transpose(2, 0, 1)).transpose(1, 2, 0)
+
+        # Pressure gradient of p_beta in +/- (pressure parity (-1)^m),
+        # exactly as the Neumann column.
+        ghost_pb = jnp.einsum("ij, mzj -> mzi", self.D1_ghost, pb_s)
+        D1_pb = jnp.einsum("ij, mzj -> mzi", self.D1_pos, pb_s)
+        D1_pb = D1_pb.at[..., :g].add(parity_sign_p_s * ghost_pb)
+        rhs_vp2 = (-(D1_pb - m_over_r_s * pb_s)).at[..., -1].set(0.0)
+        rhs_vm2 = (-(D1_pb + m_over_r_s * pb_s)).at[..., -1].set(0.0)
+        q_rhs2 = pb_s.at[..., -1].set(0.0)
+        res2 = self.Hk_op.solve(
+            jnp.stack([rhs_vp2, rhs_vm2, q_rhs2]).transpose(0, 3, 1, 2)
+        ).transpose(0, 2, 3, 1)
+        vp2_s, vm2_s, qz2_s = res2[0], res2[1], res2[2]
+
+        # --- 2x2 influence matrix ---
+        D1_wall_row = self.D1_wall.ravel()  # (Nr,)
+        # A_base_v wall row per mode: u_+/u_- parity (-1)^{m+1}, so even
+        # m -> odd parity -> A_base_odd, odd m -> A_base_even.
+        miv = 1.0 - fourier_.m_is_even[0, :, 0]  # (Nm,), 1 if m odd
+        abv_wall = jnp.where(
+            miv[:, None],
+            self.A_base_even[-1][None, :],
+            self.A_base_odd[-1][None, :],
+        )  # (Nm, Nr)
+        ur_1 = (vp1_s + vm1_s) / 2
+        ur_2 = (vp2_s + vm2_s) / 2
+        m00 = jnp.einsum("j, mzj -> mz", D1_wall_row, ur_1)
+        m01 = jnp.einsum("j, mzj -> mz", D1_wall_row, ur_2)
+        m10 = c * nu * jnp.einsum("mj, mzj -> mz", abv_wall, ur_1) - 1.0
+        m11 = c * nu * jnp.einsum("mj, mzj -> mz", abv_wall, ur_2) + 1.0
+        M = jnp.stack(
+            [jnp.stack([m00, m01], -1), jnp.stack([m10, m11], -1)], -2
+        )  # (Nm, Nkz, 2, 2)
+
+        is_mean = fourier_.mean_mask[0][..., None, None]
+        eye2 = jnp.eye(2, dtype=sharding.float_type)
+        self.M_inv = jnp.where(
+            is_mean, 0.0, jnp.linalg.inv(jnp.where(is_mean, eye2, M))
+        )
+
+        # Zero u_r at the mean mode for both columns (continuity forces
+        # u_r == 0 there), preserving u_theta; then to field layout.
+        mean_s = fourier_.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
+        c1 = jnp.where(mean_s, ur_1, 0.0)
+        c2 = jnp.where(mean_s, ur_2, 0.0)
+        self.v_plus_1 = (vp1_s - c1).transpose(2, 0, 1)
+        self.v_minus_1 = (vm1_s - c1).transpose(2, 0, 1)
+        self.v_plus_2 = (vp2_s - c2).transpose(2, 0, 1)
+        self.v_minus_2 = (vm2_s - c2).transpose(2, 0, 1)
+        self.q_z_1 = qz1_s.transpose(2, 0, 1)
+        self.q_z_2 = qz2_s.transpose(2, 0, 1)
 
     def _precompute_bulk_response(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
@@ -1398,15 +1595,22 @@ def _hk_bands(
     Single-sources the band assembly for the setup-checked build, the
     adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
     rebuild (:func:`_build_dt_leaves`).  Pallas backend only.
+
+    The half-width is read back from the already-factored (and
+    ``dt``-independent) `$L_k$`, whose ``L`` factor is
+    ``(Nr, p, Nm, Nkz)`` -- a static shape, so this works inside
+    ``jit`` (``set_dt``) where a host-side ``matrix_half_bandwidth`` on
+    the traced ``A_base`` could not.  Equals ``fd_order`` off the
+    ``consistent_imm`` gate and the wider composed band on it.
     """
-    fd_p = params.res.fd_order
+    p_band = flow_.Lk_op.L.shape[1]
     m_s = fourier_.m[0, ..., None]
     kz2_s = fourier_.kz2[0, ..., None]
     m_is_even_s = fourier_.m_is_even[0, ..., None]
     # u_+/u_- carry parity (-1)^{m+1}; u_z carries (-1)^m.
     m_is_even_v = 1.0 - m_is_even_s
-    band_even = _banded_from_dense(flow_.A_base_even, fd_p)
-    band_odd = _banded_from_dense(flow_.A_base_odd, fd_p)
+    band_even = _banded_from_dense(flow_.A_base_even, p_band)
+    band_odd = _banded_from_dense(flow_.A_base_odd, p_band)
     groups = (
         (m_is_even_v, (m_s + 1) ** 2),
         (m_is_even_v, (m_s - 1) ** 2),
@@ -1423,7 +1627,7 @@ def _hk_bands(
             dt,
             params.step.implicitness,
             1.0 / params.phys.re,
-            fd_p,
+            p_band,
         )
         for parity, meff2 in groups
     ]
@@ -1498,7 +1702,7 @@ def _build_dt_leaves(
     new._precompute_bulk_response(
         fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
     )
-    return {
+    leaves = {
         "dt": new.dt,
         "Hk_op": new.Hk_op,
         "v_plus_1": new.v_plus_1,
@@ -1508,6 +1712,13 @@ def _build_dt_leaves(
         "h_bulk_response": new.h_bulk_response,
         "H_bulk_inv": new.H_bulk_inv,
     }
+    if params.res.consistent_imm:
+        leaves |= {
+            "v_plus_2": new.v_plus_2,
+            "v_minus_2": new.v_minus_2,
+            "q_z_2": new.q_z_2,
+        }
+    return leaves
 
 
 # ── Solver functions ─────────────────────────────────────────────
@@ -1965,13 +2176,44 @@ def _imm_iteration(
     # Mean mode: pressure is a gauge; zero the residual.
     d_wall = jnp.where(fourier_.mean_mask[0], 0.0, d_wall)
 
-    # Stage 5: influence matrix correction (scalar per mode).
-    alpha = -flow_.M_inv * d_wall  # (Nm, Nkz)
-    alpha = alpha[None]  # (1, Nm, Nkz)
-
-    # Stage 6: corrected velocity.
-    up_new = up_arb + alpha * flow_.v_plus_1
-    um_new = um_arb + alpha * flow_.v_minus_1
+    if params.res.consistent_imm:
+        # Stage 4b (closure): the second wall condition -- the boundary
+        # correction sigma_hat equals the interior-form u_r-momentum
+        # residual on the wall row the Dirichlet replacement discards.
+        # At the wall u_+ = u_- = 0, so only A_base_v survives the
+        # Helmholtz; A_base_v is the parity-(-1)^{m+1} u_r viscous
+        # operator (even m -> A_base_odd, odd m -> A_base_even).  See
+        # :meth:`_derive_imm_closure` and the Cartesian _imm_iteration.
+        ur_n = (up_n + um_n) / 2
+        nl_ur = (c * (NLp_j + NLm_j) + (1 - c) * (NLp_n + NLm_n)) / 2
+        miv = 1.0 - fourier_.m_is_even[0, :, 0]  # (Nm,), 1 if m odd
+        abv_wall = jnp.where(
+            miv[:, None],
+            flow_.A_base_even[-1][None, :],
+            flow_.A_base_odd[-1][None, :],
+        )  # (Nm, Nr)
+        av_arb = jnp.einsum("mj, jmz -> mz", abv_wall, ur_arb)
+        av_n = jnp.einsum("mj, jmz -> mz", abv_wall, ur_n)
+        closure = (
+            c * nu * av_arb + ur_n[-1] / dt + (1 - c) * nu * av_n + nl_ur[-1]
+        )
+        closure = jnp.where(fourier_.mean_mask[0], 0.0, closure)
+        d_vec = jnp.stack([d_wall, closure], axis=-1)  # (Nm, Nkz, 2)
+        # Stage 5: 2x2 influence-matrix algebra alpha = -M_inv @ d.
+        alpha_vec = -jnp.einsum("mzab, mzb -> mza", flow_.M_inv, d_vec)
+        alpha = alpha_vec[..., 0][None]  # Neumann column
+        alpha2 = alpha_vec[..., 1][None]  # closure column
+        # Stage 6: corrected velocity (rank-2 update).
+        up_new = up_arb + alpha * flow_.v_plus_1 + alpha2 * flow_.v_plus_2
+        um_new = um_arb + alpha * flow_.v_minus_1 + alpha2 * flow_.v_minus_2
+        qz_corr = alpha * flow_.q_z_1 + alpha2 * flow_.q_z_2
+    else:
+        # Stage 5: influence matrix correction (scalar per mode).
+        alpha = (-flow_.M_inv * d_wall)[None]  # (1, Nm, Nkz)
+        # Stage 6: corrected velocity.
+        up_new = up_arb + alpha * flow_.v_plus_1
+        um_new = um_arb + alpha * flow_.v_minus_1
+        qz_corr = alpha * flow_.q_z_1
 
     # Stage 7: zero mean-mode u_r, preserving u_theta.
     ur_corr = jnp.where(fourier_.mean_mask, (up_new + um_new) / 2, 0.0)
@@ -1994,7 +2236,7 @@ def _imm_iteration(
         bulk_uz = 2 * jnp.dot(flow_.y_weights, mean_uz)
         uz_new = (
             uz_arb
-            - ikz * alpha * flow_.q_z_1
+            - ikz * qz_corr
             + jnp.where(
                 fourier_.mean_mask,
                 -bulk_uz
@@ -2004,7 +2246,7 @@ def _imm_iteration(
             )
         )
     else:
-        uz_new = uz_arb - ikz * alpha * flow_.q_z_1
+        uz_new = uz_arb - ikz * qz_corr
 
     velocity_new = jnp.array([uz_new, up_new, um_new])
     correction = velocity_new - velocity_j

@@ -387,6 +387,48 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # ``res.consistent_imm`` on, driven nonlinearly: the laminar
+        # smoke cannot exercise the boundary closure (every correction
+        # term is linear in u', so all of them vanish at u' = 0), and
+        # the discrete-continuity guard
+        # (``tests/test_imm_continuity.py``) only takes one step.  This
+        # entry integrates the 4x4 influence matrix and the wider
+        # D2 = D1*D1 operators through a real nonlinear run.
+        "name": "plane-couette-consistent-imm",
+        "res": {"nx": 32, "ny": 48, "nz": 32},
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+            "--res.consistent_imm",
+            "True",
+        ],
+    },
+    {
+        # The annular half of the same guard (u_r / A_base closure).
+        "name": "taylor-couette-consistent-imm",
+        "res": {"nx": 24, "ny": 40, "nz": 24},
+        "args": [
+            "--phys.system",
+            "taylor-couette",
+            "--phys.re1",
+            "500",
+            "--phys.re2",
+            "-200",
+            "--geo.eta",
+            "0.5",
+            "--geo.lz",
+            "3",
+            "--res.consistent_imm",
+            "True",
+        ],
+    },
+    {
         # CN/AB2 on the cylindrical (pipe) geometry, guarding the
         # cylindrical ``_l_bf`` build + step path.  Pipe is a
         # *stationary-wall* flow (``U_z = 1 - r^2``, ``U -> 0`` at the

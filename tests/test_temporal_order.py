@@ -25,6 +25,15 @@ so a ``dt`` sweep needs a subprocess per value):
   must also fall at slope ~2.  Runs with the default
   ``implicit_mean_coupling`` on, so the mean-flow coupling's CN
   treatment is covered by the order check too.
+- **plane-Couette, ``res.consistent_imm`` contrast**: the difference
+  proxy above cancels the shared projection error, so it cannot judge
+  a change that *removes* that error.  This study instead measures
+  each configuration's own self-convergence and asserts the flag
+  strictly improves both the error size and its decay rate (measured:
+  5.7e-2 at order ~0.5 -> 1.2e-4 at order ~1.1).  The wall-bounded
+  absolute order is **not** 2 either way -- the projection splitting
+  sets it -- which is exactly why the study above compares schemes
+  rather than dts.
 
 Corrector-bearing runs use a tight tolerance (``1e-9``) so
 fixed-point error does not pollute the truncation-error measurement,
@@ -127,6 +136,9 @@ DT_REF = 0.0001  # Kolmogorov cnab2 reference, 3200 steps
 # plane-Couette (scheme-difference order at matched dt).
 AMP_PC = 0.1
 DTS_PC = [0.01, 0.005, 0.0025]
+# Self-convergence reference for the consistent_imm study (4x the
+# finest DTS_PC entry).
+DT_SELF_REF = 0.000625
 
 # Corrector setup: converge to TOL, assert every corrector-bearing
 # step reached TOL_ASSERT -- except Kolmogorov's, whose corrector
@@ -142,6 +154,7 @@ ORDER_LO, ORDER_HI = 1.6, 2.4
 STUDIES = [
     "kolmogorov",
     "plane-couette",
+    "plane-couette-consistent-imm",
     "kolmogorov-vardt",
     "plane-couette-vardt",
 ]
@@ -154,7 +167,12 @@ FLOW_MODULES = {
 
 
 def _worker(
-    system: str, scheme: str, dt: float, out: str, vardt: bool
+    system: str,
+    scheme: str,
+    dt: float,
+    out: str,
+    vardt: bool,
+    consistent_imm: bool = False,
 ) -> None:
     """Integrate to ``T_END`` with (*system*, *scheme*, *dt*); save the
     final spectral state to *out* (.npy).  With *vardt*, step the
@@ -183,6 +201,7 @@ def _worker(
                 "ny": NY_PERIODIC if system == "kolmogorov" else NY,
                 "nz": NZ,
                 "fd_order": 4,
+                "consistent_imm": consistent_imm,
                 "double_precision": True,
             },
             step={
@@ -288,6 +307,7 @@ def _run(
     out: Path,
     *,
     vardt: bool = False,
+    consistent_imm: bool = False,
 ) -> None:
     cmd = [
         sys.executable,
@@ -303,6 +323,8 @@ def _run(
     ]
     if vardt:
         cmd.append("--vardt")
+    if consistent_imm:
+        cmd.append("--consistent-imm")
     result = run_live(cmd)
     if result.returncode != 0:
         raise SystemExit(f"worker failed: {system} {scheme} dt={dt}")
@@ -335,10 +357,18 @@ def main() -> None:
     parser.add_argument("--dt", type=float, default=None)
     parser.add_argument("--out", default=None)
     parser.add_argument("--vardt", action="store_true")
+    parser.add_argument("--consistent-imm", action="store_true")
     args = parser.parse_args()
 
     if args.worker:
-        _worker(args.worker, args.scheme, args.dt, args.out, args.vardt)
+        _worker(
+            args.worker,
+            args.scheme,
+            args.dt,
+            args.out,
+            args.vardt,
+            args.consistent_imm,
+        )
         return
 
     print(
@@ -401,6 +431,66 @@ def main() -> None:
                 _run("plane-couette", "cnab2", dt, b)
                 errs.append(_err(b, a))
             _check_orders(errs, "plane-couette cnab2-icn")
+
+        if "plane-couette-consistent-imm" in studies:
+            # NOT the scheme-difference proxy of the study above: that
+            # proxy works only while the shared IMM projection error
+            # dominates *both* schemes and cancels in the difference,
+            # and ``res.consistent_imm`` is precisely what removes it.
+            # The honest measurement is each configuration's own
+            # self-convergence against a fine-dt run of the same
+            # configuration.
+            print("=== plane-couette: consistent_imm self-convergence ===")
+            slopes, first = {}, {}
+            for cimm in (False, True):
+                tag = "on" if cimm else "off"
+                ref = tdir / f"pc_sc_{tag}_ref.npy"
+                _run(
+                    "plane-couette",
+                    "iterative-cn",
+                    DT_SELF_REF,
+                    ref,
+                    consistent_imm=cimm,
+                )
+                errs = []
+                for dt in DTS_PC:
+                    out = tdir / f"pc_sc_{tag}_{dt}.npy"
+                    _run(
+                        "plane-couette",
+                        "iterative-cn",
+                        dt,
+                        out,
+                        consistent_imm=cimm,
+                    )
+                    errs.append(_err(out, ref))
+                orders = [
+                    np.log2(a / b)
+                    for a, b in zip(errs, errs[1:], strict=False)
+                ]
+                print(
+                    f"consistent_imm={tag}: errors "
+                    f"{[f'{e:.3e}' for e in errs]}  orders "
+                    f"{[f'{o:.2f}' for o in orders]}"
+                )
+                slopes[tag], first[tag] = min(orders), errs[0]
+
+            # The flag must strictly improve both the size of the
+            # error and its decay rate.  Absolute numbers are recorded
+            # rather than pinned: the ungated absolute order is ~0.5
+            # (the wall-bounded projection-splitting error, ~6e-2 at
+            # dt = 0.01), the gated one ~1.1 at ~1.2e-4.  What must
+            # never regress is the *contrast*.
+            assert first["off"] / first["on"] > 50.0, (
+                "consistent_imm did not shrink the absolute temporal "
+                f"error: {first['off']:.3e} -> {first['on']:.3e}"
+            )
+            assert slopes["on"] > slopes["off"] + 0.3, (
+                "consistent_imm did not improve the convergence rate: "
+                f"{slopes['off']:.2f} -> {slopes['on']:.2f}"
+            )
+            assert slopes["on"] > 1.0, (
+                f"consistent_imm convergence rate below 1: {slopes['on']:.2f}"
+            )
 
         if "kolmogorov-vardt" in studies:
             print("=== kolmogorov: cnab2 vardt order (set_dt seq) ===")

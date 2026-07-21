@@ -27,6 +27,7 @@ from ...fd import (
     build_integration_weights,
     clenshaw_curtis_weights,
     local_grid_spacing,
+    matrix_half_bandwidth,
     tanh_two_sided_grid,
 )
 from ...measurements import get_cfl
@@ -196,6 +197,7 @@ def build_cartesian_grid(
     wall_grid: str | None = None,
     grid_type: str | None = None,
     grid_stretch: float = 1.5,
+    consistent_imm: bool = False,
 ) -> tuple[Array, Array, Array, Array]:
     r"""Build the Cartesian wall-normal grid, FD matrices, and
     quadrature weights.
@@ -226,6 +228,13 @@ def build_cartesian_grid(
         Named grid type (``"cgl"`` or ``"tanh"``).
     grid_stretch:
         Stretching parameter for ``grid_type="tanh"``.
+    consistent_imm:
+        ``params.res.consistent_imm``: return `$D_2 = D_1 D_1$`
+        instead of the direct Fornberg fit, so the IMM's discrete
+        identities `$\nabla\cdot\nabla = L_k$` and `$[D_1, D_2] = 0$`
+        hold exactly (see :func:`_imm_iteration`).  Same accuracy
+        order, ~an order larger error constant, and a wider band --
+        the ``Resolution.consistent_imm`` docs carry the trade.
 
     Returns
     -------
@@ -267,6 +276,8 @@ def build_cartesian_grid(
         )
 
     D1, D2 = build_diff_matrices(ys, fd_order)
+    if consistent_imm:
+        D2 = D1 @ D1
     return ys, D1, D2, y_weights
 
 
@@ -464,6 +475,12 @@ class CartesianFlow:
     D2_bnd:
         Boundary rows `$D_2[0,:],\\; D_2[-1,:]$`,
         shape ``(2, Ny)``.
+    v3, v4, q3, q4:
+        The two extra homogeneous IMM columns of the
+        ``res.consistent_imm`` boundary closure (see
+        :meth:`_derive_imm_homogeneous_data`); ``None`` -- and
+        therefore static pytree aux-data, not traced leaves -- when
+        the flag is off.
     dt:
         Current time step, a 0-d array leaf: the steppers read it
         (instead of ``params.step.dt``) so the builder's ``set_dt``
@@ -493,6 +510,10 @@ class CartesianFlow:
     v2: Array = field(init=False)
     q1: Array = field(init=False)
     q2: Array = field(init=False)
+    v3: Array | None = field(init=False)
+    v4: Array | None = field(init=False)
+    q3: Array | None = field(init=False)
+    q4: Array | None = field(init=False)
     M_inv: Array = field(init=False)
     h_bulk_response: Array = field(init=False)
     H_bulk_inv: Array = field(init=False)
@@ -529,6 +550,7 @@ class CartesianFlow:
             params.geo.wall_grid,
             params.geo.grid_type,
             params.geo.grid_stretch,
+            params.res.consistent_imm,
         )
 
         derived_params.wall_normal_grid = [
@@ -564,7 +586,12 @@ class CartesianFlow:
         Nkx = sharding.nx_spec
         Ny = params.res.ny
 
-        p = params.res.fd_order
+        # Banded half-width: measured, not assumed.  Rows 0 and Ny-1
+        # are overwritten with BC rows in every operator, so their own
+        # stencil width need not fit.  Equals ``fd_order`` for the
+        # direct-fit D2 and is wider for the ``consistent_imm``
+        # `$D_1 D_1$` (11 vs 8 at ``fd_order = 8``).
+        p = matrix_half_bandwidth(np.asarray(D2), (0, -1))
         dt = params.step.dt
 
         # Live-dt pytree leaves (class docstring; rebuilt by the
@@ -653,6 +680,23 @@ class CartesianFlow:
         `$k^2 = 0$`).  The zeroing must follow the ``M_inv``
         computation, which uses the original ``v1`` to evaluate
         `$1/M_{00}$`.
+
+        **The ``res.consistent_imm`` closure.**  With the flag on,
+        two further homogeneous columns are derived, seeded by the
+        *interior* sources `$(D_1 e_j)_P$` instead of Neumann wall
+        data (`$(\cdot)_P$` = wall rows zeroed).  They carry the
+        Kleiser-Schumann boundary correction `$\hat\sigma$` -- the
+        residual of the interior-form wall-normal momentum equation
+        on the two wall rows that the Dirichlet replacement discards
+        (Canuto, Hussaini, Quarteroni & Zang 1988, eqs.
+        (7.3.51)-(7.3.58)).  Accounting for it in the pressure Poisson
+        RHS is what makes `$\tilde H\,d = 0$` hold in the interior;
+        see :func:`_imm_iteration`.  The influence matrix then becomes
+        `$4 \times 4$`, its two new rows imposing
+        `$\beta_j = \hat\sigma_j$`, and it is inverted numerically
+        (the `$2 \times 2$` closed form does not generalise).  At the
+        mean mode ``M_inv`` is zeroed outright: `$v \equiv 0$` and
+        `$i k_x = i k_z = 0$` there, so every column is inert.
         """
         # This run-once setup stays in the mode-outer (Nkz, Nkx, Ny)
         # layout: the influence-matrix einsums below operate on it and
@@ -695,6 +739,12 @@ class CartesianFlow:
         q1_s = self.Hk_op.solve(q_rhs1.transpose(2, 0, 1)).transpose(1, 2, 0)
         q2_s = self.Hk_op.solve(q_rhs2.transpose(2, 0, 1)).transpose(1, 2, 0)
 
+        if params.res.consistent_imm:
+            self._derive_imm_closure(
+                fourier_, [v1_s, v2_s], [q1_s, q2_s], e1_b
+            )
+            return
+
         # Influence matrix `$M_{ji} = (D_1 v_i)|_{\\text{wall}_j}$`.
         M00 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], v1_s)
         M01 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], v2_s)
@@ -725,6 +775,99 @@ class CartesianFlow:
         # Zero homogeneous wall-normal velocity at the mean mode.
         self.v1 = jnp.where(fourier_.mean_mask, 0.0, self.v1)
         self.v2 = jnp.where(fourier_.mean_mask, 0.0, self.v2)
+
+        # Static aux-data (not traced leaves) with the closure off.
+        self.v3 = self.v4 = self.q3 = self.q4 = None
+
+    def _derive_imm_closure(
+        self,
+        fourier_: Fourier,
+        v_cols: list[Array],
+        q_cols: list[Array],
+        template: Array,
+    ) -> None:
+        r"""Boundary-closure columns and the `$4 \times 4$` influence
+        matrix (``res.consistent_imm``).
+
+        Extends the two Neumann-data columns already derived by
+        :meth:`_derive_imm_homogeneous_data` with two columns seeded by
+        the interior sources `$(D_1 e_j)_P$` -- the image, in the
+        pressure Poisson RHS, of a unit boundary correction
+        `$\hat\sigma$` at wall row `$j$`.  Everything downstream is the
+        same solve chain (`$L_k$` for the pressure, `$H_k$` for the
+        velocity response and the horizontal potential), so the four
+        columns are interchangeable in the stage-6 assembly.
+
+        Rows of the influence system, in the ``alpha = -M^{-1} r``
+        convention of :func:`_imm_iteration`:
+
+        - ``0, 1``: wall divergence, `$M_{bj} = (D_1 v_j)|_{wall_b}$`
+          -- the pre-existing conditions.
+        - ``2, 3``: the closure `$\beta_b = \hat\sigma_b$`, i.e.
+          `$M_{2+b,j} = c\nu (D_2 v_j)|_{wall_b}
+          + \delta_{j,2+b} - \delta_{j,b}$`.  The `$-\delta_{j,b}$`
+          is the pressure's own contribution: every column but the
+          Neumann ones has zero wall Neumann data, so
+          `$(D_1 p)|_{wall_b} = \alpha_b$` exactly.
+
+        Parameters
+        ----------
+        fourier\_:
+            Wavenumber grids (uses ``mean_mask``).
+        v_cols, q_cols:
+            The two Neumann-data columns, mode-outer ``(Nkz, Nkx, Ny)``.
+        template:
+            A correctly-sharded ``(Nkz, Nkx, Ny)`` array whose zeros
+            seed the new (mode-independent) sources.
+        """
+        c = params.step.implicitness
+        nu = 1.0 / params.phys.re
+        zero_b = jnp.zeros_like(template)
+
+        # Sources `$(D_1 e_j)_P$`: the wall columns of D1, wall rows
+        # zeroed.  Mode-independent -- added to a correctly-sharded
+        # zero array so the result inherits the mode sharding.
+        for col in (self.D1[:, 0], self.D1[:, -1]):
+            src = zero_b + col.at[0].set(0.0).at[-1].set(0.0)
+            p_s = self.Lk_op.solve(src.transpose(2, 0, 1)).transpose(1, 2, 0)
+            rhs_v = -jnp.einsum("ij, zxj -> zxi", self.D1, p_s)
+            rhs_v = rhs_v.at[..., 0].set(0.0).at[..., -1].set(0.0)
+            q_rhs = p_s.at[..., 0].set(0.0).at[..., -1].set(0.0)
+            v_cols.append(
+                self.Hk_op.solve(rhs_v.transpose(2, 0, 1)).transpose(1, 2, 0)
+            )
+            q_cols.append(
+                self.Hk_op.solve(q_rhs.transpose(2, 0, 1)).transpose(1, 2, 0)
+            )
+
+        V = jnp.stack(v_cols)  # (4, Nkz, Nkx, Ny)
+        eye4 = jnp.eye(4, dtype=sharding.float_type)
+        M = jnp.concatenate(
+            [
+                jnp.einsum("bj, nzxj -> zxbn", self.D1_bnd, V),
+                c * nu * jnp.einsum("bj, nzxj -> zxbn", self.D2_bnd, V)
+                + (eye4[2:4] - eye4[0:2]),
+            ],
+            axis=-2,
+        )
+
+        # The mean mode has `$v \equiv 0$` and `$k = 0$`, so every
+        # column is inert there and `$M$` is singular; substitute the
+        # identity before inverting, then zero the result.
+        is_mean = fourier_.mean_mask[0][..., None, None]
+        self.M_inv = jnp.where(
+            is_mean, 0.0, jnp.linalg.inv(jnp.where(is_mean, eye4, M))
+        )
+
+        # Transpose to field layout (Ny, Nkz, Nkx); zero the
+        # homogeneous wall-normal velocities at the mean mode.
+        self.v1, self.v2, self.v3, self.v4 = (
+            jnp.where(fourier_.mean_mask, 0.0, v.transpose(2, 0, 1))
+            for v in v_cols
+        )
+        self.q1, self.q2, self.q3, self.q4 = (
+            q.transpose(2, 0, 1) for q in q_cols
+        )
 
     def _precompute_bulk_response(
         self, fourier_: Fourier, Nkz: int, Nkx: int, Ny: int
@@ -802,6 +945,12 @@ def _hk_bands(
     Single-sources the band assembly for the setup-checked build, the
     adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
     rebuild (:func:`_build_dt_leaves`).
+
+    The half-width is read back from the already-factored (and
+    ``dt``-independent) `$L_k$`, whose ``L`` factor is
+    ``(Ny, p, Nkz, Nkx)`` -- a static shape, so this works inside
+    ``jit`` where a host-side ``matrix_half_bandwidth`` on the traced
+    ``D2`` could not.
     """
     k2_s = fourier_.k2[0, ..., None]
     return [
@@ -811,7 +960,7 @@ def _hk_bands(
             dt,
             params.step.implicitness,
             1.0 / params.phys.re,
-            params.res.fd_order,
+            flow_.Lk_op.L.shape[1],
         )
     ]
 
@@ -865,7 +1014,7 @@ def _build_dt_leaves(
     new._precompute_bulk_response(
         fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
     )
-    return {
+    leaves = {
         "dt": new.dt,
         "Hk_op": new.Hk_op,
         "v1": new.v1,
@@ -876,6 +1025,14 @@ def _build_dt_leaves(
         "h_bulk_response": new.h_bulk_response,
         "H_bulk_inv": new.H_bulk_inv,
     }
+    if params.res.consistent_imm:
+        leaves |= {
+            "v3": new.v3,
+            "v4": new.v4,
+            "q3": new.q3,
+            "q4": new.q4,
+        }
+    return leaves
 
 
 # ── Solver functions ─────────────────────────────────────────────────────
@@ -1181,6 +1338,43 @@ def _imm_iteration(
     Sherman--Morrison update**.  Cylindrical: same structure
     with a `$1 \times 1$` Schur complement (one wall at
     `$r = 1$`).
+
+    Discrete continuity (``res.consistent_imm``)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    The classical argument above assumes *continuous* differentiation
+    operators.  Writing `$\tilde H$` for the interior-form Helmholtz
+    operator on **all** rows, the Dirichlet wall rows of stage 3 mean
+    `$\tilde H v_{arb} = \tilde R_v + s$` with `$s$` supported only on
+    the two wall rows.  Taking the discrete divergence of the momentum
+    solve, everything cancels against the stage-2 Poisson equation
+    except
+
+    .. math::
+        \tilde H\,d\big|_{\text{interior}} =
+        \underbrace{(D_2 - D_1^2)\,p_P}_{\nabla\cdot\nabla \ne L_k}
+        + \underbrace{\nu\,[D_1, D_2]\,v}_{\text{commutator}}
+        + \underbrace{D_1 s}_{\text{boundary}} ,
+
+    so a stepped state carries `$d \approx \Delta t\,(\ldots)$` --
+    **O(1) relative**, because `$D_1[1, 0] \sim N_y^2$` on a CGL grid
+    turns the boundary term into an O(1) residual.  Measured, that
+    boundary term is the whole story; the first two are five to ten
+    orders smaller.
+
+    ``res.consistent_imm`` removes all three: `$D_2 := D_1 D_1$` kills
+    the first two, and adding `$D_1\hat\sigma$` to the interior Poisson
+    RHS with `$\hat\sigma = s$` kills the third -- the tau / boundary
+    correction of Canuto, Hussaini, Quarteroni & Zang (1988), sec. 7.3,
+    eqs. (7.3.51)-(7.3.58).  Neither half works alone (the closure on
+    the direct-fit `$D_2$` measures *worse* than doing nothing), so it
+    is one flag.  Because `$s$` depends on `$v$`, which depends on
+    `$p$`, which depends on `$s$`, the closure is a linear fixed point
+    -- realised as two extra homogeneous columns and a `$4 \times 4$`
+    influence matrix (:meth:`CartesianFlow._derive_imm_closure`).
+    Nothing currently imposed stops being imposed: every momentum
+    equation keeps exactly the rows it has today, and `$\hat\sigma$` is
+    the residual of the wall rows the Dirichlet replacement already
+    discards.
     """
     c = params.step.implicitness
     dt = flow_.dt
@@ -1265,6 +1459,29 @@ def _imm_iteration(
         jnp.where(mean_mask[0], 0.0, d_wall[..., 1])
     )
 
+    if params.res.consistent_imm:
+        # Two more conditions: the boundary correction must equal the
+        # residual of the interior-form v-momentum equation on the wall
+        # rows the Dirichlet replacement discards (the Kleiser-Schumann
+        # / CHQZ tau correction; see _derive_imm_closure).  Since
+        # v = 0 there, `$(\tilde H v)|_{wall} = -c\nu (D_2 v)|_{wall}$`
+        # and the whole condition is four extra length-Ny dot products.
+        v_n_wall = jnp.stack([v_n[0], v_n[-1]], axis=-1)
+        hm_v_n = v_n_wall / dt + (1 - c) * nu * (
+            jnp.einsum("bj, jzx -> zxb", flow_.D2_bnd, v_n)
+            - fourier_.k2[0][..., None] * v_n_wall
+        )
+        nl_v = c * Nv_j + (1 - c) * Nv_n
+        d_wall = jnp.concatenate(
+            [
+                d_wall,
+                c * nu * jnp.einsum("bj, jzx -> zxb", flow_.D2_bnd, v_arb)
+                + hm_v_n
+                + jnp.stack([nl_v[0], nl_v[-1]], axis=-1),
+            ],
+            axis=-1,
+        )
+
     # Stage 5: influence matrix algebra alpha = -M_inv @ d_wall.
     alpha = -jnp.einsum("zxab, zxb -> zxa", flow_.M_inv, d_wall)
     alpha1 = alpha[..., 0][None]
@@ -1276,13 +1493,19 @@ def _imm_iteration(
     # only velocity is stepped.
     v_new = v_arb + alpha1 * flow_.v1 + alpha2 * flow_.v2
 
-    # Stage 7: zero mean-mode wall-normal velocity.
-    v_new = jnp.where(mean_mask, 0.0, v_new)
-
     # Horizontal corrections factor through the scalar potential Δq,
     # since u^(i) = -ikx q_i and w^(i) = -ikz q_i (the -ikx, -ikz
     # scalar factors commute with Hk linearity per mode).
     q_new = alpha1 * flow_.q1 + alpha2 * flow_.q2
+
+    if params.res.consistent_imm:
+        alpha3 = alpha[..., 2][None]
+        alpha4 = alpha[..., 3][None]
+        v_new = v_new + alpha3 * flow_.v3 + alpha4 * flow_.v4
+        q_new = q_new + alpha3 * flow_.q3 + alpha4 * flow_.q4
+
+    # Stage 7: zero mean-mode wall-normal velocity.
+    v_new = jnp.where(mean_mask, 0.0, v_new)
     u_new = u_arb - ikx * q_new
     w_new = w_arb - ikz * q_new
 

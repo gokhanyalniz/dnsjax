@@ -464,7 +464,14 @@ def case_externalize() -> None:
     out = PS.externalize(P.params, pipe)
     check(
         set(out["res"])
-        == {"nz", "nr", "ntheta", "fd_order", "double_precision"},
+        == {
+            "nz",
+            "nr",
+            "ntheta",
+            "fd_order",
+            "consistent_imm",
+            "double_precision",
+        },
         "externalize res keys public",
         sorted(out["res"]),
     )
@@ -490,6 +497,7 @@ def case_externalize() -> None:
             "ny": 24,
             "nz": 32,
             "fd_order": P.params.res.fd_order,
+            "consistent_imm": False,
             "double_precision": True,
         },
         "internalize_stored res",

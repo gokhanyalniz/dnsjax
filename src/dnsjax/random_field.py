@@ -6,14 +6,22 @@ time step.  This is the implementation behind ``dnsjax.__main__``'s
 in-process random initial-condition start mode (``init.random_field``,
 the default when no snapshot is given) -- there is no offline CLI.
 
-The energy of each Fourier mode follows the wavenumber-dependent envelope
+The energy of each mode follows the structure-dependent envelope
 
 .. math::
-    A(k) = (1 - s)^{|k_x| + |k_z| (+ |k_y|)}
+    A = (1 - s)^{|k_x| + |k_z| (+ |k_y|)\,(+\,j)}
 
 where `$s$` is the ``smoothness`` argument (a fixed *physical*-wavenumber
-spectrum, so the field's correlation length is domain-independent); the
-field is then normalised so the volume-averaged L2 norm equals
+spectrum, so the field's correlation length is domain-independent) and
+`$j$` is the wall-normal polynomial index, supplied by
+:func:`_wall_normal_filter` for the wall-bounded families (the
+triply-periodic one carries `$|k_y|$` instead).  Without that factor a
+column draw is grid-white in the wall-normal direction -- flat to the
+wall-normal Nyquist -- which no wall window repairs; for the pipe it also
+makes near-axis regularity unattainable, since that is a statement about
+*derivatives*.
+
+The field is then normalised so the volume-averaged L2 norm equals
 ``amplitude``.  Each wall-bounded mode is built by solving continuity for
 one velocity component (a `$1/k$` factor that would **inflate** the
 low-wavenumber spectrum and make it domain-dependent -- as the box grows
@@ -207,6 +215,39 @@ def _leray(
     return out
 
 
+def _wall_normal_filter(coord: np.ndarray, decay: float) -> np.ndarray:
+    r"""Wall-normal factor of the smoothness envelope, as a real
+    ``(N, N)`` operator applied to a raw column draw.
+
+    The periodic directions get their `$(1-s)^{|k|}$` energy envelope
+    from :func:`_normalize_mode`'s per-mode target, but a raw draw is
+    ``standard_normal`` **per grid point** -- grid-white in the
+    wall-normal direction, i.e. flat all the way to the wall-normal
+    Nyquist.  This applies the missing factor: expand the column in the
+    orthonormal polynomial basis of *coord*, weight index `$j$` by
+    `$(1-s)^{j/2}$` (so its *energy* follows `$(1-s)^j$`, the same law
+    the periodic directions obey), and transform back.  The full
+    envelope is then `$A = (1-s)^{|k_1| + |k_2| + j}$`.
+
+    *coord* is the variable the field is smooth in, ascending: `$y$`
+    (Cartesian), `$r$` (annular), and `$r^2$` for the pipe -- an
+    axis-regular field is an analytic function of `$r^2$`, so the
+    filtered draw is even in `$r$` and the `$r^{|m_{\mathrm{eff}}|}$`
+    envelope applied afterwards supplies the parity.
+
+    Returns the identity at ``smoothness = 0``.  The basis is built by
+    QR of the Chebyshev Vandermonde on *coord* affinely mapped to
+    `$[-1, 1]$`, which is well conditioned (measured `$\kappa \approx
+    1.5$`, orthonormal to 2e-15, up to at least ``N = 385``) on CGL,
+    tanh and `$r^2$` node sets alike.
+    """
+    n = len(coord)
+    lo, hi = float(coord[0]), float(coord[-1])
+    t = 2.0 * (np.asarray(coord, dtype=float) - lo) / (hi - lo) - 1.0
+    basis, _ = np.linalg.qr(np.polynomial.chebyshev.chebvander(t, n - 1))
+    return (basis * decay ** (np.arange(n) / 2.0)) @ basis.T
+
+
 def _normalize_mode(
     col: np.ndarray, y_weights: np.ndarray, envelope: float
 ) -> np.ndarray:
@@ -315,6 +356,7 @@ def generate_cartesian(
     kz_np = _complex_harmonics_np(nz) * (2 * pi / params.geo.lz)  # (Nkz,)
 
     decay = 1.0 - smoothness
+    wn_filter = _wall_normal_filter(ys_np, decay)
     window_tang = 1.0 - ys_np**2  # tangential: value zero at the walls
     window_wn = window_tang**2  # wall-normal: value + derivative zero
 
@@ -329,6 +371,7 @@ def generate_cartesian(
                     col = _hermitian_column(seed, g2, nz, ny)
                 else:
                     col = _column_draw(seed, g2, g3, ny)
+                col = col @ wn_filter.T
                 col[0] *= window_tang
                 col[1] *= window_wn
                 col[2] *= window_tang
@@ -372,8 +415,26 @@ def generate_cylindrical(
     squared wall window `$(1-r)^2$` (value and first derivative vanish
     at `$r = 1$`), so for `$k_z \neq 0$` the continuity-derived `$u_z$`
     inherits a truncation-level wall value (projected by the first
-    corrector step).  The inner end `$r = 0$` is the axis (regularity
-    via parity), not a wall.  For `$k_z = 0$` a small residual
+    corrector step).  The inner end `$r = 0$` is the axis, not a wall,
+    and every column carries the **axis-regularity** envelope
+
+    .. math::
+        u_z \sim r^{|m|}, \qquad
+        u_\pm = u_r \pm i\,u_\theta \sim r^{|m \pm 1|},
+
+    applied in the `$u_\pm$` basis: the condition is a cancellation
+    *between* `$u_r$` and `$u_\theta$`, so enveloping them separately
+    reproduces only the slower `$r^{|m|-1}$` leading behaviour and
+    leaves `$u_+$` two orders too large.  Parity is implied by it
+    (`$r^{|m \pm 1|}$` carries `$(-1)^{m+1}$`, `$r^{|m|}$` carries
+    `$(-1)^m$`), and a parity-only window is merely its
+    `$|m_{\mathrm{eff}}| = 1$` case: that admits near-axis content the
+    continuum forbids, measured to drive a stepped state's discrete
+    divergence to `$O(1)$` at the innermost radial node and to grow as
+    `$N_r^2$` under refinement.  The envelope also preserves the
+    `$k_z = 0$` Hermitian pairing, since `$\hat u_+(-m) =
+    \overline{\hat u_-(m)}$` and the two carry the same real factor.
+    For `$k_z = 0$` a small residual
     divergence remains and is projected out by the corrector.  The
     `$k_z = 0$` plane is drawn per-component Hermitian
     (:func:`_hermitian_column`) so every physical component --
@@ -396,6 +457,7 @@ def generate_cylindrical(
         params.geo.wall_grid,
         params.geo.grid_type,
         params.geo.grid_stretch,
+        params.res.consistent_imm,
     )
     derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
 
@@ -411,6 +473,10 @@ def generate_cylindrical(
     m_np = params.geo.m0 * _complex_harmonics_np(nz)
 
     decay = 1.0 - smoothness
+    # Filter in x = r^2: an axis-regular field is analytic in it, so the
+    # filtered draw is even in r and the r^|m_eff| envelope below
+    # supplies the parity.
+    wn_filter = _wall_normal_filter(rs_np**2, decay)
     window_wall = 1.0 - rs_np  # u_z: f(1) = 0
     window_wn = window_wall**2  # u_r/u_th: value + derivative zero at r=1
 
@@ -428,15 +494,22 @@ def generate_cylindrical(
                     col = _hermitian_column(seed, g2, nz, Nr)
                 else:
                     col = _column_draw(seed, g2, g3, Nr)
+                col = col @ wn_filter.T
                 col[0] *= window_wall
                 col[1] *= window_wn
                 col[2] *= window_wn
-                # Parity windows at the axis r=0.
-                if m_val % 2 != 0:  # u_z odd when m odd
-                    col[0] *= rs_np
-                else:  # u_r, u_theta odd when m even
-                    col[1] *= rs_np
-                    col[2] *= rs_np
+                # Axis-regularity envelope at r = 0 (the docstring):
+                # u_z ~ r^|m|, u_pm ~ r^|m +- 1|.  Applied in the u_pm
+                # basis because the condition is a cancellation
+                # *between* u_r and u_theta -- enveloping them
+                # separately leaves u_+ two orders too large.  Parity
+                # follows from it, so this replaces (not supplements)
+                # a parity-only window.
+                cp = (col[1] + 1j * col[2]) * rs_np ** abs(m_val + 1)
+                cm = (col[1] - 1j * col[2]) * rs_np ** abs(m_val - 1)
+                col[1] = (cp + cm) / 2
+                col[2] = (cp - cm) / 2j
+                col[0] *= rs_np ** abs(m_val)
                 # Continuity-derived u_z for k_z != 0: the cylindrical
                 # divergence D1 u_r + u_r/r + (im/r) u_theta.
                 if kz_val != 0:
@@ -521,6 +594,7 @@ def generate_annular(
     m_np = params.geo.m0 * _complex_harmonics_np(nz)
 
     decay = 1.0 - smoothness
+    wn_filter = _wall_normal_filter(rs_np, decay)
     # No-slip window: zero at both walls, peak 1 in the interior.
     window_lin = (rs_np - r1) * (r2 - rs_np)
     window_lin = window_lin / np.max(window_lin)
@@ -537,6 +611,7 @@ def generate_annular(
                     col = _hermitian_column(seed, g2, nz, Nr)
                 else:
                     col = _column_draw(seed, g2, g3, Nr)
+                col = col @ wn_filter.T
                 col[0] *= window_lin
                 col[1] *= window_wn
                 col[2] *= window_wn
@@ -710,6 +785,7 @@ def generate_viscoelastic_dean(
     m_np = params.geo.m0 * _complex_harmonics_np(nz)
 
     decay = 1.0 - smoothness
+    wn_filter = _wall_normal_filter(rs_np, decay)
     window_lin = (rs_np - r1) * (r2 - rs_np)
     window_lin = window_lin / np.max(window_lin)
     window_wn = window_lin**2
@@ -728,6 +804,7 @@ def generate_viscoelastic_dean(
                     vcol = _hermitian_column(seed, g2, nz, Nr)
                 else:
                     vcol = _column_draw(seed, g2, g3, Nr)
+                vcol = vcol @ wn_filter.T
                 vcol[0] *= window_lin
                 vcol[1] *= window_wn
                 vcol[2] *= window_wn
@@ -751,7 +828,7 @@ def generate_viscoelastic_dean(
                     )
                 else:
                     ccol = _column_draw(seed, g2, g3, Nr, rows=6, stream=(1,))
-                ccol = ccol * window_wn
+                ccol = (ccol @ wn_filter.T) * window_wn
                 ccol = _normalize_mode(ccol, yw_np, envelope)
                 if g2 == 0 and g3 == 0:
                     ccol[:] = 0.0
