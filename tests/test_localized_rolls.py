@@ -53,7 +53,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-from _live import run_live
+from _live import report, run_live
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -306,10 +306,15 @@ def _run_config(
     return run_live(cmd, timeout=300)
 
 
-def _run_system(system: str) -> bool:
-    """Run all configs for one system; return True on full pass."""
+def _run_system(system: str) -> str | None:
+    """Run all configs for one system; ``None`` on a full pass.
+
+    On failure returns the one-line reason for the summary, quoting
+    the worker's own first ``FAIL:`` line where it has one -- the
+    parent otherwise only knows the exit code.
+    """
     print(f"=== {system} ===")
-    ok = True
+    bad: list[str] = []
     ref: np.ndarray | None = None
     with tempfile.TemporaryDirectory() as tmp:
         for np0, np1 in CONFIGS:
@@ -317,10 +322,21 @@ def _run_system(system: str) -> bool:
             proc = _run_config(system, np0, np1, out)
             tag = f"np0={np0} np1={np1}"
             if proc.returncode != 0:
-                ok = False
                 print(f"  FAIL: {tag} worker exit {proc.returncode}")
                 print(proc.stdout[-1500:])
                 print(proc.stderr[-1500:])
+                inner = next(
+                    (
+                        ln.strip()
+                        for ln in proc.stdout.splitlines()
+                        if ln.strip().startswith("FAIL:")
+                    ),
+                    "",
+                )
+                bad.append(
+                    f"{tag} worker exit {proc.returncode}"
+                    + (f" ({inner})" if inner else "")
+                )
                 continue
             arr = np.load(out)
             if ref is None:
@@ -331,8 +347,9 @@ def _run_system(system: str) -> bool:
                     f"  {'PASS' if same else 'FAIL'}: {tag} matches (1, 1) "
                     "true modes"
                 )
-                ok = ok and same
-    return ok
+                if not same:
+                    bad.append(f"{tag} differs from the (1, 1) true modes")
+    return "; ".join(bad) if bad else None
 
 
 def _peak_build(system: str, box: float, n: int) -> int:
@@ -385,10 +402,13 @@ def _peak_build(system: str, box: float, n: int) -> int:
     return 0
 
 
-def _check_peak_scaling() -> bool:
-    """Peak |u'| = amplitude, domain-independent (subprocess per build)."""
+def _check_peak_scaling() -> str | None:
+    """Peak |u'| = amplitude, domain-independent (subprocess per build).
+
+    ``None`` on a full pass, else the one-line summary reason.
+    """
     print("=== peak |u'| = amplitude (domain-independent spot) ===")
-    ok = True
+    bad: list[str] = []
     for system in PEAK_SYSTEMS:
         peaks = []
         for box, n in PEAK_BOXES:
@@ -415,7 +435,7 @@ def _check_peak_scaling() -> bool:
             if proc.returncode != 0 or line is None:
                 print(f"  FAIL: {system} box={box} worker error")
                 print(proc.stderr[-800:])
-                ok = False
+                bad.append(f"{system} box={box} worker error")
                 break
             peaks.append(float(line.split("=")[1]))
         else:
@@ -427,8 +447,12 @@ def _check_peak_scaling() -> bool:
                 f"peak(L{int(PEAK_BOXES[1][0])})={peaks[1]:.4f} "
                 f"(amp={PEAK_AMP})"
             )
-            ok = ok and near and indep
-    return ok
+            if not (near and indep):
+                bad.append(
+                    f"{system} peaks {peaks[0]:.4f}/{peaks[1]:.4f} "
+                    f"vs amp={PEAK_AMP}"
+                )
+    return "; ".join(bad) if bad else None
 
 
 def main() -> None:
@@ -456,16 +480,14 @@ def main() -> None:
         "no GPU path).",
         flush=True,
     )
-    failures = 0
-    for system in SYSTEMS:
-        if not _run_system(system):
-            failures += 1
-    if not _check_peak_scaling():
-        failures += 1
-    if failures:
-        print(f"\n{failures} check(s) FAILED.")
-        sys.exit(1)
-    print("\nAll systems passed.")
+    # Each check returns None when it passes, else its one-line reason;
+    # ``report`` repeats the failures after the counts (see _live).
+    results: list[tuple[str, str | None]] = [
+        (system, _run_system(system)) for system in SYSTEMS
+    ]
+    results.append(("peak |u'| scaling", _check_peak_scaling()))
+    failures = [(n, r) for n, r in results if r is not None]
+    sys.exit(report(len(results) - len(failures), failures))
 
 
 if __name__ == "__main__":

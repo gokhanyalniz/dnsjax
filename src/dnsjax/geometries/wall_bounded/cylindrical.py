@@ -1858,7 +1858,11 @@ def _imm_iteration(
     dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity, component_axis=1)
     dy_all = dy_common.at[:g].add(parity_sign_v * dy_ghost)
 
-    # Cylindrical divergence at time n.
+    # Cylindrical divergence at time n.  ``dnsjax.analysis`` mirrors
+    # this operator in physical components; changing it here means
+    # changing ``snapshot_ops.divergence`` and the transcription in
+    # ``tests/test_snapshot_export.py`` (``_solver_divergence``),
+    # which pins the two together.
     div_n = (
         (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
         + (dy_all[:, 1] + (1 - m) * inv_r * um_n) / 2

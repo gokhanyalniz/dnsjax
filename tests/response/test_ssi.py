@@ -18,7 +18,10 @@ All offline (no solver runs; the solver-side kick machinery is
    ``probes.bin``/``forcing.bin`` streams -- ``identify_ssi``
    recovers the restricted reference generator to ~10 %, with a
    small causality level, and pools two runs.
-4. **read_forcing error paths**: missing sidecar, truncated record.
+4. **read_forcing error paths**: missing sidecar, truncated record,
+   and the ``MIN_FORMAT_VERSION`` reject (an older stream's
+   coefficients were injected in a different basis / partner rule,
+   at an identical record layout).
 
 Usage::
 
@@ -83,6 +86,7 @@ from dnsjax.analysis.response.ensemble import (  # noqa: E402
     identify_generator,
 )
 from dnsjax.analysis.response.ssi import (  # noqa: E402
+    MIN_FORMAT_VERSION,
     _discrete_lyapunov_eig,
     cross_propagators,
     identify_ssi,
@@ -205,7 +209,7 @@ def _write_forcing_stream(
     """forcing.bin/json for one synthetic run forcing mode (3, 0)."""
     m = w.shape[1]
     sidecar = {
-        "format_version": 1,
+        "format_version": MIN_FORMAT_VERSION,
         "modes": [[3, 0]],
         "wavenumbers": [[3, 0]],
         "n_channels": m,
@@ -386,6 +390,20 @@ def test_read_forcing_errors() -> None:
         (tmp / "forcing.bin").write_bytes(raw[:-5])
         data = read_forcing(tmp)
         assert data.w.shape == (2, 1, 2)
+
+        # A pre-MIN_FORMAT_VERSION sidecar is rejected rather than
+        # misread: the record layout never changed, so only the
+        # injection basis / partner rule behind the coefficients did.
+        path = tmp / "forcing.json"
+        meta = json.loads(path.read_text())
+        meta["format_version"] = MIN_FORMAT_VERSION - 1
+        path.write_text(json.dumps(meta))
+        try:
+            read_forcing(tmp)
+        except ValueError as e:
+            assert "format_version" in str(e), e
+        else:
+            raise AssertionError("an old forcing.json was accepted")
 
 
 # ── Runner ───────────────────────────────────────────────────────────

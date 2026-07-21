@@ -104,9 +104,11 @@ def write_probe_stream(
     *u* is the ``(nt, 3, NY)`` complex profile series; samples sit at
     ``t0 + k * IT_PROBES * dt``.
     """
+    from dnsjax.analysis.response.probes import MIN_FORMAT_VERSION
+
     nt = u.shape[0]
     sidecar = {
-        "format_version": 1,
+        "format_version": MIN_FORMAT_VERSION,
         "modes": [[3, 0]],
         "wavenumbers": [[3, 0]],
         "n_components": 3,

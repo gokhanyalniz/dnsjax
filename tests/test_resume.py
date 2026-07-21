@@ -60,7 +60,7 @@ import subprocess
 import sys
 import tempfile
 
-from _live import run_live
+from _live import report, run_live
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -108,7 +108,7 @@ _SNAP_RE = re.compile(r"^state(\d+)\.tar$")
 # ── unit test ────────────────────────────────────────────────────────
 
 
-def run_unit_checks() -> bool:
+def run_unit_checks() -> str | None:
     """Offline units of ``trajectory_defining_changes`` and the
     ``read_snapshot_params`` solver-section skip (no JAX/mpirun).
 
@@ -260,13 +260,13 @@ def run_unit_checks() -> bool:
                     raise AssertionError(f"format_version {old} was accepted")
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
-        return False
+        return str(exc)
 
     print(f"  PASS  {name}")
-    return True
+    return None
 
 
-def run_grid_validation_checks() -> bool:
+def run_grid_validation_checks() -> str | None:
     """Offline unit: ``geo.grid_type='half-cgl'`` validation rules."""
     from dnsjax.parameters import params, validate_parameters
 
@@ -305,7 +305,7 @@ def run_grid_validation_checks() -> bool:
         (params.phys.system, params.geo.grid_type, params.step.scheme) = save
 
     print(f"  {'PASS' if ok else 'FAIL'}  {name}")
-    return ok
+    return None if ok else "a half-cgl accept/reject rule did not hold"
 
 
 def _restore_params(saved_dump: dict, saved_user_set: set) -> None:
@@ -321,7 +321,7 @@ def _restore_params(saved_dump: dict, saved_user_set: set) -> None:
     P._user_set_fields.update(saved_user_set)
 
 
-def run_grid_default_resolution_checks() -> bool:
+def run_grid_default_resolution_checks() -> str | None:
     """Offline unit: scheme-dependent ``geo.grid_type`` resolution.
 
     ``update_parameters`` resolves an unset ``grid_type`` to a
@@ -383,12 +383,12 @@ def run_grid_default_resolution_checks() -> bool:
         assert got is None, ("wall_grid", got)
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
-        return False
+        return str(exc)
     finally:
         _restore_params(saved_dump, saved_user_set)
 
     print(f"  PASS  {name}")
-    return True
+    return None
 
 
 def _snap_indices(workdir: str) -> list[int]:
@@ -428,13 +428,16 @@ def _run_dnsjax(
     return run_live(cmd, timeout=timeout, cwd=workdir)
 
 
-def _fail(stage: str, res: subprocess.CompletedProcess) -> None:
-    print(f"  FAIL  integration: {stage} exit {res.returncode}")
+def _fail(stage: str, res: subprocess.CompletedProcess) -> str:
+    """Print the failure detail; return the one-line summary reason."""
+    reason = f"{stage} exit {res.returncode}"
+    print(f"  FAIL  integration: {reason}")
     print(res.stdout[-2000:] if res.stdout else "(no stdout)")
     print(res.stderr[-2000:] if res.stderr else "(no stderr)")
+    return reason
 
 
-def run_integration(timeout: float) -> bool:
+def run_integration(timeout: float) -> str | None:
     """End-to-end snapshot-lineage and resume-policy checks."""
     from dnsjax.snapshot_meta import read_snapshot_meta, read_snapshot_stats
 
@@ -454,8 +457,7 @@ def run_integration(timeout: float) -> bool:
         # --- Run 1: fresh start from a random IC ---------------------
         r1 = _run_dnsjax(work1, RUN1_ARGS, timeout)
         if r1.returncode != 0:
-            _fail("run1", r1)
-            return False
+            return _fail("run1", r1)
         _check_run(r1.stdout, "run1", 0.03, 0.01)  # raises on a bad run
 
         idx1 = _snap_indices(work1)
@@ -499,8 +501,7 @@ def run_integration(timeout: float) -> bool:
             timeout,
         )
         if r2.returncode != 0:
-            _fail("run2 (continuation)", r2)
-            return False
+            return _fail("run2 (continuation)", r2)
         assert "NEW trajectory" not in r2.stdout, "unexpected new trajectory"
         assert "Resumed from snapshot" in r2.stdout, r2.stdout[-1500:]
         # Snapshot precedence: neither in-process IC was used despite the
@@ -528,8 +529,7 @@ def run_integration(timeout: float) -> bool:
             timeout,
         )
         if r3.returncode != 0:
-            _fail("run3 (new trajectory)", r3)
-            return False
+            return _fail("run3 (new trajectory)", r3)
         assert "NEW trajectory" in r3.stdout, r3.stdout[-1500:]
         idx3 = _snap_indices(work_new)
         assert 0 in idx3, f"new trajectory must save state00000: {idx3}"
@@ -557,8 +557,7 @@ def run_integration(timeout: float) -> bool:
             timeout,
         )
         if r4.returncode != 0:
-            _fail("run4 (force_resume)", r4)
-            return False
+            return _fail("run4 (force_resume)", r4)
         assert "NEW trajectory" not in r4.stdout, "force_resume reset anyway"
         assert 0 not in _snap_indices(work_force), (
             "force_resume continuation must not save state00000"
@@ -588,8 +587,7 @@ def run_integration(timeout: float) -> bool:
             timeout,
         )
         if r5.returncode != 0:
-            _fail("run5 (adaptive)", r5)
-            return False
+            return _fail("run5 (adaptive)", r5)
         assert "[adaptive]" in r5.stdout, "no adaptive dt change logged"
         idx5 = _snap_indices(work_ad)
         final5 = max(idx5)
@@ -616,8 +614,7 @@ def run_integration(timeout: float) -> bool:
             timeout,
         )
         if r6.returncode != 0:
-            _fail("run6 (adaptive resume)", r6)
-            return False
+            return _fail("run6 (adaptive resume)", r6)
         assert "NEW trajectory" not in r6.stdout, "adaptive dt reset lineage"
         assert "Resumed from snapshot" in r6.stdout, r6.stdout[-1500:]
         idx6 = _snap_indices(work_ad)
@@ -651,8 +648,7 @@ def run_integration(timeout: float) -> bool:
             timeout,
         )
         if r7.returncode != 0:
-            _fail("run7 (dt override)", r7)
-            return False
+            return _fail("run7 (dt override)", r7)
         assert "NEW trajectory" not in r7.stdout, "dt override reset lineage"
         assert "[adaptive]" not in r7.stdout, "adaptive off yet controller ran"
         last7 = max(_snap_indices(work_override))
@@ -665,14 +661,14 @@ def run_integration(timeout: float) -> bool:
         ]
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
-        return False
+        return str(exc)
     finally:
         import shutil
 
         shutil.rmtree(base, ignore_errors=True)
 
     print(f"  PASS  {name}")
-    return True
+    return None
 
 
 # ── main ─────────────────────────────────────────────────────────────
@@ -710,19 +706,15 @@ if __name__ == "__main__":
             flush=True,
         )
 
-    passed = failed = 0
-    offline = [
-        run_unit_checks(),
-        run_grid_validation_checks(),
-        run_grid_default_resolution_checks(),
+    # Each check returns None when it passes, else its one-line reason;
+    # ``report`` repeats the failures after the counts (see _live).
+    results: list[tuple[str, str | None]] = [
+        ("snapshot-meta units", run_unit_checks()),
+        ("grid_type half-cgl validation", run_grid_validation_checks()),
+        ("grid_type default resolution", run_grid_default_resolution_checks()),
     ]
-    for ok in (
-        offline if cli.unit_only else [*offline, run_integration(cli.timeout)]
-    ):
-        if ok:
-            passed += 1
-        else:
-            failed += 1
+    if not cli.unit_only:
+        results.append(("resume lineage", run_integration(cli.timeout)))
 
-    print(f"\n{passed} passed, {failed} failed.")
-    sys.exit(1 if failed else 0)
+    failures = [(n, r) for n, r in results if r is not None]
+    sys.exit(report(len(results) - len(failures), failures))

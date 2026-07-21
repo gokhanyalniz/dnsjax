@@ -117,3 +117,32 @@ def run_live(
             returncode, proc.args, output=result.stdout, stderr=result.stderr
         )
     return result
+
+
+#: Clip width for one summary reason (see :func:`report`).
+_REASON_CLIP = 200
+
+
+def report(passed: int, failures: Sequence[tuple[str, str]]) -> int:
+    """Print the closing summary; return the process exit code.
+
+    *failures* is one ``(name, reason)`` per failed entry.  The
+    reasons are repeated **after** the counts on purpose: these
+    scripts tee thousands of lines of child output, so the inline
+    ``FAIL`` line scrolls far out of a ``tail`` and leaves
+    ``"16 passed, 1 failed."`` as the only visible signal -- which
+    says nothing about *which* entry broke or why, and costs a full
+    re-run to find out.  A run's outcome must be readable from its
+    last few lines alone.
+
+    Reasons are collapsed to their first line and clipped, so a long
+    assertion message cannot push the summary out of a short tail
+    either; the full text is still inline at the point of failure.
+    """
+    print(f"\n{passed} passed, {len(failures)} failed.")
+    for name, reason in failures:
+        head = " ".join(str(reason).split())
+        if len(head) > _REASON_CLIP:
+            head = head[: _REASON_CLIP - 3] + "..."
+        print(f"  FAILED  {name}: {head}")
+    return 1 if failures else 0

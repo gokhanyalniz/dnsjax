@@ -59,7 +59,7 @@ import argparse
 import os
 import sys
 
-from _live import run_live
+from _live import report, run_live
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -506,14 +506,13 @@ if __name__ == "__main__":
         for n in sorted(CASES)
     ]
 
-    failed = 0
+    failures: list[tuple[str, str]] = []
     for label, fn in tests:
         try:
             fn()
             print(f"  PASS  {label}")
         except AssertionError as exc:
             print(f"  FAIL  {label}: {exc}")
-            failed += 1
+            failures.append((label, str(exc)))
 
-    print(f"\n{len(tests) - failed} passed, {failed} failed.")
-    sys.exit(1 if failed else 0)
+    sys.exit(report(len(tests) - len(failures), failures))

@@ -57,7 +57,7 @@ import subprocess
 import sys
 import tempfile
 
-from _live import run_live
+from _live import report, run_live
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -513,10 +513,13 @@ def _run_worker(
     return run_live(cmd, timeout=300)
 
 
-def _fail(name: str, stage: str, res: subprocess.CompletedProcess) -> None:
-    print(f"  FAIL  {name}: {stage} exit {res.returncode}")
+def _fail(name: str, stage: str, res: subprocess.CompletedProcess) -> str:
+    """Print the failure detail; return the one-line summary reason."""
+    reason = f"{stage} exit {res.returncode}"
+    print(f"  FAIL  {name}: {reason}")
     print(res.stdout[-2000:] if res.stdout else "(no stdout)")
     print(res.stderr[-2000:] if res.stderr else "(no stderr)")
+    return reason
 
 
 def run_case(
@@ -528,7 +531,7 @@ def run_case(
     load_np: int,
     save_np0: int = 1,
     load_np0: int = 1,
-) -> bool:
+) -> str | None:
     """Save then load a snapshot (one process when the np config is
     unchanged, separate save/load processes across np configs)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -544,8 +547,7 @@ def run_case(
                 np0=save_np0,
             )
             if r.returncode != 0:
-                _fail(name, "roundtrip", r)
-                return False
+                return _fail(name, "roundtrip", r)
         else:
             r_save = _run_worker(
                 "save",
@@ -557,8 +559,7 @@ def run_case(
                 np0=save_np0,
             )
             if r_save.returncode != 0:
-                _fail(name, "save", r_save)
-                return False
+                return _fail(name, "save", r_save)
             r_load = _run_worker(
                 "load",
                 system,
@@ -569,13 +570,12 @@ def run_case(
                 np0=load_np0,
             )
             if r_load.returncode != 0:
-                _fail(name, "load", r_load)
-                return False
+                return _fail(name, "load", r_load)
     print(f"  PASS  {name}")
-    return True
+    return None
 
 
-def run_stats_isnap_case() -> bool:
+def run_stats_isnap_case() -> str | None:
     """``save_snapshot`` embeds ``_dnsjax_stats.json`` + ``isnap``, and
     omits the stats member (with ``isnap`` defaulting to 0) when no stats
     are supplied.  Verified with the standard library alone (no dnsjax)."""
@@ -589,8 +589,7 @@ def run_stats_isnap_case() -> bool:
             "save_stats", "plane-couette", "walled", "concurrent", 1, snap
         )
         if r.returncode != 0:
-            _fail(name, "save_stats", r)
-            return False
+            return _fail(name, "save_stats", r)
 
         with tarfile.open(snap, "r") as tf:
             names = set(tf.getnames())
@@ -606,7 +605,7 @@ def run_stats_isnap_case() -> bool:
             meta = json.loads(tf.extractfile("_dnsjax_meta.json").read())
         assert meta["isnap"] == 0, meta["isnap"]
     print(f"  PASS  {name}")
-    return True
+    return None
 
 
 def run_ny_mismatch_case(
@@ -615,7 +614,7 @@ def run_ny_mismatch_case(
     load_np: int = 1,
     load_np0: int = 1,
     label: str = "",
-) -> bool:
+) -> str | None:
     """Save at ny=8, load at ny=16 with interpolation."""
     name = f"wb ny 8->16 interp{label}"
     with tempfile.TemporaryDirectory() as tmp:
@@ -631,8 +630,7 @@ def run_ny_mismatch_case(
             np0=save_np0,
         )
         if r_save.returncode != 0:
-            _fail(name, "save_poly", r_save)
-            return False
+            return _fail(name, "save_poly", r_save)
         r_load = _run_worker(
             "load_interp",
             "plane-couette",
@@ -644,13 +642,12 @@ def run_ny_mismatch_case(
             np0=load_np0,
         )
         if r_load.returncode != 0:
-            _fail(name, "load_interp", r_load)
-            return False
+            return _fail(name, "load_interp", r_load)
     print(f"  PASS  {name}")
-    return True
+    return None
 
 
-def run_pipe_regrid_case() -> bool:
+def run_pipe_regrid_case() -> str | None:
     """Pipe nr 8 (rigged-CGL) -> 10 (half-CGL) regrid on load.
 
     Pins the alias-aware stored-``nr`` lookup (public-named v4
@@ -669,8 +666,7 @@ def run_pipe_regrid_case() -> bool:
             ny=8,
         )
         if r_save.returncode != 0:
-            _fail(name, "save_poly_pipe", r_save)
-            return False
+            return _fail(name, "save_poly_pipe", r_save)
         r_load = _run_worker(
             "load_interp_pipe",
             "pipe",
@@ -681,13 +677,12 @@ def run_pipe_regrid_case() -> bool:
             ny=10,
         )
         if r_load.returncode != 0:
-            _fail(name, "load_interp_pipe", r_load)
-            return False
+            return _fail(name, "load_interp_pipe", r_load)
     print(f"  PASS  {name}")
-    return True
+    return None
 
 
-def run_ve_ny_mismatch_case() -> bool:
+def run_ve_ny_mismatch_case() -> str | None:
     """Viscoelastic nr-mismatch load: the assembled state must carry 9
     components at the snapshot's radial count."""
     name = "viscoelastic nr 8->16 load shape"
@@ -697,8 +692,7 @@ def run_ve_ny_mismatch_case() -> bool:
             "save", "viscoelastic-dean", "walled", "concurrent", 1, snap_path
         )
         if r_save.returncode != 0:
-            _fail(name, "save", r_save)
-            return False
+            return _fail(name, "save", r_save)
         r_load = _run_worker(
             "load_shape",
             "viscoelastic-dean",
@@ -709,10 +703,9 @@ def run_ve_ny_mismatch_case() -> bool:
             ny=16,
         )
         if r_load.returncode != 0:
-            _fail(name, "load_shape", r_load)
-            return False
+            return _fail(name, "load_shape", r_load)
     print(f"  PASS  {name}")
-    return True
+    return None
 
 
 # ── main ─────────────────────────────────────────────────────────────
@@ -764,43 +757,32 @@ if __name__ == "__main__":
         flush=True,
     )
 
-    passed = failed = 0
-    for case in CASES:
-        if run_case(*case):
-            passed += 1
-        else:
-            failed += 1
+    # Each case returns None when it passes, else its one-line reason;
+    # ``report`` repeats the failures after the counts (see _live).
+    results: list[tuple[str, str | None]] = [
+        (case[0], run_case(*case)) for case in CASES
+    ]
 
     # ny-mismatch interpolation tests
-    if run_ny_mismatch_case():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_ny_mismatch_case(
-        save_np=4, save_np0=2, load_np=4, load_np0=2, label=" 2D"
-    ):
-        passed += 1
-    else:
-        failed += 1
+    results.append(("wb ny 8->16 interp", run_ny_mismatch_case()))
+    results.append(
+        (
+            "wb ny 8->16 interp 2D",
+            run_ny_mismatch_case(
+                save_np=4, save_np0=2, load_np=4, load_np0=2, label=" 2D"
+            ),
+        )
+    )
 
     # Pipe regrid (public-named nr + parity interpolation) and the
     # viscoelastic 9-component ny-mismatch assembly.
-    if run_pipe_regrid_case():
-        passed += 1
-    else:
-        failed += 1
-
-    if run_ve_ny_mismatch_case():
-        passed += 1
-    else:
-        failed += 1
+    results.append(("pipe nr 8->10 regrid", run_pipe_regrid_case()))
+    results.append(
+        ("viscoelastic nr 8->16 load shape", run_ve_ny_mismatch_case())
+    )
 
     # isnap metadata + optional embedded-stats member
-    if run_stats_isnap_case():
-        passed += 1
-    else:
-        failed += 1
+    results.append(("isnap + embedded stats", run_stats_isnap_case()))
 
-    print(f"\n{passed} passed, {failed} failed.")
-    sys.exit(1 if failed else 0)
+    failures = [(n, r) for n, r in results if r is not None]
+    sys.exit(report(len(results) - len(failures), failures))

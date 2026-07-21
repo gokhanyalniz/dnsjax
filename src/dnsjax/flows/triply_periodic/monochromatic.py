@@ -236,12 +236,22 @@ def get_input(
     )
 
 
+def _perturbation_energy(state: Array, fourier_: Fourier) -> Array:
+    r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`.
+
+    The single definition, shared by :func:`get_stats` (which reports
+    it as ``E'``) and the laminarization read
+    :func:`get_perturbation_energy`.
+    """
+    return get_norm2(state, fourier_.k_metric) / 2
+
+
 @jit
 def _get_stats_jit(
     state: Array, fourier_: Fourier, flow_: MonochromaticFlow
 ) -> dict[str, Array]:
     """Compute diagnostic statistics: E, I, D, E'."""
-    perturbation_energy = get_norm2(state, fourier_.k_metric) / 2
+    perturbation_energy = _perturbation_energy(state, fourier_)
     input = get_input(state, fourier_, flow_)
     dissipation = get_dissipation(state, input, fourier_, flow_)
     energy = get_energy(perturbation_energy, input, fourier_, flow_)
@@ -266,7 +276,7 @@ def _get_perturbation_energy_jit(
     state: Array, fourier_: Fourier, flow_: MonochromaticFlow
 ) -> Array:
     r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
-    return get_norm2(state, fourier_.k_metric) / 2
+    return _perturbation_energy(state, fourier_)
 
 
 def get_perturbation_energy(state: Array) -> Array:
