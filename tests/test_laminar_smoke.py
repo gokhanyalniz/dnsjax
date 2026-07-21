@@ -92,7 +92,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from _live import run_live
+from _live import report, run_live
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -1105,20 +1105,19 @@ if __name__ == "__main__":
     )
 
     passed = 0
-    failed = 0
+    failures: list[tuple[str, str]] = []
     try:
         check_console_help()
         passed += 1
     except (AssertionError, subprocess.TimeoutExpired) as exc:
         print(f"  FAIL  console-help: {exc}")
-        failed += 1
+        failures.append(("console-help", str(exc)))
     for system in SYSTEMS:
         try:
             run_smoke_test(system, args.np, args.np0, args.platform)
             passed += 1
         except (AssertionError, subprocess.TimeoutExpired) as exc:
             print(f"  FAIL  {system['name']}: {exc}")
-            failed += 1
+            failures.append((system["name"], str(exc)))
 
-    print(f"\n{passed} passed, {failed} failed.")
-    sys.exit(1 if failed else 0)
+    sys.exit(report(passed, failures))

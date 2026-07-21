@@ -137,6 +137,18 @@ def frozen_profile_flow(us: Array) -> PlaneCouetteFlow:
 # ── Diagnostic statistics ────────────────────────────────────────────────
 
 
+def _perturbation_energy(
+    state: Array, fourier_: Fourier, flow_: PlaneCouetteFlow
+) -> Array:
+    r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`.
+
+    The single definition, shared by :func:`get_stats` (which reports
+    it as ``E'``) and the laminarization read
+    :func:`get_perturbation_energy`.
+    """
+    return get_norm2(state, fourier_.k_metric, flow_.y_weights) / 2
+
+
 @jit
 def _get_stats_jit(
     state: Array, fourier_: Fourier, flow_: PlaneCouetteFlow
@@ -158,9 +170,7 @@ def _get_stats_jit(
       velocity in the streamwise and spanwise directions.
     """
     Re = params.phys.re
-    perturbation_energy = (
-        get_norm2(state, fourier_.k_metric, flow_.y_weights) / 2
-    )
+    perturbation_energy = _perturbation_energy(state, fourier_, flow_)
 
     # ── Mean velocity profiles ─────────────────────────────
     mean_u = extract_mean_mode(state).real  # (3, Ny)
@@ -233,7 +243,7 @@ def _get_perturbation_energy_jit(
     state: Array, fourier_: Fourier, flow_: PlaneCouetteFlow
 ) -> Array:
     r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
-    return get_norm2(state, fourier_.k_metric, flow_.y_weights) / 2
+    return _perturbation_energy(state, fourier_, flow_)
 
 
 def get_perturbation_energy(state: Array) -> Array:

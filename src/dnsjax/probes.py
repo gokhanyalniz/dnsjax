@@ -35,6 +35,12 @@ schema: the mode list, integer wavenumbers, component labels, the
 wall-normal grid, cadence, and the full resolved parameter dump.  The
 JAX-free reader is :mod:`dnsjax.analysis.response.probes`.
 
+The record layout is fixed across schema versions, so a stale stream
+reads *cleanly* and only its values mean something else -- which makes
+:data:`FORMAT_VERSION` the only thing between an old file and a silent
+misread.  Bump it whenever the stored meaning changes (not just the
+layout), and raise the reader's ``MIN_FORMAT_VERSION`` with it.
+
 Resume semantics: an existing ``probes.bin``/``probes.json`` pair is
 appended to iff the sidecar matches the current run (same modes, grid,
 components, precision, system, and cadence) -- anything else is a hard
@@ -90,8 +96,15 @@ from .parameters import (
 from .sharding import sharding
 from .snapshot_meta import git_hash
 
-#: Sidecar schema version.
-FORMAT_VERSION: int = 1
+#: Sidecar schema version.  Version 2 records the switch of the
+#: cylindrical/annular columns from the solver's decoupled
+#: `$(u_z, u_+, u_-)$` basis (and the conformation spin components)
+#: to the physical `$(u_z, u_r, u_\theta)$` one: the *values* changed
+#: meaning at fixed layout, so a version-1 stream fed to a
+#: positional consumer (``response.lim`` / ``response.ssi``) would be
+#: silently misread.  The reader's floor is
+#: ``analysis.response.probes.MIN_FORMAT_VERSION``.
+FORMAT_VERSION: int = 2
 
 #: Sidecar keys that must match for an append (resume) to proceed.
 _MATCH_KEYS: tuple[str, ...] = (

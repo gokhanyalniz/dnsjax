@@ -92,7 +92,20 @@ from .ensemble import (
     snap_sample_lags,
     stability_report,
 )
-from .probes import ProbeData, _resolve_pair, read_probes
+from .probes import (
+    ProbeData,
+    _check_format_version,
+    _resolve_pair,
+    read_probes,
+)
+
+#: Oldest ``forcing.json`` schema this reader accepts (the writer's
+#: current version is ``dnsjax.forcing.FORMAT_VERSION``).  Version-1
+#: streams were injected in the solver's decoupled
+#: `$(u_z, u_+, u_-)$` basis, under the conjugate-partner rule that
+#: basis needed, so replaying their coefficients against today's
+#: physical profile bundle would be silently wrong.
+MIN_FORMAT_VERSION: int = 2
 
 __all__ = [
     "ForcingData",
@@ -144,6 +157,7 @@ def read_forcing(path: str | Path = ".") -> ForcingData:
         raise FileNotFoundError(f"forcing sidecar {json_path} not found")
     with open(json_path) as f:
         meta = json.load(f)
+    _check_format_version(json_path, meta, MIN_FORMAT_VERSION)
 
     modes = np.asarray(meta["modes"], dtype=int)
     m = int(meta["n_channels"])
