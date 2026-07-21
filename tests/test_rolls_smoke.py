@@ -46,7 +46,7 @@ import subprocess
 import sys
 import tempfile
 
-from _live import run_live
+from _live import report, run_live
 from test_random_smoke import _check_run
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -311,14 +311,13 @@ if __name__ == "__main__":
     )
 
     passed = 0
-    failed = 0
+    failures: list[tuple[str, str]] = []
     for system in systems:
         try:
             run_smoke_test(system, args)
             passed += 1
         except (AssertionError, subprocess.TimeoutExpired) as exc:
             print(f"  FAIL  {system['name']}: {exc}")
-            failed += 1
+            failures.append((system["name"], str(exc)))
 
-    print(f"\n{passed} passed, {failed} failed.")
-    sys.exit(1 if failed else 0)
+    sys.exit(report(passed, failures))

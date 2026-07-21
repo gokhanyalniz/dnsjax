@@ -1204,6 +1204,10 @@ def _imm_iteration(
     dy_v_n, dy_Nv_j, dy_Nv_n = dy_stack[:, 0], dy_stack[:, 1], dy_stack[:, 2]
 
     # d_hat^n (discrete divergence at time n; ~0 after first step).
+    # ``dnsjax.analysis`` mirrors this operator; changing it here
+    # means changing ``snapshot_ops.divergence`` and the
+    # transcription in ``tests/test_snapshot_export.py``
+    # (``_solver_divergence``), which pins the two together.
     d_hat_n = ikx * u_n + dy_v_n + ikz * w_n
 
     # Stage 1: interior pressure Poisson RHS.

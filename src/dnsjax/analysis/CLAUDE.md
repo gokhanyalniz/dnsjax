@@ -49,11 +49,13 @@ axis/component tables and the 9-component viscoelastic schema: the
 **Operators match the solver's discrete operators.** `divergence`/`curl`
 reproduce dnsjax's **discrete** operators node-for-node (not just the
 continuous formulae), incl. the parity-reduced pipe radial `D1` — so
-`test_snapshot_export.py` checks `curl` against the solver's `_curl_fn`
-at machine precision. **Re-run it when changing a primitive.** Per-
-function behaviour (the pipe `cylindrical_parity` argument, needing the
-full wall-normal grid, physical-field `integrate` with the radial
-Jacobian): the `snapshot_ops.py` docstrings.
+`test_snapshot_export.py` pins both against the solver: `curl` against
+`_curl_fn`, `divergence` against the `_imm_iteration` assembly (on a
+deliberately non-solenoidal probe — on a divergence-free field both
+sides return zero whatever they are). **Re-run it when changing a
+primitive.** Per-function behaviour (the pipe `cylindrical_parity`
+argument, needing the full wall-normal grid, physical-field `integrate`
+with the radial Jacobian): the `snapshot_ops.py` docstrings.
 
 **System → family mapping.** `_core.py` builds its `*_SYSTEMS`
 frozensets from the JAX-free `dnsjax.flows.registry` (the same source

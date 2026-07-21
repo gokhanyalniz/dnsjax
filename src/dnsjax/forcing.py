@@ -73,6 +73,13 @@ parameter dump.  No non-finite scan is needed: the coefficients are
 finite by construction and the state itself is guarded by the
 regular diagnostics.
 
+The record layout is fixed across schema versions, so a stale stream
+reads *cleanly* and only its values mean something else -- which makes
+:data:`FORMAT_VERSION` the only thing between an old file and a silent
+misread.  Bump it whenever the stored meaning changes (the injection
+basis, the partner rule), and raise the reader's
+``MIN_FORMAT_VERSION`` with it.
+
 Sharded scatter
 ===============
 :func:`build_mode_injector` is the scatter dual of
@@ -111,8 +118,16 @@ from .probes import _component_labels
 from .sharding import sharding
 from .snapshot_meta import git_hash
 
-#: Sidecar schema version.
-FORMAT_VERSION: int = 1
+#: Sidecar schema version.  Version 2 records the switch of the
+#: injected profiles to the physical `$(u_z, u_r, u_\theta)$` basis
+#: and, with it, of the real-FFT conjugate-partner rule (the
+#: `$u_+ \leftrightarrow u_-$` swap the decoupled basis needed is
+#: gone -- see the module docstring).  Both change what a given
+#: coefficient log *means* at fixed layout, so a version-1 stream
+#: replayed against today's profile bundle would be silently
+#: misread.  The reader's floor is
+#: ``analysis.response.ssi.MIN_FORMAT_VERSION``.
+FORMAT_VERSION: int = 2
 
 #: Sidecar keys that must match for an append (resume) to proceed.
 _MATCH_KEYS: tuple[str, ...] = (

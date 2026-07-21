@@ -6,12 +6,12 @@ transforms, the snapshot-native layout / component basis, the
 coordinate tuples, component and wall-normal subsetting, and
 object-like params/stats access) plus the field operators: the
 public ``derivative``/``gradient`` wrappers (axis wiring, ``ik``
-scaling, plain ``D1``, the pipe parity requirement), ``curl`` against
-the solver's ``_curl_fn`` node-for-node, the **viscoelastic**
-conformation read-back (components 3..8) against the solver's stored
-physical tensor slice, and ``integrate`` -- all **without
-importing JAX in the test process**, so the import-time JAX-free
-guarantee is asserted directly.
+scaling, plain ``D1``, the pipe parity requirement), ``curl`` and
+``divergence`` against the solver's own operators node-for-node, the
+**viscoelastic** conformation read-back (components 3..8) against the
+solver's stored physical tensor slice, and ``integrate`` -- all
+**without importing JAX in the test process**, so the import-time
+JAX-free guarantee is asserted directly.
 
 Fixtures are generated in JAX subprocesses (forced CPU devices, one per
 flow system, no MPI), mirroring ``tests/test_localized_rolls.py``: each
@@ -19,6 +19,15 @@ writes ``state.tar`` (a random divergence-free IC) and, for the
 wall-bounded families, ``omega.tar`` -- dnsjax's own ``_curl_fn`` of
 that state, saved raw in the ``(.,r,θ)`` / ``(x,y,z)`` basis -- so the
 analysis ``curl`` can be checked against the solver node-for-node.
+
+``div_true.npy`` does the same for ``divergence``, with one wrinkle:
+operator *equality* is invisible on a solenoidal field, so the ground
+truth is taken on ``DIV_PROBE`` -- the IC rescaled per component,
+which carries O(1) divergence -- and computed in the solver's
+decoupled ``u_pm`` basis (``_solver_divergence``, transcribed from
+``_imm_iteration``).  A physical-component reference would only
+restate the analysis formula; going through the solver basis pins the
+discretisation the pressure solve actually inverts.
 
 Run directly::
 
@@ -55,11 +64,58 @@ SYSTEMS = [
 
 CURL_TOL = 1e-10  # vs dnsjax _curl_fn (expect machine precision)
 DIV_TOL = 1e-8  # divergence of the divergence-free modes (k != 0)
+DIV_PARITY_TOL = 1e-12  # vs the solver's own divergence, on DIV_PROBE
+#: Per-component scaling that turns the solenoidal IC into a field
+#: with O(1) divergence.  Operator *equality* is only observable on a
+#: field that is not divergence-free -- on the IC both operators
+#: return zero whatever they are, which is why ``DIV_TOL`` above
+#: cannot catch a mismatch.
+DIV_PROBE = (1.0, 2.0, 3.0)
 RT_TOL = 1e-10  # transform round-trip (all families)
 VOL_TOL = 1e-10  # integrate(ones) vs analytic volume
 
 
 # ── fixture generation (JAX subprocess; forced CPU) ──────────────
+
+
+def _solver_divergence(state, system: str, flow, fourier):
+    r"""dnsjax's own discrete divergence of a **solver-basis** *state*.
+
+    Transcribed from stage 1 of each family's ``_imm_iteration`` (the
+    only place the solver forms `$\nabla\cdot\mathbf{u}$`), so the
+    check downstream compares the analysis operator against the
+    discretisation the pressure solve actually inverts -- including
+    the pipe's parity-reduced radial ``D1`` and the decoupled
+    `$(u_z, u_\pm)$` assembly, which no physical-component reference
+    could pin without restating the analysis formula itself.
+    """
+    import jax.numpy as jnp
+
+    from dnsjax.geometries.wall_bounded._base import apply_y_matrix
+
+    if system in ("plane-couette", "plane-poiseuille"):
+        u_n, v_n, w_n = state[0], state[1], state[2]
+        dy_v_n = apply_y_matrix(flow.D1, v_n)
+        return 1j * fourier.kx * u_n + dy_v_n + 1j * fourier.kz * w_n
+
+    uz_n, up_n, um_n = state[0], state[1], state[2]
+    m = fourier.m
+    stacked = jnp.stack([up_n, um_n], axis=1)
+    if system == "pipe":
+        # (-1)^{m+1} parity of u_pm: D1_pos +/- the folded ghost rows.
+        parity_sign_v = -(fourier.m_is_even * 2 - 1)
+        g = flow.D1_ghost.shape[0]
+        dy = apply_y_matrix(flow.D1_pos, stacked, component_axis=1)
+        dy_ghost = apply_y_matrix(flow.D1_ghost, stacked, component_axis=1)
+        dy_all = dy.at[:g].add(parity_sign_v * dy_ghost)
+    else:  # annular: no axis, plain D1
+        dy_all = apply_y_matrix(flow.D1, stacked, component_axis=1)
+    inv_r = flow.inv_r[:, None, None]
+    return (
+        (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
+        + (dy_all[:, 1] + (1 - m) * inv_r * um_n) / 2
+        + 1j * fourier.kz * uz_n
+    )
 
 
 def _generate(system: str, outdir: str) -> None:
@@ -117,25 +173,47 @@ def _generate(system: str, outdir: str) -> None:
     from dnsjax.snapshot import save_snapshot
 
     state = generate_random_state(0.2, 0.4, 1)
+    # The divergence ground truth is taken on a deliberately
+    # non-solenoidal probe (see DIV_PROBE); the checker rebuilds the
+    # same scaling from the stored state.
+    import jax.numpy as jnp
+
+    div_true = None
+    probe = state[:3] * jnp.asarray(DIV_PROBE)[:, None, None, None]
 
     if system in ("plane-couette", "plane-poiseuille"):
         from dnsjax.flows.wall_bounded.plane_couette import flow, get_stats
         from dnsjax.geometries.wall_bounded.cartesian import _curl_fn, fourier
 
         omega = _curl_fn(state, fourier, flow)
+        div_true = _solver_divergence(probe, system, flow, fourier)
     elif system == "pipe":
-        from dnsjax.flows.wall_bounded.pipe import flow, get_stats
+        from dnsjax.flows.wall_bounded.pipe import (
+            flow,
+            get_stats,
+            to_solver_basis,
+        )
         from dnsjax.geometries.wall_bounded.cylindrical import (
             _curl_fn,
             fourier,
         )
 
         omega = _curl_fn(state, fourier, flow)
+        div_true = _solver_divergence(
+            to_solver_basis(probe), system, flow, fourier
+        )
     elif system == "taylor-couette":
-        from dnsjax.flows.wall_bounded.taylor_couette import flow, get_stats
+        from dnsjax.flows.wall_bounded.taylor_couette import (
+            flow,
+            get_stats,
+            to_solver_basis,
+        )
         from dnsjax.geometries.wall_bounded.annular import _curl_fn, fourier
 
         omega = _curl_fn(state, fourier, flow)
+        div_true = _solver_divergence(
+            to_solver_basis(probe), system, flow, fourier
+        )
     elif system == "viscoelastic-dean":
         # 9-component state; the velocity curl path is the annular one
         # (pinned by the taylor-couette case).  The ground truth here
@@ -160,6 +238,8 @@ def _generate(system: str, outdir: str) -> None:
     )
     if omega is not None:
         save_snapshot(omega, 0.0, 0, os.path.join(outdir, "omega.tar"))
+    if div_true is not None:
+        np.save(os.path.join(outdir, "div_true.npy"), np.asarray(div_true))
 
 
 def _gen_subprocess(system: str, outdir: str) -> None:
@@ -297,6 +377,25 @@ def _check_system(system: str, family: str, outdir: str) -> None:
     div_nz = div[:, :, 1:] if info.walled else div
     rel_div = np.linalg.norm(div_nz.ravel()) / scale
     assert rel_div < DIV_TOL, f"{system}: div {rel_div:.2e}"
+
+    # divergence vs the solver's own operator, node-for-node.  The
+    # check above cannot see an operator mismatch (both sides return
+    # zero on a solenoidal field), so this one runs on DIV_PROBE --
+    # the per-component rescaling of the same state, which carries
+    # O(1) divergence.  The ground truth came from the solver's
+    # decoupled basis, so this also pins the physical <-> u_pm
+    # equivalence the stored basis relies on.
+    div_path = d / "div_true.npy"
+    if div_path.exists():
+        probe = [
+            np.asarray(c) * s
+            for c, s in zip(st.spectral, DIV_PROBE, strict=True)
+        ]
+        mine = np.asarray(divergence(probe, st.params, st.spectral_coords))
+        derr = _relerr(mine, np.load(div_path))
+        assert derr < DIV_PARITY_TOL, (
+            f"{system}: divergence vs dnsjax {derr:.2e}"
+        )
 
     # integrate(ones) == analytic volume (quadrature is exact here)
     ones = np.ones_like(np.asarray(st.physical[0]).real)

@@ -9,6 +9,10 @@ the first assertion), covering:
   upcast from ``<f4`` values, path forms: directory / ``.bin`` /
   ``.json``), the truncated-trailing-record drop, and the
   non-monotonic-timestamp warning path;
+- the ``MIN_FORMAT_VERSION`` reject: the record layout is version-
+  independent, so an old sidecar reads cleanly and only its
+  component basis is wrong -- the version check is the whole
+  defence against that silent misread;
 - ``mean_profile``: laminar-profile addition, tilt projection, and
   the ``t_min`` transient cut;
 - ``re_tau`` against a closed-form total profile (Fornberg stencils
@@ -62,7 +66,7 @@ def _write_stream(
     fixed complex profile on mode (1,0).
     """
     sidecar = {
-        "format_version": 1,
+        "format_version": rp.MIN_FORMAT_VERSION,
         "modes": MODES,
         "wavenumbers": [[0, 0], [1, 0]],
         "n_components": 3,
@@ -146,6 +150,27 @@ def test_read_probes_drops_resume_seams() -> None:
         assert_allclose(
             data.u[:, 0, 0, 0].real, np.array([1.0, 3.0, 5.0]) * DELTA_U[0]
         )
+
+
+def test_read_probes_rejects_old_format() -> None:
+    """A pre-``MIN_FORMAT_VERSION`` sidecar is rejected, not misread.
+
+    The record layout never changed, so an old stream reads without
+    error and only its component basis is wrong -- the version check
+    is the only thing standing between it and a silent misread.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_stream(tmp, np.array([0.0, 0.01]))
+        path = Path(tmp) / "probes.json"
+        meta = json.loads(path.read_text())
+        meta["format_version"] = rp.MIN_FORMAT_VERSION - 1
+        path.write_text(json.dumps(meta))
+        try:
+            rp.read_probes(tmp)
+        except ValueError as exc:
+            assert "format_version" in str(exc), exc
+        else:
+            raise AssertionError("an old probes.json was accepted")
 
 
 def test_mean_profile_and_t_min() -> None:

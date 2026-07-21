@@ -409,6 +409,12 @@ JAX-free reader `dnsjax.analysis.response.probes`), and the
 stochastic-kick coefficient log (`[force]`) → `forcing.bin` +
 `forcing.json` (`forcing.py`; reader `dnsjax.analysis.response.ssi`).
 
+The two binary streams carry a sidecar `format_version` (writer:
+`probes.py`/`forcing.py`; reader floor: each reader's
+`MIN_FORMAT_VERSION`), enforced like the snapshot one — their record
+layout never changes, so only a version bump separates an old stream
+from a silent misread. Bump both when the stored *meaning* changes.
+
 All are also flushed at shutdown, after the first step, before snapshot
 writes, and on SIGTERM/SIGINT, so they stay consistent with snapshots.
 Every flushed row and host-synced scalar is guarded against NaN/inf: a
@@ -543,7 +549,11 @@ one-liners. Cross-cutting notes:
   `mpi`/`slow` markers; the only pytest-collected file — see Run tests).
 - `tests/_live.py`: shared tee-ing subprocess runner (`run_live`: live
   stream + captured `CompletedProcess`, `PYTHONUNBUFFERED=1` children)
-  behind every long-running test launch site.
+  behind every long-running test launch site, plus `report` — the
+  closing summary that **re-prints each failure after the counts**, so
+  a run's outcome is readable from a `tail` alone. Use it in any
+  script whose children stream output; a bare `"N passed, M failed."`
+  is not actionable.
 - `tests/response/_common.py`: shared fixtures of the response
   identification tests (checked runner, real TG operator/basis
   bundle, synthetic probe streams).
@@ -604,8 +614,8 @@ one-liners. Cross-cutting notes:
 - `tests/test_snapshot_import.py`: `scripts/snapshot_import.py`
   native-contract validation (offline).
 - `tests/test_snapshot_export.py`: `dnsjax.analysis` API vs solver
-  ground truth (JAX-free import guarantee, curl + viscoelastic-
-  conformation parity, derivative/gradient wiring).
+  ground truth (JAX-free import guarantee, curl + divergence +
+  viscoelastic-conformation parity, derivative/gradient wiring).
 - `tests/test_rolls_smoke.py`: localized-rolls IC integration for the
   4 wall-bounded rolls-builder variants (short horizon).
 - `tests/test_localized_rolls.py`: IC construction self-test (rolls +

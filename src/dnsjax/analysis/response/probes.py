@@ -35,6 +35,13 @@ import numpy as np
 
 from ...fd import build_diff_matrices
 
+#: Oldest ``probes.json`` schema this reader accepts (the writer's
+#: current version is ``dnsjax.probes.FORMAT_VERSION``).  Version-1
+#: streams carry the cylindrical/annular columns in the solver's
+#: decoupled `$(u_z, u_+, u_-)$` basis at the same layout, so every
+#: positional consumer downstream would misread them silently.
+MIN_FORMAT_VERSION: int = 2
+
 #: Laminar streamwise total profiles `$U_s(y)$` of the Cartesian
 #: base-flow systems (`$y \in [-1, 1]$`; the tilted frame's
 #: streamwise ``s`` projection of the base flow is `$U_s$` itself).
@@ -92,6 +99,28 @@ def _resolve_pair(path: str | Path, stem: str = "probes") -> tuple[Path, Path]:
     return path, path.with_suffix(".json")
 
 
+def _check_format_version(json_path: Path, meta: dict, minimum: int) -> None:
+    """Reject a sidecar older than *minimum*.
+
+    The stream analogue of
+    :func:`dnsjax.snapshot_meta.read_snapshot_meta`'s version choke
+    point: the binary layout is unchanged across these versions, so
+    an old stream reads without error and only its *values* are
+    wrong.  Shared with the forcing-stream reader
+    (:mod:`dnsjax.analysis.response.ssi`).
+    """
+    version = meta.get("format_version", 0)
+    if version < minimum:
+        raise ValueError(
+            f"{json_path} has format_version {version}; this reader "
+            f"takes version {minimum}+ only.  The record layout is "
+            "unchanged, but the component basis (and, for forcing, "
+            "the conjugate-partner rule) changed representation, so "
+            "an older stream would be misread silently rather than "
+            "fail -- see the writer's FORMAT_VERSION comment."
+        )
+
+
 def read_probes(path: str | Path = ".") -> ProbeData:
     """Load a probe stream (a run directory or the ``probes.bin``).
 
@@ -110,6 +139,7 @@ def read_probes(path: str | Path = ".") -> ProbeData:
         raise FileNotFoundError(f"probe sidecar {json_path} not found")
     with open(json_path) as f:
         meta = json.load(f)
+    _check_format_version(json_path, meta, MIN_FORMAT_VERSION)
 
     modes = np.asarray(meta["modes"], dtype=int)
     n_components = int(meta["n_components"])

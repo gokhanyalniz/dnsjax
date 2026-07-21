@@ -1370,6 +1370,11 @@ def _imm_iteration(
     all_v = jnp.stack([up_n, um_n, uz_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1)
     dy_all = apply_y_matrix(flow_.D1, all_v, component_axis=1)
 
+    # ``dnsjax.analysis`` mirrors this operator in physical
+    # components; changing it here means changing
+    # ``snapshot_ops.divergence`` and the transcription in
+    # ``tests/test_snapshot_export.py`` (``_solver_divergence``),
+    # which pins the two together.
     div_n = (
         (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
         + (dy_all[:, 1] + (1 - m) * inv_r * um_n) / 2

@@ -33,12 +33,12 @@ real field), so the checks pin the *native* contract:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 import numpy as np
+from _live import report, run_live
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -346,22 +346,42 @@ def main() -> None:
         "GPU path).",
         flush=True,
     )
-    failures = 0
+    # ``report`` repeats each failure after the counts (see _live),
+    # quoting the worker's own first ``FAIL:`` line -- the parent
+    # otherwise only knows the exit code.
+    results: list[tuple[str, str | None]] = []
     for system in SYSTEMS:
         print(f"=== {system} ===")
-        proc = subprocess.run(
+        proc = run_live(
             [
                 sys.executable,
                 str(Path(__file__).resolve()),
                 "--system",
                 system,
             ],
+            timeout=600,
         )
-        failures += proc.returncode != 0
-    if failures:
-        print(f"\n{failures} system(s) FAILED.")
-        sys.exit(1)
-    print("\nAll systems passed.")
+        if proc.returncode == 0:
+            results.append((system, None))
+            continue
+        inner = next(
+            (
+                ln.strip()
+                for ln in proc.stdout.splitlines()
+                if ln.strip().startswith("FAIL:")
+            ),
+            "",
+        )
+        results.append(
+            (
+                system,
+                f"worker exit {proc.returncode}"
+                + (f" ({inner})" if inner else ""),
+            )
+        )
+
+    failures = [(n, r) for n, r in results if r is not None]
+    sys.exit(report(len(results) - len(failures), failures))
 
 
 if __name__ == "__main__":
