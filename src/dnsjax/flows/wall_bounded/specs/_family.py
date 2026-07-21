@@ -31,8 +31,14 @@ def wall_fields(
     ``grid_choices`` the family's valid ``geo.grid_type`` values (the
     first entry is only the *scheme-independent* default -- the
     resolved default comes from ``FlowSpec.grid_type_default``).
+
+    ``res.consistent_imm`` is omitted for the cylindrical family here
+    (its axis operators need the ``x = r^2`` construction, not the
+    Cartesian/annular ``D2 := D1 D1``); the pipe adds the field back on
+    its own spec (``specs/pipe.py``).
     """
-    if grid_choices == CYLINDRICAL_GRIDS:
+    cylindrical = grid_choices == CYLINDRICAL_GRIDS
+    if cylindrical:
         grid_desc = (
             "Radial grid: 'half-cgl' (iterative-cn default), "
             "'rigged-cgl' (cnab2 default; twice the innermost radius), "
@@ -47,6 +53,7 @@ def wall_fields(
     return (
         FieldSpec("phys", "u_grid", default=u_grid_default),
         FieldSpec("res", "fd_order"),
+        *(() if cylindrical else (FieldSpec("res", "consistent_imm"),)),
         FieldSpec("geo", "wall_grid"),
         FieldSpec(
             "geo",
@@ -139,7 +146,6 @@ DEFERRED_TILT = DeferredSpec(
     "geo.tilt_degree (tilted driving) is not implemented yet for the "
     "cylindrical/annular geometries.",
 )
-
 
 # ── Shared derive math ───────────────────────────────────────────
 

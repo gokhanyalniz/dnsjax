@@ -62,12 +62,14 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
+from dnsjax.fd import matrix_half_bandwidth  # noqa: E402
 from dnsjax.flows.wall_bounded.taylor_couette import (  # noqa: E402
     flow as tc_flow,
 )
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.annular import (  # noqa: E402
     _abase_matvec,
+    _build_A_base,
     _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
     _build_Lk_band_gpu,
@@ -204,9 +206,13 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
     the banded operator equals ``banded(dense)`` exactly, and the
     no-pivot banded sweep (CPU pure-JAX path) reproduces the dense
     solve on a complex RHS.
+
+    Run for both `$A_{base}$` variants: the direct-fit `$D_2$` at the
+    ``fd_order`` band, and the ``res.consistent_imm`` `$D_2 = D_1 D_1$`
+    at its wider *measured* band -- assembly, no-pivot factorisation
+    and the Pallas sweep all have to hold at both widths.
     """
     Nr = params.res.ny
-    p = params.res.fd_order
 
     m_s = fourier.m[0, ..., None]
     kz2_s = fourier.kz2[0, ..., None]
@@ -220,8 +226,13 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
     nu = 1.0 / params.phys.re
 
     D1 = tc_flow.D1
-    A_base = tc_flow.A_base
     inv_r2 = tc_flow.inv_r2
+    inv_r = tc_flow.inv_r
+    # (A_base, band half-width) for the ungated and gated operators.
+    variants = [
+        (A, matrix_half_bandwidth(np.asarray(A), (0, -1)))
+        for A in (tc_flow.A_base, _build_A_base(D1, D1 @ D1, inv_r))
+    ]
 
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
@@ -231,9 +242,8 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
     )
     rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
 
-    to_band = jax.vmap(jax.vmap(lambda A: _banded_from_dense(A, p)))
-
-    def _check(label: str, band: jax.Array, full: jax.Array) -> None:
+    def _check(label: str, p: int, band: jax.Array, full: jax.Array) -> None:
+        to_band = jax.vmap(jax.vmap(lambda A: _banded_from_dense(A, p)))
         assert_allclose(
             np.asarray(band),
             np.asarray(to_band(full)),
@@ -252,21 +262,24 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
             err_msg=label,
         )
 
-    _check(
-        "Lk",
-        _build_Lk_band_gpu(D1, A_base, m_sq, inv_r2, kz2_s, mean_s, p),
-        _build_Lk_dense_gpu(D1, A_base, m_sq, inv_r2, kz2_s, mean_s),
-    )
-    for label, meff2 in [
-        ("Hk_plus", m_plus_1_sq),
-        ("Hk_minus", m_minus_1_sq),
-        ("Hk_z", m_sq),
-    ]:
+    for A_base, p in variants:
         _check(
-            label,
-            _build_Hk_band_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu, p),
-            _build_Hk_dense_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu),
+            f"Lk (p={p})",
+            p,
+            _build_Lk_band_gpu(D1, A_base, m_sq, inv_r2, kz2_s, mean_s, p),
+            _build_Lk_dense_gpu(D1, A_base, m_sq, inv_r2, kz2_s, mean_s),
         )
+        for label, meff2 in [
+            ("Hk_plus", m_plus_1_sq),
+            ("Hk_minus", m_minus_1_sq),
+            ("Hk_z", m_sq),
+        ]:
+            _check(
+                f"{label} (p={p})",
+                p,
+                _build_Hk_band_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu, p),
+                _build_Hk_dense_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu),
+            )
 
 
 # Group C: Norms

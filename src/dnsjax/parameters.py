@@ -517,6 +517,106 @@ class Resolution(BaseModel):
             "half-width, not an accuracy order)."
         ),
     )
+    # Wall-bounded only (all three families).  Off by default: it trades
+    # a materially worse `$D_2$` for an exact discrete projection, and
+    # only the user knows which they want.  On the **pipe** it is an
+    # opt-in with a sharp edge -- see the pipe paragraph below.
+    #
+    # *What it enforces.*  The influence-matrix method's continuity
+    # argument (Kleiser-Schumann; Canuto, Hussaini, Quarteroni & Zang
+    # 1988, sec. 7.3) is derived for *continuous* differentiation
+    # operators.  Two discrete identities have to hold for the stepped
+    # state's divergence to vanish: `$\nabla\cdot\nabla = L_k$` (i.e.
+    # `$D_1 D_1 = D_2$`) and `$[D_1, D_2] = 0$`.  Independent Fornberg
+    # fits satisfy neither, and -- separately -- replacing the momentum
+    # wall rows by Dirichlet rows leaves an unaccounted residual that
+    # the divergence's own `$D_1$` spreads into the interior.  This
+    # flag fixes both at once: `$D_2 := D_1 D_1$` *and* the boundary
+    # (tau) closure of CHQZ (7.3.51)-(7.3.58), realised as extra
+    # homogeneous columns and an enlarged influence matrix (4x4 with two
+    # walls; the pipe's single wall gives 2x2).  The two halves are
+    # inseparable -- the closure alone, on the direct-fit `$D_2$`,
+    # measures 1.6-3x *worse* than doing nothing -- hence one flag.
+    #
+    # *Efficacy* (measured, ``fd_order = 8``, one step from a random
+    # IC; ``ny = 25`` / ``ny = 97``).  Cartesian: the stepped-state
+    # relative divergence drops ``2.1e-1 -> 1.1e-13`` and
+    # ``9.9e-1 -> 1.2e-13``.  Annular: ``1.6e-1 -> 7.5e-5`` and
+    # ``9.6e-1 -> 1.1e-4``.  Note the *ungated* residual worsens
+    # sharply with resolution (the boundary term carries
+    # `$D_1[1,0] \sim N_y^2$`) while the gated one is flat, so the
+    # flag matters more the better-resolved the run.  The annular gain
+    # is bounded, degrading as `$\eta \to 0$` because the discrete
+    # commutator `$[D_1, 1/r] \ne -1/r^2$` is irreducible (a milder form
+    # of the pipe's near-axis problem; the pipe paragraph below).  The
+    # wall-bounded *temporal* error improves with it: plane-Couette
+    # iterative-CN
+    # self-convergence goes from ``5.7e-2`` at order ~0.5 to
+    # ``1.2e-4`` at order ~1.1 (the divergence residual **was** the
+    # dominant projection-splitting error) -- pinned by
+    # ``tests/test_temporal_order.py``.
+    #
+    # *Pipe (`$x = r^2$` axis operators + a sharp edge).*  The pipe has
+    # no `$D_2$` to swap: its axis regularity lives in the parity-reduced
+    # `$D_1$`, and the near-axis commutator
+    # `$D_1(1/r) - (1/r)D_1 \ne -1/r^2$` is what breaks continuity there
+    # (it dominates the innermost node).  A single Fornberg fit on
+    # `$x = r^2$` (an axis-regular field is analytic in `$x$`) gives a
+    # `$D_{1,\mathrm{even}}/D_{1,\mathrm{odd}}$` pair whose discrete
+    # commutator vanishes for **one** parity to round-off, and
+    # `$D_2 := D_1 D_1$` follows by composition; the 1-wall closure is
+    # then `$2\times2$`.  The structural invariant
+    # `$\mathrm{diag}(\Theta) + \mathrm{diag}(\Phi) = 2/r^2$` forbids
+    # *both* parities' commutators vanishing at once, so a stepped state
+    # keeps the other parity's residual and the pipe **cannot** reach
+    # the Cartesian machine-zero -- but the gain is large: on a resolved
+    # (rolls) IC the stepped-state relative divergence drops
+    # ``2.8e-2 -> 5.6e-5`` at ``ny = 25`` (~500x), less at higher
+    # resolution as both converge (``tests/test_imm_continuity.py``).
+    # **The sharp edge:** the composed `$D_2 = D_1 D_1$` is deliberately
+    # less dissipative at the grid scale, so a grid-white (radially
+    # under-resolved) IC -- e.g. ``init.random_field`` -- makes the
+    # stiff near-axis corrector *diverge* where the direct-fit `$D_2$`
+    # damps it (measured: E' blows up, ``c/it`` climbs, gate-off is
+    # clean at the same ``dt``).  Use the flag only with *resolved*
+    # initial data (a snapshot, or ``init.localized_rolls``) -- which is
+    # its only meaningful regime anyway, since the residual is a
+    # convergent truncation error, physically inert for resolved fields.
+    # The band widens to 12 (vs 8) at ``fd_order = 8``.
+    #
+    # *Price.*  `$D_1 D_1$` is the same formal order as the direct-fit
+    # `$D_2$` (measured 7.6 vs 7.5 at ``fd_order = 8``) with a 6-13x
+    # larger error constant, growing with ``fd_order``; recovering the
+    # ungated wall-normal accuracy costs roughly 40% more ``ny``.  It
+    # also widens the banded operators (17 -> 23 columns at
+    # ``fd_order = 8``): ~1.35x operator storage, ~1.4x solve, ~1.9x
+    # factorisation.  `$D_2$` enters only the implicit operators
+    # (`$L_k$`, `$H_k$` and their matvecs), so the accuracy cost lands
+    # on the viscous/pressure discretisation and on transient growth --
+    # never on the diagnostics, which are `$D_1$`-only.  The
+    # viscoelastic conformation operator `$H_c$` deliberately keeps
+    # the direct-fit `$D_2$` and its narrow band (the tensor is not
+    # solenoidal and never enters the projection).
+    #
+    # *Measured step cost* (CPU, plane-Couette 32x64x32,
+    # ``fd_order = 8``): **+2.3%** per RHS evaluation, but ~11%
+    # *faster* per unit simulated time -- the corrector contracts in
+    # fewer iterations (``c/it`` 1.37 -> 0.93; 0.50 -> 0.22 in the
+    # random-smoke config).  Consistent with Kleiser's report, via
+    # CHQZ p. 220, of *lower* time-step stability limits when the
+    # correction is omitted.  One config on one backend: treat the
+    # speedup as a bonus, not a guarantee.
+    consistent_imm: bool = Field(
+        default=False,
+        description=(
+            "Make the influence-matrix projection discretely "
+            "consistent (D2 := D1*D1 plus the Kleiser-Schumann "
+            "boundary closure), so a stepped state's discrete "
+            "divergence is round-off (Cartesian) or 2-4 orders "
+            "smaller (annular).  Costs a 6-13x larger D2 error "
+            "constant and ~1.35x operator storage."
+        ),
+    )
     double_precision: bool = Field(
         default=True,
         description=(
@@ -1706,8 +1806,26 @@ def validate_parameters() -> None:
                 )
             )
 
+    # Deferred fields must reject a *direct* assignment too.  The
+    # CLI/TOML surfaces reject them at parse time
+    # (``param_surface.internalize``), but scripts and tests set
+    # ``params`` directly; a field left at its inert model default
+    # passes, exactly as in the surface path.
+    for (section, name), deferred in spec.deferred_map.items():
+        model = getattr(params, section, None)
+        if model is None or name not in type(model).model_fields:
+            continue
+        default = (
+            type(model)
+            .model_fields[name]
+            .get_default(call_default_factory=True)
+        )
+        if getattr(model, name) != default:
+            raise ValueError(deferred.message)
+
     # The moving frame is a deferred feature for flows without the
-    # field (triply-periodic).  Guards direct assignment.
+    # field (triply-periodic).  Guards direct assignment when the flow
+    # declares no ``DeferredSpec`` for it either.
     if params.phys.u_grid is not None and (
         ("phys", "u_grid") not in spec.field_map
     ):

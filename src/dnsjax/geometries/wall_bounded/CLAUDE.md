@@ -76,6 +76,22 @@ constant-bulk-velocity / block-mean-spanwise-velocity corrections.
   (`_lk_matvec`/`_hk_minus_matvec`) from shared `D1`/`D2`; IMM
   homogeneous data comes from
   `CartesianFlow._derive_imm_homogeneous_data`.
+- `res.consistent_imm` (default off, all three families) makes the
+  discrete continuity identity hold: `D2 := D1·D1` plus the
+  Kleiser-Schumann boundary closure, as extra homogeneous columns and
+  an enlarged influence matrix (4x4 with two walls;
+  `cartesian._derive_imm_closure` is the template, annular mirrors it
+  with `u_r`/`A_base`). The **pipe** instead builds `D1` itself from an
+  `x = r²` Fornberg fit (making the near-axis `1/r` commutator exact for
+  one parity — no `D2` to swap) and closes its single wall with a 2x2
+  matrix (`cylindrical._derive_imm_closure`); it cannot reach the
+  Cartesian machine-zero (a parity invariant) and, crucially, **needs
+  resolved ICs** — the composed `D2` destabilises a grid-white random
+  field near the stiff axis. Trade, per-geometry efficacy, and the pipe
+  sharp edge: the `Resolution.consistent_imm` docs (`parameters.py`).
+  Band width is **measured** from the assembled operator
+  (`fd.matrix_half_bandwidth`), never assumed to be `fd_order`. Guard:
+  `tests/test_imm_continuity.py`.
 
 ### Mean mode and padding modes
 
