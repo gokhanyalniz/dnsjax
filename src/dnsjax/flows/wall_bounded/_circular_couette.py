@@ -77,7 +77,9 @@ class CircularCouetteFlow(AnnularFlow):
         rs = self.rs  # (Nr,) on [r1, r2]
         u_theta = A0 * rs + B0 / rs
 
-        # Base flow: U = (0, 0, U_theta) in (u_z, u_r, u_theta).
+        # Base flow: U = (0, 0, U_theta) in (u_z, u_r, u_theta) --
+        # the azimuthal (streamwise) velocity is component 2 (the
+        # annular component-order exception; see annular.py).
         self.base_flow = (
             jnp.zeros(
                 (3, params.res.ny),

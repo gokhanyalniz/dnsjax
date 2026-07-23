@@ -341,6 +341,33 @@ GPUDirect Storage is unavailable) and the on-device diagnostic buffers
 are resolution-independent, so the optional I/O adds no
 resolution-scaled device memory.
 
+## Array layout by geometry
+
+The solver keeps one internal axis order for every flow — physical
+`[axis0, axis1, axis2]` and spectral `[axis0, axis1, axis2]` — and the
+physical meaning of each axis is set by the geometry (a row per
+geometry, not per flow). The leading axis is device-local; the two
+sharded axes are split by `np0` and `np1` (elaborated under
+[Parallelization](#parallelization)). Role abbreviations: **sw**
+streamwise, **wn** wall-normal, **sh** shearwise, **sp** spanwise.
+
+| Geometry | Velocity components `(0, 1, 2)` | Physical `[0, 1, 2]` | Spectral `[0, 1, 2]` | `np0` splits | `np1` splits |
+|---|---|---|---|---|---|
+| Triply-periodic (Kolmogorov) | $(u_x, u_y, u_z)$ = (sw, sh, sp) | $[y, z, x]$ | $[k_y, k_z, k_x]$ | $y$ / $k_z$ | $z$ / $k_x$ |
+| Cartesian (plane-Poiseuille/Couette) | $(u_x, u_y, u_z)$ = (sw, wn, sp) | $[y, z, x]$ | $[y, k_z, k_x]$ | $y$ / $k_z$ | $z$ / $k_x$ |
+| Cylindrical (pipe) | $(u_z, u_r, u_\theta)$ = (sw, wn, sp) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
+| Annular (Taylor–Couette, quasi-Keplerian, Dean, viscoelastic Dean) | $(u_z, u_r, u_\theta)$ = (**sp**, wn, **sw**) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
+
+Each `np0` / `np1` cell reads *physical axis* / *spectral axis*.
+Velocity components are stored in `(streamwise, wall-normal, spanwise)`
+order for every geometry **except the annulus**, which reuses the
+pipe's axial-first $(u_z, u_r, u_\theta)$ order so the solver's shared,
+right-handed curl / cross / finite-difference operators apply
+unchanged. Because the annular main flow is azimuthal, its streamwise
+velocity is component 2 ($u_\theta$) and its spanwise velocity is
+component 0 ($u_z$) — the sole departure from the component-order
+convention.
+
 ## Parallelization
 
 The device grid is $(n_{p0}, n_{p1})$, and the two axes distribute the data

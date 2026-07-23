@@ -57,6 +57,20 @@ crossing between the two at most once (``to_pm_basis`` /
 individually Hermitian-symmetric components, which `$u_\pm$` are not;
 see the ``cylindrical.py`` module docstring.
 
+Component-order convention (the annular exception)
+--------------------------------------------------
+The physical triad is ordered `$(u_z, u_r, u_\theta)$` (axial,
+radial, azimuthal), inherited unchanged from the pipe so the shared
+right-handed `$(\hat e_z, \hat e_r, \hat e_\theta)$` curl, cross
+product, and FD operators apply without a sign change.  Because the
+annular main flow is *azimuthal*, this does **not** match the
+``(streamwise, wall-normal, spanwise)`` component order that
+triply-periodic, Cartesian, and the pipe follow: the streamwise
+(azimuthal) velocity is component **2** and the spanwise (axial) one
+is component **0**.  Reordering to `$(u_\theta, u_r, u_z)$` was
+rejected -- that basis is left-handed, so it could not reuse the
+shared right-handed machinery.
+
 Influence-matrix method (`$2 \times 2$`)
 ----------------------------------------
 The annulus has two physical walls, at `$r = r_1$` and `$r = r_2$`.

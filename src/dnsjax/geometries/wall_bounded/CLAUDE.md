@@ -137,6 +137,15 @@ the streamwise (azimuthal) resolution is `nz` and spanwise (axial) is
 `nx` -- **swapped vs. the Cartesian `nx`=streamwise convention** (see the
 `Fourier` coordinate-mapping tables in `annular.py`/`cylindrical.py`).
 
+**Velocity component order (the annular exception).** The physical
+triad is `(u_z, u_r, u_θ)` -- the same axial-first order as the pipe
+(shared `_base.to_pm_basis`/`from_pm_basis`, kept so the right-handed
+curl/cross/FD operators apply unchanged). The annular main flow is
+azimuthal, so this does **not** follow the `(streamwise, wall-normal,
+spanwise)` component order the other three geometries obey: streamwise
+`u_θ` is component 2, spanwise `u_z` is component 0. Detail + why a
+reorder was rejected (left-handedness): the `annular.py` docstring.
+
 Same decoupled `u+`/`u-` formulation as cylindrical but **two walls**,
 **no `r=0` axis** (`r1 > 0`), no parity reduction, and a **2×2
 influence matrix**. Three driving modes share the infrastructure (see

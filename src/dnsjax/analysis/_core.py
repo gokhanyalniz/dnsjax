@@ -35,6 +35,12 @@ system shares the cylindrical/annular axes with **9 components**: the
 Returned components are stored components, one-to-one
 (:func:`geometry_info`).
 
+Component order is (streamwise, wall-normal, spanwise) for the
+cartesian, triply-periodic, and cylindrical (pipe) families, but
+**not** for the annulus: it reuses the pipe's axial-first
+``(u_z, u_r, u_θ)`` order, so its streamwise (azimuthal) velocity is
+component 2 and its spanwise (axial) is component 0.
+
 Transforms reinstate the omitted Nyquist mode as zero and use NumPy
 ``ifft`` / ``irfft`` with ``norm="forward"`` (the inverse of the
 solver's forward-normalised transform), differentiating in place along
