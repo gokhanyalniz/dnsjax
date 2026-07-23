@@ -24,6 +24,11 @@
   docstring.
 - Spectral layout: `(ny-1, nz_spec, nx_spec)` with `[ky, kz, kx]` --
   ky fully local, kz sharded by np0, kx sharded by np1.
+- Physical layout: `[y, z, x]` (`y` sharded by np0, `z` by np1, `x`
+  local); axes are (shear, spanwise, streamwise). Velocity components
+  `(u_x, u_y, u_z)` = (streamwise, shearwise, spanwise) -- the same
+  (streamwise, wall-normal/shear, spanwise) order as Cartesian (`y` is
+  the mean-shear direction here, `L_y = 4`).
 - The 3D FFT extends the wall-bounded 2D reshard pipeline with a y-FFT
   step after reshard #2 brings the full y-extent local on each device
   (full pipeline: the `fft.py` module docstring). `np0` requires
