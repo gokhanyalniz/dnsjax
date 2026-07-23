@@ -40,6 +40,22 @@ Spectral arrays have shape
 are local.  ``nz_spec`` and ``nx_spec`` may exceed the true mode
 counts (``nz - 1`` and ``nx // 2``) by up to ``np0 - 1`` or
 ``np1 - 1`` zero-valued padding modes; see :mod:`dnsjax.fft`.
+
+Per-geometry physical meaning of the internal ``[y, z, x]`` axes
+(the code keeps the internal names; the flow surface aliases
+translate them):
+
+- triply-periodic / Cartesian: ``y`` wall-normal (Cartesian) or
+  shear (periodic), ``z`` spanwise, ``x`` streamwise.
+- cylindrical / annular: ``y`` = radial ``r``, ``z`` = azimuthal
+  ``theta``, ``x`` = axial (public ``z``); so spectral ``kz`` is the
+  azimuthal ``m`` (np0) and ``kx`` the axial ``k_z`` (np1).
+
+Velocity components are stored ``(u_x, u_y, u_z)`` (periodic /
+Cartesian) and ``(u_z, u_r, u_theta)`` (cylindrical / annular).  This
+is (streamwise, wall-normal, spanwise) order for every geometry
+except the annulus, whose azimuthal (streamwise) velocity is
+component 2 -- the ``annular.py`` docstring covers why.
 """
 
 import dataclasses

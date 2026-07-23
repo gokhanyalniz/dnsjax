@@ -203,7 +203,7 @@ def _peak_velocity(
     Each *component* is the triple of physical 1-D factors
     ``(wall-normal profile, complex-axis signal, real-axis signal)`` of
     one **lab-frame** velocity component (`$u_x, u_y, u_z$` Cartesian;
-    `$u_r, u_\theta, u_z$` cyl/annular).  The component physical field is
+    `$u_z, u_r, u_\theta$` cyl/annular).  The component physical field is
     their outer product, so
     `$\max|\mathbf{u}'| = \sqrt{\max_{\mathbf{x}} \sum_c u_c^2}$` is a
     tiny host-numpy reduction over the ``(Ny, n_c, n_r)`` grid (no JAX,
