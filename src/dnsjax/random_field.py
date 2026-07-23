@@ -434,8 +434,10 @@ def generate_cylindrical(
     `$N_r^2$` under refinement.  The envelope also preserves the
     `$k_z = 0$` Hermitian pairing, since `$\hat u_+(-m) =
     \overline{\hat u_-(m)}$` and the two carry the same real factor.
-    For `$k_z = 0$` a small residual
-    divergence remains and is projected out by the corrector.  The
+    For `$k_z = 0$` the axial `$u_z$` drops out of continuity, so it
+    is closed through `$u_\theta$` instead (its `$im/r$` coefficient is
+    diagonal, so the solve is exact discretely); the `$m = 0$` mean has
+    `$u_r = 0$` by no-slip.  The
     `$k_z = 0$` plane is drawn per-component Hermitian
     (:func:`_hermitian_column`) so every physical component --
     including the axial-mean swirl -- is real.
@@ -458,6 +460,7 @@ def generate_cylindrical(
         params.geo.grid_type,
         params.geo.grid_stretch,
         params.res.consistent_imm,
+        params.res.pipe_axis_fit,
     )
     derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
 
@@ -510,8 +513,12 @@ def generate_cylindrical(
                 col[1] = (cp + cm) / 2
                 col[2] = (cp - cm) / 2j
                 col[0] *= rs_np ** abs(m_val)
-                # Continuity-derived u_z for k_z != 0: the cylindrical
-                # divergence D1 u_r + u_r/r + (im/r) u_theta.
+                # Close continuity per mode against the cylindrical
+                # divergence D1 u_r + u_r/r + (im/r) u_theta + i k_z u_z,
+                # keeping u_r's filtered/windowed/enveloped draw.  Both
+                # u_z (k_z != 0) and u_theta (k_z = 0, m != 0) enter with
+                # an r-diagonal coefficient, so solving for one of them is
+                # exact discretely ((1/r).r = I elementwise).
                 if kz_val != 0:
                     div_perp = (
                         D1_v @ col[1]
@@ -519,6 +526,19 @@ def generate_cylindrical(
                         + 1j * m_val * inv_r_np * col[2]
                     )
                     col[0] = -div_perp / (1j * kz_val)
+                elif m_val != 0:
+                    # k_z = 0: u_z drops out; close through u_theta.
+                    col[2] = (
+                        1j
+                        * rs_np
+                        * (D1_v @ col[1] + inv_r_np * col[1])
+                        / m_val
+                    )
+                else:
+                    # k_z = 0, m = 0 mean mode: (1/r) d(r u_r)/dr = 0 with
+                    # no-slip forces u_r = 0 (u_theta swirl / u_z axial
+                    # stay).
+                    col[1] = 0.0
                 # Energy = envelope^2 (no continuity 1/k low-k inflation).
                 col = _normalize_mode(
                     col,
@@ -553,8 +573,9 @@ def generate_annular(
     derivative vanish at both walls), so for `$k_z \neq 0$` the
     continuity-derived `$u_z$` inherits a truncation-level wall value
     (projected by the first corrector step); the independent components
-    keep exact wall zeros.  For `$k_z = 0$` a small residual divergence
-    remains and is projected out by the corrector.  The `$k_z = 0$`
+    keep exact wall zeros.  For `$k_z = 0$` the axial `$u_z$` drops out
+    of continuity, so it is closed through `$u_\theta$` instead (exact
+    discretely); the `$m = 0$` mean has `$u_r = 0$`.  The `$k_z = 0$`
     plane is drawn per-component Hermitian (:func:`_hermitian_column`)
     so every physical component -- including the axial-mean swirl --
     is real.
@@ -615,8 +636,12 @@ def generate_annular(
                 col[0] *= window_lin
                 col[1] *= window_wn
                 col[2] *= window_wn
-                # Continuity-derived u_z for k_z != 0: the cylindrical
-                # divergence D1 u_r + u_r/r + (im/r) u_theta.
+                # Close continuity per mode against the annular
+                # divergence D1 u_r + u_r/r + (im/r) u_theta + i k_z u_z,
+                # keeping u_r's filtered/windowed draw.  Both u_z
+                # (k_z != 0) and u_theta (k_z = 0, m != 0) enter with an
+                # r-diagonal coefficient, so solving for one of them is
+                # exact discretely ((1/r).r = I elementwise).
                 if kz_val != 0:
                     div_perp = (
                         D1_np @ col[1]
@@ -624,6 +649,19 @@ def generate_annular(
                         + 1j * m_val * inv_r_np * col[2]
                     )
                     col[0] = -div_perp / (1j * kz_val)
+                elif m_val != 0:
+                    # k_z = 0: u_z drops out; close through u_theta.
+                    col[2] = (
+                        1j
+                        * rs_np
+                        * (D1_np @ col[1] + inv_r_np * col[1])
+                        / m_val
+                    )
+                else:
+                    # k_z = 0, m = 0 mean mode: (1/r) d(r u_r)/dr = 0 with
+                    # no-slip forces u_r = 0 (u_theta swirl / u_z axial
+                    # stay).
+                    col[1] = 0.0
                 # Energy = envelope^2 (no continuity 1/k low-k inflation).
                 col = _normalize_mode(
                     col,

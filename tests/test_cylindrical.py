@@ -256,6 +256,44 @@ def test_A_base_matches_reference() -> None:
         )
 
 
+def test_pipe_axis_fit_direct_d2() -> None:
+    r"""``pipe_axis_fit`` builds an accurate direct ``x = r^2`` ``D2``.
+
+    ``build_parity_reduced_matrices(xr2_d1=True, compose_d2=False)`` fits
+    ``D2`` directly on ``x = r^2`` (``2 D_x + 4x D_xx`` even, its
+    ``r``-conjugate odd) rather than the composed ``D1 D1`` -- so it is
+    axis-regular like ``D1`` yet a genuine 2nd-derivative fit.  Checks it
+    reproduces ``f''`` on manufactured axis-regular fields and beats the
+    plain-``r`` mirrored fold there.
+    """
+    # Fixed, well-resolved grid so the tolerance is meaningful
+    # independent of the module resolution (the accuracy is what is
+    # under test, not its convergence rate).
+    p = 8
+    rs = np.asarray(build_radial_cgl_grid(33))
+    x = rs**2
+    _, D2e_x, _, D2o_x, _, _ = build_parity_reduced_matrices(
+        rs, p, xr2_d1=True, compose_d2=False
+    )
+    _, D2e_p, _, D2o_p, _, _ = build_parity_reduced_matrices(rs, p)
+    # even f = g(r^2), odd f = r h(r^2), with analytical f''.
+    fe, fe2 = np.exp(-2 * x), (-4 + 16 * x) * np.exp(-2 * x)
+    fo = rs * np.exp(-2 * x)
+    fo2 = (-12 * rs + 16 * rs * x) * np.exp(-2 * x)
+    for label, D2x, D2p, f, f2 in [
+        ("even", D2e_x, D2e_p, fe, fe2),
+        ("odd", D2o_x, D2o_p, fo, fo2),
+    ]:
+        rel = np.max(np.abs(np.asarray(D2x) @ f - f2)) / np.max(np.abs(f2))
+        err_x = np.max(np.abs(np.asarray(D2x) @ f - f2))
+        err_p = np.max(np.abs(np.asarray(D2p) @ f - f2))
+        assert rel < 1e-6, f"x=r^2 D2 ({label}) rel err {rel:.2e}"
+        assert err_x < err_p, (
+            f"x=r^2 D2 ({label}) not better than the fold: "
+            f"{err_x:.2e} vs {err_p:.2e}"
+        )
+
+
 def test_abase_matvec_matches_dense() -> None:
     """``_abase_matvec`` matches dense ``A_base @ u``."""
     Nr = params.res.ny

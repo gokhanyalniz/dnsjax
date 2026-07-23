@@ -582,7 +582,10 @@ class Resolution(BaseModel):
     # initial data (a snapshot, or ``init.localized_rolls``) -- which is
     # its only meaningful regime anyway, since the residual is a
     # convergent truncation error, physically inert for resolved fields.
-    # The band widens to 12 (vs 8) at ``fd_order = 8``.
+    # (For the accurate `$x = r^2$` `$D_1$` *without* this restriction --
+    # kept random-IC-stable by retaining the direct-fit `$D_2$`, at the
+    # cost of the discrete-divergence consistency -- see ``pipe_axis_fit``
+    # below.)  The band widens to 12 (vs 8) at ``fd_order = 8``.
     #
     # *Price.*  `$D_1 D_1$` is the same formal order as the direct-fit
     # `$D_2$` (measured 7.6 vs 7.5 at ``fd_order = 8``) with a 6-13x
@@ -615,6 +618,37 @@ class Resolution(BaseModel):
             "divergence is round-off (Cartesian) or 2-4 orders "
             "smaller (annular).  Costs a 6-13x larger D2 error "
             "constant and ~1.35x operator storage."
+        ),
+    )
+    # Pipe only.  Use the axis-regular ``x = r^2`` Fornberg fit for the
+    # radial operators -- **both** ``D1`` (`$2\,\mathrm{diag}(r)D_x$`)
+    # and a **direct** ``D2`` (`$2 D_x + 4x D_{xx}$` for even data, its
+    # `$r$`-conjugate for odd), **not** the composed ``D2 := D1 D1`` (see
+    # the ``consistent_imm`` pipe paragraph and
+    # :func:`~dnsjax.geometries.wall_bounded.cylindrical.\
+    # build_parity_reduced_matrices`).  So the accurate near-axis ``D1``
+    # drives every ``D1``-based quantity (curl, divergence, enstrophy,
+    # advection) and the axis-regular ``D2`` makes ``A_base = D2 +
+    # (1/r)D1`` ~3-320x more accurate near the axis too, yet -- being a
+    # genuine 2nd-derivative fit -- it stays grid-scale-dissipative.
+    # Consequences, both distinguishing it from ``consistent_imm``: (1)
+    # **stable with a grid-white random IC** (the direct ``D2`` damps the
+    # near-axis grid scale the composed ``D2`` does not); (2) it does
+    # **not** make the discrete divergence consistent -- that still needs
+    # the composed ``D2``.  Measured 5-1000x more accurate than the
+    # plain-``r`` ``D1`` for axis-regular fields at moderate ``ny`` (the
+    # gap closes at high ``ny``).  Off by default; subsumed when
+    # ``consistent_imm`` is on (which selects the same ``x = r^2`` ``D1``
+    # with the composed ``D2``).  Trajectory-defining.
+    pipe_axis_fit: bool = Field(
+        default=False,
+        description=(
+            "Pipe only: use the axis-regular x=r^2 radial fit for both "
+            "D1 and a direct D2 (not the composed D1.D1) -- accurate "
+            "near the axis for the diagnostics/advection and A_base, "
+            "grid-scale-dissipative so random-IC-stable, but does not "
+            "make the divergence discretely consistent (needs "
+            "consistent_imm)."
         ),
     )
     double_precision: bool = Field(

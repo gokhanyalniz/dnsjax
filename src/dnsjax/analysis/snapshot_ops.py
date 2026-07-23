@@ -48,6 +48,18 @@ __all__ = [
 ]
 
 
+def _use_xr2_d1(params) -> bool:
+    """Did the pipe solver build the ``x = r^2`` radial ``D1``?
+
+    True under either ``res.consistent_imm`` or ``res.pipe_axis_fit``
+    (both select the ``x = r^2`` fit; only ``consistent_imm`` also
+    composes ``D2``, which the ``D1``-only analysis operators ignore).
+    """
+    return bool(params.res.get("consistent_imm")) or bool(
+        params.res.get("pipe_axis_fit")
+    )
+
+
 # Maps a component label to its radial parity class (pipe only):
 # u_z has parity (-1)^m ("uz"); u_r and u_θ have parity (-1)^{m+1}
 # ("utheta").  Accepts the long and short spellings.
@@ -105,7 +117,7 @@ def derivative(field, direction, params, coords, cylindrical_parity=None):
         coords[ax],
         params.res.get("fd_order"),
         parity=parity,
-        consistent_imm=bool(params.res.get("consistent_imm")),
+        xr2_d1=_use_xr2_d1(params),
     )
 
 
@@ -121,7 +133,7 @@ def gradient(component, params, coords, cylindrical_parity=None):
     info = _core.geometry_info(params)
     arr = np.asarray(component)
     fd = params.res.get("fd_order")
-    cimm = bool(params.res.get("consistent_imm"))
+    xr2 = _use_xr2_d1(params)
     out = []
     for ax in range(3):
         parity = _resolve_parity(info, ax, cylindrical_parity)
@@ -133,7 +145,7 @@ def gradient(component, params, coords, cylindrical_parity=None):
                 coords[ax],
                 fd,
                 parity=parity,
-                consistent_imm=cimm,
+                xr2_d1=xr2,
             )
         )
     return tuple(out)
@@ -163,7 +175,7 @@ def divergence(field, params, coords):
             fd,
             info,
             parity=p_ur,
-            consistent_imm=bool(params.res.get("consistent_imm")),
+            xr2_d1=_use_xr2_d1(params),
         )
         d_th = _core.fourier_derivative(u_th, 1, coords[1])  # im u_θ
         d_z = _core.fourier_derivative(u_z, 2, coords[2])  # i k_z u_z
@@ -205,11 +217,11 @@ def curl(field, params, coords):
         def d_z(f):  # ∂/∂z = i k_z
             return _core.fourier_derivative(f, 2, coords[2])
 
-        cimm = bool(params.res.get("consistent_imm"))
+        xr2 = _use_xr2_d1(params)
 
         def d_r(f, parity):  # ∂/∂r = D1 (parity-reduced for the pipe)
             return _core.radial_derivative(
-                f, r, fd, info, parity=parity, consistent_imm=cimm
+                f, r, fd, info, parity=parity, xr2_d1=xr2
             )
 
         p_uz = "uz" if cyl else None

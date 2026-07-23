@@ -92,6 +92,19 @@ constant-bulk-velocity / block-mean-spanwise-velocity corrections.
   Band width is **measured** from the assembled operator
   (`fd.matrix_half_bandwidth`), never assumed to be `fd_order`. Guard:
   `tests/test_imm_continuity.py`.
+- `res.pipe_axis_fit` (default off, **pipe only**) uses the `x = r²`
+  axis-regular fit for **both** `D1` and a **direct** `D2`
+  (`2 D_x + 4x D_xx` for even data, its `r`-conjugate for odd) — **not**
+  the composed `D2 := D1·D1`. So the accurate near-axis `D1` (measured
+  5–1000× better than plain-`r`) drives every `D1`-based quantity
+  (curl/divergence/enstrophy/advection) and the axis-regular `D2` makes
+  `A_base` ~3–320× more accurate near the axis too, while the direct fit
+  stays grid-scale-dissipative → **random-IC-stable** (unlike
+  `consistent_imm`); it does **not** make the divergence discretely
+  consistent. `xr2_d1 = consistent_imm or pipe_axis_fit`, `compose_d2 =
+  consistent_imm` (`build_parity_reduced_matrices`; the analysis mirror
+  `_core.parity_radial_d1` reads both from snapshot params). Detail: the
+  `Resolution.pipe_axis_fit` docs. Guard: `tests/test_energy_budget.py`.
 
 ### Mean mode and padding modes
 
