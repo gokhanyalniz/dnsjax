@@ -405,7 +405,7 @@ layering" above.
 |------------|-----------------------------------------------------|
 | `[phys]`   | Reynolds numbers, `system`, oversampling, driving, `u_grid`; viscoelastic-dean rheology |
 | `[geo]`    | Domain lengths/tilt, `eta`, `m0` (azimuthal wedge), `delta`, wall-normal grid selection |
-| `[res]`    | Resolution (`nx`/`ny`/`nz`, or `nz`/`nr`/`ntheta`), `fd_order`, `consistent_imm`, `double_precision` |
+| `[res]`    | Resolution (`nx`/`ny`/`nz`, or `nz`/`nr`/`ntheta`), `fd_order`, `consistent_imm`, `pipe_axis_fit`, `double_precision` |
 | `[init]`   | Start mode (see "Initial conditions" above) + `t0`/`it0`/`isnap0`/`force_resume` |
 | `[outs]`   | Diagnostic cadences, buffering, snapshot write policy |
 | `[step]`   | `dt` + scheme knobs + adaptive-CFL knobs (`TimeStepping`) |
@@ -599,6 +599,8 @@ one-liners. Cross-cutting notes:
 - `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards.
 - `tests/test_imm_continuity.py`: stepped-state discrete divergence
   with/without `res.consistent_imm` (+ the pipe's deferral).
+- `tests/test_energy_budget.py`: stepped total-energy budget closure
+  (`dE/dt == I - D`) on/off `res.consistent_imm` / `res.pipe_axis_fit`.
 - `tests/test_adaptive.py`: adaptive-dt machinery (controller units,
   rebuild-vs-fresh/step parity, no-recompile guard, kappa identity).
 - `tests/test_temporal_order.py`: second-order temporal accuracy

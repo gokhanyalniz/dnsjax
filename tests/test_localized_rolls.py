@@ -78,8 +78,8 @@ CONFIGS = [(1, 1), (1, 2), (2, 1)]
 DIV_TOL = 5e-2  # loose truncation-level discrete-divergence bound
 
 # Random-field IC guard: amplitude / smoothness / seed, and the
-# *relative* divergence bound off the k_z = 0 plane (the builders
-# solve continuity there exactly, so this is machine-zero).
+# *relative* divergence bound over the whole field, k_z = 0 included
+# (the builders solve continuity on every mode, so this is machine-zero).
 RAND_AMP, RAND_SMOOTH, RAND_SEED = 0.2, 0.4, 7
 RAND_DIV_TOL = 1e-11
 
@@ -148,18 +148,16 @@ def _configure(system: str, np0: int, np1: int) -> None:
 # ── per-geometry discrete divergence (host numpy) ────────────────
 
 
-def _max_divergence(
-    true: np.ndarray, system: str, skip_kz0: bool = False
-) -> float:
+def _max_divergence(true: np.ndarray, system: str) -> float:
     r"""Max |discrete divergence| of the true-mode state (host numpy).
 
     The FD matrices are built with the run's **resolved** wall-normal
     grid selection (``geo.grid_type`` etc.), not the builder defaults
     -- pipe resolves to ``half-cgl``, whose `$D_1$` differs from the
     default grid's, and a mismatched reference would silently measure
-    the wrong operator.  With *skip_kz0* the `$k_z = 0$` plane (real
-    axis index 0) is excluded: the random-field builders solve
-    continuity only there (see :mod:`dnsjax.random_field`).
+    the wrong operator.  The whole field is measured, including the
+    `$k_z = 0$` plane: the random-field builders now solve continuity
+    on every mode (see :mod:`dnsjax.random_field`).
     """
     from dnsjax.operators import complex_harmonics, real_harmonics
     from dnsjax.parameters import derived_params, params
@@ -186,7 +184,7 @@ def _max_divergence(
             + 1j * kz[None, :, None] * true[2]
             + 1j * kx_real[None, None, :] * true[0]
         )
-        return float(np.max(np.abs(div[..., 1:] if skip_kz0 else div)))
+        return float(np.max(np.abs(div)))
 
     # pipe / annular: native (u_z, u_r, u_theta) over (r, m, k_z,ax).
     m = params.geo.m0 * np.asarray(complex_harmonics(nz))
@@ -218,7 +216,7 @@ def _max_divergence(
             d1v @ ur + inv_r[:, None] * ur + 1j * mv * inv_r[:, None] * uth
         )
         div[:, im, :] = div_perp + 1j * kx_real[None, :] * uz
-    return float(np.max(np.abs(div[..., 1:] if skip_kz0 else div)))
+    return float(np.max(np.abs(div)))
 
 
 # ── worker ───────────────────────────────────────────────────────
@@ -264,19 +262,20 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
     div = _max_divergence(true, system)
     check("divergence truncation-level", div < DIV_TOL, f"max|div|={div:.2e}")
 
-    # ── random-field IC: exact discrete continuity off the k_z = 0
-    # plane.  Unlike the analytic rolls (truncation-level), the random
-    # builders *solve* continuity for one component per mode, so the
-    # residual is machine-zero -- a sharp guard on the per-geometry
-    # divergence expression each builder inverts.
+    # ── random-field IC: exact discrete continuity on the *whole*
+    # field, k_z = 0 plane included.  Unlike the analytic rolls
+    # (truncation-level), the random builders *solve* continuity per mode
+    # -- u_z for k_z != 0, u_theta for k_z = 0 (m != 0), u_r = 0 at the
+    # mean -- so the residual is machine-zero, a sharp guard on the
+    # per-geometry divergence expression each builder inverts.
     from dnsjax.random_field import generate_random_state
 
     rand = np.asarray(generate_random_state(RAND_AMP, RAND_SMOOTH, RAND_SEED))
     rand_true = rand[:3, :, : nz - 1, : nx // 2]
     scale = float(np.max(np.abs(rand_true)))
-    rdiv = _max_divergence(rand_true, system, skip_kz0=True)
+    rdiv = _max_divergence(rand_true, system)
     check(
-        "random IC divergence-free (k_z != 0)",
+        "random IC divergence-free (full field)",
         rdiv < RAND_DIV_TOL * scale,
         f"max|div|={rdiv:.2e} scale={scale:.2e}",
     )

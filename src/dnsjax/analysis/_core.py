@@ -521,7 +521,7 @@ def _matmul_axis(mat: ndarray, field: ndarray, axis: int) -> ndarray:
 
 
 def parity_radial_d1(
-    grid, fd_order: int, consistent_imm: bool = False
+    grid, fd_order: int, xr2_d1: bool = False
 ) -> tuple[ndarray, ndarray]:
     r"""Parity-reduced radial ``D1`` pair ``(D1_even, D1_odd)``.
 
@@ -536,15 +536,16 @@ def parity_radial_d1(
     Used for the pipe (cylindrical), whose radial grid reaches the axis
     ``r -> 0``; the annulus has no axis and uses a plain ``D1``.
 
-    With *consistent_imm* (a gated pipe snapshot) the solver used the
-    ``x = r^2`` construction instead, so match it: ``D1_even = 2 R Dx``,
+    With *xr2_d1* (a pipe snapshot stepped under ``res.consistent_imm``
+    or ``res.pipe_axis_fit``) the solver used the ``x = r^2``
+    construction instead, so match it: ``D1_even = 2 R Dx``,
     ``D1_odd = S + R D1_even S`` with ``S = diag(1/r)``, ``Dx`` the
-    Fornberg fit on ``x = r^2``.  (D2 differs too, but the analysis
-    operators are ``D1``-only.)
+    Fornberg fit on ``x = r^2``.  (Under ``consistent_imm`` D2 differs
+    too, but the analysis operators are ``D1``-only.)
     """
     rs = np.asarray(grid, dtype=float)
     nr = len(rs)
-    if consistent_imm:
+    if xr2_d1:
         dx, _ = build_diff_matrices(rs**2, int(fd_order))
         r_diag = np.diag(rs)
         s_diag = np.diag(1.0 / rs)
@@ -564,7 +565,7 @@ def radial_derivative(
     fd_order: int,
     info: GeometryInfo,
     parity: str | None = None,
-    consistent_imm: bool = False,
+    xr2_d1: bool = False,
 ) -> ndarray:
     r"""First derivative along the wall-normal/radial grid axis (axis 0).
 
@@ -572,15 +573,16 @@ def radial_derivative(
     annular radius (a plain ``D1`` matmul).  For the pipe it selects the
     parity-reduced operator per azimuthal mode ``m`` (axis 1): ``"uz"``
     for the ``(-1)^m`` parity of ``u_z``; ``"utheta"`` for the
-    ``(-1)^{m+1}`` parity of ``u_r`` / ``u_θ``.  *consistent_imm* picks
-    the ``x = r^2`` operator a gated pipe snapshot was stepped with.
+    ``(-1)^{m+1}`` parity of ``u_r`` / ``u_θ``.  *xr2_d1* picks the
+    ``x = r^2`` operator a pipe snapshot stepped under
+    ``res.consistent_imm`` / ``res.pipe_axis_fit`` used.
     """
     field = np.asarray(field)
     if parity is None:
         gr = np.asarray(grid, dtype=float)
         d1, _ = build_diff_matrices(gr, int(fd_order))
         return _matmul_axis(d1, field, 0)
-    d1_even, d1_odd = parity_radial_d1(grid, fd_order, consistent_imm)
+    d1_even, d1_odd = parity_radial_d1(grid, fd_order, xr2_d1)
     m_even = complex_harmonics(info.n[1]) % 2 == 0
     use_even = m_even if parity == "uz" else ~m_even
     # One matmul per parity class on its own m-subset (not both
@@ -598,14 +600,14 @@ def derivative_axis(
     coord: ndarray,
     fd_order: int,
     parity: str | None = None,
-    consistent_imm: bool = False,
+    xr2_d1: bool = False,
 ) -> ndarray:
     r"""First derivative of a spectral field along one on-disk *axis*.
 
     Fourier axis: ``× i k`` (exact, per stored mode).  Grid axis
     (always axis 0 for wall-bounded families): the finite-difference
     ``D1`` on *coord*, parity-reduced for the pipe when *parity* is set
-    (the ``x = r^2`` operator under *consistent_imm*).
+    (the ``x = r^2`` operator under *xr2_d1*).
     """
     if info.kind[axis] in ("real", "complex"):
         return fourier_derivative(field, axis, coord)
@@ -615,5 +617,5 @@ def derivative_axis(
         fd_order,
         info,
         parity=parity,
-        consistent_imm=consistent_imm,
+        xr2_d1=xr2_d1,
     )

@@ -1357,17 +1357,36 @@ def _imm_iteration(
 
     so a stepped state carries `$d \approx \Delta t\,(\ldots)$` --
     **O(1) relative**, because `$D_1[1, 0] \sim N_y^2$` on a CGL grid
-    turns the boundary term into an O(1) residual.  Measured, that
-    boundary term is the whole story; the first two are five to ten
-    orders smaller.
+    turns the boundary term into an O(1) residual.  Measured, the
+    pressure mismatch `$(D_2 - D_1^2)p_P$` is five to ten orders
+    smaller and inert -- but the commutator is **not**: `$[D_1, D_2]$`
+    inherits the direct-fit `$D_2$`'s `$O(N_y^2)$` near-wall entries, so
+    it is boundary-amplified like `$D_1 s$`.  Even the *split* -- closing
+    the boundary and taking the pressure Poisson from `$D_1^2$` (so terms
+    1 and 3 vanish), keeping the accurate `$D_2$` only in `$H_k$` --
+    leaves a pure-commutator `$d \sim 10^{-4}$` floor that does **not**
+    refine, while the un-closed residual refines spectrally; so at
+    production resolution the split is *worse* than doing nothing
+    (`$N_y = 97$`: `$3\times10^{-4}$` vs `$9\times10^{-6}$`).  The
+    commutator, not the pressure mismatch, is what the direct fit cannot
+    survive.
 
-    ``res.consistent_imm`` removes all three: `$D_2 := D_1 D_1$` kills
-    the first two, and adding `$D_1\hat\sigma$` to the interior Poisson
-    RHS with `$\hat\sigma = s$` kills the third -- the tau / boundary
+    ``res.consistent_imm`` removes all three: `$D_2 := D_1 D_1$` -- the
+    **unique** second derivative that commutes with `$D_1$`
+    (`$[D_1, D_2] = 0$` iff `$D_2$` is a polynomial in `$D_1$`) -- kills
+    both the commutator and the pressure mismatch, and adding
+    `$D_1\hat\sigma$` to the interior Poisson RHS with
+    `$\hat\sigma = s$` kills the boundary term -- the tau / boundary
     correction of Canuto, Hussaini, Quarteroni & Zang (1988), sec. 7.3,
     eqs. (7.3.51)-(7.3.58).  Neither half works alone (the closure on
     the direct-fit `$D_2$` measures *worse* than doing nothing), so it
-    is one flag.  Because `$s$` depends on `$v$`, which depends on
+    is one flag.  Keeping the accurate `$D_2$` and cancelling the
+    commutator instead -- feeding `$c\nu[D_1,D_2]v +
+    (1-c)\nu[D_1,D_2]v_n$` back into the Poisson RHS -- *does* reach
+    machine-zero, but that fixed point contracts like `$N_y^{-2}$` (the
+    source is volumetric, not a two-per-wall boundary term), so it is
+    impractical at production resolution; `$D_2 := D_1 D_1$` is the
+    one-shot route.  Because `$s$` depends on `$v$`, which depends on
     `$p$`, which depends on `$s$`, the closure is a linear fixed point
     -- realised as two extra homogeneous columns and a `$4 \times 4$`
     influence matrix (:meth:`CartesianFlow._derive_imm_closure`).

@@ -503,7 +503,7 @@ def build_radial_cgl_grid(Nr: int, axis_gap: int = 1) -> Array:
 
 
 def build_parity_reduced_matrices(
-    rs: Array, p: int, consistent_imm: bool = False
+    rs: Array, p: int, xr2_d1: bool = False, compose_d2: bool = False
 ) -> tuple[Array, Array, Array, Array, Array, Array]:
     r"""Build parity-reduced FD matrices from the auxiliary grid.
 
@@ -522,7 +522,7 @@ def build_parity_reduced_matrices(
     is the positive-row, ghost-column block with columns
     flipped.
 
-    With *consistent_imm* the matrices are instead built from a single
+    With *xr2_d1* the ``D1`` matrices are instead built from a single
     Fornberg fit on `$x = r^2$` (an axis-regular field is analytic in
     `$x$`):
 
@@ -534,20 +534,34 @@ def build_parity_reduced_matrices(
 
     whose discrete `$1/r$` commutator
     `$D_{1,\mathrm{even}}S - S D_{1,\mathrm{odd}} + S^2$` vanishes to
-    round-off -- the axis identity the influence-matrix continuity
-    argument needs (the mirrored fold above leaves it
-    `$O(10^2\text{--}10^3)$`).  `$D_2$` is then the **composed**
-    `$D_1 D_1$`, parity-flipping (even data
-    `$\to D_{1,\mathrm{even}} \to$` odd `$\to D_{1,\mathrm{odd}} \to$`
-    even, and vice versa), so `$\nabla\!\cdot\!\nabla = L_k$` holds
-    discretely; the common part is the parity average
+    round-off (the mirrored fold above leaves it
+    `$O(10^2\text{--}10^3)$`) and which is 5-1000x more accurate on
+    axis-regular fields.  ``D2`` then depends on *compose_d2*:
+
+    - *compose_d2* (``res.consistent_imm``): the **composed**
+      `$D_1 D_1$`, parity-flipping (even data
+      `$\to D_{1,\mathrm{even}} \to$` odd `$\to D_{1,\mathrm{odd}} \to$`
+      even, and vice versa), so `$\nabla\!\cdot\!\nabla = L_k$` holds
+      discretely -- the axis identity the influence-matrix continuity
+      argument needs.  The ghost
+      `$(D_{\mathrm{even}} - D_{\mathrm{odd}})/2$` is then full, not
+      near-axis-sparse, and the band widens (`$A_{\mathrm{base}}$` 12 vs
+      8 at ``fd_order = 8``; the assembler measures it); the composed
+      `$D_2$` is less grid-scale-dissipative (needs a resolved IC).
+    - not *compose_d2* (``res.pipe_axis_fit``): a **direct** `$x = r^2$`
+      2nd-derivative fit (`$\partial_r^2 = 2\partial_x + 4x\partial_x^2$`
+      for even data, its `$r$`-conjugate for odd), so `$D_2$` is
+      axis-regular like `$D_1$` -- making `$A_{\mathrm{base}}$` ~3-320x
+      more accurate near the axis than a plain-`$r$` fit -- yet still a
+      genuine 2nd-derivative fit that is grid-scale-dissipative, unlike
+      the composed `$D_1 D_1$`, so it stays stable with a grid-white
+      random IC.  The discrete divergence is **not** made consistent
+      (no `$\nabla\!\cdot\!\nabla = L_k$`).
+
+    The common part is the parity average
     `$D_{\mathrm{pos}} = (D_{\mathrm{even}} + D_{\mathrm{odd}})/2$`, so
-    the same ghost machinery applies -- but the ghost
-    `$(D_{\mathrm{even}} - D_{\mathrm{odd}})/2$` is now full, not
-    near-axis-sparse, and the band widens (`$A_{\mathrm{base}}$` 12 vs 8
-    at ``fd_order = 8``; the assembler measures it).  Off by default and
-    only ever reached through ``res.consistent_imm`` (the
-    ``Resolution.consistent_imm`` docs carry the trade); see the pipe
+    the same ghost machinery applies.  Both flags off by default; see the
+    ``Resolution.consistent_imm`` / ``pipe_axis_fit`` docs and the pipe
     branch of :func:`_imm_iteration`.
 
     Returns
@@ -559,21 +573,36 @@ def build_parity_reduced_matrices(
     D1_pos, D2_pos:
         Common (parity-independent) part: positive-row,
         positive-column block of the full-grid matrices (the parity
-        average under *consistent_imm*).
+        average under *xr2_d1*).
     """
     Nr = len(rs)
-    if consistent_imm:
+    if xr2_d1:
         # Single Fornberg fit on x = r^2 (see the docstring): the
         # resulting even/odd D1 pair makes the near-axis 1/r commutator
-        # exact, and D2 is the composed D1.D1 for discrete continuity.
+        # exact and is accurate on axis-regular fields.
         rs_np = np.asarray(rs)
-        DX, _ = build_diff_matrices(rs_np**2, p)
+        DX, DXX = build_diff_matrices(rs_np**2, p)
         R = np.diag(rs_np)
         S = np.diag(1.0 / rs_np)
         D1_even = 2.0 * (R @ DX)
         D1_odd = S + R @ D1_even @ S
-        D2_even = D1_odd @ D1_even  # even -> odd -> even
-        D2_odd = D1_even @ D1_odd  # odd -> even -> odd
+        if compose_d2:
+            # D2 := D1.D1 (composed) for discrete continuity
+            # (res.consistent_imm), parity-flipping.
+            D2_even = D1_odd @ D1_even  # even -> odd -> even
+            D2_odd = D1_even @ D1_odd  # odd -> even -> odd
+        else:
+            # Direct x = r^2 second-derivative fit (res.pipe_axis_fit).
+            # For x = r^2, `$\partial_r^2 = 2\partial_x + 4x\partial_x^2$`
+            # on an even field `$g(x)$` (its r-conjugate on an odd
+            # `$r\,h(x)$`), i.e. a genuine 2nd-derivative fit -- so it
+            # stays grid-scale-dissipative (unlike the composed D1.D1)
+            # AND is axis-regular like the x=r^2 D1, ~3-320x more
+            # accurate on `$A_{\mathrm{base}}$` near the axis than the
+            # plain-r fold.
+            R2 = np.diag(rs_np**2)
+            D2_even = 2.0 * DX + 4.0 * (R2 @ DXX)
+            D2_odd = R @ (6.0 * DX + 4.0 * (R2 @ DXX)) @ S
         D1_pos = (D1_even + D1_odd) / 2
         D2_pos = (D2_even + D2_odd) / 2
         return D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos
@@ -601,6 +630,7 @@ def build_cylindrical_grid(
     grid_type: str | None = None,
     grid_stretch: float = 1.5,
     consistent_imm: bool = False,
+    pipe_axis_fit: bool = False,
 ) -> tuple[Array, Array, Array, Array, Array, Array, Array]:
     r"""Build radial grid, parity-reduced D1 matrices, weights,
     and `$1/r$` for the cylindrical geometry.
@@ -643,12 +673,14 @@ def build_cylindrical_grid(
     grid_stretch:
         Stretching parameter for ``grid_type="half-tanh"``.
     consistent_imm:
-        ``params.res.consistent_imm``: return the `$x = r^2$`
-        parity-reduced ``D1`` pair (see
+        ``params.res.consistent_imm``.
+    pipe_axis_fit:
+        ``params.res.pipe_axis_fit``.  Either flag returns the
+        `$x = r^2$` parity-reduced ``D1`` pair (see
         :func:`build_parity_reduced_matrices`) instead of the mirrored
         fold, so a consumer that reconstructs the divergence operator
         (the random-IC generator, the analysis package) matches the
-        gated solver.  Off by default.
+        solver.  Both off by default (mirrored-fold ``D1``).
 
     Returns
     -------
@@ -749,7 +781,7 @@ def build_cylindrical_grid(
     y_weights_odd = jnp.asarray(w_odd_np, dtype=sharding.float_type)
 
     D1_even, _, D1_odd, _, D1_pos, _ = build_parity_reduced_matrices(
-        rs, fd_order, consistent_imm
+        rs, fd_order, consistent_imm or pipe_axis_fit, consistent_imm
     )
     return rs, D1_even, D1_odd, D1_pos, y_weights, y_weights_odd, inv_r
 
@@ -1135,6 +1167,7 @@ class CylindricalFlow:
             params.geo.grid_type,
             params.geo.grid_stretch,
             params.res.consistent_imm,
+            params.res.pipe_axis_fit,
         )
         self.inv_r2 = self.inv_r**2
 
@@ -1171,7 +1204,10 @@ class CylindricalFlow:
             D1_pos,
             D2_pos,
         ) = build_parity_reduced_matrices(
-            self.rs, params.res.fd_order, params.res.consistent_imm
+            self.rs,
+            params.res.fd_order,
+            params.res.consistent_imm or params.res.pipe_axis_fit,
+            params.res.consistent_imm,
         )
 
         self.D1_pos = jax.device_put(D1_pos, sharding.no_shard)
