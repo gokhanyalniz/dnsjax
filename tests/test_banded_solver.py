@@ -288,9 +288,12 @@ def test_pallas_cuda_lowering() -> None:
     (:func:`_abstract_gpu_mesh`) so Triton can resolve the target GPU.
 
     ``p`` is a **static loop bound** in the kernel, so every band width
-    the geometries can produce needs its own lowering: ``p = 3`` for the
-    default operators and ``p = 11`` for the wider ``res.consistent_imm``
-    `$D_1 D_1$` band (measured at ``fd_order = 8``)."""
+    a caller can produce needs its own lowering: ``p = 3`` for a typical
+    geometry band and ``p = 11`` for a wide one.  No shipped
+    configuration needs 11 since the composed-`$D_1 D_1$` operators were
+    retired on 2026-07-26 (every geometry is at ``fd_order`` under both
+    ``res.consistent_imm`` settings); it stays as backend capability
+    coverage."""
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
     Ny, k = 17, 2  # non-power-of-two
     orig_mesh = sharding.mesh
@@ -299,7 +302,7 @@ def test_pallas_cuda_lowering() -> None:
     params.solver.pallas_block_m1 = 32
     jax.set_mesh(None)
     try:
-        for p in (3, 11):  # default band, consistent_imm band
+        for p in (3, 11):  # typical band, wide band
             A = _make_random_banded(Ny, p, seed=1)
             Li, Ui = _mode_inner_factors(
                 *_banded_factor(

@@ -87,13 +87,13 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # ``res.consistent_imm`` on the pipe: the nonlinear-stability
-        # guard for the x = r^2 axis operators + 1-wall closure.  It runs
-        # here (a *resolved* rolls IC), not in ``test_random_smoke.py``:
-        # the gate's composed D2 = D1*D1 is deliberately less dissipative
-        # at the grid scale, so a grid-white random IC (under-resolved
-        # noise) makes the near-axis corrector diverge -- the opt-in is
-        # for resolved runs (see the ``Resolution.consistent_imm`` docs).
+        # ``res.consistent_imm`` on the pipe, from a *resolved* rolls
+        # IC.  This entry predates the 2026-07-26 reformulation, when
+        # the flag's composed D2 = D1*D1 was not grid-scale-dissipative
+        # and a grid-white draw was genuinely unstable, so a rolls IC
+        # was the only option.  It is now redundant with the random-IC
+        # entries in ``test_random_smoke.py`` as a *stability* gate and
+        # stays as the resolved-IC coverage of the same path.
         "name": "pipe-consistent-imm",
         "args": [
             "--phys.system",

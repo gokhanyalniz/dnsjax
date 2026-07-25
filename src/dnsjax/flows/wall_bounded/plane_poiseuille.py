@@ -74,6 +74,7 @@ from ...geometries.wall_bounded.cartesian import (
     get_norm2,
     get_pert_enstrophy,
     integrate_scalar,
+    make_basis_maps,
     pad_base_flow,
     tilted_profile_arrays,
 )
@@ -135,6 +136,11 @@ flow: PlanePoiseuilleFlow = PlanePoiseuilleFlow()
     set_dt,
     reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
+
+# Solver-basis boundary (``res.consistent_imm``): the state is
+# carried as (phi, v, omega_y) and observed as (u, v, w).  Both are
+# the identity with the flag off.  See ``cartesian.make_basis_maps``.
+to_solver_basis, from_solver_basis = make_basis_maps(flow)
 
 
 def frozen_profile_flow(us: Array) -> PlanePoiseuilleFlow:

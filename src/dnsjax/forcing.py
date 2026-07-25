@@ -27,6 +27,19 @@ the price of one fused scatter-add per ``it_force`` steps.  (Under
 single step after a kick: an `$O(\varepsilon\,\Delta t)$`
 perturbation of the same class as the scheme's local error.)
 
+A kick's increment is generally **not** discretely solenoidal, and
+what happens to that part depends on the scheme.  The primitive IMM
+feeds it into the pressure Poisson RHS and *damps* it over the
+following steps.  Under ``res.consistent_imm`` on Cartesian the state
+is carried in the `$(\varphi, v, \omega_y)$` basis, which has no room
+for it at all: the kick is added to the physical field and re-encoded
+(:func:`~dnsjax.geometries.wall_bounded.cartesian._to_solver`), so the
+non-solenoidal part is projected out immediately and deterministically
+-- before it reaches any nonlinear evaluation.  Either way it is a
+bounded, per-event, truncation-class effect, not an accumulating one;
+keep injected profiles solenoidal if the distinction matters for the
+response being identified.
+
 Timing conventions (shared with the readers and resume)
 =======================================================
 - A kick fires at the **top** of the loop for every iteration with
@@ -110,7 +123,7 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from .extensions import force_params
-from .flows.registry import cartesian_systems
+from .flows.registry import cartesian_systems, spec_for
 from .harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
 from .param_surface import recorded_params_dump
 from .parameters import derived_params, params
@@ -164,8 +177,25 @@ def build_mode_injector(
     only the injected columns, never the field.
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
+    field_maps = None
     if params.phys.system in cartesian_systems:
+        # Cartesian columns are already the state's components unless
+        # ``res.consistent_imm`` carries the (phi, v, omega_y) solver
+        # basis, whose map needs `$D_1$`/`$D_2$` and the mode's
+        # wavenumbers and so cannot act on a bare column (the
+        # extractor's note applies).  Convert the *field* around the
+        # scatter-add instead: the kick is added as the velocity
+        # perturbation it is meant to be, then re-encoded -- which
+        # also makes explicit that its non-solenoidal part is
+        # projected out at once (see ``cartesian._to_solver``).
         to_solver = None
+        if params.res.consistent_imm:
+            import importlib
+
+            _fmod = importlib.import_module(
+                spec_for(params.phys.system).flow_module
+            )
+            field_maps = (_fmod.from_solver_basis, _fmod.to_solver_basis)
     else:  # cylindrical / annular (viscoelastic rejects [force])
         from .geometries.wall_bounded._base import to_pm_basis
 
@@ -199,15 +229,21 @@ def build_mode_injector(
             shard = shard.at[:, :, l2, l3].add(add)
         return shard
 
-    return jax.jit(
-        shard_map(
-            _local,
-            mesh=sharding.mesh,
-            in_specs=(sharding.spec_vector_shard, P(None, None, None)),
-            out_specs=sharding.spec_vector_shard,
-        ),
-        donate_argnums=0,
+    injector = shard_map(
+        _local,
+        mesh=sharding.mesh,
+        in_specs=(sharding.spec_vector_shard, P(None, None, None)),
+        out_specs=sharding.spec_vector_shard,
     )
+    if field_maps is None:
+        return jax.jit(injector, donate_argnums=0)
+
+    from_solver, to_solver_field = field_maps
+
+    def _inject_physical(state: Array, cols: Array) -> Array:
+        return to_solver_field(injector(from_solver(state), cols))
+
+    return jax.jit(_inject_physical, donate_argnums=0)
 
 
 class StochasticForcer:
