@@ -24,7 +24,12 @@ design.
 What is asserted, and why the bounds differ per geometry:
 
 - **Cartesian** (plane-couette): the closure is *exact*, so the
-  stepped-state divergence must collapse to round-off.
+  stepped-state divergence must collapse to round-off.  The
+  plane-couette off case additionally reports the momentum side of
+  the trade (see ``_worker``): what a state-side relocation of the
+  residual would cost -- the alternative measured *violently
+  unstable* (the ``cartesian._imm_iteration`` docs) -- vs the
+  composed-``D2`` operators' momentum price.
 - **Annular** (taylor-couette): bounded by the discrete commutator
   `$[D_1, 1/r] \\ne -1/r^2$`, which no choice of a single `$D_1$`
   removes.  A large improvement is required, not exactness.
@@ -85,10 +90,8 @@ PIPE_STEPS = 10
 # `$D_1[1,0] \sim N_y^2$` amplified its Nyquist content.  With
 # ``random_field._wall_normal_filter`` supplying the missing
 # wall-normal factor of the smoothness envelope, that content is gone.
-# **The rationale recorded for ``res.consistent_imm`` elsewhere
-# (``Resolution.consistent_imm``, ``wall_bounded/CLAUDE.md``, the plan
-# file) still quotes the old numbers and needs re-baselining** -- the
-# flag still earns its keep, but its "before" was inflated by the IC.
+# ``Resolution.consistent_imm`` records this table (re-baselined
+# 2026-07-24).
 
 # (label, system, consistent_imm, max relative divergence allowed).
 # The gate-off bounds are loose regression pins on today's behaviour
@@ -259,6 +262,63 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
     rel_ic = divergence(state)
     rel = divergence(stepped)
     print(f"IC rel div = {rel_ic:.2e}", flush=True)
+
+    if system == "plane-couette" and not consistent_imm:
+        # The momentum side of the ``consistent_imm`` trade, measured
+        # on this direct-fit-operator stepped state:
+        #
+        # - ``CHI-MOM``: what relocating the divergence residual into
+        #   the state (the tangential continuity back-solve, measured
+        #   violently unstable -- the ``_imm_iteration`` docs) would
+        #   cost as an interior chi-momentum equation residual,
+        #   `$\\max|\\tilde H \\delta| / \\max|\\tilde H u|$` with
+        #   `$\\delta = (i k_x, i k_z)\\,Q/k^2$` -- by construction
+        #   the same residual this un-gated step leaves in the
+        #   divergence, expressed in momentum units.
+        # - ``COMPOSED-D2``: the operator-side mechanism's momentum
+        #   price on the same field,
+        #   `$\\nu\\,\\max|(D_1 D_1 - D_2)\\,u| / \\max|\\tilde H u|$`
+        #   -- the extra viscous truncation the composed solves inject
+        #   into every momentum equation (full CN weight; upper
+        #   bound).  Measured ~2 orders below ``CHI-MOM`` at both
+        #   ny = 25 and ny = 97: the flag trades the O(1)-relative
+        #   continuity violation for a far smaller momentum-operator
+        #   price, and is the *stable* way to do so.
+        #
+        # Interior rows and the k = 0 plane excluded, like the
+        # divergence measure.
+        nz, nx = params.res.nz, params.res.nx
+        s = np.asarray(stepped)[:, :, : nz - 1, : nx // 2]
+        D1 = np.asarray(flow.D1)
+        D2 = np.asarray(flow.D2)
+        kx = np.asarray(fourier.kx)[..., : nx // 2]
+        kz = np.asarray(fourier.kz)[:, : nz - 1]
+        k2 = kx**2 + kz**2
+        cw = params.step.implicitness
+        nu = 1.0 / params.phys.re
+        dt = params.step.dt
+
+        q = 1j * kx * s[0] + np.einsum("ij, jzx -> izx", D1, s[1])
+        q = q + 1j * kz * s[2]
+        q[0] = 0.0
+        q[-1] = 0.0
+        q = np.where(k2 > 0, q / np.where(k2 > 0, k2, 1.0), 0.0)
+
+        def h_tilde(f):
+            visc = np.einsum("ij, jzx -> izx", D2, f) - k2 * f
+            return f / dt - cw * nu * visc
+
+        num = max(
+            np.abs(h_tilde(d))[1:-1, :, 1:].max()
+            for d in (1j * kx * q, 1j * kz * q)
+        )
+        den = max(np.abs(h_tilde(s[i]))[1:-1, :, 1:].max() for i in (0, 2))
+        r_chi = num / den
+        comp = np.einsum("ij, cjzx -> cizx", D1 @ D1 - D2, s)
+        r_comp = nu * np.abs(comp)[:, 1:-1, :, 1:].max() / den
+        print(f"CHI-MOM relocation = {r_chi:.6e}", flush=True)
+        print(f"COMPOSED-D2 momentum price = {r_comp:.6e}", flush=True)
+
     print(f"RESULT {rel:.6e}", flush=True)
     assert rel_ic < 1e-12, f"IC is not divergence-free: {rel_ic:.2e}"
 

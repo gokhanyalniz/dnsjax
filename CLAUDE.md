@@ -598,7 +598,8 @@ one-liners. Cross-cutting notes:
   matrices.
 - `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards.
 - `tests/test_imm_continuity.py`: stepped-state discrete divergence
-  with/without `res.consistent_imm` (+ the pipe's deferral).
+  with/without `res.consistent_imm` (+ the pipe accepts-the-flag
+  check and the plane-couette momentum-price report).
 - `tests/test_energy_budget.py`: stepped total-energy budget closure
   (`dE/dt == I - D`) on/off `res.consistent_imm` / `res.pipe_axis_fit`.
 - `tests/test_adaptive.py`: adaptive-dt machinery (controller units,

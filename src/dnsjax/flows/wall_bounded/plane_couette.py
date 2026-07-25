@@ -16,11 +16,14 @@ It also exports the flow interface consumed by ``__main__``:
 - ``init_state`` -- initial state from a snapshot or laminar
 - ``get_stats`` -- diagnostic statistics
 
-The influence-matrix method enforces `$\\nabla \\cdot \\mathbf{u}
-= 0$` and the no-slip wall BCs exactly at every time step, so no
-post-step divergence projection is fused into the stepper here
-(the triply-periodic geometry fuses one via ``make_stepper``'s
-*finalize_fn*).
+The influence-matrix method enforces the no-slip wall BCs and the
+*wall-row* divergence exactly at every time step; the interior
+discrete divergence is a truncation-level residual unless
+``res.consistent_imm`` closes it operator-side.  No post-step
+projection is fused into the stepper (the triply-periodic geometry
+fuses one via ``make_stepper``'s *finalize_fn*; a wall-bounded
+state-side projection is unstable -- see the
+``cartesian._imm_iteration`` docs).
 
 Base flow
 ---------
