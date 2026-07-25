@@ -393,7 +393,10 @@ SYSTEMS: list[dict] = [
         # the discrete-continuity guard
         # (``tests/test_imm_continuity.py``) only takes one step.  This
         # entry integrates the 4x4 influence matrix and the wider
-        # D2 = D1*D1 operators through a real nonlinear run.
+        # D2 = D1*D1 operators through a real nonlinear run.  (It is
+        # also the guard that caught the state-side projection
+        # alternative's violent instability -- the
+        # ``cartesian._imm_iteration`` docs.)
         "name": "plane-couette-consistent-imm",
         "res": {"nx": 32, "ny": 48, "nz": 32},
         "args": [

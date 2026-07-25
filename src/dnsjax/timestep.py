@@ -101,7 +101,9 @@ def make_stepper(
         post-step divergence projection + mean-mode zeroing here so it
         fuses with the step (no separate dispatch, one fewer
         state-sized read/write pass); wall-bounded flows pass ``None``
-        (the IMM already enforces continuity exactly), which leaves
+        (their continuity handling lives inside the IMM -- and a
+        state-side finalize projection is violently unstable there,
+        see the ``cartesian._imm_iteration`` docs), which leaves
         their traces unchanged.  The legacy manual-iteration pair
         ``predict_and_correct`` / ``iterate_correction`` does **not**
         apply it (mid-iteration states are not accepted steps); a
