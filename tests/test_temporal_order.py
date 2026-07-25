@@ -30,10 +30,17 @@ so a ``dt`` sweep needs a subprocess per value):
   a change that *removes* that error.  This study instead measures
   each configuration's own self-convergence and asserts the flag
   strictly improves both the error size and its decay rate (measured:
-  1.3e-2 at order ~0.5 -> 3.3e-5 at order ~1.1).  The wall-bounded
+  1.3e-2 at order ~0.5 -> 3.6e-5 at order ~1.2).  The wall-bounded
   absolute order is **not** 2 either way -- the projection splitting
   sets it -- which is exactly why the study above compares schemes
   rather than dts.
+- **Taylor-Couette, ``res.consistent_imm`` contrast**: the same
+  measurement on the annular geometry, where the reformulation has one
+  time-discretization element the Cartesian one does not -- the spin
+  coupling evaluated at the running corrector iterate -- plus the
+  `$\Phi^n$` wall rows recomputed from the carried `$u_\pm$` state.
+  Both are order-preserving only if the corrector converges to the
+  fully coupled scheme, which is what this study pins.
 
 Corrector-bearing runs use a tight tolerance (``1e-9``) so
 fixed-point error does not pollute the truncation-error measurement,
@@ -155,15 +162,23 @@ STUDIES = [
     "kolmogorov",
     "plane-couette",
     "plane-couette-consistent-imm",
+    "taylor-couette-consistent-imm",
     "kolmogorov-vardt",
     "plane-couette-vardt",
 ]
-WORKER_SYSTEMS = ["kolmogorov", "plane-couette"]
+WORKER_SYSTEMS = ["kolmogorov", "plane-couette", "taylor-couette"]
 
 FLOW_MODULES = {
     "plane-couette": "dnsjax.flows.wall_bounded.plane_couette",
+    "taylor-couette": "dnsjax.flows.wall_bounded.taylor_couette",
     "kolmogorov": "dnsjax.flows.triply_periodic.monochromatic",
 }
+
+# Taylor-Couette control parameters for the annular study.  Internal
+# (not public) names: ``geo.lx`` is the axial period, ``res.nx`` the
+# axial resolution and ``res.nz`` the azimuthal one.
+TC_PHYS = {"re1": 400.0, "re2": -400.0}
+TC_GEO = {"eta": 0.5}
 
 
 def _worker(
@@ -191,11 +206,21 @@ def _worker(
         update_parameters,
     )
 
+    phys: dict = {"system": system}
+    geo: dict = {"lx": LX}
+    if system == "taylor-couette":
+        # The annulus derives its azimuthal period from ``geo.m0``, so
+        # only the axial one (``geo.lx``) is set here.
+        phys |= TC_PHYS
+        geo |= TC_GEO
+    else:
+        phys["re"] = 100.0
+        geo["lz"] = LZ
     update_parameters(
         Parameters(
             dist={"np0": 1, "np1": 1, "platform": "cpu"},
-            phys={"system": system, "re": 100.0},
-            geo={"lx": LX, "lz": LZ},
+            phys=phys,
+            geo=geo,
             res={
                 "nx": NX,
                 "ny": NY_PERIODIC if system == "kolmogorov" else NY,
@@ -224,9 +249,15 @@ def _worker(
 
     amp = AMP_KOLM if system == "kolmogorov" else AMP_PC
     # ICs are physical; the steppers work in the solver basis (the
-    # same single crossing ``__main__`` performs).  The order study
-    # compares states to each other, so it stays in that one basis.
+    # same single crossing ``__main__`` performs), and the saved state
+    # is converted **back** -- the study must compare the physical
+    # solution.  A solver basis may carry a *derived* component (the
+    # Cartesian v-omega_y one carries `$\varphi = L v$`, whose two
+    # wall values are the influence matrix's `$\alpha$` and need not
+    # converge as `$\Delta t \to 0$`), so a relative L2 taken in that
+    # basis measures something the scheme never claimed.
     to_solver = getattr(fmod, "to_solver_basis", lambda s: s)
+    from_solver = getattr(fmod, "from_solver_basis", lambda s: s)
     state = to_solver(generate_random_state(amp, SMOOTH, SEED))
     if vardt and system == "kolmogorov":
         # Dense dyadic alternation: a change at 2 of every 3 steps.
@@ -297,7 +328,7 @@ def _worker(
             _converged(err, i)
             prev_dt = step_dt
 
-    np.save(out, np.asarray(state))
+    np.save(out, np.asarray(from_solver(state)))
 
 
 def _run(
@@ -485,6 +516,67 @@ def main() -> None:
                 f"error: {first['off']:.3e} -> {first['on']:.3e}"
             )
             assert slopes["on"] > slopes["off"] + 0.3, (
+                "consistent_imm did not improve the convergence rate: "
+                f"{slopes['off']:.2f} -> {slopes['on']:.2f}"
+            )
+            assert slopes["on"] > 1.0, (
+                f"consistent_imm convergence rate below 1: {slopes['on']:.2f}"
+            )
+
+        if "taylor-couette-consistent-imm" in studies:
+            # The annular/cylindrical half of the study above, and the
+            # detector for the one genuinely new time-discretization
+            # element the 2026-07-26 reformulation introduced: the
+            # spin coupling lagged to the corrector iterate, and the
+            # `$\Phi^n$` wall rows recomputed from the carried
+            # `$u_\pm$` state.  Either would show here as a lost
+            # order.  (An earlier design lagged the *recovery*
+            # coupling too; that variant measured as a small
+            # wrong-constant first-order shift, which this study is
+            # sized to see.)
+            print("=== taylor-couette: consistent_imm self-convergence ===")
+            slopes, first = {}, {}
+            for cimm in (False, True):
+                tag = "on" if cimm else "off"
+                ref = tdir / f"tc_sc_{tag}_ref.npy"
+                _run(
+                    "taylor-couette",
+                    "iterative-cn",
+                    DT_SELF_REF,
+                    ref,
+                    consistent_imm=cimm,
+                )
+                errs = []
+                for dt in DTS_PC:
+                    out = tdir / f"tc_sc_{tag}_{dt}.npy"
+                    _run(
+                        "taylor-couette",
+                        "iterative-cn",
+                        dt,
+                        out,
+                        consistent_imm=cimm,
+                    )
+                    errs.append(_err(out, ref))
+                orders = [
+                    np.log2(a / b)
+                    for a, b in zip(errs, errs[1:], strict=False)
+                ]
+                print(
+                    f"consistent_imm={tag}: errors "
+                    f"{[f'{e:.3e}' for e in errs]}  orders "
+                    f"{[f'{o:.2f}' for o in orders]}"
+                )
+                slopes[tag], first[tag] = min(orders), errs[0]
+
+            # Same contract as the Cartesian study: the flag must
+            # strictly improve the error size and the decay rate, and
+            # reach at least first order.  Absolute numbers recorded,
+            # not pinned.
+            assert first["off"] / first["on"] > 5.0, (
+                "consistent_imm did not shrink the absolute temporal "
+                f"error: {first['off']:.3e} -> {first['on']:.3e}"
+            )
+            assert slopes["on"] > slopes["off"], (
                 "consistent_imm did not improve the convergence rate: "
                 f"{slopes['off']:.2f} -> {slopes['on']:.2f}"
             )

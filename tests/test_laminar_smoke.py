@@ -512,13 +512,17 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # res.consistent_imm on: the boundary closure and the wider
-        # D2 = D1*D1 operators must leave the laminar fixed point
-        # exactly fixed.  Every correction term is linear in u', so it
-        # vanishes identically at u' = 0 -- err = 0 here is the cheap
-        # structural proof that the closure adds nothing spurious.
-        # One Cartesian, one annular, and one pipe entry cover all
-        # three implementations.
+        # res.consistent_imm on: the reconstruction scheme must leave
+        # the laminar fixed point exactly fixed.  Every term of it is
+        # linear in u', so all of them vanish identically at u' = 0 --
+        # err = 0 here is the cheap structural proof that it adds
+        # nothing spurious (it is the *nonlinear* smoke that has
+        # teeth; see tests/test_random_smoke.py).  One entry per
+        # geometry covers the three implementations; the annular
+        # family then adds the three flows whose mean-plane packing
+        # differs (a rotating outer wall, a body force, a polymer
+        # stress), since that packing is the one place the flag can
+        # break a fixed point without any perturbation present.
         "name": "plane-couette-consistent-imm",
         "args": [
             "--phys.system",
@@ -567,12 +571,106 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Pipe opt-in (x = r^2 axis operators + 1-wall closure): same
-        # cheap structural proof that the closure leaves u' = 0 fixed.
+        # Pipe opt-in (the spin-quad formulation): same cheap
+        # structural proof that it leaves u' = 0 fixed.
         "name": "pipe-consistent-imm",
         "args": [
             "--phys.system",
             "pipe",
+            "--res.consistent_imm",
+            "True",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nz",
+            "4",
+            "--res.ntheta",
+            "4",
+            "--res.nr",
+            "27",
+        ],
+    },
+    {
+        # Quasi-Keplerian flag-on: the same annular machinery at a very
+        # different (re1, r_omega, eta) corner.
+        "name": "quasi-keplerian-consistent-imm",
+        "args": [
+            "--phys.system",
+            "quasi-keplerian",
+            "--phys.re1",
+            "100",
+            "--phys.r_omega",
+            "-1.2",
+            "--geo.eta",
+            "0.71",
+            "--res.consistent_imm",
+            "True",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nz",
+            "4",
+            "--res.ntheta",
+            "4",
+            "--res.nr",
+            "27",
+        ],
+    },
+    {
+        # Dean flag-on: a **total-field** flow, so the laminar state is
+        # the mean-mode balance between the azimuthal body force
+        # ``pi_theta`` and viscosity.  That balance lives entirely in
+        # the two packed k^2 = 0 slots, which is exactly what the
+        # reformulation re-plumbs -- a packing error would show as a
+        # drifting Ub_th here even though no perturbation exists.
+        "name": "dean-consistent-imm",
+        "args": [
+            "--phys.system",
+            "dean",
+            "--geo.eta",
+            "0.5",
+            "--phys.re",
+            "100",
+            "--res.consistent_imm",
+            "True",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nz",
+            "4",
+            "--res.ntheta",
+            "4",
+            "--res.nr",
+            "27",
+        ],
+    },
+    {
+        # Viscoelastic Dean flag-on: the 9-component state calls the
+        # annular pass on its [:3] velocity slice, so this is the guard
+        # that the reformulation composes with the polymer-stress
+        # divergence (which reaches it as RHS content, projected by the
+        # double-curl sources).
+        "name": "viscoelastic-dean-consistent-imm",
+        "args": [
+            "--phys.system",
+            "viscoelastic-dean",
+            "--phys.epsilon",
+            "0",
+            "--phys.kappa",
+            "0",
+            "--phys.wi",
+            "5",
+            "--phys.el",
+            "5",
             "--res.consistent_imm",
             "True",
             "--init.start_from_laminar",

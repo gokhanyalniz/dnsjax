@@ -7,13 +7,22 @@ Tests cover:
 3. ``_abase_matvec`` matrix-free vs dense reference.
 4. ``_lk_matvec`` vs per-mode NumPy reference (Neumann at both walls,
    pin at the mean mode).
-5. Pallas band-vs-dense parity for `$L_k$` and the three `$H_k$`
-   operators (banded storage == ``banded(dense)``, no-pivot banded
-   solve == dense solve).
-6. ``get_norm2_annular`` correctness.
-7. Circular-Couette coefficients `$A_0$`, `$B_0$` vs the per-case
+5. Pallas band-vs-dense parity for `$L_k$`, the three `$H_k$`
+   operators and the two ``res.consistent_imm`` ones
+   (`$L_{v,\\mathrm{mod}}$` and the `$(\\Phi, \\omega_r)$` pair):
+   banded storage == ``banded(dense)``, no-pivot banded solve ==
+   dense solve.
+6. The `$u_r$`-`$\\omega_r$` algebraic identities backing
+   ``res.consistent_imm``: the mean-plane packing reuses the
+   primitive scheme's own mean operators bit-exactly, the per-point
+   reconstruction is exactly solenoidal at every row and in both
+   bases, and the double-curl sources annihilate a discrete gradient
+   -- with the **conservative** axial curl, whose direct-form twin is
+   asserted to fail.
+7. ``get_norm2_annular`` correctness.
+8. Circular-Couette coefficients `$A_0$`, `$B_0$` vs the per-case
    reference forms and wall values.
-8. Affine-mapped Clenshaw-Curtis integration weights (spectral) with
+9. Affine-mapped Clenshaw-Curtis integration weights (spectral) with
    the radial Jacobian on ``[r1, r2]``.
 
 Run as a script via ``uv run python tests/test_annular.py``.
@@ -69,12 +78,14 @@ from dnsjax.flows.wall_bounded.taylor_couette import (  # noqa: E402
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
 from dnsjax.geometries.wall_bounded.annular import (  # noqa: E402
     _abase_matvec,
-    _build_A_base,
     _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
     _build_Lk_band_gpu,
     _build_Lk_dense_gpu,
+    _build_Lv_dir_band_gpu,
+    _build_Lv_dir_dense_gpu,
     _lk_matvec,
+    _vw_meff2,
     build_annular_grid,
     fourier,
     get_norm2_annular,
@@ -207,10 +218,10 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
     no-pivot banded sweep (CPU pure-JAX path) reproduces the dense
     solve on a complex RHS.
 
-    Run for both `$A_{base}$` variants: the direct-fit `$D_2$` at the
-    ``fd_order`` band, and the ``res.consistent_imm`` `$D_2 = D_1 D_1$`
-    at its wider *measured* band -- assembly, no-pivot factorisation
-    and the Pallas sweep all have to hold at both widths.
+    Both flags share one direct-fit `$A_{\mathrm{base}}$` at the
+    ``fd_order`` band, so there is a single variant, and the
+    ``res.consistent_imm`` operators (`$L_{v,\mathrm{mod}}$` and the
+    `$(\Phi, \omega_r)$` pair) go through the same checks below.
     """
     Nr = params.res.ny
 
@@ -227,12 +238,8 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
 
     D1 = tc_flow.D1
     inv_r2 = tc_flow.inv_r2
-    inv_r = tc_flow.inv_r
-    # (A_base, band half-width) for the ungated and gated operators.
-    variants = [
-        (A, matrix_half_bandwidth(np.asarray(A), (0, -1)))
-        for A in (tc_flow.A_base, _build_A_base(D1, D1 @ D1, inv_r))
-    ]
+    A_base = tc_flow.A_base
+    p = matrix_half_bandwidth(np.asarray(A_base), (0, -1))
 
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
@@ -262,24 +269,204 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
             err_msg=label,
         )
 
-    for A_base, p in variants:
+    _check(
+        f"Lk (p={p})",
+        p,
+        _build_Lk_band_gpu(D1, A_base, m_sq, inv_r2, kz2_s, mean_s, p),
+        _build_Lk_dense_gpu(D1, A_base, m_sq, inv_r2, kz2_s, mean_s),
+    )
+    for label, meff2 in [
+        ("Hk_plus", m_plus_1_sq),
+        ("Hk_minus", m_minus_1_sq),
+        ("Hk_z", m_sq),
+    ]:
         _check(
-            f"Lk (p={p})",
+            f"{label} (p={p})",
             p,
-            _build_Lk_band_gpu(D1, A_base, m_sq, inv_r2, kz2_s, mean_s, p),
-            _build_Lk_dense_gpu(D1, A_base, m_sq, inv_r2, kz2_s, mean_s),
+            _build_Hk_band_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu, p),
+            _build_Hk_dense_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu),
         )
-        for label, meff2 in [
-            ("Hk_plus", m_plus_1_sq),
-            ("Hk_minus", m_minus_1_sq),
-            ("Hk_z", m_sq),
-        ]:
-            _check(
-                f"{label} (p={p})",
-                p,
-                _build_Hk_band_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu, p),
-                _build_Hk_dense_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu),
-            )
+
+    # ``res.consistent_imm`` operators: the dt-free Dirichlet recovery
+    # L_v,mod, and the two-slot (Phi, omega_r) pair -- same band width
+    # (the (D1 + 1/r) correction is a per-mode multiple of an operator
+    # already inside the base band), same assembly contract.
+    _check(
+        f"Lv_dir (p={p})",
+        p,
+        _build_Lv_dir_band_gpu(
+            D1, A_base, m_sq, tc_flow.inv_r, inv_r2, kz2_s, mean_s, p
+        ),
+        _build_Lv_dir_dense_gpu(
+            D1, A_base, m_sq, tc_flow.inv_r, inv_r2, kz2_s, mean_s
+        ),
+    )
+    for slot, meff2 in enumerate(_vw_meff2(fourier)):
+        _check(
+            f"Hk_vw[{slot}] (p={p})",
+            p,
+            _build_Hk_band_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu, p),
+            _build_Hk_dense_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu),
+        )
+
+
+def test_vw_mean_plane_packing_reuses_the_primitive_operators() -> None:
+    r"""The packed `$k^2 = 0$` plane carries the primitive scheme's own
+    mean-mode Helmholtz operators, **bit-exactly**.
+
+    Flag-on, the two evolved slots are structurally zero at the mean
+    mode, so they carry `$u_{z,00}$` and `$u_{\theta,00}$` instead
+    (``annular._imm_iteration_vw``).  That only reproduces the
+    primitive mean-mode update if the operators match: the `$\Phi$`
+    slot must be the mean `$H_{k,z}$` (`$m_{\mathrm{eff}}^2 = 0$`) and
+    the `$\omega$` slot the mean `$H_{k,\pm}$`
+    (`$m_{\mathrm{eff}}^2 = 1 = m^2 + 1$` at `$m = 0$`).  Asserted as
+    band equality on the mean column, and as *inequality* off it (the
+    pair shares `$m^2 + 1$` there, which is neither `$(m \pm 1)^2$`
+    nor `$m^2$`), so a builder that dropped the mean exception would
+    fail rather than pass vacuously.
+    """
+    m_s = fourier.m[0, ..., None]
+    kz2_s = fourier.kz2[0, ..., None]
+    dt, c = params.step.dt, params.step.implicitness
+    nu = 1.0 / params.phys.re
+    A_base = tc_flow.A_base
+    inv_r2 = tc_flow.inv_r2
+    p = matrix_half_bandwidth(np.asarray(A_base), (0, -1))
+
+    def _band(meff2):
+        return np.asarray(
+            _build_Hk_band_gpu(A_base, meff2, inv_r2, kz2_s, dt, c, nu, p)
+        )
+
+    phi2, om2 = _vw_meff2(fourier)
+    is_mean = np.asarray(fourier.mean_mask[0])
+    assert is_mean.sum() == 1, "expected exactly one k^2 = 0 mode"
+    for label, got, want in (
+        ("Phi slot == mean Hk_z", _band(phi2), _band(m_s**2)),
+        ("omega slot == mean Hk_+", _band(om2), _band((m_s + 1) ** 2)),
+    ):
+        assert_allclose(
+            got[is_mean], want[is_mean], atol=0.0, rtol=0.0, err_msg=label
+        )
+        assert not np.allclose(got[~is_mean], want[~is_mean]), (
+            f"{label}: the two operators agree off the mean plane too, "
+            "so this test cannot see the mean-plane exception"
+        )
+
+
+def test_vw_reconstruction_is_exactly_solenoidal() -> None:
+    r"""The `$u_r$`-`$\omega_r$` reconstruction zeroes the divergence.
+
+    The identity ``res.consistent_imm`` rests on
+    (``annular._imm_iteration_vw``): for any `$u_r$` and `$\omega_r$`,
+    solving
+
+    .. math::
+        i k_z u_z + \frac{im}{r} u_\theta
+            = -\Bigl(D_1 + \frac1r\Bigr) u_r , \qquad
+        \frac{im}{r} u_z - i k_z u_\theta = \omega_r
+
+    makes the solver's own divergence
+    `$(D_1 + 1/r) u_r + (im/r) u_\theta + i k_z u_z$` vanish at
+    **every** row -- walls included -- as algebra, for any `$D_1$`,
+    any grid, any mode.  Checked against the production `$D_1$` on
+    random data including the `$m = 0$` and `$k_z = 0$` lines, where a
+    route recovering one component from continuity alone would be
+    singular, and against the `$u_\pm$` form of the same operator (the
+    one ``analysis.snapshot_ops.divergence`` mirrors).
+    """
+    Nr = params.res.ny
+    D1 = np.asarray(tc_flow.D1)
+    inv_r = np.asarray(tc_flow.inv_r)
+    rng = np.random.default_rng(3)
+
+    for m, kz in ((1.0, 0.0), (0.0, 2.5), (3.0, -4.0), (2.0, 0.05)):
+        ur = rng.standard_normal(Nr) + 1j * rng.standard_normal(Nr)
+        om = rng.standard_normal(Nr) + 1j * rng.standard_normal(Nr)
+        a, b = 1j * kz, 1j * m * inv_r
+        det = kz**2 + m**2 * inv_r**2
+        chi = -(D1 @ ur + inv_r * ur)
+        uz = (-a * chi - b * om) / det
+        ut = (-b * chi + a * om) / det
+
+        terms = [D1 @ ur, inv_r * ur, b * ut, a * uz]
+        div = sum(terms)
+        scale = max(np.abs(t).max() for t in terms)
+        assert np.abs(div).max() < 100 * np.finfo(float).eps * scale, (
+            m,
+            kz,
+            np.abs(div).max() / scale,
+        )
+
+        # Same, assembled in the solver's u_+/u_- basis -- the form
+        # ``_imm_iteration_vp`` and the analysis mirror use.
+        up, um = ur + 1j * ut, ur - 1j * ut
+        pm_terms = [
+            (D1 @ up + (m + 1) * inv_r * up) / 2,
+            (D1 @ um + (1 - m) * inv_r * um) / 2,
+            a * uz,
+        ]
+        pm_scale = max(np.abs(t).max() for t in pm_terms)
+        assert np.abs(sum(pm_terms)).max() < 1e-12 * pm_scale, (m, kz)
+
+        # The round trip is exact: the reconstruction reproduces the
+        # radial vorticity it was built from.
+        assert_allclose(b * uz - a * ut, om, rtol=1e-12)
+
+
+def test_vw_source_projections_kill_gradients() -> None:
+    r"""`$S_\Phi$` and `$S_\omega$` annihilate a discrete gradient --
+    and only with the **conservative** axial curl.
+
+    This is the discrete pressure elimination of the
+    `$u_r$`-`$\omega_r$` scheme.  Both sources are built from the
+    discrete curl, whose axial component must be written
+    `$C_z = (1/r)[D_1(r N_\theta) - i m N_r]$`: in that form the only
+    metric facts used are the *diagonal* identities
+    `$r \cdot (1/r) = 1$` and `$1/r^2 = (1/r)^2$`, so the commutator
+    `$[D_1, 1/r]$` never appears and the curl of a discrete gradient
+    `$(i k_z q, D_1 q, (im/r) q)$` is exactly zero.  The direct form
+    `$C_z = (D_1 + 1/r) N_\theta - (im/r) N_r$` is mathematically the
+    same operator and fails outright -- asserted here as a *floor*, so
+    a silent regression to it cannot pass.
+    """
+    Nr = params.res.ny
+    rs = np.asarray(tc_flow.rs)
+    D1 = np.asarray(tc_flow.D1)
+    inv_r = np.asarray(tc_flow.inv_r)
+    rng = np.random.default_rng(5)
+
+    # One scale for every residual below: the size of the gradient
+    # times the size of the operators applied to it.  A per-term scale
+    # would collapse to zero on the k_z = 0 / m = 0 lines -- exactly
+    # the lines worth testing -- and make the assertion vacuous.
+    d1_norm = np.abs(D1).sum(axis=1).max()
+
+    for m, kz in ((1.0, 0.0), (0.0, 2.5), (3.0, -4.0)):
+        q = rng.standard_normal(Nr) + 1j * rng.standard_normal(Nr)
+        n_z, n_r, n_t = 1j * kz * q, D1 @ q, 1j * m * inv_r * q
+        scale = max(np.abs(t).max() for t in (n_z, n_r, n_t))
+        op = max(d1_norm, abs(m) * inv_r.max(), abs(kz), inv_r.max())
+
+        c_r = 1j * m * inv_r * n_z - 1j * kz * n_t
+        c_t = 1j * kz * n_r - D1 @ n_z
+        c_z = inv_r * (D1 @ (rs * n_t) - 1j * m * n_r)
+        s_phi = -(1j * m * inv_r * c_z - 1j * kz * c_t)
+
+        for label, val, ref in (
+            ("C_r", c_r, op * scale),
+            ("C_theta", c_t, op * scale),
+            ("C_z", c_z, op * scale),
+            ("S_phi", s_phi, op * op * scale),
+        ):
+            assert np.abs(val).max() < 1e-12 * ref, (label, m, kz)
+
+        # The direct-form axial curl must FAIL, or the assertions above
+        # are not testing the conservative form.
+        if m != 0:
+            c_z_direct = (D1 @ n_t + inv_r * n_t) - 1j * m * inv_r * n_r
+            assert np.abs(c_z_direct).max() > 1e-6 * op * scale, (m, kz)
 
 
 # Group C: Norms

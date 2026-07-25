@@ -387,16 +387,17 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # ``res.consistent_imm`` on, driven nonlinearly: the laminar
-        # smoke cannot exercise the boundary closure (every correction
-        # term is linear in u', so all of them vanish at u' = 0), and
-        # the discrete-continuity guard
-        # (``tests/test_imm_continuity.py``) only takes one step.  This
-        # entry integrates the 4x4 influence matrix and the wider
-        # D2 = D1*D1 operators through a real nonlinear run.  (It is
-        # also the guard that caught the state-side projection
-        # alternative's violent instability -- the
-        # ``cartesian._imm_iteration`` docs.)
+        # ``res.consistent_imm`` on, driven nonlinearly -- **the**
+        # stability guard for the Cartesian v-omega_y scheme.  The
+        # laminar smoke cannot exercise it (every term is linear in
+        # u', so all vanish at u' = 0) and the discrete-continuity
+        # guard (``tests/test_imm_continuity.py``) takes one step, so
+        # only this entry integrates the reformulated dynamics through
+        # a real nonlinear run.  That matters more here than anywhere
+        # else in this file: the rejected state-side projection passed
+        # every *linear* gate and still went non-finite within ~6
+        # steps of exactly this configuration (the
+        # ``cartesian._imm_iteration`` docs).
         "name": "plane-couette-consistent-imm",
         "res": {"nx": 32, "ny": 48, "nz": 32},
         "args": [
@@ -413,7 +414,36 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The annular half of the same guard (u_r / A_base closure).
+        # The same scheme under cnab2, which is a genuinely different
+        # path into it: the AB2/CN split hands ``_imm_iteration`` a
+        # combination assembled from ``_l_bf`` and the carried
+        # nonlinear history, and that combination is what the
+        # v-omega_y source projections act on.  The two knobs were
+        # disjoint across this file until 2026-07-25, so this
+        # combination had never been integrated nonlinearly.
+        "name": "plane-couette-consistent-imm-cnab2",
+        "res": {"nx": 32, "ny": 48, "nz": 32},
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+            "--res.consistent_imm",
+            "True",
+            "--step.scheme",
+            "cnab2",
+        ],
+    },
+    {
+        # The annular half of the same guard: the u_r-omega_r pair,
+        # whose spin coupling is the one linear term still lagged to
+        # the corrector iterate (measured contraction <= 0.02, but
+        # measured on *linear* data -- this entry is where the loop
+        # meets a real nonlinear source).
         "name": "taylor-couette-consistent-imm",
         "res": {"nx": 24, "ny": 40, "nz": 24},
         "args": [
@@ -427,6 +457,55 @@ SYSTEMS: list[dict] = [
             "0.5",
             "--geo.lz",
             "3",
+            "--res.consistent_imm",
+            "True",
+        ],
+    },
+    {
+        # The annular flag-on scheme under cnab2 -- a genuinely
+        # different path in: the AB2/CN split hands ``_imm_iteration``
+        # a combination assembled from ``_l_bf`` and the carried
+        # nonlinear history, and the lagged spin coupling then reads a
+        # *carry*-derived iterate rather than a corrector one.
+        "name": "taylor-couette-consistent-imm-cnab2",
+        "res": {"nx": 24, "ny": 40, "nz": 24},
+        "args": [
+            "--phys.system",
+            "taylor-couette",
+            "--phys.re1",
+            "500",
+            "--phys.re2",
+            "-200",
+            "--geo.eta",
+            "0.5",
+            "--geo.lz",
+            "3",
+            "--res.consistent_imm",
+            "True",
+            "--step.scheme",
+            "cnab2",
+        ],
+    },
+    {
+        # The pipe half: the spin-quad formulation, on a *random* IC.
+        # This entry was impossible before 2026-07-26 -- the composed
+        # `$D_2$` the flag used to build was not
+        # grid-scale-dissipative, so a grid-white draw near the axis
+        # blew it up and the flag was documented as resolved-ICs-only.
+        # The reformulation composes nothing, so the restriction is
+        # gone; this is the guard that it stays gone.  Half-CGL grid
+        # (the iterative-cn default), i.e. the innermost node sits
+        # closest to the axis -- the hardest case for every 1/r term
+        # in the scheme.
+        "name": "pipe-consistent-imm",
+        "res": {"nx": 24, "ny": 40, "nz": 24},
+        "args": [
+            "--phys.system",
+            "pipe",
+            "--phys.re",
+            "1800",
+            "--geo.lz",
+            "5",
             "--res.consistent_imm",
             "True",
         ],

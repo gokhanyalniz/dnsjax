@@ -12,7 +12,7 @@ families).  Each config steps a **resolved** flow a short time via the
 closes -- i.e. the stepped-state divergence residual and the
 ``D1``-enstrophy-vs-``D2``-Laplacian summation-by-parts gap are *inert*,
 injecting no ``O(1)`` source into the balance -- **on and off** the
-radial-operator flags (``res.consistent_imm``, ``res.pipe_axis_fit``).
+``res.consistent_imm`` flag.
 
 The residual is finite-difference/truncation level: a central-difference
 ``dE/dt`` at ``dt`` (``O(dt^2)`` on the smooth part) plus the SBP defect,
@@ -25,10 +25,9 @@ laminar-dominated pipe roll -- keeps it well-conditioned in every case.
 
 Background: memory ``reference_imm_divergence_residual`` (the residual is
 a convergent truncation error, physically inert for resolved fields) and
-the ``Resolution.consistent_imm`` / ``pipe_axis_fit`` docstrings.  The
-pipe ``consistent_imm`` entry needs a resolved IC (``localized_rolls``);
-a grid-white random draw makes its composed ``D2`` diverge (see the
-``pipe_axis_fit`` entry, which stays stable on a random IC).
+the ``Resolution.consistent_imm`` docstring.  The pipe entries start
+from a resolved IC (``localized_rolls``) to keep the two flag settings
+comparable; since the 2026-07-26 reformulation neither *needs* it.
 
 Run directly (needs ``mpirun``; each config launches ``dnsjax`` once)::
 
@@ -55,10 +54,9 @@ SKIP = 12  # drop the first-step projection transient before judging
 BUDGET_TOL = 0.05  # max|dE/dt-(I-D)| / max(|I|,|D|,|dE/dt|), steady
 
 # Each entry: (label, system, [extra CLI flags]).  A random IC (the
-# default start mode) unless the flags select localized_rolls.  Cartesian
-# and annular gates are random-IC-stable; the pipe consistent_imm gate is
-# not, so it (and its plain / axis-fit siblings, for a like-for-like
-# resolved comparison) start from a localized-rolls spot.
+# default start mode) unless the flags select localized_rolls; the pipe
+# entries use a localized-rolls spot so both flag settings are judged
+# on the same resolved field.
 _ROLLS = [
     "--init.localized_rolls",
     "True",
@@ -76,9 +74,8 @@ CONFIGS = [
         ["--res.consistent_imm", "False"],
     ),
     ("taylor-couette on", "taylor-couette", ["--res.consistent_imm", "True"]),
-    ("pipe plain", "pipe", [*_ROLLS, "--res.pipe_axis_fit", "False"]),
-    ("pipe axis-fit", "pipe", [*_ROLLS, "--res.pipe_axis_fit", "True"]),
-    ("pipe consistent_imm", "pipe", [*_ROLLS, "--res.consistent_imm", "True"]),
+    ("pipe off", "pipe", [*_ROLLS, "--res.consistent_imm", "False"]),
+    ("pipe on", "pipe", [*_ROLLS, "--res.consistent_imm", "True"]),
 ]
 
 

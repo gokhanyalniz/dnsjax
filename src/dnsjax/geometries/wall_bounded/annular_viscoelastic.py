@@ -116,7 +116,7 @@ import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
-from ...fd import build_diff_matrices, fornberg_weights
+from ...fd import fornberg_weights
 from ...fft import chunked_transform
 from ...measurements import get_cfl
 from ...operators import phys_to_spec_2d, spec_to_phys_2d
@@ -142,7 +142,6 @@ from .annular import (
     CFL_NAMES,
     AnnularFlow,
     Fourier,
-    _build_A_base,
     _imm_iteration,
     fourier,
 )
@@ -540,14 +539,6 @@ class ViscoelasticAnnularFlow(AnnularFlow):
 
     tensor_spin: Array = field(init=False)
     inv_r_padded: Array = field(init=False)
-    # `$A_{base}$` for the conformation operator.  The conformation
-    # tensor is not solenoidal and never enters the IMM projection, so
-    # it keeps the **direct-fit** `$D_2$` (more accurate, and a band
-    # narrow enough that the six stacked `$H_c$` operators -- this
-    # flow's largest allocation -- do not grow) even when
-    # ``res.consistent_imm`` widens the velocity operators.  Aliases
-    # ``A_base`` when the flag is off.
-    A_base_c: Array = field(init=False)
     Hc_op: _WallBoundedOp | None = field(init=False, default=None)
     # Narrow Laplacian BC wall rows of Hc, stored as leaves so the
     # jitted adaptive-dt rebuild (``_build_dt_leaves``) can reuse
@@ -564,20 +555,6 @@ class ViscoelasticAnnularFlow(AnnularFlow):
             jnp.asarray(_TENSOR_SPIN, dtype=sharding.float_type),
             sharding.no_shard,
         )
-
-        if params.res.consistent_imm:
-            # Rebuild the direct-fit second derivative for `$H_c$`
-            # (see the ``A_base_c`` field note).
-            _, d2_np = build_diff_matrices(
-                np.asarray(self.rs), params.res.fd_order
-            )
-            self.A_base_c = _build_A_base(
-                self.D1,
-                jax.device_put(d2_np, sharding.no_shard),
-                self.inv_r,
-            )
-        else:
-            self.A_base_c = self.A_base
 
         Nr = params.res.ny
         ny_phys = Nr + sharding.ny_y_pad
@@ -668,7 +645,7 @@ def _build_hc_operator(
         # stacked into one homogeneous operator.
         bands = [
             _build_Hc_band_gpu(
-                flow_.A_base_c,
+                flow_.A_base,
                 flow_.hc_narrow0,
                 flow_.hc_narrowN,
                 meff2[s],
@@ -687,7 +664,7 @@ def _build_hc_operator(
 
     def _dense(s: int) -> DenseJAXSolver:
         H = _build_Hc_dense_gpu(
-            flow_.A_base_c,
+            flow_.A_base,
             flow_.hc_narrow0,
             flow_.hc_narrowN,
             meff2[s],

@@ -14,10 +14,12 @@
   grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2
   IMM, optional mean-mode azimuthal body force `pi_theta`)
 
-**Component basis (cylindrical / annular).** Two representations, one
-boundary. The **solver basis** — decoupled `u_± = u_r ± i u_θ` plus the
+**Component basis (cylindrical / annular; Cartesian under
+`res.consistent_imm`).** Two representations, one boundary. The
+**solver basis** — decoupled `u_± = u_r ± i u_θ` plus the
 conformation-spin components, which diagonalize the implicit operators
-— is the state's in-memory form: the carried state, the RHS, the cnab2
+(Cartesian: `(φ, v, ω_y)`, which makes continuity structural) — is the
+state's in-memory form: the carried state, the RHS, the cnab2
 carry, and the interior of every stepper. The **physical basis**
 `(u_z, u_r, u_θ)` (+ the physical tensor) is what is observed or
 persisted: snapshots, diagnostics, probes, forcing profiles, ICs, the
@@ -27,12 +29,19 @@ never back (the physical form is a view, dropped after use), via
 `from_solver_basis`, re-exported by the flow modules) or
 `annular_viscoelastic.to_spin_basis`/`from_spin_basis`. `__main__`
 owns the field-level crossings; `probes.py`/`forcing.py` convert their
-own mode columns instead. **Anything that hands a freshly built (i.e.
+own mode columns instead (**Cartesian is the exception**: its map
+needs `D1`/`D2` and the mode's wavenumbers, so it cannot act on a bare
+column — those two convert the whole field around their
+extract/scatter). **Anything that hands a freshly built (i.e.
 physical) state to a stepper must convert first** — `__main__`'s
 post-IC line and `transient_growth._linear_step` are the templates.
 `_get_rhs_core`/`_l_bf` convert internally because the real FFT needs
 per-component Hermitian symmetry, which `u_±` lack — so physical-space
-fields and the CFL measurement are always physical components.
+fields and the CFL measurement are always physical components; the
+Cartesian pair converts there for the same reason. Cartesian's
+`to_solver_basis` is a **projection**, not a bijection — the basis has
+no room for the horizontal divergence — so an IC or a `[force]` kick
+loses its non-solenoidal part on entry, by design.
 - `annular_viscoelastic.py`: viscoelastic (sPTT) extension of the
   annular geometry (`ViscoelasticAnnularFlow`): 9-component state, one
   fused pseudo-spectral RHS, both schemes supported
@@ -63,9 +72,22 @@ that instability removed the first implementation).
 
 ### Influence-matrix method (IMM)
 
-`_imm_iteration` in `cartesian.py` documents the full 9-stage
+Every geometry has the same two-way split: `_imm_iteration` is a
+trace-time dispatcher over `_imm_iteration_vp` (primitive, flag-off)
+and `_imm_iteration_vw` (the reconstruction scheme, flag-on).
+`cartesian._imm_iteration` carries the shared derivation — why there
+are two schemes (the discrete-continuity residual) and the five
+measured repairs, four of them retired — and the other two dispatchers
+add only their geometry's amendment to that record.
+`cartesian._imm_iteration_vp` documents the primitive 9-stage
 algorithm, its Schur-complement/Woodbury equivalence, and the optional
-constant-bulk-velocity / block-mean-spanwise-velocity corrections.
+constant-bulk-velocity / block-mean-spanwise-velocity corrections
+(shared via `_apply_bulk_corrections`).
+`annular._imm_iteration_vw` carries the **cylindrical** algebra
+(the `(Φ, ω_r)` pair, the mandatory conservative curl, the exact
+`L_v,mod` recovery, the mean packing) and the retired-route record for
+decoupling the pair; `cylindrical._imm_iteration_vw` adds only what
+the axis forces (the spin quad, parity classes, the band splice).
 
 - `params.solver.backend` selects operator storage: `"pallas"` (default
   banded sweep) or the `"dense"` reference/oracle -- see the
@@ -77,34 +99,57 @@ constant-bulk-velocity / block-mean-spanwise-velocity corrections.
   homogeneous data comes from
   `CartesianFlow._derive_imm_homogeneous_data`.
 - `res.consistent_imm` (default off, all three families) makes the
-  discrete continuity identity hold: `D2 := D1·D1` plus the
-  Kleiser-Schumann boundary closure, as extra homogeneous columns and
-  an enlarged influence matrix (4x4 with two walls;
-  `cartesian._derive_imm_closure` is the template, annular mirrors it
-  with `u_r`/`A_base`). The **pipe** instead builds `D1` itself from an
-  `x = r²` Fornberg fit (making the near-axis `1/r` commutator exact for
-  one parity — no `D2` to swap) and closes its single wall with a 2x2
-  matrix (`cylindrical._derive_imm_closure`); it cannot reach the
-  Cartesian machine-zero (a parity invariant) and, crucially, **needs
-  resolved ICs** — the composed `D2` destabilises a grid-white random
-  field near the stiff axis. Trade, per-geometry efficacy, and the pipe
-  sharp edge: the `Resolution.consistent_imm` docs (`parameters.py`).
-  Band width is **measured** from the assembled operator
-  (`fd.matrix_half_bandwidth`), never assumed to be `fd_order`. Guard:
-  `tests/test_imm_continuity.py`.
-- `res.pipe_axis_fit` (default off, **pipe only**) uses the `x = r²`
-  axis-regular fit for **both** `D1` and a **direct** `D2`
-  (`2 D_x + 4x D_xx` for even data, its `r`-conjugate for odd) — **not**
-  the composed `D2 := D1·D1`. So the accurate near-axis `D1` (measured
-  5–1000× better than plain-`r`) drives every `D1`-based quantity
-  (curl/divergence/enstrophy/advection) and the axis-regular `D2` makes
-  `A_base` ~3–320× more accurate near the axis too, while the direct fit
-  stays grid-scale-dissipative → **random-IC-stable** (unlike
-  `consistent_imm`); it does **not** make the divergence discretely
-  consistent. `xr2_d1 = consistent_imm or pipe_axis_fit`, `compose_d2 =
-  consistent_imm` (`build_parity_reduced_matrices`; the analysis mirror
-  `_core.parity_radial_d1` reads both from snapshot params). Detail: the
-  `Resolution.pipe_axis_fit` docs. Guard: `tests/test_energy_budget.py`.
+  discrete continuity identity hold, by **one mechanism** in all
+  three: advance the wall-normal velocity and vorticity, reconstruct
+  the tangential pair, never form a pressure — so continuity is
+  algebra at every row (walls included) for any operator, grid or
+  axis fit, and the residual is machine-eps and *flat* under
+  refinement. Operators stay direct-fit at band `fd_order`, the
+  `Lk_op` slot holds a `dt`-free Dirichlet recovery operator instead
+  of the pressure Poisson, and the influence matrix keeps its per-wall
+  shape (2×2 Cartesian/annular, 1×1 pipe) but targets
+  `(D₁·wall-normal)|wall = 0` — tangential no-slip then *emerges*.
+  Per-geometry specifics:
+  - **Cartesian**: `(φ, v, ω_y)`, 4 → 3 solves. The state is
+    **carried** in that basis and observed as `(u, v, w)` — a second
+    solver basis alongside the cyl/annular `u±` one, bound per flow by
+    `cartesian.make_basis_maps` and exported from each flow module, so
+    `__main__` / probes / forcing / TG cross it by the same
+    `to_solver_basis` / `from_solver_basis` names. Both maps are the
+    identity with the flag off, and on the `k²=0` plane always.
+  - **Annular**: the `u_r`–`ω_r` pair, which shares one Helmholtz
+    operator (`m_eff² = m²+1`); 4 → 3 solves, 3 band families instead
+    of 4. Basis unchanged (`u±` carried, converted inside the pass).
+  - **Pipe**: the same, but the pair's spin coupling cannot be
+    iterated near the axis, so the **spin quad** `(Φ±, ω±)` is
+    advanced through the *existing* `H_{k,±}` families instead — 5
+    solves over 3 band families, and nothing linear is Picard-iterated
+    (`ρ ≡ 0`).
+
+  Derivation, per-geometry efficacy, both momentum prices, and the
+  routes that were measured and rejected (operator-side identities;
+  commutator cancellation; state-side projection; reconstruction on
+  the primitive `v`; decoupling the annular pair): the
+  `Resolution.consistent_imm` docs (`parameters.py`), the
+  `cartesian._imm_iteration` docstring (the shared record) and
+  `annular._imm_iteration_vw` (the cylindrical algebra). Band width is
+  **measured** from the assembled operator (`fd.matrix_half_bandwidth`),
+  never assumed to be `fd_order`. Guards:
+  `tests/test_imm_continuity.py` (continuity + the momentum ledger),
+  `tests/test_random_smoke.py` (the nonlinear stability gate),
+  `tests/test_temporal_order.py` (the order the flag must not cost).
+- **Retired 2026-07-26**: `res.pipe_axis_fit`, the pipe's opt-in
+  `x = r²` axis-regular radial fit. It was not needed (the
+  reformulation's divergence exactness is fit-independent) and
+  measured worse on every global metric: on the Schmid & Henningson
+  `G_max = 649` anchor it errs +357 / +37 / +3.5 / +0.25 % at
+  `nr = 20/28/40/72` against the mirrored fold's −4.1 / −0.60 / −0.06 /
+  +0.01 %, and it cost ~17× the corrector iterations on a random-IC
+  pipe run — both with the flag off as well as on, i.e. a property of
+  the fit. Its 5–1000× *pointwise near-axis* `D1` advantage was real
+  but bought at the expense of `r ≈ 1`, where the pipe's
+  optimal-growth and wall-shear physics live. Record:
+  `cylindrical.build_parity_reduced_matrices`.
 
 ### Mean mode and padding modes
 

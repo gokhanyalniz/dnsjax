@@ -19,11 +19,12 @@ It also exports the flow interface consumed by ``__main__``:
 The influence-matrix method enforces the no-slip wall BCs and the
 *wall-row* divergence exactly at every time step; the interior
 discrete divergence is a truncation-level residual unless
-``res.consistent_imm`` closes it operator-side.  No post-step
-projection is fused into the stepper (the triply-periodic geometry
-fuses one via ``make_stepper``'s *finalize_fn*; a wall-bounded
-state-side projection is unstable -- see the
-``cartesian._imm_iteration`` docs).
+``res.consistent_imm`` selects the `$v$`-`$\\omega_y$` formulation,
+where it vanishes algebraically.  No post-step projection is fused
+into the stepper (the triply-periodic geometry fuses one via
+``make_stepper``'s *finalize_fn*; a wall-bounded state-side
+projection is unstable -- see the ``cartesian._imm_iteration``
+docs).
 
 Base flow
 ---------
@@ -58,6 +59,7 @@ from ...geometries.wall_bounded.cartesian import (
     get_norm2,
     get_pert_enstrophy,
     integrate_scalar,
+    make_basis_maps,
     pad_base_flow,
     tilted_profile_arrays,
 )
@@ -119,6 +121,11 @@ flow: PlaneCouetteFlow = PlaneCouetteFlow()
     set_dt,
     reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
+
+# Solver-basis boundary (``res.consistent_imm``): the state is
+# carried as (phi, v, omega_y) and observed as (u, v, w).  Both are
+# the identity with the flag off.  See ``cartesian.make_basis_maps``.
+to_solver_basis, from_solver_basis = make_basis_maps(flow)
 
 
 def frozen_profile_flow(us: Array) -> PlaneCouetteFlow:

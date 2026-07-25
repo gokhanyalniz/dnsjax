@@ -335,12 +335,14 @@ spectral padding.
 dean/viscoelastic-dean systems instead integrate the **total** field
 (`base_flow = 0`, mean-mode body force).
 
-**Component basis (cylindrical/annular)**: the state is carried in the
-solver's decoupled `u_±`/spin basis and *observed* in physical
-components; `__main__` crosses that boundary once per state (after the
-IC, and for the diagnostics/snapshot consumers), probes/forcing convert
-their own mode columns, and anything handing a freshly built state to a
-stepper must convert first. Rules and rationale:
+**Component basis (cylindrical/annular; Cartesian under
+`res.consistent_imm`)**: the state is carried in a solver basis — the
+decoupled `u_±`/spin one, or Cartesian's `(φ, v, ω_y)` — and
+*observed* in physical components; `__main__` crosses that boundary
+once per state (after the IC, and for the diagnostics/snapshot
+consumers), probes/forcing convert (mode columns for cyl/annular, the
+whole field for Cartesian), and anything handing a freshly built state
+to a stepper must convert first. Rules and rationale:
 `geometries/wall_bounded/CLAUDE.md`.
 
 **Moving frame of reference (`phys.u_grid`)**: translates the
@@ -405,7 +407,7 @@ layering" above.
 |------------|-----------------------------------------------------|
 | `[phys]`   | Reynolds numbers, `system`, oversampling, driving, `u_grid`; viscoelastic-dean rheology |
 | `[geo]`    | Domain lengths/tilt, `eta`, `m0` (azimuthal wedge), `delta`, wall-normal grid selection |
-| `[res]`    | Resolution (`nx`/`ny`/`nz`, or `nz`/`nr`/`ntheta`), `fd_order`, `consistent_imm`, `pipe_axis_fit`, `double_precision` |
+| `[res]`    | Resolution (`nx`/`ny`/`nz`, or `nz`/`nr`/`ntheta`), `fd_order`, `consistent_imm`, `double_precision` |
 | `[init]`   | Start mode (see "Initial conditions" above) + `t0`/`it0`/`isnap0`/`force_resume` |
 | `[outs]`   | Diagnostic cadences, buffering, snapshot write policy |
 | `[step]`   | `dt` + scheme knobs + adaptive-CFL knobs (`TimeStepping`) |
@@ -588,24 +590,28 @@ one-liners. Cross-cutting notes:
 - `tests/test_banded_solver_sharded.py`: shard_map-local Pallas solve on
   a forced (2, 2) mesh.
 - `tests/test_cartesian.py`: Cartesian operator/matvec + Pallas
-  band-vs-dense parity.
+  band-vs-dense parity + the v-omega_y algebraic identities.
 - `tests/test_cylindrical.py`: cylindrical operator/matvec + Pallas
-  band-vs-dense parity.
+  band-vs-dense parity + the pipe-specific spin-quad / parity /
+  mean-splice structure.
 - `tests/test_annular.py`: annular operator/matvec, Pallas-vs-dense
-  parity, circular-Couette A0/B0 checks.
+  parity, circular-Couette A0/B0 checks, and the shared cylindrical
+  `u_r`-`ω_r` algebraic identities.
 - `tests/test_viscoelastic.py`: sPTT conformation-tensor machinery.
 - `tests/test_integration.py`: quadrature weights and interpolation
   matrices.
 - `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards.
 - `tests/test_imm_continuity.py`: stepped-state discrete divergence
   with/without `res.consistent_imm` (+ the pipe accepts-the-flag
-  check and the plane-couette momentum-price report).
+  check and the plane-couette momentum-price report; every gate-on
+  bound is asserted at every `--ny`).
 - `tests/test_energy_budget.py`: stepped total-energy budget closure
-  (`dE/dt == I - D`) on/off `res.consistent_imm` / `res.pipe_axis_fit`.
+  (`dE/dt == I - D`) on/off `res.consistent_imm`.
 - `tests/test_adaptive.py`: adaptive-dt machinery (controller units,
   rebuild-vs-fresh/step parity, no-recompile guard, kappa identity).
 - `tests/test_temporal_order.py`: second-order temporal accuracy
-  (fixed and variable step).
+  (fixed and variable step) + the `res.consistent_imm`
+  self-convergence contrast on both wall-bounded families.
 - `tests/test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
   forced spectral padding.
 - `tests/test_monochromatic.py`: Kolmogorov `get_stats` identities
@@ -617,8 +623,10 @@ one-liners. Cross-cutting notes:
   nz-padding and azimuthal-wedge entries).
 - `tests/test_random_smoke.py`: random-IC nonlinear integration for
   the 6 distinct stepping machineries (+ cnab2, adaptive,
-  split-corrector, multi-device-padding and nan-guard entries;
-  default-IC + chunked-RHS ride the base plane-couette entry).
+  split-corrector, consistent_imm x {cartesian, annular, pipe x
+  axis-fit} x {iterative-cn, cnab2}, multi-device-padding and
+  nan-guard entries; default-IC + chunked-RHS ride the base
+  plane-couette entry).
 - `tests/test_quasi_keplerian.py`: quasi-keplerian control-parameter
   derivation, regime/validation errors, and the azimuthal-wedge Fourier
   + nonlinear/physical-space units.

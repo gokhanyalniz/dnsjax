@@ -459,14 +459,15 @@ def _imm_stage_breakdown(
 
     def influence_correct(velocity_j, arb_stack):
         # Stages 4-7 + finalize: the influence-matrix correction.
-        # Transcribes the *ungated* 2x2 IMM; ``res.consistent_imm``
-        # would add two closure rows and two more columns
-        # (``cartesian._imm_iteration``).  This profiler characterises
-        # the default configuration, so it rejects the flag rather
-        # than silently profiling a different algorithm.
+        # Transcribes the *ungated* 2x2 IMM.  On Cartesian
+        # ``res.consistent_imm`` selects a different algorithm
+        # entirely (the v-omega_y scheme: no pressure, three solves
+        # per mode instead of four -- ``cartesian._imm_iteration``),
+        # so this profiler rejects the flag rather than silently
+        # characterising something it does not transcribe.
         assert not params.res.consistent_imm, (
             "pallas_solve_profile transcribes the default 2x2 IMM; "
-            "res.consistent_imm changes stages 4-6"
+            "res.consistent_imm selects a different scheme"
         )
         u_arb, v_arb, w_arb = arb_stack[0], arb_stack[1], arb_stack[2]
         d_wall = jnp.einsum("bj, jzx -> zxb", flow.D1_bnd, v_arb)

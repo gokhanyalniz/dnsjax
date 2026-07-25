@@ -5,9 +5,13 @@ Tests cover:
 1. ``_lk_matvec`` matches a NumPy reference on CGL and custom grids.
 2. ``_hk_minus_matvec`` matches a NumPy reference.
 3. ``get_norm2`` matches a manual Parseval/quadrature sum.
-4. Pallas band-vs-dense parity: the ``_build_{Lk,Hk}_band_gpu``
+4. Pallas band-vs-dense parity: the ``_build_{Lk,Hk,Lk_dir}_band_gpu``
    banded storage equals ``banded(dense)``, and the no-pivot banded
    solve equals the dense solve.
+5. The two algebraic identities the ``res.consistent_imm``
+   `$v$`-`$\omega_y$` scheme rests on: the reconstruction of
+   `$(u, w)$` from `$(D_1 v, \omega_y)$` is exactly solenoidal, and
+   the source projections annihilate a discrete gradient exactly.
 
 Run as a script via ``uv run python tests/test_cartesian.py``.
 """
@@ -57,6 +61,8 @@ from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
     _build_Hk_dense_gpu,
     _build_Lk_band_gpu,
     _build_Lk_dense_gpu,
+    _build_Lk_dir_band_gpu,
+    _build_Lk_dir_dense_gpu,
     _hk_minus_matvec,
     _lk_matvec,
     build_cartesian_grid,
@@ -244,10 +250,11 @@ def test_measured_band_half_width() -> None:
     The banded builders take the half-width from the *assembled*
     operator rather than assuming ``fd_order`` (``CartesianFlow.
     __post_init__``).  Two properties matter: with
-    ``res.consistent_imm`` **off** it must reproduce ``fd_order``
-    exactly -- that is what pins the default path byte-identical -- and
-    with it on it must be wide enough for `$D_1 D_1$`, whose
-    boundary-adjacent rows reach further than the direct-fit `$D_2$`.
+    the direct-fit `$D_2$` every Cartesian operator now uses must
+    reproduce ``fd_order`` exactly -- that is what pins the band -- and
+    a composed `$D_1 D_1$` (the annular/pipe ``consistent_imm``
+    operators) must measure wider, its boundary-adjacent rows reaching
+    further than the direct fit.
     Rows 0 and Ny-1 are excluded because every operator overwrites
     them with BC rows.
     """
@@ -272,15 +279,18 @@ def test_measured_band_half_width() -> None:
 def test_pallas_vs_dense_on_cartesian_operators() -> None:
     r"""``PerModeBandedPallasOperator`` matches ``DenseJAXSolver``.
 
-    Validates the Pallas band assembly (``_build_{Lk,Hk}_band_gpu``):
-    the banded operator equals ``banded(dense)`` exactly, and the
+    Validates the Pallas band assembly of all three Cartesian
+    operators -- the Neumann `$L_k$`, the Dirichlet `$H_k$`, and the
+    Dirichlet `$L_k$` the `$v$`-`$\omega_y$` scheme solves `$v$` with:
+    each banded operator equals ``banded(dense)`` exactly, and the
     no-pivot banded sweep (CPU pure-JAX path) reproduces the dense
     solve on a complex RHS.
 
     Run twice: with the direct-fit `$D_2$` at the ``fd_order`` band,
-    and with the ``res.consistent_imm`` `$D_2 = D_1 D_1$` at its wider
-    measured band -- the assembly, the no-pivot factorisation and the
-    Pallas sweep all have to hold at both widths.
+    and with `$D_2 = D_1 D_1$` at its wider measured band (the
+    annular/pipe ``consistent_imm`` operators) -- the assembly, the
+    no-pivot factorisation and the Pallas sweep all have to hold at
+    both widths.
     """
     Ny = params.res.ny
     y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))
@@ -298,27 +308,28 @@ def _check_band_vs_dense(D1: Array, D2: Array, p: int) -> None:
 
     Lk_band = _build_Lk_band_gpu(D1, D2, k2_s, mean_s, p)
     Hk_band = _build_Hk_band_gpu(D2, k2_s, dt, c, nu, p)
+    Ld_band = _build_Lk_dir_band_gpu(D2, k2_s, p)
     Lk_full = _build_Lk_dense_gpu(D1, D2, k2_s, mean_s)
     Hk_full = _build_Hk_dense_gpu(D2, k2_s, dt, c, nu)
+    Ld_full = _build_Lk_dir_dense_gpu(D2, k2_s)
 
     # Band assembly equals banded(dense).
     to_band = jax.vmap(jax.vmap(lambda A: _banded_from_dense(A, p)))
-    assert_allclose(
-        np.asarray(Lk_band), np.asarray(to_band(Lk_full)), atol=1e-12
-    )
-    assert_allclose(
-        np.asarray(Hk_band), np.asarray(to_band(Hk_full)), atol=1e-12
-    )
+    for band, full in (
+        (Lk_band, Lk_full),
+        (Hk_band, Hk_full),
+        (Ld_band, Ld_full),
+    ):
+        assert_allclose(
+            np.asarray(band), np.asarray(to_band(full)), atol=1e-12
+        )
 
     # No-pivot banded solve reproduces the dense solve.
-    Lk_pallas = PerModeBandedPallasOperator.from_banded_factors(
-        *_banded_factor(Lk_band)
-    )
-    Hk_pallas = PerModeBandedPallasOperator.from_banded_factors(
-        *_banded_factor(Hk_band)
-    )
-    Lk_dense = DenseJAXSolver(Lk_full)
-    Hk_dense = DenseJAXSolver(Hk_full)
+    pallas_ops = [
+        PerModeBandedPallasOperator.from_banded_factors(*_banded_factor(b))
+        for b in (Lk_band, Hk_band, Ld_band)
+    ]
+    dense_ops = [DenseJAXSolver(f) for f in (Lk_full, Hk_full, Ld_full)]
 
     Nkz, Nkx = int(fourier.k2.shape[1]), int(fourier.k2.shape[2])
     rng = np.random.default_rng(21)
@@ -327,18 +338,95 @@ def _check_band_vs_dense(D1: Array, D2: Array, p: int) -> None:
     )
     rhs = jax.device_put(jnp.asarray(b), sharding.spec_scalar_shard)
 
-    assert_allclose(
-        np.asarray(Lk_pallas.solve(rhs)),
-        np.asarray(Lk_dense.solve(rhs)),
-        atol=1e-9,
-        rtol=1e-9,
-    )
-    assert_allclose(
-        np.asarray(Hk_pallas.solve(rhs)),
-        np.asarray(Hk_dense.solve(rhs)),
-        atol=1e-9,
-        rtol=1e-9,
-    )
+    for pallas_op, dense_op in zip(pallas_ops, dense_ops, strict=True):
+        assert_allclose(
+            np.asarray(pallas_op.solve(rhs)),
+            np.asarray(dense_op.solve(rhs)),
+            atol=1e-9,
+            rtol=1e-9,
+        )
+
+
+def test_vw_reconstruction_is_exactly_solenoidal() -> None:
+    r"""The `$v$`-`$\omega_y$` reconstruction zeroes the divergence.
+
+    The identity ``res.consistent_imm`` rests on
+    (:func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration_vw`):
+    for any `$v$` and `$\omega_y$`,
+
+    .. math::
+        u = \frac{i}{k^2}(k_x D_1 v - k_z \omega_y), \qquad
+        w = \frac{i}{k^2}(k_z D_1 v + k_x \omega_y)
+
+    satisfies `$i k_x u + D_1 v + i k_z w = 0$` at **every** row --
+    walls included -- as algebra, so in floating point the residual is
+    a few ulps and does not care about the grid, the operator or the
+    wavenumber.  Checked with the production `$D_1$` (the same object
+    the divergence diagnostic uses) on random data, including the
+    `$k_x = 0$` and `$k_z = 0$` lines, where a route that recovered
+    one component from continuity alone would have been singular.
+    """
+    Ny = params.res.ny
+    y = -np.cos(np.arange(Ny) * np.pi / (Ny - 1))
+    D1, _ = build_diff_matrices(y, params.res.fd_order)
+    rng = np.random.default_rng(3)
+
+    for kx, kz in ((1.0, 0.0), (0.0, 2.5), (3.0, -4.0), (0.05, 0.05)):
+        k2 = kx * kx + kz * kz
+        v = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
+        om = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
+        dy_v = D1 @ v
+        u = 1j * (kx * dy_v - kz * om) / k2
+        w = 1j * (kz * dy_v + kx * om) / k2
+
+        div = 1j * kx * u + dy_v + 1j * kz * w
+        scale = max(np.abs(t).max() for t in (1j * kx * u, dy_v, 1j * kz * w))
+        assert np.abs(div).max() < 100 * np.finfo(float).eps * scale, (
+            kx,
+            kz,
+            np.abs(div).max() / scale,
+        )
+
+        # The round trip is exact too: the reconstruction reproduces
+        # the vorticity it was built from.
+        assert_allclose(1j * kz * u - 1j * kx * w, om, rtol=1e-13)
+
+        # Condition number exactly 1 (M^H M = k^2 I), so the only
+        # amplification is the uniform 1/sqrt(k2).
+        M = np.array([[1j * kx, 1j * kz], [1j * kz, -1j * kx]])
+        assert_allclose(M.conj().T @ M, k2 * np.eye(2), atol=1e-13)
+
+
+def test_vw_source_projections_kill_gradients() -> None:
+    r"""`$S_\varphi$` and `$S_\omega$` annihilate a discrete gradient.
+
+    This is the discrete pressure elimination of the
+    `$v$`-`$\omega_y$` scheme, and it is *exact* -- not exact-up-to-
+    truncation -- because the per-mode scalar `$k^2$` commutes with
+    `$D_1$`.  Applying the two projections to the gradient of an
+    arbitrary field `$q$`, `$(i k_x q,\; D_1 q,\; i k_z q)$`, must
+    give zero to round-off with the direct-fit `$D_2$` in play (the
+    primitive scheme's elimination, by contrast, leaves the
+    `$(D_2 - D_1^2)$` and `$[D_1, D_2]$` obstruction).
+    """
+    Ny = params.res.ny
+    y = -np.cos(np.arange(Ny) * np.pi / (Ny - 1))
+    D1, _ = build_diff_matrices(y, params.res.fd_order)
+    rng = np.random.default_rng(5)
+
+    for kx, kz in ((1.0, 0.0), (0.0, 2.5), (3.0, -4.0)):
+        k2 = kx * kx + kz * kz
+        q = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
+        n_u, n_v, n_w = 1j * kx * q, D1 @ q, 1j * kz * q
+
+        s_phi = -k2 * n_v - D1 @ (1j * kx * n_u + 1j * kz * n_w)
+        s_om = 1j * kz * n_u - 1j * kx * n_w
+
+        # Both residuals are normalised by the size of the terms that
+        # cancel; a component-wise scale would vanish on the k_x = 0
+        # and k_z = 0 lines, which are exactly the ones worth testing.
+        assert np.abs(s_phi).max() < 1e-12 * k2 * np.abs(n_v).max(), (kx, kz)
+        assert np.abs(s_om).max() < 1e-12 * k2 * np.abs(q).max(), (kx, kz)
 
 
 # ── Runner ───────────────────────────────────────────────────────────

@@ -49,15 +49,6 @@ SPEC = FlowSpec(
     fields=(
         *wall_fields(0.5, CYLINDRICAL_GRIDS),
         *cyl_annular_fields(),
-        # ``consistent_imm`` is omitted from ``wall_fields`` for the
-        # cylindrical family (see its docstring); the pipe opts in via
-        # the x = r^2 parity operators + 1-wall closure (see
-        # ``cylindrical.build_parity_reduced_matrices`` /
-        # ``_imm_iteration``).  ``pipe_axis_fit`` is the cylindrical-only
-        # x = r^2 ``D1`` without the composed ``D2`` (accurate + random-
-        # IC-stable; see ``Resolution.pipe_axis_fit``).
-        FieldSpec("res", "consistent_imm"),
-        FieldSpec("res", "pipe_axis_fit"),
         FieldSpec("phys", "re"),
         FieldSpec("phys", "driving"),
     ),

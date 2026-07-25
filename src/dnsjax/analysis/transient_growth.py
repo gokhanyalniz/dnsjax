@@ -91,8 +91,18 @@ realised exactly by the influence-matrix pressure solve (see the
 :func:`dnsjax.timestep.make_stepper`).  Backward Euler is an *exact
 rational function* of `$\mathcal{A}$`, so inverting the relation
 recovers `$\mathcal{A}$` to rounding -- `$\Delta t$` is a probe, **not**
-an accuracy knob, and there is no time-discretisation error.  The
-pipeline per mode is:
+an accuracy knob, and there is no time-discretisation error.
+
+The propagator is the solver's, so it inherits ``res.consistent_imm``.
+In every wall-bounded geometry that flag selects the reconstruction
+scheme, whose solenoidal subspace `$S$` is *exactly* the discrete one:
+a non-solenoidal basis vector's tangential part maps to zero in a
+single step rather than decaying over several, so `$\Phi$` is singular
+on the complement by construction.  That is the intended behaviour on
+`$S$` and does not affect `$G(t)$`, which is computed there -- but it
+does mean the raw propagator is rank-deficient off it.
+
+The pipeline per mode is:
 
 1. **Propagator.**  `$\Phi$` (an `$n\times n$` matrix) is built column
    by column: the `$j$`-th unit vector `$\mathbf{e}_{(c,j)}$` placed at
@@ -901,7 +911,7 @@ def _dispatch(system: str) -> tuple[Any, Any, str]:
     return fmod, gmod, spec.family
 
 
-def _linear_step(gmod: Any):
+def _linear_step(gmod: Any, fmod: Any = None):
     """Return the pure-linear implicit step ``(state, fourier, flow)``.
 
     Feeds the geometry's FFT-free linear coupling ``_l_bf`` as the RHS
@@ -910,11 +920,12 @@ def _linear_step(gmod: Any):
     step of viscous + coupling + influence-matrix pressure, with the
     nonlinear self-advection never formed.
 
-    Every array crossing the raw stepper is in the geometry's solver
-    basis (cylindrical/annular: the decoupled `$u_\\pm$` one); the
+    Every array crossing the raw stepper is in the flow's solver basis
+    (cylindrical/annular: the decoupled `$u_\\pm$` one; Cartesian
+    under ``res.consistent_imm``: `$(\\varphi, v, \\omega_y)$`); the
     returned step wraps it so the propagator, and everything this
-    driver exports, is in **physical** components.  Cartesian has no
-    such basis and is returned unwrapped.
+    driver exports, is in **physical** components.  A flow with no
+    such basis is returned unwrapped.
     """
     from ..timestep import make_stepper
 
@@ -927,10 +938,15 @@ def _linear_step(gmod: Any):
         None,
     )
     step = raw[2]  # predict_and_fully_correct(state, *args)
-    to_solver = getattr(gmod, "to_solver_basis", None)
+    # The pair lives on the *flow* module for every family: the
+    # cylindrical/annular ones re-export the pure ``_base`` algebra,
+    # and the Cartesian ones are bound to their flow (they need
+    # `$D_1$`/`$D_2$`), so only the flow module has them.
+    basis_mod = fmod if fmod is not None else gmod
+    to_solver = getattr(basis_mod, "to_solver_basis", None)
     if to_solver is None:
         return step
-    from_solver = gmod.from_solver_basis
+    from_solver = basis_mod.from_solver_basis
 
     def step_physical(state, *args):
         out, err, num_c = step(to_solver(state), *args)
@@ -1678,7 +1694,7 @@ def _run(cfg: TGParams) -> int:
 
     fmod, gmod, family = _dispatch(params.phys.system)
     fourier = gmod.fourier
-    step = _linear_step(gmod)
+    step = _linear_step(gmod, fmod)
     ny = params.res.ny
     y_code = np.asarray(derived_params.wall_normal_grid, dtype=np.float64)
     w_diag = _energy_weight_diag(family, fmod.flow)
