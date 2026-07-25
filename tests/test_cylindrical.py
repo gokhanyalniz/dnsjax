@@ -9,9 +9,20 @@ Tests cover:
 4. ``_abase_matvec`` matrix-free vs dense reference.
 5. ``_lk_matvec`` vs per-mode NumPy reference.
 6. Pallas band-vs-dense parity (banded storage == ``banded(dense)``,
-   no-pivot banded solve == dense solve) -- also the regression
-   guard for the parity-reduced builders' refactor onto the shared
+   no-pivot banded solve == dense solve) for ``Lk``/``Hk`` and the two
+   ``res.consistent_imm`` operators -- also the regression guard for
+   the parity-reduced builders' refactor onto the shared
    ``solvers._assemble_banded_operator`` helpers.
+6b. The pipe's ``res.consistent_imm`` structure: the spin pair really
+    diagonalises the vector Laplacian onto the existing
+    `$H_{k,\\pm}$` operators, every vw quantity lands in the parity
+    class its operator assumes, and the packed mean plane reuses the
+    primitive scheme's mean operators bit-exactly (including the
+    band splice).  The geometry-independent vw algebra (sources,
+    reconstruction) is checked once, in ``test_annular.py``.
+6c. ``dnsjax.analysis`` rebuilds the same parity-reduced radial ``D1``
+    the solver uses -- the ingredient behind every exported operator,
+    where a mismatch fails silently.
 7. ``get_norm2_cyl`` correctness, and the metric identity linking it
    to the solver basis' 1/2-weighted norm.
 8. ``to_solver_basis``/``from_solver_basis`` round-trip: the
@@ -82,7 +93,11 @@ from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _build_Hk_dense_gpu,
     _build_Lk_band_gpu,
     _build_Lk_dense_gpu,
+    _build_Lv_dir_band_gpu,
+    _build_Lv_dir_dense_gpu,
     _ghost_row_count,
+    _hk_vw_bands,
+    _hk_vw_dense_mats,
     _lk_matvec,
     build_parity_reduced_matrices,
     build_radial_cgl_grid,
@@ -253,44 +268,6 @@ def test_A_base_matches_reference() -> None:
             ref,
             atol=1e-12,
             err_msg=f"A_base ({label} parity)",
-        )
-
-
-def test_pipe_axis_fit_direct_d2() -> None:
-    r"""``pipe_axis_fit`` builds an accurate direct ``x = r^2`` ``D2``.
-
-    ``build_parity_reduced_matrices(xr2_d1=True, compose_d2=False)`` fits
-    ``D2`` directly on ``x = r^2`` (``2 D_x + 4x D_xx`` even, its
-    ``r``-conjugate odd) rather than the composed ``D1 D1`` -- so it is
-    axis-regular like ``D1`` yet a genuine 2nd-derivative fit.  Checks it
-    reproduces ``f''`` on manufactured axis-regular fields and beats the
-    plain-``r`` mirrored fold there.
-    """
-    # Fixed, well-resolved grid so the tolerance is meaningful
-    # independent of the module resolution (the accuracy is what is
-    # under test, not its convergence rate).
-    p = 8
-    rs = np.asarray(build_radial_cgl_grid(33))
-    x = rs**2
-    _, D2e_x, _, D2o_x, _, _ = build_parity_reduced_matrices(
-        rs, p, xr2_d1=True, compose_d2=False
-    )
-    _, D2e_p, _, D2o_p, _, _ = build_parity_reduced_matrices(rs, p)
-    # even f = g(r^2), odd f = r h(r^2), with analytical f''.
-    fe, fe2 = np.exp(-2 * x), (-4 + 16 * x) * np.exp(-2 * x)
-    fo = rs * np.exp(-2 * x)
-    fo2 = (-12 * rs + 16 * rs * x) * np.exp(-2 * x)
-    for label, D2x, D2p, f, f2 in [
-        ("even", D2e_x, D2e_p, fe, fe2),
-        ("odd", D2o_x, D2o_p, fo, fo2),
-    ]:
-        rel = np.max(np.abs(np.asarray(D2x) @ f - f2)) / np.max(np.abs(f2))
-        err_x = np.max(np.abs(np.asarray(D2x) @ f - f2))
-        err_p = np.max(np.abs(np.asarray(D2p) @ f - f2))
-        assert rel < 1e-6, f"x=r^2 D2 ({label}) rel err {rel:.2e}"
-        assert err_x < err_p, (
-            f"x=r^2 D2 ({label}) not better than the fold: "
-            f"{err_x:.2e} vs {err_p:.2e}"
         )
 
 
@@ -508,6 +485,231 @@ def test_pallas_vs_dense_on_cylindrical_operators() -> None:
                 nu,
             ),
         )
+
+    # ``res.consistent_imm``: the dt-free Dirichlet recovery
+    # L_v,mod on the velocity parity.  Its (D1 + 1/r) correction has to
+    # come out of the *same* band as A_base -- the dense twin carries
+    # the untruncated operator, so a band that lost an entry shows up
+    # in the solve comparison.
+    D1_even, _, D1_odd, _, _, _ = build_parity_reduced_matrices(
+        pipe_flow.rs, p
+    )
+    _check(
+        "Lv_dir",
+        _build_Lv_dir_band_gpu(
+            D1_even,
+            D1_odd,
+            band_even,
+            band_odd,
+            m_is_even_v,
+            m_sq,
+            pipe_flow.inv_r,
+            inv_r2,
+            kz2,
+            mean_mask,
+            p,
+        ),
+        _build_Lv_dir_dense_gpu(
+            D1_even,
+            D1_odd,
+            A_even,
+            A_odd,
+            m_is_even_v,
+            m_sq,
+            pipe_flow.inv_r,
+            inv_r2,
+            kz2,
+            mean_mask,
+        ),
+    )
+    # The two-family spin pair, including the minus family's spliced
+    # mean plane (the one structurally new banded-data pattern).
+    for slot, (band, full) in enumerate(
+        zip(
+            _hk_vw_bands(dt, fourier, pipe_flow),
+            _hk_vw_dense_mats(dt, fourier, pipe_flow),
+            strict=True,
+        )
+    ):
+        _check(f"Hk_vw[{slot}]", band, full)
+
+
+def test_vw_spin_pair_diagonalises_the_vector_laplacian() -> None:
+    r"""`$(\Delta\mathbf{u})_\pm = L_{s\pm} u_\pm$` on the *existing*
+    `$H_{k,\pm}$` base operators.
+
+    The load-bearing identity of the pipe's ``res.consistent_imm``
+    scheme (``cylindrical._imm_iteration_vw``): the `$-2im/r^2$` spin
+    coupling that ties `$(\Delta\mathbf{u})_r$` to `$u_\theta$` is
+    diagonalised by the same `$u_\pm$` combination the primitive
+    scheme already uses, with eigenvalues `$(m \pm 1)^2/r^2$` -- which
+    is why the quad needs no new operator family.  Checked against the
+    physical-component vector Laplacian on random radial profiles, per
+    parity-reduced operator.
+    """
+    Nr = params.res.ny
+    inv_r = np.asarray(pipe_flow.inv_r)
+    inv_r2 = inv_r**2
+    rng = np.random.default_rng(17)
+
+    for m in (0, 1, 2, 5):
+        even = m % 2 == 0
+        # u_r / u_theta carry parity (-1)^{m+1}: the opposite class.
+        A_v = np.asarray(
+            pipe_flow.A_base_odd if even else pipe_flow.A_base_even
+        )
+        for kz in (0.0, 1.5):
+            ur = rng.standard_normal(Nr) + 1j * rng.standard_normal(Nr)
+            ut = rng.standard_normal(Nr) + 1j * rng.standard_normal(Nr)
+            lv = A_v - np.diag((m**2 + 1) * inv_r2 + kz**2)
+            lap_r = lv @ ur - 2j * m * inv_r2 * ut
+            lap_t = lv @ ut + 2j * m * inv_r2 * ur
+            pairs = ((1.0, lap_r + 1j * lap_t), (-1.0, lap_r - 1j * lap_t))
+            for sign, lap in pairs:
+                ls = A_v - np.diag((m + sign) ** 2 * inv_r2 + kz**2)
+                got = ls @ (ur + sign * 1j * ut)
+                assert_allclose(
+                    got, lap, rtol=1e-11, atol=1e-11, err_msg=f"m={m} s={sign}"
+                )
+
+
+def test_vw_parity_classes() -> None:
+    r"""Every vw quantity lands in the parity class its operator
+    assumes.
+
+    The pipe's parity reduction is not a convenience: the wrong class
+    silently uses the wrong ghost sign near the axis.  Reconstructing
+    the mirrored field explicitly, this checks that
+
+    - `$\Phi_\pm = L_{s\pm} u_\pm$` and
+      `$\omega_\pm = \omega_r \pm i\omega_\theta$` carry the velocity
+      parity `$(-1)^{m+1}$`;
+    - the source chain's `$C_z$` -- and the `$r N_\theta$` and `$N_z$`
+      it differentiates -- carry `$(-1)^m$`, so both inner `$D_1$`
+      applications are `$z$`-parity;
+    - the recovery correction `$(2m^2/(r^3\Delta))(D_1 + 1/r)$` maps
+      `$(-1)^{m+1}$` back to itself (odd coefficient x parity flip).
+
+    Checked as a symmetry of the *continuum* fields on a mirrored
+    grid, which is what the reduction encodes, so it is independent of
+    any particular ``D1``.
+    """
+    rs = np.asarray(build_radial_cgl_grid(24))
+    aux = np.concatenate([-rs[::-1], rs])
+
+    def _mirror(vals: np.ndarray, sign: float) -> np.ndarray:
+        """Extend a positive-r profile to the mirrored grid."""
+        return np.concatenate([sign * vals[::-1], vals])
+
+    for m in (1, 2, 3):
+        pz = (-1.0) ** m  # u_z, N_z, C_z
+        pv = -pz  # u_r, u_theta, the quad
+        prof = np.exp(-2 * rs**2) * (1 + rs)
+        # A field with the declared parity, on the mirrored grid.
+        f_v, f_z = _mirror(prof, pv), _mirror(prof, pz)
+        assert np.allclose(f_v[::-1], pv * f_v)
+        assert np.allclose(f_z[::-1], pz * f_z)
+        # r N_theta: r is odd, N_theta is (-1)^{m+1} -> (-1)^m.
+        r_ntheta = aux * f_v
+        assert np.allclose(r_ntheta[::-1], pz * r_ntheta)
+        # (1/r^3) x (D1 + 1/r) applied to a (-1)^{m+1} field: D1 and
+        # 1/r each flip once, 1/r^3 flips once more -> back to
+        # (-1)^{m+1}.
+        d1_f = np.gradient(f_v, aux)
+        corr = (d1_f + f_v / aux) / aux**3
+        assert np.allclose(corr[::-1], pv * corr, atol=1e-8), m
+
+
+def test_vw_mean_plane_packing_reuses_the_primitive_operators() -> None:
+    r"""The packed `$k^2 = 0$` plane carries the primitive scheme's own
+    mean-mode Helmholtz operators, **bit-exactly**.
+
+    Flag-on, the four evolved slots are structurally zero at the mean
+    mode, so two of them carry `$u_{z,00}$` and `$u_{\theta,00}$`
+    instead (``cylindrical._imm_iteration_vw``).  The `$\omega_+$` slot
+    rides `$H_{k,+}$`, which at `$m = 0$` already *is* the mean
+    `$u_\theta$` operator; the `$\Phi_-$` slot needs the mean
+    `$H_{k,z}$` (`$m_{\mathrm{eff}}^2 = 0$`, **even** parity) and gets
+    it from the band splice.  Asserted as equality on the mean column
+    and *inequality* off it, so a builder that dropped the splice fails
+    rather than passing vacuously.
+    """
+    p = params.res.fd_order
+    m_s = fourier.m[0, ..., None]
+    kz2 = fourier.kz2[0, ..., None]
+    m_is_even_s = fourier.m_is_even[0, ..., None]
+    dt, c = params.step.dt, 1.0 / params.phys.re
+    band_even = _banded_from_dense(pipe_flow.A_base_even, p)
+    band_odd = _banded_from_dense(pipe_flow.A_base_odd, p)
+
+    def _band(parity, meff2):
+        return np.asarray(
+            _build_Hk_band_gpu(
+                band_even,
+                band_odd,
+                parity,
+                meff2,
+                pipe_flow.inv_r2,
+                kz2,
+                dt,
+                params.step.implicitness,
+                c,
+                p,
+            )
+        )
+
+    band_plus, band_minus = (
+        np.asarray(b) for b in _hk_vw_bands(dt, fourier, pipe_flow)
+    )
+    want_z = _band(m_is_even_s, m_s**2)
+    want_plus = _band(1.0 - m_is_even_s, (m_s + 1) ** 2)
+    is_mean = np.asarray(fourier.mean_mask[0])
+    assert is_mean.sum() == 1, "expected exactly one k^2 = 0 mode"
+    for label, got, want in (
+        ("Phi_- slot == mean Hk_z", band_minus, want_z),
+        ("omega_+ slot == mean Hk_+", band_plus, want_plus),
+    ):
+        assert_allclose(
+            got[is_mean], want[is_mean], atol=0.0, rtol=0.0, err_msg=label
+        )
+    # Off the mean plane the minus family must *not* be Hk_z, or the
+    # splice above is invisible.
+    assert not np.allclose(band_minus[~is_mean], want_z[~is_mean])
+
+
+def test_analysis_radial_d1_matches_the_solver() -> None:
+    r"""``dnsjax.analysis`` rebuilds the *same* radial `$D_1$` pair the
+    solver uses.
+
+    The analysis package reconstructs the pipe's parity-reduced radial
+    derivative from a snapshot's recorded parameters
+    (``_core.parity_radial_d1``), and every exported operator --
+    divergence, curl, gradient, enstrophy -- is built on it.  A
+    reconstruction that disagrees with the solver is a *silent*
+    failure: an exactly-solenoidal stepped state reads back as O(1)
+    divergent and nothing raises.  There is one construction on each
+    side since 2026-07-26 (the `$x = r^2$` fit and its selector were
+    retired), which is exactly what this pins.
+
+    (``tests/test_snapshot_export.py`` pins the assembled divergence
+    node-for-node against the solver's own; this pins the ingredient.)
+    """
+    from dnsjax.analysis._core import parity_radial_d1
+
+    rs = np.asarray(build_radial_cgl_grid(24))
+    for p in (4, 8):
+        solver = build_parity_reduced_matrices(rs, p)
+        mine = parity_radial_d1(rs, p)
+        for got, want, label in (
+            (mine[0], solver[0], "even"),
+            (mine[1], solver[2], "odd"),
+        ):
+            assert_allclose(
+                np.asarray(got),
+                np.asarray(want),
+                atol=1e-12,
+                err_msg=f"D1_{label} fd_order={p}",
+            )
 
 
 # Group C: Norms

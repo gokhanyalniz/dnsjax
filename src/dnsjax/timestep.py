@@ -103,8 +103,10 @@ def make_stepper(
         state-sized read/write pass); wall-bounded flows pass ``None``
         (their continuity handling lives inside the IMM -- and a
         state-side finalize projection is violently unstable there,
-        see the ``cartesian._imm_iteration`` docs), which leaves
-        their traces unchanged.  The legacy manual-iteration pair
+        which is why exact wall-bounded continuity is a *scheme*
+        rather than a post-step fix; see the
+        ``cartesian._imm_iteration`` docs), which leaves their traces
+        unchanged.  The legacy manual-iteration pair
         ``predict_and_correct`` / ``iterate_correction`` does **not**
         apply it (mid-iteration states are not accepted steps); a
         caller driving those directly must finalize itself.

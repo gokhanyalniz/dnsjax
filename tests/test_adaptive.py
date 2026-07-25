@@ -138,22 +138,37 @@ LEAVES = {
 }
 LEAVES["viscoelastic-dean"] = LEAVES["taylor-couette"] + ("Hc_op",)
 
-# The extra dt-dependent leaves ``res.consistent_imm`` adds (the
-# boundary-closure columns).  A missing key here would be silent:
-# ``set_dt`` only assigns what the rebuild returns, so a stale
-# column would pair a new-dt ``Hk_op`` with an old-dt response.
+# How ``res.consistent_imm`` changes the dt-dependent leaf set.  A
+# missing key here would be silent: ``set_dt`` only assigns what the
+# rebuild returns, so a stale column would pair a new-dt ``Hk_op``
+# with an old-dt response.
+#
+# All three geometries switch to a reconstruction scheme, which has no
+# pressure: the primitive scheme's pressure-response columns go away
+# (``DROPPED_LEAVES``) and are replaced by the wall-normal-velocity
+# responses of the two-solve chain.  ``Lk_op`` is deliberately absent
+# from both sets -- flag-on it holds the ``dt``-free recovery operator,
+# so ``set_dt`` must not rebuild it.
 CLOSURE_LEAVES = {
-    "plane-couette": ("v3", "v4", "q3", "q4"),
+    "plane-couette": ("phi1", "phi2"),
+    # One u_r column per wall.
+    "taylor-couette": ("ur_1", "ur_2"),
+    # The pipe's single wall gives one (a 1x1 influence matrix).
+    "pipe": ("ur_1",),
+}
+
+# Leaves a ``res.consistent_imm`` build does *not* have.
+DROPPED_LEAVES = {
+    "plane-couette": ("q1", "q2"),
     "taylor-couette": (
-        "v_plus_3",
-        "v_minus_3",
-        "q_z_3",
-        "v_plus_4",
-        "v_minus_4",
-        "q_z_4",
+        "v_plus_1",
+        "v_minus_1",
+        "q_z_1",
+        "v_plus_2",
+        "v_minus_2",
+        "q_z_2",
     ),
-    # The pipe's single wall gives one closure column (a 2x2 matrix).
-    "pipe": ("v_plus_2", "v_minus_2", "q_z_2"),
+    "pipe": ("v_plus_1", "v_minus_1", "q_z_1"),
 }
 
 
@@ -309,7 +324,8 @@ def _worker(system: str, backend: str, consistent_imm: bool = False) -> None:
     # -- rebuild-vs-fresh leaf parity ------------------------------
     params.step.dt = DT1  # direct assignment before construction
     fresh = type(fmod.flow)()
-    leaf_names = LEAVES[system] + (
+    dropped = DROPPED_LEAVES.get(system, ()) if consistent_imm else ()
+    leaf_names = tuple(n for n in LEAVES[system] if n not in dropped) + (
         CLOSURE_LEAVES[system] if consistent_imm else ()
     )
     for name in leaf_names:
@@ -502,8 +518,10 @@ def main() -> None:
         # The dense backend shares the rebuild contract; one geometry
         # covers its DenseJAXSolver/from_factors path.
         cases.append(("plane-couette", "dense"))
-    # ``res.consistent_imm`` adds dt-dependent leaves (the closure
-    # columns) and widens the operators; one case per implementation.
+    # ``res.consistent_imm`` changes the dt-dependent leaf set in every
+    # geometry (the reconstruction scheme has no pressure, so its
+    # wall-normal-velocity columns replace the pressure responses);
+    # one case per implementation.
     cases += [
         (s, "pallas", True)
         for s in ("plane-couette", "taylor-couette", "pipe")

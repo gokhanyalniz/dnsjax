@@ -8,8 +8,11 @@ Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3) is derived for
 `$[D_1, D_2] = 0$`, and -- separately -- an accounting of the momentum
 wall rows the Dirichlet replacement discards.  With none of that,
 a stepped state's discrete divergence is **O(1) relative**: not a bug,
-but not zero either.  ``res.consistent_imm`` supplies both halves at
-once (see the ``Resolution`` docstring).
+but not zero either.  ``res.consistent_imm`` fixes it in all three
+geometries by *reformulating* -- advancing the wall-normal velocity
+and vorticity and reconstructing the tangential components, so
+continuity is algebra rather than something a solve has to deliver
+(see the ``Resolution`` docstring).
 
 Each case measures ``max|div| / max|individual term|`` on the true-mode
 slice of a state that has been through one full predictor-corrector
@@ -21,28 +24,24 @@ un-stepped check is unfalsifiable.  The real-FFT `$k = 0$` plane is
 excluded, since ``random_field`` solves continuity only off it by
 design.
 
-What is asserted, and why the bounds differ per geometry:
+What is asserted: with the flag on, continuity holds *by algebra* at
+every row and for any operator, grid or axis fit, so all three
+geometries must sit at round-off -- and, unlike an `$h^p$` truncation
+residual, **at every `$N_y$`**, which is why the gate-on bounds are
+asserted across the whole ``--ny`` sweep.  Before 2026-07-26 the
+annulus and the pipe used operator identities instead and were pinned
+at `$8\\times10^{-6}$` / `$5.6\\times10^{-5}$`, floors set by a
+commutator each could not remove; the reformulation has no such floor.
+The plane-couette off case additionally reports the momentum side of
+the trade (see ``_worker``): what relocating the residual out of
+continuity costs in momentum units.
 
-- **Cartesian** (plane-couette): the closure is *exact*, so the
-  stepped-state divergence must collapse to round-off.  The
-  plane-couette off case additionally reports the momentum side of
-  the trade (see ``_worker``): what a state-side relocation of the
-  residual would cost -- the alternative measured *violently
-  unstable* (the ``cartesian._imm_iteration`` docs) -- vs the
-  composed-``D2`` operators' momentum price.
-- **Annular** (taylor-couette): bounded by the discrete commutator
-  `$[D_1, 1/r] \\ne -1/r^2$`, which no choice of a single `$D_1$`
-  removes.  A large improvement is required, not exactness.
-- **Pipe**: opts in via the `$x = r^2$` parity operators (which make the
-  near-axis `$1/r$` commutator exact for one parity) plus a 1-wall
-  `$\\hat\\sigma$` closure.  A large improvement is required, not
-  exactness: the structural invariant
-  `$\\mathrm{diag}(\\Theta) + \\mathrm{diag}(\\Phi) = 2/r^2$` forbids
-  both radial parities' commutators vanishing at once, so a stepped
-  state keeps the other parity's residual (see the
-  ``Resolution.consistent_imm`` docs).  Uses the deterministic
-  axis-regular rolls IC (a grid-white random draw would swamp it with
-  under-resolved-noise divergence).
+The pipe uses the deterministic axis-regular rolls IC.  That is no
+longer a *requirement* (the composed `$D_2$` that made a grid-white
+draw unstable is gone -- ``tests/test_random_smoke.py`` now carries
+random-IC pipe entries under the flag); it stays because a grid-white
+draw near the axis swamps the off-case measurement with
+under-resolved-noise divergence.
 
 Each case needs its own process: the parameter singletons and the
 jitted steppers capture ``params`` at import / trace time.
@@ -70,18 +69,26 @@ PIPE_STEPS = 10
 
 # ``--ny`` overrides NY for both the driver and its workers, so the
 # resolution dependence can be swept.  ``ny = 25`` is the suite
-# default because it is fast, and is the **only** resolution the
-# bounds are pinned at; other ``--ny`` values report without
-# asserting (``main``).  Measured, seed 7:
+# default because it is fast, and is the only resolution the
+# *annular/pipe* bounds are pinned at; other ``--ny`` values report
+# those without asserting (``main``).  The Cartesian gate-on bound is
+# asserted at every ny -- see the module docstring.  Measured, seed 7:
 #
 #     ny    plane-couette off / on     taylor-couette off / on
-#     25    4.48e-02 / 4.20e-14        5.94e-02 / 7.14e-06
-#     97    1.11e-03 / 1.32e-12        5.43e-04 / 1.48e-08
+#     25    4.48e-02 / 2.91e-16        6.39e-02 / 5.62e-16
+#     97    1.11e-03 / 1.63e-15        5.66e-04 / 1.92e-15
 #
-# The ungated residual **falls** with resolution here (~30x over
-# 25 -> 97, seed-robust over seeds 7/11/23), and the gated one stays
-# far below it -- the closure solve is not conditioning-limited at
-# realistic sizes.
+# and, on the pipe's rolls IC (PIPE_STEPS steps), 2.84e-02 / 2.07e-15
+# at ny = 25 and 3.88e-15 gated at ny = 97.
+#
+# The ungated residual **falls** with resolution here (~40x over
+# 25 -> 97, seed-robust over seeds 7/11/23).  Every gated one stays at
+# round-off and follows no `$h^p$` law at all (the mild ny growth is
+# the longer `$D_1$` dot product), because the reconstruction makes
+# continuity an algebraic identity rather than something a solve has
+# to deliver.  The gated annular/pipe numbers replace 8.00e-06 /
+# 1.58e-08 and 5.6e-05, the floors of the operator-identity route
+# retired on 2026-07-26.
 #
 # These numbers replace a set that was 2-3 orders larger and grew as
 # `$N_y^2$` (2.08e-01 -> 9.86e-01 for plane-couette off).  That growth
@@ -96,19 +103,17 @@ PIPE_STEPS = 10
 # (label, system, consistent_imm, max relative divergence allowed).
 # The gate-off bounds are loose regression pins on today's behaviour
 # (measured ~4e-2 / ~6e-2 at NY); the gate-on bounds are the claim.
+# Every gate-on bound is round-off, by algebra rather than by a solve,
+# and pinned tight enough that the operator-identity mechanisms these
+# replaced (4.2e-14 Cartesian, 8.0e-06 annular, 5.6e-05 pipe) could
+# not pass it.
 CASES = [
     ("plane-couette  off", "plane-couette", False, 1e0),
-    ("plane-couette  on", "plane-couette", True, 1e-11),
+    ("plane-couette  on", "plane-couette", True, 1e-13),
     ("taylor-couette off", "taylor-couette", False, 1e0),
-    ("taylor-couette on", "taylor-couette", True, 1e-3),
-    # The pipe opts in via the x = r^2 axis operators + 1-wall closure
-    # (measured ~2.8e-2 / ~5.6e-5 at NY, ``PIPE_STEPS`` rolls steps;
-    # ~500x).  The gate cannot reach the Cartesian machine-zero because
-    # the structural invariant forbids both radial parities' 1/r
-    # commutators vanishing at once -- see the
-    # ``Resolution.consistent_imm`` docs / plan.
+    ("taylor-couette on", "taylor-couette", True, 1e-13),
     ("pipe           off", "pipe", False, 1e0),
-    ("pipe           on", "pipe", True, 1e-3),
+    ("pipe           on", "pipe", True, 1e-13),
 ]
 
 # Gate-off floors: the flag must *demonstrably* change something, so
@@ -225,8 +230,9 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
             # physical triad: near the axis the physical ``u_r/r`` and
             # ``i m u_theta/r`` terms are individually huge but cancel,
             # which would inflate ``scale`` and deflate the ratio.  The
-            # parity-reduced radial D1 (parity (-1)^{m+1}) is the x = r^2
-            # operator under ``res.consistent_imm``.
+            # parity-reduced radial D1 (parity (-1)^{m+1}) is the
+            # mirrored fold -- there is one radial construction since
+            # the x = r^2 fit was retired.
             D1p = np.asarray(flow.D1_pos)
             D1g = np.asarray(flow.D1_ghost)
             gg = D1g.shape[0]
@@ -265,25 +271,38 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
 
     if system == "plane-couette" and not consistent_imm:
         # The momentum side of the ``consistent_imm`` trade, measured
-        # on this direct-fit-operator stepped state:
+        # on this direct-fit-operator stepped state.  Both numbers are
+        # what the *gated* schemes pay to buy continuity, priced on
+        # the same un-gated field:
         #
-        # - ``CHI-MOM``: what relocating the divergence residual into
-        #   the state (the tangential continuity back-solve, measured
-        #   violently unstable -- the ``_imm_iteration`` docs) would
-        #   cost as an interior chi-momentum equation residual,
+        # - ``CHI-MOM``: an *upper bound* on the momentum price of the
+        #   Cartesian v-omega_y route.  That route relocates the
+        #   divergence residual out of continuity and into the
+        #   chi-momentum equation (which it never solves), so what
+        #   continuity gains, that equation loses:
         #   `$\\max|\\tilde H \\delta| / \\max|\\tilde H u|$` with
-        #   `$\\delta = (i k_x, i k_z)\\,Q/k^2$` -- by construction
-        #   the same residual this un-gated step leaves in the
-        #   divergence, expressed in momentum units.
-        # - ``COMPOSED-D2``: the operator-side mechanism's momentum
-        #   price on the same field,
+        #   `$\\delta = (i k_x, i k_z)\\,Q/k^2$`, i.e. this step's own
+        #   divergence residual expressed in momentum units
+        #   (4.5e-2 at ny = 25 -> 1.6e-3 at ny = 97).  It is only a
+        #   bound because it assumes all of Q lands in the tangential
+        #   pair at fixed v; differencing the two schemes' stepped
+        #   states directly gives 2.4e-3 / 3.2e-5, ~20x smaller (the
+        #   ``Resolution.consistent_imm`` docs).  Either way it is
+        #   truncation-level and refines, and -- the point of the
+        #   reformulation -- no solve reads it back, so it does not
+        #   re-excite (the post-hoc projection that relocated the same
+        #   residual *while* the solve still imposed chi-momentum was
+        #   violently unstable; the ``_imm_iteration`` docs).
+        # - ``COMPOSED-D2``: what the *retired* operator-identity route
+        #   paid instead,
         #   `$\\nu\\,\\max|(D_1 D_1 - D_2)\\,u| / \\max|\\tilde H u|$`
-        #   -- the extra viscous truncation the composed solves inject
+        #   -- the extra viscous truncation composed operators inject
         #   into every momentum equation (full CN weight; upper
-        #   bound).  Measured ~2 orders below ``CHI-MOM`` at both
-        #   ny = 25 and ny = 97: the flag trades the O(1)-relative
-        #   continuity violation for a far smaller momentum-operator
-        #   price, and is the *stable* way to do so.
+        #   bound).  ~2 orders below ``CHI-MOM`` here: that is the real
+        #   price of the reformulation, and it bought exactness at
+        #   every row, on any grid, with a narrower band and one fewer
+        #   solve.  Kept as a measurement because it is the only
+        #   quantitative comparison left of the two routes.
         #
         # Interior rows and the k = 0 plane excluded, like the
         # divergence measure.
@@ -370,15 +389,18 @@ def main(ny: int) -> None:
         flush=True,
     )
     passed, failures = 0, []
-    # The bounds below are pinned at ``NY`` only; ``--ny`` is a
-    # *diagnostic* sweep (see the module docstring), reported and not
-    # asserted, because both bounds are absolute numbers that move with
-    # resolution -- and, since the wall-normal smoothness envelope
-    # landed, move a long way.
+    # The gate-*off* bounds are pinned at ``NY`` only; ``--ny`` is a
+    # *diagnostic* sweep for them (see the module docstring), reported
+    # and not asserted, because they are absolute numbers that move
+    # with resolution -- and, since the wall-normal smoothness envelope
+    # landed, move a long way.  The gate-on bounds are ny-independent
+    # and always asserted.
     asserted = ny == NY
     if not asserted:
         print(
-            f"  (ny={ny} != {NY}: values are reported, not asserted)",
+            f"  (ny={ny} != {NY}: the gate-off values are reported,"
+            " not asserted; every gate-on bound is ny-independent and"
+            " still asserted)",
             flush=True,
         )
 
@@ -393,7 +415,11 @@ def main(ny: int) -> None:
             print(f"FAIL {label}: {err}", flush=True)
             failures.append((label, err))
             continue
-        if not asserted:
+        # Every gate-on claim is an algebraic identity, so its bound
+        # holds at any resolution -- asserting it across a ``--ny``
+        # sweep is the refinement-flatness guard.
+        flat = cimm
+        if not asserted and not flat:
             print(f"REPORT {label}: rel div {rel:.2e}")
             passed += 1
             continue

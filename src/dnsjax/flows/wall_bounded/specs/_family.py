@@ -32,10 +32,9 @@ def wall_fields(
     first entry is only the *scheme-independent* default -- the
     resolved default comes from ``FlowSpec.grid_type_default``).
 
-    ``res.consistent_imm`` is omitted for the cylindrical family here
-    (its axis operators need the ``x = r^2`` construction, not the
-    Cartesian/annular ``D2 := D1 D1``); the pipe adds the field back on
-    its own spec (``specs/pipe.py``).
+    ``res.consistent_imm`` is offered by every wall-bounded flow: since
+    2026-07-26 it reformulates the implicit step rather than swapping an
+    operator, so it needs nothing family-specific.
     """
     cylindrical = grid_choices == CYLINDRICAL_GRIDS
     if cylindrical:
@@ -53,7 +52,7 @@ def wall_fields(
     return (
         FieldSpec("phys", "u_grid", default=u_grid_default),
         FieldSpec("res", "fd_order"),
-        *(() if cylindrical else (FieldSpec("res", "consistent_imm"),)),
+        FieldSpec("res", "consistent_imm"),
         FieldSpec("geo", "wall_grid"),
         FieldSpec(
             "geo",

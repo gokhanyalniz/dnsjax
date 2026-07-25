@@ -459,8 +459,6 @@ def generate_cylindrical(
         params.geo.wall_grid,
         params.geo.grid_type,
         params.geo.grid_stretch,
-        params.res.consistent_imm,
-        params.res.pipe_axis_fit,
     )
     derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
 

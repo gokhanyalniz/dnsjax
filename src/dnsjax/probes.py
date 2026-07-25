@@ -165,8 +165,23 @@ def build_mode_extractor(
     it commutes with the owner mask and the ``psum``.)
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
+    field_to_physical = None
     if params.phys.system in cartesian_systems:
+        # Cartesian columns are physical unless ``res.consistent_imm``
+        # carries the (phi, v, omega_y) solver basis, whose map needs
+        # `$D_1$` and the mode's wavenumbers -- so, unlike the pure
+        # component algebra of the other families, it cannot act on a
+        # bare column.  Convert the *field* on the way in instead: one
+        # GEMM, and only on the steps that actually sample.
         to_physical = None
+        if params.res.consistent_imm:
+            import importlib
+
+            from .flows.registry import spec_for
+
+            field_to_physical = importlib.import_module(
+                spec_for(params.phys.system).flow_module
+            ).from_solver_basis
     elif params.phys.system in viscoelastic_systems:
         from .geometries.wall_bounded.annular_viscoelastic import (
             from_solver_basis as _from_solver,
@@ -195,14 +210,19 @@ def build_mode_extractor(
             cols.append(col if to_physical is None else to_physical(col))
         return jnp.stack(cols)
 
-    return jax.jit(
-        shard_map(
-            _local,
-            mesh=sharding.mesh,
-            in_specs=sharding.spec_vector_shard,
-            out_specs=P(None, None, None),
-        )
+    extractor = shard_map(
+        _local,
+        mesh=sharding.mesh,
+        in_specs=sharding.spec_vector_shard,
+        out_specs=P(None, None, None),
     )
+    if field_to_physical is None:
+        return jax.jit(extractor)
+
+    def _extract_physical(state: Array) -> Array:
+        return extractor(field_to_physical(state))
+
+    return jax.jit(_extract_physical)
 
 
 class ProbeStream:

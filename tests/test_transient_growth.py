@@ -108,6 +108,17 @@ def _write_laminar(system: str, path: Path, **kw) -> None:
 # ── CLI driver ───────────────────────────────────────────────────
 
 
+#: Appended to every anchor run by ``--consistent-imm``, which selects
+#: the reconstruction scheme in *every* wall-bounded geometry: the
+#: anchors then check the reformulated propagator against the same
+#: published digits -- the strongest available statement that the
+#: reformulation did not perturb the linear physics (the eigenvalue
+#: content of the operator these anchors measure is exactly what an
+#: Orr-Sommerfeld/Squire check would test).  Measured agreement with
+#: the ungated propagator: 4-6 significant figures on every anchor.
+EXTRA_ARGS: list[str] = []
+
+
 def _run_tg(profile: Path, out_dir: Path, args: list[str]) -> str:
     """Invoke the CLI; raise on failure.
 
@@ -124,6 +135,7 @@ def _run_tg(profile: Path, out_dir: Path, args: list[str]) -> str:
         "--tg.out_dir",
         str(out_dir),
         *args,
+        *EXTRA_ARGS,
     ]
     res = run_live(cmd, cwd=profile.parent)
     if res.returncode != 0 or "FAILED" in res.stdout:
@@ -918,6 +930,11 @@ def _anchor_orszag() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--consistent-imm",
+        action="store_true",
+        help="run the anchors with res.consistent_imm on",
+    )
     ap.add_argument("--worker", choices=SYSTEMS, default=None)
     ap.add_argument("--system", choices=SYSTEMS, default=None)
     ap.add_argument(
@@ -929,6 +946,8 @@ def main() -> None:
         "--slow", action="store_true", help="add the Orszag eigenvalue check"
     )
     args = ap.parse_args()
+    if args.consistent_imm:
+        EXTRA_ARGS.extend(["--res.consistent_imm", "True"])
 
     if args.worker:
         _worker(args.worker)

@@ -517,10 +517,11 @@ class Resolution(BaseModel):
             "half-width, not an accuracy order)."
         ),
     )
-    # Wall-bounded only (all three families).  Off by default: it trades
-    # a materially worse `$D_2$` for an exact discrete projection, and
-    # only the user knows which they want.  On the **pipe** it is an
-    # opt-in with a sharp edge -- see the pipe paragraph below.
+    # Wall-bounded only (all three families), off by default.  It buys
+    # a discretely exact projection with a **reformulation** of the
+    # implicit step; the price is a truncation-level residual moved
+    # into a momentum equation nothing solves, and only the user knows
+    # whether that trade is acceptable.
     #
     # *What it enforces.*  The influence-matrix method's continuity
     # argument (Kleiser-Schumann; Canuto, Hussaini, Quarteroni & Zang
@@ -530,152 +531,146 @@ class Resolution(BaseModel):
     # `$D_1 D_1 = D_2$`) and `$[D_1, D_2] = 0$`.  Independent Fornberg
     # fits satisfy neither, and -- separately -- replacing the momentum
     # wall rows by Dirichlet rows leaves an unaccounted residual that
-    # the divergence's own `$D_1$` spreads into the interior.  This
-    # flag fixes both at once: `$D_2 := D_1 D_1$` *and* the boundary
-    # (tau) closure of CHQZ (7.3.51)-(7.3.58), realised as extra
-    # homogeneous columns and an enlarged influence matrix (4x4 with two
-    # walls; the pipe's single wall gives 2x2).  The two halves are
-    # inseparable -- the closure alone, on the direct-fit `$D_2$`,
-    # measures 1.6-3x *worse* than doing nothing -- hence one flag.
+    # the divergence's own `$D_1$` spreads into the interior.  So a
+    # stepped state's discrete divergence is O(1) *relative*: a
+    # convergent truncation error, physically inert for resolved
+    # fields, but not zero.
     #
-    # *Efficacy* (measured, ``fd_order = 8``, one step from a random
-    # IC, seed 7; ``ny = 25`` / ``ny = 97``;
-    # ``tests/test_imm_continuity.py``).  Cartesian: the stepped-state
-    # relative divergence drops ``4.5e-2 -> 4.2e-14`` and
-    # ``1.1e-3 -> 1.3e-12``.  Annular: ``6.4e-2 -> 8.0e-6`` and
-    # ``5.7e-4 -> 1.6e-8``.  (An earlier record quoted 2-3 orders
-    # larger "before" numbers growing as `$N_y^2$`; that growth was
-    # the grid-white IC's wall-normal Nyquist content, not the scheme
-    # -- with the filtered IC the ungated residual *falls* with
-    # resolution, ~40x over ``25 -> 97`` on Cartesian.)  The annular
-    # gain is bounded, degrading as `$\eta \to 0$` because the discrete
-    # commutator `$[D_1, 1/r] \ne -1/r^2$` is irreducible (a milder form
-    # of the pipe's near-axis problem; the pipe paragraph below).  The
-    # wall-bounded *temporal* error improves with it: plane-Couette
-    # iterative-CN
-    # self-convergence goes from ``1.3e-2`` at order ~0.5 to
-    # ``3.3e-5`` at order ~1.1 (the divergence residual **was** the
-    # dominant projection-splitting error) -- pinned by
-    # ``tests/test_temporal_order.py``.
+    # *The mechanism* (one, in all three geometries, since
+    # 2026-07-26).  Advance the **wall-normal velocity and vorticity**
+    # instead of the three velocity components, and *reconstruct* the
+    # tangential pair from them.  Continuity is then an algebraic
+    # identity -- exact at every row including the walls, for any
+    # operator, grid or axis fit -- and the pressure is eliminated
+    # discretely, never formed.  `$D_1$` and `$D_2$` stay individually
+    # Fornberg-fit and the band stays at ``fd_order``.  The
+    # wall-normal-velocity equation is the pressure-eliminated
+    # fourth-order one, integrated as two second-order banded solves
+    # that commute exactly (Tuckerman 1989; Luchini & Quadrio 2006 is
+    # the FD-in-`$y$` precedent) -- no fourth-order operator is
+    # assembled anywhere.  Tangential no-slip is not imposed but
+    # *emerges* from the reconstruction, so the tangential wall values
+    # become a live diagnostic of influence-matrix health.
     #
-    # *Pipe (`$x = r^2$` axis operators + a sharp edge).*  The pipe has
-    # no `$D_2$` to swap: its axis regularity lives in the parity-reduced
-    # `$D_1$`, and the near-axis commutator
-    # `$D_1(1/r) - (1/r)D_1 \ne -1/r^2$` is what breaks continuity there
-    # (it dominates the innermost node).  A single Fornberg fit on
-    # `$x = r^2$` (an axis-regular field is analytic in `$x$`) gives a
-    # `$D_{1,\mathrm{even}}/D_{1,\mathrm{odd}}$` pair whose discrete
-    # commutator vanishes for **one** parity to round-off, and
-    # `$D_2 := D_1 D_1$` follows by composition; the 1-wall closure is
-    # then `$2\times2$`.  The structural invariant
-    # `$\mathrm{diag}(\Theta) + \mathrm{diag}(\Phi) = 2/r^2$` forbids
-    # *both* parities' commutators vanishing at once, so a stepped state
-    # keeps the other parity's residual and the pipe **cannot** reach
-    # the Cartesian machine-zero -- but the gain is large: on a resolved
-    # (rolls) IC the stepped-state relative divergence drops
-    # ``2.8e-2 -> 5.6e-5`` at ``ny = 25`` (~500x), less at higher
-    # resolution as both converge (``tests/test_imm_continuity.py``).
-    # **The sharp edge:** the composed `$D_2 = D_1 D_1$` is deliberately
-    # less dissipative at the grid scale, so a grid-white (radially
-    # under-resolved) IC -- e.g. ``init.random_field`` -- makes the
-    # stiff near-axis corrector *diverge* where the direct-fit `$D_2$`
-    # damps it (measured: E' blows up, ``c/it`` climbs, gate-off is
-    # clean at the same ``dt``).  Use the flag only with *resolved*
-    # initial data (a snapshot, or ``init.localized_rolls``) -- which is
-    # its only meaningful regime anyway, since the residual is a
-    # convergent truncation error, physically inert for resolved fields.
-    # (For the accurate `$x = r^2$` `$D_1$` *without* this restriction --
-    # kept random-IC-stable by retaining the direct-fit `$D_2$`, at the
-    # cost of the discrete-divergence consistency -- see ``pipe_axis_fit``
-    # below.)  The band widens to 12 (vs 8) at ``fd_order = 8``.
+    # Per geometry: **Cartesian** advances `$(v, \omega_y)$`, four
+    # per-mode banded solves down to three, and *carries* the state as
+    # `$(\varphi, v, \omega_y)$` while everything outside the stepper
+    # observes `$(u, v, w)$` -- the same two-representation
+    # arrangement the cylindrical/annular geometries already use for
+    # `$u_\pm$`, crossed once per state by ``__main__``, so snapshots,
+    # probes, forcing, diagnostics, the analysis package and resume all
+    # keep seeing physical components.  **Annular** advances the
+    # `$(u_r, \omega_r)$` pair, whose two slots share one Helmholtz
+    # operator (`$m_{\mathrm{eff}}^2 = m^2+1$`, the spin-block
+    # diagonal): four solves down to three, four band families down to
+    # three, `$u_\pm$` unchanged.  **Pipe** the same, except that the
+    # pair's `$-2im/r^2$` spin coupling cannot be lagged near the axis
+    # (it diverges: measured contraction 1.13 on the plain-`$r$` fit,
+    # 19.1 on the retired `$x = r^2$` axis fit), so the **spin quad**
+    # `$(\Phi_\pm, \omega_\pm)$` is advanced through the *existing*
+    # `$H_{k,\pm}$` families, which diagonalise that coupling exactly
+    # -- five solves over three band families, and nothing linear
+    # Picard-iterated at all.  Construction, boundary conditions and
+    # the retired routes: the ``cartesian._imm_iteration`` (shared
+    # record), ``annular._imm_iteration_vw`` (cylindrical algebra) and
+    # ``cylindrical._imm_iteration_vw`` (the quad) docstrings.
     #
-    # *Price.*  `$D_1 D_1$` is the same formal order as the direct-fit
-    # `$D_2$` (measured 7.6 vs 7.5 at ``fd_order = 8``) with a 6-13x
-    # larger error constant, growing with ``fd_order``; recovering the
-    # ungated wall-normal accuracy costs roughly 40% more ``ny``.  It
-    # also widens the banded operators (17 -> 23 columns at
-    # ``fd_order = 8``): ~1.35x operator storage, ~1.4x solve, ~1.9x
-    # factorisation.  `$D_2$` enters only the implicit operators
-    # (`$L_k$`, `$H_k$` and their matvecs), so the accuracy cost lands
-    # on the viscous/pressure discretisation and on transient growth --
-    # never on the diagnostics, which are `$D_1$`-only.  The
-    # viscoelastic conformation operator `$H_c$` deliberately keeps
-    # the direct-fit `$D_2$` and its narrow band (the tensor is not
-    # solenoidal and never enters the projection).  The *momentum*
-    # price is small: the composed operators' extra viscous truncation
-    # measures ``3.5e-4`` (``ny = 25``) / ``8.3e-6`` (``ny = 97``)
-    # relative to the Helmholtz scale `$\max|\tilde H u|$` on a
-    # plane-Couette stepped state -- two orders below the
-    # ``4.5e-2`` / ``1.6e-3`` that *relocating* the continuity
-    # residual into the velocities would cost in the same units
-    # (``tests/test_imm_continuity.py`` reports both).
+    # *Efficacy* (measured, ``fd_order = 8``, ``ny = 25`` / ``ny = 97``,
+    # one step from a random IC, seed 7 -- ten steps from an
+    # axis-regular rolls IC on the pipe; ``tests/test_imm_continuity``).
+    # Stepped-state relative divergence:
     #
-    # *Rejected alternative (2026-07-24).*  A state-side route --
-    # keep the direct-fit operators and back-solve the tangential
-    # pair from continuity at the solved `$v$` once per accepted step
-    # (`$i k_x u + i k_z w := -D_1 v$`, the minimal-norm update, fused
-    # as a step finalizer) -- makes the interior divergence *exactly*
-    # zero and passes every linear gate, but is **violently unstable**
-    # in nonlinear integration (state x5-10 per step at the gravest
-    # modes, worse per unit time at smaller ``dt``, and not cured by
-    # the boundary closure): the relocated residual re-excites the
-    # solve through the undamped tangential channel, whereas the
-    # ungated scheme holds it in the divergence, which the
-    # `$d^n/\Delta t$` Poisson feedback damps.  Kleiser's tau-method
-    # instability (CHQZ p. 219) in FD form; full record in the
-    # ``cartesian._imm_iteration`` docs.  Machine-zero interior
-    # continuity on direct-fit operators would need a
-    # `$v$`-`$\omega_y$` formulation, not a projection.
+    #   plane-couette   4.5e-2 -> 2.9e-16   1.1e-3 -> 1.6e-15
+    #   taylor-couette  6.4e-2 -> 5.6e-16   5.7e-4 -> 1.9e-15
+    #   pipe            2.8e-2 -> 2.1e-15          -> 3.9e-15
     #
-    # *Measured step cost* (CPU, plane-Couette 32x64x32,
-    # ``fd_order = 8``): **+2.3%** per RHS evaluation, but ~11%
-    # *faster* per unit simulated time -- the corrector contracts in
-    # fewer iterations (``c/it`` 1.37 -> 0.93; 0.50 -> 0.22 in the
-    # random-smoke config).  Consistent with Kleiser's report, via
-    # CHQZ p. 220, of *lower* time-step stability limits when the
-    # correction is omitted.  One config on one backend: treat the
+    # -- round-off everywhere, and following no `$h^p$` law at all (the
+    # mild growth with `$N_y$` is the longer `$D_1$` dot product, not
+    # truncation), because continuity here is an identity rather than
+    # something a solve delivers; which is why every gate-on bound is
+    # asserted at every ``--ny``.  These replace the operator-identity
+    # route's floors (4.2e-14 Cartesian, 8.0e-6 annular, 5.6e-5 pipe),
+    # each set by a commutator that route could not remove.  The
+    # wall-bounded *temporal* error improves too: plane-Couette
+    # iterative-CN self-convergence goes from ``1.3e-2`` at order ~0.5
+    # to ``3.6e-5`` at order ~1.2, and Taylor-Couette likewise (the
+    # divergence residual **was** the dominant projection-splitting
+    # error) -- pinned by ``tests/test_temporal_order.py``.
+    #
+    # *Price.*  Exact continuity is bought by *not* imposing the
+    # tangential momentum combination, so what continuity gains, that
+    # equation loses.  Measured end to end on the Cartesian pair --
+    # the same random IC stepped once by each scheme, differenced in
+    # the Helmholtz norm `$\max|\tilde H \delta|/\max|\tilde H u|$` --
+    # the two answers differ by ``2.4e-3`` (``ny = 25``) / ``3.2e-5``
+    # (``ny = 97``) in the tangential pair and ``8.9e-3`` / ``1.8e-5``
+    # in `$v$`: truncation-level, refining at roughly third to fourth
+    # order, with **no plateau** (the signature that would mean a
+    # formulation error rather than a truncation one).  The
+    # ``CHI-MOM`` figure ``tests/test_imm_continuity.py`` prints
+    # (``4.5e-2`` / ``1.6e-3``) is a cruder *upper bound* on the same
+    # quantity.  Nothing reads the residual back -- the difference
+    # between this and the rejected projection below -- so it neither
+    # accumulates nor re-excites; the stepped energy budget in fact
+    # closes *tighter* with the flag on (``2.8e-3`` vs ``5.1e-3``,
+    # ``tests/test_energy_budget.py``), as it must when pressure does
+    # no work on an exactly solenoidal field.  There is no operator
+    # price at all (same `$D_1$`, same direct-fit `$D_2$`, same band)
+    # and operator storage *drops*; against that, `$L(Lv)$` is applied
+    # in the explicit half, and the reconstruction's `$1/k^2$` (
+    # `$1/(k_z^2 + m^2/r^2)$` in the cylindrical geometries) amplifies
+    # the gravest mode by `$1/k_{\min}$` (`$O(1-10)$` for sane boxes).
+    #
+    # *Rejected alternatives.*  (1) **Operator-side identities**
+    # (shipped on annular/pipe until 2026-07-26): `$D_2 := D_1 D_1$`
+    # plus the CHQZ (7.3.51)-(7.3.58) boundary closure.  It works, but
+    # cannot reach round-off in a cylindrical geometry (the metric
+    # commutator `$[D_1, 1/r] \ne -1/r^2$` survives; on the pipe a
+    # parity invariant forbids both parities' commutators vanishing at
+    # once), it widens every banded operator, it costs an order in the
+    # `$D_2$` truncation constant, and -- because a composed `$D_2$`
+    # is not grid-scale-dissipative -- it made the pipe unstable from a
+    # grid-white random IC.  All four drawbacks are gone.
+    # (2) **Commutator cancellation**: feeding the commutator back into
+    # the Poisson RHS reaches machine-zero but contracts like
+    # `$N_y^{-2}$`.  (3) **State-side tangential projection**
+    # (2026-07-24): back-solving the tangential pair from continuity at
+    # the primitive `$v$` zeroes the interior divergence and passes
+    # every *linear* gate, but is violently unstable nonlinearly
+    # (x5-10 per step at the gravest modes, worse per unit time at
+    # smaller ``dt``, not cured by the boundary closure) -- Kleiser's
+    # tau-method instability (CHQZ p. 219) in FD form.  (4) Merely
+    # solving an `$\omega_y$` Helmholtz beside the existing `$(v, p)$`
+    # IMM and reconstructing is the *same state map* as (3), so it
+    # inherits the instability: only advancing the wall-normal velocity
+    # by the pressure-eliminated dynamics escapes it.  (5) Decoupling
+    # the annular `$(u_r, \omega_r)$` pair the way `$u_\pm$` decouples
+    # `$(u_r, u_\theta)$` is impossible -- it mixes two vector fields;
+    # the exactly-decoupled candidates are enumerated and dismissed in
+    # the ``annular._imm_iteration_vw`` docstring.
+    #
+    # *Measured step cost.*  On the Cartesian family the corrector
+    # contracts in fewer iterations, and the same holds in the
+    # cylindrical ones: the pipe's random-smoke ``c/it`` drops
+    # ``1.00 -> 0.10`` and Taylor-Couette's ``0.09 -> 0.00``, because
+    # the reconstruction removes the projection error the corrector was
+    # working against (consistent with Kleiser's report, via CHQZ
+    # p. 220, of *lower* time-step stability limits when the boundary
+    # correction is omitted).  One config on one backend: treat the
     # speedup as a bonus, not a guarantee.
+    # one backend: treat the speedup as a bonus, not a guarantee.
     consistent_imm: bool = Field(
         default=False,
         description=(
             "Make the influence-matrix projection discretely "
-            "consistent (D2 := D1*D1 plus the Kleiser-Schumann "
-            "boundary closure), so a stepped state's discrete "
-            "divergence is round-off (Cartesian) or 2-4 orders "
-            "smaller (annular).  Costs a 6-13x larger D2 error "
-            "constant and ~1.35x operator storage.  "
+            "consistent by advancing the wall-normal velocity and "
+            "vorticity and reconstructing the tangential "
+            "components: a stepped state's discrete divergence is "
+            "then round-off at any resolution, on the same "
+            "operators and with fewer solves and less operator "
+            "storage, at the cost of a truncation-level "
+            "tangential-momentum residual no solve reads back.  "
             "Trajectory-defining."
-        ),
-    )
-    # Pipe only.  Use the axis-regular ``x = r^2`` Fornberg fit for the
-    # radial operators -- **both** ``D1`` (`$2\,\mathrm{diag}(r)D_x$`)
-    # and a **direct** ``D2`` (`$2 D_x + 4x D_{xx}$` for even data, its
-    # `$r$`-conjugate for odd), **not** the composed ``D2 := D1 D1`` (see
-    # the ``consistent_imm`` pipe paragraph and
-    # :func:`~dnsjax.geometries.wall_bounded.cylindrical.\
-    # build_parity_reduced_matrices`).  So the accurate near-axis ``D1``
-    # drives every ``D1``-based quantity (curl, divergence, enstrophy,
-    # advection) and the axis-regular ``D2`` makes ``A_base = D2 +
-    # (1/r)D1`` ~3-320x more accurate near the axis too, yet -- being a
-    # genuine 2nd-derivative fit -- it stays grid-scale-dissipative.
-    # Consequences, both distinguishing it from ``consistent_imm``: (1)
-    # **stable with a grid-white random IC** (the direct ``D2`` damps the
-    # near-axis grid scale the composed ``D2`` does not); (2) it does
-    # **not** make the discrete divergence consistent -- that still needs
-    # the composed ``D2``.  Measured 5-1000x more accurate than the
-    # plain-``r`` ``D1`` for axis-regular fields at moderate ``ny`` (the
-    # gap closes at high ``ny``).  Off by default; subsumed when
-    # ``consistent_imm`` is on (which selects the same ``x = r^2`` ``D1``
-    # with the composed ``D2``).  Trajectory-defining.
-    pipe_axis_fit: bool = Field(
-        default=False,
-        description=(
-            "Pipe only: use the axis-regular x=r^2 radial fit for both "
-            "D1 and a direct D2 (not the composed D1.D1) -- accurate "
-            "near the axis for the diagnostics/advection and A_base, "
-            "grid-scale-dissipative so random-IC-stable, but does not "
-            "make the divergence discretely consistent (needs "
-            "consistent_imm)."
         ),
     )
     double_precision: bool = Field(
