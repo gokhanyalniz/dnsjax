@@ -1394,6 +1394,31 @@ def _imm_iteration(
     equation keeps exactly the rows it has today, and `$\hat\sigma$` is
     the residual of the wall rows the Dirichlet replacement already
     discards.
+
+    A *state-side* alternative was measured and rejected (2026-07-24):
+    overwriting the tangential pair from continuity at the solved `$v$`
+    once per accepted step (setting `$\chi \equiv i k_x u + i k_z w$`
+    to `$-D_1 v$` by the minimal-norm `$(u, w)$` update, fused via
+    ``make_stepper``'s *finalize_fn*) zeroes the interior divergence
+    *identically* on the direct-fit operators, and every linear gate
+    passes (laminar exact no-op; one-step continuity
+    `$\sim 10^{-16}$`) -- but nonlinear integration is violently
+    unstable: the relocated residual
+    re-excites the solve through the undamped tangential channel with
+    per-step gain `$\sim 5$`-`$10$` at the gravest horizontal modes
+    (`$1/k^2$`-weighted), *worse per unit time* at smaller
+    `$\Delta t$`, insensitive to near-wall masking of the relocation,
+    linear in its amplitude, and **not** cured by the boundary closure
+    on the direct-fit operators (the commutator channel alone sustains
+    it).  The un-projected scheme holds the same residual in the
+    divergence, where the `$d^n/\Delta t$` stage-1 feedback *damps*
+    it.  This is Kleiser's instability (CHQZ p. 219, "catastrophic")
+    transferring from tau to FD collocation: continuity-determined
+    tangential velocities discard a momentum combination the kept
+    `$v$`/pressure remember.  Exact interior continuity at direct-fit
+    accuracy would need a formulation where that combination is never
+    solved (a `$v$`-`$\omega_y$` reformulation), not a post-hoc
+    projection.
     """
     c = params.step.implicitness
     dt = flow_.dt

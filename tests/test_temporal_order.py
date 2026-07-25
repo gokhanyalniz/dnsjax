@@ -30,7 +30,7 @@ so a ``dt`` sweep needs a subprocess per value):
   a change that *removes* that error.  This study instead measures
   each configuration's own self-convergence and asserts the flag
   strictly improves both the error size and its decay rate (measured:
-  5.7e-2 at order ~0.5 -> 1.2e-4 at order ~1.1).  The wall-bounded
+  1.3e-2 at order ~0.5 -> 3.3e-5 at order ~1.1).  The wall-bounded
   absolute order is **not** 2 either way -- the projection splitting
   sets it -- which is exactly why the study above compares schemes
   rather than dts.

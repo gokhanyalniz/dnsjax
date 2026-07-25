@@ -539,20 +539,22 @@ class Resolution(BaseModel):
     # measures 1.6-3x *worse* than doing nothing -- hence one flag.
     #
     # *Efficacy* (measured, ``fd_order = 8``, one step from a random
-    # IC; ``ny = 25`` / ``ny = 97``).  Cartesian: the stepped-state
-    # relative divergence drops ``2.1e-1 -> 1.1e-13`` and
-    # ``9.9e-1 -> 1.2e-13``.  Annular: ``1.6e-1 -> 7.5e-5`` and
-    # ``9.6e-1 -> 1.1e-4``.  Note the *ungated* residual worsens
-    # sharply with resolution (the boundary term carries
-    # `$D_1[1,0] \sim N_y^2$`) while the gated one is flat, so the
-    # flag matters more the better-resolved the run.  The annular gain
-    # is bounded, degrading as `$\eta \to 0$` because the discrete
+    # IC, seed 7; ``ny = 25`` / ``ny = 97``;
+    # ``tests/test_imm_continuity.py``).  Cartesian: the stepped-state
+    # relative divergence drops ``4.5e-2 -> 4.2e-14`` and
+    # ``1.1e-3 -> 1.3e-12``.  Annular: ``6.4e-2 -> 8.0e-6`` and
+    # ``5.7e-4 -> 1.6e-8``.  (An earlier record quoted 2-3 orders
+    # larger "before" numbers growing as `$N_y^2$`; that growth was
+    # the grid-white IC's wall-normal Nyquist content, not the scheme
+    # -- with the filtered IC the ungated residual *falls* with
+    # resolution, ~40x over ``25 -> 97`` on Cartesian.)  The annular
+    # gain is bounded, degrading as `$\eta \to 0$` because the discrete
     # commutator `$[D_1, 1/r] \ne -1/r^2$` is irreducible (a milder form
     # of the pipe's near-axis problem; the pipe paragraph below).  The
     # wall-bounded *temporal* error improves with it: plane-Couette
     # iterative-CN
-    # self-convergence goes from ``5.7e-2`` at order ~0.5 to
-    # ``1.2e-4`` at order ~1.1 (the divergence residual **was** the
+    # self-convergence goes from ``1.3e-2`` at order ~0.5 to
+    # ``3.3e-5`` at order ~1.1 (the divergence residual **was** the
     # dominant projection-splitting error) -- pinned by
     # ``tests/test_temporal_order.py``.
     #
@@ -599,7 +601,31 @@ class Resolution(BaseModel):
     # never on the diagnostics, which are `$D_1$`-only.  The
     # viscoelastic conformation operator `$H_c$` deliberately keeps
     # the direct-fit `$D_2$` and its narrow band (the tensor is not
-    # solenoidal and never enters the projection).
+    # solenoidal and never enters the projection).  The *momentum*
+    # price is small: the composed operators' extra viscous truncation
+    # measures ``3.5e-4`` (``ny = 25``) / ``8.3e-6`` (``ny = 97``)
+    # relative to the Helmholtz scale `$\max|\tilde H u|$` on a
+    # plane-Couette stepped state -- two orders below the
+    # ``4.5e-2`` / ``1.6e-3`` that *relocating* the continuity
+    # residual into the velocities would cost in the same units
+    # (``tests/test_imm_continuity.py`` reports both).
+    #
+    # *Rejected alternative (2026-07-24).*  A state-side route --
+    # keep the direct-fit operators and back-solve the tangential
+    # pair from continuity at the solved `$v$` once per accepted step
+    # (`$i k_x u + i k_z w := -D_1 v$`, the minimal-norm update, fused
+    # as a step finalizer) -- makes the interior divergence *exactly*
+    # zero and passes every linear gate, but is **violently unstable**
+    # in nonlinear integration (state x5-10 per step at the gravest
+    # modes, worse per unit time at smaller ``dt``, and not cured by
+    # the boundary closure): the relocated residual re-excites the
+    # solve through the undamped tangential channel, whereas the
+    # ungated scheme holds it in the divergence, which the
+    # `$d^n/\Delta t$` Poisson feedback damps.  Kleiser's tau-method
+    # instability (CHQZ p. 219) in FD form; full record in the
+    # ``cartesian._imm_iteration`` docs.  Machine-zero interior
+    # continuity on direct-fit operators would need a
+    # `$v$`-`$\omega_y$` formulation, not a projection.
     #
     # *Measured step cost* (CPU, plane-Couette 32x64x32,
     # ``fd_order = 8``): **+2.3%** per RHS evaluation, but ~11%
@@ -617,7 +643,8 @@ class Resolution(BaseModel):
             "boundary closure), so a stepped state's discrete "
             "divergence is round-off (Cartesian) or 2-4 orders "
             "smaller (annular).  Costs a 6-13x larger D2 error "
-            "constant and ~1.35x operator storage."
+            "constant and ~1.35x operator storage.  "
+            "Trajectory-defining."
         ),
     )
     # Pipe only.  Use the axis-regular ``x = r^2`` Fornberg fit for the
