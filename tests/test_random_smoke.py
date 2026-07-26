@@ -274,6 +274,32 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # res.consistent_imm on the 9-component state.  The
+        # viscoelastic geometry carries no consistent_imm code of its
+        # own -- it inherits the annular v-omega pass through
+        # ``super().__post_init__`` -- and the conformation block
+        # never enters that solve, so the composition is only ever
+        # exercised here.  Measured when this entry was added: stepped
+        # relative divergence 2.6e-2 flag-off -> 4.5e-16 flag-on, with
+        # every stats column tracking flag-off to ~4e-6 at equal
+        # corrector cost.
+        "name": "viscoelastic-dean-consistent-imm",
+        "args": [
+            "--phys.system",
+            "viscoelastic-dean",
+            "--res.consistent_imm",
+            "True",
+            "--phys.wi",
+            "20",
+            "--phys.el",
+            "20",
+            "--init.random_conformation_amplitude",
+            "10",
+            "--geo.lz",
+            "5",
+        ],
+    },
+    {
         # Regression guard for the per-device (no-replication) random
         # build with spectral padding: always multi-device on the kx axis
         # (np1 = 2), with nx // 2 = 17 not divisible by np1 (padded to

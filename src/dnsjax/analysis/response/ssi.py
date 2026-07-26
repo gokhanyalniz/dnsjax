@@ -104,8 +104,13 @@ from .probes import (
 #: streams were injected in the solver's decoupled
 #: `$(u_z, u_+, u_-)$` basis, under the conjugate-partner rule that
 #: basis needed, so replaying their coefficients against today's
-#: physical profile bundle would be silently wrong.
-MIN_FORMAT_VERSION: int = 2
+#: physical profile bundle would be silently wrong.  Version-2
+#: streams additionally record the axis-2 ``wavenumbers`` of an
+#: azimuthal wedge as the harmonic index rather than the physical
+#: `$m = m_0 j$`, so anything deriving a wavelength or a spectrum
+#: from them is wrong by `$m_0$` (correct only at ``geo.m0 = 1``,
+#: which is why it went unnoticed).
+MIN_FORMAT_VERSION: int = 3
 
 __all__ = [
     "ForcingData",

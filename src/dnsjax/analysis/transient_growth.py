@@ -920,12 +920,12 @@ def _linear_step(gmod: Any, fmod: Any = None):
     step of viscous + coupling + influence-matrix pressure, with the
     nonlinear self-advection never formed.
 
-    Every array crossing the raw stepper is in the flow's solver basis
-    (cylindrical/annular: the decoupled `$u_\\pm$` one; Cartesian
-    under ``res.consistent_imm``: `$(\\varphi, v, \\omega_y)$`); the
-    returned step wraps it so the propagator, and everything this
-    driver exports, is in **physical** components.  A flow with no
-    such basis is returned unwrapped.
+    On the cylindrical/annular flows every array crossing the raw
+    stepper is in the decoupled `$u_\\pm$` solver basis, so the
+    returned step wraps it and the propagator -- and everything this
+    driver exports -- stays in **physical** components.  Cartesian
+    carries physical components already, in both ``res.consistent_imm``
+    states, so it is returned unwrapped.
     """
     from ..timestep import make_stepper
 
@@ -938,10 +938,9 @@ def _linear_step(gmod: Any, fmod: Any = None):
         None,
     )
     step = raw[2]  # predict_and_fully_correct(state, *args)
-    # The pair lives on the *flow* module for every family: the
-    # cylindrical/annular ones re-export the pure ``_base`` algebra,
-    # and the Cartesian ones are bound to their flow (they need
-    # `$D_1$`/`$D_2$`), so only the flow module has them.
+    # The pair lives on the *flow* module (the cylindrical/annular
+    # ones re-export the pure ``_base`` algebra), never the geometry
+    # module -- so look there, and take the absence as "no basis".
     basis_mod = fmod if fmod is not None else gmod
     to_solver = getattr(basis_mod, "to_solver_basis", None)
     if to_solver is None:

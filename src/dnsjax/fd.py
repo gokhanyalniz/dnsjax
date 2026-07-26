@@ -190,9 +190,14 @@ def matrix_half_bandwidth(A: ndarray, skip_rows: Sequence[int] = ()) -> int:
     ``fd_order``-wide band is *exactly* right for the direct-fit
     `$D_2$` (a `$(p+2)$`-point one-sided row reaches offset `$p$` at
     row 1), but not for a composed operator: `$D_1 D_1$` reaches
-    `$p + \lceil p/2 \rceil - 1$` (11 at ``fd_order = 8``).  Measuring
-    instead of assuming keeps the two cases on one code path and makes
-    a silent band truncation impossible.
+    `$p + \lceil p/2 \rceil - 1$` (11 at ``fd_order = 8``).  No
+    shipped configuration composes an operator any more -- the route
+    that did was retired on 2026-07-26 -- so today every caller
+    measures ``fd_order`` back.  Measuring rather than assuming is
+    kept because the assumption is the kind that fails silently: an
+    under-sized band truncates entries instead of erroring, and the
+    same ``p`` is reused to band neighbouring operators
+    (e.g. `$D_1 + 1/r$`).
 
     Parameters
     ----------

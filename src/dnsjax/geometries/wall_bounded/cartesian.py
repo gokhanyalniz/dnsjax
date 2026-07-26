@@ -537,8 +537,6 @@ class CartesianFlow:
     v2: Array = field(init=False)
     q1: Array | None = field(init=False)
     q2: Array | None = field(init=False)
-    phi1: Array | None = field(init=False)
-    phi2: Array | None = field(init=False)
     M_inv: Array = field(init=False)
     h_bulk_response: Array = field(init=False)
     H_bulk_inv: Array = field(init=False)
@@ -799,9 +797,6 @@ class CartesianFlow:
         self.v1 = jnp.where(fourier_.mean_mask, 0.0, self.v1)
         self.v2 = jnp.where(fourier_.mean_mask, 0.0, self.v2)
 
-        # Static aux-data (not traced leaves) in the primitive scheme.
-        self.phi1 = self.phi2 = None
-
     def _derive_vw_homogeneous_data(
         self,
         fourier_: Fourier,
@@ -852,10 +847,9 @@ class CartesianFlow:
         e_cols:
             The two unit wall vectors, mode-outer ``(Nkz, Nkx, Ny)``.
         """
-        v_cols, phi_cols = [], []
+        v_cols = []
         for e_b in e_cols:
             phi_b = self.Hk_op.solve(e_b.transpose(2, 0, 1)).transpose(1, 2, 0)
-            phi_cols.append(phi_b)
             rhs_v = phi_b.at[..., 0].set(0.0).at[..., -1].set(0.0)
             v_cols.append(
                 self.Lk_op.solve(rhs_v.transpose(2, 0, 1)).transpose(1, 2, 0)
@@ -893,17 +887,12 @@ class CartesianFlow:
             jnp.where(fourier_.mean_mask, 0.0, v.transpose(2, 0, 1))
             for v in v_cols
         )
-        # The matching `$\varphi$` columns: the step superposes these
-        # with the same ``alpha`` to carry a `$\varphi$` whose wall
-        # rows *are* the influence matrix's choice (the point of
-        # carrying the solver basis at all).  Zeroed at the mean mode
-        # so the packed `$u_{00}$` plane is never touched.
-        self.phi1, self.phi2 = (
-            jnp.where(fourier_.mean_mask, 0.0, f.transpose(2, 0, 1))
-            for f in phi_cols
-        )
 
-        # No pressure in this scheme: static aux-data, not leaves.
+        # No pressure in this scheme, and the matching `$\varphi$`
+        # columns are not stored: the step's reconstruction reads
+        # `$v$` and `$\omega_y$` alone, so the `$\varphi$` half of the
+        # superposition would be dead (:func:`_imm_iteration_vw`
+        # stage 5).  Static aux-data, not leaves.
         self.q1 = self.q2 = None
 
     def _precompute_bulk_response(
@@ -1060,11 +1049,10 @@ def _build_dt_leaves(
         "h_bulk_response": new.h_bulk_response,
         "H_bulk_inv": new.H_bulk_inv,
     }
-    if params.res.consistent_imm:
-        leaves |= {"phi1": new.phi1, "phi2": new.phi2}
-    else:
+    if not params.res.consistent_imm:
         # The primitive scheme's horizontal potentials; the
-        # `$v$`-`$\omega_y$` columns carry no pressure.
+        # `$v$`-`$\omega_y$` columns carry no pressure, so its leaf
+        # set is a strict subset of this one.
         leaves |= {"q1": new.q1, "q2": new.q2}
     return leaves
 
@@ -1147,12 +1135,6 @@ def _l_bf(
     ``TimeStepping`` docstring in :mod:`dnsjax.parameters` for the
     split-consistency argument.
     """
-    if params.res.consistent_imm:
-        # The carried state is `$(\varphi, v, \omega_y)$`; every term
-        # below is a physical-component expression, and the RHS this
-        # returns is consumed in physical components too (the step's
-        # source projections do the basis work).
-        state = _from_solver(state, fourier_, flow_)
     omega = _curl_fn(state, fourier_, flow_)
     # base_flow / curl_base_flow are (3, Ny, 1, 1); broadcast over
     # (k_z, k_x).
@@ -1191,9 +1173,6 @@ def _get_rhs_core(
     divergence-free, so the pressure projection is untouched (see
     :func:`~dnsjax.geometries.wall_bounded._base.pad_base_flow`).
     """
-    if params.res.consistent_imm:
-        # See :func:`_l_bf`: physical components in, physical out.
-        state = _from_solver(state, fourier_, flow_)
     rhs = get_nonlin(
         state,
         flow_.base_flow_padded,
@@ -1306,22 +1285,22 @@ def _hk_minus_matvec(
 def _from_solver(
     state: Array, fourier_: Fourier, flow_: CartesianFlow
 ) -> Array:
-    r"""Solver basis `$(\varphi, v, \omega_y)$` -> physical
+    r"""Evolved scalars `$(\varphi, v, \omega_y)$` -> physical
     `$(u, v, w)$`.
 
-    The reconstruction of :func:`_imm_iteration_vw`, as a state map:
+    Stage 7 of :func:`_imm_iteration_vw`, as a state map:
 
     .. math::
         u = \frac{i}{k^2}(k_x D_1 v - k_z \omega_y), \qquad
         w = \frac{i}{k^2}(k_z D_1 v + k_x \omega_y)
 
     with `$v$` carried through untouched (slot 1 is the same component
-    in both bases) and the `$k^2 = 0$` plane an identity: there
+    either way) and the `$k^2 = 0$` plane an identity: there
     `$\varphi$` and `$\omega_y$` are structurally zero, so those two
-    slots carry `$u_{00}$` and `$w_{00}$` themselves.  Linear, so it
-    may be applied to a *difference* of states to get the difference
-    of the physical states -- which is how the corrector norm stays a
-    physical-energy norm.
+    slots carry `$u_{00}$` and `$w_{00}$` themselves -- which makes
+    the mean-plane unpacking part of this map rather than a separate
+    stage.  Private to the pass: the carried state is physical, so
+    nothing outside :func:`_imm_iteration_vw` needs either direction.
     """
     v = state[1]
     dy_v = apply_y_matrix(flow_.D1, v)
@@ -1339,30 +1318,25 @@ def _from_solver(
 
 
 def _to_solver(state: Array, fourier_: Fourier, flow_: CartesianFlow) -> Array:
-    r"""Physical `$(u, v, w)$` -> solver basis
+    r"""Physical `$(u, v, w)$` -> evolved scalars
     `$(\varphi, v, \omega_y)$`.
 
+    Stage 1 of :func:`_imm_iteration_vw`, the inverse of
+    :func:`_from_solver` on discretely solenoidal fields:
     `$\varphi = L v$` (`$L = D_2 - k^2$`) and
-    `$\omega_y = i k_z u - i k_x w$`; identity on `$v$` and on the
-    `$k^2 = 0$` plane, as in :func:`_from_solver`.
+    `$\omega_y = i k_z u - i k_x w$`, identity on `$v$` and on the
+    `$k^2 = 0$` plane.
 
-    **This map is a projection, not a bijection.**  The solver basis
-    has no room for the horizontal divergence
-    `$\chi = i k_x u + i k_z w$` -- continuity *defines* it as
-    `$-D_1 v$` -- so any part of the input that violates discrete
-    continuity is discarded here, at once and deterministically,
-    rather than being damped over the following steps as the
-    primitive scheme would.  It matters at exactly two places: a
-    freshly built initial condition (``random_field`` and
-    ``localized_rolls`` are already discretely solenoidal, so a no-op)
-    and a ``[force]`` kick (see :mod:`dnsjax.forcing`).
-
-    `$\varphi$`'s wall rows come out as `$(D_2 v)|_\text{wall}$`
-    here, which is the best a bare velocity field can supply.  Within
-    a trajectory they are *not* recomputed: the step carries the
-    `$\varphi$` whose wall values are the influence matrix's own
-    `$\alpha$`, which is the reason the state is carried in this
-    basis at all.
+    Not a bijection in the other direction: the pair
+    `$(\varphi, \omega_y)$` has no room for the horizontal divergence
+    `$\chi = i k_x u + i k_z w$`, which continuity *defines* as
+    `$-D_1 v$`.  A non-solenoidal input therefore keeps its `$\chi$`
+    only in the *physical* state the pass was handed -- where the
+    nonlinear term sees it for one step, exactly as in the primitive
+    scheme -- and loses it at stage 7's reconstruction.  `$\varphi$`'s
+    wall rows come out as `$(D_2 v)|_\text{wall}$` here, which is the
+    scheme's one approximation; the bound is in
+    :func:`_imm_iteration_vw`.
     """
     v = state[1]
     phi = apply_y_matrix(flow_.D2, v) - fourier_.k2 * v
@@ -1375,39 +1349,6 @@ def _to_solver(state: Array, fourier_: Fourier, flow_: CartesianFlow) -> Array:
             jnp.where(mean_mask, state[2], omega),
         ]
     )
-
-
-def make_basis_maps(
-    flow_: CartesianFlow,
-) -> tuple[Callable[[Array], Array], Callable[[Array], Array]]:
-    r"""Bind ``(to_solver_basis, from_solver_basis)`` to *flow_*.
-
-    The Cartesian analogue of the cylindrical/annular
-    ``_base.to_pm_basis``/``from_pm_basis`` pair, except that the maps
-    need `$D_1$`/`$D_2$` and the wavenumbers, hence the binding.  Each
-    flow module calls this once and exports the result, so
-    ``__main__``, the probe/forcing extractors and the
-    transient-growth driver find the pair by name and cross the
-    boundary exactly as they do for the other geometries.
-
-    With ``res.consistent_imm`` off the state *is* physical and both
-    maps are the identity -- a trace-time branch, so the flag-off
-    traces are unchanged.
-    """
-    if not params.res.consistent_imm:
-
-        def _identity(state: Array) -> Array:
-            return state
-
-        return _identity, _identity
-
-    def to_solver_basis(state: Array) -> Array:
-        return _to_solver(state, fourier, flow_)
-
-    def from_solver_basis(state: Array) -> Array:
-        return _from_solver(state, fourier, flow_)
-
-    return to_solver_basis, from_solver_basis
 
 
 def _apply_bulk_corrections(
@@ -1690,18 +1631,16 @@ def _imm_iteration_vw(
     Pressure is eliminated exactly (discretely, not just formally) and
     never appears.
 
-    The state is **carried** in this basis --
-    `$(\varphi, v, \omega_y)$` with `$\varphi = L v$` -- and
-    *observed* in `$(u, v, w)$`, the same two-representation
-    arrangement the cylindrical/annular geometries use for their
-    decoupled `$u_\pm$` basis: ``__main__`` crosses once per state
-    via the flow module's ``to_solver_basis`` /
-    ``from_solver_basis`` (:func:`make_basis_maps`), and snapshots,
-    diagnostics, probes, forcing and the analysis package all keep
-    seeing physical components.  Carrying `$\varphi$` rather than
-    re-deriving it from `$v$` is what lets its wall rows stay the
-    influence matrix's own `$\alpha$` from step to step; see the
-    boundary-condition note below.
+    The state stays **physical** `$(u, v, w)$` in both flag states:
+    stage 1 re-derives `$(\varphi^n, \omega_y^n)$` from it
+    (:func:`_to_solver`) and the exit reconstructs `$(u, w)$` back
+    (:func:`_from_solver`), so the evolved scalars live inside this
+    function and nothing outside it -- ``__main__``, snapshots,
+    diagnostics, probes, forcing, the analysis package -- needs to
+    know they exist.  The two cylindrical geometries do the same
+    (they carry `$u_\pm$` because the *implicit operators* need it,
+    not this scheme).  What that costs is two wall rows per mode; see
+    the boundary-condition note below.
 
     Why this makes the discrete divergence vanish
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1790,21 +1729,39 @@ def _imm_iteration_vw(
     than something imposed.
 
     `$\varphi$`'s two wall values are the influence-matrix unknowns,
-    so they are **carried, not re-derived**: stage 5 superposes the
-    `$\varphi$` columns with the same `$\alpha$` it applies to the
-    `$v$` columns, leaving `$L v = \varphi$` on the interior and
-    `$\varphi|_\text{wall} = \alpha$` exactly.  Re-deriving
-    `$\varphi^n = L v^n$` from a bare velocity field instead would
-    put `$(D_2 v^n)|_\text{wall}$` there -- a truncation-level
-    substitute, benign (the one-step map keeps spectral radius
-    `$\le 1$`, matching the primitive scheme's to ~7 digits over
+    and stage 5 chooses them -- but the physical state has no room for
+    them, so the next pass re-derives `$\varphi^n = L v^n$` and gets
+    `$(D_2 v^n)|_\text{wall}$` there instead of that `$\alpha$`.
+    **This is the scheme's one approximation, and it is bounded.**  It
+    perturbs a single term -- the explicit half's near-wall `$D_2$`
+    rows, `$(1-c)\nu L\varphi^n$` -- and the solve those rows feed
+    carries `$1/\Delta t + c\nu(|D_2|_{jj} + k^2)$` on the same rows,
+    at the same `$1/h_\text{wall}^2$` scale, so the amplification is
+    bounded by `$\sim (1-c)/c$` in the stiff limit and by
+    `$\Delta t\,(1-c)\nu\|D_2\|$` otherwise.  Every excursion towards
+    production -- larger `$N_y$` or `$k^2$`, smaller `$\Delta t$` --
+    moves deeper into the implicit-dominated regime where that bound
+    tightens.  Measured: the one-step map keeps spectral radius
+    `$\le 1$` and matches the primitive scheme's to ~7 digits over
     `$N_y \in [25, 97]$`, `$k^2 \in [0.04, 4\times10^3]$`,
-    `$\Delta t \in [10^{-4}, 10^{-1}]$`) but needless once the state
-    is carried in this basis.  It is still what :func:`_to_solver`
-    must do at the one place a bare velocity field enters (an initial
-    condition, or a forcing kick).  *Zeroing* those wall rows, by
-    contrast, would be a **broken** scheme rather than a fallback: it
-    deletes `$O(1)$` near-wall data from the explicit bilaplacian.
+    `$\Delta t \in [10^{-4}, 10^{-1}]$`.  Both cylindrical geometries
+    make the same trade (``annular._imm_iteration_vw`` re-derives
+    `$\Phi^n$` per pass; the pipe lags its wall differences to
+    `$t^n$`), and a snapshot resume has no other option anyway, since
+    snapshots store physical components.
+
+    Carrying `$(\varphi, v, \omega_y)$` as a second solver basis to
+    keep `$\alpha$` exactly *was* shipped (2026-07-25) and removed
+    (2026-07-27): it cost a third representation of the state,
+    field-wide basis conversions in
+    ``probes``/``forcing``/``__main__``, an extra pair of
+    `$\varphi$` influence columns as `$\Delta t$` leaves, a state/RHS
+    basis mismatch the stepper had to be careful around, and an entry
+    projection that silently dropped a kick's non-solenoidal part --
+    for two wall rows the resume path threw away regardless.
+    *Zeroing* those rows, by contrast, would be a **broken** scheme
+    rather than a fallback: it deletes `$O(1)$` near-wall data from
+    the explicit bilaplacian.
 
     Mean mode and padding
     ~~~~~~~~~~~~~~~~~~~~~
@@ -1812,9 +1769,11 @@ def _imm_iteration_vw(
     scalars are structurally zero (`$\varphi$`, `$\omega_y$` and both
     sources carry an explicit `$k^2$`, `$i k_x$` or `$i k_z$`), so
     those two slots carry the mean streamwise and spanwise momentum
-    instead -- which is why the basis maps are the *identity* on the
-    `$k^2 = 0$` plane and slot 0 / slot 2 pair naturally with
-    `$u$` / `$w$`.  The `$H_k$` operator there *is* the mean-mode
+    instead -- which is why :func:`_to_solver` and
+    :func:`_from_solver` are the *identity* on the `$k^2 = 0$` plane
+    and slot 0 / slot 2 pair naturally with `$u$` / `$w$`, and why
+    stage 5 can drop the `$\varphi$` superposition without touching
+    that plane.  The `$H_k$` operator there *is* the mean-mode
     Helmholtz those components need and their pressure gradient
     vanishes, so the packed solves are the primitive scheme's
     mean-mode update term for term, at zero extra cost.  What keeps it
@@ -1830,10 +1789,14 @@ def _imm_iteration_vw(
     ikx = 1j * fourier_.kx
     ikz = 1j * fourier_.kz
 
-    # Stage 1: the evolved scalars are the carried state itself -- no
-    # recompute, so `$\varphi$` keeps the wall values the influence
-    # matrix chose last step (:func:`_to_solver`).
-    phi_n, omega_n = velocity_n[0], velocity_n[2]
+    # Stage 1: re-derive the evolved scalars from the carried physical
+    # state, on full rows -- `$\varphi$`'s wall rows are therefore the
+    # discrete `$(D_2 v^n)$` rather than last step's influence
+    # `$\alpha$` (docstring).  This is exactly `_to_solver`, mean-plane
+    # packing included, so reuse it; slot 1 is dead here and XLA drops
+    # it.
+    sol_n = _to_solver(velocity_n, fourier_, flow_)
+    phi_n, omega_n = sol_n[0], sol_n[2]
 
     # Stage 2: the pressure-free sources.  Both projections are linear,
     # so the CN combination is formed first and projected once.
@@ -1844,9 +1807,8 @@ def _imm_iteration_vw(
     # Each annihilates a discrete gradient (i kx q, D1 q, i kz q)
     # *exactly*, because the scalar k^2 commutes with D1 -- this is the
     # discrete pressure elimination, and the reason no operator
-    # identity has to be bought.  The RHS arrives in **physical**
-    # components (the geometry's `_get_rhs` / `_l_bf` convert on the
-    # way in), which is what these projections expect.
+    # identity has to be bought.  The RHS is in physical components,
+    # like the state.
     nonlin = c * nonlin_j + (1 - c) * nonlin_n
     div_h = ikx * nonlin[0] + ikz * nonlin[2]
     S_phi = -fourier_.k2 * nonlin[1] - apply_y_matrix(flow_.D1, div_h)
@@ -1877,33 +1839,35 @@ def _imm_iteration_vw(
 
     # Stage 5: influence matrix -- choose the two free wall values of
     # phi that make (D1 v)|wall = 0, i.e. tangential no-slip of the
-    # reconstruction.  The same alpha superposes both column families,
-    # so the returned phi and v stay exactly consistent
-    # (`$L v = \varphi$` on the interior, `$\varphi|_{wall} =
-    # \alpha$`).
+    # reconstruction.  Only the `$v$` columns are superposed: the
+    # matching `$\varphi$` correction would be discarded by stage 7's
+    # reconstruction, which reads `$v$` and `$\omega_y$` alone (and
+    # `$\varphi_{arb}$` only on the mean plane, where `$\alpha \equiv
+    # 0$` by construction).
     d_wall = jnp.einsum("bj, jzx -> zxb", flow_.D1_bnd, v_arb)
     alpha = -jnp.einsum("zxab, zxb -> zxa", flow_.M_inv, d_wall)
-    alpha1, alpha2 = alpha[..., 0][None], alpha[..., 1][None]
-    v_new = v_arb + alpha1 * flow_.v1 + alpha2 * flow_.v2
-    phi_new = phi_arb + alpha1 * flow_.phi1 + alpha2 * flow_.phi2
+    v_new = (
+        v_arb + alpha[..., 0][None] * flow_.v1 + alpha[..., 1][None] * flow_.v2
+    )
 
     # Stage 6: zero mean-mode v (continuity forces it; this also
     # discards the meaningless Lk solve of the packed mean plane).
     v_new = jnp.where(mean_mask, 0.0, v_new)
 
-    # Stages 7-8: the mean-mode bulk projections, shared verbatim --
-    # they write only the k^2 = 0 plane, where these two slots *are*
-    # u_00 and w_00.
-    phi_new, omega_new = _apply_bulk_corrections(
-        phi_new, omega_new, mean_mask, flow_
+    # Stage 7: reconstruct the tangential pair -- the stage that makes
+    # the discrete divergence vanish at every row -- and unpack the
+    # mean plane.  Together those two *are* `_from_solver`.
+    u_new, v_new, w_new = _from_solver(
+        jnp.array([phi_arb, v_new, omega_new]), fourier_, flow_
     )
 
-    velocity_new = jnp.array([phi_new, v_new, omega_new])
+    # Stages 8-9: the mean-mode bulk projections, shared verbatim --
+    # they write only the k^2 = 0 plane, the one plane the
+    # reconstruction never touches.
+    u_new, w_new = _apply_bulk_corrections(u_new, w_new, mean_mask, flow_)
 
-    # The corrector norm must stay a physical-energy norm, and
-    # `_from_solver` is linear, so convert the *difference* (one D1
-    # matvec) rather than both states.
-    correction = _from_solver(velocity_new - velocity_j, fourier_, flow_)
+    velocity_new = jnp.array([u_new, v_new, w_new])
+    correction = velocity_new - velocity_j
 
     return velocity_new, correction
 

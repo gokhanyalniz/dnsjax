@@ -102,9 +102,13 @@ class ForceParams(BaseModel):
     continuation, amplitude guidance): the :mod:`dnsjax.forcing`
     module docstring.
 
-    Wall-bounded, non-viscoelastic systems only (the conjugate-
-    partner construction currently encodes the 3-component velocity
-    bases).  The whole section is **trajectory-defining**: resuming
+    Wall-bounded, non-viscoelastic systems only: the injector's
+    cylindrical/annular branch hard-codes the 3-component velocity map
+    ``to_pm_basis`` and has no ``to_spin_basis`` counterpart (unlike
+    the probe extractor, which does).  The conjugate partner itself is
+    basis-agnostic these days -- it is a plain conjugate of a physical
+    profile, valid for any component count.  The whole section is
+    **trajectory-defining**: resuming
     with changed forcing starts a new trajectory (like a ``phys``
     change).
     """
@@ -417,6 +421,23 @@ def _validate_force(values: ForceParams, params) -> None:
                 "force.modes: the (0,0) mean mode cannot be forced "
                 "(its coefficient is real, and under bulk-velocity "
                 "driving it is constrained)."
+            )
+        if i3 == 0 and n2 - i2 == i2:
+            # On the real-FFT plane the kick is applied together with
+            # its conjugate partner at the mirrored index n2 - i2.
+            # For odd ``res.nz`` that index is self-mirroring, so the
+            # kick and its own conjugate land in the *same* column:
+            # the applied kick would be 2*Re(w . profile) while
+            # forcing.bin records the complex ``w``, i.e. a silent
+            # identification error.
+            raise ValueError(
+                f"force.modes: mode ({i2},{i3}) is its own conjugate "
+                f"partner on the real-FFT plane (axis 2 has {n2} "
+                "modes, so index "
+                f"{i2} mirrors to itself); the applied kick could "
+                "not match the recorded coefficient.  Use an even "
+                "res.nz (annular/cylindrical: ntheta) or force a "
+                "different axis-2 mode."
             )
     probes = probes_params
     if probes.it_probes is not None:

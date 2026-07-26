@@ -40,7 +40,12 @@ from ...fd import build_diff_matrices
 #: streams carry the cylindrical/annular columns in the solver's
 #: decoupled `$(u_z, u_+, u_-)$` basis at the same layout, so every
 #: positional consumer downstream would misread them silently.
-MIN_FORMAT_VERSION: int = 2
+#: Version-2 streams additionally record the axis-2 ``wavenumbers``
+#: of an azimuthal wedge as the harmonic index rather than the
+#: physical `$m = m_0 j$`, so anything deriving a wavelength or a
+#: spectrum from them is wrong by `$m_0$` (correct only at
+#: ``geo.m0 = 1``, which is why it went unnoticed).
+MIN_FORMAT_VERSION: int = 3
 
 #: Laminar streamwise total profiles `$U_s(y)$` of the Cartesian
 #: base-flow systems (`$y \in [-1, 1]$`; the tilted frame's

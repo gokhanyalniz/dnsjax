@@ -1993,6 +1993,22 @@ def _imm_iteration_vw(
     reconstruction return `$u_z = u_\theta = 0$`, so their wall values
     are a live diagnostic of influence-matrix health.
 
+    `$\Phi$` is **not** carried between steps: the state stays
+    `$(u_z, u_+, u_-)$` -- the basis the RHS, the probes, the forcing
+    and the viscoelastic extension all share -- and stage 2 recomputes
+    `$\Phi^n$` from it on full rows.  The wall rows of that
+    recomputation are therefore the discrete
+    `$(\Delta\mathbf{u})_r$` rather than the influence matrix's own
+    `$\alpha$` from the previous step, and they reach the answer only
+    through the explicit half's near-wall `$D_2$` stencil (the solve's
+    own wall rows are overwritten in stage 4).  All three geometries
+    make that trade -- ``cartesian._imm_iteration_vw`` carries the
+    shared argument and the measurement (one-step spectral radius
+    `$\le 1$`); the pipe's flavour is its lagged wall differences.
+    Carrying `$\Phi$` would mean a third representation of the state
+    for the sake of two rows, which was tried on Cartesian and
+    reverted.
+
     Mean mode and padding
     ~~~~~~~~~~~~~~~~~~~~~
     At `$k^2 = 0$` the reconstruction is singular and both evolved
@@ -2080,7 +2096,19 @@ def _imm_iteration_vw(
     A_pair = apply_y_matrix(flow_.D2, pair_n, component_axis=1) + inv_r_y * (
         apply_y_matrix(flow_.D1, pair_n, component_axis=1)
     )
-    meff2_pair = jnp.stack([phi2, jnp.broadcast_to(pair2, phi2.shape)], axis=1)
+    # ``pair2`` rides ``m2``'s spec, which is unsharded on the k_z
+    # (np1) axis, while ``phi2`` inherited the mean mask's full one --
+    # so the broadcast must be given the target sharding explicitly or
+    # the stack below is a cross-spec operand mismatch under np1 > 1.
+    meff2_pair = jnp.stack(
+        [
+            phi2,
+            jnp.broadcast_to(
+                pair2, phi2.shape, out_sharding=sharding.spec_scalar_shard
+            ),
+        ],
+        axis=1,
+    )
     lapl_pair = A_pair - (meff2_pair * inv_r_y**2 + kz2[:, None]) * pair_n
     partner = jnp.stack(
         [

@@ -335,15 +335,14 @@ spectral padding.
 dean/viscoelastic-dean systems instead integrate the **total** field
 (`base_flow = 0`, mean-mode body force).
 
-**Component basis (cylindrical/annular; Cartesian under
-`res.consistent_imm`)**: the state is carried in a solver basis — the
-decoupled `u_±`/spin one, or Cartesian's `(φ, v, ω_y)` — and
-*observed* in physical components; `__main__` crosses that boundary
-once per state (after the IC, and for the diagnostics/snapshot
-consumers), probes/forcing convert (mode columns for cyl/annular, the
-whole field for Cartesian), and anything handing a freshly built state
-to a stepper must convert first. Rules and rationale:
-`geometries/wall_bounded/CLAUDE.md`.
+**Component basis (cylindrical/annular only)**: the state is carried
+in the decoupled `u_±`/spin solver basis and *observed* in physical
+components; `__main__` crosses that boundary once per state (after the
+IC, and for the diagnostics/snapshot consumers), probes/forcing convert
+their own mode columns, and anything handing a freshly built state to a
+stepper must convert first. Cartesian and triply-periodic carry
+physical components always, `res.consistent_imm` included. Rules and
+rationale: `geometries/wall_bounded/CLAUDE.md`.
 
 **Moving frame of reference (`phys.u_grid`)**: translates the
 wall-bounded frame along the grid direction (`None` → laminar bulk;
@@ -611,7 +610,8 @@ one-liners. Cross-cutting notes:
   rebuild-vs-fresh/step parity, no-recompile guard, kappa identity).
 - `tests/test_temporal_order.py`: second-order temporal accuracy
   (fixed and variable step) + the `res.consistent_imm`
-  self-convergence contrast on both wall-bounded families.
+  self-convergence contrast on all three wall-bounded geometries and
+  under a variable step.
 - `tests/test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
   forced spectral padding.
 - `tests/test_monochromatic.py`: Kolmogorov `get_stats` identities
@@ -633,10 +633,12 @@ one-liners. Cross-cutting notes:
 - `tests/test_param_surface.py`: flow-spec registry + per-flow surface
   machinery (aliases, strictness, deferred, extensions, sample-TOML,
   entry-point help smoke).
-- `tests/test_probes.py`: runtime spectral-mode probe stream
+- `tests/test_probes.py`: runtime spectral-mode probe stream, incl.
+  the solver-basis column conversion (`--unit-only` skips the mpirun
+  runs).
+- `tests/test_forcing.py`: runtime stochastic kicks, incl. the
+  solver-basis injection and its conjugate-partner rule
   (`--unit-only` skips the mpirun runs).
-- `tests/test_forcing.py`: runtime stochastic kicks (`--unit-only` skips
-  the mpirun runs).
 - `tests/test_snapshot_perturb.py`: `scripts/snapshot_perturb.py`
   injection.
 - `tests/response/test_probes_reader.py`: JAX-free probe reader.
@@ -658,7 +660,8 @@ one-liners. Cross-cutting notes:
 - `tests/test_rolls_smoke.py`: localized-rolls IC integration for the
   4 wall-bounded rolls-builder variants (short horizon).
 - `tests/test_localized_rolls.py`: IC construction self-test (rolls +
-  the random-field divergence guard, same subprocesses).
+  the random-field divergence guard, same subprocesses; rolls-less
+  flows run the random half only).
 - `tests/test_transient_growth.py`: transient-growth analysis (host
   units, per-flow hooks, CLI features, per-flow literature anchors, and
   an m0-wedge-vs-full-circle equivalence check).

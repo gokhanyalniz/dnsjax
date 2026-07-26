@@ -14,8 +14,13 @@ iterates FFT-free between full-RHS refreshes.
 
 For triply-periodic flows the Helmholtz solve is algebraic (pointwise
 multiply by ``ldt_1``, ``ildt_2``).  For wall-bounded flows it is a
-matrix solve per Fourier mode, with a different ordering for the velocity
-components (v first, then pressure via IMM, then u, v, w all updated).
+matrix solve per Fourier mode, ordered by the geometry's own
+influence-matrix pass: the primitive one solves the wall-normal
+velocity, then a pressure, then updates all three components, while
+``res.consistent_imm`` advances the wall-normal velocity and vorticity
+and reconstructs the tangential pair with no pressure at all.  Either
+way this module never inspects the state's components -- see
+``_imm_iteration`` in each geometry.
 """
 
 from collections.abc import Callable
@@ -50,6 +55,18 @@ def make_stepper(
     The returned functions close over the flow-specific callables, so
     precomputed data (wavenumbers, time-stepping coefficients, base flow)
     is captured at construction time rather than passed on every call.
+
+    **Basis contract.** This module never inspects a state's
+    components, and it must not: the geometries are free to carry the
+    state in a solver basis (the cylindrical/annular `$u_\pm$`, the
+    viscoelastic spin tensor) that their RHS arrays are *not* in --
+    those geometries deliberately return physical-component RHS,
+    because the real FFT needs per-component Hermitian symmetry.  What
+    makes that safe is that every place the stepper combines arrays it
+    combines **state with state or RHS with RHS, never one with the
+    other**; the geometry's ``correct_fn`` owns the only crossing.  A
+    future ``state + rhs`` line here would break those paths silently,
+    with correct shapes and dtypes throughout.
 
     Parameters
     ----------

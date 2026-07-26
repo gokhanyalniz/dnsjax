@@ -450,7 +450,16 @@ def resolve_parameters(
     snapshot_path = Path(snap_value) if snap_value is not None else None
     snapshot_params_used = False
     if snapshot_path is not None:
-        stored_system = _snapshot_system(snapshot_path)
+        # An unreadable snapshot (below ``MIN_FORMAT_VERSION``, or
+        # malformed metadata) raises ``ValueError`` from deep inside
+        # ``snapshot_meta``.  Present it the way every other
+        # resume-time failure here is presented -- one ``dnsjax:
+        # error:`` line -- rather than as a raw traceback; the message
+        # already names the version and the reason.
+        try:
+            stored_system = _snapshot_system(snapshot_path)
+        except ValueError as exc:
+            raise SystemExit(f"dnsjax: error: {exc}") from None
         if stored_system is not None and stored_system != ctx.system:
             raise SystemExit(
                 f"dnsjax: error: snapshot '{snapshot_path}' stores "

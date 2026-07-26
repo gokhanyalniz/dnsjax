@@ -249,7 +249,6 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
 
     from .fd import build_interpolation_matrix
     from .flows.registry import stored_value
-    from .operators import complex_harmonics
 
     meta = read_metadata(Path(snap_path))
     snap_grid = meta.get("wall_normal_grid")
@@ -291,17 +290,47 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         # even / odd radial matrix per azimuthal mode m by component
         # parity.  State layout (component, r, m, kz): u_z parity
         # (-1)^m; u_r/u_theta parity (-1)^{m+1}.
+        #
+        # The mask is the geometry's own ``Fourier.m_is_even``, which
+        # is the parity of the **physical** `$m = m_0 j$` (the wedge
+        # factor matters: with an even ``geo.m0`` every physical mode
+        # is even) and which spans the **padded** m axis -- the axis
+        # the loaded state is actually laid out on.  Re-deriving it
+        # here from ``complex_harmonics`` disagreed with both.
+        from .geometries.wall_bounded.cylindrical import fourier
+
+        if state.shape[0] != 3:
+            # The per-component parity assignment below is written for
+            # the velocity triad.  Unreachable today (the only
+            # many-component flow is viscoelastic, which resolves to
+            # the annular geometry and takes the branch below), but
+            # silently regridding three of nine components would be a
+            # very expensive thing to discover later.
+            raise ValueError(
+                "parity-aware radial interpolation is defined for the "
+                f"3-component velocity state, got {state.shape[0]} "
+                "components; a flow with extra components needs its "
+                "own parity assignment here."
+            )
         T_even, T_odd = T
-        m_is_even = np.asarray(complex_harmonics(params.res.nz)) % 2 == 0
-        T_p = np.where(m_is_even[:, None, None], T_even, T_odd)  # u_z
-        T_v = np.where(m_is_even[:, None, None], T_odd, T_even)  # u_r/th
-        T_p_jax = jnp.asarray(T_p, dtype=state.dtype)
-        T_v_jax = jnp.asarray(T_v, dtype=state.dtype)
-        # (m, i_new, j_old) x (j_old, m, k_kz) -> (i_new, m, k_kz)
-        s0 = jnp.einsum("mij, jmk -> imk", T_p_jax, state[0])
-        s1 = jnp.einsum("mij, jmk -> imk", T_v_jax, state[1])
-        s2 = jnp.einsum("mij, jmk -> imk", T_v_jax, state[2])
-        state = jnp.stack([s0, s1, s2])
+        m_even = fourier.m_is_even.astype(bool)
+        T_e = jnp.asarray(T_even, dtype=state.dtype)
+        T_o = jnp.asarray(T_odd, dtype=state.dtype)
+        # Contract with the two (i_new, j_old) matrices and select per
+        # mode, rather than materialising an (m, i_new, j_old) stack
+        # per component -- that stack is replicated on every device.
+        state = jnp.stack(
+            [
+                jnp.where(
+                    m_even,
+                    jnp.einsum("ij, jmk -> imk", a_even, state[c]),
+                    jnp.einsum("ij, jmk -> imk", a_odd, state[c]),
+                )
+                for c, (a_even, a_odd) in enumerate(
+                    ((T_e, T_o), (T_o, T_e), (T_o, T_e))
+                )
+            ]
+        )
     else:
         T_jax = jnp.asarray(T, dtype=state.dtype)
         # state: (3, ny_old, ...) -- the wall-normal axis is axis 1 in
@@ -382,10 +411,57 @@ def run(wall_time_start: int) -> None:
     def _identity_basis(state):
         return state
 
+    # The fallback is correct for a flow with no solver basis, but it
+    # is also indistinguishable from a flow that *has* one and forgot
+    # to re-export the pair -- which would feed the stepper a physical
+    # state with no error, only wrong answers.  The cylindrical,
+    # annular and viscoelastic families always carry one, so require
+    # it there and let the fallback serve the rest.
+    _needs_basis = params.phys.system in (
+        *cylindrical_systems,
+        *annular_systems,
+        *viscoelastic_systems,
+    )
+    if _needs_basis:
+        missing = [
+            name
+            for name in ("to_solver_basis", "from_solver_basis")
+            if not hasattr(_flow_mod, name)
+        ]
+        if missing:
+            raise RuntimeError(
+                f"{_spec.flow_module} does not export "
+                f"{' / '.join(missing)}; a cylindrical, annular or "
+                "viscoelastic flow must re-export the pair (see the "
+                "existing flow modules) or its state would enter the "
+                "stepper in the wrong basis."
+            )
     to_solver_basis = getattr(_flow_mod, "to_solver_basis", _identity_basis)
     from_solver_basis = getattr(
         _flow_mod, "from_solver_basis", _identity_basis
     )
+
+    # Both out-crossings run in the hot loop -- the physical view on
+    # every stats/snapshot step, the ``E'`` read every
+    # ``outs.it_error_check`` (default 10) -- so the map is jitted.
+    # Unfused it dispatches one field-sized eager primitive per
+    # operation (measured ~5-6x the jitted cost, and as many
+    # field-sized transients live alongside ``state``).  Fusing the
+    # ``E'`` read with its conversion saves the intermediate outright.
+    # The identity is deliberately left bare: jitting it would only
+    # add a dispatch, and the loop relies on ``state_phys is state``
+    # there for its release to actually free anything.
+    _crosses_basis = from_solver_basis is not _identity_basis
+    from_solver_basis_jit = (
+        jax.jit(from_solver_basis) if _crosses_basis else from_solver_basis
+    )
+    if _crosses_basis:
+
+        @jax.jit
+        def _perturbation_energy_solver(s):
+            return get_perturbation_energy(from_solver_basis(s))
+    else:
+        _perturbation_energy_solver = get_perturbation_energy
 
     # --- Initial condition ---------------------------------------------------
     from .snapshot_meta import is_snapshot_file
@@ -601,8 +677,14 @@ def run(wall_time_start: int) -> None:
 
     if check_laminarization:
         # Compile the E' kernel outside the benchmark window; it is
-        # read at the it_error_check cadence in the main loop.
-        jax.block_until_ready(get_perturbation_energy(state))
+        # read at the it_error_check cadence in the main loop.  The
+        # loop reads it through ``_perturbation_energy_solver`` on a
+        # *solver-basis* state, so warm that fused kernel -- warming
+        # the bare physical one here would leave the conversion half
+        # of it to compile inside the timed region.  ``state`` is
+        # still physical at this point, so the warm-up value is
+        # meaningless and is discarded; only the trace matters.
+        jax.block_until_ready(_perturbation_energy_solver(state))
 
     # Save the initial condition (state00000.tar) unless this run is a
     # continuation of a dnsjax snapshot trajectory (whose IC is already
@@ -945,7 +1027,7 @@ def run(wall_time_start: int) -> None:
             and it > params.init.it0
         )
         state_phys = (
-            from_solver_basis(state) if (do_stats or do_snapshot) else None
+            from_solver_basis_jit(state) if (do_stats or do_snapshot) else None
         )
 
         # Periodic diagnostic output -> GPU buffer
@@ -1176,9 +1258,7 @@ def run(wall_time_start: int) -> None:
                 # operator evaluations, no pressure solve), and goes to
                 # zero at the laminar fixed point.  Tracking it would
                 # mean keeping the pre-step state for the difference.
-                e_prime_host = float(
-                    get_perturbation_energy(from_solver_basis(state))
-                )
+                e_prime_host = float(_perturbation_energy_solver(state))
                 if not math.isfinite(e_prime_host):
                     # A NaN would otherwise compare False against the
                     # threshold and the run would keep going.
@@ -1221,7 +1301,7 @@ def run(wall_time_start: int) -> None:
     # Out of the solver, once, for the final state: the physical view
     # shared by the final stats and the final snapshot below (the probe
     # stream converts its own columns).
-    state_phys = from_solver_basis(state)
+    state_phys = from_solver_basis_jit(state)
 
     # Final-state stats: computed once when the run stepped, reused by
     # both the final snapshot and the benchmark diagnostic below.

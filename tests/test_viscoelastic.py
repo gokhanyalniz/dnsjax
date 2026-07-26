@@ -8,7 +8,10 @@ annular geometry (see
    inverses (both directions), as are the 9-component
    ``to_spin_basis``/``from_spin_basis`` maps built on them -- the
    component-basis boundary crossed once per state (``__main__``),
-   where an inversion error would be silent.
+   where an inversion error would be silent.  The runtime probe
+   stream crosses the same boundary per *column*: its gather and the
+   component labels it advertises (checked against the analysis
+   package's stored-component schema) are covered here too.
 2. The spin-diagonal tensor Laplacian equals an independently coded
    coupled cylindrical tensor Laplacian (radial/axial scalar part plus
    the `$\tfrac1{r^2}(\mathcal R + im)^2$` angular part built from the
@@ -237,6 +240,40 @@ def test_spin_physical_round_trip() -> None:
         atol=1e-13,
         err_msg="spin->phys->spin 9-component state",
     )
+
+
+def test_probe_stream_component_basis() -> None:
+    r"""The probe gather crosses the 9-component boundary, and the
+    labels it advertises name the components it returns.
+
+    The probe stream is the only consumer that converts *columns*
+    rather than whole states, and it is written once and read by
+    positional consumers (``response.lim`` / ``response.ssi``), so a
+    wrong map or a mislabelled slot is silent.  The label list is
+    checked against the analysis package's stored-component schema --
+    the snapshot's -- so the two 9-component surfaces cannot drift
+    apart.
+    """
+    from dnsjax.analysis._core import geometry_info
+    from dnsjax.probes import _component_labels, build_mode_extractor
+
+    assert _component_labels(9) == list(geometry_info(params).components)
+
+    rng = np.random.default_rng(5)
+    shape = (9, params.res.ny, sharding.nz_spec, sharding.nx_spec)
+    host = _random_tensor(rng, shape)
+    state = jax.device_put(jnp.asarray(host), sharding.spec_vector_shard)
+    modes = [(0, 0), (2, 1)]
+    got = np.asarray(build_mode_extractor(modes)(state))
+    for k, (i2, i3) in enumerate(modes):
+        col = host[:, :, i2, i3]
+        assert_allclose(
+            got[k],
+            np.asarray(from_spin_basis(jnp.asarray(col))),
+            atol=1e-13,
+            err_msg=f"mode ({i2},{i3})",
+        )
+        assert not np.allclose(got[k], col)  # not the identity
 
 
 # Group B: tensor Laplacian

@@ -8,15 +8,22 @@ genuinely sharded:
 1. ``build_mode_injector`` scatter-adds exactly the given columns at
    the static global modes (owners on every mesh position; bit-exact
    against a dense host reference; adds on top of existing content).
-2. ``StochasticForcer.kick`` places ``amplitude * sum_j w_j p_j`` and
+2. On a **cylindrical/annular** system the same scatter converts each
+   column into the solver's decoupled `$u_\pm$` basis first, and the
+   real-FFT conjugate partner -- a plain conjugate in the physical
+   components the profiles are given in -- lands there conjugated
+   *and* `$u_+ \leftrightarrow u_-$` swapped; the probe gather
+   inverts the whole path back to the geometry-independent physical
+   reference.
+3. ``StochasticForcer.kick`` places ``amplitude * sum_j w_j p_j`` and
    the conjugate partner bit-exactly (reconstructed from the same
    seeded PRNG), and streams the coefficients to ``forcing.bin``
    (read back through ``response.ssi.read_forcing``).
-3. Resume semantics: a second forcer against the same directory
+4. Resume semantics: a second forcer against the same directory
    skips the recorded draws, so the coefficient stream continues the
    uninterrupted sequence; a tampered sidecar / sidecar-less binary
    is rejected.
-4. Profile-bundle validation (grid/system/mode/channel checks) and
+5. Profile-bundle validation (grid/system/mode/channel checks) and
    the ``force`` extension's validate (all-or-none, range, mean
    mode, kick/probe alignment, wall-bounded only), dispatched
    through ``validate_parameters``.
@@ -97,7 +104,10 @@ import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from _live import run_live  # noqa: E402
-from numpy.testing import assert_array_equal  # noqa: E402
+from numpy.testing import (  # noqa: E402
+    assert_allclose,
+    assert_array_equal,
+)
 
 from dnsjax.analysis.response.probes import read_probes  # noqa: E402
 from dnsjax.analysis.response.ssi import read_forcing  # noqa: E402
@@ -106,6 +116,7 @@ from dnsjax.forcing import (  # noqa: E402
     build_mode_injector,
 )
 from dnsjax.parameters import validate_parameters  # noqa: E402
+from dnsjax.probes import _component_labels  # noqa: E402
 from dnsjax.snapshot import assemble_local_shards  # noqa: E402
 
 N2_TRUE, N3_TRUE = params.res.nz - 1, params.res.nx // 2
@@ -115,16 +126,22 @@ def _zero_state():
     return assemble_local_shards(lambda buf, *args: None)
 
 
-def _write_profiles(path: Path, seed: int = 11) -> np.ndarray:
-    """Channel-profile npz for FORCE_MODES; returns the (K, m, 3, NY)."""
+def _write_profiles(
+    path: Path, seed: int = 11, system: str = "plane-poiseuille"
+) -> np.ndarray:
+    """Channel-profile npz for FORCE_MODES; returns the (K, m, 3, NY).
+
+    Carries ``component_labels`` (the basis the rows are in), so the
+    loader's basis check runs on its accepting branch too."""
     rng = np.random.default_rng(seed)
     arrs = rng.standard_normal(
         (len(FORCE_MODES), M_CHANNELS, 3, NY)
     ) + 1j * rng.standard_normal((len(FORCE_MODES), M_CHANNELS, 3, NY))
     np.savez(
         path,
-        system="plane-poiseuille",
+        system=system,
         code_grid=np.asarray(derived_params.wall_normal_grid),
+        component_labels=np.asarray(_component_labels(3)),
         **{
             f"profiles_{i2}_{i3}": arrs[k]
             for k, (i2, i3) in enumerate(FORCE_MODES)
@@ -148,7 +165,12 @@ def _expected_kick_cols(
         ).reshape(3, NY)
         dense[:, :, i2, i3] = prof
         if i3 == 0:
-            dense[:, :, N2_TRUE - i2, 0] = np.conj(prof)  # cartesian
+            # The reality condition in **physical** components: a
+            # plain conjugate in every geometry.  This reference is
+            # therefore geometry-independent; on a solver-basis
+            # geometry it is what the state looks like after
+            # converting back (``test_kick_solver_basis``).
+            dense[:, :, N2_TRUE - i2, 0] = np.conj(prof)
     return dense
 
 
@@ -180,6 +202,69 @@ def test_injector_scatter() -> None:
         )
     )
     assert_array_equal(out2, 2.0 * base)
+
+
+def test_kick_solver_basis() -> None:
+    r"""Cylindrical/annular: the injected columns are converted into
+    the solver's decoupled `$u_\pm$` basis, and the real-FFT
+    conjugate partner lands there as the reality condition demands.
+
+    Only ``params.phys.system`` selects the conversion (the state
+    layout is geometry-independent), so scoping that field exercises
+    the branch on this module's ``(2, 2)`` mesh.  Three statements:
+
+    1. the scatter places ``to_pm_basis(col)``, not ``col``;
+    2. a full kick's partner column is the primary conjugated **and**
+       `$u_+ \leftrightarrow u_-$` swapped -- the swap is exactly why
+       the conversion must follow the partner construction rather
+       than precede it;
+    3. the probe gather inverts the whole path: read back in physical
+       components the kick is the geometry-independent reference.
+    """
+    from dnsjax.geometries.wall_bounded._base import to_pm_basis
+    from dnsjax.probes import build_mode_extractor
+
+    saved = params.phys.system
+    params.phys.system = "pipe"  # any cylindrical / annular flow
+    try:
+        assert _component_labels(3) == ["u_z", "u_r", "u_theta"]
+
+        pairs = [(5, 0), (2, 0), (3, 1), (0, 2)]
+        rng = np.random.default_rng(3)
+        cols = rng.standard_normal((len(pairs), 3, NY)) + 1j * (
+            rng.standard_normal((len(pairs), 3, NY))
+        )
+        out = np.asarray(
+            build_mode_injector(pairs)(_zero_state(), jax.device_put(cols))
+        )
+        dense = np.zeros_like(out)
+        for k, (i2, i3) in enumerate(pairs):
+            dense[:, :, i2, i3] += np.asarray(to_pm_basis(cols[k]))
+        assert_array_equal(out, dense)
+        assert not np.array_equal(out[:, :, 5, 0], cols[0])  # not identity
+
+        with tempfile.TemporaryDirectory() as tmp:
+            arrs = _write_profiles(Path(tmp) / "prof.npz", system="pipe")
+            force_params.profiles = str(Path(tmp) / "prof.npz")
+            forcer = StochasticForcer(_zero_state(), tmp)
+            state = forcer.kick(_zero_state(), 0.0)
+            arr = np.asarray(state)
+
+            i2, i3 = FORCE_MODES[0]  # (5, 0): on the real-FFT plane
+            assert i3 == 0
+            primary = arr[:, :, i2, i3]
+            partner = arr[:, :, N2_TRUE - i2, 0]
+            assert_array_equal(partner, np.conj(primary)[[0, 2, 1]])
+
+            draw0 = np.random.default_rng(SEED).standard_normal(
+                (len(FORCE_MODES), M_CHANNELS, 2)
+            )
+            ref = _expected_kick_cols(arrs, draw0, arr.shape)
+            got = np.asarray(build_mode_extractor(FORCE_MODES)(state))
+            for k, (j2, j3) in enumerate(FORCE_MODES):
+                assert_allclose(got[k], ref[:, :, j2, j3], rtol=0, atol=1e-15)
+    finally:
+        params.phys.system = saved
 
 
 # ── Offline: forcer kick + coefficient stream ────────────────────────
@@ -235,10 +320,37 @@ def test_resume_skip_and_mismatch() -> None:
             state = forcer.kick(state, 0.02 * k)
         forcer.flush()
 
+        # A fresh start that finds a leftover stream is refused: the
+        # kick times would restart from t0 and duplicate the records
+        # already in the file.
+        try:
+            StochasticForcer(_zero_state(), tmp)
+        except ValueError as e:
+            assert "fresh start" in str(e), e
+        else:
+            raise AssertionError("leftover stream accepted at it0 = 0")
+
         # The resumed forcer's first draw is the 4th of a fresh rng.
-        forcer2 = StochasticForcer(_zero_state(), tmp)
-        forcer2.kick(_zero_state(), 0.06)
-        forcer2.flush()
+        # ``init.it0`` is what makes it a resume: the stream must hold
+        # exactly it0 // it_force records, or it belongs to another
+        # point of the trajectory.
+        params.init.it0 = 3 * force_params.it_force
+        try:
+            forcer2 = StochasticForcer(_zero_state(), tmp)
+            forcer2.kick(_zero_state(), 0.06)
+            forcer2.flush()
+
+            # Resuming off an *earlier* snapshot than the stream was
+            # written up to is the failure this guards.
+            params.init.it0 = 2 * force_params.it_force
+            try:
+                StochasticForcer(_zero_state(), tmp)
+            except ValueError as e:
+                assert "does not belong to this state" in str(e), e
+            else:
+                raise AssertionError("stale resume point accepted")
+        finally:
+            params.init.it0 = 0
         rng = np.random.default_rng(SEED)
         for _ in range(3):
             rng.standard_normal((len(FORCE_MODES), M_CHANNELS, 2))

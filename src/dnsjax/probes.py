@@ -102,15 +102,28 @@ from .snapshot_meta import git_hash
 #: to the physical `$(u_z, u_r, u_\theta)$` one: the *values* changed
 #: meaning at fixed layout, so a version-1 stream fed to a
 #: positional consumer (``response.lim`` / ``response.ssi``) would be
-#: silently misread.  The reader's floor is
+#: silently misread.  Version 3 fixes the recorded axis-2
+#: ``wavenumbers`` on an azimuthal wedge: they were the harmonic
+#: index `$j$` where the geometry's mode is the physical
+#: `$m = m_0 j$`, so every ``geo.m0 > 1`` stream under-reported `$m$`
+#: by that factor (the sampled columns were always right; only the
+#: label was wrong).  The reader's floor is
 #: ``analysis.response.probes.MIN_FORMAT_VERSION``.
-FORMAT_VERSION: int = 2
+FORMAT_VERSION: int = 3
 
 #: Sidecar keys that must match for an append (resume) to proceed.
 _MATCH_KEYS: tuple[str, ...] = (
     "format_version",
     "modes",
     "n_components",
+    # The *counts* above are not enough: a resume at unchanged ``ny``
+    # onto a different ``geo.grid_type`` samples the same number of
+    # rows at different `$y$`, and the sidecar (written once, never
+    # rewritten) would keep advertising the original grid, so any
+    # profile or wall-derived quantity would integrate on the wrong
+    # one.  Same for the component *labels* versus their count.
+    "component_labels",
+    "wall_normal_grid",
     "ny",
     "value_dtype",
     "system",
@@ -156,32 +169,19 @@ def build_mode_extractor(
     from the local shard shape at trace time (the indices are static)
     and contributes the column to a ``psum`` over both mesh axes.
 
-    *state* arrives in the **solver** basis (the stream samples the
-    live field), and each column is converted to physical components
-    -- the basis of ``_component_labels`` and of the written stream --
-    *after* the gather, on a ``(C, N_y)`` slice rather than the whole
-    spectral field, so the probe stream stays affordable even at
-    ``it_probes = 1``.  (The map is linear and maps zero to zero, so
-    it commutes with the owner mask and the ``psum``.)
+    Where the state is carried in a **solver** basis (cylindrical /
+    annular `$u_\pm$`, the viscoelastic spin tensor) it is converted
+    to physical components -- the basis of ``_component_labels`` and
+    of the written stream -- *after* the gather, on a ``(C, N_y)``
+    slice rather than the whole spectral field, so a sample costs
+    essentially nothing and ``it_probes = 1`` is affordable.  (The map
+    is linear and maps zero to zero, so it commutes with the owner
+    mask and the ``psum``.)  Cartesian carries physical components in
+    both ``res.consistent_imm`` states and needs no conversion at all.
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
-    field_to_physical = None
     if params.phys.system in cartesian_systems:
-        # Cartesian columns are physical unless ``res.consistent_imm``
-        # carries the (phi, v, omega_y) solver basis, whose map needs
-        # `$D_1$` and the mode's wavenumbers -- so, unlike the pure
-        # component algebra of the other families, it cannot act on a
-        # bare column.  Convert the *field* on the way in instead: one
-        # GEMM, and only on the steps that actually sample.
         to_physical = None
-        if params.res.consistent_imm:
-            import importlib
-
-            from .flows.registry import spec_for
-
-            field_to_physical = importlib.import_module(
-                spec_for(params.phys.system).flow_module
-            ).from_solver_basis
     elif params.phys.system in viscoelastic_systems:
         from .geometries.wall_bounded.annular_viscoelastic import (
             from_solver_basis as _from_solver,
@@ -216,13 +216,7 @@ def build_mode_extractor(
         in_specs=sharding.spec_vector_shard,
         out_specs=P(None, None, None),
     )
-    if field_to_physical is None:
-        return jax.jit(extractor)
-
-    def _extract_physical(state: Array) -> Array:
-        return extractor(field_to_physical(state))
-
-    return jax.jit(_extract_physical)
+    return jax.jit(extractor)
 
 
 class ProbeStream:
@@ -257,7 +251,13 @@ class ProbeStream:
                 ("u", value_dtype, (len(self.modes), n_components, ny, 2)),
             ]
         )
-        q2 = complex_harmonics(params.res.nz)
+        # Axis-2 harmonics are *physical* wavenumbers: on the
+        # cylindrical/annular wedge the azimuthal mode of harmonic
+        # `$j$` is `$m = m_0 j$` (``geo.m0 = 1`` is the full circle),
+        # exactly as the geometry's ``Fourier.m`` builds it.  Cartesian
+        # axis 2 is `$k_z$`, which has no wedge factor.
+        m0 = 1 if params.phys.system in cartesian_systems else params.geo.m0
+        q2 = complex_harmonics(params.res.nz) * m0
         q3 = real_harmonics(params.res.nx)
         self._sidecar = {
             "format_version": FORMAT_VERSION,

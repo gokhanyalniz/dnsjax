@@ -30,14 +30,15 @@ perturbation of the same class as the scheme's local error.)
 A kick's increment is generally **not** discretely solenoidal, and
 what happens to that part depends on the scheme.  The primitive IMM
 feeds it into the pressure Poisson RHS and *damps* it over the
-following steps.  Under ``res.consistent_imm`` on Cartesian the state
-is carried in the `$(\varphi, v, \omega_y)$` basis, which has no room
-for it at all: the kick is added to the physical field and re-encoded
-(:func:`~dnsjax.geometries.wall_bounded.cartesian._to_solver`), so the
-non-solenoidal part is projected out immediately and deterministically
--- before it reaches any nonlinear evaluation.  Either way it is a
-bounded, per-event, truncation-class effect, not an accumulating one;
-keep injected profiles solenoidal if the distinction matters for the
+following steps.  Under ``res.consistent_imm`` there is no pressure
+Poisson to absorb it: the kick lands in the carried state intact and
+is **discarded** one step later, when the reconstruction rebuilds the
+tangential pair from the wall-normal velocity and vorticity alone
+(stage 7 in every geometry).  So it reaches exactly one step's
+nonlinear evaluation -- two under ``cnab2``, which carries that
+evaluation forward -- and never a solve.  Either way it is a bounded,
+per-event, truncation-class effect, not an accumulating one; keep
+injected profiles solenoidal if the distinction matters for the
 response being identified.
 
 Timing conventions (shared with the readers and resume)
@@ -123,7 +124,7 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from .extensions import force_params
-from .flows.registry import cartesian_systems, spec_for
+from .flows.registry import cartesian_systems
 from .harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
 from .param_surface import recorded_params_dump
 from .parameters import derived_params, params
@@ -138,9 +139,14 @@ from .snapshot_meta import git_hash
 #: gone -- see the module docstring).  Both change what a given
 #: coefficient log *means* at fixed layout, so a version-1 stream
 #: replayed against today's profile bundle would be silently
-#: misread.  The reader's floor is
+#: misread.  Version 3 fixes the recorded axis-2 ``wavenumbers`` on
+#: an azimuthal wedge: they were the harmonic index `$j$` where the
+#: geometry's mode is the physical `$m = m_0 j$`, so every
+#: ``geo.m0 > 1`` stream under-reported `$m$` by that factor (the
+#: injected columns were always right; only the label was wrong).
+#: The reader's floor is
 #: ``analysis.response.ssi.MIN_FORMAT_VERSION``.
-FORMAT_VERSION: int = 2
+FORMAT_VERSION: int = 3
 
 #: Sidecar keys that must match for an append (resume) to proceed.
 _MATCH_KEYS: tuple[str, ...] = (
@@ -174,28 +180,13 @@ def build_mode_injector(
     converted to the solver basis here, mapped over the mode axis so
     each ``(C, N_y)`` column goes through the ordinary
     component-axis-leading map.  Like the extractor's, this touches
-    only the injected columns, never the field.
+    only the injected columns, never the field.  Cartesian carries
+    physical components in both ``res.consistent_imm`` states, so
+    there the kick is a plain scatter-add.
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
-    field_maps = None
     if params.phys.system in cartesian_systems:
-        # Cartesian columns are already the state's components unless
-        # ``res.consistent_imm`` carries the (phi, v, omega_y) solver
-        # basis, whose map needs `$D_1$`/`$D_2$` and the mode's
-        # wavenumbers and so cannot act on a bare column (the
-        # extractor's note applies).  Convert the *field* around the
-        # scatter-add instead: the kick is added as the velocity
-        # perturbation it is meant to be, then re-encoded -- which
-        # also makes explicit that its non-solenoidal part is
-        # projected out at once (see ``cartesian._to_solver``).
         to_solver = None
-        if params.res.consistent_imm:
-            import importlib
-
-            _fmod = importlib.import_module(
-                spec_for(params.phys.system).flow_module
-            )
-            field_maps = (_fmod.from_solver_basis, _fmod.to_solver_basis)
     else:  # cylindrical / annular (viscoelastic rejects [force])
         from .geometries.wall_bounded._base import to_pm_basis
 
@@ -235,15 +226,7 @@ def build_mode_injector(
         in_specs=(sharding.spec_vector_shard, P(None, None, None)),
         out_specs=sharding.spec_vector_shard,
     )
-    if field_maps is None:
-        return jax.jit(injector, donate_argnums=0)
-
-    from_solver, to_solver_field = field_maps
-
-    def _inject_physical(state: Array, cols: Array) -> Array:
-        return to_solver_field(injector(from_solver(state), cols))
-
-    return jax.jit(_inject_physical, donate_argnums=0)
+    return jax.jit(injector, donate_argnums=0)
 
 
 class StochasticForcer:
@@ -296,7 +279,13 @@ class StochasticForcer:
         self.record_dtype = np.dtype(
             [("t", "<f8"), ("w", "<f8", (len(self.modes), self.m, 2))]
         )
-        q2 = complex_harmonics(params.res.nz)
+        # Axis-2 harmonics are *physical* wavenumbers: on the
+        # cylindrical/annular wedge the azimuthal mode of harmonic
+        # `$j$` is `$m = m_0 j$` (``geo.m0 = 1`` is the full circle),
+        # exactly as the geometry's ``Fourier.m`` builds it.  Cartesian
+        # axis 2 is `$k_z$`, which has no wedge factor.
+        m0 = 1 if params.phys.system in cartesian_systems else params.geo.m0
+        q2 = complex_harmonics(params.res.nz) * m0
         q3 = real_harmonics(params.res.nx)
         self._sidecar = {
             "format_version": FORMAT_VERSION,
@@ -331,8 +320,41 @@ class StochasticForcer:
         n_existing = self._open_files()
 
         # Rank-identical coefficient stream; skip the draws already
-        # recorded so a resume continues the uninterrupted sequence
-        # (one fixed-shape draw per kick, mirrored in ``kick``).
+        # taken so a resume continues the uninterrupted sequence (one
+        # fixed-shape draw per kick, mirrored in ``kick``).
+        #
+        # On a *resume* the record count must equal the number of
+        # kicks the state has actually been through, ``it0 //
+        # it_force``.  The two agree only when resuming off the
+        # snapshot the stream was written up to; resuming off an
+        # earlier one (parent ran to it = 1000 snapshotting at 500 and
+        # 1000, resume from the it = 500 one) would otherwise skip
+        # past the whole file and append records duplicating times
+        # already present, silently -- ``_MATCH_KEYS`` compares the
+        # configuration, which is identical, so nothing else catches
+        # it.  Deleting ``forcing.bin`` while keeping the sidecar is
+        # the same failure with the skip count at zero.
+        # A fresh start (``it0 == 0``) that finds records is the same
+        # inconsistency with the count at zero: the kick times would
+        # restart from t0 and duplicate every time already in the
+        # file, so an existing stream there is a leftover, not a
+        # parent.
+        n_taken = params.init.it0 // f.it_force
+        if n_existing != n_taken:
+            where = (
+                f"a resume at init.it0 = {params.init.it0}"
+                if params.init.it0 > 0
+                else "a fresh start (init.it0 = 0)"
+            )
+            raise ValueError(
+                f"forcing.bin holds {n_existing} kick record(s) but "
+                f"{where} with force.it_force = {f.it_force} has "
+                f"taken {n_taken}: the coefficient stream does not "
+                "belong to this state.  Resume from the snapshot the "
+                "stream was written up to, or move the existing "
+                "forcing.bin / forcing.json aside to start a new "
+                "stream."
+            )
         self._rng = np.random.default_rng(f.seed)
         for _ in range(n_existing):
             self._rng.standard_normal((len(self.modes), self.m, 2))
@@ -353,6 +375,24 @@ class StochasticForcer:
                     f"{npz_system!r}; this run is "
                     f"{params.phys.system!r}"
                 )
+            # The bundle records the basis its rows are in; a stale
+            # one written in the solver's decoupled `$u_\pm$` basis
+            # has the right shape and grid, so nothing else here
+            # would catch it -- it would simply be injected as if it
+            # were physical.  ``FORMAT_VERSION`` guards readers of
+            # ``forcing.bin``, not this input.
+            want_labels = _component_labels(n_components)
+            if "component_labels" in npz.files:
+                got_labels = [
+                    str(v) for v in np.asarray(npz["component_labels"])
+                ]
+                if got_labels != want_labels:
+                    raise SystemExit(
+                        f"[force] {path} holds profiles in components "
+                        f"{got_labels}; this run injects "
+                        f"{want_labels}.  Regenerate the bundle with "
+                        "the current dnsjax."
+                    )
             grid = np.asarray(npz["code_grid"], dtype=float)
             run_grid = np.asarray(derived_params.wall_normal_grid)
             if grid.shape != run_grid.shape or not np.allclose(

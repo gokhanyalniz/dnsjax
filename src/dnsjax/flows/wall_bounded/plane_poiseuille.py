@@ -74,7 +74,6 @@ from ...geometries.wall_bounded.cartesian import (
     get_norm2,
     get_pert_enstrophy,
     integrate_scalar,
-    make_basis_maps,
     pad_base_flow,
     tilted_profile_arrays,
 )
@@ -137,10 +136,11 @@ flow: PlanePoiseuilleFlow = PlanePoiseuilleFlow()
     reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
 
-# Solver-basis boundary (``res.consistent_imm``): the state is
-# carried as (phi, v, omega_y) and observed as (u, v, w).  Both are
-# the identity with the flag off.  See ``cartesian.make_basis_maps``.
-to_solver_basis, from_solver_basis = make_basis_maps(flow)
+# No ``to_solver_basis``/``from_solver_basis`` here, in either flag
+# state: the Cartesian state is physical `(u, v, w)` throughout, and
+# ``res.consistent_imm``'s evolved scalars never leave
+# ``cartesian._imm_iteration_vw``.  Every consumer of the pair looks
+# it up with ``getattr`` and falls back to the identity.
 
 
 def frozen_profile_flow(us: Array) -> PlanePoiseuilleFlow:

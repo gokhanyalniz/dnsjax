@@ -6,7 +6,10 @@ Builds the deterministic streamwise-localized-rolls IC
 *construction* properties the smoke test (``tests/test_rolls_smoke.py``)
 cannot -- without time-stepping -- plus, in the same subprocess (no
 extra launch), the divergence guard on the random-field IC
-(``dnsjax.random_field``, the default start mode):
+(``dnsjax.random_field``, the default start mode).  Flows with no
+rolls builder (``RANDOM_ONLY``: the 9-component viscoelastic-dean) run
+the random half only, and their random state carries the checks the
+rolls state carries elsewhere:
 
 - **finiteness** of the built spectral state;
 - **exact no-slip** at the wall nodes (the wall ``y`` / ``r`` slice is
@@ -16,7 +19,9 @@ extra launch), the divergence guard on the random-field IC
 - **bit-identical determinism** (two builds in one process agree) and
   **device-count independence** (the true modes are identical at
   ``(np0, np1) = (1, 1)``, ``(1, 2)`` and ``(2, 1)``) -- the
-  no-replication, per-device build must not depend on the mesh;
+  no-replication, per-device build must not depend on the mesh; on
+  the random state that independence is to ``RAND_CROSS_TOL`` rather
+  than bit-exact, for the reason recorded there;
 - a **loose truncation-level discrete-divergence bound** (the analytic
   profiles are continuously divergence-free; the discrete divergence is
   only FD-truncation-sized and is projected out by the first corrector
@@ -70,7 +75,16 @@ SYSTEMS = [
     "pipe",
     "taylor-couette",
     "dean",
+    "viscoelastic-dean",
 ]
+
+# Flows with no localized-rolls builder: they run the random-field
+# half of the worker only, and the cross-device comparison rides the
+# random state instead of the rolls one.  The 9-component
+# viscoelastic state exercises the builders' component-count-agnostic
+# path (its conformation block is carried along, its velocity block is
+# what continuity is solved on).
+RANDOM_ONLY = ["viscoelastic-dean"]
 
 # Configurations (np0, np1) to build at; (1, 1) is the reference.
 CONFIGS = [(1, 1), (1, 2), (2, 1)]
@@ -82,6 +96,19 @@ DIV_TOL = 5e-2  # loose truncation-level discrete-divergence bound
 # (the builders solve continuity on every mode, so this is machine-zero).
 RAND_AMP, RAND_SMOOTH, RAND_SEED = 0.2, 0.4, 7
 RAND_DIV_TOL = 1e-11
+
+# Cross-device-count comparison tolerance for the random state
+# (``RANDOM_ONLY`` flows; the rolls state is compared bit-exactly).
+# The random builders draw per column in host NumPy -- bit-exact by
+# construction -- but their final rescaling divides by a *device-side
+# global reduction* (``get_norm2_*`` over the sharded mode axes),
+# whose summation order, and so whose last ulp, depends on the mesh.
+# That single factor multiplies the whole block: measured <= 2 ulp
+# relative, with the laminar mean-mode column -- added after the
+# scaling -- bit-identical.  The structural property, exact discrete
+# continuity, is bit-exact at every configuration and is checked as
+# such above.
+RAND_CROSS_TOL = 1e-13
 
 # Peak-velocity / domain-scaling guard.  The spot is peak-normalized so
 # max|u'| = amplitude and is domain-independent (the old single-mode
@@ -126,6 +153,10 @@ def _configure(system: str, np0: int, np1: int) -> None:
         geo["eta"] = 0.5
     elif system == "dean":
         geo["eta"] = 0.5
+    elif system == "viscoelastic-dean":
+        # Re := Wi/El is derived, and the geometry comes from
+        # ``geo.delta``; the rheology defaults (spec) are left alone.
+        phys.pop("re")
 
     update_parameters(
         Parameters(
@@ -198,7 +229,7 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
         )
         d1_even, d1_odd = np.asarray(d1_even), np.asarray(d1_odd)
         inv_r = np.asarray(inv_r)
-    else:  # taylor-couette / dean
+    else:  # taylor-couette / dean / viscoelastic-dean
         from dnsjax.geometries.wall_bounded.annular import build_annular_grid
 
         r1, r2 = derived_params.r_inner, derived_params.r_outer
@@ -225,17 +256,9 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
 def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
     _configure(system, np0, np1)
 
-    from dnsjax.localized_rolls import generate_localized_rolls
     from dnsjax.parameters import params
 
-    state1 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))
-    state2 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))
-
     nx, nz = params.res.nx, params.res.nz
-    # Strip mesh padding -> true modes (padding is at the global axis end).
-    true = state1[:, :, : nz - 1, : nx // 2]
-    np.save(out_npy, true)
-
     passed = failed = 0
 
     def check(name: str, ok: bool, detail: str = "") -> None:
@@ -246,21 +269,37 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
         else:
             failed += 1
 
-    check("finite", bool(np.all(np.isfinite(state1))))
-    check("determinism (build twice)", np.array_equal(state1, state2))
+    # Strip mesh padding -> true modes (padding is at the global axis end).
+    def _true(state: np.ndarray) -> np.ndarray:
+        return state[:3, :, : nz - 1, : nx // 2]
 
-    # Exact no-slip at the wall nodes (axis 1 = y / r).
-    if system == "pipe":
-        wall = float(np.max(np.abs(state1[:, -1])))  # outer wall r = 1
-    else:
-        wall = max(
-            float(np.max(np.abs(state1[:, 0]))),
-            float(np.max(np.abs(state1[:, -1]))),
+    true: np.ndarray | None = None
+    if system not in RANDOM_ONLY:
+        from dnsjax.localized_rolls import generate_localized_rolls
+
+        state1 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))
+        state2 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))
+        true = _true(state1)
+
+        check("finite", bool(np.all(np.isfinite(state1))))
+        check("determinism (build twice)", np.array_equal(state1, state2))
+
+        # Exact no-slip at the wall nodes (axis 1 = y / r).
+        if system == "pipe":
+            wall = float(np.max(np.abs(state1[:, -1])))  # outer wall r = 1
+        else:
+            wall = max(
+                float(np.max(np.abs(state1[:, 0]))),
+                float(np.max(np.abs(state1[:, -1]))),
+            )
+        check(
+            "exact no-slip at walls", wall < 1e-12, f"max|u|_wall={wall:.2e}"
         )
-    check("exact no-slip at walls", wall < 1e-12, f"max|u|_wall={wall:.2e}")
 
-    div = _max_divergence(true, system)
-    check("divergence truncation-level", div < DIV_TOL, f"max|div|={div:.2e}")
+        div = _max_divergence(true, system)
+        check(
+            "divergence truncation-level", div < DIV_TOL, f"max|div|={div:.2e}"
+        )
 
     # ── random-field IC: exact discrete continuity on the *whole*
     # field, k_z = 0 plane included.  Unlike the analytic rolls
@@ -271,7 +310,7 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
     from dnsjax.random_field import generate_random_state
 
     rand = np.asarray(generate_random_state(RAND_AMP, RAND_SMOOTH, RAND_SEED))
-    rand_true = rand[:3, :, : nz - 1, : nx // 2]
+    rand_true = _true(rand)
     scale = float(np.max(np.abs(rand_true)))
     rdiv = _max_divergence(rand_true, system)
     check(
@@ -279,6 +318,20 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
         rdiv < RAND_DIV_TOL * scale,
         f"max|div|={rdiv:.2e} scale={scale:.2e}",
     )
+
+    if true is None:
+        # Rolls-less flow: the random state carries the finiteness,
+        # determinism and cross-device checks instead -- and it carries
+        # them for *all* its components (the conformation block
+        # included), not just the velocity block continuity is solved
+        # on.
+        check("finite", bool(np.all(np.isfinite(rand))))
+        rand2 = np.asarray(
+            generate_random_state(RAND_AMP, RAND_SMOOTH, RAND_SEED)
+        )
+        check("determinism (build twice)", np.array_equal(rand, rand2))
+        true = rand[:, :, : nz - 1, : nx // 2]
+    np.save(out_npy, true)
 
     print(f"\n[{system} {np0}x{np1}] {passed} passed, {failed} failed.")
     return 1 if failed else 0
@@ -341,7 +394,11 @@ def _run_system(system: str) -> str | None:
             if ref is None:
                 ref = arr
             else:
-                same = arr.shape == ref.shape and np.array_equal(arr, ref)
+                same = arr.shape == ref.shape and (
+                    np.allclose(arr, ref, rtol=RAND_CROSS_TOL, atol=0.0)
+                    if system in RANDOM_ONLY
+                    else np.array_equal(arr, ref)
+                )
                 print(
                     f"  {'PASS' if same else 'FAIL'}: {tag} matches (1, 1) "
                     "true modes"
