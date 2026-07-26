@@ -1654,8 +1654,11 @@ def _hk_bands(
     ``dt``-independent) `$L_k$`, whose ``L`` factor is
     ``(Nr, p, Nm, Nkz)`` -- a static shape, so this works inside
     ``jit`` (``set_dt``) where a host-side ``matrix_half_bandwidth`` on
-    the traced ``A_base`` could not.  Equals ``fd_order`` off the
-    ``consistent_imm`` gate and the wider composed band on it.
+    the traced ``A_base`` could not.  It is ``fd_order`` in **both**
+    flag states: ``res.consistent_imm`` swaps in a band-preserving
+    Dirichlet recovery operator, so no shipped configuration widens
+    the band any more (the composed ``D_2 := D_1 D_1`` route that did
+    was retired on 2026-07-26).
     """
     p_band = flow_.Lk_op.L.shape[1]
     m_s = fourier_.m[0, ..., None]
@@ -2644,11 +2647,22 @@ def _imm_iteration_vw(
     # family's mean plane carries the spliced mean axial Helmholtz, so
     # its m_eff^2 and ghost sign take the same exception the band does.
     quad = jnp.concatenate([phi_pm, om_pm_n], axis=1)  # (Nr, 4, Nm, Nkz)
-    psv_b = jnp.broadcast_to(psv, mean_mask.shape)
+    # The parity signs and ``(m + 1)^2`` ride ``m``'s spec, which is
+    # unsharded on the k_z (np1) axis, while their ``jnp.where``
+    # siblings inherited the mean mask's full one -- so each broadcast
+    # must be given the target sharding explicitly or the stacks below
+    # are cross-spec operand mismatches under np1 > 1.
+    psv_b = jnp.broadcast_to(
+        psv, mean_mask.shape, out_sharding=sharding.spec_scalar_shard
+    )
     psv_m = jnp.where(mean_mask, psp, psv)
     par_quad = jnp.stack([psv_b, psv_m, psv_b, psv_m], axis=1)
     meff2_m = jnp.where(mean_mask, m**2, (m - 1) ** 2)
-    meff2_p = jnp.broadcast_to((m + 1) ** 2, mean_mask.shape)
+    meff2_p = jnp.broadcast_to(
+        (m + 1) ** 2,
+        mean_mask.shape,
+        out_sharding=sharding.spec_scalar_shard,
+    )
     meff2_quad = jnp.stack([meff2_p, meff2_m, meff2_p, meff2_m], axis=1)
     A_quad = _parity_y_matvec(
         flow_.D2_pos, flow_.D2_ghost, quad, par_quad, component_axis=1

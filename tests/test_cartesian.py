@@ -1,4 +1,4 @@
-"""Unit tests for the Cartesian geometry operators.
+r"""Unit tests for the Cartesian geometry operators.
 
 Tests cover:
 

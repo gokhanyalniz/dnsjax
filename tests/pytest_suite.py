@@ -109,6 +109,13 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_energy_budget.py", (), _MPI + _SLOW, 3600),
     ("test_forcing.py", (), _MPI, 1800),
     ("test_laminar_smoke.py", (), _MPI + _SLOW, 3600),
+    # Multi-device, and specifically on the np1 (k_x / axial) axis:
+    # every entry runs at the runner default --np 1 otherwise, which
+    # is how a total np1 > 1 failure of res.consistent_imm reached
+    # production in the cylindrical and annular families -- the
+    # geometries build wavenumber arrays that are unsharded on that
+    # axis, so a spec mismatch there is invisible single-device.
+    ("test_laminar_smoke.py", ("--np", "2"), _MPI + _SLOW, 3600),
     ("test_probes.py", (), _MPI, 1800),
     ("test_random_smoke.py", (), _MPI + _SLOW, 3600),
     ("test_resume.py", (), _MPI + _SLOW, 3600),

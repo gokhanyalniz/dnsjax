@@ -844,6 +844,9 @@ def generate_viscoelastic_dean(
                 vcol[0] *= window_lin
                 vcol[1] *= window_wn
                 vcol[2] *= window_wn
+                # Close continuity per mode against the annular
+                # divergence, exactly as :func:`generate_annular` does
+                # (same operator, same r-diagonal coefficients).
                 if kz_val != 0:
                     div_perp = (
                         D1_np @ vcol[1]
@@ -851,6 +854,18 @@ def generate_viscoelastic_dean(
                         + 1j * m_val * inv_r_np * vcol[2]
                     )
                     vcol[0] = -div_perp / (1j * kz_val)
+                elif m_val != 0:
+                    # k_z = 0: u_z drops out; close through u_theta.
+                    vcol[2] = (
+                        1j
+                        * rs_np
+                        * (D1_np @ vcol[1] + inv_r_np * vcol[1])
+                        / m_val
+                    )
+                else:
+                    # k_z = 0, m = 0 mean mode: (1/r) d(r u_r)/dr = 0
+                    # with no-slip forces u_r = 0.
+                    vcol[1] = 0.0
                 vcol = _normalize_mode(vcol, yw_np, envelope)
                 if g2 == 0 and g3 == 0 and not mean_flow:
                     vcol[:] = 0.0
