@@ -553,13 +553,7 @@ class Resolution(BaseModel):
     # become a live diagnostic of influence-matrix health.
     #
     # Per geometry: **Cartesian** advances `$(v, \omega_y)$`, four
-    # per-mode banded solves down to three, and *carries* the state as
-    # `$(\varphi, v, \omega_y)$` while everything outside the stepper
-    # observes `$(u, v, w)$` -- the same two-representation
-    # arrangement the cylindrical/annular geometries already use for
-    # `$u_\pm$`, crossed once per state by ``__main__``, so snapshots,
-    # probes, forcing, diagnostics, the analysis package and resume all
-    # keep seeing physical components.  **Annular** advances the
+    # per-mode banded solves down to three.  **Annular** advances the
     # `$(u_r, \omega_r)$` pair, whose two slots share one Helmholtz
     # operator (`$m_{\mathrm{eff}}^2 = m^2+1$`, the spin-block
     # diagonal): four solves down to three, four band families down to
@@ -570,9 +564,17 @@ class Resolution(BaseModel):
     # `$(\Phi_\pm, \omega_\pm)$` is advanced through the *existing*
     # `$H_{k,\pm}$` families, which diagonalise that coupling exactly
     # -- five solves over three band families, and nothing linear
-    # Picard-iterated at all.  Construction, boundary conditions and
-    # the retired routes: the ``cartesian._imm_iteration`` (shared
-    # record), ``annular._imm_iteration_vw`` (cylindrical algebra) and
+    # Picard-iterated at all.  **No geometry changes what it carries**:
+    # the evolved scalars are re-derived from the carried state at the
+    # top of each corrector pass and reconstructed away at its exit, so
+    # snapshots, probes, forcing, diagnostics, the analysis package and
+    # resume are all flag-independent.  The price is two wall rows per
+    # mode (the influence coefficients cannot be carried), a bounded
+    # truncation-level substitute -- ``cartesian._imm_iteration_vw``
+    # carries the argument and the measurement.  Construction, boundary
+    # conditions and the retired routes: the
+    # ``cartesian._imm_iteration`` (shared record),
+    # ``annular._imm_iteration_vw`` (cylindrical algebra) and
     # ``cylindrical._imm_iteration_vw`` (the quad) docstrings.
     #
     # *Efficacy* (measured, ``fd_order = 8``, ``ny = 25`` / ``ny = 97``,
@@ -658,7 +660,6 @@ class Resolution(BaseModel):
     # p. 220, of *lower* time-step stability limits when the boundary
     # correction is omitted).  One config on one backend: treat the
     # speedup as a bonus, not a guarantee.
-    # one backend: treat the speedup as a bonus, not a guarantee.
     consistent_imm: bool = Field(
         default=False,
         description=(

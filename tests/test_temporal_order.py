@@ -41,6 +41,12 @@ so a ``dt`` sweep needs a subprocess per value):
   `$\Phi^n$` wall rows recomputed from the carried `$u_\pm$` state.
   Both are order-preserving only if the corrector converges to the
   fully coupled scheme, which is what this study pins.
+- **pipe, ``res.consistent_imm`` contrast**: the third and last gated
+  mechanism -- the spin quad `$(\Phi_\pm, \omega_\pm)$` over the
+  existing `$H_{k\pm}$` families, with the recovery coupling
+  identically un-lagged.  It is the one geometry where the flag
+  changes *which* operator families the corrector iterates on, so
+  neither study above implies its order.
 
 Corrector-bearing runs use a tight tolerance (``1e-9``) so
 fixed-point error does not pollute the truncation-error measurement,
@@ -106,6 +112,15 @@ shows up directly here.
   change count keeps it `$O(\Delta t^2)$`.  The exact-kappa
   application at the change steps themselves is pinned separately by
   ``tests/test_adaptive.py``'s carry-cancellation identity.
+- ``plane-couette-consistent-imm-vardt``: the same blocks with
+  ``res.consistent_imm`` **on**, where that difference proxy is
+  unusable for the reason the fixed-dt contrast study gives -- so
+  this one measures the variable-step sequence's own
+  self-convergence and compares it, error for error, against the
+  fixed-``dt`` sweep of the same configuration sharing one reference.
+  It is the only study that steps the *gated* operator set through a
+  mid-run ``set_dt`` rebuild (flag-on rebuilds one band family fewer
+  than flag-off).
 
 ::
 
@@ -163,14 +178,22 @@ STUDIES = [
     "plane-couette",
     "plane-couette-consistent-imm",
     "taylor-couette-consistent-imm",
+    "pipe-consistent-imm",
     "kolmogorov-vardt",
     "plane-couette-vardt",
+    "plane-couette-consistent-imm-vardt",
 ]
-WORKER_SYSTEMS = ["kolmogorov", "plane-couette", "taylor-couette"]
+WORKER_SYSTEMS = [
+    "kolmogorov",
+    "plane-couette",
+    "taylor-couette",
+    "pipe",
+]
 
 FLOW_MODULES = {
     "plane-couette": "dnsjax.flows.wall_bounded.plane_couette",
     "taylor-couette": "dnsjax.flows.wall_bounded.taylor_couette",
+    "pipe": "dnsjax.flows.wall_bounded.pipe",
     "kolmogorov": "dnsjax.flows.triply_periodic.monochromatic",
 }
 
@@ -213,6 +236,8 @@ def _worker(
         # only the axial one (``geo.lx``) is set here.
         phys |= TC_PHYS
         geo |= TC_GEO
+    elif system == "pipe":
+        phys["re"] = 100.0  # azimuthal period derived from geo.m0 too
     else:
         phys["re"] = 100.0
         geo["lz"] = LZ
@@ -251,11 +276,11 @@ def _worker(
     # ICs are physical; the steppers work in the solver basis (the
     # same single crossing ``__main__`` performs), and the saved state
     # is converted **back** -- the study must compare the physical
-    # solution.  A solver basis may carry a *derived* component (the
-    # Cartesian v-omega_y one carries `$\varphi = L v$`, whose two
-    # wall values are the influence matrix's `$\alpha$` and need not
-    # converge as `$\Delta t \to 0$`), so a relative L2 taken in that
-    # basis measures something the scheme never claimed.
+    # solution, which is the one the scheme's order is a statement
+    # about.  (For the surviving `$u_\pm$`/spin bases the map is
+    # invertible and well conditioned, so this changes the constant
+    # and not the slope; converting back keeps the comparison in the
+    # components every other consumer sees.)
     to_solver = getattr(fmod, "to_solver_basis", lambda s: s)
     from_solver = getattr(fmod, "from_solver_basis", lambda s: s)
     state = to_solver(generate_random_state(amp, SMOOTH, SEED))
@@ -368,6 +393,87 @@ def _err(a: Path, b: Path) -> float:
     return float(np.linalg.norm(x - y) / np.linalg.norm(y))
 
 
+def _self_convergence(
+    tdir: Path,
+    system: str,
+    stem: str,
+    *,
+    consistent_imm: bool,
+    vardt: bool = False,
+    ref_stem: str | None = None,
+) -> tuple[list[float], list[float]]:
+    """Errors and orders of one configuration's self-convergence.
+
+    Every run is iterative-CN at the same ``consistent_imm``; the
+    reference is that configuration's own **fixed**-``dt`` run at
+    ``DT_SELF_REF`` (the converged solution both sequences approach),
+    so the measured slope is an absolute order, not a proxy.  A
+    fixed-``dt`` and a variable-``dt`` sweep of the same configuration
+    share one reference via *ref_stem* (built on first use)."""
+    ref = tdir / f"{ref_stem or stem}_ref.npy"
+    if not ref.exists():
+        _run(
+            system,
+            "iterative-cn",
+            DT_SELF_REF,
+            ref,
+            consistent_imm=consistent_imm,
+        )
+    errs = []
+    for dt in DTS_PC:
+        out = tdir / f"{stem}_{dt}.npy"
+        _run(
+            system,
+            "iterative-cn",
+            dt,
+            out,
+            vardt=vardt,
+            consistent_imm=consistent_imm,
+        )
+        errs.append(_err(out, ref))
+    orders = [np.log2(a / b) for a, b in zip(errs, errs[1:], strict=False)]
+    return errs, orders
+
+
+def _consistent_imm_contrast(
+    tdir: Path,
+    system: str,
+    stem: str,
+    *,
+    min_error_gain: float,
+    min_slope_gain: float,
+) -> None:
+    """Assert ``res.consistent_imm`` improves both the size of the
+    temporal error and its decay rate, and reaches first order.
+
+    Absolute numbers are printed rather than pinned: what must never
+    regress is the *contrast* between the two flag states."""
+    slopes, first = {}, {}
+    for cimm in (False, True):
+        tag = "on" if cimm else "off"
+        errs, orders = _self_convergence(
+            tdir, system, f"{stem}_{tag}", consistent_imm=cimm
+        )
+        print(
+            f"consistent_imm={tag}: errors "
+            f"{[f'{e:.3e}' for e in errs]}  orders "
+            f"{[f'{o:.2f}' for o in orders]}"
+        )
+        slopes[tag], first[tag] = min(orders), errs[0]
+
+    assert first["off"] / first["on"] > min_error_gain, (
+        "consistent_imm did not shrink the absolute temporal "
+        f"error: {first['off']:.3e} -> {first['on']:.3e}"
+    )
+    assert slopes["on"] > slopes["off"] + min_slope_gain, (
+        "consistent_imm did not improve the convergence rate: "
+        f"{slopes['off']:.2f} -> {slopes['on']:.2f}"
+    )
+    assert slopes["on"] > 1.0, (
+        f"consistent_imm convergence rate below 1: {slopes['on']:.2f}"
+    )
+
+
 def _check_orders(errs: list[float], label: str) -> None:
     orders = [np.log2(e1 / e2) for e1, e2 in zip(errs, errs[1:], strict=False)]
     print(f"{label}: errors {[f'{e:.3e}' for e in errs]}")
@@ -471,56 +577,16 @@ def main() -> None:
             # The honest measurement is each configuration's own
             # self-convergence against a fine-dt run of the same
             # configuration.
+            # The ungated absolute order is ~0.5 (the wall-bounded
+            # projection-splitting error, ~6e-2 at dt = 0.01), the
+            # gated one ~1.1 at ~1.2e-4.
             print("=== plane-couette: consistent_imm self-convergence ===")
-            slopes, first = {}, {}
-            for cimm in (False, True):
-                tag = "on" if cimm else "off"
-                ref = tdir / f"pc_sc_{tag}_ref.npy"
-                _run(
-                    "plane-couette",
-                    "iterative-cn",
-                    DT_SELF_REF,
-                    ref,
-                    consistent_imm=cimm,
-                )
-                errs = []
-                for dt in DTS_PC:
-                    out = tdir / f"pc_sc_{tag}_{dt}.npy"
-                    _run(
-                        "plane-couette",
-                        "iterative-cn",
-                        dt,
-                        out,
-                        consistent_imm=cimm,
-                    )
-                    errs.append(_err(out, ref))
-                orders = [
-                    np.log2(a / b)
-                    for a, b in zip(errs, errs[1:], strict=False)
-                ]
-                print(
-                    f"consistent_imm={tag}: errors "
-                    f"{[f'{e:.3e}' for e in errs]}  orders "
-                    f"{[f'{o:.2f}' for o in orders]}"
-                )
-                slopes[tag], first[tag] = min(orders), errs[0]
-
-            # The flag must strictly improve both the size of the
-            # error and its decay rate.  Absolute numbers are recorded
-            # rather than pinned: the ungated absolute order is ~0.5
-            # (the wall-bounded projection-splitting error, ~6e-2 at
-            # dt = 0.01), the gated one ~1.1 at ~1.2e-4.  What must
-            # never regress is the *contrast*.
-            assert first["off"] / first["on"] > 50.0, (
-                "consistent_imm did not shrink the absolute temporal "
-                f"error: {first['off']:.3e} -> {first['on']:.3e}"
-            )
-            assert slopes["on"] > slopes["off"] + 0.3, (
-                "consistent_imm did not improve the convergence rate: "
-                f"{slopes['off']:.2f} -> {slopes['on']:.2f}"
-            )
-            assert slopes["on"] > 1.0, (
-                f"consistent_imm convergence rate below 1: {slopes['on']:.2f}"
+            _consistent_imm_contrast(
+                tdir,
+                "plane-couette",
+                "pc_sc",
+                min_error_gain=50.0,
+                min_slope_gain=0.3,
             )
 
         if "taylor-couette-consistent-imm" in studies:
@@ -535,53 +601,32 @@ def main() -> None:
             # wrong-constant first-order shift, which this study is
             # sized to see.)
             print("=== taylor-couette: consistent_imm self-convergence ===")
-            slopes, first = {}, {}
-            for cimm in (False, True):
-                tag = "on" if cimm else "off"
-                ref = tdir / f"tc_sc_{tag}_ref.npy"
-                _run(
-                    "taylor-couette",
-                    "iterative-cn",
-                    DT_SELF_REF,
-                    ref,
-                    consistent_imm=cimm,
-                )
-                errs = []
-                for dt in DTS_PC:
-                    out = tdir / f"tc_sc_{tag}_{dt}.npy"
-                    _run(
-                        "taylor-couette",
-                        "iterative-cn",
-                        dt,
-                        out,
-                        consistent_imm=cimm,
-                    )
-                    errs.append(_err(out, ref))
-                orders = [
-                    np.log2(a / b)
-                    for a, b in zip(errs, errs[1:], strict=False)
-                ]
-                print(
-                    f"consistent_imm={tag}: errors "
-                    f"{[f'{e:.3e}' for e in errs]}  orders "
-                    f"{[f'{o:.2f}' for o in orders]}"
-                )
-                slopes[tag], first[tag] = min(orders), errs[0]
+            _consistent_imm_contrast(
+                tdir,
+                "taylor-couette",
+                "tc_sc",
+                min_error_gain=5.0,
+                min_slope_gain=0.0,
+            )
 
-            # Same contract as the Cartesian study: the flag must
-            # strictly improve the error size and the decay rate, and
-            # reach at least first order.  Absolute numbers recorded,
-            # not pinned.
-            assert first["off"] / first["on"] > 5.0, (
-                "consistent_imm did not shrink the absolute temporal "
-                f"error: {first['off']:.3e} -> {first['on']:.3e}"
-            )
-            assert slopes["on"] > slopes["off"], (
-                "consistent_imm did not improve the convergence rate: "
-                f"{slopes['off']:.2f} -> {slopes['on']:.2f}"
-            )
-            assert slopes["on"] > 1.0, (
-                f"consistent_imm convergence rate below 1: {slopes['on']:.2f}"
+        if "pipe-consistent-imm" in studies:
+            # The cylindrical geometry, whose gated mechanism is
+            # neither of the other two: the **spin quad**
+            # `$(\Phi_\pm, \omega_\pm)$` solved through the existing
+            # `$H_{k\pm}$` families with the recovery coupling
+            # identically un-lagged (the near-axis lag diverges).  It
+            # is the one geometry where the flag changes *which*
+            # operator families the corrector iterates on, so its
+            # order is not implied by either study above.  Measured:
+            # 1.4e-2 at order ~0.84 -> 1.1e-3 at order ~1.06, the
+            # thinnest first-order margin of the three geometries.
+            print("=== pipe: consistent_imm self-convergence ===")
+            _consistent_imm_contrast(
+                tdir,
+                "pipe",
+                "pipe_sc",
+                min_error_gain=2.0,
+                min_slope_gain=0.0,
             )
 
         if "kolmogorov-vardt" in studies:
@@ -604,6 +649,52 @@ def main() -> None:
                 _run("plane-couette", "cnab2", dt, b, vardt=True)
                 errs.append(_err(b, a))
             _check_orders(errs, "plane-couette vardt cnab2-icn")
+
+        if "plane-couette-consistent-imm-vardt" in studies:
+            # The vardt study above is the cnab2-icn difference proxy,
+            # which cancels the shared projection error -- so, exactly
+            # as for the fixed-dt pair, it cannot judge the flag that
+            # removes that error.  With the flag on the honest
+            # measurement is again self-convergence, here of the
+            # *variable-step* sequence.  What it pins is the mid-run
+            # ``set_dt`` rebuild in the gated configuration: flag-on
+            # rebuilds a different operator set (the v-omega families,
+            # one fewer than flag-off), and no other study steps it at
+            # a changing dt.  Reference and dt list are shared with
+            # the fixed-dt run, so the two errors are directly
+            # comparable: a kappa/rebuild bug shows up as a fixed->var
+            # error blow-up or a flattened slope, neither of which
+            # survives the assertions below.  Measured: fixed 3.60e-5
+            # at orders 1.15/1.24, variable 3.52e-5 at 1.13/1.24 --
+            # the rebuild is order-preserving and essentially free.
+            print("=== plane-couette: consistent_imm vardt vs fixed ===")
+            e_fix, o_fix = _self_convergence(
+                tdir, "plane-couette", "pc_ci_seq", consistent_imm=True
+            )
+            e_var, o_var = _self_convergence(
+                tdir,
+                "plane-couette",
+                "pc_ci_seq_var",
+                consistent_imm=True,
+                vardt=True,
+                ref_stem="pc_ci_seq",
+            )
+            print(
+                f"fixed dt: errors {[f'{e:.3e}' for e in e_fix]}  "
+                f"orders {[f'{o:.2f}' for o in o_fix]}"
+            )
+            print(
+                f"vardt   : errors {[f'{e:.3e}' for e in e_var]}  "
+                f"orders {[f'{o:.2f}' for o in o_var]}"
+            )
+            assert min(o_var) > 1.0, (
+                f"consistent_imm vardt convergence rate below 1: {o_var}"
+            )
+            ratios = [v / f for v, f in zip(e_var, e_fix, strict=True)]
+            assert max(ratios) < 4.0, (
+                "consistent_imm vardt error far above the fixed-dt one "
+                f"at the same base dt (ratios {ratios})"
+            )
 
     print("ALL PASSED")
 

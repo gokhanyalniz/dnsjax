@@ -150,7 +150,10 @@ LEAVES["viscoelastic-dean"] = LEAVES["taylor-couette"] + ("Hc_op",)
 # from both sets -- flag-on it holds the ``dt``-free recovery operator,
 # so ``set_dt`` must not rebuild it.
 CLOSURE_LEAVES = {
-    "plane-couette": ("phi1", "phi2"),
+    # Cartesian's wall-normal columns are ``v1``/``v2``, which the
+    # primitive scheme has too, so its flag-on set is a strict subset
+    # of flag-off's -- nothing to add here.
+    "plane-couette": (),
     # One u_r column per wall.
     "taylor-couette": ("ur_1", "ur_2"),
     # The pipe's single wall gives one (a 1x1 influence matrix).

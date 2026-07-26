@@ -14,34 +14,29 @@
   grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2
   IMM, optional mean-mode azimuthal body force `pi_theta`)
 
-**Component basis (cylindrical / annular; Cartesian under
-`res.consistent_imm`).** Two representations, one boundary. The
-**solver basis** — decoupled `u_± = u_r ± i u_θ` plus the
-conformation-spin components, which diagonalize the implicit operators
-(Cartesian: `(φ, v, ω_y)`, which makes continuity structural) — is the
-state's in-memory form: the carried state, the RHS, the cnab2
-carry, and the interior of every stepper. The **physical basis**
-`(u_z, u_r, u_θ)` (+ the physical tensor) is what is observed or
-persisted: snapshots, diagnostics, probes, forcing profiles, ICs, the
-analysis package, the TG export. A given state crosses at most once,
-never back (the physical form is a view, dropped after use), via
-`_base.to_pm_basis`/`from_pm_basis` (aliased `to_solver_basis` /
-`from_solver_basis`, re-exported by the flow modules) or
+**Component basis (cylindrical / annular only).** Two
+representations, one boundary. The **solver basis** — decoupled
+`u_± = u_r ± i u_θ` plus the conformation-spin components, which
+diagonalize the implicit operators — is the state's in-memory form:
+the carried state, the RHS, the cnab2 carry, and the interior of every
+stepper. The **physical basis** `(u_z, u_r, u_θ)` (+ the physical
+tensor) is what is observed or persisted: snapshots, diagnostics,
+probes, forcing profiles, ICs, the analysis package, the TG export. A
+given state crosses at most once, never back (the physical form is a
+view, dropped after use), via `_base.to_pm_basis`/`from_pm_basis`
+(aliased `to_solver_basis` / `from_solver_basis`, re-exported by the
+flow modules) or
 `annular_viscoelastic.to_spin_basis`/`from_spin_basis`. `__main__`
 owns the field-level crossings; `probes.py`/`forcing.py` convert their
-own mode columns instead (**Cartesian is the exception**: its map
-needs `D1`/`D2` and the mode's wavenumbers, so it cannot act on a bare
-column — those two convert the whole field around their
-extract/scatter). **Anything that hands a freshly built (i.e.
+own mode columns instead. **Anything that hands a freshly built (i.e.
 physical) state to a stepper must convert first** — `__main__`'s
 post-IC line and `transient_growth._linear_step` are the templates.
 `_get_rhs_core`/`_l_bf` convert internally because the real FFT needs
 per-component Hermitian symmetry, which `u_±` lack — so physical-space
-fields and the CFL measurement are always physical components; the
-Cartesian pair converts there for the same reason. Cartesian's
-`to_solver_basis` is a **projection**, not a bijection — the basis has
-no room for the horizontal divergence — so an IC or a `[force]` kick
-loses its non-solenoidal part on entry, by design.
+fields and the CFL measurement are always physical components.
+**Cartesian carries physical `(u, v, w)` in both `res.consistent_imm`
+states** and exports no basis pair; every consumer finds it by
+`getattr` and falls back to the identity.
 - `annular_viscoelastic.py`: viscoelastic (sPTT) extension of the
   annular geometry (`ViscoelasticAnnularFlow`): 9-component state, one
   fused pseudo-spectral RHS, both schemes supported
@@ -109,14 +104,16 @@ the axis forces (the spin quad, parity classes, the band splice).
   of the pressure Poisson, and the influence matrix keeps its per-wall
   shape (2×2 Cartesian/annular, 1×1 pipe) but targets
   `(D₁·wall-normal)|wall = 0` — tangential no-slip then *emerges*.
-  Per-geometry specifics:
-  - **Cartesian**: `(φ, v, ω_y)`, 4 → 3 solves. The state is
-    **carried** in that basis and observed as `(u, v, w)` — a second
-    solver basis alongside the cyl/annular `u±` one, bound per flow by
-    `cartesian.make_basis_maps` and exported from each flow module, so
-    `__main__` / probes / forcing / TG cross it by the same
-    `to_solver_basis` / `from_solver_basis` names. Both maps are the
-    identity with the flag off, and on the `k²=0` plane always.
+  **No geometry changes what it carries**: each pass re-derives its
+  evolved scalars from the carried state and reconstructs them away at
+  the exit, so the influence coefficients are not carried either and
+  the scalars' wall rows are a truncation-level substitute — the one
+  approximation, argued and measured in
+  `cartesian._imm_iteration_vw`. Per-geometry specifics:
+  - **Cartesian**: `(φ, v, ω_y)`, 4 → 3 solves. Basis unchanged
+    (physical `(u, v, w)` carried; the scalars are derived and
+    reconstructed inside the pass by the private `_to_solver` /
+    `_from_solver`).
   - **Annular**: the `u_r`–`ω_r` pair, which shares one Helmholtz
     operator (`m_eff² = m²+1`); 4 → 3 solves, 3 band families instead
     of 4. Basis unchanged (`u±` carried, converted inside the pass).

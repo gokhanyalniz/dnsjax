@@ -1,4 +1,4 @@
-"""Snapshot save/load for simulation checkpointing.
+r"""Snapshot save/load for simulation checkpointing.
 
 A snapshot is a **single uncompressed tar archive** wrapping a
 zarr3 store plus a JSON metadata member::
@@ -81,8 +81,10 @@ spans per device per snapshot (wall-bounded ``256 x 193 x 256`` at
 ``np0 = 1, np1 = 4``: ``3 x 193 x 255`` spans of 512 B each), a
 few seconds through the page cache -- negligible against
 minutes-to-hours between snapshots.  ``np1 = 1`` meshes keep
-0.1-1 MiB spans and stay bandwidth-bound; single-device writes are
-one span per component.  GDS is inefficient below ~KiB transfers,
+0.1-1 MiB spans and stay bandwidth-bound; a single-device write is
+one span per component on the GDS and no-cupy engines (the
+host+cupy one caps spans at a wall-normal plane, so it writes ``A``
+of them).  GDS is inefficient below ~KiB transfers,
 so on ``np1 > 1`` meshes the host path may match or beat it;
 prefer ``np0`` parallelism when snapshot I/O granularity matters.
 
@@ -135,7 +137,8 @@ Metadata and versioning
 -----------------------
 The ``_dnsjax_meta.json`` member embeds ``t``, ``it``, ``isnap`` (the
 snapshot-lineage index this file was written with), the global (true,
-unpadded) ``native_shape`` -- which **is** the on-disk chunk shape --
+unpadded) ``native_shape`` -- which **is** the on-disk array shape,
+the per-component chunk shape being ``native_shape[1:]`` --
 ``wall_normal_grid`` (the wall-normal grid points as a float array
 for wall-bounded flows, ``None`` for periodic), and the
 flow-relevant, public-named, resolved parameter dump
@@ -187,13 +190,66 @@ class SnapshotMismatchError(Exception):
 
 
 def _gds_available() -> bool:
-    """True when kvikIO + GDS can transfer GPU buffers."""
+    """True when kvikIO + GDS can transfer GPU buffers.
+
+    ``compat_mode()`` returns a ``CompatMode`` enum
+    (``OFF`` / ``ON`` / ``AUTO``), not a bool, and ``AUTO`` -- the
+    default -- means *use kvikIO and let it fall back per file*, so
+    it must count as available.  Only an explicit ``ON`` (compat
+    shim, no GDS) disables the path.  A bare truth test would read
+    ``AUTO`` as "compat" and silently demote every run to the host
+    path, so compare against the enum and say why when rejecting.
+    """
     try:
         import kvikio
 
-        return not kvikio.defaults.compat_mode()
-    except ImportError, AttributeError:
+        mode = kvikio.defaults.compat_mode()
+    except ImportError:
         return False
+    except AttributeError as exc:  # API moved
+        print(f"Snapshot: kvikIO present but unusable ({exc}); host path")
+        return False
+    on = getattr(type(mode), "ON", None)
+    available = mode is not on if on is not None else not mode
+    if not available:
+        print(
+            f"Snapshot: kvikIO compat mode is {mode!r}; using the host "
+            "path (set KVIKIO_COMPAT_MODE=off or =auto for GDS)"
+        )
+    return available
+
+
+def _require_dense(vec) -> None:
+    """Reject a non-C-contiguous device view before it is written.
+
+    Every span :func:`_spans` yields is a prefix slice, contiguous
+    only if the array it slices is dense row-major.  kvikIO reads
+    ``__cuda_array_interface__`` and cupy's dlpack import honours
+    whatever strides it is handed, so a non-default XLA layout would
+    transfer the *wrong bytes* with no error at all -- silent
+    corruption of a snapshot, which is the one artifact a run cannot
+    reconstruct.  Cheap to check, and it converts that class into a
+    crash.
+    """
+    if not vec.flags.c_contiguous:
+        raise ValueError(
+            "snapshot I/O requires a dense row-major device buffer, "
+            f"got strides {vec.strides} for shape {vec.shape}; the "
+            "span offsets assume C-contiguous storage."
+        )
+
+
+def _cuda_ordinal(device) -> int:
+    """CUDA ordinal backing a JAX device.
+
+    ``jax.local_devices()`` order is not guaranteed to be the CUDA
+    ordinal order, and the read engines allocate cupy buffers whose
+    byte ranges were computed from the *JAX* device -- so the two must
+    be tied together explicitly.  ``local_hardware_id`` is that tie;
+    fall back to ``id`` on backends that do not expose it.
+    """
+    ordinal = getattr(device, "local_hardware_id", None)
+    return int(ordinal if ordinal is not None else device.id)
 
 
 def _is_periodic() -> bool:
@@ -575,8 +631,9 @@ def _metadata_bytes(t: float, it: int, isnap: int = 0) -> bytes:
     components in the physical basis (`$u_r$`, `$u_\theta$`, physical
     conformation tensor -- the solver's native state; same byte
     layout, changed component meaning).  Version 5 stores the state
-    in the solver's native spectral layout, so ``native_shape`` **is**
-    the on-disk per-component chunk shape.  Version 4 introduced
+    in the solver's native spectral layout, so ``native_shape[1:]``
+    **is** the on-disk per-component chunk shape.  Version 4
+    introduced
     ``params`` as the flow-relevant, **public-named**, resolved dump
     plus the relevant extension sections (e.g. ``force``, ``probes``;
     :func:`dnsjax.param_surface.recorded_params_dump`); readers map it
@@ -643,6 +700,7 @@ def _write_chunks_gds(
         if nkz == 0 or nkx == 0:
             continue
         cp_vec = cp.from_dlpack(shard.data)
+        _require_dense(cp_vec)
         with cp_vec.device, kvikio.CuFile(str(tar_path), "r+") as f:
             for comp in range(_n_components()):
                 base = comp_offsets[comp]
@@ -680,10 +738,17 @@ def _read_chunks_gds(
         local_shape = _padded_local_shape()
     _, kz_true, kx_true = comp_shape
     per_device: list[Array] = []
-    for local_idx, device in enumerate(jax.local_devices()):
+    for device in jax.local_devices():
         flat_idx = _mesh_device_index(device)
         kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
-        with cp.cuda.Device(local_idx):
+        # Bind cupy to *this* device's hardware ordinal, not to its
+        # position in ``local_devices()``.  The byte ranges below come
+        # from ``_mesh_device_index(device)``, so allocating on a
+        # different GPU would hand each device another one's
+        # `$k_z$`/`$k_x$` block -- and
+        # ``make_array_from_single_device_arrays`` would accept it
+        # (one array per device either way), silently.
+        with cp.cuda.Device(_cuda_ordinal(device)):
             vec = cp.zeros(local_shape, dtype=dtype)
             if nkz > 0 and nkx > 0:
                 with kvikio.CuFile(str(tar_path), "r") as f:
@@ -771,6 +836,8 @@ def _write_chunks_host(
                 cp = None
         if cp is None:
             vec = np.asarray(shard.data)
+        else:
+            _require_dense(vec)
         max_span = "plane" if cp is not None else "component"
         with open(tar_path, "r+b") as f:
             for comp in range(_n_components()):
@@ -787,7 +854,14 @@ def _write_chunks_host(
                 ):
                     span = vec[comp][idx]
                     f.seek(base + off * itemsize)
-                    f.write(cp.asnumpy(span) if cp is not None else span)
+                    buf = cp.asnumpy(span) if cp is not None else span
+                    n = f.write(buf)
+                    if n != buf.nbytes:
+                        raise OSError(
+                            f"short write to {tar_path}: {n} of "
+                            f"{buf.nbytes} bytes (component {comp}); "
+                            "the archive is incomplete."
+                        )
 
 
 def _read_chunks_host(
@@ -818,12 +892,13 @@ def _read_chunks_host(
     except ImportError:
         cp = None
     per_device: list[Array] = []
-    for local_idx, device in enumerate(jax.local_devices()):
+    for device in jax.local_devices():
         flat_idx = _mesh_device_index(device)
         kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
         if cp is not None:
             try:
-                with cp.cuda.Device(local_idx):
+                # This device's hardware ordinal -- see the GDS reader.
+                with cp.cuda.Device(_cuda_ordinal(device)):
                     vec = cp.zeros(local_shape, dtype=dtype)
                     if nkz > 0 and nkx > 0:
                         with open(tar_path, "rb") as f:
@@ -865,7 +940,19 @@ def _read_chunks_host(
                         nkx,
                     ):
                         f.seek(base + off * itemsize)
-                        f.readinto(vec[comp][idx])
+                        dst = vec[comp][idx]
+                        n = f.readinto(dst)
+                        if n != dst.nbytes:
+                            # Short read = truncated archive.  Without
+                            # this the tail of the state is silently
+                            # left as the zeros it was allocated with
+                            # (the cupy branch raises on its own, via
+                            # frombuffer's reshape).
+                            raise OSError(
+                                f"short read from {tar_path}: {n} of "
+                                f"{dst.nbytes} bytes (component "
+                                f"{comp}); the archive is truncated."
+                            )
         per_device.append(jax.device_put(vec, device))
     return per_device
 
@@ -1033,8 +1120,10 @@ def validate_snapshot_params(
     r"""Check that snapshot metadata matches current parameters.
 
     Raises :class:`SnapshotMismatchError` on critical mismatches
-    (resolution, precision, flow system, or a streamwise extent
-    that the current device count cannot evenly shard).  Prints
+    (resolution, precision, or flow system).  The device count is
+    never a reason: every spectral axis is auto-padded to divide the
+    mesh (``round_up_padded``), which is what makes resume
+    np-agnostic in the first place.  Prints
     warnings for non-critical differences and an info line when
     the device count differs (resume is np-agnostic).  Stored
     metadata records the *public* field names; comparisons run in
