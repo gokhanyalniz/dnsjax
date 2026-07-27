@@ -548,6 +548,14 @@ One line each; full rationale/usage in each script's module docstring.
   incl. multi-GPU correctness (`--cpu-bench`, `--cpu-smoke`).
 - `scripts/pivot_stability_survey.py`: CPU survey of the no-pivot
   banded-LU stability checks (finding: no real config trips them).
+- `scripts/gds_probe.py`: cluster diagnostic for the snapshot GDS path
+  -- whether it is engaged at all, and whether one blocking `CuFile`
+  call per span starves it (`--env-only`, `--end-to-end`,
+  `--cpu-smoke`).
+- `scripts/corrector_invariance_probe.py`: GPU diagnostic for the
+  corrector's loop-invariant dense-`y` work -- natural pass count,
+  per-pass cost, the measured matvec-split trade, and the
+  optimized-HLO invariance census (`--cpu-smoke`).
 
 ## Tests
 
