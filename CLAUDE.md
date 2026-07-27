@@ -488,6 +488,20 @@ docstrings.
   globally and redistributing with `jax.device_put`; when direct
   allocation is not possible, do not substitute `jnp.asarray` for
   `jax.device_put`.
+- **Resharding an existing multi-device array** (as opposed to a
+  host→device ingest, which is the `device_put` above): do it **inside
+  `jax.jit`** with `jax.sharding.reshard`, and move **one mesh axis
+  per step**. An eager `device_put` to a new sharding makes the
+  runtime redistribute piecewise instead of emitting a collective
+  (measured 338× slower than the same move jitted); relocating both
+  mesh axes at once defeats SPMD, which then replicates the whole
+  array on every device (`Involuntary full rematerialization` --
+  `ndev`× the traffic *and* the peak memory). It only shows at
+  `np0 > 1, np1 > 1`, so audit on a `(2, 2)` mesh. Jitting costs a
+  compile, so this is for reshards that run repeatedly, not
+  once-per-run ones. Pattern + numbers: `snapshot.py`'s `_via_mid` /
+  `_to_io_layout_core`; codebase-wide audit recipe:
+  `~/.claude/plans/reshard-audit-jitted-collectives.md`.
 - `jax_enable_x64` is set from `params.res.double_precision` before
   JAX initializes arrays.
 - JAX has no zero-copy complex<->real bitcast. Real-operator ×

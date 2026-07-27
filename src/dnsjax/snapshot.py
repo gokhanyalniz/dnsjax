@@ -45,60 +45,60 @@ wall-normal / `$k_y$` axis is outermost.
 
 I/O granularity and memory
 --------------------------
-GPU memory is never doubled and no transpose is ever performed:
-every transferred **span** is a C-contiguous view of the device
-shard (:func:`_spans`).  A span is the largest *file-contiguous*
-piece of the chunk a device owns.  The chunk is the C-ordered
-global array ``(A, kz, kx)`` (``A`` = the unsharded wall-normal /
-`$k_y$` axis), so file-adjacent elements differ in `$k_x$` -- and
-`$k_x$` is exactly the axis ``np1`` shards.  Per component and
-device this gives:
+No transpose is ever performed, and every transferred **span** is a
+C-contiguous view of a device shard (:func:`_a_spans`).  A span is
+the largest *file-contiguous* piece of the chunk a device owns, and
+which pieces those are is decided by **which axis the device's shard
+is cut along**.  The chunk is the C-ordered global array
+``(A, kz, kx)`` (``A`` = the wall-normal / `$k_y$` axis), so its
+slowest-varying axis is ``A`` and its fastest is `$k_x$`.
 
-- ``np0 = np1 = 1``: one span, the whole chunk;
-- ``np1 = 1``: ``A`` spans of ``local_kz * kx_true`` elements
-  (the device owns full `$k_x$` rows, so its `$k_z$` block is
-  file-contiguous within each ``A``-plane);
-- ``np1 > 1``: ``A * local_kz`` spans of only ``local_kx``
-  elements.  Every ``kx_true``-element file row is divided
-  between the ``np1`` devices (``[dev 0 | dev 1 | ...]``), so
-  the largest piece a device owns inside a row is its own
-  `$k_x$` block -- KiB-scale at realistic resolutions.
+The solver layout shards the two *fastest* axes (`$k_z$` by ``np0``,
+`$k_x$` by ``np1``), which is the worst possible cut for this file:
+with ``np1 > 1`` every ``kx_true``-element row is divided between the
+``np1`` devices, so a device's spans are its own ``local_kx`` block --
+512 B at ``256 x 193 x 256, np1 = 4``, and ``3 x 193 x 255`` of them
+per device.  **Measured on BeeGFS: 90 s to save a 288 MiB state**
+(151.7 µs per span), against 1.7 s for the same state at ``np1 = 1``.
 
-The ``np1 > 1`` fragmentation is intrinsic, not an implementation
-choice: a device's bytes are file-contiguous only where its
-sharded axes are the file's *slowest*-varying ones, but the store
-is one fixed np-independent global array (required for np-agnostic
-resume) in the native order -- whose slowest axis is the unsharded
-``A``.  Storing a sharded axis outermost instead is what the
-pre-v5 layouts did; that bought larger runs at the price of
-transposing every slab on every save and load, and it fragmented
-the *other* mesh axis anyway (the old wall-bounded layout kept
-`$k_z$` innermost, so ``np0 > 1`` degraded to ``local_kz``-element
-runs).
+So the state is resharded once per save onto an **I/O layout**
+(:func:`_io_spec`) that cuts the *slowest* axis instead: each device
+takes a contiguous slab of ``A`` and holds `$k_z$`/`$k_x$` whole, and
+its bytes become one contiguous range per component --
+``n_components * ndev`` spans of tens of MiB instead of ~1e5 of
+512 B.  Reads take the mirror path (read the slabs, reshard back).
+The cost is one exchange per save/load -- **one jitted program**,
+routed one mesh axis at a time (:func:`_to_io_layout` says what each
+of those buys, in measured milliseconds) -- plus a transient second
+copy of the state, distributed one local shard per device.  A
+single-device mesh already *is* the I/O layout and pays neither.
 
-Absolute cost at production resolutions: the worst case is ~1e5
-spans per device per snapshot (wall-bounded ``256 x 193 x 256`` at
-``np0 = 1, np1 = 4``: ``3 x 193 x 255`` spans of 512 B each), a
-few seconds through the page cache -- negligible against
-minutes-to-hours between snapshots.  ``np1 = 1`` meshes keep
-0.1-1 MiB spans and stay bandwidth-bound; a single-device write is
-one span per component on the GDS and no-cupy engines (the
-host+cupy one caps spans at a wall-normal plane, so it writes ``A``
-of them).  GDS is inefficient below ~KiB transfers,
-so on ``np1 > 1`` meshes the host path may match or beat it;
-prefer ``np0`` parallelism when snapshot I/O granularity matters.
+Only *spectral padding* can still fragment a span, and only in the
+buffer: an unpadded local buffer gives one span per component, a
+`$k_z$`-padded one gives one per ``A`` row, and a `$k_x$`-padded one
+falls back to one per ``(a, k_z)`` row.
+
+This is **not** the pre-v5 layout change.  The store is still one
+fixed np-independent global array in the native order (that is what
+makes resume np-agnostic), and the on-disk bytes are unchanged: only
+*which device writes which byte range* moves.  Storing a sharded axis
+outermost instead is what the pre-v5 layouts did, and that cost a
+transpose of every slab on every save and load.
 
 **Extra memory per device by I/O engine** (beyond the resident
 state):
 
-=======================  =========  =====================
-engine                   GPU extra  host extra
-=======================  =========  =====================
-GDS (write and read)     --         --
-Host + cupy (w and r)    --         one span (at most one
-                                    wall-normal plane)
-Host, no cupy (w and r)  --         one shard
-=======================  =========  =====================
+=======================  ===============  =====================
+engine                   GPU extra        host extra
+=======================  ===============  =====================
+GDS (write and read)     one local shard  --
+Host + cupy (w and r)    one local shard  one span (a component
+                                          slab)
+Host, no cupy (w and r)  one local shard  one shard
+=======================  ===============  =====================
+
+The "one local shard" column is the reshard's transient second copy,
+which every engine pays; it is absent on a single-device mesh.
 
 I/O engine
 ----------
@@ -165,6 +165,7 @@ public-named parameter dump); older snapshots are rejected at read
 import json
 import math
 from collections.abc import Callable, Iterator
+from functools import partial
 from pathlib import Path
 
 import jax
@@ -172,6 +173,7 @@ import numpy as np
 from jax import Array
 from jax import numpy as jnp
 from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 
 from .parameters import derived_params, params, periodic_systems
 from .sharding import sharding
@@ -309,67 +311,203 @@ def _device_ranges(
     return kz_start, local_kz_true, kx_start, local_kx_true
 
 
-# ── Contiguous spans ──────────────────────────────────────
+# ── The I/O layout and its spans ──────────────────────────
 
 
-def _spans(
+def _n_devices() -> int:
+    """Devices in the mesh (``np0 * np1``)."""
+    return sharding.np0 * sharding.np1
+
+
+def _io_spec():
+    r"""Partition spec of the snapshot **I/O layout**.
+
+    The stored chunk is the C-ordered global array
+    ``(A, kz_true, kx_true)``, so its *slowest*-varying axis is the
+    leading one (the wall-normal `$y$` / `$k_y$` axis, unsharded in
+    the solver layout).  Splitting **that** axis across every device
+    -- and leaving `$k_z$` and `$k_x$` whole -- makes each device's
+    bytes one contiguous file range per component.
+
+    The solver layout shards the two *fastest* axes instead (`$k_z$`
+    by ``np0``, `$k_x$` by ``np1``), which is why a device's bytes
+    are fragmented there: with ``np1 > 1`` every ``kx_true``-element
+    file row is divided between the ``np1`` devices, leaving spans of
+    ``local_kx`` elements. :func:`_to_io_layout` therefore reshards
+    once per save (and :func:`load_snapshot` reshards back after the
+    read); the measured reason is in the module docstring.
+    """
+    axes = tuple(a for a in (sharding.a0, sharding.a1) if a is not None)
+    # ``(a0, a1)`` splits the axis a0-major, so the slab index is the
+    # row-major flat mesh index ``i0 * np1 + i1`` that
+    # :func:`_shard_device_index` reports.
+    return P(None, axes or None, None, None)
+
+
+def _a_local(a_true: int, ndev: int) -> int:
+    """Padded per-device extent of the leading axis (ceil division).
+
+    ``a_true`` is rarely divisible by the device count (wall-normal
+    grids are odd), and a :class:`NamedSharding` cannot split an axis
+    unevenly -- so the array is zero-padded to ``_a_local * ndev``
+    before resharding and the trailing rows are simply never written
+    or read (:func:`_a_ranges` clamps to ``a_true``).
+    """
+    return -(-a_true // ndev)
+
+
+def _a_ranges(flat_idx: int, a_true: int, ndev: int) -> tuple[int, int]:
+    """``(a_start, n_rows)`` of the leading-axis slab of a device.
+
+    The ranges tile ``[0, a_true)`` exactly.  ``n_rows`` is 0 for a
+    device whose slab is entirely padding, which happens whenever
+    ``a_true <= (ndev - 1) * _a_local`` -- e.g. 5 rows over 4 devices.
+    """
+    a_local = _a_local(a_true, ndev)
+    a_start = flat_idx * a_local
+    return a_start, max(0, min(a_start + a_local, a_true) - a_start)
+
+
+def _io_local_shape(a_true: int) -> tuple[int, ...]:
+    """Per-device buffer shape in the I/O layout.
+
+    The leading axis is this device's (padded) slab; `$k_z$` and
+    `$k_x$` are whole, at the *current* mesh's padded spectral sizes
+    (``validate_snapshot_params`` has already enforced that the true
+    mode counts match, so only the padding can differ).
+    """
+    return (
+        _n_components(),
+        _a_local(a_true, _n_devices()),
+        sharding.nz_spec,
+        sharding.nx_spec,
+    )
+
+
+def _via_mid(state: Array, target) -> Array:
+    r"""Reshard *state* to *target*, moving one mesh axis per step.
+
+    **Trace-time only** -- both callers wrap it in :func:`jax.jit`,
+    for the reason in :func:`_to_io_layout`.
+
+    Going straight between the solver layout ``P(-, -, a0, a1)`` and
+    the I/O layout ``P(-, (a0, a1), -, -)`` relocates **both** mesh
+    axes onto a different array axis at once, and XLA's SPMD
+    partitioner cannot express that as an exchange.  It says so and
+    takes its "last resort": *replicate* the whole array on every
+    device, then slice.  That is ``ndev`` times the traffic and
+    ``ndev`` times the peak memory of the exchange it replaces --
+    it prints an "Involuntary full rematerialization" warning at
+    ``np0 > 1, np1 > 1``.
+
+    Routing through ``P(-, a0, -, a1)`` makes each leg a single-mesh-
+    axis move, which SPMD does express as an all-to-all.  On a 1D mesh
+    one of the two legs is the identity (the intermediate spec equals
+    the source or the target), so this costs nothing there.
+    """
+    mid = P(None, sharding.a0, None, sharding.a1)
+    state = jax.sharding.reshard(state, NamedSharding(sharding.mesh, mid))
+    return jax.sharding.reshard(state, NamedSharding(sharding.mesh, target))
+
+
+@jax.jit
+def _to_io_layout_core(state: Array) -> Array:
+    """Pad the leading axis and reshard, as **one** jitted program."""
+    ndev = _n_devices()
+    a_true = state.shape[1]
+    a_pad = _a_local(a_true, ndev) * ndev
+    if a_pad != a_true:
+        pad = [(0, 0)] * state.ndim
+        pad[1] = (0, a_pad - a_true)
+        state = jnp.pad(state, pad)
+    return _via_mid(state, _io_spec())
+
+
+@partial(jax.jit, static_argnums=(1,))
+def _from_io_layout_core(state: Array, a_true: int) -> Array:
+    """Reshard back to the solver layout and drop the padding.
+
+    The slice has to follow the reshard: the leading axis is sharded
+    until then, and slicing a sharded axis is the ``ShardingTypeError``
+    trap.
+    """
+    state = _via_mid(state, sharding.spec_vector_shard)
+    return state if state.shape[1] == a_true else state[:, :a_true]
+
+
+def _to_io_layout(state: Array) -> Array:
+    r"""Reshard *state* onto the I/O layout, padding the leading axis.
+
+    One exchange per save, against ~1e5 serialized 512 B writes per
+    device without it.  Costs a transient second copy of the state,
+    distributed -- one local shard per device.  A single-device mesh
+    already *is* the I/O layout, so it reshards nothing and pays
+    neither.
+
+    **The exchange must be one jitted program.**  Expressed eagerly --
+    a :func:`jax.device_put` per leg -- the runtime redistributes
+    piece by piece instead of emitting a collective, and the same
+    216 MiB took **230 ms** on an H100 node whose fabric moves a
+    72 MiB shard device-to-device in 0.32 ms (223 GB/s).  Inside
+    ``jit`` the identical two moves take **0.68 ms**: a 338x
+    difference, and the whole reason a multi-device snapshot is now
+    write-bound rather than reshard-bound.
+    """
+    if _n_devices() == 1:
+        return state
+    return _to_io_layout_core(state)
+
+
+def _a_spans(
     local_shape: tuple[int, ...],
+    a_start: int,
+    na: int,
     kz_true: int,
     kx_true: int,
-    kz_start: int,
-    nkz: int,
-    kx_start: int,
-    nkx: int,
-    max_span: str = "component",
 ) -> Iterator[tuple[tuple, int, tuple[int, ...]]]:
     r"""Yield ``(index, offset, shape)`` contiguous spans of a component.
 
-    Maps a device's true-mode block of a padded local component array
-    ``(A, local_kz, local_kx)`` onto its element ranges inside the
-    on-disk component chunk ``(A, kz_true, kx_true)`` -- the same
-    row-major axis order, so no transpose exists.  Every yielded
-    ``comp[index]`` view is a C-contiguous prefix slice of the
-    C-contiguous local array (required by kvikIO and ``readinto``;
-    keep it that way), ``shape`` is the span's shape, and the file
-    ranges are disjoint and ascending.
+    Maps a device's leading-axis slab of a padded local component
+    array ``(a_local, local_kz, local_kx)`` onto its element ranges
+    inside the on-disk component chunk ``(A, kz_true, kx_true)`` --
+    the same row-major axis order, so no transpose exists.  Every
+    yielded ``comp[index]`` view is a C-contiguous prefix slice of
+    the C-contiguous local array (required by kvikIO and
+    ``readinto``; keep it that way), ``shape`` is the span's shape,
+    and the file ranges are disjoint and ascending.
 
-    Each span is the largest *file-contiguous* piece the device
-    owns; the tiers below are the three ownership patterns (see the
-    module docstring's "I/O granularity" section for why smaller
-    ownership means shorter spans).  The largest tier that applies
-    is used, capped by ``max_span``:
+    In the I/O layout a device owns whole `$(k_z, k_x)$` planes, so
+    the only thing that can still fragment a span is *spectral
+    padding* in the local buffer -- the tiers below, largest first:
 
-    - ``"component"``: the device owns every true mode and the local
-      array carries no padding -- one span, the whole chunk.
-    - ``"plane"``: the device owns the full unpadded `$k_x$` range
-      (``np1 == 1``) -- one span per wall-normal / `$k_y$` plane
-      (its `$k_z$` block of full rows is contiguous there).
-    - ``"row"``: the general case (``np1 > 1``) -- one span per
-      ``(a, k_z)`` row, of ``nkx`` elements: the sharded innermost
-      `$k_x$` axis splits every file row between the ``np1``
-      devices, so a device's own `$k_x$` block is the largest
-      contiguous piece it may touch.
+    - no padding: **one span**, the device's whole slab of the
+      chunk (``na * kz_true * kx_true`` elements);
+    - ``local_kx == kx_true`` but ``local_kz > kz_true``: one span
+      per leading-axis row, of ``kz_true * kx_true`` elements;
+    - ``local_kx > kx_true``: one span per ``(a, k_z)`` row.
     """
-    a_size, local_kz, local_kx = local_shape
-    full_kx = nkx == kx_true == local_kx  # forces kx_start == 0
-    full_kz = nkz == kz_true == local_kz  # forces kz_start == 0
-    if full_kx and full_kz and max_span == "component":
-        yield (slice(None),), 0, (a_size, kz_true, kx_true)
+    _, local_kz, local_kx = local_shape
+    if local_kx == kx_true and local_kz == kz_true:
+        yield (
+            (slice(0, na),),
+            a_start * kz_true * kx_true,
+            (na, kz_true, kx_true),
+        )
         return
-    if full_kx and max_span != "row":
-        for a in range(a_size):
+    if local_kx == kx_true:
+        for a in range(na):
             yield (
-                (a, slice(0, nkz)),
-                (a * kz_true + kz_start) * kx_true,
-                (nkz, kx_true),
+                (a, slice(0, kz_true)),
+                (a_start + a) * kz_true * kx_true,
+                (kz_true, kx_true),
             )
         return
-    for a in range(a_size):
-        for lkz in range(nkz):
+    for a in range(na):
+        for kz in range(kz_true):
             yield (
-                (a, lkz, slice(0, nkx)),
-                (a * kz_true + kz_start + lkz) * kx_true + kx_start,
-                (nkx,),
+                (a, kz, slice(0, kx_true)),
+                ((a_start + a) * kz_true + kz) * kx_true,
+                (kx_true,),
             )
 
 
@@ -404,21 +542,6 @@ def _padded_local_shape() -> tuple[int, ...]:
     if _is_periodic():
         return (nc, params.res.ny - 1, local_kz, local_kx)
     return (nc, params.res.ny, local_kz, local_kx)
-
-
-def _padded_local_shape_snap_ny(snap_ny: int) -> tuple[int, ...]:
-    """Padded per-device shape with the *snapshot's* ``ny``.
-
-    Used when loading a wall-bounded snapshot whose ``ny``
-    differs from the current run.  ``kz`` and ``kx`` use the
-    current mesh padding; ``ny`` comes from the snapshot.
-    """
-    local_kz = sharding.nz_spec // sharding.np0
-    local_kx = sharding.nx_spec // sharding.np1
-    nc = _n_components()
-    if _is_periodic():
-        return (nc, snap_ny - 1, local_kz, local_kx)
-    return (nc, snap_ny, local_kz, local_kx)
 
 
 def _shard_device_index(shard) -> int:
@@ -688,30 +811,27 @@ def _write_chunks_gds(
     Each component's chunk lives at ``comp_offsets[comp]`` inside the
     single archive; all writes are at that base plus the in-component
     byte offset, directly from GPU memory (every span is a contiguous
-    view of the shard -- no staging, no copies).
+    view of the shard -- no staging, no copies).  *state* is already
+    in the I/O layout (:func:`_to_io_layout`), so a device's slab is
+    normally one write per component.
     """
     import cupy as cp
     import kvikio
 
-    _, kz_true, kx_true = comp_shape
+    a_true, kz_true, kx_true = comp_shape
     for shard in state.addressable_shards:
-        flat_idx = _shard_device_index(shard)
-        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
-        if nkz == 0 or nkx == 0:
+        a_start, na = _a_ranges(
+            _shard_device_index(shard), a_true, _n_devices()
+        )
+        if na == 0:
             continue
         cp_vec = cp.from_dlpack(shard.data)
         _require_dense(cp_vec)
         with cp_vec.device, kvikio.CuFile(str(tar_path), "r+") as f:
             for comp in range(_n_components()):
                 base = comp_offsets[comp]
-                for idx, off, _ in _spans(
-                    cp_vec.shape[1:],
-                    kz_true,
-                    kx_true,
-                    kz_start,
-                    nkz,
-                    kx_start,
-                    nkx,
+                for idx, off, _ in _a_spans(
+                    cp_vec.shape[1:], a_start, na, kz_true, kx_true
                 ):
                     f.write(
                         cp_vec[comp][idx],
@@ -724,44 +844,37 @@ def _read_chunks_gds(
     comp_offsets: dict[int, int],
     comp_shape: tuple[int, ...],
     dtype: np.dtype,
-    local_shape: tuple[int, ...] | None = None,
 ) -> list[Array]:
-    r"""Read each device's `$k_z$`/`$k_x$` sub-range via kvikIO
-    into a padded vector shard (np-agnostic), directly into GPU
-    memory (every span is a contiguous view of the shard -- no
-    staging buffers)."""
+    r"""Read each device's leading-axis slab via kvikIO into an
+    I/O-layout shard (np-agnostic), directly into GPU memory (every
+    span is a contiguous view of the shard -- no staging buffers).
+    The caller reshards the assembled array back to the solver
+    layout."""
     import cupy as cp
     import kvikio
 
     itemsize = dtype.itemsize
-    if local_shape is None:
-        local_shape = _padded_local_shape()
-    _, kz_true, kx_true = comp_shape
+    a_true, kz_true, kx_true = comp_shape
+    local_shape = _io_local_shape(a_true)
     per_device: list[Array] = []
     for device in jax.local_devices():
-        flat_idx = _mesh_device_index(device)
-        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
+        a_start, na = _a_ranges(
+            _mesh_device_index(device), a_true, _n_devices()
+        )
         # Bind cupy to *this* device's hardware ordinal, not to its
         # position in ``local_devices()``.  The byte ranges below come
         # from ``_mesh_device_index(device)``, so allocating on a
-        # different GPU would hand each device another one's
-        # `$k_z$`/`$k_x$` block -- and
-        # ``make_array_from_single_device_arrays`` would accept it
+        # different GPU would hand each device another one's slab --
+        # and ``make_array_from_single_device_arrays`` would accept it
         # (one array per device either way), silently.
         with cp.cuda.Device(_cuda_ordinal(device)):
             vec = cp.zeros(local_shape, dtype=dtype)
-            if nkz > 0 and nkx > 0:
+            if na > 0:
                 with kvikio.CuFile(str(tar_path), "r") as f:
                     for comp in range(_n_components()):
                         base = comp_offsets[comp]
-                        for idx, off, _ in _spans(
-                            local_shape[1:],
-                            kz_true,
-                            kx_true,
-                            kz_start,
-                            nkz,
-                            kx_start,
-                            nkx,
+                        for idx, off, _ in _a_spans(
+                            local_shape[1:], a_start, na, kz_true, kx_true
                         ):
                             f.read(
                                 vec[comp][idx],
@@ -812,22 +925,26 @@ def _write_chunks_host(
 ) -> None:
     """Stream each local shard to the tar span-by-span via host I/O.
 
-    When cupy is available (NVIDIA GPU platforms), each span is
-    transferred via ``cupy.asnumpy`` and written (spans are capped at
-    one wall-normal plane, so the extra host memory is at most one
-    plane).  Otherwise (CPU runs, non-NVIDIA GPUs), the full shard is
-    copied with ``np.asarray`` and spans are written directly from it
-    (extra host memory: one shard per device).
+    *state* is already in the I/O layout (:func:`_to_io_layout`), so a
+    device's slab is normally one span per component.  When cupy is
+    available (NVIDIA GPU platforms) each span is staged through
+    ``cupy.asnumpy``; otherwise (CPU runs, non-NVIDIA GPUs) the full
+    shard is copied once with ``np.asarray`` and the spans are
+    written directly from it.  Either way the extra host memory is
+    one span, which in this layout is a whole component slab
+    (``shard / n_components``) rather than a plane -- the trade that
+    turns ~1e5 small writes into a handful of big ones.
     """
-    _, kz_true, kx_true = comp_shape
+    a_true, kz_true, kx_true = comp_shape
     try:
         import cupy as cp
     except ImportError:
         cp = None
     for shard in state.addressable_shards:
-        flat_idx = _shard_device_index(shard)
-        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
-        if nkz == 0 or nkx == 0:
+        a_start, na = _a_ranges(
+            _shard_device_index(shard), a_true, _n_devices()
+        )
+        if na == 0:
             continue
         if cp is not None:
             try:
@@ -838,19 +955,11 @@ def _write_chunks_host(
             vec = np.asarray(shard.data)
         else:
             _require_dense(vec)
-        max_span = "plane" if cp is not None else "component"
         with open(tar_path, "r+b") as f:
             for comp in range(_n_components()):
                 base = comp_offsets[comp]
-                for idx, off, _ in _spans(
-                    vec.shape[1:],
-                    kz_true,
-                    kx_true,
-                    kz_start,
-                    nkz,
-                    kx_start,
-                    nkx,
-                    max_span,
+                for idx, off, _ in _a_spans(
+                    vec.shape[1:], a_start, na, kz_true, kx_true
                 ):
                     span = vec[comp][idx]
                     f.seek(base + off * itemsize)
@@ -869,50 +978,46 @@ def _read_chunks_host(
     comp_offsets: dict[int, int],
     comp_shape: tuple[int, ...],
     dtype: np.dtype,
-    local_shape: tuple[int, ...] | None = None,
 ) -> list[Array]:
-    r"""Read each device's `$k_z$`/`$k_x$` sub-range via host I/O
-    into a padded vector shard (np-agnostic).
+    r"""Read each device's leading-axis slab via host I/O into an
+    I/O-layout shard (np-agnostic).
 
     When cupy is available (NVIDIA GPU platforms), the output buffer
-    is allocated on GPU; each span is read from disk and copied onto
-    its contiguous view via ``cupy.ndarray.set`` (spans are capped at
-    one wall-normal plane, so the extra host memory is at most one
-    plane).  Otherwise (CPU runs, non-NVIDIA GPUs), the output is
-    assembled on the host with ``readinto`` (no temporaries) and
-    transferred at the end via ``jax.device_put`` (extra host memory:
-    one shard per device).
+    is allocated on GPU and each span is copied onto its contiguous
+    view via ``cupy.ndarray.set``.  Otherwise (CPU runs, non-NVIDIA
+    GPUs), the output is assembled on the host with ``readinto`` (no
+    temporaries) and transferred at the end via ``jax.device_put``.
+    Extra host memory: one span, i.e. a component slab
+    (``shard / n_components``).  The caller reshards the assembled
+    array back to the solver layout.
     """
     itemsize = dtype.itemsize
-    if local_shape is None:
-        local_shape = _padded_local_shape()
-    _, kz_true, kx_true = comp_shape
+    a_true, kz_true, kx_true = comp_shape
+    local_shape = _io_local_shape(a_true)
     try:
         import cupy as cp
     except ImportError:
         cp = None
     per_device: list[Array] = []
     for device in jax.local_devices():
-        flat_idx = _mesh_device_index(device)
-        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
+        a_start, na = _a_ranges(
+            _mesh_device_index(device), a_true, _n_devices()
+        )
         if cp is not None:
             try:
                 # This device's hardware ordinal -- see the GDS reader.
                 with cp.cuda.Device(_cuda_ordinal(device)):
                     vec = cp.zeros(local_shape, dtype=dtype)
-                    if nkz > 0 and nkx > 0:
+                    if na > 0:
                         with open(tar_path, "rb") as f:
                             for comp in range(_n_components()):
                                 base = comp_offsets[comp]
-                                for idx, off, shape in _spans(
+                                for idx, off, shape in _a_spans(
                                     local_shape[1:],
+                                    a_start,
+                                    na,
                                     kz_true,
                                     kx_true,
-                                    kz_start,
-                                    nkz,
-                                    kx_start,
-                                    nkx,
-                                    "plane",
                                 ):
                                     f.seek(base + off * itemsize)
                                     raw = f.read(math.prod(shape) * itemsize)
@@ -926,18 +1031,12 @@ def _read_chunks_host(
             except Exception:
                 cp = None
         vec = np.zeros(local_shape, dtype=dtype)
-        if nkz > 0 and nkx > 0:
+        if na > 0:
             with open(tar_path, "rb") as f:
                 for comp in range(_n_components()):
                     base = comp_offsets[comp]
-                    for idx, off, _ in _spans(
-                        local_shape[1:],
-                        kz_true,
-                        kx_true,
-                        kz_start,
-                        nkz,
-                        kx_start,
-                        nkx,
+                    for idx, off, _ in _a_spans(
+                        local_shape[1:], a_start, na, kz_true, kx_true
                     ):
                         f.seek(base + off * itemsize)
                         dst = vec[comp][idx]
@@ -1021,6 +1120,12 @@ def save_snapshot(
         sharding.print("Snapshot: using GDS path")
     write_fn = _write_chunks_gds if use_gds else _write_chunks_host
 
+    # One reshard, then every device writes contiguous byte ranges.
+    # Collective, so it must happen outside the serial write mode's
+    # rank-ordered section -- and before it, since that section only
+    # reorders the writes.
+    state = _to_io_layout(state)
+
     if params.outs.snapshot_write_mode == "serial":
         _write_serialized(
             write_fn, state, path, comp_offsets, comp_shape, itemsize
@@ -1074,43 +1179,38 @@ def load_snapshot(
         from .flows.registry import stored_value
 
         snap_ny = stored_value(meta["params"], meta["system"], "res", "ny")
-        local_shape: tuple[int, ...] | None = _padded_local_shape_snap_ny(
-            snap_ny
+        assembly_shape = (
+            _n_components(),
+            snap_ny - 1 if _is_periodic() else snap_ny,
+            sharding.nz_spec,
+            sharding.nx_spec,
         )
-        if _is_periodic():
-            assembly_shape = (
-                _n_components(),
-                snap_ny - 1,
-                sharding.nz_spec,
-                sharding.nx_spec,
-            )
-        else:
-            assembly_shape = (
-                _n_components(),
-                snap_ny,
-                sharding.nz_spec,
-                sharding.nx_spec,
-            )
     else:
-        local_shape = None
         assembly_shape = (_n_components(), *sharding.spec_shape)
 
     comp_offsets = snapshot_component_offsets(path)
     if _gds_available():
         sharding.print("Snapshot: using GDS path")
-        per_device = _read_chunks_gds(
-            path, comp_offsets, comp_shape, dtype, local_shape
-        )
+        per_device = _read_chunks_gds(path, comp_offsets, comp_shape, dtype)
     else:
-        per_device = _read_chunks_host(
-            path, comp_offsets, comp_shape, dtype, local_shape
-        )
+        per_device = _read_chunks_host(path, comp_offsets, comp_shape, dtype)
 
+    # The read lands in the I/O layout (contiguous leading-axis slabs,
+    # zero-padded to a divisible length); undo both, in that order --
+    # the trailing rows are only sliceable once the axis is unsharded.
+    a_true = assembly_shape[1]
+    io_shape = (
+        assembly_shape[0],
+        _a_local(a_true, _n_devices()) * _n_devices(),
+        *assembly_shape[2:],
+    )
     state = jax.make_array_from_single_device_arrays(
-        assembly_shape,
-        NamedSharding(sharding.mesh, sharding.spec_vector_shard),
+        io_shape,
+        NamedSharding(sharding.mesh, _io_spec()),
         per_device,
     )
+    if _n_devices() > 1 or io_shape[1] != a_true:
+        state = _from_io_layout_core(state, a_true)
     return state, meta["t"], meta["it"]
 
 
