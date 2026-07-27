@@ -575,6 +575,75 @@ def run_case(
     return None
 
 
+def run_io_layout_case() -> str | None:
+    """Check the I/O-layout slab arithmetic exhaustively, in-process.
+
+    ``_a_ranges`` and ``_a_spans`` are pure, so the branches the
+    round-trip cases cannot reach are cheapest to check directly:
+
+    - a device whose slab is **entirely padding** (``n_rows == 0``),
+      which needs ``a_true <= (ndev - 1) * ceil(a_true / ndev)`` --
+      5 rows over 4 devices, never produced by the ``ny = 8`` grids
+      used above;
+    - the `$k_x$`-padded span tier, which needs ``nx // 2`` not
+      divisible by ``np1`` (the cases above all divide exactly).
+
+    The invariants are the ones the format depends on: the slabs tile
+    ``[0, a_true)`` exactly, and the spans of all devices together
+    cover each component's element range exactly once, in ascending
+    order, with every span a C-contiguous prefix slice.
+    """
+    import math
+
+    import numpy as np
+
+    from dnsjax.snapshot import _a_ranges, _a_spans
+
+    for a_true in (1, 5, 7, 8, 13, 193):
+        for ndev in (1, 2, 4, 8):
+            covered: list[int] = []
+            for flat in range(ndev):
+                a_start, na = _a_ranges(flat, a_true, ndev)
+                covered.extend(range(a_start, a_start + na))
+            if covered != list(range(a_true)):
+                return (
+                    f"slabs do not tile a_true={a_true} ndev={ndev}: "
+                    f"{covered[:12]}..."
+                )
+
+    # (kz_true, kx_true, local_kz, local_kx) -> one case per span tier
+    tiers = [
+        (5, 3, 5, 3),  # unpadded: one span per component
+        (5, 3, 8, 3),  # kz-padded: one span per leading-axis row
+        (5, 3, 8, 4),  # kx-padded: one span per (a, kz) row
+    ]
+    for kz_true, kx_true, local_kz, local_kx in tiers:
+        a_true, ndev = 7, 4
+        seen: list[int] = []
+        for flat in range(ndev):
+            a_start, na = _a_ranges(flat, a_true, ndev)
+            a_local = -(-a_true // ndev)
+            local = np.zeros((a_local, local_kz, local_kx))
+            for idx, off, shape in _a_spans(
+                local.shape, a_start, na, kz_true, kx_true
+            ):
+                view = local[idx]
+                if not view.flags.c_contiguous:
+                    return f"span {idx} is not contiguous ({local.shape})"
+                if view.shape != shape:
+                    return f"span shape {view.shape} != declared {shape}"
+                seen.extend(range(off, off + math.prod(shape)))
+        want = list(range(a_true * kz_true * kx_true))
+        if seen != want:
+            return (
+                f"spans do not tile the chunk for local "
+                f"({local_kz}, {local_kx}) vs true ({kz_true}, "
+                f"{kx_true}): {len(seen)} elements, ascending="
+                f"{seen == sorted(seen)}"
+            )
+    return None
+
+
 def run_stats_isnap_case() -> str | None:
     """``save_snapshot`` embeds ``_dnsjax_stats.json`` + ``isnap``, and
     omits the stats member (with ``isnap`` defaulting to 0) when no stats
@@ -783,6 +852,10 @@ if __name__ == "__main__":
 
     # isnap metadata + optional embedded-stats member
     results.append(("isnap + embedded stats", run_stats_isnap_case()))
+
+    # The I/O-layout slab arithmetic, over shapes the round-trip cases
+    # above cannot reach (see run_io_layout_case).
+    results.append(("I/O layout slabs + spans", run_io_layout_case()))
 
     failures = [(n, r) for n, r in results if r is not None]
     sys.exit(report(len(results) - len(failures), failures))
