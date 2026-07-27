@@ -13,16 +13,21 @@ step by step, and goes further: it diffs the ``nvidia-fs`` kernel
 counters across a real transfer, which is the only way to tell an
 engaged GDS path from a silent POSIX fallback.
 
-**Item 7 -- queue depth.**  ``_write_chunks_gds`` / ``_read_chunks_gds``
-issue one **blocking** ``CuFile.write`` / ``.read`` per span.  kvikIO
-splits a single call across its thread pool, but the next span is not
-submitted until the previous one has drained, so the achieved queue
-depth is 1 -- and the module docstring's worst case is ~1e5 spans of
-512 B per device per snapshot (a ``256 x 193 x 256`` wall-bounded run
-at ``np0 = 1, np1 = 4``).  ``pwrite`` / ``pread`` return an
-``IOFuture``; keeping D of them in flight is a small change.  Whether
-it is worth making is a latency-vs-bandwidth question about this
-storage stack.
+**Item 7 -- what actually starves the snapshot?**  The audit thought
+it was queue depth (one *blocking* ``CuFile`` call per span, ~1e5 of
+them per device).  Measured on BeeGFS, it is not: ``pwrite`` futures
+are within 4 % of blocking on writes at every span size and *worse*
+on reads.  What costs is **transfer size** -- one contiguous call
+moves the same 97.7 MiB 30-90x faster than 200 k spans do, and
+strided small *writes* are punished hardest (512 B at stride 4 is 90x
+the stride-1 write, while the same reads are only 3x worse).
+
+That is why ``snapshot.py`` now reshards onto an I/O layout that cuts
+the file's *slowest* axis before writing, so a device's bytes are one
+contiguous range per component.  Part C reports the resulting span
+census next to the timings; Part B still prices the span pattern
+itself, engine by engine, and remains the evidence for both
+conclusions.
 
 Part A  environment + the item-6 verdict (kvikIO, cupy, nvidia-fs
         counters, the target filesystem, ``KVIKIO_*``).
@@ -38,10 +43,12 @@ Part B  the span-pattern benchmark: the real ownership pattern of a
         already-host buffer -- the storage-only reference).  Every
         read is verified against the written pattern, so a fast wrong
         answer cannot pass.
-Part C  ``--end-to-end``: the same comparison through the real
-        ``save_snapshot`` / ``load_snapshot`` at a real resolution and
-        mesh, with the ``pwrite`` prototype driven against the very
-        same archive (the prototype here is what the fix would be).
+Part C  ``--end-to-end``: the real ``save_snapshot`` /
+        ``load_snapshot`` at a real resolution and mesh, plus the span
+        census of the I/O layout and the write engine timed on its own
+        (so the save splits into "layout work" and "bytes to disk").
+        Run it at ``--np1 1`` and ``--np1 4``: the same state through
+        both is the check that the mesh no longer decides the cost.
 
 Run on a GPU node, from a directory on the **scratch / parallel
 filesystem** the runs actually write to (``--outdir``)::
@@ -605,64 +612,122 @@ def _part_b(outdir: Path, args, have: dict) -> None:
 # ── Part C: the real snapshot path ───────────────────────────────────
 
 
-def _write_chunks_gds_async(
-    state, tar_path, comp_offsets, comp_shape, itemsize, depth: int
-):
-    """``snapshot._write_chunks_gds`` with ``pwrite`` futures.
+def _span_census(comp_shape) -> str:
+    """How many spans, and how big, the I/O layout gives this mesh.
 
-    Byte-for-byte the same spans and offsets as the shipped writer --
-    only the submission discipline differs, so the pair is a clean A/B
-    of queue depth.  This *is* the item-7 patch, kept here until the
-    measurement says whether to land it.
+    The whole point of the reshard is this line: it should read a
+    handful of tens-of-MiB spans, not ~1e5 of 512 B.
     """
-    import cupy as cp
-    import kvikio
+    import math
 
-    from dnsjax.snapshot import (
-        _device_ranges,
-        _n_components,
-        _require_dense,
-        _shard_device_index,
-        _spans,
+    from dnsjax import snapshot as snap
+
+    a_true, kz_true, kx_true = comp_shape
+    ndev = snap._n_devices()
+    local = snap._io_local_shape(a_true)
+    itemsize = snap._np_dtype(snap._zarr3_dtype_name()).itemsize
+    n, elems = 0, 0
+    for flat in range(ndev):
+        a_start, na = snap._a_ranges(flat, a_true, ndev)
+        for _idx, _off, shape in snap._a_spans(
+            local[1:], a_start, na, kz_true, kx_true
+        ):
+            n += 1
+            elems += math.prod(shape)
+    n *= snap._n_components()
+    elems *= snap._n_components()
+    mean = elems * itemsize / max(n, 1)
+    return (
+        f"{n} spans of {mean / MB:.2f} MiB mean "
+        f"({n // max(ndev, 1)} per device; local buffer "
+        f"{local[1]} x {local[2]} x {local[3]})"
     )
 
-    _, kz_true, kx_true = comp_shape
-    for shard in state.addressable_shards:
-        flat_idx = _shard_device_index(shard)
-        kz_start, nkz, kx_start, nkx = _device_ranges(flat_idx)
-        if nkz == 0 or nkx == 0:
-            continue
-        cp_vec = cp.from_dlpack(shard.data)
-        _require_dense(cp_vec)
-        with cp_vec.device, kvikio.CuFile(str(tar_path), "r+") as f:
-            futures = []
-            for comp in range(_n_components()):
-                base = comp_offsets[comp]
-                for idx, off, _ in _spans(
-                    cp_vec.shape[1:],
-                    kz_true,
-                    kx_true,
-                    kz_start,
-                    nkz,
-                    kx_start,
-                    nkx,
-                ):
-                    futures.append(
-                        f.pwrite(
-                            cp_vec[comp][idx],
-                            file_offset=base + off * itemsize,
-                        )
-                    )
-                    if len(futures) >= depth:
-                        for fu in futures:
-                            fu.get()
-                        futures.clear()
-            for fu in futures:
-                fu.get()
+
+def _reshard_bench(state, reps: int = 3) -> None:
+    """Is the reshard bound by the fabric, or by how it is expressed?
+
+    Three numbers answer it:
+
+    - the shipped path -- one jitted program, one mesh axis per leg;
+    - the same two moves **eagerly** (a ``jax.device_put`` per leg),
+      which is what shipped before: the runtime redistributes piece by
+      piece instead of emitting a collective, and measured 230 ms
+      where the jitted form took 0.68 ms;
+    - a **raw device->device copy** of one shard, i.e. what the fabric
+      can actually do.  If the shipped path is near it, there is
+      nothing left to win here.
+    """
+    import jax
+    from jax import numpy as jnp
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    from dnsjax import snapshot as snap
+    from dnsjax.sharding import sharding
+
+    ndev = snap._n_devices()
+    if ndev == 1:
+        return
+    nbytes = int(state.size) * state.dtype.itemsize
+    a_true = state.shape[1]
+    a_pad = snap._a_local(a_true, ndev) * ndev
+    io_sharding = NamedSharding(sharding.mesh, snap._io_spec())
+    mid_sharding = NamedSharding(
+        sharding.mesh, P(None, sharding.a0, None, sharding.a1)
+    )
+    pad_w = [(0, 0)] * state.ndim
+    pad_w[1] = (0, a_pad - a_true)
+    # Each device keeps only the intersection of its old and new
+    # blocks, so 1 - 1/ndev of the state crosses the fabric.
+    crossing = nbytes * (1.0 - 1.0 / ndev)
+
+    def _drain(fn):
+        t0 = time.perf_counter()
+        jax.block_until_ready(fn())
+        return time.perf_counter() - t0
+
+    def _timed(fn, label, moved):
+        try:
+            jax.block_until_ready(fn())  # warm / compile
+            best = min(_drain(fn) for _ in range(max(1, reps)))
+        except Exception as exc:  # noqa: BLE001
+            print(f"    {label:34} FAILED {type(exc).__name__}: {exc}")
+            return
+        print(
+            f"    {label:34} {best * 1e3:8.2f} ms"
+            f"   {moved / best / GB:7.2f} GB/s"
+        )
+
+    print(
+        "\n  reshard, three ways "
+        f"({crossing / MB:.1f} MiB crosses the fabric):"
+    )
+    _timed(
+        lambda: snap._to_io_layout(state),
+        "shipped (one jitted program)",
+        crossing,
+    )
+
+    def _eager():
+        x = jnp.pad(state, pad_w) if a_pad != a_true else state
+        x = jax.device_put(x, mid_sharding)
+        return jax.device_put(x, io_sharding)
+
+    _timed(_eager, "same moves, eager (pre-fix)", crossing)
+
+    devs = list(sharding.mesh.devices.flat)
+    src = state.addressable_shards[0].data
+    shard_bytes = int(src.size) * src.dtype.itemsize
+    _timed(
+        lambda: jax.device_put(src, devs[1]),
+        f"raw device->device ({shard_bytes / MB:.0f} MiB)",
+        shard_bytes,
+    )
 
 
 def _part_c(args, outdir: Path) -> None:
-    """Time the real snapshot writer against the pwrite prototype."""
+    """Time the real snapshot path, with its span census."""
     import jax
     import numpy as np
 
@@ -696,6 +761,20 @@ def _part_c(args, outdir: Path) -> None:
         f"  mesh np0={params.dist.np0} np1={params.dist.np1}  "
         f"devices {len(jax.devices())}"
     )
+    print(f"  I/O layout: {_span_census(snap._true_spec_shape())}")
+
+    # The reshard's *first* call, on its own: XLA compiles the
+    # collective program and the runtime brings up its communicators.
+    # Both are once per process, and a real run pays the second at its
+    # first time step -- long before any snapshot -- so keeping it out
+    # of the cold-save number below is the honest split.
+    t0 = time.perf_counter()
+    jax.block_until_ready(snap._to_io_layout(state))
+    t_first_reshard = time.perf_counter() - t0
+    print(
+        f"  first reshard (compile + comms)   "
+        f"{t_first_reshard * 1e3:9.2f} ms   [one-time]"
+    )
 
     t0 = time.perf_counter()
     snap.save_snapshot(state, 0.0, 0, path)
@@ -703,6 +782,17 @@ def _part_c(args, outdir: Path) -> None:
     print(
         f"  save_snapshot (skeleton + write)  {t_save * 1e3:9.2f} ms"
         f"   {nbytes / t_save / GB:6.2f} GB/s"
+    )
+
+    # A second save: the first one pays TensorStore's import (the
+    # zarr.json round-trip goes through it), which a long run pays
+    # once.  The warm number is what each later snapshot costs.
+    t0 = time.perf_counter()
+    snap.save_snapshot(state, 0.0, 0, path)
+    t_save_warm = time.perf_counter() - t0
+    print(
+        f"  save_snapshot (2nd call, warm)    {t_save_warm * 1e3:9.2f} ms"
+        f"   {nbytes / t_save_warm / GB:6.2f} GB/s"
     )
 
     t0 = time.perf_counter()
@@ -716,40 +806,75 @@ def _part_c(args, outdir: Path) -> None:
         f"{'OK' if same else 'MISMATCH'}"
     )
 
-    if not snap._gds_available():
-        print(
-            "  GDS path not active -> the engine A/B below needs it; "
-            "Part B\n  still measured the pattern."
-        )
-        path.unlink(missing_ok=True)
-        return
-
+    # The write engine alone, without the tar skeleton, the offset
+    # re-read or the reshard -- so the save line above can be split
+    # into "layout work" and "bytes to disk".
     comp_shape = snap._true_spec_shape()
-    itemsize = np.dtype(snap._np_dtype(snap._zarr3_dtype_name())).itemsize
+    itemsize = snap._np_dtype(snap._zarr3_dtype_name()).itemsize
     offsets = snapshot_component_offsets(path)
-    depths = [int(v) for v in args.depths.split(",") if v.strip()]
-    print(f"  {'engine':14} {'write':>11}  {'GB/s':>7}")
     t0 = time.perf_counter()
-    snap._write_chunks_gds(state, path, offsets, comp_shape, itemsize)
-    t_block = time.perf_counter() - t0
-    print(
-        f"  {'blocking':14} {t_block * 1e3:9.2f}ms  "
-        f"{nbytes / t_block / GB:7.2f}"
+    io_state = snap._to_io_layout(state)
+    jax.block_until_ready(io_state)
+    t_reshard = time.perf_counter() - t0
+    write_fn = (
+        snap._write_chunks_gds
+        if snap._gds_available()
+        else snap._write_chunks_host
     )
-    for d in depths:
-        t0 = time.perf_counter()
-        _write_chunks_gds_async(state, path, offsets, comp_shape, itemsize, d)
-        t = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    write_fn(io_state, path, offsets, comp_shape, itemsize)
+    t_write = time.perf_counter() - t0
+    print(
+        f"  {write_fn.__name__:33} {t_write * 1e3:9.2f} ms"
+        f"   {nbytes / t_write / GB:6.2f} GB/s"
+    )
+
+    # Everything save_snapshot does that is not the write.  Once the
+    # spans are big this is the *dominant* term on a small mesh, so it
+    # is attributed rather than lumped: the zarr.json round-trip goes
+    # through TensorStore in a throwaway directory, the metadata dump
+    # shells out for the git hash, the skeleton sparse-reserves the
+    # whole archive, and the offsets come back through ``tarfile``.
+    dtype_name = snap._zarr3_dtype_name()
+    on_disk = (snap._n_components(), *comp_shape)
+    skel = outdir / "gds_probe_skeleton.tar"
+    t0 = time.perf_counter()
+    zarr_bytes = snap._zarr_json_bytes(on_disk, (1, *comp_shape), dtype_name)
+    t_zarr = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    meta_bytes = snap._metadata_bytes(0.0, 0, 0)
+    t_meta = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    snap._write_tar_skeleton(
+        skel, comp_shape, itemsize, meta_bytes, zarr_bytes, None
+    )
+    t_skel = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    snapshot_component_offsets(skel)
+    t_off = time.perf_counter() - t0
+    skel.unlink(missing_ok=True)
+    other = t_save_warm - t_write
+    print(
+        f"  (warm save) - write               {other * 1e3:9.2f} ms"
+        f"   [cold save - write = {(t_save - t_write) * 1e3:.1f} ms;"
+        f" the difference is one-time: TensorStore's import and the"
+        f" git subprocess -- the reshard's compile is the line above]"
+    )
+    for label, val in (
+        ("zarr.json (TensorStore)", t_zarr),
+        ("metadata (git hash + dump)", t_meta),
+        ("tar skeleton (sparse)", t_skel),
+        ("component offsets (tarfile)", t_off),
+        ("reshard to the I/O layout", t_reshard),
+    ):
         print(
-            f"  {'pwrite:' + str(d):14} {t * 1e3:9.2f}ms  "
-            f"{nbytes / t / GB:7.2f}   x{t_block / t:.2f}"
+            f"    {label:31} {val * 1e3:8.2f} ms"
+            f"  {100.0 * val / max(other, 1e-9):5.1f}% of it"
         )
+    _reshard_bench(state, args.reps)
     back, _t, _it = snap.load_snapshot(path)
     ok = bool(np.array_equal(np.asarray(back), np.asarray(state)))
-    print(
-        f"  after the prototype writes, the archive still reads back "
-        f"{'OK' if ok else 'WRONG'}"
-    )
+    print(f"  re-read after the isolated write: {'OK' if ok else 'WRONG'}")
     path.unlink(missing_ok=True)
 
 
