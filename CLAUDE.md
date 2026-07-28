@@ -454,7 +454,10 @@ format, and the guard: the `__main__.py` module docstring.
 A snapshot is a single uncompressed tar (`format_version: 6`) wrapping a
 zarr3 store, readable with standard tools and no dnsjax; each device
 writes its disjoint byte ranges directly (raw offset I/O / GDS, never
-compressed), and the on-disk bytes are the solver's spectral layout at
+compressed) into a `<name>.tar.partial` that is renamed into place once
+complete — so a killed job leaves that file beside the last good
+snapshot rather than a loadable blank one, and `*.tar` globs skip it —
+and the on-disk bytes are the solver's spectral layout at
 true mode counts (no transpose anywhere), in **physical components**
 for every family (cyl/annular `(u_z, u_r, u_θ)` + the physical
 conformation tensor; the solver's decoupled `u_±`/spin working basis
@@ -671,7 +674,9 @@ one-liners. Cross-cutting notes:
 - `tests/response/test_lim.py`: LIM identification.
 - `tests/response/test_ssi.py`: SSI identification.
 - `tests/test_snapshot.py`: snapshot round-trips, np-agnostic resume,
-  standard-tools readability, 9-component viscoelastic case.
+  standard-tools readability, 9-component viscoelastic case, and the
+  multi-device I/O layout (every mesh family, both span-fragmenting
+  tiers, the no-rematerialization guard, engine selection).
 - `tests/test_resume.py`: snapshot lineage and resume policy
   (`--unit-only`).
 - `tests/test_snapshot_import.py`: `scripts/snapshot_import.py`
