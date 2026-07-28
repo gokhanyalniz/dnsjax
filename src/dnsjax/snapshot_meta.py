@@ -13,6 +13,7 @@ stdlib-only :func:`git_hash` provenance helper, printed at solver
 startup and recorded in every snapshot's metadata.
 """
 
+import contextlib
 import functools
 import json
 import subprocess
@@ -29,6 +30,49 @@ STATS_MEMBER = "_dnsjax_stats.json"
 #: (``state/c/{component}/0/0/0``).
 _CHUNK_PREFIX = "state/c/"
 _CHUNK_SUFFIX = "/0/0/0"
+
+
+class SnapshotArchiveError(ValueError):
+    """A snapshot file exists but cannot be read as an archive."""
+
+
+@contextlib.contextmanager
+def _snapshot_tar(path: Path):
+    """Open a snapshot archive, naming a damaged one.
+
+    A short archive is where a snapshot goes wrong in practice -- an
+    interrupted copy, a full disk, a job killed mid-write -- and it is
+    caught *here* rather than by the readers downstream: ``tarfile``
+    walks to the next header by seeking past each member's data, so
+    any truncation that cuts into a component is refused before a
+    single byte of state is read (measured: only a cut that lands
+    exactly at the end of the last chunk, removing nothing but the
+    end-of-archive marker, still parses -- and that file's data is
+    complete).
+
+    What it says while refusing is the point.  Untranslated, the
+    caller sees ``ReadError: unexpected end of data`` raised from
+    wherever the member list happened to be walked, naming neither
+    the file nor the reason -- and the same exception on a resume
+    reads as a dnsjax bug rather than a damaged checkpoint.  So every
+    read in this module goes through here.
+
+    (The per-span short-transfer guards in :mod:`dnsjax.snapshot` are
+    therefore *not* the truncation defence -- they cover a short read
+    or write of an intact file, which POSIX permits on a network
+    filesystem.)
+    """
+    try:
+        with tarfile.open(path, "r") as tf:
+            yield tf
+    except tarfile.ReadError as exc:
+        raise SnapshotArchiveError(
+            f"{path} is not a readable snapshot archive ({exc}); it is "
+            "truncated or corrupt -- an interrupted write or copy "
+            "leaves exactly this.  A snapshot is written to a "
+            "'.partial' file and renamed, so a complete file under "
+            "the final name should never be short."
+        ) from exc
 
 
 @functools.cache
@@ -77,7 +121,7 @@ def is_snapshot_file(path: str | Path) -> bool:
         return False
     if not tarfile.is_tarfile(path):
         return False
-    with tarfile.open(path, "r") as tf:
+    with _snapshot_tar(path) as tf:
         return META_MEMBER in tf.getnames()
 
 
@@ -103,7 +147,7 @@ def read_snapshot_meta(path: str | Path) -> dict:
     message rather than misread under the wrong params convention.
     """
     path = Path(path)
-    with tarfile.open(path, "r") as tf:
+    with _snapshot_tar(path) as tf:
         member = tf.extractfile(META_MEMBER)
         if member is None:
             raise ValueError(f"{path} has no {META_MEMBER} member.")
@@ -128,13 +172,67 @@ def read_snapshot_stats(path: str | Path) -> dict | None:
     is on and stats were supplied to :func:`dnsjax.snapshot.save_snapshot`).
     """
     path = Path(path)
-    with tarfile.open(path, "r") as tf:
+    with _snapshot_tar(path) as tf:
         if STATS_MEMBER not in tf.getnames():
             return None
         member = tf.extractfile(STATS_MEMBER)
         if member is None:
             return None
         return json.loads(member.read())
+
+
+#: Bytes per element of the complex dtypes the snapshot writer emits
+#: (:func:`dnsjax.snapshot._zarr3_dtype_name`).  This module is
+#: deliberately numpy-free, so the size is tabulated rather than
+#: looked up; an unrecognised name skips the size check below instead
+#: of inventing a number.
+_ITEMSIZE = {"complex64": 8, "complex128": 16}
+
+
+def _check_chunks_match_meta(
+    path: Path, meta_raw: bytes | None, sizes: dict[int, int]
+) -> None:
+    """The chunks must hold exactly what ``native_shape`` claims.
+
+    The raw offset I/O in :mod:`dnsjax.snapshot` computes every read
+    and write position arithmetically from ``native_shape`` and never
+    consults the member it lands in, so if the two ever disagree a
+    reader walks off the end of one chunk and into the next
+    component's bytes -- and returns them as state.  Both come from
+    one call in the writer today, which is exactly the sort of
+    invariant that holds until someone refactors around it, and
+    nothing downstream could tell afterwards: the wrong bytes are
+    well-formed complex numbers.
+
+    Cheap enough to do unconditionally -- the sizes are already in the
+    tar headers being walked, and the metadata member is ~2 KiB.
+    """
+    if meta_raw is None:
+        return
+    meta = json.loads(meta_raw)
+    shape = meta.get("native_shape")
+    itemsize = _ITEMSIZE.get(meta.get("dtype"))
+    if not shape or itemsize is None:
+        return
+    if len(sizes) != shape[0]:
+        raise SnapshotArchiveError(
+            f"{path} declares {shape[0]} state components but holds "
+            f"{len(sizes)} component chunks."
+        )
+    expected = itemsize
+    for extent in shape[1:]:
+        expected *= extent
+    wrong = {c: n for c, n in sizes.items() if n != expected}
+    if wrong:
+        dims = " x ".join(str(d) for d in shape[1:])
+        raise SnapshotArchiveError(
+            f"{path}: the metadata says each component is {dims} of "
+            f"{meta.get('dtype')} ({expected} bytes), but component "
+            f"chunk(s) {sorted(wrong)} hold "
+            f"{sorted(set(wrong.values()))}.  The archive and the "
+            "metadata describing it disagree, and reading it would "
+            "run past the end of a chunk into the next component."
+        )
 
 
 def snapshot_component_offsets(path: str | Path) -> dict[int, int]:
@@ -146,17 +244,31 @@ def snapshot_component_offsets(path: str | Path) -> dict[int, int]:
     count is the number of chunks: 3 for the velocity-only systems, 9
     for the viscoelastic system (3 velocity + 6 conformation); the chunks
     must be a contiguous range ``0..N-1``.
+
+    This is the one place that hands out byte positions to trust, so it
+    is also where they are checked against the metadata that describes
+    them (:func:`_check_chunks_match_meta`) -- rather than leaving each
+    caller to remember.
     """
     path = Path(path)
     offsets: dict[int, int] = {}
-    with tarfile.open(path, "r") as tf:
+    sizes: dict[int, int] = {}
+    meta_raw: bytes | None = None
+    with _snapshot_tar(path) as tf:
         for m in tf.getmembers():
             name = m.name
-            if name.startswith(_CHUNK_PREFIX) and name.endswith(_CHUNK_SUFFIX):
+            if name == META_MEMBER:
+                member = tf.extractfile(m)
+                meta_raw = None if member is None else member.read()
+            elif name.startswith(_CHUNK_PREFIX) and name.endswith(
+                _CHUNK_SUFFIX
+            ):
                 comp = int(name[len(_CHUNK_PREFIX) :].split("/", 1)[0])
                 offsets[comp] = m.offset_data
+                sizes[comp] = m.size
     if not offsets or set(offsets) != set(range(len(offsets))):
-        raise ValueError(
+        raise SnapshotArchiveError(
             f"{path} is missing component chunks (found {sorted(offsets)})."
         )
+    _check_chunks_match_meta(path, meta_raw, sizes)
     return offsets
