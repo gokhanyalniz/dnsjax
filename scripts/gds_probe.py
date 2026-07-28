@@ -3,15 +3,19 @@
 Two open audit items, both of which need real hardware and a real
 filesystem to answer:
 
-**Item 6 -- is the GDS path even taken?**  ``snapshot._gds_available``
-compares ``kvikio.defaults.compat_mode()`` against the ``CompatMode``
-enum rather than truth-testing it, because ``AUTO`` (the default) is
-*available* while a bare ``bool(AUTO)`` reads as "compat".  Whether
-that fix was load-bearing or inert depends on what this cluster's
-kvikIO actually returns.  Part A answers it, replicating the check
-step by step, and goes further: it diffs the ``nvidia-fs`` kernel
-counters across a real transfer, which is the only way to tell an
-engaged GDS path from a silent POSIX fallback.
+**Item 6 -- is the GDS path even taken?**  It was not, anywhere, for
+two independent reasons this probe found: the node has no
+``nvidia-fs`` kernel driver, *and* ``snapshot._gds_available`` reached
+for ``kvikio.defaults`` as an attribute of the package, which is a
+submodule and does not resolve until imported -- so the check raised
+``AttributeError`` and took its host-path branch on a cluster that
+had kvikIO installed.  Both are now handled
+(:func:`dnsjax.snapshot._gds_available` binds the submodule, accepts
+either kvikIO API generation, and requires the driver before calling
+the path GDS).  Part A still replicates the check step by step, and
+goes further: it diffs the ``nvidia-fs`` kernel counters across a
+real transfer, which is the only way to tell an engaged GDS path from
+a silent POSIX fallback.
 
 **Item 7 -- what actually starves the snapshot?**  The audit thought
 it was queue depth (one *blocking* ``CuFile`` call per span, ~1e5 of
@@ -199,44 +203,66 @@ def _part_a(outdir: Path) -> dict:
     if kvikio is None:
         print(
             "    kvikio absent -> _gds_available() is False, the host "
-            "path is used\n    and the enum fix is unreachable here."
+            "path is used."
         )
         return have
+
+    # (1) the submodule bind.  Reaching through the package is what
+    # used to fail: kvikio.defaults is a submodule, not an attribute.
     try:
-        mode = kvikio.defaults.compat_mode()
-    except AttributeError as exc:
-        print(
-            f"    compat_mode() missing ({exc}) -> the AttributeError "
-            "branch fires,\n    host path."
-        )
+        import kvikio.defaults as kvikio_defaults
+    except ImportError as exc:
+        print(f"    import kvikio.defaults FAILED ({exc}) -> host path.")
+        return have
+    via_attr = hasattr(kvikio, "defaults")
+    print("    import kvikio.defaults as _   OK")
+    print(
+        f"    kvikio.defaults as attribute  {via_attr}"
+        f"{'' if via_attr else '   <- the old check died here'}"
+    )
+
+    # (2) the driver gate.  Without nvidia-fs, kvikIO still answers
+    # every call -- through its compat shim, which is not GDS.
+    driver = NVFS_STATS.exists()
+    print(f"    nvidia-fs driver loaded       {driver}")
+
+    # (3) the compat mode, across both kvikIO API generations.
+    getter = getattr(kvikio_defaults, "compat_mode", None)
+    try:
+        if callable(getter):
+            mode, api = getter(), "compat_mode()"
+        else:
+            mode, api = kvikio_defaults.get("compat_mode"), 'get("...")'
+    except (AttributeError, KeyError, TypeError) as exc:
+        print(f"    compat mode unreadable ({exc}) -> host path.")
         return have
     on = getattr(type(mode), "ON", None)
-    available = mode is not on if on is not None else not mode
-    print(f"    compat_mode()        {mode!r}")
-    print(f"    type                 {type(mode).__name__}")
-    print(f"    isinstance(_, bool)  {isinstance(mode, bool)}")
-    print(f"    type(mode).ON        {on!r}")
+    not_compat = mode is not on if on is not None else not mode
+    print(f"    compat mode via {api:12}  {mode!r}")
+    print(f"    type                          {type(mode).__name__}")
+    print(f"    type(mode).ON                 {on!r}")
     print(
-        f"    bool(mode)           {bool(mode)}   <- what a bare truth "
-        "test would have seen"
+        f"    bool(mode)                    {bool(mode)}   <- what a "
+        "bare truth test would have seen"
     )
-    print(f"    _gds_available()     {available}")
-    if on is None:
+    print(f"    _gds_available()              {driver and not_compat}")
+    if not driver:
         print(
-            "    VERDICT: compat_mode() is not an enum here; the fix is "
-            "inert but harmless."
+            "    VERDICT: no nvidia-fs, so kvikIO would run its compat "
+            "shim, not GDS.\n             The host path is the right "
+            "answer here and is what runs."
         )
-    elif bool(mode) and available:
+    elif not not_compat:
         print(
-            "    VERDICT: the enum fix is LOAD-BEARING -- a bare truth "
-            "test would have\n             demoted every run to the host "
-            "path, so GDS was dead before it."
+            "    VERDICT: compat mode is explicitly ON -> host path "
+            "(set KVIKIO_COMPAT_MODE=off\n             or =auto to let "
+            "GDS engage)."
         )
     else:
         print(
-            "    VERDICT: the fix changes nothing for this mode, but it "
-            "is the correct\n             comparison (AUTO would have "
-            "been misread)."
+            "    VERDICT: GDS is LIVE on this node -- driver present and "
+            "compat not ON.\n             Confirm with the counter diff "
+            "below, which is the only proof."
         )
     print("\n  kvikio.defaults:")
     _defaults_dump(kvikio)

@@ -108,9 +108,16 @@ writes to a shared chunk would race / read-modify-write).  Process
 0 lays out the whole archive once -- the tar headers plus
 sparse-reserved (zero-filled) component data regions -- and every
 device then writes its disjoint byte ranges directly into the one
-file at ``component_offset + within_component_offset``.  The
+file at ``component_offset + within_component_offset``.  That
+layout is built under a ``.partial`` name and renamed once every
+write has landed (:data:`_PARTIAL_SUFFIX`), because until then the
+file is a valid archive full of zeros.  The
 component base offsets are the tar members' ``offset_data`` (read
-back via ``tarfile``; 512-aligned, so GDS alignment is preserved).
+back via ``tarfile``, so 512-aligned -- a tar block -- but not
+generally 4096-aligned, which is what cuFile's direct path prefers.
+That costs a bounce buffer for the head and tail of a transfer, so
+it was a real penalty when a span was 512 B and is a rounding error
+now that the I/O layout makes it tens of MiB).
 TensorStore is used only to generate the ``zarr.json`` bytes (in a
 throwaway temporary directory); compression is never used (it would
 break random-access streaming).
@@ -165,7 +172,7 @@ public-named parameter dump); older snapshots are rejected at read
 import json
 import math
 from collections.abc import Callable, Iterator
-from functools import partial
+from functools import cache, partial
 from pathlib import Path
 
 import jax
@@ -188,33 +195,100 @@ class SnapshotMismatchError(Exception):
     """Snapshot parameters conflict with current config."""
 
 
+#: Suffix of the file a snapshot is built in before it is renamed
+#: into place.  The archive is laid out full-length with
+#: **zero-filled** component regions and only then filled in, so an
+#: interrupted save under the final name would leave a structurally
+#: valid tar that loads without complaint and is blank wherever the
+#: writes did not reach -- the one corruption a run cannot detect,
+#: because zeros are a legal state.  Building under this suffix and
+#: renaming (``os.replace``, atomic within a filesystem) means the
+#: final name only ever appears on a complete archive; a killed job
+#: leaves a ``.partial`` beside the last good snapshot instead of
+#: replacing it.  Costs one metadata operation per save.
+_PARTIAL_SUFFIX = ".partial"
+
+
 # ── Runtime detection ─────────────────────────────────────
 
 
+#: The GDS kernel driver's procfs entry.  It ships with the GDS
+#: package and is required for any real GPUDirect transfer.
+_NVFS_STATS = Path("/proc/driver/nvidia-fs/stats")
+
+
+def _compat_mode(defaults) -> object:
+    """kvikIO's compat-mode setting, across its two API generations.
+
+    Older kvikIO exposes a per-property getter
+    (``kvikio.defaults.compat_mode()``); newer versions replaced those
+    with a single ``get(name)``.  Try the getter, fall back to the
+    generic accessor, so the detection does not silently break again
+    the next time the API moves.
+    """
+    getter = getattr(defaults, "compat_mode", None)
+    if callable(getter):
+        return getter()
+    return defaults.get("compat_mode")
+
+
+@cache
 def _gds_available() -> bool:
     """True when kvikIO + GDS can transfer GPU buffers.
 
-    ``compat_mode()`` returns a ``CompatMode`` enum
-    (``OFF`` / ``ON`` / ``AUTO``), not a bool, and ``AUTO`` -- the
-    default -- means *use kvikIO and let it fall back per file*, so
-    it must count as available.  Only an explicit ``ON`` (compat
-    shim, no GDS) disables the path.  A bare truth test would read
-    ``AUTO`` as "compat" and silently demote every run to the host
-    path, so compare against the enum and say why when rejecting.
+    Four things must hold, and most have bitten this path before:
+
+    - **kvikIO imports.**  ``kvikio.defaults`` is a *submodule*, not
+      an attribute of the package, so ``import kvikio`` alone does not
+      make ``kvikio.defaults`` resolve on every version -- which is
+      how this check spent its life raising ``AttributeError`` and
+      taking the "unusable" branch on a cluster that had kvikIO
+      installed.  Bind the submodule itself
+      (``import kvikio.defaults as ...``, a ``sys.modules`` lookup)
+      rather than reaching for it through the package.
+    - **The nvidia-fs driver is loaded.**  Without it kvikIO still
+      imports and still accepts every call; it just services them
+      through its *compat* shim (POSIX I/O on a thread pool), which is
+      not GDS and which measured 1.5-6x *slower* than this module's
+      own host path below 1 MiB spans.  ``AUTO`` -- the default compat
+      mode -- is exactly the case that would otherwise be mistaken for
+      "GDS is on".
+    - **Compat mode is not explicitly ``ON``.**  ``compat_mode()``
+      returns a ``CompatMode`` enum (``OFF`` / ``ON`` / ``AUTO``), not
+      a bool; a bare truth test would read ``AUTO`` as "compat" and
+      demote every run.  Compare against the enum member.
+    - **cupy imports.**  Both GDS engines wrap their device buffers
+      with it, so without cupy this path cannot run at all -- and
+      answering "GDS" would turn the first snapshot of the run into
+      an ``ImportError`` instead of a fallback.
+
+    Cached: the answer cannot change within a process, and the
+    rejection line would otherwise print on every single snapshot.
     """
     try:
-        import kvikio
-
-        mode = kvikio.defaults.compat_mode()
+        import cupy  # noqa: F401  the GDS engines' buffer wrapper
+        import kvikio.defaults as kvikio_defaults
     except ImportError:
         return False
-    except AttributeError as exc:  # API moved
-        print(f"Snapshot: kvikIO present but unusable ({exc}); host path")
+    if not _NVFS_STATS.exists():
+        sharding.print(
+            "Snapshot: kvikIO is installed but nvidia-fs is not loaded, "
+            "so it would run its compat shim rather than GDS; using the "
+            "host path."
+        )
+        return False
+    try:
+        mode = _compat_mode(kvikio_defaults)
+    except (AttributeError, KeyError, TypeError) as exc:  # API moved
+        sharding.print(
+            f"Snapshot: kvikIO present but its compat-mode setting is "
+            f"unreadable ({exc}); using the host path."
+        )
         return False
     on = getattr(type(mode), "ON", None)
     available = mode is not on if on is not None else not mode
     if not available:
-        print(
+        sharding.print(
             f"Snapshot: kvikIO compat mode is {mode!r}; using the host "
             "path (set KVIKIO_COMPAT_MODE=off or =auto for GDS)"
         )
@@ -224,7 +298,7 @@ def _gds_available() -> bool:
 def _require_dense(vec) -> None:
     """Reject a non-C-contiguous device view before it is written.
 
-    Every span :func:`_spans` yields is a prefix slice, contiguous
+    Every span :func:`_a_spans` yields is a prefix slice, contiguous
     only if the array it slices is dense row-major.  kvikIO reads
     ``__cuda_array_interface__`` and cupy's dlpack import honours
     whatever strides it is handed, so a non-default XLA layout would
@@ -578,8 +652,12 @@ def assemble_local_shards(
 ) -> Array:
     r"""Assemble a sharded spectral state from per-device-generated shards.
 
-    The generator counterpart of :func:`load_snapshot`'s per-device read:
-    each local device's padded shard is allocated zero-filled (shape
+    Builds a state directly in the **solver** layout, for the
+    in-process IC generators.  (:func:`load_snapshot` assembles on the
+    I/O layout instead and reshards -- its shards come from the file,
+    whose axis order is fixed, whereas a generator can simply fill
+    whichever block it is asked for.)  Each local device's padded
+    shard is allocated zero-filled (shape
     :func:`_padded_local_shape`) and handed to
     ``fill_local(buf, kz_start, nkz, kx_start, nkx)``, which fills
     ``buf[:, :, :nkz, :nkx]`` with that device's **true** modes -- the
@@ -833,10 +911,23 @@ def _write_chunks_gds(
                 for idx, off, _ in _a_spans(
                     cp_vec.shape[1:], a_start, na, kz_true, kx_true
                 ):
-                    f.write(
-                        cp_vec[comp][idx],
+                    span = cp_vec[comp][idx]
+                    n = f.write(
+                        span,
                         file_offset=base + off * itemsize,
                     )
+                    # A short write leaves the sparse-reserved zeros of
+                    # the skeleton in place -- a snapshot that loads
+                    # fine and is blank in the middle.  The host writer
+                    # guards this too, and the I/O layout made each
+                    # span tens of MiB, so there is now something
+                    # substantial to lose.
+                    if n != span.nbytes:
+                        raise OSError(
+                            f"short GDS write to {tar_path}: {n} of "
+                            f"{span.nbytes} bytes (component {comp}); "
+                            "the archive is incomplete."
+                        )
 
 
 def _read_chunks_gds(
@@ -876,10 +967,22 @@ def _read_chunks_gds(
                         for idx, off, _ in _a_spans(
                             local_shape[1:], a_start, na, kz_true, kx_true
                         ):
-                            f.read(
-                                vec[comp][idx],
+                            span = vec[comp][idx]
+                            n = f.read(
+                                span,
                                 file_offset=base + off * itemsize,
                             )
+                            # Short read = truncated archive; the
+                            # buffer was zero-allocated, so without
+                            # this the tail of the state silently
+                            # stays blank (see the host reader).
+                            if n != span.nbytes:
+                                raise OSError(
+                                    f"short GDS read from {tar_path}: "
+                                    f"{n} of {span.nbytes} bytes "
+                                    f"(component {comp}); the archive "
+                                    "is truncated."
+                                )
             per_device.append(jnp.from_dlpack(vec))
     return per_device
 
@@ -1073,9 +1176,18 @@ def save_snapshot(
     The field is streamed to the per-component zarr3 chunks (one per
     state component: 3, or 9 for the viscoelastic tensor state) inside
     one uncompressed tar, in the solver's native spectral layout at
-    true (unpadded) mode counts -- no transpose, no staging copies.
-    Process 0 lays out the whole archive first; every device then
-    writes its disjoint byte ranges into the reserved chunk regions.
+    true (unpadded) mode counts -- no transpose anywhere.  Process 0
+    lays out the whole archive first; every device then writes its
+    disjoint byte ranges into the reserved chunk regions.  The write
+    goes to a ``.partial`` sibling that is renamed into place once
+    complete (:data:`_PARTIAL_SUFFIX`), so *path* never names a
+    half-written snapshot and an interrupted save leaves the previous
+    one intact.
+
+    On a multi-device mesh the state is first resharded onto the I/O
+    layout (:func:`_to_io_layout`) so those ranges are contiguous;
+    the caller's array is left untouched (no buffer donation -- the
+    solver keeps stepping the state it just snapshotted).
 
     Parameters
     ----------
@@ -1098,6 +1210,10 @@ def save_snapshot(
         Snapshot-lineage index recorded in the metadata.
     """
     path = Path(path)
+    # Everything is written to a sibling and renamed at the end, so
+    # the final name never names a half-written archive (see
+    # :data:`_PARTIAL_SUFFIX`).
+    partial = path.with_name(path.name + _PARTIAL_SUFFIX)
     comp_shape = _true_spec_shape()
     dtype_name = _zarr3_dtype_name()
     itemsize = _np_dtype(dtype_name).itemsize
@@ -1109,11 +1225,11 @@ def save_snapshot(
         meta_bytes = _metadata_bytes(t, it, isnap)
         stats_bytes = None if stats is None else _stats_json_bytes(stats)
         _write_tar_skeleton(
-            path, comp_shape, itemsize, meta_bytes, zarr_bytes, stats_bytes
+            partial, comp_shape, itemsize, meta_bytes, zarr_bytes, stats_bytes
         )
     _barrier("snapshot_create")
 
-    comp_offsets = snapshot_component_offsets(path)
+    comp_offsets = snapshot_component_offsets(partial)
 
     use_gds = _gds_available()
     if use_gds:
@@ -1128,11 +1244,20 @@ def save_snapshot(
 
     if params.outs.snapshot_write_mode == "serial":
         _write_serialized(
-            write_fn, state, path, comp_offsets, comp_shape, itemsize
+            write_fn, state, partial, comp_offsets, comp_shape, itemsize
         )
     else:
-        write_fn(state, path, comp_offsets, comp_shape, itemsize)
+        write_fn(state, partial, comp_offsets, comp_shape, itemsize)
+    # Every write has landed and every file handle is closed (the
+    # engines all use ``with``), so the archive is complete and can
+    # take its real name.
     _barrier("snapshot_write")
+    if sharding.main_device:
+        partial.replace(path)
+    # Only after this does the snapshot exist for a reader, on every
+    # process -- so a rank that returns early cannot report a
+    # checkpoint the run has not actually committed.
+    _barrier("snapshot_commit")
 
 
 def load_snapshot(
@@ -1140,9 +1265,12 @@ def load_snapshot(
 ) -> tuple[Array, float, int]:
     r"""Load a spectral state from a single-file snapshot.
 
-    Each current device reads its own `$k_z$`/`$k_x$` sub-range,
-    so a snapshot can be resumed at any ``(np0, np1)``
-    configuration.  No full-array inverse transpose is performed.
+    Each current device reads a contiguous slab of the file's
+    *slowest* axis (the I/O layout, :func:`_io_spec`) and the
+    assembled array is then resharded back to the solver layout, so a
+    snapshot can be resumed at any ``(np0, np1)`` configuration.  No
+    full-array inverse transpose is performed: the reshard is an
+    exchange of whole planes, not a reordering of bytes.
 
     Parameters
     ----------

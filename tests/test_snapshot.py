@@ -20,11 +20,37 @@ Exercises the host (non-GDS) I/O path:
 - a viscoelastic ``nr``-mismatch load assembles the 9-component
   state at the snapshot's radial count (``_n_components``-driven
   assembly shape);
-- ``serial`` write mode produces a valid snapshot (true
-  cross-process ordering needs MPI multi-process and is not
-  exercised here -- single-process serial reduces to one write);
+- ``serial`` write mode produces a valid snapshot whose stored
+  component data is identical to the ``concurrent`` one (the
+  archives are not byte-identical as *files*: the metadata records
+  the write mode).  True cross-process ordering needs MPI
+  multi-process and is not exercised here -- single-process serial
+  reduces to one write;
+- a truncated archive fails **loudly**, and in words that name the
+  file and the cause, rather than loading the zeros of the
+  sparse-reserved skeleton;
+- a save that dies mid-write leaves the *previous* snapshot intact
+  and the final name untouched (the archive is built under a
+  ``.partial`` name and renamed), with the partial file left behind
+  as evidence;
+- an archive whose component chunks do not match the ``native_shape``
+  describing them is refused -- every read position is computed from
+  that shape alone, so a disagreement would return a neighbouring
+  component's bytes as state without an error;
 - 2D mesh round-trips: save and load with ``np0 > 1``, including
   padding-mode stripping and re-padding;
+- the **I/O-layout reshard** the multi-device paths run (save
+  reshards onto contiguous leading-axis slabs, load reshards back):
+  every mesh family is covered -- ``np1``-only, ``np0``-only and 2D
+  -- because the slab a device owns is decided by its *flat* mesh
+  position, and each engine call is checked for the SPMD
+  ``Involuntary full rematerialization`` warning, which is what a
+  reshard routed through both mesh axes at once would print;
+- the span tiers the layout can still fragment into: an ``nx``
+  whose true `$k_x$` count does not divide ``np1`` forces the
+  narrowest (per-``(a, kz)``-row) tier through a real writer and a
+  real reader, and an ``ny`` smaller than the device count gives a
+  device whose slab is entirely padding;
 - a **viscoelastic-dean** case (single-device and ``np 1 -> 2``)
   exercises the 9-component chunk count -- the test helpers derive
   the component count from the system via ``_n_comp``, mirroring the
@@ -125,9 +151,54 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
         1,
         1,
     ),
+    (
+        # The only 9-component *save* on a multi-device mesh: the I/O
+        # layout carries the component axis whole and the engines loop
+        # over it, so a component-count slip would land every
+        # component but the first at the wrong file offset.
+        "viscoelastic-dean 2D",
+        "viscoelastic-dean",
+        "walled",
+        "concurrent",
+        4,
+        4,
+        2,
+        2,
+    ),
     # ── 2D (np0 > 1) ──
     ("walled 2D", "plane-couette", "walled", "concurrent", 4, 4, 2, 2),
     ("periodic 2D", "kolmogorov", "periodic", "concurrent", 4, 4, 2, 2),
+    # ── np0-only meshes (np1 = 1).  The I/O layout splits the
+    # leading axis across *every* device by flat mesh position, so
+    # an np0-only mesh takes a different branch of ``_io_spec``
+    # (a single mesh axis, and the one the solver layout does not
+    # put on `$k_x$`) than the np1-only and 2D rows above. ──
+    ("walled np0-only", "plane-couette", "walled", "concurrent", 2, 2, 2, 2),
+    (
+        # Periodic A = ny - 1 = 7 over 2 devices: the leading axis is
+        # zero-padded to 8, so this is A-padding on an np0-only mesh.
+        "periodic np0-only",
+        "kolmogorov",
+        "periodic",
+        "concurrent",
+        2,
+        2,
+        2,
+        2,
+    ),
+    (
+        # Save on (2, 1), load on (1, 2): the slab a device owns is
+        # unchanged (flat position), but every other axis' padding and
+        # sharding differ between the two meshes.
+        "walled np0-only -> np1-only",
+        "plane-couette",
+        "walled",
+        "concurrent",
+        2,
+        2,
+        2,
+        1,
+    ),
     # ── cross-mesh resume ──
     (
         "periodic 1D->2D",
@@ -159,6 +230,55 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
         2,
         1,
     ),
+]
+
+# Cases that override the resolution to reach a span tier or a slab
+# shape the grids above cannot produce.  Same runner, keyword form
+# (``run_case(**case)``) so the tuple rows stay unchanged.
+#
+# ``nx = 6`` gives ``kx_true = 3``, which no device count above 1
+# divides: ``nx_spec`` pads to 4 and every span narrows to a single
+# ``(a, kz)`` row -- the last resort tier of ``_a_spans``, and the
+# only one the default grids never reach (``nx = 8`` has
+# ``kx_true = 4``, divisible by every mesh used here).
+#
+# ``ny = 5`` over 4 devices gives ``_a_local = 2`` and hence slabs
+# ``[0, 2) [2, 4) [4, 5) []``: a clipped slab *and* a device whose
+# slab is entirely padding, both through a real writer and reader.
+SHAPE_CASES: list[dict] = [
+    {
+        "name": "walled kx-padded spans (nx 6, 2D)",
+        "system": "plane-couette",
+        "layout": "walled",
+        "write_mode": "concurrent",
+        "save_np": 4,
+        "load_np": 4,
+        "save_np0": 2,
+        "load_np0": 2,
+        "nx": 6,
+    },
+    {
+        "name": "walled kx-padded spans on load (nx 6, np 1->4)",
+        "system": "plane-couette",
+        "layout": "walled",
+        "write_mode": "concurrent",
+        "save_np": 1,
+        "load_np": 4,
+        "save_np0": 1,
+        "load_np0": 1,
+        "nx": 6,
+    },
+    {
+        "name": "walled empty + clipped slabs (ny 5, np 4)",
+        "system": "plane-couette",
+        "layout": "walled",
+        "write_mode": "concurrent",
+        "save_np": 4,
+        "load_np": 4,
+        "save_np0": 1,
+        "load_np0": 1,
+        "ny": 5,
+    },
 ]
 
 # Periodic systems (must match dnsjax.parameters.periodic_systems).
@@ -273,6 +393,41 @@ def _check_standard_tools(d, ref_true, system):
     )
 
 
+def _check_slab_placement(state, snapshot, sharding) -> None:
+    """The I/O layout must place the slab this module's math assumes.
+
+    Every byte range a device writes comes from
+    ``_a_ranges(_shard_device_index(shard), ...)`` -- the device's
+    *flat* mesh position -- while the placement is chosen by
+    ``P(None, (a0, a1), None, None)``.  The two agree only because a
+    tuple of mesh axes splits the array axis in row-major (a0-major)
+    order, which is a JAX convention this module reads but cannot
+    enforce.  A silent change of it would hand every device another
+    one's slab, so pin it against the real sharding.
+    """
+    import numpy as np
+
+    io = snapshot._to_io_layout(state)
+    a_true, ndev = state.shape[1], snapshot._n_devices()
+    a_local = snapshot._a_local(a_true, ndev)
+    for shard in io.addressable_shards:
+        flat = snapshot._shard_device_index(shard)
+        want = (flat * a_local, (flat + 1) * a_local)
+        got = shard.index[1]
+        assert (got.start or 0, got.stop or io.shape[1]) == want, (
+            f"device at flat mesh position {flat} holds A rows {got}, "
+            f"but the writer sends it {want}"
+        )
+        # And the payload: the reshard must have moved the rows, not
+        # merely relabelled them.
+        a_start, na = snapshot._a_ranges(flat, a_true, ndev)
+        local = np.asarray(shard.data)
+        ref = np.asarray(state)[:, a_start : a_start + na]
+        assert np.array_equal(local[:, :na], ref), (
+            f"slab content mismatch at flat mesh position {flat}"
+        )
+
+
 def _worker(
     action: str,
     system: str,
@@ -282,8 +437,12 @@ def _worker(
     np0: int,
     d: str,
     ny_override: int | None = None,
+    nx_override: int | None = None,
 ):
     """Set up singletons for *npv* CPU devices, then save or load."""
+    if nx_override is not None:
+        global NX
+        NX = nx_override
     os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={npv}"
 
     import numpy as np
@@ -321,6 +480,18 @@ def _worker(
         state_np = _embed_true_into_padded(ref_true, padded_shape, system)
         state = jax.device_put(state_np, vshard)
         snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
+        if npv > 1:
+            _check_slab_placement(state, snapshot, sharding)
+        # The state must survive its own save: nothing in the write
+        # path may donate or mutate the caller's array (``__main__``
+        # keeps stepping the state it just snapshotted).
+        assert np.array_equal(np.asarray(state), state_np), (
+            "save_snapshot mutated the caller's state"
+        )
+        # A completed save renames its scratch file into place.
+        assert not os.path.exists(d + ".partial"), (
+            "a completed save left its .partial file behind"
+        )
         if action == "save":
             return
         # "roundtrip": same-np case -- fall through to the load checks
@@ -343,6 +514,43 @@ def _worker(
         # ``isnap`` defaults to 0.
         snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d + ".nostats")
         print("worker-save-stats-ok", flush=True)
+        return
+
+    if action == "save_fail":
+        # A save that dies mid-write must not take the previous
+        # snapshot with it.  The archive is laid out full-length with
+        # zero-filled component regions before anything is written, so
+        # a half-finished save under the final name would be a valid
+        # tar that loads without complaint and is blank where the
+        # writes did not reach -- zeros being a legal state, nothing
+        # downstream could tell.
+        ref_true = _make_reference(np, tshape)
+        state_np = _embed_true_into_padded(ref_true, padded_shape, system)
+        state = jax.device_put(state_np, vshard)
+        snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
+        with open(d, "rb") as f:
+            good = f.read()
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("simulated mid-write failure")
+
+        snapshot._write_chunks_host = _boom
+        try:
+            snapshot.save_snapshot(state, T_SAVE + 1.0, IT_SAVE + 1, d)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("the broken writer did not raise")
+
+        with open(d, "rb") as f:
+            assert f.read() == good, (
+                "a failed save replaced the previous snapshot"
+            )
+        leftovers = [
+            n for n in os.listdir(os.path.dirname(d)) if n.endswith(".partial")
+        ]
+        assert leftovers, "a failed save left no .partial to diagnose"
+        print("worker-save-fail-ok", flush=True)
         return
 
     if action == "save_poly":
@@ -488,6 +696,7 @@ def _run_worker(
     d: str,
     ny: int | None = None,
     np0: int = 1,
+    nx: int | None = None,
 ) -> subprocess.CompletedProcess:
     cmd = [
         sys.executable,
@@ -510,6 +719,8 @@ def _run_worker(
     ]
     if ny is not None:
         cmd.extend(["--ny", str(ny)])
+    if nx is not None:
+        cmd.extend(["--nx", str(nx)])
     return run_live(cmd, timeout=300)
 
 
@@ -522,6 +733,27 @@ def _fail(name: str, stage: str, res: subprocess.CompletedProcess) -> str:
     return reason
 
 
+# XLA's SPMD partitioner prints this when asked to relocate two mesh
+# axes at once and gives up, replicating the whole array on every
+# device instead of exchanging it -- ndev x the traffic and ndev x the
+# peak memory.  It is a warning, not an error, so only a log check
+# catches a reshard that stops being routed one mesh axis at a time.
+_REMAT = "Involuntary full rematerialization"
+
+
+def _check(
+    name: str, stage: str, res: subprocess.CompletedProcess
+) -> str | None:
+    """``None`` when the worker is clean, else its failure reason."""
+    if res.returncode != 0:
+        return _fail(name, stage, res)
+    if _REMAT in (res.stdout or "") + (res.stderr or ""):
+        reason = f"{stage} SPMD rematerialization"
+        print(f"  FAIL  {name}: {reason}")
+        return reason
+    return None
+
+
 def run_case(
     name: str,
     system: str,
@@ -531,6 +763,8 @@ def run_case(
     load_np: int,
     save_np0: int = 1,
     load_np0: int = 1,
+    nx: int | None = None,
+    ny: int | None = None,
 ) -> str | None:
     """Save then load a snapshot (one process when the np config is
     unchanged, separate save/load processes across np configs)."""
@@ -545,9 +779,11 @@ def run_case(
                 save_np,
                 snap_path,
                 np0=save_np0,
+                nx=nx,
+                ny=ny,
             )
-            if r.returncode != 0:
-                return _fail(name, "roundtrip", r)
+            if reason := _check(name, "roundtrip", r):
+                return reason
         else:
             r_save = _run_worker(
                 "save",
@@ -557,9 +793,11 @@ def run_case(
                 save_np,
                 snap_path,
                 np0=save_np0,
+                nx=nx,
+                ny=ny,
             )
-            if r_save.returncode != 0:
-                return _fail(name, "save", r_save)
+            if reason := _check(name, "save", r_save):
+                return reason
             r_load = _run_worker(
                 "load",
                 system,
@@ -568,9 +806,11 @@ def run_case(
                 load_np,
                 snap_path,
                 np0=load_np0,
+                nx=nx,
+                ny=ny,
             )
-            if r_load.returncode != 0:
-                return _fail(name, "load", r_load)
+            if reason := _check(name, "load", r_load):
+                return reason
     print(f"  PASS  {name}")
     return None
 
@@ -620,10 +860,23 @@ def run_io_layout_case() -> str | None:
     for kz_true, kx_true, local_kz, local_kx in tiers:
         a_true, ndev = 7, 4
         seen: list[int] = []
+        # The engines write ``off * itemsize`` bytes into the file, so
+        # replay that too: fill each device's local buffer with the
+        # chunk values it should own, write every span at its byte
+        # offset, and require the result to be the reference chunk.
+        # This is the layer the element-index check above skips.
+        dtype = np.dtype("complex128")
+        chunk = (
+            np.arange(a_true * kz_true * kx_true, dtype=np.float64)
+            .astype(dtype)
+            .reshape(a_true, kz_true, kx_true)
+        )
+        file_bytes = bytearray(chunk.nbytes)
         for flat in range(ndev):
             a_start, na = _a_ranges(flat, a_true, ndev)
             a_local = -(-a_true // ndev)
-            local = np.zeros((a_local, local_kz, local_kx))
+            local = np.zeros((a_local, local_kz, local_kx), dtype=dtype)
+            local[:na, :kz_true, :kx_true] = chunk[a_start : a_start + na]
             for idx, off, shape in _a_spans(
                 local.shape, a_start, na, kz_true, kx_true
             ):
@@ -633,6 +886,8 @@ def run_io_layout_case() -> str | None:
                 if view.shape != shape:
                     return f"span shape {view.shape} != declared {shape}"
                 seen.extend(range(off, off + math.prod(shape)))
+                start = off * dtype.itemsize
+                file_bytes[start : start + view.nbytes] = view.tobytes()
         want = list(range(a_true * kz_true * kx_true))
         if seen != want:
             return (
@@ -641,6 +896,269 @@ def run_io_layout_case() -> str | None:
                 f"{kx_true}): {len(seen)} elements, ascending="
                 f"{seen == sorted(seen)}"
             )
+        if bytes(file_bytes) != chunk.tobytes():
+            return (
+                f"replayed span bytes differ from the reference chunk "
+                f"for local ({local_kz}, {local_kx}) vs true "
+                f"({kz_true}, {kx_true})"
+            )
+    return None
+
+
+def run_gds_detection_case() -> str | None:
+    """``_gds_available`` must answer for the *shipped* kvikIO API.
+
+    This check spent its life returning ``False`` on a cluster that
+    had kvikIO installed, because ``kvikio.defaults`` is a submodule
+    rather than an attribute of the package -- a failure invisible
+    from the outside, since "no GDS" is also the correct answer on a
+    node without the driver.  Stub kvikIO and drive every branch:
+    both API generations, the driver gate, and the ``CompatMode``
+    enum that a bare truth test misreads.
+    """
+    import enum
+    import sys
+    import types
+
+    from dnsjax import snapshot
+
+    class CompatMode(enum.Enum):
+        OFF = 0
+        ON = 1
+        AUTO = 2
+
+    def install(mode, *, style: str) -> None:
+        """Put a fake kvikIO of API generation *style* on the path.
+
+        Deliberately faithful about the trap: the parent module gets
+        **no** ``defaults`` attribute, exactly like the installed
+        package before its submodule is imported.  Reaching for
+        ``kvikio.defaults`` through the package -- what this check
+        used to do -- raises ``AttributeError`` here, as it did on
+        the cluster.
+        """
+        kv = types.ModuleType("kvikio")
+        kvd = types.ModuleType("kvikio.defaults")
+        if style == "getter":  # older: one getter per property
+            kvd.compat_mode = lambda: mode
+        else:  # newer: a single generic accessor
+            kvd.get = lambda name: {"compat_mode": mode}[name]
+        sys.modules["kvikio"], sys.modules["kvikio.defaults"] = kv, kvd
+
+    watched = ("kvikio", "kvikio.defaults", "cupy")
+    real = {k: sys.modules.get(k) for k in watched}
+    nvfs = snapshot._NVFS_STATS
+    with tempfile.TemporaryDirectory() as tmp:
+        present = os.path.join(tmp, "stats")
+        open(present, "w").close()
+        absent = os.path.join(tmp, "no-such-driver")
+        # (label, kvikio, cupy, driver, expected)
+        cases = [
+            ("kvikio absent", None, True, present, False),
+            ("cupy absent", ("get", CompatMode.AUTO), False, present, False),
+            (
+                "driver absent",
+                ("getter", CompatMode.AUTO),
+                True,
+                absent,
+                False,
+            ),
+            (
+                "AUTO, old API",
+                ("getter", CompatMode.AUTO),
+                True,
+                present,
+                True,
+            ),
+            ("AUTO, new API", ("get", CompatMode.AUTO), True, present, True),
+            ("OFF, new API", ("get", CompatMode.OFF), True, present, True),
+            ("ON  -> compat", ("get", CompatMode.ON), True, present, False),
+        ]
+        try:
+            for label, kvikio, cupy, driver, expected in cases:
+                if kvikio is None:
+                    # ``None`` in sys.modules makes the import raise.
+                    sys.modules["kvikio"] = None
+                    sys.modules.pop("kvikio.defaults", None)
+                else:
+                    install(kvikio[1], style=kvikio[0])
+                # A real cupy (a GPU box) must not decide the outcome
+                # either way, so stub both states explicitly.
+                sys.modules["cupy"] = (
+                    types.ModuleType("cupy") if cupy else None
+                )
+                snapshot._NVFS_STATS = __import__("pathlib").Path(driver)
+                snapshot._gds_available.cache_clear()
+                got = snapshot._gds_available()
+                if got is not expected:
+                    print(f"  FAIL  GDS detection: {label} -> {got}")
+                    return f"GDS detection wrong for {label}"
+        finally:
+            snapshot._NVFS_STATS = nvfs
+            snapshot._gds_available.cache_clear()
+            for k, v in real.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+    print("  PASS  GDS detection branches")
+    return None
+
+
+def run_truncation_case() -> str | None:
+    """A truncated archive must fail loudly, not load silently.
+
+    The component data regions are sparse-*reserved* (zero-filled) by
+    the skeleton writer, so a short archive has zeros exactly where a
+    state should be: the one failure mode that would resume a run
+    from a partly blank field without a word.  Cut the last
+    component's data in half and require the load to raise.
+    """
+    name = "truncated archive rejected"
+    with tempfile.TemporaryDirectory() as tmp:
+        snap = os.path.join(tmp, "snap.tar")
+        r = _run_worker(
+            "save", "plane-couette", "walled", "concurrent", 1, snap
+        )
+        if reason := _check(name, "save", r):
+            return reason
+        # Halfway into the final component: every tar header lies
+        # before it, so this is a data-region cut, not a header one.
+        comp_nbytes = NY * (NZ - 1) * (NX // 2) * 16
+        with open(snap, "r+b") as f:
+            f.truncate(os.path.getsize(snap) - 1024 - comp_nbytes // 2)
+        r_load = _run_worker(
+            "load", "plane-couette", "walled", "concurrent", 1, snap
+        )
+        if r_load.returncode == 0:
+            print(f"  FAIL  {name}: truncated archive loaded silently")
+            return "truncated archive loaded silently"
+        # ...and it must say so.  Untranslated this is a bare
+        # ``ReadError: unexpected end of data`` naming neither the
+        # file nor the reason, which on a resume reads as a dnsjax
+        # bug rather than a damaged checkpoint.
+        out = (r_load.stdout or "") + (r_load.stderr or "")
+        if "truncated or corrupt" not in out:
+            print(f"  FAIL  {name}: rejected, but not intelligibly")
+            return "truncated archive rejected without naming the cause"
+    print(f"  PASS  {name}")
+    return None
+
+
+def run_meta_chunk_consistency_case() -> str | None:
+    """The chunks must match the ``native_shape`` describing them.
+
+    Every read position is computed arithmetically from
+    ``native_shape``; nothing consults the member it lands in.  So a
+    snapshot whose metadata outgrew its chunks reads the *next*
+    component's bytes as state -- well-formed complex numbers, no
+    error.  Built by hand here (stdlib only, no JAX, no subprocess):
+    a matching pair must be accepted, and each way of disagreeing
+    must be refused.
+    """
+    import io
+    import json
+    import tarfile
+
+    name = "chunks match the metadata"
+    shape = [3, 8, 7, 4]  # (components, A, kz, kx)
+    chunk = 8 * 7 * 4 * 16  # complex128
+
+    def build(tar_path: str, declared, n_chunks: int, chunk_bytes: int):
+        meta = json.dumps(
+            {
+                "format_version": 6,
+                "native_shape": declared,
+                "dtype": "complex128",
+            }
+        ).encode()
+        with tarfile.open(tar_path, "w") as tf:
+            info = tarfile.TarInfo("_dnsjax_meta.json")
+            info.size = len(meta)
+            tf.addfile(info, io.BytesIO(meta))
+            for c in range(n_chunks):
+                info = tarfile.TarInfo(f"state/c/{c}/0/0/0")
+                info.size = chunk_bytes
+                tf.addfile(info, io.BytesIO(b"\x00" * chunk_bytes))
+
+    from dnsjax.snapshot_meta import (
+        SnapshotArchiveError,
+        snapshot_component_offsets,
+    )
+
+    # (label, declared native_shape, chunk count, chunk size, accept?)
+    cases = [
+        ("consistent", shape, 3, chunk, True),
+        ("chunks too small", [3, 9, 7, 4], 3, chunk, False),
+        ("chunks too large", [3, 7, 7, 4], 3, chunk, False),
+        ("too few chunks", shape, 2, chunk, False),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        for label, declared, n_chunks, chunk_bytes, accept in cases:
+            p = os.path.join(tmp, "s.tar")
+            build(p, declared, n_chunks, chunk_bytes)
+            try:
+                snapshot_component_offsets(p)
+            except SnapshotArchiveError as exc:
+                if accept:
+                    print(f"  FAIL  {name}: {label} rejected -- {exc}")
+                    return f"a consistent archive was rejected ({label})"
+            else:
+                if not accept:
+                    print(f"  FAIL  {name}: {label} accepted")
+                    return f"an inconsistent archive was accepted ({label})"
+    print(f"  PASS  {name}")
+    return None
+
+
+def run_atomic_write_case() -> str | None:
+    """A save that fails mid-write must not destroy the good snapshot."""
+    name = "failed save keeps the previous snapshot"
+    with tempfile.TemporaryDirectory() as tmp:
+        r = _run_worker(
+            "save_fail",
+            "plane-couette",
+            "walled",
+            "concurrent",
+            1,
+            os.path.join(tmp, "snap.tar"),
+        )
+        if reason := _check(name, "save_fail", r):
+            return reason
+        if "worker-save-fail-ok" not in (r.stdout or ""):
+            print(f"  FAIL  {name}: worker did not confirm")
+            return "save_fail worker did not confirm"
+    print(f"  PASS  {name}")
+    return None
+
+
+def run_write_mode_identity_case() -> str | None:
+    """``serial`` and ``concurrent`` must store the same component data.
+
+    The two modes differ only in *when* each process writes, so the
+    stored field cannot depend on the choice.  Only the component
+    members are compared: the metadata member records
+    ``snapshot_write_mode`` itself (and "concurrent" and "serial" are
+    not even the same length), so the archives are legitimately not
+    byte-identical as files.
+    """
+    import tarfile
+
+    name = "serial == concurrent component data"
+    comps = [f"state/c/{i}/0/0/0" for i in range(3)]
+    with tempfile.TemporaryDirectory() as tmp:
+        data: dict[str, list[bytes]] = {}
+        for mode in ("concurrent", "serial"):
+            snap = os.path.join(tmp, f"{mode}.tar")
+            r = _run_worker("save", "plane-couette", "walled", mode, 1, snap)
+            if reason := _check(name, f"save {mode}", r):
+                return reason
+            with tarfile.open(snap, "r") as tf:
+                data[mode] = [tf.extractfile(c).read() for c in comps]
+        if data["concurrent"] != data["serial"]:
+            print(f"  FAIL  {name}: component data differs")
+            return "serial and concurrent component data differ"
+    print(f"  PASS  {name}")
     return None
 
 
@@ -657,8 +1175,8 @@ def run_stats_isnap_case() -> str | None:
         r = _run_worker(
             "save_stats", "plane-couette", "walled", "concurrent", 1, snap
         )
-        if r.returncode != 0:
-            return _fail(name, "save_stats", r)
+        if reason := _check(name, "save_stats", r):
+            return reason
 
         with tarfile.open(snap, "r") as tf:
             names = set(tf.getnames())
@@ -683,9 +1201,18 @@ def run_ny_mismatch_case(
     load_np: int = 1,
     load_np0: int = 1,
     label: str = "",
+    save_ny: int = 8,
 ) -> str | None:
-    """Save at ny=8, load at ny=16 with interpolation."""
-    name = f"wb ny 8->16 interp{label}"
+    """Save at *save_ny*, load at ny=16 with interpolation.
+
+    A ``save_ny`` that the load mesh does not divide (7 over 4
+    devices) is the one path where the leading axis is zero-padded
+    to a divisible length *and* the assembly runs at the snapshot's
+    row count rather than the current one -- the reader has to take
+    ``a_true`` from the metadata, pad to the load mesh, and strip
+    again after resharding back.
+    """
+    name = f"wb ny {save_ny}->16 interp{label}"
     with tempfile.TemporaryDirectory() as tmp:
         snap_path = os.path.join(tmp, "snap.tar")
         r_save = _run_worker(
@@ -695,11 +1222,11 @@ def run_ny_mismatch_case(
             "concurrent",
             save_np,
             snap_path,
-            ny=8,
+            ny=save_ny,
             np0=save_np0,
         )
-        if r_save.returncode != 0:
-            return _fail(name, "save_poly", r_save)
+        if reason := _check(name, "save_poly", r_save):
+            return reason
         r_load = _run_worker(
             "load_interp",
             "plane-couette",
@@ -710,8 +1237,8 @@ def run_ny_mismatch_case(
             ny=16,
             np0=load_np0,
         )
-        if r_load.returncode != 0:
-            return _fail(name, "load_interp", r_load)
+        if reason := _check(name, "load_interp", r_load):
+            return reason
     print(f"  PASS  {name}")
     return None
 
@@ -734,8 +1261,8 @@ def run_pipe_regrid_case() -> str | None:
             snap_path,
             ny=8,
         )
-        if r_save.returncode != 0:
-            return _fail(name, "save_poly_pipe", r_save)
+        if reason := _check(name, "save_poly_pipe", r_save):
+            return reason
         r_load = _run_worker(
             "load_interp_pipe",
             "pipe",
@@ -745,8 +1272,8 @@ def run_pipe_regrid_case() -> str | None:
             snap_path,
             ny=10,
         )
-        if r_load.returncode != 0:
-            return _fail(name, "load_interp_pipe", r_load)
+        if reason := _check(name, "load_interp_pipe", r_load):
+            return reason
     print(f"  PASS  {name}")
     return None
 
@@ -760,8 +1287,8 @@ def run_ve_ny_mismatch_case() -> str | None:
         r_save = _run_worker(
             "save", "viscoelastic-dean", "walled", "concurrent", 1, snap_path
         )
-        if r_save.returncode != 0:
-            return _fail(name, "save", r_save)
+        if reason := _check(name, "save", r_save):
+            return reason
         r_load = _run_worker(
             "load_shape",
             "viscoelastic-dean",
@@ -771,8 +1298,8 @@ def run_ve_ny_mismatch_case() -> str | None:
             snap_path,
             ny=16,
         )
-        if r_load.returncode != 0:
-            return _fail(name, "load_shape", r_load)
+        if reason := _check(name, "load_shape", r_load):
+            return reason
     print(f"  PASS  {name}")
     return None
 
@@ -795,6 +1322,7 @@ if __name__ == "__main__":
             "load_interp_pipe",
             "load_shape",
             "save_stats",
+            "save_fail",
         ],
     )
     parser.add_argument("--system")
@@ -804,6 +1332,7 @@ if __name__ == "__main__":
     parser.add_argument("--np0", type=int, default=1)
     parser.add_argument("--dir")
     parser.add_argument("--ny", type=int, default=None)
+    parser.add_argument("--nx", type=int, default=None)
     args = parser.parse_args()
 
     if args.worker:
@@ -816,6 +1345,7 @@ if __name__ == "__main__":
             args.np0,
             args.dir,
             ny_override=args.ny,
+            nx_override=args.nx,
         )
         sys.exit(0)
 
@@ -831,6 +1361,7 @@ if __name__ == "__main__":
     results: list[tuple[str, str | None]] = [
         (case[0], run_case(*case)) for case in CASES
     ]
+    results.extend((case["name"], run_case(**case)) for case in SHAPE_CASES)
 
     # ny-mismatch interpolation tests
     results.append(("wb ny 8->16 interp", run_ny_mismatch_case()))
@@ -839,6 +1370,19 @@ if __name__ == "__main__":
             "wb ny 8->16 interp 2D",
             run_ny_mismatch_case(
                 save_np=4, save_np0=2, load_np=4, load_np0=2, label=" 2D"
+            ),
+        )
+    )
+    results.append(
+        (
+            "wb ny 7->16 interp 2D",
+            run_ny_mismatch_case(
+                save_np=1,
+                save_np0=1,
+                load_np=4,
+                load_np0=2,
+                label=" 2D",
+                save_ny=7,
             ),
         )
     )
@@ -852,6 +1396,26 @@ if __name__ == "__main__":
 
     # isnap metadata + optional embedded-stats member
     results.append(("isnap + embedded stats", run_stats_isnap_case()))
+
+    # Which I/O engine gets picked, and the archive-level guarantees:
+    # a short archive is rejected, and the two write modes agree.
+    results.append(("GDS detection branches", run_gds_detection_case()))
+    results.append(("truncated archive rejected", run_truncation_case()))
+    results.append(
+        ("chunks match the metadata", run_meta_chunk_consistency_case())
+    )
+    results.append(
+        (
+            "failed save keeps the previous snapshot",
+            run_atomic_write_case(),
+        )
+    )
+    results.append(
+        (
+            "serial == concurrent component data",
+            run_write_mode_identity_case(),
+        )
+    )
 
     # The I/O-layout slab arithmetic, over shapes the round-trip cases
     # above cannot reach (see run_io_layout_case).
