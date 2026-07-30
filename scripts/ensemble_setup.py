@@ -308,8 +308,15 @@ def build(args: argparse.Namespace) -> int:
             seed_cmds.append((mem, cmd))
         mem["seed"] = seed
         mem["t_end"] = mem["parent_t"] + args.horizon
+        # ``--dist.np1`` as well as ``mpirun -np``: the mesh size is a
+        # *parameter*, and a run whose visible device count does not
+        # equal ``np0 * np1`` exits 1 at startup (``sharding.py``).
+        # Emitting only ``-np N`` therefore produced a launch line that
+        # could never run for any N > 1.  np1 is the spanwise / k_x
+        # axis, the 1-D split the solver's own launch recipes use.
+        dist = f" --dist.np1 {args.np}" if args.np > 1 else ""
         run_lines.append(
-            f"cd {mdir.resolve()} && mpirun -np {args.np} {dnsjax_bin}"
+            f"cd {mdir.resolve()} && mpirun -np {args.np} {dnsjax_bin}{dist}"
         )
 
     if args.dry_run:
@@ -435,7 +442,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     pb.add_argument("--probe-modes", required=True)
     pb.add_argument("--it-probes", type=int, required=True)
-    pb.add_argument("--np", type=int, default=1, help="devices per member run")
+    pb.add_argument(
+        "--np",
+        type=int,
+        default=1,
+        help="devices per member run (emitted as mpirun -np N plus "
+        "--dist.np1 N, the spanwise split, for N > 1)",
+    )
     pb.add_argument(
         "--dnsjax-bin",
         default=None,

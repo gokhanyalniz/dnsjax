@@ -183,6 +183,12 @@ class GeometryInfo:
     components: tuple[str, ...]
     wall_normal_axis: int  # physical axis carrying the wall-normal direction
     grid_axis: int | None  # spectral axis stored as a grid (None if periodic)
+    # Azimuthal wedge fundamental (``geo.m0``; 1 = full circle).  The
+    # stored azimuthal harmonics are the *multiples* ``m = m0 * h``, and
+    # it is that physical `$m$` -- not the harmonic index ``h`` -- that
+    # sets the pipe's axis parity class (:func:`radial_derivative`).
+    # 1 for every family without an azimuthal direction.
+    azimuthal_m0: int = 1
 
     def axis_of(self, direction: str) -> int:
         """On-disk axis index of a named direction."""
@@ -196,7 +202,15 @@ class GeometryInfo:
 
 
 def geometry_info(params: Namespace) -> GeometryInfo:
-    """Build the :class:`GeometryInfo` for a snapshot's parameters."""
+    """Build the :class:`GeometryInfo` for a snapshot's parameters.
+
+    *params* is normally the :class:`Namespace` view over a snapshot's
+    embedded parameters, but the live pydantic ``params`` singleton is
+    also passed here (``tests/test_viscoelastic.py``).  Both are read
+    through **plain attribute access only** -- no mapping API, since a
+    pydantic model has none.  Use ``getattr(section, name, default)``
+    for a field that may be absent on one of the two.
+    """
     system = str(params.phys.system)
     nx, ny, nz = int(params.res.nx), int(params.res.ny), int(params.res.nz)
     lx, lz = float(params.geo.lx), float(params.geo.lz)
@@ -247,6 +261,11 @@ def geometry_info(params: Namespace) -> GeometryInfo:
             components=components,
             wall_normal_axis=0,
             grid_axis=0,
+            # ``getattr``, not ``Namespace.get``: this function is
+            # duck-typed on plain attribute access, and
+            # ``tests/test_viscoelastic.py`` hands it the *live pydantic*
+            # ``params`` singleton, whose ``geo`` has no mapping API.
+            azimuthal_m0=int(getattr(params.geo, "m0", 1) or 1),
         )
     if system in PERIODIC_SYSTEMS:
         return GeometryInfo(
@@ -315,7 +334,7 @@ def _component_recipes(
 
 
 def _pick(i: int) -> Callable[[dict[int, ndarray]], ndarray]:
-    """Identity combine for native chunk ``i`` (Cartesian / periodic)."""
+    """Identity combine for native chunk ``i`` (every family)."""
     return lambda r: r[i]
 
 
@@ -563,6 +582,15 @@ def radial_derivative(
     parity-reduced operator per azimuthal mode ``m`` (axis 1): ``"uz"``
     for the ``(-1)^m`` parity of ``u_z``; ``"utheta"`` for the
     ``(-1)^{m+1}`` parity of ``u_r`` / ``u_θ``.
+
+    The class is set by the **physical** azimuthal wavenumber
+    ``m = m0 * h``: axis regularity is a statement about the field on
+    the full circle, so an ``m0``-wedge snapshot
+    (:attr:`GeometryInfo.azimuthal_m0`) must fold the wedge
+    fundamental in exactly as ``cylindrical.Fourier.m_is_even`` does.
+    Classifying by the harmonic index ``h`` alone agrees only for odd
+    ``m0``; at ``m0 = 2`` it picks the wrong operator for every odd
+    ``h`` (measured: 4 % error against the solver's own curl).
     """
     field = np.asarray(field)
     if parity is None:
@@ -570,7 +598,7 @@ def radial_derivative(
         d1, _ = build_diff_matrices(gr, int(fd_order))
         return _matmul_axis(d1, field, 0)
     d1_even, d1_odd = parity_radial_d1(grid, fd_order)
-    m_even = complex_harmonics(info.n[1]) % 2 == 0
+    m_even = (complex_harmonics(info.n[1]) * info.azimuthal_m0) % 2 == 0
     use_even = m_even if parity == "uz" else ~m_even
     # One matmul per parity class on its own m-subset (not both
     # operators on the full field and a select).

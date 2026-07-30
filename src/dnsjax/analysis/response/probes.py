@@ -222,8 +222,10 @@ def mean_profile(
     (`$u_s = u_x\cos\vartheta + u_z\sin\vartheta$`), takes the real
     part (the mean mode of a real field), and adds the closed-form
     laminar profile.  Cartesian base-flow systems only.  Returns
-    ``(y, U_s)`` with ``y`` in solver order (descending from the top
-    wall) -- directly consumable by :func:`write_profile_file`.
+    ``(y, U_s)`` with ``y`` exactly as the stream stores it, i.e. the
+    solver's **ascending** grid (bottom wall `$y = -1$` first);
+    :func:`write_profile_file` flips it to the top-wall-first order
+    the transient-growth ``--tg.profile`` reader expects.
     """
     system = data.meta["system"]
     if system not in _CARTESIAN_LAMINAR:
@@ -258,9 +260,11 @@ def re_tau(data: ProbeData, t_min: float = 0.0) -> float:
     p = int(data.meta["params"]["res"]["fd_order"])
     d1, _ = build_diff_matrices(y, p)
     re = float(data.meta["params"]["phys"]["re"])
-    du_top = abs(float(d1[0] @ u_s))
-    du_bot = abs(float(d1[-1] @ u_s))
-    return math.sqrt(re * 0.5 * (du_top + du_bot))
+    # ``y`` is ascending, so row 0 is the *bottom* wall and row -1 the
+    # top one; the magnitudes are averaged, so only the naming cares.
+    du_lo = abs(float(d1[0] @ u_s))
+    du_hi = abs(float(d1[-1] @ u_s))
+    return math.sqrt(re * 0.5 * (du_lo + du_hi))
 
 
 def write_profile_file(

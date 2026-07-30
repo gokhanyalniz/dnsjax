@@ -70,9 +70,11 @@ _NO_MPI_ONLY = (
 # One row per invocation: (script, extra args, marks, timeout in s).
 # Scripts appearing twice: ``test_resume`` (offline ``--unit-only``
 # subset + full mpirun run), ``test_forcing``/``test_probes`` (the
-# no-mpirun unit fallback + the full run), and
+# no-mpirun unit fallback + the full run),
 # ``test_transient_growth`` (offline ``--fast`` structure checks +
-# the slow full run with the literature anchors).
+# the slow full run with the literature anchors), and
+# ``test_laminar_smoke`` (single-device + the ``--np 2`` mesh row
+# whose reason is spelled out at that entry).
 _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_adaptive.py", (), (), 1800),
     ("test_annular.py", (), (), 1800),

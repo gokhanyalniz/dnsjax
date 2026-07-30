@@ -71,9 +71,11 @@ The energy norm `$\lVert\mathbf{q}\rVert_E^2 = \mathbf{q}^{H} W
 is diagonal, `$W = \mathrm{diag}_c(m_c\,w_y)$` with the wall-normal
 quadrature weights `$w_y$` (``flow.y_weights``; the radial Jacobian
 `$r$` is baked in for pipe / Taylor-Couette) and the component metric
-`$m_c = 1$` for Cartesian `$u_x,u_y,u_z$` and cylindrical `$u_z$`,
-`$m_c = \tfrac{1}{2}$` for the `$u_\pm = u_r \pm i u_\theta$`
-components.  The Hermitian ``k_metric`` factor and ``volume_fac`` are
+`$m_c = 1$` in every family: this driver works in the **physical**
+component basis throughout (``_linear_step`` converts the
+cylindrical / annular solver basis at the stepper boundary), and a
+physical triad is pointwise orthonormal, so ``get_norm2*`` is the
+plain component sum.  The Hermitian ``k_metric`` factor and ``volume_fac`` are
 constants for a fixed mode and cancel in the ratio `$G$`, so they are
 omitted (all reported quantities -- `$G$`, `$G_{\max}$`, the abscissae
 -- are ratios or rates invariant under an overall scaling of `$W$`).
