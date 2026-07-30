@@ -180,10 +180,16 @@ def _part_a(outdir: Path) -> dict:
     print(f"  nvidia-fs stats readable: {NVFS_STATS.exists()}")
 
     have = {"kvikio": False, "cupy": False}
+    # Read *before* anything imports the submodule: ``import a.b``
+    # binds ``b`` as an attribute of ``a``, so asking afterwards can
+    # only ever answer True and the item-6 probe below would report a
+    # bug that had already been papered over by its own import.
+    via_attr = False
     try:
         import kvikio
 
         have["kvikio"] = True
+        via_attr = hasattr(kvikio, "defaults")
         print(f"  kvikio    {getattr(kvikio, '__version__', '?')}")
     except ImportError as exc:
         print(f"  kvikio    NOT IMPORTABLE ({exc})")
@@ -209,12 +215,14 @@ def _part_a(outdir: Path) -> dict:
 
     # (1) the submodule bind.  Reaching through the package is what
     # used to fail: kvikio.defaults is a submodule, not an attribute.
+    # ``via_attr`` was sampled above, on the bare ``import kvikio`` --
+    # sampling it here instead would always say True, because the
+    # import on the next line is itself what binds the attribute.
     try:
         import kvikio.defaults as kvikio_defaults
     except ImportError as exc:
         print(f"    import kvikio.defaults FAILED ({exc}) -> host path.")
         return have
-    via_attr = hasattr(kvikio, "defaults")
     print("    import kvikio.defaults as _   OK")
     print(
         f"    kvikio.defaults as attribute  {via_attr}"

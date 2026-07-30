@@ -223,36 +223,49 @@ def run_child(a: argparse.Namespace) -> None:
 
     cfg = _child_config(a)
 
-    params.phys.system = a.system
+    # **Everything** goes through the layering call, never a direct
+    # ``params.*`` assignment: ``update_parameters`` restores and
+    # re-materializes every per-flow ``FieldSpec`` default that no
+    # configuration layer set, so a direct assignment to such a field
+    # is silently reverted on the next pass.  For five of the six
+    # systems no swept field carries such a default, which is why the
+    # old direct-assignment form looked fine -- but
+    # **viscoelastic-dean** defaults seven of them (``geo.lx``,
+    # ``geo.delta``, ``phys.el``/``wi``/``beta``/``epsilon``/``kappa``),
+    # so its whole sweep collapsed onto the baseline (measured:
+    # ``lx = 1000 -> 2*pi``, ``delta = 5 -> 11``) while the recorded
+    # config still claimed the requested values.  The azimuthal extent
+    # is *not* in this list on purpose: ``geo.lz`` is the derived wedge
+    # ``2*pi/m0`` for the annular flows and is never swept here.
+    phys: dict = {"system": a.system}
     for field in ("re", "re1", "re2", "wi", "el", "beta", "epsilon", "kappa"):
         v = getattr(a, field)
         if v is not None:
-            setattr(params.phys, field, v)
-    for field in ("eta", "delta", "grid_stretch"):
+            phys[field] = v
+    geo: dict = {"lx": a.lx}
+    for field in ("eta", "delta", "grid_stretch", "grid_type"):
         v = getattr(a, field)
         if v is not None:
-            setattr(params.geo, field, v)
-    params.geo.lx = a.lx
+            geo[field] = v
     if a.lz is not None:
-        params.geo.lz = a.lz
-    params.res.nx = a.nx
-    params.res.ny = a.ny
-    params.res.nz = a.nz
-    params.res.fd_order = a.fd_order
-    params.res.double_precision = True
-    params.step.dt = a.dt
-    params.step.implicitness = a.implicitness
-    params.step.scheme = "iterative-cn"
-
-    # grid_type and the backend must go through the layering call, not
-    # direct ``params.*`` assignments: ``update_parameters`` re-resolves
-    # both per-family defaults for any field not recorded in
-    # ``_user_set_fields``, so a direct assignment is overwritten (a
-    # "tanh" pool entry would silently resolve back to the
-    # scheme-default CGL grid).
-    explicit: dict = {"solver": {"backend": "pallas"}}
-    if a.grid_type is not None:
-        explicit["geo"] = {"grid_type": a.grid_type}
+        geo["lz"] = a.lz
+    explicit: dict = {
+        "phys": phys,
+        "geo": geo,
+        "res": {
+            "nx": a.nx,
+            "ny": a.ny,
+            "nz": a.nz,
+            "fd_order": a.fd_order,
+            "double_precision": True,
+        },
+        "step": {
+            "dt": a.dt,
+            "implicitness": a.implicitness,
+            "scheme": "iterative-cn",
+        },
+        "solver": {"backend": "pallas"},
+    }
 
     try:
         update_parameters(Parameters(**explicit))

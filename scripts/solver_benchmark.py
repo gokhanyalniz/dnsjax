@@ -399,7 +399,14 @@ def run_child(a: argparse.Namespace) -> None:
     # each way).
     to_solver = getattr(m, "to_solver_basis", lambda x: x)
     from_solver = getattr(m, "from_solver_basis", lambda x: x)
-    s = to_solver(state)  # a fresh array: the step donates its argument
+    # ``jnp.copy`` unconditionally: the step donates its argument, and
+    # ``state`` is benchmarked again further down.  Relying on
+    # ``to_solver`` to hand back a fresh array is what broke here --
+    # the Cartesian flows stopped exporting the basis maps when the
+    # carried (phi, v, omega_y) basis was dropped, so the fallback
+    # became the identity and the parity loop deleted ``state`` itself
+    # ("Array has been deleted" at the first ``_bench_step``).
+    s = jnp.copy(to_solver(state))
     for _ in range(a.parity_steps):
         s, _err, _c = m.predict_and_fully_correct(s)
     jax.block_until_ready(s)
