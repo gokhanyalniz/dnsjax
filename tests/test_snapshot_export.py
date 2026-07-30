@@ -20,6 +20,12 @@ wall-bounded families, ``omega.tar`` -- dnsjax's own ``_curl_fn`` of
 that state, saved raw in the ``(.,r,θ)`` / ``(x,y,z)`` basis -- so the
 analysis ``curl`` can be checked against the solver node-for-node.
 
+The pipe is generated twice, at azimuthal wedges ``m0 = 1`` and
+``m0 = 2``.  The radial parity class is set by the **physical**
+azimuthal wavenumber ``m = m0 * h``, which for every *odd* ``m0``
+(the full circle included) agrees with the harmonic index ``h`` -- so
+only an even wedge can catch a selector keyed on ``h``.
+
 ``div_true.npy`` does the same for ``divergence``, with one wrinkle:
 operator *equality* is invisible on a solenoidal field, so the ground
 truth is taken on ``DIV_PROBE`` -- the IC rescaled per component,
@@ -52,14 +58,21 @@ NX, NY, NZ = 8, 24, 8
 LX, LZ = 5.0, 5.0
 RE = 100.0
 
-# (system, family); families exercise both basis paths + parity
+# (system, family, m0); families exercise both basis paths + parity
 # (pipe) + the 9-component conformation schema (viscoelastic-dean).
+#
+# The pipe runs twice.  The axis parity class is set by the *physical*
+# azimuthal wavenumber ``m = m0 * h``, so the full circle (m0 = 1)
+# cannot tell that selector apart from one keyed on the harmonic index
+# ``h`` alone -- the two agree for every odd m0.  The ``m0 = 2`` wedge
+# separates them, and it is the only row here that does.
 SYSTEMS = [
-    ("plane-couette", "cartesian"),
-    ("pipe", "cylindrical"),
-    ("taylor-couette", "annular"),
-    ("viscoelastic-dean", "annular"),
-    ("kolmogorov", "triply_periodic"),
+    ("plane-couette", "cartesian", 1),
+    ("pipe", "cylindrical", 1),
+    ("pipe", "cylindrical", 2),
+    ("taylor-couette", "annular", 1),
+    ("viscoelastic-dean", "annular", 1),
+    ("kolmogorov", "triply_periodic", 1),
 ]
 
 CURL_TOL = 1e-10  # vs dnsjax _curl_fn (expect machine precision)
@@ -118,8 +131,8 @@ def _solver_divergence(state, system: str, flow, fourier):
     )
 
 
-def _generate(system: str, outdir: str) -> None:
-    """Write ``state.tar`` (+ ``omega.tar``) for *system*.
+def _generate(system: str, outdir: str, m0: int = 1) -> None:
+    """Write ``state.tar`` (+ ``omega.tar``) for *system* at wedge *m0*.
 
     Runs inside the ``--gen`` subprocess; this is the only code path
     that imports JAX.
@@ -139,6 +152,10 @@ def _generate(system: str, outdir: str) -> None:
 
     phys: dict = {"system": system}
     geo: dict = {"lx": LX, "lz": LZ}
+    if m0 != 1:
+        # Azimuthal wedge (cylindrical / annular surfaces only); the
+        # spec's derive then overwrites geo.lz with 2*pi/m0.
+        geo["m0"] = m0
     init: dict = {}
     if system == "taylor-couette":
         phys.update(re1=RE, re2=-RE)  # re derives from re1
@@ -242,13 +259,13 @@ def _generate(system: str, outdir: str) -> None:
         np.save(os.path.join(outdir, "div_true.npy"), np.asarray(div_true))
 
 
-def _gen_subprocess(system: str, outdir: str) -> None:
+def _gen_subprocess(system: str, outdir: str, m0: int) -> None:
     """Spawn the ``--gen`` generation subprocess (forced 1 CPU device)."""
     env = dict(os.environ)
     env["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
     env["NPROC"] = "1"
     subprocess.run(
-        [sys.executable, __file__, "--gen", system, outdir],
+        [sys.executable, __file__, "--gen", system, outdir, str(m0)],
         check=True,
         env=env,
     )
@@ -415,7 +432,8 @@ def _check_system(system: str, family: str, outdir: str) -> None:
     assert abs(vol - exp) / exp < VOL_TOL, f"{system}: vol {vol} != {exp}"
 
     _check_subsetting(system, family, d, st)
-    print(f"  {system}: OK")
+    wedge = "" if info.azimuthal_m0 == 1 else f" (m0={info.azimuthal_m0})"
+    print(f"  {system}{wedge}: OK")
 
 
 def _check_subsetting(system, family, d, full) -> None:
@@ -448,12 +466,12 @@ def _check_subsetting(system, family, d, full) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gen", nargs=2, metavar=("SYSTEM", "OUTDIR"))
+    ap.add_argument("--gen", nargs=3, metavar=("SYSTEM", "OUTDIR", "M0"))
     ap.add_argument("--system", default=None)
     args = ap.parse_args()
 
     if args.gen is not None:
-        _generate(args.gen[0], args.gen[1])
+        _generate(args.gen[0], args.gen[1], int(args.gen[2]))
         return 0
 
     print(
@@ -478,10 +496,10 @@ def main() -> int:
             return 1
 
     with tempfile.TemporaryDirectory() as tmp:
-        for system, family in systems:
-            out = os.path.join(tmp, system)
+        for system, family, m0 in systems:
+            out = os.path.join(tmp, f"{system}-m0{m0}")
             os.makedirs(out, exist_ok=True)
-            _gen_subprocess(system, out)
+            _gen_subprocess(system, out, m0)
             _check_system(system, family, out)
 
     print("\nAll snapshot-export tests passed.")

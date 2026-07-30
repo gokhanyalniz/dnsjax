@@ -660,7 +660,7 @@ def _part_d(step, state, dump: str | None):
             f"({type(exc).__name__}: {str(exc)[:120]})"
         )
         print("  re-run with e.g. --nx 32 --nz 32 for Part D alone.")
-        return 0.0
+        return 0.0, False
     if dump:
         with open(dump, "w") as fh:
             fh.write(text)
@@ -668,7 +668,7 @@ def _part_d(step, state, dump: str | None):
     comps, entry = _split_computations(text)
     if entry is None:
         print("  no ENTRY computation found")
-        return 0.0
+        return 0.0, False
     e_instrs, e_order = _parse(comps[entry])
     whiles = [
         (n, re.search(r"body=%([\w.\-]+)", e_instrs[n][4]).group(1))
@@ -678,7 +678,7 @@ def _part_d(step, state, dump: str | None):
     ]
     if not whiles:
         print("  no while in ENTRY (corrector unrolled?)")
-        return 0.0
+        return 0.0, False
     # The banded solves carry their own small ``while``s; the corrector
     # is the one with by far the largest body, so its share is the one
     # the verdict quotes.
@@ -770,7 +770,7 @@ def _part_d(step, state, dump: str | None):
         f"\n  corrector while = %{best[2]} (largest body): "
         f"{100.0 * best[1]:.1f}% of its cost proxy is loop-invariant"
     )
-    return best[1]
+    return best[1], True
 
 
 # ── env banner + main ────────────────────────────────────────────────
@@ -925,7 +925,7 @@ def main() -> None:
     params.step.corrector_tolerance = 1e-5
     params.step.max_corrector_iterations = 10
     step = build(flow)[3]
-    share = _part_d(step, state, args.hlo_out)
+    share, hlo_ok = _part_d(step, state, args.hlo_out)
 
     # Nothing re-executes at K = 1, so the realized saving is zero
     # there and the Part C table is the K = 2 hypothetical.
@@ -970,7 +970,11 @@ def main() -> None:
         f"ny={args.ny} nx={args.nx} nz={args.nz} K={k_nat} "
         f"step_ms={t_step * 1e3:.4f} pass_ms={b * 1e3:.4f} "
         f"gemm_save_ms={save_r * 1e3:.4f} elem_share={share:.4f} "
-        f"bound_pct={100.0 * (save_r + elem) / t_step:.3f}"
+        f"bound_pct={100.0 * (save_r + elem) / t_step:.3f} "
+        # Part D can bail out (the 2 GiB HLO limit), and a zero share
+        # then reads exactly like a measured zero.  A sweep collapsed
+        # with ``grep '^SUMMARY'`` never sees the stdout that says so.
+        f"hlo={'ok' if hlo_ok else 'UNAVAILABLE'}"
     )
     if args.cpu_smoke:
         print("\n--cpu-smoke PASS: harness runs end-to-end.")
