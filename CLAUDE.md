@@ -22,20 +22,25 @@ Python >=3.14, `uv`, MPI (for multi-device runs).
 ### Lint
 
 `uv run ruff check --fix`
+`uv run ruff format src tests scripts`
 
-Line length is 79 for **all** lines (ruff `line-length = 79`, E501),
-not only docstrings/comments.
+The commit hook (`prek.toml`) runs both. Do not bare `uv run ruff
+format`: it also reformats `README.md`'s code blocks, which
+deliberately lag. Line length is 79 for **all** lines (ruff
+`line-length = 79`, E501), not only docstrings/comments.
 
 ### Run tests
 
 All tests are standalone scripts (`uv run python tests/test_*.py`,
-the source of truth; they rely on `__main__` setup + shared
-module-level singletons, so `pytest` must never import them). An
-optional pytest bridge (`tests/pytest_suite.py`, the **only** file
+the source of truth; `pytest` must never import them -- why: the
+`tests/pytest_suite.py` docstring). That bridge (the **only** file
 pytest collects via `[tool.pytest.ini_options] python_files`) runs
-each script as a subprocess: `uv run pytest -m "not slow"` for the
-offline loop, plain `uv run pytest` for everything (`mpi`-marked
-scripts auto-skip without `mpirun`). Output streams live at every
+each script as a subprocess:
+`uv run pytest -m "not slow and not mpi"` for the offline loop,
+`-m "not slow"` to add the two quick mpirun entries (the full
+`test_probes`/`test_forcing` runs), plain `uv run pytest` for
+everything (`mpi`-marked scripts auto-skip without `mpirun`).
+Output streams live at every
 layer (scripts line-buffer stdout, launch sites tee children through
 `tests/_live.py`, pytest defaults to `-s`), so background a long run
 and tail it for progress -- and kill it early when something is
@@ -87,16 +92,15 @@ compose with `mpirun`; `python -m dnsjax` is the equivalent module
 form, same `__main__.main()`). `uv run dnsjax --help` needs no mpirun
 (exits at the parser, no side effects). A run writes its `.dat`
 files/snapshots to the cwd, so launch from a scratch dir. `np0 * np1`
-counts devices, not processes (a single process can address all GPUs on
-a node); launch recipe, SLURM discipline, and the per-task-visibility
-trap: the `Distribution` docstring in `parameters.py`.
+counts devices, not processes; launch recipe, SLURM discipline, and
+the per-task-visibility trap: the `Distribution` docstring in
+`parameters.py`.
 
 `mpirun -np 2 .venv/bin/dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
 
-For double parallelisation on the default CGL grid (pick `ny` divisible
-by `np0` for an even split; the sharding layer auto-pads otherwise, and
-every auto-pad -- spectral, physical, padded-size rounding, Pallas
-tiles -- prints a startup diagnostic):
+For double parallelisation on the default CGL grid (pick `ny`
+divisible by `np0`; every auto-pad -- spectral, physical, padded-size
+rounding, Pallas tiles -- prints a startup diagnostic):
 
 `mpirun -np 4 .venv/bin/dnsjax --dist.np0 2 --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 28`
 
@@ -112,7 +116,8 @@ first: `--init.snapshot` > `--init.start_from_laminar` >
 `_amplitude`/`_width`/`_wavelength`) > `--init.random_field` (the
 **default** when no snapshot is given; `--init.random_amplitude` /
 `_smoothness` / `_seed` / `_mean_flow`, plus
-`_conformation_amplitude` for viscoelastic-dean). Total-field
+`--init.random_conformation_amplitude` for viscoelastic-dean).
+Total-field
 dean/viscoelastic-dean add the analytical laminar profile. Construction,
 per-geometry pairing, the sharded/padded-mesh-safe builds, and the
 divergence/Hermitian caveats: the `random_field.py` and
@@ -244,13 +249,13 @@ GPU-runnable (`--dist.platform cuda`). It parses the shared per-flow
 surface (`bootstrap.resolve_parameters`; public names, strict) plus its
 own `[tg]`/`--tg.*` extension section (`TGParams`). **`G_max` needs a
 converged wall-normal resolution (`ny`/`nr`)**: unresolved near-wall FD
-modes carry a mesh-dependent *early* `G` spike that can beat the
-physical optimum outright, and no post-processing removes it — it is
-real for the discrete operator. `--tg.save_operator` additionally
+modes fake an early `G` spike that can beat the physical optimum (why
+it is irremovable + the recipe: the module docstring's "Converging
+N_y" section). `--tg.save_operator` additionally
 exports each mode's reduced generator (`<stem>_tg_op.npz`) for the
 `analysis/response/` post-processing. Math, the `frozen_profile_flow`
-hook, the CLI/output spec, the `--tg.dt` trade-off, and the convergence
-recipe: the module docstring and `analysis/CLAUDE.md`.
+hook, the CLI/output spec, and the `--tg.dt` trade-off: the module
+docstring and `analysis/CLAUDE.md`.
 
 ### Code-exploration constraints
 
@@ -341,8 +346,8 @@ components; `__main__` crosses that boundary once per state (after the
 IC, and for the diagnostics/snapshot consumers), probes/forcing convert
 their own mode columns, and anything handing a freshly built state to a
 stepper must convert first. Cartesian and triply-periodic carry
-physical components always, `res.consistent_imm` included. Rules and
-rationale: `geometries/wall_bounded/CLAUDE.md`.
+physical components always (Cartesian in both `res.consistent_imm`
+states). Rules and rationale: `geometries/wall_bounded/CLAUDE.md`.
 
 **Moving frame of reference (`phys.u_grid`)**: translates the
 wall-bounded frame along the grid direction (`None` → laminar bulk;
@@ -363,8 +368,9 @@ transform batch vs peak memory (`solver.rhs_transform_chunks`, applied
 by `fft.chunked_transform`; the ~36-field viscoelastic batch is where it
 bites); cnab2 is a throughput win, not a peak-memory one (`timestep.py`).
 The dominant global memory multipliers are `phys.oversampling_factor`
-(~2.25× physical points at the default 3) and `res.double_precision`
-(2×).
+(at the default 3: ~2.25× physical points wall-bounded, ~3.375×
+periodic -- only periodic flows oversample `y`) and
+`res.double_precision` (2×).
 
 ### Parameter layering
 
@@ -380,7 +386,8 @@ on the CLI and in the TOML, aliased fields go by public names
 `--sample-toml <system>` document each flow. Never inherited from a
 snapshot: the JAX-setup fields `dist.np0`/`np1`/`platform` and
 `res.double_precision` (chosen per run; a precision mismatch with the
-snapshot rejects), and the resume-decision fields
+snapshot rejects), the whole `[solver]` section (execution-only,
+`read_snapshot_params` strips it), and the resume-decision fields
 `init.snapshot`/`init.force_resume` (recorded for lineage only).
 Detail: `bootstrap.py` (`resolve_parameters`; other entry points pass
 `toml_path`/`extensions`/`prog` — the TG CLI is the template).
@@ -438,9 +445,8 @@ stochastic-kick coefficient log (`[force]`) → `forcing.bin` +
 
 The two binary streams carry a sidecar `format_version` (writer:
 `probes.py`/`forcing.py`; reader floor: each reader's
-`MIN_FORMAT_VERSION`), enforced like the snapshot one — their record
-layout never changes, so only a version bump separates an old stream
-from a silent misread. Bump both when the stored *meaning* changes.
+`MIN_FORMAT_VERSION`), enforced like the snapshot one. Bump both when
+the stored *meaning* changes (rationale: the writers' docstrings).
 
 All are also flushed at shutdown, after the first step, before snapshot
 writes, and on SIGTERM/SIGINT, so they stay consistent with snapshots.
@@ -491,18 +497,15 @@ docstrings.
   globally and redistributing with `jax.device_put`; when direct
   allocation is not possible, do not substitute `jnp.asarray` for
   `jax.device_put`.
-- **Resharding an existing multi-device array** (as opposed to a
-  host→device ingest, which is the `device_put` above): do it **inside
-  `jax.jit`** with `jax.sharding.reshard`, and move **one mesh axis
-  per step**. An eager `device_put` to a new sharding makes the
-  runtime redistribute piecewise instead of emitting a collective
-  (measured 338× slower than the same move jitted); relocating both
-  mesh axes at once defeats SPMD, which then replicates the whole
-  array on every device (`Involuntary full rematerialization` --
-  `ndev`× the traffic *and* the peak memory). It only shows at
-  `np0 > 1, np1 > 1`, so audit on a `(2, 2)` mesh. Jitting costs a
-  compile, so this is for reshards that run repeatedly, not
-  once-per-run ones. Pattern + numbers: `snapshot.py`'s `_via_mid` /
+- **Resharding an existing multi-device array** (vs a host→device
+  ingest, the `device_put` above): do it **inside `jax.jit`** with
+  `jax.sharding.reshard`, moving **one mesh axis per step** -- eager
+  `device_put` redistributes piecewise (338× slower than jitted),
+  and moving both axes at once replicates the whole array on every
+  device (`Involuntary full rematerialization`; shows only at
+  `np0 > 1, np1 > 1`, so audit on a `(2, 2)` mesh). Jitting costs a
+  compile: for reshards that run repeatedly, not once-per-run ones.
+  Pattern + numbers: `snapshot.py`'s `_via_mid` /
   `_to_io_layout_core`; codebase-wide audit recipe:
   `~/.claude/plans/reshard-audit-jitted-collectives.md`.
 - `jax_enable_x64` is set from `params.res.double_precision` before
@@ -540,10 +543,13 @@ docstrings.
 - Pallas/Triton GPU kernels: interpret mode (CPU) validates numerics
   but **not** Triton's lowering; compile-check on the GPU-less dev box
   with `jax.jit(f).trace(*a).lower(lowering_platforms=("cuda",))`. The
-  lowering/layout rules, the partial-tile miscompile (pad tiled arrays
-  to whole tiles), and the `check_vma=False` a `pallas_call` inside a
-  `shard_map` needs are in the `_pallas_banded_solve` docstring; guards
-  `test_pallas_cuda_lowering`, `test_pallas_cuda_lowering_sharded_solve`.
+  lowering/layout rules and the partial-tile miscompile (pad tiled
+  arrays to whole tiles): the `_pallas_banded_solve` docstring; the
+  `check_vma=False` a `pallas_call` inside a `shard_map` needs:
+  `PerModeBandedPallasOperator.solve`. Guards
+  `test_pallas_cuda_lowering` and
+  `test_pallas_cuda_lowering_sharded_solve` (both in
+  `tests/test_banded_solver.py`).
 
 ## Scripts
 
@@ -584,8 +590,9 @@ one-liners. Cross-cutting notes:
   rotational nonlinear term (a wrong advection change can still report
   `err=0`); `test_random_smoke.py` drives that path.
 - In-process geometry tests configure the singletons **once** at
-  module top (`test_cylindrical.py`/`test_annular.py` via
-  `update_parameters()`, `test_cartesian.py` via direct `params.*`
+  module top (`test_cylindrical.py`/`test_annular.py`/
+  `test_viscoelastic.py` via `update_parameters()`,
+  `test_cartesian.py` via direct `params.*`
   assignment); a test that re-calls `update_parameters()` (only
   `test_annular.py` does) mutates the shared `params`/`derived_params`
   and must restore the module config before returning.
@@ -648,10 +655,10 @@ one-liners. Cross-cutting notes:
   nz-padding and azimuthal-wedge entries).
 - `tests/test_random_smoke.py`: random-IC nonlinear integration for
   the 6 distinct stepping machineries (+ cnab2, adaptive,
-  split-corrector, consistent_imm x {cartesian, annular, pipe x
-  axis-fit} x {iterative-cn, cnab2}, multi-device-padding and
-  nan-guard entries; default-IC + chunked-RHS ride the base
-  plane-couette entry).
+  split-corrector, consistent_imm x {plane-couette, taylor-couette}
+  x {iterative-cn, cnab2} + pipe + viscoelastic-dean,
+  multi-device-padding and nan-guard entries; default-IC +
+  chunked-RHS ride the base plane-couette entry).
 - `tests/test_quasi_keplerian.py`: quasi-keplerian control-parameter
   derivation, regime/validation errors, and the azimuthal-wedge Fourier
   + nonlinear/physical-space units.
@@ -674,16 +681,19 @@ one-liners. Cross-cutting notes:
 - `tests/response/test_lim.py`: LIM identification.
 - `tests/response/test_ssi.py`: SSI identification.
 - `tests/test_snapshot.py`: snapshot round-trips, np-agnostic resume,
-  standard-tools readability, 9-component viscoelastic case, and the
+  standard-tools readability, 9-component viscoelastic case, the
   multi-device I/O layout (every mesh family, both span-fragmenting
-  tiers, the no-rematerialization guard, engine selection).
+  tiers, the no-rematerialization guard, engine selection), and the
+  integrity guards (chunk-shape-vs-`native_shape` refusal, loud
+  damaged-archive naming, crash-safe `.partial` commit-by-rename).
 - `tests/test_resume.py`: snapshot lineage and resume policy
   (`--unit-only`).
 - `tests/test_snapshot_import.py`: `scripts/snapshot_import.py`
   native-contract validation (offline).
 - `tests/test_snapshot_export.py`: `dnsjax.analysis` API vs solver
   ground truth (JAX-free import guarantee, curl + divergence +
-  viscoelastic-conformation parity, derivative/gradient wiring).
+  viscoelastic-conformation parity incl. the `m0 = 2` pipe wedge row,
+  derivative/gradient wiring).
 - `tests/test_rolls_smoke.py`: localized-rolls IC integration for the
   4 wall-bounded rolls-builder variants (short horizon).
 - `tests/test_localized_rolls.py`: IC construction self-test (rolls +
@@ -691,4 +701,5 @@ one-liners. Cross-cutting notes:
   flows run the random half only).
 - `tests/test_transient_growth.py`: transient-growth analysis (host
   units, per-flow hooks, CLI features, per-flow literature anchors, and
-  an m0-wedge-vs-full-circle equivalence check).
+  an m0-wedge-vs-full-circle equivalence check; `--fast` skips the
+  anchors).

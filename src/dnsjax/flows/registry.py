@@ -124,7 +124,7 @@ walled_systems: list[str] = [
 def stored_value(meta_params: dict, system: str, section: str, name: str):
     """Read internal field ``section.name`` from a stored params dict.
 
-    Stored (v4) snapshot metadata records the *public* names; this
+    Stored snapshot metadata records the *public* names; this
     looks the field up under its public alias (identity for global /
     unaliased fields).  Returns ``None`` when absent.
     """

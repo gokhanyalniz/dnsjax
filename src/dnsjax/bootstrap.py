@@ -103,8 +103,11 @@ def configure_jax_platform(
     configures JAX for the platform/precision -- the single-process half
     of :func:`configure_jax_runtime`, without the multi-process
     ``jax.distributed.initialize`` and the CPU-threading ``XLA_FLAGS``
-    that only the production entry point needs.  Must be called *before*
-    importing :mod:`dnsjax.sharding` or any geometry module.
+    that only the production entry point needs.  The thread pool stays
+    unpinned on purpose -- a single-process test or script *should*
+    use the whole box; do not add the production pinning here.  Must
+    be called *before* importing :mod:`dnsjax.sharding` or any
+    geometry module.
 
     After this, :data:`sharding` reports the active device unambiguously
     (its banner reads the live device, so a stale ``params.dist.platform``

@@ -210,7 +210,7 @@ Conventions and choices
 
 Choosing the knobs
 ==================
-The defaults suit the four systems at moderate `$Re$`; every failure
+The defaults suit the five systems at moderate `$Re$`; every failure
 mode below is guarded per mode with an explicit error.
 
 - ``--tg.dt`` (0.01): the probe step sets *conditioning* and the
@@ -259,9 +259,9 @@ mode below is guarded per mode with an explicit error.
   so the naive "reduce it to lift the physical floor" is unreliable;
   read the printed tail rather than assuming a direction.
 - ``--tg.t_max`` (default `$0.25\,Re$`): covers the classic optima,
-  `$t_{\mathrm{opt}} \approx 0.05$`--`$0.15\,Re$`, of the four flows
-  (Taylor-Couette uses the derived reference ``re``: ``re1``, or
-  ``re2`` when outer-driven).  Raise it when a mode prints the
+  `$t_{\mathrm{opt}} \approx 0.05$`--`$0.15\,Re$`, of the five flows
+  (Taylor-Couette / quasi-Keplerian use the derived reference ``re``:
+  ``re1``, or ``re2`` when outer-driven).  Raise it when a mode prints the
   "G still rising at t_max" warning.
 - ``--tg.nt`` (65): `$G(t)$`-grid density.  The golden-section
   refinement only polishes the bracket around the *grid* argmax, so
