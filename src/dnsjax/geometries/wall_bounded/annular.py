@@ -84,9 +84,10 @@ Driving: shear-driven and force-driven flows
 --------------------------------------------
 The geometry supports two driving modes via the same infrastructure:
 
-- **Shear-driven** (Taylor-Couette): the rotating walls set an azimuthal
-  circular-Couette base flow `$U_\theta(r) = A_0 r + B_0/r$` and the
-  perturbation `$\mathbf{u}'$` is integrated.  The base coupling enters
+- **Shear-driven** (Taylor-Couette / quasi-Keplerian -- the same
+  circular-Couette flow under two parameterizations): the rotating
+  walls set an azimuthal base flow `$U_\theta(r) = A_0 r + B_0/r$` and
+  the perturbation `$\mathbf{u}'$` is integrated.  The base coupling enters
   only through the rotational-form nonlinear term (see ``rhs.py``) via
   ``base_flow`` and ``curl_base_flow`` -- no hand-coded coupling terms.
 - **Force-driven** (Dean flow): both walls are stationary and the
@@ -97,6 +98,11 @@ The geometry supports two driving modes via the same infrastructure:
   radial profile, zero by default) and added at the mean mode by
   :func:`_get_rhs_core`.  See ``flows.wall_bounded.dean`` and
   :func:`dean_laminar_u_theta`.
+
+The viscoelastic sPTT extension (``annular_viscoelastic.py``, bound by
+``flows.wall_bounded.viscoelastic_dean``) is a third user of the same
+infrastructure: it reuses the force-driven total-field mode with the
+9-component velocity + conformation state.
 
 An optional ``block_mean_spanwise_velocity`` zeroes the mean **axial**
 velocity (the undriven homogeneous direction); the azimuthal mean
@@ -202,6 +208,11 @@ class Fourier:
     only at the mean mode `$(m, k_z) = (0, 0)$` -- the unique
     `$m^2 + k_z^2 = 0$` mode (padding slots carry nonzero placeholder
     wavenumbers; see ``pad_harmonics`` in :mod:`dnsjax.operators`).
+
+    The wavenumber arrays are global multi-device arrays: host-side
+    consumers recompute them from the JAX-free
+    :mod:`dnsjax.harmonics` sequences (`$\times\,2\pi/L$`, azimuthal
+    `$\times\,m_0$`), never ``np.asarray`` on these fields.
     """
 
     kz: Array = field(init=False)

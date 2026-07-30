@@ -88,7 +88,8 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
 
     Used by the geometry base dataclasses
     (``TriplyPeriodicFlow``, ``CartesianFlow``,
-    ``CylindricalFlow``), their flow subclasses, the
+    ``CylindricalFlow``, ``AnnularFlow``,
+    ``ViscoelasticAnnularFlow``), their flow subclasses, the
     geometry-specific ``Fourier`` classes, and the solver
     dataclasses (``DenseJAXSolver``,
     ``PerModeBandedPallasOperator``).

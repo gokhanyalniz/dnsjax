@@ -109,6 +109,11 @@ class Fourier:
         mask serves the operator pin row, the
         influence-matrix mean branch, and all mean-mode
         physics (projections and bulk-velocity writes).
+
+    The wavenumber arrays are global multi-device arrays: host-side
+    consumers recompute them from the JAX-free
+    :mod:`dnsjax.harmonics` sequences (`$\times\,2\pi/L$`), never
+    ``np.asarray`` on these fields.
     """
 
     kx: Array = field(init=False)

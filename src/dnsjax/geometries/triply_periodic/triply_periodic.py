@@ -52,6 +52,11 @@ class Fourier:
     ``k_metric`` equals 2 for `$k_x > 0$` and 1 for
     `$k_x = 0$`, accounting for the Hermitian symmetry of
     the real FFT.
+
+    The wavenumber arrays are global multi-device arrays: host-side
+    consumers recompute them from the JAX-free
+    :mod:`dnsjax.harmonics` sequences (`$\times\,2\pi/L$`), never
+    ``np.asarray`` on these fields.
     """
 
     kx: Array = field(init=False)

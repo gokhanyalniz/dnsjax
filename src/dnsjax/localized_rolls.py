@@ -54,10 +54,16 @@ broadcast product is sharded -- so **no full array is ever materialised**
 and the field is device-count-independent.  The peak normalization is a
 one-time host-side computation on the small 1-D factor signals (also
 replication-free).  No-slip is **exact** (the wall slice of every profile
-is identically zero, never transformed).
+is identically zero, never transformed).  Reality is automatic: every
+1-D factor spectrum is the forward FFT of a *real* signal, hence
+conjugate-symmetric, and separable products preserve that Hermitian
+symmetry -- no enforcement step (unlike the random field's
+``enforce_hermitian_slice``).  The 1-D spectra are zero-padded to the
+mesh-padded mode counts, so padding modes stay identically zero on
+any device mesh.
 
-**Import-order discipline**: only NumPy and the (JAX-free)
-``parameters`` singletons are imported at module top; ``jax``,
+**Import-order discipline**: only NumPy and the JAX-free
+``harmonics`` / ``parameters`` leaves are imported at module top; ``jax``,
 ``sharding``, and the geometry modules are imported lazily inside each
 generator, so importing this module is safe before JAX is configured.
 Wavenumber arrays are recomputed host-side (never fetched from the
@@ -71,6 +77,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+# Wavenumber sequences come from the JAX-free ``harmonics`` leaf: the
+# builders must never fetch the ``fourier`` singleton's wavenumber
+# arrays, which are global multi-device arrays (not addressable per
+# process under ``mpirun``).
+from .harmonics import complex_harmonics, real_harmonics
 from .parameters import (
     annular_systems,
     cartesian_systems,
@@ -140,21 +151,14 @@ def _cos_signal(n: int) -> np.ndarray:
     return np.cos(2 * pi * np.arange(n) / n)
 
 
-def _complex_harmonics(n: int) -> np.ndarray:
-    """Host :func:`operators.complex_harmonics`: FFT order
-    ``[0, .., n//2-1, -n//2+1, .., -1]`` with the Nyquist mode dropped."""
-    qs = (np.arange(n, dtype=int) + n // 2) % n - n // 2
-    return np.concatenate([qs[: n // 2], qs[n // 2 + 1 :]])
-
-
 def _complex_k(n: int, L: float) -> np.ndarray:
     """Host complex-axis wavenumbers, true length ``n - 1``."""
-    return _complex_harmonics(n) * (2.0 * pi / L)
+    return complex_harmonics(n) * (2.0 * pi / L)
 
 
 def _real_k(n: int, L: float) -> np.ndarray:
     """Host real-axis wavenumbers ``[0, .., n//2-1] * 2 pi / L``."""
-    return np.arange(0, n // 2, dtype=int) * (2.0 * pi / L)
+    return real_harmonics(n) * (2.0 * pi / L)
 
 
 def _ddz(signal: np.ndarray, L: float) -> np.ndarray:

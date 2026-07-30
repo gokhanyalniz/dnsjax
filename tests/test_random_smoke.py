@@ -63,6 +63,16 @@ the force-driven Dean flow, where the coupling is the pure
 instantaneous mean-flow term (``l_bf == L_mf``) -- the regime where the
 two corrector structures most differ.
 
+Six ``*-consistent-imm`` entries drive ``res.consistent_imm`` through
+a real nonlinear run -- the stability gate the one-step
+``test_imm_continuity.py`` guard cannot provide (the rejected
+state-side projection passed every linear gate yet went non-finite
+within ~6 steps of exactly the plane-couette configuration here):
+plane-couette and taylor-couette under both schemes, plus the pipe
+spin quad and the 9-component viscoelastic-dean composition (which
+inherits the annular v-omega pass and is exercised nowhere else)
+under iterative-cn.
+
 A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
 ``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
 divisible by ``np1``) is the regression guard for the per-device

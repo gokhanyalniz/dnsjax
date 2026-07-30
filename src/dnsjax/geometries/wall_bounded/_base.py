@@ -197,7 +197,9 @@ def pad_base_flow(flow: object) -> None:
     divergence-free, hence projection-neutral and non-stiff --
     unlike the rotational split `$\boldsymbol{\omega}' \times
     \mathbf{c} + \nabla(\mathbf{c} \cdot \mathbf{u}')$`, whose
-    explicit `$c\,\partial_y u'$` half is wall-stiff).  When
+    explicit `$c\,\partial_y u'$` half is wall-stiff -- the first
+    moving-frame implementation used that split and was removed for
+    exactly this instability, commit ``1a8d7dc``).  When
     `$U_{grid} = 0$` the field aliases ``base_flow_padded``
     (byte-identical to the frame-free behaviour).
 

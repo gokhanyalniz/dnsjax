@@ -48,8 +48,11 @@ Diagnostics (``stats.dat``, ``steps.dat``, ``corrector.dat``,
 ``get_stats`` output is accumulated on-device in a fixed
 ``(nbuffer, n_cols)`` buffer (one row every ``it_stats``
 steps) and flushed to ``stats.dat`` when the buffer fills, at
-shutdown, after the first (JIT-heavy) step, after every
-snapshot write, and on a termination signal
+shutdown, after the first (JIT-heavy) step, *before* every
+snapshot write (so a buffered non-finite diagnostic aborts
+before a snapshot of the same broken state is written, and the
+``.dat`` files stay consistent with each snapshot), and on a
+termination signal
 (``flush_all_buffers``, which calls the shared
 ``_flush_stats``).  Buffering avoids a
 host-device sync per sample; each flush is then ``fsync``-ed,
@@ -252,7 +255,7 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
 
     meta = read_metadata(Path(snap_path))
     snap_grid = meta.get("wall_normal_grid")
-    # Stored (v4) params use public names (res.ny is "nr" for the
+    # Stored params use public names (res.ny is "nr" for the
     # cylindrical/annular flows); look it up via the alias.
     snap_ny = stored_value(meta.get("params", {}), meta["system"], "res", "ny")
     curr_grid = derived_params.wall_normal_grid
