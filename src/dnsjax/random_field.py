@@ -31,9 +31,11 @@ scaling the raw draw.  The triply-periodic family instead uses a Leray
 projection (:func:`_leray`) that never divides by `$k$` and needs no such
 step.
 
-**Dean flow** (``system == "dean"``) integrates the *total* field, so the
-generated divergence-free perturbation is added to the analytical laminar
-Dean profile (``add_dean_laminar``) to form the total-field IC.
+**Total-field Dean flows** (``dean`` / ``viscoelastic-dean``) integrate
+the *total* field: the divergence-free perturbation is added to the
+analytical laminar profile -- ``add_dean_laminar`` for Dean, while the
+viscoelastic builder forms its 9-component total state directly and
+``add_viscoelastic_laminar`` serves velocity-only ICs (the rolls path).
 
 **Per-device, non-JAX construction**: each device fills only its own
 spectral modes -- keyed by the *global* mode index, so the field is
@@ -47,8 +49,8 @@ wall window so its value and first derivative vanish at the walls
 analytically; the continuity-derived component's no-slip is then only
 truncation-level (projected by the first corrector step).
 
-**Import-order discipline**: only NumPy and the (JAX-free)
-``parameters`` singletons are imported at module top.  ``jax``,
+**Import-order discipline**: only NumPy and the JAX-free
+``harmonics`` / ``parameters`` leaves are imported at module top.  ``jax``,
 ``sharding``, and the geometry modules (which build the ``fourier``
 singleton at import) are imported lazily inside each generator, so
 importing this module is safe before JAX is configured and before the
@@ -62,6 +64,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+# Wavenumber sequences come from the JAX-free ``harmonics`` leaf: the
+# per-device generators must never fetch the ``fourier`` singleton's
+# wavenumber arrays, which are global multi-device arrays (not
+# addressable per process under ``mpirun``).
+from .harmonics import complex_harmonics, real_harmonics
 from .parameters import (
     annular_systems,
     cartesian_systems,
@@ -138,23 +145,6 @@ def enforce_hermitian_slice(
 # generators are ever vectorised into JAX (removing the per-mode Python
 # loops), use ``jax_threefry_partitionable=True`` with a replicated key
 # and draws under ``out_shardings`` for trivial partition-aware PRNG.
-
-
-def _real_harmonics_np(n: int) -> np.ndarray:
-    """Host-numpy :func:`operators.real_harmonics`: ``[0, .., n//2-1]``.
-
-    Computed on the host so the per-device generators never fetch the
-    ``fourier`` singleton's wavenumber arrays, which are global
-    multi-device arrays (not addressable per process under ``mpirun``).
-    """
-    return np.arange(0, n // 2, dtype=int)
-
-
-def _complex_harmonics_np(n: int) -> np.ndarray:
-    """Host-numpy :func:`operators.complex_harmonics`: FFT order
-    ``[0, .., n//2-1, -n//2+1, .., -1]`` with the Nyquist mode omitted."""
-    qs = (np.arange(n, dtype=int) + n // 2) % n - n // 2
-    return np.concatenate([qs[: n // 2], qs[n // 2 + 1 :]])
 
 
 def _column_draw(
@@ -352,8 +342,8 @@ def generate_cartesian(
     ys_np = np.asarray(ys)
     D1_np = np.asarray(D1)
     yw_np = np.asarray(y_weights)
-    kx_np = _real_harmonics_np(nx) * (2 * pi / params.geo.lx)  # (Nkx,)
-    kz_np = _complex_harmonics_np(nz) * (2 * pi / params.geo.lz)  # (Nkz,)
+    kx_np = real_harmonics(nx) * (2 * pi / params.geo.lx)  # (Nkx,)
+    kz_np = complex_harmonics(nz) * (2 * pi / params.geo.lz)  # (Nkz,)
 
     decay = 1.0 - smoothness
     wn_filter = _wall_normal_filter(ys_np, decay)
@@ -467,11 +457,11 @@ def generate_cylindrical(
     D1_even_np = np.asarray(D1_even)
     D1_odd_np = np.asarray(D1_odd)
     yw_np = np.asarray(y_weights)
-    kz_np = _real_harmonics_np(nx) * (2 * pi / params.geo.lx)  # axial
+    kz_np = real_harmonics(nx) * (2 * pi / params.geo.lx)  # axial
     # Physical azimuthal wavenumbers m = m0 * harmonic over the wedge
     # (m0 = 1 full circle): the continuity relation and axis parity need
     # the physical m; the decay envelope then weights by |m| directly.
-    m_np = params.geo.m0 * _complex_harmonics_np(nz)
+    m_np = params.geo.m0 * complex_harmonics(nz)
 
     decay = 1.0 - smoothness
     # Filter in x = r^2: an axis-regular field is analytic in it, so the
@@ -606,11 +596,11 @@ def generate_annular(
     inv_r_np = np.asarray(inv_r)
     D1_np = np.asarray(D1)
     yw_np = np.asarray(y_weights)
-    kz_np = _real_harmonics_np(nx) * (2 * pi / params.geo.lx)  # axial
+    kz_np = real_harmonics(nx) * (2 * pi / params.geo.lx)  # axial
     # Physical azimuthal wavenumbers m = m0 * harmonic over the wedge
     # (m0 = 1 full circle): the continuity relation needs the physical m;
     # the decay envelope then weights by |m| directly.
-    m_np = params.geo.m0 * _complex_harmonics_np(nz)
+    m_np = params.geo.m0 * complex_harmonics(nz)
 
     decay = 1.0 - smoothness
     wn_filter = _wall_normal_filter(rs_np, decay)
@@ -814,11 +804,11 @@ def generate_viscoelastic_dean(
     inv_r_np = np.asarray(inv_r)
     D1_np = np.asarray(D1)
     yw_np = np.asarray(y_weights)
-    kz_np = _real_harmonics_np(nx) * (2 * pi / params.geo.lx)  # axial
+    kz_np = real_harmonics(nx) * (2 * pi / params.geo.lx)  # axial
     # Physical azimuthal wavenumbers m = m0 * harmonic over the wedge
     # (m0 = 1 full circle): the continuity relation needs the physical
     # m; the decay envelope then weights by |m| directly.
-    m_np = params.geo.m0 * _complex_harmonics_np(nz)
+    m_np = params.geo.m0 * complex_harmonics(nz)
 
     decay = 1.0 - smoothness
     wn_filter = _wall_normal_filter(rs_np, decay)
@@ -936,9 +926,9 @@ def generate_triply_periodic(
     nz = params.res.nz
     Nky = ny - 1
 
-    kx_np = _real_harmonics_np(nx) * (2 * pi / params.geo.lx)  # (Nkx,)
-    kz_np = _complex_harmonics_np(nz) * (2 * pi / params.geo.lz)  # (Nkz,)
-    ky_np = _complex_harmonics_np(ny) * (2 * pi / ly)  # (Nky,)
+    kx_np = real_harmonics(nx) * (2 * pi / params.geo.lx)  # (Nkx,)
+    kz_np = complex_harmonics(nz) * (2 * pi / params.geo.lz)  # (Nkz,)
+    ky_np = complex_harmonics(ny) * (2 * pi / ly)  # (Nky,)
 
     decay = 1.0 - smoothness
     # k_y conjugate-partner permutation (index i <-> ny-1-i, 0 -> 0).

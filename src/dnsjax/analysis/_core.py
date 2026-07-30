@@ -2,16 +2,21 @@ r"""Shared engine for the JAX-free snapshot analysis API.
 
 This module backs :mod:`dnsjax.analysis.snapshot_export` and
 :mod:`dnsjax.analysis.snapshot_ops`.  It depends only on NumPy, the
-standard library, and dnsjax's JAX-free leaf modules
+standard library, dnsjax's JAX-free leaf modules
 (:mod:`dnsjax.snapshot_meta`, :mod:`dnsjax.harmonics`,
-:mod:`dnsjax.fd`) -- importing it never pulls in JAX.
+:mod:`dnsjax.fd`), and the JAX-free flow-spec registry
+(:mod:`dnsjax.flows.registry`, which pulls
+:mod:`dnsjax.flow_spec` and every ``flows/*/specs/*`` module) --
+importing it never pulls in JAX, and every module on that list must
+stay JAX-free to keep the guarantee.
 
 Snapshot-native layout
 ----------------------
 A component chunk read straight off disk and reshaped to
 ``(a_size, n_kz, n_kx)`` *is* the snapshot-native layout -- which,
-as of snapshot format 5, is also the solver's in-memory spectral
-layout (the state is stored untransposed); we never transpose it.
+in format 6 (the reader's floor), is also the solver's in-memory
+spectral layout (the state is stored untransposed); we never
+transpose it.
 Axis 2 is always the real-FFT axis (``n_kx = nx // 2``).  Per
 family:
 

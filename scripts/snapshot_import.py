@@ -57,10 +57,10 @@ pipe / TC          `$(u_z,u_r,u_\theta)$`   `$(r, m, k_z)$`
 =================  =======================  ====================
 
 True shapes are ``(ny, nz-1, nx//2)`` (Cartesian, pipe, TC) and
-``(ny-1, nz-1, nx//2)`` (triply-periodic).  As of snapshot format 5
-this table is literal: the on-disk chunk bytes *are* this native
-state (the solver's spectral layout, no transpose; format 6 made the
-cylindrical/annular components the physical basis above).
+``(ny-1, nz-1, nx//2)`` (triply-periodic).  In format 6 (the
+reader's floor) this table is literal: the on-disk chunk bytes *are*
+this native state (the solver's spectral layout, no transpose), in
+the physical component basis above.
 
 Parameter surface
 -----------------

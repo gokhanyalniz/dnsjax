@@ -33,7 +33,7 @@
   step after reshard #2 brings the full y-extent local on each device
   (full pipeline: the `fft.py` module docstring). `np0` requires
   `ny_padded` divisibility; if unmet, `ny_padded` bumps to the next
-  multiple.
+  7-smooth multiple (`round_up_padded_smooth`, `parameters.py`).
 
 ### Flows
 
@@ -44,8 +44,10 @@
 ### Tests
 
 Kolmogorov is stepped by `tests/test_random_smoke.py` (random-IC
-integration, incl. a cnab2 entry; `dt` capped at 0.005 there, a
-corrector-rate limit), `tests/test_cnab2.py` (the plain no-corrector
+integration: the base iterative-cn entry caps `dt` at 0.005 -- a
+corrector-rate limit; the corrector-free cnab2 entry runs the default
+`dt`; plus adaptive and nan-guard entries), `tests/test_cnab2.py`
+(the plain no-corrector
 AB2 path), and `tests/test_temporal_order.py` (the cnab2
 self-convergence study); `tests/test_monochromatic.py` pins the
 `get_stats` diagnostics (Parseval/physical-space enstrophy identity,

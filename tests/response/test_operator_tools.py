@@ -14,7 +14,7 @@ Two layers:
    growth-curve calls then enable float64 JAX explicitly.
 
 2. **Export faithfulness** (subprocess): a laminar plane-Poiseuille
-   transient-growth run with ``--save-operator`` (the real writer);
+   transient-growth run with ``--tg.save_operator`` (the real writer);
    the loaded bundle must satisfy the coordinate contract
    (``T_proj @ T_lift = I``), reproduce the stored resolved
    eigenvalues (assignment-free nearest matching), and

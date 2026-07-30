@@ -43,6 +43,10 @@ random-IC pipe entries under the flag); it stays because a grid-white
 draw near the axis swamps the off-case measurement with
 under-resolved-noise divergence.
 
+A final ``--pipe-accepts`` subprocess asserts the flag is *settable*
+on the pipe surface at all (it was a deferred hard error before the
+spin-quad opt-in landed).
+
 Each case needs its own process: the parameter singletons and the
 jitted steppers capture ``params`` at import / trace time.
 

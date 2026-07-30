@@ -241,7 +241,7 @@ def _generate(system: str, outdir: str, m0: int = 1) -> None:
 
         conf_true = state[3:]
         # The solver state axes (r, m, k_ax) ARE the snapshot layout
-        # read_state returns (format 5+: stored untransposed).
+        # read_state returns (format 6: stored untransposed).
         np.save(os.path.join(outdir, "conf_true.npy"), np.asarray(conf_true))
         omega = None
     else:  # triply-periodic: curl is pure Fourier, no ground-truth dump

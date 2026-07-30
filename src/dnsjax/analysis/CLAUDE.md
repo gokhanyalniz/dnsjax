@@ -8,12 +8,14 @@ External-facing API for reading and operating on dnsjax snapshots
 Importing `dnsjax.analysis` must **never import JAX**: nothing on the
 `import dnsjax.analysis` path (`__init__.py` and everything it imports)
 may pull in JAX. The API depends only on NumPy, the standard library,
-and dnsjax's JAX-free leaf modules: `fd.py`, `snapshot_meta.py`,
-`harmonics.py`. This works because `src/dnsjax/__init__.py` is empty.
-The guarantee is asserted in `tests/test_snapshot_export.py`
-(`assert "jax" not in sys.modules`). Do not add a JAX import (even
-transitively) to `__init__.py`, any module it imports, or the three
-leaves.
+dnsjax's JAX-free leaf modules (`fd.py`, `snapshot_meta.py`,
+`harmonics.py`), and the JAX-free flow-spec registry
+(`flows/registry.py`, which pulls `flow_spec.py` and every
+`flows/*/specs/*` module). This works because
+`src/dnsjax/__init__.py` is empty. The guarantee is asserted in
+`tests/test_snapshot_export.py` (`assert "jax" not in sys.modules`).
+Do not add a JAX import (even transitively) to `__init__.py`, any
+module it imports, the leaves, or **any flow spec**.
 
 **Exceptions** — modules in this directory that are *not* imported by
 `__init__.py`, so the package-level guarantee is unaffected. Do not
@@ -28,14 +30,16 @@ import either from `__init__.py` or any JAX-free module here.
 - `response/`: **may** use JAX where it runs performantly on GPUs,
   keeping JAX imports inside the functions that need them and platform
   selection in CLIs via `configure_jax_platform`. SciPy (the optional
-  `dnsjax[analysis]` extra) is imported lazily in-function with an
-  install hint. Its own `__init__.py` is docstring-only.
+  `dnsjax[analysis]` extra) is imported lazily in-function: the
+  `expm`/`logm` routes (`ensemble.py`, `ssi.py`) require it (a bare
+  `ImportError` without the extra); the Lyapunov solvers fall back to
+  eigen-based routines. Its own `__init__.py` is docstring-only.
 
 ## Conventions
 
 **Native layout — never transposed.** Data is returned exactly as
-stored, and (format 5+) the stored bytes are the solver's native
-spectral layout: a component chunk reshaped to the native
+stored, and (format 6, the reader's floor) the stored bytes are the
+solver's native spectral layout: a component chunk reshaped to the
 `(y|r|ky, kz|m, kx)` per-component shape (`meta["native_shape"]`) *is*
 the layout the solver computes in, and coordinate tuples are ordered
 to match (no transpose to "fix" layout). As of format 6 the stored
@@ -44,7 +48,10 @@ components are the physical components in every family — cyl/annular
 `u_±`/spin working basis is converted away at the write) — so returned
 components are stored components, one-to-one. The per-family
 axis/component tables and the 9-component viscoelastic schema: the
-`_core.py` module docstring.
+`_core.py` module docstring. Chunk I/O validates each component chunk
+against `meta["native_shape"]` and raises `SnapshotArchiveError` (a
+`ValueError` subclass, `snapshot_meta.py`) naming the file and the
+cause — catch that for damaged or mismatched archives.
 
 **Operators match the solver's discrete operators.** `divergence`/`curl`
 reproduce dnsjax's **discrete** operators node-for-node (not just the
@@ -53,9 +60,14 @@ continuous formulae), incl. the parity-reduced pipe radial `D1` — so
 `_curl_fn`, `divergence` against the `_imm_iteration` assembly (on a
 deliberately non-solenoidal probe — on a divergence-free field both
 sides return zero whatever they are). **Re-run it when changing a
-primitive.** Per-function behaviour (the pipe `cylindrical_parity`
-argument, needing the full wall-normal grid, physical-field `integrate`
-with the radial Jacobian): the `snapshot_ops.py` docstrings.
+primitive.** Pipe radial parity must follow the **physical** azimuthal
+mode `m = m0·h` exactly as `cylindrical.Fourier.m_is_even` does
+(`GeometryInfo.azimuthal_m0` → `_core.radial_derivative`; the
+harmonic-index pick silently corrupted every even-wedge pipe
+snapshot; guard: the `m0 = 2` pipe row in `test_snapshot_export.py`).
+Per-function behaviour (the pipe `cylindrical_parity` argument,
+needing the full wall-normal grid, physical-field `integrate` with
+the radial Jacobian): the `snapshot_ops.py` docstrings.
 
 **System → family mapping.** `_core.py` builds its `*_SYSTEMS`
 frozensets from the JAX-free `dnsjax.flows.registry` (the same source
@@ -81,9 +93,12 @@ unknown systems still raise an explicit error.
   probe→operator pipeline, the route trade-offs, and the deliberate
   JAX-vs-NumPy/SciPy split: the `response/__init__.py` docstring.
   Orchestration: `scripts/ensemble_setup.py`.
-- `_core.py` — engine: raw chunk I/O, transforms, basis conversion,
+- `_core.py` — engine: raw chunk I/O, transforms, basis conversion
+  (identity in every family since format 6; kept as the family seam),
   coordinate builders, diff/quadrature primitives, `GeometryInfo`, and
   the `Namespace` object-view over embedded params/stats.
+  `geometry_info` also receives the live pydantic `params` singleton,
+  so it must use plain attribute access only (its docstring).
 
 Detail (array shapes, the transform algorithm, per-function behaviour)
 lives in those module/function docstrings; keep it there, not here.

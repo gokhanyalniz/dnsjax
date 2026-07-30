@@ -293,7 +293,9 @@ class Physics(BaseModel):
     # term, integrated implicitly (inside the iterative-CN corrector;
     # via ``_l_bf`` for CN/AB2).  It de-advects snapshots, improves
     # temporal accuracy, and relaxes the corrector-contraction dt limit
-    # (the advecting velocity drops to ``U - U_grid``).  NOT the
+    # (the advecting velocity drops to ``U - U_grid``) -- though not
+    # cnab2's explicit self-advection CFL, which is set by the
+    # frame-invariant ``u' x omega'``.  NOT the
     # rotational-form splitting `omega' x c + grad(c . u')` of the
     # removed first implementation, whose explicit `c d/dy u'` piece
     # was wall-stiff and blew up.  When ``None`` (default) it resolves
@@ -1093,7 +1095,9 @@ class TimeStepping(BaseModel):
     ``dt = 0.005`` (capped in ``tests/test_random_smoke.py``) while the
     wall-bounded flows contract fine at the default ``dt = 0.01``.
     ``phys.u_grid`` relaxes it (the advecting velocity drops to
-    ``U - U_grid``).
+    ``U - U_grid``) -- this contraction limit only, not the advective
+    CFL bounding ``cnab2``, whose ``u' x omega'`` term is
+    frame-invariant (see the ``u_grid`` field docs).
 
     Adaptive CFL time stepping (``adaptive``)
     -----------------------------------------
@@ -1498,7 +1502,7 @@ def read_snapshot_params(
 
     Returns ``None`` when *snapshot_path* is not a dnsjax snapshot file
     (legacy ``.npz`` snapshots, a laminar start, or a missing path), so
-    the caller simply skips the snapshot layer.  Stored (v4) metadata
+    the caller simply skips the snapshot layer.  Stored metadata
     records the flow-relevant **public** names; they are mapped back
     to internal names via
     :func:`dnsjax.flows.registry.internalize_stored`, which drops
@@ -1653,7 +1657,12 @@ def update_parameters(params_new: Parameters) -> None:
     module-level :data:`_user_set_fields`, so a per-flow default (a
     ``FieldSpec.default`` override, e.g. the viscoelastic axial period
     ``geo.lx``) is materialized only when the user / snapshot / TOML
-    never set the field.  The flow-specific parameter math itself lives
+    never set the field.  Corollary: a **direct** assignment
+    (``params.geo.grid_type = ...``) never enters
+    :data:`_user_set_fields` and is silently restored /
+    re-materialized on the next call -- scripts and tests must set
+    spec-defaulted fields through ``update_parameters(Parameters(...))``.
+    The flow-specific parameter math itself lives
     in the flow specs (``flows/*/specs/``, dispatched via
     :func:`dnsjax.flows.registry.spec_for`).
     """

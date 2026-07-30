@@ -13,6 +13,12 @@ This survey answers empirically whether any *real* configuration trips
 the hard error, prints the notice, or even approaches the thresholds
 -- the evidence backing the tolerance defaults.
 
+Finding (re-run after the 2026-07-30 layering fix let the
+viscoelastic sweep and the large-``lx`` corner actually run): no real
+configuration trips the hard error or prints the notice; the
+near-singular-Poisson worst case measures an ``Lk`` residual of
+3.17e-08 against the 1e-6 notice threshold.
+
 It sweeps the supported configuration space (all six wall-bounded flow
 systems x wall-normal grid types/stretching x ``fd_order`` x ``ny`` x
 ``dt`` x ``Re`` x Crank-Nicolson ``implicitness`` x near-zero-``k^2``
