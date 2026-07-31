@@ -77,9 +77,11 @@ from ..snapshot_meta import (
 CARTESIAN_SYSTEMS = frozenset(_registry.cartesian_systems)
 CYLINDRICAL_SYSTEMS = frozenset(_registry.cylindrical_systems)
 ANNULAR_SYSTEMS = frozenset(_registry.annular_systems)
-#: Viscoelastic annular systems (9-component state: 3 velocity + 6
-#: symmetric conformation-tensor components).  Annular *geometry*, but a
-#: distinct component schema, so kept separate from ``ANNULAR_SYSTEMS``.
+#: Viscoelastic systems (9-component state: 3 velocity + 6 symmetric
+#: conformation-tensor components).  This is the *rheology* axis and
+#: cuts across the geometry sets above, each of which contains its own
+#: viscoelastic member: the geometry decides the operators, this set
+#: decides the component schema.
 VISCOELASTIC_SYSTEMS = frozenset(_registry.viscoelastic_systems)
 PERIODIC_SYSTEMS = frozenset(_registry.periodic_systems)
 
@@ -232,11 +234,7 @@ def geometry_info(params: Namespace) -> GeometryInfo:
             wall_normal_axis=0,
             grid_axis=0,
         )
-    if (
-        system in CYLINDRICAL_SYSTEMS
-        or system in ANNULAR_SYSTEMS
-        or system in VISCOELASTIC_SYSTEMS
-    ):
+    if system in CYLINDRICAL_SYSTEMS or system in ANNULAR_SYSTEMS:
         family = "cylindrical" if system in CYLINDRICAL_SYSTEMS else "annular"
         if system in VISCOELASTIC_SYSTEMS:
             # Velocity + physical conformation-tensor components (the
@@ -584,9 +582,12 @@ def radial_derivative(
 
     *parity* is ``None`` for the cartesian wall-normal axis and the
     annular radius (a plain ``D1`` matmul).  For the pipe it selects the
-    parity-reduced operator per azimuthal mode ``m`` (axis 1): ``"uz"``
-    for the ``(-1)^m`` parity of ``u_z``; ``"utheta"`` for the
-    ``(-1)^{m+1}`` parity of ``u_r`` / ``u_θ``.
+    parity-reduced operator per azimuthal mode ``m`` (axis 1):
+    ``"even"`` for the ``(-1)^m`` class (``u_z``, and the conformation
+    components with an even number of radial/azimuthal indices);
+    ``"odd"`` for the ``(-1)^{m+1}`` class (``u_r`` / ``u_θ``,
+    ``c_rz`` / ``c_θz``).  Callers map component labels to the class
+    with ``snapshot_ops._PARITY_CLASS``.
 
     The class is set by the **physical** azimuthal wavenumber
     ``m = m0 * h``: axis regularity is a statement about the field on
@@ -602,9 +603,15 @@ def radial_derivative(
         gr = np.asarray(grid, dtype=float)
         d1, _ = build_diff_matrices(gr, int(fd_order))
         return _matmul_axis(d1, field, 0)
+    if parity not in ("even", "odd"):
+        raise ValueError(
+            f"parity={parity!r} invalid; use 'even', 'odd' or None. "
+            "(Component *labels* go through "
+            "snapshot_ops._PARITY_CLASS, not here.)"
+        )
     d1_even, d1_odd = parity_radial_d1(grid, fd_order)
     m_even = (complex_harmonics(info.n[1]) * info.azimuthal_m0) % 2 == 0
-    use_even = m_even if parity == "uz" else ~m_even
+    use_even = m_even if parity == "even" else ~m_even
     # One matmul per parity class on its own m-subset (not both
     # operators on the full field and a select).
     out = np.empty_like(field)

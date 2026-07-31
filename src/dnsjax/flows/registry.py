@@ -107,14 +107,45 @@ def _by_family(family: str) -> list[str]:
 # still re-exported there for the many existing importers.
 periodic_systems: list[str] = _by_family("triply-periodic")
 cartesian_systems: list[str] = _by_family("cartesian")
-cylindrical_systems: list[str] = _by_family("cylindrical")
-annular_systems: list[str] = _by_family("annular")
-viscoelastic_systems: list[str] = _by_family("annular-viscoelastic")
+
+# The viscoelastic (sPTT) extension exists in two geometries, so its
+# systems are classified along two independent axes and a consumer
+# reads whichever it actually means:
+#
+# * **geometry** -- ``cylindrical_systems`` / ``annular_systems``
+#   answer "which geometry's machinery drives this?": the basis maps,
+#   the resume regrid, the IC builders, the analysis component schema.
+#   Each geometry list *includes* its viscoelastic member, so a
+#   viscoelastic pipe routes with the Newtonian pipe.
+# * **rheology** -- ``viscoelastic_systems`` answers "does this carry a
+#   conformation tensor?": the solvent viscosity `nu = beta/re`, the
+#   9-component probe labels, the ``[force]`` rejection, the
+#   ``snapshot_import`` refusal.  It cuts *across* the geometry lists.
+#
+# So the two kinds of list overlap by construction.  An ordered
+# ``if/elif`` chain that mixes them must test the rheology axis
+# **first** (the geometry branch would otherwise swallow the
+# viscoelastic member and hand it 3-component machinery).
+annular_viscoelastic_systems: list[str] = _by_family("annular-viscoelastic")
+cylindrical_viscoelastic_systems: list[str] = _by_family(
+    "cylindrical-viscoelastic"
+)
+cylindrical_systems: list[str] = [
+    *_by_family("cylindrical"),
+    *cylindrical_viscoelastic_systems,
+]
+annular_systems: list[str] = [
+    *_by_family("annular"),
+    *annular_viscoelastic_systems,
+]
+viscoelastic_systems: list[str] = [
+    *annular_viscoelastic_systems,
+    *cylindrical_viscoelastic_systems,
+]
 walled_systems: list[str] = [
     *cartesian_systems,
     *cylindrical_systems,
     *annular_systems,
-    *viscoelastic_systems,
 ]
 
 

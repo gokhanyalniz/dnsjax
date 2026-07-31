@@ -120,6 +120,12 @@ SYS_ARGS: dict[str, dict[str, float]] = {
         "init.random_conformation_amplitude": 10.0,
         "geo.lx": 5.0,
     },
+    "viscoelastic-pipe": {
+        "phys.wi": 20.0,
+        "phys.el": 0.02,
+        "init.random_conformation_amplitude": 10.0,
+        "geo.lx": 5.0,
+    },
 }
 
 # (nx, ny, nz) per system and size class.
@@ -128,6 +134,7 @@ SIZES: dict[str, dict[str, tuple[int, int, int]]] = {
     "pipe": {"small": (64, 48, 64), "prod": (256, 192, 256)},
     "taylor-couette": {"small": (64, 48, 64), "prod": (256, 192, 256)},
     "viscoelastic-dean": {"small": (32, 48, 32), "prod": (128, 96, 128)},
+    "viscoelastic-pipe": {"small": (32, 48, 32), "prod": (128, 96, 128)},
 }
 
 # Dense-backend operator count: Lk + Hk components (+ 6 Hc).
@@ -138,6 +145,7 @@ N_OPS = {
     "taylor-couette": 4,
     "dean": 4,
     "viscoelastic-dean": 10,
+    "viscoelastic-pipe": 10,
 }
 
 BACKENDS = ("pallas", "dense")
@@ -222,6 +230,10 @@ def _rebuild_pfc(system: str, flow):
     elif system == "pipe":
         from dnsjax.geometries.wall_bounded.cylindrical import (
             build_cylindrical_stepper as build,
+        )
+    elif system == "viscoelastic-pipe":
+        from dnsjax.geometries.wall_bounded.cylindrical_viscoelastic import (
+            build_viscoelastic_stepper as build,
         )
     elif system in ("taylor-couette", "dean"):
         from dnsjax.geometries.wall_bounded.annular import (
@@ -355,6 +367,7 @@ def run_child(a: argparse.Namespace) -> None:
 
     import jax.numpy as jnp
 
+    from dnsjax.flows.registry import viscoelastic_systems
     from dnsjax.random_field import generate_random_state
     from dnsjax.sharding import sharding
 
@@ -368,7 +381,7 @@ def run_child(a: argparse.Namespace) -> None:
 
     # Operator classes + exact persistent factor bytes.
     groups = {"Lk": flow.Lk_op, "Hk": flow.Hk_op}
-    if a.system == "viscoelastic-dean":
+    if a.system in viscoelastic_systems:
         groups["Hc"] = flow.Hc_op
     operators: dict[str, str | None] = {}
     factor_bytes: dict[str, int] = {}

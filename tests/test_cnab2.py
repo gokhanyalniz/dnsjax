@@ -98,6 +98,7 @@ SPLIT_RTOL = 5e-13
 SYSTEMS = [
     "plane-couette",
     "pipe",
+    "viscoelastic-pipe",
     "taylor-couette",
     "dean",
     "viscoelastic-dean",
@@ -107,6 +108,7 @@ SYSTEMS = [
 FLOW_MODULES = {
     "plane-couette": "dnsjax.flows.wall_bounded.plane_couette",
     "pipe": "dnsjax.flows.wall_bounded.pipe",
+    "viscoelastic-pipe": "dnsjax.flows.wall_bounded.viscoelastic_pipe",
     "taylor-couette": "dnsjax.flows.wall_bounded.taylor_couette",
     "dean": "dnsjax.flows.wall_bounded.dean",
     "viscoelastic-dean": "dnsjax.flows.wall_bounded.viscoelastic_dean",
@@ -116,6 +118,9 @@ FLOW_MODULES = {
 GEO_MODULES = {
     "plane-couette": "dnsjax.geometries.wall_bounded.cartesian",
     "pipe": "dnsjax.geometries.wall_bounded.cylindrical",
+    "viscoelastic-pipe": (
+        "dnsjax.geometries.wall_bounded.cylindrical_viscoelastic"
+    ),
     "taylor-couette": "dnsjax.geometries.wall_bounded.annular",
     "dean": "dnsjax.geometries.wall_bounded.annular",
     "viscoelastic-dean": (
@@ -129,6 +134,7 @@ GEO_MODULES = {
 STEPPER_BUILDERS = {
     "plane-couette": "build_cartesian_stepper",
     "pipe": "build_cylindrical_stepper",
+    "viscoelastic-pipe": "build_viscoelastic_stepper",
     "taylor-couette": "build_annular_stepper",
     "dean": "build_annular_stepper",
     "viscoelastic-dean": "build_viscoelastic_stepper",
@@ -164,10 +170,11 @@ def _configure(system: str) -> None:
         geo["eta"] = 0.5
     elif system == "dean":
         geo["eta"] = 0.5
-    elif system == "viscoelastic-dean":
+    elif system in ("viscoelastic-dean", "viscoelastic-pipe"):
         # Re = wi/el is derived (no explicit re); eps = kappa = 0 so the
         # mean-only conformation invariant is exact (no nonlinear
-        # relaxation, no diffusion).  delta defaults to 11.
+        # relaxation, no diffusion).  The annular delta defaults to 11;
+        # the pipe has no radius parameter at all.
         phys = {
             "system": system,
             "el": 20.0,
@@ -258,7 +265,7 @@ def _count_ffts(jaxpr, in_cond: bool = False) -> tuple[int, int, list]:
 
 
 def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
-    r"""Viscoelastic-dean CN/AB2 ``_l_bf`` split guards.
+    r"""Viscoelastic CN/AB2 ``_l_bf`` split guards (both geometries).
 
     The 9-component split differs from the perturbation flows: the
     velocity slice adds the polymer-stress divergence, the conformation
@@ -270,14 +277,27 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     (``SPLIT_RTOL``); (c) a mean-only state
     at `$\epsilon = 0$` has a vanishing explicit conformation remainder
     (``get_rhs`` conf == ``_l_bf`` conf), validating the mean advection
-    and stretching jointly.  The velocity mean-flow coupling reuses the
-    annular ``_l_bf`` already pinned by the ``dean`` entry.
+    and stretching jointly; (d) the moving-frame term is
+    `$i k_z U_{\mathrm{grid}} u$` on all 9 slots in **both**
+    ``get_rhs`` and ``_l_bf``.  The velocity mean-flow coupling reuses
+    the geometry's own ``_l_bf``, already pinned by that geometry's
+    Newtonian entry (``dean`` / ``pipe``).
+
+    Why (d) is here and not covered by the Newtonian branch's
+    ``get_rhs - _l_bf - self_adv`` check: this function *replaces* that
+    check for the viscoelastic flows, (b) pins only ``_l_bf``'s copy of
+    the frame term, and (c) runs on a mean-only state where the term
+    vanishes identically -- so without (d) the one in ``_get_rhs_core``
+    is pinned by nothing.  A regression dropping it would leave
+    ``iterative-cn`` silently frame-free and ``cnab2`` with a spurious
+    `$-i k_z U_{\mathrm{grid}} u$` in the explicit AB2 remainder, both
+    of which still run.
     """
     import jax
     import jax.numpy as jnp
     import numpy as np
 
-    from dnsjax.parameters import params
+    from dnsjax.parameters import derived_params, params
 
     coef = (1.0 - params.phys.beta) / (params.phys.re * params.phys.wi)
     faclin = (1.0 - 3.0 * params.phys.epsilon) / params.phys.wi
@@ -292,7 +312,7 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     ).jaxpr
     lbf_ffts, _, _ = _count_ffts(lbf_jaxpr)
     assert lbf_ffts == 0, f"viscoelastic _l_bf not FFT-free ({lbf_ffts})"
-    print("viscoelastic-dean: _l_bf is FFT-free")
+    print(f"{params.phys.system}: _l_bf is FFT-free")
 
     # l_bf with the instantaneous mean-flow coupling off (the velocity
     # mean-flow coupling itself is pinned by the ``dean`` entry).
@@ -304,13 +324,27 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
         params.step.implicit_mean_coupling = True
 
     # (b) Mean coupling off => l_bf == polymer divergence (velocity) +
-    # linear relaxation (conformation), to machine precision.
-    cs = gmod._spin_to_phys_combos(
+    # linear relaxation (conformation) + the moving-frame convective
+    # term, to machine precision.  The frame term is *always* implicit
+    # (both slices, mode-diagonal) and is nonzero whenever the flow's
+    # ``phys.u_grid`` is -- which is the case for the axially driven
+    # viscoelastic pipe (default 1/2) but not for the azimuthally
+    # driven Dean (default 0).
+    frame = np.asarray(
+        (1j * derived_params.u_grid) * fourier_.kz * state
+        if derived_params.u_grid != 0
+        else jnp.zeros_like(state)
+    )
+    cs = gmod.spin_to_phys_combos(
         state[3], state[4], state[5], state[6], state[7], state[8]
     )
     div_r, div_th, div_z = gmod._div_c(*cs, fourier_, flow_)
-    vel_div = coef * np.asarray(
-        jnp.array([div_z, div_r + 1j * div_th, div_r - 1j * div_th])
+    vel_div = (
+        coef
+        * np.asarray(
+            jnp.array([div_z, div_r + 1j * div_th, div_r - 1j * div_th])
+        )
+        + frame[:3]
     )
     d_pd = float(np.max(np.abs(l_off[:3] - vel_div)))
     assert d_pd <= SPLIT_RTOL * scale, (
@@ -325,13 +359,15 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     i_spin = np.zeros((6, *state.shape[1:]), dtype=np.asarray(state).dtype)
     i_spin[0] = ident_mm
     i_spin[3] = 2.0 * ident_mm
-    relax = -faclin * (np.asarray(state[3:]) - i_spin)
+    relax = -faclin * (np.asarray(state[3:]) - i_spin) + frame[3:]
     conf_scale = float(np.max(np.abs(np.asarray(state[3:]))))
     d_rel = float(np.max(np.abs(l_off[3:] - relax)))
     assert d_rel <= SPLIT_RTOL * conf_scale, (
         f"linear-relaxation oracle off by {d_rel:.3e} (scale {conf_scale})"
     )
-    print("viscoelastic-dean: l_bf(mean off) == polymer div + linear relax")
+    print(
+        f"{params.phys.system}: l_bf(mean off) == polymer div + linear relax"
+    )
 
     # (c) Mean-only conformation invariant at eps = 0: the explicit
     # conformation remainder get_rhs - l_bf vanishes for a mean-only
@@ -352,8 +388,45 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
         f"(conf scale {cscale:.3e})"
     )
     print(
-        "viscoelastic-dean: mean-only conf get_rhs == l_bf "
+        f"{params.phys.system}: mean-only conf get_rhs == l_bf "
         f"(rel {d_mo / cscale:.2e})"
+    )
+
+    # (d) The frame term, in get_rhs *and* _l_bf.  Difference each
+    # against itself at u_grid = 0 (the term is a trace-time branch on
+    # ``derived_params.u_grid``, and neither function is jitted here),
+    # and compare against the analytic i k_z U_grid u on all 9 slots.
+    # Probe a nonzero speed even where the flow ships 0 -- the annular
+    # twin defaults to 0, but the code path is shared, so a flow that
+    # later turns it on inherits a checked one.
+    u_probe = derived_params.u_grid or 0.5
+    saved = derived_params.u_grid
+    try:
+        derived_params.u_grid = 0.0
+        rhs_0 = np.asarray(gmod._get_rhs(state, fourier_, flow_))
+        lbf_0 = np.asarray(gmod._l_bf(state, fourier_, flow_))
+        derived_params.u_grid = u_probe
+        rhs_u = np.asarray(gmod._get_rhs(state, fourier_, flow_))
+        lbf_u = np.asarray(gmod._l_bf(state, fourier_, flow_))
+    finally:
+        derived_params.u_grid = saved
+    frame_probe = np.asarray((1j * u_probe) * fourier_.kz * state)
+    fscale = float(np.max(np.abs(frame_probe)))
+    assert fscale > 0, "frame probe is identically zero"
+    d_frhs = float(np.max(np.abs((rhs_u - rhs_0) - frame_probe)))
+    d_flbf = float(np.max(np.abs((lbf_u - lbf_0) - frame_probe)))
+    assert d_frhs <= SPLIT_RTOL * fscale, (
+        f"get_rhs frame term != i k_z U_grid u by {d_frhs:.3e} "
+        f"(scale {fscale:.3e}, u_grid probe {u_probe})"
+    )
+    assert d_flbf <= SPLIT_RTOL * fscale, (
+        f"_l_bf frame term != i k_z U_grid u by {d_flbf:.3e} "
+        f"(scale {fscale:.3e}, u_grid probe {u_probe})"
+    )
+    print(
+        f"{params.phys.system}: frame term == i k_z U_grid u in get_rhs "
+        f"and _l_bf (rel {max(d_frhs, d_flbf) / fscale:.2e}; "
+        f"u_grid probe {u_probe})"
     )
 
 
@@ -380,7 +453,7 @@ def _worker(system: str) -> None:
     wall_bounded = system != "kolmogorov"
 
     # -- split exactness ------------------------------------------
-    if system == "viscoelastic-dean":
+    if system in ("viscoelastic-dean", "viscoelastic-pipe"):
         _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_)
     elif wall_bounded:
         from dnsjax.parameters import derived_params, params

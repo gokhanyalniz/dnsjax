@@ -7,11 +7,13 @@ from .plane_poiseuille import SPEC as PLANE_POISEUILLE
 from .quasi_keplerian import SPEC as QUASI_KEPLERIAN
 from .taylor_couette import SPEC as TAYLOR_COUETTE
 from .viscoelastic_dean import SPEC as VISCOELASTIC_DEAN
+from .viscoelastic_pipe import SPEC as VISCOELASTIC_PIPE
 
 SPECS = (
     PLANE_COUETTE,
     PLANE_POISEUILLE,
     PIPE,
+    VISCOELASTIC_PIPE,
     TAYLOR_COUETTE,
     QUASI_KEPLERIAN,
     DEAN,

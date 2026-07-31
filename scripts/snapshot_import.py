@@ -170,6 +170,14 @@ def _geo_family(system: str) -> str:
         viscoelastic_systems,
     )
 
+    # Rheology before geometry: the viscoelastic systems are members of
+    # their geometry's list too (see ``dnsjax.flows.registry``).
+    if system in viscoelastic_systems:
+        raise ValueError(
+            f"system {system!r} has a 9-component tensor state; "
+            "snapshot_import only supports the 3-component velocity "
+            "systems (tensor import is not yet implemented)."
+        )
     if system in cartesian_systems:
         return "cartesian"
     if system in periodic_systems:
@@ -178,12 +186,6 @@ def _geo_family(system: str) -> str:
         return "pipe"
     if system in annular_systems:
         return "annular"
-    if system in viscoelastic_systems:
-        raise ValueError(
-            f"system {system!r} has a 9-component tensor state; "
-            "snapshot_import only supports the 3-component velocity "
-            "systems (tensor import is not yet implemented)."
-        )
     raise ValueError(f"unknown system: {system!r}")
 
 

@@ -4,8 +4,9 @@
 solver for the 3D incompressible Navier-Stokes equations, written in
 JAX. Flow systems: triply-periodic (Kolmogorov)
 and wall-bounded (plane-Couette, plane-Poiseuille, pipe, Taylor-Couette,
-quasi-Keplerian, force-driven Dean, and viscoelastic (sPTT) Dean with a
-coupled conformation tensor). Two selectable second-order time
+quasi-Keplerian, force-driven Dean, and two viscoelastic (sPTT) flows
+with a coupled conformation tensor: axially driven pipe and
+azimuthally driven Dean). Two selectable second-order time
 integrators (`step.scheme`): the predictor-corrector `"iterative-cn"`
 (default) and `"cnab2"`; see the "Time-stepping scheme" note below.
 
@@ -116,9 +117,10 @@ first: `--init.snapshot` > `--init.start_from_laminar` >
 `_amplitude`/`_width`/`_wavelength`) > `--init.random_field` (the
 **default** when no snapshot is given; `--init.random_amplitude` /
 `_smoothness` / `_seed` / `_mean_flow`, plus
-`--init.random_conformation_amplitude` for viscoelastic-dean).
+`--init.random_conformation_amplitude` for the viscoelastic flows).
 Total-field
-dean/viscoelastic-dean add the analytical laminar profile. Construction,
+dean/viscoelastic-dean/viscoelastic-pipe add the analytical laminar
+profile. Construction,
 per-geometry pairing, the sharded/padded-mesh-safe builds, and the
 divergence/Hermitian caveats: the `random_field.py` and
 `localized_rolls.py` module docstrings; precedence: `Initiation`
@@ -218,7 +220,9 @@ localized_rolls.py    Deterministic localized-spot IC generators
                       (init.localized_rolls)
 geometries/
   wall_bounded/       _base.py, cartesian.py, cylindrical.py,
-                      annular.py, annular_viscoelastic.py -- see
+                      annular.py, _viscoelastic_common.py,
+                      cylindrical_viscoelastic.py,
+                      annular_viscoelastic.py -- see
                       wall_bounded/CLAUDE.md
   triply_periodic/    triply_periodic.py -- see its CLAUDE.md
 flows/
@@ -226,8 +230,9 @@ flows/
                       all_systems, *_systems lists, GLOBAL_FIELDS,
                       internalize_stored/stored_value
   wall_bounded/       plane_couette, plane_poiseuille, pipe,
-                      taylor_couette, quasi_keplerian (both bind the
-                      shared _circular_couette.py machinery), dean,
+                      viscoelastic_pipe, taylor_couette,
+                      quasi_keplerian (both bind the shared
+                      _circular_couette.py machinery), dean,
                       viscoelastic_dean -- base flows/driving in
                       wall_bounded/CLAUDE.md; specs/ holds their
                       JAX-free parameter FlowSpecs
@@ -337,8 +342,8 @@ spectral padding.
 
 **Perturbation formulation**: the solver evolves `u'` around laminar
 `U(y)` (`rhs.py` module docstring). The force-driven
-dean/viscoelastic-dean systems instead integrate the **total** field
-(`base_flow = 0`, mean-mode body force).
+dean/viscoelastic-dean/viscoelastic-pipe systems instead integrate the
+**total** field (`base_flow = 0`, mean-mode body force).
 
 **Component basis (cylindrical/annular only)**: the state is carried
 in the decoupled `u_±`/spin solver basis and *observed* in physical
@@ -411,7 +416,7 @@ layering" above.
 
 | Section    | Purpose                                             |
 |------------|-----------------------------------------------------|
-| `[phys]`   | Reynolds numbers, `system`, oversampling, driving, `u_grid`; viscoelastic-dean rheology |
+| `[phys]`   | Reynolds numbers, `system`, oversampling, driving, `u_grid`; viscoelastic rheology (`el`/`wi`/`beta`/`epsilon`/`kappa`) |
 | `[geo]`    | Domain lengths/tilt, `eta`, `m0` (azimuthal wedge), `delta`, wall-normal grid selection |
 | `[res]`    | Resolution (`nx`/`ny`/`nz`, or `nz`/`nr`/`ntheta`), `fd_order`, `consistent_imm`, `double_precision` |
 | `[init]`   | Start mode (see "Initial conditions" above) + `t0`/`it0`/`isnap0`/`force_resume` |
@@ -471,7 +476,8 @@ is converted at the write/read boundary — see
 `wall_bounded/CLAUDE.md`). The
 stored state is the spectral perturbation `u'` for
 base-flow systems (laminar = zero array), the **total** field for
-dean/viscoelastic-dean. The embedded `params` dump is the
+dean/viscoelastic-dean/viscoelastic-pipe. The embedded `params` dump is
+the
 flow-relevant, resolved, **public-named** surface representation plus
 the relevant extension sections (`param_surface.recorded_params_dump`);
 readers map it back via `flows.registry.internalize_stored` /
@@ -628,7 +634,10 @@ one-liners. Cross-cutting notes:
 - `tests/test_annular.py`: annular operator/matvec, Pallas-vs-dense
   parity, circular-Couette A0/B0 checks, and the shared cylindrical
   `u_r`-`ω_r` algebraic identities.
-- `tests/test_viscoelastic.py`: sPTT conformation-tensor machinery.
+- `tests/test_viscoelastic.py`: sPTT conformation-tensor machinery
+  (annular).
+- `tests/test_viscoelastic_pipe.py`: the cylindrical sPTT geometry --
+  conformation axis parity, the pipe laminar pair, single-wall `H_c`.
 - `tests/test_integration.py`: quadrature weights and interpolation
   matrices.
 - `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards.
@@ -654,9 +663,9 @@ one-liners. Cross-cutting notes:
   wall-bounded flows (subprocess/mpirun; incl. console-script,
   nz-padding and azimuthal-wedge entries).
 - `tests/test_random_smoke.py`: random-IC nonlinear integration for
-  the 6 distinct stepping machineries (+ cnab2, adaptive,
+  the 7 distinct stepping machineries (+ cnab2, adaptive,
   split-corrector, consistent_imm x {plane-couette, taylor-couette}
-  x {iterative-cn, cnab2} + pipe + viscoelastic-dean,
+  x {iterative-cn, cnab2} + pipe + both viscoelastic flows,
   multi-device-padding and nan-guard entries; default-IC +
   chunked-RHS ride the base plane-couette entry).
 - `tests/test_quasi_keplerian.py`: quasi-keplerian control-parameter

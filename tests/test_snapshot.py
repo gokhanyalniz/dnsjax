@@ -152,6 +152,28 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
         1,
     ),
     (
+        # The cylindrical 9-component state: same component count, but
+        # its family routes through the pipe's regrid/basis paths.
+        "viscoelastic-pipe",
+        "viscoelastic-pipe",
+        "walled",
+        "concurrent",
+        1,
+        1,
+        1,
+        1,
+    ),
+    (
+        "viscoelastic-pipe np 1->2",
+        "viscoelastic-pipe",
+        "walled",
+        "concurrent",
+        1,
+        2,
+        1,
+        1,
+    ),
+    (
         # The only 9-component *save* on a multi-device mesh: the I/O
         # layout carries the component axis whole and the engines loop
         # over it, so a component-count slip would land every
@@ -286,12 +308,46 @@ _PERIODIC = {"kolmogorov"}
 
 # Viscoelastic systems carry 9 state components (3 velocity + 6
 # symmetric conformation-tensor); must match ``snapshot._n_components``.
-_VISCOELASTIC = {"viscoelastic-dean"}
+_VISCOELASTIC = {"viscoelastic-dean", "viscoelastic-pipe"}
 
 
 def _n_comp(system: str) -> int:
     """Number of stacked state components for *system* (3 or 9)."""
     return 9 if system in _VISCOELASTIC else 3
+
+
+def _ve_pipe_profiles(rs):
+    """Parity-definite mean-mode profiles, one per stored component.
+
+    Stored physical order ``(u_z, u_r, u_theta, c_zz, c_rz, c_theta_z,
+    c_rr, c_theta_theta, c_r_theta)``.  At `m = 0` the `(-1)^m` class is
+    *even* in `r` and the `(-1)^{m+1}` class *odd*, so each entry below
+    is a low-degree polynomial of its component's own parity -- which
+    the spectral parity interpolation reproduces to machine precision
+    on the new grid, but only if the component is regridded with the
+    matrix its class calls for.  The amplitudes are all distinct so a
+    swapped pair cannot cancel out.
+
+    The velocity entries vanish at `r = 1` (the regrid re-imposes
+    no-slip on ``[:3]``); the conformation entries deliberately do not
+    -- their wall condition is ``grad^2 c = 0``, and a regrid that
+    zeroed them would show up here.
+    """
+    import numpy as np
+
+    rs = np.asarray(rs, dtype=np.float64)
+    even, odd = 1.0 - rs**2, rs * (1.0 - rs**2)
+    return [
+        even,  # u_z         even
+        0.5 * odd,  # u_r         odd
+        0.25 * odd,  # u_theta     odd
+        1.0 + 2.0 * rs**2,  # c_zz        even, nonzero at the wall
+        -1.5 * rs,  # c_rz        odd,  nonzero at the wall
+        0.3 * odd,  # c_theta_z   odd
+        1.0 + 0.1 * rs**2,  # c_rr        even
+        1.0 - 0.2 * rs**2,  # c_theta_th  even
+        0.4 * even,  # c_r_theta   even
+    ]
 
 
 # ── worker (runs in its own process) ─────────────────────────────────
@@ -654,6 +710,58 @@ def _worker(
         )
         assert t == T_SAVE
         print("worker-load-interp-pipe-ok", flush=True)
+        return
+
+    if action == "save_poly_ve_pipe":
+        from dnsjax.parameters import derived_params
+
+        # Rigged-CGL radial grid (axis gap 1); 9 parity-definite
+        # mean-mode profiles (see ``_ve_pipe_profiles``).
+        n_full = 2 * ny + 1
+        s = -np.cos(np.arange(n_full, dtype=np.float64) * np.pi / (n_full - 1))
+        rs = s[ny + 1 :]
+        derived_params.wall_normal_grid = rs.tolist()
+        state_np = np.zeros(padded_shape, dtype=np.complex128)
+        for c, prof in enumerate(_ve_pipe_profiles(rs)):
+            state_np[c, :, 0, 0] = prof
+        state = jax.device_put(state_np, vshard)
+        snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
+        return
+
+    if action == "load_interp_ve_pipe":
+        from dnsjax.__main__ import _interpolate_if_needed
+        from dnsjax.parameters import derived_params
+
+        # Half-CGL radial grid (axis gap 0): both the point count and
+        # the grid family differ from the save.
+        n_full = 2 * ny
+        s = -np.cos(np.arange(n_full, dtype=np.float64) * np.pi / (n_full - 1))
+        rs = s[ny:]
+        derived_params.wall_normal_grid = rs.tolist()
+
+        snapshot.validate_snapshot_params(d)
+        state, t, it = snapshot.load_snapshot(d)
+        state = _interpolate_if_needed(
+            state,
+            os.path.join(d),
+            snapshot.read_metadata,
+            sharding,
+            jax.numpy,
+        )
+        got = np.asarray(state)
+        assert got.shape[:2] == (9, ny), (got.shape, ny)
+        want = _ve_pipe_profiles(rs)
+        for c, prof in enumerate(want):
+            ref = prof.copy()
+            if c < 3:
+                ref[-1] = 0.0  # the regrid re-imposes no-slip
+            np.testing.assert_allclose(
+                got[c, :, 0, 0].real, ref, atol=1e-10, err_msg=f"component {c}"
+            )
+        # The conformation block is *not* wall-zeroed.
+        assert abs(got[3, -1, 0, 0].real - want[3][-1]) < 1e-10
+        assert t == T_SAVE
+        print("worker-load-interp-ve-pipe-ok", flush=True)
         return
 
     if action == "load_shape":
@@ -1278,6 +1386,43 @@ def run_pipe_regrid_case() -> str | None:
     return None
 
 
+def run_ve_pipe_regrid_case() -> str | None:
+    """Viscoelastic-pipe nr 8 (rigged-CGL) -> 10 (half-CGL) regrid.
+
+    The only exercise of the **9-component** parity-aware radial
+    interpolation: the cylindrical branch of
+    ``__main__._interpolate_if_needed`` assigns a parity class per
+    stored component, and the six conformation slots are only reachable
+    through a viscoelastic flow in the cylindrical family."""
+    name = "viscoelastic-pipe nr 8->10 regrid (rigged->half)"
+    with tempfile.TemporaryDirectory() as tmp:
+        snap_path = os.path.join(tmp, "snap.tar")
+        r_save = _run_worker(
+            "save_poly_ve_pipe",
+            "viscoelastic-pipe",
+            "walled",
+            "concurrent",
+            1,
+            snap_path,
+            ny=8,
+        )
+        if reason := _check(name, "save_poly_ve_pipe", r_save):
+            return reason
+        r_load = _run_worker(
+            "load_interp_ve_pipe",
+            "viscoelastic-pipe",
+            "walled",
+            "concurrent",
+            1,
+            snap_path,
+            ny=10,
+        )
+        if reason := _check(name, "load_interp_ve_pipe", r_load):
+            return reason
+    print(f"  PASS  {name}")
+    return None
+
+
 def run_ve_ny_mismatch_case() -> str | None:
     """Viscoelastic nr-mismatch load: the assembled state must carry 9
     components at the snapshot's radial count."""
@@ -1320,6 +1465,8 @@ if __name__ == "__main__":
             "load_interp",
             "save_poly_pipe",
             "load_interp_pipe",
+            "save_poly_ve_pipe",
+            "load_interp_ve_pipe",
             "load_shape",
             "save_stats",
             "save_fail",
@@ -1392,6 +1539,12 @@ if __name__ == "__main__":
     results.append(("pipe nr 8->10 regrid", run_pipe_regrid_case()))
     results.append(
         ("viscoelastic nr 8->16 load shape", run_ve_ny_mismatch_case())
+    )
+    results.append(
+        (
+            "viscoelastic-pipe nr 8->10 regrid",
+            run_ve_pipe_regrid_case(),
+        )
     )
 
     # isnap metadata + optional embedded-stats member

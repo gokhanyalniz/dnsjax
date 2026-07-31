@@ -6,16 +6,18 @@ Builds the deterministic streamwise-localized-rolls IC
 *construction* properties the smoke test (``tests/test_rolls_smoke.py``)
 cannot -- without time-stepping -- plus, in the same subprocess (no
 extra launch), the divergence guard on the random-field IC
-(``dnsjax.random_field``, the default start mode).  Flows with no
-rolls builder (``RANDOM_ONLY``: the 9-component viscoelastic-dean) run
-the random half only, and their random state carries the checks the
-rolls state carries elsewhere:
+(``dnsjax.random_field``, the default start mode).  Flows in
+``RANDOM_ONLY`` run the random half only, and their random state
+carries the checks the rolls state carries elsewhere:
 
 - **finiteness** of the built spectral state;
-- **exact no-slip** at the wall nodes (the wall ``y`` / ``r`` slice is
-  identically zero, never transformed): both walls for Cartesian /
-  annular, the outer wall ``r = 1`` for pipe (the inner end is the axis);
-  for Dean the *total* field (perturbation + laminar) still vanishes;
+- **exact no-slip** at the wall nodes (the wall ``y`` / ``r`` slice of
+  the *velocity* block is identically zero, never transformed): both
+  walls for Cartesian / annular, the outer wall ``r = 1`` for the
+  cylindrical family (the inner end is the axis); for the total-field
+  flows (Dean, viscoelastic) the *total* velocity still vanishes,
+  while their conformation block does not -- its wall condition is
+  ``grad^2 c = 0``, not a Dirichlet zero;
 - **bit-identical determinism** (two builds in one process agree) and
   **device-count independence** (the true modes are identical at
   ``(np0, np1) = (1, 1)``, ``(1, 2)`` and ``(2, 1)``) -- the
@@ -76,14 +78,16 @@ SYSTEMS = [
     "taylor-couette",
     "dean",
     "viscoelastic-dean",
+    "viscoelastic-pipe",
 ]
 
-# Flows with no localized-rolls builder: they run the random-field
-# half of the worker only, and the cross-device comparison rides the
-# random state instead of the rolls one.  The 9-component
-# viscoelastic state exercises the builders' component-count-agnostic
-# path (its conformation block is carried along, its velocity block is
-# what continuity is solved on).
+# Flows that run the random-field half of the worker only, with the
+# cross-device comparison riding the random state instead of the rolls
+# one.  Both 9-component flows exercise the builders'
+# component-count-agnostic path (the conformation block is carried
+# along; the velocity block is what continuity is solved on) -- and
+# ``viscoelastic-pipe`` additionally runs the full rolls half, so the
+# 9-component rolls path is covered there.
 RANDOM_ONLY = ["viscoelastic-dean"]
 
 # Configurations (np0, np1) to build at; (1, 1) is the reference.
@@ -153,9 +157,10 @@ def _configure(system: str, np0: int, np1: int) -> None:
         geo["eta"] = 0.5
     elif system == "dean":
         geo["eta"] = 0.5
-    elif system == "viscoelastic-dean":
-        # Re := Wi/El is derived, and the geometry comes from
-        # ``geo.delta``; the rheology defaults (spec) are left alone.
+    elif system in ("viscoelastic-dean", "viscoelastic-pipe"):
+        # Re := Wi/El is derived (the annulus additionally takes its
+        # geometry from ``geo.delta``); the rheology defaults (spec)
+        # are left alone.
         phys.pop("re")
 
     update_parameters(
@@ -191,7 +196,11 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
     on every mode (see :mod:`dnsjax.random_field`).
     """
     from dnsjax.operators import complex_harmonics, real_harmonics
-    from dnsjax.parameters import derived_params, params
+    from dnsjax.parameters import (
+        cylindrical_systems,
+        derived_params,
+        params,
+    )
 
     nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
     fd = params.res.fd_order
@@ -218,8 +227,10 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
         return float(np.max(np.abs(div)))
 
     # pipe / annular: native (u_z, u_r, u_theta) over (r, m, k_z,ax).
+    # Keyed on the *geometry* list, which spans each geometry's
+    # viscoelastic member too (``dnsjax.flows.registry``).
     m = params.geo.m0 * np.asarray(complex_harmonics(nz))
-    if system == "pipe":
+    if system in cylindrical_systems:
         from dnsjax.geometries.wall_bounded.cylindrical import (
             build_cylindrical_grid,
         )
@@ -238,7 +249,7 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
 
     div = np.zeros_like(true[0])
     for im, mv in enumerate(m):
-        if system == "pipe":
+        if system in cylindrical_systems:
             d1v = d1_even if (mv + 1) % 2 == 0 else d1_odd
         else:
             d1v = d1
@@ -276,6 +287,7 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
     true: np.ndarray | None = None
     if system not in RANDOM_ONLY:
         from dnsjax.localized_rolls import generate_localized_rolls
+        from dnsjax.parameters import cylindrical_systems
 
         state1 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))
         state2 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))
@@ -284,13 +296,19 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
         check("finite", bool(np.all(np.isfinite(state1))))
         check("determinism (build twice)", np.array_equal(state1, state2))
 
-        # Exact no-slip at the wall nodes (axis 1 = y / r).
-        if system == "pipe":
-            wall = float(np.max(np.abs(state1[:, -1])))  # outer wall r = 1
+        # Exact no-slip at the wall nodes (axis 1 = y / r), on the
+        # **velocity** block: a viscoelastic total-field state also
+        # carries the laminar conformation there, whose wall values are
+        # O(1)-to-O(Wi^2) by construction (its BC is grad^2 c = 0, not
+        # a Dirichlet zero).  ``[:3]`` is the whole state for every
+        # velocity-only flow.
+        vel1 = state1[:3]
+        if system in cylindrical_systems:
+            wall = float(np.max(np.abs(vel1[:, -1])))  # outer wall r = 1
         else:
             wall = max(
-                float(np.max(np.abs(state1[:, 0]))),
-                float(np.max(np.abs(state1[:, -1]))),
+                float(np.max(np.abs(vel1[:, 0]))),
+                float(np.max(np.abs(vel1[:, -1]))),
             )
         check(
             "exact no-slip at walls", wall < 1e-12, f"max|u|_wall={wall:.2e}"

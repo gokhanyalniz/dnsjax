@@ -71,12 +71,13 @@ import numpy as np
 from .harmonics import complex_harmonics, real_harmonics
 from .parameters import (
     annular_systems,
+    annular_viscoelastic_systems,
     cartesian_systems,
     cylindrical_systems,
+    cylindrical_viscoelastic_systems,
     derived_params,
     params,
     periodic_systems,
-    viscoelastic_systems,
 )
 
 if TYPE_CHECKING:
@@ -895,6 +896,231 @@ def generate_viscoelastic_dean(
     return state + laminar
 
 
+def add_viscoelastic_pipe_laminar(vel_state: Array) -> Array:
+    r"""Pipe twin of :func:`add_viscoelastic_laminar`.
+
+    Adds the Hagen-Poiseuille laminar velocity to *vel_state* and
+    appends the laminar sPTT-equilibrium conformation (both at the mean
+    mode), giving the 9-component total-field IC in the physical
+    layout.  Used by the localized-rolls IC (a velocity-only
+    perturbation); the random IC builds its 9 components directly.
+    """
+    from jax import numpy as jnp
+
+    from .geometries.wall_bounded.cylindrical import (
+        build_cylindrical_grid,
+        fourier,
+    )
+    from .geometries.wall_bounded.cylindrical_viscoelastic import (
+        viscoelastic_laminar_profiles,
+    )
+
+    rs, D1_even, *_ = build_cylindrical_grid(
+        params.res.ny,
+        params.res.fd_order,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+    )
+    prof = viscoelastic_laminar_profiles(
+        np.asarray(rs),
+        np.asarray(D1_even),
+        params.phys.wi,
+        params.phys.epsilon,
+    )
+    prof_jax = jnp.asarray(prof, dtype=vel_state.dtype)
+    laminar = jnp.where(
+        fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0
+    )
+    total_vel = vel_state + laminar[:3]
+    return jnp.concatenate([total_vel, laminar[3:]])
+
+
+def generate_viscoelastic_pipe(
+    amplitude: float,
+    conf_amplitude: float,
+    smoothness: float,
+    seed: int,
+    mean_flow: bool,
+) -> Array:
+    r"""Random 9-component IC for viscoelastic (sPTT) pipe flow.
+
+    Built per device (no full-array replication): the velocity part is
+    the divergence-free pipe draw of :func:`generate_cylindrical` (rows
+    ``0:3``); the conformation part (rows ``3:9``) is windowed,
+    spectrally-decaying symmetric-tensor noise.  Velocity and
+    conformation noise are rescaled to *amplitude* / *conf_amplitude*
+    separately, then the analytical laminar pair (Hagen-Poiseuille
+    velocity + sPTT-equilibrium conformation) is added at the mean mode
+    (total-field IC).  The conformation noise vanishes at the wall and
+    at the mean mode (so the laminar wall / mean values are preserved).
+
+    Unlike the annular twin, the inner end is the pipe **axis**, so
+    each tensor column also carries the axis-regularity envelope
+    `$r^{|m+s|}$` of its spin weight `$s$` -- applied in the spin
+    basis, for the same reason the velocity envelope is
+    (:func:`generate_cylindrical`): the condition is a cancellation
+    *between* physical components, so enveloping them separately would
+    leave the high-spin combinations orders too large near the axis.
+    Parity follows from the envelope.
+    """
+    from jax import numpy as jnp
+
+    from .geometries.wall_bounded._viscoelastic_common import (
+        get_norm2_conformation,
+    )
+    from .geometries.wall_bounded.cylindrical import (
+        build_cylindrical_grid,
+        fourier,
+        get_norm2_cyl,
+    )
+    from .geometries.wall_bounded.cylindrical_viscoelastic import (
+        viscoelastic_laminar_profiles,
+    )
+    from .snapshot import assemble_local_shards
+
+    nx = params.res.nx
+    Nr = params.res.ny
+    nz = params.res.nz
+
+    rs, D1_even, D1_odd, _, y_weights, _, inv_r = build_cylindrical_grid(
+        Nr,
+        params.res.fd_order,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+    )
+    derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
+
+    rs_np = np.asarray(rs)
+    inv_r_np = np.asarray(inv_r)
+    D1_even_np = np.asarray(D1_even)
+    D1_odd_np = np.asarray(D1_odd)
+    yw_np = np.asarray(y_weights)
+    kz_np = real_harmonics(nx) * (2 * pi / params.geo.lx)  # axial
+    # Physical azimuthal wavenumbers m = m0 * harmonic over the wedge.
+    m_np = params.geo.m0 * complex_harmonics(nz)
+
+    decay = 1.0 - smoothness
+    # Filter in x = r^2 (an axis-regular field is analytic in it), then
+    # a wall window; the r^|m+s| envelopes below supply the axis
+    # behaviour and the parity, for the velocity and the tensor alike.
+    wn_filter = _wall_normal_filter(rs_np**2, decay)
+    window_wall = 1.0 - rs_np
+    window_wn = window_wall**2
+
+    def fill_local(buf, m_start, n_m, kz_start, n_kz):
+        for li in range(n_m):
+            g2 = m_start + li
+            m_val = int(m_np[g2])
+            D1_v = D1_even_np if (m_val + 1) % 2 == 0 else D1_odd_np
+            # Axis-regularity envelope per spin weight s (u_z and the
+            # spin-0 tensor slots at s = 0, u_pm / c_z+- at s = +-1,
+            # c_+-+- at s = +-2).
+            env = {s: rs_np ** abs(m_val + s) for s in (0, 1, -1, 2, -2)}
+            for lj in range(n_kz):
+                g3 = kz_start + lj
+                kz_val = kz_np[g3]
+                envelope = decay ** (abs(kz_val) + abs(m_val))
+
+                # ── Velocity (rows 0:3): the divergence-free pipe draw
+                # of ``generate_cylindrical`` (same windows, envelope
+                # and per-mode continuity closure). ──
+                if g3 == 0:
+                    col = _hermitian_column(seed, g2, nz, Nr)
+                else:
+                    col = _column_draw(seed, g2, g3, Nr)
+                col = col @ wn_filter.T
+                col[0] *= window_wall
+                col[1] *= window_wn
+                col[2] *= window_wn
+                cp = (col[1] + 1j * col[2]) * env[1]
+                cm = (col[1] - 1j * col[2]) * env[-1]
+                col[1] = (cp + cm) / 2
+                col[2] = (cp - cm) / 2j
+                col[0] *= env[0]
+                if kz_val != 0:
+                    div_perp = (
+                        D1_v @ col[1]
+                        + inv_r_np * col[1]
+                        + 1j * m_val * inv_r_np * col[2]
+                    )
+                    col[0] = -div_perp / (1j * kz_val)
+                elif m_val != 0:
+                    col[2] = (
+                        1j
+                        * rs_np
+                        * (D1_v @ col[1] + inv_r_np * col[1])
+                        / m_val
+                    )
+                else:
+                    col[1] = 0.0
+                col = _normalize_mode(col, yw_np, envelope)
+                if g2 == 0 and g3 == 0 and not mean_flow:
+                    col[:] = 0.0
+                buf[0:3, :, li, lj] = col
+
+                # ── Conformation (rows 3:9): windowed, wall-vanishing
+                # noise, axis-enveloped in the spin basis; zero at the
+                # mean mode (laminar added below). ──
+                if g3 == 0:
+                    ccol = _hermitian_column(
+                        seed, g2, nz, Nr, rows=6, stream=(1,)
+                    )
+                else:
+                    ccol = _column_draw(seed, g2, g3, Nr, rows=6, stream=(1,))
+                ccol = (ccol @ wn_filter.T) * window_wn
+                # Stored physical order (c_zz, c_rz, c_thz, c_rr,
+                # c_thth, c_rth) -> spin combos (the definitions of
+                # ``_viscoelastic_common.phys_combos_to_spin``, inlined
+                # in NumPy for this host-side per-mode loop) ->
+                # envelope by spin weight -> back.
+                c_zz, c_rz, c_thz = ccol[0], ccol[1], ccol[2]
+                c_rr, c_thth, c_rth = ccol[3], ccol[4], ccol[5]
+                c_zp = (c_rz + 1j * c_thz) * env[1]
+                c_zm = (c_rz - 1j * c_thz) * env[-1]
+                c_pm = (c_rr + c_thth) * env[0]
+                c_pp = ((c_rr - c_thth) + 2j * c_rth) * env[2]
+                c_mm = ((c_rr - c_thth) - 2j * c_rth) * env[-2]
+                d = (c_pp + c_mm) / 2  # = c_rr - c_theta_theta
+                ccol = np.stack(
+                    [
+                        c_zz * env[0],
+                        (c_zp + c_zm) / 2,
+                        -0.5j * (c_zp - c_zm),
+                        c_pm / 2 + d / 2,
+                        c_pm / 2 - d / 2,
+                        -0.5j * (c_pp - c_mm) / 2,
+                    ]
+                )
+                ccol = _normalize_mode(ccol, yw_np, envelope)
+                if g2 == 0 and g3 == 0:
+                    ccol[:] = 0.0
+                buf[3:9, :, li, lj] = ccol
+
+    state = assemble_local_shards(fill_local)
+
+    # Rescale velocity and conformation noise separately.
+    vel_norm2 = get_norm2_cyl(state[:3], fourier.k_metric, y_weights)
+    conf_norm2 = get_norm2_conformation(state[3:], fourier.k_metric, y_weights)
+    state = jnp.concatenate(
+        [
+            state[:3] * (amplitude / vel_norm2**0.5),
+            state[3:] * (conf_amplitude / conf_norm2**0.5),
+        ]
+    )
+
+    # Add the laminar pair at the mean mode (total-field IC).
+    prof = viscoelastic_laminar_profiles(
+        rs_np, D1_even_np, params.phys.wi, params.phys.epsilon
+    )
+    prof_jax = jnp.asarray(prof, dtype=state.dtype)
+    laminar = jnp.where(
+        fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0
+    )
+    return state + laminar
+
+
 # ── Triply-periodic generation ───────────────────────────────────
 
 
@@ -987,14 +1213,10 @@ def generate_random_state(
         )
     if system in cartesian_systems:
         return generate_cartesian(amplitude, smoothness, seed, mean_flow)
-    if system in cylindrical_systems:
-        return generate_cylindrical(amplitude, smoothness, seed, mean_flow)
-    if system in annular_systems:
-        state = generate_annular(amplitude, smoothness, seed, mean_flow)
-        if system == "dean":
-            state = add_dean_laminar(state)
-        return state
-    if system in viscoelastic_systems:
+    # Rheology before geometry: the viscoelastic systems are members of
+    # their geometry's list too, and need the 9-component builder (see
+    # ``flows.registry``).
+    if system in annular_viscoelastic_systems:
         return generate_viscoelastic_dean(
             amplitude,
             params.init.random_conformation_amplitude,
@@ -1002,6 +1224,21 @@ def generate_random_state(
             seed,
             mean_flow,
         )
+    if system in cylindrical_viscoelastic_systems:
+        return generate_viscoelastic_pipe(
+            amplitude,
+            params.init.random_conformation_amplitude,
+            smoothness,
+            seed,
+            mean_flow,
+        )
+    if system in cylindrical_systems:
+        return generate_cylindrical(amplitude, smoothness, seed, mean_flow)
+    if system in annular_systems:
+        state = generate_annular(amplitude, smoothness, seed, mean_flow)
+        if system == "dean":
+            state = add_dean_laminar(state)
+        return state
     if system in periodic_systems:
         return generate_triply_periodic(amplitude, smoothness, seed, mean_flow)
     raise ValueError(f"Unknown system: {system}")

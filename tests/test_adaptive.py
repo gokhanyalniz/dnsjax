@@ -65,6 +65,7 @@ PARITY_RTOL = 1e-10
 SYSTEMS = [
     "plane-couette",
     "pipe",
+    "viscoelastic-pipe",
     "taylor-couette",
     "viscoelastic-dean",
     "kolmogorov",
@@ -73,6 +74,7 @@ SYSTEMS = [
 FLOW_MODULES = {
     "plane-couette": "dnsjax.flows.wall_bounded.plane_couette",
     "pipe": "dnsjax.flows.wall_bounded.pipe",
+    "viscoelastic-pipe": "dnsjax.flows.wall_bounded.viscoelastic_pipe",
     "taylor-couette": "dnsjax.flows.wall_bounded.taylor_couette",
     "viscoelastic-dean": "dnsjax.flows.wall_bounded.viscoelastic_dean",
     "kolmogorov": "dnsjax.flows.triply_periodic.monochromatic",
@@ -81,6 +83,9 @@ FLOW_MODULES = {
 GEO_MODULES = {
     "plane-couette": "dnsjax.geometries.wall_bounded.cartesian",
     "pipe": "dnsjax.geometries.wall_bounded.cylindrical",
+    "viscoelastic-pipe": (
+        "dnsjax.geometries.wall_bounded.cylindrical_viscoelastic"
+    ),
     "taylor-couette": "dnsjax.geometries.wall_bounded.annular",
     "viscoelastic-dean": (
         "dnsjax.geometries.wall_bounded.annular_viscoelastic"
@@ -91,6 +96,7 @@ GEO_MODULES = {
 STEPPER_BUILDERS = {
     "plane-couette": "build_cartesian_stepper",
     "pipe": "build_cylindrical_stepper",
+    "viscoelastic-pipe": "build_viscoelastic_stepper",
     "taylor-couette": "build_annular_stepper",
     "viscoelastic-dean": "build_viscoelastic_stepper",
     "kolmogorov": "build_triply_periodic_stepper",
@@ -137,6 +143,7 @@ LEAVES = {
     "kolmogorov": ("dt", "ldt_1", "ildt_2"),
 }
 LEAVES["viscoelastic-dean"] = LEAVES["taylor-couette"] + ("Hc_op",)
+LEAVES["viscoelastic-pipe"] = LEAVES["pipe"] + ("Hc_op",)
 
 # How ``res.consistent_imm`` changes the dt-dependent leaf set.  A
 # missing key here would be silent: ``set_dt`` only assigns what the
@@ -240,7 +247,7 @@ def _configure(
     if system == "taylor-couette":
         phys.update(re1=100.0, re2=0.0)
         geo["eta"] = 0.5
-    elif system == "viscoelastic-dean":
+    elif system in ("viscoelastic-dean", "viscoelastic-pipe"):
         # Nonzero conformation diffusion so the Hc_op rebuild path is
         # exercised (kappa = 0 would drop the operator entirely).
         phys = {

@@ -116,9 +116,10 @@ def get_nonlin(
     the batch (:func:`dnsjax.fft.chunked_transform`; the default 1
     keeps the single fused batch, throughput-optimal), while the
     forward transform of the 3 outputs stays fused.  The knob matters
-    most for the 36-field viscoelastic variant (``_get_rhs_core`` in
-    ``geometries/wall_bounded/annular_viscoelastic.py``), whose batch
-    dominates its step's peak; the trade-off is documented in the
+    most for the 36-field viscoelastic variant (the ``_get_rhs_core``
+    of ``geometries/wall_bounded/annular_viscoelastic.py`` and
+    ``cylindrical_viscoelastic.py``), whose batch dominates its step's
+    peak; the trade-off is documented in the
     :mod:`dnsjax.fft` memory note.
 
     Parameters

@@ -59,17 +59,21 @@ LX, LZ = 5.0, 5.0
 RE = 100.0
 
 # (system, family, m0); families exercise both basis paths + parity
-# (pipe) + the 9-component conformation schema (viscoelastic-dean).
+# (pipe) + the 9-component conformation schema (both viscoelastic
+# geometries).
 #
 # The pipe runs twice.  The axis parity class is set by the *physical*
 # azimuthal wavenumber ``m = m0 * h``, so the full circle (m0 = 1)
 # cannot tell that selector apart from one keyed on the harmonic index
 # ``h`` alone -- the two agree for every odd m0.  The ``m0 = 2`` wedge
-# separates them, and it is the only row here that does.
+# separates them.  ``viscoelastic-pipe`` runs at that wedge for the
+# same reason *and* carries 9 components, so it is the row where the
+# analysis package's tensor parity classes must be right.
 SYSTEMS = [
     ("plane-couette", "cartesian", 1),
     ("pipe", "cylindrical", 1),
     ("pipe", "cylindrical", 2),
+    ("viscoelastic-pipe", "cylindrical", 2),
     ("taylor-couette", "annular", 1),
     ("viscoelastic-dean", "annular", 1),
     ("kolmogorov", "triply_periodic", 1),
@@ -114,7 +118,9 @@ def _solver_divergence(state, system: str, flow, fourier):
     uz_n, up_n, um_n = state[0], state[1], state[2]
     m = fourier.m
     stacked = jnp.stack([up_n, um_n], axis=1)
-    if system == "pipe":
+    from dnsjax.flows.registry import cylindrical_systems
+
+    if system in cylindrical_systems:
         # (-1)^{m+1} parity of u_pm: D1_pos +/- the folded ghost rows.
         parity_sign_v = -(fourier.m_is_even * 2 - 1)
         g = flow.D1_ghost.shape[0]
@@ -163,6 +169,9 @@ def _generate(system: str, outdir: str, m0: int = 1) -> None:
     elif system == "viscoelastic-dean":
         phys.update(wi=5.0, el=5.0)  # re = wi/el = 1 (derived)
         geo["eta"] = 0.5
+        init["random_conformation_amplitude"] = 10.0
+    elif system == "viscoelastic-pipe":
+        phys.update(wi=5.0, el=5.0)  # re = wi/el = 1 (derived)
         init["random_conformation_amplitude"] = 10.0
     else:
         phys["re"] = RE
@@ -231,6 +240,32 @@ def _generate(system: str, outdir: str, m0: int = 1) -> None:
         div_true = _solver_divergence(
             to_solver_basis(probe), system, flow, fourier
         )
+    elif system == "viscoelastic-pipe":
+        # 9-component state in the *cylindrical* family: the velocity
+        # divergence takes the pipe's parity-reduced path (on the [:3]
+        # slice), and the ground truth for the tensor is the stored
+        # conformation slice itself -- which on the m0 = 2 wedge is
+        # what pins the analysis package's tensor parity classes.
+        from dnsjax.flows.wall_bounded.viscoelastic_pipe import (
+            flow,
+            get_stats,
+        )
+        from dnsjax.geometries.wall_bounded._base import to_pm_basis
+        from dnsjax.geometries.wall_bounded.cylindrical import fourier
+
+        # ``probe`` is already the physical velocity triad rescaled per
+        # component, so the 3-component velocity map is the right one
+        # (the 9-component ``to_solver_basis`` would need the tensor).
+        div_true = _solver_divergence(
+            to_pm_basis(probe), system, flow, fourier
+        )
+        np.save(os.path.join(outdir, "conf_true.npy"), np.asarray(state[3:]))
+        # No omega dump: ``save_snapshot`` writes this system's **9**
+        # components, and the velocity curl is already pinned
+        # node-for-node by the 3-component ``pipe`` rows (same
+        # ``_curl_fn``, same parity-reduced ``D1``).  What only this
+        # row can pin is the *tensor* read-back on an even wedge.
+        omega = None
     elif system == "viscoelastic-dean":
         # 9-component state; the velocity curl path is the annular one
         # (pinned by the taylor-couette case).  The ground truth here
@@ -310,7 +345,9 @@ def _check_system(system: str, family: str, outdir: str) -> None:
 
     # params / stats object-like access (viscoelastic re = wi/el = 1,
     # rehydrated by params_namespace from the derived internal field)
-    exp_re = 1.0 if system == "viscoelastic-dean" else RE
+    exp_re = (
+        1.0 if system in ("viscoelastic-dean", "viscoelastic-pipe") else RE
+    )
     assert float(st.params.phys.re) == exp_re, system
     assert st.params.phys.system == system, system
     assert st.stats is not None, system

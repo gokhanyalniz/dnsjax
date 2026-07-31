@@ -1965,6 +1965,35 @@ def _imm_iteration_vw(
     axis makes the same lag diverge; ``cylindrical.py`` evolves the
     spin quad instead.)
 
+    **That `$0.02$` is a measurement over a corner, not a bound.**  The
+    lagged partners enter multiplied by `$2m/r^2$` (``spin`` below)
+    against a damping `$1/(c\nu\Delta t) + k^2$`, so the contraction
+    degrades toward small inner radius, large `$\nu$`, large
+    `$\Delta t$` and high `$m$` -- `$r \to 0$` is exactly what makes it
+    diverge on the pipe.  Measured on ``taylor-couette``
+    (`$\mathrm{re}_1 = 1$`, `$\mathrm{re}_2 = -0.5$`,
+    `$n_r = n_\theta = 64$`, `$\Delta t = 0.01$`, corrector tolerance
+    `$10^{-12}$` so the count is not floored), corrector passes per
+    step against `$\eta$`:
+
+    ===========  ==========  ==========
+    `$\eta$`     flag-on     flag-off
+    ===========  ==========  ==========
+    0.5          5           3
+    0.3          7           3
+    0.1          10          3
+    ===========  ==========  ==========
+
+    -- so the primitive scheme is `$\eta$`-independent while this one
+    reaches ``max_corrector_iterations`` by `$\eta = 0.1$`.  At the
+    default tolerance `$10^{-5}$` every one of those converges in 0-1
+    passes, so no shipped configuration is affected.  The important
+    structural point is that this lag sits **inside** the corrector:
+    degradation surfaces as an iteration count and ultimately as a
+    *reported* non-convergence, never as the silent across-step growth
+    the pipe's retired wall lag produced.  A wide-gap run at low
+    `$\mathrm{Re}$` should watch ``corrector.dat``.
+
     Retired route: decoupling the pair
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     The `$u_\pm$` trick diagonalizes the spin block only *within* one
@@ -2015,7 +2044,9 @@ def _imm_iteration_vw(
     own wall rows are overwritten in stage 4).  All three geometries
     make that trade -- ``cartesian._imm_iteration_vw`` carries the
     shared argument and the measurement (one-step spectral radius
-    `$\le 1$`); the pipe's flavour is its lagged wall differences.
+    `$\le 1$`) -- and in all three it is the only wall quantity taken
+    from `$t^n$`: the lagged spin partners above and the pipe's
+    surplus wall differences both ride the corrector iterate.
     Carrying `$\Phi$` would mean a third representation of the state
     for the sake of two rows, which was tried on Cartesian and
     reverted.

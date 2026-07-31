@@ -90,18 +90,20 @@ from dnsjax.flows.wall_bounded.viscoelastic_dean import (  # noqa: E402
     predict_and_fully_correct,
 )
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
+from dnsjax.geometries.wall_bounded._viscoelastic_common import (  # noqa: E402
+    from_spin_basis,
+    get_norm2_conformation,
+    phys_combos_to_spin,
+    spin_to_phys_combos,
+    to_spin_basis,
+)
 from dnsjax.geometries.wall_bounded.annular_viscoelastic import (  # noqa: E402
     _build_Hc_band_gpu,
     _build_Hc_dense_gpu,
     _get_rhs,
     _narrow_abase_wall_rows,
-    _phys_combos_to_spin,
-    _spin_to_phys_combos,
     _tensor_laplacian_spin,
     fourier,
-    from_spin_basis,
-    get_norm2_conformation,
-    to_spin_basis,
 )
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
@@ -198,7 +200,7 @@ def _tensor_laplacian_physical_reference(
 
 
 def test_spin_physical_round_trip() -> None:
-    """``_spin_to_phys_combos`` and ``_phys_combos_to_spin`` invert."""
+    """``spin_to_phys_combos`` and ``phys_combos_to_spin`` invert."""
     Nr = params.res.ny
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
@@ -206,14 +208,14 @@ def test_spin_physical_round_trip() -> None:
 
     # spin -> physical -> spin.
     spin = _random_tensor(rng, (6, Nr, Nm, Nkz))
-    phys = _spin_to_phys_combos(*[jnp.asarray(spin[i]) for i in range(6)])
-    spin_rt = np.asarray(_phys_combos_to_spin(*phys))
+    phys = spin_to_phys_combos(*[jnp.asarray(spin[i]) for i in range(6)])
+    spin_rt = np.asarray(phys_combos_to_spin(*phys))
     assert_allclose(spin_rt, spin, atol=1e-13, err_msg="spin->phys->spin")
 
     # physical -> spin -> physical.
     phys0 = [jnp.asarray(_random_tensor(rng, (Nr, Nm, Nkz))) for _ in range(6)]
-    spin_from = _phys_combos_to_spin(*phys0)
-    phys_rt = _spin_to_phys_combos(*[spin_from[i] for i in range(6)])
+    spin_from = phys_combos_to_spin(*phys0)
+    phys_rt = spin_to_phys_combos(*[spin_from[i] for i in range(6)])
     for got, ref, name in zip(
         phys_rt, phys0, ("rr", "thth", "rth", "rz", "thz", "zz"), strict=True
     ):
@@ -300,11 +302,11 @@ def test_tensor_laplacian_diagonalization() -> None:
 
     # Reference: convert to physical, apply the coupled Laplacian with
     # the 6x6 generator, convert back to spin.
-    cphys = np.stack([np.asarray(x) for x in _spin_to_phys_combos(*spin_np)])
+    cphys = np.stack([np.asarray(x) for x in spin_to_phys_combos(*spin_np)])
     ref_phys = _tensor_laplacian_physical_reference(
         cphys, D1, D2, inv_r, inv_r2, m_vals, kz_vals
     )
-    ref = np.asarray(_phys_combos_to_spin(*ref_phys))
+    ref = np.asarray(phys_combos_to_spin(*ref_phys))
 
     assert_allclose(got, ref, atol=1e-10, rtol=1e-10, err_msg="tensor Lap")
 
@@ -479,7 +481,7 @@ def test_conformation_frobenius_norm() -> None:
     assert_allclose(got, ref, rtol=1e-12, err_msg="Frobenius norm")
 
     # Spin-image identity: weights (1, 1, 1, 1/2, 1/4, 1/4).
-    spin = _phys_combos_to_spin(c_rr, c_thth, c_rth, c_rz, c_thz, c_zz)
+    spin = phys_combos_to_spin(c_rr, c_thth, c_rth, c_rz, c_thz, c_zz)
     w = jnp.asarray(np.sqrt([1.0, 1.0, 1.0, 0.5, 0.25, 0.25]))[
         :, None, None, None
     ]
