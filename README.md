@@ -42,7 +42,7 @@ margin for a single FFT evaluation per step.
 - **Portable data** — snapshots are plain tar + zarr3, written in parallel
   directly from device memory, readable with standard tools and a
   dependency-light NumPy reader; resume is device-count-agnostic.
-- **Extensively tested** — 32 standalone test scripts (also runnable
+- **Extensively tested** — 34 standalone test scripts (also runnable
   through a pytest bridge) pin the numerics, the machinery, and the
   multi-device behavior, and the optimal-growth module reproduces
   published values — see
@@ -66,6 +66,12 @@ A few conventions worth knowing:
 - **Reynolds number.** `re` sets the viscosity $\nu = 1/Re$. For the pipe it
   is simultaneously the centerline–radius and the bulk-velocity–diameter
   Reynolds number (the factors of two cancel in the chosen normalization).
+- **Driving.** The pressure-driven flows (pipe, plane-Poiseuille) accept
+  `phys.driving = "constant_bulk_velocity"` to hold the bulk velocity
+  fixed instead of the mean pressure gradient, and every wall-bounded
+  flow but the pipe can pin the mean velocity of its undriven
+  homogeneous direction to zero (`phys.block_mean_spanwise_velocity`) —
+  the spanwise mean in the channels, the axial mean in the annulus.
 - **Taylor–Couette rotation.** `re1` and `re2` are the inner and outer
   cylinder Reynolds numbers on a unit gap, with `re1 >= 0` and `re2` free to
   be negative. The sign pattern selects the configuration: inner-driven
@@ -82,10 +88,11 @@ A few conventions worth knowing:
 - **Viscoelastic memory.** With 9 state components, the viscoelastic
   right-hand side inverse-transforms a 36-field batch every step, and that
   batch dominates the step's peak memory. `solver.rhs_transform_chunks`
-  (item 4 in [Additional features](#additional-features)) splits it to cut
-  the peak roughly $k$-fold at identical results; it defaults to `1` (the
-  fused batch) because chunking costs throughput — more FFT dispatches and
-  reshard rounds — that is only worth paying when a run is memory-bound.
+  (item 4 in [Additional features](#additional-features)) splits it to
+  cut the batch's transform-stage peak roughly $k$-fold at identical
+  results; it defaults to `1` (the fused batch) because chunking costs
+  throughput — more FFT dispatches and reshard rounds — that is only
+  worth paying when a run is memory-bound.
 - **Grid axes.** Each flow's parameters use the names natural to its
   geometry: the cylindrical and annular flows expose `lz` (axial
   length), `nz` (axial modes), `nr` (radial points), and `ntheta`
@@ -254,8 +261,9 @@ defaults (the pipe's moving frame `u_grid = 0.5`, its scheme-dependent
 `grid_type`, the viscoelastic rheology values) are materialized before
 printing or recording. The parameters that must be known before JAX
 initializes — `dist.np0`, `dist.np1`, `dist.platform`, and
-`res.double_precision` — are never inherited from a snapshot, and the entire
-`solver` section is execution-only.
+`res.double_precision` — are never inherited from a snapshot, nor are the
+resume-decision fields `init.snapshot` and `init.force_resume` (recorded
+for lineage only), and the entire `solver` section is execution-only.
 
 `uv run dnsjax --help` shows the global parameters and the flow list,
 `--help <system>` one flow's full surface with per-field descriptions, and
@@ -280,12 +288,13 @@ the default backends:
 
 - **Spectral state** — exactly $n_c$ fields, with $n_c = 3$ velocity
   components (9 for viscoelastic Dean): one component is
-  $(n_x/2) \cdot n_y \cdot (n_z - 1)$ complex numbers, i.e.
+  $(n_x/2) \cdot n_y \cdot (n_z - 1)$ complex numbers ($n_y - 1$ in place
+  of $n_y$ for the periodic box), i.e.
   $\approx n_x n_y n_z$ reals. The time stepper holds about three further
   state-sized arrays within a step, and `cnab2` carries one across steps
-  (its allocated peak still matches the default scheme's, whose corrector
-  branch XLA keeps reserved); Dean and viscoelastic Dean keep one extra
-  state-sized laminar reference.
+  (for the wall-bounded systems its allocated peak still matches the
+  default scheme's, whose corrector branch XLA keeps reserved); Dean and
+  viscoelastic Dean keep one extra state-sized laminar reference.
 - **Nonlinear term, every step** — the rotational form inverse-transforms a
   6-field batch (velocity + vorticity) to the oversampled grid, multiplies
   pointwise, and forward-transforms the 3 product fields. Counting the held
@@ -311,8 +320,8 @@ the default backends:
   `solver.backend = "dense"` replaces $(2p + 1)$ by $n_y$ per matrix — the
   one super-linear option, and the reason Pallas is the wall-bounded
   default. Triply-periodic systems store no matrices at all (their implicit
-  solve is diagonal in spectral space), only $\approx 4$ fields of
-  wavenumber and inverse-Laplacian coefficients.
+  solve is diagonal in spectral space), only four real coefficient arrays
+  — wavenumber and inverse-Laplacian factors, $\approx 2$ fields.
 
 Summing these, the leading-order total per device is
 
@@ -325,7 +334,7 @@ Summing these, the leading-order total per device is
 
 ```math
 \text{triply-periodic:} \qquad
-  \Bigl[\, 4 n_c + \tfrac{27}{8} W + 4 \Bigr]
+  \Bigl[\, 4 n_c + \tfrac{27}{8} W + 2 \Bigr]
   \, \frac{n_x n_y n_z}{2^{27} \, n_{p0} n_{p1}} \ \text{GiB},
 ```
 
@@ -335,11 +344,12 @@ $(n_c, m, v) = (3, 2, 4)$ for the plane flows, $(3, 4, 3)$ for the pipe,
 $(3, 4, 6)$ for Taylor–Couette, quasi-Keplerian, and Dean, and
 $(9, 10, 6)$ for viscoelastic Dean. The sum is an upper estimate —
 XLA's buffer reuse typically realizes less — and halves at single
-precision. Off the stepping path, snapshot writes move each device's
-bytes directly to disk (staging through host memory only when
-GPUDirect Storage is unavailable) and the on-device diagnostic buffers
-are resolution-independent, so the optional I/O adds no
-resolution-scaled device memory.
+precision. Off the stepping path, a snapshot write reshards the state
+onto an I/O layout before moving each device's bytes directly to disk
+(staging through host memory only when GPUDirect Storage is
+unavailable) — a transient second state-sized copy on multi-device
+runs, nothing extra on a single device — and the on-device diagnostic
+buffers are resolution-independent.
 
 ## Array layout by geometry
 
@@ -441,31 +451,40 @@ launch details.
 
 ## Snapshots and external data access
 
-A snapshot is a **single uncompressed tar archive** (format version 5)
+A snapshot is a **single uncompressed tar archive** (format version 6)
 wrapping a **zarr3** store, a JSON metadata member (parameters, grid,
 lineage, and the writing code's git revision), and one contiguous chunk
 per state component (three velocity components, or nine for the
 viscoelastic flow). Each chunk is stored **in the solver's native
-spectral layout** — the bytes on disk are exactly the in-memory
-spectral state at true (unpadded) mode counts, so saving, loading, and
-reading never transpose. The embedded parameters are the flow-relevant,
+spectral layout** at true (unpadded) mode counts — saving, loading, and
+reading never transpose — and in **physical components** for every
+geometry: the cylindrical and annular families convert from the
+solver's decoupled $u_\pm$/spin working basis at the write/read
+boundary. The embedded parameters are the flow-relevant,
 resolved values under their public names — the same representation the
 startup printout and `--sample-toml` use; snapshots written before
-format version 5 embed a different layout and representation and are
-rejected rather than translated. Each device writes its
-disjoint byte ranges into the one file in parallel — directly between GPU
-memory and disk when GPUDirect Storage is available, through the host
-otherwise — with a concurrent mode for POSIX/parallel filesystems and a
-rank-ordered serial mode for filesystems where concurrent writes are
-unsafe.
+format version 6 embed a different layout, basis, or representation and
+are rejected rather than translated. A write first reshards the state,
+inside `jit`, onto the file's own layout — one contiguous span per
+device — and each device then writes its disjoint byte ranges into the
+one file in parallel: directly between GPU memory and disk when
+GPUDirect Storage is available, through the host otherwise, with a
+concurrent mode for POSIX/parallel filesystems and a rank-ordered
+serial mode for filesystems where concurrent writes are unsafe. The
+bytes land in `<name>.tar.partial` and are renamed into place only once
+complete, so a killed job leaves the previous snapshot intact and never
+a truncated archive that could pass for a valid one; on read, the chunk
+layout is checked against the metadata, and a damaged archive raises an
+error naming the file and the cause.
 The stored field is the spectral **perturbation** $\mathbf{u}'$ for the
 base-flow systems (the laminar state is a zero array) and the **total**
 field for Dean and viscoelastic Dean. The archive is readable with ordinary
 tools — `tar xf` yields a valid zarr3 store, and in the worst case each
 chunk is raw little-endian complex data for `numpy.fromfile`. Resume is
 agnostic to the device count (precision must match — a mismatch
-rejects), and re-grids a changed wall-normal grid on load (spectrally
-between the CGL-family grids).
+rejects), and re-grids a changed wall-normal grid on load — spectrally
+when both grids are CGL-family, by a local order-`fd_order` stencil for
+tanh or custom grids.
 
 For post-processing, `dnsjax.analysis.snapshot_export.read_state` reads a
 snapshot into NumPy arrays **without importing JAX or the solver runtime**,
@@ -494,16 +513,18 @@ data = read_state(
 
 The companion `dnsjax.analysis.snapshot_ops` module provides `divergence`,
 `curl`, `gradient`, and `integrate` that reproduce the solver's *discrete*
-operators node-for-node, and `scripts/snapshot_import.py` covers the reverse
-direction: packing a velocity field produced elsewhere (by another
-simulator, say) into a valid snapshot.
+operators node-for-node, and `scripts/snapshot_import.py` covers the
+reverse direction: packing a velocity field produced elsewhere (by
+another simulator, say) into a valid snapshot — velocity flows only,
+the nine-component viscoelastic state being readable but not importable.
 
 The importer is a library (not a CLI) and **assumes the field is already
 in dnsjax's native layout**: components leading, axes $(y, z, x)$ for the
-Cartesian and triply-periodic systems and $(r, \theta, z)$ for pipe and
-Taylor-Couette — whose components are $(u_z, u_r, u_\theta)$ — so any
-axis permutation and component reordering from the source code's
-conventions is the caller's first step.
+Cartesian and triply-periodic systems and $(r, \theta, z)$ for the
+cylindrical and annular flows (pipe, Taylor-Couette, quasi-Keplerian,
+Dean) — whose components are $(u_z, u_r, u_\theta)$ — so any axis
+permutation and component reordering from the source code's conventions
+is the caller's first step.
 Two conventions to keep in mind. The resolutions are the solver's
 nominal (physical) mode counts *without* the 3/2 dealiasing expansion —
 never include dealiasing zero-padding in the field or the resolution
@@ -635,14 +656,18 @@ physically neutral.
 Two second-order, semi-implicit schemes share the same predictor and
 influence-matrix pressure solve:
 
-- **`iterative-cn`** (default) — an explicit Euler predictor followed by an
-  iterative Crank–Nicolson corrector that makes the nonlinear term implicit
-  through its fixed point. This costs $2 + c \approx 3$ FFT evaluations per
-  step and is stable well past the advective CFL limit.
+- **`iterative-cn`** (default) — a semi-implicit Euler predictor followed
+  by an iterative Crank–Nicolson corrector that makes the nonlinear term
+  implicit through its fixed point. This costs $2 + n_c \approx 3$ FFT
+  evaluations per step ($n_c$ the corrector's iteration count) and is
+  stable well past the advective CFL limit.
 - **`cnab2`** — Crank–Nicolson viscous term with an explicit second-order
   Adams–Bashforth nonlinear term, costing a **single** FFT evaluation per
   step (roughly a threefold saving on CFL-limited turbulent runs), at the
-  price of an advective-CFL step restriction.
+  price of an advective-CFL step restriction. The wall-bounded systems
+  keep the wall-stiff coupling implicit through an FFT-free corrector; a
+  step whose corrector fails to contract falls back to one full
+  `iterative-cn` step.
 
 The `implicitness` knob $c$ is the Crank–Nicolson weight ($c = 0.5$ is the
 trapezoidal rule), with `corrector_tolerance` and `max_corrector_iterations`
@@ -656,12 +681,13 @@ instantaneous mean-flow coupling into the implicit term.
 Both schemes can run at a fixed `step.dt` or under **adaptive CFL time
 stepping** (`step.adaptive`): the main loop re-reads the measured total
 CFL every `cfl_cadence` steps and rescales the step toward the
-`cfl_target` setpoint, bounded by `dt_min`/`dt_max`, a per-change
-growth limiter, and a relative deadband that suppresses churn from CFL
-noise. An accepted change rebuilds the $\Delta t$-dependent implicit
-operators on the device — a few implicit solves, no recompilation —
-and the following Adams–Bashforth step is ratio-weighted
-(variable-step AB2), so both schemes remain second-order accurate.
+`cfl_target` setpoint, bounded by `dt_min`/`dt_max`, per-change growth
+and shrink limiters, and a relative deadband that suppresses churn from
+CFL noise. An accepted change rebuilds the $\Delta t$-dependent
+implicit operators on the device — a few implicit solves, no
+recompilation — and under `cnab2` the following Adams–Bashforth step
+is ratio-weighted (variable-step AB2), so both schemes remain
+second-order accurate.
 Snapshots embed the live `dt`, so a resume continues at the adapted
 step.
 
@@ -684,14 +710,14 @@ exactly on the axis and is dropped — placing its innermost node about one
 grid spacing from the axis, while the **half-CGL** grid is the positive half
 of a CGL grid with an *even* number of points (no node ever sits on the
 axis), placing it about half as far. `cnab2` defaults to the rigged grid:
-its explicit azimuthal advection near the axis limits the time step in
-proportion to that innermost radius. `iterative-cn` integrates the
-near-axis coupling implicitly and defaults to the finer-resolving half-CGL
-grid. Optional tanh stretching (`grid_type = "tanh"`, or `"half-tanh"` for
+the admissible step of its explicit azimuthal advection grows with the
+innermost node's radius. `iterative-cn` integrates the near-axis
+coupling implicitly and defaults to the finer-resolving half-CGL grid.
+Optional tanh stretching (`grid_type = "tanh"`, or `"half-tanh"` for
 the pipe's one-sided variant, with the `grid_stretch` factor) and fully
 **custom grids** (via a `geo.wall_grid` file) are supported; quadrature is
-spectral Clenshaw–Curtis on CGL grids and an order-`fd_order` composite
-rule otherwise.
+spectral Clenshaw–Curtis on CGL grids (a weighted parity variant on the
+pipe's half grids) and an order-`fd_order` composite rule otherwise.
 
 ### The influence-matrix method
 
@@ -709,9 +735,20 @@ happens once, and the per-step boundary work stays a handful of small
 per-mode operations, which is what keeps the wall-bounded solve inexpensive
 at scale.
 
+The influence-matrix solve enforces the wall conditions exactly, but the
+interior divergence of a stepped state retains a truncation-level
+residual. An opt-in reformulation (`res.consistent_imm`) eliminates it:
+advance the wall-normal velocity and vorticity, reconstruct the
+tangential components, and no discrete pressure appears — the stepped
+state's divergence sits at round-off at any resolution, on the same
+banded operators, with fewer solves and less operator storage. The trade
+is a truncation-level tangential-momentum residual that nothing feeds
+back; the discrete-divergence and energy-budget tests pin both
+formulations.
+
 ## Testing and validation
 
-The test suite is 32 standalone scripts under `tests/`, run directly
+The test suite is 34 standalone scripts under `tests/`, run directly
 (`uv run python tests/test_cartesian.py`) or through the optional pytest
 bridge — `uv run pytest` shells each script out as a subprocess, with
 `mpi`/`slow` markers and the scripts staying the source of truth — and
@@ -723,9 +760,13 @@ guarantees they pin:
   constructions, and CUDA-lowering guards that catch Triton compilation
   regressions on CPU-only machines.
 - **The physics** — laminar states step at machine precision, random
-  initial conditions integrate through the full nonlinear path for all
-  eight flows (localized spots for five of the wall-bounded ones), and
-  both time steppers converge at second order.
+  initial conditions integrate through the full nonlinear path for every
+  distinct stepping machinery (six of the eight flows; the other two
+  bind machinery those six cover), localized spots integrate for every
+  wall-bounded spot builder, and second-order temporal convergence is
+  pinned — absolute on the periodic box, scheme-against-scheme for the
+  wall-bounded systems, whose absolute order the influence-matrix
+  splitting sets.
 - **The machinery** — snapshot round-trips readable by standard tools,
   device-count-agnostic resume with lineage checks, and the JAX-free
   import guarantee of the analysis API.
@@ -735,9 +776,12 @@ guarantees they pin:
 `scripts/` adds benchmark and diagnostic tools: `solver_benchmark.py`
 (Pallas-vs-dense validation and benchmark, including multi-GPU),
 `pallas_solve_profile.py` (where the banded solve's time goes),
-`pallas_tiling_diagnostic.py` (a GPU miscompile-isolation harness), and
-`pivot_stability_survey.py` (the evidence behind the no-pivot LU stability
-tolerances).
+`pallas_tiling_diagnostic.py` (a GPU miscompile-isolation harness),
+`pivot_stability_survey.py` (the evidence behind the no-pivot LU
+stability tolerances), `gds_probe.py` (whether the GPUDirect Storage
+snapshot path is engaged, and what starves it), and
+`corrector_invariance_probe.py` (where the corrector's loop-invariant
+work goes and whether hoisting it would pay).
 
 ## References
 
@@ -820,9 +864,9 @@ A closer look at what is in the box, beyond the core solver:
    changes.
 
 7. **Laminarization auto-stop.** A run terminates automatically once the
-   perturbation energy drops below a threshold, so relaminarization events
-   are captured without babysitting — natural for lifetime and
-   edge-of-chaos studies.
+   perturbation energy drops below `stop.laminarization_threshold`, so
+   relaminarization events are captured without babysitting — natural for
+   lifetime and edge-of-chaos studies.
 
 8. **Initial-condition generators.** Divergence-free random fields (the
    default start mode) and deterministic, compactly localized "turbulent
@@ -856,10 +900,21 @@ A closer look at what is in the box, beyond the core solver:
 
 13. **Adaptive CFL time stepping.** `step.adaptive` re-selects the time
     step at runtime from the measured CFL (setpoint `cfl_target`,
-    bounds `dt_min`/`dt_max`, growth and deadband limiters), rebuilding
-    the $\Delta t$-dependent implicit operators on the device with no
-    recompilation and ratio-weighting the next Adams–Bashforth step —
-    see [Temporal discretization](#temporal-discretization).
+    bounds `dt_min`/`dt_max`, per-change limiters and a deadband),
+    rebuilding the $\Delta t$-dependent implicit operators on the device
+    with no recompilation and, under `cnab2`, ratio-weighting the next
+    Adams–Bashforth step — see
+    [Temporal discretization](#temporal-discretization).
+
+14. **Machine-precision discrete incompressibility.** The opt-in
+    `res.consistent_imm` advances the wall-normal velocity and vorticity
+    and reconstructs the tangential components, eliminating the discrete
+    pressure — the stepped state's divergence drops from truncation
+    level to round-off at any resolution, on the same banded operators
+    with fewer solves and less operator storage, and the energy budget
+    closes tighter. Available for every wall-bounded flow; changing it
+    on resume starts a new trajectory — see
+    [The influence-matrix method](#the-influence-matrix-method).
 
 ## Use of AI
 
