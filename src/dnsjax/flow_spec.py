@@ -92,9 +92,13 @@ class FlowSpec:
     r"""Complete per-flow parameter declaration.
 
     ``family`` keys the shared machinery (``"cartesian"``,
-    ``"cylindrical"``, ``"annular"``, ``"annular-viscoelastic"``,
-    ``"triply-periodic"``); ``geometry_label`` groups the ``--help``
-    flow list (viscoelastic-dean displays under ``"annular"``).
+    ``"cylindrical"``, ``"annular"``, ``"cylindrical-viscoelastic"``,
+    ``"annular-viscoelastic"``, ``"triply-periodic"``); the two
+    viscoelastic families are grouped with their geometry *and* with
+    each other by :mod:`dnsjax.flows.registry`, along the geometry and
+    rheology axes respectively.  ``geometry_label`` groups the
+    ``--help`` flow list (each viscoelastic flow displays under its
+    geometry).
 
     Hooks (all optional):
 

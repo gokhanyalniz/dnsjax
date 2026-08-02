@@ -1,7 +1,8 @@
 """Random-IC smoke tests: exercise time integration for all flows.
 
 Starts every distinct stepping machinery (kolmogorov, plane-couette,
-pipe, taylor-couette, dean, viscoelastic-dean) from a random
+pipe, viscoelastic-pipe, taylor-couette, dean, viscoelastic-dean) from
+a random
 divergence-free perturbation of its base flow (the in-process
 ``init.random_field`` start mode, no snapshot file), at a Reynolds
 number above the onset of transition, on a small domain at low
@@ -31,15 +32,16 @@ through the jitted stepper -- every other entry runs the default
 fused 6-field batch, and the chunk-vs-fused bit-parity is
 unit-covered by ``test_padding.py`` and
 ``test_viscoelastic.py::test_rhs_transform_chunks_parity``.
-Six entries (``plane-couette-cnab2``,
-``pipe-cnab2``, ``taylor-couette-cnab2``, ``dean-cnab2``,
-``viscoelastic-dean-cnab2``, ``kolmogorov-cnab2``) pass
+Seven entries (``plane-couette-cnab2``,
+``pipe-cnab2``, ``viscoelastic-pipe-cnab2``, ``taylor-couette-cnab2``,
+``dean-cnab2``, ``viscoelastic-dean-cnab2``, ``kolmogorov-cnab2``) pass
 ``--step.scheme cnab2`` to drive the alternative CN/AB2 time-stepping
 scheme -- Crank-Nicolson viscous + explicit 2nd-order Adams-Bashforth
 nonlinear, one FFT eval per step -- across all four geometry families
 (``dean-cnab2`` additionally covers the total-field ``_l_bf == 0``
-corrector path; ``viscoelastic-dean-cnab2`` the 9-component tensor
-coupling).
+corrector path; the two viscoelastic entries the 9-component tensor
+coupling -- the pipe's also with a nonzero moving frame, which the
+annular twin's ``u_grid = 0`` default never exercises).
 For the wall-bounded families this exercises the fix that makes the
 stiff base-flow coupling implicit (an FFT-free corrector; see ``_l_bf``
 / ``step_cnab2``) plus the iterative-CN self-start, so cnab2 stays
@@ -63,28 +65,34 @@ the force-driven Dean flow, where the coupling is the pure
 instantaneous mean-flow term (``l_bf == L_mf``) -- the regime where the
 two corrector structures most differ.
 
-Six ``*-consistent-imm`` entries drive ``res.consistent_imm`` through
+Seven ``*-consistent-imm`` entries drive ``res.consistent_imm`` through
 a real nonlinear run -- the stability gate the one-step
 ``test_imm_continuity.py`` guard cannot provide (the rejected
 state-side projection passed every linear gate yet went non-finite
 within ~6 steps of exactly the plane-couette configuration here):
 plane-couette and taylor-couette under both schemes, plus the pipe
-spin quad and the 9-component viscoelastic-dean composition (which
-inherits the annular v-omega pass and is exercised nowhere else)
-under iterative-cn.
+spin quad and both 9-component viscoelastic compositions
+(viscoelastic-dean inheriting the annular v-omega pass,
+viscoelastic-pipe the spin quad, each exercised nowhere else) under
+iterative-cn.  None of these entries can see the cylindrical flag-on
+scheme's low-``Re`` limit -- both pipe entries run decades above its
+threshold, deliberately (that limit and its measurements:
+``cylindrical._imm_iteration_vw``).
 
 A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
 ``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
 divisible by ``np1``) is the regression guard for the per-device
 (no-replication) random-IC build with spectral padding -- and, since
 ``solver.backend`` defaults to pallas, it also runs the *cartesian*
-banded operator build/solve on that sharded padded axis.  Two
+banded operator build/solve on that sharded padded axis.  Three
 ``*-pallas-mpi-pad`` entries repeat the sharded/padded shape for the
 banded-operator variants that entry does not reach (the CPU pure-JAX
 banded path; the Triton kernel itself is GPU-only): ``pipe``
-(parity-selected base band) and ``viscoelastic-dean`` (the annular
+(parity-selected base band), ``viscoelastic-dean`` (the annular
 stacked ``Hk`` plus the conformation Helmholtz operator ``Hc``,
-`$\\kappa > 0$`); single-device band-vs-dense parity per geometry is
+`$\\kappa > 0$`) and ``viscoelastic-pipe`` (both of those at once --
+every ``Hc`` band and every per-slot ghost sign is a mode-sharded
+stacked array there); single-device band-vs-dense parity per geometry is
 unit-covered by ``test_cartesian.py`` / ``test_cylindrical.py`` /
 ``test_annular.py``, the shard_map-local solve by
 ``test_banded_solver_sharded.py``.
@@ -257,6 +265,70 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # Viscoelastic (sPTT) pipe flow: the axially driven 9-component
+        # twin of viscoelastic-dean, and the only flow that drives the
+        # coupled tensor path through the pipe's **parity-reduced**
+        # radial operators -- so this is where a wrong per-slot
+        # conformation parity sign would show up nonlinearly (the
+        # laminar smoke's axisymmetric state cannot see it: the
+        # near-axis ghost correction only bites on m != 0 content).
+        # Total-field IC = analytical laminar pair + windowed,
+        # axis-enveloped tensor noise.  Re = wi/el is derived; the
+        # kappa > 0 default builds the conformation Helmholtz operator.
+        # Wi = 20, El = 0.02 => Re = 1000 -- the flow's own default
+        # regime, and close to the Newtonian ``pipe`` entry's Re = 1800,
+        # so the two are comparable.  (The annular entries below run at
+        # Wi = El = 20, Re = 1: that flow's subject is the inertialess
+        # limit, not this one's.)
+        "name": "viscoelastic-pipe",
+        "args": [
+            "--phys.system",
+            "viscoelastic-pipe",
+            "--phys.wi",
+            "20",
+            "--phys.el",
+            "0.02",
+            "--init.random_conformation_amplitude",
+            "10",
+            "--geo.lz",
+            "5",
+        ],
+    },
+    {
+        # The pipe spin quad carrying the 9-component total field.
+        # This composition was briefly rejected on a flag-on blow-up
+        # measured while porting the flow -- at the Re ~ 1 the flow
+        # then inherited from the annulus.  The blow-up is real but
+        # is *not* viscoelastic: it reproduces at beta = 1 (polymer
+        # decoupled from the velocity) and in the Newtonian pipe, and
+        # was a defect in the cylindrical flag-on pass -- its two free
+        # wall differences were lagged to t^n -- since fixed (the
+        # measurements: ``cylindrical._imm_iteration_vw``).  This entry
+        # runs the flow's own default Re = 1000, alongside the
+        # Newtonian ``pipe-consistent-imm`` entry's 1800.  Note what an
+        # entry of this shape does NOT guard: that defect agreed with
+        # flag-off to six significant figures for 600 steps before
+        # departing, and its boundary was crossed by *refinement* at
+        # fixed Re, which a resolution-pinned smoke entry cannot
+        # follow.  The guard for that class is a flag-on/flag-off
+        # comparison at the intended (Re, nr), read digit by digit.
+        "name": "viscoelastic-pipe-consistent-imm",
+        "args": [
+            "--phys.system",
+            "viscoelastic-pipe",
+            "--res.consistent_imm",
+            "True",
+            "--phys.wi",
+            "20",
+            "--phys.el",
+            "0.02",
+            "--init.random_conformation_amplitude",
+            "10",
+            "--geo.lz",
+            "5",
+        ],
+    },
+    {
         # Viscoelastic (sPTT) Dean flow: the 9-component state (3 velocity
         # + 6 conformation-tensor) driven through the full coupled
         # nonlinear path (advection Christoffels, stretching, relaxation,
@@ -284,15 +356,6 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # res.consistent_imm on the 9-component state.  The
-        # viscoelastic geometry carries no consistent_imm code of its
-        # own -- it inherits the annular v-omega pass through
-        # ``super().__post_init__`` -- and the conformation block
-        # never enters that solve, so the composition is only ever
-        # exercised here.  Measured when this entry was added: stepped
-        # relative divergence 2.6e-2 flag-off -> 4.5e-16 flag-on, with
-        # every stats column tracking flag-off to ~4e-6 at equal
-        # corrector cost.
         "name": "viscoelastic-dean-consistent-imm",
         "args": [
             "--phys.system",
@@ -385,6 +448,33 @@ SYSTEMS: list[dict] = [
             "20",
             "--phys.el",
             "20",
+            "--init.random_conformation_amplitude",
+            "10",
+            "--geo.lz",
+            "5",
+            "--solver.backend",
+            "pallas",
+        ],
+    },
+    {
+        # The same multi-device 9-component guard for the *pipe*, where
+        # the per-slot parity masks additionally ride the sharded
+        # azimuthal axis: every ``m_is_even``-selected band and every
+        # per-slot ghost sign is a stacked, mode-sharded array here, so
+        # this is the entry that would catch a cross-spec stack in the
+        # conformation operators or the fused radial GEMM.
+        "name": "viscoelastic-pipe-pallas-mpi-pad",
+        "force_np": 2,
+        "force_np0": 1,
+        "oversubscribe": True,
+        "res": {"nx": 6, "ny": 24, "nz": 8},
+        "args": [
+            "--phys.system",
+            "viscoelastic-pipe",
+            "--phys.wi",
+            "20",
+            "--phys.el",
+            "0.02",
             "--init.random_conformation_amplitude",
             "10",
             "--geo.lz",
@@ -655,6 +745,30 @@ SYSTEMS: list[dict] = [
         # entry.  Same robust reduced parameters as the iterative-cn
         # ``viscoelastic-dean`` entry; cnab2 matches iterative-cn to
         # O(dt^2) at ~1 FFT/step vs its ~4.
+        # CN/AB2 on the viscoelastic pipe: the FFT-free ``_l_bf``
+        # here carries the pipe's mean-flow coupling, the polymer
+        # divergence through the parity-reduced radial operators, and
+        # the moving-frame term (u_grid = 1/2 by default, unlike the
+        # annular twin) -- and the AB2 remainder must stay the pure
+        # fluctuation-fluctuation nonlinearity.
+        "name": "viscoelastic-pipe-cnab2",
+        "res": {"nx": 32, "ny": 32, "nz": 32},
+        "args": [
+            "--phys.system",
+            "viscoelastic-pipe",
+            "--phys.wi",
+            "20",
+            "--phys.el",
+            "0.02",
+            "--init.random_conformation_amplitude",
+            "10",
+            "--geo.lz",
+            "5",
+            "--step.scheme",
+            "cnab2",
+        ],
+    },
+    {
         "name": "viscoelastic-dean-cnab2",
         "res": {"nx": 32, "ny": 32, "nz": 32},
         "args": [
@@ -877,6 +991,7 @@ def _build_command(
         s in system["args"]
         for s in (
             "pipe",
+            "viscoelastic-pipe",
             "taylor-couette",
             "quasi-keplerian",
             "dean",

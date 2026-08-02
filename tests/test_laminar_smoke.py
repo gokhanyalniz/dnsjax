@@ -29,7 +29,10 @@ profile) stays tiny, the corrector still converges (``err``
 total energy is near-steady.  Its azimuthal ``CFL_th`` is the active
 column (radial / axial are roundoff).
 
-Viscoelastic-dean (total-field, 9-component) has its own branch: at
+The two viscoelastic flows (total-field, 9-component) share a branch,
+differing only in which CFL column is active -- ``CFL_z`` for the
+axially driven pipe (the same tight analytic value the Newtonian pipe
+asserts), ``CFL_th`` for the azimuthally driven Dean.  At
 `$\\epsilon = \\kappa = 0$` the analytical laminar velocity + sPTT
 equilibrium conformation pair is the *exact* discrete fixed point, so
 ``E'`` stays tiny, the corrector converges (its error floor sits at FD
@@ -478,6 +481,78 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # Viscoelastic (sPTT) pipe flow: the axially driven twin of
+        # viscoelastic-dean, and the only 9-component flow whose axis
+        # regularity is carried by the parity-reduced FD matrices -- so
+        # this exercises the per-slot conformation parity signs, the
+        # single-wall H_c BC row, and the uniform axial body force
+        # Pi_z = 4/Re through a real run.  At epsilon = kappa = 0 the
+        # analytical laminar pair (Hagen-Poiseuille velocity +
+        # pointwise sPTT-equilibrium conformation) is the *exact*
+        # discrete steady state.  Checked on the viscoelastic branch
+        # (polymer balance I = D_s - W_p), but with the pipe's tight
+        # analytic axial CFL rather than Dean's azimuthal one.
+        "name": "viscoelastic-pipe",
+        "args": [
+            "--phys.system",
+            "viscoelastic-pipe",
+            "--phys.epsilon",
+            "0",
+            "--phys.kappa",
+            "0",
+            "--phys.wi",
+            "5",
+            "--phys.el",
+            "5",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nz",
+            "4",
+            "--res.ntheta",
+            "4",
+            "--res.nr",
+            "27",
+        ],
+    },
+    {
+        # Viscoelastic pipe on an azimuthal wedge (geo.m0 = 2): the
+        # tensor spin shifts m_eff = m + s ride the *physical*
+        # m = m0 * harmonic, and so does the axis parity that selects
+        # each slot's ghost sign -- the wedge is the only configuration
+        # that can tell a physical-m selector from a harmonic-index one.
+        "name": "viscoelastic-pipe-wedge",
+        "args": [
+            "--phys.system",
+            "viscoelastic-pipe",
+            "--phys.epsilon",
+            "0",
+            "--phys.kappa",
+            "0",
+            "--phys.wi",
+            "5",
+            "--phys.el",
+            "5",
+            "--geo.m0",
+            "2",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nz",
+            "4",
+            "--res.ntheta",
+            "4",
+            "--res.nr",
+            "27",
+        ],
+    },
+    {
         # Viscoelastic azimuthal wedge (geo.m0 = 2): the axisymmetric
         # laminar state is a fixed point on the half-annulus wedge,
         # exercising the m0-scaled azimuthal wavenumbers through both
@@ -517,12 +592,14 @@ SYSTEMS: list[dict] = [
         # linear in u', so all of them vanish identically at u' = 0 --
         # err = 0 here is the cheap structural proof that it adds
         # nothing spurious (it is the *nonlinear* smoke that has
-        # teeth; see tests/test_random_smoke.py).  One entry per
-        # geometry covers the three implementations; the annular
-        # family then adds the three flows whose mean-plane packing
-        # differs (a rotating outer wall, a body force, a polymer
-        # stress), since that packing is the one place the flag can
-        # break a fixed point without any perturbation present.
+        # teeth; see tests/test_random_smoke.py -- flag-on
+        # viscoelastic-pipe was a clean fixed point here throughout the
+        # period the flag was rejected for it).  One entry per
+        # geometry covers the three implementations; each curvilinear
+        # family then adds the flows whose mean-plane packing differs
+        # (a rotating outer wall, a body force, a polymer stress),
+        # since that packing is the one place the flag can break a
+        # fixed point without any perturbation present.
         "name": "plane-couette-consistent-imm",
         "args": [
             "--phys.system",
@@ -577,6 +654,39 @@ SYSTEMS: list[dict] = [
         "args": [
             "--phys.system",
             "pipe",
+            "--res.consistent_imm",
+            "True",
+            "--init.start_from_laminar",
+            "True",
+            "--stop.max_sim_time",
+            "0.04",
+            "--outs.it_stats",
+            "1",
+            "--res.nz",
+            "4",
+            "--res.ntheta",
+            "4",
+            "--res.nr",
+            "27",
+        ],
+    },
+    {
+        # Viscoelastic pipe flag-on: the spin quad carrying a
+        # **total-field** 9-component state, so the mean-plane packing
+        # must reproduce the Pi_z-vs-viscosity balance (as Dean's does
+        # for pi_theta) while the polymer stress rides the sources.
+        "name": "viscoelastic-pipe-consistent-imm",
+        "args": [
+            "--phys.system",
+            "viscoelastic-pipe",
+            "--phys.epsilon",
+            "0",
+            "--phys.kappa",
+            "0",
+            "--phys.wi",
+            "5",
+            "--phys.el",
+            "5",
             "--res.consistent_imm",
             "True",
             "--init.start_from_laminar",
@@ -654,11 +764,9 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # Viscoelastic Dean flag-on: the 9-component state calls the
-        # annular pass on its [:3] velocity slice, so this is the guard
-        # that the reformulation composes with the polymer-stress
-        # divergence (which reaches it as RHS content, projected by the
-        # double-curl sources).
+        # Viscoelastic Dean flag-on: the same composition guard in the
+        # annular geometry, whose flag-on pass is the `(Phi, omega_r)`
+        # pair rather than the pipe's spin quad.
         "name": "viscoelastic-dean-consistent-imm",
         "args": [
             "--phys.system",
@@ -852,13 +960,17 @@ def _check_steps_file(workdir: Path, name: str) -> None:
     # Dicts returned through ``jit`` are canonicalised to sorted
     # key order, so compare as sets and index columns by name
     # ("t" is always written first by ``_flush_stats``).
-    cylindrical = name.startswith("pipe")
-    annular = name.startswith(("taylor-couette", "quasi-keplerian"))
-    # Viscoelastic-dean is a force-driven annular (total-field) flow: it
-    # shares Dean's near-steady azimuthal-CFL structure but additionally
-    # writes a ``TrC_max`` column (the max conformation trace).
+    # Both viscoelastic flows write an extra ``TrC_max`` column (the
+    # max conformation trace), but they are driven along *different*
+    # axes, so they part company on which CFL column is the active one:
+    # viscoelastic-pipe is axially driven and behaves like the pipe
+    # (tight analytic laminar CFL on ``CFL_z``), while
+    # viscoelastic-dean is azimuthally driven and shares Dean's
+    # near-steady ``CFL_th`` structure.
     viscoelastic = name.startswith("viscoelastic")
-    dean = name.startswith("dean") or viscoelastic
+    cylindrical = name.startswith(("pipe", "viscoelastic-pipe"))
+    annular = name.startswith(("taylor-couette", "quasi-keplerian"))
+    dean = name.startswith("dean") or (viscoelastic and not cylindrical)
     if cylindrical or annular or dean:
         per_dir = ("CFL_z", "CFL_r", "CFL_th")
     else:

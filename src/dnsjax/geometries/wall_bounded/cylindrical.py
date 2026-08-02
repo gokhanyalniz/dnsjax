@@ -1162,6 +1162,7 @@ class CylindricalFlow:
     D1_ghost: Array = field(init=False)
     D2_ghost: Array = field(init=False)
     D1_wall: Array = field(init=False)
+    D2_wall: Array = field(init=False)
     A_base_even: Array = field(init=False)
     A_base_odd: Array = field(init=False)
     Lk_op: _WallBoundedOp = field(init=False)
@@ -1256,8 +1257,12 @@ class CylindricalFlow:
         self.D1_ghost = jax.device_put(D1_ghost_np[:g_rows], sharding.no_shard)
         self.D2_ghost = jax.device_put(D2_ghost_np[:g_rows], sharding.no_shard)
 
-        # Wall row of D1 (parity-independent, last row).
+        # Wall rows of D1/D2 (parity-independent: the ghost correction
+        # touches only the first ``g_rows``, never the wall).  D2's is
+        # used by the ``res.consistent_imm`` pass to evaluate the quad's
+        # wall data on the corrector iterate.
         self.D1_wall = jax.device_put(D1_pos[-1:, :], sharding.no_shard)
+        self.D2_wall = jax.device_put(D2_pos[-1:, :], sharding.no_shard)
 
         # Base operators.
         self.A_base_even = _build_A_base(D1_even, D2_even, self.inv_r)
@@ -1688,7 +1693,7 @@ def _hk_bands(
             kz2_s,
             dt,
             params.step.implicitness,
-            1.0 / params.phys.re,
+            derived_params.nu,
             p_band,
         )
         for parity, meff2 in groups
@@ -1760,7 +1765,7 @@ def _hk_vw_bands(
             kz2_s,
             dt,
             params.step.implicitness,
-            1.0 / params.phys.re,
+            derived_params.nu,
             p_band,
         )
 
@@ -1795,7 +1800,7 @@ def _hk_vw_dense_mats(
             kz2_s,
             dt,
             params.step.implicitness,
-            1.0 / params.phys.re,
+            derived_params.nu,
         )
 
     (par_p, meff2_p), (par_m, meff2_m) = _vw_spin_groups(fourier_)
@@ -1850,7 +1855,7 @@ def _hk_dense_op(
                 kz2_s,
                 dt,
                 params.step.implicitness,
-                1.0 / params.phys.re,
+                derived_params.nu,
             )
         )
         for parity, meff2 in groups
@@ -2166,10 +2171,20 @@ def _parity_y_matvec(
     *parity_sign* broadcasts against the result, so a stacked *x* can
     carry a different parity per component (and, on the packed mean
     plane, per mode).
+
+    The ghost scatter has to land on the **wall-normal** axis, whose
+    position follows *component_axis*: leading for a 3-d *x* or the
+    transpose-free ``component_axis=1`` stacking, but axis 1 when a 4-d
+    *x* is component-leading.  Getting that wrong corrupts the first
+    `$g$` *components* instead of the first `$g$` radial rows, silently
+    and without a shape error, so the axis is derived here rather than
+    left to each call site.
     """
     g = M_ghost.shape[0]
     out = apply_y_matrix(M_pos, x, component_axis=component_axis)
     ghost = apply_y_matrix(M_ghost, x, component_axis=component_axis)
+    if x.ndim == 4 and component_axis == 0:
+        return out.at[:, :g].add(parity_sign * ghost)
     return out.at[:g].add(parity_sign * ghost)
 
 
@@ -2257,7 +2272,7 @@ def _imm_iteration_vp(
     """
     c = params.step.implicitness
     dt = flow_.dt
-    nu = 1.0 / params.phys.re
+    nu = derived_params.nu
 
     uz_n, up_n, um_n = velocity_n[0], velocity_n[1], velocity_n[2]
     NLz_n, NLp_n, NLm_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]
@@ -2468,8 +2483,10 @@ def _imm_iteration_vw(
     The pair `$(\Phi, \omega_r) = ((\Delta\mathbf{u})_r, \omega_r)$`
     does not close: each diffuses against its `$\theta$` partner
     through the `$-2im/r^2$` spin coupling.  On the annulus that
-    coupling is lagged to the corrector iterate and contracts at
-    `$\rho \le 0.02$`.  Near the pipe axis it **diverges** (measured
+    coupling is lagged to the corrector iterate, contracting at
+    `$\rho \le 0.02$` in its shipped configurations -- a corner, not a
+    bound, and ``annular._imm_iteration_vw`` carries the caveat.  Near
+    the pipe axis it **diverges** (measured
     worst `$\rho = 1.13$`, and `$19.1$` on the retired `$x = r^2$`
     fit, whose sharper near-axis stencils amplified the loop), so it
     cannot be iterated at all.
@@ -2495,29 +2512,105 @@ def _imm_iteration_vw(
         \Phi = \tfrac12(\Phi_+ + \Phi_-), \qquad
         \omega_r = \tfrac12(\omega_+ + \omega_-)
 
-    feed the recovery.  Nothing linear is Picard-iterated:
-    `$\rho \equiv 0$`, and the corrector is nonlinear-only, exactly
-    like the primitive scheme's.  Cost: five per-mode banded solves
+    feed the recovery.  Nothing in the **interior** is Picard-iterated
+    -- the spin coupling the annulus lags is diagonalised exactly here,
+    not lagged.  The one iterated quantity is the pair of free wall
+    differences below, whose loop the corrector's own contraction
+    bounds (and reports).  Cost: five per-mode banded solves
     against the primitive scheme's four, over **three** band families
     against its four (the quad shares two; the recovery is
     ``dt``-free), all at half-width ``fd_order``.
 
-    Boundary conditions, and the one lagged datum
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    That extra solve is why the pipe is the one geometry where this
+    flag costs throughput: measured per step on an H100,
+    ``res.consistent_imm`` is **-17 %** on plane-couette and **-12 %**
+    on Taylor-Couette -- both of which go 4 solves to 3 -- against
+    **+6 %** here.  Memory moves the other way for all three (four band
+    families to three, and the pressure-response columns are replaced
+    by the cheaper `$u_r$` ones).  The trade is forced, not chosen: the
+    `$\mp 2im/r^2$` spin coupling is what the annulus lags and the axis
+    forbids lagging, so exact diagonalisation -- and the doubling it
+    brings -- is the only route here.
+
+    Boundary conditions, and the two iterated wall differences
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Split the quad's wall data into sums and differences.  The **sums**
     are the physical set: `$\omega_r|_{\mathrm{wall}} = 0$`, and
     `$\Phi|_{\mathrm{wall}}$` is the influence-matrix unknown (taken
     zero in the particular solve, corrected by `$\alpha$`).  The
     **differences** `$(\Delta\mathbf{u})_\theta|_{\mathrm{wall}}$` and
-    `$\omega_\theta|_{\mathrm{wall}}$` are not known at `$t^{n+1}$` --
-    the latter is the wall shear -- so they are taken from `$t^n$`,
-    recomputed from the carried state.  They cancel exactly out of both
-    sums (`$(+d) + (-d) = 0$` in floating point), so `$\Phi_{arb}$` and
+    `$\omega_\theta|_{\mathrm{wall}}$` have no boundary condition at
+    all -- the latter is the wall shear -- so they are evaluated on the
+    corrector **iterate**, which at the fixed point places them at
+    `$t^{n+1}$`.  They cancel exactly out of both sums
+    (`$(+d) + (-d) = 0$` in floating point), so `$\Phi_{arb}$` and
     `$\omega_r$` still vanish at the wall to the last bit and the
-    downstream identities are untouched; the lag reaches the answer
-    only through `$L_{s+}^{-1} - L_{s-}^{-1} = O(4m\,c\nu\,\Delta t^2)$`
-    and is the same benign class as the Cartesian scheme's recomputed
-    `$\varphi^n$` wall rows.
+    downstream identities are untouched.  Cost: three wall-row
+    contractions per pass against two wall-row vectors (``D1_wall``,
+    ``D2_wall``) -- `$O(N_r)$` each, not GEMMs -- and no parity
+    handling, since the ghost correction only ever touches the first
+    `$g$` rows while the wall is the last.
+
+    Having *four* wall values against *two* conditions is the price of
+    the spin diagonalisation above, and it is unique to this geometry:
+    Cartesian and annular evolve exactly as many scalars as they have
+    conditions plus the influence unknown, so neither has a free wall
+    value to source at all.
+
+    Why the iterate and not `$t^n$` -- measured
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Lagging the two differences to `$t^n$`, which this scheme did until
+    2026-08-01, is **unstable**, and invisible until it is fatal.  What
+    the sums do not cancel is `$(L_{s+}^{-1} - L_{s-}^{-1})\,d$`: the
+    two spin families differ by `$4m/r^2$` in `$m_{\mathrm{eff}}^2$`
+    against a Helmholtz scale `$1/(c\nu\Delta t)$`, so the leftover is
+    small only while `$\nu/\Delta r$` is.  Being computed from the
+    state, it fed the next step's wall data, closing a growth loop
+    **across time steps**, where nothing damped or observed it.
+    Measured on ``pipe`` (`$32^2$` transverse modes, `$l_z = 5$`,
+    `$\Delta t = 0.01$`, random IC of amplitude 0.1), lagged against
+    iterated, with a flag-off control clean in every row:
+
+    - `$\mathrm{Re} = 1$` / `$n_r = 32$`: lagged non-finite at
+      `$t = 0.37$`; iterated decays monotonically to 1.7e-4 over 100
+      steps (flag-off 1.6e-4).
+    - `$\mathrm{Re} = 10$` / `$n_r = 32$`: lagged non-finite at
+      `$t = 2.06$`; iterated clean, 3.0e-4 at `$t = 3$`.
+    - `$\mathrm{Re} = 100$` / `$n_r = 64$`: lagged tracked flag-off to
+      **six significant figures for 600 steps** and then departed
+      exponentially (0.65 against 1.5e-2 at `$t = 9$`); iterated tracks
+      it throughout (1.733550e-2 against 1.733529e-2 at step 800).
+    - `$\mathrm{Re} = 100$` / `$n_r = 128$`: lagged non-finite at
+      `$t = 5.1$`; iterated 9.351495e-3 against flag-off's 9.351498e-3
+      at step 999 -- seven significant figures.
+    - `$\mathrm{Re} = 1800$` / `$n_r = 128$`, the shipped
+      ``pipe-consistent-imm`` regime at a production wall-normal
+      resolution: both forms clean and identical to seven significant
+      figures (2.758548e-1 at step 1999).  **The repair is a no-op
+      where the lag was already benign** -- and its price is nil:
+      identical ``pipe-consistent-imm`` temporal self-convergence to
+      four significant figures (1.130e-3 / 5.422e-4 / 2.357e-4, orders
+      1.06 / 1.20) and a step time inside CPU noise.
+
+    Two properties of the old failure say what a guard for this class
+    of defect has to look like.  Its growth rate was proportional to
+    `$\nu$` and **independent of `$\Delta t$`** (a 10x smaller step
+    diverged at the same physical time, so no step reduction helped),
+    and its boundary was crossed by **refinement** at fixed
+    `$\mathrm{Re}$`.  A fixed-horizon, fixed-resolution smoke entry can
+    see neither; what catches it is a flag-on/flag-off comparison at
+    the intended `$(\mathrm{Re}, n_r)$`, read digit by digit.  It also
+    had nothing to do with the polymer, though it was first found and
+    misattributed there: ``viscoelastic-pipe`` reproduced every row,
+    including at `$\beta = 1$` where the polymer stress is decoupled
+    from the velocity entirely, and raising `$\kappa$` 200x changed
+    nothing.
+
+    Zeroing the differences instead of lagging them -- formally as
+    admissible, since only the sums are physical -- was also tried and
+    is *worse* than the lag (`$t \approx 0.35$` against `$0.37$`): they
+    are load-bearing, not arbitrary.  Record:
+    ``investigate-consistent-imm-viscoelastic-pipe-axial-heron.md``.
 
     Parity
     ~~~~~~
@@ -2550,7 +2643,7 @@ def _imm_iteration_vw(
     """
     c = params.step.implicitness
     dt = flow_.dt
-    nu = 1.0 / params.phys.re
+    nu = derived_params.nu
 
     m = fourier_.m
     im = 1j * m
@@ -2682,10 +2775,26 @@ def _imm_iteration_vw(
     )
 
     # Wall row: the sums take zero (omega_r's physical value, and
-    # Phi's arbitrary particular choice); the differences take the
-    # lagged t^n values, which cancel out of both sums (docstring).
-    d_phi = (quad[-1, 0] - quad[-1, 1]) / 2
-    d_om = (quad[-1, 2] - quad[-1, 3]) / 2
+    # Phi's arbitrary particular choice); the differences are evaluated
+    # on the corrector ITERATE, so the fixed point carries them at
+    # t^{n+1} and no lag survives (docstring).  Two wall-row dot
+    # products, not GEMMs -- and no parity handling, because the ghost
+    # correction only ever touches the first g rows.
+    pair_j = velocity_j[1:3]
+    d1w_pair = jnp.einsum("j, cjmz -> cmz", flow_.D1_wall.ravel(), pair_j)
+    d2w_pair = jnp.einsum("j, cjmz -> cmz", flow_.D2_wall.ravel(), pair_j)
+    meff2_w = meff2_pm[0]  # (2, Nm, 1); wall-independent
+    phi_w = (
+        d2w_pair
+        + inv_r[-1] * d1w_pair
+        - (meff2_w * inv_r2[-1] + kz2) * pair_j[:, -1]
+    )
+    state_j_w = from_pm_basis(velocity_j[:, -1])
+    om_t_w = ikz[0] * state_j_w[1] - jnp.einsum(
+        "j, jmz -> mz", flow_.D1_wall.ravel(), velocity_j[0]
+    )
+    d_phi = (phi_w[0] - phi_w[1]) / 2
+    d_om = 1j * om_t_w
     wall = jnp.where(
         mean_mask[0], 0.0, jnp.stack([d_phi, -d_phi, d_om, -d_om])
     )

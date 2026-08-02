@@ -109,6 +109,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_snapshot_perturb.py", (), (), 1800),
     ("test_transient_growth.py", ("--fast",), (), 1800),
     ("test_viscoelastic.py", (), (), 1800),
+    ("test_viscoelastic_pipe.py", (), (), 1800),
     ("test_temporal_order.py", (), _SLOW, 3600),
     ("test_energy_budget.py", (), _MPI + _SLOW, 3600),
     ("test_forcing.py", (), _MPI, 1800),

@@ -13,9 +13,20 @@
 - `annular.py`: annular geometry / concentric cylinders (Fourier, CGL
   grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2
   IMM, optional mean-mode azimuthal body force `pi_theta`)
-- `annular_viscoelastic.py`: viscoelastic (sPTT) extension of the
-  annular geometry (`ViscoelasticAnnularFlow`): 9-component state, one
-  fused pseudo-spectral RHS, both schemes supported
+- `_viscoelastic_common.py`: the geometry-free half of the sPTT
+  extension, shared by both viscoelastic geometries (9-component state
+  layout, spin <-> physical maps, spin/Frobenius weights, pointwise
+  physical-space RHS kernel, div-c curvature assembly, CN/AB2 mean
+  conformation coupling, sPTT scalar root, narrow Laplacian BC wall
+  row); its docstring states what is deliberately *not* here
+- `annular_viscoelastic.py`: sPTT extension of the **annular** geometry
+  (`ViscoelasticAnnularFlow`): 9-component state, one fused
+  pseudo-spectral RHS, both schemes supported
+- `cylindrical_viscoelastic.py`: sPTT extension of the **cylindrical**
+  geometry (`ViscoelasticCylindricalFlow`), the same 9-component state
+  through the pipe's parity-reduced radial operators -- the tensor's
+  axis parity and its single-wall `H_c` are what differ; derivation
+  and per-component table: its module docstring
 
 **Component basis (cylindrical / annular only).** Two
 representations, one boundary. The **solver basis** — decoupled
@@ -28,8 +39,9 @@ probes, forcing profiles, ICs, the analysis package, the TG export. A
 given state crosses at most once, never back (the physical form is a
 view, dropped after use), via `_base.to_pm_basis`/`from_pm_basis`
 (aliased `to_solver_basis` / `from_solver_basis`, re-exported by the
-flow modules) or
-`annular_viscoelastic.to_spin_basis`/`from_spin_basis`. `__main__`
+flow modules) or the 9-component
+`_viscoelastic_common.to_spin_basis`/`from_spin_basis` (shared by both
+viscoelastic geometries). `__main__`
 owns the field-level crossings; `probes.py`/`forcing.py` convert their
 own mode columns instead. **Anything that hands a freshly built (i.e.
 physical) state to a stepper must convert first** — `__main__`'s
@@ -100,7 +112,8 @@ the axis forces (the spin quad, parity classes, the band splice).
   (+ the `_derive_vw_homogeneous_data` twins under
   `res.consistent_imm`).
 - `res.consistent_imm` (default off, offered by every wall-bounded
-  flow) makes the discrete continuity identity hold by **one
+  flow) makes the
+  discrete continuity identity hold by **one
   mechanism** in all three geometries: advance the wall-normal
   velocity + vorticity, reconstruct the tangential pair, never form a
   pressure — so the residual is machine-eps and *flat* under
@@ -108,14 +121,18 @@ the axis forces (the spin quad, parity classes, the band splice).
   advances `(φ, v, ω_y)` (4 → 3 solves); annular the `u_r`–`ω_r` pair
   on one shared Helmholtz (`m_eff² = m²+1`; 4 → 3 solves, 3 band
   families); the pipe the spin quad `(Φ±, ω±)` over the *existing*
-  `H_k±` families (5 solves, nothing Picard-iterated). **No geometry
+  `H_k±` families (5 solves; only its two free wall differences ride
+  the corrector iterate). **No geometry
   changes what it carries** (scalars re-derived per pass and
   reconstructed away), so snapshots, probes/forcing, analysis and
   resume are all flag-independent. Derivation, per-geometry efficacy,
   momentum prices, and the five rejected routes: the
   `Resolution.consistent_imm` docs (`parameters.py`); the shared
   scheme record: `cartesian._imm_iteration` (+ `_imm_iteration_vw`);
-  the cylindrical algebra: `annular._imm_iteration_vw`. Guards:
+  the cylindrical algebra: `annular._imm_iteration_vw`; the pipe's
+  free wall values, why its solve count and cost go the other way, and
+  the instability that lagging them caused:
+  `cylindrical._imm_iteration_vw`. Guards:
   `tests/test_imm_continuity.py` (continuity + the momentum ledger),
   `tests/test_random_smoke.py` (the nonlinear stability gate),
   `tests/test_temporal_order.py` (the order the flag must not cost).
@@ -174,8 +191,8 @@ section): shear-driven Taylor-Couette / quasi-Keplerian (perturbation
 `AnnularFlow.pi_theta`), and the viscoelastic total-field mode
 (`annular_viscoelastic.py`).
 
-**Azimuthal wedge (`geo.m0`, every cylindrical/annular flow,
-viscoelastic-dean included)**: `geo.m0 > 1` reduces the azimuthal
+**Azimuthal wedge (`geo.m0`, every cylindrical/annular flow, both
+viscoelastic flows included)**: `geo.m0 > 1` reduces the azimuthal
 domain to `θ ∈ [0, 2π/m0)` and resolves only `m = m0·j`, genuinely
 cutting azimuthal cost/memory by `m0` at fixed `nz` (all array/FFT
 sizes stay `nz`-driven; `m0` only scales wavenumber values). Every
@@ -242,12 +259,17 @@ its docstring and the `fd.py` interpolation docstrings.
   by `(re1, r_omega, eta)` on the quasi-Keplerian half-line `R_Ω < -1`
   (`re2` derived by its spec); binds the same `_circular_couette.py`
   machinery and differs only in its documented conventions.
+- `viscoelastic_pipe.py`:
+  ViscoelasticPipeFlow(ViscoelasticCylindricalFlow) -- sPTT pipe driven
+  by a uniform axial body force `Pi_z = 4/Re`, 9-component **total**
+  field; `Uz = 1 - r^2` at `epsilon = 0`.
 - `dean.py`: DeanFlow(AnnularFlow) -- force-driven **total** field.
 - `viscoelastic_dean.py`: ViscoelasticDeanFlow(ViscoelasticAnnularFlow)
   -- force-driven sPTT Dean, 9-component **total** field.
 
-**Transient-growth hook**: each base-flow flow (all except
-dean/viscoelastic-dean) exports `frozen_profile_flow(profile)`, used by
+**Transient-growth hook**: each base-flow flow (all except the
+total-field dean/viscoelastic-dean/viscoelastic-pipe) exports
+`frozen_profile_flow(profile)`, used by
 `dnsjax.analysis.transient_growth` to linearise around an arbitrary
 wall-normal *total* profile via `_base.frozen_profile_flow` (operators
 are profile-independent, so the jitted stepper does not retrace).
@@ -257,7 +279,8 @@ laminar coupling.
 ### Tests
 
 Relevant files: `test_cartesian.py`, `test_cylindrical.py`,
-`test_annular.py`, `test_viscoelastic.py` (per-geometry operators),
+`test_annular.py`, `test_viscoelastic.py`,
+`test_viscoelastic_pipe.py` (per-geometry operators),
 `test_banded_solver.py`, `test_banded_solver_sharded.py`,
 `test_integration.py`, `test_mean_mask.py`, `test_cnab2.py`,
 `test_imm_continuity.py`, `test_energy_budget.py`,

@@ -48,17 +48,27 @@ __all__ = [
 ]
 
 
-# Maps a component label to its radial parity class (pipe only):
-# u_z has parity (-1)^m ("uz"); u_r and u_θ have parity (-1)^{m+1}
-# ("utheta").  Accepts the long and short spellings.
+# Maps a component label to its radial parity class (pipe only).  A
+# component's axis parity is (-1)^(m+s) with s its spin weight, i.e.
+# it is set by how many of the component's indices are radial or
+# azimuthal -- each flips sign under the axis reflection.  So an even
+# count gives the "even" class (-1)^m and an odd count the "odd" class
+# (-1)^{m+1}.  Accepts the long and short spellings; the six
+# conformation labels are present only for a viscoelastic pipe.
 _PARITY_CLASS = {
-    "uz": "uz",
-    "u_z": "uz",
-    "ur": "utheta",
-    "u_r": "utheta",
-    "utheta": "utheta",
-    "u_theta": "utheta",
-    "uth": "utheta",
+    "uz": "even",
+    "u_z": "even",
+    "ur": "odd",
+    "u_r": "odd",
+    "utheta": "odd",
+    "u_theta": "odd",
+    "uth": "odd",
+    "c_zz": "even",
+    "c_rr": "even",
+    "c_theta_theta": "even",
+    "c_r_theta": "even",
+    "c_rz": "odd",
+    "c_theta_z": "odd",
 }
 
 
@@ -68,21 +78,25 @@ def _resolve_parity(info, ax, cylindrical_parity):
     ``None`` for Fourier axes and for the cartesian/annular grid axis
     (a plain ``D1``).  The pipe's radial axis is parity-dependent at the
     axis, so *cylindrical_parity* must name the component being
-    differentiated (``"u_z"`` / ``"u_r"`` / ``"u_theta"``).
+    differentiated -- any label in :data:`_PARITY_CLASS`, i.e. the
+    velocity triad plus, for a viscoelastic pipe, the six conformation
+    components.
     """
     if info.kind[ax] != "grid" or info.family != "cylindrical":
         return None
     if cylindrical_parity is None:
         raise ValueError(
             "pipe radial derivatives are parity-dependent at the axis; "
-            "pass cylindrical_parity='u_z', 'u_r', or 'u_theta'."
+            "pass cylindrical_parity naming the component, e.g. "
+            "'u_z', 'u_r', 'u_theta' (or 'c_rz', ... for a "
+            "viscoelastic pipe)."
         )
     try:
         return _PARITY_CLASS[str(cylindrical_parity).lower()]
     except KeyError:
         raise ValueError(
             f"cylindrical_parity={cylindrical_parity!r} invalid; use "
-            "'u_z', 'u_r', or 'u_theta'."
+            f"one of {sorted(_PARITY_CLASS)}."
         ) from None
 
 
@@ -153,7 +167,7 @@ def divergence(field, params, coords):
         u_z, u_r, u_th = (np.asarray(f) for f in field)
         r = np.asarray(coords[0], dtype=float)
         rinv = _core._broadcast_along(1.0 / r, 0)
-        p_ur = "utheta" if info.family == "cylindrical" else None
+        p_ur = "odd" if info.family == "cylindrical" else None
         d_ur = _core.radial_derivative(
             u_r,
             r,
@@ -204,8 +218,8 @@ def curl(field, params, coords):
         def d_r(f, parity):  # ∂/∂r = D1 (parity-reduced for the pipe)
             return _core.radial_derivative(f, r, fd, info, parity=parity)
 
-        p_uz = "uz" if cyl else None
-        p_uth = "utheta" if cyl else None
+        p_uz = "even" if cyl else None
+        p_uth = "odd" if cyl else None
         w_r = rinv * d_th(u_z) - d_z(u_th)
         w_th = d_z(u_r) - d_r(u_z, p_uz)
         w_z = d_r(u_th, p_uth) + rinv * u_th - rinv * d_th(u_r)

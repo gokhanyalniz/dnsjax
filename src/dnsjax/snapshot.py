@@ -1194,9 +1194,9 @@ def save_snapshot(
     state:
         Spectral state, shape ``(n_components, *spec_shape)``, complex
         dtype: the perturbation velocity for the base-flow systems,
-        the **total** field for the force-driven dean /
-        viscoelastic-dean systems (the latter 9 components --
-        velocity + conformation spins).
+        the **total** field for the force-driven dean and the two
+        viscoelastic systems (the latter 9 components -- velocity +
+        physical conformation components).
     t:
         Current simulation time.
     it:

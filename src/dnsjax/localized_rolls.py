@@ -84,11 +84,12 @@ import numpy as np
 from .harmonics import complex_harmonics, real_harmonics
 from .parameters import (
     annular_systems,
+    annular_viscoelastic_systems,
     cartesian_systems,
     cylindrical_systems,
+    cylindrical_viscoelastic_systems,
     derived_params,
     params,
-    viscoelastic_systems,
 )
 
 if TYPE_CHECKING:
@@ -498,6 +499,22 @@ def generate_localized_rolls(
     system = params.phys.system
     if system in cartesian_systems:
         return generate_cartesian_rolls(amplitude, width, wavelength)
+    # Rheology before geometry: the viscoelastic systems are members of
+    # their geometry's list too (see ``flows.registry``).  Both take a
+    # velocity-only rolls perturbation on the total-field IC, so the
+    # laminar velocity profile and the laminar conformation are added.
+    if system in annular_viscoelastic_systems:
+        from .random_field import add_viscoelastic_laminar
+
+        return add_viscoelastic_laminar(
+            generate_annular_rolls(amplitude, width, wavelength)
+        )
+    if system in cylindrical_viscoelastic_systems:
+        from .random_field import add_viscoelastic_pipe_laminar
+
+        return add_viscoelastic_pipe_laminar(
+            generate_cylindrical_rolls(amplitude, width, wavelength)
+        )
     if system in cylindrical_systems:
         return generate_cylindrical_rolls(amplitude, width, wavelength)
     if system in annular_systems:
@@ -507,12 +524,4 @@ def generate_localized_rolls(
 
             state = add_dean_laminar(state)
         return state
-    if system in viscoelastic_systems:
-        # Velocity-only rolls perturbation on the total-field IC: add the
-        # laminar velocity profile and the laminar conformation.
-        from .random_field import add_viscoelastic_laminar
-
-        return add_viscoelastic_laminar(
-            generate_annular_rolls(amplitude, width, wavelength)
-        )
     raise ValueError(f"Localized rolls are not defined for system: {system}")
