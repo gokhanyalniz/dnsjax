@@ -89,10 +89,15 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     Used by the geometry base dataclasses
     (``TriplyPeriodicFlow``, ``CartesianFlow``,
     ``CylindricalFlow``, ``AnnularFlow``,
-    ``ViscoelasticAnnularFlow``), their flow subclasses, the
-    geometry-specific ``Fourier`` classes, and the solver
-    dataclasses (``DenseJAXSolver``,
+    ``ViscoelasticAnnularFlow``, ``ViscoelasticCylindricalFlow``),
+    their flow subclasses, the geometry-specific ``Fourier``
+    classes, and the solver dataclasses (``DenseJAXSolver``,
     ``PerModeBandedPallasOperator``).
+
+    Only ``dataclasses.fields`` are visited, so methods and
+    ``ClassVar``s add nothing to the tree -- which is what lets the
+    viscoelastic flows carry their per-geometry adapter surface
+    (``_viscoelastic_stepping``) as methods at zero memory cost.
     """
 
     def _tree_flatten(obj: T) -> tuple[tuple[object, ...], dict[str, object]]:
