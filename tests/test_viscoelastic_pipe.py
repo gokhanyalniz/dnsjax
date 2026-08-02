@@ -28,16 +28,23 @@ RHS kernel -- is guarded once, in ``test_viscoelastic.py``.
    `$-2(1-\beta)/\mathrm{Re}$`.  The profile itself is re-derived
    independently from the sPTT equilibrium equations.
 4. `$H_c$` **band-vs-dense parity** including the single narrow
-   Laplacian BC wall row, per spin slot.
-5. The **probe stream**'s 9-component labels and column conversion for
+   Laplacian BC wall row, per spin slot, plus an independent pin of the
+   flow's `$(-1)^{m+s}$` parity-band selector.
+5. The **adapter surface** the shared stepper
+   (:mod:`dnsjax.geometries.wall_bounded._viscoelastic_stepping`)
+   dispatches on: the pipe zeroes exactly one `$H_c$` wall row (the
+   annulus two), and importing this geometry must not build the
+   annular one.
+6. The **probe stream**'s 9-component labels and column conversion for
    the pipe.
-6. **Fused-RHS transform-count** guard.
+7. **Fused-RHS transform-count** guard.
 
 Run as a script via ``uv run python tests/test_viscoelastic_pipe.py``.
 """
 
 from __future__ import annotations
 
+import subprocess
 import sys
 
 # Select the JAX backend from --dist.platform (default cpu) before the
@@ -470,6 +477,12 @@ def test_Hc_band_vs_dense() -> None:
     Covers the parity band selection and the single narrow Laplacian BC
     wall row (the pipe carries one, against the annulus's two; the axis
     is closed by the parity reduction, not a row).
+
+    The per-spin base operators come from the flow's own
+    ``hc_spin_bases`` adapter -- the pipe half of the surface the
+    shared stepper dispatches on -- so the parity selection under test
+    is the shipped one; a separate assertion below pins it against
+    `$(-1)^{m+s}$` independently.
     """
     from dnsjax.geometries.wall_bounded._viscoelastic_common import (
         narrow_abase_wall_row,
@@ -485,20 +498,39 @@ def test_Hc_band_vs_dense() -> None:
     kappa, dt, c_impl = 5.0e-5, 0.01, 0.5
     m_s = fourier.m[0, ..., None]
     kz2_s = fourier.kz2[0, ..., None]
-    m_is_even_s = fourier.m_is_even[0, ..., None]
+    # The one wall, as ``flow.hc_wall_rows()`` returns it (it cannot be
+    # called here: the module kappa is 0, so the leaf is unset).
+    walls = ((params.res.ny - 1, narrowN),)
 
-    band_even = _banded_from_dense(flow.A_base_even, p)
-    band_odd = _banded_from_dense(flow.A_base_odd, p)
+    spins = (0, 1, -1, 2, -2)
+    band_bases = flow.hc_spin_bases(fourier, spins, banded=True, p=p)
+    dense_bases = flow.hc_spin_bases(fourier, spins, banded=False, p=p)
 
-    for s in (0, 1, -1, 2, -2):
-        par = (1.0 - m_is_even_s) if s % 2 else m_is_even_s
+    # The selector obeys parity (-1)^{m+s}: a spin-s slot rides the
+    # even-parity base exactly at the modes where m + s is even.
+    m_even = np.asarray(fourier.m_is_even[0, :, 0]) > 0.5
+    for s, dense_base in zip(spins, dense_bases, strict=True):
+        want_even = m_even if s % 2 == 0 else ~m_even
+        ref_base = np.where(
+            want_even[:, None, None],
+            np.asarray(flow.A_base_even),
+            np.asarray(flow.A_base_odd),
+        )
+        assert_allclose(
+            np.asarray(dense_base)[:, 0],
+            ref_base,
+            atol=0.0,
+            err_msg=f"parity band selection, spin {s}",
+        )
+
+    for s, band_base, dense_base in zip(
+        spins, band_bases, dense_bases, strict=True
+    ):
         meff2 = (m_s + s) ** 2
         band = np.asarray(
             _build_Hc_band_gpu(
-                band_even,
-                band_odd,
-                narrowN,
-                par,
+                band_base,
+                walls,
                 meff2,
                 flow.inv_r2,
                 kz2_s,
@@ -510,10 +542,8 @@ def test_Hc_band_vs_dense() -> None:
         )
         dense = np.asarray(
             _build_Hc_dense_gpu(
-                flow.A_base_even,
-                flow.A_base_odd,
-                narrowN,
-                par,
+                dense_base,
+                walls,
                 meff2,
                 flow.inv_r2,
                 kz2_s,
@@ -537,6 +567,63 @@ def test_Hc_band_vs_dense() -> None:
 
     # The BC row is genuinely the narrow Laplacian, not an identity.
     assert np.count_nonzero(np.asarray(narrowN)) > 1
+
+
+def test_hc_wall_rows_single_wall() -> None:
+    r"""The pipe zeroes exactly **one** `$H_c$` RHS row, at `$r = 1$`.
+
+    ``zero_hc_wall_rows`` is the adapter the shared ``_c_cn_update``
+    applies for the `$\nabla^2 c = 0$` BC, and the wall count is the
+    one thing the two geometries disagree on there (the annulus zeroes
+    two).  Zeroing the axis row as well would impose a boundary
+    condition the pipe does not have.  Every ``test_laminar_smoke``
+    viscoelastic entry runs at `$\kappa = 0$`, where that branch is not
+    reached at all, so pin it directly.
+    """
+    Nr = params.res.ny
+    Nm = params.res.nz - 1
+    Nkz = params.res.nx // 2
+    rng = np.random.default_rng(11)
+    R = jnp.asarray(_random_tensor(rng, (6, Nr, Nm, Nkz)))
+    out = np.asarray(flow.zero_hc_wall_rows(R))
+
+    zero_rows = [i for i in range(Nr) if not np.any(out[:, i])]
+    assert zero_rows == [Nr - 1], f"zeroed radial rows {zero_rows}"
+    assert_allclose(out[:, : Nr - 1], np.asarray(R)[:, : Nr - 1], atol=0.0)
+
+
+def test_no_cross_geometry_import() -> None:
+    """Importing the pipe sPTT geometry must not build the annulus.
+
+    Each geometry's ``Fourier`` singleton (and its radial grid / FD
+    matrices) is constructed at **import**, so a stray import across
+    the two families would build a grid the flow never uses on every
+    viscoelastic run.  The shared stepper
+    (``_viscoelastic_stepping``) is written to depend on neither
+    geometry, which is what keeps that true; this is the guard, in a
+    fresh subprocess since the check is about import-time side effects.
+    """
+    src = (
+        "import sys\n"
+        "from dnsjax.bootstrap import configure_jax_platform\n"
+        "from dnsjax.parameters import (\n"
+        "    Parameters, padded_res, params, update_parameters)\n"
+        "configure_jax_platform('cpu')\n"
+        "update_parameters(Parameters(\n"
+        "    phys={'system': 'viscoelastic-pipe'},\n"
+        "    res={'nx': 8, 'ny': 13, 'nz': 8}))\n"
+        "padded_res.set_padded_resolution(params)\n"
+        "import dnsjax.geometries.wall_bounded.cylindrical_viscoelastic\n"
+        "bad = sorted(m for m in sys.modules if 'annular' in m)\n"
+        "print(' '.join(bad))\n"
+        "sys.exit(1 if bad else 0)\n"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", src], capture_output=True, text=True
+    )
+    assert r.returncode == 0, (
+        f"annular modules imported: {r.stdout.strip()}\n{r.stderr[-800:]}"
+    )
 
 
 # Group E: probe stream and transform count

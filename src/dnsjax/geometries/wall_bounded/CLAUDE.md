@@ -19,14 +19,22 @@
   physical-space RHS kernel, div-c curvature assembly, CN/AB2 mean
   conformation coupling, sPTT scalar root, narrow Laplacian BC wall
   row); its docstring states what is deliberately *not* here
-- `annular_viscoelastic.py`: sPTT extension of the **annular** geometry
-  (`ViscoelasticAnnularFlow`): 9-component state, one fused
-  pseudo-spectral RHS, both schemes supported
-- `cylindrical_viscoelastic.py`: sPTT extension of the **cylindrical**
-  geometry (`ViscoelasticCylindricalFlow`), the same 9-component state
-  through the pipe's parity-reduced radial operators -- the tensor's
-  axis parity and its single-wall `H_c` are what differ; derivation
-  and per-component table: its module docstring
+- `_viscoelastic_stepping.py`: the sPTT **stepping functions** (fused
+  RHS, `_l_bf`, `_c_cn_update`, predictor/corrector/norm, the `H_c`
+  builders, the stepper factory), written once against a 12-member
+  per-geometry adapter surface — the table and the zero-cost-dispatch
+  argument are in its docstring. Imports neither geometry (that would
+  build both families' grids on any viscoelastic import; guarded by
+  `test_no_cross_geometry_import` in both per-geometry tests)
+- `annular_viscoelastic.py`: the **annular** half of the sPTT extension
+  (`ViscoelasticAnnularFlow` + its adapters, laminar profiles, the two
+  narrow BC wall rows): plain `D1`/`D2` radial derivatives, two walls,
+  azimuthal body force
+- `cylindrical_viscoelastic.py`: the **cylindrical** half
+  (`ViscoelasticCylindricalFlow` + its adapters): parity-reduced radial
+  derivatives on the `(-1)^(m+s)` bands, a single-wall `H_c` (the axis
+  is closed by parity), axial body force; the tensor's axis-parity
+  derivation and per-component table: its module docstring
 
 **Component basis (cylindrical / annular only).** Two
 representations, one boundary. The **solver basis** — decoupled
@@ -100,7 +108,7 @@ the axis forces (the spin quad, parity classes, the band splice).
   banded sweep) or the `"dense"` reference/oracle -- see the
   `solvers.py` docstrings. The pallas build is wired in all three
   geometries: each `_build_{Lk,Hk}_band_gpu` (plus
-  `annular_viscoelastic._build_Hc_band_gpu`) assembles directly in
+  `_viscoelastic_stepping._build_Hc_band_gpu`) assembles directly in
   banded storage via the shared `solvers._assemble_banded_operator`,
   with the band width **measured** from the assembled operator
   (`fd.matrix_half_bandwidth`, both flag states), never assumed to be

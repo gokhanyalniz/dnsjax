@@ -221,6 +221,7 @@ localized_rolls.py    Deterministic localized-spot IC generators
 geometries/
   wall_bounded/       _base.py, cartesian.py, cylindrical.py,
                       annular.py, _viscoelastic_common.py,
+                      _viscoelastic_stepping.py,
                       cylindrical_viscoelastic.py,
                       annular_viscoelastic.py -- see
                       wall_bounded/CLAUDE.md
@@ -635,9 +636,11 @@ one-liners. Cross-cutting notes:
   parity, circular-Couette A0/B0 checks, and the shared cylindrical
   `u_r`-`ω_r` algebraic identities.
 - `tests/test_viscoelastic.py`: sPTT conformation-tensor machinery
-  (annular).
+  (annular) + its half of the shared-stepper adapter surface.
 - `tests/test_viscoelastic_pipe.py`: the cylindrical sPTT geometry --
-  conformation axis parity, the pipe laminar pair, single-wall `H_c`.
+  conformation axis parity, the pipe laminar pair, single-wall `H_c`
+  + its half of the adapter surface. Both files carry the
+  no-cross-geometry-import guard (a fresh subprocess each).
 - `tests/test_integration.py`: quadrature weights and interpolation
   matrices.
 - `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards.

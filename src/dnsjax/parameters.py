@@ -1401,7 +1401,7 @@ class Solver(BaseModel):
     # Applies to the 6-field velocity+vorticity batch of
     # ``rhs.get_nonlin`` and the ~36-field fused viscoelastic batch
     # (``_get_rhs_core`` in
-    # ``geometries/wall_bounded/annular_viscoelastic.py``), both via
+    # ``geometries/wall_bounded/_viscoelastic_stepping.py``), both via
     # ``fft.chunked_transform``.  ``k > 1`` splits the batch into
     # ``k`` balanced groups, cutting the transform-stage transient
     # (the padded intermediate buffers; see the ``fft.py`` memory

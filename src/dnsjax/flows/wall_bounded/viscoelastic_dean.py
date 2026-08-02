@@ -89,8 +89,10 @@ class ViscoelasticDeanFlow(ViscoelasticAnnularFlow):
         r2 = derived_params.r_outer
         Re = params.phys.re
 
-        # Azimuthal body force Pi_theta = (r1 + r2) / (Re r), applied at
-        # the mean mode by ``annular_viscoelastic._get_rhs_core``.
+        # Azimuthal body force Pi_theta = (r1 + r2) / (Re r), applied
+        # at the mean mode by
+        # ``ViscoelasticAnnularFlow.add_mean_body_force`` (the shared
+        # RHS's driving adapter).
         self.pi_theta = (r1 + r2) / (self.rs * Re)
 
         # Total-field formulation: no base flow to subtract.
