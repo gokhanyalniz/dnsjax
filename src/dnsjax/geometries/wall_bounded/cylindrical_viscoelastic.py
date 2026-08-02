@@ -22,6 +22,18 @@ once.  Both layouts, the conversion pair, the spin weights and the
 pointwise physical-space arithmetic live in
 :mod:`._viscoelastic_common`, shared with the annular sPTT geometry.
 
+What lives where
+----------------
+The time stepper itself -- the fused pseudo-spectral RHS, the FFT-free
+CN/AB2 coupling, the conformation Crank-Nicolson update, the
+predictor / corrector / norm, the `$H_c$` builders and the stepper
+factory -- is shared with the annular sPTT geometry and lives in
+:mod:`._viscoelastic_stepping`.  **This** module owns the pipe half:
+the flow dataclass, the analytical laminar profiles, the per-slot axis
+parity, and the adapter methods the shared stepper dispatches on
+(parity-reduced radial derivatives, a single wall row, the axial body
+force -- see :class:`ViscoelasticCylindricalFlow`).
+
 Governing equations (sPTT)
 --------------------------
 .. math::
@@ -87,9 +99,11 @@ only -- smoothness across the axis -- and not to the stronger
 spin-weighted `$r^{|m+s|}$` vanishing rate, which the parity-reduced
 discretisation does not represent for either field.
 
-Every radial derivative below therefore carries a per-slot sign, built
-by :func:`_parity_signs` from the spin weights.  Those GEMMs stack
-their inputs **y-leading** (``component_axis=1``), which is both the
+Every radial derivative therefore carries a per-slot sign, built by
+:func:`_parity_signs` from the spin weights (the flow's
+``rhs_radial_derivatives`` / ``div_c_radial_derivatives`` /
+``tensor_abase_matvec`` adapters below).  Those GEMMs stack their
+inputs **y-leading** (``component_axis=1``), which is both the
 transpose-free layout and the one whose ghost scatter-add lands on the
 radial axis (:func:`~.cylindrical._parity_y_matvec`).
 
@@ -127,41 +141,33 @@ flow-level summary is in
 :mod:`~dnsjax.flows.wall_bounded.viscoelastic_pipe`).
 
 The ``cnab2`` scheme (one FFT/step) makes the FFT-free linear/mean
-coupling implicit via :func:`_l_bf` -- velocity mean-flow coupling +
-polymer-stress divergence, conformation mean advection / mean-shear
-stretching + linear relaxation (all gated / structured so the explicit
-AB2 remainder is the pure fluctuation-fluctuation nonlinearity plus the
-nonlinear relaxation) -- and advances that remainder explicitly.  It
-reproduces ``iterative-cn`` to O(`$\Delta t^2$`) at ~1 FFT/step versus
-~4 (the coupled tensor system inherits the wall-bounded velocity's
-reduced projection-splitting order, shared by both schemes).
+coupling implicit via ``_viscoelastic_stepping._l_bf`` -- velocity
+mean-flow coupling + polymer-stress divergence, conformation mean
+advection / mean-shear stretching + linear relaxation (all gated /
+structured so the explicit AB2 remainder is the pure
+fluctuation-fluctuation nonlinearity plus the nonlinear relaxation) --
+and advances that remainder explicitly.  It reproduces ``iterative-cn``
+to O(`$\Delta t^2$`) at ~1 FFT/step versus ~4 (the coupled tensor system
+inherits the wall-bounded velocity's reduced projection-splitting
+order, shared by both schemes).
 """
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
-from ...fft import chunked_transform
-from ...measurements import get_cfl
-from ...operators import phys_to_spec_2d, spec_to_phys_2d
-from ...parameters import derived_params, params
+from ...parameters import params
 from ...sharding import register_dataclass_pytree, sharding
 from ...solvers import (
     DenseJAXSolver,
     PerModeBandedPallasOperator,
-    _assemble_banded_operator,
-    _banded_diag_column,
     _banded_from_dense,
-    _banded_wall_row,
-    _build_pallas_operator,
-    _factor_pallas_operator,
 )
 from ._base import (
-    extract_mean_mode,
     integrate_scalar,  # noqa: F401 -- for the flow module
 )
 from ._viscoelastic_common import (
@@ -169,17 +175,37 @@ from ._viscoelastic_common import (
     N_VE_COMPONENTS,  # noqa: F401 -- re-exported
     PHYS_COMBO_SPIN,
     TENSOR_SPIN,
-    combined_norm,
-    conformation_coupling_core,
-    div_c_assemble,
     from_spin_basis,
     get_norm2_conformation,  # noqa: F401 -- re-exported for the flow
     narrow_abase_wall_row,
-    phys_combos_to_spin,
-    pointwise_rhs,
     solve_ptt_f,
-    spin_to_phys_combos,
+    spin_to_phys_combos,  # noqa: F401 -- re-exported (test_cnab2)
     to_spin_basis,
+)
+
+# The stepping surface, shared with the annular sPTT geometry and
+# re-exported here so every ``cylindrical_viscoelastic.<name>``
+# consumer (the flow module, the benchmark script, the tests that reach
+# these modules by string) keeps working unchanged.
+from ._viscoelastic_stepping import (
+    _build_dt_leaves,  # noqa: F401
+    _build_Hc_band_gpu,  # noqa: F401
+    _build_Hc_dense_gpu,  # noqa: F401
+    _build_hc_operator,
+    _c_cn_update,  # noqa: F401
+    _conformation_coupling,  # noqa: F401
+    _correct,  # noqa: F401
+    _div_c,  # noqa: F401
+    _get_rhs,  # noqa: F401
+    _get_rhs_core,  # noqa: F401
+    _get_rhs_measured,  # noqa: F401
+    _l_bf,  # noqa: F401
+    _norm,  # noqa: F401
+    _predict,  # noqa: F401
+    _tensor_laplacian_spin,  # noqa: F401
+)
+from ._viscoelastic_stepping import (
+    build_viscoelastic_stepper as _build_stepper,
 )
 from .cylindrical import (
     CFL_NAMES,
@@ -201,11 +227,11 @@ from .cylindrical import (
 to_solver_basis = to_spin_basis
 from_solver_basis = from_spin_basis
 
-# Spin weights of the fused radial-derivative batch of ``_get_rhs_core``
-# -- the velocity triad (u_r, u_theta, u_z) followed by the physical
-# tensor combos -- and of the three columns ``_div_c`` differentiates
-# (c_rr, c_r_theta, c_rz).  Only ``s % 2`` matters (the parity class);
-# see the module docstring.
+# Spin weights of the fused radial-derivative batch of the shared
+# ``_get_rhs_core`` -- the velocity triad (u_r, u_theta, u_z) followed
+# by the physical tensor combos -- and of the three columns ``_div_c``
+# differentiates (c_rr, c_r_theta, c_rz).  Only ``s % 2`` matters (the
+# parity class); see the module docstring.
 _DR_BATCH_SPIN = np.concatenate([[1, 1, 0], PHYS_COMBO_SPIN])
 _DIV_C_SPIN = np.array([2, 2, 1])
 
@@ -315,139 +341,6 @@ def parity_d1_even(rs: np.ndarray, fd_order: int) -> np.ndarray:
     return build_parity_reduced_matrices(np.asarray(rs), fd_order)[0]
 
 
-# ── H_c Helmholtz operator builders (per spin component) ────────────
-
-
-def _build_Hc_dense_gpu(
-    A_base_even: Array,
-    A_base_odd: Array,
-    narrowN: Array,
-    m_is_even_c: Array,
-    meff2: Array,
-    inv_r2: Array,
-    kz2: Array,
-    dt: float,
-    c: float,
-    kappa: float,
-) -> Array:
-    r"""Dense `$H_c = \tfrac1{\Delta t} I - c\kappa\nabla^2$` for one spin
-    component (dense backend).  Interior rows carry the diagonal
-    Helmholtz shift on the parity-selected base operator; the single
-    wall row (`$r = 1$`) is the narrow Laplacian BC row
-    `$A_{\mathrm{base}} - (m_{\mathrm{eff}}^2/r^2 + k_z^2) I$`.  The
-    axis needs no row -- the parity reduction closes it."""
-    Nr = A_base_even.shape[0]
-    dtype = A_base_even.dtype
-    eye_Nr = jnp.eye(Nr, dtype=dtype)
-    diag_coeff = 1.0 / dt + c * kappa * (meff2 * inv_r2 + kz2)  # (Nm,Nkz,Nr)
-    A_base = jnp.where(m_is_even_c[..., None], A_base_even, A_base_odd)
-    Hc = diag_coeff[..., None] * eye_Nr - c * kappa * A_base
-    # Wall row: narrow Laplacian BC (mode-dependent diagonal shift).
-    shiftN = meff2 * inv_r2[-1] + kz2  # (Nm, Nkz, 1)
-    Hc = Hc.at[..., -1, :].set(narrowN[None, None] - shiftN * eye_Nr[-1])
-    return Hc
-
-
-def _build_Hc_band_gpu(
-    band_even: Array,
-    band_odd: Array,
-    narrowN: Array,
-    m_is_even_c: Array,
-    meff2: Array,
-    inv_r2: Array,
-    kz2: Array,
-    dt: float,
-    c: float,
-    kappa: float,
-    p: int,
-) -> Array:
-    r"""Banded `$H_c$` for one spin component (Pallas backend), layout
-    ``(Nm, Nkz, Nr, 2p+1)``; one narrow Laplacian BC wall row."""
-    Nr = band_even.shape[0]
-    band_base = jnp.where(m_is_even_c, band_even[None], band_odd[None])
-    diag = 1.0 / dt + c * kappa * (meff2 * inv_r2 + kz2)  # (Nm, Nkz, Nr)
-    e = _banded_diag_column(p, band_base.dtype)
-    # Narrow BC band (mode-constant) minus the mode-dependent shift.
-    bandN = _banded_wall_row(narrowN, Nr - 1, p)  # (2p+1,)
-    shiftN = meff2 * inv_r2[-1] + kz2  # (Nm, Nkz, 1)
-    return _assemble_banded_operator(
-        band_base[:, None], -c * kappa, diag, [(Nr - 1, bandN - shiftN * e)]
-    )
-
-
-# ── Spectral tensor operators (FFT-free) ────────────────────────────
-
-
-def _tensor_laplacian_spin(
-    c_spin: Array, fourier_: Fourier, flow_: ViscoelasticCylindricalFlow
-) -> Array:
-    r"""Spin-diagonal tensor Laplacian, `$(6, N_r, N_m, N_{kz})$`.
-
-    `$(\nabla^2 c)_{\text{spin }s} = A_{\mathrm{base}}^{(\sigma)} c
-    - (m_{\mathrm{eff}}^2/r^2 + k_z^2) c$` with
-    `$m_{\mathrm{eff}} = m + s$` and the parity-reduced
-    `$A_{\mathrm{base}}$` selected per spin slot (module docstring).
-    """
-    inv_r_y = flow_.inv_r[:, None, None, None]  # against (Nr, 6, Nm, Nkz)
-    par = _parity_signs(TENSOR_SPIN, fourier_)
-    # y-leading (Nr, 6, Nm, Nkz): transpose-free GEMM, and the ghost
-    # scatter lands on the radial axis.
-    c_y = jnp.swapaxes(c_spin, 0, 1)
-    D2_c = _parity_y_matvec(
-        flow_.D2_pos, flow_.D2_ghost, c_y, par, component_axis=1
-    )
-    D1_c = _parity_y_matvec(
-        flow_.D1_pos, flow_.D1_ghost, c_y, par, component_axis=1
-    )
-    Abase_c = jnp.swapaxes(D2_c + inv_r_y * D1_c, 0, 1)
-
-    m = fourier_.m  # (1, Nm, 1)
-    meff = m + flow_.tensor_spin[:, None, None, None]  # (6, 1, Nm, 1)
-    meff2_over_r2 = (meff**2) * flow_.inv_r2[None, :, None, None]
-    return Abase_c - (meff2_over_r2 + fourier_.kz2) * c_spin
-
-
-def _div_c(
-    c_rr: Array,
-    c_thth: Array,
-    c_rth: Array,
-    c_rz: Array,
-    c_thz: Array,
-    c_zz: Array,
-    fourier_: Fourier,
-    flow_: ViscoelasticCylindricalFlow,
-) -> tuple[Array, Array, Array]:
-    r"""Spectral divergence of the symmetric tensor (FFT-free).
-
-    One batched parity-reduced `$D_1$` GEMM for the radial derivatives
-    -- `$c_{rr}$` and `$c_{r\theta}$` are in the `$(-1)^m$` class,
-    `$c_{rz}$` in the `$(-1)^{m+1}$` one -- then the shared curvature
-    assembly (:func:`._viscoelastic_common.div_c_assemble`, which
-    carries the component formulas).  The result lands in the classes
-    the velocity sources need: `$(\nabla\cdot c)_z$` with `$N_z$`,
-    `$(\nabla\cdot c)_{r,\theta}$` with `$N_{r,\theta}$`.
-    """
-    dr_y = _parity_y_matvec(
-        flow_.D1_pos,
-        flow_.D1_ghost,
-        jnp.stack([c_rr, c_rth, c_rz], axis=1),
-        _parity_signs(_DIV_C_SPIN, fourier_),
-        component_axis=1,
-    )
-    return div_c_assemble(
-        jnp.swapaxes(dr_y, 0, 1),
-        c_rr,
-        c_thth,
-        c_rth,
-        c_rz,
-        c_thz,
-        c_zz,
-        1j * fourier_.m,
-        1j * fourier_.kz,
-        flow_.inv_r[:, None, None],
-    )
-
-
 # ── Viscoelastic cylindrical flow dataclass ─────────────────────────
 
 _WallBoundedOp = DenseJAXSolver | PerModeBandedPallasOperator
@@ -471,11 +364,22 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
     transport is hyperbolic and the update is the explicit CN
     combination.
 
-    ``pi_z`` is the mean-mode axial body force, zero here and set by
-    the flow subclass
+    The methods below are the **pipe half of the adapter surface** the
+    shared stepper (:mod:`._viscoelastic_stepping`) dispatches on,
+    resolved once at trace time; being methods rather than fields they
+    add no pytree leaf.  In short: parity-reduced radial derivatives
+    carrying the per-slot `$(-1)^{m+s}$` sign, a single
+    `$\nabla^2 c = 0$` wall row (the axis is closed by the parity
+    reduction), and an axial mean-mode body force.
+
+    ``pi_z`` is that body force, zero here and set by the flow subclass
     (:class:`~dnsjax.flows.wall_bounded.viscoelastic_pipe`), which also
     zeros the base flow (total-field integration).
     """
+
+    #: CFL column labels (a ``ClassVar``: as an annotated field this
+    #: tuple would become two static pytree entries per flatten).
+    cfl_names: ClassVar[tuple[str, str, str]] = CFL_NAMES
 
     tensor_spin: Array = field(init=False)
     inv_r_padded: Array = field(init=False)
@@ -526,7 +430,8 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         jitted adaptive-``dt`` rebuild reuses it), optionally
         pre-checks the no-pivot LU at ``dt_max`` (``step.adaptive``;
         the velocity `$H_k$` analogue), and delegates the
-        assembly/factorization to :func:`_build_hc_operator`.
+        assembly/factorization to
+        :func:`._viscoelastic_stepping._build_hc_operator`.
 
         The wall row is one-sided at `$r = 1$`, so its `$D_2$` stencil
         never reaches the axis and the row is parity-independent -- it
@@ -548,475 +453,168 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
             )
         self.Hc_op = _build_hc_operator(self.dt, fourier, self, label="Hc")
 
+    # ── Adapter surface (see ``_viscoelastic_stepping``) ────────────
 
-def _build_hc_operator(
-    dt: float | Array,
-    fourier_: Fourier,
-    flow_: ViscoelasticCylindricalFlow,
-    *,
-    label: str | None,
-) -> _WallBoundedOp:
-    r"""Factored 6-component `$H_c$` at *dt*.
+    def rhs_radial_derivatives(
+        self,
+        fields: tuple[Array, ...],
+        combos: Array,
+        fourier_: Fourier,
+    ) -> Array:
+        r"""The fused 9-field radial-derivative batch of the RHS.
 
-    Five distinct `$(m_{\mathrm{eff}}^2, \text{parity})$` operators
-    (`$s = 0, \pm1, \pm2$`) are built and stacked into the 6-component
-    order `$(c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++}, c_{--})$`, so the
-    `$s = 0$` operator serves both `$c_{zz}$` and `$c_{+-}$`.  The
-    parity band follows `$s \bmod 2$` (module docstring): the
-    `$s = \pm1$` slots ride the `$(-1)^{m+1}$` band, the rest the
-    `$(-1)^m$` one.
+        One parity-reduced `$D_1$` GEMM **pair** over the 3 velocity
+        components and the 6 conformation combos -- one pair instead of
+        two -- stacked y-leading ``(Nr, 9, Nm, Nkz)``, which is both
+        transpose-free and the layout whose ghost scatter-add lands on
+        the radial axis.  *fields* is the flat 9-tuple the stack wants;
+        *combos* (the same six tensor entries already materialised as
+        one array) is the annulus's preferred form and unused here.
+        Returns ``(9, Nr, Nm, Nkz)``.
+        """
+        dr_y = _parity_y_matvec(
+            self.D1_pos,
+            self.D1_ghost,
+            jnp.stack(fields, axis=1),
+            _parity_signs(_DR_BATCH_SPIN, fourier_),
+            component_axis=1,
+        )
+        return jnp.swapaxes(dr_y, 0, 1)
 
-    The stacked storage duplicates that shared operator's factors, and
-    why that is left alone is the annular twin's
-    (``annular_viscoelastic._build_hc_operator``).
+    def div_c_radial_derivatives(
+        self, c_rr: Array, c_rth: Array, c_rz: Array, fourier_: Fourier
+    ) -> Array:
+        r"""`$(\partial_r c_{rr}, \partial_r c_{r\theta},
+        \partial_r c_{rz})$`, one batched parity-reduced `$D_1$` GEMM.
 
-    *label* selects the pallas factorization path: a string runs the
-    setup-checked :func:`solvers._build_pallas_operator` under that
-    diagnostic label; ``None`` runs the unchecked, jittable
-    :func:`solvers._factor_pallas_operator` (the ``set_dt``
-    rebuild).  The dense backend is pivoted and ignores *label*.
-    The wall row comes from the ``hc_narrowN`` leaf.
-    """
-    kappa = params.phys.kappa
-    c_impl = params.step.implicitness
-    m_s = fourier_.m[0, ..., None]  # (Nm, 1, 1)
-    kz2_s = fourier_.kz2[0, ..., None]  # (1, Nkz, 1)
-    m_is_even_s = fourier_.m_is_even[0, ..., None]  # (Nm, 1, 1)
-    m_is_even_v = 1.0 - m_is_even_s
-    # (m_eff^2, parity mask) for spin s = 0, +1, -1, +2, -2.
-    per_spin = {
-        s: ((m_s + s) ** 2, m_is_even_v if s % 2 else m_is_even_s)
-        for s in (0, 1, -1, 2, -2)
-    }
-    order = [0, 1, -1, 0, 2, -2]
+        `$c_{rr}$` and `$c_{r\theta}$` are in the `$(-1)^m$` class,
+        `$c_{rz}$` in the `$(-1)^{m+1}$` one.  Returns
+        ``(3, Nr, Nm, Nkz)``.
+        """
+        dr_y = _parity_y_matvec(
+            self.D1_pos,
+            self.D1_ghost,
+            jnp.stack([c_rr, c_rth, c_rz], axis=1),
+            _parity_signs(_DIV_C_SPIN, fourier_),
+            component_axis=1,
+        )
+        return jnp.swapaxes(dr_y, 0, 1)
 
-    if params.solver.backend == "pallas":
-        p_band = flow_.Lk_op.L.shape[1]
-        band_even = _banded_from_dense(flow_.A_base_even, p_band)
-        band_odd = _banded_from_dense(flow_.A_base_odd, p_band)
-        bands = [
-            _build_Hc_band_gpu(
-                band_even,
-                band_odd,
-                flow_.hc_narrowN,
-                per_spin[s][1],
-                per_spin[s][0],
-                flow_.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                kappa,
-                p_band,
+    def tensor_abase_matvec(self, c_spin: Array, fourier_: Fourier) -> Array:
+        r"""`$A_{\mathrm{base}}^{(\sigma)} c
+        = (\partial_r^2 + \tfrac1r\partial_r)c$` on the 6 spin slots,
+        each on its own `$(-1)^{m+s}$` parity band.  ``(6, Nr, Nm,
+        Nkz)``."""
+        inv_r_y = self.inv_r[:, None, None, None]  # against (Nr,6,Nm,Nkz)
+        par = _parity_signs(TENSOR_SPIN, fourier_)
+        # y-leading (Nr, 6, Nm, Nkz): transpose-free GEMM, and the ghost
+        # scatter lands on the radial axis.
+        c_y = jnp.swapaxes(c_spin, 0, 1)
+        D2_c = _parity_y_matvec(
+            self.D2_pos, self.D2_ghost, c_y, par, component_axis=1
+        )
+        D1_c = _parity_y_matvec(
+            self.D1_pos, self.D1_ghost, c_y, par, component_axis=1
+        )
+        return jnp.swapaxes(D2_c + inv_r_y * D1_c, 0, 1)
+
+    def mean_profile_dr(self, prof: Array, spin: int) -> Array:
+        r"""`$\partial_r$` of one `$m = 0$` profile, ``(Nr,)``.
+
+        The parity-reduced `$D_1$` on a bare `$(N_r,)$` mean profile is
+        a direct matmul plus the near-axis ghost rows, at the `$m = 0$`
+        constant sign `$(-1)^s$` of the profile's *spin* (`$+1$` for
+        the even `$\bar u_z$`, `$-1$` for the odd `$\bar u_\theta$`) --
+        no mode-dependent mask needed (the same shortcut
+        ``pipe.frozen_profile_flow`` takes).
+        """
+        g = self.D1_ghost.shape[0]
+        sign = _mean_parity_signs(np.array([spin]))[0]
+        return (self.D1_pos @ prof).at[:g].add(sign * (self.D1_ghost @ prof))
+
+    def add_mean_body_force(
+        self, nl_z: Array, nl_r: Array, nl_th: Array, fourier_: Fourier
+    ) -> tuple[Array, Array, Array]:
+        """Add the axial body force ``pi_z`` at the mean mode."""
+        return (
+            nl_z
+            + jnp.where(fourier_.mean_mask, self.pi_z[:, None, None], 0.0),
+            nl_r,
+            nl_th,
+        )
+
+    def zero_hc_wall_rows(self, R: Array) -> Array:
+        r"""Zero the `$H_c$` RHS at the single `$\nabla^2 c = 0$` wall
+        row (`$r = 1$`); the axis carries no row."""
+        return R.at[:, -1].set(0.0)
+
+    def hc_wall_rows(self) -> tuple[tuple[int, Array], ...]:
+        r"""``((row index, narrow BC row),)`` -- the outer wall only.
+
+        The index is a non-negative host int: ``_banded_wall_row``'s
+        static column arithmetic needs that form.
+        """
+        return ((self.hc_narrowN.shape[0] - 1, self.hc_narrowN),)
+
+    def hc_spin_bases(
+        self,
+        fourier_: Fourier,
+        spins: tuple[int, ...],
+        *,
+        banded: bool,
+        p: int,
+    ) -> list[Array]:
+        r"""The per-spin `$H_c$` base operator, aligned with *spins*.
+
+        The parity band follows `$s \bmod 2$` (module docstring): the
+        odd-`$s$` slots ride the `$(-1)^{m+1}$` band, the rest the
+        `$(-1)^m$` one, selected per mode by ``jnp.where`` on
+        ``m_is_even``.  Broadcast to the operator's mode layout, as
+        :func:`~dnsjax.solvers._assemble_banded_operator` requires of
+        its caller.
+        """
+        even_c = fourier_.m_is_even[0, ..., None]  # (Nm, 1, 1)
+        odd_c = 1.0 - even_c
+        if banded:
+            band_even = _banded_from_dense(self.A_base_even, p)
+            band_odd = _banded_from_dense(self.A_base_odd, p)
+            return [
+                jnp.where(
+                    odd_c if s % 2 else even_c, band_even[None], band_odd[None]
+                )[:, None]
+                for s in spins
+            ]
+        return [
+            jnp.where(
+                (odd_c if s % 2 else even_c)[..., None],
+                self.A_base_even,
+                self.A_base_odd,
             )
-            for s in order
+            for s in spins
         ]
-        if label is not None:
-            return _build_pallas_operator(bands, label)
-        return _factor_pallas_operator(bands)
 
-    def _dense(s: int) -> DenseJAXSolver:
-        return DenseJAXSolver(
-            _build_Hc_dense_gpu(
-                flow_.A_base_even,
-                flow_.A_base_odd,
-                flow_.hc_narrowN,
-                per_spin[s][1],
-                per_spin[s][0],
-                flow_.inv_r2,
-                kz2_s,
-                dt,
-                c_impl,
-                kappa,
-            )
+    def imm_iteration(
+        self,
+        u_prev: Array,
+        u_pred: Array,
+        rhs_prev: Array,
+        rhs_next: Array,
+        fourier_: Fourier,
+    ) -> tuple[Array, Array]:
+        r"""The cylindrical `$1\times1$` influence-matrix velocity pass."""
+        return _imm_iteration(
+            u_prev, u_pred, rhs_prev, rhs_next, fourier_, self
         )
 
-    solvers_by_spin = {s: _dense(s) for s in (0, 1, -1, 2, -2)}
-    return DenseJAXSolver.from_factors(
-        lu=jnp.stack([solvers_by_spin[s].lu for s in order]),
-        perm=jnp.stack([solvers_by_spin[s].perm for s in order]),
-    )
+    def velocity_l_bf(self, vel: Array, fourier_: Fourier) -> Array:
+        """The cylindrical FFT-free base/mean-flow velocity coupling."""
+        return _cyl_l_bf(vel, fourier_, self)
 
-
-def _build_dt_leaves(
-    dt: Array,
-    fourier_: Fourier,
-    flow_: ViscoelasticCylindricalFlow,
-) -> dict[str, object]:
-    r"""Rebuild every ``dt``-dependent flow leaf at the traced *dt*.
-
-    The cylindrical velocity set (`$H_k$` group + IMM leaves;
-    ``cylindrical._build_dt_leaves``, with the solvent
-    `$\nu = \beta/\mathrm{Re}$` via ``derived_params.nu``) plus the
-    conformation `$H_c$` (unchecked factorization,
-    :func:`_build_hc_operator`) when diffusion is active.  At
-    `$\kappa = 0$` ``Hc_op`` is ``None`` (static aux) and stays out
-    of the rebuild -- the trace-time branch matches construction.
-    """
-    leaves = _cyl_dt_leaves(dt, fourier_, flow_)
-    if flow_.Hc_op is not None:
-        leaves["Hc_op"] = _build_hc_operator(dt, fourier_, flow_, label=None)
-    return leaves
-
-
-# ── Fused pseudo-spectral RHS ───────────────────────────────────────
-
-
-def _get_rhs_core(
-    state: Array,
-    fourier_: Fourier,
-    flow_: ViscoelasticCylindricalFlow,
-    measure_fn: Callable[[Array, Array, Array], dict[str, Array]] | None,
-) -> Array | tuple[Array, dict[str, Array]]:
-    r"""Evaluate the full 9-component nonlinear RHS ``rhs_no_lapl``.
-
-    One batched inverse transform of ~36 fields (velocity, velocity
-    gradient `$L_{ij}$`, physical tensor, and its 18 advection
-    derivatives), the shared pointwise physical-space stage
-    (:func:`._viscoelastic_common.pointwise_rhs`), one batched forward
-    transform of the 9 outputs.  The viscous / diffusive Laplacians are
-    added implicitly by the predictor/corrector, so they are absent
-    here.  See the module docstring.
-
-    The nine radial derivatives (3 velocity + 6 conformation combos)
-    are one parity-reduced GEMM pair, stacked y-leading with the
-    per-slot signs of :func:`_parity_signs`; at the default
-    ``solver.rhs_transform_chunks = 1`` the inverse/forward transforms
-    are each a **single batched** FFT over all fields.  The
-    memory-vs-throughput trade of that knob, and the deferred
-    interleaved-transform refinement, are the same as in the annular
-    twin (``annular_viscoelastic._get_rhs_core``).
-    """
-    im = 1j * fourier_.m
-    ikz = 1j * fourier_.kz
-    inv_r = flow_.inv_r[:, None, None]
-
-    # ── Spectral prep ──
-    u_z, u_plus, u_minus = state[0], state[1], state[2]
-    u_r = (u_plus + u_minus) / 2
-    u_th = -0.5j * (u_plus - u_minus)
-
-    # Conformation physical combos (still spectral here; cs_* denotes
-    # the spectral tensor combos, distinct from the physical crr.. that
-    # the pointwise stage sees).
-    cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz = spin_to_phys_combos(
-        state[3], state[4], state[5], state[6], state[7], state[8]
-    )
-    combos = jnp.array([cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz])
-
-    # Single batched parity-reduced D1 GEMM over the 3 radial velocity
-    # derivatives (velocity gradient L_ij = d_i u_j) and the 6 radial
-    # conformation advection derivatives -- one GEMM pair instead of
-    # two.  y-leading (Nr, 9, Nm, Nkz): transpose-free, and the ghost
-    # scatter-add lands on the radial axis.
-    dr_y = _parity_y_matvec(
-        flow_.D1_pos,
-        flow_.D1_ghost,
-        jnp.stack(
-            [u_r, u_th, u_z, cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz],
-            axis=1,
-        ),
-        _parity_signs(_DR_BATCH_SPIN, fourier_),
-        component_axis=1,
-    )
-    dr_all = jnp.swapaxes(dr_y, 0, 1)  # (9, Nr, Nm, Nkz)
-    Lrr, Lrth, Lrz = dr_all[0], dr_all[1], dr_all[2]
-    dr_c = dr_all[3:9]  # (6, Nr, Nm, Nkz)
-    Lthr = im * inv_r * u_r - inv_r * u_th
-    Lthth = im * inv_r * u_th + inv_r * u_r
-    Lthz = im * inv_r * u_z
-    Lzr = ikz * u_r
-    Lzth = ikz * u_th
-    Lzz = ikz * u_z
-
-    # Spectral advection derivatives of the conformation combos.
-    dth_c = im * combos
-    dz_c = ikz * combos
-
-    # ── Batched inverse transform (36 fields) ──
-    L_spec = jnp.array([Lrr, Lrth, Lrz, Lthr, Lthth, Lthz, Lzr, Lzth, Lzz])
-    u_spec = jnp.array([u_z, u_r, u_th])
-    stack = jnp.concatenate([u_spec, L_spec, combos, dr_c, dth_c, dz_c])
-    phys = chunked_transform(spec_to_phys_2d, stack)
-
-    # ── Pointwise physical-space stage (shared, coordinate-level) ──
-    wi = params.phys.wi
-    out_phys, om_phys, trc = pointwise_rhs(
-        phys, flow_.inv_r_padded, wi, params.phys.epsilon
-    )
-
-    # ── Single batched forward transform (9 outputs) ──
-    out_spec = phys_to_spec_2d(out_phys)
-    NL_z, NL_r, NL_th = out_spec[0], out_spec[1], out_spec[2]
-
-    # Axial body force at the mean mode.
-    NL_z = NL_z + jnp.where(fourier_.mean_mask, flow_.pi_z[:, None, None], 0.0)
-    # FFT-free polymer-stress divergence coef * div(c).
-    coef = (1.0 - params.phys.beta) / (params.phys.re * wi)
-    div_r, div_th, div_z = _div_c(
-        cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz, fourier_, flow_
-    )
-    NL_z = NL_z + coef * div_z
-    NL_r = NL_r + coef * div_r
-    NL_th = NL_th + coef * div_th
-
-    rhs_uz = NL_z
-    rhs_up = NL_r + 1j * NL_th
-    rhs_um = NL_r - 1j * NL_th
-
-    # Conformation outputs -> spin components.
-    Nc_spin = phys_combos_to_spin(
-        out_spec[3],
-        out_spec[4],
-        out_spec[5],
-        out_spec[6],
-        out_spec[7],
-        out_spec[8],
-    )
-
-    rhs = jnp.concatenate([jnp.array([rhs_uz, rhs_up, rhs_um]), Nc_spin])
-
-    # Moving-frame convective term (mode-diagonal on every component).
-    u_grid = derived_params.u_grid
-    if u_grid != 0:
-        rhs = rhs + (1j * u_grid) * fourier_.kz * state
-
-    if measure_fn is None:
-        return rhs
-    measurements = measure_fn(phys[:3], om_phys, trc)
-    return rhs, measurements
-
-
-def _get_rhs(
-    state: Array, fourier_: Fourier, flow_: ViscoelasticCylindricalFlow
-) -> Array:
-    """Evaluate the 9-component nonlinear RHS."""
-    return _get_rhs_core(state, fourier_, flow_, None)
-
-
-def _get_rhs_measured(
-    state: Array, fourier_: Fourier, flow_: ViscoelasticCylindricalFlow
-) -> tuple[Array, dict[str, Array]]:
-    """Evaluate the RHS + CFL / max-tr(c) measurements."""
-
-    def _measure(
-        u_phys: Array, om_phys: Array, trc: Array
-    ) -> dict[str, Array]:
-        meas = get_cfl(
-            u_phys,
-            flow_.base_flow_adv_padded,
-            flow_.cfl_inv_spacing,
-            CFL_NAMES,
-            flow_.dt,
-        )
-        meas["TrC_max"] = jnp.max(trc)
-        return meas
-
-    return _get_rhs_core(state, fourier_, flow_, _measure)
-
-
-# ── FFT-free linear / mean coupling (CN/AB2 scheme) ─────────────────
-
-
-def _conformation_coupling(
-    state: Array,
-    combos: tuple[Array, Array, Array, Array, Array, Array],
-    fourier_: Fourier,
-    flow_: ViscoelasticCylindricalFlow,
-) -> Array:
-    r"""FFT-free linear/mean conformation coupling, 6 spin components.
-
-    The cylindrical binding of
-    :func:`._viscoelastic_common.conformation_coupling_core` (which
-    carries the term-by-term account of what the CN/AB2 scheme makes
-    implicit here): this supplies the instantaneous mean velocity
-    profile and its **parity-reduced** radial gradients, plus the
-    always-implicit moving-frame convective term.
-
-    The mean profiles sit at `$m = 0$`, so their parity signs are the
-    constants `$(-1)^s$` -- `$+1$` for the even `$\bar u_z$`, `$-1$`
-    for the odd `$\bar u_\theta$` -- and no mode-dependent mask is
-    needed (the same shortcut ``pipe.frozen_profile_flow`` takes).
-    """
-    mean = None
-    if params.step.implicit_mean_coupling:
-        # Instantaneous mean velocity profile (u_z, u_r, u_theta); the
-        # mean u_r is structurally 0, so its d_r term vanishes.
-        u_z, u_plus, u_minus = state[0], state[1], state[2]
-        u_r = (u_plus + u_minus) / 2
-        u_th = -0.5j * (u_plus - u_minus)
-        mean_vel = extract_mean_mode(jnp.array([u_z, u_r, u_th]))  # (3, Nr)
-        # Mean velocity gradients: the parity-reduced D1 on the bare
-        # (N_r,) mean profiles is a direct matmul plus the near-axis
-        # ghost rows, at the m = 0 constant signs.
-        g = flow_.D1_ghost.shape[0]
-        s_uz, s_uth = _mean_parity_signs(np.array([0, 1]))
-        d_uz = (
-            (flow_.D1_pos @ mean_vel[0])
-            .at[:g]
-            .add(s_uz * (flow_.D1_ghost @ mean_vel[0]))
-        )
-        d_uth = (
-            (flow_.D1_pos @ mean_vel[2])
-            .at[:g]
-            .add(s_uth * (flow_.D1_ghost @ mean_vel[2]))
-        )
-        mean = (
-            mean_vel[0][:, None, None],
-            mean_vel[2][:, None, None],
-            d_uz[:, None, None],
-            d_uth[:, None, None],
-            1j * fourier_.m,
-            1j * fourier_.kz,
-            flow_.inv_r[:, None, None],
-        )
-
-    conf = conformation_coupling_core(
-        combos,
-        jnp.where(fourier_.mean_mask, 1.0, 0.0),
-        params.phys.epsilon,
-        params.phys.wi,
-        mean,
-    )
-
-    u_grid = derived_params.u_grid
-    if u_grid != 0:
-        conf = conf + (1j * u_grid) * fourier_.kz * state[3:]
-    return conf
-
-
-def _l_bf(
-    state: Array, fourier_: Fourier, flow_: ViscoelasticCylindricalFlow
-) -> Array:
-    r"""FFT-free linear coupling for the CN/AB2 scheme, all 9 components.
-
-    Velocity slice: the cylindrical base/mean-flow coupling
-    (:func:`~dnsjax.geometries.wall_bounded.cylindrical._l_bf`,
-    including the moving-frame term) plus the **polymer-stress
-    divergence**
-    `$\tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}\nabla\cdot\mathbf{c}$`
-    (the elastic velocity`$\leftrightarrow$`conformation coupling,
-    linear in `$c$` and FFT-free).  Conformation slice:
-    :func:`_conformation_coupling`.
-
-    ``step_cnab2`` advances the explicit remainder
-    `$\text{get\_rhs} - \text{\_l\_bf}$` (pure fluctuation-fluctuation
-    advection / stretching + nonlinear relaxation + the constant body
-    force) with AB2 and makes this coupling implicit through the
-    FFT-free corrector.  For the total-field viscoelastic pipe the mean
-    coupling (velocity *and* the large mean conformation profile) is
-    the dominant stiffness.
-    """
-    vel_lbf = _cyl_l_bf(state[:3], fourier_, flow_)
-
-    cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz = spin_to_phys_combos(
-        state[3], state[4], state[5], state[6], state[7], state[8]
-    )
-    coef = (1.0 - params.phys.beta) / (params.phys.re * params.phys.wi)
-    div_r, div_th, div_z = _div_c(
-        cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz, fourier_, flow_
-    )
-    vel_lbf = vel_lbf + coef * jnp.array(
-        [div_z, div_r + 1j * div_th, div_r - 1j * div_th]
-    )
-
-    conf_lbf = _conformation_coupling(
-        state,
-        (cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz),
-        fourier_,
-        flow_,
-    )
-    return jnp.concatenate([vel_lbf, conf_lbf])
-
-
-# ── Conformation Crank-Nicolson update ──────────────────────────────
-
-
-def _c_cn_update(
-    c_n: Array,
-    Nc_n: Array,
-    Nc_j: Array,
-    fourier_: Fourier,
-    flow_: ViscoelasticCylindricalFlow,
-) -> Array:
-    r"""Crank-Nicolson conformation update (6 spin components).
-
-    Solves `$H_c c^{new} = \tfrac1{\Delta t} c^n + (1-\theta)\kappa
-    \nabla^2 c^n + \theta N_c^j + (1-\theta) N_c^n$` with the **single**
-    wall-row RHS zeroed (the `$\nabla^2 c = 0$` BC at `$r = 1$`; the
-    axis carries no row, its regularity being built into the
-    parity-reduced band).  With `$\kappa = 0$` there is no diffusion /
-    wall BC and the update degenerates to
-    `$c^{new} = c^n + \Delta t(\theta N_c^j + (1-\theta) N_c^n)$`.
-    """
-    dt = flow_.dt
-    c_impl = params.step.implicitness
-    nl = c_impl * Nc_j + (1.0 - c_impl) * Nc_n
-    if flow_.Hc_op is None:  # kappa == 0 (trace-time branch)
-        return c_n + dt * nl
-    kappa = params.phys.kappa
-    lap_cn = _tensor_laplacian_spin(c_n, fourier_, flow_)
-    R = (1.0 / dt) * c_n + (1.0 - c_impl) * kappa * lap_cn + nl
-    R = R.at[:, -1].set(0.0)  # zero the wall-row RHS
-    return flow_.Hc_op.solve(R)
-
-
-# ── Predictor / corrector / norm ────────────────────────────────────
-
-
-def _correct(
-    state_prev: Array,
-    prediction: Array,
-    rhs_prev: Array,
-    rhs_next: Array,
-    fourier_: Fourier,
-    flow_: ViscoelasticCylindricalFlow,
-) -> tuple[Array, Array]:
-    """Coupled velocity-IMM + conformation-CN corrector.
-
-    Velocity: the cylindrical `$1\\times1$` influence-matrix iteration
-    (which sees the polymer divergence only through the sources, so it
-    needs no viscoelastic knowledge).  Conformation: the Crank-Nicolson
-    Helmholtz update.  The returned correction stacks both so the single
-    convergence norm covers `$u$` and `$c$`.
-    """
-    vel_new, vel_corr = _imm_iteration(
-        state_prev[:3],
-        prediction[:3],
-        rhs_prev[:3],
-        rhs_next[:3],
-        fourier_,
-        flow_,
-    )
-    c_new = _c_cn_update(
-        state_prev[3:], rhs_prev[3:], rhs_next[3:], fourier_, flow_
-    )
-    c_corr = c_new - prediction[3:]
-    state_new = jnp.concatenate([vel_new, c_new])
-    correction = jnp.concatenate([vel_corr, c_corr])
-    return state_new, correction
-
-
-def _predict(
-    state_n: Array,
-    rhs_no_lapl: Array,
-    fourier_: Fourier,
-    flow_: ViscoelasticCylindricalFlow,
-) -> Array:
-    """Euler predictor (nonlinear at `$u^n$`, viscous/diffusive CN)."""
-    prediction, _ = _correct(
-        state_n, state_n, rhs_no_lapl, rhs_no_lapl, fourier_, flow_
-    )
-    return prediction
-
-
-def _norm(
-    correction: Array,
-    fourier_: Fourier,
-    flow_: ViscoelasticCylindricalFlow,
-) -> Array:
-    r"""Combined L2 convergence norm, `$\sqrt{\|u\|^2 + \|c\|_F^2}$`
-    (:func:`._viscoelastic_common.combined_norm`)."""
-    return combined_norm(correction, fourier_.k_metric, flow_.y_weights)
+    def base_dt_leaves(
+        self, dt: Array, fourier_: Fourier
+    ) -> dict[str, object]:
+        """The cylindrical velocity ``dt``-dependent leaves."""
+        return _cyl_dt_leaves(dt, fourier_, self)
 
 
 # ── Stepper factory ─────────────────────────────────────────────────
@@ -1025,26 +623,8 @@ def _norm(
 def build_viscoelastic_stepper(flow: ViscoelasticCylindricalFlow):
     """Build time-stepping functions for a viscoelastic pipe flow.
 
-    Returns the same 9-tuple as
-    :func:`~dnsjax.geometries.wall_bounded._base.build_wall_bounded_stepper`
-    (incl. the adaptive-dt ``set_dt`` / ``reset_ab2_kappa``, backed
-    by this module's ``_build_dt_leaves``).
-    ``_l_bf`` (the FFT-free linear/mean coupling: velocity mean-flow
-    coupling + polymer-stress divergence, conformation mean advection /
-    stretching / linear relaxation) is passed so the CN/AB2 scheme
-    treats it implicitly and the explicit AB2 remainder stays pure
-    fluctuation-fluctuation nonlinearity.
+    Binds this geometry's ``fourier`` singleton to the shared
+    :func:`._viscoelastic_stepping.build_viscoelastic_stepper`, which
+    documents the returned 9-tuple.
     """
-    from ._base import build_wall_bounded_stepper
-
-    return build_wall_bounded_stepper(
-        _get_rhs,
-        _predict,
-        _correct,
-        _norm,
-        fourier,
-        flow,
-        _get_rhs_measured,
-        _l_bf,
-        dt_leaves_fn=_build_dt_leaves,
-    )
+    return _build_stepper(flow, fourier)

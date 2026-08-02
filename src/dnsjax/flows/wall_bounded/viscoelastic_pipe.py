@@ -229,7 +229,8 @@ class ViscoelasticPipeFlow(ViscoelasticCylindricalFlow):
         Re = params.phys.re
 
         # Uniform axial body force Pi_z = 4 / Re, applied at the mean
-        # mode by ``cylindrical_viscoelastic._get_rhs_core``.  The
+        # mode by ``ViscoelasticCylindricalFlow.add_mean_body_force``
+        # (the shared RHS's driving adapter).  The
         # coefficient is fixed by the epsilon = 0 laminar balance
         # (module docstring): 4/Re makes W = 1 - r^2 the total-stress
         # solution, i.e. unit centreline velocity.

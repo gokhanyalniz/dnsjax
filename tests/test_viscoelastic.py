@@ -23,8 +23,13 @@ annular geometry (see
    polymer-divergence balance closes too).
 4. `$H_c$` band-vs-dense parity including the narrow Laplacian BC
    wall rows (mirrors ``test_annular``'s operator parity).
-5. ``get_norm2_conformation`` reproduces the tensor Frobenius norm.
-6. Fused-RHS transform-count guard: the 9-component nonlinear RHS
+5. The adapter surface the shared stepper
+   (:mod:`dnsjax.geometries.wall_bounded._viscoelastic_stepping`)
+   dispatches on: the annulus zeroes both `$H_c$` wall rows (the pipe
+   one), and importing this geometry must not build the cylindrical
+   one.
+6. ``get_norm2_conformation`` reproduces the tensor Frobenius norm.
+7. Fused-RHS transform-count guard: the 9-component nonlinear RHS
    keeps a bounded, batched FFT count (fused evaluation, not one
    transform per field).
 
@@ -33,6 +38,7 @@ Run as a script via ``uv run python tests/test_viscoelastic.py``.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 
 # Select the JAX backend from --dist.platform (default cpu) before the
@@ -385,6 +391,11 @@ def test_Hc_band_vs_dense() -> None:
     assembly equals ``banded(dense)`` including the narrow Laplacian BC
     wall rows, and the no-pivot banded (Pallas CPU) solve reproduces
     the dense solve.
+
+    The per-spin base operators come from the flow's own
+    ``hc_spin_bases`` adapter (the annular half of the surface the
+    shared stepper dispatches on), so the geometry binding is under
+    test here and not re-derived by the test.
     """
     Nr = params.res.ny
     p = params.res.fd_order
@@ -393,7 +404,6 @@ def test_Hc_band_vs_dense() -> None:
     c = params.step.implicitness
     kappa = 0.05  # finite diffusion (module kappa is 0)
 
-    A_base = flow.A_base
     inv_r2 = flow.inv_r2
     m_s = fourier.m[0, ..., None]  # (Nm, 1, 1)
     kz2_s = fourier.kz2[0, ..., None]  # (1, Nkz, 1)
@@ -401,8 +411,10 @@ def test_Hc_band_vs_dense() -> None:
     row0_np, rowN_np = _narrow_abase_wall_rows(
         np.asarray(flow.rs), np.asarray(flow.D1), p
     )
-    narrow0 = jnp.asarray(row0_np)
-    narrowN = jnp.asarray(rowN_np)
+    # Both walls, as ``flow.hc_wall_rows()`` returns them (it cannot be
+    # called here: the module kappa is 0, so the narrow-row leaves are
+    # unset).
+    walls = ((0, jnp.asarray(row0_np)), (Nr - 1, jnp.asarray(rowN_np)))
 
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
@@ -412,13 +424,19 @@ def test_Hc_band_vs_dense() -> None:
 
     to_band = jax.vmap(jax.vmap(lambda A: _banded_from_dense(A, p)))
 
-    for s in (0, 1, -1, 2, -2):
+    spins = (0, 1, -1, 2, -2)
+    dense_bases = flow.hc_spin_bases(fourier, spins, banded=False, p=p)
+    band_bases = flow.hc_spin_bases(fourier, spins, banded=True, p=p)
+
+    for s, dense_base, band_base in zip(
+        spins, dense_bases, band_bases, strict=True
+    ):
         meff2 = (m_s + s) ** 2
         dense = _build_Hc_dense_gpu(
-            A_base, narrow0, narrowN, meff2, inv_r2, kz2_s, dt, c, kappa
+            dense_base, walls, meff2, inv_r2, kz2_s, dt, c, kappa
         )
         band = _build_Hc_band_gpu(
-            A_base, narrow0, narrowN, meff2, inv_r2, kz2_s, dt, c, kappa, p
+            band_base, walls, meff2, inv_r2, kz2_s, dt, c, kappa, p
         )
 
         assert_allclose(
@@ -441,6 +459,64 @@ def test_Hc_band_vs_dense() -> None:
             rtol=1e-9,
             err_msg=f"s={s}: pallas solve",
         )
+
+
+def test_hc_wall_rows_both_walls() -> None:
+    r"""The annulus zeroes **two** `$H_c$` RHS rows, at both walls.
+
+    ``zero_hc_wall_rows`` is the adapter the shared ``_c_cn_update``
+    applies for the `$\nabla^2 c = 0$` BC, and the wall count is the
+    one thing the two geometries disagree on there (the pipe zeroes
+    one; its axis carries no row).  Every ``test_laminar_smoke``
+    viscoelastic entry runs at `$\kappa = 0$`, where that branch is not
+    reached at all, so pin it directly.
+    """
+    Nr = params.res.ny
+    Nm = params.res.nz - 1
+    Nkz = params.res.nx // 2
+    rng = np.random.default_rng(6)
+    R = jnp.asarray(_random_tensor(rng, (6, Nr, Nm, Nkz)))
+    out = np.asarray(flow.zero_hc_wall_rows(R))
+
+    zero_rows = [i for i in range(Nr) if not np.any(out[:, i])]
+    assert zero_rows == [0, Nr - 1], f"zeroed radial rows {zero_rows}"
+    # Everything else survives untouched.
+    keep = np.asarray(R)[:, 1 : Nr - 1]
+    assert_allclose(out[:, 1 : Nr - 1], keep, atol=0.0)
+
+
+def test_no_cross_geometry_import() -> None:
+    """Importing the annular sPTT geometry must not build the pipe.
+
+    Each geometry's ``Fourier`` singleton (and its radial grid / FD
+    matrices) is constructed at **import**, so a stray import across
+    the two families would build a grid the flow never uses on every
+    viscoelastic run.  The shared stepper
+    (``_viscoelastic_stepping``) is written to depend on neither
+    geometry, which is what keeps that true; this is the guard, in a
+    fresh subprocess since the check is about import-time side effects.
+    """
+    src = (
+        "import sys\n"
+        "from dnsjax.bootstrap import configure_jax_platform\n"
+        "from dnsjax.parameters import (\n"
+        "    Parameters, padded_res, params, update_parameters)\n"
+        "configure_jax_platform('cpu')\n"
+        "update_parameters(Parameters(\n"
+        "    phys={'system': 'viscoelastic-dean'},\n"
+        "    res={'nx': 8, 'ny': 13, 'nz': 8}))\n"
+        "padded_res.set_padded_resolution(params)\n"
+        "import dnsjax.geometries.wall_bounded.annular_viscoelastic\n"
+        "bad = sorted(m for m in sys.modules if 'cylindrical' in m)\n"
+        "print(' '.join(bad))\n"
+        "sys.exit(1 if bad else 0)\n"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", src], capture_output=True, text=True
+    )
+    assert r.returncode == 0, (
+        f"cylindrical modules imported: {r.stdout.strip()}\n{r.stderr[-800:]}"
+    )
 
 
 # Group E: norms
