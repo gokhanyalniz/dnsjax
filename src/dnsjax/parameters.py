@@ -26,17 +26,21 @@ from .flow_spec import UNSET
 # The flow registry aggregates the per-flow parameter specs
 # (``flows/*/specs/``) into the system list and family groupings; the
 # groupings are re-exported here for the many existing importers.
-# ``viscoelastic_systems`` stays separate from ``annular_systems``
-# (same geometry, but a 9-component state: the eta-based annular
-# derivation and the 3-component IC generators / analysis reader must
-# not accidentally catch it).  Import direction is strictly
+# ``viscoelastic_systems`` is the *rheology* axis and cuts across the
+# geometry lists, each of which contains its own viscoelastic member
+# (so a consumer picking machinery by geometry gets it right, and one
+# asking "does this carry a conformation tensor?" reads the other
+# list) -- the rationale, and the ordering rule for a chain that mixes
+# the two, are in ``flows.registry``.  Import direction is strictly
 # ``parameters -> flows.registry -> flows.*.specs -> flow_spec`` (the
 # spec hooks receive ``params``/``derived_params`` as arguments), so
 # no cycle exists.
 from .flows.registry import (
     annular_systems,  # noqa: F401  (re-export)
+    annular_viscoelastic_systems,  # noqa: F401  (re-export)
     cartesian_systems,  # noqa: F401  (re-export)
     cylindrical_systems,  # noqa: F401  (re-export)
+    cylindrical_viscoelastic_systems,  # noqa: F401  (re-export)
     periodic_systems,
     spec_for,
     viscoelastic_systems,
@@ -205,12 +209,17 @@ class Physics(BaseModel):
             "(re1, r_omega, eta)."
         ),
     )
-    # Viscoelastic (sPTT) control parameters (system ==
-    # "viscoelastic-dean"; see ``flows.wall_bounded.viscoelastic_dean``
-    # and ``geometries.wall_bounded.annular_viscoelastic``).  All
-    # ``None`` for other systems; unset values fall back to the
-    # reference configuration in the viscoelastic ``derive`` hook
-    # (el 80, wi 105, beta 0.8, epsilon 0.001, kappa 5e-5).
+    # Viscoelastic (sPTT) control parameters, shared by both
+    # viscoelastic systems ("viscoelastic-pipe" / "viscoelastic-dean";
+    # see ``flows.wall_bounded.viscoelastic_{pipe,dean}`` and
+    # ``geometries.wall_bounded.{cylindrical,annular}_viscoelastic``).
+    # All ``None`` for other systems; unset values fall back to each
+    # flow's own FieldSpec defaults.  beta 0.8 / epsilon 0.001 /
+    # kappa 5e-5 are shared, but el and wi are not: Re := Wi/El is
+    # derived, so those two *are* the Reynolds number, and each flow
+    # picks the regime it is about -- el 80, wi 105 (Re ~ 1.3,
+    # inertialess and strongly elastic) for the annulus; el 0.02,
+    # wi 20 (Re = 1000, elasto-inertial) for the pipe.
     el: float | None = Field(
         default=None,
         gt=0,
@@ -565,8 +574,10 @@ class Resolution(BaseModel):
     # 19.1 on the retired `$x = r^2$` axis fit), so the **spin quad**
     # `$(\Phi_\pm, \omega_\pm)$` is advanced through the *existing*
     # `$H_{k,\pm}$` families, which diagonalise that coupling exactly
-    # -- five solves over three band families, and nothing linear
-    # Picard-iterated at all.  **No geometry changes what it carries**:
+    # -- five solves over three band families, with only the quad's two
+    # free wall differences taken from the corrector iterate (four wall
+    # values against two conditions is what the exact diagonalisation
+    # costs).  **No geometry changes what it carries**:
     # the evolved scalars are re-derived from the carried state at the
     # top of each corrector pass and reconstructed away at its exit, so
     # snapshots, probes, forcing, diagnostics, the analysis package and
@@ -1722,9 +1733,10 @@ def update_parameters(params_new: Parameters) -> None:
                         _derive_written.add((section, key))
 
     # Solvent viscosity multiplying the velocity Laplacian: 1/re for the
-    # Newtonian systems; beta/re for the viscoelastic system (the polymer
+    # Newtonian systems; beta/re for the viscoelastic ones (the polymer
     # stress carries the remaining (1-beta)/(re wi)).  Read by the
-    # annular geometry's operator builders and IMM.
+    # cylindrical / annular operator builders and IMM -- which is why
+    # they take it from here rather than forming 1/re themselves.
     if system in viscoelastic_systems:
         derived_params.nu = params.phys.beta / params.phys.re
     else:
@@ -1845,8 +1857,8 @@ def validate_parameters() -> None:
     spec = spec_for(params.phys.system)
 
     # Azimuthal wedge (geo.m0): only flows whose surface carries the
-    # field (the cylindrical/annular geometries, incl. the
-    # viscoelastic annulus -- the u_+/u_- and tensor-spin
+    # field (the cylindrical/annular geometries, both viscoelastic
+    # members included -- the u_+/u_- and tensor-spin
     # integer-harmonic formulations); rejected elsewhere.  Guards
     # direct assignment; the CLI/TOML surfaces reject it at parse.
     if params.geo.m0 != 1 and ("geo", "m0") not in spec.field_map:

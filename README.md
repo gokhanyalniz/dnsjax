@@ -21,9 +21,9 @@ margin for a single FFT evaluation per step.
 
 ## Highlights
 
-- **Eight flow systems across four geometries** — pipe, Taylor–Couette,
-  quasi-Keplerian, Dean, viscoelastic Dean, plane-Poiseuille,
-  plane-Couette, and Kolmogorov flow.
+- **Nine flow systems across four geometries** — pipe, viscoelastic pipe,
+  Taylor–Couette, quasi-Keplerian, Dean, viscoelastic Dean,
+  plane-Poiseuille, plane-Couette, and Kolmogorov flow.
 - **Runs anywhere JAX runs** — CPU, GPU, or TPU, on one device or many, from
   the same code path.
 - **Second-order semi-implicit time stepping** — an iterative Crank–Nicolson
@@ -37,12 +37,13 @@ margin for a single FFT evaluation per step.
 - **Non-modal stability built in** — 3D linear optimal energy growth $G(t)$
   around an arbitrary wall-normal profile, reusing the solver's own linear
   step.
-- **A coupled viscoelastic model** — a simplified Phan-Thien–Tanner (sPTT)
-  conformation-tensor flow riding the same component-agnostic machinery.
+- **A coupled viscoelastic model** — simplified Phan-Thien–Tanner (sPTT)
+  conformation-tensor flows in two geometries, riding the same
+  component-agnostic machinery.
 - **Portable data** — snapshots are plain tar + zarr3, written in parallel
   directly from device memory, readable with standard tools and a
   dependency-light NumPy reader; resume is device-count-agnostic.
-- **Extensively tested** — 34 standalone test scripts (also runnable
+- **Extensively tested** — 35 standalone test scripts (also runnable
   through a pytest bridge) pin the numerics, the machinery, and the
   multi-device behavior, and the optimal-growth module reproduces
   published values — see
@@ -53,6 +54,7 @@ margin for a single FFT evaluation per step.
 | Flow | Geometry | Laminar base / driving | Defining controls |
 |---|---|---|---|
 | **Pipe** | cylindrical | $U_z = 1 - r^2$, pressure-driven | `re`, axial length `lz` |
+| **Viscoelastic Pipe** | cylindrical (sPTT) | axial body force, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `lz` |
 | **Taylor–Couette** | annular | $U_\theta = A_0 r + B_0/r$, wall rotation | `re1`, `re2`, `eta` |
 | **Quasi-Keplerian** | annular | $U_\theta = A_0 r + B_0/r$, Rayleigh-stable co-rotation | `re1`, `r_omega`, `eta` |
 | **Dean** | annular | azimuthal body force, total field | `re`, `eta` |
@@ -84,7 +86,9 @@ A few conventions worth knowing:
 - **Viscoelastic controls.** `el` is the elasticity number and sets
   $Re = Wi/El$; `wi` is the Weissenberg number; `beta` the solvent-to-total
   viscosity ratio; `epsilon` the sPTT extensibility; `kappa` an artificial
-  stress diffusivity; `delta` the inner radius (the gap is fixed at 2).
+  stress diffusivity. Both viscoelastic flows share these; the annular one
+  adds `delta`, the inner radius (the gap is fixed at 2), while the pipe
+  takes the axial length `lz` like its Newtonian counterpart.
 - **Viscoelastic memory.** With 9 state components, the viscoelastic
   right-hand side inverse-transforms a 36-field batch every step, and that
   batch dominates the step's peak memory. `solver.rhs_transform_chunks`
@@ -287,14 +291,15 @@ arithmetic), at reduced accuracy. Assuming the default 3/2 dealiasing and
 the default backends:
 
 - **Spectral state** — exactly $n_c$ fields, with $n_c = 3$ velocity
-  components (9 for viscoelastic Dean): one component is
+  components (9 for the viscoelastic flows): one component is
   $(n_x/2) \cdot n_y \cdot (n_z - 1)$ complex numbers ($n_y - 1$ in place
   of $n_y$ for the periodic box), i.e.
   $\approx n_x n_y n_z$ reals. The time stepper holds about three further
   state-sized arrays within a step, and `cnab2` carries one across steps
   (for the wall-bounded systems its allocated peak still matches the
-  default scheme's, whose corrector branch XLA keeps reserved); Dean and
-  viscoelastic Dean keep one extra state-sized laminar reference.
+  default scheme's, whose corrector branch XLA keeps reserved); the
+  total-field systems — Dean, viscoelastic Dean, viscoelastic pipe —
+  keep one extra state-sized laminar reference.
 - **Nonlinear term, every step** — the rotational form inverse-transforms a
   6-field batch (velocity + vorticity) to the oversampled grid, multiplies
   pointwise, and forward-transforms the 3 product fields. Counting the held
@@ -307,14 +312,16 @@ the default backends:
   sizing estimate. The viscoelastic right-hand side instead transforms a
   36-field batch with 9 outputs, and `solver.rhs_transform_chunks = k` —
   the knob applies to every flow's batch, but bites here — cuts its
-  transform-stage share $k$-fold at identical results.
+  transform-stage share $k$-fold at identical results. Both viscoelastic
+  flows share that right-hand side.
 - **Wall-normal operators** — the Pallas backend stores no-pivot banded LU
   factors: $(2p + 1) \cdot n_y$ reals per matrix per Fourier mode, with the
   half-bandwidth $p$ equal to `fd_order`, over the $(n_z - 1)(n_x/2)$ mode
   plane — that is $m (2p + 1)/2$ fields for $m$ banded matrices, the one
   term that grows with `fd_order`. Here $m = 2$ for
   plane-Couette/Poiseuille, $4$ for pipe, Taylor–Couette,
-  quasi-Keplerian, and Dean, and $10$ for viscoelastic Dean, plus
+  quasi-Keplerian, and Dean, and $10$ for the viscoelastic flows (the
+  same $4$ plus the six conformation Helmholtz matrices), plus
   $v = 3\text{–}6$ field-sized boundary-response vectors ($v/2$
   fields). Switching to
   `solver.backend = "dense"` replaces $(2p + 1)$ by $n_y$ per matrix — the
@@ -338,10 +345,11 @@ Summing these, the leading-order total per device is
   \, \frac{n_x n_y n_z}{2^{27} \, n_{p0} n_{p1}} \ \text{GiB},
 ```
 
-with $W \approx 15\text{–}21$ as above (for viscoelastic Dean,
+with $W \approx 15\text{–}21$ as above (for the viscoelastic flows,
 $W \approx 45 + 72/k$ with $k$ = `rhs_transform_chunks`) and
 $(n_c, m, v) = (3, 2, 4)$ for the plane flows, $(3, 4, 3)$ for the pipe,
-$(3, 4, 6)$ for Taylor–Couette, quasi-Keplerian, and Dean, and
+$(3, 4, 6)$ for Taylor–Couette, quasi-Keplerian, and Dean,
+$(9, 10, 3)$ for the viscoelastic pipe, and
 $(9, 10, 6)$ for viscoelastic Dean. The sum is an upper estimate —
 XLA's buffer reuse typically realizes less — and halves at single
 precision. Off the stepping path, a snapshot write reshards the state
@@ -365,7 +373,7 @@ streamwise, **wn** wall-normal, **sh** shearwise, **sp** spanwise.
 |---|---|---|---|---|---|
 | Triply-periodic (Kolmogorov) | $(u_x, u_y, u_z)$ = (sw, sh, sp) | $[y, z, x]$ | $[k_y, k_z, k_x]$ | $y$ / $k_z$ | $z$ / $k_x$ |
 | Cartesian (plane-Poiseuille/Couette) | $(u_x, u_y, u_z)$ = (sw, wn, sp) | $[y, z, x]$ | $[y, k_z, k_x]$ | $y$ / $k_z$ | $z$ / $k_x$ |
-| Cylindrical (pipe) | $(u_z, u_r, u_\theta)$ = (sw, wn, sp) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
+| Cylindrical (pipe, viscoelastic pipe) | $(u_z, u_r, u_\theta)$ = (sw, wn, sp) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
 | Annular (Taylor–Couette, quasi-Keplerian, Dean, viscoelastic Dean) | $(u_z, u_r, u_\theta)$ = (**sp**, wn, **sw**) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
 
 Each `np0` / `np1` cell reads *physical axis* / *spectral axis*.
@@ -455,7 +463,7 @@ A snapshot is a **single uncompressed tar archive** (format version 6)
 wrapping a **zarr3** store, a JSON metadata member (parameters, grid,
 lineage, and the writing code's git revision), and one contiguous chunk
 per state component (three velocity components, or nine for the
-viscoelastic flow). Each chunk is stored **in the solver's native
+viscoelastic flows). Each chunk is stored **in the solver's native
 spectral layout** at true (unpadded) mode counts — saving, loading, and
 reading never transpose — and in **physical components** for every
 geometry: the cylindrical and annular families convert from the
@@ -478,8 +486,9 @@ layout is checked against the metadata, and a damaged archive raises an
 error naming the file and the cause.
 The stored field is the spectral **perturbation** $\mathbf{u}'$ for the
 base-flow systems (the laminar state is a zero array) and the **total**
-field for Dean and viscoelastic Dean. The archive is readable with ordinary
-tools — `tar xf` yields a valid zarr3 store, and in the worst case each
+field for Dean, viscoelastic Dean, and the viscoelastic pipe. The archive
+is readable with ordinary tools — `tar xf` yields a valid zarr3 store,
+and in the worst case each
 chunk is raw little-endian complex data for `numpy.fromfile`. Resume is
 agnostic to the device count (precision must match — a mismatch
 rejects), and re-grids a changed wall-normal grid on load — spectrally
@@ -612,10 +621,11 @@ term,
 ```
 
 in which the base-flow self-interaction is a pure gradient absorbed by the
-pressure. The force-driven Dean and viscoelastic-Dean systems instead
-integrate the **total** field with a mean-mode azimuthal body force.
+pressure. The force-driven systems instead integrate the **total** field
+with a mean-mode body force: azimuthal for Dean and viscoelastic Dean,
+axial for the viscoelastic pipe.
 
-The viscoelastic flow couples a symmetric **conformation tensor** $\mathbf{c}$
+The viscoelastic flows couple a symmetric **conformation tensor** $\mathbf{c}$
 through a simplified Phan-Thien–Tanner constitutive law,
 
 ```math
@@ -741,14 +751,17 @@ residual. An opt-in reformulation (`res.consistent_imm`) eliminates it:
 advance the wall-normal velocity and vorticity, reconstruct the
 tangential components, and no discrete pressure appears — the stepped
 state's divergence sits at round-off at any resolution, on the same
-banded operators, with fewer solves and less operator storage. The trade
+banded operators and with less operator storage (one band family fewer
+in every geometry). It also drops a solve in the plane and annular
+geometries; the cylindrical one instead gains one, its axis forcing an
+exact diagonalization that doubles the scalars it evolves. The trade
 is a truncation-level tangential-momentum residual that nothing feeds
 back; the discrete-divergence and energy-budget tests pin both
 formulations.
 
 ## Testing and validation
 
-The test suite is 34 standalone scripts under `tests/`, run directly
+The test suite is 35 standalone scripts under `tests/`, run directly
 (`uv run python tests/test_cartesian.py`) or through the optional pytest
 bridge — `uv run pytest` shells each script out as a subprocess, with
 `mpi`/`slow` markers and the scripts staying the source of truth — and
@@ -847,8 +860,8 @@ A closer look at what is in the box, beyond the core solver:
    [Memory footprint](#memory-footprint). The default `1` keeps the single
    fused batch, which is throughput-optimal (one FFT dispatch and one
    reshard round per pipeline stage); raise it to fit a memory-bound run,
-   most effectively for viscoelastic Dean, whose 36-field batch dominates
-   the step's peak.
+   most effectively for the viscoelastic flows, whose 36-field batch
+   dominates the step's peak.
 
 5. **Standard-tools-readable snapshots and a JAX-free reader.** The tar +
    zarr3 format — written in parallel, directly from GPU memory when
@@ -911,8 +924,8 @@ A closer look at what is in the box, beyond the core solver:
     and reconstructs the tangential components, eliminating the discrete
     pressure — the stepped state's divergence drops from truncation
     level to round-off at any resolution, on the same banded operators
-    with fewer solves and less operator storage, and the energy budget
-    closes tighter. Available for every wall-bounded flow; changing it
+    and with less operator storage, and the energy budget closes
+    tighter. Available for every wall-bounded flow; changing it
     on resume starts a new trajectory — see
     [The influence-matrix method](#the-influence-matrix-method).
 

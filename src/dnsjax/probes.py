@@ -183,11 +183,14 @@ def build_mode_extractor(
     if params.phys.system in cartesian_systems:
         to_physical = None
     elif params.phys.system in viscoelastic_systems:
-        from .geometries.wall_bounded.annular_viscoelastic import (
-            from_solver_basis as _from_solver,
+        # The 9-component spin map, from the geometry-free module both
+        # viscoelastic geometries share -- importing either geometry
+        # here would build the wrong family's singletons.
+        from .geometries.wall_bounded._viscoelastic_common import (
+            from_spin_basis,
         )
 
-        to_physical = _from_solver
+        to_physical = from_spin_basis
     else:  # cylindrical / annular velocity basis
         from .geometries.wall_bounded._base import from_pm_basis
 

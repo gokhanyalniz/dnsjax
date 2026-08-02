@@ -1750,10 +1750,13 @@ def _imm_iteration_vw(
     `$\le 1$` and matches the primitive scheme's to ~7 digits over
     `$N_y \in [25, 97]$`, `$k^2 \in [0.04, 4\times10^3]$`,
     `$\Delta t \in [10^{-4}, 10^{-1}]$`.  Both cylindrical geometries
-    make the same trade (``annular._imm_iteration_vw`` re-derives
-    `$\Phi^n$` per pass; the pipe lags its wall differences to
-    `$t^n$`), and a snapshot resume has no other option anyway, since
-    snapshots store physical components.
+    make the same trade -- they re-derive `$\Phi^n$` per pass
+    (``annular._imm_iteration_vw``) -- and a snapshot resume has no
+    other option anyway, since snapshots store physical components.
+    In all three it is also the *only* wall quantity taken from
+    `$t^n$`: the annulus's lagged spin partners and the pipe's
+    surplus wall differences both ride the running corrector iterate,
+    so they converge with it rather than persisting across steps.
 
     Carrying `$(\varphi, v, \omega_y)$` as a second solver basis to
     keep `$\alpha$` exactly *was* shipped (2026-07-25) and removed

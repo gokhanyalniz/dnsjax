@@ -189,10 +189,28 @@ from .parameters import (
     padded_res,
     params,
     trajectory_defining_changes,
-    viscoelastic_systems,
     walled_systems,
 )
 from .snapshot_meta import git_hash, read_snapshot_meta
+
+#: Axis-parity class of each **stored physical** state component, as
+#: ``True`` for the `$(-1)^m$` (even) class and ``False`` for
+#: `$(-1)^{m+1}$` (odd): the order is
+#: ``(u_z, u_r, u_theta, c_zz, c_rz, c_theta_z, c_rr, c_theta_theta,
+#: c_r_theta)``, truncated to the first 3 for a velocity-only flow.
+#: Read by the pipe's parity-aware resume regrid; the annular
+#: geometries have no axis and ignore it.
+_PARITY_EVEN_STORED = (
+    True,  # u_z
+    False,  # u_r
+    False,  # u_theta
+    True,  # c_zz
+    False,  # c_rz
+    False,  # c_theta_z
+    True,  # c_rr
+    True,  # c_theta_theta
+    True,  # c_r_theta
+)
 
 
 def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width, names=None):
@@ -275,12 +293,11 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     curr_grid_np = np.array(curr_grid)
     old_grid = np.array(snap_grid)
 
+    # Each geometry list includes its viscoelastic member, so the
+    # 9-component flows regrid with their own geometry's operators.
     if params.phys.system in cylindrical_systems:
         geometry = "cylindrical"
-    elif (
-        params.phys.system in annular_systems
-        or params.phys.system in viscoelastic_systems
-    ):
+    elif params.phys.system in annular_systems:
         geometry = "annular"
     else:
         geometry = "cartesian"
@@ -291,8 +308,17 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     if isinstance(T, tuple):
         # Spectral parity-aware cylindrical interpolation: apply the
         # even / odd radial matrix per azimuthal mode m by component
-        # parity.  State layout (component, r, m, kz): u_z parity
-        # (-1)^m; u_r/u_theta parity (-1)^{m+1}.
+        # parity.  A component's axis parity is `$(-1)^{m+s}$` with
+        # `$s$` its spin weight, i.e. it is set by how many of its
+        # indices are radial/azimuthal (each flips sign under the axis
+        # reflection).  State layout (component, r, m, kz):
+        #
+        #   u_z, c_zz, c_rr, c_theta_theta, c_r_theta -> (-1)^m
+        #   u_r, u_theta, c_rz, c_theta_z             -> (-1)^{m+1}
+        #
+        # The 6 tensor slots are present only for a viscoelastic pipe;
+        # ``_PARITY_EVEN_STORED`` is indexed by the **stored physical**
+        # component order and truncated to the state's own length.
         #
         # The mask is the geometry's own ``Fourier.m_is_even``, which
         # is the parity of the **physical** `$m = m_0 j$` (the wedge
@@ -302,18 +328,14 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         # here from ``complex_harmonics`` disagreed with both.
         from .geometries.wall_bounded.cylindrical import fourier
 
-        if state.shape[0] != 3:
-            # The per-component parity assignment below is written for
-            # the velocity triad.  Unreachable today (the only
-            # many-component flow is viscoelastic, which resolves to
-            # the annular geometry and takes the branch below), but
-            # silently regridding three of nine components would be a
-            # very expensive thing to discover later.
+        n_comp = state.shape[0]
+        if n_comp not in (3, len(_PARITY_EVEN_STORED)):
             raise ValueError(
                 "parity-aware radial interpolation is defined for the "
-                f"3-component velocity state, got {state.shape[0]} "
-                "components; a flow with extra components needs its "
-                "own parity assignment here."
+                "3-component velocity state and the 9-component "
+                f"viscoelastic state, got {n_comp} components; a flow "
+                "with a different layout needs its own parity "
+                "assignment here."
             )
         T_even, T_odd = T
         m_even = fourier.m_is_even.astype(bool)
@@ -330,7 +352,8 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
                     jnp.einsum("ij, jmk -> imk", a_odd, state[c]),
                 )
                 for c, (a_even, a_odd) in enumerate(
-                    ((T_e, T_o), (T_o, T_e), (T_o, T_e))
+                    (T_e, T_o) if even else (T_o, T_e)
+                    for even in _PARITY_EVEN_STORED[:n_comp]
                 )
             ]
         )
@@ -417,13 +440,13 @@ def run(wall_time_start: int) -> None:
     # The fallback is correct for a flow with no solver basis, but it
     # is also indistinguishable from a flow that *has* one and forgot
     # to re-export the pair -- which would feed the stepper a physical
-    # state with no error, only wrong answers.  The cylindrical,
-    # annular and viscoelastic families always carry one, so require
-    # it there and let the fallback serve the rest.
+    # state with no error, only wrong answers.  The cylindrical and
+    # annular geometries always carry one (their viscoelastic members
+    # included -- the geometry lists span them), so require it there
+    # and let the fallback serve the rest.
     _needs_basis = params.phys.system in (
         *cylindrical_systems,
         *annular_systems,
-        *viscoelastic_systems,
     )
     if _needs_basis:
         missing = [

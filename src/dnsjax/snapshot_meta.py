@@ -242,7 +242,7 @@ def snapshot_component_offsets(path: str | Path) -> dict[int, int]:
     byte of the component's raw chunk inside the archive -- used as the
     base for the raw offset I/O in :mod:`dnsjax.snapshot`.  The component
     count is the number of chunks: 3 for the velocity-only systems, 9
-    for the viscoelastic system (3 velocity + 6 conformation); the chunks
+    for the viscoelastic ones (3 velocity + 6 conformation); the chunks
     must be a contiguous range ``0..N-1``.
 
     This is the one place that hands out byte positions to trust, so it

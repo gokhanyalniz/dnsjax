@@ -64,7 +64,9 @@ primitive.** Pipe radial parity must follow the **physical** azimuthal
 mode `m = m0·h` exactly as `cylindrical.Fourier.m_is_even` does
 (`GeometryInfo.azimuthal_m0` → `_core.radial_derivative`; the
 harmonic-index pick silently corrupted every even-wedge pipe
-snapshot; guard: the `m0 = 2` pipe row in `test_snapshot_export.py`).
+snapshot; guard: the `m0 = 2` pipe rows in `test_snapshot_export.py`).
+A viscoelastic pipe's six conformation components fall into the same
+two classes, per `snapshot_ops._PARITY_CLASS` (which states the rule).
 Per-function behaviour (the pipe `cylindrical_parity` argument,
 needing the full wall-normal grid, physical-field `integrate` with
 the radial Jacobian): the `snapshot_ops.py` docstrings.
@@ -72,7 +74,10 @@ the radial Jacobian): the `snapshot_ops.py` docstrings.
 **System → family mapping.** `_core.py` builds its `*_SYSTEMS`
 frozensets from the JAX-free `dnsjax.flows.registry` (the same source
 as `parameters.py`), so a new flow spec extends them automatically;
-unknown systems still raise an explicit error.
+unknown systems still raise an explicit error. The geometry sets and
+`VISCOELASTIC_SYSTEMS` are independent axes that deliberately overlap,
+so an ordered branch mixing them must test rheology first — the rule
+and its rationale: `flows/registry.py`.
 
 ## Modules
 

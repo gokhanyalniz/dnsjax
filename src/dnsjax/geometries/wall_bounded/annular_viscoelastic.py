@@ -116,7 +116,6 @@ import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
-from ...fd import fornberg_weights
 from ...fft import chunked_transform
 from ...measurements import get_cfl
 from ...operators import phys_to_spec_2d, spec_to_phys_2d
@@ -135,8 +134,23 @@ from ...solvers import (
 from ._base import (
     apply_y_matrix,
     extract_mean_mode,
-    get_norm2,
     integrate_scalar,  # noqa: F401 -- re-exported for the flow module
+)
+from ._viscoelastic_common import (
+    C_FROB_SQRT_SPIN,  # noqa: F401 -- re-exported
+    N_VE_COMPONENTS,  # noqa: F401 -- re-exported
+    TENSOR_SPIN,
+    combined_norm,
+    conformation_coupling_core,
+    div_c_assemble,
+    from_spin_basis,
+    get_norm2_conformation,  # noqa: F401 -- re-exported for the flow
+    narrow_abase_wall_row,
+    phys_combos_to_spin,
+    pointwise_rhs,
+    solve_ptt_f,
+    spin_to_phys_combos,
+    to_spin_basis,
 )
 from .annular import (
     CFL_NAMES,
@@ -157,119 +171,10 @@ from .annular import (
 # Solver basis: state[0:3] = velocity (u_z, u_+, u_-); state[3:9] =
 # conformation spin components (c_zz, c_z+, c_z-, c_+-, c_++, c_--).
 # Physical (everything outside the stepper): (u_z, u_r, u_theta) +
-# (c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta) -- the
-# to_spin_basis / from_spin_basis pair below.
-N_VE_COMPONENTS = 9
-_N_TENSOR = 6
-
-# Spin weight s per tensor spin component (solver slot order c_zz,
-# c_z+, c_z-, c_+-, c_++, c_--); the Laplacian / Helmholtz uses
-# m_eff = m + s.
-_TENSOR_SPIN = np.array([0, 1, -1, 0, 2, -2])
-
-# Frobenius weights of the *physical* tensor components (c_zz, c_rz,
-# c_theta_z, c_rr, c_theta_theta, c_r_theta): off-diagonals count
-# twice in ||c||_F^2 = sum_ij |c_ij|^2.  Used by the diagnostic norm.
-_C_FROB_WEIGHT = np.array([1.0, 2.0, 2.0, 1.0, 1.0, 2.0])
-# sqrt, precomputed (applied per component before the shared get_norm2).
-_C_FROB_SQRT = np.sqrt(_C_FROB_WEIGHT)
-
-# The same physical scalar expressed on the *spin* slots: ||c||_F^2 =
-# |c_zz|^2 + |c_z+|^2 + |c_z-|^2 + |c_+-|^2/2 + (|c_++|^2+|c_--|^2)/4.
-# Used by the corrector ``_norm``, whose arguments are solver-basis.
-_C_FROB_SQRT_SPIN = np.sqrt(np.array([1.0, 1.0, 1.0, 0.5, 0.25, 0.25]))
-
-
-# ── Spin <-> physical tensor conversions (linear, any space) ────────
-
-
-def _spin_to_phys_combos(
-    c_zz: Array,
-    c_zp: Array,
-    c_zm: Array,
-    c_pm: Array,
-    c_pp: Array,
-    c_mm: Array,
-) -> tuple[Array, Array, Array, Array, Array, Array]:
-    r"""Spin components `$\to$` physical `$(c_{rr}, c_{\theta\theta},
-    c_{r\theta}, c_{rz}, c_{\theta z}, c_{zz})$`."""
-    d = (c_pp + c_mm) / 2  # = c_rr - c_theta_theta
-    c_rr = c_pm / 2 + d / 2
-    c_thth = c_pm / 2 - d / 2
-    c_rth = -0.5j * (c_pp - c_mm) / 2  # (c_++ - c_--)/(4i)
-    c_rz = (c_zp + c_zm) / 2
-    c_thz = -0.5j * (c_zp - c_zm)  # (c_z+ - c_z-)/(2i)
-    return c_rr, c_thth, c_rth, c_rz, c_thz, c_zz
-
-
-def _phys_combos_to_spin(
-    c_rr: Array,
-    c_thth: Array,
-    c_rth: Array,
-    c_rz: Array,
-    c_thz: Array,
-    c_zz: Array,
-) -> Array:
-    r"""Physical tensor components `$\to$` stacked spin components,
-    ``(6, ...)`` in the order `$(c_{zz}, c_{z+}, c_{z-}, c_{+-},
-    c_{++}, c_{--})$`."""
-    c_zp = c_rz + 1j * c_thz
-    c_zm = c_rz - 1j * c_thz
-    c_pm = c_rr + c_thth
-    c_pp = (c_rr - c_thth) + 2j * c_rth
-    c_mm = (c_rr - c_thth) - 2j * c_rth
-    return jnp.array([c_zz, c_zp, c_zm, c_pm, c_pp, c_mm])
-
-
-# ── Physical <-> solver basis (the 9-component boundary) ────────────
-
-
-def to_spin_basis(state: Array) -> Array:
-    r"""Physical 9-component state `$\to$` solver spin basis.
-
-    Maps `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
-    c_{\theta\theta}, c_{r\theta})$` to
-    `$(u_z, u_+, u_-, c_{zz}, c_{z+}, c_{z-}, c_{+-}, c_{++},
-    c_{--})$` -- the per-mode-diagonal basis of the `$H_k$`/`$H_c$`
-    solves in which the whole time stepper works (every entry a spin
-    projection: `$u_\pm$` are the spin-`$\pm1$` components of the
-    velocity vector).  The 9-component counterpart of
-    :func:`~dnsjax.geometries.wall_bounded._base.to_pm_basis`, and
-    like it the boundary crossed at most once per state
-    (:mod:`dnsjax.__main__`); elementwise on the unsharded component
-    axis.  Inverse: :func:`from_spin_basis`.
-    """
-    u_r, u_theta = state[1], state[2]
-    vel = jnp.array([state[0], u_r + 1j * u_theta, u_r - 1j * u_theta])
-    spin = _phys_combos_to_spin(
-        state[6], state[7], state[8], state[4], state[5], state[3]
-    )
-    return jnp.concatenate([vel, spin])
-
-
-def from_spin_basis(state: Array) -> Array:
-    r"""Solver spin basis `$\to$` physical 9-component state.
-
-    Inverse of :func:`to_spin_basis`.
-    """
-    u_plus, u_minus = state[1], state[2]
-    c_rr, c_thth, c_rth, c_rz, c_thz, c_zz = _spin_to_phys_combos(
-        state[3], state[4], state[5], state[6], state[7], state[8]
-    )
-    return jnp.array(
-        [
-            state[0],
-            (u_plus + u_minus) / 2,
-            -1j * (u_plus - u_minus) / 2,
-            c_zz,
-            c_rz,
-            c_thz,
-            c_rr,
-            c_thth,
-            c_rth,
-        ]
-    )
-
+# (c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta).  The layout,
+# the spin weights, the basis pair and the pointwise physical-space
+# arithmetic are geometry-free and shared with the pipe's viscoelastic
+# geometry: :mod:`._viscoelastic_common`.
 
 #: Role aliases for the basis boundary (see ``cylindrical.py``).
 to_solver_basis = to_spin_basis
@@ -277,20 +182,6 @@ from_solver_basis = from_spin_basis
 
 
 # ── Analytical laminar profiles (JAX-free, build-time) ──────────────
-
-
-def _solve_ptt_f(g: np.ndarray) -> np.ndarray:
-    r"""Solve `$f^3 - f^2 = g$` for `$f \ge 1$` (Newton, `$g \ge 0$`).
-
-    `$g = 2\epsilon(\mathrm{Wi}\,S)^2$` is the sPTT extensibility term;
-    `$f = 1$` for `$\epsilon = 0$` (or zero shear).
-    """
-    f = np.ones_like(g)
-    for _ in range(100):
-        num = f**3 - f**2 - g
-        den = 3.0 * f**2 - 2.0 * f
-        f = f - num / den
-    return f
 
 
 def viscoelastic_laminar_profiles(
@@ -321,7 +212,7 @@ def viscoelastic_laminar_profiles(
     )
     shear = np.asarray(D1) @ u_theta - u_theta / rs_np
     wis = wi * shear
-    f = _solve_ptt_f(2.0 * eps * wis**2)
+    f = solve_ptt_f(2.0 * eps * wis**2)
     x = wis / f  # c_r_theta
     c_thth = 1.0 + 2.0 * x**2  # c_theta_theta
     zeros = np.zeros_like(rs_np, dtype=np.complex128)
@@ -347,31 +238,17 @@ def viscoelastic_laminar_profiles(
 def _narrow_abase_wall_rows(
     rs: np.ndarray, D1: np.ndarray, fd_order: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    r"""Full `$A_{\mathrm{base}}$` wall rows using a **narrow** `$D_2$`.
+    r"""Both narrow-`$D_2$` `$A_{\mathrm{base}}$` wall rows.
 
-    The regular `$D_2$` boundary row (:func:`dnsjax.fd.build_diff_matrices`)
-    spans `$p+2$` points and does not fit banded storage (half-bandwidth
-    `$p$`).  The `$\nabla^2 c = 0$` wall BC only needs the Laplacian
-    *evaluated at the wall row*, so a `$(p+1)$`-point one-sided `$D_2$`
-    stencil (accuracy `$p-1$`, acceptable for an artificial-diffusion BC)
-    is used for the two wall rows only, giving a row that fits the band
-    (columns `$0..p$` at the inner wall, `$N-p-1..N-1$` at the outer).
-    The identical narrow row is used in every backend so all factor the
-    same matrix.  `$D_1$` already fits (`$p+1$`-point), so only `$D_2$`
-    is narrowed.  Returns the two full-length `$(N_r,)$` rows
-    `$A_{\mathrm{base}} = D_2 + (1/r) D_1$`.
+    The annulus carries a `$\nabla^2 c = 0$` BC row at each of its two
+    walls; :func:`._viscoelastic_common.narrow_abase_wall_row` builds
+    one (and documents why the regular `$D_2$` boundary row cannot be
+    used).  Returns the two full-length `$(N_r,)$` rows.
     """
-    N = len(rs)
-    p = fd_order
-    row0 = np.zeros(N)
-    rowN = np.zeros(N)
-    # Inner wall (row 0): narrow one-sided D2 on nodes 0..p.
-    w0 = fornberg_weights(rs[0], rs[0 : p + 1], 2)[:, 2]
-    row0[0 : p + 1] = w0 + (1.0 / rs[0]) * D1[0, 0 : p + 1]
-    # Outer wall (row N-1): narrow one-sided D2 on nodes N-p-1..N-1.
-    wN = fornberg_weights(rs[-1], rs[N - p - 1 :], 2)[:, 2]
-    rowN[N - p - 1 :] = wN + (1.0 / rs[-1]) * D1[-1, N - p - 1 :]
-    return row0, rowN
+    return (
+        narrow_abase_wall_row(rs, D1, fd_order, inner=True),
+        narrow_abase_wall_row(rs, D1, fd_order, inner=False),
+    )
 
 
 # ── H_c Helmholtz operator builders (per spin component) ────────────
@@ -469,47 +346,28 @@ def _div_c(
     fourier_: Fourier,
     flow_: ViscoelasticAnnularFlow,
 ) -> tuple[Array, Array, Array]:
-    r"""Spectral divergence of the symmetric tensor, `$(\nabla\cdot
-    c)_r, (\nabla\cdot c)_\theta, (\nabla\cdot c)_z$` (FFT-free):
+    r"""Spectral divergence of the symmetric tensor (FFT-free).
 
-    .. math::
-        (\nabla\cdot c)_r &= \partial_r c_{rr}
-            + \tfrac{im}{r}c_{r\theta} + ik_z c_{rz}
-            + \tfrac{c_{rr}-c_{\theta\theta}}{r}, \\
-        (\nabla\cdot c)_\theta &= \partial_r c_{r\theta}
-            + \tfrac{im}{r}c_{\theta\theta} + ik_z c_{\theta z}
-            + \tfrac{2 c_{r\theta}}{r}, \\
-        (\nabla\cdot c)_z &= \partial_r c_{rz}
-            + \tfrac{im}{r}c_{\theta z} + ik_z c_{zz}
-            + \tfrac{c_{rz}}{r}.
+    One batched `$D_1$` GEMM for the radial derivatives, then the
+    shared curvature assembly
+    (:func:`._viscoelastic_common.div_c_assemble`, which carries the
+    component formulas).
     """
-    im = 1j * fourier_.m
-    ikz = 1j * fourier_.kz
-    inv_r = flow_.inv_r[:, None, None]
     dr = apply_y_matrix(
         flow_.D1, jnp.array([c_rr, c_rth, c_rz])
     )  # (3, Nr, Nm, Nkz)
-    div_r = dr[0] + im * inv_r * c_rth + ikz * c_rz + inv_r * (c_rr - c_thth)
-    div_th = dr[1] + im * inv_r * c_thth + ikz * c_thz + inv_r * 2 * c_rth
-    div_z = dr[2] + im * inv_r * c_thz + ikz * c_zz + inv_r * c_rz
-    return div_r, div_th, div_z
-
-
-# ── Norms ───────────────────────────────────────────────────────────
-
-
-def get_norm2_conformation(
-    c_phys: Array, k_metric: Array, y_weights: Array
-) -> Array:
-    r"""Volume-averaged Frobenius norm `$\langle \|c\|_F^2 \rangle$` from
-    the **physical** components `$(c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
-    c_{\theta\theta}, c_{r\theta})$` (off-diagonal weights 2) -- the
-    diagnostic form, applied outside the solver.  Its solver-basis
-    counterpart is the spin weighting in :func:`_norm`."""
-    w = jnp.asarray(_C_FROB_SQRT, dtype=c_phys.real.dtype).reshape(
-        _N_TENSOR, 1, 1, 1
+    return div_c_assemble(
+        dr,
+        c_rr,
+        c_thth,
+        c_rth,
+        c_rz,
+        c_thz,
+        c_zz,
+        1j * fourier_.m,
+        1j * fourier_.kz,
+        flow_.inv_r[:, None, None],
     )
-    return get_norm2(c_phys * w, k_metric, y_weights)
 
 
 # ── Viscoelastic annular flow dataclass ─────────────────────────────
@@ -552,7 +410,7 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         super().__post_init__()
 
         self.tensor_spin = jax.device_put(
-            jnp.asarray(_TENSOR_SPIN, dtype=sharding.float_type),
+            jnp.asarray(TENSOR_SPIN, dtype=sharding.float_type),
             sharding.no_shard,
         )
 
@@ -634,7 +492,12 @@ def _build_hc_operator(
     """
     kappa = params.phys.kappa
     c_impl = params.step.implicitness
-    fd_p = params.res.fd_order
+    # Half-width read back from the already-factored, dt-independent
+    # Lk, exactly as ``annular._hk_bands`` does: a static shape, so it
+    # works inside the jitted ``set_dt`` rebuild, and it is *measured*
+    # rather than assumed to be ``fd_order`` -- an under-sized band
+    # truncates entries silently (``fd.matrix_half_bandwidth``).
+    fd_p = flow_.Lk_op.L.shape[1]
     m_s = fourier_.m[0, ..., None]  # (Nm, 1, 1)
     kz2_s = fourier_.kz2[0, ..., None]  # (1, Nkz, 1)
     # m_eff^2 for spin s = 0, +1, -1, +2, -2 (the 5 distinct values).
@@ -712,7 +575,7 @@ def _get_rhs_core(
     state: Array,
     fourier_: Fourier,
     flow_: ViscoelasticAnnularFlow,
-    measure_fn: Callable[[Array, Array], dict[str, Array]] | None,
+    measure_fn: Callable[[Array, Array, Array], dict[str, Array]] | None,
 ) -> Array | tuple[Array, dict[str, Array]]:
     r"""Evaluate the full 9-component nonlinear RHS ``rhs_no_lapl``.
 
@@ -776,7 +639,7 @@ def _get_rhs_core(
 
     # Conformation physical combos (still spectral here; cs_* denotes
     # the spectral tensor combos, distinct from the physical crr.. below).
-    cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz = _spin_to_phys_combos(
+    cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz = spin_to_phys_combos(
         state[3], state[4], state[5], state[6], state[7], state[8]
     )
     combos = jnp.array([cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz])
@@ -811,111 +674,13 @@ def _get_rhs_core(
     stack = jnp.concatenate([u_spec, L_spec, combos, dr_c, dth_c, dz_c])
     phys = chunked_transform(spec_to_phys_2d, stack)
 
-    uz_p, ur_p, uth_p = phys[0], phys[1], phys[2]
-    Lrr_p, Lrth_p, Lrz_p = phys[3], phys[4], phys[5]
-    Lthr_p, Lthth_p, Lthz_p = phys[6], phys[7], phys[8]
-    Lzr_p, Lzth_p, Lzz_p = phys[9], phys[10], phys[11]
-    crr, cthth, crth, crz, cthz, czz = (
-        phys[12],
-        phys[13],
-        phys[14],
-        phys[15],
-        phys[16],
-        phys[17],
-    )
-    drc = phys[18:24]
-    dthc = phys[24:30]
-    dzc = phys[30:36]
-
-    inv_rp = flow_.inv_r_padded
-    uth_over_r = uth_p * inv_rp
-
-    # ── Velocity nonlinear term u x omega (rotational form) ──
-    # omega is free from the antisymmetric part of L.
-    om_r = Lthz_p - Lzth_p
-    om_th = Lzr_p - Lrz_p
-    om_z = Lrth_p - Lthr_p
-    NLu_r = uth_p * om_z - uz_p * om_th
-    NLu_th = uz_p * om_r - ur_p * om_z
-    NLu_z = ur_p * om_th - uth_p * om_r
-
-    # ── Conformation nonlinear term N_c (advection + stretching +
-    # relaxation), physical, per component ──
-    # advection scalar part adv(f) = u_r d_r f + (u_th/r) d_th f + u_z d_z f
-    def _adv(k: int) -> Array:
-        return ur_p * drc[k] + uth_over_r * dthc[k] + uz_p * dzc[k]
-
-    adv_rr, adv_thth, adv_rth = _adv(0), _adv(1), _adv(2)
-    adv_rz, adv_thz, adv_zz = _adv(3), _adv(4), _adv(5)
-    ucgrad_rr = adv_rr - 2 * uth_over_r * crth
-    ucgrad_thth = adv_thth + 2 * uth_over_r * crth
-    ucgrad_rth = adv_rth + uth_over_r * (crr - cthth)
-    ucgrad_rz = adv_rz - uth_over_r * cthz
-    ucgrad_thz = adv_thz + uth_over_r * crz
-    ucgrad_zz = adv_zz
-
-    # Stretching S = L^T c + c L (symmetric); L_ij = d_i u_j.
-    S_rr = 2 * (Lrr_p * crr + Lthr_p * crth + Lzr_p * crz)
-    S_thth = 2 * (Lrth_p * crth + Lthth_p * cthth + Lzth_p * cthz)
-    S_zz = 2 * (Lrz_p * crz + Lthz_p * cthz + Lzz_p * czz)
-    S_rth = (
-        Lrr_p * crth
-        + Lthr_p * cthth
-        + Lzr_p * cthz
-        + crr * Lrth_p
-        + crth * Lthth_p
-        + crz * Lzth_p
-    )
-    S_rz = (
-        Lrr_p * crz
-        + Lthr_p * cthz
-        + Lzr_p * czz
-        + crr * Lrz_p
-        + crth * Lthz_p
-        + crz * Lzz_p
-    )
-    S_thz = (
-        Lrth_p * crz
-        + Lthth_p * cthz
-        + Lzth_p * czz
-        + crth * Lrz_p
-        + cthth * Lthz_p
-        + cthz * Lzz_p
-    )
-
-    # Relaxation -(c - I)(1 - 3eps + eps tr c)/Wi.
+    # ── Pointwise physical-space stage (shared, coordinate-level) ──
     wi = params.phys.wi
-    eps = params.phys.epsilon
-    trc = crr + cthth + czz
-    fac = (1.0 - 3.0 * eps + eps * trc) / wi
-    R_rr = -(crr - 1.0) * fac
-    R_thth = -(cthth - 1.0) * fac
-    R_zz = -(czz - 1.0) * fac
-    R_rth = -crth * fac
-    R_rz = -crz * fac
-    R_thz = -cthz * fac
-
-    Nc_rr = -ucgrad_rr + S_rr + R_rr
-    Nc_thth = -ucgrad_thth + S_thth + R_thth
-    Nc_rth = -ucgrad_rth + S_rth + R_rth
-    Nc_rz = -ucgrad_rz + S_rz + R_rz
-    Nc_thz = -ucgrad_thz + S_thz + R_thz
-    Nc_zz = -ucgrad_zz + S_zz + R_zz
+    out_phys, om_phys, trc = pointwise_rhs(
+        phys, flow_.inv_r_padded, wi, params.phys.epsilon
+    )
 
     # ── Single batched forward transform (9 outputs) ──
-    out_phys = jnp.array(
-        [
-            NLu_z,
-            NLu_r,
-            NLu_th,
-            Nc_rr,
-            Nc_thth,
-            Nc_rth,
-            Nc_rz,
-            Nc_thz,
-            Nc_zz,
-        ]
-    )
     out_spec = phys_to_spec_2d(out_phys)
     NL_z, NL_r, NL_th = out_spec[0], out_spec[1], out_spec[2]
 
@@ -937,7 +702,7 @@ def _get_rhs_core(
     rhs_um = NL_r - 1j * NL_th
 
     # Conformation outputs -> spin components.
-    Nc_spin = _phys_combos_to_spin(
+    Nc_spin = phys_combos_to_spin(
         out_spec[3],
         out_spec[4],
         out_spec[5],
@@ -955,9 +720,7 @@ def _get_rhs_core(
 
     if measure_fn is None:
         return rhs
-    u_phys = jnp.array([uz_p, ur_p, uth_p])
-    om_phys = jnp.array([om_z, om_r, om_th])
-    measurements = measure_fn(u_phys, om_phys, trc)
+    measurements = measure_fn(phys[:3], om_phys, trc)
     return rhs, measurements
 
 
@@ -1000,90 +763,41 @@ def _conformation_coupling(
 ) -> Array:
     r"""FFT-free linear/mean conformation coupling, 6 spin components.
 
-    The parts of the conformation RHS made implicit by the CN/AB2
-    scheme:
-
-    - the **linear relaxation** `$-(1-3\epsilon)(c-\mathbb{I})/
-      \mathrm{Wi}$` and the moving-frame convective term -- **always**
-      folded in (the linear reaction / frame terms, like the viscous
-      Laplacian);
-    - the instantaneous **mean-flow** coupling -- mean advection
-      `$-\bar{\mathbf{u}}\cdot\nabla\mathbf{c}$` (the `$\bar u_\theta\,
-      \partial_\theta$` / `$\bar u_z\,\partial_z$` parts with the
-      curvilinear Christoffel corrections; `$\bar u_r \equiv 0$` at the
-      mean mode) and mean-shear stretching `$\bar{L}^{\!\top}c + c\bar
-      {L}$` with the mean velocity gradient `$\bar L$`
-      (`$\bar L_{r\theta}=\partial_r\bar u_\theta$`,
-      `$\bar L_{rz}=\partial_r\bar u_z$`,
-      `$\bar L_{\theta r}=-\bar u_\theta/r$`; spin-mixing, fine for the
-      Picard corrector) -- gated by ``params.step.implicit_mean_coupling``
-      (default on), exactly as the velocity `$L_{mf}$` is (see the
-      annular ``_l_bf``).
-
-    Written on the physical tensor combos (identical algebra to
-    :func:`_get_rhs_core`, restricted to `$\bar{\mathbf{u}}$`), so the
-    explicit remainder `$\text{get\_rhs} - \text{\_l\_bf}$` is exactly
-    the fluctuation-fluctuation advection / stretching and the nonlinear
-    relaxation part.  No Fourier transform (mean profile x spectral
-    field is a pointwise-in-`$r$` product).
+    The annular binding of
+    :func:`._viscoelastic_common.conformation_coupling_core` (which
+    carries the term-by-term account of what the CN/AB2 scheme makes
+    implicit here): this supplies the instantaneous mean velocity
+    profile and its **plain-`$D_1$`** radial gradients -- the annulus
+    has no axis, so no parity enters -- plus the always-implicit
+    moving-frame convective term.
     """
-    cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz = combos
-
-    # Linear relaxation -(1 - 3 eps)(c - I)/Wi (always implicit).  The
-    # identity I is a constant field -- its spectral support is the mean
-    # mode alone -- so subtract 1 from the diagonal c_rr / c_thth / c_zz
-    # at the mean mode only (in physical space ``_get_rhs_core`` gets
-    # this for free; here the arithmetic is spectral).
-    faclin = (1.0 - 3.0 * params.phys.epsilon) / params.phys.wi
-    ident = jnp.where(fourier_.mean_mask, 1.0, 0.0)
-    Nc_rr = -(cs_rr - ident) * faclin
-    Nc_thth = -(cs_thth - ident) * faclin
-    Nc_zz = -(cs_zz - ident) * faclin
-    Nc_rth = -cs_rth * faclin
-    Nc_rz = -cs_rz * faclin
-    Nc_thz = -cs_thz * faclin
-
+    mean = None
     if params.step.implicit_mean_coupling:
-        im = 1j * fourier_.m
-        ikz = 1j * fourier_.kz
-        inv_r = flow_.inv_r[:, None, None]
-
         # Instantaneous mean velocity profile (u_z, u_r, u_theta); the
         # mean u_r is structurally 0, so its d_r term vanishes.
         u_z, u_plus, u_minus = state[0], state[1], state[2]
         u_r = (u_plus + u_minus) / 2
         u_th = -0.5j * (u_plus - u_minus)
         mean_vel = extract_mean_mode(jnp.array([u_z, u_r, u_th]))  # (3, Nr)
-        muz = mean_vel[0][:, None, None]
-        uth_over_r = mean_vel[2][:, None, None] * inv_r
-
         # Mean velocity gradient profiles: D1 on the bare (N_r,) mean
         # profiles is a direct matmul (no Fourier axes here).
-        Lbar_rth = (flow_.D1 @ mean_vel[2])[:, None, None]  # d_r u_theta
-        Lbar_rz = (flow_.D1 @ mean_vel[0])[:, None, None]  # d_r u_z
-        Lbar_thr = -uth_over_r  # -u_theta / r
+        mean = (
+            mean_vel[0][:, None, None],
+            mean_vel[2][:, None, None],
+            (flow_.D1 @ mean_vel[0])[:, None, None],  # d_r u_z
+            (flow_.D1 @ mean_vel[2])[:, None, None],  # d_r u_theta
+            1j * fourier_.m,
+            1j * fourier_.kz,
+            flow_.inv_r[:, None, None],
+        )
 
-        # Mean advection (u_r == 0): (u_theta/r) d_theta + u_z d_z, with
-        # the same Christoffel corrections as ``_get_rhs_core``.
-        def _madv(x: Array) -> Array:
-            return uth_over_r * (im * x) + muz * (ikz * x)
-
-        ucgrad_rr = _madv(cs_rr) - 2 * uth_over_r * cs_rth
-        ucgrad_thth = _madv(cs_thth) + 2 * uth_over_r * cs_rth
-        ucgrad_rth = _madv(cs_rth) + uth_over_r * (cs_rr - cs_thth)
-        ucgrad_rz = _madv(cs_rz) - uth_over_r * cs_thz
-        ucgrad_thz = _madv(cs_thz) + uth_over_r * cs_rz
-        ucgrad_zz = _madv(cs_zz)
-
-        # Mean-shear stretching L_bar^T c + c L_bar (spin-mixing).
-        Nc_rr = Nc_rr - ucgrad_rr + 2 * Lbar_thr * cs_rth
-        Nc_thth = Nc_thth - ucgrad_thth + 2 * Lbar_rth * cs_rth
-        Nc_zz = Nc_zz - ucgrad_zz + 2 * Lbar_rz * cs_rz
-        Nc_rth = Nc_rth - ucgrad_rth + Lbar_thr * cs_thth + cs_rr * Lbar_rth
-        Nc_rz = Nc_rz - ucgrad_rz + Lbar_thr * cs_thz + cs_rr * Lbar_rz
-        Nc_thz = Nc_thz - ucgrad_thz + Lbar_rth * cs_rz + cs_rth * Lbar_rz
-
-    conf = _phys_combos_to_spin(Nc_rr, Nc_thth, Nc_rth, Nc_rz, Nc_thz, Nc_zz)
+    conf = conformation_coupling_core(
+        combos,
+        jnp.where(fourier_.mean_mask, 1.0, 0.0),
+        params.phys.epsilon,
+        params.phys.wi,
+        mean,
+    )
 
     u_grid = derived_params.u_grid
     if u_grid != 0:
@@ -1115,7 +829,7 @@ def _l_bf(
     """
     vel_lbf = _annular_l_bf(state[:3], fourier_, flow_)
 
-    cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz = _spin_to_phys_combos(
+    cs_rr, cs_thth, cs_rth, cs_rz, cs_thz, cs_zz = spin_to_phys_combos(
         state[3], state[4], state[5], state[6], state[7], state[8]
     )
     coef = (1.0 - params.phys.beta) / (params.phys.re * params.phys.wi)
@@ -1217,21 +931,9 @@ def _norm(
     fourier_: Fourier,
     flow_: ViscoelasticAnnularFlow,
 ) -> Array:
-    r"""Combined L2 convergence norm, `$\sqrt{\|u\|^2 + \|c\|_F^2}$`.
-
-    Corrections live in the solver spin basis, so the `$u_\pm$` pair
-    carries the 1/2 weight and the tensor slots the spin Frobenius
-    weights (``_C_FROB_SQRT_SPIN``) -- the same physical scalar the
-    diagnostic norms report for a physical-basis array.
-    """
-    k_m, y_w = fourier_.k_metric, flow_.y_weights
-    pm2 = get_norm2(correction[1:3], k_m, y_w)
-    uz2 = get_norm2(correction[:1], k_m, y_w)
-    w = jnp.asarray(_C_FROB_SQRT_SPIN, dtype=correction.real.dtype).reshape(
-        _N_TENSOR, 1, 1, 1
-    )
-    c2 = get_norm2(correction[3:] * w, k_m, y_w)
-    return jnp.sqrt(uz2 + pm2 / 2 + c2)
+    r"""Combined L2 convergence norm, `$\sqrt{\|u\|^2 + \|c\|_F^2}$`
+    (:func:`._viscoelastic_common.combined_norm`)."""
+    return combined_norm(correction, fourier_.k_metric, flow_.y_weights)
 
 
 # ── Stepper factory ─────────────────────────────────────────────────
