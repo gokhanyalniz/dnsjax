@@ -492,18 +492,21 @@ def _build_hc_operator(
     """
     kappa = params.phys.kappa
     c_impl = params.step.implicitness
-    # Half-width read back from the already-factored, dt-independent
-    # Lk, exactly as ``annular._hk_bands`` does: a static shape, so it
-    # works inside the jitted ``set_dt`` rebuild, and it is *measured*
-    # rather than assumed to be ``fd_order`` -- an under-sized band
-    # truncates entries silently (``fd.matrix_half_bandwidth``).
-    fd_p = flow_.Lk_op.L.shape[1]
     m_s = fourier_.m[0, ..., None]  # (Nm, 1, 1)
     kz2_s = fourier_.kz2[0, ..., None]  # (1, Nkz, 1)
     # m_eff^2 for spin s = 0, +1, -1, +2, -2 (the 5 distinct values).
     meff2 = {s: (m_s + s) ** 2 for s in (0, 1, -1, 2, -2)}
 
     if params.solver.backend == "pallas":
+        # Half-width read back from the already-factored, dt-independent
+        # Lk, exactly as ``annular._hk_bands`` does: a static shape, so
+        # it works inside the jitted ``set_dt`` rebuild, and it is
+        # *measured* rather than assumed to be ``fd_order`` -- an
+        # under-sized band truncates entries silently
+        # (``fd.matrix_half_bandwidth``).  Read inside this branch:
+        # the dense backend's ``Lk_op`` is a ``DenseJAXSolver``, which
+        # carries no band.
+        fd_p = flow_.Lk_op.L.shape[1]
         # Six per-spin banded operators (slot 3 repeats s = 0),
         # stacked into one homogeneous operator.
         bands = [
