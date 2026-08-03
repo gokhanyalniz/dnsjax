@@ -13,28 +13,20 @@
 - `annular.py`: annular geometry / concentric cylinders (Fourier, CGL
   grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2
   IMM, optional mean-mode azimuthal body force `pi_theta`)
-- `_viscoelastic_common.py`: the geometry-free half of the sPTT
-  extension, shared by both viscoelastic geometries (9-component state
-  layout, spin <-> physical maps, spin/Frobenius weights, pointwise
-  physical-space RHS kernel, div-c curvature assembly, CN/AB2 mean
-  conformation coupling, sPTT scalar root, narrow Laplacian BC wall
-  row); its docstring states what is deliberately *not* here
-- `_viscoelastic_stepping.py`: the sPTT **stepping functions** (fused
-  RHS, `_l_bf`, `_c_cn_update`, predictor/corrector/norm, the `H_c`
-  builders, the stepper factory), written once against a 12-member
-  per-geometry adapter surface — the table and the zero-cost-dispatch
-  argument are in its docstring. Imports neither geometry (that would
-  build both families' grids on any viscoelastic import; guarded by
-  `test_no_cross_geometry_import` in both per-geometry tests)
-- `annular_viscoelastic.py`: the **annular** half of the sPTT extension
-  (`ViscoelasticAnnularFlow` + its adapters, laminar profiles, the two
-  narrow BC wall rows): plain `D1`/`D2` radial derivatives, two walls,
-  azimuthal body force
-- `cylindrical_viscoelastic.py`: the **cylindrical** half
-  (`ViscoelasticCylindricalFlow` + its adapters): parity-reduced radial
-  derivatives on the `(-1)^(m+s)` bands, a single-wall `H_c` (the axis
-  is closed by parity), axial body force; the tensor's axis-parity
-  derivation and per-component table: its module docstring
+- `_viscoelastic_common.py`: geometry-free sPTT half shared by both
+  viscoelastic geometries (`to_spin_basis`/`from_spin_basis`,
+  `spin_to_phys_combos`, `pointwise_rhs`, `div_c_assemble`,
+  `conformation_coupling_core`, `solve_ptt_f`,
+  `narrow_abase_wall_row`, `combined_norm`)
+- `_viscoelastic_stepping.py`: the sPTT stepping functions, written
+  once against a per-geometry adapter surface its docstring tabulates.
+  Imports neither geometry (that would build both families' grids on
+  any viscoelastic import; guarded by `test_no_cross_geometry_import`
+  in both per-geometry tests)
+- `annular_viscoelastic.py` / `cylindrical_viscoelastic.py`: the two
+  halves of that adapter surface (`ViscoelasticAnnularFlow` /
+  `ViscoelasticCylindricalFlow` + laminar profiles). The pipe's
+  axis-parity derivation and per-component table: its module docstring
 
 **Component basis (cylindrical / annular only).** Two
 representations, one boundary. The **solver basis** — decoupled
@@ -268,9 +260,8 @@ its docstring and the `fd.py` interpolation docstrings.
   (`re2` derived by its spec); binds the same `_circular_couette.py`
   machinery and differs only in its documented conventions.
 - `viscoelastic_pipe.py`:
-  ViscoelasticPipeFlow(ViscoelasticCylindricalFlow) -- sPTT pipe driven
-  by a uniform axial body force `Pi_z = 4/Re`, 9-component **total**
-  field; `Uz = 1 - r^2` at `epsilon = 0`.
+  ViscoelasticPipeFlow(ViscoelasticCylindricalFlow) -- axially
+  force-driven sPTT pipe, 9-component **total** field.
 - `dean.py`: DeanFlow(AnnularFlow) -- force-driven **total** field.
 - `viscoelastic_dean.py`: ViscoelasticDeanFlow(ViscoelasticAnnularFlow)
   -- force-driven sPTT Dean, 9-component **total** field.

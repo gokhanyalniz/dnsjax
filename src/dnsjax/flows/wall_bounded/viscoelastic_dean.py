@@ -33,12 +33,32 @@ conformation on the **discrete** local shear
     \quad c_{\theta\theta} = 1 + \frac{2(\mathrm{Wi}\,S)^2}{f^2},
     \quad f^3 - f^2 = 2\epsilon(\mathrm{Wi}\,S)^2,
 
-with `$c_{rz} = c_{\theta z} = 0$`.  For `$\kappa = 0$` this is the
-**exact** discrete steady state (the curvilinear advection / stretching
-terms cancel algebraically at every `$\epsilon$`), so the full
-9-component RHS conformation slice vanishes to machine precision; for
-`$\kappa > 0$` it is an approximation (the diffusion of the
-`$r$`-varying conformation is neglected).
+with `$c_{rz} = c_{\theta z} = 0$`.  For `$\kappa = 0$` the
+conformation slice of the full 9-component RHS vanishes to machine
+precision at every `$\epsilon$` (the curvilinear advection and
+stretching terms cancel algebraically); for `$\kappa > 0$` it is an
+approximation twice over -- the diffusion of the `$r$`-varying
+conformation is neglected, and the equilibrium profile does not satisfy
+the `$\nabla^2 c = 0$` wall rows `$H_c$` imposes.
+
+**The velocity slice closes exactly only at** `$\epsilon = 0$`, where
+`$f \equiv 1$` and the polymer contributes a constant extra viscosity,
+so the Newtonian `$U_\theta$` is also the sPTT one.  At
+`$\epsilon > 0$` the polymer shear-thins (the true balance is
+`$(1/r^2)\,\partial_r[r^2\tau] + \Pi_\theta = 0$` with
+`$\tau = (S/\mathrm{Re})[\beta + (1-\beta)/f]$`) and that correction is
+neglected, exactly as in the pipe twin -- so the pair is **not** a
+steady state there.  It is not small at the shipped defaults: stepping
+it at `$\epsilon = 10^{-3}$` drifts at `$\max|\Delta u|/\Delta t
+\approx 0.3$` against `$2\!\cdot\!10^{-13}$` at `$\epsilon = 0$`, and
+the laminar ledger `$I = D_s - W_p$` misses by 15 % (the pipe's 8 %).
+Consequences: ``start_from_laminar`` is not laminar, and `$E'$` --
+which is measured against *this* reference, hence the
+``stop.check_laminarization`` quantity -- has a floor of a few percent
+of `$E$` instead of decaying to zero.  Fixing it needs a shooting
+solve for `$U_\theta$` (invert `$\tau(S)$` through the cubic,
+integrate, match both no-slip walls), which is why the closed form is
+kept and the defect documented instead.
 """
 
 from dataclasses import dataclass

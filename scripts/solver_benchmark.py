@@ -213,6 +213,8 @@ def _import_flow(system: str):
         from dnsjax.flows.wall_bounded import dean as m
     elif system == "viscoelastic-dean":
         from dnsjax.flows.wall_bounded import viscoelastic_dean as m
+    elif system == "viscoelastic-pipe":
+        from dnsjax.flows.wall_bounded import viscoelastic_pipe as m
     else:
         raise SystemExit(f"unsupported system: {system}")
     return m

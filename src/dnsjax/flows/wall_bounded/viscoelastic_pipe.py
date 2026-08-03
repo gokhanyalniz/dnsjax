@@ -14,8 +14,11 @@ an independent formulation.  The deductions made in that port, in full:
    relaxation `$f = 1 - 3\epsilon + \epsilon\,\mathrm{tr}\,c$`, the
    polymer stress `$\tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}
    \nabla\cdot c$` and the spin-diagonal tensor Laplacian with
-   `$m_{\mathrm{eff}} = m + s$` -- transfers verbatim.  The shared code
-   is :mod:`~dnsjax.geometries.wall_bounded._viscoelastic_common`.
+   `$m_{\mathrm{eff}} = m + s$` -- transfers verbatim.  The shared
+   code is :mod:`~dnsjax.geometries.wall_bounded._viscoelastic_common`
+   (the coordinate-level algebra) and
+   :mod:`~dnsjax.geometries.wall_bounded._viscoelastic_stepping` (the
+   stepping functions, incl. the tensor Laplacian).
 2. The driving translates as: the annulus's constant *azimuthal* mean
    pressure gradient (`$\Pi_\theta = (r_1+r_2)/(\mathrm{Re}\,r)$`)
    becomes a constant *axial* one, `$\Pi_z = 4/\mathrm{Re}$` (uniform
@@ -131,10 +134,26 @@ conformation slice of the full 9-component RHS vanishes to machine
 precision at every `$\epsilon$` (the flow is unidirectional, so the
 advection and all but one stretching term drop out algebraically); for
 `$\kappa > 0$` it is an approximation (the diffusion of the
-`$r$`-varying conformation is neglected).  The velocity slice closes
-exactly only at `$\epsilon = 0$`, where `$W = 1 - r^2$` is the true
-profile -- at `$\epsilon > 0$` the shear-thinning correction to the
-laminar velocity is neglected, as in the annular twin.
+`$r$`-varying conformation is neglected, and the equilibrium profile
+does not satisfy the `$\nabla^2 c = 0$` wall row `$H_c$` imposes).
+
+**The velocity slice closes exactly only at** `$\epsilon = 0$`, where
+`$W = 1 - r^2$` is the true profile -- at `$\epsilon > 0$` the polymer
+shear-thins (the true balance is
+`$S[\beta + (1-\beta)/f] = -\mathrm{Re}\,\Pi_z r/2$`) and that
+correction is neglected, as in the annular twin, so the pair is
+**not** a steady state there.  It is not small at the shipped
+defaults: stepping it at `$\epsilon = 10^{-3}$` drifts at
+`$\max|\Delta u|/\Delta t \approx 5\!\cdot\!10^{-4}$` against
+`$2\!\cdot\!10^{-13}$` at `$\epsilon = 0$`, and the laminar ledger
+`$I = D_s - W_p$` misses by 8 % (the annulus's 15 %).  Consequences:
+``start_from_laminar`` is not laminar, and `$E'$` -- which is measured
+against *this* reference, hence the ``stop.check_laminarization``
+quantity -- has a floor instead of decaying to zero, so that stop
+cannot fire at the default `$\epsilon$`.  Fixing it needs a fixed-point
+solve for `$W$` (invert `$\tau(S)$` through the cubic and integrate),
+which is why the closed form is kept and the defect documented
+instead.
 
 ``res.consistent_imm``
 ----------------------

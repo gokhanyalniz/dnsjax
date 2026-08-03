@@ -240,10 +240,22 @@ class Physics(BaseModel):
             "carries nu = beta/Re, the polymer stress (1-beta)/(Re Wi)."
         ),
     )
+    # Deliberately unbounded above: the relaxation factor
+    # f = 1 + epsilon (tr c - 3) is positive for every admissible c only
+    # while epsilon <= 1/3 (above it, f flips sign once tr c < 3 - 1/eps,
+    # turning relaxation into growth), but the literature range extends
+    # past that and no realizable state reaches the threshold at the
+    # shipped defaults.  The cnab2 split stays exact either way -- its
+    # implicit half carries (1 - 3 epsilon)/Wi, which merely turns
+    # anti-dissipative there and costs corrector contraction, not
+    # correctness.
     epsilon: float | None = Field(
         default=None,
         ge=0,
-        description="sPTT extensibility parameter (>= 0).",
+        description=(
+            "sPTT extensibility parameter (>= 0); f = 1 + epsilon "
+            "(tr c - 3) is sign-definite only up to 1/3."
+        ),
     )
     kappa: float | None = Field(
         default=None,

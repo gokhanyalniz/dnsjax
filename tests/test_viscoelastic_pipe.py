@@ -19,14 +19,16 @@ RHS kernel -- is guarded once, in ``test_viscoelastic.py``.
    coupled reference built from the same parity-reduced matrices, with
    the `$\tfrac1{r^2}(\mathcal R + im)^2$` angular part carried by the
    6x6 basis-rotation generator.
-3. **Laminar fixed point.**  The analytical laminar pair is the exact
-   discrete steady state: the conformation slice of the RHS vanishes at
-   every `$\epsilon$`, a full predictor/corrector step reproduces it at
-   `$\epsilon = 0$` (so the velocity polymer-divergence balance closes
-   too), and its diagnostics satisfy `$I = D_s - W_p$` with the
-   analytically known values `$2/\mathrm{Re}$`, `$2\beta/\mathrm{Re}$`,
+3. **Laminar fixed point**, and exactly how far it reaches.  The
+   conformation slice of the RHS vanishes at every `$\epsilon$`; a full
+   predictor/corrector step reproduces the pair at `$\epsilon = 0$`;
+   and its diagnostics satisfy `$I = D_s - W_p$` with the analytically
+   known values `$2/\mathrm{Re}$`, `$2\beta/\mathrm{Re}$`,
    `$-2(1-\beta)/\mathrm{Re}$`.  The profile itself is re-derived
-   independently from the sPTT equilibrium equations.
+   independently from the sPTT equilibrium equations.  The axial
+   *momentum* balance is pinned separately, and closes **only** at
+   `$\epsilon = 0$`: `$W = 1 - r^2$` neglects the polymer's shear
+   thinning, so at `$\epsilon > 0$` the pair is not a steady state.
 4. `$H_c$` **band-vs-dense parity** including the single narrow
    Laplacian BC wall row, per spin slot, plus an independent pin of the
    flow's `$(-1)^{m+s}$` parity-band selector.
@@ -427,6 +429,49 @@ def test_laminar_conformation_rhs_vanishes() -> None:
     scale = float(np.abs(np.asarray(_laminar_state[3:])).max())
     err = np.abs(rhs[3:]).max() / scale
     assert err < 1e-12, f"conformation RHS at laminar = {err:.2e}"
+
+
+def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
+    r"""The laminar pair balances *momentum* only at `$\epsilon = 0$`.
+
+    The builder pairs the sPTT-equilibrium conformation with the
+    **Newtonian** `$W = 1 - r^2$`, so at `$\epsilon > 0$` the polymer's
+    shear thinning (`$f > 1$`) is unaccounted for and the axial balance
+    `$\nu A_{\mathrm{base}} W + \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}
+    (\nabla\cdot c)_z + \Pi_z = 0$` carries a real residual -- the
+    approximation the module docstring records.  Pinned here in both
+    directions so the `$\epsilon = 0$` exactness cannot rot and a future
+    exact profile turns the second bound into a tight one rather than a
+    silent improvement.  NumPy only: `$\epsilon$` is an *argument* of
+    the profile builder, so no reconfiguration of the module is needed.
+    """
+    rs = np.asarray(flow.rs)
+    d1_even, d1_odd = _parity_matrices()
+    a_even = np.asarray(flow.A_base_even)
+    beta, re, wi = params.phys.beta, params.phys.re, params.phys.wi
+    nu = beta / re
+    coef = (1.0 - beta) / (re * wi)
+    pi_z = 4.0 / re
+
+    def _residual(eps: float) -> float:
+        prof = viscoelastic_laminar_profiles(rs, d1_even, wi, eps)
+        u_z, c_rz = prof[0].real, prof[4].real
+        # m = k_z = 0, so (div c)_z is the radial part alone; c_rz is
+        # the odd-parity class at m = 0.
+        div_z = d1_odd @ c_rz + c_rz / rs
+        resid = nu * (a_even @ u_z) + coef * div_z + pi_z
+        return float(np.abs(resid).max() / pi_z)
+
+    # At epsilon = 0 only FD truncation survives (~1e-12 here), which is
+    # still six orders below the epsilon > 0 residual below.
+    exact = _residual(0.0)
+    assert exact < 1e-9, f"epsilon = 0 must balance exactly, got {exact:.2e}"
+    # At the shipped default epsilon the residual is percent-level; the
+    # loose window is what makes this a measurement rather than a
+    # tautology (a correct profile would drop it to ~1e-12).
+    got = _residual(1e-3)
+    assert 1e-3 < got < 1.0, f"epsilon = 1e-3 residual {got:.2e}"
+    print(f"  laminar axial-momentum residual / Pi_z: {got:.2e} at eps=1e-3")
 
 
 def test_laminar_full_step_fixed_point() -> None:

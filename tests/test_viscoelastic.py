@@ -20,7 +20,11 @@ annular geometry (see
    slice of the nonlinear RHS vanishes at the analytical laminar pair
    (advection Christoffels + stretching + relaxation cancel), and a full
    predictor/corrector step reproduces the laminar state (the velocity
-   polymer-divergence balance closes too).
+   polymer-divergence balance closes too).  The azimuthal *momentum*
+   balance is pinned separately, and closes **only** at
+   `$\epsilon = 0$`: the builder's Newtonian `$U_\theta$` neglects the
+   polymer's shear thinning, so at `$\epsilon > 0$` the pair is not a
+   steady state.
 4. `$H_c$` band-vs-dense parity including the narrow Laplacian BC
    wall rows (mirrors ``test_annular``'s operator parity).
 5. The adapter surface the shared stepper
@@ -110,6 +114,7 @@ from dnsjax.geometries.wall_bounded.annular_viscoelastic import (  # noqa: E402
     _narrow_abase_wall_rows,
     _tensor_laplacian_spin,
     fourier,
+    viscoelastic_laminar_profiles,
 )
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
@@ -337,6 +342,66 @@ def test_laminar_conformation_rhs_vanishes() -> None:
     residual = float(np.max(np.abs(conf_rhs)))
     assert residual < 1e-9 * conf_scale, (
         f"conformation RHS {residual:.3e} not << scale {conf_scale:.3e}"
+    )
+
+
+def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
+    r"""The laminar pair balances *momentum* only at `$\epsilon = 0$`.
+
+    The builder pairs the sPTT-equilibrium conformation with the
+    **Newtonian** `$U_\theta$` (``annular_forced_laminar_u_theta``,
+    which never receives `$\beta$` or `$\mathrm{Re}$`), so at
+    `$\epsilon > 0$` the polymer's shear thinning is unaccounted for
+    and the azimuthal balance
+    `$\nu(A_{\mathrm{base}} - 1/r^2)U_\theta +
+    \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}(\nabla\cdot c)_\theta
+    + \Pi_\theta = 0$` carries a real residual -- the approximation the
+    flow module records.  Pinned in both directions (the twin of
+    ``test_viscoelastic_pipe``'s check) so the `$\epsilon = 0$`
+    exactness cannot rot and a future exact profile turns the second
+    bound into a tight one.  NumPy only: `$\epsilon$` is an *argument*
+    of the profile builder, so the module needs no reconfiguration.
+    """
+    from dnsjax.parameters import derived_params
+
+    rs = np.asarray(flow.rs)
+    d1 = np.asarray(flow.D1)
+    inv_r = 1.0 / rs
+    a_base = np.asarray(flow.D2) + np.diag(inv_r) @ d1
+    beta, re, wi = params.phys.beta, params.phys.re, params.phys.wi
+    nu = beta / re
+    coef = (1.0 - beta) / (re * wi)
+    r1, r2 = derived_params.r_inner, derived_params.r_outer
+    pi_theta = (r1 + r2) * inv_r / re
+
+    def _residual(eps: float) -> float:
+        prof = viscoelastic_laminar_profiles(rs, d1, r1, r2, wi, eps)
+        u_th, c_rth = prof[2].real, prof[8].real
+        # m = k_z = 0, so (div c)_theta is d_r c_rth + 2 c_rth / r.
+        div_th = d1 @ c_rth + 2.0 * c_rth * inv_r
+        resid = (
+            nu * (a_base @ u_th - inv_r**2 * u_th) + coef * div_th + pi_theta
+        )
+        # Interior only: the wall rows carry the no-slip BC, not the
+        # momentum balance.
+        return float(np.abs(resid[1:-1]).max() / np.abs(pi_theta).max())
+
+    # Unlike the pipe's polynomial ``1 - r^2``, the annular profile is
+    # not exactly representable by the FD operators, so the epsilon = 0
+    # residual is FD truncation (~1e-7 here), not round-off.  Compare
+    # the two against each other rather than against an absolute bound:
+    # that is the claim, and it is grid- and order-independent.
+    exact, got = _residual(0.0), _residual(1e-3)
+    assert exact < 1e-5, (
+        f"epsilon = 0 must be truncation-level, got {exact:.2e}"
+    )
+    assert got > 1e3 * exact, (
+        f"epsilon = 1e-3 residual {got:.2e} not >> the "
+        f"epsilon = 0 truncation floor {exact:.2e}"
+    )
+    print(
+        f"  laminar azimuthal-momentum residual / Pi_theta: "
+        f"{got:.2e} at eps=1e-3 vs {exact:.2e} at eps=0"
     )
 
 
