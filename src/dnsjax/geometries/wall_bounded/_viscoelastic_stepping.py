@@ -195,14 +195,16 @@ def _build_hc_operator(
     `$c_{+-}$`.
 
     The stacked storage **duplicates** that shared operator's factors
-    (slot 0 and slot 3 hold the same data -- ~1/6 of the ``Hc_op``
-    memory), because the uniform stacked ``.solve`` contract pairs
-    component ``i`` of the RHS with operator ``i``.  Deduplicating
-    would need a nonuniform component-to-operator solve mapping (5
-    operators against 6 RHS components) in every backend -- deferred
-    as not worth the contract complexity for a small,
-    setup-persistent array (the velocity ``Hk_op`` stack and the
-    per-step transform transients are far larger).
+    (slot 0 and slot 3 hold the same data), because the uniform stacked
+    ``.solve`` contract pairs component ``i`` of the RHS with operator
+    ``i``.  Deduplicating would need a nonuniform
+    component-to-operator solve mapping (5 operators against 6 RHS
+    components) in **every** backend, which is the reason it is
+    deferred -- not size: ``Hc_op`` is the largest array the flow
+    holds, exactly twice the velocity ``Hk_op`` (6 stacked slots
+    against 3) and comparable to the fused RHS's own transform
+    transient, so the duplicate slot is ~1/6 of it and ~10% of the
+    flow's persistent bytes (measured, ``fd_order = 8``).
 
     *label* selects the pallas factorization path: a string runs the
     setup-checked :func:`solvers._build_pallas_operator` under that
@@ -228,6 +230,18 @@ def _build_hc_operator(
         # (``fd.matrix_half_bandwidth``).  The dense backend's
         # ``Lk_op`` carries no band, hence the read sits here.
         p = flow_.Lk_op.L.shape[1]
+        # The narrow BC row spans offset ``fd_order`` from its wall
+        # (``_viscoelastic_common.narrow_abase_wall_row``) and
+        # ``_banded_wall_row`` *silently zeroes* whatever falls outside
+        # the band, so an under-measured ``p`` would quietly degrade the
+        # BC stencil rather than fail.  The two are equal today (the
+        # direct-fit ``D_2`` reaches offset ``p`` at row 1), i.e. the
+        # fit has no slack -- hence the check, both being host ints.
+        if p < params.res.fd_order:
+            raise ValueError(
+                f"H_c band half-width {p} cannot hold the "
+                f"{params.res.fd_order}-offset Laplacian BC wall row"
+            )
         bands = [
             _build_Hc_band_gpu(
                 base,
@@ -602,10 +616,17 @@ def _l_bf(state: Array, fourier_: Fourier, flow_: ViscoelasticFlow) -> Array:
     :func:`_conformation_coupling`.
 
     ``step_cnab2`` advances the explicit remainder
-    `$\text{get\_rhs} - \text{\_l\_bf}$` (pure fluctuation-fluctuation
-    advection / stretching + nonlinear relaxation + the constant body
-    force) with AB2 and makes this coupling implicit through the
-    FFT-free corrector.  For these total-field flows the mean coupling
+    `$\text{get\_rhs} - \text{\_l\_bf}$` with AB2 and makes this
+    coupling implicit through the FFT-free corrector.  For the
+    conformation the remainder is exactly the fluctuation-fluctuation
+    advection / stretching plus the nonlinear part of the relaxation
+    and the constant body force; for the velocity it is
+    `$u'\times\omega' - \bar u\times\bar\omega$` under
+    ``implicit_mean_coupling`` (``base_flow_coupling`` counts the
+    mean-mean product twice), and that extra term is a function of
+    `$r$` alone, hence a pure gradient the pressure absorbs.
+
+    For these total-field flows the mean coupling
     (velocity *and* the large mean conformation profile) is the
     dominant stiffness, exactly as the mean-flow coupling is for
     Newtonian Dean.

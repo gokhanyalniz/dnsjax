@@ -751,8 +751,9 @@ residual. An opt-in reformulation (`res.consistent_imm`) eliminates it:
 advance the wall-normal velocity and vorticity, reconstruct the
 tangential components, and no discrete pressure appears — the stepped
 state's divergence sits at round-off at any resolution, on the same
-banded operators and with less operator storage (one band family fewer
-in every geometry). It also drops a solve in the plane and annular
+banded operators and with less operator storage: fewer boundary-response
+vectors in every geometry, and one banded operator family fewer in the
+pipe and annular ones. It also drops a solve in the plane and annular
 geometries; the cylindrical one instead gains one, its axis forcing an
 exact diagonalization that doubles the scalars it evolves. The trade
 is a truncation-level tangential-momentum residual that nothing feeds
@@ -774,8 +775,8 @@ guarantees they pin:
   regressions on CPU-only machines.
 - **The physics** — laminar states step at machine precision, random
   initial conditions integrate through the full nonlinear path for every
-  distinct stepping machinery (six of the eight flows; the other two
-  bind machinery those six cover), localized spots integrate for every
+  distinct stepping machinery (seven of the nine flows; the other two
+  bind machinery those seven cover), localized spots integrate for every
   wall-bounded spot builder, and second-order temporal convergence is
   pinned — absolute on the periodic box, scheme-against-scheme for the
   wall-bounded systems, whose absolute order the influence-matrix
