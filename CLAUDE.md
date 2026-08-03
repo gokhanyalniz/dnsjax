@@ -635,12 +635,10 @@ one-liners. Cross-cutting notes:
 - `tests/test_annular.py`: annular operator/matvec, Pallas-vs-dense
   parity, circular-Couette A0/B0 checks, and the shared cylindrical
   `u_r`-`ω_r` algebraic identities.
-- `tests/test_viscoelastic.py`: sPTT conformation-tensor machinery
-  (annular) + its half of the shared-stepper adapter surface.
-- `tests/test_viscoelastic_pipe.py`: the cylindrical sPTT geometry --
-  conformation axis parity, the pipe laminar pair, single-wall `H_c`
-  + its half of the adapter surface. Both files carry the
-  no-cross-geometry-import guard (a fresh subprocess each).
+- `tests/test_viscoelastic.py`: the annular sPTT geometry.
+- `tests/test_viscoelastic_pipe.py`: the cylindrical sPTT geometry.
+  Both also carry the no-cross-geometry-import guard (a fresh
+  subprocess each).
 - `tests/test_integration.py`: quadrature weights and interpolation
   matrices.
 - `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards.
