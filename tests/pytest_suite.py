@@ -108,6 +108,8 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_snapshot_import.py", (), (), 1800),
     ("test_snapshot_perturb.py", (), (), 1800),
     ("test_transient_growth.py", ("--fast",), (), 1800),
+    ("test_twin_analysis.py", (), (), 1800),
+    ("test_twin_unit.py", (), (), 1800),
     ("test_viscoelastic.py", (), (), 1800),
     ("test_viscoelastic_pipe.py", (), (), 1800),
     ("test_temporal_order.py", (), _SLOW, 3600),
@@ -126,6 +128,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_resume.py", (), _MPI + _SLOW, 3600),
     ("test_rolls_smoke.py", (), _MPI + _SLOW, 3600),
     ("test_transient_growth.py", (), _SLOW, 3600),
+    ("test_twin_driver.py", (), _MPI + _SLOW, 3600),
 ]
 
 
