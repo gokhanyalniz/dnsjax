@@ -98,6 +98,15 @@ and its rationale: `flows/registry.py`.
   probe→operator pipeline, the route trade-offs, and the deliberate
   JAX-vs-NumPy/SciPy split: the `response/__init__.py` docstring.
   Orchestration: `scripts/ensemble_setup.py`.
+- `twin/` — twin-run (`dnsjax-twin`) offline analysis, entirely
+  JAX-free (unlike `response/`, no JAX anywhere): `series.py`
+  (`twin.dat`/`twin_budget.dat`/`twin.json` readers, per-component
+  budget sums), `ensemble.py` (member-tree aggregation + growth-rate
+  fits, CLI), `spectra.py` (`twin_spectra.bin` reader +
+  decorrelation ratio), `lengths.py` (integral length scales of the
+  difference field from a snapshot pair). Not imported by
+  `__init__.py`; its own `__init__` re-exports the API. Guard:
+  `tests/test_twin_analysis.py`.
 - `_core.py` — engine: raw chunk I/O, transforms, basis conversion
   (identity in every family since format 6; kept as the family seam),
   coordinate builders, diff/quadrature primitives, `GeometryInfo`, and

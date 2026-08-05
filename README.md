@@ -930,6 +930,21 @@ A closer look at what is in the box, beyond the core solver:
     on resume starts a new trajectory — see
     [The influence-matrix method](#the-influence-matrix-method).
 
+15. **Twin-run perturbation-growth driver.** `dnsjax-twin` steps a
+    reference snapshot and a perturbed copy (a random divergence-free
+    field of prescribed energy $E_\Delta(0)$, exact in the solver's own
+    measure) through the same jitted stepper in lockstep and streams
+    diagnostics of the difference field: mean/streak/streamwise-varying
+    component energies, the 24 production/transport terms and
+    dissipations of the decomposed energy budget (closing against the
+    stepped states to spatial truncation), and time-resolved
+    $(k_z, k_x)$ energy spectra for scale-by-scale decorrelation.
+    Paired snapshots make members restartable; `ensemble_setup.py
+    build-twin` and the JAX-free `dnsjax.analysis.twin` package
+    orchestrate and aggregate ensembles. A zero-energy perturbation
+    reproduces the reference bit-for-bit — the determinism guard the
+    test suite pins.
+
 ## Use of AI
 
 The first version of this solver — the triply-periodic geometry, the

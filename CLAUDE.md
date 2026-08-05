@@ -218,6 +218,13 @@ random_field.py       Random divergence-free IC generators
                       (init.random_field, the default start mode)
 localized_rolls.py    Deterministic localized-spot IC generators
                       (init.localized_rolls)
+twin.py               dnsjax-twin console script: lockstep twin-run
+                      (predictability) driver, [twin] extension,
+                      paired snapshots/resume, twin.dat streams
+twin_diagnostics.py   Difference-field diagnostics: component masks,
+                      energies, the 27-term budget, (kz,kx) spectra
+twin_spectra.py       TwinSpectraStream: twin_spectra.bin writer
+                      (reader dnsjax.analysis.twin.spectra)
 geometries/
   wall_bounded/       _base.py, cartesian.py, cylindrical.py,
                       annular.py, _viscoelastic_common.py,
@@ -243,6 +250,25 @@ analysis/             External-facing JAX-free snapshot post-processing
                       API (+ the JAX-based transient_growth CLI and the
                       response/ subpackage) -- see analysis/CLAUDE.md
 ```
+
+### Twin-run perturbation growth (`dnsjax-twin`)
+
+`dnsjax-twin` steps a reference snapshot and a perturbed copy
+(random divergence-free field of exact energy `twin.e0`) in lockstep
+and streams difference-field diagnostics: component energies
+(`twin.dat`), the production/transport/dissipation budget
+(`twin_budget.dat`, `twin.it_budget`), and (kz,kx) energy spectra
+(`twin_spectra.bin`, `twin.it_spectra`). Cartesian wall-bounded
+flows, fixed dt, launched like the solver (mpirun, scratch dir):
+
+`mpirun -np 1 .venv/bin/dnsjax-twin --init.snapshot parent.tar
+--twin.e0 1e-6 --twin.seed 3 --stop.max_sim_time <t_parent + 10>`
+
+Start/resume rules (partner snapshot + `twin.json` decide; a resume
+never re-perturbs), stream formats, and the frame-invariance /
+dissipation-form notes: the `twin.py` and `twin_diagnostics.py`
+module docstrings. Ensembles: `ensemble_setup.py build-twin` +
+`dnsjax.analysis.twin`.
 
 ### Transient-growth analysis
 
@@ -428,6 +454,7 @@ layering" above.
 | `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
 | `[probes]` | Extension (`extensions.py`): spectral-mode probe stream (wall-bounded) |
 | `[force]`  | Extension: white-in-time stochastic mode kicks; all-or-none and trajectory-defining (wall-bounded, non-viscoelastic) |
+| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences (Cartesian wall-bounded, fixed dt) |
 
 The default `parameters.toml` contains only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`; the rest rely on
@@ -567,9 +594,10 @@ One line each; full rationale/usage in each script's module docstring.
   kwargs).
 - `scripts/snapshot_perturb.py`: CLI + library injecting a scaled
   single-mode perturbation into an existing snapshot.
-- `scripts/ensemble_setup.py`: JAX-free `harvest`/`build` CLI turning a
-  snapshot archive into ensemble member run trees (aggregation lives in
-  `dnsjax.analysis.response.ensemble`).
+- `scripts/ensemble_setup.py`: JAX-free `harvest`/`build`/`build-twin`
+  CLI turning a snapshot archive into ensemble member run trees
+  (aggregation: `dnsjax.analysis.response.ensemble` for response
+  trees, `dnsjax.analysis.twin.ensemble` for twin trees).
 - `scripts/pallas_tiling_diagnostic.py`: GPU harness that localised the
   Triton partial-tile miscompile and confirms the fix.
 - `scripts/pallas_solve_profile.py`: GPU diagnostic for where the Pallas
@@ -713,3 +741,14 @@ one-liners. Cross-cutting notes:
   units, per-flow hooks, CLI features, per-flow literature anchors, and
   an m0-wedge-vs-full-circle equivalence check; `--fast` skips the
   anchors).
+- `tests/test_twin_unit.py`: twin diagnostics on a (2,2) mesh (mask/
+  energy partitions, budget vs a fine-grid NumPy reference, frame
+  invariance, spectra sum identities, the `[twin]` validate hook).
+- `tests/test_twin_driver.py`: `dnsjax-twin` integration via mpirun
+  (e0 exactness, e0=0 bit-identity, bit-exact paired restart, -np 2,
+  exit-3 guard, spectra round trip + lengths, budget closure with
+  self-convergence, every driver-level guard; `--only <frag>` runs a
+  subset).
+- `tests/test_twin_analysis.py`: JAX-free `analysis.twin` readers/
+  aggregation/fits/length core on synthetic streams + the
+  `build-twin` orchestration end to end.

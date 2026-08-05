@@ -1,0 +1,545 @@
+r"""Unit tests for the JAX-free twin analysis package
+(``dnsjax.analysis.twin``) and the ``build-twin`` orchestration.
+
+Everything runs on hand-written synthetic files (no solver, no JAX --
+asserted): the ``.dat``/``twin.json`` readers with resume-seam
+duplicates, the per-component budget sums, member-tree aggregation
+(mean/std against direct NumPy; every alignment guard tripped on a
+real bad input), the growth-rate fits against planted laws, the
+``twin_spectra.bin`` reader (byte-exact round trip, truncated
+trailing record, duplicate-timestamp seams, version floor,
+decorrelation-ratio guards), the integral-length core against an
+independently evaluated two-mode reference, and
+``scripts/ensemble_setup.py build-twin`` (dry run leaves no tree;
+the built tree's TOMLs / ``members.json`` / ``run_commands.txt`` are
+consistent and feed ``aggregate_members`` end to end via synthetic
+member streams).
+
+Usage::
+
+    uv run python tests/test_twin_analysis.py
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from numpy.testing import assert_allclose
+
+sys.stdout.reconfigure(line_buffering=True)
+
+from _live import run_live  # noqa: E402
+
+from dnsjax.analysis.twin import (  # noqa: E402
+    aggregate_members,
+    budget_sums,
+    fit_exponential_rate,
+    fit_linear_rate,
+    integral_lengths_from_modes,
+    read_dat,
+    read_twin,
+)
+from dnsjax.analysis.twin.spectra import (  # noqa: E402
+    decorrelation_ratio,
+    read_twin_spectra,
+)
+
+assert "jax" not in sys.modules, "the twin analysis package must be JAX-free"
+
+_REPO = Path(__file__).resolve().parent.parent
+
+# ── Synthetic stream writers ─────────────────────────────────────────
+
+
+def _write_dat(path: Path, columns: dict[str, np.ndarray]) -> None:
+    """Write a ``.dat`` stream in the driver's format (17 digits)."""
+    names = list(columns)
+    width = max(24, max(len(n) for n in names))
+    lines = [" ".join(n.rjust(width) for n in names)]
+    n_rows = len(next(iter(columns.values())))
+    for i in range(n_rows):
+        lines.append(
+            " ".join(f"{columns[n][i]:.16e}".rjust(width) for n in names)
+        )
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _energy_columns(
+    t: np.ndarray, scale: float = 1.0
+) -> dict[str, np.ndarray]:
+    cols = {"t": t}
+    for i, name in enumerate(
+        ("E_d", "E_dU", "E_du1", "E_du1_x", "E_du1_y", "E_du1_z", "E_du2")
+    ):
+        cols[name] = scale * (i + 1) * (1.0 + t - t[0])
+    cols["E_ref"] = np.full_like(t, 5e-3)
+    return cols
+
+
+def _budget_columns(t: np.ndarray, scale: float = 1.0) -> dict:
+    triples = {
+        "dU": [("dU", "rU"), ("du1", "ru1"), ("du2", "ru2")],
+        "du1": [("du1", "rU"), ("dU", "ru1"), ("du1", "ru1"), ("du2", "ru2")],
+        "du2": [
+            ("dU", "ru2"),
+            ("du1", "ru2"),
+            ("du2", "rU"),
+            ("du2", "ru1"),
+            ("du2", "ru2"),
+        ],
+    }
+    transports = {
+        "dU": [("ru1", "du1"), ("du1", "du1"), ("ru2", "du2"), ("du2", "du2")],
+        "du1": [("ru1", "dU"), ("du1", "dU"), ("ru2", "du2"), ("du2", "du2")],
+        "du2": [("ru2", "dU"), ("du2", "dU"), ("ru2", "du1"), ("du2", "du1")],
+    }
+    cols = {"t": t}
+    k = 0
+    for a, pairs in triples.items():
+        for b, c in pairs:
+            k += 1
+            cols[f"P_{a}({b},{c})"] = scale * k * np.ones_like(t)
+    for a, pairs in transports.items():
+        for b, c in pairs:
+            k += 1
+            cols[f"T_{a}({b},{c})"] = scale * k * np.ones_like(t)
+    for x in ("dU", "du1", "du2"):
+        k += 1
+        cols[f"eps_{x}"] = scale * k * np.ones_like(t)
+    p_names = [n for n in cols if n.startswith("P_")]
+    t_names = [n for n in cols if n.startswith("T_")]
+    cols["P_tot"] = sum(cols[n] for n in p_names)
+    cols["T_tot"] = sum(cols[n] for n in t_names)
+    cols["eps_tot"] = sum(cols[f"eps_{x}"] for x in ("dU", "du1", "du2"))
+    return cols
+
+
+def _write_member(
+    mdir: Path,
+    parent_t: float,
+    n: int = 11,
+    dt: float = 0.01,
+    scale: float = 1.0,
+    budget: bool = True,
+    seam: bool = False,
+) -> None:
+    mdir.mkdir(parents=True, exist_ok=True)
+    t = parent_t + dt * np.arange(n)
+    cols = _energy_columns(t, scale)
+    if seam:  # duplicate one interior sample (a resume seam)
+        cols = {k: np.insert(v, 5, v[5]) for k, v in cols.items()}
+    _write_dat(mdir / "twin.dat", cols)
+    if budget:
+        tb = parent_t + 5 * dt * np.arange((n - 1) // 5 + 1)
+        _write_dat(mdir / "twin_budget.dat", _budget_columns(tb, scale))
+    (mdir / "twin.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "system": "plane-couette",
+                "e0": 1e-6,
+                "seed": 3,
+                "smoothness": 0.4,
+                "it_energy": 1,
+                "it_budget": 5 if budget else None,
+                "it_spectra": None,
+                "dt": dt,
+                "double_precision": True,
+                "parent": "parent.tar",
+                "parent_t": parent_t,
+                "parent_it": 100,
+            }
+        )
+    )
+
+
+# ── Readers ──────────────────────────────────────────────────────────
+
+
+def test_readers() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        mdir = Path(tmp) / "m0000"
+        _write_member(mdir, parent_t=2.0, seam=True)
+        series = read_twin(mdir)
+        # The seam duplicate is dropped; t_rel starts at 0.
+        assert series.t.shape[0] == 11
+        assert np.unique(series.t).shape[0] == 11
+        assert_allclose(series.t_rel[0], 0.0, atol=1e-12)
+        assert series.meta["seed"] == 3
+        assert series.budget is not None
+
+        sums = budget_sums(series.budget)
+        for x, n_p in (("dU", 3), ("du1", 4), ("du2", 5)):
+            p_cols = [n for n in series.budget if n.startswith(f"P_{x}(")]
+            assert len(p_cols) == n_p
+            assert_allclose(
+                sums[f"P_{x}"],
+                sum(series.budget[n] for n in p_cols),
+                rtol=1e-12,
+            )
+        raw = read_dat(mdir / "twin.dat")
+        assert raw["t"].shape[0] == 12  # duplicates kept by read_dat
+
+        # Version floor.
+        meta = json.loads((mdir / "twin.json").read_text())
+        meta["format_version"] = 0
+        (mdir / "twin.json").write_text(json.dumps(meta))
+        try:
+            read_twin(mdir)
+        except ValueError as exc:
+            assert "format_version" in str(exc)
+        else:
+            raise AssertionError("version floor did not trip")
+    print("series readers: OK")
+
+
+# ── Aggregation ──────────────────────────────────────────────────────
+
+
+def _make_tree(tmp: Path, n_members: int = 3) -> Path:
+    tree = tmp / "tree"
+    members = []
+    for k in range(n_members):
+        _write_member(tree / f"m{k:04d}", parent_t=10.0 + k, scale=1.0 + k)
+        members.append(
+            {
+                "dir": f"m{k:04d}",
+                "seed": k + 1,
+                "parent": "parent.tar",
+                "parent_t": 10.0 + k,
+                "t_end": 10.0 + k + 0.1,
+            }
+        )
+    (tree / "members.json").write_text(
+        json.dumps(
+            {"kind": "twin", "e0": 1e-6, "horizon": 0.1, "members": members}
+        )
+    )
+    return tree
+
+
+def test_aggregation() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = _make_tree(Path(tmp))
+        out = Path(tmp) / "agg.npz"
+        bundle = aggregate_members(tree, out)
+        assert bundle["n_members"] == 3
+        # Direct NumPy reference: member k scales its columns by
+        # (1 + k), so the mean E_d row is mean(1+k) * base.
+        base = _energy_columns(10.0 + 0.01 * np.arange(11))["E_d"] / 1.0
+        assert_allclose(
+            bundle["mean_E_d"], base * np.mean([1.0, 2.0, 3.0]), rtol=1e-12
+        )
+        assert_allclose(
+            bundle["std_E_d"], base * np.std([1.0, 2.0, 3.0]), rtol=1e-12
+        )
+        assert "t_rel_budget" in bundle
+        assert bundle["stack_budget_P_tot"].shape[0] == 3
+        loaded = np.load(out, allow_pickle=True)
+        assert_allclose(loaded["mean_E_d"], bundle["mean_E_d"], rtol=0)
+
+        # Guards, each on a real bad input.
+        (tree / "m0001" / "twin_budget.dat").unlink()
+        _expect_value_error(
+            "some members carry", lambda: aggregate_members(tree)
+        )
+        _write_member(tree / "m0001", parent_t=11.0, n=7, scale=2.0)
+        _expect_value_error(
+            "time grid differs", lambda: aggregate_members(tree)
+        )
+        _write_member(tree / "m0001", parent_t=11.0, scale=2.0)
+        cols = _energy_columns(11.0 + 0.01 * np.arange(11), 2.0)
+        del cols["E_du2"]
+        _write_dat(tree / "m0001" / "twin.dat", cols)
+        _expect_value_error(
+            "column set differs", lambda: aggregate_members(tree)
+        )
+        spec = json.loads((tree / "members.json").read_text())
+        spec["kind"] = "other"
+        (tree / "members.json").write_text(json.dumps(spec))
+        _expect_value_error("not a twin tree", lambda: aggregate_members(tree))
+    print("aggregation (+ guards): OK")
+
+
+def _expect_value_error(fragment: str, thunk) -> None:
+    try:
+        thunk()
+    except ValueError as exc:
+        assert fragment in str(exc), f"{fragment!r} not in {exc}"
+        return
+    raise AssertionError(f"expected ValueError({fragment!r})")
+
+
+# ── Fits ─────────────────────────────────────────────────────────────
+
+
+def test_fits() -> None:
+    t = np.linspace(0.0, 300.0, 601)
+    lam, e0 = 0.025, 1e-10
+    e_exp = e0 * np.exp(2.0 * lam * t)
+    lam_fit, e0_fit, rms = fit_exponential_rate(t, e_exp, 50.0, 250.0)
+    assert_allclose(lam_fit, lam, rtol=1e-12)
+    assert_allclose(e0_fit, e0, rtol=1e-9)
+    assert rms < 1e-12
+
+    rate, a = 1.3e-5, 0.4
+    e_lin = a + rate * t
+    rate_fit, a_fit, rms_lin = fit_linear_rate(t, e_lin, 20.0, 280.0)
+    assert_allclose(rate_fit, rate, rtol=1e-12)
+    assert_allclose(a_fit, a, rtol=1e-12)
+    assert rms_lin < 1e-12
+
+    _expect_value_error(
+        "fewer than 3", lambda: fit_linear_rate(t, e_lin, 500.0, 600.0)
+    )
+    print("growth-rate fits: OK")
+
+
+# ── Spectra reader ───────────────────────────────────────────────────
+
+
+def _write_spectra(
+    directory: Path,
+    t: np.ndarray,
+    e_delta: np.ndarray,
+    e_ref: np.ndarray | None,
+    truncate_bytes: int = 0,
+) -> None:
+    n2, n3 = e_delta.shape[1:]
+    fields = [("t", "<f8"), ("e_delta", "<f8", (n2, n3))]
+    if e_ref is not None:
+        fields.append(("e_ref", "<f8", (n2, n3)))
+    rec = np.zeros(t.shape[0], dtype=np.dtype(fields))
+    rec["t"] = t
+    rec["e_delta"] = e_delta
+    if e_ref is not None:
+        rec["e_ref"] = e_ref
+    raw = rec.tobytes()
+    if truncate_bytes:
+        raw = raw[:-truncate_bytes]
+    (directory / "twin_spectra.bin").write_bytes(raw)
+    (directory / "twin_spectra.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "system": "plane-couette",
+                "n2": n2,
+                "n3": n3,
+                "kz_harmonics": [0, 1, 2, 3, -3, -2, -1][:n2],
+                "kx_harmonics": list(range(n3)),
+                "lx": 5.5,
+                "lz": 3.77,
+                "value_dtype": "<f8",
+                "includes_ref": e_ref is not None,
+                "it_spectra": 1,
+                "dt": 0.01,
+                "double_precision": True,
+            }
+        )
+    )
+
+
+def test_spectra_reader() -> None:
+    rng = np.random.default_rng(1)
+    t = np.array([0.0, 0.01, 0.01, 0.02])  # one seam duplicate
+    e_delta = rng.random((4, 7, 4))
+    e_ref = rng.random((4, 7, 4))
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        _write_spectra(tmp, t, e_delta, e_ref, truncate_bytes=13)
+        data = read_twin_spectra(tmp)
+        # The truncated 4th record is dropped, then the duplicate.
+        assert data.t.shape[0] == 2
+        assert_allclose(data.e_delta, e_delta[:2], rtol=0)
+        assert_allclose(data.e_ref, e_ref[:2], rtol=0)
+        assert_allclose(
+            data.kz, (2 * np.pi / 3.77) * np.array([0, 1, 2, 3, -3, -2, -1])
+        )
+
+        ratio = decorrelation_ratio(data)
+        assert_allclose(ratio, data.e_delta / (2 * data.e_ref), rtol=0)
+        zeroed = data.e_ref.copy()
+        zeroed[0, 0, 0] = 0.0
+        _write_spectra(tmp, t[:2], e_delta[:2], zeroed[:2])
+        with_zero = read_twin_spectra(tmp)
+        r0 = decorrelation_ratio(with_zero)
+        assert np.isnan(r0[0, 0, 0]) and np.isfinite(r0[1]).all()
+
+        _write_spectra(tmp, t[:2], e_delta[:2], None)
+        no_ref = read_twin_spectra(tmp)
+        assert no_ref.e_ref is None
+        _expect_value_error(
+            "no reference spectra", lambda: decorrelation_ratio(no_ref)
+        )
+
+        meta = json.loads((tmp / "twin_spectra.json").read_text())
+        meta["format_version"] = 0
+        (tmp / "twin_spectra.json").write_text(json.dumps(meta))
+        _expect_value_error("format_version", lambda: read_twin_spectra(tmp))
+    print("spectra reader: OK")
+
+
+# ── Integral lengths (core) ──────────────────────────────────────────
+
+
+def test_integral_lengths_core() -> None:
+    """Two-mode spectrum against an independent dense evaluation."""
+    lz = 3.7699111843077517
+    ny = 33
+    y = np.cos(np.linspace(0.0, np.pi, ny))[::-1]  # CGL-like, [-1, 1]
+    kz = (2 * np.pi / lz) * np.array([1.0, 2.0, 3.0, -1.0, -2.0, -3.0])
+    du1 = np.zeros((3, ny, 6), dtype=complex)
+    # Component 0: two modes with a y envelope; conjugate pairs so the
+    # physical field is real.
+    g = (1.0 - y**2) * np.exp(0.3 * y)
+    for idx, amp in ((0, 0.8), (1, 0.4)):
+        du1[0, :, idx] = amp * g
+        du1[0, :, idx + 3] = amp * g  # the -m partner
+    out = integral_lengths_from_modes(du1, y, kz, lz, y0=0.0)
+
+    # Independent reference: dense correlation on fine grids with the
+    # same first-zero-crossing convention.
+    j0 = int(np.argmin(np.abs(y)))
+    power = np.abs(du1[0, j0]) ** 2
+    r = np.linspace(0.0, lz / 2, 200001)
+    f_z = (power[None, :] * np.cos(np.outer(r, kz))).sum(axis=1)
+    f_z /= f_z[0]
+    stop = np.nonzero(f_z <= 0)[0][0]
+    l_z_ref = np.trapezoid(f_z[: stop + 1], r[: stop + 1])
+    assert_allclose(out["l_z"][0], l_z_ref, rtol=2e-3)
+
+    # l_y: the correlation of a separable field g(y0)g(y) never
+    # crosses zero for this positive envelope, so the integral runs
+    # to the walls: mean of the two one-sided integrals of g(y)/g(y0).
+    f_y = g / g[j0]
+    sides = []
+    for sel in (slice(j0, None), slice(j0, None, -1)):
+        rr = np.abs(y[sel] - y[j0])
+        sides.append(np.trapezoid(f_y[sel], rr))
+    assert_allclose(out["l_y"][0], np.mean(sides), rtol=1e-12)
+    assert np.isnan(out["l_z"][1]) and np.isnan(out["l_y"][2])
+    assert out["variance"][0] > 0 and out["variance"][1] == 0
+    print("integral-length core: OK")
+
+
+# ── build-twin orchestration ─────────────────────────────────────────
+
+
+def test_build_twin() -> None:
+    """Real harvest -> build-twin -> synthetic runs -> aggregation.
+
+    The parent snapshot is built by the ``test_twin_driver.py
+    --build-parent`` worker in a subprocess (this process stays
+    JAX-free); ``harvest`` and ``build-twin`` run as real CLIs; the
+    built tree's TOMLs and index are checked, member streams are then
+    synthesised in place (as if the runs had completed), and
+    ``aggregate_members`` consumes the real ``members.json`` end to
+    end.
+    """
+    import tomllib
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        parent = tmp / "parent.tar"
+        result = run_live(
+            [
+                sys.executable,
+                str(_REPO / "tests" / "test_twin_driver.py"),
+                "--build-parent",
+                "8",
+                "17",
+                "8",
+                str(parent),
+            ],
+            cwd=_REPO,
+        )
+        assert result.returncode == 0, "parent build worker failed"
+
+        manifest = tmp / "manifest.json"
+        setup = str(_REPO / "scripts" / "ensemble_setup.py")
+        result = run_live(
+            [
+                sys.executable,
+                setup,
+                "harvest",
+                "--run-dir",
+                str(tmp),
+                "--spacing",
+                "0.5",
+                "--n",
+                "2",
+                "--out",
+                str(manifest),
+            ],
+            cwd=_REPO,
+        )
+        assert result.returncode == 0
+
+        tree = tmp / "tree"
+        build_args = [
+            sys.executable,
+            setup,
+            "build-twin",
+            "--manifest",
+            str(manifest),
+            "--tree",
+            str(tree),
+            "--e0",
+            "1e-6",
+            "--horizon",
+            "0.05",
+            "--members-per-snapshot",
+            "2",
+            "--it-budget",
+            "5",
+        ]
+        result = run_live([*build_args, "--dry-run"], cwd=_REPO)
+        assert result.returncode == 0 and not tree.exists()
+        assert "m0001" in result.stdout
+
+        result = run_live(build_args, cwd=_REPO)
+        assert result.returncode == 0
+
+        spec = json.loads((tree / "members.json").read_text())
+        assert spec["kind"] == "twin" and len(spec["members"]) == 2
+        assert [m["seed"] for m in spec["members"]] == [1, 2]
+        lines = (tree / "run_commands.txt").read_text().splitlines()
+        assert len(lines) == 2 and all("dnsjax-twin" in ln for ln in lines)
+        for record in spec["members"]:
+            with open(tree / record["dir"] / "parameters.toml", "rb") as fh:
+                toml = tomllib.load(fh)
+            assert toml["init"]["snapshot"] == str(parent.resolve())
+            assert toml["twin"]["seed"] == record["seed"]
+            assert toml["twin"]["e0"] == 1e-6
+            assert toml["twin"]["it_budget"] == 5
+            assert toml["stop"]["max_sim_time"] == record["t_end"]
+            assert toml["stop"]["check_laminarization"] is False
+
+        # Simulate the completed runs, then aggregate through the
+        # real members.json.
+        for record in spec["members"]:
+            _write_member(
+                tree / record["dir"],
+                parent_t=record["parent_t"],
+                n=6,
+                scale=record["seed"],
+            )
+        bundle = aggregate_members(tree)
+        assert bundle["n_members"] == 2
+        base = _energy_columns(1.0 + 0.01 * np.arange(6))["E_d"]
+        assert_allclose(bundle["mean_E_d"], base * 1.5, rtol=1e-12)
+    print("build-twin (harvest, dry run, tree, aggregation): OK")
+
+
+if __name__ == "__main__":
+    test_readers()
+    test_aggregation()
+    test_fits()
+    test_spectra_reader()
+    test_integral_lengths_core()
+    test_build_twin()
+    print("All twin analysis tests passed.")

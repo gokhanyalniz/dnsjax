@@ -409,6 +409,28 @@ def get_pert_enstrophy(
         Hermitian-symmetry weight for the real FFT axis.
     y_weights:
         Quadrature weights for wall-normal integration.
+
+    Notes
+    -----
+    This is the *physical* definition, and it is positive-definite by
+    construction (a Gram form in positive quadrature weights), so it
+    can never report a negative dissipation -- the right property for
+    a monitoring stream.  It is **not** the operator the implicit
+    viscous update applies: the two differ by the wall-normal
+    integration-by-parts defect
+    `$\mathbf{u}'^{T}(D_1^{T} W D_1 + W D_2)\,\mathbf{u}'$`, a
+    truncation error of the *resolved* field (measured at
+    ``fd_order = 8``: `$<10^{-4}$` for a decaying wall-normal
+    spectrum, but `$\sim 40\,\%$` for content at half the grid scale,
+    and *not* convergent for a field that re-populates the grid scale
+    under refinement).  ``tests/test_energy_budget.py`` pins it inert
+    in `$dE/dt = I - D$` for resolved stepped states.  A **discrete**
+    budget instead closes only against the operator form
+    `$-\langle \mathbf{u}' \cdot (\nabla_h^2 + D_2)\,\mathbf{u}'
+    \rangle$`, which gives up the positivity -- the rule and the case
+    that forced it: the "Dissipation form" section of
+    ``twin_diagnostics.py``.  The same holds for the cylindrical and
+    annular twins of this function.
     """
     horiz = get_norm2(state, k2 * k_metric, y_weights)
     dy_state = apply_y_matrix(D1, state)
