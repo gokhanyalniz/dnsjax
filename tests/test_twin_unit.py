@@ -1,4 +1,4 @@
-r"""Unit tests for the twin-run diagnostics (``dnsjax.twin_diagnostics``).
+r"""Unit tests for the twin-run diagnostics (``dnsjax.twin.diagnostics``).
 
 Offline, on 4 forced host CPU devices with a ``(np0, np1) = (2, 2)``
 Explicit mesh so **both** mode axes are genuinely sharded (the
@@ -83,7 +83,6 @@ import math  # noqa: E402
 import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
-from dnsjax import twin_diagnostics as td  # noqa: E402
 from dnsjax.extensions import validate_extensions  # noqa: E402
 from dnsjax.flows.wall_bounded.plane_couette import (  # noqa: E402
     get_perturbation_energy,
@@ -96,7 +95,8 @@ from dnsjax.parameters import (  # noqa: E402
 )
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.snapshot import assemble_local_shards  # noqa: E402
-from dnsjax.twin import twin_params  # noqa: E402
+from dnsjax.twin import diagnostics as td  # noqa: E402
+from dnsjax.twin.driver import twin_params  # noqa: E402
 
 NY = params.res.ny
 N2_TRUE = params.res.nz - 1  # true complex (kz) modes
@@ -233,7 +233,7 @@ def test_e0_convention() -> None:
     r"""``amplitude = sqrt(2 e0)`` gives solver-measure `$E' = e_0$`,
     and the driver's additive construction reproduces it through
     ``twin_energies`` to the float cancellation floor."""
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
 
     e0 = 1e-6
     delta = generate_random_state(math.sqrt(2.0 * e0), 0.4, seed=7)
@@ -369,7 +369,7 @@ def _ref_budget(spec1: np.ndarray, spec2: np.ndarray) -> dict[str, float]:
     D2_np = np.asarray(td.flow.D2)
     for x in ("dU", "du1", "du2"):
         # The discrete-Laplacian (operator) form, matching the code
-        # (the twin_diagnostics "Dissipation form" note): horizontal
+        # (the twin/diagnostics.py "Dissipation form" note): horizontal
         # parts spectral, wall-normal via the same D2.
         lap = (
             dx(dx(fields[x]))

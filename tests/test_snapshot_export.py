@@ -195,7 +195,7 @@ def _generate(system: str, outdir: str, m0: int = 1) -> None:
     padded_res.set_padded_resolution(params)
     validate_parameters()
 
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
     from dnsjax.snapshot import save_snapshot
 
     state = generate_random_state(0.2, 0.4, 1)

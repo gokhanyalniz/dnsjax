@@ -14,13 +14,13 @@ extension's ``values`` singleton (analogous to the global ``params``).
 Built-ins registered here:
 
 - ``probes`` -- the runtime spectral-mode probe stream
-  (:mod:`dnsjax.probes` writes ``probes.bin``/``probes.json`` during
-  the run); wall-bounded flows.
+  (:mod:`dnsjax.extensions.probes` writes ``probes.bin``/
+  ``probes.json`` during the run); wall-bounded flows.
 - ``force`` -- the white-in-time stochastic mode kicks
-  (:mod:`dnsjax.forcing` injects them into the stepping loop and logs
-  ``forcing.bin``/``forcing.json``); wall-bounded non-viscoelastic
-  flows, **trajectory-defining** (kicks alter the dynamics exactly
-  like a ``phys`` change).
+  (:mod:`dnsjax.extensions.forcing` injects them into the stepping
+  loop and logs ``forcing.bin``/``forcing.json``); wall-bounded
+  non-viscoelastic flows, **trajectory-defining** (kicks alter the
+  dynamics exactly like a ``phys`` change).
 
 Their runtime modules import JAX at module scope, so the parameter
 models and live singletons live here (JAX-free), importable before
@@ -38,8 +38,8 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .flows.registry import viscoelastic_systems, walled_systems
-from .harmonics import parse_mode_pairs
+from ..flows.registry import viscoelastic_systems, walled_systems
+from ..harmonics import parse_mode_pairs
 
 
 class ProbesParams(BaseModel):
@@ -56,7 +56,7 @@ class ProbesParams(BaseModel):
     Wall-bounded systems only.  ``it_probes`` trades time resolution
     for disk (a record is ``8 + K*C*ny*2`` values); the buffered
     writer makes any cadence cheap at runtime.  Format, buffering,
-    and the reader: the :mod:`dnsjax.probes` and
+    and the reader: the :mod:`dnsjax.extensions.probes` and
     :mod:`dnsjax.analysis.response.probes` docstrings.
     """
 
@@ -99,8 +99,8 @@ class ForceParams(BaseModel):
     loop-level kick keeps both schemes untouched and makes the
     per-kick response exactly the solver's own propagator.  Full
     conventions (timing relative to probes/snapshots, resume
-    continuation, amplitude guidance): the :mod:`dnsjax.forcing`
-    module docstring.
+    continuation, amplitude guidance): the
+    :mod:`dnsjax.extensions.forcing` module docstring.
 
     Wall-bounded, non-viscoelastic systems only: the injector's
     cylindrical/annular branch hard-codes the 3-component velocity map

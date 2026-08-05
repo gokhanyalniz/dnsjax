@@ -341,7 +341,7 @@ def init_state(snapshot: str | None) -> Array:
     ``.npz`` snapshots are not supported for the tensor state (a zarr3
     snapshot resume is handled in ``__main__`` before this is called);
     the random / localized-rolls modes are built in
-    :mod:`dnsjax.random_field` / :mod:`dnsjax.localized_rolls`.
+    :mod:`dnsjax.ic.random_field` / :mod:`dnsjax.ic.localized_rolls`.
     """
     if snapshot is None and params.init.start_from_laminar:
         # Copy: the steppers donate their state argument, and the

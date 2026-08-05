@@ -122,8 +122,8 @@ Total-field
 dean/viscoelastic-dean/viscoelastic-pipe add the analytical laminar
 profile. Construction,
 per-geometry pairing, the sharded/padded-mesh-safe builds, and the
-divergence/Hermitian caveats: the `random_field.py` and
-`localized_rolls.py` module docstrings; precedence: `Initiation`
+divergence/Hermitian caveats: the `ic/random_field.py` and
+`ic/localized_rolls.py` module docstrings; precedence: `Initiation`
 (`parameters.py`).
 
 ### Triggering transition to turbulence
@@ -178,9 +178,15 @@ flow_spec.py          JAX-free FieldSpec/DeferredSpec/FlowSpec
 param_surface.py      Per-flow surface models (CLI/TOML), aliases,
                       internalize/externalize, recorded_params_dump,
                       sample-TOML + startup-printout renderers
-extensions.py         ParamExtension registry + built-in [probes] and
+extensions/
+  __init__.py         ParamExtension registry + built-in [probes] and
                       [force] section models; singletons
                       probes_params/force_params
+  probes.py           Spectral-mode probe stream ([probes] extension):
+                      sharded-gather extractor + probes.bin writer
+  forcing.py          White-in-time stochastic mode kicks ([force]
+                      extension): sharded scatter-add injector (the
+                      extractor's dual) + forcing.bin coefficient log
 sharding.py           Multi-device (np0, np1) mesh; singleton sharding;
                       register_dataclass_pytree; layouts + specs
 operators.py          Wavenumber helpers (re-exports harmonics.py in
@@ -193,11 +199,6 @@ fft.py                3D/2D real FFT, 3/2-rule dealiasing, shard_map
 rhs.py                Rotational-form perturbation nonlinear term;
                       measure_fn hook
 measurements.py       Physical-space measurements (get_cfl)
-probes.py             Spectral-mode probe stream ([probes] extension):
-                      sharded-gather extractor + probes.bin writer
-forcing.py            White-in-time stochastic mode kicks ([force]
-                      extension): sharded scatter-add injector (the
-                      extractor's dual) + forcing.bin coefficient log
 timestep.py           make_stepper() factory:
                       predict_and_fully_correct (+_measured),
                       step_cnab2 (+_measured), _cnab2_lbf_core
@@ -214,16 +215,19 @@ snapshot.py           Single-file (tar/zarr3) snapshot save/load, raw
                       offset I/O (GDS or host); assemble_local_shards
 snapshot_meta.py      Stdlib-only (JAX-free) snapshot tar metadata
                       helpers
-random_field.py       Random divergence-free IC generators
+ic/
+  random_field.py     Random divergence-free IC generators
                       (init.random_field, the default start mode)
-localized_rolls.py    Deterministic localized-spot IC generators
+  localized_rolls.py  Deterministic localized-spot IC generators
                       (init.localized_rolls)
-twin.py               dnsjax-twin console script: lockstep twin-run
-                      (predictability) driver, [twin] extension,
-                      paired snapshots/resume, twin.dat streams
-twin_diagnostics.py   Difference-field diagnostics: component masks,
+twin/
+  driver.py           dnsjax-twin console script (also python -m
+                      dnsjax.twin): lockstep twin-run (predictability)
+                      driver, [twin] extension, paired
+                      snapshots/resume, twin.dat streams
+  diagnostics.py      Difference-field diagnostics: component masks,
                       energies, the 27-term budget, (kz,kx) spectra
-twin_spectra.py       TwinSpectraStream: twin_spectra.bin writer
+  spectra.py          TwinSpectraStream: twin_spectra.bin writer
                       (reader dnsjax.analysis.twin.spectra)
 geometries/
   wall_bounded/       _base.py, cartesian.py, cylindrical.py,
@@ -266,8 +270,9 @@ flows, fixed dt, launched like the solver (mpirun, scratch dir):
 
 Start/resume rules (partner snapshot + `twin.json` decide; a resume
 never re-perturbs), stream formats, and the frame-invariance /
-dissipation-form notes: the `twin.py` and `twin_diagnostics.py`
-module docstrings. Ensembles: `ensemble_setup.py build-twin` +
+dissipation-form notes: the `twin/driver.py` and
+`twin/diagnostics.py` module docstrings. Ensembles:
+`ensemble_setup.py build-twin` +
 `dnsjax.analysis.twin`.
 
 ### Transient-growth analysis
@@ -334,7 +339,8 @@ geometry `fourier` are module-level singletons captured at import time
 -- so JAX must be configured and parameters final (`update_parameters()`)
 *before* importing `sharding` or any geometry module (the setup
 contract: the `bootstrap.py` module docstring). Earlier-importable
-modules (e.g. `random_field.py`) keep `import jax` out of module scope.
+modules (e.g. `ic/random_field.py`) keep `import jax` out of module
+scope.
 `fourier`'s wavenumber arrays are global multi-device arrays -- host
 code recomputes them from `harmonics.real_harmonics`/`complex_harmonics`
 × `2π/L`, never `np.asarray`.
@@ -452,7 +458,7 @@ layering" above.
 | `[stop]`   | Sim-/wall-time limits, laminarization check          |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
 | `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
-| `[probes]` | Extension (`extensions.py`): spectral-mode probe stream (wall-bounded) |
+| `[probes]` | Extension (`extensions/`): spectral-mode probe stream (wall-bounded) |
 | `[force]`  | Extension: white-in-time stochastic mode kicks; all-or-none and trajectory-defining (wall-bounded, non-viscoelastic) |
 | `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences (Cartesian wall-bounded, fixed dt) |
 
@@ -471,13 +477,14 @@ Three on-device buffered scalar streams, flushed periodically
 (`outs.it_steps`, via the `rhs.py` `measure_fn` hook) → `steps.dat`, the
 corrector diagnostic (`outs.it_corrector`) → `corrector.dat`; plus the
 binary spectral-mode probe stream (`probes.modes`/`probes.it_probes`,
-wall-bounded only) → `probes.bin` + `probes.json` (`probes.py`;
-JAX-free reader `dnsjax.analysis.response.probes`), and the
-stochastic-kick coefficient log (`[force]`) → `forcing.bin` +
-`forcing.json` (`forcing.py`; reader `dnsjax.analysis.response.ssi`).
+wall-bounded only) → `probes.bin` + `probes.json`
+(`extensions/probes.py`; JAX-free reader
+`dnsjax.analysis.response.probes`), and the stochastic-kick
+coefficient log (`[force]`) → `forcing.bin` + `forcing.json`
+(`extensions/forcing.py`; reader `dnsjax.analysis.response.ssi`).
 
 The two binary streams carry a sidecar `format_version` (writer:
-`probes.py`/`forcing.py`; reader floor: each reader's
+`extensions/probes.py`/`forcing.py`; reader floor: each reader's
 `MIN_FORMAT_VERSION`), enforced like the snapshot one. Bump both when
 the stored *meaning* changes (rationale: the writers' docstrings).
 

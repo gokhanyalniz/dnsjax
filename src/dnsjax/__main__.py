@@ -100,7 +100,7 @@ the pre-step time.  ``outs.it_error_check`` must not exceed
 (the ``probes`` extension section; :mod:`dnsjax.extensions`;
 wall-bounded only) with the same buffering, but as fixed-size
 binary records with a ``probes.json`` schema sidecar -- see the
-:mod:`dnsjax.probes` module docstring for the format, the
+:mod:`dnsjax.extensions.probes` module docstring for the format, the
 append-on-resume rules, and the
 :mod:`dnsjax.analysis.response.probes` reader.  The t0 sample is
 recorded at setup, in-loop samples before each step, and a final
@@ -112,7 +112,7 @@ kicks (the ``force`` extension section) every ``force.it_force``
 steps, with a ``forcing.json`` sidecar.  A kick fires at the top of the loop
 after the equal-``t`` probe sample and any snapshot (both
 pre-kick) and immediately before the step; format, resume
-semantics, and the kick construction: the :mod:`dnsjax.forcing`
+semantics, and the kick construction: the :mod:`dnsjax.extensions.forcing`
 module docstring (reader: :mod:`dnsjax.analysis.response.ssi`).
 
 Every diagnostic is guarded against non-finite floats: each
@@ -568,7 +568,7 @@ def run(wall_time_start: int) -> None:
         # In-process deterministic localized-rolls ("spot") IC (no
         # snapshot file). The flow dispatch above already built the
         # geometry ``fourier`` singleton this consumes.
-        from .localized_rolls import generate_localized_rolls
+        from .ic.localized_rolls import generate_localized_rolls
 
         state = generate_localized_rolls(
             params.init.localized_rolls_amplitude,
@@ -585,7 +585,7 @@ def run(wall_time_start: int) -> None:
         # In-process random divergence-free IC -- the default start mode
         # (no snapshot file). The flow dispatch above already built the
         # geometry ``fourier`` singleton this consumes.
-        from .random_field import generate_random_state
+        from .ic.random_field import generate_random_state
 
         state = generate_random_state(
             params.init.random_amplitude,
@@ -866,7 +866,7 @@ def run(wall_time_start: int) -> None:
     # Spectral-mode probe stream (``probes.modes``/``probes.it_probes``,
     # the ``probes`` extension section): complex wall-normal mode
     # profiles into the binary ``probes.bin`` (see the
-    # :mod:`dnsjax.probes` docstring).  Same buffering state
+    # :mod:`dnsjax.extensions.probes` docstring).  Same buffering state
     # machine as the streams above; the t0 sample is recorded here (the
     # in-loop record skips ``it == it0``).  A non-finite message from
     # this record (possible only at ``nbuffer == 1``) is deferred to
@@ -874,21 +874,21 @@ def run(wall_time_start: int) -> None:
     measure_probes: bool = probes_params.modes is not None
     probe_bad_t0: str | None = None
     if measure_probes:
-        from .probes import ProbeStream
+        from .extensions.probes import ProbeStream
 
         probe_stream = ProbeStream(state)
         probe_bad_t0 = probe_stream.record(state, t)
 
     # --- Stochastic forcing setup ------------------------------------------
     # White-in-time mode kicks (``force.modes``, the ``force``
-    # extension section; see the :mod:`dnsjax.forcing` docstring for
+    # extension section; see the :mod:`dnsjax.extensions.forcing` docstring for
     # the conventions).  The forcer holds the channel profiles, the
     # rank-identical coefficient PRNG (advanced past any kicks already
     # recorded in an appended ``forcing.bin``), and the buffered
     # coefficient writer flushed with the other streams.
     force_on: bool = force_params.modes is not None
     if force_on:
-        from .forcing import StochasticForcer
+        from .extensions.forcing import StochasticForcer
 
         forcer = StochasticForcer(state)
 
@@ -1121,7 +1121,7 @@ def run(wall_time_start: int) -> None:
         # resumed continuation never double-applies a kick (saved
         # states are pre-kick; the kick belongs to the segment that
         # steps from them) and the coefficient stream continues
-        # seamlessly (see :mod:`dnsjax.forcing`).
+        # seamlessly (see :mod:`dnsjax.extensions.forcing`).
         if force_on and it % force_params.it_force == 0:
             state = forcer.kick(state, t)
 

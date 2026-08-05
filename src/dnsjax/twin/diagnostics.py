@@ -2,7 +2,8 @@ r"""Twin-run difference-field diagnostics (Cartesian wall-bounded).
 
 Online diagnostics of the difference field
 `$\Delta\mathbf{u} = \mathbf{u}^{(2)} - \mathbf{u}^{(1)}$` between the
-two DNS states the ``dnsjax-twin`` driver (:mod:`dnsjax.twin`) steps
+two DNS states the ``dnsjax-twin`` driver (:mod:`dnsjax.twin.driver`)
+steps
 in lockstep, following the methodology of Egerique-de-la-Concha &
 Hwang, *J. Fluid Mech.* **1036**, A52 (2026).  Both states store the
 spectral perturbation about the *same* laminar base flow, so
@@ -157,9 +158,9 @@ from jax import Array, jit, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
-from .fft import chunked_transform
-from .flows.registry import spec_for
-from .geometries.wall_bounded._base import (
+from ..fft import chunked_transform
+from ..flows.registry import spec_for
+from ..geometries.wall_bounded._base import (
     apply_y_matrix,
     extract_mean_mode,
     get_inprod,
@@ -168,15 +169,15 @@ from .geometries.wall_bounded._base import (
     phys_to_spec,
     spec_to_phys,
 )
-from .geometries.wall_bounded.cartesian import Fourier, fourier
-from .parameters import cartesian_systems, derived_params, params
-from .sharding import sharding
+from ..geometries.wall_bounded.cartesian import Fourier, fourier
+from ..parameters import cartesian_systems, derived_params, params
+from ..sharding import sharding
 
 if params.phys.system not in cartesian_systems:  # pragma: no cover
     raise RuntimeError(
-        "twin_diagnostics supports the Cartesian wall-bounded flows "
-        f"only (system {params.phys.system!r}); the [twin] surface "
-        "should have rejected this configuration."
+        "dnsjax.twin.diagnostics supports the Cartesian wall-bounded "
+        f"flows only (system {params.phys.system!r}); the [twin] "
+        "surface should have rejected this configuration."
     )
 
 #: The selected flow's module (shared singletons with the driver via

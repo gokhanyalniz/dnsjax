@@ -4,7 +4,7 @@ r"""Convert a native-layout velocity field into a dnsjax snapshot.
 This is a **library** (not a CLI): it exposes functions that future,
 per-simulator CLIs import to pack a velocity field -- already arranged in
 dnsjax's **native** component/axis structure -- into dnsjax's single-file
-(tar-wrapped zarr3) snapshot format.  Like :mod:`dnsjax.random_field`
+(tar-wrapped zarr3) snapshot format.  Like :mod:`dnsjax.ic.random_field`
 it configures the global parameter singletons (one system per process)
 and calls ``snapshot.save_snapshot``, but instead of *generating* a field
 it *packs a supplied one*.  Conversion runs single-device (``np = 1``);
@@ -112,7 +112,7 @@ responsibility.
 Usage
 -----
 One conversion per process (the geometry ``fourier`` singleton is built
-at import, the :mod:`dnsjax.random_field` idiom)::
+at import, the :mod:`dnsjax.ic.random_field` idiom)::
 
     from snapshot_import import convert_field_to_snapshot
 
@@ -429,8 +429,8 @@ def configure_target(
 
     Must be called **once per process, before** ``to_spectral_state`` /
     ``write_snapshot`` (the geometry ``fourier`` singleton is built at
-    import).  Mirrors ``random_field._setup_jax_and_params`` (single
-    device, CPU).
+    import).  Mirrors the :mod:`dnsjax.ic.random_field` import-order
+    idiom (single device, CPU).
 
     Parameters
     ----------

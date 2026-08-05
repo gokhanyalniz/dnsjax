@@ -773,7 +773,7 @@ def _part_c(args, outdir: Path) -> None:
     print("PART C -- the real snapshot path")
     print("=" * 72)
     m = _import_flow(args.system)
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
 
     to_solver = getattr(m, "to_solver_basis", None)
     state = generate_random_state(

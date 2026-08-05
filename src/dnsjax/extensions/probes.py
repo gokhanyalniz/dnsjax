@@ -84,17 +84,17 @@ from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
-from .extensions import probes_params
-from .harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
-from .param_surface import recorded_params_dump
-from .parameters import (
+from ..harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
+from ..param_surface import recorded_params_dump
+from ..parameters import (
     cartesian_systems,
     derived_params,
     params,
     viscoelastic_systems,
 )
-from .sharding import sharding
-from .snapshot_meta import git_hash
+from ..sharding import sharding
+from ..snapshot_meta import git_hash
+from . import probes_params
 
 #: Sidecar schema version.  Version 2 records the switch of the
 #: cylindrical/annular columns from the solver's decoupled
@@ -186,13 +186,13 @@ def build_mode_extractor(
         # The 9-component spin map, from the geometry-free module both
         # viscoelastic geometries share -- importing either geometry
         # here would build the wrong family's singletons.
-        from .geometries.wall_bounded._viscoelastic_common import (
+        from ..geometries.wall_bounded._viscoelastic_common import (
             from_spin_basis,
         )
 
         to_physical = from_spin_basis
     else:  # cylindrical / annular velocity basis
-        from .geometries.wall_bounded._base import from_pm_basis
+        from ..geometries.wall_bounded._base import from_pm_basis
 
         to_physical = from_pm_basis
 

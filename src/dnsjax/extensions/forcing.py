@@ -97,13 +97,14 @@ basis, the partner rule), and raise the reader's
 Sharded scatter
 ===============
 :func:`build_mode_injector` is the scatter dual of
-:func:`dnsjax.probes.build_mode_extractor`: inside a ``shard_map``,
-the device owning each static global mode index adds the replicated
-column into its local shard (everyone else adds zeros), so no global
-sharded axis is ever indexed.  The real-FFT conjugate partner
-(``i3 = 0``) is just another scatter target; its column -- the plain
-conjugate (every physical component is the transform of a real field)
--- is built on the host (the placement rules of
+:func:`dnsjax.extensions.probes.build_mode_extractor`: inside a
+``shard_map``, the device owning each static global mode index adds
+the replicated column into its local shard (everyone else adds
+zeros), so no global sharded axis is ever indexed.  The real-FFT
+conjugate partner (``i3 = 0``) is just another scatter target; its
+column -- the plain conjugate (every physical component is the
+transform of a real field) -- is built on the host (the placement
+rules of
 ``transient_growth.single_mode_state``, here in sharded form).  The
 injector is generic runtime machinery: any future loop-level state
 modification (feedback control, further forcing schemes) can reuse
@@ -123,14 +124,14 @@ from jax import numpy as jnp
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from .extensions import force_params
-from .flows.registry import cartesian_systems
-from .harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
-from .param_surface import recorded_params_dump
-from .parameters import derived_params, params
+from ..flows.registry import cartesian_systems
+from ..harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
+from ..param_surface import recorded_params_dump
+from ..parameters import derived_params, params
+from ..sharding import sharding
+from ..snapshot_meta import git_hash
+from . import force_params
 from .probes import _component_labels
-from .sharding import sharding
-from .snapshot_meta import git_hash
 
 #: Sidecar schema version.  Version 2 records the switch of the
 #: injected profiles to the physical `$(u_z, u_r, u_\theta)$` basis
@@ -171,7 +172,7 @@ def build_mode_injector(
     (``(K, C, N_y)`` complex, replicated) into the wall-bounded
     spectral ``state`` at the static global mode ``mode_pairs[k]``
     for every ``k`` -- the scatter dual of
-    :func:`dnsjax.probes.build_mode_extractor` (same owner
+    :func:`dnsjax.extensions.probes.build_mode_extractor` (same owner
     computation from the local shard shape inside a ``shard_map``;
     non-owners add zeros).  ``state`` is donated (the caller rebinds).
 
@@ -188,7 +189,7 @@ def build_mode_injector(
     if params.phys.system in cartesian_systems:
         to_solver = None
     else:  # cylindrical / annular (viscoelastic rejects [force])
-        from .geometries.wall_bounded._base import to_pm_basis
+        from ..geometries.wall_bounded._base import to_pm_basis
 
         to_solver = jax.vmap(to_pm_basis)
     # Owner masks only over mesh axes of size > 1: a size-1 axis has

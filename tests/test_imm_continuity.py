@@ -199,13 +199,13 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
     from_solver = getattr(mod, "from_solver_basis", lambda s: s)
 
     if system == "pipe":
-        from dnsjax.localized_rolls import generate_localized_rolls
+        from dnsjax.ic.localized_rolls import generate_localized_rolls
 
         state = generate_localized_rolls(0.15, 0.5, 1.0)
         e0 = float(mod.get_perturbation_energy(state))
         state = state * float(np.sqrt(1e-2 / e0))
     else:
-        from dnsjax.random_field import generate_random_state
+        from dnsjax.ic.random_field import generate_random_state
 
         state = generate_random_state(0.2, 0.4, 7)
     # A random IC produces an O(1) divergence in a single step; the
