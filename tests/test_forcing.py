@@ -1,4 +1,4 @@
-r"""Runtime stochastic-forcing tests (``dnsjax.forcing``).
+r"""Runtime stochastic-forcing tests (``dnsjax.extensions.forcing``).
 
 Offline part (default; the ``test_probes.py`` pattern: ``params``
 mutated before importing ``sharding``), on 4 forced host CPU devices
@@ -111,12 +111,12 @@ from numpy.testing import (  # noqa: E402
 
 from dnsjax.analysis.response.probes import read_probes  # noqa: E402
 from dnsjax.analysis.response.ssi import read_forcing  # noqa: E402
-from dnsjax.forcing import (  # noqa: E402
+from dnsjax.extensions.forcing import (  # noqa: E402
     StochasticForcer,
     build_mode_injector,
 )
+from dnsjax.extensions.probes import _component_labels  # noqa: E402
 from dnsjax.parameters import validate_parameters  # noqa: E402
-from dnsjax.probes import _component_labels  # noqa: E402
 from dnsjax.snapshot import assemble_local_shards  # noqa: E402
 
 N2_TRUE, N3_TRUE = params.res.nz - 1, params.res.nx // 2
@@ -221,8 +221,8 @@ def test_kick_solver_basis() -> None:
     3. the probe gather inverts the whole path: read back in physical
        components the kick is the geometry-independent reference.
     """
+    from dnsjax.extensions.probes import build_mode_extractor
     from dnsjax.geometries.wall_bounded._base import to_pm_basis
-    from dnsjax.probes import build_mode_extractor
 
     saved = params.phys.system
     params.phys.system = "pipe"  # any cylindrical / annular flow

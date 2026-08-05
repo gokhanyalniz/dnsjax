@@ -721,9 +721,9 @@ class Initiation(BaseModel):
     otherwise ``random_field`` -- an in-process random divergence-free
     perturbation, which is **the default**: a run with no snapshot and
     no explicit mode selected starts from a random IC.  The ``random_*``
-    knobs feed :func:`dnsjax.random_field.generate_random_state`; the
+    knobs feed :func:`dnsjax.ic.random_field.generate_random_state`; the
     ``localized_rolls_*`` knobs feed
-    :func:`dnsjax.localized_rolls.generate_localized_rolls`.
+    :func:`dnsjax.ic.localized_rolls.generate_localized_rolls`.
 
     Resume policy: when ``snapshot`` is a dnsjax snapshot, ``it``/``t``/
     ``isnap`` are inherited only when none of the Physics/Geometry/

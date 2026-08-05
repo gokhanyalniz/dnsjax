@@ -680,7 +680,10 @@ def test_probe_stream_component_basis() -> None:
     the analysis package's stored-component schema, so the two
     9-component surfaces cannot drift apart)."""
     from dnsjax.analysis._core import geometry_info
-    from dnsjax.probes import _component_labels, build_mode_extractor
+    from dnsjax.extensions.probes import (
+        _component_labels,
+        build_mode_extractor,
+    )
 
     info = geometry_info(params)
     assert info.family == "cylindrical"

@@ -1,4 +1,4 @@
-r"""Runtime spectral-mode probe stream tests (``dnsjax.probes``).
+r"""Runtime spectral-mode probe stream tests (``dnsjax.extensions.probes``).
 
 Offline part (default; the ``test_snapshot.py`` pattern: ``params``
 mutated before importing ``sharding``), on 4 forced host CPU devices
@@ -108,9 +108,12 @@ from dnsjax.analysis.response.probes import (  # noqa: E402
     re_tau,
     read_probes,
 )
+from dnsjax.extensions.probes import (  # noqa: E402
+    ProbeStream,
+    build_mode_extractor,
+)
 from dnsjax.harmonics import parse_mode_pairs  # noqa: E402
 from dnsjax.parameters import validate_parameters  # noqa: E402
-from dnsjax.probes import ProbeStream, build_mode_extractor  # noqa: E402
 from dnsjax.snapshot import assemble_local_shards  # noqa: E402
 
 
@@ -165,8 +168,8 @@ def test_extractor_solver_basis() -> None:
     that it is applied *after* the owner mask and the ``psum``, on
     every mesh position.
     """
+    from dnsjax.extensions.probes import _component_labels
     from dnsjax.geometries.wall_bounded._base import from_pm_basis
-    from dnsjax.probes import _component_labels
 
     saved = params.phys.system
     params.phys.system = "pipe"  # any cylindrical / annular flow

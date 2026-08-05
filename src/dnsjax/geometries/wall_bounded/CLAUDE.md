@@ -42,8 +42,9 @@ view, dropped after use), via `_base.to_pm_basis`/`from_pm_basis`
 flow modules) or the 9-component
 `_viscoelastic_common.to_spin_basis`/`from_spin_basis` (shared by both
 viscoelastic geometries). `__main__`
-owns the field-level crossings; `probes.py`/`forcing.py` convert their
-own mode columns instead. **Anything that hands a freshly built (i.e.
+owns the field-level crossings; `extensions/probes.py` /
+`extensions/forcing.py` convert their own mode columns instead.
+**Anything that hands a freshly built (i.e.
 physical) state to a stepper must convert first** — `__main__`'s
 post-IC line and `transient_growth._linear_step` are the templates.
 `_get_rhs_core`/`_l_bf` convert internally (the real FFT needs

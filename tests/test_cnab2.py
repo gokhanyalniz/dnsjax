@@ -442,7 +442,7 @@ def _worker(system: str) -> None:
     fmod = importlib.import_module(FLOW_MODULES[system])
     gmod = importlib.import_module(GEO_MODULES[system])
 
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
 
     # ICs are built in physical components; ``_get_rhs`` / ``_l_bf``
     # and the steppers work in the geometry's solver basis (the same

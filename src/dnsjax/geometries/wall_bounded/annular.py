@@ -518,7 +518,7 @@ def annular_forced_laminar_u_theta(
     viscoelastic sPTT flow (`$C = r_1 + r_2$`, the reference
     normalisation).  Pure function (no flow construction), so it is
     importable both by the ``start_from_laminar`` state and by
-    :mod:`dnsjax.random_field` (the total-field IC = laminar profile +
+    :mod:`dnsjax.ic.random_field` (the total-field IC = laminar profile +
     perturbation).
 
     Parameters

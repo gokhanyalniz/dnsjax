@@ -1,8 +1,9 @@
 r"""JAX-free reader for the runtime spectral-mode probe stream.
 
 Reads the ``probes.bin``/``probes.json`` pair written by
-:mod:`dnsjax.probes` (see that docstring for the record layout and the
-writer's append-on-resume rules) and provides the small host-side
+:mod:`dnsjax.extensions.probes` (see that docstring for the record
+layout and the writer's append-on-resume rules) and provides the
+small host-side
 post-processing steps that need no device: time-averaged mean
 profiles, the friction Reynolds number, and profile files consumable
 by the transient-growth CLI (``--tg.profile``).
@@ -36,7 +37,7 @@ import numpy as np
 from ...fd import build_diff_matrices
 
 #: Oldest ``probes.json`` schema this reader accepts (the writer's
-#: current version is ``dnsjax.probes.FORMAT_VERSION``).  Version-1
+#: current version is ``dnsjax.extensions.probes.FORMAT_VERSION``).  Version-1
 #: streams carry the cylindrical/annular columns in the solver's
 #: decoupled `$(u_z, u_+, u_-)$` basis at the same layout, so every
 #: positional consumer downstream would misread them silently.

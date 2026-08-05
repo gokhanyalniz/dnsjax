@@ -4,8 +4,8 @@ Records the difference-field per-mode energy spectrum
 `$E_\Delta(k_z, k_x)$` (and, by default, the reference state's own
 spectrum -- the pair whose ratio `$E_\Delta / 2E^{(1)}$` is the
 scale-by-scale decorrelation measure) every ``twin.it_spectra`` steps
-of a ``dnsjax-twin`` run (:mod:`dnsjax.twin`), computed by
-:func:`dnsjax.twin_diagnostics.twin_spectra_2d`.  The stream is the
+of a ``dnsjax-twin`` run (:mod:`dnsjax.twin.driver`), computed by
+:func:`dnsjax.twin.diagnostics.twin_spectra_2d`.  The stream is the
 high-Reynolds-number replacement for the scalar `$u_1/u_2$` split:
 it resolves *which scales* have decorrelated at each time.
 
@@ -57,11 +57,11 @@ import numpy as np
 from jax import Array
 from jax import numpy as jnp
 
-from .harmonics import complex_harmonics, real_harmonics
-from .param_surface import recorded_params_dump
-from .parameters import params
-from .sharding import sharding
-from .snapshot_meta import git_hash
+from ..harmonics import complex_harmonics, real_harmonics
+from ..param_surface import recorded_params_dump
+from ..parameters import params
+from ..sharding import sharding
+from ..snapshot_meta import git_hash
 
 #: Sidecar schema version (bump when the stored meaning changes; the
 #: reader's floor is ``analysis.twin.spectra.MIN_FORMAT_VERSION``).
@@ -91,7 +91,7 @@ _MATCH_KEYS: tuple[str, ...] = (
 class TwinSpectraStream:
     """Buffered binary writer for the twin spectra stream.
 
-    The ``probes.ProbeStream`` state machine: an on-device
+    The ``extensions.probes.ProbeStream`` state machine: an on-device
     ``(_NBUFFER, n_fields, N2, N3)`` buffer plus host timestamps,
     disk I/O on the main process, index resets on all ranks.
     Construct once, :meth:`record` each ``twin_spectra_2d`` sample,
@@ -103,10 +103,10 @@ class TwinSpectraStream:
     def __init__(self, twin_values, directory: str | Path = ".") -> None:
         """*twin_values* is the resolved ``[twin]`` section (the
         driver's ``twin_params`` singleton), passed in rather than
-        imported: under ``python -m dnsjax.twin`` the driver module
-        is ``__main__``, and a ``from .twin import ...`` here would
-        re-execute it as a second module instance whose extension
-        re-registration fails."""
+        imported: the ``[twin]`` extension is registered by
+        :mod:`dnsjax.twin.driver` alone, and taking the values as an
+        argument keeps this writer importable and testable without
+        pulling in the driver and its import-time registration."""
         self.includes_ref = bool(twin_values.spectra_ref)
         self.n2 = params.res.nz - 1
         self.n3 = params.res.nx // 2

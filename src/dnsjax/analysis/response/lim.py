@@ -15,7 +15,7 @@ identification (:func:`~dnsjax.analysis.response.ensemble.
 identify_generator`).  Unlike the injected-basis routes (ensemble
 impulse responses, SSI forcing), LIM needs **no extra runs**: the
 input is the probe stream of the production run itself
-(``probes.modes``; :mod:`dnsjax.probes`).  Its price is the
+(``probes.modes``; :mod:`dnsjax.extensions.probes`).  Its price is the
 whiteness hypothesis -- when the turbulent forcing of the mode is
 correlated in time, `$M(\tau)$` is no longer a semigroup and the
 identified `$L$` drifts with the lag; the per-lag reconstruction

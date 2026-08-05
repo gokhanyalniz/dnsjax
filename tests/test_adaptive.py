@@ -311,8 +311,8 @@ def _worker(system: str, backend: str, consistent_imm: bool = False) -> None:
     fmod = importlib.import_module(FLOW_MODULES[system])
     gmod = importlib.import_module(GEO_MODULES[system])
 
+    from dnsjax.ic.random_field import generate_random_state
     from dnsjax.parameters import params
-    from dnsjax.random_field import generate_random_state
 
     # ICs are physical; the steppers work in the solver basis (the
     # same single crossing ``__main__`` performs).

@@ -20,7 +20,7 @@ analysis = [
 
 [project.scripts]
 dnsjax = "dnsjax.__main__:main"
-dnsjax-twin = "dnsjax.twin:main"
+dnsjax-twin = "dnsjax.twin.driver:main"
 
 [dependency-groups]
 dev = [

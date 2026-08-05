@@ -1018,7 +1018,7 @@ def test_centerline_mean_axial_velocity() -> None:
         predict_and_fully_correct,
         to_solver_basis,
     )
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
 
     amp = 1e-3
     # ICs are built in physical components; the stepper works in the

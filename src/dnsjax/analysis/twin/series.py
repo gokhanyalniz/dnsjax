@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 #: Oldest ``twin.json`` schema this reader understands
-#: (``dnsjax.twin.TWIN_FORMAT_VERSION`` is the writer's).
+#: (``dnsjax.twin.driver.TWIN_FORMAT_VERSION`` is the writer's).
 MIN_FORMAT_VERSION: int = 1
 
 

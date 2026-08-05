@@ -418,7 +418,7 @@ def case_wedge_nonlinear_wedge() -> None:
     from dnsjax.parameters import validate_parameters
 
     validate_parameters()
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
 
     state = generate_random_state(0.2, 0.6, seed=17)
     state_in = np.asarray(state)  # host copy: the step donates ``state``

@@ -370,7 +370,7 @@ def run_child(a: argparse.Namespace) -> None:
     import jax.numpy as jnp
 
     from dnsjax.flows.registry import viscoelastic_systems
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
     from dnsjax.sharding import sharding
 
     dev = jax.local_devices()[0]
