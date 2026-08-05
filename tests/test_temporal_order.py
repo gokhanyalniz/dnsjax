@@ -270,7 +270,7 @@ def _worker(
     import jax.numpy as jnp
 
     fmod = importlib.import_module(FLOW_MODULES[system])
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
 
     amp = AMP_KOLM if system == "kolmogorov" else AMP_PC
     # ICs are physical; the steppers work in the solver basis (the

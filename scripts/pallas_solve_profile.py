@@ -530,7 +530,7 @@ def _imm_stage_breakdown(
 
 
 def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
     from dnsjax.solvers import PerModeBandedPallasOperator
 
     print("\n" + "-" * 72)
@@ -828,7 +828,7 @@ def _part_c(flow, m, sharding, trace_dir, hlo_out) -> None:
         "pure-JAX fallback instead (its own mode-outer moveaxes)."
     )
 
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
     from dnsjax.solvers import PerModeBandedPallasOperator
 
     state = getattr(m, "to_solver_basis", lambda x: x)(
@@ -1030,7 +1030,7 @@ def main() -> None:
         # Minimal steady-state stepping for an external profiler (nsys):
         # warm up (compile), then run N steps so the capture is dominated
         # by the corrector kernels.
-        from dnsjax.random_field import generate_random_state
+        from dnsjax.ic.random_field import generate_random_state
 
         state = generate_random_state(
             params.init.random_amplitude,

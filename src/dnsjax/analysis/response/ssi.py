@@ -2,7 +2,7 @@ r"""Stochastic-forcing cross-covariance identification (SSI).
 
 Identifies a mode's linear operator from a run driven by the
 white-in-time stochastic kicks of the ``force`` section
-(:mod:`dnsjax.forcing`): cross-correlating the probe stream with the
+(:mod:`dnsjax.extensions.forcing`): cross-correlating the probe stream with the
 *recorded* kick coefficients isolates the coherent forced response
 -- the natural turbulence is statistically independent of the
 injected noise and drops out of the cross-covariance -- so, unlike
@@ -18,7 +18,7 @@ Kicks add `$\varepsilon\,P\,\mathbf{w}_k$` at times `$t_k$`
 (`$\mathbf{w}_k \sim \mathcal{CN}(0, I_m)$` recorded in
 ``forcing.bin``; `$P$` the channel basis, the leading
 controllability modes the run was configured with).  Probe samples
-at kick times are pre-kick (the :mod:`dnsjax.forcing` timing
+at kick times are pre-kick (the :mod:`dnsjax.extensions.forcing` timing
 convention), so with `$\mathbf{b}(t)$` the probe profiles projected
 onto the basis coordinates, the lagged cross-covariance regression
 
@@ -100,7 +100,7 @@ from .probes import (
 )
 
 #: Oldest ``forcing.json`` schema this reader accepts (the writer's
-#: current version is ``dnsjax.forcing.FORMAT_VERSION``).  Version-1
+#: current version is ``dnsjax.extensions.forcing.FORMAT_VERSION``).  Version-1
 #: streams were injected in the solver's decoupled
 #: `$(u_z, u_+, u_-)$` basis, under the conjugate-partner rule that
 #: basis needed, so replaying their coefficients against today's
@@ -305,7 +305,7 @@ def predicted_forced_variance(
 ) -> float:
     r"""Stationary forced variance `$\mathrm{tr}(P^H X P)$` on the basis.
 
-    Samples are **pre-kick** (the :mod:`dnsjax.forcing` convention),
+    Samples are **pre-kick** (the :mod:`dnsjax.extensions.forcing` convention),
     so the sampled state obeys `$x_{n+1} = E\,(x_n + \varepsilon P
     \mathbf{w}_n)$` with `$E = e^{\Delta_f A}$`, and `$X$` solves the
     discrete Lyapunov equation `$X = E\,(X + Q)\,E^H$` with the

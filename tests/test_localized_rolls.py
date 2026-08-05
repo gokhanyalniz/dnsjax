@@ -2,11 +2,11 @@
 r"""Construction self-test for the in-process IC builders.
 
 Builds the deterministic streamwise-localized-rolls IC
-(``dnsjax.localized_rolls``) for each wall-bounded flow and checks the
+(``dnsjax.ic.localized_rolls``) for each wall-bounded flow and checks the
 *construction* properties the smoke test (``tests/test_rolls_smoke.py``)
 cannot -- without time-stepping -- plus, in the same subprocess (no
 extra launch), the divergence guard on the random-field IC
-(``dnsjax.random_field``, the default start mode).  Flows in
+(``dnsjax.ic.random_field``, the default start mode).  Flows in
 ``RANDOM_ONLY`` run the random half only, and their random state
 carries the checks the rolls state carries elsewhere:
 
@@ -193,7 +193,7 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
     default grid's, and a mismatched reference would silently measure
     the wrong operator.  The whole field is measured, including the
     `$k_z = 0$` plane: the random-field builders now solve continuity
-    on every mode (see :mod:`dnsjax.random_field`).
+    on every mode (see :mod:`dnsjax.ic.random_field`).
     """
     from dnsjax.operators import complex_harmonics, real_harmonics
     from dnsjax.parameters import (
@@ -286,7 +286,7 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
 
     true: np.ndarray | None = None
     if system not in RANDOM_ONLY:
-        from dnsjax.localized_rolls import generate_localized_rolls
+        from dnsjax.ic.localized_rolls import generate_localized_rolls
         from dnsjax.parameters import cylindrical_systems
 
         state1 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))
@@ -325,7 +325,7 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
     # -- u_z for k_z != 0, u_theta for k_z = 0 (m != 0), u_r = 0 at the
     # mean -- so the residual is machine-zero, a sharp guard on the
     # per-geometry divergence expression each builder inverts.
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
 
     rand = np.asarray(generate_random_state(RAND_AMP, RAND_SMOOTH, RAND_SEED))
     rand_true = _true(rand)
@@ -464,7 +464,7 @@ def _peak_build(system: str, box: float, n: int) -> int:
     )
     padded_res.set_padded_resolution(params)
 
-    from dnsjax.localized_rolls import generate_localized_rolls
+    from dnsjax.ic.localized_rolls import generate_localized_rolls
     from dnsjax.operators import spec_to_phys_2d
 
     state = generate_localized_rolls(PEAK_AMP, PEAK_WIDTH, PEAK_WAVE)

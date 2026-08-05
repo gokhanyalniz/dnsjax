@@ -6,7 +6,7 @@ from a snapshot and a perturbed partner
 `$\mathbf{u}^{(2)} = \mathbf{u}^{(1)} + \delta$` -- and records online
 diagnostics of the difference field
 `$\Delta\mathbf{u} = \mathbf{u}^{(2)} - \mathbf{u}^{(1)}$`
-(:mod:`dnsjax.twin_diagnostics`), following Egerique-de-la-Concha &
+(:mod:`dnsjax.twin.diagnostics`), following Egerique-de-la-Concha &
 Hwang, *J. Fluid Mech.* **1036**, A52 (2026),
 doi:10.1017/jfm.2026.11608.  Cartesian wall-bounded flows only
 (plane-Couette / plane-Poiseuille); both states share every
@@ -24,7 +24,7 @@ sampling; a kick would have to be applied identically to both states);
 Initial perturbation
 --------------------
 `$\delta$` is the divergence-free random field of
-:func:`dnsjax.random_field.generate_random_state` (device-count
+:func:`dnsjax.ic.random_field.generate_random_state` (device-count
 independent, per-global-mode seeded, mean mode excluded), rescaled so
 the solver-measure perturbation energy is exactly ``twin.e0``:
 `$E'(\delta) = \|\delta\|^2/2 = e_0$` -- the convention of
@@ -68,7 +68,7 @@ start mode is decided by two files -- the partner of
 Diagnostic streams
 ------------------
 ``twin.dat`` -- the difference-field component energies
-(:func:`dnsjax.twin_diagnostics.twin_energies`) every
+(:func:`dnsjax.twin.diagnostics.twin_energies`) every
 ``twin.it_energy`` steps, in the buffered, ``fsync``-ed,
 non-finite-guarded ``.dat`` format of ``stats.dat`` (shared
 :func:`dnsjax.__main__._flush_stats`; a ``t0`` row at setup, a final
@@ -101,17 +101,17 @@ from time import perf_counter_ns
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .__main__ import _flush_stats, _interpolate_if_needed
-from .bootstrap import configure_jax_runtime, resolve_parameters
-from .extensions import (
+from ..__main__ import _flush_stats, _interpolate_if_needed
+from ..bootstrap import configure_jax_runtime, resolve_parameters
+from ..extensions import (
     ParamExtension,
     force_params,
     probes_params,
     register_extension,
     relevant_extensions,
 )
-from .param_surface import print_resolved_parameters, recorded_params_dump
-from .parameters import (
+from ..param_surface import print_resolved_parameters, recorded_params_dump
+from ..parameters import (
     cartesian_systems,
     derived_params,
     ns_to_s,
@@ -119,7 +119,7 @@ from .parameters import (
     params,
     trajectory_defining_changes,
 )
-from .snapshot_meta import git_hash, is_snapshot_file, read_snapshot_meta
+from ..snapshot_meta import git_hash, is_snapshot_file, read_snapshot_meta
 
 _PROG = "dnsjax-twin"
 
@@ -154,7 +154,8 @@ class TwinParams(BaseModel):
     component energies to ``twin.dat`` every ``it_energy`` steps.
     ``e0 = 0`` requests an exact zero perturbation (the determinism
     guard).  Cartesian wall-bounded flows, fixed time step; details
-    and the resume rules: the :mod:`dnsjax.twin` module docstring.
+    and the resume rules: the :mod:`dnsjax.twin.driver` module
+    docstring.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -364,8 +365,8 @@ def run(wall_time_start: int) -> None:
     import numpy as np
     from jax import numpy as jnp
 
-    from .flows.registry import spec_for
-    from .sharding import sharding
+    from ..flows.registry import spec_for
+    from ..sharding import sharding
 
     # --- Flow dispatch (registry-driven, as in __main__) -----------------
     _spec = spec_for(params.phys.system)
@@ -382,9 +383,9 @@ def run(wall_time_start: int) -> None:
     # The [twin] validation restricts to the Cartesian flows, whose
     # state is physical components throughout -- no solver-basis
     # crossing anywhere in this driver.
-    from . import twin_diagnostics
+    from . import diagnostics
 
-    twin_energies = twin_diagnostics.twin_energies
+    twin_energies = diagnostics.twin_energies
 
     # --- Driver-level configuration guards -------------------------------
     # These are dnsjax-twin requirements beyond the [twin] validate
@@ -417,7 +418,7 @@ def run(wall_time_start: int) -> None:
             "start modes are not supported."
         )
 
-    from .snapshot import (
+    from ..snapshot import (
         load_snapshot,
         read_metadata,
         save_snapshot,
@@ -541,7 +542,7 @@ def run(wall_time_start: int) -> None:
                 "Twin partner: exact copy (twin.e0 = 0; bit-identity mode)."
             )
         else:
-            from .random_field import generate_random_state
+            from ..ic.random_field import generate_random_state
 
             grid_before = derived_params.wall_normal_grid
             # ||delta|| = sqrt(2 e0) makes E'(delta) = e0 already;
@@ -654,7 +655,7 @@ def run(wall_time_start: int) -> None:
     tvals = twin_energies(state1, state2)
     measure_budget: bool = twin_params.it_budget is not None
     if measure_budget:
-        twin_budget = twin_diagnostics.twin_budget
+        twin_budget = diagnostics.twin_budget
         bvals = twin_budget(state1, state2)
 
     sharding.print(
@@ -712,9 +713,9 @@ def run(wall_time_start: int) -> None:
     measure_spectra: bool = twin_params.it_spectra is not None
     spectra_bad_t0: str | None = None
     if measure_spectra:
-        from .twin_spectra import TwinSpectraStream
+        from .spectra import TwinSpectraStream
 
-        twin_spectra_2d = twin_diagnostics.twin_spectra_2d
+        twin_spectra_2d = diagnostics.twin_spectra_2d
         spectra_stream = TwinSpectraStream(twin_params)
         spectra_bad_t0 = spectra_stream.record(
             twin_spectra_2d(state1, state2), t
@@ -761,7 +762,7 @@ def run(wall_time_start: int) -> None:
     measure_probes: bool = probes_params.modes is not None
     probe_bad_t0: str | None = None
     if measure_probes:
-        from .probes import ProbeStream
+        from ..extensions.probes import ProbeStream
 
         probe_stream = ProbeStream(state1)
         probe_bad_t0 = probe_stream.record(state1, t)
@@ -1101,7 +1102,3 @@ def main(argv: list[str] | None = None) -> int:
 
     print("Shutdown at", datetime.now(), flush=True, file=sys.stderr)
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

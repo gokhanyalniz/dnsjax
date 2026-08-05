@@ -429,7 +429,7 @@ def get_pert_enstrophy(
     `$-\langle \mathbf{u}' \cdot (\nabla_h^2 + D_2)\,\mathbf{u}'
     \rangle$`, which gives up the positivity -- the rule and the case
     that forced it: the "Dissipation form" section of
-    ``twin_diagnostics.py``.  The same holds for the cylindrical and
+    ``twin/diagnostics.py``.  The same holds for the cylindrical and
     annular twins of this function.
     """
     horiz = get_norm2(state, k2 * k_metric, y_weights)

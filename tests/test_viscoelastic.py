@@ -268,7 +268,10 @@ def test_probe_stream_component_basis() -> None:
     apart.
     """
     from dnsjax.analysis._core import geometry_info
-    from dnsjax.probes import _component_labels, build_mode_extractor
+    from dnsjax.extensions.probes import (
+        _component_labels,
+        build_mode_extractor,
+    )
 
     assert _component_labels(9) == list(geometry_info(params).components)
 

@@ -51,7 +51,7 @@ Two subcommands:
 ``build-twin``
     Materialise a **twin-run** member tree from a manifest: one
     directory per member, each launched with ``dnsjax-twin``
-    (:mod:`dnsjax.twin`) against its parent snapshot.  No seed
+    (:mod:`dnsjax.twin.driver`) against its parent snapshot.  No seed
     subprocesses -- the driver perturbs in-process at start (the
     random divergence-free field of exactly ``--e0``), so a member
     directory holds only a generated ``parameters.toml`` ([init]

@@ -1,6 +1,6 @@
 r"""Reader for the twin spectra stream ``twin_spectra.bin`` (JAX-free).
 
-Format and conventions: the :mod:`dnsjax.twin_spectra` writer
+Format and conventions: the :mod:`dnsjax.twin.spectra` writer
 docstring.  Each record holds the difference field's per-mode energy
 `$E_\Delta(k_z, k_x)$` on the true (unpadded) mode grid -- summing
 over modes reproduces ``twin.dat``'s ``E_d`` -- and, when the stream
@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 #: Oldest ``twin_spectra.json`` schema this reader understands
-#: (``dnsjax.twin_spectra.FORMAT_VERSION`` is the writer's).
+#: (``dnsjax.twin.spectra.FORMAT_VERSION`` is the writer's).
 MIN_FORMAT_VERSION: int = 1
 
 

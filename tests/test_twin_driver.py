@@ -129,7 +129,7 @@ TWIN_COLS = [
 
 def _build_parents() -> None:
     """Parent snapshots: a plain one and one recording ``[force]``."""
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
     from dnsjax.snapshot import save_snapshot
 
     state = generate_random_state(0.1, 0.4, 1)
@@ -491,7 +491,7 @@ def test_budget_closure() -> None:
     against the interior divergence residual + the FD
     integration-by-parts error of the wall-normal transport;
     the dissipation uses the discrete-Laplacian form so the viscous
-    part closes exactly -- see the ``twin_diagnostics`` "Dissipation
+    part closes exactly -- see the ``twin/diagnostics.py`` "Dissipation
     form" note): the mean component closes to `$O(10^{-5})$`, the
     fluctuating components to a few percent at 16x33x16, and every
     residual *decreases* from 8x17x8 to 16x33x16 (self-convergence:

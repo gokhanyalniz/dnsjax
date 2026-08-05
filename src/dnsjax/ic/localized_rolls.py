@@ -81,8 +81,8 @@ import numpy as np
 # builders must never fetch the ``fourier`` singleton's wavenumber
 # arrays, which are global multi-device arrays (not addressable per
 # process under ``mpirun``).
-from .harmonics import complex_harmonics, real_harmonics
-from .parameters import (
+from ..harmonics import complex_harmonics, real_harmonics
+from ..parameters import (
     annular_systems,
     annular_viscoelastic_systems,
     cartesian_systems,
@@ -256,7 +256,7 @@ def _separable_scalar(
     import jax
     from jax.sharding import PartitionSpec as P
 
-    from .sharding import sharding
+    from ..sharding import sharding
 
     npc = np.complex128 if params.res.double_precision else np.complex64
 
@@ -301,8 +301,8 @@ def generate_cartesian_rolls(
     """
     from jax import numpy as jnp
 
-    from .geometries.wall_bounded.cartesian import build_cartesian_grid
-    from .sharding import sharding
+    from ..geometries.wall_bounded.cartesian import build_cartesian_grid
+    from ..sharding import sharding
 
     nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
     lx, lz = params.geo.lx, params.geo.lz
@@ -362,8 +362,8 @@ def generate_cylindrical_rolls(
     """
     from jax import numpy as jnp
 
-    from .geometries.wall_bounded.cylindrical import build_cylindrical_grid
-    from .sharding import sharding
+    from ..geometries.wall_bounded.cylindrical import build_cylindrical_grid
+    from ..sharding import sharding
 
     nx, nr, nz = params.res.nx, params.res.ny, params.res.nz
     lx = params.geo.lx  # axial length
@@ -424,8 +424,8 @@ def generate_annular_rolls(
     """
     from jax import numpy as jnp
 
-    from .geometries.wall_bounded.annular import build_annular_grid
-    from .sharding import sharding
+    from ..geometries.wall_bounded.annular import build_annular_grid
+    from ..sharding import sharding
 
     nx, nr, nz = params.res.nx, params.res.ny, params.res.nz
     lx = params.geo.lx  # axial length (spanwise; real axis)
@@ -488,9 +488,9 @@ def generate_localized_rolls(
     spanwise wavelength (ignored by the pipe, whose cross-section is the
     fixed `$m = \pm 1$` mode).  For the total-field Dean flow the
     analytical laminar profile is added to the perturbation (reusing
-    :func:`dnsjax.random_field.add_dean_laminar`); every other system
-    returns the perturbation directly.  Defined for wall-bounded systems
-    only.
+    :func:`dnsjax.ic.random_field.add_dean_laminar`); every other
+    system returns the perturbation directly.  Defined for wall-bounded
+    systems only.
 
     Requires JAX to be configured and the parameter singletons set (the
     geometry ``fourier`` singleton is built lazily by the dispatched

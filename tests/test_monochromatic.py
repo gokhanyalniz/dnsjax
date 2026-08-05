@@ -71,7 +71,7 @@ from dnsjax.flows.triply_periodic.monochromatic import (  # noqa: E402
     flow,
     get_stats,
 )
-from dnsjax.random_field import generate_random_state  # noqa: E402
+from dnsjax.ic.random_field import generate_random_state  # noqa: E402
 
 LY = 4.0  # fixed shear-direction box length (triply_periodic.ly)
 

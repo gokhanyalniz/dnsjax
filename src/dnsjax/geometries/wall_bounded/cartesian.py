@@ -1762,7 +1762,8 @@ def _imm_iteration_vw(
     keep `$\alpha$` exactly *was* shipped (2026-07-25) and removed
     (2026-07-27): it cost a third representation of the state,
     field-wide basis conversions in
-    ``probes``/``forcing``/``__main__``, an extra pair of
+    ``extensions/probes``/``extensions/forcing``/``__main__``, an
+    extra pair of
     `$\varphi$` influence columns as `$\Delta t$` leaves, a state/RHS
     basis mismatch the stepper had to be careful around, and an entry
     projection that silently dropped a kick's non-solenoidal part --

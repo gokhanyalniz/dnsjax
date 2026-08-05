@@ -68,8 +68,8 @@ import numpy as np
 # per-device generators must never fetch the ``fourier`` singleton's
 # wavenumber arrays, which are global multi-device arrays (not
 # addressable per process under ``mpirun``).
-from .harmonics import complex_harmonics, real_harmonics
-from .parameters import (
+from ..harmonics import complex_harmonics, real_harmonics
+from ..parameters import (
     annular_systems,
     annular_viscoelastic_systems,
     cartesian_systems,
@@ -320,12 +320,12 @@ def generate_cartesian(
     components keep exact wall zeros.  Returns the sharded spectral state
     of shape ``(3, Ny, Nkz, Nkx)``.
     """
-    from .geometries.wall_bounded._base import get_norm
-    from .geometries.wall_bounded.cartesian import (
+    from ..geometries.wall_bounded._base import get_norm
+    from ..geometries.wall_bounded.cartesian import (
         build_cartesian_grid,
         fourier,
     )
-    from .snapshot import assemble_local_shards
+    from ..snapshot import assemble_local_shards
 
     nx = params.res.nx
     ny = params.res.ny
@@ -433,12 +433,12 @@ def generate_cylindrical(
     (:func:`_hermitian_column`) so every physical component --
     including the axial-mean swirl -- is real.
     """
-    from .geometries.wall_bounded.cylindrical import (
+    from ..geometries.wall_bounded.cylindrical import (
         build_cylindrical_grid,
         fourier,
         get_norm2_cyl,
     )
-    from .snapshot import assemble_local_shards
+    from ..snapshot import assemble_local_shards
 
     nx = params.res.nx
     Nr = params.res.ny
@@ -569,12 +569,12 @@ def generate_annular(
     so every physical component -- including the axial-mean swirl --
     is real.
     """
-    from .geometries.wall_bounded.annular import (
+    from ..geometries.wall_bounded.annular import (
         build_annular_grid,
         fourier,
         get_norm2_annular,
     )
-    from .snapshot import assemble_local_shards
+    from ..snapshot import assemble_local_shards
 
     nx = params.res.nx
     Nr = params.res.ny
@@ -679,12 +679,12 @@ def add_dean_laminar(state: Array) -> Array:
     """
     from jax import numpy as jnp
 
-    from .geometries.wall_bounded.annular import (
+    from ..geometries.wall_bounded.annular import (
         build_annular_grid,
         dean_laminar_u_theta,
         fourier,
     )
-    from .sharding import sharding
+    from ..sharding import sharding
 
     rs, *_ = build_annular_grid(
         params.res.ny,
@@ -725,8 +725,8 @@ def add_viscoelastic_laminar(vel_state: Array) -> Array:
     """
     from jax import numpy as jnp
 
-    from .geometries.wall_bounded.annular import build_annular_grid, fourier
-    from .geometries.wall_bounded.annular_viscoelastic import (
+    from ..geometries.wall_bounded.annular import build_annular_grid, fourier
+    from ..geometries.wall_bounded.annular_viscoelastic import (
         viscoelastic_laminar_profiles,
     )
 
@@ -774,16 +774,16 @@ def generate_viscoelastic_dean(
     """
     from jax import numpy as jnp
 
-    from .geometries.wall_bounded.annular import (
+    from ..geometries.wall_bounded.annular import (
         build_annular_grid,
         fourier,
         get_norm2_annular,
     )
-    from .geometries.wall_bounded.annular_viscoelastic import (
+    from ..geometries.wall_bounded.annular_viscoelastic import (
         get_norm2_conformation,
         viscoelastic_laminar_profiles,
     )
-    from .snapshot import assemble_local_shards
+    from ..snapshot import assemble_local_shards
 
     nx = params.res.nx
     Nr = params.res.ny
@@ -907,11 +907,11 @@ def add_viscoelastic_pipe_laminar(vel_state: Array) -> Array:
     """
     from jax import numpy as jnp
 
-    from .geometries.wall_bounded.cylindrical import (
+    from ..geometries.wall_bounded.cylindrical import (
         build_cylindrical_grid,
         fourier,
     )
-    from .geometries.wall_bounded.cylindrical_viscoelastic import (
+    from ..geometries.wall_bounded.cylindrical_viscoelastic import (
         viscoelastic_laminar_profiles,
     )
 
@@ -966,18 +966,18 @@ def generate_viscoelastic_pipe(
     """
     from jax import numpy as jnp
 
-    from .geometries.wall_bounded._viscoelastic_common import (
+    from ..geometries.wall_bounded._viscoelastic_common import (
         get_norm2_conformation,
     )
-    from .geometries.wall_bounded.cylindrical import (
+    from ..geometries.wall_bounded.cylindrical import (
         build_cylindrical_grid,
         fourier,
         get_norm2_cyl,
     )
-    from .geometries.wall_bounded.cylindrical_viscoelastic import (
+    from ..geometries.wall_bounded.cylindrical_viscoelastic import (
         viscoelastic_laminar_profiles,
     )
-    from .snapshot import assemble_local_shards
+    from ..snapshot import assemble_local_shards
 
     nx = params.res.nx
     Nr = params.res.ny
@@ -1140,12 +1140,12 @@ def generate_triply_periodic(
     construction.  Returns the sharded spectral state of shape
     ``(3, Nky, Nkz, Nkx)``.
     """
-    from .geometries.triply_periodic.triply_periodic import (
+    from ..geometries.triply_periodic.triply_periodic import (
         fourier,
         get_norm,
         ly,
     )
-    from .snapshot import assemble_local_shards
+    from ..snapshot import assemble_local_shards
 
     nx = params.res.nx
     ny = params.res.ny

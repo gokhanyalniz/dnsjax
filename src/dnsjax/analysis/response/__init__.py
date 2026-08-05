@@ -5,7 +5,7 @@ Submodules (import them explicitly; this ``__init__`` stays empty so
 
 - :mod:`dnsjax.analysis.response.probes` -- JAX-free (NumPy) reader
   for the runtime spectral-mode probe stream
-  (``probes.bin``/``probes.json``; written by :mod:`dnsjax.probes`),
+  (``probes.bin``/``probes.json``; written by :mod:`dnsjax.extensions.probes`),
   plus mean-profile / friction-Reynolds-number helpers.
 - :mod:`dnsjax.analysis.response.operator_tools` -- per-mode linear
   operators exported by the transient-growth CLI
@@ -21,7 +21,7 @@ Submodules (import them explicitly; this ``__init__`` stays empty so
   turbulent forcing).  JAX-based, SciPy imported lazily.
 - :mod:`dnsjax.analysis.response.ssi` -- stochastic-forcing
   identification: reader for the runtime kick log
-  (``forcing.bin``, :mod:`dnsjax.forcing`) and the kick/response
+  (``forcing.bin``, :mod:`dnsjax.extensions.forcing`) and the kick/response
   cross-covariance fit (no whiteness hypothesis on the background;
   needs a ``[force]``-enabled run).  JAX-based, SciPy imported
   lazily.
@@ -35,7 +35,7 @@ docstrings):
 1. **Probe the run.**  Add ``--probes.modes "0,0;3,0"
    --probes.it_probes 10`` to a DNS run; the listed modes'
    wall-normal profiles `$\hat{u}(y, t)$` stream to ``probes.bin``
-   (:mod:`dnsjax.probes`).
+   (:mod:`dnsjax.extensions.probes`).
 2. **Turbulent mean.**  :func:`~dnsjax.analysis.response.probes.
    mean_profile` + ``write_profile_file`` turn the ``(0,0)`` probe
    into a total mean-profile file (cut the transient with ``t_min``;

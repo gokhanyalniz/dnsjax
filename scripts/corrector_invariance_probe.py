@@ -298,7 +298,7 @@ def _bench(fn, args_list, warmup: int = 2) -> float:
 
 def _make_state(m):
     """A random initial state in the geometry's carried basis."""
-    from dnsjax.random_field import generate_random_state
+    from dnsjax.ic.random_field import generate_random_state
 
     to_solver = getattr(m, "to_solver_basis", None)
     state = generate_random_state(
