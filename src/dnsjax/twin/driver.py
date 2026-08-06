@@ -110,9 +110,9 @@ from ..extensions import (
     register_extension,
     relevant_extensions,
 )
+from ..flows.registry import cartesian_systems
 from ..param_surface import print_resolved_parameters, recorded_params_dump
 from ..parameters import (
-    cartesian_systems,
     derived_params,
     ns_to_s,
     padded_res,

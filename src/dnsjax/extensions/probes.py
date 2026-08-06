@@ -84,31 +84,20 @@ from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
+from ..flows.registry import cartesian_systems, viscoelastic_systems
 from ..harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
 from ..param_surface import recorded_params_dump
-from ..parameters import (
-    cartesian_systems,
-    derived_params,
-    params,
-    viscoelastic_systems,
-)
+from ..parameters import derived_params, params
 from ..sharding import sharding
 from ..snapshot_meta import git_hash
 from . import probes_params
 
-#: Sidecar schema version.  Version 2 records the switch of the
-#: cylindrical/annular columns from the solver's decoupled
-#: `$(u_z, u_+, u_-)$` basis (and the conformation spin components)
-#: to the physical `$(u_z, u_r, u_\theta)$` one: the *values* changed
-#: meaning at fixed layout, so a version-1 stream fed to a
-#: positional consumer (``response.lim`` / ``response.ssi``) would be
-#: silently misread.  Version 3 fixes the recorded axis-2
-#: ``wavenumbers`` on an azimuthal wedge: they were the harmonic
-#: index `$j$` where the geometry's mode is the physical
-#: `$m = m_0 j$`, so every ``geo.m0 > 1`` stream under-reported `$m$`
-#: by that factor (the sampled columns were always right; only the
-#: label was wrong).  The reader's floor is
-#: ``analysis.response.probes.MIN_FORMAT_VERSION``.
+#: Sidecar schema version.  Bumped whenever the stored *meaning*
+#: changes at fixed layout -- the physical component basis of the
+#: columns, the physical (`$m = m_0 j$`) azimuthal wavenumber labels
+#: -- so a stale stream cannot be silently misread by a positional
+#: consumer (``response.lim`` / ``response.ssi``).  The reader's
+#: floor is ``analysis.response.probes.MIN_FORMAT_VERSION``.
 FORMAT_VERSION: int = 3
 
 #: Sidecar keys that must match for an append (resume) to proceed.
@@ -152,8 +141,11 @@ def _component_labels(n_components: int) -> list[str]:
         ]
     else:  # cylindrical / annular velocity basis
         labels = ["u_z", "u_r", "u_theta"]
-    if len(labels) != n_components:  # pragma: no cover - defensive
-        labels = [f"c{i}" for i in range(n_components)]
+    if len(labels) != n_components:
+        raise ValueError(
+            f"no component-label schema for {n_components} components "
+            f"({params.phys.system!r})"
+        )
     return labels
 
 

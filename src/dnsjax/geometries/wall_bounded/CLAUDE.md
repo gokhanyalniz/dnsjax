@@ -127,7 +127,7 @@ the axis forces (the spin quad, parity classes, the band splice).
   changes what it carries** (scalars re-derived per pass and
   reconstructed away), so snapshots, probes/forcing, analysis and
   resume are all flag-independent. Derivation, per-geometry efficacy,
-  momentum prices, and the five rejected routes: the
+  momentum prices, and the four rejected routes: the
   `Resolution.consistent_imm` docs (`parameters.py`); the shared
   scheme record: `cartesian._imm_iteration` (+ `_imm_iteration_vw`);
   the cylindrical algebra: `annular._imm_iteration_vw`; the pipe's
@@ -137,11 +137,6 @@ the axis forces (the spin quad, parity classes, the band splice).
   `tests/test_imm_continuity.py` (continuity + the momentum ledger),
   `tests/test_random_smoke.py` (the nonlinear stability gate),
   `tests/test_temporal_order.py` (the order the flag must not cost).
-- **Retired 2026-07-26**: `res.pipe_axis_fit`, the pipe's opt-in
-  `x = r²` axis-regular radial fit — not needed (divergence exactness
-  is fit-independent) and worse on every global metric despite a real
-  pointwise near-axis gain. Record + all measurements:
-  `cylindrical.build_parity_reduced_matrices`.
 
 ### Mean mode and padding modes
 

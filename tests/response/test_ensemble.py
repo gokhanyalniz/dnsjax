@@ -20,7 +20,7 @@ full chain is a documented manual rehearsal):
 3. **identify_generator units**: exact multi-horizon recovery of a
    known generator; branch-cut / singular / shape rejections.
 4. **Direct identification end-to-end vs a known operator**: a real
-   transient-growth ``--save-operator`` bundle + controllability
+   transient-growth ``--tg.save_operator`` bundle + controllability
    basis (real writers, subprocess); synthetic basis responses
    generated from the *restriction* of the exported operator, plus
    noise -> ``identify_from_responses`` recovers it (noise-free to

@@ -159,13 +159,13 @@ holds the state's physical diagnostics (the ``get_stats`` dict as
 ``{name: value}``); readers that do not need it simply ignore the
 extra member.
 
-The on-disk format is ``format_version: 6`` (6 switched the
-cylindrical/annular component basis to physical components --
-`$u_r$`, `$u_\theta$` and the physical conformation tensor; the
-solver's decoupled `$u_\pm$` / spin working basis is converted by the
-caller, so these functions stay basis-agnostic; 5 switched the array
-layout to the solver's native spectral layout; 4 introduced the
-public-named parameter dump); older snapshots are rejected at read
+The on-disk format is ``format_version: 6``: the solver's native
+spectral layout, physical components in every family
+(cylindrical/annular `$u_r$`, `$u_\theta$` and the physical
+conformation tensor; the solver's decoupled `$u_\pm$` / spin working
+basis is converted by the caller, so these functions stay
+basis-agnostic), and the public-named parameter dump.  Older
+snapshots are rejected at read
 (:func:`dnsjax.snapshot_meta.read_snapshot_meta`), never translated.
 """
 
@@ -182,7 +182,8 @@ from jax import numpy as jnp
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from .parameters import derived_params, params, periodic_systems
+from .flows.registry import periodic_systems
+from .parameters import derived_params, params
 from .sharding import sharding
 from .snapshot_meta import (
     git_hash,
@@ -217,21 +218,6 @@ _PARTIAL_SUFFIX = ".partial"
 _NVFS_STATS = Path("/proc/driver/nvidia-fs/stats")
 
 
-def _compat_mode(defaults) -> object:
-    """kvikIO's compat-mode setting, across its two API generations.
-
-    Older kvikIO exposes a per-property getter
-    (``kvikio.defaults.compat_mode()``); newer versions replaced those
-    with a single ``get(name)``.  Try the getter, fall back to the
-    generic accessor, so the detection does not silently break again
-    the next time the API moves.
-    """
-    getter = getattr(defaults, "compat_mode", None)
-    if callable(getter):
-        return getter()
-    return defaults.get("compat_mode")
-
-
 @cache
 def _gds_available() -> bool:
     """True when kvikIO + GDS can transfer GPU buffers.
@@ -253,10 +239,11 @@ def _gds_available() -> bool:
       own host path below 1 MiB spans.  ``AUTO`` -- the default compat
       mode -- is exactly the case that would otherwise be mistaken for
       "GDS is on".
-    - **Compat mode is not explicitly ``ON``.**  ``compat_mode()``
-      returns a ``CompatMode`` enum (``OFF`` / ``ON`` / ``AUTO``), not
-      a bool; a bare truth test would read ``AUTO`` as "compat" and
-      demote every run.  Compare against the enum member.
+    - **Compat mode is not explicitly ``ON``.**
+      ``defaults.get("compat_mode")`` returns a ``CompatMode`` enum
+      (``OFF`` / ``ON`` / ``AUTO``), not a bool; a bare truth test
+      would read ``AUTO`` as "compat" and demote every run.  Compare
+      against the enum member.
     - **cupy imports.**  Both GDS engines wrap their device buffers
       with it, so without cupy this path cannot run at all -- and
       answering "GDS" would turn the first snapshot of the run into
@@ -278,15 +265,14 @@ def _gds_available() -> bool:
         )
         return False
     try:
-        mode = _compat_mode(kvikio_defaults)
+        mode = kvikio_defaults.get("compat_mode")
+        available = mode is not type(mode).ON
     except (AttributeError, KeyError, TypeError) as exc:  # API moved
         sharding.print(
             f"Snapshot: kvikIO present but its compat-mode setting is "
             f"unreadable ({exc}); using the host path."
         )
         return False
-    on = getattr(type(mode), "ON", None)
-    available = mode is not on if on is not None else not mode
     if not available:
         sharding.print(
             f"Snapshot: kvikIO compat mode is {mode!r}; using the host "
@@ -828,17 +814,15 @@ def _metadata_bytes(t: float, it: int, isnap: int = 0) -> bytes:
     ``git_hash`` records the code revision that wrote the snapshot
     (provenance only -- never read back on load).  Additive keys like
     it need no ``format_version`` bump: readers use targeted lookups
-    and ignore unknown keys.  Version 6 stores the cylindrical/annular
-    components in the physical basis (`$u_r$`, `$u_\theta$`, physical
-    conformation tensor -- the solver's native state; same byte
-    layout, changed component meaning).  Version 5 stores the state
-    in the solver's native spectral layout, so ``native_shape[1:]``
-    **is** the on-disk per-component chunk shape.  Version 4
-    introduced
-    ``params`` as the flow-relevant, **public-named**, resolved dump
-    plus the relevant extension sections (e.g. ``force``, ``probes``;
-    :func:`dnsjax.param_surface.recorded_params_dump`); readers map it
-    back via :func:`dnsjax.flows.registry.internalize_stored` /
+    and ignore unknown keys.  Format 6 stores physical components
+    (cylindrical/annular `$u_r$`, `$u_\theta$`, the physical
+    conformation tensor) in the solver's native spectral layout, so
+    ``native_shape[1:]`` **is** the on-disk per-component chunk
+    shape; ``params`` is the flow-relevant, **public-named**,
+    resolved dump plus the relevant extension sections (e.g.
+    ``force``, ``probes``;
+    :func:`dnsjax.param_surface.recorded_params_dump`), mapped back
+    by readers via :func:`dnsjax.flows.registry.internalize_stored` /
     ``stored_value``.  Pre-6 snapshots are rejected at
     :func:`dnsjax.snapshot_meta.read_snapshot_meta`.
     """

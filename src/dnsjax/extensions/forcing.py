@@ -133,19 +133,12 @@ from ..snapshot_meta import git_hash
 from . import force_params
 from .probes import _component_labels
 
-#: Sidecar schema version.  Version 2 records the switch of the
-#: injected profiles to the physical `$(u_z, u_r, u_\theta)$` basis
-#: and, with it, of the real-FFT conjugate-partner rule (the
-#: `$u_+ \leftrightarrow u_-$` swap the decoupled basis needed is
-#: gone -- see the module docstring).  Both change what a given
-#: coefficient log *means* at fixed layout, so a version-1 stream
-#: replayed against today's profile bundle would be silently
-#: misread.  Version 3 fixes the recorded axis-2 ``wavenumbers`` on
-#: an azimuthal wedge: they were the harmonic index `$j$` where the
-#: geometry's mode is the physical `$m = m_0 j$`, so every
-#: ``geo.m0 > 1`` stream under-reported `$m$` by that factor (the
-#: injected columns were always right; only the label was wrong).
-#: The reader's floor is
+#: Sidecar schema version.  Bumped whenever the stored *meaning*
+#: changes at fixed layout -- the physical basis of the injected
+#: profiles (and the real-FFT conjugate-partner rule that goes with
+#: it), the physical (`$m = m_0 j$`) azimuthal wavenumber labels --
+#: so a stale coefficient log cannot be silently replayed against
+#: today's profile bundle.  The reader's floor is
 #: ``analysis.response.ssi.MIN_FORMAT_VERSION``.
 FORMAT_VERSION: int = 3
 

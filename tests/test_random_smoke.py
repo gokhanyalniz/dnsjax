@@ -613,13 +613,11 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # The pipe half: the spin-quad formulation, on a *random* IC.
-        # This entry was impossible before 2026-07-26 -- the composed
-        # `$D_2$` the flag used to build was not
-        # grid-scale-dissipative, so a grid-white draw near the axis
-        # blew it up and the flag was documented as resolved-ICs-only.
-        # The reformulation composes nothing, so the restriction is
-        # gone; this is the guard that it stays gone.  Half-CGL grid
+        # The pipe half: the spin-quad formulation, on a *random* IC
+        # -- the guard that the flag carries no resolved-IC
+        # restriction (a composed, non-grid-scale-dissipative `$D_2$`
+        # would blow up on a grid-white draw near the axis; the
+        # reformulation composes nothing).  Half-CGL grid
         # (the iterative-cn default), i.e. the innermost node sits
         # closest to the axis -- the hardest case for every 1/r term
         # in the scheme.

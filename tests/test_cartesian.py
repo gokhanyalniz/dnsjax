@@ -25,11 +25,11 @@ from types import SimpleNamespace
 # float64 before importing any dnsjax module that captures the platform
 # (sharding does so at import).  ``--dist.platform cuda`` runs the Pallas
 # band-vs-dense parity on a GPU.
-from dnsjax.bootstrap import (  # noqa: E402
+from dnsjax.bootstrap import (
     configure_jax_platform,
     platform_from_argv,
 )
-from dnsjax.parameters import (  # noqa: E402
+from dnsjax.parameters import (
     derived_params,
     params,
 )

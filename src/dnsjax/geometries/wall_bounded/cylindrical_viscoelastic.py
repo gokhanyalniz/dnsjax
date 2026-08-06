@@ -132,13 +132,7 @@ conformation update degenerates to the explicit CN combination.
 
 ``res.consistent_imm`` is supported and needs nothing from this module:
 the reconstruction scheme consumes the polymer divergence as one more
-source.  A flag-on blow-up found while porting this flow was
-misattributed to that polymer source; it was a defect in the
-cylindrical pass's lagged wall data, reproducing at `$\beta = 1$` and
-in the Newtonian pipe, and is fixed there
-(``cylindrical._imm_iteration_vw`` carries the measurements; the
-flow-level summary is in
-:mod:`~dnsjax.flows.wall_bounded.viscoelastic_pipe`).
+source.
 
 The ``cnab2`` scheme (one FFT/step) makes the FFT-free linear/mean
 coupling implicit via ``_viscoelastic_stepping._l_bf`` -- velocity
@@ -183,25 +177,18 @@ from ._viscoelastic_common import (
     to_spin_basis,
 )
 
-# The stepping surface, shared with the annular sPTT geometry and
-# re-exported here so every ``cylindrical_viscoelastic.<name>``
-# consumer (the flow module, the benchmark script, the tests that reach
-# these modules by string) keeps working unchanged.
+# The shared sPTT stepping surface lives in
+# ``._viscoelastic_stepping``; the names re-exported here are the
+# ones consumed *through this module* -- by the flow module
+# (``_div_c``) and by the tests that reach it by string
+# (``test_cnab2.py`` and the per-geometry viscoelastic tests).
 from ._viscoelastic_stepping import (
-    _build_dt_leaves,  # noqa: F401
     _build_Hc_band_gpu,  # noqa: F401
     _build_Hc_dense_gpu,  # noqa: F401
     _build_hc_operator,
-    _c_cn_update,  # noqa: F401
-    _conformation_coupling,  # noqa: F401
-    _correct,  # noqa: F401
     _div_c,  # noqa: F401
     _get_rhs,  # noqa: F401
-    _get_rhs_core,  # noqa: F401
-    _get_rhs_measured,  # noqa: F401
     _l_bf,  # noqa: F401
-    _norm,  # noqa: F401
-    _predict,  # noqa: F401
     _tensor_laplacian_spin,  # noqa: F401
 )
 from ._viscoelastic_stepping import (
@@ -625,6 +612,6 @@ def build_viscoelastic_stepper(flow: ViscoelasticCylindricalFlow):
 
     Binds this geometry's ``fourier`` singleton to the shared
     :func:`._viscoelastic_stepping.build_viscoelastic_stepper`, which
-    documents the returned 9-tuple.
+    documents the returned 7-tuple.
     """
     return _build_stepper(flow, fourier)

@@ -106,8 +106,8 @@ class ForceParams(BaseModel):
     cylindrical/annular branch hard-codes the 3-component velocity map
     ``to_pm_basis`` and has no ``to_spin_basis`` counterpart (unlike
     the probe extractor, which does).  The conjugate partner itself is
-    basis-agnostic these days -- it is a plain conjugate of a physical
-    profile, valid for any component count.  The whole section is
+    basis-agnostic -- a plain conjugate of a physical profile, valid
+    for any component count.  The whole section is
     **trajectory-defining**: resuming
     with changed forcing starts a new trajectory (like a ``phys``
     change).

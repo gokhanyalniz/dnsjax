@@ -1,9 +1,8 @@
 """Shared spectral utilities: FFT wrappers and wavenumber helpers.
 
 Provides wavenumber generation functions (``real_harmonics``,
-``complex_harmonics``), vmapped FFT wrappers for 3D
-(triply-periodic) and 2D (wall-bounded) transforms, and the
-vector cross product.
+``complex_harmonics``) and vmapped FFT wrappers for 3D
+(triply-periodic) and 2D (wall-bounded) transforms.
 
 Geometry-specific ``Fourier`` dataclasses live in the
 corresponding geometry modules
@@ -229,30 +228,3 @@ else:
         flat = velocity_spec.reshape(C * ny, *velocity_spec.shape[2:])
         phys_flat = _irfft2d(flat)
         return phys_flat.reshape(C, ny, *phys_flat.shape[1:])
-
-
-def cross(vector_1: Array, vector_2: Array) -> Array:
-    """Component-wise vector cross product.
-
-    Computes `$\\mathbf{v}_1 \\times \\mathbf{v}_2$` for two
-    three-component vector fields.  The leading axis of length 3
-    indexes the vector components; remaining axes are broadcast.
-
-    Parameters
-    ----------
-    vector_1, vector_2:
-        Vector fields of shape ``(3, ...)``.
-
-    Returns
-    -------
-    :
-        Cross product of the same shape as the inputs.
-    """
-
-    return jnp.array(
-        [
-            vector_1[1] * vector_2[2] - vector_1[2] * vector_2[1],
-            vector_1[2] * vector_2[0] - vector_1[0] * vector_2[2],
-            vector_1[0] * vector_2[1] - vector_1[1] * vector_2[0],
-        ]
-    )

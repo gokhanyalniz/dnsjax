@@ -25,7 +25,7 @@ family              spectral axes (as read)  physical axes
 ==================  =======================  =================
 cartesian           (y, kz, kx)              (y, z, x)
 cylindrical/annular (r, m, k_axial)          (r, θ, z)
-viscoelastic (dean) (r, m, k_axial)          (r, θ, z)
+viscoelastic (both) (r, m, k_axial)          (r, θ, z)
 triply-periodic     (ky, kz, kx)             (y, z, x)
 ==================  =======================  =================
 
@@ -33,10 +33,10 @@ Components are ``(u_x, u_y, u_z)`` for cartesian / triply-periodic and
 ``(u_z, u_r, u_θ)`` for cylindrical / annular -- as of snapshot format
 6 the stored components *are* these physical components (each the
 transform of a real field; the solver confines its decoupled
-``u_±`` / spin bases to the implicit solves).  The viscoelastic-dean
-system shares the cylindrical/annular axes with **9 components**: the
-3 velocity components plus the physical conformation tensor
-``(c_zz, c_rz, c_θz, c_rr, c_θθ, c_rθ)`` as components ``3..8``.
+``u_±`` / spin bases to the implicit solves).  The two viscoelastic
+systems (dean and pipe) share the cylindrical/annular axes with **9
+components**: the 3 velocity components plus the physical conformation
+tensor ``(c_zz, c_rz, c_θz, c_rr, c_θθ, c_rθ)`` as components ``3..8``.
 Returned components are stored components, one-to-one
 (:func:`geometry_info`).
 
@@ -54,7 +54,6 @@ the stored axes -- no transpose.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -137,10 +136,6 @@ class Namespace:
         for k in self.keys():
             yield k, self[k]
 
-    def to_dict(self) -> dict:
-        """Return the underlying plain dict (a shallow copy)."""
-        return dict(object.__getattribute__(self, "_data"))
-
     def __iter__(self):
         return iter(self.keys())
 
@@ -185,7 +180,7 @@ class GeometryInfo:
     n: tuple[int, int, int]  # full physical size per axis
     length: tuple[float | None, ...]  # physical length (None for grid axis)
     # Returned component labels (axis-0 order).  Length 3 for the
-    # velocity-only systems; 9 for the viscoelastic system (velocity +
+    # velocity-only systems; 9 for the viscoelastic systems (velocity +
     # physical conformation-tensor components).
     components: tuple[str, ...]
     wall_normal_axis: int  # physical axis carrying the wall-normal direction
@@ -295,15 +290,14 @@ def geometry_info(params: Namespace) -> GeometryInfo:
 def read_meta(path: str | Path) -> dict:
     """Parsed ``_dnsjax_meta.json`` of a dnsjax snapshot.
 
-    Raises a clear error for a non-snapshot file (e.g. a legacy
-    ``.npz``), so callers get a useful message rather than a tar parse
-    error.
+    Raises a clear error for a non-snapshot file, so callers get a
+    useful message rather than a tar parse error.
     """
     path = Path(path)
     if not is_snapshot_file(path):
         raise ValueError(
-            f"{path} is not a dnsjax snapshot (an uncompressed tar with a "
-            "_dnsjax_meta.json member); legacy .npz files are unsupported."
+            f"{path} is not a dnsjax snapshot (an uncompressed tar "
+            "with a _dnsjax_meta.json member)."
         )
     return read_snapshot_meta(path)
 
@@ -321,40 +315,6 @@ def _np_dtype(name: str) -> np.dtype:
         return _NP_DTYPES[name]
     except KeyError:
         raise ValueError(f"Unsupported snapshot dtype {name!r}.") from None
-
-
-def _component_recipes(
-    info: GeometryInfo,
-) -> list[tuple[tuple[int, ...], Callable[[dict[int, ndarray]], ndarray]]]:
-    r"""Per-returned-component ``(native chunks, combine)`` recipes.
-
-    Identity in every family: as of snapshot format 6 the stored
-    components are the returned physical components, one-to-one.
-    Kept as an explicit recipe layer so a future family whose stored
-    basis differs from its returned basis only has to add a branch.
-    """
-    return [((i,), _pick(i)) for i in range(len(info.components))]
-
-
-def _pick(i: int) -> Callable[[dict[int, ndarray]], ndarray]:
-    """Identity combine for native chunk ``i`` (every family)."""
-    return lambda r: r[i]
-
-
-def native_components_needed(
-    info: GeometryInfo, out_components: tuple[int, ...]
-) -> list[int]:
-    """Native chunk indices required to build *out_components*.
-
-    One-to-one under the identity recipes (see
-    :func:`_component_recipes`): requesting a component reads exactly
-    its own chunk.
-    """
-    recipes = _component_recipes(info)
-    need: set[int] = set()
-    for c in out_components:
-        need.update(recipes[c][0])
-    return sorted(need)
 
 
 def read_chunks(
@@ -401,20 +361,6 @@ def read_chunks(
                     )
                 out[c] = np.stack(slabs, axis=0)
     return out
-
-
-def to_returned_basis(
-    raw: dict[int, ndarray],
-    info: GeometryInfo,
-    out_components: tuple[int, ...],
-) -> dict[int, ndarray]:
-    r"""Map native chunks to the returned component basis.
-
-    Identity in every family (the stored components are the returned
-    physical components); see :func:`_component_recipes`.
-    """
-    recipes = _component_recipes(info)
-    return {c: recipes[c][1](raw) for c in out_components}
 
 
 # ── Nearest wall-normal grid points ──────────────────────────

@@ -50,7 +50,7 @@ Exports the flow interface consumed by ``__main__``:
 - ``predict_and_fully_correct`` -- fused predictor + corrector
 - ``predict_and_fully_correct_measured`` -- fused step + CFL
   measurements (``steps.dat``)
-- ``init_state`` -- initial state from the laminar profile or snapshot
+- ``init_state`` -- the ``start_from_laminar`` initial state
 - ``get_stats`` -- diagnostic statistics
 """
 
@@ -72,9 +72,6 @@ from ...geometries.wall_bounded.annular import (
     integrate_scalar,
     pad_base_flow,
     to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
-)
-from ...geometries.wall_bounded.annular import (
-    init_state as _base_init_state,
 )
 from ...parameters import derived_params, params
 from ...sharding import register_dataclass_pytree, sharding
@@ -119,8 +116,6 @@ class DeanFlow(AnnularFlow):
 flow: DeanFlow = DeanFlow()
 
 (
-    predict_and_correct,
-    iterate_correction,
     _init_state_laminar_zero,  # overridden below (Dean laminar != 0)
     predict_and_fully_correct,
     predict_and_fully_correct_measured,
@@ -177,21 +172,18 @@ def _perturbation_energy(
     )
 
 
-def init_state(snapshot: str | None) -> Array:
-    """Initialise the flow state (the total velocity).
+def init_state() -> Array:
+    """The ``start_from_laminar`` state: the laminar Dean profile.
 
-    A provided snapshot path (legacy ``.npz``) takes precedence: it is
-    delegated to the base ``init_state``.  Otherwise, for
-    ``start_from_laminar``, returns the closed-form laminar Dean profile
-    (a nonzero total field).  zarr3 snapshot resume is handled in
-    ``__main__`` before this is called.
+    Dean integrates the **total** field, so the laminar start is the
+    closed-form profile rather than a zero array.  Snapshot resume and
+    the in-process random / localized-rolls modes are dispatched in
+    ``__main__``; this is called only for the laminar start.
     """
-    if snapshot is None and params.init.start_from_laminar:
-        # Copy: the steppers donate their state argument, and the
-        # module-level ``_laminar_state`` must survive for the E'
-        # deviation in ``get_stats`` / ``get_perturbation_energy``.
-        return jnp.copy(_laminar_state)
-    return _base_init_state(snapshot)
+    # Copy: the steppers donate their state argument, and the
+    # module-level ``_laminar_state`` must survive for the E'
+    # deviation in ``get_stats`` / ``get_perturbation_energy``.
+    return jnp.copy(_laminar_state)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────

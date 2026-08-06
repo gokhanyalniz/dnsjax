@@ -129,8 +129,6 @@ from ._circular_couette import (
 flow: CircularCouetteFlow = CircularCouetteFlow()
 
 (
-    predict_and_correct,
-    iterate_correction,
     init_state,
     predict_and_fully_correct,
     predict_and_fully_correct_measured,

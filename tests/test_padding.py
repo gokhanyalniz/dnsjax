@@ -36,8 +36,9 @@ reshards + the component-axis concatenate of sharded outputs).
    parity-free).
 5. ``odd_nz``: single device, nz = 5 -- ``truncate_fft`` keeps
    ``(n - 1) - n // 2`` negative modes, matching the ``n - 1`` stored
-   modes of ``harmonics.complex_harmonics`` for odd *n* (formerly a
-   shape mismatch); exactness checks as in ``odd_pad``.
+   modes of ``harmonics.complex_harmonics`` for odd *n* (the count
+   a plain ``n // 2`` split gets wrong); exactness checks as in
+   ``odd_pad``.
 6. ``spec_pad``: forced (2, 2) host-CPU mesh with nx = 6 / nz = 4 --
    both spectral divisibility pads engaged, driving the
    ``pad``/``strip`` arguments fused into ``truncate_*`` /

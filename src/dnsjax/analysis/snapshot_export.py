@@ -134,7 +134,7 @@ def read_state(
     info = _core.geometry_info(params)
 
     out_components = _validate_components(components, len(info.components))
-    native_needed = _core.native_components_needed(info, out_components)
+    native_needed = sorted(set(out_components))
     wall_normal_grid = meta.get("wall_normal_grid")
 
     # Wall-bounded wall-normal subset → read only those outer slabs.
@@ -145,7 +145,7 @@ def read_state(
         )
 
     raw = _core.read_chunks(path, meta, native_needed, slab_indices=wn_indices)
-    native = _core.to_returned_basis(raw, info, out_components)
+    native = {c: raw[c] for c in out_components}
 
     wn_grid = wall_normal_grid
     if wn_indices is not None:

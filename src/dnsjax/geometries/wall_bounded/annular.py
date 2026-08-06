@@ -163,7 +163,6 @@ from ._base import (
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
     get_norm2,
-    init_state,  # noqa: F401 — re-exported
     integrate_scalar,
     pad_base_flow,  # noqa: F401 — re-exported
     phys_to_spec,  # noqa: F401 — re-exported
@@ -282,10 +281,6 @@ class Fourier:
 
 
 fourier: Fourier = Fourier()
-
-
-# Backward-compatible alias.
-integrate_scalar_in_r = integrate_scalar
 
 
 # ── Annular-specific norms ──────────────────────────────────────
@@ -1991,7 +1986,7 @@ def _imm_iteration_vw(
     structural point is that this lag sits **inside** the corrector:
     degradation surfaces as an iteration count and ultimately as a
     *reported* non-convergence, never as the silent across-step growth
-    the pipe's retired wall lag produced.  A wide-gap run at low
+    the pipe's rejected wall-data lag produced.  A wide-gap run at low
     `$\mathrm{Re}$` should watch ``corrector.dat``.
 
     Retired route: decoupling the pair
@@ -2335,9 +2330,7 @@ def _norm(
 def build_annular_stepper(
     flow: AnnularFlow,
 ) -> tuple[
-    Callable[[Array], tuple[Array, Array, Array]],
-    Callable[[Array, Array, Array], tuple[Array, Array, Array]],
-    Callable[[str | None], Array],
+    Callable[[], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
     Callable[[Array, Array], tuple[Array, Array, Array, Array]],
@@ -2349,8 +2342,7 @@ def build_annular_stepper(
 ]:
     """Build time-stepping functions for an annular flow.
 
-    Returns ``(predict_and_correct, iterate_correction,
-    init_state_bound, predict_and_fully_correct,
+    Returns ``(init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,
     step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
     ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the

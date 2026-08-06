@@ -650,10 +650,10 @@ def _worker(system: str) -> None:
         build = getattr(gmod, STEPPER_BUILDERS[system])
         try:
             params.step.split_corrector = True
-            split_pfc = build(fmod.flow)[3]
+            split_pfc = build(fmod.flow)[1]
             s_split, err_split, c_split = split_pfc(jnp.copy(state))
             params.step.split_corrector = False
-            unsplit_pfc = build(fmod.flow)[3]
+            unsplit_pfc = build(fmod.flow)[1]
             s_plain, err_plain, c_plain = unsplit_pfc(jnp.copy(state))
         finally:
             (
@@ -701,7 +701,7 @@ def _worker(system: str) -> None:
         )
         print(f"{system}: split_corrector=True has the split shape")
 
-        # Gate-off rebuild has the legacy unsplit corrector shape:
+        # Gate-off rebuild has the default unsplit corrector shape:
         # no fallback cond, one RHS evaluation per loop iteration.
         off_jaxpr = jax.make_jaxpr(unsplit_pfc)(state).jaxpr
         o_outside, o_inside, o_whiles = _count_ffts(off_jaxpr)
@@ -714,7 +714,7 @@ def _worker(system: str) -> None:
             f"unexpected (outside={o_outside}, inside={o_inside}, "
             f"whiles={o_whiles}, rhs={rhs_ffts})"
         )
-        print(f"{system}: split_corrector=False restores the legacy shape")
+        print(f"{system}: split_corrector=False has the unsplit shape")
 
 
 # ── driver ───────────────────────────────────────────────────────

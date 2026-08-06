@@ -76,7 +76,7 @@ truncation; per component,
 and the `$O(\Delta t^2)$` stepping error -- the guard in
 ``tests/test_twin_driver.py``.
 
-Three evaluation classes keep most terms FFT-free:
+Four evaluation classes, the first three FFT-free:
 
 - **c mean** (`$\mathbf{c} \in \{U^{(1)}, \Delta U\}$`, 7 terms):
   `$(\mathbf{b}\cdot\nabla)\mathbf{c} = b_y\, \partial_y c_i(y)$`,
@@ -159,7 +159,7 @@ from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
 from ..fft import chunked_transform
-from ..flows.registry import spec_for
+from ..flows.registry import cartesian_systems, spec_for
 from ..geometries.wall_bounded._base import (
     apply_y_matrix,
     extract_mean_mode,
@@ -170,7 +170,7 @@ from ..geometries.wall_bounded._base import (
     spec_to_phys,
 )
 from ..geometries.wall_bounded.cartesian import Fourier, fourier
-from ..parameters import cartesian_systems, derived_params, params
+from ..parameters import derived_params, params
 from ..sharding import sharding
 
 if params.phys.system not in cartesian_systems:  # pragma: no cover

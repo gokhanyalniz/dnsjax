@@ -8,11 +8,14 @@ Two layers:
    (``recorded_params_dump``) -- identical params yield no change; a
    ``phys``/``geo``/``res`` override is reported; the JAX-setup skip
    field ``res.double_precision`` and non-trajectory sections
-   (``step``) are ignored; a stored key the current surface no longer
-   defines (e.g. the retired ``geo.axis_gap``) is dropped, while
-   switching ``geo.grid_type`` (rigged <-> half-CGL) *is* a trajectory
-   change; the trajectory-defining ``force`` extension section is
-   compared alongside; a pre-v6 ``format_version`` is rejected.  Plus
+   (``step``) are ignored; a stored core-section key this version does
+   not define is a hard ``ValueError``, while the execution-only
+   ``[solver]`` section is exempt (and dropped wholesale before
+   validation, so a snapshot embedding retired solver knobs still
+   resumes); switching ``geo.grid_type`` (rigged <-> half-CGL) *is* a
+   trajectory change; the trajectory-defining ``force`` extension
+   section is compared alongside; a pre-v6 ``format_version`` is
+   rejected.  Plus
    ``run_grid_validation_checks`` (the half-CGL rules: rejected for
    non-cylindrical systems and with ``cnab2``, accepted on the pipe
    with ``iterative-cn``) and ``run_grid_default_resolution_checks``
@@ -43,7 +46,10 @@ Two layers:
      continues at the adapted value (and keeps adapting), while an
      explicit ``--step.dt`` / ``--step.adaptive False`` override beats
      the snapshot layer -- in both cases the lineage continues
-     (``step.*`` is not trajectory-defining).
+     (``step.*`` is not trajectory-defining);
+   - an ``--init.snapshot`` that is not a dnsjax snapshot (a typo'd or
+     unrelated path) exits nonzero with a naming diagnostic instead of
+     falling through to an in-process init mode.
 
 Run as a script::
 
@@ -159,13 +165,18 @@ def run_unit_checks() -> str | None:
         params.step.adaptive = old_ad
         assert changes == [], ("step.adaptive", changes)
 
-        # A stored key the current surface no longer defines (e.g. the
-        # retired geo.axis_gap) is dropped by the internalization (with
-        # a note), so such a snapshot resumes as a clean continuation.
-        snap_legacy = recorded_params_dump(params)
-        snap_legacy["geo"]["axis_gap"] = 0
-        changes = trajectory_defining_changes(snap_legacy)
-        assert changes == [], ("legacy axis_gap ignored", changes)
+        # A stored core-section key this version does not define is a
+        # hard error: the snapshot means something by it, and resuming
+        # against a setup that differs from the stored one with nothing
+        # reporting it is the failure mode being refused here.
+        snap_unknown = recorded_params_dump(params)
+        snap_unknown["geo"]["no_such_field"] = 0
+        try:
+            trajectory_defining_changes(snap_unknown)
+        except ValueError as exc:
+            assert "geo.no_such_field" in str(exc), exc
+        else:
+            raise AssertionError("unknown stored geo key did not raise")
 
         # Switching geo.grid_type (rigged <-> half-CGL) *is* a
         # trajectory change (the radial grid differs).
@@ -209,13 +220,13 @@ def run_unit_checks() -> str | None:
         from dnsjax.parameters import read_snapshot_params
         from dnsjax.snapshot_meta import META_MEMBER
 
-        legacy = recorded_params_dump(params)
-        legacy["solver"] = {
+        stored = recorded_params_dump(params)
+        stored["solver"] = {
             "backend": "some-retired-backend",
             "retired_knob": 8,
         }
         payload = json.dumps(
-            {"format_version": 6, "system": "plane-couette", "params": legacy}
+            {"format_version": 6, "system": "plane-couette", "params": stored}
         ).encode()
         with tempfile.NamedTemporaryFile(suffix=".tar") as fh:
             with tarfile.open(fh.name, "w") as tf:
@@ -223,7 +234,7 @@ def run_unit_checks() -> str | None:
                 info.size = len(payload)
                 tf.addfile(info, io.BytesIO(payload))
             snap = read_snapshot_params(Path(fh.name))
-        assert snap is not None, "legacy snapshot params unreadable"
+        assert snap is not None, "stored snapshot params unreadable"
         loaded, ext_overlays = snap
         assert loaded.solver.backend == "pallas", (
             "retired solver params inherited",
@@ -245,7 +256,7 @@ def run_unit_checks() -> str | None:
         # at the metadata read.
         for old in (5, 4):
             payload_old = json.dumps(
-                {"format_version": old, "params": legacy}
+                {"format_version": old, "params": stored}
             ).encode()
             with tempfile.NamedTemporaryFile(suffix=".tar") as fh:
                 with tarfile.open(fh.name, "w") as tf:
@@ -659,6 +670,29 @@ def run_integration(timeout: float) -> str | None:
         assert meta7["params"]["step"]["adaptive"] is False, meta7["params"][
             "step"
         ]
+
+        # --- Run 8: --init.snapshot that is not a dnsjax snapshot ----
+        # Must refuse loudly.  Falling through to an in-process mode
+        # would start a run that silently computes something else --
+        # a typo'd path is the common case -- so the competing
+        # random_field flag below must NOT rescue it.
+        work_bad = os.path.join(base, "bad_snapshot")
+        os.makedirs(work_bad)
+        not_a_snapshot = os.path.join(base, "not_a_snapshot.tar")
+        with open(not_a_snapshot, "wb") as fh:
+            fh.write(b"this is not a tar archive\n")
+        r8 = _run_dnsjax(
+            work_bad,
+            RUN1_ARGS + ["--init.snapshot", not_a_snapshot],
+            timeout,
+        )
+        assert r8.returncode != 0, (
+            "a non-snapshot --init.snapshot must not start a run"
+        )
+        assert "is not a dnsjax snapshot file" in r8.stdout, r8.stdout[-1500:]
+        assert not _snap_indices(work_bad), (
+            f"refused run wrote snapshots: {_snap_indices(work_bad)}"
+        )
     except AssertionError as exc:
         print(f"  FAIL  {name}: {exc}")
         return str(exc)

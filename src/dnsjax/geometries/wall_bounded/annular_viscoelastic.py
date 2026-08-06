@@ -156,25 +156,18 @@ from ._viscoelastic_common import (
     to_spin_basis,
 )
 
-# The stepping surface, shared with the pipe's sPTT geometry and
-# re-exported here so every ``annular_viscoelastic.<name>`` consumer
-# (the flow module, the benchmark script, the tests that reach these
-# modules by string) keeps working unchanged.
+# The shared sPTT stepping surface lives in
+# ``._viscoelastic_stepping``; the names re-exported here are the
+# ones consumed *through this module* -- by the flow module
+# (``_div_c``) and by the tests that reach it by string
+# (``test_cnab2.py`` and the per-geometry viscoelastic tests).
 from ._viscoelastic_stepping import (
-    _build_dt_leaves,  # noqa: F401
     _build_Hc_band_gpu,  # noqa: F401
     _build_Hc_dense_gpu,  # noqa: F401
     _build_hc_operator,
-    _c_cn_update,  # noqa: F401
-    _conformation_coupling,  # noqa: F401
-    _correct,  # noqa: F401
     _div_c,  # noqa: F401
     _get_rhs,  # noqa: F401
-    _get_rhs_core,  # noqa: F401
-    _get_rhs_measured,  # noqa: F401
     _l_bf,  # noqa: F401
-    _norm,  # noqa: F401
-    _predict,  # noqa: F401
     _tensor_laplacian_spin,  # noqa: F401
 )
 from ._viscoelastic_stepping import (
@@ -505,6 +498,6 @@ def build_viscoelastic_stepper(flow: ViscoelasticAnnularFlow):
 
     Binds this geometry's ``fourier`` singleton to the shared
     :func:`._viscoelastic_stepping.build_viscoelastic_stepper`, which
-    documents the returned 9-tuple.
+    documents the returned 7-tuple.
     """
     return _build_stepper(flow, fourier)

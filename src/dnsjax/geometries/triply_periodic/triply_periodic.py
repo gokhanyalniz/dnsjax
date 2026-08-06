@@ -179,11 +179,6 @@ def gradient(data_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
     return jnp.array([derivative(data_spec, kx, ky, kz, i) for i in range(3)])
 
 
-def laplacian(data_spec: Array, lapl_spec: Array) -> Array:
-    """Apply the spectral Laplacian (pointwise multiply by `$-k^2$`)."""
-    return lapl_spec * data_spec
-
-
 def inverse_laplacian(data_spec: Array, inv_lapl_spec: Array) -> Array:
     """Apply the inverse spectral Laplacian
     (pointwise multiply by `$-1/k^2$`)."""
@@ -320,29 +315,18 @@ def _build_dt_leaves(
 # ── Initialization ────────────────────────────────────────────────────────
 
 
-def init_state(snapshot: str | None, flow: TriplyPeriodicFlow) -> Array:
-    """Initialise the flow state (velocity_spec).
+def init_state() -> Array:
+    """The ``start_from_laminar`` state: zero spectral perturbation.
 
-    A provided snapshot path (legacy ``.npz``) takes precedence over
-    ``start_from_laminar``; zarr3 snapshot resume is handled in
-    ``__main__`` before this is called.
+    Snapshot resume and the in-process random / localized-rolls modes
+    are dispatched in ``__main__``; this is called only for the
+    laminar start (the perturbation about the base flow is zero).
     """
-    if snapshot is not None:
-        snapshot_arr = jnp.load(snapshot)["velocity_phys"].astype(
-            sharding.float_type
-        )
-        velocity_phys = device_put(snapshot_arr, sharding.phys_vector_shard)
-        velocity_phys = velocity_phys.at[...].subtract(flow.base_flow)
-        return phys_to_spec(velocity_phys)
-    elif params.init.start_from_laminar:
-        return jnp.zeros(
-            shape=(3, *sharding.spec_shape),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.spec_vector_shard,
-        )
-    else:
-        sharding.print("Provide an initial condition.")
-        sharding.exit(code=1)
+    return jnp.zeros(
+        shape=(3, *sharding.spec_shape),
+        dtype=sharding.complex_type,
+        out_sharding=sharding.spec_vector_shard,
+    )
 
 
 # ── Algebraic Helmholtz operations (triply-periodic specific) ────────────
@@ -542,9 +526,7 @@ def _finalize_state(
 def build_triply_periodic_stepper(
     flow: TriplyPeriodicFlow,
 ) -> tuple[
-    Callable[[Array], tuple[Array, Array, Array]],
-    Callable[[Array, Array, Array], tuple[Array, Array, Array]],
-    Callable[[str | None], Array],
+    Callable[[], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
     Callable[[Array, Array], tuple[Array, Array, Array, Array]],
@@ -556,12 +538,11 @@ def build_triply_periodic_stepper(
 ]:
     """Build time-stepping functions for a triply-periodic flow.
 
-    Returns ``(predict_and_correct, iterate_correction,
-    init_state_bound, predict_and_fully_correct,
+    Returns ``(init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,
     step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
     ``fourier`` and *flow* singletons already bound -- the same
-    9-tuple as the wall-bounded builder (``set_dt`` /
+    7-tuple as the wall-bounded builder (``set_dt`` /
     ``reset_ab2_kappa`` are the adaptive-dt hooks backed by
     ``_build_dt_leaves``).  ``step_cnab2`` and its measured variant
     are the CN/AB2 scheme
@@ -577,8 +558,6 @@ def build_triply_periodic_stepper(
         return flow_.dt, flow_.ab2_kappa
 
     (
-        _predict_and_correct_jit,
-        _iterate_correction_jit,
         _predict_and_fully_correct_jit,
         _predict_and_fully_correct_measured_jit,
         _step_cnab2_jit,
@@ -592,22 +571,6 @@ def build_triply_periodic_stepper(
         finalize_fn=_finalize_state,
         step_scales_fn=_step_scales,
     )
-
-    def predict_and_correct(
-        state: Array,
-    ) -> tuple[Array, Array, Array]:
-        """Predictor-corrector step with bound singletons."""
-        return _predict_and_correct_jit(state, fourier, flow)
-
-    def iterate_correction(
-        state_prev: Array,
-        prediction: Array,
-        rhs_prev: Array,
-    ) -> tuple[Array, Array, Array]:
-        """One corrector iteration with bound singletons."""
-        return _iterate_correction_jit(
-            state_prev, prediction, rhs_prev, fourier, flow
-        )
 
     def predict_and_fully_correct(
         state: Array,
@@ -638,9 +601,9 @@ def build_triply_periodic_stepper(
         """CN/AB2 step + physical-space measurements (at `$u^n$`)."""
         return _step_cnab2_measured_jit(state, carry, fourier, flow)
 
-    def init_state_bound(snapshot: str | None) -> Array:
-        """Initialize the flow state with bound flow singleton."""
-        return init_state(snapshot, flow)
+    def init_state_bound() -> Array:
+        """The ``start_from_laminar`` state (zero perturbation)."""
+        return init_state()
 
     _dt_leaves_jit = jit(_build_dt_leaves)
     _dt_box = [float(params.step.dt)]
@@ -668,8 +631,6 @@ def build_triply_periodic_stepper(
         flow.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
 
     return (
-        predict_and_correct,
-        iterate_correction,
         init_state_bound,
         predict_and_fully_correct,
         predict_and_fully_correct_measured,

@@ -1,40 +1,33 @@
 """Cluster diagnostic: is the snapshot GDS path live, and is it starved?
 
-Two open audit items, both of which need real hardware and a real
+Two questions, both of which need real hardware and a real
 filesystem to answer:
 
-**Item 6 -- is the GDS path even taken?**  It was not, anywhere, for
-two independent reasons this probe found: the node has no
-``nvidia-fs`` kernel driver, *and* ``snapshot._gds_available`` reached
-for ``kvikio.defaults`` as an attribute of the package, which is a
-submodule and does not resolve until imported -- so the check raised
-``AttributeError`` and took its host-path branch on a cluster that
-had kvikIO installed.  Both are now handled
-(:func:`dnsjax.snapshot._gds_available` binds the submodule, accepts
-either kvikIO API generation, and requires the driver before calling
-the path GDS).  Part A still replicates the check step by step, and
-goes further: it diffs the ``nvidia-fs`` kernel counters across a
-real transfer, which is the only way to tell an engaged GDS path from
-a silent POSIX fallback.
+**Engagement -- is the GDS path even taken?**  Everything
+:func:`dnsjax.snapshot._gds_available` requires must hold at once:
+the ``nvidia-fs`` kernel driver is loaded, ``kvikio.defaults`` binds
+(it is a submodule, not an attribute of the package), cupy imports,
+and the compat mode is not ``ON``.  Part A replicates that check step
+by step, and goes further: it diffs the ``nvidia-fs`` kernel counters
+across a real transfer, which is the only way to tell an engaged GDS
+path from a silent POSIX fallback.
 
-**Item 7 -- what actually starves the snapshot?**  The audit thought
-it was queue depth (one *blocking* ``CuFile`` call per span, ~1e5 of
-them per device).  Measured on BeeGFS, it is not: ``pwrite`` futures
-are within 4 % of blocking on writes at every span size and *worse*
-on reads.  What costs is **transfer size** -- one contiguous call
-moves the same 97.7 MiB 30-90x faster than 200 k spans do, and
-strided small *writes* are punished hardest (512 B at stride 4 is 90x
-the stride-1 write, while the same reads are only 3x worse).
+**Starvation -- what limits the snapshot's transfer rate?**  Not
+queue depth (one *blocking* ``CuFile`` call per span, ~1e5 of them
+per device): measured on BeeGFS, ``pwrite`` futures are within 4 % of
+blocking on writes at every span size and *worse* on reads.  What
+costs is **transfer size** -- one contiguous call moves the same
+97.7 MiB 30-90x faster than 200 k spans do, and strided small
+*writes* are punished hardest (512 B at stride 4 is 90x the stride-1
+write, while the same reads are only 3x worse).  That measurement is
+why ``snapshot.py`` reshards onto an I/O layout that cuts the file's
+*slowest* axis before writing, so a device's bytes are one contiguous
+range per component.  Part C reports the resulting span census next
+to the timings; Part B prices the span pattern itself, engine by
+engine, and is the evidence for both conclusions.
 
-That is why ``snapshot.py`` now reshards onto an I/O layout that cuts
-the file's *slowest* axis before writing, so a device's bytes are one
-contiguous range per component.  Part C reports the resulting span
-census next to the timings; Part B still prices the span pattern
-itself, engine by engine, and remains the evidence for both
-conclusions.
-
-Part A  environment + the item-6 verdict (kvikIO, cupy, nvidia-fs
-        counters, the target filesystem, ``KVIKIO_*``).
+Part A  environment + the engagement verdict (kvikIO, cupy,
+        nvidia-fs counters, the target filesystem, ``KVIKIO_*``).
 Part B  the span-pattern benchmark: the real ownership pattern of a
         sharded snapshot (``nspans`` spans of ``span_bytes``, every
         ``stride``-th block -- ``stride`` is ``np1``) written and read
@@ -42,8 +35,8 @@ Part B  the span-pattern benchmark: the real ownership pattern of a
         ``pwrite:D`` (the proposed fix at queue depth D), ``contig``
         (one whole-buffer call -- the bandwidth ceiling this layout
         cannot reach), ``host`` (device->host copy per span + POSIX
-        pwrite, i.e. the no-GDS engine the module docstring says may
-        *beat* GDS on ``np1 > 1`` meshes) and ``posix`` (POSIX from an
+        pwrite, i.e. the no-GDS engine that ships as the host
+        fallback) and ``posix`` (POSIX from an
         already-host buffer -- the storage-only reference).  Every
         read is verified against the written pattern, so a fast wrong
         answer cannot pass.
@@ -146,7 +139,7 @@ def _defaults_dump(kvikio) -> None:
             val = getattr(d, n)
             if callable(val):
                 val = val()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             val = f"<{type(exc).__name__}: {exc}>"
         print(f"    defaults.{n:28} {val!r}")
 
@@ -157,7 +150,7 @@ def _part_a(outdir: Path) -> dict:
     import sys
 
     print("=" * 72)
-    print("PART A -- environment and the item-6 verdict")
+    print("PART A -- environment and the engagement verdict")
     print("=" * 72)
     print(f"  host      {platform.node()}")
     print(f"  python    {sys.version.split()[0]}")
@@ -205,7 +198,7 @@ def _part_a(outdir: Path) -> dict:
     except ImportError as exc:
         print(f"  cupy      NOT IMPORTABLE ({exc})")
 
-    print("\n  ITEM 6 -- the _gds_available check, step by step")
+    print("\n  The _gds_available check, step by step")
     if kvikio is None:
         print(
             "    kvikio absent -> _gds_available() is False, the host "
@@ -213,9 +206,9 @@ def _part_a(outdir: Path) -> dict:
         )
         return have
 
-    # (1) the submodule bind.  Reaching through the package is what
-    # used to fail: kvikio.defaults is a submodule, not an attribute.
-    # ``via_attr`` was sampled above, on the bare ``import kvikio`` --
+    # (1) the submodule bind: kvikio.defaults is a submodule, not an
+    # attribute of the package, so a bare ``import kvikio`` does not
+    # bind it.  ``via_attr`` was sampled above, on that bare import --
     # sampling it here instead would always say True, because the
     # import on the next line is itself what binds the attribute.
     try:
@@ -224,31 +217,23 @@ def _part_a(outdir: Path) -> dict:
         print(f"    import kvikio.defaults FAILED ({exc}) -> host path.")
         return have
     print("    import kvikio.defaults as _   OK")
-    print(
-        f"    kvikio.defaults as attribute  {via_attr}"
-        f"{'' if via_attr else '   <- the old check died here'}"
-    )
+    print(f"    kvikio.defaults as attribute  {via_attr}")
 
     # (2) the driver gate.  Without nvidia-fs, kvikIO still answers
     # every call -- through its compat shim, which is not GDS.
     driver = NVFS_STATS.exists()
     print(f"    nvidia-fs driver loaded       {driver}")
 
-    # (3) the compat mode, across both kvikIO API generations.
-    getter = getattr(kvikio_defaults, "compat_mode", None)
+    # (3) the compat mode.  A CompatMode enum, not a bool.
     try:
-        if callable(getter):
-            mode, api = getter(), "compat_mode()"
-        else:
-            mode, api = kvikio_defaults.get("compat_mode"), 'get("...")'
+        mode = kvikio_defaults.get("compat_mode")
+        not_compat = mode is not type(mode).ON
     except (AttributeError, KeyError, TypeError) as exc:
         print(f"    compat mode unreadable ({exc}) -> host path.")
         return have
-    on = getattr(type(mode), "ON", None)
-    not_compat = mode is not on if on is not None else not mode
-    print(f"    compat mode via {api:12}  {mode!r}")
+    print(f"    compat mode                   {mode!r}")
     print(f"    type                          {type(mode).__name__}")
-    print(f"    type(mode).ON                 {on!r}")
+    print(f"    type(mode).ON                 {type(mode).ON!r}")
     print(
         f"    bool(mode)                    {bool(mode)}   <- what a "
         "bare truth test would have seen"
@@ -298,7 +283,7 @@ def _gds_engaged(path: Path, nbytes: int = 1 << 20) -> None:
             f.write(buf)
         with kvikio.CuFile(str(probe), "r") as f:
             f.read(buf)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"    transfer failed: {type(exc).__name__}: {exc}")
         return
     finally:
@@ -380,14 +365,14 @@ def _set_kvikio_threads(n: int) -> str:
             try:
                 fn(n)
                 return attempt
-            except Exception:  # noqa: BLE001, S110
+            except Exception:
                 pass
     setter = getattr(d, "set", None)
     if callable(setter):
         try:
             setter({"num_threads": n})
             return "set"
-        except Exception:  # noqa: BLE001, S110
+        except Exception:
             pass
     return "FAILED (set KVIKIO_NTHREADS in the environment instead)"
 
@@ -616,7 +601,7 @@ def _part_b(outdir: Path, args, have: dict) -> None:
                                 depth,
                             )[0],
                         )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     print(f"    {eng:12} FAILED {type(exc).__name__}: {exc}")
                     continue
                 if eng == "blocking":
@@ -725,7 +710,7 @@ def _reshard_bench(state, reps: int = 3) -> None:
         try:
             jax.block_until_ready(fn())  # warm / compile
             best = min(_drain(fn) for _ in range(max(1, reps)))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"    {label:34} FAILED {type(exc).__name__}: {exc}")
             return
         print(

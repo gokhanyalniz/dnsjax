@@ -157,8 +157,7 @@ snapshot, do not re-save the IC) only when
 Physics/Geometry/Resolution parameter was overridden to a value
 different from the snapshot's.  Any such change starts a NEW
 trajectory (``t = it = isnap = 0``, IC re-saved as
-``state00000.tar``) unless ``init.force_resume`` is set.  Legacy
-``.npz`` files go through geometry-specific ``init_state``.  When
+``state00000.tar``) unless ``init.force_resume`` is set.  When
 the current wall-normal grid differs from the snapshot's,
 ``_interpolate_if_needed`` interpolates the state at load time
 (see :mod:`dnsjax.fd` for the interpolation methods).
@@ -180,16 +179,18 @@ from time import perf_counter_ns
 from .adaptive import propose_dt
 from .bootstrap import configure_jax_runtime, resolve_parameters
 from .extensions import force_params, probes_params, relevant_extensions
-from .param_surface import print_resolved_parameters
-from .parameters import (
+from .flows.registry import (
     annular_systems,
     cylindrical_systems,
+    walled_systems,
+)
+from .param_surface import print_resolved_parameters
+from .parameters import (
     derived_params,
     ns_to_s,
     padded_res,
     params,
     trajectory_defining_changes,
-    walled_systems,
 )
 from .snapshot_meta import git_hash, read_snapshot_meta
 
@@ -277,11 +278,6 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     # cylindrical/annular flows); look it up via the alias.
     snap_ny = stored_value(meta.get("params", {}), meta["system"], "res", "ny")
     curr_grid = derived_params.wall_normal_grid
-
-    if snap_ny is None or snap_grid is None or curr_grid is None:
-        # Readable (v4+) walled snapshots always embed both; bail
-        # defensively if not.
-        return state
 
     needs_interp = snap_ny != params.res.ny or not np.allclose(
         snap_grid, curr_grid, atol=1e-12
@@ -492,9 +488,9 @@ def run(wall_time_start: int) -> None:
     # --- Initial condition ---------------------------------------------------
     from .snapshot_meta import is_snapshot_file
 
-    # Start-mode precedence: a provided snapshot file (tar resume or
-    # legacy .npz) wins over every in-process mode; then
-    # start_from_laminar, then localized_rolls, then random_field (the
+    # Start-mode precedence: a provided snapshot file wins over every
+    # in-process mode; then start_from_laminar, then localized_rolls,
+    # then random_field (the
     # default).  A *continuation* resume (dnsjax snapshot with unchanged
     # trajectory params) inherits t/it/isnap and does not re-save the IC;
     # every other start is a fresh trajectory: isnap begins at
@@ -557,13 +553,19 @@ def run(wall_time_start: int) -> None:
                 jnp,
             )
     elif params.init.snapshot is not None:
-        # Legacy .npz snapshot.  A provided snapshot still wins over every
-        # in-process mode (start_from_laminar / localized_rolls /
-        # random_field).
-        state = init_state(params.init.snapshot)
+        # A path was given but it is not a dnsjax snapshot.  Refusing
+        # here is deliberate: falling through to an in-process mode
+        # would start a run that computes something the user never
+        # asked for (a typo'd path is the common case).
+        sharding.print(
+            f"init.snapshot ({params.init.snapshot}) is not a dnsjax "
+            "snapshot file: expected an uncompressed tar wrapping a "
+            "zarr3 store."
+        )
+        sharding.exit(code=1)
     elif params.init.start_from_laminar:
         # Laminar / closed-form base state (snapshot is None here).
-        state = init_state(params.init.snapshot)
+        state = init_state()
     elif params.init.localized_rolls:
         # In-process deterministic localized-rolls ("spot") IC (no
         # snapshot file). The flow dispatch above already built the
@@ -1461,15 +1463,12 @@ def main(argv: list[str] | None = None) -> int:
         print("Distribution initialized at", datetime.now(), flush=True)
         print("Code version:", git_hash(), flush=True)
         if setup.snapshot_params_used:
-            # The initial-condition snapshot's own provenance, when it
-            # carries one (snapshots predating the git_hash key don't).
-            snap_hash = read_snapshot_meta(setup.snapshot_path).get("git_hash")
-            if snap_hash:
-                print(
-                    "Snapshot was recorded by code version:",
-                    snap_hash,
-                    flush=True,
-                )
+            # The initial-condition snapshot's own provenance.
+            print(
+                "Snapshot was recorded by code version:",
+                read_snapshot_meta(setup.snapshot_path)["git_hash"],
+                flush=True,
+            )
         if setup.snapshot_params_used:
             print(
                 f"Inherited parameters embedded in snapshot "

@@ -368,7 +368,7 @@ def _worker(system: str, backend: str, consistent_imm: bool = False) -> None:
     fmod.reset_ab2_kappa()
     tup = getattr(gmod, STEPPER_BUILDERS[system])(fresh)
     a_cn, a_carry, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.copy(carry))
-    b_cn, b_carry, *_ = tup[5](jnp.copy(state0), jnp.copy(carry))
+    b_cn, b_carry, *_ = tup[3](jnp.copy(state0), jnp.copy(carry))
     np.testing.assert_allclose(
         np.asarray(a_cn),
         np.asarray(b_cn),
@@ -384,7 +384,7 @@ def _worker(system: str, backend: str, consistent_imm: bool = False) -> None:
         err_msg=f"{system}: cnab2 carry parity",
     )
     a_ic, *_ = fmod.predict_and_fully_correct(jnp.copy(state0))
-    b_ic, *_ = tup[3](jnp.copy(state0))
+    b_ic, *_ = tup[1](jnp.copy(state0))
     np.testing.assert_allclose(
         np.asarray(a_ic),
         np.asarray(b_ic),

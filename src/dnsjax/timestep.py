@@ -1,9 +1,9 @@
 """Predictor-corrector time integration factory.
 
-Provides :func:`make_stepper`, which builds JIT-compiled stepping
-functions from flow-specific callables -- ``predict_and_correct``,
-``iterate_correction``, ``predict_and_fully_correct`` (the fused
-corrector loop and primary path), and an optional measured variant.
+Provides :func:`make_stepper`, which builds the JIT-compiled stepping
+functions from flow-specific callables -- ``predict_and_fully_correct``
+(the fused corrector loop) and ``step_cnab2``, each with an optional
+measured variant.
 The overall iteration structure (Euler
 predictor + iterative Crank-Nicolson corrector, Willis 2017) is shared
 across all flow types; only the RHS evaluation, Helmholtz solve, and
@@ -43,8 +43,6 @@ def make_stepper(
     finalize_fn: Callable[..., Array] | None = None,
     step_scales_fn: Callable[..., tuple[Array, Array]] | None = None,
 ) -> tuple[
-    Callable[..., tuple[Array, Array, Array]],
-    Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array]],
     Callable[..., tuple[Array, Array, Array, dict[str, Array]]] | None,
     Callable[..., tuple[Array, Array, Array, Array]],
@@ -123,10 +121,7 @@ def make_stepper(
         which is why exact wall-bounded continuity is a *scheme*
         rather than a post-step fix; see the
         ``cartesian._imm_iteration`` docs), which leaves their traces
-        unchanged.  The legacy manual-iteration pair
-        ``predict_and_correct`` / ``iterate_correction`` does **not**
-        apply it (mid-iteration states are not accepted steps); a
-        caller driving those directly must finalize itself.
+        unchanged.
     step_scales_fn:
         Optional ``(*args) -> (dt, kappa)`` returning the current
         time step and the Adams-Bashforth step ratio
@@ -144,15 +139,6 @@ def make_stepper(
 
     Returns
     -------
-    predict_and_correct:
-        Full predictor-corrector step.  Signature:
-        ``state -> (prediction_state, rhs_next, error)``.
-        No buffers are donated.
-    iterate_correction:
-        One additional corrector iteration.  Signature:
-        ``(state_prev, prediction_state, rhs_prev) ->
-        (prediction_state_next, rhs_next, error)``.
-        Only *prediction_state* is donated.
     predict_and_fully_correct:
         Fused predict + corrector loop in a single JIT scope
         via ``lax.while_loop``.  Signature:
@@ -220,56 +206,6 @@ def make_stepper(
         if finalize_fn is None:
             return state
         return finalize_fn(state, *args)
-
-    @jit
-    def predict_and_correct(state: Array, *args) -> tuple[Array, Array, Array]:
-        """Full predictor-corrector time step (Euler predict + one CN correct).
-
-        Computes the RHS at the current velocity, applies the Euler
-        predictor, recomputes the RHS at the predicted velocity, and
-        applies one Crank-Nicolson corrector.  Additional corrector
-        iterations (if the error exceeds tolerance) are handled by
-        ``iterate_correction``.
-
-        No buffers are donated because *state* (aliased as *state_prev*
-        in the caller) is reused across corrector iterations that follow.
-        """
-        rhs_prev = get_rhs_fn(state, *args)
-        prediction_state = predict_fn(state, rhs_prev, *args)
-
-        rhs_next = get_rhs_fn(prediction_state, *args)
-        prediction_state, correction = correct_fn(
-            state, prediction_state, rhs_prev, rhs_next, *args
-        )
-
-        error = norm_fn(correction, *args)
-
-        return prediction_state, rhs_next, error
-
-    @jit(donate_argnums=1)
-    def iterate_correction(
-        state_prev: Array,
-        prediction_state: Array,
-        rhs_prev: Array,
-        *args,
-    ) -> tuple[Array, Array, Array]:
-        """One corrector iteration: recompute RHS, apply CN correction.
-
-        **Functional Purity Exception:** The input buffer
-        *prediction_state* is donated (via
-        `donate_argnums=1`), meaning its memory is safely destroyed
-        and reused for the outputs within XLA. Its reference outside this
-        function call becomes invalidated. *state_prev* is NOT donated
-        because it is reused across multiple corrector iterations.
-        """
-        rhs_next = get_rhs_fn(prediction_state, *args)
-        prediction_state, correction = correct_fn(
-            state_prev, prediction_state, rhs_prev, rhs_next, *args
-        )
-
-        error = norm_fn(correction, *args)
-
-        return prediction_state, rhs_next, error
 
     def _step_core(
         state: Array, rhs_prev: Array, *args
@@ -645,8 +581,6 @@ def make_stepper(
             return (*out, measurements)
 
     return (
-        predict_and_correct,
-        iterate_correction,
         predict_and_fully_correct,
         predict_and_fully_correct_measured,
         step_cnab2,

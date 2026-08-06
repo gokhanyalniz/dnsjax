@@ -195,12 +195,9 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
     `$k_z = 0$` plane: the random-field builders now solve continuity
     on every mode (see :mod:`dnsjax.ic.random_field`).
     """
+    from dnsjax.flows.registry import cylindrical_systems
     from dnsjax.operators import complex_harmonics, real_harmonics
-    from dnsjax.parameters import (
-        cylindrical_systems,
-        derived_params,
-        params,
-    )
+    from dnsjax.parameters import derived_params, params
 
     nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
     fd = params.res.fd_order
@@ -286,8 +283,8 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
 
     true: np.ndarray | None = None
     if system not in RANDOM_ONLY:
+        from dnsjax.flows.registry import cylindrical_systems
         from dnsjax.ic.localized_rolls import generate_localized_rolls
-        from dnsjax.parameters import cylindrical_systems
 
         state1 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))
         state2 = np.asarray(generate_localized_rolls(AMP, WIDTH, WAVELENGTH))

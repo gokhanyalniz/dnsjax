@@ -750,7 +750,7 @@ def _norm(
 def build_viscoelastic_stepper(flow: ViscoelasticFlow, fourier: Fourier):
     """Build time-stepping functions for a viscoelastic flow.
 
-    Returns the same 9-tuple as
+    Returns the same 7-tuple as
     :func:`~dnsjax.geometries.wall_bounded._base.build_wall_bounded_stepper`
     (incl. the adaptive-dt ``set_dt`` / ``reset_ab2_kappa``, backed by
     this module's ``_build_dt_leaves``).  :func:`_l_bf` (the FFT-free

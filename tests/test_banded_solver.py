@@ -290,8 +290,7 @@ def test_pallas_cuda_lowering() -> None:
     ``p`` is a **static loop bound** in the kernel, so every band width
     a caller can produce needs its own lowering: ``p = 3`` for a typical
     geometry band and ``p = 11`` for a wide one.  No shipped
-    configuration needs 11 since the composed-`$D_1 D_1$` operators were
-    retired on 2026-07-26 (every geometry is at ``fd_order`` under both
+    configuration needs 11 (every geometry is at ``fd_order`` under both
     ``res.consistent_imm`` settings); it stays as backend capability
     coverage."""
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2

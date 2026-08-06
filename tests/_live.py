@@ -4,7 +4,8 @@
 ``subprocess.run(cmd, capture_output=True, text=True, ...)``: it
 streams the child's stdout/stderr line-by-line to this process's
 stdout/stderr *while* accumulating both, so callers keep reading
-``result.stdout`` / ``result.stderr`` exactly as before, and an agent
+``result.stdout`` / ``result.stderr`` exactly as with
+``subprocess.run``, and an agent
 tailing the run sees progress immediately (and can abort early).
 
 The child environment gets ``PYTHONUNBUFFERED=1`` (prompt output from

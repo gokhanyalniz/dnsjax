@@ -190,8 +190,7 @@ extensions/
 sharding.py           Multi-device (np0, np1) mesh; singleton sharding;
                       register_dataclass_pytree; layouts + specs
 operators.py          Wavenumber helpers (re-exports harmonics.py in
-                      jnp.asarray; pad_harmonics), FFT wrappers, cross
-                      product
+                      jnp.asarray; pad_harmonics), FFT wrappers
 harmonics.py          Stdlib/NumPy-only (JAX-free) wavenumber
                       sequences; leaf shared with dnsjax.analysis
 fft.py                3D/2D real FFT, 3/2-rule dealiasing, shard_map
@@ -427,6 +426,9 @@ snapshot: the JAX-setup fields `dist.np0`/`np1`/`platform` and
 snapshot rejects), the whole `[solver]` section (execution-only,
 `read_snapshot_params` strips it), and the resume-decision fields
 `init.snapshot`/`init.force_resume` (recorded for lineage only).
+A stored **core-section** parameter this version does not define is a
+hard error in `internalize_stored` — `[solver]` alone is exempt
+(note-and-drop), because it is stripped only *after* internalizing.
 Detail: `bootstrap.py` (`resolve_parameters`; other entry points pass
 `toml_path`/`extensions`/`prog` — the TG CLI is the template).
 
@@ -611,16 +613,10 @@ One line each; full rationale/usage in each script's module docstring.
   banded solve's time goes (`--cpu-smoke`).
 - `scripts/solver_benchmark.py`: pallas-vs-dense validation & benchmark
   incl. multi-GPU correctness (`--cpu-bench`, `--cpu-smoke`).
-- `scripts/pivot_stability_survey.py`: CPU survey of the no-pivot
-  banded-LU stability checks (finding: no real config trips them).
 - `scripts/gds_probe.py`: cluster diagnostic for the snapshot GDS path
   -- whether it is engaged at all, and whether one blocking `CuFile`
   call per span starves it (`--env-only`, `--end-to-end`,
   `--cpu-smoke`).
-- `scripts/corrector_invariance_probe.py`: GPU diagnostic for the
-  corrector's loop-invariant dense-`y` work -- natural pass count,
-  per-pass cost, the measured matvec-split trade, and the
-  optimized-HLO invariance census (`--cpu-smoke`).
 
 ## Tests
 
