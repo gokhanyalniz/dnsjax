@@ -162,7 +162,7 @@ def _geo_family(system: str) -> str:
     ``"annular"``.  Imports the system lists lazily (JAX/params must be
     configured first).
     """
-    from dnsjax.parameters import (
+    from dnsjax.flows.registry import (
         annular_systems,
         cartesian_systems,
         cylindrical_systems,
@@ -467,13 +467,12 @@ def configure_target(
     jax.config.update("jax_enable_x64", double_precision)
     jax.config.update("jax_platforms", "cpu")
 
-    from dnsjax.flows.registry import spec_for
+    from dnsjax.flows.registry import periodic_systems, spec_for
     from dnsjax.parameters import (
         Parameters,
         derived_params,
         padded_res,
         params,
-        periodic_systems,
         update_parameters,
     )
 

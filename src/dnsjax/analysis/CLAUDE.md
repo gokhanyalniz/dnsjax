@@ -107,10 +107,10 @@ and its rationale: `flows/registry.py`.
   difference field from a snapshot pair). Not imported by
   `__init__.py`; its own `__init__` re-exports the API. Guard:
   `tests/test_twin_analysis.py`.
-- `_core.py` — engine: raw chunk I/O, transforms, basis conversion
-  (identity in every family since format 6; kept as the family seam),
-  coordinate builders, diff/quadrature primitives, `GeometryInfo`, and
-  the `Namespace` object-view over embedded params/stats.
+- `_core.py` — engine: raw chunk I/O, transforms, coordinate
+  builders, diff/quadrature primitives, `GeometryInfo`, and
+  the `Namespace` object-view over embedded params/stats (the stored
+  components *are* the returned physical components, one-to-one).
   `geometry_info` also receives the live pydantic `params` singleton,
   so it must use plain attribute access only (its docstring).
 

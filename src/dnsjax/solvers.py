@@ -208,8 +208,8 @@ class DenseJAXSolver:
         -----
         The dense LU is inherently mode-outer (``Ny`` on the matrix
         axes), so the mode-inner field is moved to ``(Nkz, Nkx, Ny)``
-        on entry and back on exit -- a pure axis permutation, relocated
-        here from the old call-site transpose so the Pallas backend can
+        on entry and back on exit -- a pure axis permutation, done here
+        rather than at the call sites so the Pallas backend can
         drop it (see :func:`_banded_mode_solve`).  *component_axis*
         selects the batched RHS axis: ``0`` (default, ``(C, Ny, ...)``)
         or ``1`` (``(Ny, C, ...)``, the IMM Hk construction's y-leading
@@ -765,9 +765,10 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     and imaginary parts on a new axis 1 lands directly in the kernel's
     ``(N, k, Nkz, Nkx)`` layout (no transpose), and the recombine reads the
     two columns back.  Because the contract is mode-inner the hot path
-    feeds this with no transpose at all -- it previously round-tripped
-    ``(N,Nkz,Nkx) <-> (Nkz,Nkx,N)`` around every ``.solve`` (a round-trip
-    XLA did not fuse away, ~half this memory-bound solve's HBM traffic).
+    feeds this with no transpose at all; a mode-outer contract would
+    round-trip ``(N,Nkz,Nkx) <-> (Nkz,Nkx,N)`` around every ``.solve``
+    instead (a round-trip XLA does not fuse away, ~half this
+    memory-bound solve's HBM traffic).
 
     On CPU the factors *and* RHS are moved back to mode-outer (and the
     ``U`` diagonal un-inverted) for the standard
@@ -869,10 +870,11 @@ class PerModeBandedPallasOperator:
         Padding here is a memory-for-memory (and time) trade: the
         persistent factors grow by the tile-roundup fraction (typically
         one ``k_z`` row -- ``Nkz = nz - 1`` is odd -- and up to
-        ``bm1 - 1`` ``k_x`` columns), but the per-solve ``jnp.pad`` of
-        the factors disappears: previously every solve of every step
-        re-copied the factors into a padded transient duplicate, so
-        both the step's HBM traffic and its transient peak shrink.
+        ``bm1 - 1`` ``k_x`` columns), but no per-solve ``jnp.pad`` of
+        the factors is needed: padding at solve time would re-copy them
+        into a transient duplicate on every solve of every step, so
+        paying once here shrinks both the step's HBM traffic and its
+        transient peak.
 
         The padding is **per device shard** (a ``shard_map`` region,
         like the FFT pipeline): the whole-tile requirement applies to
@@ -1094,8 +1096,7 @@ def _banded_residual(a_band: Array, L: Array, U: Array) -> float:
 # at the smallest nonzero `$k^2$` of a huge box), where pivoting would
 # change nothing fundamental.  The diagonally-dominant operators solved
 # here keep growth `$O(1)$`; ``1e3`` is orders of magnitude above what
-# any supported configuration produces (CPU survey:
-# ``scripts/pivot_stability_survey.py``).
+# any supported configuration produces.
 _NO_PIVOT_GROWTH_TOL: float = 1e3
 
 

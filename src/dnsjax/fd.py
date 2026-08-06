@@ -191,8 +191,7 @@ def matrix_half_bandwidth(A: ndarray, skip_rows: Sequence[int] = ()) -> int:
     `$D_2$` (a `$(p+2)$`-point one-sided row reaches offset `$p$` at
     row 1), but not for a composed operator: `$D_1 D_1$` reaches
     `$p + \lceil p/2 \rceil - 1$` (11 at ``fd_order = 8``).  No
-    shipped configuration composes an operator any more -- the route
-    that did was retired on 2026-07-26 -- so today every caller
+    shipped configuration composes an operator, so every caller
     measures ``fd_order`` back.  Measuring rather than assuming is
     kept because the assumption is the kind that fails silently: an
     under-sized band truncates entries instead of erroring, and the
@@ -218,9 +217,7 @@ def matrix_half_bandwidth(A: ndarray, skip_rows: Sequence[int] = ()) -> int:
     return half
 
 
-def build_integration_weights(
-    y: ndarray, p: int, left_edge: float | None = None
-) -> ndarray:
+def build_integration_weights(y: ndarray, p: int) -> ndarray:
     r"""Composite polynomial quadrature weights on a non-uniform
     grid.
 
@@ -234,10 +231,8 @@ def build_integration_weights(
     summed to give global weights `$w_j$` satisfying
 
     .. math::
-        \int_{a}^{y_{N}} f(y)\,dy
-        \;\approx\; \sum_j w_j\,f(y_j),
-
-    where `$a = y_0$` by default, or *left_edge* when given.
+        \int_{y_0}^{y_{N}} f(y)\,dy
+        \;\approx\; \sum_j w_j\,f(y_j).
 
     Composite accuracy is `$O(h^{p+1})$` for smooth
     integrands, consistent with the FD derivative order `$p$`
@@ -249,20 +244,6 @@ def build_integration_weights(
         Grid-point coordinates, shape ``(Ny,)``.
     p:
         Accuracy order.  Uses ``(p+1)``-point stencils.
-    left_edge:
-        Optional lower integration bound below the first grid
-        point (``left_edge <= y[0]``).  The extra interval
-        `$[\mathrm{left\_edge}, y_0]$` is covered by the
-        first-stencil interpolant, keeping the composite
-        order `$p+1$` for integrands that are smooth across
-        the edge.  Note: the extrapolated weights oscillate
-        and turn **negative** once the gap approaches the
-        local spacing -- the cylindrical radial direction
-        (with a gap `$[0, r_0]$` at the axis) therefore does
-        **not** use this; ``build_cylindrical_grid`` instead
-        integrates `$f\,r$` on the axis-*augmented* grid
-        `$[0, r_0, \ldots]$` (the axis `$r=0$` is a real,
-        interpolated node, so the weights stay positive).
 
     Returns
     -------
@@ -280,12 +261,6 @@ def build_integration_weights(
     intervals = [
         (y[i], y[i + 1], max(0, min(i + 1 - h, Ny - s))) for i in range(Ny - 1)
     ]
-    if left_edge is not None:
-        if left_edge > y[0]:
-            raise ValueError(
-                f"left_edge={left_edge} must not exceed y[0]={y[0]}"
-            )
-        intervals.append((left_edge, y[0], 0))
 
     for a, b, j0 in intervals:
         xs = y[j0 : j0 + s]
@@ -464,14 +439,6 @@ def _local_even_axis_weights(r: ndarray, order: int) -> ndarray:
     n = min(order + 1, len(r))
     out[:n] = fornberg_weights(0.0, r[:n] ** 2, 0)[:, 0]
     return out
-
-
-# RETIRED (superseded by the parity-free axis-augmented rule in
-# ``build_cylindrical_grid``: integrate ``g = f*r`` on ``[0, *rs]``
-# with the axis ``r=0`` as a free node, ``g(0)=0`` for any bounded
-# ``f``).  The even-parity (``x = r^2``) rule silently assumed every
-# radial integrand is even in ``r`` -- wrong for the odd mean
-# ``u_theta`` -- and is removed; see ``build_cylindrical_grid``.
 
 
 def local_grid_spacing(nodes: ndarray) -> ndarray:

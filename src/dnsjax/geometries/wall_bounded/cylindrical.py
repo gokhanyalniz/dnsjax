@@ -155,8 +155,7 @@ from ._base import (
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
     get_norm2,
-    init_state,  # noqa: F401 — re-exported
-    integrate_scalar,
+    integrate_scalar,  # noqa: F401 — re-exported
     pad_base_flow,  # noqa: F401 — re-exported
     phys_to_spec,  # noqa: F401 — re-exported
     spec_to_phys,  # noqa: F401 — re-exported
@@ -320,10 +319,6 @@ class Fourier:
 
 
 fourier: Fourier = Fourier()
-
-
-# Backward-compatible alias.
-integrate_scalar_in_r = integrate_scalar
 
 
 # ── Cylindrical-specific norms ──────────────────────────────────
@@ -527,14 +522,13 @@ def build_parity_reduced_matrices(
     is the positive-row, ghost-column block with columns
     flipped.
 
-    Retired alternative: an axis-regular fit in `$x = r^2$` (an
-    axis-regular field is analytic in `$x$`), which gave
+    Rejected alternative: an axis-regular fit in `$x = r^2$` (an
+    axis-regular field is analytic in `$x$`), which gives
     `$D_{1,\mathrm{even}} = 2\,\mathrm{diag}(r) D_x$`,
     `$D_{1,\mathrm{odd}} = S + \mathrm{diag}(r) D_{1,\mathrm{even}} S$`
-    with a matching direct `$D_2 = 2 D_x + 4x D_{xx}$`.  It was shipped
-    behind an opt-in flag until 2026-07-26 on the strength of a
-    5-1000x *pointwise near-axis* accuracy gain, and removed once the
-    global consequences were measured: the refit trades away accuracy
+    with a matching direct `$D_2 = 2 D_x + 4x D_{xx}$`.  It buys a
+    5-1000x *pointwise near-axis* accuracy gain but loses on every
+    global measure: the refit trades away accuracy
     at `$r \approx 1$`, where the pipe's optimal-growth and wall-shear
     physics live.  On the Schmid & Henningson `$G_{\max} = 649$` anchor
     the mirrored fold errs by -4.1 / -0.6 / -0.06 / +0.01 % at
@@ -542,13 +536,9 @@ def build_parity_reduced_matrices(
     (unchanged with ``res.consistent_imm`` either way), and on a
     random-IC pipe run the fit cost ~17x the corrector iterations.  Its
     other job -- making the near-axis `$1/r$` commutator exact, which
-    the retired composed-`$D_2$` ``consistent_imm`` route needed --
-    went away with that route: the reconstruction scheme
-    (:func:`_imm_iteration_vw`) needs no operator identity at all.  A
-    snapshot written with the old flag still loads: the stored
-    ``res.pipe_axis_fit`` is dropped with a note
-    (``flows.registry.internalize_stored``) and the run continues on
-    these operators.
+    only the rejected composed-`$D_2$` ``consistent_imm`` route needed
+    -- is moot: the reconstruction scheme
+    (:func:`_imm_iteration_vw`) needs no operator identity at all.
 
     Returns
     -------
@@ -1667,8 +1657,7 @@ def _hk_bands(
     the traced ``A_base`` could not.  It is ``fd_order`` in **both**
     flag states: ``res.consistent_imm`` swaps in a band-preserving
     Dirichlet recovery operator, so no shipped configuration widens
-    the band any more (the composed ``D_2 := D_1 D_1`` route that did
-    was retired on 2026-07-26).
+    the band.
     """
     p_band = flow_.Lk_op.L.shape[1]
     m_s = fourier_.m[0, ..., None]
@@ -2882,20 +2871,20 @@ def _imm_iteration(
     Why there are two, and why the second one is *this* one, is
     derived once for all three geometries in the Cartesian dispatcher
     :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`.
-    The pipe's amendment to that record: its shipped mechanism until
-    2026-07-26 was route 1 (`$D_2 := D_1 D_1$` on an axis-regular
-    `$x = r^2$` fit, plus a 1-wall boundary closure), which reached
-    `$d \sim 6\times10^{-5}$` and could go no further -- the structural
+    The pipe's amendment to that record: route 1
+    (`$D_2 := D_1 D_1$` on an axis-regular
+    `$x = r^2$` fit, plus a 1-wall boundary closure) reaches
+    `$d \sim 6\times10^{-5}$` and can go no further -- the structural
     invariant `$\mathrm{diag}(\Theta) + \mathrm{diag}(\Phi) = 2/r^2$`
     forbids both radial parities' `$1/r$` commutators vanishing at
-    once, so a stepped state always kept the other parity's residual --
-    and, being built on a *composed* `$D_2$`, was not
-    grid-scale-dissipative, so it needed a resolved initial condition.
+    once, so a stepped state always keeps the other parity's residual
+    -- and, being built on a *composed* `$D_2$`, is not
+    grid-scale-dissipative, so it needs a resolved initial condition.
     The reconstruction has neither limitation: it needs no operator
     identity at all, both `$D_2$` fits stay direct, and the residual is
     machine-eps and flat under refinement on any initial condition.
-    Retiring that route also retired the `$x = r^2$` fit it was built
-    on (:func:`build_parity_reduced_matrices`).
+    That failure is also why the `$x = r^2$` fit has no remaining job
+    (:func:`build_parity_reduced_matrices`).
     """
     if params.res.consistent_imm:
         return _imm_iteration_vw(
@@ -2964,9 +2953,7 @@ def _norm(
 def build_cylindrical_stepper(
     flow: CylindricalFlow,
 ) -> tuple[
-    Callable[[Array], tuple[Array, Array, Array]],
-    Callable[[Array, Array, Array], tuple[Array, Array, Array]],
-    Callable[[str | None], Array],
+    Callable[[], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
     Callable[[Array, Array], tuple[Array, Array, Array, Array]],
@@ -2978,8 +2965,7 @@ def build_cylindrical_stepper(
 ]:
     """Build time-stepping functions for a cylindrical flow.
 
-    Returns ``(predict_and_correct, iterate_correction,
-    init_state_bound, predict_and_fully_correct,
+    Returns ``(init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,
     step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
     ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the

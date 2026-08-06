@@ -15,7 +15,7 @@ It also exports the flow interface consumed by ``__main__``:
 - ``step_cnab2`` / ``step_cnab2_measured`` -- the CN/AB2 stepping pair
 - ``set_dt`` / ``reset_ab2_kappa`` -- adaptive-dt hooks
   (``step.adaptive``; ``ldt_1``/``ildt_2`` recompute, no recompile)
-- ``init_state`` -- initial state from a snapshot or laminar
+- ``init_state`` -- the ``start_from_laminar`` initial state
 - ``get_stats`` -- diagnostic statistics
 - ``get_perturbation_energy`` -- the cheap `$E'$` read for the
   laminarization check
@@ -166,8 +166,6 @@ class MonochromaticFlow(TriplyPeriodicFlow):
 flow: MonochromaticFlow = MonochromaticFlow()
 
 (
-    predict_and_correct,
-    iterate_correction,
     init_state,
     predict_and_fully_correct,
     predict_and_fully_correct_measured,

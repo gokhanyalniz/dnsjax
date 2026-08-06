@@ -24,8 +24,8 @@ from pydantic import BaseModel, Field
 from .flow_spec import UNSET
 
 # The flow registry aggregates the per-flow parameter specs
-# (``flows/*/specs/``) into the system list and family groupings; the
-# groupings are re-exported here for the many existing importers.
+# (``flows/*/specs/``) into the system list and family groupings
+# (consumers import the groupings from ``flows.registry`` directly).
 # ``viscoelastic_systems`` is the *rheology* axis and cuts across the
 # geometry lists, each of which contains its own viscoelastic member
 # (so a consumer picking machinery by geometry gets it right, and one
@@ -36,11 +36,6 @@ from .flow_spec import UNSET
 # spec hooks receive ``params``/``derived_params`` as arguments), so
 # no cycle exists.
 from .flows.registry import (
-    annular_systems,  # noqa: F401  (re-export)
-    annular_viscoelastic_systems,  # noqa: F401  (re-export)
-    cartesian_systems,  # noqa: F401  (re-export)
-    cylindrical_systems,  # noqa: F401  (re-export)
-    cylindrical_viscoelastic_systems,  # noqa: F401  (re-export)
     periodic_systems,
     spec_for,
     viscoelastic_systems,
@@ -67,8 +62,7 @@ class Distribution(BaseModel):
     space, so FD solves are unchanged.
 
     When ``np0 == 1`` (default), the decomposition collapses
-    to the original 1D scheme (only `$k_x$` / `$z$`
-    distributed).
+    to a 1D scheme (only `$k_x$` / `$z$` distributed).
 
     Divisibility
     ------------
@@ -713,11 +707,14 @@ class Initiation(BaseModel):
     laminar.
 
     Start-mode precedence (resolved in ``__main__.py``): a provided
-    ``snapshot`` file (a single-file tar snapshot, or a legacy ``.npz``;
-    see :mod:`dnsjax.snapshot`) wins over every in-process mode;
+    ``snapshot`` file (a single-file tar snapshot; see
+    :mod:`dnsjax.snapshot`) wins over every in-process mode -- and
+    *only* a real snapshot satisfies it: a ``snapshot`` path that is
+    not one (a typo, an unrelated file) aborts the run rather than
+    falling through to a mode the user did not ask for;
     otherwise ``start_from_laminar`` (the laminar / closed-form base
     state); otherwise ``localized_rolls`` (an in-process deterministic
-    streamwise-localized-rolls perturbation, wall-bounded only);
+    localized-spot perturbation, wall-bounded only);
     otherwise ``random_field`` -- an in-process random divergence-free
     perturbation, which is **the default**: a run with no snapshot and
     no explicit mode selected starts from a random IC.  The ``random_*``
@@ -1524,12 +1521,13 @@ def read_snapshot_params(
     :func:`dnsjax.extensions.apply_extension_layer`.
 
     Returns ``None`` when *snapshot_path* is not a dnsjax snapshot file
-    (legacy ``.npz`` snapshots, a laminar start, or a missing path), so
-    the caller simply skips the snapshot layer.  Stored metadata
+    (a laminar start, or a missing path), so the caller simply skips
+    the snapshot layer.  Stored metadata
     records the flow-relevant **public** names; they are mapped back
     to internal names via
-    :func:`dnsjax.flows.registry.internalize_stored`, which drops
-    unknown stored keys with a note (schema drift across versions).
+    :func:`dnsjax.flows.registry.internalize_stored`, which **raises**
+    on a stored core-section key this version does not define
+    (``solver`` excepted, see below).
     Snapshots embed the *resolved* configuration (concrete
     ``geo.grid_type``, materialized per-flow defaults), so the
     snapshot layer pins the trajectory's actual setup on resume; the
@@ -1555,8 +1553,11 @@ def read_snapshot_params(
             snap[section].pop(key)
     # Solver knobs are execution-only (they select *how* the numerics
     # run, never the results), so they are never inherited from a
-    # snapshot -- which also keeps snapshots that embed a retired
-    # backend/field resumable.
+    # snapshot.  That is also why ``internalize_stored`` exempts this
+    # one section from its unknown-key error: the drop happens here,
+    # *after* internalization, so a snapshot naming a solver knob this
+    # version no longer defines must survive the pass above to reach
+    # it.
     snap.pop("solver", None)
     overlays = {
         name: snap.pop(name)
@@ -1600,10 +1601,11 @@ def trajectory_defining_changes(snapshot_params: dict) -> list[str]:
     flagging spuriously.  Snapshots embed the resolved configuration
     (a concrete ``geo.grid_type``, materialized per-flow defaults), so
     values compare directly; a genuine grid switch (e.g. rigged-cgl
-    <-> half-cgl) is flagged.  Stored keys the current surface no
-    longer defines are dropped by the internalization (with a note);
-    fields *added* since the snapshot compare against the model
-    default (the old run effectively ran it).
+    <-> half-cgl) is flagged.  A stored core-section key the current
+    surface no longer defines makes the internalization raise
+    (``ValueError``) rather than resume against a setup nothing
+    reports; fields *added* since the snapshot compare against the
+    model default (the old run effectively ran it).
     """
     from .extensions import EXTENSIONS
     from .flows.registry import internalize_stored

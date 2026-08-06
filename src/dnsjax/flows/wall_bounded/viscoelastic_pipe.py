@@ -1,96 +1,5 @@
 r"""Viscoelastic (sPTT) pipe flow, driven by an axial pressure gradient.
 
-Summary of assumptions in the port from the annular geometry
-------------------------------------------------------------
-This flow was derived from the annular sPTT flow
-(:mod:`~dnsjax.flows.wall_bounded.viscoelastic_dean`) rather than from
-an independent formulation.  The deductions made in that port, in full:
-
-1. The vector-form momentum and conformation equations are carried
-   over unchanged.  Both geometries use the same cylindrical
-   coordinates `$(z, r, \theta)$`, so every component expression --
-   the tensor advection with its basis-rotation (Christoffel) terms,
-   the stretching `$(\nabla u)^{\!\top}c + c\nabla u$`, the sPTT
-   relaxation `$f = 1 - 3\epsilon + \epsilon\,\mathrm{tr}\,c$`, the
-   polymer stress `$\tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}
-   \nabla\cdot c$` and the spin-diagonal tensor Laplacian with
-   `$m_{\mathrm{eff}} = m + s$` -- transfers verbatim.  The shared
-   code is :mod:`~dnsjax.geometries.wall_bounded._viscoelastic_common`
-   (the coordinate-level algebra) and
-   :mod:`~dnsjax.geometries.wall_bounded._viscoelastic_stepping` (the
-   stepping functions, incl. the tensor Laplacian).
-2. The driving translates as: the annulus's constant *azimuthal* mean
-   pressure gradient (`$\Pi_\theta = (r_1+r_2)/(\mathrm{Re}\,r)$`)
-   becomes a constant *axial* one, `$\Pi_z = 4/\mathrm{Re}$` (uniform
-   in `$r$`), applied at the mean mode.  So azimuth `$\to$` spanwise
-   and axial `$\to$` streamwise, and the flow has no Dean-ness left:
-   the only remaining novelty is the viscoelastic coupling.
-3. The amplitude keeps the annular normalisation *principle* -- the
-   force is fixed so that the `$\epsilon = 0$` laminar profile has unit
-   centreline velocity -- which in the pipe gives the
-   Hagen-Poiseuille `$W = 1 - r^2$` of
-   :mod:`~dnsjax.flows.wall_bounded.pipe`.  Lengths are pipe radii and
-   `$\mathrm{Re}$` is built on those two scales, as for the Newtonian
-   pipe; `$\mathrm{Re} := \mathrm{Wi}/\mathrm{El}$` is derived, as for
-   the annular twin.
-4. The total-field formulation is retained: ``base_flow = 0``, the
-   force enters at the mean mode, and the reported `$E'$` is the
-   velocity-only deviation from the laminar profile.
-5. The laminar conformation is the pointwise sPTT equilibrium on the
-   discrete shear `$S = D_1 W$` -- with **no** curvature term, against
-   the annulus's `$S = D_1 U_\theta - U_\theta/r$` -- and the sheared
-   pair moves from `$(c_{r\theta}, c_{\theta\theta})$` to
-   `$(c_{rz}, c_{zz})$`.  See "Laminar state" below.
-6. Axis regularity of the conformation is enforced by **parity only**,
-   `$(-1)^{m+s}$` per spin-`$s$` slot -- the same treatment (and the
-   same approximation class) the pipe already applies to `$u_\pm$`.
-   The full `$r^{|m+s|}$` vanishing rates are not separately imposed
-   on the carried state.  Derivation and the per-component table: the
-   :mod:`~dnsjax.geometries.wall_bounded.cylindrical_viscoelastic`
-   module docstring.
-7. The non-conservative discrete forms of the tensor advection
-   (explicit `$u_\theta/r$` terms) and of `$\nabla\cdot c$` (explicit
-   `$1/r$` terms) carry over unchanged; every grid point has
-   `$r > 0$`.  The conservative-curl requirement of the
-   pressure-elimination chain is unaffected -- that lives in
-   ``cylindrical._imm_iteration_vw``, which consumes the
-   polymer-augmented sources without change.
-8. The conformation BC is `$\nabla^2 c = 0$` at the single wall
-   `$r = 1$` when `$\kappa > 0$` (the annulus has two such rows); the
-   axis needs none.  ``beta`` / ``epsilon`` / ``kappa`` default to the
-   shared sPTT reference values, but ``el`` / ``wi`` do **not**: since
-   `$\mathrm{Re} := \mathrm{Wi}/\mathrm{El}$` is derived, those two
-   *are* the Reynolds number, so the pipe picks its own regime
-   (`$\mathrm{Wi} = 20$`, `$\mathrm{El} = 0.02$`, hence
-   `$\mathrm{Re} = 1000$` -- the Newtonian pipe's default, and the
-   elasto-inertial range a viscoelastic pipe is usually run in) rather
-   than inheriting the annulus's inertialess `$\mathrm{El} = 80$`.
-9. The wall-normal grid surface is the Newtonian pipe's, not the
-   annulus's: ``half-cgl`` under ``iterative-cn`` and ``rigged-cgl``
-   under ``cnab2`` (with the same validation that half-CGL's tighter
-   axis point is ``iterative-cn``-only), since the constraint is the
-   near-axis explicit CFL, which the conformation does not change.
-10. ``phys.u_grid`` defaults to the `$\epsilon = 0$` laminar bulk
-    `$1/2$`, as for the Newtonian pipe -- meaningful here because
-    streamwise *is* the grid direction.  (The annular twin defaults to
-    0 because its streamwise direction is azimuthal, not a
-    frame-translatable one; that was never a viscoelastic constraint.)
-11. ``phys.block_mean_spanwise_velocity`` is **not** offered: the
-    cylindrical geometry has no mean-blocking machinery (the Newtonian
-    pipe does not offer it either), and the undriven mean here is the
-    azimuthal swirl, which would need its own odd-parity treatment.
-12. The stored / observed layout is the annulus's unchanged: the same
-    9 physical components in the same order, so snapshots, the probe
-    stream and the analysis package need no new component schema --
-    only the axis parity classes of assumption 6.
-13. ``[probes]`` is supported and ``[force]`` is rejected, as for every
-    viscoelastic flow; transient growth is out of scope (a total-field
-    flow), so no ``frozen_profile_flow`` is exported.
-
-*This summary is scaffolding for the port review and is meant to be
-removed once the flow stands on its own; everything below documents the
-flow directly.*
-
 The flow
 --------
 Pressure-driven flow of an sPTT viscoelastic fluid through a circular
@@ -160,34 +69,11 @@ instead.
 The reconstruction scheme is supported here, as for every other
 wall-bounded flow, and needs nothing viscoelastic: the polymer stress
 reaches the velocity solve only as one more source term, which either
-influence-matrix scheme projects unchanged.
-
-It is worth recording why this flow briefly did *not* offer it, since
-the stated reason was wrong twice over.  The port measured a flag-on
-blow-up and attributed it to the polymer passing through the flag-on
-scheme's extra source derivative.  In fact the same divergence appears
-at `$\beta = 1$`, where the polymer stress is decoupled from the
-velocity entirely, and in the *Newtonian* ``pipe`` at the same
-`$\mathrm{Re}$` -- so it was never elastic; `$\kappa$` does not move
-it and `$\Delta t$` is not a lever either.  What it actually was is a
-defect in the **cylindrical** flag-on pass, whose two free wall
-differences were lagged to `$t^n$`, closing a growth loop across time
-steps.  This flow merely exposed it, by having defaulted to
-`$\mathrm{Re} \approx 1$` -- the regime it inherited from the annular
-sPTT flow, where `$\nu = \beta/\mathrm{Re}$` is three decades larger
-than at its own `$\mathrm{Re} = 1000$`.  That defect is fixed (the
-differences now come from the corrector iterate); the measurements,
-the controls that ruled out the elastic explanation, and the
-resolution dependence that made it look like a `$\mathrm{Re}$`
-threshold are all in ``cylindrical._imm_iteration_vw``.
-
-Guard: the ``viscoelastic-pipe-consistent-imm`` entry in
-``tests/test_random_smoke.py`` -- with a caveat about what an entry of
-that shape can do.  The *laminar* one is a linear gate and was a clean
-fixed point at `$\mathrm{Re} = 1$` throughout the period the scheme
-was known to diverge nonlinearly; and the old defect's boundary was
-crossed by wall-normal **refinement**, which no fixed-resolution entry
-can follow.
+influence-matrix scheme projects unchanged.  Guard: the
+``viscoelastic-pipe-consistent-imm`` entry in
+``tests/test_random_smoke.py`` (a nonlinear gate -- the laminar smoke
+is linear and blind to the flag's nonlinear path, and a
+fixed-resolution entry cannot see refinement-crossed thresholds).
 
 Moving frame
 ------------
@@ -273,8 +159,6 @@ class ViscoelasticPipeFlow(ViscoelasticCylindricalFlow):
 flow: ViscoelasticPipeFlow = ViscoelasticPipeFlow()
 
 (
-    predict_and_correct,
-    iterate_correction,
     _init_state_laminar_zero,  # overridden below
     predict_and_fully_correct,
     predict_and_fully_correct_measured,
@@ -334,27 +218,20 @@ def _perturbation_energy(
     )
 
 
-def init_state(snapshot: str | None) -> Array:
-    """Initialise the 9-component total-field state.
+def init_state() -> Array:
+    """The ``start_from_laminar`` 9-component state.
 
-    ``start_from_laminar`` returns the analytical laminar pair.  Legacy
-    ``.npz`` snapshots are not supported for the tensor state (a zarr3
-    snapshot resume is handled in ``__main__`` before this is called);
-    the random / localized-rolls modes are built in
-    :mod:`dnsjax.ic.random_field` / :mod:`dnsjax.ic.localized_rolls`.
+    Returns the analytical laminar velocity/conformation pair (this
+    flow integrates the **total** field).  Snapshot resume and the
+    in-process random / localized-rolls modes
+    (:mod:`dnsjax.ic.random_field` / :mod:`dnsjax.ic.localized_rolls`)
+    are dispatched in ``__main__``; this is called only for the
+    laminar start.
     """
-    if snapshot is None and params.init.start_from_laminar:
-        # Copy: the steppers donate their state argument, and the
-        # module-level ``_laminar_state`` must survive for the E'
-        # deviation in ``get_stats`` / ``get_perturbation_energy``.
-        return jnp.copy(_laminar_state)
-    if snapshot is not None:
-        raise NotImplementedError(
-            "viscoelastic-pipe does not support legacy .npz snapshots; "
-            "use a zarr3 (.tar) snapshot or an in-process IC."
-        )
-    sharding.print("Provide an initial condition.")
-    sharding.exit(code=1)
+    # Copy: the steppers donate their state argument, and the
+    # module-level ``_laminar_state`` must survive for the E'
+    # deviation in ``get_stats`` / ``get_perturbation_energy``.
+    return jnp.copy(_laminar_state)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────

@@ -802,7 +802,7 @@ def _hlo_census(label, jitted, args, hlo_out) -> None:
     ]
     try:
         txt = jitted.lower(*args).compile().as_text()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"  [{label}] compile/as_text failed: {type(e).__name__}: {e}")
         return
     low = txt.lower()
@@ -894,7 +894,7 @@ def _print_env() -> None:
         import triton
 
         print(f"  triton  {triton.__version__}")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"  triton  (import failed: {e})")
     print(f"  devices {jax.devices()}")
     for dv in jax.devices():

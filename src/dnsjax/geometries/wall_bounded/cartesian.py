@@ -61,8 +61,7 @@ from ._base import (
     get_norm,  # noqa: F401 — re-exported
     get_norm2,
     get_pert_enstrophy,  # noqa: F401 — re-exported
-    init_state,  # noqa: F401 — re-exported
-    integrate_scalar,
+    integrate_scalar,  # noqa: F401 — re-exported
     pad_base_flow,  # noqa: F401 — re-exported
     phys_to_spec,  # noqa: F401 — re-exported
     spec_to_phys,  # noqa: F401 — re-exported
@@ -184,16 +183,6 @@ class Fourier:
 
 
 fourier: Fourier = Fourier()
-
-
-# Backward-compatible alias (used by tests/test_integration.py).
-integrate_scalar_in_y = integrate_scalar
-
-
-# ``clenshaw_curtis_weights`` now lives in ``dnsjax.fd`` (JAX-free,
-# beside ``build_integration_weights``) so the full-CGL Cartesian and
-# annular grids share it; re-exported above for callers/tests that
-# import it from this module.
 
 
 def build_cartesian_grid(
@@ -1700,8 +1689,9 @@ def _imm_iteration_vw(
     in `$L$`, so they commute **exactly** whatever `$D_2$` is -- the
     structural property the primitive `$(v, p)$` elimination cannot
     have, since its factors mix `$D_1$` and `$D_2$` and leave the
-    `$(D_2 - D_1^2)$` / `$[D_1, D_2]$` obstruction that
-    ``consistent_imm`` used to buy off with `$D_2 := D_1 D_1$`.  This
+    `$(D_2 - D_1^2)$` / `$[D_1, D_2]$` obstruction -- what the
+    rejected composed-`$D_2$` ``consistent_imm`` route bought off by
+    setting `$D_2 := D_1 D_1$`.  This
     is the Tuckerman (1989) biharmonic-splitting influence-matrix
     construction; Luchini & Quadrio (2006) is the FD-in-`$y$`
     precedent.  The only place fourth-order *content* appears is the
@@ -1946,10 +1936,9 @@ def _imm_iteration(
     Kept here because each is a plausible-looking repair that
     measurably fails:
 
-    1. **Operator-side identities** (shipped up to 2026-07-25 here,
-       2026-07-26 in the other two geometries; now gone everywhere):
-       `$D_2 := D_1 D_1$` -- the **unique** second derivative that
-       commutes with `$D_1$` -- kills the commutator and the pressure
+    1. **Operator-side identities**: `$D_2 := D_1 D_1$` -- the
+       **unique** second derivative that commutes with `$D_1$` --
+       kills the commutator and the pressure
        mismatch, and a Kleiser-Schumann boundary closure
        (Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3,
        eqs. (7.3.51)-(7.3.58)), realised as two extra homogeneous
@@ -1972,8 +1961,8 @@ def _imm_iteration(
        RHS *does* reach machine-zero, but the fixed point contracts
        like `$N_y^{-2}$` (the source is volumetric, not a two-per-wall
        boundary term), so it is impractical at production resolution.
-    3. **State-side tangential projection** (measured and rejected
-       2026-07-24): overwriting the tangential pair from continuity at
+    3. **State-side tangential projection** (measured and rejected):
+       overwriting the tangential pair from continuity at
        the solved `$v$` -- setting `$\chi \equiv i k_x u + i k_z w$`
        to `$-D_1 v$` by the minimal-norm `$(u, w)$` update -- zeroes
        the interior divergence identically on the direct-fit
@@ -2015,8 +2004,8 @@ def _imm_iteration(
        pressure-eliminated fourth-order dynamics, so the
        `$\chi$`-momentum is never solved and nothing is discarded.
 
-    Route 5 was ported to the cylindrical geometries on 2026-07-26 and
-    is now the only mechanism behind the flag.  Its cylindrical form
+    Route 5 is the only mechanism behind the flag, in all three
+    geometries.  Its cylindrical form
     adds two facts this geometry never needs, both in
     ``annular._imm_iteration_vw``: the sources' axial curl must be the
     **conservative** `$\frac1r[D_1(r N_\theta) - i m N_r]$` (the
@@ -2086,9 +2075,7 @@ def _norm(
 def build_cartesian_stepper(
     flow: CartesianFlow,
 ) -> tuple[
-    Callable[[Array], tuple[Array, Array, Array]],
-    Callable[[Array, Array, Array], tuple[Array, Array, Array]],
-    Callable[[str | None], Array],
+    Callable[[], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
     Callable[[Array, Array], tuple[Array, Array, Array, Array]],
@@ -2101,8 +2088,7 @@ def build_cartesian_stepper(
     """Build time-stepping functions for a Cartesian
     wall-bounded flow.
 
-    Returns ``(predict_and_correct, iterate_correction,
-    init_state_bound, predict_and_fully_correct,
+    Returns ``(init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,
     step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
     ``fourier`` and *flow* singletons already bound.  ``_l_bf`` (the

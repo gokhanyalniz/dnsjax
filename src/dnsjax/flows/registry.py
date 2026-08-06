@@ -3,8 +3,7 @@ r"""Registry of all flow parameter specs (JAX-free).
 Aggregates the per-flow :class:`~dnsjax.flow_spec.FlowSpec` modules of
 ``flows/*/specs/`` into the canonical system list (the source of the
 ``phys.system`` ``Literal`` and the ``--help`` flow list), the
-system -> spec lookup, the family groupings historically defined in
-:mod:`dnsjax.parameters` (re-exported there), and the helpers that map
+system -> spec lookup, the family groupings, and the helpers that map
 *stored* (public-named, relevance-filtered) snapshot-metadata
 parameters back onto the internal names.
 
@@ -103,8 +102,8 @@ def _by_family(family: str) -> list[str]:
     return [s.system for s in SPECS.values() if s.family == family]
 
 
-# Family groupings, historically defined in ``dnsjax.parameters`` and
-# still re-exported there for the many existing importers.
+# Family groupings (defined here; consumers import them from the
+# registry).
 periodic_systems: list[str] = _by_family("triply-periodic")
 cartesian_systems: list[str] = _by_family("cartesian")
 
@@ -169,15 +168,32 @@ def internalize_stored(
 ) -> dict:
     """Map a stored (public-named) params dict to internal names.
 
-    Unknown keys -- fields that are neither global nor on *system*'s
-    surface under their public name -- are dropped with a note (schema
-    drift across versions).  With ``rehydrate=True`` the spec's
+    An unknown key in a core section -- neither global nor on
+    *system*'s surface under its public name -- **raises**.  A
+    snapshot naming a parameter this version does not define was
+    written by code that meant something by it, and silently dropping
+    it would resume a run whose setup differs from the stored one in a
+    way nothing reports.
+
+    ``solver`` is the one core section exempt (unknown keys there are
+    dropped with a note): it is execution-only by design -- it selects
+    *how* the numerics run, never the result -- and
+    :func:`dnsjax.parameters.read_snapshot_params` discards the whole
+    section anyway, but only *after* internalizing it.
+
+    With ``rehydrate=True`` the spec's
     :attr:`~dnsjax.flow_spec.FlowSpec.rehydrate` hook then fills the
     hidden-derived internal keys (e.g. the wedge ``geo.lz``, the
     derived ``phys.re``/``re2``), so offline consumers see the same
     internal values a live ``update_parameters`` would produce.
     Extension sections (e.g. ``force``) are passed through unchanged;
     their relevance/ownership is the caller's concern.
+
+    Raises
+    ------
+    ValueError
+        A stored core-section key (outside ``solver``) that *system*
+        does not define in this version.
     """
     spec = spec_for(system)
     global_keys = set(GLOBAL_FIELDS)
@@ -198,6 +214,11 @@ def internalize_stored(
             if internal is None and (section, public) in global_keys:
                 internal = public
             if internal is None:
+                if section != "solver":
+                    raise ValueError(
+                        f"stored {section}.{public} is not a {system!r} "
+                        "parameter in this version"
+                    )
                 print(
                     f"[params] note: ignoring stored {section}.{public} "
                     f"(not a {system!r} parameter in this version)"

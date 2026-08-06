@@ -13,7 +13,7 @@ It also exports the flow interface consumed by ``__main__``:
   measurements (``steps.dat``)
 - ``set_dt`` / ``reset_ab2_kappa`` -- adaptive-dt hooks
   (``step.adaptive``; on-device operator rebuild, no recompile)
-- ``init_state`` -- initial state from a snapshot or laminar
+- ``init_state`` -- the ``start_from_laminar`` initial state
 - ``get_stats`` -- diagnostic statistics
 
 The influence-matrix method enforces the no-slip wall BCs and the
@@ -110,8 +110,6 @@ class PlaneCouetteFlow(CartesianFlow):
 flow: PlaneCouetteFlow = PlaneCouetteFlow()
 
 (
-    predict_and_correct,
-    iterate_correction,
     init_state,
     predict_and_fully_correct,
     predict_and_fully_correct_measured,
