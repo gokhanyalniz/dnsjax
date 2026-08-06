@@ -32,20 +32,17 @@ deliberately lag. Line length is 79 for **all** lines (ruff
 
 ### Run tests
 
-All tests are standalone scripts (`uv run python tests/test_*.py`,
-the source of truth; `pytest` must never import them -- why: the
-`tests/pytest_suite.py` docstring). That bridge (the **only** file
-pytest collects via `[tool.pytest.ini_options] python_files`) runs
-each script as a subprocess:
-`uv run pytest -m "not slow and not mpi"` for the offline loop,
-`-m "not slow"` to add the two quick mpirun entries (the full
-`test_probes`/`test_forcing` runs), plain `uv run pytest` for
-everything (`mpi`-marked scripts auto-skip without `mpirun`).
-Output streams live at every
-layer (scripts line-buffer stdout, launch sites tee children through
-`tests/_live.py`, pytest defaults to `-s`), so background a long run
-and tail it for progress -- and kill it early when something is
-clearly wrong instead of waiting out the timeout.
+Tests are standalone scripts (`uv run python tests/test_*.py`);
+`tests/pytest_suite.py` is the subprocess bridge over them. Markers,
+why pytest must never *import* a script, and the live-output
+plumbing: its module docstring.
+
+`uv run pytest -m "not slow and not mpi"`  the offline loop
+`uv run pytest -m "not slow"`              + the two quick mpirun rows
+`uv run pytest`                            everything
+
+Background a long run and tail it for progress -- and kill it early
+when something is clearly wrong instead of waiting out the timeout.
 
 Let a backgrounded run's own completion signal reach you;
 **never poll for it** with `until ! pgrep -f "tests/test_x"`. The
@@ -59,13 +56,12 @@ iteration count.
 
 Run **one** heavy suite at a time. Each invocation is already serial
 internally (no xdist; the smoke suites loop one `mpirun` at a time)
-and deliberately leaves JAX's CPU thread pool unpinned -- a
-single-process test *should* use the box, which is why
-`configure_jax_platform` omits the production `XLA_FLAGS` pinning
-that `configure_jax_runtime` sets, so do not "fix" that. Concurrent
-invocations oversubscribe instead, and have produced spurious aborts
-(a signal-6 in an `mpirun` child; a smoke entry that failed once and
-passed identically on rerun). Corollaries: never read a *verdict*
+and deliberately leaves JAX's CPU thread pool unpinned (the reason,
+and why not to "fix" it: `configure_jax_platform` in `bootstrap.py`).
+Concurrent invocations oversubscribe instead, and have produced
+spurious aborts (a signal-6 in an `mpirun` child; a smoke entry that
+failed once and passed identically on rerun). Corollaries: never
+read a *verdict*
 from a `tail` of a run you have not seen in full -- capture it
 (`> log 2>&1`) and grep the file; never edit a test file while a
 suite is running, since each script is launched as a subprocess and
@@ -111,20 +107,16 @@ the Tests section below if you touch the modules they test.
 
 ### Initial conditions
 
-In-process only (no offline script). Start-mode precedence, highest
-first: `--init.snapshot` > `--init.start_from_laminar` >
-`--init.localized_rolls` (a compact "turbulent spot"; wall-bounded only;
-`_amplitude`/`_width`/`_wavelength`) > `--init.random_field` (the
-**default** when no snapshot is given; `--init.random_amplitude` /
-`_smoothness` / `_seed` / `_mean_flow`, plus
-`--init.random_conformation_amplitude` for the viscoelastic flows).
-Total-field
-dean/viscoelastic-dean/viscoelastic-pipe add the analytical laminar
-profile. Construction,
-per-geometry pairing, the sharded/padded-mesh-safe builds, and the
-divergence/Hermitian caveats: the `ic/random_field.py` and
-`ic/localized_rolls.py` module docstrings; precedence: `Initiation`
-(`parameters.py`).
+In-process only (no offline script). The four modes and their
+precedence: the `Initiation` docstring (`parameters.py`). Knobs:
+`--init.snapshot`, `--init.start_from_laminar`,
+`--init.localized_rolls` + `_amplitude`/`_width`/`_wavelength`
+(wall-bounded only), `--init.random_field` (the **default**) +
+`--init.random_amplitude` / `_smoothness` / `_seed` / `_mean_flow` /
+`_conformation_amplitude`. Construction, per-geometry pairing, the
+sharded/padded-mesh-safe builds, and the divergence/Hermitian
+caveats: the `ic/random_field.py` and `ic/localized_rolls.py` module
+docstrings.
 
 ### Triggering transition to turbulence
 
@@ -192,7 +184,8 @@ sharding.py           Multi-device (np0, np1) mesh; singleton sharding;
 operators.py          Wavenumber helpers (re-exports harmonics.py in
                       jnp.asarray; pad_harmonics), FFT wrappers
 harmonics.py          Stdlib/NumPy-only (JAX-free) wavenumber
-                      sequences; leaf shared with dnsjax.analysis
+                      sequences + parse_mode_pairs; leaf shared with
+                      dnsjax.analysis
 fft.py                3D/2D real FFT, 3/2-rule dealiasing, shard_map
                       reshard pipeline, spectral padding
 rhs.py                Rotational-form perturbation nonlinear term;
@@ -251,7 +244,8 @@ flows/
                       specs/ holds their JAX-free parameter FlowSpecs
 analysis/             External-facing JAX-free snapshot post-processing
                       API (+ the JAX-based transient_growth CLI and the
-                      response/ subpackage) -- see analysis/CLAUDE.md
+                      response/ and twin/ subpackages) -- see
+                      analysis/CLAUDE.md
 ```
 
 ### Twin-run perturbation growth (`dnsjax-twin`)
@@ -284,11 +278,11 @@ reusing the solver's own linear step per Fourier mode. Single-device,
 GPU-runnable (`--dist.platform cuda`). It parses the shared per-flow
 surface (`bootstrap.resolve_parameters`; public names, strict) plus its
 own `[tg]`/`--tg.*` extension section (`TGParams`). **`G_max` needs a
-converged wall-normal resolution (`ny`/`nr`)**: unresolved near-wall FD
-modes fake an early `G` spike that can beat the physical optimum (why
-it is irremovable + the recipe: the module docstring's "Converging
-N_y" section). `--tg.save_operator` additionally
-exports each mode's reduced generator (`<stem>_tg_op.npz`) for the
+converged wall-normal resolution**: at an unconverged `ny`/`nr` the
+reported optimum is an artefact (why, and the recipe: the module
+docstring's "Converging N_y" section). `--tg.save_operator`
+additionally exports each mode's reduced generator
+(`<stem>_tg_op.npz`) for the
 `analysis/response/` post-processing. Math, the `frozen_profile_flow`
 hook, the CLI/output spec, and the `--tg.dt` trade-off: the module
 docstring and `analysis/CLAUDE.md`.
@@ -311,10 +305,12 @@ directory structure enforces this:
 To add a flow `X`: (1) create `flows/<family>/specs/X.py` with a
 JAX-free `FlowSpec` (surface fields, defaults, hooks, `flow_module`,
 `n_components` — the `flow_spec.py` docstrings; the existing specs and
-`_family.py` fragments are the template) and add it to `SPECS` in
-`flows/registry.py` — this auto-extends the `phys.system` Literal, the
-`--help`/TOML surface, `--sample-toml`, snapshot metadata, the flow
-dispatch, and the `analysis/_core.py` frozensets; (2) create the
+`_family.py` fragments are the template) and add it to the `SPECS`
+tuple in `flows/<family>/specs/__init__.py` (`flows/registry.py`'s
+`SPECS` is derived from those, not edited) — this auto-extends the
+`phys.system` Literal, the `--help`/TOML surface, `--sample-toml`,
+snapshot metadata, the flow dispatch, and the `analysis/_core.py`
+frozensets; (2) create the
 `flow_module` (`flows/<family>/X.py`) exporting the stepping surface
 (the function list: the `FlowSpec.flow_module` docs; its
 `get_perturbation_energy` is the cheap `E'` laminarization read);
@@ -379,12 +375,10 @@ dean/viscoelastic-dean/viscoelastic-pipe systems instead integrate the
 
 **Component basis (cylindrical/annular only)**: the state is carried
 in the decoupled `u_±`/spin solver basis and *observed* in physical
-components; `__main__` crosses that boundary once per state (after the
-IC, and for the diagnostics/snapshot consumers), probes/forcing convert
-their own mode columns, and anything handing a freshly built state to a
-stepper must convert first. Cartesian and triply-periodic carry
-physical components always (Cartesian in both `res.consistent_imm`
-states). Rules and rationale: `geometries/wall_bounded/CLAUDE.md`.
+components — so **anything handing a freshly built (physical) state to
+a stepper must convert first**, and a state crosses at most once,
+never back. Cartesian and triply-periodic carry physical components
+always. Rules and rationale: `geometries/wall_bounded/CLAUDE.md`.
 
 **Moving frame of reference (`phys.u_grid`)**: translates the
 wall-bounded frame along the grid direction (`None` → laminar bulk;
@@ -411,16 +405,13 @@ periodic -- only periodic flows oversample `y`) and
 
 ### Parameter layering
 
-Lowest priority first: defaults (Pydantic models + the flow spec's
-per-flow overrides) → resumed-snapshot params → `parameters.toml` →
-CLI args. `update_parameters()` applies only explicitly-set,
-non-`None` fields; `validate_parameters()` runs once after the final
-layer. Every user-facing layer parses against the **selected flow's
-surface** (`param_surface.py`): irrelevant parameters are hard errors
-on the CLI and in the TOML, aliased fields go by public names
-(cylindrical/annular: `lz`/`nz`/`nr`/`ntheta` for internal
-`geo.lx`/`res.nx`/`res.ny`/`res.nz`), and `--help <system>` /
-`--sample-toml <system>` document each flow. Never inherited from a
+The layer order, the per-flow surface (`param_surface.py`) every
+user-facing layer parses against, and `--help <system>` /
+`--sample-toml <system>`: `bootstrap.resolve_parameters` (other entry
+points pass `toml_path`/`extensions`/`prog` — the TG CLI is the
+template). Aliased fields go by public names (cylindrical/annular:
+`lz`/`nz`/`nr`/`ntheta` for internal
+`geo.lx`/`res.nx`/`res.ny`/`res.nz`). Never inherited from a
 snapshot: the JAX-setup fields `dist.np0`/`np1`/`platform` and
 `res.double_precision` (chosen per run; a precision mismatch with the
 snapshot rejects), the whole `[solver]` section (execution-only,
@@ -429,8 +420,6 @@ snapshot rejects), the whole `[solver]` section (execution-only,
 A stored **core-section** parameter this version does not define is a
 hard error in `internalize_stored` — `[solver]` alone is exempt
 (note-and-drop), because it is stripped only *after* internalizing.
-Detail: `bootstrap.py` (`resolve_parameters`; other entry points pass
-`toml_path`/`extensions`/`prog` — the TG CLI is the template).
 
 Per-flow `FieldSpec` defaults (`phys.u_grid`, `geo.grid_type`, the
 viscoelastic rheology values, ...) are **re-materialized on every
@@ -485,41 +474,40 @@ wall-bounded only) → `probes.bin` + `probes.json`
 coefficient log (`[force]`) → `forcing.bin` + `forcing.json`
 (`extensions/forcing.py`; reader `dnsjax.analysis.response.ssi`).
 
-The two binary streams carry a sidecar `format_version` (writer:
-`extensions/probes.py`/`forcing.py`; reader floor: each reader's
-`MIN_FORMAT_VERSION`), enforced like the snapshot one. Bump both when
-the stored *meaning* changes (rationale: the writers' docstrings).
+Every stream with a sidecar carries a `format_version` enforced
+against the reader's `MIN_FORMAT_VERSION`, like the snapshot one —
+four writer/reader pairs: `extensions/probes.py` and `forcing.py` →
+`analysis/response/probes.py` and `ssi.py`; `twin/spectra.py` and
+`twin/driver.py` (`twin.json`) → `analysis/twin/spectra.py` and
+`series.py`. Bump writer and reader together when the stored *meaning*
+changes (rationale: the writers' docstrings).
 
-All are also flushed at shutdown, after the first step, before snapshot
-writes, and on SIGTERM/SIGINT, so they stay consistent with snapshots.
 Every flushed row and host-synced scalar is guarded against NaN/inf: a
 hit prints one `FATAL: non-finite ...` line naming the quantity, skips
-the final snapshot, and exits with code **3**. Buffering mechanism, file
-format, and the guard: the `__main__.py` module docstring.
+the final snapshot, and exits with code **3**. Buffering mechanism,
+flush points, file format, and the guard: the `__main__.py` module
+docstring.
 
 ### Snapshots
 
-A snapshot is a single uncompressed tar (`format_version: 6`) wrapping a
-zarr3 store, readable with standard tools and no dnsjax; each device
-writes its disjoint byte ranges directly (raw offset I/O / GDS, never
-compressed) into a `<name>.tar.partial` that is renamed into place once
-complete — so a killed job leaves that file beside the last good
-snapshot rather than a loadable blank one, and `*.tar` globs skip it —
-and the on-disk bytes are the solver's spectral layout at
-true mode counts (no transpose anywhere), in **physical components**
-for every family (cyl/annular `(u_z, u_r, u_θ)` + the physical
-conformation tensor; the solver's decoupled `u_±`/spin working basis
-is converted at the write/read boundary — see
-`wall_bounded/CLAUDE.md`). The
-stored state is the spectral perturbation `u'` for
-base-flow systems (laminar = zero array), the **total** field for
-dean/viscoelastic-dean/viscoelastic-pipe. The embedded `params` dump is
-the
-flow-relevant, resolved, **public-named** surface representation plus
-the relevant extension sections (`param_surface.recorded_params_dump`);
-readers map it back via `flows.registry.internalize_stored` /
-`stored_value`, and `snapshot_meta.read_snapshot_meta` rejects
-`format_version < 6` (no translation of old snapshots, by design).
+A single uncompressed tar (`format_version: 6`) wrapping a zarr3
+store; `snapshot_meta.read_snapshot_meta` rejects `< 6` (no
+translation of old snapshots, by design). Archive layout, the
+standard-tools contract, the native no-transpose byte layout, the raw
+offset I/O / GDS write path, the `.partial` commit-by-rename (which
+also makes `*.tar` globs skip an interrupted save), and the metadata
+(incl. the writing code's git hash): the `snapshot.py` and
+`__main__.py` module docstrings.
+
+Cross-cutting: the stored components are the **physical** ones for
+every family — the cyl/annular `u_±`/spin working basis is converted
+at the write/read boundary (`wall_bounded/CLAUDE.md`) — and the stored
+state is the spectral perturbation `u'` for base-flow systems (laminar
+= zero array), the **total** field for dean/viscoelastic-dean/
+viscoelastic-pipe. The embedded `params` dump is the flow-relevant,
+resolved, **public-named** surface representation plus the relevant
+extension sections (`param_surface.recorded_params_dump`); readers map
+it back via `flows.registry.internalize_stored` / `stored_value`.
 
 Resume is np-agnostic (precision must match — a mismatch rejects) and
 re-grids a changed wall-normal grid at load; `t`/`it`/`isnap` continue
@@ -527,9 +515,7 @@ only when
 `trajectory_defining_changes(meta["params"])` is empty — a `phys`/`geo`/
 `res` override or a `[force]` change starts a **new trajectory** unless
 `init.force_resume` (distinct from the hard resolution/system/precision
-rejects). Archive layout, metadata (incl. the writing code's git hash),
-and the I/O paths: the `snapshot.py` and `__main__.py` module
-docstrings.
+rejects).
 
 ### JAX-specific notes
 
@@ -596,41 +582,36 @@ docstrings.
 
 ## Scripts
 
-One line each; full rationale/usage in each script's module docstring.
+All under `scripts/`; full rationale/usage in each module docstring.
 
-- `scripts/snapshot_import.py`: **library** (not a CLI) packing a
-  native-layout velocity field into a snapshot (public-named per-flow
-  kwargs).
-- `scripts/snapshot_perturb.py`: CLI + library injecting a scaled
-  single-mode perturbation into an existing snapshot.
-- `scripts/ensemble_setup.py`: JAX-free `harvest`/`build`/`build-twin`
-  CLI turning a snapshot archive into ensemble member run trees
-  (aggregation: `dnsjax.analysis.response.ensemble` for response
-  trees, `dnsjax.analysis.twin.ensemble` for twin trees).
-- `scripts/pallas_tiling_diagnostic.py`: GPU harness that localised the
-  Triton partial-tile miscompile and confirms the fix.
-- `scripts/pallas_solve_profile.py`: GPU diagnostic for where the Pallas
-  banded solve's time goes (`--cpu-smoke`).
-- `scripts/solver_benchmark.py`: pallas-vs-dense validation & benchmark
-  incl. multi-GPU correctness (`--cpu-bench`, `--cpu-smoke`).
-- `scripts/gds_probe.py`: cluster diagnostic for the snapshot GDS path
-  -- whether it is engaged at all, and whether one blocking `CuFile`
-  call per span starves it (`--env-only`, `--end-to-end`,
-  `--cpu-smoke`).
+- `snapshot_import.py`: **library** (not a CLI) packing a
+  native-layout velocity field into a snapshot.
+- `snapshot_perturb.py`: CLI + library injecting a scaled single-mode
+  perturbation into an existing snapshot.
+- `ensemble_setup.py`: JAX-free `harvest`/`build`/`build-twin` CLI
+  building ensemble member run trees from a snapshot archive.
+- `pallas_tiling_diagnostic.py`: GPU harness for the Triton
+  partial-tile miscompile (localised it; confirms the fix).
+- `pallas_solve_profile.py`: GPU diagnostic for the Pallas banded
+  solve's time breakdown (`--cpu-smoke`).
+- `solver_benchmark.py`: pallas-vs-dense validation & benchmark incl.
+  multi-GPU correctness (`--cpu-bench`, `--cpu-smoke`).
+- `gds_probe.py`: cluster diagnostic for the snapshot GDS path
+  (`--env-only`, `--end-to-end`, `--end-to-end-only`, `--cpu-smoke`).
 
 ## Tests
 
-All to be kept up-to-date as the respective modules change. Detail
-lives in each test file's module docstring; entries here are
-one-liners. Cross-cutting notes:
+All under `tests/`, to be kept up-to-date as the respective modules
+change. What each covers lives in its module docstring; entries here
+are one-liners. Cross-cutting notes:
 
 - The laminar smoke test has `u' = 0`, so it does **not** exercise the
   rotational nonlinear term (a wrong advection change can still report
   `err=0`); `test_random_smoke.py` drives that path.
 - In-process geometry tests configure the singletons **once** at
   module top (`test_cylindrical.py`/`test_annular.py`/
-  `test_viscoelastic.py` via `update_parameters()`,
-  `test_cartesian.py` via direct `params.*`
+  `test_viscoelastic.py`/`test_viscoelastic_pipe.py` via
+  `update_parameters()`, `test_cartesian.py` via direct `params.*`
   assignment); a test that re-calls `update_parameters()` (only
   `test_annular.py` does) mutates the shared `params`/`derived_params`
   and must restore the module config before returning.
@@ -642,116 +623,67 @@ one-liners. Cross-cutting notes:
   parameterized by `re1`/`r_omega`/`eta` (with `re2` derived on the
   quasi-Keplerian half-line `R_Ω < -1`); tests use `re1`/`-1.2`/`0.71`.
 
-- `tests/pytest_suite.py`: the pytest bridge (subprocess per script,
-  `mpi`/`slow` markers; the only pytest-collected file — see Run tests).
-- `tests/_live.py`: shared tee-ing subprocess runner (`run_live`: live
-  stream + captured `CompletedProcess`, `PYTHONUNBUFFERED=1` children)
-  behind every long-running test launch site, plus `report` — the
-  closing summary that **re-prints each failure after the counts**, so
-  a run's outcome is readable from a `tail` alone. Use it in any
-  script whose children stream output; a bare `"N passed, M failed."`
-  is not actionable.
-- `tests/response/_common.py`: shared fixtures of the response
-  identification tests (checked runner, real TG operator/basis
-  bundle, synthetic probe streams).
-- `tests/test_banded_solver.py`: geometry-independent Pallas banded
-  backend.
-- `tests/test_banded_solver_sharded.py`: shard_map-local Pallas solve on
-  a forced (2, 2) mesh.
-- `tests/test_cartesian.py`: Cartesian operator/matvec + Pallas
-  band-vs-dense parity + the v-omega_y algebraic identities.
-- `tests/test_cylindrical.py`: cylindrical operator/matvec + Pallas
-  band-vs-dense parity + the pipe-specific spin-quad / parity /
-  mean-splice structure.
-- `tests/test_annular.py`: annular operator/matvec, Pallas-vs-dense
-  parity, circular-Couette A0/B0 checks, and the shared cylindrical
-  `u_r`-`ω_r` algebraic identities.
-- `tests/test_viscoelastic.py`: the annular sPTT geometry.
-- `tests/test_viscoelastic_pipe.py`: the cylindrical sPTT geometry.
-  Both also carry the no-cross-geometry-import guard (a fresh
-  subprocess each).
-- `tests/test_integration.py`: quadrature weights and interpolation
-  matrices.
-- `tests/test_cnab2.py`: CN/AB2 + split-corrector structural guards.
-- `tests/test_imm_continuity.py`: stepped-state discrete divergence
-  with/without `res.consistent_imm` (+ the pipe accepts-the-flag
-  check and the plane-couette momentum-price report; every gate-on
-  bound is asserted at every `--ny`).
-- `tests/test_energy_budget.py`: stepped total-energy budget closure
-  (`dE/dt == I - D`) on/off `res.consistent_imm`.
-- `tests/test_adaptive.py`: adaptive-dt machinery (controller units,
-  rebuild-vs-fresh/step parity, no-recompile guard, kappa identity).
-- `tests/test_temporal_order.py`: second-order temporal accuracy
-  (fixed and variable step) + the `res.consistent_imm`
-  self-convergence contrast on all three wall-bounded geometries and
-  under a variable step.
-- `tests/test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
+- `pytest_suite.py`: the pytest bridge — see Run tests.
+- `_live.py`: `run_live` (tee-ing subprocess runner) + `report`
+  (summary that re-prints each failure after the counts). Use both in
+  any script whose children stream output.
+- `response/_common.py`: shared fixtures of the response
+  identification tests.
+- `test_banded_solver.py`: geometry-independent Pallas banded backend.
+- `test_banded_solver_sharded.py`: shard_map-local Pallas solve on a
+  forced (2, 2) mesh.
+- `test_cartesian.py`: Cartesian operators + band-vs-dense parity.
+- `test_cylindrical.py`: cylindrical operators + band-vs-dense parity.
+- `test_annular.py`: annular operators + band-vs-dense parity.
+- `test_viscoelastic.py`: the annular sPTT geometry.
+- `test_viscoelastic_pipe.py`: the cylindrical sPTT geometry (both
+  also carry the no-cross-geometry-import guard).
+- `test_integration.py`: quadrature weights and interpolation matrices.
+- `test_cnab2.py`: CN/AB2 + split-corrector structural guards.
+- `test_imm_continuity.py`: stepped-state discrete divergence on/off
+  `res.consistent_imm` (`--ny`).
+- `test_energy_budget.py`: stepped total-energy budget closure.
+- `test_adaptive.py`: the adaptive-dt machinery.
+- `test_temporal_order.py`: second-order temporal accuracy, fixed and
+  variable step.
+- `test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
   forced spectral padding.
-- `tests/test_monochromatic.py`: Kolmogorov `get_stats` identities
-  (full-spectrum Parseval E/I/D/E' references + laminar limits).
-- `tests/test_padding.py`: padded-size rounding + FFT exactness
-  (odd-pad, odd-nz, fused spec-pad) + `chunked_transform` bit-parity.
-- `tests/test_laminar_smoke.py`: laminar fixed-point smoke for all
-  wall-bounded flows (subprocess/mpirun; incl. console-script,
-  nz-padding and azimuthal-wedge entries).
-- `tests/test_random_smoke.py`: random-IC nonlinear integration for
-  the 7 distinct stepping machineries (+ cnab2, adaptive,
-  split-corrector, consistent_imm x {plane-couette, taylor-couette}
-  x {iterative-cn, cnab2} + pipe + both viscoelastic flows,
-  multi-device-padding and nan-guard entries; default-IC +
-  chunked-RHS ride the base plane-couette entry).
-- `tests/test_quasi_keplerian.py`: quasi-keplerian control-parameter
-  derivation, regime/validation errors, and the azimuthal-wedge Fourier
-  + nonlinear/physical-space units.
-- `tests/test_param_surface.py`: flow-spec registry + per-flow surface
-  machinery (aliases, strictness, deferred, extensions, sample-TOML,
-  entry-point help smoke).
-- `tests/test_probes.py`: runtime spectral-mode probe stream, incl.
-  the solver-basis column conversion (`--unit-only` skips the mpirun
-  runs).
-- `tests/test_forcing.py`: runtime stochastic kicks, incl. the
-  solver-basis injection and its conjugate-partner rule
+- `test_monochromatic.py`: Kolmogorov `get_stats` identities.
+- `test_padding.py`: padded-size rounding + FFT exactness +
+  `chunked_transform` bit-parity.
+- `test_laminar_smoke.py`: laminar fixed-point smoke, all wall-bounded
+  flows (subprocess/mpirun; `--np`/`--np0`).
+- `test_random_smoke.py`: random-IC nonlinear integration for the 7
+  distinct stepping machineries + the scheme/flag variants (`--np`).
+- `test_quasi_keplerian.py`: quasi-keplerian control parameters and
+  the azimuthal wedge.
+- `test_param_surface.py`: flow-spec registry + per-flow surface
+  machinery.
+- `test_probes.py`: runtime spectral-mode probe stream
   (`--unit-only` skips the mpirun runs).
-- `tests/test_snapshot_perturb.py`: `scripts/snapshot_perturb.py`
-  injection.
-- `tests/response/test_probes_reader.py`: JAX-free probe reader.
-- `tests/response/test_operator_tools.py`: Gramian/controllability/
-  growth-curve units + `--tg.save_operator` export faithfulness.
-- `tests/response/test_ensemble.py`: harvest/build orchestration,
-  antithetic aggregation, direct operator identification.
-- `tests/response/test_lim.py`: LIM identification.
-- `tests/response/test_ssi.py`: SSI identification.
-- `tests/test_snapshot.py`: snapshot round-trips, np-agnostic resume,
-  standard-tools readability, 9-component viscoelastic case, the
-  multi-device I/O layout (every mesh family, both span-fragmenting
-  tiers, the no-rematerialization guard, engine selection), and the
-  integrity guards (chunk-shape-vs-`native_shape` refusal, loud
-  damaged-archive naming, crash-safe `.partial` commit-by-rename).
-- `tests/test_resume.py`: snapshot lineage and resume policy
-  (`--unit-only`).
-- `tests/test_snapshot_import.py`: `scripts/snapshot_import.py`
+- `test_forcing.py`: runtime stochastic kicks (`--unit-only`).
+- `test_snapshot_perturb.py`: `scripts/snapshot_perturb.py` injection.
+- `response/test_probes_reader.py`: JAX-free probe reader.
+- `response/test_operator_tools.py`: Gramian/controllability/
+  growth-curve units + the `--tg.save_operator` export.
+- `response/test_ensemble.py`: harvest/build orchestration, antithetic
+  aggregation, direct operator identification.
+- `response/test_lim.py`: LIM identification.
+- `response/test_ssi.py`: SSI identification.
+- `test_snapshot.py`: snapshot round-trips, np-agnostic resume, the
+  multi-device I/O layout, and the integrity guards.
+- `test_resume.py`: snapshot lineage and resume policy (`--unit-only`).
+- `test_snapshot_import.py`: `scripts/snapshot_import.py`
   native-contract validation (offline).
-- `tests/test_snapshot_export.py`: `dnsjax.analysis` API vs solver
-  ground truth (JAX-free import guarantee, curl + divergence +
-  viscoelastic-conformation parity incl. the `m0 = 2` pipe wedge row,
-  derivative/gradient wiring).
-- `tests/test_rolls_smoke.py`: localized-rolls IC integration for the
-  4 wall-bounded rolls-builder variants (short horizon).
-- `tests/test_localized_rolls.py`: IC construction self-test (rolls +
-  the random-field divergence guard, same subprocesses; rolls-less
-  flows run the random half only).
-- `tests/test_transient_growth.py`: transient-growth analysis (host
-  units, per-flow hooks, CLI features, per-flow literature anchors, and
-  an m0-wedge-vs-full-circle equivalence check; `--fast` skips the
-  anchors).
-- `tests/test_twin_unit.py`: twin diagnostics on a (2,2) mesh (mask/
-  energy partitions, budget vs a fine-grid NumPy reference, frame
-  invariance, spectra sum identities, the `[twin]` validate hook).
-- `tests/test_twin_driver.py`: `dnsjax-twin` integration via mpirun
-  (e0 exactness, e0=0 bit-identity, bit-exact paired restart, -np 2,
-  exit-3 guard, spectra round trip + lengths, budget closure with
-  self-convergence, every driver-level guard; `--only <frag>` runs a
-  subset).
-- `tests/test_twin_analysis.py`: JAX-free `analysis.twin` readers/
-  aggregation/fits/length core on synthetic streams + the
-  `build-twin` orchestration end to end.
+- `test_snapshot_export.py`: `dnsjax.analysis` API vs solver ground
+  truth (**re-run when changing a primitive**).
+- `test_rolls_smoke.py`: localized-rolls IC integration, 4 variants.
+- `test_localized_rolls.py`: IC construction self-test (rolls + the
+  random-field divergence guard).
+- `test_transient_growth.py`: transient-growth analysis, incl. the
+  per-flow literature anchors (`--fast` skips them).
+- `test_twin_unit.py`: twin diagnostics on a (2,2) mesh.
+- `test_twin_driver.py`: `dnsjax-twin` integration via mpirun
+  (`--only <frag>` runs a subset).
+- `test_twin_analysis.py`: JAX-free `analysis.twin` readers/
+  aggregation/fits/lengths + `build-twin` end to end.
