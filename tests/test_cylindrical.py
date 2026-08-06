@@ -3,7 +3,7 @@
 Tests cover:
 
 1. Radial CGL grid: rigged-CGL (g=1, default) vs half-CGL (g=0)
-   innermost-point formula, ~2x r_0 ratio, and bit-exact legacy g=0.
+   innermost-point formula, ~2x r_0 ratio, and the g=0 closed form.
 2. Parity-reduced FD matrices vs full auxiliary grid reference.
 3. `$A_{\\mathrm{base}}$` dense operator vs NumPy reference.
 4. ``_abase_matvec`` matrix-free vs dense reference.
@@ -46,11 +46,11 @@ from types import SimpleNamespace
 # Select the JAX backend from --dist.platform (default cpu) before the
 # geometry import below builds sharding.  --dist.platform cuda runs the
 # Pallas band-vs-dense parity on a GPU.
-from dnsjax.bootstrap import (  # noqa: E402
+from dnsjax.bootstrap import (
     configure_jax_platform,
     platform_from_argv,
 )
-from dnsjax.parameters import (  # noqa: E402
+from dnsjax.parameters import (
     Parameters,
     padded_res,
     params,
@@ -150,15 +150,15 @@ def _build_Lk_reference_cyl(
 def test_radial_cgl_grid_rigged_vs_half() -> None:
     """Radial CGL grid: rigged (g=1, default) vs half-CGL (g=0)."""
     for Nr in [8, 16, 32]:
-        # g = 0 reproduces the legacy half-CGL grid bit-exactly
-        # (identical expression: even auxiliary total 2 Nr).
-        legacy = -jnp.cos(
+        # g = 0 reproduces the direct half-CGL expression bit-exactly
+        # (identical formula: even auxiliary total 2 Nr).
+        direct = -jnp.cos(
             jnp.arange(2 * Nr, dtype=jnp.float64) * jnp.pi / (2 * Nr - 1)
         )[Nr:]
         assert np.array_equal(
             np.asarray(build_radial_cgl_grid(Nr, axis_gap=0)),
-            np.asarray(legacy),
-        ), f"Nr={Nr}: g=0 != legacy half-CGL grid"
+            np.asarray(direct),
+        ), f"Nr={Nr}: g=0 != direct half-CGL expression"
 
         for g in (0, 1):
             rs = np.asarray(build_radial_cgl_grid(Nr, g))
@@ -687,9 +687,8 @@ def test_analysis_radial_d1_matches_the_solver() -> None:
     divergence, curl, gradient, enstrophy -- is built on it.  A
     reconstruction that disagrees with the solver is a *silent*
     failure: an exactly-solenoidal stepped state reads back as O(1)
-    divergent and nothing raises.  There is one construction on each
-    side since 2026-07-26 (the `$x = r^2$` fit and its selector were
-    retired), which is exactly what this pins.
+    divergent and nothing raises.  There is one radial construction on
+    each side, which is exactly what this pins.
 
     (``tests/test_snapshot_export.py`` pins the assembled divergence
     node-for-node against the solver's own; this pins the ingredient.)
@@ -825,8 +824,8 @@ def test_cylindrical_integration_weights() -> None:
     # and y_weights_odd (odd) are BOTH strictly positive (definite
     # energy norm), and each is *spectral* for its parity -- exact for
     # the polynomial moments int r^d * r dr = 1/(d+2): even d via
-    # y_weights, odd d via y_weights_odd (the ODD guard the retired
-    # even-parity rule failed on, e.g. the mean u_theta), and machine
+    # y_weights, odd d via y_weights_odd (odd integrands, e.g. the
+    # mean u_theta, need the odd exactness), and machine
     # precision on a smooth integrand.
     from dnsjax.geometries.wall_bounded.cylindrical import (
         build_cylindrical_grid,

@@ -1,8 +1,9 @@
 r"""Shared entry-point setup: parameter layering and JAX runtime init.
 
-Every dnsjax entry point -- the ``dnsjax`` console script /
-``python -m dnsjax``, the diagnostic scripts, the offline tests, and
-future drivers (e.g. Newton solvers) -- must finalize parameters and
+Every dnsjax entry point -- the ``dnsjax`` / ``dnsjax-twin`` console
+scripts (``python -m dnsjax`` / ``-m dnsjax.twin``), the analysis
+CLIs, the diagnostic scripts, and the offline tests -- must finalize
+parameters and
 configure JAX in the same order **before** importing
 :mod:`dnsjax.sharding` or any geometry module, because those modules
 capture ``params`` / ``padded_res`` / the devices in module-level

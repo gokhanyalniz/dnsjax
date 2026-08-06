@@ -23,11 +23,11 @@ not the expected ``O(dt)`` finite-difference size.  Normalising by the
 term magnitudes -- not by ``I - D``, which is near-zero for a
 laminar-dominated pipe roll -- keeps it well-conditioned in every case.
 
-Background: memory ``reference_imm_divergence_residual`` (the residual is
-a convergent truncation error, physically inert for resolved fields) and
-the ``Resolution.consistent_imm`` docstring.  The pipe entries start
+Background: the residual is a convergent truncation error, physically
+inert for resolved fields -- the ``Resolution.consistent_imm``
+docstring.  The pipe entries start
 from a resolved IC (``localized_rolls``) to keep the two flag settings
-comparable; since the 2026-07-26 reformulation neither *needs* it.
+comparable; neither *needs* it.
 
 Run directly (needs ``mpirun``; each config launches ``dnsjax`` once)::
 

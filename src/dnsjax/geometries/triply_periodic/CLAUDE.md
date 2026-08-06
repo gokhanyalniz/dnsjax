@@ -3,7 +3,7 @@
 ### Module layout
 
 - `triply_periodic.py`: Fourier class, spectral differential operators
-  (derivative/curl/div/grad/laplacian/inverse-laplacian), norms,
+  (derivative/curl/div/grad/inverse-laplacian), norms,
   `TriplyPeriodicFlow` base dataclass, `init_state`, the algebraic
   Helmholtz predict/correct, `correct_divergence`, and
   `build_triply_periodic_stepper`.

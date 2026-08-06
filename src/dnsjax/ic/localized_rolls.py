@@ -12,12 +12,12 @@ in **every homogeneous direction**, peak-normalized so that
 `$\max|\mathbf{u}'| = A$` (the ``amplitude`` argument) at any domain
 size.  Growing a box length therefore just adds laminar flow around the
 spot, so the volume-averaged statistics scale as `$1 / (L_x L_z)$` -- the
-total perturbation energy is domain-independent.  This replaces an
-earlier construction whose streamwise width was a *fraction* of the box
-and whose single cross-plane Fourier mode made the cross-stream velocity
-grow `$\propto L$` (the `$1/\beta$` streamfunction prefactor with
-`$\beta = 2\pi / L$`), which both broke the scaling and blew the flow up
-in large domains.
+total perturbation energy is domain-independent.  Box-proportional
+sizing would forfeit both properties: a width set as a *fraction* of the
+box, or a single cross-plane Fourier mode (whose `$1/\beta$`
+streamfunction prefactor with `$\beta = 2\pi / L$` makes the
+cross-stream velocity grow `$\propto L$`), blows the perturbation up
+with the domain instead of holding it fixed.
 
 **Construction (Cartesian; `$x$` streamwise, `$z$` spanwise, `$y$`
 wall-normal).** With zero streamwise velocity and a `$y$`-`$z$`
@@ -36,7 +36,7 @@ and `$\Psi(z)$` a spanwise roll (wavelength `$\lambda$`) under a
 fixed-physical-width envelope, so the spot is localized in both `$x$` and
 `$z$`.  The spanwise derivative `$\Psi'$` is built **spectrally** as
 `$\mathrm{i}k_z\,\hat\Psi$` so the discrete divergence is truncation-level
-(projected out by the first corrector step), exactly as before.  Pipe and
+(projected out by the first corrector step).  Pipe and
 annular use the analogous per-geometry streamfunction (see the
 per-generator docstrings); the roll excites only the `$\pm 1$` spanwise
 mode for the pipe (its azimuthal cross-section), so the perturbation is
@@ -81,30 +81,21 @@ import numpy as np
 # builders must never fetch the ``fourier`` singleton's wavenumber
 # arrays, which are global multi-device arrays (not addressable per
 # process under ``mpirun``).
-from ..harmonics import complex_harmonics, real_harmonics
-from ..parameters import (
+from ..flows.registry import (
     annular_systems,
     annular_viscoelastic_systems,
     cartesian_systems,
     cylindrical_systems,
     cylindrical_viscoelastic_systems,
-    derived_params,
-    params,
 )
+from ..harmonics import complex_harmonics, real_harmonics
+from ..parameters import derived_params, params
 
 if TYPE_CHECKING:
     # ``Array`` is used only in (stringised) annotations, so it never
     # needs importing at runtime -- keeping this module importable
     # before JAX is configured (see the module docstring).
     from jax import Array
-
-__all__ = [
-    "generate_localized_rolls",
-    "generate_cartesian_rolls",
-    "generate_cylindrical_rolls",
-    "generate_annular_rolls",
-]
-
 
 # ── 1-D physical signals and host wavenumbers ────────────────────
 #

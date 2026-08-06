@@ -90,27 +90,20 @@ PIPE_STEPS = 10
 # round-off and follows no `$h^p$` law at all (the mild ny growth is
 # the longer `$D_1$` dot product), because the reconstruction makes
 # continuity an algebraic identity rather than something a solve has
-# to deliver.  The gated annular/pipe numbers replace 8.00e-06 /
-# 1.58e-08 and 5.6e-05, the floors of the operator-identity route
-# retired on 2026-07-26.
+# to deliver.
 #
-# These numbers replace a set that was 2-3 orders larger and grew as
-# `$N_y^2$` (2.08e-01 -> 9.86e-01 for plane-couette off).  That growth
-# was the *initial condition*, not the scheme: ``_column_draw`` was
-# grid-white in the wall-normal direction, and the boundary term's
-# `$D_1[1,0] \sim N_y^2$` amplified its Nyquist content.  With
-# ``random_field._wall_normal_filter`` supplying the missing
-# wall-normal factor of the smoothness envelope, that content is gone.
-# ``Resolution.consistent_imm`` records this table (re-baselined
-# 2026-07-24).
+# The gate-off numbers depend on the IC's wall-normal smoothness:
+# ``random_field._wall_normal_filter`` keeps grid-white Nyquist
+# content out of the boundary term's `$D_1[1,0] \sim N_y^2$`
+# amplification (without it they are 2-3 orders larger and *grow* as
+# `$N_y^2$`).  ``Resolution.consistent_imm`` records this table.
 
 # (label, system, consistent_imm, max relative divergence allowed).
 # The gate-off bounds are loose regression pins on today's behaviour
 # (measured ~4e-2 / ~6e-2 at NY); the gate-on bounds are the claim.
 # Every gate-on bound is round-off, by algebra rather than by a solve,
-# and pinned tight enough that the operator-identity mechanisms these
-# replaced (4.2e-14 Cartesian, 8.0e-06 annular, 5.6e-05 pipe) could
-# not pass it.
+# and pinned tight enough that an operator-identity mechanism (floors
+# 4.2e-14 Cartesian, 8.0e-06 annular, 5.6e-05 pipe) could not pass it.
 CASES = [
     ("plane-couette  off", "plane-couette", False, 1e0),
     ("plane-couette  on", "plane-couette", True, 1e-13),
@@ -235,8 +228,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
             # ``i m u_theta/r`` terms are individually huge but cancel,
             # which would inflate ``scale`` and deflate the ratio.  The
             # parity-reduced radial D1 (parity (-1)^{m+1}) is the
-            # mirrored fold -- there is one radial construction since
-            # the x = r^2 fit was retired.
+            # mirrored fold, the only radial construction.
             D1p = np.asarray(flow.D1_pos)
             D1g = np.asarray(flow.D1_ghost)
             gg = D1g.shape[0]
@@ -275,9 +267,9 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
 
     if system == "plane-couette" and not consistent_imm:
         # The momentum side of the ``consistent_imm`` trade, measured
-        # on this direct-fit-operator stepped state.  Both numbers are
-        # what the *gated* schemes pay to buy continuity, priced on
-        # the same un-gated field:
+        # on this direct-fit-operator stepped state: what the gated
+        # scheme pays to buy continuity, priced on the same un-gated
+        # field.
         #
         # - ``CHI-MOM``: an *upper bound* on the momentum price of the
         #   Cartesian v-omega_y route.  That route relocates the
@@ -297,16 +289,6 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         #   re-excite (the post-hoc projection that relocated the same
         #   residual *while* the solve still imposed chi-momentum was
         #   violently unstable; the ``_imm_iteration`` docs).
-        # - ``COMPOSED-D2``: what the *retired* operator-identity route
-        #   paid instead,
-        #   `$\\nu\\,\\max|(D_1 D_1 - D_2)\\,u| / \\max|\\tilde H u|$`
-        #   -- the extra viscous truncation composed operators inject
-        #   into every momentum equation (full CN weight; upper
-        #   bound).  ~2 orders below ``CHI-MOM`` here: that is the real
-        #   price of the reformulation, and it bought exactness at
-        #   every row, on any grid, with a narrower band and one fewer
-        #   solve.  Kept as a measurement because it is the only
-        #   quantitative comparison left of the two routes.
         #
         # Interior rows and the k = 0 plane excluded, like the
         # divergence measure.
@@ -337,18 +319,14 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         )
         den = max(np.abs(h_tilde(s[i]))[1:-1, :, 1:].max() for i in (0, 2))
         r_chi = num / den
-        comp = np.einsum("ij, cjzx -> cizx", D1 @ D1 - D2, s)
-        r_comp = nu * np.abs(comp)[:, 1:-1, :, 1:].max() / den
         print(f"CHI-MOM relocation = {r_chi:.6e}", flush=True)
-        print(f"COMPOSED-D2 momentum price = {r_comp:.6e}", flush=True)
 
     print(f"RESULT {rel:.6e}", flush=True)
     assert rel_ic < 1e-12, f"IC is not divergence-free: {rel_ic:.2e}"
 
 
 def _worker_pipe_accepts() -> None:
-    """``res.consistent_imm`` must be settable on the pipe (the opt-in
-    landed; the flag is no longer deferred)."""
+    """``res.consistent_imm`` must be settable on the pipe."""
     from dnsjax.parameters import (
         Parameters,
         Physics,

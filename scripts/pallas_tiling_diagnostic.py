@@ -502,7 +502,7 @@ def _print_env() -> None:
         import triton
 
         print(f"  triton  {triton.__version__}")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(f"  triton  (import failed: {e})")
     print(f"  devices {jax.devices()}")
     for dv in jax.devices():
@@ -575,7 +575,7 @@ def main() -> None:
                     fn, inputs, ref = _build_probe(
                         probe, dims, bm0, bm1, interpret
                     )
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     # A probe that cannot even be constructed is a
                     # harness regression regardless of expectations.
                     print(f"{tag} -> BUILD_ERROR: {type(e).__name__}: {e}")
@@ -618,7 +618,7 @@ def main() -> None:
                                 lowering_platforms=("cuda",)
                             )
                         print(f"{tag} -> LOWERS_OK")
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     kind = "RUNTIME_ERROR" if execute else "LOWERING_ERROR"
                     msg = str(e).replace("\n", " ")[:160]
                     # A crash is an acceptable manifestation of the raw

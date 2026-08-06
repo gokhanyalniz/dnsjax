@@ -336,7 +336,7 @@ def _worker(system: str) -> None:
     raw = make_stepper(
         gmod._l_bf, gmod._predict, gmod._correct, gmod._norm, None, None
     )
-    pfc = raw[2]
+    pfc = raw[0]
     ny = params.res.ny
     n2, n3 = sharding.spec_shape[1], sharding.spec_shape[2]
     i2, i3 = 1, 0

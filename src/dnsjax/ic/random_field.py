@@ -68,17 +68,16 @@ import numpy as np
 # per-device generators must never fetch the ``fourier`` singleton's
 # wavenumber arrays, which are global multi-device arrays (not
 # addressable per process under ``mpirun``).
-from ..harmonics import complex_harmonics, real_harmonics
-from ..parameters import (
+from ..flows.registry import (
     annular_systems,
     annular_viscoelastic_systems,
     cartesian_systems,
     cylindrical_systems,
     cylindrical_viscoelastic_systems,
-    derived_params,
-    params,
     periodic_systems,
 )
+from ..harmonics import complex_harmonics, real_harmonics
+from ..parameters import derived_params, params
 
 if TYPE_CHECKING:
     # ``Array`` is used only in (stringised) annotations, so it never
@@ -134,10 +133,9 @@ def enforce_hermitian_slice(
 # Each device fills only its own ``(axis2, axis3)`` modes, keyed by the
 # *global* mode index so the field is identical at any ``(np0, np1)``
 # device configuration.  Numpy has no random access into a single PRNG
-# stream, so the per-mode key replaces the old single full-array draw --
-# the generated values therefore differ from the previous scheme, but the
-# divergence-free / no-slip / norm properties and device-count
-# independence are preserved.  Conjugate symmetry on the real-FFT-axis-0
+# stream, so each mode draws from its own key; the divergence-free /
+# no-slip / norm properties and device-count independence hold by
+# construction.  Conjugate symmetry on the real-FFT-axis-0
 # plane is enforced *by construction* (the negative partner is the
 # conjugate of the same canonical draw), so no cross-device communication
 # and no plane replication are needed.
@@ -249,7 +247,7 @@ def _normalize_mode(
     continuity for one component (`$u_z = -\mathrm{div}/\mathrm{i}k_z$`,
     or the `$u_x$` analogue) -- a `$1/k$` factor that **inflates** the
     derived component at low wavenumber, so applying the spectral envelope
-    to the *draw* (the old scheme) leaves the low-`$k$` modes
+    to the *draw* would leave the low-`$k$` modes
     over-energetic and the resulting spectrum **domain-dependent** (as the
     box grows the lowest mode dominates).  Instead this rescales the
     finished divergence-free mode so its wall-normal energy follows the

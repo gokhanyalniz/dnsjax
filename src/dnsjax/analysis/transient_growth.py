@@ -939,7 +939,7 @@ def _linear_step(gmod: Any, fmod: Any = None):
         None,
         None,
     )
-    step = raw[2]  # predict_and_fully_correct(state, *args)
+    step = raw[0]  # predict_and_fully_correct(state, *args)
     # The pair lives on the *flow* module (the cylindrical/annular
     # ones re-export the pure ``_base`` algebra), never the geometry
     # module -- so look there, and take the absence as "no basis".

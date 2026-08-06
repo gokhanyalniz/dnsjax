@@ -1,8 +1,8 @@
 r"""LIM identification tests (``dnsjax.analysis.response.lim``).
 
 All offline (no solver runs; the probe streams are synthesised, the
-operator bundle comes from a real transient-growth ``--save-operator``
-subprocess as in ``test_ensemble.py``):
+operator bundle comes from a real transient-growth
+``--tg.save_operator`` subprocess as in ``test_ensemble.py``):
 
 1. **Estimator exactness**: for noiseless linear data
    ``b_k = e^{k dt L} b_0`` the lag-consistent overlap estimator

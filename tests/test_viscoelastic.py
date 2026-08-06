@@ -48,11 +48,11 @@ import sys
 # Select the JAX backend from --dist.platform (default cpu) before the
 # geometry import below builds sharding.  --dist.platform cuda runs the
 # Pallas Hc parity on a GPU.
-from dnsjax.bootstrap import (  # noqa: E402
+from dnsjax.bootstrap import (
     configure_jax_platform,
     platform_from_argv,
 )
-from dnsjax.parameters import (  # noqa: E402
+from dnsjax.parameters import (
     Parameters,
     padded_res,
     params,

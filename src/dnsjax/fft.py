@@ -163,7 +163,7 @@ def zeropad_fft(
     """Zero-pad a full-complex spectral array along *axis* to length *n*.
 
     Inserts zeros between the positive and negative Fourier modes,
-    reinstating the (previously omitted) Nyquist mode as zero.  This is
+    reinstating as zero the Nyquist mode the layout omits.  This is
     the spectral-space equivalent of interpolation to a finer grid; the
     wrap-order mode placement is exact for any parity of the pad
     `$n - N$` and any parity of `$N$`.  Built as a single

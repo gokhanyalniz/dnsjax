@@ -128,8 +128,6 @@ class ViscoelasticDeanFlow(ViscoelasticAnnularFlow):
 flow: ViscoelasticDeanFlow = ViscoelasticDeanFlow()
 
 (
-    predict_and_correct,
-    iterate_correction,
     _init_state_laminar_zero,  # overridden below
     predict_and_fully_correct,
     predict_and_fully_correct_measured,
@@ -190,27 +188,20 @@ def _perturbation_energy(
     )
 
 
-def init_state(snapshot: str | None) -> Array:
-    """Initialise the 9-component total-field state.
+def init_state() -> Array:
+    """The ``start_from_laminar`` 9-component state.
 
-    ``start_from_laminar`` returns the analytical laminar pair.  Legacy
-    ``.npz`` snapshots are not supported for the tensor state (a zarr3
-    snapshot resume is handled in ``__main__`` before this is called);
-    the random / localized-rolls modes are built in
-    :mod:`dnsjax.ic.random_field` / :mod:`dnsjax.ic.localized_rolls`.
+    Returns the analytical laminar velocity/conformation pair (this
+    flow integrates the **total** field).  Snapshot resume and the
+    in-process random / localized-rolls modes
+    (:mod:`dnsjax.ic.random_field` / :mod:`dnsjax.ic.localized_rolls`)
+    are dispatched in ``__main__``; this is called only for the
+    laminar start.
     """
-    if snapshot is None and params.init.start_from_laminar:
-        # Copy: the steppers donate their state argument, and the
-        # module-level ``_laminar_state`` must survive for the E'
-        # deviation in ``get_stats`` / ``get_perturbation_energy``.
-        return jnp.copy(_laminar_state)
-    if snapshot is not None:
-        raise NotImplementedError(
-            "viscoelastic-dean does not support legacy .npz snapshots; "
-            "use a zarr3 (.tar) snapshot or an in-process IC."
-        )
-    sharding.print("Provide an initial condition.")
-    sharding.exit(code=1)
+    # Copy: the steppers donate their state argument, and the
+    # module-level ``_laminar_state`` must survive for the E'
+    # deviation in ``get_stats`` / ``get_perturbation_energy``.
+    return jnp.copy(_laminar_state)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────

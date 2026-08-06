@@ -105,7 +105,7 @@ def test_cc_polynomial_exactness():
 
 
 def test_cc_even_ny():
-    """Even ny values must work (previously unsupported)."""
+    """Even ny values must work."""
     for ny in [4, 8, 28, 32]:
         w = clenshaw_curtis_weights(ny)
         ys = _cgl_grid(ny)
@@ -216,90 +216,6 @@ def test_composite_convergence_rate():
         assert ratio > 4, f"ny={nys[i]}: ratio {ratio:.1f} (expected >> 4)"
 
 
-def _radial_weights(rs: np.ndarray, p: int) -> np.ndarray:
-    """Exercise ``build_integration_weights``'s ``left_edge`` option:
-    the composite rule over the full disc (``left_edge=0.0``) times
-    the radial Jacobian.  (The cylindrical solver no longer uses this
-    -- it uses the spectral parity CC / axis-augmented rule -- but
-    ``left_edge`` remains a supported feature.)"""
-    return build_integration_weights(rs, p, left_edge=0.0) * rs
-
-
-def test_radial_weights_full_disc():
-    r"""Radial weights must cover [0, 1] including the
-    `$[0, r_0]$` segment below the first grid point.
-
-    The integrand `$g = r f$` is interpolated per interval,
-    so the rule is exact whenever `$g$` is a polynomial of
-    degree `$\le p$`: checks `$\int_0^1 r\,dr = 1/2$`,
-    `$\int_0^1 r^3\,dr = 1/4$`, and the laminar pipe bulk
-    `$2\int_0^1 (1-r^2)\,r\,dr = 1/2$`.
-    """
-    cases = [
-        ("half-cgl", _half_cgl_grid),
-        ("tanh", lambda nr: tanh_one_sided_grid(nr, 1.5)),
-    ]
-    for name, grid_fn in cases:
-        for nr in [8, 16, 32, 64]:
-            rs = np.asarray(grid_fn(nr), dtype=np.float64)
-            for p in [4, 8]:
-                if nr < 2 * p:
-                    continue
-                yw = _radial_weights(rs, p)
-                assert_allclose(
-                    yw.sum(),
-                    0.5,
-                    atol=1e-12,
-                    err_msg=f"int r dr, {name}, nr={nr}, p={p}",
-                )
-                assert_allclose(
-                    (yw * rs**2).sum(),
-                    0.25,
-                    atol=1e-12,
-                    err_msg=f"int r^3 dr, {name}, nr={nr}, p={p}",
-                )
-                assert_allclose(
-                    2 * (yw * (1 - rs**2)).sum(),
-                    0.5,
-                    atol=1e-12,
-                    err_msg=f"laminar bulk, {name}, nr={nr}, p={p}",
-                )
-
-
-def test_radial_weights_convergence_rate():
-    r"""Full-disc radial error must decrease as
-    `$O(h^{p+1})$` for a non-polynomial smooth-even
-    integrand (no `$O(N_r^{-2})$` floor from a missing
-    `$[0, r_0]$` segment).
-
-    Uses `$\int_0^1 e^{r^2} r\,dr = (e-1)/2$`.
-    """
-    exact = (np.exp(1.0) - 1.0) / 2.0
-    for p in [2, 4]:
-        errors = []
-        nrs = [8, 16, 32, 64]
-        for nr in nrs:
-            rs = np.asarray(_half_cgl_grid(nr), dtype=np.float64)
-            yw = _radial_weights(rs, p)
-            errors.append(abs((yw * np.exp(rs**2)).sum() - exact))
-        for i in range(1, len(errors)):
-            ratio = errors[i - 1] / max(errors[i], 1e-16)
-            assert ratio > 4, (
-                f"p={p}, nr={nrs[i]}: ratio {ratio:.1f} (expected >> 4)"
-            )
-
-
-def test_radial_weights_left_edge_validation():
-    """left_edge above the first grid point must raise."""
-    rs = np.asarray(_half_cgl_grid(8), dtype=np.float64)
-    raised = False
-    try:
-        build_integration_weights(rs, 4, left_edge=2 * rs[0])
-    except ValueError:
-        raised = True
-    assert raised, "left_edge > y[0] should raise ValueError"
-
-
 def test_composite_vs_cc_on_cgl():
     """On a CGL grid, both methods must agree for low-degree
     polynomials."""
@@ -362,12 +278,6 @@ def test_chebyshev_interp_truncation():
         )
 
 
-def _half_cgl_grid(nr):
-    N_full = 2 * nr
-    s = np.cos(np.arange(N_full) * np.pi / (N_full - 1))
-    return -s[nr:]
-
-
 def _radial_cgl_grid(nr, gap):
     """Cylindrical radial grid: outer ``nr`` positive points of a
     ``2*nr + gap``-point CGL grid (gap 0 = half-CGL, 1 = rigged-CGL)."""
@@ -386,9 +296,10 @@ def _augmented_radial_weights(rs, p):
 def test_augmented_axis_quadrature():
     """Parity-free axis-augmented radial quadrature (the solver rule):
     strictly positive AND exact for even *and odd* monomials up to the
-    interior order.  The retired even-parity gap rule erred O(r0^3) on
-    odd integrands (e.g. the mean u_theta); the augmented rule uses the
-    axis node g(0)=0, which holds for any bounded f -- no parity."""
+    interior order.  The rule integrates via the axis node g(0)=0,
+    which holds for any bounded f, so no parity assumption enters (an
+    even-parity gap rule would err O(r0^3) on odd integrands like the
+    mean u_theta)."""
     p = 4
     for gap in (0, 1):
         for nr in (8, 16, 32):

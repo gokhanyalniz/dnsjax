@@ -303,7 +303,7 @@ SHAPE_CASES: list[dict] = [
     },
 ]
 
-# Periodic systems (must match dnsjax.parameters.periodic_systems).
+# Periodic systems (must match dnsjax.flows.registry.periodic_systems).
 _PERIODIC = {"kolmogorov"}
 
 # Viscoelastic systems carry 9 state components (3 velocity + 6
@@ -1020,9 +1020,12 @@ def run_gds_detection_case() -> str | None:
     had kvikIO installed, because ``kvikio.defaults`` is a submodule
     rather than an attribute of the package -- a failure invisible
     from the outside, since "no GDS" is also the correct answer on a
-    node without the driver.  Stub kvikIO and drive every branch:
-    both API generations, the driver gate, and the ``CompatMode``
-    enum that a bare truth test misreads.
+    node without the driver.  Stub kvikIO and drive every branch: the
+    submodule bind, the cupy and nvidia-fs gates, each ``CompatMode``
+    the enum can hold (a bare truth test misreads ``AUTO``), and a
+    ``get`` that answers with something other than that enum -- which
+    must take the "unreadable" path rather than raise out of the
+    check.
     """
     import enum
     import sys
@@ -1035,22 +1038,20 @@ def run_gds_detection_case() -> str | None:
         ON = 1
         AUTO = 2
 
-    def install(mode, *, style: str) -> None:
-        """Put a fake kvikIO of API generation *style* on the path.
+    ABSENT = object()  # "kvikIO is not installed", not a compat mode
+
+    def install(value) -> None:
+        """Put a fake kvikIO answering ``get("compat_mode")`` on path.
 
         Deliberately faithful about the trap: the parent module gets
         **no** ``defaults`` attribute, exactly like the installed
-        package before its submodule is imported.  Reaching for
-        ``kvikio.defaults`` through the package -- what this check
-        used to do -- raises ``AttributeError`` here, as it did on
-        the cluster.
+        package before its submodule is imported, so reaching for
+        ``kvikio.defaults`` through the package raises
+        ``AttributeError`` here as it did on the cluster.
         """
         kv = types.ModuleType("kvikio")
         kvd = types.ModuleType("kvikio.defaults")
-        if style == "getter":  # older: one getter per property
-            kvd.compat_mode = lambda: mode
-        else:  # newer: a single generic accessor
-            kvd.get = lambda name: {"compat_mode": mode}[name]
+        kvd.get = lambda name: {"compat_mode": value}[name]
         sys.modules["kvikio"], sys.modules["kvikio.defaults"] = kv, kvd
 
     watched = ("kvikio", "kvikio.defaults", "cupy")
@@ -1060,36 +1061,27 @@ def run_gds_detection_case() -> str | None:
         present = os.path.join(tmp, "stats")
         open(present, "w").close()
         absent = os.path.join(tmp, "no-such-driver")
-        # (label, kvikio, cupy, driver, expected)
+        # (label, compat mode, cupy, driver, expected)
         cases = [
-            ("kvikio absent", None, True, present, False),
-            ("cupy absent", ("get", CompatMode.AUTO), False, present, False),
-            (
-                "driver absent",
-                ("getter", CompatMode.AUTO),
-                True,
-                absent,
-                False,
-            ),
-            (
-                "AUTO, old API",
-                ("getter", CompatMode.AUTO),
-                True,
-                present,
-                True,
-            ),
-            ("AUTO, new API", ("get", CompatMode.AUTO), True, present, True),
-            ("OFF, new API", ("get", CompatMode.OFF), True, present, True),
-            ("ON  -> compat", ("get", CompatMode.ON), True, present, False),
+            ("kvikio absent", ABSENT, True, present, False),
+            ("cupy absent", CompatMode.AUTO, False, present, False),
+            ("driver absent", CompatMode.AUTO, True, absent, False),
+            ("AUTO", CompatMode.AUTO, True, present, True),
+            ("OFF", CompatMode.OFF, True, present, True),
+            ("ON  -> compat", CompatMode.ON, True, present, False),
+            # Not a CompatMode: ``type(mode).ON`` raises, and the
+            # check must fall back to the host path.  This is why the
+            # enum comparison sits *inside* the guarded block.
+            ("non-enum mode", True, True, present, False),
         ]
         try:
-            for label, kvikio, cupy, driver, expected in cases:
-                if kvikio is None:
+            for label, mode, cupy, driver, expected in cases:
+                if mode is ABSENT:
                     # ``None`` in sys.modules makes the import raise.
                     sys.modules["kvikio"] = None
                     sys.modules.pop("kvikio.defaults", None)
                 else:
-                    install(kvikio[1], style=kvikio[0])
+                    install(mode)
                 # A real cupy (a GPU box) must not decide the outcome
                 # either way, so stub both states explicitly.
                 sys.modules["cupy"] = (

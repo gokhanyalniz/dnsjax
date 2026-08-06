@@ -6,8 +6,8 @@ global fields listed in :mod:`dnsjax.flows.registry`), the public
 (user-facing) names of aliased fields, per-flow default overrides,
 narrowed choice sets, deferred (not-yet-implemented) fields, and the
 flow's derivation / validation hooks -- the per-system parameter math
-that used to live inline in ``parameters.update_parameters`` /
-``validate_parameters``.
+that ``parameters.update_parameters`` / ``validate_parameters`` invoke
+through the spec.
 
 Specs are plain data plus pure-Python hooks.  They import nothing
 heavier than the standard library -- no pydantic, no JAX, and never

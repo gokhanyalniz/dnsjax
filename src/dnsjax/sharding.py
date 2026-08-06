@@ -18,8 +18,7 @@ The device mesh has shape ``(np0, np1)`` with axes ``"np0"`` and
   so FD solves are unchanged.
 
 When ``np0 == 1`` the ``"np0"`` axis is trivially size-1 and all
-partition specs collapse to the original 1D decomposition on
-`$k_x$` / `$z$`.
+partition specs collapse to a 1D decomposition on `$k_x$` / `$z$`.
 
 Array layout convention
 -----------------------
@@ -67,10 +66,10 @@ from jax import numpy as jnp
 from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
 
+from .flows.registry import periodic_systems
 from .parameters import (
     padded_res,
     params,
-    periodic_systems,
     round_up_padded,
 )
 
@@ -284,18 +283,14 @@ class Sharding:
     spec_scalar_shard = P(None, a0, a1)
 
     # ── Physical partition specs ──────────────────────────────
-    # [y, z, x] or [C, y, z, x]:
-    # y by np0, z by np1, x fully local.
+    # [C, y, z, x]: y by np0, z by np1, x fully local.
     phys_vector_shard = P(None, a0, a1, None)
-    phys_scalar_shard = P(a0, a1, None)
 
     no_shard = P(None)
 
     # ── IMM partition specs (wall-bounded) ────────────────────
     # Leading spectral axes [kz, kx, ...]:
     spec_imm_corr_shard = NamedSharding(mesh, P(a0, a1, None))
-    spec_dy_op_shard = NamedSharding(mesh, P(a0, a1, None, None))
-    spec_k2_op_shard = NamedSharding(mesh, P(a0, a1))
 
     # ── Precision ─────────────────────────────────────────────
     if params.res.double_precision:

@@ -1,8 +1,8 @@
 """Shared infrastructure for wall-bounded geometries.
 
-Functions that are identical (or near-identical) between the
-Cartesian and cylindrical geometry modules live here to avoid
-duplication.  Geometry-specific code (operator assembly, IMM
+Functions shared by the wall-bounded geometry modules (Cartesian,
+cylindrical, annular, and the two viscoelastic ones) live here to
+avoid duplication.  Geometry-specific code (operator assembly, IMM
 iteration, curl, etc.) stays in the respective geometry
 modules.
 """
@@ -441,32 +441,18 @@ def get_pert_enstrophy(
 # ── Flow state initialisation ───────────────────────────────────
 
 
-def init_state(snapshot: str | None) -> Array:
-    """Initialise the flow state (velocity_spec).
+def init_state() -> Array:
+    """The ``start_from_laminar`` state: zero spectral perturbation.
 
-    A provided snapshot path (legacy ``.npz``) takes precedence over
-    ``start_from_laminar`` so a supplied snapshot always wins; zarr3
-    snapshot resume is handled in ``__main__`` before this is called.
+    Snapshot resume and the in-process random / localized-rolls modes
+    are dispatched in ``__main__``; this is called only for the
+    laminar start (the perturbation about the base flow is zero).
     """
-    if snapshot is not None:
-        snapshot_arr = jnp.load(snapshot)["velocity_phys_nonexpanded"].astype(
-            sharding.float_type
-        )
-        velocity_phys = jax.device_put(
-            snapshot_arr, sharding.phys_vector_shard
-        )
-        velocity_spec = phys_to_spec_2d(velocity_phys)
-    elif params.init.start_from_laminar:
-        velocity_spec = jnp.zeros(
-            shape=(3, *sharding.spec_shape),
-            dtype=sharding.complex_type,
-            out_sharding=sharding.spec_vector_shard,
-        )
-    else:
-        sharding.print("Provide an initial condition.")
-        sharding.exit(code=1)
-
-    return velocity_spec
+    return jnp.zeros(
+        shape=(3, *sharding.spec_shape),
+        dtype=sharding.complex_type,
+        out_sharding=sharding.spec_vector_shard,
+    )
 
 
 # ── Stepper factory ─────────────────────────────────────────────
@@ -484,9 +470,7 @@ def build_wall_bounded_stepper(
     *,
     dt_leaves_fn: Callable,
 ) -> tuple[
-    Callable[[Array], tuple[Array, Array, Array]],
-    Callable[[Array, Array, Array], tuple[Array, Array, Array]],
-    Callable[[str | None], Array],
+    Callable[[], Array],
     Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
     Callable[[Array, Array], tuple[Array, Array, Array, Array]],
@@ -498,8 +482,7 @@ def build_wall_bounded_stepper(
 ]:
     r"""Build time-stepping functions for a wall-bounded flow.
 
-    Returns ``(predict_and_correct, iterate_correction,
-    init_state_bound, predict_and_fully_correct,
+    Returns ``(init_state_bound, predict_and_fully_correct,
     predict_and_fully_correct_measured, step_cnab2,
     step_cnab2_measured, set_dt, reset_ab2_kappa)`` with the
     *fourier* and *flow* singletons already bound.  ``step_cnab2``
@@ -551,8 +534,6 @@ def build_wall_bounded_stepper(
         return flow_.dt, flow_.ab2_kappa
 
     (
-        _predict_and_correct_jit,
-        _iterate_correction_jit,
         _predict_and_fully_correct_jit,
         _predict_and_fully_correct_measured_jit,
         _step_cnab2_jit,
@@ -566,22 +547,6 @@ def build_wall_bounded_stepper(
         l_bf_fn,
         step_scales_fn=_step_scales,
     )
-
-    def predict_and_correct(
-        state: Array,
-    ) -> tuple[Array, Array, Array]:
-        """Predictor-corrector step with bound singletons."""
-        return _predict_and_correct_jit(state, fourier, flow)
-
-    def iterate_correction(
-        state_prev: Array,
-        prediction: Array,
-        rhs_prev: Array,
-    ) -> tuple[Array, Array, Array]:
-        """One corrector iteration with bound singletons."""
-        return _iterate_correction_jit(
-            state_prev, prediction, rhs_prev, fourier, flow
-        )
 
     def predict_and_fully_correct(
         state: Array,
@@ -610,9 +575,9 @@ def build_wall_bounded_stepper(
         """CN/AB2 step + physical-space measurements (at `$u^n$`)."""
         return _step_cnab2_measured_jit(state, carry, fourier, flow)
 
-    def init_state_bound(snapshot: str | None) -> Array:
+    def init_state_bound() -> Array:
         """Initialize the flow state."""
-        return init_state(snapshot)
+        return init_state()
 
     _dt_leaves_jit = jax.jit(dt_leaves_fn)
     _dt_box = [float(params.step.dt)]
@@ -639,8 +604,6 @@ def build_wall_bounded_stepper(
         flow.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
 
     return (
-        predict_and_correct,
-        iterate_correction,
         init_state_bound,
         predict_and_fully_correct,
         predict_and_fully_correct_measured,

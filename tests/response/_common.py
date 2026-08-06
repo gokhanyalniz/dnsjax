@@ -23,7 +23,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from _live import run_live  # noqa: E402
+from _live import run_live
 
 #: Shared fixture configuration: a real but tiny plane-Poiseuille
 #: resolution, and the probe cadence of the synthetic streams (the

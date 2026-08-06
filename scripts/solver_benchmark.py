@@ -2,8 +2,7 @@ r"""Pallas-backend validation & benchmark vs the dense reference.
 
 Measures the production (``pallas``) solver backend against the
 ``dense`` reference on real hardware, and validates multi-GPU
-execution (stability-check companion:
-``scripts/pivot_stability_survey.py``):
+execution:
 
 A.  **Single-device matrix** (one subprocess per config x backend --
     the singletons capture the backend at import): per operator group
@@ -247,7 +246,7 @@ def _rebuild_pfc(system: str, flow):
         )
     else:
         raise SystemExit(f"unsupported system: {system}")
-    return build(flow)[3]
+    return build(flow)[1]
 
 
 def _mem_stats(jax) -> dict:
@@ -557,7 +556,7 @@ def _probe_env() -> dict:
             env=env,
         )
         return json.loads(proc.stdout.strip().splitlines()[-1])
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return {"backend": "unknown", "error": f"{type(e).__name__}: {e}"}
 
 
@@ -1889,7 +1888,7 @@ def _mpi_correctness_section(
                 drec["status"] = (
                     "PASS" if worst <= args.mpi_parity_tol else "FAIL"
                 )
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 drec["status"] = "fail"
                 drec["error"] = f"{type(e).__name__}: {e}"
         diffs.append(drec)
@@ -2171,10 +2170,6 @@ def _verdict(
                 f"{r.get('error', r.get('status'))}"
             )
 
-    print(
-        "\n(No-pivot stability coverage across the supported config "
-        "space: scripts/pivot_stability_survey.py.)"
-    )
     if not diffs:
         # No multi-device parity data was produced: an all-green code
         # here means only "nothing measured failed".

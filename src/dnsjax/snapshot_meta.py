@@ -112,9 +112,9 @@ def is_snapshot_file(path: str | Path) -> bool:
     """True when *path* is a dnsjax single-file snapshot.
 
     A dnsjax snapshot is an uncompressed tar containing a
-    :data:`META_MEMBER` member; this distinguishes it from a legacy
-    ``.npz`` (a zip) or any other file, so the caller can dispatch the
-    initial condition without a suffix convention.
+    :data:`META_MEMBER` member; testing for that member (rather than a
+    suffix convention) is what lets the caller tell a real snapshot
+    from any other file it was handed.
     """
     path = Path(path)
     if not path.is_file():
@@ -125,16 +125,14 @@ def is_snapshot_file(path: str | Path) -> bool:
         return META_MEMBER in tf.getnames()
 
 
-#: Oldest readable snapshot ``format_version``.  Version 6 switched
-#: the stored cylindrical/annular component basis from the solver's
-#: decoupled `$u_\pm$` / conformation-spin form to physical components
-#: (`$u_r$`, `$u_\theta$`, physical tensor) -- byte-layout unchanged,
-#: component *meaning* changed, so version-5 files would be silently
-#: misread; version 5 switched the on-disk array layout to the
-#: solver's native spectral layout; version 4 switched the embedded
-#: ``params`` dump to the flow-relevant public-named surface
-#: representation.  Earlier versions are not translated (no
-#: compatibility shim by design).
+#: Oldest readable snapshot ``format_version``.  Format 6 stores the
+#: state in the solver's native spectral layout, in physical
+#: components for every family (cylindrical/annular `$u_r$`,
+#: `$u_\theta$`, the physical conformation tensor), with the embedded
+#: ``params`` dump in the flow-relevant public-named surface
+#: representation.  A pre-6 file differs in at least one of those
+#: conventions and would be silently misread, so anything older is
+#: rejected -- never translated (no compatibility shim by design).
 MIN_FORMAT_VERSION: int = 6
 
 

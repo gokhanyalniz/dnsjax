@@ -32,9 +32,9 @@ def wall_fields(
     first entry is only the *scheme-independent* default -- the
     resolved default comes from ``FlowSpec.grid_type_default``).
 
-    ``res.consistent_imm`` is offered by every wall-bounded flow: since
-    2026-07-26 it reformulates the implicit step rather than swapping an
-    operator, so it needs nothing family-specific.
+    ``res.consistent_imm`` is offered by every wall-bounded flow: it
+    reformulates the implicit step rather than swapping an operator,
+    so it needs nothing family-specific.
     """
     cylindrical = grid_choices == CYLINDRICAL_GRIDS
     if cylindrical:
