@@ -2,26 +2,26 @@
 
 ### Module layout
 
-- `triply_periodic.py`: Fourier class, spectral differential operators
-  (derivative/curl/div/grad/inverse-laplacian), norms,
+- `triply_periodic.py`: the whole family. `Fourier` + the `fourier`
+  singleton and the `ly = 4` length reference (both imported by
+  `flows/triply_periodic/`), spectral differential operators
+  (derivative/curl/div/grad/inverse-laplacian), norms/`get_inprod`,
   `TriplyPeriodicFlow` base dataclass, `init_state`, the algebraic
-  Helmholtz predict/correct, `correct_divergence`, and
+  Helmholtz predict/correct, `correct_divergence`, `CFL_NAMES`, and
   `build_triply_periodic_stepper`.
 
 ### Key differences from wall-bounded
 
-- Helmholtz inversion is algebraic (pointwise multiply by `ildt_2`) --
-  no matrix solves, so `dnsjax.solvers` is never involved and
-  `solver.backend` is absent from the periodic parameter surfaces
-  (the geometry never reads it). See
-  `TriplyPeriodicFlow.__post_init__`. Adaptive dt (`set_dt`) just
-  recomputes `ldt_1`/`ildt_2` (`_build_dt_leaves`) -- no stability
-  check, fully continuous dt.
+- Helmholtz inversion is algebraic (`TriplyPeriodicFlow.__post_init__`)
+  -- no matrix solves, so `dnsjax.solvers` is never involved and
+  `solver.backend` is absent from the periodic parameter surfaces (the
+  `Solver` docstring in `parameters.py` says why). Adaptive dt
+  (`set_dt` → `_build_dt_leaves`) needs no stability check here, so
+  `dt` is fully continuous.
 - Divergence correction is a two-stage projection, not an IMM: inside
-  `_get_rhs` (pressure Poisson) and post-step (`correct_divergence` +
-  mean-mode zeroing, fused into every stepper via `make_stepper`'s
-  `finalize_fn` -- `_finalize_state`). See the `correct_divergence`
-  docstring.
+  `_get_rhs` and post-step, the latter fused into every stepper via
+  `make_stepper`'s `finalize_fn` (`_finalize_state`). Which stage
+  removes what: the `correct_divergence` docstring.
 - Spectral layout: `(ny-1, nz_spec, nx_spec)` with `[ky, kz, kx]` --
   ky fully local, kz sharded by np0, kx sharded by np1.
 - Physical layout: `[y, z, x]` (`y` sharded by np0, `z` by np1, `x`
@@ -31,9 +31,10 @@
   the mean-shear direction here, `L_y = 4`).
 - The 3D FFT extends the wall-bounded 2D reshard pipeline with a y-FFT
   step after reshard #2 brings the full y-extent local on each device
-  (full pipeline: the `fft.py` module docstring). `np0` requires
-  `ny_padded` divisibility; if unmet, `ny_padded` bumps to the next
-  7-smooth multiple (`round_up_padded_smooth`, `parameters.py`).
+  (step order: the `_rfft3d`/`_irfft3d` docstrings; the sharding
+  stages: the `fft.py` module docstring). `np0` requires `ny_padded`
+  divisibility; if unmet, `ny_padded` bumps to the next 7-smooth
+  multiple (`round_up_padded_smooth`, `parameters.py`).
 
 ### Flows
 

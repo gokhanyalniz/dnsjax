@@ -13,11 +13,9 @@
 - `annular.py`: annular geometry / concentric cylinders (Fourier, CGL
   grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2
   IMM, optional mean-mode azimuthal body force `pi_theta`)
-- `_viscoelastic_common.py`: geometry-free sPTT half shared by both
-  viscoelastic geometries (`to_spin_basis`/`from_spin_basis`,
-  `spin_to_phys_combos`, `pointwise_rhs`, `div_c_assemble`,
-  `conformation_coupling_core`, `solve_ptt_f`,
-  `narrow_abase_wall_row`, `combined_norm`)
+- `_viscoelastic_common.py`: the geometry-free sPTT half shared by
+  both viscoelastic geometries (incl. the 9-component
+  `to_spin_basis`/`from_spin_basis`)
 - `_viscoelastic_stepping.py`: the sPTT stepping functions, written
   once against a per-geometry adapter surface its docstring tabulates.
   Imports neither geometry (that would build both families' grids on
@@ -30,40 +28,38 @@
 
 **Component basis (cylindrical / annular only).** Two
 representations, one boundary. The **solver basis** — decoupled
-`u_± = u_r ± i u_θ` plus the conformation-spin components, which
-diagonalize the implicit operators — is the state's in-memory form:
-the carried state, the RHS, the cnab2 carry, and the interior of every
-stepper. The **physical basis** `(u_z, u_r, u_θ)` (+ the physical
-tensor) is what is observed or persisted: snapshots, diagnostics,
-probes, forcing profiles, ICs, the analysis package, the TG export. A
-given state crosses at most once, never back (the physical form is a
-view, dropped after use), via `_base.to_pm_basis`/`from_pm_basis`
-(aliased `to_solver_basis` / `from_solver_basis`, re-exported by the
-flow modules) or the 9-component
-`_viscoelastic_common.to_spin_basis`/`from_spin_basis` (shared by both
-viscoelastic geometries). `__main__`
-owns the field-level crossings; `extensions/probes.py` /
+`u_± = u_r ± i u_θ` plus the conformation-spin components — is the
+state's in-memory form: the carried state, the RHS, the cnab2 carry,
+and the interior of every stepper. The **physical basis**
+`(u_z, u_r, u_θ)` (+ the physical tensor) is what is observed or
+persisted: snapshots, diagnostics, probes, forcing profiles, ICs, the
+analysis package, the TG export. A given state crosses at most once,
+never back (the physical form is a view, dropped after use), via
+`_base.to_pm_basis`/`from_pm_basis` (aliased `to_solver_basis` /
+`from_solver_basis`, re-exported by the flow modules) or the
+9-component `_viscoelastic_common.to_spin_basis`/`from_spin_basis`.
+`__main__` owns the field-level crossings; `extensions/probes.py` /
 `extensions/forcing.py` convert their own mode columns instead.
-**Anything that hands a freshly built (i.e.
-physical) state to a stepper must convert first** — `__main__`'s
-post-IC line and `transient_growth._linear_step` are the templates.
-`_get_rhs_core`/`_l_bf` convert internally (the real FFT needs
-per-component Hermitian symmetry — the `cylindrical.py` docstring), so
-physical-space fields and the CFL measurement are always physical
-components.
+**Anything that hands a freshly built (i.e. physical) state to a
+stepper must convert first** — `__main__`'s post-IC line and
+`transient_growth._linear_step` are the templates.
+`_get_rhs_core`/`_l_bf` convert internally, so physical-space fields
+and the CFL measurement are always physical components (why: the
+`cylindrical.py` docstring).
 **Cartesian carries physical `(u, v, w)` in both `res.consistent_imm`
-states** and exports no basis pair; every consumer finds it by
-`getattr` and falls back to the identity.
+states** and exports no basis pair, so every consumer skips the
+conversion — `__main__` and `transient_growth` by `getattr` falling
+back to the identity, the two extensions by testing
+`params.phys.system in cartesian_systems`.
 
 ### Stepper factory (wall-bounded layer)
 
 `build_wall_bounded_stepper()` in `_base.py` wraps
 `timestep.make_stepper()`, binds the `fourier`/`flow` singletons, and
-returns the stepping functions — plus the adaptive-dt hooks
-`set_dt`/`reset_ab2_kappa`: a jitted rebuild of the dt-dependent
-operator/IMM leaves (each geometry's `_build_dt_leaves`, unchecked
-pallas factorization) swapped onto the flow in place, no stepper
-recompilation. Each geometry provides a thin
+returns the stepping functions plus the adaptive-dt hooks
+`set_dt`/`reset_ab2_kappa` (what they rebuild and why it costs no
+recompile: its own docstring; the per-geometry leaves are
+`_build_dt_leaves`). Each geometry provides a thin
 `build_*_stepper(flow)` passing its measured RHS (CFL via the `rhs.py`
 `measure_fn` hook) and `_l_bf` — the FFT-free linear base-flow coupling
 (from the shared `base_flow_coupling` helper) that wall-bounded cnab2
@@ -73,10 +69,10 @@ docstring. Guards: `tests/test_cnab2.py`.
 
 **Moving frame (`phys.u_grid`)**: the convective frame term is added
 spectrally in each geometry's `_get_rhs_core` *and* `_l_bf`
-(CN-implicit in both schemes); the CFL diagnostic advects with
-`flow.base_flow_adv_padded` from `pad_base_flow`. `get_nonlin` keeps
-the lab-frame `base_flow_padded` — do **not** shift the cross-product
-velocity (wall-stiff; the why and the history: `pad_base_flow`).
+(CN-implicit in both schemes). Do **not** shift the cross-product
+velocity — `get_nonlin` keeps the lab-frame `base_flow_padded`, and
+only the CFL diagnostic reads the shifted one (which field goes
+where, the why, and the history: `pad_base_flow`).
 
 ### Influence-matrix method (IMM)
 
@@ -113,21 +109,13 @@ the axis forces (the spin quad, parity classes, the band splice).
   (+ the `_derive_vw_homogeneous_data` twins under
   `res.consistent_imm`).
 - `res.consistent_imm` (default off, offered by every wall-bounded
-  flow) makes the
-  discrete continuity identity hold by **one
+  flow) makes the discrete continuity identity hold by **one
   mechanism** in all three geometries: advance the wall-normal
   velocity + vorticity, reconstruct the tangential pair, never form a
-  pressure — so the residual is machine-eps and *flat* under
-  refinement, for any operator or grid. Per geometry: Cartesian
-  advances `(φ, v, ω_y)` (4 → 3 solves); annular the `u_r`–`ω_r` pair
-  on one shared Helmholtz (`m_eff² = m²+1`; 4 → 3 solves, 3 band
-  families); the pipe the spin quad `(Φ±, ω±)` over the *existing*
-  `H_k±` families (5 solves; only its two free wall differences ride
-  the corrector iterate). **No geometry
-  changes what it carries** (scalars re-derived per pass and
-  reconstructed away), so snapshots, probes/forcing, analysis and
-  resume are all flag-independent. Derivation, per-geometry efficacy,
-  momentum prices, and the four rejected routes: the
+  pressure. It is flag-independent from the outside — no geometry
+  changes what it carries, so snapshots, probes/forcing, analysis and
+  resume are unaffected. Mechanism, per-geometry solve counts and
+  efficacy, momentum prices, and the five rejected routes: the
   `Resolution.consistent_imm` docs (`parameters.py`); the shared
   scheme record: `cartesian._imm_iteration` (+ `_imm_iteration_vw`);
   the cylindrical algebra: `annular._imm_iteration_vw`; the pipe's
@@ -141,11 +129,9 @@ the axis forces (the spin quad, parity classes, the band splice).
 ### Mean mode and padding modes
 
 `pad_harmonics` (`operators.py`) keeps padding-slot wavenumbers
-nonzero **so that** the mean mode is the only `k²=0` mode and
-`Fourier.mean_mask` is a one-hot — the cross-module invariant every
-pin-row/mean-mode consumer relies on, and padding modes need no
-special-casing. Detail: the `Fourier` docstrings; guard:
-`tests/test_mean_mask.py`.
+nonzero, so `Fourier.mean_mask` is a one-hot — the cross-module
+invariant every pin-row/mean-mode consumer relies on. Detail: the
+`Fourier` docstrings; guard: `tests/test_mean_mask.py`.
 
 ### Cylindrical geometry
 
@@ -172,11 +158,9 @@ the streamwise (azimuthal) resolution is `nz` and spanwise (axial) is
 `Fourier` coordinate-mapping tables in `annular.py`/`cylindrical.py`).
 
 **Velocity component order (the annular exception).** The physical
-triad is `(u_z, u_r, u_θ)`, so the annulus does **not** follow the
-`(streamwise, wall-normal, spanwise)` component order the other three
-geometries obey: streamwise `u_θ` is component 2, spanwise `u_z` is
-component 0. Why (axial-first shared with the pipe; a reorder is
-left-handed and was rejected): the `annular.py` docstring.
+triad `(u_z, u_r, u_θ)` does **not** follow the `(streamwise,
+wall-normal, spanwise)` order the other three geometries obey. Why,
+and the per-slot table: the `annular.py` docstring.
 
 Same decoupled `u+`/`u-` formulation as cylindrical but **two walls**,
 **no `r=0` axis** (`r1 > 0`), no parity reduction, and a **2×2
@@ -188,19 +172,17 @@ section): shear-driven Taylor-Couette / quasi-Keplerian (perturbation
 (`annular_viscoelastic.py`).
 
 **Azimuthal wedge (`geo.m0`, every cylindrical/annular flow, both
-viscoelastic flows included)**: `geo.m0 > 1` reduces the azimuthal
-domain to `θ ∈ [0, 2π/m0)` and resolves only `m = m0·j`, genuinely
-cutting azimuthal cost/memory by `m0` at fixed `nz` (all array/FFT
-sizes stay `nz`-driven; `m0` only scales wavenumber values). Every
-`geo.lz` consumer follows automatically. Cylindrical parity
-`m_is_even` tracks the *physical* `m0·j` — the correct r=0
-axis-regularity per mode — and the JAX-free analysis package must
-mirror exactly that selector (`analysis/_core.radial_derivative`; a
-harmonic-index pick silently corrupted every even-wedge pipe
-snapshot's operators). Rejected for Cartesian and triply-periodic in
-`validate_parameters`. The physical-space picture (why the wedge is
-fully resolved rather than decimated) and the cost argument: the
-`geo.m0` field docs (`parameters.py`). Guards:
+viscoelastic flows included)**: definition, the physical-space picture
+(why the wedge is fully resolved rather than decimated) and the cost
+argument: the `geo.m0` field docs (`parameters.py`). Only the
+cylindrical/annular surfaces carry the field; elsewhere the CLI/TOML
+reject it at parse and `validate_parameters` guards direct
+assignment. Every `geo.lz` consumer
+follows automatically. The cross-module rule: cylindrical parity
+`m_is_even` tracks the *physical* `m0·j`, and the JAX-free analysis
+package must mirror exactly that selector
+(`analysis/_core.radial_derivative`; a harmonic-index pick silently
+corrupted every even-wedge pipe snapshot's operators). Guards:
 `tests/test_quasi_keplerian.py` (wedge_nonlinear),
 `tests/test_transient_growth.py` (wedge-vs-full-circle equivalence),
 the `test_laminar_smoke.py` wedge entries, and the `m0 = 2` pipe row
@@ -208,15 +190,11 @@ in `tests/test_snapshot_export.py`.
 
 ### Custom wall-normal grids
 
-Grid selection precedence: (1) `params.geo.wall_grid` file (always
-overrides), (2) `params.geo.grid_type` — Cartesian/annular choices
-`"cgl"`/`"tanh"`, cylindrical choices `"half-cgl"`/`"rigged-cgl"`/
-`"half-tanh"` (half-CGL is `iterative-cn` only; each flow's surface
-narrows the Literal), (3) the flow spec's default, resolved to a
-concrete `grid_type` by `update_parameters` (rationale — snapshots
-embed the resolved grid: the `Geometry` docstring): full CGL for
-Cartesian/annular, cylindrical half-CGL
-under `iterative-cn` / rigged-CGL under `cnab2`. Quadrature is spectral
+Selection precedence (`geo.wall_grid` file > `geo.grid_type` > the
+flow spec's default), the per-family `grid_type` choices, and why
+`update_parameters` resolves the default to a concrete value:
+the `Geometry` docstring (`parameters.py`). Each flow's surface
+narrows the Literal further (`specs/`). Quadrature is spectral
 Clenshaw-Curtis on CGL grids, the `fd_order` composite rule on
 custom/tanh grids. File format, validation, weights, and tanh-grid
 properties: the `build_*_grid` and `fd.py` docstrings.
@@ -232,13 +210,10 @@ its docstring and the `fd.py` interpolation docstrings.
 - `apply_y_matrix` FD matvecs batch over the leading component axis, so
   `D1`/`D2` GEMMs can be regrouped/deduplicated across IMM stages
   bit-identically (the laminar smoke `err=0.00e+00` confirms refactors).
-- **Transpose-free GEMMs**: stacking matvec inputs y-leading with
-  `apply_y_matrix(..., component_axis=1)` (and the matching `.solve`
-  arg) keeps the cuBLAS GEMMs transpose-free (curl/divergence and the
-  cyl/annular Hk stacks are y-leading; Cartesian's Hk stays
-  component-leading on purpose). Rationale: the `apply_y_matrix`
-  (`_base.py`) and `PerModeBandedPallasOperator.solve` (`solvers.py`)
-  docstrings.
+- **Transpose-free GEMMs**: which stacks go y-leading
+  (`component_axis=1`), which stay component-leading, and why: the
+  `apply_y_matrix` (`_base.py`) and
+  `PerModeBandedPallasOperator.solve` (`solvers.py`) docstrings.
 
 ### Flows
 
