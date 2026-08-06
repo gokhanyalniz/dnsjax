@@ -18,8 +18,11 @@ Two subcommands:
     directory: all ``*.tar`` dnsjax snapshots with ``t >= --t-min``
     (cut the transient), thinned to a minimum spacing ``--spacing``
     (in simulation time units; pick several eddy-turnover times), at
-    most ``--n`` of them.  Writes a JSON manifest consumed by
-    ``build``.
+    most ``--n`` of them.  ``*_twin.tar`` files are skipped -- a
+    ``dnsjax-twin`` run directory holds partner snapshots beside its
+    reference trajectory, and a partner is a *perturbed copy* of the
+    reference at the same ``t``, not an independent sample.  Writes a
+    JSON manifest consumed by ``build``.
 
 ``build``
     Materialise the member run tree from a manifest: per parent
@@ -123,6 +126,13 @@ def harvest(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     candidates = []
     for path in sorted(run_dir.glob("*.tar")):
+        if path.stem.endswith("_twin"):
+            # A ``dnsjax-twin`` partner (the suffix that driver's
+            # ``_partner_path`` owns): a valid snapshot, at the same
+            # ``t`` as its reference, but a perturbed copy of it --
+            # harvesting both would seed the ensemble with a
+            # statistically dependent pair.
+            continue
         if not is_snapshot_file(path):
             continue
         meta = read_snapshot_meta(path)

@@ -156,6 +156,33 @@ class TwinParams(BaseModel):
     guard).  Cartesian wall-bounded flows, fixed time step; details
     and the resume rules: the :mod:`dnsjax.twin.driver` module
     docstring.
+
+    Cost of the two optional streams -- neither is priced by its
+    cadence alone:
+
+    - ``it_budget`` sets the **run's** peak memory, not just its
+      per-sample cost.  ``_twin_budget_jit`` is a separate compiled
+      program whose transient (~21 physical-component fields live at
+      once -- the 9 cached advectors, 9 gradients of the current
+      `$\mathbf{c}$`, and `$\mathbf{q}$` -- plus ~6 masked spectral
+      states) is the driver's global high-water mark, since the
+      device allocator's pool grows to the maximum over every
+      program.  Order `$40$` GB at a `$1024\times257\times256$`
+      double-precision plane-Poiseuille target.  If it ever binds,
+      the two ways to trade transforms for footprint are in
+      :mod:`dnsjax.twin.diagnostics`' "Budget terms".
+    - ``spectra_ref`` is a **disk** knob only.  The reference
+      spectrum is reduced whether or not it is stored
+      (:func:`dnsjax.twin.diagnostics.twin_spectra_2d` returns both),
+      so turning it off shortens ``twin_spectra.bin`` and costs the
+      decorrelation ratio, but saves no compute.
+
+    ``it_energy`` is the one per-*step* cost at its default of 1: an
+    extra jitted call per step whose ``delta`` and ``du1`` are each
+    read four times, so both materialise (~2 full-state complex
+    temporaries).  That is the intended Lyapunov sampling rate; the
+    ``E_d`` vs ``E_dU + E_du1 + E_du2`` redundancy is a deliberate
+    consistency guard.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -195,7 +222,9 @@ class TwinParams(BaseModel):
         ge=1,
         description=(
             "Steps between twin_budget.dat rows (the production/"
-            "transport/dissipation terms); unset disables the stream."
+            "transport/dissipation terms); unset disables the stream. "
+            "Not a pure cadence knob: enabling it raises the run's "
+            "peak memory (see the field's docs)."
         ),
     )
     it_spectra: int | None = Field(
@@ -210,7 +239,8 @@ class TwinParams(BaseModel):
         default=True,
         description=(
             "Also record the reference state's spectrum with each "
-            "spectra sample (for decorrelation ratios)."
+            "spectra sample (for decorrelation ratios).  A disk knob: "
+            "it is reduced either way."
         ),
     )
 
@@ -1068,13 +1098,14 @@ def main(argv: list[str] | None = None) -> int:
         print("Distribution initialized at", datetime.now(), flush=True)
         print("Code version:", git_hash(), flush=True)
         if setup.snapshot_params_used:
-            snap_hash = read_snapshot_meta(setup.snapshot_path).get("git_hash")
-            if snap_hash:
-                print(
-                    "Snapshot was recorded by code version:",
-                    snap_hash,
-                    flush=True,
-                )
+            # The parent snapshot's own provenance (``_metadata_bytes``
+            # always records it; the format-6 floor rejects anything
+            # older), as in :func:`dnsjax.__main__.main`.
+            print(
+                "Snapshot was recorded by code version:",
+                read_snapshot_meta(setup.snapshot_path)["git_hash"],
+                flush=True,
+            )
             print(
                 f"Inherited parameters embedded in snapshot "
                 f"'{setup.snapshot_path}' (except np0/np1/platform/"

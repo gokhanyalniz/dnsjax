@@ -239,8 +239,11 @@ def test_aggregation() -> None:
         )
         assert "t_rel_budget" in bundle
         assert bundle["stack_budget_P_tot"].shape[0] == 3
-        loaded = np.load(out, allow_pickle=True)
+        # allow_pickle=False on purpose: the bundle must round-trip
+        # without pickle, so no entry may be an object array.
+        loaded = np.load(out, allow_pickle=False)
         assert_allclose(loaded["mean_E_d"], bundle["mean_E_d"], rtol=0)
+        assert list(loaded["columns"]) == list(bundle["columns"])
 
         # Guards, each on a real bad input.
         (tree / "m0001" / "twin_budget.dat").unlink()

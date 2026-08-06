@@ -132,7 +132,10 @@ def aggregate_members(tree: str | Path, out: str | Path | None = None) -> dict:
             bundle[f"mean_budget_{name}"] = arr.mean(axis=0)
             bundle[f"std_budget_{name}"] = arr.std(axis=0)
         names += [f"budget_{n}" for n in sorted(bstacks)]
-    bundle["columns"] = np.array(names, dtype=object)
+    # Unicode, never ``dtype=object``: an object array would make the
+    # whole bundle unreadable under ``np.load(allow_pickle=False)``,
+    # the setting every reader in this package opens with.
+    bundle["columns"] = np.array(names)
     if out is not None:
         np.savez_compressed(out, **bundle)
     return bundle
