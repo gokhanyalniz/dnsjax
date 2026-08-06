@@ -326,9 +326,9 @@ onset, small domain).
 A flow whose state is not the 3 velocity components (e.g. the
 9-component viscoelastic state) declares it via `FlowSpec.n_components`
 (the snapshot writer/loader reads it) and needs an `analysis/_core.py`
-component schema (`geometry_info` / `_component_recipes`); the IC
-builders and the FFT/sharding/stepper machinery are
-component-count-agnostic (leading state axis replicated).
+component schema (`geometry_info`); the IC builders and the
+FFT/sharding/stepper machinery are component-count-agnostic (leading
+state axis replicated).
 
 ### Key design patterns
 
