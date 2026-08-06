@@ -455,8 +455,12 @@ def _mode_energy_replicated(field: Array, w: Array, k_metric: Array) -> Array:
     vf = derived_params.volume_fac
 
     def _local(shard: Array, w_loc: Array, k_metric_loc: Array) -> Array:
+        # ``(z conj(z)).real`` rather than ``abs(z) ** 2``: the latter
+        # takes a square root per element only to square it back (the
+        # ``get_inprod`` / ``xz_mean_cross`` idiom, and one fewer
+        # rounding on the sum-equals-``E_d`` identity).
         e_loc = (
-            jnp.einsum("j,cjkl->kl", w_loc, jnp.abs(shard) ** 2)
+            jnp.einsum("j,cjkl->kl", w_loc, (shard * jnp.conj(shard)).real)
             * k_metric_loc[0]
         )
         row0 = lax.axis_index("np0") * e_loc.shape[0]
