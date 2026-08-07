@@ -43,7 +43,7 @@ margin for a single FFT evaluation per step.
 - **Portable data** — snapshots are plain tar + zarr3, written in parallel
   directly from device memory, readable with standard tools and a
   dependency-light NumPy reader; resume is device-count-agnostic.
-- **Extensively tested** — 35 standalone test scripts (also runnable
+- **Extensively tested** — 38 standalone test scripts (also runnable
   through a pytest bridge) pin the numerics, the machinery, and the
   multi-device behavior, and the optimal-growth module reproduces
   published values — see
@@ -55,23 +55,26 @@ margin for a single FFT evaluation per step.
 |---|---|---|---|
 | **Pipe** | cylindrical | $U_z = 1 - r^2$, pressure-driven | `re`, axial length `lz` |
 | **Viscoelastic Pipe** | cylindrical (sPTT) | axial body force, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `lz` |
-| **Taylor–Couette** | annular | $U_\theta = A_0 r + B_0/r$, wall rotation | `re1`, `re2`, `eta` |
-| **Quasi-Keplerian** | annular | $U_\theta = A_0 r + B_0/r$, Rayleigh-stable co-rotation | `re1`, `r_omega`, `eta` |
-| **Dean** | annular | azimuthal body force, total field | `re`, `eta` |
-| **Viscoelastic Dean** | annular (sPTT) | azimuthal body force, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `delta` |
+| **Taylor–Couette** | annular | $U_\theta = A_0 r + B_0/r$, wall rotation | `re1`, `re2`, `eta`, `lz` |
+| **Quasi-Keplerian** | annular | $U_\theta = A_0 r + B_0/r$, Rayleigh-stable co-rotation | `re1`, `r_omega`, `eta`, `lz` |
+| **Dean** | annular | azimuthal body force, total field | `re`, `eta`, `lz` |
+| **Viscoelastic Dean** | annular (sPTT) | azimuthal body force, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `delta`, `lz` |
 | **Plane-Poiseuille** | cartesian | $U = 1 - y^2$, pressure-driven | `re`, `lx`, `lz`, `tilt_degree` |
 | **Plane-Couette** | cartesian | $U = y$, wall-driven | `re`, `lx`, `lz`, `tilt_degree` |
-| **Kolmogorov** | triply-periodic | $U = \sin(2\pi y / L_y)$, sine body force | `re`, `lx`, `lz` |
+| **Kolmogorov** | triply-periodic | $U = \sin(2\pi y / L_y)$, sine body force | `re`, `lx`, `lz`, `tilt_degree` |
 
 A few conventions worth knowing:
 
 - **Reynolds number.** `re` sets the viscosity $\nu = 1/Re$. For the pipe it
   is simultaneously the centerline–radius and the bulk-velocity–diameter
   Reynolds number (the factors of two cancel in the chosen normalization).
+  The viscoelastic flows are the exception: they expose no `re` (it is
+  derived as $Re = Wi/El$), and $\nu = \beta/Re$ is the *solvent*
+  viscosity, the polymer stress carrying the rest.
 - **Driving.** The pressure-driven flows (pipe, plane-Poiseuille) accept
   `phys.driving = "constant_bulk_velocity"` to hold the bulk velocity
   fixed instead of the mean pressure gradient, and every wall-bounded
-  flow but the pipe can pin the mean velocity of its undriven
+  flow but the two pipes can pin the mean velocity of its undriven
   homogeneous direction to zero (`phys.block_mean_spanwise_velocity`) —
   the spanwise mean in the channels, the axial mean in the annulus.
 - **Taylor–Couette rotation.** `re1` and `re2` are the inner and outer
@@ -86,9 +89,10 @@ A few conventions worth knowing:
 - **Viscoelastic controls.** `el` is the elasticity number and sets
   $Re = Wi/El$; `wi` is the Weissenberg number; `beta` the solvent-to-total
   viscosity ratio; `epsilon` the sPTT extensibility; `kappa` an artificial
-  stress diffusivity. Both viscoelastic flows share these; the annular one
-  adds `delta`, the inner radius (the gap is fixed at 2), while the pipe
-  takes the axial length `lz` like its Newtonian counterpart.
+  stress diffusivity. Both viscoelastic flows share these, and both take
+  the axial length `lz` like their Newtonian counterparts; the annular one
+  adds `delta`, the inner radius (the gap is fixed at 2), where the pipe
+  needs no radius parameter — its radius is 1.
 - **Viscoelastic memory.** With 9 state components, the viscoelastic
   right-hand side inverse-transforms a 36-field batch every step, and that
   batch dominates the step's peak memory. `solver.rhs_transform_chunks`
@@ -105,6 +109,22 @@ A few conventions worth knowing:
   wall-normal extent is fixed by the geometry (the channel spans
   $[-1, 1]$, the pipe radius is 1, the annulus $[r_1, r_2]$, and the
   periodic box uses $L_y = 4$).
+- **Azimuthal wedge.** `--geo.m0` restricts a cylindrical or annular
+  flow to the $m_0$-periodic subspace, which the dynamics preserve.
+  It is a cost lever, not a coarsening: at fixed `ntheta` the wedge
+  costs $m_0$ times less azimuthal work and memory while resolving
+  the same physical azimuthal scales a full circle would need
+  $m_0 \cdot n_\theta$ modes for, and physical space is fully
+  resolved over the wedge rather than decimated. Changing `m0` on
+  resume is trajectory-defining.
+- **Tilted domains.** `--geo.tilt_degree` rotates the driving
+  direction by $\theta$ within the homogeneous plane, so the base
+  flow becomes $\mathbf{U} = U_s(\cos\theta, 0, \sin\theta)$ with the
+  matching curl — the setup for structures oblique to the mean flow.
+  Available for plane-Couette, plane-Poiseuille and Kolmogorov;
+  $0^\circ$, $\pm 90^\circ$ and $180^\circ$ take exact values for
+  $\cos\theta$ and $\sin\theta$ rather than going through the
+  trigonometric functions.
 
 ## Installation
 
@@ -186,6 +206,19 @@ Reading the flags:
   relaminarizes).
 - `--dist.platform cpu` — a single CPU device.
 
+`--init.localized_rolls` is one of **four start modes**, resolved in a
+fixed precedence: a supplied `init.snapshot` wins over everything, then
+`start_from_laminar` (the analytical base state), then
+`localized_rolls`, then `random_field` — which is the **default**, so a
+run with no snapshot and no explicit mode starts from a random
+divergence-free field. The random builder takes
+`--init.random_amplitude` / `_smoothness` / `_seed`, plus
+`_mean_flow` and `_conformation_amplitude` where they apply; the roll
+builder adds `--init.localized_rolls_wavelength` to the amplitude and
+width shown above. A path given to `--init.snapshot` that is not a
+dnsjax snapshot **aborts** rather than falling through to the random
+default, so a typo cannot quietly start a different calculation.
+
 One default worth knowing: the pipe integrates in a frame translating at the
 laminar bulk velocity $1/2$, and its snapshots are stored in that frame;
 pass `--phys.u_grid 0` for the lab frame (see
@@ -248,6 +281,22 @@ outputs; a NaN or inf in any diagnostic instead aborts the run at once
 with a line naming the quantity, rather than spending the budget on a
 broken state.
 
+Each `.dat` stream opens with a header row naming its columns (`t`
+first) and is appended to across resumes. `stats.dat` carries the
+flow's physical diagnostics: the perturbation and total kinetic
+energies `E'` and `E`, and the energy input rate `I` against the
+dissipation `D`, which satisfy $dE/dt = I - D$ to truncation order —
+a closure the test suite pins. The wall-bounded flows add per-wall perturbation
+shear stresses and bulk velocities under the names natural to the
+geometry (`tau'_s,b`/`tau'_s,t` and `Ub'_s`/`Ub'_n` in the channels,
+`tau'_z`/`tau'_th` in the pipe, inner/outer pairs in the annulus); the
+viscoelastic flows report the solvent dissipation `D_s` in place of
+`D` and add the polymer work `W_p`, the elastic energy `E_p`, and the
+mean conformation trace `TrC`. Two optional binary streams — a
+spectral-mode probe stream and a stochastic-forcing log — are
+available through the `[probes]` and `[force]` sections; see
+[`src/dnsjax/extensions`](src/dnsjax/extensions/README.md).
+
 ## Parameter layering
 
 Configuration is applied in layers, lowest priority first:
@@ -268,6 +317,19 @@ initializes — `dist.np0`, `dist.np1`, `dist.platform`, and
 `res.double_precision` — are never inherited from a snapshot, nor are the
 resume-decision fields `init.snapshot` and `init.force_resume` (recorded
 for lineage only), and the entire `solver` section is execution-only.
+
+Not every section is owned by the core parameter model. An
+**extension** registers a whole section of its own — parsed as
+`--<name>.<field>` and `[<name>]`, shown in `--help` and
+`--sample-toml`, validated strictly per flow (a section on a flow it
+does not apply to is an error like any other irrelevant key),
+optionally recorded into snapshot metadata, and optionally
+trajectory-defining. Two ship with the solver, `[probes]` and
+`[force]`; the analysis and preprocessing entry points register their
+own on the same shared surface (`[tg]` for the transient-growth CLI,
+`[perturb]` for `scripts/snapshot_perturb.py`, `[twin]` for
+`dnsjax-twin`). A section name colliding with a core one is rejected
+at registration, so the two namespaces cannot drift into each other.
 
 `uv run dnsjax --help` shows the global parameters and the flow list,
 `--help <system>` one flow's full surface with per-field descriptions, and
@@ -520,12 +582,27 @@ data = read_state(
 )
 ```
 
-The companion `dnsjax.analysis.snapshot_ops` module provides `divergence`,
-`curl`, `gradient`, and `integrate` that reproduce the solver's *discrete*
-operators node-for-node, and `scripts/snapshot_import.py` covers the
-reverse direction: packing a velocity field produced elsewhere (by
-another simulator, say) into a valid snapshot — velocity flows only,
-the nine-component viscoelastic state being readable but not importable.
+The companion `dnsjax.analysis.snapshot_ops` module provides `derivative`,
+`gradient`, `divergence`, `curl`, and `integrate` that reproduce the
+solver's *discrete* operators node-for-node, plus `to_physical` and
+`to_spectral` for moving a field between the two representations.
+
+Three more names round out the JAX-free API for the cases where the
+field data is not what you are after. `read_meta` returns a snapshot's
+parsed metadata — resolution, grid, clock, lineage, the writing code's
+git revision — and `read_stats` the physical diagnostics of the state
+itself, which every snapshot carries as its own archive member unless
+`outs.snapshot_embed_stats` is turned off.
+`geometry_info` turns those parameters into the per-geometry axis and
+component schema, and `Namespace` is the read-only view they are
+returned through: it gives attribute access (`params.phys.re`) and item
+access side by side, the latter for stats keys such as `E'` or
+`tau'_s,b` that are not valid Python identifiers.
+
+`scripts/snapshot_import.py` covers the reverse direction: packing a
+velocity field produced elsewhere (by another simulator, say) into a
+valid snapshot — velocity flows only, the nine-component viscoelastic
+state being readable but not importable.
 
 The importer is a library (not a CLI) and **assumes the field is already
 in dnsjax's native layout**: components leading, axes $(y, z, x)$ for the
@@ -704,9 +781,9 @@ step.
 A moving frame of reference (`u_grid`) translates the domain along the
 streamwise / axial direction and is integrated implicitly by both schemes —
 convenient for following traveling structures. By default the frame moves at
-the laminar bulk velocity: $1/2$ for the pipe, $2/3$ for plane-Poiseuille,
+the laminar bulk velocity: $1/2$ for both pipes, $2/3$ for plane-Poiseuille,
 and zero for the others (Dean's driving is azimuthal, so its axial bulk
-vanishes). The pipe and plane-Poiseuille flows therefore integrate, and
+vanishes). The pipes and plane-Poiseuille therefore integrate, and
 store snapshots, in the moving frame unless `u_grid` is set to `0` (see also
 item 9 in [Additional features](#additional-features)).
 
@@ -760,9 +837,40 @@ is a truncation-level tangential-momentum residual that nothing feeds
 back; the discrete-divergence and energy-budget tests pin both
 formulations.
 
+## Extending
+
+Adding a flow system is a two-file operation. The first is a
+**`FlowSpec`** under `src/dnsjax/flows/<family>/specs/`, added to that
+package's `SPECS` tuple; the second is the flow module it names, which
+exports the stepping surface. Nothing else is edited: the
+`phys.system` literal, the `--help` and `parameters.toml` surfaces,
+`--sample-toml`, the snapshot metadata surface, the stepping dispatch
+and the analysis package's geometry sets all derive from the registry
+and extend themselves.
+
+A spec is plain data plus pure-Python hooks. It declares which shared
+parameter fields apply to the flow, the public names of any aliased
+ones (`nr` for the internal `res.ny`, and so on), per-flow default
+overrides, narrowed choice sets, *deferred* fields — declared but not
+yet implemented, so they fail with their own message rather than
+looking nonsensical — and the flow's derivation and validation hooks.
+A state that is not three velocity components declares its count, and
+the initial-condition builders, the FFT and sharding layers, and the
+steppers are all component-count-agnostic.
+
+Specs import nothing heavier than the standard library: no pydantic,
+no JAX, and never the parameter module itself, whose live objects the
+hooks receive as arguments. That is what lets `--help` render and a
+TOML validate without configuring JAX, and what keeps the import graph
+acyclic.
+
+The other extension point is the parameter surface itself: a script or
+analysis tool registers a whole section of its own, as described under
+[Parameter layering](#parameter-layering).
+
 ## Testing and validation
 
-The test suite is 35 standalone scripts under `tests/`, run directly
+The test suite is 38 standalone scripts under `tests/`, run directly
 (`uv run python tests/test_cartesian.py`) or through the optional pytest
 bridge — `uv run pytest` shells each script out as a subprocess, with
 `mpi`/`slow` markers and the scripts staying the source of truth — and
@@ -790,12 +898,19 @@ guarantees they pin:
 `scripts/` adds benchmark and diagnostic tools: `solver_benchmark.py`
 (Pallas-vs-dense validation and benchmark, including multi-GPU),
 `pallas_solve_profile.py` (where the banded solve's time goes),
-`pallas_tiling_diagnostic.py` (a GPU miscompile-isolation harness),
-`pivot_stability_survey.py` (the evidence behind the no-pivot LU
-stability tolerances), `gds_probe.py` (whether the GPUDirect Storage
-snapshot path is engaged, and what starves it), and
-`corrector_invariance_probe.py` (where the corrector's loop-invariant
-work goes and whether hoisting it would pay).
+`pallas_tiling_diagnostic.py` (a GPU miscompile-isolation harness), and
+`gds_probe.py` (whether the GPUDirect Storage snapshot path is engaged,
+and what starves it).
+
+It also holds two preprocessing tools. `snapshot_perturb.py` injects a
+scaled single-mode perturbation into an existing snapshot — from a
+transient-growth optimal, a controllability-mode bundle, or a raw
+profile — and keeps the parent's `t`/`it`, so a run resumed from the
+result continues the parent's trajectory with the perturbation
+applied. It runs single-device on the snapshot's own parameters and
+precision, so every mode it does not touch round-trips bit-identically.
+`ensemble_setup.py` builds ensembles of such runs; both are covered
+under [Response analysis](src/dnsjax/analysis/response/README.md).
 
 ## References
 
@@ -890,7 +1005,7 @@ A closer look at what is in the box, beyond the core solver:
 9. **Moving frame of reference.** The `u_grid` parameter integrates the flow
    in a frame translating along the streamwise / axial direction, implicitly
    in both time schemes — convenient for following traveling structures. It
-   defaults to the laminar bulk velocity ($1/2$ pipe, $2/3$
+   defaults to the laminar bulk velocity ($1/2$ both pipes, $2/3$
    plane-Poiseuille, zero otherwise); set it to `0` for the lab frame.
 
 10. **Buffered, crash-consistent diagnostics with a non-finite guard.**
@@ -930,12 +1045,13 @@ A closer look at what is in the box, beyond the core solver:
     on resume starts a new trajectory — see
     [The influence-matrix method](#the-influence-matrix-method).
 
-15. **Twin-run perturbation-growth driver.** `dnsjax-twin` steps a
-    reference snapshot and a perturbed copy (a random divergence-free
-    field of prescribed energy $E_\Delta(0)$, exact in the solver's own
-    measure) through the same jitted stepper in lockstep and streams
+15. **Twin-run perturbation-growth driver.** `dnsjax-twin` (Cartesian
+    wall-bounded flows, fixed step) steps a reference snapshot and a
+    perturbed copy (a random divergence-free field of prescribed energy
+    $E_\Delta(0)$, exact in the solver's own measure) through the same
+    jitted stepper in lockstep and streams
     diagnostics of the difference field: mean/streak/streamwise-varying
-    component energies, the 24 production/transport terms and
+    component energies, the 24 production/transport terms and 3
     dissipations of the decomposed energy budget (closing against the
     stepped states to spatial truncation), and time-resolved
     $(k_z, k_x)$ energy spectra for scale-by-scale decorrelation.
@@ -943,7 +1059,22 @@ A closer look at what is in the box, beyond the core solver:
     build-twin` and the JAX-free `dnsjax.analysis.twin` package
     orchestrate and aggregate ensembles. A zero-energy perturbation
     reproduces the reference bit-for-bit — the determinism guard the
-    test suite pins.
+    test suite pins. Streams, knobs, and the resume bookkeeping:
+    [`src/dnsjax/twin`](src/dnsjax/twin/README.md).
+
+16. **Response analysis and system identification.** A run can record
+    the wall-normal profiles of chosen spectral modes as it evolves
+    (`[probes]`) and can be driven by white-in-time stochastic kicks at
+    those modes (`[force]`) — see
+    [`src/dnsjax/extensions`](src/dnsjax/extensions/README.md).
+    `dnsjax.analysis.response` builds on both: the turbulent mean
+    profile, the linear operator about *that* mean, its leading
+    controllability modes, and three interchangeable routes to a
+    data-driven generator — ensemble impulse responses, linear inverse
+    modeling from an unforced stream, or stochastic-forcing
+    identification — sharing one basis and output convention so the
+    results are directly comparable. See
+    [`src/dnsjax/analysis/response`](src/dnsjax/analysis/response/README.md).
 
 ## Use of AI
 
