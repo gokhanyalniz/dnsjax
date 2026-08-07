@@ -314,12 +314,13 @@ class Physics(BaseModel):
     # rotational-form splitting `omega' x c + grad(c . u')` of the
     # removed first implementation, whose explicit `c d/dy u'` piece
     # was wall-stiff and blew up.  When ``None`` (default) it resolves
-    # to the laminar bulk velocity in the grid direction (1/2 pipe,
-    # 2/3 plane-Poiseuille, 0 otherwise); see ``update_parameters`` and
-    # ``derived_params.u_grid``.  Only meaningful for wall-bounded
-    # systems (periodic flows reject it).  A changed ``u_grid`` on
-    # resume is trajectory-defining (the stored fields drift between
-    # frames); pre-feature snapshots resume into the new default.
+    # to the laminar bulk velocity in the grid direction (1/2 for both
+    # pipes, 2/3 plane-Poiseuille, 0 otherwise); see
+    # ``update_parameters`` and ``derived_params.u_grid``.  Only
+    # meaningful for wall-bounded systems (periodic flows reject it).
+    # A changed ``u_grid`` on resume is trajectory-defining (the stored
+    # fields drift between frames); pre-feature snapshots resume into
+    # the new default.
     u_grid: float | None = Field(
         default=None,
         description=(
@@ -687,8 +688,9 @@ class Resolution(BaseModel):
             "vorticity and reconstructing the tangential "
             "components: a stepped state's discrete divergence is "
             "then round-off at any resolution, on the same "
-            "operators and with fewer solves and less operator "
-            "storage, at the cost of a truncation-level "
+            "operators and with less operator storage -- a solve "
+            "fewer in the plane and annular geometries, one more in "
+            "the cylindrical -- at the cost of a truncation-level "
             "tangential-momentum residual no solve reads back.  "
             "Trajectory-defining."
         ),
