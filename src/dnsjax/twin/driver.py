@@ -101,7 +101,11 @@ from time import perf_counter_ns
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..__main__ import _flush_stats, _interpolate_if_needed
+from ..__main__ import (
+    _flush_stats,
+    _interpolate_if_needed,
+    _write_dat_header,
+)
 from ..bootstrap import configure_jax_runtime, resolve_parameters
 from ..extensions import (
     ParamExtension,
@@ -324,9 +328,10 @@ class _ScalarStream:
     with the index reset on **all** ranks (lockstep) -- factored as a
     class because the twin driver runs several streams.  Rows are
     written by the shared :func:`dnsjax.__main__._flush_stats`
-    (append + ``fsync`` + post-write non-finite scan); the header is
-    written once, only when the file does not exist, so a resume
-    appends.  :meth:`push` fill-flushes when the buffer is full;
+    (append + ``fsync`` + post-write non-finite scan) and the header
+    by :func:`dnsjax.__main__._write_dat_header`, once and only when
+    the file does not exist, so a resume appends.  :meth:`push`
+    fill-flushes when the buffer is full;
     both methods return the non-finite diagnostic message (main
     process only) and the caller aborts on it.
     """
@@ -348,11 +353,7 @@ class _ScalarStream:
         self._ts: list[float] = []
         self._idx: int = 0
         if sharding.main_device and not self.path.exists():
-            header = " ".join(
-                n.rjust(self._col_width) for n in ["t"] + self.names
-            )
-            with open(self.path, "w") as f:
-                f.write(header + "\n")
+            _write_dat_header(self.path, ["t"] + self.names, self._col_width)
 
     def push(self, values, t: float) -> str | None:
         """Buffer one row; flush (checked) when the buffer fills."""
