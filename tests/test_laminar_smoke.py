@@ -955,7 +955,7 @@ def _check_steps_file(workdir: Path, name: str) -> None:
         raise AssertionError(f"{name}: steps.dat was not written")
 
     lines = [ln for ln in steps_file.read_text().splitlines() if ln.strip()]
-    header = lines[0].split()
+    header = lines[0].lstrip("#").split()
 
     # Dicts returned through ``jit`` are canonicalised to sorted
     # key order, so compare as sets and index columns by name
@@ -1084,7 +1084,7 @@ def _check_corrector_file(
         raise AssertionError(f"{name}: corrector.dat was not written")
 
     lines = [ln for ln in corr_file.read_text().splitlines() if ln.strip()]
-    header = lines[0].split()
+    header = lines[0].lstrip("#").split()
     if header[0] != "t" or set(header) != {"t", "c", "error"}:
         raise AssertionError(
             f"{name}: corrector.dat header {header} != [t, c, error]"

@@ -1,9 +1,11 @@
 r"""Readers for the twin driver's scalar streams (JAX-free).
 
 The ``.dat`` streams are the whitespace-aligned text format of
-``dnsjax.__main__`` (header row of column names, one row per sample,
-column order = the writer dict's *sorted* keys): parse by **name**,
-never by position.  A resumed member's stream duplicates one sample
+``dnsjax.__main__`` (``#``-commented header row of column names, one
+row per sample, column order = the writer dict's *sorted* keys):
+parse by **name**, never by position.  Because the header is a
+comment, the rows load under a default-flag :func:`numpy.loadtxt`.
+A resumed member's stream duplicates one sample
 per resume seam (the parent segment's final row and the child's
 ``t0`` row hold the same state at the same ``t``); :func:`read_twin`
 drops the duplicates, keeping the first occurrence -- the probe
@@ -33,12 +35,14 @@ def read_dat(path: str | Path) -> dict[str, np.ndarray]:
 
     The first column is always ``t``.  Rows are returned as written
     (including any resume-seam duplicates); shape ``(n_rows,)`` per
-    column.
+    column.  The names come off the header line with its ``#``
+    stripped; the rows need no ``skiprows`` because
+    :func:`numpy.loadtxt` drops that line as a comment.
     """
     path = Path(path)
     with open(path) as fh:
-        header = fh.readline().split()
-    data = np.loadtxt(path, skiprows=1, ndmin=2)
+        header = fh.readline().lstrip("#").split()
+    data = np.loadtxt(path, ndmin=2)
     if data.size == 0:
         return {name: np.empty(0) for name in header}
     if data.shape[1] != len(header):

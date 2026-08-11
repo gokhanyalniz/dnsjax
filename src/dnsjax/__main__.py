@@ -60,7 +60,9 @@ so the rows are on disk immediately once the on-device buffer
 is flushed.  ``stats.dat`` (written by the main device,
 appended) has a header row of column names (``t`` plus the
 ``get_stats`` keys) followed by whitespace-aligned rows at
-``stats_precision`` significant digits.
+``stats_precision`` significant digits.  The header is
+``#``-commented (:func:`_write_dat_header`), so ``numpy.loadtxt``
+reads a stream with no extra flags.
 
 ``steps.dat`` records the CFL diagnostic every ``it_steps``
 steps with the same buffering and file format.  Each row is
@@ -253,6 +255,24 @@ def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width, names=None):
                 f"{names[j]} = {data[i, j]} at t = {ts_buf[i]:.{p}e}"
             )
     return None
+
+
+def _write_dat_header(file_path, columns, col_width) -> None:
+    """Create *file_path* with the ``#``-commented column header.
+
+    The ``#`` replaces one leading space of the first column's
+    padding, so the header stays aligned with the rows
+    :func:`_flush_stats` writes while ``numpy.loadtxt`` skips it as a
+    comment (its default ``comments="#"``) -- a ``.dat`` stream loads
+    with no extra flags.  Shared by every measurement stream, here
+    and in the twin driver.
+    """
+    padded = [
+        n.rjust(col_width - 1 if i == 0 else col_width)
+        for i, n in enumerate(columns)
+    ]
+    with open(file_path, "w") as f:
+        f.write("#" + " ".join(padded) + "\n")
 
 
 def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
@@ -750,9 +770,7 @@ def run(wall_time_start: int) -> None:
         stats_file = Path("stats.dat")
 
         if sharding.main_device and not stats_file.exists():
-            header = " ".join(n.rjust(col_width) for n in ["t"] + stat_names)
-            with open(stats_file, "w") as f:
-                f.write(header + "\n")
+            _write_dat_header(stats_file, ["t"] + stat_names, col_width)
 
         stat_vals = jnp.stack(list(stats.values()))
         buffer = buffer.at[py_idx].set(stat_vals)
@@ -831,11 +849,7 @@ def run(wall_time_start: int) -> None:
         steps_file = Path("steps.dat")
 
         if sharding.main_device and not steps_file.exists():
-            header = " ".join(
-                n.rjust(steps_col_width) for n in ["t"] + steps_names
-            )
-            with open(steps_file, "w") as f:
-                f.write(header + "\n")
+            _write_dat_header(steps_file, ["t"] + steps_names, steps_col_width)
 
     # --- Corrector buffer setup ----------------------------------------
     # Records the corrector iteration count ``c`` and final error every
@@ -858,11 +872,7 @@ def run(wall_time_start: int) -> None:
         corr_file = Path("corrector.dat")
 
         if sharding.main_device and not corr_file.exists():
-            header = " ".join(
-                n.rjust(corr_col_width) for n in ["t"] + corr_names
-            )
-            with open(corr_file, "w") as f:
-                f.write(header + "\n")
+            _write_dat_header(corr_file, ["t"] + corr_names, corr_col_width)
 
     # --- Probe buffer setup ----------------------------------------------
     # Spectral-mode probe stream (``probes.modes``/``probes.it_probes``,

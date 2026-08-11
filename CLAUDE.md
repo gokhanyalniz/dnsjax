@@ -474,6 +474,12 @@ wall-bounded only) → `probes.bin` + `probes.json`
 coefficient log (`[force]`) → `forcing.bin` + `forcing.json`
 (`extensions/forcing.py`; reader `dnsjax.analysis.response.ssi`).
 
+Every `.dat` header row is `#`-commented (`_write_dat_header` in
+`__main__.py`, shared with `twin/driver.py`; the `#` eats one space of
+the first column's padding), so a bare `np.loadtxt` reads any stream —
+and every reader must `lstrip("#")` the header line before splitting
+it.
+
 Every stream with a sidecar carries a `format_version` enforced
 against the reader's `MIN_FORMAT_VERSION`, like the snapshot one —
 four writer/reader pairs: `extensions/probes.py` and `forcing.py` →
