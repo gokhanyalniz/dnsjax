@@ -59,7 +59,15 @@ def _write_dat(path: Path, columns: dict[str, np.ndarray]) -> None:
     """Write a ``.dat`` stream in the driver's format (17 digits)."""
     names = list(columns)
     width = max(24, max(len(n) for n in names))
-    lines = [" ".join(n.rjust(width) for n in names)]
+    # ``#``-commented header, the ``#`` eating one space of the first
+    # column's padding (``dnsjax.__main__._write_dat_header``).
+    lines = [
+        "#"
+        + " ".join(
+            n.rjust(width - 1 if i == 0 else width)
+            for i, n in enumerate(names)
+        )
+    ]
     n_rows = len(next(iter(columns.values())))
     for i in range(n_rows):
         lines.append(

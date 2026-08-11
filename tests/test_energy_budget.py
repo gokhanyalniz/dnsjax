@@ -123,8 +123,8 @@ def _base_flags(system: str) -> list[str]:
 def _columns(stats: Path) -> dict[str, np.ndarray]:
     """Parse stats.dat by header name (columns are sorted-key order)."""
     with open(stats) as fh:
-        header = fh.readline().split()
-    data = np.loadtxt(stats, skiprows=1)
+        header = fh.readline().lstrip("#").split()
+    data = np.loadtxt(stats)
     return {name: data[:, i] for i, name in enumerate(header)}
 
 

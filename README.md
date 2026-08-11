@@ -281,8 +281,9 @@ outputs; a NaN or inf in any diagnostic instead aborts the run at once
 with a line naming the quantity, rather than spending the budget on a
 broken state.
 
-Each `.dat` stream opens with a header row naming its columns (`t`
-first) and is appended to across resumes. `stats.dat` carries the
+Each `.dat` stream opens with a `#`-commented header row naming its
+columns (`t` first) — so `np.loadtxt` reads one directly — and is
+appended to across resumes. `stats.dat` carries the
 flow's physical diagnostics: the perturbation and total kinetic
 energies `E'` and `E`, and the energy input rate `I` against the
 dissipation `D`, which satisfy $dE/dt = I - D$ to truncation order —

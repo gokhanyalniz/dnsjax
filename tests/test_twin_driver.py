@@ -100,6 +100,7 @@ import numpy as np  # noqa: E402
 from _live import run_live  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
+from dnsjax.analysis.twin.series import read_dat  # noqa: E402
 from dnsjax.extensions import force_params, reset_extensions  # noqa: E402
 from dnsjax.snapshot_meta import read_snapshot_meta  # noqa: E402
 
@@ -201,13 +202,6 @@ def _twin_args(horizon: float, seed: int = 3, e0: float = E0) -> list[str]:
     ]
 
 
-def _read_dat(path: str | Path) -> dict[str, np.ndarray]:
-    with open(path) as fh:
-        header = fh.readline().split()
-    data = np.loadtxt(path, skiprows=1, ndmin=2)
-    return {name: data[:, i] for i, name in enumerate(header)}
-
-
 def _expect_error(result, fragment: str) -> None:
     output = result.stdout + result.stderr
     assert fragment in output, (
@@ -229,7 +223,7 @@ def test_fresh_start_e0_exact() -> None:
         assert meta["parent_t"] == PARENT_T
         assert meta["parent_it"] == PARENT_IT
 
-        cols = _read_dat(tmp / "twin.dat")
+        cols = read_dat(tmp / "twin.dat")
         assert list(cols) == TWIN_COLS
         n = round(0.1 / DT)
         assert cols["t"].shape[0] == n + 1
@@ -262,7 +256,7 @@ def test_zero_perturbation_bit_identity() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         result = _run_twin(tmp, _twin_args(1.05, e0=0.0))
         assert "exact copy" in result.stdout
-        cols = _read_dat(Path(tmp) / "twin.dat")
+        cols = read_dat(Path(tmp) / "twin.dat")
         for name in TWIN_COLS[1:-1]:  # every E_d* column, not E_ref
             assert (cols[name] == 0.0).all(), (
                 f"{name} nonzero: twin stepping is not bit-identical"
@@ -290,8 +284,8 @@ def test_paired_restart_continuity() -> None:
         assert "Resumed twin pair" in result.stdout
         assert "random perturbation" not in result.stdout
 
-        ref = _read_dat(Path(straight) / "twin.dat")
-        got = _read_dat(Path(split) / "twin.dat")
+        ref = read_dat(Path(straight) / "twin.dat")
+        got = read_dat(Path(split) / "twin.dat")
         # The split stream duplicates the seam sample (the parent's
         # final row and the child's t0 row hold the same state).
         seen: dict[float, int] = {}
@@ -326,7 +320,7 @@ def test_paired_restart_continuity() -> None:
 def test_np2_run() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         _run_twin(tmp, _twin_args(1.03), np_count=2, np1=2)
-        cols = _read_dat(Path(tmp) / "twin.dat")
+        cols = read_dat(Path(tmp) / "twin.dat")
         # The perturbation seed is device-count independent, so the
         # initial E_d matches the single-device runs' exactly (up to
         # the same cancellation floor).
@@ -398,7 +392,7 @@ def test_spectra_stream() -> None:
 
         # Cross-check against twin.dat (the sum identity, end to end
         # through the binary round trip).
-        cols = _read_dat(Path(tmp) / "twin.dat")
+        cols = read_dat(Path(tmp) / "twin.dat")
         e_by_t = dict(zip(np.round(cols["t"], 10), cols["E_d"], strict=True))
         for k, t in enumerate(np.round(data.t, 10)):
             assert_allclose(data.e_delta[k].sum(), e_by_t[t], rtol=1e-10)
@@ -440,8 +434,8 @@ def _closure_residuals(member: Path) -> dict[str, float]:
     term.  Also asserts the exact sum-consistency of the ``*_tot``
     columns and the expected per-component term counts.
     """
-    tw = _read_dat(member / "twin.dat")
-    bg = _read_dat(member / "twin_budget.dat")
+    tw = read_dat(member / "twin.dat")
+    bg = read_dat(member / "twin_budget.dat")
     p_all = [n for n in bg if n.startswith("P_") and n != "P_tot"]
     t_all = [n for n in bg if n.startswith("T_") and n != "T_tot"]
     assert len(p_all) == 12 and len(t_all) == 12
