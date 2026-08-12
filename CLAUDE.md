@@ -596,6 +596,9 @@ All under `scripts/`; full rationale/usage in each module docstring.
   perturbation into an existing snapshot.
 - `ensemble_setup.py`: JAX-free `harvest`/`build`/`build-twin` CLI
   building ensemble member run trees from a snapshot archive.
+- `wall_normal_resolution.py`: JAX-free `resolve`/`match`/`box` CLI
+  sizing `res.ny`/`fd_order`/`geo.grid_type` against a Chebyshev
+  expansion of a given order (Cartesian family only).
 - `pallas_tiling_diagnostic.py`: GPU harness for the Triton
   partial-tile miscompile (localised it; confirms the fix).
 - `pallas_solve_profile.py`: GPU diagnostic for the Pallas banded
