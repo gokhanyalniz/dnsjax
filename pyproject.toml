@@ -15,12 +15,6 @@ dependencies = [
     "tensorstore>=0.1.71",
 ]
 
-[project.optional-dependencies]
-# Extras for `dnsjax.analysis.response` (imported lazily in-function).
-analysis = [
-    "scipy>=1.14",
-]
-
 [project.scripts]
 dnsjax = "dnsjax.__main__:main"
 dnsjax-twin = "dnsjax.twin.driver:main"
@@ -30,7 +24,6 @@ dev = [
     "prek>=0.3.3",
     "pytest>=8",
     "ruff>=0.15.0",
-    "scipy>=1.14",
 ]
 
 [build-system]
