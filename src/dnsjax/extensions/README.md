@@ -146,17 +146,18 @@ the injection basis mid-experiment invalidates the stream. The reader
 is `dnsjax.analysis.response.ssi`.
 
 **A kick's increment is generally not discretely solenoidal**, and what
-becomes of that part depends on the scheme. The primitive
-influence-matrix method feeds it into the pressure Poisson right-hand
-side and damps it over the following steps. Under `res.consistent_imm`
-there is no pressure Poisson to absorb it: it lands in the carried
-state intact and is discarded one step later, when the reconstruction
-rebuilds the tangential pair from the wall-normal velocity and
-vorticity alone. Either way it reaches exactly one nonlinear evaluation
-(two under `cnab2`, which carries that evaluation forward) and never a
-solve — a bounded, per-event, truncation-class effect rather than an
-accumulating one. Keep injected profiles solenoidal if the distinction
-matters for the response being identified.
+becomes of that part depends on the scheme. Under the default
+`res.consistent_imm` there is no pressure Poisson to absorb it: it lands
+in the carried state intact and is discarded one step later, when the
+reconstruction rebuilds the tangential pair from the wall-normal
+velocity and vorticity alone. The legacy primitive influence-matrix
+method (`res.consistent_imm = false`) instead feeds it into the pressure
+Poisson right-hand side and damps it over the following steps. Either
+way it reaches exactly one nonlinear evaluation (two under `cnab2`,
+which carries that evaluation forward) and never a solve — a bounded,
+per-event, truncation-class effect rather than an accumulating one. Keep
+injected profiles solenoidal if the distinction matters for the response
+being identified.
 
 ## Format versions
 

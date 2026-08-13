@@ -17,10 +17,10 @@ It also exports the flow interface consumed by ``__main__``:
 - ``get_stats`` -- diagnostic statistics
 
 The influence-matrix method enforces the no-slip wall BCs and the
-*wall-row* divergence exactly at every time step; the interior
-discrete divergence is a truncation-level residual unless
-``res.consistent_imm`` selects the `$v$`-`$\\omega_y$` formulation,
-where it vanishes algebraically.  No post-step projection is fused
+*wall-row* divergence exactly at every time step; under the default
+``res.consistent_imm`` the interior discrete divergence vanishes
+algebraically too, and only on the legacy primitive path is it left as
+a truncation-level residual.  No post-step projection is fused
 into the stepper (the triply-periodic geometry fuses one via
 ``make_stepper``'s *finalize_fn*; a wall-bounded state-side
 projection is unstable -- see the ``cartesian._imm_iteration``
@@ -119,11 +119,11 @@ flow: PlaneCouetteFlow = PlaneCouetteFlow()
     reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
 
-# No ``to_solver_basis``/``from_solver_basis`` here, in either flag
-# state: the Cartesian state is physical `(u, v, w)` throughout, and
-# ``res.consistent_imm``'s evolved scalars never leave
-# ``cartesian._imm_iteration_vw``.  Every consumer of the pair looks
-# it up with ``getattr`` and falls back to the identity.
+# No ``to_solver_basis``/``from_solver_basis`` here, under either
+# ``res.consistent_imm`` formulation: the Cartesian state is physical
+# `(u, v, w)` throughout, and the default scheme's evolved scalars
+# never leave ``cartesian._imm_iteration_vw``.  Every consumer of the
+# pair looks it up with ``getattr`` and falls back to the identity.
 
 
 def frozen_profile_flow(us: Array) -> PlaneCouetteFlow:

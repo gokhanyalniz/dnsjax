@@ -141,7 +141,6 @@ from ...solvers import (
     _assemble_banded_operator,
     _banded_diag_column,
     _banded_from_dense,
-    _banded_wall_row,
     _build_pallas_operator,
     _factor_pallas_operator,
 )
@@ -811,57 +810,6 @@ def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
 # ── Pallas-backend banded operator builders ───────────────────────
 
 
-def _build_Lk_band_gpu(
-    D1_wall: Array,
-    band_even: Array,
-    band_odd: Array,
-    m_is_even: Array,
-    m2: Array,
-    inv_r2: Array,
-    kz2: Array,
-    mean_mask: Array,
-    p: int,
-) -> Array:
-    r"""Build `$L_k$` in banded storage for the Pallas backend.
-
-    Same operator as :func:`_build_Lk_dense_gpu`,
-    but assembled directly in banded layout
-    ``(Nm, Nkz, Nr, 2p+1)`` (``band[..., i, d] = L_k[..., i, i-p+d]``)
-    from the base-operator bands, with no ``(Nr, Nr)`` per mode.
-
-    Parameters
-    ----------
-    D1_wall:
-        Last row of `$D_1$` (parity-independent), shape ``(Nr,)``.
-    band_even, band_odd:
-        Banded `$A_{\mathrm{base}}$` for even/odd parity,
-        shape ``(Nr, 2p+1)``.
-    m_is_even, m2:
-        Pressure parity selector and `$m^2$`, shape ``(Nm, 1, 1)``.
-    inv_r2:
-        `$1/r_j^2$`, shape ``(Nr,)``.
-    kz2:
-        `$k_z^2$`, shape ``(1, Nkz, 1)``.
-    mean_mask:
-        Mean-mode boolean mask, shape ``(Nm, Nkz, 1)``.
-    p:
-        FD order (half-bandwidth).
-    """
-    Nr = band_even.shape[0]
-    band_base = jnp.where(m_is_even, band_even[None], band_odd[None])
-    diag = -(m2 * inv_r2 + kz2)  # (Nm, Nkz, Nr)
-    # Single wall (r = 1): Neumann D1[-1, :] in band form, identity
-    # (pin) at the mean mode; r = 0 regularity is built into the
-    # parity-reduced base band, so no inner-wall row.
-    neumann = _banded_wall_row(D1_wall, Nr - 1, p)
-    wall = jnp.where(
-        mean_mask, _banded_diag_column(p, band_base.dtype), neumann
-    )  # (Nm, Nkz, 2p+1)
-    return _assemble_banded_operator(
-        band_base[:, None], 1.0, diag, [(Nr - 1, wall)]
-    )
-
-
 def _build_Hk_band_gpu(
     band_even: Array,
     band_odd: Array,
@@ -939,7 +887,7 @@ def _build_Lv_dir_band_gpu(
     velocity parity `$(-1)^{m+1}$`, with a Dirichlet identity row at the
     single wall `$r = 1$` (`$u_r|_{\mathrm{wall}} = 0$`); the axis is
     closed by the parity reduction, exactly as for `$H_{k,\pm}$`.
-    ``dt``-free, like the Neumann `$L_k$` it replaces flag-on, and no
+    ``dt``-free, like the legacy Neumann `$L_k$` it replaces, and no
     mean pin is needed -- `$m_{\mathrm{eff}}^2 = m^2 + 1 \ge 1$` keeps
     the operator regular at every mode including `$k^2 = 0$`.
     """
@@ -958,42 +906,6 @@ def _build_Lv_dir_band_gpu(
 
 
 # ── Dense-backend operator builders ───────────────────────────────
-
-
-def _build_Lk_dense_gpu(
-    D1_wall: Array,
-    A_base_even: Array,
-    A_base_odd: Array,
-    m_is_even: Array,
-    m2: Array,
-    inv_r2: Array,
-    kz2: Array,
-    mean_mask: Array,
-) -> Array:
-    r"""Build dense `$L_k$` on GPU (dense backend only).
-
-    Returns the full ``(Nm, Nkz, Nr, Nr)`` pressure Poisson
-    operator.  The parity-dependent row selection is handled
-    by ``jnp.where`` on the ``m_is_even`` mask.
-    """
-    Nr = A_base_even.shape[0]
-    dtype = A_base_even.dtype
-    eye_Nr = jnp.eye(Nr, dtype=dtype)
-
-    m2_over_r2 = m2 * inv_r2  # (Nm, 1, Nr)
-    diag_shift = -(m2_over_r2 + kz2)  # (Nm, Nkz, Nr)
-
-    Lk_even = A_base_even[None, None] + diag_shift[..., None] * eye_Nr
-    Lk_odd = A_base_odd[None, None] + diag_shift[..., None] * eye_Nr
-    Lk = jnp.where(m_is_even[..., None], Lk_even, Lk_odd)
-
-    # Wall BC: Neumann D1[-1,:] for all modes, pin at the mean.
-    D1_wall_1d = D1_wall.ravel()
-    pin = eye_Nr[-1, :]
-    wall_row = jnp.where(mean_mask, pin, D1_wall_1d)
-    Lk = Lk.at[..., -1, :].set(wall_row)
-
-    return Lk
 
 
 def _build_Hk_dense_gpu(
@@ -1152,7 +1064,7 @@ class CylindricalFlow:
     D1_ghost: Array = field(init=False)
     D2_ghost: Array = field(init=False)
     D1_wall: Array = field(init=False)
-    D2_wall: Array = field(init=False)
+    D2_wall: Array | None = field(init=False)
     A_base_even: Array = field(init=False)
     A_base_odd: Array = field(init=False)
     Lk_op: _WallBoundedOp = field(init=False)
@@ -1164,7 +1076,7 @@ class CylindricalFlow:
     v_minus_1: Array | None = field(init=False)
     q_z_1: Array | None = field(init=False)
     # The vw scheme's homogeneous `$u_r$` response to a unit `$\Phi$`
-    # wall value (``None`` flag-off).
+    # wall value (``None`` on the legacy path).
     ur_1: Array | None = field(init=False)
     M_inv: Array = field(init=False)
     h_bulk_response: Array = field(init=False)
@@ -1249,10 +1161,15 @@ class CylindricalFlow:
 
         # Wall rows of D1/D2 (parity-independent: the ghost correction
         # touches only the first ``g_rows``, never the wall).  D2's is
-        # used by the ``res.consistent_imm`` pass to evaluate the quad's
-        # wall data on the corrector iterate.
+        # read only by the default pass, to evaluate the quad's wall
+        # data on the corrector iterate, so the legacy build leaves it
+        # ``None`` -- static aux-data rather than a dead traced leaf.
         self.D1_wall = jax.device_put(D1_pos[-1:, :], sharding.no_shard)
-        self.D2_wall = jax.device_put(D2_pos[-1:, :], sharding.no_shard)
+        self.D2_wall = (
+            jax.device_put(D2_pos[-1:, :], sharding.no_shard)
+            if params.res.consistent_imm
+            else None
+        )
 
         # Base operators.
         self.A_base_even = _build_A_base(D1_even, D2_even, self.inv_r)
@@ -1328,8 +1245,10 @@ class CylindricalFlow:
                 )
                 self.Lk_op = _build_pallas_operator([Lk_band], "Lv_dir")
             else:
+                from . import _cylindrical_primitive_imm as prim
+
                 # Lk (meff = m, pressure parity).
-                Lk_band = _build_Lk_band_gpu(
+                Lk_band = prim._build_Lk_band_gpu(
                     D1_wall_1d,
                     band_even,
                     band_odd,
@@ -1343,12 +1262,15 @@ class CylindricalFlow:
                 self.Lk_op = _build_pallas_operator([Lk_band], "Lk")
             del Lk_band
 
-            # Hk group -- flag-off (plus, minus, z), flag-on the spin
-            # pair (L_{s+}, L_{s-}): stacked into one homogeneous
-            # operator and stability-checked as a single group.
-            hk_bands_fn = (
-                _hk_vw_bands if params.res.consistent_imm else _hk_bands
-            )
+            # Hk group -- the default spin pair (L_{s+}, L_{s-}), or the
+            # legacy (plus, minus, z) triple: stacked into one
+            # homogeneous operator and stability-checked as a group.
+            if params.res.consistent_imm:
+                hk_bands_fn = _hk_vw_bands
+            else:
+                from . import _cylindrical_primitive_imm as prim
+
+                hk_bands_fn = prim._hk_bands
             if params.step.adaptive:
                 # Verify the no-pivot LU where the Helmholtz
                 # diagonal is least dominant; adaptive rebuilds at
@@ -1380,7 +1302,9 @@ class CylindricalFlow:
                     mean_s,
                 )
             else:
-                Lk_dense = _build_Lk_dense_gpu(
+                from . import _cylindrical_primitive_imm as prim
+
+                Lk_dense = prim._build_Lk_dense_gpu(
                     self.D1_wall,
                     self.A_base_even,
                     self.A_base_odd,
@@ -1393,13 +1317,14 @@ class CylindricalFlow:
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
 
-            # Combined Hk: flag-off (plus, minus, z), flag-on the spin
-            # pair (L_{s+}, L_{s-}).
-            self.Hk_op = (
-                _hk_vw_dense_op(dt, fourier, self)
-                if params.res.consistent_imm
-                else _hk_dense_op(dt, fourier, self)
-            )
+            # Combined Hk: the default spin pair (L_{s+}, L_{s-}), or
+            # the legacy (plus, minus, z) triple.
+            if params.res.consistent_imm:
+                self.Hk_op = _hk_vw_dense_op(dt, fourier, self)
+            else:
+                from . import _cylindrical_primitive_imm as prim
+
+                self.Hk_op = prim._hk_dense_op(dt, fourier, self)
 
         self._derive_imm_homogeneous_data(fourier, Nm, Nkz, Nr)
         self._precompute_bulk_response(fourier, Nm, Nkz, Nr)
@@ -1407,123 +1332,30 @@ class CylindricalFlow:
     def _derive_imm_homogeneous_data(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
     ) -> None:
-        r"""Fill ``v_plus_1``, ``v_minus_1``, ``q_z_1``, and
-        ``M_inv`` on-device.
+        r"""Fill the homogeneous responses and the `$1 \times 1$`
+        ``M_inv`` on-device: dispatch on ``res.consistent_imm``.
 
-        The homogeneous pressure `$p_1$` stays local: only the
-        velocity responses derived from it are needed at runtime
-        (the corrected pressure is never assembled -- see the
-        Cartesian ``_imm_iteration`` stage-6 note).
+        Both schemes carry the same scalar (one-wall) capacitance
+        structure; only the chain the column solves differs.
 
-        The pipe has a single wall at `$r = 1$` (last grid
-        point), giving a `$1 \times 1$` influence matrix.
+        - **default** -- :meth:`_derive_vw_homogeneous_data`: the
+          `$u_r$` response of the spin-quad scheme, with no pressure to
+          carry (``v_plus_1``/``v_minus_1``/``q_z_1`` stay ``None``).
+        - **legacy** (flag off) --
+          :func:`._cylindrical_primitive_imm.derive_homogeneous_data`:
+          the `$u_\pm$` responses to a unit wall pressure, plus the
+          axial potential ``q_z_1`` (``ur_1`` stays ``None``).
 
-        Homogeneous data (4 solves):
-
-        - `$L_k p_1 = e_1$` (unit RHS at wall)
-        - `$H_{k,+} v_{+,1} = -(D_1 - m/r) p_1$`
-        - `$H_{k,-} v_{-,1} = -(D_1 + m/r) p_1$`
-        - `$H_{k,z} q_{z,1} = p_1$` (scalar potential for
-          `$u_z$`: `$u_z^{(1)} = -i k_z q_{z,1}$`)
-
-        The influence matrix (scalar per mode):
-
-        .. math::
-            M = D_{1,\mathrm{wall}} \cdot
-            \frac{v_{+,1} + v_{-,1}}{2}
-
-        measures `$\partial u_r / \partial r|_{\mathrm{wall}}$`.
-        `$M^{-1} = 1/M$` for all modes except the mean mode
-        `$(m, k_z) = (0, 0)$`, where `$M^{-1} = 0$` (the
-        `$u_r$` zeroing below makes `$M = 0$` there).
-        Padding modes take the regular `$1/M$` branch (their
-        placeholder-wavenumber systems are as well-posed as
-        physical ones); the values are inert, multiplied
-        only by the exactly-zero wall residuals of zero
-        fields.
-
-        After the solves, the `$u_r$` part of ``v_plus_1``
-        and ``v_minus_1`` is zeroed at the mean mode
-        (continuity forces `$u_r \\equiv 0$` there), while
-        preserving the `$u_\\theta$` part.  The zeroing runs
-        before ``M`` is assembled.
-
-        Under ``res.consistent_imm`` this dispatches to
-        :meth:`_derive_vw_homogeneous_data` instead (one `$u_r$`
-        response instead of the pressure chain; same `$1 \\times 1$`
-        shape).
+        Both fill ``M_inv`` and are re-run at a changed ``dt`` by
+        :func:`_build_dt_leaves`.
         """
         if params.res.consistent_imm:
             self._derive_vw_homogeneous_data(fourier_, Nm, Nkz, Nr)
             return
-        # This run-once setup stays in the mode-outer (Nm, Nkz, Nr)
-        # layout: the influence-matrix einsums below operate on it and
-        # the results are transposed to field layout (Nr, Nm, Nkz) at
-        # the end.  ``.solve`` now takes a mode-inner field, so each
-        # setup solve is wrapped (transpose in, transpose out) to keep
-        # this layout.  FUTURE: rebuild this setup natively mode-inner to
-        # drop the wrappers -- the hot path already is; here it only
-        # relocates a one-time transpose, so it is deferred.
-        e_wall = (
-            jnp.zeros(
-                (Nm, Nkz, Nr),
-                dtype=sharding.float_type,
-                out_sharding=sharding.spec_imm_corr_shard,
-            )
-            .at[..., -1]
-            .set(1.0)
-        )
-        p1_s = self.Lk_op.solve(e_wall.transpose(2, 0, 1)).transpose(1, 2, 0)
 
-        # Pressure gradient components for the +/- equations.
-        # The ghost matrix holds only its g nonzero rows; its
-        # contribution lands in the first g radial entries.
-        parity_sign_p_s = fourier_.m_is_even[0, ..., None] * 2 - 1
-        g = self.D1_ghost.shape[0]
-        ghost_p1 = jnp.einsum("ij, mzj -> mzi", self.D1_ghost, p1_s)
-        D1_p1 = jnp.einsum("ij, mzj -> mzi", self.D1_pos, p1_s)
-        D1_p1 = D1_p1.at[..., :g].add(parity_sign_p_s * ghost_p1)
-        m_s = fourier_.m[0, ..., None]  # (Nm, 1, 1)
-        m_over_r_s = m_s * self.inv_r  # (Nm, 1, Nr)
+        from . import _cylindrical_primitive_imm as prim
 
-        rhs_v_plus = -(D1_p1 - m_over_r_s * p1_s)
-        rhs_v_minus = -(D1_p1 + m_over_r_s * p1_s)
-        rhs_v_plus = rhs_v_plus.at[..., -1].set(0.0)
-        rhs_v_minus = rhs_v_minus.at[..., -1].set(0.0)
-        q_rhs = p1_s.at[..., -1].set(0.0)
-
-        # Batched solve: component order (plus, minus, z).
-        rhs_stack = jnp.stack([rhs_v_plus, rhs_v_minus, q_rhs])
-        result_stack = self.Hk_op.solve(
-            rhs_stack.transpose(0, 3, 1, 2)
-        ).transpose(0, 2, 3, 1)
-        vp1_s = result_stack[0]
-        vm1_s = result_stack[1]
-        qz1_s = result_stack[2]
-
-        # Zero the u_r part at the mean mode, preserving u_theta.
-        mean_s = fourier_.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
-        vr_corr = jnp.where(mean_s, (vp1_s + vm1_s) / 2, 0.0)
-        vp1_s = vp1_s - vr_corr
-        vm1_s = vm1_s - vr_corr
-
-        # 1x1 influence matrix.
-        D1_wall_row = self.D1_wall.ravel()  # (Nr,)
-        ur_1 = (vp1_s + vm1_s) / 2
-        M = jnp.einsum("j, mzj -> mz", D1_wall_row, ur_1)
-
-        is_mean = fourier_.mean_mask[0]  # (Nm, Nkz)
-        safe_M = jnp.where(is_mean, 1.0, M)
-        self.M_inv = jnp.where(is_mean, 0.0, 1.0 / safe_M)
-
-        # Transpose to field layout (Nr, Nm, Nkz).
-        self.v_plus_1 = vp1_s.transpose(2, 0, 1)
-        self.v_minus_1 = vm1_s.transpose(2, 0, 1)
-        self.q_z_1 = qz1_s.transpose(2, 0, 1)
-
-        # Static aux-data (not traced leaves) flag-off: the vw
-        # scheme's column.
-        self.ur_1 = None
+        prim.derive_homogeneous_data(self, fourier_, Nm, Nkz, Nr)
 
     def _derive_vw_homogeneous_data(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
@@ -1576,7 +1408,7 @@ class CylindricalFlow:
         self.M_inv = jnp.where(is_mean, 0.0, 1.0 / jnp.where(is_mean, 1.0, M))
 
         # Field layout (Nr, Nm, Nkz); the pressure-scheme columns are
-        # static aux-data flag-on.
+        # static aux-data by default.
         self.ur_1 = ur_1.transpose(2, 0, 1)
         self.v_plus_1 = self.v_minus_1 = self.q_z_1 = None
 
@@ -1615,8 +1447,9 @@ class CylindricalFlow:
         ones_vec = jnp.ones(Nr, dtype=sharding.float_type).at[-1].set(0.0)
         rhs = jnp.where(fourier_.mean_mask[0, ..., None], ones_vec, 0.0)
 
-        # The mean-mode axial Helmholtz: flag-off it is the z slot of
-        # the (+, -, z) group; flag-on the mean plane of the minus slot
+        # The mean-mode axial Helmholtz: by default it is the mean
+        # plane of the minus slot; on the legacy path the z slot of the
+        # (+, -, z) group
         # IS the same operator (spliced there by the packing, see
         # :func:`_vw_spin_groups`).
         zeros = jnp.zeros_like(rhs)
@@ -1637,56 +1470,6 @@ class CylindricalFlow:
         )
         H_bulk = 2 * jnp.dot(self.y_weights, self.h_bulk_response)
         self.H_bulk_inv = 1.0 / H_bulk
-
-
-def _hk_bands(
-    dt: float | Array,
-    fourier_: Fourier,
-    flow_: CylindricalFlow,
-) -> list[Array]:
-    r"""Assemble the banded `$H_k$` group (+, -, z) at *dt*.
-
-    Single-sources the band assembly for the setup-checked build, the
-    adaptive ``dt_max`` stability pre-check, and the jitted ``set_dt``
-    rebuild (:func:`_build_dt_leaves`).  Pallas backend only.
-
-    The half-width is read back from the already-factored (and
-    ``dt``-independent) `$L_k$`, whose ``L`` factor is
-    ``(Nr, p, Nm, Nkz)`` -- a static shape, so this works inside
-    ``jit`` (``set_dt``) where a host-side ``matrix_half_bandwidth`` on
-    the traced ``A_base`` could not.  It is ``fd_order`` in **both**
-    flag states: ``res.consistent_imm`` swaps in a band-preserving
-    Dirichlet recovery operator, so no shipped configuration widens
-    the band.
-    """
-    p_band = flow_.Lk_op.L.shape[1]
-    m_s = fourier_.m[0, ..., None]
-    kz2_s = fourier_.kz2[0, ..., None]
-    m_is_even_s = fourier_.m_is_even[0, ..., None]
-    # u_+/u_- carry parity (-1)^{m+1}; u_z carries (-1)^m.
-    m_is_even_v = 1.0 - m_is_even_s
-    band_even = _banded_from_dense(flow_.A_base_even, p_band)
-    band_odd = _banded_from_dense(flow_.A_base_odd, p_band)
-    groups = (
-        (m_is_even_v, (m_s + 1) ** 2),
-        (m_is_even_v, (m_s - 1) ** 2),
-        (m_is_even_s, m_s**2),
-    )
-    return [
-        _build_Hk_band_gpu(
-            band_even,
-            band_odd,
-            parity,
-            meff2,
-            flow_.inv_r2,
-            kz2_s,
-            dt,
-            params.step.implicitness,
-            derived_params.nu,
-            p_band,
-        )
-        for parity, meff2 in groups
-    ]
 
 
 def _vw_spin_groups(
@@ -1817,44 +1600,6 @@ def _hk_vw_dense_op(
     )
 
 
-def _hk_dense_op(
-    dt: float | Array,
-    fourier_: Fourier,
-    flow_: CylindricalFlow,
-) -> DenseJAXSolver:
-    r"""Factored dense stacked `$H_k$` (+, -, z) at *dt* (dense
-    backend)."""
-    m_s = fourier_.m[0, ..., None]
-    kz2_s = fourier_.kz2[0, ..., None]
-    m_is_even_s = fourier_.m_is_even[0, ..., None]
-    m_is_even_v = 1.0 - m_is_even_s
-    groups = (
-        (m_is_even_v, (m_s + 1) ** 2),
-        (m_is_even_v, (m_s - 1) ** 2),
-        (m_is_even_s, m_s**2),
-    )
-    ops = [
-        DenseJAXSolver(
-            _build_Hk_dense_gpu(
-                flow_.A_base_even,
-                flow_.A_base_odd,
-                parity,
-                meff2,
-                flow_.inv_r2,
-                kz2_s,
-                dt,
-                params.step.implicitness,
-                derived_params.nu,
-            )
-        )
-        for parity, meff2 in groups
-    ]
-    return DenseJAXSolver.from_factors(
-        lu=jnp.stack([o.lu for o in ops]),
-        perm=jnp.stack([o.perm for o in ops]),
-    )
-
-
 def _build_dt_leaves(
     dt: Array,
     fourier_: Fourier,
@@ -1876,13 +1621,16 @@ def _build_dt_leaves(
     """
     new = copy.copy(flow_)
     new.dt = dt
-    hk_bands_fn = _hk_vw_bands if params.res.consistent_imm else _hk_bands
+    if params.res.consistent_imm:
+        hk_bands_fn, hk_dense_fn = _hk_vw_bands, _hk_vw_dense_op
+    else:
+        from . import _cylindrical_primitive_imm as prim
+
+        hk_bands_fn, hk_dense_fn = prim._hk_bands, prim._hk_dense_op
     if params.solver.backend == "pallas":
         new.Hk_op = _factor_pallas_operator(hk_bands_fn(dt, fourier_, new))
-    elif params.res.consistent_imm:
-        new.Hk_op = _hk_vw_dense_op(dt, fourier_, new)
     else:
-        new.Hk_op = _hk_dense_op(dt, fourier_, new)
+        new.Hk_op = hk_dense_fn(dt, fourier_, new)
     new._derive_imm_homogeneous_data(
         fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
     )
@@ -2099,52 +1847,6 @@ def _get_rhs_measured(
 # ── Matrix-free matvecs ──────────────────────────────────────────
 
 
-def _abase_matvec(
-    u: Array,
-    flow_: CylindricalFlow,
-    parity_sign: Array,
-) -> Array:
-    r"""Apply `$A_{\mathrm{base}}^{(\sigma)} u$` matrix-free.
-
-    .. math::
-        A_{\mathrm{base}}^{(\sigma)} u
-        = \underbrace{(D_{2,\mathrm{pos}} + (1/r)\,
-          D_{1,\mathrm{pos}})\,u}_{\text{common part}}
-        + (-1)^{m_{\mathrm{eff}}}
-          \underbrace{(\widetilde{D}_{2,\mathrm{ghost}}
-          + (1/r)\,\widetilde{D}_{1,\mathrm{ghost}})
-          \,u}_{\text{ghost correction}}
-
-    The ghost correction matrices are stored row-sliced to
-    their `$g \sim p/2$` nonzero rows (near the pipe centre,
-    where stencils cross `$r = 0$`), so the ghost GEMMs and
-    the scatter-add touch only the first `$g$` radial points.
-
-    Parameters
-    ----------
-    u:
-        Field, shape ``(Nr, Nm, Nkz)``.
-    flow\_:
-        Cylindrical flow data (uses ``D1_pos``,
-        ``D2_pos``, ``D1_ghost``, ``D2_ghost``,
-        ``inv_r``).
-    parity_sign:
-        `$(-1)^{m_{\mathrm{eff}}}$`, shape
-        ``(1, Nm, 1)``.
-    """
-    inv_r = flow_.inv_r[:, None, None]
-    D2_u = apply_y_matrix(flow_.D2_pos, u)
-    D1_u = apply_y_matrix(flow_.D1_pos, u)
-    common = D2_u + inv_r * D1_u
-
-    g = flow_.D1_ghost.shape[0]
-    D2g_u = apply_y_matrix(flow_.D2_ghost, u)
-    D1g_u = apply_y_matrix(flow_.D1_ghost, u)
-    ghost = D2g_u + inv_r[:g] * D1g_u
-
-    return common.at[:g].add(parity_sign * ghost)
-
-
 def _parity_y_matvec(
     M_pos: Array,
     M_ghost: Array,
@@ -2177,270 +1879,7 @@ def _parity_y_matvec(
     return out.at[:g].add(parity_sign * ghost)
 
 
-def _lk_matvec(
-    u: Array,
-    flow_: CylindricalFlow,
-    fourier_: Fourier,
-) -> Array:
-    r"""Apply `$L_k u$` for the pressure Poisson operator.
-
-    Matrix-free evaluation:
-    `$L_k u = A_{\mathrm{base}}^{(\sigma_p)} u
-    - (m^2/r^2 + k_z^2) u$`, with Neumann wall row and
-    mean-mode pin.
-
-    Parity for pressure: `$(-1)^m$`, so parity_sign =
-    ``m_is_even * 2 - 1`` (``+1`` for even, ``-1`` for odd).
-    """
-    parity_sign = fourier_.m_is_even * 2 - 1
-
-    Abase_u = _abase_matvec(u, flow_, parity_sign)
-    inv_r2 = flow_.inv_r2[:, None, None]
-    out = Abase_u - (fourier_.m2 * inv_r2 + fourier_.kz2) * u
-
-    # Wall row: Neumann D1[-1,:] for all modes, pin at the mean.
-    D1_wall_row = flow_.D1_wall.ravel()
-    wall_val = jnp.einsum("j, jmz -> mz", D1_wall_row, u)
-    bot = jnp.where(fourier_.mean_mask[0], u[-1], wall_val)
-    return out.at[-1].set(bot)
-
-
 # ── IMM iteration (1x1) ─────────────────────────────────────────
-
-
-def _imm_iteration_vp(
-    velocity_n: Array,
-    velocity_j: Array,
-    nonlin_n: Array,
-    nonlin_j: Array,
-    fourier_: Fourier,
-    flow_: CylindricalFlow,
-) -> tuple[Array, Array]:
-    r"""Primitive `$(u_\pm, p)$` influence-matrix pass (flag-off).
-
-    The pipe's single wall at `$r = 1$` gives a `$1 \times 1$`
-    influence matrix (scalar `$\alpha$` per mode).
-
-    Six stages (plus mean-mode projections):
-
-    1. **Poisson RHS**: cylindrical divergence of momentum in
-       `$(u_z, u_+, u_-)$` components:
-
-       .. math::
-           \nabla\!\cdot\!\mathbf{u}
-           = \frac{D_1 u_+ + (m+1)/r\;u_+}{2}
-           + \frac{D_1 u_- + (1-m)/r\;u_-}{2}
-           + ik_z\,u_z
-
-    2. **Particular pressure**: `$L_k p_P = \hat{f}_P$` with
-       zero Neumann wall row.
-    3. **Helmholtz solves**: three separate solves with
-       `$H_{k,+}$`, `$H_{k,-}$`, `$H_{k,z}$`.  Pressure
-       gradient in `$(+, -, z)$`:
-
-       .. math::
-           (\nabla p)_+ = D_1 p - (m/r)\,p, \quad
-           (\nabla p)_- = D_1 p + (m/r)\,p, \quad
-           (\nabla p)_z = ik_z\,p
-
-    4. **Wall divergence residual**:
-       `$d_{\mathrm{wall}} = D_{1,\mathrm{wall}}
-       \cdot (u_{+,arb} + u_{-,arb})/2$`
-    5. **Influence matrix**: `$\alpha = -M^{-1} d_{\mathrm{wall}}$`
-    6. **Correction**:
-       `$u_+ = u_{+,arb} + \alpha\,v_{+,1}$`,
-       `$u_- = u_{-,arb} + \alpha\,v_{-,1}$`,
-       `$u_z = u_{z,arb} - ik_z\,\alpha\,q_{z,1}$`.
-    7. **Zero mean-mode** `$u_r$`: continuity
-       `$(1/r)\,\partial(r u_r)/\partial r = 0$` plus
-       no-slip at `$r = 1$` forces `$u_r \equiv 0$` at the
-       mean mode.  The `$u_\theta$` part of `$u_\pm$` is
-       preserved.
-    8. *(optional)* If ``constant_bulk_velocity``, zero the
-       mean-mode perturbation bulk `$u_z$`.
-    """
-    c = params.step.implicitness
-    dt = flow_.dt
-    nu = derived_params.nu
-
-    uz_n, up_n, um_n = velocity_n[0], velocity_n[1], velocity_n[2]
-    NLz_n, NLp_n, NLm_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]
-    NLz_j, NLp_j, NLm_j = nonlin_j[0], nonlin_j[1], nonlin_j[2]
-
-    ikz = 1j * fourier_.kz
-    inv_r = flow_.inv_r[:, None, None]
-    m = fourier_.m
-
-    # Parity signs for each component type.
-    parity_sign_p = fourier_.m_is_even * 2 - 1  # (-1)^m
-    parity_sign_v = -parity_sign_p  # (-1)^{m+1}
-
-    m_plus_1_sq = (m + 1) ** 2
-    m_minus_1_sq = (m - 1) ** 2
-    m_sq = fourier_.m2
-
-    # Batch all D1 y-derivatives with (-1)^{m+1} parity into
-    # one GEMM each for D1_pos and D1_ghost (2 instead of 4);
-    # the ghost GEMM covers only its g nonzero rows.
-    g = flow_.D1_ghost.shape[0]
-    # Stack y-leading (N_r, 6, ...) so the batched D1 GEMM contracts the
-    # leading wall-normal axis transpose-free; the component axis is 1.
-    all_vparity = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1)
-    dy_common = apply_y_matrix(flow_.D1_pos, all_vparity, component_axis=1)
-    dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity, component_axis=1)
-    dy_all = dy_common.at[:g].add(parity_sign_v * dy_ghost)
-
-    # Cylindrical divergence at time n.  ``dnsjax.analysis`` mirrors
-    # this operator in physical components; changing it here means
-    # changing ``snapshot_ops.divergence`` and the transcription in
-    # ``tests/test_snapshot_export.py`` (``_solver_divergence``),
-    # which pins the two together.
-    div_n = (
-        (dy_all[:, 0] + (m + 1) * inv_r * up_n) / 2
-        + (dy_all[:, 1] + (1 - m) * inv_r * um_n) / 2
-        + ikz * uz_n
-    )
-
-    # Divergence of nonlinear terms at times n and j.
-    div_NLj = (
-        (dy_all[:, 2] + (m + 1) * inv_r * NLp_j) / 2
-        + (dy_all[:, 4] + (1 - m) * inv_r * NLm_j) / 2
-        + ikz * NLz_j
-    )
-    div_NLn = (
-        (dy_all[:, 3] + (m + 1) * inv_r * NLp_n) / 2
-        + (dy_all[:, 5] + (1 - m) * inv_r * NLm_n) / 2
-        + ikz * NLz_n
-    )
-
-    Lk_d = _lk_matvec(div_n, flow_, fourier_)
-
-    f_hat = div_n / dt + c * div_NLj + (1 - c) * div_NLn + (1 - c) * nu * Lk_d
-
-    # Stage 2: particular pressure.
-    f_hat_P = f_hat.at[-1].set(0.0)
-    pP = flow_.Lk_op.solve(f_hat_P)
-
-    # Stage 3: Helmholtz solves for each component.  The Hk construction
-    # is built **y-leading** ``(N_r, C, ...)`` so the batched D1/D2 GEMMs
-    # contract the leading wall-normal axis transpose-free (component axis
-    # 1); the solve takes that layout directly (``component_axis=1``) and
-    # we unstack.  ``inv_r``/``inv_r2`` get a trailing axis to broadcast
-    # over the C axis; ``kz2``/``mean_mask`` are trailing-mode broadcasts
-    # (layout-invariant).
-    inv_r_y = inv_r[..., None]  # (N_r, 1, 1, 1) over the C axis
-    vel_n_stack = jnp.stack([up_n, um_n, uz_n], axis=1)  # (N_r, 3, ...)
-    pP_and_vel = jnp.concatenate([pP[:, None], vel_n_stack], axis=1)
-    D1_batch = apply_y_matrix(flow_.D1_pos, pP_and_vel, component_axis=1)
-    D1g_batch = apply_y_matrix(flow_.D1_ghost, pP_and_vel, component_axis=1)
-
-    # pP pressure gradient (parity (-1)^m -> parity_sign_p).
-    D1_pP = D1_batch[:, 0].at[:g].add(parity_sign_p * D1g_batch[:, 0])
-    m_over_r = m * inv_r  # (1, Nm, 1) * (Nr, 1, 1) → (Nr, Nm, 1)
-
-    grad_pP_plus = D1_pP - m_over_r * pP
-    grad_pP_minus = D1_pP + m_over_r * pP
-    grad_pP_z = ikz * pP
-
-    # Batched `$H_k^-$` matvec for all three components (y-leading).
-    D1_vel = D1_batch[:, 1:]
-    D1g_vel = D1g_batch[:, 1:]
-    D2_all = apply_y_matrix(flow_.D2_pos, vel_n_stack, component_axis=1)
-    D2g_all = apply_y_matrix(flow_.D2_ghost, vel_n_stack, component_axis=1)
-    common_hk = D2_all + inv_r_y * D1_vel
-    ghost_hk = D2g_all + inv_r_y[:g] * D1g_vel
-    parity_hk = jnp.stack(
-        [parity_sign_v, parity_sign_v, parity_sign_p], axis=1
-    )
-    Abase_stack = common_hk.at[:g].add(parity_hk * ghost_hk)
-    meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq], axis=1)
-    inv_r2 = flow_.inv_r2[:, None, None, None]  # (N_r, 1, 1, 1)
-    lapl_stack = (
-        Abase_stack - (meff2_stack * inv_r2 + fourier_.kz2) * vel_n_stack
-    )
-    Hk_minus_stack = (1.0 / dt) * vel_n_stack + (1.0 - c) * nu * lapl_stack
-    Hk_minus_stack = Hk_minus_stack.at[-1].set(vel_n_stack[-1])
-
-    R_stack = (
-        Hk_minus_stack
-        - jnp.stack([grad_pP_plus, grad_pP_minus, grad_pP_z], axis=1)
-        + c * jnp.stack([NLp_j, NLm_j, NLz_j], axis=1)
-        + (1 - c) * jnp.stack([NLp_n, NLm_n, NLz_n], axis=1)
-    )
-
-    # Zero wall BC (Dirichlet no-slip).
-    R_stack = R_stack.at[-1].set(0.0)
-
-    # Zero the u_r part of the +/- RHS at the mean mode so
-    # the Helmholtz solves produce u_r = 0 there.  At m=0,
-    # Hk_plus and Hk_minus are identical (m_eff^2 = 1, same
-    # parity), so the antisymmetric RHS gives up = -um.
-    Rr_corr = jnp.where(
-        fourier_.mean_mask, (R_stack[:, 0] + R_stack[:, 1]) / 2, 0.0
-    )
-    R_stack = R_stack.at[:, 0].add(-Rr_corr)
-    R_stack = R_stack.at[:, 1].add(-Rr_corr)
-
-    # Batched Helmholtz solve (y-leading, component axis 1).
-    arb_stack = flow_.Hk_op.solve(R_stack, component_axis=1)
-    up_arb, um_arb, uz_arb = (
-        arb_stack[:, 0],
-        arb_stack[:, 1],
-        arb_stack[:, 2],
-    )
-
-    # Stage 4: wall divergence residual.
-    D1_wall_row = flow_.D1_wall.ravel()
-    ur_arb = (up_arb + um_arb) / 2
-    d_wall = jnp.einsum("j, jmz -> mz", D1_wall_row, ur_arb)
-
-    # Mean mode: pressure is a gauge; zero the residual.
-    d_wall = jnp.where(fourier_.mean_mask[0], 0.0, d_wall)
-
-    # Stage 5: influence matrix correction (scalar per mode).
-    alpha = (-flow_.M_inv * d_wall)[None]  # (1, Nm, Nkz)
-    # Stage 6: corrected velocity.
-    up_new = up_arb + alpha * flow_.v_plus_1
-    um_new = um_arb + alpha * flow_.v_minus_1
-    qz_corr = alpha * flow_.q_z_1
-
-    # Stage 7: zero mean-mode u_r, preserving u_theta.
-    ur_corr = jnp.where(fourier_.mean_mask, (up_new + um_new) / 2, 0.0)
-    up_new = up_new - ur_corr
-    um_new = um_new - ur_corr
-
-    # Constant-bulk-velocity enforcement: add a uniform mean
-    # pressure gradient G to the mean-mode u_z Helmholtz RHS
-    # so that the perturbation bulk velocity is zero.
-    # Equivalent post-solve form: uz += G * h, where
-    # h = Hk_z^{-1} [1,...,1,0] and G = -Ub_pert / H_bulk.
-    # At the mean mode alpha = 0 and ikz = 0, so uz_arb
-    # already equals the uncorrected uz_new there; reading
-    # the bulk from uz_arb lets the IMM correction and the
-    # bulk correction fuse into a single expression.  The
-    # write mask is ``mean_mask``: no other mode (padding
-    # included) receives the correction.
-    if params.phys.driving == "constant_bulk_velocity":
-        mean_uz = extract_mean_mode(uz_arb[None])[0].real
-        bulk_uz = 2 * jnp.dot(flow_.y_weights, mean_uz)
-        uz_new = (
-            uz_arb
-            - ikz * qz_corr
-            + jnp.where(
-                fourier_.mean_mask,
-                -bulk_uz
-                * flow_.H_bulk_inv
-                * flow_.h_bulk_response[:, None, None],
-                0.0,
-            )
-        )
-    else:
-        uz_new = uz_arb - ikz * qz_corr
-
-    velocity_new = jnp.array([uz_new, up_new, um_new])
-    correction = velocity_new - velocity_j
-
-    return velocity_new, correction
 
 
 def _imm_iteration_vw(
@@ -2558,19 +1997,21 @@ def _imm_iteration_vw(
     **across time steps**, where nothing damped or observed it.
     Measured on ``pipe`` (`$32^2$` transverse modes, `$l_z = 5$`,
     `$\Delta t = 0.01$`, random IC of amplitude 0.1), lagged against
-    iterated, with a flag-off control clean in every row:
+    iterated, with a legacy-path control clean in every row:
 
     - `$\mathrm{Re} = 1$` / `$n_r = 32$`: lagged non-finite at
       `$t = 0.37$`; iterated decays monotonically to 1.7e-4 over 100
-      steps (flag-off 1.6e-4).
+      steps (legacy 1.6e-4).
     - `$\mathrm{Re} = 10$` / `$n_r = 32$`: lagged non-finite at
       `$t = 2.06$`; iterated clean, 3.0e-4 at `$t = 3$`.
-    - `$\mathrm{Re} = 100$` / `$n_r = 64$`: lagged tracked flag-off to
+    - `$\mathrm{Re} = 100$` / `$n_r = 64$`: lagged tracked the legacy
+      path to
       **six significant figures for 600 steps** and then departed
       exponentially (0.65 against 1.5e-2 at `$t = 9$`); iterated tracks
       it throughout (1.733550e-2 against 1.733529e-2 at step 800).
     - `$\mathrm{Re} = 100$` / `$n_r = 128$`: lagged non-finite at
-      `$t = 5.1$`; iterated 9.351495e-3 against flag-off's 9.351498e-3
+      `$t = 5.1$`; iterated 9.351495e-3 against the legacy path's
+      9.351498e-3
       at step 999 -- seven significant figures.
     - `$\mathrm{Re} = 1800$` / `$n_r = 128$`, the shipped
       ``pipe-consistent-imm`` regime at a production wall-normal
@@ -2587,7 +2028,7 @@ def _imm_iteration_vw(
     diverged at the same physical time, so no step reduction helped),
     and its boundary was crossed by **refinement** at fixed
     `$\mathrm{Re}$`.  A fixed-horizon, fixed-resolution smoke entry can
-    see neither; what catches it is a flag-on/flag-off comparison at
+    see neither; what catches it is a default-vs-legacy comparison at
     the intended `$(\mathrm{Re}, n_r)$`, read digit by digit.  It also
     had nothing to do with the polymer, though it was first found and
     misattributed there: ``viscoelastic-pipe`` reproduced every row,
@@ -2795,7 +2236,7 @@ def _imm_iteration_vw(
     phi_arb = (phi_arb_pm[:, 0] + phi_arb_pm[:, 1]) / 2
     omega_new = (om_pm[:, 0] + om_pm[:, 1]) / 2
 
-    # Stage 5: exact recovery of u_r.  Lk_op holds L_v,mod flag-on,
+    # Stage 5: exact recovery of u_r.  Lk_op holds L_v,mod here,
     # with a Dirichlet identity wall row; phi_arb and omega_new both
     # vanish at the wall, so u_r|wall = 0 exactly.
     det = kz2 + fourier_.m2 * inv_r2
@@ -2855,18 +2296,21 @@ def _imm_iteration(
     the carried `$(u_z, u_+, u_-)$` state, the signature, the parity
     reduction and the `$1 \times 1$` shape of the influence matrix:
 
-    - **off** -- :func:`_imm_iteration_vp`, the primitive
-      Kleiser-Schumann influence-matrix method: solve for
+    - **on, the default** -- :func:`_imm_iteration_vw`, the
+      `$u_r$`-`$\omega_r$` formulation via the spin quad: advance the
+      radial velocity and vorticity, reconstruct `$(u_z, u_\theta)$`,
+      never form a pressure.
+    - **off, the legacy path** --
+      :func:`._cylindrical_primitive_imm._imm_iteration_vp`, the
+      primitive Kleiser-Schumann influence-matrix method: solve for
       `$(u_z, u_+, u_-)$` against a pressure Poisson solve, enforcing
-      continuity at the wall.
-    - **on** -- :func:`_imm_iteration_vw`, the `$u_r$`-`$\omega_r$`
-      formulation via the spin quad: advance the radial velocity and
-      vorticity, reconstruct `$(u_z, u_\theta)$`, never form a
-      pressure.
+      continuity at the wall.  Kept for reference and for reproducing
+      older trajectories; not recommended.
 
     The branch is a Python ``if`` on a parameter fixed before this
     module is imported, so it costs nothing at trace time and the two
-    bodies never mix.
+    bodies never mix.  The legacy body lives in a sibling module
+    imported only here, so the default path never loads it.
 
     Why there are two, and why the second one is *this* one, is
     derived once for all three geometries in the Cartesian dispatcher
@@ -2890,7 +2334,10 @@ def _imm_iteration(
         return _imm_iteration_vw(
             velocity_n, velocity_j, nonlin_n, nonlin_j, fourier_, flow_
         )
-    return _imm_iteration_vp(
+
+    from . import _cylindrical_primitive_imm as prim
+
+    return prim._imm_iteration_vp(
         velocity_n, velocity_j, nonlin_n, nonlin_j, fourier_, flow_
     )
 

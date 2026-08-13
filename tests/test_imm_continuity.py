@@ -1,5 +1,5 @@
-"""Discrete continuity of a stepped state, with and without
-``res.consistent_imm``.
+"""Discrete continuity of a stepped state, on the default
+``res.consistent_imm`` formulation and on the legacy one.
 
 The influence-matrix method's continuity argument (Kleiser-Schumann;
 Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3) is derived for
@@ -8,11 +8,12 @@ Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3) is derived for
 `$[D_1, D_2] = 0$`, and -- separately -- an accounting of the momentum
 wall rows the Dirichlet replacement discards.  With none of that,
 a stepped state's discrete divergence is **O(1) relative**: not a bug,
-but not zero either.  ``res.consistent_imm`` fixes it in all three
-geometries by *reformulating* -- advancing the wall-normal velocity
-and vorticity and reconstructing the tangential components, so
-continuity is algebra rather than something a solve has to deliver
-(see the ``Resolution`` docstring).
+but not zero either.  That is the legacy ``res.consistent_imm = False``
+path.  The **default** fixes it in all three geometries by
+*reformulating* -- advancing the wall-normal velocity and vorticity and
+reconstructing the tangential components, so continuity is algebra
+rather than something a solve has to deliver (see the ``Resolution``
+docstring).  Both are exercised here, each passed explicitly.
 
 Each case measures ``max|div| / max|individual term|`` on the true-mode
 slice of a state that has been through one full predictor-corrector
@@ -24,28 +25,28 @@ un-stepped check is unfalsifiable.  The real-FFT `$k = 0$` plane is
 excluded, since ``random_field`` solves continuity only off it by
 design.
 
-What is asserted: with the flag on, continuity holds *by algebra* at
+What is asserted: under the default, continuity holds *by algebra* at
 every row and for any operator, grid or axis fit, so all three
 geometries must sit at round-off -- and, unlike an `$h^p$` truncation
-residual, **at every `$N_y$`**, which is why the gate-on bounds are
+residual, **at every `$N_y$`**, which is why the default bounds are
 asserted across the whole ``--ny`` sweep.  Before 2026-07-26 the
 annulus and the pipe used operator identities instead and were pinned
 at `$8\\times10^{-6}$` / `$5.6\\times10^{-5}$`, floors set by a
 commutator each could not remove; the reformulation has no such floor.
-The plane-couette off case additionally reports the momentum side of
+The plane-couette legacy case additionally reports the momentum side of
 the trade (see ``_worker``): what relocating the residual out of
 continuity costs in momentum units.
 
 The pipe uses the deterministic axis-regular rolls IC.  That is no
 longer a *requirement* (the composed `$D_2$` that made a grid-white
-draw unstable is gone -- ``tests/test_random_smoke.py`` now carries
-random-IC pipe entries under the flag); it stays because a grid-white
-draw near the axis swamps the off-case measurement with
-under-resolved-noise divergence.
+draw unstable is gone -- ``tests/test_random_smoke.py`` carries
+random-IC pipe entries); it stays because a grid-white draw near the
+axis swamps the legacy-case measurement with under-resolved-noise
+divergence.
 
 A final ``--pipe-accepts`` subprocess asserts the flag is *settable*
 on the pipe surface at all (it was a deferred hard error before the
-spin-quad opt-in landed).
+spin-quad formulation landed).
 
 Each case needs its own process: the parameter singletons and the
 jitted steppers capture ``params`` at import / trace time.
@@ -75,47 +76,51 @@ PIPE_STEPS = 10
 # resolution dependence can be swept.  ``ny = 25`` is the suite
 # default because it is fast, and is the only resolution the
 # *annular/pipe* bounds are pinned at; other ``--ny`` values report
-# those without asserting (``main``).  The Cartesian gate-on bound is
+# those without asserting (``main``).  The Cartesian default bound is
 # asserted at every ny -- see the module docstring.  Measured, seed 7:
 #
-#     ny    plane-couette off / on     taylor-couette off / on
-#     25    4.48e-02 / 2.91e-16        6.39e-02 / 5.62e-16
-#     97    1.11e-03 / 1.63e-15        5.66e-04 / 1.92e-15
+#     ny    plane-couette legacy / default  taylor-couette legacy / default
+#     25    4.48e-02 / 2.91e-16             6.39e-02 / 5.62e-16
+#     97    1.11e-03 / 1.63e-15             5.66e-04 / 1.92e-15
 #
-# and, on the pipe's rolls IC (PIPE_STEPS steps), 2.84e-02 / 2.07e-15
-# at ny = 25 and 3.88e-15 gated at ny = 97.
+# and, on the pipe's rolls IC (PIPE_STEPS steps), 2.84e-02 / 1.08e-15
+# at ny = 25 and 1.51e-05 / 8.24e-15 at ny = 97.
 #
-# The ungated residual **falls** with resolution here (~40x over
-# 25 -> 97, seed-robust over seeds 7/11/23).  Every gated one stays at
-# round-off and follows no `$h^p$` law at all (the mild ny growth is
-# the longer `$D_1$` dot product), because the reconstruction makes
+# The legacy residual **falls** with resolution in every geometry
+# (~40x over 25 -> 97 on plane-couette, seed-robust over seeds
+# 7/11/23; ~110x on taylor-couette and ~1900x on the pipe).  Every
+# default one stays
+# at round-off and follows no `$h^p$` law at all (the mild ny growth
+# is the longer `$D_1$` dot product), because the reconstruction makes
 # continuity an algebraic identity rather than something a solve has
 # to deliver.
 #
-# The gate-off numbers depend on the IC's wall-normal smoothness:
+# The legacy numbers depend on the IC's wall-normal smoothness:
 # ``random_field._wall_normal_filter`` keeps grid-white Nyquist
 # content out of the boundary term's `$D_1[1,0] \sim N_y^2$`
 # amplification (without it they are 2-3 orders larger and *grow* as
 # `$N_y^2$`).  ``Resolution.consistent_imm`` records this table.
 
 # (label, system, consistent_imm, max relative divergence allowed).
-# The gate-off bounds are loose regression pins on today's behaviour
-# (measured ~4e-2 / ~6e-2 at NY); the gate-on bounds are the claim.
-# Every gate-on bound is round-off, by algebra rather than by a solve,
-# and pinned tight enough that an operator-identity mechanism (floors
-# 4.2e-14 Cartesian, 8.0e-06 annular, 5.6e-05 pipe) could not pass it.
+# Both formulations are named explicitly, so the pair stays a contrast
+# whatever the model default is.  The legacy bounds are loose
+# regression pins on today's behaviour (measured ~4e-2 / ~6e-2 at NY);
+# the default bounds are the claim.  Every default bound is round-off,
+# by algebra rather than by a solve, and pinned tight enough that an
+# operator-identity mechanism (floors 4.2e-14 Cartesian, 8.0e-06
+# annular, 5.6e-05 pipe) could not pass it.
 CASES = [
-    ("plane-couette  off", "plane-couette", False, 1e0),
-    ("plane-couette  on", "plane-couette", True, 1e-13),
-    ("taylor-couette off", "taylor-couette", False, 1e0),
-    ("taylor-couette on", "taylor-couette", True, 1e-13),
-    ("pipe           off", "pipe", False, 1e0),
-    ("pipe           on", "pipe", True, 1e-13),
+    ("plane-couette  legacy", "plane-couette", False, 1e0),
+    ("plane-couette  default", "plane-couette", True, 1e-13),
+    ("taylor-couette legacy", "taylor-couette", False, 1e0),
+    ("taylor-couette default", "taylor-couette", True, 1e-13),
+    ("pipe           legacy", "pipe", False, 1e0),
+    ("pipe           default", "pipe", True, 1e-13),
 ]
 
-# Gate-off floors: the flag must *demonstrably* change something, so
-# each off case also asserts the residual is at least this large.
-# Without it the "on" bounds could pass for the wrong reason.
+# Legacy floors: the two formulations must *demonstrably* differ, so
+# each legacy case also asserts the residual is at least this large.
+# Without it the default bounds could pass for the wrong reason.
 OFF_FLOOR = 1e-3
 
 
@@ -267,8 +272,8 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
 
     if system == "plane-couette" and not consistent_imm:
         # The momentum side of the ``consistent_imm`` trade, measured
-        # on this direct-fit-operator stepped state: what the gated
-        # scheme pays to buy continuity, priced on the same un-gated
+        # on this direct-fit-operator stepped state: what the default
+        # scheme pays to buy continuity, priced on the same legacy
         # field.
         #
         # - ``CHI-MOM``: an *upper bound* on the momentum price of the
@@ -371,17 +376,17 @@ def main(ny: int) -> None:
         flush=True,
     )
     passed, failures = 0, []
-    # The gate-*off* bounds are pinned at ``NY`` only; ``--ny`` is a
+    # The *legacy* bounds are pinned at ``NY`` only; ``--ny`` is a
     # *diagnostic* sweep for them (see the module docstring), reported
     # and not asserted, because they are absolute numbers that move
     # with resolution -- and, since the wall-normal smoothness envelope
-    # landed, move a long way.  The gate-on bounds are ny-independent
+    # landed, move a long way.  The default bounds are ny-independent
     # and always asserted.
     asserted = ny == NY
     if not asserted:
         print(
-            f"  (ny={ny} != {NY}: the gate-off values are reported,"
-            " not asserted; every gate-on bound is ny-independent and"
+            f"  (ny={ny} != {NY}: the legacy values are reported,"
+            " not asserted; every default bound is ny-independent and"
             " still asserted)",
             flush=True,
         )
@@ -397,9 +402,9 @@ def main(ny: int) -> None:
             print(f"FAIL {label}: {err}", flush=True)
             failures.append((label, err))
             continue
-        # Every gate-on claim is an algebraic identity, so its bound
-        # holds at any resolution -- asserting it across a ``--ny``
-        # sweep is the refinement-flatness guard.
+        # Every default-formulation claim is an algebraic identity, so
+        # its bound holds at any resolution -- asserting it across a
+        # ``--ny`` sweep is the refinement-flatness guard.
         flat = cimm
         if not asserted and not flat:
             print(f"REPORT {label}: rel div {rel:.2e}")
@@ -409,8 +414,9 @@ def main(ny: int) -> None:
             reason = f"rel div {rel:.2e} > {bound:.0e}"
         elif not cimm and rel < OFF_FLOOR:
             reason = (
-                f"rel div {rel:.2e} < {OFF_FLOOR:.0e} with the flag off "
-                "-- the 'on' bound would pass for the wrong reason"
+                f"rel div {rel:.2e} < {OFF_FLOOR:.0e} on the legacy "
+                "path -- the default bound would pass for the wrong "
+                "reason"
             )
         else:
             print(f"PASS {label}: rel div {rel:.2e} <= {bound:.0e}")

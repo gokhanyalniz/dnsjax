@@ -15,12 +15,12 @@ iterates FFT-free between full-RHS refreshes.
 For triply-periodic flows the Helmholtz solve is algebraic (pointwise
 multiply by ``ldt_1``, ``ildt_2``).  For wall-bounded flows it is a
 matrix solve per Fourier mode, ordered by the geometry's own
-influence-matrix pass: the primitive one solves the wall-normal
-velocity, then a pressure, then updates all three components, while
-``res.consistent_imm`` advances the wall-normal velocity and vorticity
-and reconstructs the tangential pair with no pressure at all.  Either
-way this module never inspects the state's components -- see
-``_imm_iteration`` in each geometry.
+influence-matrix pass: by default (``res.consistent_imm``) that pass
+advances the wall-normal velocity and vorticity and reconstructs the
+tangential pair with no pressure at all, while the legacy primitive
+one solves the wall-normal velocity, then a pressure, then updates all
+three components.  Either way this module never inspects the state's
+components -- see ``_imm_iteration`` in each geometry.
 """
 
 from collections.abc import Callable
