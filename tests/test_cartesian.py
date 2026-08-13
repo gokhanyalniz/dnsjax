@@ -56,15 +56,17 @@ from dnsjax.fd import (  # noqa: E402
     matrix_half_bandwidth,
 )
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
+from dnsjax.geometries.wall_bounded._cartesian_primitive_imm import (  # noqa: E402
+    _build_Lk_band_gpu,
+    _build_Lk_dense_gpu,
+    _lk_matvec,
+)
 from dnsjax.geometries.wall_bounded.cartesian import (  # noqa: E402
     _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
-    _build_Lk_band_gpu,
-    _build_Lk_dense_gpu,
     _build_Lk_dir_band_gpu,
     _build_Lk_dir_dense_gpu,
     _hk_minus_matvec,
-    _lk_matvec,
     build_cartesian_grid,
     fourier,
 )
@@ -250,10 +252,11 @@ def test_measured_band_half_width() -> None:
     The banded builders take the half-width from the *assembled*
     operator rather than assuming ``fd_order`` (``CartesianFlow.
     __post_init__``).  Two properties matter: with
-    the direct-fit `$D_2$` every Cartesian operator now uses must
-    reproduce ``fd_order`` exactly -- that is what pins the band -- and
-    a composed `$D_1 D_1$` (the annular/pipe ``consistent_imm``
-    operators) must measure wider, its boundary-adjacent rows reaching
+    the direct-fit `$D_2$` every operator in every geometry now uses
+    (both ``res.consistent_imm`` formulations) it must reproduce
+    ``fd_order`` exactly -- that is what pins the band -- and a
+    composed `$D_1 D_1$`, which the retired operator-identity route
+    used, must measure wider, its boundary-adjacent rows reaching
     further than the direct fit.
     Rows 0 and Ny-1 are excluded because every operator overwrites
     them with BC rows.
@@ -286,11 +289,11 @@ def test_pallas_vs_dense_on_cartesian_operators() -> None:
     no-pivot banded sweep (CPU pure-JAX path) reproduces the dense
     solve on a complex RHS.
 
-    Run twice: with the direct-fit `$D_2$` at the ``fd_order`` band,
-    and with `$D_2 = D_1 D_1$` at its wider measured band (the
-    annular/pipe ``consistent_imm`` operators) -- the assembly, the
-    no-pivot factorisation and the Pallas sweep all have to hold at
-    both widths.
+    Run twice: with the direct-fit `$D_2$` at the ``fd_order`` band
+    that every shipped operator uses, and with `$D_2 = D_1 D_1$` at its
+    wider measured band -- the assembly, the no-pivot factorisation and
+    the Pallas sweep all have to hold at both widths, which is backend
+    capability coverage rather than a shipped configuration.
     """
     Ny = params.res.ny
     y = -jnp.cos(jnp.arange(Ny) * jnp.pi / (Ny - 1))

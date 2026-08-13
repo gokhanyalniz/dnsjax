@@ -168,8 +168,9 @@ def build_mode_extractor(
     slice rather than the whole spectral field, so a sample costs
     essentially nothing and ``it_probes = 1`` is affordable.  (The map
     is linear and maps zero to zero, so it commutes with the owner
-    mask and the ``psum``.)  Cartesian carries physical components in
-    both ``res.consistent_imm`` states and needs no conversion at all.
+    mask and the ``psum``.)  Cartesian carries physical components
+    under both ``res.consistent_imm`` formulations and needs no
+    conversion at all.
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
     if params.phys.system in cartesian_systems:

@@ -87,21 +87,23 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # ``res.consistent_imm`` on the pipe, from a *resolved* rolls
-        # IC.  This entry predates the 2026-07-26 reformulation, when
-        # the flag's composed D2 = D1*D1 was not grid-scale-dissipative
-        # and a grid-white draw was genuinely unstable, so a rolls IC
-        # was the only option.  It is now redundant with the random-IC
-        # entries in ``test_random_smoke.py`` as a *stability* gate and
-        # stays as the resolved-IC coverage of the same path.
-        "name": "pipe-consistent-imm",
+        # The legacy primitive (v, p) path on the pipe, from a
+        # *resolved* rolls IC.  Every other entry here runs the default
+        # reconstruction scheme, so this one keeps the retired
+        # formulation under the localized-spot builder.  It predates
+        # the 2026-07-26 reformulation, when the *gated* scheme's
+        # composed D2 = D1*D1 was not grid-scale-dissipative and a
+        # grid-white draw was genuinely unstable, so a rolls IC was the
+        # only option; that limitation is long gone, and the entry
+        # stays as resolved-IC coverage of the legacy path.
+        "name": "pipe-legacy-imm",
         "args": [
             "--phys.system",
             "pipe",
             "--phys.re",
             "1800",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--geo.lz",
             "5",
         ],

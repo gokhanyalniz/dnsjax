@@ -65,19 +65,22 @@ the force-driven Dean flow, where the coupling is the pure
 instantaneous mean-flow term (``l_bf == L_mf``) -- the regime where the
 two corrector structures most differ.
 
-Seven ``*-consistent-imm`` entries drive ``res.consistent_imm`` through
-a real nonlinear run -- the stability gate the one-step
-``test_imm_continuity.py`` guard cannot provide (the rejected
-state-side projection passed every linear gate yet went non-finite
-within ~6 steps of exactly the plane-couette configuration here):
-plane-couette and taylor-couette under both schemes, plus the pipe
-spin quad and both 9-component viscoelastic compositions
-(viscoelastic-dean inheriting the annular v-omega pass,
-viscoelastic-pipe the spin quad, each exercised nowhere else) under
-iterative-cn.  None of these entries can see the cylindrical flag-on
-scheme's low-``Re`` limit -- both pipe entries run decades above its
-threshold, deliberately (that limit and its measurements:
-``cylindrical._imm_iteration_vw``).
+Every entry above runs the **default** ``res.consistent_imm``
+reconstruction scheme, so the nonlinear stability gate the one-step
+``test_imm_continuity.py`` guard cannot provide is covered for the
+whole table (the rejected state-side projection passed every linear
+gate yet went non-finite within ~6 steps of exactly the plane-couette
+configuration here).  Seven ``*-legacy-imm`` entries then drive the
+retired primitive `$(v, p)$` path
+(``--res.consistent_imm False``) through the same nonlinear runs, so
+the kept-but-not-recommended formulation keeps its own coverage:
+plane-couette and taylor-couette under both schemes, plus the pipe and
+both 9-component viscoelastic compositions (viscoelastic-dean
+inheriting the annular pass, viscoelastic-pipe the cylindrical one,
+each exercised nowhere else) under iterative-cn.  None of the pipe
+entries can see the cylindrical default scheme's low-``Re`` limit --
+they run decades above its threshold, deliberately (that limit and its
+measurements: ``cylindrical._imm_iteration_vw``).
 
 A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
 ``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
@@ -301,23 +304,25 @@ SYSTEMS: list[dict] = [
         # then inherited from the annulus.  The blow-up is real but
         # is *not* viscoelastic: it reproduces at beta = 1 (polymer
         # decoupled from the velocity) and in the Newtonian pipe, and
-        # was a defect in the cylindrical flag-on pass -- its two free
-        # wall differences were lagged to t^n -- since fixed (the
-        # measurements: ``cylindrical._imm_iteration_vw``).  This entry
-        # runs the flow's own default Re = 1000, alongside the
-        # Newtonian ``pipe-consistent-imm`` entry's 1800.  Note what an
-        # entry of this shape does NOT guard: that defect agreed with
-        # flag-off to six significant figures for 600 steps before
-        # departing, and its boundary was crossed by *refinement* at
-        # fixed Re, which a resolution-pinned smoke entry cannot
-        # follow.  The guard for that class is a flag-on/flag-off
-        # comparison at the intended (Re, nr), read digit by digit.
-        "name": "viscoelastic-pipe-consistent-imm",
+        # was a defect in the cylindrical reconstruction pass -- its
+        # two free wall differences were lagged to t^n -- since fixed
+        # (the measurements: ``cylindrical._imm_iteration_vw``).  This
+        # entry runs the flow's own default Re = 1000, alongside the
+        # Newtonian ``pipe-legacy-imm`` entry's 1800.  Note what an
+        # entry of this shape does NOT guard -- and the warning now
+        # applies to the *shipped* formulation, since it is the
+        # default: that defect agreed with its control to six
+        # significant figures for 600 steps before departing, and its
+        # boundary was crossed by *refinement* at fixed Re, which a
+        # resolution-pinned smoke entry cannot follow.  The guard for
+        # that class is a default-vs-legacy comparison at the intended
+        # (Re, nr), read digit by digit.
+        "name": "viscoelastic-pipe-legacy-imm",
         "args": [
             "--phys.system",
             "viscoelastic-pipe",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--phys.wi",
             "20",
             "--phys.el",
@@ -356,12 +361,12 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        "name": "viscoelastic-dean-consistent-imm",
+        "name": "viscoelastic-dean-legacy-imm",
         "args": [
             "--phys.system",
             "viscoelastic-dean",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--phys.wi",
             "20",
             "--phys.el",
@@ -513,18 +518,20 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # ``res.consistent_imm`` on, driven nonlinearly -- **the**
-        # stability guard for the Cartesian v-omega_y scheme.  The
-        # laminar smoke cannot exercise it (every term is linear in
-        # u', so all vanish at u' = 0) and the discrete-continuity
-        # guard (``tests/test_imm_continuity.py``) takes one step, so
-        # only this entry integrates the reformulated dynamics through
-        # a real nonlinear run.  That matters more here than anywhere
+        # The legacy primitive (v, p) path, driven nonlinearly: the
+        # plane-couette entry above already covers the shipped
+        # v-omega_y scheme, and this one keeps the retired formulation
+        # under the same nonlinear load.  The laminar smoke cannot
+        # separate them (every term is linear in u', so all vanish at
+        # u' = 0) and the discrete-continuity guard
+        # (``tests/test_imm_continuity.py``) takes one step, so only
+        # entries of this shape integrate either formulation through a
+        # real nonlinear run.  That matters more here than anywhere
         # else in this file: the rejected state-side projection passed
         # every *linear* gate and still went non-finite within ~6
         # steps of exactly this configuration (the
         # ``cartesian._imm_iteration`` docs).
-        "name": "plane-couette-consistent-imm",
+        "name": "plane-couette-legacy-imm",
         "res": {"nx": 32, "ny": 48, "nz": 32},
         "args": [
             "--phys.system",
@@ -536,7 +543,7 @@ SYSTEMS: list[dict] = [
             "--geo.lz",
             "5",
             "--res.consistent_imm",
-            "True",
+            "False",
         ],
     },
     {
@@ -547,7 +554,7 @@ SYSTEMS: list[dict] = [
         # v-omega_y source projections act on.  The two knobs were
         # disjoint across this file until 2026-07-25, so this
         # combination had never been integrated nonlinearly.
-        "name": "plane-couette-consistent-imm-cnab2",
+        "name": "plane-couette-legacy-imm-cnab2",
         "res": {"nx": 32, "ny": 48, "nz": 32},
         "args": [
             "--phys.system",
@@ -559,7 +566,7 @@ SYSTEMS: list[dict] = [
             "--geo.lz",
             "5",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--step.scheme",
             "cnab2",
         ],
@@ -570,7 +577,7 @@ SYSTEMS: list[dict] = [
         # the corrector iterate (measured contraction <= 0.02, but
         # measured on *linear* data -- this entry is where the loop
         # meets a real nonlinear source).
-        "name": "taylor-couette-consistent-imm",
+        "name": "taylor-couette-legacy-imm",
         "res": {"nx": 24, "ny": 40, "nz": 24},
         "args": [
             "--phys.system",
@@ -584,7 +591,7 @@ SYSTEMS: list[dict] = [
             "--geo.lz",
             "3",
             "--res.consistent_imm",
-            "True",
+            "False",
         ],
     },
     {
@@ -593,7 +600,7 @@ SYSTEMS: list[dict] = [
         # a combination assembled from ``_l_bf`` and the carried
         # nonlinear history, and the lagged spin coupling then reads a
         # *carry*-derived iterate rather than a corrector one.
-        "name": "taylor-couette-consistent-imm-cnab2",
+        "name": "taylor-couette-legacy-imm-cnab2",
         "res": {"nx": 24, "ny": 40, "nz": 24},
         "args": [
             "--phys.system",
@@ -607,7 +614,7 @@ SYSTEMS: list[dict] = [
             "--geo.lz",
             "3",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--step.scheme",
             "cnab2",
         ],
@@ -621,7 +628,7 @@ SYSTEMS: list[dict] = [
         # (the iterative-cn default), i.e. the innermost node sits
         # closest to the axis -- the hardest case for every 1/r term
         # in the scheme.
-        "name": "pipe-consistent-imm",
+        "name": "pipe-legacy-imm",
         "res": {"nx": 24, "ny": 40, "nz": 24},
         "args": [
             "--phys.system",
@@ -631,7 +638,7 @@ SYSTEMS: list[dict] = [
             "--geo.lz",
             "5",
             "--res.consistent_imm",
-            "True",
+            "False",
         ],
     },
     {

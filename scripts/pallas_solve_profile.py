@@ -36,6 +36,12 @@ Part C  optimized-HLO op census around the Triton custom call (static
         evidence that no separate transpose copy is left) and an
         optional ``jax.profiler`` trace for the per-kernel breakdown.
 
+Every number below is reported for the configured
+``res.consistent_imm`` formulation.  The default is the shipped
+reconstruction scheme; ``--legacy-imm`` profiles the retired primitive
+`$(v, p)$` one instead, which has a different operator set, a different
+per-mode solve count and its own stage transcription.
+
 Run **on a GPU** (single device, no mpirun)::
 
     .venv/bin/python scripts/pallas_solve_profile.py
@@ -109,6 +115,7 @@ def _configure_system(
     nz: int,
     order: int,
     solver_overrides: dict | None = None,
+    legacy_imm: bool = False,
 ):
     """Set the global ``params`` for *system* and derive singletons.
 
@@ -123,6 +130,12 @@ def _configure_system(
     / ``pallas_block_m1``) are baked into the operator at construction
     (geometry import), so a knob sweep needs a subprocess per value
     (the ``test_*`` subprocess-per-config idiom).
+
+    *legacy_imm* selects the retired primitive `$(v, p)$` scheme
+    (``res.consistent_imm = False``) instead of the shipped
+    reconstruction one; it changes the operator set, the per-mode solve
+    count and therefore every number this script reports, so it is an
+    explicit opt-in (``--legacy-imm``).
     """
     params.phys.system = system
     params.phys.re = 400.0
@@ -131,6 +144,7 @@ def _configure_system(
     params.res.nz = nz
     params.res.fd_order = order
     params.res.double_precision = True
+    params.res.consistent_imm = not legacy_imm
     if system == "taylor-couette":
         params.phys.re1 = 100.0
         params.phys.re2 = 0.0
@@ -259,6 +273,23 @@ def _bw(nbytes: int, sec: float) -> str:
 
 
 # ── input builders ───────────────────────────────────────────────────
+
+
+def _hk_components(hk) -> int:
+    """Component count of one ``Hk_op`` solve, for the isolated probes.
+
+    The RHS a step hands ``Hk_op`` is not a fixed 3-stack: the default
+    ``res.consistent_imm`` scheme solves the wall-normal
+    velocity/vorticity **pair** (Cartesian batches the two scalars
+    through one operator; the cylindrical geometries carry a two-family
+    group), while the legacy primitive scheme solves the three velocity
+    components against a three-family group.  Read the arity off a
+    grouped operator, and fall back to the formulation's own count for
+    the ungrouped Cartesian one.
+    """
+    if hk.L.ndim == 5:  # (C, N, p, Nkz, Nkx): one family per slot
+        return int(hk.L.shape[0])
+    return 2 if params.res.consistent_imm else 3
 
 
 def _make_complex(shape, seed, sharding, spec):
@@ -406,18 +437,42 @@ def _imm_stage_breakdown(
 ) -> None:
     r"""Cartesian: split one ``_imm_iteration`` into its stages.
 
-    Sizes the **influence-matrix boundary correction** (Stages 4-7 of
-    ``_imm_iteration`` in ``cartesian.py``) -- the openpipeflow-wiki
-    "negligible" per-step overhead -- against the rest of the implicit
-    Crank-Nicolson update (assembly ``D1``/``D2`` GEMMs + the ``Lk``/
-    ``Hk`` banded solves), which is the work openpipeflow *also* runs
-    every corrector iteration and the wiki does **not** count as
-    influence-matrix overhead.  Stages mirror ``_imm_iteration``
-    exactly; the constant-bulk / block-spanwise branch (Stages 8-9) is
-    compiled out for the default plane-Couette driving and omitted.
+    Sizes the **influence-matrix boundary correction** -- the
+    openpipeflow-wiki "negligible" per-step overhead -- against the rest
+    of the implicit Crank-Nicolson update (assembly ``D1``/``D2`` GEMMs
+    + the ``Lk``/``Hk`` banded solves), which is the work openpipeflow
+    *also* runs every corrector iteration and the wiki does **not**
+    count as influence-matrix overhead.
+
+    The two ``res.consistent_imm`` formulations are different
+    algorithms with different stages, so each has its own transcription
+    and this function dispatches:
+    :func:`_stages_vw` for the shipped reconstruction scheme,
+    :func:`_stages_vp` for the legacy primitive one (``--legacy-imm``).
+    Both mirror their ``cartesian.py`` counterpart stage for stage; the
+    constant-bulk / block-spanwise branch is compiled out for the
+    default plane-Couette driving and omitted from both.
+    """
+    stages = _stages_vp if not params.res.consistent_imm else _stages_vw
+    stages(
+        geom, flow, fourier, nonlin, state, reps, t_imm, t_lk, t_hk, t_step, n
+    )
+
+
+def _stages_vp(
+    geom, flow, fourier, nonlin, state, reps, t_imm, t_lk, t_hk, t_step, n
+) -> None:
+    r"""Stage split of the **legacy** primitive `$(v, p)$` pass.
+
+    Transcribes ``_cartesian_primitive_imm._imm_iteration_vp``: a
+    pressure Poisson solve, a three-component Helmholtz solve, then the
+    `$2 \times 2$` influence correction (its stages 4-7).
     """
     import jax.numpy as jnp
 
+    from dnsjax.geometries.wall_bounded import (
+        _cartesian_primitive_imm as prim,
+    )
     from dnsjax.geometries.wall_bounded._base import apply_y_matrix
 
     c = params.step.implicitness
@@ -441,7 +496,7 @@ def _imm_stage_breakdown(
         d_hat_n = ikx * u_n + dy_v_n + ikz * w_n
         div_Nj = ikx * nonlin_j[0] + dy_Nv_j + ikz * nonlin_j[2]
         div_Nn = ikx * nonlin_n[0] + dy_Nv_n + ikz * nonlin_n[2]
-        Lk_d = geom._lk_matvec(d_hat_n, flow, fourier)
+        Lk_d = prim._lk_matvec(d_hat_n, flow, fourier)
         f_hat = (
             d_hat_n / dt + c * div_Nj + (1 - c) * div_Nn + (1 - c) * nu * Lk_d
         )
@@ -458,17 +513,8 @@ def _imm_stage_breakdown(
         return r.at[1].set(jnp.where(mean_mask, 0.0, r[1]))
 
     def influence_correct(velocity_j, arb_stack):
-        # Stages 4-7 + finalize: the influence-matrix correction.
-        # Transcribes the *ungated* 2x2 IMM.  On Cartesian
-        # ``res.consistent_imm`` selects a different algorithm
-        # entirely (the v-omega_y scheme: no pressure, three solves
-        # per mode instead of four -- ``cartesian._imm_iteration``),
-        # so this profiler rejects the flag rather than silently
-        # characterising something it does not transcribe.
-        assert not params.res.consistent_imm, (
-            "pallas_solve_profile transcribes the default 2x2 IMM; "
-            "res.consistent_imm selects a different scheme"
-        )
+        # Stages 4-7 + finalize: the influence-matrix correction of
+        # the primitive 2x2 IMM.
         u_arb, v_arb, w_arb = arb_stack[0], arb_stack[1], arb_stack[2]
         d_wall = jnp.einsum("bj, jzx -> zxb", flow.D1_bnd, v_arb)
         d_wall = d_wall.at[..., 1].set(
@@ -502,11 +548,14 @@ def _imm_stage_breakdown(
     t_infl = _bench(influence_correct, [(state, arb)] * reps)
 
     t_sum = t_prhs + t_lk + t_hrhs + t_hk + t_infl
-    print("\n  IMM stage breakdown (Cartesian; each runs n times/step):")
+    print(
+        "\n  IMM stage breakdown (Cartesian, LEGACY primitive (v, p) "
+        "scheme; each runs n times/step):"
+    )
     print(f"    Poisson RHS asm (D1 GEMM+div+_lk+CN)  {_ms(t_prhs)}")
     print(f"    Lk banded solve                       {_ms(t_lk)}")
     print(f"    Helmholtz RHS asm (grad+_hk GEMM+CN)  {_ms(t_hrhs)}")
-    print(f"    Hk banded solve (3 fields)            {_ms(t_hk)}")
+    print(f"    Hk banded solve (3 components)        {_ms(t_hk)}")
     print(
         f"    influence correct + recombine         {_ms(t_infl)}  "
         "<- openpipeflow-wiki 'negligible' part"
@@ -526,6 +575,114 @@ def _imm_stage_breakdown(
         "the implicit CN\n       update (assembly GEMMs + Lk/Hk banded "
         "solves) openpipeflow also\n       runs every corrector iteration"
         " -- the wiki does not count THAT."
+    )
+
+
+def _stages_vw(
+    geom, flow, fourier, nonlin, state, reps, t_imm, t_lk, t_hk, t_step, n
+) -> None:
+    r"""Stage split of the **default** `$v$`-`$\omega_y$` pass.
+
+    Transcribes ``cartesian._imm_iteration_vw`` stage for stage.  The
+    shape differs from the primitive twin in three ways that matter to
+    a reading of the numbers:
+
+    - there is no pressure Poisson stage at all, so the ``Lk`` solve is
+      the `$\varphi \to v$` recovery (stage 4) rather than a pressure
+      solve, and it comes *after* the Helmholtz one instead of before;
+    - the ``Hk`` solve carries **two** scalars (`$\varphi$`,
+      `$\omega_y$`) rather than three velocity components;
+    - the influence correction (stages 5-7) additionally reconstructs
+      the tangential pair, which is the work that makes the discrete
+      divergence vanish -- so it is doing strictly more than the
+      primitive scheme's rank-2 recombination, and the "negligible
+      boundary correction" reading has to be made against that.
+    """
+    import jax.numpy as jnp
+
+    from dnsjax.geometries.wall_bounded._base import apply_y_matrix
+
+    c = params.step.implicitness
+    ikx = 1j * fourier.kx
+    ikz = 1j * fourier.kz
+    mean_mask = fourier.mean_mask
+
+    def source_asm(velocity_n, nonlin_j, nonlin_n):
+        # Stages 1-2: re-derive the evolved scalars from the carried
+        # physical state, then form the pressure-free CN sources and
+        # the zero-wall-data Helmholtz RHS (stage 3 up to the solve).
+        sol_n = geom._to_solver(velocity_n, fourier, flow)
+        phi_n, omega_n = sol_n[0], sol_n[2]
+        nl = c * nonlin_j + (1 - c) * nonlin_n
+        div_h = ikx * nl[0] + ikz * nl[2]
+        s_phi = -fourier.k2 * nl[1] - apply_y_matrix(flow.D1, div_h)
+        s_omega = ikz * nl[0] - ikx * nl[2]
+        s_phi = jnp.where(mean_mask, nl[0], s_phi)
+        s_omega = jnp.where(mean_mask, nl[2], s_omega)
+        r = jax.vmap(geom._hk_minus_matvec, in_axes=(0, None, None))(
+            jnp.stack([phi_n, omega_n]), flow, fourier
+        ) + jnp.stack([s_phi, s_omega])
+        return r.at[:, 0].set(0.0).at[:, -1].set(0.0)
+
+    def influence_reconstruct(velocity_j, phi_arb, omega_new, v_arb):
+        # Stages 5-7 + finalize: pick the two free phi wall values that
+        # make (D1 v)|wall = 0, then reconstruct (u, w) from
+        # (D1 v, omega) -- the stage that makes continuity an identity.
+        d_wall = jnp.einsum("bj, jzx -> zxb", flow.D1_bnd, v_arb)
+        alpha = -jnp.einsum("zxab, zxb -> zxa", flow.M_inv, d_wall)
+        v_new = (
+            v_arb
+            + alpha[..., 0][None] * flow.v1
+            + alpha[..., 1][None] * flow.v2
+        )
+        v_new = jnp.where(mean_mask, 0.0, v_new)
+        out = geom._from_solver(
+            jnp.array([phi_arb, v_new, omega_new]), fourier, flow
+        )
+        return jnp.array(out) - velocity_j
+
+    # Realistic intermediates (predictor call: velocity_n = velocity_j
+    # = state, nonlin_n = nonlin_j = nonlin).
+    lk_solve = jax.jit(lambda f: flow.Lk_op.solve(f))
+    hk_solve = jax.jit(lambda r: flow.Hk_op.solve(r))
+    R_stack = jax.block_until_ready(jax.jit(source_asm)(state, nonlin, nonlin))
+    arb = jax.block_until_ready(hk_solve(R_stack))
+    phi_arb, omega_new = arb[0], arb[1]
+    v_arb = jax.block_until_ready(lk_solve(phi_arb))
+
+    t_src = _bench(source_asm, [(state, nonlin, nonlin)] * reps)
+    t_infl = _bench(
+        influence_reconstruct, [(state, phi_arb, omega_new, v_arb)] * reps
+    )
+
+    t_sum = t_src + t_hk + t_lk + t_infl
+    print(
+        "\n  IMM stage breakdown (Cartesian, default v-omega_y scheme; "
+        "each runs n times/step):"
+    )
+    print(f"    source asm (_to_solver+proj+_hk GEMM)  {_ms(t_src)}")
+    print(f"    Hk banded solve (2 scalars)            {_ms(t_hk)}")
+    print(f"    Lk banded solve (phi -> v recovery)    {_ms(t_lk)}")
+    print(
+        f"    influence + reconstruct (u, w)         {_ms(t_infl)}  "
+        "<- the boundary-correction share"
+    )
+    print(
+        f"    {'-' * 53}\n"
+        f"    sum of stages                          {_ms(t_sum)}  "
+        f"(vs _imm_iteration {_ms(t_imm)})"
+    )
+    print(
+        f"\n    influence + reconstruct = {100 * t_infl / t_imm:.1f}% of "
+        f"_imm_iteration, {100 * n * t_infl / t_step:.1f}% of the step."
+    )
+    print(
+        "    => The boundary work is still a small share; the rest is the"
+        "\n       implicit CN update (assembly GEMMs + Hk/Lk banded solves)"
+        " that\n       openpipeflow also runs every corrector iteration."
+        "  Note this\n       scheme folds the tangential reconstruction "
+        "into that share, and\n       runs one banded solve fewer per mode"
+        " than the legacy path\n       (--legacy-imm to time that one)."
     )
 
 
@@ -581,8 +738,9 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
             _make_complex((N, Nkz, Nkx), 200 + i, sharding, sspec)
             for i in range(reps)
         ]
+        nc = _hk_components(hk)
         z3s = [
-            _make_complex((3, N, Nkz, Nkx), 300 + i, sharding, vspec)
+            _make_complex((nc, N, Nkz, Nkx), 300 + i, sharding, vspec)
             for i in range(reps)
         ]
         t_lk = _bench(lambda z: lk.solve(z), [(z,) for z in zs])
@@ -657,7 +815,10 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
     # ``_imm_iteration``, plus a (2 + c) FFT-free ``_l_bf`` re-eval.  So
     # cnab2 cuts the FFT-RHS count 2+c -> 1 but pays the SAME IMM count
     # as iterative-cn; with IMM ~ FFT on the GPU, that is why the step
-    # speedup is modest, not ~3x.
+    # speedup is modest, not ~3x.  The IMM cost per apply is
+    # ``res.consistent_imm``-dependent (the default runs one banded
+    # solve fewer per mode on this geometry), so this ratio is reported
+    # for whichever formulation is configured.
     if hasattr(m, "step_cnab2"):
         t_cnab2, cc, _ = _bench_step_cnab2(m.step_cnab2, state, steps)
         n_cn = 2 + cc  # IMM applies AND _l_bf evals per cnab2 step
@@ -766,8 +927,9 @@ def _solve_sweep(system: str, args, flow, sharding, reps: int) -> None:
         _make_complex((N, pnz, pnx), 400 + i, sharding, sspec)
         for i in range(reps)
     ]
+    nc = _hk_components(hk)
     z3s = [
-        _make_complex((3, N, pnz, pnx), 500 + i, sharding, vspec)
+        _make_complex((nc, N, pnz, pnx), 500 + i, sharding, vspec)
         for i in range(reps)
     ]
     t_lk = _bench(lambda z: lk.solve(z), [(z,) for z in zs])
@@ -780,7 +942,7 @@ def _solve_sweep(system: str, args, flow, sharding, reps: int) -> None:
         "several x for latency hiding)"
     )
     print(f"  Lk solve (1 field)   {_ms(t_lk)}")
-    print(f"  Hk solve (3 fields)  {_ms(t_hk)}")
+    print(f"  Hk solve ({nc} fields)  {_ms(t_hk)}")
     print(f"  Lk+Hk                {_ms(t_lk + t_hk)}")
     _summary_line(
         system, args, flow, {"lk": t_lk, "hk": t_hk, "solve": t_lk + t_hk}
@@ -955,6 +1117,14 @@ def main() -> None:
     ap.add_argument("--pallas-block-m0", type=int, default=None)
     ap.add_argument("--pallas-block-m1", type=int, default=None)
     ap.add_argument(
+        "--legacy-imm",
+        action="store_true",
+        help="profile the legacy res.consistent_imm=False primitive "
+        "(v, p) scheme instead of the shipped reconstruction one "
+        "(different operator set and per-mode solve count, so every "
+        "number below changes)",
+    )
+    ap.add_argument(
         "--cpu-smoke",
         action="store_true",
         help="GPU-less self-check: run Parts B/C once on CPU at tiny "
@@ -995,6 +1165,7 @@ def main() -> None:
         args.nz,
         args.fd_order,
         solver_overrides or None,
+        legacy_imm=args.legacy_imm,
     )
     geom = _geom_module(args.system)
     m = _import_flow(args.system)

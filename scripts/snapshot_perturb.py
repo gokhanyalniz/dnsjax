@@ -7,9 +7,13 @@ Offline CLI + library (the ``snapshot_import.py`` sibling for
 :func:`dnsjax.analysis.transient_growth.single_mode_state` -- and
 writes a new snapshot.  The parent's ``t``/``it`` are kept, so a run
 resumed from the output continues the parent trajectory's clock with
-the perturbation applied.  The primary use is seeding perturbed
-ensemble members from harvested turbulent snapshots
-(``scripts/ensemble_setup.py``).
+the perturbation applied -- provided the resuming run's own
+trajectory-defining parameters match the ones the parent recorded.
+``res.consistent_imm`` is one of them, so a parent written before it
+defaulted on resumes as a **new** trajectory unless that run passes
+``--res.consistent_imm False`` (or ``--init.force_resume``).  The
+primary use is seeding perturbed ensemble members from harvested
+turbulent snapshots (``scripts/ensemble_setup.py``).
 
 Runs single-device (``np0 = np1 = 1``) on the snapshot's own
 parameters and stored precision, so every untouched mode round-trips

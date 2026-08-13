@@ -96,8 +96,9 @@ recovers `$\mathcal{A}$` to rounding -- `$\Delta t$` is a probe, **not**
 an accuracy knob, and there is no time-discretisation error.
 
 The propagator is the solver's, so it inherits ``res.consistent_imm``.
-In every wall-bounded geometry that flag selects the reconstruction
-scheme, whose solenoidal subspace `$S$` is *exactly* the discrete one:
+By default that is the reconstruction scheme, in every wall-bounded
+geometry, and its solenoidal subspace `$S$` is *exactly* the discrete
+one:
 a non-solenoidal basis vector's tangential part maps to zero in a
 single step rather than decaying over several, so `$\Phi$` is singular
 on the complement by construction.  That is the intended behaviour on
@@ -926,8 +927,8 @@ def _linear_step(gmod: Any, fmod: Any = None):
     stepper is in the decoupled `$u_\\pm$` solver basis, so the
     returned step wraps it and the propagator -- and everything this
     driver exports -- stays in **physical** components.  Cartesian
-    carries physical components already, in both ``res.consistent_imm``
-    states, so it is returned unwrapped.
+    carries physical components already, under both
+    ``res.consistent_imm`` formulations, so it is returned unwrapped.
     """
     from ..timestep import make_stepper
 

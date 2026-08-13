@@ -497,7 +497,7 @@ def case_externalize() -> None:
             "ny": 24,
             "nz": 32,
             "fd_order": P.params.res.fd_order,
-            "consistent_imm": False,
+            "consistent_imm": P.params.res.consistent_imm,
             "double_precision": True,
         },
         "internalize_stored res",

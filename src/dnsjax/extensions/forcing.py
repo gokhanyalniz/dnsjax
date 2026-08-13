@@ -28,13 +28,13 @@ single step after a kick: an `$O(\varepsilon\,\Delta t)$`
 perturbation of the same class as the scheme's local error.)
 
 A kick's increment is generally **not** discretely solenoidal, and
-what happens to that part depends on the scheme.  The primitive IMM
-feeds it into the pressure Poisson RHS and *damps* it over the
-following steps.  Under ``res.consistent_imm`` there is no pressure
-Poisson to absorb it: the kick lands in the carried state intact and
-is **discarded** one step later, when the reconstruction rebuilds the
-tangential pair from the wall-normal velocity and vorticity alone
-(stage 7 in every geometry).  So it reaches exactly one step's
+what happens to that part depends on the scheme.  Under the default
+``res.consistent_imm`` there is no pressure Poisson to absorb it: the
+kick lands in the carried state intact and is **discarded** one step
+later, when the reconstruction rebuilds the tangential pair from the
+wall-normal velocity and vorticity alone (stage 7 in every geometry).
+The legacy primitive IMM instead feeds it into the pressure Poisson
+RHS and *damps* it over the following steps.  So it reaches exactly one step's
 nonlinear evaluation -- two under ``cnab2``, which carries that
 evaluation forward -- and never a solve.  Either way it is a bounded,
 per-event, truncation-class effect, not an accumulating one; keep
@@ -175,8 +175,8 @@ def build_mode_injector(
     each ``(C, N_y)`` column goes through the ordinary
     component-axis-leading map.  Like the extractor's, this touches
     only the injected columns, never the field.  Cartesian carries
-    physical components in both ``res.consistent_imm`` states, so
-    there the kick is a plain scatter-add.
+    physical components under both ``res.consistent_imm``
+    formulations, so there the kick is a plain scatter-add.
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
     if params.phys.system in cartesian_systems:

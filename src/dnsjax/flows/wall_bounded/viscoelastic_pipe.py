@@ -66,14 +66,15 @@ instead.
 
 ``res.consistent_imm``
 ----------------------
-The reconstruction scheme is supported here, as for every other
+The default reconstruction scheme is supported here, as for every other
 wall-bounded flow, and needs nothing viscoelastic: the polymer stress
 reaches the velocity solve only as one more source term, which either
-influence-matrix scheme projects unchanged.  Guard: the
-``viscoelastic-pipe-consistent-imm`` entry in
-``tests/test_random_smoke.py`` (a nonlinear gate -- the laminar smoke
-is linear and blind to the flag's nonlinear path, and a
-fixed-resolution entry cannot see refinement-crossed thresholds).
+influence-matrix formulation projects unchanged.  Guards: the
+``viscoelastic-pipe`` entry in ``tests/test_random_smoke.py`` for the
+default and ``viscoelastic-pipe-legacy-imm`` for the legacy path (both
+nonlinear gates -- the laminar smoke is linear and blind to either
+formulation's nonlinear path, and a fixed-resolution entry cannot see
+refinement-crossed thresholds).
 
 Moving frame
 ------------

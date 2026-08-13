@@ -76,15 +76,17 @@ from dnsjax.flows.wall_bounded.taylor_couette import (  # noqa: E402
     flow as tc_flow,
 )
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
-from dnsjax.geometries.wall_bounded.annular import (  # noqa: E402
+from dnsjax.geometries.wall_bounded._annular_primitive_imm import (  # noqa: E402
     _abase_matvec,
-    _build_Hk_band_gpu,
-    _build_Hk_dense_gpu,
     _build_Lk_band_gpu,
     _build_Lk_dense_gpu,
+    _lk_matvec,
+)
+from dnsjax.geometries.wall_bounded.annular import (  # noqa: E402
+    _build_Hk_band_gpu,
+    _build_Hk_dense_gpu,
     _build_Lv_dir_band_gpu,
     _build_Lv_dir_dense_gpu,
-    _lk_matvec,
     _vw_meff2,
     build_annular_grid,
     fourier,

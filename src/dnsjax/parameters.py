@@ -535,24 +535,39 @@ class Resolution(BaseModel):
             "half-width, not an accuracy order)."
         ),
     )
-    # Wall-bounded only (all three families), off by default.  It buys
-    # a discretely exact projection with a **reformulation** of the
-    # implicit step; the price is a truncation-level residual moved
-    # into a momentum equation nothing solves, and only the user knows
-    # whether that trade is acceptable.
+    # Wall-bounded only (all three families), **on by default**.  It
+    # buys a discretely exact projection with a **reformulation** of
+    # the implicit step; the price is a truncation-level residual moved
+    # into a momentum equation nothing solves.  Every measurement below
+    # says that trade is worth making everywhere, which is why it is
+    # the default rather than an opt-in.
     #
-    # *What it enforces.*  The influence-matrix method's continuity
-    # argument (Kleiser-Schumann; Canuto, Hussaini, Quarteroni & Zang
-    # 1988, sec. 7.3) is derived for *continuous* differentiation
-    # operators.  Two discrete identities have to hold for the stepped
-    # state's divergence to vanish: `$\nabla\cdot\nabla = L_k$` (i.e.
-    # `$D_1 D_1 = D_2$`) and `$[D_1, D_2] = 0$`.  Independent Fornberg
-    # fits satisfy neither, and -- separately -- replacing the momentum
-    # wall rows by Dirichlet rows leaves an unaccounted residual that
-    # the divergence's own `$D_1$` spreads into the interior.  So a
-    # stepped state's discrete divergence is O(1) *relative*: a
-    # convergent truncation error, physically inert for resolved
-    # fields, but not zero.
+    # *Setting it to ``False``* selects the **legacy** primitive
+    # Kleiser-Schumann `$(v, p)$` scheme (each geometry's
+    # ``_<geometry>_primitive_imm.py``).  It is kept, tested and
+    # supported, but not recommended: a state it steps carries the
+    # `$O(1)$` *relative* discrete divergence described next.  Two
+    # reasons remain to select it -- reproducing a trajectory computed
+    # before the default moved, and the one corner where the default
+    # costs corrector iterations: a **deep annulus** (small ``geo.eta``)
+    # at tight ``step.corrector_tolerance``, where the `$(u_r,
+    # \omega_r)$` pair's Picard-lagged spin partners contract slowly
+    # (the measured table, and why that degradation is loud rather than
+    # silent: ``annular._imm_iteration_vw``).
+    #
+    # *What it enforces.*  The primitive influence-matrix method's
+    # continuity argument (Kleiser-Schumann; Canuto, Hussaini,
+    # Quarteroni & Zang 1988, sec. 7.3) is derived for *continuous*
+    # differentiation operators.  Two discrete identities have to hold
+    # for the stepped state's divergence to vanish:
+    # `$\nabla\cdot\nabla = L_k$` (i.e. `$D_1 D_1 = D_2$`) and
+    # `$[D_1, D_2] = 0$`.  Independent Fornberg fits satisfy neither,
+    # and -- separately -- replacing the momentum wall rows by
+    # Dirichlet rows leaves an unaccounted residual that the
+    # divergence's own `$D_1$` spreads into the interior.  So a state
+    # the legacy path steps carries a discrete divergence that is O(1)
+    # *relative*: a convergent truncation error, physically inert for
+    # resolved fields, but not zero.
     #
     # *The mechanism* (one, in all three geometries, since
     # 2026-07-26).  Advance the **wall-normal velocity and vorticity**
@@ -588,7 +603,8 @@ class Resolution(BaseModel):
     # the evolved scalars are re-derived from the carried state at the
     # top of each corrector pass and reconstructed away at its exit, so
     # snapshots, probes, forcing, diagnostics, the analysis package and
-    # resume are all flag-independent.  The price is two wall rows per
+    # resume are identical under both formulations.  The price is two
+    # wall rows per
     # mode (the influence coefficients cannot be carried), a bounded
     # truncation-level substitute -- ``cartesian._imm_iteration_vw``
     # carries the argument and the measurement.  Construction, boundary
@@ -600,24 +616,25 @@ class Resolution(BaseModel):
     # *Efficacy* (measured, ``fd_order = 8``, ``ny = 25`` / ``ny = 97``,
     # one step from a random IC, seed 7 -- ten steps from an
     # axis-regular rolls IC on the pipe; ``tests/test_imm_continuity``).
-    # Stepped-state relative divergence:
+    # Stepped-state relative divergence, ``legacy -> default``:
     #
     #   plane-couette   4.5e-2 -> 2.9e-16   1.1e-3 -> 1.6e-15
     #   taylor-couette  6.4e-2 -> 5.6e-16   5.7e-4 -> 1.9e-15
-    #   pipe            2.8e-2 -> 2.1e-15          -> 3.9e-15
+    #   pipe            2.8e-2 -> 1.1e-15   1.5e-5 -> 8.2e-15
     #
     # -- round-off everywhere, and following no `$h^p$` law at all (the
     # mild growth with `$N_y$` is the longer `$D_1$` dot product, not
     # truncation), because continuity here is an identity rather than
-    # something a solve delivers; which is why every gate-on bound is
-    # asserted at every ``--ny``.  These replace the operator-identity
-    # route's floors (4.2e-14 Cartesian, 8.0e-6 annular, 5.6e-5 pipe),
-    # each set by a commutator that route could not remove.  The
-    # wall-bounded *temporal* error improves too: plane-Couette
-    # iterative-CN self-convergence goes from ``1.3e-2`` at order ~0.5
-    # to ``3.6e-5`` at order ~1.2, and Taylor-Couette likewise (the
-    # divergence residual **was** the dominant projection-splitting
-    # error) -- pinned by ``tests/test_temporal_order.py``.
+    # something a solve delivers; which is why every default-formulation
+    # bound is asserted at every ``--ny``.  These replace the
+    # operator-identity route's floors (4.2e-14 Cartesian, 8.0e-6
+    # annular, 5.6e-5 pipe), each set by a commutator that route could
+    # not remove.  The wall-bounded *temporal* error improves too:
+    # plane-Couette iterative-CN self-convergence goes from ``1.3e-2``
+    # at order ~0.5 on the legacy path to ``3.6e-5`` at order ~1.2 on
+    # the default, and Taylor-Couette likewise (the divergence residual
+    # **was** the dominant projection-splitting error) -- pinned by
+    # ``tests/test_temporal_order.py``.
     #
     # *Price.*  Exact continuity is bought by *not* imposing the
     # tangential momentum combination, so what continuity gains, that
@@ -634,8 +651,9 @@ class Resolution(BaseModel):
     # quantity.  Nothing reads the residual back -- the difference
     # between this and the rejected projection below -- so it neither
     # accumulates nor re-excites; the stepped energy budget in fact
-    # closes *tighter* with the flag on (``2.8e-3`` vs ``5.1e-3``,
-    # ``tests/test_energy_budget.py``), as it must when pressure does
+    # closes *tighter* on the default (``2.8e-3`` vs the legacy path's
+    # ``5.1e-3``, ``tests/test_energy_budget.py``), as it must when
+    # pressure does
     # no work on an exactly solenoidal field.  There is no operator
     # price at all (same `$D_1$`, same direct-fit `$D_2$`, same band)
     # and operator storage *drops*; against that, `$L(Lv)$` is applied
@@ -671,27 +689,41 @@ class Resolution(BaseModel):
     # the exactly-decoupled candidates are enumerated and dismissed in
     # the ``annular._imm_iteration_vw`` docstring.
     #
-    # *Measured step cost.*  On the Cartesian family the corrector
-    # contracts in fewer iterations, and the same holds in the
-    # cylindrical ones: the pipe's random-smoke ``c/it`` drops
-    # ``1.00 -> 0.10`` and Taylor-Couette's ``0.09 -> 0.00``, because
-    # the reconstruction removes the projection error the corrector was
-    # working against (consistent with Kleiser's report, via CHQZ
-    # p. 220, of *lower* time-step stability limits when the boundary
-    # correction is omitted).  One config on one backend: treat the
+    # *Measured step cost*, ``legacy -> default``.  The per-mode banded
+    # solve count goes 4 -> 3 on the Cartesian and annular families and
+    # 4 -> **5** on the pipe, which is the one place the default costs
+    # throughput (~+6 % per step; its axis forces the exact spin-quad
+    # diagonalisation, doubling the evolved scalars against only two
+    # wall conditions -- ``cylindrical._imm_iteration_vw``).  Against
+    # that, the corrector contracts in fewer iterations: measured as a
+    # *paired* run (one configuration, one backend, the formulation the
+    # only difference), the pipe's ``c/it`` drops ``1.00 -> 0.10`` and
+    # Taylor-Couette's ``0.09 -> 0.00``, because the reconstruction
+    # removes the projection error the corrector was working against
+    # (consistent with Kleiser's report, via CHQZ p. 220, of *lower*
+    # time-step stability limits when the boundary correction is
+    # omitted).  Do **not** expect ``test_random_smoke.py`` to reprint
+    # those: its ``*-legacy-imm`` entries deliberately run different
+    # ``Re``/box/resolution from their default counterparts, so the
+    # ``c/it`` values it prints side by side are not a controlled pair.
+    # One configuration on one backend either way: treat the net
     # speedup as a bonus, not a guarantee.
     consistent_imm: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Make the influence-matrix projection discretely "
-            "consistent by advancing the wall-normal velocity and "
-            "vorticity and reconstructing the tangential "
-            "components: a stepped state's discrete divergence is "
-            "then round-off at any resolution, on the same "
-            "operators and with less operator storage -- a solve "
-            "fewer in the plane and annular geometries, one more in "
-            "the cylindrical -- at the cost of a truncation-level "
-            "tangential-momentum residual no solve reads back.  "
+            "consistent (**the default**) by advancing the "
+            "wall-normal velocity and vorticity and reconstructing "
+            "the tangential components: a stepped state's discrete "
+            "divergence is then round-off at any resolution, on the "
+            "same operators and with less operator storage -- a "
+            "solve fewer in the plane and annular geometries, one "
+            "more in the cylindrical -- at the cost of a "
+            "truncation-level tangential-momentum residual no solve "
+            "reads back.  False selects the legacy primitive (v, p) "
+            "Kleiser-Schumann scheme instead, whose stepped state "
+            "carries an O(1) relative discrete divergence; it is "
+            "kept for reference and is not recommended.  "
             "Trajectory-defining."
         ),
     )

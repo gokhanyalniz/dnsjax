@@ -11,8 +11,9 @@ families).  Each config steps a **resolved** flow a short time via the
 
 closes -- i.e. the stepped-state divergence residual and the
 ``D1``-enstrophy-vs-``D2``-Laplacian summation-by-parts gap are *inert*,
-injecting no ``O(1)`` source into the balance -- **on and off** the
-``res.consistent_imm`` flag.
+injecting no ``O(1)`` source into the balance -- under **both**
+formulations of ``res.consistent_imm``: the default reconstruction
+scheme and the legacy primitive `$(v, p)$` one.
 
 The residual is finite-difference/truncation level: a central-difference
 ``dE/dt`` at ``dt`` (``O(dt^2)`` on the smooth part) plus the SBP defect,
@@ -26,7 +27,7 @@ laminar-dominated pipe roll -- keeps it well-conditioned in every case.
 Background: the residual is a convergent truncation error, physically
 inert for resolved fields -- the ``Resolution.consistent_imm``
 docstring.  The pipe entries start
-from a resolved IC (``localized_rolls``) to keep the two flag settings
+from a resolved IC (``localized_rolls``) to keep the two formulations
 comparable; neither *needs* it.
 
 Run directly (needs ``mpirun``; each config launches ``dnsjax`` once)::
@@ -65,17 +66,33 @@ _ROLLS = [
     "--geo.lz",
     "8.0",
 ]
+#: ``(label, system, extra CLI flags)``.  Each system runs both
+#: formulations: ``default`` is the shipped reconstruction scheme,
+#: ``legacy`` the primitive `$(v, p)$` one, both passed explicitly so
+#: the pair stays a contrast if the model default ever moves again.
 CONFIGS = [
-    ("plane-couette off", "plane-couette", ["--res.consistent_imm", "False"]),
-    ("plane-couette on", "plane-couette", ["--res.consistent_imm", "True"]),
     (
-        "taylor-couette off",
+        "plane-couette default",
+        "plane-couette",
+        ["--res.consistent_imm", "True"],
+    ),
+    (
+        "plane-couette legacy",
+        "plane-couette",
+        ["--res.consistent_imm", "False"],
+    ),
+    (
+        "taylor-couette default",
+        "taylor-couette",
+        ["--res.consistent_imm", "True"],
+    ),
+    (
+        "taylor-couette legacy",
         "taylor-couette",
         ["--res.consistent_imm", "False"],
     ),
-    ("taylor-couette on", "taylor-couette", ["--res.consistent_imm", "True"]),
-    ("pipe off", "pipe", [*_ROLLS, "--res.consistent_imm", "False"]),
-    ("pipe on", "pipe", [*_ROLLS, "--res.consistent_imm", "True"]),
+    ("pipe default", "pipe", [*_ROLLS, "--res.consistent_imm", "True"]),
+    ("pipe legacy", "pipe", [*_ROLLS, "--res.consistent_imm", "False"]),
 ]
 
 
@@ -174,8 +191,9 @@ def _run(label: str, system: str, flags: list[str]) -> str | None:
 
 def main() -> None:
     print(
-        "Energy-budget closure: dE/dt == I - D to truncation order, on "
-        "and off the radial-operator flags (offline; mpirun -np 1).",
+        "Energy-budget closure: dE/dt == I - D to truncation order, "
+        "under both res.consistent_imm formulations "
+        "(offline; mpirun -np 1).",
         flush=True,
     )
     results = [(lbl, _run(lbl, sys_, fl)) for lbl, sys_, fl in CONFIGS]
