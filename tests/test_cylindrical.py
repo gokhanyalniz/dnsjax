@@ -86,19 +86,21 @@ from dnsjax.fd import (  # noqa: E402
 )
 from dnsjax.flows.wall_bounded.pipe import flow as pipe_flow  # noqa: E402
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
-from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
+from dnsjax.geometries.wall_bounded._cylindrical_primitive_imm import (  # noqa: E402
     _abase_matvec,
+    _build_Lk_band_gpu,
+    _build_Lk_dense_gpu,
+    _lk_matvec,
+)
+from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _build_A_base,
     _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
-    _build_Lk_band_gpu,
-    _build_Lk_dense_gpu,
     _build_Lv_dir_band_gpu,
     _build_Lv_dir_dense_gpu,
     _ghost_row_count,
     _hk_vw_bands,
     _hk_vw_dense_mats,
-    _lk_matvec,
     build_parity_reduced_matrices,
     build_radial_cgl_grid,
     extract_mean_mode,

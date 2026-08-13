@@ -223,7 +223,9 @@ twin/
                       (reader dnsjax.analysis.twin.spectra)
 geometries/
   wall_bounded/       _base.py, cartesian.py, cylindrical.py,
-                      annular.py, _viscoelastic_common.py,
+                      annular.py, the three
+                      _*_primitive_imm.py legacy-IMM siblings,
+                      _viscoelastic_common.py,
                       _viscoelastic_stepping.py,
                       cylindrical_viscoelastic.py,
                       annular_viscoelastic.py -- see
@@ -347,7 +349,7 @@ singletons. See the `make_stepper` docstring, `_base.py`, and
 `triply_periodic.py`.
 
 **Time-stepping scheme (`step.scheme`)**: both 2nd-order, sharing the
-predictor/IMM-pressure solve. `"iterative-cn"` (default) makes the
+predictor and the geometry's IMM implicit solve. `"iterative-cn"` (default) makes the
 nonlinear term implicit via the corrector fixed point (stable past the
 advective CFL); `"cnab2"` advances it explicitly (AB2) at **one** FFT
 eval/step, and wall-bounded keeps the wall-stiff coupling `_l_bf`
@@ -649,8 +651,8 @@ are one-liners. Cross-cutting notes:
   also carry the no-cross-geometry-import guard).
 - `test_integration.py`: quadrature weights and interpolation matrices.
 - `test_cnab2.py`: CN/AB2 + split-corrector structural guards.
-- `test_imm_continuity.py`: stepped-state discrete divergence on/off
-  `res.consistent_imm` (`--ny`).
+- `test_imm_continuity.py`: stepped-state discrete divergence, default
+  vs legacy `res.consistent_imm` (`--ny`).
 - `test_energy_budget.py`: stepped total-energy budget closure.
 - `test_adaptive.py`: the adaptive-dt machinery.
 - `test_temporal_order.py`: second-order temporal accuracy, fixed and

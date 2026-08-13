@@ -587,25 +587,27 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # res.consistent_imm on: the reconstruction scheme must leave
-        # the laminar fixed point exactly fixed.  Every term of it is
-        # linear in u', so all of them vanish identically at u' = 0 --
-        # err = 0 here is the cheap structural proof that it adds
-        # nothing spurious (it is the *nonlinear* smoke that has
-        # teeth; see tests/test_random_smoke.py -- flag-on
+        # The legacy res.consistent_imm = False path: the primitive
+        # (v, p) scheme must leave the laminar fixed point exactly
+        # fixed too.  Every entry above already covers the shipped
+        # reconstruction scheme, whose every term is linear in u' and
+        # so vanishes identically at u' = 0 -- err = 0 there is the
+        # cheap structural proof that it adds nothing spurious (it is
+        # the *nonlinear* smoke that has teeth; see
+        # tests/test_random_smoke.py -- the reconstruction scheme on
         # viscoelastic-pipe was a clean fixed point here throughout the
-        # period the flag was rejected for it).  One entry per
+        # period it was rejected for that flow).  One legacy entry per
         # geometry covers the three implementations; each curvilinear
         # family then adds the flows whose mean-plane packing differs
         # (a rotating outer wall, a body force, a polymer stress),
-        # since that packing is the one place the flag can break a
-        # fixed point without any perturbation present.
-        "name": "plane-couette-consistent-imm",
+        # since that packing is the one place the two formulations can
+        # break a fixed point without any perturbation present.
+        "name": "plane-couette-legacy-imm",
         "args": [
             "--phys.system",
             "plane-couette",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -621,7 +623,7 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        "name": "taylor-couette-consistent-imm",
+        "name": "taylor-couette-legacy-imm",
         "args": [
             "--phys.system",
             "taylor-couette",
@@ -632,7 +634,7 @@ SYSTEMS: list[dict] = [
             "--geo.eta",
             "0.5",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -650,12 +652,12 @@ SYSTEMS: list[dict] = [
     {
         # Pipe opt-in (the spin-quad formulation): same cheap
         # structural proof that it leaves u' = 0 fixed.
-        "name": "pipe-consistent-imm",
+        "name": "pipe-legacy-imm",
         "args": [
             "--phys.system",
             "pipe",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -675,7 +677,7 @@ SYSTEMS: list[dict] = [
         # **total-field** 9-component state, so the mean-plane packing
         # must reproduce the Pi_z-vs-viscosity balance (as Dean's does
         # for pi_theta) while the polymer stress rides the sources.
-        "name": "viscoelastic-pipe-consistent-imm",
+        "name": "viscoelastic-pipe-legacy-imm",
         "args": [
             "--phys.system",
             "viscoelastic-pipe",
@@ -688,7 +690,7 @@ SYSTEMS: list[dict] = [
             "--phys.el",
             "5",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -706,7 +708,7 @@ SYSTEMS: list[dict] = [
     {
         # Quasi-Keplerian flag-on: the same annular machinery at a very
         # different (re1, r_omega, eta) corner.
-        "name": "quasi-keplerian-consistent-imm",
+        "name": "quasi-keplerian-legacy-imm",
         "args": [
             "--phys.system",
             "quasi-keplerian",
@@ -717,7 +719,7 @@ SYSTEMS: list[dict] = [
             "--geo.eta",
             "0.71",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -739,7 +741,7 @@ SYSTEMS: list[dict] = [
         # the two packed k^2 = 0 slots, which is exactly what the
         # reformulation re-plumbs -- a packing error would show as a
         # drifting Ub_th here even though no perturbation exists.
-        "name": "dean-consistent-imm",
+        "name": "dean-legacy-imm",
         "args": [
             "--phys.system",
             "dean",
@@ -748,7 +750,7 @@ SYSTEMS: list[dict] = [
             "--phys.re",
             "100",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -767,7 +769,7 @@ SYSTEMS: list[dict] = [
         # Viscoelastic Dean flag-on: the same composition guard in the
         # annular geometry, whose flag-on pass is the `(Phi, omega_r)`
         # pair rather than the pipe's spin quad.
-        "name": "viscoelastic-dean-consistent-imm",
+        "name": "viscoelastic-dean-legacy-imm",
         "args": [
             "--phys.system",
             "viscoelastic-dean",
@@ -780,7 +782,7 @@ SYSTEMS: list[dict] = [
             "--phys.el",
             "5",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",

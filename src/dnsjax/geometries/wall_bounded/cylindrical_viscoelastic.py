@@ -130,8 +130,8 @@ so both IMM schemes project it with no change of their own.  With
 `$\kappa = 0$` the transport is purely hyperbolic (no wall BC) and the
 conformation update degenerates to the explicit CN combination.
 
-``res.consistent_imm`` is supported and needs nothing from this module:
-the reconstruction scheme consumes the polymer divergence as one more
+Both ``res.consistent_imm`` formulations are supported and need nothing
+from this module: each consumes the polymer divergence as one more
 source.
 
 The ``cnab2`` scheme (one FFT/step) makes the FFT-free linear/mean

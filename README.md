@@ -11,8 +11,9 @@ of the 3D incompressible Navier–Stokes equations, written in
 `dnsjax` integrates the incompressible Navier–Stokes equations by a
 **pseudo-spectral** treatment of the periodic directions (Fourier) combined
 with **banded finite differences** in up to one wall-bounded direction, where
-the **influence-matrix method** enforces incompressibility together with the
-wall boundary conditions. Because it is written in JAX, the same source runs
+an **influence-matrix method** reconciles incompressibility with the wall
+boundary conditions — by default in a reformulation that makes the stepped
+state's discrete divergence exact to round-off. Because it is written in JAX, the same source runs
 on **CPUs, GPUs, and TPUs**, on a single device or sharded across many, and in
 single- or double-precision. Time advancement defaults to a second-order,
 semi-implicit predictor–corrector scheme (an iterative Crank–Nicolson); a
@@ -741,8 +742,8 @@ physically neutral.
 
 ### Temporal discretization
 
-Two second-order, semi-implicit schemes share the same predictor and
-influence-matrix pressure solve:
+Two second-order, semi-implicit schemes share the same predictor and the
+same influence-matrix implicit solve:
 
 - **`iterative-cn`** (default) — a semi-implicit Euler predictor followed
   by an iterative Crank–Nicolson corrector that makes the nonlinear term
@@ -813,30 +814,40 @@ Enforcing incompressibility together with the wall boundary conditions is the
 central difficulty of a wall-bounded spectral discretization: the wall-normal
 momentum equation supplies only the *interior* pressure Poisson problem,
 while the correct wall pressure boundary condition is fixed *indirectly* by
-requiring $\nabla \cdot \mathbf{u} = 0$ at the walls. The **Kleiser–Schumann
-influence-matrix method** resolves this by precomputing a small set of
-homogeneous responses once, so that each time step recovers the boundary
-condition with a tiny per-mode solve — $1 \times 1$ for the pipe's single
-wall, $2 \times 2$ for the two-walled cartesian and annular geometries —
-after which the velocity is corrected by linearity. The precomputation
-happens once, and the per-step boundary work stays a handful of small
-per-mode operations, which is what keeps the wall-bounded solve inexpensive
-at scale.
+requiring $\nabla \cdot \mathbf{u} = 0$ at the walls. The classical
+**Kleiser–Schumann influence-matrix method** resolves this by precomputing a
+small set of homogeneous responses once, so that each time step recovers the
+boundary condition with a tiny per-mode solve, after which the velocity is
+corrected by linearity. It enforces the wall conditions exactly — but the
+*interior* divergence of a stepped state is left with a residual that is
+`O(1)` relative to the individual terms of the divergence sum, a convergent
+truncation error rather than zero.
 
-The influence-matrix solve enforces the wall conditions exactly, but the
-interior divergence of a stepped state retains a truncation-level
-residual. An opt-in reformulation (`res.consistent_imm`) eliminates it:
-advance the wall-normal velocity and vorticity, reconstruct the
-tangential components, and no discrete pressure appears — the stepped
-state's divergence sits at round-off at any resolution, on the same
-banded operators and with less operator storage: fewer boundary-response
-vectors in every geometry, and one banded operator family fewer in the
-pipe and annular ones. It also drops a solve in the plane and annular
-geometries; the cylindrical one instead gains one, its axis forcing an
-exact diagonalization that doubles the scalars it evolves. The trade
-is a truncation-level tangential-momentum residual that nothing feeds
-back; the discrete-divergence and energy-budget tests pin both
-formulations.
+The solver therefore ships a reformulation that removes it by construction,
+and it is **the default** (`res.consistent_imm`): advance the wall-normal
+velocity and vorticity instead of the three velocity components, reconstruct
+the tangential pair from them, and no discrete pressure appears anywhere.
+Continuity becomes an algebraic identity — exact at every row including the
+walls, for any operator, grid or axis fit — so a stepped state's divergence
+sits at round-off *at any resolution*, and tangential no-slip is never
+imposed but *emerges* from the reconstruction. It costs nothing to buy:
+the same banded operators at the same bandwidth, less operator storage
+(fewer boundary-response vectors everywhere, and one banded operator family
+fewer in the pipe and annular geometries), and a solve fewer per mode in the
+plane and annular ones. The pipe is the exception — its axis forces an exact
+diagonalization that doubles the scalars it evolves, so it pays one solve
+more. The wall boundary condition is still recovered by the same tiny
+per-mode capacitance solve as before — $1 \times 1$ for the pipe's single
+wall, $2 \times 2$ for the two-walled cartesian and annular geometries.
+
+What the reformulation gives up is the tangential momentum combination,
+which it no longer imposes: a truncation-level residual that refines with
+resolution and that nothing feeds back into a solve. Setting
+`res.consistent_imm` to `false` selects the primitive $(\mathbf{u}, p)$
+scheme instead; it is kept for reference and for reproducing older
+trajectories, lives in its own modules, and is not recommended. The
+discrete-divergence, energy-budget and temporal-order tests pin both
+formulations against each other.
 
 ## Extending
 
@@ -888,8 +899,10 @@ guarantees they pin:
   bind machinery those seven cover), localized spots integrate for every
   wall-bounded spot builder, and second-order temporal convergence is
   pinned — absolute on the periodic box, scheme-against-scheme for the
-  wall-bounded systems, whose absolute order the influence-matrix
-  splitting sets.
+  wall-bounded systems, whose absolute order the projection splitting
+  sets. A separate self-convergence study asserts that the default
+  formulation strictly improves both that absolute error and its decay
+  rate over the primitive one, in all three wall-bounded geometries.
 - **The machinery** — snapshot round-trips readable by standard tools,
   device-count-agnostic resume with lineage checks, and the JAX-free
   import guarantee of the analysis API.
@@ -1036,14 +1049,16 @@ A closer look at what is in the box, beyond the core solver:
     Adams–Bashforth step — see
     [Temporal discretization](#temporal-discretization).
 
-14. **Machine-precision discrete incompressibility.** The opt-in
-    `res.consistent_imm` advances the wall-normal velocity and vorticity
-    and reconstructs the tangential components, eliminating the discrete
-    pressure — the stepped state's divergence drops from truncation
-    level to round-off at any resolution, on the same banded operators
-    and with less operator storage, and the energy budget closes
-    tighter. Available for every wall-bounded flow; changing it
-    on resume starts a new trajectory — see
+14. **Machine-precision discrete incompressibility, by default.** Every
+    wall-bounded flow advances the wall-normal velocity and vorticity and
+    reconstructs the tangential components, eliminating the discrete
+    pressure — the stepped state's divergence is round-off at any
+    resolution, on the same banded operators and with less operator
+    storage, and both the energy budget and the temporal convergence
+    close tighter than under the primitive scheme. That primitive
+    $(\mathbf{u}, p)$ path remains selectable (`res.consistent_imm =
+    false`) for reference; changing the setting on resume starts a new
+    trajectory — see
     [The influence-matrix method](#the-influence-matrix-method).
 
 15. **Twin-run perturbation-growth driver.** `dnsjax-twin` (Cartesian

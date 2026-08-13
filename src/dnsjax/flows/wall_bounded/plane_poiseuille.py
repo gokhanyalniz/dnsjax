@@ -134,11 +134,11 @@ flow: PlanePoiseuilleFlow = PlanePoiseuilleFlow()
     reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
 
-# No ``to_solver_basis``/``from_solver_basis`` here, in either flag
-# state: the Cartesian state is physical `(u, v, w)` throughout, and
-# ``res.consistent_imm``'s evolved scalars never leave
-# ``cartesian._imm_iteration_vw``.  Every consumer of the pair looks
-# it up with ``getattr`` and falls back to the identity.
+# No ``to_solver_basis``/``from_solver_basis`` here, under either
+# ``res.consistent_imm`` formulation: the Cartesian state is physical
+# `(u, v, w)` throughout, and the default scheme's evolved scalars
+# never leave ``cartesian._imm_iteration_vw``.  Every consumer of the
+# pair looks it up with ``getattr`` and falls back to the identity.
 
 
 def frozen_profile_flow(us: Array) -> PlanePoiseuilleFlow:
