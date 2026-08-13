@@ -24,8 +24,9 @@ import either from `__init__.py` or any JAX-free module here.
   extension): the module docstring; solver-only sections
   parse-and-ignore (the `ignored` list in `_configure_parameters`);
   the seed-snapshot metadata: `_seed_metadata_params`.
-- `response/`: **may** use JAX, and needs SciPy (the optional
-  `dnsjax[analysis]` extra) for the `expm`/`logm` routes. The
+- `response/`: **may** use JAX, and uses SciPy (a core dependency) for
+  the `expm`/`logm` routes -- both imported lazily in-function, which
+  is what keeps them off the package-level guarantee. The
   JAX-vs-NumPy/SciPy split and the fallbacks: the
   `response/__init__.py` docstring.
 
