@@ -135,9 +135,11 @@ up-to-date. In the future MkDocs will be used with MathJax, escape
 LaTeX commands appropriately (prefer raw docstrings: `\t`/`\f` in
 non-raw strings silently become control characters). Keep
 documentation lines in code to 79 characters wide. Keep CLAUDE.md
-files up-to-date (root and subdirectory files). `README.md` is
-human-facing and may lag the code, so treat the CLAUDE.md files and
-code docstrings as authoritative and do not sync code to the README.
+files up-to-date (root and subdirectory files). The **four**
+`README.md` files -- root plus `extensions/`, `twin/` and
+`analysis/response/` -- are human-facing and may lag the code, so treat
+the CLAUDE.md files and code docstrings as authoritative and do not
+sync code to a README.
 
 **Documentation layering.** CLAUDE.md files are an index for AI agents,
 not a manual. A line earns its place only if it is (a) a command to
@@ -349,11 +351,12 @@ singletons. See the `make_stepper` docstring, `_base.py`, and
 `triply_periodic.py`.
 
 **Time-stepping scheme (`step.scheme`)**: both 2nd-order, sharing the
-predictor and the geometry's IMM implicit solve. `"iterative-cn"` (default) makes the
-nonlinear term implicit via the corrector fixed point (stable past the
-advective CFL); `"cnab2"` advances it explicitly (AB2) at **one** FFT
-eval/step, and wall-bounded keeps the wall-stiff coupling `_l_bf`
-implicit via an FFT-free corrector. Full detail (measured `dt` limits,
+predictor and the geometry's IMM implicit solve. `"iterative-cn"`
+(default) makes the nonlinear term implicit via the corrector fixed
+point (stable past the advective CFL); `"cnab2"` advances it
+explicitly (AB2) at **one** FFT eval/step, and wall-bounded keeps the
+wall-stiff coupling `_l_bf` implicit via an FFT-free corrector.
+Full detail (measured `dt` limits,
 per-geometry CFL, `implicitness`, `implicit_mean_coupling`,
 `split_corrector`, and the corrector-contraction `dt` limit — a
 `corrector failed to converge` at *low* CFL means reduce `dt`, not a
@@ -579,7 +582,12 @@ rejects).
   CPU-only); real multi-GPU uses `mpirun` (`test_random_smoke.py --np`).
 - Pallas/Triton GPU kernels: interpret mode (CPU) validates numerics
   but **not** Triton's lowering; compile-check on the GPU-less dev box
-  with `jax.jit(f).trace(*a).lower(lowering_platforms=("cuda",))`. The
+  by lowering for cuda **inside an abstract GPU mesh** (since JAX 0.11
+  a bare `lower(lowering_platforms=("cuda",))` raises `No supported GPU
+  devices found` -- Triton reads the compute capability off the mesh
+  context's abstract device). Recipe, and the extra mesh swap a
+  `shard_map`-wrapped kernel needs: `_abstract_gpu_mesh` in
+  `tests/test_banded_solver.py`. The
   lowering/layout rules and the partial-tile miscompile (pad tiled
   arrays to whole tiles): the `_pallas_banded_solve` docstring; the
   `check_vma=False` a `pallas_call` inside a `shard_map` needs:

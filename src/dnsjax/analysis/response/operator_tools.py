@@ -31,9 +31,9 @@ default device -- GPU-capable; enable float64 first
 (``bootstrap.configure_jax_platform(..., double_precision=True)``, or
 ``jax.config.update("jax_enable_x64", True)``); both raise otherwise.
 JAX is imported inside those functions only, so importing this module
-(and the Gramian path, which is NumPy/SciPy) stays JAX-free.  SciPy
-is optional (``dnsjax[analysis]``): the Lyapunov solve falls back to
-an eigendecomposition closed form without it.
+(and the Gramian path, which is NumPy/SciPy) stays JAX-free.  SciPy is
+a core dependency but is likewise imported lazily; the Lyapunov solve
+keeps an eigendecomposition closed form as a fallback.
 
 CLI
 ===

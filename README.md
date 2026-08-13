@@ -916,15 +916,21 @@ guarantees they pin:
 `gds_probe.py` (whether the GPUDirect Storage snapshot path is engaged,
 and what starves it).
 
-It also holds two preprocessing tools. `snapshot_perturb.py` injects a
-scaled single-mode perturbation into an existing snapshot — from a
-transient-growth optimal, a controllability-mode bundle, or a raw
-profile — and keeps the parent's `t`/`it`, so a run resumed from the
-result continues the parent's trajectory with the perturbation
-applied. It runs single-device on the snapshot's own parameters and
-precision, so every mode it does not touch round-trips bit-identically.
-`ensemble_setup.py` builds ensembles of such runs; both are covered
-under [Response analysis](src/dnsjax/analysis/response/README.md).
+It also holds three offline tools, none of which import JAX.
+`wall_normal_resolution.py` answers how many wall-normal modes a
+finite-difference grid actually resolves, by measuring the wall-normal
+Laplacian's eigenvalue spectrum against that of a Chebyshev expansion
+of a given order — so a spectral-in-$y$ setup from the literature can
+be sized in `res.ny` and `res.fd_order` before a run rather than after.
+`snapshot_perturb.py` injects a scaled single-mode perturbation into an
+existing snapshot — from a transient-growth optimal, a
+controllability-mode bundle, or a raw profile — and keeps the parent's
+`t`/`it`, so a run resumed from the result continues the parent's
+trajectory with the perturbation applied. It runs single-device on the
+snapshot's own parameters and precision, so every mode it does not
+touch round-trips bit-identically. `ensemble_setup.py` builds ensembles
+of such runs; those two are covered under
+[Response analysis](src/dnsjax/analysis/response/README.md).
 
 ## References
 
