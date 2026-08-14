@@ -1067,6 +1067,8 @@ class CylindricalFlow:
     D2_wall: Array | None = field(init=False)
     A_base_even: Array = field(init=False)
     A_base_odd: Array = field(init=False)
+    A_base_pos: Array = field(init=False)
+    A_base_ghost: Array = field(init=False)
     Lk_op: _WallBoundedOp = field(init=False)
     Hk_op: _WallBoundedOp = field(init=False)
     # Primitive-scheme influence columns (``None``, and therefore
@@ -1174,6 +1176,29 @@ class CylindricalFlow:
         # Base operators.
         self.A_base_even = _build_A_base(D1_even, D2_even, self.inv_r)
         self.A_base_odd = _build_A_base(D1_odd, D2_odd, self.inv_r)
+
+        # The same `$A_{\mathrm{base}} = D_2 + (1/r) D_1$` in the
+        # *parity-reduced* ``pos``/``ghost`` pair, so an explicit-half
+        # matvec can apply it as **one** :func:`_parity_y_matvec`
+        # instead of a `$D_2$` matvec, a `$D_1$` matvec, a field-sized
+        # `$1/r$` multiply and an add.  Exact in real arithmetic (the
+        # ghost correction only ever touches the first ``g_rows``,
+        # which is where ``inv_r[:g_rows]`` applies), and it halves the
+        # FD GEMMs of the quad-wide stage -- measured as the largest
+        # non-solve stage of the default pass.  Built for **both**
+        # schemes: the legacy primitive path's ``_a_base_matvec`` and
+        # its `$H_k^-$` batch compute the same combination by hand.
+        self.A_base_pos = jax.device_put(
+            _build_A_base(D1_pos, D2_pos, self.inv_r), sharding.no_shard
+        )
+        self.A_base_ghost = jax.device_put(
+            _build_A_base(
+                D1_ghost_np[:g_rows],
+                D2_ghost_np[:g_rows],
+                self.inv_r[:g_rows],
+            ),
+            sharding.no_shard,
+        )
 
         # Distribute grid arrays.
         self.rs = jax.device_put(self.rs, sharding.no_shard)
@@ -1958,34 +1983,53 @@ def _imm_iteration_vw(
     forbids lagging, so exact diagonalisation -- and the doubling it
     brings -- is the only route here.
 
-    *Possible optimization to test (unmeasured).*  Those figures count
-    *solves*, and the pipe's cost is not mostly in them.  Measured with
-    ``scripts/pallas_solve_profile.py`` Part B on CPU, one device,
-    against the Cartesian scheme at matched resolution:
+    Why this pass costs ~2x Cartesian, measured
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Those figures count *solves*, and the pipe's cost is not in them.
+    Measured with ``scripts/pallas_solve_profile.py`` Parts B/A2 on
+    CPU, one device, at matched resolution (`$128^3$`, ``fd_order 8``):
 
-    ==========  =================  ================
-    resolution  ``_imm_iteration``  isolated Lk+Hk
-    ==========  =================  ================
-    96, 64x64   146 ms / 76 ms      66 ms / 75 ms
-    128^3       728 ms / 348 ms     401 ms / 398 ms
-    ==========  =================  ================
+    ==============  =================  ==============
+    geometry        ``_imm_iteration``  isolated Lk+Hk
+    ==============  =================  ==============
+    plane-couette   350 ms              278 ms
+    taylor-couette  448 ms              274 ms
+    pipe            749 ms              275 ms
+    ==============  =================  ==============
 
-    (pipe / Cartesian.)  The pipe runs **~2x the linear algebra for the
-    same solve cost** -- like compared with like; do *not* subtract the
-    isolated solve from ``_imm_iteration`` to get "non-solve work", as
-    the isolated timing over-counts the fused one and the difference
-    goes negative in the Cartesian ``128^3`` row.
+    The solve cost is **geometry-independent to 1.5 %**, so the whole
+    spread is non-solve.  Do *not* subtract the isolated solve from
+    ``_imm_iteration`` to get "non-solve work": the isolated timing
+    over-counts the fused one and the difference goes negative in the
+    Cartesian row.
 
-    Where the extra goes is structural, and inferred rather than
-    measured: the quad makes every parity mask, spin stack and
-    mean-mode ``where`` four-wide instead of two, the parity-reduced FD
-    needs each matvec stacked over both classes and then selected, and
-    the basis crossings (``from_pm_basis`` on the state and on the
-    nonlinear term, again on the wall row, ``to_pm_basis`` on exit) are
-    field-sized.  **Which of those dominates is not known**, here or on
-    GPU.  Worth a per-stage breakdown first -- the profiler's
-    ``_stages_vw`` is Cartesian-only -- because with the solves at
-    28-29 % of the pipe's step, the headroom is outside them.
+    The annulus is the control that attributes the rest, since it
+    shares every curvilinear cost (`$u_\pm$` basis crossings, the
+    `$1/r$` metric, the `$A_{\mathrm{base}}$` pair) but has neither the
+    spin quad nor the parity reduction: curvilinear accounts for
+    `$1.28\times$`, the quad and parity for a further `$1.67\times$`.
+    Within this pass the two `$A_{\mathrm{base}}$` stages -- the
+    quad-wide explicit CN half (18 % of the pass) and the stage-1 pair
+    assembly (17 %) -- were together about equal to the solves, while
+    the mechanisms the quad adds are individually small: parity costs
+    only `$1.26\times$` a plain GEMM, quad assembly 0.9 %, the basis
+    crossings 4.5 %, the metric multiplies 0.2 %.  So the excess is
+    matvec **volume** (a 4-wide quad, each matvec parity-doubled), not
+    the parity machinery -- which is what made fusing
+    `$D_2 + (1/r) D_1$` into one operator the lever, worth ~10 % of
+    this pass and ~11 % of the annulus's (interleaved A/B, both
+    orderings).
+
+    A related idea, measured and **rejected**: this pass is dense in
+    real-coefficient products on complex fields (`$1/r$`, `$1/r^2$`,
+    `$k_z^2$`, `$m_{\mathrm{eff}}^2$`, the parity signs), and each
+    promotes its real operand to ``c128`` and runs a full complex
+    multiply -- 4 real multiplies where 2 would do.  Hand-splitting
+    them buys nothing: the products move ~24 bytes per element for 2-4
+    flops, so they are memory-bound and the extra multiplies are free
+    (three interleaved repeats straddle zero: +25 %, +4 %, -29 %).
+    The promotion is also bit-identical to the split form, since
+    `$(w + 0i)(a + bi)$` evaluates the zero cross-terms exactly.
 
     Boundary conditions, and the two iterated wall differences
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2118,21 +2162,19 @@ def _imm_iteration_vw(
     state_n = from_pm_basis(velocity_n)
     nonlin = from_pm_basis(c * nonlin_j + (1 - c) * nonlin_n)
 
-    # Stage 1: one batched D1 over both parity classes at once
+    # Stage 1: one batched `$A_\mathrm{base}$` over the v-parity state
+    # pair, and one batched D1 over the three z-parity fields
     # (D1_pos/D1_ghost are parity-independent; only the ghost sign
-    # differs), and one batched D2 over the v-parity state pair.
+    # differs).  The pair needs `$D_2 + (1/r) D_1$` and nothing else
+    # from `$D_1$`, so it takes the fused operator rather than riding
+    # the D1 stack: 4 GEMMs instead of 6, and no field-sized `$1/r$`
+    # multiply-add.
     pair_n = jnp.stack([velocity_n[1], velocity_n[2]], axis=1)
-    d1_in = jnp.concatenate(
+    d1_in = jnp.stack(
         [
-            pair_n,  # u_+^n, u_-^n            (v) -> Phi_pm^n
-            jnp.stack(
-                [
-                    state_n[0],  # u_z^n       (z) -> omega_theta
-                    nonlin[0],  # N_z          (z) -> C_theta
-                    flow_.rs[:, None, None] * nonlin[2],  # (z) -> C_z
-                ],
-                axis=1,
-            ),
+            state_n[0],  # u_z^n       (z) -> omega_theta
+            nonlin[0],  # N_z          (z) -> C_theta
+            flow_.rs[:, None, None] * nonlin[2],  # (z) -> C_z
         ],
         axis=1,
     )
@@ -2141,16 +2183,18 @@ def _imm_iteration_vw(
         flow_.D1_pos,
         flow_.D1_ghost,
         d1_in,
-        jnp.stack([psv, psv, psp, psp, psp], axis=1),
+        jnp.stack([psp, psp, psp], axis=1),
         component_axis=1,
     )
-    d2_pair = _parity_y_matvec(
-        flow_.D2_pos, flow_.D2_ghost, pair_n, par_v2, component_axis=1
-    )
-    inv_r_y = inv_r[..., None]  # (Nr, 1, 1, 1) over the C axis
-    inv_r2_y = inv_r2[..., None]
+    inv_r2_y = inv_r2[..., None]  # (Nr, 1, 1, 1) over the C axis
     kz2_y = kz2[:, None]
-    A_pair = d2_pair + inv_r_y * d1[:, :2]
+    A_pair = _parity_y_matvec(
+        flow_.A_base_pos,
+        flow_.A_base_ghost,
+        pair_n,
+        par_v2,
+        component_axis=1,
+    )
 
     # Stage 2: the evolved quad, recomputed on FULL rows (wall
     # included) from the carried u_+/u_- state.
@@ -2158,7 +2202,7 @@ def _imm_iteration_vw(
     phi_pm = A_pair - (meff2_pm * inv_r2_y + kz2_y) * pair_n
     ur_n, ut_n = state_n[1], state_n[2]
     om_r_n = im * inv_r * state_n[0] - ikz * ut_n
-    om_t_n = ikz * ur_n - d1[:, 2]
+    om_t_n = ikz * ur_n - d1[:, 0]  # D1 u_z^n
 
     def _pack(minus_slot: Array, plus_val: Array, minus_val: Array) -> Array:
         """Mean-plane packing of one spin pair (docstring)."""
@@ -2182,8 +2226,8 @@ def _imm_iteration_vw(
     # with the conservative C_z that annihilates a discrete gradient
     # exactly (the annular docstring).
     C_r = im * inv_r * nonlin[0] - ikz * nonlin[2]
-    C_t = ikz * nonlin[1] - d1[:, 3]
-    C_z = inv_r * (d1[:, 4] - im * nonlin[1])
+    C_t = ikz * nonlin[1] - d1[:, 1]  # D1 N_z
+    C_z = inv_r * (d1[:, 2] - im * nonlin[1])
     d1_Cz = _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, C_z, psp)
     cc_r = im * inv_r * C_z - ikz * C_t
     cc_t = ikz * C_r - d1_Cz
@@ -2219,10 +2263,16 @@ def _imm_iteration_vw(
         out_sharding=sharding.spec_scalar_shard,
     )
     meff2_quad = jnp.stack([meff2_p, meff2_m, meff2_p, meff2_m], axis=1)
+    # One fused `$A_\mathrm{base}$` matvec over the whole quad: 4 GEMMs
+    # instead of 8, and the field-sized `$1/r$` multiply-add over four
+    # components goes with them.  This stage is the pass's largest
+    # non-solve cost, so it is where the fusion pays most.
     A_quad = _parity_y_matvec(
-        flow_.D2_pos, flow_.D2_ghost, quad, par_quad, component_axis=1
-    ) + inv_r_y * _parity_y_matvec(
-        flow_.D1_pos, flow_.D1_ghost, quad, par_quad, component_axis=1
+        flow_.A_base_pos,
+        flow_.A_base_ghost,
+        quad,
+        par_quad,
+        component_axis=1,
     )
     lapl_quad = A_quad - (meff2_quad * inv_r2_y + kz2_y) * quad
     R_quad = (

@@ -182,11 +182,13 @@ def _hk_dense_op(
 
 
 def _abase_matvec(u: Array, flow_: AnnularFlow) -> Array:
-    r"""Apply `$A_{\mathrm{base}} u = (D_2 + (1/r) D_1)\,u$`."""
-    inv_r = flow_.inv_r[:, None, None]
-    D2_u = apply_y_matrix(flow_.D2, u)
-    D1_u = apply_y_matrix(flow_.D1, u)
-    return D2_u + inv_r * D1_u
+    r"""Apply `$A_{\mathrm{base}} u = (D_2 + (1/r) D_1)\,u$`.
+
+    One GEMM against the precomputed operator (``AnnularFlow.A_base``,
+    which the implicit bands are already built from), not a `$D_2$` and
+    a `$D_1$` with a field-sized `$1/r$` multiply-add between them.
+    """
+    return apply_y_matrix(flow_.A_base, u)
 
 
 def _lk_matvec(
@@ -431,6 +433,12 @@ def _imm_iteration_vp(
     grad_pP_z = ikz * pP
 
     inv_r_y = inv_r[..., None]  # (N_r, 1, 1, 1) over the C axis
+    # Kept as `$D_2 + (1/r) D_1$` rather than the fused
+    # ``flow_.A_base`` the other three sites use: here `$D_1$` of
+    # `$u_\pm$` is **shared** with the divergence above, so fusing
+    # would add a 3-wide `$A_{\mathrm{base}}$` GEMM to save a 3-wide
+    # `$D_2$` one and shrink the shared batch by one -- 10 field-GEMMs
+    # to 9, against halving it where `$D_1$` has no other consumer.
     D2_all = apply_y_matrix(flow_.D2, vel_n_stack, component_axis=1)
     Abase_stack = D2_all + inv_r_y * D1_vel
     meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq], axis=1)
