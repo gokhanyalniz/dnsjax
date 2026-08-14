@@ -55,10 +55,12 @@ pattern so it cannot match its own text (`tes[t]_x`) and cap the
 iteration count.
 
 Run **one** heavy suite at a time. Each invocation is already serial
-internally (no xdist; the smoke suites loop one `mpirun` at a time)
-and deliberately leaves JAX's CPU thread pool unpinned (the reason,
-and why not to "fix" it: `configure_jax_platform` in `bootstrap.py`).
-Concurrent invocations oversubscribe instead, and have produced
+internally (no xdist; the smoke suites loop one `mpirun` at a time),
+and the in-process ones deliberately leave JAX's CPU thread pool
+unpinned (the reason, and why not to "fix" it:
+`configure_jax_platform` in `bootstrap.py`; the `mpirun` children go
+through `configure_jax_runtime` instead, which pins one thread per
+rank). Concurrent invocations oversubscribe instead, and have produced
 spurious aborts (a signal-6 in an `mpirun` child; a smoke entry that
 failed once and passed identically on rerun). Corollaries: never
 read a *verdict*
@@ -580,6 +582,11 @@ rejects).
   `--dist.platform cuda` runs the real Pallas kernels on GPU. In-process
   multi-device tests force CPU (`--xla_force_host_platform_device_count`,
   CPU-only); real multi-GPU uses `mpirun` (`test_random_smoke.py --np`).
+- The wall-bounded per-mode solve dispatches on the **live backend**
+  (`solvers._banded_mode_solve`): a CPU run never reaches `pallas_call`,
+  it sweeps the same stored factors in pure JAX. Why the shared
+  mode-inner factor layout is right on CPU too, and why a standalone
+  `jit` of one solve says otherwise: that docstring -- do not re-derive.
 - Pallas/Triton GPU kernels: interpret mode (CPU) validates numerics
   but **not** Triton's lowering; compile-check on the GPU-less dev box
   by lowering for cuda **inside an abstract GPU mesh** (since JAX 0.11
