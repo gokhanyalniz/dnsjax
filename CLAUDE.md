@@ -65,9 +65,11 @@ spurious aborts (a signal-6 in an `mpirun` child; a smoke entry that
 failed once and passed identically on rerun). Corollaries: never
 read a *verdict*
 from a `tail` of a run you have not seen in full -- capture it
-(`> log 2>&1`) and grep the file; never edit a test file while a
-suite is running, since each script is launched as a subprocess and
-will pick up a half-finished edit; and a failure that does not
+(`> log 2>&1`) and grep the file; never change **behaviour** while a
+suite is running -- each script is launched as a subprocess, so later
+ones would run different semantics than earlier ones and the verdict
+covers no single tree (docstrings and comments are fine: they change
+nothing the run measures); and a failure that does not
 reproduce on a clean serial rerun was contention -- say so rather
 than silently re-running.
 
@@ -582,11 +584,17 @@ rejects).
   `--dist.platform cuda` runs the real Pallas kernels on GPU. In-process
   multi-device tests force CPU (`--xla_force_host_platform_device_count`,
   CPU-only); real multi-GPU uses `mpirun` (`test_random_smoke.py --np`).
-- The wall-bounded per-mode solve dispatches on the **live backend**
-  (`solvers._banded_mode_solve`): a CPU run never reaches `pallas_call`,
-  it sweeps the same stored factors in pure JAX. Why the shared
-  mode-inner factor layout is right on CPU too, and why a standalone
-  `jit` of one solve says otherwise: that docstring -- do not re-derive.
+- The wall-bounded per-mode solve dispatches on the **live backend**:
+  `solvers._kernel_path()` picks both the solve body and the factor
+  *storage*, so they cannot disagree. A CPU run never reaches
+  `pallas_call`; it sweeps in pure JAX and stores the plain `U`
+  diagonal at the true mode plane, where the kernel path stores the
+  reciprocal and pads to whole tiles. The mode-inner **layout** is
+  shared and is measured-optimal on both -- three CPU-native layouts
+  are faster in isolation and slower end to end, monotonically. A test
+  flipping `_force_kernel_path` must do so *before* building the
+  operator. Numbers and the trap: the `solvers.py` docstrings -- do not
+  re-derive from an isolated solve timing.
 - Pallas/Triton GPU kernels: interpret mode (CPU) validates numerics
   but **not** Triton's lowering; compile-check on the GPU-less dev box
   by lowering for cuda **inside an abstract GPU mesh** (since JAX 0.11

@@ -309,6 +309,149 @@ def _make_complex(shape, seed, sharding, spec):
 # ── Part A: solve micro-breakdown ────────────────────────────────────
 
 
+def _part_a_cpu(op, sharding, reps: int) -> None:
+    r"""CPU arm of Part A: where one ``Lk`` solve's time goes on CPU.
+
+    The GPU decomposition (kernel / split / recombine) does not
+    transfer, because a CPU run never reaches ``pallas_call``: it takes
+    the pure-JAX sweep, which first rebuilds the **mode-outer** factors
+    the sweep was written against -- crop off the Pallas tile pad,
+    ``moveaxis`` both factors, un-invert the ``U`` diagonal.  That
+    *factor prologue* is exactly what a CPU-native stored layout would
+    delete, so sizing it bounds what any such layout can win.
+
+    Reported: the full solve, the sweep alone (factors and RHS
+    pre-prepared), the prologue alone, and the mandatory complex ->
+    real split / recombine.  As on GPU the isolated pieces over-count
+    -- each pays a round trip it does not pay when fused -- so the
+    honest figure for anything fused into the solve is ``full - sweep``.
+
+    **The factors are passed as jit arguments, not closed over.**  That
+    is not a detail: the real stepper takes ``flow`` as an argument
+    (``_base.build_wall_bounded_stepper`` calls
+    ``_predict_and_fully_correct_jit(state, fourier, flow)``), so the
+    factor arrays are runtime parameters and the prologue *executes*.
+    Closing over the operator instead makes them compile-time constants,
+    XLA folds the whole prologue away, and the solve then measures as if
+    the prologue were free -- which it is not, in the configuration that
+    ships.
+    """
+    import jax.numpy as jnp
+    from jax import lax
+
+    from dnsjax.solvers import _banded_solve_batched, _real_rhs_view
+
+    L, U = op.L, op.U  # mode-inner (N, p, Nkz*, Nkx*) / (N, p+1, ...)
+    N, p = L.shape[0], L.shape[1]
+    pp1 = U.shape[1]
+    Nkz, Nkx = sharding.nz_spec, sharding.nx_spec
+    spec = sharding.spec_scalar_shard
+    print(f"  operator: N(y)={N} p={p} mode-plane (Nkz,Nkx)=({Nkz},{Nkx})")
+    if L.shape[2:] != (Nkz, Nkx):
+        print(
+            f"  stored mode plane {tuple(L.shape[2:])} -- unexpected on "
+            "CPU (the tile pad is kernel-path only)"
+        )
+
+    zs = [
+        _make_complex((N, Nkz, Nkx), 100 + i, sharding, spec)
+        for i in range(reps)
+    ]
+
+    def _prologue(L_, U_):
+        """The CPU branch's factor preparation, verbatim.
+
+        Two ``moveaxis`` and nothing else: the CPU build stores the
+        plain diagonal at the true plane, so there is no tile crop and
+        no un-inversion here (``from_banded_factors``).
+        """
+        return (
+            jnp.moveaxis(L_, (0, 1), (-2, -1)),
+            jnp.moveaxis(U_, (0, 1), (-2, -1)),
+        )
+
+    Lo, Uo = jax.block_until_ready(jax.jit(_prologue)(L, U))
+    bs = [
+        jax.block_until_ready(
+            jax.jit(lambda z: _real_rhs_view(jnp.moveaxis(z, 0, -1)))(z)
+        )
+        for z in zs
+    ]
+
+    def _full(L_, U_, z):
+        return type(op)(L=L_, U=U_).solve(z)
+
+    def _sweep(L_, U_, b):
+        return _banded_solve_batched(L_, U_, b, p)
+
+    t_full = _bench(_full, [(L, U, z) for z in zs])
+    t_sweep = _bench(_sweep, [(Lo, Uo, b) for b in bs])
+    t_prol = _bench(_prologue, [(L, U)] * reps)
+    t_split = _bench(
+        lambda z: _real_rhs_view(jnp.moveaxis(z, 0, -1)), [(z,) for z in zs]
+    )
+    t_recomb = _bench(
+        lambda x: jnp.moveaxis(lax.complex(x[..., 0], x[..., 1]), -1, 0),
+        [(b,) for b in bs],
+    )
+
+    m = N * Nkz * Nkx
+    fac = (m * p + m * pp1) * 8
+    sweep_bytes = fac + m * 2 * 8 * 2
+    prol_bytes = 2 * fac  # read + write both factors
+    split_bytes = m * 16 + m * 2 * 8
+    recomb_bytes = m * 2 * 8 + m * 16
+
+    def _pct(t):
+        return f"({100 * t / t_full:4.1f}% of full)"
+
+    print(
+        f"  full   op.solve(z)            {_ms(t_full)}   "
+        f"{_bw(sweep_bytes + split_bytes + recomb_bytes, t_full)}"
+    )
+    print(
+        f"  sweep  _banded_solve_batched  {_ms(t_sweep)}   "
+        f"{_bw(sweep_bytes, t_sweep)}   {_pct(t_sweep)}"
+    )
+    print(
+        f"  prolog moveaxis x2            {_ms(t_prol)}   "
+        f"{_bw(prol_bytes, t_prol)}   {_pct(t_prol)}"
+    )
+    print(
+        f"  split  moveaxis+re/im view    {_ms(t_split)}   "
+        f"{_bw(split_bytes, t_split)}   {_pct(t_split)}"
+    )
+    print(
+        f"  recomb complex+moveaxis       {_ms(t_recomb)}   "
+        f"{_bw(recomb_bytes, t_recomb)}   {_pct(t_recomb)}"
+    )
+
+    marginal = t_full - t_sweep
+    summ = t_sweep + t_prol + t_split + t_recomb
+    print(
+        f"\n  sum(pieces)/full = {summ / t_full:4.2f}; the isolated pieces "
+        "over-count (each pays\n  a round trip it does not pay fused), so "
+        "read the fused figure, not them:\n  everything the solve does "
+        f"around the sweep costs full - sweep = {_ms(marginal)}"
+        f" ({100 * marginal / t_full:4.1f}% of full)."
+    )
+    if marginal <= 0.0:
+        print(
+            "  That is <= 0: the prologue and the re/im plumbing are fused "
+            "into the sweep\n  and cost nothing measurable.  A CPU-native "
+            "stored factor layout has nothing\n  left to remove here -- "
+            "any change would have to make the SWEEP itself faster."
+        )
+    else:
+        print(
+            f"  The prologue alone measures {_ms(t_prol)} unfused, which "
+            "bounds nothing by\n  itself (it exceeds the full solve "
+            "whenever dispatch dominates).  Only the\n  fused figure "
+            "above caps what a CPU-native stored layout could win, and\n"
+            "  Part B's solve share caps what that is worth to the step."
+        )
+
+
 def _part_a(flow, sharding, reps: int) -> None:
     import jax.numpy as jnp
     from jax import lax
@@ -327,6 +470,9 @@ def _part_a(flow, sharding, reps: int) -> None:
             f"  Lk_op is {type(op).__name__}, not the Pallas operator -- "
             "run with the pallas backend.  Skipping."
         )
+        return
+    if jax.default_backend() != "gpu":
+        _part_a_cpu(op, sharding, reps)
         return
 
     L, U = op.L, op.U  # mode-inner (N, p, Nkz, Nkx) / (N, p+1, Nkz, Nkx)
@@ -347,10 +493,18 @@ def _part_a(flow, sharding, reps: int) -> None:
         for z in zs
     ]
 
-    t_full = _bench(lambda z: op.solve(z), [(z,) for z in zs])
-    t_kern = _bench(
-        lambda b: _pallas_banded_solve(L, U, b, p), [(b,) for b in bs]
-    )
+    # Factors as jit *arguments*, not closed over: the stepper passes
+    # ``flow`` in, so the factors are runtime parameters there.  Closing
+    # over them bakes them in as constants, which is a different
+    # placement (and, on the CPU arm, folds an entire stage away).
+    def _full(L_, U_, z):
+        return type(op)(L=L_, U=U_).solve(z)
+
+    def _kern(L_, U_, b):
+        return _pallas_banded_solve(L_, U_, b, p)
+
+    t_full = _bench(_full, [(L, U, z) for z in zs])
+    t_kern = _bench(_kern, [(L, U, b) for b in bs])
     t_split = _bench(
         lambda z: jnp.stack([z.real, z.imag], axis=1), [(z,) for z in zs]
     )
@@ -422,11 +576,19 @@ def _part_a(flow, sharding, reps: int) -> None:
     else:
         print(
             "  => The plumbing is a real share of the solve; the split/"
-            "recombine round-trips\n     (mandatory: the kernel cannot "
-            "ingest c128) are worth attacking -- carry\n     the field "
-            "split-real, or batch the launches.  See Part B for whether the"
-            "\n     solve matters to the step at all."
+            "recombine round-trips\n     (mandatory *per solve*: the kernel "
+            "cannot ingest c128) are worth attacking\n     -- carry the "
+            "field split-real across an IMM apply, or batch the launches."
         )
+    print(
+        "  NOTE: this sizes ONE solve.  It does not count the "
+        "split/recombine pairs a\n  step pays, so it does not size the "
+        "hoist: multiply full-kernel by the .solve\n  calls per IMM apply "
+        "(2 Cartesian -- Hk then Lk, whose input is the Hk output\n  "
+        "indexed, so that pair is pure round trip -- 3 pipe) and by Part "
+        "B's n = 2 + c\n  applies per step.  And see Part B for whether "
+        "the solve matters to the step."
+    )
 
 
 # ── Part B: solve share of a corrector step ──────────────────────────
@@ -452,6 +614,12 @@ def _imm_stage_breakdown(
     Both mirror their ``cartesian.py`` counterpart stage for stage; the
     constant-bulk / block-spanwise branch is compiled out for the
     default plane-Couette driving and omitted from both.
+
+    **Cartesian only.**  The curvilinear geometries have no arm here
+    and are where the non-solve share is actually large -- what a
+    cylindrical transcription would have to stage separately, and why:
+    the ``TODO(cylindrical/annular)`` at this function's call site in
+    :func:`_part_b`.
     """
     stages = _stages_vp if not params.res.consistent_imm else _stages_vw
     stages(
@@ -789,6 +957,40 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
     # Stage-level IMM breakdown (Cartesian only): where the non-solve
     # part of _imm_iteration goes, and how small the influence-matrix
     # correction really is (the openpipeflow-wiki claim, measured).
+    #
+    # TODO(cylindrical/annular): the curvilinear geometries are the ones
+    # that most need this, and have no arm.  Measured on CPU, the pipe
+    # runs ~2x the ``_imm_iteration`` of Cartesian for the *same* solve
+    # cost (146 vs 76 ms at nr=96/64x64, 728 vs 348 ms at 128^3, against
+    # solves of 66 vs 75 and 401 vs 398), so with its solves at 28-29%
+    # of the step the headroom is outside them -- but nothing says which
+    # stage holds it.  A ``_stages_vw_cyl`` transcribing
+    # ``cylindrical._imm_iteration_vw`` should time, separately, the
+    # four things Cartesian does not do at all:
+    #
+    #   1. **basis crossings** -- ``from_pm_basis`` on the state and on
+    #      the nonlinear term, again on the wall row, and
+    #      ``to_pm_basis`` on exit: 6 field-sized 3-component complex
+    #      combines per pass (Cartesian: none, it carries physical
+    #      components).
+    #   2. **quad assembly** -- the spin quad makes every parity mask,
+    #      effective-wavenumber array and mean-mode ``jnp.where``
+    #      four-wide instead of two (``par_quad``, ``meff2_quad``, the
+    #      wall stack).  16 stack/concatenate sites against Cartesian's
+    #      2, and 11 ``where`` against 3.
+    #   3. **parity-stacked FD** -- there is no single ``D1``: each
+    #      matvec input is stacked over both parity classes and the
+    #      output selected by a sign array (the 5-wide
+    #      ``stack([psv, psv, psp, psp, psp])`` feeding ``d1_in``).
+    #   4. **metric / axis work** -- the ``1/r``, ``1/r^2`` multiplies
+    #      and the axis mean-mode packing.
+    #
+    # Then the shared stages (source assembly, the Hk quad solves, the
+    # Lv_dir recovery, the influence + reconstruction) so the totals are
+    # comparable with the Cartesian table.  The annulus needs the same
+    # arm minus the parity reduction and with a 2x2 influence matrix.
+    # Rationale and the measured totals: the "Possible optimization to
+    # test" note in ``cylindrical._imm_iteration_vw``.
     if (
         params.phys.system in ("plane-couette", "plane-poiseuille")
         and t_lk is not None
@@ -882,10 +1084,17 @@ def _summary_line(system: str, args, flow, times: dict) -> None:
     m0, m1 = so.pallas_block_m0, so.pallas_block_m1
     if isinstance(flow.Lk_op, PerModeBandedPallasOperator):
         _, _, pnz, pnx = flow.Lk_op.L.shape
-        progs = (pnz // m0) * (pnx // m1)
         plane = f"{pnz}x{pnx}"
+        # The program count is the kernel grid; a CPU run has none (and
+        # stores the true, unpadded plane), so report NA rather than a
+        # number that reads as "no work".
+        progs = (
+            (pnz // m0) * (pnx // m1)
+            if jax.default_backend() == "gpu"
+            else "NA"
+        )
     else:
-        progs, plane = 0, "NA"
+        progs, plane = "NA", "NA"
 
     def fmt(v):
         return "NA" if v is None else f"{v * 1e3:.3f}"
@@ -935,12 +1144,16 @@ def _solve_sweep(system: str, args, flow, sharding, reps: int) -> None:
     t_lk = _bench(lambda z: lk.solve(z), [(z,) for z in zs])
     t_hk = _bench(lambda z: hk.solve(z), [(z,) for z in z3s])
     m0, m1 = params.solver.pallas_block_m0, params.solver.pallas_block_m1
-    progs = (pnz // m0) * (pnx // m1)
-    print(
-        f"  padded plane {pnz}x{pnx}, tile {m0}x{m1} -> {progs} "
-        "programs/field\n  (H100 = 132 SMs; want >=~132 for one wave, "
-        "several x for latency hiding)"
-    )
+    if jax.default_backend() == "gpu":
+        progs = (pnz // m0) * (pnx // m1)
+        print(
+            f"  padded plane {pnz}x{pnx}, tile {m0}x{m1} -> {progs} "
+            "programs/field\n  (H100 = 132 SMs; want >=~132 for one wave, "
+            "several x for latency hiding)"
+        )
+    else:
+        # No kernel grid on CPU, and the stored plane is the true one.
+        print(f"  mode plane {pnz}x{pnx} (CPU: pure-JAX sweep, no tiling)")
     print(f"  Lk solve (1 field)   {_ms(t_lk)}")
     print(f"  Hk solve ({nc} fields)  {_ms(t_hk)}")
     print(f"  Lk+Hk                {_ms(t_lk + t_hk)}")
@@ -1191,9 +1404,10 @@ def main() -> None:
         return
 
     if args.solve_only:
-        if jax.default_backend() != "gpu":
-            print("--solve-only needs a GPU backend (real solve timing).")
-            return
+        # CPU is a first-class target here: it takes a *different* solve
+        # path (the pure-JAX sweep -- ``pallas_call`` is never reached),
+        # so its timings answer their own question rather than standing
+        # in for the GPU's.  Part A prints the CPU decomposition.
         _solve_sweep(args.system, args, flow, sharding, args.reps)
         return
 
@@ -1224,22 +1438,26 @@ def main() -> None:
 
     gpu = jax.default_backend() == "gpu"
     if not gpu:
+        # Not a degraded GPU run: the CPU takes its own solve path (the
+        # pure-JAX sweep), so these timings are the answer for that path.
+        # What is *not* transferable is the reverse -- CPU numbers say
+        # nothing about the Triton kernel.
         print(
-            "No GPU backend -> timings skipped (they need real hardware).\n"
-            "Running the HLO census only; launch on the cluster for A/B.\n"
+            "CPU backend: profiling the CPU solve path (the pure-JAX "
+            "sweep;\n``pallas_call`` is never reached here).  These "
+            "timings do not stand in\nfor GPU ones -- launch on the "
+            "cluster for those.\n"
         )
-        _part_c(flow, m, sharding, None, args.hlo_out)
-        return
 
     _part_a(flow, sharding, args.reps)
     times = _part_b(geom, m, flow, sharding, args.reps, args.steps)
-    _part_c(flow, m, sharding, args.trace, args.hlo_out)
+    _part_c(flow, m, sharding, args.trace if gpu else None, args.hlo_out)
     _summary_line(args.system, args, flow, times)
     print("\n" + "=" * 72)
     print(
         "Done.  Paste the full stdout back.  Key numbers: Part A "
-        "'split+recombine\n% of the solve' (H1) and Part B 'c*(Lk+Hk) / "
-        "step' (H2)."
+        "'split+recombine\n% of the solve' (H1; on CPU the factor "
+        "prologue's share) and Part B\n'c*(Lk+Hk) / step' (H2)."
     )
     print("=" * 72)
 
