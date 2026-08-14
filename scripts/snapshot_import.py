@@ -456,11 +456,16 @@ def configure_target(
         The three resolutions are required; unknown names are hard
         errors; omitted fields fall to the flow's defaults.
     """
-    os.environ.setdefault(
-        "XLA_FLAGS",
-        "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1",
-    )
-    os.environ["NPROC"] = "1"
+    # Same single-threaded CPU pin as the production entry point
+    # (``bootstrap.configure_jax_runtime``): ``NPROC`` sizes the pool,
+    # and the Eigen flag is prepended so a caller's own ``XLA_FLAGS``
+    # survives and the composed value still starts with a ``--`` token
+    # (XLA reads a leading bare token as a flagfile name and dies).
+    if os.environ.setdefault("NPROC", "1") == "1":
+        _existing = os.environ.get("XLA_FLAGS", "")
+        os.environ["XLA_FLAGS"] = (
+            f"--xla_cpu_multi_thread_eigen=false {_existing}".rstrip()
+        )
 
     import jax
 

@@ -171,16 +171,24 @@ if sharding.np0 > 1:
 
 else:
     # np0 == 1: y is replicated, so merging the component axis
-    # with y is unambiguous and batches all components into a
-    # single reshard.
+    # with y is unambiguous, and the transform runs once on the
+    # flattened batch instead of once per component.  It is *not*
+    # fewer collectives -- ``vmap`` over the ``shard_map`` pipeline
+    # already batches the reshard, and both forms compile to the
+    # same op counts at the same mesh (measured on a 1x4 CPU mesh:
+    # 6 all-to-all, 6 transpose, 2 fft either way).  What the fold
+    # saves is the per-component ``vmap`` dispatch: 12.3 vs 14.1 ms
+    # at 1x1, 8.03 vs 8.32 ms at 1x4.
     @jit
     def phys_to_spec_2d(velocity_phys: Array) -> Array:
         r"""Forward 2D real FFT in `$(x, z)$`, batched over
         components.
 
         The leading (component) axis is folded into the y-axis
-        before the transform and unfolded afterwards, so a single
-        reshard handles all components at once.
+        before the transform and unfolded afterwards, so the
+        pipeline runs once on the flattened batch rather than once
+        per component (see the branch comment above: the collective
+        count is unchanged; the saving is the ``vmap`` dispatch).
 
         Parameters
         ----------
@@ -207,8 +215,10 @@ else:
         components.
 
         The leading (component) axis is folded into the y-axis
-        before the transform and unfolded afterwards, so a single
-        reshard handles all components at once.
+        before the transform and unfolded afterwards, so the
+        pipeline runs once on the flattened batch rather than once
+        per component (see the branch comment above: the collective
+        count is unchanged; the saving is the ``vmap`` dispatch).
 
         Parameters
         ----------

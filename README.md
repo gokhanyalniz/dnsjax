@@ -475,10 +475,11 @@ differently:
 - Independently of the device grid, the **Pallas banded solver** tiles each
   device's $(k_z, k_x)$ mode plane in blocks of
   (`solver.pallas_block_m0`, `solver.pallas_block_m1`) $= (2, 32)$ and pads
-  up to whole tiles. The padded modes cost memory and solve work in
-  proportion to the round-up, so per-device mode counts
-  $(n_z - 1)/n_{p0}$ and $(n_x/2)/n_{p1}$ near multiples of the block sizes
-  are optimal; both knobs are adjustable when the mode plane is small.
+  up to whole tiles. The padded modes cost memory in proportion to the
+  round-up, and on GPU solve work with it — the CPU sweep crops them
+  back off — so per-device mode counts $(n_z - 1)/n_{p0}$ and
+  $(n_x/2)/n_{p1}$ near multiples of the block sizes are optimal; both
+  knobs are adjustable when the mode plane is small.
 
 No divisibility choice is rejected, and none of the padding — for the
 device grid or for FFT-friendly sizes — is silent: every adjustment is
@@ -520,6 +521,11 @@ multi-GPU run is most reliably launched as one process that addresses every
 visible GPU; multi-node runs use one process per node spanning that node's
 GPUs. The `Distribution` docstring in `parameters.py` covers the SLURM
 launch details.
+
+A distributed **CPU** run is pinned to one XLA thread per rank: the pool
+follows `NPROC`, which the run sets only if unset, so `export NPROC=<n>`
+raises it. The same docstring covers when that is worth doing, and the
+CPU collectives backend.
 
 ## Snapshots and external data access
 
@@ -978,9 +984,10 @@ A closer look at what is in the box, beyond the core solver:
    ```
 
 2. **A custom banded-LU GPU kernel with a dense reference solver.** The
-   per-mode wall-normal solves run through a custom Pallas/Triton banded-LU
-   sweep that stores $O(N_y p)$ factors instead of the dense $O(N_y^2)$, and
-   a dense reference solver validates it numerically. Kernels are checked
+   per-mode wall-normal solves store $O(N_y p)$ banded LU factors instead
+   of the dense $O(N_y^2)$, swept on GPU by a custom Pallas/Triton kernel
+   and on CPU by the same banded math as a sequential pure-JAX sweep; a
+   dense reference solver validates both numerically. Kernels are checked
    both in Pallas interpret mode and by lowering to CUDA on CPU-only
    machines.
 

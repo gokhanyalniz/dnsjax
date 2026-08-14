@@ -120,9 +120,10 @@ the axis forces (the spin quad, parity classes, the band splice).
   velocity + vorticity, reconstruct the tangential pair, never form a
   pressure. It is flag-independent from the outside — no geometry
   changes what it carries, so snapshots, probes/forcing, analysis and
-  resume are unaffected. Mechanism, per-geometry solve counts and
-  efficacy, momentum prices, when to fall back to the legacy path, and
-  the five rejected routes: the `Resolution.consistent_imm` docs
+  resume all read either path's state. Mechanism, per-geometry solve
+  counts and efficacy, momentum prices, when to fall back to the
+  legacy path, and the five rejected routes: the
+  `Resolution.consistent_imm` docs
   (`parameters.py`); the shared scheme record:
   `cartesian._imm_iteration` (+ `_imm_iteration_vw`);
   the cylindrical algebra: `annular._imm_iteration_vw`; the pipe's
