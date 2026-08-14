@@ -503,8 +503,9 @@ def configure_jax_runtime(distributed: bool = True) -> bool:
 
     The production path (``distributed=True``, used by the ``dnsjax``
     console script / ``python -m dnsjax``): pin the CPU threading via
-    ``XLA_FLAGS`` before JAX is imported (CPU platform only), select
-    platform and precision from ``params.dist.platform`` /
+    ``NPROC`` / ``XLA_FLAGS`` before JAX is imported (CPU platform
+    only; one thread per rank, see the ``Distribution`` docstring),
+    select platform and precision from ``params.dist.platform`` /
     ``params.res.double_precision`` (:func:`configure_jax_platform`),
     and initialize the multi-process runtime
     (``jax.distributed.initialize()``, which auto-detects the
@@ -519,10 +520,19 @@ def configure_jax_runtime(distributed: bool = True) -> bool:
     geometry module.
     """
     if distributed and params.dist.platform == "cpu":
-        os.environ["XLA_FLAGS"] = (
-            "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
-        )
-        os.environ["NPROC"] = "1"
+        # ``NPROC`` is what actually sizes the CPU thread pool (see the
+        # ``Distribution`` docstring); ``setdefault`` so a wide node can
+        # override it from the environment.  The Eigen flag only makes
+        # sense alongside the 1-thread pin, and it is *prepended* --
+        # XLA reads a leading token without ``--`` as a flagfile name
+        # and dies, so the composed value must start with a flag, and
+        # a user's own ``XLA_FLAGS`` must survive.
+        threads = os.environ.setdefault("NPROC", "1")
+        if threads == "1":
+            existing = os.environ.get("XLA_FLAGS", "")
+            os.environ["XLA_FLAGS"] = (
+                f"--xla_cpu_multi_thread_eigen=false {existing}".rstrip()
+            )
 
     configure_jax_platform(
         params.dist.platform,

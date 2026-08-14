@@ -121,6 +121,39 @@ class Distribution(BaseModel):
     per-task device explicitly (``JAX_LOCAL_DEVICE_IDS``;
     JAX's SLURM detection uses ``[SLURM_LOCALID]`` by
     default, which is correct under full visibility).
+
+    CPU runs: threads per rank
+    -------------------------
+    A distributed CPU run is pinned to **one XLA thread per rank**
+    (``bootstrap.configure_jax_runtime``), matching the one-device-
+    per-rank launch: the pool is sized by the ``NPROC`` environment
+    variable, which that function sets with ``setdefault``, so
+    ``export NPROC=<n>`` before launching overrides it.  One thread is
+    the measured default rather than a conservative guess -- at
+    realistic per-rank block sizes extra threads buy nothing and can
+    cost (plane-Couette ``64 x 48 x 64``, 30 steps: 2 ranks 5.2 s at 1
+    thread vs 5.1 s at 8; 4 ranks 3.2 s at 1 thread vs 3.7 s at 4),
+    because each rank's arrays are already small enough that
+    thread-dispatch overhead outweighs the intra-op parallelism.
+    Raising it is worth trying only when a run is device-starved
+    (few ranks, large per-rank blocks).  ``NPROC`` is what actually
+    sizes the pool; the accompanying
+    ``--xla_cpu_multi_thread_eigen=false`` XLA flag is a small extra
+    serialisation on top and is applied only while the pin is 1.
+
+    CPU runs: cross-process collectives
+    -----------------------------------
+    JAX's CPU backend defaults to **gloo** (TCP) for cross-process
+    collectives.  Since every dnsjax run is already launched under
+    ``mpirun``, ``JAX_CPU_COLLECTIVES_IMPLEMENTATION=mpi`` is the
+    natural thing to try on a cluster -- but it routes through
+    MPItrampoline, so it additionally needs ``MPITRAMPOLINE_LIB``
+    pointing at an MPIwrapper-built MPI library and aborts at startup
+    without it.  Unmeasured here, and therefore not a dnsjax
+    parameter: the collective share is large enough to be worth the
+    experiment (measured strong scaling on a 16-core box: 1.39x on 2
+    ranks, 2.28x on 4), but the payoff has to be measured on the
+    target machine.
     """
 
     np0: int = Field(
@@ -724,7 +757,12 @@ class Resolution(BaseModel):
             "Kleiser-Schumann scheme instead, whose stepped state "
             "carries an O(1) relative discrete divergence; it is "
             "kept for reference and is not recommended.  "
-            "Trajectory-defining."
+            "Trajectory-defining, and inherited from a resumed "
+            "snapshot like every other [res] field -- so a run "
+            "continued from a snapshot written before this became "
+            "the default stays on the legacy scheme (a clean "
+            "continuation, reported in the startup printout) until "
+            "the resuming run overrides it explicitly."
         ),
     )
     double_precision: bool = Field(

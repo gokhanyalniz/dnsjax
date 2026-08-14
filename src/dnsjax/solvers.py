@@ -772,9 +772,28 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
 
     On CPU the factors *and* RHS are moved back to mode-outer (and the
     ``U`` diagonal un-inverted) for the standard
-    :func:`_banded_solve_batched` (``N_y`` on matrix axis -2); the CPU path
-    is the oracle / fallback, not the performance target, so it absorbs the
-    transpose internally.
+    :func:`_banded_solve_batched` (``N_y`` on matrix axis -2).  Those
+    permutations are **free, and mode-inner is the right storage on CPU
+    too** -- measured, because the source reads as though the CPU path
+    re-permuted the whole (loop-invariant) factor set on every solve:
+
+    * In the optimized CPU HLO of a real stepper (plane-Couette
+      ``64 x 96 x 64``; factors ``L(96, 8, 64, 32)``,
+      ``U(96, 9, 64, 32)``) **no** ``transpose`` / ``copy`` carries any
+      permutation of a full factor shape.  XLA folds the tile crop, both
+      ``moveaxis`` and the reciprocal into the ``lax.scan`` operands and
+      assigns a layout instead of moving data.
+    * Storing the factors CPU-native instead (``(N, N_{kz}, N_{kx}, p)``,
+      plain diagonal, no tile pad) and sweeping them with no permutation
+      at all is **1.8-2.2x slower per step** (0.58 -> 1.06-1.26 s/step),
+      bit-identical, whether the back leg uses ``[::-1]`` or
+      ``lax.scan(reverse=True)``.  The mode plane is the einsum's batch
+      and ``p`` its contraction, so keeping the modes innermost is what
+      vectorises; a standalone ``jit`` of one solve shows the opposite
+      (6x the other way) and is not representative of the real
+      ``vmap`` / ``shard_map`` / ``while_loop`` context.
+
+    Do not "optimize" this away without re-running both measurements.
     """
     p = L.shape[1]
     is_complex = jnp.iscomplexobj(rhs)
@@ -890,6 +909,14 @@ class PerModeBandedPallasOperator:
         local = global and this reduces to the plain whole-tile pad.
         Any nonzero round-up is reported once at startup (main
         process), since the padded modes cost solve work and memory.
+
+        That ``shard_map`` is also load-bearing as a **compilation
+        barrier** between the no-pivot factorisation and this layout
+        change, independently of the pad it carries: without it the two
+        fuse into one graph and XLA's CPU algebraic simplifier reports a
+        circular simplification loop while building ``H_k``, turning a
+        seconds-long setup into a minutes-long one.  Keep any future
+        layout work inside it.
         """
         Li = jnp.moveaxis(L, (-2, -1), (0, 1))  # (N, p, Nkz, Nkx)
         Ui = jnp.moveaxis(U, (-2, -1), (0, 1))  # (N, p+1, Nkz, Nkx)

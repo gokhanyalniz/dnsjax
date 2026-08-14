@@ -546,9 +546,11 @@ class CartesianFlow:
         self.dt = jnp.asarray(dt, dtype=sharding.float_type)
         self.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
 
-        # Solver-internal wavenumber arrays: (Nkz, Nkx, 1).
+        # Solver-internal wavenumber arrays: (Nkz, Nkx, 1).  The mean
+        # mask is a legacy-only operand (the pressure Poisson pins its
+        # `$k^2 = 0$` plane), so it is built inside the branches that
+        # need it.
         k2_s = fourier.k2[0, ..., None]
-        mean_s = fourier.mean_mask[0, ..., None]
 
         if params.solver.backend == "pallas":
             # Pallas backend: one-program-per-mode banded sweep.
@@ -563,6 +565,7 @@ class CartesianFlow:
             else:
                 from . import _cartesian_primitive_imm as prim
 
+                mean_s = fourier.mean_mask[0, ..., None]
                 Lk_band = prim._build_Lk_band_gpu(
                     self.D1, self.D2, k2_s, mean_s, p
                 )
@@ -591,6 +594,7 @@ class CartesianFlow:
             else:
                 from . import _cartesian_primitive_imm as prim
 
+                mean_s = fourier.mean_mask[0, ..., None]
                 Lk_dense = prim._build_Lk_dense_gpu(
                     self.D1, self.D2, k2_s, mean_s
                 )
