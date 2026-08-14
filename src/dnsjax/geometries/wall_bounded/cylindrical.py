@@ -1958,6 +1958,35 @@ def _imm_iteration_vw(
     forbids lagging, so exact diagonalisation -- and the doubling it
     brings -- is the only route here.
 
+    *Possible optimization to test (unmeasured).*  Those figures count
+    *solves*, and the pipe's cost is not mostly in them.  Measured with
+    ``scripts/pallas_solve_profile.py`` Part B on CPU, one device,
+    against the Cartesian scheme at matched resolution:
+
+    ==========  =================  ================
+    resolution  ``_imm_iteration``  isolated Lk+Hk
+    ==========  =================  ================
+    96, 64x64   146 ms / 76 ms      66 ms / 75 ms
+    128^3       728 ms / 348 ms     401 ms / 398 ms
+    ==========  =================  ================
+
+    (pipe / Cartesian.)  The pipe runs **~2x the linear algebra for the
+    same solve cost** -- like compared with like; do *not* subtract the
+    isolated solve from ``_imm_iteration`` to get "non-solve work", as
+    the isolated timing over-counts the fused one and the difference
+    goes negative in the Cartesian ``128^3`` row.
+
+    Where the extra goes is structural, and inferred rather than
+    measured: the quad makes every parity mask, spin stack and
+    mean-mode ``where`` four-wide instead of two, the parity-reduced FD
+    needs each matvec stacked over both classes and then selected, and
+    the basis crossings (``from_pm_basis`` on the state and on the
+    nonlinear term, again on the wall row, ``to_pm_basis`` on exit) are
+    field-sized.  **Which of those dominates is not known**, here or on
+    GPU.  Worth a per-stage breakdown first -- the profiler's
+    ``_stages_vw`` is Cartesian-only -- because with the solves at
+    28-29 % of the pipe's step, the headroom is outside them.
+
     Boundary conditions, and the two iterated wall differences
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     Split the quad's wall data into sums and differences.  The **sums**
