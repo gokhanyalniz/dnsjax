@@ -475,11 +475,12 @@ differently:
 - Independently of the device grid, the **Pallas banded solver** tiles each
   device's $(k_z, k_x)$ mode plane in blocks of
   (`solver.pallas_block_m0`, `solver.pallas_block_m1`) $= (2, 32)$ and pads
-  up to whole tiles. The padded modes cost memory in proportion to the
-  round-up, and on GPU solve work with it — the CPU sweep crops them
-  back off — so per-device mode counts $(n_z - 1)/n_{p0}$ and
-  $(n_x/2)/n_{p1}$ near multiples of the block sizes are optimal; both
-  knobs are adjustable when the mode plane is small.
+  up to whole tiles, so the padded modes cost memory and solve work in
+  proportion to the round-up: per-device mode counts $(n_z - 1)/n_{p0}$
+  and $(n_x/2)/n_{p1}$ near multiples of the block sizes are optimal, and
+  both knobs are adjustable when the mode plane is small. This is a GPU
+  concern only — a CPU run never launches the kernel grid, so it stores
+  the true plane and pays neither cost.
 
 No divisibility choice is rejected, and none of the padding — for the
 device grid or for FFT-friendly sizes — is silent: every adjustment is
