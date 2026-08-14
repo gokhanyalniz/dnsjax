@@ -23,6 +23,13 @@ questions for the ``pallas`` backend on real hardware:
 Part A  micro-breakdown of one ``Lk`` solve: full solve vs kernel-only
         vs split-only vs recombine-only, each with effective HBM
         bandwidth (compare to the device peak: H100 HBM3 ~3.35 TB/s).
+Part A2 the **split-real hoist**: Part A sizes the plumbing inside one
+        solve, which is not what a hoist removes.  This times the real
+        ``Hk.solve -> real-coefficient map -> Lk.solve`` chain against a
+        variant that stays split-real across the map, so the round trip
+        between two consumers is priced directly (fidelity-gated, and
+        extrapolated to the step).  Its static half is the per-region
+        complex/real crossing census printed by Part C.
 Part B  full ``predict_and_fully_correct`` step time vs the isolated
         ``Lk`` and ``Hk`` solve times -- the solve's share of the step.
         Then (Cartesian) a **stage-level ``_imm_iteration`` breakdown**
@@ -583,11 +590,278 @@ def _part_a(flow, sharding, reps: int) -> None:
     print(
         "  NOTE: this sizes ONE solve.  It does not count the "
         "split/recombine pairs a\n  step pays, so it does not size the "
-        "hoist: multiply full-kernel by the .solve\n  calls per IMM apply "
-        "(2 Cartesian -- Hk then Lk, whose input is the Hk output\n  "
-        "indexed, so that pair is pure round trip -- 3 pipe) and by Part "
-        "B's n = 2 + c\n  applies per step.  And see Part B for whether "
-        "the solve matters to the step."
+        "hoist -- Part A2 does that directly.  And\n  see Part B for "
+        "whether the solve matters to the step at all."
+    )
+
+
+# ── Part A2: the split-real hoist (census + fused ceiling) ───────────
+
+
+# Word-boundary patterns: the optimized HLO writes an op application as
+# ``real(f64[...] %x)``, while instruction *names* (``%real.3 = ...``)
+# and identifiers containing the word must not be counted.  This is why
+# ``_hlo_census``'s ``str.count`` is not reused here -- it matches
+# ``real`` inside ``all-reduce``-style names and inside ``%real.3``.
+_CROSSINGS = {
+    "complex(": r"\bcomplex\(",
+    "real(": r"\breal\(",
+    "imag(": r"\bimag\(",
+    "concat(": r"\bconcatenate\(",
+}
+
+
+def _crossing_census(label: str, jitted, args) -> dict[str, int]:
+    r"""Count complex `$\leftrightarrow$` real crossings in optimized HLO.
+
+    JAX has no zero-copy complex/real bitcast, so every banded solve and
+    every :func:`~dnsjax.geometries.wall_bounded._base.apply_y_matrix`
+    FD GEMM brackets itself with a split (``real``/``imag``) and a
+    recombine (``complex``).  Some are redundant *between* consumers --
+    ``Hk_op.solve`` recombines, the caller only indexes the result, and
+    ``Lk_op.solve`` splits it straight back apart.
+
+    This counts them **after** optimization, so it reports what
+    survives XLA's simplifier rather than what the source writes.  A
+    count is not a cost: fused crossings can be free, which is what
+    :func:`_part_a2`'s timed arm tests.  The census sizes the *target*
+    and says which region owns it.
+    """
+    import re
+
+    try:
+        txt = jitted.lower(*args).compile().as_text()
+    except Exception as e:
+        print(f"    {label:26s} census failed: {type(e).__name__}: {e}")
+        return {}
+    counts = {k: len(re.findall(p, txt)) for k, p in _CROSSINGS.items()}
+    print(
+        f"    {label:26s} "
+        + "  ".join(f"{k}={v:4d}" for k, v in counts.items())
+    )
+    return counts
+
+
+def _split_helpers():
+    """Backend-matched split-real conversions and bare sweeps.
+
+    The carried split-real layout is the one the backend's own solve
+    body already builds internally, so the hoisted arm removes work
+    without inventing a layout:
+
+    - kernel path: mode-inner ``(N, 2, Nkz, Nkx)``, re/im on axis 1 --
+      exactly the buffer :func:`_pallas_banded_solve` ingests;
+    - CPU sweep: mode-outer ``(Nkz, Nkx, N, 2)`` -- exactly what
+      :func:`_banded_solve_batched` ingests.
+
+    Returned as ``(to_split, from_split, sweep, coeff)``; *coeff*
+    reshapes a real mode-inner ``(N, Nkz, Nkx)`` coefficient into the
+    matching split layout so the between-solves linear map can be
+    applied without leaving it.
+    """
+    import jax.numpy as jnp
+    from jax import lax
+
+    from dnsjax.solvers import (
+        _banded_solve_batched,
+        _complex_from_view,
+        _kernel_path,
+        _pallas_banded_solve,
+        _real_rhs_view,
+    )
+
+    if _kernel_path():
+
+        def to_split(z):
+            return jnp.stack([z.real, z.imag], axis=1)
+
+        def from_split(x):
+            return lax.complex(x[:, 0], x[:, 1])
+
+        def sweep(L, U, b, p):
+            return _pallas_banded_solve(L, U, b, p)
+
+        def coeff(w):
+            return w[:, None]
+
+    else:
+
+        def to_split(z):
+            return _real_rhs_view(jnp.moveaxis(z, 0, -1))
+
+        def from_split(x):
+            return jnp.moveaxis(_complex_from_view(x), -1, 0)
+
+        def sweep(L, U, b, p):
+            Lo = jnp.moveaxis(L, (0, 1), (-2, -1))
+            Uo = jnp.moveaxis(U, (0, 1), (-2, -1))
+            return _banded_solve_batched(Lo, Uo, b, p)
+
+        def coeff(w):
+            return jnp.moveaxis(w, 0, -1)[..., None]
+
+    return to_split, from_split, sweep, coeff
+
+
+def _part_a2(system, flow, sharding, reps, t_step, n) -> None:
+    r"""Size the split-real hoist: is the round trip between two
+    solves worth removing?
+
+    Every wall-bounded IMM runs the same chain -- one ``Hk`` solve, a
+    **linear map with real coefficients** over its components, one
+    ``Lk`` solve:
+
+    ==============  =========================================
+    geometry        the map between the two solves
+    ==============  =========================================
+    Cartesian       ``phi_arb = arb[0]``  (a bare index)
+    annular / pipe  ``phi_arb - om_shift * omega_new``
+    ==============  =========================================
+
+    Shipped, that chain recombines the ``Hk`` result to complex, does
+    real-coefficient arithmetic on it, and splits it straight back for
+    the ``Lk`` solve.  Being linear with **real** coefficients, the map
+    commutes with the re/im split, so the whole chain can stay split.
+
+    Both arms take the factors as jit **arguments** (the stepper takes
+    ``flow`` as one; closing over them folds stages away -- see
+    :func:`_part_a_cpu`), and are timed as one jit region each.  The
+    hoisted arm is one ``shard_map`` region built from the solver's own
+    :func:`_banded_solve_batched` / :func:`_pallas_banded_solve`, so it
+    cannot drift from the shipped body, and its output is asserted
+    **bit-identical** -- a representation change that moves a value is
+    a bug, and the assertion is also what pins the arm's fidelity.
+
+    Reported: the fused chain margin, and its extrapolation to the step
+    (chains per IMM apply x ``n = 2 + c`` applies per step).  The
+    extrapolation is an **upper bound on this hoist only**: the pipe
+    runs a second ``Hk`` batch whose round trip this arm does not model,
+    and the ``apply_y_matrix`` crossings the census counts are a
+    separate, larger candidate.
+    """
+    import jax.numpy as jnp
+    import numpy as np
+    from jax import shard_map
+    from jax.sharding import PartitionSpec as P
+
+    from dnsjax.solvers import PerModeBandedPallasOperator
+
+    print("\n" + "-" * 72)
+    print("PART A2 -- the split-real hoist: is the round trip removable?")
+    print("-" * 72)
+
+    hk, lk = flow.Hk_op, flow.Lk_op
+    if not isinstance(hk, PerModeBandedPallasOperator):
+        print(f"  needs the pallas backend; got {type(hk).__name__}.")
+        return
+
+    # The geometry's real call shape.  Cartesian stacks components
+    # leading and indexes; the curvilinear pair is y-leading and takes
+    # the om_shift combination (annular/cylindrical stage 5).
+    cartesian = system in ("plane-couette", "plane-poiseuille")
+    ca = 0 if cartesian else 1
+    nc = _hk_components(hk)
+    N = lk.L.shape[0]
+    Nkz, Nkx = sharding.nz_spec, sharding.nx_spec
+    p_h = hk.L.shape[-3]
+    p_l = lk.L.shape[-3]
+    shape = (nc, N, Nkz, Nkx) if ca == 0 else (N, nc, Nkz, Nkx)
+    print(
+        f"  chain: Hk.solve({shape}, component_axis={ca}) -> "
+        f"{'index' if cartesian else 'om_shift combine'} -> Lk.solve"
+    )
+
+    Rs = [
+        _make_complex(shape, 600 + i, sharding, sharding.spec_vector_shard)
+        for i in range(reps)
+    ]
+    # A real mode-inner coefficient standing in for om_shift (timing is
+    # value-independent; both arms see the same one).
+    rng = np.random.default_rng(11)
+    w = jax.device_put(
+        rng.standard_normal((N, Nkz, Nkx)),
+        jax.NamedSharding(sharding.mesh, sharding.spec_scalar_shard),
+    )
+    hL, hU, lL, lU = hk.L, hk.U, lk.L, lk.U
+
+    def _mid(phi, om, wc):
+        return phi if cartesian else phi - wc * om
+
+    def _shipped(hL_, hU_, lL_, lU_, R_, w_):
+        arb = PerModeBandedPallasOperator(L=hL_, U=hU_).solve(
+            R_, component_axis=ca
+        )
+        phi, om = (arb[0], arb[1]) if ca == 0 else (arb[:, 0], arb[:, 1])
+        src = _mid(phi, om, w_)
+        return PerModeBandedPallasOperator(L=lL_, U=lU_).solve(src), om
+
+    to_split, from_split, sweep, coeff = _split_helpers()
+
+    def _hoisted(hL_, hU_, lL_, lU_, R_, w_):
+        def _local(hL_l, hU_l, lL_l, lU_l, R_l, w_l):
+            # Component-leading for the vmap, then split once.
+            R_c = R_l if ca == 0 else jnp.moveaxis(R_l, 1, 0)
+            bs = jax.vmap(to_split)(R_c)
+            stacked = hL_l.ndim == 5
+            in_ax = (0, 0, 0, None) if stacked else (None, None, 0, None)
+            xs = jax.vmap(sweep, in_axes=in_ax)(hL_l, hU_l, bs, p_h)
+            # ... the map runs *in* the split representation ...
+            src_s = _mid(xs[0], xs[1], coeff(w_l))
+            y = sweep(lL_l, lU_l, src_s, p_l)
+            # ... and only the two outputs recombine.
+            return from_split(y), from_split(xs[1])
+
+        fspec_h = P(*(None,) * (hL_.ndim - 2), sharding.a0, sharding.a1)
+        fspec_l = P(*(None,) * (lL_.ndim - 2), sharding.a0, sharding.a1)
+        rspec = P(*(None,) * (R_.ndim - 2), sharding.a0, sharding.a1)
+        sspec = P(None, sharding.a0, sharding.a1)
+        return shard_map(
+            _local,
+            mesh=sharding.mesh,
+            in_specs=(fspec_h, fspec_h, fspec_l, fspec_l, rspec, sspec),
+            out_specs=(sspec, sspec),
+            check_vma=False,
+        )(hL_, hU_, lL_, lU_, R_, w_)
+
+    args = [(hL, hU, lL, lU, R, w) for R in Rs]
+    ship = jax.block_until_ready(jax.jit(_shipped)(*args[0]))
+    hois = jax.block_until_ready(jax.jit(_hoisted)(*args[0]))
+    # Fidelity gate: the hoist only changes the *representation* a value
+    # is carried in, so the two arms must agree to rounding.  Agreement
+    # to ~machine epsilon is the bar, not bit-identity -- the arms feed
+    # the sweep output to different consumers, so XLA is free to
+    # contract differently around it, and a last-bit difference is
+    # expected rather than a defect.
+    worst = 0.0
+    for a, b, name in zip(ship, hois, ("Lk out", "omega"), strict=True):
+        a_, b_ = np.asarray(a), np.asarray(b)
+        np.testing.assert_allclose(
+            b_, a_, rtol=1e-12, atol=0.0, err_msg=f"hoisted {name}"
+        )
+        scale = max(float(np.abs(a_).max()), np.finfo(float).tiny)
+        worst = max(worst, float(np.abs(a_ - b_).max()) / scale)
+    print(f"  fidelity: agrees to {worst:.1e} relative (bar: ~1e-15)")
+
+    t_ship = _bench(_shipped, args)
+    t_hois = _bench(_hoisted, args)
+    gain = t_ship - t_hois
+    print(f"  shipped  Hk.solve -> map -> Lk.solve   {_ms(t_ship)}")
+    print(f"  hoisted  (split-real across the map)   {_ms(t_hois)}")
+    print(
+        f"  margin                                 {_ms(gain)}  "
+        f"({100 * gain / t_ship:5.1f}% of the chain)"
+    )
+    if t_step:
+        per_step = n * gain
+        print(
+            f"\n  extrapolated to the step: {n} IMM applies x 1 chain = "
+            f"{_ms(per_step)},\n  {100 * per_step / t_step:.2f}% of the "
+            f"{_ms(t_step)} step."
+        )
+    print(
+        "  Upper bound for THIS hoist only: the pipe's second Hk batch "
+        "is not\n  modelled, and the apply_y_matrix crossings the census "
+        "counts are a\n  separate (larger) candidate."
     )
 
 
@@ -615,13 +889,28 @@ def _imm_stage_breakdown(
     constant-bulk / block-spanwise branch is compiled out for the
     default plane-Couette driving and omitted from both.
 
-    **Cartesian only.**  The curvilinear geometries have no arm here
-    and are where the non-solve share is actually large -- what a
-    cylindrical transcription would have to stage separately, and why:
-    the ``TODO(cylindrical/annular)`` at this function's call site in
-    :func:`_part_b`.
+    All three geometries have an arm under the default scheme
+    (:func:`_stages_vw` Cartesian, :func:`_stages_vw_ann` annular,
+    :func:`_stages_vw_cyl` cylindrical), which is what makes the
+    pipe's measured ~2x ``_imm_iteration`` attributable: the annulus
+    shares every curvilinear cost but has neither the spin quad nor
+    the parity reduction, so it separates the two explanations.  The
+    legacy primitive scheme keeps its Cartesian-only transcription.
     """
-    stages = _stages_vp if not params.res.consistent_imm else _stages_vw
+    if not params.res.consistent_imm:
+        if params.phys.system not in ("plane-couette", "plane-poiseuille"):
+            print(
+                "\n  (no --legacy-imm stage transcription for "
+                f"{params.phys.system}; Cartesian only.)"
+            )
+            return
+        stages = _stages_vp
+    elif params.phys.system == "pipe":
+        stages = _stages_vw_cyl
+    elif params.phys.system in ("taylor-couette", "dean"):
+        stages = _stages_vw_ann
+    else:
+        stages = _stages_vw
     stages(
         geom, flow, fourier, nonlin, state, reps, t_imm, t_lk, t_hk, t_step, n
     )
@@ -854,6 +1143,589 @@ def _stages_vw(
     )
 
 
+def _stages_vw_ann(
+    geom, flow, fourier, nonlin, state, reps, t_imm, t_lk, t_hk, t_step, n
+) -> None:
+    r"""Stage split of the **annular** `$u_r$`-`$\omega_r$` pass.
+
+    Transcribes ``annular._imm_iteration_vw`` stage for stage.  The
+    annulus is the **control** for the pipe's measured ~2x: it shares
+    every curvilinear cost -- the `$u_\pm$` basis crossings, the
+    `$1/r$` / `$1/r^2$` metric multiplies, the `$A = D_2 + (1/r)D_1$`
+    pair of matvecs on the same array -- but has *neither* the spin
+    quad nor the parity reduction, and evolves two scalars against the
+    pipe's four.  So reading this table against the Cartesian one
+    attributes the pipe's excess: what shows up here is curvilinear,
+    what shows up only in :func:`_stages_vw_cyl` is the quad/parity.
+
+    The constant-bulk / block-mean-spanwise branches are compiled out
+    for the default Taylor-Couette driving and omitted, as in the
+    Cartesian arm.
+    """
+    import jax.numpy as jnp
+
+    from dnsjax.geometries.wall_bounded._base import (
+        apply_y_matrix,
+        from_pm_basis,
+        to_pm_basis,
+    )
+    from dnsjax.parameters import derived_params
+    from dnsjax.sharding import sharding as sharding_mod
+
+    c = params.step.implicitness
+    dt = flow.dt
+    nu = derived_params.nu
+    im = 1j * fourier.m
+    ikz = 1j * fourier.kz
+    inv_r = flow.inv_r[:, None, None]
+    inv_r2 = flow.inv_r2[:, None, None]
+    kz2 = fourier.kz2
+    mean_mask = fourier.mean_mask
+    pair2 = fourier.m2 + 1.0
+    phi2 = jnp.where(mean_mask, 0.0, pair2)
+    spin = 2.0 * im * inv_r2
+
+    def basis(velocity_n, velocity_j, nonlin_j, nonlin_n):
+        # Stage 0: the three field-sized u_pm -> physical crossings.
+        return (
+            from_pm_basis(velocity_n),
+            from_pm_basis(c * velocity_j + (1 - c) * velocity_n),
+            from_pm_basis(c * nonlin_j + (1 - c) * nonlin_n),
+        )
+
+    def source_asm(state_n, state_cn, nonlin):
+        # Stages 1-3: the two batched FD matvecs, the evolved scalars,
+        # and the conservative-curl pressure-free sources.
+        d1_in = jnp.stack(
+            [
+                state_cn[0],
+                nonlin[0],
+                flow.rs[:, None, None] * nonlin[2],
+            ],
+            axis=1,
+        )
+        d1 = apply_y_matrix(flow.D1, d1_in, component_axis=1)
+        A_in = jnp.stack([state_n[1], state_cn[2]], axis=1)
+        A_pair_n = apply_y_matrix(flow.A_base, A_in, component_axis=1)
+        A_ur_n, A_ut_it = A_pair_n[:, 0], A_pair_n[:, 1]
+        phi_n = (
+            A_ur_n - (pair2 * inv_r2 + kz2) * state_n[1] - spin * state_n[2]
+        )
+        omega_n = im * inv_r * state_n[0] - ikz * state_n[2]
+        phi_n = jnp.where(mean_mask, state_n[0], phi_n)
+        omega_n = jnp.where(mean_mask, state_n[2], omega_n)
+        C_r = im * inv_r * nonlin[0] - ikz * nonlin[2]
+        C_theta = ikz * nonlin[1] - d1[:, 1]
+        C_z = inv_r * (d1[:, 2] - im * nonlin[1])
+        S_phi = jnp.where(
+            mean_mask, nonlin[0], -(im * inv_r * C_z - ikz * C_theta)
+        )
+        S_omega = jnp.where(mean_mask, nonlin[2], C_r)
+        return phi_n, omega_n, S_phi, S_omega, A_ut_it, d1[:, 0]
+
+    def cn_explicit(phi_n, omega_n, S_phi, S_omega, A_ut_it, d1_2, state_cn):
+        # Stage 4: the explicit CN half of both slots + the lagged spin
+        # partners, then the Dirichlet wall rows.
+        pair_n = jnp.stack([phi_n, omega_n], axis=1)
+        inv_r_y = inv_r[..., None]
+        A_pair = apply_y_matrix(flow.A_base, pair_n, component_axis=1)
+        meff2_pair = jnp.stack(
+            [
+                phi2,
+                jnp.broadcast_to(
+                    pair2,
+                    phi2.shape,
+                    out_sharding=sharding_mod.spec_scalar_shard,
+                ),
+            ],
+            axis=1,
+        )
+        lapl_pair = A_pair - (meff2_pair * inv_r_y**2 + kz2[:, None]) * pair_n
+        partner = jnp.stack(
+            [
+                A_ut_it
+                - (pair2 * inv_r2 + kz2) * state_cn[2]
+                + spin * state_cn[1],
+                ikz * state_cn[1] - d1_2,
+            ],
+            axis=1,
+        )
+        r = (
+            pair_n / dt
+            + (1 - c) * nu * lapl_pair
+            - nu * spin[:, None] * partner
+            + jnp.stack([S_phi, S_omega], axis=1)
+        )
+        return r.at[0].set(0.0).at[-1].set(0.0)
+
+    def influence_reconstruct(velocity_j, phi_arb, omega_new, ur_arb):
+        # Stages 6-8 + the exit basis crossing.
+        det = kz2 + fourier.m2 * inv_r2
+        inv_det = 1.0 / jnp.where(mean_mask, 1.0, det)
+        d_wall = jnp.einsum("bj, jmz -> mzb", flow.D1_bnd, ur_arb)
+        alpha = -jnp.einsum("mzab, mzb -> mza", flow.M_inv, d_wall)
+        ur_new = (
+            ur_arb
+            + alpha[..., 0][None] * flow.ur_1
+            + alpha[..., 1][None] * flow.ur_2
+        )
+        chi = -(apply_y_matrix(flow.D1, ur_new) + inv_r * ur_new)
+        b_th = im * inv_r
+        uz_new = (-ikz * chi - b_th * omega_new) * inv_det
+        ut_new = (-b_th * chi + ikz * omega_new) * inv_det
+        uz_new = jnp.where(mean_mask, phi_arb, uz_new)
+        ut_new = jnp.where(mean_mask, omega_new, ut_new)
+        ur_new = jnp.where(mean_mask, 0.0, ur_new)
+        return to_pm_basis(jnp.stack([uz_new, ur_new, ut_new])) - velocity_j
+
+    # Realistic intermediates (predictor call: velocity_n = velocity_j
+    # = state, nonlin_n = nonlin_j = nonlin).
+    b_out = jax.block_until_ready(jax.jit(basis)(state, state, nonlin, nonlin))
+    src = jax.block_until_ready(jax.jit(source_asm)(*b_out))
+    phi_n, omega_n, S_phi, S_omega, A_ut_it, d1_2 = src
+    R_stack = jax.block_until_ready(
+        jax.jit(cn_explicit)(
+            phi_n, omega_n, S_phi, S_omega, A_ut_it, d1_2, b_out[1]
+        )
+    )
+    arb = jax.block_until_ready(
+        jax.jit(lambda r: flow.Hk_op.solve(r, component_axis=1))(R_stack)
+    )
+    phi_arb, omega_new = arb[:, 0], arb[:, 1]
+    det = kz2 + fourier.m2 * inv_r2
+    inv_det = 1.0 / jnp.where(mean_mask, 1.0, det)
+    om_shift = 2.0 * fourier.m * fourier.kz * inv_r2 * inv_det
+    ur_arb = jax.block_until_ready(
+        jax.jit(lambda a, b: flow.Lk_op.solve(a - om_shift * b))(
+            phi_arb, omega_new
+        )
+    )
+
+    t_bas = _bench(basis, [(state, state, nonlin, nonlin)] * reps)
+    t_src = _bench(source_asm, [b_out] * reps)
+    t_cn = _bench(
+        cn_explicit,
+        [(phi_n, omega_n, S_phi, S_omega, A_ut_it, d1_2, b_out[1])] * reps,
+    )
+    t_inf = _bench(
+        influence_reconstruct,
+        [(state, phi_arb, omega_new, ur_arb)] * reps,
+    )
+
+    t_sum = t_bas + t_src + t_cn + t_hk + t_lk + t_inf
+    print(
+        "\n  IMM stage breakdown (annular, default u_r-omega_r scheme; "
+        "each runs n times/step):"
+    )
+    rows = (
+        ("basis crossings (3 x from_pm_basis)", t_bas),
+        ("source asm (D1/D2 matvecs + curl)  ", t_src),
+        ("CN explicit half (A_pair + partner)", t_cn),
+        ("Hk banded solve (2 scalars)        ", t_hk),
+        ("Lk banded solve (u_r recovery)     ", t_lk),
+        ("influence 2x2 + reconstruct + exit ", t_inf),
+    )
+    for label, t in rows:
+        print(f"    {label}  {_ms(t)}  ({100 * t / t_imm:4.1f}% of IMM)")
+    print(
+        f"    {'-' * 53}\n"
+        f"    sum of stages                       {_ms(t_sum)}  "
+        f"(vs _imm_iteration {_ms(t_imm)})"
+    )
+    _stage_verdict(t_sum, t_imm, t_step, n, rows, t_hk + t_lk)
+
+
+def _stages_vw_cyl(
+    geom, flow, fourier, nonlin, state, reps, t_imm, t_lk, t_hk, t_step, n
+) -> None:
+    r"""Stage split of the **cylindrical** (pipe) spin-quad pass.
+
+    Transcribes ``cylindrical._imm_iteration_vw`` stage for stage.
+    Read against :func:`_stages_vw_ann` (same curvilinear algebra, no
+    quad, no parity) and :func:`_stages_vw` (neither), this is what
+    attributes the pipe's measured ~2x ``_imm_iteration`` at equal
+    solve cost.  The pipe-only costs are, by construction:
+
+    1. the spin quad -- four evolved scalars against two, so stage 4's
+       `$A = D_2 + (1/r) D_1$` runs on a 4-wide stack;
+    2. the parity reduction -- there is no single ``D1``, so every
+       matvec is :func:`~...cylindrical._parity_y_matvec`, a ``pos``
+       GEMM plus a ``g``-row ``ghost`` GEMM and a scatter-add;
+    3. two ``Hk`` solve batches instead of one (both counted in
+       *t_hk*, which Part B measures on the full stacked RHS).
+
+    :func:`_cyl_extras` prices 1-2 in isolation; this table is where
+    they land in the pass.
+    """
+    import jax.numpy as jnp
+
+    from dnsjax.geometries.wall_bounded._base import (
+        from_pm_basis,
+        to_pm_basis,
+    )
+    from dnsjax.geometries.wall_bounded.cylindrical import _parity_y_matvec
+    from dnsjax.parameters import derived_params
+    from dnsjax.sharding import sharding as sharding_mod
+
+    c = params.step.implicitness
+    dt = flow.dt
+    nu = derived_params.nu
+    m = fourier.m
+    im = 1j * m
+    ikz = 1j * fourier.kz
+    kz2 = fourier.kz2
+    inv_r = flow.inv_r[:, None, None]
+    inv_r2 = flow.inv_r2[:, None, None]
+    mean_mask = fourier.mean_mask
+    psp = fourier.m_is_even * 2 - 1
+    psv = -psp
+    inv_r2_y = inv_r2[..., None]
+    kz2_y = kz2[:, None]
+
+    def _pack(minus_slot, plus_val, minus_val):
+        return jnp.stack(
+            [
+                jnp.where(mean_mask, plus_val, minus_slot[:, 0]),
+                jnp.where(mean_mask, minus_val, minus_slot[:, 1]),
+            ],
+            axis=1,
+        )
+
+    def basis(velocity_n, nonlin_j, nonlin_n):
+        # Stage 0: the two field-sized u_pm -> physical crossings.
+        return (
+            from_pm_basis(velocity_n),
+            from_pm_basis(c * nonlin_j + (1 - c) * nonlin_n),
+        )
+
+    def quad_asm(velocity_n, state_n, nonlin):
+        # Stages 1-2: the batched parity-reduced D1 (5-wide) and D2
+        # (2-wide), the evolved quad, and the mean-plane packing.
+        pair_n = jnp.stack([velocity_n[1], velocity_n[2]], axis=1)
+        d1_in = jnp.stack(
+            [
+                state_n[0],
+                nonlin[0],
+                flow.rs[:, None, None] * nonlin[2],
+            ],
+            axis=1,
+        )
+        d1 = _parity_y_matvec(
+            flow.D1_pos,
+            flow.D1_ghost,
+            d1_in,
+            jnp.stack([psp, psp, psp], axis=1),
+            component_axis=1,
+        )
+        A_pair = _parity_y_matvec(
+            flow.A_base_pos,
+            flow.A_base_ghost,
+            pair_n,
+            jnp.stack([psv, psv], axis=1),
+            component_axis=1,
+        )
+        meff2_pm = jnp.stack([(m + 1) ** 2, (m - 1) ** 2], axis=1)
+        phi_pm = A_pair - (meff2_pm * inv_r2_y + kz2_y) * pair_n
+        ur_n, ut_n = state_n[1], state_n[2]
+        om_r_n = im * inv_r * state_n[0] - ikz * ut_n
+        om_t_n = ikz * ur_n - d1[:, 0]
+        zero = jnp.zeros_like(mean_mask, dtype=phi_pm.dtype)
+        phi_pm = _pack(phi_pm, zero, state_n[0])
+        om_pm_n = _pack(
+            jnp.stack([om_r_n + 1j * om_t_n, om_r_n - 1j * om_t_n], axis=1),
+            ut_n,
+            zero,
+        )
+        return phi_pm, om_pm_n, d1[:, 1], d1[:, 2]
+
+    def sources(nonlin, d1_3, d1_4):
+        # Stage 3: the conservative discrete double curl.
+        zero = jnp.zeros_like(mean_mask, dtype=nonlin.dtype)
+        C_r = im * inv_r * nonlin[0] - ikz * nonlin[2]
+        C_t = ikz * nonlin[1] - d1_3
+        C_z = inv_r * (d1_4 - im * nonlin[1])
+        d1_Cz = _parity_y_matvec(flow.D1_pos, flow.D1_ghost, C_z, psp)
+        cc_r = im * inv_r * C_z - ikz * C_t
+        cc_t = ikz * C_r - d1_Cz
+        S_phi = _pack(
+            jnp.stack([-(cc_r + 1j * cc_t), -(cc_r - 1j * cc_t)], axis=1),
+            zero,
+            nonlin[0],
+        )
+        S_om = _pack(
+            jnp.stack([C_r + 1j * C_t, C_r - 1j * C_t], axis=1),
+            nonlin[2],
+            zero,
+        )
+        return S_phi, S_om
+
+    def cn_explicit(phi_pm, om_pm_n, S_phi, S_om, velocity_j):
+        # Stage 4: the quad-wide explicit CN half + the wall row whose
+        # two free differences ride the corrector iterate.
+        quad = jnp.concatenate([phi_pm, om_pm_n], axis=1)
+        psv_b = jnp.broadcast_to(
+            psv, mean_mask.shape, out_sharding=sharding_mod.spec_scalar_shard
+        )
+        psv_m = jnp.where(mean_mask, psp, psv)
+        par_quad = jnp.stack([psv_b, psv_m, psv_b, psv_m], axis=1)
+        meff2_m = jnp.where(mean_mask, m**2, (m - 1) ** 2)
+        meff2_p = jnp.broadcast_to(
+            (m + 1) ** 2,
+            mean_mask.shape,
+            out_sharding=sharding_mod.spec_scalar_shard,
+        )
+        meff2_quad = jnp.stack([meff2_p, meff2_m, meff2_p, meff2_m], axis=1)
+        A_quad = _parity_y_matvec(
+            flow.A_base_pos,
+            flow.A_base_ghost,
+            quad,
+            par_quad,
+            component_axis=1,
+        )
+        lapl_quad = A_quad - (meff2_quad * inv_r2_y + kz2_y) * quad
+        R_quad = (
+            quad / dt
+            + (1 - c) * nu * lapl_quad
+            + jnp.concatenate([S_phi, S_om], axis=1)
+        )
+        pair_j = velocity_j[1:3]
+        d1w_pair = jnp.einsum("j, cjmz -> cmz", flow.D1_wall.ravel(), pair_j)
+        d2w_pair = jnp.einsum("j, cjmz -> cmz", flow.D2_wall.ravel(), pair_j)
+        meff2_w = jnp.stack([(m + 1) ** 2, (m - 1) ** 2], axis=1)[0]
+        phi_w = (
+            d2w_pair
+            + inv_r[-1] * d1w_pair
+            - (meff2_w * inv_r2[-1] + kz2) * pair_j[:, -1]
+        )
+        state_j_w = from_pm_basis(velocity_j[:, -1])
+        om_t_w = ikz[0] * state_j_w[1] - jnp.einsum(
+            "j, jmz -> mz", flow.D1_wall.ravel(), velocity_j[0]
+        )
+        d_phi = (phi_w[0] - phi_w[1]) / 2
+        d_om = 1j * om_t_w
+        wall = jnp.where(
+            mean_mask[0], 0.0, jnp.stack([d_phi, -d_phi, d_om, -d_om])
+        )
+        return R_quad.at[-1].set(wall)
+
+    def influence_reconstruct(
+        velocity_j, phi_arb, omega_new, ur_arb, uz_mean, ut_mean
+    ):
+        # Stages 6-8 + the exit basis crossing.
+        det = kz2 + fourier.m2 * inv_r2
+        inv_det = 1.0 / jnp.where(mean_mask, 1.0, det)
+        d_wall = jnp.einsum("j, jmz -> mz", flow.D1_wall.ravel(), ur_arb)
+        ur_new = ur_arb + (-flow.M_inv * d_wall)[None] * flow.ur_1
+        d1_ur = _parity_y_matvec(flow.D1_pos, flow.D1_ghost, ur_new, psv)
+        chi = -(d1_ur + inv_r * ur_new)
+        b_th = im * inv_r
+        uz_new = (-ikz * chi - b_th * omega_new) * inv_det
+        ut_new = (-b_th * chi + ikz * omega_new) * inv_det
+        uz_new = jnp.where(mean_mask, uz_mean, uz_new)
+        ut_new = jnp.where(mean_mask, ut_mean, ut_new)
+        ur_new = jnp.where(mean_mask, 0.0, ur_new)
+        return to_pm_basis(jnp.stack([uz_new, ur_new, ut_new])) - velocity_j
+
+    # Realistic intermediates (predictor call).
+    state_n, nl = jax.block_until_ready(jax.jit(basis)(state, nonlin, nonlin))
+    phi_pm, om_pm_n, d1_3, d1_4 = jax.block_until_ready(
+        jax.jit(quad_asm)(state, state_n, nl)
+    )
+    S_phi, S_om = jax.block_until_ready(jax.jit(sources)(nl, d1_3, d1_4))
+    R_quad = jax.block_until_ready(
+        jax.jit(cn_explicit)(phi_pm, om_pm_n, S_phi, S_om, state)
+    )
+    hk_pair = jax.jit(lambda r: flow.Hk_op.solve(r, component_axis=1))
+    phi_arb_pm = jax.block_until_ready(hk_pair(R_quad[:, :2]))
+    om_pm = jax.block_until_ready(hk_pair(R_quad[:, 2:]))
+    phi_arb = (phi_arb_pm[:, 0] + phi_arb_pm[:, 1]) / 2
+    omega_new = (om_pm[:, 0] + om_pm[:, 1]) / 2
+    det = kz2 + fourier.m2 * inv_r2
+    inv_det = 1.0 / jnp.where(mean_mask, 1.0, det)
+    om_shift = 2.0 * m * fourier.kz * inv_r2 * inv_det
+    ur_arb = jax.block_until_ready(
+        jax.jit(lambda a, b: flow.Lk_op.solve(a - om_shift * b))(
+            phi_arb, omega_new
+        )
+    )
+
+    t_bas = _bench(basis, [(state, nonlin, nonlin)] * reps)
+    t_quad = _bench(quad_asm, [(state, state_n, nl)] * reps)
+    t_src = _bench(sources, [(nl, d1_3, d1_4)] * reps)
+    t_cn = _bench(cn_explicit, [(phi_pm, om_pm_n, S_phi, S_om, state)] * reps)
+    t_inf = _bench(
+        influence_reconstruct,
+        [
+            (
+                state,
+                phi_arb,
+                omega_new,
+                ur_arb,
+                phi_arb_pm[:, 1],
+                om_pm[:, 0],
+            )
+        ]
+        * reps,
+    )
+
+    t_sum = t_bas + t_quad + t_src + t_cn + t_hk + t_lk + t_inf
+    print(
+        "\n  IMM stage breakdown (cylindrical, spin-quad scheme; each "
+        "runs n times/step):"
+    )
+    rows = (
+        ("basis crossings (2 x from_pm_basis)", t_bas),
+        ("quad asm (parity D1 5-wide + D2)   ", t_quad),
+        ("sources (conservative double curl) ", t_src),
+        ("CN explicit half (quad-wide A)     ", t_cn),
+        ("Hk banded solves (2 x 2 scalars)   ", t_hk),
+        ("Lk banded solve (u_r recovery)     ", t_lk),
+        ("influence 1x1 + reconstruct + exit ", t_inf),
+    )
+    for label, t in rows:
+        print(f"    {label}  {_ms(t)}  ({100 * t / t_imm:4.1f}% of IMM)")
+    print(
+        f"    {'-' * 53}\n"
+        f"    sum of stages                       {_ms(t_sum)}  "
+        f"(vs _imm_iteration {_ms(t_imm)})"
+    )
+    _stage_verdict(t_sum, t_imm, t_step, n, rows, t_hk + t_lk)
+    _cyl_extras(flow, fourier, state, nonlin, reps, t_imm)
+
+
+def _stage_verdict(t_sum, t_imm, t_step, n, rows, t_solve) -> None:
+    """Name the largest non-solve stage and price it against the step.
+
+    The isolated stages **over-count** (each pays a round trip it does
+    not pay fused), so ``sum of stages / _imm_iteration`` is reported
+    as a fidelity read, not a decomposition: far above 1 means the
+    transcription is dominated by round trips, far below 1 means it is
+    missing work.  Shares are of the fused ``_imm_iteration``, which is
+    the honest denominator.
+    """
+    print(
+        f"\n    sum/IMM = {t_sum / t_imm:4.2f} (isolated stages over-count; "
+        "read shares, not the sum)"
+    )
+    non_solve = [r for r in rows if "banded solve" not in r[0]]
+    label, t = max(non_solve, key=lambda r: r[1])
+    print(
+        f"    largest non-solve stage: {label.strip()} at "
+        f"{100 * t / t_imm:.1f}% of _imm_iteration,\n    "
+        f"{100 * n * t / t_step:.1f}% of the step "
+        f"(solves are {100 * t_solve / t_imm:.1f}% of IMM)."
+    )
+
+
+def _cyl_extras(flow, fourier, state, nonlin, reps, t_imm) -> None:
+    r"""Price the two pipe-only mechanisms in isolation.
+
+    The stage table says *where* the pipe's time goes; this says *what
+    it is paying for* -- the two things neither Cartesian nor the
+    annulus does at all:
+
+    1. **parity-reduced FD**: :func:`_parity_y_matvec` against a plain
+       :func:`apply_y_matrix` on the identical array, so the ``pos`` +
+       ``ghost`` GEMM pair and the ``g``-row scatter-add are priced
+       against one GEMM;
+    2. **quad assembly**: the mode-plane ``par_quad`` / ``meff2_quad``
+       broadcasts and the three field-sized ``_pack`` selections.
+
+    Also reported for scale: the basis crossings and the metric
+    multiplies, which the annulus shares.  These are **isolated**
+    figures -- they over-count against the fused pass, so they rank
+    mechanisms, they do not decompose the stage table.
+    """
+    import jax.numpy as jnp
+
+    from dnsjax.geometries.wall_bounded._base import (
+        apply_y_matrix,
+        from_pm_basis,
+        to_pm_basis,
+    )
+    from dnsjax.geometries.wall_bounded.cylindrical import _parity_y_matvec
+    from dnsjax.sharding import sharding as sharding_mod
+
+    m = fourier.m
+    mean_mask = fourier.mean_mask
+    psp = fourier.m_is_even * 2 - 1
+    psv = -psp
+    inv_r = flow.inv_r[:, None, None]
+    inv_r2 = flow.inv_r2[:, None, None]
+
+    quad = jax.block_until_ready(
+        jax.jit(
+            lambda s: jnp.concatenate([s[1:3], s[1:3]], axis=0).swapaxes(0, 1)
+        )(state)
+    )
+    par = jnp.stack([psv, psv, psv, psv], axis=1)
+
+    def parity_fd(x, p_):
+        return _parity_y_matvec(
+            flow.D1_pos, flow.D1_ghost, x, p_, component_axis=1
+        )
+
+    def plain_fd(x):
+        return apply_y_matrix(flow.D1_pos, x, component_axis=1)
+
+    def quad_assembly(s):
+        psv_b = jnp.broadcast_to(
+            psv, mean_mask.shape, out_sharding=sharding_mod.spec_scalar_shard
+        )
+        psv_m = jnp.where(mean_mask, psp, psv)
+        par_quad = jnp.stack([psv_b, psv_m, psv_b, psv_m], axis=1)
+        meff2_m = jnp.where(mean_mask, m**2, (m - 1) ** 2)
+        meff2_p = jnp.broadcast_to(
+            (m + 1) ** 2,
+            mean_mask.shape,
+            out_sharding=sharding_mod.spec_scalar_shard,
+        )
+        meff2_quad = jnp.stack([meff2_p, meff2_m, meff2_p, meff2_m], axis=1)
+        packed = jnp.stack(
+            [
+                jnp.where(mean_mask, s[0], s[1]),
+                jnp.where(mean_mask, s[2], s[1]),
+            ],
+            axis=1,
+        )
+        return par_quad, meff2_quad, packed
+
+    def crossings(s, nl):
+        return to_pm_basis(from_pm_basis(s) + from_pm_basis(nl))
+
+    def metric(s):
+        return inv_r * s[0] + inv_r2 * s[1]
+
+    t_par = _bench(parity_fd, [(quad, par)] * reps)
+    t_pln = _bench(plain_fd, [(quad,)] * reps)
+    t_qas = _bench(quad_assembly, [(state,)] * reps)
+    t_cro = _bench(crossings, [(state, nonlin)] * reps)
+    t_met = _bench(metric, [(state,)] * reps)
+
+    print("\n    pipe-only mechanisms, isolated (they over-count; rank only):")
+    print(
+        f"      parity D1 on a 4-wide quad      {_ms(t_par)}  "
+        f"({100 * t_par / t_imm:4.1f}% of IMM)"
+    )
+    print(
+        f"      plain  D1 on the same array     {_ms(t_pln)}  "
+        f"-> parity costs {t_par / t_pln:4.2f}x one GEMM"
+    )
+    print(
+        f"      quad assembly (par/meff2/pack)  {_ms(t_qas)}  "
+        f"({100 * t_qas / t_imm:4.1f}% of IMM)"
+    )
+    print("    shared with the annulus (not pipe-only), for scale:")
+    print(
+        f"      basis crossings (in + in + out) {_ms(t_cro)}  "
+        f"({100 * t_cro / t_imm:4.1f}% of IMM)"
+    )
+    print(
+        f"      metric multiplies (1/r, 1/r^2)  {_ms(t_met)}  "
+        f"({100 * t_met / t_imm:4.1f}% of IMM)"
+    )
+
+
 def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
     from dnsjax.ic.random_field import generate_random_state
     from dnsjax.solvers import PerModeBandedPallasOperator
@@ -954,47 +1826,13 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
         "the target for a faster step."
     )
 
-    # Stage-level IMM breakdown (Cartesian only): where the non-solve
-    # part of _imm_iteration goes, and how small the influence-matrix
-    # correction really is (the openpipeflow-wiki claim, measured).
-    #
-    # TODO(cylindrical/annular): the curvilinear geometries are the ones
-    # that most need this, and have no arm.  Measured on CPU, the pipe
-    # runs ~2x the ``_imm_iteration`` of Cartesian for the *same* solve
-    # cost (146 vs 76 ms at nr=96/64x64, 728 vs 348 ms at 128^3, against
-    # solves of 66 vs 75 and 401 vs 398), so with its solves at 28-29%
-    # of the step the headroom is outside them -- but nothing says which
-    # stage holds it.  A ``_stages_vw_cyl`` transcribing
-    # ``cylindrical._imm_iteration_vw`` should time, separately, the
-    # four things Cartesian does not do at all:
-    #
-    #   1. **basis crossings** -- ``from_pm_basis`` on the state and on
-    #      the nonlinear term, again on the wall row, and
-    #      ``to_pm_basis`` on exit: 6 field-sized 3-component complex
-    #      combines per pass (Cartesian: none, it carries physical
-    #      components).
-    #   2. **quad assembly** -- the spin quad makes every parity mask,
-    #      effective-wavenumber array and mean-mode ``jnp.where``
-    #      four-wide instead of two (``par_quad``, ``meff2_quad``, the
-    #      wall stack).  16 stack/concatenate sites against Cartesian's
-    #      2, and 11 ``where`` against 3.
-    #   3. **parity-stacked FD** -- there is no single ``D1``: each
-    #      matvec input is stacked over both parity classes and the
-    #      output selected by a sign array (the 5-wide
-    #      ``stack([psv, psv, psp, psp, psp])`` feeding ``d1_in``).
-    #   4. **metric / axis work** -- the ``1/r``, ``1/r^2`` multiplies
-    #      and the axis mean-mode packing.
-    #
-    # Then the shared stages (source assembly, the Hk quad solves, the
-    # Lv_dir recovery, the influence + reconstruction) so the totals are
-    # comparable with the Cartesian table.  The annulus needs the same
-    # arm minus the parity reduction and with a 2x2 influence matrix.
-    # Rationale and the measured totals: the "Possible optimization to
-    # test" note in ``cylindrical._imm_iteration_vw``.
-    if (
-        params.phys.system in ("plane-couette", "plane-poiseuille")
-        and t_lk is not None
-    ):
+    # Stage-level IMM breakdown: where the non-solve part of
+    # _imm_iteration goes, per geometry.  Cartesian additionally sizes
+    # the influence-matrix correction (the openpipeflow-wiki
+    # "negligible" claim, measured); the curvilinear arms exist to
+    # attribute the pipe's ~2x _imm_iteration at equal solve cost --
+    # see _imm_stage_breakdown.
+    if t_lk is not None:
         _imm_stage_breakdown(
             geom,
             flow,
@@ -1062,6 +1900,7 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
         "hk": t_hk,
         "solve": t_solve,
         "cnab2": t_cnab2,
+        "c": c,  # corrector iterations, so n = 2 + c is reusable
     }
 
 
@@ -1189,7 +2028,7 @@ def _hlo_census(label, jitted, args, hlo_out) -> None:
         print(f"      (full HLO appended to {hlo_out})")
 
 
-def _part_c(flow, m, sharding, trace_dir, hlo_out) -> None:
+def _part_c(geom, flow, m, sharding, trace_dir, hlo_out) -> None:
     import jax.numpy as jnp
 
     print("\n" + "-" * 72)
@@ -1230,6 +2069,37 @@ def _part_c(flow, m, sharding, trace_dir, hlo_out) -> None:
         _hlo_census(
             "Lk.solve", jax.jit(lambda zz: op.solve(zz)), (z,), hlo_out
         )
+
+    # Complex <-> real crossing census, per region (Part A2's static
+    # half): how many split/recombine pairs survive optimization, and
+    # which region owns them.  A count is not a cost -- Part A2's timed
+    # arm is what says whether removing one is worth anything.
+    print(
+        "\n  complex <-> real crossings in the optimized HLO (the "
+        "split-real\n  hoist's target; JAX has no zero-copy bitcast, so "
+        "each solve and each\n  apply_y_matrix GEMM brackets itself):"
+    )
+    fourier = m.fourier
+    if isinstance(op, PerModeBandedPallasOperator):
+        _crossing_census("one Lk.solve", jax.jit(op.solve), (z,))
+    rhs = jax.block_until_ready(
+        jax.jit(lambda s: geom._get_rhs(s, fourier, flow))(state)
+    )
+    _crossing_census(
+        "one _get_rhs (FFTs)",
+        jax.jit(lambda s: geom._get_rhs(s, fourier, flow)),
+        (state,),
+    )
+    _crossing_census(
+        "one _imm_iteration",
+        jax.jit(lambda s, r: geom._imm_iteration(s, s, r, r, fourier, flow)),
+        (state, rhs),
+    )
+    _crossing_census(
+        "one corrector step",
+        jax.jit(m.predict_and_fully_correct),
+        (state,),
+    )
 
     if trace_dir:
         if jax.default_backend() != "gpu":
@@ -1397,7 +2267,15 @@ def main() -> None:
             "(numerics only; ignore the timings).\n"
         )
         times = _part_b(geom, m, flow, sharding, args.reps, args.steps)
-        _part_c(flow, m, sharding, None, args.hlo_out)
+        _part_a2(
+            args.system,
+            flow,
+            sharding,
+            args.reps,
+            times["step"],
+            2 + times["c"],
+        )
+        _part_c(geom, flow, m, sharding, None, args.hlo_out)
         _solve_sweep(args.system, args, flow, sharding, args.reps)
         _summary_line(args.system, args, flow, times)
         print("\n--cpu-smoke PASS: harness runs end-to-end.")
@@ -1451,7 +2329,10 @@ def main() -> None:
 
     _part_a(flow, sharding, args.reps)
     times = _part_b(geom, m, flow, sharding, args.reps, args.steps)
-    _part_c(flow, m, sharding, args.trace if gpu else None, args.hlo_out)
+    _part_a2(
+        args.system, flow, sharding, args.reps, times["step"], 2 + times["c"]
+    )
+    _part_c(geom, flow, m, sharding, args.trace if gpu else None, args.hlo_out)
     _summary_line(args.system, args, flow, times)
     print("\n" + "=" * 72)
     print(

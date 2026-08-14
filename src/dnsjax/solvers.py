@@ -785,34 +785,42 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     instead (a round-trip XLA does not fuse away, ~half this
     memory-bound solve's HBM traffic).
 
-    *Possible optimization to test (both backends, unmeasured).*  That
-    split and recombine are **mandatory** per solve -- JAX has no
-    zero-copy complex<->real bitcast, the f64 Triton kernel cannot
-    ingest ``c128``, and the CPU sweep runs on real columns too
-    (:func:`_real_rhs_view`) -- but some of them are redundant
-    *between* consumers.  The Cartesian IMM is the clear case:
-    ``Hk_op.solve`` recombines its result to complex, the caller only
-    indexes it (``phi_arb = arb_stack[0]``), and ``Lk_op.solve``
-    immediately splits it back apart.  ``apply_y_matrix`` brackets
-    every FD GEMM the same way.  Carrying the field split-real across
-    a whole IMM apply would delete those round trips.
+    *The split-real hoist: measured, and rejected.*  That split and
+    recombine are **mandatory** per solve -- JAX has no zero-copy
+    complex<->real bitcast, the f64 Triton kernel cannot ingest
+    ``c128``, and the CPU sweep runs on real columns too
+    (:func:`_real_rhs_view`) -- and some of them look redundant
+    *between* consumers: ``Hk_op.solve`` recombines its result to
+    complex, the caller only indexes or linearly combines it, and
+    ``Lk_op.solve`` splits it straight back apart.  XLA does **not**
+    simplify them away (optimized CPU HLO: one ``.solve`` emits one
+    ``complex`` and one ``real``/``imag`` pair; one ``_imm_iteration``
+    emits 12/6/6 Cartesian, 15/6/6 annular, 23/8/8 pipe).
 
-    XLA does **not** simplify them away: in the optimized CPU HLO one
-    ``.solve`` emits exactly one ``complex`` and one ``real``/``imag``
-    pair, while one ``_imm_iteration`` emits 12 / 6 / 6 -- so the
-    crossings are really there to remove, and there are more of them
-    around the matvecs than around the solves.
+    Carrying the field split-real across that chain nevertheless
+    **loses**.  ``pallas_solve_profile.py`` Part A2 times the real
+    ``Hk.solve -> map -> Lk.solve`` chain both ways, fidelity-gated,
+    factors as jit arguments (CPU, one device):
 
-    What is measured and what is not: ``pallas_solve_profile.py``
-    Part A sizes the plumbing **within one solve** (``full - kernel``,
-    the fused figure; its H1 test), and on CPU that figure is already
-    ``<= 0`` -- fused into the sweep, costing nothing measurable, which
-    caps the CPU payoff well below the op counts above.  Nothing counts
-    the crossings per *step*, so nothing sizes the hoist: multiply the
-    fused per-solve figure by the ``.solve`` calls per IMM apply (2
-    Cartesian, 3 pipe) and by Part B's ``n = 2 + c`` applies per step.
-    **Testable on CPU** -- prototype the hoist and measure end to end,
-    never on an isolated solve timing (see below).
+    ==============  =========  =========
+    geometry        96-ish      `$128^3$`
+    ==============  =========  =========
+    plane-couette    -0.6 %      +9.1 %
+    taylor-couette  -11.0 %     -10.0 %
+    pipe             -5.6 %     -14.7 %
+    ==============  =========  =========
+
+    (Positive = hoisting is faster.)  Negative in five of six, and the
+    one positive is an *isolated* chain figure, which this module's own
+    layout history says ranks options backwards.  The reason is the
+    same one: pre-materialising a representation that suits the two
+    solves constrains layout assignment across everything around them.
+    Part A's fused ``full - sweep`` is already ``<= 0`` on CPU, so
+    there was nothing there to win in the first place.
+
+    The two arms agree to ~1e-15, which is the bar: the hoist changes
+    only the representation a value is carried in, and XLA is free to
+    contract differently around a differently-consumed sweep output.
 
     On CPU the factors *and* RHS are moved to mode-outer for the
     standard :func:`_banded_solve_batched` (``N_y`` on matrix axis -2).
