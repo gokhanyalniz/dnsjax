@@ -1213,10 +1213,6 @@ class CylindricalFlow:
 
         m_sq = m_s**2
 
-        # Parity mask: pressure / u_z use (-1)^m -> m_is_even (the
-        # u_+/u_- masks live in ``_hk_bands`` / ``_hk_dense_op``).
-        m_is_even_p = m_is_even_s
-
         if params.solver.backend == "pallas":
             # Pallas backend: one-program-per-mode banded sweep.
             # Operators are assembled directly in banded storage (no
@@ -1224,7 +1220,6 @@ class CylindricalFlow:
             # no-pivot banded LU (_build_pallas_operator).
             band_even = _banded_from_dense(self.A_base_even, p_band)
             band_odd = _banded_from_dense(self.A_base_odd, p_band)
-            D1_wall_1d = self.D1_wall.ravel()
 
             if params.res.consistent_imm:
                 # vw scheme: the dt-free Dirichlet u_r recovery operator
@@ -1247,12 +1242,14 @@ class CylindricalFlow:
             else:
                 from . import _cylindrical_primitive_imm as prim
 
-                # Lk (meff = m, pressure parity).
+                # Lk (meff = m, pressure parity: pressure / u_z use
+                # (-1)^m -> m_is_even; the u_+/u_- masks live in
+                # ``_hk_bands`` / ``_hk_dense_op``).
                 Lk_band = prim._build_Lk_band_gpu(
-                    D1_wall_1d,
+                    self.D1_wall.ravel(),
                     band_even,
                     band_odd,
-                    m_is_even_p,
+                    m_is_even_s,
                     m_sq,
                     self.inv_r2,
                     kz2_s,
@@ -1304,11 +1301,12 @@ class CylindricalFlow:
             else:
                 from . import _cylindrical_primitive_imm as prim
 
+                # Pressure parity, as in the banded branch above.
                 Lk_dense = prim._build_Lk_dense_gpu(
                     self.D1_wall,
                     self.A_base_even,
                     self.A_base_odd,
-                    m_is_even_p,
+                    m_is_even_s,
                     m_sq,
                     self.inv_r2,
                     kz2_s,
