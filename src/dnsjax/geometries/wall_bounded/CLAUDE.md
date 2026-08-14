@@ -231,6 +231,15 @@ its docstring and the `fd.py` interpolation docstrings.
   (`component_axis=1`), which stay component-leading, and why: the
   `apply_y_matrix` (`_base.py`) and
   `PerModeBandedPallasOperator.solve` (`solvers.py`) docstrings.
+- **Curvilinear `A_base` fusion** (cyl + annular, both schemes): where a
+  field needs `D2 x + (1/r) D1 x` and `D1 x` has *no other consumer*,
+  apply the precomputed `A_base` (`flow.A_base`; parity-reduced
+  `A_base_pos`/`A_base_ghost` on the pipe) as one matvec instead. ~10 %
+  of `_imm_iteration`. Not bit-identical (different rounding), so the
+  guards are `test_imm_continuity.py` + band-vs-dense parity, **not**
+  the laminar smoke (`u' = 0` there makes every stage zero either way).
+  Where the premise fails, the split form stays — see the comment at
+  `_annular_primitive_imm`'s `H_k^-` batch.
 
 ### Flows
 

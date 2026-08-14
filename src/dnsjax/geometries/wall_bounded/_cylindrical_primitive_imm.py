@@ -49,6 +49,7 @@ from .cylindrical import (
     Fourier,
     _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
+    _parity_y_matvec,
 )
 
 # ── Pressure Poisson operator (Neumann BC) ──────────────────
@@ -261,24 +262,19 @@ def _abase_matvec(
     u:
         Field, shape ``(Nr, Nm, Nkz)``.
     flow\_:
-        Cylindrical flow data (uses ``D1_pos``,
-        ``D2_pos``, ``D1_ghost``, ``D2_ghost``,
-        ``inv_r``).
+        Cylindrical flow data (uses ``A_base_pos``,
+        ``A_base_ghost`` -- the combination above, precomputed).
     parity_sign:
         `$(-1)^{m_{\mathrm{eff}}}$`, shape
         ``(1, Nm, 1)``.
     """
-    inv_r = flow_.inv_r[:, None, None]
-    D2_u = apply_y_matrix(flow_.D2_pos, u)
-    D1_u = apply_y_matrix(flow_.D1_pos, u)
-    common = D2_u + inv_r * D1_u
-
-    g = flow_.D1_ghost.shape[0]
-    D2g_u = apply_y_matrix(flow_.D2_ghost, u)
-    D1g_u = apply_y_matrix(flow_.D1_ghost, u)
-    ghost = D2g_u + inv_r[:g] * D1g_u
-
-    return common.at[:g].add(parity_sign * ghost)
+    # `$A_{\mathrm{base}}$` is precomputed in the parity-reduced
+    # ``pos``/``ghost`` pair, so this is one matvec rather than a
+    # `$D_2$` and a `$D_1$` with a field-sized `$1/r$` multiply-add
+    # between them (``CylindricalFlow.A_base_pos``).
+    return _parity_y_matvec(
+        flow_.A_base_pos, flow_.A_base_ghost, u, parity_sign
+    )
 
 
 def _lk_matvec(
@@ -520,14 +516,18 @@ def _imm_iteration_vp(
     # we unstack.  ``inv_r``/``inv_r2`` get a trailing axis to broadcast
     # over the C axis; ``kz2``/``mean_mask`` are trailing-mode broadcasts
     # (layout-invariant).
-    inv_r_y = inv_r[..., None]  # (N_r, 1, 1, 1) over the C axis
     vel_n_stack = jnp.stack([up_n, um_n, uz_n], axis=1)  # (N_r, 3, ...)
-    pP_and_vel = jnp.concatenate([pP[:, None], vel_n_stack], axis=1)
-    D1_batch = apply_y_matrix(flow_.D1_pos, pP_and_vel, component_axis=1)
-    D1g_batch = apply_y_matrix(flow_.D1_ghost, pP_and_vel, component_axis=1)
 
-    # pP pressure gradient (parity (-1)^m -> parity_sign_p).
-    D1_pP = D1_batch[:, 0].at[:g].add(parity_sign_p * D1g_batch[:, 0])
+    # The pressure needs a bare `$D_1$` (for its gradient); the three
+    # velocity components need only `$A_{\mathrm{base}} = D_2 +
+    # (1/r) D_1$`, which is precomputed in the parity-reduced
+    # ``pos``/``ghost`` pair.  So they no longer share one `$D_1$`
+    # batch: applying `$A_{\mathrm{base}}$` to the velocity stack
+    # directly drops the separate `$D_2$` matvec and the field-sized
+    # `$1/r$` multiply-add, taking the stage from a 4-wide `$D_1$` plus
+    # a 3-wide `$D_2$` to a 3-wide `$A_{\mathrm{base}}$` plus a 1-wide
+    # `$D_1$`.
+    D1_pP = _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, pP, parity_sign_p)
     m_over_r = m * inv_r  # (1, Nm, 1) * (Nr, 1, 1) → (Nr, Nm, 1)
 
     grad_pP_plus = D1_pP - m_over_r * pP
@@ -535,16 +535,16 @@ def _imm_iteration_vp(
     grad_pP_z = ikz * pP
 
     # Batched `$H_k^-$` matvec for all three components (y-leading).
-    D1_vel = D1_batch[:, 1:]
-    D1g_vel = D1g_batch[:, 1:]
-    D2_all = apply_y_matrix(flow_.D2_pos, vel_n_stack, component_axis=1)
-    D2g_all = apply_y_matrix(flow_.D2_ghost, vel_n_stack, component_axis=1)
-    common_hk = D2_all + inv_r_y * D1_vel
-    ghost_hk = D2g_all + inv_r_y[:g] * D1g_vel
     parity_hk = jnp.stack(
         [parity_sign_v, parity_sign_v, parity_sign_p], axis=1
     )
-    Abase_stack = common_hk.at[:g].add(parity_hk * ghost_hk)
+    Abase_stack = _parity_y_matvec(
+        flow_.A_base_pos,
+        flow_.A_base_ghost,
+        vel_n_stack,
+        parity_hk,
+        component_axis=1,
+    )
     meff2_stack = jnp.stack([m_plus_1_sq, m_minus_1_sq, m_sq], axis=1)
     inv_r2 = flow_.inv_r2[:, None, None, None]  # (N_r, 1, 1, 1)
     lapl_stack = (

@@ -295,12 +295,14 @@ def test_abase_matvec_matches_dense() -> None:
     A_even = np.asarray(_build_A_base(D1_even, D2_even, inv_r))
     A_odd = np.asarray(_build_A_base(D1_odd, D2_odd, inv_r))
 
+    # The matvec applies the *precomputed* parity-reduced pair, so the
+    # stub carries it exactly as ``CylindricalFlow.__post_init__``
+    # builds it -- note the ghost rows take ``inv_r[:g_rows]``, which
+    # is what the reference below (the independent full even/odd
+    # matrices) would catch getting wrong.
     flow_ = SimpleNamespace(
-        D1_pos=D1_pos,
-        D2_pos=D2_pos,
-        D1_ghost=D1_ghost,
-        D2_ghost=D2_ghost,
-        inv_r=inv_r,
+        A_base_pos=_build_A_base(D1_pos, D2_pos, inv_r),
+        A_base_ghost=_build_A_base(D1_ghost, D2_ghost, inv_r[:g_rows]),
     )
 
     Nm = params.res.nz - 1

@@ -1678,13 +1678,17 @@ def _imm_iteration_vw(
     state_cn = from_pm_basis(c * velocity_j + (1 - c) * velocity_n)
     nonlin = from_pm_basis(c * nonlin_j + (1 - c) * nonlin_n)
 
-    # Stage 1: two batched FD matvecs.  Only the fields entering a
-    # vector Laplacian need D2; the rest need D1 alone.  Both stacks
+    # Stage 1: two batched FD matvecs.  The two fields entering a
+    # vector Laplacian need exactly `$A_\mathrm{base} = D_2 + (1/r)
+    # D_1$` and nothing else from `$D_1$`, so they take the fused
+    # operator (one GEMM per field instead of two, and no field-sized
+    # `$1/r$` multiply-add); the rest need `$D_1$` alone.  Both stacks
     # are y-leading, so both GEMMs stay transpose-free.
+    A_in = jnp.stack([state_n[1], state_cn[2]], axis=1)
+    A_pair_n = apply_y_matrix(flow_.A_base, A_in, component_axis=1)
+    A_ur_n, A_ut_it = A_pair_n[:, 0], A_pair_n[:, 1]
     d1_in = jnp.stack(
         [
-            state_n[1],  # u_r^n                 -> Phi^n
-            state_cn[2],  # u_theta^it           -> (Delta u)_theta
             state_cn[0],  # u_z^it               -> omega_theta
             nonlin[0],  # N_z                    -> C_theta
             flow_.rs[:, None, None] * nonlin[2],  # r N_theta -> C_z
@@ -1692,10 +1696,6 @@ def _imm_iteration_vw(
         axis=1,
     )
     d1 = apply_y_matrix(flow_.D1, d1_in, component_axis=1)
-    d2_in = jnp.stack([state_n[1], state_cn[2]], axis=1)
-    d2 = apply_y_matrix(flow_.D2, d2_in, component_axis=1)
-    A_ur_n = d2[:, 0] + inv_r * d1[:, 0]
-    A_ut_it = d2[:, 1] + inv_r * d1[:, 1]
 
     # Stage 2: the evolved scalars, recomputed from the carried
     # u_+/u_- state on FULL rows (walls included).  The mean plane
@@ -1709,8 +1709,8 @@ def _imm_iteration_vw(
     # with the conservative C_z that annihilates a discrete gradient
     # exactly (docstring).
     C_r = im * inv_r * nonlin[0] - ikz * nonlin[2]
-    C_theta = ikz * nonlin[1] - d1[:, 3]
-    C_z = inv_r * (d1[:, 4] - im * nonlin[1])
+    C_theta = ikz * nonlin[1] - d1[:, 1]  # D1 N_z
+    C_z = inv_r * (d1[:, 2] - im * nonlin[1])
     S_phi = jnp.where(
         mean_mask, nonlin[0], -(im * inv_r * C_z - ikz * C_theta)
     )
@@ -1720,9 +1720,8 @@ def _imm_iteration_vw(
     # plus the spin partners lagged to the running iterate.
     pair_n = jnp.stack([phi_n, omega_n], axis=1)  # (Nr, 2, Nm, Nkz)
     inv_r_y = inv_r[..., None]  # (Nr, 1, 1, 1) over the C axis
-    A_pair = apply_y_matrix(flow_.D2, pair_n, component_axis=1) + inv_r_y * (
-        apply_y_matrix(flow_.D1, pair_n, component_axis=1)
-    )
+    # One fused `$A_\mathrm{base}$` matvec, as in stage 1.
+    A_pair = apply_y_matrix(flow_.A_base, pair_n, component_axis=1)
     # ``pair2`` rides ``m2``'s spec, which is unsharded on the k_z
     # (np1) axis, while ``phi2`` inherited the mean mask's full one --
     # so the broadcast must be given the target sharding explicitly or
@@ -1742,7 +1741,7 @@ def _imm_iteration_vw(
             A_ut_it
             - (pair2 * inv_r2 + kz2) * state_cn[2]
             + spin * state_cn[1],  # (Delta u)_theta
-            ikz * state_cn[1] - d1[:, 2],  # omega_theta
+            ikz * state_cn[1] - d1[:, 0],  # omega_theta (D1 u_z^it)
         ],
         axis=1,
     )
