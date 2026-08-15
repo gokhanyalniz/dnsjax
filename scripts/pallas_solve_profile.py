@@ -2295,13 +2295,21 @@ def main() -> None:
         # by the corrector kernels.
         from dnsjax.ic.random_field import generate_random_state
 
-        state = generate_random_state(
-            params.init.random_amplitude,
-            params.init.random_smoothness,
-            params.init.random_seed,
-            params.init.random_mean_flow,
-        )
-        s = state  # chained (donated) from here on; state unused after
+        # ICs are physical; the steppers work in the geometry's solver
+        # basis (the single crossing ``__main__`` performs, and the one
+        # Parts B/C above already do).  Without it the cylindrical
+        # geometries step a state the solver reads as ``u_+``/``u_-``:
+        # no error, but a different corrector count and a trajectory
+        # that can blow up -- so the captured profile would not be the
+        # one a real run produces.
+        s = getattr(m, "to_solver_basis", lambda x: x)(
+            generate_random_state(
+                params.init.random_amplitude,
+                params.init.random_smoothness,
+                params.init.random_seed,
+                params.init.random_mean_flow,
+            )
+        )  # chained (donated) from here on
         for _ in range(3):
             s, _e, _c = m.predict_and_fully_correct(s)
         jax.block_until_ready(s)
