@@ -37,6 +37,10 @@ tested against hand-built spectra); :func:`integral_lengths` wraps it
 for a snapshot pair.  Cartesian wall-bounded snapshots only (the
 stored layout is ``(y, k_z, k_x)`` per component and the base flow
 cancels in the pair difference).
+
+Assemble the pair with :func:`partner_of` rather than by hand: the
+difference field is meaningful only between two snapshots of the *same*
+lockstep write, and :func:`integral_lengths` enforces that.
 """
 
 from __future__ import annotations
@@ -46,8 +50,18 @@ from pathlib import Path
 import numpy as np
 
 from .. import read_state
+from .._core import CARTESIAN_SYSTEMS, read_meta
 
-_CARTESIAN = ("plane-couette", "plane-poiseuille")
+
+def partner_of(reference: str | Path) -> Path:
+    """The twin partner's path for a reference ``state*.tar``.
+
+    Mirrors ``dnsjax.twin.driver._partner_path`` -- the naming rule the
+    driver writes with -- so callers do not hand-assemble the pair.
+    The file is not required to exist.
+    """
+    reference = Path(reference)
+    return reference.with_name(f"{reference.stem}_twin{reference.suffix}")
 
 
 def _integrate_to_first_zero(f: np.ndarray, r: np.ndarray) -> float:
@@ -126,11 +140,28 @@ def integral_lengths(
     Reads both snapshots' stored spectra, forms the difference's
     `$k_x = 0$` column (mean mode dropped), and dispatches to
     :func:`integral_lengths_from_modes` at the anchor ``y0``.
+
+    The two snapshots must be the same lockstep write -- same system
+    and same `$(t, \\mathrm{it})$`, as ``dnsjax-twin`` itself requires
+    of a resumed pair.  Differencing across times subtracts two
+    unrelated states: the result looks like a difference field and the
+    lengths that follow are noise, so the mismatch raises rather than
+    returning a plausible number.  :func:`partner_of` gives the
+    partner path for a reference snapshot.
     """
+    t_ref, t_twin = read_meta(reference), read_meta(partner)
+    if (t_ref["t"], t_ref["it"]) != (t_twin["t"], t_twin["it"]):
+        raise ValueError(
+            f"the pair is not at the same time: {Path(reference).name} "
+            f"is at (t={t_ref['t']}, it={t_ref['it']}) but "
+            f"{Path(partner).name} is at (t={t_twin['t']}, "
+            f"it={t_twin['it']}); pair a reference with its own "
+            "partner (see partner_of)."
+        )
     ref = read_state(reference, return_physical=False, return_spectral=True)
     twin = read_state(partner, return_physical=False, return_spectral=True)
     system = ref.params.phys.system
-    if system not in _CARTESIAN:
+    if system not in CARTESIAN_SYSTEMS:
         raise ValueError(
             "integral_lengths supports the Cartesian wall-bounded "
             f"snapshots only (system {system!r})."

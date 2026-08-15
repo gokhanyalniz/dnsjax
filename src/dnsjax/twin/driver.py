@@ -13,6 +13,14 @@ doi:10.1017/jfm.2026.11608.  Cartesian wall-bounded flows only
 singleton (grid, operators, jitted steppers, ``dt``), so their
 difference is purely dynamical.
 
+Baseline cost, before any diagnostic: a twin run is **two solver runs
+sharing one program** -- 2 spectral states resident (4 under
+``cnab2``, which carries an RHS history per state) and 2 stepper calls
+per step, so plan `$\sim\!2\times$` the memory and `$\sim\!2\times$`
+the wall time of the same flow at the same resolution.  The timing
+line says ``2x steps per t`` for that reason.  What the ``[twin]``
+cadences add on top is priced in :class:`TwinParams`.
+
 Launch exactly like the production solver (``mpirun -np N
 .venv/bin/dnsjax-twin ...``, from a scratch directory); the parameter
 surface is the flow's own plus the ``[twin]`` extension section below.
@@ -175,6 +183,10 @@ class TwinParams(BaseModel):
       double-precision plane-Poiseuille target.  If it ever binds,
       the two ways to trade transforms for footprint are in
       :mod:`dnsjax.twin.diagnostics`' "Budget terms".
+      In *time* it is equally unsubtle: one sample costs
+      `$\sim\!0.9$` of a twin step (measured, size-independent over
+      `$48^3$`-`$64^3$`), so ``it_budget = 1`` nearly doubles the
+      run and `$10$` costs `$\sim\!9\,\%$`.
     - ``spectra_ref`` is a **disk** knob only.  The reference
       spectrum is reduced whether or not it is stored
       (:func:`dnsjax.twin.diagnostics.twin_spectra_2d` returns both),
@@ -184,9 +196,13 @@ class TwinParams(BaseModel):
     ``it_energy`` is the one per-*step* cost at its default of 1: an
     extra jitted call per step whose ``delta`` and ``du1`` are each
     read four times, so both materialise (~2 full-state complex
-    temporaries).  That is the intended Lyapunov sampling rate; the
+    temporaries).  It is **a few percent of a twin step** -- 1.3 % at
+    plane-Couette `$48^3$`, 5.0 % at `$64^3$` (the rise is the
+    working set leaving cache; the step itself is pure FFT/solve
+    work either way) -- so the default needs no tuning, which is
+    just as well: it is the intended Lyapunov sampling rate.  The
     ``E_d`` vs ``E_dU + E_du1 + E_du2`` redundancy is a deliberate
-    consistency guard.
+    consistency guard and is not worth trading for that few percent.
     """
 
     model_config = ConfigDict(extra="forbid")
