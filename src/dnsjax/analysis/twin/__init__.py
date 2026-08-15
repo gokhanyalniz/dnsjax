@@ -23,7 +23,11 @@ from .ensemble import (
     fit_exponential_rate,
     fit_linear_rate,
 )
-from .lengths import integral_lengths, integral_lengths_from_modes
+from .lengths import (
+    integral_lengths,
+    integral_lengths_from_modes,
+    partner_of,
+)
 from .series import TwinSeries, budget_sums, read_dat, read_twin
 from .spectra import (
     TwinSpectraData,
@@ -41,6 +45,7 @@ __all__ = [
     "fit_linear_rate",
     "integral_lengths",
     "integral_lengths_from_modes",
+    "partner_of",
     "read_dat",
     "read_twin",
     "read_twin_spectra",

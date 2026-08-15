@@ -253,16 +253,28 @@ def test_fresh_start_e0_exact() -> None:
 
 
 def test_zero_perturbation_bit_identity() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        result = _run_twin(tmp, _twin_args(1.05, e0=0.0))
-        assert "exact copy" in result.stdout
-        cols = read_dat(Path(tmp) / "twin.dat")
-        for name in TWIN_COLS[1:-1]:  # every E_d* column, not E_ref
-            assert (cols[name] == 0.0).all(), (
-                f"{name} nonzero: twin stepping is not bit-identical"
-            )
-        assert (cols["E_ref"] > 0).all()
-    print("e0 = 0 bit-identity: OK")
+    # ``--outs.it_steps 1`` is load-bearing, not incidental: on a
+    # recording step the *reference* takes
+    # ``predict_and_fully_correct_measured`` while the partner takes
+    # the plain variant -- two separately compiled programs, the one
+    # place the lockstep loop does not literally run the same jitted
+    # function on both states.  Without the flag ``do_record`` is
+    # always false (``outs.it_steps`` defaults to ``None``) and this
+    # guard never sees that path.
+    for extra in ([], ["--outs.it_steps", "1"]):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _run_twin(tmp, [*_twin_args(1.05, e0=0.0), *extra])
+            assert "exact copy" in result.stdout
+            cols = read_dat(Path(tmp) / "twin.dat")
+            for name in TWIN_COLS[1:-1]:  # every E_d* column, not E_ref
+                assert (cols[name] == 0.0).all(), (
+                    f"{name} nonzero with {extra}: twin stepping is "
+                    "not bit-identical"
+                )
+            assert (cols["E_ref"] > 0).all()
+            if extra:
+                assert (Path(tmp) / "steps.dat").exists()
+    print("e0 = 0 bit-identity (plain + measured reference): OK")
 
 
 # ── Paired restart ───────────────────────────────────────────────────
@@ -362,11 +374,12 @@ def test_spectra_stream() -> None:
     Per-record ``e_delta`` sums equal the matching ``twin.dat``
     ``E_d`` rows; a paired restart appends with one seam duplicate
     (dropped by the reader) on a uniform time grid; a ``.bin``
-    without its sidecar is a hard error; the final snapshot pair
-    feeds ``integral_lengths`` (finite, positive, bounded by the
-    domain).
+    without its sidecar is a hard error; the final snapshot pair,
+    addressed through ``partner_of``, feeds ``integral_lengths``
+    (finite, positive, bounded by the domain) while a pair from two
+    *different* writes is refused.
     """
-    from dnsjax.analysis.twin.lengths import integral_lengths
+    from dnsjax.analysis.twin.lengths import integral_lengths, partner_of
     from dnsjax.analysis.twin.spectra import (
         decorrelation_ratio,
         read_twin_spectra,
@@ -400,16 +413,27 @@ def test_spectra_stream() -> None:
         assert np.isfinite(ratio[np.asarray(data.e_ref) > 0]).all()
 
         # The final pair feeds the integral-length diagnostic.
-        lengths = integral_lengths(
-            Path(tmp) / "state00002.tar",
-            Path(tmp) / "state00002_twin.tar",
-        )
+        final = Path(tmp) / "state00002.tar"
+        assert partner_of(final) == Path(tmp) / "state00002_twin.tar"
+        lengths = integral_lengths(final, partner_of(final))
         lz = 3.7699111843077517
         assert (lengths["variance"] > 0).all()
         assert np.isfinite(lengths["l_z"]).all()
         assert (lengths["l_z"] > 0).all() and (lengths["l_z"] <= lz / 2).all()
         assert np.isfinite(lengths["l_y"]).all()
         assert (lengths["l_y"] > 0).all() and (lengths["l_y"] <= 2).all()
+
+        # A pair from two different writes is refused: both snapshots
+        # are real and readable, and the difference of two unrelated
+        # states would otherwise pass for a difference field.
+        try:
+            integral_lengths(final, partner_of(Path(tmp) / "state00001.tar"))
+        except ValueError as exc:
+            assert "not at the same time" in str(exc), exc
+        else:
+            raise AssertionError(
+                "integral_lengths accepted a mismatched snapshot pair"
+            )
 
         # A stream file without its sidecar is refused loudly.
         (Path(tmp) / "twin_spectra.json").unlink()

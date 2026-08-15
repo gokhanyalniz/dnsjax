@@ -95,9 +95,44 @@ Four evaluation classes, the first three FFT-free:
   `$\hat{\mathbf{a}}$` -- fully alias-controlled, never a third
   physical field.  Pairs are grouped by `$\mathbf{c}$` (one gradient
   set each) with the three advector fields' physical forms cached:
-  69 single-field transforms per sample, ~the FFT cost of 5-10
-  steps.  ``solver.rhs_transform_chunks`` bounds the transform
-  transient via :func:`dnsjax.fft.chunked_transform`.
+  69 single-field transforms per sample.  **A sample costs
+  `$\sim\!0.9$` of a twin step** (both states), measured on CPU at
+  plane-Couette `$48^3$` and `$64^3$` -- the same ratio at both, and
+  the whole of it transform time.  So ``it_budget`` reads directly as
+  a throughput tax: `$1$` nearly doubles the run, `$10$` costs
+  `$\sim\!9\,\%$`.
+
+  **69 is the floor for this pairing**, and the grouping is the
+  right way round.  The nine rows use 3 distinct `$\mathbf{b}$`,
+  4 distinct `$\mathbf{c}$` and **8** distinct
+  `$(\mathbf{b},\mathbf{c})$` pairs -- 8, not 9, because
+  ``(du2, ru2)`` serves two production rows that differ only in
+  `$\mathbf{a}$`, and one `$\mathbf{q}$` covers both.  So
+  `$3\times3 = 9$` advector, `$4\times9 = 36$` gradient and
+  `$8\times3 = 24$` back-transforms, each of which some row needs.
+  Caching the *advectors* and re-deriving the gradients is what
+  makes it minimal: there are fewer distinct `$\mathbf{b}$` than
+  `$\mathbf{c}$`, so the other grouping would hold 36 gradient
+  fields to save nothing.  Writing `$(\mathbf{b}\cdot\nabla)
+  \mathbf{c} = \nabla\cdot(\mathbf{b}\mathbf{c})$` (legal, both are
+  solenoidal) trades the 36 gradient transforms for `$8\times9$`
+  tensor back-transforms: 93, worse.
+
+  Two knobs trade against footprint if this program's peak ever
+  binds, and they act on **different** transients -- neither is
+  applied by default (both cost throughput, and the budget is a
+  cadenced diagnostic):
+
+  - ``solver.rhs_transform_chunks`` bounds the *transform-stage*
+    transient inside one :func:`dnsjax.fft.chunked_transform` call
+    (the padded intermediates of a 9-field batch), for the same
+    69 single-field transforms in more, smaller dispatches.  It
+    leaves the ~21 live fields alone.
+  - Moving the advector transform *inside* the pair loop is what
+    cuts those: the 9 cached `$\mathbf{b}$` fields become 3 live
+    ones, peak 21 `$\to$` 15 (-29 %), for 84 transforms instead of
+    69 (+22 %) since each of the 8 pairs then re-transforms its own
+    advector.
 
 `$U^{(1)}$` and `$\Delta U$` are needed only as `$(3, N_y)$`
 profiles in the a/b/c mean slots (no advecting-`$U^{(1)}$` term
@@ -450,6 +485,15 @@ def _mode_energy_replicated(field: Array, w: Array, k_metric: Array) -> Array:
     launches.  Shape ``(N_{k_z}, N_{k_x})`` *padded* sizes; the
     padding rows/columns weight zero data and are stripped by the
     caller.
+
+    Called twice per sample (difference and reference), i.e. two
+    ``psum``\ s where one stacked call would do.  Deliberately left
+    alone: the collective carries one mode plane
+    (`$\sim$`1 MB at a `$1024\times257\times256$` target) against the
+    `$\sim$`3 GB *spectral field* each call streams through the
+    einsum, so merging them would save `$\sim$`0.03 % of a diagnostic
+    that already runs on a cadence.  The cost here is the field pass,
+    and there is only one of those per state either way.
     """
     nz_spec, nx_spec = sharding.spec_shape[1], sharding.spec_shape[2]
     vf = derived_params.volume_fac

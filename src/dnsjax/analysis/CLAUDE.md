@@ -94,7 +94,9 @@ and its rationale: `flows/registry.py`.
   budget sums), `ensemble.py` (member-tree aggregation + growth-rate
   fits, CLI), `spectra.py` (`twin_spectra.bin` reader +
   decorrelation ratio), `lengths.py` (integral length scales of the
-  difference field from a snapshot pair). Not imported by
+  difference field from a snapshot pair — address the pair with its
+  `partner_of`; `integral_lengths` rejects two snapshots at different
+  `(t, it)`). Not imported by
   `__init__.py`; its own `__init__` re-exports the API. Guard:
   `tests/test_twin_analysis.py`.
 - `_core.py` — engine: raw chunk I/O, transforms, coordinate
