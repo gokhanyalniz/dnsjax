@@ -1019,9 +1019,6 @@ class CylindricalFlow:
     D1_pos:
         Common (parity-independent) part of the
         first-derivative FD matrix, shape ``(Nr, Nr)``.
-    D2_pos:
-        Common part of the second-derivative FD matrix,
-        shape ``(Nr, Nr)``.
     D1_ghost:
         Ghost correction for `$D_1$`
         (`$D_{1,\mathrm{even}} - D_{1,\mathrm{pos}}$`).
@@ -1030,10 +1027,15 @@ class CylindricalFlow:
         those rows are stored: shape ``(g, Nr)``.  Applied
         via ``out.at[:g].add(...)`` so the ghost GEMM cost
         is `$g/N_r$` of the pos part instead of doubling it.
-    D2_ghost:
-        Ghost correction for `$D_2$`
-        (`$D_{2,\mathrm{even}} - D_{2,\mathrm{pos}}$`),
-        shape ``(g, Nr)`` (same row count).
+    A_base_pos, A_base_ghost:
+        The radial base operator
+        `$A_{\mathrm{base}} = D_2 + (1/r) D_1$` in that same
+        ``pos``/``ghost`` pair, shapes ``(Nr, Nr)`` / ``(g, Nr)``.
+        Every runtime consumer of `$D_2$` needs exactly this
+        combination and nothing else from it, so the combination is
+        what is carried; `$D_{2,\mathrm{pos}}$` and its ghost stay
+        build-time locals (they still form ``D2_wall`` and the
+        even/odd pair in ``__post_init__``).
     D1_wall:
         Last row of `$D_1$` (parity-independent),
         shape ``(1, Nr)``.
@@ -1060,9 +1062,7 @@ class CylindricalFlow:
     curl_base_flow_padded: Array = field(init=False)
     base_flow_adv_padded: Array = field(init=False)
     D1_pos: Array = field(init=False)
-    D2_pos: Array = field(init=False)
     D1_ghost: Array = field(init=False)
-    D2_ghost: Array = field(init=False)
     D1_wall: Array = field(init=False)
     D2_wall: Array | None = field(init=False)
     A_base_even: Array = field(init=False)
@@ -1147,19 +1147,19 @@ class CylindricalFlow:
         ) = build_parity_reduced_matrices(self.rs, params.res.fd_order)
 
         self.D1_pos = jax.device_put(D1_pos, sharding.no_shard)
-        self.D2_pos = jax.device_put(D2_pos, sharding.no_shard)
 
         # Ghost correction matrices: the difference between the
         # parity-reduced and the common (pos) part.  Stencils cross
         # r = 0 only near the axis, so just the first g rows are
         # nonzero; only those rows are stored and applied (a full
         # (Nr, Nr) ghost GEMM would cost as much as its pos
-        # counterpart, doubling every FD matvec).
+        # counterpart, doubling every FD matvec).  ``g_rows`` is the
+        # union over D1 and D2, so it bounds the ghost support of
+        # ``A_base_ghost`` too.
         D1_ghost_np = np.asarray(D1_even - D1_pos)
         D2_ghost_np = np.asarray(D2_even - D2_pos)
         g_rows = _ghost_row_count(D1_ghost_np, D2_ghost_np)
         self.D1_ghost = jax.device_put(D1_ghost_np[:g_rows], sharding.no_shard)
-        self.D2_ghost = jax.device_put(D2_ghost_np[:g_rows], sharding.no_shard)
 
         # Wall rows of D1/D2 (parity-independent: the ghost correction
         # touches only the first ``g_rows``, never the wall).  D2's is
@@ -2167,8 +2167,13 @@ def _imm_iteration_vw(
     # (D1_pos/D1_ghost are parity-independent; only the ghost sign
     # differs).  The pair needs `$D_2 + (1/r) D_1$` and nothing else
     # from `$D_1$`, so it takes the fused operator rather than riding
-    # the D1 stack: 4 GEMMs instead of 6, and no field-sized `$1/r$`
-    # multiply-add.
+    # the D1 stack: the pair costs 2 GEMMs where a `$D_1$` and a
+    # `$D_2$` were 4, taking the stage from 7 to 5, and the field-sized
+    # `$1/r$` multiply-add over the pair goes with them.
+    # GEMM counts here and below are **full-width `pos` field-GEMMs**
+    # -- one `$N_r \times N_r$` matrix against one field.  The
+    # `$g \times N_r$` ghost partner of each rides along at ~`$g/N_r$`
+    # of that cost and is not counted.
     pair_n = jnp.stack([velocity_n[1], velocity_n[2]], axis=1)
     d1_in = jnp.stack(
         [

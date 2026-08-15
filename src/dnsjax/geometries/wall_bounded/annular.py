@@ -1719,7 +1719,7 @@ def _imm_iteration_vw(
     # Stage 4: the explicit CN half of both slots (they share L_v),
     # plus the spin partners lagged to the running iterate.
     pair_n = jnp.stack([phi_n, omega_n], axis=1)  # (Nr, 2, Nm, Nkz)
-    inv_r_y = inv_r[..., None]  # (Nr, 1, 1, 1) over the C axis
+    inv_r2_y = inv_r2[..., None]  # (Nr, 1, 1, 1) over the C axis
     # One fused `$A_\mathrm{base}$` matvec, as in stage 1.
     A_pair = apply_y_matrix(flow_.A_base, pair_n, component_axis=1)
     # ``pair2`` rides ``m2``'s spec, which is unsharded on the k_z
@@ -1735,7 +1735,7 @@ def _imm_iteration_vw(
         ],
         axis=1,
     )
-    lapl_pair = A_pair - (meff2_pair * inv_r_y**2 + kz2[:, None]) * pair_n
+    lapl_pair = A_pair - (meff2_pair * inv_r2_y + kz2[:, None]) * pair_n
     partner = jnp.stack(
         [
             A_ut_it
