@@ -8,8 +8,9 @@ the ``twin.dat`` (+ optional ``twin_budget.dat``) streams of one
 on the shared relative-time grid `$t - t_\mathrm{parent}$` (members
 start from different parent snapshots, so absolute times differ) and
 returns per-column stacks with ensemble mean and standard deviation
--- the inputs of the paper's figures (Egerique-de-la-Concha & Hwang,
-*J. Fluid Mech.* **1036**, A52, 2026).
+(``ddof = 0``, the member spread -- see :func:`aggregate_members` for
+the standard-error conversion) -- the inputs of the paper's figures
+(Egerique-de-la-Concha & Hwang, *J. Fluid Mech.* **1036**, A52, 2026).
 
 Growth-rate fits (least squares over a caller-chosen window):
 
@@ -83,6 +84,15 @@ def aggregate_members(tree: str | Path, out: str | Path | None = None) -> dict:
     budget column under ``budget_<c>``.  ``columns`` lists the
     aggregated names and ``members_json`` carries the tree's
     provenance verbatim.
+
+    ``std_*`` is NumPy's default **population** standard deviation
+    (``ddof = 0``) -- the spread of the members themselves, which is
+    the quantity a member-scatter band plots.  It is *not* an
+    uncertainty on ``mean_*``: for that, take the standard error
+    `$\\sigma_{\\bar{x}} = \\mathrm{std}/\\sqrt{N-1}$` (the
+    `$\\sqrt{N/(N-1)}$` bias correction and the `$1/\\sqrt{N}$`
+    cancel to this), with ``N = n_members``.  The distinction is 5 %
+    at ten members, so state which one a figure shows.
     """
     tree = Path(tree)
     with open(tree / "members.json") as fh:
