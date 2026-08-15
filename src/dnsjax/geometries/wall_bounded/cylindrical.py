@@ -2167,8 +2167,13 @@ def _imm_iteration_vw(
     # (D1_pos/D1_ghost are parity-independent; only the ghost sign
     # differs).  The pair needs `$D_2 + (1/r) D_1$` and nothing else
     # from `$D_1$`, so it takes the fused operator rather than riding
-    # the D1 stack: 4 GEMMs instead of 6, and no field-sized `$1/r$`
-    # multiply-add.
+    # the D1 stack: the pair costs 2 GEMMs where a `$D_1$` and a
+    # `$D_2$` were 4, taking the stage from 7 to 5, and the field-sized
+    # `$1/r$` multiply-add over the pair goes with them.
+    # GEMM counts here and below are **full-width `pos` field-GEMMs**
+    # -- one `$N_r \times N_r$` matrix against one field.  The
+    # `$g \times N_r$` ghost partner of each rides along at ~`$g/N_r$`
+    # of that cost and is not counted.
     pair_n = jnp.stack([velocity_n[1], velocity_n[2]], axis=1)
     d1_in = jnp.stack(
         [

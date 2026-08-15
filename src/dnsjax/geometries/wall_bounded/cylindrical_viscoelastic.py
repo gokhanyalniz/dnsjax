@@ -491,19 +491,51 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         r"""`$A_{\mathrm{base}}^{(\sigma)} c
         = (\partial_r^2 + \tfrac1r\partial_r)c$` on the 6 spin slots,
         each on its own `$(-1)^{m+s}$` parity band.  ``(6, Nr, Nm,
-        Nkz)``."""
-        inv_r_y = self.inv_r[:, None, None, None]  # against (Nr,6,Nm,Nkz)
+        Nkz)``.
+
+        One matvec against the **precomputed** parity-reduced pair
+        (``CylindricalFlow.A_base_pos`` / ``A_base_ghost``), not a
+        `$D_2$` matvec, a `$D_1$` matvec and a field-sized `$1/r$`
+        multiply-add between them: `$D_1 c$` has no other consumer
+        here (the tensor's own radial derivatives are separate,
+        narrower stacks -- ``dr_batch`` and
+        ``div_c_radial_derivatives``), which is the premise the
+        curvilinear fusion needs.  6 full-width field-GEMMs instead of
+        12, and one fewer ``(N_r, 6, N_m, N_{k_z})`` transient.
+
+        **It buys no measurable wall time on CPU** -- interleaved A/B
+        at `$64^3$`, both orderings, warm-up discarded: this flow
+        -1.8 % at ``num_c = 0``; the annular twin -0.7 % at
+        ``num_c = 0`` *and* -0.7 % again at ``num_c = 3-4`` (chained,
+        so the field develops).  Every one of those sits inside a
+        5-25 % within-arm spread, and the two operating points agreeing
+        to 0.0 pp on the annulus is what makes "wash" the right reading
+        rather than "unresolved".  An sPTT step is dominated by its
+        ~36-field transform batch, not by FD GEMMs, so halving one FD
+        stage does not move the clock.
+
+        (Chaining *this* flow at `$64^3$` does not give a usable
+        measurement: the corrector collapses from 10 to 0 mid-run and
+        the step drops 3.7x, so the arms get sampled at different
+        points of a relaxing transient -- 260 % within-arm spread.
+        Take the annulus for the developed-field point.)
+
+        It is kept on the grounds that do not need a stopwatch:
+        strictly fewer FLOPs (6 full-width field-GEMMs instead of 12),
+        one fewer field-sized transient -- which is what bites at
+        production sizes -- and consistency with the four velocity
+        sites.  Whether it pays on **GPU** is untested and would not
+        follow from any of this: the balance there is far less
+        FFT-dominated (~47 % IMM on an H100).
+        """
         par = _parity_signs(TENSOR_SPIN, fourier_)
         # y-leading (Nr, 6, Nm, Nkz): transpose-free GEMM, and the ghost
         # scatter lands on the radial axis.
         c_y = jnp.swapaxes(c_spin, 0, 1)
-        D2_c = _parity_y_matvec(
-            self.D2_pos, self.D2_ghost, c_y, par, component_axis=1
+        A_c = _parity_y_matvec(
+            self.A_base_pos, self.A_base_ghost, c_y, par, component_axis=1
         )
-        D1_c = _parity_y_matvec(
-            self.D1_pos, self.D1_ghost, c_y, par, component_axis=1
-        )
-        return jnp.swapaxes(D2_c + inv_r_y * D1_c, 0, 1)
+        return jnp.swapaxes(A_c, 0, 1)
 
     def mean_profile_dr(self, prof: Array, spin: int) -> Array:
         r"""`$\partial_r$` of one `$m = 0$` profile, ``(Nr,)``.
