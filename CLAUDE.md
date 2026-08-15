@@ -41,6 +41,16 @@ plumbing: its module docstring.
 `uv run pytest -m "not slow"`              + the two quick mpirun rows
 `uv run pytest`                            everything
 
+Before launching a suite, ask what the change can actually **reach**
+-- not what the file looks like it touches -- and run the cheapest
+check that covers exactly that (the Tests list below picks a targeted
+script; a one-line `python -c` import often settles a plumbing
+question outright). An import already on the graph cannot change the
+graph; a docs/type-hint pass cannot change behaviour. A run that
+cannot distinguish "the change is fine" from "the change was never
+involved" buys nothing and holds the one-suite-at-a-time slot
+meanwhile.
+
 Background a long run and tail it for progress -- and kill it early
 when something is clearly wrong instead of waiting out the timeout.
 
