@@ -89,12 +89,25 @@ class Distribution(BaseModel):
 
     Process topology
     ----------------
+    Only a **multi-process** run needs a launcher.  One
+    process starts no distributed runtime at all
+    (``bootstrap._bootstrap_distributed``), so a run that
+    fits in one is launched directly -- no ``mpirun``, no
+    coordinator, no MPI on the machine, ``uv run dnsjax ...``
+    included.  On CPU that means exactly one device: several
+    CPU devices in one process is oversubscription, and
+    asking for it is refused with the ``mpirun -np N`` that
+    works.
+
     ``np0 * np1`` counts *devices*, not processes: the mesh
     only requires ``jax.device_count() == np0 * np1``, so a
     multi-GPU run may be one process per device (the usual
     ``mpirun``/``srun -n N`` launch) **or a single process
-    addressing all devices** -- launch one task with
-    ``JAX_LOCAL_DEVICE_IDS=0,1,...`` spanning the GPUs
+    addressing all devices** -- which needs no launcher
+    either, since a lone process takes every visible GPU.
+    Under a launcher, that process is instead narrowed to its
+    local rank's device unless
+    ``JAX_LOCAL_DEVICE_IDS=0,1,...`` spans the GPUs
     (overrides the SLURM one-device-per-task heuristic),
     e.g. ``srun -n 1 --overlap`` inside a 4-GPU allocation
     with ``JAX_LOCAL_DEVICE_IDS=0,1,2,3 --dist.np0 2
@@ -122,6 +135,36 @@ class Distribution(BaseModel):
     JAX's SLURM detection uses ``[SLURM_LOCALID]`` by
     default, which is correct under full visibility).
 
+    The ranks find each other from the launcher environment
+    when it describes itself fully enough, and otherwise from
+    JAX's own cluster detection (SLURM under ``srun``, the
+    cloud environments, Open MPI 4).  The layout comes from
+    the MPI implementation (``OMPI_COMM_WORLD_*``, or the
+    MPICH/MVAPICH2 equivalents) and the coordinator from
+    ``JAX_COORDINATOR_ADDRESS``, else -- in order -- loopback
+    when every rank is on this node, the launcher's own
+    daemon URI, or the queueing system's node list
+    (``PBS_NODEFILE``, the SLURM node list,
+    ``LSB_DJOB_HOSTFILE`` / ``LSB_HOSTS``, ``PE_HOSTFILE``).
+    That covers Open MPI 5, whose PRRTE launcher dropped the
+    ``OMPI_MCA_orte_hnp_uri`` JAX's plugin keys on, and every
+    scheduler JAX has no plugin for; a machine matching
+    nothing is one ``JAX_COORDINATOR_ADDRESS`` export away,
+    and says so.  The port is derived from a per-*launch*
+    identifier so that concurrent runs inside one allocation
+    cannot collide on it (``JAX_COORDINATOR_PORT``
+    overrides).  Rank *discovery* only: GPU collectives
+    remain NCCL, and ``JAX_LOCAL_DEVICE_IDS`` is honoured
+    either way, so the single-process launch above is
+    unaffected.
+
+    A launch the environment reports as **one process** skips
+    the distributed runtime altogether -- there is nothing to
+    coordinate -- which is why a single-rank run needs no
+    coordinator, and no site knowledge, anywhere.  Setting
+    ``JAX_LOCAL_DEVICE_IDS`` opts back in, since narrowing a
+    process to a subset of its devices is JAX's to apply.
+
     CPU runs: threads per rank
     -------------------------
     A distributed CPU run is pinned to **one XLA thread per rank**
@@ -134,7 +177,12 @@ class Distribution(BaseModel):
     cost (plane-Couette ``64 x 48 x 64``, 30 steps: 2 ranks 5.2 s at 1
     thread vs 5.1 s at 8; 4 ranks 3.2 s at 1 thread vs 3.7 s at 4),
     because each rank's arrays are already small enough that
-    thread-dispatch overhead outweighs the intra-op parallelism.
+    thread-dispatch overhead outweighs the intra-op parallelism.  Nor
+    does the one rank with a whole box to itself want more: the same
+    case at 1 rank runs 17.3 / 18.1 s/t at 1 thread against 17.6 /
+    18.0 at 16 (interleaved, 16-core box), i.e. inside the run-to-run
+    spread -- which is why a lone process is pinned like any other and
+    not special-cased.
     Raising it is worth trying only when a run is device-starved
     (few ranks, large per-rank blocks).  ``NPROC`` is what actually
     sizes the pool; the accompanying
@@ -144,16 +192,47 @@ class Distribution(BaseModel):
     CPU runs: cross-process collectives
     -----------------------------------
     JAX's CPU backend defaults to **gloo** (TCP) for cross-process
-    collectives.  Since every dnsjax run is already launched under
-    ``mpirun``, ``JAX_CPU_COLLECTIVES_IMPLEMENTATION=mpi`` is the
-    natural thing to try on a cluster -- but it routes through
-    MPItrampoline, so it additionally needs ``MPITRAMPOLINE_LIB``
-    pointing at an MPIwrapper-built MPI library and aborts at startup
-    without it.  Unmeasured here, and therefore not a dnsjax
-    parameter: the collective share is large enough to be worth the
-    experiment (measured strong scaling on a 16-core box: 1.39x on 2
-    ranks, 2.28x on 4), but the payoff has to be measured on the
-    target machine.
+    collectives; routing them through MPI instead is faster, and a
+    multi-device CPU run is launched under ``mpirun`` by definition --
+    it is one process per device.  Such a run therefore selects MPI by
+    itself whenever it can
+    (``bootstrap.configure_jax_runtime``), and prints which backend it
+    got.  What it needs is the MPItrampoline path JAX's MPI
+    collectives dlopen: ``MPITRAMPOLINE_LIB`` pointing at an
+    MPIwrapper-built ``libmpiwrapper.so``, or that library on
+    ``LD_LIBRARY_PATH``.  Without one the run stays on gloo and says
+    so (building the wrapper: ``README.md``, "Installation"); with
+    ``JAX_CPU_COLLECTIVES_IMPLEMENTATION`` set, that choice wins
+    outright.  Worth having: measured on a 16-core box at 4 ranks,
+    plane-Couette ``32^3``, MPI runs at 0.80 s/t against gloo's 1.14
+    (interleaved), on top of gloo's own strong scaling there (1.39x on
+    2 ranks, 2.28x on 4).  By how much is a property of the target
+    machine's interconnect, so it is worth timing again there.
+
+    Selecting MPI also turns CPU async dispatch off -- XLA's MPI
+    backend cannot take a communicator request from a thread pool, and
+    the failure is load-dependent rather than obvious
+    (``bootstrap._select_cpu_collectives``).  The numbers above already
+    include that cost.  It applies to
+    ``JAX_CPU_COLLECTIVES_IMPLEMENTATION=mpi`` as much as to the
+    discovered choice: the two reach the same backend.
+
+    The wrapper is looked for per rank, on that rank's own filesystem,
+    so it has to be visible identically on every node -- export
+    ``MPITRAMPOLINE_LIB`` in the job script rather than relying on a
+    path that some nodes may not mount, or a node that cannot see it
+    picks gloo while its peers pick MPI and the run hangs.  On macOS
+    the discovery cannot fire at all (it scans ``LD_LIBRARY_PATH`` for
+    ``libmpiwrapper.so``, where macOS has ``DYLD_LIBRARY_PATH``, a
+    ``.dylib`` convention, and SIP stripping that variable from
+    spawned processes), so an explicit ``MPITRAMPOLINE_LIB`` is the
+    only route there -- and whether the macOS wheel carries the MPI
+    collectives at all is untested.
+
+    This holds only while XLA is the first thing in the process to
+    initialize MPI, which is why the rank bootstrap above reads the
+    environment rather than asking an MPI library -- the failure modes
+    are ugly and late, see ``bootstrap._select_cpu_collectives``.
     """
 
     np0: int = Field(

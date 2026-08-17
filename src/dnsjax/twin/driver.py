@@ -21,9 +21,10 @@ the wall time of the same flow at the same resolution.  The timing
 line says ``2x steps per t`` for that reason.  What the ``[twin]``
 cadences add on top is priced in :class:`TwinParams`.
 
-Launch exactly like the production solver (``mpirun -np N
-.venv/bin/dnsjax-twin ...``, from a scratch directory); the parameter
-surface is the flow's own plus the ``[twin]`` extension section below.
+Launch exactly like the production solver (``.venv/bin/dnsjax-twin
+...`` from a scratch directory, under ``mpirun -np N`` only when it is
+multi-process); the parameter surface is the flow's own plus the
+``[twin]`` extension section below.
 ``step.adaptive`` and the ``[force]`` section are rejected (uniform
 sampling; a kick would have to be applied identically to both states);
 ``[probes]`` applies to the **reference** state only, as do

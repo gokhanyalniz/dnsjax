@@ -137,9 +137,10 @@ uv sync
 
 The only prerequisite is [`uv`](https://docs.astral.sh/uv/): `uv sync`
 provisions the pinned Python (3.14) by itself and installs the dependencies.
-An MPI runtime (`mpirun`) is used to *launch* simulation runs — even
-single-process ones — but is not needed for the installation or by the
-post-processing API. The default install pulls a CPU build of JAX. To run on
+An MPI runtime (`mpirun`) is used to *launch* multi-process simulation runs,
+but is not needed for a single-process run — one GPU, or one process
+spanning a node's GPUs — nor for the installation or the post-processing
+API. The default install pulls a CPU build of JAX. To run on
 **CUDA GPUs**, replace `jax` with the CUDA-13 build:
 
 ```bash
@@ -149,6 +150,46 @@ uv add "jax[cuda13]"    # rewrites the jax requirement, re-locks, and re-syncs
 (equivalently, change the `jax>=…` line in `pyproject.toml` to
 `jax[cuda13]>=…` and run `uv sync`). The CUDA wheels are Linux x86-64 only.
 
+### Faster CPU collectives (optional)
+
+Across processes on CPU, JAX exchanges data over TCP (`gloo`) unless it can
+route the collectives through MPI instead — which is faster, and which every
+`dnsjax` run is already positioned to use, being launched under `mpirun`.
+JAX embeds [MPItrampoline](https://github.com/eschnett/MPItrampoline) for
+that but ships no MPI of its own, so it needs a thin wrapper built against
+the machine's MPI:
+
+```bash
+git clone https://github.com/eschnett/MPIwrapper.git
+cd MPIwrapper
+cmake -S . -B build -DMPIEXEC_EXECUTABLE=mpiexec \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=$HOME/mpiwrapper
+cmake --build build
+cmake --install build
+export MPITRAMPOLINE_LIB=$HOME/mpiwrapper/lib/libmpiwrapper.so
+```
+
+A multi-device CPU run picks MPI up by itself once `MPITRAMPOLINE_LIB` is
+set, or once `libmpiwrapper.so` sits on `LD_LIBRARY_PATH`, and prints which
+backend it ended up with. Without the wrapper it stays on `gloo` and says so;
+`JAX_CPU_COLLECTIVES_IMPLEMENTATION` overrides the choice either way. GPU
+runs are unaffected — their collectives go through NCCL.
+
+Every rank looks for the wrapper on its own filesystem, so export the
+variable in the job script rather than relying on a path some nodes may not
+mount: a node that cannot see the library falls back to `gloo` while its
+peers take MPI, and the run then hangs. On macOS the search cannot fire at
+all — it scans `LD_LIBRARY_PATH` for a `.so`, where macOS has
+`DYLD_LIBRARY_PATH`, a `.dylib` convention, and SIP stripping that variable
+from spawned processes — so set `MPITRAMPOLINE_LIB` explicitly there, and
+expect to find out whether the macOS wheel carries the MPI collectives at
+all, which is untested.
+
+This works because nothing in a `dnsjax` run touches MPI before XLA does —
+XLA initializes it without checking whether it is already up, so anything
+that gets there first breaks the run. Worth knowing only if you add
+something that might.
+
 ## Running a simulation
 
 The example below runs a **100-diameter pipe at Re = 2300**, started from a
@@ -157,14 +198,15 @@ problem-defining parameter — the physics, the geometry, the resolution, and
 the time integrator — is written out explicitly, so switching to another flow
 is a matter of editing values rather than learning the defaults.
 
-A `dnsjax` run is always launched through `mpirun` (even for one process),
-invoking the environment's `dnsjax` console script directly — `uv run` does
-not compose with `mpirun`, and `python -m dnsjax` is the equivalent module
-form. Output files (`stats.dat`, snapshots, …) are written to the current
-directory, so launch from a scratch directory:
+A run that fits in one process is launched directly, with no MPI involved;
+only a multi-process run goes through `mpirun -np N`, invoking the
+environment's `dnsjax` console script directly — `uv run` does not compose
+with `mpirun`, and `python -m dnsjax` is the equivalent module form. Output
+files (`stats.dat`, snapshots, …) are written to the current directory, so
+launch from a scratch directory:
 
 ```bash
-mpirun -np 1 .venv/bin/dnsjax \
+.venv/bin/dnsjax \
   --phys.system pipe \
   --phys.re 2300 \
   --geo.lz 200 \
@@ -336,7 +378,8 @@ at registration, so the two namespaces cannot drift into each other.
 `uv run dnsjax --help` shows the global parameters and the flow list,
 `--help <system>` one flow's full surface with per-field descriptions, and
 `--sample-toml <system>` an annotated `parameters.toml` template with every
-default commented out (all exit at the parser — no `mpirun` needed). The
+default commented out (all exit at the parser, before any device is
+touched). The
 authoritative field-by-field documentation lives in
 [`src/dnsjax/parameters.py`](src/dnsjax/parameters.py) and the per-flow
 specs under `src/dnsjax/flows/*/specs/`.
@@ -476,11 +519,8 @@ differently:
   device's $(k_z, k_x)$ mode plane in blocks of
   (`solver.pallas_block_m0`, `solver.pallas_block_m1`) $= (2, 32)$ and pads
   up to whole tiles, so the padded modes cost memory and solve work in
-  proportion to the round-up: per-device mode counts $(n_z - 1)/n_{p0}$
-  and $(n_x/2)/n_{p1}$ near multiples of the block sizes are optimal, and
-  both knobs are adjustable when the mode plane is small. This is a GPU
-  concern only — a CPU run never launches the kernel grid, so it stores
-  the true plane and pays neither cost.
+  proportion to the round-up (what to do about it: *Choosing the device
+  grid* below).
 
 No divisibility choice is rejected, and none of the padding — for the
 device grid or for FFT-friendly sizes — is silent: every adjustment is
@@ -490,28 +530,84 @@ stays visible.
 Crucially, **every device holds the full wall-normal extent in spectral
 space**, so the per-mode banded solves need no communication. The forward and
 inverse FFTs move data between layouts with two reshards implemented as a
-`shard_map` with explicit `reshard` calls; with `np0 = 1` the decomposition
-collapses to the one-dimensional $k_x$ / $z$ split. `jax.device_count()`
-must equal $n_{p0} \cdot n_{p1}$.
+`shard_map` with explicit `reshard` calls; with either grid axis at 1 the
+decomposition collapses to a one-dimensional split and only the other
+reshard remains. `jax.device_count()` must equal $n_{p0} \cdot n_{p1}$.
 
-The pipe example above on a $2 \times 2$ device grid (`nr = 48` and
-$n_z/2 = 256$ split evenly; `ntheta = 96` gives 144 padded azimuthal
-points, divisible by 2; the only round-up is the harmless one-mode pad
-of the 95 stored azimuthal modes):
+### Choosing the device grid
+
+The two exchanges are not equivalent, which is what makes the choice
+matter. The `np1` exchange ($z \leftrightarrow k_x$) runs while the array
+still carries the **oversampled** spanwise extent, whereas the `np0`
+exchange ($y \leftrightarrow k_z$) runs after the truncation to stored
+modes — so at the default oversampling `np1` moves $3/2$ as many bytes.
+And a second grid axis does not divide the first exchange more finely, it
+**adds** a second one: a one-dimensional grid performs one exchange per
+transform, a two-dimensional grid two, each a synchronization point. Both
+the exchange count and its byte volume are visible in the compiled
+program.
+
+**Independently of the device type:**
+
+1. **On one node, stay one-dimensional.** Split on `np0` by default:
+   its exchange carries $2/3$ of the bytes, and its mode axis tiles far
+   more coarsely on GPU. Split on `np1` instead when `ny` (`nr`) will
+   not divide the device count or is too small for it, or when
+   snapshots are frequent.
+2. **Across nodes, align the grid with them** — `np1` = devices per node,
+   `np0` = number of nodes. The grid is laid out row-major over the
+   sorted devices, so `np1` groups fall within a node and `np0` groups
+   hold one device per node. That confines the heavier exchange to the
+   intra-node interconnect and leaves the network $n_{p0} - 1$ large
+   messages per device in place of the many small ones a grid-wide
+   exchange sends, at equal network volume. Splitting on `np1` alone
+   across nodes is the worst choice: it puts the $3/2$-sized exchange
+   on the network.
+3. **Snapshots follow the same pattern**: a one-dimensional grid
+   reshards once per save instead of twice, and `np0 = 1` — the only
+   grid that pads nothing — writes each component as a single
+   contiguous range per device rather than one per wall-normal row.
+
+**On CPU** the mode plane carries no tile round-up — the Pallas kernel
+never runs — so `np1` may be taken as far as the mode count allows, and
+one device per process makes $n_{p0} \cdot n_{p1}$ the rank count.
+Measured at four and eight ranks, the per-exchange cost dominates its
+volume: a two-dimensional grid costs 9 to 19% against the best
+one-dimensional one, where the $3/2$ volume difference between the two
+one-dimensional grids is worth some 18% of the transform itself but only
+a few percent of the step around it. Routing the collectives through MPI
+rather than `gloo` (see *Installation*) speeds up every exchange,
+shifting weight from the per-exchange cost back toward volume.
+
+**On GPU** the mode plane is tiled, which makes `np1` the granular axis:
+keep $(n_x/2)/n_{p1}$ a multiple of `solver.pallas_block_m1` $= 32$,
+where $(n_z-1)/n_{p0}$ need only clear `pallas_block_m0` $= 2$. A
+minimal-box `nx = 32` split four ways leaves four streamwise modes per
+device, padded to 32 — lower the block size, or move the split to `np0`.
+With a fast intra-node interconnect and production-sized arrays the
+exchange is likelier to be limited by volume than by its per-exchange
+cost, and that is the regime where `np0` moving $2/3$ of the bytes should
+tell; comparing the two one-dimensional grids on the target machine is
+then worth one pair of runs.
+
+The pipe example above on four devices of one node, one-dimensionally:
+`np0 = 4` splits the 48 radial points into 12 per device and the 95
+stored azimuthal modes into 24, one padding mode included, leaving the
+whole $n_z/2 = 256$ axial mode axis local (eight whole Pallas tiles):
 
 ```bash
 # CPU: one device per process
 mpirun -np 4 .venv/bin/dnsjax \
-  --dist.np0 2 --dist.np1 2 --dist.platform cpu \
+  --dist.np0 4 --dist.platform cpu \
   --phys.system pipe --phys.re 2300 --geo.lz 200 \
   --res.nz 512 --res.nr 48 --res.ntheta 96 \
   --init.localized_rolls True --stop.max_sim_time 500
 ```
 
 ```bash
-# GPU: a single process addressing all four GPUs on the node
-mpirun -np 1 .venv/bin/dnsjax \
-  --dist.np0 2 --dist.np1 2 --dist.platform cuda \
+# GPU: a single process addressing all four GPUs on the node, no MPI
+.venv/bin/dnsjax \
+  --dist.np0 4 --dist.platform cuda \
   --phys.system pipe --phys.re 2300 --geo.lz 200 \
   --res.nz 512 --res.nr 48 --res.ntheta 96 \
   --init.localized_rolls True --stop.max_sim_time 500
@@ -521,12 +617,27 @@ Because `np0 * np1` counts *devices* rather than processes, a single-node
 multi-GPU run is most reliably launched as one process that addresses every
 visible GPU; multi-node runs use one process per node spanning that node's
 GPUs. The `Distribution` docstring in `parameters.py` covers the SLURM
-launch details.
+launch details. The ranks discover each other from the launcher environment
+where it says enough — the MPI implementation's rank variables plus a
+coordinator address, taken from `JAX_COORDINATOR_ADDRESS`, else from
+loopback when the whole job is on one node, the launcher's own daemon URI,
+or the queueing system's node list (PBS, SLURM, LSF, Grid Engine) — and
+otherwise from JAX's own cluster detection. That covers Open MPI 5, whose
+PRRTE launcher drops the variable JAX's own Open MPI plugin looks for, and
+the schedulers JAX has no plugin for; a site matching nothing is one
+`JAX_COORDINATOR_ADDRESS` export away, and says so rather than failing
+obscurely. A single-process launch coordinates nothing, so it starts no
+distributed runtime and needs none of this — not even a launcher to be
+detected in. On CPU, though, one process means one device: several CPU
+devices in one process is oversubscription, and asking for it is refused
+with the `mpirun -np N` that works.
 
 A distributed **CPU** run is pinned to one XLA thread per rank: the pool
 follows `NPROC`, which the run sets only if unset, so `export NPROC=<n>`
-raises it. The same docstring covers when that is worth doing, and the
-CPU collectives backend.
+raises it. It also routes its cross-process collectives through MPI when it
+finds the MPItrampoline wrapper library (see *Installation*), falling back to
+`gloo` otherwise. The same docstring covers when raising `NPROC` is worth
+doing.
 
 ## Snapshots and external data access
 

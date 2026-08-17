@@ -87,7 +87,9 @@ Two ways to get multiple devices, and they do **not** mix:
 offline/in-process tests force CPU devices via
 `XLA_FLAGS=--xla_force_host_platform_device_count=N` + set
 `params.dist.np0`/`np1` before importing `sharding` (no MPI); a
-`dnsjax` run needs real `mpirun -np N` (1 device/process).
+multi-device `dnsjax` run needs real `mpirun -np N` (1 device/process
+on CPU, where the forced-device trick is refused), or -- on GPU only
+-- one process spanning the visible devices, no MPI.
 
 Single file: `uv run python tests/test_cartesian.py`
 Laminar smoke (1D multi-device):
@@ -97,14 +99,17 @@ Laminar smoke (2D multi-device):
 
 ### Smoke test (laminar time stepping)
 
-Any solver run must be launched via `mpirun` (even `mpirun -np 1 ...`);
-under `mpirun` invoke `.venv/bin/dnsjax` directly (`uv run` does not
-compose with `mpirun`; `python -m dnsjax` is the equivalent module
-form, same `__main__.main()`). `uv run dnsjax --help` needs no mpirun
-(exits at the parser, no side effects). A run writes its `.dat`
-files/snapshots to the cwd, so launch from a scratch dir. `np0 * np1`
-counts devices, not processes; launch recipe, SLURM discipline, and
-the per-task-visibility trap: the `Distribution` docstring in
+A **multi-process** run must be launched via `mpirun -np N`; under
+`mpirun` invoke `.venv/bin/dnsjax` directly (`uv run` does not compose
+with `mpirun`; `python -m dnsjax` is the equivalent module form, same
+`__main__.main()`). A **single-process** run needs no launcher at all
+-- `uv run dnsjax ...` is fine, and on GPU one process can span every
+visible device (`--dist.np0 2 --dist.np1 2` on 4 GPUs). One process
+may not hold several *CPU* devices: that is refused, naming the
+`mpirun -np N` that works. A run writes its `.dat` files/snapshots to
+the cwd, so launch from a scratch dir. `np0 * np1` counts devices, not
+processes; launch recipe, SLURM discipline, and the
+per-task-visibility trap: the `Distribution` docstring in
 `parameters.py`.
 
 `mpirun -np 2 .venv/bin/dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
@@ -274,9 +279,10 @@ and streams difference-field diagnostics: component energies
 (`twin.dat`), the production/transport/dissipation budget
 (`twin_budget.dat`, `twin.it_budget`), and (kz,kx) energy spectra
 (`twin_spectra.bin`, `twin.it_spectra`). Cartesian wall-bounded
-flows, fixed dt, launched like the solver (mpirun, scratch dir):
+flows, fixed dt, launched like the solver (scratch dir; `mpirun -np N`
+only when it is multi-process):
 
-`mpirun -np 1 .venv/bin/dnsjax-twin --init.snapshot parent.tar
+`.venv/bin/dnsjax-twin --init.snapshot parent.tar
 --twin.e0 1e-6 --twin.seed 3 --stop.max_sim_time <t_parent + 10>`
 
 Start/resume rules (partner snapshot + `twin.json` decide; a resume
@@ -564,6 +570,19 @@ rejects).
   `~/.claude/plans/reshard-audit-jitted-collectives.md`.
 - `jax_enable_x64` is set from `params.res.double_precision` before
   JAX initializes arrays.
+- Rank bootstrap reads the launcher environment when it is complete
+  (the MPI rank variables + a coordinator host from loopback / the
+  launcher's daemon URI / the scheduler's node list), else falls back
+  to JAX's own detection; a one-process launch skips it entirely, and
+  a multi-device **CPU** run additionally auto-selects MPI collectives
+  when it finds an MPIwrapper library. **Nothing may initialize MPI
+  before XLA does** — its `MPI_Init_thread` is unguarded, so an
+  MPI-using import aborts the run or corrupts its thread ownership.
+  Env knobs, none of them a parameter: `JAX_COORDINATOR_ADDRESS`,
+  `JAX_COORDINATOR_PORT`, `MPITRAMPOLINE_LIB`,
+  `JAX_CPU_COLLECTIVES_IMPLEMENTATION`; mechanism in
+  `configure_jax_runtime` (`bootstrap.py`), user-facing contract in
+  the `Distribution` docstring and `README.md`.
 - JAX has no zero-copy complex<->real bitcast. Real-operator ×
   complex-field GEMMs/solves use an explicit trailing re/im split --
   reuse `apply_y_matrix` (`geometries/wall_bounded/_base.py`) or the
@@ -676,6 +695,8 @@ are one-liners. Cross-cutting notes:
 - `test_banded_solver.py`: geometry-independent Pallas banded backend.
 - `test_banded_solver_sharded.py`: shard_map-local Pallas solve on a
   forced (2, 2) mesh.
+- `test_bootstrap.py`: the environment-driven multi-process bootstrap
+  decisions (launcher detection, MPIwrapper discovery, collectives).
 - `test_cartesian.py`: Cartesian operators + band-vs-dense parity.
 - `test_cylindrical.py`: cylindrical operators + band-vs-dense parity.
 - `test_annular.py`: annular operators + band-vs-dense parity.
