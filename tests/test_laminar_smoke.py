@@ -50,7 +50,11 @@ path.
 
 The suite also guards the ``dnsjax`` console script: a ``--help``
 preflight (exit 0, usage text, **no files created** -- the regression
-that motivated the entry-point refactor), one smoke case launched
+that motivated the entry-point refactor), a ``bare-launch`` pair
+running the console script with **no** ``mpirun`` at all (a lone
+process starts no distributed runtime, so it must step to the same
+``err`` / `$E'$` as the launched rows -- and must refuse to hold
+several CPU devices by itself), one smoke case launched
 through the installed ``dnsjax`` script under ``mpirun`` (the
 distributed init through the console path; same
 :func:`dnsjax.__main__.main` as ``python -m dnsjax``), and a
@@ -1284,6 +1288,72 @@ def check_console_help() -> None:
     print("  PASS  console-help (usage printed, no side effects)")
 
 
+def check_bare_launch() -> None:
+    """A one-process run needs no ``mpirun``, and says so when it does.
+
+    The solver only stands up JAX's distributed runtime when it is one
+    of several processes, so a lone run needs no launcher, no
+    coordinator and no MPI on the machine at all.  This walks the
+    whole path -- console script, no ``mpirun`` anywhere -- and then
+    checks the other half of the contract: one process may not hold
+    several *CPU* devices (that is oversubscription, not
+    parallelism), and asking for it must fail early, naming the launch
+    that works, rather than at the device count deep in ``sharding``.
+    """
+    script = _console_script()
+    if script is None:
+        print("  SKIP  bare-launch: console script not installed")
+        return
+    env = {**os.environ, "NO_COLOR": "1"}
+    args = SYSTEMS[0]["args"] + ["--stop.check_laminarization", "False"]
+
+    with tempfile.TemporaryDirectory(prefix="smoke_bare_") as workdir:
+        result = subprocess.run(
+            [str(script), *args],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=workdir,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                f"bare-launch: exit code {result.returncode}\n"
+                f"{result.stdout[-2000:]}"
+            )
+        last_err, last_ep = _parse_diagnostics(result.stdout)
+        if last_err is None or last_err > ERR_THRESHOLD:
+            raise AssertionError(
+                f"bare-launch: stepping error {last_err} > {ERR_THRESHOLD:.0e}"
+            )
+        if last_ep is None or last_ep > EP_THRESHOLD:
+            raise AssertionError(
+                f"bare-launch: perturbation energy {last_ep} "
+                f"> {EP_THRESHOLD:.0e}"
+            )
+
+    with tempfile.TemporaryDirectory(prefix="smoke_bare_cpu_") as workdir:
+        refused = subprocess.run(
+            [str(script), *args, "--dist.np0", "2", "--dist.np1", "2"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=workdir,
+            env=env,
+        )
+        message = refused.stdout + refused.stderr
+        if refused.returncode == 0:
+            raise AssertionError(
+                "bare-launch: 4 CPU devices in one process was allowed"
+            )
+        if "mpirun -np 4" not in message:
+            raise AssertionError(
+                f"bare-launch: refusal does not name the working "
+                f"launch: {message[-500:]}"
+            )
+    print(f"  PASS  bare-launch  (err={last_err:.2e}, E'={last_ep:.2e})")
+
+
 def run_smoke_test(
     system: dict, np_count: int, np0: int = 1, platform: str = "cpu"
 ) -> None:
@@ -1402,6 +1472,12 @@ if __name__ == "__main__":
     except (AssertionError, subprocess.TimeoutExpired) as exc:
         print(f"  FAIL  console-help: {exc}")
         failures.append(("console-help", str(exc)))
+    try:
+        check_bare_launch()
+        passed += 1
+    except (AssertionError, subprocess.TimeoutExpired) as exc:
+        print(f"  FAIL  bare-launch: {exc}")
+        failures.append(("bare-launch", str(exc)))
     for system in SYSTEMS:
         try:
             run_smoke_test(system, args.np, args.np0, args.platform)
