@@ -82,6 +82,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_annular.py", (), (), 1800),
     ("test_banded_solver.py", (), (), 1800),
     ("test_banded_solver_sharded.py", (), (), 1800),
+    ("test_bootstrap.py", (), (), 1800),
     ("test_cartesian.py", (), (), 1800),
     ("test_cnab2.py", (), (), 1800),
     ("test_cylindrical.py", (), (), 1800),
