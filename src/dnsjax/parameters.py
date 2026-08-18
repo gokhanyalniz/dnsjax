@@ -1014,10 +1014,17 @@ class Initiation(BaseModel):
             "Seed of the random-IC generator (device-count independent)."
         ),
     )
+    # The one start mode that can write the (kx, kz) = (0, 0) mode: the
+    # localized-rolls and twin-partner perturbations are mean-free by
+    # construction (``ic/localized_rolls.py``, ``twin/driver.py``) and
+    # the runtime kicks reject it (``extensions``).
     random_mean_flow: bool = Field(
         default=False,
         description=(
-            "Also perturb the mean (kx = kz = 0) profile in the random IC."
+            "Also perturb the mean (kx = kz = 0) profile in the random "
+            "IC, changing the field's bulk velocity and wall shear "
+            "(under constant_bulk_velocity driving the streamwise part "
+            "is projected straight back out on the first step)."
         ),
     )
     # Radially windowed to zero at both walls (the reference restart
