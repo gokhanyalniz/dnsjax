@@ -364,6 +364,106 @@ def _make_reference(np_mod, shape):
     return (real + 1j * imag).astype(np_mod.complex128)
 
 
+def _mode_value(np_mod, c, a, qz, qx):
+    """Deterministic complex value keyed on **wavenumbers**, not indices.
+
+    A resolution change renumbers the mode axes, so a reference keyed on
+    indices could not tell a correct regrid from a shifted one.  Keyed
+    on `(component, leading coordinate, k_z, k_x)` it can: a surviving
+    mode must come back bit-identical *and* land where its wavenumber
+    says.  The coefficients are exact binary fractions of well-separated
+    magnitude, so the value is reproduced bit-for-bit in the loading
+    process and no two distinct coordinates collide in both parts.
+    """
+    real = 1.0 * (c + 1) + 0.5 * a + 0.03125 * qz + 0.001953125 * qx
+    imag = -0.25 * (c + 1) + 0.015625 * a - 0.5 * qz + 2.0 * qx
+    return (real + 1j * imag).astype(np_mod.complex128)
+
+
+def _mode_reference(np_mod, system: str, nx: int, ny: int, nz: int):
+    """True-mode array of :func:`_mode_value` at resolution (nx, ny, nz).
+
+    The leading coordinate is the wavenumber `k_y` for the periodic
+    family (whose leading axis is a Fourier axis, regridded inside
+    ``load_snapshot``) and the plain grid index otherwise (the FD
+    wall-normal axis, which ``load_snapshot`` leaves at the stored
+    length).
+    """
+    from dnsjax.harmonics import complex_harmonics, real_harmonics
+
+    qz = complex_harmonics(nz)
+    qx = real_harmonics(nx)
+    a = complex_harmonics(ny) if system in _PERIODIC else np_mod.arange(ny)
+    c = np_mod.arange(_n_comp(system))
+    return _mode_value(
+        np_mod,
+        c[:, None, None, None],
+        a[None, :, None, None],
+        qz[None, None, :, None],
+        qx[None, None, None, :],
+    )
+
+
+def _check_mode_regrid(np_mod, snapshot, sharding, system: str, d: str):
+    """Assert a resolution-change load kept, added and dropped modes.
+
+    Every mode the snapshot carried and this resolution still resolves
+    must come back **bit-identical at its own wavenumber**; every mode
+    this resolution adds must be exactly zero; every mode it no longer
+    resolves must be gone.  Also checks that the mesh-divisibility
+    padding slots stay zero, which is what keeps ``mean_mask`` a
+    one-hot and the per-mode operators regular.
+    """
+    from dnsjax.harmonics import complex_harmonics, real_harmonics
+    from dnsjax.parameters import params
+
+    meta = snapshot.read_metadata(d)
+    _, a_src, kz_src, kx_src = meta["native_shape"]
+    nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
+    periodic = system in _PERIODIC
+
+    snapshot.validate_snapshot_params(d)
+    state, t, it = snapshot.load_snapshot(d)
+    got = np_mod.asarray(state)
+
+    a_out = ny - 1 if periodic else a_src
+    want_shape = (
+        _n_comp(system),
+        a_out,
+        sharding.nz_spec,
+        sharding.nx_spec,
+    )
+    assert got.shape == want_shape, (got.shape, want_shape)
+
+    # The wall-bounded leading axis is untouched here (the wall-normal
+    # interpolation is a separate step), so its reference keeps the
+    # stored length.
+    ref = _mode_reference(np_mod, system, nx, ny if periodic else a_src, nz)
+    keep_z = np_mod.isin(complex_harmonics(nz), complex_harmonics(kz_src + 1))
+    keep_x = real_harmonics(nx) < kx_src
+    keep_a = (
+        np_mod.isin(complex_harmonics(ny), complex_harmonics(a_src + 1))
+        if periodic
+        else np_mod.ones(a_src, dtype=bool)
+    )
+    mask = (
+        keep_a[None, :, None, None]
+        & keep_z[None, None, :, None]
+        & keep_x[None, None, None, :]
+    )
+    expected = np_mod.where(mask, ref, 0.0)
+    true = got[:, :, : nz - 1, : nx // 2]
+    assert np_mod.array_equal(true, expected), (
+        "mode regrid mismatch: "
+        f"max|got - want| = {np_mod.max(np_mod.abs(true - expected)):.3e}, "
+        f"{int(np_mod.sum(~mask))} of {mask.size} slots should be zero"
+    )
+    assert not np_mod.any(got[:, :, nz - 1 :, :]), "kz padding not zero"
+    assert not np_mod.any(got[:, :, :, nx // 2 :]), "kx padding not zero"
+    assert t == T_SAVE, (t, T_SAVE)
+    assert it == IT_SAVE, (it, IT_SAVE)
+
+
 def _true_shape(system: str, ny: int) -> tuple[int, ...]:
     """True (unpadded) spectral vector shape."""
     kz, kx = NZ - 1, NX // 2
@@ -484,10 +584,8 @@ def _check_slab_placement(state, snapshot, sharding) -> None:
         f"counts {(kz_true, kx_true)}: the writers would send padding "
         "modes, or fragment"
     )
-    assert snapshot._io_local_shape(a_true)[2:] == (kz_true, kx_true), (
-        snapshot._io_local_shape(a_true),
-        (kz_true, kx_true),
-    )
+    io_local = snapshot._io_local_shape(a_true, kz_true, kx_true)
+    assert io_local[2:] == (kz_true, kx_true), (io_local, (kz_true, kx_true))
     for shard in io.addressable_shards:
         flat = snapshot._shard_device_index(shard)
         want = (flat * a_local, (flat + 1) * a_local)
@@ -516,11 +614,14 @@ def _worker(
     d: str,
     ny_override: int | None = None,
     nx_override: int | None = None,
+    nz_override: int | None = None,
 ):
     """Set up singletons for *npv* CPU devices, then save or load."""
+    global NX, NZ
     if nx_override is not None:
-        global NX
         NX = nx_override
+    if nz_override is not None:
+        NZ = nz_override
     os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={npv}"
 
     import numpy as np
@@ -785,6 +886,22 @@ def _worker(
         print("worker-load-interp-ve-pipe-ok", flush=True)
         return
 
+    if action == "save_modes":
+        # A field whose every true mode is a known function of its
+        # wavenumbers (see ``_mode_value``); the padding slots stay zero.
+        ref = _mode_reference(np, system, NX, params.res.ny, NZ)
+        state_np = np.zeros(padded_shape, dtype=np.complex128)
+        state_np[:, :, : NZ - 1, : NX // 2] = ref
+        state = jax.device_put(state_np, vshard)
+        snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
+        print("worker-save-modes-ok", flush=True)
+        return
+
+    if action == "load_modes":
+        _check_mode_regrid(np, snapshot, sharding, system, d)
+        print("worker-load-modes-ok", flush=True)
+        return
+
     if action == "load_shape":
         # ny-mismatch load only: the assembled global state must carry
         # the flow's component count (9 for viscoelastic-dean) at the
@@ -826,6 +943,7 @@ def _run_worker(
     ny: int | None = None,
     np0: int = 1,
     nx: int | None = None,
+    nz: int | None = None,
 ) -> subprocess.CompletedProcess:
     cmd = [
         sys.executable,
@@ -850,6 +968,8 @@ def _run_worker(
         cmd.extend(["--ny", str(ny)])
     if nx is not None:
         cmd.extend(["--nx", str(nx)])
+    if nz is not None:
+        cmd.extend(["--nz", str(nz)])
     return run_live(cmd, timeout=300)
 
 
@@ -940,6 +1060,157 @@ def run_case(
             )
             if reason := _check(name, "load", r_load):
                 return reason
+    print(f"  PASS  {name}")
+    return None
+
+
+# Fourier-resolution regrid on resume: (nx, ny, nz) at save and at
+# load.  ``nx`` is the real-FFT half axis (append / prefix-slice),
+# ``nz`` the wrap-ordered complex one (insert / drop at the high-|k|
+# end from *both* blocks) -- the two need different arithmetic, so
+# every case moves them independently at least once.  The 2D-mesh rows
+# are the ones that matter: the resize happens inside the I/O-layout
+# reshard, where only a (2, 2) mesh exercises both legs.
+MODE_CASES: list[dict] = [
+    {
+        "name": "wb kx up (nx 8->16)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 8),
+        "load_res": (16, 9, 8),
+    },
+    {
+        "name": "wb kx down (nx 16->8)",
+        "system": "plane-couette",
+        "save_res": (16, 9, 8),
+        "load_res": (8, 9, 8),
+    },
+    {
+        "name": "wb kz up (nz 8->16)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 8),
+        "load_res": (8, 9, 16),
+    },
+    {
+        "name": "wb kz down (nz 16->8)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 16),
+        "load_res": (8, 9, 8),
+    },
+    {
+        "name": "wb kz odd counts (nz 7->10)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 7),
+        "load_res": (8, 9, 10),
+    },
+    {
+        "name": "wb both up, 2D mesh (nx/nz 8->16)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 8),
+        "load_res": (16, 9, 16),
+        "save_np": 4,
+        "save_np0": 2,
+        "load_np": 4,
+        "load_np0": 2,
+    },
+    {
+        "name": "wb both down, 2D mesh (nx/nz 16->8)",
+        "system": "plane-couette",
+        "save_res": (16, 9, 16),
+        "load_res": (8, 9, 8),
+        "save_np": 4,
+        "save_np0": 2,
+        "load_np": 4,
+        "load_np0": 2,
+    },
+    {
+        "name": "wb mixed + np change (nx up, nz down, np 1->4)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 16),
+        "load_res": (16, 9, 8),
+        "save_np": 1,
+        "save_np0": 1,
+        "load_np": 4,
+        "load_np0": 2,
+    },
+    {
+        "name": "pipe kz/kx regrid (aliased names)",
+        "system": "pipe",
+        "save_res": (8, 9, 8),
+        "load_res": (16, 9, 16),
+    },
+    {
+        "name": "viscoelastic 9-component regrid",
+        "system": "viscoelastic-pipe",
+        "save_res": (8, 9, 8),
+        "load_res": (16, 9, 16),
+    },
+    {
+        "name": "periodic ky up (ny 8->16)",
+        "system": "kolmogorov",
+        "save_res": (8, 8, 8),
+        "load_res": (8, 16, 8),
+    },
+    {
+        "name": "periodic ky down (ny 16->8)",
+        "system": "kolmogorov",
+        "save_res": (8, 16, 8),
+        "load_res": (8, 8, 8),
+    },
+    {
+        "name": "periodic all three, 2D mesh",
+        "system": "kolmogorov",
+        "save_res": (8, 8, 8),
+        "load_res": (16, 16, 16),
+        "save_np": 4,
+        "save_np0": 2,
+        "load_np": 4,
+        "load_np0": 2,
+    },
+]
+
+
+def run_mode_case(
+    name: str,
+    system: str,
+    save_res: tuple[int, int, int],
+    load_res: tuple[int, int, int],
+    save_np: int = 1,
+    save_np0: int = 1,
+    load_np: int = 1,
+    load_np0: int = 1,
+) -> str | None:
+    """Save at *save_res*, load at *load_res*, check the mode regrid."""
+    layout = "periodic" if system in _PERIODIC else "walled"
+    with tempfile.TemporaryDirectory() as tmp:
+        snap = os.path.join(tmp, "snap.tar")
+        r = _run_worker(
+            "save_modes",
+            system,
+            layout,
+            "concurrent",
+            save_np,
+            snap,
+            np0=save_np0,
+            nx=save_res[0],
+            ny=save_res[1],
+            nz=save_res[2],
+        )
+        if reason := _check(name, "save_modes", r):
+            return reason
+        r = _run_worker(
+            "load_modes",
+            system,
+            layout,
+            "concurrent",
+            load_np,
+            snap,
+            np0=load_np0,
+            nx=load_res[0],
+            ny=load_res[1],
+            nz=load_res[2],
+        )
+        if reason := _check(name, "load_modes", r):
+            return reason
     print(f"  PASS  {name}")
     return None
 
@@ -1460,6 +1731,8 @@ if __name__ == "__main__":
             "save_poly_ve_pipe",
             "load_interp_ve_pipe",
             "load_shape",
+            "save_modes",
+            "load_modes",
             "save_stats",
             "save_fail",
         ],
@@ -1472,6 +1745,7 @@ if __name__ == "__main__":
     parser.add_argument("--dir")
     parser.add_argument("--ny", type=int, default=None)
     parser.add_argument("--nx", type=int, default=None)
+    parser.add_argument("--nz", type=int, default=None)
     args = parser.parse_args()
 
     if args.worker:
@@ -1485,6 +1759,7 @@ if __name__ == "__main__":
             args.dir,
             ny_override=args.ny,
             nx_override=args.nx,
+            nz_override=args.nz,
         )
         sys.exit(0)
 
@@ -1501,6 +1776,12 @@ if __name__ == "__main__":
         (case[0], run_case(*case)) for case in CASES
     ]
     results.extend((case["name"], run_case(**case)) for case in SHAPE_CASES)
+
+    # Fourier-resolution regrid on resume (nx / nz, and the periodic
+    # ny) -- zero-padding on the way up, truncation on the way down.
+    results.extend(
+        (case["name"], run_mode_case(**case)) for case in MODE_CASES
+    )
 
     # ny-mismatch interpolation tests
     results.append(("wb ny 8->16 interp", run_ny_mismatch_case()))

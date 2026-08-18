@@ -600,6 +600,12 @@ def run(wall_time_start: int) -> None:
                 math.sqrt(2.0 * twin_params.e0),
                 twin_params.smoothness,
                 twin_params.seed,
+                # mean_flow: deliberately off, and not a ``[twin]``
+                # knob.  A (0, 0) perturbation would give the partner a
+                # different bulk velocity and wall shear from the
+                # reference, so the difference field would carry a mean
+                # profile the diagnostics would then attribute to
+                # divergence of the two trajectories.
                 False,
             )
             if grid_before is not None and not np.allclose(

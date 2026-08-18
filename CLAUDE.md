@@ -137,6 +137,16 @@ sharded/padded-mesh-safe builds, and the divergence/Hermitian
 caveats: the `ic/random_field.py` and `ic/localized_rolls.py` module
 docstrings.
 
+**No perturbation writes the `(kx, kz) = (0, 0)` mode**, so a perturbed
+field keeps its bulk velocity and wall shear: rolls and the twin
+partner are mean-free by construction, `[force]` kicks and
+`ensemble_setup build` reject the mode, and transient growth excludes
+it. The **two** deliberate opt-ins are `init.random_mean_flow`
+(default off) and `snapshot_perturb.py --perturb.modes "0,0"` (real
+profile only, refused under `constant_bulk_velocity`). Guards:
+`tests/test_localized_rolls.py` (a spot adds nothing to the mean
+column), `tests/test_forcing.py`, `tests/test_snapshot_perturb.py`.
+
 ### Triggering transition to turbulence
 
 A flow that decays is a *regime/time* matter, **not** a solver bug (the
@@ -541,12 +551,16 @@ extension sections (`param_surface.recorded_params_dump`); readers map
 it back via `flows.registry.internalize_stored` / `stored_value`.
 
 Resume is np-agnostic (precision must match — a mismatch rejects) and
-re-grids a changed wall-normal grid at load; `t`/`it`/`isnap` continue
-only when
+**re-grids every changed axis at load**: the wall-normal grid by
+interpolation (`_interpolate_if_needed`), each Fourier axis by
+zero-padding or truncating modes inside the I/O-layout reshard
+(`_from_io_layout_core`; the wrap-order arithmetic is
+`harmonics.stored_mode_counts`). The regrid is index-preserving, so a
+`geo.lx`/`lz` change alongside it re-scales what the surviving modes
+mean. `t`/`it`/`isnap` continue only when
 `trajectory_defining_changes(meta["params"])` is empty — a `phys`/`geo`/
 `res` override or a `[force]` change starts a **new trajectory** unless
-`init.force_resume` (distinct from the hard resolution/system/precision
-rejects).
+`init.force_resume` (distinct from the hard system/precision rejects).
 
 ### JAX-specific notes
 

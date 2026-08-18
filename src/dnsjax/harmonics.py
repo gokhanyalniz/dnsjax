@@ -78,6 +78,35 @@ def parse_mode_pairs(spec: str) -> list[tuple[int, int]]:
     return pairs
 
 
+def stored_mode_counts(m: int) -> tuple[int, int]:
+    r"""Split a stored full-complex axis into its `$\pm$` blocks.
+
+    A stored full-complex axis of ``m = n - 1`` modes is in FFT wrap
+    order (:func:`complex_harmonics`): ``n_pos`` non-negative
+    wavenumbers `$[0, \dots, n/2-1]$` first, then ``n_neg`` negative
+    ones `$[-n/2+1, \dots, -1]$`.  Exact for even and odd `$n$`.
+
+    This is the arithmetic a resolution change needs: growing an axis
+    **inserts** zeros between the two blocks (the high-`$|k|$` end),
+    shrinking drops the outermost modes of each -- symmetrically, so
+    the `$k_x = 0$` plane's Hermitian pairing survives.  Appending or
+    truncating at the array end, correct for a real-FFT axis, would
+    corrupt the negative block here.
+
+    Parameters
+    ----------
+    m:
+        Stored mode count along the axis (``n - 1``).
+
+    Returns
+    -------
+    :
+        ``(n_pos, n_neg)``, summing to *m*.
+    """
+    n_pos = (m + 1) // 2
+    return n_pos, m - n_pos
+
+
 def complex_harmonics(n: int) -> ndarray:
     r"""Full-complex integer wavenumbers with the Nyquist mode omitted.
 

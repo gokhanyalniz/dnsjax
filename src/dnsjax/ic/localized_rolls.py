@@ -38,10 +38,36 @@ fixed-physical-width envelope, so the spot is localized in both `$x$` and
 `$\mathrm{i}k_z\,\hat\Psi$` so the discrete divergence is truncation-level
 (projected out by the first corrector step).  Pipe and
 annular use the analogous per-geometry streamfunction (see the
-per-generator docstrings); the roll excites only the `$\pm 1$` spanwise
-mode for the pipe (its azimuthal cross-section), so the perturbation is
-**mean-free** for every flow (the Dean laminar profile is the only
-mean-mode content, added separately).
+per-generator docstrings).
+
+**Mean-free by construction.** The `$(k_x, k_z) = (0, 0)$` mode of every
+component is **identically zero**, so a spot never changes the field's
+bulk velocity or wall shear (the Dean laminar profile is the only
+mean-mode content, added separately).  Two independent mechanisms give
+that, one per component of each streamfunction pair:
+
+- the *cross-stream* component carries a spectral derivative
+  `$\mathrm{i}k\,\hat f$` of its roll factor, which vanishes at
+  `$k = 0$` exactly;
+- the *roll* component would otherwise inherit its roll factor's DC bin,
+  so every roll factor is made mean-free (:func:`_mean_free` on the
+  signal, for the peak normalization; :func:`_zero_dc` on its spectrum,
+  for an exact zero).  That bin is **not** generically zero: the roll is
+  odd about the box centre under an even envelope, so all discrete pairs
+  `$j \leftrightarrow n-j$`
+  cancel except the self-paired `$j = 0$` box edge, leaving
+  `$-\sin(\pi L/\lambda)\,e^{-(L/\pi\sigma)^2} / n$` -- machine-zero
+  only when `$L/\lambda \in \mathbb{Z}$`, and 2 % of the peak
+  coefficient at e.g. `$L = 2\pi$`, `$\lambda = 4$`.
+
+The pipe would need neither in exact arithmetic -- its azimuthal factors
+are exactly one `$m = \pm 1$` period and its `$u_z$` is identically zero
+-- but its DC bins are round-off rather than zero, so they are zeroed
+too.  Removing a roll factor's mean cannot disturb the
+discrete divergence: on the affected `$k = 0$` plane the component's own
+divergence contribution is `$\mathrm{i}\,0\,u = 0$` and its partner is
+already identically zero there.  Guard:
+``tests/test_localized_rolls.py``.
 
 **Separable, sharded construction (no replication).** Each component is
 an outer product `$(\text{wall-normal profile}) \otimes (\text{complex-}
@@ -131,6 +157,38 @@ def _roll(n: int, wavelength: float, L: float) -> np.ndarray:
     """
     s = np.arange(n) * (L / n) - 0.5 * L
     return np.sin(2.0 * pi * s / wavelength)
+
+
+def _mean_free(signal: np.ndarray) -> np.ndarray:
+    r"""Subtract a periodic signal's mean.
+
+    Applied to every **roll** factor (see the "Mean-free by
+    construction" note in the module docstring).  A constant offset is
+    invisible to the spectral derivative (`$\mathrm{i}k\,\hat f$` at
+    `$k = 0$`), so the partner component and the discrete divergence are
+    unchanged; what this *does* fix is the host-side peak normalization,
+    which reads the physical signal and must see the field that is
+    actually built.  Floating-point subtraction leaves an `$O(\epsilon)$`
+    residue in the DC bin, so the spectrum still goes through
+    :func:`_zero_dc` -- that is what makes the mean mode exact.
+    """
+    return signal - signal.mean()
+
+
+def _zero_dc(spectrum: np.ndarray) -> np.ndarray:
+    r"""Zero a roll factor's DC bin **exactly**.
+
+    The `$(k_x, k_z) = (0, 0)$` mode of the assembled component is this
+    bin times the other factors, so setting it to a hard zero is what
+    makes "the spot does not move the bulk velocity or the wall shear"
+    an exact statement rather than an `$O(\epsilon)$` one.  Only *roll*
+    factors get this: an envelope's DC bin is its mean, the whole point
+    of a localization, and zeroing it would turn the envelope into an
+    oscillation about zero.
+    """
+    out = spectrum.copy()
+    out[0] = 0.0
+    return out
 
 
 def _sin_signal(n: int) -> np.ndarray:
@@ -312,10 +370,11 @@ def generate_cartesian_rolls(
 
     x_sig = _envelope(nx, width, lx)  # streamwise localization X(x)
     psi_sig = _roll(nz, wavelength, lz) * _envelope(nz, width, lz)  # Psi(z)
+    psi_sig = _mean_free(psi_sig)  # kills the (0, 0) mode of u_z
     psi_dz = _ddz(psi_sig, lz)  # Psi'(z) (for the peak)
 
     x_spec = _real_axis_spectrum(x_sig)
-    psi_spec = _complex_axis_spectrum(psi_sig)
+    psi_spec = _zero_dc(_complex_axis_spectrum(psi_sig))
     psi_dz_spec = 1j * _complex_k(nz, lz) * psi_spec  # spectral derivative
 
     u_y = _separable_scalar(g, psi_dz_spec, x_spec)
@@ -376,8 +435,13 @@ def generate_cylindrical_rolls(
     x_sig = _envelope(nx, width, lx)  # axial localization
     x_spec = _real_axis_spectrum(x_sig)
 
-    u_r = _separable_scalar(g, _complex_axis_spectrum(sin_m), x_spec)
-    u_theta = _separable_scalar(g_r, _complex_axis_spectrum(cos_m), x_spec)
+    # ``_zero_dc``: one exact ``m = +-1`` period already leaves only a
+    # round-off DC bin, but "the spot does not move the bulk velocity"
+    # is an exact statement here as in the other two geometries.
+    u_r = _separable_scalar(g, _zero_dc(_complex_axis_spectrum(sin_m)), x_spec)
+    u_theta = _separable_scalar(
+        g_r, _zero_dc(_complex_axis_spectrum(cos_m)), x_spec
+    )
     u_z = jnp.zeros_like(u_r)
     state = jnp.stack([u_z, u_r, u_theta]).astype(sharding.complex_type)
 
@@ -444,10 +508,11 @@ def generate_annular_rolls(
     # preserved regardless of the period (see ``_envelope``).
     az_sig = _envelope(nz, width / r_mid, params.geo.lz)
     z_sig = _roll(nx, wavelength, lx) * _envelope(nx, width, lx)  # Z(z_ax)
+    z_sig = _mean_free(z_sig)  # kills the (0, 0) mode of u_z
     z_dz = _ddz(z_sig, lx)  # Z'(z_ax) (for the peak)
 
-    az_spec = _complex_axis_spectrum(az_sig)
-    z_spec = _real_axis_spectrum(z_sig)
+    az_spec = _complex_axis_spectrum(az_sig)  # envelope: DC bin kept
+    z_spec = _zero_dc(_real_axis_spectrum(z_sig))
     z_dz_spec = 1j * _real_k(nx, lx) * z_spec  # spectral derivative
 
     u_r = _separable_scalar(-p_over_r, az_spec, z_dz_spec)

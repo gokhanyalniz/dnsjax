@@ -649,7 +649,7 @@ def _span_census(comp_shape) -> str:
 
     a_true, kz_true, kx_true = comp_shape
     ndev = snap._n_devices()
-    local = snap._io_local_shape(a_true)
+    local = snap._io_local_shape(a_true, kz_true, kx_true)
     itemsize = snap._np_dtype(snap._zarr3_dtype_name()).itemsize
     n, elems = 0, 0
     for flat in range(ndev):

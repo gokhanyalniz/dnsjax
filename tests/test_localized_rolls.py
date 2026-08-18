@@ -24,6 +24,11 @@ carries the checks the rolls state carries elsewhere:
   no-replication, per-device build must not depend on the mesh; on
   the random state that independence is to ``RAND_CROSS_TOL`` rather
   than bit-exact, for the reason recorded there;
+- an **exactly zero (kx, kz) = (0, 0) mode** on every component, so a
+  spot leaves the field's bulk velocity and wall shear untouched (the
+  "Mean-free by construction" note in :mod:`dnsjax.ic.localized_rolls`);
+  checked at a box whose ``L / wavelength`` is not an integer, the only
+  regime in which the roll factors have a DC bin to leak;
 - a **loose truncation-level discrete-divergence bound** (the analytic
   profiles are continuously divergence-free; the discrete divergence is
   only FD-truncation-sized and is projected out by the first corrector
@@ -69,7 +74,12 @@ sys.stdout.reconfigure(line_buffering=True)
 # -> k_z / m padded for np0 = 2).
 NX, NY, NZ = 10, 15, 12
 LX, LZ = 5.0, 5.0
-AMP, WIDTH, WAVELENGTH = 0.1, 1.5, 2.5  # physical width / cross-roll wave
+# ``L / WAVELENGTH = 5/3`` is deliberately **not** an integer: that is
+# the only regime in which a roll factor has a nonzero DC bin, so it is
+# what makes the mean-mode check below a real guard.  At an integral
+# ratio (the shipped defaults, and the old 2.5 here) the leak this
+# checks for is machine-zero by coincidence and every build passes.
+AMP, WIDTH, WAVELENGTH = 0.1, 1.5, 3.0  # physical width / cross-roll wave
 
 SYSTEMS = [
     "plane-couette",
@@ -314,6 +324,24 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
         div = _max_divergence(true, system)
         check(
             "divergence truncation-level", div < DIV_TOL, f"max|div|={div:.2e}"
+        )
+
+        # The spot contributes **nothing** to the (0, 0) mean mode, so
+        # it moves neither the bulk velocity nor the wall shear.  Stated
+        # against an ``amplitude = 0`` build so it reads the same for
+        # the perturbation flows (whose mean column is then identically
+        # zero) and the total-field ones (whose mean column carries the
+        # analytical laminar profile).  Bit-exact, not a tolerance --
+        # the roll factors' DC bins are hard zeros (``_zero_dc``).
+        zero_amp = np.asarray(generate_localized_rolls(0.0, WIDTH, WAVELENGTH))
+        same_mean = np.array_equal(state1[:, :, 0, 0], zero_amp[:, :, 0, 0])
+        moved = float(
+            np.max(np.abs(state1[:, :, 0, 0] - zero_amp[:, :, 0, 0]))
+        )
+        check(
+            "spot adds nothing to the (0, 0) mean mode",
+            same_mean,
+            f"max|delta u(0,0)|={moved:.2e}",
         )
 
     # ── random-field IC: exact discrete continuity on the *whole*
