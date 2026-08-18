@@ -173,6 +173,23 @@ holds the state's physical diagnostics (the ``get_stats`` dict as
 ``{name: value}``); readers that do not need it simply ignore the
 extra member.
 
+Resolution changes at load
+--------------------------
+A resume may change **any** resolution axis; nothing about the read
+requires the current run to match the file.  The per-device slabs are
+sized and offset from the stored ``native_shape``, and
+:func:`_from_io_layout_core` then regrids each axis on the layout
+where that axis is local, at no extra collective: the real-FFT
+`$k_x$` half axis by a plain truncate-or-append, the wrap-ordered
+`$k_z$` (and, for the periodic family, the leading `$k_y$`) by
+:func:`_resize_wrapped_axis`, which inserts or drops modes at the
+high-`$|k|$` end so every surviving mode keeps its wavenumber and the
+`$k_x = 0$` plane stays Hermitian-symmetric.  The wall-bounded leading
+axis is the FD wall-normal one and is left at the stored length for
+``__main__._interpolate_if_needed``.  What this does **not** do is
+re-interpret wavenumbers: a `$L_x$` / `$L_z$` change alongside a mode
+change rescales `$k = 2\pi q / L$` for the survivors too.
+
 The on-disk format is ``format_version: 6``: the solver's native
 spectral layout, physical components in every family
 (cylindrical/annular `$u_r$`, `$u_\theta$` and the physical
@@ -444,7 +461,9 @@ def _a_ranges(flat_idx: int, a_true: int, ndev: int) -> tuple[int, int]:
     return a_start, max(0, min(a_start + a_local, a_true) - a_start)
 
 
-def _io_local_shape(a_true: int) -> tuple[int, ...]:
+def _io_local_shape(
+    a_true: int, kz_true: int, kx_true: int
+) -> tuple[int, ...]:
     r"""Per-device buffer shape in the I/O layout.
 
     The leading axis is this device's (padded) slab; `$k_z$` and
@@ -454,16 +473,19 @@ def _io_local_shape(a_true: int) -> tuple[int, ...]:
     device's byte range in the file: one contiguous slab per
     component, whatever the mesh pads.
 
-    The mode counts are the *current* run's, which on a read are the
-    stored ones -- ``validate_snapshot_params`` rejects a resolution
-    mismatch before the reader gets here, and the offsets it reads at
-    come from the stored ``native_shape``.
+    The mode counts are passed in rather than read from ``params``
+    because a read's are the **stored** ones, which a resolution-change
+    resume leaves differing from the current run's: the buffer has to
+    match the file (the offsets come from the same stored
+    ``native_shape``), and :func:`_from_io_layout_core` regrids the
+    modes afterwards.  The save path passes the current counts, which
+    are the stored ones by definition.
     """
     return (
         _n_components(),
         _a_local(a_true, _n_devices()),
-        _kz_true(),
-        _kx_true(),
+        kz_true,
+        kx_true,
     )
 
 
@@ -499,6 +521,46 @@ def _pad_axis(state: Array, axis: int, n_padded: int) -> Array:
     pad = [(0, 0)] * state.ndim
     pad[axis] = (0, n_padded - state.shape[axis])
     return jnp.pad(state, pad)
+
+
+def _resize_wrapped_axis(
+    state: Array, axis: int, m_src: int, m_dst: int
+) -> Array:
+    r"""Regrid a stored full-complex axis from *m_src* to *m_dst* modes.
+
+    The spectral half of a resolution-change resume: growing the axis
+    inserts zeros at the high-`$|k|$` end (between the non-negative and
+    negative blocks of the FFT wrap order), shrinking drops the
+    outermost modes of both blocks.  Every surviving mode keeps its
+    wavenumber, so a mode's *meaning* is preserved -- unless the box
+    length changed with it, which re-scales `$k = 2\pi q / L$` for all
+    of them.  The block split comes from the JAX-free
+    :func:`dnsjax.harmonics.stored_mode_counts`, the same leaf that
+    defines the ordering.
+
+    A no-op when the counts agree, so the unchanged-resolution path
+    compiles to exactly what it did before.  *axis* must be **local**
+    on the caller's layout (a sharded axis cannot be sliced); the
+    zeros come from :func:`_pad_axis`, so they inherit the surrounding
+    array's sharding rather than needing a spec of their own.
+    """
+    if m_src == m_dst:
+        return state
+    from .harmonics import stored_mode_counts
+
+    pos_src, neg_src = stored_mode_counts(m_src)
+    pos_dst, neg_dst = stored_mode_counts(m_dst)
+    keep_pos, keep_neg = min(pos_src, pos_dst), min(neg_src, neg_dst)
+
+    idx = [slice(None)] * state.ndim
+    idx[axis] = slice(0, keep_pos)
+    # ``_pad_axis`` appends the zeros; growing puts them exactly where
+    # the wrap order wants them, between the two kept blocks.
+    head = _pad_axis(state[tuple(idx)], axis, m_dst - keep_neg)
+    if keep_neg == 0:
+        return head
+    idx[axis] = slice(m_src - keep_neg, m_src)
+    return jnp.concatenate([head, state[tuple(idx)]], axis=axis)
 
 
 def _via_mid(
@@ -561,23 +623,51 @@ def _to_io_layout_core(state: Array) -> Array:
     return _trim_axis(state, 3, _kx_true())
 
 
-@partial(jax.jit, static_argnums=(1,))
-def _from_io_layout_core(state: Array, a_true: int) -> Array:
-    """Restore the mode padding, reshard back, drop the slab padding.
+@partial(jax.jit, static_argnums=(1, 2, 3, 4))
+def _from_io_layout_core(
+    state: Array,
+    a_true: int,
+    kz_src: int,
+    kx_src: int,
+    ky_dst: int | None,
+) -> Array:
+    r"""Restore the mode padding, reshard back, drop the slab padding.
 
     The exact mirror of :func:`_to_io_layout_core`, and for the same
     reasons: each mode axis is re-padded where it is local (`$k_x$` on
     the I/O layout, `$k_z$` on the mid one), and the leading-axis slice
     has to follow the reshard because that axis is sharded until then
     -- slicing a sharded axis is the ``ShardingTypeError`` trap.
+
+    It is also where a **resolution-change** resume regrids the Fourier
+    axes, for exactly the same locality reason, and at no extra
+    collective: *kz_src* / *kx_src* are the snapshot's stored mode
+    counts, and each axis is resized to the current run's on the same
+    layout that then re-pads it.  `$k_x$` is the real-FFT half axis, so
+    there it is a plain truncate-or-append (:func:`_trim_axis` /
+    :func:`_pad_axis`); `$k_z$` is wrap-ordered and goes through
+    :func:`_resize_wrapped_axis`.  *ky_dst* is the periodic family's
+    third Fourier axis (``res.ny - 1``), local only after the final
+    reshard; ``None`` for wall-bounded, whose leading axis is the FD
+    wall-normal one and is re-gridded later by
+    ``__main__._interpolate_if_needed``.
     """
-    state = _pad_axis(state, 3, sharding.nx_spec)
+    state = _pad_axis(
+        _trim_axis(state, 3, min(kx_src, _kx_true())), 3, sharding.nx_spec
+    )
     state = _via_mid(
         state,
         sharding.spec_vector_shard,
-        lambda x: _pad_axis(x, 2, sharding.nz_spec),
+        lambda x: _pad_axis(
+            _resize_wrapped_axis(x, 2, kz_src, _kz_true()),
+            2,
+            sharding.nz_spec,
+        ),
     )
-    return state if state.shape[1] == a_true else state[:, :a_true]
+    state = state if state.shape[1] == a_true else state[:, :a_true]
+    if ky_dst is None:
+        return state
+    return _resize_wrapped_axis(state, 1, a_true, ky_dst)
 
 
 def _to_io_layout(state: Array) -> Array:
@@ -957,7 +1047,7 @@ def _read_chunks_gds(
 
     itemsize = dtype.itemsize
     a_true, kz_true, kx_true = comp_shape
-    local_shape = _io_local_shape(a_true)
+    local_shape = _io_local_shape(a_true, kz_true, kx_true)
     per_device: list[Array] = []
     for device in jax.local_devices():
         a_start, na = _a_ranges(
@@ -1098,7 +1188,7 @@ def _read_chunks_host(
     """
     itemsize = dtype.itemsize
     a_true, kz_true, kx_true = comp_shape
-    local_shape = _io_local_shape(a_true)
+    local_shape = _io_local_shape(a_true, kz_true, kx_true)
     try:
         import cupy as cp
     except ImportError:
@@ -1284,31 +1374,20 @@ def load_snapshot(
     """
     path = Path(path)
     meta = read_metadata(path)
-    # The stored chunk shape (the snapshot's native shape; its ny may
-    # differ from the current run's -- kz/kx equality is enforced by
-    # ``validate_snapshot_params``).
+    # The stored chunk shape -- the snapshot's own, which the read must
+    # match byte for byte.  Any of the three axes may differ from the
+    # current run's: the leading one because ``res.ny`` changed, the two
+    # mode axes because ``res.nx`` / ``res.nz`` did.
     comp_shape = tuple(meta["native_shape"][1:])
+    a_src, kz_src, kx_src = comp_shape
     dtype = _np_dtype(meta["dtype"])
 
-    # Detect ny mismatch (wall-bounded only).
-    snap_native = tuple(meta["native_shape"])
-    curr_true = (_n_components(), *_true_spec_shape())
-    ny_mismatch = snap_native != curr_true
-
-    if ny_mismatch:
-        # Stored params use public names (res.ny is "nr" for the
-        # cylindrical/annular flows); look it up via the alias.
-        from .flows.registry import stored_value
-
-        snap_ny = stored_value(meta["params"], meta["system"], "res", "ny")
-        assembly_shape = (
-            _n_components(),
-            snap_ny - 1 if _is_periodic() else snap_ny,
-            sharding.nz_spec,
-            sharding.nx_spec,
-        )
-    else:
-        assembly_shape = (_n_components(), *sharding.spec_shape)
+    # The leading axis: a Fourier axis for the periodic family (regridded
+    # below, like the other two), the FD wall-normal one otherwise --
+    # kept at the stored length here and interpolated onto the current
+    # grid afterwards by ``__main__._interpolate_if_needed``.
+    ky_dst = params.res.ny - 1 if _is_periodic() else None
+    a_out = a_src if ky_dst is None else ky_dst
 
     comp_offsets = snapshot_component_offsets(path)
     if _gds_available():
@@ -1318,23 +1397,29 @@ def load_snapshot(
         per_device = _read_chunks_host(path, comp_offsets, comp_shape, dtype)
 
     # The read lands in the I/O layout: contiguous leading-axis slabs
-    # zero-padded to a divisible length, carrying the true mode counts
-    # rather than the solver's padded ones.  ``_from_io_layout_core``
-    # undoes all three, each where its axis is local.
-    a_true = assembly_shape[1]
+    # zero-padded to a divisible length, carrying the stored true mode
+    # counts rather than the solver's padded ones.
+    # ``_from_io_layout_core`` undoes all three -- and regrids any axis
+    # whose resolution changed -- each where its axis is local.
     io_shape = (
-        assembly_shape[0],
-        _a_local(a_true, _n_devices()) * _n_devices(),
-        _kz_true(),
-        _kx_true(),
+        _n_components(),
+        _a_local(a_src, _n_devices()) * _n_devices(),
+        kz_src,
+        kx_src,
     )
     state = jax.make_array_from_single_device_arrays(
         io_shape,
         NamedSharding(sharding.mesh, _io_spec()),
         per_device,
     )
-    if _n_devices() > 1 or io_shape != assembly_shape:
-        state = _from_io_layout_core(state, a_true)
+    solver_shape = (
+        _n_components(),
+        a_out,
+        sharding.nz_spec,
+        sharding.nx_spec,
+    )
+    if _n_devices() > 1 or io_shape != solver_shape:
+        state = _from_io_layout_core(state, a_src, kz_src, kx_src, ky_dst)
     return state, meta["t"], meta["it"]
 
 
@@ -1344,15 +1429,22 @@ def validate_snapshot_params(
     r"""Check that snapshot metadata matches current parameters.
 
     Raises :class:`SnapshotMismatchError` on critical mismatches
-    (resolution, precision, or flow system).  The device count is
-    never a reason: every spectral axis is auto-padded to divide the
-    mesh (``round_up_padded``), which is what makes resume
-    np-agnostic in the first place.  Prints
-    warnings for non-critical differences and an info line when
-    the device count differs (resume is np-agnostic).  Stored
-    metadata records the *public* field names; comparisons run in
-    internal space (:func:`dnsjax.flows.registry.internalize_stored`)
-    and messages name the public alias.
+    (precision or flow system).  Neither the device count nor the
+    **resolution** is a reason: every spectral axis is auto-padded to
+    divide the mesh (``round_up_padded``), which is what makes resume
+    np-agnostic in the first place, and every axis is re-gridded at
+    load -- the Fourier ones by :func:`_from_io_layout_core`
+    (zero-padding or truncating modes), the wall-normal one by
+    ``__main__._interpolate_if_needed``.  A changed resolution is still
+    *trajectory-defining*, so it starts a new trajectory unless
+    ``init.force_resume`` -- that decision is
+    :func:`dnsjax.parameters.trajectory_defining_changes`', not this
+    function's.  Prints warnings for non-critical differences, one info
+    line per re-gridded axis, and one when the device count differs.
+    Stored metadata records the *public* field names; comparisons run
+    in internal space
+    (:func:`dnsjax.flows.registry.internalize_stored`) and messages
+    name the public alias.
 
     Parameters
     ----------
@@ -1375,8 +1467,6 @@ def validate_snapshot_params(
     # axis-neutral: the message names the flow's public field (e.g.
     # internal ``res.nx`` is the axial ``nz`` on the annular flows).
     critical = {
-        ("res", "nx"): "resolution",
-        ("res", "nz"): "resolution",
         ("res", "double_precision"): "precision",
         ("phys", "system"): "flow system",
     }
@@ -1390,30 +1480,41 @@ def validate_snapshot_params(
                 f"current {name}={curr_val}"
             )
 
+    # The component count is the one shape axis with no regrid: it is
+    # fixed by ``phys.system`` (rejected above), so a mismatch here
+    # means the metadata and the flow spec disagree.
     native = meta.get("native_shape")
     expected = [_n_components(), *_true_spec_shape()]
-    if native is not None and list(native) != expected:
-        if _is_periodic():
-            raise SnapshotMismatchError(
-                f"Shape: snapshot {native}, expected {expected}"
-            )
-        # Wall-bounded: allow ny mismatch (axis 1).
-        non_ny_snap = [native[0], *native[2:]]
-        non_ny_exp = [expected[0], *expected[2:]]
-        if non_ny_snap != non_ny_exp:
-            raise SnapshotMismatchError(
-                f"Shape (non-ny axes): snapshot "
-                f"{non_ny_snap}, expected {non_ny_exp}"
-            )
-
-    # ny mismatch: info (wall-normal interpolation will handle it)
-    snap_ny = snap_params.get("res", {}).get("ny")
-    curr_ny = current.get("res", {}).get("ny")
-    if snap_ny is not None and snap_ny != curr_ny:
-        sharding.print(
-            f"Info: ny changed: {snap_ny} -> {curr_ny} "
-            f"(will interpolate wall-normal grid)"
+    if native is not None and native[0] != expected[0]:
+        raise SnapshotMismatchError(
+            f"Component count: snapshot {native[0]}, expected {expected[0]}"
         )
+
+    # Resolution changes are re-gridded at load, each axis by its own
+    # mechanism; report which.  ``ny`` is the FD wall-normal axis for
+    # wall-bounded flows and the third Fourier axis for the periodic
+    # ones, so its message depends on the family.
+    def _resolution_note(key: str, fourier: bool) -> None:
+        snap_val = snap_params.get("res", {}).get(key)
+        curr_val = current.get("res", {}).get(key)
+        if snap_val is None or snap_val == curr_val:
+            return
+        if fourier:
+            how = (
+                "spectral zero-padding"
+                if curr_val > snap_val
+                else "spectral truncation"
+            )
+        else:
+            how = "wall-normal interpolation"
+        sharding.print(
+            f"Info: {_public('res', key)} changed: {snap_val} -> "
+            f"{curr_val} (will regrid by {how})"
+        )
+
+    _resolution_note("nx", True)
+    _resolution_note("nz", True)
+    _resolution_note("ny", _is_periodic())
 
     # Warnings
     warn_fields = {
