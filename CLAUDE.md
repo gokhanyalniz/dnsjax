@@ -104,11 +104,11 @@ A **multi-process** run must be launched via `mpirun -np N`; under
 with `mpirun`; `python -m dnsjax` is the equivalent module form, same
 `__main__.main()`). A **single-process** run needs no launcher at all
 -- `uv run dnsjax ...` is fine, and on GPU one process can span every
-visible device (`--dist.np0 2 --dist.np1 2` on 4 GPUs). One process
-may not hold several *CPU* devices: that is refused, naming the
-`mpirun -np N` that works. A run writes its `.dat` files/snapshots to
-the cwd, so launch from a scratch dir. `np0 * np1` counts devices, not
-processes; launch recipe, SLURM discipline, and the
+visible device (`--dist.np0 4` on 4 GPUs). One process may not hold
+several *CPU* devices: that is refused, naming the `mpirun -np N` that
+works. A run writes its `.dat` files/snapshots to the cwd, so launch
+from a scratch dir. `np0 * np1` counts devices, not processes; how to
+choose them, the launch recipe, SLURM discipline, and the
 per-task-visibility trap: the `Distribution` docstring in
 `parameters.py`.
 
