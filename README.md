@@ -552,8 +552,7 @@ program.
 1. **On one node, stay one-dimensional.** Split on `np0` by default:
    its exchange carries $2/3$ of the bytes, and its mode axis tiles far
    more coarsely on GPU. Split on `np1` instead when `ny` (`nr`) will
-   not divide the device count or is too small for it, or when
-   snapshots are frequent.
+   not divide the device count or is too small for it.
 2. **Across nodes, align the grid with them** — `np1` = devices per node,
    `np0` = number of nodes. The grid is laid out row-major over the
    sorted devices, so `np1` groups fall within a node and `np0` groups
@@ -563,10 +562,11 @@ program.
    exchange sends, at equal network volume. Splitting on `np1` alone
    across nodes is the worst choice: it puts the $3/2$-sized exchange
    on the network.
-3. **Snapshots follow the same pattern**: a one-dimensional grid
-   reshards once per save instead of twice, and `np0 = 1` — the only
-   grid that pads nothing — writes each component as a single
-   contiguous range per device rather than one per wall-normal row.
+3. **Snapshots follow the same pattern**, but only for the first
+   reason: a one-dimensional grid reshards once per save instead of
+   twice. Write granularity does not enter the choice — the reshard
+   trims the divisibility padding as it goes, so every grid writes each
+   component as one contiguous range per device.
 
 **On CPU** the mode plane carries no tile round-up — the Pallas kernel
 never runs — so `np1` may be taken as far as the mode count allows, and
@@ -655,10 +655,12 @@ resolved values under their public names — the same representation the
 startup printout and `--sample-toml` use; snapshots written before
 format version 6 embed a different layout, basis, or representation and
 are rejected rather than translated. A write first reshards the state,
-inside `jit`, onto the file's own layout — one contiguous span per
-device — and each device then writes its disjoint byte ranges into the
-one file in parallel: directly between GPU memory and disk when
-GPUDirect Storage is available, through the host otherwise, with a
+inside `jit`, onto the file's own layout — a contiguous wall-normal
+slab per device, at the true mode counts, so the padding never reaches
+the file — and each device then writes its disjoint byte ranges, one
+per component, into the one file in parallel: directly between GPU
+memory and disk when GPUDirect Storage is available, through the host
+otherwise, with a
 concurrent mode for POSIX/parallel filesystems and a rank-ordered
 serial mode for filesystems where concurrent writes are unsafe. The
 bytes land in `<name>.tar.partial` and are renamed into place only once

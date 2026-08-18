@@ -41,11 +41,14 @@ Part B  the span-pattern benchmark: the real ownership pattern of a
         read is verified against the written pattern, so a fast wrong
         answer cannot pass.
 Part C  ``--end-to-end``: the real ``save_snapshot`` /
-        ``load_snapshot`` at a real resolution and mesh, plus the span
+        ``load_snapshot`` at a real resolution and mesh, plus the slab
         census of the I/O layout and the write engine timed on its own
         (so the save splits into "layout work" and "bytes to disk").
-        Run it at ``--np1 1`` and ``--np1 4``: the same state through
-        both is the check that the mesh no longer decides the cost.
+        Run it on both one-dimensional grids -- ``--np1 4`` and
+        ``--np0 4`` -- and on ``--np0 2 --np1 2``: the same state
+        through all three is the check that the mesh no longer decides
+        the cost.  Only the reshard should differ (one exchange or
+        two); the slab census is the same on every grid.
 
 Run on a GPU node, from a directory on the **scratch / parallel
 filesystem** the runs actually write to (``--outdir``)::
@@ -54,7 +57,7 @@ filesystem** the runs actually write to (``--outdir``)::
 
     # add the real snapshot path (single process, all visible GPUs)
     .venv/bin/python scripts/gds_probe.py --outdir /scratch/$USER/gdsprobe \
-        --end-to-end --dist.platform cuda --np1 4 \
+        --end-to-end --dist.platform cuda --np0 4 \
         --ny 193 --nx 256 --nz 256
 
 Part A alone is cheap and needs no GPU allocation beyond a node with
@@ -77,8 +80,10 @@ from pathlib import Path
 MB = 1 << 20
 GB = 1 << 30
 
-# Span sizes that bracket the real range: 512 B is the docstring's
-# worst case (np1 = 4 at nx = 256), 1 MiB is a np1 = 1 mesh.
+# Span sizes that bracket the range the *solver* layout would write
+# (Part B is a synthetic study of that layout, not of what ships):
+# 512 B is the docstring's worst case (np1 = 4 at nx = 256), 1 MiB is
+# a np1 = 1 mesh.  The shipped I/O layout writes tens of MiB.
 DEFAULT_SPANS = "512,4096,65536,1048576"
 DEFAULT_DEPTHS = "4,16,64,256"
 
@@ -635,10 +640,11 @@ def _span_census(comp_shape) -> str:
     """How many spans, and how big, the I/O layout gives this mesh.
 
     The whole point of the reshard is this line: it should read a
-    handful of tens-of-MiB spans, not ~1e5 of 512 B.
+    handful of tens-of-MiB slabs, not ~1e5 spans of 512 B.  The count
+    is ``n_components * ndev`` on every mesh -- the reshard trims the
+    divisibility padding, so nothing about the grid can fragment a
+    slab -- and only the *size* still varies with the grid.
     """
-    import math
-
     from dnsjax import snapshot as snap
 
     a_true, kz_true, kx_true = comp_shape
@@ -647,17 +653,16 @@ def _span_census(comp_shape) -> str:
     itemsize = snap._np_dtype(snap._zarr3_dtype_name()).itemsize
     n, elems = 0, 0
     for flat in range(ndev):
-        a_start, na = snap._a_ranges(flat, a_true, ndev)
-        for _idx, _off, shape in snap._a_spans(
-            local[1:], a_start, na, kz_true, kx_true
-        ):
-            n += 1
-            elems += math.prod(shape)
+        _a_start, na = snap._a_ranges(flat, a_true, ndev)
+        if na == 0:
+            continue
+        n += 1
+        elems += na * kz_true * kx_true
     n *= snap._n_components()
     elems *= snap._n_components()
     mean = elems * itemsize / max(n, 1)
     return (
-        f"{n} spans of {mean / MB:.2f} MiB mean "
+        f"{n} slabs of {mean / MB:.2f} MiB mean "
         f"({n // max(ndev, 1)} per device; local buffer "
         f"{local[1]} x {local[2]} x {local[3]})"
     )

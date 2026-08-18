@@ -40,17 +40,19 @@ Exercises the host (non-GDS) I/O path:
 - 2D mesh round-trips: save and load with ``np0 > 1``, including
   padding-mode stripping and re-padding;
 - the **I/O-layout reshard** the multi-device paths run (save
-  reshards onto contiguous leading-axis slabs, load reshards back):
-  every mesh family is covered -- ``np1``-only, ``np0``-only and 2D
-  -- because the slab a device owns is decided by its *flat* mesh
-  position, and each engine call is checked for the SPMD
-  ``Involuntary full rematerialization`` warning, which is what a
-  reshard routed through both mesh axes at once would print;
-- the span tiers the layout can still fragment into: an ``nx``
-  whose true `$k_x$` count does not divide ``np1`` forces the
-  narrowest (per-``(a, kz)``-row) tier through a real writer and a
-  real reader, and an ``ny`` smaller than the device count gives a
-  device whose slab is entirely padding;
+  reshards onto contiguous leading-axis slabs at the true mode
+  counts, load reshards back): every mesh family is covered --
+  ``np1``-only, ``np0``-only and 2D -- because the slab a device
+  owns is decided by its *flat* mesh position, and each engine call
+  is checked for the SPMD ``Involuntary full rematerialization``
+  warning, which is what a reshard routed through both mesh axes at
+  once would print;
+- both mode-padding trims that reshard performs, through a real
+  writer and a real reader: the `$k_x$` one needs an ``nx`` whose
+  true mode count does not divide ``np1``, and the `$k_z$` one comes
+  free with every ``np0``-only row (``nz - 1`` is odd, so no even
+  ``np0`` divides it).  An ``ny`` smaller than the device count
+  gives a device whose slab is entirely padding;
 - a **viscoelastic-dean** case (single-device and ``np 1 -> 2``)
   exercises the 9-component chunk count -- the test helpers derive
   the component count from the system via ``_n_comp``, mirroring the
@@ -254,22 +256,23 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
     ),
 ]
 
-# Cases that override the resolution to reach a span tier or a slab
-# shape the grids above cannot produce.  Same runner, keyword form
-# (``run_case(**case)``) so the tuple rows stay unchanged.
+# Cases that override the resolution to reach a padding trim or a
+# slab shape the grids above cannot produce.  Same runner, keyword
+# form (``run_case(**case)``) so the tuple rows stay unchanged.
 #
 # ``nx = 6`` gives ``kx_true = 3``, which no device count above 1
-# divides: ``nx_spec`` pads to 4 and every span narrows to a single
-# ``(a, kz)`` row -- the last resort tier of ``_a_spans``, and the
-# only one the default grids never reach (``nx = 8`` has
-# ``kx_true = 4``, divisible by every mesh used here).
+# divides: ``nx_spec`` pads to 4, so this is the only row that
+# exercises the `$k_x$` trim in ``_to_io_layout_core`` (and its
+# re-pad on load).  ``nx = 8`` has ``kx_true = 4``, divisible by
+# every mesh used above.  Left untrimmed, each of these would write
+# one ``(a, kz)`` row at a time.
 #
 # ``ny = 5`` over 4 devices gives ``_a_local = 2`` and hence slabs
 # ``[0, 2) [2, 4) [4, 5) []``: a clipped slab *and* a device whose
 # slab is entirely padding, both through a real writer and reader.
 SHAPE_CASES: list[dict] = [
     {
-        "name": "walled kx-padded spans (nx 6, 2D)",
+        "name": "walled kx trim (nx 6, 2D)",
         "system": "plane-couette",
         "layout": "walled",
         "write_mode": "concurrent",
@@ -280,7 +283,7 @@ SHAPE_CASES: list[dict] = [
         "nx": 6,
     },
     {
-        "name": "walled kx-padded spans on load (nx 6, np 1->4)",
+        "name": "walled kx trim on load (nx 6, np 1->4)",
         "system": "plane-couette",
         "layout": "walled",
         "write_mode": "concurrent",
@@ -460,12 +463,31 @@ def _check_slab_placement(state, snapshot, sharding) -> None:
     order, which is a JAX convention this module reads but cannot
     enforce.  A silent change of it would hand every device another
     one's slab, so pin it against the real sharding.
+
+    The mode axes are pinned here too.  Each writer sends
+    ``vec[comp][:na]`` in a single call, which is that device's file
+    range only if the buffer carries the **true** mode counts; one
+    that kept the solver layout's divisibility padding would satisfy
+    the placement check below and write the padding modes into the
+    file.  On a single-device mesh this also pins the short-circuit in
+    ``_to_io_layout``, which returns the solver array untouched on the
+    grounds that ``np0 = np1 = 1`` pads nothing.
     """
     import numpy as np
 
     io = snapshot._to_io_layout(state)
     a_true, ndev = state.shape[1], snapshot._n_devices()
     a_local = snapshot._a_local(a_true, ndev)
+    kz_true, kx_true = snapshot._kz_true(), snapshot._kx_true()
+    assert io.shape[2:] == (kz_true, kx_true), (
+        f"I/O layout carries mode axes {io.shape[2:]}, not the true "
+        f"counts {(kz_true, kx_true)}: the writers would send padding "
+        "modes, or fragment"
+    )
+    assert snapshot._io_local_shape(a_true)[2:] == (kz_true, kx_true), (
+        snapshot._io_local_shape(a_true),
+        (kz_true, kx_true),
+    )
     for shard in io.addressable_shards:
         flat = snapshot._shard_device_index(shard)
         want = (flat * a_local, (flat + 1) * a_local)
@@ -478,7 +500,7 @@ def _check_slab_placement(state, snapshot, sharding) -> None:
         # merely relabelled them.
         a_start, na = snapshot._a_ranges(flat, a_true, ndev)
         local = np.asarray(shard.data)
-        ref = np.asarray(state)[:, a_start : a_start + na]
+        ref = np.asarray(state)[:, a_start : a_start + na, :kz_true, :kx_true]
         assert np.array_equal(local[:, :na], ref), (
             f"slab content mismatch at flat mesh position {flat}"
         )
@@ -536,8 +558,7 @@ def _worker(
         state_np = _embed_true_into_padded(ref_true, padded_shape, system)
         state = jax.device_put(state_np, vshard)
         snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
-        if npv > 1:
-            _check_slab_placement(state, snapshot, sharding)
+        _check_slab_placement(state, snapshot, sharding)
         # The state must survive its own save: nothing in the write
         # path may donate or mutate the caller's array (``__main__``
         # keeps stepping the state it just snapshotted).
@@ -926,26 +947,22 @@ def run_case(
 def run_io_layout_case() -> str | None:
     """Check the I/O-layout slab arithmetic exhaustively, in-process.
 
-    ``_a_ranges`` and ``_a_spans`` are pure, so the branches the
-    round-trip cases cannot reach are cheapest to check directly:
-
-    - a device whose slab is **entirely padding** (``n_rows == 0``),
-      which needs ``a_true <= (ndev - 1) * ceil(a_true / ndev)`` --
-      5 rows over 4 devices, never produced by the ``ny = 8`` grids
-      used above;
-    - the `$k_x$`-padded span tier, which needs ``nx // 2`` not
-      divisible by ``np1`` (the cases above all divide exactly).
+    ``_a_ranges`` and ``_a_offset`` are pure, so the branch the
+    round-trip cases cannot reach is cheapest to check directly: a
+    device whose slab is **entirely padding** (``n_rows == 0``), which
+    needs ``a_true <= (ndev - 1) * ceil(a_true / ndev)`` -- 5 rows over
+    4 devices, never produced by the ``ny = 8`` grids used above.
 
     The invariants are the ones the format depends on: the slabs tile
-    ``[0, a_true)`` exactly, and the spans of all devices together
-    cover each component's element range exactly once, in ascending
-    order, with every span a C-contiguous prefix slice.
+    ``[0, a_true)`` exactly, and written at the offsets ``_a_offset``
+    hands them they reassemble the component chunk byte for byte --
+    each from a **single** C-contiguous transfer, which is the property
+    the trimmed I/O layout exists to provide and the one the writers
+    assume when they send ``vec[comp][:na]`` in one call.
     """
-    import math
-
     import numpy as np
 
-    from dnsjax.snapshot import _a_ranges, _a_spans
+    from dnsjax.snapshot import _a_local, _a_offset, _a_ranges
 
     for a_true in (1, 5, 7, 8, 13, 193):
         for ndev in (1, 2, 4, 8):
@@ -959,21 +976,17 @@ def run_io_layout_case() -> str | None:
                     f"{covered[:12]}..."
                 )
 
-    # (kz_true, kx_true, local_kz, local_kx) -> one case per span tier
-    tiers = [
-        (5, 3, 5, 3),  # unpadded: one span per component
-        (5, 3, 8, 3),  # kz-padded: one span per leading-axis row
-        (5, 3, 8, 4),  # kx-padded: one span per (a, kz) row
-    ]
-    for kz_true, kx_true, local_kz, local_kx in tiers:
-        a_true, ndev = 7, 4
-        seen: list[int] = []
-        # The engines write ``off * itemsize`` bytes into the file, so
-        # replay that too: fill each device's local buffer with the
-        # chunk values it should own, write every span at its byte
-        # offset, and require the result to be the reference chunk.
-        # This is the layer the element-index check above skips.
-        dtype = np.dtype("complex128")
+    # The engines write ``off * itemsize`` bytes into the file, so
+    # replay that: fill each device's local buffer with the chunk
+    # values it should own, write its slab at its byte offset, and
+    # require the result to be the reference chunk.  This is the layer
+    # the element-index check above skips.
+    dtype = np.dtype("complex128")
+    for a_true, ndev, kz_true, kx_true in (
+        (7, 4, 5, 3),  # a clipped last slab
+        (5, 4, 15, 4),  # a device whose slab is entirely padding
+        (13, 1, 255, 128),  # single device, production-shaped modes
+    ):
         chunk = (
             np.arange(a_true * kz_true * kx_true, dtype=np.float64)
             .astype(dtype)
@@ -982,32 +995,19 @@ def run_io_layout_case() -> str | None:
         file_bytes = bytearray(chunk.nbytes)
         for flat in range(ndev):
             a_start, na = _a_ranges(flat, a_true, ndev)
-            a_local = -(-a_true // ndev)
-            local = np.zeros((a_local, local_kz, local_kx), dtype=dtype)
-            local[:na, :kz_true, :kx_true] = chunk[a_start : a_start + na]
-            for idx, off, shape in _a_spans(
-                local.shape, a_start, na, kz_true, kx_true
-            ):
-                view = local[idx]
-                if not view.flags.c_contiguous:
-                    return f"span {idx} is not contiguous ({local.shape})"
-                if view.shape != shape:
-                    return f"span shape {view.shape} != declared {shape}"
-                seen.extend(range(off, off + math.prod(shape)))
-                start = off * dtype.itemsize
-                file_bytes[start : start + view.nbytes] = view.tobytes()
-        want = list(range(a_true * kz_true * kx_true))
-        if seen != want:
-            return (
-                f"spans do not tile the chunk for local "
-                f"({local_kz}, {local_kx}) vs true ({kz_true}, "
-                f"{kx_true}): {len(seen)} elements, ascending="
-                f"{seen == sorted(seen)}"
+            local = np.zeros(
+                (_a_local(a_true, ndev), kz_true, kx_true), dtype=dtype
             )
+            local[:na] = chunk[a_start : a_start + na]
+            span = local[:na]
+            if not span.flags.c_contiguous:
+                return f"slab {flat} is not contiguous ({local.shape})"
+            start = _a_offset(a_start, kz_true, kx_true) * dtype.itemsize
+            file_bytes[start : start + span.nbytes] = span.tobytes()
         if bytes(file_bytes) != chunk.tobytes():
             return (
-                f"replayed span bytes differ from the reference chunk "
-                f"for local ({local_kz}, {local_kx}) vs true "
+                "replayed slab bytes differ from the reference chunk "
+                f"for a_true={a_true} ndev={ndev} modes "
                 f"({kz_true}, {kx_true})"
             )
     return None
@@ -1564,7 +1564,7 @@ if __name__ == "__main__":
 
     # The I/O-layout slab arithmetic, over shapes the round-trip cases
     # above cannot reach (see run_io_layout_case).
-    results.append(("I/O layout slabs + spans", run_io_layout_case()))
+    results.append(("I/O layout slabs", run_io_layout_case()))
 
     failures = [(n, r) for n, r in results if r is not None]
     sys.exit(report(len(results) - len(failures), failures))

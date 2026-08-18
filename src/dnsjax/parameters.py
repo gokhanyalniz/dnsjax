@@ -87,6 +87,71 @@ class Distribution(BaseModel):
     Chebyshev transforms, and the Clenshaw--Curtis
     quadrature handles both even and odd ``ny``.
 
+    Choosing the grid
+    -----------------
+    The two exchanges are not equivalent.  The ``np1`` one
+    (`$z \leftrightarrow k_x$`) runs while the array still carries the
+    **oversampled** spanwise extent, the ``np0`` one
+    (`$y \leftrightarrow k_z$`) after the truncation to stored modes,
+    so at the default oversampling ``np1`` moves `$3/2$` as many bytes
+    (2.654 against 1.769 MB per device per forward+inverse pair at
+    ``64 x 144 x 144`` on four devices).  And a second grid axis does
+    not divide the first exchange more finely, it **adds** a second
+    one: one all-to-all per transform on a 1D grid, two on a 2D one,
+    each a synchronisation point.  Both the count and the volume are
+    readable off the compiled program.
+
+    Whatever the device type:
+
+    1. **On one node, stay one-dimensional**, splitting on ``np0`` by
+       default -- its exchange carries `$2/3$` of the bytes and its
+       mode axis tiles far more coarsely on GPU.  Split on ``np1``
+       instead when ``ny`` (``nr``) will not divide the device count
+       or is too small for it.
+    2. **Across nodes, align the grid with them**: ``np1`` = devices
+       per node, ``np0`` = number of nodes.  ``jax.make_mesh`` lays
+       the grid out row-major over the sorted devices and device ids
+       group by process, so with one task per node the ``np1`` groups
+       fall inside a node and the ``np0`` groups hold one device each.
+       That confines the heavier exchange to the intra-node
+       interconnect, and the network carries ``np0 - 1`` large
+       messages per device instead of the many small ones a grid-wide
+       exchange sends -- at equal volume (`$(N-g)/N^2 = (n-1)/(nN)$`
+       per device, for `$N$` devices in `$g$`-device groups on `$n$`
+       nodes).  Splitting on ``np1`` alone across nodes is the one
+       arrangement to avoid: it puts the `$3/2$`-sized exchange on the
+       network.
+    3. **Snapshots** add only the same 1D preference -- a
+       one-dimensional grid reshards once per save instead of twice.
+       Write granularity does not enter the choice: the reshard trims
+       the divisibility padding, so every grid writes one contiguous
+       range per component per device (:mod:`dnsjax.snapshot`).
+
+    **On CPU** the mode plane carries no tile round-up (the Pallas
+    kernel never runs), so ``np1`` may be taken as far as the mode
+    count allows, and one device per process makes ``np0 * np1`` the
+    rank count.  Measured at four and eight ranks, the per-exchange
+    cost dominates its volume: a 2D grid costs 9 to 19 % against the
+    best 1D one, where the `$3/2$` volume difference between the two
+    1D grids is worth some 18 % of the transform pair itself but only
+    a few percent of the step around it (the transforms being roughly
+    half of it).  That is why the 1D rule is the firm one and the axis
+    a lesser trade.  Routing the collectives through MPI rather than
+    gloo (below) speeds up every exchange, shifting weight from the
+    per-exchange cost back toward volume.
+
+    **On GPU** the mode plane is tiled, which makes ``np1`` the
+    granular axis: keep ``(nx // 2) / np1`` a multiple of
+    ``solver.pallas_block_m1`` (32), where ``(nz - 1) / np0`` need
+    only clear ``pallas_block_m0`` (2).  A minimal-box ``nx = 32``
+    split four ways leaves four streamwise modes per device, padded to
+    32 -- lower the block size, or move the split to ``np0``.  With a
+    fast intra-node interconnect and production-sized arrays the
+    exchange is likelier limited by volume than by its per-exchange
+    cost, and that is the regime where ``np0`` moving `$2/3$` of the
+    bytes should tell; comparing the two 1D grids on the target
+    machine is then worth one pair of runs.
+
     Process topology
     ----------------
     Only a **multi-process** run needs a launcher.  One
