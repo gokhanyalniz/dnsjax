@@ -95,6 +95,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_monochromatic.py", (), (), 1800),
     ("test_padding.py", (), (), 1800),
     ("test_param_surface.py", (), (), 1800),
+    ("test_driving.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_forcing.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_probes.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_quasi_keplerian.py", (), (), 1800),
@@ -115,6 +116,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_viscoelastic_pipe.py", (), (), 1800),
     ("test_temporal_order.py", (), _SLOW, 3600),
     ("test_energy_budget.py", (), _MPI + _SLOW, 3600),
+    ("test_driving.py", (), _SLOW, 2400),
     ("test_forcing.py", (), _MPI, 1800),
     ("test_laminar_smoke.py", (), _MPI + _SLOW, 3600),
     # Multi-device, and specifically on the np1 (k_x / axial) axis:

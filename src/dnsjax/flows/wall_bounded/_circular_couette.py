@@ -31,6 +31,7 @@ from ...geometries.wall_bounded.annular import (
     get_enstrophy_annular,
     get_norm2_annular,
     integrate_scalar,
+    mean_driving,
     pad_base_flow,
 )
 from ...geometries.wall_bounded.annular import (
@@ -273,3 +274,11 @@ def _get_perturbation_energy_jit(
 ) -> Array:
     r"""Perturbation kinetic energy `$E' = \|\mathbf{u}'\|^2 / 2$`."""
     return _perturbation_energy(state, fourier_, flow_)
+
+
+@jit
+def _get_driving_jit(
+    state: Array, flow_: CircularCouetteFlow
+) -> dict[str, Array]:
+    r"""Wall-shear inference of the applied mean-mode driving."""
+    return mean_driving(state, flow_)

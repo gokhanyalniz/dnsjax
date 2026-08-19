@@ -509,6 +509,25 @@ wall-bounded only) → `probes.bin` + `probes.json`
 coefficient log (`[force]`) → `forcing.bin` + `forcing.json`
 (`extensions/forcing.py`; reader `dnsjax.analysis.response.ssi`).
 
+Under `phys.driving = "constant_bulk_velocity"` (pipe,
+plane-Poiseuille) or `phys.block_mean_spanwise_velocity` (Cartesian and
+annular families) `stats.dat` gains a **last** column per constrained
+direction — `-dPds'` / `-dPdn'` / `-dPdz'` — the applied **forcing**
+`-∂p'/∂s` (positive = accelerating), *not* the pressure gradient. It is
+a **step** quantity: the converged body force the corrector applied,
+threaded out of the jitted solve as the `aux` dict of `correct_fn`
+(`timestep.py`), because it is the bulk of the *pre*-correction solve
+and so is not recoverable from the accepted state. The row at `t`
+carries the value applied by the step that produced that state; the
+`t = t0` row alone has no such step and carries the wall-shear
+inference instead (`get_driving`, the optional flow-module export).
+The two agree only at a converged wall-normal resolution — their gap is
+the mean-mode bulk of the discrete nonlinear term, a truncation
+residual and a usable under-resolution diagnostic (measured tables:
+`tests/test_driving.py`). `dnsjax-twin` records the reference's value
+in its `stats.dat` and the twin−reference difference as `<key>_d` in
+`twin.dat`.
+
 Every `.dat` header row is `#`-commented (`_write_dat_header` in
 `__main__.py`, shared with `twin/driver.py`; the `#` eats one space of
 the first column's padding), so a bare `np.loadtxt` reads any stream —
@@ -740,6 +759,8 @@ are one-liners. Cross-cutting notes:
   machinery.
 - `test_probes.py`: runtime spectral-mode probe stream
   (`--unit-only` skips the mpirun runs).
+- `test_driving.py`: the applied mean-mode driving column
+  (`--unit-only` skips the CLI runs).
 - `test_forcing.py`: runtime stochastic kicks (`--unit-only`).
 - `test_snapshot_perturb.py`: `scripts/snapshot_perturb.py` injection.
 - `response/test_probes_reader.py`: JAX-free probe reader.

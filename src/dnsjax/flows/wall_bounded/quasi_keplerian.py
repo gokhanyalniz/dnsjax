@@ -119,6 +119,7 @@ from ...geometries.wall_bounded.annular import (
 )
 from ._circular_couette import (
     CircularCouetteFlow,
+    _get_driving_jit,
     _get_perturbation_energy_jit,
     _get_stats_jit,
 )
@@ -150,6 +151,17 @@ def frozen_profile_flow(u_theta: Array) -> CircularCouetteFlow:
 def get_stats(state: Array) -> dict[str, Array]:
     """Shared circular-Couette ``_get_stats_jit`` (physical *state*)."""
     return _get_stats_jit(state, fourier, flow)
+
+
+def get_driving(state: Array) -> dict[str, Array]:
+    r"""Applied mean-mode driving inferred from *state* alone.
+
+    The optional flow-module export ``__main__`` uses for the one
+    ``stats.dat`` row with no step behind it (``t = t0``); every other
+    row carries the value the corrector actually applied.  Empty unless
+    ``phys.block_mean_spanwise_velocity`` is on.
+    """
+    return _get_driving_jit(state, flow)
 
 
 def get_perturbation_energy(state: Array) -> Array:

@@ -771,8 +771,12 @@ class CartesianFlow:
         Solves `$H_k\,h = \mathbf{1}$` (unit uniform RHS,
         zero Dirichlet wall BCs) at the mean mode
         `$(k_x, k_z) = (0, 0)$`.  The response `$h(y)$` is
-        the velocity profile produced by a unit mean pressure
-        gradient over one implicit time step.  Its bulk
+        the velocity profile produced by a unit uniform **body
+        force** over one implicit time step -- `$H_k$` is
+        `$I/\Delta t - c\nu L$`, so its RHS carries accelerations,
+        and the scaling `$G$` below is therefore
+        `$-\partial p'/\partial s$`, not `$+\partial p'/\partial s$`
+        (the sign the ``-dPds'`` diagnostic reports).  Its bulk
         `$H = \int_{-1}^{1} h\,dy / 2$` gives the scaling
         needed to zero a perturbation bulk velocity component:
 
@@ -1186,12 +1190,67 @@ def _to_solver(state: Array, fourier_: Fourier, flow_: CartesianFlow) -> Array:
     )
 
 
+#: ``stats.dat`` column names for the mean-mode driving this geometry
+#: applies (:func:`_apply_bulk_corrections`).  The sign is the applied
+#: **forcing** `$-\partial p'/\partial s$`, positive when it accelerates
+#: the flow -- carried in the name so a reader cannot mistake it for the
+#: pressure gradient.  ``s`` is the tilted streamwise direction, ``n``
+#: the spanwise one.
+DRIVING_KEY_S = "-dPds'"
+DRIVING_KEY_N = "-dPdn'"
+
+
+def mean_driving(state: Array, flow_: CartesianFlow) -> dict[str, Array]:
+    r"""Wall-shear **inference** of the driving, from a state alone.
+
+    The mean-mode momentum balance, integrated across the channel with
+    `$\bar{u}|_\text{wall} = 0$` and the mean-mode nonlinear term
+    contributing nothing (its bulk is a wall flux of `$\overline{uv}$`):
+
+    .. math::
+        \frac{d U_b'}{dt} = \Pi' + \nu\,\frac{\partial_y \bar{u}|_{+1}
+        - \partial_y \bar{u}|_{-1}}{2},
+
+    so a constraint holding `$U_b'$` fixed applies exactly
+    `$\Pi' = -\nu\,(\tau_t - \tau_b)/2$` -- the same number
+    :func:`_apply_bulk_corrections` applies, up to the time
+    discretization.  Keys and sign match it exactly.
+
+    This is **not** what ``stats.dat`` normally reports: that column is
+    the value the corrector actually applied, threaded out of the
+    implicit solve.  This is used for the one row that has no step
+    behind it, ``t = t0`` (see :mod:`dnsjax.__main__`), and as the
+    independent check the driving test pins the applied value against.
+    """
+    cbv = params.phys.driving == "constant_bulk_velocity"
+    if not (cbv or params.phys.block_mean_spanwise_velocity):
+        return {}
+    nu = 1.0 / params.phys.re
+    mean_u = extract_mean_mode(state).real  # (3, Ny)
+    out: dict[str, Array] = {}
+    if cbv:
+        mean_us = (
+            mean_u[0] * derived_params.cos_tilt
+            + mean_u[2] * derived_params.sin_tilt
+        )
+        sh = flow_.D1_bnd @ mean_us  # (2,) = [bottom, top]
+        out[DRIVING_KEY_S] = -nu * (sh[1] - sh[0]) / 2
+    if params.phys.block_mean_spanwise_velocity:
+        mean_un = (
+            -mean_u[0] * derived_params.sin_tilt
+            + mean_u[2] * derived_params.cos_tilt
+        )
+        sh = flow_.D1_bnd @ mean_un
+        out[DRIVING_KEY_N] = -nu * (sh[1] - sh[0]) / 2
+    return out
+
+
 def _apply_bulk_corrections(
     u_new: Array,
     w_new: Array,
     mean_mask: Array,
     flow_: CartesianFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""Mean-mode bulk-velocity projections (both schemes).
 
     Stages 8-9 of :func:`_imm_iteration_vp`, shared verbatim with
@@ -1209,12 +1268,22 @@ def _apply_bulk_corrections(
     what lets the `$v$`-`$\omega_y$` scheme reuse this unchanged even
     though its mean plane rides the packed `$\varphi$`/`$\omega$`
     slots.
+
+    Also returns the applied driving as a dict of 0-d diagnostics
+    (:data:`DRIVING_KEY_S` / :data:`DRIVING_KEY_N`), which the stepper
+    threads out as the corrector's *aux* (:func:`dnsjax.timestep.
+    make_stepper`).  The value is the rank-1 correction's own scalar
+    prefactor -- the uniform body force added to the mean-mode
+    Helmholtz RHS, i.e. `$-\partial p'/\partial s$` -- so nothing is
+    recomputed and no sign can drift between what is applied and what
+    is reported.  Empty when neither knob is on, and only the
+    **converged** corrector iterate's dict survives the step.
     """
     if not (
         params.phys.driving == "constant_bulk_velocity"
         or params.phys.block_mean_spanwise_velocity
     ):
-        return u_new, w_new
+        return u_new, w_new, {}
 
     # Extract mean-mode velocity profiles once (shared by
     # both streamwise and spanwise corrections).
@@ -1223,13 +1292,16 @@ def _apply_bulk_corrections(
 
     u_corr = 0.0
     w_corr = 0.0
+    aux: dict[str, Array] = {}
 
     if params.phys.driving == "constant_bulk_velocity":
         mean_us = (
             mean_u * derived_params.cos_tilt + mean_w * derived_params.sin_tilt
         )
         bulk_us = jnp.dot(flow_.y_weights, mean_us) / 2
-        G_s = -bulk_us * flow_.H_bulk_inv * flow_.h_bulk_response
+        pi_s = -bulk_us * flow_.H_bulk_inv  # the applied body force
+        aux[DRIVING_KEY_S] = pi_s
+        G_s = pi_s * flow_.h_bulk_response
         u_corr = u_corr + G_s * derived_params.cos_tilt
         w_corr = w_corr + G_s * derived_params.sin_tilt
 
@@ -1244,13 +1316,16 @@ def _apply_bulk_corrections(
             + mean_w * derived_params.cos_tilt
         )
         bulk_un = jnp.dot(flow_.y_weights, mean_un) / 2
-        G_n = -bulk_un * flow_.H_bulk_inv * flow_.h_bulk_response
+        pi_n = -bulk_un * flow_.H_bulk_inv  # the applied body force
+        aux[DRIVING_KEY_N] = pi_n
+        G_n = pi_n * flow_.h_bulk_response
         u_corr = u_corr - G_n * derived_params.sin_tilt
         w_corr = w_corr + G_n * derived_params.cos_tilt
 
     return (
         u_new + jnp.where(mean_mask, u_corr[:, None, None], 0.0),
         w_new + jnp.where(mean_mask, w_corr[:, None, None], 0.0),
+        aux,
     )
 
 
@@ -1261,7 +1336,7 @@ def _imm_iteration_vw(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: CartesianFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""`$v$`-`$\omega_y$` step (``res.consistent_imm``).
 
     The wall-normal velocity and the wall-normal vorticity
@@ -1508,12 +1583,12 @@ def _imm_iteration_vw(
     # Stages 8-9: the mean-mode bulk projections, shared verbatim --
     # they write only the k^2 = 0 plane, the one plane the
     # reconstruction never touches.
-    u_new, w_new = _apply_bulk_corrections(u_new, w_new, mean_mask, flow_)
+    u_new, w_new, aux = _apply_bulk_corrections(u_new, w_new, mean_mask, flow_)
 
     velocity_new = jnp.array([u_new, v_new, w_new])
     correction = velocity_new - velocity_j
 
-    return velocity_new, correction
+    return velocity_new, correction, aux
 
 
 def _imm_iteration(
@@ -1523,7 +1598,7 @@ def _imm_iteration(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: CartesianFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""One implicit Cartesian step: dispatch on ``res.consistent_imm``.
 
     Two formulations of the same second-order-in-time scheme, sharing
@@ -1684,7 +1759,7 @@ def _predict(
     """Euler predictor (Willis 2017 j=0) via Kleiser-Schumann IMM."""
     nonlin_n = rhs_no_lapl
 
-    prediction_state, _ = _imm_iteration(
+    prediction_state, _, _ = _imm_iteration(
         velocity_n, velocity_n, nonlin_n, nonlin_n, fourier_, flow_
     )
     return prediction_state
@@ -1697,18 +1772,22 @@ def _correct(
     rhs_next: Array,
     fourier_: Fourier,
     flow_: CartesianFlow,
-) -> tuple[Array, Array]:
-    """Crank-Nicolson corrector (Willis 2017 j>0) via Kleiser-Schumann IMM."""
+) -> tuple[Array, Array, dict[str, Array]]:
+    """Crank-Nicolson corrector (Willis 2017 j>0) via Kleiser-Schumann IMM.
+
+    Third return: the corrector-side *aux* diagnostics, here the applied
+    mean-mode driving (:func:`_apply_bulk_corrections`).
+    """
     velocity_n = state_prev
     velocity_j = prediction_state
 
     nonlin_n = rhs_prev
     nonlin_j = rhs_next
 
-    prediction_state_new, correction = _imm_iteration(
+    prediction_state_new, correction, aux = _imm_iteration(
         velocity_n, velocity_j, nonlin_n, nonlin_j, fourier_, flow_
     )
-    return prediction_state_new, correction
+    return prediction_state_new, correction, aux
 
 
 def _norm(
@@ -1727,11 +1806,16 @@ def build_cartesian_stepper(
     flow: CartesianFlow,
 ) -> tuple[
     Callable[[], Array],
-    Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
-    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array], tuple[Array, Array, Array, dict[str, Array], dict[str, Array]]
+    ],
     Callable[
         [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
+    Callable[
+        [Array, Array],
+        tuple[Array, Array, Array, Array, dict[str, Array], dict[str, Array]],
     ],
     Callable[[float], None],
     Callable[[], None],

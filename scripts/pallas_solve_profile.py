@@ -258,14 +258,14 @@ def _bench_step_cnab2(step_cnab2, state, n: int, warmup: int = 3):
     s = jnp.copy(state)
     # seed rhs_prev = N(u^0); step_cnab2 returns (state, carry,
     # error, num_c)
-    _, rp, _, _ = step_cnab2(jnp.copy(s), jnp.zeros_like(s))
+    _, rp, *_ = step_cnab2(jnp.copy(s), jnp.zeros_like(s))
     for _ in range(warmup):
-        s, rp, _err, _c = step_cnab2(s, rp)
+        s, rp, _err, _c, *_ = step_cnab2(s, rp)
     jax.block_until_ready(s)
     t0 = time.perf_counter()
     cc = 0
     for _ in range(n):
-        s, rp, _err, c = step_cnab2(s, rp)
+        s, rp, _err, c, *_ = step_cnab2(s, rp)
         cc = c  # device scalar; host-convert once after the loop
     jax.block_until_ready(s)
     return (time.perf_counter() - t0) / n, int(cc), s
@@ -2108,11 +2108,11 @@ def _part_c(geom, flow, m, sharding, trace_dir, hlo_out) -> None:
         print(f"\n  capturing a profiler trace of 20 steps to {trace_dir} ...")
         s = jnp.copy(state)  # the step donates its state argument
         for _ in range(3):  # warm up before tracing
-            s, _e, _c = m.predict_and_fully_correct(s)
+            s, _e, _c, *_ = m.predict_and_fully_correct(s)
         jax.block_until_ready(s)
         with jax.profiler.trace(trace_dir):
             for _ in range(20):
-                s, _e, _c = m.predict_and_fully_correct(s)
+                s, _e, _c, *_ = m.predict_and_fully_correct(s)
             jax.block_until_ready(s)
         print(
             f"  trace written.  View per-kernel times with:\n"
@@ -2311,10 +2311,10 @@ def main() -> None:
             )
         )  # chained (donated) from here on
         for _ in range(3):
-            s, _e, _c = m.predict_and_fully_correct(s)
+            s, _e, _c, *_ = m.predict_and_fully_correct(s)
         jax.block_until_ready(s)
         for _ in range(args.steps_only):
-            s, _e, _c = m.predict_and_fully_correct(s)
+            s, _e, _c, *_ = m.predict_and_fully_correct(s)
         jax.block_until_ready(s)
         print(
             f"ran {args.steps_only} steps (steps-only mode); wrap this "
