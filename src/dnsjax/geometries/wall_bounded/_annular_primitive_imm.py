@@ -43,10 +43,11 @@ from ...solvers import (
     _banded_from_dense,
     _banded_wall_row,
 )
-from ._base import apply_y_matrix, extract_mean_mode, integrate_scalar
+from ._base import apply_y_matrix
 from .annular import (
     AnnularFlow,
     Fourier,
+    _apply_bulk_correction,
     _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
 )
@@ -335,7 +336,7 @@ def _imm_iteration_vp(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: AnnularFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""Primitive `$(u_\pm, p)$` influence-matrix pass (legacy).
 
     Combines the cylindrical `$u_\pm$` divergence / pressure-gradient
@@ -492,31 +493,16 @@ def _imm_iteration_vp(
     up_new = up_new - ur_corr
     um_new = um_new - ur_corr
 
-    if params.phys.block_mean_spanwise_velocity:
-        # Zero the mean-mode perturbation bulk axial velocity.  At the
-        # mean mode alpha = 0 and ikz = 0, so uz_arb already equals the
-        # uncorrected uz there; reading the bulk from uz_arb fuses the
-        # IMM and bulk corrections.
-        mean_uz = extract_mean_mode(uz_arb[None])[0].real
-        bulk_uz = (
-            integrate_scalar(mean_uz, flow_.y_weights)
-            / derived_params.volume_fac
-        )
-        uz_new = (
-            uz_arb
-            - ikz * q_corr
-            + jnp.where(
-                mean_mask,
-                -bulk_uz
-                * flow_.H_bulk_inv
-                * flow_.h_bulk_response[:, None, None],
-                0.0,
-            )
-        )
-    else:
-        uz_new = uz_arb - ikz * q_corr
+    # Axial bulk blocking (shared with the default scheme:
+    # :func:`.annular._apply_bulk_correction`).  At the mean mode
+    # alpha = 0 and ikz = 0, so ``uz_arb`` already equals the
+    # uncorrected uz there; reading the bulk from it fuses the IMM and
+    # bulk corrections, which is why source and target differ.
+    uz_new, aux = _apply_bulk_correction(
+        uz_arb - ikz * q_corr, uz_arb, mean_mask, flow_
+    )
 
     velocity_new = jnp.array([uz_new, up_new, um_new])
     correction = velocity_new - velocity_j
 
-    return velocity_new, correction
+    return velocity_new, correction, aux

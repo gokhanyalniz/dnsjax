@@ -471,11 +471,16 @@ def build_wall_bounded_stepper(
     dt_leaves_fn: Callable,
 ) -> tuple[
     Callable[[], Array],
-    Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
-    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array], tuple[Array, Array, Array, dict[str, Array], dict[str, Array]]
+    ],
     Callable[
         [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
+    Callable[
+        [Array, Array],
+        tuple[Array, Array, Array, Array, dict[str, Array], dict[str, Array]],
     ],
     Callable[[float], None],
     Callable[[], None],
@@ -550,28 +555,34 @@ def build_wall_bounded_stepper(
 
     def predict_and_fully_correct(
         state: Array,
-    ) -> tuple[Array, Array, Array]:
-        """Fused predict + corrector loop with bound singletons."""
+    ) -> tuple[Array, Array, Array, dict[str, Array]]:
+        """Fused predict + corrector loop with bound singletons.
+
+        Returns ``(state, error, num_c, aux)``; *aux* carries the
+        converged corrector's own diagnostics -- for a wall-bounded
+        flow, the mean-mode driving it applied (see ``correct_fn`` in
+        ``timestep.py``), empty when it applies none."""
         return _predict_and_fully_correct_jit(state, fourier, flow)
 
     def predict_and_fully_correct_measured(
         state: Array,
-    ) -> tuple[Array, Array, Array, dict[str, Array]]:
+    ) -> tuple[Array, Array, Array, dict[str, Array], dict[str, Array]]:
         """Fused step + physical-space measurements (at `$u^n$`)."""
         return _predict_and_fully_correct_measured_jit(state, fourier, flow)
 
     def step_cnab2(
         state: Array, carry: Array
-    ) -> tuple[Array, Array, Array, Array]:
+    ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
         """One CN/AB2 step with bound singletons.  Returns
-        ``(state_next, carry, error, num_c)``; feed ``carry`` back
+        ``(state_next, carry, error, num_c, aux)``; feed ``carry`` back
         unchanged.  ``error``/``num_c`` are the FFT-free base-flow
-        coupling corrector's (see ``step_cnab2`` in ``timestep.py``)."""
+        coupling corrector's, and ``aux`` its converged diagnostics
+        (see ``step_cnab2`` in ``timestep.py``)."""
         return _step_cnab2_jit(state, carry, fourier, flow)
 
     def step_cnab2_measured(
         state: Array, carry: Array
-    ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
+    ) -> tuple[Array, Array, Array, Array, dict[str, Array], dict[str, Array]]:
         """CN/AB2 step + physical-space measurements (at `$u^n$`)."""
         return _step_cnab2_measured_jit(state, carry, fourier, flow)
 

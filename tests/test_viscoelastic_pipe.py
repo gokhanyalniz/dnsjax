@@ -484,7 +484,7 @@ def test_laminar_full_step_fixed_point() -> None:
     profile.
     """
     state = to_spin_basis(_laminar_state)
-    stepped, err, _ = predict_and_fully_correct(jnp.copy(state))
+    stepped, err, *_ = predict_and_fully_correct(jnp.copy(state))
     drift = float(jnp.abs(stepped - state).max())
     assert drift < 1e-12, f"laminar step drift {drift:.2e}"
     assert float(err) < 1e-12

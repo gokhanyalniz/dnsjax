@@ -130,7 +130,14 @@ class FlowSpec:
     ``set_dt`` / ``reset_ab2_kappa`` (the adaptive-dt hooks),
     ``get_perturbation_energy``) -- a string, so the spec stays
     JAX-free; consumers import it lazily (the ``__main__`` flow
-    dispatch, the transient-growth driver).  ``n_components`` is the
+    dispatch, the transient-growth driver).  One export is
+    **optional**: ``get_driving(state) -> dict[str, Array]``, the
+    wall-shear inference of the mean-mode driving, exported only by
+    flows that can apply one (``phys.driving`` /
+    ``phys.block_mean_spanwise_velocity``).  It supplies the extra
+    ``stats.dat`` column names and the ``t = t0`` row, which has no
+    step behind it to report the applied value of; ``__main__`` reads
+    it with ``getattr`` and falls back to no column.  ``n_components`` is the
     leading state-axis size (3 velocity components unless the flow
     carries more, e.g. the 9-component viscoelastic state); read by
     the snapshot writer and the analysis component schemas.

@@ -1040,7 +1040,7 @@ def test_centerline_mean_axial_velocity() -> None:
     for _ in range(20):
         # predict_and_fully_correct donates its argument; the loop
         # rebinds state, so nothing reuses the donated buffer.
-        state, err, _ = predict_and_fully_correct(state)
+        state, err, *_ = predict_and_fully_correct(state)
         assert float(err) < params.step.corrector_tolerance, (
             f"corrector not converged (err {float(err):.3e})"
         )

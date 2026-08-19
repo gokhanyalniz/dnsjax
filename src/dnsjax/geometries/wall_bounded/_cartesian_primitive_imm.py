@@ -273,7 +273,7 @@ def _imm_iteration_vp(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: CartesianFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""Kleiser-Schumann influence-matrix method.
 
     The y-momentum equation supplies only the *interior* Poisson
@@ -454,10 +454,10 @@ def _imm_iteration_vp(
     u_new = u_arb - ikx * q_new
     w_new = w_arb - ikz * q_new
 
-    u_new, w_new = _apply_bulk_corrections(u_new, w_new, mean_mask, flow_)
+    u_new, w_new, aux = _apply_bulk_corrections(u_new, w_new, mean_mask, flow_)
 
     velocity_new = jnp.array([u_new, v_new, w_new])
 
     correction = velocity_new - velocity_j
 
-    return velocity_new, correction
+    return velocity_new, correction, aux

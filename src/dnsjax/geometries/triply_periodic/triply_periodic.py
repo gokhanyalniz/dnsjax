@@ -456,9 +456,20 @@ def _correct(
     rhs_next: Array,
     fourier_: Fourier,
     flow_: TriplyPeriodicFlow,
-) -> tuple[Array, Array]:
-    """Crank-Nicolson corrector with algebraic Helmholtz inversion."""
-    return _correct_component(prediction, rhs_prev, rhs_next, flow_.ildt_2)
+) -> tuple[Array, Array, dict[str, Array]]:
+    """Crank-Nicolson corrector with algebraic Helmholtz inversion.
+
+    The empty third return is the corrector-side *aux* contract
+    (:func:`dnsjax.timestep.make_stepper`): this family applies no
+    mean-mode driving -- there are no walls to hold a bulk against, and
+    its `$k = 0$` mode is zeroed outright every step
+    (:func:`_finalize_state`) -- so it has nothing to report.  Empty is
+    a leafless pytree, hence free in the corrector's loop carry.
+    """
+    state_new, correction = _correct_component(
+        prediction, rhs_prev, rhs_next, flow_.ildt_2
+    )
+    return state_new, correction, {}
 
 
 def _norm(
@@ -527,11 +538,16 @@ def build_triply_periodic_stepper(
     flow: TriplyPeriodicFlow,
 ) -> tuple[
     Callable[[], Array],
-    Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
-    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array], tuple[Array, Array, Array, dict[str, Array], dict[str, Array]]
+    ],
     Callable[
         [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
+    Callable[
+        [Array, Array],
+        tuple[Array, Array, Array, Array, dict[str, Array], dict[str, Array]],
     ],
     Callable[[float], None],
     Callable[[], None],

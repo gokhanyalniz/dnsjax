@@ -306,13 +306,13 @@ def _bench_step_cnab2(jax, jnp, step_cnab2, state, n: int, warmup: int = 3):
     copies (both arguments are donated); a discarded priming call
     seeds the AB2 history, as the ``__main__`` driver does."""
     s = jnp.copy(state)
-    _, rp, _, _ = step_cnab2(jnp.copy(s), jnp.zeros_like(s))
+    _, rp, *_ = step_cnab2(jnp.copy(s), jnp.zeros_like(s))
     for _ in range(warmup):
-        s, rp, _err, _c = step_cnab2(s, rp)
+        s, rp, _err, _c, *_ = step_cnab2(s, rp)
     jax.block_until_ready(s)
     t0 = time.perf_counter()
     for _ in range(n):
-        s, rp, _err, _c = step_cnab2(s, rp)
+        s, rp, _err, _c, *_ = step_cnab2(s, rp)
     jax.block_until_ready(s)
     return (time.perf_counter() - t0) / n
 
@@ -439,7 +439,7 @@ def run_child(a: argparse.Namespace) -> None:
     # ("Array has been deleted" at the first ``_bench_step``).
     s = jnp.copy(to_solver(state))
     for _ in range(a.parity_steps):
-        s, _err, _c = m.predict_and_fully_correct(s)
+        s, _err, _c, *_ = m.predict_and_fully_correct(s)
     jax.block_until_ready(s)
     s_phys = from_solver(s)
     parity = {

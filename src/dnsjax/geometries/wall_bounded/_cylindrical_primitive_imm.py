@@ -43,10 +43,11 @@ from ...solvers import (
     _banded_from_dense,
     _banded_wall_row,
 )
-from ._base import apply_y_matrix, extract_mean_mode
+from ._base import apply_y_matrix
 from .cylindrical import (
     CylindricalFlow,
     Fourier,
+    _apply_bulk_correction,
     _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
     _parity_y_matvec,
@@ -403,7 +404,7 @@ def _imm_iteration_vp(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: CylindricalFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""Primitive `$(u_\pm, p)$` influence-matrix pass (legacy).
 
     The pipe's single wall at `$r = 1$` gives a `$1 \times 1$`
@@ -601,35 +602,17 @@ def _imm_iteration_vp(
     up_new = up_new - ur_corr
     um_new = um_new - ur_corr
 
-    # Constant-bulk-velocity enforcement: add a uniform mean
-    # pressure gradient G to the mean-mode u_z Helmholtz RHS
-    # so that the perturbation bulk velocity is zero.
-    # Equivalent post-solve form: uz += G * h, where
-    # h = Hk_z^{-1} [1,...,1,0] and G = -Ub_pert / H_bulk.
-    # At the mean mode alpha = 0 and ikz = 0, so uz_arb
-    # already equals the uncorrected uz_new there; reading
-    # the bulk from uz_arb lets the IMM correction and the
-    # bulk correction fuse into a single expression.  The
-    # write mask is ``mean_mask``: no other mode (padding
-    # included) receives the correction.
-    if params.phys.driving == "constant_bulk_velocity":
-        mean_uz = extract_mean_mode(uz_arb[None])[0].real
-        bulk_uz = 2 * jnp.dot(flow_.y_weights, mean_uz)
-        uz_new = (
-            uz_arb
-            - ikz * qz_corr
-            + jnp.where(
-                fourier_.mean_mask,
-                -bulk_uz
-                * flow_.H_bulk_inv
-                * flow_.h_bulk_response[:, None, None],
-                0.0,
-            )
-        )
-    else:
-        uz_new = uz_arb - ikz * qz_corr
+    # Constant-bulk-velocity enforcement (shared with the default
+    # scheme: :func:`.cylindrical._apply_bulk_correction`).  At the
+    # mean mode alpha = 0 and ikz = 0, so ``uz_arb`` already equals the
+    # uncorrected ``uz_new`` there -- reading the bulk from it is what
+    # lets the IMM correction and the bulk correction fuse into a
+    # single expression, which is why the source and target differ.
+    uz_new, aux = _apply_bulk_correction(
+        uz_arb - ikz * qz_corr, uz_arb, fourier_.mean_mask, flow_
+    )
 
     velocity_new = jnp.array([uz_new, up_new, um_new])
     correction = velocity_new - velocity_j
 
-    return velocity_new, correction
+    return velocity_new, correction, aux
