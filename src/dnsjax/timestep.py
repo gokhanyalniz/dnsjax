@@ -43,10 +43,11 @@ def make_stepper(
     finalize_fn: Callable[..., Array] | None = None,
     step_scales_fn: Callable[..., tuple[Array, Array]] | None = None,
 ) -> tuple[
-    Callable[..., tuple[Array, Array, Array]],
-    Callable[..., tuple[Array, Array, Array, dict[str, Array]]] | None,
-    Callable[..., tuple[Array, Array, Array, Array]],
-    Callable[..., tuple[Array, Array, Array, Array, dict[str, Array]]] | None,
+    Callable[..., tuple[Array, Array, Array, dict[str, Array]]],
+    Callable[..., tuple[Array, Array, Array, dict[str, Array], dict]] | None,
+    Callable[..., tuple[Array, Array, Array, Array, dict[str, Array]]],
+    Callable[..., tuple[Array, Array, Array, Array, dict[str, Array], dict]]
+    | None,
 ]:
     r"""Build the JIT-compiled predictor-corrector stepping functions.
 
@@ -77,8 +78,21 @@ def make_stepper(
         step (flow-specific Helmholtz solve).
     correct_fn:
         ``(state_prev, prediction_state, rhs_prev, rhs_next) ->
-        (prediction_state_new, correction)``.
-        Crank-Nicolson corrector step.
+        (prediction_state_new, correction, aux)``.
+        Crank-Nicolson corrector step.  *aux* is a dict of 0-d
+        **corrector-side diagnostics** -- scalars that exist only
+        inside the implicit solve and cannot be recovered from the
+        accepted state afterwards.  Its keys are fixed at trace time
+        by the geometry (so the dict is a static pytree structure the
+        loop carries verify against), and it is ``{}`` for a geometry
+        with nothing to report -- a *leafless* pytree, hence free.  The
+        one current user is the mean-mode driving a wall-bounded flow
+        applies under ``phys.driving = "constant_bulk_velocity"`` or
+        ``phys.block_mean_spanwise_velocity``: the body force
+        `$-\partial p'/\partial s$` whose rank-1 correction zeroes the
+        perturbation bulk (see each geometry's bulk correction and
+        ``__main__``'s ``stats.dat`` column).  Only the **accepted**
+        (converged) correction's *aux* survives a step.
     norm_fn:
         ``correction -> error``.  Convergence norm (L2 norm of the
         correction vector).
@@ -142,7 +156,9 @@ def make_stepper(
     predict_and_fully_correct:
         Fused predict + corrector loop in a single JIT scope
         via ``lax.while_loop``.  Signature:
-        ``state -> (prediction_state, error, num_c)``.
+        ``state -> (prediction_state, error, num_c, aux)``, *aux*
+        being the converged correction's diagnostics (see
+        *correct_fn*).
         With *l_bf_fn* and ``step.split_corrector`` enabled (opt-in,
         default off) the corrector runs in split form -- the linear
         coupling iterates FFT-free between full-RHS refreshes, same
@@ -156,15 +172,17 @@ def make_stepper(
         As ``predict_and_fully_correct``, but the step's first
         RHS evaluation (at the accepted state `$u^n$`) also
         computes the physical-space measurements.  Signature:
-        ``state -> (prediction_state, error, num_c,
-        measurements)``.  Donates *state* like
+        ``state -> (prediction_state, error, num_c, aux,
+        measurements)`` -- *measurements* stays last, so a
+        ``*_, meas`` unpack is unaffected.  Donates *state* like
         ``predict_and_fully_correct``.  ``None`` when
         *get_rhs_measured_fn* is not given.
     step_cnab2:
         One CN/AB2 step (Crank-Nicolson viscous + explicit 2nd-order
         Adams-Bashforth nonlinear), selected by ``step.scheme ==
         "cnab2"``.  Signature: ``(state, carry) -> (state_next, carry,
-        error, num_c)``; the caller carries ``carry`` back unchanged.
+        error, num_c, aux)``; the caller carries ``carry`` back
+        unchanged.
         **Donates** *state* and *carry* (both are rebound by the main
         loop); callers that reuse either afterwards must pass copies.
         **One FFT/step** either way (the single expensive nonlinear
@@ -183,7 +201,7 @@ def make_stepper(
     step_cnab2_measured:
         As ``step_cnab2``, but its first RHS evaluation (at `$u^n$`)
         also returns the physical-space measurements.  Signature:
-        ``(state, carry) -> (state_next, carry, error, num_c,
+        ``(state, carry) -> (state_next, carry, error, num_c, aux,
         measurements)``.  ``None`` when *get_rhs_measured_fn* is not
         given.
     """
@@ -219,7 +237,7 @@ def make_stepper(
         prediction = predict_fn(state, rhs_prev, *args)
 
         rhs_next = get_rhs_fn(prediction, *args)
-        prediction, correction = correct_fn(
+        prediction, correction, aux = correct_fn(
             state, prediction, rhs_prev, rhs_next, *args
         )
         error = norm_fn(correction, *args)
@@ -228,20 +246,20 @@ def make_stepper(
         max_c = params.step.max_corrector_iterations
 
         def cond_fn(carry):
-            _, _, err, c = carry
+            _, _, err, c, _ = carry
             return jnp.logical_and(err > tol, c < max_c)
 
         def body_fn(carry):
-            pred, rhs_p, _, c = carry
+            pred, rhs_p, _, c, _ = carry
             rhs_n = get_rhs_fn(pred, *args)
-            pred, corr = correct_fn(state, pred, rhs_p, rhs_n, *args)
-            return pred, rhs_p, norm_fn(corr, *args), c + 1
+            pred, corr, aux_j = correct_fn(state, pred, rhs_p, rhs_n, *args)
+            return pred, rhs_p, norm_fn(corr, *args), c + 1, aux_j
 
-        init = (prediction, rhs_prev, error, jnp.int32(0))
-        prediction, _, error, num_c = jax.lax.while_loop(
+        init = (prediction, rhs_prev, error, jnp.int32(0), aux)
+        prediction, _, error, num_c, aux = jax.lax.while_loop(
             cond_fn, body_fn, init
         )
-        return prediction, error, num_c
+        return prediction, error, num_c, aux
 
     def _split_core(
         state: Array, rhs_prev: Array, *args
@@ -291,7 +309,7 @@ def make_stepper(
         rhs_next = get_rhs_fn(prediction, *args)
         l_prev = l_bf_fn(prediction, *args)
         nnl = rhs_next - l_prev
-        prediction, correction = correct_fn(
+        prediction, correction, aux = correct_fn(
             state, prediction, rhs_prev, rhs_next, *args
         )
         error = norm_fn(correction, *args)
@@ -308,18 +326,21 @@ def make_stepper(
             return jnp.logical_and(delta > tol, ic < max_c)
 
         def outer_cond(carry):
-            _, _, _, err, c = carry
+            _, _, _, err, c, _ = carry
             return jnp.logical_and(err > tol, c < max_c)
 
         def outer_body(carry):
             # ``l_prev_k`` is the coupling used by the last correction
             # (invariant kept below), so ``delta`` measures how much
             # the coupling estimate has moved since that correction.
-            pred, nnl_k, l_prev_k, _err, c = carry
+            pred, nnl_k, l_prev_k, _err, c, _aux = carry
 
             def inner_body(icarry):
                 ipred, l_i, _, ic = icarry
-                ipred, _ = correct_fn(
+                # The tail's ``aux`` is dropped: acceptance is always the
+                # outer fresh-RHS correction below, so that is the one
+                # whose corrector-side diagnostics describe the step.
+                ipred, _, _ = correct_fn(
                     state, ipred, rhs_prev, nnl_k + l_i, *args
                 )
                 l_next = l_bf_fn(ipred, *args)
@@ -340,11 +361,11 @@ def make_stepper(
             # remainder costs no extra ``l_bf_fn`` evaluation.
             rhs_k = get_rhs_fn(pred, *args)
             nnl_k = rhs_k - l_last
-            pred, corr = correct_fn(state, pred, rhs_prev, rhs_k, *args)
-            return pred, nnl_k, l_last, norm_fn(corr, *args), c + 1
+            pred, corr, aux_k = correct_fn(state, pred, rhs_prev, rhs_k, *args)
+            return pred, nnl_k, l_last, norm_fn(corr, *args), c + 1, aux_k
 
-        init = (prediction, nnl, l_prev, error, jnp.int32(0))
-        prediction, _, _, error, num_c = jax.lax.while_loop(
+        init = (prediction, nnl, l_prev, error, jnp.int32(0), aux)
+        prediction, _, _, error, num_c, aux = jax.lax.while_loop(
             outer_cond, outer_body, init
         )
 
@@ -359,7 +380,7 @@ def make_stepper(
             return _step_core(state, rhs_prev, *args)
 
         def _keep(_):
-            return prediction, error, num_c
+            return prediction, error, num_c, aux
 
         return jax.lax.cond(error > tol, _fallback, _keep, None)
 
@@ -388,8 +409,10 @@ def make_stepper(
         copy (see the ``__main__`` warm-up calls).
         """
         rhs_prev = get_rhs_fn(state, *args)
-        prediction, error, num_c = _fully_correct_core(state, rhs_prev, *args)
-        return _finalized(prediction, *args), error, num_c
+        prediction, error, num_c, aux = _fully_correct_core(
+            state, rhs_prev, *args
+        )
+        return _finalized(prediction, *args), error, num_c, aux
 
     if get_rhs_measured_fn is None:
         predict_and_fully_correct_measured = None
@@ -407,10 +430,16 @@ def make_stepper(
             (warm-up callers pass a copy).
             """
             rhs_prev, measurements = get_rhs_measured_fn(state, *args)
-            prediction, error, num_c = _fully_correct_core(
+            prediction, error, num_c, aux = _fully_correct_core(
                 state, rhs_prev, *args
             )
-            return _finalized(prediction, *args), error, num_c, measurements
+            return (
+                _finalized(prediction, *args),
+                error,
+                num_c,
+                aux,
+                measurements,
+            )
 
     def _cnab2_lbf_core(
         state: Array, nnl_prev: Array, full_rhs: Array, *args
@@ -449,23 +478,23 @@ def make_stepper(
 
         prediction = predict_fn(state, rhs_prev, *args)
         rhs_next = f_ab2 + l_bf_fn(prediction, *args)
-        prediction, correction = correct_fn(
+        prediction, correction, aux = correct_fn(
             state, prediction, rhs_prev, rhs_next, *args
         )
         error = norm_fn(correction, *args)
 
         def cond_fn(carry):
-            _, err, c = carry
+            _, err, c, _ = carry
             return jnp.logical_and(err > tol, c < max_c)
 
         def body_fn(carry):
-            pred, _, c = carry
+            pred, _, c, _ = carry
             rhs_n = f_ab2 + l_bf_fn(pred, *args)
-            pred, corr = correct_fn(state, pred, rhs_prev, rhs_n, *args)
-            return pred, norm_fn(corr, *args), c + 1
+            pred, corr, aux_j = correct_fn(state, pred, rhs_prev, rhs_n, *args)
+            return pred, norm_fn(corr, *args), c + 1, aux_j
 
-        prediction, error, num_c = jax.lax.while_loop(
-            cond_fn, body_fn, (prediction, error, jnp.int32(0))
+        prediction, error, num_c, aux = jax.lax.while_loop(
+            cond_fn, body_fn, (prediction, error, jnp.int32(0), aux)
         )
 
         # Hybrid auto-fallback for a genuinely divergent corrector.  The
@@ -497,15 +526,20 @@ def make_stepper(
             return _step_core(state, full_rhs, *args)
 
         def _keep(_):
-            return prediction, error, num_c
+            return prediction, error, num_c, aux
 
-        prediction, error, num_c = jax.lax.cond(
+        prediction, error, num_c, aux = jax.lax.cond(
             error > tol, _fallback, _keep, None
         )
-        return _finalized(prediction, *args), nnl_n, error, num_c
+        return _finalized(prediction, *args), nnl_n, error, num_c, aux
 
     _zero_err = jnp.zeros(())
     _zero_c = jnp.int32(0)
+    # The corrector-side ``aux`` of a step that runs no corrector: the
+    # explicit-AB2 branch below.  Empty is a *leafless* pytree, so it
+    # costs nothing in a loop carry or a ``lax.cond`` branch -- and it
+    # is also what every geometry with nothing to report returns.
+    _no_aux: dict[str, Array] = {}
 
     @jit(donate_argnums=(0, 1))
     def step_cnab2(
@@ -549,7 +583,13 @@ def make_stepper(
             _, kappa = _step_scales(*args)
             forcing = (1.0 + 0.5 * kappa) * full_rhs - (0.5 * kappa) * carry
             state_next = predict_fn(state, forcing, *args)
-            return _finalized(state_next, *args), full_rhs, _zero_err, _zero_c
+            return (
+                _finalized(state_next, *args),
+                full_rhs,
+                _zero_err,
+                _zero_c,
+                _no_aux,
+            )
         return _cnab2_lbf_core(state, carry, full_rhs, *args)
 
     if get_rhs_measured_fn is None:
@@ -575,6 +615,7 @@ def make_stepper(
                     full_rhs,
                     _zero_err,
                     _zero_c,
+                    _no_aux,
                     measurements,
                 )
             out = _cnab2_lbf_core(state, carry, full_rhs, *args)

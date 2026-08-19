@@ -330,9 +330,7 @@ def _worker(
     if scheme == "cnab2":
         # __main__ bootstrap: discarded priming call seeds the AB2
         # history, the first integration step is iterative-CN.
-        _, carry, _, _ = fmod.step_cnab2(
-            jnp.copy(state), jnp.zeros_like(state)
-        )
+        _, carry, *_ = fmod.step_cnab2(jnp.copy(state), jnp.zeros_like(state))
         for i, step_dt in enumerate(seq):
             if step_dt != prev_dt:
                 fmod.set_dt(step_dt)
@@ -341,16 +339,16 @@ def _worker(
                 fmod.reset_ab2_kappa()
                 kappa_pending = False
             if i == 0:
-                state, err, _ = fmod.predict_and_fully_correct(state)
+                state, err, *_ = fmod.predict_and_fully_correct(state)
             else:
-                state, carry, err, _ = fmod.step_cnab2(state, carry)
+                state, carry, err, *_ = fmod.step_cnab2(state, carry)
             _converged(err, i)
             prev_dt = step_dt
     else:
         for i, step_dt in enumerate(seq):
             if step_dt != prev_dt:
                 fmod.set_dt(step_dt)
-            state, err, _ = fmod.predict_and_fully_correct(state)
+            state, err, *_ = fmod.predict_and_fully_correct(state)
             _converged(err, i)
             prev_dt = step_dt
 

@@ -74,6 +74,7 @@ from ...geometries.wall_bounded.cartesian import (
     get_norm2,
     get_pert_enstrophy,
     integrate_scalar,
+    mean_driving,
     pad_base_flow,
     tilted_profile_arrays,
 )
@@ -289,3 +290,25 @@ def _get_perturbation_energy_jit(
 def get_perturbation_energy(state: Array) -> Array:
     """Perturbation kinetic energy E' (for the laminarization check)."""
     return _get_perturbation_energy_jit(state, fourier, flow)
+
+
+@jit
+def _get_driving_jit(
+    state: Array, flow_: PlanePoiseuilleFlow
+) -> dict[str, Array]:
+    r"""Wall-shear inference of the applied mean-mode driving."""
+    return mean_driving(state, flow_)
+
+
+def get_driving(state: Array) -> dict[str, Array]:
+    r"""Applied mean-mode driving inferred from *state* alone.
+
+    The optional flow-module export ``__main__`` uses for the one
+    ``stats.dat`` row with no step behind it (``t = t0``); every other
+    row carries the value the corrector actually applied, threaded out
+    of the step.  Same keys and sign as that column
+    (`$-\partial p'/\partial s$`, the applied forcing), ``{}`` when no
+    driving knob is on.  Takes the **physical** view of *state*, like
+    :func:`get_stats`.
+    """
+    return _get_driving_jit(state, flow)

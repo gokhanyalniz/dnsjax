@@ -1444,8 +1444,11 @@ class CylindricalFlow:
         Solves `$H_{k,z}\,h = \mathbf{1}$` (unit uniform RHS,
         zero wall BC) at the mean mode `$(m, k_z) = (0, 0)$`.
         The response `$h(r)$` is the velocity profile produced
-        by a unit mean pressure gradient over one implicit time
-        step.  Its bulk `$H = 2 \int_0^1 h\,r\,dr$` gives the
+        by a unit uniform **body force** over one implicit time
+        step (`$H_{k,z} = I/\Delta t - c\nu L$` carries
+        accelerations on its RHS), so the scaling `$G$` below is
+        `$-\partial p'/\partial z$` -- the sign the ``-dPdz'``
+        diagnostic reports.  Its bulk `$H = 2 \int_0^1 h\,r\,dr$` gives the
         scaling needed to zero the perturbation bulk velocity:
 
         .. math::
@@ -1493,6 +1496,83 @@ class CylindricalFlow:
         )
         H_bulk = 2 * jnp.dot(self.y_weights, self.h_bulk_response)
         self.H_bulk_inv = 1.0 / H_bulk
+
+
+#: ``stats.dat`` column name for the mean-mode driving this geometry
+#: applies (:func:`_apply_bulk_correction`).  The sign is the applied
+#: **forcing** `$-\partial p'/\partial z$`, positive when it accelerates
+#: the flow, carried in the name so it cannot be read as the pressure
+#: gradient.
+DRIVING_KEY_Z = "-dPdz'"
+
+
+def mean_driving(state: Array, flow_: CylindricalFlow) -> dict[str, Array]:
+    r"""Wall-shear **inference** of the driving, from a state alone.
+
+    Area-averaging the mean-mode axial momentum over the disc, with
+    `$\int_0^1 r^{-1}(r\,\bar{u}_z')'\,r\,dr = [r\,\bar{u}_z']_0^1$`
+    and ``volume_fac`` `$= \int_0^1 r\,dr = 1/2$`:
+
+    .. math::
+        \frac{d U_{b,z}'}{dt} = \Pi'_z + 2\,\nu\,\tau_z ,
+
+    so holding the bulk fixed applies exactly `$\Pi'_z = -2\nu\tau_z$`
+    -- the same number :func:`_apply_bulk_correction` applies, up to
+    the time discretization, under the same key and sign.
+
+    Used for the ``t = t0`` ``stats.dat`` row, which has no step behind
+    it (:mod:`dnsjax.__main__`); every other row reports the value the
+    corrector actually applied.
+    """
+    if params.phys.driving != "constant_bulk_velocity":
+        return {}
+    mean_uz = extract_mean_mode(state)[0].real
+    tau_z = jnp.dot(flow_.D1_wall.ravel(), mean_uz)
+    return {DRIVING_KEY_Z: -2 * tau_z / params.phys.re}
+
+
+def _apply_bulk_correction(
+    uz_new: Array,
+    uz_src: Array,
+    mean_mask: Array,
+    flow_: CylindricalFlow,
+) -> tuple[Array, dict[str, Array]]:
+    r"""Constant-bulk-velocity enforcement, shared by both IMM schemes.
+
+    Adds a uniform body force `$\Pi'_z$` to the mean-mode `$u_z$`
+    Helmholtz RHS so the perturbation bulk axial velocity is zero,
+    in its equivalent post-solve form `$u_z \mathrel{+}= \Pi'_z\,h$`
+    with `$h$` the response of
+    :meth:`CylindricalFlow._precompute_bulk_response` and
+    `$\Pi'_z = -U_{b,\mathrm{pert}} / H_{\mathrm{bulk}}$`.  Like every
+    mean-plane write it is confined to `$k^2 = 0$`, the one plane the
+    reconstruction never touches; ``mean_mask`` is the write mask, so
+    no other mode (padding included) receives it.
+
+    *uz_src* is where the bulk is **read** and *uz_new* what the
+    correction is **added to**.  They differ only on the legacy
+    primitive path, whose `$u_z$` carries an extra `$-ik_z q_z$` term
+    that vanishes at the mean mode: reading the bulk from the
+    uncorrected ``uz_arb`` there lets the IMM and bulk corrections fuse
+    into one expression.
+
+    Returns the corrected field and the applied `$\Pi'_z$` as the
+    corrector's *aux* diagnostics -- the correction's own scalar
+    prefactor, so what is reported cannot drift from what is applied.
+    Empty, and a trace-time no-op, under any other driving.
+    """
+    if params.phys.driving != "constant_bulk_velocity":
+        return uz_new, {}
+    mean_uz = extract_mean_mode(uz_src[None])[0].real
+    bulk_uz = 2 * jnp.dot(flow_.y_weights, mean_uz)
+    pi_z = -bulk_uz * flow_.H_bulk_inv  # the applied body force
+    return (
+        uz_new
+        + jnp.where(
+            mean_mask, pi_z * flow_.h_bulk_response[:, None, None], 0.0
+        ),
+        {DRIVING_KEY_Z: pi_z},
+    )
 
 
 def _vw_spin_groups(
@@ -1912,7 +1992,7 @@ def _imm_iteration_vw(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: CylindricalFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""`$u_r$`-`$\omega_r$` step via the spin quad
     (``res.consistent_imm``).
 
@@ -2345,22 +2425,12 @@ def _imm_iteration_vw(
     ut_new = jnp.where(mean_mask, om_pm[:, 0], ut_new)
     ur_new = jnp.where(mean_mask, 0.0, ur_new)
 
-    if params.phys.driving == "constant_bulk_velocity":
-        # Zero the mean-mode perturbation bulk axial velocity.  Like
-        # every mean-plane write, this is confined to k^2 = 0, the one
-        # plane the reconstruction never touches.
-        mean_uz = extract_mean_mode(uz_new[None])[0].real
-        bulk_uz = 2 * jnp.dot(flow_.y_weights, mean_uz)
-        uz_new = uz_new + jnp.where(
-            mean_mask,
-            -bulk_uz * flow_.H_bulk_inv * flow_.h_bulk_response[:, None, None],
-            0.0,
-        )
+    uz_new, aux = _apply_bulk_correction(uz_new, uz_new, mean_mask, flow_)
 
     velocity_new = to_pm_basis(jnp.stack([uz_new, ur_new, ut_new]))
     correction = velocity_new - velocity_j
 
-    return velocity_new, correction
+    return velocity_new, correction, aux
 
 
 def _imm_iteration(
@@ -2370,7 +2440,7 @@ def _imm_iteration(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: CylindricalFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""One implicit cylindrical step: dispatch on
     ``res.consistent_imm``.
 
@@ -2432,7 +2502,7 @@ def _predict(
 ) -> Array:
     """Euler predictor via the cylindrical IMM."""
     nonlin_n = rhs_no_lapl
-    prediction_state, _ = _imm_iteration(
+    prediction_state, _, _ = _imm_iteration(
         velocity_n, velocity_n, nonlin_n, nonlin_n, fourier_, flow_
     )
     return prediction_state
@@ -2445,9 +2515,13 @@ def _correct(
     rhs_next: Array,
     fourier_: Fourier,
     flow_: CylindricalFlow,
-) -> tuple[Array, Array]:
-    """Crank-Nicolson corrector via the cylindrical IMM."""
-    prediction_state_new, correction = _imm_iteration(
+) -> tuple[Array, Array, dict[str, Array]]:
+    """Crank-Nicolson corrector via the cylindrical IMM.
+
+    Third return: the corrector-side *aux* diagnostics, here the
+    applied mean-mode driving (:func:`_apply_bulk_correction`).
+    """
+    prediction_state_new, correction, aux = _imm_iteration(
         state_prev,
         prediction_state,
         rhs_prev,
@@ -2455,7 +2529,7 @@ def _correct(
         fourier_,
         flow_,
     )
-    return prediction_state_new, correction
+    return prediction_state_new, correction, aux
 
 
 def _norm(
@@ -2483,11 +2557,16 @@ def build_cylindrical_stepper(
     flow: CylindricalFlow,
 ) -> tuple[
     Callable[[], Array],
-    Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
-    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array], tuple[Array, Array, Array, dict[str, Array], dict[str, Array]]
+    ],
     Callable[
         [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
+    Callable[
+        [Array, Array],
+        tuple[Array, Array, Array, Array, dict[str, Array], dict[str, Array]],
     ],
     Callable[[float], None],
     Callable[[], None],

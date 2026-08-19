@@ -492,8 +492,13 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         rhs_prev: Array,
         rhs_next: Array,
         fourier_: Fourier,
-    ) -> tuple[Array, Array]:
-        """The annular 2x2 influence-matrix velocity pass."""
+    ) -> tuple[Array, Array, dict[str, Array]]:
+        """The annular 2x2 influence-matrix velocity pass.
+
+        Third return: the velocity pass' corrector-side *aux*
+        diagnostics, passed straight through (the geometry owns
+        what goes in it).
+        """
         return _imm_iteration(
             u_prev, u_pred, rhs_prev, rhs_next, fourier_, self
         )

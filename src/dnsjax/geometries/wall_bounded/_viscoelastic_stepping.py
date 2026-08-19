@@ -49,6 +49,7 @@ member                           what it owns
 ``hc_spin_bases``                the per-spin `$A_{\mathrm{base}}$`
                                  (parity-selected, banded or dense)
 ``imm_iteration``                the velocity influence-matrix pass
+                                 (returns its corrector *aux* too)
 ``velocity_l_bf``                the velocity base/mean-flow coupling
 ``base_dt_leaves``               the velocity ``dt``-dependent leaves
 ===============================  ====================================
@@ -695,7 +696,7 @@ def _correct(
     rhs_next: Array,
     fourier_: Fourier,
     flow_: ViscoelasticFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     """Coupled velocity-IMM + conformation-CN corrector.
 
     Velocity: the geometry's influence-matrix iteration
@@ -705,7 +706,7 @@ def _correct(
     correction stacks both so the single convergence norm covers `$u$`
     and `$c$`.
     """
-    vel_new, vel_corr = flow_.imm_iteration(
+    vel_new, vel_corr, aux = flow_.imm_iteration(
         state_prev[:3],
         prediction[:3],
         rhs_prev[:3],
@@ -718,7 +719,7 @@ def _correct(
     c_corr = c_new - prediction[3:]
     state_new = jnp.concatenate([vel_new, c_new])
     correction = jnp.concatenate([vel_corr, c_corr])
-    return state_new, correction
+    return state_new, correction, aux
 
 
 def _predict(
@@ -728,7 +729,7 @@ def _predict(
     flow_: ViscoelasticFlow,
 ) -> Array:
     """Euler predictor (nonlinear at `$u^n$`, viscous/diffusive CN)."""
-    prediction, _ = _correct(
+    prediction, _, _ = _correct(
         state_n, state_n, rhs_no_lapl, rhs_no_lapl, fourier_, flow_
     )
     return prediction

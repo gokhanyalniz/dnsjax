@@ -213,7 +213,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
     n_steps = PIPE_STEPS if system == "pipe" else 1
     stepped = jnp.copy(to_solver(state))
     for _ in range(n_steps):
-        stepped, _, _ = mod.predict_and_fully_correct(stepped)
+        stepped, *_ = mod.predict_and_fully_correct(stepped)
     stepped = from_solver(stepped)
 
     def divergence(st) -> float:

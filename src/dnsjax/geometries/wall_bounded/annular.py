@@ -1430,6 +1430,89 @@ def _get_rhs_measured(
 # ── IMM iteration (2x2) ─────────────────────────────────────────
 
 
+#: ``stats.dat`` column name for the mean-mode driving this geometry
+#: applies (:func:`_apply_bulk_correction`).  The blocked direction is
+#: **axial** here, not spanwise-in-the-Cartesian-sense, and the sign is
+#: the applied **forcing** `$-\partial p'/\partial z$`, positive when it
+#: accelerates the flow.
+DRIVING_KEY_Z = "-dPdz'"
+
+
+def mean_driving(state: Array, flow_: AnnularFlow) -> dict[str, Array]:
+    r"""Wall-shear **inference** of the axial driving, from a state.
+
+    Area-averaging the mean-mode axial momentum over the annulus, with
+    `$\int_{r_1}^{r_2} r^{-1}(r\,\bar{u}_z')'\,r\,dr =
+    [r\,\bar{u}_z']_{r_1}^{r_2}$` and ``volume_fac``
+    `$= (r_2^2 - r_1^2)/2$`:
+
+    .. math::
+        \frac{d U_{b,z}'}{dt} = \Pi'_z
+        + \nu\,\frac{r_2\tau_2 - r_1\tau_1}{\mathrm{volfac}},
+
+    so blocking the bulk applies exactly the negative of that flux
+    term, under the same key and sign as
+    :func:`_apply_bulk_correction`.
+
+    **Newtonian only.**  It uses the solvent viscosity alone, so it
+    does not close the balance for the viscoelastic annular flow, whose
+    polymer stress carries its own axial wall traction -- that flow
+    therefore does not export it (its ``t = t0`` row is written as
+    zero instead of a wrong number; see :mod:`dnsjax.__main__`).
+    """
+    if not params.phys.block_mean_spanwise_velocity:
+        return {}
+    mean_uz = extract_mean_mode(state)[0].real
+    tau = flow_.D1_bnd @ mean_uz  # (2,) = [inner, outer]
+    r1, r2 = flow_.rs[0], flow_.rs[-1]
+    flux = (r2 * tau[1] - r1 * tau[0]) / derived_params.volume_fac
+    return {DRIVING_KEY_Z: -flux / params.phys.re}
+
+
+def _apply_bulk_correction(
+    uz_new: Array,
+    uz_src: Array,
+    mean_mask: Array,
+    flow_: AnnularFlow,
+) -> tuple[Array, dict[str, Array]]:
+    r"""Axial bulk blocking, shared by both IMM schemes.
+
+    Under ``phys.block_mean_spanwise_velocity`` (the annulus' undriven
+    homogeneous direction is the axial one) adds a uniform body force
+    `$\Pi'_z$` to the mean-mode `$u_z$` Helmholtz RHS so the
+    perturbation bulk axial velocity is zero, in the equivalent
+    post-solve form `$u_z \mathrel{+}= \Pi'_z\,h$` with `$h$` from
+    :meth:`AnnularFlow._precompute_bulk_response`.  Like every
+    mean-plane write it is confined to `$k^2 = 0$`, the one plane the
+    reconstruction never touches.
+
+    *uz_src* is where the bulk is **read**, *uz_new* what the correction
+    is **added to**; they differ only on the legacy primitive path,
+    whose `$u_z$` carries an extra `$-ik_z q$` term that vanishes at the
+    mean mode, so reading from the uncorrected ``uz_arb`` fuses the two
+    corrections.
+
+    Returns the corrected field and the applied `$\Pi'_z$` as the
+    corrector's *aux* diagnostics -- the correction's own prefactor, so
+    the reported number is by construction the applied one.  Empty, and
+    a trace-time no-op, when the knob is off (the default).
+    """
+    if not params.phys.block_mean_spanwise_velocity:
+        return uz_new, {}
+    mean_uz = extract_mean_mode(uz_src[None])[0].real
+    bulk_uz = (
+        integrate_scalar(mean_uz, flow_.y_weights) / derived_params.volume_fac
+    )
+    pi_z = -bulk_uz * flow_.H_bulk_inv  # the applied body force
+    return (
+        uz_new
+        + jnp.where(
+            mean_mask, pi_z * flow_.h_bulk_response[:, None, None], 0.0
+        ),
+        {DRIVING_KEY_Z: pi_z},
+    )
+
+
 def _imm_iteration_vw(
     velocity_n: Array,
     velocity_j: Array,
@@ -1437,7 +1520,7 @@ def _imm_iteration_vw(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: AnnularFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""`$u_r$`-`$\omega_r$` step (``res.consistent_imm``).
 
     The cylindrical transcription of the Cartesian `$v$`-`$\omega_y$`
@@ -1790,25 +1873,12 @@ def _imm_iteration_vw(
     ut_new = jnp.where(mean_mask, omega_new, ut_new)
     ur_new = jnp.where(mean_mask, 0.0, ur_new)
 
-    if params.phys.block_mean_spanwise_velocity:
-        # Zero the mean-mode perturbation bulk axial velocity.  Like
-        # every mean-plane write, this is confined to k^2 = 0, the one
-        # plane the reconstruction never touches.
-        mean_uz = extract_mean_mode(uz_new[None])[0].real
-        bulk_uz = (
-            integrate_scalar(mean_uz, flow_.y_weights)
-            / derived_params.volume_fac
-        )
-        uz_new = uz_new + jnp.where(
-            mean_mask,
-            -bulk_uz * flow_.H_bulk_inv * flow_.h_bulk_response[:, None, None],
-            0.0,
-        )
+    uz_new, aux = _apply_bulk_correction(uz_new, uz_new, mean_mask, flow_)
 
     velocity_new = to_pm_basis(jnp.stack([uz_new, ur_new, ut_new]))
     correction = velocity_new - velocity_j
 
-    return velocity_new, correction
+    return velocity_new, correction, aux
 
 
 def _imm_iteration(
@@ -1818,7 +1888,7 @@ def _imm_iteration(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: AnnularFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""One implicit annular step: dispatch on ``res.consistent_imm``.
 
     Two formulations of the same second-order-in-time scheme, sharing
@@ -1881,7 +1951,7 @@ def _predict(
 ) -> Array:
     """Euler predictor via the annular IMM."""
     nonlin_n = rhs_no_lapl
-    prediction_state, _ = _imm_iteration(
+    prediction_state, _, _ = _imm_iteration(
         velocity_n, velocity_n, nonlin_n, nonlin_n, fourier_, flow_
     )
     return prediction_state
@@ -1894,8 +1964,12 @@ def _correct(
     rhs_next: Array,
     fourier_: Fourier,
     flow_: AnnularFlow,
-) -> tuple[Array, Array]:
-    """Crank-Nicolson corrector via the annular IMM."""
+) -> tuple[Array, Array, dict[str, Array]]:
+    """Crank-Nicolson corrector via the annular IMM.
+
+    Third return: the corrector-side *aux* diagnostics, here the
+    applied mean-mode driving (:func:`_apply_bulk_correction`).
+    """
     return _imm_iteration(
         state_prev, prediction_state, rhs_prev, rhs_next, fourier_, flow_
     )
@@ -1927,11 +2001,16 @@ def build_annular_stepper(
     flow: AnnularFlow,
 ) -> tuple[
     Callable[[], Array],
-    Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
-    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array], tuple[Array, Array, Array, dict[str, Array], dict[str, Array]]
+    ],
     Callable[
         [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
+    Callable[
+        [Array, Array],
+        tuple[Array, Array, Array, Array, dict[str, Array], dict[str, Array]],
     ],
     Callable[[float], None],
     Callable[[], None],

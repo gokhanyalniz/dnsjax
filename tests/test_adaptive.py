@@ -332,7 +332,7 @@ def _worker(system: str, backend: str, consistent_imm: bool = True) -> None:
     state0 = to_solver(generate_random_state(AMP, SMOOTH, SEED))
 
     # Warm every stepper variant at DT0 (donated args -> copies).
-    _, carry, _, _ = fmod.step_cnab2(jnp.copy(state0), jnp.zeros_like(state0))
+    _, carry, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.zeros_like(state0))
     *_, m0 = fmod.step_cnab2_measured(jnp.copy(state0), jnp.copy(carry))
     fmod.predict_and_fully_correct(jnp.copy(state0))
     *_, m1 = fmod.predict_and_fully_correct_measured(jnp.copy(state0))

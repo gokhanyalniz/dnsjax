@@ -71,6 +71,7 @@ from ...geometries.wall_bounded._base import (
     pad_base_flow,
 )
 from ...geometries.wall_bounded.annular import (
+    DRIVING_KEY_Z,
     get_enstrophy_annular,
     get_norm2_annular,
     integrate_scalar,
@@ -345,3 +346,25 @@ def get_perturbation_energy(state: Array) -> Array:
     which reports the same number as ``E'``.
     """
     return _get_perturbation_energy_jit(state, _laminar_state, fourier, flow)
+
+
+def get_driving(state: Array) -> dict[str, Array]:
+    r"""Applied mean-mode driving: **keys only**, value zero.
+
+    The ``t = t0`` ``stats.dat`` row has no step behind it, so it is
+    normally filled with the wall-shear inference of the driving
+    (``mean_driving`` in each geometry).  That inference balances the
+    mean-mode axial momentum against the **solvent** wall traction
+    alone, and for an sPTT flow it does not close: the polymer carries
+    its own axial traction at the walls, so the solvent-only number
+    would be wrong rather than merely approximate.
+
+    Rather than report a wrong value this returns zero under the right
+    key, so the column exists and is correctly shaped from the first
+    row; every later row carries the value the corrector actually
+    applied, which is exact.  Empty unless
+    ``phys.block_mean_spanwise_velocity`` is on.
+    """
+    if not params.phys.block_mean_spanwise_velocity:
+        return {}
+    return {DRIVING_KEY_Z: jnp.zeros((), dtype=sharding.float_type)}

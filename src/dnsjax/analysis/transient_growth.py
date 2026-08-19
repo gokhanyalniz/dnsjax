@@ -947,11 +947,20 @@ def _linear_step(gmod: Any, fmod: Any = None):
     basis_mod = fmod if fmod is not None else gmod
     to_solver = getattr(basis_mod, "to_solver_basis", None)
     if to_solver is None:
-        return step
+        # Drop the corrector's ``aux`` (``timestep.make_stepper``): it
+        # carries the mean-mode driving, which this linear probe never
+        # applies, and keeping the returned arity fixed at three is what
+        # lets both branches feed ``_build_propagators`` unchanged.
+        def step_plain(state, *args):
+            out, err, num_c, _aux = step(state, *args)
+            return out, err, num_c
+
+        return step_plain
+
     from_solver = basis_mod.from_solver_basis
 
     def step_physical(state, *args):
-        out, err, num_c = step(to_solver(state), *args)
+        out, err, num_c, _aux = step(to_solver(state), *args)
         return from_solver(out), err, num_c
 
     return step_physical
