@@ -14,7 +14,8 @@ integrators (`step.scheme`): the predictor-corrector `"iterative-cn"`
 
 ### Prerequisites
 
-Python >=3.14, `uv`, MPI (for multi-device runs).
+Python >=3.14, `uv`, MPI (for multi-**process** runs only; a lone
+process needs none, even spanning several GPUs).
 
 ### Setup
 
@@ -43,13 +44,11 @@ plumbing: its module docstring.
 
 Before launching a suite, ask what the change can actually **reach**
 -- not what the file looks like it touches -- and run the cheapest
-check that covers exactly that (the Tests list below picks a targeted
-script; a one-line `python -c` import often settles a plumbing
-question outright). An import already on the graph cannot change the
-graph; a docs/type-hint pass cannot change behaviour. A run that
-cannot distinguish "the change is fine" from "the change was never
-involved" buys nothing and holds the one-suite-at-a-time slot
-meanwhile.
+check covering exactly that (the Tests list below; often a one-line
+`python -c` import). An import already on the graph cannot change the
+graph, and a docs/type-hint pass cannot change behaviour: a run that
+cannot tell "the change is fine" from "the change was never involved"
+buys nothing and holds the one-suite-at-a-time slot meanwhile.
 
 Background a long run and tail it for progress -- and kill it early
 when something is clearly wrong instead of waiting out the timeout.
@@ -142,7 +141,7 @@ field keeps its bulk velocity and wall shear: rolls and the twin
 partner are mean-free by construction, `[force]` kicks and
 `ensemble_setup build` reject the mode, and transient growth excludes
 it. The **two** deliberate opt-ins are `init.random_mean_flow`
-(default off) and `snapshot_perturb.py --perturb.modes "0,0"` (real
+(default off) and `snapshot_perturb.py --perturb.mode "0,0"` (real
 profile only, refused under `constant_bulk_velocity`). Guards:
 `tests/test_localized_rolls.py` (a spot adds nothing to the mean
 column), `tests/test_forcing.py`, `tests/test_snapshot_perturb.py`.
@@ -514,24 +513,20 @@ plane-Poiseuille) or `phys.block_mean_spanwise_velocity` (Cartesian and
 annular families) `stats.dat` gains a **last** column per constrained
 direction — `-dPds'` / `-dPdn'` / `-dPdz'` — the applied **forcing**
 `-∂p'/∂s` (positive = accelerating), *not* the pressure gradient. It is
-a **step** quantity: the converged body force the corrector applied,
-threaded out of the jitted solve as the `aux` dict of `correct_fn`
-(`timestep.py`), because it is the bulk of the *pre*-correction solve
-and so is not recoverable from the accepted state. The row at `t`
-carries the value applied by the step that produced that state; the
-`t = t0` row alone has no such step and carries the wall-shear
-inference instead (`get_driving`, the optional flow-module export).
-The two agree only at a converged wall-normal resolution — their gap is
-the mean-mode bulk of the discrete nonlinear term, a truncation
-residual and a usable under-resolution diagnostic (measured tables:
-`tests/test_driving.py`). `dnsjax-twin` records the reference's value
-in its `stats.dat` and the twin−reference difference as `<key>_d` in
-`twin.dat`. `get_driving` takes the **physical** view of a state, like
-`get_stats` (read before the basis crossing in `__main__`). The column
-set is an invariant across the geometry `aux`, the flow's `get_driving`
-and `__main__`'s buffer width, so `validate_parameters` rejects a
-driving knob a flow's surface does not carry — a direct assignment
-would otherwise widen one side only.
+a **step** quantity (the corrector's converged body force, threaded out
+of the jitted solve as `correct_fn`'s `aux`), so the one row no step
+produced — `t = t0` — carries the wall-shear inference `get_driving`
+instead. The two agree only at a converged wall-normal resolution, and
+their gap is a usable under-resolution diagnostic; why, and the measured
+tables: the `__main__.py` comment at the read site and
+`tests/test_driving.py`. Cross-module: `get_driving` takes the
+**physical** view of a state, like `get_stats` (read before the basis
+crossing in `__main__`); the column set is one invariant across the
+geometry `aux`, the flow's `get_driving` and `__main__`'s buffer width,
+so `validate_parameters` rejects a driving knob a flow's surface does
+not carry. `dnsjax-twin` records the reference's value in its
+`stats.dat` and the twin−reference difference as `<key>_d` in
+`twin.dat`.
 
 Every `.dat` header row is `#`-commented (`_write_dat_header` in
 `__main__.py`, shared with `twin/driver.py`; the `#` eats one space of
@@ -608,13 +603,11 @@ mean. `t`/`it`/`isnap` continue only when
   `~/.claude/plans/reshard-audit-jitted-collectives.md`.
 - `jax_enable_x64` is set from `params.res.double_precision` before
   JAX initializes arrays.
-- Rank bootstrap reads the launcher environment when it is complete
-  (the MPI rank variables + a coordinator host from loopback / the
-  launcher's daemon URI / the scheduler's node list), else falls back
-  to JAX's own detection; a one-process launch skips it entirely, and
-  a multi-device **CPU** run additionally auto-selects MPI collectives
-  when it finds an MPIwrapper library. **Nothing may initialize MPI
-  before XLA does** — its `MPI_Init_thread` is unguarded, so an
+- Rank bootstrap reads the launcher environment when it is complete,
+  else falls back to JAX's own detection; a one-process launch skips
+  it entirely, and a multi-device **CPU** run additionally auto-selects
+  MPI collectives when it finds an MPIwrapper library. **Nothing may
+  initialize MPI before XLA does** — XLA's init is unguarded, so an
   MPI-using import aborts the run or corrupts its thread ownership.
   Env knobs, none of them a parameter: `JAX_COORDINATOR_ADDRESS`,
   `JAX_COORDINATOR_PORT`, `MPITRAMPOLINE_LIB`,
@@ -653,15 +646,13 @@ mean. `t`/`it`/`isnap` continue only when
   CPU-only); real multi-GPU uses `mpirun` (`test_random_smoke.py --np`).
 - The wall-bounded per-mode solve dispatches on the **live backend**:
   `solvers._kernel_path()` picks both the solve body and the factor
-  *storage*, so they cannot disagree. A CPU run never reaches
-  `pallas_call`; it sweeps in pure JAX and stores the plain `U`
-  diagonal at the true mode plane, where the kernel path stores the
-  reciprocal and pads to whole tiles. The mode-inner **layout** is
-  shared and is measured-optimal on both -- three CPU-native layouts
-  are faster in isolation and slower end to end, monotonically. A test
-  flipping `_force_kernel_path` must do so *before* building the
-  operator. Numbers and the trap: the `solvers.py` docstrings -- do not
-  re-derive from an isolated solve timing.
+  *storage*, so they cannot disagree -- a CPU run never reaches
+  `pallas_call` and stores a different diagonal at a different plane
+  extent. The mode-inner **layout** is shared and measured-optimal on
+  both. A test flipping `_force_kernel_path` must do so *before*
+  building the operator. Numbers, and why an isolated solve timing
+  ranks the layouts backwards: the `solvers.py` docstrings -- do not
+  re-derive.
 - Pallas/Triton GPU kernels: interpret mode (CPU) validates numerics
   but **not** Triton's lowering; compile-check on the GPU-less dev box
   by lowering for cuda **inside an abstract GPU mesh** (since JAX 0.11
@@ -693,8 +684,9 @@ All under `scripts/`; full rationale/usage in each module docstring.
   expansion of a given order (Cartesian family only).
 - `pallas_tiling_diagnostic.py`: GPU harness for the Triton
   partial-tile miscompile (localised it; confirms the fix).
-- `pallas_solve_profile.py`: GPU diagnostic for the Pallas banded
-  solve's time breakdown (`--cpu-smoke`).
+- `pallas_solve_profile.py`: GPU diagnostic for the banded solve's time
+  breakdown *and* its share of a step -- the stage-level IMM/FFT
+  balance (`--steps-only`, `--solve-only`, `--cpu-smoke`).
 - `solver_benchmark.py`: pallas-vs-dense validation & benchmark incl.
   multi-GPU correctness (`--cpu-bench`, `--cpu-smoke`).
 - `gds_probe.py`: cluster diagnostic for the snapshot GDS path
