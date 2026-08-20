@@ -44,7 +44,7 @@ Add a probe stream to an ordinary DNS run: the mean mode, to get the
 turbulent mean profile, and whichever mode you intend to study.
 
 ```bash
-mpirun -np 1 .venv/bin/dnsjax \
+.venv/bin/dnsjax \
   --phys.system plane-couette --phys.re 500 \
   --probes.modes "0,0;3,0" --probes.it_probes 10
 ```

@@ -44,7 +44,7 @@ margin for a single FFT evaluation per step.
 - **Portable data** — snapshots are plain tar + zarr3, written in parallel
   directly from device memory, readable with standard tools and a
   dependency-light NumPy reader; resume is device-count-agnostic.
-- **Extensively tested** — 38 standalone test scripts (also runnable
+- **Extensively tested** — 40 standalone test scripts (also runnable
   through a pytest bridge) pin the numerics, the machinery, and the
   multi-device behavior, and the optimal-growth module reproduces
   published values — see
@@ -153,8 +153,8 @@ uv add "jax[cuda13]"    # rewrites the jax requirement, re-locks, and re-syncs
 ### Faster CPU collectives (optional)
 
 Across processes on CPU, JAX exchanges data over TCP (`gloo`) unless it can
-route the collectives through MPI instead — which is faster, and which every
-`dnsjax` run is already positioned to use, being launched under `mpirun`.
+route the collectives through MPI instead — which is faster, and which costs
+a multi-process run nothing to arrange, being under `mpirun` by definition.
 JAX embeds [MPItrampoline](https://github.com/eschnett/MPItrampoline) for
 that but ships no MPI of its own, so it needs a thin wrapper built against
 the machine's MPI:
@@ -336,9 +336,13 @@ geometry (`tau'_s,b`/`tau'_s,t` and `Ub'_s`/`Ub'_n` in the channels,
 `tau'_z`/`tau'_th` in the pipe, inner/outer pairs in the annulus); the
 viscoelastic flows report the solvent dissipation `D_s` in place of
 `D` and add the polymer work `W_p`, the elastic energy `E_p`, and the
-mean conformation trace `TrC`. Two optional binary streams — a
-spectral-mode probe stream and a stochastic-forcing log — are
-available through the `[probes]` and `[force]` sections; see
+mean conformation trace `TrC`. A run holding a bulk velocity or a mean
+spanwise velocity fixed appends one further column per constrained
+direction (`-dPds'` / `-dPdn'` / `-dPdz'`): the mean-mode **forcing**
+the corrector applied over that step, positive when accelerating. Two
+optional binary streams — a spectral-mode probe stream and a
+stochastic-forcing log — are available through the `[probes]` and
+`[force]` sections; see
 [`src/dnsjax/extensions`](src/dnsjax/extensions/README.md).
 
 ## Parameter layering
@@ -632,12 +636,12 @@ detected in. On CPU, though, one process means one device: several CPU
 devices in one process is oversubscription, and asking for it is refused
 with the `mpirun -np N` that works.
 
-A distributed **CPU** run is pinned to one XLA thread per rank: the pool
-follows `NPROC`, which the run sets only if unset, so `export NPROC=<n>`
-raises it. It also routes its cross-process collectives through MPI when it
-finds the MPItrampoline wrapper library (see *Installation*), falling back to
-`gloo` otherwise. The same docstring covers when raising `NPROC` is worth
-doing.
+A **CPU** run is pinned to one XLA thread per rank — a lone process
+exactly like a rank of sixteen: the pool follows `NPROC`, which the run
+sets only if unset, so `export NPROC=<n>` raises it. It also routes its
+cross-process collectives through MPI when it finds the MPItrampoline
+wrapper library (see *Installation*), falling back to `gloo` otherwise.
+The same docstring covers when raising `NPROC` is worth doing.
 
 ## Snapshots and external data access
 
@@ -675,9 +679,12 @@ is readable with ordinary tools — `tar xf` yields a valid zarr3 store,
 and in the worst case each
 chunk is raw little-endian complex data for `numpy.fromfile`. Resume is
 agnostic to the device count (precision must match — a mismatch
-rejects), and re-grids a changed wall-normal grid on load — spectrally
-when both grids are CGL-family, by a local order-`fd_order` stencil for
-tanh or custom grids.
+rejects), and re-grids **every changed axis** on load: the wall-normal
+grid by interpolation — spectrally when both grids are CGL-family, by a
+local order-`fd_order` stencil for tanh or custom grids — and each
+Fourier axis by inserting or dropping modes at its high-wavenumber end,
+so a state can be picked up at a different resolution (which, being a
+`res` change, starts a new trajectory rather than continuing one).
 
 For post-processing, `dnsjax.analysis.snapshot_export.read_state` reads a
 snapshot into NumPy arrays **without importing JAX or the solver runtime**,
@@ -1002,7 +1009,7 @@ analysis tool registers a whole section of its own, as described under
 
 ## Testing and validation
 
-The test suite is 38 standalone scripts under `tests/`, run directly
+The test suite is 40 standalone scripts under `tests/`, run directly
 (`uv run python tests/test_cartesian.py`) or through the optional pytest
 bridge — `uv run pytest` shells each script out as a subprocess, with
 `mpi`/`slow` markers and the scripts staying the source of truth — and
@@ -1127,11 +1134,12 @@ A closer look at what is in the box, beyond the core solver:
    [Snapshots and external data access](#snapshots-and-external-data-access).
 
 6. **Robust resume.** Snapshots resume across any device count
-   (precision must match), re-grid a changed wall-normal grid on load,
-   and track lineage — including the recording code's git revision,
-   echoed at startup when resuming — distinguishing a genuine
-   continuation from a new trajectory when the physics or geometry
-   changes.
+   (precision must match), re-grid every changed axis on load — the
+   wall-normal grid by interpolation, the Fourier axes by padding or
+   truncating modes — and track lineage, including the recording code's
+   git revision, echoed at startup when resuming — distinguishing a
+   genuine continuation from a new trajectory when the physics, geometry
+   or resolution changes.
 
 7. **Laminarization auto-stop.** A run terminates automatically once the
    perturbation energy drops below `stop.laminarization_threshold`, so

@@ -20,7 +20,7 @@ $\hat{\mathbf{u}}(y, t)$ of a listed set of global spectral modes are
 appended to a binary `probes.bin`. Wall-bounded systems only.
 
 ```bash
-mpirun -np 1 .venv/bin/dnsjax \
+.venv/bin/dnsjax \
   --phys.system plane-couette --phys.re 500 \
   --probes.modes "0,0;3,0" --probes.it_probes 10
 ```
@@ -62,10 +62,12 @@ non-finite values, and a hit aborts the run through the same
 `FATAL` / exit-code-3 path as the other diagnostics.
 
 **Resume.** An existing `probes.bin`/`probes.json` pair is appended to
-only when the sidecar matches the current run — same modes, grid,
-components, precision, system and cadence. Anything else is a hard
-error asking you to move the old pair aside, rather than a stream whose
-two halves mean different things. A clean continuation duplicates one
+only when the sidecar matches the current run — same modes *and the
+wavenumbers they denote* (a resume may change `res.nx` / `res.nz`, and a
+stored negative-block index then means a different mode), grid,
+components, precision, system and cadence. Anything else is a hard error
+asking you to move the old pair aside, rather than a stream whose two
+halves mean different things. A clean continuation duplicates one
 sample at the seam; the reader drops it, and flags genuinely
 non-monotonic timestamps.
 
@@ -78,7 +80,7 @@ increments — *kicks* — that realise white-in-time forcing localised at
 those modes. The drawn coefficients stream to `forcing.bin`.
 
 ```bash
-mpirun -np 1 .venv/bin/dnsjax \
+.venv/bin/dnsjax \
   --phys.system plane-couette --phys.re 500 \
   --probes.modes "3,0" --probes.it_probes 5 \
   --force.modes "3,0" --force.profiles modes.npz \
@@ -139,11 +141,12 @@ for `K` forced modes and `m` channels, the trailing axis the
 `(re, im)` of the coefficients exactly as applied — unscaled by
 `amplitude`, which lives in the sidecar. Coefficients are host-generated
 float64 whatever the state precision; the volume is negligible. The
-`forcing.json` sidecar carries the modes, channel count, amplitude,
-cadence, seed, the resolved parameters, and the profile bundle's path
-and SHA-256 — an append-resume must match the latter, since changing
-the injection basis mid-experiment invalidates the stream. The reader
-is `dnsjax.analysis.response.ssi`.
+`forcing.json` sidecar carries the modes and their wavenumbers, channel
+count, amplitude, cadence, seed, the resolved parameters, and the
+profile bundle's path and SHA-256 — an append-resume must match all of
+these, since changing the injection basis, or what a mode index means,
+invalidates the stream mid-experiment. The reader is
+`dnsjax.analysis.response.ssi`.
 
 **A kick's increment is generally not discretely solenoidal**, and what
 becomes of that part depends on the scheme. Under the default
