@@ -85,7 +85,7 @@ from ...solvers import (
     _build_pallas_operator,
     _factor_pallas_operator,
 )
-from ._base import extract_mean_mode
+from ._base import extract_mean_mode, from_pm_basis
 from ._viscoelastic_common import (
     combined_norm,
     conformation_coupling_core,
@@ -572,10 +572,19 @@ def _conformation_coupling(
     if params.step.implicit_mean_coupling:
         # Instantaneous mean velocity profile (u_z, u_r, u_theta); the
         # mean u_r is structurally 0, so its d_r term vanishes.
-        u_z, u_plus, u_minus = state[0], state[1], state[2]
-        u_r = (u_plus + u_minus) / 2
-        u_th = -0.5j * (u_plus - u_minus)
-        mean_vel = extract_mean_mode(jnp.array([u_z, u_r, u_th]))  # (3, Nr)
+        #
+        # Extract from the *carried* (spin) state and cross the basis
+        # on the resulting (3, N_r) column, rather than assembling a
+        # physical triad to hand the extractor: the two are
+        # bit-identical (extraction is a copy, so combining before or
+        # after gives the same floats), but the assembled triad is a
+        # field-sized array built only to be read at ``[:, :, 0, 0]``
+        # and discarded -- a ``shard_map`` operand, so XLA cannot sink
+        # that slice back into its producer (see
+        # :func:`._base.extract_mean_modes`).  ``state`` is passed
+        # whole for the same reason: ``state[:3]`` would be the copy
+        # again.
+        mean_vel = from_pm_basis(extract_mean_mode(state)[:3])  # (3, Nr)
         # Mean velocity gradient profiles: D1 on the bare (N_r,) mean
         # profiles, at the spin weight of each (0 for u_z, 1 for
         # u_theta -- only the pipe reads it, as its axis parity).

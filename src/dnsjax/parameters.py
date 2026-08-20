@@ -232,27 +232,27 @@ class Distribution(BaseModel):
 
     CPU runs: threads per rank
     -------------------------
-    A distributed CPU run is pinned to **one XLA thread per rank**
-    (``bootstrap.configure_jax_runtime``), matching the one-device-
-    per-rank launch: the pool is sized by the ``NPROC`` environment
-    variable, which that function sets with ``setdefault``, so
-    ``export NPROC=<n>`` before launching overrides it.  One thread is
-    the measured default rather than a conservative guess -- at
-    realistic per-rank block sizes extra threads buy nothing and can
-    cost (plane-Couette ``64 x 48 x 64``, 30 steps: 2 ranks 5.2 s at 1
-    thread vs 5.1 s at 8; 4 ranks 3.2 s at 1 thread vs 3.7 s at 4),
-    because each rank's arrays are already small enough that
-    thread-dispatch overhead outweighs the intra-op parallelism.  Nor
-    does the one rank with a whole box to itself want more: the same
-    case at 1 rank runs 17.3 / 18.1 s/t at 1 thread against 17.6 /
-    18.0 at 16 (interleaved, 16-core box), i.e. inside the run-to-run
-    spread -- which is why a lone process is pinned like any other and
-    not special-cased.
-    Raising it is worth trying only when a run is device-starved
-    (few ranks, large per-rank blocks).  ``NPROC`` is what actually
-    sizes the pool; the accompanying
-    ``--xla_cpu_multi_thread_eigen=false`` XLA flag is a small extra
-    serialisation on top and is applied only while the pin is 1.
+    **A CPU run takes one XLA thread per rank.**  Parallelism on CPU
+    comes from MPI ranks and from nothing else; an intra-op thread pool
+    is not a second axis to tune, and this holds however many devices
+    the run has -- a lone process is pinned exactly like a rank of
+    sixteen, and is not special-cased.  ``bootstrap.
+    configure_jax_runtime`` applies it: ``NPROC`` sizes the pool and is
+    set there with ``setdefault``, so ``export NPROC=<n>`` before
+    launching overrides the pin for a deliberate experiment;
+    ``--xla_cpu_multi_thread_eigen=false`` rides along as a small extra
+    serialisation and is applied only while the pin is 1.
+
+    Nothing measured here argues against the rule, which is the only
+    role measurement has in this section: plane-Couette
+    ``64 x 48 x 64``, 30 steps, gives 2 ranks 5.2 s at 1 thread against
+    5.1 s at 8 and 4 ranks 3.2 s at 1 thread against 3.7 s at 4, and
+    the same case at 1 rank 17.3 / 18.1 s/t at 1 thread against 17.6 /
+    18.0 at 16 (interleaved, 16-core box) -- i.e. threads buy nothing
+    at a realistic per-rank block size and can cost.  Do not re-open
+    the question with another timing: a faster threaded arm would not
+    change the rule, so measuring one is waste.  If a CPU run is
+    device-starved, the answer is more ranks.
 
     CPU runs: cross-process collectives
     -----------------------------------
@@ -2165,6 +2165,36 @@ def validate_parameters() -> None:
     # in the flow specs.
     if spec.validate is not None:
         spec.validate(params, derived_params)
+
+    # The two mean-mode driving knobs, same guard for the same reason:
+    # a geometry reads them only when its flows offer them (Cartesian
+    # and cylindrical read ``driving``, Cartesian and annular read
+    # ``block_mean_spanwise_velocity``), so a direct assignment on a
+    # flow whose surface omits one is either silently inert -- e.g.
+    # ``block_mean_spanwise_velocity`` on the pipe, which nothing reads
+    # -- or, worse, half-applied: ``phys.driving`` on the viscoelastic
+    # pipe would make the cylindrical corrector emit a ``-dPdz'``
+    # diagnostic for a flow module that exports no ``get_driving``, so
+    # ``__main__`` would size ``stats.dat`` one column short and fail
+    # mid-run on the first stats row.  The CLI/TOML reject both at
+    # parse; this is the scripts-and-tests path.  It runs after
+    # ``spec.validate`` so a flow that refuses one of these itself
+    # (plane-couette's constant-bulk refusal) keeps its own, more
+    # specific message.
+    for _drive_field in ("driving", "block_mean_spanwise_velocity"):
+        _default = Physics.model_fields[_drive_field].get_default(
+            call_default_factory=True
+        )
+        if getattr(params.phys, _drive_field) != _default and (
+            ("phys", _drive_field) not in spec.field_map
+        ):
+            raise ValueError(
+                f"phys.{_drive_field}="
+                f"{getattr(params.phys, _drive_field)!r} is not a "
+                f"parameter of system {params.phys.system!r} "
+                f"(see `dnsjax --help {params.phys.system}`); it would "
+                "not be applied."
+            )
 
     # The Pallas kernel tiles the mode plane in ``bm0 x bm1`` blocks;
     # Triton block loads require power-of-two tile dims.

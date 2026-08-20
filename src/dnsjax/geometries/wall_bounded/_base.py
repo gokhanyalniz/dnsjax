@@ -269,6 +269,103 @@ def frozen_profile_flow(
 # ── Mean-mode extraction ───────────────────────────────────────
 
 
+def extract_mean_modes(*states: Array) -> tuple[Array, ...]:
+    r"""Extract the mean Fourier mode of several states in one collective.
+
+    The variadic form of :func:`extract_mean_mode`: each argument is
+    sliced at `$k_z = k_x = 0$` **inside** one ``shard_map`` body, the
+    resulting `$(C_i, N_y)$` columns are concatenated, and a single
+    ``psum`` replicates the lot.  Returns one array per argument, in
+    order, each shaped ``(C_i, N_y)``.
+
+    Use it wherever two mean modes are wanted at the same point.  What
+    it saves is *not* arithmetic -- the slice is `$O(C N_y)$` either way
+    -- but the per-collective cost, which is what this function is
+    bound by: the payload is a few kB, so an all-reduce of it is pure
+    latency, and that latency is per *call*, not per byte.  Halving the
+    call count therefore halves the cost, and the effect grows with the
+    rank count and with a slower interconnect (a gloo/TCP CPU run being
+    the extreme).
+
+    It also removes the reason a caller would otherwise **stack** two
+    fields to make one call: a ``shard_map`` operand crosses a
+    manual-sharding boundary, so XLA cannot sink the interior
+    ``[:, :, 0, 0]`` slice back out into the producer, and the stack is
+    materialised in full -- a field-sized copy written, read once and
+    discarded, on every call.  Passing the two fields separately costs
+    nothing (each is an array the caller already holds; a bare
+    ``x[None]`` on a `$(N_y, N_{k_z}, N_{k_x})$` field is a degenerate
+    reshape, not a copy).
+
+    **Bit-identical to the same number of separate calls**, and
+    independent of the collective's reduction order: exactly one device
+    contributes a non-zero column and every other contributes exact
+    zeros, and adding zeros is exact.
+
+    **Measured a wash on CPU, and kept anyway.**  Interleaved tree-swap
+    A/B against the two-call / stacked form, plane-Poiseuille
+    `$128 \times 129 \times 128$`, ``cnab2``,
+    ``constant_bulk_velocity``, 21 steps, three pairs with the order
+    alternated and the first discarded: 4 ranks 354.3 against 356.8
+    s/t, one process 1020 against 1017 -- both inside a 2-5 %
+    within-arm spread.  That is what the arithmetic predicts at
+    ``c/it = 0``, where a step sheds only two `$(2, N_y, N_{k_z},
+    N_{k_x})$` stacks (34 MB each at that size, written and read once)
+    and two collectives, against a 0.7-2.0 s step: a few tenths of a
+    percent, under this box's noise floor.
+
+    It is kept because it is bit-identical and strictly less work, and
+    because both halves grow exactly where an 8-core box cannot show
+    them -- with the corrector count (every extra iteration is another
+    stack *and* another collective) and with rank count on a slower
+    fabric, the psum being latency- rather than volume-bound.  Do not
+    re-record this as a win, and do not re-measure it here expecting
+    one.
+
+    Parameters
+    ----------
+    *states:
+        Spectral states, each ``(C_i, N_y, N_{k_z}, N_{k_x})`` on
+        ``sharding.spec_vector_shard``.  They must agree on `$N_y$` and
+        on the two sharded extents; `$C_i$` may differ.
+
+    Returns
+    -------
+    :
+        One ``(C_i, N_y)`` array per argument, replicated across
+        devices.
+    """
+
+    def _local(*shards: Array) -> Array:
+        # A single-argument call must compile to exactly what
+        # ``extract_mean_mode`` always did, so no 1-element concatenate.
+        firsts = (
+            shards[0][:, :, 0, 0]
+            if len(shards) == 1
+            else jnp.concatenate([s[:, :, 0, 0] for s in shards], axis=0)
+        )
+        is_source = (lax.axis_index("np0") == 0) & (lax.axis_index("np1") == 0)
+        return lax.psum(
+            jnp.where(is_source, firsts, jnp.zeros_like(firsts)),
+            ("np0", "np1"),
+        )
+
+    stacked = shard_map(
+        _local,
+        mesh=sharding.mesh,
+        in_specs=(sharding.spec_vector_shard,) * len(states),
+        out_specs=P(None, None),
+    )(*states)
+
+    out: list[Array] = []
+    start = 0
+    for state in states:
+        n = state.shape[0]
+        out.append(stacked[start : start + n])
+        start += n
+    return tuple(out)
+
+
 def extract_mean_mode(state: Array) -> Array:
     r"""Extract the mean Fourier mode from a spectral state.
 
@@ -277,6 +374,12 @@ def extract_mean_mode(state: Array) -> Array:
     by ``np0`` and `$k_x$` by ``np1``, returns the
     `$k_z = k_x = 0$` mode of shape ``(C, N_y)`` in
     `$O(N_y)$` work per device via ``shard_map`` + ``psum``.
+
+    The one-argument case of :func:`extract_mean_modes`, and compiles
+    to what it always did (that function skips its concatenate at
+    ``n = 1``).  Reach for the variadic form whenever two mean modes
+    are wanted at once -- the collective is latency-bound, so two calls
+    cost twice one.
 
     Parameters
     ----------
@@ -288,21 +391,7 @@ def extract_mean_mode(state: Array) -> Array:
     :
         Shape ``(C, N_y)``, replicated across devices.
     """
-
-    def _local(shard: Array) -> Array:
-        first = shard[:, :, 0, 0]
-        is_source = (lax.axis_index("np0") == 0) & (lax.axis_index("np1") == 0)
-        return lax.psum(
-            jnp.where(is_source, first, jnp.zeros_like(first)),
-            ("np0", "np1"),
-        )
-
-    return shard_map(
-        _local,
-        mesh=sharding.mesh,
-        in_specs=sharding.spec_vector_shard,
-        out_specs=P(None, None),
-    )(state)
+    return extract_mean_modes(state)[0]
 
 
 # ── Norms and integration ───────────────────────────────────────

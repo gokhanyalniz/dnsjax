@@ -752,7 +752,10 @@ def run(wall_time_start: int) -> None:
     # wall-shear inference instead (``get_driving``), and the twin's
     # difference is exactly zero there because the partner perturbation
     # is mean-free by construction (``ic/localized_rolls`` / the
-    # ``mean_flow=False`` draw above).
+    # ``mean_flow=False`` draw above).  ``get_driving`` takes the
+    # *physical* view of a state; this driver is Cartesian-only, whose
+    # solver basis **is** the physical one (no ``to_solver_basis``
+    # anywhere here), so the states below satisfy that as they stand.
     _drive0 = get_driving(state1) if get_driving is not None else {}
     last_drive1 = dict(_drive0)
     if get_driving is not None:

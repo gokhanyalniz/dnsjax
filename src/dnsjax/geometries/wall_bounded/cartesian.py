@@ -55,6 +55,7 @@ from ._base import (
     base_flow_coupling,
     build_wall_bounded_stepper,
     extract_mean_mode,
+    extract_mean_modes,
     frozen_profile_flow,  # noqa: F401 — re-exported
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
@@ -1012,8 +1013,12 @@ def _l_bf(
     base = flow_.base_flow
     curl_base = flow_.curl_base_flow
     if params.step.implicit_mean_coupling:
-        base = base + extract_mean_mode(state)[:, :, None, None]
-        curl_base = curl_base + extract_mean_mode(omega)[:, :, None, None]
+        # One collective for the pair: this runs once per corrector
+        # iteration under cnab2 / the split corrector, and the psum is
+        # latency-bound (:func:`extract_mean_modes`).
+        mean_u, mean_om = extract_mean_modes(state, omega)
+        base = base + mean_u[:, :, None, None]
+        curl_base = curl_base + mean_om[:, :, None, None]
     l_bf = base_flow_coupling(state, omega, base, curl_base)
     # Moving frame: the convective-form frame term (the same
     # expression ``_get_rhs_core`` adds) belongs to the linear
@@ -1286,9 +1291,13 @@ def _apply_bulk_corrections(
         return u_new, w_new, {}
 
     # Extract mean-mode velocity profiles once (shared by
-    # both streamwise and spanwise corrections).
-    mean_uw = extract_mean_mode(jnp.stack([u_new, w_new])).real
-    mean_u, mean_w = mean_uw[0], mean_uw[1]
+    # both streamwise and spanwise corrections).  Two operands rather
+    # than one ``jnp.stack``: the stack would be a field-sized copy
+    # made only to be read at ``[:, :, 0, 0]`` and thrown away, and a
+    # ``shard_map`` operand cannot have that slice sunk back into its
+    # producer (see :func:`extract_mean_modes`).
+    mean_u_c, mean_w_c = extract_mean_modes(u_new[None], w_new[None])
+    mean_u, mean_w = mean_u_c[0].real, mean_w_c[0].real
 
     u_corr = 0.0
     w_corr = 0.0
