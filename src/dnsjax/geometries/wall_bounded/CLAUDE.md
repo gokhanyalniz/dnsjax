@@ -223,7 +223,12 @@ its docstring and the `fd.py` interpolation docstrings.
 ### Optimization patterns
 
 - To operate on a mean-mode-derivable quantity, index the mean mode
-  first (`extract_mean_mode`) then operate, when the two commute.
+  first (`extract_mean_mode`) then operate, when the two commute — and
+  **never stack fields to feed one call**: a `shard_map` operand is
+  materialised in full, so the stack is a field-sized copy read only at
+  `[:, :, 0, 0]`. Two mean modes at once go through
+  `extract_mean_modes(a, b)` (`_base.py`), one collective for the pair;
+  the psum is latency-bound, so call count is the cost.
 - `apply_y_matrix` FD matvecs batch over the leading component axis, so
   `D1`/`D2` GEMMs can be regrouped/deduplicated across IMM stages
   bit-identically (the laminar smoke `err=0.00e+00` confirms refactors).

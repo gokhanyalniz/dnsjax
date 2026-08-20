@@ -526,7 +526,12 @@ the mean-mode bulk of the discrete nonlinear term, a truncation
 residual and a usable under-resolution diagnostic (measured tables:
 `tests/test_driving.py`). `dnsjax-twin` records the reference's value
 in its `stats.dat` and the twin−reference difference as `<key>_d` in
-`twin.dat`.
+`twin.dat`. `get_driving` takes the **physical** view of a state, like
+`get_stats` (read before the basis crossing in `__main__`). The column
+set is an invariant across the geometry `aux`, the flow's `get_driving`
+and `__main__`'s buffer width, so `validate_parameters` rejects a
+driving knob a flow's surface does not carry — a direct assignment
+would otherwise widen one side only.
 
 Every `.dat` header row is `#`-commented (`_write_dat_header` in
 `__main__.py`, shared with `twin/driver.py`; the `#` eats one space of

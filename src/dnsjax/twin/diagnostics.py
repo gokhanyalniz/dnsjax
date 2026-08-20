@@ -197,7 +197,7 @@ from ..fft import chunked_transform
 from ..flows.registry import cartesian_systems, spec_for
 from ..geometries.wall_bounded._base import (
     apply_y_matrix,
-    extract_mean_mode,
+    extract_mean_modes,
     get_inprod,
     get_norm2,
     integrate_scalar,
@@ -360,9 +360,12 @@ def _twin_budget_jit(
         "ru1": state1 * m_u1,
         "ru2": state1 * m_u2,
     }
+    # One collective for the pair (:func:`._base.extract_mean_modes`);
+    # cadenced, so this is tidiness rather than a measured win.
+    mean_delta, mean_ref = extract_mean_modes(delta, state1)
     prof = {
-        "dU": extract_mean_mode(delta).real,
-        "rU": extract_mean_mode(state1).real + flow_.base_flow[:, :, 0, 0],
+        "dU": mean_delta.real,
+        "rU": mean_ref.real + flow_.base_flow[:, :, 0, 0],
     }
 
     def d_dy_prof(p: Array) -> Array:
