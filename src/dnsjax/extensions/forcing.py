@@ -80,10 +80,12 @@ as applied (unscaled by ``amplitude``, which is in the sidecar; the
 kick was ``amplitude * sum_j w_j profile_j``).  Coefficients
 are host-generated float64 regardless of the state precision (the
 volume is tiny).  The ``forcing.json`` sidecar carries the schema:
-modes, channel count, amplitude, cadence, seed, the profile bundle's
-path and SHA-256 (an append-resume must match it -- changing the
-basis mid-experiment invalidates the stream), and the full resolved
-parameter dump.  No non-finite scan is needed: the coefficients are
+modes (and the wavenumbers they denote -- a resume may change
+``res.nx`` / ``res.nz``, which moves what a negative-block `$k_z$`
+index means), channel count, amplitude, cadence, seed, the profile
+bundle's path and SHA-256 (an append-resume must match all of these --
+changing the basis mid-experiment invalidates the stream), and the full
+resolved parameter dump.  No non-finite scan is needed: the coefficients are
 finite by construction and the state itself is guarded by the
 regular diagnostics.
 
@@ -146,6 +148,10 @@ FORMAT_VERSION: int = 3
 _MATCH_KEYS: tuple[str, ...] = (
     "format_version",
     "modes",
+    # The wavenumbers, not the indices alone -- see the same entry in
+    # ``probes.py``: a resolution-change resume moves what a stored
+    # negative-block `$k_z$` index means.
+    "wavenumbers",
     "n_channels",
     "amplitude",
     "it_force",

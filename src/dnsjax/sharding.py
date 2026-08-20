@@ -193,17 +193,23 @@ class Sharding:
     # mismatch stays visible instead of being hidden.  ``Device.platform``
     # is 'cpu'/'gpu'/'tpu' ('gpu' for a CUDA device); the device reprs and
     # ``device_kind`` below name the concrete hardware.
+    #
+    # Rank-gated like every other print in this block: ``jax.devices()``
+    # is the *global* list, so each rank would print the identical (and
+    # long) line -- N copies of it on an N-rank CPU launch, in the first
+    # thing anyone reads.
     actual_platform: str = devices[0].platform if devices else "?"
     device_kind: str = (
         getattr(devices[0], "device_kind", "?") if devices else "?"
     )
-    print(
-        f"Working with {n_devices} '{actual_platform}' device(s) "
-        f"[{device_kind}] (requested platform "
-        f"'{params.dist.platform}', np0={np0}, np1={np1}):",
-        *devices,
-        flush=True,
-    )
+    if main_device:
+        print(
+            f"Working with {n_devices} '{actual_platform}' device(s) "
+            f"[{device_kind}] (requested platform "
+            f"'{params.dist.platform}', np0={np0}, np1={np1}):",
+            *devices,
+            flush=True,
+        )
 
     # ── 2D device mesh ────────────────────────────────────────
     mesh = jax.make_mesh(

@@ -761,19 +761,6 @@ def run(wall_time_start: int) -> None:
         isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
         last_saved_it = it
 
-    # --- Into the solver -----------------------------------------------------
-    # Every start mode above (snapshot resume + regrid, ``init_state``,
-    # localized rolls, random field) builds the state in physical
-    # components, and so did the diagnostics and the IC snapshot just
-    # taken from it.  This is where it enters the solver, once (see the
-    # component-basis boundary above); from here on ``state`` is in the
-    # solver basis until a consumer asks for the physical view.
-    state = to_solver_basis(state)
-
-    # --- Stats buffer setup ------------------------------------------------
-    p = params.outs.stats_precision - 1
-    val_width = params.outs.stats_precision + 7
-
     # Applied mean-mode driving (``constant_bulk_velocity`` /
     # ``block_mean_spanwise_velocity``): a *step* quantity, not a state
     # one -- the converged body force the corrector applied, threaded
@@ -785,9 +772,30 @@ def run(wall_time_start: int) -> None:
     # such step, so it carries the wall-shear inference of the same
     # quantity instead (``get_driving``; the one inferred entry in the
     # column, and exact in the same limit the two agree).
+    #
+    # Read here, on the **physical** side of the basis boundary below,
+    # because that is ``get_driving``'s contract -- the same one
+    # ``get_stats`` has.  Every current ``mean_driving`` happens to
+    # touch only the axial/streamwise component, which ``to_pm_basis``
+    # leaves alone, so the crossing would not show; a key reading
+    # `$u_r$` or `$u_\theta$` would read `$u_\pm$` instead, silently.
     driving = get_driving(state) if get_driving is not None else {}
     driving_names = list(driving.keys())
     last_driving = dict(driving)
+
+    # --- Into the solver -----------------------------------------------------
+    # Every start mode above (snapshot resume + regrid, ``init_state``,
+    # localized rolls, random field) builds the state in physical
+    # components, and so did the diagnostics, the IC snapshot and the
+    # driving read just taken from it.  This is where it enters the
+    # solver, once (see the component-basis boundary above); from here
+    # on ``state`` is in the solver basis until a consumer asks for the
+    # physical view.
+    state = to_solver_basis(state)
+
+    # --- Stats buffer setup ------------------------------------------------
+    p = params.outs.stats_precision - 1
+    val_width = params.outs.stats_precision + 7
 
     if params.outs.it_stats is not None:
         stat_names = list(stats.keys()) + driving_names

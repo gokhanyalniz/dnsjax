@@ -149,6 +149,7 @@ from ._base import (
     base_flow_coupling,
     build_wall_bounded_stepper,
     extract_mean_mode,
+    extract_mean_modes,
     from_pm_basis,
     frozen_profile_flow,  # noqa: F401 — re-exported
     get_inprod,  # noqa: F401 — re-exported
@@ -1857,8 +1858,12 @@ def _l_bf(
     base = flow_.base_flow
     curl_base = flow_.curl_base_flow
     if params.step.implicit_mean_coupling:
-        base = base + extract_mean_mode(state_rthz)[:, :, None, None]
-        curl_base = curl_base + extract_mean_mode(omega)[:, :, None, None]
+        # One collective for the pair: this runs once per corrector
+        # iteration under cnab2 / the split corrector, and the psum is
+        # latency-bound (:func:`extract_mean_modes`).
+        mean_u, mean_om = extract_mean_modes(state_rthz, omega)
+        base = base + mean_u[:, :, None, None]
+        curl_base = curl_base + mean_om[:, :, None, None]
     l_bf = to_pm_basis(base_flow_coupling(state_rthz, omega, base, curl_base))
     # Moving frame: the convective frame term (the same expression
     # ``_get_rhs_core`` adds, diagonal in the solver basis) belongs

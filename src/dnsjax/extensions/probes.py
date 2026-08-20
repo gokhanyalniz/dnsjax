@@ -42,9 +42,13 @@ misread.  Bump it whenever the stored meaning changes (not just the
 layout), and raise the reader's ``MIN_FORMAT_VERSION`` with it.
 
 Resume semantics: an existing ``probes.bin``/``probes.json`` pair is
-appended to iff the sidecar matches the current run (same modes, grid,
-components, precision, system, and cadence) -- anything else is a hard
-error asking the user to move the old pair away.  A clean continuation
+appended to iff the sidecar matches the current run (same modes **and
+the wavenumbers they denote**, grid, components, precision, system, and
+cadence) -- anything else is a hard error asking the user to move the
+old pair away.  The wavenumbers matter because a resume may change
+``res.nx`` / ``res.nz`` (the Fourier axes are regridded at load), and
+on the wrap-ordered `$k_z$` axis a stored *index* in the negative block
+then means a different mode.  A clean continuation
 duplicates one sample per seam (the parent's cadence-aligned final
 record and the child's t0 record hold the same state at the same
 ``t``); the reader drops these and flags genuinely non-monotonic
@@ -104,6 +108,14 @@ FORMAT_VERSION: int = 3
 _MATCH_KEYS: tuple[str, ...] = (
     "format_version",
     "modes",
+    # Not the indices alone: a resume may now change ``res.nx`` /
+    # ``res.nz`` (the Fourier axes are regridded at load --
+    # ``snapshot._from_io_layout_core``), and on the wrap-ordered
+    # `$k_z$` axis a stored *index* in the negative block then denotes
+    # a different wavenumber.  Matching the wavenumbers is the right
+    # granularity: it refuses exactly that, and still appends across a
+    # resolution change that leaves every probed mode where it was.
+    "wavenumbers",
     "n_components",
     # The *counts* above are not enough: a resume at unchanged ``ny``
     # onto a different ``geo.grid_type`` samples the same number of
