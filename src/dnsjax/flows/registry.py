@@ -168,12 +168,17 @@ def internalize_stored(
 ) -> dict:
     """Map a stored (public-named) params dict to internal names.
 
-    An unknown key in a core section -- neither global nor on
-    *system*'s surface under its public name -- **raises**.  A
-    snapshot naming a parameter this version does not define was
-    written by code that meant something by it, and silently dropping
-    it would resume a run whose setup differs from the stored one in a
-    way nothing reports.
+    An unknown key in a core section -- neither global, nor on
+    *system*'s surface under its public name, nor **deferred** for it
+    -- **raises**.  A snapshot naming a parameter this version does
+    not define was written by code that meant something by it, and
+    silently dropping it would resume a run whose setup differs from
+    the stored one in a way nothing reports.  A *deferred* key is a
+    different case and passes through: this version knows the field
+    and refuses it for this flow, so a snapshot predating the deferral
+    stays loadable and its stored value is judged by
+    :func:`dnsjax.parameters.validate_parameters` (inert default:
+    silent; actually used: the deferral's message).
 
     ``solver`` is the one core section exempt (unknown keys there are
     dropped with a note): it is execution-only by design -- it selects
@@ -212,6 +217,20 @@ def internalize_stored(
         for public, value in sec_dict.items():
             internal = spec.dealias(section, public)
             if internal is None and (section, public) in global_keys:
+                internal = public
+            if internal is None and (section, public) in spec.deferred_map:
+                # A field this version *defers* for this flow.  Not an
+                # unknown key: it is known and deliberately refused,
+                # and it may well have been on the flow's surface when
+                # the snapshot was written (``externalize`` records
+                # only non-deferred fields, so this reaches only
+                # snapshots older than the deferral).  Internalizing
+                # it is what keeps those resumable: an inert stored
+                # default lands on the model default and passes, while
+                # a value the old run actually used is refused by
+                # ``validate_parameters`` with the deferral's own
+                # message -- overridable by setting the field
+                # explicitly on the resume command line.
                 internal = public
             if internal is None:
                 if section != "solver":
