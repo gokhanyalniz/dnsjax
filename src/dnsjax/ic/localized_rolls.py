@@ -40,11 +40,21 @@ fixed-physical-width envelope, so the spot is localized in both `$x$` and
 annular use the analogous per-geometry streamfunction (see the
 per-generator docstrings).
 
-**Mean-free by construction.** The `$(k_x, k_z) = (0, 0)$` mode of every
-component is **identically zero**, so a spot never changes the field's
-bulk velocity or wall shear (the Dean laminar profile is the only
-mean-mode content, added separately).  Two independent mechanisms give
-that, one per component of each streamfunction pair:
+**Mean-free by construction**, and there is nothing admissible to
+keep.  The `$(0,0)$` content the roll pair would otherwise carry is
+`$-G'(y)$` times two scalars, and with `$G = (1-y^2)^2$` that is a
+**cubic** in `$y$` -- while the mean mode's own conservation laws
+(:mod:`dnsjax.ic.mean_mode`) require `$\delta(\pm 1) = 0$` *and*
+`$\delta''(\pm 1) = 0$`, whose only cubic solution is
+`$\delta \equiv 0$`.  The spot's natural mean content is therefore
+*entirely* inadmissible: any compatible profile put in its place would
+be a different function, not a scaled roll.  So the mode stays zero
+whatever ``init.random_mean_flow`` is set to: the `$(k_x, k_z) =
+(0, 0)$` mode of every component is **identically zero**, and a spot
+never changes the field's bulk velocity or wall shear (the Dean
+laminar profile is the only mean-mode content, added separately).  Two
+independent mechanisms give that, one per component of each
+streamfunction pair:
 
 - the *cross-stream* component carries a spectral derivative
   `$\mathrm{i}k\,\hat f$` of its roll factor, which vanishes at

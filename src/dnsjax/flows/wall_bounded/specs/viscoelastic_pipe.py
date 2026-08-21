@@ -23,6 +23,7 @@ from math import pi
 from ....flow_spec import FieldSpec, FlowSpec
 from ._family import (
     CYLINDRICAL_GRIDS,
+    DEFERRED_MEAN_FLOW,
     DEFERRED_TILT,
     cyl_annular_fields,
     wall_fields,
@@ -78,7 +79,7 @@ SPEC = FlowSpec(
         FieldSpec("phys", "kappa", default=5.0e-5),
         FieldSpec("init", "random_conformation_amplitude"),
     ),
-    deferred=(DEFERRED_TILT,),
+    deferred=(DEFERRED_TILT, DEFERRED_MEAN_FLOW),
     grid_type_default=_grid_default,
     derive=_derive,
     validate=_validate,

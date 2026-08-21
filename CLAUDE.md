@@ -136,15 +136,26 @@ sharded/padded-mesh-safe builds, and the divergence/Hermitian
 caveats: the `ic/random_field.py` and `ic/localized_rolls.py` module
 docstrings.
 
-**No perturbation writes the `(kx, kz) = (0, 0)` mode**, so a perturbed
-field keeps its bulk velocity and wall shear: rolls and the twin
-partner are mean-free by construction, `[force]` kicks and
-`ensemble_setup build` reject the mode, and transient growth excludes
-it. The **two** deliberate opt-ins are `init.random_mean_flow`
-(default off) and `snapshot_perturb.py --perturb.mode "0,0"` (real
-profile only, refused under `constant_bulk_velocity`). Guards:
-`tests/test_localized_rolls.py` (a spot adds nothing to the mean
-column), `tests/test_forcing.py`, `tests/test_snapshot_perturb.py`.
+**Only the Cartesian flows may perturb the `(kx, kz) = (0, 0)` mode**,
+and only through its conservation laws -- compatibility with no-slip at
+both walls, plus an unchanged bulk velocity in each direction whose
+mean the driving holds. The derivation, the discrete constraint rows,
+the conditioning projector and its measured tolerance are all in
+`ic/mean_mode.py`; do not restate them elsewhere.
+
+- allowed: `init.random_mean_flow` (**default on** for plane-couette /
+  plane-poiseuille, and what `dnsjax-twin` builds its partner with) and
+  `snapshot_perturb.py --perturb.mode "0,0"`, which **checks and
+  refuses** rather than reshaping a profile its caller owns.
+- deferred (`DeferredSpec`, rejects CLI/TOML *and* a direct assignment):
+  `init.random_mean_flow` on every other flow, kolmogorov included.
+- still rejected outright: `[force]` kicks; transient growth still
+  excludes the mode.
+- rolls stay mean-free and always will: their `(0,0)` content is a cubic
+  in `y`, and no nonzero cubic satisfies the compatibility conditions.
+
+Guards: `tests/test_mean_mode.py`, `tests/test_localized_rolls.py`,
+`tests/test_forcing.py`, `tests/test_snapshot_perturb.py`.
 
 ### Triggering transition to turbulence
 
@@ -452,8 +463,11 @@ snapshot rejects), the whole `[solver]` section (execution-only,
 `read_snapshot_params` strips it), and the resume-decision fields
 `init.snapshot`/`init.force_resume` (recorded for lineage only).
 A stored **core-section** parameter this version does not define is a
-hard error in `internalize_stored` — `[solver]` alone is exempt
-(note-and-drop), because it is stripped only *after* internalizing.
+hard error in `internalize_stored`. Two exemptions: `[solver]`
+(note-and-drop), because it is stripped only *after* internalizing;
+and a field the flow **defers**, which is resolved normally — this
+version knows it and refuses it, so a snapshot predating the deferral
+stays loadable and `validate_parameters` judges the stored value.
 
 Per-flow `FieldSpec` defaults (`phys.u_grid`, `geo.grid_type`, the
 viscoelastic rheology values, ...) are **re-materialized on every
@@ -743,6 +757,9 @@ are one-liners. Cross-cutting notes:
   variable step.
 - `test_mean_mask.py`: `mean_mask` is the unique k²=0 mode under
   forced spectral padding.
+- `test_mean_mode.py`: the `(0,0)` perturbation conservation laws --
+  constraint rows, projector, generated IC, per-flow deferral
+  (`--unit-only` skips the IC builds).
 - `test_monochromatic.py`: Kolmogorov `get_stats` identities.
 - `test_padding.py`: padded-size rounding + FFT exactness +
   `chunked_transform` bit-parity.

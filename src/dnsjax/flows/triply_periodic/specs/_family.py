@@ -2,9 +2,9 @@ r"""Shared spec fragments for the triply-periodic flows.
 
 One surface for the family (currently kolmogorov alone): the periodic
 box lengths/tilt, the identity-named resolution, and the Reynolds
-number.  The moving frame and the localized-rolls IC are deferred
-features here; the wall-bounded-only fields (grids, probes,
-forcing, ...) are simply not part of the surface.
+number.  The moving frame, the localized-rolls IC and the mean-mode
+perturbation are deferred features here; the wall-bounded-only fields
+(grids, probes, forcing, ...) are simply not part of the surface.
 """
 
 from ....flow_spec import DeferredSpec, FieldSpec
@@ -26,9 +26,6 @@ def periodic_fields() -> tuple[FieldSpec, ...]:
         ),
         FieldSpec("res", "nz"),
         FieldSpec("phys", "re"),
-        # The periodic random-IC generator honours the mean-mode
-        # perturbation too (the kx = kz = 0 shear profile).
-        FieldSpec("init", "random_mean_flow"),
     )
 
 
@@ -43,6 +40,14 @@ def periodic_deferred() -> tuple[DeferredSpec, ...]:
             "u_grid",
             "phys.u_grid (moving frame of reference) is not "
             "implemented yet for the triply-periodic systems.",
+        ),
+        DeferredSpec(
+            "init",
+            "random_mean_flow",
+            "init.random_mean_flow (perturbing the kx = kz = 0 mean "
+            "profile) is not implemented yet for the triply-periodic "
+            "systems; their mean mode is a passive Galilean shift the "
+            "solver re-zeroes every step anyway.",
         ),
         DeferredSpec("init", "localized_rolls", rolls_msg),
         DeferredSpec("init", "localized_rolls_amplitude", rolls_msg),

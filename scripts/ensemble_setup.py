@@ -69,10 +69,14 @@ Two subcommands:
     :func:`dnsjax.analysis.twin.ensemble.aggregate_members` consumes.
 
 The injected mode is auto-appended to ``--probe-modes`` when missing
-(the response could otherwise never be recorded), and injecting the
-``(0,0)`` mean mode is rejected (under constant-bulk-velocity driving
-it is constrained/affine, and its ensemble response is not what this
-machinery measures).  Pick ``--horizon`` to cover the response
+(the response could otherwise never be recorded).  Injecting the
+``(0,0)`` mean mode is allowed on the Cartesian flows, where
+``scripts/snapshot_perturb.py`` checks the profile against the
+mean-mode conservation laws (:mod:`dnsjax.ic.mean_mode`) -- but note
+what it identifies: under a held mean the mean-mode block is *affine*,
+not the clean linear block ``analysis.response`` fits, so read such an
+ensemble as a response measurement rather than an operator
+identification.  Pick ``--horizon`` to cover the response
 feature to be measured or fitted -- e.g. past the transient-growth
 peak `$t_\mathrm{opt}$` of the injected mode (the TG summary) -- and
 no longer: member cost is linear in it, and identification horizons
@@ -277,11 +281,6 @@ def build(args: argparse.Namespace) -> int:
     if len(pairs) != 1:
         raise SystemExit("--mode takes exactly one 'i2,i3' pair")
     i2, i3 = pairs[0]
-    if (i2, i3) == (0, 0):
-        raise SystemExit(
-            "injecting the (0,0) mean mode is not supported (see the "
-            "module docstring)"
-        )
 
     probe_pairs = parse_mode_pairs(args.probe_modes)
     if (i2, i3) not in probe_pairs:

@@ -150,6 +150,10 @@ nonzero, so `Fourier.mean_mask` is a one-hot — the cross-module
 invariant every pin-row/mean-mode consumer relies on. Detail: the
 `Fourier` docstrings; guard: `tests/test_mean_mask.py`.
 
+What may *write* the mean mode is a separate question, answered per
+flow: only the Cartesian ones, and only through the conservation laws
+in `ic/mean_mode.py` (root CLAUDE.md, "Initial conditions").
+
 ### Cylindrical geometry
 
 The `cylindrical.py` module docstring documents the decoupled `u+`/`u-`

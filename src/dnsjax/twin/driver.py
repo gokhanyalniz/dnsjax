@@ -34,7 +34,11 @@ Initial perturbation
 --------------------
 `$\delta$` is the divergence-free random field of
 :func:`dnsjax.ic.random_field.generate_random_state` (device-count
-independent, per-global-mode seeded, mean mode excluded), rescaled so
+independent, per-global-mode seeded; the mean mode follows the shared
+``init.random_mean_flow``, on by default here, and is then conditioned
+on the mean-mode conservation laws -- so under a held mean the partner
+carries the reference's bulk velocity exactly, and its mean profile
+differs only in ways the mean-mode dynamics admits), rescaled so
 the solver-measure perturbation energy is exactly ``twin.e0``:
 `$E'(\delta) = \|\delta\|^2/2 = e_0$` -- the convention of
 ``snapshot_perturb --perturb.amplitude_energy``.  ``twin.e0 = 0``
@@ -604,13 +608,18 @@ def run(wall_time_start: int) -> None:
                 math.sqrt(2.0 * twin_params.e0),
                 twin_params.smoothness,
                 twin_params.seed,
-                # mean_flow: deliberately off, and not a ``[twin]``
-                # knob.  A (0, 0) perturbation would give the partner a
-                # different bulk velocity and wall shear from the
-                # reference, so the difference field would carry a mean
-                # profile the diagnostics would then attribute to
-                # divergence of the two trajectories.
-                False,
+                # mean_flow: the shared ``init.random_mean_flow`` (on
+                # by default for the Cartesian flows this driver
+                # supports), not a separate ``[twin]`` knob.  The
+                # partner's (0, 0) perturbation is conditioned on the
+                # mean-mode conservation laws
+                # (:mod:`dnsjax.ic.mean_mode`), so under a held mean it
+                # shares the reference's bulk velocity exactly and the
+                # difference field's mean profile is a genuine
+                # perturbation direction rather than a bookkeeping
+                # artefact.  ``--init.random_mean_flow False`` gives
+                # the mean-free partner this used to hardcode.
+                params.init.random_mean_flow,
             )
             if grid_before is not None and not np.allclose(
                 np.asarray(grid_before),
@@ -749,10 +758,12 @@ def run(wall_time_start: int) -> None:
     # Applied mean-mode driving (the ``stats.dat`` / ``twin.dat`` last
     # columns): a *step* quantity threaded out of the corrector, so the
     # ``t = t0`` rows -- which have no step behind them -- carry the
-    # wall-shear inference instead (``get_driving``), and the twin's
-    # difference is exactly zero there because the partner perturbation
-    # is mean-free by construction (``ic/localized_rolls`` / the
-    # ``mean_flow=False`` draw above).  ``get_driving`` takes the
+    # wall-shear inference instead (``get_driving``).  That difference
+    # is exactly zero at ``t0`` for a mean-free partner
+    # (``ic/localized_rolls``, or ``init.random_mean_flow False``) and
+    # nonzero for a mean-perturbed one, which is correct: the partner
+    # then genuinely starts at a different wall shear.
+    # ``get_driving`` takes the
     # *physical* view of a state; this driver is Cartesian-only, whose
     # solver basis **is** the physical one (no ``to_solver_basis``
     # anywhere here), so the states below satisfy that as they stand.

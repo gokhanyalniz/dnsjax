@@ -1014,17 +1014,24 @@ class Initiation(BaseModel):
             "Seed of the random-IC generator (device-count independent)."
         ),
     )
-    # The one start mode that can write the (kx, kz) = (0, 0) mode: the
-    # localized-rolls and twin-partner perturbations are mean-free by
-    # construction (``ic/localized_rolls.py``, ``twin/driver.py``) and
-    # the runtime kicks reject it (``extensions``).
+    # Cartesian-only, and defaulted **on** there by the flow spec: only
+    # the Cartesian flows have their (kx, kz) = (0, 0) conservation
+    # laws established, so every other flow defers this field.  The
+    # model default stays False -- that is the inert value the deferred
+    # check in ``validate_parameters`` compares a direct assignment
+    # against.  Also read by ``dnsjax-twin`` for its partner field; the
+    # localized-rolls perturbation stays mean-free whatever it is set to
+    # (its (0, 0) content is a cubic in y, which the compatibility
+    # conditions annihilate -- ``ic/localized_rolls.py``), and the
+    # runtime ``[force]`` kicks still reject the mode (``extensions``).
     random_mean_flow: bool = Field(
         default=False,
         description=(
-            "Also perturb the mean (kx = kz = 0) profile in the random "
-            "IC, changing the field's bulk velocity and wall shear "
-            "(under constant_bulk_velocity driving the streamwise part "
-            "is projected straight back out on the first step)."
+            "Also perturb the mean (kx = kz = 0) streamwise/spanwise "
+            "profile, conditioned on its conservation laws: "
+            "compatibility with no-slip at both walls, and an "
+            "unchanged bulk velocity in each direction whose mean the "
+            "driving holds."
         ),
     )
     # Radially windowed to zero at both walls (the reference restart
