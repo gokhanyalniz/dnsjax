@@ -1080,6 +1080,7 @@ class Outputs(BaseModel):
     # All cadences count time steps taken.
     it_stats: int | None = Field(
         default=None,
+        ge=1,
         description=(
             "Steps between stats.dat records; unset disables the stream."
         ),
@@ -1088,6 +1089,7 @@ class Outputs(BaseModel):
     # nonlinear-term evaluation (no extra Fourier transforms).
     it_steps: int | None = Field(
         default=None,
+        ge=1,
         description=(
             "Steps between CFL time-step diagnostics in steps.dat; "
             "unset disables the stream."
@@ -1095,6 +1097,7 @@ class Outputs(BaseModel):
     )
     it_snapshot: int | None = Field(
         default=None,
+        ge=1,
         description=("Steps between periodic snapshots; unset disables them."),
     )
     # Same on-device buffering and file format as ``stats.dat``.
