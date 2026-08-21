@@ -33,7 +33,15 @@ scope, in temporary member directories:
    the finer one and self-convergence of every residual (the
    residual is spatial truncation; a wrong or missing term would
    not shrink).  ``--only closure`` (any test-name fragment) runs a
-   subset.
+   subset.  ``--mean-free`` is the **control** for that closure: it
+   overrides ``init.random_mean_flow`` off, so the partner carries no
+   ``(0, 0)`` content and the difference field is the pure
+   fluctuating one the bounds here were originally measured on.  The
+   parent is unaffected either way (``_build_parents`` takes the
+   generator's mean-free default), so the switch isolates the
+   partner.  Use it to tell "the bounds moved because the perturbation
+   energy redistributed" from "a budget term is missing": only the
+   latter survives the control.
 8. Every driver-level guard fires on a real input: missing
    ``twin.e0``, a snapshot recording a ``[force]`` section, the three
    bad start-mode quadrants (partner without ``twin.json``,
@@ -44,6 +52,7 @@ scope, in temporary member directories:
 Usage::
 
     uv run python tests/test_twin_driver.py
+    uv run python tests/test_twin_driver.py --only budget --mean-free
 """
 
 from __future__ import annotations
@@ -72,6 +81,13 @@ from dnsjax.parameters import (  # noqa: E402
     params,
     update_parameters,
 )
+
+#: Control switch (see the module docstring): force the partner's
+#: perturbation mean-free, the pre-``init.random_mean_flow`` behaviour.
+#: Read here rather than in ``main`` because ``_twin_args`` is module
+#: level; it never reaches the ``--build-parent`` worker, which is
+#: correct -- the parent does not depend on it.
+MEAN_FREE = "--mean-free" in sys.argv
 
 if "--build-parent" in sys.argv:
     _i = sys.argv.index("--build-parent")
@@ -190,7 +206,7 @@ def _run_twin(
 
 
 def _twin_args(horizon: float, seed: int = 3, e0: float = E0) -> list[str]:
-    return [
+    args = [
         "--init.snapshot",
         str(PARENT),
         "--twin.e0",
@@ -200,6 +216,11 @@ def _twin_args(horizon: float, seed: int = 3, e0: float = E0) -> list[str]:
         "--stop.max_sim_time",
         repr(horizon),
     ]
+    if MEAN_FREE:
+        # A CLI layer beats the snapshot layer, which carries the
+        # parent's resolved (Cartesian default: on) value.
+        args += ["--init.random_mean_flow", "False"]
+    return args
 
 
 def _expect_error(result, fragment: str) -> None:
@@ -514,6 +535,10 @@ def test_budget_closure() -> None:
     fluctuating components to a few percent at 16x33x16, and every
     residual *decreases* from 8x17x8 to 16x33x16 (self-convergence:
     a systematically wrong or missing term would not).
+
+    Run with ``--mean-free`` for the control (module docstring): the
+    partner then carries no `$(0,0)$` content, which is the field
+    composition these bounds were measured on.
     """
     parent16 = _SESSION / "parent16.tar"
     result = run_live(
@@ -537,7 +562,8 @@ def test_budget_closure() -> None:
             _run_twin(tmp, [*args, "--twin.it_budget", "5"])
             resids[label] = _closure_residuals(Path(tmp))
     coarse, fine = resids["coarse"], resids["fine"]
-    print(f"closure residuals: coarse={coarse} fine={fine}")
+    mode = "mean-free partner" if MEAN_FREE else "default partner"
+    print(f"closure residuals [{mode}]: coarse={coarse} fine={fine}")
     # Bounds: ~2-3x margins over the measured values (deterministic
     # seeds; coarse 2e-5/6.0e-2/6.5e-2/15%, fine 3e-5/1.7e-2/3.6e-2/5%).
     assert coarse["dU"] < 1e-3 and fine["dU"] < 1e-3
