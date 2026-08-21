@@ -175,6 +175,45 @@ carrier is the `$U^{(1)}$` profile, which enters every budget term
 through `$\partial_y$` alone.  All quantities here are therefore
 frame-invariant and need no ``u_grid`` handling.
 
+Mean-mode driving
+-----------------
+There is deliberately **no forcing column** in the budget, for either
+driving knob.  ``_apply_bulk_corrections``
+(:mod:`~dnsjax.geometries.wall_bounded.cartesian`) applies a *scalar*
+body force on the `$(0,0)$` mode alone -- `$\pi_s$` under
+``phys.driving = "constant_bulk_velocity"``, `$\pi_n$` under
+``phys.block_mean_spanwise_velocity`` -- so its work on a field is
+exactly (force) `$\times$` (that field's bulk velocity along the
+forced direction).  On the *difference* field that is
+`$\Delta\pi \cdot \mathrm{bulk}(\Delta u)$`, and every supported
+setting annihilates one of the two factors, by a different mechanism:
+
+- **force free** (``constant_pressure_gradient``, and plane-Couette,
+  which carries no ``driving`` field at all): the applied force is the
+  same constant in both runs, so `$\Delta\pi = 0$`.  Note this says
+  nothing about `$\mathrm{bulk}(\Delta u)$`, which is genuinely
+  non-zero here -- an undriven direction acquires a bulk velocity
+  spontaneously, plane-Couette's streamwise one included.
+- **bulk held**: both runs hold the *same* bulk value, so
+  `$\mathrm{bulk}(\Delta u) = 0$` -- exactly, because the correction is
+  a rank-1 algebraic projection satisfied at every corrector iterate,
+  not a converged feedback loop.  Here `$\Delta\pi$` is the non-zero
+  factor: the two runs apply genuinely different, time-varying forces.
+
+The cancellation is *exact* rather than approximate only because the
+same quadrature ``flow.y_weights`` defines the bulk in all three
+places that matter: the corrector's constraint, the held-mean
+constraint row of the partner's `$(0,0)$` initial perturbation
+(:mod:`dnsjax.ic.mean_mode`), and :func:`get_inprod` here.  Guard --
+measuring both factors, so neither leg can pass vacuously:
+``tests/test_twin_budget.py``.
+
+Contrast the *total* field, whose budget does carry the term
+(``I`` in each flow's ``get_stats``): there the held streamwise bulk
+of plane-Poiseuille is `$U_b = 2/3 \ne 0$`, so the mean pressure
+gradient does real, time-varying work.  The spanwise block is the
+degenerate case in which the held value is zero, so it does none.
+
 Sharding
 --------
 The masks derive from ``fourier.kx`` (spec ``P(None, None, a1)``) and

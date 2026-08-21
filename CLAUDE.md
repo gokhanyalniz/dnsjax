@@ -751,7 +751,9 @@ are one-liners. Cross-cutting notes:
 - `test_cnab2.py`: CN/AB2 + split-corrector structural guards.
 - `test_imm_continuity.py`: stepped-state discrete divergence, default
   vs legacy `res.consistent_imm` (`--ny`).
-- `test_energy_budget.py`: stepped total-energy budget closure.
+- `test_energy_budget.py`: stepped total-energy budget closure, incl.
+  the plane-Poiseuille pressure-gradient work and the applied-vs-
+  inferred driving comparison.
 - `test_adaptive.py`: the adaptive-dt machinery.
 - `test_temporal_order.py`: second-order temporal accuracy, fixed and
   variable step.
@@ -796,8 +798,12 @@ are one-liners. Cross-cutting notes:
   random-field divergence guard).
 - `test_transient_growth.py`: transient-growth analysis, incl. the
   per-flow literature anchors (`--fast` skips them).
+- `test_twin_budget.py`: twin budget closure per flow / driving mode
+  on a wall-normal ladder, and the omitted driving-work bound
+  (`--only`/`--ladder`/`--seeds`/`--measure`/`--quick`).
 - `test_twin_unit.py`: twin diagnostics on a (2,2) mesh.
 - `test_twin_driver.py`: `dnsjax-twin` integration via mpirun
-  (`--only <frag>` runs a subset).
+  (`--only <frag>` runs a subset, `--seed`/`--mean-free` vary the
+  partner).
 - `test_twin_analysis.py`: JAX-free `analysis.twin` readers/
   aggregation/fits/lengths + `build-twin` end to end.

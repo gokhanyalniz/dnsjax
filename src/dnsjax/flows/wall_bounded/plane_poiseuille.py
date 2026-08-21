@@ -196,6 +196,28 @@ def _get_stats_jit(
     - `$U'_{b,s}$`, `$U'_{b,n}$`: perturbation bulk
       velocity in the streamwise and spanwise directions.
 
+    Under ``constant_bulk_velocity`` the driving work is the
+    whole of `$I - I_\mathrm{lam}$`.  The **exact** input rate
+    is `$U_{b,\mathrm{lam}}\Pi'$` with `$\Pi'$` the force the
+    corrector applied (``stats.dat``'s ``-dPds'``); this
+    state-only function cannot see that, so it estimates
+    `$\Pi'$` from the wall shear instead, low by
+    `$\mathrm{bulk}(\bar N_s)$` -- continuously zero, a
+    wall-normal truncation residual discretely, and convergent.
+
+    Substituting the exact value nonetheless makes
+    `$dE/dt = I - D$` close **worse** (measured), which is a
+    statement about that two-term form rather than about either
+    estimate: it omits the discrete
+    `$\langle u\cdot N(u)\rangle$`, zero continuously, whose
+    dominant part is `$-U_b\,\mathrm{bulk}(\bar N_s)$`.  The
+    estimate's error is that same quantity with the opposite
+    sign, so it absorbs the omission.  Read `$I$` as the
+    budget-consistent input rate, not as the applied power;
+    they converge.  Measured table:
+    ``tests/test_energy_budget.py``'s
+    ``_check_applied_vs_inferred``.
+
     All total-field quantities are computed algebraically
     from perturbation norms and laminar constants, without
     constructing `$\mathbf{u}' + \mathbf{U}$`.  For
