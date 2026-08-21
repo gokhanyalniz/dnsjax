@@ -3,6 +3,7 @@ r"""Parameter spec for quasi-Keplerian (annular) flow."""
 from ....flow_spec import FieldSpec, FlowSpec
 from ._family import (
     CARTESIAN_ANNULAR_GRIDS,
+    DEFERRED_MEAN_FLOW,
     DEFERRED_TILT,
     annular_base_derive,
     circular_couette_derive,
@@ -89,7 +90,7 @@ SPEC = FlowSpec(
         FieldSpec("phys", "r_omega"),
         FieldSpec("phys", "block_mean_spanwise_velocity"),
     ),
-    deferred=(DEFERRED_TILT,),
+    deferred=(DEFERRED_TILT, DEFERRED_MEAN_FLOW),
     grid_type_default="cgl",
     derive=_derive,
     validate=_validate,

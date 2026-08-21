@@ -401,6 +401,130 @@ def test_error_paths() -> None:
         )
 
 
+# ── Mean mode ────────────────────────────────────────────────────────
+
+
+def _mean_profiles(compatible: bool) -> np.ndarray:
+    """A ``(3, NY)`` real mean-mode profile, legal or not.
+
+    Legal: ``u_x = sin(pi y)`` satisfies the case-B relations (held
+    bulk) and ``u_z = sin(pi (y+1)/2)`` the case-A ones; both vanish at
+    the walls, and ``u_y`` is zero by continuity.  Illegal: ``1 - y^2``
+    has curvature ``-2`` at both walls and moves the bulk -- it is the
+    laminar shape, legal as a *base flow* and not as a perturbation.
+    """
+    y = np.asarray(fmod.flow.ys)
+    vec = np.zeros((3, NY), dtype=complex)
+    if compatible:
+        vec[0] = np.sin(np.pi * y)
+        vec[2] = np.sin(np.pi * (y + 1) / 2)
+    else:
+        vec[0] = 1.0 - y**2
+    return vec
+
+
+def test_mean_mode_injection_under_constant_bulk() -> None:
+    """A legal (0,0) profile injects under ``constant_bulk_velocity``.
+
+    Exactly the case the old code refused outright, and the mode is
+    self-conjugate, so it writes one column and nothing else.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        base = _make_snapshot(tmp / "base.tar")
+        np.save(tmp / "vec.npy", _mean_profiles(True))
+        _run_perturb(
+            [
+                "--init.snapshot",
+                str(tmp / "base.tar"),
+                "--perturb.out",
+                str(tmp / "out.tar"),
+                "--perturb.npy",
+                str(tmp / "vec.npy"),
+                "--perturb.mode",
+                "0,0",
+                "--perturb.amplitude_scale",
+                "0.25",
+                "--phys.driving",
+                "constant_bulk_velocity",
+            ]
+        )
+        state, t, it = load_snapshot(tmp / "out.tar")
+        assert (t, it) == (1.25, 50)
+        expected = base.copy()
+        expected[:, :, 0, 0] += 0.25 * _mean_profiles(True)
+        assert_array_equal(np.asarray(state), expected)
+
+
+def test_mean_mode_error_paths() -> None:
+    """Every mean-mode rule refuses, naming what it refused.
+
+    The check is on the *injected profile*, not on the resulting
+    state: the relations are homogeneous in the perturbation, so a
+    parent's own residual is inherited unchanged (the synthetic parent
+    here has a complex, wholly incompatible (0,0) column).
+    """
+    y = np.asarray(fmod.flow.ys)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        _make_snapshot(tmp / "base.tar")
+
+        def _try(vec, expect, extra=()):
+            np.save(tmp / "v.npy", vec)
+            return _run_perturb(
+                [
+                    "--init.snapshot",
+                    str(tmp / "base.tar"),
+                    "--perturb.out",
+                    str(tmp / "x.tar"),
+                    "--perturb.npy",
+                    str(tmp / "v.npy"),
+                    "--perturb.mode",
+                    "0,0",
+                    "--perturb.amplitude_scale",
+                    "1.0",
+                    *extra,
+                ],
+                expect_fail=expect,
+            )
+
+        _try(_mean_profiles(False), "d(tau)/dy")
+
+        wn = _mean_profiles(True)
+        wn[1] = 1.0 - y**2
+        _try(wn, "wall-normal component must vanish")
+
+        slip = _mean_profiles(True)
+        slip[0] = slip[0] + 1.0
+        _try(slip, "no-slip violated")
+
+        # The case-A/case-B split, end to end on one profile:
+        # ``(1-y^2)^3`` has zero value, slope and curvature at both
+        # walls, so it satisfies the compatibility relations either
+        # way -- but it carries bulk ``32/35``, which only a held mean
+        # forbids.  Accepted with a free bulk, refused with a held one.
+        bulk = np.zeros((3, NY), dtype=complex)
+        bulk[0] = (1.0 - y**2) ** 3
+        np.save(tmp / "b.npy", bulk)
+        common = [
+            "--init.snapshot",
+            str(tmp / "base.tar"),
+            "--perturb.out",
+            str(tmp / "b.tar"),
+            "--perturb.npy",
+            str(tmp / "b.npy"),
+            "--perturb.mode",
+            "0,0",
+            "--perturb.amplitude_scale",
+            "1.0",
+        ]
+        _run_perturb(common)
+        _run_perturb(
+            [*common, "--phys.driving", "constant_bulk_velocity"],
+            expect_fail="bulk velocity held",
+        )
+
+
 # ── Runner ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
