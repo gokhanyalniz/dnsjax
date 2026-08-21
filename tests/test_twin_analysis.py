@@ -37,6 +37,7 @@ from _live import run_live  # noqa: E402
 from dnsjax.analysis.twin import (  # noqa: E402
     aggregate_members,
     budget_sums,
+    closure_residuals,
     fit_exponential_rate,
     fit_linear_rate,
     integral_lengths_from_modes,
@@ -88,23 +89,29 @@ def _energy_columns(
     return cols
 
 
+#: The budget stream's ``(a, b, c)`` layout, mirroring ``_PRODUCTION``
+#: / ``_TRANSPORT`` in :mod:`dnsjax.twin.diagnostics` (the column
+#: *names* are what the readers key on, so they must match exactly).
+_TRIPLES = {
+    "dU": [("dU", "rU"), ("du1", "ru1"), ("du2", "ru2")],
+    "du1": [("du1", "rU"), ("dU", "ru1"), ("du1", "ru1"), ("du2", "ru2")],
+    "du2": [
+        ("dU", "ru2"),
+        ("du1", "ru2"),
+        ("du2", "rU"),
+        ("du2", "ru1"),
+        ("du2", "ru2"),
+    ],
+}
+_TRANSPORTS = {
+    "dU": [("ru1", "du1"), ("du1", "du1"), ("ru2", "du2"), ("du2", "du2")],
+    "du1": [("ru1", "dU"), ("du1", "dU"), ("ru2", "du2"), ("du2", "du2")],
+    "du2": [("ru2", "dU"), ("du2", "dU"), ("ru2", "du1"), ("du2", "du1")],
+}
+
+
 def _budget_columns(t: np.ndarray, scale: float = 1.0) -> dict:
-    triples = {
-        "dU": [("dU", "rU"), ("du1", "ru1"), ("du2", "ru2")],
-        "du1": [("du1", "rU"), ("dU", "ru1"), ("du1", "ru1"), ("du2", "ru2")],
-        "du2": [
-            ("dU", "ru2"),
-            ("du1", "ru2"),
-            ("du2", "rU"),
-            ("du2", "ru1"),
-            ("du2", "ru2"),
-        ],
-    }
-    transports = {
-        "dU": [("ru1", "du1"), ("du1", "du1"), ("ru2", "du2"), ("du2", "du2")],
-        "du1": [("ru1", "dU"), ("du1", "dU"), ("ru2", "du2"), ("du2", "du2")],
-        "du2": [("ru2", "dU"), ("du2", "dU"), ("ru2", "du1"), ("du2", "du1")],
-    }
+    triples, transports = _TRIPLES, _TRANSPORTS
     cols = {"t": t}
     k = 0
     for a, pairs in triples.items():
@@ -203,6 +210,148 @@ def test_readers() -> None:
         else:
             raise AssertionError("version floor did not trip")
     print("series readers: OK")
+
+
+# ── Budget closure ───────────────────────────────────────────────────
+
+
+def _closing_budget_columns(
+    t: np.ndarray, slopes: dict[str, float]
+) -> dict[str, np.ndarray]:
+    r"""A budget stream that closes *exactly* against known slopes.
+
+    Per component, the production terms carry the whole balance
+    (all equal), the four transport terms cancel in two pairs (so
+    ``T_x`` and ``T_tot`` are identically zero while the individual
+    terms stay `$O(1)$` -- the normaliser must not be zero), and
+    ``eps_x`` is a fixed offset.  Solving
+    `$n_p a_x - e_x = \dot{E}_x$` with `$e_x = 1$` fixes `$a_x$`.
+    """
+    cols: dict[str, np.ndarray] = {"t": t}
+    ones = np.ones_like(t)
+    for x, pairs in _TRIPLES.items():
+        a = (slopes[x] + 1.0) / len(pairs)
+        for b, c in pairs:
+            cols[f"P_{x}({b},{c})"] = a * ones
+        for j, (b, c) in enumerate(_TRANSPORTS[x]):
+            # +v, -v, +2v, -2v: sums to zero, terms are O(1).
+            sign = 1.0 if j % 2 == 0 else -1.0
+            cols[f"T_{x}({b},{c})"] = sign * (1.0 + j // 2) * ones
+        cols[f"eps_{x}"] = ones.copy()
+    p_names = [n for n in cols if n.startswith("P_")]
+    t_names = [n for n in cols if n.startswith("T_")]
+    cols["P_tot"] = sum(cols[n] for n in p_names)
+    cols["T_tot"] = sum(cols[n] for n in t_names)
+    cols["eps_tot"] = sum(cols[f"eps_{x}"] for x in _TRIPLES)
+    return cols
+
+
+def _closing_member(
+    mdir: Path, n: int = 51, dt: float = 0.01, it_budget: int = 5
+) -> dict[str, np.ndarray]:
+    """Write a member whose budget closes; return the budget columns."""
+    mdir.mkdir(parents=True, exist_ok=True)
+    t = 1.0 + dt * np.arange(n)
+    _write_dat(mdir / "twin.dat", _energy_columns(t))
+    # ``_energy_columns`` is linear in t, so the centred difference is
+    # exact; the slopes are the (i + 1) factors of its E_* columns.
+    slopes = {"dU": 2.0, "du1": 3.0, "du2": 7.0}
+    tb = t[::it_budget]
+    cols = _closing_budget_columns(tb, slopes)
+    _write_dat(mdir / "twin_budget.dat", cols)
+    return cols
+
+
+def test_closure_residuals() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        # 1. An exactly closing stream reads back as machine zero, on
+        #    the interior budget samples only (the first and last of
+        #    the 11 budget rows have no energy neighbour on one side).
+        mdir = root / "exact"
+        _closing_member(mdir)
+        res = closure_residuals(read_twin(mdir))
+        assert res.n_samples == 9, res.n_samples
+        assert_allclose(res.dt, 0.01, rtol=1e-12)
+        for name in ("dU", "du1", "du2", "T_tot"):
+            assert res[name] < 1e-12, (name, res[name])
+
+        # 2. Breaking one component's dissipation moves *only* that
+        #    component: eps_du1 1 -> 1.3 unbalances a budget whose
+        #    two sides are both 3.0, so the residual is 0.3 / 3.0.
+        cols = _closing_member(root / "broken")
+        cols["eps_du1"] = cols["eps_du1"] + 0.3
+        cols["eps_tot"] = sum(cols[f"eps_{x}"] for x in ("dU", "du1", "du2"))
+        _write_dat(root / "broken" / "twin_budget.dat", cols)
+        res = closure_residuals(read_twin(root / "broken"))
+        assert_allclose(res["du1"], 0.1, rtol=1e-9)
+        assert res["dU"] < 1e-12 and res["du2"] < 1e-12
+        assert res["T_tot"] < 1e-12
+
+        # 3. T_tot is normalised by the largest individual transport
+        #    term (2.0 here), not by the balance: breaking one pair by
+        #    0.5 must read 0.25.
+        cols = _closing_member(root / "transport")
+        key = "T_du1(ru1,dU)"
+        cols[key] = cols[key] + 0.5
+        t_names = [n for n in cols if n.startswith("T_") and n != "T_tot"]
+        cols["T_tot"] = sum(cols[n] for n in t_names)
+        _write_dat(root / "transport" / "twin_budget.dat", cols)
+        res = closure_residuals(read_twin(root / "transport"))
+        assert_allclose(res["T_tot"], 0.25, rtol=1e-9)
+
+        # 4. A budget row off the energy grid is skipped, not
+        #    mis-paired: the driver writes an unconditional final row
+        #    that need not be cadence-aligned.
+        cols = _closing_member(root / "offgrid")
+        cols = {
+            k: np.append(v, v[-1] + (0.003 if k == "t" else 0.0))
+            for k, v in cols.items()
+        }
+        _write_dat(root / "offgrid" / "twin_budget.dat", cols)
+        res = closure_residuals(read_twin(root / "offgrid"))
+        assert res.n_samples == 9, res.n_samples
+        assert res["du1"] < 1e-12
+
+        # 5. Guards: no budget stream, a non-uniform energy cadence, a
+        #    missing term column, and cadences that never overlap.
+        _closing_member(root / "nobudget")
+        (root / "nobudget" / "twin_budget.dat").unlink()
+        _expect_value_error(
+            "no twin_budget.dat",
+            lambda: closure_residuals(read_twin(root / "nobudget")),
+        )
+
+        mdir = root / "jitter"
+        _closing_member(mdir)
+        t = np.append(1.0 + 0.01 * np.arange(50), 1.60)
+        _write_dat(mdir / "twin.dat", _energy_columns(t))
+        _expect_value_error(
+            "not uniformly spaced",
+            lambda: closure_residuals(read_twin(mdir)),
+        )
+
+        cols = _closing_member(root / "short")
+        del cols["P_du2(du2,ru2)"]
+        cols["P_tot"] = sum(
+            cols[n] for n in cols if n.startswith("P_") and n != "P_tot"
+        )
+        _write_dat(root / "short" / "twin_budget.dat", cols)
+        _expect_value_error(
+            "found 11 and 12",
+            lambda: closure_residuals(read_twin(root / "short")),
+        )
+
+        mdir = root / "disjoint"
+        cols = _closing_member(mdir)
+        cols["t"] = cols["t"] + 100.0
+        _write_dat(mdir / "twin_budget.dat", cols)
+        _expect_value_error(
+            "do not overlap",
+            lambda: closure_residuals(read_twin(mdir)),
+        )
+    print("budget-closure residuals: OK")
 
 
 # ── Aggregation ──────────────────────────────────────────────────────
@@ -548,6 +697,7 @@ def test_build_twin() -> None:
 
 if __name__ == "__main__":
     test_readers()
+    test_closure_residuals()
     test_aggregation()
     test_fits()
     test_spectra_reader()

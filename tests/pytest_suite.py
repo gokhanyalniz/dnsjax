@@ -133,6 +133,10 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_resume.py", (), _MPI + _SLOW, 3600),
     ("test_rolls_smoke.py", (), _MPI + _SLOW, 3600),
     ("test_transient_growth.py", (), _SLOW, 3600),
+    # No _MPI: single-process throughout (a lone process needs no
+    # launcher).  ~20 min at the default single seed -- the
+    # per-rung 50-advective-unit parent spin-ups dominate.
+    ("test_twin_budget.py", (), _SLOW, 3600),
     ("test_twin_driver.py", (), _MPI + _SLOW, 3600),
 ]
 
