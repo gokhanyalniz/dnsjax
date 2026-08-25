@@ -14,7 +14,7 @@ flow inside ``rU`` (plane-Couette's ``dU/dy`` is constant), and the
 unreachable without a driving knob.  Each of them would show up as an
 unclosed budget, so the closure measurement below is what tests them.
 
-Two questions, both measured rather than argued.
+Three questions, all measured rather than argued.
 
 1. **Does the budget close, and converge?**  Per component,
    `$\partial_t E_X = P_X + T_X - \epsilon_X$` up to spatial truncation
@@ -102,6 +102,19 @@ rank-1 algebraic projection applied at every corrector iterate.  Every
 free bulk is 2.4e-4 to 8.6e-3.  The omitted work
 `$\Delta\pi\,\mathrm{bulk}(\Delta u)$` never exceeds **5.1e-16** of the
 ``dU`` balance it would join.
+
+3. **Does the wall-normal-resolved budget regroup to this one?**
+   :func:`_yresolved` reads ``twin_ybudget.bin`` alongside
+   ``twin_budget.dat`` and checks that `$\sum_k \int$` of the
+   production and viscous densities reproduce ``P_tot`` and
+   ``eps_tot``.  Those identities are algebraic -- the same Parseval
+   sum regrouped -- so they hold to rounding at every rung, which is
+   what makes them a sharp regression test for the marginal
+   reduction, the `$\pm k_z$` fold and the density normalisation, on
+   real turbulence rather than the synthetic states of
+   ``tests/test_twin_unit.py``.  Their two truncation-limited
+   companions are printed per rung but **not** asserted; the note on
+   ``_CONVERGE`` says why.
 
 Configurations are **minimal flow units started from random
 perturbations**: the plane-Poiseuille box is `$2.0 \times 2 \times
@@ -198,6 +211,16 @@ _PC_BOUNDS = {"dU": 5e-3, "du1": 1e-3, "du2": 5e-4, "T_tot": 1e-3}
 #: normalised by shrinks faster than its own absolute residual does.
 #: The same exclusion, for the same reason, as in
 #: ``tests/test_twin_driver.py``.
+#:
+#: ``T_bins`` and ``pi_flux`` (:func:`_yresolved`) are **measured and
+#: printed per rung but not yet asserted**, here or as absolute
+#: bounds.  Their convergence has so far only been established on
+#: random solenoidal states -- ``ny`` 15/31/63/127 giving
+#: 3.1e-1 -> 8.3e-3 -> 2.0e-3 -> 1.2e-4 and
+#: 1.8e-2 -> 6.5e-4 -> 2.6e-5 -> 2.1e-6 -- and this file's discipline
+#: is that a bound comes from a measured sweep over *these*
+#: configurations and seeds, not from a plausible one elsewhere.  Run
+#: ``--measure`` across the ladder and add them here.
 _CONVERGE = ("du1", "du2", "T_tot")
 
 CONFIGS: list[dict] = [
@@ -396,6 +419,8 @@ def _twin(
         "True",
         "--twin.it_budget",
         str(IT_BUDGET),
+        "--twin.it_ybudget",
+        str(IT_BUDGET),
         "--stop.max_sim_time",
         repr(t_parent + horizon),
         "--outs.it_stats",
@@ -521,7 +546,7 @@ def _driving_work(cfg: dict, member: Path) -> dict[str, float]:
 
 def _measure(
     cfg: dict, ny: int, root: Path, seed: int, spin: float, horizon: float
-) -> tuple[ClosureResiduals, dict[str, float]]:
+) -> tuple[ClosureResiduals, dict[str, float], dict[str, float]]:
     parent = _spin_up(cfg, ny, root / f"{cfg['name']}_ny{ny}_spin", spin)
     member = _twin(
         cfg,
@@ -532,7 +557,11 @@ def _measure(
         horizon,
     )
     series = read_twin(member)
-    return closure_residuals(series), _driving_work(cfg, member)
+    return (
+        closure_residuals(series),
+        _driving_work(cfg, member),
+        _yresolved(member),
+    )
 
 
 #: The held bulk is pinned by a rank-1 algebraic projection, so it is
@@ -552,6 +581,87 @@ WORK_RATIO_TOL = 1e-10
 #: Interior budget samples a rung must contribute for its residual to
 #: be a maximum over something rather than a single draw.
 MIN_SAMPLES = 15
+
+
+# ── The wall-normal-resolved budget on the same ladder ───────────────
+
+
+def _yresolved(member: Path) -> dict[str, float]:
+    r"""Relate ``twin_ybudget.bin`` to ``twin_budget.dat``.
+
+    Four numbers, of two kinds.  ``P_exact`` and ``V_exact`` are
+    *algebraic*: `$\sum_k \int$` of the production terms and of the
+    viscous term are the same Parseval sum ``twin_budget.dat``
+    already forms, only regrouped, so they hold to rounding at every
+    rung and on any state.  They are the load-bearing check that the
+    marginal reduction, the `$\pm k_z$` fold and the density
+    normalisation are all right -- here on real turbulence rather
+    than the synthetic states of ``tests/test_twin_unit.py``.
+
+    ``T_bins`` and ``pi_flux`` are *truncation*-limited and converge
+    rather than hold.  ``T_bins`` compares the `$k$`-set sums of the
+    transfer terms against the per-component transport of the paper's
+    (2.14)-(2.16); the two differ by the same-bin triads
+    `$\tfrac12\langle(\mathbf{b}\cdot\nabla)|\Delta\mathbf{a}|^2
+    \rangle$` that the paper's lists omit because they vanish for
+    solenoidal `$\mathbf{b}$` -- continuously.  Discretely they
+    vanish only as the integration-by-parts residual that makes
+    ``T_tot`` non-zero, so ``T_bins`` and ``T_tot`` are one quantity
+    seen twice.  ``pi_flux`` is `$\max_k|\int\Pi\,dy|$`, which the
+    continuity identity forces to zero at every mode, normalised by
+    the largest `$|\int\mathcal{V}\,dy|$` over the same modes.
+    """
+    from dnsjax.analysis.twin import integrate_y, read_twin_ybudget
+
+    data = read_twin_ybudget(member)
+    budget = read_dat(member / "twin_budget.dat")
+    t_b = np.round(budget["t"], 10)
+    index = {t: i for i, t in enumerate(t_b)}
+    out = {"P_exact": 0.0, "V_exact": 0.0, "T_bins": 0.0, "pi_flux": 0.0}
+
+    def bins(name: str, k: int) -> np.ndarray:
+        x0 = integrate_y(data, f"{name}_x0")[k]
+        x = integrate_y(data, f"{name}_x")[k]
+        return np.array([x0[0], x0[1:].sum(), (x - x0).sum()])
+
+    for k, t in enumerate(np.round(data.t, 10)):
+        i = index.get(t)
+        if i is None:  # the driver's unconditional final row
+            continue
+        p_sum = (
+            integrate_y(data, "P_U_x")[k].sum()
+            + integrate_y(data, "P_r_x")[k].sum()
+        )
+        v_sum = -integrate_y(data, "V_z")[k].sum()
+        p_ref = max(abs(budget["P_tot"][i]), 1e-300)
+        e_ref = max(abs(budget["eps_tot"][i]), 1e-300)
+        out["P_exact"] = max(
+            out["P_exact"], abs(p_sum - budget["P_tot"][i]) / p_ref
+        )
+        out["V_exact"] = max(
+            out["V_exact"], abs(v_sum - budget["eps_tot"][i]) / e_ref
+        )
+        want = np.array(
+            [
+                sum(budget[c][i] for c in budget if c.startswith(f"T_{b}("))
+                for b in ("dU", "du1", "du2")
+            ]
+        )
+        got = bins("T_ref", k) + bins("T_self", k)
+        scale = max(np.abs(want).max(), 1e-300)
+        out["T_bins"] = max(out["T_bins"], np.abs(got - want).max() / scale)
+        pi = np.abs(integrate_y(data, "Pi_x")[k])
+        visc = np.abs(integrate_y(data, "V_x")[k])
+        out["pi_flux"] = max(
+            out["pi_flux"], pi.max() / max(visc.max(), 1e-300)
+        )
+    return out
+
+
+#: The two algebraic identities of :func:`_yresolved` are exact up to
+#: float summation order over `$O(10^4)$` modes and `$N_y$` quadrature
+#: nodes, so the bound is a rounding allowance, not a physics one.
+YEXACT_TOL = 1e-9
 
 
 def _check_closure(
@@ -640,7 +750,9 @@ def run_config(cfg: dict, args: argparse.Namespace) -> str | None:
             worst: dict[str, float] = {}
             rows[ny] = worst
             for seed in seeds:
-                resid, work = _measure(cfg, ny, root, seed, spin, horizon)
+                resid, work, yres = _measure(
+                    cfg, ny, root, seed, spin, horizon
+                )
                 for name, value in resid.components.items():
                     worst[name] = max(worst.get(name, 0.0), value)
                 comp = resid.components
@@ -656,7 +768,22 @@ def run_config(cfg: dict, args: argparse.Namespace) -> str | None:
                     + " ".join(f"{k}={work[k]:.3e}" for k in sorted(work)),
                     flush=True,
                 )
+                for name in ("T_bins", "pi_flux"):
+                    worst[name] = max(worst.get(name, 0.0), yres[name])
+                print(
+                    "           (y,k): "
+                    + " ".join(f"{k}={yres[k]:.2e}" for k in sorted(yres)),
+                    flush=True,
+                )
                 if not _measuring(args):
+                    for name in ("P_exact", "V_exact"):
+                        if not yres[name] < YEXACT_TOL:
+                            bad.append(
+                                f"ny={ny} seed={seed}: {name}="
+                                f"{yres[name]:.2e} >= {YEXACT_TOL:.0e} -- "
+                                "the (y,k) budget no longer regroups to "
+                                "the volume-averaged one"
+                            )
                     bad += [
                         f"ny={ny} seed={seed}: {why}"
                         for why in _check_driving(cfg, work)

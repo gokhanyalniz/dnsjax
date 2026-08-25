@@ -93,7 +93,11 @@ and its rationale: `flows/registry.py`.
   (`twin.dat`/`twin_budget.dat`/`twin.json` readers, per-component
   budget sums, `closure_residuals`), `ensemble.py` (member-tree
   aggregation + growth-rate fits, CLI), `spectra.py` (`twin_spectra.bin` reader +
-  decorrelation ratio), `lengths.py` (integral length scales of the
+  decorrelation ratio), `yspectra.py` (`twin_yspectra.bin` /
+  `twin_ybudget.bin` readers, the `integrate_y` quadrature
+  contraction, and `bin_energies` — the three-bin energies recovered
+  from the marginals, which is why `twin.bins` can stay off),
+  `lengths.py` (integral length scales of the
   difference field from a snapshot pair — address the pair with its
   `partner_of`; `integral_lengths` rejects two snapshots at different
   `(t, it)`). Not imported by
