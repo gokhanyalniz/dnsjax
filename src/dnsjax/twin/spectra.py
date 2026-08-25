@@ -39,29 +39,23 @@ layout reads cleanly across schema changes, so bump the version
 whenever the stored *meaning* changes and raise the reader's floor
 with it.
 
-Resume semantics mirror ``probes.bin``: an existing pair is appended
-to iff the sidecar matches (:data:`_MATCH_KEYS`), anything else is a
-hard error; a clean continuation duplicates one sample per seam
-(dropped by the reader).  Buffering mirrors the ``.dat`` streams
-(main-process ``fsync``-ed writes, all-rank index resets, non-finite
-scan after the write) at a fixed small depth
-(:data:`_NBUFFER`; a record is `$\sim$`MB at production sizes, so
-the ``outs.nbuffer`` default would hold hundreds of MB on device).
+Buffering, resume-by-append, sidecar matching (:data:`_MATCH_KEYS`)
+and the post-write non-finite scan are
+:class:`dnsjax.twin._binstream.BinStream`'s, shared with the
+wall-normal-resolved streams; only :data:`FORMAT_VERSION`, the field
+table and the sidecar are this stream's own.  The buffer depth
+(:data:`_NBUFFER`) is fixed and small: a record is `$\sim$`MB at
+production sizes, so the ``outs.nbuffer`` default would hold
+hundreds of MB on device.
 """
 
-import json
-import os
 from pathlib import Path
-
-import numpy as np
-from jax import Array
-from jax import numpy as jnp
 
 from ..harmonics import complex_harmonics, real_harmonics
 from ..param_surface import recorded_params_dump
 from ..parameters import params
-from ..sharding import sharding
 from ..snapshot_meta import git_hash
+from ._binstream import BinStream
 
 #: Sidecar schema version (bump when the stored meaning changes; the
 #: reader's floor is ``analysis.twin.spectra.MIN_FORMAT_VERSION``).
@@ -88,16 +82,14 @@ _MATCH_KEYS: tuple[str, ...] = (
 )
 
 
-class TwinSpectraStream:
+class TwinSpectraStream(BinStream):
     """Buffered binary writer for the twin spectra stream.
 
-    The ``extensions.probes.ProbeStream`` state machine: an on-device
-    ``(_NBUFFER, n_fields, N2, N3)`` buffer plus host timestamps,
-    disk I/O on the main process, index resets on all ranks.
-    Construct once, :meth:`record` each ``twin_spectra_2d`` sample,
-    and let :meth:`flush` run at the driver's ``flush_all_buffers``
-    sites; both return the non-finite diagnostic message the caller
-    aborts on.
+    A :class:`~dnsjax.twin._binstream.BinStream` carrying two
+    equal-shaped `$(N_2, N_3)$` fields; everything about buffering,
+    the sidecar match, the ``fsync``-ed append and the non-finite
+    scan lives in the base class.  Construct once, :meth:`record`
+    each ``twin_spectra_2d`` sample.
     """
 
     def __init__(self, twin_values, directory: str | Path = ".") -> None:
@@ -110,127 +102,44 @@ class TwinSpectraStream:
         self.includes_ref = bool(twin_values.spectra_ref)
         self.n2 = params.res.nz - 1
         self.n3 = params.res.nx // 2
-        self._fields = (
-            ("e_delta", "e_ref") if self.includes_ref else ("e_delta",)
-        )
-        self._buffer = jnp.zeros(
-            (_NBUFFER, len(self._fields), self.n2, self.n3),
-            dtype=sharding.float_type,
-        )
-        self._ts: list[float] = []
-        self._idx: int = 0
-
+        names = ("e_delta", "e_ref") if self.includes_ref else ("e_delta",)
         value_dtype = "<f8" if params.res.double_precision else "<f4"
-        shape = (self.n2, self.n3)
-        self.record_dtype = np.dtype(
-            [("t", "<f8")]
-            + [(name, value_dtype, shape) for name in self._fields]
-        )
-        self._sidecar = {
-            "format_version": FORMAT_VERSION,
-            "system": params.phys.system,
-            "n2": self.n2,
-            "n3": self.n3,
-            "kz_harmonics": [int(m) for m in complex_harmonics(params.res.nz)],
-            "kx_harmonics": [int(m) for m in real_harmonics(params.res.nx)],
-            "lx": params.geo.lx,
-            "lz": params.geo.lz,
-            "value_dtype": value_dtype,
-            "includes_ref": self.includes_ref,
-            "it_spectra": twin_values.it_spectra,
-            "dt": params.step.dt,
-            "double_precision": params.res.double_precision,
-            "note": (
-                "per-mode energy: k_metric/2 * int |u|^2 w dy / V, "
-                "component-summed; true modes only; sum == E_d"
-            ),
-            "twin": {
-                "seed": twin_values.seed,
-                "e0": twin_values.e0,
-                "smoothness": twin_values.smoothness,
+        directory = Path(directory)
+        super().__init__(
+            fields=tuple((n, (self.n2, self.n3)) for n in names),
+            sidecar={
+                "format_version": FORMAT_VERSION,
+                "system": params.phys.system,
+                "n2": self.n2,
+                "n3": self.n3,
+                "kz_harmonics": [
+                    int(m) for m in complex_harmonics(params.res.nz)
+                ],
+                "kx_harmonics": [
+                    int(m) for m in real_harmonics(params.res.nx)
+                ],
+                "lx": params.geo.lx,
+                "lz": params.geo.lz,
+                "value_dtype": value_dtype,
+                "includes_ref": self.includes_ref,
+                "it_spectra": twin_values.it_spectra,
+                "dt": params.step.dt,
+                "double_precision": params.res.double_precision,
+                "note": (
+                    "per-mode energy: k_metric/2 * int |u|^2 w dy / V, "
+                    "component-summed; true modes only; sum == E_d"
+                ),
+                "twin": {
+                    "seed": twin_values.seed,
+                    "e0": twin_values.e0,
+                    "smoothness": twin_values.smoothness,
+                },
+                "git_hash": git_hash(),
+                "params": recorded_params_dump(params),
             },
-            "git_hash": git_hash(),
-            "params": recorded_params_dump(params),
-        }
-        self.bin_path = Path(directory) / "twin_spectra.bin"
-        self.json_path = Path(directory) / "twin_spectra.json"
-        self._open_files()
-
-    def _open_files(self) -> None:
-        """Validate/append or create the ``.bin``/``.json`` pair.
-
-        Validation runs identically on every rank (shared
-        filesystem); only the main process writes the sidecar.
-        """
-        if self.bin_path.exists() and not self.json_path.exists():
-            raise SystemExit(
-                f"[twin] {self.bin_path} exists without its "
-                f"{self.json_path.name} sidecar; move it away."
-            )
-        if self.json_path.exists():
-            with open(self.json_path) as f:
-                old = json.load(f)
-            mismatch = [
-                k for k in _MATCH_KEYS if old.get(k) != self._sidecar[k]
-            ]
-            if mismatch:
-                raise SystemExit(
-                    "[twin] existing twin_spectra.json does not match "
-                    f"this run (differs in: {', '.join(mismatch)}); "
-                    "move the old twin_spectra.bin/.json pair away to "
-                    "start a fresh stream."
-                )
-            n_bytes = (
-                self.bin_path.stat().st_size if self.bin_path.exists() else 0
-            )
-            if n_bytes % self.record_dtype.itemsize != 0:
-                raise SystemExit(
-                    f"[twin] {self.bin_path} size ({n_bytes} B) is not "
-                    f"a whole number of {self.record_dtype.itemsize}-B "
-                    "records; the file is corrupt or from another "
-                    "configuration."
-                )
-            sharding.print(
-                f"[twin] appending to {self.bin_path} "
-                f"({n_bytes // self.record_dtype.itemsize} records)."
-            )
-        elif sharding.main_device:
-            with open(self.json_path, "w") as f:
-                json.dump(self._sidecar, f, indent=2, default=str)
-
-    def record(self, spectra: dict[str, Array], t: float) -> str | None:
-        """Buffer one ``twin_spectra_2d`` sample; flush when full."""
-        sample = jnp.stack([spectra[name] for name in self._fields])
-        self._buffer = self._buffer.at[self._idx].set(sample)
-        self._ts.append(t)
-        self._idx += 1
-        if self._idx == _NBUFFER:
-            return self.flush()
-        return None
-
-    def flush(self, check: bool = True) -> str | None:
-        """Append the buffered records durably; reset on all ranks."""
-        if self._idx == 0:
-            return None
-        bad = None
-        if sharding.main_device:
-            data = np.asarray(self._buffer[: self._idx])
-            rec = np.zeros(self._idx, dtype=self.record_dtype)
-            rec["t"] = np.asarray(self._ts)
-            for i, name in enumerate(self._fields):
-                rec[name] = data[:, i]
-            with open(self.bin_path, "ab") as f:
-                f.write(rec.tobytes())
-                f.flush()
-                os.fsync(f.fileno())
-            if check:
-                finite = np.isfinite(data)
-                if not finite.all():
-                    i, j, *_ = (int(v) for v in np.argwhere(~finite)[0])
-                    bad = (
-                        f"non-finite spectra value in "
-                        f"{self._fields[j]} at t = {self._ts[i]:.6e}"
-                    )
-        self._ts.clear()
-        self._idx = 0
-        return bad
+            match_keys=_MATCH_KEYS,
+            bin_path=directory / "twin_spectra.bin",
+            json_path=directory / "twin_spectra.json",
+            value_dtype=value_dtype,
+            nbuffer=_NBUFFER,
+        )

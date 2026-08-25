@@ -195,7 +195,10 @@ def test_energy_partition() -> None:
     """Component energies sum to the total to rounding."""
     state1 = _make_state(salt=0.0)
     state2 = _make_state(salt=1.0)
-    tvals = {k: float(v) for k, v in td.twin_energies(state1, state2).items()}
+    tvals = {
+        k: float(v)
+        for k, v in td.twin_energies(state1, state2, bins=True).items()
+    }
     assert_allclose(
         tvals["E_dU"] + tvals["E_du1"] + tvals["E_du2"],
         tvals["E_d"],
@@ -216,7 +219,7 @@ def test_energies_vs_numpy() -> None:
     """Every output matches the independent host reference."""
     state1 = _make_state(salt=0.0)
     state2 = _make_state(salt=1.0)
-    tvals = td.twin_energies(state1, state2)
+    tvals = td.twin_energies(state1, state2, bins=True)
     ref1 = _host_state(salt=0.0)
     ref2 = _host_state(salt=1.0)
     expected = _host_energies(ref2 - ref1, ref1)
@@ -245,7 +248,7 @@ def test_e0_convention() -> None:
     assert abs(factor - 1.0) < 1e-12
 
     state1 = generate_random_state(0.05, 0.4, seed=11)
-    tvals = td.twin_energies(state1, state1 + delta * factor)
+    tvals = td.twin_energies(state1, state1 + delta * factor, bins=True)
     # (state1 + delta) - state1 cancels state1 to eps * |state1|,
     # which is eps * (|state1|/|delta|) relative to delta.
     assert_allclose(float(tvals["E_d"]), e0, rtol=1e-10)
@@ -448,7 +451,9 @@ def test_spectra_sum_identity() -> None:
     spec2 = spec1 + _hermitian_spec(42, amp=0.05)
     s1, s2 = _device_state(spec1), _device_state(spec2)
     sp = {k: np.asarray(v) for k, v in td.twin_spectra_2d(s1, s2).items()}
-    tvals = {k: float(v) for k, v in td.twin_energies(s1, s2).items()}
+    tvals = {
+        k: float(v) for k, v in td.twin_energies(s1, s2, bins=True).items()
+    }
     assert sp["e_delta"].shape == (N2_TRUE, N3_TRUE)
     assert sp["e_ref"].shape == (N2_TRUE, N3_TRUE)
     assert_allclose(sp["e_delta"].sum(), tvals["E_d"], rtol=1e-12)
@@ -499,6 +504,258 @@ def test_validate_hook() -> None:
     print("[twin] validate hook: OK")
 
 
+# ── Wall-normal-resolved spectra and budget ──────────────────────────
+
+
+def _fold(a: np.ndarray) -> np.ndarray:
+    """Host-side ``_fold_kz`` on a stripped ``k_z`` axis."""
+    npos = params.res.nz // 2
+    out = a[..., :npos].copy()
+    out[..., 1:] += a[..., npos:][..., ::-1]
+    return out
+
+
+def test_yspectra_vs_numpy() -> None:
+    """The three marginals match a host index-layout reference."""
+    state1, state2 = _make_state(salt=0.0), _make_state(salt=1.0)
+    out = {
+        k: np.asarray(v) for k, v in td.twin_yspectra(state1, state2).items()
+    }
+    npos = params.res.nz // 2
+    assert out["e_x"].shape == (3, NY, npos)
+    assert out["e_z"].shape == (3, NY, N3_TRUE)
+    assert out["e_x0"].shape == (3, NY, npos)
+
+    delta = _host_state(1.0) - _host_state(0.0)
+    k_metric = np.full(N3_SPEC, 2.0)
+    k_metric[0] = 1.0
+    dens = (
+        (np.abs(delta) ** 2)
+        * k_metric[None, None, None, :]
+        / (2.0 * derived_params.volume_fac)
+    )
+    assert_allclose(
+        out["e_x"], _fold(dens.sum(axis=3)[:, :, :N2_TRUE]), rtol=1e-13, atol=0
+    )
+    assert_allclose(
+        out["e_z"], dens.sum(axis=2)[:, :, :N3_TRUE], rtol=1e-13, atol=0
+    )
+    assert_allclose(
+        out["e_x0"], _fold(dens[:, :, :N2_TRUE, 0]), rtol=1e-13, atol=0
+    )
+    print("y-resolved marginals vs NumPy: OK")
+
+
+def test_yspectra_fold_is_two_sided() -> None:
+    r"""The folded `$k_x$` marginal is the true two-sided spectrum.
+
+    The load-bearing check on :func:`diagnostics._fold_kz`: the stored
+    half-plane's ``k_metric`` weight makes an entry the energy of the
+    conjugate *pair*, whose partner sits at `$-k_z$`, so the `$k_x$`
+    marginal is right only after the `$\pm k_z$` fold.  Built on a
+    Hermitian-consistent state (a real physical field), where the full
+    two-sided plane can be reconstructed by reflection.  The test also
+    asserts the *unfolded* marginal is visibly wrong, so it cannot
+    pass by both sides being the same thing.
+    """
+    kz_h = complex_harmonics(params.res.nz)
+    rng = np.random.default_rng(7)
+    half = rng.standard_normal(
+        (3, NY, N2_TRUE, N3_TRUE)
+    ) + 1j * rng.standard_normal((3, NY, N2_TRUE, N3_TRUE))
+    for i2, kz in enumerate(kz_h):
+        if kz < 0:
+            j2 = int(np.nonzero(kz_h == -kz)[0][0])
+            half[:, :, i2, 0] = np.conj(half[:, :, j2, 0])
+    half[:, :, int(np.nonzero(kz_h == 0)[0][0]), 0].imag = 0.0
+
+    def fill_local(buf, kz_start, nkz, kx_start, nkx):
+        for li in range(nkz):
+            for lj in range(nkx):
+                g2, g3 = kz_start + li, kx_start + lj
+                if g2 < N2_TRUE and g3 < N3_TRUE:
+                    buf[:, :, li, lj] = half[:, :, g2, g3]
+
+    state = assemble_local_shards(fill_local)
+    zero = assemble_local_shards(lambda buf, *a: None)
+    out = {k: np.asarray(v) for k, v in td.twin_yspectra(zero, state).items()}
+
+    npos = params.res.nz // 2
+    vf = derived_params.volume_fac
+    ref_x = np.zeros((3, NY, npos))
+    ref_z = np.zeros((3, NY, N3_TRUE))
+    for i2, kz in enumerate(kz_h):
+        for i3 in range(N3_TRUE):
+            for kx, col in (
+                (i3, half[:, :, i2, i3]),
+                *(((-i3, np.conj(half[:, :, i2, i3])),) if i3 else ()),
+            ):
+                e = 0.5 * np.abs(col) ** 2 / vf
+                kz_eff = kz if kx >= 0 else -kz
+                if abs(kz_eff) < npos:
+                    ref_x[:, :, abs(kz_eff)] += e
+                if abs(kx) < N3_TRUE:
+                    ref_z[:, :, abs(kx)] += e
+    assert_allclose(out["e_x"], ref_x, rtol=1e-12, atol=0)
+    assert_allclose(out["e_z"], ref_z, rtol=1e-12, atol=0)
+
+    km = np.full(N3_TRUE, 2.0)
+    km[0] = 1.0
+    unfolded = (0.5 * np.abs(half) ** 2 * km[None, None, None, :] / vf).sum(
+        axis=3
+    )
+    naive = _fold(unfolded) * 0 + unfolded[..., :npos]
+    rel = np.abs(naive - ref_x).max() / ref_x.max()
+    assert rel > 0.1, f"the unfolded marginal is not visibly wrong ({rel:.1e})"
+    print(f"fold == two-sided marginal (unfolded is {rel:.0%} off): OK")
+
+
+def test_yspectra_partition() -> None:
+    """The stored marginals recover the three-bin energies exactly."""
+    state1, state2 = _make_state(salt=0.0), _make_state(salt=1.0)
+    out = {
+        k: np.asarray(v) for k, v in td.twin_yspectra(state1, state2).items()
+    }
+    tvals = {
+        k: float(v)
+        for k, v in td.twin_energies(state1, state2, bins=True).items()
+    }
+    w = np.asarray(td.flow.y_weights)
+    got = {
+        "E_dU": float(np.einsum("j,cj->", w, out["e_x0"][:, :, 0])),
+        "E_du1": float(np.einsum("j,cjk->", w, out["e_x0"][:, :, 1:])),
+        "E_du2": float(np.einsum("j,cjk->", w, out["e_x"] - out["e_x0"])),
+    }
+    for name, value in got.items():
+        assert_allclose(value, tvals[name], rtol=1e-13)
+    for marg in ("e_x", "e_z"):
+        assert_allclose(
+            float(np.einsum("j,cjk->", w, out[marg])),
+            tvals["E_d"],
+            rtol=1e-13,
+        )
+    print("bin energies and E_d recovered from the marginals: OK")
+
+
+def _solenoidal_pair(amp: float = 0.01):
+    """A divergence-free, no-slip state pair (a real solver state's
+    two structural properties, which the index-layout states above
+    deliberately lack)."""
+    from dnsjax.ic.random_field import generate_random_state
+
+    s1 = generate_random_state(0.05, 0.4, 11, False)
+    return s1, s1 + generate_random_state(amp, 0.4, 23, False)
+
+
+def test_ybudget_sums() -> None:
+    r"""`$\sum_k \int$` of the budget densities reproduces ``twin_budget``.
+
+    Production and the viscous term are *algebraic* identities (the
+    same Parseval sum, regrouped), so they hold to rounding at any
+    resolution; the transport terms agree only up to the discrete
+    integration-by-parts residual that makes ``T_tot`` nonzero in the
+    first place, and are checked on the wall-normal ladder of
+    ``tests/test_twin_budget.py`` instead.
+    """
+    from dnsjax.twin.pressure import DifferencePressure
+
+    s1, s2 = _solenoidal_pair()
+    pressure = DifferencePressure(td.flow, fourier)
+    yb = {
+        k: np.asarray(v) for k, v in td.twin_ybudget(s1, s2, pressure).items()
+    }
+    bud = {k: float(v) for k, v in td.twin_budget(s1, s2).items()}
+    w = np.asarray(td.flow.y_weights)
+
+    def total(name: str, marg: str) -> float:
+        return float(np.einsum("j,jk->", w, yb[f"{name}_{marg}"]))
+
+    for marg in ("x", "z"):
+        assert_allclose(
+            total("P_U", marg) + total("P_r", marg),
+            bud["P_tot"],
+            rtol=1e-12,
+            err_msg=f"P over the {marg} marginal",
+        )
+        assert_allclose(
+            -total("V", marg),
+            bud["eps_tot"],
+            rtol=1e-12,
+            err_msg=f"viscous term over the {marg} marginal",
+        )
+
+    # The k-set sums are the paper's per-component budget.
+    def bins(name: str) -> np.ndarray:
+        x0 = np.einsum("j,jk->k", w, yb[f"{name}_x0"])
+        x = np.einsum("j,jk->k", w, yb[f"{name}_x"])
+        return np.array([x0[0], x0[1:].sum(), (x - x0).sum()])
+
+    assert_allclose(
+        bins("P_U") + bins("P_r"),
+        [
+            sum(v for k, v in bud.items() if k.startswith(f"P_{b}("))
+            for b in ("dU", "du1", "du2")
+        ],
+        rtol=1e-11,
+        atol=1e-30,
+    )
+    assert_allclose(
+        -bins("V"),
+        [bud[f"eps_{b}"] for b in ("dU", "du1", "du2")],
+        rtol=1e-11,
+        atol=1e-30,
+    )
+    print("budget k-sums and k-set bins vs twin_budget: OK")
+
+
+def test_pressure_solve() -> None:
+    r"""The difference pressure solves what it claims to solve.
+
+    Three independent identities, none a restatement of the solve:
+    the interior Poisson equation; the wall closure that was actually
+    imposed (`$D_1(\partial_t\Delta\hat v)|_w = 0$`, machine-exact
+    at every mode but `$(0,0)$`, where the influence matrix is
+    structurally singular and `$\Delta\hat v \equiv 0$` makes the
+    condition vacuous); and the fact that the analytic Neumann
+    condition is *not* zero -- the IMM closure declines it, and a
+    test that found it satisfied would mean the wrong closure ran.
+    """
+    from dnsjax.twin.pressure import DifferencePressure
+
+    s1, s2 = _solenoidal_pair()
+    pressure = DifferencePressure(td.flow, fourier)
+    out = {
+        k: np.asarray(v)
+        for k, v in td.twin_pressure_check(s1, s2, pressure).items()
+    }
+
+    rhs = np.abs(out["div_n"][1:-1]).max()
+    assert np.abs(out["poisson"]).max() < 1e-11 * rhs, (
+        f"interior Poisson residual {np.abs(out['poisson']).max():.2e} "
+        f"against a right-hand side of {rhs:.2e}"
+    )
+
+    scale = np.abs(out["dy_dtv"]).max()
+    closure = out["closure"].reshape(2, -1)
+    # Column 0 of the flattened (kz, kx) plane is the mean mode.
+    off_mean = np.abs(np.delete(closure, 0, axis=1))
+    assert off_mean.max() < 1e-11 * scale, (
+        f"the imposed wall closure is not met: {off_mean.max():.2e} "
+        f"against a scale of {scale:.2e}"
+    )
+
+    neumann = np.abs(out["neumann"]).max()
+    assert neumann > 1e-8 * scale, (
+        "the analytic Neumann condition came out satisfied; the IMM "
+        "closure cannot have been the one imposed"
+    )
+    print(
+        "pressure: Poisson + imposed wall closure exact "
+        f"({off_mean.max() / scale:.1e} relative), Neumann residual "
+        f"{neumann / scale:.1e} as expected: OK"
+    )
+
+
 if __name__ == "__main__":
     test_masks_partition()
     test_energy_partition()
@@ -507,5 +764,10 @@ if __name__ == "__main__":
     test_budget_vs_numpy()
     test_budget_frame_invariance()
     test_spectra_sum_identity()
+    test_yspectra_vs_numpy()
+    test_yspectra_fold_is_two_sided()
+    test_yspectra_partition()
+    test_ybudget_sums()
+    test_pressure_solve()
     test_validate_hook()
     print("All twin unit tests passed.")

@@ -156,9 +156,12 @@ _TWIN_MATCH_KEYS: tuple[str, ...] = (
     "e0",
     "seed",
     "smoothness",
+    "bins",
     "it_energy",
     "it_budget",
     "it_spectra",
+    "it_yspectra",
+    "it_ybudget",
     "dt",
     "double_precision",
 )
@@ -240,6 +243,16 @@ class TwinParams(BaseModel):
             "(init.random_smoothness convention)."
         ),
     )
+    bins: bool = Field(
+        default=False,
+        description=(
+            "Also record the Delta-U / Delta-u1 / Delta-u2 three-bin "
+            "decomposition in twin.dat (the reference paper's "
+            "binning); required by it_budget.  Off by default: the "
+            "wall-normal-resolved spectra (it_yspectra) supersede it "
+            "and it costs a few percent of every step."
+        ),
+    )
     it_energy: int = Field(
         default=1,
         ge=1,
@@ -263,6 +276,26 @@ class TwinParams(BaseModel):
             "records; unset disables the stream."
         ),
     )
+    it_yspectra: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Steps between twin_yspectra.bin records (componentwise "
+            "wall-normal-resolved (y, kz) and (y, kx) energy "
+            "spectra); unset disables the stream."
+        ),
+    )
+    it_ybudget: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Steps between twin_ybudget.bin records (the same bins' "
+            "production / transfer / viscous / pressure densities); "
+            "unset disables the stream.  Enabling it also allocates "
+            "the difference-pressure Poisson operator (see the "
+            "field's docs)."
+        ),
+    )
     spectra_ref: bool = Field(
         default=True,
         description=(
@@ -283,9 +316,12 @@ def _validate_twin(values: TwinParams, params) -> None:
             for name in (
                 "seed",
                 "smoothness",
+                "bins",
                 "it_energy",
                 "it_budget",
                 "it_spectra",
+                "it_yspectra",
+                "it_ybudget",
                 "spectra_ref",
             )
             if getattr(values, name) != getattr(defaults, name)
@@ -317,10 +353,24 @@ def _validate_twin(values: TwinParams, params) -> None:
         raise ValueError("twin.e0 must be >= 0.")
     if not (0 < values.smoothness < 1):
         raise ValueError("twin.smoothness must lie in (0, 1).")
-    for name in ("it_energy", "it_budget", "it_spectra"):
+    for name in (
+        "it_energy",
+        "it_budget",
+        "it_spectra",
+        "it_yspectra",
+        "it_ybudget",
+    ):
         cadence = getattr(values, name)
         if cadence is not None and cadence < 1:
             raise ValueError(f"twin.{name} must be >= 1.")
+    if values.it_budget is not None and not values.bins:
+        raise ValueError(
+            "twin.it_budget needs twin.bins: the three-bin budget is "
+            "checked against twin.dat's E_dU / E_du1 / E_du2 "
+            "(analysis.twin.series.closure_residuals), which "
+            "twin.bins writes.  For the scale-resolved budget set "
+            "twin.it_ybudget instead."
+        )
 
 
 TWIN_EXTENSION = register_extension(
@@ -719,11 +769,24 @@ def run(wall_time_start: int) -> None:
 
     # --- Warm-ups (JIT outside the benchmark window) ----------------------
     stats = get_stats(state1)
-    tvals = twin_energies(state1, state2)
+    tvals = twin_energies(state1, state2, bins=twin_params.bins)
     measure_budget: bool = twin_params.it_budget is not None
     if measure_budget:
         twin_budget = diagnostics.twin_budget
         bvals = twin_budget(state1, state2)
+    measure_yspectra: bool = twin_params.it_yspectra is not None
+    if measure_yspectra:
+        twin_yspectra = diagnostics.twin_yspectra
+        yvals = twin_yspectra(state1, state2)
+    measure_ybudget: bool = twin_params.it_ybudget is not None
+    if measure_ybudget:
+        from .pressure import DifferencePressure
+
+        # One factored Poisson operator, held for the run (see the
+        # ``twin.it_ybudget`` field docs for what it costs).
+        pressure = DifferencePressure(diagnostics.flow, diagnostics.fourier)
+        twin_ybudget = diagnostics.twin_ybudget
+        ybvals = twin_ybudget(state1, state2, pressure)
 
     sharding.print(
         f"t = {t:.2f}",
@@ -814,6 +877,20 @@ def run(wall_time_start: int) -> None:
             twin_spectra_2d(state1, state2), t
         )
 
+    # --- Wall-normal-resolved streams (same discipline) ------------------
+    yspectra_bad_t0: str | None = None
+    ybudget_bad_t0: str | None = None
+    if measure_yspectra or measure_ybudget:
+        from .yspectra import TwinYBudgetStream, TwinYSpectraStream
+
+        y_weights = [float(v) for v in diagnostics.flow.y_weights]
+    if measure_yspectra:
+        yspectra_stream = TwinYSpectraStream(twin_params, y_weights)
+        yspectra_bad_t0 = yspectra_stream.record(yvals, t)
+    if measure_ybudget:
+        ybudget_stream = TwinYBudgetStream(twin_params, y_weights)
+        ybudget_bad_t0 = ybudget_stream.record(ybvals, t)
+
     # --- CN/AB2 history priming (both states; donated args copied) -------
     scheme: str = params.step.scheme
     is_cnab2: bool = scheme == "cnab2"
@@ -879,6 +956,14 @@ def run(wall_time_start: int) -> None:
             bad = spectra_stream.flush(check=check)
             if bad is not None:
                 _abort_non_finite(bad)
+        if measure_yspectra:
+            bad = yspectra_stream.flush(check=check)
+            if bad is not None:
+                _abort_non_finite(bad)
+        if measure_ybudget:
+            bad = ybudget_stream.flush(check=check)
+            if bad is not None:
+                _abort_non_finite(bad)
 
     def _abort_non_finite(reason: str) -> None:
         """FATAL / flush-unchecked / exit-3 (the ``__main__`` path)."""
@@ -906,6 +991,10 @@ def run(wall_time_start: int) -> None:
         _abort_non_finite(probe_bad_t0)
     if spectra_bad_t0 is not None:
         _abort_non_finite(spectra_bad_t0)
+    if yspectra_bad_t0 is not None:
+        _abort_non_finite(yspectra_bad_t0)
+    if ybudget_bad_t0 is not None:
+        _abort_non_finite(ybudget_bad_t0)
 
     sharding.print("Started twin timestepping at", datetime.now())
 
@@ -948,7 +1037,7 @@ def run(wall_time_start: int) -> None:
             if bad is not None:
                 _abort_non_finite(bad)
         if do_twin:
-            tvals = twin_energies(state1, state2)
+            tvals = twin_energies(state1, state2, bins=twin_params.bins)
             bad = twin_stream.push(_row(tvals, last_drive_d), t)
             if bad is not None:
                 _abort_non_finite(bad)
@@ -959,6 +1048,16 @@ def run(wall_time_start: int) -> None:
                 _abort_non_finite(bad)
         if measure_spectra and it % twin_params.it_spectra == 0 and it > it0:
             bad = spectra_stream.record(twin_spectra_2d(state1, state2), t)
+            if bad is not None:
+                _abort_non_finite(bad)
+        if measure_yspectra and it % twin_params.it_yspectra == 0 and it > it0:
+            bad = yspectra_stream.record(twin_yspectra(state1, state2), t)
+            if bad is not None:
+                _abort_non_finite(bad)
+        if measure_ybudget and it % twin_params.it_ybudget == 0 and it > it0:
+            bad = ybudget_stream.record(
+                twin_ybudget(state1, state2, pressure), t
+            )
             if bad is not None:
                 _abort_non_finite(bad)
         if measure_probes and it % probes_params.it_probes == 0 and it > it0:
@@ -1081,7 +1180,7 @@ def run(wall_time_start: int) -> None:
     # (the t column carries the timestamp), like the stats stream.
     if it > it0:
         stats = get_stats(state1)
-        tvals = twin_energies(state1, state2)
+        tvals = twin_energies(state1, state2, bins=twin_params.bins)
         if measure_budget:
             bvals = twin_budget(state1, state2)
         bad_final = [
@@ -1109,6 +1208,16 @@ def run(wall_time_start: int) -> None:
 
     if measure_spectra and it > it0 and it % twin_params.it_spectra == 0:
         bad = spectra_stream.record(twin_spectra_2d(state1, state2), t)
+        if bad is not None:
+            _abort_non_finite(bad)
+
+    if measure_yspectra and it > it0 and it % twin_params.it_yspectra == 0:
+        bad = yspectra_stream.record(twin_yspectra(state1, state2), t)
+        if bad is not None:
+            _abort_non_finite(bad)
+
+    if measure_ybudget and it > it0 and it % twin_params.it_ybudget == 0:
+        bad = ybudget_stream.record(twin_ybudget(state1, state2, pressure), t)
         if bad is not None:
             _abort_non_finite(bad)
 
@@ -1148,9 +1257,12 @@ def _twin_sidecar_stub() -> dict:
         "e0": twin_params.e0,
         "seed": twin_params.seed,
         "smoothness": twin_params.smoothness,
+        "bins": twin_params.bins,
         "it_energy": twin_params.it_energy,
         "it_budget": twin_params.it_budget,
         "it_spectra": twin_params.it_spectra,
+        "it_yspectra": twin_params.it_yspectra,
+        "it_ybudget": twin_params.it_ybudget,
         "dt": params.step.dt,
         "double_precision": params.res.double_precision,
     }

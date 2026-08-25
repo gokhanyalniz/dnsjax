@@ -149,7 +149,11 @@ PARENT_FORCED = _SESSION / "parent_forced.tar"
 
 #: The sorted twin.dat column set (t first; the rest is the
 #: JIT-canonicalised sorted key order of ``twin_energies``).
-TWIN_COLS = [
+#: ``twin.dat`` columns without ``twin.bins`` (the default) and with
+#: it.  The set is the sorted keys of the ``twin_energies`` dict, so a
+#: column added there shows up here first.
+TWIN_COLS = ["t", "E_d", "E_ref"]
+TWIN_COLS_BINNED = [
     "t",
     "E_d",
     "E_dU",
@@ -305,7 +309,7 @@ def test_zero_perturbation_bit_identity() -> None:
             result = _run_twin(tmp, [*_twin_args(1.05, e0=0.0), *extra])
             assert "exact copy" in result.stdout
             cols = read_dat(Path(tmp) / "twin.dat")
-            for name in TWIN_COLS[1:-1]:  # every E_d* column, not E_ref
+            for name in TWIN_COLS[1:-1]:  # the difference columns
                 assert (cols[name] == 0.0).all(), (
                     f"{name} nonzero with {extra}: twin stepping is "
                     "not bit-identical"
@@ -581,7 +585,10 @@ def test_budget_closure() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = _twin_args(1.5, e0=1e-4)
             args[1] = str(parent)
-            _run_twin(tmp, [*args, "--twin.it_budget", "5"])
+            _run_twin(
+                tmp,
+                [*args, "--twin.bins", "True", "--twin.it_budget", "5"],
+            )
             resids[label] = _closure_residuals(Path(tmp))
     coarse, fine = resids["coarse"], resids["fine"]
     mode = "mean-free partner" if MEAN_FREE else "default partner"
@@ -664,6 +671,99 @@ def test_guards() -> None:
     print("driver-level guards: OK")
 
 
+def test_yspectra_streams() -> None:
+    r"""``twin_yspectra.bin`` / ``twin_ybudget.bin`` end to end.
+
+    A fresh run plus a paired resume, then the identities that make
+    these streams a strict refinement of the old diagnostics: both
+    marginals integrate to ``twin.dat``'s ``E_d``; the three-bin
+    energies come back out of the `$k_x = 0$` plane; and the budget's
+    `$k$`-sums reproduce ``twin_budget.dat``'s ``P_tot`` / ``eps_tot``
+    -- all through the binary round trip.  ``twin.bins`` is on here
+    only so ``twin.dat`` carries the bin columns to check against; it
+    is off in every other case in this file, which is the default.
+    """
+    from dnsjax.analysis.twin import (
+        bin_energies,
+        integrate_y,
+        read_twin_ybudget,
+        read_twin_yspectra,
+    )
+
+    t_mid, t_end = 1.05, 1.1
+    with tempfile.TemporaryDirectory() as tmp:
+        extra = [
+            "--twin.bins",
+            "True",
+            "--twin.it_budget",
+            "1",
+            "--twin.it_yspectra",
+            "1",
+            "--twin.it_ybudget",
+            "1",
+        ]
+        _run_twin(tmp, [*_twin_args(t_mid), *extra])
+        resume_args = list(_twin_args(t_end))
+        resume_args[1] = "state00001.tar"
+        _run_twin(tmp, [*resume_args, *extra])
+
+        n = round((t_end - PARENT_T) / DT)
+        data = read_twin_yspectra(tmp)
+        assert data.t.shape[0] == n + 1  # seam duplicate dropped
+        assert_allclose(
+            data.t, PARENT_T + np.arange(n + 1) * DT, rtol=0, atol=1e-12
+        )
+        ny = params.res.ny
+        assert data["e_x"].shape == (n + 1, 3, ny, 4)
+        assert data["e_z"].shape == (n + 1, 3, ny, 4)
+        assert "r_x" in data.fields  # twin.spectra_ref default
+
+        cols = read_dat(Path(tmp) / "twin.dat")
+        by_t = {round(t, 10): i for i, t in enumerate(np.round(cols["t"], 10))}
+        bins = bin_energies(data)
+        for k, t in enumerate(np.round(data.t, 10)):
+            i = by_t[t]
+            for marg in ("e_x", "e_z"):
+                assert_allclose(
+                    integrate_y(data, marg)[k].sum(),
+                    cols["E_d"][i],
+                    rtol=1e-10,
+                    err_msg=f"{marg} does not integrate to E_d at t={t}",
+                )
+            for name in ("E_dU", "E_du1", "E_du2"):
+                assert_allclose(
+                    bins[name][k], cols[name][i], rtol=1e-9, atol=1e-30
+                )
+
+        budget = read_twin_ybudget(tmp)
+        assert budget.t.shape[0] == n + 1
+        assert budget.meta["terms"][0] == "P_U"
+        bud = read_dat(Path(tmp) / "twin_budget.dat")
+        b_by_t = {
+            round(t, 10): i for i, t in enumerate(np.round(bud["t"], 10))
+        }
+        for k, t in enumerate(np.round(budget.t, 10)):
+            i = b_by_t[t]
+            p_sum = (
+                integrate_y(budget, "P_U_x")[k].sum()
+                + integrate_y(budget, "P_r_x")[k].sum()
+            )
+            assert_allclose(p_sum, bud["P_tot"][i], rtol=1e-9)
+            assert_allclose(
+                -integrate_y(budget, "V_z")[k].sum(),
+                bud["eps_tot"][i],
+                rtol=1e-9,
+            )
+
+        # A .bin without its sidecar is refused, not guessed at.
+        (Path(tmp) / "twin_yspectra.json").unlink()
+        resume2 = list(_twin_args(t_end + 0.05))
+        resume2[1] = "state00002.tar"
+        result = _run_twin(tmp, [*resume2, *extra], expect=1)
+        _expect_error(result, "without its twin_yspectra.json sidecar")
+    print("wall-normal-resolved streams (round trip, identities): OK")
+
+
 if __name__ == "__main__":
     if _OUT is not None:  # --build-parent worker invocation
         _build_parents()
@@ -678,6 +778,7 @@ if __name__ == "__main__":
         test_np2_run,
         test_nan_guard_exit3,
         test_spectra_stream,
+        test_yspectra_streams,
         test_budget_closure,
         test_guards,
     ]

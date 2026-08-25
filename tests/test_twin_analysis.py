@@ -695,12 +695,178 @@ def test_build_twin() -> None:
     print("build-twin (harvest, dry run, tree, aggregation): OK")
 
 
+# ── Wall-normal-resolved streams ─────────────────────────────────────
+
+NY, N_KZ, N_KX = 5, 4, 3
+
+
+def _y_sidecar(extra: dict) -> dict:
+    """The keys both wall-normal-resolved sidecars share."""
+    return {
+        "system": "plane-couette",
+        "ny": NY,
+        "n_kz": N_KZ,
+        "n_kx": N_KX,
+        "kz_harmonics": list(range(N_KZ)),
+        "kx_harmonics": list(range(N_KX)),
+        "lx": 5.5,
+        "lz": 3.77,
+        "y": list(np.linspace(-1.0, 1.0, NY)),
+        "y_weights": [0.1, 0.4, 0.5, 0.4, 0.6],
+        "volume_fac": 2.0,
+        "value_dtype": "<f8",
+        "dt": 0.01,
+        "double_precision": True,
+        **extra,
+    }
+
+
+def _write_y_stream(
+    directory: Path,
+    stem: str,
+    t: np.ndarray,
+    fields: list[tuple[str, tuple[int, ...]]],
+    values: dict[str, np.ndarray],
+    sidecar: dict,
+    truncate_bytes: int = 0,
+) -> None:
+    dtype = np.dtype([("t", "<f8")] + [(n, "<f8", sh) for n, sh in fields])
+    rec = np.zeros(t.shape[0], dtype=dtype)
+    rec["t"] = t
+    for name, _ in fields:
+        rec[name] = values[name]
+    raw = rec.tobytes()
+    if truncate_bytes:
+        raw = raw[:-truncate_bytes]
+    (directory / f"{stem}.bin").write_bytes(raw)
+    (directory / f"{stem}.json").write_text(json.dumps(sidecar))
+
+
+def test_yspectra_reader() -> None:
+    """``twin_yspectra`` round trip, seam drop, truncation, floor."""
+    from dnsjax.analysis.twin import (
+        bin_energies,
+        integrate_y,
+        read_twin_yspectra,
+    )
+
+    rng = np.random.default_rng(3)
+    t = np.array([0.0, 0.01, 0.01, 0.02])  # one seam duplicate
+    fields = [
+        (f"{p}_{suf}", (3, NY, n))
+        for p in ("e", "r")
+        for suf, n in (("x", N_KZ), ("z", N_KX), ("x0", N_KZ))
+    ]
+    values = {n: rng.random((4, *sh)) for n, sh in fields}
+    # ``e_x0`` is a sub-part of ``e_x`` in the real stream; make it so
+    # here too, or ``bin_energies`` would report a negative bin.
+    values["e_x0"] = 0.25 * values["e_x"]
+    sidecar = _y_sidecar(
+        {"format_version": 1, "includes_ref": True, "it_yspectra": 1}
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        _write_y_stream(d, "twin_yspectra", t, fields, values, sidecar)
+        data = read_twin_yspectra(d)
+        assert data.t.tolist() == [0.0, 0.01, 0.02]
+        for name, _ in fields:
+            assert_allclose(
+                data[name], values[name][[0, 1, 3]], rtol=0, atol=0
+            )
+        w = np.asarray(sidecar["y_weights"])
+        assert_allclose(
+            integrate_y(data, "e_x"),
+            np.einsum("j,tcjk->tck", w, values["e_x"][[0, 1, 3]]),
+            rtol=0,
+            atol=0,
+        )
+        got = bin_energies(data)
+        x0 = np.einsum("j,tcjk->tk", w, values["e_x0"][[0, 1, 3]])
+        x = np.einsum("j,tcjk->tk", w, values["e_x"][[0, 1, 3]])
+        # Summation order differs from the reference, so eps, not bits.
+        assert_allclose(got["E_dU"], x0[:, 0], rtol=1e-14)
+        assert_allclose(got["E_du1"], x0[:, 1:].sum(axis=1), rtol=1e-14)
+        assert_allclose(got["E_du2"], (x - x0).sum(axis=1), rtol=1e-14)
+
+        # A partial trailing record is dropped, not misread.
+        _write_y_stream(
+            d, "twin_yspectra", t, fields, values, sidecar, truncate_bytes=9
+        )
+        assert read_twin_yspectra(d).t.tolist() == [0.0, 0.01]
+
+        # Version floor.
+        _write_y_stream(
+            d,
+            "twin_yspectra",
+            t,
+            fields,
+            values,
+            sidecar | {"format_version": 0},
+        )
+        _expect_value_error("format_version", lambda: read_twin_yspectra(d))
+
+        # A .bin without its sidecar.
+        (d / "twin_yspectra.json").unlink()
+        try:
+            read_twin_yspectra(d)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("a sidecar-less .bin was accepted")
+    print("twin_yspectra reader (round trip, seam, truncation, floor): OK")
+
+
+def test_ybudget_reader() -> None:
+    """``twin_ybudget`` round trip against the sidecar's term list."""
+    from dnsjax.analysis.twin import integrate_y, read_twin_ybudget
+
+    terms = ["P_U", "P_r", "T_ref", "T_self", "V", "eps", "Pi"]
+    rng = np.random.default_rng(5)
+    t = np.array([0.0, 0.02])
+    fields = [
+        (f"{term}_{suf}", (NY, n))
+        for term in terms
+        for suf, n in (("x", N_KZ), ("z", N_KX), ("x0", N_KZ))
+    ]
+    values = {n: rng.random((2, *sh)) for n, sh in fields}
+    sidecar = _y_sidecar(
+        {"format_version": 1, "terms": terms, "it_ybudget": 5}
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        _write_y_stream(d, "twin_ybudget", t, fields, values, sidecar)
+        data = read_twin_ybudget(d)
+        assert len(data.fields) == 3 * len(terms)
+        for name, _ in fields:
+            assert_allclose(data[name], values[name], rtol=0, atol=0)
+        w = np.asarray(sidecar["y_weights"])
+        assert_allclose(
+            integrate_y(data, "Pi_z"),
+            np.einsum("j,tjk->tk", w, values["Pi_z"]),
+            rtol=0,
+            atol=0,
+        )
+        # A y grid of the wrong length is a hard error, not a reshape.
+        _write_y_stream(
+            d,
+            "twin_ybudget",
+            t,
+            fields,
+            values,
+            sidecar | {"y_weights": [1.0, 2.0]},
+        )
+        _expect_value_error("y_weights", lambda: read_twin_ybudget(d))
+    print("twin_ybudget reader: OK")
+
+
 if __name__ == "__main__":
     test_readers()
     test_closure_residuals()
     test_aggregation()
     test_fits()
     test_spectra_reader()
+    test_yspectra_reader()
+    test_ybudget_reader()
     test_integral_lengths_core()
     test_build_twin()
     print("All twin analysis tests passed.")
