@@ -166,6 +166,86 @@ this one is not positive-definite (the symmetric part of `$-W D_2$`
 has genuinely negative eigenvalues), which is why ``get_stats``
 keeps the other.
 
+Wall-normal-resolved spectra
+----------------------------
+:func:`twin_yspectra` and :func:`twin_ybudget` replace the bin index
+with the wavenumber itself and stop integrating over `$y$`.  The
+three-bin split above *is* a three-bin partition of the
+`$(k_x, k_z)$` plane, and the paper restricts it to minimal flow
+units (its caveat after eq. 2.5); above that it stops resolving
+anything.
+
+The stored objects are the two marginals of the per-mode density,
+plus the `$k_x = 0$` plane:
+
+.. math::
+    E_\Delta^x[\alpha](y, k_z) = \sum_{k_x} \hat{e}_\alpha , \qquad
+    E_\Delta^z[\alpha](y, k_x) = \sum_{k_z} \hat{e}_\alpha , \qquad
+    E_\Delta^{x0}[\alpha](y, k_z) = \hat{e}_\alpha(y, 0, k_z) ,
+
+with `$\hat{e}_\alpha = \tfrac12 |\Delta\hat u_\alpha|^2$` per
+velocity component.  **Energy first, then the sum over the other
+wavenumber** -- not the energy of the averaged velocity.  Under the
+``norm="forward"`` convention that sum *is* the streamwise average of
+the energy, so it is the standard one-dimensional spectrum; it
+closes (summing either marginal over its axis and integrating in
+`$y$` returns `$E_\Delta$` exactly, where averaging first returns
+only the `$k_x = 0$` content); and it *contains* the other reading,
+which is exactly the stored `$k_x = 0$` plane.  That plane is also
+what makes these a strict refinement rather than a replacement:
+
+.. math::
+    E_{\Delta U} = \textstyle\int \sum_\alpha E^{x0}_\alpha(y, 0),
+    \quad
+    E_{\Delta u_1} = \int \sum_\alpha \sum_{k_z>0} E^{x0}_\alpha ,
+    \quad
+    E_{\Delta u_2} = \int \sum_\alpha \sum_{k_z}
+        (E^{x}_\alpha - E^{x0}_\alpha)
+
+-- the three numbers of the old binning, now `$k_z$`-resolved, which
+is why ``twin.bins`` can stay off.  The `$\pm k_z$` fold this
+requires is not cosmetic: :func:`_fold_kz`.
+
+Spectral budget
+---------------
+Contracting the difference momentum equation with
+`$\sigma_{k_x}\Delta\hat{\mathbf{u}}^*$` at each mode gives one
+production, one transfer, one viscous and one pressure term per
+`$(y, k)$` -- and the paper's (2.7)-(2.9) are `$k$`-set sums of them,
+so the 12 + 12 expansions of (2.11)-(2.16) have nothing left to say
+and are not reproduced.  :data:`YBUDGET_TERMS`:
+
+- ``P_U``: production against the reference mean profile,
+  `$-\sigma_k \mathrm{Re}\{\Delta\hat u_i^* \Delta\hat v\}\,
+  \partial_y U^{(1)}_i$` -- diagonal in `$k$`, no transform, and the
+  paper's dominant long-time (lift-up) term now resolved in
+  `$(y, k)$`;
+- ``P_r``: production against the reference *fluctuation* gradients;
+- ``T_ref`` / ``T_self``: transfer by the reference fluctuation and
+  by the difference field's own advection.  Each sums to zero over
+  all `$(y, k)$`, so they are pure redistribution -- interscale as
+  well as wall-normal;
+- ``V`` / ``eps``: the viscous term in the operator form (the one
+  that closes -- "Dissipation form" above) and the positive-definite
+  pseudo-dissipation `$\nu|\nabla\Delta\mathbf{u}|^2$`.  Their
+  difference is the wall-normal diffusion flux;
+- ``Pi``: the pressure work, from :mod:`dnsjax.twin.pressure`.
+
+`$\sum_k \int$` of ``P_U + P_r`` and of ``-V`` reproduce
+``twin_budget.dat``'s ``P_tot`` and ``eps_tot`` to rounding --
+algebraic identities, the same Parseval sum regrouped.  The transfer
+terms match their per-bin counterparts only up to the discrete
+integration-by-parts residual that makes ``T_tot`` nonzero in the
+first place (measured on the ladder in ``tests/test_twin_budget.py``).
+
+The `$k$`-resolved budget is **cheaper** than the three-bin one: 33
+field transforms against 69 (:func:`_difference_sources`), because
+binning no longer forces a separate physical product per bin pair.
+What it adds instead is the pressure -- one factored Poisson
+operator held for the run.  Pressure is the one term the
+volume-averaged budget omits for free and a localised one cannot;
+:mod:`dnsjax.twin.pressure` has the whole argument.
+
 Frame invariance
 ----------------
 A moving frame (``phys.u_grid``, e.g. the plane-Poiseuille default
@@ -227,6 +307,8 @@ outputs are replicated scalars.
 """
 
 import importlib
+from functools import partial
+from typing import NamedTuple
 
 from jax import Array, jit, lax, shard_map
 from jax import numpy as jnp
@@ -243,9 +325,16 @@ from ..geometries.wall_bounded._base import (
     phys_to_spec,
     spec_to_phys,
 )
-from ..geometries.wall_bounded.cartesian import Fourier, fourier
+from ..geometries.wall_bounded.cartesian import (
+    DRIVING_KEY_N,
+    DRIVING_KEY_S,
+    Fourier,
+    fourier,
+    mean_driving,
+)
 from ..parameters import derived_params, params
 from ..sharding import sharding
+from .pressure import DifferencePressure
 
 if params.phys.system not in cartesian_systems:  # pragma: no cover
     raise RuntimeError(
@@ -279,20 +368,42 @@ def component_masks(fourier_: Fourier) -> tuple[Array, Array, Array]:
     return m_mean, m_u1, m_u2
 
 
-@jit
+@partial(jit, static_argnames=("bins",))
 def _twin_energies_jit(
-    state1: Array, state2: Array, fourier_: Fourier, flow_: object
+    state1: Array,
+    state2: Array,
+    fourier_: Fourier,
+    flow_: object,
+    *,
+    bins: bool,
 ) -> dict[str, Array]:
-    r"""Difference-field component energies (see the module docstring).
+    r"""Difference-field energies (see the module docstring).
+
+    Always:
 
     - ``E_d``: total `$E_\Delta = \|\Delta\mathbf{u}\|^2/2$`.
-    - ``E_dU`` / ``E_du1`` / ``E_du2``: the mean / streak /
-      streamwise-varying components (computed independently; their
-      sum equals ``E_d`` to rounding).
-    - ``E_du1_x`` / ``E_du1_y`` / ``E_du1_z``: `$E_{\Delta u_1}$`
-      per velocity component.
     - ``E_ref``: the reference state's own `$E'$` (context for
       saturation levels and the laminarization read).
+
+    Under ``bins`` (``twin.bins``), additionally the three-bin
+    decomposition of the reference paper:
+
+    - ``E_dU`` / ``E_du1`` / ``E_du2``: the mean / streak /
+      streamwise-varying components (computed independently; their
+      sum equals ``E_d`` to rounding -- a deliberate consistency
+      guard, not a redundancy to trade away);
+    - ``E_du1_x`` / ``E_du1_y`` / ``E_du1_z``: `$E_{\Delta u_1}$`
+      per velocity component.
+
+    ``bins`` is **static**: the two column sets are separate compiled
+    programs, and the flag is pinned in ``twin.json`` so a resume
+    cannot append one to the other.  With it off, the two masked
+    copies (``delta * m_*``) -- the pair of full-state temporaries
+    that make this call a few percent of a twin step at
+    ``it_energy = 1`` -- are never built.  The scale-resolved
+    successor is :func:`twin_yspectra`, from which all three bin
+    energies are recoverable (module docstring, "Wall-normal-resolved
+    spectra").
 
     Keys are chosen so their *sorted* order (the ``twin.dat`` column
     order -- dicts returned through ``jit`` are canonicalised, see
@@ -301,23 +412,29 @@ def _twin_energies_jit(
     k_metric = fourier_.k_metric
     w = flow_.y_weights
     delta = state2 - state1
+    out = {
+        "E_d": get_norm2(delta, k_metric, w) / 2,
+        "E_ref": get_norm2(state1, k_metric, w) / 2,
+    }
+    if not bins:
+        return out
     m_mean, m_u1, m_u2 = component_masks(fourier_)
     du1 = delta * m_u1
-    return {
-        "E_d": get_norm2(delta, k_metric, w) / 2,
+    return out | {
         "E_dU": get_norm2(delta * m_mean, k_metric, w) / 2,
         "E_du1": get_norm2(du1, k_metric, w) / 2,
         "E_du1_x": get_norm2(du1[0:1], k_metric, w) / 2,
         "E_du1_y": get_norm2(du1[1:2], k_metric, w) / 2,
         "E_du1_z": get_norm2(du1[2:3], k_metric, w) / 2,
         "E_du2": get_norm2(delta * m_u2, k_metric, w) / 2,
-        "E_ref": get_norm2(state1, k_metric, w) / 2,
     }
 
 
-def twin_energies(state1: Array, state2: Array) -> dict[str, Array]:
+def twin_energies(
+    state1: Array, state2: Array, *, bins: bool
+) -> dict[str, Array]:
     """Wrapper around ``_twin_energies_jit`` binding the singletons."""
-    return _twin_energies_jit(state1, state2, fourier, flow)
+    return _twin_energies_jit(state1, state2, fourier, flow, bins=bins)
 
 
 # ── Budget terms (see the module docstring's "Budget terms") ─────────
@@ -595,3 +712,478 @@ def _twin_spectra_jit(
 def twin_spectra_2d(state1: Array, state2: Array) -> dict[str, Array]:
     """Wrapper around ``_twin_spectra_jit`` binding the singletons."""
     return _twin_spectra_jit(state1, state2, fourier, flow)
+
+
+# ── Wall-normal-resolved marginal spectra ────────────────────────────
+
+
+def marginal_bin_counts() -> tuple[int, int]:
+    r"""``(n_{k_z}, n_{k_x})`` of the folded marginal axes.
+
+    Both are one-sided: `$n_z/2$` and `$n_x/2$` bins, carrying
+    integer wavenumbers `$0, 1, \dots$` (``harmonics.real_harmonics``
+    of each axis' full count).  See :func:`_fold_kz` for why the
+    `$k_z$` axis is folded rather than stored two-sided.
+    """
+    return params.res.nz // 2, params.res.nx // 2
+
+
+def _fold_kz(a: Array) -> Array:
+    r"""Fold a stored `$k_z$` axis onto `$|k_z|$`.
+
+    *a* is a replicated array whose **last** axis is the stored
+    full-complex `$k_z$` axis, padding already stripped
+    (`$n_z - 1$` entries in FFT wrap order,
+    :func:`dnsjax.harmonics.complex_harmonics`).  Returns `$n_z/2$`
+    entries, entry `$j$` being the sum of the `$\pm j$` pair.
+
+    **Why the fold is mandatory, not a convenience.**  The stored
+    half-plane carries `$k_x \ge 0$` with the conjugate-pair weight
+    ``k_metric``, so a stored entry is the energy of the *pair*
+    `$\{(k_x, k_z), (-k_x, -k_z)\}$`.  Marginalising that over
+    `$k_x$` therefore does **not** give the two-sided spectrum at
+    `$k_z$` -- the partner of `$(k_x > 0, k_z)$` sits at `$-k_z$`.
+    Only after summing the `$\pm k_z$` pair do the two agree:
+
+    .. math::
+        \sum_{k_x \ge 0} \sigma_{k_x} |\hat{u}(k_x, k_z)|^2
+        + (k_z \to -k_z)
+        = \sum_{k_x} |\hat{u}(k_x, k_z)|^2 + (k_z \to -k_z) .
+
+    The `$k_x$` marginal needs no such fold: summing over the whole
+    stored `$k_z$` axis already covers both partners.
+    """
+    npos = params.res.nz // 2
+    return a[..., :npos].at[..., 1:].add(a[..., npos:][..., ::-1])
+
+
+def _marginals_replicated(density: Array) -> tuple[Array, Array, Array]:
+    r"""The three marginals of a per-mode density, replicated.
+
+    *density* is a **real** `$(C, N_y, N_{k_z}, N_{k_x})$` array in
+    the spectral layout, already carrying its ``k_metric`` weight and
+    any prefactor -- so that summing it over `$(k_z, k_x)$` and
+    integrating over `$y$` with ``y_weights`` reproduces the scalar
+    the same quantity gives in ``twin.dat`` / ``twin_budget.dat``.
+    The leading axis is free: three velocity components for the
+    energies, one per term for the budget.
+
+    Returns ``(m_x, m_z, m_x0)``, each replicated with the spectral
+    padding stripped:
+
+    - ``m_x`` `$(C, N_y, n_z/2)$`: summed over `$k_x$` and folded onto
+      `$|k_z|$` (:func:`_fold_kz`) -- the `$x$`-averaged spectrum;
+    - ``m_z`` `$(C, N_y, n_x/2)$`: summed over `$k_z$` -- the
+      `$z$`-averaged spectrum;
+    - ``m_x0`` `$(C, N_y, n_z/2)$`: the `$k_x = 0$` plane alone,
+      folded the same way -- the spectrum *of the streamwise-averaged
+      field*, which is what recovers the `$\Delta U$` / `$\Delta u_1$`
+      / `$\Delta u_2$` binning from ``m_x`` (module docstring).
+
+    Each device reduces its own `$(k_z, k_x)$` tile, scatters the
+    three blocks into zero global-shape arrays at its mesh position,
+    and one ``psum`` over both mesh axes assembles the replicated
+    result -- the pattern of :func:`_mode_energy_replicated`, and
+    required for the same reason (the writer's rank-0 host transfer
+    needs a fully-addressable array).  The three blocks share one
+    collective: unlike the two `$(k_z, k_x)$` planes there, they are
+    reductions of the *same* field pass, so there is nothing to gain
+    by splitting them.  The fold runs **after** the ``psum``: the
+    `$\pm k_z$` partners live on different ``np0`` devices.
+    """
+    nz_spec, nx_spec = sharding.spec_shape[1], sharding.spec_shape[2]
+
+    def _local(d: Array) -> Array:
+        nkz_loc, nkx_loc = d.shape[2], d.shape[3]
+        row0 = lax.axis_index("np0") * nkz_loc
+        col0 = lax.axis_index("np1") * nkx_loc
+        c, ny = d.shape[0], d.shape[1]
+        zeros_z = jnp.zeros((c, ny, nz_spec), dtype=d.dtype)
+        zeros_x = jnp.zeros((c, ny, nx_spec), dtype=d.dtype)
+        # ``k_x = 0`` is local column 0 of the first device column
+        # only; every other device contributes exact zeros.
+        x0_loc = jnp.where(col0 == 0, d[:, :, :, 0], 0.0)
+        blocks = (
+            lax.dynamic_update_slice_in_dim(
+                zeros_z, jnp.sum(d, axis=3), row0, 2
+            ),
+            lax.dynamic_update_slice_in_dim(
+                zeros_x, jnp.sum(d, axis=2), col0, 2
+            ),
+            lax.dynamic_update_slice_in_dim(zeros_z, x0_loc, row0, 2),
+        )
+        return lax.psum(jnp.concatenate(blocks, axis=2), ("np0", "np1"))
+
+    gathered = shard_map(
+        _local,
+        mesh=sharding.mesh,
+        in_specs=(sharding.spec_vector_shard,),
+        out_specs=P(None, None, None),
+    )(density)
+
+    n2 = params.res.nz - 1
+    n3 = params.res.nx // 2
+    m_x = gathered[..., :n2]
+    m_z = gathered[..., nz_spec : nz_spec + n3]
+    m_x0 = gathered[..., nz_spec + nx_spec :][..., :n2]
+    return _fold_kz(m_x), m_z, _fold_kz(m_x0)
+
+
+def _energy_density(state: Array, fourier_: Fourier) -> Array:
+    r"""Per-component, per-mode energy density in `$y$`.
+
+    `$\tfrac{1}{2}\sigma_{k_x}|\hat{u}_c|^2 / V$`, shaped
+    `$(3, N_y, N_{k_z}, N_{k_x})$` -- so
+    `$\sum_j w_j \sum_{c,k}$` of it is the solver-measure energy.
+    ``(z conj(z)).real`` rather than ``abs(z) ** 2``: see
+    :func:`_mode_energy_replicated`.
+    """
+    return (state * jnp.conj(state)).real * (
+        fourier_.k_metric / (2.0 * derived_params.volume_fac)
+    )
+
+
+@jit
+def _twin_yspectra_jit(
+    state1: Array, state2: Array, fourier_: Fourier, flow_: object
+) -> dict[str, Array]:
+    r"""Wall-normal-resolved componentwise spectra (module docstring).
+
+    ``e_x`` / ``e_z`` / ``e_x0`` are the difference field's three
+    marginals of :func:`_marginals_replicated`, per velocity
+    component; ``r_x`` / ``r_z`` / ``r_x0`` the reference state's.
+    Every array is a `$y$`-**density**: integrate with
+    ``flow.y_weights`` (shipped in the stream's sidecar) to get the
+    per-`$k$` energy, and sum over `$k$` for ``twin.dat``'s ``E_d``.
+    """
+    delta = state2 - state1
+    e_x, e_z, e_x0 = _marginals_replicated(_energy_density(delta, fourier_))
+    r_x, r_z, r_x0 = _marginals_replicated(_energy_density(state1, fourier_))
+    return {
+        "e_x": e_x,
+        "e_z": e_z,
+        "e_x0": e_x0,
+        "r_x": r_x,
+        "r_z": r_z,
+        "r_x0": r_x0,
+    }
+
+
+def twin_yspectra(state1: Array, state2: Array) -> dict[str, Array]:
+    """Wrapper around ``_twin_yspectra_jit`` binding the singletons."""
+    return _twin_yspectra_jit(state1, state2, fourier, flow)
+
+
+# ── Wall-normal-resolved spectral budget ─────────────────────────────
+
+#: ``twin_ybudget`` term names, in stored order.  ``V`` is the viscous
+#: term in the operator (discrete-Laplacian) form -- the one that makes
+#: the budget close, matching ``twin_budget``'s ``eps_*`` -- and ``eps``
+#: its positive-definite pseudo-dissipation companion; the two differ
+#: by the wall-normal diffusion flux (module docstring).
+YBUDGET_TERMS: tuple[str, ...] = (
+    "P_U",
+    "P_r",
+    "T_ref",
+    "T_self",
+    "V",
+    "eps",
+    "Pi",
+)
+
+
+class _Sources(NamedTuple):
+    r"""The advective products the budget and the pressure share.
+
+    Built once per sample by :func:`_difference_sources` -- the 33
+    field transforms are the budget's whole cost, so the pressure
+    rides on them rather than repeating them.
+    """
+
+    delta: Array
+    q_p: Array  # (Du . grad) u'^(1)
+    q_tr: Array  # (u'^(1) . grad) Du
+    q_ts: Array  # (Du' . grad) Du
+    q_pu: Array  # Dv d_y U^(1), the lift-up term
+    n_hat: Array  # the full nonlinear term
+    div_n: Array  # its discrete divergence
+    prof_dU: Array  # (3, Ny) mean-mode difference profile
+
+
+def _difference_sources(
+    state1: Array, state2: Array, fourier_: Fourier, flow_: object
+) -> _Sources:
+    r"""Evaluate the difference field's advective terms.
+
+    Twenty-four forward transforms (the three advectors and the two
+    gradient sets) and nine back -- fewer than the 69 the three-bin
+    :func:`twin_budget` needs, because binning no longer forces a
+    separate physical product per bin pair.
+
+    Two exact simplifications: the mean part of either *advector*
+    contributes identically zero to the energy (`$U_y^{(1)} = \Delta
+    U_y = 0$` by continuity plus no-slip, and what remains is
+    `$i(k_xU_x + k_zU_z)|\Delta\hat u|^2$`, purely imaginary), so
+    the transport terms take the mean-free advectors -- which also
+    keeps a large, exactly-cancelling term out of the transforms.
+    The *pressure* needs the full term, so ``n_hat`` adds the three
+    mean-mode pieces back spectrally, at no transform cost.
+    """
+    kx, kz = fourier_.kx, fourier_.kz
+    d1 = flow_.D1
+    m_mean, _, _ = component_masks(fourier_)
+
+    delta = state2 - state1
+    # `$\mathbf{u}'^{(1)} = \mathbf{u}^{(1)} - \mathbf{U}^{(1)}$`:
+    # the laminar base flow lives entirely at `$(0,0)$`, so the
+    # reference fluctuation is ``state1`` with its mean mode removed
+    # -- no base-flow arithmetic enters.
+    ref_f = state1 * ~m_mean
+    delta_f = delta * ~m_mean
+
+    mean_delta, mean_ref = extract_mean_modes(delta, state1)
+    prof_dU = mean_delta.real
+    prof_rU = mean_ref.real + flow_.base_flow[:, :, 0, 0]
+    dy_rU = jnp.einsum("ij,cj->ci", d1, prof_rU)
+
+    def grad_spec(c: Array) -> Array:
+        r"""Nine rows; row ``3 * d + i`` is `$\partial_d c_i$`."""
+        return jnp.concatenate(
+            [1j * kx * c, apply_y_matrix(d1, c), 1j * kz * c], axis=0
+        )
+
+    def mean_advect(prof: Array) -> Array:
+        r"""`$(\mathbf{P}\cdot\nabla)\Delta\mathbf{u}$`, diagonal in
+        `$k$`; the wall-normal row of either mean profile vanishes."""
+        return (
+            1j
+            * (kx * prof[0][:, None, None] + kz * prof[2][:, None, None])
+            * delta
+        )
+
+    adv = chunked_transform(
+        spec_to_phys, jnp.concatenate([delta, ref_f, delta_f], axis=0)
+    )
+    grad_ref = chunked_transform(spec_to_phys, grad_spec(ref_f))
+    grad_del = chunked_transform(spec_to_phys, grad_spec(delta))
+
+    def advect(b_phys: Array, grad_phys: Array) -> Array:
+        r"""`$(\mathbf{b}\cdot\nabla)\mathbf{c}$`, back to spectral."""
+        return chunked_transform(
+            phys_to_spec,
+            jnp.stack(
+                [
+                    sum(b_phys[j] * grad_phys[3 * j + i] for j in range(3))
+                    for i in range(3)
+                ]
+            ),
+        )
+
+    q_p = advect(adv[0:3], grad_ref)
+    q_tr = advect(adv[3:6], grad_del)
+    q_ts = advect(adv[6:9], grad_del)
+    q_pu = delta[1] * dy_rU[:, :, None, None]
+
+    n_hat = -(
+        q_p + q_tr + q_ts + q_pu + mean_advect(prof_rU) + mean_advect(prof_dU)
+    )
+    # The solver's own discrete divergence
+    # (``cartesian._imm_iteration_vp`` stage 1).
+    div_n = (
+        1j * kx * n_hat[0] + apply_y_matrix(d1, n_hat[1]) + 1j * kz * n_hat[2]
+    )
+    return _Sources(delta, q_p, q_tr, q_ts, q_pu, n_hat, div_n, prof_dU)
+
+
+def _ybudget_densities(
+    state1: Array,
+    state2: Array,
+    fourier_: Fourier,
+    flow_: object,
+    pressure: DifferencePressure,
+) -> Array:
+    r"""The seven per-mode budget densities, stacked.
+
+    Returns a real ``(7, N_y, N_{k_z}, N_{k_x})`` array in
+    :data:`YBUDGET_TERMS` order, component-summed, each already
+    carrying ``k_metric`` and divided by ``volume_fac`` -- so summing
+    over `$(k_z, k_x)$` and integrating with ``y_weights`` reproduces
+    the corresponding scalar of ``twin_budget.dat``.
+    """
+    k2, k_metric = fourier_.k2, fourier_.k_metric
+    vf = derived_params.volume_fac
+    nu = 1.0 / params.phys.re
+    d1, d2 = flow_.D1, flow_.D2
+    src = _difference_sources(state1, state2, fourier_, flow_)
+    delta = src.delta
+
+    def pair(b: Array) -> Array:
+        r"""`$-\sigma_{k_x}\sum_i\mathrm{Re}\{\Delta\hat u_i^* b_i\}/V$`."""
+        return -jnp.sum((jnp.conj(delta) * b).real, axis=0) * (k_metric / vf)
+
+    # Viscous: the operator form (closure-consistent, matching
+    # ``twin_budget``'s ``eps_*``) and the positive-definite
+    # pseudo-dissipation `$\nu|\nabla\Delta u|^2$`; their difference
+    # is the wall-normal diffusion flux.
+    visc = pair(-(apply_y_matrix(d2, delta) - k2 * delta)) * nu
+    dy_delta = apply_y_matrix(d1, delta)
+    eps = (
+        jnp.sum(
+            (dy_delta * jnp.conj(dy_delta)).real
+            + k2 * (delta * jnp.conj(delta)).real,
+            axis=0,
+        )
+        * nu
+        * (k_metric / vf)
+    )
+
+    p_hat = pressure.solve(delta, src.div_n, src.n_hat[1], flow_, fourier_)
+    pi = pressure.work_density(delta, p_hat, flow_, fourier_)
+    pi = (
+        pi
+        + _driving_density(state1, state2, src.prof_dU, flow_)
+        * component_masks(fourier_)[0]
+    )
+
+    return jnp.stack(
+        [
+            pair(src.q_pu),
+            pair(src.q_p),
+            pair(src.q_tr),
+            pair(src.q_ts),
+            visc,
+            eps,
+            pi,
+        ]
+    )
+
+
+def _driving_density(
+    state1: Array, state2: Array, prof_dU: Array, flow_: object
+) -> Array:
+    r"""Mean-mode driving work density, shape ``(N_y, 1, 1)``.
+
+    The `$(0,0)$` mode's pressure term is not the fluctuating pressure
+    (which does no work there: `$\Delta\hat v_{00}\equiv 0$` and the
+    horizontal gradients vanish) but the applied driving,
+    `$\Delta\Pi_s \Delta U_s(y) + \Delta\Pi_n \Delta U_n(y)$`.  Its
+    `$y$`-integral is `$\Delta\Pi \cdot U_\text{bulk}(\Delta u) = 0$`
+    exactly -- at constant flow rate both members hold the same bulk,
+    at fixed pressure gradient `$\Delta\Pi = 0$` -- but its *density*
+    is not, so a `$y$`-resolved budget needs it.
+
+    `$\Delta\Pi$` is the **wall-shear inference**
+    (:func:`~dnsjax.geometries.wall_bounded.cartesian.mean_driving`)
+    of each member's driving, differenced; that is deliberately the
+    better budget partner than the corrector's applied value (the
+    `$t = t_0$` reasoning in :mod:`dnsjax.__main__`).  Returns exact
+    zeros when no driving constraint is active.
+    """
+    drive1 = mean_driving(state1, flow_)
+    drive2 = mean_driving(state2, flow_)
+    cos_t, sin_t = derived_params.cos_tilt, derived_params.sin_tilt
+    dens = jnp.zeros_like(prof_dU[0])
+    if DRIVING_KEY_S in drive1:
+        dens = dens + (drive2[DRIVING_KEY_S] - drive1[DRIVING_KEY_S]) * (
+            prof_dU[0] * cos_t + prof_dU[2] * sin_t
+        )
+    if DRIVING_KEY_N in drive1:
+        dens = dens + (drive2[DRIVING_KEY_N] - drive1[DRIVING_KEY_N]) * (
+            -prof_dU[0] * sin_t + prof_dU[2] * cos_t
+        )
+    return (dens / derived_params.volume_fac)[:, None, None]
+
+
+@partial(jit, static_argnames=("pressure",))
+def _twin_ybudget_jit(
+    state1: Array,
+    state2: Array,
+    fourier_: Fourier,
+    flow_: object,
+    *,
+    pressure: DifferencePressure,
+) -> dict[str, Array]:
+    r"""Wall-normal-resolved spectral budget (module docstring).
+
+    Returns ``<term>_x`` / ``<term>_z`` / ``<term>_x0`` for each of
+    :data:`YBUDGET_TERMS`, the three marginals of
+    :func:`_marginals_replicated`.  Every array is a `$y$`-density:
+    integrate with ``flow.y_weights`` for the per-`$k$` rate, and sum
+    over `$k$` for the corresponding ``twin_budget.dat`` column.
+    """
+    stacked = _ybudget_densities(state1, state2, fourier_, flow_, pressure)
+    m_x, m_z, m_x0 = _marginals_replicated(stacked)
+    out: dict[str, Array] = {}
+    for i, name in enumerate(YBUDGET_TERMS):
+        out[f"{name}_x"] = m_x[i]
+        out[f"{name}_z"] = m_z[i]
+        out[f"{name}_x0"] = m_x0[i]
+    return out
+
+
+def twin_ybudget(
+    state1: Array, state2: Array, pressure: DifferencePressure
+) -> dict[str, Array]:
+    """Wrapper around ``_twin_ybudget_jit`` binding the singletons."""
+    return _twin_ybudget_jit(state1, state2, fourier, flow, pressure=pressure)
+
+
+@partial(jit, static_argnames=("pressure",))
+def _twin_pressure_check_jit(
+    state1: Array,
+    state2: Array,
+    fourier_: Fourier,
+    flow_: object,
+    *,
+    pressure: DifferencePressure,
+) -> dict[str, Array]:
+    r"""Residuals of the difference-pressure solve.
+
+    Built from the *same* :func:`_difference_sources` the budget uses,
+    so nothing here can drift from what ``Pi`` was computed with.
+    Returns:
+
+    - ``poisson``: the interior Poisson residual
+      `$(D_2 - k^2)\Delta\hat p - \widehat{\nabla\cdot\mathcal N}$`,
+      machine zero;
+    - ``closure``: `$(D_1 \partial_t \Delta\hat v)|_w$`, the wall
+      condition that *was* imposed -- machine zero at every mode but
+      `$(0,0)$`, where the influence matrix is structurally singular
+      and `$\Delta\hat v \equiv 0$` makes it vacuous;
+    - ``neumann``: `$(D_1\Delta\hat p - Re^{-1}D_2\Delta\hat v)|_w$`,
+      the analytic condition the IMM closure declines to impose -- a
+      wall-normal truncation diagnostic that must shrink with
+      ``res.ny``, not an error.
+    """
+    src = _difference_sources(state1, state2, fourier_, flow_)
+    delta = src.delta
+    p_hat = pressure.solve(delta, src.div_n, src.n_hat[1], flow_, fourier_)
+    lap = apply_y_matrix(flow_.D2, p_hat) - fourier_.k2 * p_hat
+    dtv = (
+        src.n_hat[1]
+        - apply_y_matrix(flow_.D1, p_hat)
+        + (apply_y_matrix(flow_.D2, delta[1]) - fourier_.k2 * delta[1])
+        / params.phys.re
+    )
+    d1b = flow_.D1_bnd
+    return {
+        "poisson": (lap - src.div_n)[1:-1],
+        "closure": jnp.stack(
+            [
+                jnp.einsum("j,jzx->zx", d1b[0], dtv),
+                jnp.einsum("j,jzx->zx", d1b[-1], dtv),
+            ]
+        ),
+        "neumann": pressure.neumann_residual(delta, p_hat, flow_),
+        "div_n": src.div_n,
+        "dy_dtv": apply_y_matrix(flow_.D1, dtv),
+    }
+
+
+def twin_pressure_check(
+    state1: Array, state2: Array, pressure: DifferencePressure
+) -> dict[str, Array]:
+    """Wrapper around ``_twin_pressure_check_jit`` binding the singletons."""
+    return _twin_pressure_check_jit(
+        state1, state2, fourier, flow, pressure=pressure
+    )

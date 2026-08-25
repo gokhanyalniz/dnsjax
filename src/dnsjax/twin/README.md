@@ -44,10 +44,21 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.e0` | unset | Initial perturbation energy $E'(\delta)$ in the solver measure; setting it enables the section. `0` requests an exact zero perturbation |
 | `twin.seed` | `1` | Perturbation RNG seed; vary per ensemble member |
 | `twin.smoothness` | `0.4` | Spectral envelope of the random perturbation (`init.random_smoothness` convention) |
+| `twin.bins` | `false` | Also record the $\Delta U$ / $\Delta u_1$ / $\Delta u_2$ three-bin energies in `twin.dat`; required by `it_budget` |
 | `twin.it_energy` | `1` | Steps between `twin.dat` rows |
 | `twin.it_budget` | unset | Steps between `twin_budget.dat` rows; unset disables the stream |
 | `twin.it_spectra` | unset | Steps between `twin_spectra.bin` records; unset disables the stream |
+| `twin.it_yspectra` | unset | Steps between `twin_yspectra.bin` records (wall-normal-resolved componentwise spectra) |
+| `twin.it_ybudget` | unset | Steps between `twin_ybudget.bin` records (the same bins' budget) |
 | `twin.spectra_ref` | `true` | Also store the reference spectrum with each sample |
+
+`twin.bins` is off by default. The three-bin split is a three-bin
+partition of the $(k_x, k_z)$ plane, and the reference paper restricts
+it to minimal flow units; above that, `twin.it_yspectra` resolves the
+same information in $k$ and $y$, and the three bin energies remain
+exactly recoverable from it (`analysis.twin.bin_energies`). Turning
+the bins off also drops a few percent of every step — the two masked
+full-state copies the split forces.
 
 Two of these are not priced by cadence alone. `it_budget` sets the
 **run's peak memory**, not just its per-sample cost: the budget is a
@@ -92,9 +103,10 @@ E_{\Delta U} + E_{\Delta u_1} + E_{\Delta u_2} = E_\Delta
 ```
 
 holds to rounding — a deliberate redundancy, and a consistency guard.
-Columns are `E_d`, `E_dU`, `E_du1`, `E_du2`, the per-velocity-component
-split `E_du1_x` / `E_du1_y` / `E_du1_z`, and `E_ref` (the reference
-state's own energy); under a driving constraint one `<key>_d` column per
+Columns are `E_d` and `E_ref` (the reference state's own energy)
+always; under `twin.bins`, additionally `E_dU`, `E_du1`, `E_du2` and
+the per-velocity-component split `E_du1_x` / `E_du1_y` / `E_du1_z`.
+Under a driving constraint one `<key>_d` column per
 constrained direction follows — the twin−reference difference of the
 applied mean-mode forcing, whose reference value `stats.dat` carries.
 Format, buffering, `fsync`, the non-finite guard and the flush sites are
@@ -114,6 +126,36 @@ mean slot — 7 with a carrier profile, 2 advected by the mean
 difference, 6 at the $(0,0)$ mode, and 9 triple-fluctuating — and the
 transport terms cancel pairwise by parts, so their total is a further
 check rather than a free parameter.
+
+### `twin_yspectra.bin` / `twin_ybudget.bin` — wall-normal-resolved
+
+The scale-resolved replacement for the three-bin split, and what to
+reach for above a minimal flow unit. Per sample, the componentwise
+difference energy as a density in $y$, marginalised each way,
+
+```math
+E_\Delta^x[u,v,w](y, k_z), \qquad E_\Delta^z[u,v,w](y, k_x)
+```
+
+— energy first, then the sum over the other wavenumber, which under
+the forward-norm convention *is* the average over that direction —
+plus the $k_x = 0$ plane, which is the spectrum of the
+streamwise-averaged field and recovers $E_{\Delta U}$,
+$E_{\Delta u_1}$, $E_{\Delta u_2}$ exactly. `twin_ybudget.bin`
+carries the matching budget on the same bins: production against the
+reference mean profile (the lift-up term) and against its
+fluctuations, transfer by the reference and by the difference field,
+the viscous term in both forms, and the pressure work.
+
+Both wavenumber axes are one-sided, with $|k_z|$ folded — a
+requirement, not a convenience: the stored half-plane's entries are
+conjugate-*pair* energies, whose partners sit at $-k_z$.
+
+Summing either marginal over its axis and integrating in $y$ returns
+`twin.dat`'s `E_d`; summing the budget's returns
+`twin_budget.dat`'s `P_tot` / `eps_tot`. Both sidecars ship the
+wall-normal grid and its quadrature weights, so a reader integrates
+without rebuilding the grid.
 
 ### `twin_spectra.bin` — $(k_z, k_x)$ energy spectra
 
@@ -202,6 +244,7 @@ importable **without JAX** — a guarantee the test suite pins.
 | `series` | Readers for `twin.dat` / `twin_budget.dat` / `stats.dat` and the `twin.json` member record; per-component budget sums |
 | `ensemble` | Member-tree aggregation on aligned relative time, plus the growth-rate fits (exponential-phase $\lambda$, algebraic-phase linear rate) |
 | `spectra` | Reader for `twin_spectra.bin` and the decorrelation ratio |
+| `yspectra` | Readers for `twin_yspectra.bin` / `twin_ybudget.bin`, the wall-normal quadrature contraction, and the three-bin energies recovered from them |
 | `lengths` | Integral length scales of the difference field from a paired snapshot |
 
 Aggregation is also a command:

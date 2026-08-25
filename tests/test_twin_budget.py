@@ -392,6 +392,8 @@ def _twin(
         repr(E0),
         "--twin.seed",
         str(seed),
+        "--twin.bins",
+        "True",
         "--twin.it_budget",
         str(IT_BUDGET),
         "--stop.max_sim_time",

@@ -237,6 +237,15 @@ def closure_residuals(series: TwinSeries) -> ClosureResiduals:
             "twin.it_budget set"
         )
     energies, budget = series.energies, series.budget
+    missing = [c for c in ("E_dU", "E_du1", "E_du2") if c not in energies]
+    if missing:
+        raise ValueError(
+            f"{series.path}: twin.dat has no {', '.join(missing)} "
+            "column; the closure check compares the budget against "
+            "the three-bin energies, so the member needs twin.bins "
+            "set (it is off by default -- the scale-resolved "
+            "twin_ybudget.bin stream is checked differently)."
+        )
 
     p_all = [n for n in budget if n.startswith("P_") and n != "P_tot"]
     t_all = [n for n in budget if n.startswith("T_") and n != "T_tot"]

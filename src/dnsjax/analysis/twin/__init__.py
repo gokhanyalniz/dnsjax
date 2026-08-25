@@ -12,6 +12,10 @@ Layout (one module per concern; none is imported by the top-level
   the exponential phase, the algebraic-phase linear rate).
 - :mod:`.spectra` -- reader for the ``twin_spectra.bin`` stream
   and the decorrelation ratio.
+- :mod:`.yspectra` -- readers for the wall-normal-resolved
+  ``twin_yspectra.bin`` / ``twin_ybudget.bin`` streams, the
+  quadrature contraction, and the three-bin energies recovered from
+  them.
 - :mod:`.lengths` -- integral length scales of the difference field
   from a paired snapshot.
 
@@ -42,12 +46,21 @@ from .spectra import (
     decorrelation_ratio,
     read_twin_spectra,
 )
+from .yspectra import (
+    YResolvedData,
+    bin_energies,
+    integrate_y,
+    read_twin_ybudget,
+    read_twin_yspectra,
+)
 
 __all__ = [
     "ClosureResiduals",
     "TwinSeries",
     "TwinSpectraData",
+    "YResolvedData",
     "aggregate_members",
+    "bin_energies",
     "budget_sums",
     "closure_residuals",
     "decorrelation_ratio",
@@ -55,8 +68,11 @@ __all__ = [
     "fit_linear_rate",
     "integral_lengths",
     "integral_lengths_from_modes",
+    "integrate_y",
     "partner_of",
     "read_dat",
     "read_twin",
     "read_twin_spectra",
+    "read_twin_ybudget",
+    "read_twin_yspectra",
 ]
