@@ -435,10 +435,18 @@ def _twin_member_toml(mem: dict, args: argparse.Namespace) -> str:
         f"seed = {mem['seed']}",
         f"it_energy = {args.it_energy}",
     ]
+    # ``twin.bins`` is off by default; ``it_budget`` needs it (the
+    # closure check reads twin.dat's three-bin energies).
+    if args.bins or args.it_budget is not None:
+        lines.append("bins = true")
     if args.it_budget is not None:
         lines.append(f"it_budget = {args.it_budget}")
     if args.it_spectra is not None:
         lines.append(f"it_spectra = {args.it_spectra}")
+    if args.it_yspectra is not None:
+        lines.append(f"it_yspectra = {args.it_yspectra}")
+    if args.it_ybudget is not None:
+        lines.append(f"it_ybudget = {args.it_ybudget}")
     return "\n".join(lines) + "\n"
 
 
@@ -514,8 +522,11 @@ def build_twin(args: argparse.Namespace) -> int:
                 "e0": args.e0,
                 "horizon": args.horizon,
                 "it_energy": args.it_energy,
+                "bins": bool(args.bins or args.it_budget is not None),
                 "it_budget": args.it_budget,
                 "it_spectra": args.it_spectra,
+                "it_yspectra": args.it_yspectra,
+                "it_ybudget": args.it_ybudget,
                 "created": datetime.now(UTC).isoformat(),
                 "git_hash": git_hash(),
                 "members": members,
@@ -643,8 +654,26 @@ def main(argv: list[str] | None = None) -> int:
         help="member run length past the parent snapshot time",
     )
     pt.add_argument("--it-energy", type=int, default=1)
+    pt.add_argument(
+        "--bins",
+        action="store_true",
+        help="also record the Delta-U / Delta-u1 / Delta-u2 three-bin "
+        "energies in twin.dat (twin.bins; implied by --it-budget)",
+    )
     pt.add_argument("--it-budget", type=int, default=None)
     pt.add_argument("--it-spectra", type=int, default=None)
+    pt.add_argument(
+        "--it-yspectra",
+        type=int,
+        default=None,
+        help="wall-normal-resolved (y, k) energy-spectra cadence",
+    )
+    pt.add_argument(
+        "--it-ybudget",
+        type=int,
+        default=None,
+        help="wall-normal-resolved (y, k) budget cadence",
+    )
     pt.add_argument(
         "--it-snapshot",
         type=int,

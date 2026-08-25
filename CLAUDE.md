@@ -259,9 +259,18 @@ twin/
                       driver, [twin] extension, paired
                       snapshots/resume, twin.dat streams
   diagnostics.py      Difference-field diagnostics: component masks,
-                      energies, the 27-term budget, (kz,kx) spectra
+                      energies, the 27-term budget, (kz,kx) spectra,
+                      the wall-normal-resolved (y,k) spectra and
+                      spectral budget that supersede the three bins
+  pressure.py         Difference-field pressure on the IMM's own wall
+                      closure (the one term a y-resolved budget
+                      cannot omit)
+  _binstream.py       BinStream: the buffered-binary state machine
+                      the three stream writers share
   spectra.py          TwinSpectraStream: twin_spectra.bin writer
                       (reader dnsjax.analysis.twin.spectra)
+  yspectra.py         twin_yspectra.bin / twin_ybudget.bin writers
+                      (reader dnsjax.analysis.twin.yspectra)
 geometries/
   wall_bounded/       _base.py, cartesian.py, cylindrical.py,
                       annular.py, the three
@@ -295,20 +304,30 @@ analysis/             External-facing JAX-free snapshot post-processing
 
 `dnsjax-twin` steps a reference snapshot and a perturbed copy
 (random divergence-free field of exact energy `twin.e0`) in lockstep
-and streams difference-field diagnostics: component energies
-(`twin.dat`), the production/transport/dissipation budget
-(`twin_budget.dat`, `twin.it_budget`), and (kz,kx) energy spectra
-(`twin_spectra.bin`, `twin.it_spectra`). Cartesian wall-bounded
+and streams difference-field diagnostics: energies (`twin.dat`),
+componentwise wall-normal-resolved spectra and the matching spectral
+budget (`twin_yspectra.bin` / `twin_ybudget.bin`,
+`twin.it_yspectra` / `twin.it_ybudget`), (kz,kx) energy spectra
+(`twin_spectra.bin`, `twin.it_spectra`), and the legacy three-bin
+production/transport/dissipation budget (`twin_budget.dat`,
+`twin.it_budget`, which needs `twin.bins`). Cartesian wall-bounded
 flows, fixed dt, launched like the solver (scratch dir; `mpirun -np N`
 only when it is multi-process):
 
 `.venv/bin/dnsjax-twin --init.snapshot parent.tar
 --twin.e0 1e-6 --twin.seed 3 --stop.max_sim_time <t_parent + 10>`
 
-Start/resume rules (partner snapshot + `twin.json` decide; a resume
-never re-perturbs), stream formats, and the frame-invariance /
-dissipation-form notes: the `twin/driver.py` and
-`twin/diagnostics.py` module docstrings. Ensembles:
+**The `ΔU`/`Δu₁`/`Δu₂` three-bin split is a three-bin partition of
+the `(kx, kz)` plane and its authors restrict it to minimal flow
+units**, so `twin.bins` defaults **off** and the `(y, k)` streams
+replace it — the three bin energies stay exactly recoverable from
+them (`analysis.twin.bin_energies`). Start/resume rules (partner
+snapshot + `twin.json` decide; a resume never re-perturbs), stream
+formats, the ±k_z fold the marginals require, the frame-invariance /
+dissipation-form notes and the pressure's wall closure: the
+`twin/driver.py`, `twin/diagnostics.py` and `twin/pressure.py`
+module docstrings; the maths is written up as Appendix C of the
+`perturbation_dynamics` document (not in this repo). Ensembles:
 `ensemble_setup.py build-twin` +
 `dnsjax.analysis.twin`.
 
@@ -499,7 +518,7 @@ layering" above.
 | `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
 | `[probes]` | Extension (`extensions/`): spectral-mode probe stream (wall-bounded) |
 | `[force]`  | Extension: white-in-time stochastic mode kicks; all-or-none and trajectory-defining (wall-bounded, non-viscoelastic) |
-| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences (Cartesian wall-bounded, fixed dt) |
+| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + `bins` (Cartesian wall-bounded, fixed dt) |
 
 The default `parameters.toml` contains only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`; the rest rely on
@@ -550,11 +569,12 @@ it.
 
 Every stream with a sidecar carries a `format_version` enforced
 against the reader's `MIN_FORMAT_VERSION`, like the snapshot one —
-four writer/reader pairs: `extensions/probes.py` and `forcing.py` →
+six writer/reader pairs: `extensions/probes.py` and `forcing.py` →
 `analysis/response/probes.py` and `ssi.py`; `twin/spectra.py` and
 `twin/driver.py` (`twin.json`) → `analysis/twin/spectra.py` and
-`series.py`. Bump writer and reader together when the stored *meaning*
-changes (rationale: the writers' docstrings).
+`series.py`; `twin/yspectra.py`'s two streams →
+`analysis/twin/yspectra.py`. Bump writer and reader together when the
+stored *meaning* changes (rationale: the writers' docstrings).
 
 Every flushed row and host-synced scalar is guarded against NaN/inf: a
 hit prints one `FATAL: non-finite ...` line naming the quantity, skips

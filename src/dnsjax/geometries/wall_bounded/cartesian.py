@@ -833,6 +833,51 @@ class CartesianFlow:
         self.H_bulk_inv = 1.0 / H_bulk
 
 
+def build_poisson_operator(
+    flow_: CartesianFlow, fourier_: Fourier
+) -> _WallBoundedOp:
+    r"""Factor the Neumann-BC pressure Poisson operator on demand.
+
+    `$L_k = D_2 - k^2 I$` with `$D_1$` Neumann rows at both walls and
+    an identity pin on the `$k^2 = 0$` (mean) mode -- the operator
+    :func:`._cartesian_primitive_imm._build_Lk_band_gpu` /
+    ``_build_Lk_dense_gpu`` assemble, factored through the same
+    backend dispatch ``CartesianFlow.__post_init__`` uses for its own
+    operators.
+
+    ``__post_init__`` builds this operator into ``flow.Lk_op`` only
+    under ``res.consistent_imm = False``; the default `$v$`-`$\omega_y$`
+    scheme puts a **Dirichlet** Laplacian there instead and never forms
+    a pressure.  This entry point exists for the consumers that want
+    the pressure under either flag -- currently
+    :mod:`dnsjax.twin.pressure`, which recovers the difference-field
+    pressure for the wall-normal-resolved budget.  The two Neumann
+    builders stay in the legacy module: all three geometries name
+    theirs identically there, and splitting one of the three would
+    cost that symmetry for nothing (the import is the same deferred
+    one the flag-off branches take).
+
+    The operator is `$\Delta t$`-independent, so nothing rebuilds it
+    when an adaptive step changes ``dt`` -- but it is **not free**:
+    the factors are a second `$(N_{k_z}, N_{k_x}, N_y, 2p+1)$` banded
+    set, the size of ``Lk_op``.  Build it once and hold it, and only
+    when the consumer is enabled.
+    """
+    from . import _cartesian_primitive_imm as prim
+
+    k2_s = fourier_.k2[0, ..., None]
+    mean_s = fourier_.mean_mask[0, ..., None]
+    if params.solver.backend == "pallas":
+        p_band = matrix_half_bandwidth(np.asarray(flow_.D2), (0, -1))
+        band = prim._build_Lk_band_gpu(
+            flow_.D1, flow_.D2, k2_s, mean_s, p_band
+        )
+        return _build_pallas_operator([band], "Lp")
+    return DenseJAXSolver(
+        prim._build_Lk_dense_gpu(flow_.D1, flow_.D2, k2_s, mean_s)
+    )
+
+
 def _hk_bands(
     dt: float | Array,
     fourier_: Fourier,
