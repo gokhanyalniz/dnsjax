@@ -108,14 +108,16 @@ def _write_laminar(system: str, path: Path, **kw) -> None:
 # ── CLI driver ───────────────────────────────────────────────────
 
 
-#: Appended to every anchor run by ``--consistent-imm``, which selects
-#: the reconstruction scheme in *every* wall-bounded geometry: the
-#: anchors then check the reformulated propagator against the same
-#: published digits -- the strongest available statement that the
-#: reformulation did not perturb the linear physics (the eigenvalue
-#: content of the operator these anchors measure is exactly what an
-#: Orr-Sommerfeld/Squire check would test).  Measured agreement with
-#: the ungated propagator: 4-6 significant figures on every anchor.
+#: Appended to every anchor run by ``--legacy-imm``, which selects the
+#: primitive `$(v, p)$` scheme (``res.consistent_imm = False``) in
+#: *every* wall-bounded geometry.  By default the anchors run on the
+#: shipped reconstruction scheme and check it against the published
+#: digits -- the strongest available statement that the reformulation
+#: did not perturb the linear physics (the eigenvalue content of the
+#: operator these anchors measure is exactly what an
+#: Orr-Sommerfeld/Squire check would test).  Measured agreement between
+#: the two propagators: 4-6 significant figures on every anchor, so
+#: ``--legacy-imm`` must hit the same published digits too.
 EXTRA_ARGS: list[str] = []
 
 
@@ -931,9 +933,9 @@ def _anchor_orszag() -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
-        "--consistent-imm",
+        "--legacy-imm",
         action="store_true",
-        help="run the anchors with res.consistent_imm on",
+        help="run the anchors on the legacy res.consistent_imm=False path",
     )
     ap.add_argument("--worker", choices=SYSTEMS, default=None)
     ap.add_argument("--system", choices=SYSTEMS, default=None)
@@ -946,8 +948,8 @@ def main() -> None:
         "--slow", action="store_true", help="add the Orszag eigenvalue check"
     )
     args = ap.parse_args()
-    if args.consistent_imm:
-        EXTRA_ARGS.extend(["--res.consistent_imm", "True"])
+    if args.legacy_imm:
+        EXTRA_ARGS.extend(["--res.consistent_imm", "False"])
 
     if args.worker:
         _worker(args.worker)

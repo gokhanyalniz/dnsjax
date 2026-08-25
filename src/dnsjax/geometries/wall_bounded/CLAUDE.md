@@ -6,13 +6,19 @@
   `init_state`, `apply_y_matrix`, `extract_mean_mode`, `pad_base_flow`,
   `base_flow_coupling`, `build_wall_bounded_stepper`)
 - `cartesian.py`: Cartesian geometry (Fourier, CGL grid, `CartesianFlow`,
-  Kleiser-Schumann IMM, Lk/Hk operator builders)
+  the default v-omega_y IMM, Lk/Hk operator builders)
 - `cylindrical.py`: cylindrical geometry (Fourier, radial CGL grid,
   `CylindricalFlow`, decoupled u+/u- formulation, parity-reduced FD,
-  1x1 IMM, `interpolate_to_axis` r=0 evaluation)
+  1x1 IMM on the default spin quad, `interpolate_to_axis` r=0
+  evaluation)
 - `annular.py`: annular geometry / concentric cylinders (Fourier, CGL
   grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2
-  IMM, optional mean-mode azimuthal body force `pi_theta`)
+  IMM on the default (u_r, omega_r) pair, optional mean-mode azimuthal
+  body force `pi_theta`)
+- `_cartesian_primitive_imm.py`, `_cylindrical_primitive_imm.py`,
+  `_annular_primitive_imm.py`: each geometry's **legacy** primitive
+  `(v, p)` IMM path (`res.consistent_imm = False`) — see the
+  Influence-matrix section below
 - `_viscoelastic_common.py`: the geometry-free sPTT half shared by
   both viscoelastic geometries (incl. the 9-component
   `to_spin_basis`/`from_spin_basis`)
@@ -46,8 +52,8 @@ stepper must convert first** — `__main__`'s post-IC line and
 `_get_rhs_core`/`_l_bf` convert internally, so physical-space fields
 and the CFL measurement are always physical components (why: the
 `cylindrical.py` docstring).
-**Cartesian carries physical `(u, v, w)` in both `res.consistent_imm`
-states** and exports no basis pair, so every consumer skips the
+**Cartesian carries physical `(u, v, w)` under both `res.consistent_imm`
+formulations** and exports no basis pair, so every consumer skips the
 conversion — `__main__` and `transient_growth` by `getattr` falling
 back to the identity, the two extensions by testing
 `params.phys.system in cartesian_systems`.
@@ -76,17 +82,20 @@ where, the why, and the history: `pad_base_flow`).
 
 ### Influence-matrix method (IMM)
 
-Every geometry has the same two-way split: `_imm_iteration` is a
-trace-time dispatcher over `_imm_iteration_vp` (primitive, flag-off)
-and `_imm_iteration_vw` (the reconstruction scheme, flag-on).
+Every geometry has the same two-way split: `_imm_iteration` and
+`Flow._derive_imm_homogeneous_data` are trace-time dispatchers over the
+default reconstruction scheme (`_imm_iteration_vw` /
+`_derive_vw_homogeneous_data`, in the geometry module) and the legacy
+primitive one (`_imm_iteration_vp` / `derive_homogeneous_data`, in
+`_<geometry>_primitive_imm.py`).
 `cartesian._imm_iteration` carries the shared derivation — why there
 are two schemes (the discrete-continuity residual) and the five
 measured repairs, four of them retired — and the other two dispatchers
 add only their geometry's amendment to that record.
-`cartesian._imm_iteration_vp` documents the primitive 9-stage
-algorithm, its Schur-complement/Woodbury equivalence, and the optional
-constant-bulk-velocity / block-mean-spanwise-velocity corrections
-(shared via `_apply_bulk_corrections`).
+`_cartesian_primitive_imm._imm_iteration_vp` documents the primitive
+9-stage algorithm, its Schur-complement/Woodbury equivalence, and the
+optional constant-bulk-velocity / block-mean-spanwise-velocity
+corrections (shared via `cartesian._apply_bulk_corrections`).
 `annular._imm_iteration_vw` carries the **cylindrical** algebra
 (the `(Φ, ω_r)` pair, the mandatory conservative curl, the exact
 `L_v,mod` recovery, the mean packing) and the retired-route record for
@@ -102,29 +111,37 @@ the axis forces (the spin quad, parity classes, the band splice).
   with the band width **measured** from the assembled operator
   (`fd.matrix_half_bandwidth`, both flag states), never assumed to be
   `fd_order`.
-- Both backends apply the `Lk` matvec matrix-free (`_lk_matvec` in
-  each geometry; only Cartesian also names `_hk_minus_matvec`, the
-  others build `H_k^-` inline) from shared `D1`/`D2`; IMM homogeneous
-  data comes from each geometry's `_derive_imm_homogeneous_data`
-  (+ the `_derive_vw_homogeneous_data` twins under
-  `res.consistent_imm`).
-- `res.consistent_imm` (default off, offered by every wall-bounded
+- Only Cartesian names `_hk_minus_matvec` (the others build `H_k^-`
+  inline); the legacy `Lk` matvec is `_lk_matvec` in each
+  `_<geometry>_primitive_imm.py`.
+- `res.consistent_imm` (**default on**, offered by every wall-bounded
   flow) makes the discrete continuity identity hold by **one
   mechanism** in all three geometries: advance the wall-normal
   velocity + vorticity, reconstruct the tangential pair, never form a
   pressure. It is flag-independent from the outside — no geometry
   changes what it carries, so snapshots, probes/forcing, analysis and
-  resume are unaffected. Mechanism, per-geometry solve counts and
-  efficacy, momentum prices, and the five rejected routes: the
-  `Resolution.consistent_imm` docs (`parameters.py`); the shared
-  scheme record: `cartesian._imm_iteration` (+ `_imm_iteration_vw`);
+  resume all read either path's state. Mechanism, per-geometry solve
+  counts and efficacy, momentum prices, when to fall back to the
+  legacy path, and the five rejected routes: the
+  `Resolution.consistent_imm` docs
+  (`parameters.py`); the shared scheme record:
+  `cartesian._imm_iteration` (+ `_imm_iteration_vw`);
   the cylindrical algebra: `annular._imm_iteration_vw`; the pipe's
   free wall values, why its solve count and cost go the other way, and
   the instability that lagging them caused:
   `cylindrical._imm_iteration_vw`. Guards:
   `tests/test_imm_continuity.py` (continuity + the momentum ledger),
   `tests/test_random_smoke.py` (the nonlinear stability gate),
-  `tests/test_temporal_order.py` (the order the flag must not cost).
+  `tests/test_temporal_order.py` (the order the formulation buys).
+- `res.consistent_imm = False` is the **legacy** primitive `(v, p)`
+  path: kept, tested, not recommended. Each geometry's flag-off half
+  — the Neumann pressure-Poisson builders, its matvecs, the
+  three-family `H_k` group (cyl/annular) and the step — lives in
+  `_<geometry>_primitive_imm.py`, imported *lazily* inside the four
+  flag-off branches (`__post_init__`, `_derive_imm_homogeneous_data`,
+  `_build_dt_leaves`, `_imm_iteration`), so the default path never
+  imports it. That module imports back from its geometry module, which
+  is why the import must stay deferred.
 
 ### Mean mode and padding modes
 
@@ -132,6 +149,10 @@ the axis forces (the spin quad, parity classes, the band splice).
 nonzero, so `Fourier.mean_mask` is a one-hot — the cross-module
 invariant every pin-row/mean-mode consumer relies on. Detail: the
 `Fourier` docstrings; guard: `tests/test_mean_mask.py`.
+
+What may *write* the mean mode is a separate question, answered per
+flow: only the Cartesian ones, and only through the conservation laws
+in `ic/mean_mode.py` (root CLAUDE.md, "Initial conditions").
 
 ### Cylindrical geometry
 
@@ -206,7 +227,12 @@ its docstring and the `fd.py` interpolation docstrings.
 ### Optimization patterns
 
 - To operate on a mean-mode-derivable quantity, index the mean mode
-  first (`extract_mean_mode`) then operate, when the two commute.
+  first (`extract_mean_mode`) then operate, when the two commute — and
+  **never stack fields to feed one call**: a `shard_map` operand is
+  materialised in full, so the stack is a field-sized copy read only at
+  `[:, :, 0, 0]`. Two mean modes at once go through
+  `extract_mean_modes(a, b)` (`_base.py`), one collective for the pair;
+  the psum is latency-bound, so call count is the cost.
 - `apply_y_matrix` FD matvecs batch over the leading component axis, so
   `D1`/`D2` GEMMs can be regrouped/deduplicated across IMM stages
   bit-identically (the laminar smoke `err=0.00e+00` confirms refactors).
@@ -214,6 +240,19 @@ its docstring and the `fd.py` interpolation docstrings.
   (`component_axis=1`), which stay component-leading, and why: the
   `apply_y_matrix` (`_base.py`) and
   `PerModeBandedPallasOperator.solve` (`solvers.py`) docstrings.
+- **Curvilinear `A_base` fusion** (cyl + annular, both schemes, plus
+  both viscoelastic geometries): where a field needs `D2 x + (1/r) D1 x`
+  and `D1 x` has *no other consumer*, apply the precomputed `A_base`
+  (`flow.A_base`; parity-reduced `A_base_pos`/`A_base_ghost` on the
+  pipe) as one matvec instead. Worth ~10 % of `_imm_iteration` on the
+  velocity-only sites; on the viscoelastic `tensor_abase_matvec` it is a
+  **measured wash** on CPU (−0.7 to −1.8 %, inside the spread, at
+  `num_c = 0` *and* `3–4` — an sPTT step is transform-dominated), kept
+  there for the FLOPs and the dropped transient. Not bit-identical, so the
+  guards are `test_imm_continuity.py` + band-vs-dense parity + the two
+  viscoelastic suites, **not** the laminar smoke (`u' = 0` there makes
+  every stage zero either way). Where the premise fails, the split form
+  stays — see the comment at `_annular_primitive_imm`'s `H_k^-` batch.
 
 ### Flows
 

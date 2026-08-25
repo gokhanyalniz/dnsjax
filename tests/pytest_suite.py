@@ -82,6 +82,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_annular.py", (), (), 1800),
     ("test_banded_solver.py", (), (), 1800),
     ("test_banded_solver_sharded.py", (), (), 1800),
+    ("test_bootstrap.py", (), (), 1800),
     ("test_cartesian.py", (), (), 1800),
     ("test_cnab2.py", (), (), 1800),
     ("test_cylindrical.py", (), (), 1800),
@@ -91,9 +92,12 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_integration.py", (), (), 1800),
     ("test_localized_rolls.py", (), (), 1800),
     ("test_mean_mask.py", (), (), 1800),
+    # Four in-process (forced CPU device) subprocesses, no mpirun.
+    ("test_mean_mode.py", (), (), 1800),
     ("test_monochromatic.py", (), (), 1800),
     ("test_padding.py", (), (), 1800),
     ("test_param_surface.py", (), (), 1800),
+    ("test_driving.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_forcing.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_probes.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_quasi_keplerian.py", (), (), 1800),
@@ -114,6 +118,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_viscoelastic_pipe.py", (), (), 1800),
     ("test_temporal_order.py", (), _SLOW, 3600),
     ("test_energy_budget.py", (), _MPI + _SLOW, 3600),
+    ("test_driving.py", (), _SLOW, 2400),
     ("test_forcing.py", (), _MPI, 1800),
     ("test_laminar_smoke.py", (), _MPI + _SLOW, 3600),
     # Multi-device, and specifically on the np1 (k_x / axial) axis:
@@ -128,6 +133,10 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_resume.py", (), _MPI + _SLOW, 3600),
     ("test_rolls_smoke.py", (), _MPI + _SLOW, 3600),
     ("test_transient_growth.py", (), _SLOW, 3600),
+    # No _MPI: single-process throughout (a lone process needs no
+    # launcher).  ~20 min at the default single seed -- the
+    # per-rung 50-advective-unit parent spin-ups dominate.
+    ("test_twin_budget.py", (), _SLOW, 3600),
     ("test_twin_driver.py", (), _MPI + _SLOW, 3600),
 ]
 

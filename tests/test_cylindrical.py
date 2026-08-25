@@ -86,19 +86,21 @@ from dnsjax.fd import (  # noqa: E402
 )
 from dnsjax.flows.wall_bounded.pipe import flow as pipe_flow  # noqa: E402
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
-from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
+from dnsjax.geometries.wall_bounded._cylindrical_primitive_imm import (  # noqa: E402
     _abase_matvec,
+    _build_Lk_band_gpu,
+    _build_Lk_dense_gpu,
+    _lk_matvec,
+)
+from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _build_A_base,
     _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
-    _build_Lk_band_gpu,
-    _build_Lk_dense_gpu,
     _build_Lv_dir_band_gpu,
     _build_Lv_dir_dense_gpu,
     _ghost_row_count,
     _hk_vw_bands,
     _hk_vw_dense_mats,
-    _lk_matvec,
     build_parity_reduced_matrices,
     build_radial_cgl_grid,
     extract_mean_mode,
@@ -293,12 +295,14 @@ def test_abase_matvec_matches_dense() -> None:
     A_even = np.asarray(_build_A_base(D1_even, D2_even, inv_r))
     A_odd = np.asarray(_build_A_base(D1_odd, D2_odd, inv_r))
 
+    # The matvec applies the *precomputed* parity-reduced pair, so the
+    # stub carries it exactly as ``CylindricalFlow.__post_init__``
+    # builds it -- note the ghost rows take ``inv_r[:g_rows]``, which
+    # is what the reference below (the independent full even/odd
+    # matrices) would catch getting wrong.
     flow_ = SimpleNamespace(
-        D1_pos=D1_pos,
-        D2_pos=D2_pos,
-        D1_ghost=D1_ghost,
-        D2_ghost=D2_ghost,
-        inv_r=inv_r,
+        A_base_pos=_build_A_base(D1_pos, D2_pos, inv_r),
+        A_base_ghost=_build_A_base(D1_ghost, D2_ghost, inv_r[:g_rows]),
     )
 
     Nm = params.res.nz - 1
@@ -1036,7 +1040,7 @@ def test_centerline_mean_axial_velocity() -> None:
     for _ in range(20):
         # predict_and_fully_correct donates its argument; the loop
         # rebinds state, so nothing reuses the donated buffer.
-        state, err, _ = predict_and_fully_correct(state)
+        state, err, *_ = predict_and_fully_correct(state)
         assert float(err) < params.step.corrector_tolerance, (
             f"corrector not converged (err {float(err):.3e})"
         )

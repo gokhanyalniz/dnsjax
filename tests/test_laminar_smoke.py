@@ -50,7 +50,11 @@ path.
 
 The suite also guards the ``dnsjax`` console script: a ``--help``
 preflight (exit 0, usage text, **no files created** -- the regression
-that motivated the entry-point refactor), one smoke case launched
+that motivated the entry-point refactor), a ``bare-launch`` pair
+running the console script with **no** ``mpirun`` at all (a lone
+process starts no distributed runtime, so it must step to the same
+``err`` / `$E'$` as the launched rows -- and must refuse to hold
+several CPU devices by itself), one smoke case launched
 through the installed ``dnsjax`` script under ``mpirun`` (the
 distributed init through the console path; same
 :func:`dnsjax.__main__.main` as ``python -m dnsjax``), and a
@@ -587,25 +591,27 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        # res.consistent_imm on: the reconstruction scheme must leave
-        # the laminar fixed point exactly fixed.  Every term of it is
-        # linear in u', so all of them vanish identically at u' = 0 --
-        # err = 0 here is the cheap structural proof that it adds
-        # nothing spurious (it is the *nonlinear* smoke that has
-        # teeth; see tests/test_random_smoke.py -- flag-on
+        # The legacy res.consistent_imm = False path: the primitive
+        # (v, p) scheme must leave the laminar fixed point exactly
+        # fixed too.  Every entry above already covers the shipped
+        # reconstruction scheme, whose every term is linear in u' and
+        # so vanishes identically at u' = 0 -- err = 0 there is the
+        # cheap structural proof that it adds nothing spurious (it is
+        # the *nonlinear* smoke that has teeth; see
+        # tests/test_random_smoke.py -- the reconstruction scheme on
         # viscoelastic-pipe was a clean fixed point here throughout the
-        # period the flag was rejected for it).  One entry per
+        # period it was rejected for that flow).  One legacy entry per
         # geometry covers the three implementations; each curvilinear
         # family then adds the flows whose mean-plane packing differs
         # (a rotating outer wall, a body force, a polymer stress),
-        # since that packing is the one place the flag can break a
-        # fixed point without any perturbation present.
-        "name": "plane-couette-consistent-imm",
+        # since that packing is the one place the two formulations can
+        # break a fixed point without any perturbation present.
+        "name": "plane-couette-legacy-imm",
         "args": [
             "--phys.system",
             "plane-couette",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -621,7 +627,7 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
-        "name": "taylor-couette-consistent-imm",
+        "name": "taylor-couette-legacy-imm",
         "args": [
             "--phys.system",
             "taylor-couette",
@@ -632,7 +638,7 @@ SYSTEMS: list[dict] = [
             "--geo.eta",
             "0.5",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -650,12 +656,12 @@ SYSTEMS: list[dict] = [
     {
         # Pipe opt-in (the spin-quad formulation): same cheap
         # structural proof that it leaves u' = 0 fixed.
-        "name": "pipe-consistent-imm",
+        "name": "pipe-legacy-imm",
         "args": [
             "--phys.system",
             "pipe",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -675,7 +681,7 @@ SYSTEMS: list[dict] = [
         # **total-field** 9-component state, so the mean-plane packing
         # must reproduce the Pi_z-vs-viscosity balance (as Dean's does
         # for pi_theta) while the polymer stress rides the sources.
-        "name": "viscoelastic-pipe-consistent-imm",
+        "name": "viscoelastic-pipe-legacy-imm",
         "args": [
             "--phys.system",
             "viscoelastic-pipe",
@@ -688,7 +694,7 @@ SYSTEMS: list[dict] = [
             "--phys.el",
             "5",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -706,7 +712,7 @@ SYSTEMS: list[dict] = [
     {
         # Quasi-Keplerian flag-on: the same annular machinery at a very
         # different (re1, r_omega, eta) corner.
-        "name": "quasi-keplerian-consistent-imm",
+        "name": "quasi-keplerian-legacy-imm",
         "args": [
             "--phys.system",
             "quasi-keplerian",
@@ -717,7 +723,7 @@ SYSTEMS: list[dict] = [
             "--geo.eta",
             "0.71",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -739,7 +745,7 @@ SYSTEMS: list[dict] = [
         # the two packed k^2 = 0 slots, which is exactly what the
         # reformulation re-plumbs -- a packing error would show as a
         # drifting Ub_th here even though no perturbation exists.
-        "name": "dean-consistent-imm",
+        "name": "dean-legacy-imm",
         "args": [
             "--phys.system",
             "dean",
@@ -748,7 +754,7 @@ SYSTEMS: list[dict] = [
             "--phys.re",
             "100",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -767,7 +773,7 @@ SYSTEMS: list[dict] = [
         # Viscoelastic Dean flag-on: the same composition guard in the
         # annular geometry, whose flag-on pass is the `(Phi, omega_r)`
         # pair rather than the pipe's spin quad.
-        "name": "viscoelastic-dean-consistent-imm",
+        "name": "viscoelastic-dean-legacy-imm",
         "args": [
             "--phys.system",
             "viscoelastic-dean",
@@ -780,7 +786,7 @@ SYSTEMS: list[dict] = [
             "--phys.el",
             "5",
             "--res.consistent_imm",
-            "True",
+            "False",
             "--init.start_from_laminar",
             "True",
             "--stop.max_sim_time",
@@ -955,7 +961,7 @@ def _check_steps_file(workdir: Path, name: str) -> None:
         raise AssertionError(f"{name}: steps.dat was not written")
 
     lines = [ln for ln in steps_file.read_text().splitlines() if ln.strip()]
-    header = lines[0].split()
+    header = lines[0].lstrip("#").split()
 
     # Dicts returned through ``jit`` are canonicalised to sorted
     # key order, so compare as sets and index columns by name
@@ -1084,7 +1090,7 @@ def _check_corrector_file(
         raise AssertionError(f"{name}: corrector.dat was not written")
 
     lines = [ln for ln in corr_file.read_text().splitlines() if ln.strip()]
-    header = lines[0].split()
+    header = lines[0].lstrip("#").split()
     if header[0] != "t" or set(header) != {"t", "c", "error"}:
         raise AssertionError(
             f"{name}: corrector.dat header {header} != [t, c, error]"
@@ -1282,6 +1288,72 @@ def check_console_help() -> None:
     print("  PASS  console-help (usage printed, no side effects)")
 
 
+def check_bare_launch() -> None:
+    """A one-process run needs no ``mpirun``, and says so when it does.
+
+    The solver only stands up JAX's distributed runtime when it is one
+    of several processes, so a lone run needs no launcher, no
+    coordinator and no MPI on the machine at all.  This walks the
+    whole path -- console script, no ``mpirun`` anywhere -- and then
+    checks the other half of the contract: one process may not hold
+    several *CPU* devices (that is oversubscription, not
+    parallelism), and asking for it must fail early, naming the launch
+    that works, rather than at the device count deep in ``sharding``.
+    """
+    script = _console_script()
+    if script is None:
+        print("  SKIP  bare-launch: console script not installed")
+        return
+    env = {**os.environ, "NO_COLOR": "1"}
+    args = SYSTEMS[0]["args"] + ["--stop.check_laminarization", "False"]
+
+    with tempfile.TemporaryDirectory(prefix="smoke_bare_") as workdir:
+        result = subprocess.run(
+            [str(script), *args],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=workdir,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                f"bare-launch: exit code {result.returncode}\n"
+                f"{result.stdout[-2000:]}"
+            )
+        last_err, last_ep = _parse_diagnostics(result.stdout)
+        if last_err is None or last_err > ERR_THRESHOLD:
+            raise AssertionError(
+                f"bare-launch: stepping error {last_err} > {ERR_THRESHOLD:.0e}"
+            )
+        if last_ep is None or last_ep > EP_THRESHOLD:
+            raise AssertionError(
+                f"bare-launch: perturbation energy {last_ep} "
+                f"> {EP_THRESHOLD:.0e}"
+            )
+
+    with tempfile.TemporaryDirectory(prefix="smoke_bare_cpu_") as workdir:
+        refused = subprocess.run(
+            [str(script), *args, "--dist.np0", "2", "--dist.np1", "2"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=workdir,
+            env=env,
+        )
+        message = refused.stdout + refused.stderr
+        if refused.returncode == 0:
+            raise AssertionError(
+                "bare-launch: 4 CPU devices in one process was allowed"
+            )
+        if "mpirun -np 4" not in message:
+            raise AssertionError(
+                f"bare-launch: refusal does not name the working "
+                f"launch: {message[-500:]}"
+            )
+    print(f"  PASS  bare-launch  (err={last_err:.2e}, E'={last_ep:.2e})")
+
+
 def run_smoke_test(
     system: dict, np_count: int, np0: int = 1, platform: str = "cpu"
 ) -> None:
@@ -1400,6 +1472,12 @@ if __name__ == "__main__":
     except (AssertionError, subprocess.TimeoutExpired) as exc:
         print(f"  FAIL  console-help: {exc}")
         failures.append(("console-help", str(exc)))
+    try:
+        check_bare_launch()
+        passed += 1
+    except (AssertionError, subprocess.TimeoutExpired) as exc:
+        print(f"  FAIL  bare-launch: {exc}")
+        failures.append(("bare-launch", str(exc)))
     for system in SYSTEMS:
         try:
             run_smoke_test(system, args.np, args.np0, args.platform)

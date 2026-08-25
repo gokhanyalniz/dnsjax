@@ -4,6 +4,14 @@ Measures the production (``pallas``) solver backend against the
 ``dense`` reference on real hardware, and validates multi-GPU
 execution:
 
+Every number is reported for the configured ``res.consistent_imm``
+formulation: the two build different operator groups (the legacy
+primitive one carries a pressure Poisson ``Lk`` and, in the cylindrical
+geometries, a third ``Hk`` family) and run a different per-mode solve
+count.  The default is the shipped reconstruction scheme;
+``--legacy-imm`` benchmarks the retired primitive `$(v, p)$` one, in
+the children and the ``mpirun`` runs alike.
+
 A.  **Single-device matrix** (one subprocess per config x backend --
     the singletons capture the backend at import): per operator group
     (``Lk``/``Hk``/``Hc``) the operator class built, exact persistent
@@ -23,7 +31,8 @@ A.  **Single-device matrix** (one subprocess per config x backend --
     reference regime) shows the split's FFT-refresh savings, while the
     default-``dt`` entries pin the
     no-regression claim (corrector converges in ~1 iteration either
-    way).
+    way -- a count the ``res.consistent_imm`` formulation moves, so
+    read it against the formulation the row was run with).
 B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
     from scratch dirs): multi-GPU execution of the Pallas Triton
     kernel -- correctness via JAX-free ``dnsjax.analysis`` snapshot
@@ -297,13 +306,13 @@ def _bench_step_cnab2(jax, jnp, step_cnab2, state, n: int, warmup: int = 3):
     copies (both arguments are donated); a discarded priming call
     seeds the AB2 history, as the ``__main__`` driver does."""
     s = jnp.copy(state)
-    _, rp, _, _ = step_cnab2(jnp.copy(s), jnp.zeros_like(s))
+    _, rp, *_ = step_cnab2(jnp.copy(s), jnp.zeros_like(s))
     for _ in range(warmup):
-        s, rp, _err, _c = step_cnab2(s, rp)
+        s, rp, _err, _c, *_ = step_cnab2(s, rp)
     jax.block_until_ready(s)
     t0 = time.perf_counter()
     for _ in range(n):
-        s, rp, _err, _c = step_cnab2(s, rp)
+        s, rp, _err, _c, *_ = step_cnab2(s, rp)
     jax.block_until_ready(s)
     return (time.perf_counter() - t0) / n
 
@@ -346,6 +355,14 @@ def run_child(a: argparse.Namespace) -> None:
     params.res.nz = a.nz
     params.res.fd_order = a.fd_order
     params.res.double_precision = True
+    # The two ``res.consistent_imm`` formulations build different
+    # operator groups (the legacy primitive one carries a pressure
+    # Poisson ``Lk`` and, in the cylindrical geometries, a third ``Hk``
+    # family) and run a different per-mode solve count, so every number
+    # below -- the operator classes, the factor-byte table, the
+    # isolated solve times, the per-step times and the corrector counts
+    # -- is per-formulation.  Default: the shipped scheme.
+    params.res.consistent_imm = not a.legacy_imm
     params.step.dt = a.dt
     params.step.scheme = "iterative-cn"  # both steppers are built
     if a.bm0 is not None:
@@ -422,7 +439,7 @@ def run_child(a: argparse.Namespace) -> None:
     # ("Array has been deleted" at the first ``_bench_step``).
     s = jnp.copy(to_solver(state))
     for _ in range(a.parity_steps):
-        s, _err, _c = m.predict_and_fully_correct(s)
+        s, _err, _c, *_ = m.predict_and_fully_correct(s)
     jax.block_until_ready(s)
     s_phys = from_solver(s)
     parity = {
@@ -617,6 +634,8 @@ def _spawn_child(
     ]
     if bm is not None:
         cmd += ["--bm0", str(bm[0]), "--bm1", str(bm[1])]
+    if args.legacy_imm:
+        cmd += ["--legacy-imm"]
     # The section's env carries the platform: JAX_PLATFORMS=cpu for the
     # CPU sections, otherwise a GPU pinned via CUDA_VISIBLE_DEVICES.  Pass
     # it through explicitly so the child records the right platform.
@@ -1377,6 +1396,8 @@ def _run_mpi(
         str(run["nz"]),
         "--res.fd_order",
         "4",
+        "--res.consistent_imm",
+        "False" if args.legacy_imm else "True",
         "--init.random_field",
         "True",
         "--init.random_amplitude",
@@ -2415,6 +2436,14 @@ def main() -> None:
     ap.add_argument("--ny", type=int, default=48)
     ap.add_argument("--nz", type=int, default=64)
     ap.add_argument("--fd-order", dest="fd_order", type=int, default=8)
+    ap.add_argument(
+        "--legacy-imm",
+        action="store_true",
+        help="benchmark the legacy res.consistent_imm=False primitive "
+        "(v, p) scheme instead of the shipped reconstruction one "
+        "(different operator groups and per-mode solve count, so every "
+        "reported number changes)",
+    )
     ap.add_argument("--bm0", type=int, default=None)
     ap.add_argument("--bm1", type=int, default=None)
     ap.add_argument("--dt", type=float, default=0.005)

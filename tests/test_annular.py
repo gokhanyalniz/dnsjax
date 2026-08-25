@@ -76,15 +76,17 @@ from dnsjax.flows.wall_bounded.taylor_couette import (  # noqa: E402
     flow as tc_flow,
 )
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
-from dnsjax.geometries.wall_bounded.annular import (  # noqa: E402
+from dnsjax.geometries.wall_bounded._annular_primitive_imm import (  # noqa: E402
     _abase_matvec,
-    _build_Hk_band_gpu,
-    _build_Hk_dense_gpu,
     _build_Lk_band_gpu,
     _build_Lk_dense_gpu,
+    _lk_matvec,
+)
+from dnsjax.geometries.wall_bounded.annular import (  # noqa: E402
+    _build_Hk_band_gpu,
+    _build_Hk_dense_gpu,
     _build_Lv_dir_band_gpu,
     _build_Lv_dir_dense_gpu,
-    _lk_matvec,
     _vw_meff2,
     build_annular_grid,
     fourier,
@@ -164,9 +166,7 @@ def test_abase_matvec_matches_dense() -> None:
     Nr = params.res.ny
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
-    A_base = np.asarray(tc_flow.A_base)
-
-    flow_ = SimpleNamespace(D1=tc_flow.D1, D2=tc_flow.D2, inv_r=tc_flow.inv_r)
+    flow_ = SimpleNamespace(A_base=tc_flow.A_base)
 
     rng = np.random.default_rng(10)
     u_np = rng.standard_normal((Nr, Nm, Nkz)) + 1j * rng.standard_normal(
@@ -174,8 +174,14 @@ def test_abase_matvec_matches_dense() -> None:
     )
     u = jnp.asarray(u_np)
 
+    # Reference composed by hand, **not** from ``flow.A_base``: the
+    # matvec now applies the precomputed operator in one GEMM, so
+    # referencing that same array would only test ``apply_y_matrix``.
+    ref_op = np.asarray(tc_flow.D2) + np.diag(
+        np.asarray(tc_flow.inv_r)
+    ) @ np.asarray(tc_flow.D1)
     got = np.asarray(_abase_matvec(u, flow_))
-    ref = np.einsum("ij, jmz -> imz", A_base, u_np)
+    ref = np.einsum("ij, jmz -> imz", ref_op, u_np)
     assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
 
 

@@ -11,13 +11,8 @@ dependencies = [
     "numpy>=2.5.1",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.13.0",
+    "scipy>=1.18.0",
     "tensorstore>=0.1.71",
-]
-
-[project.optional-dependencies]
-# Extras for `dnsjax.analysis.response` (imported lazily in-function).
-analysis = [
-    "scipy>=1.14",
 ]
 
 [project.scripts]
@@ -29,7 +24,6 @@ dev = [
     "prek>=0.3.3",
     "pytest>=8",
     "ruff>=0.15.0",
-    "scipy>=1.14",
 ]
 
 [build-system]

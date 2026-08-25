@@ -24,12 +24,12 @@ guards watch **both**.
 
 ## Running one
 
-Launch exactly like the production solver — through `mpirun` even for
-one process, from a scratch directory. `python -m dnsjax.twin` is the
-equivalent module form.
+Launch exactly like the production solver, from a scratch directory:
+directly when it fits in one process, under `mpirun -np N` when it does
+not. `python -m dnsjax.twin` is the equivalent module form.
 
 ```bash
-mpirun -np 1 .venv/bin/dnsjax-twin \
+.venv/bin/dnsjax-twin \
   --init.snapshot parent.tar \
   --twin.e0 1e-6 --twin.seed 3 \
   --twin.it_budget 100 --twin.it_spectra 100 \
@@ -94,9 +94,12 @@ E_{\Delta U} + E_{\Delta u_1} + E_{\Delta u_2} = E_\Delta
 holds to rounding — a deliberate redundancy, and a consistency guard.
 Columns are `E_d`, `E_dU`, `E_du1`, `E_du2`, the per-velocity-component
 split `E_du1_x` / `E_du1_y` / `E_du1_z`, and `E_ref` (the reference
-state's own energy). Format, buffering, `fsync`, the non-finite guard
-and the flush sites are those of `stats.dat`, with a `t0` row at setup
-and a final row after the last step.
+state's own energy); under a driving constraint one `<key>_d` column per
+constrained direction follows — the twin−reference difference of the
+applied mean-mode forcing, whose reference value `stats.dat` carries.
+Format, buffering, `fsync`, the non-finite guard and the flush sites are
+those of `stats.dat`, with a `t0` row at setup and a final row after the
+last step.
 
 At the default `it_energy = 1` this is one extra jitted call per step —
 the intended sampling rate for a growth-rate fit.

@@ -182,16 +182,20 @@ def test_pallas_banded_matches_dense() -> None:
 
 
 def test_pallas_factors_prepadded_to_tiles() -> None:
-    """``from_banded_factors`` stores whole-tile factors; ``.solve``
-    keeps the true-plane contract.
+    """Per-backend storage: whole-tile on the kernel path, true-plane
+    on the CPU one; ``.solve`` keeps the true-plane contract on both.
 
-    The stored mode plane must be rounded up to the ``(bm0, bm1)``
-    Pallas tile at construction (so no per-solve factor pad/copy
-    remains -- see the ``from_banded_factors`` docstring), while
-    ``.solve`` still takes and returns the true (non-tiling) plane and
-    matches the dense oracle on its last true mode (adjacent to the
-    padding).
+    On the kernel path the stored mode plane is rounded up to the
+    ``(bm0, bm1)`` Pallas tile at construction, so no per-solve factor
+    pad/copy remains.  A CPU run never reaches the kernel, so it stores
+    the true plane and the plain ``U`` diagonal instead -- both
+    transforms would otherwise be undone on every solve (measured; see
+    the ``from_banded_factors`` docstring).  Either way ``.solve``
+    takes and returns the true (non-tiling) plane and matches the dense
+    oracle on its last true mode, adjacent to any padding.
     """
+    import dnsjax.solvers as solvers_mod
+
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2  # (3, 2): no tile
     bm0 = params.solver.pallas_block_m0
     bm1 = params.solver.pallas_block_m1
@@ -199,10 +203,25 @@ def test_pallas_factors_prepadded_to_tiles() -> None:
     p = 4
     Ny = 5 * p
     A = _make_random_banded(Ny, p, seed=11)
+
+    # Kernel-path storage: padded to whole tiles, diagonal reciprocated.
+    solvers_mod._force_kernel_path = True
+    try:
+        op_gpu = _pallas_op_from_dense(A, p, Nkz, Nkx)
+    finally:
+        solvers_mod._force_kernel_path = False
+    assert op_gpu.L.shape[2] % bm0 == 0 and op_gpu.L.shape[3] % bm1 == 0
+    assert op_gpu.U.shape[2] % bm0 == 0 and op_gpu.U.shape[3] % bm1 == 0
+    assert op_gpu.L.shape[2] >= Nkz and op_gpu.L.shape[3] >= Nkx
+
+    # CPU storage: the true plane, and a plain (non-reciprocated)
+    # diagonal -- the two differ, or the sweep would divide by 1/d.
     op = _pallas_op_from_dense(A, p, Nkz, Nkx)
-    assert op.L.shape[2] % bm0 == 0 and op.L.shape[3] % bm1 == 0
-    assert op.U.shape[2] % bm0 == 0 and op.U.shape[3] % bm1 == 0
-    assert op.L.shape[2] >= Nkz and op.L.shape[3] >= Nkx
+    assert op.L.shape[2:] == (Nkz, Nkx)
+    assert op.U.shape[2:] == (Nkz, Nkx)
+    d_cpu = np.asarray(op.U[:, 0, 0, 0])
+    d_gpu = np.asarray(op_gpu.U[:, 0, 0, 0])
+    assert_allclose(d_cpu, 1.0 / d_gpu, atol=1e-12, rtol=1e-12)
 
     b = np.random.default_rng(12).standard_normal(Ny)
     rhs = jnp.tile(jnp.asarray(b)[:, None, None], (1, Nkz, Nkx))
@@ -360,7 +379,6 @@ def test_pallas_cuda_lowering_sharded_solve() -> None:
     Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
     p, Ny = 4, 16
     A = _make_random_banded(Ny, p, seed=21)
-    op = _pallas_op_from_dense(A, p, Nkz, Nkx)
     rng = np.random.default_rng(22)
     bc = rng.standard_normal(Ny) + 1j * rng.standard_normal(Ny)
     rhs = jnp.tile(jnp.asarray(bc)[:, None, None], (1, Nkz, Nkx))
@@ -369,8 +387,13 @@ def test_pallas_cuda_lowering_sharded_solve() -> None:
     gpu_mesh = _abstract_gpu_mesh(
         orig_mesh.devices.shape, orig_mesh.axis_names
     )
+    # The override must be set *before* the operator is built: the
+    # stored factors are kernel-shaped only on the kernel path
+    # (reciprocated diagonal, whole-tile plane -- ``_kernel_path``),
+    # so building first would lower the kernel against CPU storage.
     solvers_mod._force_kernel_path = True
     try:
+        op = _pallas_op_from_dense(A, p, Nkz, Nkx)
         sharding.mesh = gpu_mesh
         with jax.sharding.use_abstract_mesh(gpu_mesh):
             lowered = (

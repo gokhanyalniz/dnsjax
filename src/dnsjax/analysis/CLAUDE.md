@@ -24,8 +24,9 @@ import either from `__init__.py` or any JAX-free module here.
   extension): the module docstring; solver-only sections
   parse-and-ignore (the `ignored` list in `_configure_parameters`);
   the seed-snapshot metadata: `_seed_metadata_params`.
-- `response/`: **may** use JAX, and needs SciPy (the optional
-  `dnsjax[analysis]` extra) for the `expm`/`logm` routes. The
+- `response/`: **may** use JAX, and uses SciPy (a core dependency) for
+  the `expm`/`logm` routes -- both imported lazily in-function, which
+  is what keeps them off the package-level guarantee. The
   JAX-vs-NumPy/SciPy split and the fallbacks: the
   `response/__init__.py` docstring.
 
@@ -90,10 +91,12 @@ and its rationale: `flows/registry.py`.
 - `twin/` — twin-run (`dnsjax-twin`) offline analysis, entirely
   JAX-free (unlike `response/`, no JAX anywhere): `series.py`
   (`twin.dat`/`twin_budget.dat`/`twin.json` readers, per-component
-  budget sums), `ensemble.py` (member-tree aggregation + growth-rate
-  fits, CLI), `spectra.py` (`twin_spectra.bin` reader +
+  budget sums, `closure_residuals`), `ensemble.py` (member-tree
+  aggregation + growth-rate fits, CLI), `spectra.py` (`twin_spectra.bin` reader +
   decorrelation ratio), `lengths.py` (integral length scales of the
-  difference field from a snapshot pair). Not imported by
+  difference field from a snapshot pair — address the pair with its
+  `partner_of`; `integral_lengths` rejects two snapshots at different
+  `(t, it)`). Not imported by
   `__init__.py`; its own `__init__` re-exports the API. Guard:
   `tests/test_twin_analysis.py`.
 - `_core.py` — engine: raw chunk I/O, transforms, coordinate

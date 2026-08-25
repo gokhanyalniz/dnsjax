@@ -5,11 +5,13 @@ Explicit mesh (the ``test_snapshot.py`` offline pattern: ``params``
 mutated before importing ``sharding``).  Covers the class the
 single-device suite (``test_banded_solver.py``) structurally cannot:
 
-1. **Per-shard factor pre-padding**: ``from_banded_factors`` pads each
-   device's *local* mode-plane block to whole ``(bm0, bm1)`` tiles
-   inside a ``shard_map``, so the stored global plane is the **sum of
-   local roundups** (not the global roundup) -- asserted on a plane
-   whose local blocks do not tile.
+1. **Per-shard factor pre-padding**: on the kernel path
+   ``from_banded_factors`` pads each device's *local* mode-plane block
+   to whole ``(bm0, bm1)`` tiles inside a ``shard_map``, so the stored
+   global plane is the **sum of local roundups** (not the global
+   roundup) -- asserted on a plane whose local blocks do not tile.  A
+   CPU run stores the true plane instead (it never launches the kernel
+   grid); both storages are asserted here.
 2. **shard_map-local ``.solve``** on sharded mode axes: dense-oracle
    parity for real + complex RHS, single + stacked operators, and both
    ``component_axis`` layouts, plus the result sharding matching the
@@ -114,19 +116,40 @@ def _tiled_rhs(vec: np.ndarray) -> jnp.ndarray:
 
 
 def test_per_shard_padded_factor_plane() -> None:
-    """The stored factor plane is the sum of per-shard tile roundups."""
+    """On the kernel path the stored factor plane is the sum of
+    per-shard tile roundups; on the CPU one it is the true plane.
+
+    The roundup is per *shard*, not global -- each device's kernel grid
+    covers its own local block.  A CPU run never launches that grid, so
+    it stores the true plane instead (``_kernel_path``); this asserts
+    both, since only the sharded mesh can tell a sum-of-local roundup
+    from a global one.
+    """
+    import dnsjax.solvers as solvers_mod
+
     bm0 = params.solver.pallas_block_m0
     bm1 = params.solver.pallas_block_m1
     nkz_loc, nkx_loc = NKZ // 2, NKX // 2
     assert nkz_loc % bm0 != 0 or nkx_loc % bm1 != 0  # locals must not tile
-    op = _sharded_pallas_op(_make_random_banded(NY, FD_P, seed=0), FD_P)
+
+    solvers_mod._force_kernel_path = True
+    try:
+        op_gpu = _sharded_pallas_op(
+            _make_random_banded(NY, FD_P, seed=0), FD_P
+        )
+    finally:
+        solvers_mod._force_kernel_path = False
 
     def _roundup(n: int, b: int) -> int:
         return -(-n // b) * b
 
     expect = (2 * _roundup(nkz_loc, bm0), 2 * _roundup(nkx_loc, bm1))
-    assert op.L.shape[2:] == expect, (op.L.shape, expect)
-    assert op.U.shape[2:] == expect, (op.U.shape, expect)
+    assert op_gpu.L.shape[2:] == expect, (op_gpu.L.shape, expect)
+    assert op_gpu.U.shape[2:] == expect, (op_gpu.U.shape, expect)
+
+    op = _sharded_pallas_op(_make_random_banded(NY, FD_P, seed=0), FD_P)
+    assert op.L.shape[2:] == (NKZ, NKX), op.L.shape
+    assert op.U.shape[2:] == (NKZ, NKX), op.U.shape
 
 
 def test_sharded_solve_matches_dense() -> None:

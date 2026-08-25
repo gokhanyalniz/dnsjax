@@ -69,10 +69,14 @@ Two subcommands:
     :func:`dnsjax.analysis.twin.ensemble.aggregate_members` consumes.
 
 The injected mode is auto-appended to ``--probe-modes`` when missing
-(the response could otherwise never be recorded), and injecting the
-``(0,0)`` mean mode is rejected (under constant-bulk-velocity driving
-it is constrained/affine, and its ensemble response is not what this
-machinery measures).  Pick ``--horizon`` to cover the response
+(the response could otherwise never be recorded).  Injecting the
+``(0,0)`` mean mode is allowed on the Cartesian flows, where
+``scripts/snapshot_perturb.py`` checks the profile against the
+mean-mode conservation laws (:mod:`dnsjax.ic.mean_mode`) -- but note
+what it identifies: under a held mean the mean-mode block is *affine*,
+not the clean linear block ``analysis.response`` fits, so read such an
+ensemble as a response measurement rather than an operator
+identification.  Pick ``--horizon`` to cover the response
 feature to be measured or fitted -- e.g. past the transient-growth
 peak `$t_\mathrm{opt}$` of the injected mode (the TG summary) -- and
 no longer: member cost is linear in it, and identification horizons
@@ -277,11 +281,6 @@ def build(args: argparse.Namespace) -> int:
     if len(pairs) != 1:
         raise SystemExit("--mode takes exactly one 'i2,i3' pair")
     i2, i3 = pairs[0]
-    if (i2, i3) == (0, 0):
-        raise SystemExit(
-            "injecting the (0,0) mean mode is not supported (see the "
-            "module docstring)"
-        )
 
     probe_pairs = parse_mode_pairs(args.probe_modes)
     if (i2, i3) not in probe_pairs:
@@ -340,13 +339,17 @@ def build(args: argparse.Namespace) -> int:
             seed_cmds.append((mem, cmd))
         mem["seed"] = seed
         mem["t_end"] = mem["parent_t"] + args.horizon
-        # ``--dist.np1`` as well as ``mpirun -np``: the mesh size is a
+        # ``--dist.np0`` as well as ``mpirun -np``: the mesh size is a
         # *parameter*, and a run whose visible device count does not
         # equal ``np0 * np1`` exits 1 at startup (``sharding.py``).
         # Emitting only ``-np N`` therefore produced a launch line that
-        # could never run for any N > 1.  np1 is the spanwise / k_x
-        # axis, the 1-D split the solver's own launch recipes use.
-        dist = f" --dist.np1 {args.np}" if args.np > 1 else ""
+        # could never run for any N > 1.  np0 is the wall-normal / k_z
+        # axis, the 1-D split the solver's own launch recipes use: its
+        # exchange moves 2/3 of the bytes np1's does, and snapshot
+        # granularity no longer distinguishes the two.  A member whose
+        # ``ny`` / ``nr`` does not divide N is auto-padded, not
+        # rejected, and says so at startup.
+        dist = f" --dist.np0 {args.np}" if args.np > 1 else ""
         run_lines.append(
             f"cd {mdir.resolve()} && mpirun -np {args.np} {dnsjax_bin}{dist}"
         )
@@ -477,7 +480,8 @@ def build_twin(args: argparse.Namespace) -> int:
                 "t_end": snap["t"] + args.horizon,
             }
             members.append(mem)
-            dist = f" --dist.np1 {args.np}" if args.np > 1 else ""
+            # ``--dist.np0``: see the sibling in :func:`build`.
+            dist = f" --dist.np0 {args.np}" if args.np > 1 else ""
             run_lines.append(
                 f"cd {(tree / mem['dir']).resolve()} && "
                 f"mpirun -np {args.np} {twin_bin}{dist}"
@@ -598,7 +602,7 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=1,
         help="devices per member run (emitted as mpirun -np N plus "
-        "--dist.np1 N, the spanwise split, for N > 1)",
+        "--dist.np0 N, the wall-normal split, for N > 1)",
     )
     pb.add_argument(
         "--dnsjax-bin",
@@ -651,7 +655,7 @@ def main(argv: list[str] | None = None) -> int:
         "--np",
         type=int,
         default=1,
-        help="devices per member run (mpirun -np N plus --dist.np1 N "
+        help="devices per member run (mpirun -np N plus --dist.np0 N "
         "for N > 1)",
     )
     pt.add_argument(

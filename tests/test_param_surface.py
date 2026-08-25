@@ -180,9 +180,7 @@ def case_surface_strictness() -> None:
     except ValidationError:
         check(True, "viscoelastic rejects [force]")
 
-    # Periodic: wall-bounded fields are rejected outright; the
-    # random-IC mean-mode knob stays (the periodic generator honours
-    # it).
+    # Periodic: wall-bounded fields are rejected outright.
     kol = spec_for("kolmogorov")
     kol_model = PS.build_surface_model(kol, settings=False)
     for bad in (
@@ -194,8 +192,14 @@ def case_surface_strictness() -> None:
             check(False, f"kolmogorov rejects {bad}")
         except ValidationError:
             check(True, f"kolmogorov rejects {bad}")
-    kol_model.model_validate({"init": {"random_mean_flow": True}})
-    check(True, "kolmogorov accepts init.random_mean_flow")
+    # The mean-mode knob is *deferred* here, not absent: it parses
+    # (deferred fields stay in the surface model) and ``internalize``
+    # is what refuses it -- exercised in ``case_deferred``.  An
+    # explicit inert default is a no-op and passes, which is what lets
+    # a snapshot predating the deferral resume.
+    v = kol_model.model_validate({"init": {"random_mean_flow": False}})
+    PS.internalize(v.model_dump(exclude_unset=True), kol)
+    check(True, "kolmogorov accepts an inert init.random_mean_flow")
 
 
 def case_cli_parse() -> None:
@@ -260,11 +264,12 @@ def case_deferred() -> None:
 
     kol = spec_for("kolmogorov")
     model = PS.build_surface_model(kol, settings=False)
-    for field, value in (
-        ("u_grid", 0.5),
-        ("u_grid", 0.0),  # even zero: the field is deferred wholesale
+    for section, field, value in (
+        ("phys", "u_grid", 0.5),
+        ("phys", "u_grid", 0.0),  # even zero: deferred wholesale
+        ("init", "random_mean_flow", True),
     ):
-        v = model.model_validate({"phys": {field: value}})
+        v = model.model_validate({section: {field: value}})
         try:
             PS.internalize(v.model_dump(exclude_unset=True), kol)
             check(False, f"kolmogorov {field}={value} deferred")
@@ -274,6 +279,19 @@ def case_deferred() -> None:
                 f"kolmogorov {field}={value} deferred",
                 ex,
             )
+
+    # The same knob on a non-Cartesian *wall-bounded* flow.
+    pipe_model = PS.build_surface_model(pipe, settings=False)
+    v = pipe_model.model_validate({"init": {"random_mean_flow": True}})
+    try:
+        PS.internalize(v.model_dump(exclude_unset=True), pipe)
+        check(False, "pipe random_mean_flow deferred")
+    except ValueError as ex:
+        check(
+            "not implemented yet" in str(ex),
+            "pipe random_mean_flow deferred",
+            ex,
+        )
 
 
 # ── Case D: update_parameters spec dispatch ──────────────────────────
@@ -497,7 +515,7 @@ def case_externalize() -> None:
             "ny": 24,
             "nz": 32,
             "fd_order": P.params.res.fd_order,
-            "consistent_imm": False,
+            "consistent_imm": P.params.res.consistent_imm,
             "double_precision": True,
         },
         "internalize_stored res",

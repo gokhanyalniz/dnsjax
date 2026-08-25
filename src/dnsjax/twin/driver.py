@@ -13,9 +13,18 @@ doi:10.1017/jfm.2026.11608.  Cartesian wall-bounded flows only
 singleton (grid, operators, jitted steppers, ``dt``), so their
 difference is purely dynamical.
 
-Launch exactly like the production solver (``mpirun -np N
-.venv/bin/dnsjax-twin ...``, from a scratch directory); the parameter
-surface is the flow's own plus the ``[twin]`` extension section below.
+Baseline cost, before any diagnostic: a twin run is **two solver runs
+sharing one program** -- 2 spectral states resident (4 under
+``cnab2``, which carries an RHS history per state) and 2 stepper calls
+per step, so plan `$\sim\!2\times$` the memory and `$\sim\!2\times$`
+the wall time of the same flow at the same resolution.  The timing
+line says ``2x steps per t`` for that reason.  What the ``[twin]``
+cadences add on top is priced in :class:`TwinParams`.
+
+Launch exactly like the production solver (``.venv/bin/dnsjax-twin
+...`` from a scratch directory, under ``mpirun -np N`` only when it is
+multi-process); the parameter surface is the flow's own plus the
+``[twin]`` extension section below.
 ``step.adaptive`` and the ``[force]`` section are rejected (uniform
 sampling; a kick would have to be applied identically to both states);
 ``[probes]`` applies to the **reference** state only, as do
@@ -25,7 +34,11 @@ Initial perturbation
 --------------------
 `$\delta$` is the divergence-free random field of
 :func:`dnsjax.ic.random_field.generate_random_state` (device-count
-independent, per-global-mode seeded, mean mode excluded), rescaled so
+independent, per-global-mode seeded; the mean mode follows the shared
+``init.random_mean_flow``, on by default here, and is then conditioned
+on the mean-mode conservation laws -- so under a held mean the partner
+carries the reference's bulk velocity exactly, and its mean profile
+differs only in ways the mean-mode dynamics admits), rescaled so
 the solver-measure perturbation energy is exactly ``twin.e0``:
 `$E'(\delta) = \|\delta\|^2/2 = e_0$` -- the convention of
 ``snapshot_perturb --perturb.amplitude_energy``.  ``twin.e0 = 0``
@@ -101,7 +114,14 @@ from time import perf_counter_ns
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..__main__ import _flush_stats, _interpolate_if_needed
+from ..__main__ import (
+    _flush_stats,
+    _interpolate_if_needed,
+    _write_dat_header,
+)
+from ..__main__ import (
+    _stats_row as _row,
+)
 from ..bootstrap import configure_jax_runtime, resolve_parameters
 from ..extensions import (
     ParamExtension,
@@ -171,6 +191,10 @@ class TwinParams(BaseModel):
       double-precision plane-Poiseuille target.  If it ever binds,
       the two ways to trade transforms for footprint are in
       :mod:`dnsjax.twin.diagnostics`' "Budget terms".
+      In *time* it is equally unsubtle: one sample costs
+      `$\sim\!0.9$` of a twin step (measured, size-independent over
+      `$48^3$`-`$64^3$`), so ``it_budget = 1`` nearly doubles the
+      run and `$10$` costs `$\sim\!9\,\%$`.
     - ``spectra_ref`` is a **disk** knob only.  The reference
       spectrum is reduced whether or not it is stored
       (:func:`dnsjax.twin.diagnostics.twin_spectra_2d` returns both),
@@ -180,9 +204,13 @@ class TwinParams(BaseModel):
     ``it_energy`` is the one per-*step* cost at its default of 1: an
     extra jitted call per step whose ``delta`` and ``du1`` are each
     read four times, so both materialise (~2 full-state complex
-    temporaries).  That is the intended Lyapunov sampling rate; the
+    temporaries).  It is **a few percent of a twin step** -- 1.3 % at
+    plane-Couette `$48^3$`, 5.0 % at `$64^3$` (the rise is the
+    working set leaving cache; the step itself is pure FFT/solve
+    work either way) -- so the default needs no tuning, which is
+    just as well: it is the intended Lyapunov sampling rate.  The
     ``E_d`` vs ``E_dU + E_du1 + E_du2`` redundancy is a deliberate
-    consistency guard.
+    consistency guard and is not worth trading for that few percent.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -324,9 +352,10 @@ class _ScalarStream:
     with the index reset on **all** ranks (lockstep) -- factored as a
     class because the twin driver runs several streams.  Rows are
     written by the shared :func:`dnsjax.__main__._flush_stats`
-    (append + ``fsync`` + post-write non-finite scan); the header is
-    written once, only when the file does not exist, so a resume
-    appends.  :meth:`push` fill-flushes when the buffer is full;
+    (append + ``fsync`` + post-write non-finite scan) and the header
+    by :func:`dnsjax.__main__._write_dat_header`, once and only when
+    the file does not exist, so a resume appends.  :meth:`push`
+    fill-flushes when the buffer is full;
     both methods return the non-finite diagnostic message (main
     process only) and the caller aborts on it.
     """
@@ -348,11 +377,7 @@ class _ScalarStream:
         self._ts: list[float] = []
         self._idx: int = 0
         if sharding.main_device and not self.path.exists():
-            header = " ".join(
-                n.rjust(self._col_width) for n in ["t"] + self.names
-            )
-            with open(self.path, "w") as f:
-                f.write(header + "\n")
+            _write_dat_header(self.path, ["t"] + self.names, self._col_width)
 
     def push(self, values, t: float) -> str | None:
         """Buffer one row; flush (checked) when the buffer fills."""
@@ -403,6 +428,7 @@ def run(wall_time_start: int) -> None:
     _flow_mod = importlib.import_module(_spec.flow_module)
     get_perturbation_energy = _flow_mod.get_perturbation_energy
     get_stats = _flow_mod.get_stats
+    get_driving = getattr(_flow_mod, "get_driving", None)
     predict_and_fully_correct = _flow_mod.predict_and_fully_correct
     predict_and_fully_correct_measured = (
         _flow_mod.predict_and_fully_correct_measured
@@ -582,7 +608,18 @@ def run(wall_time_start: int) -> None:
                 math.sqrt(2.0 * twin_params.e0),
                 twin_params.smoothness,
                 twin_params.seed,
-                False,
+                # mean_flow: the shared ``init.random_mean_flow`` (on
+                # by default for the Cartesian flows this driver
+                # supports), not a separate ``[twin]`` knob.  The
+                # partner's (0, 0) perturbation is conditioned on the
+                # mean-mode conservation laws
+                # (:mod:`dnsjax.ic.mean_mode`), so under a held mean it
+                # shares the reference's bulk velocity exactly and the
+                # difference field's mean profile is a genuine
+                # perturbation direction rather than a bookkeeping
+                # artefact.  ``--init.random_mean_flow False`` gives
+                # the mean-free partner this used to hardcode.
+                params.init.random_mean_flow,
             )
             if grid_before is not None and not np.allclose(
                 np.asarray(grid_before),
@@ -718,17 +755,43 @@ def run(wall_time_start: int) -> None:
         last_saved_it = it
 
     # --- Streams ---------------------------------------------------------
+    # Applied mean-mode driving (the ``stats.dat`` / ``twin.dat`` last
+    # columns): a *step* quantity threaded out of the corrector, so the
+    # ``t = t0`` rows -- which have no step behind them -- carry the
+    # wall-shear inference instead (``get_driving``).  That difference
+    # is exactly zero at ``t0`` for a mean-free partner
+    # (``ic/localized_rolls``, or ``init.random_mean_flow False``) and
+    # nonzero for a mean-perturbed one, which is correct: the partner
+    # then genuinely starts at a different wall shear.
+    # ``get_driving`` takes the
+    # *physical* view of a state; this driver is Cartesian-only, whose
+    # solver basis **is** the physical one (no ``to_solver_basis``
+    # anywhere here), so the states below satisfy that as they stand.
+    _drive0 = get_driving(state1) if get_driving is not None else {}
+    last_drive1 = dict(_drive0)
+    if get_driving is not None:
+        _d2 = get_driving(state2)
+        last_drive_d = {f"{k}_d": _d2[k] - _drive0[k] for k in _drive0}
+    else:
+        last_drive_d = {}
+
     stats_stream = None
     if params.outs.it_stats is not None:
         stats_stream = _ScalarStream(
-            "stats.dat", stats.keys(), jnp=jnp, sharding=sharding
+            "stats.dat",
+            list(stats.keys()) + list(last_drive1.keys()),
+            jnp=jnp,
+            sharding=sharding,
         )
-        stats_stream.push(jnp.stack(list(stats.values())), t)
+        stats_stream.push(_row(stats, last_drive1), t)
 
     twin_stream = _ScalarStream(
-        "twin.dat", tvals.keys(), jnp=jnp, sharding=sharding
+        "twin.dat",
+        list(tvals.keys()) + list(last_drive_d.keys()),
+        jnp=jnp,
+        sharding=sharding,
     )
-    twin_stream.push(jnp.stack(list(tvals.values())), t)
+    twin_stream.push(_row(tvals, last_drive_d), t)
 
     budget_stream = None
     if measure_budget:
@@ -755,8 +818,8 @@ def run(wall_time_start: int) -> None:
     scheme: str = params.step.scheme
     is_cnab2: bool = scheme == "cnab2"
     if is_cnab2:
-        _, rhs1, _, _ = step_cnab2(jnp.copy(state1), jnp.zeros_like(state1))
-        _, rhs2, _, _ = step_cnab2(jnp.copy(state2), jnp.zeros_like(state2))
+        _, rhs1, *_ = step_cnab2(jnp.copy(state1), jnp.zeros_like(state1))
+        _, rhs2, *_ = step_cnab2(jnp.copy(state2), jnp.zeros_like(state2))
 
     # --- Steps (CFL) stream: reference state only ------------------------
     measure_steps: bool = params.outs.it_steps is not None
@@ -765,9 +828,7 @@ def run(wall_time_start: int) -> None:
         if is_cnab2:
             *_, meas = step_cnab2_measured(jnp.copy(state1), jnp.copy(rhs1))
         else:
-            _, _, _, meas = predict_and_fully_correct_measured(
-                jnp.copy(state1)
-            )
+            *_, meas = predict_and_fully_correct_measured(jnp.copy(state1))
         if it % params.outs.it_steps == 0 and params.outs.it_steps != 1:
             # The first loop iteration runs the measured variant; the
             # unmeasured program would otherwise compile inside the
@@ -883,12 +944,12 @@ def run(wall_time_start: int) -> None:
         if do_stats or do_snapshot:
             stats = get_stats(state1)
         if do_stats:
-            bad = stats_stream.push(jnp.stack(list(stats.values())), t)
+            bad = stats_stream.push(_row(stats, last_drive1), t)
             if bad is not None:
                 _abort_non_finite(bad)
         if do_twin:
             tvals = twin_energies(state1, state2)
-            bad = twin_stream.push(jnp.stack(list(tvals.values())), t)
+            bad = twin_stream.push(_row(tvals, last_drive_d), t)
             if bad is not None:
                 _abort_non_finite(bad)
         if do_budget:
@@ -916,20 +977,36 @@ def run(wall_time_start: int) -> None:
         do_record = measure_steps and it % params.outs.it_steps == 0
         if is_cnab2 and it > it0:
             if do_record:
-                state1, rhs1, e1_dev, c1_dev, meas = step_cnab2_measured(
-                    state1, rhs1
-                )
+                (
+                    state1,
+                    rhs1,
+                    e1_dev,
+                    c1_dev,
+                    drive1,
+                    meas,
+                ) = step_cnab2_measured(state1, rhs1)
             else:
-                state1, rhs1, e1_dev, c1_dev = step_cnab2(state1, rhs1)
-            state2, rhs2, e2_dev, c2_dev = step_cnab2(state2, rhs2)
+                state1, rhs1, e1_dev, c1_dev, drive1 = step_cnab2(state1, rhs1)
+            state2, rhs2, e2_dev, c2_dev, drive2 = step_cnab2(state2, rhs2)
         else:
             if do_record:
-                state1, e1_dev, c1_dev, meas = (
-                    predict_and_fully_correct_measured(state1)
-                )
+                (
+                    state1,
+                    e1_dev,
+                    c1_dev,
+                    drive1,
+                    meas,
+                ) = predict_and_fully_correct_measured(state1)
             else:
-                state1, e1_dev, c1_dev = predict_and_fully_correct(state1)
-            state2, e2_dev, c2_dev = predict_and_fully_correct(state2)
+                state1, e1_dev, c1_dev, drive1 = predict_and_fully_correct(
+                    state1
+                )
+            state2, e2_dev, c2_dev, drive2 = predict_and_fully_correct(state2)
+        # The reference's own applied driving, and the difference the
+        # twin streams: both belong to the step just taken, so they are
+        # bound here and consumed by the *next* iteration's rows.
+        last_drive1 = drive1
+        last_drive_d = {f"{k}_d": drive2[k] - drive1[k] for k in drive1}
 
         if do_record:
             bad = steps_stream.push(jnp.stack(list(meas.values())), t)
@@ -1020,8 +1097,8 @@ def run(wall_time_start: int) -> None:
                 f"at t = {t:.6e}, it = {it}"
             )
         if stats_stream is not None:
-            stats_stream.push(jnp.stack(list(stats.values())), t)
-        twin_stream.push(jnp.stack(list(tvals.values())), t)
+            stats_stream.push(_row(stats, last_drive1), t)
+        twin_stream.push(_row(tvals, last_drive_d), t)
         if measure_budget:
             budget_stream.push(jnp.stack(list(bvals.values())), t)
 

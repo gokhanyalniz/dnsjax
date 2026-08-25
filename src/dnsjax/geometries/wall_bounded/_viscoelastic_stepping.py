@@ -49,6 +49,7 @@ member                           what it owns
 ``hc_spin_bases``                the per-spin `$A_{\mathrm{base}}$`
                                  (parity-selected, banded or dense)
 ``imm_iteration``                the velocity influence-matrix pass
+                                 (returns its corrector *aux* too)
 ``velocity_l_bf``                the velocity base/mean-flow coupling
 ``base_dt_leaves``               the velocity ``dt``-dependent leaves
 ===============================  ====================================
@@ -84,7 +85,7 @@ from ...solvers import (
     _build_pallas_operator,
     _factor_pallas_operator,
 )
-from ._base import extract_mean_mode
+from ._base import extract_mean_mode, from_pm_basis
 from ._viscoelastic_common import (
     combined_norm,
     conformation_coupling_core,
@@ -571,10 +572,19 @@ def _conformation_coupling(
     if params.step.implicit_mean_coupling:
         # Instantaneous mean velocity profile (u_z, u_r, u_theta); the
         # mean u_r is structurally 0, so its d_r term vanishes.
-        u_z, u_plus, u_minus = state[0], state[1], state[2]
-        u_r = (u_plus + u_minus) / 2
-        u_th = -0.5j * (u_plus - u_minus)
-        mean_vel = extract_mean_mode(jnp.array([u_z, u_r, u_th]))  # (3, Nr)
+        #
+        # Extract from the *carried* (spin) state and cross the basis
+        # on the resulting (3, N_r) column, rather than assembling a
+        # physical triad to hand the extractor: the two are
+        # bit-identical (extraction is a copy, so combining before or
+        # after gives the same floats), but the assembled triad is a
+        # field-sized array built only to be read at ``[:, :, 0, 0]``
+        # and discarded -- a ``shard_map`` operand, so XLA cannot sink
+        # that slice back into its producer (see
+        # :func:`._base.extract_mean_modes`).  ``state`` is passed
+        # whole for the same reason: ``state[:3]`` would be the copy
+        # again.
+        mean_vel = from_pm_basis(extract_mean_mode(state)[:3])  # (3, Nr)
         # Mean velocity gradient profiles: D1 on the bare (N_r,) mean
         # profiles, at the spin weight of each (0 for u_z, 1 for
         # u_theta -- only the pipe reads it, as its axis parity).
@@ -695,7 +705,7 @@ def _correct(
     rhs_next: Array,
     fourier_: Fourier,
     flow_: ViscoelasticFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     """Coupled velocity-IMM + conformation-CN corrector.
 
     Velocity: the geometry's influence-matrix iteration
@@ -705,7 +715,7 @@ def _correct(
     correction stacks both so the single convergence norm covers `$u$`
     and `$c$`.
     """
-    vel_new, vel_corr = flow_.imm_iteration(
+    vel_new, vel_corr, aux = flow_.imm_iteration(
         state_prev[:3],
         prediction[:3],
         rhs_prev[:3],
@@ -718,7 +728,7 @@ def _correct(
     c_corr = c_new - prediction[3:]
     state_new = jnp.concatenate([vel_new, c_new])
     correction = jnp.concatenate([vel_corr, c_corr])
-    return state_new, correction
+    return state_new, correction, aux
 
 
 def _predict(
@@ -728,7 +738,7 @@ def _predict(
     flow_: ViscoelasticFlow,
 ) -> Array:
     """Euler predictor (nonlinear at `$u^n$`, viscous/diffusive CN)."""
-    prediction, _ = _correct(
+    prediction, _, _ = _correct(
         state_n, state_n, rhs_no_lapl, rhs_no_lapl, fourier_, flow_
     )
     return prediction

@@ -45,27 +45,28 @@ wall-normal / `$k_y$` axis is outermost.
 
 I/O granularity and memory
 --------------------------
-No transpose is ever performed, and every transferred **span** is a
-C-contiguous view of a device shard (:func:`_a_spans`).  A span is
-the largest *file-contiguous* piece of the chunk a device owns, and
-which pieces those are is decided by **which axis the device's shard
-is cut along**.  The chunk is the C-ordered global array
-``(A, kz, kx)`` (``A`` = the wall-normal / `$k_y$` axis), so its
-slowest-varying axis is ``A`` and its fastest is `$k_x$`.
+No transpose is ever performed, and every transfer is one
+C-contiguous **slab**: a device's whole range of the chunk's slowest
+axis, for one component.  Which pieces of the file a device holds is
+decided by **which axis its shard is cut along**.  The chunk is the
+C-ordered global array ``(A, kz, kx)`` (``A`` = the wall-normal /
+`$k_y$` axis), so its slowest-varying axis is ``A`` and its fastest
+is `$k_x$`.
 
 The solver layout shards the two *fastest* axes (`$k_z$` by ``np0``,
 `$k_x$` by ``np1``), which is the worst possible cut for this file:
 with ``np1 > 1`` every ``kx_true``-element row is divided between the
-``np1`` devices, so a device's spans are its own ``local_kx`` block --
-512 B at ``256 x 193 x 256, np1 = 4``, and ``3 x 193 x 255`` of them
-per device.  **Measured on BeeGFS: 90 s to save a 288 MiB state**
-(151.7 µs per span), against 1.7 s for the same state at ``np1 = 1``.
+``np1`` devices, so a device's pieces are its own ``local_kx`` block
+-- 512 B at ``256 x 193 x 256, np1 = 4``, and ``3 x 193 x 255`` of
+them per device.  **Measured on BeeGFS: 90 s to save a 288 MiB
+state** (151.7 µs per transfer), against 1.7 s for the same state at
+``np1 = 1``.
 
 So the state is resharded once per save onto an **I/O layout**
 (:func:`_io_spec`) that cuts the *slowest* axis instead: each device
 takes a contiguous slab of ``A`` and holds `$k_z$`/`$k_x$` whole, and
 its bytes become one contiguous range per component --
-``n_components * ndev`` spans of tens of MiB instead of ~1e5 of
+``n_components * ndev`` transfers of tens of MiB instead of ~1e5 of
 512 B.  Reads take the mirror path (read the slabs, reshard back).
 The cost is one exchange per save/load -- **one jitted program**,
 routed one mesh axis at a time (:func:`_to_io_layout` says what each
@@ -73,10 +74,19 @@ of those buys, in measured milliseconds) -- plus a transient second
 copy of the state, distributed one local shard per device.  A
 single-device mesh already *is* the I/O layout and pays neither.
 
-Only *spectral padding* can still fragment a span, and only in the
-buffer: an unpadded local buffer gives one span per component, a
-`$k_z$`-padded one gives one per ``A`` row, and a `$k_x$`-padded one
-falls back to one per ``(a, k_z)`` row.
+That count is ``n_components * ndev`` on **every** mesh, not only an
+unpadded one, because the reshard also trims the solver layout's
+divisibility padding: the I/O buffer carries the *true* mode counts,
+so it **is** the device's byte range rather than a padded superset of
+it (:func:`_to_io_layout_core`, :func:`_io_local_shape`).  Without
+that trim one padded mode in a *middle* axis breaks the contiguity of
+the whole component -- and `$n_z - 1$` being odd forces exactly that
+on any even ``np0``: one transfer per ``A`` row, 49 of 0.5 MiB rather
+than one of 25 MiB at ``256 x 193 x 256`` on four devices.  A padded
+`$k_x$` falls further, to one transfer per ``(a, k_z)`` row: measured
+at ``ny = 49, nz = 16, nx = 6`` on four devices, 2205 writes of 48 B
+against 12 of 8.8 kiB.  Neither needs an exotic grid -- ``np1`` just
+happens to divide ``nx // 2`` for the usual power-of-two ``nx``.
 
 This is **not** the pre-v5 layout change.  The store is still one
 fixed np-independent global array in the native order (that is what
@@ -92,13 +102,17 @@ state):
 engine                   GPU extra        host extra
 =======================  ===============  =====================
 GDS (write and read)     one local shard  --
-Host + cupy (w and r)    one local shard  one span (a component
-                                          slab)
+Host + cupy (w and r)    one local shard  one slab (a component
+                                          of a shard)
 Host, no cupy (w and r)  one local shard  one shard
 =======================  ===============  =====================
 
 The "one local shard" column is the reshard's transient second copy,
-which every engine pays; it is absent on a single-device mesh.
+which every engine pays; it is absent on a single-device mesh.  The
+padding trim inside the reshard is free of it in the usual case --
+it replaces the leading-axis pad's buffer rather than adding one --
+and costs a second such transient only when the device count divides
+``A`` exactly *and* a mode axis is padded.
 
 I/O engine
 ----------
@@ -116,15 +130,15 @@ component base offsets are the tar members' ``offset_data`` (read
 back via ``tarfile``, so 512-aligned -- a tar block -- but not
 generally 4096-aligned, which is what cuFile's direct path prefers.
 That costs a bounce buffer for the head and tail of a transfer, so
-it was a real penalty when a span was 512 B and is a rounding error
-now that the I/O layout makes it tens of MiB).
+it was a real penalty when a transfer was 512 B and is a rounding
+error now that the I/O layout makes it tens of MiB).
 TensorStore is used only to generate the ``zarr.json`` bytes (in a
 throwaway temporary directory); compression is never used (it would
 break random-access streaming).
 
 - **GDS** (NVIDIA GPUDirect Storage): when ``kvikio`` and ``cupy``
-  are available, spans move directly between GPU memory and disk.
-- **Host + cupy** (NVIDIA GPU, no GDS): spans are transferred one
+  are available, slabs move directly between GPU memory and disk.
+- **Host + cupy** (NVIDIA GPU, no GDS): slabs are transferred one
   at a time with ``cupy.asnumpy`` (write) or ``cupy.ndarray.set``
   (read).
 - **Host, no cupy** (CPU runs, non-NVIDIA GPUs): the full shard
@@ -159,6 +173,23 @@ holds the state's physical diagnostics (the ``get_stats`` dict as
 ``{name: value}``); readers that do not need it simply ignore the
 extra member.
 
+Resolution changes at load
+--------------------------
+A resume may change **any** resolution axis; nothing about the read
+requires the current run to match the file.  The per-device slabs are
+sized and offset from the stored ``native_shape``, and
+:func:`_from_io_layout_core` then regrids each axis on the layout
+where that axis is local, at no extra collective: the real-FFT
+`$k_x$` half axis by a plain truncate-or-append, the wrap-ordered
+`$k_z$` (and, for the periodic family, the leading `$k_y$`) by
+:func:`_resize_wrapped_axis`, which inserts or drops modes at the
+high-`$|k|$` end so every surviving mode keeps its wavenumber and the
+`$k_x = 0$` plane stays Hermitian-symmetric.  The wall-bounded leading
+axis is the FD wall-normal one and is left at the stored length for
+``__main__._interpolate_if_needed``.  What this does **not** do is
+re-interpret wavenumbers: a `$L_x$` / `$L_z$` change alongside a mode
+change rescales `$k = 2\pi q / L$` for the survivors too.
+
 The on-disk format is ``format_version: 6``: the solver's native
 spectral layout, physical components in every family
 (cylindrical/annular `$u_r$`, `$u_\theta$` and the physical
@@ -171,7 +202,7 @@ snapshots are rejected at read
 
 import json
 import math
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from functools import cache, partial
 from pathlib import Path
 
@@ -284,8 +315,9 @@ def _gds_available() -> bool:
 def _require_dense(vec) -> None:
     """Reject a non-C-contiguous device view before it is written.
 
-    Every span :func:`_a_spans` yields is a prefix slice, contiguous
-    only if the array it slices is dense row-major.  kvikIO reads
+    The slab each device transfers is a leading-axis prefix slice,
+    contiguous only if the array it slices is dense row-major.  kvikIO
+    reads
     ``__cuda_array_interface__`` and cupy's dlpack import honours
     whatever strides it is handed, so a non-default XLA layout would
     transfer the *wrong bytes* with no error at all -- silent
@@ -297,7 +329,7 @@ def _require_dense(vec) -> None:
         raise ValueError(
             "snapshot I/O requires a dense row-major device buffer, "
             f"got strides {vec.strides} for shape {vec.shape}; the "
-            "span offsets assume C-contiguous storage."
+            "slab offsets assume C-contiguous storage."
         )
 
 
@@ -371,7 +403,7 @@ def _device_ranges(
     return kz_start, local_kz_true, kx_start, local_kx_true
 
 
-# ── The I/O layout and its spans ──────────────────────────
+# ── The I/O layout and its slabs ──────────────────────────
 
 
 def _n_devices() -> int:
@@ -386,14 +418,15 @@ def _io_spec():
     ``(A, kz_true, kx_true)``, so its *slowest*-varying axis is the
     leading one (the wall-normal `$y$` / `$k_y$` axis, unsharded in
     the solver layout).  Splitting **that** axis across every device
-    -- and leaving `$k_z$` and `$k_x$` whole -- makes each device's
-    bytes one contiguous file range per component.
+    -- and leaving `$k_z$` and `$k_x$` whole, at the true mode counts
+    (:func:`_to_io_layout_core` trims the padding) -- makes each
+    device's bytes one contiguous file range per component.
 
     The solver layout shards the two *fastest* axes instead (`$k_z$`
     by ``np0``, `$k_x$` by ``np1``), which is why a device's bytes
     are fragmented there: with ``np1 > 1`` every ``kx_true``-element
-    file row is divided between the ``np1`` devices, leaving spans of
-    ``local_kx`` elements. :func:`_to_io_layout` therefore reshards
+    file row is divided between the ``np1`` devices, leaving pieces
+    of ``local_kx`` elements. :func:`_to_io_layout` therefore reshards
     once per save (and :func:`load_snapshot` reshards back after the
     read); the measured reason is in the module docstring.
     """
@@ -428,23 +461,111 @@ def _a_ranges(flat_idx: int, a_true: int, ndev: int) -> tuple[int, int]:
     return a_start, max(0, min(a_start + a_local, a_true) - a_start)
 
 
-def _io_local_shape(a_true: int) -> tuple[int, ...]:
-    """Per-device buffer shape in the I/O layout.
+def _io_local_shape(
+    a_true: int, kz_true: int, kx_true: int
+) -> tuple[int, ...]:
+    r"""Per-device buffer shape in the I/O layout.
 
     The leading axis is this device's (padded) slab; `$k_z$` and
-    `$k_x$` are whole, at the *current* mesh's padded spectral sizes
-    (``validate_snapshot_params`` has already enforced that the true
-    mode counts match, so only the padding can differ).
+    `$k_x$` are whole and at the **true** mode counts, the solver
+    layout's divisibility padding having been trimmed off inside the
+    reshard (:func:`_to_io_layout_core`).  So the buffer *is* the
+    device's byte range in the file: one contiguous slab per
+    component, whatever the mesh pads.
+
+    The mode counts are passed in rather than read from ``params``
+    because a read's are the **stored** ones, which a resolution-change
+    resume leaves differing from the current run's: the buffer has to
+    match the file (the offsets come from the same stored
+    ``native_shape``), and :func:`_from_io_layout_core` regrids the
+    modes afterwards.  The save path passes the current counts, which
+    are the stored ones by definition.
     """
     return (
         _n_components(),
         _a_local(a_true, _n_devices()),
-        sharding.nz_spec,
-        sharding.nx_spec,
+        kz_true,
+        kx_true,
     )
 
 
-def _via_mid(state: Array, target) -> Array:
+def _a_offset(a_start: int, kz_true: int, kx_true: int) -> int:
+    r"""First element index of a leading-axis slab in a component chunk.
+
+    The chunk is the C-ordered ``(A, kz_true, kx_true)`` global array
+    and a device owns whole `$(k_z, k_x)$` planes at the true mode
+    counts, so its slab is the single contiguous element range
+    ``[off, off + na * kz_true * kx_true)`` starting here -- the same
+    range in the file and in the local buffer, in the same order, with
+    no transpose and no fragmentation.  The one place the arithmetic
+    is written down; ``native_shape``, the shape it is derived from, is
+    cross-checked against the chunks in
+    :func:`dnsjax.snapshot_meta.snapshot_component_offsets`.
+    """
+    return a_start * kz_true * kx_true
+
+
+def _trim_axis(state: Array, axis: int, n_true: int) -> Array:
+    """Slice *axis* down to its true mode count (no-op when unpadded)."""
+    if state.shape[axis] == n_true:
+        return state
+    idx = [slice(None)] * state.ndim
+    idx[axis] = slice(0, n_true)
+    return state[tuple(idx)]
+
+
+def _pad_axis(state: Array, axis: int, n_padded: int) -> Array:
+    """Zero-pad *axis* up to *n_padded* (no-op when already there)."""
+    if state.shape[axis] == n_padded:
+        return state
+    pad = [(0, 0)] * state.ndim
+    pad[axis] = (0, n_padded - state.shape[axis])
+    return jnp.pad(state, pad)
+
+
+def _resize_wrapped_axis(
+    state: Array, axis: int, m_src: int, m_dst: int
+) -> Array:
+    r"""Regrid a stored full-complex axis from *m_src* to *m_dst* modes.
+
+    The spectral half of a resolution-change resume: growing the axis
+    inserts zeros at the high-`$|k|$` end (between the non-negative and
+    negative blocks of the FFT wrap order), shrinking drops the
+    outermost modes of both blocks.  Every surviving mode keeps its
+    wavenumber, so a mode's *meaning* is preserved -- unless the box
+    length changed with it, which re-scales `$k = 2\pi q / L$` for all
+    of them.  The block split comes from the JAX-free
+    :func:`dnsjax.harmonics.stored_mode_counts`, the same leaf that
+    defines the ordering.
+
+    A no-op when the counts agree, so the unchanged-resolution path
+    compiles to exactly what it did before.  *axis* must be **local**
+    on the caller's layout (a sharded axis cannot be sliced); the
+    zeros come from :func:`_pad_axis`, so they inherit the surrounding
+    array's sharding rather than needing a spec of their own.
+    """
+    if m_src == m_dst:
+        return state
+    from .harmonics import stored_mode_counts
+
+    pos_src, neg_src = stored_mode_counts(m_src)
+    pos_dst, neg_dst = stored_mode_counts(m_dst)
+    keep_pos, keep_neg = min(pos_src, pos_dst), min(neg_src, neg_dst)
+
+    idx = [slice(None)] * state.ndim
+    idx[axis] = slice(0, keep_pos)
+    # ``_pad_axis`` appends the zeros; growing puts them exactly where
+    # the wrap order wants them, between the two kept blocks.
+    head = _pad_axis(state[tuple(idx)], axis, m_dst - keep_neg)
+    if keep_neg == 0:
+        return head
+    idx[axis] = slice(m_src - keep_neg, m_src)
+    return jnp.concatenate([head, state[tuple(idx)]], axis=axis)
+
+
+def _via_mid(
+    state: Array, target, mid_fn: Callable[[Array], Array] | None = None
+) -> Array:
     r"""Reshard *state* to *target*, moving one mesh axis per step.
 
     **Trace-time only** -- both callers wrap it in :func:`jax.jit`,
@@ -464,35 +585,89 @@ def _via_mid(state: Array, target) -> Array:
     axis move, which SPMD does express as an all-to-all.  On a 1D mesh
     one of the two legs is the identity (the intermediate spec equals
     the source or the target), so this costs nothing there.
+
+    *mid_fn* is applied **on** the intermediate layout, the one point
+    in either direction where `$k_z$` is local; the callers use it to
+    trim and restore the mode padding (:func:`_to_io_layout_core`).
     """
     mid = P(None, sharding.a0, None, sharding.a1)
     state = jax.sharding.reshard(state, NamedSharding(sharding.mesh, mid))
+    if mid_fn is not None:
+        state = mid_fn(state)
     return jax.sharding.reshard(state, NamedSharding(sharding.mesh, target))
 
 
 @jax.jit
 def _to_io_layout_core(state: Array) -> Array:
-    """Pad the leading axis and reshard, as **one** jitted program."""
-    ndev = _n_devices()
-    a_true = state.shape[1]
-    a_pad = _a_local(a_true, ndev) * ndev
-    if a_pad != a_true:
-        pad = [(0, 0)] * state.ndim
-        pad[1] = (0, a_pad - a_true)
-        state = jnp.pad(state, pad)
-    return _via_mid(state, _io_spec())
+    r"""Pad the leading axis, reshard, and trim to the true modes.
 
+    **One** jitted program, and *where* each trim sits is what makes it
+    free.  The solver layout pads `$k_z$` to a multiple of ``np0`` and
+    `$k_x$` to a multiple of ``np1``, neither of which the file has;
+    trimming them here rather than in the writers is what leaves every
+    device with one contiguous slab per component on **every** mesh
+    (see the module docstring).  A sharded axis cannot be sliced, so
+    each trim goes where its axis is local -- `$k_z$` on the mid
+    layout, `$k_x$` on the I/O layout -- which is also immediately
+    before the next collective, so the trimmed array *replaces* the
+    untrimmed one in the liveness window instead of adding to it.
 
-@partial(jax.jit, static_argnums=(1,))
-def _from_io_layout_core(state: Array, a_true: int) -> Array:
-    """Reshard back to the solver layout and drop the padding.
-
-    The slice has to follow the reshard: the leading axis is sharded
-    until then, and slicing a sharded axis is the ``ShardingTypeError``
-    trap.
+    A trim is a no-op exactly when its mesh axis is 1
+    (``round_up_padded(n, 1) == n``), i.e. exactly when the leg it
+    follows is the identity: a grid that pads nothing compiles to the
+    reshard alone.
     """
-    state = _via_mid(state, sharding.spec_vector_shard)
-    return state if state.shape[1] == a_true else state[:, :a_true]
+    ndev = _n_devices()
+    state = _pad_axis(state, 1, _a_local(state.shape[1], ndev) * ndev)
+    state = _via_mid(state, _io_spec(), lambda x: _trim_axis(x, 2, _kz_true()))
+    return _trim_axis(state, 3, _kx_true())
+
+
+@partial(jax.jit, static_argnums=(1, 2, 3, 4))
+def _from_io_layout_core(
+    state: Array,
+    a_true: int,
+    kz_src: int,
+    kx_src: int,
+    ky_dst: int | None,
+) -> Array:
+    r"""Restore the mode padding, reshard back, drop the slab padding.
+
+    The exact mirror of :func:`_to_io_layout_core`, and for the same
+    reasons: each mode axis is re-padded where it is local (`$k_x$` on
+    the I/O layout, `$k_z$` on the mid one), and the leading-axis slice
+    has to follow the reshard because that axis is sharded until then
+    -- slicing a sharded axis is the ``ShardingTypeError`` trap.
+
+    It is also where a **resolution-change** resume regrids the Fourier
+    axes, for exactly the same locality reason, and at no extra
+    collective: *kz_src* / *kx_src* are the snapshot's stored mode
+    counts, and each axis is resized to the current run's on the same
+    layout that then re-pads it.  `$k_x$` is the real-FFT half axis, so
+    there it is a plain truncate-or-append (:func:`_trim_axis` /
+    :func:`_pad_axis`); `$k_z$` is wrap-ordered and goes through
+    :func:`_resize_wrapped_axis`.  *ky_dst* is the periodic family's
+    third Fourier axis (``res.ny - 1``), local only after the final
+    reshard; ``None`` for wall-bounded, whose leading axis is the FD
+    wall-normal one and is re-gridded later by
+    ``__main__._interpolate_if_needed``.
+    """
+    state = _pad_axis(
+        _trim_axis(state, 3, min(kx_src, _kx_true())), 3, sharding.nx_spec
+    )
+    state = _via_mid(
+        state,
+        sharding.spec_vector_shard,
+        lambda x: _pad_axis(
+            _resize_wrapped_axis(x, 2, kz_src, _kz_true()),
+            2,
+            sharding.nz_spec,
+        ),
+    )
+    state = state if state.shape[1] == a_true else state[:, :a_true]
+    if ky_dst is None:
+        return state
+    return _resize_wrapped_axis(state, 1, a_true, ky_dst)
 
 
 def _to_io_layout(state: Array) -> Array:
@@ -501,8 +676,10 @@ def _to_io_layout(state: Array) -> Array:
     One exchange per save, against ~1e5 serialized 512 B writes per
     device without it.  Costs a transient second copy of the state,
     distributed -- one local shard per device.  A single-device mesh
-    already *is* the I/O layout, so it reshards nothing and pays
-    neither.
+    already *is* the I/O layout down to the padding (``np0 = np1 = 1``
+    pads no axis, so the trims and the slab pad in
+    :func:`_to_io_layout_core` are all no-ops), so it reshards nothing
+    and pays neither.
 
     **The exchange must be one jitted program.**  Expressed eagerly --
     a :func:`jax.device_put` per leg -- the runtime redistributes
@@ -516,59 +693,6 @@ def _to_io_layout(state: Array) -> Array:
     if _n_devices() == 1:
         return state
     return _to_io_layout_core(state)
-
-
-def _a_spans(
-    local_shape: tuple[int, ...],
-    a_start: int,
-    na: int,
-    kz_true: int,
-    kx_true: int,
-) -> Iterator[tuple[tuple, int, tuple[int, ...]]]:
-    r"""Yield ``(index, offset, shape)`` contiguous spans of a component.
-
-    Maps a device's leading-axis slab of a padded local component
-    array ``(a_local, local_kz, local_kx)`` onto its element ranges
-    inside the on-disk component chunk ``(A, kz_true, kx_true)`` --
-    the same row-major axis order, so no transpose exists.  Every
-    yielded ``comp[index]`` view is a C-contiguous prefix slice of
-    the C-contiguous local array (required by kvikIO and
-    ``readinto``; keep it that way), ``shape`` is the span's shape,
-    and the file ranges are disjoint and ascending.
-
-    In the I/O layout a device owns whole `$(k_z, k_x)$` planes, so
-    the only thing that can still fragment a span is *spectral
-    padding* in the local buffer -- the tiers below, largest first:
-
-    - no padding: **one span**, the device's whole slab of the
-      chunk (``na * kz_true * kx_true`` elements);
-    - ``local_kx == kx_true`` but ``local_kz > kz_true``: one span
-      per leading-axis row, of ``kz_true * kx_true`` elements;
-    - ``local_kx > kx_true``: one span per ``(a, k_z)`` row.
-    """
-    _, local_kz, local_kx = local_shape
-    if local_kx == kx_true and local_kz == kz_true:
-        yield (
-            (slice(0, na),),
-            a_start * kz_true * kx_true,
-            (na, kz_true, kx_true),
-        )
-        return
-    if local_kx == kx_true:
-        for a in range(na):
-            yield (
-                (a, slice(0, kz_true)),
-                (a_start + a) * kz_true * kx_true,
-                (kz_true, kx_true),
-            )
-        return
-    for a in range(na):
-        for kz in range(kz_true):
-            yield (
-                (a, kz, slice(0, kx_true)),
-                ((a_start + a) * kz_true + kz) * kx_true,
-                (kx_true,),
-            )
 
 
 # ── Geometry / shape helpers ──────────────────────────────
@@ -868,14 +992,14 @@ def _write_chunks_gds(
     comp_shape: tuple[int, ...],
     itemsize: int,
 ) -> None:
-    """Stream each local shard to the tar span-by-span via kvikIO.
+    """Stream each local shard to the tar slab-by-slab via kvikIO.
 
     Each component's chunk lives at ``comp_offsets[comp]`` inside the
     single archive; all writes are at that base plus the in-component
-    byte offset, directly from GPU memory (every span is a contiguous
-    view of the shard -- no staging, no copies).  *state* is already
-    in the I/O layout (:func:`_to_io_layout`), so a device's slab is
-    normally one write per component.
+    byte offset, directly from GPU memory (the slab is a contiguous
+    view of the shard -- no staging, no copies).  *state* is in the I/O
+    layout at the true mode counts (:func:`_to_io_layout`), so this is
+    exactly one write per component per device.
     """
     import cupy as cp
     import kvikio
@@ -889,29 +1013,22 @@ def _write_chunks_gds(
             continue
         cp_vec = cp.from_dlpack(shard.data)
         _require_dense(cp_vec)
+        off = _a_offset(a_start, kz_true, kx_true) * itemsize
         with cp_vec.device, kvikio.CuFile(str(tar_path), "r+") as f:
             for comp in range(_n_components()):
-                base = comp_offsets[comp]
-                for idx, off, _ in _a_spans(
-                    cp_vec.shape[1:], a_start, na, kz_true, kx_true
-                ):
-                    span = cp_vec[comp][idx]
-                    n = f.write(
-                        span,
-                        file_offset=base + off * itemsize,
+                slab = cp_vec[comp][:na]
+                n = f.write(slab, file_offset=comp_offsets[comp] + off)
+                # A short write leaves the sparse-reserved zeros of the
+                # skeleton in place -- a snapshot that loads fine and is
+                # blank in the middle.  The host writer guards this too,
+                # and the I/O layout made each slab tens of MiB, so
+                # there is something substantial to lose.
+                if n != slab.nbytes:
+                    raise OSError(
+                        f"short GDS write to {tar_path}: {n} of "
+                        f"{slab.nbytes} bytes (component {comp}); "
+                        "the archive is incomplete."
                     )
-                    # A short write leaves the sparse-reserved zeros of
-                    # the skeleton in place -- a snapshot that loads
-                    # fine and is blank in the middle.  The host writer
-                    # guards this too, and the I/O layout made each
-                    # span tens of MiB, so there is now something
-                    # substantial to lose.
-                    if n != span.nbytes:
-                        raise OSError(
-                            f"short GDS write to {tar_path}: {n} of "
-                            f"{span.nbytes} bytes (component {comp}); "
-                            "the archive is incomplete."
-                        )
 
 
 def _read_chunks_gds(
@@ -921,16 +1038,16 @@ def _read_chunks_gds(
     dtype: np.dtype,
 ) -> list[Array]:
     r"""Read each device's leading-axis slab via kvikIO into an
-    I/O-layout shard (np-agnostic), directly into GPU memory (every
-    span is a contiguous view of the shard -- no staging buffers).
-    The caller reshards the assembled array back to the solver
-    layout."""
+    I/O-layout shard (np-agnostic), directly into GPU memory (the slab
+    is a contiguous view of the shard -- no staging buffers), one read
+    per component.  The caller reshards the assembled array back to
+    the solver layout."""
     import cupy as cp
     import kvikio
 
     itemsize = dtype.itemsize
     a_true, kz_true, kx_true = comp_shape
-    local_shape = _io_local_shape(a_true)
+    local_shape = _io_local_shape(a_true, kz_true, kx_true)
     per_device: list[Array] = []
     for device in jax.local_devices():
         a_start, na = _a_ranges(
@@ -945,28 +1062,22 @@ def _read_chunks_gds(
         with cp.cuda.Device(_cuda_ordinal(device)):
             vec = cp.zeros(local_shape, dtype=dtype)
             if na > 0:
+                off = _a_offset(a_start, kz_true, kx_true) * itemsize
                 with kvikio.CuFile(str(tar_path), "r") as f:
                     for comp in range(_n_components()):
-                        base = comp_offsets[comp]
-                        for idx, off, _ in _a_spans(
-                            local_shape[1:], a_start, na, kz_true, kx_true
-                        ):
-                            span = vec[comp][idx]
-                            n = f.read(
-                                span,
-                                file_offset=base + off * itemsize,
+                        slab = vec[comp][:na]
+                        n = f.read(slab, file_offset=comp_offsets[comp] + off)
+                        # Short read = truncated archive; the buffer was
+                        # zero-allocated, so without this the tail of
+                        # the state silently stays blank (see the host
+                        # reader).
+                        if n != slab.nbytes:
+                            raise OSError(
+                                f"short GDS read from {tar_path}: "
+                                f"{n} of {slab.nbytes} bytes "
+                                f"(component {comp}); the archive "
+                                "is truncated."
                             )
-                            # Short read = truncated archive; the
-                            # buffer was zero-allocated, so without
-                            # this the tail of the state silently
-                            # stays blank (see the host reader).
-                            if n != span.nbytes:
-                                raise OSError(
-                                    f"short GDS read from {tar_path}: "
-                                    f"{n} of {span.nbytes} bytes "
-                                    f"(component {comp}); the archive "
-                                    "is truncated."
-                                )
             per_device.append(jnp.from_dlpack(vec))
     return per_device
 
@@ -1010,15 +1121,15 @@ def _write_chunks_host(
     comp_shape: tuple[int, ...],
     itemsize: int,
 ) -> None:
-    """Stream each local shard to the tar span-by-span via host I/O.
+    """Stream each local shard to the tar slab-by-slab via host I/O.
 
-    *state* is already in the I/O layout (:func:`_to_io_layout`), so a
-    device's slab is normally one span per component.  When cupy is
-    available (NVIDIA GPU platforms) each span is staged through
-    ``cupy.asnumpy``; otherwise (CPU runs, non-NVIDIA GPUs) the full
-    shard is copied once with ``np.asarray`` and the spans are
-    written directly from it.  Either way the extra host memory is
-    one span, which in this layout is a whole component slab
+    *state* is in the I/O layout at the true mode counts
+    (:func:`_to_io_layout`), so a device's slab is one write per
+    component.  When cupy is available (NVIDIA GPU platforms) each slab
+    is staged through ``cupy.asnumpy``; otherwise (CPU runs, non-NVIDIA
+    GPUs) the full shard is copied once with ``np.asarray`` and the
+    slabs are written directly from it.  Either way the extra host
+    memory is one slab, i.e. a whole component
     (``shard / n_components``) rather than a plane -- the trade that
     turns ~1e5 small writes into a handful of big ones.
     """
@@ -1042,22 +1153,19 @@ def _write_chunks_host(
             vec = np.asarray(shard.data)
         else:
             _require_dense(vec)
+        off = _a_offset(a_start, kz_true, kx_true) * itemsize
         with open(tar_path, "r+b") as f:
             for comp in range(_n_components()):
-                base = comp_offsets[comp]
-                for idx, off, _ in _a_spans(
-                    vec.shape[1:], a_start, na, kz_true, kx_true
-                ):
-                    span = vec[comp][idx]
-                    f.seek(base + off * itemsize)
-                    buf = cp.asnumpy(span) if cp is not None else span
-                    n = f.write(buf)
-                    if n != buf.nbytes:
-                        raise OSError(
-                            f"short write to {tar_path}: {n} of "
-                            f"{buf.nbytes} bytes (component {comp}); "
-                            "the archive is incomplete."
-                        )
+                slab = vec[comp][:na]
+                f.seek(comp_offsets[comp] + off)
+                buf = cp.asnumpy(slab) if cp is not None else slab
+                n = f.write(buf)
+                if n != buf.nbytes:
+                    raise OSError(
+                        f"short write to {tar_path}: {n} of "
+                        f"{buf.nbytes} bytes (component {comp}); "
+                        "the archive is incomplete."
+                    )
 
 
 def _read_chunks_host(
@@ -1070,17 +1178,17 @@ def _read_chunks_host(
     I/O-layout shard (np-agnostic).
 
     When cupy is available (NVIDIA GPU platforms), the output buffer
-    is allocated on GPU and each span is copied onto its contiguous
-    view via ``cupy.ndarray.set``.  Otherwise (CPU runs, non-NVIDIA
-    GPUs), the output is assembled on the host with ``readinto`` (no
-    temporaries) and transferred at the end via ``jax.device_put``.
-    Extra host memory: one span, i.e. a component slab
+    is allocated on GPU and each component's slab is copied onto its
+    contiguous view via ``cupy.ndarray.set``.  Otherwise (CPU runs,
+    non-NVIDIA GPUs), the output is assembled on the host with
+    ``readinto`` (no temporaries) and transferred at the end via
+    ``jax.device_put``.  Extra host memory: one slab, i.e. a component
     (``shard / n_components``).  The caller reshards the assembled
     array back to the solver layout.
     """
     itemsize = dtype.itemsize
     a_true, kz_true, kx_true = comp_shape
-    local_shape = _io_local_shape(a_true)
+    local_shape = _io_local_shape(a_true, kz_true, kx_true)
     try:
         import cupy as cp
     except ImportError:
@@ -1096,49 +1204,41 @@ def _read_chunks_host(
                 with cp.cuda.Device(_cuda_ordinal(device)):
                     vec = cp.zeros(local_shape, dtype=dtype)
                     if na > 0:
+                        off = _a_offset(a_start, kz_true, kx_true) * itemsize
                         with open(tar_path, "rb") as f:
                             for comp in range(_n_components()):
-                                base = comp_offsets[comp]
-                                for idx, off, shape in _a_spans(
-                                    local_shape[1:],
-                                    a_start,
-                                    na,
-                                    kz_true,
-                                    kx_true,
-                                ):
-                                    f.seek(base + off * itemsize)
-                                    raw = f.read(math.prod(shape) * itemsize)
-                                    vec[comp][idx].set(
-                                        np.frombuffer(
-                                            raw, dtype=dtype
-                                        ).reshape(shape)
+                                dst = vec[comp][:na]
+                                f.seek(comp_offsets[comp] + off)
+                                raw = f.read(dst.nbytes)
+                                # A short read raises here, in
+                                # ``reshape`` -- see the plain branch.
+                                dst.set(
+                                    np.frombuffer(raw, dtype=dtype).reshape(
+                                        dst.shape
                                     )
+                                )
                     per_device.append(jnp.from_dlpack(vec))
                 continue
             except Exception:
                 cp = None
         vec = np.zeros(local_shape, dtype=dtype)
         if na > 0:
+            off = _a_offset(a_start, kz_true, kx_true) * itemsize
             with open(tar_path, "rb") as f:
                 for comp in range(_n_components()):
-                    base = comp_offsets[comp]
-                    for idx, off, _ in _a_spans(
-                        local_shape[1:], a_start, na, kz_true, kx_true
-                    ):
-                        f.seek(base + off * itemsize)
-                        dst = vec[comp][idx]
-                        n = f.readinto(dst)
-                        if n != dst.nbytes:
-                            # Short read = truncated archive.  Without
-                            # this the tail of the state is silently
-                            # left as the zeros it was allocated with
-                            # (the cupy branch raises on its own, via
-                            # frombuffer's reshape).
-                            raise OSError(
-                                f"short read from {tar_path}: {n} of "
-                                f"{dst.nbytes} bytes (component "
-                                f"{comp}); the archive is truncated."
-                            )
+                    dst = vec[comp][:na]
+                    f.seek(comp_offsets[comp] + off)
+                    n = f.readinto(dst)
+                    if n != dst.nbytes:
+                        # Short read = truncated archive.  Without this
+                        # the tail of the state is silently left as the
+                        # zeros it was allocated with (the cupy branch
+                        # raises on its own, via frombuffer's reshape).
+                        raise OSError(
+                            f"short read from {tar_path}: {n} of "
+                            f"{dst.nbytes} bytes (component "
+                            f"{comp}); the archive is truncated."
+                        )
         per_device.append(jax.device_put(vec, device))
     return per_device
 
@@ -1274,31 +1374,20 @@ def load_snapshot(
     """
     path = Path(path)
     meta = read_metadata(path)
-    # The stored chunk shape (the snapshot's native shape; its ny may
-    # differ from the current run's -- kz/kx equality is enforced by
-    # ``validate_snapshot_params``).
+    # The stored chunk shape -- the snapshot's own, which the read must
+    # match byte for byte.  Any of the three axes may differ from the
+    # current run's: the leading one because ``res.ny`` changed, the two
+    # mode axes because ``res.nx`` / ``res.nz`` did.
     comp_shape = tuple(meta["native_shape"][1:])
+    a_src, kz_src, kx_src = comp_shape
     dtype = _np_dtype(meta["dtype"])
 
-    # Detect ny mismatch (wall-bounded only).
-    snap_native = tuple(meta["native_shape"])
-    curr_true = (_n_components(), *_true_spec_shape())
-    ny_mismatch = snap_native != curr_true
-
-    if ny_mismatch:
-        # Stored params use public names (res.ny is "nr" for the
-        # cylindrical/annular flows); look it up via the alias.
-        from .flows.registry import stored_value
-
-        snap_ny = stored_value(meta["params"], meta["system"], "res", "ny")
-        assembly_shape = (
-            _n_components(),
-            snap_ny - 1 if _is_periodic() else snap_ny,
-            sharding.nz_spec,
-            sharding.nx_spec,
-        )
-    else:
-        assembly_shape = (_n_components(), *sharding.spec_shape)
+    # The leading axis: a Fourier axis for the periodic family (regridded
+    # below, like the other two), the FD wall-normal one otherwise --
+    # kept at the stored length here and interpolated onto the current
+    # grid afterwards by ``__main__._interpolate_if_needed``.
+    ky_dst = params.res.ny - 1 if _is_periodic() else None
+    a_out = a_src if ky_dst is None else ky_dst
 
     comp_offsets = snapshot_component_offsets(path)
     if _gds_available():
@@ -1307,22 +1396,30 @@ def load_snapshot(
     else:
         per_device = _read_chunks_host(path, comp_offsets, comp_shape, dtype)
 
-    # The read lands in the I/O layout (contiguous leading-axis slabs,
-    # zero-padded to a divisible length); undo both, in that order --
-    # the trailing rows are only sliceable once the axis is unsharded.
-    a_true = assembly_shape[1]
+    # The read lands in the I/O layout: contiguous leading-axis slabs
+    # zero-padded to a divisible length, carrying the stored true mode
+    # counts rather than the solver's padded ones.
+    # ``_from_io_layout_core`` undoes all three -- and regrids any axis
+    # whose resolution changed -- each where its axis is local.
     io_shape = (
-        assembly_shape[0],
-        _a_local(a_true, _n_devices()) * _n_devices(),
-        *assembly_shape[2:],
+        _n_components(),
+        _a_local(a_src, _n_devices()) * _n_devices(),
+        kz_src,
+        kx_src,
     )
     state = jax.make_array_from_single_device_arrays(
         io_shape,
         NamedSharding(sharding.mesh, _io_spec()),
         per_device,
     )
-    if _n_devices() > 1 or io_shape[1] != a_true:
-        state = _from_io_layout_core(state, a_true)
+    solver_shape = (
+        _n_components(),
+        a_out,
+        sharding.nz_spec,
+        sharding.nx_spec,
+    )
+    if _n_devices() > 1 or io_shape != solver_shape:
+        state = _from_io_layout_core(state, a_src, kz_src, kx_src, ky_dst)
     return state, meta["t"], meta["it"]
 
 
@@ -1332,15 +1429,22 @@ def validate_snapshot_params(
     r"""Check that snapshot metadata matches current parameters.
 
     Raises :class:`SnapshotMismatchError` on critical mismatches
-    (resolution, precision, or flow system).  The device count is
-    never a reason: every spectral axis is auto-padded to divide the
-    mesh (``round_up_padded``), which is what makes resume
-    np-agnostic in the first place.  Prints
-    warnings for non-critical differences and an info line when
-    the device count differs (resume is np-agnostic).  Stored
-    metadata records the *public* field names; comparisons run in
-    internal space (:func:`dnsjax.flows.registry.internalize_stored`)
-    and messages name the public alias.
+    (precision or flow system).  Neither the device count nor the
+    **resolution** is a reason: every spectral axis is auto-padded to
+    divide the mesh (``round_up_padded``), which is what makes resume
+    np-agnostic in the first place, and every axis is re-gridded at
+    load -- the Fourier ones by :func:`_from_io_layout_core`
+    (zero-padding or truncating modes), the wall-normal one by
+    ``__main__._interpolate_if_needed``.  A changed resolution is still
+    *trajectory-defining*, so it starts a new trajectory unless
+    ``init.force_resume`` -- that decision is
+    :func:`dnsjax.parameters.trajectory_defining_changes`', not this
+    function's.  Prints warnings for non-critical differences, one info
+    line per re-gridded axis, and one when the device count differs.
+    Stored metadata records the *public* field names; comparisons run
+    in internal space
+    (:func:`dnsjax.flows.registry.internalize_stored`) and messages
+    name the public alias.
 
     Parameters
     ----------
@@ -1363,8 +1467,6 @@ def validate_snapshot_params(
     # axis-neutral: the message names the flow's public field (e.g.
     # internal ``res.nx`` is the axial ``nz`` on the annular flows).
     critical = {
-        ("res", "nx"): "resolution",
-        ("res", "nz"): "resolution",
         ("res", "double_precision"): "precision",
         ("phys", "system"): "flow system",
     }
@@ -1378,30 +1480,41 @@ def validate_snapshot_params(
                 f"current {name}={curr_val}"
             )
 
+    # The component count is the one shape axis with no regrid: it is
+    # fixed by ``phys.system`` (rejected above), so a mismatch here
+    # means the metadata and the flow spec disagree.
     native = meta.get("native_shape")
     expected = [_n_components(), *_true_spec_shape()]
-    if native is not None and list(native) != expected:
-        if _is_periodic():
-            raise SnapshotMismatchError(
-                f"Shape: snapshot {native}, expected {expected}"
-            )
-        # Wall-bounded: allow ny mismatch (axis 1).
-        non_ny_snap = [native[0], *native[2:]]
-        non_ny_exp = [expected[0], *expected[2:]]
-        if non_ny_snap != non_ny_exp:
-            raise SnapshotMismatchError(
-                f"Shape (non-ny axes): snapshot "
-                f"{non_ny_snap}, expected {non_ny_exp}"
-            )
-
-    # ny mismatch: info (wall-normal interpolation will handle it)
-    snap_ny = snap_params.get("res", {}).get("ny")
-    curr_ny = current.get("res", {}).get("ny")
-    if snap_ny is not None and snap_ny != curr_ny:
-        sharding.print(
-            f"Info: ny changed: {snap_ny} -> {curr_ny} "
-            f"(will interpolate wall-normal grid)"
+    if native is not None and native[0] != expected[0]:
+        raise SnapshotMismatchError(
+            f"Component count: snapshot {native[0]}, expected {expected[0]}"
         )
+
+    # Resolution changes are re-gridded at load, each axis by its own
+    # mechanism; report which.  ``ny`` is the FD wall-normal axis for
+    # wall-bounded flows and the third Fourier axis for the periodic
+    # ones, so its message depends on the family.
+    def _resolution_note(key: str, fourier: bool) -> None:
+        snap_val = snap_params.get("res", {}).get(key)
+        curr_val = current.get("res", {}).get(key)
+        if snap_val is None or snap_val == curr_val:
+            return
+        if fourier:
+            how = (
+                "spectral zero-padding"
+                if curr_val > snap_val
+                else "spectral truncation"
+            )
+        else:
+            how = "wall-normal interpolation"
+        sharding.print(
+            f"Info: {_public('res', key)} changed: {snap_val} -> "
+            f"{curr_val} (will regrid by {how})"
+        )
+
+    _resolution_note("nx", True)
+    _resolution_note("nz", True)
+    _resolution_note("ny", _is_periodic())
 
     # Warnings
     warn_fields = {

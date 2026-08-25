@@ -32,9 +32,10 @@ def wall_fields(
     first entry is only the *scheme-independent* default -- the
     resolved default comes from ``FlowSpec.grid_type_default``).
 
-    ``res.consistent_imm`` is offered by every wall-bounded flow: it
-    reformulates the implicit step rather than swapping an operator,
-    so it needs nothing family-specific.
+    ``res.consistent_imm`` is offered by every wall-bounded flow (and
+    defaults on for all of them): it reformulates the implicit step
+    rather than swapping an operator, so it needs nothing
+    family-specific.
     """
     cylindrical = grid_choices == CYLINDRICAL_GRIDS
     if cylindrical:
@@ -61,7 +62,6 @@ def wall_fields(
             choices=grid_choices,
         ),
         FieldSpec("geo", "grid_stretch"),
-        FieldSpec("init", "random_mean_flow"),
         FieldSpec("init", "localized_rolls"),
         FieldSpec("init", "localized_rolls_amplitude"),
         FieldSpec("init", "localized_rolls_width"),
@@ -86,6 +86,11 @@ def cartesian_fields() -> tuple[FieldSpec, ...]:
         FieldSpec("res", "nz"),
         FieldSpec("phys", "re"),
         FieldSpec("phys", "block_mean_spanwise_velocity"),
+        # Default **on** here and deferred everywhere else: the
+        # Cartesian flows are the ones whose (0, 0) conservation laws
+        # are established, so the random IC may perturb the mean
+        # profile (:mod:`dnsjax.ic.mean_mode`).
+        FieldSpec("init", "random_mean_flow", default=True),
     )
 
 
@@ -144,6 +149,18 @@ DEFERRED_TILT = DeferredSpec(
     "tilt_degree",
     "geo.tilt_degree (tilted driving) is not implemented yet for the "
     "cylindrical/annular geometries.",
+)
+
+#: Deferred: a (kx, kz) = (0, 0) perturbation has to respect the mean
+#: mode's conservation laws, and those are only established for the
+#: Cartesian flows (:mod:`dnsjax.ic.mean_mode`).
+DEFERRED_MEAN_FLOW = DeferredSpec(
+    "init",
+    "random_mean_flow",
+    "init.random_mean_flow (perturbing the kx = kz = 0 mean profile) "
+    "is not implemented yet for this flow: only the Cartesian flows "
+    "have their mean-mode conservation laws established, and the "
+    "perturbation is conditioned on them (dnsjax.ic.mean_mode).",
 )
 
 # ── Shared derive math ───────────────────────────────────────────

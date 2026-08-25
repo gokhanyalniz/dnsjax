@@ -7,9 +7,13 @@ Offline CLI + library (the ``snapshot_import.py`` sibling for
 :func:`dnsjax.analysis.transient_growth.single_mode_state` -- and
 writes a new snapshot.  The parent's ``t``/``it`` are kept, so a run
 resumed from the output continues the parent trajectory's clock with
-the perturbation applied.  The primary use is seeding perturbed
-ensemble members from harvested turbulent snapshots
-(``scripts/ensemble_setup.py``).
+the perturbation applied -- provided the resuming run's own
+trajectory-defining parameters match the ones the parent recorded.
+``res.consistent_imm`` is one of them, so a parent written before it
+defaulted on resumes as a **new** trajectory unless that run passes
+``--res.consistent_imm False`` (or ``--init.force_resume``).  The
+primary use is seeding perturbed ensemble members from harvested
+turbulent snapshots (``scripts/ensemble_setup.py``).
 
 Runs single-device (``np0 = np1 = 1``) on the snapshot's own
 parameters and stored precision, so every untouched mode round-trips
@@ -68,10 +72,16 @@ The injected profile need not be discretely divergence-free: the
 influence-matrix pressure solve projects any residual divergence out
 on the first corrector step of the resumed run.  Transient-growth
 optimals and controllability modes are divergence-free by
-construction.  The mean mode ``(0, 0)`` is a valid target only with a
-real profile (the mean of a real field), and is rejected under
-``constant_bulk_velocity`` driving, whose bulk constraint makes the
-mean mode affine.
+construction.  The mean mode ``(0, 0)`` is a valid target on the
+Cartesian flows only, and the profile is **checked, not reshaped** --
+this script's caller owns what it injects, so an incompatible profile
+is refused with its measured residuals rather than silently projected.
+It must be real (the mean of a real field), have no wall-normal
+component (continuity with no-slip forces ``<v> = 0``), satisfy
+no-slip, and satisfy the mean-mode conservation laws of each tilted
+direction (:mod:`dnsjax.ic.mean_mode`, which also documents the
+tolerance) -- including an unchanged bulk velocity in a direction
+whose mean the driving holds.
 
 Usage::
 
@@ -92,7 +102,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dnsjax.analysis.transient_growth import WALL_BOUNDED_TG_SYSTEMS
 from dnsjax.extensions import ParamExtension, register_extension
+from dnsjax.flows.registry import cartesian_systems
 from dnsjax.harmonics import parse_mode_pairs
+from dnsjax.ic.mean_mode import check_cartesian_mean_profile
 
 __all__ = [
     "PerturbParams",
@@ -240,13 +252,13 @@ def _validate_perturb(values: PerturbParams, params) -> None:
             f"perturb.mode ({i2},{i3}) out of range "
             f"(0..{n2 - 1}, 0..{n3 - 1})."
         )
-    if (i2, i3) == (0, 0) and (
-        params.phys.driving == "constant_bulk_velocity"
-    ):
+    if (i2, i3) == (0, 0) and params.phys.system not in cartesian_systems:
         raise ValueError(
-            "perturb: injecting the (0,0) mean mode under "
-            "constant_bulk_velocity driving is rejected (the bulk "
-            "constraint makes the mean mode affine)."
+            "perturb: injecting the (0,0) mean mode is implemented "
+            "only for the Cartesian flows, whose mean-mode "
+            "conservation laws the profile is checked against; "
+            f"system {params.phys.system!r} defers it (see "
+            "dnsjax.ic.mean_mode)."
         )
 
 
@@ -507,14 +519,23 @@ def main(argv: list[str] | None = None) -> int:
     else:
         vec = load_profile_npy(p.npy)
 
-    # The mean of a real field is real (the driving restriction is
-    # already checked by _validate_perturb).
-    if (i2, i3) == (0, 0) and np.max(np.abs(vec.imag)) > 1e-13 * max(
-        np.max(np.abs(vec)), 1.0
-    ):
-        raise SystemExit(
-            "a (0,0) mean-mode profile must be real (the mean of a real field)"
+    # A mean-mode profile is not free: reality, no wall-normal
+    # component, no-slip, and each tilted direction's conservation
+    # laws (module docstring).  Refused, not reshaped -- the caller
+    # owns the profile it injects.  (_validate_perturb has already
+    # restricted (0,0) to the Cartesian flows.)
+    if (i2, i3) == (0, 0):
+        bad = check_cartesian_mean_profile(
+            vec,
+            np.asarray(fmod.flow.D1),
+            np.asarray(fmod.flow.D2),
+            np.asarray(fmod.flow.y_weights),
         )
+        if bad:
+            raise SystemExit(
+                "the (0,0) mean-mode profile is not a legal "
+                "perturbation:\n  - " + "\n  - ".join(bad)
+            )
 
     mode_state = single_mode_state(vec, i2, i3)
     if p.amplitude_energy is not None:

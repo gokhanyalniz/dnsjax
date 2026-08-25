@@ -74,6 +74,7 @@ from ...geometries.wall_bounded.cartesian import (
     get_norm2,
     get_pert_enstrophy,
     integrate_scalar,
+    mean_driving,
     pad_base_flow,
     tilted_profile_arrays,
 )
@@ -134,11 +135,11 @@ flow: PlanePoiseuilleFlow = PlanePoiseuilleFlow()
     reset_ab2_kappa,
 ) = build_cartesian_stepper(flow)
 
-# No ``to_solver_basis``/``from_solver_basis`` here, in either flag
-# state: the Cartesian state is physical `(u, v, w)` throughout, and
-# ``res.consistent_imm``'s evolved scalars never leave
-# ``cartesian._imm_iteration_vw``.  Every consumer of the pair looks
-# it up with ``getattr`` and falls back to the identity.
+# No ``to_solver_basis``/``from_solver_basis`` here, under either
+# ``res.consistent_imm`` formulation: the Cartesian state is physical
+# `(u, v, w)` throughout, and the default scheme's evolved scalars
+# never leave ``cartesian._imm_iteration_vw``.  Every consumer of the
+# pair looks it up with ``getattr`` and falls back to the identity.
 
 
 def frozen_profile_flow(us: Array) -> PlanePoiseuilleFlow:
@@ -194,6 +195,28 @@ def _get_stats_jit(
       the bottom (`$y=-1$`) and top (`$y=1$`) walls.
     - `$U'_{b,s}$`, `$U'_{b,n}$`: perturbation bulk
       velocity in the streamwise and spanwise directions.
+
+    Under ``constant_bulk_velocity`` the driving work is the
+    whole of `$I - I_\mathrm{lam}$`.  The **exact** input rate
+    is `$U_{b,\mathrm{lam}}\Pi'$` with `$\Pi'$` the force the
+    corrector applied (``stats.dat``'s ``-dPds'``); this
+    state-only function cannot see that, so it estimates
+    `$\Pi'$` from the wall shear instead, low by
+    `$\mathrm{bulk}(\bar N_s)$` -- continuously zero, a
+    wall-normal truncation residual discretely, and convergent.
+
+    Substituting the exact value nonetheless makes
+    `$dE/dt = I - D$` close **worse** (measured), which is a
+    statement about that two-term form rather than about either
+    estimate: it omits the discrete
+    `$\langle u\cdot N(u)\rangle$`, zero continuously, whose
+    dominant part is `$-U_b\,\mathrm{bulk}(\bar N_s)$`.  The
+    estimate's error is that same quantity with the opposite
+    sign, so it absorbs the omission.  Read `$I$` as the
+    budget-consistent input rate, not as the applied power;
+    they converge.  Measured table:
+    ``tests/test_energy_budget.py``'s
+    ``_check_applied_vs_inferred``.
 
     All total-field quantities are computed algebraically
     from perturbation norms and laminar constants, without
@@ -289,3 +312,25 @@ def _get_perturbation_energy_jit(
 def get_perturbation_energy(state: Array) -> Array:
     """Perturbation kinetic energy E' (for the laminarization check)."""
     return _get_perturbation_energy_jit(state, fourier, flow)
+
+
+@jit
+def _get_driving_jit(
+    state: Array, flow_: PlanePoiseuilleFlow
+) -> dict[str, Array]:
+    r"""Wall-shear inference of the applied mean-mode driving."""
+    return mean_driving(state, flow_)
+
+
+def get_driving(state: Array) -> dict[str, Array]:
+    r"""Applied mean-mode driving inferred from *state* alone.
+
+    The optional flow-module export ``__main__`` uses for the one
+    ``stats.dat`` row with no step behind it (``t = t0``); every other
+    row carries the value the corrector actually applied, threaded out
+    of the step.  Same keys and sign as that column
+    (`$-\partial p'/\partial s$`, the applied forcing), ``{}`` when no
+    driving knob is on.  Takes the **physical** view of *state*, like
+    :func:`get_stats`.
+    """
+    return _get_driving_jit(state, flow)

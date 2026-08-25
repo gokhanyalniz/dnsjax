@@ -87,14 +87,92 @@ class Distribution(BaseModel):
     Chebyshev transforms, and the Clenshaw--Curtis
     quadrature handles both even and odd ``ny``.
 
+    Choosing the grid
+    -----------------
+    The two exchanges are not equivalent.  The ``np1`` one
+    (`$z \leftrightarrow k_x$`) runs while the array still carries the
+    **oversampled** spanwise extent, the ``np0`` one
+    (`$y \leftrightarrow k_z$`) after the truncation to stored modes,
+    so at the default oversampling ``np1`` moves `$3/2$` as many bytes
+    (2.654 against 1.769 MB per device per forward+inverse pair at
+    ``64 x 144 x 144`` on four devices).  And a second grid axis does
+    not divide the first exchange more finely, it **adds** a second
+    one: one all-to-all per transform on a 1D grid, two on a 2D one,
+    each a synchronisation point.  Both the count and the volume are
+    readable off the compiled program.
+
+    Whatever the device type:
+
+    1. **On one node, stay one-dimensional**, splitting on ``np0`` by
+       default -- its exchange carries `$2/3$` of the bytes and its
+       mode axis tiles far more coarsely on GPU.  Split on ``np1``
+       instead when ``ny`` (``nr``) will not divide the device count
+       or is too small for it.
+    2. **Across nodes, align the grid with them**: ``np1`` = devices
+       per node, ``np0`` = number of nodes.  ``jax.make_mesh`` lays
+       the grid out row-major over the sorted devices and device ids
+       group by process, so with one task per node the ``np1`` groups
+       fall inside a node and the ``np0`` groups hold one device each.
+       That confines the heavier exchange to the intra-node
+       interconnect, and the network carries ``np0 - 1`` large
+       messages per device instead of the many small ones a grid-wide
+       exchange sends -- at equal volume (`$(N-g)/N^2 = (n-1)/(nN)$`
+       per device, for `$N$` devices in `$g$`-device groups on `$n$`
+       nodes).  Splitting on ``np1`` alone across nodes is the one
+       arrangement to avoid: it puts the `$3/2$`-sized exchange on the
+       network.
+    3. **Snapshots** add only the same 1D preference -- a
+       one-dimensional grid reshards once per save instead of twice.
+       Write granularity does not enter the choice: the reshard trims
+       the divisibility padding, so every grid writes one contiguous
+       range per component per device (:mod:`dnsjax.snapshot`).
+
+    **On CPU** the mode plane carries no tile round-up (the Pallas
+    kernel never runs), so ``np1`` may be taken as far as the mode
+    count allows, and one device per process makes ``np0 * np1`` the
+    rank count.  Measured at four and eight ranks, the per-exchange
+    cost dominates its volume: a 2D grid costs 9 to 19 % against the
+    best 1D one, where the `$3/2$` volume difference between the two
+    1D grids is worth some 18 % of the transform pair itself but only
+    a few percent of the step around it (the transforms being roughly
+    half of it).  That is why the 1D rule is the firm one and the axis
+    a lesser trade.  Routing the collectives through MPI rather than
+    gloo (below) speeds up every exchange, shifting weight from the
+    per-exchange cost back toward volume.
+
+    **On GPU** the mode plane is tiled, which makes ``np1`` the
+    granular axis: keep ``(nx // 2) / np1`` a multiple of
+    ``solver.pallas_block_m1`` (32), where ``(nz - 1) / np0`` need
+    only clear ``pallas_block_m0`` (2).  A minimal-box ``nx = 32``
+    split four ways leaves four streamwise modes per device, padded to
+    32 -- lower the block size, or move the split to ``np0``.  With a
+    fast intra-node interconnect and production-sized arrays the
+    exchange is likelier limited by volume than by its per-exchange
+    cost, and that is the regime where ``np0`` moving `$2/3$` of the
+    bytes should tell; comparing the two 1D grids on the target
+    machine is then worth one pair of runs.
+
     Process topology
     ----------------
+    Only a **multi-process** run needs a launcher.  One
+    process starts no distributed runtime at all
+    (``bootstrap._bootstrap_distributed``), so a run that
+    fits in one is launched directly -- no ``mpirun``, no
+    coordinator, no MPI on the machine, ``uv run dnsjax ...``
+    included.  On CPU that means exactly one device: several
+    CPU devices in one process is oversubscription, and
+    asking for it is refused with the ``mpirun -np N`` that
+    works.
+
     ``np0 * np1`` counts *devices*, not processes: the mesh
     only requires ``jax.device_count() == np0 * np1``, so a
     multi-GPU run may be one process per device (the usual
     ``mpirun``/``srun -n N`` launch) **or a single process
-    addressing all devices** -- launch one task with
-    ``JAX_LOCAL_DEVICE_IDS=0,1,...`` spanning the GPUs
+    addressing all devices** -- which needs no launcher
+    either, since a lone process takes every visible GPU.
+    Under a launcher, that process is instead narrowed to its
+    local rank's device unless
+    ``JAX_LOCAL_DEVICE_IDS=0,1,...`` spans the GPUs
     (overrides the SLURM one-device-per-task heuristic),
     e.g. ``srun -n 1 --overlap`` inside a 4-GPU allocation
     with ``JAX_LOCAL_DEVICE_IDS=0,1,2,3 --dist.np0 2
@@ -121,6 +199,105 @@ class Distribution(BaseModel):
     per-task device explicitly (``JAX_LOCAL_DEVICE_IDS``;
     JAX's SLURM detection uses ``[SLURM_LOCALID]`` by
     default, which is correct under full visibility).
+
+    The ranks find each other from the launcher environment
+    when it describes itself fully enough, and otherwise from
+    JAX's own cluster detection (SLURM under ``srun``, the
+    cloud environments, Open MPI 4).  The layout comes from
+    the MPI implementation (``OMPI_COMM_WORLD_*``, or the
+    MPICH/MVAPICH2 equivalents) and the coordinator from
+    ``JAX_COORDINATOR_ADDRESS``, else -- in order -- loopback
+    when every rank is on this node, the launcher's own
+    daemon URI, or the queueing system's node list
+    (``PBS_NODEFILE``, the SLURM node list,
+    ``LSB_DJOB_HOSTFILE`` / ``LSB_HOSTS``, ``PE_HOSTFILE``).
+    That covers Open MPI 5, whose PRRTE launcher dropped the
+    ``OMPI_MCA_orte_hnp_uri`` JAX's plugin keys on, and every
+    scheduler JAX has no plugin for; a machine matching
+    nothing is one ``JAX_COORDINATOR_ADDRESS`` export away,
+    and says so.  The port is derived from a per-*launch*
+    identifier so that concurrent runs inside one allocation
+    cannot collide on it (``JAX_COORDINATOR_PORT``
+    overrides).  Rank *discovery* only: GPU collectives
+    remain NCCL, and ``JAX_LOCAL_DEVICE_IDS`` is honoured
+    either way, so the single-process launch above is
+    unaffected.
+
+    A launch the environment reports as **one process** skips
+    the distributed runtime altogether -- there is nothing to
+    coordinate -- which is why a single-rank run needs no
+    coordinator, and no site knowledge, anywhere.  Setting
+    ``JAX_LOCAL_DEVICE_IDS`` opts back in, since narrowing a
+    process to a subset of its devices is JAX's to apply.
+
+    CPU runs: threads per rank
+    -------------------------
+    **A CPU run takes one XLA thread per rank.**  Parallelism on CPU
+    comes from MPI ranks and from nothing else; an intra-op thread pool
+    is not a second axis to tune, and this holds however many devices
+    the run has -- a lone process is pinned exactly like a rank of
+    sixteen, and is not special-cased.  ``bootstrap.
+    configure_jax_runtime`` applies it: ``NPROC`` sizes the pool and is
+    set there with ``setdefault``, so ``export NPROC=<n>`` before
+    launching overrides the pin for a deliberate experiment;
+    ``--xla_cpu_multi_thread_eigen=false`` rides along as a small extra
+    serialisation and is applied only while the pin is 1.
+
+    Nothing measured here argues against the rule, which is the only
+    role measurement has in this section: plane-Couette
+    ``64 x 48 x 64``, 30 steps, gives 2 ranks 5.2 s at 1 thread against
+    5.1 s at 8 and 4 ranks 3.2 s at 1 thread against 3.7 s at 4, and
+    the same case at 1 rank 17.3 / 18.1 s/t at 1 thread against 17.6 /
+    18.0 at 16 (interleaved, 16-core box) -- i.e. threads buy nothing
+    at a realistic per-rank block size and can cost.  Do not re-open
+    the question with another timing: a faster threaded arm would not
+    change the rule, so measuring one is waste.  If a CPU run is
+    device-starved, the answer is more ranks.
+
+    CPU runs: cross-process collectives
+    -----------------------------------
+    JAX's CPU backend defaults to **gloo** (TCP) for cross-process
+    collectives; routing them through MPI instead is faster, and a
+    multi-device CPU run is launched under ``mpirun`` by definition --
+    it is one process per device.  Such a run therefore selects MPI by
+    itself whenever it can
+    (``bootstrap.configure_jax_runtime``), and prints which backend it
+    got.  What it needs is the MPItrampoline path JAX's MPI
+    collectives dlopen: ``MPITRAMPOLINE_LIB`` pointing at an
+    MPIwrapper-built ``libmpiwrapper.so``, or that library on
+    ``LD_LIBRARY_PATH``.  Without one the run stays on gloo and says
+    so (building the wrapper: ``README.md``, "Installation"); with
+    ``JAX_CPU_COLLECTIVES_IMPLEMENTATION`` set, that choice wins
+    outright.  Worth having: measured on a 16-core box at 4 ranks,
+    plane-Couette ``32^3``, MPI runs at 0.80 s/t against gloo's 1.14
+    (interleaved), on top of gloo's own strong scaling there (1.39x on
+    2 ranks, 2.28x on 4).  By how much is a property of the target
+    machine's interconnect, so it is worth timing again there.
+
+    Selecting MPI also turns CPU async dispatch off -- XLA's MPI
+    backend cannot take a communicator request from a thread pool, and
+    the failure is load-dependent rather than obvious
+    (``bootstrap._select_cpu_collectives``).  The numbers above already
+    include that cost.  It applies to
+    ``JAX_CPU_COLLECTIVES_IMPLEMENTATION=mpi`` as much as to the
+    discovered choice: the two reach the same backend.
+
+    The wrapper is looked for per rank, on that rank's own filesystem,
+    so it has to be visible identically on every node -- export
+    ``MPITRAMPOLINE_LIB`` in the job script rather than relying on a
+    path that some nodes may not mount, or a node that cannot see it
+    picks gloo while its peers pick MPI and the run hangs.  On macOS
+    the discovery cannot fire at all (it scans ``LD_LIBRARY_PATH`` for
+    ``libmpiwrapper.so``, where macOS has ``DYLD_LIBRARY_PATH``, a
+    ``.dylib`` convention, and SIP stripping that variable from
+    spawned processes), so an explicit ``MPITRAMPOLINE_LIB`` is the
+    only route there -- and whether the macOS wheel carries the MPI
+    collectives at all is untested.
+
+    This holds only while XLA is the first thing in the process to
+    initialize MPI, which is why the rank bootstrap above reads the
+    environment rather than asking an MPI library -- the failure modes
+    are ugly and late, see ``bootstrap._select_cpu_collectives``.
     """
 
     np0: int = Field(
@@ -535,24 +712,39 @@ class Resolution(BaseModel):
             "half-width, not an accuracy order)."
         ),
     )
-    # Wall-bounded only (all three families), off by default.  It buys
-    # a discretely exact projection with a **reformulation** of the
-    # implicit step; the price is a truncation-level residual moved
-    # into a momentum equation nothing solves, and only the user knows
-    # whether that trade is acceptable.
+    # Wall-bounded only (all three families), **on by default**.  It
+    # buys a discretely exact projection with a **reformulation** of
+    # the implicit step; the price is a truncation-level residual moved
+    # into a momentum equation nothing solves.  Every measurement below
+    # says that trade is worth making everywhere, which is why it is
+    # the default rather than an opt-in.
     #
-    # *What it enforces.*  The influence-matrix method's continuity
-    # argument (Kleiser-Schumann; Canuto, Hussaini, Quarteroni & Zang
-    # 1988, sec. 7.3) is derived for *continuous* differentiation
-    # operators.  Two discrete identities have to hold for the stepped
-    # state's divergence to vanish: `$\nabla\cdot\nabla = L_k$` (i.e.
-    # `$D_1 D_1 = D_2$`) and `$[D_1, D_2] = 0$`.  Independent Fornberg
-    # fits satisfy neither, and -- separately -- replacing the momentum
-    # wall rows by Dirichlet rows leaves an unaccounted residual that
-    # the divergence's own `$D_1$` spreads into the interior.  So a
-    # stepped state's discrete divergence is O(1) *relative*: a
-    # convergent truncation error, physically inert for resolved
-    # fields, but not zero.
+    # *Setting it to ``False``* selects the **legacy** primitive
+    # Kleiser-Schumann `$(v, p)$` scheme (each geometry's
+    # ``_<geometry>_primitive_imm.py``).  It is kept, tested and
+    # supported, but not recommended: a state it steps carries the
+    # `$O(1)$` *relative* discrete divergence described next.  Two
+    # reasons remain to select it -- reproducing a trajectory computed
+    # before the default moved, and the one corner where the default
+    # costs corrector iterations: a **deep annulus** (small ``geo.eta``)
+    # at tight ``step.corrector_tolerance``, where the `$(u_r,
+    # \omega_r)$` pair's Picard-lagged spin partners contract slowly
+    # (the measured table, and why that degradation is loud rather than
+    # silent: ``annular._imm_iteration_vw``).
+    #
+    # *What it enforces.*  The primitive influence-matrix method's
+    # continuity argument (Kleiser-Schumann; Canuto, Hussaini,
+    # Quarteroni & Zang 1988, sec. 7.3) is derived for *continuous*
+    # differentiation operators.  Two discrete identities have to hold
+    # for the stepped state's divergence to vanish:
+    # `$\nabla\cdot\nabla = L_k$` (i.e. `$D_1 D_1 = D_2$`) and
+    # `$[D_1, D_2] = 0$`.  Independent Fornberg fits satisfy neither,
+    # and -- separately -- replacing the momentum wall rows by
+    # Dirichlet rows leaves an unaccounted residual that the
+    # divergence's own `$D_1$` spreads into the interior.  So a state
+    # the legacy path steps carries a discrete divergence that is O(1)
+    # *relative*: a convergent truncation error, physically inert for
+    # resolved fields, but not zero.
     #
     # *The mechanism* (one, in all three geometries, since
     # 2026-07-26).  Advance the **wall-normal velocity and vorticity**
@@ -588,7 +780,8 @@ class Resolution(BaseModel):
     # the evolved scalars are re-derived from the carried state at the
     # top of each corrector pass and reconstructed away at its exit, so
     # snapshots, probes, forcing, diagnostics, the analysis package and
-    # resume are all flag-independent.  The price is two wall rows per
+    # resume are identical under both formulations.  The price is two
+    # wall rows per
     # mode (the influence coefficients cannot be carried), a bounded
     # truncation-level substitute -- ``cartesian._imm_iteration_vw``
     # carries the argument and the measurement.  Construction, boundary
@@ -600,24 +793,25 @@ class Resolution(BaseModel):
     # *Efficacy* (measured, ``fd_order = 8``, ``ny = 25`` / ``ny = 97``,
     # one step from a random IC, seed 7 -- ten steps from an
     # axis-regular rolls IC on the pipe; ``tests/test_imm_continuity``).
-    # Stepped-state relative divergence:
+    # Stepped-state relative divergence, ``legacy -> default``:
     #
     #   plane-couette   4.5e-2 -> 2.9e-16   1.1e-3 -> 1.6e-15
     #   taylor-couette  6.4e-2 -> 5.6e-16   5.7e-4 -> 1.9e-15
-    #   pipe            2.8e-2 -> 2.1e-15          -> 3.9e-15
+    #   pipe            2.8e-2 -> 1.1e-15   1.5e-5 -> 8.2e-15
     #
     # -- round-off everywhere, and following no `$h^p$` law at all (the
     # mild growth with `$N_y$` is the longer `$D_1$` dot product, not
     # truncation), because continuity here is an identity rather than
-    # something a solve delivers; which is why every gate-on bound is
-    # asserted at every ``--ny``.  These replace the operator-identity
-    # route's floors (4.2e-14 Cartesian, 8.0e-6 annular, 5.6e-5 pipe),
-    # each set by a commutator that route could not remove.  The
-    # wall-bounded *temporal* error improves too: plane-Couette
-    # iterative-CN self-convergence goes from ``1.3e-2`` at order ~0.5
-    # to ``3.6e-5`` at order ~1.2, and Taylor-Couette likewise (the
-    # divergence residual **was** the dominant projection-splitting
-    # error) -- pinned by ``tests/test_temporal_order.py``.
+    # something a solve delivers; which is why every default-formulation
+    # bound is asserted at every ``--ny``.  These replace the
+    # operator-identity route's floors (4.2e-14 Cartesian, 8.0e-6
+    # annular, 5.6e-5 pipe), each set by a commutator that route could
+    # not remove.  The wall-bounded *temporal* error improves too:
+    # plane-Couette iterative-CN self-convergence goes from ``1.3e-2``
+    # at order ~0.5 on the legacy path to ``3.6e-5`` at order ~1.2 on
+    # the default, and Taylor-Couette likewise (the divergence residual
+    # **was** the dominant projection-splitting error) -- pinned by
+    # ``tests/test_temporal_order.py``.
     #
     # *Price.*  Exact continuity is bought by *not* imposing the
     # tangential momentum combination, so what continuity gains, that
@@ -634,8 +828,9 @@ class Resolution(BaseModel):
     # quantity.  Nothing reads the residual back -- the difference
     # between this and the rejected projection below -- so it neither
     # accumulates nor re-excites; the stepped energy budget in fact
-    # closes *tighter* with the flag on (``2.8e-3`` vs ``5.1e-3``,
-    # ``tests/test_energy_budget.py``), as it must when pressure does
+    # closes *tighter* on the default (``2.8e-3`` vs the legacy path's
+    # ``5.1e-3``, ``tests/test_energy_budget.py``), as it must when
+    # pressure does
     # no work on an exactly solenoidal field.  There is no operator
     # price at all (same `$D_1$`, same direct-fit `$D_2$`, same band)
     # and operator storage *drops*; against that, `$L(Lv)$` is applied
@@ -671,28 +866,47 @@ class Resolution(BaseModel):
     # the exactly-decoupled candidates are enumerated and dismissed in
     # the ``annular._imm_iteration_vw`` docstring.
     #
-    # *Measured step cost.*  On the Cartesian family the corrector
-    # contracts in fewer iterations, and the same holds in the
-    # cylindrical ones: the pipe's random-smoke ``c/it`` drops
-    # ``1.00 -> 0.10`` and Taylor-Couette's ``0.09 -> 0.00``, because
-    # the reconstruction removes the projection error the corrector was
-    # working against (consistent with Kleiser's report, via CHQZ
-    # p. 220, of *lower* time-step stability limits when the boundary
-    # correction is omitted).  One config on one backend: treat the
+    # *Measured step cost*, ``legacy -> default``.  The per-mode banded
+    # solve count goes 4 -> 3 on the Cartesian and annular families and
+    # 4 -> **5** on the pipe, which is the one place the default costs
+    # throughput (~+6 % per step; its axis forces the exact spin-quad
+    # diagonalisation, doubling the evolved scalars against only two
+    # wall conditions -- ``cylindrical._imm_iteration_vw``).  Against
+    # that, the corrector contracts in fewer iterations: measured as a
+    # *paired* run (one configuration, one backend, the formulation the
+    # only difference), the pipe's ``c/it`` drops ``1.00 -> 0.10`` and
+    # Taylor-Couette's ``0.09 -> 0.00``, because the reconstruction
+    # removes the projection error the corrector was working against
+    # (consistent with Kleiser's report, via CHQZ p. 220, of *lower*
+    # time-step stability limits when the boundary correction is
+    # omitted).  Do **not** expect ``test_random_smoke.py`` to reprint
+    # those: its ``*-legacy-imm`` entries deliberately run different
+    # ``Re``/box/resolution from their default counterparts, so the
+    # ``c/it`` values it prints side by side are not a controlled pair.
+    # One configuration on one backend either way: treat the net
     # speedup as a bonus, not a guarantee.
     consistent_imm: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Make the influence-matrix projection discretely "
-            "consistent by advancing the wall-normal velocity and "
-            "vorticity and reconstructing the tangential "
-            "components: a stepped state's discrete divergence is "
-            "then round-off at any resolution, on the same "
-            "operators and with less operator storage -- a solve "
-            "fewer in the plane and annular geometries, one more in "
-            "the cylindrical -- at the cost of a truncation-level "
-            "tangential-momentum residual no solve reads back.  "
-            "Trajectory-defining."
+            "consistent (**the default**) by advancing the "
+            "wall-normal velocity and vorticity and reconstructing "
+            "the tangential components: a stepped state's discrete "
+            "divergence is then round-off at any resolution, on the "
+            "same operators and with less operator storage -- a "
+            "solve fewer in the plane and annular geometries, one "
+            "more in the cylindrical -- at the cost of a "
+            "truncation-level tangential-momentum residual no solve "
+            "reads back.  False selects the legacy primitive (v, p) "
+            "Kleiser-Schumann scheme instead, whose stepped state "
+            "carries an O(1) relative discrete divergence; it is "
+            "kept for reference and is not recommended.  "
+            "Trajectory-defining, and inherited from a resumed "
+            "snapshot like every other [res] field -- so a run "
+            "continued from a snapshot written before this became "
+            "the default stays on the legacy scheme (a clean "
+            "continuation, reported in the startup printout) until "
+            "the resuming run overrides it explicitly."
         ),
     )
     double_precision: bool = Field(
@@ -800,10 +1014,24 @@ class Initiation(BaseModel):
             "Seed of the random-IC generator (device-count independent)."
         ),
     )
+    # Cartesian-only, and defaulted **on** there by the flow spec: only
+    # the Cartesian flows have their (kx, kz) = (0, 0) conservation
+    # laws established, so every other flow defers this field.  The
+    # model default stays False -- that is the inert value the deferred
+    # check in ``validate_parameters`` compares a direct assignment
+    # against.  Also read by ``dnsjax-twin`` for its partner field; the
+    # localized-rolls perturbation stays mean-free whatever it is set to
+    # (its (0, 0) content is a cubic in y, which the compatibility
+    # conditions annihilate -- ``ic/localized_rolls.py``), and the
+    # runtime ``[force]`` kicks still reject the mode (``extensions``).
     random_mean_flow: bool = Field(
         default=False,
         description=(
-            "Also perturb the mean (kx = kz = 0) profile in the random IC."
+            "Also perturb the mean (kx = kz = 0) streamwise/spanwise "
+            "profile, conditioned on its conservation laws: "
+            "compatibility with no-slip at both walls, and an "
+            "unchanged bulk velocity in each direction whose mean the "
+            "driving holds."
         ),
     )
     # Radially windowed to zero at both walls (the reference restart
@@ -852,6 +1080,7 @@ class Outputs(BaseModel):
     # All cadences count time steps taken.
     it_stats: int | None = Field(
         default=None,
+        ge=1,
         description=(
             "Steps between stats.dat records; unset disables the stream."
         ),
@@ -860,6 +1089,7 @@ class Outputs(BaseModel):
     # nonlinear-term evaluation (no extra Fourier transforms).
     it_steps: int | None = Field(
         default=None,
+        ge=1,
         description=(
             "Steps between CFL time-step diagnostics in steps.dat; "
             "unset disables the stream."
@@ -867,6 +1097,7 @@ class Outputs(BaseModel):
     )
     it_snapshot: int | None = Field(
         default=None,
+        ge=1,
         description=("Steps between periodic snapshots; unset disables them."),
     )
     # Same on-device buffering and file format as ``stats.dat``.
@@ -1944,6 +2175,36 @@ def validate_parameters() -> None:
     # in the flow specs.
     if spec.validate is not None:
         spec.validate(params, derived_params)
+
+    # The two mean-mode driving knobs, same guard for the same reason:
+    # a geometry reads them only when its flows offer them (Cartesian
+    # and cylindrical read ``driving``, Cartesian and annular read
+    # ``block_mean_spanwise_velocity``), so a direct assignment on a
+    # flow whose surface omits one is either silently inert -- e.g.
+    # ``block_mean_spanwise_velocity`` on the pipe, which nothing reads
+    # -- or, worse, half-applied: ``phys.driving`` on the viscoelastic
+    # pipe would make the cylindrical corrector emit a ``-dPdz'``
+    # diagnostic for a flow module that exports no ``get_driving``, so
+    # ``__main__`` would size ``stats.dat`` one column short and fail
+    # mid-run on the first stats row.  The CLI/TOML reject both at
+    # parse; this is the scripts-and-tests path.  It runs after
+    # ``spec.validate`` so a flow that refuses one of these itself
+    # (plane-couette's constant-bulk refusal) keeps its own, more
+    # specific message.
+    for _drive_field in ("driving", "block_mean_spanwise_velocity"):
+        _default = Physics.model_fields[_drive_field].get_default(
+            call_default_factory=True
+        )
+        if getattr(params.phys, _drive_field) != _default and (
+            ("phys", _drive_field) not in spec.field_map
+        ):
+            raise ValueError(
+                f"phys.{_drive_field}="
+                f"{getattr(params.phys, _drive_field)!r} is not a "
+                f"parameter of system {params.phys.system!r} "
+                f"(see `dnsjax --help {params.phys.system}`); it would "
+                "not be applied."
+            )
 
     # The Pallas kernel tiles the mode plane in ``bm0 x bm1`` blocks;
     # Triton block loads require power-of-two tile dims.

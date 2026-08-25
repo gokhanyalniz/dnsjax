@@ -18,18 +18,13 @@ These modules **may** use JAX, and they do where it pays.
 
 ## Requirements
 
-SciPy, declared as the optional `analysis` extra:
-
-```bash
-uv sync --extra analysis
-```
-
-A plain `uv sync` from a clone already provides it through the dev
-group; the extra is what a non-development install needs. SciPy is
-imported lazily, inside the functions that use it — `logm`, the
-Lyapunov solve, non-symmetric `eig`: factorisations JAX has no GPU
-kernels for. Without it the Lyapunov solve falls back to an
-eigendecomposition closed form; the matrix logarithm does not.
+SciPy, which `uv sync` installs — it is a core dependency, so nothing
+extra is needed here. It is still imported **lazily**, inside the
+functions that use it — `logm`, the Lyapunov solve, non-symmetric
+`eig`: factorisations JAX has no GPU kernels for — which is what keeps
+`import dnsjax.analysis` free of both JAX and SciPy. The Lyapunov solve
+additionally carries an eigendecomposition closed form as a fallback;
+the matrix logarithm has none.
 
 The dense time sweeps (growth curves, input-response curves) run
 batched `expm` + SVD on the JAX default device, are GPU-capable, and
@@ -49,7 +44,7 @@ Add a probe stream to an ordinary DNS run: the mean mode, to get the
 turbulent mean profile, and whichever mode you intend to study.
 
 ```bash
-mpirun -np 1 .venv/bin/dnsjax \
+.venv/bin/dnsjax \
   --phys.system plane-couette --phys.re 500 \
   --probes.modes "0,0;3,0" --probes.it_probes 10
 ```

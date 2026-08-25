@@ -29,11 +29,24 @@ scope, in temporary member directories:
    sidecar-less ``.bin`` is refused; the final pair feeds
    ``integral_lengths`` (finite, domain-bounded).
 7. Budget closure: `$dE_X/dt = P_X + T_X - \epsilon_X$` per
-   component on a real run at two resolutions -- absolute bounds at
-   the finer one and self-convergence of every residual (the
-   residual is spatial truncation; a wrong or missing term would
-   not shrink).  ``--only closure`` (any test-name fragment) runs a
-   subset.
+   component on a real run, as a **structural** guard -- term counts,
+   ``*_tot`` sum-consistency, sample count, and order-of-magnitude
+   bounds.  The convergence claim lives in
+   ``tests/test_twin_budget.py``, which measures it on three-rung
+   ladders across both Cartesian flows and every driving mode; the
+   six-run seed sweep that moved it there is tabulated in
+   ``test_budget_closure``'s own docstring.  ``--only closure`` (any
+   test-name fragment) runs a subset; ``--seed N`` varies the
+   partner's seed, which is what that sweep used.  ``--mean-free``
+   overrides ``init.random_mean_flow`` off, so the partner carries no
+   ``(0, 0)`` content: it isolates the partner's mean-mode content
+   from everything else (the parent is unaffected either way,
+   ``_build_parents`` taking the generator's mean-free default).  It
+   was added to tell "the bounds moved because the perturbation
+   energy redistributed" from "a budget term is missing"; the sweep
+   answered that -- **neither**, the bounds were fitted to one draw,
+   and the control fails at a different seed than the default path
+   does.
 8. Every driver-level guard fires on a real input: missing
    ``twin.e0``, a snapshot recording a ``[force]`` section, the three
    bad start-mode quadrants (partner without ``twin.json``,
@@ -44,6 +57,8 @@ scope, in temporary member directories:
 Usage::
 
     uv run python tests/test_twin_driver.py
+    uv run python tests/test_twin_driver.py --only budget --mean-free
+    uv run python tests/test_twin_driver.py --only budget --seed 5
 """
 
 from __future__ import annotations
@@ -73,6 +88,20 @@ from dnsjax.parameters import (  # noqa: E402
     update_parameters,
 )
 
+#: Control switch (see the module docstring): force the partner's
+#: perturbation mean-free, the pre-``init.random_mean_flow`` behaviour.
+#: Read here rather than in ``main`` because ``_twin_args`` is module
+#: level; it never reaches the ``--build-parent`` worker, which is
+#: correct -- the parent does not depend on it.
+MEAN_FREE = "--mean-free" in sys.argv
+
+#: ``--seed N`` overrides ``_twin_args``' default partner seed, so the
+#: closure bounds below can be re-measured across seeds without editing
+#: the file.  Same reasoning as ``MEAN_FREE`` for reading it here.
+SEED = 3
+if "--seed" in sys.argv:
+    SEED = int(sys.argv[sys.argv.index("--seed") + 1])
+
 if "--build-parent" in sys.argv:
     _i = sys.argv.index("--build-parent")
     _NX, _NY, _NZ = (int(v) for v in sys.argv[_i + 1 : _i + 4])
@@ -100,6 +129,12 @@ import numpy as np  # noqa: E402
 from _live import run_live  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
+from dnsjax.analysis.twin.series import (  # noqa: E402
+    ClosureResiduals,
+    closure_residuals,
+    read_dat,
+    read_twin,
+)
 from dnsjax.extensions import force_params, reset_extensions  # noqa: E402
 from dnsjax.snapshot_meta import read_snapshot_meta  # noqa: E402
 
@@ -188,8 +223,8 @@ def _run_twin(
     return result
 
 
-def _twin_args(horizon: float, seed: int = 3, e0: float = E0) -> list[str]:
-    return [
+def _twin_args(horizon: float, seed: int = SEED, e0: float = E0) -> list[str]:
+    args = [
         "--init.snapshot",
         str(PARENT),
         "--twin.e0",
@@ -199,13 +234,11 @@ def _twin_args(horizon: float, seed: int = 3, e0: float = E0) -> list[str]:
         "--stop.max_sim_time",
         repr(horizon),
     ]
-
-
-def _read_dat(path: str | Path) -> dict[str, np.ndarray]:
-    with open(path) as fh:
-        header = fh.readline().split()
-    data = np.loadtxt(path, skiprows=1, ndmin=2)
-    return {name: data[:, i] for i, name in enumerate(header)}
+    if MEAN_FREE:
+        # A CLI layer beats the snapshot layer, which carries the
+        # parent's resolved (Cartesian default: on) value.
+        args += ["--init.random_mean_flow", "False"]
+    return args
 
 
 def _expect_error(result, fragment: str) -> None:
@@ -229,7 +262,7 @@ def test_fresh_start_e0_exact() -> None:
         assert meta["parent_t"] == PARENT_T
         assert meta["parent_it"] == PARENT_IT
 
-        cols = _read_dat(tmp / "twin.dat")
+        cols = read_dat(tmp / "twin.dat")
         assert list(cols) == TWIN_COLS
         n = round(0.1 / DT)
         assert cols["t"].shape[0] == n + 1
@@ -259,16 +292,28 @@ def test_fresh_start_e0_exact() -> None:
 
 
 def test_zero_perturbation_bit_identity() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        result = _run_twin(tmp, _twin_args(1.05, e0=0.0))
-        assert "exact copy" in result.stdout
-        cols = _read_dat(Path(tmp) / "twin.dat")
-        for name in TWIN_COLS[1:-1]:  # every E_d* column, not E_ref
-            assert (cols[name] == 0.0).all(), (
-                f"{name} nonzero: twin stepping is not bit-identical"
-            )
-        assert (cols["E_ref"] > 0).all()
-    print("e0 = 0 bit-identity: OK")
+    # ``--outs.it_steps 1`` is load-bearing, not incidental: on a
+    # recording step the *reference* takes
+    # ``predict_and_fully_correct_measured`` while the partner takes
+    # the plain variant -- two separately compiled programs, the one
+    # place the lockstep loop does not literally run the same jitted
+    # function on both states.  Without the flag ``do_record`` is
+    # always false (``outs.it_steps`` defaults to ``None``) and this
+    # guard never sees that path.
+    for extra in ([], ["--outs.it_steps", "1"]):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _run_twin(tmp, [*_twin_args(1.05, e0=0.0), *extra])
+            assert "exact copy" in result.stdout
+            cols = read_dat(Path(tmp) / "twin.dat")
+            for name in TWIN_COLS[1:-1]:  # every E_d* column, not E_ref
+                assert (cols[name] == 0.0).all(), (
+                    f"{name} nonzero with {extra}: twin stepping is "
+                    "not bit-identical"
+                )
+            assert (cols["E_ref"] > 0).all()
+            if extra:
+                assert (Path(tmp) / "steps.dat").exists()
+    print("e0 = 0 bit-identity (plain + measured reference): OK")
 
 
 # ── Paired restart ───────────────────────────────────────────────────
@@ -290,8 +335,8 @@ def test_paired_restart_continuity() -> None:
         assert "Resumed twin pair" in result.stdout
         assert "random perturbation" not in result.stdout
 
-        ref = _read_dat(Path(straight) / "twin.dat")
-        got = _read_dat(Path(split) / "twin.dat")
+        ref = read_dat(Path(straight) / "twin.dat")
+        got = read_dat(Path(split) / "twin.dat")
         # The split stream duplicates the seam sample (the parent's
         # final row and the child's t0 row hold the same state).
         seen: dict[float, int] = {}
@@ -326,7 +371,7 @@ def test_paired_restart_continuity() -> None:
 def test_np2_run() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         _run_twin(tmp, _twin_args(1.03), np_count=2, np1=2)
-        cols = _read_dat(Path(tmp) / "twin.dat")
+        cols = read_dat(Path(tmp) / "twin.dat")
         # The perturbation seed is device-count independent, so the
         # initial E_d matches the single-device runs' exactly (up to
         # the same cancellation floor).
@@ -368,11 +413,12 @@ def test_spectra_stream() -> None:
     Per-record ``e_delta`` sums equal the matching ``twin.dat``
     ``E_d`` rows; a paired restart appends with one seam duplicate
     (dropped by the reader) on a uniform time grid; a ``.bin``
-    without its sidecar is a hard error; the final snapshot pair
-    feeds ``integral_lengths`` (finite, positive, bounded by the
-    domain).
+    without its sidecar is a hard error; the final snapshot pair,
+    addressed through ``partner_of``, feeds ``integral_lengths``
+    (finite, positive, bounded by the domain) while a pair from two
+    *different* writes is refused.
     """
-    from dnsjax.analysis.twin.lengths import integral_lengths
+    from dnsjax.analysis.twin.lengths import integral_lengths, partner_of
     from dnsjax.analysis.twin.spectra import (
         decorrelation_ratio,
         read_twin_spectra,
@@ -398,7 +444,7 @@ def test_spectra_stream() -> None:
 
         # Cross-check against twin.dat (the sum identity, end to end
         # through the binary round trip).
-        cols = _read_dat(Path(tmp) / "twin.dat")
+        cols = read_dat(Path(tmp) / "twin.dat")
         e_by_t = dict(zip(np.round(cols["t"], 10), cols["E_d"], strict=True))
         for k, t in enumerate(np.round(data.t, 10)):
             assert_allclose(data.e_delta[k].sum(), e_by_t[t], rtol=1e-10)
@@ -406,16 +452,27 @@ def test_spectra_stream() -> None:
         assert np.isfinite(ratio[np.asarray(data.e_ref) > 0]).all()
 
         # The final pair feeds the integral-length diagnostic.
-        lengths = integral_lengths(
-            Path(tmp) / "state00002.tar",
-            Path(tmp) / "state00002_twin.tar",
-        )
+        final = Path(tmp) / "state00002.tar"
+        assert partner_of(final) == Path(tmp) / "state00002_twin.tar"
+        lengths = integral_lengths(final, partner_of(final))
         lz = 3.7699111843077517
         assert (lengths["variance"] > 0).all()
         assert np.isfinite(lengths["l_z"]).all()
         assert (lengths["l_z"] > 0).all() and (lengths["l_z"] <= lz / 2).all()
         assert np.isfinite(lengths["l_y"]).all()
         assert (lengths["l_y"] > 0).all() and (lengths["l_y"] <= 2).all()
+
+        # A pair from two different writes is refused: both snapshots
+        # are real and readable, and the difference of two unrelated
+        # states would otherwise pass for a difference field.
+        try:
+            integral_lengths(final, partner_of(Path(tmp) / "state00001.tar"))
+        except ValueError as exc:
+            assert "not at the same time" in str(exc), exc
+        else:
+            raise AssertionError(
+                "integral_lengths accepted a mismatched snapshot pair"
+            )
 
         # A stream file without its sidecar is refused loudly.
         (Path(tmp) / "twin_spectra.json").unlink()
@@ -429,22 +486,21 @@ def test_spectra_stream() -> None:
 # ── Budget closure ───────────────────────────────────────────────────
 
 
-def _closure_residuals(member: Path) -> dict[str, float]:
+def _closure_residuals(member: Path) -> ClosureResiduals:
     r"""Relative budget-closure residuals of one member directory.
 
-    For each component ``X``: the centered-difference `$dE_X/dt$`
-    from ``twin.dat`` (``it_energy = 1``) against
-    `$P_X + T_X - \epsilon_X$` from ``twin_budget.dat`` at the
-    interior budget sample times, normalised by the largest of the
-    two magnitudes; plus ``T_tot`` relative to the largest transport
-    term.  Also asserts the exact sum-consistency of the ``*_tot``
-    columns and the expected per-component term counts.
+    Thin wrapper over
+    :func:`dnsjax.analysis.twin.series.closure_residuals` (which owns
+    the definition and the structural validation) that additionally
+    asserts the exact sum-consistency of the ``*_tot`` columns -- a
+    writer-side property of the stream, not a physics one, so it
+    belongs here rather than in the reader.
     """
-    tw = _read_dat(member / "twin.dat")
-    bg = _read_dat(member / "twin_budget.dat")
+    series = read_twin(member)
+    bg = series.budget
+    assert bg is not None, "no twin_budget.dat"
     p_all = [n for n in bg if n.startswith("P_") and n != "P_tot"]
     t_all = [n for n in bg if n.startswith("T_") and n != "T_tot"]
-    assert len(p_all) == 12 and len(t_all) == 12
     assert_allclose(
         bg["P_tot"], sum(bg[n] for n in p_all), rtol=1e-10, atol=1e-300
     )
@@ -456,32 +512,10 @@ def _closure_residuals(member: Path) -> dict[str, float]:
         bg["eps_dU"] + bg["eps_du1"] + bg["eps_du2"],
         rtol=1e-12,
     )
-
-    t_idx = {round(t, 10): i for i, t in enumerate(tw["t"])}
-    out: dict[str, float] = {}
-    n_p = {"dU": 3, "du1": 4, "du2": 5}
-    for x in ("dU", "du1", "du2"):
-        p_cols = [n for n in bg if n.startswith(f"P_{x}(")]
-        t_cols = [n for n in bg if n.startswith(f"T_{x}(")]
-        assert len(p_cols) == n_p[x] and len(t_cols) == 4
-        pairs = []
-        for k, tb in enumerate(bg["t"]):
-            i = t_idx.get(round(tb, 10))
-            if i is None or i == 0 or i + 1 >= len(tw["t"]):
-                continue
-            dedt = (tw[f"E_{x}"][i + 1] - tw[f"E_{x}"][i - 1]) / (2 * DT)
-            rhs = (
-                sum(bg[n][k] for n in p_cols)
-                + sum(bg[n][k] for n in t_cols)
-                - bg[f"eps_{x}"][k]
-            )
-            pairs.append((dedt, rhs))
-        arr = np.array(pairs)
-        assert arr.shape[0] >= 5
-        out[x] = float(np.abs(arr[:, 0] - arr[:, 1]).max() / np.abs(arr).max())
-    t_scale = np.abs(np.stack([bg[n] for n in t_all])).max()
-    out["T_tot"] = float(np.abs(bg["T_tot"]).max() / t_scale)
-    return out
+    resid = closure_residuals(series)
+    assert resid.n_samples >= 5, f"only {resid.n_samples} budget samples"
+    assert_allclose(resid.dt, DT, rtol=1e-9)
+    return resid
 
 
 def test_budget_closure() -> None:
@@ -492,10 +526,41 @@ def test_budget_closure() -> None:
     integration-by-parts error of the wall-normal transport;
     the dissipation uses the discrete-Laplacian form so the viscous
     part closes exactly -- see the ``twin/diagnostics.py`` "Dissipation
-    form" note): the mean component closes to `$O(10^{-5})$`, the
-    fluctuating components to a few percent at 16x33x16, and every
-    residual *decreases* from 8x17x8 to 16x33x16 (self-convergence:
-    a systematically wrong or missing term would not).
+    form" note): the mean component closes to `$O(10^{-5})$` and the
+    fluctuating ones to a few percent at 16x33x16.
+
+    **This case does not assert refinement, and its bounds are loose
+    on purpose.**  Both were tried, and a six-run sweep (``--seed``
+    3/5/7 x default/``--mean-free``) showed neither survives the seed:
+
+    ======  =========  =======  =======  =======
+    seed    mode       du1 (c)  du1 (f)  T_tot (f)
+    ======  =========  =======  =======  =======
+    3       default    0.038    0.063    0.014
+    3       mean-free  0.109    0.020    0.035
+    5       default    0.262    0.015    0.022
+    5       mean-free  0.082    0.044    0.121
+    7       default    0.183    0.012    0.034
+    7       mean-free  0.045    0.013    0.072
+    ======  =========  =======  =======  =======
+
+    Fine ``du1`` spans 0.012 to 0.063 -- a 5.1x swing straddling the
+    old 0.04 bound in **both** modes, so the control was never clean
+    either; ``fine < coarse`` fails in two of the six runs (seed 3
+    default on ``du1``, seed 5 mean-free on ``T_tot``), again in both
+    modes.  Two rungs one seed apart cannot separate convergence from
+    the draw.
+
+    The convergence claim therefore lives where it has the evidence:
+    ``tests/test_twin_budget.py`` asserts it on three-rung ladders at
+    ``fd_order = 8`` off *stepped* parents, where it holds for all
+    fifteen (configuration, seed) combinations.  What stays here is
+    the cheap structural guard -- term counts, ``*_tot``
+    sum-consistency, sample count, and an order-of-magnitude bound
+    that an actually missing term would still break.
+
+    Run with ``--mean-free`` for the control (module docstring): the
+    partner then carries no `$(0,0)$` content.
     """
     parent16 = _SESSION / "parent16.tar"
     result = run_live(
@@ -511,7 +576,7 @@ def test_budget_closure() -> None:
     )
     assert result.returncode == 0, "parent16 build failed"
 
-    resids: dict[str, dict[str, float]] = {}
+    resids: dict[str, ClosureResiduals] = {}
     for label, parent in (("coarse", PARENT), ("fine", parent16)):
         with tempfile.TemporaryDirectory() as tmp:
             args = _twin_args(1.5, e0=1e-4)
@@ -519,18 +584,19 @@ def test_budget_closure() -> None:
             _run_twin(tmp, [*args, "--twin.it_budget", "5"])
             resids[label] = _closure_residuals(Path(tmp))
     coarse, fine = resids["coarse"], resids["fine"]
-    print(f"closure residuals: coarse={coarse} fine={fine}")
-    # Bounds: ~2-3x margins over the measured values (deterministic
-    # seeds; coarse 2e-5/6.0e-2/6.5e-2/15%, fine 3e-5/1.7e-2/3.6e-2/5%).
+    mode = "mean-free partner" if MEAN_FREE else "default partner"
+    mode += f", seed {SEED}"
+    print(
+        f"closure residuals [{mode}]: "
+        f"coarse={coarse.components} fine={fine.components}"
+    )
+    # Bounds: ~3x over the worst of a six-run sweep (twin.seed 3/5/7 x
+    # both modes) -- see this function's docstring for why they are not
+    # the ~2x they used to be, and why nothing here asserts refinement.
     assert coarse["dU"] < 1e-3 and fine["dU"] < 1e-3
-    assert fine["du1"] < 0.04 and fine["du2"] < 0.08
-    assert fine["T_tot"] < 0.10
-    for x in ("du1", "du2", "T_tot"):
-        assert fine[x] < coarse[x], (
-            f"{x} closure residual did not shrink under refinement "
-            f"({coarse[x]:.3e} -> {fine[x]:.3e})"
-        )
-    print("budget closure (+ self-convergence): OK")
+    assert fine["du1"] < 0.20 and fine["du2"] < 0.10
+    assert fine["T_tot"] < 0.35
+    print("budget closure: OK")
 
 
 # ── Driver-level guards ──────────────────────────────────────────────

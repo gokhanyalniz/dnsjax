@@ -40,17 +40,19 @@ Exercises the host (non-GDS) I/O path:
 - 2D mesh round-trips: save and load with ``np0 > 1``, including
   padding-mode stripping and re-padding;
 - the **I/O-layout reshard** the multi-device paths run (save
-  reshards onto contiguous leading-axis slabs, load reshards back):
-  every mesh family is covered -- ``np1``-only, ``np0``-only and 2D
-  -- because the slab a device owns is decided by its *flat* mesh
-  position, and each engine call is checked for the SPMD
-  ``Involuntary full rematerialization`` warning, which is what a
-  reshard routed through both mesh axes at once would print;
-- the span tiers the layout can still fragment into: an ``nx``
-  whose true `$k_x$` count does not divide ``np1`` forces the
-  narrowest (per-``(a, kz)``-row) tier through a real writer and a
-  real reader, and an ``ny`` smaller than the device count gives a
-  device whose slab is entirely padding;
+  reshards onto contiguous leading-axis slabs at the true mode
+  counts, load reshards back): every mesh family is covered --
+  ``np1``-only, ``np0``-only and 2D -- because the slab a device
+  owns is decided by its *flat* mesh position, and each engine call
+  is checked for the SPMD ``Involuntary full rematerialization``
+  warning, which is what a reshard routed through both mesh axes at
+  once would print;
+- both mode-padding trims that reshard performs, through a real
+  writer and a real reader: the `$k_x$` one needs an ``nx`` whose
+  true mode count does not divide ``np1``, and the `$k_z$` one comes
+  free with every ``np0``-only row (``nz - 1`` is odd, so no even
+  ``np0`` divides it).  An ``ny`` smaller than the device count
+  gives a device whose slab is entirely padding;
 - a **viscoelastic-dean** case (single-device and ``np 1 -> 2``)
   exercises the 9-component chunk count -- the test helpers derive
   the component count from the system via ``_n_comp``, mirroring the
@@ -254,22 +256,23 @@ CASES: list[tuple[str, str, str, str, int, int, int, int]] = [
     ),
 ]
 
-# Cases that override the resolution to reach a span tier or a slab
-# shape the grids above cannot produce.  Same runner, keyword form
-# (``run_case(**case)``) so the tuple rows stay unchanged.
+# Cases that override the resolution to reach a padding trim or a
+# slab shape the grids above cannot produce.  Same runner, keyword
+# form (``run_case(**case)``) so the tuple rows stay unchanged.
 #
 # ``nx = 6`` gives ``kx_true = 3``, which no device count above 1
-# divides: ``nx_spec`` pads to 4 and every span narrows to a single
-# ``(a, kz)`` row -- the last resort tier of ``_a_spans``, and the
-# only one the default grids never reach (``nx = 8`` has
-# ``kx_true = 4``, divisible by every mesh used here).
+# divides: ``nx_spec`` pads to 4, so this is the only row that
+# exercises the `$k_x$` trim in ``_to_io_layout_core`` (and its
+# re-pad on load).  ``nx = 8`` has ``kx_true = 4``, divisible by
+# every mesh used above.  Left untrimmed, each of these would write
+# one ``(a, kz)`` row at a time.
 #
 # ``ny = 5`` over 4 devices gives ``_a_local = 2`` and hence slabs
 # ``[0, 2) [2, 4) [4, 5) []``: a clipped slab *and* a device whose
 # slab is entirely padding, both through a real writer and reader.
 SHAPE_CASES: list[dict] = [
     {
-        "name": "walled kx-padded spans (nx 6, 2D)",
+        "name": "walled kx trim (nx 6, 2D)",
         "system": "plane-couette",
         "layout": "walled",
         "write_mode": "concurrent",
@@ -280,7 +283,7 @@ SHAPE_CASES: list[dict] = [
         "nx": 6,
     },
     {
-        "name": "walled kx-padded spans on load (nx 6, np 1->4)",
+        "name": "walled kx trim on load (nx 6, np 1->4)",
         "system": "plane-couette",
         "layout": "walled",
         "write_mode": "concurrent",
@@ -359,6 +362,106 @@ def _make_reference(np_mod, shape):
     real = rng.standard_normal(shape)
     imag = rng.standard_normal(shape)
     return (real + 1j * imag).astype(np_mod.complex128)
+
+
+def _mode_value(np_mod, c, a, qz, qx):
+    """Deterministic complex value keyed on **wavenumbers**, not indices.
+
+    A resolution change renumbers the mode axes, so a reference keyed on
+    indices could not tell a correct regrid from a shifted one.  Keyed
+    on `(component, leading coordinate, k_z, k_x)` it can: a surviving
+    mode must come back bit-identical *and* land where its wavenumber
+    says.  The coefficients are exact binary fractions of well-separated
+    magnitude, so the value is reproduced bit-for-bit in the loading
+    process and no two distinct coordinates collide in both parts.
+    """
+    real = 1.0 * (c + 1) + 0.5 * a + 0.03125 * qz + 0.001953125 * qx
+    imag = -0.25 * (c + 1) + 0.015625 * a - 0.5 * qz + 2.0 * qx
+    return (real + 1j * imag).astype(np_mod.complex128)
+
+
+def _mode_reference(np_mod, system: str, nx: int, ny: int, nz: int):
+    """True-mode array of :func:`_mode_value` at resolution (nx, ny, nz).
+
+    The leading coordinate is the wavenumber `k_y` for the periodic
+    family (whose leading axis is a Fourier axis, regridded inside
+    ``load_snapshot``) and the plain grid index otherwise (the FD
+    wall-normal axis, which ``load_snapshot`` leaves at the stored
+    length).
+    """
+    from dnsjax.harmonics import complex_harmonics, real_harmonics
+
+    qz = complex_harmonics(nz)
+    qx = real_harmonics(nx)
+    a = complex_harmonics(ny) if system in _PERIODIC else np_mod.arange(ny)
+    c = np_mod.arange(_n_comp(system))
+    return _mode_value(
+        np_mod,
+        c[:, None, None, None],
+        a[None, :, None, None],
+        qz[None, None, :, None],
+        qx[None, None, None, :],
+    )
+
+
+def _check_mode_regrid(np_mod, snapshot, sharding, system: str, d: str):
+    """Assert a resolution-change load kept, added and dropped modes.
+
+    Every mode the snapshot carried and this resolution still resolves
+    must come back **bit-identical at its own wavenumber**; every mode
+    this resolution adds must be exactly zero; every mode it no longer
+    resolves must be gone.  Also checks that the mesh-divisibility
+    padding slots stay zero, which is what keeps ``mean_mask`` a
+    one-hot and the per-mode operators regular.
+    """
+    from dnsjax.harmonics import complex_harmonics, real_harmonics
+    from dnsjax.parameters import params
+
+    meta = snapshot.read_metadata(d)
+    _, a_src, kz_src, kx_src = meta["native_shape"]
+    nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
+    periodic = system in _PERIODIC
+
+    snapshot.validate_snapshot_params(d)
+    state, t, it = snapshot.load_snapshot(d)
+    got = np_mod.asarray(state)
+
+    a_out = ny - 1 if periodic else a_src
+    want_shape = (
+        _n_comp(system),
+        a_out,
+        sharding.nz_spec,
+        sharding.nx_spec,
+    )
+    assert got.shape == want_shape, (got.shape, want_shape)
+
+    # The wall-bounded leading axis is untouched here (the wall-normal
+    # interpolation is a separate step), so its reference keeps the
+    # stored length.
+    ref = _mode_reference(np_mod, system, nx, ny if periodic else a_src, nz)
+    keep_z = np_mod.isin(complex_harmonics(nz), complex_harmonics(kz_src + 1))
+    keep_x = real_harmonics(nx) < kx_src
+    keep_a = (
+        np_mod.isin(complex_harmonics(ny), complex_harmonics(a_src + 1))
+        if periodic
+        else np_mod.ones(a_src, dtype=bool)
+    )
+    mask = (
+        keep_a[None, :, None, None]
+        & keep_z[None, None, :, None]
+        & keep_x[None, None, None, :]
+    )
+    expected = np_mod.where(mask, ref, 0.0)
+    true = got[:, :, : nz - 1, : nx // 2]
+    assert np_mod.array_equal(true, expected), (
+        "mode regrid mismatch: "
+        f"max|got - want| = {np_mod.max(np_mod.abs(true - expected)):.3e}, "
+        f"{int(np_mod.sum(~mask))} of {mask.size} slots should be zero"
+    )
+    assert not np_mod.any(got[:, :, nz - 1 :, :]), "kz padding not zero"
+    assert not np_mod.any(got[:, :, :, nx // 2 :]), "kx padding not zero"
+    assert t == T_SAVE, (t, T_SAVE)
+    assert it == IT_SAVE, (it, IT_SAVE)
 
 
 def _true_shape(system: str, ny: int) -> tuple[int, ...]:
@@ -460,12 +563,29 @@ def _check_slab_placement(state, snapshot, sharding) -> None:
     order, which is a JAX convention this module reads but cannot
     enforce.  A silent change of it would hand every device another
     one's slab, so pin it against the real sharding.
+
+    The mode axes are pinned here too.  Each writer sends
+    ``vec[comp][:na]`` in a single call, which is that device's file
+    range only if the buffer carries the **true** mode counts; one
+    that kept the solver layout's divisibility padding would satisfy
+    the placement check below and write the padding modes into the
+    file.  On a single-device mesh this also pins the short-circuit in
+    ``_to_io_layout``, which returns the solver array untouched on the
+    grounds that ``np0 = np1 = 1`` pads nothing.
     """
     import numpy as np
 
     io = snapshot._to_io_layout(state)
     a_true, ndev = state.shape[1], snapshot._n_devices()
     a_local = snapshot._a_local(a_true, ndev)
+    kz_true, kx_true = snapshot._kz_true(), snapshot._kx_true()
+    assert io.shape[2:] == (kz_true, kx_true), (
+        f"I/O layout carries mode axes {io.shape[2:]}, not the true "
+        f"counts {(kz_true, kx_true)}: the writers would send padding "
+        "modes, or fragment"
+    )
+    io_local = snapshot._io_local_shape(a_true, kz_true, kx_true)
+    assert io_local[2:] == (kz_true, kx_true), (io_local, (kz_true, kx_true))
     for shard in io.addressable_shards:
         flat = snapshot._shard_device_index(shard)
         want = (flat * a_local, (flat + 1) * a_local)
@@ -478,7 +598,7 @@ def _check_slab_placement(state, snapshot, sharding) -> None:
         # merely relabelled them.
         a_start, na = snapshot._a_ranges(flat, a_true, ndev)
         local = np.asarray(shard.data)
-        ref = np.asarray(state)[:, a_start : a_start + na]
+        ref = np.asarray(state)[:, a_start : a_start + na, :kz_true, :kx_true]
         assert np.array_equal(local[:, :na], ref), (
             f"slab content mismatch at flat mesh position {flat}"
         )
@@ -494,11 +614,14 @@ def _worker(
     d: str,
     ny_override: int | None = None,
     nx_override: int | None = None,
+    nz_override: int | None = None,
 ):
     """Set up singletons for *npv* CPU devices, then save or load."""
+    global NX, NZ
     if nx_override is not None:
-        global NX
         NX = nx_override
+    if nz_override is not None:
+        NZ = nz_override
     os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={npv}"
 
     import numpy as np
@@ -536,8 +659,7 @@ def _worker(
         state_np = _embed_true_into_padded(ref_true, padded_shape, system)
         state = jax.device_put(state_np, vshard)
         snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
-        if npv > 1:
-            _check_slab_placement(state, snapshot, sharding)
+        _check_slab_placement(state, snapshot, sharding)
         # The state must survive its own save: nothing in the write
         # path may donate or mutate the caller's array (``__main__``
         # keeps stepping the state it just snapshotted).
@@ -764,6 +886,22 @@ def _worker(
         print("worker-load-interp-ve-pipe-ok", flush=True)
         return
 
+    if action == "save_modes":
+        # A field whose every true mode is a known function of its
+        # wavenumbers (see ``_mode_value``); the padding slots stay zero.
+        ref = _mode_reference(np, system, NX, params.res.ny, NZ)
+        state_np = np.zeros(padded_shape, dtype=np.complex128)
+        state_np[:, :, : NZ - 1, : NX // 2] = ref
+        state = jax.device_put(state_np, vshard)
+        snapshot.save_snapshot(state, T_SAVE, IT_SAVE, d)
+        print("worker-save-modes-ok", flush=True)
+        return
+
+    if action == "load_modes":
+        _check_mode_regrid(np, snapshot, sharding, system, d)
+        print("worker-load-modes-ok", flush=True)
+        return
+
     if action == "load_shape":
         # ny-mismatch load only: the assembled global state must carry
         # the flow's component count (9 for viscoelastic-dean) at the
@@ -805,6 +943,7 @@ def _run_worker(
     ny: int | None = None,
     np0: int = 1,
     nx: int | None = None,
+    nz: int | None = None,
 ) -> subprocess.CompletedProcess:
     cmd = [
         sys.executable,
@@ -829,6 +968,8 @@ def _run_worker(
         cmd.extend(["--ny", str(ny)])
     if nx is not None:
         cmd.extend(["--nx", str(nx)])
+    if nz is not None:
+        cmd.extend(["--nz", str(nz)])
     return run_live(cmd, timeout=300)
 
 
@@ -923,29 +1064,176 @@ def run_case(
     return None
 
 
+# Fourier-resolution regrid on resume: (nx, ny, nz) at save and at
+# load.  ``nx`` is the real-FFT half axis (append / prefix-slice),
+# ``nz`` the wrap-ordered complex one (insert / drop at the high-|k|
+# end from *both* blocks) -- the two need different arithmetic, so
+# every case moves them independently at least once.  The 2D-mesh rows
+# are the ones that matter: the resize happens inside the I/O-layout
+# reshard, where only a (2, 2) mesh exercises both legs.
+MODE_CASES: list[dict] = [
+    {
+        "name": "wb kx up (nx 8->16)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 8),
+        "load_res": (16, 9, 8),
+    },
+    {
+        "name": "wb kx down (nx 16->8)",
+        "system": "plane-couette",
+        "save_res": (16, 9, 8),
+        "load_res": (8, 9, 8),
+    },
+    {
+        "name": "wb kz up (nz 8->16)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 8),
+        "load_res": (8, 9, 16),
+    },
+    {
+        "name": "wb kz down (nz 16->8)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 16),
+        "load_res": (8, 9, 8),
+    },
+    {
+        "name": "wb kz odd counts (nz 7->10)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 7),
+        "load_res": (8, 9, 10),
+    },
+    {
+        "name": "wb both up, 2D mesh (nx/nz 8->16)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 8),
+        "load_res": (16, 9, 16),
+        "save_np": 4,
+        "save_np0": 2,
+        "load_np": 4,
+        "load_np0": 2,
+    },
+    {
+        "name": "wb both down, 2D mesh (nx/nz 16->8)",
+        "system": "plane-couette",
+        "save_res": (16, 9, 16),
+        "load_res": (8, 9, 8),
+        "save_np": 4,
+        "save_np0": 2,
+        "load_np": 4,
+        "load_np0": 2,
+    },
+    {
+        "name": "wb mixed + np change (nx up, nz down, np 1->4)",
+        "system": "plane-couette",
+        "save_res": (8, 9, 16),
+        "load_res": (16, 9, 8),
+        "save_np": 1,
+        "save_np0": 1,
+        "load_np": 4,
+        "load_np0": 2,
+    },
+    {
+        "name": "pipe kz/kx regrid (aliased names)",
+        "system": "pipe",
+        "save_res": (8, 9, 8),
+        "load_res": (16, 9, 16),
+    },
+    {
+        "name": "viscoelastic 9-component regrid",
+        "system": "viscoelastic-pipe",
+        "save_res": (8, 9, 8),
+        "load_res": (16, 9, 16),
+    },
+    {
+        "name": "periodic ky up (ny 8->16)",
+        "system": "kolmogorov",
+        "save_res": (8, 8, 8),
+        "load_res": (8, 16, 8),
+    },
+    {
+        "name": "periodic ky down (ny 16->8)",
+        "system": "kolmogorov",
+        "save_res": (8, 16, 8),
+        "load_res": (8, 8, 8),
+    },
+    {
+        "name": "periodic all three, 2D mesh",
+        "system": "kolmogorov",
+        "save_res": (8, 8, 8),
+        "load_res": (16, 16, 16),
+        "save_np": 4,
+        "save_np0": 2,
+        "load_np": 4,
+        "load_np0": 2,
+    },
+]
+
+
+def run_mode_case(
+    name: str,
+    system: str,
+    save_res: tuple[int, int, int],
+    load_res: tuple[int, int, int],
+    save_np: int = 1,
+    save_np0: int = 1,
+    load_np: int = 1,
+    load_np0: int = 1,
+) -> str | None:
+    """Save at *save_res*, load at *load_res*, check the mode regrid."""
+    layout = "periodic" if system in _PERIODIC else "walled"
+    with tempfile.TemporaryDirectory() as tmp:
+        snap = os.path.join(tmp, "snap.tar")
+        r = _run_worker(
+            "save_modes",
+            system,
+            layout,
+            "concurrent",
+            save_np,
+            snap,
+            np0=save_np0,
+            nx=save_res[0],
+            ny=save_res[1],
+            nz=save_res[2],
+        )
+        if reason := _check(name, "save_modes", r):
+            return reason
+        r = _run_worker(
+            "load_modes",
+            system,
+            layout,
+            "concurrent",
+            load_np,
+            snap,
+            np0=load_np0,
+            nx=load_res[0],
+            ny=load_res[1],
+            nz=load_res[2],
+        )
+        if reason := _check(name, "load_modes", r):
+            return reason
+    print(f"  PASS  {name}")
+    return None
+
+
 def run_io_layout_case() -> str | None:
     """Check the I/O-layout slab arithmetic exhaustively, in-process.
 
-    ``_a_ranges`` and ``_a_spans`` are pure, so the branches the
-    round-trip cases cannot reach are cheapest to check directly:
-
-    - a device whose slab is **entirely padding** (``n_rows == 0``),
-      which needs ``a_true <= (ndev - 1) * ceil(a_true / ndev)`` --
-      5 rows over 4 devices, never produced by the ``ny = 8`` grids
-      used above;
-    - the `$k_x$`-padded span tier, which needs ``nx // 2`` not
-      divisible by ``np1`` (the cases above all divide exactly).
+    ``_a_ranges`` and ``_a_offset`` are pure, so the branch the
+    round-trip cases cannot reach is cheapest to check directly: a
+    device whose slab is **entirely padding** (``n_rows == 0``), which
+    needs ``a_true <= (ndev - 1) * ceil(a_true / ndev)`` -- 5 rows over
+    4 devices, never produced by the ``ny = 8`` grids used above.
 
     The invariants are the ones the format depends on: the slabs tile
-    ``[0, a_true)`` exactly, and the spans of all devices together
-    cover each component's element range exactly once, in ascending
-    order, with every span a C-contiguous prefix slice.
+    ``[0, a_true)`` exactly, and written at the offsets ``_a_offset``
+    hands them they reassemble the component chunk byte for byte --
+    each from a **single** C-contiguous transfer, which is the property
+    the trimmed I/O layout exists to provide and the one the writers
+    assume when they send ``vec[comp][:na]`` in one call.
     """
-    import math
-
     import numpy as np
 
-    from dnsjax.snapshot import _a_ranges, _a_spans
+    from dnsjax.snapshot import _a_local, _a_offset, _a_ranges
 
     for a_true in (1, 5, 7, 8, 13, 193):
         for ndev in (1, 2, 4, 8):
@@ -959,21 +1247,17 @@ def run_io_layout_case() -> str | None:
                     f"{covered[:12]}..."
                 )
 
-    # (kz_true, kx_true, local_kz, local_kx) -> one case per span tier
-    tiers = [
-        (5, 3, 5, 3),  # unpadded: one span per component
-        (5, 3, 8, 3),  # kz-padded: one span per leading-axis row
-        (5, 3, 8, 4),  # kx-padded: one span per (a, kz) row
-    ]
-    for kz_true, kx_true, local_kz, local_kx in tiers:
-        a_true, ndev = 7, 4
-        seen: list[int] = []
-        # The engines write ``off * itemsize`` bytes into the file, so
-        # replay that too: fill each device's local buffer with the
-        # chunk values it should own, write every span at its byte
-        # offset, and require the result to be the reference chunk.
-        # This is the layer the element-index check above skips.
-        dtype = np.dtype("complex128")
+    # The engines write ``off * itemsize`` bytes into the file, so
+    # replay that: fill each device's local buffer with the chunk
+    # values it should own, write its slab at its byte offset, and
+    # require the result to be the reference chunk.  This is the layer
+    # the element-index check above skips.
+    dtype = np.dtype("complex128")
+    for a_true, ndev, kz_true, kx_true in (
+        (7, 4, 5, 3),  # a clipped last slab
+        (5, 4, 15, 4),  # a device whose slab is entirely padding
+        (13, 1, 255, 128),  # single device, production-shaped modes
+    ):
         chunk = (
             np.arange(a_true * kz_true * kx_true, dtype=np.float64)
             .astype(dtype)
@@ -982,32 +1266,19 @@ def run_io_layout_case() -> str | None:
         file_bytes = bytearray(chunk.nbytes)
         for flat in range(ndev):
             a_start, na = _a_ranges(flat, a_true, ndev)
-            a_local = -(-a_true // ndev)
-            local = np.zeros((a_local, local_kz, local_kx), dtype=dtype)
-            local[:na, :kz_true, :kx_true] = chunk[a_start : a_start + na]
-            for idx, off, shape in _a_spans(
-                local.shape, a_start, na, kz_true, kx_true
-            ):
-                view = local[idx]
-                if not view.flags.c_contiguous:
-                    return f"span {idx} is not contiguous ({local.shape})"
-                if view.shape != shape:
-                    return f"span shape {view.shape} != declared {shape}"
-                seen.extend(range(off, off + math.prod(shape)))
-                start = off * dtype.itemsize
-                file_bytes[start : start + view.nbytes] = view.tobytes()
-        want = list(range(a_true * kz_true * kx_true))
-        if seen != want:
-            return (
-                f"spans do not tile the chunk for local "
-                f"({local_kz}, {local_kx}) vs true ({kz_true}, "
-                f"{kx_true}): {len(seen)} elements, ascending="
-                f"{seen == sorted(seen)}"
+            local = np.zeros(
+                (_a_local(a_true, ndev), kz_true, kx_true), dtype=dtype
             )
+            local[:na] = chunk[a_start : a_start + na]
+            span = local[:na]
+            if not span.flags.c_contiguous:
+                return f"slab {flat} is not contiguous ({local.shape})"
+            start = _a_offset(a_start, kz_true, kx_true) * dtype.itemsize
+            file_bytes[start : start + span.nbytes] = span.tobytes()
         if bytes(file_bytes) != chunk.tobytes():
             return (
-                f"replayed span bytes differ from the reference chunk "
-                f"for local ({local_kz}, {local_kx}) vs true "
+                "replayed slab bytes differ from the reference chunk "
+                f"for a_true={a_true} ndev={ndev} modes "
                 f"({kz_true}, {kx_true})"
             )
     return None
@@ -1460,6 +1731,8 @@ if __name__ == "__main__":
             "save_poly_ve_pipe",
             "load_interp_ve_pipe",
             "load_shape",
+            "save_modes",
+            "load_modes",
             "save_stats",
             "save_fail",
         ],
@@ -1472,6 +1745,7 @@ if __name__ == "__main__":
     parser.add_argument("--dir")
     parser.add_argument("--ny", type=int, default=None)
     parser.add_argument("--nx", type=int, default=None)
+    parser.add_argument("--nz", type=int, default=None)
     args = parser.parse_args()
 
     if args.worker:
@@ -1485,6 +1759,7 @@ if __name__ == "__main__":
             args.dir,
             ny_override=args.ny,
             nx_override=args.nx,
+            nz_override=args.nz,
         )
         sys.exit(0)
 
@@ -1501,6 +1776,12 @@ if __name__ == "__main__":
         (case[0], run_case(*case)) for case in CASES
     ]
     results.extend((case["name"], run_case(**case)) for case in SHAPE_CASES)
+
+    # Fourier-resolution regrid on resume (nx / nz, and the periodic
+    # ny) -- zero-padding on the way up, truncation on the way down.
+    results.extend(
+        (case["name"], run_mode_case(**case)) for case in MODE_CASES
+    )
 
     # ny-mismatch interpolation tests
     results.append(("wb ny 8->16 interp", run_ny_mismatch_case()))
@@ -1564,7 +1845,7 @@ if __name__ == "__main__":
 
     # The I/O-layout slab arithmetic, over shapes the round-trip cases
     # above cannot reach (see run_io_layout_case).
-    results.append(("I/O layout slabs + spans", run_io_layout_case()))
+    results.append(("I/O layout slabs", run_io_layout_case()))
 
     failures = [(n, r) for n, r in results if r is not None]
     sys.exit(report(len(results) - len(failures), failures))

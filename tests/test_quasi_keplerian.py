@@ -402,7 +402,7 @@ def _wedge_step(state):
         to_solver_basis,
     )
 
-    out, err, _ = predict_and_fully_correct(to_solver_basis(state))
+    out, err, *_ = predict_and_fully_correct(to_solver_basis(state))
     assert float(err) < 1e-13, f"corrector did not converge: err={float(err)}"
     return from_solver_basis(out)
 

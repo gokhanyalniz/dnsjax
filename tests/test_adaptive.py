@@ -145,29 +145,32 @@ LEAVES = {
 LEAVES["viscoelastic-dean"] = LEAVES["taylor-couette"] + ("Hc_op",)
 LEAVES["viscoelastic-pipe"] = LEAVES["pipe"] + ("Hc_op",)
 
-# How ``res.consistent_imm`` changes the dt-dependent leaf set.  A
-# missing key here would be silent: ``set_dt`` only assigns what the
-# rebuild returns, so a stale column would pair a new-dt ``Hk_op``
-# with an old-dt response.
+# ``LEAVES`` above lists the *legacy* ``res.consistent_imm = False``
+# leaf set; the two tables below carry the difference to the shipped
+# default.  A missing key here would be silent: ``set_dt`` only assigns
+# what the rebuild returns, so a stale column would pair a new-dt
+# ``Hk_op`` with an old-dt response.
 #
-# All three geometries switch to a reconstruction scheme, which has no
+# All three geometries default to a reconstruction scheme, which has no
 # pressure: the primitive scheme's pressure-response columns go away
 # (``DROPPED_LEAVES``) and are replaced by the wall-normal-velocity
 # responses of the two-solve chain.  ``Lk_op`` is deliberately absent
-# from both sets -- flag-on it holds the ``dt``-free recovery operator,
-# so ``set_dt`` must not rebuild it.
+# from both sets -- by default it holds the ``dt``-free recovery
+# operator, so ``set_dt`` must not rebuild it.
 CLOSURE_LEAVES = {
     # Cartesian's wall-normal columns are ``v1``/``v2``, which the
-    # primitive scheme has too, so its flag-on set is a strict subset
-    # of flag-off's -- nothing to add here.
+    # primitive scheme has too, so the default set is a strict subset
+    # of the legacy one -- nothing to add here.
     "plane-couette": (),
     # One u_r column per wall.
     "taylor-couette": ("ur_1", "ur_2"),
     # The pipe's single wall gives one (a 1x1 influence matrix).
     "pipe": ("ur_1",),
+    # Triply-periodic: the flag does not reach this family at all.
+    "kolmogorov": (),
 }
 
-# Leaves a ``res.consistent_imm`` build does *not* have.
+# Leaves the default ``res.consistent_imm`` build does *not* have.
 DROPPED_LEAVES = {
     "plane-couette": ("q1", "q2"),
     "taylor-couette": (
@@ -180,6 +183,17 @@ DROPPED_LEAVES = {
     ),
     "pipe": ("v_plus_1", "v_minus_1", "q_z_1"),
 }
+
+# The viscoelastic flows subclass their base geometry's flow and reach
+# the IMM through it, so their difference tables are its own (the extra
+# ``Hc_op`` leaf is flag-independent) -- exactly as ``LEAVES`` derives
+# them above.
+for _visc, _base in (
+    ("viscoelastic-dean", "taylor-couette"),
+    ("viscoelastic-pipe", "pipe"),
+):
+    CLOSURE_LEAVES[_visc] = CLOSURE_LEAVES[_base]
+    DROPPED_LEAVES[_visc] = DROPPED_LEAVES[_base]
 
 
 # ── controller units (JAX-free) ──────────────────────────────────
@@ -224,9 +238,7 @@ def run_unit_checks() -> None:
 # ── worker (subprocess per system, forced 1 CPU device) ──────────
 
 
-def _configure(
-    system: str, backend: str, consistent_imm: bool = False
-) -> None:
+def _configure(system: str, backend: str, consistent_imm: bool = True) -> None:
     """Configure JAX + the parameter singletons (1 CPU device, x64)."""
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
 
@@ -301,7 +313,7 @@ def _leaf_arrays(val: object) -> dict[str, object]:
     return {"": val}
 
 
-def _worker(system: str, backend: str, consistent_imm: bool = False) -> None:
+def _worker(system: str, backend: str, consistent_imm: bool = True) -> None:
     _configure(system, backend, consistent_imm)
 
     import jax
@@ -320,7 +332,7 @@ def _worker(system: str, backend: str, consistent_imm: bool = False) -> None:
     state0 = to_solver(generate_random_state(AMP, SMOOTH, SEED))
 
     # Warm every stepper variant at DT0 (donated args -> copies).
-    _, carry, _, _ = fmod.step_cnab2(jnp.copy(state0), jnp.zeros_like(state0))
+    _, carry, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.zeros_like(state0))
     *_, m0 = fmod.step_cnab2_measured(jnp.copy(state0), jnp.copy(carry))
     fmod.predict_and_fully_correct(jnp.copy(state0))
     *_, m1 = fmod.predict_and_fully_correct_measured(jnp.copy(state0))
@@ -466,11 +478,11 @@ def _worker(system: str, backend: str, consistent_imm: bool = False) -> None:
 
 
 def _run_worker(
-    system: str, backend: str, consistent_imm: bool = False
+    system: str, backend: str, consistent_imm: bool = True
 ) -> None:
     label = f"{system}[{backend}]"
-    if consistent_imm:
-        label += "[consistent_imm]"
+    if not consistent_imm:
+        label += "[legacy-imm]"
     print(f"=== {label} ===")
     result = run_live(
         [
@@ -481,7 +493,7 @@ def _run_worker(
             "--backend",
             backend,
         ]
-        + (["--consistent-imm"] if consistent_imm else [])
+        + ([] if consistent_imm else ["--legacy-imm"])
     )
     if result.returncode != 0:
         raise AssertionError(
@@ -503,7 +515,7 @@ def main() -> None:
         help="restrict to one or more systems (repeatable)",
     )
     parser.add_argument(
-        "--consistent-imm", action="store_true", help=argparse.SUPPRESS
+        "--legacy-imm", action="store_true", help=argparse.SUPPRESS
     )
     parser.add_argument(
         "--unit-only",
@@ -513,7 +525,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.worker:
-        _worker(args.worker, args.backend, args.consistent_imm)
+        _worker(args.worker, args.backend, not args.legacy_imm)
         return
 
     run_unit_checks()
@@ -528,17 +540,17 @@ def main() -> None:
         # The dense backend shares the rebuild contract; one geometry
         # covers its DenseJAXSolver/from_factors path.
         cases.append(("plane-couette", "dense"))
-    # ``res.consistent_imm`` changes the dt-dependent leaf set in every
-    # geometry (the reconstruction scheme has no pressure, so its
-    # wall-normal-velocity columns replace the pressure responses);
+    # The legacy ``res.consistent_imm = False`` path has a different
+    # dt-dependent leaf set in every geometry (it carries pressure
+    # responses where the default carries wall-normal-velocity ones);
     # one case per implementation.
     cases += [
-        (s, "pallas", True)
+        (s, "pallas", False)
         for s in ("plane-couette", "taylor-couette", "pipe")
         if s in systems
     ]
     for system, backend, *rest in cases:
-        _run_worker(system, backend, bool(rest and rest[0]))
+        _run_worker(system, backend, rest[0] if rest else True)
     print("\nAll adaptive-dt checks passed.")
 
 

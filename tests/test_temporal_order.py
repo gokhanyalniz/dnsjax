@@ -19,34 +19,35 @@ so a ``dt`` sweep needs a subprocess per value):
   (below), so the check is a ceiling plus ~linear decay, not
   proximity to cnab2's own error.
 - **plane-Couette (wall-bounded), scheme-difference order**: both
-  schemes share the same IMM projection-splitting error, so the
-  *difference* of their final states at matched ``dt`` isolates the
-  nonlinear treatment (iterated-CN vs AB2 + implicit coupling) and
+  time-stepping schemes share the same IMM projection-splitting error,
+  so the *difference* of their final states at matched ``dt`` isolates
+  the nonlinear treatment (iterated-CN vs AB2 + implicit coupling) and
   must also fall at slope ~2.  Runs with the default
   ``implicit_mean_coupling`` on, so the mean-flow coupling's CN
   treatment is covered by the order check too.
 - **plane-Couette, ``res.consistent_imm`` contrast**: the difference
   proxy above cancels the shared projection error, so it cannot judge
-  a change that *removes* that error.  This study instead measures
-  each configuration's own self-convergence and asserts the flag
-  strictly improves both the error size and its decay rate (measured:
-  1.3e-2 at order ~0.5 -> 3.6e-5 at order ~1.2).  The wall-bounded
+  a formulation that *removes* that error.  This study instead
+  measures each configuration's own self-convergence and asserts the
+  shipped default strictly improves both the error size and its decay
+  rate over the legacy primitive path (measured: legacy 1.3e-2 at
+  order ~0.5 -> default 3.6e-5 at order ~1.2).  The wall-bounded
   absolute order is **not** 2 either way -- the projection splitting
   sets it -- which is exactly why the study above compares schemes
   rather than dts.
 - **Taylor-Couette, ``res.consistent_imm`` contrast**: the same
-  measurement on the annular geometry, where the reformulation has one
+  measurement on the annular geometry, where the default has one
   time-discretization element the Cartesian one does not -- the spin
   coupling evaluated at the running corrector iterate -- plus the
   `$\Phi^n$` wall rows recomputed from the carried `$u_\pm$` state.
   Both are order-preserving only if the corrector converges to the
   fully coupled scheme, which is what this study pins.
-- **pipe, ``res.consistent_imm`` contrast**: the third and last gated
-  mechanism -- the spin quad `$(\Phi_\pm, \omega_\pm)$` over the
-  existing `$H_{k\pm}$` families, with the recovery coupling
-  identically un-lagged.  It is the one geometry where the flag
-  changes *which* operator families the corrector iterates on, so
-  neither study above implies its order.
+- **pipe, ``res.consistent_imm`` contrast**: the third and last
+  default mechanism -- the spin quad `$(\Phi_\pm, \omega_\pm)$` over
+  the existing `$H_{k\pm}$` families, with the recovery coupling
+  identically un-lagged.  It is the one geometry where the two
+  formulations differ in *which* operator families the corrector
+  iterates on, so neither study above implies its order.
 
 Corrector-bearing runs use a tight tolerance (``1e-9``) so
 fixed-point error does not pollute the truncation-error measurement,
@@ -112,15 +113,15 @@ shows up directly here.
   change count keeps it `$O(\Delta t^2)$`.  The exact-kappa
   application at the change steps themselves is pinned separately by
   ``tests/test_adaptive.py``'s carry-cancellation identity.
-- ``plane-couette-consistent-imm-vardt``: the same blocks with
-  ``res.consistent_imm`` **on**, where that difference proxy is
-  unusable for the reason the fixed-dt contrast study gives -- so
-  this one measures the variable-step sequence's own
+- ``plane-couette-consistent-imm-vardt``: the same blocks on the
+  **default** ``res.consistent_imm`` formulation, where that
+  difference proxy is unusable for the reason the fixed-dt contrast
+  study gives -- so this one measures the variable-step sequence's own
   self-convergence and compares it, error for error, against the
   fixed-``dt`` sweep of the same configuration sharing one reference.
-  It is the only study that steps the *gated* operator set through a
-  mid-run ``set_dt`` rebuild (flag-on rebuilds one band family fewer
-  than flag-off).
+  It is the only study that steps the *default* operator set through a
+  mid-run ``set_dt`` rebuild (it rebuilds one band family fewer than
+  the legacy path).
 
 ::
 
@@ -329,9 +330,7 @@ def _worker(
     if scheme == "cnab2":
         # __main__ bootstrap: discarded priming call seeds the AB2
         # history, the first integration step is iterative-CN.
-        _, carry, _, _ = fmod.step_cnab2(
-            jnp.copy(state), jnp.zeros_like(state)
-        )
+        _, carry, *_ = fmod.step_cnab2(jnp.copy(state), jnp.zeros_like(state))
         for i, step_dt in enumerate(seq):
             if step_dt != prev_dt:
                 fmod.set_dt(step_dt)
@@ -340,16 +339,16 @@ def _worker(
                 fmod.reset_ab2_kappa()
                 kappa_pending = False
             if i == 0:
-                state, err, _ = fmod.predict_and_fully_correct(state)
+                state, err, *_ = fmod.predict_and_fully_correct(state)
             else:
-                state, carry, err, _ = fmod.step_cnab2(state, carry)
+                state, carry, err, *_ = fmod.step_cnab2(state, carry)
             _converged(err, i)
             prev_dt = step_dt
     else:
         for i, step_dt in enumerate(seq):
             if step_dt != prev_dt:
                 fmod.set_dt(step_dt)
-            state, err, _ = fmod.predict_and_fully_correct(state)
+            state, err, *_ = fmod.predict_and_fully_correct(state)
             _converged(err, i)
             prev_dt = step_dt
 
@@ -404,7 +403,8 @@ def _self_convergence(
 ) -> tuple[list[float], list[float]]:
     """Errors and orders of one configuration's self-convergence.
 
-    Every run is iterative-CN at the same ``consistent_imm``; the
+    Every run is iterative-CN at the same ``consistent_imm``
+    formulation; the
     reference is that configuration's own **fixed**-``dt`` run at
     ``DT_SELF_REF`` (the converged solution both sequences approach),
     so the measured slope is an absolute order, not a proxy.  A
@@ -443,34 +443,38 @@ def _consistent_imm_contrast(
     min_error_gain: float,
     min_slope_gain: float,
 ) -> None:
-    """Assert ``res.consistent_imm`` improves both the size of the
-    temporal error and its decay rate, and reaches first order.
+    """Assert the default ``res.consistent_imm`` formulation improves
+    both the size of the temporal error and its decay rate over the
+    legacy primitive one, and reaches first order.
 
     Absolute numbers are printed rather than pinned: what must never
-    regress is the *contrast* between the two flag states."""
+    regress is the *contrast* between the two formulations.  Both are
+    passed explicitly, so the study stays a contrast whatever the
+    model default is."""
     slopes, first = {}, {}
     for cimm in (False, True):
-        tag = "on" if cimm else "off"
+        tag = "default" if cimm else "legacy"
         errs, orders = _self_convergence(
             tdir, system, f"{stem}_{tag}", consistent_imm=cimm
         )
         print(
-            f"consistent_imm={tag}: errors "
+            f"consistent_imm {tag}: errors "
             f"{[f'{e:.3e}' for e in errs]}  orders "
             f"{[f'{o:.2f}' for o in orders]}"
         )
         slopes[tag], first[tag] = min(orders), errs[0]
 
-    assert first["off"] / first["on"] > min_error_gain, (
-        "consistent_imm did not shrink the absolute temporal "
-        f"error: {first['off']:.3e} -> {first['on']:.3e}"
+    assert first["legacy"] / first["default"] > min_error_gain, (
+        "the default formulation did not shrink the absolute temporal "
+        f"error: {first['legacy']:.3e} -> {first['default']:.3e}"
     )
-    assert slopes["on"] > slopes["off"] + min_slope_gain, (
-        "consistent_imm did not improve the convergence rate: "
-        f"{slopes['off']:.2f} -> {slopes['on']:.2f}"
+    assert slopes["default"] > slopes["legacy"] + min_slope_gain, (
+        "the default formulation did not improve the convergence "
+        f"rate: {slopes['legacy']:.2f} -> {slopes['default']:.2f}"
     )
-    assert slopes["on"] > 1.0, (
-        f"consistent_imm convergence rate below 1: {slopes['on']:.2f}"
+    assert slopes["default"] > 1.0, (
+        "default-formulation convergence rate below 1: "
+        f"{slopes['default']:.2f}"
     )
 
 
@@ -577,9 +581,9 @@ def main() -> None:
             # The honest measurement is each configuration's own
             # self-convergence against a fine-dt run of the same
             # configuration.
-            # The ungated absolute order is ~0.5 (the wall-bounded
-            # projection-splitting error, ~6e-2 at dt = 0.01), the
-            # gated one ~1.1 at ~1.2e-4.
+            # The legacy path's absolute order is ~0.5 (the
+            # wall-bounded projection-splitting error, ~6e-2 at
+            # dt = 0.01), the default's ~1.1 at ~1.2e-4.
             print("=== plane-couette: consistent_imm self-convergence ===")
             _consistent_imm_contrast(
                 tdir,
@@ -610,16 +614,17 @@ def main() -> None:
             )
 
         if "pipe-consistent-imm" in studies:
-            # The cylindrical geometry, whose gated mechanism is
+            # The cylindrical geometry, whose default mechanism is
             # neither of the other two: the **spin quad**
             # `$(\Phi_\pm, \omega_\pm)$` solved through the existing
             # `$H_{k\pm}$` families with the recovery coupling
             # identically un-lagged (the near-axis lag diverges).  It
-            # is the one geometry where the flag changes *which*
-            # operator families the corrector iterates on, so its
-            # order is not implied by either study above.  Measured:
-            # 1.4e-2 at order ~0.84 -> 1.1e-3 at order ~1.06, the
-            # thinnest first-order margin of the three geometries.
+            # is the one geometry where the two formulations differ in
+            # *which* operator families the corrector iterates on, so
+            # its order is not implied by either study above.
+            # Measured: legacy 1.4e-2 at order ~0.84 -> default 1.1e-3
+            # at order ~1.06, the thinnest first-order margin of the
+            # three geometries.
             print("=== pipe: consistent_imm self-convergence ===")
             _consistent_imm_contrast(
                 tdir,
@@ -688,11 +693,12 @@ def main() -> None:
                 f"orders {[f'{o:.2f}' for o in o_var]}"
             )
             assert min(o_var) > 1.0, (
-                f"consistent_imm vardt convergence rate below 1: {o_var}"
+                f"default-formulation vardt convergence rate below 1: {o_var}"
             )
             ratios = [v / f for v, f in zip(e_var, e_fix, strict=True)]
             assert max(ratios) < 4.0, (
-                "consistent_imm vardt error far above the fixed-dt one "
+                "default-formulation vardt error far above the "
+                "fixed-dt one "
                 f"at the same base dt (ratios {ratios})"
             )
 

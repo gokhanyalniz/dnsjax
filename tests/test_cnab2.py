@@ -651,10 +651,10 @@ def _worker(system: str) -> None:
         try:
             params.step.split_corrector = True
             split_pfc = build(fmod.flow)[1]
-            s_split, err_split, c_split = split_pfc(jnp.copy(state))
+            s_split, err_split, c_split, *_ = split_pfc(jnp.copy(state))
             params.step.split_corrector = False
             unsplit_pfc = build(fmod.flow)[1]
-            s_plain, err_plain, c_plain = unsplit_pfc(jnp.copy(state))
+            s_plain, err_plain, c_plain, *_ = unsplit_pfc(jnp.copy(state))
         finally:
             (
                 params.step.corrector_tolerance,

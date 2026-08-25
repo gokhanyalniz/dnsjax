@@ -407,11 +407,30 @@ class ViscoelasticAnnularFlow(AnnularFlow):
 
     def tensor_abase_matvec(self, c_spin: Array, fourier_: Fourier) -> Array:
         r"""`$A_{\mathrm{base}} c = (\partial_r^2 + \tfrac1r\partial_r)c$`
-        on the 6 spin slots, ``(6, Nr, Nm, Nkz)``."""
-        inv_r = self.inv_r[:, None, None]
-        return apply_y_matrix(self.D2, c_spin) + inv_r * apply_y_matrix(
-            self.D1, c_spin
-        )
+        on the 6 spin slots, ``(6, Nr, Nm, Nkz)``.
+
+        One GEMM against the **precomputed** ``AnnularFlow.A_base``
+        (which the implicit bands are already built from), not a
+        `$D_2$` matvec, a `$D_1$` matvec and a field-sized `$1/r$`
+        multiply-add between them: `$D_1 c$` has no other consumer here
+        (``div_c_radial_derivatives`` is its own, narrower stack),
+        which is the premise the curvilinear fusion needs.  6
+        field-GEMMs instead of 12, one fewer
+        ``(6, N_r, N_m, N_{k_z})`` transient, and -- since this stack
+        is component-leading -- two of the four field-sized transposes
+        ``apply_y_matrix`` emits at ``component_axis = 0``.
+
+        **It buys no measurable wall time on CPU**: an interleaved A/B
+        at `$64^3$` gives -0.7 % at ``num_c = 0`` and -0.7 % again at
+        ``num_c = 3-4`` (chained, so the field develops), both well
+        inside an 11-25 % within-arm spread.  Two operating points
+        agreeing is what makes this a wash rather than an unresolved
+        measurement.  Kept on the FLOPs and the dropped transient, not
+        on a timing.  The full record, the pipe twin, and why the GPU
+        case does not follow:
+        ``cylindrical_viscoelastic.tensor_abase_matvec``.
+        """
+        return apply_y_matrix(self.A_base, c_spin)
 
     def mean_profile_dr(self, prof: Array, spin: int) -> Array:
         r"""`$\partial_r$` of one `$m = 0$` profile, ``(Nr,)``.
@@ -473,8 +492,13 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         rhs_prev: Array,
         rhs_next: Array,
         fourier_: Fourier,
-    ) -> tuple[Array, Array]:
-        """The annular 2x2 influence-matrix velocity pass."""
+    ) -> tuple[Array, Array, dict[str, Array]]:
+        """The annular 2x2 influence-matrix velocity pass.
+
+        Third return: the velocity pass' corrector-side *aux*
+        diagnostics, passed straight through (the geometry owns
+        what goes in it).
+        """
         return _imm_iteration(
             u_prev, u_pred, rhs_prev, rhs_next, fourier_, self
         )

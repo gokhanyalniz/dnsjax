@@ -28,13 +28,13 @@ single step after a kick: an `$O(\varepsilon\,\Delta t)$`
 perturbation of the same class as the scheme's local error.)
 
 A kick's increment is generally **not** discretely solenoidal, and
-what happens to that part depends on the scheme.  The primitive IMM
-feeds it into the pressure Poisson RHS and *damps* it over the
-following steps.  Under ``res.consistent_imm`` there is no pressure
-Poisson to absorb it: the kick lands in the carried state intact and
-is **discarded** one step later, when the reconstruction rebuilds the
-tangential pair from the wall-normal velocity and vorticity alone
-(stage 7 in every geometry).  So it reaches exactly one step's
+what happens to that part depends on the scheme.  Under the default
+``res.consistent_imm`` there is no pressure Poisson to absorb it: the
+kick lands in the carried state intact and is **discarded** one step
+later, when the reconstruction rebuilds the tangential pair from the
+wall-normal velocity and vorticity alone (stage 7 in every geometry).
+The legacy primitive IMM instead feeds it into the pressure Poisson
+RHS and *damps* it over the following steps.  So it reaches exactly one step's
 nonlinear evaluation -- two under ``cnab2``, which carries that
 evaluation forward -- and never a solve.  Either way it is a bounded,
 per-event, truncation-class effect, not an accumulating one; keep
@@ -80,10 +80,12 @@ as applied (unscaled by ``amplitude``, which is in the sidecar; the
 kick was ``amplitude * sum_j w_j profile_j``).  Coefficients
 are host-generated float64 regardless of the state precision (the
 volume is tiny).  The ``forcing.json`` sidecar carries the schema:
-modes, channel count, amplitude, cadence, seed, the profile bundle's
-path and SHA-256 (an append-resume must match it -- changing the
-basis mid-experiment invalidates the stream), and the full resolved
-parameter dump.  No non-finite scan is needed: the coefficients are
+modes (and the wavenumbers they denote -- a resume may change
+``res.nx`` / ``res.nz``, which moves what a negative-block `$k_z$`
+index means), channel count, amplitude, cadence, seed, the profile
+bundle's path and SHA-256 (an append-resume must match all of these --
+changing the basis mid-experiment invalidates the stream), and the full
+resolved parameter dump.  No non-finite scan is needed: the coefficients are
 finite by construction and the state itself is guarded by the
 regular diagnostics.
 
@@ -146,6 +148,10 @@ FORMAT_VERSION: int = 3
 _MATCH_KEYS: tuple[str, ...] = (
     "format_version",
     "modes",
+    # The wavenumbers, not the indices alone -- see the same entry in
+    # ``probes.py``: a resolution-change resume moves what a stored
+    # negative-block `$k_z$` index means.
+    "wavenumbers",
     "n_channels",
     "amplitude",
     "it_force",
@@ -175,8 +181,8 @@ def build_mode_injector(
     each ``(C, N_y)`` column goes through the ordinary
     component-axis-leading map.  Like the extractor's, this touches
     only the injected columns, never the field.  Cartesian carries
-    physical components in both ``res.consistent_imm`` states, so
-    there the kick is a plain scatter-add.
+    physical components under both ``res.consistent_imm``
+    formulations, so there the kick is a plain scatter-add.
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
     if params.phys.system in cartesian_systems:

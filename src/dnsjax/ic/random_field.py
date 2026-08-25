@@ -37,6 +37,18 @@ analytical laminar profile -- ``add_dean_laminar`` for Dean, while the
 viscoelastic builder forms its 9-component total state directly and
 ``add_viscoelastic_laminar`` serves velocity-only ICs (the rolls path).
 
+**The mean mode** `$(k_x, k_z) = (0, 0)$` is dropped unless
+``init.random_mean_flow``, which only the Cartesian flows offer -- every
+other flow defers the knob, because only there are the mean-mode
+conservation laws established.  When it is on, the Cartesian generator
+keeps that column and conditions it on those laws
+(:mod:`dnsjax.ic.mean_mode`): the perturbed field stays compatible with
+no-slip at both walls and, under a held mean
+(``phys.driving = "constant_bulk_velocity"`` /
+``phys.block_mean_spanwise_velocity``), carries an unchanged bulk
+velocity.  The wall-normal component's mean mode is identically zero by
+continuity in every geometry.
+
 **Per-device, non-JAX construction**: each device fills only its own
 spectral modes -- keyed by the *global* mode index, so the field is
 identical at any ``(np0, np1)`` -- with NumPy per-mode loops (the
@@ -78,6 +90,7 @@ from ..flows.registry import (
 )
 from ..harmonics import complex_harmonics, real_harmonics
 from ..parameters import derived_params, params
+from .mean_mode import build_cartesian_projector
 
 if TYPE_CHECKING:
     # ``Array`` is used only in (stringised) annotations, so it never
@@ -317,6 +330,18 @@ def generate_cartesian(
     (projected by the first corrector step) while the independent
     components keep exact wall zeros.  Returns the sharded spectral state
     of shape ``(3, Ny, Nkz, Nkx)``.
+
+    With *mean_flow* the `$(k_x, k_z) = (0, 0)$` column is kept rather
+    than zeroed, conditioned on the mean-mode conservation laws by
+    :func:`dnsjax.ic.mean_mode.build_cartesian_projector` -- so a
+    perturbed field is compatible with the no-slip boundary condition
+    at both walls and, under a held mean, carries the same bulk
+    velocity as the state it perturbs.  The mean-mode draw is real
+    (:func:`_hermitian_column` at ``i2 = 0``) and the filter, window,
+    tilt rotation and projector are all real, so its reality needs no
+    separate enforcement.  Conditioning runs *before*
+    :func:`_normalize_mode`, whose uniform real scaling preserves every
+    (homogeneous) constraint.
     """
     from ..geometries.wall_bounded._base import get_norm
     from ..geometries.wall_bounded.cartesian import (
@@ -329,7 +354,7 @@ def generate_cartesian(
     ny = params.res.ny
     nz = params.res.nz
 
-    ys, D1, _, y_weights = build_cartesian_grid(
+    ys, D1, D2, y_weights = build_cartesian_grid(
         ny,
         params.res.fd_order,
         params.geo.wall_grid,
@@ -349,6 +374,16 @@ def generate_cartesian(
     window_tang = 1.0 - ys_np**2  # tangential: value zero at the walls
     window_wn = window_tang**2  # wall-normal: value + derivative zero
 
+    # One factorization for the single (0, 0) column, hoisted out of
+    # the mode loop (and skipped entirely when the mode is zeroed).
+    project_mean = (
+        build_cartesian_projector(
+            D1_np, np.asarray(D2), yw_np, window_tang, wn_filter
+        )
+        if mean_flow
+        else None
+    )
+
     def fill_local(buf, kz_start, nkz, kx_start, nkx):
         for li in range(nkz):
             g2 = kz_start + li  # global k_z index (axis 2)
@@ -366,7 +401,16 @@ def generate_cartesian(
                 col[2] *= window_tang
                 # Divergence-free by construction (same D1).
                 if kx_val == 0 and kz_val == 0:
+                    # Mean mode: continuity with no-slip forces
+                    # ``u_y = 0``; the tangential pair is either
+                    # dropped or conditioned on the mean-mode
+                    # conservation laws (``dnsjax.ic.mean_mode``).
                     col[1] = 0.0
+                    if project_mean is None:
+                        col[0] = 0.0
+                        col[2] = 0.0
+                    else:
+                        col[0], col[2] = project_mean(col[0].real, col[2].real)
                 elif kz_val != 0:
                     col[2] = -(1j * kx_val * col[0] + D1_np @ col[1]) / (
                         1j * kz_val
@@ -377,8 +421,6 @@ def generate_cartesian(
                 col = _normalize_mode(
                     col, yw_np, decay ** (abs(kz_val) + abs(kx_val))
                 )
-                if g2 == 0 and g3 == 0 and not mean_flow:
-                    col[:] = 0.0
                 buf[:, :, li, lj] = col
 
     state = assemble_local_shards(fill_local)
@@ -393,7 +435,6 @@ def generate_cylindrical(
     amplitude: float,
     smoothness: float,
     seed: int,
-    mean_flow: bool,
 ) -> Array:
     r"""Generate a random perturbation for pipe flow.
 
@@ -532,7 +573,12 @@ def generate_cylindrical(
                     yw_np,
                     decay ** (abs(kz_val) + abs(m_val)),
                 )
-                if g2 == 0 and g3 == 0 and not mean_flow:
+                # Mean mode: the (0, 0) conservation laws are only
+                # established for the Cartesian flows, so every other
+                # flow defers ``init.random_mean_flow``
+                # (``dnsjax.ic.mean_mode``, and the per-flow
+                # ``DeferredSpec``s).
+                if g2 == 0 and g3 == 0:
                     col[:] = 0.0
                 buf[:, :, li, lj] = col
 
@@ -548,7 +594,6 @@ def generate_annular(
     amplitude: float,
     smoothness: float,
     seed: int,
-    mean_flow: bool,
 ) -> Array:
     r"""Generate a random perturbation for Taylor-Couette flow.
 
@@ -655,7 +700,12 @@ def generate_annular(
                     yw_np,
                     decay ** (abs(kz_val) + abs(m_val)),
                 )
-                if g2 == 0 and g3 == 0 and not mean_flow:
+                # Mean mode: the (0, 0) conservation laws are only
+                # established for the Cartesian flows, so every other
+                # flow defers ``init.random_mean_flow``
+                # (``dnsjax.ic.mean_mode``, and the per-flow
+                # ``DeferredSpec``s).
+                if g2 == 0 and g3 == 0:
                     col[:] = 0.0
                 buf[:, :, li, lj] = col
 
@@ -755,7 +805,6 @@ def generate_viscoelastic_dean(
     conf_amplitude: float,
     smoothness: float,
     seed: int,
-    mean_flow: bool,
 ) -> Array:
     r"""Random 9-component IC for viscoelastic (sPTT) Dean flow.
 
@@ -856,7 +905,12 @@ def generate_viscoelastic_dean(
                     # with no-slip forces u_r = 0.
                     vcol[1] = 0.0
                 vcol = _normalize_mode(vcol, yw_np, envelope)
-                if g2 == 0 and g3 == 0 and not mean_flow:
+                # Mean mode: the (0, 0) conservation laws are only
+                # established for the Cartesian flows, so every other
+                # flow defers ``init.random_mean_flow``
+                # (``dnsjax.ic.mean_mode``, and the per-flow
+                # ``DeferredSpec``s).
+                if g2 == 0 and g3 == 0:
                     vcol[:] = 0.0
                 buf[0:3, :, li, lj] = vcol
 
@@ -939,7 +993,6 @@ def generate_viscoelastic_pipe(
     conf_amplitude: float,
     smoothness: float,
     seed: int,
-    mean_flow: bool,
 ) -> Array:
     r"""Random 9-component IC for viscoelastic (sPTT) pipe flow.
 
@@ -1054,7 +1107,12 @@ def generate_viscoelastic_pipe(
                 else:
                     col[1] = 0.0
                 col = _normalize_mode(col, yw_np, envelope)
-                if g2 == 0 and g3 == 0 and not mean_flow:
+                # Mean mode: the (0, 0) conservation laws are only
+                # established for the Cartesian flows, so every other
+                # flow defers ``init.random_mean_flow``
+                # (``dnsjax.ic.mean_mode``, and the per-flow
+                # ``DeferredSpec``s).
+                if g2 == 0 and g3 == 0:
                     col[:] = 0.0
                 buf[0:3, :, li, lj] = col
 
@@ -1126,7 +1184,6 @@ def generate_triply_periodic(
     amplitude: float,
     smoothness: float,
     seed: int,
-    mean_flow: bool,
 ) -> Array:
     """Generate a random divergence-free periodic perturbation.
 
@@ -1173,7 +1230,12 @@ def generate_triply_periodic(
                     np.abs(ky_np) + abs(kz_val) + abs(kx_val)
                 )
                 col = _leray(col, kx_val, ky_np, kz_val)
-                if g2 == 0 and g3 == 0 and not mean_flow:
+                # Mean mode: the (0, 0) conservation laws are only
+                # established for the Cartesian flows, so every other
+                # flow defers ``init.random_mean_flow``
+                # (``dnsjax.ic.mean_mode``, and the per-flow
+                # ``DeferredSpec``s).
+                if g2 == 0 and g3 == 0:
                     col[:, 0] = 0.0  # mean mode (ky=kz=kx=0)
                 buf[:, :, li, lj] = col
 
@@ -1200,6 +1262,10 @@ def generate_random_state(
     total-field Dean flow the analytical laminar profile is added to the
     perturbation; every other system returns the perturbation directly.
 
+    *mean_flow* (``init.random_mean_flow``) reaches only the Cartesian
+    generator: every other flow defers the knob, so its mean mode is
+    zeroed unconditionally (module docstring).
+
     Requires JAX to be configured and the parameter singletons set (the
     geometry ``fourier`` singleton is built lazily by the dispatched
     generator's import).
@@ -1220,7 +1286,6 @@ def generate_random_state(
             params.init.random_conformation_amplitude,
             smoothness,
             seed,
-            mean_flow,
         )
     if system in cylindrical_viscoelastic_systems:
         return generate_viscoelastic_pipe(
@@ -1228,15 +1293,14 @@ def generate_random_state(
             params.init.random_conformation_amplitude,
             smoothness,
             seed,
-            mean_flow,
         )
     if system in cylindrical_systems:
-        return generate_cylindrical(amplitude, smoothness, seed, mean_flow)
+        return generate_cylindrical(amplitude, smoothness, seed)
     if system in annular_systems:
-        state = generate_annular(amplitude, smoothness, seed, mean_flow)
+        state = generate_annular(amplitude, smoothness, seed)
         if system == "dean":
             state = add_dean_laminar(state)
         return state
     if system in periodic_systems:
-        return generate_triply_periodic(amplitude, smoothness, seed, mean_flow)
+        return generate_triply_periodic(amplitude, smoothness, seed)
     raise ValueError(f"Unknown system: {system}")

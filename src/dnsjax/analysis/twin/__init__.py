@@ -5,7 +5,8 @@ Layout (one module per concern; none is imported by the top-level
 
 - :mod:`.series` -- readers for the ``.dat`` scalar streams
   (``twin.dat`` / ``twin_budget.dat`` / ``stats.dat``) and the
-  ``twin.json`` member record; per-component budget sums.
+  ``twin.json`` member record; per-component budget sums and the
+  budget-closure residuals.
 - :mod:`.ensemble` -- member-tree aggregation of the twin streams on
   aligned relative time, and the growth-rate fits (`$\\lambda$` from
   the exponential phase, the algebraic-phase linear rate).
@@ -23,8 +24,19 @@ from .ensemble import (
     fit_exponential_rate,
     fit_linear_rate,
 )
-from .lengths import integral_lengths, integral_lengths_from_modes
-from .series import TwinSeries, budget_sums, read_dat, read_twin
+from .lengths import (
+    integral_lengths,
+    integral_lengths_from_modes,
+    partner_of,
+)
+from .series import (
+    ClosureResiduals,
+    TwinSeries,
+    budget_sums,
+    closure_residuals,
+    read_dat,
+    read_twin,
+)
 from .spectra import (
     TwinSpectraData,
     decorrelation_ratio,
@@ -32,15 +44,18 @@ from .spectra import (
 )
 
 __all__ = [
+    "ClosureResiduals",
     "TwinSeries",
     "TwinSpectraData",
     "aggregate_members",
     "budget_sums",
+    "closure_residuals",
     "decorrelation_ratio",
     "fit_exponential_rate",
     "fit_linear_rate",
     "integral_lengths",
     "integral_lengths_from_modes",
+    "partner_of",
     "read_dat",
     "read_twin",
     "read_twin_spectra",

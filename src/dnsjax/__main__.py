@@ -60,7 +60,9 @@ so the rows are on disk immediately once the on-device buffer
 is flushed.  ``stats.dat`` (written by the main device,
 appended) has a header row of column names (``t`` plus the
 ``get_stats`` keys) followed by whitespace-aligned rows at
-``stats_precision`` significant digits.
+``stats_precision`` significant digits.  The header is
+``#``-commented (:func:`_write_dat_header`), so ``numpy.loadtxt``
+reads a stream with no extra flags.
 
 ``steps.dat`` records the CFL diagnostic every ``it_steps``
 steps with the same buffering and file format.  Each row is
@@ -255,6 +257,39 @@ def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width, names=None):
     return None
 
 
+def _stats_row(stats, driving):
+    """One ``stats.dat`` row: the sorted stats, then the driving.
+
+    Both dicts come back from ``jit`` in sorted key order, and the
+    driving is appended rather than merged so it stays the **last**
+    column whatever the stats keys are named.
+    """
+    import jax.numpy as jnp
+
+    return jnp.stack(
+        [jnp.asarray(v) for v in stats.values()]
+        + [jnp.asarray(v) for v in driving.values()]
+    )
+
+
+def _write_dat_header(file_path, columns, col_width) -> None:
+    """Create *file_path* with the ``#``-commented column header.
+
+    The ``#`` replaces one leading space of the first column's
+    padding, so the header stays aligned with the rows
+    :func:`_flush_stats` writes while ``numpy.loadtxt`` skips it as a
+    comment (its default ``comments="#"``) -- a ``.dat`` stream loads
+    with no extra flags.  Shared by every measurement stream, here
+    and in the twin driver.
+    """
+    padded = [
+        n.rjust(col_width - 1 if i == 0 else col_width)
+        for i, n in enumerate(columns)
+    ]
+    with open(file_path, "w") as f:
+        f.write("#" + " ".join(padded) + "\n")
+
+
 def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     r"""Interpolate snapshot state if the wall-normal grid changed.
 
@@ -409,6 +444,11 @@ def run(wall_time_start: int) -> None:
     _flow_mod = importlib.import_module(_spec.flow_module)
     get_perturbation_energy = _flow_mod.get_perturbation_energy
     get_stats = _flow_mod.get_stats
+    # Optional: the applied mean-mode driving, inferred from a state.
+    # Only flows that can apply one export it (see ``flow_spec``); it
+    # supplies both the extra ``stats.dat`` column names and the one row
+    # that has no step behind it.
+    get_driving = getattr(_flow_mod, "get_driving", None)
     init_state = _flow_mod.init_state
     predict_and_fully_correct = _flow_mod.predict_and_fully_correct
     predict_and_fully_correct_measured = (
@@ -721,13 +761,36 @@ def run(wall_time_start: int) -> None:
         isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
         last_saved_it = it
 
+    # Applied mean-mode driving (``constant_bulk_velocity`` /
+    # ``block_mean_spanwise_velocity``): a *step* quantity, not a state
+    # one -- the converged body force the corrector applied, threaded
+    # out of the implicit solve because it is not recoverable from the
+    # accepted state (its bulk is zero by construction).  It is appended
+    # **after** the sorted ``get_stats`` keys, so it is the last
+    # column(s), and the row at time ``t`` carries the value applied by
+    # the step that *produced* that state.  The ``t = t0`` row has no
+    # such step, so it carries the wall-shear inference of the same
+    # quantity instead (``get_driving``; the one inferred entry in the
+    # column, and exact in the same limit the two agree).
+    #
+    # Read here, on the **physical** side of the basis boundary below,
+    # because that is ``get_driving``'s contract -- the same one
+    # ``get_stats`` has.  Every current ``mean_driving`` happens to
+    # touch only the axial/streamwise component, which ``to_pm_basis``
+    # leaves alone, so the crossing would not show; a key reading
+    # `$u_r$` or `$u_\theta$` would read `$u_\pm$` instead, silently.
+    driving = get_driving(state) if get_driving is not None else {}
+    driving_names = list(driving.keys())
+    last_driving = dict(driving)
+
     # --- Into the solver -----------------------------------------------------
     # Every start mode above (snapshot resume + regrid, ``init_state``,
     # localized rolls, random field) builds the state in physical
-    # components, and so did the diagnostics and the IC snapshot just
-    # taken from it.  This is where it enters the solver, once (see the
-    # component-basis boundary above); from here on ``state`` is in the
-    # solver basis until a consumer asks for the physical view.
+    # components, and so did the diagnostics, the IC snapshot and the
+    # driving read just taken from it.  This is where it enters the
+    # solver, once (see the component-basis boundary above); from here
+    # on ``state`` is in the solver basis until a consumer asks for the
+    # physical view.
     state = to_solver_basis(state)
 
     # --- Stats buffer setup ------------------------------------------------
@@ -735,7 +798,7 @@ def run(wall_time_start: int) -> None:
     val_width = params.outs.stats_precision + 7
 
     if params.outs.it_stats is not None:
-        stat_names = list(stats.keys())
+        stat_names = list(stats.keys()) + driving_names
         n_stat_cols = len(stat_names)
         buffer = jnp.zeros(
             (params.outs.nbuffer, n_stat_cols),
@@ -750,12 +813,9 @@ def run(wall_time_start: int) -> None:
         stats_file = Path("stats.dat")
 
         if sharding.main_device and not stats_file.exists():
-            header = " ".join(n.rjust(col_width) for n in ["t"] + stat_names)
-            with open(stats_file, "w") as f:
-                f.write(header + "\n")
+            _write_dat_header(stats_file, ["t"] + stat_names, col_width)
 
-        stat_vals = jnp.stack(list(stats.values()))
-        buffer = buffer.at[py_idx].set(stat_vals)
+        buffer = buffer.at[py_idx].set(_stats_row(stats, driving))
         ts_buf.append(t)
         py_idx += 1
 
@@ -781,7 +841,7 @@ def run(wall_time_start: int) -> None:
     scheme: str = params.step.scheme
     is_cnab2: bool = scheme == "cnab2"
     if is_cnab2:
-        _, rhs_prev, _, _ = step_cnab2(jnp.copy(state), jnp.zeros_like(state))
+        _, rhs_prev, *_ = step_cnab2(jnp.copy(state), jnp.zeros_like(state))
 
     # --- Steps (CFL) buffer setup --------------------------------------
     # The measured stepper serves two consumers: the ``steps.dat``
@@ -800,7 +860,7 @@ def run(wall_time_start: int) -> None:
         if is_cnab2:
             *_, meas = step_cnab2_measured(jnp.copy(state), jnp.copy(rhs_prev))
         else:
-            _, _, _, meas = predict_and_fully_correct_measured(jnp.copy(state))
+            *_, meas = predict_and_fully_correct_measured(jnp.copy(state))
         first_measured = (
             measure_steps and it % params.outs.it_steps == 0
         ) or (adaptive and it % cfl_cadence == 0)
@@ -831,11 +891,7 @@ def run(wall_time_start: int) -> None:
         steps_file = Path("steps.dat")
 
         if sharding.main_device and not steps_file.exists():
-            header = " ".join(
-                n.rjust(steps_col_width) for n in ["t"] + steps_names
-            )
-            with open(steps_file, "w") as f:
-                f.write(header + "\n")
+            _write_dat_header(steps_file, ["t"] + steps_names, steps_col_width)
 
     # --- Corrector buffer setup ----------------------------------------
     # Records the corrector iteration count ``c`` and final error every
@@ -858,11 +914,7 @@ def run(wall_time_start: int) -> None:
         corr_file = Path("corrector.dat")
 
         if sharding.main_device and not corr_file.exists():
-            header = " ".join(
-                n.rjust(corr_col_width) for n in ["t"] + corr_names
-            )
-            with open(corr_file, "w") as f:
-                f.write(header + "\n")
+            _write_dat_header(corr_file, ["t"] + corr_names, corr_col_width)
 
     # --- Probe buffer setup ----------------------------------------------
     # Spectral-mode probe stream (``probes.modes``/``probes.it_probes``,
@@ -1060,9 +1112,11 @@ def run(wall_time_start: int) -> None:
 
         # Periodic diagnostic output -> GPU buffer
         if do_stats:
+            # ``last_driving`` is the driving applied by the step that
+            # produced this state (the previous iteration's), which is
+            # what this row's time stamp refers to.
             stats = get_stats(state_phys)
-            stat_vals = jnp.stack(list(stats.values()))
-            buffer = buffer.at[py_idx].set(stat_vals)
+            buffer = buffer.at[py_idx].set(_stats_row(stats, last_driving))
             ts_buf.append(t)
             py_idx += 1
 
@@ -1141,17 +1195,30 @@ def run(wall_time_start: int) -> None:
         # ``rhs_prev`` history seeded from ``u^0`` below.
         if is_cnab2 and it > params.init.it0:
             if do_measure:
-                state, rhs_prev, error_dev, c_dev, meas = step_cnab2_measured(
+                (
+                    state,
+                    rhs_prev,
+                    error_dev,
+                    c_dev,
+                    last_driving,
+                    meas,
+                ) = step_cnab2_measured(state, rhs_prev)
+            else:
+                state, rhs_prev, error_dev, c_dev, last_driving = step_cnab2(
                     state, rhs_prev
                 )
-            else:
-                state, rhs_prev, error_dev, c_dev = step_cnab2(state, rhs_prev)
         elif do_measure:
-            state, error_dev, c_dev, meas = predict_and_fully_correct_measured(
+            (
+                state,
+                error_dev,
+                c_dev,
+                last_driving,
+                meas,
+            ) = predict_and_fully_correct_measured(state)
+        else:
+            state, error_dev, c_dev, last_driving = predict_and_fully_correct(
                 state
             )
-        else:
-            state, error_dev, c_dev = predict_and_fully_correct(state)
 
         if do_record:
             steps_buffer = steps_buffer.at[steps_idx].set(
@@ -1397,8 +1464,7 @@ def run(wall_time_start: int) -> None:
         c_per_it = c_tot / n_steps
 
         if params.outs.it_stats is not None:
-            stat_vals = jnp.stack(list(stats.values()))
-            buffer = buffer.at[py_idx].set(stat_vals)
+            buffer = buffer.at[py_idx].set(_stats_row(stats, last_driving))
             ts_buf.append(t)
             py_idx += 1
 

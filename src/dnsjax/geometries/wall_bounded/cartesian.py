@@ -47,7 +47,6 @@ from ...solvers import (
     _assemble_banded_operator,
     _banded_diag_column,
     _banded_from_dense,
-    _banded_wall_row,
     _build_pallas_operator,
     _factor_pallas_operator,
 )
@@ -56,6 +55,7 @@ from ._base import (
     base_flow_coupling,
     build_wall_bounded_stepper,
     extract_mean_mode,
+    extract_mean_modes,
     frozen_profile_flow,  # noqa: F401 — re-exported
     get_inprod,  # noqa: F401 — re-exported
     get_norm,  # noqa: F401 — re-exported
@@ -268,49 +268,6 @@ def build_cartesian_grid(
 # ── Pallas-backend banded operator builders ───────────────────────
 
 
-def _build_Lk_band_gpu(
-    D1: Array,
-    D2: Array,
-    k2: Array,
-    mean_mask: Array,
-    p: int,
-) -> Array:
-    r"""Build `$L_k$` in banded storage for the Pallas backend.
-
-    Same Neumann-BC pressure Poisson operator
-    `$L_k = D_2 - k^2 I$` as :func:`_build_Lk_dense_gpu`,
-    but assembled directly in banded
-    layout ``(Nkz, Nkx, Ny, 2p+1)``
-    (``band[..., i, d] = L_k[..., i, i-p+d]``) from the base band
-    ``_banded_from_dense(D2, p)``, with no ``(Ny, Ny)`` per mode.  The
-    `$-k^2$` shift is constant across rows; Neumann `$D_1$` rows sit at
-    **both** walls (rows 0 and ``Ny-1``), with a mean-mode identity pin
-    at the outer wall (the only `$k^2 = 0$` system).
-
-    Parameters
-    ----------
-    D1, D2:
-        First/second-derivative matrices, ``(Ny, Ny)``.
-    k2:
-        `$k_x^2 + k_z^2$`, ``(Nkz, Nkx, 1)``.
-    mean_mask:
-        Mean-mode boolean mask, same shape as *k2*.
-    p:
-        FD order (half-bandwidth).
-    """
-    Ny = D2.shape[-1]
-    band_D2 = _banded_from_dense(D2, p)  # (Ny, 2p+1)
-    diag = -k2  # (Nkz, Nkx, 1), constant across rows
-    inner = _banded_wall_row(D1[0], 0, p)  # Neumann, inner wall
-    neumann_outer = _banded_wall_row(D1[-1], Ny - 1, p)  # Neumann, outer
-    outer = jnp.where(
-        mean_mask, _banded_diag_column(p, band_D2.dtype), neumann_outer
-    )  # (Nkz, Nkx, 2p+1)
-    return _assemble_banded_operator(
-        band_D2, 1.0, diag, [(0, inner), (Ny - 1, outer)]
-    )
-
-
 def _build_Hk_band_gpu(
     D2: Array,
     k2: Array,
@@ -368,35 +325,6 @@ def _build_Lk_dir_dense_gpu(D2: Array, k2: Array) -> Array:
     e_0 = zero_row.at[0].set(1.0)
     e_Nm1 = zero_row.at[-1].set(1.0)
     return Lk.at[..., 0, :].set(e_0).at[..., -1, :].set(e_Nm1)
-
-
-def _build_Lk_dense_gpu(
-    D1: Array, D2: Array, k2: Array, mean_mask: Array
-) -> Array:
-    """Build the Neumann-BC Laplacian `$L_k$` in dense form on GPU.
-
-    Used only by the ``"dense"`` solver backend; allocates
-    `$(N_{kz}, N_{kx}, N_y, N_y)$`.  No CPU path.
-
-    Parameters follow :func:`_build_Lk_band_gpu` (sans ``p``);
-    the output is the full dense operator.
-    """
-    Ny = D2.shape[-1]
-    eye = jnp.eye(Ny, dtype=D2.dtype)
-    # Lk_interior[..., i, j] = D2[i, j] - k2 * delta_{i, j}
-    Lk = D2[None, None, :, :] - k2[..., None] * eye
-
-    # Row 0: D1[0, :] for all modes (Neumann).
-    Lk = Lk.at[..., 0, :].set(D1[0, :])
-
-    # Row -1: D1[-1, :] for all modes; pin row [0, ..., 0, 1]
-    # at the mean mode.  mean_mask is (Nkz, Nkx, 1); `jnp.where`
-    # broadcasts the (Ny,) branches to (Nkz, Nkx, Ny).
-    pin = eye[-1, :]  # (Ny,)
-    row_N = jnp.where(mean_mask, pin, D1[-1, :])
-    Lk = Lk.at[..., -1, :].set(row_N)
-
-    return Lk
 
 
 def _build_Hk_dense_gpu(
@@ -619,9 +547,11 @@ class CartesianFlow:
         self.dt = jnp.asarray(dt, dtype=sharding.float_type)
         self.ab2_kappa = jnp.ones((), dtype=sharding.float_type)
 
-        # Solver-internal wavenumber arrays: (Nkz, Nkx, 1).
+        # Solver-internal wavenumber arrays: (Nkz, Nkx, 1).  The mean
+        # mask is a legacy-only operand (the pressure Poisson pins its
+        # `$k^2 = 0$` plane), so it is built inside the branches that
+        # need it.
         k2_s = fourier.k2[0, ..., None]
-        mean_s = fourier.mean_mask[0, ..., None]
 
         if params.solver.backend == "pallas":
             # Pallas backend: one-program-per-mode banded sweep.
@@ -631,11 +561,15 @@ class CartesianFlow:
             # single shared Hk are each one operator group; build one
             # at a time so the setup peak never holds two unfactored
             # operators at once.
-            Lk_band = (
-                _build_Lk_dir_band_gpu(self.D2, k2_s, p)
-                if params.res.consistent_imm
-                else _build_Lk_band_gpu(self.D1, self.D2, k2_s, mean_s, p)
-            )
+            if params.res.consistent_imm:
+                Lk_band = _build_Lk_dir_band_gpu(self.D2, k2_s, p)
+            else:
+                from . import _cartesian_primitive_imm as prim
+
+                mean_s = fourier.mean_mask[0, ..., None]
+                Lk_band = prim._build_Lk_band_gpu(
+                    self.D1, self.D2, k2_s, mean_s, p
+                )
             self.Lk_op = _build_pallas_operator([Lk_band], "Lk")
             del Lk_band
 
@@ -656,11 +590,15 @@ class CartesianFlow:
             # `(Nkz, Nkx, Ny, Ny)` matrices are built, LU-factored
             # (donated, so the factors reuse their buffers), then
             # dropped — only the factors are kept.
-            Lk_dense = (
-                _build_Lk_dir_dense_gpu(self.D2, k2_s)
-                if params.res.consistent_imm
-                else _build_Lk_dense_gpu(self.D1, self.D2, k2_s, mean_s)
-            )
+            if params.res.consistent_imm:
+                Lk_dense = _build_Lk_dir_dense_gpu(self.D2, k2_s)
+            else:
+                from . import _cartesian_primitive_imm as prim
+
+                mean_s = fourier.mean_mask[0, ..., None]
+                Lk_dense = prim._build_Lk_dense_gpu(
+                    self.D1, self.D2, k2_s, mean_s
+                )
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
             self.Hk_op = _hk_dense_op(dt, fourier, self)
@@ -671,57 +609,35 @@ class CartesianFlow:
     def _derive_imm_homogeneous_data(
         self, fourier_: Fourier, Nkz: int, Nkx: int, Ny: int
     ) -> None:
-        r"""Fill ``v1``, ``v2``, ``q1``, ``q2``, and ``M_inv``
-        from the factored GPU operator.
+        r"""Fill the homogeneous IMM columns and ``M_inv``.
 
-        Both backends converge here once :attr:`Lk_op` and
-        :attr:`Hk_op` are in place.  Nothing else on the CPU
-        needs to do another LU solve -- everything below runs
-        against the already-factored device operator.
+        A dispatcher on ``res.consistent_imm``, like
+        :func:`_imm_iteration`: it builds the two unit wall vectors
+        both schemes need, then hands them to the derivation that
+        matches the operators :meth:`__post_init__` built.
 
-        In Schur-complement notation, the arrays
-        ``p1, p2, v1, v2, q1, q2`` are the columns of
-        `$A_{II}^{-1}\,A_{IB}$` (the interior-to-boundary
-        coupling through the factored interior operator), and
-        ``M_inv`` is `$S^{-1}$` where `$S$` is the `$2 \times
-        2$` Schur complement (influence / capacitance matrix).
-        See :func:`_imm_iteration` for the full context.  The
-        homogeneous pressures ``p1``, ``p2`` are needed only
-        within this derivation (the IMM never assembles the
-        pressure), so they are not stored on the dataclass.
+        - **default** -- :meth:`_derive_vw_homogeneous_data`: the
+          `$v$`-`$\omega_y$` scheme's columns are responses to a unit
+          `$\varphi$` at a wall row, and carry no pressure (``q1``,
+          ``q2`` stay ``None``).
+        - **legacy** (flag off) --
+          :func:`._cartesian_primitive_imm.derive_homogeneous_data`:
+          the primitive scheme's columns solve a different chain, one
+          solve shallower, and carry the horizontal potentials
+          `$q_i = H_k^{-1} p_i$`.
 
-        The mean mode (the only `$k^2 = 0$` system) is
-        handled analytically: ``M`` has a zero second column
-        there (`$p_2 \equiv 1$` is a pressure gauge), so the
-        `$2 \times 2$` inverse is replaced by
-        `$[[1/M_{00}, 0], [0, 0]]$`.  The ``jnp.where``
-        around ``safe_det`` keeps the regular branch NaN-free
-        before the selection happens.  Padding modes take the
-        regular branch (their placeholder `$k^2 \ne 0$`
-        systems are as well-posed as physical ones); the
-        values are inert, multiplied only by the exactly-zero
-        wall residuals of zero fields.
-
-        After ``M_inv`` is built, ``v1`` and ``v2`` are zeroed
-        at the mean mode so the IMM velocity correction produces
-        zero there (continuity forces `$v \equiv 0$` at
-        `$k^2 = 0$`).  The zeroing must follow the ``M_inv``
-        computation, which uses the original ``v1`` to evaluate
-        `$1/M_{00}$`.
-
-        Under ``res.consistent_imm`` the whole derivation is
-        replaced by :meth:`_derive_vw_homogeneous_data` -- the
-        `$v$`-`$\omega_y$` scheme's columns solve a different
-        chain and there is no pressure to carry.
+        Both fill ``v1``, ``v2`` and ``M_inv``; only the legacy branch
+        fills ``q1``/``q2``.  Both are re-run at a changed ``dt`` by
+        :func:`_build_dt_leaves`.
         """
         # This run-once setup stays in the mode-outer (Nkz, Nkx, Ny)
-        # layout: the influence-matrix einsums below operate on it and
-        # the results are transposed to field layout (Ny, Nkz, Nkx) at
-        # the end.  ``.solve`` now takes a mode-inner field, so each
-        # setup solve is wrapped (transpose in, transpose out) to keep
-        # this layout.  FUTURE: rebuild this setup natively mode-inner to
-        # drop the wrappers -- the hot path already is; here it only
-        # relocates a one-time transpose, so it is deferred.
+        # layout: the influence-matrix einsums operate on it and the
+        # results are transposed to field layout (Ny, Nkz, Nkx) at the
+        # end.  ``.solve`` takes a mode-inner field, so each setup solve
+        # is wrapped (transpose in, transpose out) to keep this layout.
+        # FUTURE: rebuild this setup natively mode-inner to drop the
+        # wrappers -- the hot path already is; here it only relocates a
+        # one-time transpose, so it is deferred.
         e1_b = (
             jnp.zeros(
                 (Nkz, Nkx, Ny),
@@ -745,51 +661,9 @@ class CartesianFlow:
             self._derive_vw_homogeneous_data(fourier_, [e1_b, e2_b])
             return
 
-        p1_s = self.Lk_op.solve(e1_b.transpose(2, 0, 1)).transpose(1, 2, 0)
-        p2_s = self.Lk_op.solve(e2_b.transpose(2, 0, 1)).transpose(1, 2, 0)
+        from . import _cartesian_primitive_imm as prim
 
-        rhs_v1 = -jnp.einsum("ij, zxj -> zxi", self.D1, p1_s)
-        rhs_v2 = -jnp.einsum("ij, zxj -> zxi", self.D1, p2_s)
-        rhs_v1 = rhs_v1.at[..., 0].set(0.0).at[..., -1].set(0.0)
-        rhs_v2 = rhs_v2.at[..., 0].set(0.0).at[..., -1].set(0.0)
-        v1_s = self.Hk_op.solve(rhs_v1.transpose(2, 0, 1)).transpose(1, 2, 0)
-        v2_s = self.Hk_op.solve(rhs_v2.transpose(2, 0, 1)).transpose(1, 2, 0)
-
-        q_rhs1 = p1_s.at[..., 0].set(0.0).at[..., -1].set(0.0)
-        q_rhs2 = p2_s.at[..., 0].set(0.0).at[..., -1].set(0.0)
-        q1_s = self.Hk_op.solve(q_rhs1.transpose(2, 0, 1)).transpose(1, 2, 0)
-        q2_s = self.Hk_op.solve(q_rhs2.transpose(2, 0, 1)).transpose(1, 2, 0)
-
-        # Influence matrix `$M_{ji} = (D_1 v_i)|_{\\text{wall}_j}$`.
-        M00 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], v1_s)
-        M01 = jnp.einsum("j, zxj -> zx", self.D1_bnd[0], v2_s)
-        M10 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], v1_s)
-        M11 = jnp.einsum("j, zxj -> zx", self.D1_bnd[-1], v2_s)
-
-        is_mean = fourier_.mean_mask[0]
-        det = M00 * M11 - M01 * M10
-        safe_det = jnp.where(is_mean, 1.0, det)
-        inv_00 = jnp.where(is_mean, 1.0 / M00, M11 / safe_det)
-        inv_01 = jnp.where(is_mean, 0.0, -M01 / safe_det)
-        inv_10 = jnp.where(is_mean, 0.0, -M10 / safe_det)
-        inv_11 = jnp.where(is_mean, 0.0, M00 / safe_det)
-        self.M_inv = jnp.stack(
-            [
-                jnp.stack([inv_00, inv_01], axis=-1),
-                jnp.stack([inv_10, inv_11], axis=-1),
-            ],
-            axis=-2,
-        )
-
-        # Transpose to field layout (Ny, Nkz, Nkx).
-        self.v1 = v1_s.transpose(2, 0, 1)
-        self.v2 = v2_s.transpose(2, 0, 1)
-        self.q1 = q1_s.transpose(2, 0, 1)
-        self.q2 = q2_s.transpose(2, 0, 1)
-
-        # Zero homogeneous wall-normal velocity at the mean mode.
-        self.v1 = jnp.where(fourier_.mean_mask, 0.0, self.v1)
-        self.v2 = jnp.where(fourier_.mean_mask, 0.0, self.v2)
+        prim.derive_homogeneous_data(self, fourier_, [e1_b, e2_b])
 
     def _derive_vw_homogeneous_data(
         self,
@@ -898,8 +772,12 @@ class CartesianFlow:
         Solves `$H_k\,h = \mathbf{1}$` (unit uniform RHS,
         zero Dirichlet wall BCs) at the mean mode
         `$(k_x, k_z) = (0, 0)$`.  The response `$h(y)$` is
-        the velocity profile produced by a unit mean pressure
-        gradient over one implicit time step.  Its bulk
+        the velocity profile produced by a unit uniform **body
+        force** over one implicit time step -- `$H_k$` is
+        `$I/\Delta t - c\nu L$`, so its RHS carries accelerations,
+        and the scaling `$G$` below is therefore
+        `$-\partial p'/\partial s$`, not `$+\partial p'/\partial s$`
+        (the sign the ``-dPds'`` diagnostic reports).  Its bulk
         `$H = \int_{-1}^{1} h\,dy / 2$` gives the scaling
         needed to zero a perturbation bulk velocity component:
 
@@ -1135,8 +1013,12 @@ def _l_bf(
     base = flow_.base_flow
     curl_base = flow_.curl_base_flow
     if params.step.implicit_mean_coupling:
-        base = base + extract_mean_mode(state)[:, :, None, None]
-        curl_base = curl_base + extract_mean_mode(omega)[:, :, None, None]
+        # One collective for the pair: this runs once per corrector
+        # iteration under cnab2 / the split corrector, and the psum is
+        # latency-bound (:func:`extract_mean_modes`).
+        mean_u, mean_om = extract_mean_modes(state, omega)
+        base = base + mean_u[:, :, None, None]
+        curl_base = curl_base + mean_om[:, :, None, None]
     l_bf = base_flow_coupling(state, omega, base, curl_base)
     # Moving frame: the convective-form frame term (the same
     # expression ``_get_rhs_core`` adds) belongs to the linear
@@ -1212,38 +1094,6 @@ def _get_rhs_measured(
         )
 
     return _get_rhs_core(state, fourier_, flow_, _measure)
-
-
-def _lk_matvec(
-    u: Array,
-    flow_: CartesianFlow,
-    fourier_: Fourier,
-) -> Array:
-    r"""Apply `$L_k u$` for the Neumann-BC pressure Poisson operator.
-
-    Matrix-free evaluation that avoids storing the per-mode
-    ``(Nkz, Nkx, Ny, Ny)`` operator.  The interior of the
-    output is `$D_2 u - k^2 u$`; the wall rows use `$D_1$`
-    to encode Neumann BCs, except for the mean mode (the
-    only `$k^2 = 0$` mode) where the top-wall row pins
-    `$p_{N_y-1} = 0$` (matching
-    :func:`_build_Lk_dense_gpu`).
-
-    Parameters
-    ----------
-    u:
-        Field, shape ``(Ny, Nkz, Nkx)``.
-    flow\_:
-        Cartesian flow data (uses ``D2``, ``D1_bnd``).
-    fourier\_:
-        Wavenumber grids (uses ``k2``, ``mean_mask``).
-    """
-    D2u = apply_y_matrix(flow_.D2, u)
-    out = D2u - fourier_.k2 * u
-    bot = jnp.einsum("j, jzx -> zx", flow_.D1_bnd[0], u)
-    top_neumann = jnp.einsum("j, jzx -> zx", flow_.D1_bnd[-1], u)
-    top = jnp.where(fourier_.mean_mask[0], u[-1], top_neumann)
-    return out.at[0].set(bot).at[-1].set(top)
 
 
 def _hk_minus_matvec(
@@ -1345,12 +1195,67 @@ def _to_solver(state: Array, fourier_: Fourier, flow_: CartesianFlow) -> Array:
     )
 
 
+#: ``stats.dat`` column names for the mean-mode driving this geometry
+#: applies (:func:`_apply_bulk_corrections`).  The sign is the applied
+#: **forcing** `$-\partial p'/\partial s$`, positive when it accelerates
+#: the flow -- carried in the name so a reader cannot mistake it for the
+#: pressure gradient.  ``s`` is the tilted streamwise direction, ``n``
+#: the spanwise one.
+DRIVING_KEY_S = "-dPds'"
+DRIVING_KEY_N = "-dPdn'"
+
+
+def mean_driving(state: Array, flow_: CartesianFlow) -> dict[str, Array]:
+    r"""Wall-shear **inference** of the driving, from a state alone.
+
+    The mean-mode momentum balance, integrated across the channel with
+    `$\bar{u}|_\text{wall} = 0$` and the mean-mode nonlinear term
+    contributing nothing (its bulk is a wall flux of `$\overline{uv}$`):
+
+    .. math::
+        \frac{d U_b'}{dt} = \Pi' + \nu\,\frac{\partial_y \bar{u}|_{+1}
+        - \partial_y \bar{u}|_{-1}}{2},
+
+    so a constraint holding `$U_b'$` fixed applies exactly
+    `$\Pi' = -\nu\,(\tau_t - \tau_b)/2$` -- the same number
+    :func:`_apply_bulk_corrections` applies, up to the time
+    discretization.  Keys and sign match it exactly.
+
+    This is **not** what ``stats.dat`` normally reports: that column is
+    the value the corrector actually applied, threaded out of the
+    implicit solve.  This is used for the one row that has no step
+    behind it, ``t = t0`` (see :mod:`dnsjax.__main__`), and as the
+    independent check the driving test pins the applied value against.
+    """
+    cbv = params.phys.driving == "constant_bulk_velocity"
+    if not (cbv or params.phys.block_mean_spanwise_velocity):
+        return {}
+    nu = 1.0 / params.phys.re
+    mean_u = extract_mean_mode(state).real  # (3, Ny)
+    out: dict[str, Array] = {}
+    if cbv:
+        mean_us = (
+            mean_u[0] * derived_params.cos_tilt
+            + mean_u[2] * derived_params.sin_tilt
+        )
+        sh = flow_.D1_bnd @ mean_us  # (2,) = [bottom, top]
+        out[DRIVING_KEY_S] = -nu * (sh[1] - sh[0]) / 2
+    if params.phys.block_mean_spanwise_velocity:
+        mean_un = (
+            -mean_u[0] * derived_params.sin_tilt
+            + mean_u[2] * derived_params.cos_tilt
+        )
+        sh = flow_.D1_bnd @ mean_un
+        out[DRIVING_KEY_N] = -nu * (sh[1] - sh[0]) / 2
+    return out
+
+
 def _apply_bulk_corrections(
     u_new: Array,
     w_new: Array,
     mean_mask: Array,
     flow_: CartesianFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""Mean-mode bulk-velocity projections (both schemes).
 
     Stages 8-9 of :func:`_imm_iteration_vp`, shared verbatim with
@@ -1368,27 +1273,44 @@ def _apply_bulk_corrections(
     what lets the `$v$`-`$\omega_y$` scheme reuse this unchanged even
     though its mean plane rides the packed `$\varphi$`/`$\omega$`
     slots.
+
+    Also returns the applied driving as a dict of 0-d diagnostics
+    (:data:`DRIVING_KEY_S` / :data:`DRIVING_KEY_N`), which the stepper
+    threads out as the corrector's *aux* (:func:`dnsjax.timestep.
+    make_stepper`).  The value is the rank-1 correction's own scalar
+    prefactor -- the uniform body force added to the mean-mode
+    Helmholtz RHS, i.e. `$-\partial p'/\partial s$` -- so nothing is
+    recomputed and no sign can drift between what is applied and what
+    is reported.  Empty when neither knob is on, and only the
+    **converged** corrector iterate's dict survives the step.
     """
     if not (
         params.phys.driving == "constant_bulk_velocity"
         or params.phys.block_mean_spanwise_velocity
     ):
-        return u_new, w_new
+        return u_new, w_new, {}
 
     # Extract mean-mode velocity profiles once (shared by
-    # both streamwise and spanwise corrections).
-    mean_uw = extract_mean_mode(jnp.stack([u_new, w_new])).real
-    mean_u, mean_w = mean_uw[0], mean_uw[1]
+    # both streamwise and spanwise corrections).  Two operands rather
+    # than one ``jnp.stack``: the stack would be a field-sized copy
+    # made only to be read at ``[:, :, 0, 0]`` and thrown away, and a
+    # ``shard_map`` operand cannot have that slice sunk back into its
+    # producer (see :func:`extract_mean_modes`).
+    mean_u_c, mean_w_c = extract_mean_modes(u_new[None], w_new[None])
+    mean_u, mean_w = mean_u_c[0].real, mean_w_c[0].real
 
     u_corr = 0.0
     w_corr = 0.0
+    aux: dict[str, Array] = {}
 
     if params.phys.driving == "constant_bulk_velocity":
         mean_us = (
             mean_u * derived_params.cos_tilt + mean_w * derived_params.sin_tilt
         )
         bulk_us = jnp.dot(flow_.y_weights, mean_us) / 2
-        G_s = -bulk_us * flow_.H_bulk_inv * flow_.h_bulk_response
+        pi_s = -bulk_us * flow_.H_bulk_inv  # the applied body force
+        aux[DRIVING_KEY_S] = pi_s
+        G_s = pi_s * flow_.h_bulk_response
         u_corr = u_corr + G_s * derived_params.cos_tilt
         w_corr = w_corr + G_s * derived_params.sin_tilt
 
@@ -1403,210 +1325,17 @@ def _apply_bulk_corrections(
             + mean_w * derived_params.cos_tilt
         )
         bulk_un = jnp.dot(flow_.y_weights, mean_un) / 2
-        G_n = -bulk_un * flow_.H_bulk_inv * flow_.h_bulk_response
+        pi_n = -bulk_un * flow_.H_bulk_inv  # the applied body force
+        aux[DRIVING_KEY_N] = pi_n
+        G_n = pi_n * flow_.h_bulk_response
         u_corr = u_corr - G_n * derived_params.sin_tilt
         w_corr = w_corr + G_n * derived_params.cos_tilt
 
     return (
         u_new + jnp.where(mean_mask, u_corr[:, None, None], 0.0),
         w_new + jnp.where(mean_mask, w_corr[:, None, None], 0.0),
+        aux,
     )
-
-
-def _imm_iteration_vp(
-    velocity_n: Array,
-    velocity_j: Array,
-    nonlin_n: Array,
-    nonlin_j: Array,
-    fourier_: Fourier,
-    flow_: CartesianFlow,
-) -> tuple[Array, Array]:
-    r"""Kleiser-Schumann influence-matrix method.
-
-    The y-momentum equation supplies only the *interior* Poisson
-    equation for pressure; the wall BC is determined indirectly by
-    enforcing continuity `$\nabla \cdot u = 0$` at the walls.
-
-    Nine stages (six core IMM stages, then three mean-mode projections):
-
-    1. Build the interior Poisson RHS from divergence of momentum.
-    2. Solve Poisson for the particular pressure `$p_P$` with
-       arbitrary (zero) Neumann BCs.
-    3. Solve Helmholtz for all three particular velocity components
-       `$u_{arb}, v_{arb}, w_{arb}$` against `$p_P$` (zero
-       Dirichlet BCs).
-    4. Compute wall divergence residual
-       `$d_{\mathrm{wall}} = (D_1 v_{arb})|_{\mathrm{wall}}$`
-       (since `$u = w = 0$` at walls).
-    5. Apply the influence matrix
-       `$\alpha = -M^{-1} d_{\mathrm{wall}}$`.
-    6. Assemble the corrected pressure and all three corrected
-       velocity components via Helmholtz linearity, with no
-       further Helmholtz solves:
-
-       - `$p = p_P + \alpha_1 p_1 + \alpha_2 p_2$`
-       - `$v = v_{arb} + \alpha_1 v_1 + \alpha_2 v_2$`
-       - `$u = u_{arb} - i k_x \Delta q$`
-       - `$w = w_{arb} - i k_z \Delta q$`
-
-       where `$\Delta q = \alpha_1 q_1 + \alpha_2 q_2$` and
-       `$q_i = H_k^{-1} p_i$` (precomputed), using the
-       factorisation `$u^{(i)} = -i k_x q_i$`,
-       `$w^{(i)} = -i k_z q_i$` (the scalar `$-i k_x$`,
-       `$-i k_z$` commute with `$H_k^{-1}$` per mode).
-    7. Zero the mean-mode wall-normal velocity `$v$`.
-       Continuity `$\partial v / \partial y = 0$` plus
-       no-slip at both walls forces `$v \equiv 0$` there;
-       the projection prevents accumulation of numerical
-       noise from the Helmholtz RHS.
-    8. *(optional)* If ``constant_bulk_velocity``, zero the
-       mean-mode perturbation bulk velocity in the streamwise
-       direction `$(\cos\theta, 0, \sin\theta)$`.
-    9. *(optional)* If ``block_mean_spanwise_velocity``, zero
-       the mean-mode perturbation bulk velocity in the
-       spanwise direction `$(-\sin\theta, 0, \cos\theta)$`.
-
-    Steps 7--9 are orthogonal projections and do not
-    interfere; all mean-mode projections and writes go
-    through ``mean_mask``.  Padding modes need no writes:
-    their fields are identically zero (the forward FFT
-    re-zeroes the padding slots on every evaluation), their
-    placeholder-wavenumber operators are regular, and the
-    IMM corrections vanish there.
-
-    Mathematical equivalence
-    ~~~~~~~~~~~~~~~~~~~~~~~~
-    The IMM is a **Schur-complement (capacitance-matrix)
-    reduction**.  The coupled pressure--velocity system has a
-    `$2 \times 2$` block structure with interior unknowns
-    (`$I$`) and boundary unknowns (`$B$`).  The influence
-    matrix `$M$` is the Schur complement
-    `$S = A_{BB} - A_{BI}\,A_{II}^{-1}\,A_{IB}$`; the
-    homogeneous data (``p1, p2, v1, v2, q1, q2``) are the
-    columns of `$A_{II}^{-1}\,A_{IB}$`.  The correction
-    (stage 6) is a **rank-2 low-rank update** to the particular
-    solution -- the same algebraic structure as the **Woodbury
-    matrix identity** applied to boundary conditions.  The
-    bulk-velocity correction (step 8) is a **rank-1
-    Sherman--Morrison update**.  Cylindrical: same structure
-    with a `$1 \times 1$` Schur complement (one wall at
-    `$r = 1$`).
-
-    The discrete continuity this scheme does *not* deliver, and the
-    `$v$`-`$\omega_y$` alternative ``res.consistent_imm`` selects
-    instead, are documented on :func:`_imm_iteration`.
-    """
-    c = params.step.implicitness
-    dt = flow_.dt
-    nu = 1.0 / params.phys.re
-
-    u_n, v_n, w_n = velocity_n[0], velocity_n[1], velocity_n[2]
-    Nu_n, Nv_n, Nw_n = nonlin_n[0], nonlin_n[1], nonlin_n[2]
-    Nu_j, Nv_j, Nw_j = nonlin_j[0], nonlin_j[1], nonlin_j[2]
-
-    mean_mask = fourier_.mean_mask
-
-    # Horizontal spectral-derivative factors, reused across every stage.
-    ikx = 1j * fourier_.kx
-    ikz = 1j * fourier_.kz
-
-    # Batch the three D1 y-derivatives into one GEMM, stacked y-leading
-    # (N_y, 3, ...) so the contraction is transpose-free; unstack to 3-d.
-    dy_stack = apply_y_matrix(
-        flow_.D1, jnp.stack([v_n, Nv_j, Nv_n], axis=1), component_axis=1
-    )
-    dy_v_n, dy_Nv_j, dy_Nv_n = dy_stack[:, 0], dy_stack[:, 1], dy_stack[:, 2]
-
-    # d_hat^n (discrete divergence at time n; ~0 after first step).
-    # ``dnsjax.analysis`` mirrors this operator; changing it here
-    # means changing ``snapshot_ops.divergence`` and the
-    # transcription in ``tests/test_snapshot_export.py``
-    # (``_solver_divergence``), which pins the two together.
-    d_hat_n = ikx * u_n + dy_v_n + ikz * w_n
-
-    # Stage 1: interior pressure Poisson RHS.
-    div_Nj = ikx * Nu_j + dy_Nv_j + ikz * Nw_j
-    div_Nn = ikx * Nu_n + dy_Nv_n + ikz * Nw_n
-
-    Lk_d = _lk_matvec(d_hat_n, flow_, fourier_)
-
-    f_hat = d_hat_n / dt + c * div_Nj + (1 - c) * div_Nn + (1 - c) * nu * Lk_d
-
-    # Stage 2: particular pressure with ZERO Neumann BCs.
-    f_hat_P = f_hat.at[0].set(0.0).at[-1].set(0.0)
-    pP = flow_.Lk_op.solve(f_hat_P)
-
-    # Stage 3: Helmholtz solves for all three velocity components
-    # against the particular pressure p_P (zero Dirichlet BCs).  The
-    # three components share the same :math:`H_k` operator per mode,
-    # so the explicit matvec, the wall-row zeroing, and the final
-    # solve are all batched over the component axis — one kernel
-    # launch each instead of three sequential ones.
-    #
-    # This Hk path stays **component-leading** (unlike the y-leading
-    # curl/divergence matvecs above): it has a single D2 GEMM (the
-    # vmapped _hk_minus_matvec), and velocity_n / nonlin_j / nonlin_n
-    # all arrive component-leading, so a y-leading conversion would add
-    # three transposes to remove the one matvec's two -- a net loss.
-    # (Cylindrical/annular convert theirs -- several batched matvecs to
-    # amortise; see those modules.)
-    dx_pP = ikx * pP
-    dy_pP = apply_y_matrix(flow_.D1, pP)
-    dz_pP = ikz * pP
-    grad_pP = jnp.stack([dx_pP, dy_pP, dz_pP])  # (3, Ny, Nkz, Nkx)
-
-    Hk_minus_stack = jax.vmap(
-        _hk_minus_matvec,
-        in_axes=(0, None, None),
-    )(velocity_n, flow_, fourier_)
-
-    R_stack = Hk_minus_stack - grad_pP + c * nonlin_j + (1 - c) * nonlin_n
-    R_stack = R_stack.at[:, 0].set(0.0).at[:, -1].set(0.0)
-
-    # Zero v-component RHS at the mean mode so the Helmholtz
-    # solve itself returns v = 0 there.
-    R_stack = R_stack.at[1].set(jnp.where(mean_mask, 0.0, R_stack[1]))
-
-    arb_stack = flow_.Hk_op.solve(R_stack)
-    u_arb, v_arb, w_arb = arb_stack[0], arb_stack[1], arb_stack[2]
-
-    # Stage 4: wall divergence residual. At walls u=w=0 (no-slip),
-    # so div u|_wall = D1 v|_wall.
-    d_wall = jnp.einsum("bj, jzx -> zxb", flow_.D1_bnd, v_arb)
-
-    # Mean-mode top-wall residual is a pressure gauge; zero it.
-    d_wall = d_wall.at[..., 1].set(
-        jnp.where(mean_mask[0], 0.0, d_wall[..., 1])
-    )
-
-    # Stage 5: influence matrix algebra alpha = -M_inv @ d_wall.
-    alpha = -jnp.einsum("zxab, zxb -> zxa", flow_.M_inv, d_wall)
-    alpha1 = alpha[..., 0][None]
-    alpha2 = alpha[..., 1][None]
-
-    # Stage 6: corrected velocity components via Helmholtz
-    # linearity — no additional Helmholtz solves.  The corrected
-    # pressure (pP + alpha1 p1 + alpha2 p2) is never assembled:
-    # only velocity is stepped.
-    v_new = v_arb + alpha1 * flow_.v1 + alpha2 * flow_.v2
-
-    # Horizontal corrections factor through the scalar potential Δq,
-    # since u^(i) = -ikx q_i and w^(i) = -ikz q_i (the -ikx, -ikz
-    # scalar factors commute with Hk linearity per mode).
-    q_new = alpha1 * flow_.q1 + alpha2 * flow_.q2
-
-    # Stage 7: zero mean-mode wall-normal velocity.
-    v_new = jnp.where(mean_mask, 0.0, v_new)
-    u_new = u_arb - ikx * q_new
-    w_new = w_arb - ikz * q_new
-
-    u_new, w_new = _apply_bulk_corrections(u_new, w_new, mean_mask, flow_)
-
-    velocity_new = jnp.array([u_new, v_new, w_new])
-
-    correction = velocity_new - velocity_j
-
-    return velocity_new, correction
 
 
 def _imm_iteration_vw(
@@ -1616,7 +1345,7 @@ def _imm_iteration_vw(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: CartesianFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""`$v$`-`$\omega_y$` step (``res.consistent_imm``).
 
     The wall-normal velocity and the wall-normal vorticity
@@ -1863,12 +1592,12 @@ def _imm_iteration_vw(
     # Stages 8-9: the mean-mode bulk projections, shared verbatim --
     # they write only the k^2 = 0 plane, the one plane the
     # reconstruction never touches.
-    u_new, w_new = _apply_bulk_corrections(u_new, w_new, mean_mask, flow_)
+    u_new, w_new, aux = _apply_bulk_corrections(u_new, w_new, mean_mask, flow_)
 
     velocity_new = jnp.array([u_new, v_new, w_new])
     correction = velocity_new - velocity_j
 
-    return velocity_new, correction
+    return velocity_new, correction, aux
 
 
 def _imm_iteration(
@@ -1878,24 +1607,27 @@ def _imm_iteration(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: CartesianFlow,
-) -> tuple[Array, Array]:
+) -> tuple[Array, Array, dict[str, Array]]:
     r"""One implicit Cartesian step: dispatch on ``res.consistent_imm``.
 
     Two formulations of the same second-order-in-time scheme, sharing
     the state, the signature, the `$H_k$` operator and the
     capacitance-matrix structure:
 
-    - **off** -- :func:`_imm_iteration_vp`, the primitive
-      Kleiser-Schumann influence-matrix method: solve for
+    - **on, the default** -- :func:`_imm_iteration_vw`, the
+      `$v$`-`$\omega_y$` formulation: advance the wall-normal velocity
+      and vorticity, reconstruct `$(u, w)$`, and never form a pressure.
+    - **off, the legacy path** --
+      :func:`._cartesian_primitive_imm._imm_iteration_vp`, the
+      primitive Kleiser-Schumann influence-matrix method: solve for
       `$(u, v, w)$` against a pressure Poisson solve, enforcing
-      continuity at the walls.
-    - **on** -- :func:`_imm_iteration_vw`, the `$v$`-`$\omega_y$`
-      formulation: advance the wall-normal velocity and vorticity,
-      reconstruct `$(u, w)$`, and never form a pressure.
+      continuity at the walls.  Kept for reference and for reproducing
+      older trajectories; not recommended.
 
     The branch is a Python ``if`` on a parameter fixed before this
     module is imported, so it costs nothing at trace time and the two
-    bodies never mix.
+    bodies never mix.  The legacy body lives in a sibling module
+    imported only here, so the default path never loads it.
 
     Discrete continuity: why there are two
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2019,7 +1751,10 @@ def _imm_iteration(
         return _imm_iteration_vw(
             velocity_n, velocity_j, nonlin_n, nonlin_j, fourier_, flow_
         )
-    return _imm_iteration_vp(
+
+    from . import _cartesian_primitive_imm as prim
+
+    return prim._imm_iteration_vp(
         velocity_n, velocity_j, nonlin_n, nonlin_j, fourier_, flow_
     )
 
@@ -2033,7 +1768,7 @@ def _predict(
     """Euler predictor (Willis 2017 j=0) via Kleiser-Schumann IMM."""
     nonlin_n = rhs_no_lapl
 
-    prediction_state, _ = _imm_iteration(
+    prediction_state, _, _ = _imm_iteration(
         velocity_n, velocity_n, nonlin_n, nonlin_n, fourier_, flow_
     )
     return prediction_state
@@ -2046,18 +1781,22 @@ def _correct(
     rhs_next: Array,
     fourier_: Fourier,
     flow_: CartesianFlow,
-) -> tuple[Array, Array]:
-    """Crank-Nicolson corrector (Willis 2017 j>0) via Kleiser-Schumann IMM."""
+) -> tuple[Array, Array, dict[str, Array]]:
+    """Crank-Nicolson corrector (Willis 2017 j>0) via Kleiser-Schumann IMM.
+
+    Third return: the corrector-side *aux* diagnostics, here the applied
+    mean-mode driving (:func:`_apply_bulk_corrections`).
+    """
     velocity_n = state_prev
     velocity_j = prediction_state
 
     nonlin_n = rhs_prev
     nonlin_j = rhs_next
 
-    prediction_state_new, correction = _imm_iteration(
+    prediction_state_new, correction, aux = _imm_iteration(
         velocity_n, velocity_j, nonlin_n, nonlin_j, fourier_, flow_
     )
-    return prediction_state_new, correction
+    return prediction_state_new, correction, aux
 
 
 def _norm(
@@ -2076,11 +1815,16 @@ def build_cartesian_stepper(
     flow: CartesianFlow,
 ) -> tuple[
     Callable[[], Array],
-    Callable[[Array], tuple[Array, Array, Array]],
     Callable[[Array], tuple[Array, Array, Array, dict[str, Array]]],
-    Callable[[Array, Array], tuple[Array, Array, Array, Array]],
+    Callable[
+        [Array], tuple[Array, Array, Array, dict[str, Array], dict[str, Array]]
+    ],
     Callable[
         [Array, Array], tuple[Array, Array, Array, Array, dict[str, Array]]
+    ],
+    Callable[
+        [Array, Array],
+        tuple[Array, Array, Array, Array, dict[str, Array], dict[str, Array]],
     ],
     Callable[[float], None],
     Callable[[], None],
