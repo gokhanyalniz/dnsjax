@@ -276,12 +276,6 @@ def test_fresh_start_e0_exact() -> None:
         # E_d(t0) == e0 up to the (state1 + delta) - state1
         # cancellation floor.
         assert_allclose(cols["E_d"][0], E0, rtol=1e-10)
-        # Per-row component partition (parse-precision limited).
-        assert_allclose(
-            cols["E_dU"] + cols["E_du1"] + cols["E_du2"],
-            cols["E_d"],
-            rtol=1e-12,
-        )
         assert (tmp / "stats.dat").exists()
 
         # IC and final snapshot pairs, each internally consistent.
@@ -677,7 +671,8 @@ def test_yspectra_streams() -> None:
     A fresh run plus a paired resume, then the identities that make
     these streams a strict refinement of the old diagnostics: both
     marginals integrate to ``twin.dat``'s ``E_d``; the three-bin
-    energies come back out of the `$k_x = 0$` plane; and the budget's
+    energies come back out of the `$k_x = 0$` plane and partition
+    ``E_d`` between them; and the budget's
     `$k$`-sums reproduce ``twin_budget.dat``'s ``P_tot`` / ``eps_tot``
     -- all through the binary round trip.  ``twin.bins`` is on here
     only so ``twin.dat`` carries the bin columns to check against; it
@@ -734,6 +729,15 @@ def test_yspectra_streams() -> None:
                 assert_allclose(
                     bins[name][k], cols[name][i], rtol=1e-9, atol=1e-30
                 )
+            # The three bins partition E_d (parse-precision limited).
+            # Checked here rather than on a default run: twin.bins is
+            # off by default, so these columns exist only in this case.
+            assert_allclose(
+                cols["E_dU"][i] + cols["E_du1"][i] + cols["E_du2"][i],
+                cols["E_d"][i],
+                rtol=1e-12,
+                err_msg=f"the three bins do not partition E_d at t={t}",
+            )
 
         budget = read_twin_ybudget(tmp)
         assert budget.t.shape[0] == n + 1
