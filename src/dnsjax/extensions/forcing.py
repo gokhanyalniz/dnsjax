@@ -53,9 +53,11 @@ Timing conventions (shared with the readers and resume)
   the kick belonging to its first iteration itself: no kick is lost
   or doubled across a resume.
 - The coefficient PRNG is host-side, rank-identical, and seeded by
-  ``force.seed``; on an append-resume the already-recorded draws are
-  skipped, so the coefficient stream continues exactly as if the run
-  had never stopped.
+  ``force.seed`` -- drawn from the system entropy pool when unset
+  (:mod:`dnsjax.seeding`), and recorded here and in the snapshot so an
+  append-resume inherits it; on an append-resume the already-recorded
+  draws are skipped, so the coefficient stream continues exactly as if
+  the run had never stopped.
 
 Amplitude guidance: each kick adds `$\varepsilon\sum_j w_j\,
 \mathbf{p}_j$` per mode with `$w_j \sim \mathcal{CN}(0,1)$` i.i.d.

@@ -97,10 +97,15 @@ SIGTERM/SIGINT flushing, and the FATAL / exit-3 semantics all mirror
 Ensembles
 ---------
 One member = one run directory = one ``dnsjax-twin`` invocation; vary
-``twin.seed`` (and parent snapshot) across members.
+``twin.seed`` (and parent snapshot) across members.  An unset
+``twin.seed`` is drawn from the system entropy pool
+(:mod:`dnsjax.seeding`) on a fresh start, so members launched by hand
+are independent without being told to be; a paired resume adopts the
+seed recorded in ``twin.json`` rather than drawing, which is what keeps
+:data:`_TWIN_MATCH_KEYS` satisfiable without re-typing it.
 ``scripts/ensemble_setup.py`` harvests parent snapshots and builds
-member trees; ``dnsjax.analysis.twin`` aggregates the ``twin.dat``
-streams.
+member trees (pinning each member's seed in its ``parameters.toml``);
+``dnsjax.analysis.twin`` aggregates the ``twin.dat`` streams.
 """
 
 import json
@@ -122,7 +127,11 @@ from ..__main__ import (
 from ..__main__ import (
     _stats_row as _row,
 )
-from ..bootstrap import configure_jax_runtime, resolve_parameters
+from ..bootstrap import (
+    configure_jax_runtime,
+    resolve_parameters,
+    resolve_seed,
+)
 from ..extensions import (
     ParamExtension,
     force_params,
@@ -139,6 +148,12 @@ from ..parameters import (
     params,
     trajectory_defining_changes,
 )
+from ..seeding import (
+    SOURCE_CLI,
+    SOURCE_DRAWN,
+    SOURCE_SIDECAR,
+    seed_note,
+)
 from ..snapshot_meta import git_hash, is_snapshot_file, read_snapshot_meta
 
 _PROG = "dnsjax-twin"
@@ -149,7 +164,10 @@ TWIN_FORMAT_VERSION: int = 1
 
 #: ``twin.json`` keys that must match for a paired resume to proceed.
 #: The cadences are included: a mid-stream cadence change would break
-#: the uniform sample grid the offline fits assume.
+#: the uniform sample grid the offline fits assume.  ``seed`` is
+#: matched, not re-read, so a resume with an unset ``twin.seed`` adopts
+#: the recorded one first (in :func:`run`); it is ``null`` exactly when
+#: ``e0 = 0``, which draws no perturbation and so has no seed.
 _TWIN_MATCH_KEYS: tuple[str, ...] = (
     "format_version",
     "system",
@@ -227,11 +245,19 @@ class TwinParams(BaseModel):
             "unconfigured."
         ),
     )
-    seed: int = Field(
-        default=1,
+    # Unset means "draw one" (:mod:`dnsjax.seeding`), but resolved late
+    # -- in ``run`` below, once the fresh-start / paired-resume decision
+    # is known.  A resume adopts the seed recorded in ``twin.json``
+    # instead of drawing, which is what keeps the _TWIN_MATCH_KEYS check
+    # satisfiable without the user re-typing it; ``e0 = 0`` draws nothing
+    # at all and records ``null``.
+    seed: int | None = Field(
+        default=None,
         description=(
             "Perturbation RNG seed (device-count independent); vary "
-            "per ensemble member."
+            "per ensemble member. Unset: drawn from the system entropy "
+            "pool on a fresh start, and taken from twin.json on a "
+            "resume."
         ),
     )
     smoothness: float = Field(
@@ -458,11 +484,13 @@ class _ScalarStream:
         return bad
 
 
-def run(wall_time_start: int) -> None:
+def run(wall_time_start: int, seed_source: str | None = None) -> None:
     """Run the twin time-stepping loop (parameters and JAX final).
 
     Mirrors :func:`dnsjax.__main__.run` with two states; see the
-    module docstring for what differs.
+    module docstring for what differs.  *seed_source* is the
+    ``seeding.SOURCE_*`` label of the layer that supplied ``twin.seed``
+    (``None`` when none did, and the seed is resolved in here).
     """
     import importlib
 
@@ -542,12 +570,38 @@ def run(wall_time_start: int) -> None:
     json_path = Path("twin.json")
     have_partner = partner.exists()
     have_json = json_path.exists()
+    old: dict = {}
+    if have_json:
+        with open(json_path) as f:
+            old = json.load(f)
+
+    # --- The perturbation seed (before the branch: the two differ) -------
+    # A paired resume never re-perturbs, so it needs no draw -- it needs
+    # the seed its pair was *born* with, the one recorded in twin.json.
+    # Adopting it is also what makes the _TWIN_MATCH_KEYS check below
+    # satisfiable for a member whose seed was drawn rather than typed.
+    # A fresh start draws one; ``e0 = 0`` perturbs by exactly nothing and
+    # needs no seed at all, recording ``null``.
+    if twin_params.seed is None:
+        if have_partner and have_json:
+            twin_params.seed = old.get("seed")
+            seed_source = SOURCE_SIDECAR
+        elif not have_partner and not have_json and twin_params.e0 != 0.0:
+            # Every rank, outside any main-device gate: the draw is
+            # agreed by a collective so the partner is one field, not
+            # one per rank.
+            twin_params.seed = resolve_seed("twin.seed", "--twin.seed", None)
+            seed_source = SOURCE_DRAWN
+    if twin_params.seed is not None:
+        # ``or SOURCE_CLI``: a seed that reached here already set, with
+        # no layer recorded for it, was assigned directly (a test).
+        sharding.print(
+            seed_note("twin.seed", twin_params.seed, seed_source or SOURCE_CLI)
+        )
 
     # --- Fresh start vs paired resume (see the module docstring) ---------
     resumed_pair: bool = False
     if have_partner and have_json:
-        with open(json_path) as f:
-            old = json.load(f)
         current = _twin_sidecar_stub()
         mismatch = [k for k in _TWIN_MATCH_KEYS if old.get(k) != current[k]]
         if mismatch:
@@ -1318,7 +1372,7 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
 
-    run(wall_time_start)
+    run(wall_time_start, setup.seed_layers.get("twin.seed"))
 
     print("Shutdown at", datetime.now(), flush=True, file=sys.stderr)
     return 0

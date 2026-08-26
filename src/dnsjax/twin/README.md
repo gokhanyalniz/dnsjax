@@ -42,7 +42,7 @@ which `dnsjax-twin` registers and the solver does not.
 | Knob | Default | Meaning |
 |---|---|---|
 | `twin.e0` | unset | Initial perturbation energy $E'(\delta)$ in the solver measure; setting it enables the section. `0` requests an exact zero perturbation |
-| `twin.seed` | `1` | Perturbation RNG seed; vary per ensemble member |
+| `twin.seed` | unset | Perturbation RNG seed; vary per ensemble member. Unset draws one from the system entropy pool on a fresh start and takes the recorded one from `twin.json` on a resume |
 | `twin.smoothness` | `0.4` | Spectral envelope of the random perturbation (`init.random_smoothness` convention) |
 | `twin.bins` | `false` | Also record the $\Delta U$ / $\Delta u_1$ / $\Delta u_2$ three-bin energies in `twin.dat`; required by `it_budget` |
 | `twin.it_energy` | `1` | Steps between `twin.dat` rows |
@@ -203,6 +203,14 @@ the run directory's `twin.json`.
 | absent | exists | Error: this directory already holds a twin trajectory |
 | absent | absent | **Fresh start** — perturb, write `twin.json`, save the IC pair |
 
+"Matches" is the `twin.json` configuration record — `e0`, the seed,
+the smoothness, the cadences, `dt`, the precision — and a resume that
+differs in any of them is refused rather than appending to streams it
+does not belong to. `twin.seed` is *matched*, not re-read, which is why
+a resume with the seed left unset adopts the recorded one first: the
+pair is not re-perturbed, so what it needs is the seed it was born
+with, and an un-pinned member would otherwise fail its own first resume.
+
 On a paired resume a trajectory-defining parameter change is a hard
 error: switching mid-trajectory would disconnect the pair from its own
 streams. Start a fresh member instead. A fresh start inherits the
@@ -212,8 +220,11 @@ parent's clock, so offline analysis reads the perturbation time from
 ## Ensembles
 
 One member = one run directory = one `dnsjax-twin` invocation, varying
-`twin.seed` and the parent snapshot. `scripts/ensemble_setup.py`
-harvests statistically independent parents and builds the member tree:
+`twin.seed` and the parent snapshot — or leaving the seed unset, in
+which case each member draws its own and records it, so members
+launched by hand are independent without being told to be.
+`scripts/ensemble_setup.py` harvests statistically independent parents
+and builds the member tree:
 
 ```bash
 uv run python scripts/ensemble_setup.py harvest \
@@ -228,7 +239,11 @@ uv run python scripts/ensemble_setup.py build-twin \
 in-process at start — so each member directory holds only a generated
 `parameters.toml`. Seeds run `--seed-base + k` over the flat member
 index, and `--members-per-snapshot` fans several seeds out of one
-parent. `check_laminarization` is forced off so every member runs the
+parent. An unset `--seed-base` is drawn from the system entropy pool
+and printed, so two ensembles built from the same parents are
+independent rather than both running seeds `1..N`; either way each
+member's concrete seed is written into its `parameters.toml`, which is
+what keeps the tree reproducible and resumable. `check_laminarization` is forced off so every member runs the
 full horizon and the streams aggregate on one shared time grid; a
 relaminarised member stays visible offline in its `E_ref` column. The
 script emits `run_commands.txt` and a `members.json` index, and never

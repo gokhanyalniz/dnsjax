@@ -61,6 +61,16 @@ wall window so its value and first derivative vanish at the walls
 analytically; the continuity-derived component's no-slip is then only
 truncation-level (projected by the first corrector step).
 
+**The seed** is the first element of every per-mode key, so the field
+is a function of ``(seed, global mode index)`` alone -- identical at any
+``(np0, np1)``, *provided every process holds the same seed*.  That is
+the entry points' job: an unset ``init.random_seed`` / ``twin.seed`` is
+drawn once and agreed across processes before any generator here is
+called (:mod:`dnsjax.seeding`, ``bootstrap.resolve_seed``).  Per-rank
+draws would assemble one field out of unrelated streams -- still
+divergence-free, still correctly normalised, and reproducible from no
+recorded seed at all.
+
 **Import-order discipline**: only NumPy and the JAX-free
 ``harmonics`` / ``parameters`` leaves are imported at module top.  ``jax``,
 ``sharding``, and the geometry modules (which build the ``fourier``

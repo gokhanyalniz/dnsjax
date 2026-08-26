@@ -945,6 +945,13 @@ class Initiation(BaseModel):
     trajectory by default (``it = t = isnap = 0``); ``force_resume``
     keeps the run continuous instead.  See
     :func:`trajectory_defining_changes`.
+
+    Seeds (``random_seed`` here, ``twin.seed`` and ``force.seed`` on
+    their extension sections) default to **unset**, meaning "draw one
+    from the system entropy pool at startup"; the drawn value is
+    printed and recorded, and a run that needs a seed it cannot draw
+    refuses rather than falling back to a fixed one.  The contract and
+    the reasons behind it: :mod:`dnsjax.seeding`.
     """
 
     start_from_laminar: bool = Field(
@@ -1008,10 +1015,18 @@ class Initiation(BaseModel):
             "(0 < s < 1; larger = smoother)."
         ),
     )
-    random_seed: int = Field(
-        default=1,
+    # Unset means "draw one": ``bootstrap.resolve_run_seeds`` resolves
+    # it from the OS entropy pool at startup -- but only when this run
+    # actually builds a random IC (:func:`random_ic_selected`) -- prints
+    # it with its source, and leaves the concrete value here, so the
+    # snapshot records the seed that ran.  A ``default_factory`` would
+    # be wrong: see the :mod:`dnsjax.seeding` docstring.
+    random_seed: int | None = Field(
+        default=None,
         description=(
-            "Seed of the random-IC generator (device-count independent)."
+            "Seed of the random-IC generator (device-count "
+            "independent). Unset: drawn from the system entropy pool "
+            "at startup, printed, and recorded in the snapshot."
         ),
     )
     # Cartesian-only, and defaulted **on** there by the flow spec: only
@@ -1807,6 +1822,29 @@ def read_snapshot_params(
 # stochastic kicks alter the dynamics exactly like a ``phys`` change)
 # are compared alongside in :func:`trajectory_defining_changes`.
 _TRAJECTORY_SECTIONS: tuple[str, ...] = ("phys", "geo", "res")
+
+
+def random_ic_selected(p: Parameters | None = None) -> bool:
+    """Whether this run's start mode is the random-field IC.
+
+    Mirrors -- and is used by -- the start-mode precedence chain in
+    ``dnsjax.__main__.run`` (a ``snapshot`` path wins over every
+    in-process mode, then ``start_from_laminar``, then
+    ``localized_rolls``, then ``random_field``), so the one condition
+    is written once.  ``bootstrap.resolve_run_seeds`` reads it to
+    decide whether the run needs ``init.random_seed`` resolved at all:
+    a laminar, rolls or resume start draws nothing and so needs no
+    entropy source.
+
+    *p* defaults to the global :data:`params`.
+    """
+    init = (p if p is not None else params).init
+    return (
+        init.snapshot is None
+        and not init.start_from_laminar
+        and not init.localized_rolls
+        and init.random_field
+    )
 
 
 def trajectory_defining_changes(snapshot_params: dict) -> list[str]:

@@ -71,8 +71,8 @@ _NO_MPI_ONLY = (
 
 # One row per invocation: (script, extra args, marks, timeout in s).
 # Scripts appearing twice: ``test_resume`` (offline ``--unit-only``
-# subset + full mpirun run), ``test_forcing``/``test_probes`` (the
-# no-mpirun unit fallback + the full run),
+# subset + full mpirun run), ``test_forcing``/``test_probes``/
+# ``test_seeding`` (the no-mpirun unit fallback + the full run),
 # ``test_transient_growth`` (offline ``--fast`` structure checks +
 # the slow full run with the literature anchors), and
 # ``test_laminar_smoke`` (single-device + the ``--np 2`` mesh row
@@ -100,6 +100,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_driving.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_forcing.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_probes.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
+    ("test_seeding.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_quasi_keplerian.py", (), (), 1800),
     ("response/test_ensemble.py", (), (), 1800),
     ("response/test_lim.py", (), (), 1800),
@@ -130,6 +131,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_laminar_smoke.py", ("--np", "2"), _MPI + _SLOW, 3600),
     ("test_probes.py", (), _MPI, 1800),
     ("test_random_smoke.py", (), _MPI + _SLOW, 3600),
+    # _MPI for the cross-process seed-agreement row alone; the seven
+    # solver/twin launches are all a handful of steps each.
+    ("test_seeding.py", (), _MPI, 1800),
     ("test_resume.py", (), _MPI + _SLOW, 3600),
     ("test_rolls_smoke.py", (), _MPI + _SLOW, 3600),
     ("test_transient_growth.py", (), _SLOW, 3600),

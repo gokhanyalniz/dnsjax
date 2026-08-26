@@ -166,12 +166,19 @@ class ForceParams(BaseModel):
             "cadence when probing."
         ),
     )
-    seed: int = Field(
-        default=0,
+    # Unset means "draw one" (:mod:`dnsjax.seeding`), resolved by
+    # ``bootstrap.resolve_run_seeds`` only when the enabling quartet
+    # below is configured -- so an unconfigured [force] never draws, and
+    # the stray-knob check further down still sees ``None``.  The drawn
+    # value is recorded in the snapshot and in ``forcing.json``, so an
+    # append-resume inherits it and its match key still agrees.
+    seed: int | None = Field(
+        default=None,
         description=(
             "Seed of the kick-coefficient PRNG (host-side; a resumed "
             "run skips the recorded draws and continues the stream "
-            "exactly)."
+            "exactly). Unset: drawn from the system entropy pool at "
+            "startup, printed, and recorded."
         ),
     )
 
@@ -375,11 +382,20 @@ def _validate_force(values: ForceParams, params) -> None:
         # quartet -- and a recorded non-default value would flag a
         # spurious trajectory change on a later resume (the section is
         # trajectory-defining), so reject rather than ignore.
+        #
+        # ``seed == 0`` is exempt: it was this field's default before
+        # seeds became drawable, so every snapshot written by an
+        # *unforced* run of an older version records it.  The snapshot
+        # layer feeds that ``0`` straight back in, and rejecting it
+        # here would make those snapshots unresumable.  It costs
+        # nothing: ``0`` was never distinguishable from unset here
+        # either, and a configured ``force.seed = 0`` is still honoured
+        # (``resolve_run_seeds`` only draws over ``None``).
         stray = [
             k
             for k, v in (
                 ("n_channels", values.n_channels),
-                ("seed", values.seed if values.seed != 0 else None),
+                ("seed", values.seed or None),
             )
             if v is not None
         ]

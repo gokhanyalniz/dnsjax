@@ -22,6 +22,14 @@ singletons at import time:
 3. Only then import :mod:`dnsjax.sharding` and the geometry / flow
    modules.
 
+Between 2 and 3 the two stepping entry points call
+:func:`resolve_run_seeds`, which turns an unset seed this run would
+actually draw with into a concrete one (:mod:`dnsjax.seeding`) and
+agrees it across processes.  It sits *after* step 2 because the
+agreement is a JAX collective, and *before* step 3 because that is
+where the seed's consumers are built; a script that does no random
+draws simply never calls it.
+
 Production parsing is *surface-based* and two-pass:
 :func:`peek_run_context` scans the raw argv / ``parameters.toml`` (no
 pydantic) for the flow system (CLI ``--phys.system`` > TOML > resumed
@@ -45,7 +53,7 @@ import re
 import sys
 import tomllib
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -68,9 +76,22 @@ from .parameters import (
     Physics,
     padded_res,
     params,
+    random_ic_selected,
     read_snapshot_params,
     update_parameters,
     validate_parameters,
+)
+from .seeding import (
+    SOURCE_CLI,
+    SOURCE_DRAWN,
+    SOURCE_SNAPSHOT,
+    SOURCE_TOML,
+    NoEntropySource,
+    draw_seed,
+    join_seed,
+    missing_entropy_message,
+    seed_note,
+    split_seed,
 )
 
 _VALID_PLATFORMS: tuple[str, ...] = ("cpu", "cuda", "rocm", "tpu")
@@ -311,6 +332,38 @@ def _flow_epilog(spec: FlowSpec, prog: str = "dnsjax") -> str:
     )
 
 
+#: The seed knobs, as ``(dotted name, section, key)``.  ``twin.seed``
+#: is here for its *provenance* only: the twin driver resolves it late,
+#: after the paired-resume decision (:mod:`dnsjax.twin.driver`).
+_SEED_KNOBS: tuple[tuple[str, str, str], ...] = (
+    ("init.random_seed", "init", "random_seed"),
+    ("force.seed", "force", "seed"),
+    ("twin.seed", "twin", "seed"),
+)
+
+
+def _seed_layers(
+    *layers: tuple[str, dict, dict],
+) -> dict[str, str]:
+    """Which layer supplied each seed, highest priority winning.
+
+    *layers* are ``(source label, core sections, extension sections)``
+    triples in descending priority.  Both dicts are the layer's own
+    ``exclude_unset`` dump, so a key present in one means *that layer*
+    set it -- the distinction ``parameters._user_set_fields`` cannot
+    make (see :class:`ResolvedSetup`).
+    """
+    found: dict[str, str] = {}
+    for source, core, ext in layers:
+        for label, section, key in _SEED_KNOBS:
+            if label in found:
+                continue
+            layer = core.get(section) or ext.get(section) or {}
+            if layer.get(key) is not None:
+                found[label] = source
+    return found
+
+
 @dataclass(frozen=True)
 class ResolvedSetup:
     """What the production startup banner needs from the layering.
@@ -320,6 +373,14 @@ class ResolvedSetup:
     whether a ``parameters.toml`` was loaded; ``snapshot_path`` /
     ``snapshot_params_used`` which snapshot (if any) contributed its
     embedded parameters as the lowest layer.
+
+    ``seed_layers`` maps a seed's dotted name (``"init.random_seed"``,
+    ``"force.seed"``, ``"twin.seed"``) to the ``seeding.SOURCE_*``
+    label of the layer that supplied it; a seed no layer set is absent.
+    :func:`resolve_parameters` is the only place this can be known --
+    ``parameters._user_set_fields`` is a union over the layers and so
+    reports "set" on every resume, which cannot tell an inherited seed
+    from a typed one.
     """
 
     system: str
@@ -327,6 +388,7 @@ class ResolvedSetup:
     params_from_disk: bool
     snapshot_path: Path | None
     snapshot_params_used: bool
+    seed_layers: dict[str, str] = field(default_factory=dict)
 
 
 def resolve_parameters(
@@ -463,6 +525,8 @@ def resolve_parameters(
     ).get("snapshot")
     snapshot_path = Path(snap_value) if snap_value is not None else None
     snapshot_params_used = False
+    snap_core: dict = {}
+    snap_ext: dict[str, dict] = {}
     if snapshot_path is not None:
         # An unreadable snapshot (below ``MIN_FORMAT_VERSION``, or
         # malformed metadata) raises ``ValueError`` from deep inside
@@ -487,6 +551,7 @@ def resolve_parameters(
             update_parameters(snap_params)
             apply_extension_layer(snap_ext)
             snapshot_params_used = True
+            snap_core = snap_params.model_dump(exclude_unset=True)
 
     # Higher-priority layers: parameters.toml, then CLI arguments
     # (core sections and extension sections alike).  Empty core layers
@@ -505,6 +570,11 @@ def resolve_parameters(
         params_from_disk=ctx.raw_toml is not None,
         snapshot_path=snapshot_path,
         snapshot_params_used=snapshot_params_used,
+        seed_layers=_seed_layers(
+            (SOURCE_CLI, cli_layer, cli_ext),
+            (SOURCE_TOML, toml_layer, toml_ext),
+            (SOURCE_SNAPSHOT, snap_core, snap_ext),
+        ),
     )
 
 
@@ -1164,3 +1234,123 @@ def configure_jax_runtime(distributed: bool = True) -> bool:
     if note is not None and main:
         print(note, flush=True)
     return main
+
+
+# ── Seed resolution ──────────────────────────────────────────────
+
+
+def resolve_seed(label: str, flag: str, value: int | None) -> int:
+    r"""One seed's concrete value, drawing and agreeing one if unset.
+
+    Returns *value* untouched when it is not ``None`` (a layer supplied
+    it).  Otherwise process 0 draws from the OS entropy pool and the
+    result is broadcast, so **every process ends up with the same
+    seed**: :mod:`dnsjax.ic.random_field` keys each mode's draw on
+    ``(seed, global mode index)`` and per-rank draws would assemble one
+    field out of unrelated streams -- divergence-free and correctly
+    normalised, but reproducible from no recorded seed at all.
+
+    The payload is ``[ok, high, low]`` in ``int32``: the seed as the two
+    31-bit words of :func:`dnsjax.seeding.split_seed` (exact whether or
+    not ``jax_enable_x64`` is on -- it follows ``res.double_precision``,
+    and an ``int64`` payload would be truncated in single precision),
+    behind a success flag.  A failure is broadcast rather than raised on
+    the spot so that **every** rank raises, instead of the peers
+    blocking forever in a collective process 0 has already left.
+
+    Must be called on every process, after :func:`configure_jax_runtime`
+    and outside any main-process gate.  Raises ``SystemExit`` when no
+    entropy source is available.
+    """
+    if value is not None:
+        return value
+
+    import jax
+
+    multi = jax.process_count() > 1
+    ok, high, low, reason = 1, 0, 0, ""
+    if not multi or jax.process_index() == 0:
+        try:
+            high, low = split_seed(draw_seed())
+        except NoEntropySource as exc:
+            ok, reason = 0, str(exc)
+
+    if multi:
+        import numpy as np
+        from jax.experimental.multihost_utils import broadcast_one_to_all
+
+        ok, high, low = (
+            int(x)
+            for x in broadcast_one_to_all(
+                np.array([ok, high, low], dtype=np.int32)
+            )
+        )
+        if not ok:
+            # Only process 0 knows why its draw failed; the peers
+            # report the same refusal without inventing a reason.
+            reason = reason or "no entropy source on the main process"
+
+    if not ok:
+        raise SystemExit(
+            f"dnsjax: error: {missing_entropy_message(label, flag, reason)}"
+        )
+    return join_seed(high, low)
+
+
+def resolve_run_seeds(setup: ResolvedSetup) -> list[str]:
+    r"""Resolve the seeds this run will actually draw with.
+
+    Fills in ``init.random_seed`` when the start mode is the random IC
+    (:func:`dnsjax.parameters.random_ic_selected`) and ``force.seed``
+    when the ``[force]`` section is configured, leaving both concrete so
+    the snapshot records the seed that ran.  A start mode that draws
+    nothing -- laminar, localized rolls, a snapshot resume -- resolves
+    nothing and so needs no entropy source at all.  ``twin.seed`` is
+    *not* handled here: the twin driver resolves it after its
+    paired-resume decision, which is only known much later
+    (:mod:`dnsjax.twin.driver`).
+
+    Returns one :func:`dnsjax.seeding.seed_note` line per resolved seed,
+    for the caller's startup banner.  Call on every process, after
+    :func:`configure_jax_runtime` and outside any main-process gate --
+    it may enter a collective.
+    """
+    from .extensions import EXTENSIONS, force_params
+
+    def resolve(label: str, flag: str, value: int | None) -> tuple[int, str]:
+        """Resolve one seed, labelled by what actually happened.
+
+        The label follows *value*, not ``setup.seed_layers``: a seed no
+        layer set is drawn here and must say so, whatever the map holds.
+        """
+        seed = resolve_seed(label, flag, value)
+        if value is not None:
+            return seed, setup.seed_layers.get(label, SOURCE_CLI)
+        return seed, SOURCE_DRAWN
+
+    notes: list[str] = []
+    if random_ic_selected():
+        seed, source = resolve(
+            "init.random_seed",
+            "--init.random_seed",
+            params.init.random_seed,
+        )
+        if params.init.random_seed is None:
+            # Through the layering contract, not a bare assignment:
+            # that is what marks the field user-set, so a later
+            # ``update_parameters`` pass cannot restore it (see the
+            # "Parameter layering" note in CLAUDE.md).
+            update_parameters(Parameters(init={"random_seed": seed}))
+        notes.append(seed_note("init.random_seed", seed, source))
+
+    force = EXTENSIONS.get("force")
+    if (
+        force is not None
+        and force.relevant(setup.system)
+        and force_params.modes is not None
+    ):
+        seed, source = resolve("force.seed", "--force.seed", force_params.seed)
+        if force_params.seed is None:
+            apply_extension_layer({"force": {"seed": seed}})
+        notes.append(seed_note("force.seed", seed, source))
+    return notes

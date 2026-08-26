@@ -656,6 +656,11 @@ def test_build_twin() -> None:
             "2",
             "--it-budget",
             "5",
+            # Pinned: an unset --seed-base is drawn from the OS entropy
+            # pool (:mod:`dnsjax.seeding`), and the fan-out below is
+            # asserted by value.
+            "--seed-base",
+            "1",
         ]
         result = run_live([*build_args, "--dry-run"], cwd=_REPO)
         assert result.returncode == 0 and not tree.exists()
@@ -666,7 +671,9 @@ def test_build_twin() -> None:
 
         spec = json.loads((tree / "members.json").read_text())
         assert spec["kind"] == "twin" and len(spec["members"]) == 2
-        assert [m["seed"] for m in spec["members"]] == [1, 2]
+        assert [m["seed"] for m in spec["members"]] == [1, 2], (
+            "build-twin must fan --seed-base out as seed-base + k"
+        )
         lines = (tree / "run_commands.txt").read_text().splitlines()
         assert len(lines) == 2 and all("dnsjax-twin" in ln for ln in lines)
         for record in spec["members"]:

@@ -136,6 +136,17 @@ sharded/padded-mesh-safe builds, and the divergence/Hermitian
 caveats: the `ic/random_field.py` and `ic/localized_rolls.py` module
 docstrings.
 
+**Every seed defaults to unset, meaning "draw one"** --
+`init.random_seed`, `twin.seed`, `force.seed` and `ensemble_setup.py
+--seed-base`; the benchmark/diagnostic seeds in `scripts/` stay fixed
+on purpose. The contract (draw, agree across processes, print with
+source, record, and refuse only for a seed the run would actually draw
+with) and the reasons behind each part: the `seeding.py` module
+docstring. Resolution is `bootstrap.resolve_seed` / `resolve_run_seeds`
+between `configure_jax_runtime` and the `sharding` import, except
+`twin.seed`, which `twin/driver.py` resolves after its paired-resume
+decision.
+
 **Only the Cartesian flows may perturb the `(kx, kz) = (0, 0)` mode**,
 and only through its conservation laws -- compatibility with no-slip at
 both walls, plus an unchanged bulk velocity in each direction whose
@@ -248,6 +259,9 @@ snapshot.py           Single-file (tar/zarr3) snapshot save/load, raw
                       offset I/O (GDS or host); assemble_local_shards
 snapshot_meta.py      Stdlib-only (JAX-free) snapshot tar metadata
                       helpers
+seeding.py            Stdlib-only (JAX-free) seed contract: 62-bit
+                      OS-entropy draw, int32 transport split,
+                      provenance labels, refusal message
 ic/
   random_field.py     Random divergence-free IC generators
                       (init.random_field, the default start mode)
@@ -806,6 +820,9 @@ are one-liners. Cross-cutting notes:
   aggregation, direct operator identification.
 - `response/test_lim.py`: LIM identification.
 - `response/test_ssi.py`: SSI identification.
+- `test_seeding.py`: the seed contract -- OS-entropy draw, transport,
+  provenance labels, the no-entropy refusal, and end-to-end
+  reproducibility of a drawn seed (`--unit-only` skips the CLI runs).
 - `test_snapshot.py`: snapshot round-trips, np-agnostic resume, the
   multi-device I/O layout, and the integrity guards.
 - `test_resume.py`: snapshot lineage and resume policy (`--unit-only`).

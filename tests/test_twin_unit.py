@@ -481,7 +481,9 @@ def test_validate_hook() -> None:
     # validate_parameters dispatch).
     twin_params.seed = 5
     _expect_value_error("without twin.e0", validate_parameters)
-    twin_params.seed = 1
+    # ``None``, not ``1``: unset is what the stray check compares
+    # against, and an unset seed is drawn later (:mod:`dnsjax.seeding`).
+    twin_params.seed = None
 
     # Adaptive dt rejected when configured.
     twin_params.e0 = 1e-6
