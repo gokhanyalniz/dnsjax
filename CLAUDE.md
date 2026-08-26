@@ -649,6 +649,17 @@ mean. `t`/`it`/`isnap` continue only when
   Pattern + numbers: `snapshot.py`'s `_via_mid` /
   `_to_io_layout_core`; codebase-wide audit recipe:
   `~/.claude/plans/reshard-audit-jitted-collectives.md`.
+- A **global (multi-device) array reaches a jitted function as an
+  argument**, never through a closure or a `static_argnames` entry
+  holding it: a baked-in constant is legal on one process and raises
+  `Closing over jax.Array that spans non-addressable (non process
+  local) devices` the moment the run has two. So every object
+  carrying arrays is a `register_dataclass_pytree` pytree and is
+  passed in -- the flows, the `Fourier` classes, the solver
+  operators, `twin.pressure.DifferencePressure`. Only a real
+  multi-**process** run catches a slip; forced CPU devices inside one
+  process are all addressable and accept it (guard:
+  `tests/test_twin_driver.py`'s `test_np2_run`).
 - `jax_enable_x64` is set from `params.res.double_precision` before
   JAX initializes arrays.
 - Rank bootstrap reads the launcher environment when it is complete,

@@ -367,15 +367,72 @@ def test_paired_restart_continuity() -> None:
 
 
 def test_np2_run() -> None:
+    r"""The multi-process path, binary streams included.
+
+    The stream cadences are on here and in no other multi-process
+    row, because a second *process* is the only thing that tells
+    these paths apart from the single-process ones: every array a
+    stream writes is assembled by a ``psum`` over both mesh axes so
+    that rank 0 can pull it to the host, and every global array a
+    jitted diagnostic reads must arrive as an *argument*.  Both are
+    free on one process, where nothing is non-addressable --
+    ``twin_ybudget`` took its difference-pressure operator as a
+    ``static_argnames`` entry, so the trace closed over that
+    operator's sharded banded factors, and only a run like this one
+    rejects it.
+    """
+    from dnsjax.analysis.twin import (
+        integrate_y,
+        read_twin_ybudget,
+        read_twin_yspectra,
+    )
+    from dnsjax.analysis.twin.spectra import read_twin_spectra
+
     with tempfile.TemporaryDirectory() as tmp:
-        _run_twin(tmp, _twin_args(1.03), np_count=2, np1=2)
+        _run_twin(
+            tmp,
+            [
+                *_twin_args(1.03),
+                "--twin.it_spectra",
+                "1",
+                "--twin.it_yspectra",
+                "1",
+                "--twin.it_ybudget",
+                "1",
+            ],
+            np_count=2,
+            np1=2,
+        )
         cols = read_dat(Path(tmp) / "twin.dat")
         # The perturbation seed is device-count independent, so the
         # initial E_d matches the single-device runs' exactly (up to
         # the same cancellation floor).
         assert_allclose(cols["E_d"][0], E0, rtol=1e-10)
         assert (cols["E_d"] > 0).all()
-    print("mpirun -np 2 (--dist.np1 2): OK")
+
+        # The gathered marginals carry every device's mode block, not
+        # just rank 0's: both integrate to twin.dat's own E_d.
+        data = read_twin_yspectra(tmp)
+        by_t = {round(t, 10): i for i, t in enumerate(np.round(cols["t"], 10))}
+        assert data.t.shape[0] == cols["t"].shape[0]
+        for k, t in enumerate(np.round(data.t, 10)):
+            for marg in ("e_x", "e_z"):
+                assert_allclose(
+                    integrate_y(data, marg)[k].sum(),
+                    cols["E_d"][by_t[t]],
+                    rtol=1e-10,
+                    err_msg=f"{marg} does not integrate to E_d at t={t}",
+                )
+        assert read_twin_ybudget(tmp).t.shape[0] == data.t.shape[0]
+
+        # Same identity for the (kz, kx) plane, whose blocks are
+        # gathered by the sibling collective.
+        spec = read_twin_spectra(tmp)
+        for k, t in enumerate(np.round(spec.t, 10)):
+            assert_allclose(
+                spec.e_delta[k].sum(), cols["E_d"][by_t[t]], rtol=1e-10
+            )
+    print("mpirun -np 2 (--dist.np1 2, every stream): OK")
 
 
 # ── Non-finite guard ─────────────────────────────────────────────────
