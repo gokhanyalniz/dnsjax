@@ -1536,9 +1536,24 @@ class TimeStepping(BaseModel):
 class Termination(BaseModel):
     """Stopping criteria for the simulation."""
 
+    # *Relative* to the run's initial condition: the loop stops at
+    # ``init.t0 + max_sim_time``, where ``init.t0`` is the resumed
+    # snapshot's timestamp on a resume and the fresh-start value
+    # otherwise.  A snapshot at ``t = 100`` continued with
+    # ``max_sim_time = 300`` therefore stops at ``t = 400``: what a
+    # launch integrates does not depend on where its trajectory
+    # started, so one horizon serves an ensemble of members harvested
+    # at different times (``scripts/ensemble_setup.py``).  The
+    # consequence for a run split across several launches (a
+    # wall-clock budget, a paired twin resume) is that each launch
+    # gets the whole horizon again -- a fixed *absolute* end time is
+    # expressed by shortening ``max_sim_time`` on the resume.
     max_sim_time: float | None = Field(
         default=None,
-        description=("Stop once the simulation time reaches this value."),
+        description=(
+            "Stop once this much simulation time has elapsed since "
+            "the initial condition (t - init.t0)."
+        ),
     )
     max_wall_time: timedelta | None = Field(
         default=None,

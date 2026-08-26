@@ -62,7 +62,11 @@ start mode is decided by two files -- the partner of
   usual), no re-perturbation, streams append.  A trajectory-defining
   parameter change is a hard error here (a mid-twin trajectory switch
   would disconnect the pair from its own streams) -- start a fresh
-  member instead.
+  member instead.  ``stop.max_sim_time`` is a horizon counted from
+  the *resumed* clock rather than an end time
+  (:class:`dnsjax.parameters.Termination`), so a member restarted
+  mid-horizon asks for what is left of it, not for the original
+  value.
 - partner exists, no ``twin.json`` -> error (either a resume in a
   directory missing its member record, or a fresh start pointed at a
   twin run's own output; copy the reference tar out to seed a fresh
@@ -800,11 +804,19 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         if params.stop.max_wall_time is None
         else int(params.stop.max_wall_time.total_seconds() / ns_to_s)
     )
+    # Relative to the initial condition, as in ``dnsjax.__main__``:
+    # the horizon is counted from ``init.t0`` -- the parent's clock on
+    # a fresh start, the resumed pair's on a paired resume (so a
+    # member restarted mid-horizon gets a fresh horizon from there).
     t_stop = (
         jnp.inf
         if params.stop.max_sim_time is None
-        else params.stop.max_sim_time
+        else params.init.t0 + params.stop.max_sim_time
     )
+    if params.stop.max_sim_time is not None and params.init.t0 != 0.0:
+        sharding.print(
+            f"Stopping at t = {t_stop:.6e} (init.t0 + stop.max_sim_time)."
+        )
 
     it: int = params.init.it0
     it0: int = params.init.it0

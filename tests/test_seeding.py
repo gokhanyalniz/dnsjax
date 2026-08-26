@@ -488,14 +488,16 @@ def run_twin_adoption(timeout: float) -> str | None:
             return "the parent run wrote no snapshot"
         shutil.copy(snaps[-1], member / snaps[-1].name)
 
-        def twin_args(snapshot: str, t_end: str) -> list[str]:
+        def twin_args(snapshot: str, horizon: str) -> list[str]:
+            # ``max_sim_time`` is the horizon past the snapshot the
+            # launch starts from, not an absolute stop time.
             return [
                 str(_BIN / "dnsjax-twin"),
                 *_RUN_ARGS,
                 "--init.snapshot",
                 snapshot,
                 "--stop.max_sim_time",
-                t_end,
+                horizon,
                 "--twin.e0",
                 "1e-6",
                 "--twin.it_energy",
@@ -503,7 +505,7 @@ def run_twin_adoption(timeout: float) -> str | None:
             ]
 
         # Fresh start: draws, prints, records.
-        res = _run(twin_args(snaps[-1].name, "0.02"), member, timeout)
+        res = _run(twin_args(snaps[-1].name, "0.005"), member, timeout)
         if res.returncode != 0:
             return f"the fresh twin start exited {res.returncode}"
         match = _TWIN_SEED_RE.search(res.stdout)
@@ -527,7 +529,7 @@ def run_twin_adoption(timeout: float) -> str | None:
         )
         if not pairs:
             return "the fresh twin start wrote no reference/partner pair"
-        res = _run(twin_args(pairs[-1].name, "0.03"), member, timeout)
+        res = _run(twin_args(pairs[-1].name, "0.01"), member, timeout)
         if res.returncode != 0:
             return (
                 f"the paired resume exited {res.returncode}; an unset "
