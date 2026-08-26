@@ -769,12 +769,15 @@ def test_mpi_resume_continuation() -> None:
         split = tmp / "split"
         split.mkdir()
         _run_solver(split, [*prof_args, "--stop.max_sim_time", "0.2"])
+        # The horizon is relative to the resumed snapshot, so the
+        # second half asks for the remaining 0.2 -- landing on the
+        # single-shot run's own t = 0.4 sample by sample.
         _run_solver(
             split,
             [
                 *prof_args,
                 "--stop.max_sim_time",
-                "0.4",
+                "0.2",
                 "--init.snapshot",
                 "state00001.tar",
             ],
@@ -810,7 +813,7 @@ def test_mpi_resume_continuation() -> None:
             [
                 *prof_args,
                 "--stop.max_sim_time",
-                "0.4",
+                "0.2",
                 "--init.snapshot",
                 "state00001.tar",
             ],
