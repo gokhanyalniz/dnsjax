@@ -41,10 +41,20 @@ tiny laminar plane-Poiseuille configuration,
   sample is exactly zero), the coefficient log, and the operator
   export, closed to ~1e-4 relative; ``identify_ssi`` runs on the
   same directory as a smoke check.
+- **parameter validation**: the all-or-none quartet, mode-range and
+  mean-mode rejections, the adaptive-dt and cadence guards, the
+  unsupported systems -- and the stray-knob rule for ``force.seed``,
+  whose ``0`` exemption keeps snapshots written before seeds became
+  drawable resumable.
 - **resume continuation**: a run split in two by a snapshot resume
   reproduces the single-shot run's ``forcing.bin`` exactly (the PRNG
   skip) and, after dropping the duplicated seam sample, its
-  ``probes.bin`` bit-exactly (no kick is lost or doubled).
+  ``probes.bin`` bit-exactly (no kick is lost or doubled).  The same
+  split with ``force.seed`` left **unset** additionally checks the
+  drawn-seed path (:mod:`dnsjax.seeding`): the fresh half draws and
+  records one, and the resumed half inherits it through the snapshot
+  instead of drawing again -- which it must, or the ``forcing.json``
+  seed match key would reject the append.
 
 Usage::
 
@@ -98,6 +108,7 @@ derived_params.wall_normal_grid = [
     float(v) for v in np.linspace(1.0, -1.0, NY)
 ]
 
+import json  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
@@ -488,7 +499,27 @@ def test_validate_force_params() -> None:
         _expect_value_error("wall-bounded")
         params.phys.system = "viscoelastic-dean"  # 9 components
         _expect_value_error("wall-bounded")
+        params.phys.system = saved[-1]  # back to the module's system
+
+        # Stray secondary knobs without the enabling quartet.  The
+        # ``seed == 0`` exemption is a backward-compatibility guard,
+        # not a nicety: it was this field's default before seeds became
+        # drawable, so *every* snapshot an older version wrote from an
+        # unforced run records it, and the snapshot layer feeds it
+        # straight back in.  Rejecting it would make those snapshots
+        # unresumable.
+        force_params.modes = None
+        force_params.profiles = None
+        force_params.amplitude = None
+        force_params.it_force = None
+        force_params.seed = 0
+        validate_parameters()  # a legacy snapshot's recorded default
+        force_params.seed = 5
+        _expect_value_error("without the enabling")
+        force_params.seed = None
+        validate_parameters()  # unset: the modern "draw one"
     finally:
+        force_params.seed = SEED
         (
             force_params.modes,
             force_params.profiles,
@@ -545,8 +576,16 @@ def _run_cmd(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return result
 
 
-def _run_solver(workdir: Path, args: list[str]) -> None:
-    """Launch ``mpirun -np 1 python -m dnsjax`` in *workdir*."""
+def _run_solver(
+    workdir: Path, args: list[str], seed: str | None = "3"
+) -> None:
+    """Launch ``mpirun -np 1 python -m dnsjax`` in *workdir*.
+
+    *seed* pins ``force.seed``; ``None`` leaves it unset, so the run
+    draws one from the OS entropy pool (:mod:`dnsjax.seeding`).  Pinned
+    by default: the stream comparisons below need two runs to share a
+    coefficient stream, and two independent draws would not.
+    """
     cmd = [
         "mpirun",
         "-np",
@@ -578,8 +617,7 @@ def _run_solver(workdir: Path, args: list[str]) -> None:
         "1e-3",
         "--force.it_force",
         "2",
-        "--force.seed",
-        "3",
+        *(() if seed is None else ("--force.seed", seed)),
         *args,
     ]
     # The forced-host-device XLA_FLAGS of the offline part must not
@@ -752,6 +790,38 @@ def test_mpi_resume_continuation() -> None:
         # the duplicate, so the streams compare directly.
         assert_array_equal(p_split.t, p_full.t)
         assert_array_equal(p_split.u, p_full.u)
+
+        # Same split, with force.seed left unset: the fresh half draws
+        # one and records it, and the resumed half inherits it through
+        # the snapshot rather than drawing again -- which it must, or
+        # forcing.json's seed match key would reject the append.  The
+        # seam then joins as above.
+        drawn = tmp / "drawn"
+        drawn.mkdir()
+        _run_solver(
+            drawn, [*prof_args, "--stop.max_sim_time", "0.2"], seed=None
+        )
+        recorded = json.loads((drawn / "forcing.json").read_text())["seed"]
+        assert isinstance(recorded, int) and 0 <= recorded < (1 << 62), (
+            f"an unset force.seed recorded {recorded!r} in forcing.json"
+        )
+        _run_solver(
+            drawn,
+            [
+                *prof_args,
+                "--stop.max_sim_time",
+                "0.4",
+                "--init.snapshot",
+                "state00001.tar",
+            ],
+            seed=None,
+        )
+        after = json.loads((drawn / "forcing.json").read_text())["seed"]
+        assert after == recorded, (
+            f"the resume changed force.seed {recorded} -> {after}"
+        )
+        f_drawn = read_forcing(drawn)
+        assert_array_equal(f_drawn.t, f_full.t)
 
 
 # ── Runner ───────────────────────────────────────────────────────────
