@@ -90,8 +90,9 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     ``CylindricalFlow``, ``AnnularFlow``,
     ``ViscoelasticAnnularFlow``, ``ViscoelasticCylindricalFlow``),
     their flow subclasses, the geometry-specific ``Fourier``
-    classes, and the solver dataclasses (``DenseJAXSolver``,
-    ``PerModeBandedPallasOperator``).
+    classes, the solver dataclasses (``DenseJAXSolver``,
+    ``PerModeBandedPallasOperator``), and
+    :class:`~dnsjax.twin.pressure.DifferencePressure`.
 
     Only ``dataclasses.fields`` are visited, so methods and
     ``ClassVar``s add nothing to the tree -- which is what lets the

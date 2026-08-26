@@ -1094,13 +1094,12 @@ def _driving_density(
     return (dens / derived_params.volume_fac)[:, None, None]
 
 
-@partial(jit, static_argnames=("pressure",))
+@jit
 def _twin_ybudget_jit(
     state1: Array,
     state2: Array,
     fourier_: Fourier,
     flow_: object,
-    *,
     pressure: DifferencePressure,
 ) -> dict[str, Array]:
     r"""Wall-normal-resolved spectral budget (module docstring).
@@ -1125,16 +1124,15 @@ def twin_ybudget(
     state1: Array, state2: Array, pressure: DifferencePressure
 ) -> dict[str, Array]:
     """Wrapper around ``_twin_ybudget_jit`` binding the singletons."""
-    return _twin_ybudget_jit(state1, state2, fourier, flow, pressure=pressure)
+    return _twin_ybudget_jit(state1, state2, fourier, flow, pressure)
 
 
-@partial(jit, static_argnames=("pressure",))
+@jit
 def _twin_pressure_check_jit(
     state1: Array,
     state2: Array,
     fourier_: Fourier,
     flow_: object,
-    *,
     pressure: DifferencePressure,
 ) -> dict[str, Array]:
     r"""Residuals of the difference-pressure solve.
@@ -1184,6 +1182,4 @@ def twin_pressure_check(
     state1: Array, state2: Array, pressure: DifferencePressure
 ) -> dict[str, Array]:
     """Wrapper around ``_twin_pressure_check_jit`` binding the singletons."""
-    return _twin_pressure_check_jit(
-        state1, state2, fourier, flow, pressure=pressure
-    )
+    return _twin_pressure_check_jit(state1, state2, fourier, flow, pressure)
