@@ -12,6 +12,38 @@ the base flow cancels identically and every solver-measure norm
 helper (:func:`~dnsjax.geometries.wall_bounded._base.get_norm2`)
 applies to it unchanged.
 
+State preconditions
+-------------------
+Everything here takes the two states to be what the solver produces:
+divergence-free, with no-slip at both walls.  One consequence is used
+throughout and is worth stating once, because it is what several terms
+below are entitled to omit rather than evaluate --
+`$\Delta\hat v_{00} \equiv 0$`, the mean mode's wall-normal
+component.  Continuity at `$k^2 = 0$` reads
+`$\partial_y \hat v_{00} = 0$` and no-slip pins
+`$\hat v_{00}(\pm 1) = 0$`, so the profile is identically zero; and
+it holds **exactly**, not to truncation, at every point a state can
+enter: both influence-matrix paths zero that plane outright
+(``cartesian._imm_iteration_vw`` stage 6 and
+``_cartesian_primitive_imm._imm_iteration_vp``), every initial
+condition honours it (:mod:`dnsjax.ic.random_field` sets it, the
+localized rolls are mean-free, ``scripts/snapshot_perturb.py``
+refuses a mean-mode profile that violates it), a wall-normal regrid is
+a linear map on a profile that is zero for all `$y$`, and a Fourier
+regrid preserves mode zero.
+
+So a mean profile `$\mathbf{P} = (P_x, 0, P_z)$` advects with
+`$\mathrm{i}(k_xP_x + k_zP_z)$` alone -- mode-diagonal, hence
+FFT-free, and with no `$P_y\,\partial_y$` half to form.  The sites
+that rely on it: ``term_b_mean`` in :func:`_twin_budget_jit`,
+``mean_advect`` in :func:`_difference_sources`, and the mean-mode
+gauge argument of :mod:`dnsjax.twin.pressure` (where
+`$\Delta\hat v_{00} \equiv 0$` is what makes the fluctuating
+pressure do no work at `$(0,0)$`).  A state that violated it would not
+be an admissible incompressible no-slip field in the first place, and
+the whole `$(y, k)$` half of this module would be wrong for it, not
+just those terms.
+
 Component decomposition
 -----------------------
 Fields are split by their wall-parallel Fourier support into the
@@ -242,18 +274,54 @@ The `$k$`-resolved budget is **cheaper** than the three-bin one: 33
 field transforms against 69 (:func:`_difference_sources`), because
 binning no longer forces a separate physical product per bin pair.
 What it adds instead is the pressure -- one factored Poisson
-operator held for the run.  Pressure is the one term the
-volume-averaged budget omits for free and a localised one cannot;
-:mod:`dnsjax.twin.pressure` has the whole argument.
+operator held for the run, plus its two homogeneous columns.
+Pressure is the one term the volume-averaged budget omits for free
+and a localised one cannot; :mod:`dnsjax.twin.pressure` has the whole
+argument, and its "Cost" section the footprint.
+
+Its *transient*, unlike its transform count, is not automatically the
+smaller of the two.  Held naively the three padded physical sets
+`$\mathbf{b}$`, `$\nabla\mathbf{c}^{(1)}$` and
+`$\nabla\Delta\mathbf{c}$` are 6 + 9 + 9 = 24 live fields, *more*
+than the three-bin pass's ~21 despite half the transforms.  So
+:func:`_difference_sources` forms the two gradient sets one at a time,
+the reference's consumer `$q_p$` between them: 6 + 9 = 15 in program
+order.  XLA still schedules -- this only stops the statement order
+from asking for the worse arrangement -- so size a job against 15 and
+watch it.  ``solver.rhs_transform_chunks`` caps the transform-stage
+transient inside each :func:`dnsjax.fft.chunked_transform` call; it
+does **not** touch the live field count.
 
 Frame invariance
 ----------------
 A moving frame (``phys.u_grid``, e.g. the plane-Poiseuille default
-`$2/3$`) shifts the streamwise mean of *both* states by the same
-constant, which cancels in `$\Delta\mathbf{u}$`; the only remaining
-carrier is the `$U^{(1)}$` profile, which enters every budget term
-through `$\partial_y$` alone.  All quantities here are therefore
-frame-invariant and need no ``u_grid`` handling.
+`$2/3$`) is a change of *coordinate*, not of velocity: the solver adds
+the convective term `$+\,\mathrm{i}k_x U_{grid}\mathbf{u}'$` to its
+RHS (``cartesian._get_rhs_core`` / ``_l_bf``) and leaves the stored
+field alone.  So the **energy** terms are frame-invariant for two
+independent reasons -- the mean of both states shifts by the same
+constant, which cancels in `$\Delta\mathbf{u}$`, and the frame term
+is `$\mathrm{i}a\,\Delta\hat{\mathbf{u}}$` with real `$a$`, whose
+contraction against `$\Delta\hat{\mathbf{u}}^*$` is purely
+imaginary and so contributes exactly zero *per mode* (the same
+mechanism that removes :func:`_difference_sources`' two ``mean_advect``
+terms from the densities).
+
+The **pressure** is the exception, and it is why
+:func:`_difference_sources` adds the frame term to `$\hat{\mathcal
+N}$` explicitly rather than relying on the argument above.  The
+`$U^{(1)}$` profile does *not* enter every term through
+`$\partial_y$`: ``mean_advect`` reads the profile itself.  The
+resulting error in `$\widehat{\nabla\cdot\mathcal N}$` is
+`$\mathrm{i}k_x U_{grid}\,\nabla\!\cdot\!\Delta\mathbf{u}$` and
+in the wall closure `$\mathrm{i}k_x U_{grid}(D_1\Delta\hat
+v)|_w$` -- both machine-zero under the default ``res.consistent_imm``
+(discrete continuity everywhere, and `$(D_1 v)|_w = 0$` imposed
+exactly by the influence matrix), and **neither** under the legacy
+flag, whose states carry an `$O(1)$` relative divergence.  Carrying
+the term costs one mode-diagonal multiply and makes
+:mod:`dnsjax.twin.pressure`'s "right under either
+``res.consistent_imm``" claim unconditional.
 
 Mean-mode driving
 -----------------
@@ -330,7 +398,7 @@ from ..geometries.wall_bounded.cartesian import (
     DRIVING_KEY_S,
     Fourier,
     fourier,
-    mean_driving,
+    mean_driving_from_profile,
 )
 from ..parameters import derived_params, params
 from ..sharding import sharding
@@ -544,12 +612,15 @@ def _twin_budget_jit(
         return -integrate_scalar(jnp.sum(dyc * cross, axis=0), w) / vf
 
     def term_b_mean(a: str, b: str, c: str) -> Array:
+        # `$b$` is only ever `$\Delta U$`, whose wall-normal row is an
+        # identical zero (module docstring, "State preconditions"), so
+        # the `$b_y\,\partial_y$` half of the advection is a
+        # full-field GEMM against exact zero and is not formed -- the
+        # same omission, for the same reason, as
+        # :func:`_difference_sources`' ``mean_advect``.
         bx = prof[b][0][:, None, None]
-        by = prof[b][1][:, None, None]
         bz = prof[b][2][:, None, None]
-        adv = 1j * (bx * kx + bz * kz) * full[c] + by * apply_y_matrix(
-            D1, full[c]
-        )
+        adv = 1j * (bx * kx + bz * kz) * full[c]
         return -get_inprod(full[a], adv, k_metric, w)
 
     def term_a_mean(a: str, b: str, c: str) -> Array:
@@ -685,33 +756,49 @@ def _mode_energy_replicated(field: Array, w: Array, k_metric: Array) -> Array:
     return gathered / (2.0 * vf)
 
 
-@jit
+@partial(jit, static_argnames=("ref",))
 def _twin_spectra_jit(
-    state1: Array, state2: Array, fourier_: Fourier, flow_: object
+    state1: Array,
+    state2: Array,
+    fourier_: Fourier,
+    flow_: object,
+    *,
+    ref: bool,
 ) -> dict[str, Array]:
     r"""``(k_z, k_x)`` energy spectra of the difference and reference.
 
-    ``e_delta`` is the per-mode `$E_\Delta(k_z, k_x)$` and ``e_ref``
-    the reference state's own spectrum (their ratio
-    `$E_\Delta / 2 E^{(1)}$` is the offline decorrelation measure:
-    fully decorrelated independent fields give 1).  True modes only
-    (padding stripped); summing ``e_delta`` reproduces ``twin.dat``'s
-    ``E_d`` to rounding (a ``tests/test_twin_unit.py`` guard).
+    ``e_delta`` is the per-mode `$E_\Delta(k_z, k_x)$` and, under
+    *ref* (``twin.spectra_ref``), ``e_ref`` the reference state's own
+    spectrum (their ratio `$E_\Delta / 2 E^{(1)}$` is the offline
+    decorrelation measure: fully decorrelated independent fields give
+    1).  True modes only (padding stripped); summing ``e_delta``
+    reproduces ``twin.dat``'s ``E_d`` to rounding (a
+    ``tests/test_twin_unit.py`` guard).
+
+    *ref* is **static**, like ``bins`` on :func:`_twin_energies_jit`:
+    with it off the reference's whole field pass and its ``psum`` are
+    never traced, which is the only way ``twin.spectra_ref`` saves
+    anything.  The writer pins it in the stream sidecar
+    (``includes_ref``), so a resume cannot flip it mid-stream.
     """
     n2 = params.res.nz - 1
     n3 = params.res.nx // 2
     w = flow_.y_weights
     k_metric = fourier_.k_metric
     delta = state2 - state1
-    return {
-        "e_delta": _mode_energy_replicated(delta, w, k_metric)[:n2, :n3],
-        "e_ref": _mode_energy_replicated(state1, w, k_metric)[:n2, :n3],
+    out = {"e_delta": _mode_energy_replicated(delta, w, k_metric)[:n2, :n3]}
+    if not ref:
+        return out
+    return out | {
+        "e_ref": _mode_energy_replicated(state1, w, k_metric)[:n2, :n3]
     }
 
 
-def twin_spectra_2d(state1: Array, state2: Array) -> dict[str, Array]:
+def twin_spectra_2d(
+    state1: Array, state2: Array, *, ref: bool = True
+) -> dict[str, Array]:
     """Wrapper around ``_twin_spectra_jit`` binding the singletons."""
-    return _twin_spectra_jit(state1, state2, fourier, flow)
+    return _twin_spectra_jit(state1, state2, fourier, flow, ref=ref)
 
 
 # ── Wall-normal-resolved marginal spectra ────────────────────────────
@@ -843,35 +930,47 @@ def _energy_density(state: Array, fourier_: Fourier) -> Array:
     )
 
 
-@jit
+@partial(jit, static_argnames=("ref",))
 def _twin_yspectra_jit(
-    state1: Array, state2: Array, fourier_: Fourier, flow_: object
+    state1: Array,
+    state2: Array,
+    fourier_: Fourier,
+    flow_: object,
+    *,
+    ref: bool,
 ) -> dict[str, Array]:
     r"""Wall-normal-resolved componentwise spectra (module docstring).
 
     ``e_x`` / ``e_z`` / ``e_x0`` are the difference field's three
     marginals of :func:`_marginals_replicated`, per velocity
-    component; ``r_x`` / ``r_z`` / ``r_x0`` the reference state's.
-    Every array is a `$y$`-**density**: integrate with
-    ``flow.y_weights`` (shipped in the stream's sidecar) to get the
-    per-`$k$` energy, and sum over `$k$` for ``twin.dat``'s ``E_d``.
+    component; under *ref* (``twin.spectra_ref``), ``r_x`` / ``r_z`` /
+    ``r_x0`` are the reference state's.  Every array is a
+    `$y$`-**density**: integrate with ``flow.y_weights`` (shipped in
+    the stream's sidecar) to get the per-`$k$` energy, and sum over
+    `$k$` for ``twin.dat``'s ``E_d``.
+
+    *ref* is **static**, like ``bins`` on :func:`_twin_energies_jit`,
+    and it matters more here than on the `$(k_z, k_x)$` stream: the
+    reference half is a second full real
+    `$(3, N_y, N_{k_z}, N_{k_x})$` density **and** a second ``psum``,
+    i.e. about half this sample's cost and one of its two collectives.
+    The writer pins it in the stream sidecar (``includes_ref``), so a
+    resume cannot flip it mid-stream.
     """
     delta = state2 - state1
     e_x, e_z, e_x0 = _marginals_replicated(_energy_density(delta, fourier_))
+    out = {"e_x": e_x, "e_z": e_z, "e_x0": e_x0}
+    if not ref:
+        return out
     r_x, r_z, r_x0 = _marginals_replicated(_energy_density(state1, fourier_))
-    return {
-        "e_x": e_x,
-        "e_z": e_z,
-        "e_x0": e_x0,
-        "r_x": r_x,
-        "r_z": r_z,
-        "r_x0": r_x0,
-    }
+    return out | {"r_x": r_x, "r_z": r_z, "r_x0": r_x0}
 
 
-def twin_yspectra(state1: Array, state2: Array) -> dict[str, Array]:
+def twin_yspectra(
+    state1: Array, state2: Array, *, ref: bool = True
+) -> dict[str, Array]:
     """Wrapper around ``_twin_yspectra_jit`` binding the singletons."""
-    return _twin_yspectra_jit(state1, state2, fourier, flow)
+    return _twin_yspectra_jit(state1, state2, fourier, flow, ref=ref)
 
 
 # ── Wall-normal-resolved spectral budget ─────────────────────────────
@@ -915,19 +1014,43 @@ def _difference_sources(
 ) -> _Sources:
     r"""Evaluate the difference field's advective terms.
 
-    Twenty-four forward transforms (the three advectors and the two
+    Twenty-four forward transforms (the two advectors and the two
     gradient sets) and nine back -- fewer than the 69 the three-bin
     :func:`twin_budget` needs, because binning no longer forces a
-    separate physical product per bin pair.
+    separate physical product per bin pair.  The two gradient sets are
+    formed **one at a time** -- the reference's only consumer is
+    `$q_p$` -- so the live padded physical set is 6 + 9, not 6 + 9 + 9;
+    the module docstring's "Spectral budget" section prices it.
 
-    Two exact simplifications: the mean part of either *advector*
-    contributes identically zero to the energy (`$U_y^{(1)} = \Delta
-    U_y = 0$` by continuity plus no-slip, and what remains is
-    `$i(k_xU_x + k_zU_z)|\Delta\hat u|^2$`, purely imaginary), so
-    the transport terms take the mean-free advectors -- which also
-    keeps a large, exactly-cancelling term out of the transforms.
-    The *pressure* needs the full term, so ``n_hat`` adds the three
-    mean-mode pieces back spectrally, at no transform cost.
+    Three exact simplifications, all of them of the same mean-mode
+    kind (`$U^{(1)}_y = \Delta U_y = 0$` by continuity plus no-slip,
+    so a mean profile advects with `$\mathrm{i}(k_xP_x + k_zP_z)$`
+    alone -- mode-diagonal, and therefore free of any transform):
+
+    - **The advectors are mean-free.**  The mean part of either
+      advector contributes `$\mathrm{i}(k_xU_x + k_zU_z)|\Delta\hat
+      u|^2$` to the energy, purely imaginary and so exactly zero per
+      mode, which keeps a large, exactly-cancelling term out of the
+      transforms.  The *pressure* needs the full term, so ``n_hat``
+      adds the mean-mode pieces back spectrally, at no transform cost.
+    - **The production advector splits.**  `$(\Delta\mathbf{u}\cdot
+      \nabla)\mathbf{u}'^{(1)} = (\Delta\mathbf{u}'\cdot\nabla)
+      \mathbf{u}'^{(1)} + (\Delta\mathbf{U}\cdot\nabla)
+      \mathbf{u}'^{(1)}$`, and the second half is mode-diagonal.
+      That is what makes the advector set **two** fields rather than
+      three: `$\Delta\mathbf{u}$` never needs a physical form of its
+      own.  The split is exact -- a `$k = 0$` times fluctuation
+      product cannot alias -- and it drops three forward transforms
+      *and* three live padded fields.
+    - **The moving frame is mode-diagonal too.**  In a moving frame
+      (``phys.u_grid``) the solver's RHS carries
+      `$+\,\mathrm{i}k_xU_{grid}\mathbf{u}'$`, so the difference
+      field's `$\hat{\mathcal N}$` carries `$+\,\mathrm{i}k_x
+      U_{grid}\Delta\hat{\mathbf{u}}$`.  It contributes nothing to the
+      energy densities (imaginary again) but it *is* part of the
+      pressure's source, and is added here so ``div_n`` and
+      ``n_hat[1]`` match the solver term for term under either
+      ``res.consistent_imm`` (module docstring, "Frame invariance").
     """
     kx, kz = fourier_.kx, fourier_.kz
     d1 = flow_.D1
@@ -952,20 +1075,16 @@ def _difference_sources(
             [1j * kx * c, apply_y_matrix(d1, c), 1j * kz * c], axis=0
         )
 
-    def mean_advect(prof: Array) -> Array:
-        r"""`$(\mathbf{P}\cdot\nabla)\Delta\mathbf{u}$`, diagonal in
-        `$k$`; the wall-normal row of either mean profile vanishes."""
+    def mean_advect(prof: Array, field: Array) -> Array:
+        r"""`$(\mathbf{P}\cdot\nabla)\mathbf{f}$` for a mean profile
+        `$\mathbf{P}$`: diagonal in `$k$`, so FFT-free.  The
+        wall-normal row of any mean profile vanishes -- the module
+        docstring's "State preconditions"."""
         return (
             1j
             * (kx * prof[0][:, None, None] + kz * prof[2][:, None, None])
-            * delta
+            * field
         )
-
-    adv = chunked_transform(
-        spec_to_phys, jnp.concatenate([delta, ref_f, delta_f], axis=0)
-    )
-    grad_ref = chunked_transform(spec_to_phys, grad_spec(ref_f))
-    grad_del = chunked_transform(spec_to_phys, grad_spec(delta))
 
     def advect(b_phys: Array, grad_phys: Array) -> Array:
         r"""`$(\mathbf{b}\cdot\nabla)\mathbf{c}$`, back to spectral."""
@@ -979,14 +1098,38 @@ def _difference_sources(
             ),
         )
 
-    q_p = advect(adv[0:3], grad_ref)
-    q_tr = advect(adv[3:6], grad_del)
-    q_ts = advect(adv[6:9], grad_del)
+    adv = chunked_transform(
+        spec_to_phys, jnp.concatenate([ref_f, delta_f], axis=0)
+    )
+    # One gradient set at a time: the reference's only consumer is
+    # ``q_p``, so finishing it here lets the scheduler retire those
+    # nine padded fields before the difference's nine exist.  Peak 15
+    # live rather than 24 -- see the docstring; XLA still schedules,
+    # this only stops the statement order from asking for the worse
+    # one.
+    grad_ref = chunked_transform(spec_to_phys, grad_spec(ref_f))
+    # `$(\Delta\mathbf{u}\cdot\nabla)\mathbf{u}'^{(1)}$`, split so the
+    # advector is the mean-free half (docstring).
+    q_p = advect(adv[3:6], grad_ref) + mean_advect(prof_dU, ref_f)
+
+    grad_del = chunked_transform(spec_to_phys, grad_spec(delta))
+    q_tr = advect(adv[0:3], grad_del)
+    q_ts = advect(adv[3:6], grad_del)
     q_pu = delta[1] * dy_rU[:, :, None, None]
 
     n_hat = -(
-        q_p + q_tr + q_ts + q_pu + mean_advect(prof_rU) + mean_advect(prof_dU)
+        q_p
+        + q_tr
+        + q_ts
+        + q_pu
+        + mean_advect(prof_rU, delta)
+        + mean_advect(prof_dU, delta)
     )
+    u_grid = derived_params.u_grid
+    if u_grid:
+        # The moving frame's convective term (docstring): energy-inert,
+        # part of the pressure's source.
+        n_hat = n_hat + (1j * u_grid) * kx * delta
     # The solver's own discrete divergence
     # (``cartesian._imm_iteration_vp`` stage 1).
     div_n = (
@@ -1041,8 +1184,7 @@ def _ybudget_densities(
     pi = pressure.work_density(delta, p_hat, flow_, fourier_)
     pi = (
         pi
-        + _driving_density(state1, state2, src.prof_dU, flow_)
-        * component_masks(fourier_)[0]
+        + _driving_density(src.prof_dU, flow_) * component_masks(fourier_)[0]
     )
 
     return jnp.stack(
@@ -1058,9 +1200,7 @@ def _ybudget_densities(
     )
 
 
-def _driving_density(
-    state1: Array, state2: Array, prof_dU: Array, flow_: object
-) -> Array:
+def _driving_density(prof_dU: Array, flow_: object) -> Array:
     r"""Mean-mode driving work density, shape ``(N_y, 1, 1)``.
 
     The `$(0,0)$` mode's pressure term is not the fluctuating pressure
@@ -1072,23 +1212,35 @@ def _driving_density(
     at fixed pressure gradient `$\Delta\Pi = 0$` -- but its *density*
     is not, so a `$y$`-resolved budget needs it.
 
-    `$\Delta\Pi$` is the **wall-shear inference**
-    (:func:`~dnsjax.geometries.wall_bounded.cartesian.mean_driving`)
-    of each member's driving, differenced; that is deliberately the
-    better budget partner than the corrector's applied value (the
-    `$t = t_0$` reasoning in :mod:`dnsjax.__main__`).  Returns exact
-    zeros when no driving constraint is active.
+    `$\Delta\Pi$` is the **wall-shear inference** of the two members'
+    driving, differenced; that is deliberately the better budget
+    partner than the corrector's applied value (the `$t = t_0$`
+    reasoning in :mod:`dnsjax.__main__`).  Returns exact zeros when no
+    driving constraint is active.
+
+    Taken from the **difference mean profile alone**, not from the two
+    states: the inference is linear, so
+    `$\Delta\Pi = \Pi(\mathbf{u}^{(2)}) - \Pi(\mathbf{u}^{(1)})$`
+    is exactly `$\Pi$` evaluated on `$\Delta\mathbf{U}$` -- hence
+    :func:`~dnsjax.geometries.wall_bounded.cartesian.mean_driving_from_profile`
+    on ``prof_dU``, which :func:`_difference_sources` has already
+    extracted.  Calling ``mean_driving`` on each state instead costs two
+    further ``extract_mean_mode`` collectives per sample, on top of the
+    one already spent on the same two mean modes (separate
+    ``shard_map`` regions, so XLA cannot merge them) -- a third of this
+    sample's collectives for nothing, and the ``psum`` is
+    latency-bound:
+    :func:`~dnsjax.geometries.wall_bounded._base.extract_mean_modes`.
     """
-    drive1 = mean_driving(state1, flow_)
-    drive2 = mean_driving(state2, flow_)
+    drive = mean_driving_from_profile(prof_dU, flow_)
     cos_t, sin_t = derived_params.cos_tilt, derived_params.sin_tilt
     dens = jnp.zeros_like(prof_dU[0])
-    if DRIVING_KEY_S in drive1:
-        dens = dens + (drive2[DRIVING_KEY_S] - drive1[DRIVING_KEY_S]) * (
+    if DRIVING_KEY_S in drive:
+        dens = dens + drive[DRIVING_KEY_S] * (
             prof_dU[0] * cos_t + prof_dU[2] * sin_t
         )
-    if DRIVING_KEY_N in drive1:
-        dens = dens + (drive2[DRIVING_KEY_N] - drive1[DRIVING_KEY_N]) * (
+    if DRIVING_KEY_N in drive:
+        dens = dens + drive[DRIVING_KEY_N] * (
             -prof_dU[0] * sin_t + prof_dU[2] * cos_t
         )
     return (dens / derived_params.volume_fac)[:, None, None]
@@ -1151,7 +1303,13 @@ def _twin_pressure_check_jit(
     - ``neumann``: `$(D_1\Delta\hat p - Re^{-1}D_2\Delta\hat v)|_w$`,
       the analytic condition the IMM closure declines to impose -- a
       wall-normal truncation diagnostic that must shrink with
-      ``res.ny``, not an error.
+      ``res.ny``, not an error;
+    - ``div_n``, ``dy_dtv``: the Poisson source and
+      `$\partial_y\,\partial_t\Delta\hat v$`, the two fields the
+      residuals above are measured *against*, returned so a caller can
+      normalise by them.  Both are **full-size**
+      `$(N_y, N_{k_z}, N_{k_x})$` complex arrays -- this entry point is
+      for tests, not for a cadenced stream.
     """
     src = _difference_sources(state1, state2, fourier_, flow_)
     delta = src.delta

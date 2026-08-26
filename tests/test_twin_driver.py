@@ -695,6 +695,22 @@ def test_guards() -> None:
         result = _run_twin(tmp, _twin_args(1.02), expect=1)
         _expect_error(result, "stale twin.dat")
 
+    # An odd res.nz with a folded-k_z stream: refused at parse, not
+    # left to fail as a shape error inside ``_fold_kz`` mid-run.  At
+    # odd nz the stored band is asymmetric (the highest negative mode
+    # has no positive partner), so the fold is genuinely undefined --
+    # and only the (y, k) streams fold, so this must *not* refuse a
+    # run without them.
+    with tempfile.TemporaryDirectory() as tmp:
+        odd = ["--res.nz", "7", "--init.force_resume", "True"]
+        for stream in ("--twin.it_yspectra", "--twin.it_ybudget"):
+            result = _run_twin(
+                tmp, [*_twin_args(1.02), *odd, stream, "1"], expect=1
+            )
+            _expect_error(result, "need an even res.nz")
+        # Same odd nz, no folded stream: parses (and then runs).
+        _run_twin(tmp, [*_twin_args(1.02), *odd])
+
     # Resume guards need a real member directory.
     with tempfile.TemporaryDirectory() as tmp:
         _run_twin(tmp, _twin_args(1.02))
@@ -734,10 +750,16 @@ def test_yspectra_streams() -> None:
     -- all through the binary round trip.  ``twin.bins`` is on here
     only so ``twin.dat`` carries the bin columns to check against; it
     is off in every other case in this file, which is the default.
+
+    Then ``twin.spectra_ref = False``, which is a *static* flag on
+    both spectra diagnostics rather than a write-time filter: the
+    reference branch is not traced at all, so the run has to be
+    exercised, not just the writer.
     """
     from dnsjax.analysis.twin import (
         bin_energies,
         integrate_y,
+        read_twin_spectra,
         read_twin_ybudget,
         read_twin_yspectra,
     )
@@ -815,6 +837,31 @@ def test_yspectra_streams() -> None:
                 bud["eps_tot"][i],
                 rtol=1e-9,
             )
+
+        # ``twin.spectra_ref = False`` drops the reference half of
+        # *both* spectra streams.  It is a static flag on the two
+        # diagnostics, so this also pins that the programs still trace
+        # and record with the reference branch absent -- the thing a
+        # disk-only knob would not need testing for.
+        with tempfile.TemporaryDirectory() as tmp2:
+            _run_twin(
+                tmp2,
+                [
+                    *_twin_args(t_mid),
+                    "--twin.it_yspectra",
+                    "1",
+                    "--twin.it_spectra",
+                    "1",
+                    "--twin.spectra_ref",
+                    "False",
+                ],
+            )
+            lean = read_twin_yspectra(tmp2)
+            assert lean.meta["includes_ref"] is False
+            assert set(lean.fields) == {"e_x", "e_z", "e_x0"}, lean.fields
+            assert read_twin_spectra(tmp2).e_ref is None
+            # The kept half is unchanged by the flag.
+            assert lean["e_x"].shape[1:] == (3, ny, 4)
 
         # A .bin without its sidecar is refused, not guessed at.
         (Path(tmp) / "twin_yspectra.json").unlink()

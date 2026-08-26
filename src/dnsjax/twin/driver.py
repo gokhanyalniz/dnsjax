@@ -216,11 +216,33 @@ class TwinParams(BaseModel):
       `$\sim\!0.9$` of a twin step (measured, size-independent over
       `$48^3$`-`$64^3$`), so ``it_budget = 1`` nearly doubles the
       run and `$10$` costs `$\sim\!9\,\%$`.
-    - ``spectra_ref`` is a **disk** knob only.  The reference
-      spectrum is reduced whether or not it is stored
-      (:func:`dnsjax.twin.diagnostics.twin_spectra_2d` returns both),
-      so turning it off shortens ``twin_spectra.bin`` and costs the
-      decorrelation ratio, but saves no compute.
+    - ``it_ybudget`` costs memory in **two** places, and the
+      per-sample transient is the one that is easy to miss.
+      *Resident*: :class:`dnsjax.twin.pressure.DifferencePressure`
+      holds a second factored banded operator the size of
+      ``flow.Lk_op`` plus its two homogeneous columns, two real
+      `$(N_y, N_{k_z}, N_{k_x})$` fields (its "Cost" section has the
+      numbers).  *Transient*:
+      :func:`dnsjax.twin.diagnostics._difference_sources` holds 15
+      padded physical fields at once -- 6 advector plus one gradient
+      set, the two gradient sets being formed one at a time for
+      exactly this reason (holding both is 24, *more* than the
+      three-bin pass's ~21 despite half the transforms).  XLA still
+      schedules, so watch it rather than assuming 15.
+      ``solver.rhs_transform_chunks``
+      caps the transform-stage transient inside each
+      :func:`dnsjax.fft.chunked_transform` call; it does **not** touch
+      the live field count.
+    - ``spectra_ref`` gates the reference half of **both** spectra
+      streams, in compute as well as on disk: it is a static flag on
+      :func:`dnsjax.twin.diagnostics.twin_spectra_2d` and
+      :func:`~dnsjax.twin.diagnostics.twin_yspectra`, so with it off
+      the reference reduction is never traced.  On the `$(k_z, k_x)$`
+      stream that saves one field pass and a `$\sim$`1 MB ``psum``
+      per sample; on the `$y$`-resolved one it saves a full real
+      `$(3, N_y, N_{k_z}, N_{k_x})$` density and one of the sample's
+      two collectives -- about half of it.  What it costs is the
+      decorrelation ratio.
 
     ``it_energy`` is the one per-*step* cost at its default of 1: an
     extra jitted call per step whose ``delta`` and ``du1`` are each
@@ -317,17 +339,17 @@ class TwinParams(BaseModel):
         description=(
             "Steps between twin_ybudget.bin records (the same bins' "
             "production / transfer / viscous / pressure densities); "
-            "unset disables the stream.  Enabling it also allocates "
-            "the difference-pressure Poisson operator (see the "
-            "field's docs)."
+            "unset disables the stream.  Like it_budget, not a pure "
+            "cadence knob: it raises both the run's resident and its "
+            "peak memory (see the field's docs)."
         ),
     )
     spectra_ref: bool = Field(
         default=True,
         description=(
             "Also record the reference state's spectrum with each "
-            "spectra sample (for decorrelation ratios).  A disk knob: "
-            "it is reduced either way."
+            "spectra / yspectra sample (for decorrelation ratios); "
+            "turning it off also skips computing it."
         ),
     )
 
@@ -389,6 +411,18 @@ def _validate_twin(values: TwinParams, params) -> None:
         cadence = getattr(values, name)
         if cadence is not None and cadence < 1:
             raise ValueError(f"twin.{name} must be >= 1.")
+    if (
+        values.it_yspectra is not None or values.it_ybudget is not None
+    ) and params.res.nz % 2:
+        raise ValueError(
+            "twin.it_yspectra / twin.it_ybudget need an even res.nz "
+            f"(got {params.res.nz}): the wall-normal-resolved streams "
+            "store the k_z axis folded onto |k_z|, and at odd nz the "
+            "stored band is asymmetric -- the highest negative mode "
+            "has no positive partner to fold onto "
+            "(dnsjax.twin.diagnostics._fold_kz).  Even sizes are the "
+            "recommended resolutions anyway (dnsjax.fft)."
+        )
     if values.it_budget is not None and not values.bins:
         raise ValueError(
             "twin.it_budget needs twin.bins: the three-bin budget is "
@@ -830,7 +864,14 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         bvals = twin_budget(state1, state2)
     measure_yspectra: bool = twin_params.it_yspectra is not None
     if measure_yspectra:
-        twin_yspectra = diagnostics.twin_yspectra
+        # ``spectra_ref`` static, as for the (k_z, k_x) stream above:
+        # with it off the reference density and its psum -- about half
+        # this sample -- are never traced.
+        _yref = twin_params.spectra_ref
+
+        def twin_yspectra(s1, s2):
+            return diagnostics.twin_yspectra(s1, s2, ref=_yref)
+
         yvals = twin_yspectra(state1, state2)
     measure_ybudget: bool = twin_params.it_ybudget is not None
     if measure_ybudget:
@@ -925,7 +966,14 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     if measure_spectra:
         from .spectra import TwinSpectraStream
 
-        twin_spectra_2d = diagnostics.twin_spectra_2d
+        # ``spectra_ref`` is static in the diagnostic (it decides
+        # whether the reference reduction is traced at all), so it is
+        # bound here once rather than passed per sample.
+        _ref = twin_params.spectra_ref
+
+        def twin_spectra_2d(s1, s2):
+            return diagnostics.twin_spectra_2d(s1, s2, ref=_ref)
+
         spectra_stream = TwinSpectraStream(twin_params)
         spectra_bad_t0 = spectra_stream.record(
             twin_spectra_2d(state1, state2), t
@@ -937,7 +985,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     if measure_yspectra or measure_ybudget:
         from .yspectra import TwinYBudgetStream, TwinYSpectraStream
 
-        y_weights = [float(v) for v in diagnostics.flow.y_weights]
+        y_weights = np.asarray(diagnostics.flow.y_weights).tolist()
     if measure_yspectra:
         yspectra_stream = TwinYSpectraStream(twin_params, y_weights)
         yspectra_bad_t0 = yspectra_stream.record(yvals, t)
@@ -960,14 +1008,12 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             *_, meas = step_cnab2_measured(jnp.copy(state1), jnp.copy(rhs1))
         else:
             *_, meas = predict_and_fully_correct_measured(jnp.copy(state1))
-        if it % params.outs.it_steps == 0 and params.outs.it_steps != 1:
-            # The first loop iteration runs the measured variant; the
-            # unmeasured program would otherwise compile inside the
-            # benchmark window.
-            if is_cnab2:
-                step_cnab2(jnp.copy(state1), jnp.copy(rhs1))
-            else:
-                predict_and_fully_correct(jnp.copy(state1))
+        # No unmeasured-stepper warm-up here, unlike
+        # :func:`dnsjax.__main__.run`: ``state2`` always takes the
+        # unmeasured program, in every iteration including the first,
+        # so it compiles inside iteration 0 -- which is already outside
+        # the benchmark window (``bench_start`` is set at
+        # ``it == it0 + 1``).
         steps_stream = _ScalarStream(
             "steps.dat", meas.keys(), jnp=jnp, sharding=sharding
         )

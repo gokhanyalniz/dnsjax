@@ -11,6 +11,8 @@ returns per-column stacks with ensemble mean and standard deviation
 (``ddof = 0``, the member spread -- see :func:`aggregate_members` for
 the standard-error conversion) -- the inputs of the paper's figures
 (Egerique-de-la-Concha & Hwang, *J. Fluid Mech.* **1036**, A52, 2026).
+Each member is restricted to its own cadence grid first, so a resumed
+member stacks against a fresh one (:func:`_grid_mask`).
 
 Growth-rate fits (least squares over a caller-chosen window):
 
@@ -37,11 +39,28 @@ from pathlib import Path
 
 import numpy as np
 
-from .series import read_twin
+from .series import read_twin, uniform_grid
 
 #: Relative-time alignment tolerance across members (seconds of
 #: simulation time; the grids come from one shared dt and cadence).
 _T_ATOL = 1e-9
+
+
+def _grid_mask(t: np.ndarray) -> np.ndarray:
+    """One member's on-cadence rows (everything, when too short).
+
+    A stream carries a few rows off its own cadence grid -- the
+    driver's unconditional final row always, a resume seam's ``t0``
+    row when the snapshot cadence is not a multiple of the sample one
+    (:mod:`dnsjax.analysis.twin.series`).  Which of them a member has
+    depends on whether and where it was resumed, so members that are
+    otherwise identical would not stack; selecting each member's grid
+    first is what makes them comparable again.
+    """
+    try:
+        return uniform_grid(t)[1]
+    except ValueError:
+        return np.ones(t.shape, dtype=bool)
 
 
 def _stack_group(
@@ -51,10 +70,13 @@ def _stack_group(
     """Stack one stream group over members, guarding mismatches.
 
     *per_member* holds ``(member dir, relative times, columns)``
-    triples (``t`` excluded from the columns).  All members must
-    share the column set and the relative-time grid.
+    triples (``t`` excluded from the columns).  Each member is first
+    restricted to its own cadence grid (:func:`_grid_mask`); all must
+    then share the column set and the relative-time grid.
     """
     _, t_rel, first_cols = per_member[0]
+    keep0 = _grid_mask(t_rel)
+    t_rel = t_rel[keep0]
     names = set(first_cols)
     stacks: dict[str, list[np.ndarray]] = {n: [] for n in names}
     for member, rel, columns in per_member:
@@ -62,6 +84,8 @@ def _stack_group(
             raise ValueError(
                 f"{member}: {label} column set differs from the first member's"
             )
+        keep = _grid_mask(rel)
+        rel = rel[keep]
         if rel.shape != t_rel.shape or not np.allclose(
             rel, t_rel, rtol=0, atol=_T_ATOL
         ):
@@ -71,7 +95,7 @@ def _stack_group(
                 "an incomplete run?)"
             )
         for name in names:
-            stacks[name].append(columns[name])
+            stacks[name].append(columns[name][keep])
     return t_rel, {name: np.stack(vals) for name, vals in stacks.items()}
 
 
