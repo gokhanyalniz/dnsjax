@@ -314,8 +314,31 @@ def test_closure_residuals() -> None:
         assert res.n_samples == 9, res.n_samples
         assert res["du1"] < 1e-12
 
-        # 5. Guards: no budget stream, a non-uniform energy cadence, a
-        #    missing term column, and cadences that never overlap.
+        # 5. An energy row off the cadence grid is skipped, not
+        #    allowed to shift the pairing.  The driver writes an
+        #    unconditional final ``twin.dat`` row whatever the cadence,
+        #    and a resume seam adds an interior one when
+        #    ``outs.it_snapshot`` is not a multiple of
+        #    ``twin.it_energy``; at ``it_energy > 1`` both are routine.
+        #    Neither may change a single residual.
+        for name, extra in (
+            ("tail", [1.0 + 0.01 * 50 + 0.003]),  # trailing, off-lattice
+            ("seam", [1.0 + 0.01 * 20 + 0.004]),  # interior, off-lattice
+            ("both", [1.0 + 0.01 * 20 + 0.004, 1.0 + 0.01 * 50 + 0.003]),
+        ):
+            mdir = root / f"offgrid_{name}"
+            _closing_member(mdir)
+            t = np.sort(np.append(1.0 + 0.01 * np.arange(51), extra))
+            _write_dat(mdir / "twin.dat", _energy_columns(t))
+            res = closure_residuals(read_twin(mdir))
+            assert res.n_samples == 9, (name, res.n_samples)
+            assert_allclose(res.dt, 0.01, rtol=1e-12)
+            for term in ("dU", "du1", "du2", "T_tot"):
+                assert res[term] < 1e-12, (name, term, res[term])
+
+        # 6. Guards: no budget stream, an energy stream with no single
+        #    cadence at all, a missing term column, and cadences that
+        #    never overlap.
         _closing_member(root / "nobudget")
         (root / "nobudget" / "twin_budget.dat").unlink()
         _expect_value_error(
@@ -325,10 +348,14 @@ def test_closure_residuals() -> None:
 
         mdir = root / "jitter"
         _closing_member(mdir)
-        t = np.append(1.0 + 0.01 * np.arange(50), 1.60)
+        # Every gap different: no lattice fits more than two rows, so
+        # this is the case that must still refuse (a genuinely
+        # non-uniform stream, as opposed to a uniform one carrying a
+        # couple of off-grid rows).
+        t = 1.0 + np.cumsum(0.01 * (1.0 + 0.3 * np.arange(51)))
         _write_dat(mdir / "twin.dat", _energy_columns(t))
         _expect_value_error(
-            "not uniformly spaced",
+            "cadence grid",
             lambda: closure_residuals(read_twin(mdir)),
         )
 

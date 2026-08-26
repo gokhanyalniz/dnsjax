@@ -91,7 +91,9 @@ and its rationale: `flows/registry.py`.
 - `twin/` — twin-run (`dnsjax-twin`) offline analysis, entirely
   JAX-free (unlike `response/`, no JAX anywhere): `series.py`
   (`twin.dat`/`twin_budget.dat`/`twin.json` readers, per-component
-  budget sums, `closure_residuals`), `ensemble.py` (member-tree
+  budget sums, `closure_residuals`, and `uniform_grid` — a `.dat`
+  stream carries rows off its own cadence, so every consumer that
+  needs a uniform grid selects one), `ensemble.py` (member-tree
   aggregation + growth-rate fits, CLI), `spectra.py` (`twin_spectra.bin` reader +
   decorrelation ratio), `yspectra.py` (`twin_yspectra.bin` /
   `twin_ybudget.bin` readers, the `integrate_y` quadrature

@@ -262,11 +262,27 @@ KZ_HARM = [int(m) for m in complex_harmonics(params.res.nz)]
 
 
 def _hermitian_spec(seed: int, amp: float = 0.1) -> np.ndarray:
-    """Random host spectral state with *real* physical fields.
+    r"""Random host spectral state with *real* physical fields.
 
     The ``kx = 0`` plane is made Hermitian (``complex_harmonics``
     pairs index ``i2`` with ``N2_TRUE - i2``) and the mean column
     real, as for any pair of genuine solver states.
+
+    Deliberately **not** divergence-free and **not** no-slip (that is
+    :func:`_solenoidal_pair`): the point of these states is to drive
+    every index-layout path with generic data.  The one structural
+    property they do carry is the one the diagnostics are entitled to
+    assume -- `$\hat v_{00} \equiv 0$`, forced by continuity at
+    `$k^2 = 0$` plus no-slip and exact at every point a state can
+    enter the driver (:mod:`dnsjax.twin.diagnostics`, "State
+    preconditions").  Without it these states would exercise
+    ``term_b_mean``'s `$b_y\,\partial_y$` branch, which no state the
+    solver produces ever reaches, and pin a term that is identically
+    zero in production.  The reference in :func:`_ref_budget` is
+    untouched by this and still evaluates every term the generic way,
+    so the cross-check is unweakened: it agrees on the omitted branch
+    because that branch is genuinely zero here, not because it was
+    told to.
     """
     rng = np.random.default_rng(seed)
     spec = np.zeros((3, NY, N2_SPEC, N3_SPEC), dtype=np.complex128)
@@ -275,6 +291,7 @@ def _hermitian_spec(seed: int, amp: float = 0.1) -> np.ndarray:
         + 1j * rng.standard_normal((3, NY, N2_TRUE, N3_TRUE))
     )
     spec[:, :, 0, 0] = spec[:, :, 0, 0].real
+    spec[1, :, 0, 0] = 0.0  # continuity + no-slip at k^2 = 0
     for i2 in range(1, N2_TRUE):
         j2 = N2_TRUE - i2
         if i2 < j2:
@@ -394,7 +411,14 @@ def _ref_budget(spec1: np.ndarray, spec2: np.ndarray) -> dict[str, float]:
 
 
 def test_budget_vs_numpy() -> None:
-    """All 30 budget outputs match the independent reference."""
+    r"""All 30 budget outputs match the independent reference.
+
+    ``P_dU(dU,rU)`` is an identical zero on both sides, here and in
+    production: it is `$-\langle \Delta U_i\,\Delta V\,
+    \partial_y U^{(1)}_i \rangle$` and `$\Delta V \equiv 0$` at the
+    mean mode (:func:`_hermitian_spec`).  The paper lists the triad,
+    so the column stays; this test cannot discriminate it.
+    """
     spec1 = _hermitian_spec(21)
     spec2 = spec1 + _hermitian_spec(22, amp=0.03)
     got = td.twin_budget(_device_state(spec1), _device_state(spec2))

@@ -11,6 +11,16 @@ per resume seam (the parent segment's final row and the child's
 drops the duplicates, keeping the first occurrence -- the probe
 reader's convention.
 
+**Off-grid rows.**  Two kinds of row do *not* sit on the
+``twin.it_energy`` sampling grid, and at ``it_energy > 1`` both are
+routine: the driver's unconditional final row (written whatever the
+cadence, so the end-of-run state is never lost), and, when
+``outs.it_snapshot`` is not a multiple of ``it_energy``, a resumed
+segment's ``t0`` row.  They are kept -- ``t`` disambiguates them and
+they are real samples -- so any consumer that needs a *uniform* grid
+(a centred difference, an across-member stack) selects it with
+:func:`uniform_grid` rather than assuming the raw stream is one.
+
 ``twin.json`` is the member record the driver writes at the fresh
 start (seed, ``e0``, parent snapshot and clock, cadences, git hash,
 resolved parameter dump); its ``format_version`` floor here is
@@ -185,22 +195,44 @@ class ClosureResiduals:
         return self.components[key]
 
 
-def _uniform_spacing(t: np.ndarray) -> float:
-    """The uniform sample spacing of *t*, or raise."""
+def uniform_grid(t: np.ndarray) -> tuple[float, np.ndarray]:
+    r"""The sampling interval of *t*, and the mask of samples on it.
+
+    The cadence is the **median** positive gap: the stream is a
+    uniform grid plus a handful of off-grid rows (module docstring),
+    at most two per resume segment against hundreds of samples, so the
+    median is the cadence and the strays cannot move it.  A sample is
+    on the grid when its phase `$(t - t_0) \bmod \Delta t$` matches
+    the median phase -- taken modulo, not by index, so an off-grid
+    *interior* row (a resume seam) shifts nothing after it, and an
+    off-grid **first** row is itself excluded rather than defining a
+    grid nothing else sits on.
+
+    Returns ``(dt, mask)``.  Raises when *t* is too short, has no
+    positive gap, or leaves fewer than three samples on the grid.
+    """
     if t.size < 3:
         raise ValueError(
             f"need at least 3 twin.dat samples to difference, got {t.size}"
         )
     steps = np.diff(t)
-    dt = float(np.mean(steps))
-    if dt <= 0 or np.max(np.abs(steps - dt)) > 1e-6 * dt:
+    positive = steps[steps > 0]
+    if positive.size == 0:
+        raise ValueError("twin.dat sample times do not increase")
+    dt = float(np.median(positive))
+    tol = 1e-6 * dt
+    resid = np.mod(t - t[0], dt)
+    # Fold onto (-dt/2, dt/2] so a phase just under dt and one just
+    # over 0 are the same phase.
+    resid = np.where(resid > 0.5 * dt, resid - dt, resid)
+    on_grid = np.abs(resid - float(np.median(resid))) <= tol
+    if int(on_grid.sum()) < 3:
         raise ValueError(
-            "twin.dat sample times are not uniformly spaced "
-            f"(spread {float(np.max(np.abs(steps - dt))):.3e} about "
-            f"dt = {dt:.6g}); the centred difference below assumes a "
-            "single fixed cadence"
+            "twin.dat has fewer than 3 samples on its own cadence grid "
+            f"(dt = {dt:.6g}, {int(on_grid.sum())} of {t.size} rows); "
+            "the centred difference below needs a single fixed cadence"
         )
-    return dt
+    return dt, on_grid
 
 
 def closure_residuals(series: TwinSeries) -> ClosureResiduals:
@@ -226,10 +258,13 @@ def closure_residuals(series: TwinSeries) -> ClosureResiduals:
     mis-signed term would not.
 
     The derivative uses the ``twin.dat`` spacing rather than the run's
-    ``step.dt``, so it is correct at any ``twin.it_energy``.  Raises
-    :class:`ValueError` when the budget stream is absent, is
-    structurally not a twin budget, has a non-uniform energy cadence,
-    or leaves no interior sample.
+    ``step.dt``, so it is correct at any ``twin.it_energy``, and the
+    energies are first restricted to their own cadence grid
+    (:func:`uniform_grid`), so the driver's unconditional final row and
+    a resume seam's ``t0`` row are skipped rather than corrupting the
+    index mapping.  Raises :class:`ValueError` when the budget stream
+    is absent, is structurally not a twin budget, carries fewer than
+    three on-grid energy samples, or leaves no interior sample.
     """
     if series.budget is None:
         raise ValueError(
@@ -255,18 +290,36 @@ def closure_residuals(series: TwinSeries) -> ClosureResiduals:
             f"columns, found {len(p_all)} and {len(t_all)}"
         )
 
-    t_e = energies["t"]
-    dt = _uniform_spacing(t_e)
+    # Restrict the energies to their own cadence grid *first*
+    # (:func:`uniform_grid`): the driver writes an unconditional final
+    # row, and a resume seam can add an interior one, and neither is a
+    # usable centred-difference neighbour.
+    dt, on_energy_grid = uniform_grid(energies["t"])
+    t_e = energies["t"][on_energy_grid]
+    energies = {n: v[on_energy_grid] for n, v in energies.items()}
     t_b = budget["t"]
-    # Budget rows land on the energy grid by construction (both are
-    # sampled before the same step), except the driver's unconditional
-    # final row, which can fall off a cadence.  Map by grid index and
-    # verify, so an off-grid row is skipped rather than mis-paired.
-    idx = np.rint((t_b - t_e[0]) / dt).astype(int)
+    tol = 1e-6 * dt
+    # Budget rows land on that grid by construction (both are sampled
+    # before the same step), except the budget stream's own
+    # unconditional final row, which can fall off a cadence.  Locate
+    # each by *value* -- not by a grid index, which a gap in the energy
+    # samples would offset -- and keep only those whose two immediate
+    # neighbours really are `$\mp\Delta t$` away, since that is what
+    # the centred difference below consumes.  Anything else is skipped
+    # rather than mis-paired.
+    idx = np.clip(
+        np.searchsorted(t_e, t_b - 0.5 * dt), 0, t_e.size - 1
+    ).astype(int)
+    lo, hi = (
+        np.clip(idx - 1, 0, t_e.size - 1),
+        np.clip(idx + 1, 0, t_e.size - 1),
+    )
     on_grid = (
         (idx > 0)
         & (idx + 1 < t_e.size)
-        & (np.abs(t_e[np.clip(idx, 0, t_e.size - 1)] - t_b) < 1e-6 * dt)
+        & (np.abs(t_e[idx] - t_b) < tol)
+        & (np.abs(t_e[idx] - t_e[lo] - dt) < tol)
+        & (np.abs(t_e[hi] - t_e[idx] - dt) < tol)
     )
     if not on_grid.any():
         raise ValueError(
