@@ -110,6 +110,8 @@ field transforms the budget itself costs.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from jax import Array
 from jax import numpy as jnp
 
@@ -120,9 +122,12 @@ from ..geometries.wall_bounded.cartesian import (
     build_poisson_operator,
 )
 from ..parameters import derived_params, params
-from ..sharding import sharding
+from ..sharding import register_dataclass_pytree, sharding
+from ..solvers import DenseJAXSolver, PerModeBandedPallasOperator
 
 
+@register_dataclass_pytree
+@dataclass(init=False)
 class DifferencePressure:
     r"""The difference field's pressure, and the work it does.
 
@@ -130,7 +135,20 @@ class DifferencePressure:
     two homogeneous columns and the `$2\times2$` influence matrix --
     all state-independent, all done once.  Hold one instance for the
     run; see the module docstring for its memory cost.
+
+    A **pytree**, like the flow and solver dataclasses it is built
+    from, and for the same reason: every field is a global
+    multi-device array, so the jitted diagnostics must take it as an
+    *argument*.  A ``static_argnames`` entry would embed the factors
+    in the trace as constants -- which works on one process and
+    raises ``Closing over jax.Array that spans non-addressable (non
+    process local) devices`` on the first multi-process run.
     """
+
+    op: DenseJAXSolver | PerModeBandedPallasOperator
+    p1: Array
+    p2: Array
+    m_inv: Array
 
     def __init__(self, flow_: CartesianFlow, fourier_: Fourier) -> None:
         self.op = build_poisson_operator(flow_, fourier_)
