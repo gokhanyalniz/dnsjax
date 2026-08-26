@@ -165,12 +165,24 @@ CONFIGS = [
 _PP_NY = "49"
 
 
+#: Pins the random IC every launch here starts from.  An unset seed is
+#: drawn from the OS entropy pool (:mod:`dnsjax.seeding`), which would
+#: put ``BUDGET_TOL`` and the applied-vs-inferred gaps on a different
+#: trajectory each run; ``1`` is the value they were measured at.
+_SEED_FLAGS = ["--init.random_seed", "1"]
+
+
 def _base_flags(system: str) -> list[str]:
-    """Resolution / Reynolds per family (moderate, resolved)."""
+    """Resolution / Reynolds per family (moderate, resolved).
+
+    Carries :data:`_SEED_FLAGS`, so every launch below is on the one
+    measured trajectory.
+    """
     if system == "plane-poiseuille":
         # The minimal-channel box (lx+ ~ 270, lz+ ~ 108 at Re_tau ~ 135)
         # at the transitional Re_b = 2000.
         return [
+            *_SEED_FLAGS,
             "--phys.re",
             "3000",
             "--geo.lx",
@@ -188,6 +200,7 @@ def _base_flags(system: str) -> list[str]:
         ]
     if system == "plane-couette":
         return [
+            *_SEED_FLAGS,
             "--phys.re",
             "500",
             "--res.nx",
@@ -199,6 +212,7 @@ def _base_flags(system: str) -> list[str]:
         ]
     if system == "taylor-couette":
         return [
+            *_SEED_FLAGS,
             "--phys.re1",
             "100",
             "--phys.re2",
@@ -214,6 +228,7 @@ def _base_flags(system: str) -> list[str]:
         ]
     # pipe
     return [
+        *_SEED_FLAGS,
         "--phys.re",
         "3000",
         "--res.nz",

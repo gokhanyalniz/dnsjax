@@ -179,7 +179,11 @@ from pathlib import Path
 from time import perf_counter_ns
 
 from .adaptive import propose_dt
-from .bootstrap import configure_jax_runtime, resolve_parameters
+from .bootstrap import (
+    configure_jax_runtime,
+    resolve_parameters,
+    resolve_run_seeds,
+)
 from .extensions import force_params, probes_params, relevant_extensions
 from .flows.registry import (
     annular_systems,
@@ -192,6 +196,7 @@ from .parameters import (
     ns_to_s,
     padded_res,
     params,
+    random_ic_selected,
     trajectory_defining_changes,
 )
 from .snapshot_meta import git_hash, read_snapshot_meta
@@ -623,7 +628,7 @@ def run(wall_time_start: int) -> None:
             f"width={params.init.localized_rolls_width}, "
             f"wavelength={params.init.localized_rolls_wavelength}."
         )
-    elif params.init.random_field:
+    elif random_ic_selected():
         # In-process random divergence-free IC -- the default start mode
         # (no snapshot file). The flow dispatch above already built the
         # geometry ``fourier`` singleton this consumes.
@@ -1502,8 +1507,10 @@ def main(argv: list[str] | None = None) -> int:
     (:func:`dnsjax.bootstrap.resolve_parameters`; ``--help`` exits
     here with the full CLI reference and no side effects), configures
     the distributed JAX runtime
-    (:func:`dnsjax.bootstrap.configure_jax_runtime`), prints the
-    final configuration on the main process, and runs the simulation
+    (:func:`dnsjax.bootstrap.configure_jax_runtime`), draws and agrees
+    any seed this run needs but was not given
+    (:func:`dnsjax.bootstrap.resolve_run_seeds`), prints the final
+    configuration on the main process, and runs the simulation
     (:func:`run`).  *argv* defaults to ``sys.argv``.
     """
     wall_time_start = perf_counter_ns()
@@ -1524,6 +1531,10 @@ def main(argv: list[str] | None = None) -> int:
     # a collective would deadlock.
     print("Alive at", datetime.now(), flush=True, file=sys.stderr)
     main_device = configure_jax_runtime()
+    # Every rank: an unset seed is drawn on process 0 and broadcast, so
+    # the ranks build one random field rather than one each.  Before the
+    # gate below -- a collective inside it would deadlock.
+    seed_notes = resolve_run_seeds(setup)
 
     if main_device:
         print("Distribution initialized at", datetime.now(), flush=True)
@@ -1559,6 +1570,11 @@ def main(argv: list[str] | None = None) -> int:
                 "the default parameters.",
                 flush=True,
             )
+        # Never gated on DNSJAX_QUIET_STARTUP below: a drawn seed is
+        # the one piece of the configuration that cannot be recovered
+        # from the launching command.
+        for note in seed_notes:
+            print(note, flush=True)
         # The full resolved-parameter dump is provenance for a real run
         # but pure repeated noise when a test launches the solver dozens
         # of times (the launching command already carries every argument

@@ -112,6 +112,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from dnsjax.harmonics import parse_mode_pairs
+from dnsjax.seeding import (
+    SOURCE_DRAWN,
+    NoEntropySource,
+    draw_seed,
+    seed_note,
+)
 from dnsjax.snapshot_meta import (
     git_hash,
     is_snapshot_file,
@@ -475,6 +481,28 @@ def build_twin(args: argparse.Namespace) -> int:
         twin_bin = str(sibling) if sibling.exists() else "dnsjax-twin"
 
     tree = Path(args.tree)
+    # Unset base: draw one, so two ensembles built from the same parent
+    # snapshots do not both run seeds 1..N.  Single process and JAX-free
+    # here, so no cross-rank agreement is needed -- and each member's
+    # concrete seed is pinned in its parameters.toml below either way,
+    # which is what keeps the tree reproducible and resumable.
+    seed_base = args.seed_base
+    if seed_base is None:
+        try:
+            seed_base = draw_seed()
+        except NoEntropySource as exc:
+            # Not ``missing_entropy_message``: its "or set it in
+            # parameters.toml" advice is wrong here, since the member
+            # TOMLs are what this command writes.
+            raise SystemExit(
+                "ensemble_setup: error: --seed-base is unset and no "
+                f"system entropy source is available ({exc}).  Pass "
+                "--seed-base <int> to choose the members' seeds."
+            ) from None
+        print(
+            f"[build-twin] {seed_note('seed-base', seed_base, SOURCE_DRAWN)}"
+        )
+
     members: list[dict] = []
     run_lines: list[str] = []
     k = 0
@@ -482,7 +510,7 @@ def build_twin(args: argparse.Namespace) -> int:
         for _ in range(args.members_per_snapshot):
             mem = {
                 "dir": f"m{k:04d}",
-                "seed": args.seed_base + k,
+                "seed": seed_base + k,
                 "parent": snap["path"],
                 "parent_t": snap["t"],
                 "t_end": snap["t"] + args.horizon,
@@ -638,8 +666,12 @@ def main(argv: list[str] | None = None) -> int:
     pt.add_argument(
         "--seed-base",
         type=int,
-        default=1,
-        help="member k gets twin.seed = seed-base + k",
+        default=None,
+        help=(
+            "member k gets twin.seed = seed-base + k "
+            "(default: drawn from the system entropy pool, so two "
+            "ensembles off the same parents are independent)"
+        ),
     )
     pt.add_argument(
         "--members-per-snapshot",

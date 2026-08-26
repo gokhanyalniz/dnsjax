@@ -362,7 +362,8 @@ def _spin_up(cfg: dict, ny: int, workdir: Path, spin: float) -> Path:
 
     Cached per ``(config, ny)``: ``twin.seed`` selects the *partner*,
     so a seed sweep shares one reference trajectory -- which is also
-    the only way the sweep isolates the partner's effect.
+    the only way the sweep isolates the partner's effect.  The
+    reference's own ``init.random_seed`` is pinned for the same reason.
     """
     workdir.mkdir(parents=True, exist_ok=True)
     done = [
@@ -377,6 +378,12 @@ def _spin_up(cfg: dict, ny: int, workdir: Path, spin: float) -> Path:
         *_common(cfg, ny),
         "--init.random_amplitude",
         "0.2",
+        # Pinned: an unset seed is drawn from the OS entropy pool
+        # (:mod:`dnsjax.seeding`), so the reference trajectory -- and
+        # with it the measured bounds below and the directory cache
+        # above -- would differ every run.
+        "--init.random_seed",
+        "1",
         "--stop.max_sim_time",
         repr(spin),
         "--outs.it_stats",

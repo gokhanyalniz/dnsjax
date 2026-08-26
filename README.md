@@ -262,6 +262,15 @@ width shown above. A path given to `--init.snapshot` that is not a
 dnsjax snapshot **aborts** rather than falling through to the random
 default, so a typo cannot quietly start a different calculation.
 
+Leave `--init.random_seed` unset and the run **draws one from the
+system entropy pool**, prints it with its source, and records it in the
+snapshot — so a batch of runs launched the same way explores different
+realisations, and any one of them replays exactly by passing its
+printed seed back. The same holds for `--twin.seed` and `--force.seed`.
+A run that draws nothing (laminar, rolls, or a resume) never asks for
+entropy; one that would draw and cannot reach a source stops rather
+than falling back to a fixed value.
+
 One default worth knowing: the pipe integrates in a frame translating at the
 laminar bulk velocity $1/2$, and its snapshots are stored in that frame;
 pass `--phys.u_grid 0` for the lab frame (see

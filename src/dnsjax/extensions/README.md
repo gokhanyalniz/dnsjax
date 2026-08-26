@@ -100,7 +100,7 @@ changed forcing starts a new trajectory unless `init.force_resume`.
 | `force.n_channels` | Leading stored channels used per mode (default: all) |
 | `force.amplitude` | Coefficient scale $\varepsilon$; expected injected energy is $\varepsilon^2$ per channel per kick |
 | `force.it_force` | Steps between kicks; must be a multiple of the probe cadence when probing |
-| `force.seed` | Kick-coefficient PRNG seed |
+| `force.seed` | Kick-coefficient PRNG seed; unset draws one from the system entropy pool and records it, and an append-resume inherits that value rather than drawing again |
 
 **Why kicks and not a body-force term.** A forcing term inside the
 nonlinear right-hand side would be integrated by the scheme: `cnab2`
