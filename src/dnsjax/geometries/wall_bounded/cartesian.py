@@ -1250,8 +1250,10 @@ DRIVING_KEY_S = "-dPds'"
 DRIVING_KEY_N = "-dPdn'"
 
 
-def mean_driving(state: Array, flow_: CartesianFlow) -> dict[str, Array]:
-    r"""Wall-shear **inference** of the driving, from a state alone.
+def mean_driving_from_profile(
+    mean_u: Array, flow_: CartesianFlow
+) -> dict[str, Array]:
+    r"""Wall-shear **inference** of the driving, from a `$(0,0)$` profile.
 
     The mean-mode momentum balance, integrated across the channel with
     `$\bar{u}|_\text{wall} = 0$` and the mean-mode nonlinear term
@@ -1266,17 +1268,21 @@ def mean_driving(state: Array, flow_: CartesianFlow) -> dict[str, Array]:
     :func:`_apply_bulk_corrections` applies, up to the time
     discretization.  Keys and sign match it exactly.
 
-    This is **not** what ``stats.dat`` normally reports: that column is
-    the value the corrector actually applied, threaded out of the
-    implicit solve.  This is used for the one row that has no step
-    behind it, ``t = t0`` (see :mod:`dnsjax.__main__`), and as the
-    independent check the driving test pins the applied value against.
+    The body of :func:`mean_driving`, taking the `$(3, N_y)$` mean
+    profile rather than the field it comes from, for the callers that
+    already hold one: the collective is
+    :func:`~dnsjax.geometries.wall_bounded._base.extract_mean_mode`,
+    and it is latency-bound, so paying it twice for a profile already
+    in hand is pure cost.  The map is also **linear** in *mean_u* --
+    which is what lets the twin driver's `$y$`-resolved driving-work
+    density (``twin.diagnostics._driving_density``) get the driving
+    *difference* between two members by evaluating this on their
+    profile difference, with no collective of its own.
     """
     cbv = params.phys.driving == "constant_bulk_velocity"
     if not (cbv or params.phys.block_mean_spanwise_velocity):
         return {}
     nu = 1.0 / params.phys.re
-    mean_u = extract_mean_mode(state).real  # (3, Ny)
     out: dict[str, Array] = {}
     if cbv:
         mean_us = (
@@ -1293,6 +1299,28 @@ def mean_driving(state: Array, flow_: CartesianFlow) -> dict[str, Array]:
         sh = flow_.D1_bnd @ mean_un
         out[DRIVING_KEY_N] = -nu * (sh[1] - sh[0]) / 2
     return out
+
+
+def mean_driving(state: Array, flow_: CartesianFlow) -> dict[str, Array]:
+    r"""Wall-shear **inference** of the driving, from a state alone.
+
+    :func:`mean_driving_from_profile` on the state's `$(0,0)$` mode;
+    that function carries the derivation, the keys and the sign.  The
+    ``extract_mean_mode`` collective is skipped outright when no
+    driving constraint is active.
+
+    This is **not** what ``stats.dat`` normally reports: that column is
+    the value the corrector actually applied, threaded out of the
+    implicit solve.  This is used for the one row that has no step
+    behind it, ``t = t0`` (see :mod:`dnsjax.__main__`), and as the
+    independent check the driving test pins the applied value against.
+    """
+    if not (
+        params.phys.driving == "constant_bulk_velocity"
+        or params.phys.block_mean_spanwise_velocity
+    ):
+        return {}
+    return mean_driving_from_profile(extract_mean_mode(state).real, flow_)
 
 
 def _apply_bulk_corrections(

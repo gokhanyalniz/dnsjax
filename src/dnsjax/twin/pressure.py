@@ -101,11 +101,21 @@ profile to hand.
 
 Cost
 ----
-One extra factored operator, the size of ``flow.Lk_op``
-(`$(N_{k_z}, N_{k_x}, N_y, 2p+1)$` banded factors), held for the run
--- so it is built only when ``twin.it_ybudget`` is set.  Per sample:
-one banded solve and a handful of `$D_1$` matvecs, against the ~33
-field transforms the budget itself costs.
+Resident, held for the run -- so it is built only when
+``twin.it_ybudget`` is set:
+
+- one extra factored operator, the size of ``flow.Lk_op``
+  (`$(N_{k_z}, N_{k_x}, N_y, 2p+1)$` banded factors);
+- the two homogeneous columns `$p_1$`, `$p_2$`: real
+  `$(N_y, N_{k_z}, N_{k_x})$` fields, so together `$2/(2p+1)$` of the
+  factors -- ~12 % on top at ``fd_order = 8``.  They are what makes
+  the runtime superposition solve-free, and they are not compressible:
+  the columns depend on the mode through `$k^2$`, which every mode has
+  its own value of.
+- ``M_inv``, `$(N_{k_z}, N_{k_x}, 2, 2)$` -- negligible beside those.
+
+Per sample: one banded solve and a handful of `$D_1$` matvecs, against
+the ~33 field transforms the budget itself costs.
 """
 
 from __future__ import annotations

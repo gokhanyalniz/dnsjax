@@ -5,8 +5,10 @@ Layout (one module per concern; none is imported by the top-level
 
 - :mod:`.series` -- readers for the ``.dat`` scalar streams
   (``twin.dat`` / ``twin_budget.dat`` / ``stats.dat``) and the
-  ``twin.json`` member record; per-component budget sums and the
-  budget-closure residuals.
+  ``twin.json`` member record; per-component budget sums, the
+  budget-closure residuals, and :func:`~.series.uniform_grid`, which
+  selects a stream's own cadence grid out of the off-grid rows a
+  resume and the final row add.
 - :mod:`.ensemble` -- member-tree aggregation of the twin streams on
   aligned relative time, and the growth-rate fits (`$\\lambda$` from
   the exponential phase, the algebraic-phase linear rate).
@@ -40,6 +42,7 @@ from .series import (
     closure_residuals,
     read_dat,
     read_twin,
+    uniform_grid,
 )
 from .spectra import (
     TwinSpectraData,
@@ -75,4 +78,5 @@ __all__ = [
     "read_twin_spectra",
     "read_twin_ybudget",
     "read_twin_yspectra",
+    "uniform_grid",
 ]
