@@ -175,7 +175,6 @@ from dnsjax.analysis.twin.series import (  # noqa: E402
     read_dat,
     read_twin,
 )
-from dnsjax.snapshot_meta import read_snapshot_meta  # noqa: E402
 
 assert "jax" not in sys.modules, "the readers here must stay JAX-free"
 
@@ -410,7 +409,6 @@ def _twin(
 ) -> Path:
     """Run ``dnsjax-twin`` off *parent*; return the member directory."""
     workdir.mkdir(parents=True, exist_ok=True)
-    t_parent = float(read_snapshot_meta(parent)["t"])
     cmd = [
         sys.executable,
         "-m",
@@ -428,8 +426,10 @@ def _twin(
         str(IT_BUDGET),
         "--twin.it_ybudget",
         str(IT_BUDGET),
+        # A horizon past the parent snapshot, which is what
+        # ``stop.max_sim_time`` means (relative to init.t0).
         "--stop.max_sim_time",
-        repr(t_parent + horizon),
+        repr(horizon),
         "--outs.it_stats",
         "1",
         "--outs.stats_precision",

@@ -710,7 +710,7 @@ def test_build_twin() -> None:
             assert toml["twin"]["seed"] == record["seed"]
             assert toml["twin"]["e0"] == 1e-6
             assert toml["twin"]["it_budget"] == 5
-            assert toml["stop"]["max_sim_time"] == record["t_end"]
+            assert toml["stop"]["max_sim_time"] == spec["horizon"]
             assert toml["stop"]["check_laminarization"] is False
 
         # Simulate the completed runs, then aggregate through the

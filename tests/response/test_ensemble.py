@@ -215,7 +215,9 @@ def test_harvest_build_and_aggregate() -> None:
             toml = (tree / f"m{k:04d}_p" / "parameters.toml").read_text()
             assert "[probes]" in toml
             assert 'modes = "3,0"' in toml
-            assert f"max_sim_time = {parent_t + NT * IT_PROBES * DT!r}" in toml
+            # A relative horizon: the same value for every member,
+            # whatever time its parent was harvested at.
+            assert f"max_sim_time = {NT * IT_PROBES * DT!r}" in toml
 
         # Synthetic member probe streams: huge per-pair background,
         # shared response -> antithetic aggregation is exact.

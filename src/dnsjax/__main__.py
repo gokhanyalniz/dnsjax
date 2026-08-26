@@ -34,10 +34,11 @@ Execution phases
      :mod:`dnsjax.timestep`)
    - Periodic diagnostic output (:func:`get_stats`)
 
-   The loop terminates when the simulation time, wall-clock
-   time, or corrector divergence criterion is reached.  The
-   corrector error and iteration counters stay on the device;
-   the error is synced to the host only every
+   The loop terminates when the elapsed simulation time
+   (``stop.max_sim_time``, counted from ``init.t0``), the
+   wall-clock time, or the corrector divergence criterion is
+   reached.  The corrector error and iteration counters stay on
+   the device; the error is synced to the host only every
    ``outs.it_error_check`` steps so that JAX async dispatch can
    pipeline steps (divergence is detected at most
    ``it_error_check`` steps late).
@@ -661,11 +662,21 @@ def run(wall_time_start: int) -> None:
         else int(params.stop.max_wall_time.total_seconds() / ns_to_s)
     )
 
+    # ``stop.max_sim_time`` is the horizon *relative* to the initial
+    # condition (``init.t0``, the resumed snapshot's timestamp by this
+    # point): a run continued from ``t = 100`` with
+    # ``max_sim_time = 300`` stops at ``t = 400``.
     t_stop = (
         jnp.inf
         if params.stop.max_sim_time is None
-        else params.stop.max_sim_time
+        else params.init.t0 + params.stop.max_sim_time
     )
+    if params.stop.max_sim_time is not None and params.init.t0 != 0.0:
+        # Only when the two readings differ: on a t0 = 0 start the
+        # horizon *is* the stop time and the line would be noise.
+        sharding.print(
+            f"Stopping at t = {t_stop:.6e} (init.t0 + stop.max_sim_time)."
+        )
 
     it: int = params.init.it0
     t: float = params.init.t0

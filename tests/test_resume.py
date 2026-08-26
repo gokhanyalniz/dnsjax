@@ -75,6 +75,7 @@ sys.stdout.reconfigure(line_buffering=True)
 # A short, low-resolution plane-Couette run from a random IC.  Three
 # steps at dt = 0.01 (it_snapshot = 1) produce state00000 (IC),
 # state00001/2 (periodic) and a final snapshot.
+DT = 0.01
 RUN1_ARGS: list[str] = [
     "--phys.system",
     "plane-couette",
@@ -97,7 +98,7 @@ RUN1_ARGS: list[str] = [
     "--init.random_seed",
     "1",
     "--step.dt",
-    "0.01",
+    str(DT),
     "--outs.it_snapshot",
     "1",
     "--outs.it_stats",
@@ -495,6 +496,9 @@ def run_integration(timeout: float) -> str | None:
         # start_from_laminar): a provided snapshot must take precedence
         # over every other init mode, so this still resumes (and, with
         # unchanged params, continues the trajectory).
+        # ``max_sim_time`` is the horizon *past the resumed state*:
+        # 0.02 from t = 0.03 ends at t = 0.05 (as an absolute stop
+        # time it would have ended the run before its first step).
         r2 = _run_dnsjax(
             work1,
             [
@@ -507,7 +511,7 @@ def run_integration(timeout: float) -> str | None:
                 "--outs.it_snapshot",
                 "1",
                 "--stop.max_sim_time",
-                "0.05",
+                "0.02",
             ],
             timeout,
         )
@@ -523,6 +527,13 @@ def run_integration(timeout: float) -> str | None:
         idx2 = _snap_indices(work1)
         assert (final1 + 1) in idx2, (final1, idx2)
         assert max(idx2) > final1, (final1, idx2)
+        t_resumed = read_snapshot_meta(
+            os.path.join(work1, f"state{max(idx2):05d}.tar")
+        )["t"]
+        assert abs(t_resumed - 0.05) < 0.5 * DT, (
+            "the resume did not run t0 + max_sim_time",
+            t_resumed,
+        )
 
         # --- Run 3: changed phys.re -> new trajectory (fresh dir) ----
         r3 = _run_dnsjax(
@@ -563,7 +574,7 @@ def run_integration(timeout: float) -> str | None:
                 "--outs.it_snapshot",
                 "1",
                 "--stop.max_sim_time",
-                "0.05",
+                "0.02",
             ],
             timeout,
         )
@@ -620,7 +631,7 @@ def run_integration(timeout: float) -> str | None:
                 "--outs.it_snapshot",
                 "1",
                 "--stop.max_sim_time",
-                "0.1",
+                "0.07",
             ],
             timeout,
         )
@@ -654,7 +665,7 @@ def run_integration(timeout: float) -> str | None:
                 "--outs.it_snapshot",
                 "1",
                 "--stop.max_sim_time",
-                "0.1",
+                "0.07",
             ],
             timeout,
         )

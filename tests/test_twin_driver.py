@@ -227,7 +227,21 @@ def _run_twin(
     return result
 
 
-def _twin_args(horizon: float, seed: int = SEED, e0: float = E0) -> list[str]:
+def _twin_args(
+    t_end: float,
+    seed: int = SEED,
+    e0: float = E0,
+    t_start: float = PARENT_T,
+) -> list[str]:
+    """Driver arguments running from *t_start* to *t_end*.
+
+    ``stop.max_sim_time`` is the horizon relative to the run's own
+    initial condition, so a resume passes the resumed pair's clock as
+    *t_start* (``t_start + (t_end - t_start)`` is exact in binary
+    floating point for these values, so the stop time -- and with it
+    the sample count every stream assertion below counts -- is the
+    same whichever launch produced it).
+    """
     args = [
         "--init.snapshot",
         str(PARENT),
@@ -236,7 +250,7 @@ def _twin_args(horizon: float, seed: int = SEED, e0: float = E0) -> list[str]:
         "--twin.seed",
         str(seed),
         "--stop.max_sim_time",
-        repr(horizon),
+        repr(t_end - t_start),
     ]
     if MEAN_FREE:
         # A CLI layer beats the snapshot layer, which carries the
@@ -326,8 +340,9 @@ def test_paired_restart_continuity() -> None:
         _run_twin(straight, _twin_args(t_end))
         _run_twin(split, _twin_args(t_mid))
         # Resume from the final pair written at t_mid (isnap 1: the
-        # IC pair is 00000).
-        resume_args = list(_twin_args(t_end))
+        # IC pair is 00000).  The horizon is relative, so the child
+        # asks for what is left of it.
+        resume_args = list(_twin_args(t_end, t_start=t_mid))
         resume_args[1] = "state00001.tar"
         result = _run_twin(split, resume_args)
         assert "Resumed twin pair" in result.stdout
@@ -483,7 +498,7 @@ def test_spectra_stream() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         spectra_args = ["--twin.it_spectra", "1"]
         _run_twin(tmp, [*_twin_args(t_mid), *spectra_args])
-        resume_args = list(_twin_args(t_end))
+        resume_args = list(_twin_args(t_end, t_start=t_mid))
         resume_args[1] = "state00001.tar"
         _run_twin(tmp, [*resume_args, *spectra_args])
 
@@ -531,7 +546,7 @@ def test_spectra_stream() -> None:
 
         # A stream file without its sidecar is refused loudly.
         (Path(tmp) / "twin_spectra.json").unlink()
-        resume2 = list(_twin_args(1.15))
+        resume2 = list(_twin_args(1.15, t_start=t_end))
         resume2[1] = "state00002.tar"
         result = _run_twin(tmp, [*resume2, *spectra_args], expect=1)
         _expect_error(result, "without its twin_spectra.json sidecar")
@@ -714,7 +729,7 @@ def test_guards() -> None:
     # Resume guards need a real member directory.
     with tempfile.TemporaryDirectory() as tmp:
         _run_twin(tmp, _twin_args(1.02))
-        resume_args = list(_twin_args(1.04))
+        resume_args = list(_twin_args(1.04, t_start=1.02))
         resume_args[1] = "state00001.tar"
 
         # twin.json mismatch (a different seed).
@@ -777,7 +792,7 @@ def test_yspectra_streams() -> None:
             "1",
         ]
         _run_twin(tmp, [*_twin_args(t_mid), *extra])
-        resume_args = list(_twin_args(t_end))
+        resume_args = list(_twin_args(t_end, t_start=t_mid))
         resume_args[1] = "state00001.tar"
         _run_twin(tmp, [*resume_args, *extra])
 
@@ -865,7 +880,7 @@ def test_yspectra_streams() -> None:
 
         # A .bin without its sidecar is refused, not guessed at.
         (Path(tmp) / "twin_yspectra.json").unlink()
-        resume2 = list(_twin_args(t_end + 0.05))
+        resume2 = list(_twin_args(t_end + 0.05, t_start=t_end))
         resume2[1] = "state00002.tar"
         result = _run_twin(tmp, [*resume2, *extra], expect=1)
         _expect_error(result, "without its twin_yspectra.json sidecar")

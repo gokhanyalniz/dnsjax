@@ -329,7 +329,7 @@ flows, fixed dt, launched like the solver (scratch dir; `mpirun -np N`
 only when it is multi-process):
 
 `.venv/bin/dnsjax-twin --init.snapshot parent.tar
---twin.e0 1e-6 --twin.seed 3 --stop.max_sim_time <t_parent + 10>`
+--twin.e0 1e-6 --twin.seed 3 --stop.max_sim_time 10`
 
 **The `ΔU`/`Δu₁`/`Δu₂` three-bin split is a three-bin partition of
 the `(kx, kz)` plane and its authors restrict it to minimal flow
@@ -527,7 +527,7 @@ layering" above.
 | `[init]`   | Start mode (see "Initial conditions" above) + `t0`/`it0`/`isnap0`/`force_resume` |
 | `[outs]`   | Diagnostic cadences, buffering, snapshot write policy |
 | `[step]`   | `dt` + scheme knobs + adaptive-CFL knobs (`TimeStepping`) |
-| `[stop]`   | Sim-/wall-time limits, laminarization check          |
+| `[stop]`   | Sim-time horizon (`max_sim_time`, relative to `init.t0`) / wall-time limit, laminarization check |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
 | `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
 | `[probes]` | Extension (`extensions/`): spectral-mode probe stream (wall-bounded) |
