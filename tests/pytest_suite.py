@@ -72,7 +72,8 @@ _NO_MPI_ONLY = (
 # One row per invocation: (script, extra args, marks, timeout in s).
 # Scripts appearing twice: ``test_resume`` (offline ``--unit-only``
 # subset + full mpirun run), ``test_forcing``/``test_probes``/
-# ``test_seeding`` (the no-mpirun unit fallback + the full run),
+# ``test_seeding``/``test_twin_postprocess`` (the no-mpirun unit
+# fallback + the full run),
 # ``test_transient_growth`` (offline ``--fast`` structure checks +
 # the slow full run with the literature anchors), and
 # ``test_laminar_smoke`` (single-device + the ``--np 2`` mesh row
@@ -114,6 +115,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_snapshot_perturb.py", (), (), 1800),
     ("test_transient_growth.py", ("--fast",), (), 1800),
     ("test_twin_analysis.py", (), (), 1800),
+    ("test_twin_postprocess.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_twin_unit.py", (), (), 1800),
     ("test_viscoelastic.py", (), (), 1800),
     ("test_viscoelastic_pipe.py", (), (), 1800),
@@ -142,6 +144,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     # per-rung 50-advective-unit parent spin-ups dominate.
     ("test_twin_budget.py", (), _SLOW, 3600),
     ("test_twin_driver.py", (), _MPI + _SLOW, 3600),
+    # ~2.5 min: three short twin members plus the reconstructions of
+    # them, the last on a (2, 1) mesh -- not a _SLOW row.
+    ("test_twin_postprocess.py", (), _MPI, 1800),
 ]
 
 
