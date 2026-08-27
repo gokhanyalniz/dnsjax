@@ -329,6 +329,9 @@ dissipation-form notes and the pressure's wall closure: the
 `twin/yspectra.py` module docstrings; the maths is written up as
 Appendix C of the `perturbation_dynamics` document (not in this repo).
 Ensembles: `ensemble_setup.py build-twin` + `dnsjax.analysis.twin`.
+A member recorded before a stream existed rebuilds it offline from its
+snapshot pairs: `scripts/twin_postprocess.py` (same diagnostics, same
+writers, sampled on the snapshot grid).
 
 ### Transient-growth analysis
 
@@ -525,7 +528,8 @@ model defaults -- set them via CLI (e.g. `--dist.np1 2`,
 `--force.modes "3,0"`, `--probes.modes "0,0;3,0"`) or by adding the
 section. Analysis CLIs and scripts register further extension sections
 on their own surfaces (`[tg]` for the transient-growth driver,
-`[perturb]` for `scripts/snapshot_perturb.py`).
+`[perturb]` for `scripts/snapshot_perturb.py`, `[recon]` for
+`scripts/twin_postprocess.py`).
 
 ### Diagnostics (`stats.dat`, `steps.dat`, `corrector.dat`, `probes.bin`, `forcing.bin`)
 
@@ -707,6 +711,10 @@ All under `scripts/`; full rationale/usage in each module docstring.
   perturbation into an existing snapshot.
 - `ensemble_setup.py`: JAX-free `harvest`/`build`/`build-twin` CLI
   building ensemble member run trees from a snapshot archive.
+- `twin_postprocess.py`: CLI rebuilding `twin.dat` /
+  `twin_yspectra.bin` / `twin_ybudget.bin` offline from a twin
+  member's snapshot pairs (`[recon]` section) -- for members recorded
+  before a stream existed.
 - `wall_normal_resolution.py`: JAX-free `resolve`/`match`/`box` CLI
   sizing `res.ny`/`fd_order`/`geo.grid_type` against a Chebyshev
   expansion of a given order (Cartesian family only).
@@ -824,3 +832,5 @@ are one-liners. Cross-cutting notes:
   partner).
 - `test_twin_analysis.py`: JAX-free `analysis.twin` readers/
   aggregation/fits/lengths + `build-twin` end to end.
+- `test_twin_postprocess.py`: `scripts/twin_postprocess.py` rebuilt
+  against live streams, incl. the mpirun mesh row (`--unit-only`).
