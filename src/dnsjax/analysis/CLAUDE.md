@@ -94,8 +94,9 @@ and its rationale: `flows/registry.py`.
   budget sums, `closure_residuals`, and `uniform_grid` — a `.dat`
   stream carries rows off its own cadence, so every consumer that
   needs a uniform grid selects one), `ensemble.py` (member-tree
-  aggregation + growth-rate fits, CLI), `spectra.py` (`twin_spectra.bin` reader +
-  decorrelation ratio), `yspectra.py` (`twin_yspectra.bin` /
+  aggregation + growth-rate fits, CLI), `spectra.py`
+  (`twin_spectra.bin` reader + decorrelation ratio), `yspectra.py`
+  (`twin_yspectra.bin` /
   `twin_ybudget.bin` readers, the `integrate_y` quadrature
   contraction, and `bin_energies` — the three-bin energies recovered
   from the marginals, which is why `twin.bins` can stay off),

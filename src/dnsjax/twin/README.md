@@ -48,9 +48,9 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.it_energy` | `1` | Steps between `twin.dat` rows |
 | `twin.it_budget` | unset | Steps between `twin_budget.dat` rows; unset disables the stream |
 | `twin.it_spectra` | unset | Steps between `twin_spectra.bin` records; unset disables the stream |
-| `twin.it_yspectra` | unset | Steps between `twin_yspectra.bin` records (wall-normal-resolved componentwise spectra) |
-| `twin.it_ybudget` | unset | Steps between `twin_ybudget.bin` records (the same bins' budget) |
-| `twin.spectra_ref` | `true` | Also store the reference spectrum with each sample |
+| `twin.it_yspectra` | unset | Steps between `twin_yspectra.bin` records (wall-normal-resolved componentwise spectra). Needs an even `res.nz` |
+| `twin.it_ybudget` | unset | Steps between `twin_ybudget.bin` records (the same bins' budget). Needs an even `res.nz` |
+| `twin.spectra_ref` | `true` | Also compute and store the reference spectrum with each `it_spectra` / `it_yspectra` sample; off, it is never traced |
 
 `twin.bins` is off by default. The three-bin split is a three-bin
 partition of the $(k_x, k_z)$ plane, and the reference paper restricts
@@ -60,20 +60,31 @@ exactly recoverable from it (`analysis.twin.bin_energies`). Turning
 the bins off also drops a few percent of every step — the two masked
 full-state copies the split forces.
 
-Two of these are not priced by cadence alone. `it_budget` sets the
+Three of these are not priced by cadence alone. `it_budget` sets the
 **run's peak memory**, not just its per-sample cost: the budget is a
 separate compiled program whose transient is the driver's global
 high-water mark, and the device allocator's pool grows to the maximum
-over every program. `spectra_ref` is a **disk** knob only — the
-reference spectrum is reduced either way, so turning it off shortens
-the file and costs the decorrelation ratio, but saves no compute.
+over every program. `it_ybudget` costs memory in two places — a
+resident second factored banded operator with its homogeneous columns
+(`twin/pressure.py`'s "Cost" section), and a per-sample transient of 15
+padded physical fields that is the easy one to miss. `spectra_ref`
+gates the reference half of **both** spectra streams in compute as well
+as on disk: it is a static flag on the two jitted samplers, so with it
+off the reference reduction is never traced — saving a field pass and a
+collective on the $(k_z, k_x)$ stream, and about half the sample on the
+$y$-resolved one. What it costs is the decorrelation ratio.
+
+An even `res.nz` is a hard requirement of the two $y$-resolved streams,
+checked at parse: they store $k_z$ folded onto $|k_z|$, and at odd `nz`
+the stored band is asymmetric, leaving the outermost negative mode with
+no positive partner to fold onto.
 
 ## The initial perturbation
 
 $\delta$ is the divergence-free random field of
 `dnsjax.ic.random_field` — device-count independent, seeded per global
-mode, mean mode excluded — rescaled so that its solver-measure
-perturbation energy is *exactly* `twin.e0`:
+mode — rescaled so that its solver-measure perturbation energy is
+*exactly* `twin.e0`:
 
 ```math
 E'(\delta) = \tfrac{1}{2}\lVert \delta \rVert^2 = e_0 ,
@@ -81,6 +92,12 @@ E'(\delta) = \tfrac{1}{2}\lVert \delta \rVert^2 = e_0 ,
 
 the same convention as `snapshot_perturb --perturb.amplitude_energy`.
 It is applied once, at the fresh start; a resume can never re-perturb.
+
+Its $(k_x, k_z) = (0, 0)$ content follows the shared
+`init.random_mean_flow`, **on by default** here, and is conditioned on
+that mode's conservation laws. So the partner's mean profile differs
+from the reference's only in ways the mean-mode dynamics admits, and
+under a held bulk velocity it carries the reference's exactly.
 
 `twin.e0 = 0` makes the partner an exact copy stepped by the same
 jitted stepper, so every difference energy must be exactly zero. That
@@ -217,6 +234,10 @@ streams. Start a fresh member instead. A fresh start inherits the
 parent's clock, so offline analysis reads the perturbation time from
 `twin.json`.
 
+`stop.max_sim_time` is a horizon counted from whichever clock the run
+starts on, not an absolute end time, so a member restarted mid-horizon
+asks for what is left of it rather than for the original value.
+
 ## Ensembles
 
 One member = one run directory = one `dnsjax-twin` invocation, varying
@@ -237,7 +258,10 @@ uv run python scripts/ensemble_setup.py build-twin \
 
 `build-twin` needs no seeding subprocesses — the driver perturbs
 in-process at start — so each member directory holds only a generated
-`parameters.toml`. Seeds run `--seed-base + k` over the flat member
+`parameters.toml`, carrying `--horizon` straight through as
+`stop.max_sim_time`: every member integrates the same span however far
+apart their parents were harvested, which is what the shared time grid
+means. Seeds run `--seed-base + k` over the flat member
 index, and `--members-per-snapshot` fans several seeds out of one
 parent. An unset `--seed-base` is drawn from the system entropy pool
 and printed, so two ensembles built from the same parents are
@@ -254,9 +278,17 @@ runs the solver itself.
 `dnsjax.analysis.twin` reads and aggregates all of it, and is
 importable **without JAX** — a guarantee the test suite pins.
 
+Two kinds of `twin.dat` row sit off the `it_energy` sampling grid, and
+at `it_energy > 1` both are routine: the unconditional final row, so
+the end-of-run state is never lost, and a resumed segment's `t0` row
+when `outs.it_snapshot` is not a multiple of `it_energy`. They are real
+samples and are kept, so a consumer that needs a *uniform* grid — a
+centred difference, an across-member stack — selects one with
+`series.uniform_grid` instead of assuming the raw stream is one.
+
 | Module | Role |
 |---|---|
-| `series` | Readers for `twin.dat` / `twin_budget.dat` / `stats.dat` and the `twin.json` member record; per-component budget sums |
+| `series` | Readers for `twin.dat` / `twin_budget.dat` / `stats.dat` and the `twin.json` member record; per-component budget sums; `uniform_grid` |
 | `ensemble` | Member-tree aggregation on aligned relative time, plus the growth-rate fits (exponential-phase $\lambda$, algebraic-phase linear rate) |
 | `spectra` | Reader for `twin_spectra.bin` and the decorrelation ratio |
 | `yspectra` | Readers for `twin_yspectra.bin` / `twin_ybudget.bin`, the wall-normal quadrature contraction, and the three-bin energies recovered from them |
@@ -277,6 +309,7 @@ python -m dnsjax.analysis.twin.ensemble --tree twins/ --out twin_ens.npz
 - The root [README](../../../README.md) for the solver itself.
 
 Per-function behaviour, the difference-field derivations, the budget
-term list and the frame-invariance notes live in the
-`twin/driver.py`, `twin/diagnostics.py` and `twin/spectra.py` module
-docstrings.
+term list, the $\pm k_z$ fold, the pressure's wall closure and the
+frame-invariance notes live in the `twin/driver.py`,
+`twin/diagnostics.py`, `twin/pressure.py`, `twin/spectra.py` and
+`twin/yspectra.py` module docstrings.
