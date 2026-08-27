@@ -48,47 +48,33 @@ check covering exactly that (the Tests list below; often a one-line
 `python -c` import). An import already on the graph cannot change the
 graph, and a docs/type-hint pass cannot change behaviour: a run that
 cannot tell "the change is fine" from "the change was never involved"
-buys nothing and holds the one-suite-at-a-time slot meanwhile.
+buys nothing and holds the one-suite slot meanwhile.
 
-Background a long run and tail it for progress -- and kill it early
-when something is clearly wrong instead of waiting out the timeout.
+Background a long run and tail it for progress; kill it early when
+something is clearly wrong. Let the run's own completion signal reach
+you -- **never poll** with `until ! pgrep -f "tests/test_x"`, whose
+pattern matches the polling shell's own command line, so the loop
+outlives what it watches. Queue suites by chaining them with `&&`
+inside one backgrounded command; where a process check is unavoidable,
+bracket the pattern (`tes[t]_x`) and cap the iterations.
 
-Let a backgrounded run's own completion signal reach you;
-**never poll for it** with `until ! pgrep -f "tests/test_x"`. The
-polling shell's own command line contains the pattern, so `pgrep -f`
-matches itself, the condition never goes false, and the loop
-outlives the run it was watching. Queue several suites by chaining
-them with `&&` inside one backgrounded command, not by waiting in
-between. Where a process check is genuinely unavoidable, bracket the
-pattern so it cannot match its own text (`tes[t]_x`) and cap the
-iteration count.
+Run **one** heavy suite at a time: each invocation is already serial
+internally, and the in-process ones deliberately leave JAX's CPU thread
+pool unpinned (why, and why not to "fix" it: `configure_jax_platform`
+in `bootstrap.py`), so concurrent invocations oversubscribe and have
+produced spurious aborts. Corollaries: read a verdict from a captured
+log (`> log 2>&1`) and grep it, never from a `tail` of a run you have
+not seen in full; never change **behaviour** while a suite is running
+-- each script is a subprocess, so the verdict would cover no single
+tree (docstrings and comments are fine); and a failure that does not
+reproduce on a clean serial rerun was contention -- say so rather than
+silently re-running.
 
-Run **one** heavy suite at a time. Each invocation is already serial
-internally (no xdist; the smoke suites loop one `mpirun` at a time),
-and the in-process ones deliberately leave JAX's CPU thread pool
-unpinned (the reason, and why not to "fix" it:
-`configure_jax_platform` in `bootstrap.py`; the `mpirun` children go
-through `configure_jax_runtime` instead, which pins one thread per
-rank). Concurrent invocations oversubscribe instead, and have produced
-spurious aborts (a signal-6 in an `mpirun` child; a smoke entry that
-failed once and passed identically on rerun). Corollaries: never
-read a *verdict*
-from a `tail` of a run you have not seen in full -- capture it
-(`> log 2>&1`) and grep the file; never change **behaviour** while a
-suite is running -- each script is launched as a subprocess, so later
-ones would run different semantics than earlier ones and the verdict
-covers no single tree (docstrings and comments are fine: they change
-nothing the run measures); and a failure that does not
-reproduce on a clean serial rerun was contention -- say so rather
-than silently re-running.
-
-Two ways to get multiple devices, and they do **not** mix:
-offline/in-process tests force CPU devices via
-`XLA_FLAGS=--xla_force_host_platform_device_count=N` + set
-`params.dist.np0`/`np1` before importing `sharding` (no MPI); a
-multi-device `dnsjax` run needs real `mpirun -np N` (1 device/process
-on CPU, where the forced-device trick is refused), or -- on GPU only
--- one process spanning the visible devices, no MPI.
+Multiple devices offline: force CPU devices with
+`XLA_FLAGS=--xla_force_host_platform_device_count=N` and set
+`params.dist.np0`/`np1` before importing `sharding` (no MPI). A real
+`dnsjax` run takes the launch contract below instead -- the two do not
+mix.
 
 Single file: `uv run python tests/test_cartesian.py`
 Laminar smoke (1D multi-device):
@@ -170,13 +156,11 @@ Guards: `tests/test_mean_mode.py`, `tests/test_localized_rolls.py`,
 
 ### Triggering transition to turbulence
 
-A flow that decays is a *regime/time* matter, **not** a solver bug (the
-linear physics is reproduced quantitatively): transition develops over
-O(100) advective units (smoke tests only reach `t=1`) and needs `Re`
-above sustainment (plane-Couette ≳ 350-500), a domain ≳ the minimal flow
-unit, and a finite-amplitude perturbation (random `amplitude ≈ 0.1-0.2`,
-or a strong localized spot). Near-minimal boxes give transient
-(decaying) turbulence.
+A flow that decays is a *regime/time* matter, **not** a solver bug. It
+needs all three of: O(100) advective units (smoke tests reach `t=1`),
+`Re` above sustainment (plane-Couette ≳ 350-500), and a
+finite-amplitude perturbation in a domain ≳ the minimal flow unit,
+which is itself only transiently turbulent.
 
 ## Documentation instructions
 
@@ -185,11 +169,11 @@ up-to-date. In the future MkDocs will be used with MathJax, escape
 LaTeX commands appropriately (prefer raw docstrings: `\t`/`\f` in
 non-raw strings silently become control characters). Keep
 documentation lines in code to 79 characters wide. Keep CLAUDE.md
-files up-to-date (root and subdirectory files). The **four**
-`README.md` files -- root plus `extensions/`, `twin/` and
-`analysis/response/` -- are human-facing and may lag the code, so treat
-the CLAUDE.md files and code docstrings as authoritative and do not
-sync code to a README.
+files up-to-date (root and subdirectory files). The **five**
+human-facing docs -- `README.md` and `SCALING.md` at the root, plus the
+`extensions/`, `twin/` and `analysis/response/` READMEs -- may lag the
+code, so treat the CLAUDE.md files and code docstrings as authoritative
+and do not sync code to one.
 
 **Documentation layering.** CLAUDE.md files are an index for AI agents,
 not a manual. A line earns its place only if it is (a) a command to
@@ -267,6 +251,8 @@ ic/
                       (init.random_field, the default start mode)
   localized_rolls.py  Deterministic localized-spot IC generators
                       (init.localized_rolls)
+  mean_mode.py        The (0,0) conservation laws: constraint rows,
+                      conditioning projector (Cartesian only)
 twin/
   driver.py           dnsjax-twin console script (also python -m
                       dnsjax.twin): lockstep twin-run (predictability)
@@ -339,11 +325,10 @@ them (`analysis.twin.bin_energies`). Start/resume rules (partner
 snapshot + `twin.json` decide; a resume never re-perturbs), stream
 formats, the ±k_z fold the marginals require, the frame-invariance /
 dissipation-form notes and the pressure's wall closure: the
-`twin/driver.py`, `twin/diagnostics.py` and `twin/pressure.py`
-module docstrings; the maths is written up as Appendix C of the
-`perturbation_dynamics` document (not in this repo). Ensembles:
-`ensemble_setup.py build-twin` +
-`dnsjax.analysis.twin`.
+`twin/driver.py`, `twin/diagnostics.py`, `twin/pressure.py` and
+`twin/yspectra.py` module docstrings; the maths is written up as
+Appendix C of the `perturbation_dynamics` document (not in this repo).
+Ensembles: `ensemble_setup.py build-twin` + `dnsjax.analysis.twin`.
 
 ### Transient-growth analysis
 
@@ -633,46 +618,40 @@ mean. `t`/`it`/`isnap` continue only when
 
 - Explicit mode sharding is used globally rather than Auto mode. Do
   not use `jax.lax.with_sharding_constraint`.
-- Allocate sharded arrays directly on devices (`out_sharding` argument
-  of `jnp.zeros`, `.at[...].get/set`, etc.) instead of allocating
-  globally and redistributing with `jax.device_put`; when direct
-  allocation is not possible, do not substitute `jnp.asarray` for
-  `jax.device_put`.
+- Allocate sharded arrays directly on devices (`out_sharding` on
+  `jnp.zeros`, `.at[...].get/set`, ...) rather than allocating globally
+  and redistributing; where that is impossible use `jax.device_put`,
+  never `jnp.asarray`.
 - **Resharding an existing multi-device array** (vs a host→device
   ingest, the `device_put` above): do it **inside `jax.jit`** with
-  `jax.sharding.reshard`, moving **one mesh axis per step** -- eager
-  `device_put` redistributes piecewise (338× slower than jitted),
-  and moving both axes at once replicates the whole array on every
-  device (`Involuntary full rematerialization`; shows only at
-  `np0 > 1, np1 > 1`, so audit on a `(2, 2)` mesh). Jitting costs a
-  compile: for reshards that run repeatedly, not once-per-run ones.
-  Pattern + numbers: `snapshot.py`'s `_via_mid` /
-  `_to_io_layout_core`; codebase-wide audit recipe:
+  `jax.sharding.reshard`, moving **one mesh axis per step** -- the
+  eager form is slow at any mesh, and moving both axes at once
+  replicates the array on every device, which shows only at
+  `np0 > 1, np1 > 1`, so audit on a `(2, 2)` mesh. Jitting costs a
+  compile: for repeated reshards, not once-per-run ones. Pattern,
+  numbers and failure signature: `snapshot.py`'s `_via_mid` /
+  `_to_io_layout_core`; audit recipe:
   `~/.claude/plans/reshard-audit-jitted-collectives.md`.
 - A **global (multi-device) array reaches a jitted function as an
   argument**, never through a closure or a `static_argnames` entry
-  holding it: a baked-in constant is legal on one process and raises
-  `Closing over jax.Array that spans non-addressable (non process
-  local) devices` the moment the run has two. So every object
-  carrying arrays is a `register_dataclass_pytree` pytree and is
-  passed in -- the flows, the `Fourier` classes, the solver
-  operators, `twin.pressure.DifferencePressure`. Only a real
-  multi-**process** run catches a slip; forced CPU devices inside one
-  process are all addressable and accept it (guard:
+  holding it: a baked-in constant is legal on one process and raises at
+  trace time the moment the run has two (error text:
+  `twin/pressure.py`). So every array-carrying object is a
+  `register_dataclass_pytree` pytree passed in -- flows, `Fourier`,
+  solver operators, `DifferencePressure`. Only a real
+  multi-**process** run catches a slip (guard:
   `tests/test_twin_driver.py`'s `test_np2_run`).
 - `jax_enable_x64` is set from `params.res.double_precision` before
   JAX initializes arrays.
-- Rank bootstrap reads the launcher environment when it is complete,
-  else falls back to JAX's own detection; a one-process launch skips
-  it entirely, and a multi-device **CPU** run additionally auto-selects
-  MPI collectives when it finds an MPIwrapper library. **Nothing may
-  initialize MPI before XLA does** — XLA's init is unguarded, so an
-  MPI-using import aborts the run or corrupts its thread ownership.
-  Env knobs, none of them a parameter: `JAX_COORDINATOR_ADDRESS`,
-  `JAX_COORDINATOR_PORT`, `MPITRAMPOLINE_LIB`,
-  `JAX_CPU_COLLECTIVES_IMPLEMENTATION`; mechanism in
-  `configure_jax_runtime` (`bootstrap.py`), user-facing contract in
-  the `Distribution` docstring and `README.md`.
+- **Nothing may initialize MPI before XLA does** -- XLA's init is
+  unguarded, so an MPI-using import aborts the run or corrupts its
+  thread ownership. Rank bootstrap, the one-process skip and the
+  CPU-collectives auto-selection: `configure_jax_runtime`
+  (`bootstrap.py`); env knobs, none of them a parameter:
+  `JAX_COORDINATOR_ADDRESS`, `JAX_COORDINATOR_PORT`,
+  `MPITRAMPOLINE_LIB`, `JAX_CPU_COLLECTIVES_IMPLEMENTATION`;
+  user-facing contract: the `Distribution` docstring, `README.md`
+  "Installation" and `SCALING.md`.
 - JAX has no zero-copy complex<->real bitcast. Real-operator ×
   complex-field GEMMs/solves use an explicit trailing re/im split --
   reuse `apply_y_matrix` (`geometries/wall_bounded/_base.py`) or the
@@ -691,8 +670,7 @@ mean. `t`/`it`/`isnap` continue only when
   insertion order.
 - A flow dataclass is a registered pytree, so every array field is
   traced into the jitted steppers; keep data needed only *outside* jit
-  (e.g. a precomputed laminar state) at module level, not as a flow
-  field.
+  (e.g. a precomputed laminar state) at module level.
 - A `dt` / resolution / `params` sweep needs a **subprocess per
   value**: they are captured into the singletons and jitted steppers
   at import/trace time (the `test_*` subprocess-per-config idiom).
@@ -700,33 +678,24 @@ mean. `t`/`it`/`isnap` continue only when
   backend from `--dist.platform` (default cpu) via
   `configure_jax_platform` / `platform_from_argv` (`bootstrap.py`),
   before importing `sharding` or any geometry module -- so
-  `--dist.platform cuda` runs the real Pallas kernels on GPU. In-process
-  multi-device tests force CPU (`--xla_force_host_platform_device_count`,
-  CPU-only); real multi-GPU uses `mpirun` (`test_random_smoke.py --np`).
+  `--dist.platform cuda` runs the real Pallas kernels on GPU. Real
+  multi-GPU needs `mpirun` (`test_random_smoke.py --np`).
 - The wall-bounded per-mode solve dispatches on the **live backend**:
   `solvers._kernel_path()` picks both the solve body and the factor
-  *storage*, so they cannot disagree -- a CPU run never reaches
-  `pallas_call` and stores a different diagonal at a different plane
-  extent. The mode-inner **layout** is shared and measured-optimal on
-  both. A test flipping `_force_kernel_path` must do so *before*
-  building the operator. Numbers, and why an isolated solve timing
-  ranks the layouts backwards: the `solvers.py` docstrings -- do not
-  re-derive.
+  *storage*, so they cannot disagree; a test flipping
+  `_force_kernel_path` must do so *before* building the operator.
+  Numbers, the shared mode-inner layout, and why an isolated solve
+  timing ranks the layouts backwards: `solvers.py` -- do not re-derive.
 - Pallas/Triton GPU kernels: interpret mode (CPU) validates numerics
   but **not** Triton's lowering; compile-check on the GPU-less dev box
-  by lowering for cuda **inside an abstract GPU mesh** (since JAX 0.11
-  a bare `lower(lowering_platforms=("cuda",))` raises `No supported GPU
-  devices found` -- Triton reads the compute capability off the mesh
-  context's abstract device). Recipe, and the extra mesh swap a
-  `shard_map`-wrapped kernel needs: `_abstract_gpu_mesh` in
-  `tests/test_banded_solver.py`. The
-  lowering/layout rules and the partial-tile miscompile (pad tiled
-  arrays to whole tiles): the `_pallas_banded_solve` docstring; the
-  `check_vma=False` a `pallas_call` inside a `shard_map` needs:
-  `PerModeBandedPallasOperator.solve`. Guards
-  `test_pallas_cuda_lowering` and
-  `test_pallas_cuda_lowering_sharded_solve` (both in
-  `tests/test_banded_solver.py`).
+  by lowering for cuda **inside an abstract GPU mesh**. Recipe, and the
+  extra mesh swap a `shard_map`-wrapped kernel needs:
+  `_abstract_gpu_mesh` in `tests/test_banded_solver.py` (guards
+  `test_pallas_cuda_lowering{,_sharded_solve}` there). Lowering/layout
+  rules and the partial-tile miscompile (pad tiled arrays to whole
+  tiles): the `_pallas_banded_solve` docstring; the `check_vma=False` a
+  `pallas_call` inside a `shard_map` needs:
+  `PerModeBandedPallasOperator.solve`.
 
 ## Scripts
 
