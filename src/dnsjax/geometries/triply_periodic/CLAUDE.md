@@ -44,12 +44,7 @@
 
 ### Tests
 
-Kolmogorov is stepped by `tests/test_random_smoke.py` (random-IC
-integration: the base iterative-cn entry caps `dt` at 0.005 -- a
-corrector-rate limit; the corrector-free cnab2 entry runs the default
-`dt`; plus adaptive and nan-guard entries), `tests/test_cnab2.py`
-(the plain no-corrector
-AB2 path), and `tests/test_temporal_order.py` (the cnab2
-self-convergence study); `tests/test_monochromatic.py` pins the
-`get_stats` diagnostics (Parseval/physical-space enstrophy identity,
-laminar limits).
+Kolmogorov is reached by `tests/test_random_smoke.py` (random-IC
+integration; iterative-cn, cnab2, adaptive and nan-guard entries),
+`tests/test_cnab2.py`, `tests/test_temporal_order.py` and
+`tests/test_monochromatic.py` (the `get_stats` identities).

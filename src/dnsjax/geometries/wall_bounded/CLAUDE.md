@@ -287,16 +287,8 @@ laminar coupling.
 
 ### Tests
 
-Relevant files: `test_cartesian.py`, `test_cylindrical.py`,
-`test_annular.py`, `test_viscoelastic.py`,
-`test_viscoelastic_pipe.py` (per-geometry operators),
-`test_banded_solver.py`, `test_banded_solver_sharded.py`,
-`test_integration.py`, `test_mean_mask.py`, `test_cnab2.py`,
-`test_imm_continuity.py`, `test_energy_budget.py`,
-`test_temporal_order.py`, `test_adaptive.py`,
-`test_laminar_smoke.py`, `test_random_smoke.py`,
-`test_rolls_smoke.py`, `test_localized_rolls.py`,
-`test_quasi_keplerian.py`, `test_probes.py`, `test_forcing.py`,
-`test_transient_growth.py`. One-line
-descriptions in the root CLAUDE.md Tests section; detail in each
-test's module docstring.
+Per-geometry operator suites (`test_cartesian` / `test_cylindrical` /
+`test_annular` / `test_viscoelastic` / `test_viscoelastic_pipe`) plus
+the solver, stepping, continuity, budget, IC and transient-growth
+guards that reach this directory. One-liners in the root CLAUDE.md
+Tests section; what each covers is in its own module docstring.

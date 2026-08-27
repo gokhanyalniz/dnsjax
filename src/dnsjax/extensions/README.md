@@ -34,7 +34,7 @@ mean mode `0,0` **is** allowed: its record is the instantaneous mean
 profile of the perturbation, and adding the closed-form laminar profile
 recovers the total mean (the reader does this for you).
 
-**Why a separate stream.** A mode time series wants $10^5$–$10^6$
+**Why a separate stream.** A mode time series wants $10^5$ to $10^6$
 samples. A snapshot per sample is some three orders of magnitude more
 bytes, and the scalar `.dat` streams cannot hold a complex per-$y$
 profile. The probe stream is the input for mode statistics —
