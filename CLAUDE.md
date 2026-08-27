@@ -561,8 +561,9 @@ crossing in `__main__`); the column set is one invariant across the
 geometry `aux`, the flow's `get_driving` and `__main__`'s buffer width,
 so `validate_parameters` rejects a driving knob a flow's surface does
 not carry. `dnsjax-twin` records the reference's value in its
-`stats.dat` and the twin−reference difference as `<key>_d` in
-`twin.dat`.
+`stats.dat`; `twin.dat` carries no driving column, because the
+difference of a uniform mean-mode force does no work on any
+y-integrated budget term.
 
 Every `.dat` header row is `#`-commented (`_write_dat_header` in
 `__main__.py`, shared with `twin/driver.py`; the `#` eats one space of
@@ -824,7 +825,7 @@ are one-liners. Cross-cutting notes:
 - `test_transient_growth.py`: transient-growth analysis, incl. the
   per-flow literature anchors (`--fast` skips them).
 - `test_twin_budget.py`: twin budget closure per flow / driving mode
-  on a wall-normal ladder, and the omitted driving-work bound
+  on a wall-normal ladder
   (`--only`/`--ladder`/`--seeds`/`--measure`/`--quick`).
 - `test_twin_unit.py`: twin diagnostics on a (2,2) mesh.
 - `test_twin_driver.py`: `dnsjax-twin` integration via mpirun

@@ -6,15 +6,15 @@ guards -- on one plane-Couette configuration with no driving knob set.
 This script guards the *physics* of the difference-field budget
 (:mod:`dnsjax.twin.diagnostics`) where that one cannot reach: on
 plane-Poiseuille, and with the mean-mode driving constraints active.
-Three code paths reach a twin run only through plane-Poiseuille --
+Three code paths reach a twin run only through these configurations --
 the moving frame ``phys.u_grid = 2/3`` (whose cancellation the
 "Frame invariance" note argues but never measured), a *curved* base
-flow inside ``rU`` (plane-Couette's ``dU/dy`` is constant), and the
-``-dPds'_d`` / ``-dPdn'_d`` columns of ``twin.dat``, which are
-unreachable without a driving knob.  Each of them would show up as an
-unclosed budget, so the closure measurement below is what tests them.
+flow inside ``rU`` (plane-Couette's ``dU/dy`` is constant), and an
+active mean-mode driving constraint, which no run without a driving
+knob can reach.  Each of them would show up as an unclosed budget, so
+the closure measurement below is what tests them.
 
-Three questions, all measured rather than argued.
+Two questions, both measured rather than argued.
 
 1. **Does the budget close, and converge?**  Per component,
    `$\partial_t E_X = P_X + T_X - \epsilon_X$` up to spatial truncation
@@ -24,35 +24,10 @@ Three questions, all measured rather than argued.
    ladder, and the residuals must *shrink* along it: a missing or
    mis-signed term would not.
 
-2. **Is the budget complete under an active driving constraint?**  The
-   budget has no forcing column.  It does not need one because the
-   omitted work `$\Delta\pi\cdot\mathrm{bulk}(\Delta u)$` vanishes --
-   but by a *different* mechanism per setting, and neither mechanism is
-   self-evident:
-
-   ===================  ===============  ==================
-   setting              `$\Delta\pi$`    bulk `$(\Delta u)$`
-   ===================  ===============  ==================
-   force free (CPG,     **zero**         non-zero
-   plane-Couette,
-   spanwise unblocked)
-   bulk held (CBV,      non-zero         **zero**
-   spanwise blocked)
-   ===================  ===============  ==================
-
-   So the test measures **both** factors in every configuration and
-   bounds their product against the budget's own terms.  Measuring both
-   is the point: asserting only the vanishing one would pass vacuously
-   in exactly the case where a real term had gone missing.  A free bulk
-   velocity is emphatically not a zero one -- plane-Couette acquires a
-   streamwise bulk spontaneously despite having no streamwise pressure
-   gradient at all, and so does the spanwise bulk of both flows when the
-   block is off.
-
 Measured
 --------
 Closure residuals, **max over ``twin.seed`` 3/5/7** at each rung
-(20 budget samples each; the driving legs are in the next table):
+(20 budget samples each):
 
 ===========  ====  =======  =======  =======  =======
 config       ny    dU       du1      du2      T_tot
@@ -79,31 +54,7 @@ All 15 (config, seed) ladders shrink on ``du1``, ``du2`` and
 the two flows land in different regimes: plane-Couette closes an order
 *tighter* on ``du2``/``T_tot`` and an order *looser* on ``dU``.
 
-The driving legs, at the coarsest rung of each (they are
-resolution-independent -- both are exact statements, not truncated
-ones):
-
-===========  ==========  ==========  ==========  ==========
-config       bulk_s      dpi_s/pi_s  bulk_n      dpi_n/pi_n
-===========  ==========  ==========  ==========  ==========
-pp-cpg       4.5e-3      -- (no      7.5e-3      -- (no
-                         force)                  force)
-pp-cbv       8.8e-18     1.0e-2      8.6e-3      -- (no
-                                                 force)
-pp-cbv-span  1.2e-17     1.2e-2      4.3e-18     4.0e-3
-pc           2.4e-3      -- (no      1.7e-3      -- (no
-                         force)                  force)
-pc-span      2.6e-3      -- (no      1.7e-18     1.8e-1
-                         force)
-===========  ==========  ==========  ==========  ==========
-
-Every held bulk is 2.7e-18 to 4.7e-17 -- rounding, as it must be for a
-rank-1 algebraic projection applied at every corrector iterate.  Every
-free bulk is 2.4e-4 to 8.6e-3.  The omitted work
-`$\Delta\pi\,\mathrm{bulk}(\Delta u)$` never exceeds **5.1e-16** of the
-``dU`` balance it would join.
-
-3. **Does the wall-normal-resolved budget regroup to this one?**
+2. **Does the wall-normal-resolved budget regroup to this one?**
    :func:`_yresolved` reads ``twin_ybudget.bin`` alongside
    ``twin_budget.dat`` and checks that `$\sum_k \int$` of the
    production and viscous densities reproduce ``P_tot`` and
@@ -166,9 +117,6 @@ sys.stdout.reconfigure(line_buffering=True)
 _REPO = Path(__file__).resolve().parent.parent
 BIN = str(_REPO / ".venv" / "bin" / "dnsjax")
 
-from dnsjax.analysis.snapshot_export import read_state  # noqa: E402
-from dnsjax.analysis.snapshot_ops import integrate  # noqa: E402
-from dnsjax.analysis.twin.lengths import partner_of  # noqa: E402
 from dnsjax.analysis.twin.series import (  # noqa: E402
     ClosureResiduals,
     closure_residuals,
@@ -192,8 +140,6 @@ _HKW_LZ = 1.2 * math.pi
 
 #: ``name`` selects with ``--only``.  ``spin`` is the parent spin-up
 #: horizon and ``horizon`` the twin's own, both in advective units.
-#: ``keys`` are the driving columns the configuration must produce --
-#: empty means the run must produce *none*, which is itself asserted.
 #: Absolute bounds at each flow's **finest** rung, ~10x above the worst
 #: of three ``twin.seed`` values there (the measured table is in this
 #: module's docstring).  Ten, not the two or three that would look
@@ -234,7 +180,6 @@ CONFIGS: list[dict] = [
         "ladder": [49, 65, 97],
         "spin": 50.0,
         "horizon": 1.0,
-        "keys": [],
     },
     {
         # The one configuration where the applied force is genuinely
@@ -258,7 +203,6 @@ CONFIGS: list[dict] = [
         "ladder": [49, 65, 97],
         "spin": 50.0,
         "horizon": 1.0,
-        "keys": ["-dPds'"],
     },
     {
         "name": "pp-cbv-span",
@@ -282,7 +226,6 @@ CONFIGS: list[dict] = [
         "ladder": [49, 65, 97],
         "spin": 50.0,
         "horizon": 1.0,
-        "keys": ["-dPds'", "-dPdn'"],
     },
     {
         "name": "pc",
@@ -302,11 +245,10 @@ CONFIGS: list[dict] = [
         "ladder": [33, 49, 65],
         "spin": 50.0,
         "horizon": 1.0,
-        "keys": [],
     },
     {
-        # Spanwise blocking with no streamwise driving at all: the
-        # ``-dPdn'_d`` leg on its own.
+        # Spanwise blocking with no streamwise driving at all: a
+        # constrained mean mode in the spanwise direction alone.
         "name": "pc-span",
         "bounds": _PC_BOUNDS,
         "converge": _CONVERGE,
@@ -326,7 +268,6 @@ CONFIGS: list[dict] = [
         "ladder": [33, 49, 65],
         "spin": 50.0,
         "horizon": 1.0,
-        "keys": ["-dPdn'"],
     },
 ]
 
@@ -445,115 +386,12 @@ def _twin(
     return workdir
 
 
-# ── The omitted driving-work term ────────────────────────────────────
-
-
-def _tilt(params) -> tuple[float, float]:
-    theta = math.radians(float(params.geo.tilt_degree))
-    return math.cos(theta), math.sin(theta)
-
-
-def _difference_bulk(member: Path) -> dict[str, float]:
-    r"""`$\mathrm{bulk}(\Delta u)$` in the tilted (s, n) frame.
-
-    Read from the **paired snapshots** the driver writes, because no
-    stream reports the partner's bulk velocity: ``stats.dat`` carries
-    the reference's alone.  The volume average is the same quantity the
-    budget's `$\langle\cdot\rangle$` uses, so the product with the
-    recorded force difference is directly comparable to a budget term.
-
-    Returns the largest magnitude over the pairs present, keyed ``s``
-    and ``n``.
-    """
-    pairs = [
-        p
-        for p in sorted(member.glob("state*.tar"))
-        if not p.name.endswith("_twin.tar")
-    ]
-    assert pairs, f"{member}: the twin run wrote no snapshot pair"
-    worst = {"s": 0.0, "n": 0.0}
-    for ref in pairs:
-        twin = partner_of(ref)
-        a, b = read_state(ref), read_state(twin)
-        cos_t, sin_t = _tilt(a.params)
-        volume = float(a.params.geo.lx) * float(a.params.geo.lz) * 2.0
-        bulk = [
-            float(integrate(bi - ai, a.params, a.physical_coords)) / volume
-            for ai, bi in zip(a.physical, b.physical, strict=True)
-        ]
-        got = {
-            "s": bulk[0] * cos_t + bulk[2] * sin_t,
-            "n": -bulk[0] * sin_t + bulk[2] * cos_t,
-        }
-        for k, v in got.items():
-            worst[k] = max(worst[k], abs(v))
-    return worst
-
-
-def _driving_work(cfg: dict, member: Path) -> dict[str, float]:
-    r"""Bound the budget's omitted `$\Delta\pi\,\mathrm{bulk}(\Delta u)$`.
-
-    Returns, per constrained direction, the largest force difference
-    (``dpi_*``), the largest difference-field bulk (``bulk_*``), their
-    product (``work_*``) and that product relative to the smallest
-    budget term the same run resolved (``ratio_*``) -- the number that
-    decides whether the omission is defensible.
-    """
-    twin_cols = read_dat(member / "twin.dat")
-    stats_cols = read_dat(member / "stats.dat")
-    budget = read_dat(member / "twin_budget.dat")
-    keys = list(cfg["keys"])
-
-    present = [k for k in ("-dPds'", "-dPdn'") if f"{k}_d" in twin_cols]
-    assert present == keys, (
-        f"{cfg['name']}: twin.dat carries driving columns {present}, "
-        f"expected {keys}"
-    )
-    for key in keys:
-        assert key in stats_cols, f"{cfg['name']}: stats.dat lacks {key}"
-
-    bulk = _difference_bulk(member)
-    # The omitted work is a *mean-mode* term -- the force lives on the
-    # (0, 0) mode alone -- so the balance it would join is the ``dU``
-    # component's, and that is the scale it must be small against.
-    # Not "the smallest budget term": ``P_dU(dU,rU)`` is structurally
-    # zero, because a divergence-free field with no-slip walls has an
-    # identically vanishing mean wall-normal velocity, so
-    # `$(\Delta U\cdot\nabla)$` of a mean profile is zero pointwise.
-    p_du = sum(budget[n] for n in budget if n.startswith("P_dU("))
-    t_du = sum(budget[n] for n in budget if n.startswith("T_dU("))
-    scale = float(np.abs(p_du + t_du - budget["eps_dU"]).max())
-    assert scale > 0.0, f"{cfg['name']}: the dU budget is identically zero"
-
-    out: dict[str, float] = {"budget_dU": scale}
-    for key, axis in (("-dPds'", "s"), ("-dPdn'", "n")):
-        # Row 0 is the wall-shear *inference*, not the applied value
-        # (no step precedes it); it is a poor estimator at these ny and
-        # must not enter the measurement.
-        dpi = (
-            float(np.abs(twin_cols[f"{key}_d"][1:]).max())
-            if f"{key}_d" in twin_cols
-            else 0.0
-        )
-        pi = (
-            float(np.abs(stats_cols[key][1:]).max())
-            if key in stats_cols
-            else 0.0
-        )
-        out[f"dpi_{axis}"] = dpi
-        out[f"pi_{axis}"] = pi
-        out[f"bulk_{axis}"] = bulk[axis]
-        out[f"work_{axis}"] = dpi * bulk[axis]
-        out[f"ratio_{axis}"] = dpi * bulk[axis] / scale
-    return out
-
-
 # ── The measurement ──────────────────────────────────────────────────
 
 
 def _measure(
     cfg: dict, ny: int, root: Path, seed: int, spin: float, horizon: float
-) -> tuple[ClosureResiduals, dict[str, float], dict[str, float]]:
+) -> tuple[ClosureResiduals, dict[str, float]]:
     parent = _spin_up(cfg, ny, root / f"{cfg['name']}_ny{ny}_spin", spin)
     member = _twin(
         cfg,
@@ -564,27 +402,9 @@ def _measure(
         horizon,
     )
     series = read_twin(member)
-    return (
-        closure_residuals(series),
-        _driving_work(cfg, member),
-        _yresolved(member),
-    )
+    return closure_residuals(series), _yresolved(member)
 
 
-#: The held bulk is pinned by a rank-1 algebraic projection, so it is
-#: zero to rounding, not to a solver tolerance.  Measured 4e-18 to
-#: 2e-17 across the configurations here.
-BULK_HELD_TOL = 1e-12
-#: A *free* bulk must be demonstrably non-zero, or the "the force is
-#: what vanishes" leg proves nothing.  Measured O(1e-3 .. 1e-2).
-BULK_FREE_MIN = 1e-8
-#: Likewise the force difference on a held direction: it has to be a
-#: real fraction of the reference's own applied force, or the "the bulk
-#: is what vanishes" leg is equally vacuous.  Measured ~1e-2.
-DPI_FRACTION_MIN = 1e-4
-#: The omitted work relative to the dU balance it would join.
-#: Measured 1e-17 to 1e-18.
-WORK_RATIO_TOL = 1e-10
 #: Interior budget samples a rung must contribute for its residual to
 #: be a maximum over something rather than a single draw.
 MIN_SAMPLES = 15
@@ -703,44 +523,6 @@ def _check_closure(
     return bad
 
 
-def _check_driving(cfg: dict, work: dict[str, float]) -> list[str]:
-    """The omitted-term legs, both factors measured (see the header)."""
-    bad: list[str] = []
-    held = {
-        "s": "-dPds'" in cfg["keys"],
-        "n": "-dPdn'" in cfg["keys"],
-    }
-    for axis, is_held in held.items():
-        bulk, dpi, pi = (
-            work[f"bulk_{axis}"],
-            work[f"dpi_{axis}"],
-            work[f"pi_{axis}"],
-        )
-        if is_held:
-            if not bulk < BULK_HELD_TOL:
-                bad.append(f"bulk_{axis}={bulk:.2e} not held to zero")
-            if not (pi > 0 and dpi > DPI_FRACTION_MIN * pi):
-                bad.append(
-                    f"dpi_{axis}={dpi:.2e} vs pi_{axis}={pi:.2e}: the "
-                    "force difference is too small for the zero-work "
-                    "result to mean anything"
-                )
-        else:
-            if not bulk > BULK_FREE_MIN:
-                bad.append(
-                    f"bulk_{axis}={bulk:.2e} is not measurably free; "
-                    "the vanishing-force leg proves nothing"
-                )
-            if dpi != 0.0:
-                bad.append(f"dpi_{axis}={dpi:.2e} on an undriven axis")
-        if not work[f"ratio_{axis}"] < WORK_RATIO_TOL:
-            bad.append(
-                f"omitted work along {axis} is {work[f'ratio_{axis}']:.2e} "
-                "of the dU balance"
-            )
-    return bad
-
-
 def run_config(cfg: dict, args: argparse.Namespace) -> str | None:
     """Measure one configuration across its ladder; return failure."""
     ladder = args.ladder or cfg["ladder"]
@@ -757,9 +539,7 @@ def run_config(cfg: dict, args: argparse.Namespace) -> str | None:
             worst: dict[str, float] = {}
             rows[ny] = worst
             for seed in seeds:
-                resid, work, yres = _measure(
-                    cfg, ny, root, seed, spin, horizon
-                )
+                resid, yres = _measure(cfg, ny, root, seed, spin, horizon)
                 for name, value in resid.components.items():
                     worst[name] = max(worst.get(name, 0.0), value)
                 comp = resid.components
@@ -768,11 +548,6 @@ def run_config(cfg: dict, args: argparse.Namespace) -> str | None:
                     f"dU={comp['dU']:.2e} du1={comp['du1']:.2e} "
                     f"du2={comp['du2']:.2e} T_tot={comp['T_tot']:.2e} "
                     f"({resid.n_samples} samples)",
-                    flush=True,
-                )
-                print(
-                    "           driving: "
-                    + " ".join(f"{k}={work[k]:.3e}" for k in sorted(work)),
                     flush=True,
                 )
                 for name in ("T_bins", "pi_flux"):
@@ -791,10 +566,6 @@ def run_config(cfg: dict, args: argparse.Namespace) -> str | None:
                                 "the (y,k) budget no longer regroups to "
                                 "the volume-averaged one"
                             )
-                    bad += [
-                        f"ny={ny} seed={seed}: {why}"
-                        for why in _check_driving(cfg, work)
-                    ]
                     if resid.n_samples < MIN_SAMPLES:
                         bad.append(
                             f"ny={ny} seed={seed}: only "

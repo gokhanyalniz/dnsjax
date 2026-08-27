@@ -925,25 +925,15 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         last_saved_it = it
 
     # --- Streams ---------------------------------------------------------
-    # Applied mean-mode driving (the ``stats.dat`` / ``twin.dat`` last
+    # The reference's applied mean-mode driving (the ``stats.dat`` last
     # columns): a *step* quantity threaded out of the corrector, so the
-    # ``t = t0`` rows -- which have no step behind them -- carry the
-    # wall-shear inference instead (``get_driving``).  That difference
-    # is exactly zero at ``t0`` for a mean-free partner
-    # (``ic/localized_rolls``, or ``init.random_mean_flow False``) and
-    # nonzero for a mean-perturbed one, which is correct: the partner
-    # then genuinely starts at a different wall shear.
-    # ``get_driving`` takes the
-    # *physical* view of a state; this driver is Cartesian-only, whose
-    # solver basis **is** the physical one (no ``to_solver_basis``
-    # anywhere here), so the states below satisfy that as they stand.
-    _drive0 = get_driving(state1) if get_driving is not None else {}
-    last_drive1 = dict(_drive0)
-    if get_driving is not None:
-        _d2 = get_driving(state2)
-        last_drive_d = {f"{k}_d": _d2[k] - _drive0[k] for k in _drive0}
-    else:
-        last_drive_d = {}
+    # ``t = t0`` row -- which has no step behind it -- carries the
+    # wall-shear inference instead (``get_driving``).  ``get_driving``
+    # takes the *physical* view of a state; this driver is
+    # Cartesian-only, whose solver basis **is** the physical one (no
+    # ``to_solver_basis`` anywhere here), so ``state1`` satisfies that
+    # as it stands.
+    last_drive1 = get_driving(state1) if get_driving is not None else {}
 
     stats_stream = None
     if params.outs.it_stats is not None:
@@ -956,12 +946,9 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         stats_stream.push(_row(stats, last_drive1), t)
 
     twin_stream = _ScalarStream(
-        "twin.dat",
-        list(tvals.keys()) + list(last_drive_d.keys()),
-        jnp=jnp,
-        sharding=sharding,
+        "twin.dat", tvals.keys(), jnp=jnp, sharding=sharding
     )
-    twin_stream.push(_row(tvals, last_drive_d), t)
+    twin_stream.push(jnp.stack(list(tvals.values())), t)
 
     budget_stream = None
     if measure_budget:
@@ -1150,7 +1137,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                 _abort_non_finite(bad)
         if do_twin:
             tvals = twin_energies(state1, state2, bins=twin_params.bins)
-            bad = twin_stream.push(_row(tvals, last_drive_d), t)
+            bad = twin_stream.push(jnp.stack(list(tvals.values())), t)
             if bad is not None:
                 _abort_non_finite(bad)
         if do_budget:
@@ -1198,7 +1185,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                 ) = step_cnab2_measured(state1, rhs1)
             else:
                 state1, rhs1, e1_dev, c1_dev, drive1 = step_cnab2(state1, rhs1)
-            state2, rhs2, e2_dev, c2_dev, drive2 = step_cnab2(state2, rhs2)
+            state2, rhs2, e2_dev, c2_dev, _ = step_cnab2(state2, rhs2)
         else:
             if do_record:
                 (
@@ -1212,12 +1199,11 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                 state1, e1_dev, c1_dev, drive1 = predict_and_fully_correct(
                     state1
                 )
-            state2, e2_dev, c2_dev, drive2 = predict_and_fully_correct(state2)
-        # The reference's own applied driving, and the difference the
-        # twin streams: both belong to the step just taken, so they are
-        # bound here and consumed by the *next* iteration's rows.
+            state2, e2_dev, c2_dev, _ = predict_and_fully_correct(state2)
+        # The reference's own applied driving belongs to the step just
+        # taken, so it is bound here and consumed by the *next*
+        # iteration's ``stats.dat`` row.
         last_drive1 = drive1
-        last_drive_d = {f"{k}_d": drive2[k] - drive1[k] for k in drive1}
 
         if do_record:
             bad = steps_stream.push(jnp.stack(list(meas.values())), t)
@@ -1309,7 +1295,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             )
         if stats_stream is not None:
             stats_stream.push(_row(stats, last_drive1), t)
-        twin_stream.push(_row(tvals, last_drive_d), t)
+        twin_stream.push(jnp.stack(list(tvals.values())), t)
         if measure_budget:
             budget_stream.push(jnp.stack(list(bvals.values())), t)
 
