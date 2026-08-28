@@ -86,11 +86,18 @@ def cartesian_fields() -> tuple[FieldSpec, ...]:
         FieldSpec("res", "nz"),
         FieldSpec("phys", "re"),
         FieldSpec("phys", "block_mean_spanwise_velocity"),
-        # Default **on** here and deferred everywhere else: the
-        # Cartesian flows are the ones whose (0, 0) conservation laws
-        # are established, so the random IC may perturb the mean
-        # profile (:mod:`dnsjax.ic.mean_mode`).
-        FieldSpec("init", "random_mean_flow", default=True),
+        # Offered here and deferred everywhere else: the Cartesian
+        # flows are the ones whose (0, 0) conservation laws are
+        # established, so the random IC *may* perturb the mean profile
+        # (:mod:`dnsjax.ic.mean_mode`).  It is opt-in, at the model
+        # default (off), so that every wall-bounded flow behaves the
+        # same way out of the box -- the geometries that defer the knob
+        # have nothing that respects the mean mode's bulk / driving
+        # laws, and a default that holds only for two of eight flows is
+        # a trap.  The one entry point that defaults it on is
+        # ``dnsjax-twin``, through its own ``twin.mean_flow``
+        # (:class:`dnsjax.twin.driver.TwinParams`).
+        FieldSpec("init", "random_mean_flow"),
     )
 
 

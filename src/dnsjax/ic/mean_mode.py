@@ -1,13 +1,31 @@
 r"""Mean-mode `$(k_x, k_z) = (0, 0)$` perturbation constraints.
 
 A perturbation of the mean mode is not free: the `$x$`-`$z$` averaged
-momentum balance ties the mean profile to the boundary conditions and,
-when a bulk velocity is held, to the applied driving.  This module
-turns those relations into the **discrete, homogeneous** conditions a
-mean-mode perturbation must satisfy, and projects a candidate profile
-onto the subspace they define.  Cartesian only (plane-Couette /
-plane-Poiseuille); every other flow defers ``init.random_mean_flow``
-until its own laws are worked out.
+momentum balance ties the mean profile to the boundary conditions and
+to the driving.  This module turns those relations into the
+**discrete, homogeneous** conditions a mean-mode perturbation must
+satisfy, and projects a candidate profile onto the subspace they
+define.  Cartesian only (plane-Couette / plane-Poiseuille); every
+other flow defers ``init.random_mean_flow`` until its own laws are
+worked out.
+
+What the conditions deliver: a state and its perturbed copy share
+every quantity the run **controls**, so their difference is an
+initial-condition perturbation and nothing else --
+
+- the mean pressure gradient `$\Pi$`, in **both** tangential
+  directions and under **every** driving.  It is imposed and shared
+  where the driving fixes it, and pinned to the state where the
+  driving holds a bulk instead, which is the extra row of case B
+  below;
+- the bulk velocity, in each direction whose bulk the driving
+  **holds**.  Where the bulk is free it is a response, not a control,
+  and the pair's bulks differ exactly as any two states' would --
+  deliberately unconstrained.
+
+That is what a twin run (:mod:`dnsjax.twin.driver`) needs of
+`$\delta$`, and it is what a solver run needs of a random IC built
+around the laminar profile.
 
 Derivation
 ----------
@@ -22,20 +40,27 @@ balance of a tangential component `$u$` is
     \tau = -\langle v u\rangle + \nu\,\partial_y\langle u\rangle ,
 
 with `$\tau$` the **total** shear of the **total** field.  Two
-relations follow, and both hold at all times:
+relations follow:
 
-1. No-slip pins `$\langle u\rangle$` at each wall, so
-   `$\partial_t\langle u\rangle|_{\pm 1} = 0$` and hence
-   `$\partial_y\tau(\pm 1) = \Pi$` at **each wall independently**.
-   At a wall `$v = \partial_y v = 0$` (no-slip plus continuity), so
-   `$\langle v u\rangle$` and `$\partial_y\langle v u\rangle$` both
-   vanish there and the relation reduces to
+1. **Regardless of the driving.**  No-slip pins `$\langle u\rangle$`
+   at each wall, so `$\partial_t\langle u\rangle|_{\pm 1} = 0$` and
+   hence `$\partial_y\tau(\pm 1) = \Pi$` at **each wall
+   independently**.  At a wall `$v = \partial_y v = 0$` (no-slip plus
+   continuity), so `$\langle v u\rangle$` and
+   `$\partial_y\langle v u\rangle$` both vanish there and the relation
+   reduces to
 
    .. math:: \nu\,\partial_y^2\langle u\rangle(\pm 1) = \Pi .
 
-2. When the direction's bulk is held fixed, integrating the balance
-   across the channel (the `$\partial_y\tau$` term telescopes, the
-   Reynolds stress vanishes at both walls) gives
+   It holds at all times, for any driving, and it is the
+   **first-order compatibility condition** between the initial data
+   and the no-slip boundary condition: data violating it is
+   inconsistent with `$\partial_t\langle u\rangle|_{\text{wall}} = 0$`
+   and launches a singular near-wall adjustment layer.
+
+2. **When the direction's bulk is held fixed**, integrating the
+   balance across the channel (the `$\partial_y\tau$` term telescopes,
+   the Reynolds stress vanishes at both walls) gives
 
    .. math::
        \Pi = \frac{\tau(+1) - \tau(-1)}{2}
@@ -46,19 +71,17 @@ relations follow, and both hold at all times:
    which is the wall-shear inference
    :func:`dnsjax.geometries.wall_bounded.cartesian.mean_driving`
    already reports (up to its sign convention: that column is the
-   applied forcing `$-\Pi$`).
-
-Relation 1 at a wall is the **first-order compatibility condition**
-between the initial data and the no-slip boundary condition: data
-violating it is inconsistent with `$\partial_t\langle u\rangle|_{
-\text{wall}} = 0$` and launches a singular near-wall adjustment layer.
+   applied forcing `$-\Pi$`).  `$\Pi$` is then a **response**: it is
+   whatever the state's own wall shears demand, rather than a number
+   the run imposes.
 
 Measured, on a controlled pair -- plane-Poiseuille at ``re = 400``,
 ``ny = 65``, ``fd_order = 6``, ``constant_bulk_velocity``,
 ``dt = 2e-4``, an otherwise laminar state carrying one mean-mode
 profile of peak ``0.05``.  Both profiles are **odd** in `$y$`, so both
-have exactly zero bulk and the held-bulk constraint is inert for both;
-they differ only in `$\partial_y^2\delta(\pm 1)$`, which is `$0$` for
+have exactly zero bulk and (their `$\partial_y\delta$` being even)
+equal wall shears -- both held-bulk rows are inert for both, and they
+differ only in `$\partial_y^2\delta(\pm 1)$`, which is `$0$` for
 `$\sin(\pi y)$` and `$\mp 6$` (scaled) for `$y(1-y^2)$`:
 
     t            0.0002   0.001    0.005    0.02
@@ -81,38 +104,57 @@ Reduction to homogeneous conditions
 The solver stores the perturbation `$u'$` about the laminar base flow
 `$U$`, which satisfies both relations exactly -- and *discretely* so,
 since `$D_2\,(1-y^2) = -2$` and `$D_2\,y = 0$` are exact for
-``fd_order >= 2``.  Both relations are linear, so with
-`$\delta(y)$` the perturbation of one tangential mean profile they
-become homogeneous conditions on `$\delta$` alone, and the factor
-`$\nu$` cancels between relations 1 and 2 -- the constraints are
-**Reynolds-number free** and purely geometric/discrete.
+``fd_order >= 2``.  Both relations are linear, so with `$\delta(y)$`
+the perturbation of one tangential mean profile, and
+`$\Delta\Pi$` the difference in mean pressure gradient it induces,
+relation 1 becomes
+
+.. math:: \nu\,\partial_y^2\delta(\pm 1) = \Delta\Pi .
+
+`$\Delta\Pi = 0$` is imposed: a perturbation may not change the
+gradient that drives the flow (see the header).  Relation 1 then
+reads `$\partial_y^2\delta(\pm 1) = 0$` **whatever the driving** --
+the factor `$\nu$` drops out with it, so the constraints are
+**Reynolds-number free** and purely geometric/discrete.  What the
+driving decides is only how `$\Delta\Pi = 0$` is *spelt*, since it
+fixes whether `$\Pi$` is imposed or a response.
 
 With the wall-normal grid ascending (index ``0`` is `$y = -1$`, index
 ``-1`` is `$y = +1$`; see ``build_cartesian_grid``):
 
-**Case A** -- that direction carries no held mean, so `$\Pi$` is fixed
-(zero for plane-Couette, the laminar value under
-``constant_pressure_gradient``):
+**Case A** -- that direction carries no held mean, so `$\Pi$` is
+imposed (zero for plane-Couette, the laminar value under
+``constant_pressure_gradient``) and `$\Delta\Pi = 0$` needs no row of
+its own:
 
 .. math:: \delta(\pm 1) = 0, \qquad (D_2\delta)_0 = (D_2\delta)_{-1} = 0 .
 
 **Case B** -- that direction's mean is held
 (``phys.driving = "constant_bulk_velocity"`` streamwise,
-``phys.block_mean_spanwise_velocity`` spanwise), so `$\Pi$` is
-determined dynamically and the bulk may not move:
+``phys.block_mean_spanwise_velocity`` spanwise), so relation 2
+evaluates `$\Pi$` on the state itself.  `$\Delta\Pi = 0$` becomes the
+equal-wall-shear row, and the held bulk adds one more:
 
 .. math::
-    \delta(\pm 1) = 0, \qquad \mathbf{w}\cdot\delta = 0, \qquad
-    (D_2\delta)_0 = (D_2\delta)_{-1}
-      = \tfrac{1}{2}\bigl[(D_1\delta)_{-1} - (D_1\delta)_0\bigr] ,
+    \delta(\pm 1) = 0, \qquad (D_2\delta)_0 = (D_2\delta)_{-1} = 0,
+    \qquad (D_1\delta)_{-1} = (D_1\delta)_0, \qquad
+    \mathbf{w}\cdot\delta = 0 ,
 
 with `$\mathbf{w}$` the grid's own quadrature weights (the same ones
-``_apply_bulk_corrections`` integrates with).
+``_apply_bulk_corrections`` integrates with).  The two curvature rows
+are **the same rows in both cases**; case B adds the two that keep
+them true under a responding `$\Pi$`.
 
-Anchors: laminar plane-Poiseuille `$1-y^2$` gives `$\partial_y^2 = -2$`
-at both walls and `$\tfrac12[-2-2] = -2$`, so it satisfies case B;
+Anchors, measured at ``cgl``/``ny = 65``/``fd_order = 6``:
 `$\sin(k\pi(y+1)/2)$` satisfies case A for every `$k$`;
-`$\sin(m\pi y)$` satisfies case B.
+`$\sin(m\pi y)$` satisfies case B (odd, so both extra rows are
+inert).  The even quartic `$(1-y^2)(5-y^2)$` separates them --
+machine-exact on the two curvature rows and `$O(1)$` on each of case
+B's extras (``1.000`` and ``0.640``, its wall shears being `$\mp 8$`
+and its bulk ``6.4``) -- which is what makes the four rows
+independent statements.  Laminar plane-Poiseuille `$1-y^2$` violates
+**every** row of both cases (``1, 1`` and ``1, 1, 1, 0.667``): legal
+as a base flow, never as a perturbation.
 
 The two directions are the **tilted** ones,
 `$\delta_s = \delta_x\cos\theta + \delta_z\sin\theta$` and
@@ -123,7 +165,7 @@ identically zero by continuity and is never touched here.
 
 Enforcement: condition, do not project blindly
 ----------------------------------------------
-The constrained subspace has codimension 2 (A) or 3 (B) inside the
+The constrained subspace has codimension 2 (A) or 4 (B) inside the
 wall-vanishing profiles.  Projecting a candidate along a *fixed*
 complement is a poor generator: the natural complement
 `$\mathrm{span}\{(1-y^2),\, y(1-y^2)\}$` is exactly where a windowed
@@ -184,13 +226,18 @@ from ..parameters import derived_params, params
 
 # Relative floor added to the ensemble covariance's spectrum
 # (:func:`smoothing_kernel`).  At an extreme ``random_smoothness`` the
-# filter retains only two or three effective wall-normal modes, and the
-# case-B constraint rows -- which need three -- go linearly dependent
-# after smoothing, making ``C K C^T`` singular.  The floor is a white
+# filter retains only four or five effective wall-normal modes (index
+# 6 at ``s = 0.95``, index 4 at ``0.99``, ``ny = 65``), and the case-B
+# constraint rows -- which need four -- go linearly dependent after
+# smoothing, making ``C K C^T`` singular.  The floor is a white
 # component *inside* the wall-vanishing space (it keeps the window
 # factor), so it restores full rank without breaking no-slip.  At the
-# default smoothness it sits ~34 filter indices down and is invisible.
-_KERNEL_FLOOR = 1e-6
+# default smoothness it sits 29 filter indices down and is invisible:
+# switching it from ``1e-6`` moved the projected draw's retained
+# energy by 0.1 % there, while cutting ``cond(C K C^T)`` by a decade
+# at ``s = 0.95``-``0.99`` (1.3e12 -> 1.3e11) -- which is what the
+# fourth row needed.
+_KERNEL_FLOOR = 1e-5
 
 # Residual below which a relation counts as satisfied.  A profile that
 # is compatible in the *continuum* still has a truncation-level, not a
@@ -203,23 +250,26 @@ _KERNEL_FLOOR = 1e-6
 #
 #     ny        17       25       33       65      129
 #     cgl    2.9e-4   4.3e-5   1.1e-5   3.6e-7   1.1e-8
-#     tanh   5.6e-4   8.3e-5   1.5e-4   4.9e-6   1.7e-6
+#     tanh   5.6e-4   8.2e-5   1.4e-4   4.9e-6   1.7e-6
 #
 # (the floor at large ``ny`` is roundoff, not truncation: the CGL
 # near-wall ``D_2`` entries grow like ``ny^4``).  A profile that
-# genuinely violates a relation scores `$O(1)$` -- ``1 - y^2`` (the
-# laminar shape: legal as a base flow, not as a perturbation) scores
-# ``1.0`` against case A and ``0.67`` against case B's bulk row, while
-# satisfying case B's two curvature rows exactly -- so
-# this sits ~1 decade above the worst compatible case and ~2 below the
-# violating one.  An *unresolved* profile (~2 points per wavelength)
-# scores up to ``0.3`` and is rejected, correctly: the grid cannot
-# carry it compatibly.  Do not tighten without re-measuring the table.
+# genuinely violates a relation scores `$O(1)$`: ``1 - y^2`` scores
+# ``1.0`` on every row of both cases except case B's bulk row, at
+# ``0.67``.  So this sits ~1 decade above the worst compatible case
+# and ~2 below the violating one.  An *unresolved* profile (~2 points
+# per wavelength) scores ``1.0`` and is rejected, correctly: the grid
+# cannot carry it compatibly.  Do not tighten without re-measuring
+# the table.
 COMPAT_TOL = 5e-3
 
 # Relation labels, in the row order of :func:`constraint_rows`.
 _LABELS_A = ("d(tau)/dy(y=-1) = Pi", "d(tau)/dy(y=+1) = Pi")
-_LABELS_B = (*_LABELS_A, "bulk velocity held")
+_LABELS_B = (
+    *_LABELS_A,
+    "mean pressure gradient unchanged",
+    "bulk velocity held",
+)
 
 
 def constraint_rows(
@@ -234,7 +284,10 @@ def constraint_rows(
     Returns the `$(m, N_y)$` matrix `$C$` whose rows are the relations
     derived in the module docstring, in the order of :data:`_LABELS_A`
     / :data:`_LABELS_B`: `$m = 2$` in case A (*fixed_bulk* false) and
-    `$m = 3$` in case B.  The no-slip rows are **not** included (see
+    `$m = 4$` in case B.  The first two rows -- relation 1, the
+    vanishing wall curvature -- are the **same in both cases**; case B
+    adds the two rows that make them so under a responding `$\Pi$`.
+    The no-slip rows are **not** included (see
     the module docstring).  Rows are unscaled -- the projection is
     invariant under row scaling, and :func:`constraint_residuals`
     applies each relation's own physical scale.
@@ -253,10 +306,10 @@ def constraint_rows(
     D2 = np.asarray(D2, dtype=np.float64)
     rows = [D2[0].copy(), D2[-1].copy()]
     if fixed_bulk:
-        # Relation 2: Pi is the wall-shear difference, so relation 1's
-        # right-hand side becomes a functional of delta itself.
-        shear = (D1[-1] - D1[0]) / 2.0
-        rows = [r - shear for r in rows]
+        # Relation 2 evaluates the responding Pi on delta itself, so
+        # "the perturbation leaves Pi alone" is the wall-shear
+        # difference; relation 3 holds the bulk the driving holds.
+        rows.append((D1[-1] - D1[0]) / 2.0)
         rows.append(np.asarray(y_weights, dtype=np.float64).copy())
     return np.stack(rows)
 
@@ -272,8 +325,8 @@ def constraint_residuals(
     r"""Per-relation **relative** residual of a candidate profile.
 
     Each relation is scaled by its own magnitude -- the curvature
-    relations by `$\max|D_2\delta|$` (and, in case B, the wall-shear
-    difference they are compared against), the bulk relation by
+    relations by `$\max|D_2\delta|$`, the pressure-gradient relation
+    by `$\max|D_1\delta|$`, the bulk relation by
     `$\bigl(\sum_j |w_j|\bigr)\max|\delta|$`.  The result is
     dimensionless and `$O(1)$` for a grossly incompatible profile,
     truncation-level for one that is compatible in the continuum, so a
@@ -287,11 +340,10 @@ def constraint_residuals(
 
     d2 = np.asarray(D2, dtype=np.float64) @ delta
     scale = np.max(np.abs(d2))
-    if fixed_bulk:
-        d1 = np.asarray(D1, dtype=np.float64) @ delta
-        scale = max(scale, abs(d1[-1] - d1[0]) / 2.0)
     scales = [scale, scale]
     if fixed_bulk:
+        d1 = np.asarray(D1, dtype=np.float64) @ delta
+        scales.append(np.max(np.abs(d1)))
         w = np.asarray(y_weights, dtype=np.float64)
         scales.append(float(np.sum(np.abs(w))) * np.max(np.abs(delta)))
     out = np.array(

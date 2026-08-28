@@ -1029,24 +1029,28 @@ class Initiation(BaseModel):
             "at startup, printed, and recorded in the snapshot."
         ),
     )
-    # Cartesian-only, and defaulted **on** there by the flow spec: only
-    # the Cartesian flows have their (kx, kz) = (0, 0) conservation
-    # laws established, so every other flow defers this field.  The
-    # model default stays False -- that is the inert value the deferred
+    # Cartesian-only, and **off** by default there too: only the
+    # Cartesian flows have their (kx, kz) = (0, 0) conservation laws
+    # established, so every other flow defers this field, and a
+    # default that held for two of the eight wall-bounded flows would
+    # make the mean mode behave differently per geometry for no
+    # user-visible reason.  Off is also the inert value the deferred
     # check in ``validate_parameters`` compares a direct assignment
-    # against.  Also read by ``dnsjax-twin`` for its partner field; the
-    # localized-rolls perturbation stays mean-free whatever it is set to
-    # (its (0, 0) content is a cubic in y, which the compatibility
+    # against.  ``dnsjax-twin`` does not read this field: its partner
+    # perturbation has its own ``twin.mean_flow``, which defaults
+    # **on** (``dnsjax.twin.driver``).  The localized-rolls
+    # perturbation stays mean-free whatever this is set to (its
+    # (0, 0) content is a cubic in y, which the compatibility
     # conditions annihilate -- ``ic/localized_rolls.py``), and the
     # runtime ``[force]`` kicks still reject the mode (``extensions``).
     random_mean_flow: bool = Field(
         default=False,
         description=(
             "Also perturb the mean (kx = kz = 0) streamwise/spanwise "
-            "profile, conditioned on its conservation laws: "
-            "compatibility with no-slip at both walls, and an "
-            "unchanged bulk velocity in each direction whose mean the "
-            "driving holds."
+            "profile, conditioned on its conservation laws: an "
+            "unchanged mean pressure gradient (= compatibility with "
+            "no-slip at both walls), and an unchanged bulk velocity "
+            "in each direction whose mean the driving holds."
         ),
     )
     # Radially windowed to zero at both walls (the reference restart

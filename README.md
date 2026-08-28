@@ -258,13 +258,14 @@ divergence-free field. The random builder takes
 `--init.random_amplitude` / `_smoothness` / `_seed`, plus
 `_conformation_amplitude` where it applies; the roll builder adds
 `--init.localized_rolls_wavelength` to the amplitude and width shown
-above. On the two plane channels the random field also perturbs the
-$(k_x, k_z) = (0, 0)$ mean profile by default
-(`--init.random_mean_flow`), conditioned on that mode's conservation
-laws — compatibility with no-slip at both walls, and an unchanged bulk
-velocity in each direction whose mean the driving holds — so the
-perturbation reaches the mean flow without contradicting what the run
-is holding fixed. Every other flow declares the field and refuses it,
+above. On the two plane channels the random field can also perturb the
+$(k_x, k_z) = (0, 0)$ mean profile (`--init.random_mean_flow`, off by
+default), conditioned on that mode's conservation laws — an unchanged
+mean pressure gradient, which under no-slip is compatibility at both
+walls, and an unchanged bulk velocity in each direction whose mean the
+driving holds — so the perturbation reaches the mean flow without
+contradicting what the run is holding fixed.
+Every other flow declares the field and refuses it,
 rather than appearing to offer something it does not implement. A path
 given to `--init.snapshot` that is not a dnsjax snapshot **aborts**
 rather than falling through to the random default, so a typo cannot

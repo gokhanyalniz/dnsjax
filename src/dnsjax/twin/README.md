@@ -93,11 +93,14 @@ E'(\delta) = \tfrac{1}{2}\lVert \delta \rVert^2 = e_0 ,
 the same convention as `snapshot_perturb --perturb.amplitude_energy`.
 It is applied once, at the fresh start; a resume can never re-perturb.
 
-Its $(k_x, k_z) = (0, 0)$ content follows the shared
-`init.random_mean_flow`, **on by default** here, and is conditioned on
-that mode's conservation laws. So the partner's mean profile differs
-from the reference's only in ways the mean-mode dynamics admits, and
-under a held bulk velocity it carries the reference's exactly.
+Its $(k_x, k_z) = (0, 0)$ content follows `twin.mean_flow`, **on by
+default** (the driver's own knob, not the shared
+`init.random_mean_flow`, which every flow defaults off), and is
+conditioned on that mode's conservation laws. So the partner drives
+the flow at the reference's own mean pressure gradient — whatever the
+driving — and under a held bulk velocity carries its bulk exactly:
+the pair is one flow, driven identically, differing only in its
+initial state.
 
 `twin.e0 = 0` makes the partner an exact copy stepped by the same
 jitted stepper, so every difference energy must be exactly zero. That
