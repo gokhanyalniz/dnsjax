@@ -13,16 +13,13 @@ it and compares:
    shared time grid.  Exact equality, not a tolerance: the same jitted
    diagnostics run on states that round-trip through the snapshot
    bit-exactly.
-2. Under a driving constraint the energy columns stay bit-identical
-   while ``-dPds'_d`` / ``-dPdn'_d`` carry the wall-shear *inference*
-   of the driving difference: **exact** at the ``t = t0`` row, where
-   the driver computes the same inference through its own code path,
-   and different at every later row, where the driver has the
-   corrector's applied value instead.  The size of that difference is
-   a wall-normal truncation residual and is not bounded here -- at an
-   unconverged ``res.ny`` it exceeds the term itself
-   (``tests/test_driving.py`` owns its convergence; the script's
-   module docstring tabulates a measured ladder).
+2. Under a driving constraint the rebuild is bit-identical too, with
+   **no exempt column**: the constraint reaches the stepper and the
+   `$(0,0)$` pressure-work term, but nothing a snapshot cannot give
+   back.  The same case pins where the driving *is* still recorded --
+   ``stats.dat``'s ``-dPds'`` / ``-dPdn'``, the reference member's own
+   applied force -- against ``twin.dat``, which carries no driving
+   column at all.
 3. ``twin.e0 = 0``: the partner is an exact copy, so every rebuilt
    value is **exactly** zero -- the determinism guard, and the one
    configuration that also exercises the null-seed sidecar and the
@@ -92,6 +89,7 @@ from _live import run_live  # noqa: E402
 
 from dnsjax.analysis.twin import (  # noqa: E402
     bin_energies,
+    read_dat,
     read_twin,
     read_twin_ybudget,
     read_twin_yspectra,
@@ -110,6 +108,18 @@ DT = params.step.dt
 #: ``[phys]`` driving knobs their embedded parameter dump records.
 PARENT = _SESSION / "parent.tar"
 PARENT_DRIVEN = _SESSION / "parent_driven.tar"
+
+#: Shared by the two ``PARENT_DRIVEN`` cases, which ``_member`` caches
+#: under one name.  ``it_stats`` is on so the driven member also shows
+#: where the applied driving *is* recorded (``stats.dat``).
+_DRIVEN_ARGS = [
+    "--twin.e0",
+    str(E0),
+    "--twin.bins",
+    "True",
+    "--outs.it_stats",
+    "1",
+]
 
 #: Members built once and reused across the cases below.
 _MEMBERS: dict[str, Path] = {}
@@ -242,44 +252,35 @@ def test_matches_live_streams() -> None:
     assert meta["it_yspectra"] == 1 and meta["includes_ref"] is True
 
 
-def test_driving_columns_are_inferred() -> None:
-    """Energies exact; the driving columns are the wall-shear inference."""
+def test_driven_member_rebuilds_identically() -> None:
+    """A member under a driving constraint has no exempt column."""
     member = _member(
         "driven",
         PARENT_DRIVEN,
         4,
-        ["--twin.e0", str(E0), "--twin.bins", "True"],
+        _DRIVEN_ARGS,
     )
-    stdout = _recon(member)
+    _recon(member)
     out = member / "recon"
     _assert_streams_identical(member, out)
 
     live, rebuilt = read_twin(member).energies, read_twin(out).energies
     assert list(live) == list(rebuilt), (list(live), list(rebuilt))
-    drive = [c for c in rebuilt if c.startswith("-dP")]
-    assert drive == ["-dPdn'_d", "-dPds'_d"], drive
-    assert "wall-shear *inference*" in stdout
     # ``--recon.bins`` unset adopts the member's twin.json.
+    assert "E_dU" in rebuilt, list(rebuilt)
     for key in rebuilt:
-        if key in drive:
-            continue
         assert np.array_equal(live[key], rebuilt[key]), key
 
-    for col in drive:
-        a, b = live[col], rebuilt[col]
-        # The t0 row is the same inference in both streams.
-        assert a[0] == b[0], (col, a[0], b[0])
-        assert np.isfinite(b).all()
-        # Afterwards the driver reports the corrector's *applied*
-        # value, so the two must differ -- a column reproducing it
-        # exactly would not be the inference this claims to be.  No
-        # magnitude bound belongs here: the gap is the wall-normal
-        # truncation residual, which at an unconverged ny exceeds the
-        # term itself (``tests/test_driving.py`` measures it, and a
-        # bound fitted to one draw is what that file's own docstring
-        # warns against).  The exactness at ``t0`` is the sharp check:
-        # the driver computed that row through its own code path.
-        assert (b[1:] != a[1:]).all(), (col, a, b)
+    # ``twin.dat`` carries no driving column: the difference of the
+    # applied mean-mode force does no work on any y-integrated budget
+    # term, so it is not recorded.  ``stats.dat`` still carries the
+    # *reference's* own applied force, exactly as a solver run does.
+    assert not [c for c in live if c.startswith("-dP")], list(live)
+    stats = read_dat(member / "stats.dat")
+    assert [c for c in stats if c.startswith("-dP")] == [
+        "-dPdn'",
+        "-dPds'",
+    ], list(stats)
 
 
 def test_bin_energies_round_trip() -> None:
@@ -288,7 +289,7 @@ def test_bin_energies_round_trip() -> None:
         "driven",
         PARENT_DRIVEN,
         4,
-        ["--twin.e0", str(E0), "--twin.bins", "True"],
+        _DRIVEN_ARGS,
     )
     out = member / "recon"
     dat = read_twin(out).energies
