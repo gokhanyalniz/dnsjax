@@ -134,16 +134,23 @@ between `configure_jax_runtime` and the `sharding` import, except
 decision.
 
 **Only the Cartesian flows may perturb the `(kx, kz) = (0, 0)` mode**,
-and only through its conservation laws -- compatibility with no-slip at
-both walls, plus an unchanged bulk velocity in each direction whose
-mean the driving holds. The derivation, the discrete constraint rows,
-the conditioning projector and its measured tolerance are all in
-`ic/mean_mode.py`; do not restate them elsewhere.
+and only through its conservation laws -- an unchanged mean pressure
+gradient (which under no-slip *is* compatibility at both walls, and is
+driving-independent), plus an unchanged bulk velocity in each
+direction whose mean the driving holds. So a state and its perturbed
+copy are the same flow, driven identically. The derivation, the
+discrete constraint rows, the conditioning projector and its measured
+tolerance are all in `ic/mean_mode.py`; do not restate them elsewhere.
 
-- allowed: `init.random_mean_flow` (**default on** for plane-couette /
-  plane-poiseuille, and what `dnsjax-twin` builds its partner with) and
-  `snapshot_perturb.py --perturb.mode "0,0"`, which **checks and
-  refuses** rather than reshaping a profile its caller owns.
+- allowed, **all opt-in and default off**, so every geometry behaves
+  the same out of the box: `init.random_mean_flow` (plane-couette /
+  plane-poiseuille only) and `snapshot_perturb.py --perturb.mode
+  "0,0"`, which **checks and refuses** rather than reshaping a profile
+  its caller owns.
+- the one default-**on** switch is `twin.mean_flow`, which
+  `dnsjax-twin` builds its partner with -- its own `[twin]` field, not
+  the shared one, because `init.*` is snapshot-inherited in both
+  directions (`twin/driver.py`).
 - deferred (`DeferredSpec`, rejects CLI/TOML *and* a direct assignment):
   `init.random_mean_flow` on every other flow, kolmogorov included.
 - still rejected outright: `[force]` kicks; transient growth still
@@ -520,7 +527,7 @@ layering" above.
 | `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
 | `[probes]` | Extension (`extensions/`): spectral-mode probe stream (wall-bounded) |
 | `[force]`  | Extension: white-in-time stochastic mode kicks; all-or-none and trajectory-defining (wall-bounded, non-viscoelastic) |
-| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + `bins` (Cartesian wall-bounded, fixed dt) |
+| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + `mean_flow`/`bins` (Cartesian wall-bounded, fixed dt) |
 
 The default `parameters.toml` contains only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`; the rest rely on

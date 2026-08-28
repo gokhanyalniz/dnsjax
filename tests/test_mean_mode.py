@@ -21,10 +21,13 @@ Cartesian perturbation must respect -- at three levels:
    with ``init.random_mean_flow`` on, across both flows, both driving
    knobs, tilt, both grid types and two ``fd_order``s: a real, wall-
    vanishing `$(0,0)$` column with no wall-normal component, machine-
-   level residuals per tilted direction, and an exactly zero bulk in
-   each direction whose mean is held.  Plus device-count independence
-   over ``(np0, np1)``, and the per-flow deferral for every flow whose
-   laws are not established.
+   level residuals per tilted direction -- which include the
+   vanishing wall curvature in **every** direction under **every**
+   driving, the statement that the pair starts at one mean pressure
+   gradient -- and an exactly zero bulk in each direction whose mean
+   is held.  Plus device-count independence over ``(np0, np1)``, and
+   the per-flow deferral for every flow whose laws are not
+   established.
 
 The rolls' own claim -- that their `$(0,0)$` content is a cubic, which
 no compatibility-satisfying profile can be -- is checked here too; the
@@ -142,16 +145,19 @@ def test_tolerance_table(check) -> None:
                                 d, D1, D2, w, fixed_bulk=case_b
                             ).max(),
                         )
-                # 1 - y^2 violates every case-A row (curvature -2
-                # at both walls) and case B's bulk row (it moves the
-                # bulk) -- the witness the tolerance is set against.
+                # 1 - y^2 violates every row of both cases -- the
+                # curvature pair (-2 at both walls), the pressure
+                # gradient (its wall shears are +-2) and the bulk --
+                # the witness the tolerance is set against.
                 pois = 1.0 - y**2
                 least_bad = min(
                     least_bad,
                     constraint_residuals(
                         pois, D1, D2, w, fixed_bulk=False
                     ).min(),
-                    constraint_residuals(pois, D1, D2, w, fixed_bulk=True)[2],
+                    constraint_residuals(
+                        pois, D1, D2, w, fixed_bulk=True
+                    ).min(),
                 )
     check(
         "compatible profiles score below COMPAT_TOL",
@@ -164,22 +170,41 @@ def test_tolerance_table(check) -> None:
         f"least={least_bad:.2e} >= {VIOLATION_FLOOR:g}",
     )
 
-    # The derivation's sharpest anchor: as a *perturbation*, the
-    # laminar plane-Poiseuille shape satisfies case B's two curvature
-    # relations exactly -- d^2/dy^2 = -2 at both walls equals
-    # (1/2)[-2 - 2] -- while violating its bulk row, so the three rows
-    # really are independent statements.
+    # The derivation's sharpest anchor: the even quartic
+    # (1-y^2)(5-y^2) is *exact* on both curvature rows -- which are
+    # literally the same rows in both cases -- and O(1) on each of the
+    # two rows case B adds, so the four rows really are independent
+    # statements.  A polynomial of degree <= fd_order is reproduced
+    # exactly by D1/D2, so this can be a machine-level check; a
+    # transcendental witness would carry the CGL near-wall D2 roundoff
+    # floor (~2e-10 at ny=65) instead.  Its wall curvatures are 0, its
+    # wall shears -+8 (so Delta Pi != 0) and its bulk 6.4.
     y, D1, D2, w = _grid("cgl", 65, 6)
-    res = constraint_residuals(1.0 - y**2, D1, D2, w, fixed_bulk=True)
+    quartic = (1.0 - y**2) * (5.0 - y**2)
+    res_a = constraint_residuals(quartic, D1, D2, w, fixed_bulk=False)
+    res_b = constraint_residuals(quartic, D1, D2, w, fixed_bulk=True)
     check(
-        "1 - y^2 satisfies case B's curvature rows exactly",
-        res[:2].max() < EXACT_TOL,
-        f"{res[0]:.1e}, {res[1]:.1e}",
+        "(1-y^2)(5-y^2): the curvature rows are case-independent",
+        max(res_a.max(), res_b[:2].max()) < EXACT_TOL
+        and np.allclose(res_a, res_b[:2], atol=EXACT_TOL),
+        f"A {res_a.max():.1e}, B {res_b[:2].max():.1e}",
     )
     check(
-        "1 - y^2 violates case B's bulk row",
-        abs(res[2] - 2.0 / 3.0) < 1e-12,
-        f"{res[2]:.6f} (= (4/3)/2)",
+        "(1-y^2)(5-y^2) violates case B's pressure-gradient row",
+        abs(res_b[2] - 1.0) < 1e-12,
+        f"{res_b[2]:.6f} (= (16/2)/8)",
+    )
+    check(
+        "(1-y^2)(5-y^2) violates case B's bulk row",
+        abs(res_b[3] - 0.64) < 1e-12,
+        f"{res_b[3]:.6f} (= 6.4/(2*5))",
+    )
+    # And the laminar shape violates all four, in both cases.
+    res = constraint_residuals(1.0 - y**2, D1, D2, w, fixed_bulk=True)
+    check(
+        "1 - y^2 violates every case-B row",
+        res[:3].min() > 1.0 - 1e-12 and abs(res[3] - 2.0 / 3.0) < 1e-12,
+        np.array2string(res, precision=3),
     )
 
 
@@ -271,10 +296,20 @@ def test_projector_properties(check) -> None:
             raw = win * (F @ rng.standard_normal(len(y)))
             out = project_profile(raw, C, K)
             res = constraint_residuals(out, D1, D2, w, fixed_bulk=case_b).max()
+            # ``constraint_residuals`` is *relative* to the profile it
+            # is handed, and at an extreme smoothness case B legitimately
+            # removes all but ~2 % of the draw (``keep``) -- the same
+            # absolute roundoff then reads inflated by ``1/keep``, and
+            # measurably so: the residual tracks ``1/keep`` across these
+            # six rows.  Bound it against what survives, so the check
+            # stays tight where the projector keeps the profile
+            # (``keep ~ 0.8`` at the default smoothness) rather than
+            # being loosened wholesale.
+            keep = float(out @ out) / float(raw @ raw)
             check(
                 f"{tag}: residual at machine level",
-                res < EXACT_TOL,
-                f"{res:.2e}",
+                res * min(keep, 1.0) < EXACT_TOL,
+                f"{res:.2e} (keep={keep:.3f})",
             )
             # Idempotent as algebra; the recompute differs only by
             # roundoff, so this is a scaled bound, not an equality
@@ -349,7 +384,10 @@ def test_per_flow_surface(check) -> None:
         )
     )
     validate_parameters()
-    check("plane-couette defaults on", params.init.random_mean_flow is True)
+    check(
+        "plane-couette defaults off",
+        params.init.random_mean_flow is False,
+    )
 
     for system, re in (("pipe", 2000.0), ("kolmogorov", 400.0)):
         update_parameters(

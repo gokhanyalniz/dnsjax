@@ -38,7 +38,7 @@ scope, in temporary member directories:
    ``test_budget_closure``'s own docstring.  ``--only closure`` (any
    test-name fragment) runs a subset; ``--seed N`` varies the
    partner's seed, which is what that sweep used.  ``--mean-free``
-   overrides ``init.random_mean_flow`` off, so the partner carries no
+   overrides ``twin.mean_flow`` off, so the partner carries no
    ``(0, 0)`` content: it isolates the partner's mean-mode content
    from everything else (the parent is unaffected either way,
    ``_build_parents`` taking the generator's mean-free default).  It
@@ -89,7 +89,7 @@ from dnsjax.parameters import (  # noqa: E402
 )
 
 #: Control switch (see the module docstring): force the partner's
-#: perturbation mean-free, the pre-``init.random_mean_flow`` behaviour.
+#: perturbation mean-free, the pre-``twin.mean_flow`` behaviour.
 #: Read here rather than in ``main`` because ``_twin_args`` is module
 #: level; it never reaches the ``--build-parent`` worker, which is
 #: correct -- the parent does not depend on it.
@@ -253,9 +253,8 @@ def _twin_args(
         repr(t_end - t_start),
     ]
     if MEAN_FREE:
-        # A CLI layer beats the snapshot layer, which carries the
-        # parent's resolved (Cartesian default: on) value.
-        args += ["--init.random_mean_flow", "False"]
+        # ``twin.mean_flow`` defaults on; this is its only override.
+        args += ["--twin.mean_flow", "False"]
     return args
 
 
