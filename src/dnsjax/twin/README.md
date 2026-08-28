@@ -123,9 +123,10 @@ holds to rounding — a deliberate redundancy, and a consistency guard.
 Columns are `E_d` and `E_ref` (the reference state's own energy)
 always; under `twin.bins`, additionally `E_dU`, `E_du1`, `E_du2` and
 the per-velocity-component split `E_du1_x` / `E_du1_y` / `E_du1_z`.
-Under a driving constraint one `<key>_d` column per
-constrained direction follows — the twin−reference difference of the
-applied mean-mode forcing, whose reference value `stats.dat` carries.
+There is no driving column: the difference of a uniform mean-mode
+force does no work on any $y$-integrated budget term (the reference's
+own applied forcing is in `stats.dat`, and the $y$-*resolved* budget
+carries the density it does have — see `twin_ybudget.bin` below).
 Format, buffering, `fsync`, the non-finite guard and the flush sites are
 those of `stats.dat`, with a `t0` row at setup and a final row after the
 last step.
