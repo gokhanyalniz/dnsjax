@@ -158,7 +158,12 @@ from ..seeding import (
     SOURCE_SIDECAR,
     seed_note,
 )
-from ..snapshot_meta import git_hash, is_snapshot_file, read_snapshot_meta
+from ..snapshot_meta import (
+    git_hash,
+    is_snapshot_file,
+    read_snapshot_meta,
+    write_sidecar_json,
+)
 
 _PROG = "dnsjax-twin"
 
@@ -795,8 +800,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                 git_hash=git_hash(),
                 params=recorded_params_dump(params),
             )
-            with open(json_path, "w") as f:
-                json.dump(sidecar, f, indent=2, default=str)
+            write_sidecar_json(json_path, sidecar)
 
     # --- Stopping criteria -----------------------------------------------
     wall_time_stop = (
