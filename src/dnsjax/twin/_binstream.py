@@ -37,6 +37,7 @@ from jax import Array
 from jax import numpy as jnp
 
 from ..sharding import sharding
+from ..snapshot_meta import write_sidecar_json
 
 
 class BinStream:
@@ -120,8 +121,10 @@ class BinStream:
                 f"({n_bytes // self.record_dtype.itemsize} records)."
             )
         elif sharding.main_device:
-            with open(self.json_path, "w") as f:
-                json.dump(self._sidecar, f, indent=2, default=str)
+            # Atomic: every rank tested ``json_path.exists()`` above,
+            # so a path that exists must already be complete
+            # (:func:`~dnsjax.snapshot_meta.write_sidecar_json`).
+            write_sidecar_json(self.json_path, self._sidecar)
 
     def record(self, values: dict[str, Array], t: float) -> str | None:
         """Buffer one sample; flush when the buffer fills."""
