@@ -37,13 +37,16 @@ analytical laminar profile -- ``add_dean_laminar`` for Dean, while the
 viscoelastic builder forms its 9-component total state directly and
 ``add_viscoelastic_laminar`` serves velocity-only ICs (the rolls path).
 
-**The mean mode** `$(k_x, k_z) = (0, 0)$` is dropped unless
-``init.random_mean_flow``, which only the Cartesian flows offer -- every
-other flow defers the knob, because only there are the mean-mode
-conservation laws established.  When it is on, the Cartesian generator
+**The mean mode** `$(k_x, k_z) = (0, 0)$` is dropped unless the
+caller asks for it -- ``init.random_mean_flow`` for a solver run
+(**off** by default), ``twin.mean_flow`` for the ``dnsjax-twin``
+partner (**on** by default).  Only the Cartesian flows offer the knob
+at all: every other flow defers it, because only there are the
+mean-mode conservation laws established.  When it is on, the generator
 keeps that column and conditions it on those laws
-(:mod:`dnsjax.ic.mean_mode`): the perturbed field stays compatible with
-no-slip at both walls and, under a held mean
+(:mod:`dnsjax.ic.mean_mode`): the perturbed field drives the flow at
+the same mean pressure gradient (equivalently, stays compatible with
+no-slip at both walls) and, under a held mean
 (``phys.driving = "constant_bulk_velocity"`` /
 ``phys.block_mean_spanwise_velocity``), carries an unchanged bulk
 velocity.  The wall-normal component's mean mode is identically zero by
@@ -1272,7 +1275,8 @@ def generate_random_state(
     total-field Dean flow the analytical laminar profile is added to the
     perturbation; every other system returns the perturbation directly.
 
-    *mean_flow* (``init.random_mean_flow``) reaches only the Cartesian
+    *mean_flow* (``init.random_mean_flow`` for the solver,
+    ``twin.mean_flow`` for the twin partner) reaches only the Cartesian
     generator: every other flow defers the knob, so its mean mode is
     zeroed unconditionally (module docstring).
 

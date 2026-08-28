@@ -34,11 +34,13 @@ Initial perturbation
 --------------------
 `$\delta$` is the divergence-free random field of
 :func:`dnsjax.ic.random_field.generate_random_state` (device-count
-independent, per-global-mode seeded; the mean mode follows the shared
-``init.random_mean_flow``, on by default here, and is then conditioned
-on the mean-mode conservation laws -- so under a held mean the partner
-carries the reference's bulk velocity exactly, and its mean profile
-differs only in ways the mean-mode dynamics admits), rescaled so
+independent, per-global-mode seeded; the mean mode follows this
+driver's own ``twin.mean_flow``, **on** by default -- unlike the
+shared ``init.random_mean_flow``, which every flow defaults off and
+which this driver never reads -- and is then conditioned on the
+mean-mode conservation laws, so under a held mean the partner carries
+the reference's bulk velocity exactly and its mean profile differs
+only in ways the mean-mode dynamics admits), rescaled so
 the solver-measure perturbation energy is exactly ``twin.e0``:
 `$E'(\delta) = \|\delta\|^2/2 = e_0$` -- the convention of
 ``snapshot_perturb --perturb.amplitude_energy``.  ``twin.e0 = 0``
@@ -183,6 +185,7 @@ _TWIN_MATCH_KEYS: tuple[str, ...] = (
     "e0",
     "seed",
     "smoothness",
+    "mean_flow",
     "bins",
     "it_energy",
     "it_budget",
@@ -192,6 +195,19 @@ _TWIN_MATCH_KEYS: tuple[str, ...] = (
     "dt",
     "double_precision",
 )
+
+#: Value assumed for a :data:`_TWIN_MATCH_KEYS` entry that a
+#: ``twin.json`` written before the key existed does not carry -- so
+#: adding one does not strand recorded members.  A key absent from
+#: here still mismatches when absent from the file, which is the right
+#: default: only a key whose *old* behaviour was a fixed, known value
+#: can be back-filled.  ``mean_flow`` is one: the partner followed the
+#: Cartesian ``init.random_mean_flow``, whose default was on, so a
+#: member recorded then resumes unchanged (and one deliberately run
+#: mean-free re-states ``--twin.mean_flow False``, which is correct
+#: -- it is a real difference in what was perturbed).  No
+#: :data:`TWIN_FORMAT_VERSION` bump: no existing key changes meaning.
+_TWIN_LEGACY_DEFAULTS: dict[str, object] = {"mean_flow": True}
 
 
 class TwinParams(BaseModel):
@@ -300,6 +316,29 @@ class TwinParams(BaseModel):
             "(init.random_smoothness convention)."
         ),
     )
+    # The partner's own knob rather than the shared
+    # ``init.random_mean_flow`` (which the driver does not read at
+    # all: ``dnsjax-twin`` never builds a random *initial condition*,
+    # it perturbs a loaded one).  Two reasons it cannot be the shared
+    # field.  The defaults differ -- a twin pair wants the mean mode
+    # perturbed, a plain run defaults it off -- and ``init`` fields
+    # are inherited from the parent snapshot, so a twin started from
+    # any ordinary run's snapshot would silently pick that run's
+    # ``false`` up as an explicitly-set layer.  Conversely, forcing
+    # the shared field on here would write ``random_mean_flow: true``
+    # into the twin's own paired snapshots, and a later plain resume
+    # from the reference tar would inherit it.
+    mean_flow: bool = Field(
+        default=True,
+        description=(
+            "Perturb the mean (kx = kz = 0) profile too, conditioned "
+            "on its conservation laws (ic/mean_mode.py). On by "
+            "default -- unlike init.random_mean_flow, which this "
+            "driver does not read: the mean mode is a difference-field "
+            "component in its own right (the Delta-U bin). Off gives a "
+            "mean-free partner."
+        ),
+    )
     bins: bool = Field(
         default=False,
         description=(
@@ -373,6 +412,7 @@ def _validate_twin(values: TwinParams, params) -> None:
             for name in (
                 "seed",
                 "smoothness",
+                "mean_flow",
                 "bins",
                 "it_energy",
                 "it_budget",
@@ -646,7 +686,11 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     resumed_pair: bool = False
     if have_partner and have_json:
         current = _twin_sidecar_stub()
-        mismatch = [k for k in _TWIN_MATCH_KEYS if old.get(k) != current[k]]
+        mismatch = [
+            k
+            for k in _TWIN_MATCH_KEYS
+            if old.get(k, _TWIN_LEGACY_DEFAULTS.get(k)) != current[k]
+        ]
         if mismatch:
             raise SystemExit(
                 f"{_PROG}: error: this directory's twin.json does "
@@ -755,18 +799,17 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                 math.sqrt(2.0 * twin_params.e0),
                 twin_params.smoothness,
                 twin_params.seed,
-                # mean_flow: the shared ``init.random_mean_flow`` (on
-                # by default for the Cartesian flows this driver
-                # supports), not a separate ``[twin]`` knob.  The
-                # partner's (0, 0) perturbation is conditioned on the
-                # mean-mode conservation laws
+                # ``twin.mean_flow`` (on by default), not the shared
+                # ``init.random_mean_flow`` -- see the field's docs.
+                # The partner's (0, 0) perturbation is conditioned on
+                # the mean-mode conservation laws
                 # (:mod:`dnsjax.ic.mean_mode`), so under a held mean it
                 # shares the reference's bulk velocity exactly and the
                 # difference field's mean profile is a genuine
                 # perturbation direction rather than a bookkeeping
-                # artefact.  ``--init.random_mean_flow False`` gives
-                # the mean-free partner this used to hardcode.
-                params.init.random_mean_flow,
+                # artefact.  ``--twin.mean_flow False`` gives the
+                # mean-free partner this used to hardcode.
+                twin_params.mean_flow,
             )
             if grid_before is not None and not np.allclose(
                 np.asarray(grid_before),
@@ -1359,6 +1402,7 @@ def _twin_sidecar_stub() -> dict:
         "e0": twin_params.e0,
         "seed": twin_params.seed,
         "smoothness": twin_params.smoothness,
+        "mean_flow": twin_params.mean_flow,
         "bins": twin_params.bins,
         "it_energy": twin_params.it_energy,
         "it_budget": twin_params.it_budget,
