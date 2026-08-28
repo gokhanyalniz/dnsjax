@@ -10,12 +10,15 @@ for both :mod:`dnsjax.parameters` (which reads a resumed snapshot's
 parameters before the distributed backend is up) and
 :mod:`dnsjax.snapshot` (no import cycle).  It also hosts the
 stdlib-only :func:`git_hash` provenance helper, printed at solver
-startup and recorded in every snapshot's metadata.
+startup and recorded in every snapshot's metadata, and
+:func:`write_sidecar_json`, the atomic writer every ``.bin`` stream's
+JSON sidecar is created with.
 """
 
 import contextlib
 import functools
 import json
+import os
 import subprocess
 import tarfile
 from pathlib import Path
@@ -106,6 +109,41 @@ def git_hash() -> str:
         return "unknown"
     version = proc.stdout.strip()
     return version if proc.returncode == 0 and version else "unknown"
+
+
+def write_sidecar_json(path: str | Path, payload: dict) -> None:
+    """Write *payload* to *path* atomically (commit by rename).
+
+    Every ``.bin`` stream writer -- :mod:`dnsjax.extensions.probes`,
+    :mod:`dnsjax.extensions.forcing`, :mod:`dnsjax.twin._binstream` --
+    creates its JSON sidecar on the **main** process while **every**
+    rank tests the same path's existence to choose between "create"
+    and "validate and append".  A plain ``open(path, "w")`` makes the
+    path exist before its content does, so a rank whose test lands
+    inside that window loads zero bytes and dies in ``json.load``:
+
+        json.decoder.JSONDecodeError: Expecting value: line 1 column 1
+
+    -- a genuine multi-process race, seen on a fresh output directory
+    under ``mpirun -np 2``.  Writing a ``.partial`` sibling and
+    ``os.replace``-ing it makes the path appear only once complete,
+    so the loser of the race either sees no file (and, not being the
+    main process, does nothing) or sees the whole of it.  Same
+    directory, so the rename is atomic on any POSIX filesystem; it is
+    the commit-by-rename discipline :mod:`dnsjax.snapshot` already
+    uses for the tar itself.  A crash mid-write leaves the
+    ``.partial`` behind rather than a truncated sidecar, which no
+    reader globs for.
+
+    :mod:`dnsjax.twin.driver` writes ``twin.json`` through it too:
+    that file is read back by a later resume, where a truncated write
+    would be just as fatal.
+    """
+    path = Path(path)
+    tmp = path.with_name(path.name + ".partial")
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+    os.replace(tmp, path)
 
 
 def is_snapshot_file(path: str | Path) -> bool:

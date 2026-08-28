@@ -93,7 +93,7 @@ from ..harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
 from ..param_surface import recorded_params_dump
 from ..parameters import derived_params, params
 from ..sharding import sharding
-from ..snapshot_meta import git_hash
+from ..snapshot_meta import git_hash, write_sidecar_json
 from . import probes_params
 
 #: Sidecar schema version.  Bumped whenever the stored *meaning*
@@ -329,8 +329,9 @@ class ProbeStream:
                 f"({n_bytes // self.record_dtype.itemsize} records)."
             )
         elif sharding.main_device:
-            with open(self.json_path, "w") as f:
-                json.dump(self._sidecar, f, indent=2, default=str)
+            # Atomic, for the same reason as every other sidecar
+            # (:func:`~dnsjax.snapshot_meta.write_sidecar_json`).
+            write_sidecar_json(self.json_path, self._sidecar)
 
     def record(self, state: Array, t: float) -> str | None:
         """Buffer one sample; flush (checked) when the buffer fills."""

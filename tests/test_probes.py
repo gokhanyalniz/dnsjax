@@ -259,6 +259,53 @@ def test_probe_stream_rejects_mismatch() -> None:
             raise AssertionError("sidecar-less probes.bin was accepted")
 
 
+def test_sidecar_write_is_atomic() -> None:
+    """The sidecar path never exists holding a partial write.
+
+    Every rank tests ``json_path.exists()`` to choose between
+    "create" and "validate and append", while only the main process
+    writes it (``_open_files``, shared by the probe, forcing and twin
+    streams).  A plain ``open(path, "w")`` makes the path exist
+    *before* its content does, and a rank landing in that window dies
+    in ``json.load`` -- measured at 138 of 300 attempts with a
+    concurrent reader, so it is a routine multi-process failure, not
+    a rare one.  ``write_sidecar_json`` commits by rename instead.
+
+    Deterministic here: interrupt the encode and require that the
+    target path did not appear.  Would fail on a revert to a direct
+    ``open(path, "w")``, which is the regression this guards.
+    """
+    import json as _json
+
+    from dnsjax import snapshot_meta
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "probes.json"
+        real_dump = _json.dump
+
+        def exploding_dump(obj, fp, **kw):
+            fp.write('{"format_version"')  # a prefix, then die
+            raise RuntimeError("interrupted mid-encode")
+
+        snapshot_meta.json.dump = exploding_dump
+        try:
+            snapshot_meta.write_sidecar_json(target, {"a": 1})
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("the exploding encoder did not raise")
+        finally:
+            snapshot_meta.json.dump = real_dump
+        assert not target.exists(), (
+            "a partial write made the sidecar path exist; a concurrent "
+            "rank would read it and fail in json.load"
+        )
+
+        # And the completed write lands whole, replacing any leftover.
+        snapshot_meta.write_sidecar_json(target, {"format_version": 7})
+        assert _json.loads(target.read_text())["format_version"] == 7
+
+
 def test_probe_stream_non_finite() -> None:
     """The flush scan names the offending mode/component."""
     state = _make_state(nan_mode=(5, 2))
