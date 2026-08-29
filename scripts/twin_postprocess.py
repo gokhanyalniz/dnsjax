@@ -66,8 +66,8 @@ caller.
 
 Cost
 ====
-Per pair: two snapshot loads, one ``twin_ybudget`` sample (~33 field
-transforms, ~0.9 of a twin step) and two cheap reductions.  Peak memory
+Per pair: two snapshot loads, one ``twin_ybudget`` sample (21 field
+transforms) and two cheap reductions.  Peak memory
 matches a live run with ``twin.it_ybudget`` set -- that program is the
 high-water mark.  The jitted programs compile once and are reused
 across pairs.
@@ -171,6 +171,15 @@ class ReconParams(BaseModel):
             "Also record the reference state's spectra alongside the "
             "difference field's (the twin.spectra_ref convention); "
             "turning it off also skips computing them."
+        ),
+    )
+    rotational_ybudget: bool = Field(
+        default=False,
+        description=(
+            "Rebuild twin_ybudget.bin in the rotational form "
+            "(twin.rotational_ybudget).  Not recorded in twin.json, "
+            "so it is stated here rather than inherited: to reproduce "
+            "a member's own stream, match the form the run used."
         ),
     )
     bins: bool | None = Field(
@@ -581,6 +590,7 @@ def main(argv: list[str] | None = None) -> int:
         smoothness=source.get("smoothness", TwinParams().smoothness),
         bins=bins,
         spectra_ref=values.spectra_ref,
+        rotational_ybudget=values.rotational_ybudget,
         it_yspectra=it_stride,
         it_ybudget=it_stride,
     )
@@ -625,7 +635,9 @@ def main(argv: list[str] | None = None) -> int:
         yvals = diagnostics.twin_yspectra(
             state1, state2, ref=values.spectra_ref
         )
-        ybvals = diagnostics.twin_ybudget(state1, state2, pressure)
+        ybvals = diagnostics.twin_ybudget(
+            state1, state2, pressure, rotational=values.rotational_ybudget
+        )
 
         for bad in (
             twin_stream.push(jnp.stack(list(tvals.values())), t),
@@ -685,6 +697,7 @@ def main(argv: list[str] | None = None) -> int:
                     "t_last": kept[-1].t,
                     "bins": bins,
                     "spectra_ref": values.spectra_ref,
+                    "rotational_ybudget": values.rotational_ybudget,
                     "created": datetime.now(UTC).isoformat(),
                     "git_hash": git_hash(),
                 },

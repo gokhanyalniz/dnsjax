@@ -50,6 +50,7 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.it_spectra` | unset | Steps between `twin_spectra.bin` records; unset disables the stream |
 | `twin.it_yspectra` | unset | Steps between `twin_yspectra.bin` records (wall-normal-resolved componentwise spectra). Needs an even `res.nz` |
 | `twin.it_ybudget` | unset | Steps between `twin_ybudget.bin` records (the same bins' budget). Needs an even `res.nz` |
+| `twin.rotational_ybudget` | `False` | Write that budget with the rotational nonlinear term instead of the convective one |
 | `twin.spectra_ref` | `true` | Also compute and store the reference spectrum with each `it_spectra` / `it_yspectra` sample; off, it is never traced |
 
 `twin.bins` is off by default. The three-bin split is a three-bin
@@ -162,21 +163,43 @@ E_\Delta^x[u,v,w](y, k_z), \qquad E_\Delta^z[u,v,w](y, k_x)
 the forward-norm convention *is* the average over that direction —
 plus the $k_x = 0$ plane, which is the spectrum of the
 streamwise-averaged field and recovers $E_{\Delta U}$,
-$E_{\Delta u_1}$, $E_{\Delta u_2}$ exactly. `twin_ybudget.bin`
-carries the matching budget on the same bins: production against the
-reference mean profile (the lift-up term) and against its
-fluctuations, transfer by the reference and by the difference field,
-the viscous term in both forms, and the pressure work.
+$E_{\Delta u_1}$, $E_{\Delta u_2}$ exactly.
+
+`twin_ybudget.bin` carries the matching budget on the same bins:
+production against the reference mean profile (`P_U`, the lift-up
+term) and against its fluctuation gradients (`P_r`), transfer by the
+reference fluctuation (`T_ref`) and by the difference field's own
+advection (`T_self`), the viscous term in both forms (`V`, `eps`),
+and the work of the pressure gradient (`Wp`).
+
+`twin.rotational_ybudget` (default **off**) writes the same budget
+with the *rotational* nonlinear term the solver actually integrates.
+Then the two transfer terms become exactly redistributive —
+$\Delta\mathbf{u}\cdot(\Delta\mathbf{u}\times\mathbf{b}) = 0$
+pointwise, so $\sum_k T = 0$ at every $y$ whatever the resolution —
+and the nonlinear term is checkable against the solver's own
+right-hand side. That is a different decomposition, not a repaired
+one: convectively $\sum_k T(y)$ *is* the turbulent transport of
+difference energy, and rotationally that transport has moved into
+`Wp`, which becomes the Bernoulli-pressure work. The two forms differ
+by a gradient, so volume totals agree while the $y$-densities move
+between production, transfer and `Wp`. An eighth column, `P_lift`,
+carries the convective `P_U` unchanged and outside the sum — the
+classical $-\sigma\,\mathrm{Re}\{\Delta\hat u_i^*\Delta\hat
+v\}\,\partial_y U^{(1)}_i$ density, otherwise unrecoverable from
+what the streams hold, and the piece a channel-budget reader will
+look for.
 
 Both wavenumber axes are one-sided, with $|k_z|$ folded — a
 requirement, not a convenience: the stored half-plane's entries are
 conjugate-*pair* energies, whose partners sit at $-k_z$.
 
 Summing either marginal over its axis and integrating in $y$ returns
-`twin.dat`'s `E_d`; summing the budget's returns
-`twin_budget.dat`'s `P_tot` / `eps_tot`. Both sidecars ship the
-wall-normal grid and its quadrature weights, so a reader integrates
-without rebuilding the grid.
+`twin.dat`'s `E_d`; summing the budget's returns `twin_budget.dat`'s
+`P_tot` / `eps_tot` (under `twin.rotational_ybudget`, `eps_tot` and —
+from `P_lift` — the three mean-gradient production columns). Both
+sidecars ship the wall-normal grid and its quadrature weights, so a
+reader integrates without rebuilding the grid.
 
 ### `twin_spectra.bin` — $(k_z, k_x)$ energy spectra
 

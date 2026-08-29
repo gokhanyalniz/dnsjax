@@ -759,9 +759,17 @@ def test_yspectra_streams() -> None:
     these streams a strict refinement of the old diagnostics: both
     marginals integrate to ``twin.dat``'s ``E_d``; the three-bin
     energies come back out of the `$k_x = 0$` plane and partition
-    ``E_d`` between them; and the budget's
-    `$k$`-sums reproduce ``twin_budget.dat``'s ``P_tot`` / ``eps_tot``
-    -- all through the binary round trip.  ``twin.bins`` is on here
+    ``E_d`` between them; and the budget's `$k$`-sums reproduce
+    ``twin_budget.dat``'s ``P_tot`` / ``eps_tot`` -- all through the
+    binary round trip, in the default convective form.
+
+    Then ``twin.rotational_ybudget``, which is a *static* flag on the
+    budget diagnostic and changes the stream's term set, so like
+    ``spectra_ref`` it has to be exercised by a run rather than by
+    the writer alone: the eight-term stream must round-trip, carry
+    ``P_lift`` reproducing the mean-gradient production columns
+    exactly, and have both transfer terms sum to zero over `$k$` at
+    every `$y$`.  ``twin.bins`` is on here
     only so ``twin.dat`` carries the bin columns to check against; it
     is off in every other case in this file, which is the default.
 
@@ -839,6 +847,18 @@ def test_yspectra_streams() -> None:
         b_by_t = {
             round(t, 10): i for i, t in enumerate(np.round(bud["t"], 10))
         }
+        # Spelt out rather than imported: this is the stored record's
+        # shape, so an unintended change to the term tuple should
+        # fail here.
+        assert budget.meta["terms"] == [
+            "P_U",
+            "P_r",
+            "T_ref",
+            "T_self",
+            "V",
+            "eps",
+            "Wp",
+        ], budget.meta["terms"]
         for k, t in enumerate(np.round(budget.t, 10)):
             i = b_by_t[t]
             p_sum = (
@@ -876,6 +896,56 @@ def test_yspectra_streams() -> None:
             assert read_twin_spectra(tmp2).e_ref is None
             # The kept half is unchanged by the flag.
             assert lean["e_x"].shape[1:] == (3, ny, 4)
+
+        # ``twin.rotational_ybudget``: a static flag on the budget
+        # diagnostic, so the run has to be exercised, not the writer.
+        with tempfile.TemporaryDirectory() as tmp3:
+            _run_twin(
+                tmp3,
+                [
+                    *_twin_args(t_mid),
+                    "--twin.bins",
+                    "True",
+                    "--twin.it_budget",
+                    "1",
+                    "--twin.it_ybudget",
+                    "1",
+                    "--twin.rotational_ybudget",
+                    "True",
+                ],
+            )
+            rot = read_twin_ybudget(tmp3)
+            assert rot.meta["terms"] == [
+                "P_U",
+                "P_r",
+                "T_vort",
+                "T_self",
+                "V",
+                "eps",
+                "Wp",
+                "P_lift",
+            ], rot.meta["terms"]
+            rbud = read_dat(Path(tmp3) / "twin_budget.dat")
+            rt = np.round(rbud["t"], 10)
+            r_by_t = {t: i for i, t in enumerate(rt)}
+            rows = [f"P_{b}({b},rU)" for b in ("dU", "du1", "du2")]
+            for k, t in enumerate(np.round(rot.t, 10)):
+                i = r_by_t[t]
+                # P_lift is the convective P_U, carried unchanged.
+                assert_allclose(
+                    integrate_y(rot, "P_lift_x")[k].sum(),
+                    sum(rbud[r][i] for r in rows),
+                    rtol=1e-9,
+                )
+                # Both transfer terms redistribute exactly at every y.
+                for name in ("T_vort", "T_self"):
+                    dens = rot[f"{name}_x"][k]
+                    net = np.abs(dens.sum(axis=-1)).max()
+                    scale = max(np.abs(dens).sum(axis=-1).max(), 1e-300)
+                    assert net / scale < 1e-11, (
+                        f"sum_k {name}(y) is {net / scale:.2e} of its "
+                        f"own magnitude at t={t}"
+                    )
 
         # A .bin without its sidecar is refused, not guessed at.
         (Path(tmp) / "twin_yspectra.json").unlink()

@@ -673,65 +673,217 @@ def _solenoidal_pair(amp: float = 0.01):
     return s1, s1 + generate_random_state(amp, 0.4, 23, False)
 
 
-def test_ybudget_sums() -> None:
-    r"""`$\sum_k \int$` of the budget densities reproduces ``twin_budget``.
+#: Relative floor for a sum that is exactly zero by pointwise
+#: algebra: float cancellation over the mode set only.
+TRANSFER_TOL = 1e-11
 
-    Production and the viscous term are *algebraic* identities (the
-    same Parseval sum, regrouped), so they hold to rounding at any
-    resolution; the transport terms agree only up to the discrete
+
+def test_ybudget_sums() -> None:
+    r"""`$\sum_k \int$` of the budget densities against ``twin_budget``.
+
+    In the **default convective form** production and the viscous
+    term are *algebraic* identities -- the same Parseval sum,
+    regrouped -- so they hold to rounding at any resolution; the
+    transport terms agree only up to the discrete
     integration-by-parts residual that makes ``T_tot`` nonzero in the
     first place, and are checked on the wall-normal ladder of
     ``tests/test_twin_budget.py`` instead.
+
+    Under ``twin.rotational_ybudget`` the production identity moves:
+    `$\sum_k\int(P_U + P_r)$` is ``P_tot + T_tot`` plus the work of a
+    gradient, both truncation-limited, while the *classical* lift-up
+    density is carried unchanged as ``P_lift`` and still reproduces
+    the three ``P_*(*,rU)`` columns exactly.  The viscous identity is
+    form-independent, ``V`` being the same array either way.
     """
     from dnsjax.twin.pressure import DifferencePressure
 
     s1, s2 = _solenoidal_pair()
     pressure = DifferencePressure(td.flow, fourier)
-    yb = {
-        k: np.asarray(v) for k, v in td.twin_ybudget(s1, s2, pressure).items()
-    }
     bud = {k: float(v) for k, v in td.twin_budget(s1, s2).items()}
     w = np.asarray(td.flow.y_weights)
+    rows = [f"P_{b}({b},rU)" for b in ("dU", "du1", "du2")]
 
-    def total(name: str, marg: str) -> float:
-        return float(np.einsum("j,jk->", w, yb[f"{name}_{marg}"]))
+    for rot in (False, True):
+        yb = {
+            k: np.asarray(v)
+            for k, v in td.twin_ybudget(
+                s1, s2, pressure, rotational=rot
+            ).items()
+        }
 
-    for marg in ("x", "z"):
+        def total(name: str, marg: str, yb=yb) -> float:
+            return float(np.einsum("j,jk->", w, yb[f"{name}_{marg}"]))
+
+        def bins(name: str, yb=yb) -> np.ndarray:
+            x0 = np.einsum("j,jk->k", w, yb[f"{name}_x0"])
+            x = np.einsum("j,jk->k", w, yb[f"{name}_x"])
+            return np.array([x0[0], x0[1:].sum(), (x - x0).sum()])
+
+        # Form-independent: V is literally the same array.
+        for marg in ("x", "z"):
+            assert_allclose(
+                -total("V", marg),
+                bud["eps_tot"],
+                rtol=1e-12,
+                err_msg=f"viscous term over the {marg} marginal (rot={rot})",
+            )
         assert_allclose(
-            total("P_U", marg) + total("P_r", marg),
-            bud["P_tot"],
-            rtol=1e-12,
-            err_msg=f"P over the {marg} marginal",
-        )
-        assert_allclose(
-            -total("V", marg),
-            bud["eps_tot"],
-            rtol=1e-12,
-            err_msg=f"viscous term over the {marg} marginal",
+            -bins("V"),
+            [bud[f"eps_{b}"] for b in ("dU", "du1", "du2")],
+            rtol=1e-11,
+            atol=1e-30,
         )
 
-    # The k-set sums are the paper's per-component budget.
-    def bins(name: str) -> np.ndarray:
-        x0 = np.einsum("j,jk->k", w, yb[f"{name}_x0"])
-        x = np.einsum("j,jk->k", w, yb[f"{name}_x"])
-        return np.array([x0[0], x0[1:].sum(), (x - x0).sum()])
+        # Production: the whole of it convectively, the mean-gradient
+        # part of it (as P_lift) rotationally.
+        if rot:
+            for marg in ("x", "z"):
+                assert_allclose(
+                    total("P_lift", marg),
+                    sum(bud[r] for r in rows),
+                    rtol=1e-12,
+                    err_msg=f"P_lift over the {marg} marginal",
+                )
+            assert_allclose(
+                bins("P_lift"), [bud[r] for r in rows], rtol=1e-11, atol=1e-30
+            )
+        else:
+            for marg in ("x", "z"):
+                assert_allclose(
+                    total("P_U", marg) + total("P_r", marg),
+                    bud["P_tot"],
+                    rtol=1e-12,
+                    err_msg=f"P over the {marg} marginal",
+                )
+            assert_allclose(
+                bins("P_U") + bins("P_r"),
+                [
+                    sum(v for k, v in bud.items() if k.startswith(f"P_{b}("))
+                    for b in ("dU", "du1", "du2")
+                ],
+                rtol=1e-11,
+                atol=1e-30,
+            )
+    print("budget k-sums and k-set bins vs twin_budget, both forms: OK")
 
-    assert_allclose(
-        bins("P_U") + bins("P_r"),
-        [
-            sum(v for k, v in bud.items() if k.startswith(f"P_{b}("))
-            for b in ("dU", "du1", "du2")
-        ],
-        rtol=1e-11,
-        atol=1e-30,
+
+def test_ybudget_transfer_split() -> None:
+    r"""What each form's transfer terms do to `$\sum_k T(y)$`.
+
+    The two forms differ here **physically**, not by an error, and
+    the test pins both sides of that so neither can drift:
+
+    - **rotational**: `$\sum_k T(y) = 0$` at every `$y$`, exactly.
+      Both terms are `$\Delta\hat{\mathbf{u}}^*\cdot(\Delta\mathbf{u}
+      \times\mathbf{b})$` and `$\mathbf{a}\cdot(\mathbf{a}\times
+      \mathbf{b}) = 0$` pointwise, so the `$k$`-sum is the `$xz$`-mean
+      of a pointwise-zero field (Parseval, exact because the 3/2 rule
+      represents the quadratic product).  It needs no structural
+      property of the states -- not `$\nabla\cdot\Delta\mathbf{u} =
+      0$`, not no-slip, not `$\Delta\boldsymbol{\omega} = \nabla\times
+      \Delta\mathbf{u}$` -- so the discriminating axis is the state,
+      not `$N_y$`, and two very different pairs are used.
+    - **convective**: `$\sum_k T(y) = -\partial_y\langle v^{(1)}
+      |\Delta\mathbf{u}|^2/2\rangle_{xz}$`, the turbulent transport of
+      difference energy.  A genuine wall-normal flux, zero only after
+      integrating in `$y$`.  Asserted **nonzero** here: a convective
+      build that produced zero would have lost that transport.
+
+    The difference between the two is exactly the `$|\Delta\mathbf{u}|
+    ^2/2$` half of the gradient the two nonlinear forms differ by;
+    rotationally it sits in ``Wp`` instead.
+    """
+    from dnsjax.twin.pressure import DifferencePressure
+
+    pressure = DifferencePressure(td.flow, fourier)
+    base = _hermitian_spec(51)
+    pairs = {
+        "generic": (
+            _device_state(base),
+            _device_state(base + _hermitian_spec(52, amp=0.03)),
+        ),
+        "solenoidal": _solenoidal_pair(),
+    }
+
+    def net(yb, name):
+        """``max_y |sum_k T(y)|`` relative to ``max_y sum_k |T|``."""
+        marg = yb[f"{name}_x"]  # (ny, n_kz), already summed over k_x
+        return float(
+            np.abs(marg.sum(axis=-1)).max()
+            / max(np.abs(marg).sum(axis=-1).max(), 1e-300)
+        )
+
+    worst = 0.0
+    for label, (s1, s2) in pairs.items():
+        rot = {
+            k: np.asarray(v)
+            for k, v in td.twin_ybudget(
+                s1, s2, pressure, rotational=True
+            ).items()
+        }
+        for name in ("T_vort", "T_self"):
+            rel = net(rot, name)
+            worst = max(worst, rel)
+            assert rel < TRANSFER_TOL, (
+                f"{label}: max_y |sum_k {name}(y)| is {rel:.2e} of its "
+                f"own magnitude -- not a redistribution"
+            )
+        con = {
+            k: np.asarray(v)
+            for k, v in td.twin_ybudget(
+                s1, s2, pressure, rotational=False
+            ).items()
+        }
+        flux = max(net(con, "T_ref"), net(con, "T_self"))
+        assert flux > 1e-3, (
+            f"{label}: the convective transfer terms sum to "
+            f"{flux:.2e} of their magnitude over k -- the turbulent "
+            f"transport of difference energy has gone missing"
+        )
+    print(
+        f"transfer split: rotational redistributes exactly ({worst:.1e}), "
+        "convective carries the transport flux: OK"
     )
-    assert_allclose(
-        -bins("V"),
-        [bud[f"eps_{b}"] for b in ("dU", "du1", "du2")],
-        rtol=1e-11,
-        atol=1e-30,
+
+
+def test_nonlinear_matches_solver() -> None:
+    r"""The rotational ``n_hat`` **is** the solver's own term.
+
+    `$\mathbf{u}^{(1)}\times\Delta\boldsymbol{\omega} +
+    \Delta\mathbf{u}\times\boldsymbol{\omega}^{(1)} +
+    \Delta\mathbf{u}\times\Delta\boldsymbol{\omega}$` is exactly what
+    ``cartesian._get_rhs`` forms on each state, so under
+    ``twin.rotational_ybudget`` the diagnostic's Poisson source can be
+    pinned against the solver rather than argued.  It pins the sign,
+    all five terms of the mean/fluctuation split, and the
+    moving-frame contribution at once.  The convective form has no
+    such counterpart -- the solver never assembles that operator --
+    which is one of the two things it trades away.
+
+    The two mean-profile halves are evaluated spectrally here and in
+    padded physical space there; they agree *exactly* because a
+    `$k = 0$` profile times a fluctuation cannot alias.  The partner
+    is deliberately large, so the difference of the two RHS
+    evaluations is not cancellation-dominated.
+    """
+    from dnsjax.geometries.wall_bounded.cartesian import _get_rhs
+    from dnsjax.twin.pressure import DifferencePressure
+
+    s1, s2 = _solenoidal_pair(amp=0.5)
+    pressure = DifferencePressure(td.flow, fourier)
+    got = np.asarray(
+        td.twin_pressure_check(s1, s2, pressure, rotational=True)["n_hat"]
     )
-    print("budget k-sums and k-set bins vs twin_budget: OK")
+    r1 = np.asarray(_get_rhs(s1, fourier, td.flow))
+    r2 = np.asarray(_get_rhs(s2, fourier, td.flow))
+    scale = max(np.abs(r1).max(), np.abs(r2).max())
+    err = np.abs(got - (r2 - r1)).max() / scale
+    assert err < 1e-12, (
+        f"n_hat departs from the solver's own RHS difference by "
+        f"{err:.2e} relative"
+    )
+    print(f"rotational n_hat == solver RHS difference ({err:.1e}): OK")
 
 
 def test_pressure_solve() -> None:
@@ -794,6 +946,8 @@ if __name__ == "__main__":
     test_yspectra_fold_is_two_sided()
     test_yspectra_partition()
     test_ybudget_sums()
+    test_ybudget_transfer_split()
+    test_nonlinear_matches_solver()
     test_pressure_solve()
     test_validate_hook()
     print("All twin unit tests passed.")
