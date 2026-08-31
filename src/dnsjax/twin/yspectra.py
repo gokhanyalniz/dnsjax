@@ -12,9 +12,12 @@ one-sided marginal bins of
   recovers the `$\Delta U$` / `$\Delta u_1$` / `$\Delta u_2$`
   binning;
 - ``twin_ybudget.bin`` (``twin.it_ybudget``), from
-  :func:`~dnsjax.twin.diagnostics.twin_ybudget`: the seven
-  component-summed budget densities of
-  :data:`~dnsjax.twin.diagnostics.YBUDGET_TERMS` on the same bins.
+  :func:`~dnsjax.twin.diagnostics.twin_ybudget`: the component-summed
+  budget densities of
+  :func:`~dnsjax.twin.diagnostics.ybudget_terms` on the same bins --
+  seven of them in the default convective form, eight under
+  ``twin.rotational_ybudget``.  The sidecar's ``terms`` names them
+  and is a match key, so a resume cannot change form mid-stream.
 
 Why these replace the three-bin diagnostics: the `$\Delta U$` /
 `$\Delta u_1$` / `$\Delta u_2$` split is a three-bin partition of the
@@ -35,7 +38,7 @@ followed by one entry per field, ``VAL = "<f8"``/``"<f4"`` per
     twin_yspectra:  e_x,  e_z,  e_x0   (3, ny, n_kz) / (3, ny, n_kx)
                     r_x,  r_z,  r_x0   when twin.spectra_ref
     twin_ybudget:   <term>_x, <term>_z, <term>_x0  for each of
-                    YBUDGET_TERMS,     (ny, n_kz) / (ny, n_kx)
+                    ybudget_terms(),   (ny, n_kz) / (ny, n_kx)
 
 Every array is a `$y$`-**density** already divided by
 ``volume_fac``: contract with the sidecar's ``y_weights`` for the
@@ -64,12 +67,12 @@ from ..param_surface import recorded_params_dump
 from ..parameters import derived_params, params
 from ..snapshot_meta import git_hash
 from ._binstream import BinStream
-from .diagnostics import YBUDGET_TERMS, marginal_bin_counts
+from .diagnostics import marginal_bin_counts, ybudget_terms
 
 #: Sidecar schema versions (the reader's floors are
 #: ``analysis.twin.yspectra.MIN_*_VERSION``).
 YSPECTRA_FORMAT_VERSION: int = 1
-YBUDGET_FORMAT_VERSION: int = 1
+YBUDGET_FORMAT_VERSION: int = 2
 
 #: Records buffered on device between flushes.  Smaller than the
 #: ``(k_z, k_x)`` stream's: these records carry a wall-normal axis
@@ -187,20 +190,24 @@ class TwinYBudgetStream(BinStream):
     ) -> None:
         ny = params.res.ny
         n_kz, n_kx = marginal_bin_counts()
+        terms = ybudget_terms(bool(twin_values.rotational_ybudget))
         fields = tuple(
             (f"{term}_{suf}", (ny, n))
-            for term in YBUDGET_TERMS
+            for term in terms
             for suf, n in (("x", n_kz), ("z", n_kx), ("x0", n_kz))
         )
         sidecar = _common_sidecar(twin_values, y_weights) | {
             "format_version": YBUDGET_FORMAT_VERSION,
-            "terms": list(YBUDGET_TERMS),
+            "terms": list(terms),
             "it_ybudget": twin_values.it_ybudget,
             "note": (
-                "component-summed budget densities in y: "
-                "y_weights . X summed over k == the twin_budget.dat "
-                "column; V is the operator (closure-consistent) "
-                "viscous form and eps the pseudo-dissipation"
+                "component-summed budget densities in y; the terms "
+                "sum to d_t e(y, k), except that under the rotational "
+                "form the trailing P_lift (the classical "
+                "-Re{Du_i* Dv} d_y U_i) sits outside that sum.  V is "
+                "the operator (closure-consistent) viscous form and "
+                "eps the pseudo-dissipation; Wp is the work of the "
+                "pressure gradient (the applied driving at k = 0)"
             ),
         }
         directory = Path(directory)

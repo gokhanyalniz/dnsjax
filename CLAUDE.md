@@ -328,10 +328,23 @@ only when it is multi-process):
 the `(kx, kz)` plane and its authors restrict it to minimal flow
 units**, so `twin.bins` defaults **off** and the `(y, k)` streams
 replace it — the three bin energies stay exactly recoverable from
-them (`analysis.twin.bin_energies`). Start/resume rules (partner
-snapshot + `twin.json` decide; a resume never re-perturbs), stream
-formats, the ±k_z fold the marginals require, the frame-invariance /
-dissipation-form notes and the pressure's wall closure: the
+them (`analysis.twin.bin_energies`).
+
+**The `(y, k)` budget has two forms**, selected by
+`twin.rotational_ybudget` (default **off** = convective, matching
+`twin_budget.dat` term by term). The rotational one is the solver's
+own nonlinear term: its transfer terms are exactly redistributive
+(`Σ_k T(y) = 0` by pointwise algebra, any resolution) and its
+`n_hat` is checkable against `cartesian._get_rhs`, but it is a
+different decomposition — the turbulent transport moves into the
+pressure column — so it also stores `P_lift` (the convective `P_U`)
+to keep the classical lift-up density. Which identities hold in
+which form: the `diagnostics.py` "Two budget forms" note.
+
+Start/resume rules (partner snapshot + `twin.json` decide; a resume
+never re-perturbs), stream formats, the ±k_z fold the marginals
+require, the frame-invariance / dissipation-form notes and the
+pressure's wall closure: the
 `twin/driver.py`, `twin/diagnostics.py`, `twin/pressure.py` and
 `twin/yspectra.py` module docstrings; the maths is written up as
 Appendix C of the `perturbation_dynamics` document (not in this repo).
@@ -527,7 +540,7 @@ layering" above.
 | `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
 | `[probes]` | Extension (`extensions/`): spectral-mode probe stream (wall-bounded) |
 | `[force]`  | Extension: white-in-time stochastic mode kicks; all-or-none and trajectory-defining (wall-bounded, non-viscoelastic) |
-| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + `mean_flow`/`bins` (Cartesian wall-bounded, fixed dt) |
+| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + `mean_flow`/`bins`/`rotational_ybudget` (Cartesian wall-bounded, fixed dt) |
 
 The default `parameters.toml` contains only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`; the rest rely on

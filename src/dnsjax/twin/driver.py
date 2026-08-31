@@ -248,12 +248,14 @@ class TwinParams(BaseModel):
       ``flow.Lk_op`` plus its two homogeneous columns, two real
       `$(N_y, N_{k_z}, N_{k_x})$` fields (its "Cost" section has the
       numbers).  *Transient*:
-      :func:`dnsjax.twin.diagnostics._difference_sources` holds 15
+      :func:`dnsjax.twin.diagnostics._convective_sources` holds 15
       padded physical fields at once -- 6 advector plus one gradient
       set, the two gradient sets being formed one at a time for
       exactly this reason (holding both is 24, *more* than the
-      three-bin pass's ~21 despite half the transforms).  XLA still
-      schedules, so watch it rather than assuming 15.
+      three-bin pass's ~21 despite half the transforms).  Under
+      ``twin.rotational_ybudget`` it is 12, and 21 transforms rather
+      than 33.  XLA still schedules, so watch it rather than
+      assuming either.
       ``solver.rhs_transform_chunks``
       caps the transform-stage transient inside each
       :func:`dnsjax.fft.chunked_transform` call; it does **not** touch
@@ -390,6 +392,18 @@ class TwinParams(BaseModel):
             "unset disables the stream.  Like it_budget, not a pure "
             "cadence knob: it raises both the run's resident and its "
             "peak memory (see the field's docs)."
+        ),
+    )
+    rotational_ybudget: bool = Field(
+        default=False,
+        description=(
+            "Write twin_ybudget.bin in the rotational form of the "
+            "nonlinear term instead of the convective one.  Its two "
+            "transfer terms are then exactly redistributive at every "
+            "y and its nonlinear term is the solver's own, at the "
+            "cost of a split that does not map onto the reference "
+            "paper's production/transport terms (see the "
+            "twin.diagnostics docstring).  Off by default."
         ),
     )
     spectra_ref: bool = Field(
@@ -939,8 +953,9 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         # One factored Poisson operator, held for the run (see the
         # ``twin.it_ybudget`` field docs for what it costs).
         pressure = DifferencePressure(diagnostics.flow, diagnostics.fourier)
+        rot = twin_params.rotational_ybudget
         twin_ybudget = diagnostics.twin_ybudget
-        ybvals = twin_ybudget(state1, state2, pressure)
+        ybvals = twin_ybudget(state1, state2, pressure, rotational=rot)
 
     sharding.print(
         f"t = {t:.2f}",
@@ -1202,7 +1217,8 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                 _abort_non_finite(bad)
         if measure_ybudget and it % twin_params.it_ybudget == 0 and it > it0:
             bad = ybudget_stream.record(
-                twin_ybudget(state1, state2, pressure), t
+                twin_ybudget(state1, state2, pressure, rotational=rot),
+                t,
             )
             if bad is not None:
                 _abort_non_finite(bad)
@@ -1362,7 +1378,9 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             _abort_non_finite(bad)
 
     if measure_ybudget and it > it0 and it % twin_params.it_ybudget == 0:
-        bad = ybudget_stream.record(twin_ybudget(state1, state2, pressure), t)
+        bad = ybudget_stream.record(
+            twin_ybudget(state1, state2, pressure, rotational=rot), t
+        )
         if bad is not None:
             _abort_non_finite(bad)
 

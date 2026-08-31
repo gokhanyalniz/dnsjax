@@ -18,19 +18,32 @@ rather than left as a hole.
 
 Interior equation
 -----------------
-Take the divergence of the difference momentum equation (the paper's
-(B1)); both members are solenoidal, so the pressure obeys, per
-wall-parallel mode,
+Take the divergence of the difference momentum equation; both members
+are solenoidal, so the pressure obeys, per wall-parallel mode,
 
 .. math::
     (D_2 - k^2)\,\Delta\hat{p} = \widehat{\nabla\cdot\mathcal{N}},
     \qquad
-    \mathcal{N} = -(\mathbf{u}^{(1)}\cdot\nabla)\Delta\mathbf{u}
-    - (\Delta\mathbf{u}\cdot\nabla)\mathbf{u}^{(1)}
-    - (\Delta\mathbf{u}\cdot\nabla)\Delta\mathbf{u} ,
+    \mathcal{N} = \mathbf{u}^{(1)}\times\Delta\boldsymbol{\omega}
+    + \Delta\mathbf{u}\times\boldsymbol{\omega}^{(1)}
+    + \Delta\mathbf{u}\times\Delta\boldsymbol{\omega} ,
 
 on the **interior** rows.  That operator is
 :func:`~dnsjax.geometries.wall_bounded.cartesian.build_poisson_operator`.
+
+`$\mathcal{N}$` is written above in the **convective** form, the
+default (:func:`dnsjax.twin.diagnostics._convective_sources`).  Under
+``twin.rotational_ybudget`` it is instead the rotational term the
+solver itself integrates (:mod:`dnsjax.rhs`), and then
+`$\Delta\hat p$` comes back as the difference of the two members'
+**Bernoulli** pressures, `$\Delta p + \mathbf{u}^{(1)}\!\cdot
+\Delta\mathbf{u} + |\Delta\mathbf{u}|^2/2$` -- the pressure the
+influence matrix actually closes on, rather than one reconstructed
+from an operator the solver never applies.  The two differ by a
+gradient, so the total work is unchanged; the `$y$`-density is not
+(:mod:`dnsjax.twin.diagnostics`, "Two budget forms").  Everything
+below is form-independent: nothing in the solve reads
+`$\mathcal{N}$` except as a source.
 
 Wall closure: the IMM one, not the textbook one
 -----------------------------------------------
@@ -57,7 +70,9 @@ two free rows are fixed by asking the same of it at the walls,
 `$(D_1\,\partial_t\Delta\hat{v})|_{w} = 0$` -- the wall-parallel
 components of `$\partial_t\Delta\mathbf{u}$` vanish there because
 no-slip holds for all `$t$`, so this is exactly
-``_imm_iteration_vp``'s stage-4 residual.  Writing
+``_imm_iteration_vp``'s stage-4 residual.  Nothing in that argument
+reads `$\mathcal{N}$`, so the closure is the same under either
+nonlinear form.  Writing
 `$\Delta\hat{p} = p_P + \alpha_1 p_1 + \alpha_2 p_2$` with
 `$L_k p_P = \hat f$` (wall rows zeroed) and `$L_k p_i = e_i$` (unit
 wall data) makes that residual affine in `$\alpha$`, so
@@ -81,10 +96,14 @@ delivers it everywhere, at machine epsilon), so requiring the same of
 produced the state.  What the analytic Neumann condition then does is
 supply an *independent* check:
 :meth:`DifferencePressure.neumann_residual` measures how far
-`$(D_1\Delta\hat{p} - Re^{-1}D_2\Delta\hat{v})|_w$` is from zero, a
-wall-normal truncation diagnostic of the same kind as the
-applied-vs-inferred driving gap (``tests/test_driving.py``), which
-must shrink with ``res.ny``.
+`$(D_1\Delta\hat{p} - \hat{\mathcal{N}}_y
+- Re^{-1}D_2\Delta\hat{v})|_w$` is from zero, a wall-normal
+truncation diagnostic of the same kind as the applied-vs-inferred
+driving gap (``tests/test_driving.py``), which must shrink with
+``res.ny``.  The `$\hat{\mathcal{N}}_y|_w$` term is machine-zero in
+the convective form and genuinely non-zero in the rotational one, so
+it is carried unconditionally: that method's docstring has the
+derivation.
 
 The mean mode
 -------------
@@ -115,7 +134,7 @@ Resident, held for the run -- so it is built only when
 - ``M_inv``, `$(N_{k_z}, N_{k_x}, 2, 2)$` -- negligible beside those.
 
 Per sample: one banded solve and a handful of `$D_1$` matvecs, against
-the ~33 field transforms the budget itself costs.
+the ~21 field transforms the budget itself costs.
 """
 
 from __future__ import annotations
@@ -269,20 +288,30 @@ class DifferencePressure:
         flow_: CartesianFlow,
         fourier_: Fourier,
     ) -> Array:
-        r"""`$\sum_\alpha \Pi_\alpha(y, k)$`, the pressure work density.
+        r"""`$\sum_\alpha W_\alpha(y, k)$`, the pressure work density.
 
         .. math::
-            \Pi_\alpha = -\sigma_{k_x}\,
+            W_\alpha = -\sigma_{k_x}\,
             \mathrm{Re}\{\Delta\hat{u}_\alpha^*\,
             (\partial_\alpha \Delta p)^{\widehat{\ }}\} ,
 
-        evaluated **componentwise and summed**, not through the
+        stored as :func:`~dnsjax.twin.diagnostics.ybudget_terms`'
+        ``Wp`` -- **not** the mean-mode driving `$\Pi$` named
+        throughout the rest of this codebase, although at `$(0,0)$`
+        the two coincide (:func:`dnsjax.twin.diagnostics.
+        _driving_density`).
+
+        Evaluated **componentwise and summed**, not through the
         equivalent flux form `$-\sigma\,\partial_y
         \mathrm{Re}\{\Delta\hat{p}\Delta\hat{v}^*\}$`: the two agree
         only up to the discrete product-rule error, and this is the
         one that appears in `$\partial_t e$`.  (The flux form is the
-        *interpretation* -- it is what makes `$\int\Pi\,dy = 0$` at
-        every `$k$`, and comparing them is a check, not a shortcut.)
+        *interpretation* -- it is what makes `$\int W\,dy = 0$` at
+        every `$k$`, and comparing them is a check, not a shortcut.
+        It follows from continuity alone, so it holds for the
+        Bernoulli `$\Delta\hat p$` exactly as it did for the static
+        one -- of a larger field, hence a larger absolute residual:
+        the ``pi_flux`` column of ``tests/test_twin_budget.py``.)
 
         Returned as a `$y$`-density divided by ``volume_fac``, like
         every other :func:`dnsjax.twin.diagnostics.twin_ybudget` term.
@@ -296,20 +325,39 @@ class DifferencePressure:
         return -work * (fourier_.k_metric / derived_params.volume_fac)
 
     def neumann_residual(
-        self, delta: Array, p_hat: Array, flow_: CartesianFlow
+        self,
+        delta: Array,
+        p_hat: Array,
+        n_y: Array,
+        flow_: CartesianFlow,
     ) -> Array:
-        r"""`$(D_1\Delta\hat p - Re^{-1}D_2\Delta\hat v)|_w$`.
+        r"""`$(D_1\Delta\hat p - \hat{\mathcal N}_y
+        - Re^{-1}D_2\Delta\hat v)|_w$`.
 
         The analytic Neumann condition the IMM closure does *not*
         impose, as a wall-normal truncation diagnostic: it must shrink
         with ``res.ny``.  Shape ``(2, Nkz, Nkx)`` complex, walls
         ``[bottom, top]``.
+
+        `$\hat{\mathcal N}_y$` is carried unconditionally because
+        it is form-dependent.  Evaluating the `$y$`-momentum equation at
+        a wall where `$\partial_t\Delta\hat v = \Delta\hat v = 0$`
+        gives `$(\partial_y\Delta\hat p)|_w = \hat{\mathcal N}_y|_w +
+        Re^{-1}(D_2\Delta\hat v)|_w$`.  Convectively every term of
+        `$\mathcal{N}$` carries a velocity factor that no-slip kills,
+        so `$\hat{\mathcal N}_y|_w$` is machine-zero and subtracting
+        it is a no-op.  Rotationally it is `$(\mathbf{U}_w\cdot
+        \partial_y\Delta\mathbf{u}_\parallel)|_w$` -- non-zero
+        wherever the wall moves (plane-Couette) -- and is exactly
+        `$\partial_y(\mathbf{u}^{(1)}\!\cdot\Delta\mathbf{u})|_w$`,
+        the Bernoulli part of `$\Delta\hat p$`, so subtracting it
+        leaves the same quantity in both forms.
         """
         d1 = flow_.D1_bnd
         d2v = apply_y_matrix(flow_.D2, delta[1]) / params.phys.re
         return jnp.stack(
             [
-                jnp.einsum("j,jzx->zx", d1[0], p_hat) - d2v[0],
-                jnp.einsum("j,jzx->zx", d1[-1], p_hat) - d2v[-1],
+                jnp.einsum("j,jzx->zx", d1[0], p_hat) - n_y[0] - d2v[0],
+                jnp.einsum("j,jzx->zx", d1[-1], p_hat) - n_y[-1] - d2v[-1],
             ]
         )

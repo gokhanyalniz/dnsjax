@@ -8,10 +8,20 @@ grid and its quadrature weights, and the sidecar.
 
 Everything stored is a `$y$`-**density** already divided by
 ``volume_fac``.  :func:`integrate_y` contracts one with the weights
-to give the per-`$k$` quantity; summing *that* over `$k$` reproduces
-the matching ``twin.dat`` / ``twin_budget.dat`` scalar.  Both
-wavenumber axes are one-sided (`$|k_z|$` folded), so those sums run
-over the stored axis with no further weighting.
+to give the per-`$k$` quantity; summing *that* over `$k$` gives the
+matching volume-averaged rate.  Both wavenumber axes are one-sided
+(`$|k_z|$` folded), so those sums run over the stored axis with no
+further weighting.
+
+For the energies that rate is ``twin.dat``'s ``E_d`` exactly.  For
+the budget it is a ``twin_budget.dat`` column only where the two
+regroup the same Parseval sum: ``-V`` gives ``eps_tot`` and
+``P_lift`` the three mean-gradient production columns.  The budget
+stream is written in the **rotational** form and ``twin_budget.dat``
+in the convective one, so the production/transfer *split* differs
+between them by the work of a gradient -- zero in total, not per
+`$y$` (:mod:`dnsjax.twin.diagnostics`, "Rotational against
+convective").
 
 :func:`bin_energies` is the bridge back to the three-bin diagnostics
 of Egerique-de-la-Concha & Hwang (*J. Fluid Mech.* **1036**, A52,
@@ -40,7 +50,7 @@ import numpy as np
 
 #: Reader floors (raised with the writers' ``*_FORMAT_VERSION``).
 MIN_YSPECTRA_VERSION: int = 1
-MIN_YBUDGET_VERSION: int = 1
+MIN_YBUDGET_VERSION: int = 2
 
 
 @dataclass(frozen=True)

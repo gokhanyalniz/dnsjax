@@ -27,7 +27,13 @@ Two questions, both measured rather than argued.
 Measured
 --------
 Closure residuals, **max over ``twin.seed`` 3/5/7** at each rung
-(20 budget samples each):
+(20 budget samples each).  The ``pp-cbv`` block was re-measured at
+the current partner construction; **the other four blocks predate
+it** -- the `$(0,0)$` perturbation became `$\Pi$`-preserving after
+they were taken, which changes the partner for a given ``twin.seed``
+and so every residual here.  They are kept because the bounds below
+were fitted to them and still hold with room; re-measure before
+tightening any of them.
 
 ===========  ====  =======  =======  =======  =======
 config       ny    dU       du1      du2      T_tot
@@ -35,9 +41,11 @@ config       ny    dU       du1      du2      T_tot
 pp-cpg        49   1.4e-5   1.0e-3   1.5e-2   7.6e-2
               65   1.0e-5   1.1e-3   3.7e-3   1.8e-2
               97   7.6e-6   2.0e-4   1.5e-3   9.3e-3
-pp-cbv        49   1.4e-5   3.6e-3   1.1e-2   4.6e-2
-              65   1.5e-5   8.9e-4   3.6e-3   3.2e-2
-              97   2.2e-5   1.1e-4   1.3e-3   5.0e-3
+pp-cbv        49   1.4e-5   5.9e-4   4.7e-3   1.7e-1
+              65   2.5e-5   2.6e-4   1.3e-2   3.1e-2
+              97   3.3e-5   2.4e-4   3.1e-4   6.7e-3
+             129   8.7e-6   2.7e-5   9.3e-6   6.0e-4
+             161   1.5e-5   3.2e-6   4.5e-5   1.4e-5
 pp-cbv-span   49   1.7e-5   1.6e-3   3.7e-3   1.4e-2
               65   2.4e-5   6.5e-4   4.1e-3   7.8e-3
               97   2.5e-5   4.6e-5   5.2e-4   1.4e-3
@@ -54,18 +62,30 @@ All 15 (config, seed) ladders shrink on ``du1``, ``du2`` and
 the two flows land in different regimes: plane-Couette closes an order
 *tighter* on ``du2``/``T_tot`` and an order *looser* on ``dU``.
 
-2. **Does the wall-normal-resolved budget regroup to this one?**
-   :func:`_yresolved` reads ``twin_ybudget.bin`` alongside
-   ``twin_budget.dat`` and checks that `$\sum_k \int$` of the
-   production and viscous densities reproduce ``P_tot`` and
-   ``eps_tot``.  Those identities are algebraic -- the same Parseval
-   sum regrouped -- so they hold to rounding at every rung, which is
-   what makes them a sharp regression test for the marginal
-   reduction, the `$\pm k_z$` fold and the density normalisation, on
-   real turbulence rather than the synthetic states of
-   ``tests/test_twin_unit.py``.  Their two truncation-limited
-   companions are printed per rung but **not** asserted; the note on
-   ``_CONVERGE`` says why.
+The `$(y, k)$` numbers of :func:`_yresolved` on the same ``pp-cbv``
+ladder, same seeds, in the **default convective form**:
+
+====  ========  ========  ========  ========
+ny    P_exact   V_exact   T_bins    pi_flux
+====  ========  ========  ========  ========
+  49  1.6e-15   5.7e-16   3.3e-1    7.0e-4
+  65  8.0e-16   6.1e-16   5.8e-2    7.2e-4
+  97  3.2e-15   8.0e-16   2.2e-2    5.3e-5
+ 129  1.7e-15   9.3e-16   1.1e-3    1.0e-5
+ 161  1.4e-15   6.0e-16   2.2e-4    4.1e-7
+====  ========  ========  ========  ========
+
+``P_exact`` and ``V_exact`` are the algebraic pair and sit at the
+float floor; ``T_bins`` and ``pi_flux`` are truncation-limited and
+converge, tracking ``T_tot`` rung for rung because all three are the
+same discrete integration-by-parts residual seen from different
+sides.
+
+Under ``twin.rotational_ybudget`` the set changes (``T_zero`` and
+``N_tot`` in place of ``T_bins``; ``P_exact`` measured against
+``P_lift``) -- see :func:`_yresolved`.  ``T_zero`` there is exact by
+pointwise algebra and so has no `$n_y$` dependence at all, which is
+what that form buys.
 
 Configurations are **minimal flow units started from random
 perturbations**: the plane-Poiseuille box is `$2.0 \times 2 \times
@@ -95,9 +115,13 @@ Usage::
 
     uv run python tests/test_twin_budget.py
     uv run python tests/test_twin_budget.py --only pp-cbv
-    uv run python tests/test_twin_budget.py --quick
+    uv run python tests/test_twin_budget.py --only pp-cbv,pc --quick
     uv run python tests/test_twin_budget.py --only pp-cbv \
         --ladder 49 65 97 --seeds 3 5 7
+
+``--only`` matches config names **exactly** and takes a
+comma-separated list, so ``pp-cbv`` does not also select
+``pp-cbv-span``.
 """
 
 from __future__ import annotations
@@ -157,16 +181,32 @@ _PC_BOUNDS = {"dU": 5e-3, "du1": 1e-3, "du2": 5e-4, "T_tot": 1e-3}
 #: The same exclusion, for the same reason, as in
 #: ``tests/test_twin_driver.py``.
 #:
-#: ``T_bins`` and ``pi_flux`` (:func:`_yresolved`) are **measured and
-#: printed per rung but not yet asserted**, here or as absolute
-#: bounds.  Their convergence has so far only been established on
-#: random solenoidal states -- ``ny`` 15/31/63/127 giving
-#: 3.1e-1 -> 8.3e-3 -> 2.0e-3 -> 1.2e-4 and
-#: 1.8e-2 -> 6.5e-4 -> 2.6e-5 -> 2.1e-6 -- and this file's discipline
-#: is that a bound comes from a measured sweep over *these*
-#: configurations and seeds, not from a plausible one elsewhere.  Run
-#: ``--measure`` across the ladder and add them here.
+#: The truncation-limited `$(y, k)$` numbers of :func:`_yresolved`
+#: (``T_bins`` / ``pi_flux`` in the default convective form,
+#: ``N_tot`` / ``pi_flux`` under ``twin.rotational_ybudget``) are
+#: **measured and printed for every configuration but asserted only
+#: where they have been swept** -- today ``pp-cbv``, which carries
+#: them in its own ``bounds`` / ``converge`` entries
+#: (:data:`_YRES_BOUNDS`).  This file's discipline is that a bound
+#: comes from a measured sweep over *that* configuration and its
+#: seeds, not from a plausible one elsewhere: run ``--measure`` on
+#: another config and extend it the same way.  The algebraic
+#: identities need no sweep and are asserted everywhere under
+#: :data:`YEXACT_TOL`.
 _CONVERGE = ("du1", "du2", "T_tot")
+
+#: Absolute bounds on the truncation-limited `$(y, k)$` numbers at the
+#: **finest** rung of a ladder, from the ``--measure`` sweep in the
+#: module docstring.  Carried with the same ~10x margin as the closure
+#: bounds, and over the worst of three seeds, for the same reason: a
+#: fixed rung's residual is not reproducible to better than an order
+#: of magnitude across ``twin.seed``.  These sit at ``pp-cbv``'s
+#: default finest rung (``ny = 97``: 2.2e-2 and 5.3e-5), not at the
+#: 161 the docstring table reaches.  Convective-form values: the
+#: rotational ``pi_flux`` is a couple of decades larger, its ``Wp``
+#: being the work of the rougher Bernoulli pressure.
+_YRES_BOUNDS: dict[str, float] = {"T_bins": 2e-1, "pi_flux": 5e-4}
+
 
 CONFIGS: list[dict] = [
     {
@@ -185,8 +225,11 @@ CONFIGS: list[dict] = [
         # The one configuration where the applied force is genuinely
         # different between the two runs *and* time-varying.
         "name": "pp-cbv",
-        "bounds": _PP_BOUNDS,
-        "converge": _CONVERGE,
+        # The one configuration swept for the (y, k) numbers as well
+        # (the ladder in this module's docstring), so it is the one
+        # that asserts them.
+        "bounds": {**_PP_BOUNDS, **_YRES_BOUNDS},
+        "converge": (*_CONVERGE, *_YRES_BOUNDS),
         "system": "plane-poiseuille",
         "args": [
             "--phys.re",
@@ -416,68 +459,128 @@ MIN_SAMPLES = 15
 def _yresolved(member: Path) -> dict[str, float]:
     r"""Relate ``twin_ybudget.bin`` to ``twin_budget.dat``.
 
-    Four numbers, of two kinds.  ``P_exact`` and ``V_exact`` are
-    *algebraic*: `$\sum_k \int$` of the production terms and of the
-    viscous term are the same Parseval sum ``twin_budget.dat``
-    already forms, only regrouped, so they hold to rounding at every
-    rung and on any state.  They are the load-bearing check that the
-    marginal reduction, the `$\pm k_z$` fold and the density
-    normalisation are all right -- here on real turbulence rather
-    than the synthetic states of ``tests/test_twin_unit.py``.
+    The stream names its own budget form in the sidecar's ``terms``,
+    and the identities available differ between the two, so this
+    dispatches on that rather than on a flag.
 
-    ``T_bins`` and ``pi_flux`` are *truncation*-limited and converge
-    rather than hold.  ``T_bins`` compares the `$k$`-set sums of the
-    transfer terms against the per-component transport of the paper's
-    (2.14)-(2.16); the two differ by the same-bin triads
-    `$\tfrac12\langle(\mathbf{b}\cdot\nabla)|\Delta\mathbf{a}|^2
-    \rangle$` that the paper's lists omit because they vanish for
-    solenoidal `$\mathbf{b}$` -- continuously.  Discretely they
-    vanish only as the integration-by-parts residual that makes
-    ``T_tot`` non-zero, so ``T_bins`` and ``T_tot`` are one quantity
-    seen twice.  ``pi_flux`` is `$\max_k|\int\Pi\,dy|$`, which the
-    continuity identity forces to zero at every mode, normalised by
-    the largest `$|\int\mathcal{V}\,dy|$` over the same modes.
+    *Algebraic* -- the same Parseval sum regrouped, so they hold to
+    rounding at every rung and on any state.  They are the
+    load-bearing check that the marginal reduction, the `$\pm k_z$`
+    fold and the density normalisation are all right, here on real
+    turbulence rather than the synthetic states of
+    ``tests/test_twin_unit.py``:
+
+    - ``V_exact``: `$-\sum_k\int \mathcal{V}$` against ``eps_tot``.
+      Form-independent -- ``V`` is the same array either way.
+    - ``P_exact``: the production identity.  **Convectively** the
+      whole of it, `$\sum_k\int(P_U + P_r)$` against ``P_tot``;
+      **rotationally** only the mean-gradient part, `$\sum_k\int
+      P_\text{lift}$` against the three ``P_*(*,rU)`` columns, since
+      the rotational production is no longer an algebraic identity.
+    - ``T_zero`` (rotational only): `$\max_y|\sum_k T(y)|$` over both
+      transfer terms, relative to `$\max_y\sum_k|T|$`.  Zero because
+      `$\mathbf{a}\cdot(\mathbf{a}\times\mathbf{b}) = 0$` pointwise,
+      hence resolution-independent.  It has **no convective
+      counterpart**: there `$\sum_k T(y)$` is the turbulent transport
+      of difference energy, a real flux that is zero only after
+      integrating in `$y$`.
+
+    *Truncation*-limited, converging rather than holding:
+
+    - ``T_bins`` (convective only): the `$k$`-set sums of the transfer
+      terms against the per-component transport of the paper's
+      (2.14)-(2.16).  The two differ by the same-bin triads
+      `$\tfrac12\langle(\mathbf{b}\cdot\nabla)|\Delta\mathbf{a}|^2
+      \rangle$` that the paper's lists omit because they vanish for
+      solenoidal `$\mathbf{b}$` -- continuously.  Discretely they
+      vanish only as the integration-by-parts residual that makes
+      ``T_tot`` non-zero, so ``T_bins`` and ``T_tot`` are one quantity
+      seen twice.
+    - ``N_tot`` (rotational only): `$\sum_k\int(P_U + P_r)$` against
+      ``P_tot + T_tot``.  The two nonlinear forms differ by the
+      gradient of `$\mathbf{u}^{(1)}\!\cdot\Delta\mathbf{u} +
+      |\Delta\mathbf{u}|^2/2$`, whose work is a wall-normal flux --
+      zero continuously, and discretely the same residual again.
+    - ``pi_flux``: `$\max_k|\int W_p\,\mathrm{d}y|$`, which the
+      continuity identity forces to zero at every mode, normalised by
+      the largest `$|\int\mathcal{V}\,\mathrm{d}y|$` over the same
+      modes.  Form-*dependent* in magnitude though not in kind: the
+      rotational ``Wp`` is the work of the Bernoulli pressure, a
+      larger and rougher field than the static one, so its product-
+      rule residual is correspondingly larger.
     """
     from dnsjax.analysis.twin import integrate_y, read_twin_ybudget
 
     data = read_twin_ybudget(member)
+    rotational = "P_lift" in data.meta["terms"]
     budget = read_dat(member / "twin_budget.dat")
     t_b = np.round(budget["t"], 10)
     index = {t: i for i, t in enumerate(t_b)}
-    out = {"P_exact": 0.0, "V_exact": 0.0, "T_bins": 0.0, "pi_flux": 0.0}
+    names = ["P_exact", "V_exact", "pi_flux"]
+    names += ["T_zero", "N_tot"] if rotational else ["T_bins"]
+    out = dict.fromkeys(names, 0.0)
+    rows = [f"P_{b}({b},rU)" for b in ("dU", "du1", "du2")]
 
     def bins(name: str, k: int) -> np.ndarray:
         x0 = integrate_y(data, f"{name}_x0")[k]
         x = integrate_y(data, f"{name}_x")[k]
         return np.array([x0[0], x0[1:].sum(), (x - x0).sum()])
 
-    for k, t in enumerate(np.round(data.t, 10)):
-        i = index.get(t)
-        if i is None:  # the driver's unconditional final row
-            continue
-        p_sum = (
-            integrate_y(data, "P_U_x")[k].sum()
-            + integrate_y(data, "P_r_x")[k].sum()
-        )
-        v_sum = -integrate_y(data, "V_z")[k].sum()
-        p_ref = max(abs(budget["P_tot"][i]), 1e-300)
-        e_ref = max(abs(budget["eps_tot"][i]), 1e-300)
-        out["P_exact"] = max(
-            out["P_exact"], abs(p_sum - budget["P_tot"][i]) / p_ref
-        )
-        out["V_exact"] = max(
-            out["V_exact"], abs(v_sum - budget["eps_tot"][i]) / e_ref
-        )
-        want = np.array(
+    def transport_bins(i: int) -> np.ndarray:
+        """The paper's per-component transport at ``twin_budget`` row *i*."""
+        return np.array(
             [
                 sum(budget[c][i] for c in budget if c.startswith(f"T_{b}("))
                 for b in ("dU", "du1", "du2")
             ]
         )
-        got = bins("T_ref", k) + bins("T_self", k)
-        scale = max(np.abs(want).max(), 1e-300)
-        out["T_bins"] = max(out["T_bins"], np.abs(got - want).max() / scale)
-        pi = np.abs(integrate_y(data, "Pi_x")[k])
+
+    for k, t in enumerate(np.round(data.t, 10)):
+        i = index.get(t)
+        if i is None:  # the driver's unconditional final row
+            continue
+        v_sum = -integrate_y(data, "V_z")[k].sum()
+        e_ref = max(abs(budget["eps_tot"][i]), 1e-300)
+        out["V_exact"] = max(
+            out["V_exact"], abs(v_sum - budget["eps_tot"][i]) / e_ref
+        )
+
+        p_rot = (
+            integrate_y(data, "P_U_x")[k].sum()
+            + integrate_y(data, "P_r_x")[k].sum()
+        )
+        if rotational:
+            want_p = sum(budget[r][i] for r in rows)
+            out["P_exact"] = max(
+                out["P_exact"],
+                abs(integrate_y(data, "P_lift_x")[k].sum() - want_p)
+                / max(abs(want_p), 1e-300),
+            )
+            for name in ("T_vort", "T_self"):
+                dens = data[f"{name}_x"][k]
+                scale = max(np.abs(dens).sum(axis=-1).max(), 1e-300)
+                out["T_zero"] = max(
+                    out["T_zero"], np.abs(dens.sum(axis=-1)).max() / scale
+                )
+            n_conv = budget["P_tot"][i] + budget["T_tot"][i]
+            out["N_tot"] = max(
+                out["N_tot"],
+                abs(p_rot - n_conv) / max(abs(budget["P_tot"][i]), 1e-300),
+            )
+        else:
+            out["P_exact"] = max(
+                out["P_exact"],
+                abs(p_rot - budget["P_tot"][i])
+                / max(abs(budget["P_tot"][i]), 1e-300),
+            )
+            want = transport_bins(i)
+            got = bins("T_ref", k) + bins("T_self", k)
+            scale = max(np.abs(want).max(), 1e-300)
+            out["T_bins"] = max(
+                out["T_bins"], np.abs(got - want).max() / scale
+            )
+
+        pi = np.abs(integrate_y(data, "Wp_x")[k])
         visc = np.abs(integrate_y(data, "V_x")[k])
         out["pi_flux"] = max(
             out["pi_flux"], pi.max() / max(visc.max(), 1e-300)
@@ -485,10 +588,13 @@ def _yresolved(member: Path) -> dict[str, float]:
     return out
 
 
-#: The two algebraic identities of :func:`_yresolved` are exact up to
+#: The three algebraic identities of :func:`_yresolved` are exact up to
 #: float summation order over `$O(10^4)$` modes and `$N_y$` quadrature
 #: nodes, so the bound is a rounding allowance, not a physics one.
 YEXACT_TOL = 1e-9
+
+#: Names asserted under :data:`YEXACT_TOL`.
+_YEXACT = ("P_exact", "V_exact", "T_zero")
 
 
 def _check_closure(
@@ -509,13 +615,17 @@ def _check_closure(
     bad: list[str] = []
     finest = rows[ladder[-1]]
     for name, bound in cfg["bounds"].items():
+        # A (y, k) name is absent when the run used the other budget
+        # form, which names a different set (:func:`_yresolved`).
+        if name not in finest:
+            continue
         if not finest[name] < bound:
             bad.append(
                 f"ny={ladder[-1]} {name}={finest[name]:.2e} >= {bound:.2e}"
             )
     if len(ladder) < 2:
         return bad
-    for name in cfg["converge"]:
+    for name in (n for n in cfg["converge"] if n in rows[ladder[0]]):
         seq = [rows[ny][name] for ny in ladder]
         if not seq[-1] < seq[0]:
             trail = " -> ".join(f"{v:.2e}" for v in seq)
@@ -550,15 +660,15 @@ def run_config(cfg: dict, args: argparse.Namespace) -> str | None:
                     f"({resid.n_samples} samples)",
                     flush=True,
                 )
-                for name in ("T_bins", "pi_flux"):
-                    worst[name] = max(worst.get(name, 0.0), yres[name])
+                for name, value in yres.items():
+                    worst[name] = max(worst.get(name, 0.0), value)
                 print(
                     "           (y,k): "
                     + " ".join(f"{k}={yres[k]:.2e}" for k in sorted(yres)),
                     flush=True,
                 )
                 if not _measuring(args):
-                    for name in ("P_exact", "V_exact"):
+                    for name in (n for n in _YEXACT if n in yres):
                         if not yres[name] < YEXACT_TOL:
                             bad.append(
                                 f"ny={ny} seed={seed}: {name}="
@@ -587,7 +697,9 @@ def _parse_args() -> argparse.Namespace:
         description="Twin-run budget closure across flows / driving modes."
     )
     parser.add_argument(
-        "--only", default=None, help="Substring filter on the config name"
+        "--only",
+        default=None,
+        help="Comma-separated config names, matched exactly",
     )
     parser.add_argument(
         "--ladder",
@@ -622,8 +734,15 @@ def main() -> None:
     args = _parse_args()
     configs = CONFIGS
     if args.only:
-        configs = [c for c in configs if args.only in c["name"]]
-        assert configs, f"--only {args.only!r} matches no config"
+        # Exact names, not a substring filter: ``--only pp-cbv`` must
+        # not silently drag in ``pp-cbv-span`` and double the ladder.
+        want = [n.strip() for n in args.only.split(",") if n.strip()]
+        known = [c["name"] for c in CONFIGS]
+        unknown = [n for n in want if n not in known]
+        assert not unknown, (
+            f"--only: unknown config(s) {unknown}; choose from {known}"
+        )
+        configs = [c for c in configs if c["name"] in want]
     if args.quick:
         args.spin = args.spin or 5.0
         args.horizon = args.horizon or 0.3

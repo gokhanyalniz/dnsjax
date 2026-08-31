@@ -854,7 +854,7 @@ def test_ybudget_reader() -> None:
     """``twin_ybudget`` round trip against the sidecar's term list."""
     from dnsjax.analysis.twin import integrate_y, read_twin_ybudget
 
-    terms = ["P_U", "P_r", "T_ref", "T_self", "V", "eps", "Pi"]
+    terms = ["P_U", "P_r", "T_ref", "T_self", "V", "eps", "Wp"]
     rng = np.random.default_rng(5)
     t = np.array([0.0, 0.02])
     fields = [
@@ -864,7 +864,7 @@ def test_ybudget_reader() -> None:
     ]
     values = {n: rng.random((2, *sh)) for n, sh in fields}
     sidecar = _y_sidecar(
-        {"format_version": 1, "terms": terms, "it_ybudget": 5}
+        {"format_version": 2, "terms": terms, "it_ybudget": 5}
     )
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -875,8 +875,8 @@ def test_ybudget_reader() -> None:
             assert_allclose(data[name], values[name], rtol=0, atol=0)
         w = np.asarray(sidecar["y_weights"])
         assert_allclose(
-            integrate_y(data, "Pi_z"),
-            np.einsum("j,tjk->tk", w, values["Pi_z"]),
+            integrate_y(data, "Wp_z"),
+            np.einsum("j,tjk->tk", w, values["Wp_z"]),
             rtol=0,
             atol=0,
         )
