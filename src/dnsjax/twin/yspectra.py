@@ -201,13 +201,17 @@ class TwinYBudgetStream(BinStream):
             "terms": list(terms),
             "it_ybudget": twin_values.it_ybudget,
             "note": (
-                "component-summed budget densities in y; the terms "
-                "sum to d_t e(y, k), except that under the rotational "
-                "form the trailing P_lift (the classical "
-                "-Re{Du_i* Dv} d_y U_i) sits outside that sum.  V is "
-                "the operator (closure-consistent) viscous form and "
-                "eps the pseudo-dissipation; Wp is the work of the "
-                "pressure gradient (the applied driving at k = 0)"
+                "component-summed budget densities in y.  Summing the "
+                "terms gives d_t e(y, k), with two exclusions.  eps is "
+                "the positive-definite pseudo-dissipation companion to "
+                "the operator (closure-consistent) viscous form V -- "
+                "only V is in the balance, and their difference is the "
+                "wall-normal diffusion flux.  And where the rotational "
+                "form writes it, the trailing P_lift (the classical "
+                "-Re{Du_i* Dv} d_y U_i, carried unchanged from the "
+                "convective form) also sits outside the sum.  Wp is "
+                "the work of the pressure gradient (the applied "
+                "driving at k = 0)"
             ),
         }
         directory = Path(directory)

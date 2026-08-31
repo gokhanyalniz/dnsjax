@@ -336,10 +336,11 @@ them (`analysis.twin.bin_energies`).
 own nonlinear term: its transfer terms are exactly redistributive
 (`Σ_k T(y) = 0` by pointwise algebra, any resolution) and its
 `n_hat` is checkable against `cartesian._get_rhs`, but it is a
-different decomposition — the turbulent transport moves into the
-pressure column — so it also stores `P_lift` (the convective `P_U`)
-to keep the classical lift-up density. Which identities hold in
-which form: the `diagnostics.py` "Two budget forms" note.
+different decomposition — the turbulent transport is redistributed
+between the pressure and production columns — so it also stores
+`P_lift` (the convective `P_U`) to keep the classical lift-up
+density. Which identities hold in which form: the `diagnostics.py`
+"Two budget forms" note.
 
 Start/resume rules (partner snapshot + `twin.json` decide; a resume
 never re-perturbs), stream formats, the ±k_z fold the marginals

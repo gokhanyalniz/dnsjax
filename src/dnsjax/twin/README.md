@@ -180,8 +180,9 @@ pointwise, so $\sum_k T = 0$ at every $y$ whatever the resolution —
 and the nonlinear term is checkable against the solver's own
 right-hand side. That is a different decomposition, not a repaired
 one: convectively $\sum_k T(y)$ *is* the turbulent transport of
-difference energy, and rotationally that transport has moved into
-`Wp`, which becomes the Bernoulli-pressure work. The two forms differ
+difference energy, and rotationally that transport is redistributed —
+its $\Delta v$ half into `Wp`, which becomes the Bernoulli-pressure
+work, and the rest into the production. The two forms differ
 by a gradient, so volume totals agree while the $y$-densities move
 between production, transfer and `Wp`. An eighth column, `P_lift`,
 carries the convective `P_U` unchanged and outside the sum — the

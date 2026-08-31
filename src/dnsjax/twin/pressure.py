@@ -24,9 +24,9 @@ are solenoidal, so the pressure obeys, per wall-parallel mode,
 .. math::
     (D_2 - k^2)\,\Delta\hat{p} = \widehat{\nabla\cdot\mathcal{N}},
     \qquad
-    \mathcal{N} = \mathbf{u}^{(1)}\times\Delta\boldsymbol{\omega}
-    + \Delta\mathbf{u}\times\boldsymbol{\omega}^{(1)}
-    + \Delta\mathbf{u}\times\Delta\boldsymbol{\omega} ,
+    \mathcal{N} = -(\mathbf{u}^{(1)}\cdot\nabla)\Delta\mathbf{u}
+    - (\Delta\mathbf{u}\cdot\nabla)\mathbf{u}^{(1)}
+    - (\Delta\mathbf{u}\cdot\nabla)\Delta\mathbf{u} ,
 
 on the **interior** rows.  That operator is
 :func:`~dnsjax.geometries.wall_bounded.cartesian.build_poisson_operator`.
@@ -34,7 +34,10 @@ on the **interior** rows.  That operator is
 `$\mathcal{N}$` is written above in the **convective** form, the
 default (:func:`dnsjax.twin.diagnostics._convective_sources`).  Under
 ``twin.rotational_ybudget`` it is instead the rotational term the
-solver itself integrates (:mod:`dnsjax.rhs`), and then
+solver itself integrates (:mod:`dnsjax.rhs`),
+`$\mathbf{u}^{(1)}\times\Delta\boldsymbol{\omega} + \Delta\mathbf{u}
+\times\boldsymbol{\omega}^{(1)} + \Delta\mathbf{u}\times\Delta
+\boldsymbol{\omega}$`, and then
 `$\Delta\hat p$` comes back as the difference of the two members'
 **Bernoulli** pressures, `$\Delta p + \mathbf{u}^{(1)}\!\cdot
 \Delta\mathbf{u} + |\Delta\mathbf{u}|^2/2$` -- the pressure the
@@ -109,12 +112,18 @@ The mean mode
 -------------
 `$\Delta\hat{v} \equiv 0$` at `$(k_z, k_x) = (0,0)$` (continuity plus
 no-slip), and `$k_x = k_z = 0$` kills the horizontal gradients, so
-the *fluctuating* pressure does no work there and
-`$\Delta\hat{p}_{00}$` is a pure gauge -- the operator pins it, and
-`$M$` is identically zero there (both homogeneous columns are
-harmonic at `$k^2 = 0$`, so `$D_1D_1p_i = 0$`), which
-``M_inv`` handles by zeroing.  What *does* act on the mean mode is
-the applied driving `$\Delta\Pi$`; that density is added by
+the *fluctuating* pressure does no work there.  `$k^2 = 0$` is the
+one singular system, so ``build_poisson_operator`` swaps that mode's
+upper Neumann row for a Dirichlet pin; both homogeneous columns are
+then harmonic (`$p_1$` affine in `$y$`, `$p_2$` constant), so
+`$D_1D_1p_i = 0$`, `$M$` is identically zero, and ``M_inv`` handles
+that by zeroing -- `$\alpha = 0$`.  What comes back is therefore the
+mean pressure the interior equation determines, free only in the
+constant the pin fixes; not a pure gauge, but doing no work either
+way.  What *does* act on the mean mode is the applied driving
+`$-\Delta\Pi$` (`$\Pi$` the mean pressure gradient -- the sign
+convention is fixed in :mod:`dnsjax.twin.diagnostics`, "Mean-mode
+driving"); that density is added by
 :func:`dnsjax.twin.diagnostics.twin_ybudget`, which has the mean
 profile to hand.
 
@@ -296,9 +305,8 @@ class DifferencePressure:
             (\partial_\alpha \Delta p)^{\widehat{\ }}\} ,
 
         stored as :func:`~dnsjax.twin.diagnostics.ybudget_terms`'
-        ``Wp`` -- **not** the mean-mode driving `$\Pi$` named
-        throughout the rest of this codebase, although at `$(0,0)$`
-        the two coincide (:func:`dnsjax.twin.diagnostics.
+        ``Wp`` -- **not** the mean-mode driving, although at
+        `$(0,0)$` the two coincide (:func:`dnsjax.twin.diagnostics.
         _driving_density`).
 
         Evaluated **componentwise and summed**, not through the

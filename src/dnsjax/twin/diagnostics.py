@@ -262,10 +262,10 @@ and are not reproduced.  :func:`ybudget_terms`, default
   pseudo-dissipation `$\nu|\nabla\Delta\mathbf{u}|^2$`.  Their
   difference is the wall-normal diffusion flux;
 - ``Wp``: the work done by the pressure *gradient*, from
-  :mod:`dnsjax.twin.pressure`.  Not the mean-mode driving `$\Pi$`
-  this codebase names elsewhere -- although at `$(0,0)$`, where the
-  fluctuating pressure does no work, it is exactly that
-  (:func:`_driving_density`).
+  :mod:`dnsjax.twin.pressure`.  Not the mean-mode driving --
+  although at `$(0,0)$`, where the fluctuating pressure does no work,
+  it is exactly that (:func:`_driving_density`; "Mean-mode driving"
+  below fixes the sign convention).
 
 `$\sum_k \int$` of ``P_U + P_r`` and of ``-V`` reproduce
 ``twin_budget.dat``'s ``P_tot`` and ``eps_tot`` to rounding --
@@ -275,13 +275,22 @@ integration-by-parts residual that makes ``T_tot`` nonzero in the
 first place (measured on the ladder in ``tests/test_twin_budget.py``).
 
 **What `$\sum_k T(y)$` is, and is not.**  Summed over `$k$` at fixed
-`$y$` the two transfer terms give `$-\partial_y\langle v^{(1)}
-|\Delta\mathbf{u}|^2/2\rangle_{xz}$`, the turbulent transport of
-difference energy: a genuine wall-normal flux, zero only after
-integrating in `$y$`.  It is *not* a quantity that should vanish
-pointwise, and a build in which it did would have lost that
-transport.  What does vanish, up to truncation, is the
-`$y$`-integral.
+`$y$` the two transfer terms give
+
+.. math::
+    -\partial_y\langle v^{(1)}|\Delta\mathbf{u}|^2/2\rangle_{xz}
+    -\partial_y\langle \Delta v|\Delta\mathbf{u}|^2/2\rangle_{xz}
+    = -\partial_y\langle v^{(2)}|\Delta\mathbf{u}|^2/2\rangle_{xz},
+
+the turbulent transport of difference energy -- carried by the
+**perturbed** member, because `$\Delta\mathbf{u}$` is advected by
+`$\mathbf{u}^{(1)} + \Delta\mathbf{u}$` and the two halves above are
+exactly ``T_ref`` and ``T_self``.  Dropping the second would be
+dropping one of the two terms.  A genuine wall-normal flux, zero only
+after integrating in `$y$` (`$v^{(2)}$` vanishes at both walls too).
+It is *not* a quantity that should vanish pointwise, and a build in
+which it did would have lost that transport.  What does vanish, up to
+truncation, is the `$y$`-integral.
 
 The `$k$`-resolved budget is **cheaper** than the three-bin one: 33
 field transforms against 69 (:func:`_convective_sources`), because
@@ -327,8 +336,10 @@ V, eps, Wp, P_lift``:
   `$y$` **exactly** -- at any resolution, on any grid, needing
   neither continuity nor no-slip.  That is a different statement from
   the convective one above, not a repaired version of it: the
-  turbulent transport has moved into ``Wp``, which is now the work of
-  the Bernoulli pressure.
+  turbulent transport has moved, and not as a block -- its
+  `$\Delta v$` half into ``Wp``, which is now the work of the
+  Bernoulli pressure, and its `$\mathbf{u}^{(1)}$` half into the
+  production.
 - ``P_U`` carries the lift-up production, but its density is
   `$U^{(1)}_i\partial_y\langle\Delta u_i\Delta v\rangle$` rather than
   the classical `$-\langle\Delta u_i\Delta v\rangle\partial_yU^{(1)}
@@ -400,27 +411,38 @@ the term costs one mode-diagonal multiply and makes
 
 Mean-mode driving
 -----------------
+**Sign convention.**  `$\Pi_s$` is the `$(0,0)$` mode of
+`$\partial p/\partial s$` -- the mean pressure gradient -- so the
+applied *force* is `$-\Pi_s$`, positive when it accelerates the flow.
+That is ``stats.dat``'s ``-dPds'`` column, it is what
+:mod:`dnsjax.ic.mean_mode` derives its `$(0,0)$` constraints in, and
+everything below and in :mod:`dnsjax.twin.pressure` is written in it.
+Elsewhere in this codebase `$\Pi$` often names the *force* directly
+(``cartesian.mean_driving_from_profile``, the per-geometry body
+forces `$\Pi_\theta$`, `$\Pi_z$`), which is the opposite sign; the
+column name ``-dPds'`` is the unambiguous one either way.
+
 There is deliberately **no forcing column** in the budget, for either
 driving knob.  ``_apply_bulk_corrections``
 (:mod:`~dnsjax.geometries.wall_bounded.cartesian`) applies a *scalar*
-body force on the `$(0,0)$` mode alone -- `$\pi_s$` under
-``phys.driving = "constant_bulk_velocity"``, `$\pi_n$` under
+body force on the `$(0,0)$` mode alone -- `$-\Pi_s$` under
+``phys.driving = "constant_bulk_velocity"``, `$-\Pi_n$` under
 ``phys.block_mean_spanwise_velocity`` -- so its work on a field is
 exactly (force) `$\times$` (that field's bulk velocity along the
 forced direction).  On the *difference* field that is
-`$\Delta\pi \cdot \mathrm{bulk}(\Delta u)$`, and every supported
+`$-\Delta\Pi \cdot \mathrm{bulk}(\Delta u)$`, and every supported
 setting annihilates one of the two factors, by a different mechanism:
 
 - **force free** (``constant_pressure_gradient``, and plane-Couette,
   which carries no ``driving`` field at all): the applied force is the
-  same constant in both runs, so `$\Delta\pi = 0$`.  Note this says
+  same constant in both runs, so `$\Delta\Pi = 0$`.  Note this says
   nothing about `$\mathrm{bulk}(\Delta u)$`, which is genuinely
   non-zero here -- an undriven direction acquires a bulk velocity
   spontaneously, plane-Couette's streamwise one included.
 - **bulk held**: both runs hold the *same* bulk value, so
   `$\mathrm{bulk}(\Delta u) = 0$` -- exactly, because the correction is
   a rank-1 algebraic projection satisfied at every corrector iterate,
-  not a converged feedback loop.  Here `$\Delta\pi$` is the non-zero
+  not a converged feedback loop.  Here `$\Delta\Pi$` is the non-zero
   factor: the two runs apply genuinely different, time-varying forces.
 
 The cancellation is *exact* rather than approximate only because the
@@ -885,7 +907,22 @@ def marginal_bin_counts() -> tuple[int, int]:
     integer wavenumbers `$0, 1, \dots$` (``harmonics.real_harmonics``
     of each axis' full count).  See :func:`_fold_kz` for why the
     `$k_z$` axis is folded rather than stored two-sided.
+
+    Refuses an odd ``res.nz``, where the stored `$k_z$` band is
+    asymmetric and :func:`_fold_kz` has no slot for the outermost
+    negative mode.  Both consumers reject it earlier with a fuller
+    message (``twin/driver.py``'s ``_validate_twin``,
+    ``scripts/twin_postprocess.py``), so this is unreachable through
+    either of them; it keeps the invariant with the function whose
+    contract states it rather than only with the two pre-flights.
     """
+    if params.res.nz % 2:
+        raise ValueError(
+            "marginal_bin_counts needs an even res.nz (got "
+            f"{params.res.nz}): the wall-normal-resolved streams fold "
+            "the k_z axis onto |k_z|, and at odd nz the outermost "
+            "negative mode has no positive partner (_fold_kz)."
+        )
     return params.res.nz // 2, params.res.nx // 2
 
 
@@ -1058,9 +1095,8 @@ def twin_yspectra(
 #: budget close, matching ``twin_budget``'s ``eps_*`` -- and ``eps``
 #: its positive-definite pseudo-dissipation companion; the two differ
 #: by the wall-normal diffusion flux.  ``Wp`` is the work done by the
-#: pressure *gradient*, not the mean-mode driving `$\Pi$` this
-#: codebase names elsewhere -- though at `$(0,0)$` it is exactly that
-#: (:func:`_driving_density`).
+#: pressure *gradient*, not the mean-mode driving -- though at
+#: `$(0,0)$` it is exactly that (:func:`_driving_density`).
 CONVECTIVE_TERMS: tuple[str, ...] = (
     "P_U",
     "P_r",
@@ -1469,23 +1505,29 @@ def _driving_density(prof_dU: Array, flow_: object) -> Array:
 
     The `$(0,0)$` mode's pressure term is not the fluctuating pressure
     (which does no work there: `$\Delta\hat v_{00}\equiv 0$` and the
-    horizontal gradients vanish) but the applied driving,
-    `$\Delta\Pi_s \Delta U_s(y) + \Delta\Pi_n \Delta U_n(y)$`.  Its
-    `$y$`-integral is `$\Delta\Pi \cdot U_\text{bulk}(\Delta u) = 0$`
+    horizontal gradients vanish) but the applied driving.  With
+    `$\Pi$` the mean pressure gradient (the module docstring's
+    "Mean-mode driving" fixes the sign) the force is `$-\Pi$`, so the
+    density is
+    `$-\Delta\Pi_s \Delta U_s(y) - \Delta\Pi_n \Delta U_n(y)$` -- and
+    what ``mean_driving_from_profile`` returns is `$-\Delta\Pi$`
+    already, keyed ``-dPds'`` / ``-dPdn'``, so the code below adds it
+    with a plus.  The `$y$`-integral is
+    `$-\Delta\Pi \cdot U_\text{bulk}(\Delta u) = 0$`
     exactly -- at constant flow rate both members hold the same bulk,
     at fixed pressure gradient `$\Delta\Pi = 0$` -- but its *density*
     is not, so a `$y$`-resolved budget needs it.
 
-    `$\Delta\Pi$` is the **wall-shear inference** of the two members'
+    `$-\Delta\Pi$` is the **wall-shear inference** of the two members'
     driving, differenced; that is deliberately the better budget
     partner than the corrector's applied value (the `$t = t_0$`
     reasoning in :mod:`dnsjax.__main__`).  Returns exact zeros when no
     driving constraint is active.
 
     Taken from the **difference mean profile alone**, not from the two
-    states: the inference is linear, so
-    `$\Delta\Pi = \Pi(\mathbf{u}^{(2)}) - \Pi(\mathbf{u}^{(1)})$`
-    is exactly `$\Pi$` evaluated on `$\Delta\mathbf{U}$` -- hence
+    states: the inference is linear, so the difference of the two
+    members' driving is exactly the driving evaluated on
+    `$\Delta\mathbf{U}$` -- hence
     :func:`~dnsjax.geometries.wall_bounded.cartesian.mean_driving_from_profile`
     on ``prof_dU``, which :func:`_difference_sources` has already
     extracted.  Calling ``mean_driving`` on each state instead costs two
