@@ -59,7 +59,13 @@ Two subcommands:
     random divergence-free field of exactly ``--e0``), so a member
     directory holds only a generated ``parameters.toml`` ([init]
     snapshot, [stop] horizon, the [twin] section with the member's
-    seed).  Seeds are ``--seed-base + k`` over the flat member index
+    seed, and an [outs] section for whichever cadences were asked
+    for).  The driver records ``stats.dat`` / ``steps.dat`` /
+    ``corrector.dat`` for **both** states of the pair, the partner's
+    under the ``_twin`` suffix, but each stream is gated on its own
+    ``[outs]`` cadence: without ``--it-stats`` / ``--it-steps`` /
+    ``--it-corrector`` a member records none of them.
+    Seeds are ``--seed-base + k`` over the flat member index
     (``--members-per-snapshot`` fans several seeds out of one
     parent).  ``check_laminarization`` is forced off so every member
     runs the full horizon and the streams aggregate on one shared
@@ -99,7 +105,8 @@ Usage::
 
     uv run python scripts/ensemble_setup.py build-twin \
         --manifest manifest.json --tree twins/ --e0 1e-5 \
-        --horizon 5000 --it-budget 100 --it-spectra 100 [--dry-run]
+        --horizon 5000 --it-budget 100 --it-spectra 100 \
+        --it-stats 100 [--dry-run]
 """
 
 from __future__ import annotations
@@ -439,8 +446,22 @@ def _twin_member_toml(mem: dict, args: argparse.Namespace) -> str:
         "check_laminarization = false",
         "",
     ]
-    if args.it_snapshot is not None:
-        lines += ["[outs]", f"it_snapshot = {args.it_snapshot}", ""]
+    # ``dnsjax-twin`` writes stats/steps/corrector for *both* states
+    # (``stats.dat`` + ``stats_twin.dat``, ...), each gated on its own
+    # ``[outs]`` cadence; unset, the member records none of them.
+    outs = [
+        (name, getattr(args, name))
+        for name in ("it_snapshot", "it_stats", "it_steps", "it_corrector")
+    ]
+    if any(v is not None for _, v in outs):
+        lines.append("[outs]")
+        lines += [f"{k} = {v}" for k, v in outs if v is not None]
+        # ``validate_parameters`` requires it_error_check <=
+        # it_corrector; the default (10) is too coarse for a fine
+        # corrector cadence.
+        if args.it_corrector is not None and args.it_corrector < 10:
+            lines.append(f"it_error_check = {args.it_corrector}")
+        lines.append("")
     lines += [
         "[twin]",
         f"e0 = {args.e0!r}",
@@ -557,6 +578,9 @@ def build_twin(args: argparse.Namespace) -> int:
                 "e0": args.e0,
                 "horizon": args.horizon,
                 "it_energy": args.it_energy,
+                "it_stats": args.it_stats,
+                "it_steps": args.it_steps,
+                "it_corrector": args.it_corrector,
                 "bins": bool(args.bins or args.it_budget is not None),
                 "it_budget": args.it_budget,
                 "it_spectra": args.it_spectra,
@@ -718,6 +742,27 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=None,
         help="paired-restart snapshot cadence (outs.it_snapshot)",
+    )
+    pt.add_argument(
+        "--it-stats",
+        type=int,
+        default=None,
+        help="per-state statistics cadence (outs.it_stats): "
+        "stats.dat for the reference, stats_twin.dat for the partner",
+    )
+    pt.add_argument(
+        "--it-steps",
+        type=int,
+        default=None,
+        help="per-state CFL cadence (outs.it_steps): steps.dat + "
+        "steps_twin.dat",
+    )
+    pt.add_argument(
+        "--it-corrector",
+        type=int,
+        default=None,
+        help="per-state corrector cadence (outs.it_corrector): "
+        "corrector.dat + corrector_twin.dat",
     )
     pt.add_argument(
         "--np",

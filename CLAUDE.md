@@ -264,7 +264,8 @@ twin/
   driver.py           dnsjax-twin console script (also python -m
                       dnsjax.twin): lockstep twin-run (predictability)
                       driver, [twin] extension, paired
-                      snapshots/resume, twin.dat streams
+                      snapshots/resume, twin.dat streams + the
+                      per-state stats/steps/corrector pair
   diagnostics.py      Difference-field diagnostics: component masks,
                       energies, the 27-term budget, (kz,kx) spectra,
                       the wall-normal-resolved (y,k) spectra and
@@ -317,9 +318,14 @@ budget (`twin_yspectra.bin` / `twin_ybudget.bin`,
 `twin.it_yspectra` / `twin.it_ybudget`), (kz,kx) energy spectra
 (`twin_spectra.bin`, `twin.it_spectra`), and the legacy three-bin
 production/transport/dissipation budget (`twin_budget.dat`,
-`twin.it_budget`, which needs `twin.bins`). Cartesian wall-bounded
-flows, fixed dt, launched like the solver (scratch dir; `mpirun -np N`
-only when it is multi-process):
+`twin.it_budget`, which needs `twin.bins`). The three **per-state**
+solver streams are written for *both* states at the ordinary `[outs]`
+cadences -- the partner's as `stats_twin.dat` / `steps_twin.dat` /
+`corrector_twin.dat`, same columns and sample times, byte-identical to
+the reference's at `twin.e0 = 0`; only `[probes]` stays
+reference-only. Cartesian wall-bounded flows, fixed dt, launched like
+the solver (scratch dir; `mpirun -np N` only when it is
+multi-process):
 
 `.venv/bin/dnsjax-twin --init.snapshot parent.tar
 --twin.e0 1e-6 --twin.seed 3 --stop.max_sim_time 10`
@@ -587,10 +593,11 @@ tables: the `__main__.py` comment at the read site and
 crossing in `__main__`); the column set is one invariant across the
 geometry `aux`, the flow's `get_driving` and `__main__`'s buffer width,
 so `validate_parameters` rejects a driving knob a flow's surface does
-not carry. `dnsjax-twin` records the reference's value in its
-`stats.dat`; `twin.dat` carries no driving column, because the
-difference of a uniform mean-mode force does no work on any
-y-integrated budget term.
+not carry. `dnsjax-twin` records **each** state's own applied value,
+the reference's in `stats.dat` and the partner's in `stats_twin.dat`
+(the difference is then an offline subtraction); `twin.dat` carries no
+driving column, because the difference of a uniform mean-mode force
+does no work on any y-integrated budget term.
 
 Every `.dat` header row is `#`-commented (`_write_dat_header` in
 `__main__.py`, shared with `twin/driver.py`; the `#` eats one space of
@@ -740,9 +747,12 @@ All under `scripts/`; full rationale/usage in each module docstring.
 - `ensemble_setup.py`: JAX-free `harvest`/`build`/`build-twin` CLI
   building ensemble member run trees from a snapshot archive.
 - `twin_postprocess.py`: CLI rebuilding `twin.dat` /
-  `twin_yspectra.bin` / `twin_ybudget.bin` offline from a twin
-  member's snapshot pairs (`[recon]` section) -- for members recorded
-  before a stream existed.
+  `twin_yspectra.bin` / `twin_ybudget.bin` / `stats.dat` /
+  `stats_twin.dat` offline from a twin member's snapshot pairs
+  (`[recon]` section) -- for members recorded before a stream existed.
+  Bit-for-bit except the `stats*.dat` driving columns, which no
+  reconstruction can give back as the *applied* force (why, and what
+  it writes instead: its module docstring).
 - `wall_normal_resolution.py`: JAX-free `resolve`/`match`/`box` CLI
   sizing `res.ny`/`fd_order`/`geo.grid_type` against a Chebyshev
   expansion of a given order (Cartesian family only).
