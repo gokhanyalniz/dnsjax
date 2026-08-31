@@ -3,10 +3,11 @@ r"""Dean flow: pressure-driven flow between two stationary cylinders.
 A "simplified" Dean flow in the annular geometry: flow in the gap between
 two **stationary** concentric cylinders, driven by an azimuthally- and
 axially-uniform, radius-dependent **azimuthal body force** (a mean
-azimuthal pressure gradient)
+azimuthal pressure gradient `$\Pi_\theta$`, whose force is
+`$-\Pi_\theta$`)
 
 .. math::
-    \vec{\Pi} = \frac{2\eta + 2}{r\,\mathrm{Re}\,(1 - \eta)}\,
+    -\vec{\Pi} = \frac{2\eta + 2}{r\,\mathrm{Re}\,(1 - \eta)}\,
     \hat{\boldsymbol{\theta}}, \qquad \eta = r_1/r_2,
 
 with no-slip walls (all velocity components vanish at `$r_1$` and
@@ -23,7 +24,7 @@ realised with **no special stepper**: the flow sets
 ``base_flow = curl_base_flow = 0`` so the rotational-form nonlinear term
 (:func:`dnsjax.rhs.get_nonlin`) evaluates the full
 `$(\nabla\times\mathbf{u})\times\mathbf{u}$` of the total field, and the
-azimuthal body force is supplied through ``AnnularFlow.pi_theta``
+azimuthal body force is supplied through ``AnnularFlow.force_theta``
 (applied at the mean mode inside ``annular._get_rhs_core``).  Because
 there is no base flow, the reported perturbation kinetic energy `$E'$`
 is the energy of the **deviation** from the analytical laminar Dean
@@ -85,8 +86,8 @@ class DeanFlow(AnnularFlow):
 
     Delegates the radial grid, FD matrices, and per-mode IMM operators to
     :meth:`AnnularFlow.__post_init__`, then sets the azimuthal body force
-    `$\Pi_\theta = (2\eta + 2)/(r\,\mathrm{Re}\,(1-\eta))$` on
-    ``pi_theta`` and zeros the base flow (the **total** velocity is
+    `$-\Pi_\theta = (2\eta + 2)/(r\,\mathrm{Re}\,(1-\eta))$` on
+    ``force_theta`` and zeros the base flow (the **total** velocity is
     integrated).
     """
 
@@ -100,7 +101,7 @@ class DeanFlow(AnnularFlow):
         # Azimuthal body force Pi_theta = (2 eta + 2) / (r Re (1 - eta)),
         # applied at the mean mode by ``annular._get_rhs_core``.
         C = 2.0 * (eta + 1.0) / (1.0 - eta)
-        self.pi_theta = C / (self.rs * Re)
+        self.force_theta = C / (self.rs * Re)
 
         # Total-field formulation: there is no base flow to subtract, so
         # the rotational term computes the full (curl u) x u of the total
@@ -213,8 +214,8 @@ def _get_stats_jit(
       at ``start_from_laminar``; the laminar-smoke error metric and the
       laminarization-check quantity).
     - `$I$`: energy input rate from the body force,
-      `$I = \langle u_\theta\,\Pi_\theta \rangle$` (mean-mode only, as
-      `$\Pi_\theta$` is azimuthally/axially uniform).
+      `$I = -\langle u_\theta\,\Pi_\theta \rangle$` (mean-mode only,
+      as `$\Pi_\theta$` is azimuthally/axially uniform).
     - `$D$`: total dissipation rate `$\langle |\nabla\mathbf{u}|^2
       \rangle / \mathrm{Re}$`.  At a steady state `$I = D$`.
     - `$\tau_{\theta,i/o}$`, `$\tau_{z,i/o}$`: wall shear stresses at the
@@ -244,7 +245,7 @@ def _get_stats_jit(
 
     # ── Energy input rate I = <u_theta Pi_theta> ─────────────
     energy_input = (
-        integrate_scalar(mean_utheta * flow_.pi_theta, flow_.y_weights)
+        integrate_scalar(mean_utheta * flow_.force_theta, flow_.y_weights)
         / volfac
     )
 
