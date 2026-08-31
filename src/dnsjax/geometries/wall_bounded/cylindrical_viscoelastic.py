@@ -40,7 +40,7 @@ Governing equations (sPTT)
     \partial_t \mathbf{u} + \mathbf{u}\cdot\nabla\mathbf{u}
       &= -\nabla p + \tfrac{\beta}{\mathrm{Re}}\nabla^2\mathbf{u}
       + \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}\nabla\cdot\mathbf{c}
-      + \boldsymbol{\Pi}, \\
+      - \boldsymbol{\Pi}, \\
     \partial_t \mathbf{c} + \mathbf{u}\cdot\nabla\mathbf{c}
       - (\nabla\mathbf{u})^{\!\top}\!\cdot\mathbf{c}
       - \mathbf{c}\cdot\nabla\mathbf{u}
@@ -50,8 +50,8 @@ Governing equations (sPTT)
 
 with no-slip `$\mathbf{u}=0$` and `$\nabla^2\mathbf{c}=0$` at the
 single wall `$r = 1$`, regularity at the axis carried by parity (see
-below), and the **axial** body force `$\Pi_z = 4/\mathrm{Re}$` (a
-uniform mean pressure gradient; see
+below), and the **axial** body force `$-\Pi_z = 4/\mathrm{Re}$` (a
+uniform mean pressure gradient `$\Pi_z = -4/\mathrm{Re}$`; see
 :mod:`~dnsjax.flows.wall_bounded.viscoelastic_pipe`).  All products are
 at most quadratic (`$\mathrm{tr}(\mathbf{c})\,\mathbf{c}$`), so the
 existing 3/2-rule dealiasing is exact.
@@ -111,7 +111,7 @@ Time integration
 ----------------
 Both ``iterative-cn`` (default) and ``cnab2`` schemes are supported.
 ``get_rhs`` returns the full 9-component nonlinear RHS -- velocity
-(`$\mathbf{u}\times\boldsymbol\omega$` + `$\boldsymbol\Pi$` + FFT-free
+(`$\mathbf{u}\times\boldsymbol\omega$` + `$-\boldsymbol\Pi$` + FFT-free
 polymer divergence
 `$\tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}\nabla\cdot\mathbf{c}$`) and
 conformation (`$-\mathbf{u}\cdot\nabla\mathbf{c} + (\nabla u)^{\!\top}c
@@ -263,7 +263,7 @@ def viscoelastic_laminar_profiles(
     solver (:func:`to_spin_basis` converts when one enters it).
 
     Velocity: the Hagen-Poiseuille profile `$W(r) = 1 - r^2$`, which is
-    the exact balance of `$\Pi_z = 4/\mathrm{Re}$` against the *total*
+    the exact balance of `$-\Pi_z = 4/\mathrm{Re}$` against the *total*
     (solvent + polymer) stress at `$\epsilon = 0$`; the shear-thinning
     correction at `$\epsilon > 0$` is neglected, as in the annular twin.
 
@@ -359,7 +359,7 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
     `$\nabla^2 c = 0$` wall row (the axis is closed by the parity
     reduction), and an axial mean-mode body force.
 
-    ``pi_z`` is that body force, zero here and set by the flow subclass
+    ``force_z`` is that body force, zero here and set by the flow subclass
     (:class:`~dnsjax.flows.wall_bounded.viscoelastic_pipe`), which also
     zeros the base flow (total-field integration).
     """
@@ -370,7 +370,7 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
 
     tensor_spin: Array = field(init=False)
     inv_r_padded: Array = field(init=False)
-    pi_z: Array = field(init=False)
+    force_z: Array = field(init=False)
     Hc_op: _WallBoundedOp | None = field(init=False, default=None)
     # Narrow Laplacian BC wall row of Hc, stored as a leaf so the
     # jitted adaptive-dt rebuild (``_build_dt_leaves``) can reuse it
@@ -388,7 +388,7 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         )
 
         # Mean-mode axial body force; the flow subclass overwrites it.
-        self.pi_z = jnp.zeros(
+        self.force_z = jnp.zeros(
             params.res.ny,
             dtype=sharding.float_type,
             out_sharding=sharding.no_shard,
@@ -554,10 +554,10 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
     def add_mean_body_force(
         self, nl_z: Array, nl_r: Array, nl_th: Array, fourier_: Fourier
     ) -> tuple[Array, Array, Array]:
-        """Add the axial body force ``pi_z`` at the mean mode."""
+        """Add the axial body force ``force_z`` at the mean mode."""
         return (
             nl_z
-            + jnp.where(fourier_.mean_mask, self.pi_z[:, None, None], 0.0),
+            + jnp.where(fourier_.mean_mask, self.force_z[:, None, None], 0.0),
             nl_r,
             nl_th,
         )

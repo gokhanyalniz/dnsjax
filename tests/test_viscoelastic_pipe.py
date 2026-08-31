@@ -438,7 +438,7 @@ def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
     **Newtonian** `$W = 1 - r^2$`, so at `$\epsilon > 0$` the polymer's
     shear thinning (`$f > 1$`) is unaccounted for and the axial balance
     `$\nu A_{\mathrm{base}} W + \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}
-    (\nabla\cdot c)_z + \Pi_z = 0$` carries a real residual -- the
+    (\nabla\cdot c)_z - \Pi_z = 0$` carries a real residual -- the
     approximation the module docstring records.  Pinned here in both
     directions so the `$\epsilon = 0$` exactness cannot rot and a future
     exact profile turns the second bound into a tight one rather than a
@@ -451,7 +451,7 @@ def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
     beta, re, wi = params.phys.beta, params.phys.re, params.phys.wi
     nu = beta / re
     coef = (1.0 - beta) / (re * wi)
-    pi_z = 4.0 / re
+    force_z = 4.0 / re
 
     def _residual(eps: float) -> float:
         prof = viscoelastic_laminar_profiles(rs, d1_even, wi, eps)
@@ -459,8 +459,8 @@ def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
         # m = k_z = 0, so (div c)_z is the radial part alone; c_rz is
         # the odd-parity class at m = 0.
         div_z = d1_odd @ c_rz + c_rz / rs
-        resid = nu * (a_even @ u_z) + coef * div_z + pi_z
-        return float(np.abs(resid).max() / pi_z)
+        resid = nu * (a_even @ u_z) + coef * div_z + force_z
+        return float(np.abs(resid).max() / force_z)
 
     # At epsilon = 0 only FD truncation survives (~1e-12 here), which is
     # still six orders below the epsilon > 0 residual below.
@@ -479,7 +479,7 @@ def test_laminar_full_step_fixed_point() -> None:
 
     Stronger than the RHS check: it also closes the *velocity* balance
     (the polymer-stress divergence against the solvent Laplacian and
-    the body force `$\Pi_z = 4/\mathrm{Re}$`) through the influence
+    the body force `$-\Pi_z = 4/\mathrm{Re}$`) through the influence
     matrix, at `$\epsilon = 0$` where `$W = 1 - r^2$` is the exact
     profile.
     """
@@ -494,7 +494,7 @@ def test_laminar_energy_balance() -> None:
     r"""The laminar diagnostics hit their analytical values.
 
     For `$W = 1 - r^2$` on `$\int_0^1 r\,dr = 1/2$`:
-    `$I = \langle W\Pi_z\rangle = 2/\mathrm{Re}$`,
+    `$I = -\langle W\Pi_z\rangle = 2/\mathrm{Re}$`,
     `$D_s = \nu\langle|W'|^2\rangle = 2\beta/\mathrm{Re}$`, and
     `$W_p = -2(1-\beta)/\mathrm{Re}$` -- so the steady balance
     `$I = D_s - W_p$` closes, which is what the laminar smoke test

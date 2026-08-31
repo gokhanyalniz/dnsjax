@@ -183,8 +183,11 @@ def _get_stats_jit(
     - `$E'$`: perturbation kinetic energy
       `$\|\mathbf{u}'\|^2 / 2$`.
     - `$I$`: energy input rate
-      `$\langle (\mathbf{u} + \mathbf{U}) \cdot
-      (-\nabla \Pi) \rangle$`.
+      `$\langle (\mathbf{u}' + \mathbf{U}) \cdot
+      (-\Pi_\mathrm{tot}\,\hat{\mathbf{s}}) \rangle
+      = -\Pi_\mathrm{tot}\,U_{b,\mathrm{tot}}$`, the driving force
+      `$-\Pi$` being the negative of the mean pressure gradient
+      (:mod:`dnsjax.ic.mean_mode`).
     - `$D$`: energy dissipation rate
       `$\langle |\nabla \times (\mathbf{u}' +
       \mathbf{U})|^2 \rangle / Re$`.
@@ -198,10 +201,10 @@ def _get_stats_jit(
 
     Under ``constant_bulk_velocity`` the driving work is the
     whole of `$I - I_\mathrm{lam}$`.  The **exact** input rate
-    is `$U_{b,\mathrm{lam}}\Pi'$` with `$\Pi'$` the force the
+    is `$-U_{b,\mathrm{lam}}\Pi$` with `$-\Pi$` the force the
     corrector applied (``stats.dat``'s ``-dPds'``); this
     state-only function cannot see that, so it estimates
-    `$\Pi'$` from the wall shear instead, low by
+    `$\Pi$` from the wall shear instead, low by
     `$\mathrm{bulk}(\bar N_s)$` -- continuously zero, a
     wall-normal truncation residual discretely, and convergent.
 
@@ -255,7 +258,8 @@ def _get_stats_jit(
 
     # ── Energy input rate I ─────────────────────────────────
     # CPG: I = I_lam + (2/Re) * Ub'_s
-    # CBV: I = I_lam - U_bulk_lam * dPds'
+    # CBV: I = I_lam - U_bulk_lam * Pi, with Pi the perturbation
+    # mean pressure gradient dP/ds (the force being -Pi).
     dpds_pert = (mean_us_shear[1] - mean_us_shear[0]) / (2 * Re)
     I_cpg = flow_.I_lam + 2 * U_bulk_s / Re
     I_cbv = flow_.I_lam - flow_.U_bulk_lam * dpds_pert

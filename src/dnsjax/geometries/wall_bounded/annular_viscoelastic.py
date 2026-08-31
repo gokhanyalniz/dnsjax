@@ -79,7 +79,7 @@ Governing equations (sPTT)
     \partial_t \mathbf{u} + \mathbf{u}\cdot\nabla\mathbf{u}
       &= -\nabla p + \tfrac{\beta}{\mathrm{Re}}\nabla^2\mathbf{u}
       + \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}\nabla\cdot\mathbf{c}
-      + \boldsymbol{\Pi}, \\
+      - \boldsymbol{\Pi}, \\
     \partial_t \mathbf{c} + \mathbf{u}\cdot\nabla\mathbf{c}
       - (\nabla\mathbf{u})^{\!\top}\!\cdot\mathbf{c}
       - \mathbf{c}\cdot\nabla\mathbf{u}
@@ -88,7 +88,7 @@ Governing equations (sPTT)
         (1 - 3\epsilon + \epsilon\,\mathrm{tr}\,\mathbf{c}),
 
 with no-slip `$\mathbf{u}=0$` and `$\nabla^2\mathbf{c}=0$` at both walls,
-and the azimuthal body force `$\Pi_\theta = (r_1+r_2)/(\mathrm{Re}\,r)$`
+and the azimuthal body force `$-\Pi_\theta = (r_1+r_2)/(\mathrm{Re}\,r)$`
 (see :mod:`~dnsjax.flows.wall_bounded.viscoelastic_dean`).  All products
 are at most quadratic (`$\mathrm{tr}(\mathbf{c})\,\mathbf{c}$`), so the
 existing 3/2-rule dealiasing is exact.
@@ -97,7 +97,7 @@ Time integration
 ----------------
 Both ``iterative-cn`` (default) and ``cnab2`` schemes are supported.
 ``get_rhs`` returns the full 9-component nonlinear RHS -- velocity
-(`$\mathbf{u}\times\boldsymbol\omega$` + `$\boldsymbol\Pi$` + FFT-free
+(`$\mathbf{u}\times\boldsymbol\omega$` + `$-\boldsymbol\Pi$` + FFT-free
 polymer divergence
 `$\tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}\nabla\cdot\mathbf{c}$`) and
 conformation (`$-\mathbf{u}\cdot\nabla\mathbf{c} + (\nabla u)^{\!\top}c
@@ -301,7 +301,7 @@ class ViscoelasticAnnularFlow(AnnularFlow):
     wall rows, and an azimuthal mean-mode body force.
 
     Subclasses (:class:`~dnsjax.flows.wall_bounded.viscoelastic_dean`)
-    set ``pi_theta`` and zero the base flow (total-field integration).
+    set ``force_theta`` and zero the base flow (total-field integration).
     """
 
     #: CFL column labels (a ``ClassVar``: as an annotated field this
@@ -443,12 +443,14 @@ class ViscoelasticAnnularFlow(AnnularFlow):
     def add_mean_body_force(
         self, nl_z: Array, nl_r: Array, nl_th: Array, fourier_: Fourier
     ) -> tuple[Array, Array, Array]:
-        """Add the azimuthal body force ``pi_theta`` at the mean mode."""
+        """Add the azimuthal body force ``force_theta`` at the mean mode."""
         return (
             nl_z,
             nl_r,
             nl_th
-            + jnp.where(fourier_.mean_mask, self.pi_theta[:, None, None], 0.0),
+            + jnp.where(
+                fourier_.mean_mask, self.force_theta[:, None, None], 0.0
+            ),
         )
 
     def zero_hc_wall_rows(self, R: Array) -> Array:
