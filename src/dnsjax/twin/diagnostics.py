@@ -36,8 +36,9 @@ So a mean profile `$\mathbf{P} = (P_x, 0, P_z)$` advects with
 `$\mathrm{i}(k_xP_x + k_zP_z)$` alone -- mode-diagonal, hence
 FFT-free, and with no `$P_y\,\partial_y$` half to form.  The sites
 that rely on it: ``term_b_mean`` in :func:`_twin_budget_jit`,
-``mean_advect`` in :func:`_difference_sources`, and the mean-mode
-gauge argument of :mod:`dnsjax.twin.pressure` (where
+``mean_advect`` in :func:`_convective_sources`, the two-component
+form of :func:`_driving_density`, and the mean-mode gauge argument
+of :mod:`dnsjax.twin.pressure` (where
 `$\Delta\hat v_{00} \equiv 0$` is what makes the fluctuating
 pressure do no work at `$(0,0)$`).  A state that violated it would not
 be an admissible incompressible no-slip field in the first place, and
@@ -245,7 +246,8 @@ Contracting the difference momentum equation with
 production, one transfer, one viscous and one pressure term per
 `$(y, k)$` -- and the paper's (2.7)-(2.9) are `$k$`-set sums of them,
 so the 12 + 12 expansions of (2.11)-(2.16) have nothing left to say
-and are not reproduced.  :data:`YBUDGET_TERMS`:
+and are not reproduced.  :func:`ybudget_terms`, default
+(**convective**) form:
 
 - ``P_U``: production against the reference mean profile,
   `$-\sigma_k \mathrm{Re}\{\Delta\hat u_i^* \Delta\hat v\}\,
@@ -254,14 +256,16 @@ and are not reproduced.  :data:`YBUDGET_TERMS`:
   `$(y, k)$`;
 - ``P_r``: production against the reference *fluctuation* gradients;
 - ``T_ref`` / ``T_self``: transfer by the reference fluctuation and
-  by the difference field's own advection.  Each sums to zero over
-  all `$(y, k)$`, so they are pure redistribution -- interscale as
-  well as wall-normal;
+  by the difference field's own advection;
 - ``V`` / ``eps``: the viscous term in the operator form (the one
   that closes -- "Dissipation form" above) and the positive-definite
   pseudo-dissipation `$\nu|\nabla\Delta\mathbf{u}|^2$`.  Their
   difference is the wall-normal diffusion flux;
-- ``Pi``: the pressure work, from :mod:`dnsjax.twin.pressure`.
+- ``Wp``: the work done by the pressure *gradient*, from
+  :mod:`dnsjax.twin.pressure`.  Not the mean-mode driving `$\Pi$`
+  this codebase names elsewhere -- although at `$(0,0)$`, where the
+  fluctuating pressure does no work, it is exactly that
+  (:func:`_driving_density`).
 
 `$\sum_k \int$` of ``P_U + P_r`` and of ``-V`` reproduce
 ``twin_budget.dat``'s ``P_tot`` and ``eps_tot`` to rounding --
@@ -270,27 +274,87 @@ terms match their per-bin counterparts only up to the discrete
 integration-by-parts residual that makes ``T_tot`` nonzero in the
 first place (measured on the ladder in ``tests/test_twin_budget.py``).
 
+**What `$\sum_k T(y)$` is, and is not.**  Summed over `$k$` at fixed
+`$y$` the two transfer terms give `$-\partial_y\langle v^{(1)}
+|\Delta\mathbf{u}|^2/2\rangle_{xz}$`, the turbulent transport of
+difference energy: a genuine wall-normal flux, zero only after
+integrating in `$y$`.  It is *not* a quantity that should vanish
+pointwise, and a build in which it did would have lost that
+transport.  What does vanish, up to truncation, is the
+`$y$`-integral.
+
 The `$k$`-resolved budget is **cheaper** than the three-bin one: 33
-field transforms against 69 (:func:`_difference_sources`), because
+field transforms against 69 (:func:`_convective_sources`), because
 binning no longer forces a separate physical product per bin pair.
-What it adds instead is the pressure -- one factored Poisson
-operator held for the run, plus its two homogeneous columns.
-Pressure is the one term the volume-averaged budget omits for free
-and a localised one cannot; :mod:`dnsjax.twin.pressure` has the whole
-argument, and its "Cost" section the footprint.
+What it adds instead is the pressure -- one factored Poisson operator
+held for the run, plus its two homogeneous columns.  Pressure is the
+one term the volume-averaged budget omits for free and a localised
+one cannot; :mod:`dnsjax.twin.pressure` has the whole argument, and
+its "Cost" section the footprint.
 
 Its *transient*, unlike its transform count, is not automatically the
 smaller of the two.  Held naively the three padded physical sets
 `$\mathbf{b}$`, `$\nabla\mathbf{c}^{(1)}$` and
 `$\nabla\Delta\mathbf{c}$` are 6 + 9 + 9 = 24 live fields, *more*
 than the three-bin pass's ~21 despite half the transforms.  So
-:func:`_difference_sources` forms the two gradient sets one at a time,
+:func:`_convective_sources` forms the two gradient sets one at a time,
 the reference's consumer `$q_p$` between them: 6 + 9 = 15 in program
 order.  XLA still schedules -- this only stops the statement order
 from asking for the worse arrangement -- so size a job against 15 and
 watch it.  ``solver.rhs_transform_chunks`` caps the transform-stage
 transient inside each :func:`dnsjax.fft.chunked_transform` call; it
 does **not** touch the live field count.
+
+Two budget forms
+----------------
+``twin.rotational_ybudget`` swaps the nonlinear term for the
+**rotational** one the solver actually integrates
+(:mod:`dnsjax.rhs`).  Off by default.  The two forms differ by
+`$\nabla\phi$` with `$\phi = \mathbf{u}^{(1)}\!\cdot\Delta\mathbf{u}
++ |\Delta\mathbf{u}|^2/2$`; contracted with
+`$\Delta\hat{\mathbf{u}}^*$` and reduced by continuity that is
+`$\partial_y\mathrm{Re}\{\hat\phi\,\Delta\hat v^*\}$`, a wall-normal
+flux -- so the **volume totals agree** (continuously; discretely up
+to the same integration-by-parts residual, measured as ``N_tot``),
+while the *densities* move between production, transfer and ``Wp``.
+
+Under it, :func:`ybudget_terms` becomes ``P_U, P_r, T_vort, T_self,
+V, eps, Wp, P_lift``:
+
+- ``T_vort`` / ``T_self`` are `$\Delta\hat{\mathbf{u}}^*\cdot(\Delta
+  \mathbf{u}\times\mathbf{b})$`, and `$\mathbf{a}\cdot(\mathbf{a}
+  \times\mathbf{b}) = 0$` pointwise, so `$\sum_k T(y) = 0$` at every
+  `$y$` **exactly** -- at any resolution, on any grid, needing
+  neither continuity nor no-slip.  That is a different statement from
+  the convective one above, not a repaired version of it: the
+  turbulent transport has moved into ``Wp``, which is now the work of
+  the Bernoulli pressure.
+- ``P_U`` carries the lift-up production, but its density is
+  `$U^{(1)}_i\partial_y\langle\Delta u_i\Delta v\rangle$` rather than
+  the classical `$-\langle\Delta u_i\Delta v\rangle\partial_yU^{(1)}
+  _i$`; the two share a `$y$`-integral and differ by the flux
+  `$\partial_y(U^{(1)}_iR_i)$`, `$R_i$` the `$u$`-`$v$` co-spectrum.
+  ``P_U`` alone is also not Galilean-invariant -- a shift of
+  `$\mathbf{U}^{(1)}$` moves density between it and ``Wp``, cancelling
+  mode by mode.
+- ``P_lift`` is therefore stored as well: it **is** the convective
+  ``P_U``, unchanged, sitting outside the sum the other seven make.
+  It is the frame-invariant production density, it is unrecoverable
+  from anything else stored (`$R_i$` is a cross-spectrum and only the
+  diagonal energies are written), and its `$k$`-sum still reproduces
+  the three ``P_*(*,rU)`` columns exactly.
+
+What the form buys: those two exact identities, and
+`$\hat{\mathcal{N}}$` becoming the solver's own RHS difference -- so
+the recovered pressure is the Bernoulli pressure the influence matrix
+actually closes on, and the whole term is *checkable* against the
+solver instead of argued (``tests/test_twin_unit.py``).  It is also
+cheaper: 21 field transforms and 12 live padded fields against 33 and
+15.  What it costs: ``P_r``, ``T_vort`` and ``T_self`` no longer map
+onto the paper's terms at all, so `$\sum_k\int(P_U + P_r)$` is
+``P_tot + T_tot`` up to truncation rather than ``P_tot`` exactly, and
+the fluctuation half of the production has no convective counterpart
+in the stream.  That is why the convective form is the default.
 
 Frame invariance
 ----------------
@@ -303,16 +367,27 @@ independent reasons -- the mean of both states shifts by the same
 constant, which cancels in `$\Delta\mathbf{u}$`, and the frame term
 is `$\mathrm{i}a\,\Delta\hat{\mathbf{u}}$` with real `$a$`, whose
 contraction against `$\Delta\hat{\mathbf{u}}^*$` is purely
-imaginary and so contributes exactly zero *per mode* (the same
-mechanism that removes :func:`_difference_sources`' two ``mean_advect``
-terms from the densities).
+imaginary and so contributes exactly zero *per mode* -- the same
+mechanism that removes :func:`_convective_sources`' two
+``mean_advect`` terms from the densities, and
+`$\Delta\mathbf{u}\times\boldsymbol{\Omega}^{(1)}$` from
+:func:`_rotational_sources`'.
 
-The **pressure** is the exception, and it is why
-:func:`_difference_sources` adds the frame term to `$\hat{\mathcal
-N}$` explicitly rather than relying on the argument above.  The
-`$U^{(1)}$` profile does *not* enter every term through
-`$\partial_y$`: ``mean_advect`` reads the profile itself.  The
-resulting error in `$\widehat{\nabla\cdot\mathcal N}$` is
+A moving frame is **not** the Galilean redefinition of "Two budget
+forms" above: ``phys.u_grid`` leaves the stored field and
+`$\mathbf{U}^{(1)}$` untouched, so it moves nothing between ``P_U``
+and ``Wp``.
+
+The **pressure** is the exception, and it is why both source builders
+add the frame term to `$\hat{\mathcal N}$` explicitly rather than
+relying on the argument above.  The `$U^{(1)}$` profile does *not*
+enter every term through `$\partial_y$`: ``mean_advect`` reads the
+profile itself.  (Rotationally the requirement is sharper still --
+`$\hat{\mathcal N}$` has to equal the solver's own RHS difference
+term for term, which the frame term is part of, and the profiles read
+are the lab-frame ones ``get_nonlin`` uses rather than the shifted
+``base_flow_adv_padded``; see ``_base.pad_base_flow``.)  The error
+from omitting it in `$\widehat{\nabla\cdot\mathcal N}$` would be
 `$\mathrm{i}k_x U_{grid}\,\nabla\!\cdot\!\Delta\mathbf{u}$` and
 in the wall closure `$\mathrm{i}k_x U_{grid}(D_1\Delta\hat
 v)|_w$` -- both machine-zero under the default ``res.consistent_imm``
@@ -397,6 +472,7 @@ from ..geometries.wall_bounded.cartesian import (
     DRIVING_KEY_N,
     DRIVING_KEY_S,
     Fourier,
+    _curl_fn,
     fourier,
     mean_driving_from_profile,
 )
@@ -615,9 +691,7 @@ def _twin_budget_jit(
         # `$b$` is only ever `$\Delta U$`, whose wall-normal row is an
         # identical zero (module docstring, "State preconditions"), so
         # the `$b_y\,\partial_y$` half of the advection is a
-        # full-field GEMM against exact zero and is not formed -- the
-        # same omission, for the same reason, as
-        # :func:`_difference_sources`' ``mean_advect``.
+        # full-field GEMM against exact zero and is not formed.
         bx = prof[b][0][:, None, None]
         bz = prof[b][2][:, None, None]
         adv = 1j * (bx * kx + bz * kz) * full[c]
@@ -975,46 +1049,118 @@ def twin_yspectra(
 
 # ── Wall-normal-resolved spectral budget ─────────────────────────────
 
-#: ``twin_ybudget`` term names, in stored order.  ``V`` is the viscous
-#: term in the operator (discrete-Laplacian) form -- the one that makes
-#: the budget close, matching ``twin_budget``'s ``eps_*`` -- and ``eps``
+#: ``twin_ybudget`` term names, in stored order, one set per budget
+#: form (module docstring, "Two budget forms").  The **convective**
+#: set is the default and is the term-for-term counterpart of the
+#: paper's (2.11)-(2.16); the **rotational** set is
+#: ``twin.rotational_ybudget``.  In both, ``V`` is the viscous term in
+#: the operator (discrete-Laplacian) form -- the one that makes the
+#: budget close, matching ``twin_budget``'s ``eps_*`` -- and ``eps``
 #: its positive-definite pseudo-dissipation companion; the two differ
-#: by the wall-normal diffusion flux (module docstring).
-YBUDGET_TERMS: tuple[str, ...] = (
+#: by the wall-normal diffusion flux.  ``Wp`` is the work done by the
+#: pressure *gradient*, not the mean-mode driving `$\Pi$` this
+#: codebase names elsewhere -- though at `$(0,0)$` it is exactly that
+#: (:func:`_driving_density`).
+CONVECTIVE_TERMS: tuple[str, ...] = (
     "P_U",
     "P_r",
     "T_ref",
     "T_self",
     "V",
     "eps",
-    "Pi",
+    "Wp",
+)
+
+#: The rotational set.  ``P_lift`` is the convective ``P_U`` carried
+#: unchanged, and sits **outside** the sum the other seven make.
+ROTATIONAL_TERMS: tuple[str, ...] = (
+    "P_U",
+    "P_r",
+    "T_vort",
+    "T_self",
+    "V",
+    "eps",
+    "Wp",
+    "P_lift",
 )
 
 
-class _Sources(NamedTuple):
-    r"""The advective products the budget and the pressure share.
+def ybudget_terms(rotational: bool) -> tuple[str, ...]:
+    """The stored term names for the selected budget form."""
+    return ROTATIONAL_TERMS if rotational else CONVECTIVE_TERMS
 
-    Built once per sample by :func:`_difference_sources` -- the 33
-    field transforms are the budget's whole cost, so the pressure
-    rides on them rather than repeating them.
+
+class _Sources(NamedTuple):
+    r"""The products the budget and the pressure share.
+
+    Built once per sample by :func:`_difference_sources`, whose field
+    transforms are the budget's whole cost, so the pressure rides on
+    them rather than repeating them.
+
+    *advective* and *trailing* are the form-specific operands, each
+    already signed so that its density is ``work(b)`` -- the leading
+    terms of :func:`ybudget_terms` and (rotational only) the ones
+    stored after ``Wp``.  Everything else is form-independent.
     """
 
     delta: Array
-    q_p: Array  # (Du . grad) u'^(1)
-    q_tr: Array  # (u'^(1) . grad) Du
-    q_ts: Array  # (Du' . grad) Du
-    q_pu: Array  # Dv d_y U^(1), the lift-up term
-    n_hat: Array  # the full nonlinear term
+    advective: tuple[Array, ...]
+    trailing: tuple[Array, ...]
+    n_hat: Array  # the full nonlinear term, as it enters d_t(Du)
     div_n: Array  # its discrete divergence
     prof_dU: Array  # (3, Ny) mean-mode difference profile
 
 
+def _cross(a: Array, b: Array) -> Array:
+    r"""`$\mathbf{a} \times \mathbf{b}$`, fused per component.
+
+    One ``jnp.array`` expression per output component (the
+    :func:`dnsjax.rhs._fused_nonlinear` shape), so no intermediate
+    concatenation or scatter kernel is emitted.  Either operand may be
+    a `$(3, N_y, 1, 1)$` profile broadcast over the Fourier axes; such
+    a product is mode-diagonal and therefore transform-free.
+
+    Deliberately not
+    :func:`~dnsjax.geometries.wall_bounded._base.base_flow_coupling`:
+    that helper returns the *sum* `$\mathbf{u}\times\nabla\times
+    \mathbf{U} + \mathbf{U}\times\boldsymbol{\omega}$` of two cross
+    products, and the budget needs them as separate terms.  Expressing
+    it through this one would split its single fused stack in two on
+    the solver's corrector path.
+    """
+    return jnp.array(
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    )
+
+
 def _difference_sources(
+    state1: Array,
+    state2: Array,
+    fourier_: Fourier,
+    flow_: object,
+    rotational: bool,
+) -> _Sources:
+    """Evaluate the difference field's nonlinear term, in either form.
+
+    *rotational* is resolved at trace time (it reaches here as a
+    ``static_argnames`` entry of :func:`_twin_ybudget_jit`), so only
+    the selected branch is ever traced.
+    """
+    if rotational:
+        return _rotational_sources(state1, state2, fourier_, flow_)
+    return _convective_sources(state1, state2, fourier_, flow_)
+
+
+def _convective_sources(
     state1: Array, state2: Array, fourier_: Fourier, flow_: object
 ) -> _Sources:
-    r"""Evaluate the difference field's advective terms.
+    r"""The convective nonlinear term (the default form).
 
-    Twenty-four forward transforms (the two advectors and the two
+    Twenty-four ``spec_to_phys`` (the two advectors and the two
     gradient sets) and nine back -- fewer than the 69 the three-bin
     :func:`twin_budget` needs, because binning no longer forces a
     separate physical product per bin pair.  The two gradient sets are
@@ -1135,7 +1281,120 @@ def _difference_sources(
     div_n = (
         1j * kx * n_hat[0] + apply_y_matrix(d1, n_hat[1]) + 1j * kz * n_hat[2]
     )
-    return _Sources(delta, q_p, q_tr, q_ts, q_pu, n_hat, div_n, prof_dU)
+    # Advection enters `$\partial_t\Delta\mathbf{u}$` with a minus, so
+    # the operands are handed over negated and ``work`` stays uniform
+    # across the two forms.  Sign flips are exact.
+    return _Sources(
+        delta,
+        (-q_pu, -q_p, -q_tr, -q_ts),
+        (),
+        n_hat,
+        div_n,
+        prof_dU,
+    )
+
+
+def _rotational_sources(
+    state1: Array, state2: Array, fourier_: Fourier, flow_: object
+) -> _Sources:
+    r"""The rotational nonlinear term (``twin.rotational_ybudget``).
+
+    Both states carry the perturbation about the *same* base flow
+    `$\mathbf{U}_b$`, so differencing :mod:`dnsjax.rhs`'s rotational
+    form collapses to three terms in the *total* reference fields,
+
+    .. math::
+        \Delta\mathcal{N} = \mathbf{u}^{(1)}\times\Delta
+        \boldsymbol{\omega} + \Delta\mathbf{u}\times
+        \boldsymbol{\omega}^{(1)} + \Delta\mathbf{u}\times\Delta
+        \boldsymbol{\omega} ,
+
+    and splitting each reference field into its mean profile and its
+    fluctuation gives the five products below.  This is the term the
+    solver itself integrates, so ``n_hat`` equals
+    ``cartesian._get_rhs(state2) - _get_rhs(state1)`` to rounding --
+    a property the convective form cannot have, and the guard
+    ``tests/test_twin_unit.py::test_nonlinear_matches_solver``.
+
+    **Two are mode-diagonal, hence transform-free.**  A `$k = 0$`
+    profile times a fluctuation cannot alias, so evaluating
+    `$\mathbf{U}^{(1)}\times\Delta\boldsymbol{\omega}$` and
+    `$\Delta\mathbf{u}\times\boldsymbol{\Omega}^{(1)}$` spectrally is
+    *equal*, not merely equivalent, to the padded physical-space form.
+    `$\overline{\boldsymbol{\omega}'^{(1)}} = \nabla\times\overline{
+    \mathbf{u}'^{(1)}}$` because the curl is mode-diagonal, so one
+    :func:`~dnsjax.geometries.wall_bounded._base.extract_mean_modes`
+    collective yields all three mean profiles -- the ``cartesian._l_bf``
+    precedent.
+
+    **`$\Delta\mathbf{u}\times\boldsymbol{\Omega}^{(1)}$` is kept in
+    `$\hat{\mathcal N}$` and dropped from the densities.**  Its
+    contraction is `$\mathrm{Re}\{\hat{\mathbf{a}}^*\cdot(\hat{
+    \mathbf{a}}\times\boldsymbol{\Omega})\} = \mathrm{Re}\{
+    \boldsymbol{\Omega}\cdot(\hat{\mathbf{a}}^*\times\hat{\mathbf{a}}
+    )\}$`, and `$\hat{\mathbf{a}}^*\times\hat{\mathbf{a}}$` is purely
+    imaginary, so it is exactly zero **per mode** for a real profile
+    -- the same imaginary-contraction omission the convective form
+    makes for its mean advectors.
+
+    **Cost: 21 field transforms against the convective 33** -- twelve
+    ``spec_to_phys`` (`$\Delta\mathbf{u}$`, `$\Delta\boldsymbol{
+    \omega}$`, `$\boldsymbol{\omega}_f^{(1)}$`, `$\mathbf{u}_f^{(1)}$`)
+    and nine back, one per product.  The statement order below peaks
+    at **12** live padded fields rather than the convective 15: the
+    two `$\Delta\mathbf{u}$` products are formed and retired first,
+    which lets `$\boldsymbol{\omega}_f^{(1)}$` and
+    `$\Delta\mathbf{u}$` go before `$\mathbf{u}_f^{(1)}$` arrives.
+    XLA still schedules, so size a job against 12 and watch it.
+    """
+    kx, kz = fourier_.kx, fourier_.kz
+    d1 = flow_.D1
+    m_mean, _, _ = component_masks(fourier_)
+
+    delta = state2 - state1
+    omega_d = _curl_fn(delta, fourier_, flow_)
+    omega_r = _curl_fn(state1, fourier_, flow_)
+
+    # One collective for the three mean modes (docstring).
+    mean_delta, mean_ref, mean_om = extract_mean_modes(delta, state1, omega_r)
+    prof_dU = mean_delta.real
+    prof_rU = mean_ref.real + flow_.base_flow[:, :, 0, 0]
+    prof_rom = mean_om.real + flow_.curl_base_flow[:, :, 0, 0]
+    ref_f = state1 * ~m_mean
+    omg_f = omega_r * ~m_mean
+
+    # Mode-diagonal, transform-free (docstring).
+    q_pu = _cross(prof_rU[:, :, None, None], omega_d)
+    q_om = _cross(delta, prof_rom[:, :, None, None])
+    dy_rU = jnp.einsum("ij,cj->ci", d1, prof_rU)
+    q_lift = delta[1] * dy_rU[:, :, None, None]
+
+    def back(product: Array) -> Array:
+        r"""One padded physical product back to spectral."""
+        return chunked_transform(phys_to_spec, product)
+
+    phys = chunked_transform(
+        spec_to_phys, jnp.concatenate([delta, omega_d, omg_f], axis=0)
+    )
+    q_tv = back(_cross(phys[0:3], phys[6:9]))
+    q_ts = back(_cross(phys[0:3], phys[3:6]))
+    # `$\mathbf{u}_f^{(1)}$` last: by here `$\boldsymbol{\omega}_f^{(1)}$`
+    # and `$\Delta\mathbf{u}$` are dead, so the peak stays at 12.
+    q_pr = back(_cross(chunked_transform(spec_to_phys, ref_f), phys[3:6]))
+
+    n_hat = q_pu + q_pr + q_om + q_tv + q_ts
+    u_grid = derived_params.u_grid
+    if u_grid:
+        n_hat = n_hat + (1j * u_grid) * kx * delta
+    div_n = (
+        1j * kx * n_hat[0] + apply_y_matrix(d1, n_hat[1]) + 1j * kz * n_hat[2]
+    )
+    # The rotational term enters `$\partial_t\Delta\mathbf{u}$` with a
+    # plus; ``P_lift`` is the classical `$-\langle\ldots\rangle$` and
+    # is negated here for the same uniformity.
+    return _Sources(
+        delta, (q_pu, q_pr, q_tv, q_ts), (-q_lift,), n_hat, div_n, prof_dU
+    )
 
 
 def _ybudget_densities(
@@ -1144,31 +1403,38 @@ def _ybudget_densities(
     fourier_: Fourier,
     flow_: object,
     pressure: DifferencePressure,
+    rotational: bool,
 ) -> Array:
-    r"""The seven per-mode budget densities, stacked.
+    r"""The per-mode budget densities, stacked.
 
-    Returns a real ``(7, N_y, N_{k_z}, N_{k_x})`` array in
-    :data:`YBUDGET_TERMS` order, component-summed, each already
+    Returns a real ``(n_terms, N_y, N_{k_z}, N_{k_x})`` array in
+    :func:`ybudget_terms` order, component-summed, each already
     carrying ``k_metric`` and divided by ``volume_fac`` -- so summing
-    over `$(k_z, k_x)$` and integrating with ``y_weights`` reproduces
-    the corresponding scalar of ``twin_budget.dat``.
+    over `$(k_z, k_x)$` and integrating with ``y_weights`` gives the
+    rate the corresponding scalar diagnostic reports.
     """
     k2, k_metric = fourier_.k2, fourier_.k_metric
     vf = derived_params.volume_fac
     nu = 1.0 / params.phys.re
     d1, d2 = flow_.D1, flow_.D2
-    src = _difference_sources(state1, state2, fourier_, flow_)
+    src = _difference_sources(state1, state2, fourier_, flow_, rotational)
     delta = src.delta
 
-    def pair(b: Array) -> Array:
-        r"""`$-\sigma_{k_x}\sum_i\mathrm{Re}\{\Delta\hat u_i^* b_i\}/V$`."""
-        return -jnp.sum((jnp.conj(delta) * b).real, axis=0) * (k_metric / vf)
+    def work(b: Array) -> Array:
+        r"""`$+\sigma_{k_x}\sum_i\mathrm{Re}\{\Delta\hat u_i^* b_i\}/V$`.
+
+        The rate at which a term *b* of `$\partial_t\Delta\hat{
+        \mathbf{u}}$` feeds the modal energy.  Both source builders
+        hand over operands already signed for it, so this is the one
+        contraction the whole budget uses.
+        """
+        return jnp.sum((jnp.conj(delta) * b).real, axis=0) * (k_metric / vf)
 
     # Viscous: the operator form (closure-consistent, matching
     # ``twin_budget``'s ``eps_*``) and the positive-definite
     # pseudo-dissipation `$\nu|\nabla\Delta u|^2$`; their difference
     # is the wall-normal diffusion flux.
-    visc = pair(-(apply_y_matrix(d2, delta) - k2 * delta)) * nu
+    visc = work(apply_y_matrix(d2, delta) - k2 * delta) * nu
     dy_delta = apply_y_matrix(d1, delta)
     eps = (
         jnp.sum(
@@ -1181,21 +1447,19 @@ def _ybudget_densities(
     )
 
     p_hat = pressure.solve(delta, src.div_n, src.n_hat[1], flow_, fourier_)
-    pi = pressure.work_density(delta, p_hat, flow_, fourier_)
-    pi = (
-        pi
+    wp = pressure.work_density(delta, p_hat, flow_, fourier_)
+    wp = (
+        wp
         + _driving_density(src.prof_dU, flow_) * component_masks(fourier_)[0]
     )
 
     return jnp.stack(
         [
-            pair(src.q_pu),
-            pair(src.q_p),
-            pair(src.q_tr),
-            pair(src.q_ts),
+            *(work(b) for b in src.advective),
             visc,
             eps,
-            pi,
+            wp,
+            *(work(b) for b in src.trailing),
         ]
     )
 
@@ -1246,26 +1510,36 @@ def _driving_density(prof_dU: Array, flow_: object) -> Array:
     return (dens / derived_params.volume_fac)[:, None, None]
 
 
-@jit
+@partial(jit, static_argnames=("rotational",))
 def _twin_ybudget_jit(
     state1: Array,
     state2: Array,
     fourier_: Fourier,
     flow_: object,
     pressure: DifferencePressure,
+    *,
+    rotational: bool,
 ) -> dict[str, Array]:
     r"""Wall-normal-resolved spectral budget (module docstring).
 
-    Returns ``<term>_x`` / ``<term>_z`` / ``<term>_x0`` for each of
-    :data:`YBUDGET_TERMS`, the three marginals of
+    Returns ``<term>_x`` / ``<term>_z`` / ``<term>_x0`` for each name
+    in :func:`ybudget_terms`, the three marginals of
     :func:`_marginals_replicated`.  Every array is a `$y$`-density:
     integrate with ``flow.y_weights`` for the per-`$k$` rate, and sum
-    over `$k$` for the corresponding ``twin_budget.dat`` column.
+    over `$k$` for the corresponding volume-averaged rate.
+
+    *rotational* is **static**, like ``bins`` on
+    :func:`_twin_energies_jit` and ``ref`` on
+    :func:`_twin_yspectra_jit`: it selects the budget form, so only
+    one of the two source builders is ever traced, and the term list
+    it names is what the stream's records are shaped by.
     """
-    stacked = _ybudget_densities(state1, state2, fourier_, flow_, pressure)
+    stacked = _ybudget_densities(
+        state1, state2, fourier_, flow_, pressure, rotational
+    )
     m_x, m_z, m_x0 = _marginals_replicated(stacked)
     out: dict[str, Array] = {}
-    for i, name in enumerate(YBUDGET_TERMS):
+    for i, name in enumerate(ybudget_terms(rotational)):
         out[f"{name}_x"] = m_x[i]
         out[f"{name}_z"] = m_z[i]
         out[f"{name}_x0"] = m_x0[i]
@@ -1273,19 +1547,27 @@ def _twin_ybudget_jit(
 
 
 def twin_ybudget(
-    state1: Array, state2: Array, pressure: DifferencePressure
+    state1: Array,
+    state2: Array,
+    pressure: DifferencePressure,
+    *,
+    rotational: bool = False,
 ) -> dict[str, Array]:
     """Wrapper around ``_twin_ybudget_jit`` binding the singletons."""
-    return _twin_ybudget_jit(state1, state2, fourier, flow, pressure)
+    return _twin_ybudget_jit(
+        state1, state2, fourier, flow, pressure, rotational=rotational
+    )
 
 
-@jit
+@partial(jit, static_argnames=("rotational",))
 def _twin_pressure_check_jit(
     state1: Array,
     state2: Array,
     fourier_: Fourier,
     flow_: object,
     pressure: DifferencePressure,
+    *,
+    rotational: bool,
 ) -> dict[str, Array]:
     r"""Residuals of the difference-pressure solve.
 
@@ -1300,18 +1582,20 @@ def _twin_pressure_check_jit(
       condition that *was* imposed -- machine zero at every mode but
       `$(0,0)$`, where the influence matrix is structurally singular
       and `$\Delta\hat v \equiv 0$` makes it vacuous;
-    - ``neumann``: `$(D_1\Delta\hat p - Re^{-1}D_2\Delta\hat v)|_w$`,
-      the analytic condition the IMM closure declines to impose -- a
-      wall-normal truncation diagnostic that must shrink with
-      ``res.ny``, not an error;
-    - ``div_n``, ``dy_dtv``: the Poisson source and
-      `$\partial_y\,\partial_t\Delta\hat v$`, the two fields the
-      residuals above are measured *against*, returned so a caller can
-      normalise by them.  Both are **full-size**
-      `$(N_y, N_{k_z}, N_{k_x})$` complex arrays -- this entry point is
-      for tests, not for a cadenced stream.
+    - ``neumann``: `$(D_1\Delta\hat p - \hat{\mathcal N}_y
+      - Re^{-1}D_2\Delta\hat v)|_w$`, the analytic condition the IMM
+      closure declines to impose -- a wall-normal truncation
+      diagnostic that must shrink with ``res.ny``, not an error;
+    - ``n_hat``, ``div_n``, ``dy_dtv``: the nonlinear term, the
+      Poisson source and `$\partial_y\,\partial_t\Delta\hat v$` --
+      what the residuals above are measured *against*, returned so a
+      caller can normalise by them, and so ``n_hat`` can be pinned
+      against the solver's own RHS.  All **full-size**
+      `$(3, N_y, N_{k_z}, N_{k_x})$` / `$(N_y, N_{k_z}, N_{k_x})$`
+      complex arrays -- this entry point is for tests, not for a
+      cadenced stream.
     """
-    src = _difference_sources(state1, state2, fourier_, flow_)
+    src = _difference_sources(state1, state2, fourier_, flow_, rotational)
     delta = src.delta
     p_hat = pressure.solve(delta, src.div_n, src.n_hat[1], flow_, fourier_)
     lap = apply_y_matrix(flow_.D2, p_hat) - fourier_.k2 * p_hat
@@ -1330,14 +1614,23 @@ def _twin_pressure_check_jit(
                 jnp.einsum("j,jzx->zx", d1b[-1], dtv),
             ]
         ),
-        "neumann": pressure.neumann_residual(delta, p_hat, flow_),
+        "neumann": pressure.neumann_residual(
+            delta, p_hat, src.n_hat[1], flow_
+        ),
+        "n_hat": src.n_hat,
         "div_n": src.div_n,
         "dy_dtv": apply_y_matrix(flow_.D1, dtv),
     }
 
 
 def twin_pressure_check(
-    state1: Array, state2: Array, pressure: DifferencePressure
+    state1: Array,
+    state2: Array,
+    pressure: DifferencePressure,
+    *,
+    rotational: bool = False,
 ) -> dict[str, Array]:
     """Wrapper around ``_twin_pressure_check_jit`` binding the singletons."""
-    return _twin_pressure_check_jit(state1, state2, fourier, flow, pressure)
+    return _twin_pressure_check_jit(
+        state1, state2, fourier, flow, pressure, rotational=rotational
+    )
