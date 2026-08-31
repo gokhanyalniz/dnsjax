@@ -289,7 +289,34 @@ def test_fresh_start_e0_exact() -> None:
         # E_d(t0) == e0 up to the (state1 + delta) - state1
         # cancellation floor.
         assert_allclose(cols["E_d"][0], E0, rtol=1e-10)
-        assert (tmp / "stats.dat").exists()
+
+        # The per-state statistics pair: same columns, same sample
+        # times, one file per state (the partner under ``_twin``).
+        ref_stats = read_dat(tmp / "stats.dat")
+        twin_stats = read_dat(tmp / "stats_twin.dat")
+        assert list(ref_stats) == list(twin_stats), (
+            f"{list(ref_stats)} != {list(twin_stats)}"
+        )
+        assert "E'" in ref_stats, list(ref_stats)
+        # A t0 row, one per in-loop cadence hit (``it > it0``), and a
+        # final row.  The loop runs it = PARENT_IT .. PARENT_IT + n - 1.
+        n_stats = (
+            sum(1 for i in range(PARENT_IT + 1, PARENT_IT + n) if i % 5 == 0)
+            + 2
+        )
+        for name, cols_ in (("stats", ref_stats), ("stats_twin", twin_stats)):
+            assert cols_["t"].shape[0] == n_stats, (
+                f"{name}.dat has {cols_['t'].shape[0]} rows, not {n_stats}"
+            )
+        assert_allclose(
+            twin_stats["t"],
+            ref_stats["t"],
+            rtol=0,
+            atol=0,
+            err_msg="the two stats streams sample different times",
+        )
+        # A real perturbation: the partner is a different state.
+        assert (twin_stats["E'"] != ref_stats["E'"]).any()
 
         # IC and final snapshot pairs, each internally consistent.
         for stem in ("state00000", "state00001"):
@@ -303,15 +330,30 @@ def test_fresh_start_e0_exact() -> None:
 
 
 def test_zero_perturbation_bit_identity() -> None:
-    # ``--outs.it_steps 1`` is load-bearing, not incidental: on a
-    # recording step the *reference* takes
-    # ``predict_and_fully_correct_measured`` while the partner takes
-    # the plain variant -- two separately compiled programs, the one
-    # place the lockstep loop does not literally run the same jitted
-    # function on both states.  Without the flag ``do_record`` is
-    # always false (``outs.it_steps`` defaults to ``None``) and this
-    # guard never sees that path.
-    for extra in ([], ["--outs.it_steps", "1"]):
+    # The second arm turns on all three per-state streams.  That is
+    # load-bearing twice over.  It exercises the measured stepper on
+    # *both* states (``do_record`` is false throughout otherwise --
+    # ``outs.it_steps`` defaults to ``None``), and it turns each
+    # stream pair into its own bit-identity assertion: at ``e0 = 0``
+    # the partner is an exact copy stepped by the same jitted
+    # program, so ``stats_twin.dat`` / ``steps_twin.dat`` /
+    # ``corrector_twin.dat`` must come out byte-for-byte equal to
+    # their reference counterparts -- headers, column widths and all.
+    # ``it_error_check`` must not exceed ``it_corrector``.
+    streams = ["stats", "steps", "corrector"]
+    for extra in (
+        [],
+        [
+            "--outs.it_stats",
+            "1",
+            "--outs.it_steps",
+            "1",
+            "--outs.it_corrector",
+            "1",
+            "--outs.it_error_check",
+            "1",
+        ],
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             result = _run_twin(tmp, [*_twin_args(1.05, e0=0.0), *extra])
             assert "exact copy" in result.stdout
@@ -323,8 +365,17 @@ def test_zero_perturbation_bit_identity() -> None:
                 )
             assert (cols["E_ref"] > 0).all()
             if extra:
-                assert (Path(tmp) / "steps.dat").exists()
-    print("e0 = 0 bit-identity (plain + measured reference): OK")
+                for name in streams:
+                    ref = Path(tmp) / f"{name}.dat"
+                    twin = Path(tmp) / f"{name}_twin.dat"
+                    assert ref.exists() and twin.exists(), name
+                    assert ref.read_bytes() == twin.read_bytes(), (
+                        f"{name}_twin.dat differs from {name}.dat at "
+                        "e0 = 0: the partner is not being stepped "
+                        "bit-identically, or the two streams disagree "
+                        "on format"
+                    )
+    print("e0 = 0 bit-identity (twin.dat + the three stream pairs): OK")
 
 
 # ── Paired restart ───────────────────────────────────────────────────
@@ -336,45 +387,57 @@ def test_paired_restart_continuity() -> None:
         tempfile.TemporaryDirectory() as straight,
         tempfile.TemporaryDirectory() as split,
     ):
-        _run_twin(straight, _twin_args(t_end))
-        _run_twin(split, _twin_args(t_mid))
+        stats_args = ["--outs.it_stats", "1"]
+        _run_twin(straight, [*_twin_args(t_end), *stats_args])
+        _run_twin(split, [*_twin_args(t_mid), *stats_args])
         # Resume from the final pair written at t_mid (isnap 1: the
         # IC pair is 00000).  The horizon is relative, so the child
         # asks for what is left of it.
         resume_args = list(_twin_args(t_end, t_start=t_mid))
         resume_args[1] = "state00001.tar"
-        result = _run_twin(split, resume_args)
+        result = _run_twin(split, [*resume_args, *stats_args])
         assert "Resumed twin pair" in result.stdout
         assert "random perturbation" not in result.stdout
 
-        ref = read_dat(Path(straight) / "twin.dat")
-        got = read_dat(Path(split) / "twin.dat")
-        # The split stream duplicates the seam sample (the parent's
-        # final row and the child's t0 row hold the same state).
-        seen: dict[float, int] = {}
-        keep: list[int] = []
-        for i, t in enumerate(np.round(got["t"], 10)):
-            if t not in seen:
-                seen[t] = i
-                keep.append(i)
-        assert len(got["t"]) == len(ref["t"]) + 1  # one seam duplicate
-        for name in TWIN_COLS:
-            assert_allclose(
-                got[name][keep],
-                ref[name],
-                rtol=0,
-                atol=0,
-                err_msg=f"{name}: resumed stream differs from the "
-                "uninterrupted run",
-            )
-        # The seam duplicate itself matches the row it duplicates.
-        dup = [i for i in range(len(got["t"])) if i not in keep]
-        assert len(dup) == 1
-        i_dup = dup[0]
-        i_orig = seen[float(np.round(got["t"], 10)[i_dup])]
-        for name in TWIN_COLS:
-            assert got[name][i_dup] == got[name][i_orig]
-    print("paired restart continuity (bit-exact): OK")
+        # ``stats_twin.dat`` follows the same append-on-resume path
+        # as ``twin.dat`` (a header only when the file is absent), so
+        # it takes the same seam treatment.  The seam-duplicate
+        # equality below holds column for column only because
+        # plane-Couette under the default driving has no ``-dP``
+        # column: those *would* differ across the seam, the parent's
+        # final row carrying the applied force and the child's t0 row
+        # the wall-shear inference (``driver.py``'s stream comment).
+        for stream in ("twin.dat", "stats.dat", "stats_twin.dat"):
+            ref = read_dat(Path(straight) / stream)
+            got = read_dat(Path(split) / stream)
+            # The split stream duplicates the seam sample (the parent's
+            # final row and the child's t0 row hold the same state).
+            seen: dict[float, int] = {}
+            keep: list[int] = []
+            for i, t in enumerate(np.round(got["t"], 10)):
+                if t not in seen:
+                    seen[t] = i
+                    keep.append(i)
+            assert len(got["t"]) == len(ref["t"]) + 1, stream  # one dup
+            for name in ref:
+                assert_allclose(
+                    got[name][keep],
+                    ref[name],
+                    rtol=0,
+                    atol=0,
+                    err_msg=f"{stream}:{name}: resumed stream differs "
+                    "from the uninterrupted run",
+                )
+            # The seam duplicate itself matches the row it duplicates.
+            dup = [i for i in range(len(got["t"])) if i not in keep]
+            assert len(dup) == 1, stream
+            i_dup = dup[0]
+            i_orig = seen[float(np.round(got["t"], 10)[i_dup])]
+            for name in ref:
+                assert got[name][i_dup] == got[name][i_orig], (
+                    f"{stream}:{name}"
+                )
+    print("paired restart continuity (bit-exact, 3 streams): OK")
 
 
 # ── Multi-process ────────────────────────────────────────────────────

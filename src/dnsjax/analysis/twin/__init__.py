@@ -4,8 +4,10 @@ Layout (one module per concern; none is imported by the top-level
 ``dnsjax.analysis`` namespace, mirroring ``analysis/response``):
 
 - :mod:`.series` -- readers for the ``.dat`` scalar streams
-  (``twin.dat`` / ``twin_budget.dat`` / ``stats.dat``) and the
-  ``twin.json`` member record; per-component budget sums, the
+  (``twin.dat`` / ``twin_budget.dat``) and the ``twin.json`` member
+  record, plus the column-generic :func:`~.series.read_dat` that loads
+  any of them and the per-state ``stats.dat`` / ``stats_twin.dat``
+  pair as well; per-component budget sums, the
   budget-closure residuals, and :func:`~.series.uniform_grid`, which
   selects a stream's own cadence grid out of the off-grid rows a
   resume and the final row add.
