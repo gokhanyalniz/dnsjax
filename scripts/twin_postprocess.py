@@ -177,9 +177,11 @@ class ReconParams(BaseModel):
         default=False,
         description=(
             "Rebuild twin_ybudget.bin in the rotational form "
-            "(twin.rotational_ybudget).  Not recorded in twin.json, "
-            "so it is stated here rather than inherited: to reproduce "
-            "a member's own stream, match the form the run used."
+            "(twin.rotational_ybudget).  Stated here rather than "
+            "inherited: to reproduce a member's own stream, match the "
+            "form the run used, which its twin_ybudget.json 'terms' "
+            "names outright (twin.json records it too, but only for "
+            "members written since it began to)."
         ),
     )
     bins: bool | None = Field(

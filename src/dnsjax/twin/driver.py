@@ -433,6 +433,7 @@ def _validate_twin(values: TwinParams, params) -> None:
                 "it_spectra",
                 "it_yspectra",
                 "it_ybudget",
+                "rotational_ybudget",
                 "spectra_ref",
             )
             if getattr(values, name) != getattr(defaults, name)
@@ -1021,7 +1022,14 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
 
     # --- Spectra stream (probes-style binary; t0 sample here, in-loop
     # samples before each step, a final sample only when
-    # cadence-aligned -- uniform sample times for the reader) --------------
+    # cadence-aligned -- uniform sample times for the reader).  The
+    # gate below is ``it % cadence``, not ``(it - it0) % cadence``, so
+    # a resume whose ``it0`` is not a multiple of the cadence leaves
+    # one short gap at the seam; the readers key on ``t`` and
+    # ``analysis.twin.series.uniform_grid`` re-derives the grid, so
+    # this costs an off-grid row rather than a wrong one.  Changing the
+    # gate would move the sample times of every existing member's
+    # resume, which is why it is documented instead. --------------------
     measure_spectra: bool = twin_params.it_spectra is not None
     spectra_bad_t0: str | None = None
     if measure_spectra:
@@ -1413,7 +1421,25 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
 
 
 def _twin_sidecar_stub() -> dict:
-    """The configuration half of ``twin.json`` (the match keys)."""
+    r"""The configuration half of ``twin.json``.
+
+    A **superset** of :data:`_TWIN_MATCH_KEYS`: the resume check reads
+    only those, and the last two entries below are recorded for
+    provenance alone.  They shape a *stream* rather than the
+    trajectory, and each is already pinned where it matters -- the
+    budget form by ``terms`` in ``twin_ybudget.json`` and the
+    reference half by ``includes_ref`` in the two spectra sidecars, so
+    a mid-stream flip is a hard error from
+    :class:`~dnsjax.twin._binstream.BinStream` either way.  Matching
+    them here would additionally refuse the harmless case where the
+    stream is off, while *not* recording them leaves ``twin.json``
+    unable to say which budget form a member ran in (which
+    ``scripts/twin_postprocess.py`` has to work around).  Additive
+    keys only, so no :data:`TWIN_FORMAT_VERSION` bump and no
+    :data:`_TWIN_LEGACY_DEFAULTS` entry: nothing reads them for
+    control flow, and ``analysis.twin.series`` reads ``twin.json``
+    with ``.get``.
+    """
     return {
         "format_version": TWIN_FORMAT_VERSION,
         "system": params.phys.system,
@@ -1429,6 +1455,9 @@ def _twin_sidecar_stub() -> dict:
         "it_ybudget": twin_params.it_ybudget,
         "dt": params.step.dt,
         "double_precision": params.res.double_precision,
+        # Recorded, not matched -- see the docstring.
+        "rotational_ybudget": twin_params.rotational_ybudget,
+        "spectra_ref": twin_params.spectra_ref,
     }
 
 

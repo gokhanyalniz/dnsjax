@@ -6,20 +6,30 @@ time step.  This is the implementation behind ``dnsjax.__main__``'s
 in-process random initial-condition start mode (``init.random_field``,
 the default when no snapshot is given) -- there is no offline CLI.
 
-The energy of each mode follows the structure-dependent envelope
+Each mode is given the decaying **amplitude** envelope
 
 .. math::
-    A = (1 - s)^{|k_x| + |k_z| (+ |k_y|)\,(+\,j)}
+    A = (1 - s)^{|k_x| + |k_z| (+ |k_y|)},
 
-where `$s$` is the ``smoothness`` argument (a fixed *physical*-wavenumber
-spectrum, so the field's correlation length is domain-independent) and
-`$j$` is the wall-normal polynomial index, supplied by
-:func:`_wall_normal_filter` for the wall-bounded families (the
-triply-periodic one carries `$|k_y|$` instead).  Without that factor a
-column draw is grid-white in the wall-normal direction -- flat to the
-wall-normal Nyquist -- which no wall window repairs; for the pipe it also
-makes near-axis regularity unattainable, since that is a statement about
-*derivatives*.
+so its energy is `$A^2$`.  `$s$` is the ``smoothness`` argument, and
+the exponent carries the *physical* wavenumbers, so the field's
+correlation length is a property of `$s$` alone and does not change
+when the box is resized.
+
+The wall-bounded families need a second factor, because a column draw
+is ``standard_normal`` per grid point -- grid-white in the wall-normal
+direction, flat to the wall-normal Nyquist -- which no wall window
+repairs; for the pipe it also makes near-axis regularity unattainable,
+since that is a statement about *derivatives*.
+:func:`_wall_normal_filter` supplies it, weighting the **energy** of
+wall-normal polynomial index `$j$` by `$(1 - s)^{j}$`.  That is
+deliberately not `$A$`'s exponent convention -- `$A$` is an amplitude
+and this is an energy, and `$j$` counts modes where `$|k|$` carries
+units, so the two coincide per index only at `$L = 4\pi$`.  They are
+two laws on purpose: `$s$` buys a physical correlation length where
+there is a box length to measure it against, and a polynomial-degree
+cutoff where there is not.  The triply-periodic family instead carries
+`$|k_y|$` in `$A$` and needs no filter.
 
 The field is then normalised so the volume-averaged L2 norm equals
 ``amplitude``.  Each wall-bounded mode is built by solving continuity for
@@ -234,15 +244,17 @@ def _wall_normal_filter(coord: np.ndarray, decay: float) -> np.ndarray:
     r"""Wall-normal factor of the smoothness envelope, as a real
     ``(N, N)`` operator applied to a raw column draw.
 
-    The periodic directions get their `$(1-s)^{|k|}$` energy envelope
+    The periodic directions get their `$(1-s)^{2|k|}$` energy envelope
     from :func:`_normalize_mode`'s per-mode target, but a raw draw is
     ``standard_normal`` **per grid point** -- grid-white in the
     wall-normal direction, i.e. flat all the way to the wall-normal
     Nyquist.  This applies the missing factor: expand the column in the
     orthonormal polynomial basis of *coord*, weight index `$j$` by
-    `$(1-s)^{j/2}$` (so its *energy* follows `$(1-s)^j$`, the same law
-    the periodic directions obey), and transform back.  The full
-    envelope is then `$A = (1-s)^{|k_1| + |k_2| + j}$`.
+    `$(1-s)^{j/2}$` -- so its *energy* follows `$(1-s)^j$` -- and
+    transform back.  That is **not** the periodic directions'
+    exponent, and not meant to be: theirs is `$(1-s)^{2|k|}$` in
+    energy, in a wavenumber that carries units where `$j$` counts
+    modes.  The module docstring has the argument.
 
     *coord* is the variable the field is smooth in, ascending: `$y$`
     (Cartesian), `$r$` (annular), and `$r^2$` for the pipe -- an
