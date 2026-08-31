@@ -31,7 +31,15 @@ Derivation
 ----------
 Write `$\langle\cdot\rangle$` for the `$x$`-`$z$` average, `$\nu =
 1/Re$`, and let `$\Pi$` be the mean pressure gradient along a
-homogeneous direction (`$\Pi = 0$` for plane-Couette).  Continuity plus
+homogeneous direction -- the `$(k_x, k_z) = (0,0)$` mode of
+`$\partial p/\partial s$`, so that the **force** appearing on the
+right-hand side of the momentum equation is `$-\Pi$`.  That is the
+convention throughout this codebase, and the one the ``-dPds'`` /
+``-dPdn'`` / ``-dPdz'`` diagnostic columns are named for: they carry
+`$-\Pi$`, positive when the driving accelerates the flow.  In a
+perturbation formulation `$\Pi$` is the *excess* gradient over the
+one driving the laminar state, written without a prime; a total is
+`$\Pi_\mathrm{tot}$`.  (`$\Pi = 0$` for plane-Couette.)  Continuity plus
 no-slip give `$\langle v\rangle = 0$`, so the mean-mode momentum
 balance of a tangential component `$u$` is
 
@@ -70,10 +78,9 @@ relations follow:
 
    which is the wall-shear inference
    :func:`dnsjax.geometries.wall_bounded.cartesian.mean_driving`
-   already reports (up to its sign convention: that column is the
-   applied forcing `$-\Pi$`).  `$\Pi$` is then a **response**: it is
-   whatever the state's own wall shears demand, rather than a number
-   the run imposes.
+   already reports, as the force `$-\Pi$`.  `$\Pi$` is then a
+   **response**: whatever the state's own wall shears demand, rather
+   than a number the run imposes.
 
 Measured, on a controlled pair -- plane-Poiseuille at ``re = 400``,
 ``ny = 65``, ``fd_order = 6``, ``constant_bulk_velocity``,

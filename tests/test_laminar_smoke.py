@@ -680,7 +680,7 @@ SYSTEMS: list[dict] = [
         # Viscoelastic pipe flag-on: the spin quad carrying a
         # **total-field** 9-component state, so the mean-plane packing
         # must reproduce the Pi_z-vs-viscosity balance (as Dean's does
-        # for pi_theta) while the polymer stress rides the sources.
+        # for force_theta) while the polymer stress rides the sources.
         "name": "viscoelastic-pipe-legacy-imm",
         "args": [
             "--phys.system",
@@ -741,7 +741,7 @@ SYSTEMS: list[dict] = [
     {
         # Dean flag-on: a **total-field** flow, so the laminar state is
         # the mean-mode balance between the azimuthal body force
-        # ``pi_theta`` and viscosity.  That balance lives entirely in
+        # ``force_theta`` and viscosity.  That balance lives entirely in
         # the two packed k^2 = 0 slots, which is exactly what the
         # reformulation re-plumbs -- a packing error would show as a
         # drifting Ub_th here even though no perturbation exists.

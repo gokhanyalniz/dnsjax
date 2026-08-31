@@ -14,7 +14,7 @@
 - `annular.py`: annular geometry / concentric cylinders (Fourier, CGL
   grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2
   IMM on the default (u_r, omega_r) pair, optional mean-mode azimuthal
-  body force `pi_theta`)
+  body force `force_theta`)
 - `_cartesian_primitive_imm.py`, `_cylindrical_primitive_imm.py`,
   `_annular_primitive_imm.py`: each geometry's **legacy** primitive
   `(v, p)` IMM path (`res.consistent_imm = False`) — see the
@@ -189,7 +189,7 @@ influence matrix**. Two driving modes plus the viscoelastic
 extension share the infrastructure (the `annular.py` "Driving"
 section): shear-driven Taylor-Couette / quasi-Keplerian (perturbation
 `u'`), force-driven Dean (total field, mean-mode body force
-`AnnularFlow.pi_theta`), and the viscoelastic total-field mode
+`AnnularFlow.force_theta`), and the viscoelastic total-field mode
 (`annular_viscoelastic.py`).
 
 **Azimuthal wedge (`geo.m0`, every cylindrical/annular flow, both

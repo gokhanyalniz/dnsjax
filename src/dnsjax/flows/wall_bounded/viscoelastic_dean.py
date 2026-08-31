@@ -2,7 +2,7 @@ r"""Viscoelastic (sPTT) Dean flow between two stationary cylinders.
 
 Force-driven flow of an sPTT viscoelastic fluid in the annular gap
 between two **stationary** concentric cylinders, driven by an azimuthal
-body force `$\Pi_\theta = (r_1 + r_2)/(\mathrm{Re}\,r)$` (an external
+body force `$-\Pi_\theta = (r_1 + r_2)/(\mathrm{Re}\,r)$` (an external
 reference normalisation, `$r_1 = \delta$`, `$r_2 = \delta + 2$`).  The
 velocity is coupled to a symmetric conformation tensor `$\mathbf{c}$` via
 the polymer-stress divergence; see the module docstring of
@@ -15,7 +15,7 @@ Total-field formulation
 Like Newtonian Dean flow, the **total** velocity is integrated (base
 flow zero, so the rotational nonlinear term evaluates the full field),
 with the azimuthal body force applied at the mean mode through
-``pi_theta``.  The reported perturbation energy `$E'$` is velocity-only:
+``force_theta``.  The reported perturbation energy `$E'$` is velocity-only:
 the kinetic energy of the deviation of `$\mathbf{u}$` from the analytical
 laminar profile (the laminarization-check quantity).  ``get_stats`` also
 reports polymer diagnostics (mean trace, elastic energy, polymer work).
@@ -45,7 +45,7 @@ the `$\nabla^2 c = 0$` wall rows `$H_c$` imposes.
 `$f \equiv 1$` and the polymer contributes a constant extra viscosity,
 so the Newtonian `$U_\theta$` is also the sPTT one.  At
 `$\epsilon > 0$` the polymer shear-thins (the true balance is
-`$(1/r^2)\,\partial_r[r^2\tau] + \Pi_\theta = 0$` with
+`$(1/r^2)\,\partial_r[r^2\tau] - \Pi_\theta = 0$` with
 `$\tau = (S/\mathrm{Re})[\beta + (1-\beta)/f]$`) and that correction is
 neglected, exactly as in the pipe twin -- so the pair is **not** a
 steady state there.  It is not small at the shipped defaults: stepping
@@ -99,7 +99,7 @@ class ViscoelasticDeanFlow(ViscoelasticAnnularFlow):
     Delegates the velocity grid / IMM operators (solvent viscosity
     `$\nu = \beta/\mathrm{Re}$`) and the conformation Helmholtz operator
     to :class:`ViscoelasticAnnularFlow`, then sets the azimuthal body
-    force `$\Pi_\theta = (r_1 + r_2)/(\mathrm{Re}\,r)$` and zeros the base
+    force `$-\Pi_\theta = (r_1 + r_2)/(\mathrm{Re}\,r)$` and zeros the base
     flow (total-field integration).
     """
 
@@ -114,7 +114,7 @@ class ViscoelasticDeanFlow(ViscoelasticAnnularFlow):
         # at the mean mode by
         # ``ViscoelasticAnnularFlow.add_mean_body_force`` (the shared
         # RHS's driving adapter).
-        self.pi_theta = (r1 + r2) / (self.rs * Re)
+        self.force_theta = (r1 + r2) / (self.rs * Re)
 
         # Total-field formulation: no base flow to subtract.
         self.base_flow = jnp.zeros(
@@ -225,7 +225,7 @@ def _get_stats_jit(
 
     - `$E$`: total kinetic energy; `$E'$`: velocity-only deviation from
       the laminar profile (laminarization quantity).
-    - `$I = \langle u_\theta \Pi_\theta \rangle$`: body-force input.
+    - `$I = -\langle u_\theta \Pi_\theta \rangle$`: body-force input.
     - `$D_s = \nu\langle|\nabla u|^2\rangle$`: solvent dissipation
       (`$\nu = \beta/\mathrm{Re}$`).
     - `$W_p = \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}
@@ -259,7 +259,7 @@ def _get_stats_jit(
     U_bulk_z = integrate_scalar(mean_uz, flow_.y_weights) / volfac
 
     energy_input = (
-        integrate_scalar(mean_utheta * flow_.pi_theta, flow_.y_weights)
+        integrate_scalar(mean_utheta * flow_.force_theta, flow_.y_weights)
         / volfac
     )
     enstrophy = get_enstrophy_annular(

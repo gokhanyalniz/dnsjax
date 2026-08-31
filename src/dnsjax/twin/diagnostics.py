@@ -411,16 +411,11 @@ the term costs one mode-diagonal multiply and makes
 
 Mean-mode driving
 -----------------
-**Sign convention.**  `$\Pi_s$` is the `$(0,0)$` mode of
+**Sign convention** (:mod:`dnsjax.ic.mean_mode` derives it, and it
+holds codebase-wide): `$\Pi_s$` is the `$(0,0)$` mode of
 `$\partial p/\partial s$` -- the mean pressure gradient -- so the
-applied *force* is `$-\Pi_s$`, positive when it accelerates the flow.
-That is ``stats.dat``'s ``-dPds'`` column, it is what
-:mod:`dnsjax.ic.mean_mode` derives its `$(0,0)$` constraints in, and
-everything below and in :mod:`dnsjax.twin.pressure` is written in it.
-Elsewhere in this codebase `$\Pi$` often names the *force* directly
-(``cartesian.mean_driving_from_profile``, the per-geometry body
-forces `$\Pi_\theta$`, `$\Pi_z$`), which is the opposite sign; the
-column name ``-dPds'`` is the unambiguous one either way.
+applied *force* is `$-\Pi_s$`, positive when it accelerates the flow,
+which is what ``stats.dat``'s ``-dPds'`` column carries.
 
 There is deliberately **no forcing column** in the budget, for either
 driving knob.  ``_apply_bulk_corrections``

@@ -569,7 +569,13 @@ Under `phys.driving = "constant_bulk_velocity"` (pipe,
 plane-Poiseuille) or `phys.block_mean_spanwise_velocity` (Cartesian and
 annular families) `stats.dat` gains a **last** column per constrained
 direction — `-dPds'` / `-dPdn'` / `-dPdz'` — the applied **forcing**
-`-∂p'/∂s` (positive = accelerating), *not* the pressure gradient. It is
+`-∂p/∂s = -Π` (positive = accelerating), *not* the pressure gradient
+`Π` itself. **Sign convention, codebase-wide:** `Π` (`Π_s` / `Π_n` in
+planar geometries, `Π_θ` / `Π_z` in curvilinear ones) is the
+`(kx, kz) = (0, 0)` mode of `∂p/∂s`, so every force on a
+Navier-Stokes right-hand side is `-Π`; in a perturbation formulation
+`Π` is the excess over the laminar driving, unprimed, and a total is
+`Π_tot`. Derived in `ic/mean_mode.py`. It is
 a **step** quantity (the corrector's converged body force, threaded out
 of the jitted solve as `correct_fn`'s `aux`), so the one row no step
 produced — `t = t0` — carries the wall-shear inference `get_driving`

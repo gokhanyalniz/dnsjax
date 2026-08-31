@@ -1448,9 +1448,10 @@ class CylindricalFlow:
         by a unit uniform **body force** over one implicit time
         step (`$H_{k,z} = I/\Delta t - c\nu L$` carries
         accelerations on its RHS), so the scaling `$G$` below is
-        `$-\partial p'/\partial z$` -- the sign the ``-dPdz'``
-        diagnostic reports.  Its bulk `$H = 2 \int_0^1 h\,r\,dr$` gives the
-        scaling needed to zero the perturbation bulk velocity:
+        `$-\partial p/\partial z = -\Pi_z$` -- the sign the
+        ``-dPdz'`` diagnostic reports.  Its bulk
+        `$H = 2 \int_0^1 h\,r\,dr$` gives the scaling needed to zero
+        the perturbation bulk velocity:
 
         .. math::
             G = -\frac{U_{b,\mathrm{pert}}}{H}, \qquad
@@ -1515,11 +1516,14 @@ def mean_driving(state: Array, flow_: CylindricalFlow) -> dict[str, Array]:
     and ``volume_fac`` `$= \int_0^1 r\,dr = 1/2$`:
 
     .. math::
-        \frac{d U_{b,z}'}{dt} = \Pi'_z + 2\,\nu\,\tau_z ,
+        \frac{d U_{b,z}'}{dt} = -\Pi_z + 2\,\nu\,\tau_z ,
 
-    so holding the bulk fixed applies exactly `$\Pi'_z = -2\nu\tau_z$`
-    -- the same number :func:`_apply_bulk_correction` applies, up to
-    the time discretization, under the same key and sign.
+    with `$\Pi_z$` the `$(0,0)$` mode of `$\partial p/\partial z$`, so
+    the applied force is `$-\Pi_z$` (the codebase convention;
+    :mod:`dnsjax.ic.mean_mode` derives it).  Holding the bulk fixed
+    therefore applies exactly `$-\Pi_z = -2\nu\tau_z$` -- the same
+    number :func:`_apply_bulk_correction` applies, up to the time
+    discretization, under the same key and sign.
 
     Used for the ``t = t0`` ``stats.dat`` row, which has no step behind
     it (:mod:`dnsjax.__main__`); every other row reports the value the
@@ -1540,12 +1544,13 @@ def _apply_bulk_correction(
 ) -> tuple[Array, dict[str, Array]]:
     r"""Constant-bulk-velocity enforcement, shared by both IMM schemes.
 
-    Adds a uniform body force `$\Pi'_z$` to the mean-mode `$u_z$`
+    Adds a uniform body force `$-\Pi_z$` to the mean-mode `$u_z$`
     Helmholtz RHS so the perturbation bulk axial velocity is zero,
-    in its equivalent post-solve form `$u_z \mathrel{+}= \Pi'_z\,h$`
+    in its equivalent post-solve form `$u_z \mathrel{+}= -\Pi_z\,h$`
     with `$h$` the response of
     :meth:`CylindricalFlow._precompute_bulk_response` and
-    `$\Pi'_z = -U_{b,\mathrm{pert}} / H_{\mathrm{bulk}}$`.  Like every
+    `$-\Pi_z = -U_{b,\mathrm{pert}} / H_{\mathrm{bulk}}$` (``force_z``
+    below holds that force, not `$\Pi_z$`).  Like every
     mean-plane write it is confined to `$k^2 = 0$`, the one plane the
     reconstruction never touches; ``mean_mask`` is the write mask, so
     no other mode (padding included) receives it.
@@ -1557,7 +1562,7 @@ def _apply_bulk_correction(
     uncorrected ``uz_arb`` there lets the IMM and bulk corrections fuse
     into one expression.
 
-    Returns the corrected field and the applied `$\Pi'_z$` as the
+    Returns the corrected field and the applied `$-\Pi_z$` as the
     corrector's *aux* diagnostics -- the correction's own scalar
     prefactor, so what is reported cannot drift from what is applied.
     Empty, and a trace-time no-op, under any other driving.
@@ -1566,13 +1571,13 @@ def _apply_bulk_correction(
         return uz_new, {}
     mean_uz = extract_mean_mode(uz_src[None])[0].real
     bulk_uz = 2 * jnp.dot(flow_.y_weights, mean_uz)
-    pi_z = -bulk_uz * flow_.H_bulk_inv  # the applied body force
+    force_z = -bulk_uz * flow_.H_bulk_inv  # the applied ``-Pi_z``
     return (
         uz_new
         + jnp.where(
-            mean_mask, pi_z * flow_.h_bulk_response[:, None, None], 0.0
+            mean_mask, force_z * flow_.h_bulk_response[:, None, None], 0.0
         ),
-        {DRIVING_KEY_Z: pi_z},
+        {DRIVING_KEY_Z: force_z},
     )
 
 

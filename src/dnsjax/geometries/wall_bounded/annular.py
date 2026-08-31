@@ -94,8 +94,9 @@ The geometry supports two driving modes via the same infrastructure:
   **total** velocity is integrated (``base_flow = curl_base_flow = 0``,
   so the rotational term computes the full `$(\nabla\times\mathbf{u})
   \times\mathbf{u}$`).  An azimuthally-/axially-uniform, radius-dependent
-  azimuthal body force is supplied through ``AnnularFlow.pi_theta`` (a
-  radial profile, zero by default) and added at the mean mode by
+  azimuthal body force `$-\Pi_\theta$` is supplied through
+  ``AnnularFlow.force_theta`` (a radial profile holding that force,
+  zero by default) and added at the mean mode by
   :func:`_get_rhs_core`.  See ``flows.wall_bounded.dean`` and
   :func:`dean_laminar_u_theta`.
 
@@ -110,7 +111,7 @@ evolves freely.
 
 Flow-specific modules (e.g. ``flows.wall_bounded.taylor_couette``,
 ``flows.wall_bounded.dean``) subclass ``AnnularFlow``, set the base flow
-and/or ``pi_theta``, then call ``build_annular_stepper`` to obtain
+and/or ``force_theta``, then call ``build_annular_stepper`` to obtain
 ready-to-use time-stepping functions.
 """
 
@@ -489,9 +490,12 @@ def annular_forced_laminar_u_theta(
     r"""Analytical laminar azimuthal profile for an annular body force.
 
     Closed-form steady solution of the azimuthal momentum balance
-    `$(1/\mathrm{Re})\,(\nabla^2 \mathbf{U})_\theta + \Pi_\theta = 0$`
-    for a radius-dependent azimuthal body force
-    `$\Pi_\theta = C/(r\,\mathrm{Re})$` with no-slip walls
+    `$(1/\mathrm{Re})\,(\nabla^2 \mathbf{U})_\theta - \Pi_\theta = 0$`
+    for a radius-dependent azimuthal driving whose applied force is
+    `$-\Pi_\theta = C/(r\,\mathrm{Re})$` -- `$\Pi_\theta$` being the
+    mean-mode azimuthal gradient in the codebase convention, so the
+    force is its negative (:mod:`dnsjax.ic.mean_mode`) -- with no-slip
+    walls
     `$U_\theta(r_1) = U_\theta(r_2) = 0$`.  The `$1/\mathrm{Re}$`
     cancels, so the profile is **Reynolds-independent**:
 
@@ -523,7 +527,8 @@ def annular_forced_laminar_u_theta(
     r1, r2:
         Inner / outer non-dim radii.
     C:
-        Body-force coefficient (`$\Pi_\theta = C/(r\,\mathrm{Re})$`).
+        Body-force coefficient: the applied force is
+        `$-\Pi_\theta = C/(r\,\mathrm{Re})$`.
     """
     denom = r1**2 - r2**2
     alpha = (C / 2.0) * (r1**2 * np.log(r1) - r2**2 * np.log(r2)) / denom
@@ -536,7 +541,7 @@ def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
 
     Thin wrapper over :func:`annular_forced_laminar_u_theta` for the
     Newtonian Dean body force
-    `$\Pi_\theta = (2\eta + 2)/(r\,\mathrm{Re}\,(1 - \eta))$`, i.e.
+    `$-\Pi_\theta = (2\eta + 2)/(r\,\mathrm{Re}\,(1 - \eta))$`, i.e.
     `$C = 2(\eta + 1)/(1 - \eta) = 2(r_1 + r_2)$` on the gap-1 radii
     `$r_1 = \eta/(1-\eta)$`, `$r_2 = 1/(1-\eta)$`.
 
@@ -728,7 +733,7 @@ class AnnularFlow:
         Radial grid `$r_j$`, `$1/r_j$`, `$1/r_j^2$`.
     y_weights:
         Integration weights with radial Jacobian `$w_j r_j$`.
-    pi_theta:
+    force_theta:
         Mean-mode azimuthal body force on the radial grid, shape
         ``(Nr,)``; zero for shear-driven flows, set by force-driven
         subclasses (Dean flow).
@@ -769,7 +774,7 @@ class AnnularFlow:
     inv_r2: Array = field(init=False)
     y_weights: Array = field(init=False)
     cfl_inv_spacing: Array = field(init=False)
-    pi_theta: Array = field(init=False)
+    force_theta: Array = field(init=False)
     base_flow: Array = field(init=False)
     curl_base_flow: Array = field(init=False)
     base_flow_padded: Array = field(init=False)
@@ -842,7 +847,7 @@ class AnnularFlow:
         # Mean-mode azimuthal body force on the radial grid, zero by
         # default.  Force-driven subclasses (Dean flow) overwrite it;
         # applied at the mean mode by ``_get_rhs_core``.
-        self.pi_theta = jnp.zeros(
+        self.force_theta = jnp.zeros(
             Nr, dtype=sharding.float_type, out_sharding=sharding.no_shard
         )
 
@@ -1306,7 +1311,7 @@ def _l_bf(
     stiff on the wall-clustered grid, so the CN/AB2 scheme advances this
     term implicitly while the self-advection `$\mathbf{u}' \times
     \boldsymbol{\omega}' = \text{get\_rhs} - \text{\_l\_bf}$` stays
-    explicit (the constant Dean body force ``pi_theta`` is not part of
+    explicit (the constant Dean body force ``force_theta`` is not part of
     this coupling; it rides in the explicit term).
 
     With ``params.step.implicit_mean_coupling`` (default on) the
@@ -1366,7 +1371,7 @@ def _get_rhs_core(
        For force-driven flows (Dean) ``base_flow`` is zero, so this is
        the full `$(\nabla\times\mathbf{u})\times\mathbf{u}$` of the
        total field.
-    3. Add the mean-mode azimuthal body force ``flow_.pi_theta`` to
+    3. Add the mean-mode azimuthal body force ``flow_.force_theta`` to
        `$NL_\theta$` (zero for shear-driven Taylor-Couette).
     4. Convert `$(NL_z, NL_r, NL_\theta) \to (NL_z, NL_+, NL_-)$`.
     """
@@ -1388,7 +1393,9 @@ def _get_rhs_core(
     # enters the RHS with a + sign (and into NL_+/- via NL_theta).
     rhs = to_pm_basis(
         nonlin.at[2].add(
-            jnp.where(fourier_.mean_mask, flow_.pi_theta[:, None, None], 0.0)
+            jnp.where(
+                fourier_.mean_mask, flow_.force_theta[:, None, None], 0.0
+            )
         )
     )
     # Moving frame: convective-form frame term
@@ -1452,11 +1459,13 @@ def mean_driving(state: Array, flow_: AnnularFlow) -> dict[str, Array]:
     `$= (r_2^2 - r_1^2)/2$`:
 
     .. math::
-        \frac{d U_{b,z}'}{dt} = \Pi'_z
+        \frac{d U_{b,z}'}{dt} = -\Pi_z
         + \nu\,\frac{r_2\tau_2 - r_1\tau_1}{\mathrm{volfac}},
 
-    so blocking the bulk applies exactly the negative of that flux
-    term, under the same key and sign as
+    with `$\Pi_z$` the `$(0,0)$` mode of `$\partial p/\partial z$` and
+    the applied force `$-\Pi_z$` (:mod:`dnsjax.ic.mean_mode`), so
+    blocking the bulk applies exactly the negative of that flux term,
+    under the same key and sign as
     :func:`_apply_bulk_correction`.
 
     **Newtonian only.**  It uses the solvent viscosity alone, so it
@@ -1484,9 +1493,9 @@ def _apply_bulk_correction(
 
     Under ``phys.block_mean_spanwise_velocity`` (the annulus' undriven
     homogeneous direction is the axial one) adds a uniform body force
-    `$\Pi'_z$` to the mean-mode `$u_z$` Helmholtz RHS so the
+    `$-\Pi_z$` to the mean-mode `$u_z$` Helmholtz RHS so the
     perturbation bulk axial velocity is zero, in the equivalent
-    post-solve form `$u_z \mathrel{+}= \Pi'_z\,h$` with `$h$` from
+    post-solve form `$u_z \mathrel{+}= -\Pi_z\,h$` with `$h$` from
     :meth:`AnnularFlow._precompute_bulk_response`.  Like every
     mean-plane write it is confined to `$k^2 = 0$`, the one plane the
     reconstruction never touches.
@@ -1497,7 +1506,7 @@ def _apply_bulk_correction(
     mean mode, so reading from the uncorrected ``uz_arb`` fuses the two
     corrections.
 
-    Returns the corrected field and the applied `$\Pi'_z$` as the
+    Returns the corrected field and the applied `$-\Pi_z$` as the
     corrector's *aux* diagnostics -- the correction's own prefactor, so
     the reported number is by construction the applied one.  Empty, and
     a trace-time no-op, when the knob is off (the default).
@@ -1508,13 +1517,13 @@ def _apply_bulk_correction(
     bulk_uz = (
         integrate_scalar(mean_uz, flow_.y_weights) / derived_params.volume_fac
     )
-    pi_z = -bulk_uz * flow_.H_bulk_inv  # the applied body force
+    force_z = -bulk_uz * flow_.H_bulk_inv  # the applied ``-Pi_z``
     return (
         uz_new
         + jnp.where(
-            mean_mask, pi_z * flow_.h_bulk_response[:, None, None], 0.0
+            mean_mask, force_z * flow_.h_bulk_response[:, None, None], 0.0
         ),
-        {DRIVING_KEY_Z: pi_z},
+        {DRIVING_KEY_Z: force_z},
     )
 
 

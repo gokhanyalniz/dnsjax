@@ -38,7 +38,7 @@ blocking on both Cartesian flows: ``I`` has **no** spanwise term, so
 those entries fail visibly if the blocking force did any work.  Each
 entry with an active hold additionally checks that the force is
 non-zero and the bulk it holds is zero to rounding -- "no work" is
-only informative when the force is real.  Which `$\Pi'$` estimate
+only informative when the force is real.  Which `$\Pi$` estimate
 belongs in ``I``, with the measured table: the
 ``_check_applied_vs_inferred`` docstring.
 
@@ -340,7 +340,7 @@ def _check_held_bulks(label: str, flags: list[str], cols: dict) -> str | None:
 _APPLIED_NY = (33, 49, 65, 97)
 #: Run long enough for the driving to develop, and judge only the
 #: developed window.  This is not fussiness: from a random IC the
-#: applied `$\Pi'$` is ~1e-6, so its work is ~0.2 % of ``I`` and a
+#: applied `$-\Pi$` is ~1e-6, so its work is ~0.2 % of ``I`` and a
 #: short run would pass however wrong the inference was.  By ``t = 40``
 #: it is ~1e-3, i.e. ~60 % of ``I`` -- only there does the comparison
 #: test anything.
@@ -356,11 +356,12 @@ def _pp_input_from_applied(cols: dict, re: float) -> np.ndarray:
     r"""Plane-Poiseuille ``I`` rebuilt from the **applied** driving.
 
     Under ``constant_bulk_velocity`` the total streamwise gradient is
-    the laminar one plus the corrector's own `$\Pi'$`, and the held
+    the laminar one plus the corrector's own `$\Pi$`, and the held
     bulk is `$U_{b,\mathrm{lam}} = 2/3$`, so
-    `$I = U_b \Pi = I_\mathrm{lam} + U_{b,\mathrm{lam}}\Pi'$` with
+    `$I = -\Pi_\mathrm{tot} U_b
+    = I_\mathrm{lam} + U_{b,\mathrm{lam}}\,(-\Pi)$` with
     `$I_\mathrm{lam} = 4/(3Re)$` (``plane_poiseuille.py``).  The
-    ``-dPds'`` column *is* `$\Pi'$` (the applied forcing, sign carried
+    ``-dPds'`` column *is* `$-\Pi$` (the applied forcing, sign carried
     in the name), so this needs no sign flip.
     """
     return 4.0 / (3.0 * re) + (2.0 / 3.0) * cols["-dPds'"]
@@ -381,10 +382,10 @@ def _budget_residual(cols: dict, inp: np.ndarray) -> float:
 
 
 def _check_applied_vs_inferred() -> str | None:
-    r"""Which `$\Pi'$` estimate belongs in ``I``, and why.
+    r"""Which `$\Pi$` estimate belongs in ``I``, and why.
 
     ``get_stats`` is a function of the *state* alone, so under
-    ``constant_bulk_velocity`` it can only infer `$\Pi'$` from the wall
+    ``constant_bulk_velocity`` it can only infer `$\Pi$` from the wall
     shear (``plane_poiseuille.py``'s ``dpds_pert``).  That drops
     `$\mathrm{bulk}(\bar N_s)$`, the mean-mode bulk of the discrete
     nonlinear term -- continuously zero, a finite wall-normal
@@ -397,7 +398,7 @@ def _check_applied_vs_inferred() -> str | None:
     16``, judged over the developed window ``t`` in ``[40, 60]``):
 
     ======  ==================  =================  ==============
-    ``ny``  residual, ``I``     residual, applied  `$\Pi'$` gap
+    ``ny``  residual, ``I``     residual, applied  `$\Pi$` gap
     ======  ==================  =================  ==============
     33      6.6e-1              6.5e-1             7.7e-1
     49      3.7e-2              1.5e-1             2.3e-1
@@ -407,12 +408,12 @@ def _check_applied_vs_inferred() -> str | None:
 
     Two things to read off, and the second is the non-obvious one.
 
-    The `$\Pi'$` gap **converges** (7.7e-1 to 9.3e-3): the wall-shear
+    The `$\Pi$` gap **converges** (7.7e-1 to 9.3e-3): the wall-shear
     inference and the applied force agree in the limit, as they must.
     At ``ny = 33`` nothing closes at all -- that rung is here to show
     what an under-resolved wall-normal grid looks like, not to pass.
 
-    But the *inferred* `$\Pi'$` closes the budget **better** than the
+    But the *inferred* `$\Pi$` closes the budget **better** than the
     applied one at every resolved rung.  That is not a statement about
     which estimate is right -- the applied force is the exact input
     rate, full stop -- but about ``I - D`` being an incomplete discrete
@@ -425,7 +426,7 @@ def _check_applied_vs_inferred() -> str | None:
     truncation errors are *the same quantity*, so they cancel.  (Check
     at ``ny = 49``: the residuals differ by 1.1e-1 of a 1.2e-3 scale,
     i.e. 1.4e-4, against `$\tfrac23\times$` the 2.3e-1 gap on a
-    `$\Pi'$` of 1e-3, i.e. 1.6e-4.)
+    `$\Pi$` of 1e-3, i.e. 1.6e-4.)
 
     So **do not** "fix" ``get_stats`` to report the applied column:
     that would make ``I`` a better estimate of the physical input rate

@@ -358,7 +358,7 @@ def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
     and the azimuthal balance
     `$\nu(A_{\mathrm{base}} - 1/r^2)U_\theta +
     \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}(\nabla\cdot c)_\theta
-    + \Pi_\theta = 0$` carries a real residual -- the approximation the
+    - \Pi_\theta = 0$` carries a real residual -- the approximation the
     flow module records.  Pinned in both directions (the twin of
     ``test_viscoelastic_pipe``'s check) so the `$\epsilon = 0$`
     exactness cannot rot and a future exact profile turns the second
@@ -375,7 +375,7 @@ def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
     nu = beta / re
     coef = (1.0 - beta) / (re * wi)
     r1, r2 = derived_params.r_inner, derived_params.r_outer
-    pi_theta = (r1 + r2) * inv_r / re
+    force_theta = (r1 + r2) * inv_r / re
 
     def _residual(eps: float) -> float:
         prof = viscoelastic_laminar_profiles(rs, d1, r1, r2, wi, eps)
@@ -383,11 +383,13 @@ def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
         # m = k_z = 0, so (div c)_theta is d_r c_rth + 2 c_rth / r.
         div_th = d1 @ c_rth + 2.0 * c_rth * inv_r
         resid = (
-            nu * (a_base @ u_th - inv_r**2 * u_th) + coef * div_th + pi_theta
+            nu * (a_base @ u_th - inv_r**2 * u_th)
+            + coef * div_th
+            + force_theta
         )
         # Interior only: the wall rows carry the no-slip BC, not the
         # momentum balance.
-        return float(np.abs(resid[1:-1]).max() / np.abs(pi_theta).max())
+        return float(np.abs(resid[1:-1]).max() / np.abs(force_theta).max())
 
     # Unlike the pipe's polynomial ``1 - r^2``, the annular profile is
     # not exactly representable by the FD operators, so the epsilon = 0

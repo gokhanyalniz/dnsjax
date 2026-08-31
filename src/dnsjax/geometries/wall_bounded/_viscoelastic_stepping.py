@@ -43,7 +43,7 @@ member                           what it owns
                                  \partial_r)c$` on the 6 spin slots
 ``mean_profile_dr``              `$\partial_r$` of one `$m = 0$`
                                  profile
-``add_mean_body_force``          the mean-mode driving `$\Pi$`
+``add_mean_body_force``          the mean-mode force `$-\Pi$`
 ``zero_hc_wall_rows``            the `$\nabla^2 c = 0$` RHS rows
 ``hc_wall_rows``                 ``((row index, narrow BC row), ...)``
 ``hc_spin_bases``                the per-spin `$A_{\mathrm{base}}$`

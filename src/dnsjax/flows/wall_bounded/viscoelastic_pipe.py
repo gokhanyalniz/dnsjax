@@ -4,10 +4,10 @@ The flow
 --------
 Pressure-driven flow of an sPTT viscoelastic fluid through a circular
 pipe, driven by a uniform axial body force
-`$\Pi_z = 4/\mathrm{Re}$` (a constant mean pressure gradient
-`$-\partial p/\partial z$`).  The velocity is coupled to a symmetric
-conformation tensor `$\mathbf{c}$` via the polymer-stress divergence;
-see the module docstring of
+`$-\Pi_z = 4/\mathrm{Re}$`, i.e. a constant mean pressure gradient
+`$\Pi_z = \partial p/\partial z = -4/\mathrm{Re}$`.  The velocity is
+coupled to a symmetric conformation tensor `$\mathbf{c}$` via the
+polymer-stress divergence; see the module docstring of
 :mod:`~dnsjax.geometries.wall_bounded.cylindrical_viscoelastic` for the
 governing equations, the 9-component state layout, the axis parity of
 the tensor, and the spin diagonalisation of its Laplacian.
@@ -16,7 +16,7 @@ Total-field formulation
 -----------------------
 The **total** velocity is integrated (base flow zero, so the rotational
 nonlinear term evaluates the full field), with the axial body force
-applied at the mean mode through ``pi_z``.  The reported perturbation
+applied at the mean mode through ``force_z``.  The reported perturbation
 energy `$E'$` is velocity-only: the kinetic energy of the deviation of
 `$\mathbf{u}$` from the analytical laminar profile (the
 laminarization-check quantity).  ``get_stats`` also reports polymer
@@ -26,7 +26,7 @@ Laminar state
 -------------
 ``start_from_laminar`` uses the analytical laminar pair: the
 Hagen-Poiseuille profile `$W(r) = 1 - r^2$` (the exact balance of
-`$\Pi_z$` against the *total* solvent + polymer stress at
+`$-\Pi_z$` against the *total* solvent + polymer stress at
 `$\epsilon = 0$`, where `$c_{rz} = \mathrm{Wi}\,W'$` makes the polymer
 divergence `$\mathrm{Wi}\,\nabla^2 W$` and the two viscosities sum back
 to `$1/\mathrm{Re}$`) and the pointwise sPTT-equilibrium conformation
@@ -49,7 +49,7 @@ does not satisfy the `$\nabla^2 c = 0$` wall row `$H_c$` imposes).
 **The velocity slice closes exactly only at** `$\epsilon = 0$`, where
 `$W = 1 - r^2$` is the true profile -- at `$\epsilon > 0$` the polymer
 shear-thins (the true balance is
-`$S[\beta + (1-\beta)/f] = -\mathrm{Re}\,\Pi_z r/2$`) and that
+`$S[\beta + (1-\beta)/f] = \mathrm{Re}\,\Pi_z r/2$`) and that
 correction is neglected, as in the annular twin, so the pair is
 **not** a steady state there.  It is not small at the shipped
 defaults: stepping it at `$\epsilon = 10^{-3}$` drifts at
@@ -125,7 +125,7 @@ class ViscoelasticPipeFlow(ViscoelasticCylindricalFlow):
     operators (solvent viscosity `$\nu = \beta/\mathrm{Re}$`) and the
     conformation Helmholtz operator to
     :class:`ViscoelasticCylindricalFlow`, then sets the uniform axial
-    body force `$\Pi_z = 4/\mathrm{Re}$` and zeros the base flow
+    body force `$-\Pi_z = 4/\mathrm{Re}$` and zeros the base flow
     (total-field integration).
     """
 
@@ -140,7 +140,7 @@ class ViscoelasticPipeFlow(ViscoelasticCylindricalFlow):
         # coefficient is fixed by the epsilon = 0 laminar balance
         # (module docstring): 4/Re makes W = 1 - r^2 the total-stress
         # solution, i.e. unit centreline velocity.
-        self.pi_z = jnp.full(
+        self.force_z = jnp.full(
             params.res.ny,
             4.0 / Re,
             dtype=sharding.float_type,
@@ -255,7 +255,7 @@ def _get_stats_jit(
 
     - `$E$`: total kinetic energy; `$E'$`: velocity-only deviation from
       the laminar profile (laminarization quantity).
-    - `$I = \langle u_z \Pi_z \rangle$`: body-force input.
+    - `$I = -\langle u_z \Pi_z \rangle$`: body-force input.
     - `$D_s = \nu\langle|\nabla u|^2\rangle$`: solvent dissipation
       (`$\nu = \beta/\mathrm{Re}$`).
     - `$W_p = \tfrac{1-\beta}{\mathrm{Re}\,\mathrm{Wi}}
@@ -295,7 +295,7 @@ def _get_stats_jit(
     U_bulk_theta = integrate_scalar(mean_utheta, flow_.y_weights_odd) / volfac
 
     energy_input = (
-        integrate_scalar(mean_uz * flow_.pi_z, flow_.y_weights) / volfac
+        integrate_scalar(mean_uz * flow_.force_z, flow_.y_weights) / volfac
     )
     enstrophy = get_pert_enstrophy_cyl(
         vel,

@@ -776,8 +776,8 @@ class CartesianFlow:
         force** over one implicit time step -- `$H_k$` is
         `$I/\Delta t - c\nu L$`, so its RHS carries accelerations,
         and the scaling `$G$` below is therefore
-        `$-\partial p'/\partial s$`, not `$+\partial p'/\partial s$`
-        (the sign the ``-dPds'`` diagnostic reports).  Its bulk
+        `$-\partial p'/\partial s = -\Pi$`, not `$+\Pi$` (the sign
+        the ``-dPds'`` diagnostic reports).  Its bulk
         `$H = \int_{-1}^{1} h\,dy / 2$` gives the scaling
         needed to zero a perturbation bulk velocity component:
 
@@ -1260,13 +1260,19 @@ def mean_driving_from_profile(
     contributing nothing (its bulk is a wall flux of `$\overline{uv}$`):
 
     .. math::
-        \frac{d U_b'}{dt} = \Pi' + \nu\,\frac{\partial_y \bar{u}|_{+1}
+        \frac{d U_b'}{dt} = -\Pi + \nu\,\frac{\partial_y \bar{u}|_{+1}
         - \partial_y \bar{u}|_{-1}}{2},
 
-    so a constraint holding `$U_b'$` fixed applies exactly
-    `$\Pi' = -\nu\,(\tau_t - \tau_b)/2$` -- the same number
+    with `$\Pi$` the `$(0,0)$` mode of `$\partial p/\partial s$` and
+    the applied force therefore `$-\Pi$` (the codebase convention;
+    :mod:`dnsjax.ic.mean_mode` derives it).  So a constraint holding
+    `$U_b'$` fixed applies exactly the force
+    `$-\Pi = -\nu\,(\tau_t - \tau_b)/2$`, i.e. infers a gradient
+    `$\Pi = \nu\,(\tau_t - \tau_b)/2$` -- the same number
     :func:`_apply_bulk_corrections` applies, up to the time
-    discretization.  Keys and sign match it exactly.
+    discretization.  What the returned dict holds is the **force**
+    `$-\Pi$`, which is what its ``-dPds'`` / ``-dPdn'`` keys say;
+    keys and sign match ``_apply_bulk_corrections`` exactly.
 
     The body of :func:`mean_driving`, taking the `$(3, N_y)$` mean
     profile rather than the field it comes from, for the callers that
@@ -1352,7 +1358,8 @@ def _apply_bulk_corrections(
     threads out as the corrector's *aux* (:func:`dnsjax.timestep.
     make_stepper`).  The value is the rank-1 correction's own scalar
     prefactor -- the uniform body force added to the mean-mode
-    Helmholtz RHS, i.e. `$-\partial p'/\partial s$` -- so nothing is
+    Helmholtz RHS, i.e. `$-\partial p'/\partial s = -\Pi$` in the
+    convention of :mod:`dnsjax.ic.mean_mode` -- so nothing is
     recomputed and no sign can drift between what is applied and what
     is reported.  Empty when neither knob is on, and only the
     **converged** corrector iterate's dict survives the step.
@@ -1381,9 +1388,11 @@ def _apply_bulk_corrections(
             mean_u * derived_params.cos_tilt + mean_w * derived_params.sin_tilt
         )
         bulk_us = jnp.dot(flow_.y_weights, mean_us) / 2
-        pi_s = -bulk_us * flow_.H_bulk_inv  # the applied body force
-        aux[DRIVING_KEY_S] = pi_s
-        G_s = pi_s * flow_.h_bulk_response
+        # The applied body force, i.e. ``-Pi_s`` -- not ``Pi_s``,
+        # which is the pressure gradient (``ic.mean_mode``).
+        force_s = -bulk_us * flow_.H_bulk_inv
+        aux[DRIVING_KEY_S] = force_s
+        G_s = force_s * flow_.h_bulk_response
         u_corr = u_corr + G_s * derived_params.cos_tilt
         w_corr = w_corr + G_s * derived_params.sin_tilt
 
@@ -1398,9 +1407,9 @@ def _apply_bulk_corrections(
             + mean_w * derived_params.cos_tilt
         )
         bulk_un = jnp.dot(flow_.y_weights, mean_un) / 2
-        pi_n = -bulk_un * flow_.H_bulk_inv  # the applied body force
-        aux[DRIVING_KEY_N] = pi_n
-        G_n = pi_n * flow_.h_bulk_response
+        force_n = -bulk_un * flow_.H_bulk_inv  # the applied ``-Pi_n``
+        aux[DRIVING_KEY_N] = force_n
+        G_n = force_n * flow_.h_bulk_response
         u_corr = u_corr - G_n * derived_params.sin_tilt
         w_corr = w_corr + G_n * derived_params.cos_tilt
 

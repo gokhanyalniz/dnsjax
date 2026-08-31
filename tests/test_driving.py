@@ -5,8 +5,9 @@ Under ``phys.driving = "constant_bulk_velocity"`` (pipe,
 plane-Poiseuille) or ``phys.block_mean_spanwise_velocity`` (the
 Cartesian and annular families) the solver holds a mean velocity
 component fixed with a rank-1 correction, and the body force that
-correction represents -- `$\Pi' = -\partial p'/\partial s$`, the
-**applied forcing**, positive when it accelerates the flow -- is
+correction represents -- `$-\Pi = -\partial p/\partial s$`, the
+**applied forcing**, positive when it accelerates the flow, with
+`$\Pi$` the mean pressure gradient (:mod:`dnsjax.ic.mean_mode`) -- is
 recorded as the last ``stats.dat`` column (``-dPds'`` / ``-dPdn'`` /
 ``-dPdz'``).  It is a *step* quantity threaded out of the jitted
 corrector, because it is the bulk of the **pre**-correction solve and
@@ -28,7 +29,7 @@ Four checks, in increasing strength:
   to the one the corrector applied -- not to a re-derivation of it;
 - **wall shear**: on a *non-laminar* run the recorded value agrees with
   the independent wall-shear inference
-  `$\Pi' = -\nu(\tau_t - \tau_b)/2$` (pipe: `$-2\nu\tau_z$`), which
+  `$-\Pi = -\nu(\tau_t - \tau_b)/2$` (pipe: `$-2\nu\tau_z$`), which
   follows from the mean-mode momentum balance once the constraint
   holds the bulk fixed.  The two are **not** identical at finite
   resolution: they differ by the mean-mode bulk of the discrete
