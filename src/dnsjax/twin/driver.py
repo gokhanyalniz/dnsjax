@@ -27,8 +27,9 @@ multi-process); the parameter surface is the flow's own plus the
 ``[twin]`` extension section below.
 ``step.adaptive`` and the ``[force]`` section are rejected (uniform
 sampling; a kick would have to be applied identically to both states);
-``[probes]`` applies to the **reference** state only, as do
-``stats.dat`` / ``steps.dat`` / ``corrector.dat``.
+``[probes]`` applies to the **reference** state only, while
+``stats.dat`` / ``steps.dat`` / ``corrector.dat`` are written for
+*both* states (the partner's under the ``_twin`` suffix).
 
 Initial perturbation
 --------------------
@@ -91,14 +92,28 @@ Diagnostic streams
 ``twin.it_energy`` steps, in the buffered, ``fsync``-ed,
 non-finite-guarded ``.dat`` format of ``stats.dat`` (shared
 :func:`dnsjax.__main__._flush_stats`; a ``t0`` row at setup, a final
-row after the last step).  ``stats.dat`` / ``steps.dat`` /
-``corrector.dat`` record the reference state at their usual cadences
-(``outs.it_stats`` / ``it_steps`` / ``it_corrector``); the corrector
-convergence guard and the non-finite exit-3 guard watch **both**
-states' errors at the ``outs.it_error_check`` cadence.  Flush sites,
-snapshot consistency (one checked flush before each snapshot *pair*),
-SIGTERM/SIGINT flushing, and the FATAL / exit-3 semantics all mirror
-:mod:`dnsjax.__main__`.
+row after the last step).
+
+The three *per-state* solver streams are written for **both** states
+at their usual cadences (``outs.it_stats`` / ``it_steps`` /
+``it_corrector``): the reference into ``stats.dat`` / ``steps.dat`` /
+``corrector.dat`` under the standard names, the partner into
+``stats_twin.dat`` / ``steps_twin.dat`` / ``corrector_twin.dat`` --
+the ``_twin`` suffix the snapshot pair already uses
+(:func:`_partner_path`).  Each pair shares one column set, since the
+two states are the same flow: ``get_stats``, the measurement hook and
+``get_driving`` return the same keys.  A partner stream costs almost
+nothing -- ``c``/``error`` already come back from its own step, and
+its ``get_stats`` is the one the partner snapshot embeds, computed
+once and shared.  Recording ``steps.dat`` for both is what makes the
+loop run the *identical* jitted program on the two states in every
+iteration: there is no measured/unmeasured split between them.
+
+The corrector convergence guard and the non-finite exit-3 guard watch
+**both** states' errors at the ``outs.it_error_check`` cadence.  Flush
+sites, snapshot consistency (one checked flush before each snapshot
+*pair*), SIGTERM/SIGINT flushing, and the FATAL / exit-3 semantics all
+mirror :mod:`dnsjax.__main__`.
 
 Ensembles
 ---------
@@ -901,12 +916,16 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     c1_dev = None
     c2_dev = None
 
-    def _save_pair(s1, s2, t, it, snap_stats, isnap):
+    def _save_pair(s1, s2, t, it, snap_stats, snap_stats2, isnap):
         """Write the state{isnap}.tar / state{isnap}_twin.tar pair.
 
         Every rank calls ``save_snapshot`` twice in the same order
         (its internal barriers are collective); the caller flushes
-        the streams once *before* the pair, never between.
+        the streams once *before* the pair, never between.  Both
+        states' stats arrive as arguments, computed by the caller
+        under the same gate that feeds ``stats.dat`` /
+        ``stats_twin.dat``, so a snapshot step coinciding with a stats
+        step traverses each state once rather than twice.
         """
         width = params.outs.snapshot_pad_width
         name = f"state{isnap:0{width}d}"
@@ -924,13 +943,14 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             t,
             it,
             f"{name}_twin.tar",
-            stats=(get_stats(s2) if embed else None),
+            stats=(snap_stats2 if embed else None),
             isnap=isnap,
         )
         return isnap + 1
 
     # --- Warm-ups (JIT outside the benchmark window) ----------------------
     stats = get_stats(state1)
+    stats2 = get_stats(state2)
     tvals = twin_energies(state1, state2, bins=twin_params.bins)
     measure_budget: bool = twin_params.it_budget is not None
     if measure_budget:
@@ -965,9 +985,15 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         *[f"{x}={y:.3e}" for x, y in stats.items()],
     )
 
-    bad_init = [k for k, v in stats.items() if not math.isfinite(float(v))] + [
-        k for k, v in tvals.items() if not math.isfinite(float(v))
-    ]
+    bad_init = (
+        [k for k, v in stats.items() if not math.isfinite(float(v))]
+        + [
+            f"{k} (twin)"
+            for k, v in stats2.items()
+            if not math.isfinite(float(v))
+        ]
+        + [k for k, v in tvals.items() if not math.isfinite(float(v))]
+    )
     if measure_budget:
         bad_init += [
             k for k, v in bvals.items() if not math.isfinite(float(v))
@@ -984,29 +1010,35 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
 
     # --- IC snapshot pair (fresh start only) -----------------------------
     if params.outs.snapshot_save_initial and not resumed_pair:
-        isnap = _save_pair(state1, state2, t, it, stats, isnap)
+        isnap = _save_pair(state1, state2, t, it, stats, stats2, isnap)
         last_saved_it = it
 
     # --- Streams ---------------------------------------------------------
-    # The reference's applied mean-mode driving (the ``stats.dat`` last
+    # Each state's applied mean-mode driving (the last ``stats*.dat``
     # columns): a *step* quantity threaded out of the corrector, so the
     # ``t = t0`` row -- which has no step behind it -- carries the
     # wall-shear inference instead (``get_driving``).  ``get_driving``
     # takes the *physical* view of a state; this driver is
     # Cartesian-only, whose solver basis **is** the physical one (no
-    # ``to_solver_basis`` anywhere here), so ``state1`` satisfies that
-    # as it stands.
+    # ``to_solver_basis`` anywhere here), so both states satisfy that
+    # as they stand.
     last_drive1 = get_driving(state1) if get_driving is not None else {}
+    last_drive2 = get_driving(state2) if get_driving is not None else {}
 
     stats_stream = None
+    stats2_stream = None
     if params.outs.it_stats is not None:
+        # One column set for the pair: the same flow, hence the same
+        # ``get_stats`` and ``get_driving`` keys.
+        stats_names = list(stats.keys()) + list(last_drive1.keys())
         stats_stream = _ScalarStream(
-            "stats.dat",
-            list(stats.keys()) + list(last_drive1.keys()),
-            jnp=jnp,
-            sharding=sharding,
+            "stats.dat", stats_names, jnp=jnp, sharding=sharding
         )
         stats_stream.push(_row(stats, last_drive1), t)
+        stats2_stream = _ScalarStream(
+            "stats_twin.dat", stats_names, jnp=jnp, sharding=sharding
+        )
+        stats2_stream.push(_row(stats2, last_drive2), t)
 
     twin_stream = _ScalarStream(
         "twin.dat", tvals.keys(), jnp=jnp, sharding=sharding
@@ -1069,30 +1101,48 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         _, rhs1, *_ = step_cnab2(jnp.copy(state1), jnp.zeros_like(state1))
         _, rhs2, *_ = step_cnab2(jnp.copy(state2), jnp.zeros_like(state2))
 
-    # --- Steps (CFL) stream: reference state only ------------------------
+    # --- Steps (CFL) streams: both states --------------------------------
     measure_steps: bool = params.outs.it_steps is not None
     steps_stream = None
+    steps2_stream = None
     if measure_steps:
         if is_cnab2:
             *_, meas = step_cnab2_measured(jnp.copy(state1), jnp.copy(rhs1))
         else:
             *_, meas = predict_and_fully_correct_measured(jnp.copy(state1))
-        # No unmeasured-stepper warm-up here, unlike
-        # :func:`dnsjax.__main__.run`: ``state2`` always takes the
-        # unmeasured program, in every iteration including the first,
-        # so it compiles inside iteration 0 -- which is already outside
-        # the benchmark window (``bench_start`` is set at
-        # ``it == it0 + 1``).
+        # ``state2`` no longer forces the unmeasured program to compile
+        # in iteration 0: on a recording step both states take the
+        # measured variant.  Pre-compile it when the first iteration
+        # records but not every one does, exactly as
+        # :func:`dnsjax.__main__.run` does (``step.adaptive`` is
+        # rejected here, so ``outs.it_steps`` is the only consumer of
+        # the measured program).  Only iterative-CN needs this: under
+        # cnab2 both cnab2 programs are primed above, and iteration 0
+        # self-starts with iterative-CN, which is outside the benchmark
+        # window (``bench_start`` is set at ``it == it0 + 1``).
+        if (
+            not is_cnab2
+            and params.outs.it_steps != 1
+            and it % params.outs.it_steps == 0
+        ):
+            predict_and_fully_correct(jnp.copy(state1))
         steps_stream = _ScalarStream(
             "steps.dat", meas.keys(), jnp=jnp, sharding=sharding
         )
+        steps2_stream = _ScalarStream(
+            "steps_twin.dat", meas.keys(), jnp=jnp, sharding=sharding
+        )
 
-    # --- Corrector stream (reference state) ------------------------------
+    # --- Corrector streams (both states) ---------------------------------
     measure_corrector: bool = params.outs.it_corrector is not None
     corr_stream = None
+    corr2_stream = None
     if measure_corrector:
         corr_stream = _ScalarStream(
             "corrector.dat", ["c", "error"], jnp=jnp, sharding=sharding
+        )
+        corr2_stream = _ScalarStream(
+            "corrector_twin.dat", ["c", "error"], jnp=jnp, sharding=sharding
         )
 
     # --- Probe stream (reference state) ----------------------------------
@@ -1108,10 +1158,13 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         """Flush every stream (the ``__main__`` flush contract)."""
         for stream in (
             stats_stream,
+            stats2_stream,
             twin_stream,
             budget_stream,
             steps_stream,
+            steps2_stream,
             corr_stream,
+            corr2_stream,
         ):
             if stream is not None:
                 bad = stream.flush(check=check)
@@ -1201,10 +1254,15 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         # async dispatch orders these reads before the donation.
         if do_stats or do_snapshot:
             stats = get_stats(state1)
+            stats2 = get_stats(state2)
         if do_stats:
-            bad = stats_stream.push(_row(stats, last_drive1), t)
-            if bad is not None:
-                _abort_non_finite(bad)
+            for stream, s, drive in (
+                (stats_stream, stats, last_drive1),
+                (stats2_stream, stats2, last_drive2),
+            ):
+                bad = stream.push(_row(s, drive), t)
+                if bad is not None:
+                    _abort_non_finite(bad)
         if do_twin:
             tvals = twin_energies(state1, state2, bins=twin_params.bins)
             bad = twin_stream.push(jnp.stack(list(tvals.values())), t)
@@ -1236,13 +1294,15 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                 _abort_non_finite(bad)
         if do_snapshot:
             flush_all_buffers()
-            isnap = _save_pair(state1, state2, t, it, stats, isnap)
+            isnap = _save_pair(state1, state2, t, it, stats, stats2, isnap)
             last_saved_it = it
 
         # The two steps: the same jitted stepper twice, each donating
         # its own buffers.  CN/AB2 self-starts with one iterative-CN
-        # step (the __main__ convention); only the reference runs the
-        # measured variant (steps.dat).
+        # step (the __main__ convention).  Both states take the *same*
+        # variant in the same iteration -- measured on a recording step
+        # (``steps.dat`` / ``steps_twin.dat``), plain otherwise -- so
+        # the loop never runs different programs on the pair.
         do_record = measure_steps and it % params.outs.it_steps == 0
         if is_cnab2 and it > it0:
             if do_record:
@@ -1254,9 +1314,17 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                     drive1,
                     meas,
                 ) = step_cnab2_measured(state1, rhs1)
+                (
+                    state2,
+                    rhs2,
+                    e2_dev,
+                    c2_dev,
+                    drive2,
+                    meas2,
+                ) = step_cnab2_measured(state2, rhs2)
             else:
                 state1, rhs1, e1_dev, c1_dev, drive1 = step_cnab2(state1, rhs1)
-            state2, rhs2, e2_dev, c2_dev, _ = step_cnab2(state2, rhs2)
+                state2, rhs2, e2_dev, c2_dev, drive2 = step_cnab2(state2, rhs2)
         else:
             if do_record:
                 (
@@ -1266,33 +1334,48 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                     drive1,
                     meas,
                 ) = predict_and_fully_correct_measured(state1)
+                (
+                    state2,
+                    e2_dev,
+                    c2_dev,
+                    drive2,
+                    meas2,
+                ) = predict_and_fully_correct_measured(state2)
             else:
                 state1, e1_dev, c1_dev, drive1 = predict_and_fully_correct(
                     state1
                 )
-            state2, e2_dev, c2_dev, _ = predict_and_fully_correct(state2)
-        # The reference's own applied driving belongs to the step just
+                state2, e2_dev, c2_dev, drive2 = predict_and_fully_correct(
+                    state2
+                )
+        # Each state's own applied driving belongs to the step just
         # taken, so it is bound here and consumed by the *next*
-        # iteration's ``stats.dat`` row.
+        # iteration's ``stats.dat`` / ``stats_twin.dat`` row.
         last_drive1 = drive1
+        last_drive2 = drive2
 
         if do_record:
-            bad = steps_stream.push(jnp.stack(list(meas.values())), t)
-            if bad is not None:
-                _abort_non_finite(bad)
+            for stream, m in ((steps_stream, meas), (steps2_stream, meas2)):
+                bad = stream.push(jnp.stack(list(m.values())), t)
+                if bad is not None:
+                    _abort_non_finite(bad)
 
         if measure_corrector and it % params.outs.it_corrector == 0:
-            bad = corr_stream.push(
-                jnp.stack(
-                    [
-                        c1_dev.astype(sharding.float_type),
-                        e1_dev.astype(sharding.float_type),
-                    ]
-                ),
-                t,
-            )
-            if bad is not None:
-                _abort_non_finite(bad)
+            for stream, c_dev, e_dev in (
+                (corr_stream, c1_dev, e1_dev),
+                (corr2_stream, c2_dev, e2_dev),
+            ):
+                bad = stream.push(
+                    jnp.stack(
+                        [
+                            c_dev.astype(sharding.float_type),
+                            e_dev.astype(sharding.float_type),
+                        ]
+                    ),
+                    t,
+                )
+                if bad is not None:
+                    _abort_non_finite(bad)
 
         t += params.step.dt
         it += 1
@@ -1349,12 +1432,19 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     # (the t column carries the timestamp), like the stats stream.
     if it > it0:
         stats = get_stats(state1)
+        stats2 = get_stats(state2)
         tvals = twin_energies(state1, state2, bins=twin_params.bins)
         if measure_budget:
             bvals = twin_budget(state1, state2)
-        bad_final = [
-            k for k, v in stats.items() if not math.isfinite(float(v))
-        ] + [k for k, v in tvals.items() if not math.isfinite(float(v))]
+        bad_final = (
+            [k for k, v in stats.items() if not math.isfinite(float(v))]
+            + [
+                f"{k} (twin)"
+                for k, v in stats2.items()
+                if not math.isfinite(float(v))
+            ]
+            + [k for k, v in tvals.items() if not math.isfinite(float(v))]
+        )
         if measure_budget:
             bad_final += [
                 k for k, v in bvals.items() if not math.isfinite(float(v))
@@ -1366,6 +1456,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             )
         if stats_stream is not None:
             stats_stream.push(_row(stats, last_drive1), t)
+            stats2_stream.push(_row(stats2, last_drive2), t)
         twin_stream.push(jnp.stack(list(tvals.values())), t)
         if measure_budget:
             budget_stream.push(jnp.stack(list(bvals.values())), t)
@@ -1394,7 +1485,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
 
     if params.outs.snapshot_save_final and it > it0 and it != last_saved_it:
         flush_all_buffers()
-        isnap = _save_pair(state1, state2, t, it, stats, isnap)
+        isnap = _save_pair(state1, state2, t, it, stats, stats2, isnap)
         last_saved_it = it
 
     wall_time_now = perf_counter_ns()

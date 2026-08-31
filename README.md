@@ -992,10 +992,16 @@ A closer look at what is in the box, beyond the core solver:
     dissipations are available too (`twin.bins`, off by default: the
     split is a partition of the $(k_x, k_z)$ plane that its authors
     restrict to minimal flow units, and the $(y, k)$ streams recover its
-    three energies exactly). Paired snapshots make members restartable;
+    three energies exactly). The three per-state streams a plain solver
+    run writes — statistics, CFL and corrector — are recorded for
+    *both* states at the usual cadences, the partner's under a `_twin`
+    suffix, so each state's own applied mean-mode driving is on record
+    and their difference is an offline subtraction. Paired snapshots
+    make members restartable;
     `ensemble_setup.py build-twin` and the JAX-free
     `dnsjax.analysis.twin` package orchestrate and aggregate ensembles.
-    A zero-energy perturbation reproduces the reference bit-for-bit —
+    A zero-energy perturbation reproduces the reference bit-for-bit,
+    every stream pair included —
     the determinism guard the test suite pins. Streams, knobs, and the
     resume bookkeeping:
     [`src/dnsjax/twin`](src/dnsjax/twin/README.md).

@@ -16,13 +16,16 @@ This script walks those pairs and feeds the driver's own writers:
   :func:`~dnsjax.twin.diagnostics.twin_yspectra`
 - ``twin_ybudget.bin`` (+ sidecar) --
   :func:`~dnsjax.twin.diagnostics.twin_ybudget`
+- ``stats.dat`` / ``stats_twin.dat`` -- the flow's own ``get_stats``
+  on each state of the pair
 
 Nothing is reimplemented: the same jitted diagnostics, the same
 :class:`~dnsjax.twin.pressure.DifferencePressure`, the same
 :class:`~dnsjax.twin._binstream.BinStream` writers and the same
 ``.dat`` machinery the live driver uses, so a rebuilt record is the
 number the run would have written, bit for bit -- every stored value
-of every stream, with no exceptions.
+of every stream, with the single documented exception of the
+``stats*.dat`` driving columns below.
 
 Why this needs JAX (and cannot live in :mod:`dnsjax.analysis`):
 :func:`~dnsjax.twin.diagnostics._marginals_replicated` is a
@@ -31,8 +34,8 @@ Why this needs JAX (and cannot live in :mod:`dnsjax.analysis`):
 dealiased transforms, the geometry's ``D1``/``D2``/``D1_bnd``/base
 profile, and a factored Neumann Poisson operator.
 
-The one thing a reconstruction cannot give back
-===============================================
+What a reconstruction cannot give back
+======================================
 **The sampling grid is the snapshot grid.**  A live stream samples
 every ``twin.it_yspectra`` steps; this one samples wherever
 ``outs.it_snapshot`` left a pair.  That is why the rebuilt streams go
@@ -45,6 +48,20 @@ directory -- ``twin.json`` is copied into it -- so
 :func:`~dnsjax.analysis.twin.yspectra.read_twin_yspectra` and
 :func:`~dnsjax.analysis.twin.yspectra.read_twin_ybudget` read it as
 they would a live one.
+
+**The ``stats*.dat`` driving columns are inferred, not applied.**
+Under an active mean-mode driving constraint the live streams' last
+columns carry the force the corrector actually applied -- a *step*
+quantity, and no row here has a step behind it.  What a state alone
+supports is the wall-shear inference ``get_driving``, which is exactly
+what the live stream itself writes for its one stepless row
+(``t = t0``); the rebuilt file simply uses that convention for
+**every** row, under the same column names.  The two agree only at a
+converged wall-normal resolution, and their gap is the usable
+under-resolution diagnostic documented at the ``__main__`` read site.
+``twin_postprocess.json`` records this as ``stats_driving``.  Every
+other stored value, in every stream, is bit for bit what the run
+would have written.
 
 Parameters, and why the grid is pinned
 ======================================
@@ -105,8 +122,10 @@ _PROG = "python scripts/twin_postprocess.py"
 
 #: ``twin_postprocess.json`` schema version.  A provenance record on
 #: the ``ensemble_setup.py`` ``members.json`` model -- nothing reads it
-#: back, so it carries no reader floor (unlike the stream sidecars).
-PROVENANCE_VERSION: int = 1
+#: back, so it carries no reader floor (unlike the stream sidecars);
+#: the number is here so a record describes which fields to expect.
+#: 2 added ``stats_driving`` alongside the two ``stats*.dat`` streams.
+PROVENANCE_VERSION: int = 2
 
 #: The output files this script owns; an existing one is refused rather
 #: than appended to (both writer families append silently on a matching
@@ -117,6 +136,8 @@ _OUTPUTS: tuple[str, ...] = (
     "twin_yspectra.json",
     "twin_ybudget.bin",
     "twin_ybudget.json",
+    "stats.dat",
+    "stats_twin.dat",
 )
 
 #: Relative tolerance of the built-in energy identity (``--recon.check``).
@@ -576,15 +597,41 @@ def main(argv: list[str] | None = None) -> int:
     # keeps it off this surface, and the stream writers take their
     # values as an argument rather than importing the singleton
     # (:mod:`dnsjax.twin.spectra` says why).
+    import importlib
+
     import numpy as np
     from jax import numpy as jnp
 
+    from dnsjax.__main__ import _stats_row
+    from dnsjax.flows.registry import spec_for
     from dnsjax.sharding import sharding
     from dnsjax.snapshot import load_snapshot, validate_snapshot_params
     from dnsjax.twin import diagnostics
     from dnsjax.twin.driver import TwinParams, _ScalarStream
     from dnsjax.twin.pressure import DifferencePressure
     from dnsjax.twin.yspectra import TwinYBudgetStream, TwinYSpectraStream
+
+    # The per-state streams need the flow module itself, dispatched
+    # through the registry exactly as :func:`dnsjax.twin.driver.run`
+    # does.  ``get_driving`` is optional (a flow with no driving knob
+    # on its surface returns no columns at all).
+    _spec = spec_for(params.phys.system)
+    _flow_mod = importlib.import_module(_spec.flow_module)
+    get_stats = _flow_mod.get_stats
+    get_driving = getattr(_flow_mod, "get_driving", None)
+
+    def _stats_of(state):
+        """``(stats, driving)`` for one state -- a live row's pair.
+
+        The driving is the wall-shear inference, not the applied
+        force: no row here has a corrector step behind it, so every
+        row takes the convention the live stream reserves for its own
+        ``t = t0`` row (see the module docstring).
+        """
+        return (
+            get_stats(state),
+            get_driving(state) if get_driving is not None else {},
+        )
 
     stream_values = TwinParams(
         e0=source.get("e0"),
@@ -606,10 +653,19 @@ def main(argv: list[str] | None = None) -> int:
     state1, _, _ = load_snapshot(kept[0].reference)
     state2, _, _ = load_snapshot(kept[0].partner)
     tvals = diagnostics.twin_energies(state1, state2, bins=bins)
+    stats_names = list(get_stats(state1).keys()) + (
+        list(get_driving(state1).keys()) if get_driving is not None else []
+    )
     del state1, state2
 
     twin_stream = _ScalarStream(
         out / "twin.dat", tvals.keys(), jnp=jnp, sharding=sharding
+    )
+    stats_stream = _ScalarStream(
+        out / "stats.dat", stats_names, jnp=jnp, sharding=sharding
+    )
+    stats2_stream = _ScalarStream(
+        out / "stats_twin.dat", stats_names, jnp=jnp, sharding=sharding
     )
     yspectra_stream = TwinYSpectraStream(
         stream_values, np.asarray(y_weights).tolist(), directory=out
@@ -617,7 +673,13 @@ def main(argv: list[str] | None = None) -> int:
     ybudget_stream = TwinYBudgetStream(
         stream_values, np.asarray(y_weights).tolist(), directory=out
     )
-    streams = (twin_stream, yspectra_stream, ybudget_stream)
+    streams = (
+        twin_stream,
+        stats_stream,
+        stats2_stream,
+        yspectra_stream,
+        ybudget_stream,
+    )
 
     def abort(reason: str) -> None:
         """The ``dnsjax.__main__`` non-finite contract: FATAL, exit 3."""
@@ -643,6 +705,8 @@ def main(argv: list[str] | None = None) -> int:
 
         for bad in (
             twin_stream.push(jnp.stack(list(tvals.values())), t),
+            stats_stream.push(_stats_row(*_stats_of(state1)), t),
+            stats2_stream.push(_stats_row(*_stats_of(state2)), t),
             yspectra_stream.record(yvals, t),
             ybudget_stream.record(ybvals, t),
         ):
@@ -698,6 +762,10 @@ def main(argv: list[str] | None = None) -> int:
                     "t_first": kept[0].t,
                     "t_last": kept[-1].t,
                     "bins": bins,
+                    # The one value that is not what the run wrote:
+                    # the ``stats*.dat`` driving columns hold the
+                    # wall-shear inference (module docstring).
+                    "stats_driving": "inferred",
                     "spectra_ref": values.spectra_ref,
                     "rotational_ybudget": values.rotational_ybudget,
                     "created": datetime.now(UTC).isoformat(),

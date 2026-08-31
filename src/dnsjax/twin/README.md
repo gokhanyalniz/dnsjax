@@ -18,9 +18,11 @@ Both states share every singleton — grid, operators, jitted steppers,
 plane-Poiseuille) at a **fixed time step**. `step.adaptive` and the
 `[force]` section are rejected: the streams assume uniform sampling,
 and a kick would have to be applied identically to both states.
-`[probes]`, `stats.dat`, `steps.dat` and `corrector.dat` all record
-the **reference** state; the corrector-convergence and non-finite
-guards watch **both**.
+`stats.dat`, `steps.dat` and `corrector.dat` are recorded for **both**
+states — the partner's as `stats_twin.dat`, `steps_twin.dat` and
+`corrector_twin.dat` (see below). `[probes]` still records the
+reference alone; the corrector-convergence and non-finite guards watch
+both.
 
 ## Running one
 
@@ -128,9 +130,10 @@ Columns are `E_d` and `E_ref` (the reference state's own energy)
 always; under `twin.bins`, additionally `E_dU`, `E_du1`, `E_du2` and
 the per-velocity-component split `E_du1_x` / `E_du1_y` / `E_du1_z`.
 There is no driving column: the difference of a uniform mean-mode
-force does no work on any $y$-integrated budget term (the reference's
-own applied forcing is in `stats.dat`, and the $y$-*resolved* budget
-carries the density it does have — see `twin_ybudget.bin` below).
+force does no work on any $y$-integrated budget term (each state's own
+applied forcing is in its `stats*.dat`, so the difference stays
+recoverable offline, and the $y$-*resolved* budget carries the density
+it does have — see `twin_ybudget.bin` below).
 Format, buffering, `fsync`, the non-finite guard and the flush sites are
 those of `stats.dat`, with a `t0` row at setup and a final row after the
 last step.
@@ -228,6 +231,39 @@ domain lengths, the cadence, and the resolved parameter dump. Its
 `format_version` is enforced against the reader's floor, as for every
 other dnsjax stream.
 
+### `stats*.dat`, `steps*.dat`, `corrector*.dat` — per state
+
+The three streams a plain solver run writes are written here for
+**each** state of the pair, at the same `[outs]` cadences and in the
+same format: the reference into `stats.dat` / `steps.dat` /
+`corrector.dat` under the standard names, the partner into
+`stats_twin.dat` / `steps_twin.dat` / `corrector_twin.dat`.
+
+| stream | cadence | contents |
+|---|---|---|
+| `stats.dat` / `stats_twin.dat` | `outs.it_stats` | the flow's `get_stats` — $E'$, $I$, $D$, $E$, the wall shears, the bulk velocities — plus the applied mean-mode driving as the last column(s) under an active driving constraint |
+| `steps.dat` / `steps_twin.dat` | `outs.it_steps` | the CFL diagnostic and `dt` |
+| `corrector.dat` / `corrector_twin.dat` | `outs.it_corrector` | the corrector iteration count `c` and its final error |
+
+Each stream is off unless its cadence is set, and a pair is always
+written together: same columns, same sample times, same buffering and
+`fsync`ing, so the two load side by side with
+`analysis.twin.series.read_dat` and subtract column-wise. At
+`twin.e0 = 0` a partner file is **byte-identical** to its reference —
+one of the determinism guards the test suite pins.
+
+The partner's driving column is its own applied force, not a
+difference: under `constant_bulk_velocity` (or a blocked spanwise
+mean) the two states hold the same bulk with different forces, and
+that difference is the interesting number. It does no work on any
+$y$-integrated difference-field budget term, which is why `twin.dat`
+carries no driving column of its own.
+
+Recording `steps.dat` for both states is also what makes the lockstep
+loop run the *identical* jitted program on the pair in every
+iteration: the measured stepper variant is selected by the cadence,
+not by which state is being stepped.
+
 ## Trajectory bookkeeping
 
 A twin trajectory lives in its run directory: the streams above, a
@@ -235,8 +271,10 @@ A twin trajectory lives in its run directory: the streams above, a
 hash, the resolved parameter dump), and **paired snapshots** —
 `state{isnap}.tar` for the reference and `state{isnap}_twin.tar` for
 the partner, written back-to-back with identical `t`/`it`. The
-reference keeps the standard name, so every existing tool works on the
-reference trajectory unchanged.
+reference keeps the standard name — for the snapshots and for the
+per-state streams alike, the `_twin` suffix marking the partner
+throughout — so every existing tool works on the reference trajectory
+unchanged.
 
 Two files decide the start mode: the partner of `init.snapshot`, and
 the run directory's `twin.json`.
@@ -316,7 +354,7 @@ centred difference, an across-member stack — selects one with
 
 | Module | Role |
 |---|---|
-| `series` | Readers for `twin.dat` / `twin_budget.dat` / `stats.dat` and the `twin.json` member record; per-component budget sums; `uniform_grid` |
+| `series` | Readers for `twin.dat` / `twin_budget.dat` and the `twin.json` member record, plus the generic `read_dat` that loads any `.dat` stream (`stats.dat`, `stats_twin.dat`, …); per-component budget sums; `uniform_grid` |
 | `ensemble` | Member-tree aggregation on aligned relative time, plus the growth-rate fits (exponential-phase $\lambda$, algebraic-phase linear rate) |
 | `spectra` | Reader for `twin_spectra.bin` and the decorrelation ratio |
 | `yspectra` | Readers for `twin_yspectra.bin` / `twin_ybudget.bin`, the wall-normal quadrature contraction, and the three-bin energies recovered from them |

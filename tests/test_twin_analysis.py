@@ -683,6 +683,14 @@ def test_build_twin() -> None:
             "2",
             "--it-budget",
             "5",
+            # The per-state stream cadences: without these a member
+            # records no stats.dat / stats_twin.dat at all.  A
+            # sub-10 it_corrector must drag it_error_check down with
+            # it or validate_parameters refuses the member.
+            "--it-stats",
+            "2",
+            "--it-corrector",
+            "3",
             # Pinned: an unset --seed-base is drawn from the OS entropy
             # pool (:mod:`dnsjax.seeding`), and the fan-out below is
             # asserted by value.
@@ -698,6 +706,11 @@ def test_build_twin() -> None:
 
         spec = json.loads((tree / "members.json").read_text())
         assert spec["kind"] == "twin" and len(spec["members"]) == 2
+        assert (spec["it_stats"], spec["it_corrector"], spec["it_steps"]) == (
+            2,
+            3,
+            None,
+        ), spec
         assert [m["seed"] for m in spec["members"]] == [1, 2], (
             "build-twin must fan --seed-base out as seed-base + k"
         )
@@ -710,6 +723,10 @@ def test_build_twin() -> None:
             assert toml["twin"]["seed"] == record["seed"]
             assert toml["twin"]["e0"] == 1e-6
             assert toml["twin"]["it_budget"] == 5
+            assert toml["outs"]["it_stats"] == 2
+            assert toml["outs"]["it_corrector"] == 3
+            assert toml["outs"]["it_error_check"] == 3
+            assert "it_steps" not in toml["outs"], toml["outs"]
             assert toml["stop"]["max_sim_time"] == spec["horizon"]
             assert toml["stop"]["check_laminarization"] is False
 

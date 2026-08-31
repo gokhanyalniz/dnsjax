@@ -245,6 +245,18 @@ def test_matches_live_streams() -> None:
         assert np.array_equal(live[key], rebuilt[key]), key
     # 5 pairs: the IC pair plus one per step.
     assert len(rebuilt["t"]) == 5, rebuilt["t"]
+    # The per-state streams are rebuilt on the same pair grid.  This
+    # member records no live ``stats.dat`` (no ``--outs.it_stats``),
+    # which is the case the script exists for.
+    assert not (member / "stats.dat").exists()
+    for name in ("stats.dat", "stats_twin.dat"):
+        cols = read_dat(out / name)
+        assert np.array_equal(cols["t"], rebuilt["t"]), (name, cols["t"])
+        assert "E'" in cols, list(cols)
+    ref_s = read_dat(out / "stats.dat")
+    twin_s = read_dat(out / "stats_twin.dat")
+    assert list(ref_s) == list(twin_s), (list(ref_s), list(twin_s))
+    assert (ref_s["E'"] != twin_s["E'"]).any()
     # The rebuilt directory is a member directory in its own right.
     assert (out / "twin.json").is_file()
     assert read_twin(out).meta["parent_t"] == PARENT_T
@@ -273,14 +285,43 @@ def test_driven_member_rebuilds_identically() -> None:
 
     # ``twin.dat`` carries no driving column: the difference of the
     # applied mean-mode force does no work on any y-integrated budget
-    # term, so it is not recorded.  ``stats.dat`` still carries the
-    # *reference's* own applied force, exactly as a solver run does.
+    # term, so it is not recorded.  Each *state* still carries its own
+    # applied force in its own stream, exactly as a solver run does.
     assert not [c for c in live if c.startswith("-dP")], list(live)
-    stats = read_dat(member / "stats.dat")
-    assert [c for c in stats if c.startswith("-dP")] == [
-        "-dPdn'",
-        "-dPds'",
-    ], list(stats)
+    for name in ("stats.dat", "stats_twin.dat"):
+        cols = read_dat(member / name)
+        assert [c for c in cols if c.startswith("-dP")] == [
+            "-dPdn'",
+            "-dPds'",
+        ], (name, list(cols))
+
+    # The rebuild is bit-for-bit on every column the pair grid shares
+    # with the live cadence, with one documented exception: a
+    # reconstruction has no corrector step behind any row, so its
+    # driving columns are the ``get_driving`` wall-shear inference.
+    # The live stream uses that same convention for its own stepless
+    # ``t = t0`` row, so exactly the first row agrees.
+    driving = ["-dPdn'", "-dPds'"]
+    for name in ("stats.dat", "stats_twin.dat"):
+        a = read_dat(member / name)
+        b = read_dat(out / name)
+        assert list(a) == list(b), (name, list(a), list(b))
+        assert np.array_equal(a["t"], b["t"]), (name, a["t"], b["t"])
+        for key in a:
+            if key in driving:
+                continue
+            assert np.array_equal(a[key], b[key]), f"{name}: {key}"
+        for key in driving:
+            assert a[key][0] == b[key][0], (
+                f"{name}: {key} disagrees at t0, where both are the "
+                "wall-shear inference"
+            )
+            assert (a[key][1:] != b[key][1:]).any(), (
+                f"{name}: {key} matches the live applied force at "
+                "every stepped row -- the exemption is vacuous, so "
+                "either the rebuild changed or this member is "
+                "wall-normal converged"
+            )
 
 
 def test_bin_energies_round_trip() -> None:

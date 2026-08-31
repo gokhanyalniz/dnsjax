@@ -90,7 +90,9 @@ and its rationale: `flows/registry.py`.
   `scripts/ensemble_setup.py`. Guards: `tests/response/`.
 - `twin/` — twin-run (`dnsjax-twin`) offline analysis, entirely
   JAX-free (unlike `response/`, no JAX anywhere): `series.py`
-  (`twin.dat`/`twin_budget.dat`/`twin.json` readers, per-component
+  (`twin.dat`/`twin_budget.dat`/`twin.json` readers plus the
+  column-generic `read_dat` that also loads a run's per-state
+  `stats.dat`/`stats_twin.dat`, per-component
   budget sums, `closure_residuals`, and `uniform_grid` — a `.dat`
   stream carries rows off its own cadence, so every consumer that
   needs a uniform grid selects one), `ensemble.py` (member-tree
