@@ -15,13 +15,17 @@ further weighting.
 
 For the energies that rate is ``twin.dat``'s ``E_d`` exactly.  For
 the budget it is a ``twin_budget.dat`` column only where the two
-regroup the same Parseval sum: ``-V`` gives ``eps_tot`` and
-``P_lift`` the three mean-gradient production columns.  The budget
-stream is written in the **rotational** form and ``twin_budget.dat``
-in the convective one, so the production/transfer *split* differs
-between them by the work of a gradient -- zero in total, not per
-`$y$` (:mod:`dnsjax.twin.diagnostics`, "Rotational against
-convective").
+regroup the same Parseval sum, and which columns those are depends on
+the form the stream was written in -- the sidecar's ``terms`` names it
+(:mod:`dnsjax.twin.diagnostics`, "Two budget forms").  In the
+**default convective** form ``-V`` gives ``eps_tot`` and
+``P_U + P_r`` gives ``P_tot``, both exactly, while the transfer terms
+match their per-bin counterparts only up to the discrete
+integration-by-parts residual that makes ``T_tot`` nonzero.  Under
+``twin.rotational_ybudget`` the production identity moves to
+``P_lift`` (the three mean-gradient production columns) and the rest
+of the split differs from ``twin_budget.dat`` by the work of a
+gradient -- zero in total, not per `$y$`.
 
 :func:`bin_energies` is the bridge back to the three-bin diagnostics
 of Egerique-de-la-Concha & Hwang (*J. Fluid Mech.* **1036**, A52,

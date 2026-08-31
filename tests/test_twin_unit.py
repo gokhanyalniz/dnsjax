@@ -509,6 +509,13 @@ def test_validate_hook() -> None:
     # against, and an unset seed is drawn later (:mod:`dnsjax.seeding`).
     twin_params.seed = None
 
+    # The stream-shaping flags are on the same list: left on without
+    # ``e0`` they configure nothing, and must say so rather than be
+    # silently ignored.
+    twin_params.rotational_ybudget = True
+    _expect_value_error("rotational_ybudget", validate_parameters)
+    twin_params.rotational_ybudget = False
+
     # Adaptive dt rejected when configured.
     twin_params.e0 = 1e-6
     params.step.adaptive = True
@@ -539,6 +546,30 @@ def _fold(a: np.ndarray) -> np.ndarray:
     out = a[..., :npos].copy()
     out[..., 1:] += a[..., npos:][..., ::-1]
     return out
+
+
+def test_marginal_bins_need_even_nz() -> None:
+    r"""``marginal_bin_counts`` refuses an odd ``res.nz``.
+
+    :func:`~dnsjax.twin.diagnostics._fold_kz` pairs stored `$k_z$`
+    entry `$j$` with `$-j$`, and at odd `$n_z$` the outermost negative
+    mode has no positive partner to fold onto.  Both CLIs reject that
+    earlier with a fuller message, so this guard is unreachable
+    through either and has to be called directly -- which is the point
+    of keeping it with the function whose contract states it.
+
+    ``res.nz`` is read at call time, so poking it rebuilds nothing;
+    restored in ``finally`` because the singleton is shared with every
+    other test in this module.
+    """
+    nz = params.res.nz
+    try:
+        params.res.nz = nz + 1
+        _expect_value_error("even res.nz", td.marginal_bin_counts)
+    finally:
+        params.res.nz = nz
+    assert td.marginal_bin_counts() == (nz // 2, params.res.nx // 2)
+    print("marginal_bin_counts refuses an odd nz: OK")
 
 
 def test_yspectra_vs_numpy() -> None:
@@ -784,15 +815,24 @@ def test_ybudget_transfer_split() -> None:
       0$`, not no-slip, not `$\Delta\boldsymbol{\omega} = \nabla\times
       \Delta\mathbf{u}$` -- so the discriminating axis is the state,
       not `$N_y$`, and two very different pairs are used.
-    - **convective**: `$\sum_k T(y) = -\partial_y\langle v^{(1)}
-      |\Delta\mathbf{u}|^2/2\rangle_{xz}$`, the turbulent transport of
-      difference energy.  A genuine wall-normal flux, zero only after
-      integrating in `$y$`.  Asserted **nonzero** here: a convective
-      build that produced zero would have lost that transport.
+    - **convective**: `$\sum_k T(y) = -\partial_y\langle v^{(2)}
+      |\Delta\mathbf{u}|^2/2\rangle_{xz}$` -- the turbulent transport
+      of difference energy, carried by the **perturbed** member: the
+      two terms advect `$\Delta\mathbf{u}$` by `$\mathbf{u}'^{(1)}$`
+      and by `$\Delta\mathbf{u}'$`, and the mean advectors they drop
+      contribute exactly zero, so the flux sums to
+      `$\mathbf{u}^{(1)} + \Delta\mathbf{u}$`.  A genuine wall-normal
+      flux, zero only after integrating in `$y$`.  Asserted
+      **nonzero** here: a convective build that produced zero would
+      have lost that transport.
 
-    The difference between the two is exactly the `$|\Delta\mathbf{u}|
-    ^2/2$` half of the gradient the two nonlinear forms differ by;
-    rotationally it sits in ``Wp`` instead.
+    The two forms do not differ by one block.  ``Wp`` rotationally
+    absorbs `$-\partial_y\langle\phi\,\Delta v\rangle$` with
+    `$\phi = \mathbf{u}^{(1)}\!\cdot\Delta\mathbf{u}
+    + |\Delta\mathbf{u}|^2/2$`, whose `$|\Delta\mathbf{u}|^2/2$` half
+    is exactly the `$\Delta v$`-mediated half of the convective flux;
+    the `$\mathbf{u}^{(1)}$`-mediated half goes into the rotational
+    production instead.
     """
     from dnsjax.twin.pressure import DifferencePressure
 
@@ -942,6 +982,7 @@ if __name__ == "__main__":
     test_budget_vs_numpy()
     test_budget_frame_invariance()
     test_spectra_sum_identity()
+    test_marginal_bins_need_even_nz()
     test_yspectra_vs_numpy()
     test_yspectra_fold_is_two_sided()
     test_yspectra_partition()
