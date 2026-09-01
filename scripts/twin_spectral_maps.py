@@ -6,10 +6,11 @@ over a set of ``dnsjax-twin`` member directories, following the
 premultiplied spectral maps of Cho, Hwang & Choi, *J. Fluid Mech.*
 **854**, 474-504 (2018) -- their figures 3 and 11: wavelength on a
 logarithmic abscissa, filled contours plus contour lines, inner units
-on the primary axes and outer units on the secondary ones.  The
-ordinate is **linear** here rather than the paper's logarithmic one;
-``--yscale log`` restores it, and the two carry different
-premultipliers (next section).
+on the primary axes and outer units on the secondary ones.  Where
+these depart from the paper is the premultiplier: `$k$` alone, not
+its `$k\,y$`, which is the commoner convention for a spectrum on a
+logarithmic ordinate (next section).  ``--yscale linear`` swaps the
+ordinate instead.
 
 Both wavenumber marginals are drawn (``_z`` gives `$\lambda_x$`, the
 paper shows only `$\lambda_z$`), plus the stored `$k_x = 0$` plane and
@@ -25,22 +26,28 @@ average.  The density is therefore ``entry / dk`` with
 harmonic `$m$`, `$k\,\Phi = m \times \text{entry}$`, independent of the
 box length.
 
-A logarithmic axis needs a premultiplier if equal areas are to be
-equal energy; a linear one does not.  With the default linear
-ordinate only the abscissa asks for one,
+A logarithmic axis needs a premultiplier if equal areas along it are
+to be equal energy.  The abscissa always asks for one,
 
 .. math::  k\,\Phi(y, k) = m \times \text{entry}(y, m) ,
 
-which is ``--premultiply k``, the default.  Under ``--yscale log`` the
-ordinate wants its own factor as well -- the paper's (2.8),
+which is ``--premultiply k``, the default and the near-universal
+convention for these maps: a vertical cut then reads as the spectrum
+*at* that wall distance, whose area over `$\log\lambda$` is the local
+variance, and the ordinate is logarithmic to put the near-wall region
+and the log layer in one frame rather than to be integrated over.
+
+``ky`` adds the second factor -- the paper's (2.8),
 `$\int\!\!\int \Phi\,\mathrm{d}k\,\mathrm{d}y = \int\!\!\int
-k\,y\,\Phi\,\mathrm{d}\log k\,\mathrm{d}\log y$` -- which is
-``--premultiply ky``, with `$y$` the wall distance **in the plotted
-units** (`$y^+$` by default), so that equal areas are equal energy in
-those same units.  ``none`` drops both factors.  The scale and the
-premultiplier are independent knobs: pairing a logarithmic ordinate
-with ``k``, or a linear one with ``ky``, is legal and simply not
-area-true.
+k\,y\,\Phi\,\mathrm{d}\log k\,\mathrm{d}\log y$` -- with `$y$` the
+wall distance **in the plotted units** (`$y^+$` by default), which
+makes the area of the *whole map* the energy instead.  That is the
+reading the paper's budget argument needs and it is the minority one;
+it is a knob, not the default.  ``none`` drops both factors.
+
+The scale and the premultiplier are independent: pairing a linear
+ordinate with ``ky``, or a logarithmic one with ``none``, is legal
+and simply not area-true in `$y$`.
 
 The `$m = 0$` column is dropped whatever the premultiplier, because
 `$\lambda = L/m$` has no position on a wavelength axis.  That is also
@@ -223,8 +230,12 @@ lines are drawn on top either way.
 
 Every colour scale, per frame or frozen, is read off the **plotted**
 quantity -- premultiplied, folded, in inner units, over exactly the
-rows the logarithmic ordinate shows (:meth:`Map.drawn`).  The colour
-bar therefore labels the same numbers the contours do.
+rows the axes box shows: the ordinate's floor and limits included,
+not merely the wall row a logarithmic axis cannot place
+(:meth:`Map.drawn`, :func:`y_limits`).  The colour bar therefore
+labels the same numbers the contours do, which matters most for
+`$\hat\varepsilon$`: its peak is at the wall, below the default
+floor, and would otherwise set a scale no visible contour reaches.
 
 Each panel's scale is frozen (``--clim series``, the default) on the
 ensemble-global extremes of that quantity over the rendered frames, so
@@ -246,18 +257,22 @@ of the plotted limits, leaving only the scale free.  ``--width`` sets
 it (default 6.61546 in, the write-up's ``\linewidth``) and
 ``--decade`` sets the decade length directly instead.
 
-The height follows the **ordinate's scale**.  Linear: it is
-``--box-aspect`` times the width, 1 (square) by default, a linear
-axis having no decades to match.  Logarithmic: the same decade length
-applies to it as well -- **one decade, one length, on both axes**, the
-constraint that makes a `$\lambda \propto y$` band read at 45 degrees
--- and ``ax.set_aspect(1)`` holds it there.  A square box then needs
-equal decade counts, which is a choice of ``--ylim`` rather than of
-sizing: on the full stored range `$y^+ \in [0.02, 179]$` against
-`$\lambda_z^+ \in [14, 1122]$` the box is 2.1 times taller than wide,
-and an eight-panel budget figure correspondingly tall.  ``set_aspect``
-is deliberately *not* applied to a linear ordinate, where it would be
-matching decades against data units.
+The height follows the **ordinate's scale**.  Logarithmic (the
+default): the same decade length applies to it as well -- **one
+decade, one length, on both axes**, the constraint that makes a
+`$\lambda \propto y$` band read at 45 degrees -- and
+``ax.set_aspect(1)`` holds it there, so the box's shape follows from
+the limits alone.  The default floor at `$y^+ = 1$`
+(:data:`Y_FLOOR_PLUS`) is most of what sets it: on
+`$y^+ \in [1, 179]$` against `$\lambda_z^+ \in [14, 1122]$` the box
+is 1.2 times taller than wide, where the grid's full
+`$y^+ \in [0.02, 179]$` would make it 2.1 and an eight-panel budget
+figure correspondingly tall.  ``--ylim`` trims it further.
+
+Linear: the height is ``--box-aspect`` times the width, 1 (square) by
+default, a linear axis having no decades to match.  ``set_aspect`` is
+deliberately *not* applied there, where it would be matching decades
+against data units.
 
 Usage
 =====
@@ -348,6 +363,14 @@ COMPONENTS: tuple[str, ...] = ("u", "v", "w")
 #: docstring, "Decorrelation").  It is built from the stored ``e_*``
 #: and ``r_*`` rather than read, so it names no stored field.
 DECORR: str = "decorr"
+
+#: Default bottom of a **logarithmic** ordinate, in wall units.  The
+#: grid reaches far below it (`$y^+ \approx 0.02$` at the resolutions
+#: these runs use), and nothing but `$\hat\varepsilon$` reaches its
+#: first contour level down there, so the decade below `$y^+ = 1$`
+#: buys a taller box and no information.  A linear ordinate keeps the
+#: wall itself, which is a position it can show.
+Y_FLOOR_PLUS: float = 1.0
 
 #: Records read from a memory-mapped stream at a time while the
 #: reference normalisation is accumulated.  Each is reduced to three
@@ -982,10 +1005,12 @@ def open_series(
 class MapOptions:
     r"""Everything that turns a stored field into a plotted map.
 
-    *premultiply* is ``"k"`` (the default, for the linear ordinate
-    *y_log* also defaults to), ``"ky"`` (the paper's (2.8), for a
-    logarithmic one) or ``"none"``; *half* is how the two channel
-    halves collapse onto the one wall distance a `$y^+$` ordinate
+    *premultiply* is ``"k"`` (the default), ``"ky"`` (the paper's
+    (2.8)) or ``"none"``, and *y_log* draws the ordinate logarithmic
+    (the default); the two are independent, and the default pair is
+    the usual convention for a spectrum rather than the paper's own
+    (module docstring, "Premultiplication").  *half* is how the two
+    channel halves collapse onto the one wall distance a `$y^+$` axis
     needs (module docstring, "Folding the channel"); *volume_fac*
     multiplies the stored `$y$`-mean density back to the local density
     the literature plots.  The decorrelation panels are a ratio and
@@ -1005,7 +1030,7 @@ class MapOptions:
     half: str = "mean"
     volume_fac: bool = True
     smooth: int = 1
-    y_log: bool = False
+    y_log: bool = True
 
 
 @dataclass(frozen=True)
@@ -1030,8 +1055,10 @@ class Map:
         """
         return MARGINALS[self.name.rpartition("_")[2]][0]
 
-    def drawn(self) -> tuple[np.ndarray, np.ndarray]:
-        r"""The rows the ordinate can show: all of them, or ``y > 0``.
+    def drawn(
+        self, ylim: tuple[float, float] | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        r"""The rows the ordinate shows, optionally within *ylim*.
 
         The wall row has no position on a **logarithmic** axis, so it
         is dropped there -- from the plot and therefore from the
@@ -1040,13 +1067,31 @@ class Map:
         ``values`` directly.  It matters under ``--premultiply k`` /
         ``none``, where the wall value of a budget term is not zero
         (`$\hat\varepsilon$` is largest there); under ``ky`` the
-        `$y$` factor zeroes that row anyway.  On the default linear
-        ordinate the row is an ordinary sample and is kept.
+        `$y$` factor zeroes that row anyway.  On a linear ordinate the
+        row is an ordinary sample and is kept.
+
+        *ylim* additionally drops what falls outside the axis box,
+        which is how the colour scale stays a scale of what is
+        *visible* once the ordinate has a floor (:data:`Y_FLOOR_PLUS`)
+        rather than of every stored row.  One row is kept beyond each
+        end: the fill interpolates between samples, so the pair
+        straddling a limit still colours the strip inside it.
+        :func:`draw_map` passes nothing and lets the axes clip
+        instead, so a contour still reaches the edge of the box.
         """
-        if not self.y_log:
-            return self.y, self.values
-        above_wall = self.y > 0.0
-        return self.y[above_wall], self.values[above_wall]
+        if self.y_log:
+            shown = self.y > 0.0
+        else:
+            shown = np.ones(self.y.size, dtype=bool)
+        keep = shown.copy()
+        if ylim is not None:
+            keep &= (self.y >= ylim[0]) & (self.y <= ylim[1])
+            inside = np.flatnonzero(keep)
+            if inside.size:  # the interpolation neighbours, if any
+                keep[max(int(inside[0]) - 1, 0)] = True
+                keep[min(int(inside[-1]) + 1, keep.size - 1)] = True
+            keep &= shown
+        return self.y[keep], self.values[keep]
 
 
 def _select_half(
@@ -1063,23 +1108,34 @@ def _select_half(
     collapsed values and the wall distance `$1 - |y|$` of the retained
     rows, ascending from the wall.
     """
-    if not np.allclose(y, -y[::-1], rtol=0.0, atol=1e-12):
-        raise ValueError(
-            "the wall-normal grid is not symmetric about the centreline, "
-            "so the R_y fold does not apply; use --half lower / upper"
-        )
-    n_half = (y.size + 1) // 2
+    wall_distance = _half_grid(y, mode)
+    n_half = wall_distance.size
     lower = values[..., :n_half, :]
     upper = values[..., ::-1, :][..., :n_half, :]
     if mode == "mean":
         kept = 0.5 * (lower + upper)
     elif mode == "lower":
         kept = lower
-    elif mode == "upper":
-        kept = upper
     else:
+        kept = upper
+    return kept, wall_distance
+
+
+def _half_grid(y: np.ndarray, mode: str) -> np.ndarray:
+    r"""The wall distances a fold retains, ascending from the wall.
+
+    Split out of :func:`_select_half` because the ordinate's limits
+    are a property of the grid alone (:func:`y_limits`), settled once
+    for a series rather than per panel and per frame.
+    """
+    if mode not in ("mean", "lower", "upper"):
         raise ValueError(f"half must be mean/lower/upper, not {mode!r}")
-    return kept, 1.0 + y[:n_half]
+    if not np.allclose(y, -y[::-1], rtol=0.0, atol=1e-12):
+        raise ValueError(
+            "the wall-normal grid is not symmetric about the centreline, "
+            "so the R_y fold does not apply; use --half lower / upper"
+        )
+    return 1.0 + y[: (y.size + 1) // 2]
 
 
 def _running_mean(values: np.ndarray, window: int) -> np.ndarray:
@@ -1100,6 +1156,35 @@ def _running_mean(values: np.ndarray, window: int) -> np.ndarray:
         lambda row: np.convolve(row, kernel, mode="same"), -1, values
     )
     return smoothed / norm
+
+
+def y_limits(
+    series: YSeries,
+    options: MapOptions,
+    ylim: tuple[float, float] | None = None,
+) -> tuple[float, float]:
+    r"""The ordinate limits every panel of a series shares.
+
+    ``--ylim`` when it is given, and otherwise the folded grid's own
+    range -- floored at :data:`Y_FLOOR_PLUS` on a logarithmic
+    ordinate, converted into whatever units the ordinate is drawn in
+    so that the floor is the same wall distance either way.  The floor
+    never *extends* the axis past the data: a grid whose first point
+    is already above it keeps that point.
+
+    Settled from the grid alone, so :func:`scan_panels` can read a
+    colour scale over exactly the rows the box will show and
+    :func:`panel_figure` can size the box from the same numbers.
+    """
+    if ylim is not None:
+        return ylim
+    y = options.units.length(_half_grid(series.y, options.half))
+    top = float(y.max())
+    if not options.y_log:
+        return float(y.min()), top
+    above_wall = float(y[y > 0.0].min())
+    floor = options.units.length(Y_FLOOR_PLUS / options.units.re_tau)
+    return max(above_wall, floor), top
 
 
 def field_kind(series: YSeries) -> str:
@@ -1236,6 +1321,7 @@ def scan_panels(
     options: MapOptions,
     *,
     declared: bool = True,
+    ylim: tuple[float, float] | None = None,
 ) -> tuple[dict[tuple[str, int | None], PanelScale], list[str]]:
     """Series-global extremes per panel, and the sign-check report.
 
@@ -1249,6 +1335,11 @@ def scan_panels(
 
     Either way the family is decided once for the whole series, so a
     panel cannot change colour map from frame to frame.
+
+    *ylim* restricts the scan to the rows the axes box will show
+    (:meth:`Map.drawn`), which is what keeps the colour bar a legend
+    for the visible map rather than for a near-wall peak the ordinate
+    floors away.
     """
     scales: dict[tuple[str, int | None], PanelScale] = {}
     notes: list[str] = []
@@ -1262,7 +1353,7 @@ def scan_panels(
                 options=options,
                 component=component,
                 non_negative=True,  # irrelevant here; decided below
-            ).drawn()
+            ).drawn(ylim)
             finite = values[np.isfinite(values)]
             if finite.size:
                 lo = min(lo, float(finite.min()))
@@ -1758,9 +1849,8 @@ def panel_figure(
         )
         for name, component in panels
     ]
-    drawn_y = maps[0].drawn()[0]
     xlim = style.xlim or (maps[0].lam.min(), maps[0].lam.max())
-    ylim = style.ylim or (drawn_y.min(), drawn_y.max())
+    ylim = y_limits(series, options, style.ylim)
     geometry = panel_geometry(
         len(panels), xlim, ylim, style, y_log=options.y_log
     )
@@ -1901,7 +1991,11 @@ def render_series(
     if prefix == DECORR and not quiet:
         print("\n".join(series.reference_report()), flush=True)
     scales, notes = scan_panels(
-        series, panels, options, declared=declared_signs
+        series,
+        panels,
+        options,
+        declared=declared_signs,
+        ylim=y_limits(series, options, style.ylim),
     )
     if notes and not quiet:
         print("\n".join(notes), flush=True)
@@ -1981,9 +2075,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--yscale",
-        choices=("linear", "log"),
-        default="linear",
-        help="wall-normal axis scale (log wants --premultiply ky)",
+        choices=("log", "linear"),
+        default="log",
+        help="wall-normal axis scale; linear keeps the wall row and "
+        "takes --box-aspect for the panel shape",
     )
     p.add_argument(
         "--ref-stride",
@@ -2051,7 +2146,8 @@ def build_parser() -> argparse.ArgumentParser:
         nargs=2,
         default=None,
         metavar=("LO", "HI"),
-        help="wall-normal axis limits, in the plotted units",
+        help="wall-normal axis limits, in the plotted units "
+        "(default: the grid, floored at y+ = 1 when logarithmic)",
     )
     p.add_argument(
         "--width",
