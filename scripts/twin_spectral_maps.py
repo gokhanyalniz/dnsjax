@@ -91,9 +91,17 @@ when the record is there and from the stream's first sample
 otherwise, and the frames rendered are the **intersection** of the
 members' relative grids, so a short or resumed member restricts the
 set rather than corrupting it.  With one shared ``dt`` and cadence
-this selects the same samples as matching by index, but keyed on the
+this selects the same samples as matching by index, but read off the
 clock, which is what survives a member whose stream starts elsewhere.
-Any number of members works; ``--tree`` takes an
+
+Two members meet on that clock to within a **tolerance**
+(:data:`_T_ATOL`), never on a rounded key.  They reach one sample
+time by different arithmetic -- accumulating from different parents
+-- so their stored times differ in the last bits, and a pair
+straddling a bin's edge rounds apart however fine the bin.  On this
+grid that silently *drops* a frame, which is indistinguishable from
+a member simply being short.  Any number of members works; ``--tree``
+takes an
 ``ensemble_setup.py build-twin`` tree and uses every member its
 ``members.json`` lists.
 
@@ -141,11 +149,10 @@ parent snapshot carry bit-identical ``r_*``, and members from
 different parents repeat each other wherever their windows overlap.
 Samples are therefore grouped on **absolute** time (unlike the
 ensemble alignment above, which is relative) and each instant counted
-once.  Grouped to a tolerance (:data:`_T_ATOL`), not by a rounded key
--- one member accumulates its way to a shared instant while another
-starts there, so their stored times differ in the last bits, and a
-pair that straddles a bin edge would be counted twice however fine
-the bin.
+once.  Grouped to the same tolerance as the frame grid above and for
+the same reason, the cost of a rounded key here being the mirror of
+the cost there: a straddling pair counted twice, and the reference
+state it names double-weighted in the average.
 Every record of every stream feeds that average, independently of
 ``--stride`` / ``--first`` / ``--last``; ``--ref-stride`` subsamples
 it for a cheaper pass.
@@ -307,26 +314,26 @@ from dnsjax.analysis.twin.yspectra import (
     fluctuation_energy,
 )
 
-#: Absolute-time tolerance for deciding that two samples hold the
-#: **same** reference instant (:meth:`YSeries._distinct_instants`).
+#: Tolerance within which two sample times are held to be the same
+#: instant -- of the members' shared frame grid (:func:`open_series`,
+#: on relative time) and of the reference average
+#: (:meth:`YSeries._distinct_instants`, on absolute time).
+#:
 #: Two members reach one instant by different arithmetic -- one
 #: accumulates to it from its own parent, the other starts there --
 #: so their stored times differ in the last bits.  A *rounded key*
-#: would not do here however fine: two values a picosecond apart
-#: still land in different bins when they straddle one bin's edge,
-#: and the pair would be counted twice.  This is three decades above
-#: the accumulated round-off below and five below any sampling
-#: cadence, which is the other side it has to clear -- were it not,
-#: consecutive samples would chain into one instant, and
-#: :meth:`YSeries._distinct_instants` refuses that rather than
-#: silently merging them.
+#: will not do however fine: two values a picosecond apart still land
+#: in different bins when they straddle one bin's edge, and the pair
+#: is then two instants rather than one, which silently drops a frame
+#: from the shared grid and double-weights a reference state.
+#:
+#: This sits three decades above the round-off it has to absorb (the
+#: stored times accumulate order `$10^{-9}$`) and five below the
+#: sampling cadence, ``it_* * dt``, of order 1 here.  That second side
+#: matters as much: matching is transitive, so samples closer together
+#: than this would chain into one instant.  :func:`_open_member`
+#: refuses such a stream rather than let it.
 _T_ATOL: float = 1e-6
-
-#: Decimals used to key relative times when intersecting members.
-#: The cadence is ``it_* * dt`` (order 1 here) and the stored times
-#: carry accumulated round-off of order `$10^{-9}$`; the repo reader's
-#: alignment tolerance is the same order.
-_T_DECIMALS: int = 6
 
 #: The two streams this script understands, with their reader floors.
 STEMS: dict[str, int] = {
@@ -550,6 +557,29 @@ class _Member:
     parent: str  # its parent snapshot, "" when unrecorded
 
 
+def _check_cadence(path: Path, times: np.ndarray) -> None:
+    """A stream's own samples must be ascending and well separated.
+
+    Both consumers of these times -- the shared frame grid and the
+    reference average -- match them to :data:`_T_ATOL`, and matching
+    is transitive, so two samples closer than that would be one
+    instant.  Ascending order is the other assumption: the streams are
+    append-only, and both consumers reach a member's records through
+    ``searchsorted``, which is silent on a key that is not sorted and
+    would pair a frame with the wrong record.  Neither is trusted.
+    """
+    gap = float(np.min(np.diff(times))) if times.size > 1 else np.inf
+    if gap <= 0.0:
+        raise ValueError(f"{path}: sample times are not sorted ascending")
+    if gap <= _T_ATOL:
+        raise ValueError(
+            f"{path}: samples are {gap:g} apart in time, at or below "
+            f"the {_T_ATOL:g} tolerance that decides whether two of "
+            "them are the same instant; distinct instants would be "
+            "chained into one."
+        )
+
+
 def _twin_record(path: Path) -> dict:
     """A member's parsed ``twin.json``, or ``{}`` when it has none.
 
@@ -594,6 +624,7 @@ def _open_member(path: Path, stem: str) -> _Member:
     # the eager reader's policy.
     rows = np.sort(np.unique(t, return_index=True)[1])
     t_abs = t[rows]
+    _check_cadence(path, t_abs)
     record = _twin_record(path)
     parent_t = record.get("parent_t")
     t0 = float(t_abs[0]) if parent_t is None else float(parent_t)
@@ -797,21 +828,11 @@ class YSeries:
         reference state, so it does not matter which.
 
         The grouping is transitive, so the tolerance has to stay well
-        below the sampling cadence.  That is checked rather than
-        assumed: a stream whose own samples come closer than the
-        tolerance would have distinct instants chained into one.
+        below the sampling cadence; :func:`_check_cadence` has already
+        refused a stream where it does not.
         """
         times = [m.t_abs[:: self.ref_stride] for m in self.members]
         rows = [m.rows[:: self.ref_stride] for m in self.members]
-        for member, own in zip(self.members, times, strict=True):
-            gap = float(np.min(np.diff(own))) if own.size > 1 else np.inf
-            if gap <= _T_ATOL:
-                raise ValueError(
-                    f"{member.path}: samples are {gap:g} apart in time, "
-                    f"at or below the {_T_ATOL:g} tolerance that decides "
-                    "whether two of them are the same reference instant; "
-                    "distinct instants would be chained into one."
-                )
         flat = np.concatenate(times)
         owner = np.concatenate(
             [np.full(t.size, i, dtype=int) for i, t in enumerate(times)]
@@ -858,20 +879,25 @@ class YSeries:
             )
 
 
-def _locate(key: np.ndarray, wanted: np.ndarray, path: Path) -> np.ndarray:
-    """Positions of *wanted* in the ascending *key*, verified.
+def _match(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
+    """Index in ascending *times* of each *wanted* value, or ``-1``.
 
-    ``searchsorted`` is silent on a key that is not sorted, and an
-    append-only stream that was somehow written out of order would
-    then pair a frame with the wrong record; the equality check is
-    what turns that into an error.
+    Nearest neighbour within :data:`_T_ATOL`.  A tolerance rather than
+    an equality on rounded keys: two members reach one sample time by
+    different arithmetic, so a pair that straddles a bin's edge would
+    round apart and drop the frame from the shared grid -- silently,
+    since a shorter grid is exactly what a short member produces.
+    Both arrays are ascending and separated by more than the
+    tolerance (:func:`_check_cadence`), so the match is unambiguous.
     """
-    where = np.searchsorted(key, wanted)
-    if where.size and (
-        where.max() >= key.size or not np.array_equal(key[where], wanted)
-    ):
-        raise ValueError(f"{path}: sample times are not sorted ascending")
-    return where
+    if times.size == 0:
+        return np.full(wanted.shape, -1, dtype=int)
+    after = np.searchsorted(times, wanted)
+    before = np.clip(after - 1, 0, times.size - 1)
+    after = np.clip(after, 0, times.size - 1)
+    nearer = np.abs(times[before] - wanted) <= np.abs(times[after] - wanted)
+    nearest = np.where(nearer, before, after)
+    return np.where(np.abs(times[nearest] - wanted) <= _T_ATOL, nearest, -1)
 
 
 def tree_members(tree: str | Path) -> list[Path]:
@@ -921,24 +947,28 @@ def open_series(
         raise ValueError("need at least one member directory")
     opened = [_open_member(Path(m), stem) for m in members]
 
-    keys = [np.round(m.t_rel, _T_DECIMALS) for m in opened]
-    common = keys[0]
-    for other in keys[1:]:
-        common = np.intersect1d(common, other, assume_unique=False)
-    if common.size == 0:
+    # The shared grid is the first member's own times, thinned to
+    # those every other member also has (:func:`_match`); its own
+    # record positions are then the frame index the filenames carry.
+    grids = [member.t_rel for member in opened]
+    keep = np.arange(grids[0].size)
+    for other in grids[1:]:
+        keep = keep[_match(other, grids[0][keep]) >= 0]
+    if keep.size == 0:
         raise ValueError("members share no relative sample time")
-    common = common[first : (None if last is None else last + 1)][::stride]
+    keep = keep[first : (None if last is None else last + 1)][::stride]
+    common = grids[0][keep]
     rows = np.stack(
         [
-            member.rows[_locate(key, common, member.path)]
-            for member, key in zip(opened, keys, strict=True)
+            member.rows[_match(grid, common)]
+            for member, grid in zip(opened, grids, strict=True)
         ]
     )
     return YSeries(
         stem=stem,
         members=tuple(opened),
         rows=rows,
-        index=_locate(keys[0], common, opened[0].path),
+        index=keep,
         t_rel=common,
         meta=opened[0].meta,
         ref_stride=ref_stride,
