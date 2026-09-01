@@ -20,7 +20,8 @@ Layout (one module per concern; none is imported by the top-level
   ``twin_yspectra.bin`` / ``twin_ybudget.bin`` streams, the
   quadrature contraction, the three-bin energies recovered from
   them, and the total-in-`$(y, k)$` fluctuation energy (the total
-  with the `$(0, 0)$` mode removed) that normalises a decorrelation.
+  with the `$(0, 0)$` mode removed) that a difference spectrum is
+  normalised by.
 - :mod:`.lengths` -- integral length scales of the difference field
   from a paired snapshot.
 

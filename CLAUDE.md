@@ -758,21 +758,22 @@ All under `scripts/`; full rationale/usage in each module docstring.
   `(lambda, y)` contour maps of every field in an ensemble
   (`--members` or a `build-twin` `--tree`) of twin
   `twin_yspectra.bin` / `twin_ybudget.bin` streams, one figure per
-  sample, in inner units against a **measured** `Re_tau`, plus the
-  decorrelation the difference and reference spectra make together.
-  Defaults: log-log axes floored at `y+ = 1` (`Y_FLOOR_PLUS`),
+  sample, in inner units against a **measured** `Re_tau`. Defaults:
+  log-log axes floored at `y+ = 1` (`Y_FLOOR_PLUS`),
   premultiplied by `k` **only** -- the usual convention for a
   spectrum, not the paper's `k y`, which `--premultiply ky` restores;
   `--yscale linear` keeps the wall row and takes `--box-aspect` for
   the panel shape, the decade rule fixing the abscissa either way.
   Colour scales are read over the rows the box shows, floor included.
-  The decorrelation's reference average
-  assumes the members subsample **one** reference trajectory --
-  distinct absolute sample times are distinct reference states -- and
-  reports the parent count so a set that is not can be spotted. The
-  only script needing matplotlib -- `uv run --group plots python
-  scripts/twin_spectral_maps.py` (the `plots` dependency group;
-  `uv sync` alone does not install it).
+  The two complete spectral marginals are drawn over a time-averaged
+  per-component `E_ref` (the `k_x = 0` plane stays absolute), each
+  panel's title reporting the number so absolute values stay
+  recoverable; that average assumes the members subsample **one**
+  reference trajectory -- distinct absolute sample times are distinct
+  reference states -- and reports the parent count so a set that is
+  not can be spotted. The only script needing matplotlib -- `uv run
+  --group plots python scripts/twin_spectral_maps.py` (the `plots`
+  dependency group; `uv sync` alone does not install it).
 - `wall_normal_resolution.py`: JAX-free `resolve`/`match`/`box` CLI
   sizing `res.ny`/`fd_order`/`geo.grid_type` against a Chebyshev
   expansion of a given order (Cartesian family only).
