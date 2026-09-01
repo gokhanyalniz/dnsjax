@@ -354,7 +354,8 @@ require, the frame-invariance / dissipation-form notes and the
 pressure's wall closure: the
 `twin/driver.py`, `twin/diagnostics.py`, `twin/pressure.py` and
 `twin/yspectra.py` module docstrings; the maths is written up as
-Appendix C of the `perturbation_dynamics` document (not in this repo).
+Appendix A of the `perturbation_dynamics` document (not in this repo),
+whose closing subsection keys the plotted panels to its equations.
 Ensembles: `ensemble_setup.py build-twin` + `dnsjax.analysis.twin`.
 A member recorded before a stream existed rebuilds it offline from its
 snapshot pairs: `scripts/twin_postprocess.py` (same diagnostics, same
