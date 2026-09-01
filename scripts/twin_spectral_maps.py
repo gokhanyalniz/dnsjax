@@ -12,23 +12,34 @@ and outer units on the secondary ones.
 Both wavenumber marginals are drawn (``_z`` gives `$\lambda_x$`, the
 paper shows only `$\lambda_z$`), plus the stored `$k_x = 0$` plane.
 
-What "premultiplied" means here
-===============================
+Premultiplication
+=================
 A stored entry is the energy (or rate) held by one **discrete** mode
 band, not a spectral density: summing the entries over the stored
 one-sided axis and contracting with ``y_weights`` returns the volume
 average.  The density is therefore ``entry / dk`` with
 `$\Delta k = 2\pi/L$`, and since `$k_m = m\,\Delta k$` for the integer
-harmonic `$m$` the premultiplied spectrum is
+harmonic `$m$`, `$k\,\Phi = m \times \text{entry}$`, independent of the
+box length.
 
-.. math::  k\,\Phi(y, k) = m \times \text{entry}(y, m) ,
+Both axes are logarithmic, so **both** get a premultiplier -- the
+paper's (2.8), `$\int\!\!\int \Phi\,\mathrm{d}k\,\mathrm{d}y =
+\int\!\!\int k\,y\,\Phi\,\mathrm{d}\log k\,\mathrm{d}\log y$`.  The
+plotted quantity is therefore
 
-independent of the box length.  The `$m = 0$` column carries no
-premultiplied content and is dropped, which is also what makes the
-maps read as fluctuation spectra: the wall-parallel mean of a state
-lives at `$(0, 0)$` alone, so at every plotted `$m \ge 1$` the stored
-perturbation-about-laminar spectrum ``r_*`` *is* the spectrum of the
-fluctuation about the `$x$`-`$z$` mean.
+.. math::  y\,k\,\Phi(y, k) = y \times m \times \text{entry}(y, m) ,
+
+with `$y$` the wall distance **in the plotted units** (`$y^+$` by
+default), which is what makes equal areas on the map equal energy in
+those same units.  ``--premultiply k`` drops the `$y$` factor and
+``none`` drops both.
+
+The `$m = 0$` column carries no premultiplied content and is dropped,
+which is also what makes the maps read as fluctuation spectra: the
+wall-parallel mean of a state lives at `$(0, 0)$` alone, so at every
+plotted `$m \ge 1$` the stored perturbation-about-laminar spectrum
+``r_*`` *is* the spectrum of the fluctuation about the `$x$`-`$z$`
+mean.
 
 Stored entries are additionally divided by ``volume_fac`` (the
 channel's wall-normal extent) so that the plain `$y$`-average of a
@@ -36,10 +47,10 @@ profile is the volume average.  Multiplying it back gives the local
 density, which is the quantity the paper plots; that is
 :attr:`MapOptions.volume_fac` and it is on by default.  What fixes
 that factor empirically is the ``r_*`` half of the spectra stream: at
-plane-Poiseuille `$Re = 4200$`, `$Re_\tau = 178.6$`, it puts
-`$\max k_z E^{x+}_{uu} \approx 3.8$` at `$y^+ \approx 14$`,
-`$\lambda_z^+ \approx 130$` -- the textbook near-wall peak.  Without
-it every map is a factor of two low.
+plane-Poiseuille `$Re = 4200$`, `$Re_\tau = 178.6$`, its `$k$`-only
+premultiplied map puts `$\max k_z E^{x+}_{uu} \approx 3.8$` at
+`$y^+ \approx 14$`, `$\lambda_z^+ \approx 130$` -- the textbook
+near-wall peak.  Without it every map is a factor of two low.
 
 Inner units
 ===========
@@ -56,6 +67,73 @@ the last two for an energy and for a budget rate (`$u_\tau^2$` and
 `$u_\tau^4/\nu$`).  ``Re_tau`` is a **measured** input, never derived
 here.
 
+Ensemble averaging
+==================
+Members are averaged sample by sample on **relative** time
+`$t - t_\mathrm{parent}$`, the clock since the perturbation, as
+:func:`dnsjax.analysis.twin.ensemble.aggregate_members` does: members
+start from different parent snapshots, so their absolute times do not
+match.  `$t_\mathrm{parent}$` comes from each member's ``twin.json``
+when the record is there and from the stream's first sample
+otherwise, and the frames rendered are the **intersection** of the
+members' relative grids, so a short or resumed member restricts the
+set rather than corrupting it.  With one shared ``dt`` and cadence
+this selects the same samples as matching by index, but keyed on the
+clock, which is what survives a member whose stream starts elsewhere.
+Any number of members works; ``--tree`` takes an
+``ensemble_setup.py build-twin`` tree and uses every member its
+``members.json`` lists.
+
+Folding the channel
+===================
+``--half mean`` (the default) averages the two channel halves at
+matching wall distance, which is legitimate and free statistics
+because the reflection `$R_y:\,(u,v,w)(x,y,z) \mapsto
+(u,-v,w)(x,-y,z)$` is a symmetry of the flow.  Every stored quantity
+is `$R_y$`-**even**, so the fold is a plain arithmetic mean with no
+sign flips: the spectra are moduli; `$\mathcal{P}^U$` flips both
+`$\Delta\hat v$` and `$\partial_y U$`; `$\mathcal{V}$`,
+`$\hat\varepsilon$` and `$\mathcal{W}$` pair each odd factor with a
+`$\partial_y$` or with the `$v$` slot; and each transfer term carries
+an even number of odd factors for the same reason.  The mid-plane
+pairs with itself and is **not** double counted, and the grid is
+checked for the symmetry the fold assumes rather than trusted.
+``--half lower`` / ``upper`` keep one wall instead, which is how a
+run's own asymmetry is inspected.
+
+Colour scales
+=============
+Non-negativity is **declared**, not inferred: the energies and the
+pseudo-dissipation are sums of squares (:data:`NON_NEGATIVE`) and get
+the grey scale, everything else the diverging one.  The declaration is
+asserted against the data once per series and a negative excursion is
+reported with its size relative to the peak -- at round-off it is
+truncation and the map is drawn regardless; anything larger is worth
+looking at, and the map is still drawn.  ``--signs-from-data`` infers
+the sign instead, for a stream this list does not cover.
+
+``--clim series`` freezes each panel's scale on the ensemble-global
+extremes of that quantity over the rendered frames, so a sequence is
+comparable frame to frame; the default ``frame`` rescales each figure
+to its own peak, which is what shows the shape while the difference
+field grows by four decades.  The sign family is decided once for the
+whole series either way, so a panel never changes colour map mid-run.
+
+Figure geometry
+===============
+**One decade is the same length on both axes** -- the constraint that
+makes a `$\lambda \propto y$` band read at 45 degrees -- so the axes
+box is `$(\text{decade} \times D_\lambda,\ \text{decade} \times D_y)$`
+for the decade counts `$D$` of the plotted limits, and
+``ax.set_aspect(1)`` holds it there.  That fixes the box's shape from
+the limits and leaves only its scale free, which ``--width`` sets
+(default 6.61546 in, the write-up's ``\linewidth``); ``--decade``
+sets it directly instead.  A **square** box therefore needs equal
+decade counts, which is a choice of ``--ylim`` rather than of sizing:
+on the full stored range `$y^+ \in [0.02, 179]$` against
+`$\lambda_z^+ \in [14, 1122]$` the box is 2.1 times taller than wide,
+and an eight-panel budget figure is correspondingly tall.
+
 Usage
 =====
 matplotlib is not a solver dependency; it lives in the ``plots``
@@ -65,9 +143,7 @@ dependency group::
         --members RUN1 RUN2 --out FIGDIR \
         --re 4200 --re-tau 178.62135279727977 --stride 10
 
-Every number above is a knob; ``--help`` lists the rest (contour
-levels, colour maps, figure width, which channel half, outer
-units, filename padding, frame and series selection).
+Every number above is a knob; ``--help`` lists the rest.
 
 As a library (a notebook on the cluster, one stream at a time)::
 
@@ -77,17 +153,14 @@ As a library (a notebook on the cluster, one stream at a time)::
     s = open_series(["twin1", "twin2"], "twin_ybudget", stride=10)
     opts = MapOptions(Units(re=4200.0, re_tau=178.62135279727977))
     m = make_map(s, "P_U_x", frame=24, options=opts)
-    draw_map(ax, m)
+    draw_map(ax, m, units=opts.units)
 
 :func:`open_series` memory-maps each member and reads only the
 selected records, so a single stream costs megabytes rather than the
 gigabyte the eager reader
 :func:`dnsjax.analysis.twin.yspectra.read_twin_yspectra` would pull
 in; the record layout, the format-version floors and the
-duplicate-``t`` policy are that reader's, mirrored here.  Members are
-aligned on **relative** time `$t - t_0$`, as
-:func:`dnsjax.analysis.twin.ensemble.aggregate_members` does, because
-members start from different parent snapshots.
+duplicate-``t`` policy are that reader's, mirrored here.
 """
 
 from __future__ import annotations
@@ -104,7 +177,6 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib.ticker import FuncFormatter
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from dnsjax.analysis.twin.yspectra import (
     MIN_YBUDGET_VERSION,
@@ -125,6 +197,21 @@ STEMS: dict[str, int] = {
 
 #: Velocity components of the ``twin_yspectra`` leading axis.
 COMPONENTS: tuple[str, ...] = ("u", "v", "w")
+
+#: Fields that are non-negative **by construction**, keyed by the base
+#: name: the two spectra prefixes are `$\tfrac12|\hat u|^2$` sums and
+#: ``eps`` is `$\nu(|\partial_y\hat u|^2 + k^2|\hat u|^2)$`.  ``V`` is
+#: deliberately absent -- the operator (discrete-Laplacian) viscous
+#: form is *not* sign-definite, as :mod:`dnsjax.twin.diagnostics`
+#: ("Dissipation form") sets out, however negative it happens to come
+#: out in any given run.
+NON_NEGATIVE: frozenset[str] = frozenset({"e", "r", "eps"})
+
+#: Below this fraction of the peak, a negative excursion in a declared
+#: non-negative field is reported as truncation rather than a defect.
+#: These are sums of squares, so round-off is the only mechanism and
+#: it lands many orders below this.
+SIGN_TOLERANCE: float = 1e-9
 
 #: Budget terms excluded from the ``sum`` virtual field: ``eps`` is
 #: the pseudo-dissipation companion of ``V`` (not a separate sink) and
@@ -164,20 +251,27 @@ LATEX_PREAMBLE: str = r"""
 #: Text width of that document, in inches (its ``\linewidth``).
 PAGE_LINEWIDTH: float = 6.61546
 
-#: Title offset (points) that clears a secondary abscissa's own label,
-#: and colour-bar offset (inches) that clears a secondary ordinate's.
+#: Panel margins, in inches, at the default font size.  The layout is
+#: placed explicitly (:func:`panel_geometry`) rather than by
+#: ``tight_layout``, because the equal-decade rule fixes the axes box
+#: and everything else has to be budgeted around it.
+_M_LEFT: float = 0.62  # ordinate label + its tick labels
+_M_RIGHT: float = 0.05  # trailing strip
+_M_TOP: float = 0.78  # top tick labels + secondary label + title
+_M_BOTTOM: float = 0.55  # bottom tick labels + abscissa label
+_RIGHT_AXIS: float = 0.62  # secondary ordinate, right of the box
+_CBAR_PAD: float = 0.08
+_CBAR_WIDTH: float = 0.10
+_CBAR_LABELS: float = 0.50
+_COL_GAP: float = 0.12
+_ROW_GAP: float = 0.10
+_SUP_HEIGHT: float = 0.36
+
+#: Title offset in points, inside the top margin budgeted above.
 _TITLE_PAD: float = 12.0
-_CBAR_PAD: float = 0.72
 
 #: Upper bound on the number of labelled colour-bar ticks.
 _BAR_TICKS: int = 6
-
-#: Inches a panel's decorations take beside and above/below its axes
-#: box (ordinate label + colour bar + secondary ordinate; title +
-#: secondary abscissa + abscissa label), and the figure's suptitle.
-_COL_OVERHEAD: float = 2.00
-_ROW_OVERHEAD: float = 1.35
-_SUP_OVERHEAD: float = 0.45
 
 
 # ── Units ────────────────────────────────────────────────────────────
@@ -223,6 +317,11 @@ class Units:
     def convert(self, values, kind: str):
         """Dispatch :meth:`energy` / :meth:`rate` on *kind*."""
         return self.energy(values) if kind == "energy" else self.rate(values)
+
+    @property
+    def suffix(self) -> str:
+        """``+`` on a symbol that is plotted in inner units."""
+        return "^+" if self.wall else ""
 
     @property
     def lambda_label(self) -> str:
@@ -283,7 +382,24 @@ class _Member:
     meta: dict
     records: np.memmap
     rows: np.ndarray  # record indices, ascending, unique in t
-    t_rel: np.ndarray  # their times relative to the member's first
+    t_rel: np.ndarray  # their times since the perturbation
+
+
+def _perturbation_time(path: Path, first_sample: float) -> float:
+    """The member's `$t_\\mathrm{parent}$`, the clock the ensemble uses.
+
+    ``twin.json``'s ``parent_t`` when the member record is there --
+    what :mod:`dnsjax.analysis.twin.series` uses, and the only one
+    that is right for a member whose stream begins at a resume rather
+    than at the perturbation.  Otherwise the stream's first sample.
+    """
+    record = path / "twin.json"
+    if record.is_file():
+        with open(record) as fh:
+            meta = json.load(fh)
+        if meta.get("parent_t") is not None:
+            return float(meta["parent_t"])
+    return first_sample
 
 
 def _open_member(path: Path, stem: str) -> _Member:
@@ -310,7 +426,8 @@ def _open_member(path: Path, stem: str) -> _Member:
     # Resume-by-append can repeat a seam row: keep its first copy,
     # the eager reader's policy.
     rows = np.sort(np.unique(t, return_index=True)[1])
-    return _Member(path, meta, records, rows, t[rows] - t[rows[0]])
+    t0 = _perturbation_time(path, float(t[rows[0]]))
+    return _Member(path, meta, records, rows, t[rows] - t0)
 
 
 @dataclass
@@ -318,18 +435,23 @@ class YSeries:
     r"""An ensemble-averaged, subsampled `$(y, k)$` stream.
 
     Fields are read and averaged on demand (and cached), so opening a
-    series is cheap however long the run.  ``index`` carries each
-    frame's record number on the members' common relative-time grid --
-    the number the output filenames use.
+    series is cheap however long the run and however many members it
+    has.  ``index`` carries each frame's position on the members'
+    common relative-time grid -- the number the output filenames use.
     """
 
     stem: str
     members: tuple[_Member, ...]
     rows: np.ndarray  # (n_members, n_frames) record index per member
     index: np.ndarray  # (n_frames,) position on the common grid
-    t_rel: np.ndarray  # (n_frames,) relative time
+    t_rel: np.ndarray  # (n_frames,) time since the perturbation
     meta: dict  # the first member's sidecar
     _cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
+
+    @property
+    def n_members(self) -> int:
+        """How many member streams are being averaged."""
+        return len(self.members)
 
     @property
     def y(self) -> np.ndarray:
@@ -399,7 +521,7 @@ class YSeries:
                     member.records[name][rows], dtype=np.float64
                 )
                 total = block if total is None else total + block
-            value = total / len(self.members)
+            value = total / self.n_members
         self._cache[name] = value
         return value
 
@@ -420,6 +542,26 @@ def _locate(key: np.ndarray, wanted: np.ndarray, path: Path) -> np.ndarray:
     return where
 
 
+def tree_members(tree: str | Path) -> list[Path]:
+    """Member directories of an ``ensemble_setup.py build-twin`` tree.
+
+    Reads the tree's ``members.json`` index, the same one
+    :func:`dnsjax.analysis.twin.ensemble.aggregate_members` walks.
+    """
+    tree = Path(tree)
+    with open(tree / "members.json") as fh:
+        spec = json.load(fh)
+    if spec.get("kind") != "twin":
+        raise ValueError(
+            f"{tree}/members.json is not a twin tree "
+            f"(kind = {spec.get('kind')!r})."
+        )
+    members = spec.get("members") or []
+    if not members:
+        raise ValueError(f"{tree}/members.json lists no members")
+    return [tree / record["dir"] for record in members]
+
+
 def open_series(
     members: list[str | Path],
     stem: str,
@@ -432,8 +574,8 @@ def open_series(
 
     *stride* keeps every *stride*-th record (the "subsample by 10" of
     a long run), *first* / *last* clip the common grid before that.
-    Members are aligned on relative time `$t - t_0$`: they start from
-    different parent snapshots, so absolute times do not match.
+    Members are aligned on time since the perturbation (module
+    docstring, "Ensemble averaging"); any number of them works.
     """
     if stem not in STEMS:
         raise ValueError(f"unknown stream {stem!r}; expected {set(STEMS)}")
@@ -454,12 +596,11 @@ def open_series(
             for member, key in zip(opened, keys, strict=True)
         ]
     )
-    index = _locate(keys[0], common, opened[0].path)
     return YSeries(
         stem=stem,
         members=tuple(opened),
         rows=rows,
-        index=index,
+        index=_locate(keys[0], common, opened[0].path),
         t_rel=common,
         meta=opened[0].meta,
     )
@@ -472,27 +613,26 @@ def open_series(
 class MapOptions:
     r"""Everything that turns a stored field into a plotted map.
 
-    *half* picks how the two channel halves collapse onto the single
-    wall distance a `$y^+$` ordinate needs -- ``"mean"`` averages them
-    (the grid is symmetric, so this is an arithmetic mean at matching
-    `$y^+$`), ``"lower"`` / ``"upper"`` keep one wall, which is how a
-    run's own asymmetry is inspected.  *volume_fac* multiplies the
-    stored `$y$`-mean density back to the local density the paper
-    plots; *premultiply* applies the `$m \times$` factor of the module
-    docstring.
+    *premultiply* is ``"ky"`` (the paper's (2.8), both axes
+    logarithmic), ``"k"`` or ``"none"``; *half* is how the two channel
+    halves collapse onto the one wall distance a `$y^+$` ordinate
+    needs (module docstring, "Folding the channel"); *volume_fac*
+    multiplies the stored `$y$`-mean density back to the local density
+    the paper plots.
 
     *smooth* is a centred running mean over that many adjacent
     wavenumbers, applied last.  It is off (``1``) by default and is
-    presentation only: a two-member ensemble mean of an *instantaneous*
-    field is genuinely rough mode to mode -- unlike the paper's
-    long-time averages of a stationary flow -- and the transfer terms
-    show it.  Widening this bins the map; it does not denoise it.
+    presentation only: a few-member ensemble mean of an
+    *instantaneous* field is genuinely rough mode to mode -- unlike
+    the paper's long-time averages of a stationary flow -- and the
+    transfer terms show it.  Widening this bins the map; it does not
+    denoise it.
     """
 
     units: Units
+    premultiply: str = "ky"
     half: str = "mean"
     volume_fac: bool = True
-    premultiply: bool = True
     smooth: int = 1
 
 
@@ -505,19 +645,28 @@ class Map:
     values: np.ndarray  # (n_y, n_lam)
     title: str  # LaTeX panel title, with normalisation
     name: str  # the stored field it came from
+    non_negative: bool  # declared or inferred; sets the colour family
 
 
 def _select_half(
     values: np.ndarray, y: np.ndarray, mode: str
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Collapse the channel onto one wall distance (:class:`MapOptions`).
+    """Collapse the channel onto one wall distance.
 
-    The wall-normal grid is symmetric about the centreline, so index
-    ``j`` pairs with ``n_y - 1 - j`` and, for odd ``n_y``, the
-    mid-plane with itself -- which is why ``"mean"`` needs no special
-    case there.  Returns the collapsed values and the wall distance
-    `$1 - |y|$` of the retained rows, ascending from the wall.
+    Index ``j`` pairs with ``n_y - 1 - j`` -- checked against the grid
+    rather than assumed -- and for odd ``n_y`` the mid-plane pairs with
+    itself, so ``"mean"`` neither needs a special case there nor
+    double counts it.  Every stored quantity is even under the
+    reflection, so the mean carries no sign flips; the argument is in
+    the module docstring, "Folding the channel".  Returns the
+    collapsed values and the wall distance `$1 - |y|$` of the retained
+    rows, ascending from the wall.
     """
+    if not np.allclose(y, -y[::-1], rtol=0.0, atol=1e-12):
+        raise ValueError(
+            "the wall-normal grid is not symmetric about the centreline, "
+            "so the R_y fold does not apply; use --half lower / upper"
+        )
     n_half = (y.size + 1) // 2
     lower = values[..., :n_half, :]
     upper = values[..., ::-1, :][..., :n_half, :]
@@ -545,12 +694,21 @@ def _running_mean(values: np.ndarray, window: int) -> np.ndarray:
         return values
     window += 1 - window % 2
     kernel = np.ones(window) / window
-    ones = np.ones(values.shape[-1])
-    norm = np.convolve(ones, kernel, mode="same")
+    norm = np.convolve(np.ones(values.shape[-1]), kernel, mode="same")
     smoothed = np.apply_along_axis(
         lambda row: np.convolve(row, kernel, mode="same"), -1, values
     )
     return smoothed / norm
+
+
+def field_kind(series: YSeries) -> str:
+    """``"energy"`` or ``"rate"``, by which stream *series* is."""
+    return "energy" if series.stem == "twin_yspectra" else "rate"
+
+
+def declared_non_negative(name: str) -> bool:
+    """Whether :data:`NON_NEGATIVE` covers a stored (or virtual) name."""
+    return name.rpartition("_")[0] in NON_NEGATIVE
 
 
 def field_title(
@@ -562,18 +720,20 @@ def field_title(
     """The LaTeX panel title for one stored (or virtual) field."""
     base, _, suffix = name.rpartition("_")
     wavenumber, superscript = MARGINALS[suffix]
-    kind = "energy" if series.stem == "twin_yspectra" else "rate"
-    factor = f"{wavenumber}\\," if options.premultiply else ""
+    kind = field_kind(series)
+    plus = options.units.suffix
+    factor = {
+        "ky": rf"{wavenumber}{plus} y{plus}\,",
+        "k": rf"{wavenumber}{plus}\,",
+        "none": "",
+    }[options.premultiply]
     if kind == "rate":
         body = TERM_LABELS.get(base, base.replace("_", r"\_"))
     else:
         delta = r"\Delta " if base == "e" else ""
         if component is None:
-            body = (
-                rf"\sum_\alpha E^{{{superscript}}}_{{{delta}\alpha}}"
-                if base == "e"
-                else rf"\sum_\alpha E^{{{superscript}}}_{{\alpha}}"
-            )
+            inner = rf"{delta}\alpha" if base == "e" else r"\alpha"
+            body = rf"\sum_\alpha E^{{{superscript}}}_{{{inner}}}"
         else:
             sub = f"{delta}{COMPONENTS[component]}"
             body = rf"E^{{{superscript}}}_{{{sub}}}"
@@ -587,13 +747,16 @@ def make_map(
     *,
     options: MapOptions,
     component: int | None = None,
+    non_negative: bool | None = None,
 ) -> Map:
     """Build one premultiplied map from a stored (or virtual) field.
 
     *name* is a stored field such as ``e_x`` / ``P_U_z``, or the
     virtual ``sum_x``; *component* selects a velocity component of a
     ``twin_yspectra`` field (``None`` sums the three).  *frame* indexes
-    the series' subsampled records.
+    the series' subsampled records.  *non_negative* overrides the
+    declaration of :data:`NON_NEGATIVE` -- what ``--signs-from-data``
+    and :func:`scan_panels` feed back in.
     """
     suffix = name.rpartition("_")[2]
     values = series.field(name)[frame]
@@ -602,37 +765,107 @@ def make_map(
     elif component is not None:
         raise ValueError(f"{series.stem}: {name} has no component axis")
 
-    harmonics = series.harmonics(suffix)
     values = values[:, 1:]  # m = 0 carries no premultiplied content
-    if options.premultiply:
-        values = values * harmonics[None, 1:]
+    if options.premultiply != "none":
+        values = values * series.harmonics(suffix)[None, 1:]
     if options.volume_fac:
         values = values * series.volume_fac
-    kind = "energy" if series.stem == "twin_yspectra" else "rate"
-    values = options.units.convert(values, kind)
+    values = options.units.convert(values, field_kind(series))
     values = values[:, ::-1]  # ascending in wavelength, as the axis is
 
     values, wall_distance = _select_half(values, series.y, options.half)
+    y = options.units.length(wall_distance)
+    if options.premultiply == "ky":
+        # The second logarithmic axis needs its own premultiplier, in
+        # the units the ordinate is drawn in (module docstring).
+        values = values * y[:, None]
     values = _running_mean(values, options.smooth)
     return Map(
         lam=options.units.length(series.wavelengths(suffix)),
-        y=options.units.length(wall_distance),
+        y=y,
         values=values,
         title=field_title(series, name, component, options),
         name=name,
+        non_negative=(
+            declared_non_negative(name)
+            if non_negative is None
+            else non_negative
+        ),
     )
 
 
-# ── Drawing ──────────────────────────────────────────────────────────
+# ── Colour scales ────────────────────────────────────────────────────
 
 
-def _bar_ticks(levels: np.ndarray) -> np.ndarray:
-    """At most :data:`_BAR_TICKS` of the contour levels, zero kept."""
-    every = max(1, math.ceil(levels.size / _BAR_TICKS))
-    if every == 1:
-        return levels
-    zero = int(np.argmin(np.abs(levels)))
-    return levels[zero % every :: every]
+@dataclass(frozen=True)
+class PanelScale:
+    """One panel's series-global range and its sign family."""
+
+    lo: float
+    hi: float
+    non_negative: bool
+
+
+def scan_panels(
+    series: YSeries,
+    panels: list[tuple[str, int | None]],
+    options: MapOptions,
+    *,
+    declared: bool = True,
+) -> tuple[dict[tuple[str, int | None], PanelScale], list[str]]:
+    """Series-global extremes per panel, and the sign-check report.
+
+    Walks every frame of every panel once -- the member means are
+    cached, so this is a set of NumPy reductions over arrays already
+    in memory -- and returns ``{(name, component): PanelScale}`` plus
+    the lines to print.  With *declared* the sign family comes from
+    :data:`NON_NEGATIVE` and the data only **checks** it; without, it
+    is inferred from the series-global minimum, which is what a stream
+    the declaration does not cover needs.
+
+    Either way the family is decided once for the whole series, so a
+    panel cannot change colour map from frame to frame.
+    """
+    scales: dict[tuple[str, int | None], PanelScale] = {}
+    notes: list[str] = []
+    for name, component in panels:
+        lo, hi = math.inf, -math.inf
+        for frame in range(series.t_rel.size):
+            values = make_map(
+                series,
+                name,
+                frame,
+                options=options,
+                component=component,
+                non_negative=True,  # irrelevant here; decided below
+            ).values
+            finite = values[np.isfinite(values)]
+            if finite.size:
+                lo = min(lo, float(finite.min()))
+                hi = max(hi, float(finite.max()))
+        if not math.isfinite(lo):
+            lo = hi = 0.0
+        label = (
+            name if component is None else f"{name}[{COMPONENTS[component]}]"
+        )
+        if declared and declared_non_negative(name):
+            non_negative = True
+            peak = max(abs(lo), abs(hi))
+            if lo < 0.0 and peak > 0.0:
+                ratio = -lo / peak
+                verdict = (
+                    "round-off, i.e. truncation"
+                    if ratio < SIGN_TOLERANCE
+                    else "ABOVE round-off -- worth a look"
+                )
+                notes.append(
+                    f"  {label}: declared non-negative, min/peak = "
+                    f"-{ratio:.3e} ({verdict}); drawn as non-negative"
+                )
+        else:
+            non_negative = lo >= 0.0
+        scales[(name, component)] = PanelScale(lo, hi, non_negative)
+    return scales, notes
 
 
 def nice_step(raw: float) -> float:
@@ -652,10 +885,13 @@ def nice_step(raw: float) -> float:
 def contour_levels(
     values: np.ndarray,
     n_levels: int,
+    *,
+    non_negative: bool,
+    data_range: tuple[float, float] | None = None,
     quantile: float | None = None,
     nice: bool = True,
-) -> tuple[np.ndarray, bool, float]:
-    """Contour levels for one map, and whether it is non-negative.
+) -> tuple[np.ndarray, float]:
+    """Contour levels for one map, and the end of its colour scale.
 
     A non-negative field gets bands from one step up to the peak,
     leaving the lowest band unfilled so the empty corners of the map
@@ -673,37 +909,51 @@ def contour_levels(
     it the near-zero band is one neutral-coloured band, as it should
     be, and no line is drawn through it.
 
-    With *nice* the step is rounded up to a round number
-    (:func:`nice_step`), which is what keeps the colour-bar labels
-    short across panels whose magnitudes differ by decades.
-
+    *data_range* freezes the scale on a range computed elsewhere
+    (``--clim series``); without it the map's own extremes are used.
     *quantile* (0-1) clips the peak to a quantile of ``|values|``
     instead of its maximum -- a guard against one near-wall cell
-    setting the scale.  Returns ``(levels, non_negative, vmax)``, the
-    last being the end of the colour scale, not of the data.
+    setting the scale.  With *nice* the step is rounded up to a round
+    number (:func:`nice_step`), which is what keeps the colour-bar
+    labels short across panels whose magnitudes differ by decades.
     """
     finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return np.asarray([]), True, 0.0
-    magnitude = np.abs(finite)
-    peak = (
-        float(magnitude.max())
-        if quantile is None
-        else float(np.quantile(magnitude, quantile))
-    )
+    if data_range is not None:
+        lo, hi = data_range
+    elif finite.size:
+        lo, hi = float(finite.min()), float(finite.max())
+    else:
+        return np.asarray([], dtype=float), 0.0
+    peak = max(abs(lo), abs(hi))
+    if quantile is not None and finite.size:
+        peak = float(np.quantile(np.abs(finite), quantile))
     if peak <= 0.0:
-        return np.asarray([]), bool(finite.min() >= 0.0), 0.0
+        return np.asarray([], dtype=float), 0.0
+
     step = peak / max(n_levels, 2)  # a filled band needs two levels
     if nice:
         step = nice_step(step)
-    if finite.min() >= 0.0:
-        top = math.ceil(peak / step)
-        levels = np.arange(1, top + 1) * step
-        return levels, True, float(levels[-1])
-    lo = min(math.floor(float(finite.min()) / step), -1)
-    hi = max(math.ceil(float(finite.max()) / step), 1)
-    levels = np.concatenate([np.arange(lo, 0), np.arange(1, hi + 1)]) * step
-    return levels, False, float(np.abs(levels).max())
+    if non_negative:
+        levels = np.arange(1, math.ceil(peak / step) + 1) * step
+        return levels, float(levels[-1])
+    below = min(math.floor(lo / step), -1)
+    above = max(math.ceil(hi / step), 1)
+    levels = (
+        np.concatenate([np.arange(below, 0), np.arange(1, above + 1)]) * step
+    )
+    return levels, float(np.abs(levels).max())
+
+
+def _bar_ticks(levels: np.ndarray) -> np.ndarray:
+    """At most :data:`_BAR_TICKS` of the contour levels, zero kept."""
+    every = max(1, math.ceil(levels.size / _BAR_TICKS))
+    if every == 1:
+        return levels
+    zero = int(np.argmin(np.abs(levels)))
+    return levels[zero % every :: every]
+
+
+# ── Drawing ──────────────────────────────────────────────────────────
 
 
 def draw_map(
@@ -714,10 +964,11 @@ def draw_map(
     n_levels: int = 10,
     cmap_positive: str = "Greys",
     cmap_signed: str = "RdBu_r",
+    data_range: tuple[float, float] | None = None,
     quantile: float | None = None,
     nice: bool = True,
     lines: bool = True,
-    colorbar: bool = True,
+    cax=None,
     secondary: bool = True,
     title: bool = True,
     xlim: tuple[float, float] | None = None,
@@ -726,24 +977,29 @@ def draw_map(
     """Draw one premultiplied map on *ax*; returns the contour set.
 
     Filled contours plus (redundant, deliberately) contour lines at
-    the same levels; grey-scale for a non-negative field and a
-    blue-white-red scale otherwise (:func:`contour_levels`).  With
-    *secondary* the outer-unit axes are added opposite the inner-unit
-    ones, as in the paper -- and the title is then lifted clear of the
-    top one's own label.
+    the same levels; grey-scale when ``map_.non_negative`` and a
+    blue-white-red scale otherwise.  Both axes are logarithmic and
+    ``set_aspect(1)`` holds one decade to the same length on each --
+    the layout of :func:`panel_geometry` sizes the box so that costs
+    nothing.  *cax* is where the colour bar goes (``None``: no bar).
     """
     ax.set_xscale("log")
     ax.set_yscale("log")
     above_wall = map_.y > 0.0  # the wall itself has no log position
     y, values = map_.y[above_wall], map_.values[above_wall]
-    levels, non_negative, vmax = contour_levels(
-        values, n_levels, quantile, nice
+    levels, vmax = contour_levels(
+        values,
+        n_levels,
+        non_negative=map_.non_negative,
+        data_range=data_range,
+        quantile=quantile,
+        nice=nice,
     )
 
     filled = None
     if levels.size:
-        cmap = cmap_positive if non_negative else cmap_signed
-        span = (0.0, vmax) if non_negative else (-vmax, vmax)
+        cmap = cmap_positive if map_.non_negative else cmap_signed
+        span = (0.0, vmax) if map_.non_negative else (-vmax, vmax)
         filled = ax.contourf(
             map_.lam,
             y,
@@ -774,26 +1030,22 @@ def draw_map(
 
     ax.set_xlim(*(xlim or (map_.lam.min(), map_.lam.max())))
     ax.set_ylim(*(ylim or (y.min(), y.max())))
+    # One decade, one length, on both axes: the constraint the whole
+    # layout is built around.  A no-op once panel_geometry has sized
+    # the box, and the guarantee if anything else moves the limits.
+    ax.set_aspect(1.0, adjustable="box", anchor="C")
     ax.set_xlabel(units.lambda_label)
     ax.set_ylabel(units.y_label)
 
-    divider = make_axes_locatable(ax)
-    twinned = secondary and units.wall
-    if twinned:
+    if secondary and units.wall:
         # The outer-unit twins of the two inner-unit axes; both are a
         # plain division by Re_tau, as in the paper's frames.
         outer = (lambda v: v / units.re_tau, lambda v: v * units.re_tau)
         ax.secondary_xaxis("top", functions=outer).set_xlabel(r"$\lambda/h$")
         ax.secondary_yaxis("right", functions=outer).set_ylabel(r"$y/h$")
     if title:
-        # tight_layout sizes the cell from the tight bbox (child axes
-        # included), but set_title still anchors to the axes box, so
-        # the pad has to clear the secondary abscissa by hand.
-        ax.set_title(map_.title, pad=_TITLE_PAD if twinned else None)
-    if colorbar and filled is not None:
-        cax = divider.append_axes(
-            "right", size="3.5%", pad=_CBAR_PAD if twinned else 0.1
-        )
+        ax.set_title(map_.title, pad=_TITLE_PAD)
+    if cax is not None and filled is not None:
         bar = ax.figure.colorbar(filled, cax=cax, ticks=_bar_ticks(levels))
         # Three significant digits inline, rather than a shared
         # exponent: the offset box sits over the secondary ordinate.
@@ -801,10 +1053,135 @@ def draw_map(
             FuncFormatter(lambda v, _pos: f"{v:.3g}")
         )
         bar.ax.tick_params(labelsize="small")
+    elif cax is not None:
+        cax.set_axis_off()
     return filled
 
 
 # ── Figures ──────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class PlotStyle:
+    """Figure-level knobs shared by the two builders.
+
+    *decade* is inches per decade, the one free parameter the
+    equal-decade rule leaves; ``None`` derives it from *width* so the
+    figure comes out exactly that wide (module docstring, "Figure
+    geometry").
+    """
+
+    width: float = PAGE_LINEWIDTH
+    decade: float | None = None
+    ncols: int = 2
+    n_levels: int = 10
+    cmap_positive: str = "Greys"
+    cmap_signed: str = "RdBu_r"
+    quantile: float | None = None
+    nice: bool = True
+    lines: bool = True
+    freeze_clim: bool = False
+    xlim: tuple[float, float] | None = None
+    ylim: tuple[float, float] | None = None
+    dpi: int = 200
+
+
+#: Inches a panel needs to the right of its axes box, and the pitch
+#: from one column's box to the next -- which has to carry the *next*
+#: column's ordinate labels (``_M_LEFT``) as well, not only this
+#: column's colour bar.
+_COL_AFTER: float = _RIGHT_AXIS + _CBAR_PAD + _CBAR_WIDTH + _CBAR_LABELS
+_COL_PITCH_EXTRA: float = _COL_AFTER + _COL_GAP + _M_LEFT
+
+
+@dataclass(frozen=True)
+class Geometry:
+    """A figure's placement, in inches and figure fractions."""
+
+    fig_w: float
+    fig_h: float
+    box_w: float
+    box_h: float
+    nrows: int
+    ncols: int
+
+    def axes_rect(self, panel: int) -> tuple[float, float, float, float]:
+        """``[left, bottom, width, height]`` of one panel's axes box."""
+        row, col = divmod(panel, self.ncols)
+        left = _M_LEFT + col * (self.box_w + _COL_PITCH_EXTRA)
+        top = (
+            _SUP_HEIGHT
+            + row * (_M_TOP + self.box_h + _M_BOTTOM + _ROW_GAP)
+            + _M_TOP
+        )
+        return (
+            left / self.fig_w,
+            1.0 - (top + self.box_h) / self.fig_h,
+            self.box_w / self.fig_w,
+            self.box_h / self.fig_h,
+        )
+
+    def cbar_rect(self, panel: int) -> tuple[float, float, float, float]:
+        """``[left, bottom, width, height]`` of its colour bar."""
+        left, bottom, _, height = self.axes_rect(panel)
+        return (
+            left + (self.box_w + _RIGHT_AXIS + _CBAR_PAD) / self.fig_w,
+            bottom,
+            _CBAR_WIDTH / self.fig_w,
+            height,
+        )
+
+
+def panel_geometry(
+    n_panels: int,
+    xlim: tuple[float, float],
+    ylim: tuple[float, float],
+    style: PlotStyle,
+) -> Geometry:
+    """Size a figure so one decade is one length on both axes.
+
+    The axes box is ``decade`` inches per decade in **both**
+    directions, so its shape follows from the limits alone; the
+    remaining freedom is the scale, taken from ``style.decade`` when
+    given and otherwise from ``style.width``, which then comes out
+    exact.  Everything around the box is a fixed inch budget (the
+    ``_M_*`` module constants), so the figure height is whatever the
+    panels need.
+    """
+    nrows = math.ceil(n_panels / style.ncols)
+    decades_x = math.log10(xlim[1] / xlim[0])
+    decades_y = math.log10(ylim[1] / ylim[0])
+    if style.decade is not None:
+        decade = style.decade
+    else:
+        usable = (
+            style.width
+            - _M_LEFT
+            - _M_RIGHT
+            - (style.ncols - 1) * (_COL_GAP + _M_LEFT)
+        )
+        box_w = usable / style.ncols - _COL_AFTER
+        if box_w <= 0.1:
+            raise ValueError(
+                f"--width {style.width:g} in leaves no room for "
+                f"{style.ncols} columns: labels and colour bar take about "
+                f"{_COL_AFTER + _M_LEFT:.2f} in of each.  Widen the "
+                "figure, drop a column, or set --decade."
+            )
+        decade = box_w / decades_x
+    box_w, box_h = decade * decades_x, decade * decades_y
+    fig_w = (
+        _M_LEFT
+        + style.ncols * (box_w + _COL_AFTER)
+        + (style.ncols - 1) * (_COL_GAP + _M_LEFT)
+        + _M_RIGHT
+    )
+    fig_h = (
+        _SUP_HEIGHT
+        + nrows * (_M_TOP + box_h + _M_BOTTOM)
+        + (nrows - 1) * _ROW_GAP
+    )
+    return Geometry(fig_w, fig_h, box_w, box_h, nrows, style.ncols)
 
 
 def _suptitle(series: YSeries, frame: int, units: Units) -> str:
@@ -818,123 +1195,94 @@ def _suptitle(series: YSeries, frame: int, units: Units) -> str:
     )
 
 
-@dataclass(frozen=True)
-class PlotStyle:
-    """Figure-level knobs shared by the two builders."""
-
-    width: float = PAGE_LINEWIDTH
-    aspect: float = 1.3  # of the axes box, not of the grid cell
-    ncols: int = 2
-    n_levels: int = 10
-    cmap_positive: str = "Greys"
-    cmap_signed: str = "RdBu_r"
-    quantile: float | None = None
-    nice: bool = True
-    lines: bool = True
-    xlim: tuple[float, float] | None = None
-    ylim: tuple[float, float] | None = None
-    dpi: int = 200
-
-
-def _grid(n_panels: int, style: PlotStyle):
-    """A figure holding *n_panels* panels, sized from the axes box.
-
-    A panel's decorations -- the ordinate label, the colour bar and
-    the two secondary axes -- cost a fixed amount of the cell whatever
-    the figure width, so the free parameter is the **axes box**, not
-    the cell: :data:`_COL_OVERHEAD` and :data:`_ROW_OVERHEAD` are what
-    the decorations take, and :attr:`PlotStyle.aspect` is the box's
-    own height/width.
-    """
-    nrows = math.ceil(n_panels / style.ncols)
-    box_w = max(style.width / style.ncols - _COL_OVERHEAD, 0.5)
-    height = nrows * (box_w * style.aspect + _ROW_OVERHEAD) + _SUP_OVERHEAD
-    fig, axes = plt.subplots(
-        nrows, style.ncols, figsize=(style.width, height), squeeze=False
-    )
-    return fig, axes.ravel()
-
-
-def _panel_figure(
+def panel_figure(
     series: YSeries,
     frame: int,
     panels: list[tuple[str, int | None]],
     options: MapOptions,
     style: PlotStyle,
+    scales: dict[tuple[str, int | None], PanelScale],
 ):
     """One figure, one ``(name, component)`` map per panel.
 
-    Shared body of :func:`figure_spectra` and :func:`figure_budget`:
-    lay the grid out, draw each map, blank the unused cells and title
-    the whole with the sample time in both unit systems.
+    Shared body of :func:`spectra_panels` and :func:`budget_panels`
+    figures.  Every panel of a figure shares one wavelength axis and
+    one wall-normal grid, so a single :func:`panel_geometry` sizes
+    them all.
     """
-    fig, axes = _grid(len(panels), style)
-    for ax, (name, component) in zip(axes, panels, strict=False):
-        map_ = make_map(
-            series, name, frame, options=options, component=component
+    maps = [
+        make_map(
+            series,
+            name,
+            frame,
+            options=options,
+            component=component,
+            non_negative=scales[(name, component)].non_negative,
         )
+        for name, component in panels
+    ]
+    above_wall = maps[0].y > 0.0
+    xlim = style.xlim or (maps[0].lam.min(), maps[0].lam.max())
+    ylim = style.ylim or (
+        maps[0].y[above_wall].min(),
+        maps[0].y[above_wall].max(),
+    )
+    geometry = panel_geometry(len(panels), xlim, ylim, style)
+
+    fig = plt.figure(figsize=(geometry.fig_w, geometry.fig_h))
+    for panel, (map_, key) in enumerate(zip(maps, panels, strict=True)):
+        scale = scales[key]
         draw_map(
-            ax,
+            fig.add_axes(geometry.axes_rect(panel)),
             map_,
             units=options.units,
             n_levels=style.n_levels,
             cmap_positive=style.cmap_positive,
             cmap_signed=style.cmap_signed,
+            data_range=(scale.lo, scale.hi) if style.freeze_clim else None,
             quantile=style.quantile,
             nice=style.nice,
             lines=style.lines,
-            xlim=style.xlim,
-            ylim=style.ylim,
+            cax=fig.add_axes(geometry.cbar_rect(panel)),
+            xlim=xlim,
+            ylim=ylim,
         )
-    for ax in axes[len(panels) :]:
-        ax.set_axis_off()
-    fig.suptitle(_suptitle(series, frame, options.units))
-    fig.tight_layout()
+    fig.suptitle(
+        _suptitle(series, frame, options.units),
+        y=1.0 - 0.3 * _SUP_HEIGHT / geometry.fig_h,
+        va="top",
+    )
     return fig
 
 
-def figure_spectra(
-    series: YSeries,
-    frame: int,
-    prefix: str,
-    marginal: str,
-    *,
-    options: MapOptions,
-    style: PlotStyle,
-):
-    """The componentwise spectra of one prefix and marginal.
-
-    Panels: the three velocity components and their sum -- the layout
-    of the paper's figure 11.
-    """
+def spectra_panels(prefix: str, marginal: str) -> list[tuple[str, int | None]]:
+    """The four panels of a spectra figure (the paper's figure 11)."""
     name = f"{prefix}_{marginal}"
-    panels = [(name, c) for c in range(len(COMPONENTS))] + [(name, None)]
-    return _panel_figure(series, frame, panels, options, style)
+    return [(name, c) for c in range(len(COMPONENTS))] + [(name, None)]
 
 
-def figure_budget(
-    series: YSeries,
-    frame: int,
-    marginal: str,
-    *,
-    options: MapOptions,
-    style: PlotStyle,
-):
+def budget_panels(
+    series: YSeries, marginal: str
+) -> list[tuple[str, int | None]]:
     """Every stored budget term of one marginal, plus their sum."""
-    names = [*series.terms, "sum"]
-    panels = [(f"{term}_{marginal}", None) for term in names]
-    return _panel_figure(series, frame, panels, options, style)
+    return [(f"{t}_{marginal}", None) for t in (*series.terms, "sum")]
 
 
 def apply_rcparams(usetex: bool, font_size: float = 11.0) -> None:
-    """The write-up's matplotlib style (fonts, preamble, tight bbox)."""
+    """The write-up's matplotlib style (fonts, preamble, exact size).
+
+    ``savefig.bbox`` is deliberately **not** ``"tight"``: the layout
+    budgets its own margins in inches (:func:`panel_geometry`), and
+    cropping them away would make the saved figure narrower than
+    ``--width``.
+    """
     plt.rcParams.update(
         {
             "text.usetex": usetex,
             "text.latex.preamble": LATEX_PREAMBLE if usetex else "",
             "font.size": font_size,
             "axes.titlesize": font_size * 0.9,
-            "savefig.bbox": "tight",
+            "savefig.bbox": None,
             "lines.linewidth": 1,
         }
     )
@@ -955,7 +1303,7 @@ def resolve_usetex(choice: str) -> bool:
 def available_series(
     spectra: YSeries | None, budget: YSeries | None
 ) -> dict[str, tuple[str, str, str]]:
-    """``tag -> (stream, prefix-or-empty, marginal)`` for what is on disk."""
+    """``tag -> (stream, prefix-or-empty, marginal)`` for what is here."""
     out: dict[str, tuple[str, str, str]] = {}
     if spectra is not None:
         for prefix in spectra.prefixes:
@@ -980,6 +1328,7 @@ def render_series(
     *,
     options: MapOptions,
     style: PlotStyle,
+    declared_signs: bool = True,
     fmt: str = "png",
     pad: int | None = None,
     quiet: bool = False,
@@ -988,21 +1337,26 @@ def render_series(
 
     Filenames are ``<tag>_<index>.<fmt>`` with *index* the record's
     position on the members' common time grid, zero-padded so a
-    lexical sort is the time order.
+    lexical sort is the time order.  The series is scanned once first
+    (:func:`scan_panels`) for the sign check and the frozen scale.
     """
+    panels = (
+        spectra_panels(prefix, marginal)
+        if prefix
+        else budget_panels(series, marginal)
+    )
+    scales, notes = scan_panels(
+        series, panels, options, declared=declared_signs
+    )
+    if notes and not quiet:
+        print("\n".join(notes), flush=True)
+
     target = out_dir / tag
     target.mkdir(parents=True, exist_ok=True)
     width = pad or len(str(int(series.index.max())))
     written: list[Path] = []
     for frame in range(series.t_rel.size):
-        if prefix:
-            fig = figure_spectra(
-                series, frame, prefix, marginal, options=options, style=style
-            )
-        else:
-            fig = figure_budget(
-                series, frame, marginal, options=options, style=style
-            )
+        fig = panel_figure(series, frame, panels, options, style, scales)
         path = target / f"{tag}_{int(series.index[frame]):0{width}d}.{fmt}"
         fig.savefig(path, dpi=style.dpi)
         plt.close(fig)
@@ -1019,12 +1373,17 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument(
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument(
         "--members",
         nargs="+",
-        required=True,
         metavar="DIR",
         help="dnsjax-twin run directories to ensemble-average",
+    )
+    source.add_argument(
+        "--tree",
+        metavar="ROOT",
+        help="ensemble_setup.py build-twin tree; every member is used",
     )
     p.add_argument(
         "--out", required=True, type=Path, help="output directory root"
@@ -1049,6 +1408,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="TAG",
         help="subset of series tags to render (default: all present)",
+    )
+    p.add_argument(
+        "--premultiply",
+        choices=("ky", "k", "none"),
+        default="ky",
+        help="premultiplier: both log axes, wavenumber only, or neither",
+    )
+    p.add_argument(
+        "--clim",
+        choices=("frame", "series"),
+        default="frame",
+        help="colour scale per figure, or frozen on the whole series",
+    )
+    p.add_argument(
+        "--signs-from-data",
+        action="store_true",
+        help="infer non-negativity instead of declaring it",
     )
     p.add_argument("--levels", type=int, default=10, help="contour levels")
     p.add_argument("--cmap-positive", default="Greys")
@@ -1089,12 +1465,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar=("LO", "HI"),
         help="wall-normal axis limits, in the plotted units",
     )
-    p.add_argument("--width", type=float, default=PAGE_LINEWIDTH)
     p.add_argument(
-        "--aspect",
+        "--width",
         type=float,
-        default=1.3,
-        help="axes-box height/width of one panel",
+        default=PAGE_LINEWIDTH,
+        help="figure width in inches (sets the decade length)",
+    )
+    p.add_argument(
+        "--decade",
+        type=float,
+        default=None,
+        help="inches per decade; overrides --width as the scale",
     )
     p.add_argument("--ncols", type=int, default=2)
     p.add_argument("--dpi", type=int, default=200)
@@ -1127,15 +1508,21 @@ def main(argv: list[str] | None = None) -> int:
     """Render every series of both streams for one member set."""
     args = build_parser().parse_args(argv)
     apply_rcparams(resolve_usetex(args.usetex))
+    members = (
+        tree_members(args.tree)
+        if args.tree
+        else [Path(m) for m in args.members]
+    )
     options = MapOptions(
         units=Units(args.re, args.re_tau, wall=not args.outer_units),
+        premultiply=args.premultiply,
         half=args.half,
         volume_fac=not args.no_volume_fac,
         smooth=args.smooth,
     )
     style = PlotStyle(
         width=args.width,
-        aspect=args.aspect,
+        decade=args.decade,
         ncols=args.ncols,
         n_levels=args.levels,
         cmap_positive=args.cmap_positive,
@@ -1143,6 +1530,7 @@ def main(argv: list[str] | None = None) -> int:
         quantile=args.quantile,
         nice=not args.exact_levels,
         lines=not args.no_lines,
+        freeze_clim=args.clim == "series",
         xlim=None if args.xlim is None else tuple(args.xlim),
         ylim=None if args.ylim is None else tuple(args.ylim),
         dpi=args.dpi,
@@ -1152,7 +1540,7 @@ def main(argv: list[str] | None = None) -> int:
     for stem in STEMS:
         try:
             opened[stem] = open_series(
-                args.members,
+                members,
                 stem,
                 stride=args.stride,
                 first=args.first,
@@ -1176,15 +1564,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.quiet:
         print(
-            f"{len(args.members)} member(s), Re = {args.re:g}, "
+            f"{len(members)} member(s), Re = {args.re:g}, "
             f"Re_tau = {args.re_tau:g}, stride {args.stride}, "
-            f"usetex {plt.rcParams['text.usetex']}",
+            f"premultiply {args.premultiply}, half {args.half}, "
+            f"clim {args.clim}, usetex {plt.rcParams['text.usetex']}",
             flush=True,
         )
     for tag in tags:
         stem, prefix, marginal = registry[tag]
         series = opened[stem]
-        assert series is not None
+        if series is None:  # pragma: no cover - the registry guards this
+            continue
         if not args.quiet:
             print(
                 f"{tag}: {series.t_rel.size} frames, "
@@ -1199,6 +1589,7 @@ def main(argv: list[str] | None = None) -> int:
             args.out,
             options=options,
             style=style,
+            declared_signs=not args.signs_from_data,
             fmt=args.format,
             pad=args.pad,
             quiet=args.quiet,

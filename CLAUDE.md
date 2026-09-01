@@ -753,11 +753,14 @@ All under `scripts/`; full rationale/usage in each module docstring.
   Bit-for-bit except the `stats*.dat` driving columns, which no
   reconstruction can give back as the *applied* force (why, and what
   it writes instead: its module docstring).
-- `twin_spectral_maps.py`: CLI + library rendering premultiplied
-  `(lambda, y)` contour maps of every field in an ensemble of twin
+- `twin_spectral_maps.py`: CLI + library rendering `k`- and
+  `y`-premultiplied `(lambda, y)` contour maps of every field in an
+  ensemble (`--members` or a `build-twin` `--tree`) of twin
   `twin_yspectra.bin` / `twin_ybudget.bin` streams, one figure per
-  sample, in inner units against a **measured** `Re_tau`. The only
-  script needing matplotlib -- `uv run --group plots python
+  sample, in inner units against a **measured** `Re_tau`. One decade
+  is one length on both axes, which fixes the panel shape from the
+  axis limits and leaves only `--width` free. The only script needing
+  matplotlib -- `uv run --group plots python
   scripts/twin_spectral_maps.py` (the `plots` dependency group;
   `uv sync` alone does not install it).
 - `wall_normal_resolution.py`: JAX-free `resolve`/`match`/`box` CLI
