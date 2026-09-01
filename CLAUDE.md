@@ -760,10 +760,13 @@ All under `scripts/`; full rationale/usage in each module docstring.
   `twin_yspectra.bin` / `twin_ybudget.bin` streams, one figure per
   sample, in inner units against a **measured** `Re_tau`, plus the
   decorrelation the difference and reference spectra make together.
-  Defaults: a linear ordinate (`--yscale log` restores the
-  log-log/`--premultiply ky` layout the maps started as) and square
-  panels (`--box-aspect`); the decade rule fixes the **abscissa**
-  from `--width` either way. The decorrelation's reference average
+  Defaults: log-log axes floored at `y+ = 1` (`Y_FLOOR_PLUS`),
+  premultiplied by `k` **only** -- the usual convention for a
+  spectrum, not the paper's `k y`, which `--premultiply ky` restores;
+  `--yscale linear` keeps the wall row and takes `--box-aspect` for
+  the panel shape, the decade rule fixing the abscissa either way.
+  Colour scales are read over the rows the box shows, floor included.
+  The decorrelation's reference average
   assumes the members subsample **one** reference trajectory --
   distinct absolute sample times are distinct reference states -- and
   reports the parent count so a set that is not can be spotted. The
