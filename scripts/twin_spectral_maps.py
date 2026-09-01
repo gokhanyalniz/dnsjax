@@ -254,11 +254,15 @@ TERM_LABELS: dict[str, str] = {
     "sum": r"\partial_t\hat{e}",
 }
 
-#: ``(wavenumber symbol, energy superscript)`` per stored suffix.
+#: ``(wavelength axis, energy superscript)`` per stored suffix.  A
+#: suffix names the axis that was **summed over**, so ``_x`` is the
+#: `$k_z$` marginal and its abscissa is `$\lambda_z$`.  The axis letter
+#: is what both the panel title and the two abscissa labels subscript,
+#: which is why it is stored rather than a ready-made ``k_z``.
 MARGINALS: dict[str, tuple[str, str]] = {
-    "x": ("k_z", "x"),
-    "z": ("k_x", "z"),
-    "x0": ("k_z", "x0"),
+    "x": ("z", "x"),
+    "z": ("x", "z"),
+    "x0": ("z", "x0"),
 }
 
 #: LaTeX preamble matching the ``perturbation_dynamics`` write-up.
@@ -343,10 +347,19 @@ class Units:
         """``+`` on a symbol that is plotted in inner units."""
         return "^+" if self.wall else ""
 
-    @property
-    def lambda_label(self) -> str:
-        """Abscissa label (primary axis)."""
-        return r"$\lambda^+$" if self.wall else r"$\lambda/h$"
+    def lambda_label(self, axis: str = "", *, outer: bool = False) -> str:
+        r"""Abscissa label for the wavelength of one marginal.
+
+        *axis* is that wavelength's own subscript -- ``z`` on the
+        `$k_z$` marginal, ``x`` on the `$k_x$` one (:data:`MARGINALS`)
+        -- and is empty only for a map that is not a single marginal.
+        *outer* forces outer units, which is what the secondary
+        abscissa wants while the primary one is in wall units.
+        """
+        lam = rf"\lambda_{{{axis}}}" if axis else r"\lambda"
+        if outer or not self.wall:
+            return rf"${lam}/h$"
+        return rf"${lam}^+$"
 
     @property
     def y_label(self) -> str:
@@ -667,6 +680,16 @@ class Map:
     name: str  # the stored field it came from
     non_negative: bool  # declared or inferred; sets the colour family
 
+    @property
+    def lam_axis(self) -> str:
+        r"""Which wavelength the abscissa is: ``x`` or ``z``.
+
+        Read off the stored suffix of :attr:`name`, the same way
+        :func:`field_title` reads the panel title's wavenumber, so a
+        panel and its axes cannot label different marginals.
+        """
+        return MARGINALS[self.name.rpartition("_")[2]][0]
+
     def drawn(self) -> tuple[np.ndarray, np.ndarray]:
         r"""The rows a logarithmic ordinate can show: ``y > 0``.
 
@@ -754,7 +777,8 @@ def field_title(
 ) -> str:
     """The LaTeX panel title for one stored (or virtual) field."""
     base, _, suffix = name.rpartition("_")
-    wavenumber, superscript = MARGINALS[suffix]
+    axis, superscript = MARGINALS[suffix]
+    wavenumber = rf"k_{{{axis}}}"
     kind = field_kind(series)
     plus = options.units.suffix
     factor = {
@@ -1099,14 +1123,16 @@ def draw_map(
     # layout is built around.  A no-op once panel_geometry has sized
     # the box, and the guarantee if anything else moves the limits.
     ax.set_aspect(1.0, adjustable="box", anchor="C")
-    ax.set_xlabel(units.lambda_label)
+    ax.set_xlabel(units.lambda_label(map_.lam_axis))
     ax.set_ylabel(units.y_label)
 
     if secondary and units.wall:
         # The outer-unit twins of the two inner-unit axes; both are a
         # plain division by Re_tau, as in the paper's frames.
         outer = (lambda v: v / units.re_tau, lambda v: v * units.re_tau)
-        ax.secondary_xaxis("top", functions=outer).set_xlabel(r"$\lambda/h$")
+        ax.secondary_xaxis("top", functions=outer).set_xlabel(
+            units.lambda_label(map_.lam_axis, outer=True)
+        )
         ax.secondary_yaxis("right", functions=outer).set_ylabel(r"$y/h$")
     if title:
         ax.set_title(map_.title, pad=_TITLE_PAD)
