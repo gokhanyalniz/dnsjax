@@ -18,8 +18,9 @@ Layout (one module per concern; none is imported by the top-level
   and the decorrelation ratio.
 - :mod:`.yspectra` -- readers for the wall-normal-resolved
   ``twin_yspectra.bin`` / ``twin_ybudget.bin`` streams, the
-  quadrature contraction, and the three-bin energies recovered from
-  them.
+  quadrature contraction, the three-bin energies recovered from
+  them, and the total-in-`$(y, k)$` fluctuation energy (the total
+  with the `$(0, 0)$` mode removed) that normalises a decorrelation.
 - :mod:`.lengths` -- integral length scales of the difference field
   from a paired snapshot.
 
@@ -54,6 +55,7 @@ from .spectra import (
 from .yspectra import (
     YResolvedData,
     bin_energies,
+    fluctuation_energy,
     integrate_y,
     read_twin_ybudget,
     read_twin_yspectra,
@@ -71,6 +73,7 @@ __all__ = [
     "decorrelation_ratio",
     "fit_exponential_rate",
     "fit_linear_rate",
+    "fluctuation_energy",
     "integral_lengths",
     "integral_lengths_from_modes",
     "integrate_y",

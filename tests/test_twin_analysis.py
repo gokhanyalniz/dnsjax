@@ -867,6 +867,40 @@ def test_yspectra_reader() -> None:
     print("twin_yspectra reader (round trip, seam, truncation, floor): OK")
 
 
+def test_fluctuation_energy() -> None:
+    """The `(0,0)`-free total, and that both marginals agree on it."""
+    from dnsjax.analysis.twin import fluctuation_energy
+
+    rng = np.random.default_rng(11)
+    w = np.asarray(_y_sidecar({})["y_weights"])
+    # A consistent pair of marginals: one non-negative mode energy
+    # summed over the axis each of them contracts, and its k_x = 0
+    # plane.  This is the structure the writer produces, so the two
+    # marginals must report the same total.
+    modes = rng.random((3, NY, N_KZ, N_KX))
+    r_x = modes.sum(axis=-1)
+    r_z = modes.sum(axis=-2)
+    r_x0 = modes[..., 0]
+
+    total = np.einsum("j,cjzx->c", w, modes)
+    mean_mode = np.einsum("j,cj->c", w, modes[..., 0, 0])
+    want = total - mean_mode
+    assert_allclose(fluctuation_energy(r_x, r_x0, w), want, rtol=1e-14)
+    assert_allclose(fluctuation_energy(r_z, r_x0, w), want, rtol=1e-14)
+
+    # The mean mode is a real subtraction, and it is the (0,0) mode
+    # alone -- not the whole k_z = 0 column, which r_x[..., 0] is.
+    assert np.all(mean_mode > 0.0)
+    wrong = total - np.einsum("j,cj->c", w, r_x[..., 0])
+    assert not np.allclose(wrong, want)
+
+    # Leading axes are free: one component alone gives a scalar.
+    one = fluctuation_energy(r_x[0], r_x0[0], w)
+    assert one.shape == ()
+    assert_allclose(one, want[0], rtol=1e-14)
+    print("fluctuation_energy (both marginals, (0,0) removal): OK")
+
+
 def test_ybudget_reader() -> None:
     """``twin_ybudget`` round trip against the sidecar's term list."""
     from dnsjax.analysis.twin import integrate_y, read_twin_ybudget
@@ -917,6 +951,7 @@ if __name__ == "__main__":
     test_fits()
     test_spectra_reader()
     test_yspectra_reader()
+    test_fluctuation_energy()
     test_ybudget_reader()
     test_integral_lengths_core()
     test_build_twin()

@@ -2,15 +2,18 @@ r"""Premultiplied `$(\lambda, y)$` maps of the twin `$(y, k)$` streams.
 
 Renders one figure per recorded sample of ``twin_yspectra.bin`` and
 ``twin_ybudget.bin`` (:mod:`dnsjax.twin.yspectra`), ensemble-averaged
-over a set of ``dnsjax-twin`` member directories, in the style of the
+over a set of ``dnsjax-twin`` member directories, following the
 premultiplied spectral maps of Cho, Hwang & Choi, *J. Fluid Mech.*
 **854**, 474-504 (2018) -- their figures 3 and 11: wavelength on a
-logarithmic abscissa, wall-normal position on a logarithmic ordinate,
-filled contours plus contour lines, inner units on the primary axes
-and outer units on the secondary ones.
+logarithmic abscissa, filled contours plus contour lines, inner units
+on the primary axes and outer units on the secondary ones.  The
+ordinate is **linear** here rather than the paper's logarithmic one;
+``--yscale log`` restores it, and the two carry different
+premultipliers (next section).
 
 Both wavenumber marginals are drawn (``_z`` gives `$\lambda_x$`, the
-paper shows only `$\lambda_z$`), plus the stored `$k_x = 0$` plane.
+paper shows only `$\lambda_z$`), plus the stored `$k_x = 0$` plane and
+the decorrelation the difference and reference spectra make together.
 
 Premultiplication
 =================
@@ -94,6 +97,69 @@ Any number of members works; ``--tree`` takes an
 ``ensemble_setup.py build-twin`` tree and uses every member its
 ``members.json`` lists.
 
+Decorrelation
+=============
+Beside the difference spectra ``e_*`` and the reference spectra
+``r_*``, each of the two marginals carries a third series: the
+difference energy in units of the reference field's own fluctuation
+energy,
+
+.. math::
+    \mathcal{D}_\alpha(y, m) = \frac{e_\alpha(y, m)}
+        {2\,\bigl(R_\alpha - R^{00}_\alpha\bigr)} ,
+    \quad R_\alpha = \sum_m \sum_j w_j\, r^{x}_\alpha(y_j, m) ,
+    \quad R^{00}_\alpha = \sum_j w_j\, r^{x0}_\alpha(y_j, 0) ,
+
+i.e. the total reference energy over `$y$` **and** `$k$` less its
+`$(0, 0)$` mode -- subtracted first, then doubled.  Two statistically
+identical fields that have decorrelated completely differ by twice the
+energy of either, so `$\mathcal{D}$` saturates at 1.  The mean mode is
+common to both states and never decorrelates, which is why it leaves
+the denominator; it dominates it otherwise, and a saturated
+plane-Poiseuille pair whose `$R_u$` is some 89 % its own `$(0, 0)$`
+mode would read 0.11.
+
+This is the globally normalised sibling of
+:func:`dnsjax.analysis.twin.decorrelation_ratio`, which divides each
+mode by its *own* reference energy instead.  Being a plain ratio it
+carries **no** premultiplier and no unit conversion: the
+`$\tfrac12$`, ``volume_fac`` and `$u_\tau^2$` cancel between its two
+halves, so ``--premultiply``, ``--no-volume-fac`` and
+``--outer-units`` do not reach these panels.  What holds in place of
+an area rule is `$\sum_j w_j \sum_m \mathcal{D} = E_\Delta /
+2(R - R^{00})$`, the pair's scalar decorrelation, printed per frame.
+The drawn map is the part of that sum the wavelength axis can carry:
+the `$m = 0$` column is dropped as everywhere else, and ``--half
+mean`` halves it as it does every map.
+
+The denominator is **one** number per component for the whole series,
+so the frames share a scale and the sequence shows the approach to
+saturation.  It is averaged over **distinct reference instants**: the
+members of an ensemble are subsampled from one long turbulent run, so
+their reference halves are not independent -- members built from one
+parent snapshot carry bit-identical ``r_*``, and members from
+different parents repeat each other wherever their windows overlap.
+Samples are therefore grouped on **absolute** time (unlike the
+ensemble alignment above, which is relative) and each instant counted
+once.  Grouped to a tolerance (:data:`_T_ATOL`), not by a rounded key
+-- one member accumulates its way to a shared instant while another
+starts there, so their stored times differ in the last bits, and a
+pair that straddles a bin edge would be counted twice however fine
+the bin.
+Every record of every stream feeds that average, independently of
+``--stride`` / ``--first`` / ``--last``; ``--ref-stride`` subsamples
+it for a cheaper pass.
+
+That key is exactly right for **one** reference trajectory and wrong
+without it -- members subsampled from two *different* turbulent runs
+would be merged wherever their absolute times met.  Nothing recorded
+today separates them: ``twin.json`` carries ``parent`` and
+``parent_t`` (the member's own start) and the harvest manifest the
+source ``run_dir``, but neither is a signature of the trajectory, and
+neither travels into the stream.  Until one does, the report prints
+how many distinct parent snapshots are in play beside the instant
+count, so a member set that is not one trajectory is at least visible.
+
 Folding the channel
 ===================
 ``--half mean`` (the default) averages the two channel halves at
@@ -114,8 +180,9 @@ run's own asymmetry is inspected.
 Colour scales
 =============
 Non-negativity is **declared**, not inferred: the energies and the
-pseudo-dissipation are sums of squares (:data:`NON_NEGATIVE`) and get
-the grey scale, everything else the diverging one.  The declaration is
+pseudo-dissipation are sums of squares and the decorrelation is one
+over a positive constant (:data:`NON_NEGATIVE`), so those get the
+grey scale and everything else the diverging one.  The declaration is
 asserted against the data once per series and a negative excursion is
 reported with its size relative to the peak -- at round-off it is
 truncation and the map is drawn regardless; anything larger is worth
@@ -237,7 +304,23 @@ from matplotlib.ticker import FuncFormatter
 from dnsjax.analysis.twin.yspectra import (
     MIN_YBUDGET_VERSION,
     MIN_YSPECTRA_VERSION,
+    fluctuation_energy,
 )
+
+#: Absolute-time tolerance for deciding that two samples hold the
+#: **same** reference instant (:meth:`YSeries._distinct_instants`).
+#: Two members reach one instant by different arithmetic -- one
+#: accumulates to it from its own parent, the other starts there --
+#: so their stored times differ in the last bits.  A *rounded key*
+#: would not do here however fine: two values a picosecond apart
+#: still land in different bins when they straddle one bin's edge,
+#: and the pair would be counted twice.  This is three decades above
+#: the accumulated round-off below and five below any sampling
+#: cadence, which is the other side it has to clear -- were it not,
+#: consecutive samples would chain into one instant, and
+#: :meth:`YSeries._distinct_instants` refuses that rather than
+#: silently merging them.
+_T_ATOL: float = 1e-6
 
 #: Decimals used to key relative times when intersecting members.
 #: The cadence is ``it_* * dt`` (order 1 here) and the stored times
@@ -254,14 +337,25 @@ STEMS: dict[str, int] = {
 #: Velocity components of the ``twin_yspectra`` leading axis.
 COMPONENTS: tuple[str, ...] = ("u", "v", "w")
 
+#: Field prefix of the virtual decorrelation series (module
+#: docstring, "Decorrelation").  It is built from the stored ``e_*``
+#: and ``r_*`` rather than read, so it names no stored field.
+DECORR: str = "decorr"
+
+#: Records read from a memory-mapped stream at a time while the
+#: reference normalisation is accumulated.  Each is reduced to three
+#: numbers immediately, so this bounds that pass's memory.
+_REF_CHUNK: int = 64
+
 #: Fields that are non-negative **by construction**, keyed by the base
-#: name: the two spectra prefixes are `$\tfrac12|\hat u|^2$` sums and
-#: ``eps`` is `$\nu(|\partial_y\hat u|^2 + k^2|\hat u|^2)$`.  ``V`` is
+#: name: the two spectra prefixes are `$\tfrac12|\hat u|^2$` sums,
+#: ``decorr`` is one of them over a positive constant, and ``eps`` is
+#: `$\nu(|\partial_y\hat u|^2 + k^2|\hat u|^2)$`.  ``V`` is
 #: deliberately absent -- the operator (discrete-Laplacian) viscous
 #: form is *not* sign-definite, as :mod:`dnsjax.twin.diagnostics`
 #: ("Dissipation form") sets out, however negative it happens to come
 #: out in any given run.
-NON_NEGATIVE: frozenset[str] = frozenset({"e", "r", "eps"})
+NON_NEGATIVE: frozenset[str] = frozenset({"e", "r", "eps", DECORR})
 
 #: Below this fraction of the peak, a negative excursion in a declared
 #: non-negative field is reported as truncation rather than a defect.
@@ -451,24 +545,28 @@ class _Member:
     meta: dict
     records: np.memmap
     rows: np.ndarray  # record indices, ascending, unique in t
-    t_rel: np.ndarray  # their times since the perturbation
+    t_abs: np.ndarray  # their absolute simulation times
+    t_rel: np.ndarray  # the same, since the perturbation
+    parent: str  # its parent snapshot, "" when unrecorded
 
 
-def _perturbation_time(path: Path, first_sample: float) -> float:
-    """The member's `$t_\\mathrm{parent}$`, the clock the ensemble uses.
+def _twin_record(path: Path) -> dict:
+    """A member's parsed ``twin.json``, or ``{}`` when it has none.
 
-    ``twin.json``'s ``parent_t`` when the member record is there --
-    what :mod:`dnsjax.analysis.twin.series` uses, and the only one
-    that is right for a member whose stream begins at a resume rather
-    than at the perturbation.  Otherwise the stream's first sample.
+    Two fields are read off it.  ``parent_t`` is the member's
+    `$t_\\mathrm{parent}$`, the clock the ensemble aligns on -- what
+    :mod:`dnsjax.analysis.twin.series` uses, and the only one that is
+    right for a member whose stream begins at a resume rather than at
+    the perturbation; the stream's first sample stands in when the
+    record is absent.  ``parent`` names the snapshot the reference
+    trajectory was picked up from, which the reference normalisation
+    reports (module docstring, "Decorrelation").
     """
     record = path / "twin.json"
-    if record.is_file():
-        with open(record) as fh:
-            meta = json.load(fh)
-        if meta.get("parent_t") is not None:
-            return float(meta["parent_t"])
-    return first_sample
+    if not record.is_file():
+        return {}
+    with open(record) as fh:
+        return json.load(fh)
 
 
 def _open_member(path: Path, stem: str) -> _Member:
@@ -495,8 +593,19 @@ def _open_member(path: Path, stem: str) -> _Member:
     # Resume-by-append can repeat a seam row: keep its first copy,
     # the eager reader's policy.
     rows = np.sort(np.unique(t, return_index=True)[1])
-    t0 = _perturbation_time(path, float(t[rows[0]]))
-    return _Member(path, meta, records, rows, t[rows] - t0)
+    t_abs = t[rows]
+    record = _twin_record(path)
+    parent_t = record.get("parent_t")
+    t0 = float(t_abs[0]) if parent_t is None else float(parent_t)
+    return _Member(
+        path,
+        meta,
+        records,
+        rows,
+        t_abs,
+        t_abs - t0,
+        str(record.get("parent", "")),
+    )
 
 
 @dataclass
@@ -515,7 +624,11 @@ class YSeries:
     index: np.ndarray  # (n_frames,) position on the common grid
     t_rel: np.ndarray  # (n_frames,) time since the perturbation
     meta: dict  # the first member's sidecar
+    ref_stride: int = 1  # subsampling of the reference normalisation
     _cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
+    _reference: tuple[np.ndarray, list[str]] | None = field(
+        default=None, repr=False
+    )
 
     @property
     def n_members(self) -> int:
@@ -594,6 +707,156 @@ class YSeries:
         self._cache[name] = value
         return value
 
+    def reference_scale(self) -> np.ndarray:
+        r"""`$R_\alpha - R^{00}_\alpha$` per component, cached.
+
+        The reference field's total-in-`$(y, k)$` energy without its
+        `$(0, 0)$` mode, averaged over the **distinct** reference
+        instants of the member set: the denominator of the
+        decorrelation, bar the factor of two the caller applies
+        (module docstring, "Decorrelation").
+        """
+        return self._resolved_reference()[0]
+
+    def reference_report(self) -> list[str]:
+        """The lines describing that normalisation, for printing."""
+        return self._resolved_reference()[1]
+
+    def _resolved_reference(self) -> tuple[np.ndarray, list[str]]:
+        """The reference normalisation and its report, built once."""
+        if self._reference is None:
+            self._reference = self._build_reference()
+        return self._reference
+
+    def decorrelation(self, frame: int) -> float:
+        r"""The pair's scalar decorrelation at one frame.
+
+        `$E_\Delta / 2(R - R^{00})$`, summed over every component,
+        wavenumber and wall-normal node -- the number the eight
+        `$\mathcal{D}$` panels distribute over `$(\lambda, y)$`.  It
+        keeps the `$m = 0$` column the maps have to drop, so it is the
+        whole of the sum and they are the part of it a wavelength axis
+        can carry.  Read off ``e_x``; either marginal would do, both
+        being complete sums over the mode plane.
+        """
+        total = np.einsum("j,cjk->", self.y_weights, self.field("e_x")[frame])
+        return float(total / (2.0 * self.reference_scale().sum()))
+
+    def _build_reference(self) -> tuple[np.ndarray, list[str]]:
+        """Accumulate the reference normalisation over the members."""
+        if "r" not in self.prefixes:
+            raise ValueError(
+                f"{self.stem}: the stream carries no reference spectra "
+                "(twin.spectra_ref was off), so there is nothing to "
+                "normalise a decorrelation by."
+            )
+        picks, n_instants, n_samples = self._distinct_instants()
+        total = np.zeros(len(COMPONENTS))
+        for member, rows in zip(self.members, picks, strict=True):
+            if rows.size == 0:  # every instant is another member's
+                continue
+            self._check_marginals(member, int(rows[0]))
+            for start in range(0, rows.size, _REF_CHUNK):
+                take = rows[start : start + _REF_CHUNK]
+                total += fluctuation_energy(
+                    np.asarray(member.records["r_x"][take], dtype=np.float64),
+                    np.asarray(member.records["r_x0"][take], dtype=np.float64),
+                    self.y_weights,
+                ).sum(axis=0)
+        scale = total / n_instants
+        if not np.all(scale > 0.0):
+            raise ValueError(
+                "the reference fluctuation energy is not positive in "
+                f"every component ({scale.tolist()}); a decorrelation "
+                "cannot be normalised by it."
+            )
+        parents = {m.parent for m in self.members if m.parent}
+        report = [
+            f"reference normalisation, {self.n_members} member(s): "
+            f"{n_instants} distinct instants of {n_samples} samples"
+            + (f", stride {self.ref_stride}" if self.ref_stride > 1 else "")
+            + f"; {len(parents) or 'unrecorded'} parent snapshot(s)",
+            "  R - R00 = "
+            + "  ".join(
+                f"{c} {v:.6g}" for c, v in zip(COMPONENTS, scale, strict=True)
+            )
+            + f"  sum {scale.sum():.6g}",
+        ]
+        return scale, report
+
+    def _distinct_instants(self) -> tuple[list[np.ndarray], int, int]:
+        r"""Record indices covering each reference instant once.
+
+        Returns one ascending index array per member -- together they
+        name every distinct instant exactly once -- with the instant
+        and sample counts.  Samples are grouped by **proximity in
+        absolute time** rather than by a rounded key: the two are the
+        same until a pair straddles a bin edge, where a key splits
+        them and a tolerance does not (:data:`_T_ATOL`).  Whichever
+        member sorts first owns a shared instant; they hold the same
+        reference state, so it does not matter which.
+
+        The grouping is transitive, so the tolerance has to stay well
+        below the sampling cadence.  That is checked rather than
+        assumed: a stream whose own samples come closer than the
+        tolerance would have distinct instants chained into one.
+        """
+        times = [m.t_abs[:: self.ref_stride] for m in self.members]
+        rows = [m.rows[:: self.ref_stride] for m in self.members]
+        for member, own in zip(self.members, times, strict=True):
+            gap = float(np.min(np.diff(own))) if own.size > 1 else np.inf
+            if gap <= _T_ATOL:
+                raise ValueError(
+                    f"{member.path}: samples are {gap:g} apart in time, "
+                    f"at or below the {_T_ATOL:g} tolerance that decides "
+                    "whether two of them are the same reference instant; "
+                    "distinct instants would be chained into one."
+                )
+        flat = np.concatenate(times)
+        owner = np.concatenate(
+            [np.full(t.size, i, dtype=int) for i, t in enumerate(times)]
+        )
+        index = np.concatenate([np.arange(t.size) for t in times])
+        order = np.argsort(flat, kind="stable")
+        opening = np.ones(order.size, dtype=bool)
+        opening[1:] = np.diff(flat[order]) > _T_ATOL
+        keep, owned = index[order[opening]], owner[order[opening]]
+        picks = [
+            np.sort(member_rows[keep[owned == i]])
+            for i, member_rows in enumerate(rows)
+        ]
+        return picks, int(opening.sum()), int(flat.size)
+
+    def _check_marginals(self, member: _Member, row: int) -> None:
+        """Both marginals must report the same reference total.
+
+        ``r_x`` sums over `$k_x$` and ``r_z`` over `$k_z$`, so each is
+        already a complete one-sided sum over the mode plane and the
+        two are an independent reading of the same number -- a
+        mismatch is a convention slip, not noise.  Checked once per
+        member, on the first record its instants contribute.
+        """
+        block = member.records[row]
+        mean_plane = np.asarray(block["r_x0"], dtype=np.float64)
+        by_x, by_z = (
+            fluctuation_energy(
+                np.asarray(block[name], dtype=np.float64),
+                mean_plane,
+                self.y_weights,
+            )
+            for name in ("r_x", "r_z")
+        )
+        tol = 1e-9 if member.meta["value_dtype"] == "<f8" else 1e-4
+        if not np.allclose(
+            by_x, by_z, rtol=tol, atol=tol * float(np.max(np.abs(by_x)))
+        ):
+            raise ValueError(
+                f"{member.path}: the k_z and k_x marginals disagree on "
+                f"the reference energy at t = {member.records['t'][row]:g} "
+                f"({by_x.tolist()} vs {by_z.tolist()}); one of them is "
+                "not a complete sum over the mode plane."
+            )
+
 
 def _locate(key: np.ndarray, wanted: np.ndarray, path: Path) -> np.ndarray:
     """Positions of *wanted* in the ascending *key*, verified.
@@ -638,6 +901,7 @@ def open_series(
     stride: int = 1,
     first: int = 0,
     last: int | None = None,
+    ref_stride: int = 1,
 ) -> YSeries:
     """Open one stream across *members* on their common time grid.
 
@@ -645,6 +909,11 @@ def open_series(
     a long run), *first* / *last* clip the common grid before that.
     Members are aligned on time since the perturbation (module
     docstring, "Ensemble averaging"); any number of them works.
+
+    *ref_stride* subsamples the reference normalisation instead, and
+    is the only one of the four that does not select what is drawn:
+    that average runs over every record either way, on absolute time
+    (module docstring, "Decorrelation").
     """
     if stem not in STEMS:
         raise ValueError(f"unknown stream {stem!r}; expected {set(STEMS)}")
@@ -672,6 +941,7 @@ def open_series(
         index=_locate(keys[0], common, opened[0].path),
         t_rel=common,
         meta=opened[0].meta,
+        ref_stride=ref_stride,
     )
 
 
@@ -688,7 +958,8 @@ class MapOptions:
     halves collapse onto the one wall distance a `$y^+$` ordinate
     needs (module docstring, "Folding the channel"); *volume_fac*
     multiplies the stored `$y$`-mean density back to the local density
-    the literature plots.
+    the literature plots.  The decorrelation panels are a ratio and
+    take none of those three (module docstring, "Decorrelation").
 
     *smooth* is a centred running mean over that many adjacent
     wavenumbers, applied last.  It is off (``1``) by default and is
@@ -820,6 +1091,11 @@ def field_title(
     """The LaTeX panel title for one stored (or virtual) field."""
     base, _, suffix = name.rpartition("_")
     axis, superscript = MARGINALS[suffix]
+    if base == DECORR:
+        # A ratio: no premultiplier, no normalisation.  Its definition
+        # belongs in the caption (module docstring, "Decorrelation").
+        sub = r"\alpha" if component is None else COMPONENTS[component]
+        return rf"$\mathcal{{D}}^{{{superscript}}}_{{{sub}}}$"
     wavenumber = rf"k_{{{axis}}}"
     kind = field_kind(series)
     plus = options.units.suffix
@@ -852,31 +1128,47 @@ def make_map(
 ) -> Map:
     """Build one premultiplied map from a stored (or virtual) field.
 
-    *name* is a stored field such as ``e_x`` / ``P_U_z``, or the
-    virtual ``sum_x``; *component* selects a velocity component of a
-    ``twin_yspectra`` field (``None`` sums the three).  *frame* indexes
-    the series' subsampled records.  *non_negative* overrides the
-    declaration of :data:`NON_NEGATIVE` -- what ``--signs-from-data``
-    and :func:`scan_panels` feed back in.
+    *name* is a stored field such as ``e_x`` / ``P_U_z``, or one of
+    the virtual ``sum_x`` / ``decorr_x``; *component* selects a
+    velocity component of a ``twin_yspectra`` field (``None`` sums the
+    three).  *frame* indexes the series' subsampled records.
+    *non_negative* overrides the declaration of :data:`NON_NEGATIVE`
+    -- what ``--signs-from-data`` and :func:`scan_panels` feed back in.
+
+    A ``decorr_*`` map is ``e_*`` over twice the series' reference
+    scale, and the division happens **after** the component reduction:
+    the summed panel is one ratio of sums, not a sum of three ratios.
     """
-    suffix = name.rpartition("_")[2]
-    values = series.field(name)[frame]
+    base, _, suffix = name.rpartition("_")
+    decorr = base == DECORR
+    values = series.field(f"e_{suffix}" if decorr else name)[frame]
     if series.stem == "twin_yspectra":
-        values = values.sum(axis=0) if component is None else values[component]
+        scale = series.reference_scale() if decorr else None
+        if component is None:
+            values = values.sum(axis=0)
+            scale = None if scale is None else scale.sum()
+        else:
+            values = values[component]
+            scale = None if scale is None else scale[component]
+        if scale is not None:
+            values = values / (2.0 * scale)
     elif component is not None:
         raise ValueError(f"{series.stem}: {name} has no component axis")
 
     values = values[:, 1:]  # lambda = L/m has no place at m = 0
-    if options.premultiply != "none":
-        values = values * series.harmonics(suffix)[None, 1:]
-    if options.volume_fac:
-        values = values * series.volume_fac
-    values = options.units.convert(values, field_kind(series))
+    if not decorr:
+        # A ratio takes none of these three: they cancel between its
+        # numerator and its denominator (module docstring).
+        if options.premultiply != "none":
+            values = values * series.harmonics(suffix)[None, 1:]
+        if options.volume_fac:
+            values = values * series.volume_fac
+        values = options.units.convert(values, field_kind(series))
     values = values[:, ::-1]  # ascending in wavelength, as the axis is
 
     values, wall_distance = _select_half(values, series.y, options.half)
     y = options.units.length(wall_distance)
-    if options.premultiply == "ky":
+    if options.premultiply == "ky" and not decorr:
         # A second logarithmic axis needs its own premultiplier, in
         # the units the ordinate is drawn in (module docstring).
         values = values * y[:, None]
@@ -1518,7 +1810,12 @@ def resolve_usetex(choice: str) -> bool:
 def available_series(
     spectra: YSeries | None, budget: YSeries | None
 ) -> dict[str, tuple[str, str, str]]:
-    """``tag -> (stream, prefix-or-empty, marginal)`` for what is here."""
+    """``tag -> (stream, prefix-or-empty, marginal)`` for what is here.
+
+    The decorrelation needs the reference half of the spectra stream
+    and is offered only for the two true marginals: the `$k_x = 0$`
+    plane is a slice of one, not a spectrum of the whole field.
+    """
     out: dict[str, tuple[str, str, str]] = {}
     if spectra is not None:
         for prefix in spectra.prefixes:
@@ -1526,6 +1823,13 @@ def available_series(
                 out[f"spectra_{prefix}_{marginal}"] = (
                     "twin_yspectra",
                     prefix,
+                    marginal,
+                )
+        if "r" in spectra.prefixes:
+            for marginal in ("x", "z"):
+                out[f"spectra_{DECORR}_{marginal}"] = (
+                    "twin_yspectra",
+                    DECORR,
                     marginal,
                 )
     if budget is not None:
@@ -1554,12 +1858,18 @@ def render_series(
     position on the members' common time grid, zero-padded so a
     lexical sort is the time order.  The series is scanned once first
     (:func:`scan_panels`) for the sign check and the frozen scale.
+
+    A decorrelation series additionally reports the normalisation it
+    was built on, and each of its frames the scalar the panels
+    distribute (:meth:`YSeries.decorrelation`).
     """
     panels = (
         spectra_panels(prefix, marginal)
         if prefix
         else budget_panels(series, marginal)
     )
+    if prefix == DECORR and not quiet:
+        print("\n".join(series.reference_report()), flush=True)
     scales, notes = scan_panels(
         series, panels, options, declared=declared_signs
     )
@@ -1577,7 +1887,15 @@ def render_series(
         plt.close(fig)
         written.append(path)
         if not quiet:
-            print(f"  {path.name}  t = {series.t_rel[frame]:g}", flush=True)
+            scalar = (
+                f"  D = {series.decorrelation(frame):.4g}"
+                if prefix == DECORR
+                else ""
+            )
+            print(
+                f"  {path.name}  t = {series.t_rel[frame]:g}{scalar}",
+                flush=True,
+            )
     return written
 
 
@@ -1636,6 +1954,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("linear", "log"),
         default="linear",
         help="wall-normal axis scale (log wants --premultiply ky)",
+    )
+    p.add_argument(
+        "--ref-stride",
+        type=int,
+        default=1,
+        help="keep every Nth record of the decorrelation's reference "
+        "average (default: every one, whatever --stride is)",
     )
     p.add_argument(
         "--clim",
@@ -1787,6 +2112,7 @@ def main(argv: list[str] | None = None) -> int:
                 stride=args.stride,
                 first=args.first,
                 last=args.last,
+                ref_stride=args.ref_stride,
             )
         except FileNotFoundError as exc:
             print(f"skipping {stem}: {exc}", file=sys.stderr)
