@@ -127,12 +127,17 @@ quantity -- premultiplied, folded, in inner units, over exactly the
 rows the logarithmic ordinate shows (:meth:`Map.drawn`).  The colour
 bar therefore labels the same numbers the contours do.
 
-``--clim series`` freezes each panel's scale on the ensemble-global
-extremes of that quantity over the rendered frames, so a sequence is
-comparable frame to frame; the default ``frame`` rescales each figure
-to its own peak, which is what shows the shape while the difference
-field grows by four decades.  The sign family is decided once for the
-whole series either way, so a panel never changes colour map mid-run.
+Each panel's scale is frozen (``--clim series``, the default) on the
+ensemble-global extremes of that quantity over the rendered frames, so
+one panel means the same thing in every figure of a sequence and the
+colour bar can be read once.  The price is the growth phase: a
+difference field that saturates four decades above its initial energy
+leaves the first frames below the first contour level, and they come
+out blank rather than rescaled.  ``--clim frame`` rescales every
+figure to its own peak instead, which is what shows the *shape* while
+the amplitude is still climbing -- at the cost of a colour bar that
+moves under you.  The sign family is decided once for the whole series
+either way, so a panel never changes colour map mid-run.
 
 Figure geometry
 ===============
@@ -1141,7 +1146,7 @@ class PlotStyle:
     nice: bool = True
     fill: str = "contour"
     lines: bool = True
-    freeze_clim: bool = False
+    freeze_clim: bool = True
     xlim: tuple[float, float] | None = None
     ylim: tuple[float, float] | None = None
     dpi: int = 200
@@ -1476,9 +1481,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--clim",
-        choices=("frame", "series"),
-        default="frame",
-        help="colour scale per figure, or frozen on the whole series",
+        choices=("series", "frame"),
+        default="series",
+        help="colour scale frozen on the whole series, or per figure",
     )
     p.add_argument(
         "--signs-from-data",
