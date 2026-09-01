@@ -112,6 +112,16 @@ truncation and the map is drawn regardless; anything larger is worth
 looking at, and the map is still drawn.  ``--signs-from-data`` infers
 the sign instead, for a stream this list does not cover.
 
+The `$y$` grid is the solver's own (CGL by default), and nothing here
+assumes it is uniform: ``contourf`` / ``contour`` are handed the
+coordinate arrays, so a contour lands at the wall distance it belongs
+to.  Clustering at the wall makes that grid *coarse in* `$\log y$`
+there -- its first plotted cell spans 0.6 of a decade -- which is
+where ``--fill pcolormesh`` earns its place: the same bands, one flat
+cell per sample on geometric-mean edges (:func:`log_edges`), with no
+interpolation between them.  The contour lines are drawn on top
+either way.
+
 Every colour scale, per frame or frozen, is read off the **plotted**
 quantity -- premultiplied, folded, in inner units, over exactly the
 rows the logarithmic ordinate shows (:meth:`Map.drawn`).  The colour
@@ -180,7 +190,7 @@ from pathlib import Path
 
 import numpy as np
 from matplotlib import pyplot as plt
-from matplotlib.colors import Normalize
+from matplotlib.colors import BoundaryNorm, Normalize
 from matplotlib.ticker import FuncFormatter
 
 from dnsjax.analysis.twin.yspectra import (
@@ -964,6 +974,22 @@ def contour_levels(
     return levels, float(np.abs(levels).max())
 
 
+def log_edges(centres: np.ndarray) -> np.ndarray:
+    r"""Cell edges around log-spaced *centres*: the geometric means.
+
+    ``pcolormesh`` wants edges, and on a logarithmic axis the edge
+    between two samples is their geometric mean, not their arithmetic
+    one -- the difference is visible in the near-wall cells, where the
+    CGL grid is coarsest **in `$\log y$`** (its first plotted cell
+    spans 0.6 of a decade).  The two outermost edges are extrapolated
+    by the same half-step.
+    """
+    mid = np.sqrt(centres[:-1] * centres[1:])
+    return np.concatenate(
+        [[centres[0] ** 2 / mid[0]], mid, [centres[-1] ** 2 / mid[-1]]]
+    )
+
+
 def _bar_ticks(levels: np.ndarray) -> np.ndarray:
     """At most :data:`_BAR_TICKS` of the contour levels, zero kept."""
     every = max(1, math.ceil(levels.size / _BAR_TICKS))
@@ -987,6 +1013,7 @@ def draw_map(
     data_range: tuple[float, float] | None = None,
     quantile: float | None = None,
     nice: bool = True,
+    fill: str = "contour",
     lines: bool = True,
     cax=None,
     secondary: bool = True,
@@ -1019,14 +1046,28 @@ def draw_map(
     if levels.size:
         cmap = cmap_positive if map_.non_negative else cmap_signed
         span = (0.0, vmax) if map_.non_negative else (-vmax, vmax)
-        filled = ax.contourf(
-            map_.lam,
-            y,
-            values,
-            levels=levels,
-            cmap=cmap,
-            norm=Normalize(*span),
-        )
+        if fill == "pcolormesh":
+            # The same bands, drawn per cell instead of interpolated
+            # between samples -- the honest rendering of a grid that
+            # is coarse in log y near the wall (:func:`log_edges`).
+            shaded = plt.get_cmap(cmap).copy()
+            shaded.set_under((1.0, 1.0, 1.0, 0.0))  # as contourf leaves it
+            filled = ax.pcolormesh(
+                log_edges(map_.lam),
+                log_edges(y),
+                values,
+                cmap=shaded,
+                norm=BoundaryNorm(levels, shaded.N, extend="max"),
+            )
+        else:
+            filled = ax.contourf(
+                map_.lam,
+                y,
+                values,
+                levels=levels,
+                cmap=cmap,
+                norm=Normalize(*span),
+            )
         if lines:
             ax.contour(
                 map_.lam,
@@ -1098,6 +1139,7 @@ class PlotStyle:
     cmap_signed: str = "RdBu_r"
     quantile: float | None = None
     nice: bool = True
+    fill: str = "contour"
     lines: bool = True
     freeze_clim: bool = False
     xlim: tuple[float, float] | None = None
@@ -1258,6 +1300,7 @@ def panel_figure(
             data_range=(scale.lo, scale.hi) if style.freeze_clim else None,
             quantile=style.quantile,
             nice=style.nice,
+            fill=style.fill,
             lines=style.lines,
             cax=fig.add_axes(geometry.cbar_rect(panel)),
             xlim=xlim,
@@ -1457,6 +1500,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="clip the colour scale to this quantile of |values|",
     )
     p.add_argument(
+        "--fill",
+        choices=("contour", "pcolormesh"),
+        default="contour",
+        help="filled contours, or one flat cell per sample",
+    )
+    p.add_argument(
         "--no-lines", action="store_true", help="drop contour lines"
     )
     p.add_argument(
@@ -1545,6 +1594,7 @@ def main(argv: list[str] | None = None) -> int:
         cmap_signed=args.cmap_signed,
         quantile=args.quantile,
         nice=not args.exact_levels,
+        fill=args.fill,
         lines=not args.no_lines,
         freeze_clim=args.clim == "series",
         xlim=None if args.xlim is None else tuple(args.xlim),
