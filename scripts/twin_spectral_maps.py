@@ -112,6 +112,11 @@ truncation and the map is drawn regardless; anything larger is worth
 looking at, and the map is still drawn.  ``--signs-from-data`` infers
 the sign instead, for a stream this list does not cover.
 
+Every colour scale, per frame or frozen, is read off the **plotted**
+quantity -- premultiplied, folded, in inner units, over exactly the
+rows the logarithmic ordinate shows (:meth:`Map.drawn`).  The colour
+bar therefore labels the same numbers the contours do.
+
 ``--clim series`` freezes each panel's scale on the ensemble-global
 extremes of that quantity over the rendered frames, so a sequence is
 comparable frame to frame; the default ``frame`` rescales each figure
@@ -647,6 +652,21 @@ class Map:
     name: str  # the stored field it came from
     non_negative: bool  # declared or inferred; sets the colour family
 
+    def drawn(self) -> tuple[np.ndarray, np.ndarray]:
+        r"""The rows a logarithmic ordinate can show: ``y > 0``.
+
+        The wall row has no position on a log axis, so it is dropped
+        from the plot -- and therefore from the colour scale too,
+        which is why :func:`scan_panels` and :func:`draw_map` both go
+        through here rather than reading ``values`` directly.  It
+        matters under ``--premultiply k`` / ``none``, where the wall
+        value of a budget term is not zero (`$\hat\varepsilon$` is
+        largest there); under the default ``ky`` the `$y$` factor
+        zeroes that row anyway.
+        """
+        above_wall = self.y > 0.0
+        return self.y[above_wall], self.values[above_wall]
+
 
 def _select_half(
     values: np.ndarray, y: np.ndarray, mode: str
@@ -831,14 +851,14 @@ def scan_panels(
     for name, component in panels:
         lo, hi = math.inf, -math.inf
         for frame in range(series.t_rel.size):
-            values = make_map(
+            _, values = make_map(
                 series,
                 name,
                 frame,
                 options=options,
                 component=component,
                 non_negative=True,  # irrelevant here; decided below
-            ).values
+            ).drawn()
             finite = values[np.isfinite(values)]
             if finite.size:
                 lo = min(lo, float(finite.min()))
@@ -985,8 +1005,7 @@ def draw_map(
     """
     ax.set_xscale("log")
     ax.set_yscale("log")
-    above_wall = map_.y > 0.0  # the wall itself has no log position
-    y, values = map_.y[above_wall], map_.values[above_wall]
+    y, values = map_.drawn()
     levels, vmax = contour_levels(
         values,
         n_levels,
@@ -1221,12 +1240,9 @@ def panel_figure(
         )
         for name, component in panels
     ]
-    above_wall = maps[0].y > 0.0
+    drawn_y = maps[0].drawn()[0]
     xlim = style.xlim or (maps[0].lam.min(), maps[0].lam.max())
-    ylim = style.ylim or (
-        maps[0].y[above_wall].min(),
-        maps[0].y[above_wall].max(),
-    )
+    ylim = style.ylim or (drawn_y.min(), drawn_y.max())
     geometry = panel_geometry(len(panels), xlim, ylim, style)
 
     fig = plt.figure(figsize=(geometry.fig_w, geometry.fig_h))
