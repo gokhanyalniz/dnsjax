@@ -112,6 +112,19 @@ truncation and the map is drawn regardless; anything larger is worth
 looking at, and the map is still drawn.  ``--signs-from-data`` infers
 the sign instead, for a stream this list does not cover.
 
+Both fills are handed the *same* band colours, so ``--fill contour``
+and ``--fill pcolormesh`` differ in geometry and in nothing else, and
+a signed scale is **two-slope**: zero sits on the colour map's neutral
+centre exactly and each side is stretched on its own, so the most
+negative band is the darkest blue and the most positive the darkest
+red however lopsided the range (:func:`band_colors`).
+
+``--levels`` sets the level **step**, ``peak / levels``, and not the
+level count, which is bounded by it rather than equal to it: at or
+below it on a non-negative field, because the step is rounded up to a
+round number, and up to twice it on a signed one, which spends that
+step on both sides of zero (:func:`contour_levels`).
+
 The `$y$` grid is the solver's own (CGL by default), and nothing here
 assumes it is uniform: ``contourf`` / ``contour`` are handed the
 coordinate arrays, so a contour lands at the wall distance it belongs
@@ -195,7 +208,12 @@ from pathlib import Path
 
 import numpy as np
 from matplotlib import pyplot as plt
-from matplotlib.colors import BoundaryNorm, Normalize
+from matplotlib.colors import (
+    BoundaryNorm,
+    ListedColormap,
+    Normalize,
+    TwoSlopeNorm,
+)
 from matplotlib.ticker import FuncFormatter
 
 from dnsjax.analysis.twin.yspectra import (
@@ -949,15 +967,23 @@ def contour_levels(
     data_range: tuple[float, float] | None = None,
     quantile: float | None = None,
     nice: bool = True,
-) -> tuple[np.ndarray, float]:
-    """Contour levels for one map, and the end of its colour scale.
+) -> np.ndarray:
+    """Contour levels for one map.
 
     A non-negative field gets bands from one step up to the peak,
     leaving the lowest band unfilled so the empty corners of the map
     stay white (the paper's convention).  A signed field gets the same
-    step reflected about zero and trimmed to the data range, with a
-    colour scale symmetric about zero so that zero is the neutral
-    colour whatever the trim.
+    step reflected about zero and trimmed to the data range; which
+    colour each of those bands is then given, and why zero lands on
+    the neutral one however lopsided the trim, is
+    :func:`band_colors`.
+
+    *n_levels* sets the **step**, ``peak / n_levels``, not the level
+    count: it is how many bands reach from zero to the larger of the
+    two extremes.  The count that comes out is therefore only bounded
+    by it -- at or below on a non-negative field (``nice`` rounds the
+    step up, never down, by a factor under two), and up to twice it on
+    a signed one, which spends that step on both sides of zero.
 
     The zero level itself is **dropped**, which is the signed
     counterpart of that unfilled lowest band: an instantaneous
@@ -982,25 +1008,79 @@ def contour_levels(
     elif finite.size:
         lo, hi = float(finite.min()), float(finite.max())
     else:
-        return np.asarray([], dtype=float), 0.0
+        return np.asarray([], dtype=float)
     peak = max(abs(lo), abs(hi))
     if quantile is not None and finite.size:
         peak = float(np.quantile(np.abs(finite), quantile))
     if peak <= 0.0:
-        return np.asarray([], dtype=float), 0.0
+        return np.asarray([], dtype=float)
 
     step = peak / max(n_levels, 2)  # a filled band needs two levels
     if nice:
         step = nice_step(step)
     if non_negative:
-        levels = np.arange(1, math.ceil(peak / step) + 1) * step
-        return levels, float(levels[-1])
+        return np.arange(1, math.ceil(peak / step) + 1) * step
     below = min(math.floor(lo / step), -1)
     above = max(math.ceil(hi / step), 1)
-    levels = (
+    return (
         np.concatenate([np.arange(below, 0), np.arange(1, above + 1)]) * step
     )
-    return levels, float(np.abs(levels).max())
+
+
+def band_colors(
+    levels: np.ndarray, cmap: str, *, non_negative: bool
+) -> tuple[ListedColormap, BoundaryNorm]:
+    r"""One colour per filled band, and the norm that selects it.
+
+    ``contourf`` colours a band by its **midpoint** and ``pcolormesh``
+    by the interval a value falls in, so the two agree only if they
+    are handed the same table: a :class:`~matplotlib.colors.
+    ListedColormap` holding one colour per band, indexed by a
+    :class:`~matplotlib.colors.BoundaryNorm` on *levels*.  Then
+    ``--fill contour`` and ``--fill pcolormesh`` differ in geometry
+    and in nothing else.
+
+    The colours themselves are read off the band midpoints through a
+    *value*-linear norm, so intensity still tracks magnitude within a
+    side:
+
+    - non-negative: white at zero to the darkest colour at the top
+      band, and everything below the first level is left transparent
+      (the deliberately unfilled lowest band);
+    - signed: **two-slope** -- zero sits exactly on the colour map's
+      neutral centre, and each side is scaled on its own so that the
+      most negative band is the darkest blue and the most positive the
+      darkest red.  That is deliberately *not* symmetric in intensity:
+      a one-sided term such as `$\mathcal{P}^{U}$`, whose negative
+      excursion is a percent of its positive one, would otherwise
+      spend the entire blue half of the colour map on a single band
+      and read as unsigned.
+
+    A signed field that never changes sign is the same statement with
+    one side empty, and gets the whole ramp of the side it does use.
+    Note that "neutral" is the colour map's own centre, which for the
+    default ``RdBu_r`` is ColorBrewer's near-white ``#f7f6f6`` rather
+    than the page; ``--cmap-signed bwr`` centres on pure white.
+    """
+    base = plt.get_cmap(cmap)
+    layers = 0.5 * (levels[:-1] + levels[1:])  # what contourf colours
+    if non_negative:
+        scale = Normalize(0.0, float(layers[-1]))
+    else:
+        lo, hi = min(float(layers[0]), 0.0), max(float(layers[-1]), 0.0)
+        if lo == 0.0 and hi == 0.0:  # the zero-straddling band alone
+            scale = Normalize(-1.0, 1.0)
+        else:
+            span = max(-lo, hi)
+            scale = TwoSlopeNorm(
+                vcenter=0.0,
+                vmin=lo if lo < 0.0 else -span,
+                vmax=hi if hi > 0.0 else span,
+            )
+    shaded = ListedColormap(base(scale(layers)))
+    shaded.set_under((1.0, 1.0, 1.0, 0.0))  # below the first level
+    shaded.set_over(shaded(shaded.N - 1))  # only --quantile reaches it
+    return shaded, BoundaryNorm(levels, shaded.N)
 
 
 def log_edges(centres: np.ndarray) -> np.ndarray:
@@ -1062,7 +1142,7 @@ def draw_map(
     ax.set_xscale("log")
     ax.set_yscale("log")
     y, values = map_.drawn()
-    levels, vmax = contour_levels(
+    levels = contour_levels(
         values,
         n_levels,
         non_negative=map_.non_negative,
@@ -1072,30 +1152,26 @@ def draw_map(
     )
 
     filled = None
-    if levels.size:
-        cmap = cmap_positive if map_.non_negative else cmap_signed
-        span = (0.0, vmax) if map_.non_negative else (-vmax, vmax)
+    if levels.size > 1:  # a single level bounds no band
+        shaded, norm = band_colors(
+            levels,
+            cmap_positive if map_.non_negative else cmap_signed,
+            non_negative=map_.non_negative,
+        )
         if fill == "pcolormesh":
             # The same bands, drawn per cell instead of interpolated
             # between samples -- the honest rendering of a grid that
             # is coarse in log y near the wall (:func:`log_edges`).
-            shaded = plt.get_cmap(cmap).copy()
-            shaded.set_under((1.0, 1.0, 1.0, 0.0))  # as contourf leaves it
             filled = ax.pcolormesh(
                 log_edges(map_.lam),
                 log_edges(y),
                 values,
                 cmap=shaded,
-                norm=BoundaryNorm(levels, shaded.N, extend="max"),
+                norm=norm,
             )
         else:
             filled = ax.contourf(
-                map_.lam,
-                y,
-                values,
-                levels=levels,
-                cmap=cmap,
-                norm=Normalize(*span),
+                map_.lam, y, values, levels=levels, cmap=shaded, norm=norm
             )
         if lines:
             ax.contour(
@@ -1516,7 +1592,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="infer non-negativity instead of declaring it",
     )
-    p.add_argument("--levels", type=int, default=10, help="contour levels")
+    p.add_argument(
+        "--levels",
+        type=int,
+        default=10,
+        help="bands from zero to the peak; sets the step, not the count",
+    )
     p.add_argument("--cmap-positive", default="Greys")
     p.add_argument("--cmap-signed", default="RdBu_r")
     p.add_argument(
