@@ -354,7 +354,8 @@ require, the frame-invariance / dissipation-form notes and the
 pressure's wall closure: the
 `twin/driver.py`, `twin/diagnostics.py`, `twin/pressure.py` and
 `twin/yspectra.py` module docstrings; the maths is written up as
-Appendix C of the `perturbation_dynamics` document (not in this repo).
+Appendix A of the `perturbation_dynamics` document (not in this repo),
+whose closing subsection keys the plotted panels to its equations.
 Ensembles: `ensemble_setup.py build-twin` + `dnsjax.analysis.twin`.
 A member recorded before a stream existed rebuilds it offline from its
 snapshot pairs: `scripts/twin_postprocess.py` (same diagnostics, same
@@ -753,6 +754,16 @@ All under `scripts/`; full rationale/usage in each module docstring.
   Bit-for-bit except the `stats*.dat` driving columns, which no
   reconstruction can give back as the *applied* force (why, and what
   it writes instead: its module docstring).
+- `twin_spectral_maps.py`: CLI + library rendering `k`- and
+  `y`-premultiplied `(lambda, y)` contour maps of every field in an
+  ensemble (`--members` or a `build-twin` `--tree`) of twin
+  `twin_yspectra.bin` / `twin_ybudget.bin` streams, one figure per
+  sample, in inner units against a **measured** `Re_tau`. One decade
+  is one length on both axes, which fixes the panel shape from the
+  axis limits and leaves only `--width` free. The only script needing
+  matplotlib -- `uv run --group plots python
+  scripts/twin_spectral_maps.py` (the `plots` dependency group;
+  `uv sync` alone does not install it).
 - `wall_normal_resolution.py`: JAX-free `resolve`/`match`/`box` CLI
   sizing `res.ny`/`fd_order`/`geo.grid_type` against a Chebyshev
   expansion of a given order (Cartesian family only).
