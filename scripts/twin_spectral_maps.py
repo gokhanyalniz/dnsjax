@@ -22,35 +22,45 @@ average.  The density is therefore ``entry / dk`` with
 harmonic `$m$`, `$k\,\Phi = m \times \text{entry}$`, independent of the
 box length.
 
-Both axes are logarithmic, so **both** get a premultiplier -- the
-paper's (2.8), `$\int\!\!\int \Phi\,\mathrm{d}k\,\mathrm{d}y =
-\int\!\!\int k\,y\,\Phi\,\mathrm{d}\log k\,\mathrm{d}\log y$`.  The
-plotted quantity is therefore
+A logarithmic axis needs a premultiplier if equal areas are to be
+equal energy; a linear one does not.  With the default linear
+ordinate only the abscissa asks for one,
 
-.. math::  y\,k\,\Phi(y, k) = y \times m \times \text{entry}(y, m) ,
+.. math::  k\,\Phi(y, k) = m \times \text{entry}(y, m) ,
 
-with `$y$` the wall distance **in the plotted units** (`$y^+$` by
-default), which is what makes equal areas on the map equal energy in
-those same units.  ``--premultiply k`` drops the `$y$` factor and
-``none`` drops both.
+which is ``--premultiply k``, the default.  Under ``--yscale log`` the
+ordinate wants its own factor as well -- the paper's (2.8),
+`$\int\!\!\int \Phi\,\mathrm{d}k\,\mathrm{d}y = \int\!\!\int
+k\,y\,\Phi\,\mathrm{d}\log k\,\mathrm{d}\log y$` -- which is
+``--premultiply ky``, with `$y$` the wall distance **in the plotted
+units** (`$y^+$` by default), so that equal areas are equal energy in
+those same units.  ``none`` drops both factors.  The scale and the
+premultiplier are independent knobs: pairing a logarithmic ordinate
+with ``k``, or a linear one with ``ky``, is legal and simply not
+area-true.
 
-The `$m = 0$` column carries no premultiplied content and is dropped,
-which is also what makes the maps read as fluctuation spectra: the
-wall-parallel mean of a state lives at `$(0, 0)$` alone, so at every
-plotted `$m \ge 1$` the stored perturbation-about-laminar spectrum
-``r_*`` *is* the spectrum of the fluctuation about the `$x$`-`$z$`
-mean.
+The `$m = 0$` column is dropped whatever the premultiplier, because
+`$\lambda = L/m$` has no position on a wavelength axis.  That is also
+what makes the maps read as fluctuation spectra: the wall-parallel
+mean of a state lives at `$(0, 0)$` alone, so at every plotted
+`$m \ge 1$` the stored perturbation-about-laminar spectrum ``r_*``
+*is* the spectrum of the fluctuation about the `$x$`-`$z$` mean.
 
 Stored entries are additionally divided by ``volume_fac`` (the
-channel's wall-normal extent) so that the plain `$y$`-average of a
-profile is the volume average.  Multiplying it back gives the local
-density, which is the quantity the paper plots; that is
-:attr:`MapOptions.volume_fac` and it is on by default.  What fixes
-that factor empirically is the ``r_*`` half of the spectra stream: at
-plane-Poiseuille `$Re = 4200$`, `$Re_\tau = 178.6$`, its `$k$`-only
-premultiplied map puts `$\max k_z E^{x+}_{uu} \approx 3.8$` at
-`$y^+ \approx 14$`, `$\lambda_z^+ \approx 130$` -- the textbook
-near-wall peak.  Without it every map is a factor of two low.
+channel's wall-normal extent) so that contracting a profile with
+``y_weights`` gives the volume average.  Multiplying it back gives the
+**local** density at that `$y$`, which is what the literature plots;
+that is :attr:`MapOptions.volume_fac` and it is on by default.  The
+paper settles both halves of that convention: its (2.5) defines
+`$\hat e = (|\hat u|^2 + |\hat v|^2 + |\hat w|^2)/2$`, so the
+`$\tfrac12$` the writer carries is the standard one too, and its
+(2.7)-(2.8) integrate `$\int_0^h \ldots \mathrm{d}y$` over the
+physical wall distance, never over a channel-averaged one.  The
+numbers agree: at plane-Poiseuille `$Re = 4200$`,
+`$Re_\tau = 178.6$`, the `$k$`-premultiplied ``r_*`` map puts
+`$\max k_z E^{x+}_{uu} \approx 3.8$` at `$y^+ \approx 14$`,
+`$\lambda_z^+ \approx 130$` -- the textbook near-wall peak.  Without
+the factor every map is a factor of two low.
 
 Inner units
 ===========
@@ -128,12 +138,14 @@ step on both sides of zero (:func:`contour_levels`).
 The `$y$` grid is the solver's own (CGL by default), and nothing here
 assumes it is uniform: ``contourf`` / ``contour`` are handed the
 coordinate arrays, so a contour lands at the wall distance it belongs
-to.  Clustering at the wall makes that grid *coarse in* `$\log y$`
-there -- its first plotted cell spans 0.6 of a decade -- which is
-where ``--fill pcolormesh`` earns its place: the same bands, one flat
-cell per sample on geometric-mean edges (:func:`log_edges`), with no
-interpolation between them.  The contour lines are drawn on top
-either way.
+to.  Where the samples are sparse, ``--fill pcolormesh`` earns its
+place: the same bands, one flat cell per sample on midpoint edges
+(:func:`cell_edges` -- geometric on a logarithmic axis, arithmetic on
+a linear one), with no interpolation between them.  Which end is
+sparse follows the ordinate's scale: wall clustering makes the grid
+coarse in `$\log y$` at the wall (its first plotted cell spans 0.6 of
+a decade) and coarse in plain `$y$` at the centreline.  The contour
+lines are drawn on top either way.
 
 Every colour scale, per frame or frozen, is read off the **plotted**
 quantity -- premultiplied, folded, in inner units, over exactly the
@@ -154,18 +166,24 @@ either way, so a panel never changes colour map mid-run.
 
 Figure geometry
 ===============
-**One decade is the same length on both axes** -- the constraint that
-makes a `$\lambda \propto y$` band read at 45 degrees -- so the axes
-box is `$(\text{decade} \times D_\lambda,\ \text{decade} \times D_y)$`
-for the decade counts `$D$` of the plotted limits, and
-``ax.set_aspect(1)`` holds it there.  That fixes the box's shape from
-the limits and leaves only its scale free, which ``--width`` sets
-(default 6.61546 in, the write-up's ``\linewidth``); ``--decade``
-sets it directly instead.  A **square** box therefore needs equal
-decade counts, which is a choice of ``--ylim`` rather than of sizing:
-on the full stored range `$y^+ \in [0.02, 179]$` against
+The abscissa is sized by its decade count: the axes box is
+`$\text{decade} \times D_\lambda$` wide for the `$D_\lambda$` decades
+of the plotted limits, leaving only the scale free.  ``--width`` sets
+it (default 6.61546 in, the write-up's ``\linewidth``) and
+``--decade`` sets the decade length directly instead.
+
+The height follows the **ordinate's scale**.  Linear: it is
+``--box-aspect`` times the width, 1 (square) by default, a linear
+axis having no decades to match.  Logarithmic: the same decade length
+applies to it as well -- **one decade, one length, on both axes**, the
+constraint that makes a `$\lambda \propto y$` band read at 45 degrees
+-- and ``ax.set_aspect(1)`` holds it there.  A square box then needs
+equal decade counts, which is a choice of ``--ylim`` rather than of
+sizing: on the full stored range `$y^+ \in [0.02, 179]$` against
 `$\lambda_z^+ \in [14, 1122]$` the box is 2.1 times taller than wide,
-and an eight-panel budget figure is correspondingly tall.
+and an eight-panel budget figure correspondingly tall.  ``set_aspect``
+is deliberately *not* applied to a linear ordinate, where it would be
+matching decades against data units.
 
 Usage
 =====
@@ -664,12 +682,13 @@ def open_series(
 class MapOptions:
     r"""Everything that turns a stored field into a plotted map.
 
-    *premultiply* is ``"ky"`` (the paper's (2.8), both axes
-    logarithmic), ``"k"`` or ``"none"``; *half* is how the two channel
+    *premultiply* is ``"k"`` (the default, for the linear ordinate
+    *y_log* also defaults to), ``"ky"`` (the paper's (2.8), for a
+    logarithmic one) or ``"none"``; *half* is how the two channel
     halves collapse onto the one wall distance a `$y^+$` ordinate
     needs (module docstring, "Folding the channel"); *volume_fac*
     multiplies the stored `$y$`-mean density back to the local density
-    the paper plots.
+    the literature plots.
 
     *smooth* is a centred running mean over that many adjacent
     wavenumbers, applied last.  It is off (``1``) by default and is
@@ -681,10 +700,11 @@ class MapOptions:
     """
 
     units: Units
-    premultiply: str = "ky"
+    premultiply: str = "k"
     half: str = "mean"
     volume_fac: bool = True
     smooth: int = 1
+    y_log: bool = False
 
 
 @dataclass(frozen=True)
@@ -697,6 +717,7 @@ class Map:
     title: str  # LaTeX panel title, with normalisation
     name: str  # the stored field it came from
     non_negative: bool  # declared or inferred; sets the colour family
+    y_log: bool = False  # whether the ordinate is drawn logarithmic
 
     @property
     def lam_axis(self) -> str:
@@ -709,17 +730,20 @@ class Map:
         return MARGINALS[self.name.rpartition("_")[2]][0]
 
     def drawn(self) -> tuple[np.ndarray, np.ndarray]:
-        r"""The rows a logarithmic ordinate can show: ``y > 0``.
+        r"""The rows the ordinate can show: all of them, or ``y > 0``.
 
-        The wall row has no position on a log axis, so it is dropped
-        from the plot -- and therefore from the colour scale too,
-        which is why :func:`scan_panels` and :func:`draw_map` both go
-        through here rather than reading ``values`` directly.  It
-        matters under ``--premultiply k`` / ``none``, where the wall
-        value of a budget term is not zero (`$\hat\varepsilon$` is
-        largest there); under the default ``ky`` the `$y$` factor
-        zeroes that row anyway.
+        The wall row has no position on a **logarithmic** axis, so it
+        is dropped there -- from the plot and therefore from the
+        colour scale too, which is why :func:`scan_panels` and
+        :func:`draw_map` both go through here rather than reading
+        ``values`` directly.  It matters under ``--premultiply k`` /
+        ``none``, where the wall value of a budget term is not zero
+        (`$\hat\varepsilon$` is largest there); under ``ky`` the
+        `$y$` factor zeroes that row anyway.  On the default linear
+        ordinate the row is an ordinary sample and is kept.
         """
+        if not self.y_log:
+            return self.y, self.values
         above_wall = self.y > 0.0
         return self.y[above_wall], self.values[above_wall]
 
@@ -842,7 +866,7 @@ def make_map(
     elif component is not None:
         raise ValueError(f"{series.stem}: {name} has no component axis")
 
-    values = values[:, 1:]  # m = 0 carries no premultiplied content
+    values = values[:, 1:]  # lambda = L/m has no place at m = 0
     if options.premultiply != "none":
         values = values * series.harmonics(suffix)[None, 1:]
     if options.volume_fac:
@@ -853,7 +877,7 @@ def make_map(
     values, wall_distance = _select_half(values, series.y, options.half)
     y = options.units.length(wall_distance)
     if options.premultiply == "ky":
-        # The second logarithmic axis needs its own premultiplier, in
+        # A second logarithmic axis needs its own premultiplier, in
         # the units the ordinate is drawn in (module docstring).
         values = values * y[:, None]
     values = _running_mean(values, options.smooth)
@@ -868,6 +892,7 @@ def make_map(
             if non_negative is None
             else non_negative
         ),
+        y_log=options.y_log,
     )
 
 
@@ -1083,19 +1108,26 @@ def band_colors(
     return shaded, BoundaryNorm(levels, shaded.N)
 
 
-def log_edges(centres: np.ndarray) -> np.ndarray:
-    r"""Cell edges around log-spaced *centres*: the geometric means.
+def cell_edges(centres: np.ndarray, *, log: bool) -> np.ndarray:
+    r"""Cell edges around *centres*: the midpoints between them.
 
-    ``pcolormesh`` wants edges, and on a logarithmic axis the edge
-    between two samples is their geometric mean, not their arithmetic
-    one -- the difference is visible in the near-wall cells, where the
-    CGL grid is coarsest **in `$\log y$`** (its first plotted cell
-    spans 0.6 of a decade).  The two outermost edges are extrapolated
-    by the same half-step.
+    ``pcolormesh`` wants edges, and the edge between two samples is
+    their arithmetic mean on a linear axis and their **geometric**
+    mean on a logarithmic one -- the difference is visible in the
+    near-wall cells of a `$\log y$` ordinate, where the CGL grid is
+    coarsest in that measure (its first plotted cell spans 0.6 of a
+    decade).  The two outermost edges are extrapolated by the same
+    half-step, so a linear ordinate's first edge falls *inside* the
+    wall; the axis limits clip it back.
     """
-    mid = np.sqrt(centres[:-1] * centres[1:])
+    if log:
+        mid = np.sqrt(centres[:-1] * centres[1:])
+        return np.concatenate(
+            [[centres[0] ** 2 / mid[0]], mid, [centres[-1] ** 2 / mid[-1]]]
+        )
+    mid = 0.5 * (centres[:-1] + centres[1:])
     return np.concatenate(
-        [[centres[0] ** 2 / mid[0]], mid, [centres[-1] ** 2 / mid[-1]]]
+        [[2.0 * centres[0] - mid[0]], mid, [2.0 * centres[-1] - mid[-1]]]
     )
 
 
@@ -1134,13 +1166,14 @@ def draw_map(
 
     Filled contours plus (redundant, deliberately) contour lines at
     the same levels; grey-scale when ``map_.non_negative`` and a
-    blue-white-red scale otherwise.  Both axes are logarithmic and
+    blue-white-red scale otherwise.  The abscissa is logarithmic and
+    the ordinate follows ``map_.y_log``; when it is logarithmic too,
     ``set_aspect(1)`` holds one decade to the same length on each --
     the layout of :func:`panel_geometry` sizes the box so that costs
     nothing.  *cax* is where the colour bar goes (``None``: no bar).
     """
     ax.set_xscale("log")
-    ax.set_yscale("log")
+    ax.set_yscale("log" if map_.y_log else "linear")
     y, values = map_.drawn()
     levels = contour_levels(
         values,
@@ -1161,10 +1194,10 @@ def draw_map(
         if fill == "pcolormesh":
             # The same bands, drawn per cell instead of interpolated
             # between samples -- the honest rendering of a grid that
-            # is coarse in log y near the wall (:func:`log_edges`).
+            # is coarse wherever it is (:func:`cell_edges`).
             filled = ax.pcolormesh(
-                log_edges(map_.lam),
-                log_edges(y),
+                cell_edges(map_.lam, log=True),
+                cell_edges(y, log=map_.y_log),
                 values,
                 cmap=shaded,
                 norm=norm,
@@ -1195,10 +1228,13 @@ def draw_map(
 
     ax.set_xlim(*(xlim or (map_.lam.min(), map_.lam.max())))
     ax.set_ylim(*(ylim or (y.min(), y.max())))
-    # One decade, one length, on both axes: the constraint the whole
-    # layout is built around.  A no-op once panel_geometry has sized
-    # the box, and the guarantee if anything else moves the limits.
-    ax.set_aspect(1.0, adjustable="box", anchor="C")
+    if map_.y_log:
+        # One decade, one length, on both axes: the constraint a
+        # log-log layout is built around.  A no-op once
+        # panel_geometry has sized the box, and the guarantee if
+        # anything else moves the limits.  Meaningless across a
+        # log/linear pair, where it would match decades to data units.
+        ax.set_aspect(1.0, adjustable="box", anchor="C")
     ax.set_xlabel(units.lambda_label(map_.lam_axis))
     ax.set_ylabel(units.y_label)
 
@@ -1232,14 +1268,17 @@ def draw_map(
 class PlotStyle:
     """Figure-level knobs shared by the two builders.
 
-    *decade* is inches per decade, the one free parameter the
-    equal-decade rule leaves; ``None`` derives it from *width* so the
-    figure comes out exactly that wide (module docstring, "Figure
-    geometry").
+    *decade* is inches per decade of the abscissa, the one free
+    parameter the decade rule leaves; ``None`` derives it from *width*
+    so the figure comes out exactly that wide.  *box_aspect* is the
+    axes box's height over its width, and applies only to a **linear**
+    ordinate -- a logarithmic one takes the same decade length as the
+    abscissa instead (module docstring, "Figure geometry").
     """
 
     width: float = PAGE_LINEWIDTH
     decade: float | None = None
+    box_aspect: float = 1.0
     ncols: int = 2
     n_levels: int = 10
     cmap_positive: str = "Greys"
@@ -1305,20 +1344,23 @@ def panel_geometry(
     xlim: tuple[float, float],
     ylim: tuple[float, float],
     style: PlotStyle,
+    *,
+    y_log: bool,
 ) -> Geometry:
-    """Size a figure so one decade is one length on both axes.
+    """Size a figure from the abscissa's decade count.
 
-    The axes box is ``decade`` inches per decade in **both**
-    directions, so its shape follows from the limits alone; the
-    remaining freedom is the scale, taken from ``style.decade`` when
-    given and otherwise from ``style.width``, which then comes out
-    exact.  Everything around the box is a fixed inch budget (the
-    ``_M_*`` module constants), so the figure height is whatever the
-    panels need.
+    The axes box is ``decade`` inches per decade of the wavelength
+    axis; the scale comes from ``style.decade`` when given and
+    otherwise from ``style.width``, which then comes out exact.  Its
+    height is ``style.box_aspect`` times that width on a linear
+    ordinate and the same decade length again on a logarithmic one,
+    where the shape therefore follows from the limits alone.
+    Everything around the box is a fixed inch budget (the ``_M_*``
+    module constants), so the figure height is whatever the panels
+    need.
     """
     nrows = math.ceil(n_panels / style.ncols)
     decades_x = math.log10(xlim[1] / xlim[0])
-    decades_y = math.log10(ylim[1] / ylim[0])
     if style.decade is not None:
         decade = style.decade
     else:
@@ -1337,7 +1379,12 @@ def panel_geometry(
                 "figure, drop a column, or set --decade."
             )
         decade = box_w / decades_x
-    box_w, box_h = decade * decades_x, decade * decades_y
+    box_w = decade * decades_x
+    box_h = (
+        decade * math.log10(ylim[1] / ylim[0])
+        if y_log
+        else box_w * style.box_aspect
+    )
     fig_w = (
         _M_LEFT
         + style.ncols * (box_w + _COL_AFTER)
@@ -1392,7 +1439,9 @@ def panel_figure(
     drawn_y = maps[0].drawn()[0]
     xlim = style.xlim or (maps[0].lam.min(), maps[0].lam.max())
     ylim = style.ylim or (drawn_y.min(), drawn_y.max())
-    geometry = panel_geometry(len(panels), xlim, ylim, style)
+    geometry = panel_geometry(
+        len(panels), xlim, ylim, style, y_log=options.y_log
+    )
 
     fig = plt.figure(figsize=(geometry.fig_w, geometry.fig_h))
     for panel, (map_, key) in enumerate(zip(maps, panels, strict=True)):
@@ -1578,8 +1627,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--premultiply",
         choices=("ky", "k", "none"),
-        default="ky",
-        help="premultiplier: both log axes, wavenumber only, or neither",
+        default="k",
+        help="premultiplier: both axes (log ordinate), wavenumber "
+        "only, or neither",
+    )
+    p.add_argument(
+        "--yscale",
+        choices=("linear", "log"),
+        default="linear",
+        help="wall-normal axis scale (log wants --premultiply ky)",
     )
     p.add_argument(
         "--clim",
@@ -1654,6 +1710,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="inches per decade; overrides --width as the scale",
     )
+    p.add_argument(
+        "--box-aspect",
+        type=float,
+        default=1.0,
+        help="axes box height over width, linear ordinate only",
+    )
     p.add_argument("--ncols", type=int, default=2)
     p.add_argument("--dpi", type=int, default=200)
     p.add_argument("--format", default="png", help="savefig extension")
@@ -1696,10 +1758,12 @@ def main(argv: list[str] | None = None) -> int:
         half=args.half,
         volume_fac=not args.no_volume_fac,
         smooth=args.smooth,
+        y_log=args.yscale == "log",
     )
     style = PlotStyle(
         width=args.width,
         decade=args.decade,
+        box_aspect=args.box_aspect,
         ncols=args.ncols,
         n_levels=args.levels,
         cmap_positive=args.cmap_positive,
@@ -1744,8 +1808,9 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"{len(members)} member(s), Re = {args.re:g}, "
             f"Re_tau = {args.re_tau:g}, stride {args.stride}, "
-            f"premultiply {args.premultiply}, half {args.half}, "
-            f"clim {args.clim}, usetex {plt.rcParams['text.usetex']}",
+            f"premultiply {args.premultiply}, yscale {args.yscale}, "
+            f"half {args.half}, clim {args.clim}, "
+            f"usetex {plt.rcParams['text.usetex']}",
             flush=True,
         )
     for tag in tags:
