@@ -758,11 +758,15 @@ All under `scripts/`; full rationale/usage in each module docstring.
   `(lambda, y)` contour maps of every field in an ensemble
   (`--members` or a `build-twin` `--tree`) of twin
   `twin_yspectra.bin` / `twin_ybudget.bin` streams, one figure per
-  sample, in inner units against a **measured** `Re_tau`. Defaults:
-  a linear ordinate (`--yscale log` restores the
+  sample, in inner units against a **measured** `Re_tau`, plus the
+  decorrelation the difference and reference spectra make together.
+  Defaults: a linear ordinate (`--yscale log` restores the
   log-log/`--premultiply ky` layout the maps started as) and square
   panels (`--box-aspect`); the decade rule fixes the **abscissa**
-  from `--width` either way. The
+  from `--width` either way. The decorrelation's reference average
+  assumes the members subsample **one** reference trajectory --
+  distinct absolute sample times are distinct reference states -- and
+  reports the parent count so a set that is not can be spotted. The
   only script needing matplotlib -- `uv run --group plots python
   scripts/twin_spectral_maps.py` (the `plots` dependency group;
   `uv sync` alone does not install it).

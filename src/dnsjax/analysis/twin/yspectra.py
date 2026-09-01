@@ -203,6 +203,39 @@ def integrate_y(data: YResolvedData, name: str) -> np.ndarray:
     return np.einsum("j,...jk->...k", data.y_weights, data[name])
 
 
+def fluctuation_energy(
+    marginal: np.ndarray,
+    mean_plane: np.ndarray,
+    y_weights: np.ndarray,
+) -> np.ndarray:
+    r"""Total-in-`$(y, k)$` energy without the `$(0, 0)$` mode.
+
+    Array-level, so a memory-mapped reader can share the definition
+    with :class:`YResolvedData` (``scripts/twin_spectral_maps.py``
+    does).  *marginal* is a **complete** marginal -- ``r_x`` / ``e_x``
+    (summed over `$k_x$`) or ``r_z`` / ``e_z`` (summed over `$k_z$`)
+    -- and *mean_plane* the `$k_x = 0$` plane ``*_x0`` of the same
+    field, both ``(..., n_y, n_k)`` with the leading axes free; the
+    result is ``(...)``.
+
+    Either marginal gives the same total, since each already sums the
+    other axis, so passing ``r_z`` and ``r_x0`` together is a genuine
+    cross-check rather than a second reading of the same numbers.
+    Index 0 of a ``*_x0`` axis is `$k_z = 0$` at `$k_x = 0$`, i.e.
+    the mean mode alone -- which is why the subtraction needs that
+    plane and not ``*_x[..., 0]``, the whole `$k_z = 0$` column.
+
+    For a reference field ``r_*`` the result is the fluctuation
+    energy about the wall-parallel mean: the stored spectra are of
+    the perturbation about the **laminar** profile, whose `$(0, 0)$`
+    mode carries the mean-flow deviation and dominates the streamwise
+    total.
+    """
+    total = np.einsum("j,...jk->...", y_weights, marginal)
+    mean_mode = np.einsum("j,...j->...", y_weights, mean_plane[..., 0])
+    return total - mean_mode
+
+
 def bin_energies(data: YResolvedData) -> dict[str, np.ndarray]:
     r"""`$E_{\Delta U}$`, `$E_{\Delta u_1}$`, `$E_{\Delta u_2}$` per record.
 
