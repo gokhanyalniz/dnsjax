@@ -6,12 +6,29 @@ r"""JAX-free readers for the wall-normal-resolved twin streams.
 arrays, the two wavenumber axes in physical units, the wall-normal
 grid and its quadrature weights, and the sidecar.
 
+Which fields a stream carries is the sidecar's ``suffixes``, and
+:func:`stored_fields` is the one place that turns it into a record
+layout -- shared with the memory-mapped reader in
+``scripts/twin_spectral_maps.py`` rather than mirrored there.  Two
+layouts exist and both are read:
+
+- ``("x", "z", "xz00")``, the default, and ``("x", "z", "x0",
+  "xz00")`` under ``twin.x0_planes``;
+- ``("x", "z", "x0")``, everything written before ``xz00`` existed.
+  Those sidecars have no ``suffixes`` key and a ``format_version``
+  below the current writer's; :data:`MIN_YSPECTRA_VERSION` /
+  :data:`MIN_YBUDGET_VERSION` are therefore held at the old values
+  rather than raised with the writer, which is the exception to the
+  usual lockstep rule (:mod:`dnsjax.twin.yspectra` says why).
+
 Everything stored is a `$y$`-**density** already divided by
 ``volume_fac``.  :func:`integrate_y` contracts one with the weights
 to give the per-`$k$` quantity; summing *that* over `$k$` gives the
 matching volume-averaged rate.  Both wavenumber axes are one-sided
 (`$|k_z|$` folded), so those sums run over the stored axis with no
-further weighting.
+further weighting.  A ``*_xz00`` field has no wavenumber axis --
+it is the `$(0, 0)$` mode alone -- so :func:`integrate_y` returns
+its `$y$`-average directly.
 
 For the energies that rate is ``twin.dat``'s ``E_d`` exactly.  For
 the budget it is a ``twin_budget.dat`` column only where the two
@@ -29,19 +46,23 @@ gradient -- zero in total, not per `$y$`.
 
 :func:`bin_energies` is the bridge back to the three-bin diagnostics
 of Egerique-de-la-Concha & Hwang (*J. Fluid Mech.* **1036**, A52,
-2026): the `$k_x = 0$` plane the stream carries alongside the two
-marginals is exactly the spectrum of the streamwise-averaged
-difference field, so
+2026): the `$k_x = 0$` plane is exactly the spectrum of the
+streamwise-averaged difference field, so
 
 .. math::
-    E_{\Delta U} = \textstyle\int \sum_\alpha e^{x0}_\alpha(y, 0),
+    E_{\Delta U} = \textstyle\int \sum_\alpha e^{x0}_\alpha(y, 0)
+        = \int \sum_\alpha e^{xz00}_\alpha ,
     \quad
     E_{\Delta u_1} = \int \sum_\alpha \sum_{k_z > 0} e^{x0}_\alpha ,
     \quad
     E_{\Delta u_2} = \int \sum_\alpha \sum_{k_z}
         \bigl(e^{x}_\alpha - e^{x0}_\alpha\bigr) ,
 
-now resolved in `$k_z$` rather than collapsed to three numbers.
+now resolved in `$k_z$` rather than collapsed to three numbers.  It
+therefore needs a stream written under ``twin.x0_planes``; the first
+of the three survives on the always-stored ``e_xz00`` alone, and so
+does :func:`fluctuation_energy`, which is the `$(0, 0)$` mode's other
+use.
 """
 
 from __future__ import annotations
@@ -52,9 +73,17 @@ from pathlib import Path
 
 import numpy as np
 
-#: Reader floors (raised with the writers' ``*_FORMAT_VERSION``).
+#: Reader floors: the oldest layout this module can still *name*, not
+#: the current writer version (module docstring).
 MIN_YSPECTRA_VERSION: int = 1
 MIN_YBUDGET_VERSION: int = 2
+
+#: What a sidecar without a ``suffixes`` key stored, which is every
+#: stream written before ``xz00`` existed.
+LEGACY_SUFFIXES: tuple[str, ...] = ("x", "z", "x0")
+
+#: Number of velocity components on a ``twin_yspectra`` leading axis.
+_N_COMPONENTS: int = 3
 
 
 @dataclass(frozen=True)
@@ -65,7 +94,8 @@ class YResolvedData:
     ``(n_t, ...)`` array; ``y`` / ``y_weights`` are the wall-normal
     grid and its quadrature rule; ``kz`` / ``kx`` the one-sided
     physical wavenumbers of the ``*_x`` / ``*_x0`` and ``*_z``
-    arrays.
+    arrays.  A ``*_xz00`` field has no wavenumber axis.  Which names
+    are present is :func:`stored_suffixes` of :attr:`meta`.
     """
 
     t: np.ndarray
@@ -80,6 +110,95 @@ class YResolvedData:
         return self.fields[name]
 
 
+def stored_suffixes(meta: dict) -> tuple[str, ...]:
+    """The marginal suffixes a stream stores, from its sidecar.
+
+    :data:`LEGACY_SUFFIXES` when the key is absent, which is exactly
+    the pre-``xz00`` layout (module docstring).
+    """
+    return tuple(meta.get("suffixes", LEGACY_SUFFIXES))
+
+
+def stored_fields(meta: dict, stem: str) -> list[tuple[str, tuple[int, ...]]]:
+    """``(name, shape)`` per stored field, in stored order.
+
+    The counterpart of the writers' ``_suffix_shapes``
+    (:mod:`dnsjax.twin.yspectra`), and the only place either reader
+    turns a sidecar into a record layout.  *stem* is
+    ``"twin_yspectra"`` or ``"twin_ybudget"``: the first is prefixed
+    by ``e`` / ``r`` and carries a component axis, the second by the
+    sidecar's ``terms`` and does not.
+    """
+    ny = int(meta["ny"])
+    widths: dict[str, tuple[int, ...]] = {
+        "x": (int(meta["n_kz"]),),
+        "z": (int(meta["n_kx"]),),
+        "x0": (int(meta["n_kz"]),),
+        "xz00": (),
+    }
+    suffixes = stored_suffixes(meta)
+    unknown = [suf for suf in suffixes if suf not in widths]
+    if unknown:
+        raise ValueError(
+            f"unknown stored suffix(es) {unknown}; this reader knows "
+            f"{sorted(widths)}."
+        )
+    if stem == "twin_yspectra":
+        prefixes = ("e", "r") if bool(meta["includes_ref"]) else ("e",)
+        return [
+            (f"{p}_{suf}", (_N_COMPONENTS, ny, *widths[suf]))
+            for p in prefixes
+            for suf in suffixes
+        ]
+    return [
+        (f"{term}_{suf}", (ny, *widths[suf]))
+        for term in meta["terms"]
+        for suf in suffixes
+    ]
+
+
+def record_dtype(meta: dict, stem: str) -> np.dtype:
+    """The stream's fixed-size record layout, from its sidecar alone.
+
+    ``("t", "<f8")`` then :func:`stored_fields`.  Shared with the
+    memory-mapped reader in ``scripts/twin_spectral_maps.py``, which
+    needs the dtype without the whole-file pass :func:`_read` makes.
+    """
+    return np.dtype(
+        [("t", "<f8")]
+        + [
+            (name, meta["value_dtype"], shape)
+            for name, shape in stored_fields(meta, stem)
+        ]
+    )
+
+
+def mean_mode_name(meta: dict, prefix: str) -> str:
+    r"""The stored field carrying *prefix*'s `$(0, 0)$` mode.
+
+    ``<prefix>_xz00`` where the stream has it, else the legacy
+    ``<prefix>_x0`` whose index 0 is that mode.  Pair it with
+    :func:`mean_mode_profile`, which drops the difference.
+    """
+    suffixes = stored_suffixes(meta)
+    for suffix in ("xz00", "x0"):
+        if suffix in suffixes:
+            return f"{prefix}_{suffix}"
+    raise ValueError(
+        f"the stream stores {list(suffixes)}, neither the (0, 0) mode "
+        "(xz00) nor the k_x = 0 plane (x0) it can be sliced from; "
+        "re-run with twin.x0_planes, or with a writer new enough to "
+        "store xz00."
+    )
+
+
+def mean_mode_profile(values: np.ndarray, name: str) -> np.ndarray:
+    r"""`$(..., n_y)$` from whichever field :func:`mean_mode_name`
+    chose: a ``*_xz00`` array is already the profile, a ``*_x0``
+    plane needs its `$k_z = 0$` column."""
+    return values if name.endswith("_xz00") else values[..., 0]
+
+
 def _resolve_pair(path: str | Path, stem: str) -> tuple[Path, Path]:
     path = Path(path)
     if path.is_dir():
@@ -89,12 +208,7 @@ def _resolve_pair(path: str | Path, stem: str) -> tuple[Path, Path]:
     return path, path.with_suffix(".json")
 
 
-def _read(
-    path: str | Path,
-    stem: str,
-    floor: int,
-    field_shapes,
-) -> YResolvedData:
+def _read(path: str | Path, stem: str, floor: int) -> YResolvedData:
     """Shared body: sidecar, record dtype, truncation, seam drop."""
     bin_path, json_path = _resolve_pair(path, stem)
     if not json_path.is_file():
@@ -110,21 +224,18 @@ def _read(
 
     ny = int(meta["ny"])
     n_kz, n_kx = int(meta["n_kz"]), int(meta["n_kx"])
-    value_dtype = meta["value_dtype"]
-    names = field_shapes(meta, ny, n_kz, n_kx)
-    record_dtype = np.dtype(
-        [("t", "<f8")] + [(n, value_dtype, sh) for n, sh in names]
-    )
+    names = stored_fields(meta, stem)
+    dtype = record_dtype(meta, stem)
 
     raw = np.fromfile(bin_path, dtype=np.uint8)
-    n_records = raw.size // record_dtype.itemsize
+    n_records = raw.size // dtype.itemsize
     if n_records == 0:
         raise ValueError(f"{bin_path}: no complete records")
-    if raw.size % record_dtype.itemsize:
+    if raw.size % dtype.itemsize:
         # A kill mid-write leaves a partial trailing record; the
         # complete prefix is intact (append-only + fsync per flush).
-        raw = raw[: n_records * record_dtype.itemsize]
-    records = raw.view(record_dtype)
+        raw = raw[: n_records * dtype.itemsize]
+    records = raw.view(dtype)
 
     t = records["t"].astype(np.float64)
     keep = np.sort(np.unique(t, return_index=True)[1])
@@ -162,34 +273,18 @@ def _read(
 
 def read_twin_yspectra(path: str | Path = ".") -> YResolvedData:
     """Read ``twin_yspectra`` (a run directory, the ``.bin``, or the
-    ``.json``).  Fields ``e_x`` / ``e_z`` / ``e_x0``, each
-    ``(n_t, 3, n_y, n_k)``, plus the ``r_*`` triplet when the run set
+    ``.json``).  Fields ``e_<suffix>`` for each of
+    :func:`stored_suffixes`, ``(n_t, 3, n_y, n_k)`` or
+    ``(n_t, 3, n_y)``, plus the matching ``r_*`` set when the run set
     ``twin.spectra_ref``."""
-
-    def shapes(meta, ny, n_kz, n_kx):
-        prefixes = ("e", "r") if bool(meta["includes_ref"]) else ("e",)
-        return [
-            (f"{p}_{suf}", (3, ny, n))
-            for p in prefixes
-            for suf, n in (("x", n_kz), ("z", n_kx), ("x0", n_kz))
-        ]
-
-    return _read(path, "twin_yspectra", MIN_YSPECTRA_VERSION, shapes)
+    return _read(path, "twin_yspectra", MIN_YSPECTRA_VERSION)
 
 
 def read_twin_ybudget(path: str | Path = ".") -> YResolvedData:
-    """Read ``twin_ybudget``.  Fields ``<term>_x`` / ``_z`` / ``_x0``
-    for each name in the sidecar's ``terms``, each
-    ``(n_t, n_y, n_k)``."""
-
-    def shapes(meta, ny, n_kz, n_kx):
-        return [
-            (f"{term}_{suf}", (ny, n))
-            for term in meta["terms"]
-            for suf, n in (("x", n_kz), ("z", n_kx), ("x0", n_kz))
-        ]
-
-    return _read(path, "twin_ybudget", MIN_YBUDGET_VERSION, shapes)
+    """Read ``twin_ybudget``.  Fields ``<term>_<suffix>`` for each
+    name in the sidecar's ``terms`` and each of
+    :func:`stored_suffixes`, ``(n_t, n_y, n_k)`` or ``(n_t, n_y)``."""
+    return _read(path, "twin_ybudget", MIN_YBUDGET_VERSION)
 
 
 def integrate_y(data: YResolvedData, name: str) -> np.ndarray:
@@ -199,13 +294,19 @@ def integrate_y(data: YResolvedData, name: str) -> np.ndarray:
     Summing the result over its last axis gives the corresponding
     ``twin.dat`` / ``twin_budget.dat`` scalar (for the energies, also
     sum over the component axis).
+
+    A ``*_xz00`` field has no wavenumber axis, so it comes back
+    ``(n_t, ...)`` -- already the scalar for that one mode.  The
+    branch is on the **name**, which is what fixes a field's layout
+    (:func:`stored_fields`), not on the array's rank.
     """
-    return np.einsum("j,...jk->...k", data.y_weights, data[name])
+    subscripts = "j,...j->..." if name.endswith("_xz00") else "j,...jk->...k"
+    return np.einsum(subscripts, data.y_weights, data[name])
 
 
 def fluctuation_energy(
     marginal: np.ndarray,
-    mean_plane: np.ndarray,
+    mean_mode: np.ndarray,
     y_weights: np.ndarray,
 ) -> np.ndarray:
     r"""Total-in-`$(y, k)$` energy without the `$(0, 0)$` mode.
@@ -214,16 +315,24 @@ def fluctuation_energy(
     with :class:`YResolvedData` (``scripts/twin_spectral_maps.py``
     does).  *marginal* is a **complete** marginal -- ``r_x`` / ``e_x``
     (summed over `$k_x$`) or ``r_z`` / ``e_z`` (summed over `$k_z$`)
-    -- and *mean_plane* the `$k_x = 0$` plane ``*_x0`` of the same
-    field, both ``(..., n_y, n_k)`` with the leading axes free; the
-    result is ``(...)``.
+    -- shaped ``(..., n_y, n_k)``, and *mean_mode* the same field's
+    `$(0, 0)$` profile, ``(..., n_y)``, with the leading axes free;
+    the result is ``(...)``.  :func:`mean_mode_name` /
+    :func:`mean_mode_profile` produce that second argument from
+    whichever of ``*_xz00`` / ``*_x0`` the stream carries.
+
+    Because the `$y$`-weights sum to ``volume_fac`` and the stored
+    entries are already divided by it, both contractions are
+    wall-normal **averages**: the result is a mean energy density,
+    not an integral.
 
     Either marginal gives the same total, since each already sums the
-    other axis, so passing ``r_z`` and ``r_x0`` together is a genuine
-    cross-check rather than a second reading of the same numbers.
-    Index 0 of a ``*_x0`` axis is `$k_z = 0$` at `$k_x = 0$`, i.e.
-    the mean mode alone -- which is why the subtraction needs that
-    plane and not ``*_x[..., 0]``, the whole `$k_z = 0$` column.
+    other axis, so passing ``r_z`` against the same mean mode as
+    ``r_x`` is a genuine cross-check rather than a second reading of
+    the same numbers.  What the mean mode is *not* is ``*_x[..., 0]``
+    (the whole `$k_z = 0$` column, summed over `$k_x$`) or
+    ``*_z[..., 0]`` (the whole `$k_x = 0$` plane, summed over
+    `$k_z$`) -- both of those carry fluctuating modes.
 
     For a reference field ``r_*`` the result is the fluctuation
     energy about the wall-parallel mean: the stored spectra are of
@@ -232,8 +341,7 @@ def fluctuation_energy(
     total.
     """
     total = np.einsum("j,...jk->...", y_weights, marginal)
-    mean_mode = np.einsum("j,...j->...", y_weights, mean_plane[..., 0])
-    return total - mean_mode
+    return total - np.einsum("j,...j->...", y_weights, mean_mode)
 
 
 def bin_energies(data: YResolvedData) -> dict[str, np.ndarray]:
@@ -243,10 +351,16 @@ def bin_energies(data: YResolvedData) -> dict[str, np.ndarray]:
     (module docstring), component-summed, as ``E_dU`` / ``E_du1`` /
     ``E_du2`` -- the same numbers ``twin.dat`` carries under
     ``twin.bins``, and the reason that flag can stay off.  Pass a
-    ``twin_yspectra`` stream.
+    ``twin_yspectra`` stream written under ``twin.x0_planes``: all
+    three need the `$k_x = 0$` plane, and only ``E_dU`` survives
+    without it, as ``integrate_y(data, "e_xz00").sum(axis=1)``.
     """
     if "e_x0" not in data.fields:
-        raise ValueError("bin_energies needs a twin_yspectra stream")
+        raise ValueError(
+            "bin_energies needs the k_x = 0 plane, which this stream "
+            f"does not carry (it stores {list(stored_suffixes(data.meta))}"
+            "); re-run or rebuild it with twin.x0_planes."
+        )
     x0 = integrate_y(data, "e_x0").sum(axis=1)  # (n_t, n_kz)
     x = integrate_y(data, "e_x").sum(axis=1)
     return {
