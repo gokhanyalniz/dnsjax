@@ -885,6 +885,9 @@ are one-liners. Cross-cutting notes:
 - `test_twin_budget.py`: twin budget closure per flow / driving mode
   on a wall-normal ladder
   (`--only`/`--ladder`/`--seeds`/`--measure`/`--quick`).
+- `test_twin_spectral_maps.py`: `scripts/twin_spectral_maps.py`
+  premultiplication, `E_ref`, colour scales and reader, on
+  in-memory streams (skips without the `plots` group).
 - `test_twin_unit.py`: twin diagnostics on a (2,2) mesh.
 - `test_twin_driver.py`: `dnsjax-twin` integration via mpirun
   (`--only <frag>` runs a subset, `--seed`/`--mean-free` vary the
