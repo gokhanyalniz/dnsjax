@@ -79,7 +79,11 @@ start mode is decided by two files -- the partner of
   its latest ``state*.tar``, or clean the directory to restart).
 - neither -> **fresh start** from ``init.snapshot`` (any plain dnsjax
   snapshot): perturb, write ``twin.json``, save the IC pair
-  (``outs.snapshot_save_initial``).  The parent clock is inherited
+  (``outs.snapshot_save_initial``).  Any of :data:`_STREAM_FILES`
+  still lying in the directory is an error here rather than something
+  to append to -- every writer appends, so a half-cleaned directory
+  would splice a new trajectory onto an old one's records.  The
+  parent clock is inherited
   (``t0``/``it0`` from the snapshot -- offline analysis reads the
   perturbation time from ``twin.json``); a trajectory-defining
   override starts the reference at ``t = it = 0`` exactly as in
@@ -271,6 +275,18 @@ class TwinParams(BaseModel):
       ``twin.rotational_ybudget`` it is 12, and 21 transforms rather
       than 33.  XLA still schedules, so watch it rather than
       assuming either.
+      That figure counts the padded **physical** set alone, which is
+      not the whole transient: live *spectral* arrays at the same
+      point are `$\Delta\mathbf{u}$`, the four signed operands of
+      ``_Sources.advective``, `$\hat{\mathcal N}$`, and then
+      ``div_n`` and `$\Delta\hat p$`.  A complex
+      `$(3, N_y, N_{k_z}, N_{k_x})$` field is `$24 n_x n_y n_z$`
+      bytes against a padded physical component's
+      `$18 n_x n_y n_z$` (wall-bounded oversamples `$x$`-`$z$` only,
+      `$1.5^2$`), so those `$\sim\!6$` are `$\sim\!8$` more
+      padded-component equivalents: size a job against `$\sim\!23$`,
+      not 15.  That last step is arithmetic off the shapes rather
+      than a measurement, which is one more reason to watch the run.
       ``solver.rhs_transform_chunks``
       caps the transform-stage transient inside each
       :func:`dnsjax.fft.chunked_transform` call; it does **not** touch
@@ -296,16 +312,20 @@ class TwinParams(BaseModel):
       two collectives -- about half of it.  What it costs is the
       decorrelation ratio.
 
-    ``it_energy`` is the one per-*step* cost at its default of 1: an
-    extra jitted call per step whose ``delta`` and ``du1`` are each
-    read four times, so both materialise (~2 full-state complex
-    temporaries).  It is **a few percent of a twin step** -- 1.3 % at
-    plane-Couette `$48^3$`, 5.0 % at `$64^3$` (the rise is the
-    working set leaving cache; the step itself is pure FFT/solve
-    work either way) -- so the default needs no tuning, which is
-    just as well: it is the intended Lyapunov sampling rate.  The
-    ``E_d`` vs ``E_dU + E_du1 + E_du2`` redundancy is a deliberate
-    consistency guard and is not worth trading for that few percent.
+    ``it_energy`` is the one per-*step* cost at its default of 1, and
+    what it costs depends on ``bins``.  **Off** (the default): one
+    extra jitted call per step forming ``delta`` and reducing it and
+    ``state1``, three full-state passes against the two steps' FFT and
+    solve work.  **On**: ``delta`` and ``du1`` are each read four
+    times, so both materialise (~2 full-state complex temporaries) --
+    **a few percent of a twin step**, measured at 1.3 % for
+    plane-Couette `$48^3$` and 5.0 % at `$64^3$` (the rise is the
+    working set leaving cache; the step itself is pure FFT/solve work
+    either way), and the ``E_d`` vs ``E_dU + E_du1 + E_du2``
+    redundancy those percent buy is a deliberate consistency guard,
+    not something to trade away.  Either way the default cadence
+    needs no tuning, which is just as well: it is the intended
+    Lyapunov sampling rate.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -549,6 +569,35 @@ TWIN_EXTENSION = register_extension(
 
 #: Live merged section (analogous to the global ``params``).
 twin_params: TwinParams = TWIN_EXTENSION.values
+
+
+#: Every file a twin run appends to.  A fresh start refuses to touch
+#: a directory holding any of them (see :func:`run`), because all
+#: three writer families append rather than truncate: a ``.dat``
+#: stream because :class:`_ScalarStream` re-writes no header, and a
+#: ``.bin`` stream whenever its sidecar happens to match this run.
+#: A superset of ``scripts/twin_postprocess.py``'s ``_OUTPUTS``: the
+#: streams that script rebuilds, plus the ones it cannot.
+#: ``probes.*`` is here too -- reference-only, and written by plain
+#: ``dnsjax`` as well, but a twin run appends to it like the rest.
+_STREAM_FILES: tuple[str, ...] = (
+    "twin.dat",
+    "twin_budget.dat",
+    "stats.dat",
+    "stats_twin.dat",
+    "steps.dat",
+    "steps_twin.dat",
+    "corrector.dat",
+    "corrector_twin.dat",
+    "twin_spectra.bin",
+    "twin_spectra.json",
+    "twin_yspectra.bin",
+    "twin_yspectra.json",
+    "twin_ybudget.bin",
+    "twin_ybudget.json",
+    "probes.bin",
+    "probes.json",
+)
 
 
 def _partner_path(reference: Path) -> Path:
@@ -804,11 +853,17 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         )
     else:
         # Fresh start.  Stale streams without the member record mean
-        # a corrupt / half-cleaned directory; refuse to append.
-        if Path("twin.dat").exists():
+        # a corrupt / half-cleaned directory; refuse to append.  All
+        # of them, not just ``twin.dat``: every writer here appends
+        # (:data:`_STREAM_FILES`), so a half-cleaned directory would
+        # otherwise splice a new trajectory onto an old one's records
+        # -- silently for the ``.dat`` streams, and for a ``.bin``
+        # stream whenever its sidecar matched.
+        stale = [name for name in _STREAM_FILES if Path(name).exists()]
+        if stale:
             raise SystemExit(
-                f"{_PROG}: error: stale twin.dat without twin.json "
-                "in this directory; move it away."
+                f"{_PROG}: error: stale {', '.join(stale)} without "
+                "twin.json in this directory; move them away."
             )
         if changes and not params.init.force_resume:
             sharding.print(
