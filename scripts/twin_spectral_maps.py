@@ -249,8 +249,10 @@ how many distinct parent snapshots are in play beside the instant
 count, so a member set that is not one trajectory is at least visible.
 
 What that pass actually accumulates is the **mean reference record**
--- every stored ``r_*`` marginal, with the `$(0, 0)$` mode subtracted
-once, on arrival (:meth:`YSeries.reference_spectrum`).
+-- both complete ``r_*`` marginals, with the `$(0, 0)$` mode
+subtracted once, on arrival (:meth:`YSeries.reference_spectrum`).
+Never a `$k_x = 0$` plane the stream may also carry: nothing divides
+by one, and reading it would be a third more of the pass.
 `$E^{\mathrm{ref}}$` is then
 one of its three reductions, and the next section's two divisors are
 the other two, so "a reference divisor never carries the `$(0, 0)$`
@@ -985,14 +987,21 @@ class YSeries:
 
     Fields are read and averaged on demand (and cached), so opening a
     series is cheap however long the run and however many members it
-    has.  ``index`` carries each frame's position on the members'
-    common relative-time grid -- the number the output filenames use.
+    has.  ``index`` carries each frame's position in the **first**
+    member's own deduplicated record sequence -- the number the output
+    filenames use.  That is the frame label rather than a position on
+    the shared grid, and deliberately: it is strictly increasing in
+    time (so a lexical sort of the filenames is the time order) and it
+    survives ``--stride`` / ``--first`` / ``--last`` naming the same
+    frame the same way, which a position within the *selection* would
+    not.  It skips a number wherever the first member has a sample the
+    others lack.
     """
 
     stem: str
     members: tuple[_Member, ...]
     rows: np.ndarray  # (n_members, n_frames) record index per member
-    index: np.ndarray  # (n_frames,) position on the common grid
+    index: np.ndarray  # (n_frames,) row in members[0], the frame label
     t_rel: np.ndarray  # (n_frames,) time since the perturbation
     meta: dict  # the first member's sidecar
     ref_stride: int = 1  # subsampling of the reference normalisation
@@ -1095,8 +1104,24 @@ class YSeries:
         the `$(0, 0)$` mode" is one statement about one array rather
         than three that could drift (module docstring,
         "Decorrelation").
+
+        Only the two **complete** marginals are held
+        (:data:`NORMALISED_MARGINALS`), which is every one a divisor
+        is ever built from: neither decorrelation is offered for the
+        `$k_x = 0$` plane, and normalising that plane by a reference
+        of the whole mode plane is what "Reference normalisation"
+        declines to do.  Asking for another marginal is a caller bug
+        rather than a missing feature, so it says so.
         """
-        return self._resolved_reference()[0][marginal]
+        spectra = self._resolved_reference()[0]
+        if marginal not in spectra:
+            raise ValueError(
+                f"no reference spectrum is held for the {marginal!r} "
+                f"marginal (only {sorted(spectra)}): a divisor is built "
+                "from a complete sum over the mode plane, which the "
+                "k_x = 0 plane is not."
+            )
+        return spectra[marginal]
 
     def reference_profile(self) -> np.ndarray:
         r"""`$D_\alpha(y)$`, ``(3, n_y)``: that spectrum's `$k$`-sum.
@@ -1132,17 +1157,17 @@ class YSeries:
     def _build_reference(self) -> tuple[dict[str, np.ndarray], list[str]]:
         """Accumulate the mean reference record over the members.
 
-        One pass over the distinct instants, accumulating every stored
-        reference marginal and the `$(0, 0)$` mode; everything a
-        normalised or decorrelation panel divides by is a reduction of
-        what comes out (:meth:`reference_spectrum`).  Accumulating the
-        marginals rather than the scalar is what makes the `$y$`- and
-        `$k$`-resolved divisors available at all, and it is exact:
-        every step from the stored entry to `$E^{\\mathrm{ref}}$` is
-        linear, so the mean of the reductions is the reduction of the
-        mean.  It reads two or three fields per record where the
-        scalar needed one; ``--ref-stride`` is the lever if that pass
-        is the expensive one.
+        One pass over the distinct instants, accumulating the two
+        complete reference marginals and the `$(0, 0)$` mode;
+        everything a normalised or decorrelation panel divides by is a
+        reduction of what comes out (:meth:`reference_spectrum`).
+        Accumulating the marginals rather than the scalar is what
+        makes the `$y$`- and `$k$`-resolved divisors available at all,
+        and it is exact: every step from the stored entry to
+        `$E^{\\mathrm{ref}}$` is linear, so the mean of the reductions
+        is the reduction of the mean.  It reads three fields per
+        record where the scalar needed one; ``--ref-stride`` is the
+        lever if that pass is the expensive one.
         """
         if "r" not in self.prefixes:
             raise ValueError(
@@ -1152,7 +1177,12 @@ class YSeries:
             )
         picks, n_instants, n_samples = self._distinct_instants()
         mean_name = mean_mode_name(self.meta, "r")
-        wanted = [suf for suf in self.suffixes if suf in MARGINALS]
+        # The two complete marginals only, never the ``x0`` plane a
+        # stream may also carry: nothing divides by it
+        # (:meth:`reference_spectrum`), and reading it here would be a
+        # third more of this pass -- which is the whole stream, every
+        # member, and the most expensive thing the script does.
+        wanted = [suf for suf in self.suffixes if suf in NORMALISED_MARGINALS]
         totals = {suf: np.zeros(()) for suf in wanted}
         mean_total = np.zeros(())
         for member, rows in zip(self.members, picks, strict=True):
@@ -3205,8 +3235,9 @@ def write_spacetime_npz(
         "y_plotted": maps[0].y,
         "y_full": series.y,
         "y_weights": series.y_weights,
-        # Which records went in: their position on the members'
-        # common relative-time grid, after --stride / --first / --last.
+        # Which records went in: the frame labels the figures are
+        # named by (:attr:`YSeries.index`), after --stride / --first /
+        # --last.
         "index": series.index,
         "clim": np.asarray([(s.lo, s.hi) for s in scales]),
         "log_floor": np.asarray(floors),
@@ -3517,9 +3548,9 @@ def render_series(
 ) -> list[Path]:
     """Render every frame of one series into ``out_dir/tag``.
 
-    Filenames are ``<tag>_<index>.<fmt>`` with *index* the record's
-    position on the members' common time grid, zero-padded so a
-    lexical sort is the time order.  The series is scanned once first
+    Filenames are ``<tag>_<index>.<fmt>`` with *index* the frame
+    label of :attr:`YSeries.index`, zero-padded so a lexical sort is
+    the time order.  The series is scanned once first
     (:func:`scan_panels`) for the sign check and the frozen scale.
 
     The reference normalisation a spectra series may carry is a
