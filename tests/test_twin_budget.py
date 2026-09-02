@@ -406,6 +406,10 @@ def _twin(
         str(seed),
         "--twin.bins",
         "True",
+        # The convective leg reads the (y, k) budget back per k-set
+        # bin, which is the k_x = 0 plane's job and is off by default.
+        "--twin.x0_planes",
+        "True",
         "--twin.it_budget",
         str(IT_BUDGET),
         "--twin.it_ybudget",

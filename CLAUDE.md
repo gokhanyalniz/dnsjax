@@ -332,9 +332,23 @@ multi-process):
 
 **The `ΔU`/`Δu₁`/`Δu₂` three-bin split is a three-bin partition of
 the `(kx, kz)` plane and its authors restrict it to minimal flow
-units**, so `twin.bins` defaults **off** and the `(y, k)` streams
-replace it — the three bin energies stay exactly recoverable from
-them (`analysis.twin.bin_energies`).
+units**, so both of its runtime costs default **off**: `twin.bins`
+(the `twin.dat` columns) and `twin.x0_planes` (the `k_x = 0` plane
+of the two `(y, k)` streams, without which
+`analysis.twin.bin_energies` refuses). What the streams always carry
+instead is `_xz00`, the `y`-resolved `(0,0)` mode — `E_ΔU` on its
+own, and the mean `analysis.twin.fluctuation_energy` subtracts.
+Turning `x0_planes` on restores the exact three-bin recovery at a
+third more `psum` payload and a third more disk.
+
+**Three stream layouts exist and all three read** (the sidecar's
+`suffixes` names one): pre-`_xz00` `(x, z, x0)`, the default
+`(x, z, xz00)`, and `(x, z, x0, xz00)`. The readers' floors are
+therefore deliberately **not** raised with the writers' versions —
+the one place in the repo where that lockstep is broken, and
+`twin/yspectra.py` says why. `analysis.twin.stored_fields` /
+`record_dtype` own the layout for the eager reader *and*
+`scripts/twin_spectral_maps.py`'s memory map.
 
 **The `(y, k)` budget has two forms**, selected by
 `twin.rotational_ybudget` (default **off** = convective, matching
@@ -548,7 +562,7 @@ layering" above.
 | `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
 | `[probes]` | Extension (`extensions/`): spectral-mode probe stream (wall-bounded) |
 | `[force]`  | Extension: white-in-time stochastic mode kicks; all-or-none and trajectory-defining (wall-bounded, non-viscoelastic) |
-| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + `mean_flow`/`bins`/`rotational_ybudget` (Cartesian wall-bounded, fixed dt) |
+| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + `mean_flow`/`bins`/`x0_planes`/`rotational_ybudget` (Cartesian wall-bounded, fixed dt) |
 
 The default `parameters.toml` contains only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`; the rest rely on
@@ -613,7 +627,10 @@ six writer/reader pairs: `extensions/probes.py` and `forcing.py` →
 `twin/driver.py` (`twin.json`) → `analysis/twin/spectra.py` and
 `series.py`; `twin/yspectra.py`'s two streams →
 `analysis/twin/yspectra.py`. Bump writer and reader together when the
-stored *meaning* changes (rationale: the writers' docstrings).
+stored *meaning* changes (rationale: the writers' docstrings). The
+`twin/yspectra.py` pair is the **exception**: its versions moved for
+a change of *layout*, which the sidecar's `suffixes` names outright,
+so the floors stayed put and old members still read.
 
 Every flushed row and host-synced scalar is guarded against NaN/inf: a
 hit prints one `FATAL: non-finite ...` line naming the quantity, skips
@@ -751,14 +768,21 @@ All under `scripts/`; full rationale/usage in each module docstring.
   `twin_yspectra.bin` / `twin_ybudget.bin` / `stats.dat` /
   `stats_twin.dat` offline from a twin member's snapshot pairs
   (`[recon]` section) -- for members recorded before a stream existed.
+  The stream-shaping `[recon]` flags (`spectra_ref`,
+  `rotational_ybudget`, `x0_planes`) are stated, not inherited: match
+  what the run wrote, which its sidecars name.
   Bit-for-bit except the `stats*.dat` driving columns, which no
   reconstruction can give back as the *applied* force (why, and what
   it writes instead: its module docstring).
 - `twin_spectral_maps.py`: CLI + library rendering `k`-premultiplied
-  `(lambda, y)` contour maps of every field in an ensemble
+  `(lambda, y)` contour maps of an ensemble
   (`--members` or a `build-twin` `--tree`) of twin
   `twin_yspectra.bin` / `twin_ybudget.bin` streams, one figure per
-  sample, in inner units against a **measured** `Re_tau`. Defaults:
+  sample, in inner units against a **measured** `Re_tau`. What it
+  draws by default is the **spectra** stream's two marginals and
+  nothing else: `--budget` adds the `twin_ybudget` series, `--x0` the
+  `k_x = 0` plane where a stream carries one, and `--series` names
+  exact tags overriding both. Other defaults:
   log-log axes floored at `y+ = 1` (`Y_FLOOR_PLUS`),
   premultiplied by `k` **only** -- the usual convention for a
   spectrum, not the paper's `k y`, which `--premultiply ky` restores;
@@ -768,7 +792,10 @@ All under `scripts/`; full rationale/usage in each module docstring.
   The two complete spectral marginals are drawn over a time-averaged
   per-component `E_ref` (the `k_x = 0` plane stays absolute), each
   panel's title reporting the number so absolute values stay
-  recoverable; that average assumes the members subsample **one**
+  recoverable. `E_ref` subtracts the `(0,0)` mode off the stream's
+  own `_xz00` field, or off `_x0`'s first column on a pre-`_xz00`
+  member -- all three stream layouts render, and a member set that
+  mixes them is refused. That average assumes the members subsample **one**
   reference trajectory -- distinct absolute sample times are distinct
   reference states -- and reports the parent count so a set that is
   not can be spotted. The only script needing matplotlib -- `uv run
@@ -886,13 +913,14 @@ are one-liners. Cross-cutting notes:
   on a wall-normal ladder
   (`--only`/`--ladder`/`--seeds`/`--measure`/`--quick`).
 - `test_twin_spectral_maps.py`: `scripts/twin_spectral_maps.py`
-  premultiplication, `E_ref`, colour scales and reader, on
-  in-memory streams (skips without the `plots` group).
+  premultiplication, `E_ref`, colour scales, the default series and
+  all three stream layouts, on in-memory streams (skips without the
+  `plots` group).
 - `test_twin_unit.py`: twin diagnostics on a (2,2) mesh.
 - `test_twin_driver.py`: `dnsjax-twin` integration via mpirun
   (`--only <frag>` runs a subset, `--seed`/`--mean-free` vary the
   partner).
-- `test_twin_analysis.py`: JAX-free `analysis.twin` readers/
-  aggregation/fits/lengths + `build-twin` end to end.
+- `test_twin_analysis.py`: JAX-free `analysis.twin` readers (all three
+  stream layouts)/aggregation/fits/lengths + `build-twin` end to end.
 - `test_twin_postprocess.py`: `scripts/twin_postprocess.py` rebuilt
   against live streams, incl. the mpirun mesh row (`--unit-only`).

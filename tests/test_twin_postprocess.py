@@ -111,15 +111,24 @@ PARENT_DRIVEN = _SESSION / "parent_driven.tar"
 
 #: Shared by the two ``PARENT_DRIVEN`` cases, which ``_member`` caches
 #: under one name.  ``it_stats`` is on so the driven member also shows
-#: where the applied driving *is* recorded (``stats.dat``).
+#: where the applied driving *is* recorded (``stats.dat``);
+#: ``x0_planes`` because ``bin_energies`` needs the plane, and it is
+#: the one stream-shaping flag whose ``[recon]`` twin has to be
+#: passed to match (``_assert_streams_identical`` is what catches a
+#: pair of defaults that disagree).
 _DRIVEN_ARGS = [
     "--twin.e0",
     str(E0),
     "--twin.bins",
     "True",
+    "--twin.x0_planes",
+    "True",
     "--outs.it_stats",
     "1",
 ]
+
+#: Its ``[recon]`` counterpart, for the same member.
+_DRIVEN_RECON = ["--recon.x0_planes", "True"]
 
 #: Members built once and reused across the cases below.
 _MEMBERS: dict[str, Path] = {}
@@ -272,7 +281,7 @@ def test_driven_member_rebuilds_identically() -> None:
         4,
         _DRIVEN_ARGS,
     )
-    _recon(member)
+    _recon(member, _DRIVEN_RECON)
     out = member / "recon"
     _assert_streams_identical(member, out)
 
@@ -351,7 +360,8 @@ def test_zero_perturbation_is_exactly_zero() -> None:
     assert (dat["E_d"] == 0).all(), dat["E_d"]
     assert (dat["E_ref"] > 0).all(), dat["E_ref"]
     ys = read_twin_yspectra(out)
-    for key in ("e_x", "e_z", "e_x0"):
+    assert ys.meta["suffixes"] == ["x", "z", "xz00"]  # the default
+    for key in ("e_x", "e_z", "e_xz00"):
         assert (ys[key] == 0).all(), key
     assert (ys["r_x"] > 0).any()
     yb = read_twin_ybudget(out)

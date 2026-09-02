@@ -209,12 +209,12 @@ units (its caveat after eq. 2.5); above that it stops resolving
 anything.
 
 The stored objects are the two marginals of the per-mode density,
-plus the `$k_x = 0$` plane:
+plus its `$(0, 0)$` mode:
 
 .. math::
     E_\Delta^x[\alpha](y, k_z) = \sum_{k_x} \hat{e}_\alpha , \qquad
     E_\Delta^z[\alpha](y, k_x) = \sum_{k_z} \hat{e}_\alpha , \qquad
-    E_\Delta^{x0}[\alpha](y, k_z) = \hat{e}_\alpha(y, 0, k_z) ,
+    E_\Delta^{xz00}[\alpha](y) = \hat{e}_\alpha(y, 0, 0) ,
 
 with `$\hat{e}_\alpha = \tfrac12 |\Delta\hat u_\alpha|^2$` per
 velocity component.  **Energy first, then the sum over the other
@@ -224,11 +224,18 @@ the energy, so it is the standard one-dimensional spectrum; it
 closes (summing either marginal over its axis and integrating in
 `$y$` returns `$E_\Delta$` exactly, where averaging first returns
 only the `$k_x = 0$` content); and it *contains* the other reading,
-which is exactly the stored `$k_x = 0$` plane.  That plane is also
-what makes these a strict refinement rather than a replacement:
+the `$k_x = 0$` plane
 
 .. math::
-    E_{\Delta U} = \textstyle\int \sum_\alpha E^{x0}_\alpha(y, 0),
+    E_\Delta^{x0}[\alpha](y, k_z) = \hat{e}_\alpha(y, 0, k_z) ,
+
+of which `$E^{xz00}$` is the `$k_z = 0$` column.  The full plane is
+what makes these a strict refinement of the three-bin split rather
+than a replacement:
+
+.. math::
+    E_{\Delta U} = \textstyle\int \sum_\alpha E^{x0}_\alpha(y, 0)
+        = \int \sum_\alpha E^{xz00}_\alpha ,
     \quad
     E_{\Delta u_1} = \int \sum_\alpha \sum_{k_z>0} E^{x0}_\alpha ,
     \quad
@@ -238,6 +245,14 @@ what makes these a strict refinement rather than a replacement:
 -- the three numbers of the old binning, now `$k_z$`-resolved, which
 is why ``twin.bins`` can stay off.  The `$\pm k_z$` fold this
 requires is not cosmetic: :func:`_fold_kz`.
+
+Only `$E^{xz00}$` is stored unconditionally.  The plane it comes from
+is **opt-in** (``twin.x0_planes``, default off): it is a third of
+every record and a third of the sample's collective, and the two
+marginals are what a `$(y, k)$` reading actually wants.  With it off
+only the first of the three identities above survives -- which is the
+one a difference field's mean-flow component needs, and the one
+:func:`~dnsjax.analysis.twin.yspectra.fluctuation_energy` subtracts.
 
 Spectral budget
 ---------------
@@ -950,8 +965,21 @@ def _fold_kz(a: Array) -> Array:
     return a[..., :npos].at[..., 1:].add(a[..., npos:][..., ::-1])
 
 
-def _marginals_replicated(density: Array) -> tuple[Array, Array, Array]:
-    r"""The three marginals of a per-mode density, replicated.
+def marginal_suffixes(x0: bool) -> tuple[str, ...]:
+    r"""The stored marginal names, in stored order.
+
+    ``x`` / ``z`` are the two marginals and ``xz00`` the `$(0, 0)$`
+    mode; ``x0``, the full `$k_x = 0$` plane, joins them under
+    ``twin.x0_planes``.  This is the order
+    :func:`_marginals_replicated` returns and the order both writers
+    (:mod:`dnsjax.twin.yspectra`) lay a record out in, so the two
+    cannot drift apart.
+    """
+    return ("x", "z", "x0", "xz00") if x0 else ("x", "z", "xz00")
+
+
+def _marginals_replicated(density: Array, *, x0: bool) -> dict[str, Array]:
+    r"""The marginals of a per-mode density, replicated.
 
     *density* is a **real** `$(C, N_y, N_{k_z}, N_{k_x})$` array in
     the spectral layout, already carrying its ``k_metric`` weight and
@@ -961,28 +989,42 @@ def _marginals_replicated(density: Array) -> tuple[Array, Array, Array]:
     The leading axis is free: three velocity components for the
     energies, one per term for the budget.
 
-    Returns ``(m_x, m_z, m_x0)``, each replicated with the spectral
-    padding stripped:
+    Returns one entry per :func:`marginal_suffixes` name, each
+    replicated with the spectral padding stripped:
 
-    - ``m_x`` `$(C, N_y, n_z/2)$`: summed over `$k_x$` and folded onto
+    - ``x`` `$(C, N_y, n_z/2)$`: summed over `$k_x$` and folded onto
       `$|k_z|$` (:func:`_fold_kz`) -- the `$x$`-averaged spectrum;
-    - ``m_z`` `$(C, N_y, n_x/2)$`: summed over `$k_z$` -- the
+    - ``z`` `$(C, N_y, n_x/2)$`: summed over `$k_z$` -- the
       `$z$`-averaged spectrum;
-    - ``m_x0`` `$(C, N_y, n_z/2)$`: the `$k_x = 0$` plane alone,
-      folded the same way -- the spectrum *of the streamwise-averaged
-      field*, which is what recovers the `$\Delta U$` / `$\Delta u_1$`
-      / `$\Delta u_2$` binning from ``m_x`` (module docstring).
+    - ``xz00`` `$(C, N_y)$`: the `$(k_x, k_z) = (0, 0)$` mode alone.
+      It takes no fold -- `$k_z = 0$` is its own `$\pm$` partner, so
+      :func:`_fold_kz` would leave it exactly as it is -- and it is
+      *not* ``x[..., 0]`` (the whole `$k_z = 0$` column, summed over
+      `$k_x$`) nor ``z[..., 0]`` (the whole `$k_x = 0$` plane, summed
+      over `$k_z$`);
+    - ``x0`` `$(C, N_y, n_z/2)$`, under *x0* only: the `$k_x = 0$`
+      plane, folded like ``x`` -- the spectrum *of the
+      streamwise-averaged field*, which is what recovers the
+      `$\Delta U$` / `$\Delta u_1$` / `$\Delta u_2$` binning from
+      ``x`` (module docstring).
 
-    Each device reduces its own `$(k_z, k_x)$` tile, scatters the
-    three blocks into zero global-shape arrays at its mesh position,
-    and one ``psum`` over both mesh axes assembles the replicated
-    result -- the pattern of :func:`_mode_energy_replicated`, and
-    required for the same reason (the writer's rank-0 host transfer
-    needs a fully-addressable array).  The three blocks share one
-    collective: unlike the two `$(k_z, k_x)$` planes there, they are
-    reductions of the *same* field pass, so there is nothing to gain
-    by splitting them.  The fold runs **after** the ``psum``: the
-    `$\pm k_z$` partners live on different ``np0`` devices.
+    Each device reduces its own `$(k_z, k_x)$` tile, scatters its
+    blocks into zero global-shape arrays at its mesh position, and one
+    ``psum`` over both mesh axes assembles the replicated result --
+    the pattern of :func:`_mode_energy_replicated`, and required for
+    the same reason (the writer's rank-0 host transfer needs a
+    fully-addressable array).  The blocks share one collective:
+    unlike the two `$(k_z, k_x)$` planes there, they are reductions of
+    the *same* field pass, so there is nothing to gain by splitting
+    them.  The fold runs **after** the ``psum``: the `$\pm k_z$`
+    partners live on different ``np0`` devices.
+
+    What *x0* costs is therefore not a field pass but a third of the
+    payload -- one more `$(C, N_y, N_{k_z}^{\mathrm{spec}})$` block in
+    a collective that otherwise carries
+    `$N_{k_z}^{\mathrm{spec}} + N_{k_x}^{\mathrm{spec}} + 1$` columns
+    -- and a third of every stored record.  ``xz00`` is the single
+    trailing column, which is why it is unconditional.
     """
     nz_spec, nx_spec = sharding.spec_shape[1], sharding.spec_shape[2]
 
@@ -993,17 +1035,25 @@ def _marginals_replicated(density: Array) -> tuple[Array, Array, Array]:
         c, ny = d.shape[0], d.shape[1]
         zeros_z = jnp.zeros((c, ny, nz_spec), dtype=d.dtype)
         zeros_x = jnp.zeros((c, ny, nx_spec), dtype=d.dtype)
-        # ``k_x = 0`` is local column 0 of the first device column
-        # only; every other device contributes exact zeros.
-        x0_loc = jnp.where(col0 == 0, d[:, :, :, 0], 0.0)
-        blocks = (
+        blocks = [
             lax.dynamic_update_slice_in_dim(
                 zeros_z, jnp.sum(d, axis=3), row0, 2
             ),
             lax.dynamic_update_slice_in_dim(
                 zeros_x, jnp.sum(d, axis=2), col0, 2
             ),
-            lax.dynamic_update_slice_in_dim(zeros_z, x0_loc, row0, 2),
+        ]
+        if x0:
+            # ``k_x = 0`` is local column 0 of the first device column
+            # only; every other device contributes exact zeros.
+            x0_loc = jnp.where(col0 == 0, d[:, :, :, 0], 0.0)
+            blocks.append(
+                lax.dynamic_update_slice_in_dim(zeros_z, x0_loc, row0, 2)
+            )
+        # ``(0, 0)`` lives on one device and is already global-shaped
+        # at length 1, so it is appended rather than scattered.
+        blocks.append(
+            jnp.where((row0 == 0) & (col0 == 0), d[:, :, 0, 0], 0.0)[..., None]
         )
         return lax.psum(jnp.concatenate(blocks, axis=2), ("np0", "np1"))
 
@@ -1016,10 +1066,16 @@ def _marginals_replicated(density: Array) -> tuple[Array, Array, Array]:
 
     n2 = params.res.nz - 1
     n3 = params.res.nx // 2
-    m_x = gathered[..., :n2]
-    m_z = gathered[..., nz_spec : nz_spec + n3]
-    m_x0 = gathered[..., nz_spec + nx_spec :][..., :n2]
-    return _fold_kz(m_x), m_z, _fold_kz(m_x0)
+    out = {
+        "x": _fold_kz(gathered[..., :n2]),
+        "z": gathered[..., nz_spec : nz_spec + n3],
+    }
+    offset = nz_spec + nx_spec
+    if x0:
+        out["x0"] = _fold_kz(gathered[..., offset : offset + n2])
+        offset += nz_spec
+    out["xz00"] = gathered[..., offset]
+    return {suf: out[suf] for suf in marginal_suffixes(x0)}
 
 
 def _energy_density(state: Array, fourier_: Fourier) -> Array:
@@ -1036,7 +1092,7 @@ def _energy_density(state: Array, fourier_: Fourier) -> Array:
     )
 
 
-@partial(jit, static_argnames=("ref",))
+@partial(jit, static_argnames=("ref", "x0"))
 def _twin_yspectra_jit(
     state1: Array,
     state2: Array,
@@ -1044,39 +1100,51 @@ def _twin_yspectra_jit(
     flow_: object,
     *,
     ref: bool,
+    x0: bool,
 ) -> dict[str, Array]:
     r"""Wall-normal-resolved componentwise spectra (module docstring).
 
-    ``e_x`` / ``e_z`` / ``e_x0`` are the difference field's three
-    marginals of :func:`_marginals_replicated`, per velocity
-    component; under *ref* (``twin.spectra_ref``), ``r_x`` / ``r_z`` /
-    ``r_x0`` are the reference state's.  Every array is a
+    ``e_<suffix>`` are the difference field's marginals of
+    :func:`_marginals_replicated`, per velocity component, one per
+    :func:`marginal_suffixes` name; under *ref* (``twin.spectra_ref``)
+    the ``r_<suffix>`` set is the reference state's.  Every array is a
     `$y$`-**density**: integrate with ``flow.y_weights`` (shipped in
     the stream's sidecar) to get the per-`$k$` energy, and sum over
     `$k$` for ``twin.dat``'s ``E_d``.
 
-    *ref* is **static**, like ``bins`` on :func:`_twin_energies_jit`,
-    and it matters more here than on the `$(k_z, k_x)$` stream: the
-    reference half is a second full real
+    *ref* and *x0* are both **static**, like ``bins`` on
+    :func:`_twin_energies_jit`.  *ref* matters more here than on the
+    `$(k_z, k_x)$` stream: the reference half is a second full real
     `$(3, N_y, N_{k_z}, N_{k_x})$` density **and** a second ``psum``,
     i.e. about half this sample's cost and one of its two collectives.
-    The writer pins it in the stream sidecar (``includes_ref``), so a
-    resume cannot flip it mid-stream.
+    *x0* (``twin.x0_planes``) is a third of each collective rather
+    than a field pass, and with it off nothing about the `$k_x = 0$`
+    plane is traced at all.  The writer pins both in the stream
+    sidecar (``includes_ref``, ``suffixes``), so a resume cannot flip
+    either mid-stream.
     """
     delta = state2 - state1
-    e_x, e_z, e_x0 = _marginals_replicated(_energy_density(delta, fourier_))
-    out = {"e_x": e_x, "e_z": e_z, "e_x0": e_x0}
+    out = {
+        f"e_{suf}": v
+        for suf, v in _marginals_replicated(
+            _energy_density(delta, fourier_), x0=x0
+        ).items()
+    }
     if not ref:
         return out
-    r_x, r_z, r_x0 = _marginals_replicated(_energy_density(state1, fourier_))
-    return out | {"r_x": r_x, "r_z": r_z, "r_x0": r_x0}
+    return out | {
+        f"r_{suf}": v
+        for suf, v in _marginals_replicated(
+            _energy_density(state1, fourier_), x0=x0
+        ).items()
+    }
 
 
 def twin_yspectra(
-    state1: Array, state2: Array, *, ref: bool = True
+    state1: Array, state2: Array, *, ref: bool = True, x0: bool = False
 ) -> dict[str, Array]:
     """Wrapper around ``_twin_yspectra_jit`` binding the singletons."""
-    return _twin_yspectra_jit(state1, state2, fourier, flow, ref=ref)
+    return _twin_yspectra_jit(state1, state2, fourier, flow, ref=ref, x0=x0)
 
 
 # ── Wall-normal-resolved spectral budget ─────────────────────────────
@@ -1547,7 +1615,7 @@ def _driving_density(prof_dU: Array, flow_: object) -> Array:
     return (dens / derived_params.volume_fac)[:, None, None]
 
 
-@partial(jit, static_argnames=("rotational",))
+@partial(jit, static_argnames=("rotational", "x0"))
 def _twin_ybudget_jit(
     state1: Array,
     state2: Array,
@@ -1556,30 +1624,33 @@ def _twin_ybudget_jit(
     pressure: DifferencePressure,
     *,
     rotational: bool,
+    x0: bool,
 ) -> dict[str, Array]:
     r"""Wall-normal-resolved spectral budget (module docstring).
 
-    Returns ``<term>_x`` / ``<term>_z`` / ``<term>_x0`` for each name
-    in :func:`ybudget_terms`, the three marginals of
-    :func:`_marginals_replicated`.  Every array is a `$y$`-density:
-    integrate with ``flow.y_weights`` for the per-`$k$` rate, and sum
-    over `$k$` for the corresponding volume-averaged rate.
+    Returns ``<term>_<suffix>`` for each name in
+    :func:`ybudget_terms` and each in :func:`marginal_suffixes`, the
+    marginals of :func:`_marginals_replicated`.  Every array is a
+    `$y$`-density: integrate with ``flow.y_weights`` for the
+    per-`$k$` rate, and sum over `$k$` for the corresponding
+    volume-averaged rate.
 
-    *rotational* is **static**, like ``bins`` on
+    *rotational* and *x0* are both **static**, like ``bins`` on
     :func:`_twin_energies_jit` and ``ref`` on
-    :func:`_twin_yspectra_jit`: it selects the budget form, so only
-    one of the two source builders is ever traced, and the term list
-    it names is what the stream's records are shaped by.
+    :func:`_twin_yspectra_jit`.  *rotational* selects the budget form,
+    so only one of the two source builders is ever traced, and the
+    term list it names is what the stream's records are shaped by;
+    *x0* (``twin.x0_planes``) selects the suffix list, and with it off
+    the `$k_x = 0$` plane is never formed.
     """
     stacked = _ybudget_densities(
         state1, state2, fourier_, flow_, pressure, rotational
     )
-    m_x, m_z, m_x0 = _marginals_replicated(stacked)
+    marginals = _marginals_replicated(stacked, x0=x0)
     out: dict[str, Array] = {}
     for i, name in enumerate(ybudget_terms(rotational)):
-        out[f"{name}_x"] = m_x[i]
-        out[f"{name}_z"] = m_z[i]
-        out[f"{name}_x0"] = m_x0[i]
+        for suf, value in marginals.items():
+            out[f"{name}_{suf}"] = value[i]
     return out
 
 
@@ -1589,10 +1660,17 @@ def twin_ybudget(
     pressure: DifferencePressure,
     *,
     rotational: bool = False,
+    x0: bool = False,
 ) -> dict[str, Array]:
     """Wrapper around ``_twin_ybudget_jit`` binding the singletons."""
     return _twin_ybudget_jit(
-        state1, state2, fourier, flow, pressure, rotational=rotational
+        state1,
+        state2,
+        fourier,
+        flow,
+        pressure,
+        rotational=rotational,
+        x0=x0,
     )
 
 

@@ -793,6 +793,48 @@ def _write_y_stream(
     (directory / f"{stem}.json").write_text(json.dumps(sidecar))
 
 
+#: Trailing shape per stored suffix, mirroring the writer.
+_SUFFIX_WIDTH: dict[str, tuple[int, ...]] = {
+    "x": (N_KZ,),
+    "z": (N_KX,),
+    "x0": (N_KZ,),
+    "xz00": (),
+}
+
+
+def _yspectra_fixture(suffixes, *, version, seed=3, n_t=4):
+    """A ``twin_yspectra`` field table, values and sidecar.
+
+    *suffixes* is the layout: the legacy triple written with no
+    ``suffixes`` key (the pre-``xz00`` streams the reader must still
+    accept), or one of the current ones written with it.
+    """
+    rng = np.random.default_rng(seed)
+    fields = [
+        (f"{p}_{suf}", (3, NY, *_SUFFIX_WIDTH[suf]))
+        for p in ("e", "r")
+        for suf in suffixes
+    ]
+    values = {n: rng.random((n_t, *sh)) for n, sh in fields}
+    # The stored blocks are slices/sums of one mode plane in a real
+    # stream; make them consistent here too, or ``bin_energies``
+    # would report a negative bin -- and ``xz00`` is exactly the
+    # plane's first column wherever both are stored.
+    for prefix in ("e", "r"):
+        if f"{prefix}_x0" in values:
+            values[f"{prefix}_x0"] = 0.25 * values[f"{prefix}_x"]
+        if f"{prefix}_xz00" in values:
+            values[f"{prefix}_xz00"] = (
+                values[f"{prefix}_x0"][..., 0]
+                if f"{prefix}_x0" in values
+                else 0.25 * values[f"{prefix}_x"][..., 0]
+            )
+    extra = {"format_version": version, "includes_ref": True, "it_yspectra": 1}
+    if version > 1:
+        extra["suffixes"] = list(suffixes)
+    return fields, values, _y_sidecar(extra)
+
+
 def test_yspectra_reader() -> None:
     """``twin_yspectra`` round trip, seam drop, truncation, floor."""
     from dnsjax.analysis.twin import (
@@ -801,20 +843,9 @@ def test_yspectra_reader() -> None:
         read_twin_yspectra,
     )
 
-    rng = np.random.default_rng(3)
     t = np.array([0.0, 0.01, 0.01, 0.02])  # one seam duplicate
-    fields = [
-        (f"{p}_{suf}", (3, NY, n))
-        for p in ("e", "r")
-        for suf, n in (("x", N_KZ), ("z", N_KX), ("x0", N_KZ))
-    ]
-    values = {n: rng.random((4, *sh)) for n, sh in fields}
-    # ``e_x0`` is a sub-part of ``e_x`` in the real stream; make it so
-    # here too, or ``bin_energies`` would report a negative bin.
-    values["e_x0"] = 0.25 * values["e_x"]
-    sidecar = _y_sidecar(
-        {"format_version": 1, "includes_ref": True, "it_yspectra": 1}
-    )
+    # The pre-``xz00`` layout: no ``suffixes`` key at all.
+    fields, values, sidecar = _yspectra_fixture(("x", "z", "x0"), version=1)
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         _write_y_stream(d, "twin_yspectra", t, fields, values, sidecar)
@@ -867,6 +898,93 @@ def test_yspectra_reader() -> None:
     print("twin_yspectra reader (round trip, seam, truncation, floor): OK")
 
 
+def test_stored_layouts() -> None:
+    """All three on-disk layouts read, and name their own fields.
+
+    The reader floor is deliberately *not* raised with the writer's
+    ``format_version``, so a member recorded before ``xz00`` existed
+    still opens: its sidecar has no ``suffixes`` key and the legacy
+    triple is what that means.  What the newer layouts add is the
+    key itself, which is then the only thing consulted.
+    """
+    from dnsjax.analysis.twin import (
+        LEGACY_SUFFIXES,
+        mean_mode_name,
+        mean_mode_profile,
+        read_twin_yspectra,
+        record_dtype,
+        stored_suffixes,
+    )
+
+    t = np.array([0.0, 0.01])
+    cases = {
+        "legacy": (("x", "z", "x0"), 1),
+        "default": (("x", "z", "xz00"), 2),
+        "x0_planes": (("x", "z", "x0", "xz00"), 2),
+    }
+    sizes = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for label, (suffixes, version) in cases.items():
+            d = Path(tmp) / label
+            d.mkdir()
+            fields, values, sidecar = _yspectra_fixture(
+                suffixes, version=version, n_t=2
+            )
+            _write_y_stream(d, "twin_yspectra", t, fields, values, sidecar)
+            data = read_twin_yspectra(d)
+            assert stored_suffixes(data.meta) == suffixes, label
+            assert set(data.fields) == {n for n, _ in fields}, label
+            for name, _ in fields:
+                assert_allclose(data[name], values[name], rtol=0, atol=0)
+            sizes[label] = record_dtype(sidecar, "twin_yspectra").itemsize
+
+            # The (0, 0) mode is reachable whatever the layout, and
+            # the two routes to it agree where both exist.
+            name = mean_mode_name(data.meta, "r")
+            want = "r_xz00" if "xz00" in suffixes else "r_x0"
+            assert name == want, (label, name)
+            profile = mean_mode_profile(data[name], name)
+            assert profile.shape == (2, 3, NY), label
+            if suffixes == ("x", "z", "x0", "xz00"):
+                assert_allclose(profile, data["r_x0"][..., 0], rtol=0, atol=0)
+
+    assert stored_suffixes({}) == LEGACY_SUFFIXES
+    # Dropping the plane is a third of the record; the mode is one
+    # column, so the default is smaller than the legacy layout it
+    # replaces even though it stores something the legacy one did not.
+    assert sizes["default"] < sizes["legacy"] < sizes["x0_planes"]
+    print(f"stored layouts (record bytes {sizes}): OK")
+
+
+def test_bin_energies_needs_the_plane() -> None:
+    """Without ``x0`` the three-bin recovery refuses, by name."""
+    from dnsjax.analysis.twin import (
+        bin_energies,
+        integrate_y,
+        read_twin_yspectra,
+    )
+
+    t = np.array([0.0, 0.01])
+    fields, values, sidecar = _yspectra_fixture(
+        ("x", "z", "xz00"), version=2, n_t=2
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        _write_y_stream(d, "twin_yspectra", t, fields, values, sidecar)
+        data = read_twin_yspectra(d)
+        _expect_value_error("twin.x0_planes", lambda: bin_energies(data))
+
+        # E_dU alone survives, on a field with no wavenumber axis --
+        # so ``integrate_y`` must not try to keep one.
+        w = np.asarray(sidecar["y_weights"])
+        got = integrate_y(data, "e_xz00")
+        assert got.shape == (2, 3)
+        assert_allclose(
+            got, np.einsum("j,tcj->tc", w, values["e_xz00"]), rtol=1e-14
+        )
+    print("bin_energies refuses without the plane; E_dU survives: OK")
+
+
 def test_fluctuation_energy() -> None:
     """The `(0,0)`-free total, and that both marginals agree on it."""
     from dnsjax.analysis.twin import fluctuation_energy
@@ -880,22 +998,30 @@ def test_fluctuation_energy() -> None:
     modes = rng.random((3, NY, N_KZ, N_KX))
     r_x = modes.sum(axis=-1)
     r_z = modes.sum(axis=-2)
-    r_x0 = modes[..., 0]
+    r_xz00 = modes[..., 0, 0]
 
     total = np.einsum("j,cjzx->c", w, modes)
-    mean_mode = np.einsum("j,cj->c", w, modes[..., 0, 0])
+    mean_mode = np.einsum("j,cj->c", w, r_xz00)
     want = total - mean_mode
-    assert_allclose(fluctuation_energy(r_x, r_x0, w), want, rtol=1e-14)
-    assert_allclose(fluctuation_energy(r_z, r_x0, w), want, rtol=1e-14)
+    assert_allclose(fluctuation_energy(r_x, r_xz00, w), want, rtol=1e-14)
+    assert_allclose(fluctuation_energy(r_z, r_xz00, w), want, rtol=1e-14)
+
+    # The legacy route to the same profile is the k_x = 0 plane's
+    # k_z = 0 column, which is the same numbers.
+    assert_allclose(
+        fluctuation_energy(r_x, modes[..., 0][..., 0], w), want, rtol=1e-14
+    )
 
     # The mean mode is a real subtraction, and it is the (0,0) mode
-    # alone -- not the whole k_z = 0 column, which r_x[..., 0] is.
+    # alone -- not the whole k_z = 0 column, which r_x[..., 0] is,
+    # nor the whole k_x = 0 plane, which r_z[..., 0] is.
     assert np.all(mean_mode > 0.0)
-    wrong = total - np.einsum("j,cj->c", w, r_x[..., 0])
-    assert not np.allclose(wrong, want)
+    for wrong_mode in (r_x[..., 0], r_z[..., 0]):
+        wrong = total - np.einsum("j,cj->c", w, wrong_mode)
+        assert not np.allclose(wrong, want)
 
     # Leading axes are free: one component alone gives a scalar.
-    one = fluctuation_energy(r_x[0], r_x0[0], w)
+    one = fluctuation_energy(r_x[0], r_xz00[0], w)
     assert one.shape == ()
     assert_allclose(one, want[0], rtol=1e-14)
     print("fluctuation_energy (both marginals, (0,0) removal): OK")
@@ -908,6 +1034,7 @@ def test_ybudget_reader() -> None:
     terms = ["P_U", "P_r", "T_ref", "T_self", "V", "eps", "Wp"]
     rng = np.random.default_rng(5)
     t = np.array([0.0, 0.02])
+    # The pre-``xz00`` layout, at the reader floor: no ``suffixes``.
     fields = [
         (f"{term}_{suf}", (NY, n))
         for term in terms
@@ -941,7 +1068,37 @@ def test_ybudget_reader() -> None:
             sidecar | {"y_weights": [1.0, 2.0]},
         )
         _expect_value_error("y_weights", lambda: read_twin_ybudget(d))
-    print("twin_ybudget reader: OK")
+
+        # The current layout: named by ``suffixes``, and its ``xz00``
+        # block has no wavenumber axis to integrate over.
+        new_fields = [
+            (f"{term}_{suf}", (NY, *width))
+            for term in terms
+            for suf, width in (("x", (N_KZ,)), ("z", (N_KX,)), ("xz00", ()))
+        ]
+        new_values = {n: rng.random((2, *sh)) for n, sh in new_fields}
+        _write_y_stream(
+            d,
+            "twin_ybudget",
+            t,
+            new_fields,
+            new_values,
+            sidecar
+            | {
+                "format_version": 3,
+                "suffixes": ["x", "z", "xz00"],
+            },
+        )
+        data = read_twin_ybudget(d)
+        assert set(data.fields) == {n for n, _ in new_fields}
+        assert data["Wp_xz00"].shape == (2, NY)
+        assert_allclose(
+            integrate_y(data, "Wp_xz00"),
+            np.einsum("j,tj->t", w, new_values["Wp_xz00"]),
+            rtol=0,
+            atol=0,
+        )
+    print("twin_ybudget reader (both layouts): OK")
 
 
 if __name__ == "__main__":
@@ -951,6 +1108,8 @@ if __name__ == "__main__":
     test_fits()
     test_spectra_reader()
     test_yspectra_reader()
+    test_stored_layouts()
+    test_bin_energies_needs_the_plane()
     test_fluctuation_energy()
     test_ybudget_reader()
     test_integral_lengths_core()

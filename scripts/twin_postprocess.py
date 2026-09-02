@@ -124,8 +124,9 @@ _PROG = "python scripts/twin_postprocess.py"
 #: the ``ensemble_setup.py`` ``members.json`` model -- nothing reads it
 #: back, so it carries no reader floor (unlike the stream sidecars);
 #: the number is here so a record describes which fields to expect.
-#: 2 added ``stats_driving`` alongside the two ``stats*.dat`` streams.
-PROVENANCE_VERSION: int = 2
+#: 2 added ``stats_driving`` alongside the two ``stats*.dat`` streams;
+#: 3 added ``x0_planes``.
+PROVENANCE_VERSION: int = 3
 
 #: The output files this script owns; an existing one is refused rather
 #: than appended to (both writer families append silently on a matching
@@ -203,6 +204,18 @@ class ReconParams(BaseModel):
             "form the run used, which its twin_ybudget.json 'terms' "
             "names outright (twin.json records it too, but only for "
             "members written since it began to)."
+        ),
+    )
+    x0_planes: bool = Field(
+        default=False,
+        description=(
+            "Rebuild the k_x = 0 plane (the _x0 fields) into both "
+            "y-resolved streams (twin.x0_planes).  Stated here rather "
+            "than inherited, like rotational_ybudget: to reproduce a "
+            "member's own stream, match what the run wrote, which its "
+            "sidecars' 'suffixes' names outright.  Needed by "
+            "analysis.twin.bin_energies; off, only the always-stored "
+            "_xz00 mean mode is rebuilt."
         ),
     )
     bins: bool | None = Field(
@@ -640,6 +653,7 @@ def main(argv: list[str] | None = None) -> int:
         bins=bins,
         spectra_ref=values.spectra_ref,
         rotational_ybudget=values.rotational_ybudget,
+        x0_planes=values.x0_planes,
         it_yspectra=it_stride,
         it_ybudget=it_stride,
     )
@@ -697,10 +711,14 @@ def main(argv: list[str] | None = None) -> int:
 
         tvals = diagnostics.twin_energies(state1, state2, bins=bins)
         yvals = diagnostics.twin_yspectra(
-            state1, state2, ref=values.spectra_ref
+            state1, state2, ref=values.spectra_ref, x0=values.x0_planes
         )
         ybvals = diagnostics.twin_ybudget(
-            state1, state2, pressure, rotational=values.rotational_ybudget
+            state1,
+            state2,
+            pressure,
+            rotational=values.rotational_ybudget,
+            x0=values.x0_planes,
         )
 
         for bad in (
@@ -768,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
                     "stats_driving": "inferred",
                     "spectra_ref": values.spectra_ref,
                     "rotational_ybudget": values.rotational_ybudget,
+                    "x0_planes": values.x0_planes,
                     "created": datetime.now(UTC).isoformat(),
                     "git_hash": git_hash(),
                 },

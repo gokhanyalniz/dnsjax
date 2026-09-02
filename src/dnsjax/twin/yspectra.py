@@ -8,9 +8,8 @@ one-sided marginal bins of
 - ``twin_yspectra.bin`` (``twin.it_yspectra``), from
   :func:`~dnsjax.twin.diagnostics.twin_yspectra`: the componentwise
   difference energy `$E_\Delta^x[u,v,w](y, k_z)$` and
-  `$E_\Delta^z[u,v,w](y, k_x)$`, plus the `$k_x = 0$` plane that
-  recovers the `$\Delta U$` / `$\Delta u_1$` / `$\Delta u_2$`
-  binning;
+  `$E_\Delta^z[u,v,w](y, k_x)$`, plus their `$(0, 0)$` mode
+  `$E_\Delta^{xz00}[u,v,w](y)$`;
 - ``twin_ybudget.bin`` (``twin.it_ybudget``), from
   :func:`~dnsjax.twin.diagnostics.twin_ybudget`: the component-summed
   budget densities of
@@ -24,21 +23,35 @@ Why these replace the three-bin diagnostics: the `$\Delta U$` /
 `$(k_x, k_z)$` plane, and its own authors restrict it to minimal flow
 units (Egerique-de-la-Concha & Hwang, *J. Fluid Mech.* **1036**, A52,
 2026, after their eq. 2.5).  These streams refine the bin index to
-the wavenumber itself and drop the `$y$`-integration, and the old
-three numbers remain exactly recoverable from them.
+the wavenumber itself and drop the `$y$`-integration.  Recovering the
+old three numbers takes the full `$k_x = 0$` plane, which is
+``twin.x0_planes`` and is **off by default**; the `$(0, 0)$` mode --
+`$E_{\Delta U}$` on its own, and the mean the reference fluctuation
+energy is measured against -- is always there.
 
 File format
 ===========
 Both are flat sequences of fixed-size records, ``("t", "<f8")``
 followed by one entry per field, ``VAL = "<f8"``/``"<f4"`` per
-``res.double_precision``:
+``res.double_precision``.  The field table is the outer product of
+the prefixes (or the budget terms) with
+:func:`~dnsjax.twin.diagnostics.marginal_suffixes`, **term-major**:
 
 .. code-block:: text
 
-    twin_yspectra:  e_x,  e_z,  e_x0   (3, ny, n_kz) / (3, ny, n_kx)
-                    r_x,  r_z,  r_x0   when twin.spectra_ref
-    twin_ybudget:   <term>_x, <term>_z, <term>_x0  for each of
-                    ybudget_terms(),   (ny, n_kz) / (ny, n_kx)
+    suffix    x           z           x0          xz00
+    shape     (.., n_kz)  (.., n_kx)  (.., n_kz)  (..,)
+    stored    always      always      x0_planes   always
+
+    twin_yspectra:  e_<suffix>    leading axis (3,) + (ny, ...)
+                    r_<suffix>    when twin.spectra_ref
+    twin_ybudget:   <term>_<suffix>  for each of ybudget_terms(),
+                    leading axis (ny, ...)
+
+The sidecar's ``suffixes`` names that middle row outright, so a
+reader never infers the layout: :mod:`dnsjax.analysis.twin.yspectra`
+reads it, and falls back to the pre-``xz00`` triple
+``("x", "z", "x0")`` below this module's format versions.
 
 Every array is a `$y$`-**density** already divided by
 ``volume_fac``: contract with the sidecar's ``y_weights`` for the
@@ -52,6 +65,8 @@ Both wavenumber axes are **one-sided**: ``kz_harmonics`` and
 ``nz`` / ``nx``.  The `$k_z$` axis is folded onto `$|k_z|$` for a
 reason that is not cosmetic --
 :func:`dnsjax.twin.diagnostics._fold_kz` has it.
+
+The ``xz00`` column has no wavenumber axis at all, being one mode.
 
 Buffering, sidecar matching, resume-by-append and the non-finite scan
 are :class:`dnsjax.twin._binstream.BinStream`'s; the JAX-free reader
@@ -67,12 +82,43 @@ from ..param_surface import recorded_params_dump
 from ..parameters import derived_params, params
 from ..snapshot_meta import git_hash
 from ._binstream import BinStream
-from .diagnostics import marginal_bin_counts, ybudget_terms
+from .diagnostics import (
+    marginal_bin_counts,
+    marginal_suffixes,
+    ybudget_terms,
+)
 
-#: Sidecar schema versions (the reader's floors are
-#: ``analysis.twin.yspectra.MIN_*_VERSION``).
-YSPECTRA_FORMAT_VERSION: int = 1
-YBUDGET_FORMAT_VERSION: int = 2
+#: Sidecar schema versions.  The reader's floors
+#: (``analysis.twin.yspectra.MIN_*_VERSION``) are deliberately **not**
+#: raised in step with these: version 2 / 3 added ``xz00`` and made
+#: ``x0`` opt-in, which is a change of *layout*, not of what a stored
+#: array means, and the sidecar's ``suffixes`` names the layout
+#: outright.  Holding the floors is what keeps a member recorded
+#: before this readable -- the one thing this pair of streams is
+#: expected to do that the snapshot format is not.
+YSPECTRA_FORMAT_VERSION: int = 2
+YBUDGET_FORMAT_VERSION: int = 3
+
+
+def _suffix_shapes(x0: bool) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    r"""``(suffix, trailing shape)`` in stored order.
+
+    The trailing shape is what a field carries *after* its leading
+    axis (the three velocity components, or the wall-normal grid for
+    the budget): a wavenumber axis for the two marginals and the
+    `$k_x = 0$` plane, nothing at all for the single `$(0, 0)$` mode.
+    The reader's counterpart is
+    :func:`dnsjax.analysis.twin.yspectra.stored_fields`.
+    """
+    n_kz, n_kx = marginal_bin_counts()
+    widths: dict[str, tuple[int, ...]] = {
+        "x": (n_kz,),
+        "z": (n_kx,),
+        "x0": (n_kz,),
+        "xz00": (),
+    }
+    return tuple((suf, widths[suf]) for suf in marginal_suffixes(x0))
+
 
 #: Records buffered on device between flushes.  Smaller than the
 #: ``(k_z, k_x)`` stream's: these records carry a wall-normal axis
@@ -86,6 +132,7 @@ _YSPECTRA_MATCH_KEYS: tuple[str, ...] = (
     "ny",
     "n_kz",
     "n_kx",
+    "suffixes",
     "value_dtype",
     "includes_ref",
     "it_yspectra",
@@ -101,6 +148,7 @@ _YBUDGET_MATCH_KEYS: tuple[str, ...] = (
     "ny",
     "n_kz",
     "n_kx",
+    "suffixes",
     "terms",
     "value_dtype",
     "it_ybudget",
@@ -112,13 +160,21 @@ _YBUDGET_MATCH_KEYS: tuple[str, ...] = (
 
 
 def _common_sidecar(twin_values, y_weights: list[float]) -> dict:
-    """The keys both sidecars share (grid, axes, provenance)."""
+    """The keys both sidecars share (grid, axes, layout, provenance).
+
+    ``suffixes`` is the layout key: it names the field table both
+    streams are laid out by, so a reader never has to infer one, and
+    it is a match key in both -- a resume that flipped
+    ``twin.x0_planes`` would otherwise append records of a different
+    size onto an existing ``.bin``.
+    """
     n_kz, n_kx = marginal_bin_counts()
     return {
         "system": params.phys.system,
         "ny": params.res.ny,
         "n_kz": n_kz,
         "n_kx": n_kx,
+        "suffixes": list(marginal_suffixes(bool(twin_values.x0_planes))),
         "kz_harmonics": [int(m) for m in real_harmonics(params.res.nz)],
         "kx_harmonics": [int(m) for m in real_harmonics(params.res.nx)],
         "lx": params.geo.lx,
@@ -150,12 +206,11 @@ class TwinYSpectraStream(BinStream):
     ) -> None:
         self.includes_ref = bool(twin_values.spectra_ref)
         ny = params.res.ny
-        n_kz, n_kx = marginal_bin_counts()
         prefixes = ("e", "r") if self.includes_ref else ("e",)
         fields = tuple(
-            (f"{p}_{suf}", (3, ny, n))
+            (f"{p}_{suf}", (3, ny, *shape))
             for p in prefixes
-            for suf, n in (("x", n_kz), ("z", n_kx), ("x0", n_kz))
+            for suf, shape in _suffix_shapes(bool(twin_values.x0_planes))
         )
         sidecar = _common_sidecar(twin_values, y_weights) | {
             "format_version": YSPECTRA_FORMAT_VERSION,
@@ -189,12 +244,11 @@ class TwinYBudgetStream(BinStream):
         directory: str | Path = ".",
     ) -> None:
         ny = params.res.ny
-        n_kz, n_kx = marginal_bin_counts()
         terms = ybudget_terms(bool(twin_values.rotational_ybudget))
         fields = tuple(
-            (f"{term}_{suf}", (ny, n))
+            (f"{term}_{suf}", (ny, *shape))
             for term in terms
-            for suf, n in (("x", n_kz), ("z", n_kx), ("x0", n_kz))
+            for suf, shape in _suffix_shapes(bool(twin_values.x0_planes))
         )
         sidecar = _common_sidecar(twin_values, y_weights) | {
             "format_version": YBUDGET_FORMAT_VERSION,
