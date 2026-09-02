@@ -50,7 +50,8 @@ scope, in temporary member directories:
 8. Every driver-level guard fires on a real input: missing
    ``twin.e0``, a snapshot recording a ``[force]`` section, the three
    bad start-mode quadrants (partner without ``twin.json``,
-   ``twin.json`` without partner, stale ``twin.dat``), a ``twin.json``
+   ``twin.json`` without partner, a stale stream of any of the three
+   writer families), a ``twin.json``
    mismatch on resume, a trajectory-defining change on resume, and an
    inconsistent ``(t, it)`` snapshot pair.
 
@@ -766,11 +767,16 @@ def test_guards() -> None:
         result = _run_twin(tmp, _twin_args(1.02), expect=1)
         _expect_error(result, "already holds a twin trajectory")
 
-    # Stale twin.dat without twin.json.
-    with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "twin.dat").write_text("stale\n")
-        result = _run_twin(tmp, _twin_args(1.02), expect=1)
-        _expect_error(result, "stale twin.dat")
+    # Stale streams without twin.json -- every file the driver
+    # appends to, not just twin.dat: a .dat stream is appended
+    # silently (no second header) and a .bin stream whenever its
+    # sidecar matches, so a half-cleaned directory would splice a new
+    # trajectory onto an old one's records.
+    for stale in ("twin.dat", "stats_twin.dat", "twin_yspectra.json"):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / stale).write_text("stale\n")
+            result = _run_twin(tmp, _twin_args(1.02), expect=1)
+            _expect_error(result, f"stale {stale}")
 
     # An odd res.nz with a folded-k_z stream: refused at parse, not
     # left to fail as a shape error inside ``_fold_kz`` mid-run.  At
