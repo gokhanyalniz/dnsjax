@@ -68,9 +68,10 @@ What each case pins:
     value; a signed series gets no logarithmic figure and a
     one-sample selection none at all; and the ``.npz`` beside the
     pair carries the drawn arrays and every factor behind them.
-12. **End to end.** ``main()`` renders every series of both streams
-    for a two-member set, and each ``--no-*`` switch removes exactly
-    its own.
+12. **End to end.** ``main()`` on a two-member set draws the two
+    spectra marginals and nothing else, and each of the five opt-in
+    switches adds exactly its own family -- ``--decorr-k`` needing
+    ``--spacetime`` as well before `$\mathcal{R}^k$` gets one.
 
 Usage::
 
@@ -817,8 +818,8 @@ def test_layouts_and_default_series() -> None:
     under ``twin.x0_planes``.  All three must open; the `$(0, 0)$`
     mode `$E^{\\mathrm{ref}}$` subtracts is the same number in all
     three, whichever field it is read from; and what is *drawn* is the
-    two marginals of every default family unless asked otherwise --
-    each of the three switches taking its own and nothing else.
+    two spectra marginals unless a switch asks for more -- each of the
+    five adding its own family and nothing else.
     """
     scales = {}
     registries = {}
@@ -856,23 +857,31 @@ def test_layouts_and_default_series() -> None:
     spectra = [f"spectra_{p}_{m}" for p in ("e", "r") for m in ("x", "z")]
     decorr = [f"spectra_decorr_{m}" for m in ("x", "z")]
     decorr_k = [f"spectra_decorr_k_{m}" for m in ("x", "z")]
-    spacetime = ["spacetime_e", "spacetime_r", "spacetime_decorr_k"]
+    spacetime = ["spacetime_e", "spacetime_r"]
+    everything = dict(
+        x0=True, budget=True, decorr=True, decorr_k=True, spacetime=True
+    )
     for label, registry in registries.items():
-        every = tsm.default_series(registry)
-        assert sorted(every) == sorted(
-            spectra + decorr + decorr_k + spacetime
-        ), label
-        # Each switch takes its own family and nothing else, and
-        # --no-decorr-k takes R^k's spacetime map with it.
-        for switch, gone in (
-            ({"decorr": False}, decorr),
-            ({"decorr_k": False}, decorr_k + ["spacetime_decorr_k"]),
-            ({"spacetime": False}, spacetime),
+        # The bare default is one family: the two marginals of the
+        # difference and reference spectra.
+        assert sorted(tsm.default_series(registry)) == sorted(spectra), label
+        # Each switch adds its own family and nothing else.  R^k's
+        # spacetime map is the one composite -- it needs both of its
+        # switches, so neither alone brings it.
+        for switch, gained in (
+            ({"decorr": True}, decorr),
+            ({"decorr_k": True}, decorr_k),
+            ({"spacetime": True}, spacetime),
+            (
+                {"decorr_k": True, "spacetime": True},
+                decorr_k + spacetime + ["spacetime_decorr_k"],
+            ),
         ):
-            left = tsm.default_series(registry, **switch)
-            assert set(every) - set(left) == set(gone), (label, switch)
-        with_x0 = set(tsm.default_series(registry, x0=True))
-        assert with_x0 == set(registry), label
+            got = tsm.default_series(registry, **switch)
+            assert set(got) - set(spectra) == set(gained), (label, switch)
+        assert set(tsm.default_series(registry, **everything)) == set(
+            registry
+        ), label
     print("layouts, their tags, and one E_ref across all three: OK")
 
 
@@ -1300,16 +1309,12 @@ def test_main_renders_the_selected_series() -> None:
             ]
         )
         assert code == 0
-        # The default set: the spectra marginals, both
-        # decorrelations, and the k-summed maps.
+        # The bare default set: the difference and reference spectra
+        # marginals, and nothing else.
         maps = [
-            f"spectra_{base}_{m}"
-            for base in ("e", "r", "decorr", "decorr_k")
-            for m in ("x", "z")
+            f"spectra_{base}_{m}" for base in ("e", "r") for m in ("x", "z")
         ]
-        spacetime = ["spacetime_e", "spacetime_r", "spacetime_decorr_k"]
-        tags = sorted(p.name for p in out.iterdir())
-        assert tags == sorted(maps + spacetime)
+        assert sorted(p.name for p in out.iterdir()) == sorted(maps)
         for tag in maps:
             frames = sorted((out / tag).glob("*.png"))
             assert [f.name for f in frames] == [
@@ -1317,19 +1322,7 @@ def test_main_renders_the_selected_series() -> None:
                 f"{tag}_2.png",
             ], tag
             assert all(f.stat().st_size > 0 for f in frames)
-        # One figure per colour scale for the whole run, and the
-        # ``.npz`` behind the pair.
-        for tag in spacetime:
-            files = sorted(f.name for f in (out / tag).iterdir())
-            assert files == [
-                f"{tag}.npz",
-                f"{tag}_lin.png",
-                f"{tag}_log.png",
-            ], tag
-            assert all(f.stat().st_size > 0 for f in (out / tag).iterdir())
 
-        # ``--budget`` adds the other stream; ``--x0`` adds nothing
-        # here, these members carrying no such plane.
         def run(target: Path, *extra: str) -> int:
             return tsm.main(
                 [
@@ -1352,34 +1345,58 @@ def test_main_renders_the_selected_series() -> None:
                 ]
             )
 
-        # ``--budget`` adds the other stream, its k-sum included;
-        # ``--x0`` adds nothing here, these members carrying no such
-        # plane.  The budget changes sign, so it draws no log figure.
+        # ``--spacetime`` adds one figure per colour scale for the
+        # whole run, and the ``.npz`` behind the pair.
+        spacetime = ["spacetime_e", "spacetime_r"]
+        st_dir = root / "st"
+        assert run(st_dir, "--spacetime") == 0
+        assert sorted(p.name for p in st_dir.iterdir()) == sorted(
+            maps + spacetime
+        )
+        for tag in spacetime:
+            files = sorted(f.name for f in (st_dir / tag).iterdir())
+            assert files == [
+                f"{tag}.npz",
+                f"{tag}_lin.png",
+                f"{tag}_log.png",
+            ], tag
+            assert all(f.stat().st_size > 0 for f in (st_dir / tag).iterdir())
+
+        # ``--budget`` adds the other stream, its k-sum included under
+        # ``--spacetime``; ``--x0`` adds nothing here, these members
+        # carrying no such plane.  The budget changes sign, so it
+        # draws no log figure.
         wider = root / "wider"
-        assert run(wider, "--budget", "--x0") == 0
+        assert run(wider, "--budget", "--x0", "--spacetime") == 0
         assert sorted(p.name for p in wider.iterdir()) == sorted(
-            tags + ["budget_x", "budget_z", "spacetime_budget"]
+            maps + spacetime + ["budget_x", "budget_z", "spacetime_budget"]
         )
         assert sorted(
             f.name for f in (wider / "spacetime_budget").iterdir()
         ) == ["spacetime_budget.npz", "spacetime_budget_lin.png"]
 
-        # Each switch removes exactly its own family.
-        for switch, gone in (
-            ("--no-decorr", {"spectra_decorr_x", "spectra_decorr_z"}),
+        # Each switch adds exactly its own family, and R^k's spacetime
+        # map needs both of its switches.
+        for extra, gained in (
+            (["--decorr"], {"spectra_decorr_x", "spectra_decorr_z"}),
             (
-                "--no-decorr-k",
+                ["--decorr-k"],
+                {"spectra_decorr_k_x", "spectra_decorr_k_z"},
+            ),
+            (["--spacetime"], set(spacetime)),
+            (
+                ["--decorr-k", "--spacetime"],
                 {
                     "spectra_decorr_k_x",
                     "spectra_decorr_k_z",
                     "spacetime_decorr_k",
+                    *spacetime,
                 },
             ),
-            ("--no-spacetime", set(spacetime)),
         ):
-            target = root / switch.strip("-")
-            assert run(target, switch) == 0
-            assert set(tags) - {p.name for p in target.iterdir()} == gone
+            target = root / "-".join(e.strip("-") for e in extra)
+            assert run(target, *extra) == 0
+            assert {p.name for p in target.iterdir()} - set(maps) == gained
 
         # ``--series`` is exact, and an unknown tag is refused rather
         # than quietly dropped.

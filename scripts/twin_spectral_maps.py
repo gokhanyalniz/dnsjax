@@ -17,29 +17,34 @@ What is drawn
 Two figure families, and a tag for each series of each
 (:class:`SeriesSpec`).  A `$(\lambda, y)$` **map** is one figure per
 recorded sample; a **spacetime** map is one figure -- a pair, for its
-two colour scales -- for the whole run.  By default:
+two colour scales -- for the whole run.  What a bare invocation draws
+is one family:
 
 - both wavenumber marginals of the **spectra** stream (``_z`` gives
-  `$\lambda_x$`; the paper shows only `$\lambda_z$`), as maps;
-- both decorrelations, `$\mathcal{R}^k$` and `$\mathcal{R}$`, also as
-  maps ("Decorrelation");
-- the `$k$`-summed spacetime maps of the difference spectra, the
-  reference spectra and `$\mathcal{R}^k$` ("Spacetime maps").
+  `$\lambda_x$`; the paper shows only `$\lambda_z$`), as maps, for the
+  difference field and for the reference.
 
 Everything else is held back behind its own flag rather than behind a
-tag name the caller has to know, and the three families above have the
-same shape of switch to turn them off:
+tag name the caller has to know, and the five switches have the same
+shape:
 
+- ``--decorr`` adds `$\mathcal{R}$`, the decorrelation over a
+  `$k$`-resolved reference, as maps ("Decorrelation");
+- ``--decorr-k`` adds `$\mathcal{R}^k$`, the decorrelation over a
+  `$k$`-summed one, as maps -- and, under ``--spacetime``, its
+  `$k$`-summed map too, that being the only spacetime series a
+  decorrelation has;
+- ``--spacetime`` adds the `$k$`-summed `$(y, t)$` maps of whatever
+  else is selected: the difference and reference spectra always,
+  `$\mathcal{R}^k$` under ``--decorr-k``, the budget under
+  ``--budget`` ("Spacetime maps");
 - ``--budget`` adds the ``twin_ybudget`` series, one figure per
-  stored term, and its spacetime map;
+  stored term;
 - ``--x0`` adds the `$k_x = 0$` plane, where the stream has one --
   ``twin.x0_planes``, or any member recorded before that plane became
   opt-in.  It is a slice of the mode plane rather than a marginal of
   it, which is also why it is left absolute (below) and why neither
-  decorrelation is offered for it;
-- ``--no-decorr-k`` / ``--no-decorr`` / ``--no-spacetime`` drop one
-  family each, the first taking `$\mathcal{R}^k$`'s spacetime map
-  with it.
+  decorrelation is offered for it.
 
 ``--series`` overrides all of them: it names exact tags, and
 :func:`available_series` lists what a given member set offers.  The
@@ -244,8 +249,10 @@ how many distinct parent snapshots are in play beside the instant
 count, so a member set that is not one trajectory is at least visible.
 
 What that pass actually accumulates is the **mean reference record**
--- every stored ``r_*`` marginal, with the `$(0, 0)$` mode subtracted
-once, on arrival (:meth:`YSeries.reference_spectrum`).
+-- both complete ``r_*`` marginals, with the `$(0, 0)$` mode
+subtracted once, on arrival (:meth:`YSeries.reference_spectrum`).
+Never a `$k_x = 0$` plane the stream may also carry: nothing divides
+by one, and reading it would be a third more of the pass.
 `$E^{\mathrm{ref}}$` is then
 one of its three reductions, and the next section's two divisors are
 the other two, so "a reference divisor never carries the `$(0, 0)$`
@@ -322,8 +329,9 @@ Spacetime maps
 Sum a `$(y, k)$` stream over `$k$` and what is left is a `$(y, t)$`
 field, which is one figure for a whole run rather than one per frame:
 wall distance across, on the same scale and floor as the maps'
-ordinate, and time up.  Every `$k$`-summable series has one -- the
-difference and reference spectra, `$\mathcal{R}^k$`, the `$k_x = 0$`
+ordinate, and time up.  ``--spacetime`` asks for them, and every
+`$k$`-summable series then has one -- the difference and reference
+spectra, `$\mathcal{R}^k$` under ``--decorr-k``, the `$k_x = 0$`
 slice under ``--x0``, the budget terms under ``--budget`` -- and each
 is **marginal-free**, `$\sum_m e_x = \sum_m e_z$` being two readings
 of one complete sum over the mode plane.  So there is one figure per
@@ -979,14 +987,21 @@ class YSeries:
 
     Fields are read and averaged on demand (and cached), so opening a
     series is cheap however long the run and however many members it
-    has.  ``index`` carries each frame's position on the members'
-    common relative-time grid -- the number the output filenames use.
+    has.  ``index`` carries each frame's position in the **first**
+    member's own deduplicated record sequence -- the number the output
+    filenames use.  That is the frame label rather than a position on
+    the shared grid, and deliberately: it is strictly increasing in
+    time (so a lexical sort of the filenames is the time order) and it
+    survives ``--stride`` / ``--first`` / ``--last`` naming the same
+    frame the same way, which a position within the *selection* would
+    not.  It skips a number wherever the first member has a sample the
+    others lack.
     """
 
     stem: str
     members: tuple[_Member, ...]
     rows: np.ndarray  # (n_members, n_frames) record index per member
-    index: np.ndarray  # (n_frames,) position on the common grid
+    index: np.ndarray  # (n_frames,) row in members[0], the frame label
     t_rel: np.ndarray  # (n_frames,) time since the perturbation
     meta: dict  # the first member's sidecar
     ref_stride: int = 1  # subsampling of the reference normalisation
@@ -1089,8 +1104,24 @@ class YSeries:
         the `$(0, 0)$` mode" is one statement about one array rather
         than three that could drift (module docstring,
         "Decorrelation").
+
+        Only the two **complete** marginals are held
+        (:data:`NORMALISED_MARGINALS`), which is every one a divisor
+        is ever built from: neither decorrelation is offered for the
+        `$k_x = 0$` plane, and normalising that plane by a reference
+        of the whole mode plane is what "Reference normalisation"
+        declines to do.  Asking for another marginal is a caller bug
+        rather than a missing feature, so it says so.
         """
-        return self._resolved_reference()[0][marginal]
+        spectra = self._resolved_reference()[0]
+        if marginal not in spectra:
+            raise ValueError(
+                f"no reference spectrum is held for the {marginal!r} "
+                f"marginal (only {sorted(spectra)}): a divisor is built "
+                "from a complete sum over the mode plane, which the "
+                "k_x = 0 plane is not."
+            )
+        return spectra[marginal]
 
     def reference_profile(self) -> np.ndarray:
         r"""`$D_\alpha(y)$`, ``(3, n_y)``: that spectrum's `$k$`-sum.
@@ -1126,17 +1157,17 @@ class YSeries:
     def _build_reference(self) -> tuple[dict[str, np.ndarray], list[str]]:
         """Accumulate the mean reference record over the members.
 
-        One pass over the distinct instants, accumulating every stored
-        reference marginal and the `$(0, 0)$` mode; everything a
-        normalised or decorrelation panel divides by is a reduction of
-        what comes out (:meth:`reference_spectrum`).  Accumulating the
-        marginals rather than the scalar is what makes the `$y$`- and
-        `$k$`-resolved divisors available at all, and it is exact:
-        every step from the stored entry to `$E^{\\mathrm{ref}}$` is
-        linear, so the mean of the reductions is the reduction of the
-        mean.  It reads two or three fields per record where the
-        scalar needed one; ``--ref-stride`` is the lever if that pass
-        is the expensive one.
+        One pass over the distinct instants, accumulating the two
+        complete reference marginals and the `$(0, 0)$` mode;
+        everything a normalised or decorrelation panel divides by is a
+        reduction of what comes out (:meth:`reference_spectrum`).
+        Accumulating the marginals rather than the scalar is what
+        makes the `$y$`- and `$k$`-resolved divisors available at all,
+        and it is exact: every step from the stored entry to
+        `$E^{\\mathrm{ref}}$` is linear, so the mean of the reductions
+        is the reduction of the mean.  It reads three fields per
+        record where the scalar needed one; ``--ref-stride`` is the
+        lever if that pass is the expensive one.
         """
         if "r" not in self.prefixes:
             raise ValueError(
@@ -1146,7 +1177,12 @@ class YSeries:
             )
         picks, n_instants, n_samples = self._distinct_instants()
         mean_name = mean_mode_name(self.meta, "r")
-        wanted = [suf for suf in self.suffixes if suf in MARGINALS]
+        # The two complete marginals only, never the ``x0`` plane a
+        # stream may also carry: nothing divides by it
+        # (:meth:`reference_spectrum`), and reading it here would be a
+        # third more of this pass -- which is the whole stream, every
+        # member, and the most expensive thing the script does.
+        wanted = [suf for suf in self.suffixes if suf in NORMALISED_MARGINALS]
         totals = {suf: np.zeros(()) for suf in wanted}
         mean_total = np.zeros(())
         for member, rows in zip(self.members, picks, strict=True):
@@ -3199,8 +3235,9 @@ def write_spacetime_npz(
         "y_plotted": maps[0].y,
         "y_full": series.y,
         "y_weights": series.y_weights,
-        # Which records went in: their position on the members'
-        # common relative-time grid, after --stride / --first / --last.
+        # Which records went in: the frame labels the figures are
+        # named by (:attr:`YSeries.index`), after --stride / --first /
+        # --last.
         "index": series.index,
         "clim": np.asarray([(s.lo, s.hi) for s in scales]),
         "log_floor": np.asarray(floors),
@@ -3441,20 +3478,30 @@ def default_series(
     *,
     x0: bool = False,
     budget: bool = False,
-    decorr: bool = True,
-    decorr_k: bool = True,
-    spacetime: bool = True,
+    decorr: bool = False,
+    decorr_k: bool = False,
+    spacetime: bool = False,
 ) -> list[str]:
-    """The tags rendered when ``--series`` names none.
+    r"""The tags rendered when ``--series`` names none.
 
-    Two things are held back by default, each behind its own flag
-    rather than a tag the caller has to know the name of.  The
-    `$k_x = 0$` plane is a slice of the mode plane, not a marginal of
-    it, and only a legacy or ``twin.x0_planes`` stream has one; the
-    whole ``twin_ybudget`` set is a figure per term, which is worth
-    asking for rather than getting.  The three new families are on by
-    default and have the same shape of switch.  ``--series``
-    overrides every one of them: naming a tag renders it.
+    One family is drawn unasked -- the two wavenumber marginals of the
+    spectra stream, for the difference field and for the reference.
+    Five are held back, each behind its own flag rather than a tag the
+    caller has to know the name of, and each of the five is a
+    ``False`` here: the `$k_x = 0$` plane is a slice of the mode plane
+    rather than a marginal of it (and only a legacy or
+    ``twin.x0_planes`` stream has one); the ``twin_ybudget`` set is a
+    figure per term; the two decorrelations and the `$k$`-summed
+    `$(y, t)$` maps are second readings of the same records, and a
+    rendering run pays for each in full.  ``--series`` overrides every
+    one of them: naming a tag renders it.
+
+    The two composite cases fall out of the predicate rather than
+    being special-cased.  ``spacetime_decorr_k`` needs *both*
+    ``decorr_k`` (it is a :data:`DECORR_K` base) and ``spacetime`` (it
+    is a :data:`SPACETIME` family), which is what makes
+    `$\mathcal{R}^k$`'s spacetime map follow its maps; and a
+    ``spacetime_*_x0`` needs ``x0`` as well, its marginal being one.
     """
     held = {DECORR: decorr, DECORR_K: decorr_k}
     return [
@@ -3501,9 +3548,9 @@ def render_series(
 ) -> list[Path]:
     """Render every frame of one series into ``out_dir/tag``.
 
-    Filenames are ``<tag>_<index>.<fmt>`` with *index* the record's
-    position on the members' common time grid, zero-padded so a
-    lexical sort is the time order.  The series is scanned once first
+    Filenames are ``<tag>_<index>.<fmt>`` with *index* the frame
+    label of :attr:`YSeries.index`, zero-padded so a lexical sort is
+    the time order.  The series is scanned once first
     (:func:`scan_panels`) for the sign check and the frozen scale.
 
     The reference normalisation a spectra series may carry is a
@@ -3581,8 +3628,8 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=None,
         metavar="TAG",
-        help="exact series tags to render, overriding --budget / --x0 "
-        "(default: the spectra marginals present)",
+        help="exact series tags to render, overriding every selection "
+        "switch (default: the spectra marginals present)",
     )
     p.add_argument(
         "--budget",
@@ -3597,20 +3644,23 @@ def build_parser() -> argparse.ArgumentParser:
         "carries one (twin.x0_planes, or a pre-xz00 member)",
     )
     p.add_argument(
-        "--no-decorr-k",
+        "--decorr-k",
         action="store_true",
-        help="drop R^k, the decorrelation over a k-summed reference "
-        "(its maps and its spacetime map alike)",
+        help="also render R^k, the decorrelation over a k-summed "
+        "reference (its spacetime map too, under --spacetime); off by "
+        "default",
     )
     p.add_argument(
-        "--no-decorr",
+        "--decorr",
         action="store_true",
-        help="drop R, the decorrelation over a k-resolved reference",
+        help="also render R, the decorrelation over a k-resolved "
+        "reference; off by default",
     )
     p.add_argument(
-        "--no-spacetime",
+        "--spacetime",
         action="store_true",
-        help="drop the (y, t) maps and their .npz",
+        help="also render the k-summed (y, t) maps and their .npz, "
+        "for whatever else is selected; off by default",
     )
     p.add_argument(
         "--log-decades",
@@ -3804,9 +3854,9 @@ def main(argv: list[str] | None = None) -> int:
         registry,
         x0=args.x0,
         budget=args.budget,
-        decorr=not args.no_decorr,
-        decorr_k=not args.no_decorr_k,
-        spacetime=not args.no_spacetime,
+        decorr=args.decorr,
+        decorr_k=args.decorr_k,
+        spacetime=args.spacetime,
     )
     unknown = [t for t in tags if t not in registry]
     if unknown:
@@ -3818,8 +3868,8 @@ def main(argv: list[str] | None = None) -> int:
             "no stream found under the given members"
             if not registry
             else "every series present is held back by default; add "
-            f"--budget / --x0, drop a --no-* switch, or name one of: "
-            f"{list(registry)}"
+            "--decorr / --decorr-k / --spacetime / --budget / --x0, "
+            f"or name one of: {list(registry)}"
         )
     held = [t for t in registry if t not in tags]
     if held and not args.quiet:
