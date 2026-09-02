@@ -46,8 +46,31 @@ What each case pins:
    the shared grid is their intersection; ``stride`` / ``first`` /
    ``last`` clip it; a member that is not the same flow, and a stream
    whose own samples are closer than the tolerance, are both refused.
-8. **End to end.** ``main()`` renders every series of both streams for
-   a two-member set.
+8. **The two decorrelations.** `$\mathcal{R}$` divides mode by mode
+   and `$\mathcal{R}^k$` by the same reference summed over `$k$`;
+   both take the `$(0, 0)$` mode off the reference and neither off
+   the perturbation, the summed panel is one ratio of sums, the
+   premultiplier reaches the second and not the first, and
+   ``volume_fac`` / the unit conversion reach neither.  A saturated
+   pair reads exactly 1, and an empty reference reads ``nan`` without
+   touching a colour scale.
+9. **The divisor is symmetrised before the fold.** On a deliberately
+   asymmetric reference, ``--half mean`` gives the ratio of the
+   folded halves rather than the mean of the two ratios, which is
+   what makes the answer independent of the order.
+10. **The `$k$`-sum.** Marginal-free on all three stream layouts, and
+    what each half of a decorrelation counts: every mode of the
+    perturbation, every mode but `$(0, 0)$` of the reference.
+11. **Spacetime.** The `$(y, t)$` map is that `$k$`-sum in the
+    plotted units, folded and never premultiplied; its colour range
+    sees only the columns the box shows; the logarithmic floor is the
+    higher of *decades* below the peak and the smallest positive
+    value; a signed series gets no logarithmic figure and a
+    one-sample selection none at all; and the ``.npz`` beside the
+    pair carries the drawn arrays and every factor behind them.
+12. **End to end.** ``main()`` renders every series of both streams
+    for a two-member set, and each ``--no-*`` switch removes exactly
+    its own.
 
 Usage::
 
@@ -149,10 +172,14 @@ def _records(
 ) -> np.ndarray:
     """*n_t* records of *stem*, one time unit apart.
 
-    The spectra are marginals of a genuine `$(k_z, k_x)$` plane, so
-    the two of them agree on the total by construction -- which is
-    what :meth:`~twin_spectral_maps.YSeries._check_marginals` demands
-    of a real stream.
+    Every stored field is a marginal of a genuine `$(k_z, k_x)$`
+    plane -- the budget terms as much as the spectra -- so the two
+    marginals of one quantity agree on its total by construction,
+    which is what a real stream does and what
+    :meth:`~twin_spectral_maps.YSeries._check_marginals` and
+    :func:`~twin_spectral_maps.check_k_sum` both demand.  Independent
+    draws per stored field would be a stub no stream could produce,
+    and would make those guards look untestable rather than tested.
     """
     rec = np.zeros(n_t, dtype=tsm._record_dtype(meta, stem))
     rec["t"] = t0 + np.arange(n_t, dtype=float)
@@ -173,11 +200,20 @@ def _records(
             for suffix in stored:
                 rec[f"{prefix}_{suffix}"] = blocks[suffix]
     else:
-        for name in rec.dtype.names[1:]:
-            values = rng.random(rec[name].shape)
+        for term in meta["terms"]:
+            plane = rng.random((n_t, meta["ny"], NKZ, NKX))
             # ``eps`` is a sum of squares in a real stream, and the
             # sign check would rightly complain about a signed one.
-            rec[name] = values if name.startswith("eps") else values - 0.5
+            if term != "eps":
+                plane = plane - 0.5
+            blocks = {
+                "x": plane.sum(axis=3),
+                "z": plane.sum(axis=2),
+                "x0": plane[..., 0],
+                "xz00": plane[..., 0, 0],
+            }
+            for suffix in stored:
+                rec[f"{term}_{suffix}"] = blocks[suffix]
     return rec
 
 
@@ -255,6 +291,41 @@ def _folded(values: np.ndarray, ny: int = NY) -> np.ndarray:
     """The ``--half mean`` fold, written out independently."""
     n_half = (ny + 1) // 2
     return 0.5 * (values[:n_half] + values[::-1][:n_half])
+
+
+def _symmetric(values: np.ndarray, axis: int = 0) -> np.ndarray:
+    """What a ``--half mean`` fold makes of a divisor (case 9)."""
+    return 0.5 * (values + np.flip(values, axis=axis))
+
+
+def _saturated(meta: dict, n_t: int = 3, seed: int = 5) -> np.ndarray:
+    r"""A pair that has decorrelated completely.
+
+    `$e = 2(r - r^{00})$`: twice the reference's own energy in every
+    mode but the wall-parallel mean, of which the difference field is
+    given none.  `$\mathcal{R}$` is then 1 at every plotted mode and
+    the `$k$`-summed `$\mathcal{R}^k$` 1 everywhere -- exactly, and
+    only because each half counts the modes it is documented to count.
+
+    The reference is held steady in time, so its average is itself,
+    and symmetric about the centreline, so the fold has nothing left
+    to do and the reading does not lean on case 9's algebra.
+    """
+    rec = _records(meta, "twin_yspectra", n_t, seed=seed)
+    stored = tsm.stored_suffixes(meta)
+    for suffix in stored:
+        field = rec[f"r_{suffix}"]
+        field[:] = field[0]  # steady in time
+        field[:] = _symmetric(field, axis=2)  # and R_y-symmetric
+    name = tsm.mean_mode_name(meta, "r")
+    mean_mode = tsm.mean_mode_profile(rec[name], name)
+    for suffix in stored:
+        rec[f"e_{suffix}"] = (
+            np.zeros_like(rec[f"e_{suffix}"])
+            if suffix == "xz00"
+            else 2.0 * tsm.mean_free_spectrum(rec[f"r_{suffix}"], mean_mode)
+        )
+    return rec
 
 
 # ── Cases ────────────────────────────────────────────────────────────
@@ -389,9 +460,13 @@ def test_reference_scale() -> None:
     # a budget stream names no prefix at all.
     assert tsm.normalises(series, "e_x") and tsm.normalises(series, "r_z")
     assert not tsm.normalises(series, "e_x0")
-    # The summed panel is one ratio of sums, not a sum of three ratios.
-    assert tsm.reference_norm(series, "e_x", None) == float(want.sum())
-    assert tsm.reference_norm(series, "e_x", 1) == float(want[1])
+    # The summed panel is one ratio of sums, not a sum of three
+    # ratios.  Against the series' own scale, which the line above has
+    # already matched to *want*: this is which number a panel picks,
+    # not how it was accumulated.
+    scale = series.reference_scale()
+    assert tsm.reference_norm(series, "e_x", None) == float(scale.sum())
+    assert tsm.reference_norm(series, "e_x", 1) == float(scale[1])
     assert tsm.reference_norm(series, "e_x0", None) is None
 
     # A panel really is the absolute one over that constant -- which
@@ -742,7 +817,8 @@ def test_layouts_and_default_series() -> None:
     under ``twin.x0_planes``.  All three must open; the `$(0, 0)$`
     mode `$E^{\\mathrm{ref}}$` subtracts is the same number in all
     three, whichever field it is read from; and what is *drawn* is the
-    two marginals unless asked otherwise.
+    two marginals of every default family unless asked otherwise --
+    each of the three switches taking its own and nothing else.
     """
     scales = {}
     registries = {}
@@ -777,10 +853,24 @@ def test_layouts_and_default_series() -> None:
     # ``xz00`` is never a tag: it has no abscissa.
     assert not any("xz00" in tag for tag in registries["x0_planes"])
 
+    spectra = [f"spectra_{p}_{m}" for p in ("e", "r") for m in ("x", "z")]
+    decorr = [f"spectra_decorr_{m}" for m in ("x", "z")]
+    decorr_k = [f"spectra_decorr_k_{m}" for m in ("x", "z")]
+    spacetime = ["spacetime_e", "spacetime_r", "spacetime_decorr_k"]
     for label, registry in registries.items():
-        assert sorted(tsm.default_series(registry)) == sorted(
-            f"spectra_{p}_{m}" for p in ("e", "r") for m in ("x", "z")
+        every = tsm.default_series(registry)
+        assert sorted(every) == sorted(
+            spectra + decorr + decorr_k + spacetime
         ), label
+        # Each switch takes its own family and nothing else, and
+        # --no-decorr-k takes R^k's spacetime map with it.
+        for switch, gone in (
+            ({"decorr": False}, decorr),
+            ({"decorr_k": False}, decorr_k + ["spacetime_decorr_k"]),
+            ({"spacetime": False}, spacetime),
+        ):
+            left = tsm.default_series(registry, **switch)
+            assert set(every) - set(left) == set(gone), (label, switch)
         with_x0 = set(tsm.default_series(registry, x0=True))
         assert with_x0 == set(registry), label
     print("layouts, their tags, and one E_ref across all three: OK")
@@ -825,6 +915,350 @@ def test_reference_scale_is_a_quadrature() -> None:
     print("E_ref is the quadrature contraction, not a plain mean: OK")
 
 
+def test_decorrelation() -> None:
+    """R and R^k: what each divides by, and what moves them."""
+    units = tsm.Units(RE, RE_TAU)
+    options = tsm.MapOptions(units)
+    meta = _meta("twin_yspectra")
+    rec = _records(meta, "twin_yspectra", 5, seed=7)
+    series = _series("twin_yspectra", [_member(meta, rec)])
+
+    # One member, so every record is its own reference instant and
+    # the average over them is a plain mean.
+    mean_x = rec["r_x"].mean(axis=0)
+    mean_00 = rec["r_xz00"].mean(axis=0)
+    spectrum = mean_x.copy()
+    spectrum[..., 0] -= mean_00  # the (0, 0) mode, and only it
+    profile = mean_x.sum(axis=-1) - mean_00
+    assert np.allclose(series.reference_spectrum("x"), spectrum)
+    assert np.allclose(series.reference_profile(), profile)
+    # The three divisors are one array read at three resolutions ...
+    assert np.allclose(spectrum.sum(axis=-1), profile)
+    assert np.allclose(
+        series.reference_scale(),
+        np.einsum("j,cj->c", series.y_weights, profile),
+    )
+    # ... and the k_x marginal is an independent reading of it.
+    assert np.allclose(rec["r_z"].mean(axis=0).sum(axis=-1) - mean_00, profile)
+
+    harmonics = np.arange(1, NKZ, dtype=float)
+    for component in (0, 2, None):
+        e = rec["e_x"][1]
+        e = e.sum(axis=0) if component is None else e[component]
+        # The divisor is symmetrised for the fold (next case), so the
+        # hand computation symmetrises too.  The summed panel takes
+        # the summed divisor: one ratio of sums.
+        flat = profile.sum(0) if component is None else profile[component]
+        resolved = (
+            spectrum.sum(0) if component is None else spectrum[component]
+        )
+        want = (e / (2.0 * _symmetric(flat)[:, None]))[:, 1:] * harmonics
+        drawn = tsm.make_map(
+            series, "decorr_k_x", 1, options=options, component=component
+        )
+        assert np.allclose(drawn.values, _folded(want[:, ::-1])), component
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            want = (e / (2.0 * _symmetric(resolved)))[:, 1:]
+        drawn = tsm.make_map(
+            series, "decorr_x", 1, options=options, component=component
+        )
+        assert np.allclose(drawn.values, _folded(want[:, ::-1])), component
+
+    # volume_fac and the unit conversion cancel between a ratio's two
+    # halves; the premultiplier survives R^k's k-independent divisor
+    # and cancels against R's.
+    for name, premultiplied in (("decorr_k_x", True), ("decorr_x", False)):
+        base = tsm.make_map(series, name, 1, options=options).values
+        for other in (
+            tsm.MapOptions(units, volume_fac=False),
+            tsm.MapOptions(tsm.Units(RE, RE_TAU, wall=False)),
+        ):
+            same = tsm.make_map(series, name, 1, options=other).values
+            assert np.allclose(base, same, equal_nan=True), name
+        plain = tsm.make_map(
+            series, name, 1, options=tsm.MapOptions(units, premultiply="none")
+        ).values
+        moved = not np.allclose(base, plain, equal_nan=True)
+        assert moved is premultiplied, name
+
+    # A pair that has decorrelated completely reads exactly 1 -- R at
+    # every plotted mode, R^k once its k-sum is taken -- and it does
+    # so by each half counting the modes it is documented to count.
+    saturated = _series("twin_yspectra", [_member(meta, _saturated(meta))])
+    for component in (1, None):
+        drawn = tsm.make_map(
+            saturated, "decorr_x", 0, options=options, component=component
+        )
+        assert np.allclose(drawn.values, 1.0), component
+        summed = tsm.make_spacetime(
+            saturated, tsm.DECORR_K, options=options, component=component
+        )
+        assert np.allclose(summed.values, 1.0), component
+
+    # An empty reference mode is nan, and nan reaches no colour scale.
+    holed = _records(meta, "twin_yspectra", 2, seed=13)
+    for suffix in tsm.stored_suffixes(meta):
+        # Two whole wall-normal rows, and R_y partners: the divisor is
+        # symmetrised, so one alone would be filled in by the other.
+        holed[f"r_{suffix}"][:, :, [5, NY - 6]] = 0.0
+    empty = _series("twin_yspectra", [_member(meta, holed)])
+    for name in ("decorr_x", "decorr_k_x"):
+        drawn = tsm.make_map(empty, name, 0, options=options)
+        assert np.isnan(drawn.values).any(), name
+        panel = (name, None)
+        scales, _ = tsm.scan_panels(empty, [panel], options)
+        assert np.isfinite(scales[panel].lo), name
+        assert np.isfinite(scales[panel].hi), name
+
+
+def test_divisor_is_symmetrised_before_the_fold() -> None:
+    """A y-dependent divisor must not depend on the fold's order."""
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    meta = _meta("twin_yspectra")
+    rec = _records(meta, "twin_yspectra", 3, seed=11)
+    # A reference that is deliberately not R_y-symmetric.  The
+    # component axis is 1, so the wall-normal one is 2 in every
+    # stored field, marginal and (0, 0) mode alike.
+    ramp = (1.0 + np.arange(NY, dtype=float)).reshape(1, 1, NY)
+    for suffix in tsm.stored_suffixes(meta):
+        field = rec[f"r_{suffix}"]
+        field *= ramp if field.ndim == 3 else ramp[..., None]
+    series = _series("twin_yspectra", [_member(meta, rec)])
+
+    profile = rec["r_x"].mean(0).sum(-1) - rec["r_xz00"].mean(0)
+    numerator = rec["e_x"].sum(-1)[:, 0]
+    drawn = tsm.make_spacetime(
+        series, tsm.DECORR_K, options=options, component=0
+    )
+    # The ratio of the folded halves ...
+    want = _folded(numerator.T).T / (2.0 * _folded(_symmetric(profile[0])))
+    assert np.allclose(drawn.values, want)
+    # ... which is not the mean of the two unsymmetrised ratios.
+    naive = _folded((numerator / (2.0 * profile[0])).T).T
+    assert not np.allclose(drawn.values, naive)
+
+    # --half lower folds nothing and keeps each row's own divisor.
+    lower = tsm.make_spacetime(
+        series,
+        tsm.DECORR_K,
+        options=tsm.MapOptions(options.units, half="lower"),
+        component=0,
+    )
+    n_half = (NY + 1) // 2
+    assert np.allclose(
+        lower.values, (numerator / (2.0 * profile[0]))[:, :n_half]
+    )
+
+
+def test_k_sum_counts_the_modes_each_half_counts() -> None:
+    """Marginal-free, on every layout, and whose (0, 0) mode leaves."""
+    for suffixes in (LEGACY, DEFAULT, WITH_X0):
+        meta = _meta("twin_yspectra", suffixes=suffixes)
+        rec = _records(meta, "twin_yspectra", 3, seed=17)
+        series = _series("twin_yspectra", [_member(meta, rec)])
+        name = tsm.mean_mode_name(meta, "r")
+        mean_mode = tsm.mean_mode_profile(rec[name], name)
+
+        # The perturbation keeps every mode it has ...
+        assert np.allclose(tsm.k_summed(series, "e"), rec["e_x"].sum(-1))
+        assert np.allclose(rec["e_z"].sum(-1), rec["e_x"].sum(-1))
+        # ... the reference loses its (0, 0) one, off either marginal.
+        want = rec["r_x"].sum(-1) - mean_mode
+        assert np.allclose(tsm.k_summed(series, "r"), want)
+        assert np.allclose(rec["r_z"].sum(-1) - mean_mode, want)
+        tsm.check_k_sum(series, "e")  # the guard, on a real layout
+        if "x0" in suffixes:
+            # The slice's m = 0 *is* the (0, 0) mode, so there the two
+            # readings coincide.
+            assert np.allclose(
+                tsm.k_summed(series, "r", "x0"),
+                rec["r_x0"][..., 1:].sum(-1),
+            )
+
+    meta = _meta("twin_yspectra")
+    rec = _records(meta, "twin_yspectra", 2, seed=19)
+    rec["e_z"] *= 1.01  # one marginal is no longer a complete sum
+    _raises(
+        lambda: tsm.check_k_sum(
+            _series("twin_yspectra", [_member(meta, rec)]), "e"
+        ),
+        "not a complete sum",
+    )
+
+
+def test_spacetime() -> None:
+    """The (y, t) maps, their colour scales and their .npz."""
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    meta = _meta("twin_yspectra")
+    rec = _records(meta, "twin_yspectra", 4, seed=23)
+    series = _series("twin_yspectra", [_member(meta, rec)])
+
+    # The k-sum of the panel, in the plotted units, folded, and with
+    # no premultiplier whatever --premultiply says.
+    scale = series.reference_scale()
+    for component in (2, None):
+        if component is None:
+            total = rec["e_x"].sum(-1).sum(axis=1)
+            over = scale.sum()
+        else:
+            total = rec["e_x"].sum(-1)[:, component]
+            over = scale[component]
+        want = _folded((total * VOLUME_FAC / over).T).T
+        for premultiply in ("k", "ky", "none"):
+            drawn = tsm.make_spacetime(
+                series,
+                "e",
+                options=tsm.MapOptions(options.units, premultiply=premultiply),
+                component=component,
+            )
+            assert np.allclose(drawn.values, want), (component, premultiply)
+        assert drawn.values.shape == (rec.size, (NY + 1) // 2)
+        assert np.allclose(drawn.t, options.units.time(series.t_rel))
+
+    # The k_x = 0 slice keeps its name and stays absolute, so it
+    # carries the unit conversion the normalised panels cancel.
+    x0_meta = _meta("twin_yspectra", suffixes=WITH_X0)
+    x0_rec = _records(x0_meta, "twin_yspectra", 3, seed=37)
+    x0_series = _series("twin_yspectra", [_member(x0_meta, x0_rec)])
+    slice_map = tsm.make_spacetime(
+        x0_series, "r", "x0", options=options, component=0
+    )
+    want = options.units.energy(
+        _folded((x0_rec["r_x0"][:, 0, :, 1:].sum(-1) * VOLUME_FAC).T).T
+    )
+    assert np.allclose(slice_map.values, want)
+    assert tsm.spacetime_norm(x0_series, "r", "x0", 0) is None
+    assert "x0" in slice_map.title and "\n" not in slice_map.title
+
+    # The colour range is a legend for the columns the box shows: a
+    # peak below the wall-distance floor sets no level.
+    ny = 129
+    wide_meta = _meta("twin_yspectra", ny=ny)
+    wide = _records(wide_meta, "twin_yspectra", 2, seed=29)
+    # A whole wall-normal row of the plane, so that both marginals
+    # stay complete sums of one field (case 10's guard runs here).
+    for suffix in tsm.stored_suffixes(wide_meta):
+        wide[f"e_{suffix}"][:, :, 1] *= 1e6  # y+ ~ 0.05, under the floor
+        wide[f"e_{suffix}"][:, :, -2] *= 1e6
+    wide_series = _series("twin_yspectra", [_member(wide_meta, wide)])
+    maps = tsm.spacetime_maps(
+        wide_series,
+        tsm.SeriesSpec("twin_yspectra", "e", "", tsm.SPACETIME),
+        options,
+    )
+    ylim = tsm.y_limits(wide_series, options)
+    assert np.isclose(ylim[0], tsm.Y_FLOOR_PLUS)
+    scales, floors, notes = tsm.spacetime_scales(maps, ylim)
+    unrestricted = tsm.spacetime_scales(maps, None)[0]
+    assert not notes  # sums of squares, no sign complaint
+    assert unrestricted[0].hi > 1e3 * scales[0].hi
+    assert maps[0].drawn(ylim)[0].size < maps[0].drawn()[0].size
+
+    # The logarithmic floor: decades below the peak where the data
+    # spans more than that, and the smallest positive value where it
+    # spans fewer, so no empty range is invented under the data.
+    shown = maps[0].drawn(ylim)[1]
+    positive = shown[np.isfinite(shown) & (shown > 0.0)]
+    span = float(np.log10(positive.max() / positive.min()))
+    assert span > 0.0
+    tight = tsm.log_floor(shown, 0.5 * span)
+    assert np.isclose(tight, positive.max() / 10.0 ** (0.5 * span))
+    assert np.isclose(tsm.log_floor(shown, 2.0 * span), positive.min())
+    levels = tsm.log_levels(tight, float(positive.max()))
+    assert np.isclose(levels[0], tight) and np.isclose(
+        levels[-1], positive.max()
+    )
+    assert floors[0] > 0.0
+
+    with tempfile.TemporaryDirectory() as scratch:
+        out = Path(scratch)
+        # A signed series draws no logarithmic figure; a non-negative
+        # one draws both, and both carry the .npz.
+        budget_meta = _meta("twin_ybudget")
+        budget = _series(
+            "twin_ybudget",
+            [
+                _member(
+                    budget_meta,
+                    _records(budget_meta, "twin_ybudget", 3, seed=31),
+                )
+            ],
+        )
+        written = tsm.render_spacetime(
+            budget,
+            tsm.SeriesSpec("twin_ybudget", "", "", tsm.SPACETIME),
+            "spacetime_budget",
+            out,
+            options=options,
+            style=tsm.PlotStyle(dpi=50),
+            quiet=True,
+        )
+        assert [p.name for p in written] == [
+            "spacetime_budget_lin.png",
+            "spacetime_budget.npz",
+        ]
+
+        written = tsm.render_spacetime(
+            series,
+            tsm.SeriesSpec("twin_yspectra", "decorr_k", "", tsm.SPACETIME),
+            "spacetime_decorr_k",
+            out,
+            options=options,
+            style=tsm.PlotStyle(dpi=50),
+            quiet=True,
+        )
+        assert [p.name for p in written] == [
+            "spacetime_decorr_k_lin.png",
+            "spacetime_decorr_k_log.png",
+            "spacetime_decorr_k.npz",
+        ]
+        assert all(p.stat().st_size > 0 for p in written)
+
+        # The .npz carries the drawn arrays and every factor behind
+        # them -- enough to undo the normalisation without the figure.
+        stored = np.load(written[-1])
+        panels = tsm.spacetime_maps(
+            series,
+            tsm.SeriesSpec("twin_yspectra", "decorr_k", "", tsm.SPACETIME),
+            options,
+        )
+        assert np.allclose(stored["values"], [p.values for p in panels])
+        assert list(stored["panels"]) == ["u", "v", "w", "sum"]
+        assert np.allclose(stored["t"], series.t_rel)
+        assert np.allclose(stored["y"], tsm._half_grid(series.y, "mean"))
+        assert np.allclose(stored["y_plotted"], panels[0].y)
+        assert not bool(stored["premultiplied"])
+        assert float(stored["re_tau"]) == RE_TAU
+        assert float(stored["volume_fac"]) == VOLUME_FAC
+        assert str(stored["half"]) == "mean"
+        assert np.all(np.isnan(stored["e_ref"]))  # a ratio, not an E_ref
+        # Multiplying the divisor back recovers the k-summed numerator.
+        numerator = _folded(rec["e_x"].sum(-1)[:, 0].T).T
+        assert np.allclose(
+            stored["values"][0] * stored["divisor"][0], numerator
+        )
+        assert json.loads(str(stored["meta_json"]))["system"] == (
+            "plane-poiseuille"
+        )
+
+        # A selection of one sample time has no time axis to draw, and
+        # says so rather than dying inside matplotlib; its .npz is
+        # still one valid row.
+        single = _series("twin_yspectra", [_member(meta, rec[:1])])
+        written = tsm.render_spacetime(
+            single,
+            tsm.SeriesSpec("twin_yspectra", "e", "", tsm.SPACETIME),
+            "one_frame",
+            out,
+            options=options,
+            style=tsm.PlotStyle(dpi=50),
+            quiet=True,
+        )
+        assert [p.name for p in written] == ["one_frame.npz"]
+        assert np.load(written[0])["values"].shape[1] == 1
+
+
 def test_main_renders_the_selected_series() -> None:
     """``main()`` on a two-member set: the default tags, then more."""
     with tempfile.TemporaryDirectory() as scratch:
@@ -866,18 +1300,33 @@ def test_main_renders_the_selected_series() -> None:
             ]
         )
         assert code == 0
-        # The default set: the spectra marginals, and nothing else.
+        # The default set: the spectra marginals, both
+        # decorrelations, and the k-summed maps.
+        maps = [
+            f"spectra_{base}_{m}"
+            for base in ("e", "r", "decorr", "decorr_k")
+            for m in ("x", "z")
+        ]
+        spacetime = ["spacetime_e", "spacetime_r", "spacetime_decorr_k"]
         tags = sorted(p.name for p in out.iterdir())
-        assert tags == sorted(
-            f"spectra_{p}_{m}" for p in ("e", "r") for m in ("x", "z")
-        )
-        for tag in tags:
+        assert tags == sorted(maps + spacetime)
+        for tag in maps:
             frames = sorted((out / tag).glob("*.png"))
             assert [f.name for f in frames] == [
                 f"{tag}_0.png",
                 f"{tag}_2.png",
             ], tag
             assert all(f.stat().st_size > 0 for f in frames)
+        # One figure per colour scale for the whole run, and the
+        # ``.npz`` behind the pair.
+        for tag in spacetime:
+            files = sorted(f.name for f in (out / tag).iterdir())
+            assert files == [
+                f"{tag}.npz",
+                f"{tag}_lin.png",
+                f"{tag}_log.png",
+            ], tag
+            assert all(f.stat().st_size > 0 for f in (out / tag).iterdir())
 
         # ``--budget`` adds the other stream; ``--x0`` adds nothing
         # here, these members carrying no such plane.
@@ -903,13 +1352,34 @@ def test_main_renders_the_selected_series() -> None:
                 ]
             )
 
-        # ``--budget`` adds the other stream; ``--x0`` adds nothing
-        # here, these members carrying no such plane.
+        # ``--budget`` adds the other stream, its k-sum included;
+        # ``--x0`` adds nothing here, these members carrying no such
+        # plane.  The budget changes sign, so it draws no log figure.
         wider = root / "wider"
         assert run(wider, "--budget", "--x0") == 0
         assert sorted(p.name for p in wider.iterdir()) == sorted(
-            tags + ["budget_x", "budget_z"]
+            tags + ["budget_x", "budget_z", "spacetime_budget"]
         )
+        assert sorted(
+            f.name for f in (wider / "spacetime_budget").iterdir()
+        ) == ["spacetime_budget.npz", "spacetime_budget_lin.png"]
+
+        # Each switch removes exactly its own family.
+        for switch, gone in (
+            ("--no-decorr", {"spectra_decorr_x", "spectra_decorr_z"}),
+            (
+                "--no-decorr-k",
+                {
+                    "spectra_decorr_k_x",
+                    "spectra_decorr_k_z",
+                    "spacetime_decorr_k",
+                },
+            ),
+            ("--no-spacetime", set(spacetime)),
+        ):
+            target = root / switch.strip("-")
+            assert run(target, switch) == 0
+            assert set(tags) - {p.name for p in target.iterdir()} == gone
 
         # ``--series`` is exact, and an unknown tag is refused rather
         # than quietly dropped.

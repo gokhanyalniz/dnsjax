@@ -61,8 +61,11 @@ streamwise-averaged difference field, so
 now resolved in `$k_z$` rather than collapsed to three numbers.  It
 therefore needs a stream written under ``twin.x0_planes``; the first
 of the three survives on the always-stored ``e_xz00`` alone, and so
-does :func:`fluctuation_energy`, which is the `$(0, 0)$` mode's other
-use.
+does the `$(0, 0)$` mode's other use: taking it back off a spectrum,
+in the three reductions :func:`mean_free_spectrum` /
+:func:`fluctuation_profile` / :func:`fluctuation_energy`, which are
+one definition read at three resolutions -- `$(y, k)$`, `$(y)$` and a
+scalar.
 """
 
 from __future__ import annotations
@@ -304,6 +307,64 @@ def integrate_y(data: YResolvedData, name: str) -> np.ndarray:
     return np.einsum(subscripts, data.y_weights, data[name])
 
 
+def mean_free_spectrum(
+    marginal: np.ndarray,
+    mean_mode: np.ndarray,
+) -> np.ndarray:
+    r"""A stored marginal with the `$(0, 0)$` mode taken off it.
+
+    The first of three reductions of one idea, each the next one's
+    input: the spectrum without the mean mode, its `$k$`-sum
+    (:func:`fluctuation_profile`), and that profile's wall-normal
+    average (:func:`fluctuation_energy`).  All three are array-level,
+    so a memory-mapped reader shares them with
+    :class:`YResolvedData` (``scripts/twin_spectral_maps.py`` does).
+
+    *marginal* is a **complete** marginal -- ``r_x`` / ``e_x`` (summed
+    over `$k_x$`) or ``r_z`` / ``e_z`` (summed over `$k_z$`) -- shaped
+    ``(..., n_y, n_k)``, and *mean_mode* the same field's `$(0, 0)$`
+    profile, ``(..., n_y)``, with the leading axes free;
+    :func:`mean_mode_name` / :func:`mean_mode_profile` produce that
+    second argument from whichever of ``*_xz00`` / ``*_x0`` the stream
+    carries.
+
+    The mean mode lives in the `$m = 0$` column and **only** there, so
+    that is the one column this touches.  What it is *not* is the
+    whole of that column: ``*_x[..., 0]`` is every `$k_z = 0$` mode
+    summed over `$k_x$` and ``*_z[..., 0]`` every `$k_x = 0$` mode
+    summed over `$k_z$`, both of which carry fluctuating modes that
+    have every right to be there.
+
+    Use it wherever a **reference** spectrum is a denominator: the
+    `$(0, 0)$` mode is the wall-parallel mean, common to both states
+    of a twin pair and never decorrelating, and the stored spectra
+    are of the perturbation about the **laminar** profile, so it also
+    carries the mean-flow deviation and dominates the streamwise
+    total.  A returned copy, always float64; the input is untouched.
+    """
+    out = np.array(marginal, dtype=np.float64)
+    out[..., 0] -= mean_mode
+    return out
+
+
+def fluctuation_profile(
+    marginal: np.ndarray,
+    mean_mode: np.ndarray,
+) -> np.ndarray:
+    r"""`$(..., n_y)$`: :func:`mean_free_spectrum` summed over `$k$`.
+
+    The energy at each wall distance held by everything but the
+    `$(0, 0)$` mode.  Written as the sum less the mode rather than as
+    a sum of the copy -- the same number, one array cheaper.
+
+    Either marginal gives the same profile, since each already sums
+    the other axis, so passing ``r_z`` against the same mean mode as
+    ``r_x`` is a genuine cross-check rather than a second reading of
+    the same numbers.
+    """
+    return marginal.sum(axis=-1) - mean_mode
+
+
 def fluctuation_energy(
     marginal: np.ndarray,
     mean_mode: np.ndarray,
@@ -311,37 +372,18 @@ def fluctuation_energy(
 ) -> np.ndarray:
     r"""Total-in-`$(y, k)$` energy without the `$(0, 0)$` mode.
 
-    Array-level, so a memory-mapped reader can share the definition
-    with :class:`YResolvedData` (``scripts/twin_spectral_maps.py``
-    does).  *marginal* is a **complete** marginal -- ``r_x`` / ``e_x``
-    (summed over `$k_x$`) or ``r_z`` / ``e_z`` (summed over `$k_z$`)
-    -- shaped ``(..., n_y, n_k)``, and *mean_mode* the same field's
-    `$(0, 0)$` profile, ``(..., n_y)``, with the leading axes free;
-    the result is ``(...)``.  :func:`mean_mode_name` /
-    :func:`mean_mode_profile` produce that second argument from
-    whichever of ``*_xz00`` / ``*_x0`` the stream carries.
+    :func:`fluctuation_profile` contracted with the wall-normal
+    quadrature; the arguments are that function's, and the result has
+    its leading axes.
 
     Because the `$y$`-weights sum to ``volume_fac`` and the stored
-    entries are already divided by it, both contractions are
-    wall-normal **averages**: the result is a mean energy density,
-    not an integral.
-
-    Either marginal gives the same total, since each already sums the
-    other axis, so passing ``r_z`` against the same mean mode as
-    ``r_x`` is a genuine cross-check rather than a second reading of
-    the same numbers.  What the mean mode is *not* is ``*_x[..., 0]``
-    (the whole `$k_z = 0$` column, summed over `$k_x$`) or
-    ``*_z[..., 0]`` (the whole `$k_x = 0$` plane, summed over
-    `$k_z$`) -- both of those carry fluctuating modes.
-
-    For a reference field ``r_*`` the result is the fluctuation
-    energy about the wall-parallel mean: the stored spectra are of
-    the perturbation about the **laminar** profile, whose `$(0, 0)$`
-    mode carries the mean-flow deviation and dominates the streamwise
-    total.
+    entries are already divided by it, the contraction is a
+    wall-normal **average**: the result is a mean energy density, not
+    an integral.
     """
-    total = np.einsum("j,...jk->...", y_weights, marginal)
-    return total - np.einsum("j,...j->...", y_weights, mean_mode)
+    return np.einsum(
+        "j,...j->...", y_weights, fluctuation_profile(marginal, mean_mode)
+    )
 
 
 def bin_energies(data: YResolvedData) -> dict[str, np.ndarray]:
