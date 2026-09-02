@@ -12,8 +12,25 @@ its `$k\,y$`, which is the commoner convention for a spectrum on a
 logarithmic ordinate (next section).  ``--yscale linear`` swaps the
 ordinate instead.
 
-Both wavenumber marginals are drawn (``_z`` gives `$\lambda_x$`, the
-paper shows only `$\lambda_z$`), plus the stored `$k_x = 0$` plane.
+What is drawn
+=============
+Both wavenumber marginals of the **spectra** stream (``_z`` gives
+`$\lambda_x$`; the paper shows only `$\lambda_z$`), and nothing else
+unless asked.  Two sets are held back behind their own flag rather
+than behind a tag name the caller has to know:
+
+- ``--budget`` adds the ``twin_ybudget`` series, one figure per
+  stored term;
+- ``--x0`` adds the `$k_x = 0$` plane, where the stream has one --
+  ``twin.x0_planes``, or any member recorded before that plane became
+  opt-in.  It is a slice of the mode plane rather than a marginal of
+  it, which is also why it is left absolute (below).
+
+``--series`` overrides both: it names exact tags, and
+:func:`available_series` lists what a given member set offers.  The
+`$(0, 0)$` mode ``xz00`` is never a tag -- it is one mode, with no
+abscissa to put it on -- and reaches the figures only as
+`$E^{\mathrm{ref}}$`.
 
 Premultiplication
 =================
@@ -139,17 +156,23 @@ energy,
     E^{\mathrm{ref}}_\alpha = \bigl\langle R_\alpha
         - R^{00}_\alpha \bigr\rangle_t ,
     \quad R_\alpha = \sum_m \sum_j w_j\, r^{x}_\alpha(y_j, m) ,
-    \quad R^{00}_\alpha = \sum_j w_j\, r^{x0}_\alpha(y_j, 0) ,
+    \quad R^{00}_\alpha = \sum_j w_j\, r^{xz00}_\alpha(y_j) ,
 
 the total reference energy over `$y$` **and** `$k$` less its
 `$(0, 0)$` mode, one number per component (and their sum for the
-summed panel) for the whole series.  The mean mode leaves the total
-because it is the wall-parallel mean, common to both states of a
-pair and never decorrelating; it dominates the total otherwise, a
-plane-Poiseuille `$R_u$` being some 89 % its own `$(0, 0)$` mode, and
-every panel would be read against a number that is mostly mean flow.
-It comes off the `$k_x = 0$` plane, whose index 0 is that mode alone,
-and not off ``r_x[..., 0]``, which is the whole `$k_z = 0$` column.
+summed panel) for the whole series.  Both sums are wall-normal
+**averages** and not integrals: `$\sum_j w_j$` is ``volume_fac``, by
+which the stored entries are already divided.
+
+The mean mode leaves the total because it is the wall-parallel mean,
+common to both states of a pair and never decorrelating; it dominates
+the total otherwise, a plane-Poiseuille `$R_u$` being some 89 % its
+own `$(0, 0)$` mode, and every panel would be read against a number
+that is mostly mean flow.  It comes off the stored `$(0, 0)$` mode
+itself -- or, on a member recorded before that field existed, off
+index 0 of the `$k_x = 0$` plane, which is the same number
+(:func:`~dnsjax.analysis.twin.yspectra.mean_mode_name`).  What it is
+*not* is ``r_x[..., 0]``, the whole `$k_z = 0$` column.
 
 Dividing by a constant is a rescaling and nothing else: the shape of
 a map is untouched and only the rounded level step
@@ -174,12 +197,12 @@ would cancel between the two halves, so neither half takes it, and
 two unit systems -- and through the `$E^{\mathrm{ref}}$` the title
 reports, which is in the units the rest of the figure is drawn in.
 
-The `$k_x = 0$` panels are left absolute.  ``e_x`` and ``e_z`` each
-sum the other wavenumber away, so each is a complete sum over the
-mode plane and a fraction of `$E^{\mathrm{ref}}$` is a fraction of a
-whole; the `$k_x = 0$` plane is a slice of that plane instead, and
-normalising it by its own total would cost exactly what the shared
-denominator buys.
+The `$k_x = 0$` panels, when ``--x0`` asks for them, are left
+absolute.  ``e_x`` and ``e_z`` each sum the other wavenumber away, so
+each is a complete sum over the mode plane and a fraction of
+`$E^{\mathrm{ref}}$` is a fraction of a whole; the `$k_x = 0$` plane
+is a slice of that plane instead, and normalising it by its own total
+would cost exactly what the shared denominator buys.
 
 `$E^{\mathrm{ref}}$` is averaged over **distinct reference
 instants**: the members of an ensemble are subsampled from one long
@@ -369,6 +392,10 @@ from dnsjax.analysis.twin.yspectra import (
     MIN_YBUDGET_VERSION,
     MIN_YSPECTRA_VERSION,
     fluctuation_energy,
+    mean_mode_name,
+    mean_mode_profile,
+    record_dtype,
+    stored_suffixes,
 )
 
 #: Tolerance within which two sample times are held to be the same
@@ -428,9 +455,13 @@ _SHARED_KEYS: tuple[str, ...] = (
 
 #: Added to :data:`_SHARED_KEYS` per stream: what sets the field table,
 #: and so what a stored name means, rather than the grid it lives on.
+#: ``suffixes`` is normalised onto every member's sidecar by
+#: :func:`_open_member`, so a set of pre-``xz00`` members compares on
+#: the legacy triple rather than on a key none of them has -- and a
+#: set that mixes layouts is refused by name.
 _STREAM_KEYS: dict[str, tuple[str, ...]] = {
-    "twin_yspectra": ("includes_ref",),
-    "twin_ybudget": ("terms",),
+    "twin_yspectra": ("includes_ref", "suffixes"),
+    "twin_ybudget": ("terms", "suffixes"),
 }
 
 #: Velocity components of the ``twin_yspectra`` leading axis.
@@ -492,16 +523,30 @@ TERM_LABELS: dict[str, str] = {
     "sum": r"\partial_t\hat{e}",
 }
 
-#: ``(wavelength axis, energy superscript)`` per stored suffix.  A
-#: suffix names the axis that was **summed over**, so ``_x`` is the
-#: `$k_z$` marginal and its abscissa is `$\lambda_z$`.  The axis letter
-#: is what both the panel title and the two abscissa labels subscript,
-#: which is why it is stored rather than a ready-made ``k_z``.
+#: ``(wavelength axis, energy superscript)`` per **drawable** stored
+#: suffix.  A suffix names the axis that was **summed over**, so
+#: ``_x`` is the `$k_z$` marginal and its abscissa is
+#: `$\lambda_z$`.  The axis letter is what both the panel title and
+#: the two abscissa labels subscript, which is why it is stored rather
+#: than a ready-made ``k_z``.
+#:
+#: ``xz00`` is deliberately absent: it is one mode, with no wavenumber
+#: axis to put on an abscissa.  It reaches the figures only through
+#: `$E^{\mathrm{ref}}$`.  ``x0`` is here but is **not** drawn by
+#: default (:data:`DEFAULT_MARGINALS`); only a pre-``xz00`` stream or
+#: a run under ``twin.x0_planes`` carries it at all.
 MARGINALS: dict[str, tuple[str, str]] = {
     "x": ("z", "x"),
     "z": ("x", "z"),
     "x0": ("z", "x0"),
 }
+
+#: The marginals rendered unless ``--x0`` asks for the rest, and the
+#: streams rendered unless ``--budget`` does.  Both defaults are about
+#: what is worth looking at rather than what is on disk: the two true
+#: marginals of the difference and reference spectra.
+DEFAULT_MARGINALS: frozenset[str] = frozenset({"x", "z"})
+DEFAULT_STEMS: frozenset[str] = frozenset({"twin_yspectra"})
 
 #: LaTeX preamble matching the ``perturbation_dynamics`` write-up.
 LATEX_PREAMBLE: str = r"""
@@ -625,30 +670,15 @@ class Units:
 def _record_dtype(meta: dict, stem: str) -> np.dtype:
     """The stream's fixed-size record layout, from its sidecar.
 
-    Mirrors the field table of
-    :func:`dnsjax.analysis.twin.yspectra.read_twin_yspectra` /
-    :func:`~dnsjax.analysis.twin.yspectra.read_twin_ybudget`; the
-    dtype is what lets a record be read without the eager reader's
-    whole-file pass.
+    The eager reader's own
+    :func:`dnsjax.analysis.twin.yspectra.record_dtype` -- shared
+    rather than mirrored, so the two cannot disagree about which
+    layout a sidecar describes.  What this script needs it for is the
+    memory map: the dtype is what lets a record be read without the
+    whole-file pass :func:`~dnsjax.analysis.twin.yspectra.read_twin_yspectra`
+    makes.
     """
-    ny = int(meta["ny"])
-    n_kz, n_kx = int(meta["n_kz"]), int(meta["n_kx"])
-    per_suffix = (("x", n_kz), ("z", n_kx), ("x0", n_kz))
-    value_dtype = meta["value_dtype"]
-    if stem == "twin_yspectra":
-        prefixes = ("e", "r") if bool(meta["includes_ref"]) else ("e",)
-        names = [
-            (f"{p}_{suf}", (len(COMPONENTS), ny, n))
-            for p in prefixes
-            for suf, n in per_suffix
-        ]
-    else:
-        names = [
-            (f"{term}_{suf}", (ny, n))
-            for term in meta["terms"]
-            for suf, n in per_suffix
-        ]
-    return np.dtype([("t", "<f8")] + [(n, value_dtype, sh) for n, sh in names])
+    return record_dtype(meta, stem)
 
 
 @dataclass(frozen=True)
@@ -719,6 +749,9 @@ def _open_member(path: Path, stem: str) -> _Member:
             f"{json_path}: format_version {version} predates the "
             f"reader floor {STEMS[stem]}."
         )
+    # Written in so the per-member sidecar comparison has a key to
+    # compare (_STREAM_KEYS); a pre-``xz00`` sidecar has none.
+    meta["suffixes"] = list(stored_suffixes(meta))
     dtype = _record_dtype(meta, stem)
     # A kill mid-write leaves a partial trailing record; the complete
     # prefix is intact (append-only, fsync per flush).
@@ -808,6 +841,11 @@ class YSeries:
         return tuple(self.meta.get("terms", ()))
 
     @property
+    def suffixes(self) -> tuple[str, ...]:
+        """Stored marginals, normalised onto the sidecar on open."""
+        return tuple(self.meta["suffixes"])
+
+    @property
     def prefixes(self) -> tuple[str, ...]:
         """Spectra prefixes present (``twin_yspectra`` only)."""
         if self.stem != "twin_yspectra":
@@ -875,6 +913,7 @@ class YSeries:
                 "normalise the difference spectra by."
             )
         picks, n_instants, n_samples = self._distinct_instants()
+        mean_name = mean_mode_name(self.meta, "r")
         total = np.zeros(len(COMPONENTS))
         for member, rows in zip(self.members, picks, strict=True):
             if rows.size == 0:  # every instant is another member's
@@ -884,7 +923,12 @@ class YSeries:
                 take = rows[start : start + _REF_CHUNK]
                 total += fluctuation_energy(
                     np.asarray(member.records["r_x"][take], dtype=np.float64),
-                    np.asarray(member.records["r_x0"][take], dtype=np.float64),
+                    mean_mode_profile(
+                        np.asarray(
+                            member.records[mean_name][take], dtype=np.float64
+                        ),
+                        mean_name,
+                    ),
                     self.y_weights,
                 ).sum(axis=0)
         scale = total / n_instants
@@ -951,11 +995,14 @@ class YSeries:
         member, on the first record its instants contribute.
         """
         block = member.records[row]
-        mean_plane = np.asarray(block["r_x0"], dtype=np.float64)
+        mean_name = mean_mode_name(member.meta, "r")
+        mean = mean_mode_profile(
+            np.asarray(block[mean_name], dtype=np.float64), mean_name
+        )
         by_x, by_z = (
             fluctuation_energy(
                 np.asarray(block[name], dtype=np.float64),
-                mean_plane,
+                mean,
                 self.y_weights,
             )
             for name in ("r_x", "r_z")
@@ -2163,23 +2210,52 @@ def available_series(
 ) -> dict[str, tuple[str, str, str]]:
     r"""``tag -> (stream, prefix-or-empty, marginal)`` for what is here.
 
-    One tag per stored prefix and marginal; which of them come out
-    normalised by `$E^{\mathrm{ref}}$` is :func:`normalises`, not a
-    tag of its own.
+    One tag per stored prefix and **drawable** stored marginal --
+    :data:`MARGINALS` intersected with what the sidecar says the
+    stream carries, so a default run offers no ``_x0`` tag because it
+    has no such field, and ``xz00`` never becomes a tag at all.  Which
+    tags come out normalised by `$E^{\mathrm{ref}}$` is
+    :func:`normalises`, not a tag of its own, and which of them are
+    rendered *by default* is :func:`default_series`.
     """
     out: dict[str, tuple[str, str, str]] = {}
     if spectra is not None:
         for prefix in spectra.prefixes:
-            for marginal in MARGINALS:
-                out[f"spectra_{prefix}_{marginal}"] = (
-                    "twin_yspectra",
-                    prefix,
-                    marginal,
-                )
+            for marginal in spectra.suffixes:
+                if marginal in MARGINALS:
+                    out[f"spectra_{prefix}_{marginal}"] = (
+                        "twin_yspectra",
+                        prefix,
+                        marginal,
+                    )
     if budget is not None:
-        for marginal in MARGINALS:
-            out[f"budget_{marginal}"] = ("twin_ybudget", "", marginal)
+        for marginal in budget.suffixes:
+            if marginal in MARGINALS:
+                out[f"budget_{marginal}"] = ("twin_ybudget", "", marginal)
     return out
+
+
+def default_series(
+    registry: dict[str, tuple[str, str, str]],
+    *,
+    x0: bool = False,
+    budget: bool = False,
+) -> list[str]:
+    """The tags rendered when ``--series`` names none.
+
+    Two things are held back, each behind its own flag rather than a
+    tag the caller has to know the name of.  The `$k_x = 0$` plane is
+    a slice of the mode plane, not a marginal of it, and only a legacy
+    or ``twin.x0_planes`` stream has one; the whole ``twin_ybudget``
+    set is a figure per term, which is worth asking for rather than
+    getting.  ``--series`` overrides both: naming a tag renders it.
+    """
+    return [
+        tag
+        for tag, (stem, _, marginal) in registry.items()
+        if (budget or stem in DEFAULT_STEMS)
+        and (x0 or marginal in DEFAULT_MARGINALS)
+    ]
 
 
 def render_series(
@@ -2278,7 +2354,20 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=None,
         metavar="TAG",
-        help="subset of series tags to render (default: all present)",
+        help="exact series tags to render, overriding --budget / --x0 "
+        "(default: the spectra marginals present)",
+    )
+    p.add_argument(
+        "--budget",
+        action="store_true",
+        help="also render the twin_ybudget series (one figure per "
+        "term); off by default",
+    )
+    p.add_argument(
+        "--x0",
+        action="store_true",
+        help="also render the k_x = 0 plane series, where the stream "
+        "carries one (twin.x0_planes, or a pre-xz00 member)",
     )
     p.add_argument(
         "--premultiply",
@@ -2461,14 +2550,24 @@ def main(argv: list[str] | None = None) -> int:
     registry = available_series(
         opened["twin_yspectra"], opened["twin_ybudget"]
     )
-    tags = args.series or list(registry)
+    tags = args.series or default_series(
+        registry, x0=args.x0, budget=args.budget
+    )
     unknown = [t for t in tags if t not in registry]
     if unknown:
         raise SystemExit(
             f"unknown series {unknown}; available: {list(registry)}"
         )
     if not tags:
-        raise SystemExit("no stream found under the given members")
+        raise SystemExit(
+            "no stream found under the given members"
+            if not registry
+            else "every series present is held back by default; add "
+            f"--budget / --x0, or name one of: {list(registry)}"
+        )
+    held = [t for t in registry if t not in tags]
+    if held and not args.quiet:
+        print(f"not rendering {' '.join(held)}", flush=True)
 
     if not args.quiet:
         print(

@@ -47,6 +47,7 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.seed` | unset | Perturbation RNG seed; vary per ensemble member. Unset draws one from the system entropy pool on a fresh start and takes the recorded one from `twin.json` on a resume |
 | `twin.smoothness` | `0.4` | Spectral envelope of the random perturbation (`init.random_smoothness` convention) |
 | `twin.bins` | `false` | Also record the $\Delta U$ / $\Delta u_1$ / $\Delta u_2$ three-bin energies in `twin.dat`; required by `it_budget` |
+| `twin.x0_planes` | `false` | Also store the $k_x = 0$ plane (the `_x0` fields) in both wall-normal-resolved streams, which is what `analysis.twin.bin_energies` recovers the same three-bin split from; off, it is never traced |
 | `twin.it_energy` | `1` | Steps between `twin.dat` rows |
 | `twin.it_budget` | unset | Steps between `twin_budget.dat` rows; unset disables the stream |
 | `twin.it_spectra` | unset | Steps between `twin_spectra.bin` records; unset disables the stream |
@@ -55,13 +56,17 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.rotational_ybudget` | `False` | Write that budget with the rotational nonlinear term instead of the convective one |
 | `twin.spectra_ref` | `true` | Also compute and store the reference spectrum with each `it_spectra` / `it_yspectra` sample; off, it is never traced |
 
-`twin.bins` is off by default. The three-bin split is a three-bin
-partition of the $(k_x, k_z)$ plane, and the reference paper restricts
-it to minimal flow units; above that, `twin.it_yspectra` resolves the
-same information in $k$ and $y$, and the three bin energies remain
-exactly recoverable from it (`analysis.twin.bin_energies`). Turning
-the bins off also drops a few percent of every step — the two masked
-full-state copies the split forces.
+`twin.bins` and `twin.x0_planes` are both off by default, and both
+for the same reason. The three-bin split is a three-bin partition of
+the $(k_x, k_z)$ plane, and the reference paper restricts it to
+minimal flow units; above that, `twin.it_yspectra` resolves the same
+information in $k$ and $y$. Turning the bins off drops a few percent
+of every step — the two masked full-state copies the split forces —
+and leaving `x0_planes` off drops a third of each wall-normal-resolved
+record and a third of its collective. What the streams always carry
+instead is the $y$-resolved $(0,0)$ mode `_xz00`, which is
+$E_{\Delta U}$ on its own; the other two bins need the plane, so
+`analysis.twin.bin_energies` refuses without it and says so.
 
 Three of these are not priced by cadence alone. `it_budget` sets the
 **run's peak memory**, not just its per-sample cost: the budget is a
@@ -164,9 +169,15 @@ E_\Delta^x[u,v,w](y, k_z), \qquad E_\Delta^z[u,v,w](y, k_x)
 
 — energy first, then the sum over the other wavenumber, which under
 the forward-norm convention *is* the average over that direction —
-plus the $k_x = 0$ plane, which is the spectrum of the
-streamwise-averaged field and recovers $E_{\Delta U}$,
-$E_{\Delta u_1}$, $E_{\Delta u_2}$ exactly.
+plus the $(0,0)$ mode $E_\Delta^{xz00}[u,v,w](y)$, and under
+`twin.x0_planes` the whole $k_x = 0$ plane it comes from, which is the
+spectrum of the streamwise-averaged field and recovers
+$E_{\Delta U}$, $E_{\Delta u_1}$, $E_{\Delta u_2}$ exactly.
+
+Which fields a record holds is the sidecar's `suffixes`, and the
+readers follow it rather than assume: a member written before `_xz00`
+existed carries `x, z, x0` and no such key, and still opens
+(`analysis.twin.stored_fields`).
 
 `twin_ybudget.bin` carries the matching budget on the same bins:
 production against the reference mean profile (`P_U`, the lift-up

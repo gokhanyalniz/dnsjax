@@ -275,6 +275,16 @@ class TwinParams(BaseModel):
       caps the transform-stage transient inside each
       :func:`dnsjax.fft.chunked_transform` call; it does **not** touch
       the live field count.
+    - ``x0_planes`` gates the `$k_x = 0$` plane of **both**
+      `$y$`-resolved streams, and is a static flag on
+      :func:`~dnsjax.twin.diagnostics.twin_yspectra` and
+      :func:`~dnsjax.twin.diagnostics.twin_ybudget` for the same
+      reason ``spectra_ref`` is.  It is not a second field pass --
+      the plane is a slice of one already taken -- but it is a third
+      of the sample's ``psum`` payload and a third of every stored
+      record, on top of ``spectra_ref``'s doubling of the first.
+      What it costs to leave off is
+      :func:`~dnsjax.analysis.twin.bin_energies`.
     - ``spectra_ref`` gates the reference half of **both** spectra
       streams, in compute as well as on disk: it is a static flag on
       :func:`dnsjax.twin.diagnostics.twin_spectra_2d` and
@@ -366,6 +376,19 @@ class TwinParams(BaseModel):
             "and it costs a few percent of every step."
         ),
     )
+    x0_planes: bool = Field(
+        default=False,
+        description=(
+            "Also store the k_x = 0 plane (the _x0 fields) in "
+            "twin_yspectra.bin / twin_ybudget.bin -- the k_z-resolved "
+            "spectrum of the streamwise-averaged field, which is what "
+            "recovers the Delta-U / Delta-u1 / Delta-u2 three-bin "
+            "split (analysis.twin.bin_energies).  Off by default: it "
+            "is a third of every record and of the sample's psum, and "
+            "the (y, k) marginals plus the always-stored _xz00 mean "
+            "mode supersede it.  Off, it is never traced."
+        ),
+    )
     it_energy: int = Field(
         default=1,
         ge=1,
@@ -443,6 +466,7 @@ def _validate_twin(values: TwinParams, params) -> None:
                 "smoothness",
                 "mean_flow",
                 "bins",
+                "x0_planes",
                 "it_energy",
                 "it_budget",
                 "it_spectra",
@@ -956,6 +980,8 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     if measure_budget:
         twin_budget = diagnostics.twin_budget
         bvals = twin_budget(state1, state2)
+    # Both y-resolved streams share it, and both take it statically.
+    _yx0 = twin_params.x0_planes
     measure_yspectra: bool = twin_params.it_yspectra is not None
     if measure_yspectra:
         # ``spectra_ref`` static, as for the (k_z, k_x) stream above:
@@ -964,7 +990,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         _yref = twin_params.spectra_ref
 
         def twin_yspectra(s1, s2):
-            return diagnostics.twin_yspectra(s1, s2, ref=_yref)
+            return diagnostics.twin_yspectra(s1, s2, ref=_yref, x0=_yx0)
 
         yvals = twin_yspectra(state1, state2)
     measure_ybudget: bool = twin_params.it_ybudget is not None
@@ -975,8 +1001,13 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         # ``twin.it_ybudget`` field docs for what it costs).
         pressure = DifferencePressure(diagnostics.flow, diagnostics.fourier)
         rot = twin_params.rotational_ybudget
-        twin_ybudget = diagnostics.twin_ybudget
-        ybvals = twin_ybudget(state1, state2, pressure, rotational=rot)
+
+        def twin_ybudget(s1, s2):
+            return diagnostics.twin_ybudget(
+                s1, s2, pressure, rotational=rot, x0=_yx0
+            )
+
+        ybvals = twin_ybudget(state1, state2)
 
     sharding.print(
         f"t = {t:.2f}",
@@ -1282,10 +1313,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             if bad is not None:
                 _abort_non_finite(bad)
         if measure_ybudget and it % twin_params.it_ybudget == 0 and it > it0:
-            bad = ybudget_stream.record(
-                twin_ybudget(state1, state2, pressure, rotational=rot),
-                t,
-            )
+            bad = ybudget_stream.record(twin_ybudget(state1, state2), t)
             if bad is not None:
                 _abort_non_finite(bad)
         if measure_probes and it % probes_params.it_probes == 0 and it > it0:
@@ -1477,9 +1505,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             _abort_non_finite(bad)
 
     if measure_ybudget and it > it0 and it % twin_params.it_ybudget == 0:
-        bad = ybudget_stream.record(
-            twin_ybudget(state1, state2, pressure, rotational=rot), t
-        )
+        bad = ybudget_stream.record(twin_ybudget(state1, state2), t)
         if bad is not None:
             _abort_non_finite(bad)
 
@@ -1515,12 +1541,13 @@ def _twin_sidecar_stub() -> dict:
     r"""The configuration half of ``twin.json``.
 
     A **superset** of :data:`_TWIN_MATCH_KEYS`: the resume check reads
-    only those, and the last two entries below are recorded for
+    only those, and the last three entries below are recorded for
     provenance alone.  They shape a *stream* rather than the
     trajectory, and each is already pinned where it matters -- the
-    budget form by ``terms`` in ``twin_ybudget.json`` and the
-    reference half by ``includes_ref`` in the two spectra sidecars, so
-    a mid-stream flip is a hard error from
+    budget form by ``terms`` in ``twin_ybudget.json``, the reference
+    half by ``includes_ref`` in the two spectra sidecars, and the
+    `$k_x = 0$` plane by ``suffixes`` in both -- so a mid-stream flip
+    is a hard error from
     :class:`~dnsjax.twin._binstream.BinStream` either way.  Matching
     them here would additionally refuse the harmless case where the
     stream is off, while *not* recording them leaves ``twin.json``
@@ -1549,6 +1576,7 @@ def _twin_sidecar_stub() -> dict:
         # Recorded, not matched -- see the docstring.
         "rotational_ybudget": twin_params.rotational_ybudget,
         "spectra_ref": twin_params.spectra_ref,
+        "x0_planes": twin_params.x0_planes,
     }
 
 

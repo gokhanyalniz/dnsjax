@@ -100,8 +100,21 @@ def _grid(ny: int = NY) -> np.ndarray:
     return -np.cos(np.arange(ny) * np.pi / (ny - 1))
 
 
-def _meta(stem: str, **over) -> dict:
-    """A sidecar for *stem*; *over* replaces any key."""
+#: The three on-disk layouts a member can have.  ``LEGACY`` is what
+#: was written before ``xz00`` existed and carries no ``suffixes``
+#: key at all; the other two name themselves.
+LEGACY = ("x", "z", "x0")
+DEFAULT = ("x", "z", "xz00")
+WITH_X0 = ("x", "z", "x0", "xz00")
+
+
+def _meta(stem: str, *, suffixes=DEFAULT, **over) -> dict:
+    """A sidecar for *stem*; *over* replaces any key.
+
+    *suffixes* picks the layout.  :data:`LEGACY` writes the sidecar a
+    pre-``xz00`` run left -- no ``suffixes`` key, and the reader's
+    floor version -- which is what the back-compatibility cases need.
+    """
     ny = over.pop("ny", NY)
     y = np.asarray(over.pop("y", _grid(ny)), dtype=float)
     meta = {
@@ -120,6 +133,9 @@ def _meta(stem: str, **over) -> dict:
         "value_dtype": "<f8",
         "twin": {"seed": 1, "e0": 1e-6, "smoothness": 4.0},
     }
+    if tuple(suffixes) != LEGACY:
+        meta["suffixes"] = list(suffixes)
+        meta["format_version"] = tsm.STEMS[stem] + 1
     if stem == "twin_yspectra":
         meta["includes_ref"] = True
     else:
@@ -141,15 +157,21 @@ def _records(
     rec = np.zeros(n_t, dtype=tsm._record_dtype(meta, stem))
     rec["t"] = t0 + np.arange(n_t, dtype=float)
     rng = np.random.default_rng(seed)
+    stored = tsm.stored_suffixes(meta)
     if stem == "twin_yspectra":
         plane = rng.random((n_t, 3, meta["ny"], NKZ, NKX))
         fields = [("e", 0.3 * plane)]
         if meta["includes_ref"]:
             fields.append(("r", plane))
         for prefix, field in fields:
-            rec[f"{prefix}_x"] = field.sum(axis=4)
-            rec[f"{prefix}_z"] = field.sum(axis=3)
-            rec[f"{prefix}_x0"] = field[..., 0]
+            blocks = {
+                "x": field.sum(axis=4),
+                "z": field.sum(axis=3),
+                "x0": field[..., 0],
+                "xz00": field[..., 0, 0],
+            }
+            for suffix in stored:
+                rec[f"{prefix}_{suffix}"] = blocks[suffix]
     else:
         for name in rec.dtype.names[1:]:
             values = rng.random(rec[name].shape)
@@ -168,6 +190,10 @@ def _member(
     parent_t: float | None = None,
 ) -> tsm._Member:
     """One opened member, without going through the filesystem."""
+    # ``_open_member`` writes the resolved layout back onto the
+    # sidecar so a legacy member has a key to compare; do the same
+    # here, since these members never pass through it.
+    meta = meta | {"suffixes": list(tsm.stored_suffixes(meta))}
     t = rec["t"].astype(np.float64)
     rows = np.sort(np.unique(t, return_index=True)[1])
     t_abs = t[rows]
@@ -237,7 +263,10 @@ def _folded(values: np.ndarray, ny: int = NY) -> np.ndarray:
 def test_premultiplication() -> None:
     """A panel is `$m \\times$` entry `$\\times V$`, in stream units."""
     units = tsm.Units(RE, RE_TAU)
-    spectra_meta = _meta("twin_yspectra")
+    # ``e_x0`` is the absolute spectra panel, so it is the one that
+    # exercises the un-normalised branch -- on a legacy member, which
+    # is where that field now comes from.
+    spectra_meta = _meta("twin_yspectra", suffixes=LEGACY)
     spectra = _records(spectra_meta, "twin_yspectra", 2)
     budget_meta = _meta("twin_ybudget")
     budget = _records(budget_meta, "twin_ybudget", 2, seed=3)
@@ -304,7 +333,9 @@ def test_ky_is_the_plotted_y() -> None:
     docstring's "Premultiplication".  Pinned in both directions so
     neither half can drift.
     """
-    meta = _meta("twin_yspectra")
+    # Legacy layout: ``e_x0`` is the absolute panel the second half
+    # of this case needs, and only a legacy stream carries one.
+    meta = _meta("twin_yspectra", suffixes=LEGACY)
     series = _series(
         "twin_yspectra", [_member(meta, _records(meta, "twin_yspectra", 2))]
     )
@@ -339,7 +370,7 @@ def test_ky_is_the_plotted_y() -> None:
 
 def test_reference_scale() -> None:
     """`$E^{\\mathrm{ref}}$` and what it does and does not normalise."""
-    meta = _meta("twin_yspectra")
+    meta = _meta("twin_yspectra", suffixes=LEGACY)
     rec = _records(meta, "twin_yspectra", 4)
     series = _series("twin_yspectra", [_member(meta, rec)])
     w = np.asarray(meta["y_weights"])
@@ -431,7 +462,7 @@ def test_colour_scale_is_a_legend_for_the_box() -> None:
     ny = 129
     meta = _meta("twin_ybudget", ny=ny, terms=["eps"])
     rec = np.zeros(1, dtype=tsm._record_dtype(meta, "twin_ybudget"))
-    for suffix in ("x", "z", "x0"):
+    for suffix in tsm.stored_suffixes(meta):
         rec[f"eps_{suffix}"][:] = 1e-6
     rec["eps_x"][:, 1, :] = 1.0  # y+ ~ 0.05, four rows under the floor
     rec["eps_x"][:, -2, :] = 1.0
@@ -500,7 +531,7 @@ def test_sign_family_is_declared() -> None:
     meta = _meta("twin_ybudget", terms=["P_U", "eps"])
     rec = np.zeros(2, dtype=tsm._record_dtype(meta, "twin_ybudget"))
     rec["t"] = [0.0, 1.0]
-    for suffix in ("x", "z", "x0"):
+    for suffix in tsm.stored_suffixes(meta):
         rec[f"P_U_{suffix}"][:] = 1.0  # signed, but never negative here
         rec[f"eps_{suffix}"][:] = 1.0
     rec["eps_x"][:, [10, NY - 1 - 10], 3] = -1e-14  # a round-off dip
@@ -584,8 +615,8 @@ def test_open_series() -> None:
         assert series.n_members == 2
         assert np.allclose(series.t_rel, np.arange(6.0))  # the intersection
         assert np.allclose(
-            series.field("e_x0")[0],
-            0.5 * (first["e_x0"][0] + second["e_x0"][0]),
+            series.field("e_xz00")[0],
+            0.5 * (first["e_xz00"][0] + second["e_xz00"][0]),
         )
         assert np.allclose(
             tsm.open_series(pair, "twin_yspectra", stride=2).t_rel,
@@ -683,9 +714,119 @@ def test_open_series() -> None:
             "unknown stream",
         )
 
+        # Members of different layouts are not one set: their records
+        # do not even hold the same fields.  A legacy member has no
+        # ``suffixes`` key, so the comparison is against the triple it
+        # stands for, not against a missing value.
+        legacy_meta = _meta("twin_yspectra", suffixes=LEGACY)
+        _write_member(
+            root / "legacy",
+            "twin_yspectra",
+            legacy_meta,
+            _records(legacy_meta, "twin_yspectra", 8, t0=100.0),
+            parent_t=100.0,
+        )
+        _raises(
+            lambda: tsm.open_series(
+                [root / "a", root / "legacy"], "twin_yspectra"
+            ),
+            "suffixes",
+        )
 
-def test_main_renders_every_series() -> None:
-    """``main()`` on a two-member set: both streams, every tag."""
+
+def test_layouts_and_default_series() -> None:
+    """What each layout offers, what is drawn, and `$E^{ref}$`.
+
+    The three cases are the three streams that exist on disk: a
+    pre-``xz00`` member, the current default, and the current default
+    under ``twin.x0_planes``.  All three must open; the `$(0, 0)$`
+    mode `$E^{\\mathrm{ref}}$` subtracts is the same number in all
+    three, whichever field it is read from; and what is *drawn* is the
+    two marginals unless asked otherwise.
+    """
+    scales = {}
+    registries = {}
+    for label, suffixes in (
+        ("legacy", LEGACY),
+        ("default", DEFAULT),
+        ("x0_planes", WITH_X0),
+    ):
+        meta = _meta("twin_yspectra", suffixes=suffixes)
+        rec = _records(meta, "twin_yspectra", 3, seed=7)
+        series = _series("twin_yspectra", [_member(meta, rec)])
+        assert series.suffixes == suffixes, label
+        assert tsm.mean_mode_name(series.meta, "r") == (
+            "r_xz00" if "xz00" in suffixes else "r_x0"
+        )
+        scales[label] = series.reference_scale()
+        registries[label] = tsm.available_series(series, None)
+
+    # One plane, one E_ref -- the stored route to its (0, 0) mode is
+    # a storage detail and nothing more.  The stored *values* are
+    # identical; the contraction is not bit-identical between them
+    # because ``einsum`` accumulates a strided ``r_x0[..., 0]`` view
+    # in a different order from a contiguous ``r_xz00``.
+    for label in ("default", "x0_planes"):
+        assert np.allclose(scales[label], scales["legacy"], rtol=1e-14), label
+
+    # Only a stream that carries the plane offers its tags, and they
+    # are not in the default set even then.
+    assert "spectra_e_x0" in registries["legacy"]
+    assert "spectra_e_x0" in registries["x0_planes"]
+    assert "spectra_e_x0" not in registries["default"]
+    # ``xz00`` is never a tag: it has no abscissa.
+    assert not any("xz00" in tag for tag in registries["x0_planes"])
+
+    for label, registry in registries.items():
+        assert sorted(tsm.default_series(registry)) == sorted(
+            f"spectra_{p}_{m}" for p in ("e", "r") for m in ("x", "z")
+        ), label
+        with_x0 = set(tsm.default_series(registry, x0=True))
+        assert with_x0 == set(registry), label
+    print("layouts, their tags, and one E_ref across all three: OK")
+
+
+def test_reference_scale_is_a_quadrature() -> None:
+    """`$E^{\\mathrm{ref}}$` averages over `$y$` with the *weights*.
+
+    The stored entries are densities already divided by
+    ``volume_fac`` and the weights sum to it, so the contraction is a
+    wall-normal **average**.  Every other fixture here uses a uniform
+    stand-in rule, which cannot tell that contraction from a plain
+    mean scaled by ``volume_fac``; a genuine non-uniform rule can.
+    """
+    rng = np.random.default_rng(19)
+    w = rng.random(NY) + 0.5
+    w *= VOLUME_FAC / w.sum()
+    meta = _meta("twin_yspectra", y_weights=[float(v) for v in w])
+    rec = _records(meta, "twin_yspectra", 3, seed=5)
+    series = _series("twin_yspectra", [_member(meta, rec)])
+
+    want = np.mean(
+        [
+            np.einsum("j,cjk->c", w, rec["r_x"][i])
+            - np.einsum("j,cj->c", w, rec["r_xz00"][i])
+            for i in range(rec.size)
+        ],
+        axis=0,
+    )
+    assert np.allclose(series.reference_scale(), want)
+
+    # A plain mean over y, scaled the same way, is a different number.
+    flat = VOLUME_FAC / NY
+    naive = np.mean(
+        [
+            flat * (rec["r_x"][i].sum(axis=(1, 2)) - rec["r_xz00"][i].sum(1))
+            for i in range(rec.size)
+        ],
+        axis=0,
+    )
+    assert not np.allclose(naive, want)
+    print("E_ref is the quadrature contraction, not a plain mean: OK")
+
+
+def test_main_renders_the_selected_series() -> None:
+    """``main()`` on a two-member set: the default tags, then more."""
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
         spectra_meta = _meta("twin_yspectra")
@@ -725,10 +866,10 @@ def test_main_renders_every_series() -> None:
             ]
         )
         assert code == 0
+        # The default set: the spectra marginals, and nothing else.
         tags = sorted(p.name for p in out.iterdir())
         assert tags == sorted(
-            [f"spectra_{p}_{m}" for p in ("e", "r") for m in ("x", "z", "x0")]
-            + [f"budget_{m}" for m in ("x", "z", "x0")]
+            f"spectra_{p}_{m}" for p in ("e", "r") for m in ("x", "z")
         )
         for tag in tags:
             frames = sorted((out / tag).glob("*.png"))
@@ -737,6 +878,48 @@ def test_main_renders_every_series() -> None:
                 f"{tag}_2.png",
             ], tag
             assert all(f.stat().st_size > 0 for f in frames)
+
+        # ``--budget`` adds the other stream; ``--x0`` adds nothing
+        # here, these members carrying no such plane.
+        def run(target: Path, *extra: str) -> int:
+            return tsm.main(
+                [
+                    "--members",
+                    str(root / "a"),
+                    str(root / "b"),
+                    "--out",
+                    str(target),
+                    "--re",
+                    str(RE),
+                    "--re-tau",
+                    str(RE_TAU),
+                    "--stride",
+                    "2",
+                    "--usetex",
+                    "off",
+                    "--dpi",
+                    "50",
+                    *extra,
+                ]
+            )
+
+        # ``--budget`` adds the other stream; ``--x0`` adds nothing
+        # here, these members carrying no such plane.
+        wider = root / "wider"
+        assert run(wider, "--budget", "--x0") == 0
+        assert sorted(p.name for p in wider.iterdir()) == sorted(
+            tags + ["budget_x", "budget_z"]
+        )
+
+        # ``--series`` is exact, and an unknown tag is refused rather
+        # than quietly dropped.
+        one = root / "one"
+        assert run(one, "--series", "budget_z") == 0
+        assert [p.name for p in one.iterdir()] == ["budget_z"]
+        _raises(
+            lambda: run(root / "none", "--series", "spectra_e_x0"),
+            "unknown series",
+        )
 
 
 # ── Runner ───────────────────────────────────────────────────────────

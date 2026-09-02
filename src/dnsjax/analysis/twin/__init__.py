@@ -18,10 +18,12 @@ Layout (one module per concern; none is imported by the top-level
   and the decorrelation ratio.
 - :mod:`.yspectra` -- readers for the wall-normal-resolved
   ``twin_yspectra.bin`` / ``twin_ybudget.bin`` streams, the
-  quadrature contraction, the three-bin energies recovered from
-  them, and the total-in-`$(y, k)$` fluctuation energy (the total
-  with the `$(0, 0)$` mode removed) that a difference spectrum is
-  normalised by.
+  sidecar-driven record layout they share with the memory-mapped
+  reader in ``scripts/twin_spectral_maps.py``, the quadrature
+  contraction, the three-bin energies recovered from them, and the
+  total-in-`$(y, k)$` fluctuation energy (the total with the
+  `$(0, 0)$` mode removed) that a difference spectrum is normalised
+  by.
 - :mod:`.lengths` -- integral length scales of the difference field
   from a paired snapshot.
 
@@ -54,15 +56,22 @@ from .spectra import (
     read_twin_spectra,
 )
 from .yspectra import (
+    LEGACY_SUFFIXES,
     YResolvedData,
     bin_energies,
     fluctuation_energy,
     integrate_y,
+    mean_mode_name,
+    mean_mode_profile,
     read_twin_ybudget,
     read_twin_yspectra,
+    record_dtype,
+    stored_fields,
+    stored_suffixes,
 )
 
 __all__ = [
+    "LEGACY_SUFFIXES",
     "ClosureResiduals",
     "TwinSeries",
     "TwinSpectraData",
@@ -78,11 +87,16 @@ __all__ = [
     "integral_lengths",
     "integral_lengths_from_modes",
     "integrate_y",
+    "mean_mode_name",
+    "mean_mode_profile",
     "partner_of",
     "read_dat",
     "read_twin",
     "read_twin_spectra",
     "read_twin_ybudget",
     "read_twin_yspectra",
+    "record_dtype",
+    "stored_fields",
+    "stored_suffixes",
     "uniform_grid",
 ]

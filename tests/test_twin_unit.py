@@ -81,7 +81,10 @@ padded_res.set_padded_resolution(params)
 import math  # noqa: E402
 
 import numpy as np  # noqa: E402
-from numpy.testing import assert_allclose  # noqa: E402
+from numpy.testing import (  # noqa: E402
+    assert_allclose,
+    assert_array_equal,
+)
 
 from dnsjax.extensions import validate_extensions  # noqa: E402
 from dnsjax.flows.wall_bounded.plane_couette import (  # noqa: E402
@@ -573,15 +576,17 @@ def test_marginal_bins_need_even_nz() -> None:
 
 
 def test_yspectra_vs_numpy() -> None:
-    """The three marginals match a host index-layout reference."""
+    """Every stored marginal matches a host index-layout reference."""
     state1, state2 = _make_state(salt=0.0), _make_state(salt=1.0)
     out = {
-        k: np.asarray(v) for k, v in td.twin_yspectra(state1, state2).items()
+        k: np.asarray(v)
+        for k, v in td.twin_yspectra(state1, state2, x0=True).items()
     }
     npos = params.res.nz // 2
     assert out["e_x"].shape == (3, NY, npos)
     assert out["e_z"].shape == (3, NY, N3_TRUE)
     assert out["e_x0"].shape == (3, NY, npos)
+    assert out["e_xz00"].shape == (3, NY)
 
     delta = _host_state(1.0) - _host_state(0.0)
     k_metric = np.full(N3_SPEC, 2.0)
@@ -600,7 +605,53 @@ def test_yspectra_vs_numpy() -> None:
     assert_allclose(
         out["e_x0"], _fold(dens[:, :, :N2_TRUE, 0]), rtol=1e-13, atol=0
     )
+    assert_allclose(out["e_xz00"], dens[:, :, 0, 0], rtol=1e-13, atol=0)
     print("y-resolved marginals vs NumPy: OK")
+
+
+def test_xz00_is_the_plane_column_exactly() -> None:
+    r"""``_xz00`` *is* ``_x0[..., 0]``, and ``x0`` costs nothing else.
+
+    Two claims in one, both of which the gate depends on.  The
+    `$(0, 0)$` column is scattered by one device and summed with exact
+    zeros from the rest, and the fold leaves index 0 alone, so the two
+    routes to that mode are **bit-identical** -- not merely close.
+    And with ``x0`` off the dicts carry no `$k_x = 0$` field at all,
+    which is what "never traced" looks like from outside
+    (:func:`diagnostics._marginals_replicated` builds the block only
+    under the flag).
+    """
+    state1, state2 = _make_state(salt=0.0), _make_state(salt=1.0)
+    full = {
+        k: np.asarray(v)
+        for k, v in td.twin_yspectra(state1, state2, x0=True).items()
+    }
+    lean = {
+        k: np.asarray(v) for k, v in td.twin_yspectra(state1, state2).items()
+    }
+    for prefix in ("e", "r"):
+        assert_array_equal(
+            full[f"{prefix}_xz00"], full[f"{prefix}_x0"][:, :, 0]
+        )
+    assert set(lean) == {f"{p}_{s}" for p in "er" for s in ("x", "z", "xz00")}
+    for name, value in lean.items():
+        assert_array_equal(value, full[name])
+
+    from dnsjax.twin.pressure import DifferencePressure
+
+    pressure = DifferencePressure(td.flow, fourier)
+    yb_full = td.twin_ybudget(state1, state2, pressure, x0=True)
+    yb_lean = td.twin_ybudget(state1, state2, pressure)
+    terms = td.ybudget_terms(False)
+    for name in terms:
+        assert_array_equal(
+            np.asarray(yb_full[f"{name}_xz00"]),
+            np.asarray(yb_full[f"{name}_x0"])[:, 0],
+        )
+    assert set(yb_lean) == {
+        f"{t}_{s}" for t in terms for s in ("x", "z", "xz00")
+    }
+    print("xz00 == x0[..., 0] bit-for-bit; x0 off drops the plane: OK")
 
 
 def test_yspectra_fold_is_two_sided() -> None:
@@ -671,7 +722,8 @@ def test_yspectra_partition() -> None:
     """The stored marginals recover the three-bin energies exactly."""
     state1, state2 = _make_state(salt=0.0), _make_state(salt=1.0)
     out = {
-        k: np.asarray(v) for k, v in td.twin_yspectra(state1, state2).items()
+        k: np.asarray(v)
+        for k, v in td.twin_yspectra(state1, state2, x0=True).items()
     }
     tvals = {
         k: float(v)
@@ -679,7 +731,7 @@ def test_yspectra_partition() -> None:
     }
     w = np.asarray(td.flow.y_weights)
     got = {
-        "E_dU": float(np.einsum("j,cj->", w, out["e_x0"][:, :, 0])),
+        "E_dU": float(np.einsum("j,cj->", w, out["e_xz00"])),
         "E_du1": float(np.einsum("j,cjk->", w, out["e_x0"][:, :, 1:])),
         "E_du2": float(np.einsum("j,cjk->", w, out["e_x"] - out["e_x0"])),
     }
@@ -739,7 +791,7 @@ def test_ybudget_sums() -> None:
         yb = {
             k: np.asarray(v)
             for k, v in td.twin_ybudget(
-                s1, s2, pressure, rotational=rot
+                s1, s2, pressure, rotational=rot, x0=True
             ).items()
         }
 
@@ -984,6 +1036,7 @@ if __name__ == "__main__":
     test_spectra_sum_identity()
     test_marginal_bins_need_even_nz()
     test_yspectra_vs_numpy()
+    test_xz00_is_the_plane_column_exactly()
     test_yspectra_fold_is_two_sided()
     test_yspectra_partition()
     test_ybudget_sums()

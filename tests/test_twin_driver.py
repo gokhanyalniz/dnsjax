@@ -824,7 +824,11 @@ def test_yspectra_streams() -> None:
     energies come back out of the `$k_x = 0$` plane and partition
     ``E_d`` between them; and the budget's `$k$`-sums reproduce
     ``twin_budget.dat``'s ``P_tot`` / ``eps_tot`` -- all through the
-    binary round trip, in the default convective form.
+    binary round trip, in the default convective form.  ``twin.bins``
+    and ``twin.x0_planes`` are both on for that: the first so
+    ``twin.dat`` carries the columns to check against, the second
+    because the `$k_x = 0$` plane the three-bin recovery needs is
+    itself off by default.
 
     Then ``twin.rotational_ybudget``, which is a *static* flag on the
     budget diagnostic and changes the stream's term set, so like
@@ -832,9 +836,12 @@ def test_yspectra_streams() -> None:
     the writer alone: the eight-term stream must round-trip, carry
     ``P_lift`` reproducing the mean-gradient production columns
     exactly, and have both transfer terms sum to zero over `$k$` at
-    every `$y$`.  ``twin.bins`` is on here
-    only so ``twin.dat`` carries the bin columns to check against; it
-    is off in every other case in this file, which is the default.
+    every `$y$`.
+
+    Then ``twin.x0_planes`` **off**, the default, which is also a
+    static flag: the plane must be absent from both streams, and the
+    `$(0, 0)$` mode that replaces it must equal what the plane's
+    first column held in the run that stored one.
 
     Then ``twin.spectra_ref = False``, which is a *static* flag on
     both spectra diagnostics rather than a write-time filter: the
@@ -853,6 +860,8 @@ def test_yspectra_streams() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         extra = [
             "--twin.bins",
+            "True",
+            "--twin.x0_planes",
             "True",
             "--twin.it_budget",
             "1",
@@ -875,7 +884,11 @@ def test_yspectra_streams() -> None:
         ny = params.res.ny
         assert data["e_x"].shape == (n + 1, 3, ny, 4)
         assert data["e_z"].shape == (n + 1, 3, ny, 4)
+        assert data["e_xz00"].shape == (n + 1, 3, ny)
+        assert data.meta["suffixes"] == ["x", "z", "x0", "xz00"]
         assert "r_x" in data.fields  # twin.spectra_ref default
+        # The mode written on its own is the plane's first column.
+        assert_allclose(data["e_xz00"], data["e_x0"][..., 0], rtol=0, atol=0)
 
         cols = read_dat(Path(tmp) / "twin.dat")
         by_t = {round(t, 10): i for i, t in enumerate(np.round(cols["t"], 10))}
@@ -955,7 +968,7 @@ def test_yspectra_streams() -> None:
             )
             lean = read_twin_yspectra(tmp2)
             assert lean.meta["includes_ref"] is False
-            assert set(lean.fields) == {"e_x", "e_z", "e_x0"}, lean.fields
+            assert set(lean.fields) == {"e_x", "e_z", "e_xz00"}, lean.fields
             assert read_twin_spectra(tmp2).e_ref is None
             # The kept half is unchanged by the flag.
             assert lean["e_x"].shape[1:] == (3, ny, 4)
@@ -1009,6 +1022,40 @@ def test_yspectra_streams() -> None:
                         f"sum_k {name}(y) is {net / scale:.2e} of its "
                         f"own magnitude at t={t}"
                     )
+
+        # ``twin.x0_planes`` off, the default: the plane is absent
+        # from both streams, and the mode that replaces it holds what
+        # the plane's first column held above.  A static flag again,
+        # so the run has to be exercised rather than the writer.
+        with tempfile.TemporaryDirectory() as tmp4:
+            _run_twin(
+                tmp4,
+                [
+                    *_twin_args(t_mid),
+                    "--twin.it_yspectra",
+                    "1",
+                    "--twin.it_ybudget",
+                    "1",
+                ],
+            )
+            lean_y = read_twin_yspectra(tmp4)
+            lean_b = read_twin_ybudget(tmp4)
+            assert lean_y.meta["suffixes"] == ["x", "z", "xz00"]
+            assert lean_b.meta["suffixes"] == ["x", "z", "xz00"]
+            assert not [n for n in lean_y.fields if n.endswith("_x0")]
+            assert not [n for n in lean_b.fields if n.endswith("_x0")]
+            try:
+                bin_energies(lean_y)
+            except ValueError as exc:
+                assert "twin.x0_planes" in str(exc), exc
+            else:
+                raise AssertionError("bin_energies accepted a plane-less run")
+            # Same trajectory as the run above, so the same numbers.
+            keep = np.isin(np.round(lean_y.t, 10), np.round(data.t, 10))
+            take = np.isin(np.round(data.t, 10), np.round(lean_y.t, 10))
+            assert_allclose(
+                lean_y["e_xz00"][keep], data["e_x0"][take][..., 0], rtol=0
+            )
 
         # A .bin without its sidecar is refused, not guessed at.
         (Path(tmp) / "twin_yspectra.json").unlink()
