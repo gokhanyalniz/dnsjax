@@ -324,8 +324,20 @@ than the three-bin pass's ~21 despite half the transforms.  So
 :func:`_convective_sources` forms the two gradient sets one at a time,
 the reference's consumer `$q_p$` between them: 6 + 9 = 15 in program
 order.  XLA still schedules -- this only stops the statement order
-from asking for the worse arrangement -- so size a job against 15 and
-watch it.  ``solver.rhs_transform_chunks`` caps the transform-stage
+from asking for the worse arrangement.
+
+Fifteen is the padded **physical** count and not the whole
+transient.  Live *spectral* arrays at the same point are
+`$\Delta\mathbf{u}$`, the four signed operands of :class:`_Sources`'
+``advective``, `$\hat{\mathcal N}$`, and then ``div_n`` and
+`$\Delta\hat p$` from :func:`_ybudget_densities`.  A complex
+`$(3, N_y, N_{k_z}, N_{k_x})$` field is `$24 n_x n_y n_z$` bytes
+against a padded physical component's `$18 n_x n_y n_z$`
+(wall-bounded oversamples `$x$`-`$z$` only, `$1.5^2$`), so those
+`$\sim\!6$` are `$\sim\!8$` more padded-component equivalents:
+size a job against `$\sim\!23$`, not 15, and watch it -- that
+conversion is arithmetic off the shapes, not a measurement.
+``solver.rhs_transform_chunks`` caps the transform-stage
 transient inside each :func:`dnsjax.fft.chunked_transform` call; it
 does **not** touch the live field count.
 
