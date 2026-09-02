@@ -1024,7 +1024,24 @@ def test_fluctuation_energy() -> None:
     one = fluctuation_energy(r_x[0], r_xz00[0], w)
     assert one.shape == ()
     assert_allclose(one, want[0], rtol=1e-14)
-    print("fluctuation_energy (both marginals, (0,0) removal): OK")
+
+    # The same idea at its two coarser resolutions, each the next
+    # one's input: the spectrum without its (0, 0) mode, that
+    # spectrum's k-sum, and the profile's wall-normal average.
+    from dnsjax.analysis.twin import fluctuation_profile, mean_free_spectrum
+
+    spectrum = mean_free_spectrum(r_x, r_xz00)
+    assert spectrum.shape == r_x.shape
+    assert_allclose(spectrum[..., 1:], r_x[..., 1:], rtol=0.0)  # only m = 0
+    assert_allclose(spectrum[..., 0], r_x[..., 0] - r_xz00, rtol=1e-14)
+    assert np.shares_memory(spectrum, r_x) is False  # a copy, always
+
+    profile = fluctuation_profile(r_x, r_xz00)
+    assert profile.shape == (3, NY)
+    assert_allclose(profile, spectrum.sum(axis=-1), rtol=1e-14)
+    assert_allclose(fluctuation_profile(r_z, r_xz00), profile, rtol=1e-14)
+    assert_allclose(np.einsum("j,cj->c", w, profile), want, rtol=1e-14)
+    print("mean_free_spectrum / _profile / _energy (one idea): OK")
 
 
 def test_ybudget_reader() -> None:

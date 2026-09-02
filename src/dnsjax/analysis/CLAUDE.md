@@ -102,8 +102,10 @@ and its rationale: `flows/registry.py`.
   `twin_ybudget.bin` readers, the `integrate_y` quadrature
   contraction, `bin_energies` — the three-bin energies recovered
   from the marginals, which is why `twin.bins` can stay off — and
-  `fluctuation_energy`, the total-in-`(y, k)` energy without the
-  `(0, 0)` mode, array-level so a memmapped reader shares it),
+  the `(0, 0)`-removal trio `mean_free_spectrum` /
+  `fluctuation_profile` / `fluctuation_energy`, one definition read at
+  `(y, k)`, `(y)` and scalar resolution, array-level so a memmapped
+  reader shares it),
   `lengths.py` (integral length scales of the
   difference field from a snapshot pair — address the pair with its
   `partner_of`; `integral_lengths` rejects two snapshots at different

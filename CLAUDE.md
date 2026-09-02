@@ -778,11 +778,28 @@ All under `scripts/`; full rationale/usage in each module docstring.
   `(lambda, y)` contour maps of an ensemble
   (`--members` or a `build-twin` `--tree`) of twin
   `twin_yspectra.bin` / `twin_ybudget.bin` streams, one figure per
-  sample, in inner units against a **measured** `Re_tau`. What it
-  draws by default is the **spectra** stream's two marginals and
-  nothing else: `--budget` adds the `twin_ybudget` series, `--x0` the
-  `k_x = 0` plane where a stream carries one, and `--series` names
-  exact tags overriding both. Other defaults:
+  sample, in inner units against a **measured** `Re_tau`; plus one
+  `(y, t)` **spacetime** figure per `k`-summed quantity for the whole
+  run. What it draws by default is the **spectra** stream's two
+  marginals, the two decorrelations, and the spacetime maps:
+  `--budget` adds the `twin_ybudget` series (and its spacetime map),
+  `--x0` the `k_x = 0` plane where a stream carries one,
+  `--no-decorr-k` / `--no-decorr` / `--no-spacetime` drop one family
+  each, and `--series` names exact tags overriding all of them.
+  **The two decorrelations differ only in their divisor's treatment
+  of `k`, and everything else follows**: `R^k = e/(2 D(y))` over the
+  `k`-summed reference stays additive in `k`, so it keeps the
+  premultiplier and has a spacetime sibling; `R = e/(2 <r(y,k)>_t)`
+  divides mode by mode and has neither. **Only the reference loses
+  its `(0,0)` mode** -- from every divisor and from every reference
+  `k`-sum; the perturbation keeps its own, which is why a `k`-summed
+  map is the total difference energy at that `y`. A `k`-sum is
+  marginal-free (`check_k_sum` asserts it), so a spacetime series is
+  one figure of four panels, never one per marginal, and is **never**
+  premultiplied. Each is drawn twice, linear and log (floored
+  `--log-decades` below the peak, or at the smallest positive value
+  drawn), with a `.npz` of the drawn arrays and every factor behind
+  them; a signed series gets no log figure. Other defaults:
   log-log axes floored at `y+ = 1` (`Y_FLOOR_PLUS`),
   premultiplied by `k` **only** -- the usual convention for a
   spectrum, not the paper's `k y`, which `--premultiply ky` restores;
@@ -913,9 +930,10 @@ are one-liners. Cross-cutting notes:
   on a wall-normal ladder
   (`--only`/`--ladder`/`--seeds`/`--measure`/`--quick`).
 - `test_twin_spectral_maps.py`: `scripts/twin_spectral_maps.py`
-  premultiplication, `E_ref`, colour scales, the default series and
-  all three stream layouts, on in-memory streams (skips without the
-  `plots` group).
+  premultiplication, `E_ref`, the two decorrelations and the
+  spacetime maps, colour scales, the default series and all three
+  stream layouts, on in-memory streams (skips without the `plots`
+  group).
 - `test_twin_unit.py`: twin diagnostics on a (2,2) mesh.
 - `test_twin_driver.py`: `dnsjax-twin` integration via mpirun
   (`--only <frag>` runs a subset, `--seed`/`--mean-free` vary the
