@@ -780,12 +780,15 @@ All under `scripts/`; full rationale/usage in each module docstring.
   `twin_yspectra.bin` / `twin_ybudget.bin` streams, one figure per
   sample, in inner units against a **measured** `Re_tau`; plus one
   `(y, t)` **spacetime** figure per `k`-summed quantity for the whole
-  run. What it draws by default is the **spectra** stream's two
-  marginals, the two decorrelations, and the spacetime maps:
-  `--budget` adds the `twin_ybudget` series (and its spacetime map),
-  `--x0` the `k_x = 0` plane where a stream carries one,
-  `--no-decorr-k` / `--no-decorr` / `--no-spacetime` drop one family
-  each, and `--series` names exact tags overriding all of them.
+  run. What it draws by default is one family, the **spectra**
+  stream's two marginals; the other **five are opt-in**, each behind
+  its own flag: `--decorr` / `--decorr-k` add the two decorrelations,
+  `--spacetime` the `(y, t)` maps of whatever else is selected,
+  `--budget` the `twin_ybudget` series, `--x0` the `k_x = 0` plane
+  where a stream carries one. `R^k`'s spacetime map needs
+  `--decorr-k` **and** `--spacetime`, which falls out of
+  `default_series`' predicate rather than being special-cased.
+  `--series` names exact tags, overriding all five.
   **The two decorrelations differ only in their divisor's treatment
   of `k`, and everything else follows**: `R^k = e/(2 D(y))` over the
   `k`-summed reference stays additive in `k`, so it keeps the
