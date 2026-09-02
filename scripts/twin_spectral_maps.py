@@ -38,11 +38,23 @@ and the log layer in one frame rather than to be integrated over.
 
 ``ky`` adds the second factor -- the paper's (2.8),
 `$\int\!\!\int \Phi\,\mathrm{d}k\,\mathrm{d}y = \int\!\!\int
-k\,y\,\Phi\,\mathrm{d}\log k\,\mathrm{d}\log y$` -- with `$y$` the
-wall distance **in the plotted units** (`$y^+$` by default), which
-makes the area of the *whole map* the energy instead.  That is the
-reading the paper's budget argument needs and it is the minority one;
-it is a knob, not the default.  ``none`` drops both factors.
+k\,y\,\Phi\,\mathrm{d}\log k\,\mathrm{d}\log y$` -- which makes the
+area of the *whole map* the energy rather than one wall distance's
+variance.  That is the reading the paper's budget argument needs and
+it is the minority one; it is a knob, not the default.  ``none``
+drops both factors.
+
+**Its `$y$` is the wall distance in the plotted units, so (2.8) is
+exact only under ``--outer-units``.**  A premultiplier cancels the
+units of what it multiplies -- `$k^+\Phi^+ = k\Phi$`, which is why
+the `$m \times \text{entry}$` above serves a `$\lambda^+$` abscissa
+and a `$\lambda/h$` one alike -- so the area-true pair takes `$k$`
+and `$y$` in the **same** units:
+`$k^+y^+\Phi^+ = k\,y\,\Phi/u_\tau^2$`, outer `$k$` and outer `$y$`.
+What is plotted is that with `$y^+$` in place of `$y$`, so a
+wall-unit ``ky`` map has area `$Re_\tau E^+$`, not `$E^+$`.  Its
+shape, its axes and its contour spacing are the paper's; read an
+*area* off ``--outer-units``, where the two factors agree.
 
 The scale and the premultiplier are independent: pairing a linear
 ordinate with ``ky``, or a logarithmic one with ``none``, is legal
@@ -99,7 +111,11 @@ otherwise, and the frames rendered are the **intersection** of the
 members' relative grids, so a short or resumed member restricts the
 set rather than corrupting it.  With one shared ``dt`` and cadence
 this selects the same samples as matching by index, but read off the
-clock, which is what survives a member whose stream starts elsewhere.
+clock, which is what survives a member whose stream starts
+elsewhere.  What the clock cannot tell is whether two members are
+the same *flow*: their sidecars are therefore compared first, and a
+set that disagrees on the grid, the mode axes or the stored meaning
+is refused (:data:`_SHARED_KEYS`).
 
 Two members meet on that clock to within a **tolerance**
 (:data:`_T_ATOL`), never on a rounded key.  They reach one sample
@@ -153,9 +169,10 @@ The premultiplier and ``volume_fac`` reach the numerator alone,
 exactly as they reach an absolute panel.  The energy unit conversion
 would cancel between the two halves, so neither half takes it, and
 ``--outer-units`` therefore reaches these panels only through the
-`$y$` of ``--premultiply ky`` and through the `$E^{\mathrm{ref}}$`
-the title reports, which is in the units the rest of the figure is
-drawn in.
+`$y$` of ``--premultiply ky`` -- the `$Re_\tau$` of
+"Premultiplication" above, and here the whole difference between the
+two unit systems -- and through the `$E^{\mathrm{ref}}$` the title
+reports, which is in the units the rest of the figure is drawn in.
 
 The `$k_x = 0$` panels are left absolute.  ``e_x`` and ``e_z`` each
 sum the other wavenumber away, so each is a complete sum over the
@@ -202,7 +219,10 @@ sign flips: the spectra are moduli; `$\mathcal{P}^U$` flips both
 `$\partial_y$` or with the `$v$` slot; and each transfer term carries
 an even number of odd factors for the same reason.  The mid-plane
 pairs with itself and is **not** double counted, and the grid is
-checked for the symmetry the fold assumes rather than trusted.
+checked for the symmetry the fold assumes rather than trusted --
+which binds ``upper`` as well, since it labels its rows with the
+*opposite* half's wall distances, but not ``lower``, where `$1 + y$`
+is the wall distance whatever the far half does.
 ``--half lower`` / ``upper`` keep one wall instead, which is how a
 run's own asymmetry is inspected.
 
@@ -376,6 +396,41 @@ _T_ATOL: float = 1e-6
 STEMS: dict[str, int] = {
     "twin_yspectra": MIN_YSPECTRA_VERSION,
     "twin_ybudget": MIN_YBUDGET_VERSION,
+}
+
+#: Sidecar keys every member of a set must agree on before their
+#: streams may be averaged: the grid, the mode axes and the stored
+#: meaning -- everything a figure reads off the **first** member alone
+#: (:attr:`YSeries.meta`) and then applies to the ensemble mean.  This
+#: is deliberately *not* the writers' ``_MATCH_KEYS``
+#: (:mod:`dnsjax.twin.yspectra`), which answer a different question --
+#: may this run append to that file -- and so pin ``dt``,
+#: ``it_yspectra`` / ``it_ybudget`` and ``double_precision`` as well.
+#: Here those three may differ: the members meet on a *clock*
+#: (:func:`_match`), so a member on another cadence contributes the
+#: samples it shares and no more, and every read is cast to float64
+#: whatever ``value_dtype`` says.  ``twin`` (seed / ``e0`` /
+#: smoothness) is what an ensemble varies and is never compared.
+_SHARED_KEYS: tuple[str, ...] = (
+    "format_version",
+    "system",
+    "ny",
+    "n_kz",
+    "n_kx",
+    "kz_harmonics",
+    "kx_harmonics",
+    "lx",
+    "lz",
+    "y",
+    "y_weights",
+    "volume_fac",
+)
+
+#: Added to :data:`_SHARED_KEYS` per stream: what sets the field table,
+#: and so what a stored name means, rather than the grid it lives on.
+_STREAM_KEYS: dict[str, tuple[str, ...]] = {
+    "twin_yspectra": ("includes_ref",),
+    "twin_ybudget": ("terms",),
 }
 
 #: Velocity components of the ``twin_yspectra`` leading axis.
@@ -917,6 +972,34 @@ class YSeries:
             )
 
 
+def _sidecar_mismatch(
+    first: dict, other: dict, keys: tuple[str, ...]
+) -> list[str]:
+    """Which of *keys* two members' sidecars disagree on.
+
+    The wall-normal grid and its weights are compared to the same
+    ``1e-12`` the driver uses when it re-derives a grid it already
+    holds (``twin/driver.py``), so a member written by another build
+    is not refused over a last-bit difference; everything else,
+    including the integer harmonic lists, is compared exactly.
+    """
+    bad: list[str] = []
+    for key in keys:
+        a, b = first.get(key), other.get(key)
+        if key in ("y", "y_weights"):
+            same = np.shape(a) == np.shape(b) and np.allclose(
+                np.asarray(a, dtype=np.float64),
+                np.asarray(b, dtype=np.float64),
+                rtol=0.0,
+                atol=1e-12,
+            )
+        else:
+            same = a == b
+        if not same:
+            bad.append(key)
+    return bad
+
+
 def _match(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
     """Index in ascending *times* of each *wanted* value, or ``-1``.
 
@@ -978,12 +1061,28 @@ def open_series(
     is the only one of the four that does not select what is drawn:
     that average runs over every record either way, on absolute time
     (module docstring, "Reference normalisation").
+
+    Members that do not agree on the grid, the mode axes or the
+    stored meaning (:data:`_SHARED_KEYS`) are **refused**: a figure
+    reads all three off the first member and would otherwise label an
+    average of incommensurate streams with one member's axes.
     """
     if stem not in STEMS:
         raise ValueError(f"unknown stream {stem!r}; expected {set(STEMS)}")
     if not members:
         raise ValueError("need at least one member directory")
     opened = [_open_member(Path(m), stem) for m in members]
+    keys = _SHARED_KEYS + _STREAM_KEYS[stem]
+    for member in opened[1:]:
+        differs = _sidecar_mismatch(opened[0].meta, member.meta, keys)
+        if differs:
+            raise ValueError(
+                f"{member.path}: its {stem}.json disagrees with "
+                f"{opened[0].path}'s on {', '.join(differs)}, so these "
+                "members are not one ensemble and their streams cannot "
+                "be averaged -- the grid, the mode axes and the panel "
+                "labels are all read off the first member alone."
+            )
 
     # The shared grid is the first member's own times, thinned to
     # those every other member also has (:func:`_match`); its own
@@ -994,7 +1093,13 @@ def open_series(
         keep = keep[_match(other, grids[0][keep]) >= 0]
     if keep.size == 0:
         raise ValueError("members share no relative sample time")
-    keep = keep[first : (None if last is None else last + 1)][::stride]
+    selected = keep[first : (None if last is None else last + 1)][::stride]
+    if selected.size == 0:
+        raise ValueError(
+            f"first={first} / last={last} / stride={stride} select none "
+            f"of the {keep.size} sample time(s) the members share."
+        )
+    keep = selected
     common = grids[0][keep]
     rows = np.stack(
         [
@@ -1093,8 +1198,9 @@ class Map:
         rather than of every stored row.  One row is kept beyond each
         end: the fill interpolates between samples, so the pair
         straddling a limit still colours the strip inside it.
-        :func:`draw_map` passes nothing and lets the axes clip
-        instead, so a contour still reaches the edge of the box.
+        :func:`draw_map` calls both forms: the restricted rows set its
+        levels, and the unrestricted ones are what it draws, so a
+        contour still reaches the edge of the box.
         """
         if self.y_log:
             shown = self.y > 0.0
@@ -1147,10 +1253,18 @@ def _half_grid(y: np.ndarray, mode: str) -> np.ndarray:
     """
     if mode not in ("mean", "lower", "upper"):
         raise ValueError(f"half must be mean/lower/upper, not {mode!r}")
-    if not np.allclose(y, -y[::-1], rtol=0.0, atol=1e-12):
+    if y.size > 1 and y[0] >= y[-1]:
+        raise ValueError(
+            "the wall-normal grid is not ascending, so 1 + y is not the "
+            "wall distance; the streams carry the solver's own grid, "
+            "which runs from the lower wall up."
+        )
+    if mode != "lower" and not np.allclose(y, -y[::-1], rtol=0.0, atol=1e-12):
         raise ValueError(
             "the wall-normal grid is not symmetric about the centreline, "
-            "so the R_y fold does not apply; use --half lower / upper"
+            "so the R_y fold has no partner row to average against, and "
+            "--half upper no wall distance to label its rows with; use "
+            "--half lower, which needs neither."
         )
     return 1.0 + y[: (y.size + 1) // 2]
 
@@ -1441,8 +1555,8 @@ def scan_panels(
         label = (
             name if component is None else f"{name}[{COMPONENTS[component]}]"
         )
-        if declared and declared_non_negative(name):
-            non_negative = True
+        non_negative = declared_non_negative(name) if declared else lo >= 0.0
+        if declared and non_negative:
             peak = max(abs(lo), abs(hi))
             if lo < 0.0 and peak > 0.0:
                 ratio = -lo / peak
@@ -1455,8 +1569,6 @@ def scan_panels(
                     f"  {label}: declared non-negative, min/peak = "
                     f"-{ratio:.3e} ({verdict}); drawn as non-negative"
                 )
-        else:
-            non_negative = lo >= 0.0
         scales[(name, component)] = PanelScale(lo, hi, non_negative)
     return scales, notes
 
@@ -1662,12 +1774,26 @@ def draw_map(
     ``set_aspect(1)`` holds one decade to the same length on each --
     the layout of :func:`panel_geometry` sizes the box so that costs
     nothing.  *cax* is where the colour bar goes (``None``: no bar).
+
+    *ylim* both limits the axis and restricts the rows the **levels**
+    are read from (:meth:`Map.drawn`), so the colour bar is a legend
+    for the visible map whether the scale is frozen (*data_range*,
+    already restricted by :func:`scan_panels`) or taken from this
+    frame.  Everything inside the box is still drawn from the
+    unrestricted array.
     """
     ax.set_xscale("log")
     ax.set_yscale("log" if map_.y_log else "linear")
     y, values = map_.drawn()
+    # The scale is a legend for what the box shows, so the levels are
+    # read off the rows inside *ylim* -- while the fill still gets the
+    # unrestricted array, so a contour reaches the edge of the box
+    # (:meth:`Map.drawn`).  Under ``--clim series`` *data_range* has
+    # already been restricted the same way (:func:`scan_panels`); this
+    # is what makes ``--clim frame`` and ``--quantile`` agree with it.
+    scaled = values if ylim is None else map_.drawn(ylim)[1]
     levels = contour_levels(
-        values,
+        scaled,
         n_levels,
         non_negative=map_.non_negative,
         data_range=data_range,
@@ -1694,8 +1820,17 @@ def draw_map(
                 norm=norm,
             )
         else:
+            # ``extend`` only where something can land above the
+            # top level: without ``--quantile`` the levels cover the
+            # data, and an arrowed colour bar would be a lie.
             filled = ax.contourf(
-                map_.lam, y, values, levels=levels, cmap=shaded, norm=norm
+                map_.lam,
+                y,
+                values,
+                levels=levels,
+                cmap=shaded,
+                norm=norm,
+                extend="neither" if quantile is None else "max",
             )
         if lines:
             ax.contour(

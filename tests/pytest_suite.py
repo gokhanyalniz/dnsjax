@@ -116,6 +116,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_transient_growth.py", ("--fast",), (), 1800),
     ("test_twin_analysis.py", (), (), 1800),
     ("test_twin_postprocess.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
+    # Offline and matplotlib-only; skips itself with a message where
+    # the ``plots`` dependency group is not installed.
+    ("test_twin_spectral_maps.py", (), (), 1800),
     ("test_twin_unit.py", (), (), 1800),
     ("test_viscoelastic.py", (), (), 1800),
     ("test_viscoelastic_pipe.py", (), (), 1800),
