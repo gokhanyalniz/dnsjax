@@ -69,16 +69,23 @@ suffix.  The opener stacks three planes, one near each wall at
 `$y^+ \approx 15$` and one at the centreline::
 
     uv run --group plots python scripts/snapshot_figure.py \
-        <run>/state*.tar --y -0.9167 0 0.9167 --bare \
+        <run>/state*.tar --y -0.9167 0 0.9167 --bare --lab-frame \
         --dpi 150 --refine 2 --width-px 800 --quality 42 \
         --out docs/figures/channel-planes.webp
 
 and the second, further down, is the near-wall plane on its own::
 
     uv run --group plots python scripts/snapshot_figure.py \
-        <run>/state*.tar --y -0.9167 \
+        <run>/state*.tar --y -0.9167 --lab-frame \
         --refine 3 --width-px 800 --quality 35 \
         --out docs/figures/channel-streaks.webp
+
+``--lab-frame`` matters for anything animated out of a run with
+``phys.u_grid`` set.  That frame is a change of coordinate, so undoing
+it is a pure translation, and without it the picture is confusing
+rather than wrong: this run integrates in a frame moving at the bulk
+velocity, which outruns the near-wall fluid but is itself outrun by the
+centreline, so the planes would drift in *opposite* directions.
 
 Drop to a single snapshot for the still versions, and raise ``--dpi``
 and ``--refine`` accordingly: a still is worth rendering at 2x for a
@@ -491,6 +498,29 @@ def _trim(path: Path, palette: int = 0, box=None):
     return box
 
 
+def _lab_frame_shift(plane, distance: float, length: float):
+    r"""Translate a periodic plane *distance* downstream in ``x``.
+
+    A run may integrate in a frame moving along the streamwise axis
+    (``phys.u_grid``), which is a change of *coordinate* only -- the
+    solver adds a convective term and leaves the stored field alone.
+    Undoing it for a figure is therefore a pure translation: the lab
+    field at time `$t$` is the stored one shifted by
+    `$U_{\mathrm{grid}}\,(t - t_0)$`.
+
+    ``x`` is periodic and the stored field carries no Nyquist mode, so
+    the shift is done exactly as a phase on each Fourier mode rather
+    than by rolling whole grid points -- the displacement is not a
+    whole number of them.
+    """
+    if not distance:
+        return plane
+    n = plane.shape[-1]
+    k = 2.0 * np.pi * np.fft.rfftfreq(n, d=length / n)
+    spec = np.fft.rfft(plane, axis=-1) * np.exp(-1j * k * distance)
+    return np.fft.irfft(spec, n=n, axis=-1)
+
+
 def _plane_frame(plane, norm, cmap, width, aspect, refine):
     r"""One wall-parallel plane as a plain RGB image.
 
@@ -548,6 +578,19 @@ def _animate(args, info) -> int:
         frames_data.append([pl for pl, _ in used])
         stations = np.array([yy for _, yy in used])
         times.append(float(read_meta(path)["t"]))
+
+    u_grid = float(getattr(data.params.phys, "u_grid", 0.0) or 0.0)
+    drift = 0.0
+    if args.lab_frame and u_grid:
+        length = float(info.length[2])
+        drift = u_grid * (times[-1] - times[0])
+        frames_data = [
+            [
+                _lab_frame_shift(pl, u_grid * (t - times[0]), length)
+                for pl in planes
+            ]
+            for t, planes in zip(times, frames_data, strict=True)
+        ]
 
     lim = args.clim
     if lim is None:
@@ -619,6 +662,11 @@ def _animate(args, info) -> int:
         f"{args.fps:g} fps  {args.out.stat().st_size / 1024:.0f} KB  ->  "
         f"{args.out}"
     )
+    if drift:
+        print(
+            f"[figure] lab frame: undid u_grid = {u_grid:.4g}, a "
+            f"{drift:.4g} shift downstream across the sequence"
+        )
     return 0
 
 
@@ -665,6 +713,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=2.2,
         help="wall-normal exaggeration of a stack (default 2.2)",
+    )
+    p.add_argument(
+        "--lab-frame",
+        action="store_true",
+        help="undo phys.u_grid, so an animation translates downstream at "
+        "the true velocity rather than through the moving frame the run "
+        "integrated in (a coordinate change only, applied here as an "
+        "exact Fourier phase shift)",
     )
     p.add_argument(
         "--fps",
