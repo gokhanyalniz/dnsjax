@@ -9,8 +9,8 @@ grid and its quadrature weights, and the sidecar.
 Which fields a stream carries is the sidecar's ``suffixes``, and
 :func:`stored_fields` is the one place that turns it into a record
 layout -- shared with the memory-mapped reader in
-``scripts/twin_spectral_maps.py`` rather than mirrored there.  Two
-layouts exist and both are read:
+``scripts/twin_spectral_maps.py`` rather than mirrored there.  Three
+suffix tuples exist, from two eras, and all three are read:
 
 - ``("x", "z", "xz00")``, the default, and ``("x", "z", "x0",
   "xz00")`` under ``twin.x0_planes``;

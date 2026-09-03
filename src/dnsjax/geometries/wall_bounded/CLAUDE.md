@@ -137,11 +137,13 @@ the axis forces (the spin quad, parity classes, the band splice).
   path: kept, tested, not recommended. Each geometry's flag-off half
   — the Neumann pressure-Poisson builders, its matvecs, the
   three-family `H_k` group (cyl/annular) and the step — lives in
-  `_<geometry>_primitive_imm.py`, imported *lazily* inside the four
-  flag-off branches (`__post_init__`, `_derive_imm_homogeneous_data`,
-  `_build_dt_leaves`, `_imm_iteration`), so the default path never
-  imports it. That module imports back from its geometry module, which
-  is why the import must stay deferred.
+  `_<geometry>_primitive_imm.py`, imported *lazily* inside the
+  flag-off branches alone (`__post_init__`,
+  `_derive_imm_homogeneous_data`, `_imm_iteration`, plus
+  `_build_dt_leaves` on cyl/annular and `build_poisson_operator` on
+  Cartesian), so the default path never imports it. That module
+  imports back from its geometry module, which is why the import must
+  stay deferred.
 
 ### Mean mode and padding modes
 

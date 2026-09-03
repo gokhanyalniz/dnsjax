@@ -80,38 +80,22 @@ and its rationale: `flows/registry.py`.
   `mode_state_energy` helpers are shared with
   `scripts/snapshot_perturb.py`. See the module docstring and the root
   CLAUDE.md "Transient-growth analysis" note.
-- `response/` — input-output / response tools: `probes.py` (reader for
-  the runtime `probes.bin` streams), `operator_tools.py` (Gramians,
-  controllability modes, growth curves, basis plumbing), `ensemble.py`,
-  `lim.py`, and `ssi.py` (three interchangeable operator-identification
-  routes sharing one fit, basis, and output convention). The full
+- `response/` — input-output / response tools: `probes.py`,
+  `operator_tools.py`, `ensemble.py`, `lim.py`, `ssi.py` (the last
+  three interchangeable operator-identification routes sharing one
+  fit, basis, and output convention). The module list, the full
   probe→operator pipeline and the route trade-offs: the
   `response/__init__.py` docstring. Orchestration:
   `scripts/ensemble_setup.py`. Guards: `tests/response/`.
-- `twin/` — twin-run (`dnsjax-twin`) offline analysis, entirely
-  JAX-free (unlike `response/`, no JAX anywhere): `series.py`
-  (`twin.dat`/`twin_budget.dat`/`twin.json` readers plus the
-  column-generic `read_dat` that also loads a run's per-state
-  `stats.dat`/`stats_twin.dat`, per-component
-  budget sums, `closure_residuals`, and `uniform_grid` — a `.dat`
-  stream carries rows off its own cadence, so every consumer that
-  needs a uniform grid selects one), `ensemble.py` (member-tree
-  aggregation + growth-rate fits, CLI), `spectra.py`
-  (`twin_spectra.bin` reader + decorrelation ratio), `yspectra.py`
-  (`twin_yspectra.bin` /
-  `twin_ybudget.bin` readers, the `integrate_y` quadrature
-  contraction, `bin_energies` — the three-bin energies recovered
-  from the marginals, which is why `twin.bins` can stay off — and
-  the `(0, 0)`-removal trio `mean_free_spectrum` /
-  `fluctuation_profile` / `fluctuation_energy`, one definition read at
-  `(y, k)`, `(y)` and scalar resolution, array-level so a memmapped
-  reader shares it),
-  `lengths.py` (integral length scales of the
-  difference field from a snapshot pair — address the pair with its
-  `partner_of`; `integral_lengths` rejects two snapshots at different
-  `(t, it)`). Not imported by
-  `__init__.py`; its own `__init__` re-exports the API. Guard:
-  `tests/test_twin_analysis.py`.
+- `twin/` — twin-run (`dnsjax-twin`) offline analysis: `series.py`,
+  `ensemble.py`, `spectra.py`, `yspectra.py`, `lengths.py`. What each
+  reads: the `analysis/twin/__init__.py` docstring; the streams
+  themselves: `src/dnsjax/twin/CLAUDE.md`. Cross-module: it is
+  entirely JAX-free (unlike `response/`, no JAX anywhere), it is not
+  imported by `__init__.py` (its own `__init__` re-exports the API),
+  and `yspectra`'s record layout (`stored_fields` / `record_dtype`)
+  is *shared* with `scripts/twin_spectral_maps.py`'s memory map
+  rather than mirrored there. Guard: `tests/test_twin_analysis.py`.
 - `_core.py` — engine: raw chunk I/O, transforms, coordinate
   builders, differentiation primitives, `GeometryInfo`, and the
   `Namespace` object-view over embedded params/stats. (Quadrature is
