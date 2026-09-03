@@ -89,6 +89,10 @@ VIOLATION_FLOOR = 0.1
 CROSS_TOL = 1e-13
 
 RAND_AMP, RAND_SMOOTH, RAND_SEED = 0.1, 0.4, 3
+# The wall-normal pair, at the shipped defaults.  ``RAND_WALL_CONF``
+# is inert at the (0, 0) column the projector acts on -- the window is
+# scaled by |k| -- so it only shapes the surrounding modes here.
+RAND_WALL_SMOOTH, RAND_WALL_CONF = 0.4, 0.14
 
 
 def _grid(kind: str, ny: int, order: int):
@@ -511,7 +515,14 @@ def _worker_matrix() -> int:
         from dnsjax.ic.random_field import generate_random_state
 
         state = np.asarray(
-            generate_random_state(RAND_AMP, RAND_SMOOTH, RAND_SEED, True)
+            generate_random_state(
+                RAND_AMP,
+                RAND_SMOOTH,
+                RAND_WALL_SMOOTH,
+                RAND_WALL_CONF,
+                RAND_SEED,
+                True,
+            )
         )
         col = state[:, :, 0, 0]
         _, D1, D2, w = build_cartesian_grid(
@@ -609,7 +620,14 @@ def _worker_column(np0: int, np1: int, out: str) -> int:
     from dnsjax.ic.random_field import generate_random_state
 
     state = np.asarray(
-        generate_random_state(RAND_AMP, RAND_SMOOTH, RAND_SEED, True)
+        generate_random_state(
+            RAND_AMP,
+            RAND_SMOOTH,
+            RAND_WALL_SMOOTH,
+            RAND_WALL_CONF,
+            RAND_SEED,
+            True,
+        )
     )
     np.save(out, state[:, :, 0, 0])
     return 0

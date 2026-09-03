@@ -117,7 +117,7 @@ def main() -> None:
     # (kolmogorov defers ``init.random_mean_flow``: the periodic mean
     # mode is a passive Galilean shift the solver re-zeroes anyway, so
     # the generator drops it unconditionally.)
-    state = generate_random_state(1.0, 0.4, seed=7)
+    state = generate_random_state(1.0, 0.4, 0.4, 0.14, seed=7)
     u = np.asarray(state)
     assert u.shape == (3, NY - 1, NZ - 1, NX // 2), u.shape
 

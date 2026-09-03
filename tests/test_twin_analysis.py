@@ -1044,6 +1044,57 @@ def test_fluctuation_energy() -> None:
     print("mean_free_spectrum / _profile / _energy (one idea): OK")
 
 
+def test_shape_alignment() -> None:
+    """The `(y, k)` shape overlap: normalised, symmetric, and blind to
+    amplitude -- the three properties a calibration reads off it."""
+    from dnsjax.analysis.twin import shape_alignment
+
+    rng = np.random.default_rng(5)
+    w = np.asarray(_y_sidecar({})["y_weights"])
+    p = rng.random((NY, N_KZ))
+    q = rng.random((NY, N_KZ))
+
+    # A shape against itself is 1, and against a rescaling of itself
+    # still 1: the measure sees shape and not amplitude, which is why
+    # a candidate initial condition can be scored without matching the
+    # energy of the field it is compared with.
+    assert_allclose(shape_alignment(p, p, w), 1.0, atol=1e-14)
+    assert_allclose(shape_alignment(p, 1.0e-7 * p, w), 1.0, atol=1e-14)
+    assert_allclose(shape_alignment(p, q, w), shape_alignment(q, p, w))
+    assert 0.0 < shape_alignment(p, q, w) < 1.0
+
+    # Disjoint support is 0.  A uniform density against one spread
+    # over twice the support is 1/sqrt(2): the overlap integral runs
+    # over half the plane, where the integrand is sqrt(2/S . 1/S).
+    left, right = np.zeros((NY, N_KZ)), np.zeros((NY, N_KZ))
+    left[:, : N_KZ // 2] = 1.0
+    right[:, N_KZ // 2 :] = 1.0
+    assert_allclose(shape_alignment(left, right, w), 0.0, atol=1e-14)
+    assert_allclose(
+        shape_alignment(left, left + right, w), 2.0**-0.5, atol=1e-14
+    )
+    # Two uniforms of equal support overlapping in half of it is 1/2,
+    # which is the case worth pinning: it is the scale on which an
+    # initial condition's A(0) is read.
+    shifted = np.zeros((NY, N_KZ))
+    shifted[:, N_KZ // 4 : 3 * (N_KZ // 4)] = 1.0
+    assert_allclose(shape_alignment(left, shifted, w), 0.5, atol=1e-14)
+
+    # Refusals: mismatched axes, a negative entry (not a density), and
+    # an all-zero input (no shape to compare).
+    for bad in (
+        lambda: shape_alignment(p, q[:, :-1], w),
+        lambda: shape_alignment(p, -q, w),
+        lambda: shape_alignment(p, np.zeros_like(q), w),
+    ):
+        try:
+            bad()
+        except ValueError:
+            continue
+        raise AssertionError("shape_alignment accepted an invalid input")
+    print("shape_alignment (scale-free overlap + refusals): OK")
+
+
 def test_ybudget_reader() -> None:
     """``twin_ybudget`` round trip against the sidecar's term list."""
     from dnsjax.analysis.twin import integrate_y, read_twin_ybudget
@@ -1128,6 +1179,7 @@ if __name__ == "__main__":
     test_stored_layouts()
     test_bin_energies_needs_the_plane()
     test_fluctuation_energy()
+    test_shape_alignment()
     test_ybudget_reader()
     test_integral_lengths_core()
     test_build_twin()

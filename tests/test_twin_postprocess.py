@@ -139,7 +139,9 @@ def _build_parents() -> None:
     from dnsjax.ic.random_field import generate_random_state
     from dnsjax.snapshot import save_snapshot
 
-    state = generate_random_state(0.1, 0.4, 1, params.init.random_mean_flow)
+    state = generate_random_state(
+        0.1, 0.4, 0.4, 0.14, 1, params.init.random_mean_flow
+    )
     save_snapshot(state, PARENT_T, PARENT_IT, PARENT, isnap=0)
     # Direct assignment to the singleton, the ``test_twin_driver``
     # ``[force]`` idiom: ``recorded_params_dump`` reads the live

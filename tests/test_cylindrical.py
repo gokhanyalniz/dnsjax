@@ -1026,7 +1026,7 @@ def test_centerline_mean_axial_velocity() -> None:
     amp = 1e-3
     # ICs are built in physical components; the stepper works in the
     # solver basis (``__main__`` performs this same single crossing).
-    state = to_solver_basis(generate_random_state(amp, 0.4, 3))
+    state = to_solver_basis(generate_random_state(amp, 0.4, 0.4, 0.14, 3))
     rs = np.asarray(pipe_flow.rs)
 
     def centreline(s) -> float:

@@ -146,6 +146,9 @@ NX, NY, NZ = 8, 17, 8
 NY_PERIODIC = 16
 LX, LZ = 5.0, 5.0
 SMOOTH, SEED = 0.4, 1
+# The wall-normal pair of the random IC, at the shipped defaults
+# (``init.random_wall_smoothness`` / ``random_wall_confinement``).
+WALL_SMOOTH, WALL_CONF = 0.4, 0.14
 
 # Fixed horizon; every dt below divides it exactly.
 T_END = 0.32
@@ -284,7 +287,9 @@ def _worker(
     # components every other consumer sees.)
     to_solver = getattr(fmod, "to_solver_basis", lambda s: s)
     from_solver = getattr(fmod, "from_solver_basis", lambda s: s)
-    state = to_solver(generate_random_state(amp, SMOOTH, SEED))
+    state = to_solver(
+        generate_random_state(amp, SMOOTH, WALL_SMOOTH, WALL_CONF, SEED)
+    )
     if vardt and system == "kolmogorov":
         # Dense dyadic alternation: a change at 2 of every 3 steps.
         n_periods = round(T_END / (2 * dt))

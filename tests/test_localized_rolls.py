@@ -109,6 +109,10 @@ DIV_TOL = 5e-2  # loose truncation-level discrete-divergence bound
 # *relative* divergence bound over the whole field, k_z = 0 included
 # (the builders solve continuity on every mode, so this is machine-zero).
 RAND_AMP, RAND_SMOOTH, RAND_SEED = 0.2, 0.4, 7
+# The wall-normal pair, at the shipped defaults: the divergence bound
+# below is what proves the scale-dependent wall window is structurally
+# inert (it reshapes a column, it does not touch the closure).
+RAND_WALL_SMOOTH, RAND_WALL_CONF = 0.4, 0.14
 RAND_DIV_TOL = 1e-11
 
 # Cross-device-count comparison tolerance for the random state
@@ -352,7 +356,11 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
     # per-geometry divergence expression each builder inverts.
     from dnsjax.ic.random_field import generate_random_state
 
-    rand = np.asarray(generate_random_state(RAND_AMP, RAND_SMOOTH, RAND_SEED))
+    rand = np.asarray(
+        generate_random_state(
+            RAND_AMP, RAND_SMOOTH, RAND_WALL_SMOOTH, RAND_WALL_CONF, RAND_SEED
+        )
+    )
     rand_true = _true(rand)
     scale = float(np.max(np.abs(rand_true)))
     rdiv = _max_divergence(rand_true, system)
@@ -370,7 +378,13 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
         # on.
         check("finite", bool(np.all(np.isfinite(rand))))
         rand2 = np.asarray(
-            generate_random_state(RAND_AMP, RAND_SMOOTH, RAND_SEED)
+            generate_random_state(
+                RAND_AMP,
+                RAND_SMOOTH,
+                RAND_WALL_SMOOTH,
+                RAND_WALL_CONF,
+                RAND_SEED,
+            )
         )
         check("determinism (build twice)", np.array_equal(rand, rand2))
         true = rand[:, :, : nz - 1, : nx // 2]
