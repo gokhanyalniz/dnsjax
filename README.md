@@ -23,20 +23,23 @@ the corrector's stability margin for a single FFT evaluation per step.
 The full formulation is in [`NUMERICS.md`](NUMERICS.md).
 
 <p align="center">
-  <img src="docs/figures/channel-planes.png" width="900"
-       alt="Streamwise velocity fluctuation on three wall-parallel
-            planes through turbulent channel flow, stacked in a 3D
-            view.">
+  <img src="docs/figures/channel-planes.webp" width="900"
+       alt="Animation of the streamwise velocity fluctuation on three
+            wall-parallel planes through turbulent channel flow,
+            stacked in a 3D view.">
 </p>
 
-<div align="center">
-
-*Turbulent channel flow in a $4\pi \times 2\pi$ box at
-$Re_\tau \approx 180$: streamwise velocity fluctuation on three
-wall-parallel planes — near each wall, and at the centreline.
-Red is faster than the local mean, blue slower.*
-
-</div>
+<p align="center"><em>
+Turbulent channel flow in a 4&pi; &times; 2&pi; box at
+Re<sub>&tau;</sub> &asymp; 180: streamwise velocity fluctuation on three
+wall-parallel planes &mdash; near each wall, and at the centreline
+&mdash; over 11 advective time units. Red is faster than the local
+mean, blue slower. The frame travels downstream at the bulk velocity,
+so the near-wall planes drift backwards through it while the centreline
+drifts forwards.<br>
+<a href="#snapshots-and-external-data-access">The near-wall plane
+alone, larger &darr;</a>
+</em></p>
 
 ## Highlights
 
@@ -622,17 +625,19 @@ Both README figures are made this way — no JAX, no solver runtime, just
 a snapshot and NumPy (`scripts/snapshot_figure.py`):
 
 <p align="center">
-  <img src="docs/figures/channel-streaks.png" width="820"
-       alt="Streamwise velocity fluctuation in a wall-parallel plane of
-            turbulent channel flow at a friction Reynolds number of 180.">
+  <img src="docs/figures/channel-streaks.webp" width="820"
+       alt="Animation of the streamwise velocity fluctuation in a
+            wall-parallel plane of turbulent channel flow at a friction
+            Reynolds number of 180.">
 </p>
-<div align="center">
-
-*The same run, read back through `read_state`: streamwise velocity
-fluctuation in a wall-parallel plane at $y = -0.917$, $y^+ = 14.9$ —
-the height at which it peaks.*
-
-</div>
+<p align="center"><em>
+The same run, read back through <code>read_state</code>: streamwise
+velocity fluctuation in the wall-parallel plane at
+<i>y</i> = &minus;0.917, <i>y</i><sup>+</sup> = 14.9. The streaks drift
+backwards because the frame moves downstream at the bulk velocity,
+outrunning the slower near-wall fluid.<br>
+<a href="#dnsjax">All three planes &uarr;</a>
+</em></p>
 
 The companion `dnsjax.analysis.snapshot_ops` module provides `derivative`,
 `gradient`, `divergence`, `curl`, and `integrate` that reproduce the

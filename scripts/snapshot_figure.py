@@ -61,80 +61,75 @@ order is axial-first -- see ``SCALING.md``).
 
 Producing the README figures
 ----------------------------
-Both come from one plane-Poiseuille snapshot at ``re = 4200``
-(`$Re_\tau \approx 180$`).  The opener stacks three planes -- one near
-each wall at `$y^+ \approx 15$` and one at the centreline::
+Both come from one plane-Poiseuille run at ``re = 4200``
+(`$Re_\tau \approx 180$`), and both are animations over its snapshot
+series -- several snapshot arguments switch the script from a figure to
+one, written as ``.webp``, ``.gif`` or ``.png`` (APNG) after the output
+suffix.  The opener stacks three planes, one near each wall at
+`$y^+ \approx 15$` and one at the centreline::
 
     uv run --group plots python scripts/snapshot_figure.py \
-        <run>/state00082.tar --y -0.9167 0 0.9167 --bare \
-        --dpi 320 --refine 3 --palette 256 \
-        --out docs/figures/channel-planes.png
+        <run>/state*.tar --y -0.9167 0 0.9167 --bare \
+        --dpi 150 --refine 2 --width-px 800 --quality 42 \
+        --out docs/figures/channel-planes.webp
 
-``--bare`` drops the axes and the colourbar: a first-scroll image does
-not need to be readable to three digits, and its caption says what it
-shows.  ``--dpi 320`` puts it at ~1800 px across, so it stays sharp at
-the README's 900 px on a 2x display -- and ``--refine`` has to follow,
-because that is exactly the magnification at which the flat-shaded mesh
-starts to show (below).  ``--palette 256`` then halves the file.
-
-The single plane, further down, is the same near-wall station on its
-own, annotated::
+and the second, further down, is the near-wall plane on its own::
 
     uv run --group plots python scripts/snapshot_figure.py \
-        <run>/state00082.tar --y -0.9167 \
-        --out docs/figures/channel-streaks.png --width-px 1600
+        <run>/state*.tar --y -0.9167 \
+        --refine 3 --width-px 800 --quality 35 \
+        --out docs/figures/channel-streaks.webp
 
-``--y`` is the only number that has to move with the snapshot: it is
+Drop to a single snapshot for the still versions, and raise ``--dpi``
+and ``--refine`` accordingly: a still is worth rendering at 2x for a
+high-DPI display (``--dpi 320 --refine 3 --palette 256`` for the
+stack, ``--refine 3 --width-px 1600 --palette 256`` for the plane),
+where an animation is not -- the frame count pays for the resolution
+several dozen times over.
+
+``--y`` is the only number that has to move with the run: it is
 `$-1 + y^+/Re_\tau$`, so recompute it from the new run's own friction
-Reynolds number rather than carrying `$-0.9167$` over.  The colour
-scale then fits the data, and the caption's `$Re$`, box and resolution
-come from the embedded parameters -- ``dnsjax.analysis.read_meta``.
+Reynolds number rather than carrying `$-0.9167$` over.  The caption's
+`$Re$`, box and resolution come from the embedded parameters --
+``dnsjax.analysis.read_meta``.
 
-A stack shares **one** colour scale across its planes, which is the
-point: the fluctuation decays away from the wall (at `$Re_\tau \approx
-180$` the centreline rms is a third of the near-wall one) and
-normalising each plane separately would hide that.  ``--clip`` sets the
-percentile the shared scale is cut at, ``--clim`` pins it outright.
+Why animated WebP
+=================
+It is the only common format that is both small enough and sharp
+enough here.  Turbulence changes everywhere between frames, so
+inter-frame prediction saves little and the codec is doing near-still
+compression 51 times over; GIF's 256-colour palette on top of that
+costs roughly twice the bytes for a visibly worse picture, and APNG
+several times that again.  Animated WebP is supported by every current
+browser (Chrome, Firefox, Edge, Safari 14+) and renders inline in a
+GitHub README like any other image.  ``--fps``, ``--quality`` and
+``--width-px`` are the three levers; halving the frame count by
+sampling every second snapshot is the fourth, and at these speeds the
+motion is smooth either way.
 
-An alternative subject, when a *localized* structure is the point, is
-the quick-start pipe run of the README's own "Running a simulation"
-section taken to `$t = 500$` (add ``--dist.platform cuda``), rendered
-with ``--window 40``: a turbulent puff inside 100 laminar diameters.
-Puff lifetimes at ``re = 2300`` are stochastic, so
-``stop.check_laminarization`` may fire first -- take the last snapshot
-before it did, or raise ``--phys.re`` to 2600-3000.  That is a regime
-property, not a solver setting.
+Every frame of an animation shares one colour scale, taken from the
+percentile over the whole sequence rather than from each frame, so a
+colour means the same thing throughout and the picture does not pulse.
 
-Animating a sequence
---------------------
-Frames must share a colour scale or the animation flickers as the
-per-frame limit breathes, so pin it with ``--clim``: render one
-representative frame, read the ``|u|max`` the run prints, and pass that
-(or a little more, since a growing structure has not peaked yet) to
-every frame.  Save the frames at a fixed cadence with
-``--outs.it_snapshot``, then::
+Animating a meridional view
+---------------------------
+Only the wall-parallel view animates: the meridional one is a
+``--window`` crop that re-centres on the largest `$|u|$` in *each*
+frame, so a moving structure stays centred while the axes shift under
+it, which is not what an animation should do.  Render the frames one
+snapshot at a time with a pinned ``--clim`` and ``--window 0``, and
+stitch them outside::
 
-    mkdir -p frames
-    for f in ~/scratch/readme_puff/state*.tar; do
+    for f in <run>/state*.tar; do
       uv run --group plots python scripts/snapshot_figure.py "$f" \
-        --out "frames/$(basename "$f" .tar).png" \
-        --clim 0.35 --window 40 --width-px 1200
+        --out "frames/$(basename "$f" .tar).png" --clim 0.35 --window 0
     done
-
     ffmpeg -framerate 12 -pattern_type glob -i 'frames/state*.png' \
-      -vf "split[a][b];[a]palettegen[p];[b][p]paletteuse" \
-      -loop 0 docs/figures/pipe_puff.gif
+      -c:v libwebp_anim -q:v 45 -loop 0 puff.webp
 
-``--window`` re-centres on the largest `$|u|$` in *each* frame, so a
-structure that moves stays centred but the axis labels shift under it;
-pass ``--window 0`` and crop once with ffmpeg instead when a fixed
-laboratory window is what the animation is about.
-
-GitHub renders an animated GIF inline exactly like a PNG (swap the
-``<img src=...>`` in the template above), but it is fetched in full on
-every page view, so keep it to a few MB -- fewer frames, or a smaller
-``--width-px``.  The still is the safer README opener; an animation
-earns its bytes when the *evolution* is the point.
+An animation is fetched in full on every page view, so it earns its
+bytes only when the *evolution* is the point; a still is the cheaper
+opener.
 """
 
 from __future__ import annotations
@@ -154,7 +149,12 @@ from _figure_common import (  # noqa: E402
     y_plus,
 )
 
-from dnsjax.analysis import geometry_info, read_state, read_stats  # noqa: E402
+from dnsjax.analysis import (  # noqa: E402
+    geometry_info,
+    read_meta,
+    read_state,
+    read_stats,
+)
 from dnsjax.flows.registry import viscoelastic_systems  # noqa: E402
 
 #: Systems whose snapshots store the **total** field rather than a
@@ -201,6 +201,15 @@ def _grid_edges(c: np.ndarray) -> np.ndarray:
     if c.size == 1:
         return np.array([c[0] - 0.5, c[0] + 0.5])
     return np.concatenate([c[:1], 0.5 * (c[1:] + c[:-1]), c[-1:]])
+
+
+def _finer_centres(c: np.ndarray, factor: int) -> np.ndarray:
+    """The uniform axis *c* resampled *factor* times more finely."""
+    c = np.asarray(c, dtype=float)
+    if factor <= 1:
+        return c
+    step = float(c[1] - c[0]) / factor
+    return c[0] + np.arange(c.size * factor) * step
 
 
 def _periodic_edges(c: np.ndarray) -> np.ndarray:
@@ -350,8 +359,19 @@ def _refine(plane: np.ndarray, factor: int) -> np.ndarray:
 
 
 def _render_stack(
-    planes, y_used, horiz, vert, *, labels, ticks, out, dpi, cmap, opts
-) -> None:
+    planes,
+    y_used,
+    horiz,
+    vert,
+    *,
+    labels,
+    ticks,
+    out,
+    dpi,
+    cmap,
+    opts,
+    trim_box=None,
+):
     r"""Draw several wall-parallel planes stacked in a 3D view.
 
     Each plane keeps its own `$x$`-`$z$` mean removed, but they share
@@ -376,11 +396,8 @@ def _render_stack(
     ax = fig.add_subplot(projection="3d", computed_zorder=False)
     if opts.refine > 1:
         planes = [_refine(p, opts.refine) for p in planes]
-        horiz, vert = (
-            c[0]
-            + np.arange(c.size * opts.refine) * (c[1] - c[0]) / opts.refine
-            for c in (horiz, vert)
-        )
+        horiz = _finer_centres(horiz, opts.refine)
+        vert = _finer_centres(vert, opts.refine)
     grid_h, grid_v = np.meshgrid(horiz, vert, indexing="ij")
     alpha = np.linspace(1.0, opts.top_opacity, len(planes))
     for rank, k in enumerate(np.argsort(y_used)):
@@ -436,10 +453,10 @@ def _render_stack(
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, facecolor="white")
     plt.close(fig)
-    _trim(out, opts.palette)
+    return _trim(out, opts.palette, trim_box)
 
 
-def _trim(path: Path, palette: int = 0) -> None:
+def _trim(path: Path, palette: int = 0, box=None):
     """Crop the white margin a 3D axes reserves around its content.
 
     With *palette* set, the result is also quantised to that many
@@ -453,20 +470,156 @@ def _trim(path: Path, palette: int = 0) -> None:
     from PIL import Image
 
     img = np.asarray(Image.open(path).convert("RGB"))
-    mask = (img < 250).any(axis=2)
-    rows, cols = np.where(mask.any(axis=1))[0], np.where(mask.any(axis=0))[0]
-    pad = 10
-    out = Image.fromarray(
-        img[
-            max(rows[0] - pad, 0) : rows[-1] + pad + 1,
-            max(cols[0] - pad, 0) : cols[-1] + pad + 1,
-        ]
-    )
+    if box is None:
+        mask = (img < 250).any(axis=2)
+        rows = np.where(mask.any(axis=1))[0]
+        cols = np.where(mask.any(axis=0))[0]
+        pad = 10
+        box = (
+            max(rows[0] - pad, 0),
+            rows[-1] + pad + 1,
+            max(cols[0] - pad, 0),
+            cols[-1] + pad + 1,
+        )
+    r0, r1, c0, c1 = box
+    out = Image.fromarray(img[r0:r1, c0:c1])
     if palette:
         out = out.quantize(
             colors=palette, method=Image.MEDIANCUT, dither=Image.NONE
         )
     out.save(path, optimize=True)
+    return box
+
+
+def _plane_frame(plane, norm, cmap, width, aspect, refine):
+    r"""One wall-parallel plane as a plain RGB image.
+
+    An animation frame is the plane itself, with no axes and no
+    colourbar: the caption carries what they would have said, and every
+    frame must come out the *same size*, which ``bbox_inches="tight"``
+    around a matplotlib figure cannot guarantee.  Mapping the array
+    straight through the colormap also skips the flat-shaded surface
+    mesh entirely, so no weave can appear.
+
+    ``z`` is flipped because image rows run downward.
+    """
+    from PIL import Image
+
+    fine = _refine(plane, refine)
+    rgb = (cmap(norm(fine))[..., :3] * 255).astype(np.uint8)
+    return Image.fromarray(rgb[::-1]).resize(
+        (width, max(round(width / aspect), 1)), Image.LANCZOS
+    )
+
+
+def _animate(args, info) -> int:
+    r"""Animate one wall-parallel plane, or a stack of them, over time.
+
+    Every frame shares one colour scale -- otherwise the animation
+    pulses as each frame renormalises itself -- taken from ``--clim`` or
+    from the given percentile over **all** frames, so the bounds suit
+    the whole sequence rather than any one of it.  Only the requested
+    component and the requested wall-normal slabs are read from each
+    snapshot, so the cost is a few slabs per file rather than a field.
+
+    A single ``--y`` maps the plane straight through the colormap: the
+    frames are then pixel-identical in size by construction, which
+    ``bbox_inches="tight"`` around a matplotlib figure cannot promise.
+    Several ``--y`` render the 3D stack instead, and the crop box of the
+    first frame is reused for the rest for the same reason.
+    """
+    import tempfile
+
+    from matplotlib import pyplot as plt
+    from matplotlib.colors import Normalize
+    from PIL import Image
+
+    stacked = len(args.y) > 1
+    frames_data, stations, times = [], None, []
+    for path in args.snapshot:
+        data = read_state(
+            path, components=(args.component,), wall_normal_points=args.y
+        )
+        grid = np.asarray(data.physical_coords[0])
+        used = [
+            _wall_parallel(data.physical[0], grid, y0, demean=args.demean)
+            for y0 in args.y
+        ]
+        frames_data.append([pl for pl, _ in used])
+        stations = np.array([yy for _, yy in used])
+        times.append(float(read_meta(path)["t"]))
+
+    lim = args.clim
+    if lim is None:
+        lim = max(
+            float(np.percentile(np.abs(pl), args.clip))
+            for planes in frames_data
+            for pl in planes
+        )
+    args.clim = lim  # every frame renders on the sequence's own scale
+
+    if stacked:
+        coords = data.physical_coords
+        frames, box = [], None
+        with tempfile.TemporaryDirectory() as tmp:
+            shot = Path(tmp) / "frame.png"
+            for planes in frames_data:
+                box = _render_stack(
+                    planes,
+                    stations,
+                    np.asarray(coords[2]),
+                    np.asarray(coords[1]),
+                    labels=("$x$", "$z$", ""),
+                    ticks=[
+                        f"{0.0 if abs(v) < 1e-9 else v:.3g}" for v in stations
+                    ],
+                    out=shot,
+                    dpi=args.dpi,
+                    cmap=args.cmap,
+                    opts=args,
+                    trim_box=box,
+                )
+                frames.append(Image.open(shot).convert("RGB"))
+    else:
+        norm = Normalize(-lim, lim)
+        cmap = plt.get_cmap(args.cmap)
+        aspect = float(info.length[2]) / float(info.length[1])  # Lx / Lz
+        frames = [
+            _plane_frame(
+                planes[0], norm, cmap, args.width_px, aspect, args.refine
+            )
+            for planes in frames_data
+        ]
+
+    if args.width_px and frames[0].size[0] != args.width_px:
+        w = args.width_px
+        h = max(round(frames[0].size[1] * w / frames[0].size[0]), 1)
+        frames = [f.resize((w, h), Image.LANCZOS) for f in frames]
+
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    suffix = args.out.suffix.lower()
+    extra = {}
+    if suffix == ".webp":
+        extra = dict(quality=args.quality, method=6)
+    elif suffix == ".gif":
+        extra = dict(optimize=True)
+    frames[0].save(
+        args.out,
+        save_all=True,
+        append_images=frames[1:],
+        duration=round(1000.0 / args.fps),
+        loop=0,
+        **extra,
+    )
+    print(
+        f"[figure] {len(frames)} frames  t {times[0]:.5g}..{times[-1]:.5g}  "
+        f"y "
+        + ", ".join(f"{v:.3g}" for v in stations)
+        + f"  {frames[0].size[0]}x{frames[0].size[1]} px  clim {lim:.4g}  "
+        f"{args.fps:g} fps  {args.out.stat().st_size / 1024:.0f} KB  ->  "
+        f"{args.out}"
+    )
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -476,7 +629,14 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("snapshot", type=Path, help="a dnsjax snapshot tar")
+    p.add_argument(
+        "snapshot",
+        type=Path,
+        nargs="+",
+        help="a dnsjax snapshot tar; several make an animation of one "
+        "wall-parallel plane, written as .webp, .gif or .png (APNG) "
+        "after the output suffix",
+    )
     p.add_argument("--out", type=Path, required=True, help="output PNG path")
     p.add_argument(
         "--component",
@@ -507,6 +667,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="wall-normal exaggeration of a stack (default 2.2)",
     )
     p.add_argument(
+        "--fps",
+        type=float,
+        default=12.5,
+        help="animation frame rate (default 12.5)",
+    )
+    p.add_argument(
+        "--quality",
+        type=int,
+        default=72,
+        help="animated-WebP quality, 0-100 (default 72)",
+    )
+    p.add_argument(
         "--palette",
         type=int,
         default=0,
@@ -517,10 +689,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--refine",
         type=int,
         default=1,
-        help="interpolate each plane onto a grid this many times finer "
-        "before rendering (exact: both in-plane axes are Fourier).  "
-        "Above ~6 px per cell the flat-shaded mesh shows as a weave; "
-        "raise this rather than lowering --dpi",
+        help="interpolate each wall-parallel plane onto a grid this many "
+        "times finer before rendering (exact: both of its axes are "
+        "Fourier).  Both renderers shade cells flat, so above ~6 px per "
+        "cell the mesh shows -- blockiness in the plane view, a weave in "
+        "the stack.  Raise this rather than lowering --dpi.  The "
+        "meridional view is unrefined: its radial axis is an FD grid",
     )
     p.add_argument(
         "--bare",
@@ -578,7 +752,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.clim is not None and args.clim <= 0.0:
         build_parser().error("--clim must be positive")
 
-    data = read_state(args.snapshot, components=(args.component,))
+    if len(args.snapshot) > 1:
+        first = read_state(args.snapshot[0], components=(args.component,))
+        info = geometry_info(first.params)
+        if info.family in ("cylindrical", "annular"):
+            raise SystemExit(
+                "snapshot_figure: the animation draws a wall-parallel "
+                f"plane; {first.params.phys.system!r} has none"
+            )
+        return _animate(args, info)
+
+    data = read_state(args.snapshot[0], components=(args.component,))
     info = geometry_info(data.params)
     system = str(data.params.phys.system)
     prime = "" if system in TOTAL_FIELD_SYSTEMS else "'"
@@ -605,13 +789,17 @@ def main(argv: list[str] | None = None) -> int:
         ]
         planes = [pl for pl, _ in used]
         stations = np.array([yy for _, yy in used])
+        if args.refine > 1:
+            planes = [_refine(pl, args.refine) for pl in planes]
+            xc = _finer_centres(np.asarray(xc), args.refine)
+            zc = _finer_centres(np.asarray(zc), args.refine)
         horiz, vert = _periodic_edges(xc), _periodic_edges(zc)
         if args.demean:
             base = comp.partition("_")[0]
             sub = _component_label(comp, "")[1:-1].partition("_")[2]
             c_label = rf"${base}_{sub} - \langle {base}_{sub} \rangle_{{xz}}$"
         re_tau = (
-            friction_reynolds(read_stats(args.snapshot), data.params)
+            friction_reynolds(read_stats(args.snapshot[0]), data.params)
             if system in LAMINAR_WALL_SHEAR
             else None
         )

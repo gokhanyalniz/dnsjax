@@ -708,10 +708,11 @@ All under `scripts/`; full rationale/usage in each module docstring.
 - `twin_spectral_maps.py`: CLI + library drawing the twin `(y, k)`
   streams as `(lambda, y)` and `(y, t)` maps over an ensemble -- see
   `src/dnsjax/twin/CLAUDE.md`.
-- `snapshot_figure.py`: JAX-free CLI rendering one snapshot as a
-  velocity-plane PNG (the `docs/figures/` sources); meridional for
-  cyl/annular, wall-parallel otherwise, and several `--y` stations
-  stacked in a 3D view on one shared colour scale.
+- `snapshot_figure.py`: JAX-free CLI rendering snapshots as velocity
+  planes (the `docs/figures/` sources); meridional for cyl/annular,
+  wall-parallel otherwise, several `--y` stations stacked in a 3D
+  view, and several *snapshots* as an animation (`.webp`/`.gif`/APNG)
+  -- one shared colour scale across planes and frames either way.
 - `wall_normal_resolution.py`: JAX-free `resolve`/`match`/`box` CLI
   sizing `res.ny`/`fd_order`/`geo.grid_type` against a Chebyshev
   expansion of a given order (Cartesian family only).
