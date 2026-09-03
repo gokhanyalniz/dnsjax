@@ -1,11 +1,11 @@
-"""Unit tests for the cylindrical geometry operators.
+r"""Unit tests for the cylindrical geometry operators.
 
 Tests cover:
 
 1. Radial CGL grid: rigged-CGL (g=1, default) vs half-CGL (g=0)
    innermost-point formula, ~2x r_0 ratio, and the g=0 closed form.
 2. Parity-reduced FD matrices vs full auxiliary grid reference.
-3. `$A_{\\mathrm{base}}$` dense operator vs NumPy reference.
+3. `$A_{\mathrm{base}}$` dense operator vs NumPy reference.
 4. ``_abase_matvec`` matrix-free vs dense reference.
 5. ``_lk_matvec`` vs per-mode NumPy reference.
 6. Pallas band-vs-dense parity (banded storage == ``banded(dense)``,
@@ -15,7 +15,7 @@ Tests cover:
    ``solvers._assemble_banded_operator`` helpers.
 6b. The pipe's ``res.consistent_imm`` structure: the spin pair really
     diagonalises the vector Laplacian onto the existing
-    `$H_{k,\\pm}$` operators, every vw quantity lands in the parity
+    `$H_{k,\pm}$` operators, every vw quantity lands in the parity
     class its operator assumes, and the packed mean plane reuses the
     primitive scheme's mean operators bit-exactly (including the
     band splice).  The geometry-independent vw algebra (sources,

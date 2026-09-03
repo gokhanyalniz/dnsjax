@@ -1,4 +1,4 @@
-"""Laminar smoke tests for all wall-bounded flows.
+r"""Laminar smoke tests for all wall-bounded flows.
 
 Runs each wall-bounded system from its laminar state for a few
 time steps at low resolution, verifying that:
@@ -9,13 +9,13 @@ time steps at low resolution, verifying that:
 - The CFL diagnostic (``steps.dat``, written every
   ``it_steps = 1`` steps) matches the laminar base flow in the
   (default) moving frame of reference: the active grid-direction
-  column is `$\\Delta t \\, \\max|U - U_{grid}| \\, n / l$` and the
+  column is `$\Delta t \, \max|U - U_{grid}| \, n / l$` and the
   remaining columns are roundoff-sized.  ``phys.u_grid`` defaults to
-  the laminar bulk velocity, so the active CFL is `$\\max|U_x| = 1$`
+  the laminar bulk velocity, so the active CFL is `$\max|U_x| = 1$`
   for plane-Couette (`$U_{grid} = 0$`), `$2/3$` of it for
   plane-Poiseuille (`$U_{grid} = 2/3$`, max at the walls), `$1/2$` of
   it for the pipe (`$U_{grid} = 1/2$`, max at the `$r = 1$` wall), and
-  the azimuthal `$\\max|U_\\theta/r| = 1$` for Taylor-Couette
+  the azimuthal `$\max|U_\theta/r| = 1$` for Taylor-Couette
   (`$U_{grid} = 0$`).
 - The corrector diagnostic (``corrector.dat``, written every
   ``it_corrector = 1`` steps) records ``c = 0`` (a single corrector
@@ -25,7 +25,7 @@ Dean flow is force-driven and integrates the **total** field, so it is
 checked differently: started from the *analytical* laminar profile, its
 ``E'`` (the perturbation kinetic energy of the deviation from that
 profile) stays tiny, the corrector still converges (``err``
-`$O(10^{-14})$`), the energy balance `$I \\approx D$` holds, and the
+`$O(10^{-14})$`), the energy balance `$I \approx D$` holds, and the
 total energy is near-steady.  Its azimuthal ``CFL_th`` is the active
 column (radial / axial are roundoff).
 
@@ -33,15 +33,15 @@ The two viscoelastic flows (total-field, 9-component) share a branch,
 differing only in which CFL column is active -- ``CFL_z`` for the
 axially driven pipe (the same tight analytic value the Newtonian pipe
 asserts), ``CFL_th`` for the azimuthally driven Dean.  At
-`$\\epsilon = \\kappa = 0$` the analytical laminar velocity + sPTT
+`$\epsilon = \kappa = 0$` the analytical laminar velocity + sPTT
 equilibrium conformation pair is the *exact* discrete fixed point, so
 ``E'`` stays tiny, the corrector converges (its error floor sits at FD
 truncation, `$O(10^{-10})$`, not roundoff, because the conformation
 carries magnitude `$O(10)$` -- hence a relaxed error threshold), the
-polymer energy balance `$I \\approx D_s - W_p$` holds, the energy is
+polymer energy balance `$I \approx D_s - W_p$` holds, the energy is
 near-steady, and ``steps.dat`` carries the extra ``TrC_max`` column.
 
-Caveat: the laminar state has ``u' = 0``, so every `$\\omega'$`/
+Caveat: the laminar state has ``u' = 0``, so every `$\omega'$`/
 `$u'$`-proportional term vanishes -- this checks the base-flow fixed
 point, time stepping, and the CFL diagnostic, but **not** the
 rotational nonlinear term (a wrong ``rhs.py``/advection change can
@@ -72,7 +72,7 @@ Each subprocess runs in its own temporary directory, so
 (and the repo's ``parameters.toml`` is not loaded; the smoke runs
 use the parameter-model defaults plus the CLI arguments).  Every
 entry passes ``--stop.check_laminarization False``: the laminar
-``E'`` `$\\approx 10^{-32}$` would otherwise trip the default
+``E'`` `$\approx 10^{-32}$` would otherwise trip the default
 laminarization check and terminate the run immediately.
 
 Usage (single device)::

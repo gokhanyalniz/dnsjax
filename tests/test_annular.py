@@ -1,18 +1,18 @@
-"""Unit tests for the annular (Taylor-Couette) geometry operators.
+r"""Unit tests for the annular (Taylor-Couette) geometry operators.
 
 Tests cover:
 
 1. Annular grid properties (spans ``[r1, r2]``, monotone, endpoints).
-2. `$A_{\\mathrm{base}}$` dense operator vs NumPy reference.
+2. `$A_{\mathrm{base}}$` dense operator vs NumPy reference.
 3. ``_abase_matvec`` matrix-free vs dense reference.
 4. ``_lk_matvec`` vs per-mode NumPy reference (Neumann at both walls,
    pin at the mean mode).
 5. Pallas band-vs-dense parity for `$L_k$`, the three `$H_k$`
    operators and the two ``res.consistent_imm`` ones
-   (`$L_{v,\\mathrm{mod}}$` and the `$(\\Phi, \\omega_r)$` pair):
+   (`$L_{v,\mathrm{mod}}$` and the `$(\Phi, \omega_r)$` pair):
    banded storage == ``banded(dense)``, no-pivot banded solve ==
    dense solve.
-6. The `$u_r$`-`$\\omega_r$` algebraic identities backing
+6. The `$u_r$`-`$\omega_r$` algebraic identities backing
    ``res.consistent_imm``: the mean-plane packing reuses the
    primitive scheme's own mean operators bit-exactly, the per-point
    reconstruction is exactly solenoidal at every row and in both

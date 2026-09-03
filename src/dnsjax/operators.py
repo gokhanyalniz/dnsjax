@@ -43,12 +43,12 @@ def complex_harmonics(n: int) -> Array:
 
 
 def pad_harmonics(harmonics: Array, n: int, pad: int) -> Array:
-    """Append placeholder wavenumbers for divisibility-padding slots.
+    r"""Append placeholder wavenumbers for divisibility-padding slots.
 
     Spectral axes are padded so the mode count divides the device
     mesh (see :mod:`dnsjax.sharding`).  The padding slots receive
     the beyond-resolution wavenumbers
-    `$[n/2, n/2 + 1, \\dots, n/2 + \\text{pad} - 1]$` (the omitted
+    `$[n/2, n/2 + 1, \dots, n/2 + \text{pad} - 1]$` (the omitted
     Nyquist magnitude and up; both generators above have maximum
     magnitude `$n/2 - 1$`).  They must be nonzero integers so the
     per-mode operators assembled at padding slots stay regular

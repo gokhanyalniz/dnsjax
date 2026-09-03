@@ -1908,12 +1908,12 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
 
 
 def _summary_line(system: str, args, flow, times: dict) -> None:
-    """Emit one ``SUMMARY`` line for a resolution x tile sweep.
+    r"""Emit one ``SUMMARY`` line for a resolution x tile sweep.
 
     Machine-parseable (``grep '^SUMMARY'``); ``times`` values are
     seconds (``None`` -> ``NA``).  ``progs`` is the per-field Triton
-    program count `$(\\lceil N_{kz}/m_0\\rceil)(\\lceil N_{kx}/m_1
-    \\rceil)$` on the *stored* (whole-tile-padded) mode plane -- the
+    program count `$(\lceil N_{kz}/m_0\rceil)(\lceil N_{kx}/m_1
+    \rceil)$` on the *stored* (whole-tile-padded) mode plane -- the
     occupancy metric to compare against the device SM count (H100:
     132).
     """

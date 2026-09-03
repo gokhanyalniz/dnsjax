@@ -1,10 +1,10 @@
-"""Discrete continuity of a stepped state, on the default
+r"""Discrete continuity of a stepped state, on the default
 ``res.consistent_imm`` formulation and on the legacy one.
 
 The influence-matrix method's continuity argument (Kleiser-Schumann;
 Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3) is derived for
 *continuous* differentiation operators.  Discretely it needs
-`$\\nabla\\cdot\\nabla = L_k$` (i.e. `$D_1 D_1 = D_2$`) and
+`$\nabla\cdot\nabla = L_k$` (i.e. `$D_1 D_1 = D_2$`) and
 `$[D_1, D_2] = 0$`, and -- separately -- an accounting of the momentum
 wall rows the Dirichlet replacement discards.  With none of that,
 a stepped state's discrete divergence is **O(1) relative**: not a bug,
@@ -31,7 +31,7 @@ geometries must sit at round-off -- and, unlike an `$h^p$` truncation
 residual, **at every `$N_y$`**, which is why the default bounds are
 asserted across the whole ``--ny`` sweep.  Before 2026-07-26 the
 annulus and the pipe used operator identities instead and were pinned
-at `$8\\times10^{-6}$` / `$5.6\\times10^{-5}$`, floors set by a
+at `$8\times10^{-6}$` / `$5.6\times10^{-5}$`, floors set by a
 commutator each could not remove; the reformulation has no such floor.
 The plane-couette legacy case additionally reports the momentum side of
 the trade (see ``_worker``): what relocating the residual out of

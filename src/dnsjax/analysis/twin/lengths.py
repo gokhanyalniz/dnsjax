@@ -135,14 +135,14 @@ def integral_lengths(
     partner: str | Path,
     y0: float = 0.0,
 ) -> dict:
-    """Integral lengths of `$\\Delta u_1$` for a snapshot pair.
+    r"""Integral lengths of `$\Delta u_1$` for a snapshot pair.
 
     Reads both snapshots' stored spectra, forms the difference's
     `$k_x = 0$` column (mean mode dropped), and dispatches to
     :func:`integral_lengths_from_modes` at the anchor ``y0``.
 
     The two snapshots must be the same lockstep write -- same system
-    and same `$(t, \\mathrm{it})$`, as ``dnsjax-twin`` itself requires
+    and same `$(t, \mathrm{it})$`, as ``dnsjax-twin`` itself requires
     of a resumed pair.  Differencing across times subtracts two
     unrelated states: the result looks like a difference field and the
     lengths that follow are noise, so the mismatch raises rather than

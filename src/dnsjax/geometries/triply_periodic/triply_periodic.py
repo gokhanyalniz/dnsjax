@@ -146,7 +146,7 @@ def get_norm(vector_spec: Array, k_metric: Array) -> Array:
 def derivative(
     data_spec: Array, kx: Array, ky: Array, kz: Array, axis: int
 ) -> Array:
-    """Spectral derivative: `$i k_{\\text{axis}} \\, \\text{data\\_spec}$`."""
+    r"""Spectral derivative: `$i k_{\text{axis}} \, \text{data\_spec}$`."""
     match axis:
         case 0:
             return 1j * kx * data_spec
@@ -162,8 +162,8 @@ def divergence(velocity_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
 
 
 def curl(velocity_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
-    """Spectral curl (vorticity):
-    `$i \\mathbf{k} \\times \\mathbf{u}_{\\text{spec}}$`.
+    r"""Spectral curl (vorticity):
+    `$i \mathbf{k} \times \mathbf{u}_{\text{spec}}$`.
     """
     return 1j * jnp.array(
         [
@@ -175,7 +175,7 @@ def curl(velocity_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
 
 
 def gradient(data_spec: Array, kx: Array, ky: Array, kz: Array) -> Array:
-    """Spectral gradient: `$[i k_x, i k_y, i k_z] \\, \\text{data\\_spec}$`."""
+    r"""Spectral gradient: `$[i k_x, i k_y, i k_z] \, \text{data\_spec}$`."""
     return jnp.array([derivative(data_spec, kx, ky, kz, i) for i in range(3)])
 
 
@@ -211,19 +211,19 @@ class TriplyPeriodicFlow:
     ildt_2: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        """Build time-stepping coefficients.
+        r"""Build time-stepping coefficients.
 
         For the triply-periodic case the Helmholtz operator is diagonal
         in Fourier space, so the implicit solve reduces to pointwise
         operations:
 
-            `$ldt_1 = \\frac{1}{\\Delta t}
-            + (1-c) \\frac{\\nabla^2}{\\mathrm{Re}}$`
+            `$ldt_1 = \frac{1}{\Delta t}
+            + (1-c) \frac{\nabla^2}{\mathrm{Re}}$`
             (explicit part)
-            `$ildt_2 = \\left(
-            \\frac{1}{\\Delta t}
-            - c \\frac{\\nabla^2}{\\mathrm{Re}}
-            \\right)^{-1}$`
+            `$ildt_2 = \left(
+            \frac{1}{\Delta t}
+            - c \frac{\nabla^2}{\mathrm{Re}}
+            \right)^{-1}$`
             (inverse of implicit part)
 
         The mean mode `$(k_y, k_z, k_x) = (0, 0, 0)$` is zeroed out,
@@ -339,9 +339,9 @@ def _predict_component(
     ldt_1: Array,
     ildt_2: Array,
 ) -> Array:
-    """Euler predictor step (vmapped over velocity components).
+    r"""Euler predictor step (vmapped over velocity components).
 
-    Computes `$u_p = (u^n \\cdot ldt_1 + f^n) \\cdot ildt_2$`
+    Computes `$u_p = (u^n \cdot ldt_1 + f^n) \cdot ildt_2$`
     as a pointwise operation in spectral space, where the Helmholtz
     inversion is algebraic (multiply by ``ildt_2``).
     """
@@ -355,10 +355,10 @@ def _correct_component(
     rhs_no_lapl_next: Array,
     ildt_2: Array,
 ) -> tuple[Array, Array]:
-    """Crank-Nicolson corrector step (vmapped over velocity components).
+    r"""Crank-Nicolson corrector step (vmapped over velocity components).
 
     Computes the correction
-    `$\\delta = c (f_{\\text{next}} - f_{\\text{prev}}) \\cdot ildt_2$`
+    `$\delta = c (f_{\text{next}} - f_{\text{prev}}) \cdot ildt_2$`
     and returns the updated prediction and the correction itself (for
     convergence monitoring).
     """

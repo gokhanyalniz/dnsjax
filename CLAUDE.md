@@ -171,16 +171,19 @@ which is itself only transiently turbulent.
 
 ## Documentation instructions
 
-Keep docstrings, comments (in LaTeX for math for both) and typing
-up-to-date. In the future MkDocs will be used with MathJax, escape
-LaTeX commands appropriately (prefer raw docstrings: `\t`/`\f` in
-non-raw strings silently become control characters). Keep
-documentation lines in code to 79 characters wide. Keep CLAUDE.md
-files up-to-date (root and subdirectory files). The **six**
-human-facing docs -- `README.md`, `NUMERICS.md` and `SCALING.md` at the
-root, plus the `extensions/`, `twin/` and `analysis/response/` READMEs
--- may lag the code, so treat the CLAUDE.md files and code docstrings as
-authoritative and do not sync code to one.
+Keep docstrings, comments and typing up-to-date, at 79 columns. Math
+is LaTeX -- inline `` `$...$` ``, display `.. math::` (MkDocs + MathJax
+later). Two rules currently hold across the whole tree, so any
+violation is new: **a docstring containing a backslash is raw**
+(`r"""`; in a plain `"""`, `\t`/`\f`/`\n` silently become control
+characters, and a trailing `\` eats its newline), and **an inline
+`$...$` in a `.md` never spans a line break** (GitHub renders it as raw
+LaTeX, not math). Keep CLAUDE.md files up-to-date (root and
+subdirectory files). The **six** human-facing docs -- `README.md`,
+`NUMERICS.md` and `SCALING.md` at the root, plus the `extensions/`,
+`twin/` and `analysis/response/` READMEs -- may lag the code, so treat
+the CLAUDE.md files and code docstrings as authoritative and do not
+sync code to one.
 
 **Documentation layering.** CLAUDE.md files are an index for AI agents,
 not a manual. A line earns its place only if it is (a) a command to

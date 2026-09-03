@@ -160,7 +160,7 @@ def _strip_y(a: Array) -> Array:
 def zeropad_fft(
     a: Array, n: int, axis: int, out_shard, strip: int = 0
 ) -> Array:
-    """Zero-pad a full-complex spectral array along *axis* to length *n*.
+    r"""Zero-pad a full-complex spectral array along *axis* to length *n*.
 
     Inserts zeros between the positive and negative Fourier modes,
     reinstating as zero the Nyquist mode the layout omits.  This is
@@ -181,7 +181,7 @@ def zeropad_fft(
         modes (Nyquist omitted), where `$N$` is the original full mode
         count.
     n:
-        Target length (`$\\ge N$`, any parity).
+        Target length (`$\ge N$`, any parity).
     axis:
         Axis along which to pad (0 for y, 1 for z).
     out_shard:
@@ -216,11 +216,11 @@ def zeropad_fft(
 def truncate_fft(
     a: Array, n: int, axis: int, pad: int = 0, out_shard=None
 ) -> Array:
-    """Truncate a full-complex FFT output along *axis*, dropping
+    r"""Truncate a full-complex FFT output along *axis*, dropping
     aliased modes.
 
-    Keeps the lowest `$\\lfloor n/2 \\rfloor$` positive and
-    `$n - 1 - \\lfloor n/2 \\rfloor$` negative modes, discarding all
+    Keeps the lowest `$\lfloor n/2 \rfloor$` positive and
+    `$n - 1 - \lfloor n/2 \rfloor$` negative modes, discarding all
     higher modes including the Nyquist mode.  The output has `$n - 1$`
     stored modes -- the layout of
     :func:`dnsjax.harmonics.complex_harmonics` for even and odd *n*
@@ -237,7 +237,7 @@ def truncate_fft(
     a:
         Full FFT output with ``a.shape[axis] == N`` modes.
     n:
-        Target mode count (`$\\le N$`, any parity).
+        Target mode count (`$\le N$`, any parity).
     axis:
         Axis along which to truncate (0 for y, 1 for z).
     pad:

@@ -1,4 +1,4 @@
-"""Triply-periodic Kolmogorov flow (monochromatic sine forcing).
+r"""Triply-periodic Kolmogorov flow (monochromatic sine forcing).
 
 This module defines the ``MonochromaticFlow`` dataclass that holds all
 precomputed, flow-specific data: base flow, forcing, and laminar-state
@@ -28,21 +28,21 @@ separate ``correct_velocity`` export exists.
 Base flow construction
 ----------------------
 The monochromatic base flow `$U(y)$` is a single Fourier harmonic
-(`$q_f = 1$`): the Kolmogorov profile `$U = \\sin(2\\pi y/L_y)$`,
+(`$q_f = 1$`): the Kolmogorov profile `$U = \sin(2\pi y/L_y)$`,
 coefficient `-0.5j` at mode `$q_f$`.
 
 The base flow is transformed to physical space on the 3/2-oversampled
 grid for use in the nonlinear term.  Its curl
-(`$-\\partial U_x/\\partial y$` in the z-component) and the
-self-interaction `$\\mathbf{U} \\times \\nabla \\times \\mathbf{U}$`
+(`$-\partial U_x/\partial y$` in the z-component) and the
+self-interaction `$\mathbf{U} \times \nabla \times \mathbf{U}$`
 are precomputed once.
 
 Tilt
 ----
-When the forcing direction is tilted by an angle `$\\theta$` away from
+When the forcing direction is tilted by an angle `$\theta$` away from
 the x-axis in the (x, z) plane, the base flow and its derivatives are
 rotated:
-    `$U_x \\to U_x \\cos\\theta$`, `$U_z \\to U_x \\sin\\theta$`.
+    `$U_x \to U_x \cos\theta$`, `$U_z \to U_x \sin\theta$`.
 """
 
 from dataclasses import dataclass, field
@@ -216,7 +216,7 @@ def get_dissipation(
     fourier_: Fourier,
     flow_: MonochromaticFlow,
 ) -> Array:
-    """Total dissipation rate `$D = \\text{enstrophy} / \\mathrm{Re}$`."""
+    r"""Total dissipation rate `$D = \text{enstrophy} / \mathrm{Re}$`."""
     return get_enstrophy(state, input, fourier_, flow_) / params.phys.re
 
 

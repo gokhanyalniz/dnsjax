@@ -100,7 +100,7 @@ def _stack_group(
 
 
 def aggregate_members(tree: str | Path, out: str | Path | None = None) -> dict:
-    """Aggregate a twin member tree; optionally write an ``.npz``.
+    r"""Aggregate a twin member tree; optionally write an ``.npz``.
 
     Returns ``t_rel`` plus ``stack_<c>`` / ``mean_<c>`` / ``std_<c>``
     for every ``twin.dat`` column ``<c>``; when every member carries
@@ -113,8 +113,8 @@ def aggregate_members(tree: str | Path, out: str | Path | None = None) -> dict:
     (``ddof = 0``) -- the spread of the members themselves, which is
     the quantity a member-scatter band plots.  It is *not* an
     uncertainty on ``mean_*``: for that, take the standard error
-    `$\\sigma_{\\bar{x}} = \\mathrm{std}/\\sqrt{N-1}$` (the
-    `$\\sqrt{N/(N-1)}$` bias correction and the `$1/\\sqrt{N}$`
+    `$\sigma_{\bar{x}} = \mathrm{std}/\sqrt{N-1}$` (the
+    `$\sqrt{N/(N-1)}$` bias correction and the `$1/\sqrt{N}$`
     cancel to this), with ``N = n_members``.  The distinction is 5 %
     at ten members, so state which one a figure shows.
     """

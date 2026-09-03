@@ -27,12 +27,12 @@ MIN_FORMAT_VERSION: int = 1
 
 @dataclass(frozen=True)
 class TwinSpectraData:
-    """One twin spectra stream, parsed.
+    r"""One twin spectra stream, parsed.
 
     ``e_delta`` (and ``e_ref``, ``None`` when not recorded) have
     shape ``(n_t, n_kz, n_kx)`` on the true mode grid; ``kz`` /
     ``kx`` are the *physical* wavenumbers (harmonics
-    `$\\times\\, 2\\pi/L$`, in the stored axis order); ``meta`` is
+    `$\times\, 2\pi/L$`, in the stored axis order); ``meta`` is
     the sidecar dict.
     """
 
