@@ -205,7 +205,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
     else:
         from dnsjax.ic.random_field import generate_random_state
 
-        state = generate_random_state(0.2, 0.4, 7)
+        state = generate_random_state(0.2, 0.4, 0.4, 0.14, 7)
     # A random IC produces an O(1) divergence in a single step; the
     # axis-regular rolls IC (pipe) starts divergence-free and its
     # projection-splitting divergence accumulates over a few steps, so

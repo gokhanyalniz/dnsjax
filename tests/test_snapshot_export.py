@@ -198,7 +198,7 @@ def _generate(system: str, outdir: str, m0: int = 1) -> None:
     from dnsjax.ic.random_field import generate_random_state
     from dnsjax.snapshot import save_snapshot
 
-    state = generate_random_state(0.2, 0.4, 1)
+    state = generate_random_state(0.2, 0.4, 0.4, 0.14, 1)
     # The divergence ground truth is taken on a deliberately
     # non-solenoidal probe (see DIV_PROBE); the checker rebuilds the
     # same scaling from the stored state.

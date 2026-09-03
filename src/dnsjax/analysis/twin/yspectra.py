@@ -386,6 +386,57 @@ def fluctuation_energy(
     )
 
 
+def shape_alignment(
+    p: np.ndarray,
+    q: np.ndarray,
+    y_weights: np.ndarray,
+) -> float:
+    r"""How much two `$(y, k)$` distributions overlap, in `$[0, 1]$`.
+
+    The Bhattacharyya coefficient
+    `$A = \int \sqrt{p\,q}\,\mathrm{d}y\,\mathrm{d}k$` of two
+    ``(n_y, n_k)`` densities, each first normalised to unit total
+    against *y_weights*, so it reads **shape only** -- an amplitude
+    is divided out, and `$A = 1$` exactly when the two shapes agree.
+    Negative entries (a budget term, say) are not distributions and
+    are rejected.
+
+    What it is for: the difference field of a twin run settles onto a
+    `$(y, k)$` distribution of its own within a few time units,
+    whatever it started from, and `$1 - A(t)$` against that
+    distribution decays exponentially.  An initial condition is
+    therefore worth exactly the head start its own `$A(0)$` buys, and
+    this is the number to calibrate one against -- see
+    ``scripts/random_ic_calibrate.py``, which is its caller, and
+    :mod:`dnsjax.ic.random_field` for what the shipped generator is
+    calibrated to.
+
+    Pair it with :func:`mean_free_spectrum`: the `$(0, 0)$` mode is
+    the wall-parallel mean and is not part of the shape being
+    compared.
+    """
+    pf = np.asarray(p, dtype=np.float64)
+    qf = np.asarray(q, dtype=np.float64)
+    if pf.shape != qf.shape:
+        raise ValueError(
+            f"shape mismatch: {pf.shape} against {qf.shape}; both must "
+            "be (n_y, n_k) on the same grid and wavenumber axis."
+        )
+    if pf.min() < 0.0 or qf.min() < 0.0:
+        raise ValueError(
+            "shape_alignment compares densities; a negative entry "
+            "means the input is not one."
+        )
+    norms = [float(np.einsum("j,jk->", y_weights, a)) for a in (pf, qf)]
+    if min(norms) <= 0.0:
+        raise ValueError("shape_alignment needs two non-zero densities.")
+    return float(
+        np.einsum(
+            "j,jk->", y_weights, np.sqrt((pf / norms[0]) * (qf / norms[1]))
+        )
+    )
+
+
 def bin_energies(data: YResolvedData) -> dict[str, np.ndarray]:
     r"""`$E_{\Delta U}$`, `$E_{\Delta u_1}$`, `$E_{\Delta u_2}$` per record.
 

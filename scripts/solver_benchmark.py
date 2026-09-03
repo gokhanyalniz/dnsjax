@@ -422,6 +422,8 @@ def run_child(a: argparse.Namespace) -> None:
     state = generate_random_state(
         params.init.random_amplitude,
         params.init.random_smoothness,
+        params.init.random_wall_smoothness,
+        params.init.random_wall_confinement,
         a.seed,
         False,
     )

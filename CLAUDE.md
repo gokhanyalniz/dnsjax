@@ -117,12 +117,38 @@ precedence: the `Initiation` docstring (`parameters.py`). Knobs:
 `--init.snapshot`, `--init.start_from_laminar`,
 `--init.localized_rolls` + `_amplitude`/`_width`/`_wavelength`
 (wall-bounded only), `--init.random_field` (the **default**) +
-`--init.random_amplitude` / `_smoothness` / `_seed` / `_mean_flow` /
-`_conformation_amplitude` (the last on the two viscoelastic flows
-only; every other surface rejects it). Construction, per-geometry
-pairing, the sharded/padded-mesh-safe builds, and the
+`--init.random_amplitude` / `_smoothness` / `_seed` / `_mean_flow`,
+`_wall_smoothness` / `_wall_confinement` (wall-bounded only -- the
+periodic family has neither a wall-normal filter nor a wall window),
+and `_conformation_amplitude` (the two viscoelastic flows only); every
+other surface rejects the ones it is not offered. Construction,
+per-geometry pairing, the sharded/padded-mesh-safe builds, and the
 divergence/Hermitian caveats: the `ic/random_field.py` and
 `ic/localized_rolls.py` module docstrings.
+
+The random field's `(y, k)` shape is set by **three** knobs obeying
+two laws (2026-09-03). `random_smoothness` (**0.4, unchanged**) is the
+periodic-direction energy envelope `(1-s)^(2(|k_x|+|k_z|))` in
+*physical* wavenumbers. The wall-normal pair is
+`random_wall_smoothness` (0.4, the polynomial-degree cutoff, split off
+so lowering `s` cannot drag it down too) and
+`random_wall_confinement` (**0.14, new and default-on**: a mode's wall
+window peaks where the plain window equals `1/(a|k|)`, so large scales
+fill the gap and small ones do not; `0` is the plain window, and is
+the parameter's own limit rather than a sentinel -- an *optional*
+float could not have been switched off, since `update_parameters`
+reads a layer's `None` as unset).
+
+**`s` is deliberately not calibrated.** Scored on the `(y, k)` shape a
+turbulent difference field settles into, `Re_tau ~ 180` wants
+`s ~ 0.04` and `Re_tau ~ 34` wants `s ~ 0.15`; and where growth can
+actually be measured (a minimal box) it is *monotone the other way* --
+2.07 decades over 60 units at 0.4, 0.09 at 0.04. So the shape score is
+not a growth predictor and `s` stays put; the window, by contrast, is
+neutral in that same measurement and better on shape at both. The
+argument and the numbers: the `ic/random_field.py` module docstring
+and `_scaled_wall_window`. To score a candidate per flow, box or
+Reynolds number: `scripts/random_ic_calibrate.py`.
 
 **Every seed defaults to unset, meaning "draw one"** --
 `init.random_seed`, `twin.seed`, `force.seed` and `ensemble_setup.py
@@ -500,6 +526,7 @@ layering" above.
 | `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
 | `[probes]` | Extension (`extensions/`): spectral-mode probe stream (wall-bounded) |
 | `[force]`  | Extension: white-in-time stochastic mode kicks; all-or-none and trajectory-defining (wall-bounded, non-viscoelastic) |
+| `[calib]`  | Extension (`scripts/random_ic_calibrate.py` only): the random-IC calibration target and sweeps |
 | `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + the stream-shaping flags (Cartesian wall-bounded, fixed dt); the fields and their defaults: `twin/CLAUDE.md` |
 
 The default `parameters.toml` contains only
@@ -509,7 +536,8 @@ model defaults -- set them via CLI (e.g. `--dist.np1 2`,
 section. Analysis CLIs and scripts register further extension sections
 on their own surfaces (`[tg]` for the transient-growth driver,
 `[perturb]` for `scripts/snapshot_perturb.py`, `[recon]` for
-`scripts/twin_postprocess.py`).
+`scripts/twin_postprocess.py`, `[calib]` for
+`scripts/random_ic_calibrate.py`).
 
 ### Diagnostics (`stats.dat`, `steps.dat`, `corrector.dat`, `probes.bin`, `forcing.bin`)
 
@@ -708,6 +736,9 @@ All under `scripts/`; full rationale/usage in each module docstring.
 - `twin_spectral_maps.py`: CLI + library drawing the twin `(y, k)`
   streams as `(lambda, y)` and `(y, t)` maps over an ensemble -- see
   `src/dnsjax/twin/CLAUDE.md`.
+- `random_ic_calibrate.py`: CLI scoring the random IC's `(y, k)` shape
+  against a recorded twin ensemble's own, and sweeping the three shape
+  knobs (Cartesian; `[calib]`).
 - `snapshot_figure.py`: JAX-free CLI rendering snapshots as velocity
   planes (the `docs/figures/` sources); meridional for cyl/annular,
   wall-parallel otherwise, several `--y` stations stacked in a 3D
@@ -836,6 +867,7 @@ are one-liners. Cross-cutting notes:
   (`--only <frag>` runs a subset, `--seed`/`--mean-free` vary the
   partner).
 - `test_twin_analysis.py`: JAX-free `analysis.twin` readers (all three
-  stream layouts)/aggregation/fits/lengths + `build-twin` end to end.
+  stream layouts)/aggregation/fits/lengths/`shape_alignment` +
+  `build-twin` end to end.
 - `test_twin_postprocess.py`: `scripts/twin_postprocess.py` rebuilt
   against live streams, incl. the mpirun mesh row (`--unit-only`).

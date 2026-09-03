@@ -1006,13 +1006,57 @@ class Initiation(BaseModel):
         default=0.1,
         description=("Target L2 norm of the random initial perturbation."),
     )
+    # The *horizontal* law only: per-mode energy
+    # ``(1 - s)^(2(|k_x| + |k_z|))`` in physical wavenumbers.  The
+    # wall-normal polynomial-degree law is ``random_wall_smoothness``,
+    # its own field since 2026-09-03: the two are separate laws, and
+    # the moment either moves they want values an order of magnitude
+    # apart, so one knob cannot serve both.  The value here is
+    # deliberately **not** the one a high-Reynolds-number twin
+    # ensemble calibrates to -- lowering it is measured to cost growth
+    # at a low-Re minimal box, and the two regimes disagree by a
+    # factor of ten.  The argument, the measurements, and the tool to
+    # redo them per flow: ``ic/random_field.py`` and
+    # ``scripts/random_ic_calibrate.py``.
     random_smoothness: float = Field(
         gt=0,
         lt=1,
         default=0.4,
         description=(
-            "Spectral decay rate of the random perturbation "
-            "(0 < s < 1; larger = smoother)."
+            "Spectral decay rate of the random perturbation over the "
+            "periodic directions (0 < s < 1; larger = smoother, i.e. "
+            "a longer correlation length)."
+        ),
+    )
+    # Wall-bounded only (the periodic family has no wall-normal
+    # filter): the surface offers it through ``wall_fields()``.
+    random_wall_smoothness: float = Field(
+        gt=0,
+        lt=1,
+        default=0.4,
+        description=(
+            "Wall-normal decay rate of the random perturbation, "
+            "weighting the energy of wall-normal polynomial degree j "
+            "by (1 - s_wall)^j (0 < s_wall < 1)."
+        ),
+    )
+    # Wall-bounded only, like ``random_wall_smoothness``.  Zero is the
+    # pre-2026-09-03 behaviour -- one wall window for every mode -- and
+    # is the parameter's own limit rather than a sentinel, which is why
+    # the knob is this reciprocal and not the wall-distance ratio
+    # ``1 / a`` the maths is naturally written in: a layer that sets a
+    # field to ``None`` is read as not having set it at all
+    # (``update_parameters``), so an optional float could never be
+    # switched back off.
+    random_wall_confinement: float = Field(
+        ge=0,
+        default=0.14,
+        description=(
+            "Scale-dependent narrowing of the random perturbation's "
+            "wall window: a mode of wavenumber |k| peaks where the "
+            "window equals 1 / (a |k|), so large scales fill the gap "
+            "and small ones sit near the wall. Zero gives every mode "
+            "the same window."
         ),
     )
     # Unset means "draw one": ``bootstrap.resolve_run_seeds`` resolves
@@ -1054,7 +1098,8 @@ class Initiation(BaseModel):
         ),
     )
     # Radially windowed to zero at both walls (the reference restart
-    # recipe); shares ``random_smoothness`` for the spectral envelope.
+    # recipe); shares the velocity draw's ``random_smoothness`` /
+    # ``random_wall_smoothness`` / ``random_wall_confinement`` shaping.
     random_conformation_amplitude: float = Field(
         default=700.0,
         description=(

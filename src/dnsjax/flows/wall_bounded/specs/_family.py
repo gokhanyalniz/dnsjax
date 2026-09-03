@@ -36,6 +36,14 @@ def wall_fields(
     defaults on for all of them): it reformulates the implicit step
     rather than swapping an operator, so it needs nothing
     family-specific.
+
+    The two wall-normal random-IC knobs
+    (``init.random_wall_smoothness`` / ``random_wall_confinement``) are
+    here rather than in ``GLOBAL_FIELDS`` because they name a *wall*:
+    the triply-periodic family has neither a wall-normal filter nor a
+    wall window, and carries its third direction on the shared
+    ``init.random_smoothness`` instead
+    (:mod:`dnsjax.ic.random_field`).
     """
     cylindrical = grid_choices == CYLINDRICAL_GRIDS
     if cylindrical:
@@ -62,6 +70,8 @@ def wall_fields(
             choices=grid_choices,
         ),
         FieldSpec("geo", "grid_stretch"),
+        FieldSpec("init", "random_wall_smoothness"),
+        FieldSpec("init", "random_wall_confinement"),
         FieldSpec("init", "localized_rolls"),
         FieldSpec("init", "localized_rolls_amplitude"),
         FieldSpec("init", "localized_rolls_width"),
