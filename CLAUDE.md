@@ -19,7 +19,8 @@ process needs none, even spanning several GPUs).
 
 ### Setup
 
-`uv sync` (also installs the `dnsjax` console script into `.venv/bin`)
+`uv sync` (also installs the `dnsjax` and `dnsjax-twin` console
+scripts into `.venv/bin`)
 
 ### Lint
 
@@ -39,7 +40,7 @@ why pytest must never *import* a script, and the live-output
 plumbing: its module docstring.
 
 `uv run pytest -m "not slow and not mpi"`  the offline loop
-`uv run pytest -m "not slow"`              + the two quick mpirun rows
+`uv run pytest -m "not slow"`              + the four quick mpirun rows
 `uv run pytest`                            everything
 
 Before launching a suite, ask what the change can actually **reach**
@@ -117,10 +118,11 @@ precedence: the `Initiation` docstring (`parameters.py`). Knobs:
 `--init.localized_rolls` + `_amplitude`/`_width`/`_wavelength`
 (wall-bounded only), `--init.random_field` (the **default**) +
 `--init.random_amplitude` / `_smoothness` / `_seed` / `_mean_flow` /
-`_conformation_amplitude`. Construction, per-geometry pairing, the
-sharded/padded-mesh-safe builds, and the divergence/Hermitian
-caveats: the `ic/random_field.py` and `ic/localized_rolls.py` module
-docstrings.
+`_conformation_amplitude` (the last on the two viscoelastic flows
+only; every other surface rejects it). Construction, per-geometry
+pairing, the sharded/padded-mesh-safe builds, and the
+divergence/Hermitian caveats: the `ic/random_field.py` and
+`ic/localized_rolls.py` module docstrings.
 
 **Every seed defaults to unset, meaning "draw one"** --
 `init.random_seed`, `twin.seed`, `force.seed` and `ensemble_setup.py
@@ -134,13 +136,11 @@ between `configure_jax_runtime` and the `sharding` import, except
 decision.
 
 **Only the Cartesian flows may perturb the `(kx, kz) = (0, 0)` mode**,
-and only through its conservation laws -- an unchanged mean pressure
-gradient (which under no-slip *is* compatibility at both walls, and is
-driving-independent), plus an unchanged bulk velocity in each
-direction whose mean the driving holds. So a state and its perturbed
-copy are the same flow, driven identically. The derivation, the
-discrete constraint rows, the conditioning projector and its measured
-tolerance are all in `ic/mean_mode.py`; do not restate them elsewhere.
+and only through its conservation laws, so that a state and its
+perturbed copy are the same flow, driven identically. The laws, their
+derivation, the discrete constraint rows, the conditioning projector
+and its measured tolerance are all in `ic/mean_mode.py`; do not
+restate them elsewhere. Which flow may do it, and by which route:
 
 - allowed, **all opt-in and default off**, so every geometry behaves
   the same out of the box: `init.random_mean_flow` (plane-couette /
@@ -189,8 +189,11 @@ modules. Anything explaining *how* or *why* a single module works goes
 in that module's docstring, and a CLAUDE.md line never restates a
 docstring it points at — point at it instead. Algorithms, array shapes,
 mathematical formulations, and per-function behaviour are always code
-docs. Tests follow the same rule: one line per test file in the Tests
-section below; what a test covers lives in its module docstring.
+docs. The three flat lists -- the package layout, Scripts and Tests --
+are index entries and nothing else: one entry per file, a few lines at
+most, and what it covers lives in its module docstring. A feature
+round that needs more prose than that has written it in the wrong
+file.
 
 ## Architecture
 
@@ -260,25 +263,10 @@ ic/
                       (init.localized_rolls)
   mean_mode.py        The (0,0) conservation laws: constraint rows,
                       conditioning projector (Cartesian only)
-twin/
-  driver.py           dnsjax-twin console script (also python -m
-                      dnsjax.twin): lockstep twin-run (predictability)
-                      driver, [twin] extension, paired
-                      snapshots/resume, twin.dat streams + the
-                      per-state stats/steps/corrector pair
-  diagnostics.py      Difference-field diagnostics: component masks,
-                      energies, the 27-term budget, (kz,kx) spectra,
-                      the wall-normal-resolved (y,k) spectra and
-                      spectral budget that supersede the three bins
-  pressure.py         Difference-field pressure on the IMM's own wall
-                      closure (the one term a y-resolved budget
-                      cannot omit)
-  _binstream.py       BinStream: the buffered-binary state machine
-                      the three stream writers share
-  spectra.py          TwinSpectraStream: twin_spectra.bin writer
-                      (reader dnsjax.analysis.twin.spectra)
-  yspectra.py         twin_yspectra.bin / twin_ybudget.bin writers
-                      (reader dnsjax.analysis.twin.yspectra)
+twin/                 dnsjax-twin: driver.py (console script + the
+                      __main__.py shim), diagnostics.py, pressure.py,
+                      _binstream.py, spectra.py, yspectra.py
+                      -- see twin/CLAUDE.md
 geometries/
   wall_bounded/       _base.py, cartesian.py, cylindrical.py,
                       annular.py, the three
@@ -310,70 +298,18 @@ analysis/             External-facing JAX-free snapshot post-processing
 
 ### Twin-run perturbation growth (`dnsjax-twin`)
 
-`dnsjax-twin` steps a reference snapshot and a perturbed copy
-(random divergence-free field of exact energy `twin.e0`) in lockstep
-and streams difference-field diagnostics: energies (`twin.dat`),
-componentwise wall-normal-resolved spectra and the matching spectral
-budget (`twin_yspectra.bin` / `twin_ybudget.bin`,
-`twin.it_yspectra` / `twin.it_ybudget`), (kz,kx) energy spectra
-(`twin_spectra.bin`, `twin.it_spectra`), and the legacy three-bin
-production/transport/dissipation budget (`twin_budget.dat`,
-`twin.it_budget`, which needs `twin.bins`). The three **per-state**
-solver streams are written for *both* states at the ordinary `[outs]`
-cadences -- the partner's as `stats_twin.dat` / `steps_twin.dat` /
-`corrector_twin.dat`, same columns and sample times, byte-identical to
-the reference's at `twin.e0 = 0`; only `[probes]` stays
-reference-only. Cartesian wall-bounded flows, fixed dt, launched like
-the solver (scratch dir; `mpirun -np N` only when it is
-multi-process):
+`dnsjax-twin` steps a reference snapshot and a perturbed copy (random
+divergence-free field of exact energy `twin.e0`) in lockstep and
+streams difference-field diagnostics. Cartesian wall-bounded flows,
+fixed dt, launched like the solver (scratch dir; `mpirun -np N` only
+when it is multi-process):
 
 `.venv/bin/dnsjax-twin --init.snapshot parent.tar
 --twin.e0 1e-6 --twin.seed 3 --stop.max_sim_time 10`
 
-**The `ΔU`/`Δu₁`/`Δu₂` three-bin split is a three-bin partition of
-the `(kx, kz)` plane and its authors restrict it to minimal flow
-units**, so both of its runtime costs default **off**: `twin.bins`
-(the `twin.dat` columns) and `twin.x0_planes` (the `k_x = 0` plane
-of the two `(y, k)` streams, without which
-`analysis.twin.bin_energies` refuses). What the streams always carry
-instead is `_xz00`, the `y`-resolved `(0,0)` mode — `E_ΔU` on its
-own, and the mean `analysis.twin.fluctuation_energy` subtracts.
-Turning `x0_planes` on restores the exact three-bin recovery at a
-third more `psum` payload and a third more disk.
-
-**Three stream layouts exist and all three read** (the sidecar's
-`suffixes` names one): pre-`_xz00` `(x, z, x0)`, the default
-`(x, z, xz00)`, and `(x, z, x0, xz00)`. The readers' floors are
-therefore deliberately **not** raised with the writers' versions —
-the one place in the repo where that lockstep is broken, and
-`twin/yspectra.py` says why. `analysis.twin.stored_fields` /
-`record_dtype` own the layout for the eager reader *and*
-`scripts/twin_spectral_maps.py`'s memory map.
-
-**The `(y, k)` budget has two forms**, selected by
-`twin.rotational_ybudget` (default **off** = convective, matching
-`twin_budget.dat` term by term). The rotational one is the solver's
-own nonlinear term: its transfer terms are exactly redistributive
-(`Σ_k T(y) = 0` by pointwise algebra, any resolution) and its
-`n_hat` is checkable against `cartesian._get_rhs`, but it is a
-different decomposition — the turbulent transport is redistributed
-between the pressure and production columns — so it also stores
-`P_lift` (the convective `P_U`) to keep the classical lift-up
-density. Which identities hold in which form: the `diagnostics.py`
-"Two budget forms" note.
-
-Start/resume rules (partner snapshot + `twin.json` decide; a resume
-never re-perturbs), stream formats, the ±k_z fold the marginals
-require, the frame-invariance / dissipation-form notes and the
-pressure's wall closure: the
-`twin/driver.py`, `twin/diagnostics.py`, `twin/pressure.py` and
-`twin/yspectra.py` module docstrings; the maths is written up as
-Appendix A of the `perturbation_dynamics` document (not in this repo),
-whose closing subsection keys the plotted panels to its equations.
-Ensembles: `ensemble_setup.py build-twin` + `dnsjax.analysis.twin`.
-A member recorded before a stream existed rebuilds it offline from its
-snapshot pairs: `scripts/twin_postprocess.py` (same diagnostics, same
-writers, sampled on the snapshot grid).
+The streams and their cadences, the `[twin]` surface and the defaults
+that decide what a run costs, the three stream layouts, and the two
+offline scripts: `src/dnsjax/twin/CLAUDE.md`.
 
 ### Transient-growth analysis
 
@@ -483,10 +419,9 @@ dean/viscoelastic-dean/viscoelastic-pipe systems instead integrate the
 
 **Component basis (cylindrical/annular only)**: the state is carried
 in the decoupled `u_±`/spin solver basis and *observed* in physical
-components — so **anything handing a freshly built (physical) state to
-a stepper must convert first**, and a state crosses at most once,
-never back. Cartesian and triply-periodic carry physical components
-always. Rules and rationale: `geometries/wall_bounded/CLAUDE.md`.
+components, so **anything handing a freshly built (physical) state to
+a stepper must convert first**. Rules and rationale:
+`geometries/wall_bounded/CLAUDE.md`.
 
 **Moving frame of reference (`phys.u_grid`)**: translates the
 wall-bounded frame along the grid direction (`None` → laminar bulk;
@@ -562,7 +497,7 @@ layering" above.
 | `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
 | `[probes]` | Extension (`extensions/`): spectral-mode probe stream (wall-bounded) |
 | `[force]`  | Extension: white-in-time stochastic mode kicks; all-or-none and trajectory-defining (wall-bounded, non-viscoelastic) |
-| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + `mean_flow`/`bins`/`x0_planes`/`rotational_ybudget` (Cartesian wall-bounded, fixed dt) |
+| `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + the stream-shaping flags (Cartesian wall-bounded, fixed dt); the fields and their defaults: `twin/CLAUDE.md` |
 
 The default `parameters.toml` contains only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`; the rest rely on
@@ -621,7 +556,7 @@ and every reader must `lstrip("#")` the header line before splitting
 it.
 
 Every stream with a sidecar carries a `format_version` enforced
-against the reader's `MIN_FORMAT_VERSION`, like the snapshot one —
+against the reader's own floor constant, like the snapshot one —
 six writer/reader pairs: `extensions/probes.py` and `forcing.py` →
 `analysis/response/probes.py` and `ssi.py`; `twin/spectra.py` and
 `twin/driver.py` (`twin.json`) → `analysis/twin/spectra.py` and
@@ -686,9 +621,9 @@ mean. `t`/`it`/`isnap` continue only when
   replicates the array on every device, which shows only at
   `np0 > 1, np1 > 1`, so audit on a `(2, 2)` mesh. Jitting costs a
   compile: for repeated reshards, not once-per-run ones. Pattern,
-  numbers and failure signature: `snapshot.py`'s `_via_mid` /
-  `_to_io_layout_core`; audit recipe:
-  `~/.claude/plans/reshard-audit-jitted-collectives.md`.
+  numbers and failure signature (XLA's "Involuntary full
+  rematerialization"): `snapshot.py`'s `_via_mid` /
+  `_to_io_layout_core`.
 - A **global (multi-device) array reaches a jitted function as an
   argument**, never through a closure or a `static_argnames` entry
   holding it: a baked-in constant is legal on one process and raises at
@@ -764,63 +699,14 @@ All under `scripts/`; full rationale/usage in each module docstring.
   perturbation into an existing snapshot.
 - `ensemble_setup.py`: JAX-free `harvest`/`build`/`build-twin` CLI
   building ensemble member run trees from a snapshot archive.
-- `twin_postprocess.py`: CLI rebuilding `twin.dat` /
-  `twin_yspectra.bin` / `twin_ybudget.bin` / `stats.dat` /
-  `stats_twin.dat` offline from a twin member's snapshot pairs
-  (`[recon]` section) -- for members recorded before a stream existed.
-  The stream-shaping `[recon]` flags (`spectra_ref`,
-  `rotational_ybudget`, `x0_planes`) are stated, not inherited: match
-  what the run wrote, which its sidecars name.
-  Bit-for-bit except the `stats*.dat` driving columns, which no
-  reconstruction can give back as the *applied* force (why, and what
-  it writes instead: its module docstring).
-- `twin_spectral_maps.py`: CLI + library rendering `k`-premultiplied
-  `(lambda, y)` contour maps of an ensemble
-  (`--members` or a `build-twin` `--tree`) of twin
-  `twin_yspectra.bin` / `twin_ybudget.bin` streams, one figure per
-  sample, in inner units against a **measured** `Re_tau`; plus one
-  `(y, t)` **spacetime** figure per `k`-summed quantity for the whole
-  run. What it draws by default is one family, the **spectra**
-  stream's two marginals; the other **five are opt-in**, each behind
-  its own flag: `--decorr` / `--decorr-k` add the two decorrelations,
-  `--spacetime` the `(y, t)` maps of whatever else is selected,
-  `--budget` the `twin_ybudget` series, `--x0` the `k_x = 0` plane
-  where a stream carries one. `R^k`'s spacetime map needs
-  `--decorr-k` **and** `--spacetime`, which falls out of
-  `default_series`' predicate rather than being special-cased.
-  `--series` names exact tags, overriding all five.
-  **The two decorrelations differ only in their divisor's treatment
-  of `k`, and everything else follows**: `R^k = e/(2 D(y))` over the
-  `k`-summed reference stays additive in `k`, so it keeps the
-  premultiplier and has a spacetime sibling; `R = e/(2 <r(y,k)>_t)`
-  divides mode by mode and has neither. **Only the reference loses
-  its `(0,0)` mode** -- from every divisor and from every reference
-  `k`-sum; the perturbation keeps its own, which is why a `k`-summed
-  map is the total difference energy at that `y`. A `k`-sum is
-  marginal-free (`check_k_sum` asserts it), so a spacetime series is
-  one figure of four panels, never one per marginal, and is **never**
-  premultiplied. Each is drawn twice, linear and log (floored
-  `--log-decades` below the peak, or at the smallest positive value
-  drawn), with a `.npz` of the drawn arrays and every factor behind
-  them; a signed series gets no log figure. Other defaults:
-  log-log axes floored at `y+ = 1` (`Y_FLOOR_PLUS`),
-  premultiplied by `k` **only** -- the usual convention for a
-  spectrum, not the paper's `k y`, which `--premultiply ky` restores;
-  `--yscale linear` keeps the wall row and takes `--box-aspect` for
-  the panel shape, the decade rule fixing the abscissa either way.
-  Colour scales are read over the rows the box shows, floor included.
-  The two complete spectral marginals are drawn over a time-averaged
-  per-component `E_ref` (the `k_x = 0` plane stays absolute), each
-  panel's title reporting the number so absolute values stay
-  recoverable. `E_ref` subtracts the `(0,0)` mode off the stream's
-  own `_xz00` field, or off `_x0`'s first column on a pre-`_xz00`
-  member -- all three stream layouts render, and a member set that
-  mixes them is refused. That average assumes the members subsample **one**
-  reference trajectory -- distinct absolute sample times are distinct
-  reference states -- and reports the parent count so a set that is
-  not can be spotted. The only script needing matplotlib -- `uv run
-  --group plots python scripts/twin_spectral_maps.py` (the `plots`
-  dependency group; `uv sync` alone does not install it).
+- `twin_postprocess.py`: CLI rebuilding a twin member's streams
+  offline from its snapshot pairs (`[recon]`), for members recorded
+  before a stream existed -- see `src/dnsjax/twin/CLAUDE.md`.
+- `twin_spectral_maps.py`: CLI + library drawing the twin `(y, k)`
+  streams as `(lambda, y)` and `(y, t)` maps over an ensemble -- see
+  `src/dnsjax/twin/CLAUDE.md`. The **only** script needing matplotlib
+  -- `uv run --group plots python scripts/twin_spectral_maps.py` (the
+  `plots` dependency group; `uv sync` alone does not install it).
 - `wall_normal_resolution.py`: JAX-free `resolve`/`match`/`box` CLI
   sizing `res.ny`/`fd_order`/`geo.grid_type` against a Chebyshev
   expansion of a given order (Cartesian family only).
@@ -932,11 +818,8 @@ are one-liners. Cross-cutting notes:
 - `test_twin_budget.py`: twin budget closure per flow / driving mode
   on a wall-normal ladder
   (`--only`/`--ladder`/`--seeds`/`--measure`/`--quick`).
-- `test_twin_spectral_maps.py`: `scripts/twin_spectral_maps.py`
-  premultiplication, `E_ref`, the two decorrelations and the
-  spacetime maps, colour scales, the default series and all three
-  stream layouts, on in-memory streams (skips without the `plots`
-  group).
+- `test_twin_spectral_maps.py`: `scripts/twin_spectral_maps.py` on
+  in-memory streams (skips without the `plots` group).
 - `test_twin_unit.py`: twin diagnostics on a (2,2) mesh.
 - `test_twin_driver.py`: `dnsjax-twin` integration via mpirun
   (`--only <frag>` runs a subset, `--seed`/`--mean-free` vary the

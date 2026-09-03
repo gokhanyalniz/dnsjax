@@ -31,8 +31,9 @@ Usage::
 
     uv run pytest                            # everything available
     uv run pytest -m "not slow and not mpi"  # offline: no solver runs
-    uv run pytest -m "not slow"              # + the two quick mpirun
-                                             #   rows (probes, forcing)
+    uv run pytest -m "not slow"              # + the four quick mpirun
+                                             #   rows (probes, forcing,
+                                             #   seeding, twin_postprocess)
     uv run pytest -k padding                 # a single script
 """
 
