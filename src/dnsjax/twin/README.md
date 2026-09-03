@@ -53,7 +53,7 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.it_spectra` | unset | Steps between `twin_spectra.bin` records; unset disables the stream |
 | `twin.it_yspectra` | unset | Steps between `twin_yspectra.bin` records (wall-normal-resolved componentwise spectra). Needs an even `res.nz` |
 | `twin.it_ybudget` | unset | Steps between `twin_ybudget.bin` records (the same bins' budget). Needs an even `res.nz` |
-| `twin.rotational_ybudget` | `False` | Write that budget with the rotational nonlinear term instead of the convective one |
+| `twin.rotational_ybudget` | `false` | Write that budget with the rotational nonlinear term instead of the convective one |
 | `twin.spectra_ref` | `true` | Also compute and store the reference spectrum with each `it_spectra` / `it_yspectra` sample; off, it is never traced |
 
 `twin.bins` and `twin.x0_planes` are both off by default, and both
@@ -200,10 +200,10 @@ work, and the rest into the production. The two forms differ
 by a gradient, so volume totals agree while the $y$-densities move
 between production, transfer and `Wp`. An eighth column, `P_lift`,
 carries the convective `P_U` unchanged and outside the sum — the
-classical $-\sigma\,\mathrm{Re}\{\Delta\hat u_i^*\Delta\hat
-v\}\,\partial_y U^{(1)}_i$ density, otherwise unrecoverable from
-what the streams hold, and the piece a channel-budget reader will
-look for.
+classical density
+$-\sigma\,\mathrm{Re}\{\Delta\hat u_i^*\Delta\hat v\}\,\partial_y U^{(1)}_i$,
+otherwise unrecoverable from what the streams hold, and the piece a
+channel-budget reader will look for.
 
 Both wavenumber axes are one-sided, with $|k_z|$ folded — a
 requirement, not a convenience: the stored half-plane's entries are

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="286"
+     viewBox="0 0 900 286" role="img"
+     aria-label="One dnsjax time step: the sharded spectral state, the 3/2-dealiased pseudo-spectral nonlinear term, a per-mode banded influence-matrix solve, and the corrector loop back to the state.">
+  <style>
+    .b { fill: none; stroke: #7d8590; stroke-width: 1.4; }
+    .a { fill: none; stroke: #7d8590; stroke-width: 1.4; }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+            Helvetica, Arial, sans-serif; fill: #e6edf3; }
+    .t { font-size: 14px; font-weight: 600; }
+    .s { font-size: 12.5px; }
+    .l { font-size: 12px; fill: #9198a1; }
+    .n { font-size: 11.5px; fill: #9198a1; font-style: italic; }
+  </style>
+  <defs>
+    <marker id="h" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8590"/>
+    </marker>
+  </defs>
+
+  <rect class="b" x="20" y="56" width="250" height="86" rx="7"/>
+  <text class="t" x="145" y="84"  text-anchor="middle">spectral state</text>
+  <text class="s" x="145" y="106" text-anchor="middle">u&#x0302;&#8242; over (y, kz, kx)</text>
+  <text class="l" x="145" y="126" text-anchor="middle">sharded over (np0, np1)</text>
+
+  <rect class="b" x="325" y="56" width="250" height="86" rx="7"/>
+  <text class="t" x="450" y="84"  text-anchor="middle">nonlinear term</text>
+  <text class="s" x="450" y="106" text-anchor="middle">inverse FFT &#8594; 3/2 grid</text>
+  <text class="s" x="450" y="124" text-anchor="middle">u&#8242;&#215;&#969;&#8242; &#8594; forward FFT</text>
+
+  <rect class="b" x="630" y="56" width="250" height="86" rx="7"/>
+  <text class="t" x="755" y="84"  text-anchor="middle">implicit solve</text>
+  <text class="s" x="755" y="106" text-anchor="middle">influence matrix, one banded</text>
+  <text class="s" x="755" y="124" text-anchor="middle">system per (kz, kx) mode</text>
+
+  <path class="a" d="M 270 99 L 318 99" marker-end="url(#h)"/>
+  <path class="a" d="M 575 99 L 623 99" marker-end="url(#h)"/>
+  <text class="l" x="294" y="46" text-anchor="middle">evaluate</text>
+  <text class="l" x="600" y="46" text-anchor="middle">predict</text>
+
+  <path class="a" d="M 755 142 L 755 180 L 145 180 L 145 146" marker-end="url(#h)"/>
+  <text class="l" x="450" y="172" text-anchor="middle">corrector &#8212; iterate to the Crank&#8211;Nicolson fixed point</text>
+
+  <text class="n" x="450" y="222" text-anchor="middle">two reshards move the data across the device grid on the way out, two more on the way back</text>
+  <text class="n" x="450" y="242" text-anchor="middle">every device holds the full wall-normal extent in spectral space, so the per-mode solves need no communication</text>
+  <text class="n" x="450" y="262" text-anchor="middle">Pallas/Triton banded-LU kernel on GPU &#183; the same banded math as a sequential sweep on CPU</text>
+</svg>

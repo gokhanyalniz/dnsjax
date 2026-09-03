@@ -933,7 +933,7 @@ def _write_tar_skeleton(
 
 
 def _metadata_bytes(t: float, it: int, isnap: int = 0) -> bytes:
-    """Serialise the ``_dnsjax_meta.json`` member content.
+    r"""Serialise the ``_dnsjax_meta.json`` member content.
 
     ``git_hash`` records the code revision that wrote the snapshot
     (provenance only -- never read back on load).  Additive keys like
