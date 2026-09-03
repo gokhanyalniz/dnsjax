@@ -710,7 +710,8 @@ All under `scripts/`; full rationale/usage in each module docstring.
   `src/dnsjax/twin/CLAUDE.md`.
 - `snapshot_figure.py`: JAX-free CLI rendering one snapshot as a
   velocity-plane PNG (the `docs/figures/` sources); meridional for
-  cyl/annular, wall-parallel otherwise.
+  cyl/annular, wall-parallel otherwise, and several `--y` stations
+  stacked in a 3D view on one shared colour scale.
 - `wall_normal_resolution.py`: JAX-free `resolve`/`match`/`box` CLI
   sizing `res.ny`/`fd_order`/`geo.grid_type` against a Chebyshev
   expansion of a given order (Cartesian family only).

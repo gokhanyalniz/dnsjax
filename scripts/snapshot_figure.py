@@ -19,8 +19,15 @@ Two views, chosen from the snapshot's own geometry:
   largest `$|u|$`, which is what keeps a puff legible inside a
   100-diameter pipe.
 - **Cartesian / triply-periodic** -- a wall-parallel `$(x, z)$` plane
-  at ``--y``, the view streaks read in.  The default `$y = -0.7$` sits
-  inside the near-wall streak region of a channel.
+  at ``--y``, the view streaks read in.  Which `$y$` that is depends on
+  the flow: the near-wall cycle lives at `$y^+ \approx 15$`, i.e.
+  `$y = -1 + y^+/Re_\tau$`, so a channel at `$Re_\tau \approx 180$`
+  wants `$-0.92$` while a low-`$Re$` Couette box wants far less.
+  Recover `$Re_\tau = \sqrt{Re\,|\mathrm{d}U/\mathrm{d}y|_w}$` from
+  the run's own wall shear -- the laminar value plus the ``tau'_s,*``
+  columns of ``stats.dat`` (or the snapshot's embedded stats).  The
+  ``--y`` default of `$-0.9$` is a near-wall plane at production
+  channel Reynolds numbers, not a universal one.
 
 The quantity is the **stored** field, which is the perturbation `$u'$`
 about the laminar profile for the base-flow systems and the total field
@@ -52,55 +59,51 @@ streamwise one in every family: `$u_x$` for the plane channels and the
 periodic box, `$u_z$` for the pipe and the annulus, whose component
 order is axial-first -- see ``SCALING.md``).
 
-Producing the README figure
----------------------------
-The README's opening figure is the quick-start run of its own
-"Running a simulation" section, taken to `$t = 500$` on one GPU::
-
-    mkdir -p ~/scratch/readme_puff && cd ~/scratch/readme_puff
-    /path/to/dnsjax/.venv/bin/dnsjax \
-      --phys.system pipe --phys.re 2300 \
-      --geo.lz 200 --geo.grid_type half-cgl \
-      --res.nz 512 --res.nr 48 --res.ntheta 96 --res.fd_order 8 \
-      --step.scheme iterative-cn --step.dt 0.01 \
-      --init.localized_rolls True \
-      --init.localized_rolls_amplitude 0.2 \
-      --init.localized_rolls_width 2.0 \
-      --stop.max_sim_time 500 \
-      --outs.it_stats 100 --outs.it_snapshot 5000 \
-      --dist.platform cuda
-
-Puff lifetimes at `$Re = 2300$` are stochastic, so
-``stop.check_laminarization`` may fire first: take the last snapshot
-before it did, or raise ``--phys.re`` to 2600-3000 or
-``--init.localized_rolls_amplitude``.  That is a regime property, not
-a solver setting.  Then::
+Producing the README figures
+----------------------------
+Both come from one plane-Poiseuille snapshot at ``re = 4200``
+(`$Re_\tau \approx 180$`).  The opener stacks three planes -- one near
+each wall at `$y^+ \approx 15$` and one at the centreline::
 
     uv run --group plots python scripts/snapshot_figure.py \
-      ~/scratch/readme_puff/state00010.tar \
-      --out docs/figures/pipe_puff.png --width-px 1600
+        <run>/state00082.tar --y -0.9167 0 0.9167 --bare \
+        --dpi 320 --refine 3 --palette 256 \
+        --out docs/figures/channel-planes.png
 
-and place it in ``README.md`` immediately after the opening paragraph,
-before ``## Highlights``:
+``--bare`` drops the axes and the colourbar: a first-scroll image does
+not need to be readable to three digits, and its caption says what it
+shows.  ``--dpi 320`` puts it at ~1800 px across, so it stays sharp at
+the README's 900 px on a 2x display -- and ``--refine`` has to follow,
+because that is exactly the magnification at which the flat-shaded mesh
+starts to show (below).  ``--palette 256`` then halves the file.
 
-.. code-block:: html
+The single plane, further down, is the same near-wall station on its
+own, annotated::
 
-    <p align="center">
-      <img src="docs/figures/pipe_puff.png" width="900"
-           alt="Axial velocity perturbation of a turbulent puff in
-                pipe flow at Re = 2300.">
-    </p>
-    <p align="center"><sub>
-    A turbulent puff at <code>Re = 2300</code> in a 100-diameter pipe
-    &mdash; the quick-start run below, at <code>t = 500</code>.
-    Meridional plane of the axial velocity perturbation; 512 axial
-    &times; 96 azimuthal Fourier modes, 48 radial points.
-    </sub></p>
+    uv run --group plots python scripts/snapshot_figure.py \
+        <run>/state00082.tar --y -0.9167 \
+        --out docs/figures/channel-streaks.png --width-px 1600
 
-Update the caption's numbers if the configuration changes.  A
-plane-Couette alternative is ``--phys.system plane-couette --phys.re
-500`` in a box a few units on a side, rendered with the default
-``--y``: the wall-parallel streaks.
+``--y`` is the only number that has to move with the snapshot: it is
+`$-1 + y^+/Re_\tau$`, so recompute it from the new run's own friction
+Reynolds number rather than carrying `$-0.9167$` over.  The colour
+scale then fits the data, and the caption's `$Re$`, box and resolution
+come from the embedded parameters -- ``dnsjax.analysis.read_meta``.
+
+A stack shares **one** colour scale across its planes, which is the
+point: the fluctuation decays away from the wall (at `$Re_\tau \approx
+180$` the centreline rms is a third of the near-wall one) and
+normalising each plane separately would hide that.  ``--clip`` sets the
+percentile the shared scale is cut at, ``--clim`` pins it outright.
+
+An alternative subject, when a *localized* structure is the point, is
+the quick-start pipe run of the README's own "Running a simulation"
+section taken to `$t = 500$` (add ``--dist.platform cuda``), rendered
+with ``--window 40``: a turbulent puff inside 100 laminar diameters.
+Puff lifetimes at ``re = 2300`` are stochastic, so
+``stop.check_laminarization`` may fire first -- take the last snapshot
+before it did, or raise ``--phys.re`` to 2600-3000.  That is a regime
+property, not a solver setting.
 
 Animating a sequence
 --------------------
@@ -143,8 +146,16 @@ from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
 
-from dnsjax.analysis import geometry_info, read_state
-from dnsjax.flows.registry import viscoelastic_systems
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _figure_common import (  # noqa: E402
+    LAMINAR_WALL_SHEAR,
+    friction_reynolds,
+    y_plus,
+)
+
+from dnsjax.analysis import geometry_info, read_state, read_stats  # noqa: E402
+from dnsjax.flows.registry import viscoelastic_systems  # noqa: E402
 
 #: Systems whose snapshots store the **total** field rather than a
 #: perturbation about a laminar profile (root ``CLAUDE.md``,
@@ -233,14 +244,29 @@ def _axial_window(plane: np.ndarray, z: np.ndarray, span: float) -> tuple:
     return plane[:, keep], z[keep]
 
 
-def _wall_parallel(field: np.ndarray, y: np.ndarray, y0: float) -> tuple:
-    """The ``(x, z)`` plane of *field* nearest wall-normal ``y0``.
+def _wall_parallel(
+    field: np.ndarray, y: np.ndarray, y0: float, *, demean: bool
+) -> tuple:
+    r"""The ``(x, z)`` plane of *field* nearest wall-normal ``y0``.
 
     *field* is one component in the native layout ``(y, z, x)``; returns
     ``(plane, y_used)`` with ``plane`` of shape ``(n_z, n_x)``.
+
+    With *demean*, the plane's own `$x$`-`$z$` average is subtracted.
+    That is what makes a turbulent wall-parallel plane legible: the
+    stored field is the perturbation about the **laminar** profile, and
+    in a channel that carries a large offset at a fixed height -- at
+    `$y^+ \approx 15$`, `$Re_\tau \approx 180$`, the plane mean is
+    `$\sim\!3\times$` the fluctuation rms about it, so a scale
+    symmetric about zero would paint the whole plane one colour and
+    hide the streaks entirely.  What is left is the fluctuation about
+    the *turbulent* mean at that height, which is the standard
+    quantity; the laminar offset cancels with the mean, so the result
+    carries no prime either way.
     """
     j = int(np.argmin(np.abs(y - y0)))
-    return field[j], float(y[j])
+    plane = field[j]
+    return (plane - plane.mean() if demean else plane), float(y[j])
 
 
 def _render(
@@ -294,6 +320,155 @@ def _render(
     plt.close(fig)
 
 
+def _refine(plane: np.ndarray, factor: int) -> np.ndarray:
+    r"""Interpolate a wall-parallel plane onto a *factor*-finer grid.
+
+    Both in-plane directions are Fourier, so zero-padding the spectrum
+    is **exact** trigonometric interpolation -- the same operation the
+    solver's own 3/2 dealiasing pad performs, not invented detail.
+
+    It is needed because ``plot_surface`` shades each cell flat: magnify
+    a `$192\times160$` plane to 1800 px and the quads are ~9 px across,
+    so the mesh itself becomes visible as a diagonal weave.  Refining
+    the data puts the cells back below the pixel scale.
+
+    The Nyquist row and column are dropped rather than split, which is
+    exact here: dnsjax stores no Nyquist mode on any axis, so the field
+    carries none.
+    """
+    if factor <= 1:
+        return plane
+    n0, n1 = plane.shape
+    k0, k1 = (n0 - 1) // 2, (n1 - 1) // 2  # keep modes -k..+k, no Nyquist
+    spec = np.fft.fft2(plane)
+    out = np.zeros((n0 * factor, n1 * factor), dtype=complex)
+    out[: k0 + 1, : k1 + 1] = spec[: k0 + 1, : k1 + 1]
+    out[: k0 + 1, -k1:] = spec[: k0 + 1, -k1:]
+    out[-k0:, : k1 + 1] = spec[-k0:, : k1 + 1]
+    out[-k0:, -k1:] = spec[-k0:, -k1:]
+    return np.real(np.fft.ifft2(out)) * factor**2
+
+
+def _render_stack(
+    planes, y_used, horiz, vert, *, labels, ticks, out, dpi, cmap, opts
+) -> None:
+    r"""Draw several wall-parallel planes stacked in a 3D view.
+
+    Each plane keeps its own `$x$`-`$z$` mean removed, but they share
+    one symmetric colour scale, so the decay of the fluctuation away
+    from the wall is visible rather than normalised away -- at
+    `$Re_\tau \approx 180$` the centreline rms is a third of the
+    near-wall one, and the middle plane is meant to look fainter.
+
+    Physical `$(x, z, y)$` map onto matplotlib's `$(x, y, z)$`: its
+    third axis is the vertical one on screen, and wall-normal is what
+    has to be vertical for a stack to read as a stack.
+    """
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    lim = opts.clim
+    if lim is None:
+        lim = max(float(np.percentile(np.abs(p), opts.clip)) for p in planes)
+    norm, colormap = Normalize(-lim, lim), plt.get_cmap(cmap)
+
+    fig = plt.figure(figsize=(11, 5.6), dpi=dpi)
+    ax = fig.add_subplot(projection="3d", computed_zorder=False)
+    if opts.refine > 1:
+        planes = [_refine(p, opts.refine) for p in planes]
+        horiz, vert = (
+            c[0]
+            + np.arange(c.size * opts.refine) * (c[1] - c[0]) / opts.refine
+            for c in (horiz, vert)
+        )
+    grid_h, grid_v = np.meshgrid(horiz, vert, indexing="ij")
+    alpha = np.linspace(1.0, opts.top_opacity, len(planes))
+    for rank, k in enumerate(np.argsort(y_used)):
+        ax.plot_surface(
+            grid_h,
+            grid_v,
+            np.full_like(grid_h, y_used[k]),
+            facecolors=colormap(norm(planes[k].T)),
+            shade=False,
+            rstride=1,
+            cstride=1,
+            alpha=float(alpha[rank]),
+            linewidth=0,
+            antialiased=False,
+            rasterized=True,
+        )
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.pane.set_visible(False)
+    ax.grid(False)
+    ax.set_xlabel(labels[0], labelpad=10)
+    ax.set_ylabel(labels[1], labelpad=8)
+    ax.set_zlabel("$y$", labelpad=14)
+    ax.set_xlim(horiz[0], horiz[-1])
+    ax.set_ylim(vert[0], vert[-1])
+    ax.set_zlim(-1.0, 1.0)
+    ax.set_zticks(list(y_used))
+    ax.set_zticklabels(ticks)
+    # The wall-normal ticks sit beside the spanwise ones.
+    ax.tick_params(axis="z", pad=6)
+    ax.tick_params(axis="y", pad=2)
+    ax.set_box_aspect(
+        (
+            float(horiz[-1] - horiz[0]),
+            float(vert[-1] - vert[0]),
+            opts.y_aspect * 2.0,
+        )
+    )
+    ax.view_init(elev=opts.elevation, azim=opts.azimuth)
+    if opts.bare:
+        # A headline image, not a plot: the caption carries what the
+        # axes and the colourbar would otherwise have said.
+        ax.set_axis_off()
+        ax.set_position([0.0, 0.0, 1.0, 1.0])
+    else:
+        ax.set_position([-0.05, 0.11, 1.10, 0.95])
+        bar = fig.colorbar(
+            ScalarMappable(norm=norm, cmap=colormap),
+            cax=fig.add_axes([0.32, 0.20, 0.37, 0.026]),
+            orientation="horizontal",
+        )
+        bar.set_label(labels[2], labelpad=2)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, facecolor="white")
+    plt.close(fig)
+    _trim(out, opts.palette)
+
+
+def _trim(path: Path, palette: int = 0) -> None:
+    """Crop the white margin a 3D axes reserves around its content.
+
+    With *palette* set, the result is also quantised to that many
+    colours.  A figure like this is a smooth colormap ramp over white,
+    so 256 entries reproduce it to well under one level on average --
+    measured on the README figure, mean channel error 0.4/255, with no
+    banding in the pale centreline plane, for half the bytes.  It is
+    opt-in because it *is* lossy, and a figure carrying fine colour
+    detail rather than one ramp would show it.
+    """
+    from PIL import Image
+
+    img = np.asarray(Image.open(path).convert("RGB"))
+    mask = (img < 250).any(axis=2)
+    rows, cols = np.where(mask.any(axis=1))[0], np.where(mask.any(axis=0))[0]
+    pad = 10
+    out = Image.fromarray(
+        img[
+            max(rows[0] - pad, 0) : rows[-1] + pad + 1,
+            max(cols[0] - pad, 0) : cols[-1] + pad + 1,
+        ]
+    )
+    if palette:
+        out = out.quantize(
+            colors=palette, method=Image.MEDIANCUT, dither=Image.NONE
+        )
+    out.save(path, optimize=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The CLI (see the module docstring)."""
     p = argparse.ArgumentParser(
@@ -312,9 +487,55 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--y",
         type=float,
-        default=-0.7,
-        help="wall-normal station of the Cartesian plane (default -0.7)",
+        nargs="+",
+        default=[-0.9],
+        help="wall-normal station(s) of the Cartesian plane (default "
+        "-0.9; the near-wall cycle is at y = -1 + 15/Re_tau).  Give "
+        "several and they are stacked in a 3D view",
     )
+    p.add_argument(
+        "--clip",
+        type=float,
+        default=99.7,
+        help="percentile of |u| setting the shared colour scale of a "
+        "stack (default 99.7); --clim overrides it",
+    )
+    p.add_argument(
+        "--y-aspect",
+        type=float,
+        default=2.2,
+        help="wall-normal exaggeration of a stack (default 2.2)",
+    )
+    p.add_argument(
+        "--palette",
+        type=int,
+        default=0,
+        help="quantise the PNG to this many colours (0 = truecolour); "
+        "256 roughly halves the file of a smooth colormap render",
+    )
+    p.add_argument(
+        "--refine",
+        type=int,
+        default=1,
+        help="interpolate each plane onto a grid this many times finer "
+        "before rendering (exact: both in-plane axes are Fourier).  "
+        "Above ~6 px per cell the flat-shaded mesh shows as a weave; "
+        "raise this rather than lowering --dpi",
+    )
+    p.add_argument(
+        "--bare",
+        action="store_true",
+        help="a stack with no axes, ticks, labels or colourbar -- for a "
+        "headline image whose caption carries what they would have said",
+    )
+    p.add_argument(
+        "--top-opacity",
+        type=float,
+        default=0.7,
+        help="opacity of the topmost plane of a stack",
+    )
+    p.add_argument("--elevation", type=float, default=26.0)
+    p.add_argument("--azimuth", type=float, default=-62.0)
     p.add_argument(
         "--window",
         type=float,
@@ -322,6 +543,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "axial span kept around the largest |u| in the cylindrical / "
             "annular view; 0 keeps the whole domain (default 40)"
+        ),
+    )
+    p.add_argument(
+        "--no-demean",
+        dest="demean",
+        action="store_false",
+        help=(
+            "keep the wall-parallel plane's own mean instead of "
+            "subtracting it (the meridional view never demeans -- its "
+            "plane spans the whole diameter)"
         ),
     )
     p.add_argument(
@@ -356,6 +587,11 @@ def main(argv: list[str] | None = None) -> int:
 
     field = data.physical[0]
     if info.family in ("cylindrical", "annular"):
+        if len(args.y) > 1:
+            raise SystemExit(
+                "snapshot_figure: a stack of wall-parallel planes is a "
+                f"Cartesian view; {system!r} draws the meridional one"
+            )
         r, _theta, z = data.physical_coords
         plane, vert = _meridional(field, r)
         plane, z = _axial_window(plane, np.asarray(z), args.window)
@@ -363,9 +599,53 @@ def main(argv: list[str] | None = None) -> int:
         labels = ("$z$", "$r$", c_label)
     else:
         y, zc, xc = data.physical_coords
-        plane, y_used = _wall_parallel(field, np.asarray(y), args.y)
+        used = [
+            _wall_parallel(field, np.asarray(y), y0, demean=args.demean)
+            for y0 in args.y
+        ]
+        planes = [pl for pl, _ in used]
+        stations = np.array([yy for _, yy in used])
         horiz, vert = _periodic_edges(xc), _periodic_edges(zc)
-        labels = ("$x$", "$z$", f"{c_label}   at $y = {y_used:.3g}$")
+        if args.demean:
+            base = comp.partition("_")[0]
+            sub = _component_label(comp, "")[1:-1].partition("_")[2]
+            c_label = rf"${base}_{sub} - \langle {base}_{sub} \rangle_{{xz}}$"
+        re_tau = (
+            friction_reynolds(read_stats(args.snapshot), data.params)
+            if system in LAMINAR_WALL_SHEAR
+            else None
+        )
+
+        def station(value: float) -> str:
+            text = f"$y = {value:.3g}$"
+            if re_tau is not None:
+                text += rf"$,\ y^+ = {y_plus(value, re_tau):.3g}$"
+            return text
+
+        if len(planes) > 1:
+            # ``argmin`` lands on the centreline at float noise, not 0.
+            ticks = [f"{0.0 if abs(v) < 1e-9 else v:.3g}" for v in stations]
+            print(
+                f"[figure] {system}  {info.family}  component {comp}  "
+                f"{len(planes)} planes at "
+                + ", ".join(f"{v:.3g}" for v in stations)
+                + f"  ->  {args.out}"
+            )
+            _render_stack(
+                planes,
+                stations,
+                np.asarray(xc),
+                np.asarray(zc),
+                labels=("$x$", "$z$", c_label),
+                ticks=ticks,
+                out=args.out,
+                dpi=args.dpi,
+                cmap=args.cmap,
+                opts=args,
+            )
+            return 0
+        plane, y_used = planes[0], float(stations[0])
+        labels = ("$x$", "$z$", f"{c_label}   at {station(y_used)}")
 
     _render(
         plane,

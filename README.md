@@ -22,6 +22,22 @@ Crank–Nicolson); a Crank–Nicolson / Adams–Bashforth alternative trades
 the corrector's stability margin for a single FFT evaluation per step.
 The full formulation is in [`NUMERICS.md`](NUMERICS.md).
 
+<p align="center">
+  <img src="docs/figures/channel-planes.png" width="900"
+       alt="Streamwise velocity fluctuation on three wall-parallel
+            planes through turbulent channel flow, stacked in a 3D
+            view.">
+</p>
+
+<div align="center">
+
+*Turbulent channel flow in a $4\pi \times 2\pi$ box at
+$Re_\tau \approx 180$: streamwise velocity fluctuation on three
+wall-parallel planes — near each wall, and at the centreline.
+Red is faster than the local mean, blue slower.*
+
+</div>
+
 ## Highlights
 
 - **Nine flow systems across four geometries** — pipe, viscoelastic pipe,
@@ -601,6 +617,22 @@ data = read_state(
     return_spectral=True,
 )
 ```
+
+Both README figures are made this way — no JAX, no solver runtime, just
+a snapshot and NumPy (`scripts/snapshot_figure.py`):
+
+<p align="center">
+  <img src="docs/figures/channel-streaks.png" width="820"
+       alt="Streamwise velocity fluctuation in a wall-parallel plane of
+            turbulent channel flow at a friction Reynolds number of 180.">
+</p>
+<div align="center">
+
+*The same run, read back through `read_state`: streamwise velocity
+fluctuation in a wall-parallel plane at $y = -0.917$, $y^+ = 14.9$ —
+the height at which it peaks.*
+
+</div>
 
 The companion `dnsjax.analysis.snapshot_ops` module provides `derivative`,
 `gradient`, `divergence`, `curl`, and `integrate` that reproduce the
