@@ -1742,6 +1742,8 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
         generate_random_state(
             params.init.random_amplitude,
             params.init.random_smoothness,
+            params.init.random_wall_smoothness,
+            params.init.random_wall_confinement,
             params.init.random_seed,
             params.init.random_mean_flow,
         )
@@ -2049,6 +2051,8 @@ def _part_c(geom, flow, m, sharding, trace_dir, hlo_out) -> None:
         generate_random_state(
             params.init.random_amplitude,
             params.init.random_smoothness,
+            params.init.random_wall_smoothness,
+            params.init.random_wall_confinement,
             params.init.random_seed,
             params.init.random_mean_flow,
         )
@@ -2306,6 +2310,8 @@ def main() -> None:
             generate_random_state(
                 params.init.random_amplitude,
                 params.init.random_smoothness,
+                params.init.random_wall_smoothness,
+                params.init.random_wall_confinement,
                 params.init.random_seed,
                 params.init.random_mean_flow,
             )

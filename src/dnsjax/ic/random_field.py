@@ -22,14 +22,61 @@ direction, flat to the wall-normal Nyquist -- which no wall window
 repairs; for the pipe it also makes near-axis regularity unattainable,
 since that is a statement about *derivatives*.
 :func:`_wall_normal_filter` supplies it, weighting the **energy** of
-wall-normal polynomial index `$j$` by `$(1 - s)^{j}$`.  That is
-deliberately not `$A$`'s exponent convention -- `$A$` is an amplitude
-and this is an energy, and `$j$` counts modes where `$|k|$` carries
-units, so the two coincide per index only at `$L = 4\pi$`.  They are
-two laws on purpose: `$s$` buys a physical correlation length where
-there is a box length to measure it against, and a polynomial-degree
-cutoff where there is not.  The triply-periodic family instead carries
-`$|k_y|$` in `$A$` and needs no filter.
+wall-normal polynomial index `$j$` by `$(1 - s_w)^{j}$`, where `$s_w$`
+is the separate ``wall_smoothness`` argument
+(``init.random_wall_smoothness`` / ``twin.wall_smoothness``).
+
+**Why the two are separate knobs.**  They are not the same law -- `$A$`
+is an amplitude and this is an energy, `$j$` counts modes where `$|k|$`
+carries units -- but that alone would not force two *numbers*.  What
+does is that the moment either moves, they want values an order of
+magnitude apart, and moving one is a thing users do: the shipped
+`$s = 0.4$` puts 93 % of a KMM-box perturbation's energy inside
+`$|k_z| \le 2$` and starts every mode above `$|k_z| \approx 45$` below
+round-off, which a high-Reynolds-number twin campaign has good reason
+to change (``scripts/random_ic_calibrate.py``).  The wall-normal law
+must **not** follow it down: lowering `$s_w$` moves the wall-normal
+profile *away* from the wall rather than towards it (the wall window,
+not the filter, is what sets that distribution -- see
+:func:`_scaled_wall_window`), and `$s_w$` is also what keeps
+grid-white Nyquist content out of the legacy IMM boundary term
+(``tests/test_imm_continuity.py``).  So `$s$` buys a physical
+correlation length where there is a box length to measure it against,
+and `$s_w$` a polynomial-degree cutoff where there is not.  The
+triply-periodic family has neither a filter nor a wall window: it
+carries `$|k_y|$` in `$A$` and takes `$s$` alone.
+
+**What `$s$` is not calibrated to, and why it has not moved.**  Scored
+on the `$(y, k)$` shape a turbulent difference field settles into, a
+ten-member plane-Poiseuille twin ensemble at `$Re_\tau \approx 180$`
+wants `$s \approx 0.04$` (overlap 0.31 -> 0.95) and an HKW minimal
+plane-Couette box at `$Re_\tau \approx 34$` wants `$s \approx 0.15$`.
+The disagreement is physical -- the envelope carries a *physical*
+wavenumber, and the band that amplifies scales with `$Re_\tau$` --
+and it is not the whole story: at the minimal box, where growth can
+actually be measured, it runs the other way.  Over 60 advective units
+the difference energy gains 2.07 decades at `$s = 0.4$`, 1.15 at
+`$0.15$` and 0.09 at `$0.04$`, decaying outright for the first five
+units at the last (two seeds, both).  The shape score is therefore a
+statement about *shape* and not a growth predictor -- the attractor's
+small-scale content is sustained by transfer from larger scales, and
+seeding it directly just feeds `$k^2/Re$`.  `$s$` stays at 0.4 until a
+growth measurement at a Reynolds number with real scale separation
+says otherwise.
+
+**The wall window is scale-dependent** (``random_wall_confinement``,
+the `$a$` of :func:`_scaled_wall_window`): a mode's window peaks where
+the base window equals `$1/(a|k|)$`, so modes below `$1/a$` still fill
+the gap while smaller ones sit nearer the wall.  This is the one factor
+that moves the perturbation's wall-normal distribution at all -- the
+smoothness filter does not, measurably.  Unlike `$s$` it is safe to
+default on: it improves the `$(y, k)$` overlap at both Reynolds
+numbers above, and at the minimal box, where growth is measurable, it
+is exactly neutral (2.07 and 1.65 decades over 60 units with it, the
+same two numbers without).  `$a$` is dimensionless, so it carries no
+Reynolds number and no box length; `$a = 0$` is the plain window; and
+`$|k| = 0$` recovers it whatever `$a$` is, which is why the `$(0, 0)$`
+column and :mod:`dnsjax.ic.mean_mode` see no change from any of this.
 
 The field is then normalised so the volume-averaged L2 norm equals
 ``amplitude``.  Each wall-bounded mode is built by solving continuity for
@@ -250,11 +297,15 @@ def _wall_normal_filter(coord: np.ndarray, decay: float) -> np.ndarray:
     wall-normal direction, i.e. flat all the way to the wall-normal
     Nyquist.  This applies the missing factor: expand the column in the
     orthonormal polynomial basis of *coord*, weight index `$j$` by
-    `$(1-s)^{j/2}$` -- so its *energy* follows `$(1-s)^j$` -- and
-    transform back.  That is **not** the periodic directions'
-    exponent, and not meant to be: theirs is `$(1-s)^{2|k|}$` in
+    `$\sqrt{\text{decay}}^{\,j}$` -- so its *energy* follows
+    `$\text{decay}^{\,j}$` -- and transform back.  *decay* is
+    `$1 - s_w$` from the **separate** ``wall_smoothness`` knob, not the
+    periodic directions' `$1 - s$`: theirs is `$(1-s)^{2|k|}$` in
     energy, in a wavenumber that carries units where `$j$` counts
-    modes.  The module docstring has the argument.
+    modes, and the two calibrate an order of magnitude apart.  The
+    module docstring has the argument, and
+    :func:`_scaled_wall_window` has the reason this is *not* the knob
+    that moves the field's wall-normal energy distribution.
 
     *coord* is the variable the field is smooth in, ascending: `$y$`
     (Cartesian), `$r$` (annular), and `$r^2$` for the pipe -- an
@@ -273,6 +324,58 @@ def _wall_normal_filter(coord: np.ndarray, decay: float) -> np.ndarray:
     t = 2.0 * (np.asarray(coord, dtype=float) - lo) / (hi - lo) - 1.0
     basis, _ = np.linalg.qr(np.polynomial.chebyshev.chebvander(t, n - 1))
     return (basis * decay ** (np.arange(n) / 2.0)) @ basis.T
+
+
+def _scaled_wall_window(
+    base: np.ndarray, k: float, confinement: float
+) -> np.ndarray:
+    r"""The wall window of one mode: *base*, narrowed towards the wall
+    for modes above `$1/a$`.
+
+    *base* is the geometry's own wall window, already normalised to a
+    peak of 1 -- `$1 - y^2$` (Cartesian), `$1 - r$` (pipe, peaking at
+    the axis), `$(r - r_1)(r_2 - r)$` (annulus, peaking at mid-gap).
+    With ``confinement = 0`` it is returned unchanged, which is the
+    behaviour every mode had before this argument existed.  Otherwise
+
+    .. math::
+        w_k = \frac{b\,e^{-a |k| b}}{\max_y b\,e^{-a |k| b}},
+        \qquad b = \text{base},\ a = \text{confinement},
+
+    which peaks at `$b = 1/(a|k|)$` -- inside the range only once
+    `$|k| > 1/a$`, so large scales keep the plain window and smaller
+    ones are pulled towards the wall as `$1/|k|$`.  That is the
+    attached-eddy ridge in one expression, and `$a$` is dimensionless,
+    so it fixes a ratio rather than a wall distance and needs no
+    Reynolds number.
+
+    Why this rather than a smaller ``wall_smoothness``: the wall-normal
+    energy distribution of a windowed draw is set by the window and
+    essentially not by the filter.  Sweeping the filter's `$s_w$` over
+    `$0.4 \to 0.01$` moves the energy-weighted median wall distance of
+    the finished field by under 5 % (and the wrong way); the bare
+    `$(1 - y^2)^2$` energy window alone reproduces the full generator's
+    profile.  Only the window can move it, because `$1 - y^2$` is
+    centre-peaked by construction for any `$s_w$`.
+
+    The narrowing is inert structurally: it is a real, positive,
+    smooth factor applied before the continuity closure, and
+    :func:`_normalize_mode` rescales the column afterwards, so it
+    changes a mode's `$y$` distribution and not its energy, leaves the
+    value/derivative wall conditions of the squared window standing,
+    and commutes with the conjugate pairing (a pair shares `$|k|$`).
+    At `$|k| = 0$` the exponential is 1, so the mean-mode column and
+    the projector built on *base* (:mod:`dnsjax.ic.mean_mode`) are
+    untouched.
+    """
+    # The early return is the exact `$a = 0$` limit, not a sentinel:
+    # it also spares the renormalisation, which would only reproduce
+    # *base* up to whether the base's own peak is exactly 1.
+    if confinement == 0.0:
+        return base
+    w = base * np.exp(-(confinement * k) * base)
+    peak = float(np.max(w))
+    return w / peak if peak > 0.0 else base
 
 
 def _normalize_mode(
@@ -342,6 +445,8 @@ def _periodic_hermitian_raw(
 def generate_cartesian(
     amplitude: float,
     smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
     seed: int,
     mean_flow: bool,
 ) -> Array:
@@ -349,8 +454,10 @@ def generate_cartesian(
 
     Built per device (no full-array replication): each device fills only
     its own ``(k_z, k_x)`` modes, keyed by the global mode index.  The
-    wall-normal velocity carries a squared no-slip window ``(1-y^2)^2``
-    (value and first derivative vanish at the walls), so the
+    wall-normal velocity carries a squared no-slip window
+    ``(1-y^2)^2`` -- narrowed towards the wall by the mode's own
+    wavenumber (:func:`_scaled_wall_window`) -- so its value and first
+    derivative vanish at the walls and the
     continuity-derived component inherits a truncation-level wall value
     (projected by the first corrector step) while the independent
     components keep exact wall zeros.  Returns the sharded spectral state
@@ -395,15 +502,18 @@ def generate_cartesian(
     kz_np = complex_harmonics(nz) * (2 * pi / params.geo.lz)  # (Nkz,)
 
     decay = 1.0 - smoothness
-    wn_filter = _wall_normal_filter(ys_np, decay)
-    window_tang = 1.0 - ys_np**2  # tangential: value zero at the walls
-    window_wn = window_tang**2  # wall-normal: value + derivative zero
+    wn_filter = _wall_normal_filter(ys_np, 1.0 - wall_smoothness)
+    # Base wall window (peak 1 at the centreline); each mode narrows it
+    # towards the wall by its own wavenumber (``_scaled_wall_window``).
+    window_base = 1.0 - ys_np**2
 
     # One factorization for the single (0, 0) column, hoisted out of
     # the mode loop (and skipped entirely when the mode is zeroed).
+    # It takes the *base* window, which is what ``_scaled_wall_window``
+    # returns at |k| = 0 -- the mean mode's own window, unchanged.
     project_mean = (
         build_cartesian_projector(
-            D1_np, np.asarray(D2), yw_np, window_tang, wn_filter
+            D1_np, np.asarray(D2), yw_np, window_base, wn_filter
         )
         if mean_flow
         else None
@@ -416,6 +526,10 @@ def generate_cartesian(
             for lj in range(nkx):
                 g3 = kx_start + lj  # global k_x index (axis 3, real)
                 kx_val = kx_np[g3]
+                window_tang = _scaled_wall_window(
+                    window_base, np.hypot(kx_val, kz_val), wall_confinement
+                )
+                window_wn = window_tang**2  # value + derivative zero
                 if g3 == 0:
                     col = _hermitian_column(seed, g2, nz, ny)
                 else:
@@ -459,6 +573,8 @@ def generate_cartesian(
 def generate_cylindrical(
     amplitude: float,
     smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
     seed: int,
 ) -> Array:
     r"""Generate a random perturbation for pipe flow.
@@ -468,7 +584,9 @@ def generate_cylindrical(
     the sharded spectral state of shape ``(3, Nr, Nm, Nkz)`` in
     `$(u_z, u_r, u_\theta)$` form.  `$u_r$` and `$u_\theta$` carry a
     squared wall window `$(1-r)^2$` (value and first derivative vanish
-    at `$r = 1$`), so for `$k_z \neq 0$` the continuity-derived `$u_z$`
+    at `$r = 1$`), narrowed towards the wall by the mode's own
+    wavenumber (:func:`_scaled_wall_window`), so for
+    `$k_z \neq 0$` the continuity-derived `$u_z$`
     inherits a truncation-level wall value (projected by the first
     corrector step).  The inner end `$r = 0$` is the axis, not a wall,
     and every column carries the **axis-regularity** envelope
@@ -532,9 +650,9 @@ def generate_cylindrical(
     # Filter in x = r^2: an axis-regular field is analytic in it, so the
     # filtered draw is even in r and the r^|m_eff| envelope below
     # supplies the parity.
-    wn_filter = _wall_normal_filter(rs_np**2, decay)
-    window_wall = 1.0 - rs_np  # u_z: f(1) = 0
-    window_wn = window_wall**2  # u_r/u_th: value + derivative zero at r=1
+    wn_filter = _wall_normal_filter(rs_np**2, 1.0 - wall_smoothness)
+    # Base wall window, peak 1 at the axis; narrowed per mode below.
+    window_base = 1.0 - rs_np  # u_z: f(1) = 0
 
     def fill_local(buf, m_start, n_m, kz_start, n_kz):
         for li in range(n_m):
@@ -546,6 +664,10 @@ def generate_cylindrical(
             for lj in range(n_kz):
                 g3 = kz_start + lj  # global k_z index (axis 3, real)
                 kz_val = kz_np[g3]
+                window_wall = _scaled_wall_window(
+                    window_base, np.hypot(kz_val, m_val), wall_confinement
+                )
+                window_wn = window_wall**2  # value + derivative zero
                 if g3 == 0:
                     col = _hermitian_column(seed, g2, nz, Nr)
                 else:
@@ -618,6 +740,8 @@ def generate_cylindrical(
 def generate_annular(
     amplitude: float,
     smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
     seed: int,
 ) -> Array:
     r"""Generate a random perturbation for Taylor-Couette flow.
@@ -627,7 +751,9 @@ def generate_annular(
     the sharded spectral state of shape ``(3, Nr, Nm, Nkz)`` in
     `$(u_z, u_r, u_\theta)$` form.  `$u_r$` and `$u_\theta$` carry a
     squared no-slip window `$((r-r_1)(r_2-r))^2$` (value and first
-    derivative vanish at both walls), so for `$k_z \neq 0$` the
+    derivative vanish at both walls), narrowed towards the walls by the
+    mode's own wavenumber (:func:`_scaled_wall_window`), so for
+    `$k_z \neq 0$` the
     continuity-derived `$u_z$` inherits a truncation-level wall value
     (projected by the first corrector step); the independent components
     keep exact wall zeros.  For `$k_z = 0$` the axial `$u_z$` drops out
@@ -672,11 +798,11 @@ def generate_annular(
     m_np = params.geo.m0 * complex_harmonics(nz)
 
     decay = 1.0 - smoothness
-    wn_filter = _wall_normal_filter(rs_np, decay)
-    # No-slip window: zero at both walls, peak 1 in the interior.
-    window_lin = (rs_np - r1) * (r2 - rs_np)
-    window_lin = window_lin / np.max(window_lin)
-    window_wn = window_lin**2  # u_r/u_th: value + derivative zero at walls
+    wn_filter = _wall_normal_filter(rs_np, 1.0 - wall_smoothness)
+    # No-slip window: zero at both walls, peak 1 at mid-gap; narrowed
+    # towards the walls per mode below (``_scaled_wall_window``).
+    window_base = (rs_np - r1) * (r2 - rs_np)
+    window_base = window_base / np.max(window_base)
 
     def fill_local(buf, m_start, n_m, kz_start, n_kz):
         for li in range(n_m):
@@ -685,6 +811,10 @@ def generate_annular(
             for lj in range(n_kz):
                 g3 = kz_start + lj  # global k_z index (axis 3, real)
                 kz_val = kz_np[g3]
+                window_lin = _scaled_wall_window(
+                    window_base, np.hypot(kz_val, m_val), wall_confinement
+                )
+                window_wn = window_lin**2  # value + derivative zero
                 if g3 == 0:
                     col = _hermitian_column(seed, g2, nz, Nr)
                 else:
@@ -829,6 +959,8 @@ def generate_viscoelastic_dean(
     amplitude: float,
     conf_amplitude: float,
     smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
     seed: int,
 ) -> Array:
     r"""Random 9-component IC for viscoelastic (sPTT) Dean flow.
@@ -884,10 +1016,9 @@ def generate_viscoelastic_dean(
     m_np = params.geo.m0 * complex_harmonics(nz)
 
     decay = 1.0 - smoothness
-    wn_filter = _wall_normal_filter(rs_np, decay)
-    window_lin = (rs_np - r1) * (r2 - rs_np)
-    window_lin = window_lin / np.max(window_lin)
-    window_wn = window_lin**2
+    wn_filter = _wall_normal_filter(rs_np, 1.0 - wall_smoothness)
+    window_base = (rs_np - r1) * (r2 - rs_np)
+    window_base = window_base / np.max(window_base)
 
     def fill_local(buf, m_start, n_m, kz_start, n_kz):
         for li in range(n_m):
@@ -897,6 +1028,10 @@ def generate_viscoelastic_dean(
                 g3 = kz_start + lj
                 kz_val = kz_np[g3]
                 envelope = decay ** (abs(kz_val) + abs(m_val))
+                window_lin = _scaled_wall_window(
+                    window_base, np.hypot(kz_val, m_val), wall_confinement
+                )
+                window_wn = window_lin**2
 
                 # Velocity (rows 0:3): divergence-free draw.
                 if g3 == 0:
@@ -1017,6 +1152,8 @@ def generate_viscoelastic_pipe(
     amplitude: float,
     conf_amplitude: float,
     smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
     seed: int,
 ) -> Array:
     r"""Random 9-component IC for viscoelastic (sPTT) pipe flow.
@@ -1081,9 +1218,8 @@ def generate_viscoelastic_pipe(
     # Filter in x = r^2 (an axis-regular field is analytic in it), then
     # a wall window; the r^|m+s| envelopes below supply the axis
     # behaviour and the parity, for the velocity and the tensor alike.
-    wn_filter = _wall_normal_filter(rs_np**2, decay)
-    window_wall = 1.0 - rs_np
-    window_wn = window_wall**2
+    wn_filter = _wall_normal_filter(rs_np**2, 1.0 - wall_smoothness)
+    window_base = 1.0 - rs_np
 
     def fill_local(buf, m_start, n_m, kz_start, n_kz):
         for li in range(n_m):
@@ -1098,6 +1234,10 @@ def generate_viscoelastic_pipe(
                 g3 = kz_start + lj
                 kz_val = kz_np[g3]
                 envelope = decay ** (abs(kz_val) + abs(m_val))
+                window_wall = _scaled_wall_window(
+                    window_base, np.hypot(kz_val, m_val), wall_confinement
+                )
+                window_wn = window_wall**2
 
                 # ── Velocity (rows 0:3): the divergence-free pipe draw
                 # of ``generate_cylindrical`` (same windows, envelope
@@ -1275,6 +1415,8 @@ def generate_triply_periodic(
 def generate_random_state(
     amplitude: float,
     smoothness: float,
+    wall_smoothness: float,
+    wall_confinement: float | None,
     seed: int,
     mean_flow: bool = False,
 ) -> Array:
@@ -1292,6 +1434,12 @@ def generate_random_state(
     generator: every other flow defers the knob, so its mean mode is
     zeroed unconditionally (module docstring).
 
+    *wall_smoothness* and *wall_confinement* reach only the wall-bounded
+    generators, and their surfaces are the only ones offering them
+    (``wall_fields()``): the triply-periodic family has neither a
+    wall-normal filter nor a wall window, so it takes *smoothness*
+    alone and both arguments are ignored for it.
+
     Requires JAX to be configured and the parameter singletons set (the
     geometry ``fourier`` singleton is built lazily by the dispatched
     generator's import).
@@ -1301,8 +1449,19 @@ def generate_random_state(
         assert 0 < smoothness < 1, (
             "0 < smoothness < 1 required for wall-bounded random states"
         )
+        assert 0 < wall_smoothness < 1, (
+            "0 < wall_smoothness < 1 required for wall-bounded random states"
+        )
+        assert wall_confinement >= 0, "wall_confinement must be >= 0"
     if system in cartesian_systems:
-        return generate_cartesian(amplitude, smoothness, seed, mean_flow)
+        return generate_cartesian(
+            amplitude,
+            smoothness,
+            wall_smoothness,
+            wall_confinement,
+            seed,
+            mean_flow,
+        )
     # Rheology before geometry: the viscoelastic systems are members of
     # their geometry's list too, and need the 9-component builder (see
     # ``flows.registry``).
@@ -1311,6 +1470,8 @@ def generate_random_state(
             amplitude,
             params.init.random_conformation_amplitude,
             smoothness,
+            wall_smoothness,
+            wall_confinement,
             seed,
         )
     if system in cylindrical_viscoelastic_systems:
@@ -1318,12 +1479,18 @@ def generate_random_state(
             amplitude,
             params.init.random_conformation_amplitude,
             smoothness,
+            wall_smoothness,
+            wall_confinement,
             seed,
         )
     if system in cylindrical_systems:
-        return generate_cylindrical(amplitude, smoothness, seed)
+        return generate_cylindrical(
+            amplitude, smoothness, wall_smoothness, wall_confinement, seed
+        )
     if system in annular_systems:
-        state = generate_annular(amplitude, smoothness, seed)
+        state = generate_annular(
+            amplitude, smoothness, wall_smoothness, wall_confinement, seed
+        )
         if system == "dean":
             state = add_dean_laminar(state)
         return state

@@ -242,7 +242,7 @@ def test_e0_convention() -> None:
     from dnsjax.ic.random_field import generate_random_state
 
     e0 = 1e-6
-    delta = generate_random_state(math.sqrt(2.0 * e0), 0.4, seed=7)
+    delta = generate_random_state(math.sqrt(2.0 * e0), 0.4, 0.4, 0.14, seed=7)
     e_delta = float(get_perturbation_energy(delta))
     assert_allclose(e_delta, e0, rtol=1e-12)
 
@@ -250,7 +250,7 @@ def test_e0_convention() -> None:
     factor = math.sqrt(e0 / e_delta)
     assert abs(factor - 1.0) < 1e-12
 
-    state1 = generate_random_state(0.05, 0.4, seed=11)
+    state1 = generate_random_state(0.05, 0.4, 0.4, 0.14, seed=11)
     tvals = td.twin_energies(state1, state1 + delta * factor, bins=True)
     # (state1 + delta) - state1 cancels state1 to eps * |state1|,
     # which is eps * (|state1|/|delta|) relative to delta.
@@ -752,8 +752,8 @@ def _solenoidal_pair(amp: float = 0.01):
     deliberately lack)."""
     from dnsjax.ic.random_field import generate_random_state
 
-    s1 = generate_random_state(0.05, 0.4, 11, False)
-    return s1, s1 + generate_random_state(amp, 0.4, 23, False)
+    s1 = generate_random_state(0.05, 0.4, 0.4, 0.14, 11, False)
+    return s1, s1 + generate_random_state(amp, 0.4, 0.4, 0.14, 23, False)
 
 
 #: Relative floor for a sum that is exactly zero by pointwise

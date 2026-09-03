@@ -638,6 +638,8 @@ def run(wall_time_start: int) -> None:
         state = generate_random_state(
             params.init.random_amplitude,
             params.init.random_smoothness,
+            params.init.random_wall_smoothness,
+            params.init.random_wall_confinement,
             params.init.random_seed,
             params.init.random_mean_flow,
         )
@@ -645,6 +647,8 @@ def run(wall_time_start: int) -> None:
             "Started from an in-process random IC: "
             f"amplitude={params.init.random_amplitude}, "
             f"smoothness={params.init.random_smoothness}, "
+            f"wall_smoothness={params.init.random_wall_smoothness}, "
+            f"wall_confinement={params.init.random_wall_confinement}, "
             f"seed={params.init.random_seed}."
         )
     else:

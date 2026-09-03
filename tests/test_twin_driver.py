@@ -172,7 +172,7 @@ def _build_parents() -> None:
     from dnsjax.ic.random_field import generate_random_state
     from dnsjax.snapshot import save_snapshot
 
-    state = generate_random_state(0.1, 0.4, 1)
+    state = generate_random_state(0.1, 0.4, 0.4, 0.14, 1)
     if _OUT is not None:  # --build-parent worker invocation
         save_snapshot(state, PARENT_T, PARENT_IT, _OUT, isnap=0)
         return

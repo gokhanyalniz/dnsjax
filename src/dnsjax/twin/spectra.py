@@ -133,6 +133,8 @@ class TwinSpectraStream(BinStream):
                     "seed": twin_values.seed,
                     "e0": twin_values.e0,
                     "smoothness": twin_values.smoothness,
+                    "wall_smoothness": twin_values.wall_smoothness,
+                    "wall_confinement": twin_values.wall_confinement,
                 },
                 "git_hash": git_hash(),
                 "params": recorded_params_dump(params),

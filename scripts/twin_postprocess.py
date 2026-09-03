@@ -650,6 +650,14 @@ def main(argv: list[str] | None = None) -> int:
         e0=source.get("e0"),
         seed=source.get("seed"),
         smoothness=source.get("smoothness", TwinParams().smoothness),
+        # A member recorded before the wall-normal pair existed drove
+        # both laws off one ``smoothness`` and gave every mode the same
+        # wall window -- the driver's own legacy back-fill.
+        wall_smoothness=source.get(
+            "wall_smoothness",
+            source.get("smoothness", TwinParams().smoothness),
+        ),
+        wall_confinement=source.get("wall_confinement", 0.0),
         bins=bins,
         spectra_ref=values.spectra_ref,
         rotational_ybudget=values.rotational_ybudget,

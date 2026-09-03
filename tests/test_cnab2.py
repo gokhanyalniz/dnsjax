@@ -92,6 +92,9 @@ NX, NY, NZ = 8, 17, 8
 NY_PERIODIC = 16
 LX, LZ = 5.0, 5.0
 AMP, SMOOTH, SEED = 0.1, 0.4, 1
+# The wall-normal pair of the random IC, at the shipped defaults
+# (``init.random_wall_smoothness`` / ``random_wall_confinement``).
+WALL_SMOOTH, WALL_CONF = 0.4, 0.14
 # Machine-precision bound for the split, relative to max|rhs|.
 SPLIT_RTOL = 5e-13
 
@@ -448,7 +451,9 @@ def _worker(system: str) -> None:
     # and the steppers work in the geometry's solver basis (the same
     # single crossing ``__main__`` performs).
     to_solver = getattr(fmod, "to_solver_basis", lambda s: s)
-    state = to_solver(generate_random_state(AMP, SMOOTH, SEED))
+    state = to_solver(
+        generate_random_state(AMP, SMOOTH, WALL_SMOOTH, WALL_CONF, SEED)
+    )
     fourier_, flow_ = gmod.fourier, fmod.flow
     wall_bounded = system != "kolmogorov"
 

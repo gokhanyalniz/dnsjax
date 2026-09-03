@@ -66,6 +66,18 @@ says why, the pointers carry the derivations:
 - `mean_flow` defaults **on** -- its own field, not the shared
   `init.random_mean_flow`, because `init.*` is snapshot-inherited in
   both directions (root CLAUDE.md, "Initial conditions").
+- `smoothness` / `wall_smoothness` / `wall_confinement` mirror the
+  three `init.random_*` shape knobs (2026-09-03). Only the last
+  changed behaviour: 0.4 / 0.4 / **0.14**, where the wall window used
+  to be the same for every mode. All three are `_TWIN_MATCH_KEYS`
+  entries, so **a member recorded before the change needs
+  `--twin.wall_confinement 0` to resume** -- no back-fill can
+  reconcile a key whose old behaviour and new default differ (unlike
+  `mean_flow`, whose did not). `wall_smoothness` does back-fill, and
+  its `_TWIN_LEGACY_DEFAULTS` entry is a callable because the old
+  behaviour was `= smoothness` rather than a constant. Why `s` did
+  *not* move, and how to score a candidate: `ic/random_field.py` and
+  `scripts/random_ic_calibrate.py`.
 - `spectra_ref` defaults **on**: the reference spectrum every
   decorrelation divides by.
 

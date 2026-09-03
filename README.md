@@ -212,7 +212,8 @@ fixed precedence: a supplied `init.snapshot` wins over everything, then
 `localized_rolls`, then `random_field` — which is the **default**, so a
 run with no snapshot and no explicit mode starts from a random
 divergence-free field. The random builder takes
-`--init.random_amplitude` / `_smoothness` / `_seed`, plus
+`--init.random_amplitude` / `_smoothness` / `_seed`, the wall-normal
+pair `_wall_smoothness` / `_wall_confinement`, plus
 `_conformation_amplitude` where it applies; the roll builder adds
 `--init.localized_rolls_wavelength` to the amplitude and width shown
 above. On the two plane channels the random field can also perturb the

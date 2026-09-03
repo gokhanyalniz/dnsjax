@@ -204,6 +204,8 @@ _TWIN_MATCH_KEYS: tuple[str, ...] = (
     "e0",
     "seed",
     "smoothness",
+    "wall_smoothness",
+    "wall_confinement",
     "mean_flow",
     "bins",
     "it_energy",
@@ -226,7 +228,26 @@ _TWIN_MATCH_KEYS: tuple[str, ...] = (
 #: mean-free re-states ``--twin.mean_flow False``, which is correct
 #: -- it is a real difference in what was perturbed).  No
 #: :data:`TWIN_FORMAT_VERSION` bump: no existing key changes meaning.
-_TWIN_LEGACY_DEFAULTS: dict[str, object] = {"mean_flow": True}
+#:
+#: A value may be a **callable** of the recorded sidecar, for a key
+#: whose old behaviour was derived rather than constant:
+#: ``wall_smoothness`` did not exist while one ``smoothness`` drove
+#: both the periodic envelope and the wall-normal filter, so a member
+#: recorded then had ``wall_smoothness == smoothness`` whatever that
+#: was.  ``wall_confinement`` is the constant case again -- every mode
+#: carried the same wall window, which is what zero means.
+_TWIN_LEGACY_DEFAULTS: dict[str, object] = {
+    "mean_flow": True,
+    "wall_smoothness": lambda old: old.get("smoothness"),
+    "wall_confinement": 0.0,
+}
+
+
+def _legacy_default(key: str, old: dict) -> object:
+    """The assumed value of a :data:`_TWIN_MATCH_KEYS` entry *key*
+    that *old* does not carry (:data:`_TWIN_LEGACY_DEFAULTS`)."""
+    fallback = _TWIN_LEGACY_DEFAULTS.get(key)
+    return fallback(old) if callable(fallback) else fallback
 
 
 class TwinParams(BaseModel):
@@ -359,8 +380,31 @@ class TwinParams(BaseModel):
         gt=0,
         lt=1,
         description=(
-            "Spectral envelope of the random perturbation "
-            "(init.random_smoothness convention)."
+            "Spectral envelope of the random perturbation over the "
+            "periodic directions (init.random_smoothness convention)."
+        ),
+    )
+    # The wall-normal pair, mirroring ``init.random_wall_smoothness`` /
+    # ``random_wall_confinement``.  They are separate knobs from
+    # ``smoothness`` because they calibrate an order of magnitude apart
+    # and because only the window moves the difference field's
+    # wall-normal distribution (``ic/random_field.py``).
+    wall_smoothness: float = Field(
+        default=0.4,
+        gt=0,
+        lt=1,
+        description=(
+            "Wall-normal envelope of the random perturbation "
+            "(init.random_wall_smoothness convention)."
+        ),
+    )
+    wall_confinement: float = Field(
+        default=0.14,
+        ge=0,
+        description=(
+            "Scale-dependent narrowing of the perturbation's wall "
+            "window (init.random_wall_confinement convention); zero "
+            "gives every mode the same window."
         ),
     )
     # The partner's own knob rather than the shared
@@ -484,6 +528,8 @@ def _validate_twin(values: TwinParams, params) -> None:
             for name in (
                 "seed",
                 "smoothness",
+                "wall_smoothness",
+                "wall_confinement",
                 "mean_flow",
                 "bins",
                 "x0_planes",
@@ -524,6 +570,10 @@ def _validate_twin(values: TwinParams, params) -> None:
         raise ValueError("twin.e0 must be >= 0.")
     if not (0 < values.smoothness < 1):
         raise ValueError("twin.smoothness must lie in (0, 1).")
+    if not (0 < values.wall_smoothness < 1):
+        raise ValueError("twin.wall_smoothness must lie in (0, 1).")
+    if values.wall_confinement < 0:
+        raise ValueError("twin.wall_confinement must be >= 0.")
     for name in (
         "it_energy",
         "it_budget",
@@ -792,7 +842,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         mismatch = [
             k
             for k in _TWIN_MATCH_KEYS
-            if old.get(k, _TWIN_LEGACY_DEFAULTS.get(k)) != current[k]
+            if old.get(k, _legacy_default(k, old)) != current[k]
         ]
         if mismatch:
             raise SystemExit(
@@ -907,6 +957,8 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             delta = generate_random_state(
                 math.sqrt(2.0 * twin_params.e0),
                 twin_params.smoothness,
+                twin_params.wall_smoothness,
+                twin_params.wall_confinement,
                 twin_params.seed,
                 # ``twin.mean_flow`` (on by default), not the shared
                 # ``init.random_mean_flow`` -- see the field's docs.
@@ -1619,6 +1671,8 @@ def _twin_sidecar_stub() -> dict:
         "e0": twin_params.e0,
         "seed": twin_params.seed,
         "smoothness": twin_params.smoothness,
+        "wall_smoothness": twin_params.wall_smoothness,
+        "wall_confinement": twin_params.wall_confinement,
         "mean_flow": twin_params.mean_flow,
         "bins": twin_params.bins,
         "it_energy": twin_params.it_energy,

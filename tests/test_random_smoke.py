@@ -1228,6 +1228,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-sim-time", type=float, default=1.0)
     parser.add_argument("--dt", type=float, default=0.01)
     parser.add_argument("--amplitude", type=float, default=0.1)
+    # The shipped default, so the smoke test drives the initial
+    # condition users actually get.  The random IC's *wall-normal*
+    # shaping (``init.random_wall_smoothness`` /
+    # ``random_wall_confinement``) is not a flag here: it is
+    # wall-bounded-only, so a shared flag would have to be withheld
+    # from the kolmogorov row, and taking the model default covers
+    # every row at once.
     parser.add_argument("--smoothness", type=float, default=0.4)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--it-stats", type=int, default=10)

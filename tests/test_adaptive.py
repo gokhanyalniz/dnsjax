@@ -57,6 +57,9 @@ NX, NY, NZ = 8, 17, 8
 NY_PERIODIC = 16
 LX, LZ = 5.0, 5.0
 AMP, SMOOTH, SEED = 0.1, 0.4, 1
+# The wall-normal pair of the random IC, at the shipped defaults
+# (``init.random_wall_smoothness`` / ``random_wall_confinement``).
+WALL_SMOOTH, WALL_CONF = 0.4, 0.14
 
 # The dt ladder exercised by ``set_dt`` (all well inside stability).
 DT0, DT1, DT2 = 0.01, 0.004, 0.007
@@ -329,7 +332,9 @@ def _worker(system: str, backend: str, consistent_imm: bool = True) -> None:
     # ICs are physical; the steppers work in the solver basis (the
     # same single crossing ``__main__`` performs).
     to_solver = getattr(fmod, "to_solver_basis", lambda s: s)
-    state0 = to_solver(generate_random_state(AMP, SMOOTH, SEED))
+    state0 = to_solver(
+        generate_random_state(AMP, SMOOTH, WALL_SMOOTH, WALL_CONF, SEED)
+    )
 
     # Warm every stepper variant at DT0 (donated args -> copies).
     _, carry, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.zeros_like(state0))

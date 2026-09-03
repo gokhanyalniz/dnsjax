@@ -234,7 +234,7 @@ def _worker_identity(system: str) -> int:
         column = "-dPds'"
     to_solver = getattr(mod, "to_solver_basis", lambda s: s)
 
-    u0 = to_solver(generate_random_state(0.1, 0.6, 11))
+    u0 = to_solver(generate_random_state(0.1, 0.6, 0.4, 0.14, 11))
     u1, err, num_c, aux = mod.predict_and_fully_correct(jnp.copy(u0))
     recorded = float(aux[column])
 

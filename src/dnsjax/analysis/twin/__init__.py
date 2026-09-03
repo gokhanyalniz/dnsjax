@@ -23,7 +23,9 @@ Layout (one module per concern; none is imported by the top-level
   contraction, the three-bin energies recovered from them, and the
   total-in-`$(y, k)$` fluctuation energy (the total with the
   `$(0, 0)$` mode removed) that a difference spectrum is normalised
-  by.
+  by, and the shape overlap of two such spectra that
+  ``scripts/random_ic_calibrate.py`` scores an initial condition
+  with.
 - :mod:`.lengths` -- integral length scales of the difference field
   from a paired snapshot.
 
@@ -68,6 +70,7 @@ from .yspectra import (
     read_twin_ybudget,
     read_twin_yspectra,
     record_dtype,
+    shape_alignment,
     stored_fields,
     stored_suffixes,
 )
@@ -97,6 +100,7 @@ __all__ = [
     "read_dat",
     "read_twin",
     "read_twin_spectra",
+    "shape_alignment",
     "read_twin_ybudget",
     "read_twin_yspectra",
     "record_dtype",
