@@ -1,4 +1,4 @@
-"""Random-IC smoke tests: exercise time integration for all flows.
+r"""Random-IC smoke tests: exercise time integration for all flows.
 
 Starts every distinct stepping machinery (kolmogorov, plane-couette,
 pipe, viscoelastic-pipe, taylor-couette, dean, viscoelastic-dean) from
@@ -15,7 +15,7 @@ comments), with their flow-specific pieces covered by
 transient-growth anchors.
 
 Unlike ``tests/test_laminar_smoke.py`` (which starts from ``u' = 0``, so
-all `$\\omega'$`/`$u'$`-proportional terms -- including the rotational
+all `$\omega'$`/`$u'$`-proportional terms -- including the rotational
 nonlinear term -- vanish), this test feeds a non-trivial field through
 the full nonlinear path, catching advection / ``rhs.py`` regressions a
 laminar run reports as ``err = 0``.  It is also the triply-periodic
@@ -93,7 +93,7 @@ banded-operator variants that entry does not reach (the CPU pure-JAX
 banded path; the Triton kernel itself is GPU-only): ``pipe``
 (parity-selected base band), ``viscoelastic-dean`` (the annular
 stacked ``Hk`` plus the conformation Helmholtz operator ``Hc``,
-`$\\kappa > 0$`) and ``viscoelastic-pipe`` (both of those at once --
+`$\kappa > 0$`) and ``viscoelastic-pipe`` (both of those at once --
 every ``Hc`` band and every per-slot ghost sign is a mode-sharded
 stacked array there); single-device band-vs-dense parity per geometry is
 unit-covered by ``test_cartesian.py`` / ``test_cylindrical.py`` /
@@ -124,7 +124,7 @@ the per-system ``stats.dat`` does not collide.
 Success criteria per system:
 
 1. subprocess exit code 0 (catches hard crashes / exceptions);
-2. the run reached the end (final ``t`` `$\\geq$`
+2. the run reached the end (final ``t`` `$\geq$`
    ``max_sim_time - dt``): it was not cut short by corrector
    divergence (the main loop stops once ``err`` reaches
    ``corrector_tolerance``);

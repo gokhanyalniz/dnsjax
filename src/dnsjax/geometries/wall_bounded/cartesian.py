@@ -330,10 +330,10 @@ def _build_Lk_dir_dense_gpu(D2: Array, k2: Array) -> Array:
 def _build_Hk_dense_gpu(
     D2: Array, k2: Array, dt: float, c: float, nu: float
 ) -> Array:
-    """Build dense `$H_k$` on GPU (dense backend only).
+    r"""Build dense `$H_k$` on GPU (dense backend only).
 
     Returns the implicit operator
-    `$H_k = (1/\\Delta t) I - c \\nu (D_2 - k^2 I)$`
+    `$H_k = (1/\Delta t) I - c \nu (D_2 - k^2 I)$`
     with identity wall rows for no-slip Dirichlet BCs.
     The explicit counterpart `$H_k^-$` is applied matrix-free
     by :func:`_hk_minus_matvec`.
@@ -400,7 +400,7 @@ _WallBoundedOp = DenseJAXSolver | PerModeBandedPallasOperator
 @register_dataclass_pytree
 @dataclass
 class CartesianFlow:
-    """Precomputed data for wall-bounded Cartesian flows.
+    r"""Precomputed data for wall-bounded Cartesian flows.
 
     Subclasses must set ``base_flow`` and ``curl_base_flow``
     *after* calling ``super().__post_init__()``, which builds
@@ -416,15 +416,15 @@ class CartesianFlow:
     D2:
         Second-derivative FD matrix, shape ``(Ny, Ny)``.
     D1_bnd:
-        Boundary rows `$D_1[0,:],\\; D_1[-1,:]$`,
+        Boundary rows `$D_1[0,:],\; D_1[-1,:]$`,
         shape ``(2, Ny)``.
     Lk_op:
         The `$dt$`-independent second-derivative solve, **per flag**:
         the Neumann-BC pressure Poisson operator with the
         primitive `$(v, p)$` IMM (:func:`_build_Lk_band_gpu`), or the
-        Dirichlet `$\\varphi \\to v$` operator with
+        Dirichlet `$\varphi \to v$` operator with
         ``res.consistent_imm`` (:func:`_build_Lk_dir_band_gpu`;
-        the `$v$`-`$\\omega_y$` scheme has no pressure).
+        the `$v$`-`$\omega_y$` scheme has no pressure).
     q1, q2:
         The horizontal potentials `$H_k^{-1} p_b$` of the primitive
         IMM's homogeneous columns; ``None`` -- and therefore static
@@ -436,7 +436,7 @@ class CartesianFlow:
         (instead of ``params.step.dt``) so the builder's ``set_dt``
         can change the step without retracing.  ``ab2_kappa`` is
         the companion AB2 step ratio
-        `$\\kappa = \\Delta t_n/\\Delta t_{n-1}$` (1 at fixed
+        `$\kappa = \Delta t_n/\Delta t_{n-1}$` (1 at fixed
         step).
     """
 
@@ -464,7 +464,7 @@ class CartesianFlow:
     H_bulk_inv: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        """Build CGL grid, quadrature weights, FD matrices,
+        r"""Build CGL grid, quadrature weights, FD matrices,
         and IMM operators.
 
         Constructs the Chebyshev-Gauss-Lobatto grid for
@@ -490,7 +490,7 @@ class CartesianFlow:
         ``q2`` of the primitive scheme) is derived from the GPU
         operator by :meth:`_derive_imm_homogeneous_data`.
 
-        ``res.consistent_imm`` selects the `$v$`-`$\\omega_y$`
+        ``res.consistent_imm`` selects the `$v$`-`$\omega_y$`
         formulation (:func:`_imm_iteration_vw`), whose `$L_k$` is
         the Dirichlet build; everything else here is
         flag-independent.

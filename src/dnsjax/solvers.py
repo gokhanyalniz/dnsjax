@@ -1,4 +1,4 @@
-"""Geometry-independent linear solver infrastructure.
+r"""Geometry-independent linear solver infrastructure.
 
 Provides the two solver backends used by wall-bounded geometries: the
 Pallas per-mode banded production solver
@@ -25,7 +25,7 @@ avoid promoting the (large) factors to complex on every solve --
 which `jax.scipy.linalg.lu_solve` would do, tripling the factor
 memory traffic and doubling the triangular-solve FLOPs -- a complex
 RHS is split into a real array with a trailing re/im axis of
-length 2 (`$\\ldots, N_y$` complex `$\\to \\ldots, N_y, 2$` real)
+length 2 (`$\ldots, N_y$` complex `$\to \ldots, N_y, 2$` real)
 and solved as two real RHS columns, then recombined.  The split
 and merge are single fused elementwise passes over the RHS, far
 cheaper than the factor-sized conversion they replace.  The
