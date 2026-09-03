@@ -176,11 +176,11 @@ up-to-date. In the future MkDocs will be used with MathJax, escape
 LaTeX commands appropriately (prefer raw docstrings: `\t`/`\f` in
 non-raw strings silently become control characters). Keep
 documentation lines in code to 79 characters wide. Keep CLAUDE.md
-files up-to-date (root and subdirectory files). The **five**
-human-facing docs -- `README.md` and `SCALING.md` at the root, plus the
-`extensions/`, `twin/` and `analysis/response/` READMEs -- may lag the
-code, so treat the CLAUDE.md files and code docstrings as authoritative
-and do not sync code to one.
+files up-to-date (root and subdirectory files). The **six**
+human-facing docs -- `README.md`, `NUMERICS.md` and `SCALING.md` at the
+root, plus the `extensions/`, `twin/` and `analysis/response/` READMEs
+-- may lag the code, so treat the CLAUDE.md files and code docstrings as
+authoritative and do not sync code to one.
 
 **Documentation layering.** CLAUDE.md files are an index for AI agents,
 not a manual. A line earns its place only if it is (a) a command to
@@ -704,9 +704,10 @@ All under `scripts/`; full rationale/usage in each module docstring.
   before a stream existed -- see `src/dnsjax/twin/CLAUDE.md`.
 - `twin_spectral_maps.py`: CLI + library drawing the twin `(y, k)`
   streams as `(lambda, y)` and `(y, t)` maps over an ensemble -- see
-  `src/dnsjax/twin/CLAUDE.md`. The **only** script needing matplotlib
-  -- `uv run --group plots python scripts/twin_spectral_maps.py` (the
-  `plots` dependency group; `uv sync` alone does not install it).
+  `src/dnsjax/twin/CLAUDE.md`.
+- `snapshot_figure.py`: JAX-free CLI rendering one snapshot as a
+  velocity-plane PNG (the `docs/figures/` sources); meridional for
+  cyl/annular, wall-parallel otherwise.
 - `wall_normal_resolution.py`: JAX-free `resolve`/`match`/`box` CLI
   sizing `res.ny`/`fd_order`/`geo.grid_type` against a Chebyshev
   expansion of a given order (Cartesian family only).
@@ -719,6 +720,11 @@ All under `scripts/`; full rationale/usage in each module docstring.
   multi-GPU correctness (`--cpu-bench`, `--cpu-smoke`).
 - `gds_probe.py`: cluster diagnostic for the snapshot GDS path
   (`--env-only`, `--end-to-end`, `--end-to-end-only`, `--cpu-smoke`).
+
+`twin_spectral_maps.py` and `snapshot_figure.py` are the **only** two
+needing matplotlib: run them as `uv run --group plots python
+scripts/<name>.py` (the `plots` dependency group; `uv sync` alone does
+not install it).
 
 ## Tests
 

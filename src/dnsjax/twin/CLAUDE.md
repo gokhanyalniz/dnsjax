@@ -94,10 +94,10 @@ Ensembles: `scripts/ensemble_setup.py build-twin` + `analysis.twin`.
   are drawn by default; the two decorrelations, the spacetime maps,
   the budget and the `k_x = 0` plane are each behind their own flag.
   What each is, and the premultiplier / `E_ref` / colour-scale
-  conventions: its module docstring. The **only** script needing
-  matplotlib -- `uv run --group plots python
-  scripts/twin_spectral_maps.py` (the `plots` dependency group;
-  `uv sync` alone does not install it).
+  conventions: its module docstring. Needs matplotlib -- `uv run
+  --group plots python scripts/twin_spectral_maps.py` (the `plots`
+  dependency group; `uv sync` alone does not install it, and
+  `snapshot_figure.py` is the only other script in it).
 
 ### Tests
 

@@ -136,7 +136,7 @@ differently:
   ($3/2 \times$ the base resolution of that axis at the default
   oversampling) is rounded up to the next FFT-friendly multiple of
   `np1` when needed (see
-  [Spatial discretization](README.md#spatial-discretization)), which
+  [Spatial discretization](NUMERICS.md#spatial-discretization)), which
   amounts to a sliver of extra oversampling.
 - Independently of the device grid, the **Pallas banded solver** tiles each
   device's $(k_z, k_x)$ mode plane in blocks of
