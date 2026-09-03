@@ -1,4 +1,4 @@
-"""JAX-free offline analysis of twin-run (``dnsjax-twin``) outputs.
+r"""JAX-free offline analysis of twin-run (``dnsjax-twin``) outputs.
 
 Layout (one module per concern; none is imported by the top-level
 ``dnsjax.analysis`` namespace, mirroring ``analysis/response``):
@@ -12,7 +12,7 @@ Layout (one module per concern; none is imported by the top-level
   selects a stream's own cadence grid out of the off-grid rows a
   resume and the final row add.
 - :mod:`.ensemble` -- member-tree aggregation of the twin streams on
-  aligned relative time, and the growth-rate fits (`$\\lambda$` from
+  aligned relative time, and the growth-rate fits (`$\lambda$` from
   the exponential phase, the algebraic-phase linear rate).
 - :mod:`.spectra` -- reader for the ``twin_spectra.bin`` stream
   and the decorrelation ratio.

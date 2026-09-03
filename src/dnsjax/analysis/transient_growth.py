@@ -748,11 +748,11 @@ def _select_modes(
 def _wavenumber_arrays(
     family: str,
 ) -> tuple[np.ndarray, np.ndarray, tuple[str, str]]:
-    """Physical wavenumbers for the two spectral axes (host-recompute).
+    r"""Physical wavenumbers for the two spectral axes (host-recompute).
 
     Axis 2 (from ``nz``) is spanwise `$k_z$` / azimuthal `$m$`; axis 3
     (from ``nx``, the real-FFT axis) is streamwise `$k_x$` / axial.
-    Recomputed from :mod:`dnsjax.harmonics` scaled by `$2\\pi/L$`, per
+    Recomputed from :mod:`dnsjax.harmonics` scaled by `$2\pi/L$`, per
     the global-array caveat in the ``fourier`` singleton docstrings.
     """
     nx, nz = params.res.nx, params.res.nz
@@ -915,16 +915,16 @@ def _dispatch(system: str) -> tuple[Any, Any, str]:
 
 
 def _linear_step(gmod: Any, fmod: Any = None):
-    """Return the pure-linear implicit step ``(state, fourier, flow)``.
+    r"""Return the pure-linear implicit step ``(state, fourier, flow)``.
 
     Feeds the geometry's FFT-free linear coupling ``_l_bf`` as the RHS
     and no ``l_bf_fn`` (unsplit corrector), so the converged
-    predict-and-fully-correct is the exact `$\\theta$`-implicit linear
+    predict-and-fully-correct is the exact `$\theta$`-implicit linear
     step of viscous + coupling + influence-matrix pressure, with the
     nonlinear self-advection never formed.
 
     On the cylindrical/annular flows every array crossing the raw
-    stepper is in the decoupled `$u_\\pm$` solver basis, so the
+    stepper is in the decoupled `$u_\pm$` solver basis, so the
     returned step wraps it and the propagator -- and everything this
     driver exports -- stays in **physical** components.  Cartesian
     carries physical components already, under both
@@ -1024,11 +1024,11 @@ def _build_propagators(
 
 
 def _energy_weight_diag(family: str, flow: Any) -> np.ndarray:
-    """Diagonal energy weights `$W$` (component-major, length `$3N_y$`).
+    r"""Diagonal energy weights `$W$` (component-major, length `$3N_y$`).
 
     Matches the solver's ``get_norm2*`` kinetic energy up to the
     per-mode ``k_metric`` / ``volume_fac`` constants (which cancel in
-    `$G$`): `$m_c\\,w_y$` with `$m_c = 1$` in every native basis (kept
+    `$G$`): `$m_c\,w_y$` with `$m_c = 1$` in every native basis (kept
     as an explicit per-component metric for the exported
     ``energy_weights``' self-description).
     """

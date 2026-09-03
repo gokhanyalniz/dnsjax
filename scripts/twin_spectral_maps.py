@@ -920,10 +920,10 @@ def _check_cadence(path: Path, times: np.ndarray) -> None:
 
 
 def _twin_record(path: Path) -> dict:
-    """A member's parsed ``twin.json``, or ``{}`` when it has none.
+    r"""A member's parsed ``twin.json``, or ``{}`` when it has none.
 
     Two fields are read off it.  ``parent_t`` is the member's
-    `$t_\\mathrm{parent}$`, the clock the ensemble aligns on -- what
+    `$t_\mathrm{parent}$`, the clock the ensemble aligns on -- what
     :mod:`dnsjax.analysis.twin.series` uses, and the only one that is
     right for a member whose stream begins at a resume rather than at
     the perturbation; the stream's first sample stands in when the
@@ -1017,7 +1017,7 @@ class YSeries:
 
     @property
     def y(self) -> np.ndarray:
-        """Wall-normal grid, `$y \\in [-1, 1]$`."""
+        r"""Wall-normal grid, `$y \in [-1, 1]$`."""
         return np.asarray(self.meta["y"], dtype=np.float64)
 
     @property
@@ -1062,12 +1062,12 @@ class YSeries:
         return ("e", "r") if bool(self.meta["includes_ref"]) else ("e",)
 
     def field(self, name: str) -> np.ndarray:
-        """Ensemble mean of one field over the selected frames.
+        r"""Ensemble mean of one field over the selected frames.
 
         Shape ``(n_frames, 3, n_y, n_k)`` for the spectra and
         ``(n_frames, n_y, n_k)`` for the budget.  The virtual name
         ``sum_<suffix>`` adds the budget terms that make up
-        `$\\partial_t \\hat e$` (:data:`NON_ADDITIVE_TERMS`).
+        `$\partial_t \hat e$` (:data:`NON_ADDITIVE_TERMS`).
         """
         if name in self._cache:
             return self._cache[name]
@@ -1155,7 +1155,7 @@ class YSeries:
         return self._reference
 
     def _build_reference(self) -> tuple[dict[str, np.ndarray], list[str]]:
-        """Accumulate the mean reference record over the members.
+        r"""Accumulate the mean reference record over the members.
 
         One pass over the distinct instants, accumulating the two
         complete reference marginals and the `$(0, 0)$` mode;
@@ -1164,7 +1164,7 @@ class YSeries:
         Accumulating the marginals rather than the scalar is what
         makes the `$y$`- and `$k$`-resolved divisors available at all,
         and it is exact: every step from the stored entry to
-        `$E^{\\mathrm{ref}}$` is linear, so the mean of the reductions
+        `$E^{\mathrm{ref}}$` is linear, so the mean of the reductions
         is the reduction of the mean.  It reads three fields per
         record where the scalar needed one; ``--ref-stride`` is the
         lever if that pass is the expensive one.
@@ -1759,10 +1759,10 @@ def reference_symbol(component: int | None) -> str:
 
 
 def latex_float(value: float, digits: int = 4) -> str:
-    """*value* to *digits* significant figures, as LaTeX math.
+    r"""*value* to *digits* significant figures, as LaTeX math.
 
     ``%g``'s exponent is spelled out, so a title reads
-    `$1.234 \\times 10^{-3}$` rather than ``1.234e-03``.
+    `$1.234 \times 10^{-3}$` rather than ``1.234e-03``.
     """
     text = f"{value:.{digits}g}"
     if "e" not in text:

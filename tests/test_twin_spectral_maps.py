@@ -333,7 +333,7 @@ def _saturated(meta: dict, n_t: int = 3, seed: int = 5) -> np.ndarray:
 
 
 def test_premultiplication() -> None:
-    """A panel is `$m \\times$` entry `$\\times V$`, in stream units."""
+    r"""A panel is `$m \times$` entry `$\times V$`, in stream units."""
     units = tsm.Units(RE, RE_TAU)
     # ``e_x0`` is the absolute spectra panel, so it is the one that
     # exercises the un-normalised branch -- on a legacy member, which
@@ -397,9 +397,9 @@ def test_premultiplication() -> None:
 
 
 def test_ky_is_the_plotted_y() -> None:
-    """``ky``'s second factor is `$y^+$`, so it carries a `$Re_\\tau$`.
+    r"""``ky``'s second factor is `$y^+$`, so it carries a `$Re_\tau$`.
 
-    The `$k$` half is unit-invariant (`$k^+\\Phi^+ = k\\Phi$`) and the
+    The `$k$` half is unit-invariant (`$k^+\Phi^+ = k\Phi$`) and the
     `$y$` half is not, which is the whole difference between a
     wall-unit ``ky`` map and an outer-unit one -- the module
     docstring's "Premultiplication".  Pinned in both directions so
@@ -441,7 +441,7 @@ def test_ky_is_the_plotted_y() -> None:
 
 
 def test_reference_scale() -> None:
-    """`$E^{\\mathrm{ref}}$` and what it does and does not normalise."""
+    r"""`$E^{\mathrm{ref}}$` and what it does and does not normalise."""
     meta = _meta("twin_yspectra", suffixes=LEGACY)
     rec = _records(meta, "twin_yspectra", 4)
     series = _series("twin_yspectra", [_member(meta, rec)])
@@ -811,12 +811,12 @@ def test_open_series() -> None:
 
 
 def test_layouts_and_default_series() -> None:
-    """What each layout offers, what is drawn, and `$E^{ref}$`.
+    r"""What each layout offers, what is drawn, and `$E^{ref}$`.
 
     The three cases are the three streams that exist on disk: a
     pre-``xz00`` member, the current default, and the current default
     under ``twin.x0_planes``.  All three must open; the `$(0, 0)$`
-    mode `$E^{\\mathrm{ref}}$` subtracts is the same number in all
+    mode `$E^{\mathrm{ref}}$` subtracts is the same number in all
     three, whichever field it is read from; and what is *drawn* is the
     two spectra marginals unless a switch asks for more -- each of the
     five adding its own family and nothing else.
@@ -886,7 +886,7 @@ def test_layouts_and_default_series() -> None:
 
 
 def test_reference_scale_is_a_quadrature() -> None:
-    """`$E^{\\mathrm{ref}}$` averages over `$y$` with the *weights*.
+    r"""`$E^{\mathrm{ref}}$` averages over `$y$` with the *weights*.
 
     The stored entries are densities already divided by
     ``volume_fac`` and the weights sum to it, so the contraction is a
