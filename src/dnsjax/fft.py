@@ -178,7 +178,7 @@ def zeropad_fft(
     ----------
     a:
         Input array with ``a.shape[axis] == N - 1 + strip`` stored
-        modes (Nyquist omitted), where *$N$* is the original full mode
+        modes (Nyquist omitted), where `$N$` is the original full mode
         count.
     n:
         Target length (`$\\ge N$`, any parity).

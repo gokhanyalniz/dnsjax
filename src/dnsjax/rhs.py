@@ -4,11 +4,11 @@ The nonlinear term uses the *rotational form* of the
 perturbation Navier--Stokes equation around a base flow
 `$\mathbf{U}$`:
 
-    $$
-    NL = \mathbf{u}' \times \boldsymbol{\omega}' +
+.. math::
+
+    \mathrm{NL} = \mathbf{u}' \times \boldsymbol{\omega}' +
     \mathbf{u}' \times \nabla \times \mathbf{U} +
     \mathbf{U} \times \boldsymbol{\omega}'
-    $$
 
 where `$\mathbf{u}'$` is the perturbation velocity and
 `$\boldsymbol{\omega}' = \nabla \times \mathbf{u}'$`.
