@@ -22,6 +22,24 @@ Crank–Nicolson); a Crank–Nicolson / Adams–Bashforth alternative trades
 the corrector's stability margin for a single FFT evaluation per step.
 The full formulation is in [`NUMERICS.md`](NUMERICS.md).
 
+<a id="fig-planes"></a>
+<p align="center">
+  <img src="docs/figures/channel-planes.webp" width="900"
+       alt="Animation of the streamwise velocity fluctuation on three
+            wall-parallel planes through turbulent channel flow,
+            stacked in a 3D view.">
+</p>
+
+<p align="center"><em>
+Turbulent channel flow in a 4&pi; &times; 2&pi; box at
+Re<sub>&tau;</sub> &asymp; 180: streamwise velocity fluctuation on three
+wall-parallel planes &mdash; near each wall, and at the centreline
+&mdash; over 10 advective time units. Red is faster than the local
+mean, blue slower.<br>
+<a href="#fig-streaks">The bottom near-wall plane alone,
+larger &darr;</a>
+</em></p>
+
 ## Highlights
 
 - **Nine flow systems across four geometries** — pipe, viscoelastic pipe,
@@ -601,6 +619,22 @@ data = read_state(
     return_spectral=True,
 )
 ```
+
+Both README figures are made this way — no JAX, no solver runtime, just
+a snapshot and NumPy (`scripts/snapshot_figure.py`):
+
+<a id="fig-streaks"></a>
+<p align="center">
+  <img src="docs/figures/channel-streaks.webp" width="820"
+       alt="Animation of the streamwise velocity fluctuation in a
+            wall-parallel plane of turbulent channel flow at a friction
+            Reynolds number of 180.">
+</p>
+<p align="center"><em>
+Streamwise velocity fluctuation in the wall-parallel plane at
+<i>y</i> = &minus;0.917, <i>y</i><sup>+</sup> = 14.9.<br>
+<a href="#fig-planes">Three planes stacked &uarr;</a>
+</em></p>
 
 The companion `dnsjax.analysis.snapshot_ops` module provides `derivative`,
 `gradient`, `divergence`, `curl`, and `integrate` that reproduce the
