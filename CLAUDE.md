@@ -14,10 +14,18 @@ integrators (`step.scheme`): the predictor-corrector `"iterative-cn"`
 
 ### Prerequisites
 
-Python >=3.12 (`.python-version` pins 3.14 for development; the floor
-is validated by the offline suite under 3.12), `uv`, MPI (for
-multi-**process** runs only; a lone process needs none, even spanning
-several GPUs).
+Python >=3.12 (`.python-version` pins 3.14 for development), `uv`, MPI
+(for multi-**process** runs only; a lone process needs none, even
+spanning several GPUs).
+
+The dev interpreter and the supported **floor** are independent, and
+`uv lock --upgrade` moves neither -- it only moves package versions.
+The floor is currently exactly where jax/numpy put it; when to move it,
+how uv reports that it must, the silent case (a *fork* in `uv.lock`,
+which desynchronises the CI matrix), and the five places a move touches:
+`CONTRIBUTING.md` "Python versions". **Lowering** it is never a source
+question -- `py_compile` -> import -> the offline suite under the new
+floor, since deferred-annotation reliance is invisible to a grep.
 
 ### Setup
 

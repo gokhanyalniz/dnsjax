@@ -11,6 +11,51 @@ That provisions the pinned Python, installs the dependencies and the
 `prek` in the dev environment. Figure scripts additionally need the
 `plots` group: `uv run --group plots python scripts/snapshot_figure.py`.
 
+## Python versions
+
+Three separate things, and `uv lock --upgrade` changes none of them — it
+only moves package versions within the constraints they set:
+
+| | what it is | changed by |
+|---|---|---|
+| `.python-version` | the interpreter `uv sync` builds `.venv` with | `uv python pin <ver>`; keep it on the newest release |
+| `requires-python` in `pyproject.toml` | the **oldest** version supported | hand-edited, only for the reasons below |
+| `requires-python` in `uv.lock` | a mirror of the above | rewritten by `uv lock` |
+
+Develop on the newest Python. The floor is a separate decision, and it
+moves only when one of these holds:
+
+1. **A dependency forces it.** uv says so outright — set the floor below
+   what the dependencies allow and `uv lock` refuses, naming the version
+   to use: *"The `requires-python` value (>=3.11) includes Python
+   versions that are not supported by your dependencies (e.g.
+   numpy>=2.5.1 only supports >=3.12)."* That is the whole check. The
+   current `>=3.12` is exactly where JAX and NumPy put it.
+2. **The floor has started costing something.** Because uv resolves
+   universally, a package that drops the floor version is not an error:
+   uv either holds it back, or **forks** the lock — a newer version for
+   newer interpreters, an older one for the floor — at which point the
+   two CI matrix jobs are no longer testing the same dependencies. A
+   fork shows up as a duplicated package:
+
+   ```bash
+   grep -E '^name = ' uv.lock | sort | uniq -d   # empty means no fork
+   ```
+
+   Raising the floor is then a judgement call, not a requirement.
+3. **The code wants a feature only a newer Python has**, deliberately,
+   with the reason recorded.
+
+Never raise it merely because the development machine has moved on.
+
+Moving the floor touches five places, none of which derive from each
+other: `requires-python` and the classifiers in `pyproject.toml`, the
+`smoke` matrix in `.github/workflows/ci.yml`, the Python badge in
+`README.md`, and the Prerequisites line in `CLAUDE.md`. **Lowering** it
+additionally requires running the offline suite under the new floor —
+source-level compatibility is necessary but not sufficient, and only a
+real run finds things like reliance on deferred annotation evaluation.
+
 ## Lint and format
 
 ```bash
