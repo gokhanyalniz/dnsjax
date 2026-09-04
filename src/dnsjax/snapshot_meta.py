@@ -105,7 +105,7 @@ def git_hash() -> str:
             text=True,
             timeout=5,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return "unknown"
     version = proc.stdout.strip()
     return version if proc.returncode == 0 and version else "unknown"
