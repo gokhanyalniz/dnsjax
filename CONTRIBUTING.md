@@ -108,12 +108,11 @@ New flows also need a row in `tests/test_laminar_smoke.py` and one in
 ## Documentation
 
 Docstrings, comments and type hints stay current with the code, at 79
-columns; math is LaTeX. The human-facing documents — `README.md`,
-`NUMERICS.md`, `SCALING.md`, the `docs/` pages, `tests/README.md`, and
-the three subpackage READMEs — are updated in the same change that makes
-them wrong. They are written pointer-first: they link the module
-docstring that owns a detail rather than restating it, which is what
-keeps that affordable.
+columns; math is LaTeX. The human-facing documents — `README.md`, this
+file, the `docs/` pages, `tests/README.md`, and the three subpackage
+READMEs — are updated in the same change that makes them wrong. They
+are written pointer-first: they link the module docstring that owns a
+detail rather than restating it, which is what keeps that affordable.
 
 Nothing committed carries a placeholder: no `TODO(author)`, no draft
 block, no section waiting on a number. Content that cannot be finished
