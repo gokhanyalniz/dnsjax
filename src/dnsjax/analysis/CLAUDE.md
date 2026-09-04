@@ -1,7 +1,9 @@
 # `dnsjax.analysis` — JAX-free snapshot post-processing
 
 External-facing API for reading and operating on dnsjax snapshots
-**without the solver runtime**. Not used by the solver itself.
+**without the solver runtime**. Not used by the solver itself. The one
+inbound member, `snapshot_import.py`, is an exception on both counts
+(below).
 
 ## Hard constraint: no JAX
 
@@ -29,6 +31,12 @@ import either from `__init__.py` or any JAX-free module here.
   is what keeps them off the package-level guarantee. The
   JAX-vs-NumPy/SciPy split and the fallbacks: the
   `response/__init__.py` docstring.
+- `snapshot_import.py`: the **inbound** direction -- it configures the
+  parameter singletons and calls `snapshot.save_snapshot`, so it needs
+  the solver runtime. Every JAX import is in-function, so importing it
+  is still NumPy-only. It lives here rather than in `scripts/` because
+  only `src/` is packaged: a `scripts/` copy never reaches an installed
+  `dnsjax`. The native input contract: its module docstring.
 
 ## Conventions
 
@@ -80,6 +88,9 @@ and its rationale: `flows/registry.py`.
   `mode_state_energy` helpers are shared with
   `scripts/snapshot_perturb.py`. See the module docstring and the root
   CLAUDE.md "Transient-growth analysis" note.
+- `snapshot_import.py` — native-layout velocity field -> snapshot (a
+  library, not a CLI; not part of the JAX-free API). Guard:
+  `tests/test_snapshot_import.py`.
 - `response/` — input-output / response tools: `probes.py`,
   `operator_tools.py`, `ensemble.py`, `lim.py`, `ssi.py` (the last
   three interchangeable operator-identification routes sharing one

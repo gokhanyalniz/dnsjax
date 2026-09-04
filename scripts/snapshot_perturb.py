@@ -1,7 +1,8 @@
 r"""Inject a single-mode perturbation into an existing dnsjax snapshot.
 
-Offline CLI + library (the ``snapshot_import.py`` sibling for
-*existing* dnsjax snapshots): loads a snapshot, adds a scaled
+Offline CLI + library (the
+:mod:`dnsjax.analysis.snapshot_import` counterpart for *existing*
+dnsjax snapshots): loads a snapshot, adds a scaled
 ``(C, Ny)`` complex wall-normal profile at one global spectral mode
 ``(i2, i3)`` -- with the real-FFT conjugate partner handled by
 :func:`dnsjax.analysis.transient_growth.single_mode_state` -- and

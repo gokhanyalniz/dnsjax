@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 r"""Convert a native-layout velocity field into a dnsjax snapshot.
 
 This is a **library** (not a CLI): it exposes functions that future,
@@ -11,6 +10,15 @@ it *packs a supplied one*.  Conversion runs single-device (``np = 1``);
 any external ``[streamwise, wall-normal, spanwise]`` -> native
 permutation and component mixing is the **caller's** responsibility, not
 this module's.
+
+It is the *inbound* half of :mod:`dnsjax.analysis`, whose other members
+only read: it belongs here because it is the round trip's other
+direction, and because only ``src/`` is packaged -- a ``scripts/`` copy
+never reaches an installed ``dnsjax`` at all.  Unlike the JAX-free
+reading API it needs the **solver runtime** to build the state, but
+every JAX import is in-function, so *importing* this module stays
+NumPy-only and the package-level "``import dnsjax.analysis`` never
+imports JAX" guarantee is untouched (see ``analysis/CLAUDE.md``).
 
 Native input layout (physical and spectral)
 -------------------------------------------
@@ -114,7 +122,9 @@ Usage
 One conversion per process (the geometry ``fourier`` singleton is built
 at import, the :mod:`dnsjax.ic.random_field` idiom)::
 
-    from snapshot_import import convert_field_to_snapshot
+    from dnsjax.analysis.snapshot_import import (
+        convert_field_to_snapshot,
+    )
 
     convert_field_to_snapshot(
         field, "ic_snapshot.tar",
@@ -126,7 +136,7 @@ at import, the :mod:`dnsjax.ic.random_field` idiom)::
 (pipe: ``system="pipe", nz=..., nr=..., ntheta=..., lz=...,
 re=..., wall_normal_grid=rs``) or, for finer control::
 
-    import snapshot_import as si
+    from dnsjax.analysis import snapshot_import as si
     si.configure_target("kolmogorov", nx=64, ny=64, nz=64,
                         lx=4.0, lz=4.0)
     state = si.to_spectral_state(field, space="spectral",
@@ -162,7 +172,7 @@ def _geo_family(system: str) -> str:
     ``"annular"``.  Imports the system lists lazily (JAX/params must be
     configured first).
     """
-    from dnsjax.flows.registry import (
+    from ..flows.registry import (
         annular_systems,
         cartesian_systems,
         cylindrical_systems,
@@ -200,7 +210,7 @@ def _full_axis_gather(n: int) -> np.ndarray:
     built by matching integer wavenumbers against
     ``operators.complex_harmonics`` so it cannot drift from the solver.
     """
-    from dnsjax.operators import complex_harmonics
+    from ..operators import complex_harmonics
 
     fft_freqs = (np.arange(n) + n // 2) % n - n // 2  # numpy FFT order
     target = np.asarray(complex_harmonics(n))
@@ -353,7 +363,7 @@ def _validate_grid_domain(system: str, family: str, grid: list[float]) -> None:
     Raises on out-of-domain points or a non-ascending grid; warns if the
     walls are not resolved at the domain endpoints.
     """
-    from dnsjax.parameters import derived_params
+    from ..parameters import derived_params
 
     g = np.asarray(grid)
     if np.any(np.diff(g) <= 0):
@@ -403,7 +413,7 @@ def _public_field_map(system: str) -> dict[str, tuple[str, str]]:
     for *system* (``--help <system>``); the converter-owned fields
     (``phys.system``, ``res.double_precision``) are excluded.
     """
-    from dnsjax.flows.registry import GLOBAL_FIELDS, spec_for
+    from ..flows.registry import GLOBAL_FIELDS, spec_for
 
     owned = {("phys", "system"), ("res", "double_precision")}
     sections = ("phys", "geo", "res")
@@ -472,8 +482,8 @@ def configure_target(
     jax.config.update("jax_enable_x64", double_precision)
     jax.config.update("jax_platforms", "cpu")
 
-    from dnsjax.flows.registry import periodic_systems, spec_for
-    from dnsjax.parameters import (
+    from ..flows.registry import periodic_systems, spec_for
+    from ..parameters import (
         Parameters,
         derived_params,
         padded_res,
@@ -573,8 +583,8 @@ def to_spectral_state(
     import jax
     from jax import numpy as jnp
 
-    from dnsjax.parameters import params
-    from dnsjax.sharding import sharding
+    from ..parameters import params
+    from ..sharding import sharding
 
     periodic = _geo_family(params.phys.system) == "periodic"
     nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
@@ -599,7 +609,7 @@ def write_snapshot(
     parameters, the wall-normal grid, ``t`` and ``it`` in the snapshot's
     ``_dnsjax_meta.json`` member.  *output_path* is the tar file path.
     """
-    from dnsjax.snapshot import save_snapshot
+    from ..snapshot import save_snapshot
 
     save_snapshot(state, t=t, it=it, path=output_path)
 
