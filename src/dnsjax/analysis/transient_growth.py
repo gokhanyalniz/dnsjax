@@ -444,6 +444,7 @@ _TG_OWNED_STEP = (
     "implicit_mean_coupling",
     "corrector_tolerance",
     "max_corrector_iterations",
+    "corrector_iterations",
     "split_corrector",
 )
 
@@ -876,6 +877,10 @@ def _configure_parameters(argv: list[str]) -> None:
                 "max_corrector_iterations": (
                     tg_params.max_corrector_iterations
                 ),
+                # The reduced generator must be the *converged* linear
+                # map, so the corrector always iterates to tolerance
+                # here regardless of what the run-time surface offers.
+                "corrector_iterations": 0,
             },
             phys=phys_force,
         )

@@ -711,6 +711,10 @@ def run(wall_time_start: int) -> None:
     dt_first: float = params.step.dt
     wall_time_now: int = perf_counter_ns()
     last_error: float = 0.0
+    # A fixed corrector count (``step.corrector_iterations``) makes the
+    # reported error a diagnostic rather than a convergence verdict, so
+    # the run must not end on it -- see the ``TimeStepping`` docstring.
+    fixed_corrector: bool = params.step.corrector_iterations > 0
 
     # Adaptive CFL controller (``step.adaptive``): the loop reads the
     # measured total CFL every ``cfl_cadence`` steps, asks
@@ -1090,7 +1094,7 @@ def run(wall_time_start: int) -> None:
     while (
         t < t_stop
         and wall_time_now - wall_time_start < wall_time_stop
-        and last_error < params.step.corrector_tolerance
+        and (fixed_corrector or last_error < params.step.corrector_tolerance)
         and not laminarized
     ):
         if it == params.init.it0 + 1:
@@ -1400,10 +1404,19 @@ def run(wall_time_start: int) -> None:
         c_first_int = 0
 
     if last_error > params.step.corrector_tolerance:
-        sharding.print(
-            f"Corrector failed to converge at t={t}, it={it}, c={last_c}, "
-            f"with error = {last_error:.3e}."
-        )
+        if fixed_corrector:
+            sharding.print(
+                f"Corrector ran its fixed "
+                f"{params.step.corrector_iterations} iterations; the "
+                f"final correction norm at t={t}, it={it} is "
+                f"{last_error:.3e}, above step.corrector_tolerance "
+                f"({params.step.corrector_tolerance:.3e})."
+            )
+        else:
+            sharding.print(
+                f"Corrector failed to converge at t={t}, it={it}, "
+                f"c={last_c}, with error = {last_error:.3e}."
+            )
 
     if laminarized:
         sharding.print(

@@ -104,6 +104,15 @@ is pushed near the corrector iteration cap and is otherwise slower, hence the
 default. A related `implicit_mean_coupling` (on by default) folds the
 instantaneous mean-flow coupling into the implicit term.
 
+A second opt-in, `corrector_iterations` (0 by default), runs a **fixed**
+number of corrections instead of iterating to tolerance. Its purpose is
+differentiability: a dynamic trip count is the one construct in a step
+that reverse-mode automatic differentiation cannot traverse, and a
+static one lowers to a scan that it can. It is a different integrator
+unless the count covers what the dynamic corrector actually used, which
+`corrector.dat` records; the `TimeStepping` docstring in
+`src/dnsjax/parameters.py` carries the full trade-off.
+
 Both schemes can run at a fixed `step.dt` or under **adaptive CFL time
 stepping** (`step.adaptive`): the main loop re-reads the measured total
 CFL every `cfl_cadence` steps and rescales the step toward the
