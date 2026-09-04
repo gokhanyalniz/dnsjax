@@ -500,7 +500,9 @@ JAX pytrees. See its docstring.
 
 **Performance/memory trade-offs** (detail in the owning
 docstrings/comments): `solver.backend` (pallas beats dense in storage
-and speed); whole-tile mode-plane padding (`solvers.py`); the RHS
+and speed) and, on a separate axis, `solver.pallas_kernel` (which sweep
+reads banded storage — no memory consequence);
+whole-tile mode-plane padding (`solvers.py`); the RHS
 transform batch vs peak memory (`solver.rhs_transform_chunks`, applied
 by `fft.chunked_transform`; the ~36-field viscoelastic batch is where it
 bites); cnab2 is a throughput win, not a peak-memory one (`timestep.py`).
@@ -557,7 +559,7 @@ layering" above.
 | `[step]`   | `dt` + scheme knobs + adaptive-CFL knobs (`TimeStepping`) |
 | `[stop]`   | Sim-time horizon (`max_sim_time`, relative to `init.t0`) / wall-time limit, laminarization check |
 | `[dist]`   | `np0` (wall-normal / kz axis), `np1` (spanwise / kx axis), `platform` |
-| `[solver]` | Backend selection + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
+| `[solver]` | Backend selection + `pallas_kernel` sweep pin + Pallas tiling / RHS chunking (wall-bounded; `rhs_transform_chunks` is global) |
 | `[probes]` | Extension (`extensions/`): spectral-mode probe stream (wall-bounded) |
 | `[force]`  | Extension: white-in-time stochastic mode kicks; all-or-none and trajectory-defining (wall-bounded, non-viscoelastic) |
 | `[calib]`  | Extension (`scripts/random_ic_calibrate.py` only): the random-IC calibration target and sweeps |

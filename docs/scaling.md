@@ -56,7 +56,9 @@ the default backends:
   fields). Switching to
   `solver.backend = "dense"` replaces $(2p + 1)$ by $n_y$ per matrix — the
   one super-linear option, and the reason Pallas is the wall-bounded
-  default. Triply-periodic systems store no matrices at all (their implicit
+  default. (`solver.pallas_kernel` is a different axis: it selects which
+  sweep reads the banded factors, not how they are stored, so it moves
+  nothing here.) Triply-periodic systems store no matrices at all (their implicit
   solve is diagonal in spectral space), only four real coefficient arrays
   — wavenumber and inverse-Laplacian factors, $\approx 2$ fields.
 
