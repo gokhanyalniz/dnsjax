@@ -45,5 +45,9 @@
 
 Kolmogorov is reached by `tests/test_random_smoke.py` (random-IC
 integration; iterative-cn, cnab2, adaptive and nan-guard entries),
-`tests/test_cnab2.py`, `tests/test_temporal_order.py` and
-`tests/test_monochromatic.py` (the `get_stats` identities).
+`tests/test_rolls_smoke.py` and `tests/test_localized_rolls.py` (the
+localized-spot IC, whose periodic member is held to machine-precision
+divergence and reality bounds rather than the wall-bounded truncation
+ones -- `ic/localized_rolls.py`), `tests/test_cnab2.py`,
+`tests/test_temporal_order.py` and `tests/test_monochromatic.py` (the
+`get_stats` identities).

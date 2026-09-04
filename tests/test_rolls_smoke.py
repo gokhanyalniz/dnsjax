@@ -1,11 +1,11 @@
-"""Localized-rolls IC smoke tests: nonlinear integration, wall-bounded.
+"""Localized-rolls IC smoke tests: nonlinear integration.
 
-Starts each wall-bounded rolls-builder variant (plane-couette for the
-Cartesian builder, pipe, taylor-couette, dean) from the deterministic
-streamwise-localized-rolls IC (the in-process ``init.localized_rolls``
-start mode, no snapshot file) at a transitional Reynolds number on a
-small domain, and integrates a short time (``t = 0.25``; the
-long-horizon integration of the same flows is
+Starts each rolls-builder variant (kolmogorov for the triply-periodic
+builder, plane-couette for the Cartesian one, pipe, taylor-couette,
+dean) from the deterministic localized-rolls IC (the in-process
+``init.localized_rolls`` start mode, no snapshot file) at a
+transitional Reynolds number on a small domain, and integrates a short
+time (``t = 0.25``; the long-horizon integration of the same flows is
 ``test_random_smoke.py``'s job at ``t = 1``) -- verifying the run
 completes with no error, NaN, or blow-up.  The rolls drive the full
 **nonlinear** path (the laminar smoke test cannot, since ``u' = 0``
@@ -14,9 +14,11 @@ IC.
 
 Reuses ``test_random_smoke``'s ``_check_run`` (the five success criteria:
 exit 0, reached the end, no ``"Corrector failed"``, finite + converged
-final error, all summary values finite).  The triply-periodic family is
-excluded -- the rolls are a wall-normal cross-plane structure, defined for
-wall-bounded systems only.
+final error, all summary values finite).  The ``kolmogorov`` entry
+drives the triply-periodic builder, whose `$y$` factor is a
+localization rather than a wall profile (``ic/localized_rolls.py``);
+it runs the same default ``iterative-cn`` corrector as the rest, so
+all five criteria apply to it unchanged.
 
 Includes a **forced multi-device, padding-inducing** case (``mpirun
 --oversubscribe -np 2`` with ``np1 = 2`` and ``nx`` chosen so
@@ -53,11 +55,28 @@ sys.stdout.reconfigure(line_buffering=True)
 
 # ── configuration ────────────────────────────────────────────────────
 
-# Same Reynolds numbers / boxes as test_random_smoke (minus kolmogorov;
-# the rolls are wall-bounded only).  Each standard entry runs at the
-# suite's ``--np`` (default 1); the trailing ``*-mpi-pad`` entry always
-# runs multi-device with a padding-inducing resolution.
+# Same Reynolds numbers / boxes as test_random_smoke.  Each standard
+# entry runs at the suite's ``--np`` (default 1); the trailing
+# ``*-mpi-pad`` entry always runs multi-device with a padding-inducing
+# resolution.
 SYSTEMS: list[dict] = [
+    {
+        "name": "kolmogorov",
+        # The corrector contracts to the 1e-5 tolerance only for
+        # dt <~ 0.005 at this Re (see the test_random_smoke entry);
+        # the CFL is tiny, so this is a corrector-rate limit.
+        "max_dt": 0.005,
+        "args": [
+            "--phys.system",
+            "kolmogorov",
+            "--phys.re",
+            "620",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+        ],
+    },
     {
         "name": "plane-couette",
         "args": [

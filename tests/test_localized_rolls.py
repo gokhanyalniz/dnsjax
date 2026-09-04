@@ -2,7 +2,7 @@
 r"""Construction self-test for the in-process IC builders.
 
 Builds the deterministic streamwise-localized-rolls IC
-(``dnsjax.ic.localized_rolls``) for each wall-bounded flow and checks the
+(``dnsjax.ic.localized_rolls``) for each flow and checks the
 *construction* properties the smoke test (``tests/test_rolls_smoke.py``)
 cannot -- without time-stepping -- plus, in the same subprocess (no
 extra launch), the divergence guard on the random-field IC
@@ -34,7 +34,17 @@ carries the checks the rolls state carries elsewhere:
   only FD-truncation-sized and is projected out by the first corrector
   step at run start): Cartesian is ~machine-zero (the FD order
   differentiates the quartic profile exactly), the rational-profile
-  annular/pipe are `$O(10^{-5})$`;
+  annular/pipe are `$O(10^{-5})$`.  **Kolmogorov is held to a
+  machine-precision bound instead** (``DIV_TOL_SPECTRAL``, relative):
+  with no wall-normal direction there is no FD operator to truncate
+  against, `$G'$` is the exact `$\mathrm{i}k_y\hat G$`, and the two
+  divergence terms are the same product of the same factors with
+  opposite sign -- so a truncation-level bound there would pass on a
+  construction that had stopped cancelling;
+- **reality**, Kolmogorov only: the periodic family's joint
+  `$f(k_y,k_z,0) = \overline{f(-k_y,-k_z,0)}$` condition on the
+  `$k_x = 0$` plane, which the rolls get free from separability while
+  the random-field builder needs a dedicated helper for it;
 - a **peak-velocity / domain-scaling guard** (``_check_peak_scaling``,
   subprocess ``--peak``): built at two resolved box sizes, the sampled
   ``max|u'|`` is within ``PEAK_TOL`` (12%) of ``amplitude`` and
@@ -73,6 +83,10 @@ sys.stdout.reconfigure(line_buffering=True)
 # padding: nx // 2 = 5 (odd -> k_x padded for np1 = 2); nz - 1 = 11 (odd
 # -> k_z / m padded for np0 = 2).
 NX, NY, NZ = 10, 15, 12
+# Kolmogorov's ``ny`` is a *Fourier* mode count, not a wall-normal grid
+# size, so it must be even -- ``validate_parameters`` refuses an odd
+# one, and ``NY = 15`` above is a grid size (see ``dnsjax.harmonics``).
+NY_PERIODIC = 16
 LX, LZ = 5.0, 5.0
 # ``L / WAVELENGTH = 5/3`` is deliberately **not** an integer: that is
 # the only regime in which a roll factor has a nonzero DC bin, so it is
@@ -82,6 +96,7 @@ LX, LZ = 5.0, 5.0
 AMP, WIDTH, WAVELENGTH = 0.1, 1.5, 3.0  # physical width / cross-roll wave
 
 SYSTEMS = [
+    "kolmogorov",
     "plane-couette",
     "plane-poiseuille",
     "pipe",
@@ -104,6 +119,10 @@ RANDOM_ONLY = ["viscoelastic-dean"]
 CONFIGS = [(1, 1), (1, 2), (2, 1)]
 
 DIV_TOL = 5e-2  # loose truncation-level discrete-divergence bound
+# Triply-periodic: every direction is spectral, so the divergence
+# cancels analytically rather than to FD truncation order -- bound it
+# *relative to the field scale* at machine precision (measured ~8e-17).
+DIV_TOL_SPECTRAL = 1e-13
 
 # Random-field IC guard: amplitude / smoothness / seed, and the
 # *relative* divergence bound over the whole field, k_z = 0 included
@@ -134,7 +153,7 @@ RAND_CROSS_TOL = 1e-13
 # two resolved boxes (the spot fits and is well sampled at both) with the
 # spanwise/axial wavelength a fixed physical value, so peak ~ amplitude
 # must hold at both and agree across them.
-PEAK_SYSTEMS = ["plane-couette", "pipe", "taylor-couette"]
+PEAK_SYSTEMS = ["kolmogorov", "plane-couette", "pipe", "taylor-couette"]
 PEAK_AMP, PEAK_WIDTH, PEAK_WAVE = 0.1, 2.0, 4.0
 PEAK_BOXES = ((20.0, 48), (40.0, 96))  # (box length, resolution)
 PEAK_TOL = 0.12  # |peak/amp - 1| and cross-box agreement bound
@@ -171,6 +190,10 @@ def _configure(system: str, np0: int, np1: int) -> None:
         geo["eta"] = 0.5
     elif system == "dean":
         geo["eta"] = 0.5
+    elif system == "kolmogorov":
+        # Periodic in every direction: no eta, no wall grid, and
+        # ``res.fd_order`` is not on its surface (nothing reads it).
+        pass
     elif system in ("viscoelastic-dean", "viscoelastic-pipe"):
         # Re := Wi/El is derived (the annulus additionally takes its
         # geometry from ``geo.delta``); the rheology defaults (spec)
@@ -184,7 +207,7 @@ def _configure(system: str, np0: int, np1: int) -> None:
             geo=geo,
             res={
                 "nx": NX,
-                "ny": NY,
+                "ny": NY_PERIODIC if system == "kolmogorov" else NY,
                 "nz": NZ,
                 "fd_order": 4,
                 "double_precision": True,
@@ -221,6 +244,21 @@ def _max_divergence(true: np.ndarray, system: str) -> float:
         params.geo.grid_stretch,
     )
     kx_real = np.asarray(real_harmonics(nx)) * (2 * np.pi / params.geo.lx)
+    if system == "kolmogorov":
+        # Triply-periodic: components (u_x, u_y, u_z) over
+        # [k_y, k_z, k_x], every derivative a multiply.  ``ly`` is the
+        # geometry's own fixed shear-direction period, not a parameter.
+        from dnsjax.geometries.triply_periodic.triply_periodic import ly
+
+        ky = np.asarray(complex_harmonics(ny)) * (2 * np.pi / ly)
+        kz = np.asarray(complex_harmonics(nz)) * (2 * np.pi / params.geo.lz)
+        div = 1j * (
+            kx_real[None, None, :] * true[0]
+            + ky[:, None, None] * true[1]
+            + kz[None, :, None] * true[2]
+        )
+        return float(np.max(np.abs(div)))
+
     if system in ("plane-couette", "plane-poiseuille"):
         from dnsjax.geometries.wall_bounded.cartesian import (
             build_cartesian_grid,
@@ -280,7 +318,7 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
 
     from dnsjax.parameters import params
 
-    nx, nz = params.res.nx, params.res.nz
+    nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
     passed = failed = 0
 
     def check(name: str, ok: bool, detail: str = "") -> None:
@@ -312,23 +350,62 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
         # carries the laminar conformation there, whose wall values are
         # O(1)-to-O(Wi^2) by construction (its BC is grad^2 c = 0, not
         # a Dirichlet zero).  ``[:3]`` is the whole state for every
-        # velocity-only flow.
-        vel1 = state1[:3]
-        if system in cylindrical_systems:
-            wall = float(np.max(np.abs(vel1[:, -1])))  # outer wall r = 1
-        else:
-            wall = max(
-                float(np.max(np.abs(vel1[:, 0]))),
-                float(np.max(np.abs(vel1[:, -1]))),
+        # velocity-only flow.  Kolmogorov has no wall node to check:
+        # its axis 1 is ``k_y``, and the spot is periodic there.
+        if system != "kolmogorov":
+            vel1 = state1[:3]
+            if system in cylindrical_systems:
+                wall = float(np.max(np.abs(vel1[:, -1])))  # outer r = 1
+            else:
+                wall = max(
+                    float(np.max(np.abs(vel1[:, 0]))),
+                    float(np.max(np.abs(vel1[:, -1]))),
+                )
+            check(
+                "exact no-slip at walls",
+                wall < 1e-12,
+                f"max|u|_wall={wall:.2e}",
             )
-        check(
-            "exact no-slip at walls", wall < 1e-12, f"max|u|_wall={wall:.2e}"
-        )
 
         div = _max_divergence(true, system)
-        check(
-            "divergence truncation-level", div < DIV_TOL, f"max|div|={div:.2e}"
-        )
+        if system == "kolmogorov":
+            # Fully spectral: the cancellation is analytic, so this is
+            # a machine-precision statement, not a truncation bound.
+            tscale = float(np.max(np.abs(true)))
+            check(
+                "divergence at machine precision",
+                div < DIV_TOL_SPECTRAL * tscale,
+                f"max|div|={div:.2e} scale={tscale:.2e}",
+            )
+        else:
+            check(
+                "divergence truncation-level",
+                div < DIV_TOL,
+                f"max|div|={div:.2e}",
+            )
+
+        # Reality (Kolmogorov only): the periodic family stores the
+        # ``k_x = 0`` plane under the *joint* conjugate symmetry
+        # ``f(k_y, k_z, 0) = conj(f(-k_y, -k_z, 0))``.  The rolls get it
+        # from separability -- every 1-D factor is the transform of a
+        # real signal -- where the random-field builder needs
+        # ``_periodic_hermitian_raw``; this is what would catch a factor
+        # that stopped being real.  The index flip below pairs
+        # `$q \leftrightarrow -q$`, which every stored Fourier axis
+        # supports because its mode count is even (``NY_PERIODIC``).
+        if system == "kolmogorov":
+            nky, nkz = ny - 1, nz - 1
+            fy = np.array([0] + [nky - i for i in range(1, nky)])
+            fz = np.array([0] + [nkz - i for i in range(1, nkz)])
+            plane = true[:, :, :, 0]
+            defect = float(
+                np.max(np.abs(plane - np.conj(plane[:, fy][:, :, fz])))
+            )
+            check(
+                "reality on the k_x = 0 plane",
+                defect < DIV_TOL_SPECTRAL * float(np.max(np.abs(plane))),
+                f"max defect={defect:.2e}",
+            )
 
         # The spot contributes **nothing** to the (0, 0) mean mode, so
         # it moves neither the bulk velocity nor the wall shear.  Stated
@@ -486,6 +563,10 @@ def _peak_build(system: str, box: float, n: int) -> int:
     if system == "taylor-couette":
         phys.update(re1=100.0, re2=-100.0)
         geo["eta"] = 0.5
+    # Kolmogorov's shear direction is Fourier too, and its period is
+    # fixed by the geometry -- so ``box`` scales two of three
+    # directions there, and ``ny`` is a mode count like the others.
+    ny = n if system == "kolmogorov" else 33
     update_parameters(
         Parameters(
             dist={"np0": 1, "np1": 1, "platform": "cpu"},
@@ -493,7 +574,7 @@ def _peak_build(system: str, box: float, n: int) -> int:
             geo=geo,
             res={
                 "nx": n,
-                "ny": 33,
+                "ny": ny,
                 "nz": n,
                 "fd_order": 4,
                 "double_precision": True,
@@ -504,10 +585,13 @@ def _peak_build(system: str, box: float, n: int) -> int:
     padded_res.set_padded_resolution(params)
 
     from dnsjax.ic.localized_rolls import generate_localized_rolls
-    from dnsjax.operators import spec_to_phys_2d
+    from dnsjax.operators import spec_to_phys, spec_to_phys_2d
 
     state = generate_localized_rolls(PEAK_AMP, PEAK_WIDTH, PEAK_WAVE)
-    pf = np.asarray(spec_to_phys_2d(state))
+    # ``spec_to_phys_2d`` leaves the wall-normal axis alone; the
+    # triply-periodic state has no such axis and takes the 3D one.
+    to_phys = spec_to_phys if system == "kolmogorov" else spec_to_phys_2d
+    pf = np.asarray(to_phys(state))
     # Native components are orthonormal in every geometry:
     # |u'|^2 is the plain component sum.
     mag = np.sqrt(np.sum(pf**2, axis=0))

@@ -930,7 +930,7 @@ class Initiation(BaseModel):
     falling through to a mode the user did not ask for;
     otherwise ``start_from_laminar`` (the laminar / closed-form base
     state); otherwise ``localized_rolls`` (an in-process deterministic
-    localized-spot perturbation, wall-bounded only);
+    localized-spot perturbation, defined for every flow);
     otherwise ``random_field`` -- an in-process random divergence-free
     perturbation, which is **the default**: a run with no snapshot and
     no explicit mode selected starts from a random IC.  The ``random_*``

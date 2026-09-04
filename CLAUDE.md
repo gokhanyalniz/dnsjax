@@ -127,8 +127,8 @@ the Tests section below if you touch the modules they test.
 In-process only (no offline script). The four modes and their
 precedence: the `Initiation` docstring (`parameters.py`). Knobs:
 `--init.snapshot`, `--init.start_from_laminar`,
-`--init.localized_rolls` + `_amplitude`/`_width`/`_wavelength`
-(wall-bounded only), `--init.random_field` (the **default**) +
+`--init.localized_rolls` + `_amplitude`/`_width`/`_wavelength`,
+`--init.random_field` (the **default**) +
 `--init.random_amplitude` / `_smoothness` / `_seed` / `_mean_flow`,
 `_wall_smoothness` / `_wall_confinement` (wall-bounded only -- the
 periodic family has neither a wall-normal filter nor a wall window),
@@ -193,8 +193,9 @@ restate them elsewhere. Which flow may do it, and by which route:
   `init.random_mean_flow` on every other flow, kolmogorov included.
 - still rejected outright: `[force]` kicks; transient growth still
   excludes the mode.
-- rolls stay mean-free and always will: their `(0,0)` content is a cubic
-  in `y`, and no nonzero cubic satisfies the compatibility conditions.
+- rolls stay mean-free and always will: on the Cartesian flows their
+  `(0,0)` content is a cubic in `y`, and no nonzero cubic satisfies the
+  compatibility conditions.
 
 Guards: `tests/test_mean_mode.py`, `tests/test_localized_rolls.py`,
 `tests/test_forcing.py`, `tests/test_snapshot_perturb.py`.
@@ -879,7 +880,7 @@ are one-liners. Cross-cutting notes:
   native-contract validation (offline).
 - `test_snapshot_export.py`: `dnsjax.analysis` API vs solver ground
   truth (**re-run when changing a primitive**).
-- `test_rolls_smoke.py`: localized-rolls IC integration, 4 variants.
+- `test_rolls_smoke.py`: localized-rolls IC integration, 5 variants.
 - `test_localized_rolls.py`: IC construction self-test (rolls + the
   random-field divergence guard).
 - `test_transient_growth.py`: transient-growth analysis, incl. the
