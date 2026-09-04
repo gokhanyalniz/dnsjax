@@ -251,7 +251,8 @@ estimate any configuration. **Switching flows** is a one-line change:
 above.
 
 The same run can be expressed as a `parameters.toml` in the working
-directory (shipped as the repository default):
+directory (shipped as
+[`examples/pipe-re2300/parameters.toml`](examples/pipe-re2300/parameters.toml)):
 
 ```toml
 [phys]
