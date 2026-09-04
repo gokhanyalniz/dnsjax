@@ -205,11 +205,26 @@ violation is new: **a docstring containing a backslash is raw**
 characters, and a trailing `\` eats its newline), and **an inline
 `$...$` in a `.md` never spans a line break** (GitHub renders it as raw
 LaTeX, not math). Keep CLAUDE.md files up-to-date (root and
-subdirectory files). The **six** human-facing docs -- `README.md`,
-`NUMERICS.md` and `SCALING.md` at the root, plus the `extensions/`,
-`twin/` and `analysis/response/` READMEs -- may lag the code, so treat
-the CLAUDE.md files and code docstrings as authoritative and do not
-sync code to one.
+subdirectory files).
+
+**The human-facing docs are not allowed to lag** (policy change
+2026-09-04; they previously could). Any change that alters what one of
+them describes updates it in the same pass. They are thirteen:
+`README.md`, `NUMERICS.md`, `SCALING.md`; `docs/running.md`,
+`configuration.md`, `snapshots.md`, `validation.md`, `extending.md`,
+`cpu-collectives.md`; `tests/README.md`; and the `extensions/`,
+`twin/` and `analysis/response/` READMEs. That stays affordable because
+every `docs/` page is **pointer-first** -- it links the owning module
+docstring rather than restating it -- so a typical change touches one
+or two. Where a doc and a docstring disagree the docstring is still the
+one to fix first, then the doc.
+
+**Nothing public-facing carries a placeholder or an invisible marker**:
+no `TODO(author)`, no `DRAFT:` block, no empty section awaiting a
+table, no badge for a DOI that does not exist, and no claim whose
+backing artefact has not landed -- an unbacked claim is the same defect
+as a placeholder. A section that cannot be finished truthfully is
+omitted, not stubbed.
 
 **Documentation layering.** CLAUDE.md files are an index for AI agents,
 not a manual. A line earns its place only if it is (a) a command to

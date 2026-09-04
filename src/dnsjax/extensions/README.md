@@ -6,7 +6,7 @@ simulation, beside the always-available `stats.dat` / `steps.dat` /
 owned outside `parameters.py`, but parsed from the CLI and
 `parameters.toml`, listed in `--help`, validated strictly per flow, and
 recorded into snapshot metadata exactly like a core section (the
-mechanism: the root [README](../../../README.md#parameter-layering)).
+mechanism: [Parameter layering](../../../docs/configuration.md)).
 
 Together they are the runtime half of the input-output analysis in
 [`analysis/response`](../analysis/response/README.md): `[probes]`

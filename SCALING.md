@@ -199,7 +199,8 @@ volume: a two-dimensional grid costs 9 to 19% against the best
 one-dimensional one, where the $3/2$ volume difference between the two
 one-dimensional grids is worth some 18% of the transform itself but only
 a few percent of the step around it. Routing the collectives through MPI
-rather than `gloo` (see [Installation](README.md#installation)) speeds up
+rather than `gloo` (see
+[CPU collectives](docs/cpu-collectives.md)) speeds up
 every exchange, shifting weight from the per-exchange cost back toward
 volume.
 
@@ -214,7 +215,7 @@ cost, and that is the regime where `np0` moving $2/3$ of the bytes should
 tell; comparing the two one-dimensional grids on the target machine is
 then worth one pair of runs.
 
-The README's [pipe example](README.md#running-a-simulation) on four
+The README's [pipe example](README.md#quick-start) on four
 devices of one node, one-dimensionally:
 `np0 = 4` splits the 48 radial points into 12 per device and the 95
 stored azimuthal modes into 24, one padding mode included, leaving the
@@ -261,6 +262,6 @@ A **CPU** run is pinned to one XLA thread per rank — a lone process
 exactly like a rank of sixteen: the pool follows `NPROC`, which the run
 sets only if unset, so `export NPROC=<n>` raises it. It also routes its
 cross-process collectives through MPI when it finds the MPItrampoline
-wrapper library (see [Installation](README.md#installation)), falling
+wrapper library (see [CPU collectives](docs/cpu-collectives.md)), falling
 back to `gloo` otherwise. The same docstring covers when raising
 `NPROC` is worth doing.
