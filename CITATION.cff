@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+title: >-
+  dnsjax: a GPU-accelerated pseudo-spectral solver for direct numerical
+  simulation of the incompressible Navier-Stokes equations
+message: If dnsjax supports your work, please cite it.
+type: software
+authors:
+  - given-names: Gökhan
+    family-names: Yalnız
+repository-code: https://github.com/gokhanyalniz/dnsjax
+url: https://github.com/gokhanyalniz/dnsjax
+abstract: >-
+  dnsjax integrates the three-dimensional incompressible Navier-Stokes
+  equations by a pseudo-spectral treatment of the periodic directions
+  combined with banded finite differences in up to one wall-bounded
+  direction, where an influence-matrix method reconciles
+  incompressibility with the wall boundary conditions. Written in JAX,
+  it runs on CPUs, GPUs and TPUs, on a single device or sharded across
+  many, in single or double precision.
+keywords:
+  - computational fluid dynamics
+  - direct numerical simulation
+  - turbulence
+  - pseudo-spectral method
+  - Navier-Stokes equations
+  - JAX
+  - GPU computing
+license: MIT
+version: 0.1.0

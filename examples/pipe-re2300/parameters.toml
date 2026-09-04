@@ -1,6 +1,8 @@
 # Example configuration: a 100-diameter pipe at Re = 2300, started from
 # a localized-roll perturbation ("puff").  Equivalent to the CLI command
-# in the README.  Command-line flags override any value set here.  Only
+# in the README.  A run reads `parameters.toml` from its own working
+# directory, so copy this file into a scratch directory and launch there.
+# Command-line flags override any value set here.  Only
 # parameters of the selected flow are accepted: `dnsjax --help pipe`
 # lists them, and `dnsjax --sample-toml pipe` prints an annotated
 # template with every parameter and its default.
