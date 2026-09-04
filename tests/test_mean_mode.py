@@ -55,8 +55,13 @@ from _live import report, run_live  # noqa: E402
 # ── Configuration ────────────────────────────────────────────────
 
 #: Resolution of the in-process IC builds (small: the mean mode is one
-#: column, and every other mode is unaffected by this feature).
+#: column, and every other mode is unaffected by this feature).  ``NY``
+#: is a wall-normal grid size, so it is odd (a CGL centreline point);
+#: the triply-periodic case below needs ``NY_PERIODIC`` instead, ``ny``
+#: being a Fourier axis there and Fourier counts being even
+#: (``validate_parameters``; ``dnsjax.harmonics``).
 NX, NY, NZ = 8, 33, 8
+NY_PERIODIC = 32
 
 #: ``(system, driving, block_mean_spanwise, tilt, grid_type, fd_order)``
 #: -- both flows, every reachable driving combination (plane-couette
@@ -393,11 +398,14 @@ def test_per_flow_surface(check) -> None:
         params.init.random_mean_flow is False,
     )
 
-    for system, re in (("pipe", 2000.0), ("kolmogorov", 400.0)):
+    for system, re, ny in (
+        ("pipe", 2000.0, NY),
+        ("kolmogorov", 400.0, NY_PERIODIC),
+    ):
         update_parameters(
             Parameters(
                 phys=Physics(system=system, re=re),
-                res=Resolution(nx=NX, ny=NY, nz=NZ),
+                res=Resolution(nx=NX, ny=ny, nz=NZ),
                 init=Initiation(random_mean_flow=False),
             )
         )
