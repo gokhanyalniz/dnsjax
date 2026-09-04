@@ -112,6 +112,7 @@ it_snapshot = 5000
 [stop]
 max_sim_time = 500.0
 # check_laminarization = true (default) stops the run if the flow relaminarizes
+```
 
 ## Start modes
 
