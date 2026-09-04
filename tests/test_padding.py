@@ -34,12 +34,7 @@ reshards + the component-axis concatenate of sharded outputs).
    Hermitian field round-trips exactly and a single ``k_z = 1`` mode
    lands on the analytic physical profile (mode placement is
    parity-free).
-5. ``odd_nz``: single device, nz = 5 -- ``truncate_fft`` keeps
-   ``(n - 1) - n // 2`` negative modes, matching the ``n - 1`` stored
-   modes of ``harmonics.complex_harmonics`` for odd *n* (the count
-   a plain ``n // 2`` split gets wrong); exactness checks as in
-   ``odd_pad``.
-6. ``spec_pad``: forced (2, 2) host-CPU mesh with nx = 6 / nz = 4 --
+5. ``spec_pad``: forced (2, 2) host-CPU mesh with nx = 6 / nz = 4 --
    both spectral divisibility pads engaged, driving the
    ``pad``/``strip`` arguments fused into ``truncate_*`` /
    ``zeropad_*`` (no rounding note; the spec-pad diagnostics are
@@ -150,10 +145,12 @@ def _hermitian_random_spec(sharding):
 
     Free on ``kx > 0`` columns (the real FFT implies the conjugate
     half); Hermitian-paired in kz on the ``kx = 0`` plane
-    (``c(-kz) = conj(c(kz))``, real mean), with unpaired kz modes
-    (the odd-``nz`` band edge) and divisibility-padding slots zeroed.
-    Any such field is exactly representable on the padded grid, so
-    spec -> phys -> spec must be the identity.
+    (``c(-kz) = conj(c(kz))``, real mean), with the
+    divisibility-padding slots zeroed.  ``res.nz`` is even (a Fourier
+    axis; ``validate_parameters``), so every stored kz mode has its
+    conjugate partner stored too and there is no unpaired band edge to
+    skip.  Any such field is exactly representable on the padded grid,
+    so spec -> phys -> spec must be the identity.
     """
     import numpy as np
 
@@ -169,8 +166,6 @@ def _hermitian_random_spec(sharding):
     for i, q in enumerate(kz):
         if q == 0:
             a[:, :, i, 0] = a[:, :, i, 0].real
-        elif -q not in kz:
-            a[:, :, i, 0] = 0.0  # unpaired band edge (odd nz)
         elif q > 0:
             a[:, :, kz.index(-q), 0] = np.conj(a[:, :, i, 0])
     return a
@@ -338,35 +333,6 @@ def case_odd_pad() -> None:
     print("case-ok")
 
 
-def case_odd_nz() -> None:
-    """Single device, nz = 5: the odd-``nz`` band round-trips exactly."""
-    from dnsjax.bootstrap import configure_jax_platform
-    from dnsjax.parameters import (
-        Parameters,
-        padded_res,
-        params,
-        update_parameters,
-    )
-
-    update_parameters(
-        Parameters(
-            phys={"system": "plane-couette"},
-            res={"nx": 4, "ny": 9, "nz": 5},
-        )
-    )
-    padded_res.set_padded_resolution(params)
-    assert padded_res.nz_padded == 7, padded_res.nz_padded
-    assert padded_res.notes == [], padded_res.notes
-
-    configure_jax_platform("cpu")  # x64 for the exactness thresholds
-    from dnsjax.sharding import sharding
-
-    assert sharding.spec_shape == (9, 4, 2), sharding.spec_shape
-    _fft_round_trip(sharding)
-    _fft_exactness(sharding)
-    print("case-ok")
-
-
 def case_spec_pad() -> None:
     """(2, 2) mesh, nx = 6 / nz = 4: both fused spec pads engaged.
 
@@ -446,7 +412,6 @@ CASES = {
     "primary": case_primary,
     "fallback": case_fallback,
     "odd_pad": case_odd_pad,
-    "odd_nz": case_odd_nz,
     "spec_pad": case_spec_pad,
     "smooth": case_smooth,
 }
@@ -457,7 +422,6 @@ EXPECT: dict[str, str | None] = {
     "primary": "nz_padded rounded from 9 to 10 (np1 divisibility).",
     "fallback": "nz_padded rounded from 9 to 12 (np1 divisibility).",
     "odd_pad": None,
-    "odd_nz": None,
     "spec_pad": None,
     "smooth": "nz_padded rounded from 141 to 144 (FFT-friendly size).",
 }

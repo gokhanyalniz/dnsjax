@@ -584,18 +584,6 @@ def _validate_twin(values: TwinParams, params) -> None:
         cadence = getattr(values, name)
         if cadence is not None and cadence < 1:
             raise ValueError(f"twin.{name} must be >= 1.")
-    if (
-        values.it_yspectra is not None or values.it_ybudget is not None
-    ) and params.res.nz % 2:
-        raise ValueError(
-            "twin.it_yspectra / twin.it_ybudget need an even res.nz "
-            f"(got {params.res.nz}): the wall-normal-resolved streams "
-            "store the k_z axis folded onto |k_z|, and at odd nz the "
-            "stored band is asymmetric -- the highest negative mode "
-            "has no positive partner to fold onto "
-            "(dnsjax.twin.diagnostics._fold_kz).  Even sizes are the "
-            "recommended resolutions anyway (dnsjax.fft)."
-        )
     if values.it_budget is not None and not values.bins:
         raise ValueError(
             "twin.it_budget needs twin.bins: the three-bin budget is "

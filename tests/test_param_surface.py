@@ -445,6 +445,60 @@ def case_validate_guards() -> None:
     except ValueError as ex:
         check("half-cgl" in str(ex), "half-cgl needs iterative-cn", ex)
 
+    # Fourier axes must be even, reported under the flow's *public*
+    # field name (a pipe's axial axis is res.nz, not the internal
+    # res.nx) -- and the wall-normal grid, which is not a Fourier
+    # axis, must stay free to be odd.
+    _reset()
+    try:
+        P.update_parameters(
+            P.Parameters(phys={"system": "pipe"}, res={"nx": 9})
+        )
+        P.validate_parameters()
+        check(False, "odd axial Fourier count rejected (pipe)")
+    except ValueError as ex:
+        check(
+            "res.nz = 9 must be even" in str(ex),
+            "odd axial Fourier count rejected (pipe)",
+            ex,
+        )
+
+    _reset()
+    try:
+        P.update_parameters(
+            P.Parameters(phys={"system": "pipe"}, res={"nz": 15})
+        )
+        P.validate_parameters()
+        check(False, "odd azimuthal Fourier count rejected (pipe)")
+    except ValueError as ex:
+        check(
+            "res.ntheta = 15 must be even" in str(ex),
+            "odd azimuthal Fourier count rejected (pipe)",
+            ex,
+        )
+
+    # ny is a Fourier axis for the triply-periodic family only.
+    _reset()
+    try:
+        P.update_parameters(
+            P.Parameters(phys={"system": "kolmogorov"}, res={"ny": 15})
+        )
+        P.validate_parameters()
+        check(False, "odd ny rejected for kolmogorov")
+    except ValueError as ex:
+        check(
+            "res.ny = 15 must be even" in str(ex),
+            "odd ny rejected for kolmogorov",
+            ex,
+        )
+
+    _reset()
+    P.update_parameters(
+        P.Parameters(phys={"system": "plane-couette"}, res={"ny": 15})
+    )
+    P.validate_parameters()
+    check(True, "odd wall-normal ny still allowed (plane-couette)")
+
     # u_grid on a periodic system: deferred error (direct assignment).
     _reset()
     P.update_parameters(P.Parameters(phys={"system": "kolmogorov"}))

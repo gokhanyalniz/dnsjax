@@ -778,21 +778,19 @@ def test_guards() -> None:
             result = _run_twin(tmp, _twin_args(1.02), expect=1)
             _expect_error(result, f"stale {stale}")
 
-    # An odd res.nz with a folded-k_z stream: refused at parse, not
-    # left to fail as a shape error inside ``_fold_kz`` mid-run.  At
-    # odd nz the stored band is asymmetric (the highest negative mode
-    # has no positive partner), so the fold is genuinely undefined --
-    # and only the (y, k) streams fold, so this must *not* refuse a
-    # run without them.
+    # An odd res.nz is refused at parse, whatever streams are on: it
+    # is a Fourier axis, and at an odd count the stored band would be
+    # asymmetric (the highest negative mode having no positive
+    # partner), which is also exactly why ``_fold_kz`` could not fold
+    # it.  The refusal is the parameter layer's, so the driver no
+    # longer carries a stream-conditional one of its own.
     with tempfile.TemporaryDirectory() as tmp:
         odd = ["--res.nz", "7", "--init.force_resume", "True"]
-        for stream in ("--twin.it_yspectra", "--twin.it_ybudget"):
+        for extra in ([], ["--twin.it_yspectra", "1"]):
             result = _run_twin(
-                tmp, [*_twin_args(1.02), *odd, stream, "1"], expect=1
+                tmp, [*_twin_args(1.02), *odd, *extra], expect=1
             )
-            _expect_error(result, "need an even res.nz")
-        # Same odd nz, no folded stream: parses (and then runs).
-        _run_twin(tmp, [*_twin_args(1.02), *odd])
+            _expect_error(result, "must be even")
 
     # Resume guards need a real member directory.
     with tempfile.TemporaryDirectory() as tmp:
