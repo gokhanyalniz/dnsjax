@@ -458,7 +458,13 @@ per-geometry CFL, `implicitness`, `implicit_mean_coupling`,
 `corrector failed to converge` at *low* CFL means reduce `dt`, not a
 blow-up): the `TimeStepping` docstring (`parameters.py`); implementation
 `timestep.py`; guards `tests/test_cnab2.py`,
-`tests/test_temporal_order.py`. Adaptive CFL `dt` (`step.adaptive`,
+`tests/test_temporal_order.py`.
+**`step.corrector_iterations`** (opt-in, default 0 = iterate) fixes the
+corrector count so the step reverse-differentiates; it is refused with
+`split_corrector`, forced to 0 by the TG driver, and it flips the
+corrector error from a **verdict to a diagnostic** — so the four
+run-ending sites (`__main__.py` and `twin/driver.py`, loop guard +
+closing line) gate on it. Adaptive CFL `dt` (`step.adaptive`,
 knobs + controller law in the `TimeStepping` docstring and
 `adaptive.py`; on-device operator rebuild via the builders'
 `set_dt`, no recompile): guards `tests/test_adaptive.py` and the

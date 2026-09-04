@@ -59,6 +59,7 @@ GLOBAL_FIELDS: tuple[tuple[str, str], ...] = (
     ("step", "implicitness"),
     ("step", "corrector_tolerance"),
     ("step", "max_corrector_iterations"),
+    ("step", "corrector_iterations"),
     ("step", "adaptive"),
     ("step", "cfl_target"),
     ("step", "dt_min"),

@@ -1416,6 +1416,41 @@ class TimeStepping(BaseModel):
     CFL bounding ``cnab2``, whose ``u' x omega'`` term is
     frame-invariant (see the ``u_grid`` field docs).
 
+    Fixed corrector count (``corrector_iterations``)
+    ------------------------------------------------
+    ``corrector_iterations = 0`` (the default) runs the corrector to
+    ``corrector_tolerance`` in a ``lax.while_loop``; ``n > 0`` runs
+    **exactly** *n* corrections in a static-trip-count
+    ``lax.fori_loop``, which lowers to a ``scan`` and therefore
+    reverse-differentiates.  That is the whole reason the knob exists:
+    the dynamic trip count is the one construct between a step and
+    ``jax.grad`` (the dealiased nonlinear term, the influence-matrix
+    pass and the banded LU sweep already differentiate).
+
+    A fixed count is a **different integrator** unless *n* covers what
+    the dynamic corrector actually used, and ``corrector.dat``
+    (``outs.it_corrector``) is where that number comes from: its ``c``
+    column is the count *beyond* the first correction, so *n* must be
+    at least ``max(c) + 1`` over the window of interest.  Three
+    consequences, all deliberate:
+
+    - ``max_corrector_iterations`` is inert -- the count is fixed, not
+      capped.
+    - ``error`` becomes a **diagnostic rather than a verdict**.  The
+      main loop no longer ends the run when it exceeds
+      ``corrector_tolerance``; a run that finishes above tolerance says
+      so in one closing line instead.
+    - ``cnab2``'s automatic redo of a non-contracting step with
+      ``iterative-cn`` is dropped, since its ``error > tol`` test no
+      longer means what it means under the dynamic loop (and it would
+      trace a second corrector into the differentiated graph).
+
+    Refused together with ``split_corrector``, whose FFT-free coupling
+    tail is a second dynamic loop.  ``adaptive`` is *not* refused --
+    its operator rebuild is host-side, outside the differentiated step
+    -- but a swept ``dt`` changes the step being differentiated, which
+    is rarely what a gradient is wanted for.
+
     Adaptive CFL time stepping (``adaptive``)
     -----------------------------------------
     With ``adaptive = True`` the main loop re-selects ``dt`` from the
@@ -1513,6 +1548,21 @@ class TimeStepping(BaseModel):
             "Opt-in, wall-bounded iterative-cn only: iterate the "
             "linear coupling FFT-free between full-RHS corrector "
             "refreshes; no effect on cnab2."
+        ),
+    )
+    # A static trip count lowers to a ``scan`` and so reverse-
+    # differentiates, which a ``while_loop`` does not; this is the only
+    # thing standing between a step and ``jax.grad``.  Off by an
+    # in-range value rather than ``None``: ``update_parameters`` drops
+    # ``None``, so an optional field could never be switched off from a
+    # layer.  See the class docstring.
+    corrector_iterations: int = Field(
+        ge=0,
+        default=0,
+        description=(
+            "Opt-in: run exactly this many corrections per step "
+            "instead of iterating to corrector_tolerance, making the "
+            "step reverse-differentiable.  0 = iterate (the default)."
         ),
     )
     # Adaptive CFL controller knobs; semantics in the class docstring
@@ -2202,6 +2252,15 @@ def validate_parameters() -> None:
                 f"step.dt_min_change ({s.dt_min_change}) must be "
                 f"<= step.dt_max_change ({s.dt_max_change})."
             )
+
+    if s.corrector_iterations > 0 and s.split_corrector:
+        raise ValueError(
+            f"step.corrector_iterations ({s.corrector_iterations}) "
+            "cannot be combined with step.split_corrector: the split "
+            "corrector's FFT-free coupling tail is a second dynamic "
+            "loop, so the step would not be reverse-differentiable "
+            "anyway.  Disable one."
+        )
 
     spec = spec_for(params.phys.system)
 

@@ -1022,6 +1022,10 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     dt_first: float = params.step.dt
     wall_time_now: int = perf_counter_ns()
     last_error: float = 0.0
+    # A fixed corrector count (``step.corrector_iterations``) makes the
+    # reported error a diagnostic rather than a convergence verdict, so
+    # the run must not end on it -- see the ``TimeStepping`` docstring.
+    fixed_corrector: bool = params.step.corrector_iterations > 0
 
     check_laminarization: bool = params.stop.check_laminarization
     laminarization_threshold: float = params.stop.laminarization_threshold
@@ -1350,7 +1354,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     while (
         t < t_stop
         and wall_time_now - wall_time_start < wall_time_stop
-        and last_error < params.step.corrector_tolerance
+        and (fixed_corrector or last_error < params.step.corrector_tolerance)
         and not laminarized
     ):
         if it == it0 + 1:
@@ -1538,10 +1542,19 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         c_tot = 0
 
     if last_error > params.step.corrector_tolerance:
-        sharding.print(
-            f"Corrector failed to converge at t={t}, it={it}, "
-            f"with error = {last_error:.3e}."
-        )
+        if fixed_corrector:
+            sharding.print(
+                f"Corrector ran its fixed "
+                f"{params.step.corrector_iterations} iterations; the "
+                f"final correction norm at t={t}, it={it} is "
+                f"{last_error:.3e}, above step.corrector_tolerance "
+                f"({params.step.corrector_tolerance:.3e})."
+            )
+        else:
+            sharding.print(
+                f"Corrector failed to converge at t={t}, it={it}, "
+                f"with error = {last_error:.3e}."
+            )
     if laminarized:
         sharding.print(
             f"Laminarized: E' = {e_prime_host:.3e} < "

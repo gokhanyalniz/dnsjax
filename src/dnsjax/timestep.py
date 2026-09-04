@@ -10,7 +10,9 @@ across all flow types; only the RHS evaluation, Helmholtz solve, and
 norm computation differ.  With *l_bf_fn* provided and
 ``step.split_corrector`` enabled (an opt-in, default off), the fused
 corrector runs in split form (``_split_core``): the linear coupling
-iterates FFT-free between full-RHS refreshes.
+iterates FFT-free between full-RHS refreshes.  ``step.corrector_iterations``
+(also opt-in, default 0) replaces both correctors' dynamic loop with a
+static-trip-count one, which is what makes a step reverse-differentiable.
 
 For triply-periodic flows the Helmholtz solve is algebraic (pointwise
 multiply by ``ldt_1``, ``ildt_2``).  For wall-bounded flows it is a
@@ -155,7 +157,8 @@ def make_stepper(
     -------
     predict_and_fully_correct:
         Fused predict + corrector loop in a single JIT scope
-        via ``lax.while_loop``.  Signature:
+        via ``lax.while_loop`` (a static-trip-count ``lax.fori_loop``
+        under ``step.corrector_iterations``).  Signature:
         ``state -> (prediction_state, error, num_c, aux)``, *aux*
         being the converged correction's diagnostics (see
         *correct_fn*).
@@ -215,6 +218,15 @@ def make_stepper(
         def _step_scales(*args: object) -> tuple[Array, Array]:
             return jnp.asarray(params.step.dt), jnp.ones(())
 
+    # Fixed corrector count (``step.corrector_iterations``, opt-in,
+    # default 0 = iterate to tolerance).  Read once here, like the
+    # core selection below: the geometry builders run after the
+    # configuration is final.  ``n > 0`` replaces the dynamic
+    # ``while_loop`` with a static-trip-count ``fori_loop``, which
+    # lowers to a ``scan`` and so reverse-differentiates -- see the
+    # ``TimeStepping`` docstring.
+    _n_fixed: int = params.step.corrector_iterations
+
     def _finalized(state: Array, *args) -> Array:
         """Apply *finalize_fn* to an accepted step output.
 
@@ -227,12 +239,17 @@ def make_stepper(
 
     def _step_core(
         state: Array, rhs_prev: Array, *args
-    ) -> tuple[Array, Array, Array]:
+    ) -> tuple[Array, Array, Array, dict[str, Array]]:
         """Predictor + corrector loop, given the RHS at `$u^n$`.
 
         Uses ``lax.while_loop`` so that the corrector convergence
         check stays on-device, eliminating per-iteration
-        GPU-to-CPU synchronisation.
+        GPU-to-CPU synchronisation.  Under
+        ``step.corrector_iterations = n > 0`` the same body runs a
+        fixed ``n - 1`` times in a ``lax.fori_loop`` instead (the
+        first correction is already outside the loop), so ``num_c``
+        is the constant ``n - 1`` and ``error`` is a diagnostic
+        rather than a convergence verdict.
         """
         prediction = predict_fn(state, rhs_prev, *args)
 
@@ -256,14 +273,19 @@ def make_stepper(
             return pred, rhs_p, norm_fn(corr, *args), c + 1, aux_j
 
         init = (prediction, rhs_prev, error, jnp.int32(0), aux)
-        prediction, _, error, num_c, aux = jax.lax.while_loop(
-            cond_fn, body_fn, init
-        )
+        if _n_fixed:
+            prediction, _, error, num_c, aux = jax.lax.fori_loop(
+                0, _n_fixed - 1, lambda _i, carry: body_fn(carry), init
+            )
+        else:
+            prediction, _, error, num_c, aux = jax.lax.while_loop(
+                cond_fn, body_fn, init
+            )
         return prediction, error, num_c, aux
 
     def _split_core(
         state: Array, rhs_prev: Array, *args
-    ) -> tuple[Array, Array, Array]:
+    ) -> tuple[Array, Array, Array, dict[str, Array]]:
         r"""Split corrector: FFT-free coupling tail + full refreshes.
 
         Same CN fixed point as ``_step_core``, reorganised so the
@@ -458,6 +480,11 @@ def make_stepper(
         iteration -- a converged linear corrector is the exact
         CN-implicit ``L_bf`` solve.  Returns
         ``(state_next, N_nl^n, error, num_c)``.
+
+        Under ``step.corrector_iterations = n > 0`` the coupling
+        corrector runs a fixed ``n - 1`` iterations in a
+        ``lax.fori_loop`` and the non-contraction fallback below is
+        not traced at all (see the ``TimeStepping`` docstring).
         """
         # ``l_bf_fn(state)`` re-derives the spectral curl (and, in the
         # cylindrical/annular geometries, the u_+/- conversion) that
@@ -492,6 +519,20 @@ def make_stepper(
             rhs_n = f_ab2 + l_bf_fn(pred, *args)
             pred, corr, aux_j = correct_fn(state, pred, rhs_prev, rhs_n, *args)
             return pred, norm_fn(corr, *args), c + 1, aux_j
+
+        if _n_fixed:
+            # Fixed count: run the body ``n - 1`` times and stop.  The
+            # ``error > tol`` fallback below is dropped -- with a fixed
+            # count that test no longer means "the corrector failed",
+            # and taking it would trace a second corrector (plus its
+            # ``jax.debug.print``) into the differentiated graph.
+            prediction, error, num_c, aux = jax.lax.fori_loop(
+                0,
+                _n_fixed - 1,
+                lambda _i, carry: body_fn(carry),
+                (prediction, error, jnp.int32(0), aux),
+            )
+            return _finalized(prediction, *args), nnl_n, error, num_c, aux
 
         prediction, error, num_c, aux = jax.lax.while_loop(
             cond_fn, body_fn, (prediction, error, jnp.int32(0), aux)
