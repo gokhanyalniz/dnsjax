@@ -4,7 +4,7 @@
 of the 3D incompressible Navier–Stokes equations, written in
 [JAX](https://github.com/jax-ml/jax).**
 
-[![CI](https://github.com/gokhanyalniz/dnsjax/actions/workflows/ci.yml/badge.svg)](https://github.com/gokhanyalniz/dnsjax/actions/workflows/ci.yml)
+[![CI](https://github.com/gokhanyalniz/dnsjax/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/gokhanyalniz/dnsjax/actions/workflows/ci.yml?query=branch%3Amain)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue)
 ![JAX](https://img.shields.io/badge/backend-JAX-orange)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
