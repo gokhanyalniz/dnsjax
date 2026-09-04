@@ -57,7 +57,7 @@ so run this as::
 ``--component`` selects the stored component by index (0 is the
 streamwise one in every family: `$u_x$` for the plane channels and the
 periodic box, `$u_z$` for the pipe and the annulus, whose component
-order is axial-first -- see ``SCALING.md``).
+order is axial-first -- see ``docs/scaling.md``).
 
 Producing the README figures
 ----------------------------

@@ -3,7 +3,7 @@
 What `dnsjax` is checked against, and which test pins each claim. Every
 row here is executed by the suite — nothing on this page is a number
 someone typed once. Start at the [README](../README.md) for the solver
-itself and at [`../NUMERICS.md`](../NUMERICS.md) for the formulation
+itself and at [`numerics.md`](numerics.md) for the formulation
 being checked.
 
 ## Non-modal optimal growth against published values

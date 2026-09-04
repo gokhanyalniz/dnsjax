@@ -55,7 +55,7 @@ Reading the flags:
 - `--geo.grid_type half-cgl` — the radial grid; `half-cgl` is the default
   for a pipe under `iterative-cn`, while `cnab2` uses `rigged-cgl` instead
   (both are halves of a Chebyshev grid that avoid the axis — see
-  [Grids](../NUMERICS.md#grids)).
+  [Grids](numerics.md#grids)).
 - `--res.nz 512 --res.nr 48 --res.ntheta 96` — axial, radial, and azimuthal
   resolution, with eighth-order (the default) finite differences in the
   radial direction.
@@ -69,7 +69,7 @@ Reading the flags:
 - `--dist.platform cpu` — a single CPU device.
 
 This configuration fits comfortably in laptop memory — the
-[Memory footprint](../SCALING.md#memory-footprint) section shows how to
+[Memory footprint](scaling.md#memory-footprint) section shows how to
 estimate any configuration. **Switching flows** is a one-line change:
 `--phys.system taylor-couette --phys.re1 … --phys.re2 … --geo.eta …`, or
 `--phys.system kolmogorov --geo.lx … --geo.lz …`, and so on per the
@@ -154,7 +154,7 @@ than falling back to a fixed value.
 One default worth knowing: the pipe integrates in a frame translating at the
 laminar bulk velocity $1/2$, and its snapshots are stored in that frame;
 pass `--phys.u_grid 0` for the lab frame (see
-[Temporal discretization](../NUMERICS.md#temporal-discretization)).
+[Temporal discretization](numerics.md#temporal-discretization)).
 
 ## What a run writes
 

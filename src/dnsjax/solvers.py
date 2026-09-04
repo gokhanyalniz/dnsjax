@@ -42,6 +42,8 @@ local arrays where no Explicit-mesh sharding rules apply.  See
 :meth:`PerModeBandedPallasOperator.solve`.
 """
 
+from __future__ import annotations
+
 import math
 from dataclasses import dataclass, field
 from functools import partial

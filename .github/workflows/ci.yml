@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Mondays, 05:00 UTC — the full offline suite.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The suite is CPU-only; nothing here needs (or should try to find) a
+  # GPU. dnsjax pins one XLA thread per rank, so runs are single-threaded.
+  JAX_PLATFORMS: cpu
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      # setup-uv stopped publishing a floating major tag after v7, so
+      # this is pinned exactly rather than to a major.
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run ruff check
+      # Named directories on purpose: a bare `ruff format` also rewrites
+      # the code blocks in README.md, which are written to be read.
+      - run: uv run ruff format --check src tests scripts
+
+  smoke:
+    name: smoke (CPU, Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor from pyproject, and the version .python-version pins
+        # for development. Both are run in full offline locally.
+        python: ["3.12", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      # uv provisions the interpreter itself; nothing else is needed.
+      - run: uv sync
+
+      - name: Parameter surfaces render without touching a device
+        run: |
+          uv run dnsjax --help
+          uv run dnsjax --help pipe
+          uv run dnsjax --sample-toml pipe
+          uv run dnsjax-twin --help
+
+      - name: The analysis API imports without JAX
+        run: |
+          uv run python -c "
+          import sys
+          import dnsjax.analysis
+          assert 'jax' not in sys.modules, 'dnsjax.analysis pulled in JAX'
+          print('dnsjax.analysis is JAX-free')
+          "
+
+      # The fast half of the offline suite: parameter surface, bootstrap
+      # decisions, FFT padding, the mean-mode mask, quadrature, the
+      # JAX-free analysis API against solver ground truth, and the four
+      # response readers/identifiers. ~2 min locally; the rest of the
+      # offline suite runs weekly in full-cpu below.
+      - name: Fast test scripts
+        run: |
+          set -u
+          failed=""
+          for t in \
+            test_bootstrap \
+            test_param_surface \
+            test_padding \
+            test_mean_mask \
+            test_integration \
+            test_snapshot_export \
+            response/test_probes_reader \
+            response/test_operator_tools \
+            response/test_lim \
+            response/test_ssi
+          do
+            echo "::group::tests/$t.py"
+            if ! uv run python "tests/$t.py"; then
+              failed="$failed $t"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "failed:$failed"
+            exit 1
+          fi
+
+  full-cpu:
+    name: full offline suite (CPU)
+    # Weekly and on demand only: ~36 script launches, far too long for
+    # every push.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+      - run: uv sync --group plots
+      # No mpirun on the runner, so the mpi rows skip themselves; the
+      # slow rows are solver integrations measured in minutes each.
+      - run: uv run pytest -m "not slow and not mpi"

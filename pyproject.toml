@@ -5,7 +5,7 @@ description = "A GPU-accelerated & parallelized pseudo-spectral solver for direc
 authors = [
     { name = "Gökhan Yalnız", email = "gokhan.yalniz@ista.ac.at" }
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = [
@@ -27,6 +27,8 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Mathematics",

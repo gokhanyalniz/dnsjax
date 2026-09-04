@@ -7,7 +7,7 @@ by definition. This page is only about that choice. GPU runs are
 unaffected: their collectives go through NCCL.
 
 Start at the [README](../README.md) for the solver itself, and at
-[`SCALING.md`](../SCALING.md) for how the work is split across devices in
+[`scaling.md`](scaling.md) for how the work is split across devices in
 the first place.
 
 ## Building the wrapper

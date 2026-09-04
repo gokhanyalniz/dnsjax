@@ -14,8 +14,10 @@ integrators (`step.scheme`): the predictor-corrector `"iterative-cn"`
 
 ### Prerequisites
 
-Python >=3.14, `uv`, MPI (for multi-**process** runs only; a lone
-process needs none, even spanning several GPUs).
+Python >=3.12 (`.python-version` pins 3.14 for development; the floor
+is validated by the offline suite under 3.12), `uv`, MPI (for
+multi-**process** runs only; a lone process needs none, even spanning
+several GPUs).
 
 ### Setup
 
@@ -30,7 +32,9 @@ scripts into `.venv/bin`)
 The commit hook (`prek.toml`) runs both. Do not bare `uv run ruff
 format`: it also reformats `README.md`'s code blocks, which
 deliberately lag. Line length is 79 for **all** lines (ruff
-`line-length = 79`, E501), not only docstrings/comments.
+`line-length = 79`, E501), not only docstrings/comments. CI
+(`.github/workflows/ci.yml`) runs the same two commands plus a fast
+CPU smoke subset on every push, and the whole offline suite weekly.
 
 ### Run tests
 
@@ -39,7 +43,7 @@ Tests are standalone scripts (`uv run python tests/test_*.py`);
 why pytest must never *import* a script, and the live-output
 plumbing: its module docstring.
 
-`uv run pytest -m "not slow and not mpi"`  the offline loop
+`uv run pytest -m "not slow and not mpi"`  the offline loop (~22 min)
 `uv run pytest -m "not slow"`              + the four quick mpirun rows
 `uv run pytest`                            everything
 
@@ -209,15 +213,15 @@ subdirectory files).
 
 **The human-facing docs are not allowed to lag** (policy change
 2026-09-04; they previously could). Any change that alters what one of
-them describes updates it in the same pass. They are thirteen:
-`README.md`, `NUMERICS.md`, `SCALING.md`; `docs/running.md`,
-`configuration.md`, `snapshots.md`, `validation.md`, `extending.md`,
-`cpu-collectives.md`; `tests/README.md`; and the `extensions/`,
-`twin/` and `analysis/response/` READMEs. That stays affordable because
-every `docs/` page is **pointer-first** -- it links the owning module
-docstring rather than restating it -- so a typical change touches one
-or two. Where a doc and a docstring disagree the docstring is still the
-one to fix first, then the doc.
+them describes updates it in the same pass. They are fourteen:
+`README.md`, `CONTRIBUTING.md` and `tests/README.md`; the eight
+`docs/` pages (`numerics`, `scaling`, `running`, `configuration`,
+`snapshots`, `validation`, `extending`, `cpu-collectives`); and the
+`extensions/`, `twin/` and `analysis/response/` READMEs. That stays
+affordable because every `docs/` page is **pointer-first** -- it links
+the owning module docstring rather than restating it -- so a typical
+change touches one or two. Where a doc and a docstring disagree, the
+docstring is still the one to fix first, then the doc.
 
 **Nothing public-facing carries a placeholder or an invisible marker**:
 no `TODO(author)`, no `DRAFT:` block, no empty section awaiting a
@@ -690,8 +694,8 @@ mean. `t`/`it`/`isnap` continue only when
   (`bootstrap.py`); env knobs, none of them a parameter:
   `JAX_COORDINATOR_ADDRESS`, `JAX_COORDINATOR_PORT`,
   `MPITRAMPOLINE_LIB`, `JAX_CPU_COLLECTIVES_IMPLEMENTATION`;
-  user-facing contract: the `Distribution` docstring, `README.md`
-  "Installation" and `SCALING.md`.
+  user-facing contract: the `Distribution` docstring,
+  `docs/cpu-collectives.md` and `docs/scaling.md`.
 - JAX has no zero-copy complex<->real bitcast. Real-operator ×
   complex-field GEMMs/solves use an explicit trailing re/im split --
   reuse `apply_y_matrix` (`geometries/wall_bounded/_base.py`) or the

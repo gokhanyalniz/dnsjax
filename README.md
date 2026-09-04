@@ -4,7 +4,8 @@
 of the 3D incompressible Navier–Stokes equations, written in
 [JAX](https://github.com/jax-ml/jax).**
 
-![Python](https://img.shields.io/badge/python-%E2%89%A53.14-blue)
+[![CI](https://github.com/gokhanyalniz/dnsjax/actions/workflows/ci.yml/badge.svg)](https://github.com/gokhanyalniz/dnsjax/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue)
 ![JAX](https://img.shields.io/badge/backend-JAX-orange)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
@@ -19,17 +20,17 @@ one device or many.
 <a id="fig-planes"></a>
 <p align="center">
   <img src="docs/figures/channel-planes.webp" width="900"
-       alt="Animation of the streamwise velocity fluctuation on three
+       alt="Animation of the streamwise velocity fluctuations on three
             wall-parallel planes through turbulent channel flow,
             stacked in a 3D view.">
 </p>
 
 <p align="center"><em>
 Turbulent channel flow at Re<sub>&tau;</sub> &asymp; 180: streamwise
-velocity fluctuation on three wall-parallel planes &mdash; near each
+velocity fluctuations on three wall-parallel planes &mdash; near each
 wall, and at the centreline &mdash; over 10 advective time units.<br>
-<a href="docs/snapshots.md#fig-streaks">The bottom near-wall plane
-alone, larger</a>
+<a href="docs/snapshots.md#fig-streaks">&#128279;&nbsp;See one near-wall
+plane by itself.</a>
 </em></p>
 
 **Contents** — [Highlights](#highlights) ·
@@ -75,12 +76,13 @@ uv sync
 ```
 
 The only prerequisite is [`uv`](https://docs.astral.sh/uv/), which
-provisions the pinned Python by itself. The default install pulls a CPU
-build of JAX; for **CUDA GPUs** run `uv add "jax[cuda13]"` (Linux x86-64
-wheels only). An MPI runtime is needed only to *launch* a multi-process
-run — not for a single process spanning a node's GPUs, and not for the
-post-processing API. On multi-process CPU runs, MPI can also carry the
-collectives: [`docs/cpu-collectives.md`](docs/cpu-collectives.md).
+provisions the pinned Python (3.14; 3.12 is the floor) by itself. The
+default install pulls a CPU build of JAX; for **CUDA GPUs** run
+`uv add "jax[cuda13]"` (Linux x86-64 wheels only). An MPI runtime is
+needed only to *launch* a multi-process run — not for a single process
+spanning a node's GPUs, and not for the post-processing API. On
+multi-process CPU runs, MPI can also carry the collectives:
+[`docs/cpu-collectives.md`](docs/cpu-collectives.md).
 
 Output goes to the working directory, so launch from a scratch dir:
 
@@ -125,7 +127,7 @@ natural to its geometry: a pipe takes `--geo.lz`/`--res.nr`/`--res.ntheta`
 where a plane channel takes `--geo.lx`/`--res.ny`/`--res.nz`. Reynolds-number
 normalizations, driving options, rotation conventions, the viscoelastic
 controls and the azimuthal wedge are collected under
-[Conventions](NUMERICS.md#conventions).
+[Conventions](docs/numerics.md#conventions).
 
 ## Performance and scaling
 
@@ -147,11 +149,11 @@ no communication at all.**
 
 The two sharded axes are **not** equivalent — the `np1` exchange moves
 $3/2$ as many bytes as the `np0` one, and a second grid axis adds an
-exchange rather than subdividing the first — so the device grid is a real
-choice. [`SCALING.md`](SCALING.md) has the array layout per geometry, a
-symbolic memory model linear in $n_x n_y n_z$ that sizes a configuration
-before it is launched, and how to pick $(n_{p0}, n_{p1})$ on one node and
-across many.
+exchange rather than subdividing the first — so the device grid is a
+real choice. [`docs/scaling.md`](docs/scaling.md) has the array layout
+per geometry, a symbolic memory model linear in $n_x n_y n_z$ that sizes
+a configuration before it is launched, and how to pick the device grid
+$(n_{p0}, n_{p1})$ on one node and across many.
 
 ## Validation
 
@@ -165,21 +167,26 @@ in [`docs/validation.md`](docs/validation.md).
 ## Design decisions
 
 - **Banded finite differences in the wall-normal direction, not
-  Chebyshev.** Chebyshev is spectrally accurate but dense: per-mode
-  operators would cost $O(N_y^2)$ over the whole $(k_x, k_z)$ plane, the
-  one term that grows faster than the point count. An order-$p$ stencil
-  on a Chebyshev-distributed grid keeps the wall clustering, stores
-  $O(N_y p)$ banded factors, and puts accuracy under a knob.
+  Chebyshev.** Both can be arranged into banded operators, so storage is
+  not the argument — the grid is. A Chebyshev basis fixes the CGL
+  distribution; finite differences leave the wall-normal grid free (CGL
+  by default, tanh, or one supplied as a file) and put the order under a
+  knob, so a case is sized in `res.ny` and `res.fd_order` rather than
+  inherited.
 - **Velocity–vorticity, not primitive variables.** Advancing the
   wall-normal velocity and vorticity and reconstructing the tangential
-  pair removes the discrete pressure entirely, so continuity becomes an
-  algebraic identity — exact at every row, walls included — and
-  tangential no-slip *emerges* rather than being imposed.
-- **Influence matrix, not a projection.** The wall pressure condition is
-  fixed only indirectly, by requiring $\nabla\cdot\mathbf{u} = 0$ there.
-  A fractional step sidesteps that with a splitting error no resolution
-  removes; precomputing the homogeneous responses once buys the exact
-  condition back for a tiny per-mode solve.
+  pair removes the discrete pressure entirely. Continuity then becomes an
+  algebraic identity — exact at every row including the walls, for any
+  operator or grid — instead of a convergent truncation error.
+- **Influence matrix, not a projection.** One wall condition can only be
+  fixed indirectly: the wall pressure in the primitive form, and
+  $(D_1 v)|_\text{wall} = 0$ in the velocity–vorticity one. Precomputing
+  the homogeneous responses once turns that into a $1\times1$ or
+  $2\times2$ per-mode solve. Tangential no-slip is then exact as a
+  consequence rather than a separately imposed condition — which is why
+  the wall values of $u$ and $w$ double as a live diagnostic that the
+  influence matrix is healthy. A fractional-step projection avoids all of
+  it at the cost of a splitting error no resolution removes.
 - **Two sharded axes, deliberately asymmetric.** The wall-normal solves
   are what must never communicate, so the mesh is built around keeping
   them device-local — and the two exchanges then differ in volume and in
@@ -201,7 +208,7 @@ in [`docs/validation.md`](docs/validation.md).
 | **Twin-run perturbation growth** | a reference snapshot and a perturbed copy stepped in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, and $(k_z, k_x)$ spectra — [twin/](src/dnsjax/twin/README.md) |
 | **Response and identification** | record spectral modes, drive them with white-in-time kicks, identify a data-driven generator three interchangeable ways — [response/](src/dnsjax/analysis/response/README.md) |
 | **Banded-LU GPU kernel** | $O(N_y p)$ factors instead of dense $O(N_y^2)$, with a dense reference solver; checked in interpret mode *and* by lowering to CUDA on GPU-less machines |
-| **Two-axis device mesh** | $(n_{p0}, n_{p1})$ with an in-FFT reshard pipeline — [SCALING.md](SCALING.md#parallelization) |
+| **Two-axis device mesh** | $(n_{p0}, n_{p1})$ with an in-FFT reshard pipeline — [docs/scaling.md](docs/scaling.md#parallelization) |
 | **A memory–throughput dial** | `solver.rhs_transform_chunks` splits the batched inverse transform $k$ ways, cutting its working set $k$-fold at identical results |
 | **Snapshots and resume** | tar + zarr3, written in parallel and straight from GPU memory where available; resume across any device count, re-gridding every changed axis — [docs/snapshots.md](docs/snapshots.md) |
 | **External-data import** | pack a field produced elsewhere into a valid snapshot |
@@ -216,8 +223,8 @@ in [`docs/validation.md`](docs/validation.md).
 
 | file | what it covers |
 |---|---|
-| [`NUMERICS.md`](NUMERICS.md) | equations, discretization, wall-normal grids, the influence-matrix method, per-flow conventions |
-| [`SCALING.md`](SCALING.md) | array layout, the memory model, choosing the device grid |
+| [`docs/numerics.md`](docs/numerics.md) | equations, discretization, wall-normal grids, the influence-matrix method, per-flow conventions |
+| [`docs/scaling.md`](docs/scaling.md) | array layout, the memory model, choosing the device grid |
 | [`docs/running.md`](docs/running.md) | a worked run, start modes, seeds, the moving frame, every output stream |
 | [`docs/configuration.md`](docs/configuration.md) | how the parameter layers combine; extension sections |
 | [`docs/snapshots.md`](docs/snapshots.md) | the snapshot format, resume and re-gridding, the JAX-free API, the importer |
@@ -225,6 +232,7 @@ in [`docs/validation.md`](docs/validation.md).
 | [`docs/extending.md`](docs/extending.md) | adding a flow system |
 | [`docs/cpu-collectives.md`](docs/cpu-collectives.md) | routing multi-process CPU collectives through MPI |
 | [`tests/README.md`](tests/README.md) | how the suite is laid out and how to run it |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style |
 | [`src/dnsjax/extensions`](src/dnsjax/extensions/README.md) | the `[probes]` and `[force]` runtime streams |
 | [`src/dnsjax/analysis/response`](src/dnsjax/analysis/response/README.md) | probe stream → turbulent mean → linear operator → identification |
 | [`src/dnsjax/twin`](src/dnsjax/twin/README.md) | the `dnsjax-twin` driver, its streams and its ensembles |
@@ -257,13 +265,17 @@ extend themselves. See [`docs/extending.md`](docs/extending.md).
 
 ## Limitations
 
+- **Tested on CPUs and NVIDIA GPUs.** The code paths are
+  backend-agnostic and the solver accepts `cuda`, `rocm` and `tpu`
+  alike, but only CPU and CUDA are exercised regularly; AMD (ROCm) has
+  had minimal testing and TPUs none at all.
 - **One wall-bounded direction.** The discretization admits at most one
   non-periodic direction.
-- **Some parameters are declared but not implemented, per flow.** Tilted
-  driving is Cartesian and periodic only, and perturbing the
-  $(k_x, k_z) = (0, 0)$ mean profile is available only for the two plane
-  channels, whose mean-mode conservation laws are established. Each such
-  field fails with its own message rather than being silently ignored.
+- **Perturbing the mean profile is Cartesian-only.** The
+  $(k_x, k_z) = (0, 0)$ mode may be perturbed only for the two plane
+  channels, whose mean-mode conservation laws are established; every
+  other flow declares the field and refuses it with its own message
+  rather than appearing to offer something it does not implement.
 - **The viscoelastic laminar states are exact only at $\epsilon = 0$.**
   At the default $\epsilon = 10^{-3}$ the sPTT `start_from_laminar`
   profile does not balance momentum exactly, so those two flows carry a
@@ -301,20 +313,25 @@ The numerics follow these references:
 
 ## License and citation
 
-Released under the [MIT License](LICENSE), © 2025 Gökhan Yalnız. If `dnsjax`
-supports your work, a citation of this repository
+Released under the [MIT License](LICENSE), © 2025–2026 Gökhan Yalnız.
+If `dnsjax` supports your work, a citation of this repository
 (<https://github.com/gokhanyalniz/dnsjax>) is appreciated.
-
-A `CITATION.cff` in the repository root gives GitHub's "Cite this
-repository" button its entry.
 
 ## Use of AI
 
 The first version of this solver — the triply-periodic geometry, the
 predictor–corrector stepper, and the Kolmogorov flow — was designed and
-written by hand; the extension to the wall-bounded geometries grew out of
-that core with extensive use of LLM coding assistants. The numerical
-formulation, the design and the validation strategy are the author's, and
-they came first: the dense reference solver and the test suite are what
-made assisted development of the wall-bounded extension safe, since every
-assisted change had something independent to be wrong against.
+written by hand. The extension to the wall-bounded geometries grew out of
+that core with extensive use of LLM coding assistants.
+
+None of the mathematics here is new: the predictor–corrector stepping,
+the influence-matrix treatment of the wall conditions, the Fornberg
+finite-difference weights, the 3/2 dealiasing rule and the rest are long
+established. What is mine is the selection and the assembly — which
+formulation to use where, and how the pieces have to fit together to
+make one solver rather than a pile of methods — together with the
+strategy for deciding whether the result is right: a dense reference
+solver to check the fast path against, per-geometry operators checked
+against independent constructions, and published values to land on.
+Every assisted change was planned, reviewed and iterated on against
+that.

@@ -5,7 +5,7 @@ and how the work is split across devices. Everything here is
 independent of the flow — the geometry sets the meaning of each axis,
 and the device grid is chosen the same way for all nine systems.
 
-Start at the [README](README.md) for the solver itself.
+Start at the [README](../README.md) for the solver itself.
 
 ## Memory footprint
 
@@ -136,7 +136,7 @@ differently:
   ($3/2 \times$ the base resolution of that axis at the default
   oversampling) is rounded up to the next FFT-friendly multiple of
   `np1` when needed (see
-  [Spatial discretization](NUMERICS.md#spatial-discretization)), which
+  [Spatial discretization](numerics.md#spatial-discretization)), which
   amounts to a sliver of extra oversampling.
 - Independently of the device grid, the **Pallas banded solver** tiles each
   device's $(k_z, k_x)$ mode plane in blocks of
@@ -200,7 +200,7 @@ one-dimensional one, where the $3/2$ volume difference between the two
 one-dimensional grids is worth some 18% of the transform itself but only
 a few percent of the step around it. Routing the collectives through MPI
 rather than `gloo` (see
-[CPU collectives](docs/cpu-collectives.md)) speeds up
+[CPU collectives](cpu-collectives.md)) speeds up
 every exchange, shifting weight from the per-exchange cost back toward
 volume.
 
@@ -215,7 +215,7 @@ cost, and that is the regime where `np0` moving $2/3$ of the bytes should
 tell; comparing the two one-dimensional grids on the target machine is
 then worth one pair of runs.
 
-The README's [pipe example](README.md#quick-start) on four
+The README's [pipe example](../README.md#quick-start) on four
 devices of one node, one-dimensionally:
 `np0 = 4` splits the 48 radial points into 12 per device and the 95
 stored azimuthal modes into 24, one padding mode included, leaving the
@@ -262,6 +262,6 @@ A **CPU** run is pinned to one XLA thread per rank — a lone process
 exactly like a rank of sixteen: the pool follows `NPROC`, which the run
 sets only if unset, so `export NPROC=<n>` raises it. It also routes its
 cross-process collectives through MPI when it finds the MPItrampoline
-wrapper library (see [CPU collectives](docs/cpu-collectives.md)), falling
+wrapper library (see [CPU collectives](cpu-collectives.md)), falling
 back to `gloo` otherwise. The same docstring covers when raising
 `NPROC` is worth doing.

@@ -91,14 +91,17 @@ a snapshot and NumPy (`scripts/snapshot_figure.py`):
 <a id="fig-streaks"></a>
 <p align="center">
   <img src="figures/channel-streaks.webp" width="820"
-       alt="Animation of the streamwise velocity fluctuation in a
+       alt="Animation of the streamwise velocity fluctuations in a
             wall-parallel plane of turbulent channel flow at a friction
             Reynolds number of 180.">
 </p>
 <p align="center"><em>
-Streamwise velocity fluctuation in the wall-parallel plane at
+Streamwise velocity fluctuations in turbulent channel flow at
+Re<sub>&tau;</sub> &asymp; 180, in a 4&pi; &times; 2&pi; box, over 10
+advective time units: the wall-parallel plane at
 <i>y</i> = &minus;0.917, <i>y</i><sup>+</sup> = 14.9.<br>
-<a href="../README.md#fig-planes">Three planes stacked &uarr;</a>
+<a href="../README.md#fig-planes">&#128279;&nbsp;See three planes
+stacked in a 3D view.</a>
 </em></p>
 
 The companion `dnsjax.analysis.snapshot_ops` module provides `derivative`,
