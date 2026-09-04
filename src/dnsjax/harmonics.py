@@ -12,10 +12,32 @@ transient-growth surfaces), also lives here.
 The conventions match the storage layout: the Nyquist mode is always
 omitted, so a real-FFT axis carries `$n / 2$` modes and a full-complex
 axis carries `$n - 1$` modes (see :mod:`dnsjax.fft`).
+
+**`$n$` is even, and the generators enforce it.**  A Nyquist mode
+exists only at an even mode count -- it is the single self-aliasing slot
+holding `$+n/2 = -n/2$`.  At an odd `$n$` the frequencies are
+`$0, \pm 1, \dots, \pm(n-1)/2$`, all in conjugate pairs bar the mean,
+so there is nothing to drop and omitting a slot anyway would remove a
+genuine harmonic, stranding its partner on a complex axis.
+``parameters.validate_parameters`` refuses an odd Fourier count at the
+parameter layer; these generators refuse one too, so a count
+mis-derived anywhere fails loudly instead of silently describing a
+layout the solver never produces.
 """
 
 import numpy as np
 from numpy import ndarray
+
+
+def _require_even(n: int, who: str) -> None:
+    """Reject an odd Fourier mode count (see the module docstring)."""
+    if n % 2:
+        raise ValueError(
+            f"{who}: the mode count must be even, got {n}.  At an odd "
+            "count there is no Nyquist mode to omit, so this layout "
+            "would drop a genuine harmonic and strand its conjugate "
+            "partner; parameters.validate_parameters refuses one."
+        )
 
 
 def real_harmonics(n: int) -> ndarray:
@@ -33,7 +55,13 @@ def real_harmonics(n: int) -> ndarray:
     :
         Wavenumber array `$[0, 1, \dots, n/2 - 1]$`, shape
         ``(n // 2,)``.
+
+    Raises
+    ------
+    ValueError
+        If *n* is odd (see the module docstring).
     """
+    _require_even(n, "real_harmonics")
     # Omits the Nyquist mode
     return np.arange(0, n // 2, dtype=int)
 
@@ -84,7 +112,7 @@ def stored_mode_counts(m: int) -> tuple[int, int]:
     A stored full-complex axis of ``m = n - 1`` modes is in FFT wrap
     order (:func:`complex_harmonics`): ``n_pos`` non-negative
     wavenumbers `$[0, \dots, n/2-1]$` first, then ``n_neg`` negative
-    ones `$[-n/2+1, \dots, -1]$`.  Exact for even and odd `$n$`.
+    ones `$[-n/2+1, \dots, -1]$`.
 
     This is the arithmetic a resolution change needs: growing an axis
     **inserts** zeros between the two blocks (the high-`$|k|$` end),
@@ -120,7 +148,13 @@ def complex_harmonics(n: int) -> ndarray:
     :
         `$n - 1$` wavenumbers in FFT order:
         `$[0, 1, \dots, n/2-1, -n/2+1, \dots, -1]$`.
+
+    Raises
+    ------
+    ValueError
+        If *n* is odd (see the module docstring).
     """
+    _require_even(n, "complex_harmonics")
     qs = (np.arange(n, dtype=int) + n // 2) % n - n // 2
     # Omits the Nyquist mode
     qs_out = np.zeros(n - 1, dtype=int)

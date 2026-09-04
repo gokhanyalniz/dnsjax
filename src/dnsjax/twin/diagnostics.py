@@ -930,13 +930,13 @@ def marginal_bin_counts() -> tuple[int, int]:
     of each axis' full count).  See :func:`_fold_kz` for why the
     `$k_z$` axis is folded rather than stored two-sided.
 
-    Refuses an odd ``res.nz``, where the stored `$k_z$` band is
-    asymmetric and :func:`_fold_kz` has no slot for the outermost
-    negative mode.  Both consumers reject it earlier with a fuller
-    message (``twin/driver.py``'s ``_validate_twin``,
-    ``scripts/twin_postprocess.py``), so this is unreachable through
-    either of them; it keeps the invariant with the function whose
-    contract states it rather than only with the two pre-flights.
+    Refuses an odd ``res.nz``, where the stored `$k_z$` band would be
+    asymmetric and :func:`_fold_kz` would have no slot for the
+    outermost negative mode.  ``parameters.validate_parameters``
+    refuses an odd Fourier count outright, for the same reason and
+    everywhere, so this is unreachable through any entry point; it
+    keeps the invariant with the function whose contract states it
+    rather than only with the parameter layer.
     """
     if params.res.nz % 2:
         raise ValueError(

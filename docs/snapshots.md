@@ -138,7 +138,8 @@ is the caller's first step.
 Two conventions to keep in mind. The resolutions are the solver's
 nominal (physical) mode counts *without* the 3/2 dealiasing expansion —
 never include dealiasing zero-padding in the field or the resolution
-parameters. And every wall-bounded flow needs its wall-normal/radial
+parameters — and every Fourier count must be **even**, so resample an
+odd-sized source axis before importing it. And every wall-bounded flow needs its wall-normal/radial
 grid points, **ascending** in dnsjax's convention: bottom wall $-1$ to
 top wall $+1$ (Cartesian), near-axis to the outer wall on $(0, 1]$
 (pipe), inner to outer radius (Taylor–Couette); the triply-periodic

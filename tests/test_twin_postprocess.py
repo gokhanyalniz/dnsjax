@@ -433,9 +433,10 @@ def test_guards() -> None:
     assert result.returncode == 1, result.returncode
     assert "the pair is inconsistent" in result.stdout + result.stderr
 
-    # An odd res.nz cannot fold the k_z axis (the [twin] rule, which
-    # this script's own validate hook has to repeat).
-    assert "even res.nz" in _recon(
+    # An odd res.nz is refused by the parameter layer (a Fourier axis
+    # must be even), which is also what keeps the k_z fold defined --
+    # so this script needs no rule of its own.
+    assert "must be even" in _recon(
         member, ["--recon.out", "odd", "--res.nz", "7"], expect=1
     )
 

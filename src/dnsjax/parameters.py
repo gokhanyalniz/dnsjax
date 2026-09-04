@@ -2205,6 +2205,45 @@ def validate_parameters() -> None:
 
     spec = spec_for(params.phys.system)
 
+    # Fourier axes must carry an **even** mode count.  The stored
+    # spectral layout omits the Nyquist mode -- and a Nyquist mode
+    # exists only at an even count: it is the single self-aliasing slot
+    # holding ``+n/2 == -n/2``.  At an odd count the DFT frequencies
+    # are ``0, +-1, ..., +-(n-1)/2``, all in conjugate pairs bar the
+    # mean, so there is nothing to drop and
+    # ``harmonics.complex_harmonics`` removes a *genuine* harmonic
+    # instead.  On a complex axis that strands its conjugate partner in
+    # a slot which is stored, sharded, padded and solved for but cannot
+    # hold physical content: a unit coefficient there survives one
+    # spectral <-> physical round trip at half amplitude, so it is
+    # silently damped on every nonlinear evaluation.  On the real-FFT
+    # axis the top wavenumber is merely lost (``nx = 9`` resolves no
+    # more than ``nx = 8`` while paying for a larger padded grid).
+    # Refused rather than supported: an even count is what every other
+    # constraint wants anyway (an integral 3/2 dealiasing size,
+    # FFT-friendly padded sizes, mesh divisibility, power-of-two Pallas
+    # tiles), so odd buys at most one mode -- the least trustworthy one
+    # -- for a parity branch through every stored mode count.
+    # ``res.nx`` (real FFT) and ``res.nz`` (complex) are Fourier axes
+    # for every flow; ``res.ny`` is one only for the triply-periodic
+    # family, and is the wall-normal grid size elsewhere.
+    _fourier = ["nx", "nz"]
+    if params.phys.system in periodic_systems:
+        _fourier.append("ny")
+    for _axis in _fourier:
+        _n = getattr(params.res, _axis)
+        if _n % 2:
+            raise ValueError(
+                f"res.{spec.alias('res', _axis)} = {_n} must be even: it "
+                "is a Fourier axis, and the stored spectral layout omits "
+                "the Nyquist mode, which exists only at an even mode "
+                "count.  At an odd count the omitted mode is a genuine "
+                "harmonic instead, so the highest wavenumber is either "
+                "stranded without its conjugate partner (the complex "
+                "axes) or simply lost (the real-FFT axis); see "
+                f"dnsjax.harmonics.  Use {_n + 1}."
+            )
+
     # Azimuthal wedge (geo.m0): only flows whose surface carries the
     # field (the cylindrical/annular geometries, both viscoelastic
     # members included -- the u_+/u_- and tensor-spin

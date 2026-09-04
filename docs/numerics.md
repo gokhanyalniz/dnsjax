@@ -62,10 +62,14 @@ equal to `fd_order`). The quadratic nonlinearity is dealiased with the
 **3/2 rule** — physical fields are evaluated on a
 $\tfrac{3}{2}$-oversampled grid and the product is truncated back — and the
 Nyquist mode is dropped on every stored spectral axis (FFTs use
-`norm="forward"`). The dealiasing pad carries no parity constraint — the
-omitted Nyquist mode re-enters as a zero in its exact wrap-order slot for
-even and odd pads alike — so any spanwise / azimuthal `nz` is accepted
-(likewise `ny` for the triply-periodic box). The oversampled sizes are
+`norm="forward"`). The dealiasing *pad* carries no parity constraint —
+the omitted Nyquist mode re-enters as a zero in its exact wrap-order slot
+for even and odd pads alike. The mode *counts* do: a Nyquist mode exists
+only at an even count, so at an odd one the layout would drop a genuine
+harmonic instead and strand its conjugate partner, and every Fourier axis
+is therefore required to be even (`nx` and `nz`, plus `ny` in the
+triply-periodic box; a wall-normal grid size is unconstrained). The
+oversampled sizes are
 then rounded up, with a startup note, to **7-smooth** lengths (no prime
 factor beyond 7, so every transform takes the fast FFT radix kernels
 whatever the base resolution) that also divide evenly across the device

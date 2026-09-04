@@ -261,17 +261,6 @@ def _validate_recon(values: ReconParams, params) -> None:
             "the twin streams exist for the Cartesian wall-bounded "
             f"flows only (system {params.phys.system!r})."
         )
-    if params.res.nz % 2:
-        # dnsjax.twin.diagnostics._fold_kz's requirement, copied here
-        # because the [twin] validate hook does not run under this
-        # entry point.
-        raise ValueError(
-            f"the wall-normal-resolved streams need an even res.nz "
-            f"(got {params.res.nz}): the k_z axis is stored folded "
-            "onto |k_z|, and at odd nz the highest negative mode has "
-            "no positive partner to fold onto "
-            "(dnsjax.twin.diagnostics._fold_kz)."
-        )
     if params.step.adaptive:
         raise ValueError(
             "the twin streams assume a fixed time step "

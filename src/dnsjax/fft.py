@@ -219,14 +219,14 @@ def truncate_fft(
     r"""Truncate a full-complex FFT output along *axis*, dropping
     aliased modes.
 
-    Keeps the lowest `$\lfloor n/2 \rfloor$` positive and
-    `$n - 1 - \lfloor n/2 \rfloor$` negative modes, discarding all
-    higher modes including the Nyquist mode.  The output has `$n - 1$`
-    stored modes -- the layout of
-    :func:`dnsjax.harmonics.complex_harmonics` for even and odd *n*
-    alike (an odd *n* retains an asymmetric band, one more negative
-    than positive mode; even sizes remain the recommended
-    resolutions).  Formed by concatenating the kept slices (one copy;
+    Keeps the lowest `$n/2$` positive and `$n/2 - 1$` negative
+    modes, discarding all higher modes including the Nyquist mode.
+    The output has `$n - 1$` stored modes -- the layout of
+    :func:`dnsjax.harmonics.complex_harmonics`.  *n* is a Fourier mode
+    count and so is **even** (``validate_parameters`` refuses an odd
+    one: at odd *n* there is no Nyquist mode to drop, and dropping one
+    anyway strands a genuine harmonic's conjugate partner).  Formed by
+    concatenating the kept slices (one copy;
     no zero-init plus scatters); the wrap-order placement is exact for
     any parity of `$N - n$`.  The truncated axis is locally stored in
     every pipeline stage, so the input sharding carries over to the
@@ -237,7 +237,7 @@ def truncate_fft(
     a:
         Full FFT output with ``a.shape[axis] == N`` modes.
     n:
-        Target mode count (`$\le N$`, any parity).
+        Target mode count (`$\le N$`, even).
     axis:
         Axis along which to truncate (0 for y, 1 for z).
     pad:
@@ -258,7 +258,7 @@ def truncate_fft(
     idx_pos = [slice(None)] * 3
     idx_neg = [slice(None)] * 3
     # positive modes; negative modes (skip the Nyquist modes)
-    n_neg = (n - 1) - n // 2
+    n_neg = n // 2 - 1
     idx_pos[axis] = slice(None, n // 2)
     idx_neg[axis] = slice(N - n_neg, None)
     parts = [a[tuple(idx_pos)], a[tuple(idx_neg)]]

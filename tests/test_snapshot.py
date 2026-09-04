@@ -1097,9 +1097,12 @@ MODE_CASES: list[dict] = [
         "load_res": (8, 9, 8),
     },
     {
-        "name": "wb kz odd counts (nz 7->10)",
+        # The one row whose resize is not a doubling: the stored count
+        # goes 5 -> 9, so both wrap-order blocks grow by an amount the
+        # halving/doubling rows never produce.
+        "name": "wb kz non-doubling (nz 6->10)",
         "system": "plane-couette",
-        "save_res": (8, 9, 7),
+        "save_res": (8, 9, 6),
         "load_res": (8, 9, 10),
     },
     {
