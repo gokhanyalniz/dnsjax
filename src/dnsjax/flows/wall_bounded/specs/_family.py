@@ -79,6 +79,7 @@ def wall_fields(
         FieldSpec("step", "implicit_mean_coupling"),
         FieldSpec("step", "split_corrector"),
         FieldSpec("solver", "backend"),
+        FieldSpec("solver", "pallas_kernel"),
         FieldSpec("solver", "pallas_block_m0"),
         FieldSpec("solver", "pallas_block_m1"),
         FieldSpec("solver", "pallas_stability_tol"),

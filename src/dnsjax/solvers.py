@@ -759,10 +759,29 @@ def _kernel_path() -> bool:
     disagree about what the stored factors mean.  Host-side Python
     either way -- the backend is fixed once ``bootstrap`` has run.
 
-    A test flipping :data:`_force_kernel_path` must therefore flip it
-    **before building the operator**, not merely before solving.
+    Three inputs, in order:
+
+    1. :data:`_force_kernel_path`, the **trace-only** test override.
+       It exists so a GPU-less box can *lower* the
+       ``shard_map(pallas_call)`` composition for cuda, which is a
+       different job from choosing a sweep, so it stays first and
+       stays out of the parameter surface.
+    2. ``solver.pallas_kernel``, the user's pin: ``False`` takes the
+       portable pure-JAX sweep even on GPU (differentiable without the
+       custom adjoint, and the oracle that adjoint is checked
+       against), ``True`` forces the kernel.  ``None`` (the default)
+       defers to
+    3. the live backend -- the kernel on GPU, the portable sweep
+       everywhere else.
+
+    A test flipping :data:`_force_kernel_path` must flip it **before
+    building the operator**, not merely before solving.
     """
-    return _force_kernel_path or jax.default_backend() == "gpu"
+    if _force_kernel_path:
+        return True
+    if params.solver.pallas_kernel is not None:
+        return params.solver.pallas_kernel
+    return jax.default_backend() == "gpu"
 
 
 def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
