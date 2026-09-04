@@ -125,10 +125,16 @@ def get_inprod(
 ) -> Array:
     """Volume-averaged L2 inner product ``<u1, u2>`` in spectral space.
 
-    A direct Parseval sum over all Fourier modes.
+    A direct Parseval sum over all Fourier modes.  The summand is
+    complex and the result is real (the conjugate-symmetric layout's
+    imaginary parts cancel), so the real part is taken **elementwise**
+    before the reduction: that is exactly what a ``dtype=`` float
+    accumulator did -- cast, then sum -- but spelled out, so NumPy's
+    cast rule stops warning about it on every call, and the reduction
+    carries no imaginary half.  Bit-identical to the cast form.
     """
     return jnp.sum(
-        jnp.conj(vector_spec_1) * k_metric * vector_spec_2,
+        (jnp.conj(vector_spec_1) * k_metric * vector_spec_2).real,
         dtype=sharding.float_type,
     )
 
