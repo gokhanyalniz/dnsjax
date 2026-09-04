@@ -81,6 +81,7 @@ from dnsjax.solvers import (  # noqa: E402
     _banded_solve_batched,
     _build_pallas_operator,
     _pallas_banded_solve,
+    _pallas_banded_solve_t,
     _stack_pallas_operators,
 )
 
@@ -288,6 +289,137 @@ def test_pallas_interpret_matches_cpu_path() -> None:
         params.solver.pallas_block_m1 = orig_bm[1]
 
 
+def _kernel_layout_case(Ny: int, p: int, Nkz: int, Nkx: int, seed: int):
+    """One dense operator plus its kernel-layout factors."""
+    A = _make_random_banded(Ny, p, seed=seed)
+    Li, Ui = _mode_inner_factors(
+        *_banded_factor(_banded_from_dense(_tile_modes(A, Nkz, Nkx), p))
+    )
+    return A, Li, Ui
+
+
+def test_pallas_transpose_identity() -> None:
+    r"""The transposed sweep really solves `$A^T \bar b = \bar x$`.
+
+    Two independent statements, both in interpret mode.  The dot-product
+    identity `$\langle A^{-1}b, c\rangle = \langle b, A^{-T}c\rangle$`
+    is what the adjoint rule rests on and holds at machine precision;
+    and the transposed solution itself is compared against
+    ``np.linalg.solve(A.T, c)``, which pins the *direction* of the
+    transpose -- the identity alone is symmetric in a way that a
+    consistently mirrored sign error could survive.
+
+    Swept over ``p`` including ``p = 1``, where the window recurrence
+    degenerates to a single slot and the ``range(p - 1)`` carry-over is
+    empty.
+    """
+    Nkz, Nkx, k = params.res.nz - 1, params.res.nx // 2, 2
+    orig_mesh = sharding.mesh
+    jax.set_mesh(None)  # interpret-mode ref-store discharge; see above
+    try:
+        for p in (1, 3, 5):
+            Ny = 5 * p + 2
+            A, Li, Ui = _kernel_layout_case(Ny, p, Nkz, Nkx, seed=p)
+            rng = np.random.default_rng(1000 + p)
+            b = jnp.asarray(rng.standard_normal((Ny, k, Nkz, Nkx)))
+            c = jnp.asarray(rng.standard_normal((Ny, k, Nkz, Nkx)))
+
+            x = _pallas_banded_solve(Li, Ui, b, p, interpret=True)
+            bt, _z = _pallas_banded_solve_t(Li, Ui, c, p, interpret=True)
+            assert_allclose(
+                float(jnp.sum(x * c)), float(jnp.sum(b * bt)), rtol=1e-12
+            )
+            assert_allclose(
+                np.asarray(bt)[:, 0, 0, 0],
+                np.linalg.solve(A.T, np.asarray(c)[:, 0, 0, 0]),
+                atol=1e-9,
+                rtol=1e-9,
+            )
+    finally:
+        jax.set_mesh(orig_mesh)
+
+
+def test_pallas_adjoint_matches_portable_sweep() -> None:
+    r"""The kernel's ``custom_vjp`` reproduces the portable sweep's own
+    autodiff, in all three cotangents, and every band slot survives a
+    finite difference.
+
+    The pure-JAX :func:`_banded_solve_batched` differentiates through
+    its ``lax.scan`` with no hand-written rule, so it is an
+    **independent** oracle -- the one place a sign or a chain-rule slip
+    in the hand-derived rule would show.  It is fed the same stored
+    factors with the diagonal slot un-reciprocated inside the
+    differentiated function, so its ``dU`` comes back in the stored
+    (reciprocated) coordinates the kernel's rule reports.
+
+    The finite differences are the second, weaker check, and they pick
+    their slots deliberately: ``L[i, d]`` addresses column ``i - p + d``,
+    so any ``d < p - i`` is structurally zero and would "pass" while
+    testing nothing.  ``d = p - 1`` (the first sub-diagonal) is in band
+    for every row.  The diagonal slot is checked separately because it
+    stores `$1/U_{ii}$`, so its cotangent carries a reciprocal chain
+    rule that no other slot exercises.
+    """
+    Nkz, Nkx, k = params.res.nz - 1, params.res.nx // 2, 2
+    orig_mesh = sharding.mesh
+    jax.set_mesh(None)
+    try:
+        for p in (1, 3, 5):
+            Ny = 5 * p + 2
+            _A, Li, Ui = _kernel_layout_case(Ny, p, Nkz, Nkx, seed=20 + p)
+            rng = np.random.default_rng(2000 + p)
+            b = jnp.asarray(rng.standard_normal((Ny, k, Nkz, Nkx)))
+
+            def f_kernel(L_, U_, b_, p=p):
+                x = _pallas_banded_solve(L_, U_, b_, p, interpret=True)
+                return jnp.sum(x**2)
+
+            def f_portable(L_, U_, b_, p=p):
+                Lo = jnp.moveaxis(L_, (0, 1), (-2, -1))
+                Uo = jnp.moveaxis(U_, (0, 1), (-2, -1))
+                Uo = Uo.at[..., 0].set(1.0 / Uo[..., 0])
+                bo = jnp.moveaxis(jnp.moveaxis(b_, 0, -1), 0, -1)
+                return jnp.sum(_banded_solve_batched(Lo, Uo, bo, p) ** 2)
+
+            gk = jax.grad(f_kernel, argnums=(0, 1, 2))(Li, Ui, b)
+            gp = jax.grad(f_portable, argnums=(0, 1, 2))(Li, Ui, b)
+            for name, a, o in zip(("L", "U", "b"), gk, gp, strict=True):
+                (
+                    assert_allclose(
+                        np.asarray(a), np.asarray(o), atol=1e-11, rtol=1e-9
+                    ),
+                    f"d/d{name} at p={p}",
+                )
+
+            # Finite differences, one in-band slot per stored array.
+            eps = 1e-6
+            for arr_i, arr, i, d in (
+                (0, Li, 2, p - 1),  # L: first sub-diagonal, always in band
+                (1, Ui, 2, 1),  # U: first super-diagonal
+                (1, Ui, 2, 0),  # U: the reciprocated diagonal slot
+            ):
+
+                def shift(
+                    v, arr=arr, arr_i=arr_i, i=i, d=d, Li=Li, Ui=Ui, b=b
+                ):
+                    args = [Li, Ui, b]
+                    args[arr_i] = arr.at[i, d, 0, 0].add(v)
+                    return float(f_kernel(*args))
+
+                fd = (shift(eps) - shift(-eps)) / (2 * eps)
+                ad = float(gk[arr_i][i, d, 0, 0])
+                assert abs(fd) > 1e-8, (
+                    f"slot ({i}, {d}) of {'LU'[arr_i]} is structurally "
+                    f"zero at p={p}: the check would pass vacuously"
+                )
+                (
+                    assert_allclose(fd, ad, rtol=1e-5),
+                    (f"d/d{'LU'[arr_i]}[{i},{d}] at p={p}"),
+                )
+    finally:
+        jax.set_mesh(orig_mesh)
+
+
 def test_pallas_cuda_lowering() -> None:
     """The Triton kernel lowers for the GPU target (compile-only).
 
@@ -305,6 +437,11 @@ def test_pallas_cuda_lowering() -> None:
     the kernel's mode-inner layout; the Explicit mesh is cleared as in the
     interpret test and the lowering runs under an abstract H100 mesh
     (:func:`_abstract_gpu_mesh`) so Triton can resolve the target GPU.
+
+    Both sweeps are lowered: the forward one and the transposed one
+    that backs the ``custom_vjp``.  The transposed kernel has two
+    output refs and its own window recurrence, so it is a distinct
+    lowering, not a variant of the first.
 
     ``p`` is a **static loop bound** in the kernel, so every band width
     a caller can produce needs its own lowering: ``p = 3`` for a typical
@@ -332,15 +469,19 @@ def test_pallas_cuda_lowering() -> None:
             def solve(L: jnp.ndarray, U: jnp.ndarray, b: jnp.ndarray, p=p):
                 return _pallas_banded_solve(L, U, b, p, interpret=False)
 
-            with jax.sharding.use_abstract_mesh(
-                _abstract_gpu_mesh((1,), ("x",))
-            ):
-                lowered = (
-                    jax.jit(solve)
-                    .trace(Li, Ui, b)
-                    .lower(lowering_platforms=("cuda",))
-                )
-            assert "triton" in lowered.as_text().lower(), f"p={p}"
+            def solve_t(L: jnp.ndarray, U: jnp.ndarray, c: jnp.ndarray, p=p):
+                return _pallas_banded_solve_t(L, U, c, p, interpret=False)
+
+            for name, fn in (("fwd", solve), ("transposed", solve_t)):
+                with jax.sharding.use_abstract_mesh(
+                    _abstract_gpu_mesh((1,), ("x",))
+                ):
+                    lowered = (
+                        jax.jit(fn)
+                        .trace(Li, Ui, b)
+                        .lower(lowering_platforms=("cuda",))
+                    )
+                assert "triton" in lowered.as_text().lower(), f"{name} p={p}"
     finally:
         jax.set_mesh(orig_mesh)
         params.solver.pallas_block_m0 = orig_bm[0]

@@ -18,6 +18,22 @@ setup (solve-residual probe + LU element-growth check) and hard-errors
 with an actionable message on a genuinely unstable factorisation
 instead of proceeding silently.
 
+Differentiability
+-----------------
+The Pallas sweep is opaque to reverse mode, so
+:func:`_pallas_banded_solve_core` carries a :func:`jax.custom_vjp`
+whose backward pass is :func:`_pallas_banded_solve_t` -- the mirrored
+sweep on the *same stored factors*, with no un-inversion and no second
+factorisation.  The rule is complete (cotangents for ``L`` and ``U``
+as well as the right-hand side), and it is derived in that function's
+docstring; do not re-derive it elsewhere.  The pure-JAX
+:func:`_banded_solve_batched` is left differentiating through its own
+``lax.scan`` **deliberately**: it is the independent oracle the
+hand-written rule is checked against
+(``test_pallas_adjoint_matches_portable_sweep``), so it must not be
+replaced by a call into the rule.  ``solver.pallas_kernel = False``
+selects it on a GPU.
+
 Complex right-hand sides
 ------------------------
 All operators here are **real**; only the RHS may be complex.  To
@@ -530,6 +546,52 @@ def _banded_matvec(a_band: Array, x: Array) -> Array:
     return y
 
 
+def _tile_pad_planes(
+    L: Array, U: Array, b: Array
+) -> tuple[Array, Array, Array, int, int]:
+    """Pad factors and RHS to a shared whole-``(bm0, bm1)``-tile plane.
+
+    Returns ``(L, U, b, Nkz, Nkx)`` with the original RHS plane, which
+    is the crop the caller applies to the result.  See the padding
+    argument in :func:`_pallas_banded_solve`.
+    """
+    Nkz, Nkx = b.shape[2], b.shape[3]
+    bm0 = params.solver.pallas_block_m0
+    bm1 = params.solver.pallas_block_m1
+    # Whole-``(bm0, bm1)``-tile mode plane, so no boundary tile is
+    # partial (a masked partial-tile band load miscompiles on real
+    # Triton -- see the docstring).  Zero-fill is NaN-safe: padded modes
+    # solve to zero (the backward sweep multiplies by the pre-inverted
+    # diagonal, never divides).  The **stored factors are already padded
+    # to this plane at construction** (``from_banded_factors``), so only
+    # the per-call RHS is padded here; factors from a direct caller that
+    # are still at the true plane take the same pad as a fallback.  The
+    # kernel plane is the whole-tile roundup of the **larger** of the
+    # RHS's true plane and the stored factor plane: factors padded at
+    # construction under a *different* (larger) tile than the runtime
+    # one are grown, never shrunk (a negative ``jnp.pad`` raises) --
+    # their extra rows are valid zero-solving padded modes either way.
+    # The result is cropped back to the RHS's ``(Nkz, Nkx)``.
+    Nkz_need = max(Nkz, L.shape[2])
+    Nkx_need = max(Nkx, L.shape[3])
+    Nkz_pad = ((Nkz_need + bm0 - 1) // bm0) * bm0
+    Nkx_pad = ((Nkx_need + bm1 - 1) // bm1) * bm1
+    if (L.shape[2], L.shape[3]) != (Nkz_pad, Nkx_pad):
+        fac_pad = [
+            (0, 0),
+            (0, 0),
+            (0, Nkz_pad - L.shape[2]),
+            (0, Nkx_pad - L.shape[3]),
+        ]
+        L = jnp.pad(L, fac_pad)
+        U = jnp.pad(U, fac_pad)
+    if (Nkz_pad, Nkx_pad) != (Nkz, Nkx):
+        b = jnp.pad(
+            b, [(0, 0), (0, 0), (0, Nkz_pad - Nkz), (0, Nkx_pad - Nkx)]
+        )
+    return L, U, b, Nkz, Nkx
+
+
 def _pallas_banded_solve(
     L: Array, U: Array, b: Array, p: int, interpret: bool = False
 ) -> Array:
@@ -619,47 +681,46 @@ def _pallas_banded_solve(
         Half-bandwidth.
     interpret:
         Run the kernel in Pallas interpret mode (CPU).
+
+    **Differentiation.**  The sequential sweep is a Pallas kernel, so
+    reverse mode cannot traverse it; :func:`_pallas_banded_solve_core`
+    -- this function minus the pad and crop, where all three arrays
+    share one whole-tile plane -- carries a :func:`jax.custom_vjp`
+    whose backward pass is the mirrored sweep
+    :func:`_pallas_banded_solve_t` on the *same stored factors*.  The
+    pad and crop stay outside it as ordinary differentiable ops, which
+    transpose to each other, so the rule needs no shape bookkeeping.
+    The rule is complete: it returns cotangents for ``L`` and ``U`` as
+    well as ``b`` -- see :func:`_pallas_banded_solve_t` for the
+    derivation.  The pure-JAX :func:`_banded_solve_batched` keeps
+    differentiating through its own ``lax.scan``, deliberately: it is
+    the independent oracle this rule is checked against
+    (``tests/test_autodiff.py``).
+    """
+    L, U, b, Nkz, Nkx = _tile_pad_planes(L, U, b)
+    out = _pallas_banded_solve_core(L, U, b, p, interpret)
+    # Crop the padded modes off (no-op when the plane tiled evenly).
+    return out[:, :, :Nkz, :Nkx]
+
+
+def _banded_kernel_call(
+    L: Array, U: Array, b: Array, p: int, interpret: bool
+) -> Array:
+    """The forward Pallas sweep, at one shared whole-tile mode plane.
+
+    The kernel of :func:`_pallas_banded_solve`, which owns the
+    explanation; this is only the ``pallas_call``.  Every array's
+    ``(k_z, k_x)`` plane must already tile evenly.
     """
     from jax.experimental import pallas as pl
     from jax.experimental.pallas import triton as pltriton
 
     N = L.shape[0]
     k = b.shape[1]
-    Nkz, Nkx = b.shape[2], b.shape[3]
+    Nkz_pad, Nkx_pad = b.shape[2], b.shape[3]
     bm0 = params.solver.pallas_block_m0
     bm1 = params.solver.pallas_block_m1
-
-    # Whole-``(bm0, bm1)``-tile mode plane, so no boundary tile is
-    # partial (a masked partial-tile band load miscompiles on real
-    # Triton -- see the docstring).  Zero-fill is NaN-safe: padded modes
-    # solve to zero (the backward sweep multiplies by the pre-inverted
-    # diagonal, never divides).  The **stored factors are already padded
-    # to this plane at construction** (``from_banded_factors``), so only
-    # the per-call RHS is padded here; factors from a direct caller that
-    # are still at the true plane take the same pad as a fallback.  The
-    # kernel plane is the whole-tile roundup of the **larger** of the
-    # RHS's true plane and the stored factor plane: factors padded at
-    # construction under a *different* (larger) tile than the runtime
-    # one are grown, never shrunk (a negative ``jnp.pad`` raises) --
-    # their extra rows are valid zero-solving padded modes either way.
-    # The result is cropped back to the RHS's ``(Nkz, Nkx)``.
-    Nkz_need = max(Nkz, L.shape[2])
-    Nkx_need = max(Nkx, L.shape[3])
-    Nkz_pad = ((Nkz_need + bm0 - 1) // bm0) * bm0
-    Nkx_pad = ((Nkx_need + bm1 - 1) // bm1) * bm1
-    if (L.shape[2], L.shape[3]) != (Nkz_pad, Nkx_pad):
-        fac_pad = [
-            (0, 0),
-            (0, 0),
-            (0, Nkz_pad - L.shape[2]),
-            (0, Nkx_pad - L.shape[3]),
-        ]
-        L = jnp.pad(L, fac_pad)
-        U = jnp.pad(U, fac_pad)
-    if (Nkz_pad, Nkx_pad) != (Nkz, Nkx):
-        b = jnp.pad(
-            b, [(0, 0), (0, 0), (0, Nkz_pad - Nkz), (0, Nkx_pad - Nkx)]
-        )
+    assert Nkz_pad % bm0 == 0 and Nkx_pad % bm1 == 0
 
     def kernel(l_ref, u_ref, b_ref, x_ref):
         # Window row of zeros, vectorised over the (bm0, bm1) mode tile.
@@ -736,8 +797,246 @@ def _pallas_banded_solve(
         compiler_params=pltriton.CompilerParams(),
         interpret=interpret,
     )(L, U, b)
-    # Crop the padded modes off (no-op when the plane tiled evenly).
-    return out[:, :, :Nkz, :Nkx]
+    return out
+
+
+def _banded_kernel_call_t(
+    L: Array, U: Array, xbar: Array, p: int, interpret: bool
+) -> tuple[Array, Array]:
+    r"""The transposed Pallas sweep, at one shared whole-tile plane.
+
+    The kernel of :func:`_pallas_banded_solve_t`, which owns the
+    explanation.  Returns ``(bbar, z)``: the solution of
+    `$A^T \bar b = \bar x$` and the intermediate `$z = U^{-T}\bar x$`,
+    which the adjoint rule needs as well.
+    """
+    from jax.experimental import pallas as pl
+    from jax.experimental.pallas import triton as pltriton
+
+    N = L.shape[0]
+    k = xbar.shape[1]
+    Nkz_pad, Nkx_pad = xbar.shape[2], xbar.shape[3]
+    bm0 = params.solver.pallas_block_m0
+    bm1 = params.solver.pallas_block_m1
+    assert Nkz_pad % bm0 == 0 and Nkx_pad % bm1 == 0
+
+    def kernel(l_ref, u_ref, xb_ref, b_ref, z_ref):
+        zero = jnp.zeros((k, bm0, bm1), xbar.dtype)
+
+        # Forward: U^T z = xbar (lower, diagonal 1/R_i -> a multiply,
+        # exactly as the forward sweep's backward pass).  ``window[t]``
+        # accumulates the contributions already scattered into row
+        # ``i + t``, so every band read is at the *current* row -- see
+        # the docstring on why this is a scatter and not a gather.
+        def fwd(i, window):
+            zi = (xb_ref[i] + window[0]) * u_ref[i, 0][None]
+            z_ref[i] = zi
+            return tuple(
+                window[t + 1] - u_ref[i, t + 1][None] * zi
+                for t in range(p - 1)
+            ) + (-u_ref[i, p][None] * zi,)
+
+        lax.fori_loop(0, N, fwd, (zero,) * p)
+
+        # ``z`` round-trips a GMEM ref between the passes, like ``y`` in
+        # the forward kernel -- here it is the second output rather than
+        # a stash, since the adjoint rule wants it.  Same defensive
+        # multi-warp fence (GPU-only; no CPU lowering).
+        if not interpret:
+            pltriton.debug_barrier()
+
+        # Back: L^T bbar = z (upper, unit diagonal, so no division at
+        # all).  Descending; ``window[t]`` accumulates for row ``m - t``.
+        def back(t_, window):
+            m = N - 1 - t_
+            bm = z_ref[m] + window[0]
+            b_ref[m] = bm
+            return tuple(
+                window[t + 1] - l_ref[m, p - 1 - t][None] * bm
+                for t in range(p - 1)
+            ) + (-l_ref[m, 0][None] * bm,)
+
+        lax.fori_loop(0, N, back, (zero,) * p)
+
+    grid = (Nkz_pad // bm0, Nkx_pad // bm1)
+
+    def idx(i, j):
+        return (0, 0, i, j)
+
+    out_spec = pl.BlockSpec((N, k, bm0, bm1), idx)
+    out_struct = jax.ShapeDtypeStruct((N, k, Nkz_pad, Nkx_pad), xbar.dtype)
+    return pl.pallas_call(
+        kernel,
+        grid=grid,
+        in_specs=[
+            pl.BlockSpec((N, p, bm0, bm1), idx),
+            pl.BlockSpec((N, p + 1, bm0, bm1), idx),
+            out_spec,
+        ],
+        out_specs=(out_spec, out_spec),
+        out_shape=(out_struct, out_struct),
+        compiler_params=pltriton.CompilerParams(),
+        interpret=interpret,
+    )(L, U, xbar)
+
+
+def _pallas_banded_solve_t(
+    L: Array, U: Array, xbar: Array, p: int, interpret: bool = False
+) -> tuple[Array, Array]:
+    r"""Transposed twin of :func:`_pallas_banded_solve`.
+
+    Solves `$A^T \bar b = \bar x$` for every Fourier mode **on the
+    stored factors**, with no un-inversion and no second
+    factorisation: `$A = LU$` with no pivoting, so
+    `$A^T = U^T L^T$` -- forward-substitute with `$U^T$` (lower, its
+    diagonal the same reciprocated `$1/U_{ii}$` slot, so a multiply),
+    then back-substitute with `$L^T$` (upper, unit diagonal, no
+    division anywhere).  Returns ``(bbar, z)`` with
+    `$z = U^{-T}\bar x$`, which :func:`_pallas_banded_solve_core`'s
+    backward rule needs.
+
+    **Scatter, not gather.**  Written the obvious way this sweep would
+    read the band off *other* rows: `$(U^T)_{i, i-d} = U_{i-d, i}$` is
+    ``u_ref[i - d, d]`` and `$(L^T)_{i, i+d} = L_{i+d, i}$` is
+    ``l_ref[i + d, p - d]``.  Both are row-shifted, so they would need
+    a clamped index plus a mask at the ends -- the masked-load shape
+    that miscompiles on real Triton.  Instead each pass carries a
+    ``p``-deep window of **accumulators for the rows ahead** and
+    scatters into it as soon as a value is known, which reads every
+    coefficient at the current row and mirrors the forward kernel's
+    window of solved values exactly:
+
+    .. math::
+
+        z_i = R_i\,(\bar x_i + w_0), \quad
+        w'_t = w_{t+1} - U[i, t{+}1]\,z_i, \quad
+        w'_{p-1} = -\,U[i, p]\,z_i
+
+    ascending for `$U^T$`, and
+
+    .. math::
+
+        \bar b_m = z_m + w_0, \quad
+        w'_t = w_{t+1} - L[m, p{-}1{-}t]\,\bar b_m, \quad
+        w'_{p-1} = -\,L[m, 0]\,\bar b_m
+
+    descending for `$L^T$`.  Same tiling, same whole-tile plane
+    padding, same NaN-safety: a padded mode has zero ``L``, ``U`` and
+    reciprocal, so both sweeps produce clean zeros.
+
+    **The adjoint rule this serves.**  With `$y = L^{-1}b$`,
+    `$x = U^{-1}y$` and a cotangent `$\bar x$`:
+    `$\bar b = A^{-T}\bar x$` (this function), and differentiating
+    `$Ly = b$`, `$Ux = y$` gives the *dense* cotangents
+    `$\bar L_{ij} = -\bar b_i y_j$` and `$\bar U_{ij} = -z_i x_j$`,
+    restricted to the stored band and summed over the `$k$` right-hand
+    columns (one factor pair serves them all).  The diagonal slot
+    stores `$R_i = 1/U_{ii}$` rather than `$U_{ii}$`, so it carries the
+    reciprocal's chain rule and flips sign:
+    `$\bar R_i = -\bar U_{ii}/R_i^2 = z_i x_i / R_i^2$`.  Deriving that
+    slot directly off the kernel recursion is where a factor `$R_i$`
+    goes missing -- `$z_i$` itself depends on `$R_i$` -- so it is
+    checked numerically against a finite difference in
+    ``tests/test_autodiff.py``, not trusted.
+
+    Only ever differentiated once (it *is* a backward pass), so it
+    carries no rule of its own.
+    """
+    L, U, xbar, Nkz, Nkx = _tile_pad_planes(L, U, xbar)
+    bbar, z = _banded_kernel_call_t(L, U, xbar, p, interpret)
+    return bbar[:, :, :Nkz, :Nkx], z[:, :, :Nkz, :Nkx]
+
+
+def _banded_upper_matvec(U: Array, x: Array, p: int) -> Array:
+    r"""`$y = Ux$` from the reciprocated-diagonal banded ``U``.
+
+    Recovers the forward sweep's intermediate `$y$` for the adjoint
+    rule in `$O(Np)$`, rather than stashing it: the kernel overwrites
+    its ``y`` scratch during the backward pass, and recomputing needs
+    no kernel change.  Mode-inner ``(N, p+1, Nkz, Nkx)`` times
+    ``(N, k, Nkz, Nkx)``.
+
+    The diagonal term is `$x_i / R_i$`, and a **padded mode has
+    `$R_i = 0$` and `$x_i = 0$`** -- a genuine ``0/0`` -- so it takes
+    the same guarded-denominator form as ``_banded_lu_factor_single``.
+    """
+    N = x.shape[0]
+    r = U[:, 0:1]
+    ok = r != 0
+    y = jnp.where(ok, x / jnp.where(ok, r, 1.0), 0.0)
+    xpad = jnp.pad(x, ((0, p), (0, 0), (0, 0), (0, 0)))
+    for d in range(1, p + 1):
+        y = y + U[:, d : d + 1] * lax.slice_in_dim(xpad, d, d + N, axis=0)
+    return y
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(3, 4))
+def _pallas_banded_solve_core(
+    L: Array, U: Array, b: Array, p: int, interpret: bool
+) -> Array:
+    """The differentiation boundary of the Pallas banded solve.
+
+    :func:`_pallas_banded_solve` minus its pad and crop, so all three
+    arrays share one whole-tile mode plane and the ``custom_vjp`` rule
+    needs no shape bookkeeping.  The rule is derived in
+    :func:`_pallas_banded_solve_t`.
+    """
+    return _banded_kernel_call(L, U, b, p, interpret)
+
+
+def _core_fwd(
+    L: Array, U: Array, b: Array, p: int, interpret: bool
+) -> tuple[Array, tuple[Array, Array, Array]]:
+    """Forward pass: the solve, keeping ``L``, ``U`` and the solution.
+
+    ``b`` is not kept -- the backward pass needs `$y$`, which
+    :func:`_banded_upper_matvec` recovers from ``x`` more cheaply than
+    a second triangular sweep on ``b`` would.
+    """
+    x = _banded_kernel_call(L, U, b, p, interpret)
+    return x, (L, U, x)
+
+
+def _core_bwd(
+    p: int,
+    interpret: bool,
+    res: tuple[Array, Array, Array],
+    xbar: Array,
+) -> tuple[Array, Array, Array]:
+    """Backward pass: the complete rule derived in
+    :func:`_pallas_banded_solve_t`."""
+    L, U, x = res
+    N = x.shape[0]
+    bbar, z = _banded_kernel_call_t(L, U, xbar, p, interpret)
+    y = _banded_upper_matvec(U, x, p)
+
+    # L[i, d] = L_{i, i-p+d}: Lbar[i, d] = -sum_k bbar[i, k] y[i-p+d, k].
+    ypad = jnp.pad(y, ((p, 0), (0, 0), (0, 0), (0, 0)))
+    lbar = -jnp.stack(
+        [
+            (bbar * lax.slice_in_dim(ypad, d, d + N, axis=0)).sum(axis=1)
+            for d in range(p)
+        ],
+        axis=1,
+    )
+
+    # U[i, 0] = 1/U_ii (the reciprocal's chain rule, hence the sign and
+    # the square); U[i, d] = U_{i, i+d} for d >= 1.
+    xpad = jnp.pad(x, ((0, p), (0, 0), (0, 0), (0, 0)))
+    r = U[:, 0]
+    ok = r != 0
+    cols = [
+        jnp.where(ok, (z * x).sum(axis=1) / jnp.where(ok, r * r, 1.0), 0.0)
+    ]
+    cols += [
+        -(z * lax.slice_in_dim(xpad, d, d + N, axis=0)).sum(axis=1)
+        for d in range(1, p + 1)
+    ]
+    ubar = jnp.stack(cols, axis=1)
+    return lbar, ubar, bbar
+
+
+_pallas_banded_solve_core.defvjp(_core_fwd, _core_bwd)
 
 
 # Test-only override: force :func:`_banded_mode_solve` onto the Pallas

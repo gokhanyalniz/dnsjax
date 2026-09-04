@@ -741,6 +741,13 @@ mean. `t`/`it`/`isnap` continue only when
   before importing `sharding` or any geometry module -- so
   `--dist.platform cuda` runs the real Pallas kernels on GPU. Real
   multi-GPU needs `mpirun` (`test_random_smoke.py --np`).
+- The banded solve is **reverse-differentiable**: a `custom_vjp` on
+  `_pallas_banded_solve_core` whose backward pass is the mirrored sweep
+  `_pallas_banded_solve_t` on the same stored factors (complete rule —
+  `L̄`, `Ū` too; derivation in that docstring, do not restate). The CPU
+  `_banded_solve_batched` stays differentiable through its own
+  `lax.scan` **on purpose**: it is the oracle the rule is checked
+  against, so never route it through the rule.
 - The wall-bounded per-mode solve dispatches on the **live backend**:
   `solvers._kernel_path()` picks both the solve body and the factor
   *storage*, so they cannot disagree; a test flipping
