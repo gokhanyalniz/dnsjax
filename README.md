@@ -407,10 +407,10 @@ Beyond the core solver, in the order a run tends to meet them:
     snapshot, flushed diagnostics — before a queue kills it, and
     SIGTERM/SIGINT are caught and flush the diagnostic buffers.
 
-12. **External-data import.** `scripts/snapshot_import.py` is a small
-    library that packs a velocity field produced elsewhere into a valid
-    snapshot, so external data enters the solver and the analysis API as a
-    first-class state.
+12. **External-data import.** `dnsjax.analysis.snapshot_import` is a
+    small library that packs a velocity field produced elsewhere into a
+    valid snapshot, so external data enters the solver and the analysis
+    API as a first-class state.
 
 13. **Adaptive CFL time stepping.** `step.adaptive` re-selects the time
     step at runtime from the measured CFL (setpoint `cfl_target`,
@@ -655,8 +655,8 @@ returned through: it gives attribute access (`params.phys.re`) and item
 access side by side, the latter for stats keys such as `E'` or
 `tau'_s,b` that are not valid Python identifiers.
 
-`scripts/snapshot_import.py` covers the reverse direction: packing a
-velocity field produced elsewhere (by another simulator, say) into a
+`dnsjax.analysis.snapshot_import` covers the reverse direction: packing
+a velocity field produced elsewhere (by another simulator, say) into a
 valid snapshot — velocity flows only, the nine-component viscoelastic
 state being readable but not importable.
 
@@ -678,12 +678,9 @@ systems take no grid. Parameters go by the flow's public names, exactly
 as on the CLI:
 
 ```python
-import sys
-
 import numpy as np
 
-sys.path.insert(0, "scripts")   # snapshot_import is a library, not a CLI
-from snapshot_import import convert_field_to_snapshot
+from dnsjax.analysis.snapshot_import import convert_field_to_snapshot
 
 # Plane-Couette: perturbation u' with components (u_x, u_y, u_z) over
 # native axes (y, z, x) — shape (3, ny, nz, nx) — already in dnsjax's
