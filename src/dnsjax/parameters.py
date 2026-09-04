@@ -1688,6 +1688,11 @@ class Solver(BaseModel):
     Linear-solver backends (pallas / dense) and pseudo-spectral
     transform batching.  These knobs select *how* the numerics are
     executed (speed / memory trade-offs), never the results.
+
+    ``backend`` picks the operator **storage**; ``pallas_kernel`` is a
+    separate axis picking which **sweep** reads banded storage (the
+    Triton kernel or the portable pure-JAX one), and so changes no
+    memory figure.
     """
 
     # ``"pallas"`` (the default for all wall-bounded systems): the
@@ -1721,6 +1726,23 @@ class Solver(BaseModel):
             "'pallas': the production banded solver (smallest "
             "storage, fastest).  'dense': the reference Ny x Ny LU "
             "backend kept for readability and regression checks."
+        ),
+    )
+    # A *modifier* on the pallas backend, not a third backend:
+    # ``backend == "pallas"`` means banded **storage**, which both the
+    # Triton kernel and the portable pure-JAX sweep read.  Which sweep
+    # runs is normally decided by the live device (kernel on GPU,
+    # portable elsewhere -- ``solvers._kernel_path``); this pins it.
+    # ``False`` on GPU buys reverse-mode differentiability without the
+    # custom adjoint, and is the oracle that adjoint is checked
+    # against; it costs the kernel's speed.  ``True`` off GPU cannot
+    # execute a Triton kernel and is refused.
+    pallas_kernel: bool | None = Field(
+        default=None,
+        description=(
+            "Pallas backend only: force (true) or forbid (false) the "
+            "Triton banded kernel, overriding the automatic choice "
+            "(kernel on GPU, portable pure-JAX sweep elsewhere)."
         ),
     )
     # ``"pallas"`` backend only: one Pallas program solves a
@@ -2419,6 +2441,17 @@ def validate_parameters() -> None:
     # The dense backend is a readability/regression reference, not a
     # production path; nudge wall-bounded production runs back to the
     # default.  Plain ``print``: this runs before JAX is configured.
+    if params.solver.pallas_kernel and params.dist.platform not in (
+        "cuda",
+        "rocm",
+    ):
+        raise ValueError(
+            "solver.pallas_kernel=true needs a GPU platform "
+            f"(dist.platform is {params.dist.platform!r}): the Triton "
+            "banded kernel has no CPU or TPU lowering.  Leave it "
+            "unset for the automatic choice."
+        )
+
     if (
         params.solver.backend == "dense"
         and params.phys.system in walled_systems

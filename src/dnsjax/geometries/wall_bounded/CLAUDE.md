@@ -104,7 +104,10 @@ the axis forces (the spin quad, parity classes, the band splice).
 
 - `params.solver.backend` selects operator storage: `"pallas"` (default
   banded sweep) or the `"dense"` reference/oracle -- see the
-  `solvers.py` docstrings. The pallas build is wired in all three
+  `solvers.py` docstrings. Which sweep reads banded storage is a
+  separate axis: `solvers._kernel_path()` takes the trace-only
+  `_force_kernel_path`, then `params.solver.pallas_kernel`, then the
+  live backend. The pallas build is wired in all three
   geometries: each `_build_{Lk,Hk}_band_gpu` (plus
   `_viscoelastic_stepping._build_Hc_band_gpu`) assembles directly in
   banded storage via the shared `solvers._assemble_banded_operator`,
