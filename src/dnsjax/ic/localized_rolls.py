@@ -1,8 +1,8 @@
 r"""Localized-roll ("turbulent spot") initial-condition generators.
 
 Builds a deterministic divergence-free **localized** perturbation of the
-base flow for every wall-bounded flow system, returned as a sharded
-spectral state ready to time step.  This is the implementation behind the
+base flow for every flow system, returned as a sharded spectral state
+ready to time step.  This is the implementation behind the
 in-process ``init.localized_rolls`` start mode (``dnsjax.__main__``);
 there is no offline script (unlike the random field).
 
@@ -30,7 +30,9 @@ streamfunction `$\psi = G(y)\,\Psi(z)\,X(x)$`,
 
 which is divergence-free for **any** profiles (`$u_x = 0$` lets `$X$`
 factor out of the divergence, and the `$y$`-`$z$` pair is a
-streamfunction).  `$G = (1 - y^2)^2$` (peak 1, value + derivative zero at
+streamfunction) -- an argument that never mentions walls, which is why
+the triply-periodic member below is the same construction with one
+factor swapped.  `$G = (1 - y^2)^2$` (peak 1, value + derivative zero at
 both walls).  `$X(x)$` is a fixed-physical-width streamwise localization
 and `$\Psi(z)$` a spanwise roll (wavelength `$\lambda$`) under a
 fixed-physical-width envelope, so the spot is localized in both `$x$` and
@@ -40,10 +42,18 @@ fixed-physical-width envelope, so the spot is localized in both `$x$` and
 annular use the analogous per-geometry streamfunction (see the
 per-generator docstrings).
 
-**Mean-free by construction**, and there is nothing admissible to
-keep.  The `$(0,0)$` content the roll pair would otherwise carry is
-`$-G'(y)$` times two scalars, and with `$G = (1-y^2)^2$` that is a
-**cubic** in `$y$` -- while the mean mode's own conservation laws
+**Triply-periodic.** `$y$` is Fourier rather than a wall-normal grid, so
+the only wall-specific ingredient -- `$G$`, whose shape exists to satisfy
+the no-slip conditions -- is replaced by the same fixed-physical
+localization the homogeneous directions use, and `$G'$` becomes the exact
+`$\mathrm{i}k_y\hat G$`.  The divergence then cancels analytically
+(round-off, not truncation-level) and the mean mode is zero structurally;
+see :func:`generate_periodic_rolls`.
+
+**Mean-free by construction**, and (wall-bounded) there is nothing
+admissible to keep.  The `$(0,0)$` content the roll pair would otherwise
+carry is `$-G'(y)$` times two scalars, and with `$G = (1-y^2)^2$` that is
+a **cubic** in `$y$` -- while the mean mode's own conservation laws
 (:mod:`dnsjax.ic.mean_mode`) require `$\delta(\pm 1) = 0$` *and*
 `$\delta''(\pm 1) = 0$`, whose only cubic solution is
 `$\delta \equiv 0$`.  The spot's natural mean content is therefore
@@ -70,10 +80,14 @@ streamfunction pair:
   only when `$L/\lambda \in \mathbb{Z}$`, and 2 % of the peak
   coefficient at e.g. `$L = 2\pi$`, `$\lambda = 4$`.
 
-The pipe would need neither in exact arithmetic -- its azimuthal factors
-are exactly one `$m = \pm 1$` period and its `$u_z$` is identically zero
--- but its DC bins are round-off rather than zero, so they are zeroed
-too.  Removing a roll factor's mean cannot disturb the
+In the triply-periodic family the mean mode is a single bin rather than
+a `$y$` profile, and the *first* mechanism alone settles it on both
+components at once (`$u_z$`'s `$\mathrm{i}k_y$` is a spectral derivative
+there too), so the second is kept only for parity and for the host-side
+peak.  The pipe would need neither in exact arithmetic -- its
+azimuthal factors are exactly one `$m = \pm 1$` period and its `$u_z$`
+is identically zero -- but its DC bins are round-off rather than zero,
+so they are zeroed too.  Removing a roll factor's mean cannot disturb the
 discrete divergence: on the affected `$k = 0$` plane the component's own
 divergence contribution is `$\mathrm{i}\,0\,u = 0$` and its partner is
 already identically zero there.  Guard:
@@ -89,14 +103,16 @@ the ``np0`` mesh axis, the real-FFT-axis factor on ``np1``, and the
 broadcast product is sharded -- so **no full array is ever materialised**
 and the field is device-count-independent.  The peak normalization is a
 one-time host-side computation on the small 1-D factor signals (also
-replication-free).  No-slip is **exact** (the wall slice of every profile
-is identically zero, never transformed).  Reality is automatic: every
-1-D factor spectrum is the forward FFT of a *real* signal, hence
-conjugate-symmetric, and separable products preserve that Hermitian
-symmetry -- no enforcement step (unlike the random field's
-``enforce_hermitian_slice``).  The 1-D spectra are zero-padded to the
-mesh-padded mode counts, so padding modes stay identically zero on
-any device mesh.
+replication-free).  No-slip is **exact** where there are walls (the wall
+slice of every profile is identically zero, never transformed); the
+triply-periodic member passes a `$k_y$` spectrum in that same slot,
+which is unsharded on every mesh exactly as a wall-normal profile is.
+Reality is automatic: every 1-D factor spectrum is the forward FFT of a
+*real* signal, hence conjugate-symmetric, and separable products
+preserve that Hermitian symmetry -- no enforcement step (unlike the
+random field's ``enforce_hermitian_slice``).  The 1-D spectra are
+zero-padded to the mesh-padded mode counts, so padding modes stay
+identically zero on any device mesh.
 
 **Import-order discipline**: only NumPy and the JAX-free
 ``harmonics`` / ``parameters`` leaves are imported at module top; ``jax``,
@@ -123,6 +139,7 @@ from ..flows.registry import (
     cartesian_systems,
     cylindrical_systems,
     cylindrical_viscoelastic_systems,
+    periodic_systems,
 )
 from ..harmonics import complex_harmonics, real_harmonics
 from ..parameters import derived_params, params
@@ -293,8 +310,10 @@ def _separable_scalar(
 
     Builds ``prof[:, None, None] * complex[None, :, None] *
     real[None, None, :]`` as a ``(Ny, nz_spec, nx_spec)`` array on
-    ``spec_scalar_shard`` via the dnsjax broadcast-of-sharded-factors
-    idiom (cf. ``Fourier.k2`` / ``mean_mask``): the complex-FFT-axis
+    ``spec_scalar_shard`` (``Ny -> Nky = ny - 1`` for the
+    triply-periodic family, whose leading axis is spectral) via the
+    dnsjax broadcast-of-sharded-factors idiom (cf. ``Fourier.k2`` /
+    ``mean_mask``): the complex-FFT-axis
     factor is placed on the ``np0`` mesh axis and the real-FFT-axis
     factor on ``np1``, so the broadcast product is sharded and **no full
     array is materialised**.  The 1-D spectra are zero-padded to the
@@ -304,7 +323,12 @@ def _separable_scalar(
     Parameters
     ----------
     prof:
-        Real wall-normal profile, shape ``(Ny,)`` (or ``(Nr,)``).
+        Leading-axis factor, already at its full length and
+        unsharded: a **real wall-normal profile** ``(Ny,)`` / ``(Nr,)``
+        for the wall-bounded geometries, or the **complex** `$k_y$`
+        spectrum ``(ny - 1,)`` for the triply-periodic one.  That axis
+        is never mesh-padded, so unlike the two below it needs no
+        zero-fill.
     complex_spectrum:
         Complex-FFT-axis (`$k_z$` / `$m$`, ``np0``) spectrum, true
         length ``nz - 1``.
@@ -536,6 +560,93 @@ def generate_annular_rolls(
     return state * (amplitude / peak)
 
 
+# ── Triply-periodic rolls ────────────────────────────────────────
+
+
+def generate_periodic_rolls(
+    amplitude: float, width: float, wavelength: float
+) -> Array:
+    r"""Localized-spot rolls for triply-periodic flow.
+
+    Components `$(u_x, u_y, u_z)$`, axes `$[k_y, k_z, k_x]$`.  Same
+    streamfunction `$\psi = G(y)\,\Psi(z)\,X(x)$` as
+    :func:`generate_cartesian_rolls`, with the one wall-specific
+    ingredient replaced: the shear direction `$y$` is Fourier here, not
+    a wall-normal grid, so instead of `$G = (1 - y^2)^2$` (chosen so
+    value *and* derivative vanish at the walls) it takes the same
+    fixed-physical localization :func:`_envelope` the other two
+    homogeneous directions already use, and `$G'$` becomes the exact
+    spectral `$\mathrm{i}k_y\hat G$`:
+
+    .. math::
+        u_x = 0, \quad
+        u_y = \hat G \otimes (\mathrm{i}k_z\hat\Psi) \otimes \hat X,
+        \quad
+        u_z = -(\mathrm{i}k_y\hat G) \otimes \hat\Psi \otimes \hat X.
+
+    The spot is therefore localized in **all three** directions -- `$y$`
+    is homogeneous here, so "localized in every homogeneous direction"
+    (module docstring) includes it -- and, since :func:`_envelope`
+    centres on the box mid-point while `$L_y$` is fixed at the base
+    flow's own period, it sits on a shear extremum of
+    `$U = \sin(2\pi y/L_y)$` (the profile's zero, where `$|U'|$` peaks).
+    Like the Cartesian generator this puts no perturbation in the
+    streamwise component and ignores ``geo.tilt_degree``.
+
+    Two properties are **stronger** than in the wall-bounded case, both
+    because `$G'$` is now spectral rather than an analytic derivative
+    evaluated against a finite-difference operator:
+
+    - the discrete divergence cancels **analytically**, mode by mode
+      (`$\mathrm{i}k_y u_y + \mathrm{i}k_z u_z$` is the same product of
+      the same five factors with opposite sign), so it is round-off
+      rather than truncation-level;
+    - the mean mode is zero **structurally**: `$(k_y, k_z, k_x) =
+      (0,0,0)$` is a single bin, `$u_y$` carries `$\mathrm{i}k_z$` and
+      `$u_z$` carries `$\mathrm{i}k_y$`, and both vanish there.
+      :func:`_mean_free` / :func:`_zero_dc` on the roll factor are kept
+      for parity with the other generators (and for the host-side peak),
+      but nothing here depends on them.
+
+    Reality is automatic for the same reason as elsewhere: every 1-D
+    factor is the forward transform of a *real* signal, and a separable
+    product of conjugate-symmetric factors satisfies the periodic
+    family's joint `$f(k_y,k_z,0) = \overline{f(-k_y,-k_z,0)}$`
+    condition on the `$k_x = 0$` plane (which the random-field generator
+    needs ``_periodic_hermitian_raw`` to arrange).  That pairing needs
+    **even** mode counts, which ``validate_parameters`` guarantees for
+    every Fourier axis (:mod:`dnsjax.harmonics`).
+    """
+    from jax import numpy as jnp
+
+    from ..geometries.triply_periodic.triply_periodic import ly
+    from ..sharding import sharding
+
+    nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
+    lx, lz = params.geo.lx, params.geo.lz
+
+    g_sig = _envelope(ny, width, ly)  # G(y): shear-direction spot
+    gp_sig = _ddz(g_sig, ly)  # G'(y) (for the peak)
+    x_sig = _envelope(nx, width, lx)  # streamwise localization X(x)
+    psi_sig = _roll(nz, wavelength, lz) * _envelope(nz, width, lz)  # Psi(z)
+    psi_sig = _mean_free(psi_sig)
+    psi_dz = _ddz(psi_sig, lz)  # Psi'(z) (for the peak)
+
+    x_spec = _real_axis_spectrum(x_sig)
+    g_spec = _complex_axis_spectrum(g_sig)
+    g_dy_spec = 1j * _complex_k(ny, ly) * g_spec  # G'(y), spectral
+    psi_spec = _zero_dc(_complex_axis_spectrum(psi_sig))
+    psi_dz_spec = 1j * _complex_k(nz, lz) * psi_spec  # Psi'(z), spectral
+
+    u_y = _separable_scalar(g_spec, psi_dz_spec, x_spec)
+    u_z = _separable_scalar(-g_dy_spec, psi_spec, x_spec)
+    u_x = jnp.zeros_like(u_y)
+    state = jnp.stack([u_x, u_y, u_z]).astype(sharding.complex_type)
+
+    peak = _peak_velocity([(g_sig, psi_dz, x_sig), (gp_sig, psi_sig, x_sig)])
+    return state * (amplitude / peak)
+
+
 # ── Dispatch ─────────────────────────────────────────────────────
 
 
@@ -555,8 +666,10 @@ def generate_localized_rolls(
     fixed `$m = \pm 1$` mode).  For the total-field Dean flow the
     analytical laminar profile is added to the perturbation (reusing
     :func:`dnsjax.ic.random_field.add_dean_laminar`); every other
-    system returns the perturbation directly.  Defined for wall-bounded
-    systems only.
+    system returns the perturbation directly.  The triply-periodic
+    family has no wall-normal direction and takes
+    :func:`generate_periodic_rolls`, whose `$y$` factor is a
+    localization rather than a wall profile.
 
     Requires JAX to be configured and the parameter singletons set (the
     geometry ``fourier`` singleton is built lazily by the dispatched
@@ -565,6 +678,8 @@ def generate_localized_rolls(
     system = params.phys.system
     if system in cartesian_systems:
         return generate_cartesian_rolls(amplitude, width, wavelength)
+    if system in periodic_systems:
+        return generate_periodic_rolls(amplitude, width, wavelength)
     # Rheology before geometry: the viscoelastic systems are members of
     # their geometry's list too (see ``flows.registry``).  Both take a
     # velocity-only rolls perturbation on the total-field IC, so the
