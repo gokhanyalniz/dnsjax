@@ -7,8 +7,8 @@ method that reconciles incompressibility with the wall boundary
 conditions. The closing section collects the parameter conventions each
 flow follows.
 
-Start at the [README](README.md) for the solver itself, and
-[`SCALING.md`](SCALING.md) for array layout, memory and the device grid.
+Start at the [README](../README.md) for the solver itself, and
+[`scaling.md`](scaling.md) for array layout, memory and the device grid.
 
 ## Equations
 
@@ -120,7 +120,7 @@ the laminar bulk velocity: $1/2$ for both pipes, $2/3$ for plane-Poiseuille,
 and zero for the others (Dean's driving is azimuthal, so its axial bulk
 vanishes). The pipes and plane-Poiseuille therefore integrate, and
 store snapshots, in the moving frame unless `u_grid` is set to `0` (see also
-item 9 in [What's in the box](README.md#whats-in-the-box)).
+item 9 in [What's in the box](../README.md#whats-in-the-box)).
 
 ## Grids
 
@@ -219,7 +219,7 @@ A few conventions worth knowing across the flow surfaces:
   batch dominates the step's peak memory — the one configuration where
   the `solver.rhs_transform_chunks` memory–throughput dial is worth
   reaching for (see
-  [Memory footprint](SCALING.md#memory-footprint)).
+  [Memory footprint](scaling.md#memory-footprint)).
 - **Grid axes.** Each flow's parameters use the names natural to its
   geometry: the cylindrical and annular flows expose `lz` (axial
   length), `nz` (axial modes), `nr` (radial points), and `ntheta`
