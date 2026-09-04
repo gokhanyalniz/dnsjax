@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""Tests for ``scripts/snapshot_import.py`` (native-field converter).
+r"""Tests for ``dnsjax.analysis.snapshot_import`` (native-field converter).
 
 Each flow family is exercised in its own subprocess (the geometry
 ``fourier`` singleton is built once at import, one system per
@@ -41,9 +41,6 @@ import numpy as np
 from _live import report, run_live
 
 sys.stdout.reconfigure(line_buffering=True)
-
-_SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-sys.path.insert(0, str(_SCRIPTS))
 
 # Small, distinct resolutions so axis mix-ups cannot hide.
 NX, NY, NZ = 8, 9, 12  # ny is grid points (wall-bounded); periodic uses 10
@@ -125,7 +122,7 @@ def _run_one(system: str) -> int:
     family, cfg = SYSTEMS[system]
     ny = cfg["ny"] if "ny" in cfg else cfg["nr"]
 
-    import snapshot_import as si
+    from dnsjax.analysis import snapshot_import as si
 
     # Strictness of the public surface: an internal / irrelevant name
     # must be rejected before any singleton is touched.

@@ -320,9 +320,9 @@ flows/
   triply_periodic/    monochromatic.py: Kolmogorov;
                       specs/ holds their JAX-free parameter FlowSpecs
 analysis/             External-facing JAX-free snapshot post-processing
-                      API (+ the JAX-based transient_growth CLI and the
-                      response/ and twin/ subpackages) -- see
-                      analysis/CLAUDE.md
+                      API (+ the JAX-based transient_growth CLI,
+                      snapshot_import, and the response/ and twin/
+                      subpackages) -- see analysis/CLAUDE.md
 ```
 
 ### Twin-run perturbation growth (`dnsjax-twin`)
@@ -726,8 +726,6 @@ mean. `t`/`it`/`isnap` continue only when
 
 All under `scripts/`; full rationale/usage in each module docstring.
 
-- `snapshot_import.py`: **library** (not a CLI) packing a
-  native-layout velocity field into a snapshot.
 - `snapshot_perturb.py`: CLI + library injecting a scaled single-mode
   perturbation into an existing snapshot.
 - `ensemble_setup.py`: JAX-free `harvest`/`build`/`build-twin` CLI
@@ -850,7 +848,7 @@ are one-liners. Cross-cutting notes:
 - `test_snapshot.py`: snapshot round-trips, np-agnostic resume, the
   multi-device I/O layout, and the integrity guards.
 - `test_resume.py`: snapshot lineage and resume policy (`--unit-only`).
-- `test_snapshot_import.py`: `scripts/snapshot_import.py`
+- `test_snapshot_import.py`: `analysis/snapshot_import.py`
   native-contract validation (offline).
 - `test_snapshot_export.py`: `dnsjax.analysis` API vs solver ground
   truth (**re-run when changing a primitive**).
