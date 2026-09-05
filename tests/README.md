@@ -1,6 +1,6 @@
 # Tests
 
-45 standalone scripts. Each one is a program with a `__main__` runner,
+46 standalone scripts. Each one is a program with a `__main__` runner,
 runnable on its own:
 
 ```bash

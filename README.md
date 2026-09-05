@@ -89,19 +89,25 @@ Output goes to the working directory, so launch from a scratch dir:
 ```bash
 mkdir -p /tmp/run && cd /tmp/run
 /path/to/dnsjax/.venv/bin/dnsjax \
-  --phys.system pipe --phys.re 2300 --geo.lz 200 \
-  --res.nz 512 --res.nr 48 --res.ntheta 96 \
-  --init.localized_rolls True --init.localized_rolls_amplitude 0.2 \
-  --step.dt 0.01 --stop.max_sim_time 500 \
-  --outs.it_stats 100 --outs.it_snapshot 5000
+  --phys.system pipe --phys.re 2500 --geo.lz 8 \
+  --phys.driving constant_bulk_velocity \
+  --res.nz 24 --res.nr 32 --res.ntheta 32 \
+  --init.localized_rolls True \
+  --init.localized_rolls_amplitude 0.3 --init.localized_rolls_width 1.5 \
+  --step.dt 0.01 --stop.max_sim_time 200 \
+  --outs.it_stats 50
 ```
 
-A 100-diameter pipe at Re = 2300, seeded with a localized roll
-("puff"). The first step takes noticeably longer than the rest (JIT
-compilation); statistics then stream to `stats.dat` and snapshots appear
-as `state00000.tar`, `state00001.tar`, … The same run as a configuration
+Four diameters of pipe at Re = 2500, seeded with a localized roll
+("puff") that breaks down into turbulence and decays again a hundred or
+so advective time units later — a few minutes on one core. The first
+step takes noticeably longer than the rest (JIT compilation);
+statistics then stream to `stats.dat`. The same run as a configuration
 file is
-[`examples/pipe-re2300/parameters.toml`](examples/pipe-re2300/parameters.toml).
+[`examples/pipe-re2500/parameters.toml`](examples/pipe-re2500/parameters.toml),
+and [`examples/`](examples/) has three more — a plane channel, a minimal
+Couette cell and a triply-periodic box — each sized to reach turbulence
+on one laptop core.
 
 `dnsjax --help` lists the global parameters and the flows, `--help pipe`
 one flow's full surface, and `--sample-toml pipe` an annotated template.
@@ -208,6 +214,7 @@ in [`docs/validation.md`](docs/validation.md).
 | **Twin-run perturbation growth** | a reference snapshot and a perturbed copy stepped in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, and $(k_z, k_x)$ spectra — [twin/](src/dnsjax/twin/README.md) |
 | **Response and identification** | record spectral modes, drive them with white-in-time kicks, identify a data-driven generator three interchangeable ways — [response/](src/dnsjax/analysis/response/README.md) |
 | **Banded-LU GPU kernel** | $O(N_y p)$ factors instead of dense $O(N_y^2)$, with a dense reference solver; checked in interpret mode *and* by lowering to CUDA on GPU-less machines |
+| **Differentiable time steps** | `jax.grad` through a step, opt-in: a fixed-count corrector replaces the one construct reverse mode cannot traverse, and the banded GPU kernel carries a hand-written adjoint — [docs/differentiability.md](docs/differentiability.md) |
 | **Two-axis device mesh** | $(n_{p0}, n_{p1})$ with an in-FFT reshard pipeline — [docs/scaling.md](docs/scaling.md#parallelization) |
 | **A memory–throughput dial** | `solver.rhs_transform_chunks` splits the batched inverse transform $k$ ways, cutting its working set $k$-fold at identical results |
 | **Snapshots and resume** | tar + zarr3, written in parallel and straight from GPU memory where available; resume across any device count, re-gridding every changed axis — [docs/snapshots.md](docs/snapshots.md) |
@@ -243,7 +250,7 @@ flow by `dnsjax --help <system>` and `dnsjax --sample-toml <system>`.
 
 ## Testing
 
-45 standalone scripts under `tests/`, run directly
+46 standalone scripts under `tests/`, run directly
 (`uv run python tests/test_cartesian.py`) or through a pytest bridge that
 shells each one out as a subprocess. They pin the solvers and operators
 against independent constructions; the physics (laminar fixed points at
@@ -269,7 +276,10 @@ extend themselves. See [`docs/extending.md`](docs/extending.md).
 - **Tested on CPUs and NVIDIA GPUs.** The code paths are
   backend-agnostic and the solver accepts `cuda`, `rocm` and `tpu`
   alike, but only CPU and CUDA are exercised regularly; AMD (ROCm) has
-  had minimal testing and TPUs none at all.
+  had minimal testing and TPUs none at all. The banded kernel's adjoint
+  is in the same position the kernel itself once was: its numerics are
+  checked in interpret mode and it is lowered for CUDA, but **reverse
+  mode has not yet been run on a GPU**.
 - **One wall-bounded direction.** The discretization admits at most one
   non-periodic direction.
 - **Perturbing the mean profile is Cartesian-only.** The
