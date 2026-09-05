@@ -1,0 +1,60 @@
+# Kolmogorov flow: a sinusoidal body force in a triply-periodic box,
+# seeded with a localized roll perturbation that transitions to
+# sustained chaos.  Laptop-sized -- a few minutes on one core.
+#
+# A run reads `parameters.toml` from its own working directory, so copy
+# this file into a scratch directory and launch there.  Command-line
+# flags override any value set here.  Only parameters of the selected
+# flow are accepted: `dnsjax --help kolmogorov` lists them, and
+# `dnsjax --sample-toml kolmogorov` prints an annotated template with
+# every parameter and its default.
+
+[phys]
+system = "kolmogorov"
+# Re = 1/nu on the fixed shear-direction box length (4) and the unit
+# forcing amplitude.  Above this box's transition threshold: the
+# perturbation grows by nearly three decades before saturating.
+re = 100.0
+
+[geo]
+# Streamwise and spanwise periods.  The shear direction is not a free
+# length -- it is the reference length, fixed at 4, and the base flow
+# U = sin(2*pi*y/4) has its shear maximum at the box mid-point.
+lx = 5.0
+lz = 5.0
+
+[res]
+# 32^3 Fourier modes, oversampled 3/2 in every direction for
+# dealiasing.  Converged here: the same case at 48^3 agrees on every
+# saturated statistic to a few tenths of a percent, for 12x the cost.
+nx = 32
+ny = 32
+nz = 32
+# Double precision (the model default, stated here because it is a real
+# choice rather than an incidental one: the timings in
+# examples/README.md are for this setting, and single precision would
+# halve the memory).
+double_precision = true
+
+[init]
+# Start-mode precedence: snapshot > start_from_laminar >
+# localized_rolls > random_field (the default).  A localized spot is
+# deterministic, so two runs of this file take the same trajectory.
+# It centres on the shear maximum, is divergence-free to round-off,
+# and carries no mean-mode content.
+localized_rolls = true
+localized_rolls_amplitude = 0.3   # peak |u'| of the spot
+localized_rolls_width = 1.0       # physical localization half-width
+localized_rolls_wavelength = 2.0  # cross-roll spanwise wavelength
+
+[step]
+dt = 0.01
+scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
+
+[outs]
+it_stats = 100      # steps between stats.dat records
+
+[stop]
+# The spot grows through t ~ 30 and the flow is chaotic well before
+# t = 100, so the second half of this run is the saturated state.
+max_sim_time = 200.0

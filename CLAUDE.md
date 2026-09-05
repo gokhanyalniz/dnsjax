@@ -567,8 +567,8 @@ layering" above.
 | `[twin]`   | Extension (registered by `dnsjax-twin` only): twin-run seed/energy/cadences + the stream-shaping flags (Cartesian wall-bounded, fixed dt); the fields and their defaults: `twin/CLAUDE.md` |
 
 A run reads `./parameters.toml` from its own working directory; the
-shipped example (`examples/pipe-re2300/parameters.toml`, copied into a
-scratch dir) sets only
+four shipped examples (`examples/*/parameters.toml`, copied into a
+scratch dir) set only
 `[phys] [geo] [res] [init] [outs] [step] [stop]`, and the rest rely on
 model defaults -- set them via CLI (e.g. `--dist.np1 2`,
 `--force.modes "3,0"`, `--probes.modes "0,0;3,0"`) or by adding the

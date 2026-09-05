@@ -1,0 +1,57 @@
+# Plane-Couette flow in the minimal flow unit: the smallest box that
+# holds turbulence between two shearing walls.  Laptop-sized -- a
+# couple of minutes on one core.
+#
+# A run reads `parameters.toml` from its own working directory, so copy
+# this file into a scratch directory and launch there.  Command-line
+# flags override any value set here.  Only parameters of the selected
+# flow are accepted: `dnsjax --help plane-couette` lists them, and
+# `dnsjax --sample-toml plane-couette` prints an annotated template
+# with every parameter and its default.
+
+[phys]
+system = "plane-couette"
+# Wall speed x half-gap / viscosity, with U = y on y in [-1, 1].
+# Above the sustainment threshold (~350-500) but still in the regime
+# where turbulence in a box this small is transient by nature.
+re = 500.0
+
+[geo]
+# The minimal flow unit: 1.75*pi long, 1.2*pi wide, in half-gap units.
+# One streamwise-roll pair fits across the span, which is exactly what
+# the self-sustaining cycle needs and no more.
+lx = 5.4978
+lz = 3.7699
+
+[res]
+nx = 16       # streamwise Fourier modes
+ny = 33       # wall-normal finite-difference points (Chebyshev grid)
+nz = 16       # spanwise Fourier modes
+fd_order = 8  # wall-normal finite-difference accuracy order
+# Double precision (the model default, stated here because it is a real
+# choice rather than an incidental one: the timings in
+# examples/README.md are for this setting, and single precision would
+# halve the memory).
+double_precision = true
+
+[init]
+# Start-mode precedence: snapshot > start_from_laminar >
+# localized_rolls > random_field (the default).  A localized spot is
+# deterministic, so two runs of this file take the same trajectory.
+localized_rolls = true
+localized_rolls_amplitude = 0.3    # peak |u'| of the spot
+localized_rolls_width = 1.5        # streamwise localization half-width
+localized_rolls_wavelength = 3.77  # cross-roll spanwise wavelength
+
+[step]
+dt = 0.01
+scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
+
+[outs]
+it_stats = 50     # steps between stats.dat records
+
+[stop]
+# Dissipation peaks near t = 25 at ~4.7x laminar and stays above 1.5x
+# out to t ~ 105 before the flow relaminarizes -- see the README, this
+# is the box behaving as designed rather than a failure.
+max_sim_time = 200.0

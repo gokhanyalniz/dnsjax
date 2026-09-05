@@ -46,6 +46,11 @@ and the time integrator — is written out explicitly, so switching to
 another flow is a matter of editing values rather than learning the
 defaults.
 
+It is a production-scale run: seven million real degrees of freedom
+carried over 500 advective time units. For something that finishes while
+you watch, [`examples/`](../examples/) ships four laptop-sized
+configurations that reach turbulence in minutes on one core.
+
 Reading the flags:
 
 - `--phys.system pipe --phys.re 2300` — the flow and its Reynolds number.
@@ -78,8 +83,7 @@ estimate any configuration. **Switching flows** is a one-line change:
 ## The TOML form
 
 The same run can be expressed as a `parameters.toml` in the working
-directory (shipped as
-[`examples/pipe-re2300/parameters.toml`](../examples/pipe-re2300/parameters.toml)):
+directory:
 
 ```toml
 [phys]

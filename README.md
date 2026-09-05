@@ -89,19 +89,25 @@ Output goes to the working directory, so launch from a scratch dir:
 ```bash
 mkdir -p /tmp/run && cd /tmp/run
 /path/to/dnsjax/.venv/bin/dnsjax \
-  --phys.system pipe --phys.re 2300 --geo.lz 200 \
-  --res.nz 512 --res.nr 48 --res.ntheta 96 \
-  --init.localized_rolls True --init.localized_rolls_amplitude 0.2 \
-  --step.dt 0.01 --stop.max_sim_time 500 \
-  --outs.it_stats 100 --outs.it_snapshot 5000
+  --phys.system pipe --phys.re 2500 --geo.lz 8 \
+  --phys.driving constant_bulk_velocity \
+  --res.nz 24 --res.nr 32 --res.ntheta 32 \
+  --init.localized_rolls True \
+  --init.localized_rolls_amplitude 0.3 --init.localized_rolls_width 1.5 \
+  --step.dt 0.01 --stop.max_sim_time 200 \
+  --outs.it_stats 50
 ```
 
-A 100-diameter pipe at Re = 2300, seeded with a localized roll
-("puff"). The first step takes noticeably longer than the rest (JIT
-compilation); statistics then stream to `stats.dat` and snapshots appear
-as `state00000.tar`, `state00001.tar`, … The same run as a configuration
+Four diameters of pipe at Re = 2500, seeded with a localized roll
+("puff") that breaks down into turbulence and decays again a hundred or
+so advective time units later — a few minutes on one core. The first
+step takes noticeably longer than the rest (JIT compilation);
+statistics then stream to `stats.dat`. The same run as a configuration
 file is
-[`examples/pipe-re2300/parameters.toml`](examples/pipe-re2300/parameters.toml).
+[`examples/pipe-re2500/parameters.toml`](examples/pipe-re2500/parameters.toml),
+and [`examples/`](examples/) has three more — a plane channel, a minimal
+Couette cell and a triply-periodic box — each sized to reach turbulence
+on one laptop core.
 
 `dnsjax --help` lists the global parameters and the flows, `--help pipe`
 one flow's full surface, and `--sample-toml pipe` an annotated template.

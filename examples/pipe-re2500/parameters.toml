@@ -1,0 +1,68 @@
+# Pipe flow in a short periodic cell, near the Reynolds number where
+# pipe turbulence first appears.  Laptop-sized -- a few minutes on one
+# core.
+#
+# A run reads `parameters.toml` from its own working directory, so copy
+# this file into a scratch directory and launch there.  Command-line
+# flags override any value set here.  Only parameters of the selected
+# flow are accepted: `dnsjax --help pipe` lists them, and
+# `dnsjax --sample-toml pipe` prints an annotated template with every
+# parameter and its default.
+
+[phys]
+system = "pipe"
+# Bulk/diameter Reynolds number, which for this normalization is also
+# the centerline/radius one (the factors of two cancel; D = 2).  Pipe
+# flow is linearly stable at every Reynolds number, so the transition
+# here is entirely down to the finite-amplitude spot below.
+re = 2500.0
+# Hold the bulk velocity fixed and let the axial pressure gradient
+# respond, rather than the default the other way round.  That keeps Re
+# above meaning what it says once the flow is turbulent, and it puts the
+# applied forcing -dPdz' in a last stats.dat column, where it rises
+# above its laminar value exactly when the flow does.
+driving = "constant_bulk_velocity"
+
+[geo]
+# Four diameters of pipe.  Short enough to run on a laptop, long enough
+# to hold a turbulent structure for a while.  The full circle is
+# simulated: `geo.m0` would restrict the domain to a 2*pi/m0 wedge and
+# cut the azimuthal cost by m0, but it also forbids every azimuthal
+# wavenumber that is not a multiple of m0, so it is left at 1 here.
+lz = 8.0
+# grid_type defaults to "half-cgl" for pipe + iterative-cn
+# ("rigged-cgl" under cnab2).
+
+[res]
+nz = 24       # axial Fourier modes
+nr = 32       # radial finite-difference points
+ntheta = 32   # azimuthal Fourier modes
+fd_order = 8  # radial finite-difference accuracy order
+# Double precision (the model default, stated here because it is a real
+# choice rather than an incidental one: the timings in
+# examples/README.md are for this setting, and single precision would
+# halve the memory).
+double_precision = true
+
+[init]
+# Start-mode precedence: snapshot > start_from_laminar >
+# localized_rolls > random_field (the default).  A localized spot is
+# deterministic, so two runs of this file take the same trajectory.
+# The pipe's cross-roll structure is the fixed m = +-1 mode, so
+# localized_rolls_wavelength does not apply here.
+localized_rolls = true
+localized_rolls_amplitude = 0.3   # peak |u'| of the spot
+localized_rolls_width = 1.5       # axial localization half-width
+
+[step]
+dt = 0.01
+scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
+
+[outs]
+it_stats = 50     # steps between stats.dat records
+
+[stop]
+# Dissipation peaks near t = 30 and the flow is still several times
+# more dissipative than laminar out to t ~ 75; the rest of the horizon
+# is the decay back, which is the physics here -- see the README.
+max_sim_time = 200.0

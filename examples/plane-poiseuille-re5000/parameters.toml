@@ -1,0 +1,61 @@
+# Plane-Poiseuille flow in a minimal channel: the smallest box that
+# sustains near-wall turbulence in a pressure-driven channel.
+# Laptop-sized -- a couple of minutes on one core.
+#
+# A run reads `parameters.toml` from its own working directory, so copy
+# this file into a scratch directory and launch there.  Command-line
+# flags override any value set here.  Only parameters of the selected
+# flow are accepted: `dnsjax --help plane-poiseuille` lists them, and
+# `dnsjax --sample-toml plane-poiseuille` prints an annotated template
+# with every parameter and its default.
+
+[phys]
+system = "plane-poiseuille"
+# Centerline speed x half-height / viscosity, with U = 1 - y^2 on
+# y in [-1, 1].  Well above the subcritical transition threshold: the
+# seeded spot breaks down within a few tens of advective units.
+re = 5000.0
+# Hold the bulk velocity fixed and let the streamwise pressure gradient
+# respond, rather than the default the other way round.  That keeps the
+# Reynolds number above meaning what it says once the flow is turbulent,
+# and it puts the applied forcing -dPds' in a last stats.dat column,
+# where it rises above its laminar value exactly when the flow does.
+driving = "constant_bulk_velocity"
+
+[geo]
+# A minimal channel: pi long, pi/2 wide, in half-height units -- about
+# one near-wall streak pair across the span at this Reynolds number.
+lx = 3.1416
+lz = 1.5708
+
+[res]
+nx = 16       # streamwise Fourier modes
+ny = 49       # wall-normal finite-difference points (Chebyshev grid)
+nz = 16       # spanwise Fourier modes
+fd_order = 8  # wall-normal finite-difference accuracy order
+# Double precision (the model default, stated here because it is a real
+# choice rather than an incidental one: the timings in
+# examples/README.md are for this setting, and single precision would
+# halve the memory).
+double_precision = true
+
+[init]
+# Start-mode precedence: snapshot > start_from_laminar >
+# localized_rolls > random_field (the default).  A localized spot is
+# deterministic, so two runs of this file take the same trajectory.
+localized_rolls = true
+localized_rolls_amplitude = 0.3      # peak |u'| of the spot
+localized_rolls_width = 1.0          # streamwise localization half-width
+localized_rolls_wavelength = 1.5708  # cross-roll spanwise wavelength
+
+[step]
+dt = 0.01
+scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
+
+[outs]
+it_stats = 50     # steps between stats.dat records
+
+[stop]
+# Breakdown by t ~ 15, overshooting to ~14x the laminar dissipation,
+# then a turbulent state around 3x laminar that lasts the whole horizon.
+max_sim_time = 250.0
