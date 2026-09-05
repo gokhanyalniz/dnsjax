@@ -214,6 +214,7 @@ in [`docs/validation.md`](docs/validation.md).
 | **Twin-run perturbation growth** | a reference snapshot and a perturbed copy stepped in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, and $(k_z, k_x)$ spectra — [twin/](src/dnsjax/twin/README.md) |
 | **Response and identification** | record spectral modes, drive them with white-in-time kicks, identify a data-driven generator three interchangeable ways — [response/](src/dnsjax/analysis/response/README.md) |
 | **Banded-LU GPU kernel** | $O(N_y p)$ factors instead of dense $O(N_y^2)$, with a dense reference solver; checked in interpret mode *and* by lowering to CUDA on GPU-less machines |
+| **Differentiable time steps** | `jax.grad` through a step, opt-in: a fixed-count corrector replaces the one construct reverse mode cannot traverse, and the banded GPU kernel carries a hand-written adjoint — [docs/differentiability.md](docs/differentiability.md) |
 | **Two-axis device mesh** | $(n_{p0}, n_{p1})$ with an in-FFT reshard pipeline — [docs/scaling.md](docs/scaling.md#parallelization) |
 | **A memory–throughput dial** | `solver.rhs_transform_chunks` splits the batched inverse transform $k$ ways, cutting its working set $k$-fold at identical results |
 | **Snapshots and resume** | tar + zarr3, written in parallel and straight from GPU memory where available; resume across any device count, re-gridding every changed axis — [docs/snapshots.md](docs/snapshots.md) |
@@ -249,7 +250,7 @@ flow by `dnsjax --help <system>` and `dnsjax --sample-toml <system>`.
 
 ## Testing
 
-45 standalone scripts under `tests/`, run directly
+46 standalone scripts under `tests/`, run directly
 (`uv run python tests/test_cartesian.py`) or through a pytest bridge that
 shells each one out as a subprocess. They pin the solvers and operators
 against independent constructions; the physics (laminar fixed points at
@@ -275,7 +276,10 @@ extend themselves. See [`docs/extending.md`](docs/extending.md).
 - **Tested on CPUs and NVIDIA GPUs.** The code paths are
   backend-agnostic and the solver accepts `cuda`, `rocm` and `tpu`
   alike, but only CPU and CUDA are exercised regularly; AMD (ROCm) has
-  had minimal testing and TPUs none at all.
+  had minimal testing and TPUs none at all. The banded kernel's adjoint
+  is in the same position the kernel itself once was: its numerics are
+  checked in interpret mode and it is lowered for CUDA, but **reverse
+  mode has not yet been run on a GPU**.
 - **One wall-bounded direction.** The discretization admits at most one
   non-periodic direction.
 - **Perturbing the mean profile is Cartesian-only.** The
