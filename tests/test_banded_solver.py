@@ -548,6 +548,61 @@ def test_pallas_cuda_lowering_sharded_solve() -> None:
         solvers_mod._force_kernel_path = False
 
 
+def test_pallas_adjoint_composes_in_solve() -> None:
+    """The adjoint works *through* ``.solve``, not just standalone.
+
+    ``test_pallas_adjoint_matches_portable_sweep`` checks the rule's
+    numbers, but it calls the kernel directly -- and on a CPU box every
+    end-to-end gradient takes the portable sweep, so nothing else
+    exercises the ``custom_vjp`` in the shape production uses it:
+    inside ``.solve``'s ``shard_map``, with the backward pass adding a
+    *second* ``pallas_call`` to that region.  This forces the kernel
+    branch and runs both sweeps in interpret mode
+    (``solvers._force_interpret``), so the whole composition actually
+    executes on this machine, and finite-differences the result.
+
+    It is an execution check rather than a lowering one on purpose:
+    ``shard_map``'s transpose compares cotangent *shardings*, and
+    against the abstract GPU mesh the other cuda guards use they do not
+    compare equal -- so the differentiated region cannot be lowered
+    here at all.  The forward region's cuda lowering
+    (``test_pallas_cuda_lowering_sharded_solve``) and the transposed
+    kernel's (``test_pallas_cuda_lowering``) are checked separately;
+    what stays unverified until a GPU runs
+    ``scripts/grad_probe.py --dist.platform cuda`` is Triton's real
+    lowering of the two together.
+    """
+    import dnsjax.solvers as solvers_mod
+
+    Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
+    p, Ny = 4, 16
+    A = _make_random_banded(Ny, p, seed=31)
+    rng = np.random.default_rng(32)
+    rhs = jnp.asarray(rng.standard_normal((Ny, Nkz, Nkx)))
+
+    solvers_mod._force_kernel_path = True
+    solvers_mod._force_interpret = True
+    try:
+        op = _pallas_op_from_dense(A, p, Nkz, Nkx)
+
+        def energy(r):
+            return jnp.sum(op.solve(r) ** 2)
+
+        grad = jax.grad(energy)(rhs)
+        eps = 1e-6
+        for idx in ((3, 1, 0), (11, 0, 1)):
+            direction = jnp.zeros_like(rhs).at[idx].set(1.0)
+            fd = float(
+                energy(rhs + eps * direction) - energy(rhs - eps * direction)
+            ) / (2 * eps)
+            ad = float(grad[idx])
+            assert abs(fd) > 1e-8, f"entry {idx} has no sensitivity"
+            assert_allclose(fd, ad, rtol=1e-6), f"d/db{idx}"
+    finally:
+        solvers_mod._force_kernel_path = False
+        solvers_mod._force_interpret = False
+
+
 def test_pallas_stacked_operators() -> None:
     """Stacked multi-component Pallas operator solves each component
     with its own factors."""

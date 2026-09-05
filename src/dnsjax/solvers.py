@@ -546,6 +546,20 @@ def _banded_matvec(a_band: Array, x: Array) -> Array:
     return y
 
 
+# Test-only override: run the Pallas kernels in interpret mode wherever
+# they are reached.  Paired with :data:`_force_kernel_path`, this lets a
+# GPU-less box *execute* the whole ``.solve`` composition -- shard_map,
+# the vmap over components, the ``custom_vjp`` and both sweeps -- rather
+# than only lower it, which is the one way to check that the adjoint
+# composes.  (Lowering the *differentiated* region for cuda is not an
+# option: shard_map's transpose compares cotangent shardings, and
+# against an abstract mesh they do not compare equal.)  Read at trace
+# time in :func:`_pallas_banded_solve` and
+# :func:`_pallas_banded_solve_t`; ``False`` leaves every production
+# trace untouched.  See ``test_pallas_adjoint_composes_in_solve``.
+_force_interpret: bool = False
+
+
 def _tile_pad_planes(
     L: Array, U: Array, b: Array
 ) -> tuple[Array, Array, Array, int, int]:
@@ -697,6 +711,7 @@ def _pallas_banded_solve(
     the independent oracle this rule is checked against
     (``tests/test_autodiff.py``).
     """
+    interpret = interpret or _force_interpret
     L, U, b, Nkz, Nkx = _tile_pad_planes(L, U, b)
     out = _pallas_banded_solve_core(L, U, b, p, interpret)
     # Crop the padded modes off (no-op when the plane tiled evenly).
@@ -942,6 +957,7 @@ def _pallas_banded_solve_t(
     Only ever differentiated once (it *is* a backward pass), so it
     carries no rule of its own.
     """
+    interpret = interpret or _force_interpret
     L, U, xbar, Nkz, Nkx = _tile_pad_planes(L, U, xbar)
     bbar, z = _banded_kernel_call_t(L, U, xbar, p, interpret)
     return bbar[:, :, :Nkz, :Nkx], z[:, :, :Nkz, :Nkx]
