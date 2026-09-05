@@ -217,7 +217,7 @@ cost, and that is the regime where `np0` moving $2/3$ of the bytes should
 tell; comparing the two one-dimensional grids on the target machine is
 then worth one pair of runs.
 
-The README's [pipe example](../README.md#quick-start) on four
+The production pipe run of [`running.md`](running.md#launching) on four
 devices of one node, one-dimensionally:
 `np0 = 4` splits the 48 radial points into 12 per device and the 95
 stored azimuthal modes into 24, one padding mode included, leaving the
