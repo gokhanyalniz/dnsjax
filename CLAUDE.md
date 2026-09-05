@@ -222,10 +222,11 @@ subdirectory files).
 
 **The human-facing docs are not allowed to lag** (policy change
 2026-09-04; they previously could). Any change that alters what one of
-them describes updates it in the same pass. They are fourteen:
-`README.md`, `CONTRIBUTING.md` and `tests/README.md`; the eight
+them describes updates it in the same pass. They are fifteen:
+`README.md`, `CONTRIBUTING.md` and `tests/README.md`; the nine
 `docs/` pages (`numerics`, `scaling`, `running`, `configuration`,
-`snapshots`, `validation`, `extending`, `cpu-collectives`); and the
+`snapshots`, `validation`, `extending`, `cpu-collectives`,
+`differentiability`); and the
 `extensions/`, `twin/` and `analysis/response/` READMEs. That stays
 affordable because every `docs/` page is **pointer-first** -- it links
 the owning module docstring rather than restating it -- so a typical
@@ -797,6 +798,9 @@ All under `scripts/`; full rationale/usage in each module docstring.
   balance (`--steps-only`, `--solve-only`, `--cpu-smoke`).
 - `solver_benchmark.py`: pallas-vs-dense validation & benchmark incl.
   multi-GPU correctness (`--cpu-bench`, `--cpu-smoke`).
+- `grad_probe.py`: per-configuration forward/reverse differentiability
+  matrix with a finite-difference cross-check (`--full`,
+  `--dist.platform cuda`).
 - `gds_probe.py`: cluster diagnostic for the snapshot GDS path
   (`--env-only`, `--end-to-end`, `--end-to-end-only`, `--cpu-smoke`).
 
@@ -835,7 +839,13 @@ are one-liners. Cross-cutting notes:
   any script whose children stream output.
 - `response/_common.py`: shared fixtures of the response
   identification tests.
-- `test_banded_solver.py`: geometry-independent Pallas banded backend.
+- `test_autodiff.py`: reverse-mode differentiability of a step --
+  FD-verified gradients, the fixed-vs-dynamic corrector
+  equivalence, and that the *default* configuration still refuses
+  (`--only <frag>` runs a subset).
+- `test_banded_solver.py`: geometry-independent Pallas banded
+  backend, incl. the transposed sweep and the adjoint vs the
+  portable sweep.
 - `test_banded_solver_sharded.py`: shard_map-local Pallas solve on a
   forced (2, 2) mesh.
 - `test_bootstrap.py`: the environment-driven multi-process bootstrap

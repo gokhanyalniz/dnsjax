@@ -82,6 +82,9 @@ _NO_MPI_ONLY = (
 _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_adaptive.py", (), (), 1800),
     ("test_annular.py", (), (), 1800),
+    # Eight in-process (forced CPU device) subprocesses, each a
+    # few differentiated steps; no mpirun.
+    ("test_autodiff.py", (), (), 1800),
     ("test_banded_solver.py", (), (), 1800),
     ("test_banded_solver_sharded.py", (), (), 1800),
     ("test_bootstrap.py", (), (), 1800),
