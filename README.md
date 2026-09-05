@@ -229,6 +229,7 @@ in [`docs/validation.md`](docs/validation.md).
 | [`docs/configuration.md`](docs/configuration.md) | how the parameter layers combine; extension sections |
 | [`docs/snapshots.md`](docs/snapshots.md) | the snapshot format, resume and re-gridding, the JAX-free API, the importer |
 | [`docs/validation.md`](docs/validation.md) | what is checked against what, and which test pins each claim |
+| [`docs/differentiability.md`](docs/differentiability.md) | what differentiates through a step, the two opt-in knobs, the banded solve's adjoint |
 | [`docs/extending.md`](docs/extending.md) | adding a flow system |
 | [`docs/cpu-collectives.md`](docs/cpu-collectives.md) | routing multi-process CPU collectives through MPI |
 | [`tests/README.md`](tests/README.md) | how the suite is laid out and how to run it |
