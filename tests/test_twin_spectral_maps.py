@@ -46,6 +46,9 @@ What each case pins:
    the shared grid is their intersection; ``stride`` / ``first`` /
    ``last`` clip it; a member that is not the same flow, and a stream
    whose own samples are closer than the tolerance, are both refused.
+   So is a set whose grids are out of *phase* -- ``--align-atol``
+   accepts one, up to half a cadence -- while a member merely
+   covering another stretch of the clock is not confused with it.
 8. **The two decorrelations.** `$\mathcal{R}$` divides mode by mode
    and `$\mathcal{R}^k$` by the same reference summed over `$k$`;
    both take the `$(0, 0)$` mode off the reference and neither off
@@ -247,6 +250,8 @@ def _series(stem: str, members, **over) -> tsm.YSeries:
         rows=np.stack([m.rows[:n] for m in members]),
         index=np.arange(n),
         t_rel=members[0].t_rel[:n],
+        t_members=np.stack([m.t_rel[:n] for m in members]),
+        matched=np.full(len(members), n),
         meta=members[0].meta,
         **over,
     )
@@ -690,6 +695,15 @@ def test_open_series() -> None:
         series = tsm.open_series(pair, "twin_yspectra")
         assert series.n_members == 2
         assert np.allclose(series.t_rel, np.arange(6.0))  # the intersection
+        # A shorter member costs the shared grid samples, and the
+        # report says so member by member -- the catch-all that keeps
+        # a collapsed grid from being silent whatever collapsed it.
+        report = series.grid_report()
+        assert report is not None and "6 of 8" in report, report
+        assert "b 6" in report, report
+        assert tsm.open_series(
+            [root / "a"], "twin_yspectra"
+        ).grid_report() is (None)
         assert np.allclose(
             series.field("e_xz00")[0],
             0.5 * (first["e_xz00"][0] + second["e_xz00"][0]),
@@ -770,14 +784,37 @@ def test_open_series() -> None:
             tsm.open_series([root / "seam"], "twin_yspectra").t_rel.size == 8
         )
 
-        # Members whose clocks never meet, a selection that keeps
-        # nothing, and an unknown stream name.
+        # A member displaced by half a cadence -- what a parent
+        # snapshot off the cadence grid used to produce -- is refused
+        # with the offset, not silently reduced to whatever frames
+        # coincide.  ``--align-atol`` accepts it, up to half a cadence
+        # and no further, and says how far apart it then pairs.
         _write_member(
             root / "off", "twin_yspectra", meta, second, parent_t=150.5
         )
+        off_pair = [root / "a", root / "off"]
+        _raises(
+            lambda: tsm.open_series(off_pair, "twin_yspectra"),
+            "out of phase",
+        )
+        loose = tsm.open_series(off_pair, "twin_yspectra", align_atol=0.5)
+        assert loose.t_rel.size == 6, loose.t_rel
+        assert loose.alignment_spread() == 0.5
+        _raises(
+            lambda: tsm.open_series(off_pair, "twin_yspectra", align_atol=0.6),
+            "half the",
+        )
+
+        # In phase and never overlapping is a different failure: a
+        # member covering another stretch of the relative clock is not
+        # displaced, so it must reach the intersection to be refused
+        # there.  (Measured modulo the cadence for exactly this.)
+        _write_member(
+            root / "late", "twin_yspectra", meta, second, parent_t=-850.0
+        )
         _raises(
             lambda: tsm.open_series(
-                [root / "a", root / "off"], "twin_yspectra"
+                [root / "a", root / "late"], "twin_yspectra"
             ),
             "share no relative sample time",
         )

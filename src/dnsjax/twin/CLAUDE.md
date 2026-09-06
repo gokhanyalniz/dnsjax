@@ -40,6 +40,15 @@ at the ordinary `[outs]` cadences -- the partner's as
 columns and sample times, byte-identical to the reference's at
 `twin.e0 = 0`; only `[probes]` stays reference-only.
 
+**Every cadence here counts from the member's own perturbation step**
+(`twin.json`'s `parent_it`, inherited across a paired resume), not
+from the absolute `it`, so members meet on the relative clock
+`t - parent_t` whatever iteration numbers their parents carried. A
+member recorded before that (2026-09-06) has a grid displaced by
+`(-parent_it mod cadence) * dt`; `scripts/twin_spectral_maps.py`
+refuses such a set and names the `--align-atol` that accepts it,
+`analysis.twin.ensemble.aggregate_members` refuses it outright.
+
 Start/resume rules (partner snapshot + `twin.json` decide; a resume
 never re-perturbs), the fresh-start guard, stream formats, the ±k_z
 fold the marginals require, the frame-invariance / dissipation-form
@@ -105,8 +114,9 @@ Ensembles: `scripts/ensemble_setup.py build-twin` + `analysis.twin`.
   maps over an ensemble, in inner units. Only the spectra marginals
   are drawn by default; the two decorrelations, the spacetime maps,
   the budget and the `k_x = 0` plane are each behind their own flag.
-  What each is, and the premultiplier / `E_ref` / colour-scale
-  conventions: its module docstring. Needs matplotlib -- `uv run
+  What each is, the premultiplier / `E_ref` / colour-scale
+  conventions and the `--align-atol` escape for a phase-displaced
+  member set: its module docstring. Needs matplotlib -- `uv run
   --group plots python scripts/twin_spectral_maps.py` (the `plots`
   dependency group; `uv sync` alone does not install it, and
   `snapshot_figure.py` is the only other script in it).

@@ -165,6 +165,32 @@ takes an
 ``ensemble_setup.py build-twin`` tree and uses every member its
 ``members.json`` lists.
 
+Members out of phase
+====================
+Members meet on the relative clock because ``dnsjax-twin`` counts
+every cadence from the member's own perturbation step, so its samples
+sit at `$t_\mathrm{parent} + n\,c\,\Delta t$` whatever iteration
+number its parent snapshot carried.  A member recorded before that
+was true (the driver gated on the absolute step counter instead)
+carries a grid displaced by `$(-\mathrm{it}_\mathrm{parent}
+\bmod c)\,\Delta t$`, a phase set by the bookkeeping index of the
+snapshot it was harvested from.  Members whose parents differed in
+that residue then have no relative sample time in common but
+`$t = 0$`, which the driver records unconditionally -- a single
+frame per stream, and nothing to say why.
+
+That set is **refused** (:func:`_check_phase`), with the measured
+offset and the ``--align-atol`` that accepts it.  Widening the
+tolerance pairs each frame with every member's *nearest* sample
+rather than its own, which is exact for nothing and useful for a
+recorded ensemble that cannot be run again: the frames come back, and
+each averages fields recorded up to that far apart on their own
+clocks.  Half the cadence is the cap -- a nearest neighbour is never
+further than that from a uniform grid -- and the run report prints
+the widest spread any frame actually pairs across
+(:meth:`YSeries.alignment_spread`), so the size of the approximation
+is on the page rather than in the flag.
+
 Reference normalisation
 =======================
 The two true marginals of the spectra stream -- the difference
@@ -237,6 +263,20 @@ and the reference state it names double-weighted in the average.
 Every record of every stream feeds that average, independently of
 ``--stride`` / ``--first`` / ``--last``; ``--ref-stride`` subsamples
 it for a cheaper pass.
+
+Two members meet on that key when their parents are separated by a
+whole number of sample cadences, which is what a harvest spacing
+that is a multiple of ``it_* * dt`` gives (``dnsjax-twin`` counts
+each member's cadence from its own perturbation step, so it is the
+parents' separation that decides this, not their ``it`` residues).
+Parents spaced otherwise put the members on interleaved absolute
+grids: there is then nothing to deduplicate, the report's instant
+count comes out at the sample count, and the average becomes
+coverage-weighted -- the middle of the covered window, where every
+member's stream overlaps, carries more weight than its ends -- rather
+than uniform over the union.  It is a normalisation constant either
+way (both estimate the same time average, and a constant moves no
+contour), and the two counts side by side say which one was taken.
 
 That key is exactly right for **one** reference trajectory and wrong
 without it -- members subsampled from two *different* turbulent runs
@@ -1003,6 +1043,8 @@ class YSeries:
     rows: np.ndarray  # (n_members, n_frames) record index per member
     index: np.ndarray  # (n_frames,) row in members[0], the frame label
     t_rel: np.ndarray  # (n_frames,) time since the perturbation
+    t_members: np.ndarray  # (n_members, n_frames) each member's own
+    matched: np.ndarray  # (n_members,) hits on members[0]'s full grid
     meta: dict  # the first member's sidecar
     ref_stride: int = 1  # subsampling of the reference normalisation
     _cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
@@ -1014,6 +1056,47 @@ class YSeries:
     def n_members(self) -> int:
         """How many member streams are being averaged."""
         return len(self.members)
+
+    def grid_report(self) -> str | None:
+        """Which members cost the shared grid samples, if any did.
+
+        The frame grid is the **intersection** of the members'
+        relative grids, so one member that samples elsewhere silently
+        shortens it -- to a single frame in the limit, which is what a
+        member set recorded off the shared clock collapses to and what
+        says nothing on its own.  ``None`` when every member carries
+        every one of the first's sample times; otherwise the line
+        naming the shortfall, member by member, whatever caused it.
+        The phase case is diagnosed before this (:func:`_check_phase`)
+        and named as such; this is the catch-all behind it.
+        """
+        full = self.members[0].t_rel.size
+        if int(np.min(self.matched)) == full:
+            return None
+        return (
+            f"{self.stem}: {int(np.min(self.matched))} of "
+            f"{full} sample times of {self.members[0].path} are in "
+            "every member; per member "
+            + ", ".join(
+                f"{member.path.name} {int(hits)}"
+                for member, hits in zip(
+                    self.members, self.matched, strict=True
+                )
+            )
+        )
+
+    def alignment_spread(self) -> float:
+        """The widest relative-time spread inside one frame.
+
+        Zero for a set aligned exactly (the default): every member
+        contributes the same relative instant.  Under
+        ``--align-atol`` it is how far apart on their own clocks the
+        two extreme members of the worst frame were recorded --
+        what the widened tolerance actually bought and cost.
+        """
+        return float(
+            np.max(self.t_members.max(axis=0) - self.t_members.min(axis=0))
+        )
 
     @property
     def y(self) -> np.ndarray:
@@ -1322,25 +1405,138 @@ def _sidecar_mismatch(
     return bad
 
 
-def _match(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
-    """Index in ascending *times* of each *wanted* value, or ``-1``.
+def _nearest(times: np.ndarray, wanted: np.ndarray) -> np.ndarray:
+    """Index in ascending *times* of the nearest value to each *wanted*.
 
-    Nearest neighbour within :data:`_T_ATOL`.  A tolerance rather than
-    an equality on rounded keys: two members reach one sample time by
-    different arithmetic, so a pair that straddles a bin's edge would
-    round apart and drop the frame from the shared grid -- silently,
-    since a shorter grid is exactly what a short member produces.
-    Both arrays are ascending and separated by more than the
-    tolerance (:func:`_check_cadence`), so the match is unambiguous.
+    Ties (a *wanted* exactly between two samples) go to the earlier
+    one; :func:`_match` applies the tolerance.
     """
-    if times.size == 0:
-        return np.full(wanted.shape, -1, dtype=int)
     after = np.searchsorted(times, wanted)
     before = np.clip(after - 1, 0, times.size - 1)
     after = np.clip(after, 0, times.size - 1)
     nearer = np.abs(times[before] - wanted) <= np.abs(times[after] - wanted)
-    nearest = np.where(nearer, before, after)
-    return np.where(np.abs(times[nearest] - wanted) <= _T_ATOL, nearest, -1)
+    return np.where(nearer, before, after)
+
+
+def _match(
+    times: np.ndarray, wanted: np.ndarray, atol: float = _T_ATOL
+) -> np.ndarray:
+    """Index in ascending *times* of each *wanted* value, or ``-1``.
+
+    Nearest neighbour within *atol*.  A tolerance rather than an
+    equality on rounded keys: two members reach one sample time by
+    different arithmetic, so a pair that straddles a bin's edge would
+    round apart and drop the frame from the shared grid -- silently,
+    since a shorter grid is exactly what a short member produces.
+
+    At the default :data:`_T_ATOL` both arrays are ascending and
+    separated by far more than the tolerance
+    (:func:`_check_cadence`), so at most one sample can match.  Under
+    ``--align-atol`` (:func:`open_series`) the tolerance approaches
+    half a cadence and several may fall inside it; the nearest is
+    still one sample, and a tolerance above half a cadence -- where
+    two frames could claim it -- is refused there.
+    """
+    if times.size == 0:
+        return np.full(wanted.shape, -1, dtype=int)
+    nearest = _nearest(times, wanted)
+    return np.where(np.abs(times[nearest] - wanted) <= atol, nearest, -1)
+
+
+def _cadence(grids: list[np.ndarray]) -> float:
+    """The coarsest member's sampling interval, or ``inf``.
+
+    The median gap: a stream carries a few rows off its own cadence
+    grid (a resume seam, the driver's unconditional final row) and the
+    median is the cadence anyway.  ``inf`` when no member has two
+    samples, which leaves both the phase test and the tolerance below
+    inert -- there is no grid to have a phase on.
+    """
+    gaps = [float(np.median(np.diff(g))) for g in grids if g.size > 1]
+    return min(gaps) if gaps else float("inf")
+
+
+def _phase_offsets(grids: list[np.ndarray], cadence: float) -> np.ndarray:
+    r"""Each later member's grid displacement against the first's.
+
+    A member samples at `$p + n\,c$`; this returns `$p_i - p_0$` for
+    every member after the first, folded onto
+    `$[-c/2, c/2)$`.  Zero to the last bits for members recorded on
+    one clock, and a nonzero value is a **phase** offset -- the whole
+    grid displaced, so the members have no relative sample time in
+    common beyond whatever coincides by accident.
+
+    Modulo the cadence rather than a distance, so that members
+    covering *different stretches* of the relative clock -- a short
+    member, one that starts later -- still read as in phase; their
+    grids do not overlap and that is the intersection's business, not
+    this one's.  A median rather than a mean, so the handful of
+    off-grid rows a stream carries cannot move it, and the
+    **difference** is folded as well as each phase, so two in-phase
+    members landing on opposite sides of the fold read as the same
+    phase rather than as a whole cadence apart.
+
+    ``dnsjax-twin`` anchors every cadence on the member's own
+    perturbation step, so a set recorded by it is in phase whatever
+    iteration numbers its parent snapshots carried
+    (``dnsjax.twin.driver``, "Sample-cadence anchor").  Members
+    written before that are not, whenever their parents' ``it``
+    differed modulo the cadence.
+    """
+    if len(grids) < 2 or not np.isfinite(cadence):
+        return np.zeros(0)
+
+    def fold(x):
+        return (x + 0.5 * cadence) % cadence - 0.5 * cadence
+
+    phases = [float(np.median(fold(g))) for g in grids]
+    return fold(np.array(phases[1:]) - phases[0])
+
+
+def _check_phase(
+    opened: list[_Member],
+    grids: list[np.ndarray],
+    atol: float,
+    cadence: float,
+) -> None:
+    r"""Refuse a member set whose relative grids are out of phase.
+
+    The members' sample times must name the same relative instants to
+    within *atol*, or the shared frame grid below is whatever few
+    times coincide by accident -- in the worst case `$t = 0$` alone,
+    which the driver records unconditionally.  That produced a single
+    frame per stream and said nothing, so it is an error here instead
+    (module docstring, "Members out of phase").
+
+    The message quotes the offset (:func:`_phase_offsets`) and the
+    ``--align-atol`` that would accept it, which is never more than
+    half a cadence: a folded offset cannot be, and neither can the
+    distance to the nearest sample of a uniform grid.
+    """
+    offsets = _phase_offsets(grids, cadence)
+    if offsets.size == 0 or float(np.max(np.abs(offsets))) <= atol:
+        return
+    worst = float(np.max(np.abs(offsets)))
+    named = ", ".join(
+        f"{member.path}: {offset:+.6g}"
+        for member, offset in zip(opened[1:], offsets, strict=True)
+        if abs(offset) > atol
+    )
+    raise ValueError(
+        f"{opened[0].path}: the members' sample grids are out of "
+        f"phase on the relative clock t - t_parent, by up to "
+        f"{worst:.6g} against this one ({named}), which is more than "
+        f"the {atol:g} that decides whether two of them are the same "
+        "instant -- so they share no frame beyond t = 0.  A member "
+        "whose parent snapshot sat at an iteration number that is "
+        "not a multiple of the sample cadence was recorded on a "
+        "displaced grid; dnsjax-twin anchors the cadence on the "
+        "member's own perturbation step and no longer does that.  To "
+        "use the members as recorded, pass --align-atol "
+        f"{min(1.05 * worst, 0.5 * cadence):.6g} (up to half the "
+        f"{cadence:.6g} cadence), which pairs each frame with every "
+        "member's nearest sample instead of its own."
+    )
 
 
 def tree_members(tree: str | Path) -> list[Path]:
@@ -1371,6 +1567,7 @@ def open_series(
     first: int = 0,
     last: int | None = None,
     ref_stride: int = 1,
+    align_atol: float = _T_ATOL,
 ) -> YSeries:
     """Open one stream across *members* on their common time grid.
 
@@ -1388,6 +1585,14 @@ def open_series(
     stored meaning (:data:`_SHARED_KEYS`) are **refused**: a figure
     reads all three off the first member and would otherwise label an
     average of incommensurate streams with one member's axes.
+
+    *align_atol* is how far apart two members' samples may be and
+    still be one frame (module docstring, "Members out of phase").
+    The default :data:`_T_ATOL` demands the same relative instant and
+    a set that cannot meet it is **refused**, naming the offset it
+    would take; raising it accepts members whose grids are displaced
+    in phase, at the cost of averaging fields recorded up to that far
+    apart on their own clocks.
     """
     if stem not in STEMS:
         raise ValueError(f"unknown stream {stem!r}; expected {set(STEMS)}")
@@ -1410,9 +1615,28 @@ def open_series(
     # those every other member also has (:func:`_match`); its own
     # record positions are then the frame index the filenames carry.
     grids = [member.t_rel for member in opened]
+    # Half a cadence is as wide as the tolerance may go.  It buys
+    # nothing beyond that -- a nearest neighbour inside a uniform grid
+    # is never further away -- and it costs: past the end of a short
+    # member's grid the nearest sample is its last one, at any
+    # distance, so a wider tolerance would quietly extend that member
+    # over every later frame instead of ending its contribution.
+    cadence = _cadence(grids)
+    if align_atol > 0.5 * cadence:
+        raise ValueError(
+            f"align_atol = {align_atol:g} is more than half the "
+            f"{cadence:g} sample cadence.  Nothing above that pairs "
+            "a frame with a nearer sample; it only lets a member "
+            "whose stream ends early keep contributing its last "
+            "record to every frame after it."
+        )
+    _check_phase(opened, grids, align_atol, cadence)
+    matched = np.array(
+        [int((_match(g, grids[0], align_atol) >= 0).sum()) for g in grids]
+    )
     keep = np.arange(grids[0].size)
     for other in grids[1:]:
-        keep = keep[_match(other, grids[0][keep]) >= 0]
+        keep = keep[_match(other, grids[0][keep], align_atol) >= 0]
     if keep.size == 0:
         raise ValueError("members share no relative sample time")
     selected = keep[first : (None if last is None else last + 1)][::stride]
@@ -1423,18 +1647,22 @@ def open_series(
         )
     keep = selected
     common = grids[0][keep]
-    rows = np.stack(
-        [
-            member.rows[_match(grid, common)]
-            for member, grid in zip(opened, grids, strict=True)
-        ]
-    )
+    picks = [_match(grid, common, align_atol) for grid in grids]
     return YSeries(
         stem=stem,
         members=tuple(opened),
-        rows=rows,
+        rows=np.stack(
+            [
+                member.rows[pick]
+                for member, pick in zip(opened, picks, strict=True)
+            ]
+        ),
         index=keep,
         t_rel=common,
+        t_members=np.stack(
+            [grid[pick] for grid, pick in zip(grids, picks, strict=True)]
+        ),
+        matched=matched,
         meta=opened[0].meta,
         ref_stride=ref_stride,
     )
@@ -3624,6 +3852,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--last", type=int, default=None, help="last record kept (inclusive)"
     )
     p.add_argument(
+        "--align-atol",
+        type=float,
+        default=_T_ATOL,
+        metavar="T",
+        help="how far apart (in t) two members' samples may be and "
+        "still be one frame; raise it to use members recorded on "
+        "phase-displaced grids (default: exact alignment)",
+    )
+    p.add_argument(
         "--series",
         nargs="+",
         default=None,
@@ -3842,6 +4079,7 @@ def main(argv: list[str] | None = None) -> int:
                 first=args.first,
                 last=args.last,
                 ref_stride=args.ref_stride,
+                align_atol=args.align_atol,
             )
         except FileNotFoundError as exc:
             print(f"skipping {stem}: {exc}", file=sys.stderr)
@@ -3884,6 +4122,24 @@ def main(argv: list[str] | None = None) -> int:
             f"usetex {plt.rcParams['text.usetex']}",
             flush=True,
         )
+        # Never silent: a shared grid shorter than the first member's
+        # own says which member shortened it
+        # (:meth:`YSeries.grid_report`), and a widened tolerance says
+        # how far apart the frames it recovered actually pair.
+        for stem, series in opened.items():
+            if series is None:
+                continue
+            shortfall = series.grid_report()
+            if shortfall is not None:
+                print(shortfall, flush=True)
+            if args.align_atol > _T_ATOL:
+                print(
+                    f"{stem}: members aligned to {args.align_atol:g} "
+                    f"in t; frames pair samples up to "
+                    f"{series.alignment_spread():.6g} apart on the "
+                    "relative clock",
+                    flush=True,
+                )
         # The reference average is one pass for the whole member set,
         # so its report belongs here, not once per tag that uses it.
         spectra = opened["twin_yspectra"]

@@ -10,8 +10,9 @@ to an injected basis (``identify``).
 Aggregation
 ===========
 Member probe streams are aligned on **relative** time (each member
-continues its parent snapshot's clock; the grids must agree, which
-the shared ``it_probes * dt`` cadence guarantees) and pair-combined
+continues its parent snapshot's clock, so the grids are compared
+after subtracting each member's first sample; they must then agree)
+and pair-combined
 per the tree's pairing: antithetic `$(\hat{u}_+ - \hat{u}_-)/2$`
 (cancels the common turbulent evolution and all even-order nonlinear
 contributions), baseline `$\hat{u}_p - \hat{u}_b$`, or the plain
@@ -218,9 +219,21 @@ def _member_response(
                 f"{ref_dir}'s {ref.u.shape}"
             )
         if not np.allclose(pd.t - pd.t[0], t_rel, rtol=0, atol=1e-10):
+            # A shared ``it_probes * dt`` does *not* on its own put two
+            # members on one relative grid: ``dnsjax`` gates the probe
+            # stream on ``it % it_probes``, the absolute step counter,
+            # so a member whose parent snapshot sits at a different
+            # ``it`` residue samples at a displaced phase -- the same
+            # trap ``dnsjax.analysis.twin.ensemble`` names, where the
+            # driver now anchors the cadence on the member's own start
+            # instead.  Harvest parents at ``it`` multiples of
+            # ``it_probes`` until it does here too.
             raise SystemExit(
                 f"{d}: relative sample times differ from {ref_dir}'s "
-                "(inconsistent it_probes * dt across members?)"
+                "-- either the cadence (it_probes * dt) differs across "
+                "members, or their parent snapshots sit at different "
+                "iteration numbers modulo it_probes, which displaces "
+                "the whole grid by (-it0 mod it_probes) * dt"
             )
         if pd.modes.tolist() != ref.modes.tolist():
             raise SystemExit(f"{d}: probed modes differ from {ref_dir}'s")

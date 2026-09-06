@@ -98,6 +98,12 @@ and its rationale: `flows/registry.py`.
   probe→operator pipeline and the route trade-offs: the
   `response/__init__.py` docstring. Orchestration:
   `scripts/ensemble_setup.py`. Guards: `tests/response/`.
+  Cross-module: members aggregate on **relative** time while
+  `__main__` gates `probes.bin` on the absolute `it % it_probes`, so
+  parents must be harvested at `it` multiples of the probe cadence or
+  `ensemble.aggregate` refuses the set (`dnsjax-twin` anchors its own
+  cadences on the member's perturbation step instead and has no such
+  constraint).
 - `twin/` — twin-run (`dnsjax-twin`) offline analysis: `series.py`,
   `ensemble.py`, `spectra.py`, `yspectra.py`, `lengths.py`. What each
   reads: the `analysis/twin/__init__.py` docstring; the streams

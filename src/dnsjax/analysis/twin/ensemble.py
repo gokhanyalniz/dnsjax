@@ -14,6 +14,15 @@ the standard-error conversion) -- the inputs of the paper's figures
 Each member is restricted to its own cadence grid first, so a resumed
 member stacks against a fresh one (:func:`_grid_mask`).
 
+Members meet on that grid because ``dnsjax-twin`` counts every cadence
+from the member's own perturbation step, so its samples sit at
+`$t_\mathrm{parent} + n\,c\,\Delta t$` whatever iteration number
+its parent snapshot carried.  A member recorded before that was true
+carries a grid displaced by `$(-\mathrm{it}_\mathrm{parent} \bmod
+c)\,\Delta t$`; the stack refuses such a set, naming the
+``align_atol`` that accepts it (``--align-atol`` on the CLI) and what
+accepting it means.
+
 Growth-rate fits (least squares over a caller-chosen window):
 
 - :func:`fit_exponential_rate` -- the leading Lyapunov exponent from
@@ -66,19 +75,23 @@ def _grid_mask(t: np.ndarray) -> np.ndarray:
 def _stack_group(
     label: str,
     per_member: list[tuple[str, np.ndarray, dict[str, np.ndarray]]],
-) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    atol: float = _T_ATOL,
+) -> tuple[np.ndarray, dict[str, np.ndarray], float]:
     """Stack one stream group over members, guarding mismatches.
 
     *per_member* holds ``(member dir, relative times, columns)``
     triples (``t`` excluded from the columns).  Each member is first
     restricted to its own cadence grid (:func:`_grid_mask`); all must
-    then share the column set and the relative-time grid.
+    then share the column set and, to within *atol*, the relative-time
+    grid.  Returns the grid, the stacks, and the widest displacement
+    any member was accepted at (zero unless *atol* was widened).
     """
     _, t_rel, first_cols = per_member[0]
     keep0 = _grid_mask(t_rel)
     t_rel = t_rel[keep0]
     names = set(first_cols)
     stacks: dict[str, list[np.ndarray]] = {n: [] for n in names}
+    spread = 0.0
     for member, rel, columns in per_member:
         if set(columns) != names:
             raise ValueError(
@@ -86,20 +99,45 @@ def _stack_group(
             )
         keep = _grid_mask(rel)
         rel = rel[keep]
-        if rel.shape != t_rel.shape or not np.allclose(
-            rel, t_rel, rtol=0, atol=_T_ATOL
-        ):
+        gap = (
+            float(np.max(np.abs(rel - t_rel)))
+            if rel.shape == t_rel.shape
+            else np.inf
+        )
+        if not gap <= atol:
             raise ValueError(
                 f"{member}: {label} relative time grid differs from "
                 "the first member's (different horizon, cadence, or "
                 "an incomplete run?)"
+                + (
+                    ""
+                    if not np.isfinite(gap)
+                    else f"; same length, displaced by up to {gap:.6g} -- "
+                    "a member whose parent snapshot sat at an iteration "
+                    "number that is not a multiple of the sample cadence "
+                    "was recorded on a phase-displaced grid (dnsjax.twin"
+                    ".driver anchors the cadence on the member's own "
+                    "perturbation step and no longer does that).  Pass "
+                    f"align_atol >= {gap:.6g} (--align-atol) to stack "
+                    "them as recorded."
+                )
             )
+        spread = max(spread, gap)
         for name in names:
             stacks[name].append(columns[name][keep])
-    return t_rel, {name: np.stack(vals) for name, vals in stacks.items()}
+    return (
+        t_rel,
+        {name: np.stack(vals) for name, vals in stacks.items()},
+        spread,
+    )
 
 
-def aggregate_members(tree: str | Path, out: str | Path | None = None) -> dict:
+def aggregate_members(
+    tree: str | Path,
+    out: str | Path | None = None,
+    *,
+    align_atol: float = _T_ATOL,
+) -> dict:
     r"""Aggregate a twin member tree; optionally write an ``.npz``.
 
     Returns ``t_rel`` plus ``stack_<c>`` / ``mean_<c>`` / ``std_<c>``
@@ -108,6 +146,13 @@ def aggregate_members(tree: str | Path, out: str | Path | None = None) -> dict:
     budget column under ``budget_<c>``.  ``columns`` lists the
     aggregated names and ``members_json`` carries the tree's
     provenance verbatim.
+
+    *align_atol* is how far apart two members' samples may be and
+    still be one row of the stack.  The default demands the same
+    relative instant; raising it accepts an ensemble whose members
+    were recorded on phase-displaced grids -- ``twin.dat`` rows up to
+    that far apart on their own clocks then average together, and
+    ``align_spread`` reports the widest displacement actually used.
 
     ``std_*`` is NumPy's default **population** standard deviation
     (``ddof = 0``) -- the spread of the members themselves, which is
@@ -147,10 +192,11 @@ def aggregate_members(tree: str | Path, out: str | Path | None = None) -> dict:
             "the tree is inconsistent."
         )
 
-    t_rel, stacks = _stack_group("energy", energy_rows)
+    t_rel, stacks, spread = _stack_group("energy", energy_rows, align_atol)
     bundle: dict = {
         "t_rel": t_rel,
         "n_members": len(members),
+        "align_spread": spread,
         "members_json": json.dumps(spec),
     }
     names = sorted(stacks)
@@ -159,7 +205,10 @@ def aggregate_members(tree: str | Path, out: str | Path | None = None) -> dict:
         bundle[f"mean_{name}"] = arr.mean(axis=0)
         bundle[f"std_{name}"] = arr.std(axis=0)
     if budget_rows:
-        t_rel_b, bstacks = _stack_group("budget", budget_rows)
+        t_rel_b, bstacks, spread_b = _stack_group(
+            "budget", budget_rows, align_atol
+        )
+        bundle["align_spread"] = max(spread, spread_b)
         bundle["t_rel_budget"] = t_rel_b
         for name, arr in bstacks.items():
             bundle[f"stack_budget_{name}"] = arr
@@ -242,11 +291,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--tree", required=True, help="member tree root")
     parser.add_argument("--out", required=True, help="output .npz path")
+    parser.add_argument(
+        "--align-atol",
+        type=float,
+        default=_T_ATOL,
+        metavar="T",
+        help="how far apart two members' samples may be and still be "
+        "one row; raise it to stack members recorded on "
+        "phase-displaced grids (default: exact alignment)",
+    )
     args = parser.parse_args(argv)
-    bundle = aggregate_members(args.tree, args.out)
+    bundle = aggregate_members(args.tree, args.out, align_atol=args.align_atol)
     print(
         f"[twin-ensemble] {bundle['n_members']} members, "
-        f"{bundle['t_rel'].shape[0]} samples -> {args.out}"
+        f"{bundle['t_rel'].shape[0]} samples"
+        + (
+            f", aligned to {bundle['align_spread']:.6g} in t"
+            if args.align_atol > _T_ATOL
+            else ""
+        )
+        + f" -> {args.out}"
     )
     return 0
 

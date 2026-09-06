@@ -333,6 +333,17 @@ uv run python scripts/ensemble_setup.py build-twin \
   --horizon 5000 --it-budget 100 --it-spectra 100
 ```
 
+Every cadence a member records at — the `[twin]` streams, the
+per-state solver streams, `outs.it_snapshot` — is counted from that
+member's own perturbation step, recorded as `parent_it` in its
+`twin.json` and inherited across a paired resume. Its samples
+therefore sit at $t_\mathrm{parent} + n\,c\,\Delta t$ whatever
+iteration number the parent snapshot was harvested at, which is what
+puts the members of an ensemble on one relative grid: the clock every
+reader aligns on is $t - t_\mathrm{parent}$, and a cadence counted
+from the absolute step counter would displace a member's whole grid by
+the residue of its parent's `it`.
+
 `build-twin` needs no seeding subprocesses — the driver perturbs
 in-process at start — so each member directory holds only a generated
 `parameters.toml`, carrying `--horizon` straight through as
@@ -362,6 +373,14 @@ when `outs.it_snapshot` is not a multiple of `it_energy`. They are real
 samples and are kept, so a consumer that needs a *uniform* grid — a
 centred difference, an across-member stack — selects one with
 `series.uniform_grid` instead of assuming the raw stream is one.
+
+Members recorded before the cadence anchor above (2026-09-06) whose
+parents sat at different `it` residues carry grids displaced against
+one another, and share no relative sample time but $t = 0$.
+`aggregate_members` refuses them; `scripts/twin_spectral_maps.py`
+refuses them too and names the `--align-atol` that pairs each frame
+with every member's nearest sample instead, reporting how far apart
+the widest such pairing is.
 
 | Module | Role |
 |---|---|
