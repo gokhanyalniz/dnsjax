@@ -98,6 +98,17 @@ non-finite-guarded ``.dat`` format of ``stats.dat`` (shared
 :func:`dnsjax.__main__._flush_stats`; a ``t0`` row at setup, a final
 row after the last step).
 
+Every cadence in this driver -- the ``[twin]`` streams, the
+per-state solver streams and ``outs.it_snapshot`` -- is counted from
+the member's own **perturbation step** (``twin.json``'s ``parent_it``,
+which a paired resume inherits), not from the absolute step counter.
+So a member's samples sit at `$t_\mathrm{parent} + n\,c\,\Delta t$`
+whatever ``it`` its parent snapshot was harvested at, which is what
+lets an ensemble be averaged on the relative clock
+`$t - t_\mathrm{parent}$` its readers use
+(:func:`dnsjax.analysis.twin.ensemble.aggregate_members`,
+``scripts/twin_spectral_maps.py``).
+
 The three *per-state* solver streams are written for **both** states
 at their usual cadences (``outs.it_stats`` / ``it_steps`` /
 ``it_corrector``): the reference into ``stats.dat`` / ``steps.dat`` /
@@ -994,6 +1005,32 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             )
             write_sidecar_json(json_path, sidecar)
 
+    # --- Sample-cadence anchor -------------------------------------------
+    # Every cadence below is counted from the member's own
+    # perturbation step, ``(it - sample_it0) % cadence``, not from the
+    # absolute step counter.  The two agree only when the parent
+    # snapshot happens to sit at a multiple of the cadence, and the
+    # clock every consumer of these streams reads is the relative one
+    # `$t - t_\mathrm{parent}$` (``twin.json``'s ``parent_t``;
+    # :func:`dnsjax.analysis.twin.ensemble.aggregate_members`,
+    # ``scripts/twin_spectral_maps.py``).  Anchoring on ``it`` instead
+    # put a member's whole relative grid out of phase by
+    # ``(-parent_it mod cadence) * dt`` -- a number set by the
+    # bookkeeping index of the snapshot it was harvested from -- so an
+    # ensemble whose parents carried different residues shared only
+    # `$t = 0$` and could not be averaged at all.  ``parent_it``
+    # rather than ``init.it0``: it is the same number across a paired
+    # resume, so one member has one grid for its whole life, and a
+    # resume seam costs at most the unconditional ``t0`` row
+    # (:func:`dnsjax.analysis.twin.series.uniform_grid` masks it).
+    # A member *recorded* before this changed keeps its old phase in
+    # the rows it already holds: resuming one appends on the new grid,
+    # leaving a phase seam that ``uniform_grid`` resolves in favour of
+    # whichever segment is longer.
+    sample_it0: int = int(
+        old["parent_it"] if resumed_pair else params.init.it0
+    )
+
     # --- Stopping criteria -----------------------------------------------
     wall_time_stop = (
         jnp.inf
@@ -1184,14 +1221,8 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
 
     # --- Spectra stream (probes-style binary; t0 sample here, in-loop
     # samples before each step, a final sample only when
-    # cadence-aligned -- uniform sample times for the reader).  The
-    # gate below is ``it % cadence``, not ``(it - it0) % cadence``, so
-    # a resume whose ``it0`` is not a multiple of the cadence leaves
-    # one short gap at the seam; the readers key on ``t`` and
-    # ``analysis.twin.series.uniform_grid`` re-derives the grid, so
-    # this costs an off-grid row rather than a wrong one.  Changing the
-    # gate would move the sample times of every existing member's
-    # resume, which is why it is documented instead. --------------------
+    # cadence-aligned -- uniform sample times for the reader; the gate
+    # is anchored on ``sample_it0``, above). ----------------------------
     measure_spectra: bool = twin_params.it_spectra is not None
     spectra_bad_t0: str | None = None
     if measure_spectra:
@@ -1253,7 +1284,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         if (
             not is_cnab2
             and params.outs.it_steps != 1
-            and it % params.outs.it_steps == 0
+            and (it - sample_it0) % params.outs.it_steps == 0
         ):
             predict_and_fully_correct(jnp.copy(state1))
         steps_stream = _ScalarStream(
@@ -1366,16 +1397,18 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
 
         do_stats = (
             params.outs.it_stats is not None
-            and it % params.outs.it_stats == 0
+            and (it - sample_it0) % params.outs.it_stats == 0
             and it > it0
         )
-        do_twin = it % twin_params.it_energy == 0 and it > it0
+        do_twin = (it - sample_it0) % twin_params.it_energy == 0 and it > it0
         do_budget = (
-            measure_budget and it % twin_params.it_budget == 0 and it > it0
+            measure_budget
+            and (it - sample_it0) % twin_params.it_budget == 0
+            and it > it0
         )
         do_snapshot = (
             params.outs.it_snapshot is not None
-            and it % params.outs.it_snapshot == 0
+            and (it - sample_it0) % params.outs.it_snapshot == 0
             and it > it0
         )
 
@@ -1403,19 +1436,35 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             bad = budget_stream.push(jnp.stack(list(bvals.values())), t)
             if bad is not None:
                 _abort_non_finite(bad)
-        if measure_spectra and it % twin_params.it_spectra == 0 and it > it0:
+        if (
+            measure_spectra
+            and (it - sample_it0) % twin_params.it_spectra == 0
+            and it > it0
+        ):
             bad = spectra_stream.record(twin_spectra_2d(state1, state2), t)
             if bad is not None:
                 _abort_non_finite(bad)
-        if measure_yspectra and it % twin_params.it_yspectra == 0 and it > it0:
+        if (
+            measure_yspectra
+            and (it - sample_it0) % twin_params.it_yspectra == 0
+            and it > it0
+        ):
             bad = yspectra_stream.record(twin_yspectra(state1, state2), t)
             if bad is not None:
                 _abort_non_finite(bad)
-        if measure_ybudget and it % twin_params.it_ybudget == 0 and it > it0:
+        if (
+            measure_ybudget
+            and (it - sample_it0) % twin_params.it_ybudget == 0
+            and it > it0
+        ):
             bad = ybudget_stream.record(twin_ybudget(state1, state2), t)
             if bad is not None:
                 _abort_non_finite(bad)
-        if measure_probes and it % probes_params.it_probes == 0 and it > it0:
+        if (
+            measure_probes
+            and (it - sample_it0) % probes_params.it_probes == 0
+            and it > it0
+        ):
             bad = probe_stream.record(state1, t)
             if bad is not None:
                 _abort_non_finite(bad)
@@ -1430,7 +1479,9 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         # variant in the same iteration -- measured on a recording step
         # (``steps.dat`` / ``steps_twin.dat``), plain otherwise -- so
         # the loop never runs different programs on the pair.
-        do_record = measure_steps and it % params.outs.it_steps == 0
+        do_record = (
+            measure_steps and (it - sample_it0) % params.outs.it_steps == 0
+        )
         if is_cnab2 and it > it0:
             if do_record:
                 (
@@ -1487,7 +1538,10 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                 if bad is not None:
                     _abort_non_finite(bad)
 
-        if measure_corrector and it % params.outs.it_corrector == 0:
+        if (
+            measure_corrector
+            and (it - sample_it0) % params.outs.it_corrector == 0
+        ):
             for stream, c_dev, e_dev in (
                 (corr_stream, c1_dev, e1_dev),
                 (corr2_stream, c2_dev, e2_dev),
@@ -1597,22 +1651,38 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         if measure_budget:
             budget_stream.push(jnp.stack(list(bvals.values())), t)
 
-    if measure_probes and it > it0 and it % probes_params.it_probes == 0:
+    if (
+        measure_probes
+        and it > it0
+        and (it - sample_it0) % probes_params.it_probes == 0
+    ):
         bad = probe_stream.record(state1, t)
         if bad is not None:
             _abort_non_finite(bad)
 
-    if measure_spectra and it > it0 and it % twin_params.it_spectra == 0:
+    if (
+        measure_spectra
+        and it > it0
+        and (it - sample_it0) % twin_params.it_spectra == 0
+    ):
         bad = spectra_stream.record(twin_spectra_2d(state1, state2), t)
         if bad is not None:
             _abort_non_finite(bad)
 
-    if measure_yspectra and it > it0 and it % twin_params.it_yspectra == 0:
+    if (
+        measure_yspectra
+        and it > it0
+        and (it - sample_it0) % twin_params.it_yspectra == 0
+    ):
         bad = yspectra_stream.record(twin_yspectra(state1, state2), t)
         if bad is not None:
             _abort_non_finite(bad)
 
-    if measure_ybudget and it > it0 and it % twin_params.it_ybudget == 0:
+    if (
+        measure_ybudget
+        and it > it0
+        and (it - sample_it0) % twin_params.it_ybudget == 0
+    ):
         bad = ybudget_stream.record(twin_ybudget(state1, state2), t)
         if bad is not None:
             _abort_non_finite(bad)
