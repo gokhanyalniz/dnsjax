@@ -5,7 +5,9 @@ Everything runs on hand-written synthetic files (no solver, no JAX --
 asserted): the ``.dat``/``twin.json`` readers with resume-seam
 duplicates, the per-component budget sums, member-tree aggregation
 (mean/std against direct NumPy; every alignment guard tripped on a
-real bad input), the growth-rate fits against planted laws, the
+real bad input, a phase-displaced member among them, with
+``align_atol`` stacking one as recorded), the growth-rate fits
+against planted laws, the
 ``twin_spectra.bin`` reader (byte-exact round trip, truncated
 trailing record, duplicate-timestamp seams, version floor,
 decorrelation-ratio guards), the integral-length core against an
@@ -445,6 +447,21 @@ def test_aggregation() -> None:
         _expect_value_error(
             "column set differs", lambda: aggregate_members(tree)
         )
+
+        # A grid the same length but displaced in phase -- what a
+        # parent snapshot off the cadence grid used to produce -- is
+        # told apart from a different horizon, and ``align_atol``
+        # stacks it as recorded, reporting how far apart.
+        _write_member(tree / "m0001", parent_t=11.0, scale=2.0)
+        record = json.loads((tree / "m0001" / "twin.json").read_text())
+        record["parent_t"] = 11.004
+        (tree / "m0001" / "twin.json").write_text(json.dumps(record))
+        _expect_value_error("phase-displaced", lambda: aggregate_members(tree))
+        loose = aggregate_members(tree, align_atol=0.005)
+        assert_allclose(loose["align_spread"], 0.004, rtol=0, atol=1e-12)
+        assert loose["t_rel"].shape == bundle["t_rel"].shape
+        _write_member(tree / "m0001", parent_t=11.0, scale=2.0)
+
         spec = json.loads((tree / "members.json").read_text())
         spec["kind"] = "other"
         (tree / "members.json").write_text(json.dumps(spec))

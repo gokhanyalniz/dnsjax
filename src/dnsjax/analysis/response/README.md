@@ -140,6 +140,17 @@ emits `run_commands.txt` (one scheduler-agnostic launch line per
 member) and `members.json`. It never runs the solver itself;
 `--dry-run` prints the whole tree and every command without writing.
 
+One constraint on the harvest: members are aggregated on relative time
+— each member's stream less its own first sample — while `dnsjax`
+gates the probe stream on the **absolute** step counter
+(`it % it_probes`). A parent whose `it` is not a multiple of
+`--it-probes` therefore records on a grid displaced by
+`(-it0 mod it_probes) · dt`, and `aggregate` refuses a set whose
+members disagree. Harvest parents at `it` multiples of the probe
+cadence — with a fixed `dt` and a snapshot cadence that is itself a
+multiple of it, they are. (`dnsjax-twin` has no such constraint: it
+anchors every cadence on the member's own perturbation step.)
+
 Default `--pairing antithetic` seeds each parent twice, at $+\epsilon$
 and $-\epsilon$. Because dnsjax runs are deterministic for a fixed
 configuration and device layout, $(u_+ - u_-)/2$ cancels the shared

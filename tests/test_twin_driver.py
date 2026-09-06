@@ -10,25 +10,29 @@ scope, in temporary member directories:
    grid from the inherited parent clock, first-row ``E_d == e0`` to
    the float cancellation floor, per-row component partition, and the
    IC + final snapshot *pairs* with matching ``(t, it)``.
-2. ``twin.e0 = 0``: the partner is an exact copy stepped by the same
+2. Off-phase parent: a member harvested from a snapshot whose ``it``
+   is not a multiple of the sample cadence still records on its own
+   uniform relative grid -- the four streams whose gates are separate,
+   from one launch.
+3. ``twin.e0 = 0``: the partner is an exact copy stepped by the same
    jitted stepper, so every ``E_d`` row is exactly zero -- the
    determinism guard for the whole lockstep loop.
-3. Paired restart: run to ``T1``, resume from the final pair to
+4. Paired restart: run to ``T1``, resume from the final pair to
    ``T2``; the concatenated ``twin.dat`` matches an uninterrupted run
    to ``T2`` row-for-row **exactly** (iterative-CN is stateless
    across steps, snapshots round-trip bit-exactly, single-device CPU
    stepping is deterministic), with one duplicated seam sample; the
    resume never re-perturbs.
-4. ``mpirun -np 2 --dist.np1 2``: the multi-process path produces the
+5. ``mpirun -np 2 --dist.np1 2``: the multi-process path produces the
    same (device-count-independent) initial ``E_d``.
-5. Non-finite guard: a deliberately exploding configuration exits
+6. Non-finite guard: a deliberately exploding configuration exits
    with code 3 and one ``FATAL: non-finite`` line.
-6. Spectra stream: per-record ``e_delta`` sums equal ``twin.dat``'s
+7. Spectra stream: per-record ``e_delta`` sums equal ``twin.dat``'s
    ``E_d`` through the binary round trip; a paired restart appends
    on a uniform grid (seam duplicate dropped by the reader); a
    sidecar-less ``.bin`` is refused; the final pair feeds
    ``integral_lengths`` (finite, domain-bounded).
-7. Budget closure: `$dE_X/dt = P_X + T_X - \epsilon_X$` per
+8. Budget closure: `$dE_X/dt = P_X + T_X - \epsilon_X$` per
    component on a real run, as a **structural** guard -- term counts,
    ``*_tot`` sum-consistency, sample count, and order-of-magnitude
    bounds.  The convergence claim lives in
@@ -47,7 +51,7 @@ scope, in temporary member directories:
    answered that -- **neither**, the bounds were fitted to one draw,
    and the control fails at a different seed than the default path
    does.
-8. Every driver-level guard fires on a real input: missing
+9. Every driver-level guard fires on a real input: missing
    ``twin.e0``, a snapshot recording a ``[force]`` section, the three
    bad start-mode quadrants (partner without ``twin.json``,
    ``twin.json`` without partner, a stale stream of any of the three
@@ -147,6 +151,13 @@ E0 = 1e-6
 _SESSION = Path(tempfile.mkdtemp(prefix="twin_driver_"))
 PARENT = _SESSION / "parent.tar"
 PARENT_FORCED = _SESSION / "parent_forced.tar"
+#: The same state three steps on the clock, so its ``it`` is *not* a
+#: multiple of the cadences the tests use.  Everything else here
+#: harvests a parent at ``PARENT_IT = 100``, which every cadence
+#: divides, and a run from such a parent cannot tell the two anchors
+#: apart (:func:`test_offphase_parent_grid`).
+PARENT_OFFPHASE = _SESSION / "parent_offphase.tar"
+OFFPHASE_STEPS = 3
 
 #: The sorted twin.dat column set (t first; the rest is the
 #: JIT-canonicalised sorted key order of ``twin_energies``).
@@ -177,6 +188,13 @@ def _build_parents() -> None:
         save_snapshot(state, PARENT_T, PARENT_IT, _OUT, isnap=0)
         return
     save_snapshot(state, PARENT_T, PARENT_IT, PARENT, isnap=0)
+    save_snapshot(
+        state,
+        PARENT_T + OFFPHASE_STEPS * DT,
+        PARENT_IT + OFFPHASE_STEPS,
+        PARENT_OFFPHASE,
+        isnap=0,
+    )
 
     # A snapshot whose embedded params carry a configured [force]
     # section (set directly on the singleton -- the recorded dump
@@ -328,6 +346,72 @@ def test_fresh_start_e0_exact() -> None:
             PARENT_IT + n
         )
     print("fresh start (e0 exactness, grids, pairs): OK")
+
+
+def test_offphase_parent_grid() -> None:
+    r"""A member's sample grid is its own, not its parent's ``it``.
+
+    Every cadence is counted from the member's perturbation step
+    (``dnsjax.twin.driver``, "Sample-cadence anchor"), so a member
+    harvested from a snapshot whose ``it`` is not a multiple of the
+    cadence still samples at `$t_\mathrm{parent} + n\,c\,\Delta t$`
+    -- which is what lets an ensemble whose parents carried different
+    residues be averaged on the relative clock at all.  Gated on the
+    absolute counter instead, this parent's stream would sit at
+    `$0, 2\Delta t, 7\Delta t, 10\Delta t$`, sharing nothing but
+    `$t = 0$` with a member harvested three steps away.
+
+    One launch, all three stream families: the ``.dat`` pair whose
+    cadence is ``[outs]``, ``twin.dat`` whose cadence is ``[twin]``,
+    and a binary ``(y, k)`` stream, each of which gates separately.
+    """
+    cadence, n = 5, 10
+    t0 = PARENT_T + OFFPHASE_STEPS * DT
+    args = list(_twin_args(t0 + n * DT, t_start=t0))
+    args[1] = str(PARENT_OFFPHASE)
+    with tempfile.TemporaryDirectory() as tmp:
+        _run_twin(
+            tmp,
+            [
+                *args,
+                "--outs.it_stats",
+                str(cadence),
+                "--twin.it_energy",
+                str(cadence),
+                "--twin.it_yspectra",
+                str(cadence),
+            ],
+        )
+        from dnsjax.analysis.twin import read_twin_yspectra
+
+        assert (PARENT_IT + OFFPHASE_STEPS) % cadence != 0, (
+            "the parent is on the cadence grid; this test proves nothing"
+        )
+        # t0, the one in-loop cadence hit, and the final row/record.
+        want = t0 + np.arange(0, n + 1, cadence) * DT
+        streams = {
+            "twin.dat": read_dat(Path(tmp) / "twin.dat")["t"],
+            "stats.dat": read_dat(Path(tmp) / "stats.dat")["t"],
+            "stats_twin.dat": read_dat(Path(tmp) / "stats_twin.dat")["t"],
+            "twin_yspectra.bin": read_twin_yspectra(tmp).t,
+        }
+        for name, got in streams.items():
+            assert_allclose(
+                got,
+                want,
+                rtol=0,
+                atol=1e-12,
+                err_msg=f"{name} does not sample the member's own grid",
+            )
+        meta = json.loads((Path(tmp) / "twin.json").read_text())
+        assert_allclose(
+            streams["twin.dat"] - meta["parent_t"],
+            np.arange(0, n + 1, cadence) * DT,
+            rtol=0,
+            atol=1e-12,
+            err_msg="the relative grid is not a multiple of the cadence",
+        )
+    print("off-phase parent (member-anchored cadences, 4 streams): OK")
 
 
 def test_zero_perturbation_bit_identity() -> None:
@@ -1079,6 +1163,7 @@ if __name__ == "__main__":
         sys.exit(0)
     _tests = [
         test_fresh_start_e0_exact,
+        test_offphase_parent_grid,
         test_zero_perturbation_bit_identity,
         test_paired_restart_continuity,
         test_np2_run,
