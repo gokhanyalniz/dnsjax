@@ -12,10 +12,9 @@ of the 3D incompressible Navier–Stokes equations, written in
 Periodic directions are **pseudo-spectral** (Fourier); up to one
 wall-bounded direction uses **banded finite differences**, where an
 **influence-matrix method** reconciles incompressibility with the wall
-boundary conditions — by default in a reformulation that makes the
-stepped state's discrete divergence exact to round-off. Nine flow systems
-across four geometries share one stepping core, on **CPU, GPU or TPU**,
-one device or many.
+boundary conditions. Nine flow systems
+across four geometries share one stepping core. The same code works on a **CPU, GPU or TPU**,
+and distributes across many.
 
 <a id="fig-planes"></a>
 <p align="center">
@@ -27,8 +26,8 @@ one device or many.
 
 <p align="center"><em>
 Turbulent channel flow at Re<sub>&tau;</sub> &asymp; 180: streamwise
-velocity fluctuations on three wall-parallel planes &mdash; near each
-wall, and at the centreline &mdash; over 10 advective time units.<br>
+velocity fluctuations on three wall-parallel planes (near each
+wall, and at the centreline), over 10 advective time units.<br>
 <a href="docs/snapshots.md#fig-streaks">&#128279;&nbsp;See one near-wall
 plane by itself.</a>
 </em></p>
@@ -50,20 +49,17 @@ plane by itself.</a>
 
 ## Highlights
 
-- **Runs anywhere JAX runs** — CPU, GPU or TPU, one device or many,
-  single or double precision, from the same code path; the wall-normal
-  solves go through a custom Pallas/Triton banded-LU kernel on GPU.
-- **Machine-precision discrete incompressibility, by default** — a
-  stepped state's divergence sits at round-off *at any resolution*, on
-  the same banded operators and with less operator storage than the
-  classical scheme it replaces.
-- **Nine flow systems across four geometries** on one stepping core, the
-  two nine-component viscoelastic (sPTT) flows included.
-- **Three analyses built on the solver itself** — non-modal optimal
+- **Runs anywhere JAX runs** - CPU, GPU or TPU, on one or many,
+  double or single precision, all from the same code path; wall-normal
+  solves go through a custom Pallas/Triton banded-LU kernel on GPUs.
+- **Machine-precision discrete incompressibility, by default** - a
+  stepped state's divergence sits at round-off *at any resolution*, with less operator storage than in a primitive-variable formulation (also available as an option).
+- **Nine flow systems across four geometries** all on one stepping core (two nine-component viscoelastic (sPTT) flows included.)
+- **Three analyses built on the solver itself** - non-modal optimal
   growth, lockstep twin runs for perturbation growth, and three
   interchangeable routes from a turbulent run to a data-driven linear
   operator.
-- **Post-processing that needs no solver** — snapshots are ordinary tar
+- **Post-processing that needs no solver** - snapshots are ordinary tar
   archives wrapping a zarr3 store, and the reading API imports nothing
   but NumPy.
 
@@ -75,13 +71,11 @@ cd dnsjax
 uv sync
 ```
 
-The only prerequisite is [`uv`](https://docs.astral.sh/uv/), which
-provisions the pinned Python (3.14; 3.12 is the floor) by itself. The
+The only prerequisite is [`uv`](https://docs.astral.sh/uv/), which, upon `uv sync`, defaults to the pinned Python version (3.14; 3.12 is the floor) by itself. The
 default install pulls a CPU build of JAX; for **CUDA GPUs** run
-`uv add "jax[cuda13]"` (Linux x86-64 wheels only). An MPI runtime is
-needed only to *launch* a multi-process run — not for a single process
-spanning a node's GPUs, and not for the post-processing API. On
-multi-process CPU runs, MPI can also carry the collectives:
+`uv add "jax[cuda13]"`. An MPI runtime is
+needed to launch a multi-process run, including multi-CPU runs - but not for a single process run that spans a single node's GPUs, and not for the post-processing API. On
+multi-CPU runs, MPI can also carry the collectives, and it's best to configure for that:
 [`docs/cpu-collectives.md`](docs/cpu-collectives.md).
 
 Output goes to the working directory, so launch from a scratch dir:
@@ -98,50 +92,41 @@ mkdir -p /tmp/run && cd /tmp/run
   --outs.it_stats 50
 ```
 
-Four diameters of pipe at Re = 2500, seeded with a localized roll
-("puff") that breaks down into turbulence and decays again a hundred or
-so advective time units later — a few minutes on one core. The first
+Four diameters of pipe at Re = 2500, seeded with a localized roll that breaks down into turbulence and decays again a hundred or so advective time units later - a few minutes on one core on a modern CPU. The first
 step takes noticeably longer than the rest (JIT compilation);
 statistics then stream to `stats.dat`. The same run as a configuration
 file is
-[`examples/pipe-re2500/parameters.toml`](examples/pipe-re2500/parameters.toml),
-and [`examples/`](examples/) has three more — a plane channel, a minimal
-Couette cell and a triply-periodic box — each sized to reach turbulence
-on one laptop core.
+[`examples/pipe-re2500/parameters.toml`](examples/pipe-re2500/parameters.toml). [`examples/`](examples/) has three more: a plane-Poiseuille, plane-Couete and Kolmogorov flow (sinusoidally-driven flow in a triply-periodic box), each should run easily on a modern laptop on one CPU.
 
 `dnsjax --help` lists the global parameters and the flows, `--help pipe`
-one flow's full surface, and `--sample-toml pipe` an annotated template.
-The flag-by-flag walkthrough, the four start modes, the seed contract
-and the output streams: [`docs/running.md`](docs/running.md).
+one flow's full surface (replace `pipe` for other flows), and `--sample-toml pipe` prints an annotated template.
+For a walkthrough of more flags, the four start modes (from a snapshot file, random perturbation of the laminar flow, localized rolls, and the laminar flow itself), and the output streams, see [`docs/running.md`](docs/running.md).
 
 ## Flows and geometries
 
 | Flow | Geometry | Laminar base / driving | Defining controls |
 |---|---|---|---|
 | **Pipe** | cylindrical | $U_z = 1 - r^2$, pressure-driven | `re`, axial length `lz` |
-| **Viscoelastic Pipe** | cylindrical (sPTT) | axial body force, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `lz` |
+| **Viscoelastic Pipe** | cylindrical (sPTT) | pressure-driven, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `lz` |
 | **Taylor–Couette** | annular | $U_\theta = A_0 r + B_0/r$, wall rotation | `re1`, `re2`, `eta`, `lz` |
 | **Quasi-Keplerian** | annular | $U_\theta = A_0 r + B_0/r$, Rayleigh-stable co-rotation | `re1`, `r_omega`, `eta`, `lz` |
-| **Dean** | annular | azimuthal body force, total field | `re`, `eta`, `lz` |
-| **Viscoelastic Dean** | annular (sPTT) | azimuthal body force, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `delta`, `lz` |
+| **Dean** | annular | azimuthal body force (a pressure-driven *curved* channel), total field | `re`, `eta`, `lz` |
+| **Viscoelastic Dean** | annular (sPTT) | azimuthal body force (a pressure-driven *curved* channel), 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `delta`, `lz` |
 | **Plane-Poiseuille** | Cartesian | $U = 1 - y^2$, pressure-driven | `re`, `lx`, `lz`, `tilt_degree` |
 | **Plane-Couette** | Cartesian | $U = y$, wall-driven | `re`, `lx`, `lz`, `tilt_degree` |
 | **Kolmogorov** | triply-periodic | $U = \sin(2\pi y / L_y)$, sine body force | `re`, `lx`, `lz`, `tilt_degree` |
 
 Each flow exposes only the parameters that apply to it, under the names
 natural to its geometry: a pipe takes `--geo.lz`/`--res.nr`/`--res.ntheta`
-where a plane channel takes `--geo.lx`/`--res.ny`/`--res.nz`. Reynolds-number
-normalizations, driving options, rotation conventions, the viscoelastic
-controls and the azimuthal wedge are collected under
-[Conventions](docs/numerics.md#conventions).
+where a plane channel takes `--geo.lx`/`--res.ny`/`--res.nz`. For the various conventions involved, see [Conventions](docs/numerics.md#conventions).
 
 ## Performance and scaling
 
 One time step: the spectral state is inverse-transformed onto the
-$\tfrac{3}{2}$-oversampled grid, the rotational nonlinear term is formed
-pointwise, and the result is transformed back and truncated — two
-reshards carry the data across the device grid each way. A semi-implicit
-predictor is then corrected toward the Crank–Nicolson fixed point, each
+$\tfrac{3}{2}$-oversampled grid (for the second-order nonlinearity), the rotational nonlinear term is formed
+pointwise, and the result is transformed back and truncated. Two
+reshards carry the data across the device grid each way. By default, a semi-implicit
+predictor is then corrected toward the Crank-Nicolson fixed point, each
 iteration solving one banded system per Fourier mode. **Every device
 holds the full wall-normal extent in spectral space, so those solves need
 no communication at all.**
@@ -153,10 +138,9 @@ no communication at all.**
        alt="One time step: the sharded spectral state, the 3/2-dealiased pseudo-spectral nonlinear term, a per-mode banded influence-matrix solve, and the corrector loop back to the state.">
 </picture>
 
-The two sharded axes are **not** equivalent — the `np1` exchange moves
+The two sharded axes are **not** equivalent: the `np1` exchange moves
 $3/2$ as many bytes as the `np0` one, and a second grid axis adds an
-exchange rather than subdividing the first — so the device grid is a
-real choice. [`docs/scaling.md`](docs/scaling.md) has the array layout
+exchange rather than subdividing the first, so the choice for a device grid is not trivial. [`docs/scaling.md`](docs/scaling.md) has the array layout
 per geometry, a symbolic memory model linear in $n_x n_y n_z$ that sizes
 a configuration before it is launched, and how to pick the device grid
 $(n_{p0}, n_{p1})$ on one node and across many.
@@ -173,17 +157,10 @@ in [`docs/validation.md`](docs/validation.md).
 ## Design decisions
 
 - **Banded finite differences in the wall-normal direction, not
-  Chebyshev.** Both can be arranged into banded operators, so storage is
-  not the argument — the grid is. A Chebyshev basis fixes the CGL
-  distribution; finite differences leave the wall-normal grid free (CGL
-  by default, tanh, or one supplied as a file) and put the order under a
-  knob, so a case is sized in `res.ny` and `res.fd_order` rather than
-  inherited.
-- **Velocity–vorticity, not primitive variables.** Advancing the
+  Chebyshev.** A Chebyshev basis fixes a Cauchy-Gauss-Lobatto (CGL) grid for the wall-normal direction, whereas finite differences leave the grid free, which is especially helpful for large-Re studies. CGL is still the default, stretched tanh grids are baked-in, and arbitrary grids are also supported.
+- **Velocity-vorticity (internally), not primitive variables.** Advancing the
   wall-normal velocity and vorticity and reconstructing the tangential
-  pair removes the discrete pressure entirely. Continuity then becomes an
-  algebraic identity — exact at every row including the walls, for any
-  operator or grid — instead of a convergent truncation error.
+  pair removes the discrete pressure entirely. Continuity is then an algebraic identity, instead of a convergent truncation error. User-facing arrays are always the primitive variables. A primitive-variable-based stepping is optionally provided.
 - **Influence matrix, not a projection.** One wall condition can only be
   fixed indirectly: the wall pressure in the primitive form, and
   $(D_1 v)|_\text{wall} = 0$ in the velocity–vorticity one. Precomputing
@@ -193,28 +170,24 @@ in [`docs/validation.md`](docs/validation.md).
   the wall values of $u$ and $w$ double as a live diagnostic that the
   influence matrix is healthy. A fractional-step projection avoids all of
   it at the cost of a splitting error no resolution removes.
-- **Two sharded axes, deliberately asymmetric.** The wall-normal solves
-  are what must never communicate, so the mesh is built around keeping
-  them device-local — and the two exchanges then differ in volume and in
-  count, rather than being symmetric halves of one decomposition.
+- **Two sharded axes, deliberately asymmetric.** Ease of the linear wall-normal solves hinge on the wall-normal data being device-local. The device mesh was built around that primarily, and then requiring minimal amount of data transposes secondarily.
 - **Tests as standalone scripts.** Configuration lives in module-level
   singletons captured at import, and JAX's platform and precision are
   process-wide, so a test has to own its process. Making that explicit
   beats fighting a collector that wants to import everything into one.
 - **JAX rather than hand-written CUDA or Fortran.** One source runs on
   CPU, GPU and TPU and shards across devices without a second
-  implementation. Where the compiler is not enough — the wall-normal
-  banded sweep — a Pallas kernel drops in under the same API.
+  implementation. Where standard JAX is not enough, such as for the the wall-normal
+  banded sweep, a Pallas kernel is used under the same API. Besides, JAX is simply easier to read and write compared to CUDA, or Fortran with MPI.
 
 ## What's in the box
 
 | | |
 |---|---|
-| **Optimal-growth analysis** | 3D linear optimal energy growth $G(t)$ about an arbitrary wall-normal profile, five flows, reusing the solver's own linear step per mode |
-| **Twin-run perturbation growth** | a reference snapshot and a perturbed copy stepped in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, and $(k_z, k_x)$ spectra — [twin/](src/dnsjax/twin/README.md) |
-| **Response and identification** | record spectral modes, drive them with white-in-time kicks, identify a data-driven generator three interchangeable ways — [response/](src/dnsjax/analysis/response/README.md) |
 | **Banded-LU GPU kernel** | $O(N_y p)$ factors instead of dense $O(N_y^2)$, with a dense reference solver; checked in interpret mode *and* by lowering to CUDA on GPU-less machines |
 | **Differentiable time steps** | `jax.grad` through a step, opt-in: a fixed-count corrector replaces the one construct reverse mode cannot traverse, and the banded GPU kernel carries a hand-written adjoint — [docs/differentiability.md](docs/differentiability.md) |
+| **Twin-run perturbation growth** | a reference snapshot and a perturbed copy stepped in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, and $(k_z, k_x)$ spectra - [twin/](src/dnsjax/twin/README.md) |
+| **Optimal-growth analysis** | linear optimal energy growth $G(t)$ about an arbitrary wall-normal profile, reusing the solver's own linear step per mode |
 | **Two-axis device mesh** | $(n_{p0}, n_{p1})$ with an in-FFT reshard pipeline — [docs/scaling.md](docs/scaling.md#parallelization) |
 | **A memory–throughput dial** | `solver.rhs_transform_chunks` splits the batched inverse transform $k$ ways, cutting its working set $k$-fold at identical results |
 | **Snapshots and resume** | tar + zarr3, written in parallel and straight from GPU memory where available; resume across any device count, re-gridding every changed axis — [docs/snapshots.md](docs/snapshots.md) |
@@ -225,6 +198,7 @@ in [`docs/validation.md`](docs/validation.md).
 | **Crash-consistent diagnostics** | buffered streams flushed before snapshots and on termination; a NaN or inf aborts naming the quantity and writes no snapshot of the broken state |
 | **Graceful shutdown** | an ISO 8601 wall-time budget ends the run cleanly, final snapshot included, before a queue kills it |
 | **Laminarization auto-stop** | a run ends once the perturbation energy falls below a threshold |
+| **Response and identification** | record spectral modes, drive them with white-in-time kicks, identify a data-driven generator three interchangeable ways — [response/](src/dnsjax/analysis/response/README.md) |
 
 ## Documentation
 
