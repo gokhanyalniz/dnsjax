@@ -53,6 +53,9 @@ map to them as follows.
 | Claim | Pinned by |
 |---|---|
 | A stepped state's discrete divergence is round-off at any resolution | `tests/test_imm_continuity.py` |
+| On the toroidal pipe, where the metric makes the constraint iterative, that divergence instead tracks the corrector tolerance | `tests/test_curved_pipe.py` |
+| The toroidal equation set reproduces its published reference, and $\kappa = 0$ reproduces the straight pipe | `tests/test_curved_pipe.py` |
+| Curvature produces Dean vortices: the streamwise maximum moves to the outer wall and the flux drops under a fixed pressure gradient | `tests/test_curved_pipe.py` |
 | The default formulation beats the primitive one in absolute error *and* decay rate, in all three wall-bounded geometries | `tests/test_temporal_order.py` |
 | Second-order temporal convergence, fixed and variable step | `tests/test_temporal_order.py` |
 | $dE/dt = I - D$ closes to truncation order, pressure-gradient work included | `tests/test_energy_budget.py` |

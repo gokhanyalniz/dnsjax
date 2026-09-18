@@ -4,6 +4,16 @@ Runs each wall-bounded system from its laminar state for a few
 time steps at low resolution, verifying that:
 
 - The corrector converges in a single iteration.
+``curved-pipe`` is deliberately **absent**: at its own curvature it has
+no laminar fixed point to sit at (its laminar state is the
+two-dimensional Dean solution, which is numerical), and at
+``geo.curvature = 0`` every curvature term is switched off at trace
+time, so the entry would pin the straight pipe a second time.  What it
+would have covered is covered better elsewhere -- the `$\kappa = 0$`
+identity with ``pipe`` to `$10^{-15}$` through five nonlinear steps in
+``tests/test_curved_pipe.py``, and the CLI path at finite curvature by
+the ``curved-pipe`` entry of ``tests/test_random_smoke.py``.
+
 - The stepping error is `$O(10^{-18})$` or less.
 - The perturbation energy stays at `$O(10^{-32})$` or less.
 - The CFL diagnostic (``steps.dat``, written every

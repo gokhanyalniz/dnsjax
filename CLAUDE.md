@@ -3,7 +3,8 @@
 `dnsjax` is a GPU-accelerated pseudo-spectral + finite-differences DNS
 solver for the 3D incompressible Navier-Stokes equations, written in
 JAX. Flow systems: triply-periodic (Kolmogorov)
-and wall-bounded (plane-Couette, plane-Poiseuille, pipe, Taylor-Couette,
+and wall-bounded (plane-Couette, plane-Poiseuille, pipe, curved
+(toroidal, zero-torsion) pipe, Taylor-Couette,
 quasi-Keplerian, force-driven Dean, and two viscoelastic (sPTT) flows
 with a coupled conformation tensor: axially driven pipe and
 azimuthally driven Dean). Two selectable second-order time
@@ -326,7 +327,9 @@ twin/                 dnsjax-twin: driver.py (console script + the
                       _binstream.py, spectra.py, yspectra.py
                       -- see twin/CLAUDE.md
 geometries/
-  wall_bounded/       _base.py, cartesian.py, cylindrical.py,
+  wall_bounded/       _base.py, cartesian.py, cylindrical.py +
+                      _cylindrical_stepping.py (shared stepping) +
+                      cylindrical_curved.py (the toroidal metric),
                       annular.py, the three
                       _*_primitive_imm.py legacy-IMM siblings,
                       _viscoelastic_common.py,
@@ -340,7 +343,7 @@ flows/
                       all_systems, *_systems lists, GLOBAL_FIELDS,
                       internalize_stored/stored_value
   wall_bounded/       plane_couette, plane_poiseuille, pipe,
-                      viscoelastic_pipe, taylor_couette,
+                      curved_pipe, viscoelastic_pipe, taylor_couette,
                       quasi_keplerian (both bind the shared
                       _circular_couette.py machinery), dean,
                       viscoelastic_dean -- base flows/driving in
@@ -453,6 +456,11 @@ predictor and the geometry's IMM implicit solve. `"iterative-cn"`
 point (stable past the advective CFL); `"cnab2"` advances it
 explicitly (AB2) at **one** FFT eval/step, and wall-bounded keeps the
 wall-stiff coupling `_l_bf` implicit via an FFT-free corrector.
+`curved-pipe` is the one flow that refuses `cnab2` (and
+`split_corrector`): with no base flow its `_l_bf` is identically zero,
+so that corrector would not iterate, and the curvature terms would be
+lagged across a step rather than to the iterate — the failure mode
+`cylindrical._imm_iteration_vw` records.
 Full detail (measured `dt` limits,
 per-geometry CFL, `implicitness`, `implicit_mean_coupling`,
 `split_corrector`, and the corrector-contraction `dt` limit — a
@@ -478,8 +486,14 @@ spectral padding.
 
 **Perturbation formulation**: the solver evolves `u'` around laminar
 `U(y)` (`rhs.py` module docstring). The force-driven
-dean/viscoelastic-dean/viscoelastic-pipe systems instead integrate the
-**total** field (`base_flow = 0`, mean-mode body force).
+curved-pipe/dean/viscoelastic-dean/viscoelastic-pipe systems instead
+integrate the **total** field (`base_flow = 0`, mean-mode body force);
+curved-pipe has no closed-form laminar state at all (its laminar
+solution is the 2D Dean flow), so its `E'` is the `k_s != 0` energy.
+`rhs.get_nonlin`'s optional metric hooks (`extra_spec_fn`,
+`to_physical_fn`, `metric_rhs_fn`) let a geometry carry a
+metric-weighted component and do the weighting where the
+physical-space fields are -- the curved pipe is the only user.
 
 **Component basis (cylindrical/annular only)**: the state is carried
 in the decoupled `u_±`/spin solver basis and *observed* in physical
@@ -553,7 +567,7 @@ layering" above.
 | Section    | Purpose                                             |
 |------------|-----------------------------------------------------|
 | `[phys]`   | Reynolds numbers, `system`, oversampling, driving, `u_grid`; viscoelastic rheology (`el`/`wi`/`beta`/`epsilon`/`kappa`) |
-| `[geo]`    | Domain lengths/tilt, `eta`, `m0` (azimuthal wedge), `delta`, wall-normal grid selection |
+| `[geo]`    | Domain lengths/tilt, `eta`, `m0` (azimuthal wedge), `curvature` (toroidal pipe), `delta`, wall-normal grid selection |
 | `[res]`    | Resolution (`nx`/`ny`/`nz`, or `nz`/`nr`/`ntheta`), `fd_order`, `consistent_imm`, `double_precision`.  **Every Fourier count is even** (`validate_parameters`; a Nyquist mode to omit exists only at an even count -- `harmonics.py`).  A wall-normal grid size is unconstrained |
 | `[init]`   | Start mode (see "Initial conditions" above) + `t0`/`it0`/`isnap0`/`force_resume` |
 | `[outs]`   | Diagnostic cadences, buffering, snapshot write policy |
@@ -591,7 +605,7 @@ wall-bounded only) → `probes.bin` + `probes.json`
 coefficient log (`[force]`) → `forcing.bin` + `forcing.json`
 (`extensions/forcing.py`; reader `dnsjax.analysis.response.ssi`).
 
-Under `phys.driving = "constant_bulk_velocity"` (pipe,
+Under `phys.driving = "constant_bulk_velocity"` (pipe, curved-pipe,
 plane-Poiseuille) or `phys.block_mean_spanwise_velocity` (Cartesian and
 annular families) `stats.dat` gains a **last** column per constrained
 direction — `-dPds'` / `-dPdn'` / `-dPdz'` — the applied **forcing**
@@ -613,7 +627,13 @@ tables: the `__main__.py` comment at the read site and
 crossing in `__main__`); the column set is one invariant across the
 geometry `aux`, the flow's `get_driving` and `__main__`'s buffer width,
 so `validate_parameters` rejects a driving knob a flow's surface does
-not carry. `dnsjax-twin` records **each** state's own applied value,
+not carry, and the column *name* is a geometry ClassVar
+(`CylindricalFlow.driving_key`) rather than a module constant, so a
+geometry whose streamwise direction is not `z` cannot name it two ways.
+`curved-pipe` is the one flow whose `get_driving` is **not** a
+wall-shear inference — the toroidal mean balance keeps `O(κ)` volume
+terms no wall integral captures, so it infers from the whole `(0,0)`
+momentum balance instead (its `_applied_driving` docstring derives it). `dnsjax-twin` records **each** state's own applied value,
 the reference's in `stats.dat` and the partner's in `stats_twin.dat`
 (the difference is then an offline subtraction); `twin.dat` carries no
 driving column, because the difference of a uniform mean-mode force
@@ -852,6 +872,10 @@ are one-liners. Cross-cutting notes:
   decisions (launcher detection, MPIwrapper discovery, collectives).
 - `test_cartesian.py`: Cartesian operators + band-vs-dense parity.
 - `test_cylindrical.py`: cylindrical operators + band-vs-dense parity.
+- `test_curved_pipe.py`: the toroidal pipe -- the reference equation
+  set, the metric coupling, the divergence defect, continuity against
+  the corrector tolerance, the `kappa = 0` identity with `pipe`, and
+  the Dean-vortex structure (`--only <frag>`).
 - `test_annular.py`: annular operators + band-vs-dense parity.
 - `test_viscoelastic.py`: the annular sPTT geometry.
 - `test_viscoelastic_pipe.py`: the cylindrical sPTT geometry (both
