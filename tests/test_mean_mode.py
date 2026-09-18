@@ -12,10 +12,13 @@ Cartesian perturbation must respect -- at three levels:
    rests on.  A compatible profile's *correction* also falls with
    ``ny``, which is what makes "these rows discretize those relations"
    an empirical statement rather than an assertion.
-2. **The projector is a projector.**  Machine-level residual, exact
-   idempotence, exactly preserved no-slip (the kernel's window factor),
-   and no amplification in the ensemble it conditions -- including at
-   an extreme ``random_smoothness``, where the smoothed case-B rows go
+2. **The projector is a projector.**  Machine-level residual,
+   machine-level idempotence *as an operator* -- every input at once,
+   not one draw -- exactly preserved no-slip (the kernel's window
+   factor), and no amplification, of the conditioned ensemble and of
+   the drawn one the kernel floor holds it slightly apart from (both
+   in closed form, no sampling) -- including at an extreme
+   ``random_smoothness``, where the smoothed case-B rows go
    near-degenerate and only ``_KERNEL_FLOOR`` keeps the solve honest.
 3. **The generated IC satisfies them.**  A real random Cartesian IC
    with ``init.random_mean_flow`` on, across both flows, both driving
@@ -89,6 +92,27 @@ EXACT_TOL = 1e-11
 #: A genuinely violating profile must score at least this, so the
 #: single ``COMPAT_TOL`` separates the two populations by decades.
 VIOLATION_FLOOR = 0.1
+
+#: Relative bound on the projector's idempotence, ``||P^2 - P||_inf``
+#: against ``||P||_inf``.  ``P`` is idempotent as algebra, so what is
+#: measured is roundoff, amplified by how oblique the projection is in
+#: the Euclidean metric -- ``||P||_inf`` reaches ``2.6e4`` once an
+#: extreme ``random_smoothness`` leaves ``K`` near-rank-4.  Worst over
+#: ``random_smoothness`` in ``{0, 0.4, 0.8, 0.95, 0.99}``:
+#:
+#:     ny           17       33       65      129
+#:     cgl  case A  1.9e-14  2.5e-14  1.3e-14  9.1e-15
+#:     cgl  case B  5.9e-13  2.3e-13  5.8e-13  2.1e-12
+#:     tanh case A  1.9e-14  8.3e-15  6.3e-15  6.7e-15
+#:     tanh case B  3.2e-13  2.5e-12  4.2e-13  4.1e-12
+#:
+#: (at the shipped ``s = 0.4`` no entry exceeds ``1.4e-14``; case B is
+#: the worse row throughout, its two extra rows being the ones the
+#: filter drives near-degenerate).  A projection that is wrong rather
+#: than rounded scores `$O(1)$` -- damping the correction by 1 % scores
+#: ``1e-2`` -- so this sits ~1.5 decades above the measured roundoff
+#: and ~8 below a formula error.
+IDEMPOTENT_TOL = 1e-10
 
 #: Relative agreement of the `$(0,0)$` column across device meshes.
 CROSS_TOL = 1e-13
@@ -320,35 +344,67 @@ def test_projector_properties(check) -> None:
                 res * min(keep, 1.0) < EXACT_TOL,
                 f"{res:.2e} (keep={keep:.3f})",
             )
-            # Idempotent as algebra; the recompute differs only by
-            # roundoff, so this is a scaled bound, not an equality
-            # (unlike the no-slip check below, which is exact by
-            # construction -- the kernel's window factor).
-            again = project_profile(out, C, K)
-            drift = float(np.max(np.abs(again - out)))
+            # Idempotent as algebra, so a recompute shows roundoff
+            # only.  Measured on the operator, not on the draw above:
+            # what the draw comes back with is a fraction of what went
+            # in (``keep`` above), so normalising its drift by its own
+            # norm reports that shrinkage rather than the projector --
+            # on the s=0.99 case-B row it reads 8e-14 at this seed and
+            # up to 2e-11 at others, and at this one it tipped over a
+            # bound calibrated here once a CI runner's BLAS summed the
+            # same solve in a different order.  Column by column
+            # through the same entry point instead: ``|P(Pd) - Pd| <=
+            # ||P^2 - P||_inf |d|_inf`` bounds every input at once,
+            # with no draw in it.  (The no-slip check below *is* an
+            # equality -- exact by construction, the window factor.)
+            basis = np.eye(len(y))
+            P = np.stack([project_profile(e, C, K) for e in basis], axis=1)
+            P2 = np.stack([project_profile(c, C, K) for c in P.T], axis=1)
+            p_norm = float(np.max(np.abs(P).sum(axis=1)))
+            drift = float(np.max(np.abs(P2 - P).sum(axis=1)))
             check(
                 f"{tag}: idempotent",
-                drift <= 1e-13 * float(np.max(np.abs(out))),
-                f"max|P^2-P| = {drift:.2e}",
+                drift <= IDEMPOTENT_TOL * p_norm,
+                f"||P^2-P||/||P|| = {drift / p_norm:.1e}",
             )
             check(
                 f"{tag}: no-slip preserved exactly",
                 out[0] == 0.0 and out[-1] == 0.0,
                 f"walls = {out[0]:.1e}, {out[-1]:.1e}",
             )
-            # E||d'||^2 <= E||d||^2: the projection is orthogonal in
-            # the ensemble's own metric (module docstring).
-            rng = np.random.default_rng(11)
-            num = den = 0.0
-            for _ in range(200):
-                d = win * (F @ rng.standard_normal(len(y)))
-                pd = project_profile(d, C, K)
-                den += float(d @ d)
-                num += float(pd @ pd)
+            # E||d'||^2 = tr(KP) <= tr(K) = E||d||^2: the projection
+            # is orthogonal in the ensemble's own metric (module
+            # docstring).  Read off ``P`` rather than sampled -- the
+            # 200-draw estimate this replaces targets the *drawn*
+            # ensemble below, pins it to no better than +-80 % on the
+            # case-B rows, and its own noise (+-0.9 % where the true
+            # ratio is 0.9983) put it over 1.0 for 1 loop seed in 40.
+            # The rejected fixed-complement projector (module
+            # docstring) scores 2.0 to 4.7 here.
+            ratio = float(np.trace(K @ P) / np.trace(K))
             check(
                 f"{tag}: does not amplify",
-                num <= den,
-                f"E|d'|^2/E|d|^2 = {num / den:.4f}",
+                ratio <= 1.0,
+                f"tr(KP)/tr(K) = {ratio:.4f}",
+            )
+            # A second statement, not the same one: the draw carries
+            # the **unfloored** covariance ``M M^T`` while ``P`` is
+            # orthogonal in the floored ``K``, so ``_KERNEL_FLOOR``
+            # costs the drawn ensemble 1.9 % of its retained energy at
+            # ``s = 0.99`` (0.9814 -> 0.9631) against 7.6e-5 at the
+            # shipped 0.4.  It stays a contraction -- worst 0.9999995
+            # over both grids, ``ny`` in {17, 33, 65, 129} and ``s`` in
+            # {0, 0.2, 0.4, 0.8, 0.95, 0.99} -- and this is the number
+            # the sampled ratio converged to (0.9631 at 20000 draws,
+            # s=0.99 case A).  It is also the sharper guard: the
+            # fixed-complement projector scores up to 1e28 here.
+            M = win[:, None] * F
+            K0 = M @ M.T
+            drawn = float(np.trace(P @ K0 @ P.T) / np.trace(K0))
+            check(
+                f"{tag}: does not amplify the drawn ensemble",
+                drawn <= 1.0,
+                f"tr(PK0P^T)/tr(K0) = {drawn:.4f}",
             )
 
 
