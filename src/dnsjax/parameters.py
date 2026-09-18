@@ -637,6 +637,18 @@ class Geometry(BaseModel):
             "resolution."
         ),
     )
+    curvature: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Dimensionless centreline curvature kappa = a/R_c of a "
+            "curved (toroidal, zero-torsion) pipe; 0 is the straight "
+            "pipe.  The complete torus is a streamwise period of "
+            "2*pi/kappa, but any period is geometrically consistent "
+            "because no metric coefficient depends on the streamwise "
+            "coordinate."
+        ),
+    )
     # Default 11 (applied in the viscoelastic ``derive`` hook).
     delta: float | None = Field(
         default=None,

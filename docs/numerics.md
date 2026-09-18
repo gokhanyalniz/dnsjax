@@ -35,7 +35,19 @@ term,
 in which the base-flow self-interaction is a pure gradient absorbed by the
 pressure. The force-driven systems instead integrate the **total** field
 with a mean-mode body force: azimuthal for Dean and viscoelastic Dean,
-axial for the viscoelastic pipe.
+streamwise for the viscoelastic pipe and the curved pipe.
+
+The **curved pipe** is the one system whose metric is not the identity: a
+pipe bent onto a circle of radius $R_c$, with curvature
+$\kappa = a/R_c$ (`geo.curvature`) and zero torsion, whose scale factors
+are $(1, r, h)$ with $h = 1 + \kappa r\cos\theta$. It solves the same
+equations in that metric, and it does so on the *straight* pipe's
+operators: carrying $h\,u_s$ in place of $u_s$ leaves the curl, the
+pressure projection, the influence matrix and every Helmholtz solve
+untouched, so no operator couples azimuthal modes. The four identities
+that make that work, and the two places curvature does survive, are
+derived in the `geometries/wall_bounded/cylindrical_curved.py` module
+docstring.
 
 The viscoelastic flows couple a symmetric **conformation tensor** $\mathbf{c}$
 through a simplified Phan-Thien–Tanner constitutive law,
@@ -204,8 +216,15 @@ A few conventions worth knowing across the flow surfaces:
   Reynolds number (the factors of two cancel in the chosen normalization).
   The viscoelastic flows are the exception: they expose no `re` (it is
   derived as $Re = Wi/El$), and $\nu = \beta/Re$ is the *solvent*
-  viscosity, the polymer stress carrying the rest.
-- **Driving.** The pressure-driven flows (pipe, plane-Poiseuille) accept
+  viscosity, the polymer stress carrying the rest. The curved pipe keeps
+  the pipe's normalization, so under a held flux its `re` is the
+  bulk-velocity–diameter Reynolds number of the toroidal-pipe
+  literature, with Dean number $De = Re\sqrt{\kappa}$; under the default
+  constant pressure gradient it is the *nominal* value of the same
+  driving, and the realized bulk is lower by the Dean friction
+  increase.
+- **Driving.** The pressure-driven flows (pipe, curved pipe,
+  plane-Poiseuille) accept
   `phys.driving = "constant_bulk_velocity"` to hold the bulk velocity
   fixed instead of the mean pressure gradient, and every wall-bounded
   flow but the two pipes can pin the mean velocity of its undriven

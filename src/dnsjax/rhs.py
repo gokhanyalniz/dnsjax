@@ -92,6 +92,10 @@ def get_nonlin(
     phys_to_spec_fn: Callable[[Array], Array],
     curl_fn: Callable[[Array], Array],
     measure_fn: Callable[[Array, Array], dict[str, Array]] | None = None,
+    extra_spec_fn: Callable[[Array], Array] | None = None,
+    to_physical_fn: Callable[[Array, Array], tuple[Array, Array]]
+    | None = None,
+    metric_rhs_fn: Callable[[Array, Array, Array], Array] | None = None,
 ) -> Array | tuple[Array, dict[str, Array]]:
     r"""Compute the perturbation nonlinear term in spectral space.
 
@@ -150,6 +154,26 @@ def get_nonlin(
         replicated scalars (static structure; see
         :mod:`dnsjax.measurements`).  The branch is resolved
         at trace time, so the unmeasured path is unchanged.
+    extra_spec_fn:
+        Optional ``vorticity_spec -> extra_spec``: further spectral
+        fields to ride the same batched inverse transform, handed to
+        *metric_rhs_fn* in physical space.  The curved pipe sends `$\partial_s
+        \boldsymbol{\Omega}$` this way, so its curvature terms cost
+        no transform of their own.
+    to_physical_fn:
+        Optional ``(velocity_phys, vorticity_phys) -> (velocity_phys,
+        vorticity_phys)`` converting the *carried* components into the
+        **physical** ones, applied before both the cross product and
+        *measure_fn*.  A geometry whose state is metric-weighted (the
+        curved pipe carries `$h\,u_s$`) divides here, where the
+        pointwise metric factor is free.
+    metric_rhs_fn:
+        Optional ``(nonlin_phys, vorticity_phys, extra_phys) ->
+        nonlin_phys`` applied after the cross product, receiving the
+        vorticity as it came out of the transform (**before**
+        *to_physical_fn*).  It carries the weighting the geometry's own
+        momentum equation puts on the RHS and any pointwise curvature
+        remainder.
 
     Returns
     -------
@@ -164,11 +188,22 @@ def get_nonlin(
     # (``solver.rhs_transform_chunks > 1`` splits it to cap the
     # transform-stage transient).
     vorticity_spec = curl_fn(velocity_spec)
-    combined_phys = chunked_transform(
-        spec_to_phys_fn, jnp.concatenate([velocity_spec, vorticity_spec])
-    )
+    batch = [velocity_spec, vorticity_spec]
+    if extra_spec_fn is not None:
+        batch.append(extra_spec_fn(vorticity_spec))
+    combined_phys = chunked_transform(spec_to_phys_fn, jnp.concatenate(batch))
     velocity_phys = combined_phys[:3]
-    vorticity_phys = combined_phys[3:]
+    vorticity_phys = combined_phys[3:6]
+    extra_phys = combined_phys[6:] if extra_spec_fn is not None else None
+
+    # The carried components may be metric-weighted; everything from
+    # here to ``metric_rhs_fn`` -- the cross product, the CFL -- is on
+    # the physical triad.  Both branches resolve at trace time.
+    raw_vorticity_phys = vorticity_phys
+    if to_physical_fn is not None:
+        velocity_phys, vorticity_phys = to_physical_fn(
+            velocity_phys, vorticity_phys
+        )
 
     nonlin_phys = _fused_nonlinear(
         velocity_phys,
@@ -176,6 +211,10 @@ def get_nonlin(
         base_flow,
         curl_base_flow,
     )
+    if metric_rhs_fn is not None:
+        nonlin_phys = metric_rhs_fn(
+            nonlin_phys, raw_vorticity_phys, extra_phys
+        )
 
     if measure_fn is None:
         return phys_to_spec_fn(nonlin_phys)

@@ -190,7 +190,7 @@ shear stresses and bulk velocities under the names natural to the
 geometry (`tau'_s,b`/`tau'_s,t` and `Ub'_s`/`Ub'_n` in the channels,
 `tau'_z`/`tau'_th` in the pipe, inner/outer pairs in the annulus),
 primed on the flows that evolve a perturbation and unprimed on the
-three that integrate the total field. The viscoelastic flows report
+four that integrate the total field. The viscoelastic flows report
 the solvent dissipation `D_s` in place of `D` and add the polymer
 work `W_p`, the elastic energy `E_p`, and the mean conformation
 trace `TrC`. A run holding a bulk velocity or a mean
