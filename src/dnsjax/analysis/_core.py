@@ -245,6 +245,12 @@ def geometry_info(params: Namespace) -> GeometryInfo:
                 "c_theta_theta",
                 "c_r_theta",
             )
+        elif system == "curved-pipe":
+            # The streamwise direction is the centreline arclength of a
+            # bent pipe, not a straight axis.  The stored components are
+            # the physical ones, as everywhere else: the solver's
+            # metric weight `$h u_s$` is undone at the basis boundary.
+            components = ("u_s", "u_r", "u_theta")
         else:
             components = ("u_z", "u_r", "u_theta")
         # Azimuthal length is the wedge extent lz = 2*pi/m0 (m0 = 1 full
@@ -253,7 +259,7 @@ def geometry_info(params: Namespace) -> GeometryInfo:
             family=family,
             walled=True,
             kind=("grid", "complex", "real"),
-            name=("r", "theta", "z"),
+            name=("r", "theta", "s" if system == "curved-pipe" else "z"),
             n=(ny, nz, nx),
             length=(None, lz, lx),
             components=components,

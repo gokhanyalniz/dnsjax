@@ -13,6 +13,12 @@ exports the stepping surface. Nothing else is edited: the
 and the analysis package's geometry sets all derive from the registry
 and extend themselves.
 
+That is the count for a flow that reuses an existing geometry. A flow
+that brings its own *metric* adds a third file — the geometry module —
+and, if it renames a component or an axis, one branch in the analysis
+package's schema: the curved pipe is the worked example, and its
+`cylindrical_curved.py` docstring is written to be read as one.
+
 A spec is plain data plus pure-Python hooks. It declares which shared
 parameter fields apply to the flow, the public names of any aliased
 ones (`nr` for the internal `res.ny`, and so on), per-flow default

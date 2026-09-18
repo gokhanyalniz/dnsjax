@@ -234,6 +234,30 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # The toroidal pipe: the same cylindrical stepping with a
+        # metric, driving the full curvature path -- the pointwise
+        # metric factors in the RHS and the O(kappa) defect in the
+        # continuity rows -- through the CLI on a nonlinear field.  A
+        # *total*-field flow, so its ``E'`` is the k_s != 0 energy and
+        # the run starts from the straight-pipe profile plus the random
+        # perturbation.  Curvature 0.3 rather than the shipped 0.037:
+        # the terms under test scale with it, and the corrector's
+        # contraction (~kappa) is worth exercising away from zero.
+        # Correctness lives in test_curved_pipe.py; this is the
+        # integration gate.
+        "name": "curved-pipe",
+        "args": [
+            "--phys.system",
+            "curved-pipe",
+            "--phys.re",
+            "1800",
+            "--geo.curvature",
+            "0.3",
+            "--geo.lz",
+            "5",
+        ],
+    },
+    {
         # Also stands in for quasi-keplerian: since the TC/QK dedup
         # (_circular_couette.py) the two share the stepping machinery;
         # the QK-specific parameter derivation and the wedge Fourier +
@@ -996,6 +1020,7 @@ def _build_command(
         s in system["args"]
         for s in (
             "pipe",
+            "curved-pipe",
             "viscoelastic-pipe",
             "taylor-couette",
             "quasi-keplerian",

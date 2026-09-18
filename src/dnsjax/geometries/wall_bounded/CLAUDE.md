@@ -10,7 +10,18 @@
 - `cylindrical.py`: cylindrical geometry (Fourier, radial CGL grid,
   `CylindricalFlow`, decoupled u+/u- formulation, parity-reduced FD,
   1x1 IMM on the default spin quad, `interpolate_to_axis` r=0
-  evaluation)
+  evaluation) -- the *geometry*; its stepping lives next door
+- `_cylindrical_stepping.py`: the cylindrical stepping functions
+  (pseudo-spectral RHS, FFT-free `_l_bf`, the `u_r`-`omega_r` IMM pass,
+  predict/correct/norm, the stepper factory), written once against a
+  **metric adapter surface** its docstring tabulates and shared by the
+  straight and curved pipes.  Imports neither geometry
+- `cylindrical_curved.py`: the curved (toroidal, zero-torsion) pipe --
+  `CurvedCylindricalFlow(CylindricalFlow)` plus the curved half of that
+  adapter.  The carried variable `w = (h u_s, u_r, u_theta)`, the four
+  identities that keep the influence-matrix pass the straight pipe's,
+  the `m+-1` shift behind `chi = r cos(theta)`, and the driving: its
+  module docstring
 - `annular.py`: annular geometry / concentric cylinders (Fourier, CGL
   grid on `[r1, r2]`, `AnnularFlow`, decoupled u+/u- formulation, 2x2
   IMM on the default (u_r, omega_r) pair, optional mean-mode azimuthal
@@ -266,6 +277,10 @@ its docstring and the `fd.py` interpolation docstrings.
 - `plane_poiseuille.py`: PlanePoiseuilleFlow(CartesianFlow) --
   `Us = 1 - y^2` with tilt.
 - `pipe.py`: PipeFlow(CylindricalFlow) -- `Uz = 1 - r^2`.
+- `curved_pipe.py`: CurvedPipeFlow(CurvedCylindricalFlow) -- toroidal
+  pipe, **total** field, uniform `-Pi` driving.  `E'` is the
+  `k_s != 0` energy, not a deviation from a laminar profile: there is
+  no closed-form one (the laminar state is the 2D Dean solution).
 - `taylor_couette.py`: circular-Couette `Uθ = A0 r + B0/r` from
   `(re1, re2, eta)` -- a thin binding of the shared
   `flows/wall_bounded/_circular_couette.py`
@@ -282,7 +297,8 @@ its docstring and the `fd.py` interpolation docstrings.
   -- force-driven sPTT Dean, 9-component **total** field.
 
 **Transient-growth hook**: each base-flow flow (all except the
-total-field dean/viscoelastic-dean/viscoelastic-pipe) exports
+total-field curved-pipe/dean/viscoelastic-dean/viscoelastic-pipe)
+exports
 `frozen_profile_flow(profile)`, used by
 `dnsjax.analysis.transient_growth` to linearise around an arbitrary
 wall-normal *total* profile via `_base.frozen_profile_flow` (operators
@@ -297,3 +313,35 @@ Per-geometry operator suites (`test_cartesian` / `test_cylindrical` /
 the solver, stepping, continuity, budget, IC and transient-growth
 guards that reach this directory. One-liners in the root CLAUDE.md
 Tests section; what each covers is in its own module docstring.
+
+### Curvature (the toroidal pipe)
+
+`geo.curvature` (`kappa = a/R_c`, 0 = straight) turns `cylindrical.py`'s
+geometry into a toroidal one **without touching a single operator**:
+the four identities in the `cylindrical_curved.py` docstring show that
+carrying `w = (h u_s, u_r, u_theta)` leaves the curl, the pressure
+projection, the four Helmholtz solves, the spin quad, the parity
+classes, the `L_v,mod` recovery and the 1x1 influence matrix exactly
+the straight pipe's.  Curvature survives in two places only:
+
+- the **explicit RHS**, as pointwise metric factors on the
+  physical-space fields (`to_physical` / `metric_rhs`, via the
+  `extra_spec_fn` / `to_physical_fn` / `metric_rhs_fn` hooks of
+  `rhs.get_nonlin` -- the same site that hosts `measure_fn`, for the
+  same reason: it is where the physical-space fields exist);
+- the **continuity rows**, through one `O(kappa)` scalar
+  (`divergence_defect`) entering the `Phi` definition, the
+  `L_v,mod` recovery, the reconstruction's `chi` and the `(0,0)` radial
+  velocity -- always on the corrector **iterate**.
+
+Two properties are measured, not assumed, and both have guards in
+`tests/test_curved_pipe.py`: the corrector contracts at `~kappa`
+(so continuity holds to `step.corrector_tolerance` rather than to
+machine epsilon, unlike the straight pipe's), and `kappa = 0`
+reproduces `pipe` to `1e-15` through five nonlinear steps.
+
+**Any source added to the `L_v,mod` solve must be zeroed on the wall
+row.** `Lk_op` carries a Dirichlet identity row there, so whatever the
+RHS holds *is* `u_r|wall`; leaving the defect in imposes a nonzero wall
+velocity and the corrector stops converging above `kappa ~ 0.02`.  The
+same applies to any future curved term reaching that solve.

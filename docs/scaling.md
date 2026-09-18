@@ -3,7 +3,7 @@
 How `dnsjax` lays its data out, what a configuration costs in memory,
 and how the work is split across devices. Everything here is
 independent of the flow — the geometry sets the meaning of each axis,
-and the device grid is chosen the same way for all nine systems.
+and the device grid is chosen the same way for all ten systems.
 
 Start at the [README](../README.md) for the solver itself.
 
@@ -29,10 +29,13 @@ the default backends:
   (for the wall-bounded systems its allocated peak still matches the
   default scheme's, whose corrector branch XLA keeps reserved); the
   total-field systems — Dean, viscoelastic Dean, viscoelastic pipe —
-  keep one extra state-sized laminar reference.
+  keep one extra state-sized laminar reference (the curved pipe keeps
+  none: it has no closed-form laminar state to hold).
 - **Nonlinear term, every step** — the rotational form inverse-transforms a
   6-field batch (velocity + vorticity) to the oversampled grid, multiplies
-  pointwise, and forward-transforms the 3 product fields. Counting the held
+  pointwise, and forward-transforms the 3 product fields (the curved
+  pipe sends 8: its curvature terms ride the same batch rather than
+  paying for transforms of their own). Counting the held
   fields, the products, and the one to two batch-sized intermediates inside
   the transforms, the working set is $W \approx 15\text{–}21$ oversampled
   fields; each oversampled field is $(3/2)^2 = 2.25$ fields for

@@ -12,7 +12,7 @@ of the 3D incompressible Navier–Stokes equations, written in
 Periodic directions are **pseudo-spectral** (Fourier); up to one
 wall-bounded direction uses **banded finite differences**, where an
 **influence-matrix method** reconciles incompressibility with the wall
-boundary conditions. Nine flow systems
+boundary conditions. Ten flow systems
 across four geometries share one stepping core. The same code works on a **CPU, GPU or TPU**,
 and distributes across many.
 
@@ -53,8 +53,8 @@ plane by itself.</a>
   double or single precision, all from the same code path; wall-normal
   solves go through a custom Pallas/Triton banded-LU kernel on GPUs.
 - **Machine-precision discrete incompressibility, by default** - a
-  stepped state's divergence sits at round-off *at any resolution*, with less operator storage than in a primitive-variable formulation (also available as an option).
-- **Nine flow systems across four geometries** all on one stepping core (two nine-component viscoelastic (sPTT) flows included.)
+  stepped state's divergence sits at round-off *at any resolution*, with less operator storage than in a primitive-variable formulation (also available as an option). The one exception is the toroidal pipe, whose metric couples azimuthal modes: there the constraint holds at the corrector's fixed point, hence to the corrector tolerance.
+- **Ten flow systems across four geometries** all on one stepping core (two nine-component viscoelastic (sPTT) flows included.)
 - **Three analyses built on the solver itself** - non-modal optimal
   growth, lockstep twin runs for perturbation growth, and three
   interchangeable routes from a turbulent run to a data-driven linear
@@ -107,6 +107,7 @@ For a walkthrough of more flags, the four start modes (from a snapshot file, ran
 | Flow | Geometry | Laminar base / driving | Defining controls |
 |---|---|---|---|
 | **Pipe** | cylindrical | $U_z = 1 - r^2$, pressure-driven | `re`, axial length `lz` |
+| **Curved Pipe** | cylindrical (toroidal) | uniform body force on a pipe bent onto a circle, total field; no closed-form laminar state | `re`, `curvature`, `lz` |
 | **Viscoelastic Pipe** | cylindrical (sPTT) | pressure-driven, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `lz` |
 | **Taylor–Couette** | annular | $U_\theta = A_0 r + B_0/r$, wall rotation | `re1`, `re2`, `eta`, `lz` |
 | **Quasi-Keplerian** | annular | $U_\theta = A_0 r + B_0/r$, Rayleigh-stable co-rotation | `re1`, `r_omega`, `eta`, `lz` |

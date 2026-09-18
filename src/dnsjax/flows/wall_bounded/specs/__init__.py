@@ -1,5 +1,6 @@
 r"""Wall-bounded flow parameter specs (JAX-free)."""
 
+from .curved_pipe import SPEC as CURVED_PIPE
 from .dean import SPEC as DEAN
 from .pipe import SPEC as PIPE
 from .plane_couette import SPEC as PLANE_COUETTE
@@ -13,6 +14,7 @@ SPECS = (
     PLANE_COUETTE,
     PLANE_POISEUILLE,
     PIPE,
+    CURVED_PIPE,
     VISCOELASTIC_PIPE,
     TAYLOR_COUETTE,
     QUASI_KEPLERIAN,

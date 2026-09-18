@@ -906,6 +906,47 @@ def add_dean_laminar(state: Array) -> Array:
     return state + laminar
 
 
+def add_curved_pipe_laminar(state: Array) -> Array:
+    r"""Add the straight-pipe profile to a curved-pipe perturbation.
+
+    The curved pipe integrates the **total** velocity, and has no
+    closed-form laminar state to start from -- its laminar solution is
+    the two-dimensional Dean-vortex flow, which is numerical.  The
+    start is therefore the `$\kappa = 0$` profile `$u_s = 1 - r^2$`,
+    at the mean mode, plus the random perturbation; the flow relaxes
+    from there on a viscous timescale.
+
+    Two properties of that perturbation are worth naming.  It is
+    axisymmetric and vanishes at the wall, so no-slip survives.  But it
+    is divergence-free with respect to the **straight** cylindrical
+    divergence, not the toroidal one, so it starts `$O(\kappa)$` off
+    the constraint -- which costs nothing: the reconstruction rebuilds
+    the tangential pair from continuity on the very first step, so the
+    state is exactly constraint-satisfying from `$t = t_0 + \Delta t$`
+    onwards.
+    """
+    from jax import numpy as jnp
+
+    from ..geometries.wall_bounded.cylindrical import (
+        build_cylindrical_grid,
+        fourier,
+    )
+    from ..sharding import sharding
+
+    rs, *_ = build_cylindrical_grid(
+        params.res.ny,
+        params.res.fd_order,
+        params.geo.wall_grid,
+        params.geo.grid_type,
+        params.geo.grid_stretch,
+    )
+    profile = 1.0 - rs**2
+    u_spec = jnp.where(fourier.mean_mask, profile[:, None, None], 0.0)
+    zeros = jnp.zeros_like(u_spec, dtype=sharding.complex_type)
+    laminar = jnp.stack([u_spec.astype(sharding.complex_type), zeros, zeros])
+    return state + laminar
+
+
 # Viscoelastic conformation noise: every physical tensor
 # component (c_zz, c_rz, c_theta_z, c_rr, c_theta_theta, c_r_theta) is
 # the transform of a real field, so its draws use the same
@@ -1484,9 +1525,12 @@ def generate_random_state(
             seed,
         )
     if system in cylindrical_systems:
-        return generate_cylindrical(
+        state = generate_cylindrical(
             amplitude, smoothness, wall_smoothness, wall_confinement, seed
         )
+        if system == "curved-pipe":
+            state = add_curved_pipe_laminar(state)
+        return state
     if system in annular_systems:
         state = generate_annular(
             amplitude, smoothness, wall_smoothness, wall_confinement, seed
