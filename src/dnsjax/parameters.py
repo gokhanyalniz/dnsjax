@@ -1188,11 +1188,13 @@ class Outputs(BaseModel):
     # Between checks the host enqueues steps ahead of the device (JAX
     # async dispatch); corrector divergence is therefore detected up
     # to ``it_error_check`` steps late, each late step bounded by
-    # ``max_corrector_iterations``.  1 restores a per-step check (and
-    # a per-step host-device sync).  Also the cadence of the
-    # non-finite (NaN/inf) guard on the synced corrector error and
-    # perturbation energy (a hit aborts the run with exit code 3; the
-    # ``__main__`` module docstring documents the full guard).
+    # ``max_corrector_iterations`` -- late but never missed, since the
+    # check reads the running maximum since the previous one.  1
+    # restores a per-step check (and a per-step host-device sync).
+    # Also the cadence of the non-finite (NaN/inf) guard on the synced
+    # corrector error and perturbation energy (a hit aborts the run
+    # with exit code 3; the ``__main__`` module docstring documents the
+    # full guard).
     it_error_check: int = Field(
         ge=1,
         default=10,
