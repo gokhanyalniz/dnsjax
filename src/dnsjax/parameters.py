@@ -2538,12 +2538,16 @@ def round_up_padded_smooth(n_padded: int, divisor: int) -> int:
 
 
 def _rounding_note(
-    name: str, old: int, new: int, divisor: int, axis: str
+    name: str, old: int, new: int, divisor: int, why: str
 ) -> str:
-    """Compose the startup-diagnostic line for one padded-size bump."""
+    """Compose the startup-diagnostic line for one padded-size bump.
+
+    *why* names the divisibility requirement (``"np1 divisibility"``,
+    ``"even real-FFT length"``), reported when *old* violated it.
+    """
     reasons = []
     if old % max(divisor, 1) != 0:
-        reasons.append(f"{axis} divisibility")
+        reasons.append(why)
     if not is_fft_smooth(old) and is_fft_smooth(new):
         reasons.append("FFT-friendly size")
     return f"{name} rounded from {old} to {new} ({', '.join(reasons)})."
@@ -2576,11 +2580,18 @@ class PaddedResolution:
         ``nz_padded`` and the periodic ``ny_padded`` to 7-smooth
         multiples of the mesh direction that shards them (``np1`` for
         `$z$`, ``np0`` for `$y$`), and ``nx_padded`` (the real-FFT
-        axis, never sharded in physical space -- divisor 1) to the
-        next 7-smooth length.  Both roundings insert only zero
-        (dealiased) modes, so they are physically neutral; smoothness
-        keeps every transform on the fast radix-2/3/5/7 kernels
-        regardless of the base resolution.  Idempotent; re-applied at
+        axis, never sharded in physical space) to the next **even**
+        7-smooth length.  Even because an inverse real FFT returns an
+        even length unless told otherwise: the natural
+        ``3 * nx // 2`` is odd whenever ``nx % 4 == 2``, and an odd
+        ``nx_padded`` would leave a physical grid one point shorter
+        than every consumer reads it as, and smooth-round the wrong
+        length (``nx = 22`` would report 35 and transform 34 =
+        2 * 17); :mod:`dnsjax.fft` passes the length explicitly as
+        well.  Every rounding inserts only zero (dealiased) modes, so
+        it is physically neutral; smoothness keeps every transform on
+        the fast radix-2/3/5/7 kernels regardless of the base
+        resolution.  Idempotent; re-applied at
         :mod:`dnsjax.sharding` import for entry points that set
         ``params.dist`` after (or without)
         :meth:`set_padded_resolution`.  Each adjustment appends a
@@ -2590,10 +2601,16 @@ class PaddedResolution:
         np0 = parameters.dist.np0
         np1 = parameters.dist.np1
 
-        nx_new = round_up_padded_smooth(self.nx_padded, 1)
+        nx_new = round_up_padded_smooth(self.nx_padded, 2)
         if nx_new != self.nx_padded:
             self.notes.append(
-                _rounding_note("nx_padded", self.nx_padded, nx_new, 1, "")
+                _rounding_note(
+                    "nx_padded",
+                    self.nx_padded,
+                    nx_new,
+                    2,
+                    "even real-FFT length",
+                )
             )
             self.nx_padded = nx_new
         if self.ny_padded is not None:
@@ -2601,14 +2618,24 @@ class PaddedResolution:
             if ny_new != self.ny_padded:
                 self.notes.append(
                     _rounding_note(
-                        "ny_padded", self.ny_padded, ny_new, np0, "np0"
+                        "ny_padded",
+                        self.ny_padded,
+                        ny_new,
+                        np0,
+                        "np0 divisibility",
                     )
                 )
                 self.ny_padded = ny_new
         nz_new = round_up_padded_smooth(self.nz_padded, np1)
         if nz_new != self.nz_padded:
             self.notes.append(
-                _rounding_note("nz_padded", self.nz_padded, nz_new, np1, "np1")
+                _rounding_note(
+                    "nz_padded",
+                    self.nz_padded,
+                    nz_new,
+                    np1,
+                    "np1 divisibility",
+                )
             )
             self.nz_padded = nz_new
 
@@ -2620,8 +2647,8 @@ class PaddedResolution:
         their wall-normal direction is FD, not Fourier);
         :meth:`apply_rounding` then rounds every
         FFT axis up to a mesh-divisible, FFT-friendly 7-smooth length
-        (``nx_padded`` is exempt from the divisibility part only:
-        real-FFT axis, never sharded in physical space).
+        (``nx_padded``, the real-FFT axis, is never sharded in physical
+        space and is rounded to an even length instead).
         """
         self.notes = []
 
