@@ -58,6 +58,11 @@ class ProbesParams(BaseModel):
     writer makes any cadence cheap at runtime.  Format, buffering,
     and the reader: the :mod:`dnsjax.extensions.probes` and
     :mod:`dnsjax.analysis.response.probes` docstrings.
+
+    On ``curved-pipe`` component 0 is the solver's carried streamwise
+    variable `$w_s = h\,u_s$` (`$h = 1 + \kappa r\cos\theta$`), not
+    `$u_s$`: `$1/h$` couples every azimuthal mode, so no single mode
+    column converts exactly.  The sidecar keeps the cylindrical label.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -107,7 +112,9 @@ class ForceParams(BaseModel):
     ``to_pm_basis`` and has no ``to_spin_basis`` counterpart (unlike
     the probe extractor, which does).  The conjugate partner itself is
     basis-agnostic -- a plain conjugate of a physical profile, valid
-    for any component count.  The whole section is
+    for any component count.  On ``curved-pipe`` a kick's component-0
+    profile lands on the carried `$w_s = h\,u_s$` -- the column a
+    probe records there -- not on `$u_s$`.  The whole section is
     **trajectory-defining**: resuming
     with changed forcing starts a new trajectory (like a ``phys``
     change).

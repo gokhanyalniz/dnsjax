@@ -61,8 +61,9 @@ a **cubic** in `$y$` -- while the mean mode's own conservation laws
 be a different function, not a scaled roll.  So the mode stays zero
 whatever ``init.random_mean_flow`` is set to: the `$(k_x, k_z) =
 (0, 0)$` mode of every component is **identically zero**, and a spot
-never changes the field's bulk velocity or wall shear (the Dean
-laminar profile is the only mean-mode content, added separately).  Two
+never changes the field's bulk velocity or wall shear (the
+total-field flows' laminar profiles are the only mean-mode content,
+added separately).  Two
 independent mechanisms give that, one per component of each
 streamfunction pair:
 
@@ -85,7 +86,7 @@ a `$y$` profile, and the *first* mechanism alone settles it on both
 components at once (`$u_z$`'s `$\mathrm{i}k_y$` is a spectral derivative
 there too), so the second is kept only for parity and for the host-side
 peak.  The pipe would need neither in exact arithmetic -- its
-azimuthal factors are exactly one `$m = \pm 1$` period and its `$u_z$`
+azimuthal factors are exactly one period over the wedge and its `$u_z$`
 is identically zero -- but its DC bins are round-off rather than zero,
 so they are zeroed too.  Removing a roll factor's mean cannot disturb the
 discrete divergence: on the affected `$k = 0$` plane the component's own
@@ -429,20 +430,30 @@ def generate_cylindrical_rolls(
     r"""Axially-localized puff for pipe flow (`$\lambda$` unused).
 
     Components `$(u_z, u_r, u_\theta)$`, axes `$[r, m, k_z]$`.  The
-    azimuthal cross-section is the `$m = \pm 1$` roll pair (filling the
-    pipe, fixed `$2\pi$` -- so no spanwise blow-up); axial `$z$` (real
-    `$k_z$` axis) carries a fixed-width localization `$X(z)$`.  The
-    reference cross-plane roll (`$g = (1 - r^2)^2$`):
+    azimuthal cross-section is the lowest roll pair the domain holds,
+    `$m = \pm m_0$` (one period over the wedge; `$\pm 1$` on the full
+    circle, ``geo.m0 = 1``) -- it fills the pipe at a fixed azimuthal
+    period, so no spanwise blow-up -- and axial `$z$` (real `$k_z$`
+    axis) carries a fixed-width localization `$X(z)$`.  With
+    `$g = (1 - r^2)^2$` and the streamfunction
+    `$\psi = -r^{m_0} g \cos(m_0\theta)/m_0$`:
 
     .. math::
-        u_r &= g \otimes \sin(m) \otimes \hat X \\
-        u_\theta &= (g + r g') \otimes \cos(m) \otimes \hat X \\
-        u_z &= 0
+        u_r &= r^{m_0 - 1} g \otimes \sin(m_0\theta) \otimes \hat X
+        \\
+        u_\theta &= r^{m_0 - 1}\bigl(g + r g'/m_0\bigr) \otimes
+            \cos(m_0\theta) \otimes \hat X \\
+        u_z &= 0 .
 
-    with `$g + r g' = (1 - r^2)(1 - 5 r^2)$`.  Both radial profiles
+    The `$r^{m_0 - 1}$` factor is the regularity a mode `$m$` needs at
+    the axis (`$u_r, u_\theta \sim r^{|m| - 1}$`), and it puts both
+    profiles in the `$(-1)^{m+1}$` parity class the solver's
+    parity-reduced operators assume; the `$1/m_0$` is what keeps the
+    pair solenoidal at any `$m_0$`.  At `$m_0 = 1$` this is the familiar
+    `$(g,\; g + r g') = (g,\; (1 - r^2)(1 - 5 r^2))$`.  Both profiles
     vanish at the wall `$r = 1$`; the field is peak-normalized so
     `$\max|\mathbf{u}'| = A$`.  ``wavelength`` is ignored (the
-    azimuthal structure is the fixed `$m = \pm 1$` mode).
+    azimuthal structure is fixed by the domain).
     """
     from jax import numpy as jnp
 
@@ -461,25 +472,31 @@ def generate_cylindrical_rolls(
     derived_params.wall_normal_grid = [float(v) for v in np.asarray(rs)]
 
     rs_np = np.asarray(rs)
-    g = (1.0 - rs_np**2) ** 2  # peak 1; zero at the wall r = 1
-    g_r = (1.0 - rs_np**2) * (1.0 - 5.0 * rs_np**2)  # g + r g'; zero at r=1
+    m0 = params.geo.m0
+    axis = rs_np ** (m0 - 1)  # regularity at the axis for m = m0
+    g = (1.0 - rs_np**2) ** 2  # zero with its derivative at r = 1
+    g_prime = -4.0 * rs_np * (1.0 - rs_np**2)
+    p_r = axis * g
+    p_theta = axis * (g + rs_np * g_prime / m0)  # zero at r = 1
 
-    sin_m = _sin_signal(nz)  # azimuthal m = +-1
+    sin_m = _sin_signal(nz)  # one period over the wedge: m = +-m0
     cos_m = _cos_signal(nz)
     x_sig = _envelope(nx, width, lx)  # axial localization
     x_spec = _real_axis_spectrum(x_sig)
 
-    # ``_zero_dc``: one exact ``m = +-1`` period already leaves only a
+    # ``_zero_dc``: one exact ``m = +-m0`` period already leaves only a
     # round-off DC bin, but "the spot does not move the bulk velocity"
     # is an exact statement here as in the other two geometries.
-    u_r = _separable_scalar(g, _zero_dc(_complex_axis_spectrum(sin_m)), x_spec)
+    u_r = _separable_scalar(
+        p_r, _zero_dc(_complex_axis_spectrum(sin_m)), x_spec
+    )
     u_theta = _separable_scalar(
-        g_r, _zero_dc(_complex_axis_spectrum(cos_m)), x_spec
+        p_theta, _zero_dc(_complex_axis_spectrum(cos_m)), x_spec
     )
     u_z = jnp.zeros_like(u_r)
     state = jnp.stack([u_z, u_r, u_theta]).astype(sharding.complex_type)
 
-    peak = _peak_velocity([(g, sin_m, x_sig), (g_r, cos_m, x_sig)])
+    peak = _peak_velocity([(p_r, sin_m, x_sig), (p_theta, cos_m, x_sig)])
     return state * (amplitude / peak)
 
 
@@ -662,11 +679,15 @@ def generate_localized_rolls(
     perturbation is a fixed-physical localized spot with
     `$\max|\mathbf{u}'| =$` *amplitude*; *width* is the physical
     localization half-width (flow units) and *wavelength* the cross-roll
-    spanwise wavelength (ignored by the pipe, whose cross-section is the
-    fixed `$m = \pm 1$` mode).  For the total-field Dean flow the
-    analytical laminar profile is added to the perturbation (reusing
-    :func:`dnsjax.ic.random_field.add_dean_laminar`); every other
-    system returns the perturbation directly.  The triply-periodic
+    spanwise wavelength (ignored by the pipe family, whose cross-section
+    is the lowest azimuthal mode the domain holds).  The total-field
+    flows get their laminar profile added to the perturbation, reusing
+    the random field's helpers: Dean
+    (:func:`~dnsjax.ic.random_field.add_dean_laminar`), the curved pipe
+    (:func:`~dnsjax.ic.random_field.add_curved_pipe_laminar`, the
+    `$\kappa = 0$` profile its docstring explains) and both
+    viscoelastic flows, which also get the laminar conformation.  Every
+    other system returns the perturbation directly.  The triply-periodic
     family has no wall-normal direction and takes
     :func:`generate_periodic_rolls`, whose `$y$` factor is a
     localization rather than a wall profile.
@@ -697,7 +718,12 @@ def generate_localized_rolls(
             generate_cylindrical_rolls(amplitude, width, wavelength)
         )
     if system in cylindrical_systems:
-        return generate_cylindrical_rolls(amplitude, width, wavelength)
+        state = generate_cylindrical_rolls(amplitude, width, wavelength)
+        if system == "curved-pipe":
+            from .random_field import add_curved_pipe_laminar
+
+            state = add_curved_pipe_laminar(state)
+        return state
     if system in annular_systems:
         state = generate_annular_rolls(amplitude, width, wavelength)
         if system == "dean":

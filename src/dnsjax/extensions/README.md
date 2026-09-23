@@ -34,6 +34,11 @@ mean mode `0,0` **is** allowed: its record is the instantaneous mean
 profile of the perturbation, and adding the closed-form laminar profile
 recovers the total mean (the reader does this for you).
 
+On `curved-pipe` the component-0 profile is the solver's carried
+streamwise variable $w_s = h\,u_s$ with $h = 1 + \kappa r\cos\theta$,
+not $u_s$: $1/h$ couples every azimuthal mode, so no single mode
+column converts exactly (the label stays the cylindrical `u_z`).
+
 **Why a separate stream.** A mode time series wants $10^5$ to $10^6$
 samples. A snapshot per sample is some three orders of magnitude more
 bytes, and the scalar `.dat` streams cannot hold a complex per-$y$
@@ -89,7 +94,9 @@ those modes. The drawn coefficients stream to `forcing.bin`.
 
 The section is **all-or-none**: `modes`, `profiles`, `amplitude` and
 `it_force` are set together or not at all. Wall-bounded,
-non-viscoelastic systems only. It is **trajectory-defining** — kicks
+non-viscoelastic systems only; on `curved-pipe` a component-0 profile
+is added to the carried $w_s = h\,u_s$ (the column `[probes]` records
+there), not to $u_s$. It is **trajectory-defining** — kicks
 alter the dynamics exactly as a `phys` change does, so resuming with
 changed forcing starts a new trajectory unless `init.force_resume`.
 

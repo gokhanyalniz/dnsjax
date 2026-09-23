@@ -100,6 +100,8 @@ SYSTEMS = [
     "plane-couette",
     "plane-poiseuille",
     "pipe",
+    "pipe-wedge",
+    "curved-pipe",
     "taylor-couette",
     "dean",
     "viscoelastic-dean",
@@ -114,6 +116,14 @@ SYSTEMS = [
 # ``viscoelastic-pipe`` additionally runs the full rolls half, so the
 # 9-component rolls path is covered there.
 RANDOM_ONLY = ["viscoelastic-dean"]
+
+# Cases that are a flow at a non-default azimuthal wedge (``geo.m0``),
+# ``name -> (system, m0)``: the pipe rolls' azimuthal factor is one
+# period over the wedge, i.e. the physical ``m = m0``, and their radial
+# profiles must follow it for the field to stay solenoidal and
+# axis-regular (``generate_cylindrical_rolls``) -- which the divergence
+# check below measures with the physical ``m``.
+WEDGE_CASES = {"pipe-wedge": ("pipe", 2)}
 
 # Configurations (np0, np1) to build at; (1, 1) is the reference.
 CONFIGS = [(1, 1), (1, 2), (2, 1)]
@@ -183,8 +193,11 @@ def _configure(system: str, np0: int, np1: int) -> None:
         update_parameters,
     )
 
+    system, m0 = WEDGE_CASES.get(system, (system, 1))
     phys: dict = {"system": system, "re": 100.0}
     geo: dict = {"lx": LX, "lz": LZ}
+    if m0 != 1:
+        geo["m0"] = m0
     if system == "taylor-couette":
         phys.update(re1=100.0, re2=-100.0)
         geo["eta"] = 0.5
@@ -318,6 +331,8 @@ def _run_worker(system: str, np0: int, np1: int, out_npy: str) -> int:
 
     from dnsjax.parameters import params
 
+    # A ``WEDGE_CASES`` name resolves to its flow for every check below.
+    system = params.phys.system
     nx, ny, nz = params.res.nx, params.res.ny, params.res.nz
     passed = failed = 0
 

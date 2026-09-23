@@ -11,7 +11,9 @@ keeping the run's full forcing history available to any offline
 analysis.  E.g. cross-correlating the probe stream against it
 identifies the mode's linear operator without any hypothesis on the
 turbulent background (:mod:`dnsjax.analysis.response.ssi`, which
-also holds the JAX-free reader).
+also holds the JAX-free reader).  On ``curved-pipe`` the component-0
+profile is added to the carried `$w_s = h\,u_s$`, not to `$u_s$`
+(:class:`dnsjax.extensions.ForceParams`).
 
 Why kicks, not a body-force term
 ================================
