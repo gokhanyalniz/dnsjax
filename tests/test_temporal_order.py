@@ -11,13 +11,12 @@ so a ``dt`` sweep needs a subprocess per value):
   projection is algebraically exact there and the triply-periodic
   cnab2 step has *no corrector*, so cnab2 self-convergence against a
   fine-``dt`` cnab2 reference is floor-free and falls at a clean
-  slope 2 under ``dt`` halving.  Iterative-CN runs at the largest
-  and smallest ``dt`` are compared against the same reference to pin
-  that both schemes converge to the *same* limit (same equation),
-  which upgrades the self-convergence into an absolute-order
-  statement; icn's error there is floor-dominated and first order
-  (below), so the check is a ceiling plus ~linear decay, not
-  proximity to cnab2's own error.
+  slope 2 under ``dt`` halving.  Iterative-CN over the same ``dt``
+  ladder, measured against the *same* reference, must converge to it
+  at slope 2 as well (same equation), which upgrades the
+  self-convergence into an absolute-order statement, and with an
+  error no larger than cnab2's own (measured ~0.2x; orders 1.99 /
+  1.95).
 - **plane-Couette (wall-bounded), scheme-difference order**: both
   time-stepping schemes share the same IMM projection-splitting error,
   so the *difference* of their final states at matched ``dt`` isolates
@@ -52,31 +51,15 @@ so a ``dt`` sweep needs a subprocess per value):
 Corrector-bearing runs use a tight tolerance (``1e-9``) so
 fixed-point error does not pollute the truncation-error measurement,
 and every step **asserts** its corrector converged -- an unconverged
-corrector silently degrades a step to first order (exactly what an
-early version of this test measured on Kolmogorov: clean *order 1*).
-
-**Triply-periodic corrector floor (pre-existing).**  The
-triply-periodic iterative-CN corrector does not converge to machine
-precision: it stalls on a near-neutral direction (per-iteration rate
-~0.9995 while the bulk contracts at ~0.006/iteration) at a
-``dt^2``-scaled amplitude -- measured ``~0.02 dt^2`` at this config
-(``2.98e-7`` at ``dt = 0.004``), bit-identical on the pre-``optimize``
-``read_state`` branch, so it is a property of the algebraic
-projection/CN interplay, not a regression.  Accumulated over ``T/dt``
-steps (``O(T C dt)``) it dominates icn's global Kolmogorov error:
-measured ``4.97e-2`` at ``dt = 0.004`` vs ``1.38e-2`` at
-``dt = 0.001`` against the cnab2 reference -- *first-order* decay to
-the same limit, ~70x above cnab2's own error at ``dt = 0.004``.
-This is what produced the order-1 measurement above, and it is (part
-of) the known "Kolmogorov corrector stall" noted in
-``tests/test_random_smoke.py``.  The wall-bounded corrector has no
-such floor (converges to ``~5e-11`` in 4-5 iterations at these
-configs).  Hence: the Kolmogorov reference is corrector-free cnab2,
-the per-step assert uses a ``dt^2``-scaled threshold for
-Kolmogorov's corrector-bearing steps (the cnab2 self-start and the
-icn cross-check), and the icn cross-check asserts same-limit
-convergence (absolute ceiling + ~linear decay under a 4x ``dt``
-reduction), not proximity to cnab2's error.
+corrector silently degrades a step to first order.  That is exactly
+what the Kolmogorov icn cross-check once recorded: its error sat
+orders of magnitude above cnab2's and fell at order ~1, which this
+test attributed to a projection floor.  The cause was the
+triply-periodic corrector itself, whose incremental update re-added
+its increment on every pass after the first (fixed 2026-09; the
+direct form's rationale is on ``triply_periodic._correct_component``)
+-- so a Kolmogorov icn error well above cnab2's is now a regression,
+and asserted as one.
 
 cnab2 self-starts exactly like ``__main__``: prime the AB2 history
 with a discarded ``step_cnab2(copy(u0), zeros)`` call, take the first
@@ -153,9 +136,7 @@ WALL_SMOOTH, WALL_CONF = 0.4, 0.14
 # Fixed horizon; every dt below divides it exactly.
 T_END = 0.32
 # Kolmogorov (absolute order vs a fine-dt corrector-free cnab2
-# reference): dts sit below the known Kolmogorov iterative-CN
-# corrector-rate cap (~0.005; see the random-smoke SYSTEMS note) so
-# the icn cross-check and the cnab2 self-start step both converge.
+# reference).
 AMP_KOLM = 0.02
 DTS_KOLM = [0.004, 0.002, 0.001]
 DT_REF = 0.0001  # Kolmogorov cnab2 reference, 3200 steps
@@ -167,15 +148,16 @@ DTS_PC = [0.01, 0.005, 0.0025]
 DT_SELF_REF = 0.000625
 
 # Corrector setup: converge to TOL, assert every corrector-bearing
-# step reached TOL_ASSERT -- except Kolmogorov's, whose corrector
-# stalls at a pre-existing dt^2-scaled floor (~0.02 dt^2 here; see
-# the module docstring): its threshold is dt^2-scaled with margin.
+# step reached TOL_ASSERT.
 TOL = 1e-9
 TOL_ASSERT = 1e-7
-KOLM_FLOOR = 0.05  # * dt^2
 
 # Accepted slope band for order 2 (log2 error ratio per dt halving).
 ORDER_LO, ORDER_HI = 1.6, 2.4
+# Kolmogorov iterative-CN error bound, as a multiple of cnab2's at the
+# same dt (measured ~0.2x; the pre-fix corrector put it orders of
+# magnitude higher -- module docstring).
+KOLM_ICN_RATIO = 1.0
 
 STUDIES = [
     "kolmogorov",
@@ -309,14 +291,8 @@ def _worker(
         assert abs(n_steps * dt - T_END) < 1e-12
         seq = [dt] * n_steps
 
-    # Kolmogorov's corrector-bearing steps stall at the pre-existing
-    # dt^2-scaled floor (module docstring); its cnab2 steps have no
-    # corrector and report err = 0.
-    thresh = (
-        max(TOL_ASSERT, KOLM_FLOOR * dt * dt)
-        if system == "kolmogorov"
-        else TOL_ASSERT
-    )
+    # (Kolmogorov's cnab2 steps have no corrector and report err = 0.)
+    thresh = TOL_ASSERT
 
     def _converged(err, i: int) -> None:
         # An unconverged corrector silently degrades the temporal
@@ -545,26 +521,23 @@ def main() -> None:
                 _run("kolmogorov", "cnab2", dt, out)
                 errs.append(_err(out, ref))
             _check_orders(errs, "kolmogorov cnab2")
-            # Same-limit cross-check: iterative-CN must land on the
-            # same reference (same equation).  Its error here is the
-            # accumulated corrector floor -- first order in dt and
-            # ~70x cnab2's own error (module docstring) -- so assert
-            # an absolute ceiling plus ~linear decay under a 4x dt
-            # reduction (a wrong-equation offset would plateau).
+            # Same-limit cross-check: iterative-CN, measured against
+            # the *same* cnab2 reference, must converge to it at slope
+            # 2 too (same equation, both second order) -- which is
+            # what upgrades cnab2's self-convergence into an absolute
+            # order -- with an error of cnab2's own size, not a
+            # plateau (a wrong-equation offset) or a floor (a corrector
+            # that stops contracting; module docstring).
             e_icn = []
-            for dt in (DTS_KOLM[0], DTS_KOLM[-1]):
+            for dt in DTS_KOLM:
                 icn = tdir / f"kolm_icn_{dt}.npy"
                 _run("kolmogorov", "iterative-cn", dt, icn)
                 e_icn.append(_err(icn, ref))
-                print(f"kolmogorov icn@{dt}: {e_icn[-1]:.3e}")
-            assert e_icn[0] <= 0.2, (
-                f"iterative-cn far from the cnab2 limit: {e_icn[0]:.3e}"
-            )
-            ratio = e_icn[0] / e_icn[1]
-            assert 2.0 <= ratio <= 8.0, (
-                f"icn error not ~first-order toward the cnab2 "
-                f"limit: {e_icn[0]:.3e} -> {e_icn[1]:.3e} "
-                f"(ratio {ratio:.2f})"
+            _check_orders(e_icn, "kolmogorov icn")
+            worst = max(a / b for a, b in zip(e_icn, errs, strict=True))
+            assert worst <= KOLM_ICN_RATIO, (
+                f"iterative-cn error {worst:.2f}x cnab2's at matched dt "
+                f"(> {KOLM_ICN_RATIO}): icn {e_icn}, cnab2 {errs}"
             )
 
         if "plane-couette" in studies:
