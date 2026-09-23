@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 r"""Curved (toroidal) pipe guards (offline, subprocess per config).
 
-Six checks, cheapest first.  Each runs in its own subprocess because
+Seven checks, cheapest first.  Each runs in its own subprocess because
 the geometry singletons are captured at import, and `$\kappa$` is one
 of the things they capture.
 
@@ -56,6 +56,17 @@ of the things they capture.
     machine-eps by construction, here it holds at the corrector's fixed
     point, so the residual tracks ``step.corrector_tolerance`` -- which
     is what this check measures, over three decades of it.
+
+``driving``
+    Under ``constant_bulk_velocity`` the corrector *applies* the
+    mean-mode force each step, while ``get_driving`` *infers* it from a
+    state's `$(0,0)$` streamwise momentum balance -- the value the
+    ``t = t0`` row and every row's ``I`` carry.  The two must agree on
+    a steady Dean state, and they do only if the inference takes the
+    wall shear of the **carried** `$w_s = h\,u_s$` (whose poloidal
+    mean keeps the `$\cos\theta$` harmonic of the shear) rather than
+    the physical `$u_s$`: measured at the default `$\kappa$`, 6.8e-8
+    relative against 3.6e-4 for the physical-shear reading.
 
 ``dean``
     The physics, at a Dean number where it is unambiguous: the
@@ -531,6 +542,42 @@ def _check_dean(kappa: float) -> str:
     )
 
 
+#: Relative applied-vs-inferred driving bound on the relaxed state
+#: (module docstring: ~1e-7 when right, ~4e-4 at the default kappa for
+#: the physical-shear inference).
+DRIVING_TOL = 1e-5
+
+
+def _check_driving(kappa: float) -> str:
+    """Applied vs inferred mean-mode driving on a relaxed Dean state."""
+    _configure(
+        kappa,
+        phys={"re": 50.0, "u_grid": 0.0, "driving": "constant_bulk_velocity"},
+        res={"nx": 4, "ny": 24, "nz": 16},
+        step={"dt": 0.05, "corrector_tolerance": 1e-11},
+    )
+    from jax import numpy as jnp
+
+    import dnsjax.flows.wall_bounded.curved_pipe as cp
+
+    # From the straight-pipe profile to the steady Dean state: ~35
+    # viscous-relaxation units at this Re, after which the flux no
+    # longer drifts and the inference is exact up to the time
+    # discretization.
+    state = cp.to_solver_basis(cp.init_state())
+    for _ in range(700):
+        state, _err, _nc, aux = cp.predict_and_fully_correct(jnp.copy(state))
+    key = cp.flow.driving_key
+    applied = float(aux[key])
+    inferred = float(cp.get_driving(cp.from_solver_basis(state))[key])
+    rel = abs(inferred - applied) / abs(applied)
+    assert rel < DRIVING_TOL, (
+        f"inferred driving {inferred:.10e} vs applied {applied:.10e}: "
+        f"{rel:.2e} relative (> {DRIVING_TOL:.0e})"
+    )
+    return f"applied {applied:.8e}, inferred to {rel:.1e} relative"
+
+
 # ── driver ───────────────────────────────────────────────────────
 
 WORKERS = {
@@ -539,6 +586,7 @@ WORKERS = {
     "defect": lambda a: _check_defect(a.kappa),
     "straight": lambda a: _check_straight(a.kappa, a.out, a.system),
     "continuity": lambda a: _check_continuity(a.kappa, a.tol),
+    "driving": lambda a: _check_driving(a.kappa),
     "dean": lambda a: _check_dean(a.kappa),
 }
 
@@ -552,6 +600,7 @@ CASES: list[tuple[str, str, list[str]]] = [
     ("continuity @ 1e-12", "continuity", ["--tol", "1e-12"]),
     ("straight limit: pipe", "straight", ["--system", "pipe"]),
     ("straight limit: curved-pipe", "straight", ["--system", "curved-pipe"]),
+    ("applied vs inferred driving", "driving", []),
     ("Dean structure", "dean", []),
 ]
 

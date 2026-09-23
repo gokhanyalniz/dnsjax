@@ -1,8 +1,9 @@
 """Localized-rolls IC smoke tests: nonlinear integration.
 
 Starts each rolls-builder variant (kolmogorov for the triply-periodic
-builder, plane-couette for the Cartesian one, pipe, taylor-couette,
-dean) from the deterministic localized-rolls IC (the in-process
+builder, plane-couette for the Cartesian one, pipe, curved-pipe,
+taylor-couette, dean) from the deterministic localized-rolls IC (the
+in-process
 ``init.localized_rolls`` start mode, no snapshot file) at a
 transitional Reynolds number on a small domain, and integrates a short
 time (``t = 0.25``; the long-horizon integration of the same flows is
@@ -43,7 +44,7 @@ The whole standard suite at two devices via MPI::
 from __future__ import annotations
 
 import argparse
-import math
+import re
 import subprocess
 import sys
 import tempfile
@@ -62,10 +63,6 @@ sys.stdout.reconfigure(line_buffering=True)
 SYSTEMS: list[dict] = [
     {
         "name": "kolmogorov",
-        # The corrector contracts to the 1e-5 tolerance only for
-        # dt <~ 0.005 at this Re (see the test_random_smoke entry);
-        # the CFL is tiny, so this is a corrector-rate limit.
-        "max_dt": 0.005,
         "args": [
             "--phys.system",
             "kolmogorov",
@@ -123,6 +120,24 @@ SYSTEMS: list[dict] = [
             "1800",
             "--res.consistent_imm",
             "False",
+            "--geo.lz",
+            "5",
+        ],
+    },
+    {
+        # A total-field flow: the builder adds its laminar profile, so
+        # the first stats line (t = 0, before any step) must already
+        # carry the laminar flux -- a bare-rolls start would print 0
+        # there and leave the first bulk correction to supply it.
+        "name": "curved-pipe",
+        "expect_pattern": r"t = 0\.00 .*Ub_s=5\.000e-01",
+        "args": [
+            "--phys.system",
+            "curved-pipe",
+            "--phys.re",
+            "1800",
+            "--geo.curvature",
+            "0.3",
             "--geo.lz",
             "5",
         ],
@@ -203,6 +218,8 @@ def _build_command(
         s in system["args"]
         for s in (
             "pipe",
+            "curved-pipe",
+            "viscoelastic-pipe",
             "taylor-couette",
             "quasi-keplerian",
             "dean",
@@ -258,9 +275,13 @@ def _build_command(
 
 
 def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
-    """Run a single localized-rolls smoke test (in a fresh directory)."""
+    """Run a single localized-rolls smoke test (in a fresh directory).
+
+    An entry's optional ``expect_pattern`` is a regex the run's stdout
+    must match (the curved pipe's ``t = 0`` flux).
+    """
     name = system["name"]
-    dt = min(args.dt, system.get("max_dt", math.inf))
+    dt = args.dt
     cmd = _build_command(system, args, dt)
 
     with tempfile.TemporaryDirectory(prefix=f"rolls_{name}_") as workdir:
@@ -275,6 +296,9 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
             )
 
         summary = _check_run(result.stdout, name, args.max_sim_time, dt)
+        pattern = system.get("expect_pattern")
+        if pattern is not None and re.search(pattern, result.stdout) is None:
+            raise AssertionError(f"{name}: no match for {pattern!r}")
 
     print(f"  PASS  {name}  ({summary.strip()})")
 
