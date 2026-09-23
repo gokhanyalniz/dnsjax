@@ -40,8 +40,11 @@ Execution phases
    reached.  The corrector error and iteration counters stay on
    the device; the error is synced to the host only every
    ``outs.it_error_check`` steps so that JAX async dispatch can
-   pipeline steps (divergence is detected at most
-   ``it_error_check`` steps late).
+   pipeline steps.  What is synced is the device-side running
+   **maximum** of the error since the previous sync, so a step that
+   failed to converge between syncs is still seen -- divergence is
+   detected at most ``it_error_check`` steps late, never missed --
+   and the shutdown folds in the unsynced tail the same way.
 
 Diagnostics (``stats.dat``, ``steps.dat``, ``corrector.dat``,
 ``probes.bin``, ``forcing.bin``)
@@ -741,9 +744,13 @@ def run(wall_time_start: int) -> None:
     # Corrector counters stay on the device and accumulate lazily;
     # they are synced to the host only every ``it_error_check``
     # steps (error) or at shutdown (totals), so the host can keep
-    # enqueueing steps ahead of the device (JAX async dispatch).
+    # enqueueing steps ahead of the device (JAX async dispatch).  The
+    # error is carried as its running maximum since the last sync
+    # (``jnp.maximum`` also carries a NaN through), so the check
+    # judges every step in between rather than the one it lands on.
     it_error_check: int = params.outs.it_error_check
     c_sum = jnp.zeros((), dtype=jnp.int32)
+    err_max_dev = jnp.zeros((), dtype=sharding.float_type)
     c_first = None
     error_dev = None
     c_dev = None
@@ -1342,16 +1349,19 @@ def run(wall_time_start: int) -> None:
 
         # On-device accumulation (no host sync).
         c_sum = c_sum + c_dev
+        err_max_dev = jnp.maximum(err_max_dev, error_dev)
         if it == params.init.it0 + 1:
             c_first = c_dev
 
         if (it - params.init.it0) % it_error_check == 0:
-            # Periodic host sync for the convergence check.
-            last_error = float(error_dev)
+            # Periodic host sync for the convergence check: the largest
+            # error since the previous sync.
+            last_error = float(err_max_dev)
+            err_max_dev = jnp.zeros_like(err_max_dev)
             if not math.isfinite(last_error):
                 _abort_non_finite(
-                    f"non-finite corrector error ({last_error}) at "
-                    f"t = {t:.6e}, it = {it}"
+                    f"non-finite corrector error ({last_error}) in the "
+                    f"steps up to t = {t:.6e}, it = {it}"
                 )
 
             if check_laminarization:
@@ -1394,7 +1404,9 @@ def run(wall_time_start: int) -> None:
     # (this also waits for all in-flight steps to complete).
     n_steps: int = it - params.init.it0
     if n_steps > 0:
-        last_error = float(error_dev)
+        # The unsynced tail since the last check, folded into the
+        # verdict like any other interval (NaN-propagating).
+        last_error = float(jnp.maximum(err_max_dev, last_error))
         last_c = int(c_dev)
         c_tot = int(c_sum)
         c_first_int = int(c_first)
@@ -1408,14 +1420,16 @@ def run(wall_time_start: int) -> None:
             sharding.print(
                 f"Corrector ran its fixed "
                 f"{params.step.corrector_iterations} iterations; the "
-                f"final correction norm at t={t}, it={it} is "
-                f"{last_error:.3e}, above step.corrector_tolerance "
+                f"largest final correction norm in the steps up to "
+                f"t={t}, it={it} is {last_error:.3e}, above "
+                f"step.corrector_tolerance "
                 f"({params.step.corrector_tolerance:.3e})."
             )
         else:
             sharding.print(
-                f"Corrector failed to converge at t={t}, it={it}, "
-                f"c={last_c}, with error = {last_error:.3e}."
+                f"Corrector failed to converge in the steps up to "
+                f"t={t}, it={it}: max error {last_error:.3e} "
+                f"(c={last_c} on the last step)."
             )
 
     if laminarized:
@@ -1523,9 +1537,32 @@ def run(wall_time_start: int) -> None:
                 f"{wall_time_per_sim_time:.3e} s/t,",
                 f"{wall_time_per_rhs:.3e} s/rhs.",
             )
+        peak = _peak_device_bytes(jax)
+        if peak is not None:
+            sharding.print(
+                f"Peak device memory: {peak / 2**30:.2f} GiB "
+                "(largest over this process's devices)."
+            )
 
     # Flush any remaining buffered diagnostic rows.
     flush_all_buffers()
+
+
+def _peak_device_bytes(jax) -> int | None:
+    """Largest ``peak_bytes_in_use`` over this process's devices.
+
+    ``None`` where the backend keeps no allocator statistics (CPU), so
+    the closing summary prints the line only where it means something
+    (a GPU's allocator peak includes XLA's temporaries, which is the
+    number to size a run against).  Per process: a multi-process run
+    reports the main process's devices.
+    """
+    peaks = []
+    for device in jax.local_devices():
+        stats = device.memory_stats()
+        if stats and "peak_bytes_in_use" in stats:
+            peaks.append(int(stats["peak_bytes_in_use"]))
+    return max(peaks) if peaks else None
 
 
 def main(argv: list[str] | None = None) -> int:

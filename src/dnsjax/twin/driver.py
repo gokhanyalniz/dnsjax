@@ -1071,6 +1071,11 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
 
     it_error_check: int = params.outs.it_error_check
     c_sum = jnp.zeros((), dtype=jnp.int32)
+    # Running maxima of both states' corrector errors since the last
+    # host sync (:mod:`dnsjax.__main__`: a check judges every step in
+    # between, not only the one it lands on).
+    e1_max = jnp.zeros((), dtype=sharding.float_type)
+    e2_max = jnp.zeros((), dtype=sharding.float_type)
     e1_dev = None
     e2_dev = None
     c1_dev = None
@@ -1562,17 +1567,23 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         it += 1
 
         c_sum = c_sum + c1_dev + c2_dev
+        e1_max = jnp.maximum(e1_max, e1_dev)
+        e2_max = jnp.maximum(e2_max, e2_dev)
 
         if (it - it0) % it_error_check == 0:
-            # Periodic host sync: both states' corrector errors feed
-            # the convergence stop and the non-finite guard.
-            err1 = float(e1_dev)
-            err2 = float(e2_dev)
+            # Periodic host sync: both states' largest corrector errors
+            # since the previous sync feed the convergence stop and the
+            # non-finite guard.
+            err1 = float(e1_max)
+            err2 = float(e2_max)
+            e1_max = jnp.zeros_like(e1_max)
+            e2_max = jnp.zeros_like(e2_max)
             for label, err in (("reference", err1), ("perturbed", err2)):
                 if not math.isfinite(err):
                     _abort_non_finite(
                         f"non-finite corrector error ({err}) in the "
-                        f"{label} state at t = {t:.6e}, it = {it}"
+                        f"{label} state in the steps up to "
+                        f"t = {t:.6e}, it = {it}"
                     )
             last_error = max(err1, err2)
 
@@ -1590,7 +1601,10 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     # --- Post-processing -------------------------------------------------
     n_steps: int = it - it0
     if n_steps > 0:
-        last_error = max(float(e1_dev), float(e2_dev))
+        # The unsynced tail, folded in like any other interval.
+        last_error = float(
+            jnp.maximum(jnp.maximum(e1_max, e2_max), last_error)
+        )
         c_tot = int(c_sum)
     else:
         c_tot = 0
@@ -1600,14 +1614,15 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             sharding.print(
                 f"Corrector ran its fixed "
                 f"{params.step.corrector_iterations} iterations; the "
-                f"final correction norm at t={t}, it={it} is "
-                f"{last_error:.3e}, above step.corrector_tolerance "
+                f"largest final correction norm in the steps up to "
+                f"t={t}, it={it} is {last_error:.3e}, above "
+                f"step.corrector_tolerance "
                 f"({params.step.corrector_tolerance:.3e})."
             )
         else:
             sharding.print(
-                f"Corrector failed to converge at t={t}, it={it}, "
-                f"with error = {last_error:.3e}."
+                f"Corrector failed to converge in the steps up to "
+                f"t={t}, it={it}: max error {last_error:.3e}."
             )
     if laminarized:
         sharding.print(
