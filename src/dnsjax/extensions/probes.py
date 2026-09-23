@@ -7,7 +7,9 @@ stored-layout index convention (axis 2 = complex slot, axis 3 =
 real-FFT slot; :func:`dnsjax.harmonics.parse_mode_pairs`) -- every
 ``probes.it_probes`` steps into a binary ``probes.bin`` next to the
 ``.dat`` diagnostic streams.  Wall-bounded systems only (the state
-layout is ``(C, N_y, N_{k_2}, N_{k_3})``).  Unlike the transient-growth
+layout is ``(C, N_y, N_{k_2}, N_{k_3})``); on ``curved-pipe`` the
+component-0 column is the carried `$w_s = h\,u_s$`, not `$u_s$`
+(:class:`dnsjax.extensions.ProbesParams`).  Unlike the transient-growth
 CLI, the mean mode ``(0,0)`` **is** allowed: its record is the
 instantaneous mean profile of the perturbation (add the closed-form
 laminar profile for the total; see the reader).
@@ -134,7 +136,11 @@ _MATCH_KEYS: tuple[str, ...] = (
 
 
 def _component_labels(n_components: int) -> list[str]:
-    """Component labels of the stored state for the current system."""
+    """Component labels of the stored state for the current system.
+
+    ``curved-pipe`` takes the cylindrical schema, although its slot 0
+    holds the carried `$w_s = h\,u_s$` (``ProbesParams``).
+    """
     if params.phys.system in cartesian_systems:
         labels = ["u_x", "u_y", "u_z"]
     elif params.phys.system in viscoelastic_systems:

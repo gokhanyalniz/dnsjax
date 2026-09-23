@@ -194,9 +194,13 @@ def _energy_3d(
 
 
 def _applied_driving(
-    state: Array, fourier_: Fourier, flow_: CurvedPipeFlow
+    carried: Array, fourier_: Fourier, flow_: CurvedPipeFlow
 ) -> Array:
-    r"""The mean-mode forcing `$-\Pi$` this state is driven with.
+    r"""The mean-mode forcing `$-\Pi$` a state is driven with.
+
+    *carried* is the state in the **carried** basis
+    (:func:`to_solver_basis`), because both terms below are balances of
+    the carried variable `$w_s = h\,u_s$`.
 
     Under a constant pressure gradient the answer is the constant
     `$4/\mathrm{Re}$` the RHS adds, and costs nothing.  Under
@@ -225,15 +229,24 @@ def _applied_driving(
     `$O(\kappa)$` volume terms that no wall integral captures, which
     is what `$\langle N_s\rangle$` is here for, and why this costs one
     right-hand-side evaluation.
+
+    The wall term is the carried variable's, not the physical shear:
+    `$\partial_r w_s = h\,\partial_r u_s + \kappa\cos\theta\,u_s$`
+    at the wall is `$h\,\partial_r u_s$`, whose poloidal mean keeps
+    the `$(\kappa/2)\,\partial_r(u_{s,1} + u_{s,-1})$` of the
+    `$\cos\theta$` harmonic -- the inner/outer shear asymmetry that
+    Dean flow makes `$O(1)$`.  Read off `$u_s$` instead, the inference
+    runs ~1 % low at `$\kappa = 0.1$` (measured on a steady Dean state
+    against the corrector's applied value).
     """
     if FORCE_S != 0.0:
         # A constant pressure gradient applies exactly what the RHS
         # adds; nothing to infer, and no transform to pay for.
         return jnp.asarray(FORCE_S, dtype=sharding.float_type)
-    tau = jnp.einsum("j, jmz -> mz", flow_.D1_wall.ravel(), state[0])
+    tau = jnp.einsum("j, jmz -> mz", flow_.D1_wall.ravel(), carried[0])
     wall = jnp.sum(jnp.where(fourier_.mean_mask[0], tau, 0.0)).real
     viscous = 2.0 * derived_params.nu * wall
-    rhs = _get_rhs(to_solver_basis(state), fourier_, flow_)
+    rhs = _get_rhs(carried, fourier_, flow_)
     mean_rhs = extract_mean_mode(rhs[:1])[0].real
     return -2.0 * jnp.dot(flow_.y_weights, mean_rhs) - viscous
 
@@ -292,7 +305,7 @@ def _get_stats_jit(
     )
 
     bulk_s = flow_.bulk_deficit(carried[0]) + BULK_TARGET
-    force = _applied_driving(state, fourier_, flow_)
+    force = _applied_driving(carried, fourier_, flow_)
     wall_shear = jnp.einsum("j, jmz -> mz", flow_.D1_wall.ravel(), state[0])
     tau_s = (
         nu * jnp.sum(jnp.where(fourier_.mean_mask[0], wall_shear, 0.0)).real
@@ -335,7 +348,11 @@ def _get_driving_jit(
 ) -> dict[str, Array]:
     if params.phys.driving != "constant_bulk_velocity":
         return {}
-    return {flow_.driving_key: _applied_driving(state, fourier_, flow_)}
+    return {
+        flow_.driving_key: _applied_driving(
+            to_solver_basis(state), fourier_, flow_
+        )
+    }
 
 
 def get_driving(state: Array) -> dict[str, Array]:
