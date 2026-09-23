@@ -438,9 +438,7 @@ class Physics(BaseModel):
         ),
     )
     # Default "plane-couette": a wall-bounded flow that integrates
-    # cleanly from the default random IC at the default dt (Kolmogorov +
-    # random needs a smaller dt; see the corrector-contraction note in
-    # the ``TimeStepping`` docstring).
+    # cleanly from the default random IC at the default dt.
     system: Literal[*periodic_systems, *walled_systems] = Field(
         default="plane-couette",
         description=(
@@ -1420,13 +1418,13 @@ class TimeStepping(BaseModel):
     means the step is too large to contract within
     ``max_corrector_iterations``, **not** a blow-up: reduce ``dt`` (or
     raise the cap).  The limit is per-flow and unrelated to the
-    advective CFL bounding ``cnab2``: random-IC Kolmogorov needs
-    ``dt = 0.005`` (capped in ``tests/test_random_smoke.py``) while the
-    wall-bounded flows contract fine at the default ``dt = 0.01``.
-    ``phys.u_grid`` relaxes it (the advecting velocity drops to
-    ``U - U_grid``) -- this contraction limit only, not the advective
-    CFL bounding ``cnab2``, whose ``u' x omega'`` term is
-    frame-invariant (see the ``u_grid`` field docs).
+    advective CFL bounding ``cnab2``; every shipped flow contracts at
+    the default ``dt = 0.01`` from its default random IC
+    (``tests/test_random_smoke.py``).  ``phys.u_grid`` relaxes it (the
+    advecting velocity drops to ``U - U_grid``) -- this contraction
+    limit only, not the advective CFL bounding ``cnab2``, whose
+    ``u' x omega'`` term is frame-invariant (see the ``u_grid`` field
+    docs).
 
     Fixed corrector count (``corrector_iterations``)
     ------------------------------------------------

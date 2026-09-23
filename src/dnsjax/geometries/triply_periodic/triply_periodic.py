@@ -354,26 +354,38 @@ def _predict_component(
     return (state * ldt_1 + rhs_no_lapl) * ildt_2
 
 
-@partial(vmap, in_axes=(0, 0, 0, None))
+@partial(vmap, in_axes=(0, 0, 0, None, None))
 def _correct_component(
-    prediction: Array,
+    state_prev: Array,
     rhs_no_lapl_prev: Array,
     rhs_no_lapl_next: Array,
+    ldt_1: Array,
     ildt_2: Array,
-) -> tuple[Array, Array]:
+) -> Array:
     r"""Crank-Nicolson corrector step (vmapped over velocity components).
 
-    Computes the correction
-    `$\delta = c (f_{\text{next}} - f_{\text{prev}}) \cdot ildt_2$`
-    and returns the updated prediction and the correction itself (for
-    convergence monitoring).
+    The **direct** update, anchored at `$u^n$`:
+
+    .. math::
+        u^{j+1} = \bigl(u^n\,ldt_1 + c\,f(u^j)
+                  + (1 - c)\,f(u^n)\bigr)\,ildt_2 ,
+
+    whose fixed point is the Crank-Nicolson step itself.  The loop in
+    :func:`dnsjax.timestep.make_stepper` hands every pass the
+    *constant* `$f(u^n)$` as ``rhs_no_lapl_prev`` (the contract the
+    wall-bounded influence-matrix passes share).  The incremental form
+    `$u^{j+1} = u^j + c\,(f(u^j) - f(u^n))\,ildt_2$` agrees with this
+    one only on the first pass, where `$u^j$` is the predictor: from
+    the second pass on it adds the whole increment again, so the
+    correction never shrinks and the loop drifts to
+    ``max_corrector_iterations`` -- measured on Kolmogorov at
+    ``dt = 0.01``, a constant `$1.4\times10^{-5}$` per pass, and a
+    global order of ~1 against this form's 2.0.
     """
-    correction = (
-        params.step.implicitness
-        * (rhs_no_lapl_next - rhs_no_lapl_prev)
-        * ildt_2
-    )
-    return prediction + correction, correction
+    c = params.step.implicitness
+    return (
+        state_prev * ldt_1 + c * rhs_no_lapl_next + (1 - c) * rhs_no_lapl_prev
+    ) * ildt_2
 
 
 # ── Geometry-general callables for the stepper factory ───────────────────
@@ -472,10 +484,10 @@ def _correct(
     (:func:`_finalize_state`) -- so it has nothing to report.  Empty is
     a leafless pytree, hence free in the corrector's loop carry.
     """
-    state_new, correction = _correct_component(
-        prediction, rhs_prev, rhs_next, flow_.ildt_2
+    state_new = _correct_component(
+        state_prev, rhs_prev, rhs_next, flow_.ldt_1, flow_.ildt_2
     )
-    return state_new, correction, {}
+    return state_new, state_new - prediction, {}
 
 
 def _norm(

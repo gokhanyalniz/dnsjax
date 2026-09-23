@@ -112,9 +112,8 @@ Transition to turbulence is **not** expected to develop by the default
 ``t = 1`` at this resolution/box; the success metric is purely that
 integration completes cleanly, not that the flow becomes turbulent.
 
-Each system steps at ``--dt`` (default 0.01), capped per-system where the
-corrector needs a smaller step (Kolmogorov: 0.005 -- a corrector-rate,
-not advective-CFL, limit; see ``SYSTEMS``).
+Each system steps at ``--dt`` (default 0.01) unless its entry forces
+its own (``force_dt``: the adaptive and non-finite-guard entries).
 
 Each system runs in a separate subprocess (the geometry modules capture
 global singletons at import time) in its own temporary directory, so
@@ -173,12 +172,6 @@ sys.stdout.reconfigure(line_buffering=True)
 SYSTEMS: list[dict] = [
     {
         "name": "kolmogorov",
-        # The iterative Crank-Nicolson corrector contracts to the 1e-5
-        # tolerance within max_corrector_iterations only for dt <~ 0.005
-        # here (at dt = 0.01 it stalls at ~1.4e-5 after 10 iterations);
-        # cap dt so the global default does not exceed it.  The CFL is
-        # tiny (~0.08), so this is a corrector-rate limit, not advective.
-        "max_dt": 0.005,
         "args": [
             "--phys.system",
             "kolmogorov",
@@ -924,9 +917,9 @@ SYSTEMS: list[dict] = [
     },
     {
         # Adaptive CFL dt on the triply-periodic path: the
-        # ldt_1/ildt_2 recompute.  dt_max respects the Kolmogorov
-        # corrector-contraction cap (~0.005; see the kolmogorov
-        # entry).
+        # ldt_1/ildt_2 recompute.  The CFL is tiny here, so the
+        # controller grows dt until dt_max stops it: any dt_max above
+        # force_dt exercises the rebuild.
         "name": "kolmogorov-adaptive",
         "force_dt": 0.002,
         "slack_dt": 0.004,
@@ -952,8 +945,8 @@ SYSTEMS: list[dict] = [
     },
     {
         # Non-finite guard (inverted criteria; see run_smoke_test):
-        # cnab2 at dt = 1.0 (200x Kolmogorov's iterative-cn limit,
-        # CFL >> 1) blows up within tens of steps; the run must abort
+        # cnab2 at dt = 1.0 (100x the default dt, CFL >> 1) blows up
+        # within tens of steps; the run must abort
         # itself with exit code 3 and a "FATAL: non-finite ..." line
         # (whichever guard layer sees it first).  it_stats = 1 with
         # nbuffer = 10 makes the in-loop buffered-stats scan the
@@ -1153,11 +1146,10 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
     grows -- the adaptive entries pass their ``dt_max``).
     """
     name = system["name"]
-    # Per-system dt cap: some systems need a smaller step than the
-    # global default for the corrector to converge (see SYSTEMS).
-    # ``force_dt`` overrides outright (the nan-guard entry needs a dt
+    # ``force_dt`` overrides the global --dt outright (the adaptive
+    # entries start from their own dt; the nan-guard entry needs a dt
     # *larger* than any sane default).
-    dt = system.get("force_dt", min(args.dt, system.get("max_dt", math.inf)))
+    dt = system.get("force_dt", args.dt)
     cmd = _build_command(system, args, dt)
 
     with tempfile.TemporaryDirectory(prefix=f"rand_{name}_") as workdir:
