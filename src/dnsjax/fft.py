@@ -453,7 +453,7 @@ def _irfft2d(x: Array) -> Array:
         strip=sharding.nx_spec_pad,
     )
     y = shard_map(
-        lambda a: jnp.fft.irfft(a, axis=2, norm=norm),
+        lambda a: jnp.fft.irfft(a, n=padded_res.nx_padded, axis=2, norm=norm),
         mesh=sharding.mesh,
         in_specs=phys,
         out_specs=phys,
@@ -603,7 +603,7 @@ def _irfft3d(x: Array) -> Array:
         strip=sharding.nx_spec_pad,
     )
     y = shard_map(
-        lambda a: jnp.fft.irfft(a, axis=2, norm=norm),
+        lambda a: jnp.fft.irfft(a, n=padded_res.nx_padded, axis=2, norm=norm),
         mesh=sharding.mesh,
         in_specs=phys,
         out_specs=phys,

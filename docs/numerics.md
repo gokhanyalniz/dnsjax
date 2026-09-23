@@ -85,9 +85,10 @@ oversampled sizes are
 then rounded up, with a startup note, to **7-smooth** lengths (no prime
 factor beyond 7, so every transform takes the fast FFT radix kernels
 whatever the base resolution) that also divide evenly across the device
-grid; the streamwise real-FFT axis, never sharded, gets the smoothness
-rounding only. The extra slots carry only zero modes, so the rounding is
-physically neutral.
+grid; the streamwise real-FFT axis, never sharded, is rounded to an
+*even* 7-smooth length instead, the length an inverse real FFT returns.
+The extra slots carry only zero modes, so the rounding is physically
+neutral.
 
 ## Temporal discretization
 
