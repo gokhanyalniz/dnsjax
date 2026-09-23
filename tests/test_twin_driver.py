@@ -58,6 +58,9 @@ scope, in temporary member directories:
    writer families), a ``twin.json``
    mismatch on resume, a trajectory-defining change on resume, and an
    inconsistent ``(t, it)`` snapshot pair.
+10. The corrector-convergence check judges every step since the
+    previous host sync, for both states: the closing ``err =``
+    against their first corrector-stream rows.
 
 Usage::
 
@@ -461,6 +464,45 @@ def test_zero_perturbation_bit_identity() -> None:
                         "on format"
                     )
     print("e0 = 0 bit-identity (twin.dat + the three stream pairs): OK")
+
+
+def test_error_check_running_max() -> None:
+    """The convergence check covers every step since the previous sync.
+
+    With ``it_error_check = it_corrector = 10`` over ten steps, each
+    state's single corrector-stream row is its step-1 error -- the
+    largest of the decaying sequence after the parent's raw IC -- and
+    the closing ``err =`` (the maximum since the last check, over both
+    states) must not fall below either.  A loop reading only the check
+    step's own errors reports step 10's smaller ones.
+    """
+    import re
+
+    with tempfile.TemporaryDirectory() as tmp:
+        result = _run_twin(
+            tmp,
+            [
+                *_twin_args(PARENT_T + 10 * DT),
+                "--outs.it_corrector",
+                "10",
+                "--outs.it_error_check",
+                "10",
+            ],
+        )
+        firsts = []
+        for name in ("corrector.dat", "corrector_twin.dat"):
+            rows = [
+                ln.split()
+                for ln in (Path(tmp) / name).read_text().splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")
+            ]
+            firsts.append(float(f"{float(rows[0][2]):.3e}"))
+        closing = float(re.findall(r"err = (\S+)", result.stdout)[-1])
+        assert closing >= max(firsts), (
+            f"closing err {closing:.3e} below the step-1 errors {firsts}: "
+            "the check dropped an earlier step's error"
+        )
+    print("corrector check covers the whole interval: OK")
 
 
 # ── Paired restart ───────────────────────────────────────────────────
@@ -1165,6 +1207,7 @@ if __name__ == "__main__":
         test_fresh_start_e0_exact,
         test_offphase_parent_grid,
         test_zero_perturbation_bit_identity,
+        test_error_check_running_max,
         test_paired_restart_continuity,
         test_np2_run,
         test_nan_guard_exit3,

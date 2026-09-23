@@ -100,6 +100,11 @@ unit-covered by ``test_cartesian.py`` / ``test_cylindrical.py`` /
 ``test_annular.py``, the shard_map-local solve by
 ``test_banded_solver_sharded.py``.
 
+A ``plane-couette-error-max`` entry pins that the corrector-error
+check judges every step since the previous host sync, not only the one
+it lands on (its closing ``err =`` against its own ``corrector.dat``;
+see the entry).
+
 A trailing ``kolmogorov-nan-guard`` entry inverts the success
 criteria: it forces a genuine blow-up (cnab2 at a dt far past the
 advective limit) and requires the solver's non-finite guard to abort
@@ -155,6 +160,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 from _live import report, run_live
 
@@ -944,6 +950,34 @@ SYSTEMS: list[dict] = [
         ],
     },
     {
+        # Corrector-error guard between host checks: the loop syncs the
+        # error every it_error_check steps and must judge every step
+        # since the previous check, not only the one it lands on.  At
+        # it_error_check = it_corrector = 10 over 10 steps, the single
+        # corrector.dat row is step 1's error (the largest of the
+        # decaying post-IC sequence) and the closing "err =" -- the
+        # maximum since the last check -- must not fall below it; a
+        # loop reading only the check step's own error reports step
+        # 10's smaller one (``check_error_max``).
+        "name": "plane-couette-error-max",
+        "max_sim_time": 0.1,
+        "check_error_max": True,
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+            "--outs.it_error_check",
+            "10",
+            "--outs.it_corrector",
+            "10",
+        ],
+    },
+    {
         # Non-finite guard (inverted criteria; see run_smoke_test):
         # cnab2 at dt = 1.0 (100x the default dt, CFL >> 1) blows up
         # within tens of steps; the run must abort
@@ -1134,6 +1168,32 @@ def _check_run(stdout: str, name: str, max_sim_time: float, dt: float) -> str:
     return summary
 
 
+def _check_error_max(corrector_dat: Path, summary: str, name: str) -> None:
+    """The closing ``err =`` covers every step since the last check.
+
+    Compared at the summary's printed precision: the first
+    ``corrector.dat`` row (step 1's error) rounded the same way must not
+    exceed it.
+    """
+    rows = [
+        ln.split()
+        for ln in corrector_dat.read_text().splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    if not rows:
+        raise AssertionError(f"{name}: corrector.dat has no rows")
+    first = float(f"{float(rows[0][2]):.3e}")
+    err_match = ERR_PATTERN.search(summary)
+    if err_match is None:
+        raise AssertionError(f"{name}: no err on the summary line")
+    closing = float(err_match.group(1))
+    if closing < first:
+        raise AssertionError(
+            f"{name}: closing err {closing:.3e} below step 1's "
+            f"{first:.3e} -- the check dropped an earlier step's error"
+        )
+
+
 # ── test runner ──────────────────────────────────────────────────────
 
 
@@ -1202,7 +1262,7 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
         summary = _check_run(
             result.stdout,
             name,
-            args.max_sim_time,
+            system.get("max_sim_time", args.max_sim_time),
             system.get("slack_dt", dt),
         )
 
@@ -1211,6 +1271,8 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
             raise AssertionError(
                 f"{name}: expected pattern {pattern!r} not found in stdout"
             )
+        if system.get("check_error_max"):
+            _check_error_max(Path(workdir) / "corrector.dat", summary, name)
 
     print(f"  PASS  {name}  ({summary.strip()})")
 
