@@ -171,13 +171,16 @@ from ._cylindrical_stepping import (
     CFL_NAMES,  # noqa: F401 — re-exported
     DRIVING_KEY_Z,  # noqa: F401 — re-exported
     _apply_bulk_correction,  # noqa: F401 — re-exported
+    _correct,  # noqa: F401 — re-exported
     _curl_fn,  # noqa: F401 — re-exported
     _get_rhs,  # noqa: F401 — re-exported
     _get_rhs_measured,  # noqa: F401 — re-exported
     _imm_iteration,  # noqa: F401 — re-exported
     _imm_iteration_vw,  # noqa: F401 — re-exported
     _l_bf,  # noqa: F401 — re-exported
+    _norm,  # noqa: F401 — re-exported
     _parity_y_matvec,  # noqa: F401 — re-exported
+    _predict,  # noqa: F401 — re-exported
     build_stepper,
     mean_driving,  # noqa: F401 — re-exported
 )
