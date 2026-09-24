@@ -67,6 +67,17 @@ projection splitting and accepted; from the relaxed IC it is second
 order in all three geometries, and only the legacy path's genuine
 splitting error keeps it below.
 
+Every run pins ``step.implicitness = 0.5``, the exact trapezoidal
+rule, so the studies measure the schemes' formal order.  The model
+default (0.5001) off-centres it to damp the stiffest wall modes, at the
+price of a first-order term (``TimeStepping`` docstring), and the
+**default-implicitness** study guards that the price stays invisible:
+the pipe's default formulation at the model default, against the same
+``c = 0.5`` reference, must stay second order and within
+``DEFAULT_C_RATIO_MAX`` of the trapezoidal rule's error at every
+``dt`` (measured 0.98 / 0.95 / 0.90 of it, orders 2.05 / 2.16).  The
+pipe is where that stiff mode is least damped.
+
 Corrector-bearing runs use a tight tolerance (``1e-9``) so
 fixed-point error does not pollute the truncation-error measurement,
 and every step **asserts** its corrector converged -- an unconverged
@@ -182,6 +193,11 @@ N_RELAX = 100
 # wall-bounded geometry, from the relaxed IC (measured ~2.0 in all
 # three; module docstring).
 DEFAULT_ORDER_MIN = 1.8
+# The Crank-Nicolson weight every study pins (the exact trapezoidal
+# rule), and the bound on the model default's error relative to it
+# (measured at most 0.98 of it; module docstring).
+IMPLICITNESS = 0.5
+DEFAULT_C_RATIO_MAX = 1.25
 
 # Corrector setup: converge to TOL, assert every corrector-bearing
 # step reached TOL_ASSERT.
@@ -201,6 +217,7 @@ STUDIES = [
     "plane-couette-consistent-imm",
     "taylor-couette-consistent-imm",
     "pipe-consistent-imm",
+    "default-implicitness",
     "kolmogorov-vardt",
     "plane-couette-vardt",
     "plane-couette-consistent-imm-vardt",
@@ -233,10 +250,13 @@ def _worker(
     out: str,
     vardt: bool,
     consistent_imm: bool = False,
+    default_implicitness: bool = False,
 ) -> None:
     """Integrate to ``T_END`` with (*system*, *scheme*, *dt*); save the
     final spectral state to *out* (.npy).  With *vardt*, step the
-    dyadic ``(dt, dt/2, dt/2)`` pattern via ``set_dt`` (docstring)."""
+    dyadic ``(dt, dt/2, dt/2)`` pattern via ``set_dt`` (docstring).
+    The Crank-Nicolson weight is ``IMPLICITNESS`` unless
+    *default_implicitness* leaves the model default."""
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
 
     import jax
@@ -281,6 +301,11 @@ def _worker(
                 "dt": dt,
                 "corrector_tolerance": TOL,
                 "max_corrector_iterations": 60,
+                **(
+                    {}
+                    if default_implicitness
+                    else {"implicitness": IMPLICITNESS}
+                ),
             },
             outs={},
         )
@@ -395,6 +420,7 @@ def _run(
     *,
     vardt: bool = False,
     consistent_imm: bool = False,
+    default_implicitness: bool = False,
 ) -> None:
     cmd = [
         sys.executable,
@@ -412,6 +438,8 @@ def _run(
         cmd.append("--vardt")
     if consistent_imm:
         cmd.append("--consistent-imm")
+    if default_implicitness:
+        cmd.append("--default-implicitness")
     result = run_live(cmd)
     if result.returncode != 0:
         raise SystemExit(f"worker failed: {system} {scheme} dt={dt}")
@@ -530,6 +558,7 @@ def main() -> None:
     parser.add_argument("--out", default=None)
     parser.add_argument("--vardt", action="store_true")
     parser.add_argument("--consistent-imm", action="store_true")
+    parser.add_argument("--default-implicitness", action="store_true")
     args = parser.parse_args()
 
     if args.worker:
@@ -540,6 +569,7 @@ def main() -> None:
             args.out,
             args.vardt,
             args.consistent_imm,
+            args.default_implicitness,
         )
         return
 
@@ -661,6 +691,56 @@ def main() -> None:
                 "pipe_sc",
                 min_error_gain=25.0,
                 min_slope_gain=0.0,
+            )
+
+        if "default-implicitness" in studies:
+            # The model default off-centres the Crank-Nicolson weight
+            # (module docstring); every other study pins the
+            # trapezoidal rule.  Same configuration and reference as
+            # the pipe contrast's default row, whose c = 0.5 runs are
+            # reused when that study ran first.
+            print("=== pipe: model-default implicitness vs c = 0.5 ===")
+            ref = tdir / "pipe_sc_default_ref.npy"
+            if not ref.exists():
+                _run(
+                    "pipe",
+                    "iterative-cn",
+                    DT_SELF_REF,
+                    ref,
+                    consistent_imm=True,
+                )
+            e_half, e_def = [], []
+            for dt in DTS_PC:
+                half = tdir / f"pipe_sc_default_{dt}.npy"
+                if not half.exists():
+                    _run("pipe", "iterative-cn", dt, half, consistent_imm=True)
+                dflt = tdir / f"pipe_default_c_{dt}.npy"
+                _run(
+                    "pipe",
+                    "iterative-cn",
+                    dt,
+                    dflt,
+                    consistent_imm=True,
+                    default_implicitness=True,
+                )
+                e_half.append(_err(half, ref))
+                e_def.append(_err(dflt, ref))
+            o_def = [
+                np.log2(a / b) for a, b in zip(e_def, e_def[1:], strict=False)
+            ]
+            ratios = [d / h for d, h in zip(e_def, e_half, strict=True)]
+            print(f"c = 0.5  : errors {[f'{e:.3e}' for e in e_half]}")
+            print(
+                f"default c: errors {[f'{e:.3e}' for e in e_def]}  "
+                f"orders {[f'{o:.2f}' for o in o_def]}  "
+                f"ratios {[f'{r:.2f}' for r in ratios]}"
+            )
+            assert min(o_def) >= DEFAULT_ORDER_MIN, (
+                f"model-default implicitness not second order: {o_def}"
+            )
+            assert max(ratios) < DEFAULT_C_RATIO_MAX, (
+                "model-default implicitness less accurate than the "
+                f"trapezoidal rule: error ratios {ratios}"
             )
 
         if "kolmogorov-vardt" in studies:

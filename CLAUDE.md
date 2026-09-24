@@ -456,6 +456,12 @@ predictor and the geometry's IMM implicit solve. `"iterative-cn"`
 point (stable past the advective CFL); `"cnab2"` advances it
 explicitly (AB2) at **one** FFT eval/step, and wall-bounded keeps the
 wall-stiff coupling `_l_bf` implicit via an FFT-free corrector.
+`step.implicitness` defaults to **0.5001**, not 0.5: the trapezoidal
+rule leaves the stiffest wall modes near-neutral (`mu -> -1`) in every
+wall-bounded geometry, and the off-centring bounds their damping at
+~4e-4/step for no measurable accuracy cost. Anything measuring the
+formal order pins 0.5 (`tests/test_temporal_order.py`); the numbers:
+the `TimeStepping` docstring.
 `curved-pipe` is the one flow that refuses `cnab2` (and
 `split_corrector`): with no base flow its `_l_bf` is identically zero,
 so that corrector would not iterate, and the curvature terms would be
