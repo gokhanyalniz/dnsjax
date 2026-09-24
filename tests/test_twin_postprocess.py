@@ -30,8 +30,12 @@ it and compares:
    thins the sample grid and is recorded as the sidecars' cadence.
 6. Every refusal fires on a real input: pre-existing output, an output
    directory aliasing the run directory, a directory with no pairs, a
-   pair whose halves disagree on ``(t, it)``, and an odd ``res.nz``.
-7. ``mpirun -np 2 --dist.np0 2`` reproduces the single-process streams
+   pair whose halves disagree on ``(t, it)``, a trajectory-defining
+   override (``--phys.re``), and an odd ``res.nz``.
+7. A single-precision member rebuilds bit-identically as well, its
+   built-in identity check passing at a tolerance its own precision
+   can meet (a double-precision one failed every record there).
+8. ``mpirun -np 2 --dist.np0 2`` reproduces the single-process streams
    to machine epsilon -- the ``psum`` in ``_marginals_replicated``
    (whose `$\pm k_z$` fold spans the ``np0`` axis) and the
    ``DifferencePressure`` pytree argument, neither of which a
@@ -433,12 +437,81 @@ def test_guards() -> None:
     assert result.returncode == 1, result.returncode
     assert "the pair is inconsistent" in result.stdout + result.stderr
 
+    # A trajectory-defining override is refused rather than applied to
+    # states written under another value -- dnsjax-twin's own
+    # paired-resume rule.
+    assert "differ from what" in _recon(
+        member, ["--recon.out", "re", "--phys.re", "500"], expect=1
+    )
+
     # An odd res.nz is refused by the parameter layer (a Fourier axis
     # must be even), which is also what keeps the k_z fold defined --
     # so this script needs no rule of its own.
     assert "must be even" in _recon(
         member, ["--recon.out", "odd", "--res.nz", "7"], expect=1
     )
+
+
+def test_single_precision_member() -> None:
+    """A float32 member rebuilds, and its identity check holds.
+
+    Built from a float32 parent, which only a float32 run can write
+    (a precision mismatch with the snapshot is refused), so the parent
+    comes from a one-step plain ``dnsjax`` run.
+    """
+    workdir = _SESSION / "parent_f32"
+    workdir.mkdir(exist_ok=True)
+    run_live(
+        [
+            sys.executable,
+            "-m",
+            "dnsjax",
+            "--phys.system",
+            "plane-poiseuille",
+            "--phys.re",
+            "400",
+            "--geo.lx",
+            str(params.geo.lx),
+            "--geo.lz",
+            str(params.geo.lz),
+            "--res.nx",
+            str(NX),
+            "--res.ny",
+            str(NY),
+            "--res.nz",
+            str(NZ),
+            "--res.fd_order",
+            "4",
+            "--res.double_precision",
+            "False",
+            "--init.random_seed",
+            "1",
+            "--stop.max_sim_time",
+            str(DT),
+            "--stop.check_laminarization",
+            "False",
+            "--dist.platform",
+            "cpu",
+        ],
+        cwd=workdir,
+        check=True,
+        timeout=900,
+    )
+    member = _member(
+        "f32",
+        workdir / "state00000.tar",
+        3,
+        ["--twin.e0", str(E0), "--res.double_precision", "False"],
+    )
+    out = _recon(member)
+    assert "worst energy-identity deviation" in out, out[-500:]
+    _assert_streams_identical(member, member / "recon")
+    live, rebuilt = (
+        read_twin(member).energies,
+        read_twin(member / "recon").energies,
+    )
+    for key in rebuilt:
+        assert np.array_equal(live[key], rebuilt[key]), key
 
 
 def test_mpi_np2_matches_single_process() -> None:
