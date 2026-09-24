@@ -27,10 +27,7 @@ the default backends:
   $\approx n_x n_y n_z$ reals. The time stepper holds about three further
   state-sized arrays within a step, and `cnab2` carries one across steps
   (for the wall-bounded systems its allocated peak still matches the
-  default scheme's, whose corrector branch XLA keeps reserved); the
-  total-field systems — Dean, viscoelastic Dean, viscoelastic pipe —
-  keep one extra state-sized laminar reference (the curved pipe keeps
-  none: it has no closed-form laminar state to hold).
+  default scheme's, whose corrector branch XLA keeps reserved).
 - **Nonlinear term, every step** — the rotational form inverse-transforms a
   6-field batch (velocity + vorticity) to the oversampled grid, multiplies
   pointwise, and forward-transforms the 3 product fields (the curved

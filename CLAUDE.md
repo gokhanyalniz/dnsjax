@@ -744,8 +744,7 @@ mean. `t`/`it`/`isnap` continue only when
 - Buffer donation: `predict_and_fully_correct(_measured)` donate
   `state`; `step_cnab2(_measured)` donate `state` **and** `carry`. Any
   caller that reuses an input afterwards must pass `jnp.copy` -- the
-  `__main__` warm-up/priming calls do, and Dean's `init_state` copies
-  the module-level `_laminar_state` for the same reason.
+  `__main__` warm-up/priming calls do.
 - The first time step is excluded from benchmark statistics (JIT
   compilation overhead).
 - FFT normalization uses `norm="forward"`.
@@ -754,8 +753,9 @@ mean. `t`/`it`/`isnap` continue only when
   sets the column order of `stats.dat`/`steps.dat`; never assume
   insertion order.
 - A flow dataclass is a registered pytree, so every array field is
-  traced into the jitted steppers; keep data needed only *outside* jit
-  (e.g. a precomputed laminar state) at module level.
+  traced into the jitted steppers; keep data needed only *outside* the
+  steppers (e.g. the total-field flows' laminar profile) at module
+  level, and pass it to the jitted diagnostics as an argument.
 - A `dt` / resolution / `params` sweep needs a **subprocess per
   value**: they are captured into the singletons and jitted steppers
   at import/trace time (the `test_*` subprocess-per-config idiom).

@@ -99,9 +99,9 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.flows.wall_bounded.viscoelastic_pipe import (  # noqa: E402
-    _laminar_state,
     flow,
     get_stats,
+    init_state,
     predict_and_fully_correct,
 )
 from dnsjax.geometries.wall_bounded._viscoelastic_common import (  # noqa: E402
@@ -424,9 +424,9 @@ def test_laminar_conformation_rhs_vanishes() -> None:
     pair, for every `$\epsilon$` -- the flow is unidirectional, so the
     advection and all but one stretching term drop out algebraically
     and the relaxation cancels the survivor."""
-    state = to_spin_basis(_laminar_state)
+    state = to_spin_basis(init_state())
     rhs = np.asarray(_get_rhs(state, fourier, flow))
-    scale = float(np.abs(np.asarray(_laminar_state[3:])).max())
+    scale = float(np.abs(np.asarray(init_state()[3:])).max())
     err = np.abs(rhs[3:]).max() / scale
     assert err < 1e-12, f"conformation RHS at laminar = {err:.2e}"
 
@@ -483,7 +483,7 @@ def test_laminar_full_step_fixed_point() -> None:
     matrix, at `$\epsilon = 0$` where `$W = 1 - r^2$` is the exact
     profile.
     """
-    state = to_spin_basis(_laminar_state)
+    state = to_spin_basis(init_state())
     stepped, err, *_ = predict_and_fully_correct(jnp.copy(state))
     drift = float(jnp.abs(stepped - state).max())
     assert drift < 1e-12, f"laminar step drift {drift:.2e}"
@@ -500,7 +500,7 @@ def test_laminar_energy_balance() -> None:
     `$I = D_s - W_p$` closes, which is what the laminar smoke test
     asserts at runtime.
     """
-    st = get_stats(_laminar_state)
+    st = get_stats(init_state())
     Re, beta = params.phys.re, params.phys.beta
     assert_allclose(float(st["I"]), 2.0 / Re, rtol=1e-12)
     assert_allclose(float(st["D_s"]), 2.0 * beta / Re, rtol=1e-10)
