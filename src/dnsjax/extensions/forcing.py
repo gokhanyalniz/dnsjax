@@ -130,7 +130,7 @@ from jax import numpy as jnp
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from ..flows.registry import cartesian_systems
+from ..flows.registry import cartesian_systems, spec_for
 from ..harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
 from ..param_surface import recorded_params_dump
 from ..parameters import derived_params, params
@@ -168,13 +168,14 @@ _MATCH_KEYS: tuple[str, ...] = (
 
 def build_mode_injector(
     mode_pairs: list[tuple[int, int]],
-) -> Callable[[Array, Array], Array]:
+    carried_fn: Callable[..., Array] | None = None,
+) -> Callable[..., Array]:
     r"""Build a jitted scatter-add of columns into the probed layout.
 
-    Returns a function ``(state, cols) -> state`` adding ``cols[k]``
-    (``(K, C, N_y)`` complex, replicated) into the wall-bounded
-    spectral ``state`` at the static global mode ``mode_pairs[k]``
-    for every ``k`` -- the scatter dual of
+    Returns a function ``(state, cols, *carry_args) -> state`` adding
+    ``cols[k]`` (``(K, C, N_y)`` complex, replicated) into the
+    wall-bounded spectral ``state`` at the static global mode
+    ``mode_pairs[k]`` for every ``k`` -- the scatter dual of
     :func:`dnsjax.extensions.probes.build_mode_extractor` (same owner
     computation from the local shard shape inside a ``shard_map``;
     non-owners add zeros).  ``state`` is donated (the caller rebinds).
@@ -187,6 +188,14 @@ def build_mode_injector(
     only the injected columns, never the field.  Cartesian carries
     physical components under both ``res.consistent_imm``
     formulations, so there the kick is a plain scatter-add.
+
+    On the pipe family the state also carries its pass's spin-quad
+    differences, which a kick must move by its own: *carried_fn*
+    (``_cylindrical_stepping.column_differences``) turns the
+    solver-basis columns into their contribution to those slots, and
+    *carry_args* are its remaining arguments (the columns'
+    wavenumbers and the flow -- arguments, never closed over, so the
+    flow's global arrays stay jit arguments).
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
     if params.phys.system in cartesian_systems:
@@ -205,8 +214,6 @@ def build_mode_injector(
 
     def _local(shard: Array, cols: Array) -> Array:
         n2_loc, n3_loc = shard.shape[2], shard.shape[3]
-        if to_solver is not None:
-            cols = to_solver(cols)
         for k, (i2, i3) in enumerate(pairs):
             owner0, l2 = divmod(i2, n2_loc)
             owner1, l3 = divmod(i3, n3_loc)
@@ -230,7 +237,17 @@ def build_mode_injector(
         in_specs=(sharding.spec_vector_shard, P(None, None, None)),
         out_specs=sharding.spec_vector_shard,
     )
-    return jax.jit(injector, donate_argnums=0)
+
+    def inject(state: Array, cols: Array, *carry_args: object) -> Array:
+        if to_solver is not None:
+            cols = to_solver(cols)
+        if carried_fn is not None:
+            cols = jnp.concatenate(
+                [cols, carried_fn(cols, *carry_args)], axis=1
+            )
+        return injector(state, cols)
+
+    return jax.jit(inject, donate_argnums=0)
 
 
 class StochasticForcer:
@@ -251,7 +268,10 @@ class StochasticForcer:
         self.modes = parse_mode_pairs(f.modes)
         self.amplitude: float = float(f.amplitude)
         self.nbuffer: int = params.outs.nbuffer
-        n_components, ny = int(state.shape[0]), int(state.shape[1])
+        # The flow's physical component count, not the state's leading
+        # size: a pipe state also carries solver slots.
+        n_components = spec_for(params.phys.system).n_components
+        ny = int(state.shape[1])
         self._profiles = self._load_profiles(f, n_components, ny)
         self.m: int = self._profiles[0].shape[0]
 
@@ -273,10 +293,15 @@ class StochasticForcer:
             else:
                 self._partner_slot.append(None)
         self._n_slots = len(placements)
-        self._inject = build_mode_injector(placements)
+        carried_fn, self._carry_args = self._carried_kick(
+            placements, int(state.shape[0]) > n_components
+        )
+        self._inject = build_mode_injector(placements, carried_fn)
         # Compile outside the benchmark window (donated dummies).
         jax.block_until_ready(
-            self._inject(jnp.zeros_like(state), self._device_cols())
+            self._inject(
+                jnp.zeros_like(state), self._device_cols(), *self._carry_args
+            )
         )
 
         self._rows: list[tuple[float, np.ndarray]] = []
@@ -444,6 +469,50 @@ class StochasticForcer:
             h.update(np.ascontiguousarray(arr).tobytes())
         return h.hexdigest()
 
+    def _carried_kick(
+        self, placements: list[tuple[int, int]], carries: bool
+    ) -> tuple[Callable[..., Array] | None, tuple]:
+        """The injector's carried-slot hook for this flow, and its args.
+
+        ``(None, ())`` unless *carries* -- the solver state handed to the
+        forcer has slots past the flow's physical components (the pipe
+        family, default scheme): then the kick's own contribution to
+        them, per injected column, from the columns' physical
+        wavenumbers (``_cylindrical_stepping.ModeColumns``).
+        """
+        if not carries:
+            return None, ()
+        import importlib
+
+        flow = importlib.import_module(
+            spec_for(params.phys.system).flow_module
+        ).flow
+        from ..geometries.wall_bounded._cylindrical_stepping import (
+            ModeColumns,
+            column_differences,
+        )
+
+        q2 = complex_harmonics(params.res.nz) * params.geo.m0
+        q3 = real_harmonics(params.res.nx)
+        m = np.array([float(q2[i2]) for i2, _ in placements])
+        kz = np.array(
+            [2.0 * np.pi * q3[i3] / params.geo.lx for _, i3 in placements]
+        )
+        rep = NamedSharding(sharding.mesh, P(None, None, None))
+
+        def put(a: np.ndarray, dtype) -> Array:
+            return jax.device_put(a.reshape(1, -1, 1).astype(dtype), rep)
+
+        ftype = sharding.float_type
+        columns = ModeColumns(
+            m=put(m, ftype),
+            kz=put(kz, ftype),
+            kz2=put(kz**2, ftype),
+            m_is_even=put((np.mod(m, 2) == 0).astype(float), ftype),
+            mean_mask=put(np.zeros_like(m, dtype=bool), bool),
+        )
+        return column_differences, (columns, flow)
+
     def _device_cols(self, cols: np.ndarray | None = None) -> Array:
         """Replicate the ``(n_slots, C, Ny)`` kick columns on devices."""
         if cols is None:
@@ -532,7 +601,7 @@ class StochasticForcer:
             if self._partner_slot[k] is not None:
                 cols[slot] = np.conj(prof)
                 slot += 1
-        state = self._inject(state, self._device_cols(cols))
+        state = self._inject(state, self._device_cols(cols), *self._carry_args)
 
         self._rows.append((t, coeff))
         if len(self._rows) >= self.nbuffer:

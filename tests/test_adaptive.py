@@ -167,8 +167,11 @@ CLOSURE_LEAVES = {
     "plane-couette": (),
     # One u_r column per wall.
     "taylor-couette": ("ur_1", "ur_2"),
-    # The pipe's single wall gives one (a 1x1 influence matrix).
-    "pipe": ("ur_1",),
+    # The pipe's single wall gives one (a 1x1 influence matrix), plus
+    # the two halves of its unit response across the spin pair, which
+    # the carried slots take with the influence correction and on
+    # re-anchoring.
+    "pipe": ("ur_1", "phi_1_diff", "phi_1_sum"),
     # Triply-periodic: the flag does not reach this family at all.
     "kolmogorov": (),
 }
@@ -336,8 +339,14 @@ def _worker(system: str, backend: str, consistent_imm: bool = True) -> None:
         generate_random_state(AMP, SMOOTH, WALL_SMOOTH, WALL_CONF, SEED)
     )
 
+    # RHS-shaped cnab2 seeds: the flow's physical components (a pipe
+    # state also carries 2 solver slots).
+    from dnsjax.flows.registry import spec_for
+
+    rhs0 = jnp.zeros_like(state0[: spec_for(system).n_components])
+
     # Warm every stepper variant at DT0 (donated args -> copies).
-    _, carry, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.zeros_like(state0))
+    _, carry, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.copy(rhs0))
     *_, m0 = fmod.step_cnab2_measured(jnp.copy(state0), jnp.copy(carry))
     fmod.predict_and_fully_correct(jnp.copy(state0))
     *_, m1 = fmod.predict_and_fully_correct_measured(jnp.copy(state0))
@@ -451,12 +460,12 @@ def _worker(system: str, backend: str, consistent_imm: bool = True) -> None:
     # not be.  Pins that kappa multiplies exactly (N^n - carry) in
     # BOTH cnab2 branches (the wall-bounded _cnab2_lbf_core and the
     # plain triply-periodic forcing).
-    _, n_ref, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.zeros_like(state0))
+    _, n_ref, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.copy(rhs0))
     fmod.reset_ab2_kappa()
     a_id, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.copy(n_ref))
     fmod.flow.ab2_kappa = jnp.asarray(0.7, dtype=fmod.flow.dt.dtype)
     b_id, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.copy(n_ref))
-    c_id, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.zeros_like(state0))
+    c_id, *_ = fmod.step_cnab2(jnp.copy(state0), jnp.copy(rhs0))
     fmod.reset_ab2_kappa()
     np.testing.assert_allclose(
         np.asarray(a_id),

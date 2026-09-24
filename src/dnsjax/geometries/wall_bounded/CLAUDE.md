@@ -55,6 +55,18 @@ never back (the physical form is a view, dropped after use), via
 `_base.to_pm_basis`/`from_pm_basis` (aliased `to_solver_basis` /
 `from_solver_basis`, re-exported by the flow modules) or the
 9-component `_viscoelastic_common.to_spin_basis`/`from_spin_basis`.
+The **pipe family** (pipe, curved pipe, viscoelastic pipe) is the
+exception on the way in: under the default `res.consistent_imm` its
+solver state carries two trailing slots past the velocity (+ tensor)
+-- the spin quad's difference halves, which the pass evolves instead
+of re-deriving (`_cylindrical_stepping._imm_iteration_vw`) -- so each
+of those flow modules binds its own `to_solver_basis`
+(`with_carried`: the map, then `kinematic_differences`), while
+`from_solver_basis` reads the evolved slots only and drops them. RHS
+arrays, the cnab2 carry and the correction never have the slots (a
+cnab2 seed is `zeros_like(state[:n_components])`); probes gather the
+physical slots only, and a `[force]` kick adds its own carried
+contribution (`column_differences`).
 `__main__` owns the field-level crossings; `extensions/probes.py` /
 `extensions/forcing.py` convert their own mode columns instead. The
 outgoing map is exported **already jitted**, and `__main__` never

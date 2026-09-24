@@ -90,7 +90,11 @@ from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
-from ..flows.registry import cartesian_systems, viscoelastic_systems
+from ..flows.registry import (
+    cartesian_systems,
+    spec_for,
+    viscoelastic_systems,
+)
 from ..harmonics import complex_harmonics, parse_mode_pairs, real_harmonics
 from ..param_surface import recorded_params_dump
 from ..parameters import derived_params, params
@@ -169,6 +173,7 @@ def _component_labels(n_components: int) -> list[str]:
 
 def build_mode_extractor(
     mode_pairs: list[tuple[int, int]],
+    n_components: int | None = None,
 ) -> Callable[[Array], Array]:
     r"""Build a jitted gather of the probed modes' columns.
 
@@ -179,16 +184,20 @@ def build_mode_extractor(
     from the local shard shape at trace time (the indices are static)
     and contributes the column to a ``psum`` over both mesh axes.
 
-    Where the state is carried in a **solver** basis (cylindrical /
-    annular `$u_\pm$`, the viscoelastic spin tensor) it is converted
-    to physical components -- the basis of ``_component_labels`` and
-    of the written stream -- *after* the gather, on a ``(C, N_y)``
-    slice rather than the whole spectral field, so a sample costs
-    essentially nothing and ``it_probes = 1`` is affordable.  (The map
-    is linear and maps zero to zero, so it commutes with the owner
-    mask and the ``psum``.)  Cartesian carries physical components
-    under both ``res.consistent_imm`` formulations and needs no
-    conversion at all.
+    Only the first *n_components* slots are gathered (every slot
+    when ``None``) -- the flow's physical ones; a pipe state's trailing
+    carried slots are solver internals (``_cylindrical_stepping``).
+    Where the state is carried
+    in a **solver** basis (cylindrical / annular `$u_\pm$`, the
+    viscoelastic spin tensor) it is converted to physical components
+    -- the basis of ``_component_labels`` and of the written stream --
+    *after* the gather, on a ``(C, N_y)`` slice rather than the whole
+    spectral field, so a sample costs essentially nothing and
+    ``it_probes = 1`` is affordable.  (The map is linear and maps zero
+    to zero, so it commutes with the owner mask and the ``psum``.)
+    Cartesian carries physical components under both
+    ``res.consistent_imm`` formulations and needs no conversion at
+    all.
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
     if params.phys.system in cartesian_systems:
@@ -213,7 +222,7 @@ def build_mode_extractor(
         for i2, i3 in pairs:
             owner0, l2 = divmod(i2, n2_loc)
             owner1, l3 = divmod(i3, n3_loc)
-            col = shard[:, :, l2, l3]
+            col = shard[:n_components, :, l2, l3]
             is_owner = (lax.axis_index("np0") == owner0) & (
                 lax.axis_index("np1") == owner1
             )
@@ -248,9 +257,12 @@ class ProbeStream:
     def __init__(self, state: Array, directory: str | Path = ".") -> None:
         self.modes = parse_mode_pairs(probes_params.modes)
         self.nbuffer: int = params.outs.nbuffer
-        n_components, ny = int(state.shape[0]), int(state.shape[1])
+        # The flow's physical component count, not the state's leading
+        # size: a pipe state also carries solver slots.
+        n_components = spec_for(params.phys.system).n_components
+        ny = int(state.shape[1])
         self.component_labels = _component_labels(n_components)
-        self._extract = build_mode_extractor(self.modes)
+        self._extract = build_mode_extractor(self.modes, n_components)
         self._buffer = jnp.zeros(
             (self.nbuffer, len(self.modes), n_components, ny),
             dtype=sharding.complex_type,

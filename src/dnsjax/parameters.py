@@ -1244,6 +1244,22 @@ class Outputs(BaseModel):
             "(_dnsjax_stats.json member)."
         ),
     )
+    # Pipe family only (the flows whose default ``res.consistent_imm``
+    # scheme carries solver state beyond the velocity -- its two
+    # spin-quad difference halves, ``_cylindrical_stepping``): write
+    # them as each snapshot's ``carry/`` member, so a resume continues
+    # the trajectory to round-off rather than re-deriving them from the
+    # velocity (a one-off, truncation-sized change).  Two more fields on
+    # a pipe snapshot's three (on the viscoelastic pipe's nine); the
+    # member and its resume rules: :mod:`dnsjax.snapshot`.
+    snapshot_embed_carry: bool = Field(
+        default=True,
+        description=(
+            "Embed the solver's two carried fields in every snapshot "
+            "(carry/ member), so a resume continues exactly; False "
+            "saves their space and re-derives them on resume."
+        ),
+    )
     snapshot_save_initial: bool = Field(
         default=True,
         description=(

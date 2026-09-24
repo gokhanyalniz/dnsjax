@@ -28,6 +28,9 @@ Tests cover:
 8. ``to_solver_basis``/``from_solver_basis`` round-trip: the
    physical/solver component-basis boundary crossed once per state
    (``__main__``), where an inversion error would be silent.
+8b. A ``[force]`` kick's contribution to the carried spin-quad
+    differences, built column by column by the forcer, equals the
+    field map's at the same modes.
 9. Composite integration weights on the radial CGL grid.
 10. ``interpolate_to_axis``: polynomial exactness, parity paths,
     multi-dimensional/complex inputs.
@@ -108,7 +111,6 @@ from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     from_solver_basis,
     get_norm2_cyl,
     interpolate_to_axis,
-    to_solver_basis,
 )
 from dnsjax.sharding import sharding  # noqa: E402
 from dnsjax.solvers import (  # noqa: E402
@@ -762,7 +764,12 @@ def test_pm_basis_round_trip() -> None:
     The pair is crossed once per state at the physical/solver boundary
     (``__main__``), so a silent inversion error would corrupt every
     snapshot, diagnostic and initial condition without failing loudly.
+    ``to_solver_basis`` also appends the pass's carried slots (derived
+    from the velocity), which ``from_solver_basis`` drops: the
+    velocity round-trips exactly both ways.
     """
+    from dnsjax.flows.wall_bounded.pipe import to_solver_basis
+
     Nm = params.res.nz - 1
     Nkz = params.res.nx // 2
     Nr = params.res.ny
@@ -778,7 +785,7 @@ def test_pm_basis_round_trip() -> None:
         err_msg="phys->pm->phys",
     )
     assert_allclose(
-        np.asarray(to_solver_basis(from_solver_basis(state))),
+        np.asarray(to_solver_basis(from_solver_basis(state))[:3]),
         np.asarray(state),
         atol=1e-14,
         err_msg="pm->phys->pm",
@@ -790,6 +797,46 @@ def test_pm_basis_round_trip() -> None:
         atol=0.0,
         err_msg="u_z must pass through",
     )
+
+
+def test_kick_carried_contribution_matches_the_field_map() -> None:
+    r"""A kick moves the carried differences as the field map does.
+
+    A ``[force]`` kick adds velocity columns to a pipe state, so it must
+    add their share of the two carried spin-quad differences as well,
+    which the forcer builds column by column
+    (``StochasticForcer._carried_kick``: ``column_differences`` over
+    ``ModeColumns`` holding each column's `$m$` and `$k_z$`).  The map
+    is linear, so per column it must equal
+    :func:`kinematic_differences` of the whole field at that mode --
+    a check on the forcer's own wavenumber arithmetic too.
+    """
+    from dnsjax.extensions.forcing import StochasticForcer
+    from dnsjax.geometries.wall_bounded._cylindrical_stepping import (
+        kinematic_differences,
+    )
+
+    Nm = params.res.nz - 1
+    Nkz = params.res.nx // 2
+    Nr = params.res.ny
+    rng = np.random.default_rng(13)
+    field = jnp.asarray(
+        rng.standard_normal((3, Nr, Nm, Nkz))
+        + 1j * rng.standard_normal((3, Nr, Nm, Nkz))
+    )
+    whole = np.asarray(kinematic_differences(field, fourier, pipe_flow))
+    pairs = [(1, 0), (2, 1), (0, 1), (Nm - 1, 1)]
+    carried_fn, carry_args = StochasticForcer._carried_kick(None, pairs, True)
+    cols = jnp.stack([field[:, :, i2, i3] for i2, i3 in pairs])
+    got = np.asarray(carried_fn(cols, *carry_args))
+    for k, (i2, i3) in enumerate(pairs):
+        assert_allclose(
+            got[k],
+            whole[:, :, i2, i3],
+            rtol=1e-13,
+            atol=1e-13 * float(np.abs(whole).max()),
+            err_msg=f"column ({i2}, {i3})",
+        )
 
 
 # Group D: Integration

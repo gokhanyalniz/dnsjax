@@ -96,10 +96,13 @@ from ...geometries.wall_bounded._base import (
     extract_mean_mode,
     pad_base_flow,
 )
+from ...geometries.wall_bounded._viscoelastic_common import to_spin_basis
 from ...geometries.wall_bounded.cylindrical import (
+    CARRIED_FIELDS,  # noqa: F401 — re-exported (snapshot carry/ member)
     get_norm2_cyl,
     get_pert_enstrophy_cyl,
     integrate_scalar,
+    with_carried,
 )
 from ...geometries.wall_bounded.cylindrical_viscoelastic import (
     Fourier,
@@ -110,7 +113,6 @@ from ...geometries.wall_bounded.cylindrical_viscoelastic import (
     from_solver_basis,  # noqa: F401 — re-exported (basis boundary)
     get_norm2_conformation,  # noqa: F401 -- available for callers
     parity_d1_even,
-    to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
     viscoelastic_laminar_profiles,
 )
 from ...parameters import derived_params, params
@@ -159,6 +161,25 @@ class ViscoelasticPipeFlow(ViscoelasticCylindricalFlow):
 
 
 flow: ViscoelasticPipeFlow = ViscoelasticPipeFlow()
+
+
+@jit
+def _to_solver_basis_jit(
+    state: Array, fourier_: Fourier, flow_: ViscoelasticPipeFlow
+) -> Array:
+    return with_carried(to_spin_basis(state), fourier_, flow_)
+
+
+def to_solver_basis(state: Array) -> Array:
+    r"""Physical 9-component state -> the solver state.
+
+    The spin map (``_viscoelastic_common.to_spin_basis``), followed --
+    under the default ``res.consistent_imm`` -- by the two spin-quad
+    differences the velocity pass carries, derived from the velocity.
+    ``from_solver_basis`` drops them again.
+    """
+    return _to_solver_basis_jit(state, fourier, flow)
+
 
 (
     _init_state_laminar_zero,  # overridden below

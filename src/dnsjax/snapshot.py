@@ -10,6 +10,8 @@ zarr3 store plus a JSON metadata member::
       state/c/0/0/0/0            component 0 chunk: raw LE complex
       state/c/1/0/0/0            component 1 chunk
       state/c/2/0/0/0            component 2 chunk
+      carry/zarr.json            (optional) solver-carried fields
+      carry/c/0/0/0/0            ... one chunk per carried field
 
 The spectral state is stored as **per-component zarr3 chunks** (one
 chunk per state component), each **byte-identical to the solver's
@@ -173,6 +175,25 @@ holds the state's physical diagnostics (the ``get_stats`` dict as
 ``{name: value}``); readers that do not need it simply ignore the
 extra member.
 
+Solver-carried fields (optional ``carry/``)
+-------------------------------------------
+A second zarr3 array beside ``state``, in the same native layout and
+per-component chunking, holds state the **solver** carries beyond the
+velocity -- today only the pipe family's default scheme, whose two
+spin-quad difference halves are evolved rather than re-derived
+(``_cylindrical_stepping._imm_iteration_vw``; metadata ``carried``
+names them).  They are solver-internal: the stored state is the
+physical velocity as always, and nothing outside the solver's resume
+reads ``carry/``.  With it a resumed run continues its trajectory to
+round-off; without it -- an older snapshot, one a script rewrote, or
+``outs.snapshot_embed_carry = False`` -- the resume re-derives the two
+fields from the velocity, a one-off truncation-sized change.  So does
+a resume that changes any trajectory-defining parameter
+(``__main__``): the stored fields belong to the trajectory they were
+evolved on, and a re-grid or an index-preserving ``geo.lz`` /
+``geo.m0`` change would pair them with a velocity whose modes now mean
+something else.
+
 Resolution changes at load
 --------------------------
 A resume may change **any** resolution axis; nothing about the read
@@ -217,8 +238,10 @@ from .flows.registry import periodic_systems
 from .parameters import derived_params, params
 from .sharding import sharding
 from .snapshot_meta import (
+    CARRY_PREFIX,
     git_hash,
     read_snapshot_meta,
+    snapshot_carry_offsets,
     snapshot_component_offsets,
 )
 
@@ -462,7 +485,7 @@ def _a_ranges(flat_idx: int, a_true: int, ndev: int) -> tuple[int, int]:
 
 
 def _io_local_shape(
-    a_true: int, kz_true: int, kx_true: int
+    a_true: int, kz_true: int, kx_true: int, n_comp: int | None = None
 ) -> tuple[int, ...]:
     r"""Per-device buffer shape in the I/O layout.
 
@@ -479,10 +502,12 @@ def _io_local_shape(
     match the file (the offsets come from the same stored
     ``native_shape``), and :func:`_from_io_layout_core` regrids the
     modes afterwards.  The save path passes the current counts, which
-    are the stored ones by definition.
+    are the stored ones by definition.  *n_comp* is the component
+    count of the array being moved: the state's by default, the
+    carried fields' for the ``carry/`` member.
     """
     return (
-        _n_components(),
+        _n_components() if n_comp is None else n_comp,
         _a_local(a_true, _n_devices()),
         kz_true,
         kx_true,
@@ -900,15 +925,19 @@ def _write_tar_skeleton(
     meta_bytes: bytes,
     zarr_bytes: bytes,
     stats_bytes: bytes | None = None,
+    carry_zarr_bytes: bytes | None = None,
+    n_carry: int = 0,
 ) -> None:
     """Lay out the whole uncompressed tar (process 0 only).
 
-    Small members (metadata, the optional stats JSON, ``zarr.json``) are
-    written in full; the three component members get a correct header
-    followed by a sparse-reserved, zero-filled data region padded to the
-    512-byte block boundary.  The archive ends with the two zero blocks
-    tar expects.  After this the file is full-length, so every device can
-    safely write its disjoint byte ranges into the component regions.
+    Small members (metadata, the optional stats JSON, the ``zarr.json``
+    of the state and, with *n_carry*, of the carried fields) are written
+    in full; each chunk member -- the state's components, then the
+    carried fields' -- gets a correct header followed by a
+    sparse-reserved, zero-filled data region padded to the 512-byte
+    block boundary.  The archive ends with the two zero blocks tar
+    expects.  After this the file is full-length, so every device can
+    safely write its disjoint byte ranges into the chunk regions.
     """
     comp_nbytes = math.prod(comp_shape) * itemsize
     comp_padded = comp_nbytes + (-comp_nbytes) % 512
@@ -916,13 +945,17 @@ def _write_tar_skeleton(
     if stats_bytes is not None:
         members.append(("_dnsjax_stats.json", stats_bytes))
     members.append(("state/zarr.json", zarr_bytes))
+    if n_carry:
+        members.append(("carry/zarr.json", carry_zarr_bytes))
+    chunks = [f"state/c/{c}/0/0/0" for c in range(_n_components())]
+    chunks += [f"{CARRY_PREFIX}{c}/0/0/0" for c in range(n_carry)]
     with open(tar_path, "wb") as f:
         for name, data in members:
             f.write(_tar_header(name, len(data)))
             f.write(data)
             f.write(b"\x00" * ((-len(data)) % 512))
-        for comp in range(_n_components()):
-            f.write(_tar_header(f"state/c/{comp}/0/0/0", comp_nbytes))
+        for name in chunks:
+            f.write(_tar_header(name, comp_nbytes))
             # Sparse-reserve the (zeroed) data + block padding.
             f.seek(comp_padded - 1, 1)
             f.write(b"\x00")
@@ -932,7 +965,9 @@ def _write_tar_skeleton(
 # ── Snapshot metadata ─────────────────────────────────────
 
 
-def _metadata_bytes(t: float, it: int, isnap: int = 0) -> bytes:
+def _metadata_bytes(
+    t: float, it: int, isnap: int = 0, carried: tuple[str, ...] = ()
+) -> bytes:
     r"""Serialise the ``_dnsjax_meta.json`` member content.
 
     ``git_hash`` records the code revision that wrote the snapshot
@@ -948,7 +983,9 @@ def _metadata_bytes(t: float, it: int, isnap: int = 0) -> bytes:
     :func:`dnsjax.param_surface.recorded_params_dump`), mapped back
     by readers via :func:`dnsjax.flows.registry.internalize_stored` /
     ``stored_value``.  Pre-6 snapshots are rejected at
-    :func:`dnsjax.snapshot_meta.read_snapshot_meta`.
+    :func:`dnsjax.snapshot_meta.read_snapshot_meta`.  *carried* names
+    the optional ``carry/`` fields (key ``carried``, present only with
+    them).
     """
     from .param_surface import recorded_params_dump
 
@@ -966,6 +1003,8 @@ def _metadata_bytes(t: float, it: int, isnap: int = 0) -> bytes:
         "wall_normal_grid": derived_params.wall_normal_grid,
         "params": recorded_params_dump(params),
     }
+    if carried:
+        meta["carried"] = list(carried)
     return json.dumps(meta, indent=2, default=str).encode("utf-8")
 
 
@@ -1015,7 +1054,7 @@ def _write_chunks_gds(
         _require_dense(cp_vec)
         off = _a_offset(a_start, kz_true, kx_true) * itemsize
         with cp_vec.device, kvikio.CuFile(str(tar_path), "r+") as f:
-            for comp in range(_n_components()):
+            for comp in range(len(comp_offsets)):
                 slab = cp_vec[comp][:na]
                 n = f.write(slab, file_offset=comp_offsets[comp] + off)
                 # A short write leaves the sparse-reserved zeros of the
@@ -1047,7 +1086,7 @@ def _read_chunks_gds(
 
     itemsize = dtype.itemsize
     a_true, kz_true, kx_true = comp_shape
-    local_shape = _io_local_shape(a_true, kz_true, kx_true)
+    local_shape = _io_local_shape(a_true, kz_true, kx_true, len(comp_offsets))
     per_device: list[Array] = []
     for device in jax.local_devices():
         a_start, na = _a_ranges(
@@ -1064,7 +1103,7 @@ def _read_chunks_gds(
             if na > 0:
                 off = _a_offset(a_start, kz_true, kx_true) * itemsize
                 with kvikio.CuFile(str(tar_path), "r") as f:
-                    for comp in range(_n_components()):
+                    for comp in range(len(comp_offsets)):
                         slab = vec[comp][:na]
                         n = f.read(slab, file_offset=comp_offsets[comp] + off)
                         # Short read = truncated archive; the buffer was
@@ -1155,7 +1194,7 @@ def _write_chunks_host(
             _require_dense(vec)
         off = _a_offset(a_start, kz_true, kx_true) * itemsize
         with open(tar_path, "r+b") as f:
-            for comp in range(_n_components()):
+            for comp in range(len(comp_offsets)):
                 slab = vec[comp][:na]
                 f.seek(comp_offsets[comp] + off)
                 buf = cp.asnumpy(slab) if cp is not None else slab
@@ -1188,7 +1227,7 @@ def _read_chunks_host(
     """
     itemsize = dtype.itemsize
     a_true, kz_true, kx_true = comp_shape
-    local_shape = _io_local_shape(a_true, kz_true, kx_true)
+    local_shape = _io_local_shape(a_true, kz_true, kx_true, len(comp_offsets))
     try:
         import cupy as cp
     except ImportError:
@@ -1206,7 +1245,7 @@ def _read_chunks_host(
                     if na > 0:
                         off = _a_offset(a_start, kz_true, kx_true) * itemsize
                         with open(tar_path, "rb") as f:
-                            for comp in range(_n_components()):
+                            for comp in range(len(comp_offsets)):
                                 dst = vec[comp][:na]
                                 f.seek(comp_offsets[comp] + off)
                                 raw = f.read(dst.nbytes)
@@ -1225,7 +1264,7 @@ def _read_chunks_host(
         if na > 0:
             off = _a_offset(a_start, kz_true, kx_true) * itemsize
             with open(tar_path, "rb") as f:
-                for comp in range(_n_components()):
+                for comp in range(len(comp_offsets)):
                     dst = vec[comp][:na]
                     f.seek(comp_offsets[comp] + off)
                     n = f.readinto(dst)
@@ -1254,6 +1293,8 @@ def save_snapshot(
     *,
     stats: dict | None = None,
     isnap: int = 0,
+    carry: Array | None = None,
+    carry_names: tuple[str, ...] = (),
 ) -> None:
     r"""Save the spectral state to a single-file snapshot.
 
@@ -1292,8 +1333,13 @@ def save_snapshot(
         ``_dnsjax_stats.json`` member (``None`` omits the member).
     isnap:
         Snapshot-lineage index recorded in the metadata.
+    carry, carry_names:
+        Optional solver-carried fields, ``(len(carry_names),
+        *spec_shape)`` in the state's own sharding, written as the
+        ``carry/`` member (module docstring); ``None`` writes none.
     """
     path = Path(path)
+    n_carry = 0 if carry is None else len(carry_names)
     # Everything is written to a sibling and renamed at the end, so
     # the final name never names a half-written archive (see
     # :data:`_PARTIAL_SUFFIX`).
@@ -1306,14 +1352,31 @@ def save_snapshot(
     if sharding.main_device:
         path.parent.mkdir(parents=True, exist_ok=True)
         zarr_bytes = _zarr_json_bytes(on_disk, (1, *comp_shape), dtype_name)
-        meta_bytes = _metadata_bytes(t, it, isnap)
+        carry_zarr = (
+            _zarr_json_bytes(
+                (n_carry, *comp_shape), (1, *comp_shape), dtype_name
+            )
+            if n_carry
+            else None
+        )
+        meta_bytes = _metadata_bytes(
+            t, it, isnap, carry_names if n_carry else ()
+        )
         stats_bytes = None if stats is None else _stats_json_bytes(stats)
         _write_tar_skeleton(
-            partial, comp_shape, itemsize, meta_bytes, zarr_bytes, stats_bytes
+            partial,
+            comp_shape,
+            itemsize,
+            meta_bytes,
+            zarr_bytes,
+            stats_bytes,
+            carry_zarr,
+            n_carry,
         )
     _barrier("snapshot_create")
 
     comp_offsets = snapshot_component_offsets(partial)
+    carry_offsets = snapshot_carry_offsets(partial) if n_carry else None
 
     use_gds = _gds_available()
     if use_gds:
@@ -1324,14 +1387,17 @@ def save_snapshot(
     # Collective, so it must happen outside the serial write mode's
     # rank-ordered section -- and before it, since that section only
     # reorders the writes.
-    state = _to_io_layout(state)
+    parts = [(_to_io_layout(state), comp_offsets)]
+    if carry_offsets is not None:
+        parts.append((_to_io_layout(carry), carry_offsets))
 
-    if params.outs.snapshot_write_mode == "serial":
-        _write_serialized(
-            write_fn, state, partial, comp_offsets, comp_shape, itemsize
-        )
-    else:
-        write_fn(state, partial, comp_offsets, comp_shape, itemsize)
+    for array, offsets in parts:
+        if params.outs.snapshot_write_mode == "serial":
+            _write_serialized(
+                write_fn, array, partial, offsets, comp_shape, itemsize
+            )
+        else:
+            write_fn(array, partial, offsets, comp_shape, itemsize)
     # Every write has landed and every file handle is closed (the
     # engines all use ``with``), so the archive is complete and can
     # take its real name.
@@ -1421,6 +1487,59 @@ def load_snapshot(
     if _n_devices() > 1 or io_shape != solver_shape:
         state = _from_io_layout_core(state, a_src, kz_src, kx_src, ky_dst)
     return state, meta["t"], meta["it"]
+
+
+def load_snapshot_carry(path: str | Path) -> Array | None:
+    r"""The snapshot's solver-carried fields, or ``None``.
+
+    ``None`` when the archive has no ``carry/`` member, and when any
+    axis differs from the current run's -- the stored fields were
+    evolved on the old grid, so a re-gridded resume re-derives them
+    instead (the module docstring; ``__main__`` additionally declines
+    them on any trajectory-defining change).  Otherwise the fields in the
+    solver layout, ``(n_carried, *spec_shape)``, through the same
+    engines and reshard as :func:`load_snapshot`.
+    """
+    path = Path(path)
+    offsets = snapshot_carry_offsets(path)
+    if offsets is None:
+        return None
+    meta = read_metadata(path)
+    comp_shape = tuple(meta["native_shape"][1:])
+    # "Same grid" exactly as ``__main__._interpolate_if_needed`` judges
+    # it for the state, so the two never disagree about a regrid.
+    snap_grid = meta.get("wall_normal_grid")
+    curr_grid = derived_params.wall_normal_grid
+    same_grid = (
+        comp_shape == _true_spec_shape()
+        and snap_grid is not None
+        and len(snap_grid) == len(curr_grid)
+        and np.allclose(snap_grid, curr_grid, atol=1e-12)
+    )
+    if not same_grid:
+        return None
+    a_src, kz_src, kx_src = comp_shape
+    dtype = _np_dtype(meta["dtype"])
+    if _gds_available():
+        per_device = _read_chunks_gds(path, offsets, comp_shape, dtype)
+    else:
+        per_device = _read_chunks_host(path, offsets, comp_shape, dtype)
+    n_carry = len(offsets)
+    io_shape = (
+        n_carry,
+        _a_local(a_src, _n_devices()) * _n_devices(),
+        kz_src,
+        kx_src,
+    )
+    carry = jax.make_array_from_single_device_arrays(
+        io_shape,
+        NamedSharding(sharding.mesh, _io_spec()),
+        per_device,
+    )
+    solver_shape = (n_carry, a_src, sharding.nz_spec, sharding.nx_spec)
+    if _n_devices() > 1 or io_shape != solver_shape:
+        carry = _from_io_layout_core(carry, a_src, kz_src, kx_src, None)
+    return carry
 
 
 def validate_snapshot_params(

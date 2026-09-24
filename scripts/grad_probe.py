@@ -176,22 +176,29 @@ def run_child(a: argparse.Namespace) -> None:
 
     s0 = generate_random_state(0.1, 0.4, 0.4, 0.14, SEED)
 
+    # Physical in, physical out, crossing the basis where ``__main__``
+    # does: the steppers take the solver state (a pipe's also carries
+    # its pass's two spin-quad differences past the velocity).
+    to_solver = getattr(mod, "to_solver_basis", lambda x: x)
+    from_solver = getattr(mod, "from_solver_basis", lambda x: x)
+
     def energy(state):
         """Perturbation energy after ``N_STEPS`` steps from *state*.
 
         The steppers donate their inputs, so a caller that keeps its
         own state hands them a copy.
         """
-        s = jnp.copy(state)
+        s = to_solver(jnp.copy(state))
         if a.scheme == "cnab2":
-            carry = jnp.zeros_like(s)
+            # RHS-shaped: 3 physical components in every row.
+            carry = jnp.zeros_like(s[:3])
             _, carry, *_ = mod.step_cnab2(jnp.copy(s), carry)
             for _ in range(N_STEPS):
                 s, carry, *_ = mod.step_cnab2(s, carry)
         else:
             for _ in range(N_STEPS):
                 s, *_ = mod.predict_and_fully_correct(s)
-        return mod.get_perturbation_energy(s)
+        return mod.get_perturbation_energy(from_solver(s))
 
     rec: dict = {"jvp": None, "grad": None, "fd": None, "ad": None}
     try:

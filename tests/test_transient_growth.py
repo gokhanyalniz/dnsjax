@@ -343,9 +343,13 @@ def _worker(system: str) -> None:
     n2, n3 = sharding.spec_shape[1], sharding.spec_shape[2]
     i2, i3 = 1, 0
 
+    # The raw stepper's own state shape: the velocity, plus the slots a
+    # pipe's pass carries across steps (``flow.n_carried``).
+    n_slots = 3 + getattr(flow, "n_carried", 0)
+
     def _state(all_modes: bool):
         st = jnp.zeros(
-            (3, ny, n2, n3),
+            (n_slots, ny, n2, n3),
             dtype=sharding.complex_type,
             out_sharding=sharding.spec_vector_shard,
         )

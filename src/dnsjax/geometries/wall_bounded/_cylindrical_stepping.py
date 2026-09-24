@@ -29,7 +29,7 @@ reconstruction scheme's shared record in
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from jax import Array
 from jax import numpy as jnp
@@ -243,10 +243,11 @@ def _l_bf(
     # Moving frame: the convective frame term (the same expression
     # ``_get_rhs_core`` adds, diagonal in the solver basis) belongs
     # to the linear coupling, so CN/AB2 integrates it implicitly.
+    # Velocity only: the carried slots have no RHS.
     u_grid = derived_params.u_grid
     if u_grid == 0:
         return l_bf
-    return l_bf + (1j * u_grid) * fourier_.kz * state
+    return l_bf + (1j * u_grid) * fourier_.kz * state[:3]
 
 
 # Per-direction CFL column names, matching the physical-space
@@ -296,7 +297,7 @@ def _get_rhs_core(
     # divergence-free; see ``pad_base_flow``).
     u_grid = derived_params.u_grid
     if u_grid != 0:
-        rhs = rhs + (1j * u_grid) * fourier_.kz * state
+        rhs = rhs + (1j * u_grid) * fourier_.kz * state[:3]
     if measure_fn is None:
         return rhs
     return rhs, measurements
@@ -412,6 +413,144 @@ def _grad_pm(
     )
 
 
+# ── The carried spin-quad differences ───────────────────────────
+
+
+#: Number of trailing slots the default (``res.consistent_imm``) pass
+#: carries in the solver-basis state after `$(w_s, w_+, w_-)$`
+#: (:func:`kinematic_differences`); the legacy primitive pass carries
+#: none.
+N_CARRIED = 2
+
+#: Names of the carried slots, as the snapshot ``carry/`` member
+#: records them (:mod:`dnsjax.snapshot`): the two difference halves.
+CARRIED_FIELDS: tuple[str, str] = ("d_phi", "d_omega")
+
+
+def kinematic_differences(
+    velocity: Array, fourier_: Fourier, flow_: CylindricalFlow
+) -> Array:
+    r"""The spin-quad difference halves a velocity implies.
+
+    ``(2, N_r, ...)``: `$d_\Phi = (\Phi_+ - \Phi_-)/2 = i\,\Phi_\theta$`
+    and `$d_\omega = (\omega_+ - \omega_-)/2 = i\,\omega_\theta$` of a
+    solver-basis *velocity* `$(w_s, w_+, w_-)$`, through the same
+    discrete operators :func:`_imm_iteration_vw` evolves them with --
+    the spin pair of the vector Laplacian (less `$\nabla_0(\nabla_0
+    \cdot w)$` on the curved pipe) and the parity-reduced `$D_1$` in
+    `$\omega_\theta = ik_z w_r - D_1 w_s$` -- and zero on the mean
+    plane, where the pass packs the mean momentum into those slots
+    instead.
+
+    The pass *carries* these two across steps rather than re-deriving
+    them, and this is the one place they come from a velocity: a
+    state entering the solver (``to_solver_basis``) and the columns of
+    a forcing kick.  *fourier_* is anything with the ``m``, ``kz``,
+    ``kz2``, ``m_is_even`` and ``mean_mask`` members the geometry's
+    ``Fourier`` has, broadcast against the trailing axes of
+    *velocity* -- the whole mode plane, or a set of mode columns.
+    """
+    m = fourier_.m
+    psp = fourier_.m_is_even * 2 - 1  # (-1)^m    (u_z)
+    psv = -psp  # (-1)^{m+1} (u_+, u_-)
+    inv_r2_y = flow_.inv_r2[:, None, None, None]
+    pair = jnp.stack([velocity[1], velocity[2]], axis=1)
+    A_pair = _parity_y_matvec(
+        flow_.A_base_pos,
+        flow_.A_base_ghost,
+        pair,
+        jnp.stack([psv, psv], axis=1),
+        component_axis=1,
+    )
+    meff2_pm = jnp.stack([(m + 1) ** 2, (m - 1) ** 2], axis=1)
+    phi_pm = A_pair - (meff2_pm * inv_r2_y + fourier_.kz2[:, None]) * pair
+    physical = from_pm_basis(velocity)
+    if flow_.is_curved:
+        phi_pm = phi_pm - _grad_pm(
+            _straight_divergence(physical, fourier_, flow_), fourier_, flow_
+        )
+    d1_uz = _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, physical[0], psp)
+    d_om = 1j * (1j * fourier_.kz * physical[1] - d1_uz)
+    d_phi = (phi_pm[:, 0] - phi_pm[:, 1]) / 2
+    return jnp.where(fourier_.mean_mask, 0.0, jnp.stack([d_phi, d_om]))
+
+
+class ModeColumns(NamedTuple):
+    r"""The ``Fourier`` members :func:`kinematic_differences` reads, for
+    a set of single mode columns rather than the whole mode plane.
+
+    Each is ``(1, K, 1)`` over the ``K`` columns (the physical azimuthal
+    and axial wavenumbers of each, its `$(-1)^m$` class as ``0``/``1``,
+    and a mean-mode flag), so a ``(C, N_r, K, 1)`` stack of columns
+    broadcasts exactly as a field does.  A pytree (a ``NamedTuple``),
+    so it reaches a jitted function as an argument.
+    """
+
+    m: Array
+    kz: Array
+    kz2: Array
+    m_is_even: Array
+    mean_mask: Array
+
+
+def column_differences(
+    columns: Array, fourier_: ModeColumns, flow_: CylindricalFlow
+) -> Array:
+    """:func:`kinematic_differences` of ``(K, 3, N_r)`` solver-basis
+    mode columns, as ``(K, N_CARRIED, N_r)`` -- a forcing kick's
+    contribution to the carried slots (:mod:`dnsjax.extensions.forcing`)."""
+    field_ = jnp.moveaxis(columns, 0, -1)[..., None]  # (3, N_r, K, 1)
+    diff = kinematic_differences(field_, fourier_, flow_)
+    return jnp.moveaxis(diff[..., 0], -1, 0)
+
+
+def with_carried(
+    state: Array, fourier_: Fourier, flow_: CylindricalFlow
+) -> Array:
+    """*state* followed by its carried slots, if the pass carries any.
+
+    *state* is a solver-basis state without them -- the velocity
+    `$(w_s, w_+, w_-)$`, optionally followed by other evolved
+    components (the viscoelastic conformation) -- and the slots are
+    :func:`kinematic_differences` of its velocity.  The flow modules'
+    ``to_solver_basis`` ends here; on the legacy path it is the
+    identity.
+    """
+    if not flow_.n_carried:
+        return state
+    return jnp.concatenate(
+        [state, kinematic_differences(state[:3], fourier_, flow_)]
+    )
+
+
+def _wall_differences(
+    velocity: Array, fourier_: Fourier, flow_: CylindricalFlow
+) -> tuple[Array, Array]:
+    r"""The spin-quad difference halves a velocity implies *at the wall*.
+
+    ``(d_Phi, d_omega)``, each ``(N_m, N_{k_z})``: the wall-row values of
+    :func:`kinematic_differences`, from two wall-row dot products (no
+    GEMM, and no parity handling -- the ghost correction only touches
+    the first few rows).  The pass's wall rows take them from the
+    corrector iterate, and the carried halves are re-anchored on the
+    accepted velocity's (:func:`_imm_iteration_vw`).
+    """
+    m, kz2 = fourier_.m, fourier_.kz2
+    ikz = 1j * fourier_.kz
+    inv_r = flow_.inv_r[:, None, None]
+    inv_r2 = flow_.inv_r2[:, None, None]
+    pair = velocity[1:3]
+    d1w = jnp.einsum("j, cjmz -> cmz", flow_.D1_wall.ravel(), pair)
+    d2w = jnp.einsum("j, cjmz -> cmz", flow_.D2_wall.ravel(), pair)
+    meff2 = jnp.stack([(m + 1) ** 2, (m - 1) ** 2], axis=1)[0]
+    phi_w = d2w + inv_r[-1] * d1w - (meff2 * inv_r2[-1] + kz2) * pair[:, -1]
+    phys_w = from_pm_basis(velocity[:, -1])
+    om_t_w = ikz[0] * phys_w[1] - jnp.einsum(
+        "j, jmz -> mz", flow_.D1_wall.ravel(), velocity[0]
+    )
+    return (phi_w[0] - phi_w[1]) / 2, 1j * om_t_w
+
+
 # ── IMM iteration (1x1) ─────────────────────────────────────────
 
 
@@ -422,7 +561,8 @@ def _imm_iteration_vw(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: CylindricalFlow,
-) -> tuple[Array, Array, dict[str, Array]]:
+    carried_n: Array,
+) -> tuple[Array, Array, dict[str, Array], Array]:
     r"""`$u_r$`-`$\omega_r$` step via the spin quad
     (``res.consistent_imm``).
 
@@ -623,6 +763,66 @@ def _imm_iteration_vw(
     are load-bearing, not arbitrary.  Record:
     ``investigate-consistent-imm-viscoelastic-pipe-axial-heron.md``.
 
+    The two difference halves are carried, not re-derived -- measured
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Only the sums feed the recovery and the reconstruction, so the
+    differences `$d_\Phi = (\Phi_+ - \Phi_-)/2$` and
+    `$d_\omega = (\omega_+ - \omega_-)/2$` that this pass *solves for*
+    never reach the velocity.  Until 2026-09 they were dropped and, at
+    the next step, re-derived kinematically from the reconstructed
+    state for the explicit half.  The discrete kinematics do not
+    commute with the discrete dynamics -- the commutators are
+    truncation-sized and largest near the axis, where only
+    `$m = \pm 1$` is nonzero -- so each step replaced the solved
+    differences by values `$O(\varepsilon_h)$` off, and that mismatch
+    re-entered the sums through the `$\mp 2im/r^2$` coupling with
+    weight `$\Delta t$`: an `$O(\Delta t\,\varepsilon_h)$` **global**
+    error, i.e. first order in time wherever it dominates the
+    second-order term.  It did at small `$n_r$`: self-convergence from a
+    relaxed state (8x17x8, Re 100) measured orders 0.96 / 1.01 / 1.08
+    at 150x the annulus's error, with the corrector at `$10^{-12}$`;
+    still first order at `$n_r = 33$`, second order by `$n_r = 65$`.
+    The Cartesian and annular passes discard nothing that feeds back
+    and were clean order 2 under the same protocol.
+
+    So the two halves ride as trailing slots of the solver-basis state
+    (*carried_n* in, the last return out; evaluated on the
+    accepted state by :func:`kinematic_differences` only when a state
+    enters the solver): the same configuration then measures 2.00 /
+    2.00 / 2.02, its errors 8x smaller at `$\Delta t = 0.02$` and 64x
+    at `$0.0025$` (1.88e-4 ... 2.89e-6).  Carrying either half alone
+    leaves it first order (0.98 / 1.02 / 1.09 and 0.95 / 1.01 / 1.08).
+    The carried halves do not stay equal to the ones the velocity
+    implies -- they are two discretisations of one continuum quantity
+    -- but the gap between them is spatial truncation, bounded in time
+    and removed by refinement: 20 steps from a relaxed state it is
+    1.1e-1 / 1.2e-2 / 1.1e-3 relative at `$n_r$` = 17 / 33 / 65.
+
+    The halves come from the corrector's *last iterate*, whose wall
+    data the wall row sources through the wall stencil.  Carried as
+    solved, they would keep that iterate's residual, amplified by the
+    stencil (whose weight grows like `$n_r^4$`) -- a residual the
+    re-derived pass threw away every step, and one that a weakly
+    damped mode of the pipe's step (present before the carry, at low
+    `$\mathrm{Re}$` on fine grids) lets accumulate: at Re 100 /
+    `$n_r = 128$` and the default tolerance it moved `$E'$` by 1.7e-3
+    after 1000 steps.  So the last stage re-anchors both halves on the
+    *accepted* velocity's wall data, a rank-one update per mode through
+    the unit response's sum half (``phi_1_sum``), leaving what a fully
+    converged corrector would carry; that run then sits 1.6e-5 from
+    its own `$10^{-12}$` result.  At the default tolerance (`$10^{-5}$`)
+    the order study above reaches the corrector's ordinary floor at its
+    smallest step (3.7e-6 against 2.9e-6), still 8-50x below the
+    re-derived pass at every step size.
+    The influence-matrix correction reaches the differences as well,
+    through ``flow.phi_1_diff``, the difference half of the unit-wall
+    `$\Phi$` response.  They are not a representation of the state in
+    their own right, only the part of the evolved quad the velocity
+    does not determine, so nothing outside the stepper reads them
+    (``from_solver_basis`` drops them); a snapshot stores them
+    separately so that a resume continues exactly
+    (``outs.snapshot_embed_carry``).
+
     Parity
     ~~~~~~
     All four evolved scalars carry the velocity parity
@@ -673,49 +873,44 @@ def _imm_iteration_vw(
     state_n = from_pm_basis(velocity_n)
     nonlin = from_pm_basis(c * nonlin_j + (1 - c) * nonlin_n)
 
-    # Stage 1: one batched `$A_\mathrm{base}$` over the v-parity state
-    # pair, and one batched D1 over the three z-parity fields
-    # (D1_pos/D1_ghost are parity-independent; only the ghost sign
-    # differs).  The pair needs `$D_2 + (1/r) D_1$` and nothing else
-    # from `$D_1$`, so it takes the fused operator rather than riding
-    # the D1 stack: the pair costs 2 GEMMs where a `$D_1$` and a
-    # `$D_2$` were 4, taking the stage from 7 to 5, and the field-sized
-    # `$1/r$` multiply-add over the pair goes with them.
+    # Stage 1: the t^n quad needs only its two *sums* from the state
+    # (the differences are carried; docstring), and the sum of the
+    # vector-Laplacian spin pair is `$A_\mathrm{base}$` of `$u_r$`
+    # alone -- one fused matvec -- while the sources need one batched
+    # D1 over the two z-parity fields (D1_pos/D1_ghost are
+    # parity-independent; only the ghost sign differs).
     # GEMM counts here and below are **full-width `pos` field-GEMMs**
     # -- one `$N_r \times N_r$` matrix against one field.  The
     # `$g \times N_r$` ghost partner of each rides along at ~`$g/N_r$`
     # of that cost and is not counted.
-    pair_n = jnp.stack([velocity_n[1], velocity_n[2]], axis=1)
     d1_in = jnp.stack(
         [
-            state_n[0],  # u_z^n       (z) -> omega_theta
             nonlin[0],  # N_z          (z) -> C_theta
             flow_.rs[:, None, None] * nonlin[2],  # (z) -> C_z
         ],
         axis=1,
     )
-    par_v2 = jnp.stack([psv, psv], axis=1)
     d1 = _parity_y_matvec(
         flow_.D1_pos,
         flow_.D1_ghost,
         d1_in,
-        jnp.stack([psp, psp, psp], axis=1),
+        jnp.stack([psp, psp], axis=1),
         component_axis=1,
     )
     inv_r2_y = inv_r2[..., None]  # (Nr, 1, 1, 1) over the C axis
     kz2_y = kz2[:, None]
-    A_pair = _parity_y_matvec(
-        flow_.A_base_pos,
-        flow_.A_base_ghost,
-        pair_n,
-        par_v2,
-        component_axis=1,
-    )
+    ur_n, ut_n = state_n[1], state_n[2]
+    A_ur = _parity_y_matvec(flow_.A_base_pos, flow_.A_base_ghost, ur_n, psv)
 
-    # Stage 2: the evolved quad, recomputed on FULL rows (wall
-    # included) from the carried u_+/u_- state.
-    meff2_pm = jnp.stack([(m + 1) ** 2, (m - 1) ** 2], axis=1)
-    phi_pm = A_pair - (meff2_pm * inv_r2_y + kz2_y) * pair_n
+    # Stage 2: the evolved quad at t^n, on FULL rows (wall included):
+    # the sums from the accepted state, the differences as carried.
+    # The spin pair's sum is the radial vector Laplacian,
+    # `$((m+1)^2 u_+ + (m-1)^2 u_-)/2 = (m^2 + 1) u_r + 2im\,u_\theta$`.
+    phi_sum = (
+        A_ur
+        - ((fourier_.m2 + 1.0) * inv_r2 + kz2) * ur_n
+        - 2.0 * im * inv_r2 * ut_n
+    )
     if flow_.is_curved:
         # The evolved `$\Phi = -\nabla_0\times\nabla_0\times w$` is
         # the *solenoidal* Laplacian, which is what makes its evolution
@@ -723,13 +918,17 @@ def _imm_iteration_vw(
         # vector Laplacian above overshoots it by
         # `$\nabla_0(\nabla_0\cdot w)$` -- identically zero on the
         # straight pipe, `$O(\kappa)$` here, and exactly evaluable at
-        # `$t^n$` from the accepted state.
-        phi_pm = phi_pm - _grad_pm(
-            _straight_divergence(state_n, fourier_, flow_), fourier_, flow_
+        # `$t^n$` from the accepted state; its radial component (the
+        # sum half of :func:`_grad_pm`) is `$D_1$` of the divergence.
+        phi_sum = phi_sum - _parity_y_matvec(
+            flow_.D1_pos,
+            flow_.D1_ghost,
+            _straight_divergence(state_n, fourier_, flow_),
+            psp,
         )
-    ur_n, ut_n = state_n[1], state_n[2]
     om_r_n = im * inv_r * state_n[0] - ikz * ut_n
-    om_t_n = ikz * ur_n - d1[:, 0]  # D1 u_z^n
+    d_phi_n, d_om_n = carried_n[0], carried_n[1]
+    phi_pm = jnp.stack([phi_sum + d_phi_n, phi_sum - d_phi_n], axis=1)
 
     def _pack(minus_slot: Array, plus_val: Array, minus_val: Array) -> Array:
         """Mean-plane packing of one spin pair (docstring)."""
@@ -744,7 +943,7 @@ def _imm_iteration_vw(
     zero = jnp.zeros_like(mean_mask, dtype=phi_pm.dtype)
     phi_pm = _pack(phi_pm, zero, state_n[0])  # Phi_- carries u_z00
     om_pm_n = _pack(
-        jnp.stack([om_r_n + 1j * om_t_n, om_r_n - 1j * om_t_n], axis=1),
+        jnp.stack([om_r_n + d_om_n, om_r_n - d_om_n], axis=1),
         ut_n,  # omega_+ carries u_theta00
         zero,
     )
@@ -753,8 +952,8 @@ def _imm_iteration_vw(
     # with the conservative C_z that annihilates a discrete gradient
     # exactly (the annular docstring).
     C_r = im * inv_r * nonlin[0] - ikz * nonlin[2]
-    C_t = ikz * nonlin[1] - d1[:, 1]  # D1 N_z
-    C_z = inv_r * (d1[:, 2] - im * nonlin[1])
+    C_t = ikz * nonlin[1] - d1[:, 0]  # D1 N_z
+    C_z = inv_r * (d1[:, 1] - im * nonlin[1])
     d1_Cz = _parity_y_matvec(flow_.D1_pos, flow_.D1_ghost, C_z, psp)
     cc_r = im * inv_r * C_z - ikz * C_t
     cc_t = ikz * C_r - d1_Cz
@@ -811,24 +1010,8 @@ def _imm_iteration_vw(
     # Wall row: the sums take zero (omega_r's physical value, and
     # Phi's arbitrary particular choice); the differences are evaluated
     # on the corrector ITERATE, so the fixed point carries them at
-    # t^{n+1} and no lag survives (docstring).  Two wall-row dot
-    # products, not GEMMs -- and no parity handling, because the ghost
-    # correction only ever touches the first g rows.
-    pair_j = velocity_j[1:3]
-    d1w_pair = jnp.einsum("j, cjmz -> cmz", flow_.D1_wall.ravel(), pair_j)
-    d2w_pair = jnp.einsum("j, cjmz -> cmz", flow_.D2_wall.ravel(), pair_j)
-    meff2_w = meff2_pm[0]  # (2, Nm, 1); wall-independent
-    phi_w = (
-        d2w_pair
-        + inv_r[-1] * d1w_pair
-        - (meff2_w * inv_r2[-1] + kz2) * pair_j[:, -1]
-    )
-    state_j_w = from_pm_basis(velocity_j[:, -1])
-    om_t_w = ikz[0] * state_j_w[1] - jnp.einsum(
-        "j, jmz -> mz", flow_.D1_wall.ravel(), velocity_j[0]
-    )
-    d_phi = (phi_w[0] - phi_w[1]) / 2
-    d_om = 1j * om_t_w
+    # t^{n+1} and no lag survives (docstring).
+    d_phi, d_om = _wall_differences(velocity_j, fourier_, flow_)
     wall = jnp.where(
         mean_mask[0], 0.0, jnp.stack([d_phi, -d_phi, d_om, -d_om])
     )
@@ -879,7 +1062,8 @@ def _imm_iteration_vw(
     # Stage 6: influence matrix (1x1) -- the free Phi wall value that
     # makes (D1 u_r)|wall = 0.
     d_wall = jnp.einsum("j, jmz -> mz", flow_.D1_wall.ravel(), ur_arb)
-    ur_new = ur_arb + (-flow_.M_inv * d_wall)[None] * flow_.ur_1
+    alpha = (-flow_.M_inv * d_wall)[None]
+    ur_new = ur_arb + alpha * flow_.ur_1
 
     # Stage 7: per-point reconstruction of (u_z, u_theta) from the
     # continuity row and the omega_r definition.
@@ -903,7 +1087,34 @@ def _imm_iteration_vw(
     velocity_new = to_pm_basis(jnp.stack([uz_new, ur_new, ut_new]))
     correction = velocity_new - velocity_j
 
-    return velocity_new, correction, aux
+    # The difference halves of the solved quad, for the next step: the
+    # particular solve's plus the influence correction's (the unit-wall
+    # response puts the same alpha into both slots, whose difference
+    # half is ``phi_1_diff``).  Their wall values came from the ITERATE
+    # (the wall row above), which the accepted velocity differs from by
+    # the corrector residual -- amplified by the wall stencil, and,
+    # carried, no longer thrown away at the next step.  So they are
+    # re-anchored on the accepted velocity: a wall datum changed by
+    # `$\pm\Delta$` across the pair moves the difference half by
+    # `$\Delta$` times the unit response's *sum* half
+    # (``phi_1_sum``), leaving exactly what a fully converged corrector
+    # would have carried (docstring).  Zero on the mean plane, where
+    # the slots held the packed mean momentum.
+    d_phi_new, d_om_new = _wall_differences(velocity_new, fourier_, flow_)
+    carried_new = jnp.where(
+        mean_mask,
+        0.0,
+        jnp.stack(
+            [
+                (phi_arb_pm[:, 0] - phi_arb_pm[:, 1]) / 2
+                + alpha * flow_.phi_1_diff
+                + (d_phi_new - d_phi)[None] * flow_.phi_1_sum,
+                (om_pm[:, 0] - om_pm[:, 1]) / 2
+                + (d_om_new - d_om)[None] * flow_.phi_1_sum,
+            ]
+        ),
+    )
+    return velocity_new, correction, aux, carried_new
 
 
 def _imm_iteration(
@@ -913,9 +1124,16 @@ def _imm_iteration(
     nonlin_j: Array,
     fourier_: Fourier,
     flow_: CylindricalFlow,
-) -> tuple[Array, Array, dict[str, Array]]:
+    carried_n: Array | None = None,
+) -> tuple[Array, Array, dict[str, Array], Array | None]:
     r"""One implicit cylindrical step: dispatch on
     ``res.consistent_imm``.
+
+    Returns ``(velocity_new, correction, aux, carried_new)``: the
+    default pass takes and returns the two carried spin-quad
+    differences (*carried_n*, :data:`N_CARRIED` slots; see
+    :func:`_imm_iteration_vw`), the legacy one carries nothing and
+    returns ``None`` there.
 
     Two formulations of the same second-order-in-time scheme, sharing
     the carried `$(u_z, u_+, u_-)$` state, the signature, the parity
@@ -957,13 +1175,22 @@ def _imm_iteration(
     """
     if params.res.consistent_imm:
         return _imm_iteration_vw(
-            velocity_n, velocity_j, nonlin_n, nonlin_j, fourier_, flow_
+            velocity_n,
+            velocity_j,
+            nonlin_n,
+            nonlin_j,
+            fourier_,
+            flow_,
+            carried_n,
         )
 
     from . import _cylindrical_primitive_imm as prim
 
-    return prim._imm_iteration_vp(
-        velocity_n, velocity_j, nonlin_n, nonlin_j, fourier_, flow_
+    return (
+        *prim._imm_iteration_vp(
+            velocity_n, velocity_j, nonlin_n, nonlin_j, fourier_, flow_
+        ),
+        None,
     )
 
 
@@ -974,9 +1201,8 @@ def _predict(
     flow_: CylindricalFlow,
 ) -> Array:
     """Euler predictor via the cylindrical IMM."""
-    nonlin_n = rhs_no_lapl
-    prediction_state, _, _ = _imm_iteration(
-        velocity_n, velocity_n, nonlin_n, nonlin_n, fourier_, flow_
+    prediction_state, _, _ = _correct(
+        velocity_n, velocity_n, rhs_no_lapl, rhs_no_lapl, fourier_, flow_
     )
     return prediction_state
 
@@ -991,18 +1217,28 @@ def _correct(
 ) -> tuple[Array, Array, dict[str, Array]]:
     """Crank-Nicolson corrector via the cylindrical IMM.
 
+    The solver-basis state is the velocity followed by the pass's
+    carried slots (``flow.n_carried``, zero on the legacy path): the
+    pass reads the carried ones from *state_prev* -- they are `$t^n$`
+    quantities, fixed across the corrector iterations -- and returns
+    the new ones with the velocity.  The correction, and so the
+    convergence norm, is the velocity's alone.
+
     Third return: the corrector-side *aux* diagnostics, here the
     applied mean-mode driving (:func:`_apply_bulk_correction`).
     """
-    prediction_state_new, correction, aux = _imm_iteration(
-        state_prev,
-        prediction_state,
+    velocity_new, correction, aux, carried_new = _imm_iteration(
+        state_prev[:3],
+        prediction_state[:3],
         rhs_prev,
         rhs_next,
         fourier_,
         flow_,
+        state_prev[3:] if flow_.n_carried else None,
     )
-    return prediction_state_new, correction, aux
+    if carried_new is None:
+        return velocity_new, correction, aux
+    return jnp.concatenate([velocity_new, carried_new]), correction, aux
 
 
 def _norm(
@@ -1061,7 +1297,8 @@ def build_stepper(
     treats it implicitly; ``_build_dt_leaves`` backs the adaptive-dt
     ``set_dt`` rebuild.  Every array crossing these steppers is in
     the decoupled `$(u_z, u_+, u_-)$` solver basis (the module
-    docstring).
+    docstring), the states followed by the pass's carried slots
+    (:func:`_correct`).
     """
     return build_wall_bounded_stepper(
         _get_rhs,

@@ -103,6 +103,7 @@ from dnsjax.flows.wall_bounded.viscoelastic_pipe import (  # noqa: E402
     get_stats,
     init_state,
     predict_and_fully_correct,
+    to_solver_basis,
 )
 from dnsjax.geometries.wall_bounded._viscoelastic_common import (  # noqa: E402
     PHYS_COMBO_SPIN,
@@ -483,7 +484,10 @@ def test_laminar_full_step_fixed_point() -> None:
     matrix, at `$\epsilon = 0$` where `$W = 1 - r^2$` is the exact
     profile.
     """
-    state = to_spin_basis(init_state())
+    # Into the solver through the flow's own map: the pipe's solver
+    # state also carries the velocity pass's two spin-quad differences
+    # (``_cylindrical_stepping``), which the raw spin map lacks.
+    state = to_solver_basis(init_state())
     stepped, err, *_ = predict_and_fully_correct(jnp.copy(state))
     drift = float(jnp.abs(stepped - state).max())
     assert drift < 1e-12, f"laminar step drift {drift:.2e}"

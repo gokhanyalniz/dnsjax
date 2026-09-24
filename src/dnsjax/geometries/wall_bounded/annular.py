@@ -118,6 +118,7 @@ ready-to-use time-stepping functions.
 import copy
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import jax
 import numpy as np
@@ -766,6 +767,12 @@ class AnnularFlow:
         Live time step and AB2 step ratio, 0-d array leaves (see
         ``CartesianFlow`` and the builder ``set_dt``).
     """
+
+    #: Trailing carried slots of the solver-basis state: none -- the
+    #: annular pass evolves exactly as many scalars as it reconstructs
+    #: from (the pipe's does not; ``_cylindrical_stepping``).  Read by
+    #: the viscoelastic stepper shared with the pipe.
+    n_carried: ClassVar[int] = 0
 
     dt: Array = field(init=False)
     ab2_kappa: Array = field(init=False)

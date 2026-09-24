@@ -47,7 +47,9 @@ from dataclasses import dataclass
 from jax import Array, jit
 from jax import numpy as jnp
 
+from ...geometries.wall_bounded._base import to_pm_basis
 from ...geometries.wall_bounded.cylindrical import (
+    CARRIED_FIELDS,  # noqa: F401 — re-exported (snapshot carry/ member)
     CylindricalFlow,
     Fourier,
     build_cylindrical_stepper,
@@ -59,7 +61,7 @@ from ...geometries.wall_bounded.cylindrical import (
     integrate_scalar,
     mean_driving,
     pad_base_flow,
-    to_solver_basis,  # noqa: F401 — re-exported (basis boundary)
+    with_carried,
 )
 from ...geometries.wall_bounded.cylindrical import (
     frozen_profile_flow as _frozen_flow_copy,
@@ -127,6 +129,26 @@ class PipeFlow(CylindricalFlow):
 
 
 flow: PipeFlow = PipeFlow()
+
+
+@jit
+def _to_solver_basis_jit(
+    state: Array, fourier_: Fourier, flow_: PipeFlow
+) -> Array:
+    return with_carried(to_pm_basis(state), fourier_, flow_)
+
+
+def to_solver_basis(state: Array) -> Array:
+    r"""Physical `$(u_z, u_r, u_\theta)$` -> the solver state.
+
+    The `$u_\pm$` rotation, followed -- under the default
+    ``res.consistent_imm`` -- by the two spin-quad differences the pass
+    carries, derived from this velocity
+    (:func:`~dnsjax.geometries.wall_bounded._cylindrical_stepping.with_carried`).
+    ``from_solver_basis`` drops them again.
+    """
+    return _to_solver_basis_jit(state, fourier, flow)
+
 
 (
     init_state,

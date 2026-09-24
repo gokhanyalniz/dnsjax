@@ -28,6 +28,7 @@ from ._family import (
     CYLINDRICAL_GRIDS,
     DEFERRED_MEAN_FLOW,
     DEFERRED_TILT,
+    PIPE_CARRY_FIELDS,
     cyl_annular_fields,
     wall_fields,
 )
@@ -116,6 +117,7 @@ SPEC = FlowSpec(
     fields=(
         *_WALL_FIELDS,
         *_ALIAS_FIELDS,
+        *PIPE_CARRY_FIELDS,
         FieldSpec(
             "geo",
             "curvature",

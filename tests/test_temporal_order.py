@@ -311,7 +311,11 @@ def _worker(
     if scheme == "cnab2":
         # __main__ bootstrap: discarded priming call seeds the AB2
         # history, the first integration step is iterative-CN.
-        _, carry, *_ = fmod.step_cnab2(jnp.copy(state), jnp.zeros_like(state))
+        # (RHS-shaped seed: every system here has 3 physical
+        # components; a pipe state also carries 2 solver slots.)
+        _, carry, *_ = fmod.step_cnab2(
+            jnp.copy(state), jnp.zeros_like(state[:3])
+        )
         for i, step_dt in enumerate(seq):
             if step_dt != prev_dt:
                 fmod.set_dt(step_dt)

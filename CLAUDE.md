@@ -679,7 +679,13 @@ every family — the cyl/annular `u_±`/spin working basis is converted
 at the write/read boundary (`wall_bounded/CLAUDE.md`) — and the stored
 state is the spectral perturbation `u'` for base-flow systems (laminar
 = zero array), the **total** field for dean/viscoelastic-dean/
-viscoelastic-pipe. The embedded `params` dump is the flow-relevant,
+viscoelastic-pipe. The pipe family's solver state carries two more
+fields than it stores (its default scheme's spin-quad differences):
+`from_solver_basis` drops them, `to_solver_basis` re-derives them, and
+a snapshot keeps them only in its optional `carry/` member
+(`outs.snapshot_embed_carry`), which a resume restores only on an
+unchanged trajectory (`__main__`, `snapshot.load_snapshot_carry`).
+The embedded `params` dump is the flow-relevant,
 resolved, **public-named** surface representation plus the relevant
 extension sections (`param_surface.recorded_params_dump`); readers map
 it back via `flows.registry.internalize_stored` / `stored_value`.

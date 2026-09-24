@@ -66,8 +66,13 @@ def make_stepper(
     makes that safe is that every place the stepper combines arrays it
     combines **state with state or RHS with RHS, never one with the
     other**; the geometry's ``correct_fn`` owns the only crossing.  A
-    future ``state + rhs`` line here would break those paths silently,
-    with correct shapes and dtypes throughout.
+    state may even carry trailing slots its RHS has no counterpart for
+    at all -- the pipe family's carried spin-quad differences
+    (``_cylindrical_stepping._imm_iteration_vw``) -- under the same
+    rule, which is also why a cnab2 carry is seeded RHS-shaped
+    (``zeros_like(state[:n_components])``, the flow's physical count).
+    A future ``state + rhs`` line here would break those paths
+    silently, with correct shapes and dtypes throughout.
 
     Parameters
     ----------

@@ -52,8 +52,10 @@ from ...geometries.wall_bounded._base import (
     to_pm_basis,
 )
 from ...geometries.wall_bounded._cylindrical_stepping import (
+    CARRIED_FIELDS,  # noqa: F401 — re-exported (snapshot carry/ member)
     _curl_fn,
     _get_rhs,
+    with_carried,
 )
 from ...geometries.wall_bounded.cylindrical import (
     Fourier,
@@ -118,6 +120,8 @@ def _physical_velocity(state: Array, flow_: CurvedPipeFlow) -> Array:
     couples every azimuthal mode, so the division is done where it is
     pointwise -- one transform round trip on one field, paid once per
     stats or snapshot interval rather than per corrector iteration.
+    Reads the three velocity slots only, so a solver state's carried
+    slots are dropped.
     """
     physical = from_pm_basis(state)
     unweighted = phys_to_spec_2d(
@@ -127,8 +131,10 @@ def _physical_velocity(state: Array, flow_: CurvedPipeFlow) -> Array:
 
 
 @jit
-def _to_solver_basis_jit(state: Array, flow_: CurvedPipeFlow) -> Array:
-    return _carried_velocity(state, flow_)
+def _to_solver_basis_jit(
+    state: Array, fourier_: Fourier, flow_: CurvedPipeFlow
+) -> Array:
+    return with_carried(_carried_velocity(state, flow_), fourier_, flow_)
 
 
 @jit
@@ -137,14 +143,18 @@ def _from_solver_basis_jit(state: Array, flow_: CurvedPipeFlow) -> Array:
 
 
 def to_solver_basis(state: Array) -> Array:
-    r"""Physical `$(u_s, u_r, u_\theta)$` -> the carried state.
+    r"""Physical `$(u_s, u_r, u_\theta)$` -> the solver state.
 
-    :func:`_carried_velocity`, jitted with the flow as an **argument**:
-    the metric is a global array, which a jit closing over it would
-    bake into the program as a constant -- accepted on one process,
-    refused at trace time by a multi-process run.
+    The carried velocity `$(w_s, w_+, w_-)$` (:func:`_carried_velocity`)
+    followed, under the default ``res.consistent_imm``, by the two
+    spin-quad differences the pass carries, derived from it
+    (:func:`~dnsjax.geometries.wall_bounded._cylindrical_stepping.with_carried`).
+    Jitted with the flow as an **argument**: the metric is a global
+    array, which a jit closing over it would bake into the program as
+    a constant -- accepted on one process, refused at trace time by a
+    multi-process run.
     """
-    return _to_solver_basis_jit(state, flow)
+    return _to_solver_basis_jit(state, fourier, flow)
 
 
 def from_solver_basis(state: Array) -> Array:

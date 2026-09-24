@@ -270,10 +270,15 @@ def _bench_step_cnab2(step_cnab2, state, n: int, warmup: int = 3):
     """
     import jax.numpy as jnp
 
+    from dnsjax.flows.registry import spec_for
+    from dnsjax.parameters import params
+
     s = jnp.copy(state)
     # seed rhs_prev = N(u^0); step_cnab2 returns (state, carry,
-    # error, num_c)
-    _, rp, *_ = step_cnab2(jnp.copy(s), jnp.zeros_like(s))
+    # error, num_c).  RHS-shaped: the flow's physical components, not
+    # a pipe state's trailing carried slots.
+    n_phys = spec_for(params.phys.system).n_components
+    _, rp, *_ = step_cnab2(jnp.copy(s), jnp.zeros_like(s[:n_phys]))
     for _ in range(warmup):
         s, rp, _err, _c, *_ = step_cnab2(s, rp)
     jax.block_until_ready(s)
@@ -300,6 +305,19 @@ def _hbm_peak(override: float | None) -> tuple[float | None, str]:
 def _sm_count() -> int | None:
     """Streaming-multiprocessor count of device 0 (GPU only)."""
     return getattr(jax.devices()[0], "core_count", None)
+
+
+def _imm_apply(geom, s, r, fourier, flow):
+    """One ``_imm_iteration`` at ``(u^n, u^j) = (s, s)``, ``N = r``.
+
+    A pipe state carries the pass's two spin-quad differences after the
+    velocity (``flow.n_carried`` slots); they go to the pass as its
+    `$t^n$` input, exactly as the corrector hands them over.
+    """
+    if getattr(flow, "n_carried", 0):
+        v = s[:3]
+        return geom._imm_iteration(v, v, r, r, fourier, flow, s[3:])
+    return geom._imm_iteration(s, s, r, r, fourier, flow)
 
 
 def _ms(sec: float) -> str:
@@ -1375,14 +1393,17 @@ def _stages_vw_cyl(
 ) -> None:
     r"""Stage split of the **cylindrical** (pipe) spin-quad pass.
 
-    Transcribes ``cylindrical._imm_iteration_vw`` stage for stage.
-    Read against :func:`_stages_vw_ann` (same curvilinear algebra, no
-    quad, no parity) and :func:`_stages_vw` (neither), this is what
-    attributes the pipe's measured ~2x ``_imm_iteration`` at equal
-    solve cost.  The pipe-only costs are, by construction:
+    Transcribes ``_cylindrical_stepping._imm_iteration_vw`` stage for
+    stage.  Read against :func:`_stages_vw_ann` (same curvilinear
+    algebra, no quad, no parity) and :func:`_stages_vw` (neither), this
+    is what attributes the pipe's measured ~2x ``_imm_iteration`` at
+    equal solve cost.  The pipe-only costs are, by construction:
 
     1. the spin quad -- four evolved scalars against two, so stage 4's
-       `$A = D_2 + (1/r) D_1$` runs on a 4-wide stack;
+       `$A = D_2 + (1/r) D_1$` runs on a 4-wide stack (the quad's two
+       difference halves are carried across steps, so its `$t^n$`
+       assembly needs `$A$` on `$u_r$` alone, and the last stage
+       returns the new halves);
     2. the parity reduction -- there is no single ``D1``, so every
        matvec is :func:`~...cylindrical._parity_y_matvec`, a ``pos``
        GEMM plus a ``g``-row ``ghost`` GEMM and a scatter-add;
@@ -1397,6 +1418,9 @@ def _stages_vw_cyl(
     from dnsjax.geometries.wall_bounded._base import (
         from_pm_basis,
         to_pm_basis,
+    )
+    from dnsjax.geometries.wall_bounded._cylindrical_stepping import (
+        _wall_differences,
     )
     from dnsjax.geometries.wall_bounded.cylindrical import _parity_y_matvec
     from dnsjax.parameters import derived_params
@@ -1433,45 +1457,38 @@ def _stages_vw_cyl(
             from_pm_basis(c * nonlin_j + (1 - c) * nonlin_n),
         )
 
-    def quad_asm(velocity_n, state_n, nonlin):
-        # Stages 1-2: the batched parity-reduced D1 (5-wide) and D2
-        # (2-wide), the evolved quad, and the mean-plane packing.
-        pair_n = jnp.stack([velocity_n[1], velocity_n[2]], axis=1)
+    def quad_asm(carried_n, state_n, nonlin):
+        # Stages 1-2: the batched parity-reduced D1 (2-wide), the fused
+        # A on u_r alone (the quad's t^n sums; its differences are
+        # carried), the evolved quad and the mean-plane packing.
         d1_in = jnp.stack(
-            [
-                state_n[0],
-                nonlin[0],
-                flow.rs[:, None, None] * nonlin[2],
-            ],
-            axis=1,
+            [nonlin[0], flow.rs[:, None, None] * nonlin[2]], axis=1
         )
         d1 = _parity_y_matvec(
             flow.D1_pos,
             flow.D1_ghost,
             d1_in,
-            jnp.stack([psp, psp, psp], axis=1),
+            jnp.stack([psp, psp], axis=1),
             component_axis=1,
         )
-        A_pair = _parity_y_matvec(
-            flow.A_base_pos,
-            flow.A_base_ghost,
-            pair_n,
-            jnp.stack([psv, psv], axis=1),
-            component_axis=1,
-        )
-        meff2_pm = jnp.stack([(m + 1) ** 2, (m - 1) ** 2], axis=1)
-        phi_pm = A_pair - (meff2_pm * inv_r2_y + kz2_y) * pair_n
         ur_n, ut_n = state_n[1], state_n[2]
+        A_ur = _parity_y_matvec(flow.A_base_pos, flow.A_base_ghost, ur_n, psv)
+        phi_sum = (
+            A_ur
+            - ((fourier.m2 + 1.0) * inv_r2 + kz2) * ur_n
+            - 2.0 * im * inv_r2 * ut_n
+        )
         om_r_n = im * inv_r * state_n[0] - ikz * ut_n
-        om_t_n = ikz * ur_n - d1[:, 0]
+        d_phi_n, d_om_n = carried_n[0], carried_n[1]
+        phi_pm = jnp.stack([phi_sum + d_phi_n, phi_sum - d_phi_n], axis=1)
         zero = jnp.zeros_like(mean_mask, dtype=phi_pm.dtype)
         phi_pm = _pack(phi_pm, zero, state_n[0])
         om_pm_n = _pack(
-            jnp.stack([om_r_n + 1j * om_t_n, om_r_n - 1j * om_t_n], axis=1),
+            jnp.stack([om_r_n + d_om_n, om_r_n - d_om_n], axis=1),
             ut_n,
             zero,
         )
-        return phi_pm, om_pm_n, d1[:, 1], d1[:, 2]
+        return phi_pm, om_pm_n, d1[:, 0], d1[:, 1]
 
     def sources(nonlin, d1_3, d1_4):
         # Stage 3: the conservative discrete double curl.
@@ -1544,13 +1561,16 @@ def _stages_vw_cyl(
         return R_quad.at[-1].set(wall)
 
     def influence_reconstruct(
-        velocity_j, phi_arb, omega_new, ur_arb, uz_mean, ut_mean
+        velocity_j, phi_arb, omega_new, ur_arb, phi_arb_pm, om_pm
     ):
-        # Stages 6-8 + the exit basis crossing.
+        # Stages 6-8, the exit basis crossing and the new carried
+        # differences.
+        uz_mean, ut_mean = phi_arb_pm[:, 1], om_pm[:, 0]
         det = kz2 + fourier.m2 * inv_r2
         inv_det = 1.0 / jnp.where(mean_mask, 1.0, det)
         d_wall = jnp.einsum("j, jmz -> mz", flow.D1_wall.ravel(), ur_arb)
-        ur_new = ur_arb + (-flow.M_inv * d_wall)[None] * flow.ur_1
+        alpha = (-flow.M_inv * d_wall)[None]
+        ur_new = ur_arb + alpha * flow.ur_1
         d1_ur = _parity_y_matvec(flow.D1_pos, flow.D1_ghost, ur_new, psv)
         chi = -(d1_ur + inv_r * ur_new)
         b_th = im * inv_r
@@ -1559,16 +1579,41 @@ def _stages_vw_cyl(
         uz_new = jnp.where(mean_mask, uz_mean, uz_new)
         ut_new = jnp.where(mean_mask, ut_mean, ut_new)
         ur_new = jnp.where(mean_mask, 0.0, ur_new)
-        return to_pm_basis(jnp.stack([uz_new, ur_new, ut_new])) - velocity_j
+        carried_new = jnp.where(
+            mean_mask,
+            0.0,
+            jnp.stack(
+                [
+                    (phi_arb_pm[:, 0] - phi_arb_pm[:, 1]) / 2
+                    + alpha * flow.phi_1_diff,
+                    (om_pm[:, 0] - om_pm[:, 1]) / 2,
+                ]
+            ),
+        )
+        velocity_new = to_pm_basis(jnp.stack([uz_new, ur_new, ut_new]))
+        # Re-anchor the carried wall data on the accepted velocity.
+        d_phi_j, d_om_j = _wall_differences(velocity_j, fourier, flow)
+        d_phi_n, d_om_n = _wall_differences(velocity_new, fourier, flow)
+        carried_new = carried_new + jnp.stack(
+            [
+                (d_phi_n - d_phi_j)[None] * flow.phi_1_sum,
+                (d_om_n - d_om_j)[None] * flow.phi_1_sum,
+            ]
+        )
+        return velocity_new - velocity_j, carried_new
 
-    # Realistic intermediates (predictor call).
-    state_n, nl = jax.block_until_ready(jax.jit(basis)(state, nonlin, nonlin))
+    # Realistic intermediates (predictor call).  The solver state is
+    # the velocity followed by the pass's carried differences.
+    velocity, carried = state[:3], state[3:]
+    state_n, nl = jax.block_until_ready(
+        jax.jit(basis)(velocity, nonlin, nonlin)
+    )
     phi_pm, om_pm_n, d1_3, d1_4 = jax.block_until_ready(
-        jax.jit(quad_asm)(state, state_n, nl)
+        jax.jit(quad_asm)(carried, state_n, nl)
     )
     S_phi, S_om = jax.block_until_ready(jax.jit(sources)(nl, d1_3, d1_4))
     R_quad = jax.block_until_ready(
-        jax.jit(cn_explicit)(phi_pm, om_pm_n, S_phi, S_om, state)
+        jax.jit(cn_explicit)(phi_pm, om_pm_n, S_phi, S_om, velocity)
     )
     hk_pair = jax.jit(lambda r: flow.Hk_op.solve(r, component_axis=1))
     phi_arb_pm = jax.block_until_ready(hk_pair(R_quad[:, :2]))
@@ -1584,23 +1629,15 @@ def _stages_vw_cyl(
         )
     )
 
-    t_bas = _bench(basis, [(state, nonlin, nonlin)] * reps)
-    t_quad = _bench(quad_asm, [(state, state_n, nl)] * reps)
+    t_bas = _bench(basis, [(velocity, nonlin, nonlin)] * reps)
+    t_quad = _bench(quad_asm, [(carried, state_n, nl)] * reps)
     t_src = _bench(sources, [(nl, d1_3, d1_4)] * reps)
-    t_cn = _bench(cn_explicit, [(phi_pm, om_pm_n, S_phi, S_om, state)] * reps)
+    t_cn = _bench(
+        cn_explicit, [(phi_pm, om_pm_n, S_phi, S_om, velocity)] * reps
+    )
     t_inf = _bench(
         influence_reconstruct,
-        [
-            (
-                state,
-                phi_arb,
-                omega_new,
-                ur_arb,
-                phi_arb_pm[:, 1],
-                om_pm[:, 0],
-            )
-        ]
-        * reps,
+        [(velocity, phi_arb, omega_new, ur_arb, phi_arb_pm, om_pm)] * reps,
     )
 
     t_sum = t_bas + t_quad + t_src + t_cn + t_hk + t_lk + t_inf
@@ -1610,12 +1647,12 @@ def _stages_vw_cyl(
     )
     rows = (
         ("basis crossings (2 x from_pm_basis)", t_bas),
-        ("quad asm (parity D1 5-wide + D2)   ", t_quad),
+        ("quad asm (parity D1 2-wide + A u_r)", t_quad),
         ("sources (conservative double curl) ", t_src),
         ("CN explicit half (quad-wide A)     ", t_cn),
         ("Hk banded solves (2 x 2 scalars)   ", t_hk),
         ("Lk banded solve (u_r recovery)     ", t_lk),
-        ("influence 1x1 + reconstruct + exit ", t_inf),
+        ("influence + reconstruct + carry    ", t_inf),
     )
     for label, t in rows:
         print(f"    {label}  {_ms(t)}  ({100 * t / t_imm:4.1f}% of IMM)")
@@ -1796,7 +1833,7 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
         return geom._get_rhs(s, fourier, flow)
 
     def f_imm(s, r):
-        return geom._imm_iteration(s, s, r, r, fourier, flow)
+        return _imm_apply(geom, s, r, fourier, flow)
 
     rhs = jax.block_until_ready(jax.jit(f_rhs)(state))
     t_rhs = _bench(f_rhs, [(state,)] * reps)
@@ -2135,7 +2172,7 @@ def _part_c(geom, flow, m, sharding, trace_dir, hlo_out) -> None:
     )
     _crossing_census(
         "one _imm_iteration",
-        jax.jit(lambda s, r: geom._imm_iteration(s, s, r, r, fourier, flow)),
+        jax.jit(lambda s, r: _imm_apply(geom, s, r, fourier, flow)),
         (state, rhs),
     )
     _crossing_census(

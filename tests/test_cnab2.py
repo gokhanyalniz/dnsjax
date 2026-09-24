@@ -334,9 +334,9 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     # viscoelastic pipe (default 1/2) but not for the azimuthally
     # driven Dean (default 0).
     frame = np.asarray(
-        (1j * derived_params.u_grid) * fourier_.kz * state
+        (1j * derived_params.u_grid) * fourier_.kz * state[:9]
         if derived_params.u_grid != 0
-        else jnp.zeros_like(state)
+        else jnp.zeros_like(state[:9])
     )
     cs = gmod.spin_to_phys_combos(
         state[3], state[4], state[5], state[6], state[7], state[8]
@@ -362,8 +362,10 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     i_spin = np.zeros((6, *state.shape[1:]), dtype=np.asarray(state).dtype)
     i_spin[0] = ident_mm
     i_spin[3] = 2.0 * ident_mm
-    relax = -faclin * (np.asarray(state[3:]) - i_spin) + frame[3:]
-    conf_scale = float(np.max(np.abs(np.asarray(state[3:]))))
+    # The conformation is slots 3..8 (a pipe state carries the velocity
+    # pass's two spin-quad differences after it).
+    relax = -faclin * (np.asarray(state[3:9]) - i_spin) + frame[3:]
+    conf_scale = float(np.max(np.abs(np.asarray(state[3:9]))))
     d_rel = float(np.max(np.abs(l_off[3:] - relax)))
     assert d_rel <= SPLIT_RTOL * conf_scale, (
         f"linear-relaxation oracle off by {d_rel:.3e} (scale {conf_scale})"
@@ -413,7 +415,7 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
         lbf_u = np.asarray(gmod._l_bf(state, fourier_, flow_))
     finally:
         derived_params.u_grid = saved
-    frame_probe = np.asarray((1j * u_probe) * fourier_.kz * state)
+    frame_probe = np.asarray((1j * u_probe) * fourier_.kz * state[:9])
     fscale = float(np.max(np.abs(frame_probe)))
     assert fscale > 0, "frame probe is identically zero"
     d_frhs = float(np.max(np.abs((rhs_u - rhs_0) - frame_probe)))
@@ -565,8 +567,15 @@ def _worker(system: str) -> None:
     # -- carry-seed independence ----------------------------------
     # (step_cnab2 donates both arguments; pass copies so ``state``
     # stays alive for the jaxpr section below.)
-    carry_a = fmod.step_cnab2(jnp.copy(state), jnp.zeros_like(state))[1]
-    carry_b = fmod.step_cnab2(jnp.copy(state), jnp.copy(state))[1]
+    # Seeds have the RHS's shape: the flow's physical components (a
+    # pipe state also carries 2 solver slots).
+    from dnsjax.flows.registry import spec_for
+
+    n_phys = spec_for(system).n_components
+    carry_a = fmod.step_cnab2(jnp.copy(state), jnp.zeros_like(state[:n_phys]))[
+        1
+    ]
+    carry_b = fmod.step_cnab2(jnp.copy(state), jnp.copy(state[:n_phys]))[1]
     assert np.array_equal(np.asarray(carry_a), np.asarray(carry_b)), (
         f"{system}: step_cnab2 carry output depends on the carry seed"
     )
@@ -581,7 +590,7 @@ def _worker(system: str) -> None:
     rhs_ffts, _, _ = _count_ffts(rhs_jaxpr)
     assert rhs_ffts > 0
 
-    carry = jnp.zeros_like(state)
+    carry = jnp.zeros_like(state[:n_phys])
     step_jaxpr = jax.make_jaxpr(fmod.step_cnab2)(state, carry).jaxpr
     outside, inside, whiles = _count_ffts(step_jaxpr)
 

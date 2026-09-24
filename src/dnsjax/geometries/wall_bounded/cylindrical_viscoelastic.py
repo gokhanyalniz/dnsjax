@@ -174,7 +174,7 @@ from ._viscoelastic_common import (
     narrow_abase_wall_row,
     solve_ptt_f,
     spin_to_phys_combos,  # noqa: F401 -- re-exported (test_cnab2)
-    to_spin_basis,
+    to_spin_basis,  # noqa: F401 -- re-exported (the spin map)
 )
 
 # The shared sPTT stepping surface lives in
@@ -210,8 +210,11 @@ from .cylindrical import (
     _l_bf as _cyl_l_bf,
 )
 
-#: Role aliases for the basis boundary (see ``cylindrical.py``).
-to_solver_basis = to_spin_basis
+#: The solver -> physical half of the basis boundary, jitted (see
+#: ``cylindrical.py``); it reads the nine evolved slots only, so it
+#: also drops the velocity pass's carried slots.  The physical ->
+#: solver half appends those, so the flow module binds it
+#: (:func:`._cylindrical_stepping.with_carried`).
 from_solver_basis = jax.jit(from_spin_basis)
 
 # Spin weights of the fused radial-derivative batch of the shared
@@ -619,15 +622,17 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         rhs_prev: Array,
         rhs_next: Array,
         fourier_: Fourier,
-    ) -> tuple[Array, Array, dict[str, Array]]:
+        carried: Array | None = None,
+    ) -> tuple[Array, Array, dict[str, Array], Array | None]:
         r"""The cylindrical `$1\times1$` influence-matrix velocity pass.
 
         Third return: the velocity pass' corrector-side *aux*
         diagnostics, passed straight through (the geometry owns
-        what goes in it).
+        what goes in it); fourth, the pass's new carried slots from
+        *carried* (``None`` on the legacy path).
         """
         return _imm_iteration(
-            u_prev, u_pred, rhs_prev, rhs_next, fourier_, self
+            u_prev, u_pred, rhs_prev, rhs_next, fourier_, self, carried
         )
 
     def velocity_l_bf(self, vel: Array, fourier_: Fourier) -> Array:
