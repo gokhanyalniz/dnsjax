@@ -108,9 +108,17 @@ same influence-matrix implicit solve:
   step whose corrector fails to contract falls back to one full
   `iterative-cn` step.
 
-The `implicitness` knob $c$ is the Crank–Nicolson weight ($c = 0.5$ is the
-trapezoidal rule), with `corrector_tolerance` and `max_corrector_iterations`
-governing the fixed point. An **opt-in split corrector**
+The `implicitness` knob $c$ is the Crank–Nicolson weight, with
+`corrector_tolerance` and `max_corrector_iterations` governing the fixed
+point. $c = 0.5$ is the trapezoidal rule, which barely damps the stiffest
+viscous modes: those on the first grid points off a wall flip sign every
+step and shrink by only $4/(\nu\,\Delta t\,\Lambda_{\max})$, less on every
+refinement of the wall grid. The default $c = 0.5001$ keeps that damping
+above about $4(c - \tfrac12)$ per step at any resolution. Its first-order
+error term stays below the second-order one at any practical step, and the
+temporal-order test holds it to the trapezoidal rule's accuracy. The
+`TimeStepping` docstring in `src/dnsjax/parameters.py` has the
+measurements. An **opt-in split corrector**
 (`split_corrector`, off by default) iterates the wall-stiff linear coupling
 FFT-free between full right-hand-side refreshes; it only helps when the step
 is pushed near the corrector iteration cap and is otherwise slower, hence the
