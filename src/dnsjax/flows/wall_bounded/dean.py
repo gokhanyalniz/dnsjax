@@ -57,7 +57,7 @@ Exports the flow interface consumed by ``__main__``:
 
 from dataclasses import dataclass
 
-from jax import Array, jit, lax
+from jax import Array, jit
 from jax import numpy as jnp
 
 from ...geometries.wall_bounded.annular import (
@@ -128,32 +128,38 @@ flow: DeanFlow = DeanFlow()
 ) = build_annular_stepper(flow)
 
 
-def _build_laminar_state() -> Array:
-    r"""Spectral laminar Dean state: `$U_\theta(r)$` at the mean mode.
+def _build_laminar_profile() -> Array:
+    r"""The laminar Dean state's mean-mode column, ``(3, N_r)``.
 
-    Places the analytical azimuthal profile at the mean mode in
-    `$(u_z, u_r, u_\theta)$` form (`$u_\theta = U_\theta$`,
-    `$u_z = u_r = 0$`).
+    The analytical azimuthal profile in `$(u_z, u_r, u_\theta)$` form
+    (`$u_\theta = U_\theta$`, `$u_z = u_r = 0$`) -- the only nonzero
+    column of the laminar state.
     """
     u_theta = dean_laminar_u_theta(flow.rs, params.geo.eta)  # (Nr,) real
-    # Broadcast onto the mean mode (m, k_z) = (0, 0) only.
-    u_spec = jnp.where(fourier.mean_mask, u_theta[:, None, None], 0.0)
-    zeros = jnp.zeros_like(u_spec)
-    complex_zeros = lax.complex(zeros, zeros)
-    u_theta_spec = lax.complex(u_spec, zeros)
-    return jnp.stack([complex_zeros, complex_zeros, u_theta_spec])
+    zeros = jnp.zeros_like(u_theta)
+    return jnp.stack([zeros, zeros, u_theta]).astype(sharding.complex_type)
 
 
-#: Physical-basis laminar reference.  It never enters the solver as
-#: itself -- ``init_state`` hands it to ``__main__``, which converts
-#: the initial state once -- so the ``state - laminar_state``
-#: deviations below are both physical.
-_laminar_state: Array = _build_laminar_state()
+#: The laminar reference, kept as its mean-mode column rather than the
+#: field it spans: the full ``(C, N_r, N_m, N_{k_z})`` array would hold
+#: a whole state's worth of device memory for the run to carry
+#: ``C N_r`` nonzero values.  :func:`_laminar_field` rebuilds the field
+#: where it is needed -- inside the jitted diagnostics, fused into the
+#: subtraction -- and ``init_state`` builds it on demand.  Physical
+#: basis: ``init_state`` hands it to ``__main__``, which converts the
+#: initial state once, so the deviations below are physical too.
+_laminar_profile: Array = _build_laminar_profile()
+
+
+def _laminar_field(profile: Array, fourier_: Fourier) -> Array:
+    """The spectral field carrying *profile* ``(C, N_r)`` on the mean
+    mode alone (zero on every other mode, padding included)."""
+    return jnp.where(fourier_.mean_mask[None], profile[:, :, None, None], 0.0)
 
 
 def _perturbation_energy(
     state: Array,
-    laminar_state: Array,
+    laminar_profile: Array,
     fourier_: Fourier,
     flow_: DeanFlow,
 ) -> Array:
@@ -168,7 +174,9 @@ def _perturbation_energy(
     """
     return (
         get_norm2_annular(
-            state - laminar_state, fourier_.k_metric, flow_.y_weights
+            state - _laminar_field(laminar_profile, fourier_),
+            fourier_.k_metric,
+            flow_.y_weights,
         )
         / 2
     )
@@ -182,10 +190,7 @@ def init_state() -> Array:
     the in-process random / localized-rolls modes are dispatched in
     ``__main__``; this is called only for the laminar start.
     """
-    # Copy: the steppers donate their state argument, and the
-    # module-level ``_laminar_state`` must survive for the E'
-    # deviation in ``get_stats`` / ``get_perturbation_energy``.
-    return jnp.copy(_laminar_state)
+    return _laminar_field(_laminar_profile, fourier)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────
@@ -194,7 +199,7 @@ def init_state() -> Array:
 @jit
 def _get_stats_jit(
     state: Array,
-    laminar_state: Array,
+    laminar_profile: Array,
     fourier_: Fourier,
     flow_: DeanFlow,
 ) -> dict[str, Array]:
@@ -203,8 +208,8 @@ def _get_stats_jit(
     *state* is the **physical** `$(u_z, u_r, u_\theta)$` view of the
     field -- diagnostics sit outside the solver, whose working basis
     is the decoupled `$(u_z, u_+, u_-)$` one (the ``annular.py``
-    module docstring); *laminar_state* is physical for the same
-    reason.
+    module docstring); *laminar_profile* (the laminar state's
+    mean-mode column) is physical for the same reason.
 
     - `$E$`: total kinetic energy (annular norm with radial Jacobian
       `$r$`).
@@ -229,7 +234,7 @@ def _get_stats_jit(
         get_norm2_annular(state, fourier_.k_metric, flow_.y_weights) / 2
     )
     perturbation_energy = _perturbation_energy(
-        state, laminar_state, fourier_, flow_
+        state, laminar_profile, fourier_, flow_
     )
 
     # ── Mean velocity profiles ───────────────────────────────
@@ -277,18 +282,18 @@ def _get_stats_jit(
 
 def get_stats(state: Array) -> dict[str, Array]:
     """Wrapper around ``_get_stats_jit`` (physical-basis *state*)."""
-    return _get_stats_jit(state, _laminar_state, fourier, flow)
+    return _get_stats_jit(state, _laminar_profile, fourier, flow)
 
 
 @jit
 def _get_perturbation_energy_jit(
     state: Array,
-    laminar_state: Array,
+    laminar_profile: Array,
     fourier_: Fourier,
     flow_: DeanFlow,
 ) -> Array:
     r"""Perturbation kinetic energy of the deviation from laminar."""
-    return _perturbation_energy(state, laminar_state, fourier_, flow_)
+    return _perturbation_energy(state, laminar_profile, fourier_, flow_)
 
 
 def get_perturbation_energy(state: Array) -> Array:
@@ -297,7 +302,7 @@ def get_perturbation_energy(state: Array) -> Array:
     Takes the **physical** `$(u_z, u_r, u_\theta)$` view, like
     :func:`get_stats`, which reports the same number as ``E'``.
     """
-    return _get_perturbation_energy_jit(state, _laminar_state, fourier, flow)
+    return _get_perturbation_energy_jit(state, _laminar_profile, fourier, flow)
 
 
 @jit

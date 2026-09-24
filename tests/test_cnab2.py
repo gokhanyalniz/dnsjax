@@ -380,7 +380,7 @@ def _check_viscoelastic_split(gmod, fmod, state, fourier_, flow_) -> None:
     # zero); conformation = 2x the laminar tensor -- a valid mean-mode
     # (Hermitian-partner) tensor that is *not* the equilibrium, so the
     # remainder scale is O(1/Wi) rather than machine zero.
-    lam = gmod.to_spin_basis(fmod._laminar_state)
+    lam = gmod.to_spin_basis(fmod.init_state())
     mstate = jnp.concatenate([lam[:3], 2.0 * lam[3:]])
     rhs_m = np.asarray(gmod._get_rhs(mstate, fourier_, flow_))[3:]
     lbf_m = np.asarray(gmod._l_bf(mstate, fourier_, flow_))[3:]

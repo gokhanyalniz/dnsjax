@@ -95,8 +95,8 @@ import numpy as np  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.flows.wall_bounded.viscoelastic_dean import (  # noqa: E402
-    _laminar_state,
     flow,
+    init_state,
     predict_and_fully_correct,
 )
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
@@ -336,9 +336,9 @@ def test_laminar_conformation_rhs_vanishes() -> None:
     conformation slice of ``_get_rhs`` (which excludes the diffusion
     Laplacian) is ~0 relative to the conformation magnitude.
     """
-    # ``_laminar_state`` is physical (the flow hands it to ``__main__``,
+    # ``init_state()`` is physical (the flow hands it to ``__main__``,
     # which converts once); the RHS is a solver-basis function.
-    state = to_spin_basis(_laminar_state)
+    state = to_spin_basis(init_state())
     rhs = np.asarray(_get_rhs(state, fourier, flow))
     conf_rhs = rhs[3:]
     conf_scale = float(np.max(np.abs(np.asarray(state[3:]))))
@@ -420,11 +420,11 @@ def test_laminar_full_step_fixed_point() -> None:
     state to FD truncation: velocity deviation energy ~0 and the
     conformation unchanged.
     """
-    # Solver basis on both sides of the step (``_laminar_state`` is
+    # Solver basis on both sides of the step (``init_state()`` is
     # physical; ``__main__`` performs this same single conversion).
-    state0 = np.asarray(to_spin_basis(_laminar_state))
+    state0 = np.asarray(to_spin_basis(init_state()))
     state_new, error, num_c, *_ = predict_and_fully_correct(
-        to_spin_basis(_laminar_state)
+        to_spin_basis(init_state())
     )
     state_new = np.asarray(state_new)
 

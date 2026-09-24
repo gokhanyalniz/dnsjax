@@ -87,6 +87,7 @@ the lab frame.
 
 from dataclasses import dataclass
 
+import jax
 import numpy as np
 from jax import Array, jit
 from jax import numpy as jnp
@@ -170,13 +171,14 @@ flow: ViscoelasticPipeFlow = ViscoelasticPipeFlow()
 ) = build_viscoelastic_stepper(flow)
 
 
-def _build_laminar_state() -> Array:
-    r"""Spectral 9-component laminar state at the mean mode.
+def _build_laminar_profile() -> Array:
+    r"""The 9-component laminar state's mean-mode column,
+    ``(9, N_r)``.
 
     The analytical laminar `$r$`-profiles (Hagen-Poiseuille velocity +
     sPTT-equilibrium conformation; see
     :func:`~dnsjax.geometries.wall_bounded.cylindrical_viscoelastic.viscoelastic_laminar_profiles`)
-    placed at the mean mode `$(m, k_z) = (0, 0)$`.
+    -- the only nonzero column of the laminar state.
     """
     rs = np.asarray(flow.rs)
     prof = viscoelastic_laminar_profiles(
@@ -185,20 +187,31 @@ def _build_laminar_state() -> Array:
         params.phys.wi,
         params.phys.epsilon,
     )
-    prof_jax = jnp.asarray(prof, dtype=sharding.complex_type)
-    return jnp.where(fourier.mean_mask[None], prof_jax[:, :, None, None], 0.0)
+    return jax.device_put(
+        np.asarray(prof, dtype=sharding.complex_type), sharding.no_shard
+    )
 
 
-#: Physical-basis laminar reference.  It never enters the solver as
-#: itself -- ``init_state`` hands it to ``__main__``, which converts
-#: the initial state once -- so the ``state - laminar_state``
-#: deviations below are both physical.
-_laminar_state: Array = _build_laminar_state()
+#: The laminar reference, kept as its mean-mode column rather than the
+#: field it spans: the full ``(C, N_r, N_m, N_{k_z})`` array would hold
+#: a whole state's worth of device memory for the run to carry
+#: ``C N_r`` nonzero values.  :func:`_laminar_field` rebuilds the field
+#: where it is needed -- inside the jitted diagnostics, fused into the
+#: subtraction -- and ``init_state`` builds it on demand.  Physical
+#: basis: ``init_state`` hands it to ``__main__``, which converts the
+#: initial state once, so the deviations below are physical too.
+_laminar_profile: Array = _build_laminar_profile()
+
+
+def _laminar_field(profile: Array, fourier_: Fourier) -> Array:
+    """The spectral field carrying *profile* ``(C, N_r)`` on the mean
+    mode alone (zero on every other mode, padding included)."""
+    return jnp.where(fourier_.mean_mask[None], profile[:, :, None, None], 0.0)
 
 
 def _perturbation_energy(
     state: Array,
-    laminar_state: Array,
+    laminar_profile: Array,
     fourier_: Fourier,
     flow_: ViscoelasticPipeFlow,
 ) -> Array:
@@ -211,7 +224,7 @@ def _perturbation_energy(
     """
     return (
         get_norm2_cyl(
-            state[:3] - laminar_state[:3],
+            state[:3] - _laminar_field(laminar_profile[:3], fourier_),
             fourier_.k_metric,
             flow_.y_weights,
         )
@@ -229,10 +242,7 @@ def init_state() -> Array:
     are dispatched in ``__main__``; this is called only for the
     laminar start.
     """
-    # Copy: the steppers donate their state argument, and the
-    # module-level ``_laminar_state`` must survive for the E'
-    # deviation in ``get_stats`` / ``get_perturbation_energy``.
-    return jnp.copy(_laminar_state)
+    return _laminar_field(_laminar_profile, fourier)
 
 
 # ── Diagnostic statistics ────────────────────────────────────────
@@ -241,13 +251,13 @@ def init_state() -> Array:
 @jit
 def _get_stats_jit(
     state: Array,
-    laminar_state: Array,
+    laminar_profile: Array,
     fourier_: Fourier,
     flow_: ViscoelasticPipeFlow,
 ) -> dict[str, Array]:
     r"""Total-field diagnostics + polymer quantities.
 
-    *state* and *laminar_state* are the **physical** 9-component view
+    *state* and *laminar_profile* are the **physical** 9-component view
     `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
     c_{\theta\theta}, c_{r\theta})$` -- diagnostics sit outside the
     solver, whose working basis is the `$u_\pm$`/spin one (the
@@ -280,7 +290,7 @@ def _get_stats_jit(
     vel = state[:3]
     total_energy = get_norm2_cyl(vel, fourier_.k_metric, flow_.y_weights) / 2
     perturbation_energy = _perturbation_energy(
-        state, laminar_state, fourier_, flow_
+        state, laminar_profile, fourier_, flow_
     )
 
     # Mean velocity profiles.
@@ -360,18 +370,18 @@ def _get_stats_jit(
 
 def get_stats(state: Array) -> dict[str, Array]:
     """Wrapper around ``_get_stats_jit`` (physical-basis *state*)."""
-    return _get_stats_jit(state, _laminar_state, fourier, flow)
+    return _get_stats_jit(state, _laminar_profile, fourier, flow)
 
 
 @jit
 def _get_perturbation_energy_jit(
     state: Array,
-    laminar_state: Array,
+    laminar_profile: Array,
     fourier_: Fourier,
     flow_: ViscoelasticPipeFlow,
 ) -> Array:
     r"""Velocity-only deviation energy (laminarization check)."""
-    return _perturbation_energy(state, laminar_state, fourier_, flow_)
+    return _perturbation_energy(state, laminar_profile, fourier_, flow_)
 
 
 def get_perturbation_energy(state: Array) -> Array:
@@ -380,4 +390,4 @@ def get_perturbation_energy(state: Array) -> Array:
     Takes the **physical** 9-component view, like :func:`get_stats`,
     which reports the same number as ``E'``.
     """
-    return _get_perturbation_energy_jit(state, _laminar_state, fourier, flow)
+    return _get_perturbation_energy_jit(state, _laminar_profile, fourier, flow)
