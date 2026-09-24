@@ -17,11 +17,14 @@ member stacks against a fresh one (:func:`_grid_mask`).
 Members meet on that grid because ``dnsjax-twin`` counts every cadence
 from the member's own perturbation step, so its samples sit at
 `$t_\mathrm{parent} + n\,c\,\Delta t$` whatever iteration number
-its parent snapshot carried.  A member recorded before that was true
+its parent snapshot carried -- and the grid is read as that step count
+(:func:`~.series.relative_time`), never as the difference of two
+floats, one of which the ``.dat`` text column has rounded to a few
+parts in `$10^9$`.  A member recorded before the cadence anchor
 carries a grid displaced by `$(-\mathrm{it}_\mathrm{parent} \bmod
-c)\,\Delta t$`; the stack refuses such a set, naming the
-``align_atol`` that accepts it (``--align-atol`` on the CLI) and what
-accepting it means.
+c)\,\Delta t$`, a whole number of steps; the stack refuses such a
+set, naming the ``align_atol`` that accepts it (``--align-atol`` on
+the CLI) and what accepting it means.
 
 Growth-rate fits (least squares over a caller-chosen window):
 
@@ -50,8 +53,11 @@ import numpy as np
 
 from .series import read_twin, uniform_grid
 
-#: Relative-time alignment tolerance across members (seconds of
-#: simulation time; the grids come from one shared dt and cadence).
+#: Relative-time alignment tolerance across members (simulation time).
+#: Relative times are whole multiples of the step
+#: (:func:`~.series.relative_time`), so members on one grid agree to
+#: the last bit and anything this tolerance sees is a real
+#: displacement.
 _T_ATOL = 1e-9
 
 
@@ -180,12 +186,13 @@ def aggregate_members(
     budget_rows = []
     for record in members:
         series = read_twin(tree / record["dir"])
-        t0 = series.t[0] if series.meta is None else series.meta["parent_t"]
         cols = {n: v for n, v in series.energies.items() if n != "t"}
-        energy_rows.append((record["dir"], series.t - t0, cols))
+        energy_rows.append((record["dir"], series.t_rel, cols))
         if series.budget is not None:
             bcols = {n: v for n, v in series.budget.items() if n != "t"}
-            budget_rows.append((record["dir"], series.budget["t"] - t0, bcols))
+            budget_rows.append(
+                (record["dir"], series.relative(series.budget["t"]), bcols)
+            )
     if budget_rows and len(budget_rows) != len(members):
         raise ValueError(
             "some members carry twin_budget.dat and some do not; "

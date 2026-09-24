@@ -6,7 +6,9 @@ asserted): the ``.dat``/``twin.json`` readers with resume-seam
 duplicates, the per-component budget sums, member-tree aggregation
 (mean/std against direct NumPy; every alignment guard tripped on a
 real bad input, a phase-displaced member among them, with
-``align_atol`` stacking one as recorded), the growth-rate fits
+``align_atol`` stacking one as recorded; members whose ``t`` column
+carries the driver's own 9 significant digits, late in a long run,
+still stacking exactly), the growth-rate fits
 against planted laws, the
 ``twin_spectra.bin`` reader (byte-exact round trip, truncated
 trailing record, duplicate-timestamp seams, version floor,
@@ -50,6 +52,7 @@ from dnsjax.analysis.twin.spectra import (  # noqa: E402
     decorrelation_ratio,
     read_twin_spectra,
 )
+from dnsjax.parameters import Outputs  # noqa: E402
 
 assert "jax" not in sys.modules, "the twin analysis package must be JAX-free"
 
@@ -58,8 +61,17 @@ _REPO = Path(__file__).resolve().parent.parent
 # ── Synthetic stream writers ─────────────────────────────────────────
 
 
-def _write_dat(path: Path, columns: dict[str, np.ndarray]) -> None:
-    """Write a ``.dat`` stream in the driver's format (17 digits)."""
+def _write_dat(
+    path: Path, columns: dict[str, np.ndarray], t_digits: int | None = None
+) -> None:
+    """Write a ``.dat`` stream in the driver's layout.
+
+    Values carry 17 significant digits, which is more than the driver
+    writes (``outs.stats_precision``, 9 by default) and harmless for
+    them.  Not for ``t``, the one column whose precision is structural
+    -- it is what members are aligned on -- so *t_digits* writes it the
+    way the driver does.
+    """
     names = list(columns)
     width = max(24, max(len(n) for n in names))
     # ``#``-commented header, the ``#`` eating one space of the first
@@ -72,9 +84,15 @@ def _write_dat(path: Path, columns: dict[str, np.ndarray]) -> None:
         )
     ]
     n_rows = len(next(iter(columns.values())))
+    t_fmt = ".16e" if t_digits is None else f".{t_digits - 1}e"
     for i in range(n_rows):
         lines.append(
-            " ".join(f"{columns[n][i]:.16e}".rjust(width) for n in names)
+            " ".join(
+                format(columns[n][i], t_fmt if n == "t" else ".16e").rjust(
+                    width
+                )
+                for n in names
+            )
         )
     path.write_text("\n".join(lines) + "\n")
 
@@ -143,16 +161,19 @@ def _write_member(
     scale: float = 1.0,
     budget: bool = True,
     seam: bool = False,
+    t_digits: int | None = None,
 ) -> None:
     mdir.mkdir(parents=True, exist_ok=True)
     t = parent_t + dt * np.arange(n)
     cols = _energy_columns(t, scale)
     if seam:  # duplicate one interior sample (a resume seam)
         cols = {k: np.insert(v, 5, v[5]) for k, v in cols.items()}
-    _write_dat(mdir / "twin.dat", cols)
+    _write_dat(mdir / "twin.dat", cols, t_digits)
     if budget:
         tb = parent_t + 5 * dt * np.arange((n - 1) // 5 + 1)
-        _write_dat(mdir / "twin_budget.dat", _budget_columns(tb, scale))
+        _write_dat(
+            mdir / "twin_budget.dat", _budget_columns(tb, scale), t_digits
+        )
     (mdir / "twin.json").write_text(
         json.dumps(
             {
@@ -451,10 +472,12 @@ def test_aggregation() -> None:
         # A grid the same length but displaced in phase -- what a
         # parent snapshot off the cadence grid used to produce -- is
         # told apart from a different horizon, and ``align_atol``
-        # stacks it as recorded, reporting how far apart.
+        # stacks it as recorded, reporting how far apart.  As the
+        # driver wrote them, which is a whole number of steps: here a
+        # 0.001 step sampled every 10, parent 4 steps off the others'.
         _write_member(tree / "m0001", parent_t=11.0, scale=2.0)
         record = json.loads((tree / "m0001" / "twin.json").read_text())
-        record["parent_t"] = 11.004
+        record.update(parent_t=11.004, dt=0.001, it_energy=10)
         (tree / "m0001" / "twin.json").write_text(json.dumps(record))
         _expect_value_error("phase-displaced", lambda: aggregate_members(tree))
         loose = aggregate_members(tree, align_atol=0.005)
@@ -467,6 +490,77 @@ def test_aggregation() -> None:
         (tree / "members.json").write_text(json.dumps(spec))
         _expect_value_error("not a twin tree", lambda: aggregate_members(tree))
     print("aggregation (+ guards): OK")
+
+
+def test_aggregation_at_driver_precision() -> None:
+    """Members late in a long run stack on the driver's own ``t`` column.
+
+    The driver writes ``t`` at ``outs.stats_precision`` significant
+    digits and ``twin.json`` holds ``parent_t`` as a full double, so
+    ``t - parent_t`` carries a per-member offset of up to half a unit
+    in the last written digit -- several times ``1e-7`` at these
+    parents, against a stack that must tell a real displacement from
+    none.  The rows are read as whole steps instead.
+    """
+    digits = Outputs().stats_precision
+    parents = (3200.000000123, 7700.000000456, 5100.00000078)
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = Path(tmp) / "tree"
+        members = []
+        for k, parent_t in enumerate(parents):
+            _write_member(
+                tree / f"m{k}",
+                parent_t=parent_t,
+                scale=1.0 + k,
+                t_digits=digits,
+            )
+            members.append(
+                {
+                    "dir": f"m{k}",
+                    "seed": k + 1,
+                    "parent": "parent.tar",
+                    "parent_t": parent_t,
+                    "t_end": parent_t + 0.1,
+                }
+            )
+        (tree / "members.json").write_text(
+            json.dumps(
+                {
+                    "kind": "twin",
+                    "e0": 1e-6,
+                    "horizon": 0.1,
+                    "members": members,
+                }
+            )
+        )
+        # The plain difference really is that far apart -- what the
+        # stack compared before, and refused -- so this case has teeth.
+        raw = [
+            read_dat(tree / f"m{k}" / "twin.dat")["t"] - p
+            for k, p in enumerate(parents)
+        ]
+        assert max(float(np.max(np.abs(r - raw[0]))) for r in raw) > 1e-7
+
+        bundle = aggregate_members(tree)
+        assert bundle["align_spread"] == 0.0
+        assert_allclose(bundle["t_rel"], 0.01 * np.arange(11), atol=1e-15)
+        assert_allclose(
+            bundle["t_rel_budget"], 0.05 * np.arange(3), atol=1e-15
+        )
+        base = _energy_columns(0.01 * np.arange(11))["E_d"]
+        assert_allclose(bundle["mean_E_d"], 2.0 * base, rtol=1e-12)
+        # The closure reader takes the same step counts.
+        assert_allclose(read_twin(tree / "m1").t_rel, bundle["t_rel"], atol=0)
+
+        # A member whose rows do not sit on its own step grid is not
+        # anything the driver writes, and is named rather than stacked.
+        record = json.loads((tree / "m1" / "twin.json").read_text())
+        record["dt"] = 0.02
+        (tree / "m1" / "twin.json").write_text(json.dumps(record))
+        _expect_value_error(
+            "off a whole number of steps", lambda: aggregate_members(tree)
+        )
+    print("aggregation at the driver's t precision: OK")
 
 
 def _expect_value_error(fragment: str, thunk) -> None:
@@ -1190,6 +1284,7 @@ if __name__ == "__main__":
     test_readers()
     test_closure_residuals()
     test_aggregation()
+    test_aggregation_at_driver_precision()
     test_fits()
     test_spectra_reader()
     test_yspectra_reader()
