@@ -821,6 +821,9 @@ All under `scripts/`; full rationale/usage in each module docstring.
   balance (`--steps-only`, `--solve-only`, `--cpu-smoke`).
 - `solver_benchmark.py`: pallas-vs-dense validation & benchmark incl.
   multi-GPU correctness (`--cpu-bench`, `--cpu-smoke`).
+- `node_benchmark.py`: JAX-free layout sweep of one production problem
+  on one node -- CPU rank counts x meshes under mpirun, or GPU meshes x
+  Pallas tiles x precision in one process (`--dry-run`, `--cpu-smoke`).
 - `grad_probe.py`: per-configuration forward/reverse differentiability
   matrix with a finite-difference cross-check (`--full`,
   `--dist.platform cuda`).
