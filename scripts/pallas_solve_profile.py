@@ -119,6 +119,11 @@ HBM_PEAK_BY_KIND = {
 
 GBPS = 1e9
 
+#: The random IC's seed.  Fixed on purpose, like every diagnostic
+#: seed in ``scripts/``: each profile of one configuration steps the
+#: same field (``init.random_seed`` itself defaults to drawing one).
+IC_SEED = 1
+
 
 # ── setup ────────────────────────────────────────────────────────────
 
@@ -242,13 +247,15 @@ def _bench_step(step, state, n: int, warmup: int = 3):
     import jax.numpy as jnp
 
     s = jnp.copy(state)
+    # The step returns (state, error, num_c, aux); only the first three
+    # are timed here.
     for _ in range(warmup):
-        s, _err, _c = step(s)
+        s, _err, _c, *_ = step(s)
     jax.block_until_ready(s)
     t0 = time.perf_counter()
     cc = 0
     for _ in range(n):
-        s, _err, c = step(s)
+        s, _err, c, *_ = step(s)
         cc = c
     jax.block_until_ready(s)
     return (time.perf_counter() - t0) / n, int(cc), s
@@ -1772,7 +1779,7 @@ def _part_b(geom, m, flow, sharding, reps: int, steps: int) -> None:
             params.init.random_smoothness,
             params.init.random_wall_smoothness,
             params.init.random_wall_confinement,
-            params.init.random_seed,
+            IC_SEED,
             params.init.random_mean_flow,
         )
     )
@@ -2085,7 +2092,7 @@ def _part_c(geom, flow, m, sharding, trace_dir, hlo_out) -> None:
             params.init.random_smoothness,
             params.init.random_wall_smoothness,
             params.init.random_wall_confinement,
-            params.init.random_seed,
+            IC_SEED,
             params.init.random_mean_flow,
         )
     )
@@ -2356,7 +2363,7 @@ def main() -> None:
                 params.init.random_smoothness,
                 params.init.random_wall_smoothness,
                 params.init.random_wall_confinement,
-                params.init.random_seed,
+                IC_SEED,
                 params.init.random_mean_flow,
             )
         )  # chained (donated) from here on
