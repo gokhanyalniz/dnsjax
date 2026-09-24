@@ -145,10 +145,20 @@ SIZES: dict[str, dict[str, tuple[int, int, int]]] = {
     "viscoelastic-pipe": {"small": (32, 48, 32), "prod": (128, 96, 128)},
 }
 
-# Dense-backend operator count: Lk + Hk components (+ 6 Hc).
+# Dense-backend operator count: Lk + the Hk components (+ the 6 Hc of
+# the sPTT flows).  The default reconstruction scheme's curvilinear Hk
+# is the spin pair (2 families), the legacy primitive one's the three
+# velocity components; the Cartesian count is 2 under both.
 N_OPS = {
     "plane-couette": 2,
     "plane-poiseuille": 2,
+    "pipe": 3,
+    "taylor-couette": 3,
+    "dean": 3,
+    "viscoelastic-dean": 9,
+    "viscoelastic-pipe": 9,
+}
+N_OPS_LEGACY = N_OPS | {
     "pipe": 4,
     "taylor-couette": 4,
     "dean": 4,
@@ -579,9 +589,13 @@ def _probe_env() -> dict:
         return {"backend": "unknown", "error": f"{type(e).__name__}: {e}"}
 
 
-def _dense_gb(system: str, nx: int, ny: int, nz: int) -> float:
-    """Analytic dense-backend factor estimate (f64, all groups)."""
-    return N_OPS[system] * (nz - 1) * (nx // 2) * ny * ny * 8 / 2**30
+def _dense_gb(
+    system: str, nx: int, ny: int, nz: int, legacy_imm: bool = False
+) -> float:
+    """Analytic dense-backend factor estimate (f64, all groups), for
+    the formulation the run uses (*legacy_imm*: ``--legacy-imm``)."""
+    n_ops = (N_OPS_LEGACY if legacy_imm else N_OPS)[system]
+    return n_ops * (nz - 1) * (nx // 2) * ny * ny * 8 / 2**30
 
 
 def _log(workdir: Path, tag: str, text: str) -> Path:
@@ -1647,7 +1661,11 @@ def _single_device_section(
         for backend in BACKENDS:
             if backend == "dense":
                 est = _dense_gb(
-                    entry["system"], entry["nx"], entry["ny"], entry["nz"]
+                    entry["system"],
+                    entry["nx"],
+                    entry["ny"],
+                    entry["nz"],
+                    args.legacy_imm,
                 )
                 if est > args.dense_budget_gb:
                     results.append(
@@ -2231,7 +2249,13 @@ def _plan_only(args: argparse.Namespace) -> None:
     print("\nNo GPU backend detected -> printing the planned matrix only.")
     print("Run on the cluster, or use --cpu-bench / --cpu-smoke here.\n")
     for entry in _build_entries(args):
-        est = _dense_gb(entry["system"], entry["nx"], entry["ny"], entry["nz"])
+        est = _dense_gb(
+            entry["system"],
+            entry["nx"],
+            entry["ny"],
+            entry["nz"],
+            args.legacy_imm,
+        )
         skip = (
             "  (dense would be SKIPPED)" if est > args.dense_budget_gb else ""
         )
