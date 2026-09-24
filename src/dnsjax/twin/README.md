@@ -45,7 +45,10 @@ which `dnsjax-twin` registers and the solver does not.
 |---|---|---|
 | `twin.e0` | unset | Initial perturbation energy $E'(\delta)$ in the solver measure; setting it enables the section. `0` requests an exact zero perturbation |
 | `twin.seed` | unset | Perturbation RNG seed; vary per ensemble member. Unset draws one from the system entropy pool on a fresh start and takes the recorded one from `twin.json` on a resume |
-| `twin.smoothness` | `0.4` | Spectral envelope of the random perturbation (`init.random_smoothness` convention) |
+| `twin.smoothness` | `0.4` | Spectral envelope of the random perturbation over the periodic directions (`init.random_smoothness` convention) |
+| `twin.wall_smoothness` | `0.4` | Its wall-normal envelope (`init.random_wall_smoothness` convention) |
+| `twin.wall_confinement` | `0.14` | Scale-dependent narrowing of its wall window (`init.random_wall_confinement` convention); `0` gives every mode the same window, which is what a member recorded before 2026-09-04 ran with, and resumes only with `--twin.wall_confinement 0` |
+| `twin.mean_flow` | `true` | Perturb the $(k_x, k_z) = (0, 0)$ profile as well, conditioned on its conservation laws (below); `false` gives a mean-free partner |
 | `twin.bins` | `false` | Also record the $\Delta U$ / $\Delta u_1$ / $\Delta u_2$ three-bin energies in `twin.dat`; required by `it_budget` |
 | `twin.x0_planes` | `false` | Also store the $k_x = 0$ plane (the `_x0` fields) in both wall-normal-resolved streams, which is what `analysis.twin.bin_energies` recovers the same three-bin split from; off, it is never traced |
 | `twin.it_energy` | `1` | Steps between `twin.dat` rows |
@@ -74,8 +77,13 @@ separate compiled program whose transient is the driver's global
 high-water mark, and the device allocator's pool grows to the maximum
 over every program. `it_ybudget` costs memory in two places — a
 resident second factored banded operator with its homogeneous columns
-(`twin/pressure.py`'s "Cost" section), and a per-sample transient of 15
-padded physical fields that is the easy one to miss. `spectra_ref`
+(`twin/pressure.py`'s "Cost" section), and a per-sample transient that
+is the easy one to miss: measured on CPU at some 37 padded physical
+fields' worth, against 20 for the time step itself, so an enabled
+budget stream rather than the step sets the run's peak
+(`twin/diagnostics.py`'s "Memory" section). A GPU schedules its own;
+the driver's closing `Peak device memory` line is the number to size a
+job against. `spectra_ref`
 gates the reference half of **both** spectra streams in compute as well
 as on disk: it is a static flag on the two jitted samplers, so with it
 off the reference reduction is never traced — saving a field pass and a
@@ -342,7 +350,11 @@ iteration number the parent snapshot was harvested at, which is what
 puts the members of an ensemble on one relative grid: the clock every
 reader aligns on is $t - t_\mathrm{parent}$, and a cadence counted
 from the absolute step counter would displace a member's whole grid by
-the residue of its parent's `it`.
+the residue of its parent's `it`. The readers count that clock in
+whole steps (`series.relative_time`) rather than subtracting two
+floats: a `.dat` stream writes `t` to `outs.stats_precision`
+significant digits, which late in a long reference run is coarser than
+any tolerance an across-member stack can afford.
 
 `build-twin` needs no seeding subprocesses — the driver perturbs
 in-process at start — so each member directory holds only a generated

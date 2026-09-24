@@ -158,6 +158,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..__main__ import (
     _flush_stats,
     _interpolate_if_needed,
+    _peak_device_bytes,
     _write_dat_header,
 )
 from ..__main__ import (
@@ -279,15 +280,15 @@ class TwinParams(BaseModel):
 
     - ``it_budget`` sets the **run's** peak memory, not just its
       per-sample cost.  ``_twin_budget_jit`` is a separate compiled
-      program whose transient (~21 physical-component fields live at
-      once -- the 9 cached advectors, 9 gradients of the current
-      `$\mathbf{c}$`, and `$\mathbf{q}$` -- plus ~6 masked spectral
-      states) is the driver's global high-water mark, since the
-      device allocator's pool grows to the maximum over every
-      program.  Order `$40$` GB at a `$1024\times257\times256$`
-      double-precision plane-Poiseuille target.  If it ever binds,
-      the two ways to trade transforms for footprint are in
-      :mod:`dnsjax.twin.diagnostics`' "Budget terms".
+      program whose transient is the driver's global high-water
+      mark, since the device allocator's pool grows to the maximum
+      over every program: ~43 padded physical components against
+      the iterative-CN step's 20, measured on CPU
+      (:mod:`dnsjax.twin.diagnostics`, "Memory") -- some `$50$` GB
+      in all at a `$1024\times257\times256$` double-precision
+      plane-Poiseuille target, on that schedule.  If it ever binds,
+      the two ways to trade transforms for footprint are in that
+      module's "Budget terms".
       In *time* it is equally unsubtle: one sample costs
       `$\sim\!0.9$` of a twin step (measured, size-independent over
       `$48^3$`-`$64^3$`), so ``it_budget = 1`` nearly doubles the
@@ -298,31 +299,14 @@ class TwinParams(BaseModel):
       holds a second factored banded operator the size of
       ``flow.Lk_op`` plus its two homogeneous columns, two real
       `$(N_y, N_{k_z}, N_{k_x})$` fields (its "Cost" section has the
-      numbers).  *Transient*:
-      :func:`dnsjax.twin.diagnostics._convective_sources` holds 15
-      padded physical fields at once -- 6 advector plus one gradient
-      set, the two gradient sets being formed one at a time for
-      exactly this reason (holding both is 24, *more* than the
-      three-bin pass's ~21 despite half the transforms).  Under
-      ``twin.rotational_ybudget`` it is 12, and 21 transforms rather
-      than 33.  XLA still schedules, so watch it rather than
-      assuming either.
-      That figure counts the padded **physical** set alone, which is
-      not the whole transient: live *spectral* arrays at the same
-      point are `$\Delta\mathbf{u}$`, the four signed operands of
-      ``_Sources.advective``, `$\hat{\mathcal N}$`, and then
-      ``div_n`` and `$\Delta\hat p$`.  A complex
-      `$(3, N_y, N_{k_z}, N_{k_x})$` field is `$24 n_x n_y n_z$`
-      bytes against a padded physical component's
-      `$18 n_x n_y n_z$` (wall-bounded oversamples `$x$`-`$z$` only,
-      `$1.5^2$`), so those `$\sim\!6$` are `$\sim\!8$` more
-      padded-component equivalents: size a job against `$\sim\!23$`,
-      not 15.  That last step is arithmetic off the shapes rather
-      than a measurement, which is one more reason to watch the run.
-      ``solver.rhs_transform_chunks``
-      caps the transform-stage transient inside each
-      :func:`dnsjax.fft.chunked_transform` call; it does **not** touch
-      the live field count.
+      numbers).  *Transient*: the sample program peaks at ~37
+      padded physical components convectively and ~33 under
+      ``twin.rotational_ybudget`` (measured on CPU; the iterative-CN
+      step is 20, CN/AB2 28), so it, not the step, sets the run's
+      peak; ``solver.rhs_transform_chunks = 3`` brings those to
+      31 / 27.  The table, what a count of live fields misses, and
+      why a GPU run reads its own ``Peak device memory`` line
+      instead: :mod:`dnsjax.twin.diagnostics`, "Memory".
     - ``x0_planes`` gates the `$k_x = 0$` plane of **both**
       `$y$`-resolved streams, and is a static flag on
       :func:`~dnsjax.twin.diagnostics.twin_yspectra` and
@@ -788,6 +772,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         )
 
     from ..snapshot import (
+        _barrier,
         load_snapshot,
         read_metadata,
         save_snapshot,
@@ -805,10 +790,20 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     json_path = Path("twin.json")
     have_partner = partner.exists()
     have_json = json_path.exists()
+    # Only a fresh start reads these (below), but every read of the
+    # directory happens here, ahead of the barrier.
+    stale = [name for name in _STREAM_FILES if Path(name).exists()]
     old: dict = {}
     if have_json:
         with open(json_path) as f:
             old = json.load(f)
+    # Every rank has now read the directory it decides on; only after
+    # this may rank 0 write into it.  Without the barrier a lagging rank
+    # can read the ``twin.json`` rank 0 has just written, take another
+    # branch than its peers, and hang the job -- and on the
+    # ``twin.e0 = 0`` fresh start no collective runs in between to
+    # order the two by accident.
+    _barrier("twin_start")
 
     # --- The perturbation seed (before the branch: the two differ) -------
     # A paired resume never re-perturbs, so it needs no draw -- it needs
@@ -908,7 +903,6 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         # otherwise splice a new trajectory onto an old one's records
         # -- silently for the ``.dat`` streams, and for a ``.bin``
         # stream whenever its sidecar matched.
-        stale = [name for name in _STREAM_FILES if Path(name).exists()]
         if stale:
             raise SystemExit(
                 f"{_PROG}: error: stale {', '.join(stale)} without "
@@ -1659,12 +1653,22 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                 f"non-finite final statistic(s) {', '.join(bad_final)} "
                 f"at t = {t:.6e}, it = {it}"
             )
+        final_rows = []
         if stats_stream is not None:
-            stats_stream.push(_row(stats, last_drive1), t)
-            stats2_stream.push(_row(stats2, last_drive2), t)
-        twin_stream.push(jnp.stack(list(tvals.values())), t)
+            final_rows += [
+                (stats_stream, _row(stats, last_drive1)),
+                (stats2_stream, _row(stats2, last_drive2)),
+            ]
+        final_rows.append((twin_stream, jnp.stack(list(tvals.values()))))
         if measure_budget:
-            budget_stream.push(jnp.stack(list(bvals.values())), t)
+            final_rows.append((budget_stream, jnp.stack(list(bvals.values()))))
+        for stream, row in final_rows:
+            # A push that fills its buffer flushes it, checked; the
+            # verdict covers every row buffered since the last flush,
+            # not only this one, so it is acted on here as in the loop.
+            bad = stream.push(row, t)
+            if bad is not None:
+                _abort_non_finite(bad)
 
     if (
         measure_probes
@@ -1726,6 +1730,15 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             f"device(s): {wall_time_per_sim_time:.3e} s/t "
             f"(twin pair, 2x steps per t).",
         )
+        # The number the [twin] cost notes say to size a job against:
+        # an enabled budget stream, not the step, sets it
+        # (:mod:`dnsjax.twin.diagnostics`, "Memory").
+        peak = _peak_device_bytes(jax)
+        if peak is not None:
+            sharding.print(
+                f"Peak device memory: {peak / 2**30:.2f} GiB "
+                "(largest over this process's devices)."
+            )
 
     flush_all_buffers()
 
