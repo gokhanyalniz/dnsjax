@@ -202,10 +202,11 @@ def _build_hc_operator(
     component-to-operator solve mapping (5 operators against 6 RHS
     components) in **every** backend, which is the reason it is
     deferred -- not size: ``Hc_op`` is the largest array the flow
-    holds, exactly twice the velocity ``Hk_op`` (6 stacked slots
-    against 3) and comparable to the fused RHS's own transform
-    transient, so the duplicate slot is ~1/6 of it and ~10% of the
-    flow's persistent bytes (measured, ``fd_order = 8``).
+    holds, three times the default velocity ``Hk_op`` (6 stacked slots
+    against the spin pair's 2; twice the legacy path's 3) and ~2/3 of
+    the flow's persistent bytes, so the duplicate slot is ~1/6 of it
+    and ~11% of those bytes (measured on both sPTT flows at
+    ``64 x 48 x 64``, ``fd_order = 8``).
 
     *label* selects the pallas factorization path: a string runs the
     setup-checked :func:`solvers._build_pallas_operator` under that
