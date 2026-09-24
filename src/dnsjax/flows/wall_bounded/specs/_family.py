@@ -86,6 +86,14 @@ def wall_fields(
     )
 
 
+#: The pipe family's own snapshot knob: its default scheme is the one
+#: that carries solver state beyond the velocity, so only these flows
+#: have a ``carry/`` member to embed (``outs.snapshot_embed_carry``).
+PIPE_CARRY_FIELDS: tuple[FieldSpec, ...] = (
+    FieldSpec("outs", "snapshot_embed_carry"),
+)
+
+
 def cartesian_fields() -> tuple[FieldSpec, ...]:
     """Cartesian (plane-channel) domain and physics fields."""
     return (

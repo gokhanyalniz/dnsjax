@@ -34,6 +34,15 @@ STATS_MEMBER = "_dnsjax_stats.json"
 _CHUNK_PREFIX = "state/c/"
 _CHUNK_SUFFIX = "/0/0/0"
 
+#: Tar member prefix of the optional solver-carried fields
+#: (``carry/c/{slot}/0/0/0``): a second zarr3 array beside ``state``,
+#: written by :func:`dnsjax.snapshot.save_snapshot` when a run's solver
+#: carries state beyond the velocity (the pipe family's spin-quad
+#: differences; ``outs.snapshot_embed_carry``) and read back only by
+#: the solver's own resume.  Every other reader walks ``state/c/`` and
+#: never sees it.
+CARRY_PREFIX = "carry/c/"
+
 
 class SnapshotArchiveError(ValueError):
     """A snapshot file exists but cannot be read as an archive."""
@@ -271,6 +280,26 @@ def _check_chunks_match_meta(
         )
 
 
+def _chunk_members(
+    path: Path, prefix: str
+) -> tuple[dict[int, int], dict[int, int], bytes | None]:
+    """``(offsets, sizes, meta_raw)`` of the ``prefix{i}/0/0/0`` chunks."""
+    offsets: dict[int, int] = {}
+    sizes: dict[int, int] = {}
+    meta_raw: bytes | None = None
+    with _snapshot_tar(path) as tf:
+        for m in tf.getmembers():
+            name = m.name
+            if name == META_MEMBER:
+                member = tf.extractfile(m)
+                meta_raw = None if member is None else member.read()
+            elif name.startswith(prefix) and name.endswith(_CHUNK_SUFFIX):
+                comp = int(name[len(prefix) :].split("/", 1)[0])
+                offsets[comp] = m.offset_data
+                sizes[comp] = m.size
+    return offsets, sizes, meta_raw
+
+
 def snapshot_component_offsets(path: str | Path) -> dict[int, int]:
     """Map each state component to its data byte offset in the tar.
 
@@ -287,24 +316,46 @@ def snapshot_component_offsets(path: str | Path) -> dict[int, int]:
     caller to remember.
     """
     path = Path(path)
-    offsets: dict[int, int] = {}
-    sizes: dict[int, int] = {}
-    meta_raw: bytes | None = None
-    with _snapshot_tar(path) as tf:
-        for m in tf.getmembers():
-            name = m.name
-            if name == META_MEMBER:
-                member = tf.extractfile(m)
-                meta_raw = None if member is None else member.read()
-            elif name.startswith(_CHUNK_PREFIX) and name.endswith(
-                _CHUNK_SUFFIX
-            ):
-                comp = int(name[len(_CHUNK_PREFIX) :].split("/", 1)[0])
-                offsets[comp] = m.offset_data
-                sizes[comp] = m.size
+    offsets, sizes, meta_raw = _chunk_members(path, _CHUNK_PREFIX)
     if not offsets or set(offsets) != set(range(len(offsets))):
         raise SnapshotArchiveError(
             f"{path} is missing component chunks (found {sorted(offsets)})."
         )
     _check_chunks_match_meta(path, meta_raw, sizes)
+    return offsets
+
+
+def snapshot_carry_offsets(path: str | Path) -> dict[int, int] | None:
+    """Byte offsets of the optional ``carry/`` chunks, or ``None``.
+
+    ``None`` when the archive has none (every snapshot but a
+    pipe-family one written with ``outs.snapshot_embed_carry``).  The
+    chunks are checked like the state's: a contiguous ``0..N-1`` range,
+    ``N`` the metadata's ``carried`` count, each exactly one component
+    of ``native_shape[1:]``.
+    """
+    path = Path(path)
+    offsets, sizes, meta_raw = _chunk_members(path, CARRY_PREFIX)
+    if not offsets:
+        return None
+    meta = json.loads(meta_raw) if meta_raw is not None else {}
+    names = meta.get("carried") or []
+    if set(offsets) != set(range(len(names))):
+        raise SnapshotArchiveError(
+            f"{path} holds carry chunks {sorted(offsets)} but its "
+            f"metadata names {len(names)} carried field(s)."
+        )
+    shape = meta.get("native_shape")
+    itemsize = _ITEMSIZE.get(meta.get("dtype"))
+    if shape and itemsize is not None:
+        expected = itemsize
+        for extent in shape[1:]:
+            expected *= extent
+        wrong = {c: n for c, n in sizes.items() if n != expected}
+        if wrong:
+            raise SnapshotArchiveError(
+                f"{path}: carry chunk(s) {sorted(wrong)} hold "
+                f"{sorted(set(wrong.values()))} bytes, not one component "
+                f"({expected} bytes)."
+            )
     return offsets

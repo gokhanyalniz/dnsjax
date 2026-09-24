@@ -390,8 +390,10 @@ def derive_homogeneous_data(
     flow_.q_z_1 = qz1_s.transpose(2, 0, 1)
 
     # Static aux-data (not traced leaves) here: the default
-    # scheme's column.
+    # scheme's columns.
     flow_.ur_1 = None
+    flow_.phi_1_diff = None
+    flow_.phi_1_sum = None
 
 
 # ── The step ─────────────────────────────────────────

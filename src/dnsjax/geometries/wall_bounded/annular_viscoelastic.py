@@ -120,9 +120,7 @@ advection / mean-shear stretching + linear relaxation (all gated /
 structured so the explicit AB2 remainder is the pure
 fluctuation-fluctuation nonlinearity plus the nonlinear relaxation) --
 and advances that remainder explicitly.  It reproduces ``iterative-cn``
-to O(`$\Delta t^2$`) at ~1 FFT/step versus ~4 (the coupled tensor system
-inherits the wall-bounded velocity's reduced projection-splitting
-order, shared by both schemes).
+to O(`$\Delta t^2$`) at ~1 FFT/step versus ~4.
 """
 
 from dataclasses import dataclass, field
@@ -494,15 +492,21 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         rhs_prev: Array,
         rhs_next: Array,
         fourier_: Fourier,
-    ) -> tuple[Array, Array, dict[str, Array]]:
+        carried: Array | None = None,
+    ) -> tuple[Array, Array, dict[str, Array], Array | None]:
         """The annular 2x2 influence-matrix velocity pass.
 
         Third return: the velocity pass' corrector-side *aux*
         diagnostics, passed straight through (the geometry owns
-        what goes in it).
+        what goes in it); fourth, ``None`` -- the annular pass carries
+        no slots (``AnnularFlow.n_carried``), and *carried* is always
+        ``None`` here.
         """
-        return _imm_iteration(
-            u_prev, u_pred, rhs_prev, rhs_next, fourier_, self
+        return (
+            *_imm_iteration(
+                u_prev, u_pred, rhs_prev, rhs_next, fourier_, self
+            ),
+            None,
         )
 
     def velocity_l_bf(self, vel: Array, fourier_: Fourier) -> Array:

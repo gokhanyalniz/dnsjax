@@ -7,6 +7,7 @@ from ._family import (
     CYLINDRICAL_GRIDS,
     DEFERRED_MEAN_FLOW,
     DEFERRED_TILT,
+    PIPE_CARRY_FIELDS,
     cyl_annular_fields,
     wall_fields,
     wedge_rehydrate,
@@ -50,6 +51,7 @@ SPEC = FlowSpec(
     fields=(
         *wall_fields(0.5, CYLINDRICAL_GRIDS),
         *cyl_annular_fields(),
+        *PIPE_CARRY_FIELDS,
         FieldSpec("phys", "re"),
         FieldSpec("phys", "driving"),
     ),

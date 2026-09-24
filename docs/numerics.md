@@ -195,9 +195,14 @@ the same banded operators at the same bandwidth, less operator storage
 fewer in the pipe and annular geometries), and a solve fewer per mode in the
 plane and annular ones. The pipe is the exception — its axis forces an exact
 diagonalization that doubles the scalars it evolves, so it pays one solve
-more. The wall boundary condition is still recovered by the same tiny
-per-mode capacitance solve as before — $1 \times 1$ for the pipe's single
-wall, $2 \times 2$ for the two-walled Cartesian and annular geometries.
+more. Half of those scalars are differences that the velocity does not
+determine, so they are carried from step to step rather than re-derived from
+it; re-derived, they made the pipe first order in time at coarse radial
+resolution. Snapshots store them next to the velocity
+([`snapshots.md`](snapshots.md#the-format)). The wall boundary condition is
+still recovered by the same tiny per-mode capacitance solve as before —
+$1 \times 1$ for the pipe's single wall, $2 \times 2$ for the two-walled
+Cartesian and annular geometries.
 
 What the reformulation gives up is the tangential momentum combination,
 which it no longer imposes: a truncation-level residual that refines with
@@ -206,7 +211,9 @@ resolution and that nothing feeds back into a solve. Setting
 scheme instead; it is kept for reference and for reproducing older
 trajectories, lives in its own modules, and is not recommended. The
 discrete-divergence, energy-budget and temporal-order tests pin both
-formulations against each other.
+formulations against each other. The last measures the default second order
+in time in all three geometries, and the primitive scheme well below that,
+held down by its projection splitting.
 
 ## Conventions
 

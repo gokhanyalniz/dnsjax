@@ -793,15 +793,20 @@ class Resolution(BaseModel):
     # -- five solves over three band families, with only the quad's two
     # free wall differences taken from the corrector iterate (four wall
     # values against two conditions is what the exact diagonalisation
-    # costs).  **No geometry changes what it carries**:
-    # the evolved scalars are re-derived from the carried state at the
-    # top of each corrector pass and reconstructed away at its exit, so
+    # costs).  **No geometry changes what it observes**: the evolved
+    # scalars are re-derived from the carried velocity at the top of
+    # each corrector pass and reconstructed away at its exit, so
     # snapshots, probes, forcing, diagnostics, the analysis package and
-    # resume are identical under both formulations.  The price is two
-    # wall rows per
-    # mode (the influence coefficients cannot be carried), a bounded
-    # truncation-level substitute -- ``cartesian._imm_iteration_vw``
-    # carries the argument and the measurement.  Construction, boundary
+    # resume see the same physical state under both formulations.  The
+    # one internal exception is the pipe family, which also carries the
+    # quad's two difference halves: the velocity does not determine
+    # them, and re-deriving them made it first order in time at coarse
+    # radial resolution (trailing solver-basis slots plus an optional
+    # snapshot member, ``outs.snapshot_embed_carry``).  The price is
+    # two wall rows per mode (the influence coefficients cannot be
+    # carried), a bounded truncation-level substitute --
+    # ``cartesian._imm_iteration_vw`` carries the argument and the
+    # measurement.  Construction, boundary
     # conditions and the retired routes: the
     # ``cartesian._imm_iteration`` (shared record),
     # ``annular._imm_iteration_vw`` (cylindrical algebra) and
@@ -823,10 +828,11 @@ class Resolution(BaseModel):
     # bound is asserted at every ``--ny``.  These replace the
     # operator-identity route's floors (4.2e-14 Cartesian, 8.0e-6
     # annular, 5.6e-5 pipe), each set by a commutator that route could
-    # not remove.  The wall-bounded *temporal* error improves too:
-    # plane-Couette iterative-CN self-convergence goes from ``1.3e-2``
-    # at order ~0.5 on the legacy path to ``3.6e-5`` at order ~1.2 on
-    # the default, and Taylor-Couette likewise (the divergence residual
+    # not remove.  The wall-bounded *temporal* order is restored too:
+    # from a relaxed state, plane-Couette iterative-CN self-convergence
+    # goes from ``1.4e-2`` (``dt = 0.01``) at order ~0.5-0.8 on the
+    # legacy path to ``6.3e-6`` at order 2 on the default, and
+    # Taylor-Couette and the pipe likewise (the divergence residual
     # **was** the dominant projection-splitting error) -- pinned by
     # ``tests/test_temporal_order.py``.
     #
@@ -1242,6 +1248,22 @@ class Outputs(BaseModel):
         description=(
             "Embed the state's stats into every snapshot "
             "(_dnsjax_stats.json member)."
+        ),
+    )
+    # Pipe family only (the flows whose default ``res.consistent_imm``
+    # scheme carries solver state beyond the velocity -- its two
+    # spin-quad difference halves, ``_cylindrical_stepping``): write
+    # them as each snapshot's ``carry/`` member, so a resume continues
+    # the trajectory to round-off rather than re-deriving them from the
+    # velocity (a one-off, truncation-sized change).  Two more fields on
+    # a pipe snapshot's three (on the viscoelastic pipe's nine); the
+    # member and its resume rules: :mod:`dnsjax.snapshot`.
+    snapshot_embed_carry: bool = Field(
+        default=True,
+        description=(
+            "Embed the solver's two carried fields in every snapshot "
+            "(carry/ member), so a resume continues exactly; False "
+            "saves their space and re-derives them on resume."
         ),
     )
     snapshot_save_initial: bool = Field(

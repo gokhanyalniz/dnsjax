@@ -25,6 +25,7 @@ from ._family import (
     CYLINDRICAL_GRIDS,
     DEFERRED_MEAN_FLOW,
     DEFERRED_TILT,
+    PIPE_CARRY_FIELDS,
     cyl_annular_fields,
     wall_fields,
     wedge_rehydrate,
@@ -68,6 +69,7 @@ SPEC = FlowSpec(
     fields=(
         *wall_fields(0.5, CYLINDRICAL_GRIDS),
         *cyl_annular_fields(),
+        *PIPE_CARRY_FIELDS,
         # Wi = 20, El = 0.02 => Re = 1000, the Newtonian pipe's default
         # (see the module docstring); the rheology below is the shared
         # sPTT reference (dilute solvent ratio, weak extensibility, a

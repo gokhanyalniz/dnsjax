@@ -1552,8 +1552,10 @@ def _imm_iteration_vw(
     `$N_y \in [25, 97]$`, `$k^2 \in [0.04, 4\times10^3]$`,
     `$\Delta t \in [10^{-4}, 10^{-1}]$`.  Both cylindrical geometries
     make the same trade -- they re-derive `$\Phi^n$` per pass
-    (``annular._imm_iteration_vw``) -- and a snapshot resume has no
-    other option anyway, since snapshots store physical components.
+    (``annular._imm_iteration_vw``; the pipe's carried difference
+    halves take their wall data from the accepted state too) -- and a
+    snapshot resume has no other option anyway, since snapshots store
+    physical components.
     In all three it is also the *only* wall quantity taken from
     `$t^n$`: the annulus's lagged spin partners and the pipe's
     surplus wall differences both ride the running corrector iterate,

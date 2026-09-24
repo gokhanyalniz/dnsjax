@@ -165,11 +165,13 @@ from ._base import (
     pad_base_flow,  # noqa: F401 — re-exported
     phys_to_spec,  # noqa: F401 — re-exported
     spec_to_phys,  # noqa: F401 — re-exported
-    to_pm_basis,
 )
 from ._cylindrical_stepping import (
+    CARRIED_FIELDS,  # noqa: F401 — re-exported
     CFL_NAMES,  # noqa: F401 — re-exported
     DRIVING_KEY_Z,  # noqa: F401 — re-exported
+    N_CARRIED,
+    ModeColumns,  # noqa: F401 — re-exported
     _apply_bulk_correction,  # noqa: F401 — re-exported
     _correct,  # noqa: F401 — re-exported
     _curl_fn,  # noqa: F401 — re-exported
@@ -182,19 +184,24 @@ from ._cylindrical_stepping import (
     _parity_y_matvec,  # noqa: F401 — re-exported
     _predict,  # noqa: F401 — re-exported
     build_stepper,
+    column_differences,  # noqa: F401 — re-exported
+    kinematic_differences,  # noqa: F401 — re-exported
     mean_driving,  # noqa: F401 — re-exported
+    with_carried,  # noqa: F401 — re-exported
 )
 
-#: Role aliases for the basis boundary.  The flow modules re-export
-#: these so :mod:`dnsjax.__main__` can move a state between the
-#: physical representation every consumer sees and the solver basis,
-#: without knowing which geometry it is driving (Cartesian and
-#: triply-periodic simply have none).  The outgoing map runs in the
-#: hot loop, so it is exported jitted: ``__main__`` never jits a flow
-#: function itself, because an outer jit would trace the flow's
-#: global arrays in as constants, which a multi-process run refuses.
-#: The incoming map runs once per state and stays bare.
-to_solver_basis = to_pm_basis
+#: The solver -> physical half of the basis boundary, which the
+#: flow modules re-export so :mod:`dnsjax.__main__` can take the
+#: physical view of a state without knowing which geometry it drives
+#: (Cartesian and triply-periodic simply have none).  It reads the
+#: three velocity slots only, so it also drops the pass's carried
+#: slots.  It runs in the hot loop, so it is exported jitted:
+#: ``__main__`` never jits a flow function itself, because an outer
+#: jit would trace the flow's global arrays in as constants, which a
+#: multi-process run refuses.  The other half, ``to_solver_basis``,
+#: appends the carried slots and so needs the flow's operators: each
+#: flow module binds its own
+#: (:func:`._cylindrical_stepping.with_carried`).
 from_solver_basis = jax.jit(from_pm_basis)
 
 
@@ -1098,6 +1105,16 @@ class CylindricalFlow:
     #: and its flow must name the column identically.
     driving_key: ClassVar[str] = DRIVING_KEY_Z
 
+    @property
+    def n_carried(self) -> int:
+        """Trailing carried slots of the solver-basis state.
+
+        The default pass carries its two spin-quad difference halves
+        (``_cylindrical_stepping._imm_iteration_vw``); the legacy
+        primitive pass carries nothing.  A property, so no pytree leaf.
+        """
+        return N_CARRIED if params.res.consistent_imm else 0
+
     dt: Array = field(init=False)
     ab2_kappa: Array = field(init=False)
     rs: Array = field(init=False)
@@ -1128,8 +1145,14 @@ class CylindricalFlow:
     v_minus_1: Array | None = field(init=False)
     q_z_1: Array | None = field(init=False)
     # The vw scheme's homogeneous `$u_r$` response to a unit `$\Phi$`
-    # wall value (``None`` on the legacy path).
+    # wall value, and the two halves of that unit response across the
+    # spin pair: the difference half is what the carried `$d_\Phi$`
+    # slot receives with the influence correction, the sum half what a
+    # carried slot receives when its wall datum is re-anchored on the
+    # accepted velocity (all ``None`` on the legacy path).
     ur_1: Array | None = field(init=False)
+    phi_1_diff: Array | None = field(init=False)
+    phi_1_sum: Array | None = field(init=False)
     M_inv: Array = field(init=False)
     h_bulk_response: Array = field(init=False)
     H_bulk_inv: Array = field(init=False)
@@ -1475,18 +1498,28 @@ class CylindricalFlow:
         phi_pm = self.Hk_op.solve(stacked.transpose(0, 3, 1, 2)).transpose(
             0, 2, 3, 1
         )
-        phi_1 = (phi_pm[0] + phi_pm[1]) / 2
-        phi_1 = phi_1.at[..., -1].set(0.0)
+        phi_1_sum = (phi_pm[0] + phi_pm[1]) / 2
+        phi_1 = phi_1_sum.at[..., -1].set(0.0)
         ur_1 = self.Lk_op.solve(phi_1.transpose(2, 0, 1)).transpose(1, 2, 0)
 
         is_mean = fourier_.mean_mask[0]  # (Nm, Nkz)
         ur_1 = jnp.where(is_mean[..., None], 0.0, ur_1)
+        # The same unit response's difference half: what the influence
+        # correction adds to the carried `$d_\Phi$` (zero at the wall,
+        # where both slots take the same unit value).
+        phi_1_diff = (phi_pm[0] - phi_pm[1]) / 2
+        phi_1_diff = jnp.where(is_mean[..., None], 0.0, phi_1_diff)
+        # Its sum half, wall value 1 kept: the carried slots' response
+        # to a re-anchored wall datum.
+        phi_1_sum = jnp.where(is_mean[..., None], 0.0, phi_1_sum)
         M = jnp.einsum("j, mzj -> mz", self.D1_wall.ravel(), ur_1)
         self.M_inv = jnp.where(is_mean, 0.0, 1.0 / jnp.where(is_mean, 1.0, M))
 
         # Field layout (Nr, Nm, Nkz); the pressure-scheme columns are
         # static aux-data by default.
         self.ur_1 = ur_1.transpose(2, 0, 1)
+        self.phi_1_diff = phi_1_diff.transpose(2, 0, 1)
+        self.phi_1_sum = phi_1_sum.transpose(2, 0, 1)
         self.v_plus_1 = self.v_minus_1 = self.q_z_1 = None
 
     def _precompute_bulk_response(
@@ -1807,10 +1840,15 @@ def _build_dt_leaves(
         "H_bulk_inv": new.H_bulk_inv,
     }
     if params.res.consistent_imm:
-        # The vw scheme's u_r column; the pressure-scheme columns are
-        # None (static aux-data) and Lk_op (= the dt-free recovery) is
-        # deliberately absent -- see test_adaptive's leaf dicts.
-        leaves |= {"ur_1": new.ur_1}
+        # The vw scheme's u_r column and its carried-slot partner; the
+        # pressure-scheme columns are None (static aux-data) and Lk_op
+        # (= the dt-free recovery) is deliberately absent -- see
+        # test_adaptive's leaf dicts.
+        leaves |= {
+            "ur_1": new.ur_1,
+            "phi_1_diff": new.phi_1_diff,
+            "phi_1_sum": new.phi_1_sum,
+        }
     else:
         leaves |= {
             "v_plus_1": new.v_plus_1,

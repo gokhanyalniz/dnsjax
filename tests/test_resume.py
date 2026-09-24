@@ -51,6 +51,16 @@ Two layers:
      unrelated path) exits nonzero with a naming diagnostic instead of
      falling through to an in-process init mode.
 
+3. **Carried fields** (the pipe family's ``carry/`` member,
+   :mod:`dnsjax.snapshot`): a pipe run's periodic snapshots carry the
+   member and name it in their metadata, while the IC snapshot, a
+   Cartesian one and a run with ``outs.snapshot_embed_carry False``
+   carry none.  The JAX-free reader returns the state alone.  A resume
+   from a snapshot with the member continues the uninterrupted run to
+   round-off ("restored").  A resume from the same state without it
+   re-derives the fields from the velocity and lands measurably off
+   that run.  A resume that re-grids re-derives them too.
+
 Run as a script::
 
     uv run python tests/test_resume.py            # unit + integration
@@ -110,6 +120,44 @@ RUN1_ARGS: list[str] = [
 ]
 
 _SNAP_RE = re.compile(r"^state(\d+)\.tar$")
+
+# A short pipe run for the carried-field checks: ten steps from a
+# random IC, a snapshot every five.
+PIPE_ARGS: list[str] = [
+    "--phys.system",
+    "pipe",
+    "--phys.re",
+    "1800",
+    "--geo.lz",
+    "5",
+    "--res.nz",
+    "8",
+    "--res.nr",
+    "17",
+    "--res.ntheta",
+    "8",
+    "--init.random_field",
+    "True",
+    "--init.random_amplitude",
+    "0.1",
+    "--init.random_seed",
+    "1",
+    "--step.dt",
+    str(DT),
+    "--outs.it_snapshot",
+    "5",
+    "--outs.it_stats",
+    "5",
+    "--stop.check_laminarization",
+    "False",
+]
+# Resumed-vs-uninterrupted relative difference of the final state:
+# with the member it is the u_pm <-> physical round trip of a resume,
+# without it the re-derivation's truncation-sized step.  Measured at
+# this configuration: 2e-15 to 3e-15 with the member, 2.9e-4 without;
+# each bound sits more than two decades from both.
+CARRY_RESTORED_TOL = 1e-12
+CARRY_REDERIVED_MIN = 1e-9
 
 
 # ── unit test ────────────────────────────────────────────────────────
@@ -719,6 +767,128 @@ def run_integration(timeout: float) -> str | None:
 # ── main ─────────────────────────────────────────────────────────────
 
 
+def _final_spectral(workdir: str, isnap: int):
+    import numpy as np
+
+    from dnsjax.analysis import read_state
+
+    data = read_state(
+        os.path.join(workdir, f"state{isnap:05d}.tar"),
+        return_physical=False,
+        return_spectral=True,
+    )
+    return np.stack([np.asarray(c) for c in data.spectral])
+
+
+def run_carry_integration(timeout: float) -> str | None:
+    """The pipe family's ``carry/`` member: written, read, resumed."""
+    import numpy as np
+
+    from dnsjax.snapshot_meta import read_snapshot_meta, snapshot_carry_offsets
+
+    with tempfile.TemporaryDirectory() as tmp:
+        full = os.path.join(tmp, "full")
+        bare = os.path.join(tmp, "bare")
+        for d in (full, bare):
+            os.makedirs(d)
+        res = _run_dnsjax(
+            full, [*PIPE_ARGS, "--stop.max_sim_time", "0.1"], timeout
+        )
+        if res.returncode != 0:
+            return _fail("carry: uninterrupted run", res)
+        res = _run_dnsjax(
+            bare,
+            [
+                *PIPE_ARGS,
+                "--stop.max_sim_time",
+                "0.1",
+                "--outs.snapshot_embed_carry",
+                "False",
+            ],
+            timeout,
+        )
+        if res.returncode != 0:
+            return _fail("carry: knob-off run", res)
+
+        mid = os.path.join(full, "state00001.tar")
+        meta = read_snapshot_meta(mid)
+        if meta.get("carried") != ["d_phi", "d_omega"]:
+            return f"carry: periodic snapshot names {meta.get('carried')}"
+        if snapshot_carry_offsets(mid) is None:
+            return "carry: periodic snapshot has no carry/ member"
+        for label, path in (
+            ("IC snapshot", os.path.join(full, "state00000.tar")),
+            ("knob-off snapshot", os.path.join(bare, "state00001.tar")),
+        ):
+            if snapshot_carry_offsets(path) is not None:
+                return f"carry: {label} has a carry/ member"
+        if _final_spectral(full, 1).shape[0] != 3:
+            return "carry: the JAX-free reader returned the carried slots"
+
+        reference = _final_spectral(full, 2)
+        diffs = {}
+        for tag, src in (("restored", full), ("rederived", bare)):
+            work = os.path.join(tmp, f"resume_{tag}")
+            os.makedirs(work)
+            res = _run_dnsjax(
+                work,
+                [
+                    *PIPE_ARGS,
+                    "--init.snapshot",
+                    os.path.join(src, "state00001.tar"),
+                    "--stop.max_sim_time",
+                    "0.05",
+                ],
+                timeout,
+            )
+            if res.returncode != 0:
+                return _fail(f"carry: {tag} resume", res)
+            word = "restored" if tag == "restored" else "re-derived"
+            if f"solver-carried fields {word}" not in res.stdout:
+                return f"carry: {tag} resume did not report '{word}'"
+            final = _final_spectral(work, 2)
+            diffs[tag] = float(
+                np.linalg.norm(final - reference) / np.linalg.norm(reference)
+            )
+        print(
+            f"  carry: resumed vs uninterrupted, relative "
+            f"{diffs['restored']:.2e} with the member, "
+            f"{diffs['rederived']:.2e} without"
+        )
+        if diffs["restored"] > CARRY_RESTORED_TOL:
+            return (
+                f"carry: restored resume off by {diffs['restored']:.2e} "
+                f"> {CARRY_RESTORED_TOL:.0e}"
+            )
+        if diffs["rederived"] < CARRY_REDERIVED_MIN:
+            return (
+                f"carry: re-derived resume only {diffs['rederived']:.2e} "
+                f"off -- the member is not what makes the difference"
+            )
+
+        regrid = os.path.join(tmp, "regrid")
+        os.makedirs(regrid)
+        res = _run_dnsjax(
+            regrid,
+            [
+                *PIPE_ARGS,
+                "--res.nr",
+                "19",
+                "--init.snapshot",
+                mid,
+                "--stop.max_sim_time",
+                "0.02",
+            ],
+            timeout,
+        )
+        if res.returncode != 0:
+            return _fail("carry: re-gridded resume", res)
+        if "solver-carried fields re-derived" not in res.stdout:
+            return "carry: a re-gridded resume did not re-derive"
+    print("  PASS  carried fields: member, reader, resume, regrid")
+    return None
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Resume-lineage tests")
     parser.add_argument(
@@ -760,6 +930,7 @@ if __name__ == "__main__":
     ]
     if not cli.unit_only:
         results.append(("resume lineage", run_integration(cli.timeout)))
+        results.append(("carried fields", run_carry_integration(cli.timeout)))
 
     failures = [(n, r) for n, r in results if r is not None]
     sys.exit(report(len(results) - len(failures), failures))
