@@ -25,6 +25,17 @@ they are real samples -- so any consumer that needs a *uniform* grid
 start (seed, ``e0``, parent snapshot and clock, cadences, git hash,
 resolved parameter dump); its ``format_version`` floor here is
 :data:`MIN_FORMAT_VERSION`.
+
+**Relative time is a step count.**  A ``.dat`` row's ``t`` is text at
+``outs.stats_precision`` significant digits (9 by default), while
+``twin.json`` holds ``parent_t`` as a full double, so ``t - parent_t``
+carries a per-member offset of up to half a unit in that last digit:
+`$5\times10^{-7}$` at `$t \sim 10^3$`, `$5\times10^{-6}$` at
+`$10^4$`.  Members harvested at different times differ by that much,
+which is far above any tolerance an across-member stack can afford.
+Every driver sample sits a whole number of steps after the
+perturbation, though, so :func:`relative_time` rounds to that number
+and returns it times ``dt``: exact whatever the column's precision.
 """
 
 from __future__ import annotations
@@ -38,6 +49,14 @@ import numpy as np
 #: Oldest ``twin.json`` schema this reader understands
 #: (``dnsjax.twin.driver.TWIN_FORMAT_VERSION`` is the writer's).
 MIN_FORMAT_VERSION: int = 1
+
+#: How far a ``.dat`` sample time may read from a whole number of steps
+#: after the perturbation, in steps, before :func:`relative_time`
+#: refuses to round it onto one.  The driver's samples sit exactly on
+#: that grid, so the only thing this bounds is the text column's
+#: rounding: rounding recovers the step while that stays under half a
+#: step, and a quarter keeps a factor of two in hand.
+_SNAP_TOLERANCE: float = 0.25
 
 
 def read_dat(path: str | Path) -> dict[str, np.ndarray]:
@@ -75,6 +94,49 @@ def _drop_seam_duplicates(
     return {name: vals[keep] for name, vals in columns.items()}
 
 
+def relative_time(
+    t: np.ndarray, meta: dict | None, first: float, where: str = ""
+) -> np.ndarray:
+    r"""Sample times since the perturbation, on the member's step grid.
+
+    ``t - meta["parent_t"]`` rounded to the nearest whole number of
+    ``meta["dt"]`` steps (module docstring, "Relative time is a step
+    count").  *first*, the stream's own first sample, stands in for
+    ``parent_t`` when *meta* is ``None``, and without a recorded
+    ``dt`` the difference is returned as it is.
+
+    A member recorded before the cadence anchor (2026-09-06) keeps its
+    phase offset: its samples are displaced from the others by whole
+    steps, which the rounding preserves exactly, so an ensemble stack
+    still sees that displacement and still refuses it.
+
+    Raises when a sample reads more than :data:`_SNAP_TOLERANCE` of a
+    step off that grid, which the driver cannot write: either the
+    column's precision cannot resolve ``dt`` at this ``t`` or
+    ``twin.json`` does not describe this stream.  *where* names the
+    member in that message.
+    """
+    if meta is None:
+        return t - float(first)
+    rel = t - float(meta["parent_t"])
+    dt = meta.get("dt")
+    if not dt or rel.size == 0:
+        return rel
+    steps = np.rint(rel / dt)
+    off = float(np.max(np.abs(rel / dt - steps)))
+    if off > _SNAP_TOLERANCE:
+        raise ValueError(
+            f"{where}: sample times read up to {off:.2f} of a step "
+            f"(dt = {dt:g}) off a whole number of steps after "
+            f"parent_t = {meta['parent_t']!r}, which no dnsjax-twin "
+            "stream carries: either the .dat time column (written at "
+            "outs.stats_precision significant digits) cannot resolve "
+            "dt at this t, or twin.json does not belong to this "
+            "stream."
+        )
+    return steps * dt
+
+
 @dataclass(frozen=True)
 class TwinSeries:
     """One member directory's twin streams.
@@ -84,8 +146,10 @@ class TwinSeries:
     both seam-deduplicated, with ``t`` inside each dict.  ``meta`` is
     the parsed ``twin.json`` (``None`` when absent -- e.g. a stream
     pair copied without its member record).  ``t_rel`` is the time
-    since the perturbation, ``t - meta["parent_t"]`` (falling back to
-    the first sample when ``meta`` is missing).
+    since the perturbation, ``t - meta["parent_t"]`` counted in whole
+    steps (:func:`relative_time`; the first sample stands in when
+    ``meta`` is missing), and :meth:`relative` maps any other time
+    array of the member -- the budget's -- the same way.
     """
 
     path: Path
@@ -99,12 +163,12 @@ class TwinSeries:
 
     @property
     def t_rel(self) -> np.ndarray:
-        t0 = (
-            float(self.meta["parent_t"])
-            if self.meta is not None
-            else float(self.t[0])
-        )
-        return self.t - t0
+        return self.relative(self.t)
+
+    def relative(self, t: np.ndarray) -> np.ndarray:
+        """*t*, one of this member's absolute time columns, relative."""
+        first = float(self.t[0]) if self.t.size else 0.0
+        return relative_time(t, self.meta, first, where=str(self.path))
 
 
 def read_twin(directory: str | Path = ".") -> TwinSeries:
@@ -262,9 +326,12 @@ def closure_residuals(series: TwinSeries) -> ClosureResiduals:
     energies are first restricted to their own cadence grid
     (:func:`uniform_grid`), so the driver's unconditional final row and
     a resume seam's ``t0`` row are skipped rather than corrupting the
-    index mapping.  Raises :class:`ValueError` when the budget stream
-    is absent, is structurally not a twin budget, carries fewer than
-    three on-grid energy samples, or leaves no interior sample.
+    index mapping.  Both streams' times are read as step counts
+    (:func:`relative_time`), so that matching is exact however few
+    digits the text columns carry.  Raises :class:`ValueError` when the
+    budget stream is absent, is structurally not a twin budget, carries
+    fewer than three on-grid energy samples, or leaves no interior
+    sample.
     """
     if series.budget is None:
         raise ValueError(
@@ -294,10 +361,11 @@ def closure_residuals(series: TwinSeries) -> ClosureResiduals:
     # (:func:`uniform_grid`): the driver writes an unconditional final
     # row, and a resume seam can add an interior one, and neither is a
     # usable centred-difference neighbour.
-    dt, on_energy_grid = uniform_grid(energies["t"])
-    t_e = energies["t"][on_energy_grid]
+    t_rel = series.t_rel
+    dt, on_energy_grid = uniform_grid(t_rel)
+    t_e = t_rel[on_energy_grid]
     energies = {n: v[on_energy_grid] for n, v in energies.items()}
-    t_b = budget["t"]
+    t_b = series.relative(budget["t"])
     tol = 1e-6 * dt
     # Budget rows land on that grid by construction (both are sampled
     # before the same step), except the budget stream's own
