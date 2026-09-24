@@ -25,7 +25,9 @@ Nothing is reimplemented: the same jitted diagnostics, the same
 ``.dat`` machinery the live driver uses, so a rebuilt record is the
 number the run would have written, bit for bit -- every stored value
 of every stream, with the single documented exception of the
-``stats*.dat`` driving columns below.
+``stats*.dat`` driving columns below.  Bit for bit on the run's own
+device layout, that is: another mesh reorders the reductions, which
+moves a value by machine epsilon and no more.
 
 Why this needs JAX (and cannot live in :mod:`dnsjax.analysis`):
 :func:`~dnsjax.twin.diagnostics._marginals_replicated` is a
@@ -72,6 +74,12 @@ own TOML carries ``[twin]`` keys, which do not ride this script's
 surface.  ``res.double_precision`` is taken from the snapshot, the only
 value :func:`~dnsjax.snapshot.validate_snapshot_params` accepts.
 
+No layer may change what the snapshots were written with: a
+``phys`` / ``geo`` / ``res`` override would rebuild a member's
+streams under another Reynolds number, box or grid than its states
+carry, and the script refuses one exactly as ``dnsjax-twin`` refuses
+it on a paired resume (``trajectory_defining_changes``).
+
 Every selected snapshot must then share that one's ``native_shape``
 and wall-normal grid, or the script refuses.  Each stream sidecar
 carries a *single* ``ny`` / ``y`` / ``y_weights`` / ``n_kz`` / ``n_kx``
@@ -116,6 +124,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from dnsjax.analysis.twin.lengths import partner_of
 from dnsjax.extensions import ParamExtension, register_extension
 from dnsjax.flows.registry import cartesian_systems
+from dnsjax.parameters import trajectory_defining_changes
 from dnsjax.snapshot_meta import git_hash, read_snapshot_meta
 
 _PROG = "python scripts/twin_postprocess.py"
@@ -141,8 +150,12 @@ _OUTPUTS: tuple[str, ...] = (
     "stats_twin.dat",
 )
 
-#: Relative tolerance of the built-in energy identity (``--recon.check``).
-_CHECK_TOL: float = 1e-10
+#: Relative tolerance of the built-in energy identity (``--recon.check``),
+#: by ``res.double_precision``.  Round-off only -- the two sides sum the
+#: same squares in different orders -- so a decade or more above what
+#: each precision's summation leaves; a convention slip (a lost fold, a
+#: factor of two) is order one either way.
+_CHECK_TOL: dict[bool, float] = {True: 1e-10, False: 1e-4}
 
 
 class ReconParams(BaseModel):
@@ -414,9 +427,11 @@ def check_one_grid(pairs: list[Pair], reference: Pair) -> None:
 def _prepare_output(out: Path, values: ReconParams, main: bool) -> None:
     """Create *out* and clear or refuse pre-existing streams.
 
-    Runs on **every** rank: the ``mkdir`` and the ``unlink`` are both
-    idempotent, so no barrier is needed before the writers stat the
-    same paths, and the refusal must be unanimous.
+    Runs on **every** rank, so that the refusal is unanimous; the
+    ``mkdir`` and the ``unlink`` are both idempotent.  The caller then
+    holds every rank at a barrier before rank 0 creates a stream file:
+    a rank still in here could otherwise find a file rank 0 had just
+    created, and refuse -- or, under ``--recon.overwrite``, delete it.
     """
     out.mkdir(parents=True, exist_ok=True)
     existing = [name for name in _OUTPUTS if (out / name).is_file()]
@@ -516,18 +531,21 @@ def main(argv: list[str] | None = None) -> int:
             f"{directory}"
         )
     check_one_grid(kept, param_pair)
-    # A resolution override would leave the loaded state's axes at the
-    # stored sizes while every derived object follows params.
-    expect = (params.res.ny, params.res.nz - 1, params.res.nx // 2)
-    if param_pair.shape[1:] != expect:
+    # An override would leave the loaded states as they were written
+    # while every derived object follows params: a resolution change
+    # mismatches the arrays outright, a phys / geo one (Re, the box,
+    # the wall-normal grid) silently rebuilds the streams of another
+    # flow.  The resume rule of dnsjax-twin itself.
+    changes = trajectory_defining_changes(
+        read_snapshot_meta(param_pair.reference)["params"]
+    )
+    if changes:
         raise SystemExit(
-            f"{_PROG}: error: the resolved resolution "
-            f"(ny={params.res.ny}, nz={params.res.nz}, "
-            f"nx={params.res.nx}) does not match what "
-            f"{param_pair.reference.name} stores "
-            f"({list(param_pair.shape[1:])} = (ny, nz-1, nx//2)); this "
-            "script rebuilds a stream on the snapshots' own grid and "
-            "does not regrid."
+            f"{_PROG}: error: the resolved parameters differ from what "
+            f"{param_pair.reference.name} was written with "
+            f"({'; '.join(changes)}); this script rebuilds a member's "
+            "streams under its snapshots' own parameters and does not "
+            "regrid."
         )
 
     # The snapshot's precision, before JAX initializes any array:
@@ -591,6 +609,11 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     _prepare_output(out, values, main_device)
+    from dnsjax.snapshot import _barrier
+
+    # Every rank has cleared or refused before any creates a file
+    # (:func:`_prepare_output`).
+    _barrier("recon_prepare")
 
     # Everything below captures the singletons at import: params are
     # final and the JAX runtime is configured (the bootstrap contract).
@@ -699,6 +722,7 @@ def main(argv: list[str] | None = None) -> int:
             stream.flush(check=False)
         sys.exit(3)
 
+    check_tol = _CHECK_TOL[bool(params.res.double_precision)]
     worst = 0.0
     for n, pair in enumerate(kept, start=1):
         validate_snapshot_params(pair.reference)
@@ -734,7 +758,7 @@ def main(argv: list[str] | None = None) -> int:
                 got = float(jnp.einsum("j,cjk->", y_weights, yvals[axis]))
                 dev = abs(got - e_d) / e_d if e_d > 0 else abs(got)
                 worst = max(worst, dev)
-                if dev > _CHECK_TOL:
+                if dev > check_tol:
                     sharding.print(
                         f"[recon] CHECK FAILED at t = {t:.6e}: "
                         f"sum_k int {axis} = {got:.12e} but E_d = "
@@ -799,10 +823,10 @@ def main(argv: list[str] | None = None) -> int:
             ),
             flush=True,
         )
-    if values.check and worst > _CHECK_TOL:
+    if values.check and worst > check_tol:
         sharding.print(
             f"[recon] FAILED: the spectral marginals miss twin.dat's "
-            f"E_d by {worst:.3e} (tolerance {_CHECK_TOL:.0e}); the "
+            f"E_d by {worst:.3e} (tolerance {check_tol:.0e}); the "
             "streams are written but should not be trusted."
         )
         return 1
