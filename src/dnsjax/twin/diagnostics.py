@@ -151,21 +151,27 @@ Four evaluation classes, the first three FFT-free:
   solenoidal) trades the 36 gradient transforms for `$8\times9$`
   tensor back-transforms: 93, worse.
 
-  Two knobs trade against footprint if this program's peak ever
-  binds, and they act on **different** transients -- neither is
-  applied by default (both cost throughput, and the budget is a
-  cadenced diagnostic):
+  The pass holds ~21 padded physical fields at once -- the 9 cached
+  advectors, the 9 gradients of the current `$\mathbf{c}$` and
+  `$\mathbf{q}$` -- one gradient set at a time, which an optimization
+  barrier per `$\mathbf{c}$` enforces (without it XLA formed the four
+  sets together).  That is a count of live fields; the program's
+  measured peak is about twice it ("Memory" below).  Two knobs trade
+  against footprint if it ever binds, and they act on **different**
+  transients -- neither is applied by default (both cost throughput,
+  and the budget is a cadenced diagnostic):
 
   - ``solver.rhs_transform_chunks`` bounds the *transform-stage*
     transient inside one :func:`dnsjax.fft.chunked_transform` call
     (the padded intermediates of a 9-field batch), for the same
     69 single-field transforms in more, smaller dispatches.  It
-    leaves the ~21 live fields alone.
+    leaves the ~21 live fields alone; measured, it takes the peak
+    from 43 to 37.
   - Moving the advector transform *inside* the pair loop is what
     cuts those: the 9 cached `$\mathbf{b}$` fields become 3 live
-    ones, peak 21 `$\to$` 15 (-29 %), for 84 transforms instead of
+    ones, 21 `$\to$` 15 live fields, for 84 transforms instead of
     69 (+22 %) since each of the 8 pairs then re-transforms its own
-    advector.
+    advector.  A count off the shapes; not measured.
 
 `$U^{(1)}$` and `$\Delta U$` are needed only as `$(3, N_y)$`
 profiles in the a/b/c mean slots (no advecting-`$U^{(1)}$` term
@@ -317,29 +323,18 @@ one cannot; :mod:`dnsjax.twin.pressure` has the whole argument, and
 its "Cost" section the footprint.
 
 Its *transient*, unlike its transform count, is not automatically the
-smaller of the two.  Held naively the three padded physical sets
+smaller of the two.  Held together the three padded physical sets
 `$\mathbf{b}$`, `$\nabla\mathbf{c}^{(1)}$` and
-`$\nabla\Delta\mathbf{c}$` are 6 + 9 + 9 = 24 live fields, *more*
-than the three-bin pass's ~21 despite half the transforms.  So
+`$\nabla\Delta\mathbf{c}$`, with the product being formed, are
+6 + 9 + 9 + 3 = 27 live fields, *more* than the three-bin pass's ~21
+(counted the same way) despite half the transforms.  So
 :func:`_convective_sources` forms the two gradient sets one at a time,
-the reference's consumer `$q_p$` between them: 6 + 9 = 15 in program
-order.  XLA still schedules -- this only stops the statement order
-from asking for the worse arrangement.
-
-Fifteen is the padded **physical** count and not the whole
-transient.  Live *spectral* arrays at the same point are
-`$\Delta\mathbf{u}$`, the four signed operands of :class:`_Sources`'
-``advective``, `$\hat{\mathcal N}$`, and then ``div_n`` and
-`$\Delta\hat p$` from :func:`_ybudget_densities`.  A complex
-`$(3, N_y, N_{k_z}, N_{k_x})$` field is `$24 n_x n_y n_z$` bytes
-against a padded physical component's `$18 n_x n_y n_z$`
-(wall-bounded oversamples `$x$`-`$z$` only, `$1.5^2$`), so those
-`$\sim\!6$` are `$\sim\!8$` more padded-component equivalents:
-size a job against `$\sim\!23$`, not 15, and watch it -- that
-conversion is arithmetic off the shapes, not a measurement.
-``solver.rhs_transform_chunks`` caps the transform-stage
-transient inside each :func:`dnsjax.fft.chunked_transform` call; it
-does **not** touch the live field count.
+the reference's consumer `$q_p$` between them: 6 + 9 + 3.  Statement
+order does not get that on its own -- XLA formed both sets together
+-- so an optimization barrier holds it there.  What the program then
+peaks at is measured rather than counted in "Memory" below: about
+twice the live-field count, the rest being transform-pipeline
+transient and spectral operands.
 
 Two budget forms
 ----------------
@@ -387,9 +382,10 @@ What the form buys: those two exact identities, and
 the recovered pressure is the Bernoulli pressure the influence matrix
 actually closes on, and the whole term is *checkable* against the
 solver instead of argued (``tests/test_twin_unit.py``).  It is also
-cheaper: 21 field transforms and 12 live padded fields against 33 and
-15.  What it costs: ``P_r``, ``T_vort`` and ``T_self`` no longer map
-onto the paper's terms at all, so `$\sum_k\int(P_U + P_r)$` is
+cheaper: 21 field transforms against 33, and a measured peak of 33
+padded components against 37 ("Memory" below).  What it costs:
+``P_r``, ``T_vort`` and ``T_self`` no longer map onto the paper's
+terms at all, so `$\sum_k\int(P_U + P_r)$` is
 ``P_tot + T_tot`` up to truncation rather than ``P_tot`` exactly, and
 the fluctuation half of the production has no convective counterpart
 in the stream.  That is why the convective form is the default.
@@ -491,6 +487,35 @@ note in ``cylindrical.py``, ``_imm_iteration_vw``) cannot arise
 because no mask is ever materialised standalone at full shape.
 Reductions are plain ``get_norm2`` sums over the sharded axes;
 outputs are replicated scalars.
+
+Memory
+------
+Measured, not counted: each program's peak transient from XLA's own
+buffer assignment (``temp_size_in_bytes`` of
+``jax.jit(f).lower(...).compile().memory_analysis()``), in padded
+physical components -- one real field on the 3/2-rule grid,
+`$18\,n_x n_y n_z$` bytes at double precision.  CPU, plane-Poiseuille
+at `$64\times65\times64$` and `$96\times97\times96$` (the two agree
+to 1 %), at ``solver.rhs_transform_chunks`` 1 and 3:
+
+- :func:`twin_budget` (three-bin): 43 / 37;
+- :func:`twin_ybudget`: 37 / 31 convective, 33 / 27 rotational;
+- for scale, the time step itself: 20 / 18 iterative-CN, 28 / 26
+  CN/AB2;
+- :func:`twin_energies` 2.6 (7.9 under ``twin.bins``), the two
+  spectra samples 1.5 and 1.3 -- none of them a peak.
+
+So either budget, when enabled, is the run's high-water mark, since
+the device allocator's pool grows to the maximum over every program.
+A count of live fields misses about half: every batched transform
+carries some two padded fields of pipeline transient per field in
+flight on top of its output (a 3-field :func:`spec_to_phys` alone
+peaks at 6, a 9-field one at 18), plus the spectral operands around
+it.  The two optimization barriers (:func:`_convective_sources`,
+:func:`_twin_budget_jit`) are worth 47 `$\to$` 37 and
+61 `$\to$` 43 of these, for the same numbers to rounding and no
+measurable CPU time.  A GPU schedule is its own: size a job against
+the driver's closing ``Peak device memory`` line, not this list.
 """
 
 import importlib
@@ -783,6 +808,10 @@ def _twin_budget_jit(
                     out[f"{kind}_{a}({b},{c})"] = -get_inprod(
                         full[a], q_spec, k_metric, w
                     )
+        # One gradient set live at a time.  The four are independent
+        # of one another, so without this XLA forms them together
+        # (module docstring, "Budget terms").
+        out, b_phys, full = lax.optimization_barrier((out, b_phys, full))
 
     # Mean-slot terms (FFT-free classes; priority c > b > a keeps the
     # dispatch unambiguous for multi-mean triples).
@@ -1276,8 +1305,10 @@ def _convective_sources(
     :func:`twin_budget` needs, because binning no longer forces a
     separate physical product per bin pair.  The two gradient sets are
     formed **one at a time** -- the reference's only consumer is
-    `$q_p$` -- so the live padded physical set is 6 + 9, not 6 + 9 + 9;
-    the module docstring's "Spectral budget" section prices it.
+    `$q_p$`, and an optimization barrier keeps XLA to that order -- so
+    the live padded physical set is 6 + 9 + 3 with the product being
+    formed, not 6 + 9 + 9 + 3; the module docstring's "Memory" section
+    has what the program measures.
 
     Three exact simplifications, all of them of the same mean-mode
     kind (`$U^{(1)}_y = \Delta U_y = 0$` by continuity plus no-slip,
@@ -1359,15 +1390,18 @@ def _convective_sources(
         spec_to_phys, jnp.concatenate([ref_f, delta_f], axis=0)
     )
     # One gradient set at a time: the reference's only consumer is
-    # ``q_p``, so finishing it here lets the scheduler retire those
-    # nine padded fields before the difference's nine exist.  Peak 15
-    # live rather than 24 -- see the docstring; XLA still schedules,
-    # this only stops the statement order from asking for the worse
-    # one.
+    # ``q_p``, so finishing it first retires those nine padded fields
+    # before the difference's nine exist.
     grad_ref = chunked_transform(spec_to_phys, grad_spec(ref_f))
     # `$(\Delta\mathbf{u}\cdot\nabla)\mathbf{u}'^{(1)}$`, split so the
     # advector is the mean-free half (docstring).
     q_p = advect(adv[3:6], grad_ref) + mean_advect(prof_dU, ref_f)
+    # Statement order alone does not get that order: ``grad_del``
+    # depends on nothing ``q_p`` does, and XLA schedules the two
+    # nine-field transforms together.  The barrier makes the second
+    # wait for ``q_p`` -- a fifth off this program's peak, and the
+    # same numbers (docstring).
+    q_p, adv, delta = lax.optimization_barrier((q_p, adv, delta))
 
     grad_del = chunked_transform(spec_to_phys, grad_spec(delta))
     q_tr = advect(adv[0:3], grad_del)
@@ -1451,12 +1485,15 @@ def _rotational_sources(
     **Cost: 21 field transforms against the convective 33** -- twelve
     ``spec_to_phys`` (`$\Delta\mathbf{u}$`, `$\Delta\boldsymbol{
     \omega}$`, `$\boldsymbol{\omega}_f^{(1)}$`, `$\mathbf{u}_f^{(1)}$`)
-    and nine back, one per product.  The statement order below peaks
-    at **12** live padded fields rather than the convective 15: the
+    and nine back, one per product.  The statement order below keeps
+    at most **12** padded fields live, the product being formed
+    included (the convective order's is 18 by that count): the
     two `$\Delta\mathbf{u}$` products are formed and retired first,
     which lets `$\boldsymbol{\omega}_f^{(1)}$` and
     `$\Delta\mathbf{u}$` go before `$\mathbf{u}_f^{(1)}$` arrives.
-    XLA still schedules, so size a job against 12 and watch it.
+    That is a count of live fields, not the program's peak, which its
+    one nine-field transform sets: 33 padded components measured,
+    against the convective 37 (module docstring, "Memory").
     """
     kx, kz = fourier_.kx, fourier_.kz
     d1 = flow_.D1

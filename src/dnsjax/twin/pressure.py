@@ -143,7 +143,8 @@ Resident, held for the run -- so it is built only when
 - ``M_inv``, `$(N_{k_z}, N_{k_x}, 2, 2)$` -- negligible beside those.
 
 Per sample: one banded solve and a handful of `$D_1$` matvecs, against
-the ~21 field transforms the budget itself costs.
+the 33 field transforms the budget itself costs (21 in the rotational
+form).
 """
 
 from __future__ import annotations
