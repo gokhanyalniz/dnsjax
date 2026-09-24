@@ -106,9 +106,9 @@ Ensembles: `scripts/ensemble_setup.py build-twin` + `analysis.twin`.
 - `scripts/twin_postprocess.py`: rebuilds `twin.dat`, the two `(y, k)`
   streams and `stats.dat` / `stats_twin.dat` from a member's snapshot
   pairs (`[recon]`), for members recorded before a stream existed.
-  Bit-for-bit except the `stats*.dat` driving columns, and the
-  `[recon]` stream-shaping flags are stated, not inherited: its
-  module docstring.
+  Bit-for-bit on the run's own mesh except the `stats*.dat` driving
+  columns, and the `[recon]` stream-shaping flags are stated, not
+  inherited: its module docstring.
 - `scripts/twin_spectral_maps.py`: draws the `(y, k)` streams as
   premultiplied `(lambda, y)` maps and `k`-summed `(y, t)` spacetime
   maps over an ensemble, in inner units. Only the spectra marginals
