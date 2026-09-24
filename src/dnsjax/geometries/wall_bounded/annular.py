@@ -1738,7 +1738,11 @@ def _imm_iteration_vw(
     surplus wall differences both ride the corrector iterate.
     Carrying `$\Phi$` would mean a third representation of the state
     for the sake of two rows, which was tried on Cartesian and
-    reverted.
+    reverted.  (The pipe does carry its quad's two *difference*
+    halves, for another reason -- the velocity does not determine
+    them, and re-deriving them made it first order in time at coarse
+    radial resolution -- and still re-anchors their wall data on the
+    accepted state: ``cylindrical._imm_iteration_vw``.)
 
     Mean mode and padding
     ~~~~~~~~~~~~~~~~~~~~~

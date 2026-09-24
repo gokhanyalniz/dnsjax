@@ -793,15 +793,20 @@ class Resolution(BaseModel):
     # -- five solves over three band families, with only the quad's two
     # free wall differences taken from the corrector iterate (four wall
     # values against two conditions is what the exact diagonalisation
-    # costs).  **No geometry changes what it carries**:
-    # the evolved scalars are re-derived from the carried state at the
-    # top of each corrector pass and reconstructed away at its exit, so
+    # costs).  **No geometry changes what it observes**: the evolved
+    # scalars are re-derived from the carried velocity at the top of
+    # each corrector pass and reconstructed away at its exit, so
     # snapshots, probes, forcing, diagnostics, the analysis package and
-    # resume are identical under both formulations.  The price is two
-    # wall rows per
-    # mode (the influence coefficients cannot be carried), a bounded
-    # truncation-level substitute -- ``cartesian._imm_iteration_vw``
-    # carries the argument and the measurement.  Construction, boundary
+    # resume see the same physical state under both formulations.  The
+    # one internal exception is the pipe family, which also carries the
+    # quad's two difference halves: the velocity does not determine
+    # them, and re-deriving them made it first order in time at coarse
+    # radial resolution (trailing solver-basis slots plus an optional
+    # snapshot member, ``outs.snapshot_embed_carry``).  The price is
+    # two wall rows per mode (the influence coefficients cannot be
+    # carried), a bounded truncation-level substitute --
+    # ``cartesian._imm_iteration_vw`` carries the argument and the
+    # measurement.  Construction, boundary
     # conditions and the retired routes: the
     # ``cartesian._imm_iteration`` (shared record),
     # ``annular._imm_iteration_vw`` (cylindrical algebra) and

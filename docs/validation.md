@@ -66,9 +66,9 @@ map to them as follows.
 | The banded kernel's adjoint matches the portable sweep's own autodiff, and composes inside the sharded solve | `tests/test_banded_solver.py` |
 | Triton lowering does not regress on GPU-less machines | `tests/test_banded_solver.py` (CUDA-lowering rows) |
 | Per-geometry operators and matvecs match independent NumPy constructions | `tests/test_cartesian.py`, `test_cylindrical.py`, `test_annular.py`, `test_viscoelastic.py`, `test_viscoelastic_pipe.py` |
-| Snapshots round-trip, resume across any device count, and carry lineage | `tests/test_snapshot.py`, `tests/test_resume.py` |
+| Snapshots round-trip, resume across any device count, and carry lineage; a pipe-family resume continues the uninterrupted run to round-off | `tests/test_snapshot.py`, `tests/test_resume.py` |
 | The JAX-free analysis API reproduces the solver's own discrete operators | `tests/test_snapshot_export.py` |
 | The $(k_x, k_z) = (0, 0)$ perturbation respects its conservation laws | `tests/test_mean_mode.py` |
-| The applied mean-mode driving column agrees with the wall-shear inference at converged resolution | `tests/test_driving.py` |
+| The applied mean-mode driving column agrees with the wall-shear inference at converged resolution, and on the toroidal pipe with its whole mean-momentum balance | `tests/test_driving.py`, `tests/test_curved_pipe.py` |
 | A zero-energy twin perturbation reproduces the reference bit-for-bit, every stream included | `tests/test_twin_driver.py` |
 | Quadrature weights and interpolation matrices | `tests/test_integration.py` |

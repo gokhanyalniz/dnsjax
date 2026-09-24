@@ -21,7 +21,9 @@ arithmetic), at reduced accuracy. Assuming the default 3/2 dealiasing and
 the default backends:
 
 - **Spectral state** — exactly $n_c$ fields, with $n_c = 3$ velocity
-  components (9 for the viscoelastic flows): one component is
+  components (9 for the viscoelastic flows, and 2 more for the pipe
+  family — pipe, curved pipe, viscoelastic pipe — whose default time
+  stepper carries two further fields across steps): one component is
   $(n_x/2) \cdot n_y \cdot (n_z - 1)$ complex numbers ($n_y - 1$ in place
   of $n_y$ for the periodic box), i.e.
   $\approx n_x n_y n_z$ reals. The time stepper holds about three further
@@ -49,11 +51,13 @@ the default backends:
   half-bandwidth $p$ equal to `fd_order`, over the $(n_z - 1)(n_x/2)$ mode
   plane — that is $m (2p + 1)/2$ fields for $m$ banded matrices, the one
   term that grows with `fd_order`. Here $m = 2$ for
-  plane-Couette/Poiseuille, $4$ for pipe, Taylor–Couette,
-  quasi-Keplerian, and Dean, and $10$ for the viscoelastic flows (the
-  same $4$ plus the six conformation Helmholtz matrices), plus
-  $v = 3\text{–}6$ field-sized boundary-response vectors ($v/2$
-  fields). Switching to
+  plane-Couette/Poiseuille, $3$ for the pipe, curved pipe,
+  Taylor–Couette, quasi-Keplerian, and Dean, and $9$ for the
+  viscoelastic flows (the same $3$ plus the six conformation Helmholtz
+  matrices), plus $v$ field-sized boundary-response vectors ($v/2$
+  fields): $v = 2$, or $3$ for the pipe family. The legacy primitive
+  scheme (`res.consistent_imm = false`) stores one more matrix in the
+  curvilinear geometries and up to six response vectors. Switching to
   `solver.backend = "dense"` replaces $(2p + 1)$ by $n_y$ per matrix — the
   one super-linear option, and the reason Pallas is the wall-bounded
   default. (`solver.pallas_kernel` is a different axis: it selects which
@@ -79,10 +83,10 @@ Summing these, the leading-order total per device is
 
 with $W \approx 15\text{–}21$ as above (for the viscoelastic flows,
 $W \approx 45 + 72/k$ with $k$ = `rhs_transform_chunks`) and
-$(n_c, m, v) = (3, 2, 4)$ for the plane flows, $(3, 4, 3)$ for the pipe,
-$(3, 4, 6)$ for Taylor–Couette, quasi-Keplerian, and Dean,
-$(9, 10, 3)$ for the viscoelastic pipe, and
-$(9, 10, 6)$ for viscoelastic Dean. The sum is an upper estimate —
+$(n_c, m, v) = (3, 2, 2)$ for the plane flows, $(5, 3, 3)$ for the pipe
+and the curved pipe, $(3, 3, 2)$ for Taylor–Couette, quasi-Keplerian,
+and Dean, $(11, 9, 3)$ for the viscoelastic pipe, and $(9, 9, 2)$ for
+viscoelastic Dean. The sum is an upper estimate —
 XLA's buffer reuse typically realizes less — and halves at single
 precision. Off the stepping path, a snapshot write reshards the state
 onto an I/O layout before moving each device's bytes directly to disk

@@ -150,18 +150,20 @@ the axis forces (the spin quad, parity classes, the band splice).
   flow) makes the discrete continuity identity hold by **one
   mechanism** in all three geometries: advance the wall-normal
   velocity + vorticity, reconstruct the tangential pair, never form a
-  pressure. It is flag-independent from the outside — no geometry
-  changes what it carries, so snapshots, probes/forcing, analysis and
-  resume all read either path's state. Mechanism, per-geometry solve
+  pressure. It is flag-independent from the outside — every geometry
+  is observed in the same physical components, so snapshots,
+  probes/forcing, analysis and resume all read either path's state
+  (the pipe family's two extra slots are solver-internal: "Component
+  basis" above). Mechanism, per-geometry solve
   counts and efficacy, momentum prices, when to fall back to the
   legacy path, and the five rejected routes: the
   `Resolution.consistent_imm` docs
   (`parameters.py`); the shared scheme record:
   `cartesian._imm_iteration` (+ `_imm_iteration_vw`);
   the cylindrical algebra: `annular._imm_iteration_vw`; the pipe's
-  free wall values, why its solve count and cost go the other way, and
-  the instability that lagging them caused:
-  `cylindrical._imm_iteration_vw`. Guards:
+  free wall values, why its solve count and cost go the other way, the
+  instability that lagging them caused, and why it carries its
+  difference halves: `cylindrical._imm_iteration_vw`. Guards:
   `tests/test_imm_continuity.py` (continuity + the momentum ledger),
   `tests/test_random_smoke.py` (the nonlinear stability gate),
   `tests/test_temporal_order.py` (the order the formulation buys).
