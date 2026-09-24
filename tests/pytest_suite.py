@@ -90,6 +90,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_bootstrap.py", (), (), 1800),
     ("test_cartesian.py", (), (), 1800),
     ("test_cnab2.py", (), (), 1800),
+    # Seven checks, one subprocess each (the geometry captures kappa at
+    # import); ~3 min, no mpirun.
+    ("test_curved_pipe.py", (), (), 1800),
     ("test_cylindrical.py", (), (), 1800),
     # Offline (no mpirun), but it runs five full solver steps in
     # subprocesses, so it is a slow row.
