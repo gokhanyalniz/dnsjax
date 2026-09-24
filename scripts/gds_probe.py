@@ -80,6 +80,11 @@ from pathlib import Path
 MB = 1 << 20
 GB = 1 << 30
 
+#: The random IC's seed for Part C's snapshot.  Fixed on purpose, like
+#: every diagnostic seed in ``scripts/`` (``init.random_seed`` itself
+#: defaults to drawing one).
+IC_SEED = 1
+
 # Span sizes that bracket the range the *solver* layout would write
 # (Part B is a synthetic study of that layout, not of what ships):
 # 512 B is the docstring's worst case (np1 = 4 at nx = 256), 1 MiB is
@@ -771,7 +776,7 @@ def _part_c(args, outdir: Path) -> None:
         params.init.random_smoothness,
         params.init.random_wall_smoothness,
         params.init.random_wall_confinement,
-        params.init.random_seed,
+        IC_SEED,
         params.init.random_mean_flow,
     )
     if to_solver is not None:

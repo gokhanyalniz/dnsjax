@@ -47,10 +47,11 @@ default.  ``--calib.sweep_smoothness`` and its two siblings take
 comma-separated lists and report their outer product, one line each,
 rebuilding the field per entry (a per-mode host loop: seconds at a
 production resolution, so a dozen entries is a coffee, not a job).
-The seed is `` init.random_seed`` as usual, and `$A$` is essentially
-seed-independent -- it averages over every resolved mode, and moves
-by under 0.005 across seeds at a production box -- so a sweep needs
-one seed, not an ensemble.
+The seed is ``init.random_seed`` as usual (unset: drawn, and printed
+with its source), and `$A$` is essentially seed-independent -- it
+averages over every resolved mode, and moves by under 0.005 across
+seeds at a production box -- so a sweep needs one seed, not an
+ensemble.
 
 **A(0) is a shape score, not a growth predictor.**  This is the
 caveat that decides how the output should be used, and it is measured
@@ -430,10 +431,14 @@ def ic_shape(marginal: str) -> tuple[np.ndarray, np.ndarray]:
 
 def main(argv: list[str] | None = None) -> int:
     from dnsjax.analysis.twin.yspectra import shape_alignment
-    from dnsjax.bootstrap import configure_jax_platform, resolve_parameters
+    from dnsjax.bootstrap import (
+        configure_jax_platform,
+        resolve_parameters,
+        resolve_run_seeds,
+    )
     from dnsjax.parameters import params, update_parameters
 
-    resolve_parameters(argv, extensions=(CALIB_EXTENSION,), prog=_PROG)
+    setup = resolve_parameters(argv, extensions=(CALIB_EXTENSION,), prog=_PROG)
     if calib_params.target is None:
         raise SystemExit(f"{_PROG}: error: --calib.target is required")
     if params.dist.np0 * params.dist.np1 != 1:
@@ -453,6 +458,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     configure_jax_platform(params.dist.platform, double_precision=True)
+    # An unset ``init.random_seed`` means "draw one", as for the solver:
+    # resolved (and printed with its source) before any IC is built.
+    for note in resolve_run_seeds(setup):
+        print(note, flush=True)
     from dnsjax.twin.diagnostics import flow  # noqa: F401  (builds it)
 
     if (int(meta["ny"]), _n_k(meta, marginal)) != (
