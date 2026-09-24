@@ -720,9 +720,12 @@ mean. `t`/`it`/`isnap` continue only when
   trace time the moment the run has two (error text:
   `twin/pressure.py`). So every array-carrying object is a
   `register_dataclass_pytree` pytree passed in -- flows, `Fourier`,
-  solver operators, `DifferencePressure`. Only a real
-  multi-**process** run catches a slip (guard:
-  `tests/test_twin_driver.py`'s `test_np2_run`).
+  solver operators, `DifferencePressure`. A jit wrapped around a
+  function that passes module globals to an inner jit bakes them in
+  just the same. Only a real multi-**process** run catches a slip
+  (guards: `tests/test_twin_driver.py`'s `test_np2_run`, and the
+  `*-mpi-pad` entries of `tests/test_random_smoke.py`, which keep the
+  laminarization read on).
 - `jax_enable_x64` is set from `params.res.double_precision` before
   JAX initializes arrays.
 - **Nothing may initialize MPI before XLA does** -- XLA's init is

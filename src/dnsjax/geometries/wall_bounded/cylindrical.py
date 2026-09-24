@@ -171,13 +171,16 @@ from ._cylindrical_stepping import (
     CFL_NAMES,  # noqa: F401 — re-exported
     DRIVING_KEY_Z,  # noqa: F401 — re-exported
     _apply_bulk_correction,  # noqa: F401 — re-exported
+    _correct,  # noqa: F401 — re-exported
     _curl_fn,  # noqa: F401 — re-exported
     _get_rhs,  # noqa: F401 — re-exported
     _get_rhs_measured,  # noqa: F401 — re-exported
     _imm_iteration,  # noqa: F401 — re-exported
     _imm_iteration_vw,  # noqa: F401 — re-exported
     _l_bf,  # noqa: F401 — re-exported
+    _norm,  # noqa: F401 — re-exported
     _parity_y_matvec,  # noqa: F401 — re-exported
+    _predict,  # noqa: F401 — re-exported
     build_stepper,
     mean_driving,  # noqa: F401 — re-exported
 )
@@ -186,9 +189,13 @@ from ._cylindrical_stepping import (
 #: these so :mod:`dnsjax.__main__` can move a state between the
 #: physical representation every consumer sees and the solver basis,
 #: without knowing which geometry it is driving (Cartesian and
-#: triply-periodic simply have none).
+#: triply-periodic simply have none).  The outgoing map runs in the
+#: hot loop, so it is exported jitted: ``__main__`` never jits a flow
+#: function itself, because an outer jit would trace the flow's
+#: global arrays in as constants, which a multi-process run refuses.
+#: The incoming map runs once per state and stays bare.
 to_solver_basis = to_pm_basis
-from_solver_basis = from_pm_basis
+from_solver_basis = jax.jit(from_pm_basis)
 
 
 def _ghost_row_count(D1_ghost: np.ndarray, D2_ghost: np.ndarray) -> int:
