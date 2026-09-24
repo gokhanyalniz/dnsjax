@@ -514,21 +514,22 @@ def run(wall_time_start: int) -> None:
 
     # Both out-crossings run in the hot loop -- the physical view on
     # every stats/snapshot step, the ``E'`` read every
-    # ``outs.it_error_check`` (default 10) -- so the map is jitted.
-    # Unfused it dispatches one field-sized eager primitive per
-    # operation (measured ~5-6x the jitted cost, and as many
-    # field-sized transients live alongside ``state``).  Fusing the
-    # ``E'`` read with its conversion saves the intermediate outright.
-    # The identity is deliberately left bare: jitting it would only
-    # add a dispatch, and the loop relies on ``state_phys is state``
-    # there for its release to actually free anything.
-    _crosses_basis = from_solver_basis is not _identity_basis
-    from_solver_basis_jit = (
-        jax.jit(from_solver_basis) if _crosses_basis else from_solver_basis
-    )
-    if _crosses_basis:
+    # ``outs.it_error_check`` (default 10) -- so the geometry exports
+    # the map already jitted (eager, it dispatches one field-sized
+    # primitive per operation: measured ~5-6x the jitted cost, with as
+    # many field-sized transients alongside ``state``).  Nothing a
+    # flow module exports is jitted *again* here: an outer jit traces
+    # the flow's own functions with its global arrays as constants --
+    # every ``get_perturbation_energy`` hands ``fourier``/``flow`` to
+    # its jitted core, and a metric map reads them outright -- which
+    # one process accepts and a multi-process run refuses at trace
+    # time.  So the ``E'`` read is two dispatches, not one fused
+    # program, and its physical intermediate lives only between them,
+    # outside the step program's peak.  The identity stays bare: the
+    # loop relies on ``state_phys is state`` there for its release to
+    # actually free anything.
+    if from_solver_basis is not _identity_basis:
 
-        @jax.jit
         def _perturbation_energy_solver(s):
             return get_perturbation_energy(from_solver_basis(s))
     else:
@@ -778,11 +779,11 @@ def run(wall_time_start: int) -> None:
         # Compile the E' kernel outside the benchmark window; it is
         # read at the it_error_check cadence in the main loop.  The
         # loop reads it through ``_perturbation_energy_solver`` on a
-        # *solver-basis* state, so warm that fused kernel -- warming
-        # the bare physical one here would leave the conversion half
-        # of it to compile inside the timed region.  ``state`` is
-        # still physical at this point, so the warm-up value is
-        # meaningless and is discarded; only the trace matters.
+        # *solver-basis* state, so warm that pair -- warming the bare
+        # physical read here would leave the conversion to compile
+        # inside the timed region.  ``state`` is still physical at
+        # this point, so the warm-up value is meaningless and is
+        # discarded; only the trace matters.
         jax.block_until_ready(_perturbation_energy_solver(state))
 
     # Save the initial condition (state00000.tar) unless this run is a
@@ -1138,7 +1139,7 @@ def run(wall_time_start: int) -> None:
             and it > params.init.it0
         )
         state_phys = (
-            from_solver_basis_jit(state) if (do_stats or do_snapshot) else None
+            from_solver_basis(state) if (do_stats or do_snapshot) else None
         )
 
         # Periodic diagnostic output -> GPU buffer
@@ -1443,7 +1444,7 @@ def run(wall_time_start: int) -> None:
     # Out of the solver, once, for the final state: the physical view
     # shared by the final stats and the final snapshot below (the probe
     # stream converts its own columns).
-    state_phys = from_solver_basis_jit(state)
+    state_phys = from_solver_basis(state)
 
     # Final-state stats: computed once when the run stepped, reused by
     # both the final snapshot and the benchmark diagnostic below.

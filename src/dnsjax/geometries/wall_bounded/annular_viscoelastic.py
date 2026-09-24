@@ -199,7 +199,7 @@ from .annular import (
 
 #: Role aliases for the basis boundary (see ``cylindrical.py``).
 to_solver_basis = to_spin_basis
-from_solver_basis = from_spin_basis
+from_solver_basis = jax.jit(from_spin_basis)
 
 
 # ── Analytical laminar profiles (JAX-free, build-time) ──────────────

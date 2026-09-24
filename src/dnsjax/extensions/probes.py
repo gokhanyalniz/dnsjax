@@ -136,7 +136,7 @@ _MATCH_KEYS: tuple[str, ...] = (
 
 
 def _component_labels(n_components: int) -> list[str]:
-    """Component labels of the stored state for the current system.
+    r"""Component labels of the stored state for the current system.
 
     ``curved-pipe`` takes the cylindrical schema, although its slot 0
     holds the carried `$w_s = h\,u_s$` (``ProbesParams``).

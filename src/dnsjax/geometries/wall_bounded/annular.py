@@ -173,7 +173,7 @@ from ._base import (
 
 #: Role aliases for the basis boundary (see ``cylindrical.py``).
 to_solver_basis = to_pm_basis
-from_solver_basis = from_pm_basis
+from_solver_basis = jax.jit(from_pm_basis)
 
 
 @register_dataclass_pytree
