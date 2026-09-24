@@ -547,6 +547,9 @@ def run(wall_time_start: int) -> None:
     # init.isnap0 and the IC is saved as state00000.tar (see the IC-save
     # block below).
     resumed_continuation: bool = False
+    # Whether a snapshot's stored solver-carried fields may replace the
+    # re-derived ones (no trajectory-defining change; see below).
+    carry_restorable: bool = False
     isnap_start: int = params.init.isnap0
 
     if params.init.snapshot is not None and is_snapshot_file(
@@ -568,6 +571,7 @@ def run(wall_time_start: int) -> None:
         # snapshot's starts a new trajectory (reset t/it/isnap) unless
         # init.force_resume is set.
         changes = trajectory_defining_changes(meta["params"])
+        carry_restorable = not changes
         if changes and not params.init.force_resume:
             sharding.print(
                 "Resume: trajectory-defining parameters changed; "
@@ -695,10 +699,24 @@ def run(wall_time_start: int) -> None:
     isnap: int = isnap_start
     last_saved_it: int | None = None
 
-    def _save_numbered_snapshot(state, t, it, snap_stats, isnap):
+    # The solver state's trailing slots past the flow's physical
+    # components: state the pass carries across steps (the pipe
+    # family's spin-quad differences), invisible to every consumer and
+    # dropped by ``from_solver_basis``.  None elsewhere.
+    n_physical: int = _spec.n_components
+    carried_names: tuple[str, ...] = tuple(
+        getattr(_flow_mod, "CARRIED_FIELDS", ())
+    )
+    embed_carry: bool = bool(carried_names) and bool(
+        getattr(params.outs, "snapshot_embed_carry", False)
+    )
+
+    def _save_numbered_snapshot(state, t, it, snap_stats, isnap, carry=None):
         """Write state{isnap}.tar (stats embedded per outs.*), return the
         next isnap.  *state* is the physical view -- the on-disk basis
-        is physical components (see the component-basis boundary)."""
+        is physical components (see the component-basis boundary);
+        *carry* the solver-carried slots, embedded as the ``carry/``
+        member under ``outs.snapshot_embed_carry`` (``None``: none)."""
         from .snapshot import save_snapshot
 
         width = params.outs.snapshot_pad_width
@@ -709,8 +727,16 @@ def run(wall_time_start: int) -> None:
             f"state{isnap:0{width}d}.tar",
             stats=(snap_stats if params.outs.snapshot_embed_stats else None),
             isnap=isnap,
+            carry=carry if embed_carry else None,
+            carry_names=carried_names,
         )
         return isnap + 1
+
+    def _carried(solver_state):
+        """The solver state's carried slots (``None`` if it has none)."""
+        if solver_state.shape[0] == n_physical:
+            return None
+        return solver_state[n_physical:]
 
     dt_first: float = params.step.dt
     wall_time_now: int = perf_counter_ns()
@@ -825,6 +851,36 @@ def run(wall_time_start: int) -> None:
     # physical view.
     state = to_solver_basis(state)
 
+    # A resumed state's carried slots: ``to_solver_basis`` derived them
+    # from the velocity, which is the right thing for any other start.
+    # A snapshot that stored the solver's own (``carry/``) continues the
+    # trajectory exactly with them instead -- but only the trajectory
+    # it was written on: any trajectory-defining change (a ``geo.lz`` or
+    # ``geo.m0`` override rescales what each stored mode means, a
+    # ``res`` one re-grids) re-derives them, and
+    # :func:`dnsjax.snapshot.load_snapshot_carry` re-checks the grid.
+    if params.init.snapshot is not None and state.shape[0] > n_physical:
+        from .snapshot import load_snapshot_carry
+
+        stored = (
+            load_snapshot_carry(params.init.snapshot)
+            if carry_restorable
+            else None
+        )
+        if stored is not None and stored.shape[0] == (
+            state.shape[0] - n_physical
+        ):
+            state = jnp.concatenate([state[:n_physical], stored])
+            sharding.print(
+                "Resume: solver-carried fields restored from the snapshot."
+            )
+        else:
+            sharding.print(
+                "Resume: solver-carried fields re-derived from the "
+                "velocity (the snapshot stores none, or it was written "
+                "on another grid or trajectory)."
+            )
+
     # --- Stats buffer setup ------------------------------------------------
     p = params.outs.stats_precision - 1
     val_width = params.outs.stats_precision + 7
@@ -873,7 +929,11 @@ def run(wall_time_start: int) -> None:
     scheme: str = params.step.scheme
     is_cnab2: bool = scheme == "cnab2"
     if is_cnab2:
-        _, rhs_prev, *_ = step_cnab2(jnp.copy(state), jnp.zeros_like(state))
+        # RHS-shaped: the RHS has the flow's physical components only,
+        # not the state's carried slots.
+        _, rhs_prev, *_ = step_cnab2(
+            jnp.copy(state), jnp.zeros_like(state[:n_physical])
+        )
 
     # --- Steps (CFL) buffer setup --------------------------------------
     # The measured stepper serves two consumers: the ``steps.dat``
@@ -1194,7 +1254,7 @@ def run(wall_time_start: int) -> None:
             # broken state is written.
             flush_all_buffers()
             isnap = _save_numbered_snapshot(
-                state_phys, t, it, snap_stats, isnap
+                state_phys, t, it, snap_stats, isnap, _carried(state)
             )
             last_saved_it = it
 
@@ -1487,7 +1547,9 @@ def run(wall_time_start: int) -> None:
         # with this snapshot): buffered non-finite rows abort before
         # the write.
         flush_all_buffers()
-        isnap = _save_numbered_snapshot(state_phys, t, it, stats, isnap)
+        isnap = _save_numbered_snapshot(
+            state_phys, t, it, stats, isnap, _carried(state)
+        )
         last_saved_it = it
 
     wall_time_now = perf_counter_ns()

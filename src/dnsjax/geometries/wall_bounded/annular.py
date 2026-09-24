@@ -118,6 +118,7 @@ ready-to-use time-stepping functions.
 import copy
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import jax
 import numpy as np
@@ -766,6 +767,12 @@ class AnnularFlow:
         Live time step and AB2 step ratio, 0-d array leaves (see
         ``CartesianFlow`` and the builder ``set_dt``).
     """
+
+    #: Trailing carried slots of the solver-basis state: none -- the
+    #: annular pass evolves exactly as many scalars as it reconstructs
+    #: from (the pipe's does not; ``_cylindrical_stepping``).  Read by
+    #: the viscoelastic stepper shared with the pipe.
+    n_carried: ClassVar[int] = 0
 
     dt: Array = field(init=False)
     ab2_kappa: Array = field(init=False)
@@ -1731,7 +1738,11 @@ def _imm_iteration_vw(
     surplus wall differences both ride the corrector iterate.
     Carrying `$\Phi$` would mean a third representation of the state
     for the sake of two rows, which was tried on Cartesian and
-    reverted.
+    reverted.  (The pipe does carry its quad's two *difference*
+    halves, for another reason -- the velocity does not determine
+    them, and re-deriving them made it first order in time at coarse
+    radial resolution -- and still re-anchors their wall data on the
+    accepted state: ``cylindrical._imm_iteration_vw``.)
 
     Mean mode and padding
     ~~~~~~~~~~~~~~~~~~~~~

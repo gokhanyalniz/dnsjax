@@ -315,8 +315,14 @@ def _bench_step_cnab2(jax, jnp, step_cnab2, state, n: int, warmup: int = 3):
     """Time the CN/AB2 step by chaining ``(state, rhs_prev)`` from
     copies (both arguments are donated); a discarded priming call
     seeds the AB2 history, as the ``__main__`` driver does."""
+    from dnsjax.flows.registry import spec_for
+    from dnsjax.parameters import params
+
     s = jnp.copy(state)
-    _, rp, *_ = step_cnab2(jnp.copy(s), jnp.zeros_like(s))
+    # RHS-shaped seed: the flow's physical components, not a pipe
+    # state's trailing carried slots.
+    n_phys = spec_for(params.phys.system).n_components
+    _, rp, *_ = step_cnab2(jnp.copy(s), jnp.zeros_like(s[:n_phys]))
     for _ in range(warmup):
         s, rp, _err, _c, *_ = step_cnab2(s, rp)
     jax.block_until_ready(s)

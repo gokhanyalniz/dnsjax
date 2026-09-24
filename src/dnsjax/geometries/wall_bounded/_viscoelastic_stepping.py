@@ -87,6 +87,7 @@ from ...solvers import (
 )
 from ._base import extract_mean_mode, from_pm_basis
 from ._viscoelastic_common import (
+    N_VE_COMPONENTS,
     combined_norm,
     conformation_coupling_core,
     div_c_assemble,
@@ -513,7 +514,9 @@ def _get_rhs_core(
     # Moving-frame convective term (mode-diagonal on every component).
     u_grid = derived_params.u_grid
     if u_grid != 0:
-        rhs = rhs + (1j * u_grid) * fourier_.kz * state
+        # The evolved components only: a pipe state's trailing carried
+        # slots have no RHS (``_cylindrical_stepping``).
+        rhs = rhs + (1j * u_grid) * fourier_.kz * state[:N_VE_COMPONENTS]
 
     if measure_fn is None:
         return rhs
@@ -611,7 +614,7 @@ def _conformation_coupling(
 
     u_grid = derived_params.u_grid
     if u_grid != 0:
-        conf = conf + (1j * u_grid) * fourier_.kz * state[3:]
+        conf = conf + (1j * u_grid) * fourier_.kz * state[3:N_VE_COMPONENTS]
     return conf
 
 
@@ -714,20 +717,28 @@ def _correct(
     through the sources, so it needs no viscoelastic knowledge).
     Conformation: the Crank-Nicolson Helmholtz update.  The returned
     correction stacks both so the single convergence norm covers `$u$`
-    and `$c$`.
+    and `$c$`.  A pipe state carries the velocity pass's two spin-quad
+    differences after the conformation (``flow.n_carried`` slots, none
+    on the annulus): they go to the pass and come back from it, and
+    stay out of the correction.
     """
-    vel_new, vel_corr, aux = flow_.imm_iteration(
+    n = N_VE_COMPONENTS
+    vel_new, vel_corr, aux, carried_new = flow_.imm_iteration(
         state_prev[:3],
         prediction[:3],
         rhs_prev[:3],
         rhs_next[:3],
         fourier_,
+        state_prev[n:] if flow_.n_carried else None,
     )
     c_new = _c_cn_update(
-        state_prev[3:], rhs_prev[3:], rhs_next[3:], fourier_, flow_
+        state_prev[3:n], rhs_prev[3:], rhs_next[3:], fourier_, flow_
     )
-    c_corr = c_new - prediction[3:]
-    state_new = jnp.concatenate([vel_new, c_new])
+    c_corr = c_new - prediction[3:n]
+    parts = [vel_new, c_new]
+    if carried_new is not None:
+        parts.append(carried_new)
+    state_new = jnp.concatenate(parts)
     correction = jnp.concatenate([vel_corr, c_corr])
     return state_new, correction, aux
 

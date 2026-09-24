@@ -37,8 +37,22 @@ error naming the file and the cause.
 
 The stored field is the spectral **perturbation** $\mathbf{u}'$ for the
 base-flow systems (the laminar state is a zero array) and the **total**
-field for Dean, viscoelastic Dean, and the viscoelastic pipe. The archive
-is readable with ordinary tools — `tar xf` yields a valid zarr3 store,
+field for Dean, viscoelastic Dean, and the viscoelastic pipe.
+
+The pipe family — pipe, curved pipe, viscoelastic pipe — can store one
+more array beside the state, `carry/`: two fields its default time
+stepper evolves from step to step rather than deriving them from the
+velocity (the `_cylindrical_stepping` module documents them). They are
+solver-internal, and nothing that reads the state sees them. With them,
+a resume continues the trajectory to round-off. Without them, the solver
+re-derives both fields from the velocity, a one-off change of
+truncation size. That happens for a snapshot written with
+`outs.snapshot_embed_carry = false` (two fields fewer per snapshot, a
+pipe snapshot's size lower by two fifths and a viscoelastic pipe's by
+two elevenths), for one a script wrote, and for any resume that starts
+a new trajectory, a re-grid included.
+
+The archive is readable with ordinary tools — `tar xf` yields a valid zarr3 store,
 and in the worst case each
 chunk is raw little-endian complex data for `numpy.fromfile`. Resume is
 agnostic to the device count (precision must match — a mismatch
