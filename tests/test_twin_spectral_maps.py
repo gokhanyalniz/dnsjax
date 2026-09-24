@@ -1133,6 +1133,57 @@ def test_k_sum_counts_the_modes_each_half_counts() -> None:
     )
 
 
+def test_k_sum_streams() -> None:
+    """The streamed k-sum is the whole-field one, chunk edges included.
+
+    Two members of five records read two at a time, so each member's
+    reads cross two chunk edges and the ensemble mean is taken of
+    reduced blocks rather than of whole fields; the budget's virtual
+    ``sum`` is assembled from its additive terms on the way.  Nothing
+    lands in the field cache, which is what reading it this way buys.
+    """
+    chunk = tsm._REF_CHUNK
+    tsm._REF_CHUNK = 2
+    try:
+        meta = _meta("twin_yspectra")
+        recs = [_records(meta, "twin_yspectra", 5, seed=s) for s in (41, 43)]
+        series = _series(
+            "twin_yspectra",
+            [_member(meta, r, path=f"m{i}") for i, r in enumerate(recs)],
+        )
+        name = tsm.mean_mode_name(meta, "r")
+        for base in ("e", "r"):
+            want = np.mean(
+                [
+                    r[f"{base}_x"].sum(-1)
+                    - (
+                        tsm.mean_mode_profile(r[name], name)
+                        if base == "r"
+                        else 0
+                    )
+                    for r in recs
+                ],
+                axis=0,
+            )
+            assert np.allclose(tsm.k_summed(series, base), want), base
+
+        bmeta = _meta("twin_ybudget")
+        brecs = [_records(bmeta, "twin_ybudget", 5, seed=s) for s in (47, 53)]
+        budget = _series(
+            "twin_ybudget",
+            [_member(bmeta, r, path=f"b{i}") for i, r in enumerate(brecs)],
+        )
+        additive = [t for t in TERMS if t not in tsm.NON_ADDITIVE_TERMS]
+        want = np.mean(
+            [sum(r[f"{t}_x"] for t in additive).sum(-1) for r in brecs], axis=0
+        )
+        assert np.allclose(tsm.k_summed(budget, "sum"), want)
+        assert np.allclose(budget.field("sum_x").sum(-1), want)
+        assert not series._cache
+    finally:
+        tsm._REF_CHUNK = chunk
+
+
 def test_spacetime() -> None:
     """The (y, t) maps, their colour scales and their .npz."""
     options = tsm.MapOptions(tsm.Units(RE, RE_TAU))

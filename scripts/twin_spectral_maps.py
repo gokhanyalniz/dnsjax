@@ -554,8 +554,10 @@ As a library (a notebook on the cluster, one stream at a time)::
     draw_spacetime(ax, r, units=opts.units, scale="log")
 
 :func:`open_series` memory-maps each member and reads only the
-selected records, so a single stream costs megabytes rather than the
-gigabyte the eager reader
+records a figure draws -- the selected frames of the fields a map
+shows, and for a spacetime map not even those whole: each record is
+summed over `$k$` as it is read -- so a stream costs megabytes rather
+than the gigabytes the eager reader
 :func:`dnsjax.analysis.twin.yspectra.read_twin_yspectra` would pull
 in; the record layout, the format-version floors and the
 duplicate-``t`` policy are that reader's, mirrored here.
@@ -1156,14 +1158,9 @@ class YSeries:
             return self._cache[name]
         base, _, suffix = name.rpartition("_")
         if base == "sum":
-            parts = [
-                self.field(f"{term}_{suffix}")
-                for term in self.terms
-                if term not in NON_ADDITIVE_TERMS
-            ]
-            if not parts:
-                raise ValueError(f"{self.stem}: no additive budget terms")
-            value = np.sum(parts, axis=0)
+            value = np.sum(
+                [self.field(n) for n in self.additive(suffix)], axis=0
+            )
         else:
             total = None
             for member, rows in zip(self.members, self.rows, strict=True):
@@ -1174,6 +1171,50 @@ class YSeries:
             value = total / self.n_members
         self._cache[name] = value
         return value
+
+    def additive(self, suffix: str) -> list[str]:
+        r"""The stored budget fields that add up to `$\partial_t \hat e$`.
+
+        Every term of one marginal but :data:`NON_ADDITIVE_TERMS` --
+        what the virtual ``sum_<suffix>`` adds, wherever it is read.
+        """
+        names = [
+            f"{term}_{suffix}"
+            for term in self.terms
+            if term not in NON_ADDITIVE_TERMS
+        ]
+        if not names:
+            raise ValueError(f"{self.stem}: no additive budget terms")
+        return names
+
+    def reduced(self, reduce) -> np.ndarray:
+        r"""Ensemble mean of a per-record reduction, read in chunks.
+
+        *reduce* is handed ``read(name)``, the float64 block of one
+        stored field over up to :data:`_REF_CHUNK` of one member's
+        selected records, and returns its reduction with the records
+        still on the leading axis.  Nothing is cached and no field is
+        ever held whole: where :meth:`field` keeps ``n_frames``
+        records of `$(3, n_y, n_k)$`, a `$k$`-sum wants
+        `$(3, n_y)$` of each, and at every sample of a long production
+        member the first is gigabytes (module docstring, "Spacetime
+        maps").
+        """
+        total = None
+        for member, rows in zip(self.members, self.rows, strict=True):
+            parts = []
+            for start in range(0, rows.size, _REF_CHUNK):
+                take = rows[start : start + _REF_CHUNK]
+
+                def read(name: str, member=member, take=take) -> np.ndarray:
+                    return np.asarray(
+                        member.records[name][take], dtype=np.float64
+                    )
+
+                parts.append(reduce(read))
+            block = np.concatenate(parts, axis=0)
+            total = block if total is None else total + block
+        return total / self.n_members
 
     def reference_spectrum(self, marginal: str) -> np.ndarray:
         r"""`$\langle r_\alpha(y, m)\rangle_t$`, `$(0, 0)$` mode off.
@@ -2939,6 +2980,9 @@ def _frame_mean(series: YSeries, name: str, frame: int) -> np.ndarray:
 def k_summed(series: YSeries, base: str, marginal: str = "") -> np.ndarray:
     r"""A stored field summed over `$k$`, ``(n_t, [3,] n_y)``.
 
+    Read record by record and summed on arrival
+    (:meth:`YSeries.reduced`), so the whole field is never held.
+
     Which modes that sum covers is the whole of the convention behind
     every spacetime map (module docstring, "Spacetime maps"): a
     **reference** spectrum loses its `$(0, 0)$` mode, because that is
@@ -2953,12 +2997,17 @@ def k_summed(series: YSeries, base: str, marginal: str = "") -> np.ndarray:
     the `$k_x = 0$` slice instead, which is a different quantity and
     keeps its name.
     """
-    values = series.field(f"{base}_{marginal or 'x'}")
-    if base != "r":
-        return values.sum(axis=-1)
-    mean_name = mean_mode_name(series.meta, "r")
-    return fluctuation_profile(
-        values, mean_mode_profile(series.field(mean_name), mean_name)
+    suffix = marginal or "x"
+    if base == "r":
+        name, mean_name = f"r_{suffix}", mean_mode_name(series.meta, "r")
+        return series.reduced(
+            lambda read: fluctuation_profile(
+                read(name), mean_mode_profile(read(mean_name), mean_name)
+            )
+        )
+    names = series.additive(suffix) if base == "sum" else [f"{base}_{suffix}"]
+    return series.reduced(
+        lambda read: sum(read(n).sum(axis=-1) for n in names)
     )
 
 
