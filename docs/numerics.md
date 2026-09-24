@@ -206,7 +206,9 @@ resolution and that nothing feeds back into a solve. Setting
 scheme instead; it is kept for reference and for reproducing older
 trajectories, lives in its own modules, and is not recommended. The
 discrete-divergence, energy-budget and temporal-order tests pin both
-formulations against each other.
+formulations against each other. The last measures the default second order
+in time in all three geometries, and the primitive scheme well below that,
+held down by its projection splitting.
 
 ## Conventions
 

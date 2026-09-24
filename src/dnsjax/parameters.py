@@ -823,10 +823,11 @@ class Resolution(BaseModel):
     # bound is asserted at every ``--ny``.  These replace the
     # operator-identity route's floors (4.2e-14 Cartesian, 8.0e-6
     # annular, 5.6e-5 pipe), each set by a commutator that route could
-    # not remove.  The wall-bounded *temporal* error improves too:
-    # plane-Couette iterative-CN self-convergence goes from ``1.3e-2``
-    # at order ~0.5 on the legacy path to ``3.6e-5`` at order ~1.2 on
-    # the default, and Taylor-Couette likewise (the divergence residual
+    # not remove.  The wall-bounded *temporal* order is restored too:
+    # from a relaxed state, plane-Couette iterative-CN self-convergence
+    # goes from ``1.4e-2`` (``dt = 0.01``) at order ~0.5-0.8 on the
+    # legacy path to ``6.3e-6`` at order 2 on the default, and
+    # Taylor-Couette and the pipe likewise (the divergence residual
     # **was** the dominant projection-splitting error) -- pinned by
     # ``tests/test_temporal_order.py``.
     #

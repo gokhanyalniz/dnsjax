@@ -120,9 +120,7 @@ advection / mean-shear stretching + linear relaxation (all gated /
 structured so the explicit AB2 remainder is the pure
 fluctuation-fluctuation nonlinearity plus the nonlinear relaxation) --
 and advances that remainder explicitly.  It reproduces ``iterative-cn``
-to O(`$\Delta t^2$`) at ~1 FFT/step versus ~4 (the coupled tensor system
-inherits the wall-bounded velocity's reduced projection-splitting
-order, shared by both schemes).
+to O(`$\Delta t^2$`) at ~1 FFT/step versus ~4.
 """
 
 from dataclasses import dataclass, field

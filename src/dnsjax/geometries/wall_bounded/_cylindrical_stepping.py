@@ -740,8 +740,9 @@ def _imm_iteration_vw(
       figures (2.758548e-1 at step 1999).  **The repair is a no-op
       where the lag was already benign** -- and its price is nil:
       identical ``pipe-consistent-imm`` temporal self-convergence to
-      four significant figures (1.130e-3 / 5.422e-4 / 2.357e-4, orders
-      1.06 / 1.20) and a step time inside CPU noise.
+      four significant figures and a step time inside CPU noise
+      (measured on the pass before its difference halves were
+      carried; see below).
 
     Two properties of the old failure say what a guard for this class
     of defect has to look like.  Its growth rate was proportional to
@@ -780,7 +781,8 @@ def _imm_iteration_vw(
     error, i.e. first order in time wherever it dominates the
     second-order term.  It did at small `$n_r$`: self-convergence from a
     relaxed state (8x17x8, Re 100) measured orders 0.96 / 1.01 / 1.08
-    at 150x the annulus's error, with the corrector at `$10^{-12}$`;
+    and 175x the annulus's error at `$\Delta t = 0.01$` (7.9e-4 against
+    4.5e-6), with the corrector at `$10^{-12}$`;
     still first order at `$n_r = 33$`, second order by `$n_r = 65$`.
     The Cartesian and annular passes discard nothing that feeds back
     and were clean order 2 under the same protocol.

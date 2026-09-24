@@ -56,7 +56,7 @@ map to them as follows.
 | On the toroidal pipe, where the metric makes the constraint iterative, that divergence instead tracks the corrector tolerance | `tests/test_curved_pipe.py` |
 | The toroidal equation set reproduces its published reference, and $\kappa = 0$ reproduces the straight pipe | `tests/test_curved_pipe.py` |
 | Curvature produces Dean vortices: the streamwise maximum moves to the outer wall and the flux drops under a fixed pressure gradient | `tests/test_curved_pipe.py` |
-| The default formulation beats the primitive one in absolute error *and* decay rate, in all three wall-bounded geometries | `tests/test_temporal_order.py` |
+| The default formulation is second order in time in all three wall-bounded geometries, and beats the primitive one in absolute error *and* decay rate | `tests/test_temporal_order.py` |
 | Second-order temporal convergence, fixed and variable step | `tests/test_temporal_order.py` |
 | $dE/dt = I - D$ closes to truncation order, pressure-gradient work included | `tests/test_energy_budget.py` |
 | Laminar states step at machine precision, every wall-bounded flow | `tests/test_laminar_smoke.py` |
