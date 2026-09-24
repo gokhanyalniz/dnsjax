@@ -58,6 +58,7 @@ map to them as follows.
 | Curvature produces Dean vortices: the streamwise maximum moves to the outer wall and the flux drops under a fixed pressure gradient | `tests/test_curved_pipe.py` |
 | The default formulation is second order in time in all three wall-bounded geometries, and beats the primitive one in absolute error *and* decay rate | `tests/test_temporal_order.py` |
 | Second-order temporal convergence, fixed and variable step | `tests/test_temporal_order.py` |
+| The default off-centred Crank–Nicolson weight stays second order, as accurate as the trapezoidal rule to within 25 % | `tests/test_temporal_order.py` |
 | $dE/dt = I - D$ closes to truncation order, pressure-gradient work included | `tests/test_energy_budget.py` |
 | Laminar states step at machine precision, every wall-bounded flow | `tests/test_laminar_smoke.py` |
 | Random initial conditions integrate through the full nonlinear path, every distinct stepping machinery | `tests/test_random_smoke.py` |

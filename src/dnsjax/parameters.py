@@ -1294,7 +1294,9 @@ class TimeStepping(BaseModel):
     r"""Time integration parameters.
 
     Two schemes (``scheme``), both semi-implicit (implicit viscous,
-    IMM pressure) and both second-order:
+    IMM pressure) and both second-order at ``implicitness = 0.5`` (the
+    default 0.5001 adds a first-order term too small to measure at any
+    practical ``dt``; see "Why the default implicitness is 0.5001"):
 
     - ``"iterative-cn"`` (default): Euler predictor + iterative
       Crank-Nicolson corrector (Willis 2017).  Implicitness *c* is
@@ -1441,6 +1443,46 @@ class TimeStepping(BaseModel):
     wall-bounded, the implicit base-flow coupling), while the explicit
     AB2 self-advection is independent of *c*.
 
+    Why the default implicitness is 0.5001 -- measured
+    --------------------------------------------------
+    The trapezoidal rule is A-stable but not L-stable.  A mode of
+    viscous eigenvalue `$-\nu\Lambda$` is multiplied per step by
+    `$\mu = (1 - (1-c)x)/(1 + cx)$` with `$x = \nu\,\Delta t\,\Lambda$`,
+    which at ``c = 0.5`` tends to `$-1 + 4/x$` as the mode stiffens.
+    The stiffest discrete viscous modes sit on the first grid points
+    off each wall, where `$\Lambda_{\max}$` grows like the fourth
+    power of the wall resolution; so at ``c = 0.5`` they flip sign every
+    step and lose only `$4/x$` of their amplitude, less on every
+    refinement, at lower ``Re`` and at larger ``dt``.  Measured on the
+    solver's own one-step propagator (pipe, ``Re = 1``,
+    ``dt = 0.01``, ``fd_order = 4``): ``1 - |mu| = 6.3e-4`` at
+    ``nr = 32`` and ``3.8e-5`` at ``nr = 64``, ``1.5e-5`` at
+    ``Re = 100`` / ``nr = 256``, following the formula to four digits
+    in ``dt`` and *c*; the same mode appears in plane-Couette and
+    Taylor-Couette and on the legacy ``res.consistent_imm = False``
+    path.  A smooth flow barely excites it, but a grid-scale wall
+    residual injected every step accumulates in it -- as the pipe's
+    carried spin-quad differences once did
+    (``_cylindrical_stepping._imm_iteration_vw``).
+
+    Off-centring bounds it: `$|\mu| \to (1-c)/c$` as `$x \to \infty$`,
+    so ``1 - |mu|`` stays above about ``4 (c - 1/2)`` at any resolution
+    -- ``4e-4`` per step at the default (measured ``1.0e-3`` at
+    ``nr = 32`` and ``4.4e-4`` at ``nr = 64``, 11x the trapezoidal value
+    there, the gap widening with every refinement).  The price is a
+    first-order error ``B (c - 1/2) dt``.  In the
+    ``tests/test_temporal_order.py`` configuration ``B`` is 1.3 (pipe)
+    and 0.33 (plane-Couette), so at the default it stays below the
+    second-order error for ``dt`` above ~5e-4: the measured errors are
+    within 10 % of the trapezoidal rule's (smaller, in fact) at
+    ``dt = 0.01 ... 0.0025``, orders 2.04--2.16, which that study
+    guards.  ``c = 0.501`` buys a ten times firmer floor for a ten times
+    larger first-order term, which overtakes the second-order error
+    below ``dt`` ~ 3e-3 to 5e-3; ``c = 0.51`` is first order over the
+    whole practical range (errors 2--20x the trapezoidal rule's).
+    ``c = 0.5`` restores the exact trapezoidal rule, which the
+    temporal-order studies pin.
+
     Corrector convergence is ``dt``-limited, not CFL-limited
     ------------------------------------------------------------
     The corrector is a fixed-point iteration whose contraction rate
@@ -1542,10 +1584,11 @@ class TimeStepping(BaseModel):
     implicitness: float = Field(
         ge=0,
         le=1,
-        default=0.5,
+        default=0.5001,
         description=(
-            "Crank-Nicolson implicit weight c (0.5 = second-order "
-            "trapezoidal)."
+            "Crank-Nicolson implicit weight c (0.5 = the trapezoidal "
+            "rule; the default 0.5001 damps the stiffest wall modes at "
+            "no measurable accuracy cost)."
         ),
     )
     corrector_tolerance: float = Field(
