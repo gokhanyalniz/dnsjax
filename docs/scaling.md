@@ -270,3 +270,63 @@ cross-process collectives through MPI when it finds the MPItrampoline
 wrapper library (see [CPU collectives](cpu-collectives.md)), falling
 back to `gloo` otherwise. The same docstring covers when raising
 `NPROC` is worth doing.
+
+### Target nodes
+
+The rules above fix a run's shape. What they leave open — the rank
+count on a CPU node, the grid axis and the Pallas tile on a GPU node,
+the precision — is measured on the machine itself by
+[`scripts/node_benchmark.py`](../scripts/node_benchmark.py). It launches
+the ordinary solver on one fixed problem (the production configuration
+with a short horizon) across every candidate layout, and tabulates the
+seconds per time unit, the parallel efficiency, and on GPU the peak
+device memory, which the closing summary of every GPU run also reports.
+The starting points below are configuration, not measurements.
+
+**A two-socket CPU node** (for example 2 × 64-core AMD EPYC 7742): one
+rank per physical core, bound to it and running one XLA thread (the
+default), with the collectives routed through MPI:
+
+```bash
+export MPITRAMPOLINE_LIB=/path/to/libmpiwrapper.so
+mpirun -np 128 --map-by core --bind-to core -x MPITRAMPOLINE_LIB \
+  .venv/bin/dnsjax --dist.platform cpu --dist.np0 <n0> --dist.np1 <n1> ...
+```
+
+These are Open MPI's binding flags; under SLURM the equivalent is
+`srun --ntasks-per-node 128 --cpu-bind=cores`. A one-dimensional grid of
+128 needs 128 to divide, or at least not badly overshoot, both axes it
+splits — the wall-normal points and the stored spanwise modes for `np0`,
+the streamwise modes and the oversampled spanwise points for `np1` — so
+at production sizes the 128-rank candidates are mostly two-dimensional.
+`node_benchmark.py --target cpu` runs every factorisation at each rank
+count (`--ranks 16 32 64 128` by default), so the table also shows the
+rank count at which the step stops scaling.
+
+**A four-GPU node** (for example 4 × NVIDIA H200): one process addressing
+all four GPUs, no launcher:
+
+```bash
+.venv/bin/dnsjax --dist.platform cuda --dist.np0 4 ...
+```
+
+- **Grid.** `np0 = 4` is rule 1's default; `np1 = 4` is the alternative
+  worth one pair of runs, and `node_benchmark.py --target gpu` adds the
+  2 × 2 grid.
+- **Memory.** JAX reserves `XLA_PYTHON_CLIENT_MEM_FRACTION` of each GPU
+  at start-up (0.75 by default) and allocates inside it. Size the run
+  with the model under [Memory footprint](#memory-footprint), and raise
+  the fraction (`export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`) when it
+  needs more of the device. `solver.rhs_transform_chunks` shrinks the
+  transform transient at the cost of more FFT dispatches, which makes it
+  the knob for a run that does not fit — chiefly the viscoelastic flows.
+- **Pallas tile.** The defaults (2, 32) were tuned on an H100 SXM, which
+  has the same 132 streaming multiprocessors as an H200 but less memory
+  bandwidth (3.35 against 4.8 TB/s), so they are where a `--tiles` sweep
+  starts rather than a result for the H200.
+  [`scripts/pallas_solve_profile.py`](../scripts/pallas_solve_profile.py)
+  breaks a solve down against the device's own peak bandwidth.
+- **Precision.** Single precision halves every figure under
+  [Memory footprint](#memory-footprint);
+  `node_benchmark.py --precisions double single` puts the two side by
+  side.

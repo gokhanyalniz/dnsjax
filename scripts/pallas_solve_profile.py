@@ -22,7 +22,9 @@ questions for the ``pallas`` backend on real hardware:
 
 Part A  micro-breakdown of one ``Lk`` solve: full solve vs kernel-only
         vs split-only vs recombine-only, each with effective HBM
-        bandwidth (compare to the device peak: H100 HBM3 ~3.35 TB/s).
+        bandwidth, and the kernel's as a share of the device's peak
+        (the datasheet figure for an H100 SXM or an H200, read from
+        ``device_kind``; ``--hbm-peak`` gives it for any other GPU).
 Part A2 the **split-real hoist**: Part A sizes the plumbing inside one
         solve, which is not what a hoist removes.  This times the real
         ``Hk.solve -> real-coefficient map -> Lk.solve`` chain against a
@@ -106,8 +108,14 @@ from dnsjax.parameters import (  # noqa: E402
     validate_parameters,
 )
 
-# H100 80GB HBM3 peak HBM bandwidth (~3.35 TB/s) for the roofline %.
-HBM_PEAK = 3.35e12
+#: Datasheet peak HBM bandwidth (B/s) by ``device_kind`` prefix, for
+#: the roofline percentage.  ``--hbm-peak`` overrides it, and a device
+#: not listed gets no percentage rather than a wrong one (an H100 PCIe
+#: reports ``"NVIDIA H100 PCIe"`` and has 2.0 TB/s, not 3.35).
+HBM_PEAK_BY_KIND = {
+    "NVIDIA H200": 4.8e12,  # SXM and NVL, HBM3e
+    "NVIDIA H100 80GB HBM3": 3.35e12,  # SXM5
+}
 
 GBPS = 1e9
 
@@ -269,6 +277,22 @@ def _bench_step_cnab2(step_cnab2, state, n: int, warmup: int = 3):
         cc = c  # device scalar; host-convert once after the loop
     jax.block_until_ready(s)
     return (time.perf_counter() - t0) / n, int(cc), s
+
+
+def _hbm_peak(override: float | None) -> tuple[float | None, str]:
+    """``(peak B/s or None, device kind)`` of device 0."""
+    kind = getattr(jax.devices()[0], "device_kind", "?")
+    if override is not None:
+        return override, kind
+    for prefix, peak in HBM_PEAK_BY_KIND.items():
+        if kind.startswith(prefix):
+            return peak, kind
+    return None, kind
+
+
+def _sm_count() -> int | None:
+    """Streaming-multiprocessor count of device 0 (GPU only)."""
+    return getattr(jax.devices()[0], "core_count", None)
 
 
 def _ms(sec: float) -> str:
@@ -459,7 +483,7 @@ def _part_a_cpu(op, sharding, reps: int) -> None:
         )
 
 
-def _part_a(flow, sharding, reps: int) -> None:
+def _part_a(flow, sharding, reps: int, hbm: tuple[float | None, str]) -> None:
     import jax.numpy as jnp
     from jax import lax
 
@@ -550,7 +574,12 @@ def _part_a(flow, sharding, reps: int) -> None:
     summ = t_kern + t_split + t_recomb
     marginal = t_full - t_kern  # true fused cost of split+recombine
     kern_frac = t_kern / t_full
-    kern_peak = (kern_bytes / t_kern) / HBM_PEAK
+    peak, kind = hbm
+    kern_peak = (
+        f" = {100 * kern_bytes / t_kern / peak:.0f}% of the {kind} peak"
+        if peak
+        else f" (no peak known for {kind!r}: pass --hbm-peak)"
+    )
     print(
         f"\n  isolated split+recombine = {100 * plumb:4.1f}% of full, but "
         f"sum(pieces)/full = {summ / t_full:4.2f}."
@@ -566,8 +595,7 @@ def _part_a(flow, sharding, reps: int) -> None:
     )
     print(
         f"  kernel = {100 * kern_frac:4.1f}% of the solve, running at "
-        f"{kern_bytes / t_kern / GBPS:.0f} GB/s = {100 * kern_peak:.0f}% "
-        "of H100 HBM3 peak."
+        f"{kern_bytes / t_kern / GBPS:.0f} GB/s{kern_peak}."
     )
     if kern_frac >= 0.70:
         print(
@@ -1916,8 +1944,9 @@ def _summary_line(system: str, args, flow, times: dict) -> None:
     seconds (``None`` -> ``NA``).  ``progs`` is the per-field Triton
     program count `$(\lceil N_{kz}/m_0\rceil)(\lceil N_{kx}/m_1
     \rceil)$` on the *stored* (whole-tile-padded) mode plane -- the
-    occupancy metric to compare against the device SM count (H100:
-    132).
+    occupancy metric to compare against the device's SM count
+    (``sms``, read from the device; 132 on both an H100 SXM and an
+    H200).
     """
     from dnsjax.solvers import PerModeBandedPallasOperator
 
@@ -1940,10 +1969,12 @@ def _summary_line(system: str, args, flow, times: dict) -> None:
     def fmt(v):
         return "NA" if v is None else f"{v * 1e3:.3f}"
 
+    sms = _sm_count() if jax.default_backend() == "gpu" else None
     print(
         "SUMMARY "
         f"sys={system} ny={args.ny} nx={args.nx} nz={args.nz} "
-        f"pad_plane={plane} progs={progs} m0={m0} m1={m1} "
+        f"pad_plane={plane} progs={progs} sms={sms or 'NA'} "
+        f"m0={m0} m1={m1} "
         f"lk_ms={fmt(times.get('lk'))} hk_ms={fmt(times.get('hk'))} "
         f"solve_ms={fmt(times.get('solve'))} imm_ms={fmt(times.get('imm'))} "
         f"step_ms={fmt(times.get('step'))} cnab2_ms={fmt(times.get('cnab2'))}"
@@ -1987,10 +2018,11 @@ def _solve_sweep(system: str, args, flow, sharding, reps: int) -> None:
     m0, m1 = params.solver.pallas_block_m0, params.solver.pallas_block_m1
     if jax.default_backend() == "gpu":
         progs = (pnz // m0) * (pnx // m1)
+        sms = _sm_count() or "?"
         print(
             f"  padded plane {pnz}x{pnx}, tile {m0}x{m1} -> {progs} "
-            "programs/field\n  (H100 = 132 SMs; want >=~132 for one wave, "
-            "several x for latency hiding)"
+            f"programs/field\n  (this device: {sms} SMs; want >= one per "
+            "SM for one wave, several x for latency hiding)"
         )
     else:
         # No kernel grid on CPU, and the stored plane is the true one.
@@ -2147,7 +2179,11 @@ def _print_env() -> None:
         print(f"  triton  (import failed: {e})")
     print(f"  devices {jax.devices()}")
     for dv in jax.devices():
-        print(f"    - {dv} kind={getattr(dv, 'device_kind', '?')}")
+        sms = getattr(dv, "core_count", None)
+        print(
+            f"    - {dv} kind={getattr(dv, 'device_kind', '?')}"
+            + (f" sms={sms}" if sms else "")
+        )
     print(f"  default_backend  {jax.default_backend()}")
     print(
         f"  pallas tile      m0={params.solver.pallas_block_m0} "
@@ -2217,6 +2253,14 @@ def main() -> None:
         help="GPU-less self-check: run Parts B/C once on CPU at tiny "
         "resolution (timings meaningless) to validate the harness "
         "before the cluster run.",
+    )
+    ap.add_argument(
+        "--hbm-peak",
+        type=float,
+        default=None,
+        help="peak HBM bandwidth in B/s for Part A's roofline %% "
+        "(default: the datasheet value for an H100 SXM or H200, by "
+        "device_kind; none for other devices)",
     )
     ap.add_argument(
         "--dist.platform",
@@ -2341,7 +2385,7 @@ def main() -> None:
             "cluster for those.\n"
         )
 
-    _part_a(flow, sharding, args.reps)
+    _part_a(flow, sharding, args.reps, _hbm_peak(args.hbm_peak))
     times = _part_b(geom, m, flow, sharding, args.reps, args.steps)
     _part_a2(
         args.system, flow, sharding, args.reps, times["step"], 2 + times["c"]

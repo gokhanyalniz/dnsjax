@@ -152,6 +152,13 @@ class Distribution(BaseModel):
     bytes should tell; comparing the two 1D grids on the target
     machine is then worth one pair of runs.
 
+    What these rules leave open on a given node -- the rank count, the
+    grid axis, the Pallas tile, the precision -- is measured there by
+    ``scripts/node_benchmark.py``, one fixed problem over every
+    candidate layout; ``docs/scaling.md`` ("Target nodes") gives the
+    starting configuration for a two-socket CPU node and a four-GPU
+    one.
+
     Process topology
     ----------------
     Only a **multi-process** run needs a launcher.  One
