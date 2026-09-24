@@ -1677,7 +1677,9 @@ class Termination(BaseModel):
     # (the corrector-error sync point), so detection lags by up to
     # that many steps.  For the total-field flows ``E'`` is the
     # kinetic energy of the deviation from the analytical laminar
-    # profile.  Disabled in all tests.
+    # profile.  Disabled in the tests, except the multi-process smoke
+    # entries (``tests/test_random_smoke.py``), where its read is a
+    # program only two processes can refuse to trace.
     check_laminarization: bool = Field(
         default=True,
         description=(

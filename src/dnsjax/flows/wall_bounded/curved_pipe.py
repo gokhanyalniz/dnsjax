@@ -98,35 +98,64 @@ flow: CurvedPipeFlow = CurvedPipeFlow()
 # ── Basis boundary (u_pm rotation **and** the metric weight) ──────
 
 
-def to_solver_basis(state: Array) -> Array:
+def _carried_velocity(state: Array, flow_: CurvedPipeFlow) -> Array:
     r"""Physical `$(u_s, u_r, u_\theta)$` -> the carried state.
 
     Applies the metric weight `$w_s = h\,u_s$` before the `$u_\pm$`
     rotation.  Pseudo-spectral (one transform round trip on one field),
-    so it is the exact inverse of :func:`from_solver_basis` up to the
+    so it is the exact inverse of :func:`_physical_velocity` up to the
     collocation error the dealiasing rule already bounds -- an `$m\pm1$`
     Galerkin product would instead lose the outgoing top mode.
     """
-    weighted = phys_to_spec_2d(spec_to_phys_2d(state[:1]) * flow.h_phys)
+    weighted = phys_to_spec_2d(spec_to_phys_2d(state[:1]) * flow_.h_phys)
     return to_pm_basis(jnp.concatenate([weighted, state[1:]]))
 
 
-def from_solver_basis(state: Array) -> Array:
+def _physical_velocity(state: Array, flow_: CurvedPipeFlow) -> Array:
     r"""Carried state -> physical `$(u_s, u_r, u_\theta)$`.
 
     Undoes the metric weight, `$u_s = w_s/h$`.  Spectrally `$1/h$`
     couples every azimuthal mode, so the division is done where it is
     pointwise -- one transform round trip on one field, paid once per
     stats or snapshot interval rather than per corrector iteration.
-    Everything downstream (snapshots, ``analysis``, the diagnostics
-    below) therefore sees the **physical** components, as every other
-    geometry's consumers do.
     """
     physical = from_pm_basis(state)
     unweighted = phys_to_spec_2d(
-        spec_to_phys_2d(physical[:1]) * flow.inv_h_phys
+        spec_to_phys_2d(physical[:1]) * flow_.inv_h_phys
     )
     return jnp.concatenate([unweighted, physical[1:]])
+
+
+@jit
+def _to_solver_basis_jit(state: Array, flow_: CurvedPipeFlow) -> Array:
+    return _carried_velocity(state, flow_)
+
+
+@jit
+def _from_solver_basis_jit(state: Array, flow_: CurvedPipeFlow) -> Array:
+    return _physical_velocity(state, flow_)
+
+
+def to_solver_basis(state: Array) -> Array:
+    r"""Physical `$(u_s, u_r, u_\theta)$` -> the carried state.
+
+    :func:`_carried_velocity`, jitted with the flow as an **argument**:
+    the metric is a global array, which a jit closing over it would
+    bake into the program as a constant -- accepted on one process,
+    refused at trace time by a multi-process run.
+    """
+    return _to_solver_basis_jit(state, flow)
+
+
+def from_solver_basis(state: Array) -> Array:
+    r"""Carried state -> physical `$(u_s, u_r, u_\theta)$`.
+
+    :func:`_physical_velocity`, jitted with the flow as an argument
+    (see :func:`to_solver_basis`).  Everything downstream (snapshots,
+    ``analysis``, the diagnostics below) therefore sees the
+    **physical** components, as every other geometry's consumers do.
+    """
+    return _from_solver_basis_jit(state, flow)
 
 
 def init_state() -> Array:
@@ -199,8 +228,8 @@ def _applied_driving(
     r"""The mean-mode forcing `$-\Pi$` a state is driven with.
 
     *carried* is the state in the **carried** basis
-    (:func:`to_solver_basis`), because both terms below are balances of
-    the carried variable `$w_s = h\,u_s$`.
+    (:func:`_carried_velocity`), because both terms below are balances
+    of the carried variable `$w_s = h\,u_s$`.
 
     Under a constant pressure gradient the answer is the constant
     `$4/\mathrm{Re}$` the RHS adds, and costs nothing.  Under
@@ -291,7 +320,7 @@ def _get_stats_jit(
     `$I = D$` is the steady-state balance these two are for.
     """
     nu = derived_params.nu
-    carried = to_solver_basis(state)
+    carried = _carried_velocity(state, flow_)
 
     # Physical vorticity: Omega = curl_0(w) is (h w_r, h w_th, w_s)'s
     # own curl and equals (h om_r, h om_th, om_s), so one collocation
@@ -350,7 +379,7 @@ def _get_driving_jit(
         return {}
     return {
         flow_.driving_key: _applied_driving(
-            to_solver_basis(state), fourier_, flow_
+            _carried_velocity(state, flow_), fourier_, flow_
         )
     }
 

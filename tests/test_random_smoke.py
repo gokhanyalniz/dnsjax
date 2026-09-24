@@ -98,7 +98,14 @@ every ``Hc`` band and every per-slot ghost sign is a mode-sharded
 stacked array there); single-device band-vs-dense parity per geometry is
 unit-covered by ``test_cartesian.py`` / ``test_cylindrical.py`` /
 ``test_annular.py``, the shard_map-local solve by
-``test_banded_solver_sharded.py``.
+``test_banded_solver_sharded.py``.  A ``curved-pipe-mpi-pad`` entry
+adds the toroidal metric on that shape.  The multi-process entries are
+also the only ones that keep ``stop.check_laminarization`` on (their
+`$E'$` stays decades above its threshold): a flow's global arrays must
+reach every jitted program as arguments, a closed-over one traces on
+one process and is refused on two, and the laminarization read, the
+basis crossing and the curved pipe's metric diagnostics are all such
+programs.
 
 A ``plane-couette-error-max`` entry pins that the corrector-error
 check judges every step since the previous host sync, not only the one
@@ -409,6 +416,7 @@ SYSTEMS: list[dict] = [
         "force_np": 2,
         "force_np0": 1,
         "oversubscribe": True,
+        "check_laminarization": True,
         "res": {"nx": 34, "ny": 32, "nz": 32},
         "args": [
             "--phys.system",
@@ -434,6 +442,7 @@ SYSTEMS: list[dict] = [
         "force_np": 2,
         "force_np0": 1,
         "oversubscribe": True,
+        "check_laminarization": True,
         "res": {"nx": 6, "ny": 24, "nz": 8},
         "args": [
             "--phys.system",
@@ -468,6 +477,7 @@ SYSTEMS: list[dict] = [
         "force_np": 2,
         "force_np0": 1,
         "oversubscribe": True,
+        "check_laminarization": True,
         "res": {"nx": 6, "ny": 24, "nz": 8},
         "args": [
             "--phys.system",
@@ -495,6 +505,7 @@ SYSTEMS: list[dict] = [
         "force_np": 2,
         "force_np0": 1,
         "oversubscribe": True,
+        "check_laminarization": True,
         "res": {"nx": 6, "ny": 24, "nz": 8},
         "args": [
             "--phys.system",
@@ -509,6 +520,32 @@ SYSTEMS: list[dict] = [
             "5",
             "--solver.backend",
             "pallas",
+        ],
+    },
+    {
+        # The curved pipe on the same sharded, padded shape: its basis
+        # maps and diagnostics carry the metric `h`, a global array
+        # that a jitted function must take as an argument -- closed
+        # over, it traces on one process and is refused on two.  Under
+        # constant bulk velocity, so the t = t0 driving inference runs
+        # too.
+        "name": "curved-pipe-mpi-pad",
+        "force_np": 2,
+        "force_np0": 1,
+        "oversubscribe": True,
+        "check_laminarization": True,
+        "res": {"nx": 6, "ny": 24, "nz": 8},
+        "args": [
+            "--phys.system",
+            "curved-pipe",
+            "--phys.re",
+            "1800",
+            "--geo.curvature",
+            "0.3",
+            "--phys.driving",
+            "constant_bulk_velocity",
+            "--geo.lz",
+            "5",
         ],
     },
     {
@@ -1030,9 +1067,9 @@ def _build_command(
     """Build the ``mpirun ... -m dnsjax`` command for one system.
 
     Per-system ``force_np`` / ``force_np0`` / ``res`` /
-    ``oversubscribe`` / ``max_sim_time`` / ``it_stats`` override the
-    suite defaults (used by the multi-device padded entry and the
-    nan-guard entry).
+    ``oversubscribe`` / ``max_sim_time`` / ``it_stats`` /
+    ``check_laminarization`` override the suite defaults (used by the
+    multi-device padded entries and the nan-guard entry).
     """
     np_count = system.get("force_np", args.np)
     np0 = system.get("force_np0", args.np0)
@@ -1098,10 +1135,14 @@ def _build_command(
         str(max_sim_time),
         "--outs.it_stats",
         str(it_stats),
-        # Laminarization check off: a decaying transient must not cut
-        # the run short before max_sim_time.
+        # Laminarization check off unless the entry keeps it on: a
+        # decaying transient must not cut the run short before
+        # max_sim_time.  The multi-process entries keep it on (their
+        # E' stays decades above the threshold), because its E' read
+        # is a jitted program only a real multi-process run can fail
+        # to trace.
         "--stop.check_laminarization",
-        "False",
+        str(system.get("check_laminarization", False)),
     ]
     return base + system["args"]
 

@@ -212,7 +212,7 @@ from .cylindrical import (
 
 #: Role aliases for the basis boundary (see ``cylindrical.py``).
 to_solver_basis = to_spin_basis
-from_solver_basis = from_spin_basis
+from_solver_basis = jax.jit(from_spin_basis)
 
 # Spin weights of the fused radial-derivative batch of the shared
 # ``_get_rhs_core`` -- the velocity triad (u_r, u_theta, u_z) followed

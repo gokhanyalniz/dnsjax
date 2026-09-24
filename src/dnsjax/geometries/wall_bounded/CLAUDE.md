@@ -56,7 +56,13 @@ never back (the physical form is a view, dropped after use), via
 `from_solver_basis`, re-exported by the flow modules) or the
 9-component `_viscoelastic_common.to_spin_basis`/`from_spin_basis`.
 `__main__` owns the field-level crossings; `extensions/probes.py` /
-`extensions/forcing.py` convert their own mode columns instead.
+`extensions/forcing.py` convert their own mode columns instead. The
+outgoing map is exported **already jitted**, and `__main__` never
+wraps a flow export in a jit of its own: that outer trace would take
+the flow's global arrays in as constants (every
+`get_perturbation_energy` passes `fourier`/`flow` to its core; the
+curved pipe's maps read the metric), which a multi-process run
+refuses.
 **Anything that hands a freshly built (i.e. physical) state to a
 stepper must convert first** — `__main__`'s post-IC line and
 `transient_growth._linear_step` are the templates.
