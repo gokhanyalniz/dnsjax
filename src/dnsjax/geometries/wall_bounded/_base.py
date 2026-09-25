@@ -381,6 +381,11 @@ def extract_mean_mode(state: Array) -> Array:
     are wanted at once -- the collective is latency-bound, so two calls
     cost twice one.
 
+    For a quantity derived from the mean mode, extract first and
+    operate on the ``(C, N_y)`` column whenever the two commute: the
+    extraction is `$O(N_y)$` per device, the field-wide operation is
+    not.
+
     Parameters
     ----------
     state:

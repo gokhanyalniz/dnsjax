@@ -52,7 +52,7 @@ so a ``dt`` sweep needs a subprocess per value):
   neither study above implies its order -- and the one this study
   caught at first order: re-deriving the difference halves from the
   velocity every step held the pipe there at this resolution
-  (``cylindrical._imm_iteration_vw``).  Measured: legacy 1.1e-2 at
+  (``_cylindrical_stepping._imm_iteration_vw``).  Measured: legacy 1.1e-2 at
   0.87 / 0.97 -> default 4.1e-5 at 2.02 / 2.07.
 
 Every wall-bounded run first **relaxes** the random IC: 0.05 time

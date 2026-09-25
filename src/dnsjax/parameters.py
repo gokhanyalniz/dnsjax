@@ -810,7 +810,7 @@ class Resolution(BaseModel):
     # conditions and the retired routes: the
     # ``cartesian._imm_iteration`` (shared record),
     # ``annular._imm_iteration_vw`` (cylindrical algebra) and
-    # ``cylindrical._imm_iteration_vw`` (the quad) docstrings.
+    # ``_cylindrical_stepping._imm_iteration_vw`` (the quad) docstrings.
     #
     # *Efficacy* (measured, ``fd_order = 8``, ``ny = 25`` / ``ny = 97``,
     # one step from a random IC, seed 7 -- ten steps from an
@@ -894,7 +894,7 @@ class Resolution(BaseModel):
     # 4 -> **5** on the pipe, which is the one place the default costs
     # throughput (~+6 % per step; its axis forces the exact spin-quad
     # diagonalisation, doubling the evolved scalars against only two
-    # wall conditions -- ``cylindrical._imm_iteration_vw``).  Against
+    # wall conditions -- ``_cylindrical_stepping._imm_iteration_vw``).  Against
     # that, the corrector contracts in fewer iterations: measured as a
     # *paired* run (one configuration, one backend, the formulation the
     # only difference), the pipe's ``c/it`` drops ``1.00 -> 0.10`` and
@@ -963,10 +963,11 @@ class Initiation(BaseModel):
 
     Resume policy: when ``snapshot`` is a dnsjax snapshot, ``it``/``t``/
     ``isnap`` are inherited only when none of the Physics/Geometry/
-    Resolution parameters were overridden to a value different from the
-    snapshot's (a *continuation*).  Any such change starts a NEW
-    trajectory by default (``it = t = isnap = 0``); ``force_resume``
-    keeps the run continuous instead.  See
+    Resolution parameters, nor the ``[force]`` section, was overridden
+    to a value different from the snapshot's (a *continuation*).  Any
+    such change starts a NEW trajectory by default
+    (``it = t = isnap = 0``); ``force_resume`` keeps the run continuous
+    instead.  See
     :func:`trajectory_defining_changes`.
 
     Seeds (``random_seed`` here, ``twin.seed`` and ``force.seed`` on
@@ -1099,7 +1100,7 @@ class Initiation(BaseModel):
     # Cartesian-only, and **off** by default there too: only the
     # Cartesian flows have their (kx, kz) = (0, 0) conservation laws
     # established, so every other flow defers this field, and a
-    # default that held for two of the eight wall-bounded flows would
+    # default that held for only two of the wall-bounded flows would
     # make the mean mode behave differently per geometry for no
     # user-visible reason.  Off is also the inert value the deferred
     # check in ``validate_parameters`` compares a direct assignment
@@ -2414,7 +2415,9 @@ def validate_parameters() -> None:
     # Azimuthal wedge (geo.m0): only flows whose surface carries the
     # field (the cylindrical/annular geometries, both viscoelastic
     # members included -- the u_+/u_- and tensor-spin
-    # integer-harmonic formulations); rejected elsewhere.  Guards
+    # integer-harmonic formulations -- except the curved pipe, whose
+    # metric couples neighbouring azimuthal harmonics); rejected
+    # elsewhere.  Guards
     # direct assignment; the CLI/TOML surfaces reject it at parse.
     if params.geo.m0 != 1 and ("geo", "m0") not in spec.field_map:
         raise ValueError(
@@ -2640,6 +2643,13 @@ class PaddedResolution:
     (:meth:`apply_rounding`), with every adjustment recorded in
     :attr:`notes` for the startup diagnostics printed by
     :mod:`dnsjax.sharding`.
+
+    Only the triply-periodic flows pad ``y`` (``ny_padded`` stays
+    ``None`` for a wall-normal grid), so at the default oversampling
+    factor of 3 the physical-space point count is ~2.25x the spectral
+    one for a wall-bounded flow and ~3.375x for a periodic one -- the
+    dominant global memory multiplier, ahead of
+    ``res.double_precision`` (2x).
     """
 
     nx_padded: int = params.phys.oversampling_factor * params.res.nx // 2

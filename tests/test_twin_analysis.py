@@ -12,8 +12,15 @@ still stacking exactly), the growth-rate fits
 against planted laws, the
 ``twin_spectra.bin`` reader (byte-exact round trip, truncated
 trailing record, duplicate-timestamp seams, version floor,
-decorrelation-ratio guards), the integral-length core against an
-independently evaluated two-mode reference, and
+decorrelation-ratio guards), the ``twin_yspectra.bin`` /
+``twin_ybudget.bin`` readers (round trip, seam drop, truncation,
+floor) across all three stored layouts -- the reader floor stays
+below the writer's version, so a member recorded before ``xz00``
+still opens -- the three-bin recovery refusing without the ``x0``
+plane, ``fluctuation_energy`` agreeing between the two marginals,
+``shape_alignment`` (normalised, symmetric, amplitude-blind), the
+integral-length core against an independently evaluated two-mode
+reference, and
 ``scripts/ensemble_setup.py build-twin`` (dry run leaves no tree;
 the built tree's TOMLs / ``members.json`` / ``run_commands.txt`` are
 consistent and feed ``aggregate_members`` end to end via synthetic

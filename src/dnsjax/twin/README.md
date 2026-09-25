@@ -389,10 +389,11 @@ centred difference, an across-member stack — selects one with
 Members recorded before the cadence anchor above (2026-09-06) whose
 parents sat at different `it` residues carry grids displaced against
 one another, and share no relative sample time but $t = 0$.
-`aggregate_members` refuses them; `scripts/twin_spectral_maps.py`
-refuses them too and names the `--align-atol` that pairs each frame
-with every member's nearest sample instead, reporting how far apart
-the widest such pairing is.
+`aggregate_members` and `scripts/twin_spectral_maps.py` both refuse
+them at the default tolerance, naming the `align_atol`
+(`--align-atol`) that accepts them: it pairs each frame with every
+member's nearest sample instead, and reports how far apart the widest
+such pairing is.
 
 | Module | Role |
 |---|---|

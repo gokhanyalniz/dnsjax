@@ -1,4 +1,4 @@
-"""Localized-rolls IC smoke tests: nonlinear integration.
+r"""Localized-rolls IC smoke tests: nonlinear integration.
 
 Starts each rolls-builder variant (kolmogorov for the triply-periodic
 builder, plane-couette for the Cartesian one, pipe, curved-pipe,

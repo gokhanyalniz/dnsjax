@@ -53,8 +53,7 @@ triad):
 
 - mean `$\Delta U$`: the `$(k_z, k_x) = (0, 0)$` mode
   (``fourier.mean_mask``, one-hot by the padding-slot invariant --
-  see "Mean mode and padding modes" in
-  ``geometries/wall_bounded/CLAUDE.md``);
+  see :func:`dnsjax.operators.pad_harmonics`);
 - streaks `$\Delta u_1$`: `$k_x = 0$`, `$k_z \ne 0$` (the
   streamwise-averaged fluctuation);
 - streamwise-varying `$\Delta u_2$`: `$k_x \ne 0$`.

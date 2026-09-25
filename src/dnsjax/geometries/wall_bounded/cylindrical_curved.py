@@ -108,7 +108,7 @@ toroidal operators:
    `$L_{v,\mathrm{mod}}$` recovery and the reconstruction's `$\chi$`)
    and the `$(0,0)$` radial velocity, always on the corrector
    **iterate** -- never across a time step, for the reason
-   ``cylindrical._imm_iteration_vw`` records.
+   ``_cylindrical_stepping._imm_iteration_vw`` records.
 
 That iteration is what pays for keeping every operator: continuity
 holds at the corrector's **fixed point**, so its residual tracks
@@ -671,12 +671,12 @@ class CurvedCylindricalFlow(CylindricalFlow):
 
 
 def build_curved_cylindrical_stepper(flow: CurvedCylindricalFlow) -> tuple:
-    """Build time-stepping functions for a curved-pipe flow.
+    r"""Build time-stepping functions for a curved-pipe flow.
 
     Binds the shared cylindrical ``fourier`` singleton and
     ``_build_dt_leaves`` -- both identical to the straight pipe's,
     since curvature changes neither the wavenumber grid nor any
-    `$\\Delta t$`-dependent operator -- to the shared
+    `$\Delta t$`-dependent operator -- to the shared
     ``_cylindrical_stepping.build_stepper``.
     """
     return build_stepper(flow, fourier, _build_dt_leaves)

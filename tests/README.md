@@ -42,7 +42,7 @@ output tail on failure — the scripts stay authoritative, and `pytest`
 becomes a way to run them all with markers and a summary.
 
 ```bash
-uv run pytest -m "not slow and not mpi"   # offline: no solver runs
+uv run pytest -m "not slow and not mpi"   # offline: no mpirun launch
 uv run pytest -m "not slow"               # + the quick mpirun rows
 uv run pytest                             # everything available
 uv run pytest -k padding                  # one script

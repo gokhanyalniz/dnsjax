@@ -503,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:
             for conf in sweeps["random_wall_confinement"]:
                 # Through ``update_parameters``: a direct assignment to
                 # a materialized field is overwritten on the next pass
-                # (root CLAUDE.md, "Parameter layering").
+                # (its docstring).
                 params.init.random_smoothness = s_h
                 params.init.random_wall_smoothness = s_w
                 params.init.random_wall_confinement = conf

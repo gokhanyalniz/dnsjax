@@ -564,7 +564,11 @@ def dean_laminar_u_theta(rs: Array, eta: float) -> Array:
 
 def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
     r"""Build the radial base operator
-    `$A_{\mathrm{base}} = D_2 + \mathrm{diag}(1/r)\,D_1$`."""
+    `$A_{\mathrm{base}} = D_2 + \mathrm{diag}(1/r)\,D_1$`.
+
+    Used exactly as the pipe's (:func:`.cylindrical._build_A_base`,
+    which states where the fusion applies and which tests guard it).
+    """
     return D2 + inv_r[:, None] * D1
 
 
@@ -1742,7 +1746,7 @@ def _imm_iteration_vw(
     halves, for another reason -- the velocity does not determine
     them, and re-deriving them made it first order in time at coarse
     radial resolution -- and still re-anchors their wall data on the
-    accepted state: ``cylindrical._imm_iteration_vw``.)
+    accepted state: ``_cylindrical_stepping._imm_iteration_vw``.)
 
     Mean mode and padding
     ~~~~~~~~~~~~~~~~~~~~~

@@ -60,16 +60,17 @@ def make_stepper(
     **Basis contract.** This module never inspects a state's
     components, and it must not: the geometries are free to carry the
     state in a solver basis (the cylindrical/annular `$u_\pm$`, the
-    viscoelastic spin tensor) that their RHS arrays are *not* in --
-    those geometries deliberately return physical-component RHS,
-    because the real FFT needs per-component Hermitian symmetry.  What
-    makes that safe is that every place the stepper combines arrays it
-    combines **state with state or RHS with RHS, never one with the
-    other**; the geometry's ``correct_fn`` owns the only crossing.  A
-    state may even carry trailing slots its RHS has no counterpart for
-    at all -- the pipe family's carried spin-quad differences
-    (``_cylindrical_stepping._imm_iteration_vw``) -- under the same
-    rule, which is also why a cnab2 carry is seeded RHS-shaped
+    viscoelastic spin tensor).  Their RHS comes back in that basis too
+    -- a geometry converts to the physical triad only around its own
+    FFTs, because the real FFT needs per-component Hermitian symmetry
+    -- but only the geometry knows which basis and which slots an
+    array holds.  What makes that safe is that every place the stepper
+    combines arrays it combines **state with state or RHS with RHS,
+    never one with the other**; the geometry's ``correct_fn`` owns the
+    only crossing.  A state may even carry trailing slots its RHS has
+    no counterpart for at all -- the pipe family's carried spin-quad
+    differences (``_cylindrical_stepping._imm_iteration_vw``) -- under
+    the same rule, which is also why a cnab2 carry is seeded RHS-shaped
     (``zeros_like(state[:n_components])``, the flow's physical count).
     A future ``state + rhs`` line here would break those paths
     silently, with correct shapes and dtypes throughout.

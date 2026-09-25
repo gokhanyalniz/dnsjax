@@ -112,7 +112,7 @@ def cartesian_fields() -> tuple[FieldSpec, ...]:
         # default (off), so that every wall-bounded flow behaves the
         # same way out of the box -- the geometries that defer the knob
         # have nothing that respects the mean mode's bulk / driving
-        # laws, and a default that holds only for two of eight flows is
+        # laws, and a default that holds for only two of the flows is
         # a trap.  The one entry point that defaults it on is
         # ``dnsjax-twin``, through its own ``twin.mean_flow``
         # (:class:`dnsjax.twin.driver.TwinParams`).

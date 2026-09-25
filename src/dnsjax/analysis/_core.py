@@ -8,7 +8,10 @@ standard library, dnsjax's JAX-free leaf modules
 (:mod:`dnsjax.flows.registry`, which pulls
 :mod:`dnsjax.flow_spec` and every ``flows/*/specs/*`` module) --
 importing it never pulls in JAX, and every module on that list must
-stay JAX-free to keep the guarantee.
+stay JAX-free to keep the guarantee.  That the guarantee can hold at
+all rests on ``src/dnsjax/__init__.py`` being empty: importing any
+``dnsjax.*`` submodule runs the package ``__init__`` first.
+``tests/test_snapshot_export.py`` asserts it.
 
 Snapshot-native layout
 ----------------------

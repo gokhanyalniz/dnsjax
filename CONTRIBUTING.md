@@ -52,8 +52,9 @@ Moving the floor touches five places, none of which derive from each
 other: `requires-python` and the classifiers in `pyproject.toml`, the
 `smoke` matrix in `.github/workflows/ci.yml`, the Python badge in
 `README.md`, and the Prerequisites line in `CLAUDE.md`. **Lowering** it
-additionally requires running the offline suite under the new floor —
-source-level compatibility is necessary but not sufficient, and only a
+additionally requires a real run under the new floor, in this order:
+`py_compile` the tree, import it, then run the offline suite.
+Source-level compatibility is necessary but not sufficient, and only a
 real run finds things like reliance on deferred annotation evaluation.
 
 ## Lint and format
@@ -65,8 +66,8 @@ uv run ruff format src tests scripts
 
 Line length is **79 for every line**, code and prose alike. Name the
 directories when formatting — a bare `uv run ruff format` also reformats
-the code blocks in `README.md`, which are written to be read rather than
-to satisfy the formatter.
+the Python blocks in the Markdown docs and the example notebook, which
+are laid out to be read rather than to satisfy the formatter.
 
 `prek.toml` configures the commit hook, which runs both:
 
@@ -109,8 +110,9 @@ New flows also need a row in `tests/test_laminar_smoke.py` and one in
 
 Docstrings, comments and type hints stay current with the code, at 79
 columns; math is LaTeX. The human-facing documents — `README.md`, this
-file, the `docs/` pages, `tests/README.md`, and the three subpackage
-READMEs — are updated in the same change that makes them wrong. They
+file, the `docs/` pages, `tests/README.md`, the `examples/` READMEs and
+the three subpackage READMEs — are updated in the same change that
+makes them wrong. They
 are written pointer-first: they link the module docstring that owns a
 detail rather than restating it, which is what keeps that affordable.
 

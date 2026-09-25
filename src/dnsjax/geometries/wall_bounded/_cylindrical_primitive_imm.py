@@ -1,9 +1,9 @@
 r"""Legacy primitive `$(u_\pm, p)$` influence-matrix path, cylindrical.
 
 ``res.consistent_imm`` is **on by default**; the pipe's implicit step is
-then the spin-quad reformulation in :mod:`.cylindrical`
-(:func:`~dnsjax.geometries.wall_bounded.cylindrical._imm_iteration_vw`),
-which never forms a pressure.  Setting the flag to ``False`` selects the
+then the spin-quad reformulation
+(:func:`._cylindrical_stepping._imm_iteration_vw`), which never forms a
+pressure.  Setting the flag to ``False`` selects the
 **legacy** scheme kept here: the primitive Kleiser-Schumann
 influence-matrix method, which solves `$(u_z, u_+, u_-)$` against a
 pressure Poisson solve and enforces continuity only at the wall.  It is
@@ -14,8 +14,9 @@ docs (``parameters.py``) and the shared scheme record on
 :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`.
 
 Everything here is reachable **only** when the flag is off, so
-``cylindrical.py`` imports this module lazily inside its flag-off
-branches and the default path never imports it at all.  The dependency
+``cylindrical.py`` and ``_cylindrical_stepping.py`` import this module
+lazily inside their flag-off branches and the default path never
+imports it at all.  The dependency
 runs the other way at module scope -- this module imports the shared
 `$H_k$` builders and types from ``cylindrical.py`` -- which is why the
 import must be deferred there rather than declared at the top of that

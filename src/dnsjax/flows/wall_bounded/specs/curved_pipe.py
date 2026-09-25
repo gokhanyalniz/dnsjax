@@ -93,7 +93,7 @@ def _validate(params, derived) -> None:
             "FFT-free corrector has nothing to iterate here -- with "
             "no base flow its coupling term is identically zero, so "
             "both would be lagged across the time step (the "
-            "instability recorded in cylindrical._imm_iteration_vw)."
+            "instability recorded in _cylindrical_stepping._imm_iteration_vw)."
         )
     if not params.res.consistent_imm:
         raise ValueError(

@@ -95,7 +95,8 @@ Usage (two devices via MPI)::
 
 With ``--np N`` (N > 1), each test invokes
 ``mpirun -np N python -m dnsjax --dist.np0 NP0 --dist.np1 NP1 ...``
-where ``NP0 * NP1 == N``.
+where ``NP0 * NP1 == N``.  ``--np0`` sets ``NP0`` (default 1, a 1D
+mesh along ``np1``); ``--np 4 --np0 2`` runs the ``(2, 2)`` mesh.
 """
 
 from __future__ import annotations

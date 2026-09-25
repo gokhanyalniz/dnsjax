@@ -80,7 +80,7 @@ inheriting the annular pass, viscoelastic-pipe the cylindrical one,
 each exercised nowhere else) under iterative-cn.  None of the pipe
 entries can see the cylindrical default scheme's low-``Re`` limit --
 they run decades above its threshold, deliberately (that limit and its
-measurements: ``cylindrical._imm_iteration_vw``).
+measurements: ``_cylindrical_stepping._imm_iteration_vw``).
 
 A trailing forced multi-device, padding-inducing entry (``mpi-pad``:
 ``mpirun --oversubscribe -np 2``, ``np1 = 2``, ``nx // 2`` not
@@ -336,8 +336,9 @@ SYSTEMS: list[dict] = [
         # decoupled from the velocity) and in the Newtonian pipe, and
         # was a defect in the cylindrical reconstruction pass -- its
         # two free wall differences were lagged to t^n -- since fixed
-        # (the measurements: ``cylindrical._imm_iteration_vw``).  This
-        # entry runs the flow's own default Re = 1000, alongside the
+        # (the measurements:
+        # ``_cylindrical_stepping._imm_iteration_vw``).  This entry
+        # runs the flow's own default Re = 1000, alongside the
         # Newtonian ``pipe-legacy-imm`` entry's 1800.  Note what an
         # entry of this shape does NOT guard -- and the warning now
         # applies to the *shipped* formulation, since it is the

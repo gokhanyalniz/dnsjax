@@ -19,6 +19,15 @@ Pallas banded backend (``PerModeBandedPallasOperator``):
    a no-pivot breakdown or genuine element growth hard-errors; an
    above-tolerance residual with benign growth prints the
    ill-conditioning notice and proceeds.
+5. The reverse-mode rule: the transposed sweep solves `$A^T x = b$`
+   (``test_pallas_transpose_identity``); the ``custom_vjp`` matches
+   the portable sweep's own autodiff in all three cotangents, with a
+   finite-difference check on every band slot
+   (``test_pallas_adjoint_matches_portable_sweep`` -- the portable
+   :func:`_banded_solve_batched` is the independent oracle, so it
+   must never be routed through the rule); and the adjoint composes
+   inside ``.solve``'s ``shard_map``
+   (``test_pallas_adjoint_composes_in_solve``).
 
 The interpret/lowering tests call ``_pallas_banded_solve`` directly
 with local, uncommitted factors (``_mode_inner_factors``; in
@@ -27,8 +36,9 @@ region, where arrays are local by construction) and clear the
 Explicit mesh (``jax.set_mesh(None)``): the kernel's indexed ref
 stores discharge to a sharding-checked ``dynamic_update_slice`` only
 in interpret mode.  Real-GPU execution and perf (tile tuning) are
-deferred to the ``gpu-validation-pallas-banded`` plan, not this
-suite.  Multi-device solve coverage (per-shard factor padding on a
+outside this suite: they are what ``scripts/solver_benchmark.py`` and
+``scripts/pallas_solve_profile.py`` measure on a GPU node.
+Multi-device solve coverage (per-shard factor padding on a
 (2, 2) mesh) lives in ``test_banded_solver_sharded.py``.
 
 Geometry-specific operator tests live in ``test_cartesian.py``,

@@ -18,7 +18,7 @@ never reaches an installed ``dnsjax`` at all.  Unlike the JAX-free
 reading API it needs the **solver runtime** to build the state, but
 every JAX import is in-function, so *importing* this module stays
 NumPy-only and the package-level "``import dnsjax.analysis`` never
-imports JAX" guarantee is untouched (see ``analysis/CLAUDE.md``).
+imports JAX" guarantee is untouched (see :mod:`dnsjax.analysis._core`).
 
 Native input layout (physical and spectral)
 -------------------------------------------

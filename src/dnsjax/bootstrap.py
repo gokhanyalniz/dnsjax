@@ -22,13 +22,15 @@ singletons at import time:
 3. Only then import :mod:`dnsjax.sharding` and the geometry / flow
    modules.
 
-Between 2 and 3 the two stepping entry points call
+Between 2 and 3 the solver's entry point calls
 :func:`resolve_run_seeds`, which turns an unset seed this run would
 actually draw with into a concrete one (:mod:`dnsjax.seeding`) and
 agrees it across processes.  It sits *after* step 2 because the
 agreement is a JAX collective, and *before* step 3 because that is
 where the seed's consumers are built; a script that does no random
-draws simply never calls it.
+draws simply never calls it.  ``dnsjax-twin`` resolves its one seed,
+``twin.seed``, with :func:`resolve_seed` instead, after its
+paired-resume decision.
 
 Production parsing is *surface-based* and two-pass:
 :func:`peek_run_context` scans the raw argv / ``parameters.toml`` (no
@@ -1338,8 +1340,8 @@ def resolve_run_seeds(setup: ResolvedSetup) -> list[str]:
         if params.init.random_seed is None:
             # Through the layering contract, not a bare assignment:
             # that is what marks the field user-set, so a later
-            # ``update_parameters`` pass cannot restore it (see the
-            # "Parameter layering" note in CLAUDE.md).
+            # ``update_parameters`` pass cannot restore it (see
+            # :func:`dnsjax.parameters.update_parameters`).
             update_parameters(Parameters(init={"random_seed": seed}))
         notes.append(seed_note("init.random_seed", seed, source))
 
