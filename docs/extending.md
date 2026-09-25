@@ -27,7 +27,11 @@ yet implemented, so they fail with their own message rather than
 looking nonsensical — and the flow's derivation and validation hooks.
 A state that is not three velocity components declares its count, and
 the initial-condition builders, the FFT and sharding layers, and the
-steppers are all component-count-agnostic.
+steppers are all component-count-agnostic. A flow that integrates the
+total field, driven by a mean-mode body force, rather than a
+perturbation about a laminar profile declares that too
+(`total_field`); what a snapshot holds, the transient-growth scope and
+the figure labels all follow from it.
 
 Specs import nothing heavier than the standard library: no pydantic,
 no JAX, and never the parameter module itself, whose live objects the

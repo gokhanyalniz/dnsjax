@@ -114,6 +114,7 @@ SPEC = FlowSpec(
     geometry_label="cylindrical",
     summary="pressure/bulk-driven toroidal (curved) pipe",
     flow_module="dnsjax.flows.wall_bounded.curved_pipe",
+    total_field=True,
     fields=(
         *_WALL_FIELDS,
         *_ALIAS_FIELDS,

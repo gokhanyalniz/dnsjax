@@ -3,10 +3,13 @@ r"""Linear transient (optimal energy) growth around arbitrary profiles.
 Compute the three-dimensional linear transient-growth spectrum of a
 wall-bounded flow **linearised about an arbitrary wall-normal total
 profile** `$\mathbf{U}(y)$` -- not necessarily a laminar / stationary
-solution.  Supported systems: ``plane-couette`` / ``plane-poiseuille``
-(Cartesian), ``pipe`` (cylindrical), ``taylor-couette`` and
-``quasi-keplerian`` (annular).  The force-driven Dean / viscoelastic-Dean
-flows are out of scope.
+solution.  Supported systems: the wall-bounded base-flow flows
+(:data:`WALL_BOUNDED_TG_SYSTEMS`) -- ``plane-couette`` /
+``plane-poiseuille`` (Cartesian), ``pipe`` (cylindrical),
+``taylor-couette`` and ``quasi-keplerian`` (annular).  The total-field
+flows (``FlowSpec.total_field``: the curved pipe, Dean and the two
+viscoelastic flows) have no base flow to linearise about and are out
+of scope.
 
 Run as a CLI (single process, single device; GPU with
 ``--dist.platform cuda`` and ``CUDA_VISIBLE_DEVICES=0``)::
@@ -394,6 +397,7 @@ from ..bootstrap import (
 )
 from ..extensions import ParamExtension, register_extension
 from ..fd import local_interpolation_matrix
+from ..flows.registry import total_field_systems, walled_systems
 from ..parameters import (
     Parameters,
     _user_set_fields,
@@ -409,18 +413,13 @@ if TYPE_CHECKING:
     from jax import Array
 
 # The TG scope: the wall-bounded *base-flow* (perturbation-form)
-# systems, whose flow modules export ``frozen_profile_flow``.  The
-# force-driven Dean / viscoelastic-Dean flows integrate the total
-# field around ``base_flow = 0`` and are out of scope, so this cannot
-# be derived from the spec families; the modules and geometry come
-# from the registry (``FlowSpec.flow_module`` / ``family``) in
-# :func:`_dispatch`.
-WALL_BOUNDED_TG_SYSTEMS = (
-    "plane-couette",
-    "plane-poiseuille",
-    "pipe",
-    "taylor-couette",
-    "quasi-keplerian",
+# systems, whose flow modules export ``frozen_profile_flow``.  A
+# total-field flow (``FlowSpec.total_field``) integrates around
+# ``base_flow = 0`` and has no profile to linearise about, so it is
+# out of scope; the modules and geometry come from the registry
+# (``FlowSpec.flow_module`` / ``family``) in :func:`_dispatch`.
+WALL_BOUNDED_TG_SYSTEMS = tuple(
+    s for s in walled_systems if s not in total_field_systems
 )
 
 # Component labels in the stored state basis, per family.

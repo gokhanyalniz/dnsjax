@@ -31,9 +31,9 @@ Two views, chosen from the snapshot's own geometry:
 
 The quantity is the **stored** field, which is the perturbation `$u'$`
 about the laminar profile for the base-flow systems and the total field
-for force-driven Dean, viscoelastic Dean and viscoelastic pipe
-(:data:`TOTAL_FIELD_SYSTEMS`); the colourbar label says which, and no
-base flow is ever added or removed here.
+for the force-driven ones (:data:`TOTAL_FIELD_SYSTEMS`: the curved
+pipe, Dean and the two viscoelastic flows); the colourbar label says
+which, and no base flow is ever added or removed here.
 
 The colour scale is diverging and pinned symmetric about zero
 (``vmin = -vmax``), so the neutral midpoint *is* zero -- an asymmetric
@@ -162,12 +162,12 @@ from dnsjax.analysis import (  # noqa: E402
     read_state,
     read_stats,
 )
-from dnsjax.flows.registry import viscoelastic_systems  # noqa: E402
+from dnsjax.flows.registry import total_field_systems  # noqa: E402
 
 #: Systems whose snapshots store the **total** field rather than a
-#: perturbation about a laminar profile (root ``CLAUDE.md``,
-#: "Snapshots"); derived so a new viscoelastic flow follows.
-TOTAL_FIELD_SYSTEMS = frozenset({"dean", *viscoelastic_systems})
+#: perturbation about a laminar profile -- each flow declares it
+#: (``FlowSpec.total_field``), so a new flow follows.
+TOTAL_FIELD_SYSTEMS = frozenset(total_field_systems)
 
 #: An inner radius above this fraction of the outer one is a *wall* (an
 #: annulus), not a pipe's near-axis first point.
