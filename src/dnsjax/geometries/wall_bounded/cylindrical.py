@@ -41,7 +41,7 @@ conditions and the analysis package all work in the physical
 triad `$(u_z, u_r, u_\theta)$`, and a given state crosses between
 the two at most once, at that boundary (``to_pm_basis`` /
 ``from_pm_basis`` in ``_base.py``, driven by
-:mod:`dnsjax.__main__`; the wall-bounded ``CLAUDE.md``).
+:mod:`dnsjax.__main__`).
 
 :func:`_get_rhs_core` and :func:`_l_bf` convert internally because
 the real FFT demands it: every physical component is the
@@ -830,6 +830,15 @@ def _build_A_base(D1: Array, D2: Array, inv_r: Array) -> Array:
     .. math::
         A_{\mathrm{base}} = D_2 + \mathrm{diag}(1/r)\,D_1
 
+    Applied as one matvec wherever a field needs
+    `$D_2 x + (1/r) D_1 x$` and `$D_1 x$` has no other consumer (why it
+    pays: :func:`._cylindrical_stepping._imm_iteration_vw`); where
+    `$D_1 x$` is reused, the split form stays.  The fused product is
+    not bit-identical to the split one, so a change to it is guarded by
+    ``tests/test_imm_continuity.py``, the band-vs-dense parity tests
+    and the two viscoelastic suites -- not by the laminar smoke, whose
+    `$u' = 0$` makes every stage zero either way.
+
     Parameters
     ----------
     D1:
@@ -1599,7 +1608,7 @@ class CylindricalFlow:
     def to_physical(
         self, velocity_phys: Array, vorticity_phys: Array
     ) -> tuple[Array, Array]:
-        """Carried physical-space components -> the physical triad.
+        r"""Carried physical-space components -> the physical triad.
 
         The identity here: the straight pipe carries
         `$(u_z, u_r, u_\theta)$` themselves.

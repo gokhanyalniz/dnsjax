@@ -39,7 +39,10 @@ convention throughout this codebase, and the one the ``-dPds'`` /
 `$-\Pi$`, positive when the driving accelerates the flow.  In a
 perturbation formulation `$\Pi$` is the *excess* gradient over the
 one driving the laminar state, written without a prime; a total is
-`$\Pi_\mathrm{tot}$`.  (`$\Pi = 0$` for plane-Couette.)  Continuity plus
+`$\Pi_\mathrm{tot}$`.  A subscript names the direction: `$\Pi_s$` /
+`$\Pi_n$` (streamwise / spanwise) in the planar geometries,
+`$\Pi_\theta$` / `$\Pi_z$` in the curvilinear ones.  (`$\Pi = 0$` for
+plane-Couette.)  Continuity plus
 no-slip give `$\langle v\rangle = 0$`, so the mean-mode momentum
 balance of a tangential component `$u$` is
 

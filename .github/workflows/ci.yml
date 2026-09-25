@@ -35,7 +35,8 @@ jobs:
       - run: uv sync
       - run: uv run ruff check
       # Named directories on purpose: a bare `ruff format` also rewrites
-      # the code blocks in README.md, which are written to be read.
+      # the Python blocks in the Markdown docs and the example notebook,
+      # which are laid out to be read.
       - run: uv run ruff format --check src tests scripts
 
   smoke:

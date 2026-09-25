@@ -22,6 +22,11 @@ verifies against the reloaded arrays:
    actual writer.
 5. **Error paths**: out-of-range mode, complex ``(0,0)`` profile,
    mode missing from the TG bundle, wrong-system bundle.
+6. **Mean mode** ``(0,0)``: a profile that satisfies the conservation
+   laws of :mod:`dnsjax.ic.mean_mode` injects (even under
+   ``constant_bulk_velocity``) and writes that one self-conjugate
+   column; each law it can break refuses, naming the law, judged on
+   the injected profile rather than the resulting state.
 
 Usage::
 

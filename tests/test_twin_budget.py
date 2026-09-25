@@ -121,7 +121,9 @@ Usage::
 
 ``--only`` matches config names **exactly** and takes a
 comma-separated list, so ``pp-cbv`` does not also select
-``pp-cbv-span``.
+``pp-cbv-span``.  ``--measure`` reports the numbers without asserting
+the bounds; ``--spin`` / ``--horizon`` override the parent spin-up and
+the twin horizon (advective units; ``--quick`` shortens both).
 """
 
 from __future__ import annotations

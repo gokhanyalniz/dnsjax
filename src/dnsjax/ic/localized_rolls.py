@@ -4,7 +4,7 @@ Builds a deterministic divergence-free **localized** perturbation of the
 base flow for every flow system, returned as a sharded spectral state
 ready to time step.  This is the implementation behind the
 in-process ``init.localized_rolls`` start mode (``dnsjax.__main__``);
-there is no offline script (unlike the random field).
+like the random field, it has no offline CLI.
 
 **Fixed-physical structure (a spot, surrounded by laminar flow).** The
 perturbation is a compact structure of *fixed physical size*, localized

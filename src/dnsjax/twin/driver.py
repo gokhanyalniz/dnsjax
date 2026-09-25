@@ -248,6 +248,13 @@ _TWIN_MATCH_KEYS: tuple[str, ...] = (
 #: recorded then had ``wall_smoothness == smoothness`` whatever that
 #: was.  ``wall_confinement`` is the constant case again -- every mode
 #: carried the same wall window, which is what zero means.
+#:
+#: A back-fill records the old behaviour; it cannot make that behaviour
+#: match a *different* current default.  ``mean_flow``'s old value is
+#: today's default, so those members resume as they are, but a member
+#: recorded before ``wall_confinement`` existed back-fills to ``0``
+#: against the ``0.14`` default -- a real difference in the partner --
+#: and resumes only with ``--twin.wall_confinement 0``.
 _TWIN_LEGACY_DEFAULTS: dict[str, object] = {
     "mean_flow": True,
     "wall_smoothness": lambda old: old.get("smoothness"),

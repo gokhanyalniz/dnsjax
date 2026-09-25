@@ -26,6 +26,10 @@ deliberate differences: decoding uses ``errors="replace"`` (a stray
 invalid byte must not kill the pump), and the relative ordering
 between the stdout and stderr streams is not guaranteed (it never was
 observable for captured output).
+
+:func:`report` prints the closing summary and re-prints each failure
+after the counts, so a failure is not buried in a long live log.  A
+test script whose children stream output uses both.
 """
 
 from __future__ import annotations
