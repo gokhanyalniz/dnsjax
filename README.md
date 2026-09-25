@@ -45,6 +45,7 @@ plane by itself.</a>
 [Limitations](#limitations) ·
 [References](#references) ·
 [License and citation](#license-and-citation) ·
+[Acknowledgements](#acknowledgements) ·
 [Use of AI](#use-of-ai)
 
 ## Highlights
@@ -348,6 +349,17 @@ The numerics follow these references:
 Released under the [MIT License](LICENSE), © 2025–2026 Gökhan Yalnız.
 If `dnsjax` supports your work, a citation of this repository
 (<https://github.com/gokhanyalniz/dnsjax>) is appreciated.
+
+## Acknowledgements
+
+I developed most of `dnsjax` (everything before 1 August 2026) during
+my year as a postdoctoral researcher in Björn Hof's group at the
+Institute of Science and Technology Austria, and I am grateful for that
+opportunity and for the time it gave me to work on this. Substantial
+changes have followed, and continue, since I joined Yongyun Hwang's
+group at Imperial College London. I also thank Ashley P. Willis for
+openpipeflow, from which I learned a great deal. None of them was
+involved in the development of this code. Any errors are my own.
 
 ## Use of AI
 
