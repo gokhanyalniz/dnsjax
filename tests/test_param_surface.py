@@ -100,6 +100,51 @@ def case_coherence() -> None:
         check(not overlap, f"{system}: no global overlap", overlap)
 
 
+# ── Case A2: the storage-form axis (``FlowSpec.total_field``) ────────
+
+
+def case_total_field() -> None:
+    from dnsjax.analysis._core import TOTAL_FIELD_SYSTEMS
+    from dnsjax.flows import registry as R
+
+    total = {"curved-pipe", "dean", "viscoelastic-dean", "viscoelastic-pipe"}
+    check(
+        set(R.total_field_systems) == total,
+        "total-field systems are the four force-driven flows",
+        R.total_field_systems,
+    )
+    check(
+        set(TOTAL_FIELD_SYSTEMS) == total,
+        "analysis mirrors the registry's total-field set",
+        sorted(TOTAL_FIELD_SYSTEMS),
+    )
+    # The transient-growth scope (shared by scripts/snapshot_perturb.py)
+    # is derived from the flag: the walled systems minus the
+    # total-field ones.  It must be the five base-flow flows it was when
+    # it was listed by hand, in the same order.  In a subprocess,
+    # because importing the driver registers its ``[tg]`` section, which
+    # would leak into the other cases.
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from dnsjax.analysis.transient_growth import "
+            "WALL_BOUNDED_TG_SYSTEMS as s; print(','.join(s))",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    check(
+        r.returncode == 0
+        and r.stdout.strip()
+        == "plane-couette,plane-poiseuille,pipe,taylor-couette,"
+        "quasi-keplerian",
+        "transient-growth scope unchanged by its derivation",
+        r.stdout.strip() or r.stderr[-300:],
+    )
+
+
 # ── Case B: surface strictness + alias round-trip ────────────────────
 
 
@@ -840,6 +885,7 @@ def main() -> int:
     args = parser.parse_args()
 
     case_coherence()
+    case_total_field()
     case_surface_strictness()
     case_cli_parse()
     case_deferred()

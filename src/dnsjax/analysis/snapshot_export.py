@@ -119,12 +119,22 @@ def read_state(
         ``(physical, physical_coords, spectral, spectral_coords,
         params, stats)``.
 
+    Raises
+    ------
+    dnsjax.snapshot_meta.SnapshotArchiveError
+        A ``ValueError`` subclass naming the file and the cause: the
+        archive is damaged (e.g. truncated), or its component chunks
+        do not match the ``native_shape`` its metadata declares.  Catch
+        it to skip damaged or mismatched archives.
+
     Notes
     -----
     Physical-space components are real; cylindrical/annular return
     ``(u_z, u_r, u_θ)``, all other families ``(u_x, u_y, u_z)``.  The
-    stored field is the **perturbation** ``u'`` (the total field for
-    Dean); the analytical base flow is not added.
+    stored field is the **perturbation** ``u'`` for the base-flow
+    systems and the **total** field for those in
+    :data:`~dnsjax.analysis._core.TOTAL_FIELD_SYSTEMS`; the analytical
+    base flow is never added.
     """
     path = Path(path)
     meta = _core.read_meta(path)

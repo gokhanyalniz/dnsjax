@@ -64,6 +64,7 @@ SPEC = FlowSpec(
     geometry_label="cylindrical",
     summary="viscoelastic (sPTT) pressure-driven circular pipe",
     flow_module="dnsjax.flows.wall_bounded.viscoelastic_pipe",
+    total_field=True,
     # 3 velocity + 6 symmetric conformation-tensor components.
     n_components=9,
     fields=(

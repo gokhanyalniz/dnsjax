@@ -126,6 +126,12 @@ cartesian_systems: list[str] = _by_family("cartesian")
 # ``if/elif`` chain that mixes them must test the rheology axis
 # **first** (the geometry branch would otherwise swallow the
 # viscoelastic member and hand it 3-component machinery).
+#
+# A third axis, ``total_field_systems``, answers "is the state (and so
+# every snapshot) the total field rather than a perturbation about a
+# laminar profile?" (``FlowSpec.total_field``): the force-driven flows,
+# across both geometries and both rheologies.  Its complement among
+# the walled systems is the transient-growth scope.
 annular_viscoelastic_systems: list[str] = _by_family("annular-viscoelastic")
 cylindrical_viscoelastic_systems: list[str] = _by_family(
     "cylindrical-viscoelastic"
@@ -146,6 +152,9 @@ walled_systems: list[str] = [
     *cartesian_systems,
     *cylindrical_systems,
     *annular_systems,
+]
+total_field_systems: list[str] = [
+    s.system for s in SPECS.values() if s.total_field
 ]
 
 

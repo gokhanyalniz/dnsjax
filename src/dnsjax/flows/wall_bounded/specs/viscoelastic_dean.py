@@ -55,6 +55,7 @@ SPEC = FlowSpec(
     geometry_label="annular",
     summary="viscoelastic (sPTT) force-driven annular flow",
     flow_module="dnsjax.flows.wall_bounded.viscoelastic_dean",
+    total_field=True,
     # 3 velocity + 6 symmetric conformation-tensor components.
     n_components=9,
     fields=(

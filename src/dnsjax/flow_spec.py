@@ -132,15 +132,31 @@ class FlowSpec:
     JAX-free; consumers import it lazily (the ``__main__`` flow
     dispatch, the transient-growth driver).  One export is
     **optional**: ``get_driving(state) -> dict[str, Array]``, the
-    wall-shear inference of the mean-mode driving, exported only by
-    flows that can apply one (``phys.driving`` /
+    wall-shear inference of the mean-mode driving from the
+    physical-basis state (the same contract as ``get_stats``), exported
+    only by flows that can apply one (``phys.driving`` /
     ``phys.block_mean_spanwise_velocity``).  It supplies the extra
     ``stats.dat`` column names and the ``t = t0`` row, which has no
     step behind it to report the applied value of; ``__main__`` reads
     it with ``getattr`` and falls back to no column.  ``n_components`` is the
     leading state-axis size (3 velocity components unless the flow
-    carries more, e.g. the 9-component viscoelastic state); read by
-    the snapshot writer and the analysis component schemas.
+    carries more, e.g. the 9-component viscoelastic state); the
+    snapshot writer and loader read it, while the IC builders and the
+    FFT, sharding and stepper machinery are component-count-agnostic
+    (the leading state axis is replicated).  A flow with its own
+    component set also needs a branch in the analysis schema
+    (:func:`dnsjax.analysis._core.geometry_info`), which is keyed on the
+    system, not on this count.
+
+    ``total_field`` declares what the state -- and so every snapshot --
+    holds: ``False`` (the default) for the perturbation `$u'$` about the
+    flow's laminar profile, ``True`` for the total field, integrated
+    around ``base_flow = 0`` with a mean-mode body force (the
+    force-driven curved pipe, Dean and viscoelastic flows).  The
+    registry exposes it as
+    :data:`dnsjax.flows.registry.total_field_systems`; a total-field
+    flow has no ``frozen_profile_flow`` hook and is outside the
+    transient-growth and single-mode-perturbation scope.
     """
 
     system: str
@@ -155,6 +171,7 @@ class FlowSpec:
     rehydrate: Callable[[dict], None] | None = None
     flow_module: str | None = None
     n_components: int = 3
+    total_field: bool = False
 
     #: ``(section, name) -> FieldSpec`` over :attr:`fields` (cached).
     field_map: dict[tuple[str, str], FieldSpec] = field(

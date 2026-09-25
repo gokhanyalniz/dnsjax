@@ -86,6 +86,10 @@ ANNULAR_SYSTEMS = frozenset(_registry.annular_systems)
 #: decides the component schema.
 VISCOELASTIC_SYSTEMS = frozenset(_registry.viscoelastic_systems)
 PERIODIC_SYSTEMS = frozenset(_registry.periodic_systems)
+#: Systems whose stored field is the **total** field rather than the
+#: perturbation about the laminar profile (``FlowSpec.total_field``):
+#: another axis cutting across the geometry sets.
+TOTAL_FIELD_SYSTEMS = frozenset(_registry.total_field_systems)
 
 #: Triply-periodic shear-direction box length (fixed length reference;
 #: see :mod:`dnsjax.geometries.triply_periodic`).
