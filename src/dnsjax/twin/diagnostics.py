@@ -255,8 +255,18 @@ Only `$E^{xz00}$` is stored unconditionally.  The plane it comes from
 is **opt-in** (``twin.x0_planes``, default off): it is a third of
 every record and a third of the sample's collective, and the two
 marginals are what a `$(y, k)$` reading actually wants.  With it off
-only the first of the three identities above survives -- which is the
-one a difference field's mean-flow component needs, and the one
+the three numbers still come back, because the first column of the
+`$k_x$` marginal is the whole plane summed over `$k_z$`:
+
+.. math::
+    E_{\Delta u_1} = \textstyle\int \sum_\alpha
+        \bigl(E^{z}_\alpha(y, 0) - E^{xz00}_\alpha\bigr) ,
+    \qquad
+    E_{\Delta u_2} = \int \sum_\alpha \sum_{k_x > 0} E^{z}_\alpha ,
+
+which is what :func:`~dnsjax.analysis.twin.bin_energies` evaluates.
+What goes with the plane is only the `$k_z$` resolution of
+`$E_{\Delta u_1}$`.  The mode is also what
 :func:`~dnsjax.analysis.twin.yspectra.fluctuation_energy` subtracts.
 
 Spectral budget
