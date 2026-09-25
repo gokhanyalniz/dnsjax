@@ -63,6 +63,9 @@ _SLOW = (pytest.mark.slow,)
 # ``--unit-only`` fallback rows: they exist so the unit halves still
 # run where mpirun is absent; with mpirun present the full (mpi) rows
 # re-run those same units, so the fallback would be pure duplication.
+# ``test_driving`` is the exception and carries no such mark: its full
+# row launches no mpirun, so it is marked ``slow`` only, and the fast
+# tiers would otherwise never run its unit half.
 _NO_MPI_ONLY = (
     pytest.mark.skipif(
         shutil.which("mpirun") is not None,
@@ -74,7 +77,8 @@ _NO_MPI_ONLY = (
 # Scripts appearing twice: ``test_resume`` (offline ``--unit-only``
 # subset + full mpirun run), ``test_forcing``/``test_probes``/
 # ``test_seeding``/``test_twin_postprocess`` (the no-mpirun unit
-# fallback + the full run),
+# fallback + the full run), ``test_driving`` (the always-run unit half
+# + the slow full run),
 # ``test_transient_growth`` (offline ``--fast`` structure checks +
 # the slow full run with the literature anchors), and
 # ``test_laminar_smoke`` (single-device + the ``--np 2`` mesh row
@@ -105,7 +109,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_monochromatic.py", (), (), 1800),
     ("test_padding.py", (), (), 1800),
     ("test_param_surface.py", (), (), 1800),
-    ("test_driving.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
+    ("test_driving.py", ("--unit-only",), (), 1800),
     ("test_forcing.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_probes.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_seeding.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
