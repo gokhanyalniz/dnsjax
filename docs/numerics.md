@@ -102,9 +102,11 @@ same influence-matrix implicit solve:
   stable well past the advective CFL limit.
 - **`cnab2`** — Crank–Nicolson viscous term with an explicit second-order
   Adams–Bashforth nonlinear term, costing a **single** FFT evaluation per
-  step (roughly a threefold saving on CFL-limited turbulent runs), at the
-  price of an advective-CFL step restriction. The wall-bounded systems
-  keep the wall-stiff coupling implicit through an FFT-free corrector; a
+  step, a third of what `iterative-cn` needs, at the price of an
+  advective-CFL step restriction; it pays on turbulent runs whose step
+  is CFL-limited anyway. The wall-bounded systems keep the wall-stiff
+  coupling implicit through an FFT-free corrector whose implicit solves
+  remain, so there the step time falls by less than the FFT count; a
   step whose corrector fails to contract falls back to one full
   `iterative-cn` step.
 
@@ -149,12 +151,12 @@ step.
 
 A moving frame of reference (`u_grid`) translates the domain along the
 streamwise / axial direction and is integrated implicitly by both schemes —
-convenient for following traveling structures. By default the frame moves at
-the laminar bulk velocity: $1/2$ for both pipes, $2/3$ for plane-Poiseuille,
-and zero for the others (Dean's driving is azimuthal, so its axial bulk
-vanishes). The pipes and plane-Poiseuille therefore integrate, and
-store snapshots, in the moving frame unless `u_grid` is set to `0` (see also
-item 9 in [What's in the box](../README.md#whats-in-the-box)).
+convenient for following travelling structures. By default the frame moves
+at the laminar bulk velocity: $1/2$ for the three pipes, $2/3$ for
+plane-Poiseuille, and zero for the others (Dean's driving is azimuthal, so
+its axial bulk vanishes). The pipes and plane-Poiseuille therefore
+integrate, and store snapshots, in the moving frame unless `u_grid` is set
+to `0` (see also [Moving frame](running.md#moving-frame)).
 
 ## Grids
 
@@ -228,7 +230,7 @@ held down by its projection splitting.
 A few conventions worth knowing across the flow surfaces:
 
 - **Reynolds number.** `re` sets the viscosity $\nu = 1/Re$. For the pipe it
-  is simultaneously the centerline–radius and the bulk-velocity–diameter
+  is simultaneously the centreline–radius and the bulk-velocity–diameter
   Reynolds number (the factors of two cancel in the chosen normalization).
   The viscoelastic flows are the exception: they expose no `re` (it is
   derived as $Re = Wi/El$), and $\nu = \beta/Re$ is the *solvent*
@@ -243,7 +245,7 @@ A few conventions worth knowing across the flow surfaces:
   plane-Poiseuille) accept
   `phys.driving = "constant_bulk_velocity"` to hold the bulk velocity
   fixed instead of the mean pressure gradient, and every wall-bounded
-  flow but the two pipes can pin the mean velocity of its undriven
+  flow but the three pipes can pin the mean velocity of its undriven
   homogeneous direction to zero (`phys.block_mean_spanwise_velocity`) —
   the spanwise mean in the channels, the axial mean in the annulus.
 - **Taylor–Couette rotation.** `re1` and `re2` are the inner and outer
@@ -277,7 +279,8 @@ A few conventions worth knowing across the flow surfaces:
   $[-1, 1]$, the pipe radius is 1, the annulus $[r_1, r_2]$, and the
   periodic box uses $L_y = 4$).
 - **Azimuthal wedge.** `--geo.m0` restricts a cylindrical or annular
-  flow to the $m_0$-periodic subspace, which the dynamics preserve.
+  flow to the $m_0$-periodic subspace, which the dynamics preserve (all
+  but the curved pipe, whose metric breaks that symmetry).
   It is a cost lever, not a coarsening: at fixed `ntheta` the wedge
   costs $m_0$ times less azimuthal work and memory while resolving
   the same physical azimuthal scales a full circle would need

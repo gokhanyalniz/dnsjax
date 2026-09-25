@@ -24,15 +24,20 @@ inside `jit`, onto the file's own layout — a contiguous wall-normal
 slab per device, at the true mode counts, so the padding never reaches
 the file — and each device then writes its disjoint byte ranges, one
 per component, into the one file in parallel: directly between GPU
-memory and disk when GPUDirect Storage is available, through the host
-otherwise, with a
-concurrent mode for POSIX/parallel filesystems and a rank-ordered
+memory and disk when GPUDirect Storage is available (a path not yet
+exercised on a system with the GDS driver), through the host otherwise,
+with a concurrent mode for POSIX/parallel filesystems and a rank-ordered
 serial mode for filesystems where concurrent writes are unsafe. The
 bytes land in `<name>.tar.partial` and are renamed into place only once
 complete, so a killed job leaves the previous snapshot intact and never
 a truncated archive that could pass for a valid one; on read, the chunk
 layout is checked against the metadata, and a damaged archive raises an
 error naming the file and the cause.
+
+The archive is readable with ordinary tools — `tar xf` yields a valid
+zarr3 store, and in the worst case each chunk is raw little-endian
+complex data for `numpy.fromfile`.
+
 ### What is stored
 
 The stored field is the spectral **perturbation** $\mathbf{u}'$ for the
@@ -55,17 +60,16 @@ pipe snapshot's size lower by two fifths and a viscoelastic pipe's by
 two elevenths), for one a script wrote, and for any resume that starts
 a new trajectory, a re-grid included.
 
-The archive is readable with ordinary tools — `tar xf` yields a valid zarr3 store,
-and in the worst case each
-chunk is raw little-endian complex data for `numpy.fromfile`. Resume is
-agnostic to the device count (precision must match — a mismatch
-rejects), and re-grids **every changed axis** on load: the wall-normal
-grid by interpolation — spectrally when both grids are CGL-family, by a
-local order-`fd_order` stencil for tanh or custom grids — and each
-Fourier axis by inserting or dropping modes at its high-wavenumber end,
-so a state can be picked up at a different resolution (which, being a
-`res` change, starts a new trajectory rather than continuing one).
-### Resume and re-gridding
+## Resume and re-gridding
+
+Resume is agnostic to the device count (precision must match — a
+mismatch rejects), and re-grids **every changed axis** on load: the
+wall-normal grid by interpolation — spectrally when both grids are
+CGL-family, by a local order-`fd_order` stencil for tanh or custom
+grids — and each Fourier axis by inserting or dropping modes at its
+high-wavenumber end, so a state can be picked up at a different
+resolution (which, being a `res` change, starts a new trajectory rather
+than continuing one).
 
 `stop.max_sim_time` is a horizon measured from the run's own initial
 condition rather than an absolute clock reading, so a resume asks for
@@ -152,16 +156,17 @@ cylindrical and annular flows (pipe, Taylor–Couette, quasi-Keplerian,
 Dean) — whose components are $(u_z, u_r, u_\theta)$ — so any axis
 permutation and component reordering from the source code's conventions
 is the caller's first step.
+
 Two conventions to keep in mind. The resolutions are the solver's
 nominal (physical) mode counts *without* the 3/2 dealiasing expansion —
 never include dealiasing zero-padding in the field or the resolution
 parameters — and every Fourier count must be **even**, so resample an
-odd-sized source axis before importing it. And every wall-bounded flow needs its wall-normal/radial
-grid points, **ascending** in dnsjax's convention: bottom wall $-1$ to
-top wall $+1$ (Cartesian), near-axis to the outer wall on $(0, 1]$
-(pipe), inner to outer radius (Taylor–Couette); the triply-periodic
-systems take no grid. Parameters go by the flow's public names, exactly
-as on the CLI:
+odd-sized source axis before importing it. And every wall-bounded flow
+needs its wall-normal/radial grid points, **ascending** in dnsjax's
+convention: bottom wall $-1$ to top wall $+1$ (Cartesian), near-axis to
+the outer wall on $(0, 1]$ (pipe), inner to outer radius
+(Taylor–Couette); the triply-periodic systems take no grid. Parameters
+go by the flow's public names, exactly as on the CLI:
 
 ```python
 import numpy as np

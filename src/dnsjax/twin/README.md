@@ -5,9 +5,13 @@ reference trajectory loaded from a snapshot and a perturbed partner
 $\mathbf{u}^{(2)} = \mathbf{u}^{(1)} + \delta$ — and streams online
 diagnostics of the difference field
 $\Delta\mathbf{u} = \mathbf{u}^{(2)} - \mathbf{u}^{(1)}$: how fast two
-initially-close realisations of the same turbulence separate, which
+initially-close realizations of the same turbulence separate, which
 components carry the separation, which terms feed it, and which scales
-have decorrelated by when.
+have decorrelated by when. The three-component energies and the
+volume-averaged budget follow Egerique-de-la-Concha & Hwang, *J. Fluid
+Mech.* **1036**, A52 (2026)
+([doi:10.1017/jfm.2026.11608](https://doi.org/10.1017/jfm.2026.11608));
+the wall-normal-resolved spectra and budget refine them.
 
 Both states share every singleton — grid, operators, jitted steppers,
 `dt` — so their difference is purely dynamical.
@@ -34,7 +38,7 @@ not. `python -m dnsjax.twin` is the equivalent module form.
 .venv/bin/dnsjax-twin \
   --init.snapshot parent.tar \
   --twin.e0 1e-6 --twin.seed 3 \
-  --twin.it_budget 100 --twin.it_spectra 100 \
+  --twin.bins True --twin.it_budget 100 --twin.it_spectra 100 \
   --stop.max_sim_time 5000
 ```
 
@@ -61,9 +65,9 @@ which `dnsjax-twin` registers and the solver does not.
 
 `twin.bins` and `twin.x0_planes` are both off by default, and both
 for the same reason. The three-bin split is a three-bin partition of
-the $(k_x, k_z)$ plane, and the reference paper restricts it to
-minimal flow units; above that, `twin.it_yspectra` resolves the same
-information in $k$ and $y$. Turning the bins off drops a few percent
+the $(k_x, k_z)$ plane, and Egerique-de-la-Concha & Hwang restrict it
+to minimal flow units; above that, `twin.it_yspectra` resolves the
+same information in $k$ and $y$. Turning the bins off drops a few percent
 of every step — the two masked full-state copies the split forces —
 and leaving `x0_planes` off drops a third of each wall-normal-resolved
 record and a third of its collective. What the streams always carry
@@ -169,7 +173,7 @@ check rather than a free parameter.
 
 The scale-resolved replacement for the three-bin split, and what to
 reach for above a minimal flow unit. Per sample, the componentwise
-difference energy as a density in $y$, marginalised each way,
+difference energy as a density in $y$, marginalized each way,
 
 ```math
 E_\Delta^x[u,v,w](y, k_z), \qquad E_\Delta^z[u,v,w](y, k_x)
@@ -367,11 +371,11 @@ parent. An unset `--seed-base` is drawn from the system entropy pool
 and printed, so two ensembles built from the same parents are
 independent rather than both running seeds `1..N`; either way each
 member's concrete seed is written into its `parameters.toml`, which is
-what keeps the tree reproducible and resumable. `check_laminarization` is forced off so every member runs the
-full horizon and the streams aggregate on one shared time grid; a
-relaminarised member stays visible offline in its `E_ref` column. The
-script emits `run_commands.txt` and a `members.json` index, and never
-runs the solver itself.
+what keeps the tree reproducible and resumable. `check_laminarization`
+is forced off so every member runs the full horizon and the streams
+aggregate on one shared time grid; a relaminarized member stays visible
+offline in its `E_ref` column. The script emits `run_commands.txt` and
+a `members.json` index, and never runs the solver itself.
 
 ## Offline analysis
 
@@ -386,7 +390,7 @@ samples and are kept, so a consumer that needs a *uniform* grid — a
 centred difference, an across-member stack — selects one with
 `series.uniform_grid` instead of assuming the raw stream is one.
 
-Members recorded before the cadence anchor above (2026-09-06) whose
+Members recorded before the cadence rule above (2026-09-06) whose
 parents sat at different `it` residues carry grids displaced against
 one another, and share no relative sample time but $t = 0$.
 `aggregate_members` and `scripts/twin_spectral_maps.py` both refuse
@@ -406,7 +410,8 @@ such pairing is.
 Aggregation is also a command:
 
 ```bash
-python -m dnsjax.analysis.twin.ensemble --tree twins/ --out twin_ens.npz
+uv run python -m dnsjax.analysis.twin.ensemble \
+  --tree twins/ --out twin_ens.npz
 ```
 
 ## See also

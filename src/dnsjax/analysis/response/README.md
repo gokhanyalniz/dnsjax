@@ -21,7 +21,7 @@ These modules **may** use JAX, and they do where it pays.
 SciPy, which `uv sync` installs — it is a core dependency, so nothing
 extra is needed here. It is still imported **lazily**, inside the
 functions that use it — `logm`, the Lyapunov solve, non-symmetric
-`eig`: factorisations JAX has no GPU kernels for — which is what keeps
+`eig`: factorizations JAX has no GPU kernels for — which is what keeps
 `import dnsjax.analysis` free of both JAX and SciPy. The Lyapunov solve
 additionally carries an eigendecomposition closed form as a fallback;
 the matrix logarithm has none.
@@ -75,13 +75,13 @@ write_profile_file("U_mean.txt", data, t_min=200.0)
 
 ### 3. The linear operator about that mean
 
-The transient-growth CLI linearises about an arbitrary wall-normal
+The transient-growth CLI linearizes about an arbitrary wall-normal
 **total** profile — including one that is not a solution of the
 equations, such as this measured mean — and reuses the solver's own
 linear step per Fourier mode.
 
 ```bash
-python -m dnsjax.analysis.transient_growth \
+uv run python -m dnsjax.analysis.transient_growth \
   --phys.system plane-couette --phys.re 500 \
   --tg.profile U_mean.txt --tg.modes "3,0" \
   --tg.save_operator True
@@ -104,7 +104,7 @@ it is most excitable in — the natural basis for a response experiment,
 and far smaller than the full state.
 
 ```bash
-python -m dnsjax.analysis.response.operator_tools \
+uv run python -m dnsjax.analysis.response.operator_tools \
   --operator U_mean_tg_op.npz --n-modes 30 --out U_mean_cont.npz
 ```
 
@@ -133,7 +133,7 @@ uv run python scripts/ensemble_setup.py build \
 
 `harvest` selects snapshots past `--t-min` and thins them to a minimum
 `--spacing` in simulation time (several eddy-turnover times), so the
-members are statistically independent. `build` materialises one
+members are statistically independent. `build` materializes one
 directory per member — a perturbed seed snapshot from
 `scripts/snapshot_perturb.py`, plus a generated `parameters.toml` — and
 emits `run_commands.txt` (one scheduler-agnostic launch line per
@@ -149,7 +149,7 @@ gates the probe stream on the **absolute** step counter
 members disagree. Harvest parents at `it` multiples of the probe
 cadence — with a fixed `dt` and a snapshot cadence that is itself a
 multiple of it, they are. (`dnsjax-twin` has no such constraint: it
-anchors every cadence on the member's own perturbation step.)
+counts every cadence from the member's own perturbation step.)
 
 Default `--pairing antithetic` seeds each parent twice, at $+\epsilon$
 and $-\epsilon$. Because dnsjax runs are deterministic for a fixed
@@ -161,7 +161,7 @@ the unperturbed parent; `none` relies on the plain ensemble mean alone.
 Run the members, then aggregate:
 
 ```bash
-python -m dnsjax.analysis.response.ensemble aggregate \
+uv run python -m dnsjax.analysis.response.ensemble aggregate \
   --tree members/ --out response_0.npz --operator U_mean_tg_op.npz
 ```
 
@@ -174,7 +174,7 @@ Repeat step 5 once per basis index, then fit the generator from the
 propagator samples $M(\tau) \approx e^{\tau L}$:
 
 ```bash
-python -m dnsjax.analysis.response.ensemble identify \
+uv run python -m dnsjax.analysis.response.ensemble identify \
   --responses response_0.npz response_1.npz response_2.npz \
   --operator U_mean_tg_op.npz --modes-npz U_mean_cont.npz \
   --horizons "1,2,4" --out identified.npz
@@ -196,14 +196,14 @@ same basis, coordinates and output convention.
 | `ssi` | One run re-run with `[force]` stochastic kicks — one experiment, not an ensemble | Nothing about the background: the kicks are known exactly |
 
 ```bash
-# Linear inverse modeling: lagged covariances of an unforced stream.
-python -m dnsjax.analysis.response.lim \
+# Linear inverse modelling: lagged covariances of an unforced stream.
+uv run python -m dnsjax.analysis.response.lim \
   --probes run1/ run2/ --mode 3,0 --operator U_mean_tg_op.npz \
   --modes-npz U_mean_cont.npz --n-modes 10 \
   --lags "0.5,1,2" --t-min 200 --out lim.npz
 
 # Stochastic-forcing identification: kick/response cross-covariance.
-python -m dnsjax.analysis.response.ssi \
+uv run python -m dnsjax.analysis.response.ssi \
   --runs run1/ run2/ --mode 3,0 --operator U_mean_tg_op.npz \
   --lags "0.5,1,2" --t-min 200 --out ssi.npz
 ```
@@ -225,13 +225,11 @@ $q = T_{\mathrm{lift}} a$, with both maps precomputed. So the plain
 matrix 2-norm *is* the energy norm. Three consequences make the whole
 package simpler than it would otherwise be:
 
-```math
-G(t) = \lVert e^{tA} \rVert_2^2 ,
-```
-
-a Galerkin restriction onto orthonormal columns preserves the norm, and
-the controllability Gramian with unit-covariance forcing in the energy
-inner product is just the Lyapunov solution of $(A, I)$.
+- the optimal growth is a plain matrix norm,
+  $G(t) = \lVert e^{tA} \rVert_2^2$;
+- a Galerkin restriction onto orthonormal columns preserves the norm;
+- the controllability Gramian with unit-covariance forcing in the
+  energy inner product is just the Lyapunov solution of $(A, I)$.
 
 Because all three routes fit in those coordinates, on the same basis,
 and report the same quantities, their operators can be compared
@@ -245,7 +243,7 @@ restricted to the same subspace.
 | `probes.py` | JAX-free reader for `probes.bin`/`probes.json`, plus `mean_profile`, `re_tau`, `write_profile_file` |
 | `operator_tools.py` | Controllability Gramians and modes, growth curves of arbitrary operator matrices, Galerkin restriction, the full-state lift used for injection |
 | `ensemble.py` | Member-tree aggregation (`aggregate`) and direct operator identification (`identify`) |
-| `lim.py` | Linear inverse modeling from lagged covariances of an unforced probe stream |
+| `lim.py` | Linear inverse modelling from lagged covariances of an unforced probe stream |
 | `ssi.py` | Reader for `forcing.bin` and the kick/response cross-covariance fit |
 
 Orchestration lives in `scripts/ensemble_setup.py`; per-function

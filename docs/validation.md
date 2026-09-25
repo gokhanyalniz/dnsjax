@@ -10,10 +10,10 @@ being checked.
 
 `dnsjax.analysis.transient_growth` computes the 3D linear optimal energy
 growth $G(t)$ about a wall-normal total profile by reusing the solver's
-own linear step, one Fourier mode at a time — so an anchor here tests the
+own linear step, one Fourier mode at a time — so every check here tests the
 production stepper, not a separate linear code. Each case below is a
 single mode, matched on the solver's finite-difference-in-$y$
-discretisation to about **2 %** or better:
+discretization to about **2 %** or better:
 
 | Flow | Control parameters | Mode | Published $G_{\max}$ | at $t$ | Source |
 |---|---|---|---|---|---|
@@ -21,7 +21,7 @@ discretisation to about **2 %** or better:
 | Plane-Couette | $Re = 1000$ | $(\alpha, \beta) = (0.035,\ 1.60)$ | $\approx 1185$ | $\approx 117$ | Butler & Farrell 1992 |
 | Pipe | $Re = 3000$ | $m = 1$, $\alpha = 0$ | $649$ | $147$ | Schmid & Henningson 1994, p. 217 |
 | Taylor–Couette | $\eta = 0.881$, $Re_1 = 591$, $Re_2 = -2588$ | $n = 10$, $k = 1.994$ | $71.58$ | — | Maretzke, Hof & Avila 2014, table 3 |
-| Quasi-Keplerian | $\eta = 0.71$, $R_\Omega = -1.2$, $Re_1 = 10^4$ | $m = 4$, $k_z = 0$ | $13.04$ | $27\,\tau_d$ | Shi et al., Phys. Fluids **29**, 044107 (2017), table III case I |
+| Quasi-Keplerian | $\eta = 0.71$, $R_\Omega = -1.2$, $Re_1 = 10^4$ | $m = 4$, $k_z = 0$ | $13.04$ | $27\,\tau_d$ | Shi et al. 2017, table III case I |
 
 Two further checks ride along: the centrifugally unstable
 Taylor–Couette case ($Re_1 = 100$, $Re_2 = 0$, $\eta = 1/2$) must come
@@ -35,14 +35,30 @@ are directly comparable without rescaling; where they are not obvious
 the reasoning is recorded next to the check. Run them with
 
 ```bash
-uv run python tests/test_transient_growth.py                 # all anchors
+uv run python tests/test_transient_growth.py                 # every case
 uv run python tests/test_transient_growth.py --system pipe   # one flow
 ```
 
 `tests/test_transient_growth.py` is the authoritative record: it carries
 the exact tolerances, the full conventions argument for each case, and
-the `--legacy-imm` variant that repeats every anchor on the retired
+the `--legacy-imm` variant that repeats every case on the legacy
 primitive formulation.
+
+The published values come from:
+
+- K. M. Butler and B. F. Farrell, *Three-dimensional optimal
+  perturbations in viscous shear flow*, Phys. Fluids A **4**, 1637–1650
+  (1992).
+- S. C. Reddy and D. S. Henningson, *Energy growth in viscous channel
+  flows*, J. Fluid Mech. **252**, 209–238 (1993).
+- P. J. Schmid and D. S. Henningson, *Optimal energy density growth in
+  Hagen–Poiseuille flow*, J. Fluid Mech. **277**, 197–225 (1994).
+- S. Maretzke, B. Hof and M. Avila, *Transient growth in linearly stable
+  Taylor–Couette flows*, J. Fluid Mech. **742**, 254–290 (2014).
+- L. Shi, B. Hof, M. Rampp and M. Avila, *Hydrodynamic turbulence in
+  quasi-Keplerian rotating flows*, Phys. Fluids **29**, 044107 (2017).
+- S. A. Orszag, *Accurate solution of the Orr–Sommerfeld stability
+  equation*, J. Fluid Mech. **50**, 689–703 (1971).
 
 ## What else the suite pins
 
@@ -60,13 +76,13 @@ map to them as follows.
 | Second-order temporal convergence, fixed and variable step | `tests/test_temporal_order.py` |
 | The default off-centred Crank–Nicolson weight stays second order, as accurate as the trapezoidal rule to within 25 % | `tests/test_temporal_order.py` |
 | $dE/dt = I - D$ closes to truncation order, pressure-gradient work included | `tests/test_energy_budget.py` |
-| Laminar states step at machine precision, every wall-bounded flow | `tests/test_laminar_smoke.py` |
+| Laminar states step at machine precision, every wall-bounded flow with a closed-form laminar state (all but the curved pipe) | `tests/test_laminar_smoke.py` |
 | Random initial conditions integrate through the full nonlinear path, every distinct stepping machinery | `tests/test_random_smoke.py` |
 | The Pallas banded kernel agrees with the dense reference solver | `tests/test_banded_solver.py`, `tests/test_banded_solver_sharded.py` |
 | Reverse-mode gradients of a step match a central difference, and the default corrector still refuses | `tests/test_autodiff.py` |
 | The banded kernel's adjoint matches the portable sweep's own autodiff, and composes inside the sharded solve | `tests/test_banded_solver.py` |
 | Triton lowering does not regress on GPU-less machines | `tests/test_banded_solver.py` (CUDA-lowering rows) |
-| Per-geometry operators and matvecs match independent NumPy constructions | `tests/test_cartesian.py`, `test_cylindrical.py`, `test_annular.py`, `test_viscoelastic.py`, `test_viscoelastic_pipe.py` |
+| Per-geometry operators and matvecs match independent NumPy constructions | `tests/test_cartesian.py`, `tests/test_cylindrical.py`, `tests/test_annular.py`, `tests/test_viscoelastic.py`, `tests/test_viscoelastic_pipe.py` |
 | Snapshots round-trip, resume across any device count, and carry lineage; a pipe-family resume continues the uninterrupted run to round-off | `tests/test_snapshot.py`, `tests/test_resume.py` |
 | The JAX-free analysis API reproduces the solver's own discrete operators | `tests/test_snapshot_export.py` |
 | The $(k_x, k_z) = (0, 0)$ perturbation respects its conservation laws | `tests/test_mean_mode.py` |

@@ -58,7 +58,7 @@ Two markers:
   `-np 1`). Skipped automatically when `mpirun` is not on `PATH`; where
   a script has a `--unit-only` half, that half runs instead.
 - **`slow`** — full solver integration runs, `dt` sweeps, or the
-  transient-growth literature anchors. Minutes each.
+  published transient-growth values. Minutes each.
 
 Adding a test script means adding one row to `_SCRIPTS` in
 `pytest_suite.py`.
