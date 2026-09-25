@@ -116,10 +116,10 @@ PARENT_DRIVEN = _SESSION / "parent_driven.tar"
 #: Shared by the two ``PARENT_DRIVEN`` cases, which ``_member`` caches
 #: under one name.  ``it_stats`` is on so the driven member also shows
 #: where the applied driving *is* recorded (``stats.dat``);
-#: ``x0_planes`` because ``bin_energies`` needs the plane, and it is
-#: the one stream-shaping flag whose ``[recon]`` twin has to be
-#: passed to match (``_assert_streams_identical`` is what catches a
-#: pair of defaults that disagree).
+#: ``x0_planes`` so the plane's reconstruction is exercised too, and
+#: because it is the one stream-shaping flag whose ``[recon]`` twin
+#: has to be passed to match (``_assert_streams_identical`` is what
+#: catches a pair of defaults that disagree).
 _DRIVEN_ARGS = [
     "--twin.e0",
     str(E0),

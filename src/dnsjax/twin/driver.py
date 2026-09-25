@@ -322,8 +322,10 @@ class TwinParams(BaseModel):
       the plane is a slice of one already taken -- but it is a third
       of the sample's ``psum`` payload and a third of every stored
       record, on top of ``spectra_ref``'s doubling of the first.
-      What it costs to leave off is
-      :func:`~dnsjax.analysis.twin.bin_energies`.
+      Leaving it off costs only the `$k_z$` resolution of
+      `$E_{\Delta u_1}$`: :func:`~dnsjax.analysis.twin.bin_energies`
+      recovers all three bins from the `$k_x$` marginal and the
+      `$(0, 0)$` mode.
     - ``spectra_ref`` gates the reference half of **both** spectra
       streams, in compute as well as on disk: it is a static flag on
       :func:`dnsjax.twin.diagnostics.twin_spectra_2d` and
@@ -475,12 +477,12 @@ class TwinParams(BaseModel):
         description=(
             "Also store the k_x = 0 plane (the _x0 fields) in "
             "twin_yspectra.bin / twin_ybudget.bin -- the k_z-resolved "
-            "spectrum of the streamwise-averaged field, which is what "
-            "recovers the Delta-U / Delta-u1 / Delta-u2 three-bin "
-            "split (analysis.twin.bin_energies).  Off by default: it "
-            "is a third of every record and of the sample's psum, and "
-            "the (y, k) marginals plus the always-stored _xz00 mean "
-            "mode supersede it.  Off, it is never traced."
+            "spectrum of the streamwise-averaged field, i.e. Delta-u1 "
+            "per k_z.  The three-bin split does not need it "
+            "(analysis.twin.bin_energies reads it off the k_x marginal "
+            "and the always-stored _xz00 mean mode).  Off by default: "
+            "it is a third of every record and of the sample's psum.  "
+            "Off, it is never traced."
         ),
     )
     it_energy: int = Field(
