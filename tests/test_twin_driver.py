@@ -254,6 +254,7 @@ def _twin_args(
     seed: int = SEED,
     e0: float = E0,
     t_start: float = PARENT_T,
+    smoothness: float | None = 0.4,
 ) -> list[str]:
     """Driver arguments running from *t_start* to *t_end*.
 
@@ -263,6 +264,11 @@ def _twin_args(
     floating point for these values, so the stop time -- and with it
     the sample count every stream assertion below counts -- is the
     same whichever launch produced it).
+
+    *smoothness* pins ``twin.smoothness`` at the value every bound in
+    this file was measured with; ``None`` leaves the driver's own
+    default, which is tuned for a production box rather than this one
+    (:class:`dnsjax.twin.driver.TwinParams`).
     """
     args = [
         "--init.snapshot",
@@ -274,6 +280,8 @@ def _twin_args(
         "--stop.max_sim_time",
         repr(t_end - t_start),
     ]
+    if smoothness is not None:
+        args += ["--twin.smoothness", repr(smoothness)]
     if MEAN_FREE:
         # ``twin.mean_flow`` defaults on; this is its only override.
         args += ["--twin.mean_flow", "False"]
@@ -292,8 +300,13 @@ def _expect_error(result, fragment: str) -> None:
 
 
 def test_fresh_start_e0_exact() -> None:
+    # The one launch at the driver's own ``twin.smoothness`` default:
+    # everything asserted here holds for any perturbation shape.
     with tempfile.TemporaryDirectory() as tmp:
-        _run_twin(tmp, [*_twin_args(1.1), "--outs.it_stats", "5"])
+        _run_twin(
+            tmp,
+            [*_twin_args(1.1, smoothness=None), "--outs.it_stats", "5"],
+        )
         tmp = Path(tmp)
 
         meta = json.loads((tmp / "twin.json").read_text())

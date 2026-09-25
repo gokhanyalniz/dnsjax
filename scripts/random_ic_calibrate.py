@@ -42,8 +42,12 @@ is how much sooner this field would *look* settled, which is not the
 same as how much sooner it grows -- see the next paragraph.
 
 **Reading the output.**  A bare run reports one configuration --
-whatever the surface resolved, which with no overrides is the shipped
-default.  ``--calib.sweep_smoothness`` and its two siblings take
+whatever the surface resolved, which with no overrides is the
+``init.random_*`` default.  That is the laminar-start value, not the
+twin partner's: ``twin.smoothness`` defaults far lower
+(:class:`dnsjax.twin.driver.TwinParams`), so score a twin seed by
+passing its value as ``--init.random_smoothness``.
+``--calib.sweep_smoothness`` and its two siblings take
 comma-separated lists and report their outer product, one line each,
 rebuilding the field per entry (a per-mode host loop: seconds at a
 production resolution, so a dozen entries is a coffee, not a job).

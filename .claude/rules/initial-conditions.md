@@ -14,8 +14,10 @@ paths:
 - Start modes, their knobs and their precedence: the
   `parameters.Initiation` docstring. Construction: the
   `ic/random_field.py` (the default mode) and `ic/localized_rolls.py`
-  module docstrings; why `init.random_smoothness` is deliberately not
-  calibrated: `ic/random_field.py`.
+  module docstrings. `init.random_smoothness` (laminar starts) and
+  `twin.smoothness` (a turbulent parent, seeded below the minimal flow
+  unit) are one law with deliberately different defaults: what `s`
+  sets, `ic/random_field.py`; the twin value per flow, `TwinParams`.
 - Every seed defaults to unset, meaning "draw one": `init.random_seed`,
   `twin.seed`, `force.seed`, `scripts/ensemble_setup.py --seed-base`.
   The contract (draw, agree across processes, print, record, refuse
