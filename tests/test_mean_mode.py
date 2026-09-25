@@ -18,7 +18,7 @@ Cartesian perturbation must respect -- at three levels:
    factor), and no amplification, of the conditioned ensemble and of
    the drawn one the kernel floor holds it slightly apart from (both
    in closed form, no sampling) -- including at an extreme
-   ``random_smoothness``, where the smoothed case-B rows go
+   ``random_wall_smoothness``, where the smoothed case-B rows go
    near-degenerate and only ``_KERNEL_FLOOR`` keeps the solve honest.
 3. **The generated IC satisfies them.**  A real random Cartesian IC
    with ``init.random_mean_flow`` on, across both flows, both driving
@@ -97,8 +97,8 @@ VIOLATION_FLOOR = 0.1
 #: against ``||P||_inf``.  ``P`` is idempotent as algebra, so what is
 #: measured is roundoff, amplified by how oblique the projection is in
 #: the Euclidean metric -- ``||P||_inf`` reaches ``2.6e4`` once an
-#: extreme ``random_smoothness`` leaves ``K`` near-rank-4.  Worst over
-#: ``random_smoothness`` in ``{0, 0.4, 0.8, 0.95, 0.99}``:
+#: extreme ``random_wall_smoothness`` leaves ``K`` near-rank-4.  Worst
+#: over ``random_wall_smoothness`` in ``{0, 0.4, 0.8, 0.95, 0.99}``:
 #:
 #:     ny           17       33       65      129
 #:     cgl  case A  1.9e-14  2.5e-14  1.3e-14  9.1e-15
@@ -106,7 +106,7 @@ VIOLATION_FLOOR = 0.1
 #:     tanh case A  1.9e-14  8.3e-15  6.3e-15  6.7e-15
 #:     tanh case B  3.2e-13  2.5e-12  4.2e-13  4.1e-12
 #:
-#: (at the shipped ``s = 0.4`` no entry exceeds ``1.4e-14``; case B is
+#: (at the shipped ``s_w = 0.4`` no entry exceeds ``1.4e-14``; case B is
 #: the worse row throughout, its two extra rows being the ones the
 #: filter drives near-degenerate).  A projection that is wrong rather
 #: than rounded scores `$O(1)$` -- damping the correction by 1 % scores
@@ -323,7 +323,7 @@ def test_projector_properties(check) -> None:
         F = _wall_normal_filter(y, 1.0 - smooth)
         K = smoothing_kernel(win, F)
         for case_b in (False, True):
-            tag = f"s={smooth} case {'B' if case_b else 'A'}"
+            tag = f"s_w={smooth} case {'B' if case_b else 'A'}"
             C = constraint_rows(D1, D2, w, fixed_bulk=case_b)
             rng = np.random.default_rng(0)
             raw = win * (F @ rng.standard_normal(len(y)))

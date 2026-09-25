@@ -235,18 +235,19 @@ from numpy import ndarray
 from ..parameters import derived_params, params
 
 # Relative floor added to the ensemble covariance's spectrum
-# (:func:`smoothing_kernel`).  At an extreme ``random_smoothness`` the
+# (:func:`smoothing_kernel`).  At an extreme ``random_wall_smoothness``
+# -- the filter's own knob, ``s_w``, not the periodic ``s`` -- the
 # filter retains only four or five effective wall-normal modes (index
-# 6 at ``s = 0.95``, index 4 at ``0.99``, ``ny = 65``), and the case-B
-# constraint rows -- which need four -- go linearly dependent after
-# smoothing, making ``C K C^T`` singular.  The floor is a white
+# 6 at ``s_w = 0.95``, index 4 at ``0.99``, ``ny = 65``), and the
+# case-B constraint rows -- which need four -- go linearly dependent
+# after smoothing, making ``C K C^T`` singular.  The floor is a white
 # component *inside* the wall-vanishing space (it keeps the window
 # factor), so it restores full rank without breaking no-slip.  At the
-# default smoothness it sits 29 filter indices down and is invisible:
-# switching it from ``1e-6`` moved the projected draw's retained
-# energy by 0.1 % there, while cutting ``cond(C K C^T)`` by a decade
-# at ``s = 0.95``-``0.99`` (1.3e12 -> 1.3e11) -- which is what the
-# fourth row needed.
+# default ``s_w = 0.4`` it sits 29 filter indices down and is
+# invisible: switching it from ``1e-6`` moved the projected draw's
+# retained energy by 0.1 % there, while cutting ``cond(C K C^T)`` by a
+# decade at ``s_w = 0.95``-``0.99`` (1.3e12 -> 1.3e11) -- which is
+# what the fourth row needed.
 _KERNEL_FLOOR = 1e-5
 
 # Residual below which a relation counts as satisfied.  A profile that
