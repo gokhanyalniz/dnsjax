@@ -1,6 +1,5 @@
-# Plane-Poiseuille flow in a minimal channel: the smallest box that
-# sustains near-wall turbulence in a pressure-driven channel.
-# Laptop-sized -- a couple of minutes on one core.
+# Plane-Poiseuille flow in a small channel box.  Laptop-sized -- a
+# couple of minutes on one core.
 #
 # A run reads `parameters.toml` from its own working directory, so copy
 # this file into a scratch directory and launch there.  Command-line
@@ -11,9 +10,9 @@
 
 [phys]
 system = "plane-poiseuille"
-# Centerline speed x half-height / viscosity, with U = 1 - y^2 on
-# y in [-1, 1].  Well above the subcritical transition threshold: the
-# seeded spot breaks down within a few tens of advective units.
+# Centreline speed x half-height / viscosity, with U = 1 - y^2 on
+# y in [-1, 1].  Below the linear critical value (5772), so the
+# transition is subcritical, driven by the seeded spot.
 re = 5000.0
 # Hold the bulk velocity fixed and let the streamwise pressure gradient
 # respond, rather than the default the other way round.  That keeps the
@@ -23,8 +22,8 @@ re = 5000.0
 driving = "constant_bulk_velocity"
 
 [geo]
-# A minimal channel: pi long, pi/2 wide, in half-height units -- about
-# one near-wall streak pair across the span at this Reynolds number.
+# A small channel box: pi long, pi/2 wide, in half-height units --
+# about 314 x 157 wall units even at the laminar friction Re_tau = 100.
 lx = 3.1416
 lz = 1.5708
 
@@ -56,6 +55,6 @@ scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
 it_stats = 50     # steps between stats.dat records
 
 [stop]
-# Breakdown by t ~ 15, overshooting to ~14x the laminar dissipation,
-# then a turbulent state around 3x laminar that lasts the whole horizon.
+# Breakdown, then a turbulent state several times as dissipative as
+# laminar -- see the README.
 max_sim_time = 250.0

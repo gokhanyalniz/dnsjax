@@ -51,7 +51,7 @@ scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
 it_stats = 50     # steps between stats.dat records
 
 [stop]
-# Dissipation peaks near t = 25 at ~4.7x laminar and stays above 1.5x
-# out to t ~ 105 before the flow relaminarizes -- see the README, this
-# is the box behaving as designed rather than a failure.
+# Turbulence in the minimal flow unit is transient, so the flow may
+# relaminarize before the horizon -- see the README; that is the box
+# behaving as designed rather than a failure.
 max_sim_time = 200.0
