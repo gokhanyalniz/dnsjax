@@ -377,13 +377,41 @@ class TwinParams(BaseModel):
             "resume."
         ),
     )
+    # The default is set for plane Poiseuille at Re = 4200 in the
+    # 4 pi x 2 x 2 pi box (Re_tau = 178.6).  The criterion: seed the
+    # turbulent reference *below* the smallest perturbation of the
+    # laminar state that triggers turbulence -- the minimal flow unit,
+    # lambda_z+ ~ 100 and lambda_x+ ~ 250-350 -- so the seed cannot
+    # hold a self-sustaining structure of its own and can grow only
+    # through the reference flow.  (Chaos makes every perturbation grow
+    # eventually, so "the scales that amplify" picks out no scale.)
+    #
+    # ``ic/random_field.py`` derives what s sets: the premultiplied
+    # spectra peak at lambda* = 4 pi |ln(1 - s)| h.  Placing that peak at
+    # lambda*+ = 50, half the minimal-unit span, inverts exactly to
+    #
+    #     s = 1 - exp(-lambda*+ / (4 pi Re_tau))
+    #
+    # -- 0.022 here, 0.0079 at Re_tau = 500 (plane Poiseuille).  No s
+    # can empty the large scales, the energy per mode peaking at k = 0,
+    # so "below" means mostly: at Re_tau = 178.6, 59 % of e0 sits at
+    # lambda_z+ < 100, 18 % above lambda+ = 100 in both directions, and
+    # 5 % below lambda+ = 20, where viscosity removes it before the
+    # reference flow can act on it.  A minimal flow unit has no room below
+    # itself: the HKW box (Re_tau ~ 34) keeps 0.4, where this default
+    # would put the peak at lambda+ ~ 10.  A member recorded at the
+    # earlier default 0.4 resumes only with ``--twin.smoothness 0.4``.
     smoothness: float = Field(
-        default=0.4,
+        default=0.022,
         gt=0,
         lt=1,
         description=(
             "Spectral envelope of the random perturbation over the "
-            "periodic directions (init.random_smoothness convention)."
+            "periodic directions (init.random_smoothness convention). "
+            "The default seeds below the minimal flow unit of plane "
+            "Poiseuille at Re_tau = 178.6; s = 1 - exp(-50 / (4 pi "
+            "Re_tau)) elsewhere (0.0079 at Re_tau = 500), and 0.4 in a "
+            "minimal box."
         ),
     )
     # The wall-normal pair, mirroring ``init.random_wall_smoothness`` /

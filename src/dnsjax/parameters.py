@@ -1035,13 +1035,12 @@ class Initiation(BaseModel):
     # wall-normal polynomial-degree law is ``random_wall_smoothness``,
     # its own field since 2026-09-03: the two are separate laws, and
     # the moment either moves they want values an order of magnitude
-    # apart, so one knob cannot serve both.  The value here is
-    # deliberately **not** the one a high-Reynolds-number twin
-    # ensemble calibrates to -- lowering it is measured to cost growth
-    # at a low-Re minimal box, and the two regimes disagree by a
-    # factor of ten.  The argument, the measurements, and the tool to
-    # redo them per flow: ``ic/random_field.py`` and
-    # ``scripts/random_ic_calibrate.py``.
+    # apart, so one knob cannot serve both.  The value here seeds a
+    # *laminar* state, where large scales trigger transition; the
+    # ``dnsjax-twin`` partner perturbs a turbulent one and has its own,
+    # much smaller default (``twin.smoothness``, below the minimal flow
+    # unit).  What ``s`` sets and why the two differ:
+    # ``ic/random_field.py``.
     random_smoothness: float = Field(
         gt=0,
         lt=1,

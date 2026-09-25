@@ -16,6 +16,28 @@ the exponent carries the *physical* wavenumbers, so the field's
 correlation length is a property of `$s$` alone and does not change
 when the box is resized.
 
+**What `$s$` sets.**  Written as an exponential, the energy per mode
+is `$A^2 = e^{-c(|k_x| + |k_z|)}$` with `$c = -2\ln(1 - s)$` -- the 2
+because energy is the amplitude squared.  The sum over `$k_x$`
+factors out of the `$k_z$` marginal (and vice versa), so each
+one-dimensional spectrum falls as `$e^{-c|k|}$`: the field's two-point
+correlation is a Lorentzian of half-width `$c$` in each wall-parallel
+direction, and its premultiplied spectrum `$k\,e^{-ck}$` -- the
+energy per logarithmic band -- peaks at `$k^* = 1/c$`, the wavelength
+
+.. math::
+    \lambda^* = 2\pi c = 4\pi\,|\ln(1 - s)|\,h ,
+
+the `$4\pi$` being `$2\pi$` (wavenumber to wavelength) times the 2
+above.  So a target peak `$\lambda^{*+}$` in wall units inverts
+exactly to `$s = 1 - \exp(-\lambda^{*+}/4\pi Re_\tau)$`, with no
+small-`$s$` expansion; the grid reproduces it (`$s = 0.022$` in the
+`$4\pi \times 2\pi$` plane-Poiseuille box at `$Re_\tau = 178.6$`
+peaks at `$\lambda_z^+ = 51$`, `$\lambda_x^+ = 49.9$`, against 50).
+The energy *per mode* still peaks at `$k = 0$` for every `$s$`: a
+small `$s$` moves the energy per band to small scales but never
+empties the large ones.
+
 The wall-bounded families need a second factor, because a column draw
 is ``standard_normal`` per grid point -- grid-white in the wall-normal
 direction, flat to the wall-normal Nyquist -- which no wall window
@@ -29,16 +51,16 @@ is the separate ``wall_smoothness`` argument
 **Why the two are separate knobs.**  They are not the same law -- `$A$`
 is an amplitude and this is an energy, `$j$` counts modes where `$|k|$`
 carries units -- but that alone would not force two *numbers*.  What
-does is that the moment either moves, they want values an order of
-magnitude apart, and moving one is a thing users do: the shipped
-`$s = 0.4$` puts 93 % of a KMM-box perturbation's energy inside
-`$|k_z| \le 2$` and starts every mode above `$|k_z| \approx 45$` below
-round-off, which a high-Reynolds-number twin campaign has good reason
-to change (``scripts/random_ic_calibrate.py``).  The wall-normal law
-must **not** follow it down: lowering `$s_w$` moves the wall-normal
-profile *away* from the wall rather than towards it (the wall window,
-not the filter, is what sets that distribution -- see
-:func:`_scaled_wall_window`), and `$s_w$` is also what keeps
+does is that `$s$` moves a long way between uses while `$s_w$` should
+not move at all.  In the plane-Poiseuille `$4\pi \times 2\pi$` box,
+``init.random_smoothness = 0.4`` puts 93 % of a perturbation's energy
+inside `$|k_z| \le 2$`, and every mode beyond `$|k_z| = 36$` more
+than sixteen decades below the peak, while the twin partner's default
+``twin.smoothness = 0.022`` peaks at `$\lambda^+ \approx 50$`.  The
+wall-normal law must **not** follow `$s$` down: lowering `$s_w$` moves
+the wall-normal profile *away* from the wall rather than towards it
+(the wall window, not the filter, is what sets that distribution --
+see :func:`_scaled_wall_window`), and `$s_w$` is also what keeps
 grid-white Nyquist content out of the legacy IMM boundary term
 (``tests/test_imm_continuity.py``).  So `$s$` buys a physical
 correlation length where there is a box length to measure it against,
@@ -46,31 +68,31 @@ and `$s_w$` a polynomial-degree cutoff where there is not.  The
 triply-periodic family has neither a filter nor a wall window: it
 carries `$|k_y|$` in `$A$` and takes `$s$` alone.
 
-**What `$s$` is not calibrated to, and why it has not moved.**  Scored
-on the `$(y, k)$` shape a turbulent difference field settles into, a
-ten-member plane-Poiseuille twin ensemble at `$Re_\tau \approx 180$`
-wants `$s \approx 0.04$` (overlap 0.31 -> 0.95) and an HKW minimal
-plane-Couette box at `$Re_\tau \approx 34$` wants `$s \approx 0.15$`.
-The disagreement is physical -- the envelope carries a *physical*
-wavenumber, and the band that amplifies scales with `$Re_\tau$` --
-and it is not the whole story: at the minimal box, where growth can
-actually be measured, it runs the other way.  Over 60 advective units
-the difference energy gains 2.07 decades at `$s = 0.4$`, 1.15 at
-`$0.15$` and 0.09 at `$0.04$`, decaying outright for the first five
-units at the last (two seeds, both).  The shape score is therefore a
-statement about *shape* and not a growth predictor -- the attractor's
-small-scale content is sustained by transfer from larger scales, and
-seeding it directly just feeds `$k^2/Re$`.  `$s$` stays at 0.4 until a
-growth measurement at a Reynolds number with real scale separation
-says otherwise.
+**Two defaults for one law.**  ``init.random_smoothness`` stays at
+0.4: it seeds a *laminar* state, where large scales are what trigger
+transition.  The twin partner perturbs a *turbulent* one, and
+``twin.smoothness`` (:class:`dnsjax.twin.driver.TwinParams`) puts it
+below the minimal flow unit instead, with the choice of `$\lambda^{*+}$`
+and its values per flow.  Neither default is fitted to the `$(y, k)$`
+shape a turbulent difference field settles into
+(``scripts/random_ic_calibrate.py``), because that shape is not a
+growth predictor: at an HKW minimal plane-Couette box
+(`$Re_\tau \approx 34$`) the score peaks at `$s \approx 0.15$`,
+while over 60 advective units the difference energy gains 2.07 decades
+at `$s = 0.4$`, 1.15 at 0.15 and 0.09 at 0.04 (two seeds, both) -- a
+seed placed at `$\lambda^{*+} = 218, 69, 17$` in a box whose own span
+is 128 wall units.  An attractor's small-scale content is sustained by
+transfer from larger scales, and energy seeded well below the scales
+the box can sustain goes to `$k^2/Re$` first.  Hence the twin default's
+margin above the grid scale as well as below the minimal unit.
 
 **The wall window is scale-dependent** (``random_wall_confinement``,
 the `$a$` of :func:`_scaled_wall_window`): a mode's window peaks where
 the base window equals `$1/(a|k|)$`, so modes below `$1/a$` still fill
 the gap while smaller ones sit nearer the wall.  This is the one factor
 that moves the perturbation's wall-normal distribution at all -- the
-smoothness filter does not, measurably.  Unlike `$s$` it is safe to
-default on: it improves the `$(y, k)$` overlap at both Reynolds
+smoothness filter does not, measurably.  It is on by default for
+both uses: it improves the `$(y, k)$` overlap at both Reynolds
 numbers above, and at the minimal box, where growth is measurable, it
 is exactly neutral (2.07 and 1.65 decades over 60 units with it, the
 same two numbers without).  `$a$` is dimensionless, so it carries no

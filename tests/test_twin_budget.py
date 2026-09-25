@@ -406,6 +406,11 @@ def _twin(
         repr(E0),
         "--twin.seed",
         str(seed),
+        # Every bound and ladder row here was measured with the partner
+        # seeded at s = 0.4; the driver's own default is tuned for a
+        # production box, not for these minimal ones.
+        "--twin.smoothness",
+        "0.4",
         "--twin.bins",
         "True",
         # The convective leg reads the (y, k) budget back per k-set
