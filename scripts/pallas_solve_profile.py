@@ -1,4 +1,4 @@
-"""GPU diagnostic: where does the Pallas banded solve's time go?
+r"""GPU diagnostic: where does the Pallas banded solve's time go?
 
 The mode-inner ``.solve`` contract was bit-identical yet gave **0%**
 speedup on a real GPU.  This script measures *why*, answering two
@@ -85,6 +85,9 @@ On a GPU-less box it prints the HLO census only (timings need real
 hardware) so the harness can be sanity-checked before the cluster;
 ``--cpu-smoke`` additionally exercises Parts B/C once on CPU at tiny
 resolution (numerics only) to validate the harness end-to-end.
+``--steps-only N`` runs ``N`` steps and exits, skipping Parts A/B/C:
+a clean driver to wrap in an external profiler (e.g.
+``nsys profile --stats=true``).
 **Paste the full stdout back** for diagnosis.
 """
 

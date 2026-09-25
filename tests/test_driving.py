@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 r"""The applied mean-mode driving recorded in ``stats.dat``.
 
-Under ``phys.driving = "constant_bulk_velocity"`` (pipe,
+Under ``phys.driving = "constant_bulk_velocity"`` (pipe, curved pipe,
 plane-Poiseuille) or ``phys.block_mean_spanwise_velocity`` (the
 Cartesian and annular families) the solver holds a mean velocity
 component fixed with a rank-1 correction, and the body force that

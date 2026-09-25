@@ -260,7 +260,9 @@ class SnapshotMismatchError(Exception):
 #: renaming (``os.replace``, atomic within a filesystem) means the
 #: final name only ever appears on a complete archive; a killed job
 #: leaves a ``.partial`` beside the last good snapshot instead of
-#: replacing it.  Costs one metadata operation per save.
+#: replacing it.  Costs one metadata operation per save.  The suffix
+#: also keeps an interrupted save out of every ``*.tar`` glob, which
+#: ``scripts/ensemble_setup.py`` relies on when it harvests parents.
 _PARTIAL_SUFFIX = ".partial"
 
 

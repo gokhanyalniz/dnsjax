@@ -1,4 +1,4 @@
-"""Cluster diagnostic: is the snapshot GDS path live, and is it starved?
+r"""Cluster diagnostic: is the snapshot GDS path live, and is it starved?
 
 Two questions, both of which need real hardware and a real
 filesystem to answer:
@@ -49,6 +49,8 @@ Part C  ``--end-to-end``: the real ``save_snapshot`` /
         through all three is the check that the mesh no longer decides
         the cost.  Only the reshard should differ (one exchange or
         two); the slab census is the same on every grid.
+        ``--end-to-end-only`` runs Part C alone: Part B's span sweep
+        is the expensive part and does not change between meshes.
 
 Run on a GPU node, from a directory on the **scratch / parallel
 filesystem** the runs actually write to (``--outdir``)::

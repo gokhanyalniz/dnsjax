@@ -545,7 +545,7 @@ def test_vw_spin_pair_diagonalises_the_vector_laplacian() -> None:
     `$H_{k,\pm}$` base operators.
 
     The load-bearing identity of the pipe's ``res.consistent_imm``
-    scheme (``cylindrical._imm_iteration_vw``): the `$-2im/r^2$` spin
+    scheme (``_cylindrical_stepping._imm_iteration_vw``): the `$-2im/r^2$` spin
     coupling that ties `$(\Delta\mathbf{u})_r$` to `$u_\theta$` is
     diagonalised by the same `$u_\pm$` combination the primitive
     scheme already uses, with eigenvalues `$(m \pm 1)^2/r^2$` -- which
@@ -632,11 +632,11 @@ def test_vw_mean_plane_packing_reuses_the_primitive_operators() -> None:
 
     Flag-on, the four evolved slots are structurally zero at the mean
     mode, so two of them carry `$u_{z,00}$` and `$u_{\theta,00}$`
-    instead (``cylindrical._imm_iteration_vw``).  The `$\omega_+$` slot
-    rides `$H_{k,+}$`, which at `$m = 0$` already *is* the mean
-    `$u_\theta$` operator; the `$\Phi_-$` slot needs the mean
-    `$H_{k,z}$` (`$m_{\mathrm{eff}}^2 = 0$`, **even** parity) and gets
-    it from the band splice.  Asserted as equality on the mean column
+    instead (``_cylindrical_stepping._imm_iteration_vw``).  The
+    `$\omega_+$` slot rides `$H_{k,+}$`, which at `$m = 0$` already
+    *is* the mean `$u_\theta$` operator; the `$\Phi_-$` slot needs the
+    mean `$H_{k,z}$` (`$m_{\mathrm{eff}}^2 = 0$`, **even** parity) and
+    gets it from the band splice.  Asserted as equality on the mean column
     and *inequality* off it, so a builder that dropped the splice fails
     rather than passing vacuously.
     """

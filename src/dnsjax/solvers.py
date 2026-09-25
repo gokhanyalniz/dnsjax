@@ -709,7 +709,8 @@ def _pallas_banded_solve(
     derivation.  The pure-JAX :func:`_banded_solve_batched` keeps
     differentiating through its own ``lax.scan``, deliberately: it is
     the independent oracle this rule is checked against
-    (``tests/test_autodiff.py``).
+    (``tests/test_banded_solver.py``,
+    ``test_pallas_adjoint_matches_portable_sweep``).
     """
     interpret = interpret or _force_interpret
     L, U, b, Nkz, Nkx = _tile_pad_planes(L, U, b)
@@ -952,7 +953,8 @@ def _pallas_banded_solve_t(
     slot directly off the kernel recursion is where a factor `$R_i$`
     goes missing -- `$z_i$` itself depends on `$R_i$` -- so it is
     checked numerically against a finite difference in
-    ``tests/test_autodiff.py``, not trusted.
+    ``tests/test_banded_solver.py``
+    (``test_pallas_adjoint_matches_portable_sweep``), not trusted.
 
     Only ever differentiated once (it *is* a backward pass), so it
     carries no rule of its own.

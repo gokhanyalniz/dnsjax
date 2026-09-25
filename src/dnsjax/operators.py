@@ -8,7 +8,8 @@ Geometry-specific ``Fourier`` dataclasses live in the
 corresponding geometry modules
 (``geometries.triply_periodic``,
 ``geometries.wall_bounded.cartesian``,
-``geometries.wall_bounded.cylindrical``).
+``geometries.wall_bounded.cylindrical``,
+``geometries.wall_bounded.annular``).
 """
 
 from jax import Array, jit, vmap
@@ -55,7 +56,10 @@ def pad_harmonics(harmonics: Array, n: int, pad: int) -> Array:
     (only `$k^2 = 0$` systems are singular); the values are
     otherwise arbitrary because padded fields are identically zero
     (the forward FFT re-zeroes the padding slots on every
-    evaluation; see :mod:`dnsjax.fft`).
+    evaluation; see :mod:`dnsjax.fft`).  Being nonzero also keeps
+    `$k^2 = 0$` unique, so each geometry's ``Fourier.mean_mask`` is
+    one-hot -- the invariant every mean-mode and pin-row consumer
+    relies on (``tests/test_mean_mask.py``).
 
     Parameters
     ----------

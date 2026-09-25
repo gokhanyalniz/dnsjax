@@ -652,8 +652,8 @@ def _worker(system: str) -> None:
         # Force the split path explicitly (it is opt-in, default off
         # for every system).  A direct assignment before ``build`` is
         # safe here: unlike ``solver.backend`` / ``geo.grid_type``, no
-        # intervening ``update_parameters`` re-resolves it (see the
-        # parameter layering note in the root CLAUDE.md).
+        # intervening ``update_parameters`` re-resolves it (see that
+        # function's docstring).
         saved = (
             params.step.corrector_tolerance,
             params.step.max_corrector_iterations,

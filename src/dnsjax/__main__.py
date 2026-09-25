@@ -160,13 +160,13 @@ the JAX-setup fields ``np0``/``np1``/``platform``/
 *continuation* (inherit ``t`` / ``it`` / ``isnap`` from the
 snapshot, do not re-save the IC) only when
 :func:`dnsjax.parameters.trajectory_defining_changes` is empty -- no
-Physics/Geometry/Resolution parameter was overridden to a value
-different from the snapshot's.  Any such change starts a NEW
-trajectory (``t = it = isnap = 0``, IC re-saved as
-``state00000.tar``) unless ``init.force_resume`` is set.  When
-the current wall-normal grid differs from the snapshot's,
-``_interpolate_if_needed`` interpolates the state at load time
-(see :mod:`dnsjax.fd` for the interpolation methods).
+Physics/Geometry/Resolution parameter, and nothing in the ``[force]``
+section, was overridden to a value different from the snapshot's.
+Any such change starts a NEW trajectory (``t = it = isnap = 0``, IC
+re-saved as ``state00000.tar``) unless ``init.force_resume`` is set.
+When the current wall-normal grid differs from the snapshot's,
+``_interpolate_if_needed`` interpolates the state at load time (see
+:mod:`dnsjax.fd` for the interpolation methods).
 
 Benchmarking
 ------------
@@ -288,8 +288,9 @@ def _write_dat_header(file_path, columns, col_width) -> None:
     padding, so the header stays aligned with the rows
     :func:`_flush_stats` writes while ``numpy.loadtxt`` skips it as a
     comment (its default ``comments="#"``) -- a ``.dat`` stream loads
-    with no extra flags.  Shared by every measurement stream, here
-    and in the twin driver.
+    with no extra flags.  A reader that wants the column names must
+    ``lstrip("#")`` the header line before splitting it.  Shared by
+    every measurement stream, here and in the twin driver.
     """
     padded = [
         n.rjust(col_width - 1 if i == 0 else col_width)

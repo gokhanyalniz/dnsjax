@@ -763,7 +763,7 @@ def test_consistent_imm_is_accepted() -> None:
     this flow -- it reproduces at `$\beta = 1$` and in the Newtonian
     pipe -- so rejecting it here while ``pipe`` offered the same scheme
     was asymmetric.  It is fixed in
-    ``cylindrical._imm_iteration_vw``.  This asserts the surface, not
+    ``_cylindrical_stepping._imm_iteration_vw``.  This asserts the surface, not
     the stability: no *validate* hook and no linear gate can see that
     class of defect; the nonlinear guard is the
     ``viscoelastic-pipe-consistent-imm`` entry in
