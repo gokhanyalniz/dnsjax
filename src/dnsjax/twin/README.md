@@ -58,8 +58,8 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.it_energy` | `1` | Steps between `twin.dat` rows |
 | `twin.it_budget` | unset | Steps between `twin_budget.dat` rows; unset disables the stream |
 | `twin.it_spectra` | unset | Steps between `twin_spectra.bin` records; unset disables the stream |
-| `twin.it_yspectra` | unset | Steps between `twin_yspectra.bin` records (wall-normal-resolved componentwise spectra). Needs an even `res.nz` |
-| `twin.it_ybudget` | unset | Steps between `twin_ybudget.bin` records (the same bins' budget). Needs an even `res.nz` |
+| `twin.it_yspectra` | unset | Steps between `twin_yspectra.bin` records (wall-normal-resolved componentwise spectra) |
+| `twin.it_ybudget` | unset | Steps between `twin_ybudget.bin` records (the same bins' budget) |
 | `twin.rotational_ybudget` | `false` | Write that budget with the rotational nonlinear term instead of the convective one |
 | `twin.spectra_ref` | `true` | Also compute and store the reference spectrum with each `it_spectra` / `it_yspectra` sample; off, it is never traced |
 
@@ -97,10 +97,9 @@ off the reference reduction is never traced — saving a field pass and a
 collective on the $(k_z, k_x)$ stream, and about half the sample on the
 $y$-resolved one. What it costs is the decorrelation ratio.
 
-An even `res.nz` is a hard requirement of the two $y$-resolved streams,
-checked at parse: they store $k_z$ folded onto $|k_z|$, and at odd `nz`
-the stored band is asymmetric, leaving the outermost negative mode with
-no positive partner to fold onto.
+The two $y$-resolved streams store $k_z$ folded onto $|k_z|$, which
+needs the even `res.nz` that every run has anyway: the solver refuses
+an odd Fourier count at parse.
 
 ## The initial perturbation
 

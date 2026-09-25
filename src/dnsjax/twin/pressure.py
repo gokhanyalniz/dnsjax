@@ -10,8 +10,10 @@ integrates away over the domain.  That cancellation belongs to the
 reappears as a wall-normal flux -- zero net, but comparable to
 production near the wall, and the mechanism by which the wall blocks
 and redistributes a scale's energy.  Resolve it per velocity
-component and it becomes the pressure--strain redistribution, the
-*only* source `$\Delta v$` has.
+component and it becomes the pressure--strain redistribution: the
+only way the mean shear's energy reaches `$\Delta v$`, whose
+production against the mean profile vanishes identically (its
+production against the reference *fluctuations* does not).
 
 This module recovers `$\Delta\hat{p}$` so that term can be measured
 rather than left as a hole.
@@ -41,8 +43,10 @@ solver itself integrates (:mod:`dnsjax.rhs`),
 `$\Delta\hat p$` comes back as the difference of the two members'
 **Bernoulli** pressures, `$\Delta p + \mathbf{u}^{(1)}\!\cdot
 \Delta\mathbf{u} + |\Delta\mathbf{u}|^2/2$` -- the pressure the
-influence matrix actually closes on, rather than one reconstructed
-from an operator the solver never applies.  The two differ by a
+solver's own nonlinear term implies, rather than one reconstructed
+from an operator the solver never applies.  (The default
+`$v$`-`$\omega_y$` step forms no pressure at all; the legacy
+primitive path closes on exactly this one.)  The two differ by a
 gradient, so the total work is unchanged; the `$y$`-density is not
 (:mod:`dnsjax.twin.diagnostics`, "Two budget forms").  Everything
 below is form-independent: nothing in the solve reads
@@ -59,7 +63,10 @@ states that "the wall BC is determined indirectly by enforcing
 continuity `$\nabla\cdot u = 0$` at the walls", because with a
 discrete operator the analytic condition and discrete continuity are
 not the same constraint.  This module follows the scheme, not the
-textbook.
+textbook.  The default `$v$`-`$\omega_y$` step (``res.consistent_imm``)
+forms no pressure, but it too imposes the discrete condition rather
+than the analytic one -- `$(D_1\hat v)|_w = 0$`, exactly, at every
+step -- and the closure below is that condition's time derivative.
 
 The reconstructed time derivative of the difference field is
 
@@ -82,7 +89,7 @@ wall data) makes that residual affine in `$\alpha$`, so
 
 .. math::
     M_{ji} = \bigl(D_1 D_1 p_i\bigr)\big|_{w_j}, \qquad
-    M\alpha = \bigl(D_1 (r - p_P)\bigr)\big|_{w},
+    M\alpha = \bigl(D_1 r - D_1 D_1 p_P\bigr)\big|_{w},
     \qquad r = \hat{\mathcal{N}}_y
       + Re^{-1}(D_2 - k^2)\Delta\hat{v} .
 
