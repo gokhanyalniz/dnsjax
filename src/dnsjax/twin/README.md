@@ -49,7 +49,7 @@ which `dnsjax-twin` registers and the solver does not.
 |---|---|---|
 | `twin.e0` | unset | Initial perturbation energy $E'(\delta)$ in the solver measure; setting it enables the section. `0` requests an exact zero perturbation |
 | `twin.seed` | unset | Perturbation RNG seed; vary per ensemble member. Unset draws one from the system entropy pool on a fresh start and takes the recorded one from `twin.json` on a resume |
-| `twin.smoothness` | `0.4` | Spectral envelope of the random perturbation over the periodic directions (`init.random_smoothness` convention) |
+| `twin.smoothness` | `0.022` | Spectral envelope of the random perturbation over the periodic directions (`init.random_smoothness` convention). The default seeds below the minimal flow unit of plane Poiseuille at $Re_\tau = 178.6$ (below) |
 | `twin.wall_smoothness` | `0.4` | Its wall-normal envelope (`init.random_wall_smoothness` convention) |
 | `twin.wall_confinement` | `0.14` | Scale-dependent narrowing of its wall window (`init.random_wall_confinement` convention); `0` gives every mode the same window, which is what a member recorded before 2026-09-04 ran with, and resumes only with `--twin.wall_confinement 0` |
 | `twin.mean_flow` | `true` | Perturb the $(k_x, k_z) = (0, 0)$ profile as well, conditioned on its conservation laws (below); `false` gives a mean-free partner |
@@ -112,6 +112,26 @@ E'(\delta) = \tfrac{1}{2}\lVert \delta \rVert^2 = e_0 ,
 
 the same convention as `snapshot_perturb --perturb.amplitude_energy`.
 It is applied once, at the fresh start; a resume can never re-perturb.
+
+Its scale is `twin.smoothness`. The envelope's energy per mode falls
+as $e^{-c(|k_x| + |k_z|)}$ with $c = -2\ln(1 - s)$, so the
+premultiplied one-dimensional spectra peak at the wavelength
+$\lambda^* = 4\pi |\ln(1 - s)| h$ (`dnsjax.ic.random_field`). The
+default puts that peak at $\lambda^{*+} = 50$, half the span of the
+minimal flow unit: the seed then sits mostly below the smallest
+perturbation of the laminar state that would trigger turbulence, and
+cannot carry a self-sustaining structure of its own. Inverted exactly,
+
+```math
+s = 1 - \exp\left(-\frac{\lambda^{*+}}{4\pi\, Re_\tau}\right),
+```
+
+which is 0.022 for plane Poiseuille at $Re = 4200$ in the
+$4\pi \times 2 \times 2\pi$ box ($Re_\tau = 178.6$) and 0.0079 at
+$Re_\tau = 500$. A minimal flow unit has no room below itself, so a
+run in one (the HKW box) sets `--twin.smoothness 0.4`, which is also
+the earlier default: members recorded with it resume only with that
+flag.
 
 Its $(k_x, k_z) = (0, 0)$ content follows `twin.mean_flow`, **on by
 default** (the driver's own knob, not the shared
