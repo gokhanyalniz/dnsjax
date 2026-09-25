@@ -413,10 +413,14 @@ Folding the channel
 ===================
 ``--half mean`` (the default) averages the two channel halves at
 matching wall distance, which is legitimate and free statistics
-because the reflection `$R_y:\,(u,v,w)(x,y,z) \mapsto
-(u,-v,w)(x,-y,z)$` is a symmetry of the flow.  Every stored quantity
-is `$R_y$`-**even**, so the fold is a plain arithmetic mean with no
-sign flips: the spectra are moduli; `$\mathcal{P}^U$` flips both
+because the flow is statistically symmetric about its mid-plane:
+under the reflection `$R_y:\,(u,v,w)(x,y,z) \mapsto
+(u,-v,w)(x,-y,z)$` for plane Poiseuille, and under the rotation
+`$(u,v,w)(x,y,z) \mapsto (-u,-v,w)(-x,-y,z)$` for plane Couette, whose
+`$x \to -x$` both marginals are blind to (a stored entry pairs `$\pm k$`
+already).  Every stored quantity is **even** under the flow's own
+symmetry, so the fold is a plain arithmetic mean with no sign flips.
+For the reflection: the spectra are moduli; `$\mathcal{P}^U$` flips both
 `$\Delta\hat v$` and `$\partial_y U$`; `$\mathcal{V}$`,
 `$\hat\varepsilon$` and `$\mathcal{W}$` pair each odd factor with a
 `$\partial_y$` or with the `$v$` slot; and each transfer term carries

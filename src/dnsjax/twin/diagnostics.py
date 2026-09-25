@@ -1201,8 +1201,9 @@ def twin_yspectra(
 
 #: ``twin_ybudget`` term names, in stored order, one set per budget
 #: form (module docstring, "Two budget forms").  The **convective**
-#: set is the default and is the term-for-term counterpart of the
-#: paper's (2.11)-(2.16); the **rotational** set is
+#: set is the default, and its sums over the three bins' `$k$`-sets
+#: return the paper's (2.7)-(2.9) (the 12 + 12 terms of (2.11)-(2.16)
+#: dissolve into it); the **rotational** set is
 #: ``twin.rotational_ybudget``.  In both, ``V`` is the viscous term in
 #: the operator (discrete-Laplacian) form -- the one that makes the
 #: budget close, matching ``twin_budget``'s ``eps_*`` -- and ``eps``
@@ -1636,8 +1637,10 @@ def _driving_density(prof_dU: Array, flow_: object) -> Array:
     with a plus.  The `$y$`-integral is
     `$-\Delta\Pi \cdot U_\text{bulk}(\Delta u) = 0$`
     exactly -- at constant flow rate both members hold the same bulk,
-    at fixed pressure gradient `$\Delta\Pi = 0$` -- but its *density*
-    is not, so a `$y$`-resolved budget needs it.
+    at fixed pressure gradient `$\Delta\Pi = 0$`.  Under a held bulk
+    its *density* is not zero, so a `$y$`-resolved budget needs it;
+    at a fixed gradient the density vanishes identically too, and
+    this returns exact zeros.
 
     `$-\Delta\Pi$` is the **wall-shear inference** of the two members'
     driving, differenced; that is deliberately the better budget
