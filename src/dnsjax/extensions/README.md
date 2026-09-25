@@ -26,8 +26,10 @@ appended to a binary `probes.bin`. Wall-bounded systems only.
 ```
 
 `probes.modes` is an `"i2,i3;i2,i3;…"` list of **stored-layout** mode
-indices — axis 2 is the complex slot, axis 3 the real-FFT slot, the
-same convention the transient-growth CLI's `--tg.modes` uses. Indices
+indices — axis 2 is the complex slot, axis 3 the real-FFT slot, counting
+the component axis as axis 0 (the per-geometry layout:
+[`docs/scaling.md`](../../../docs/scaling.md#array-layout-by-geometry)),
+the same convention the transient-growth CLI's `--tg.modes` uses. Indices
 are bounds-checked against the true (unpadded) mode counts, so a
 padding slot can never be probed. Unlike the transient-growth CLI, the
 mean mode `0,0` **is** allowed: its record is the instantaneous mean
@@ -81,7 +83,7 @@ non-monotonic timestamps.
 Every `force.it_force` steps, a random superposition of stored
 wall-normal channel profiles is added to each listed spectral mode (and
 its real-FFT conjugate partner): a sequence of independent state
-increments — *kicks* — that realise white-in-time forcing localised at
+increments — *kicks* — that realize white-in-time forcing localized at
 those modes. The drawn coefficients stream to `forcing.bin`.
 
 ```bash
@@ -111,7 +113,7 @@ changed forcing starts a new trajectory unless `init.force_resume`.
 
 **Why kicks and not a body-force term.** A forcing term inside the
 nonlinear right-hand side would be integrated by the scheme: `cnab2`
-would Adams-Bashforth-extrapolate the random sequence
+would Adams–Bashforth-extrapolate the random sequence
 ($1.5 f^n - 0.5 f^{n-1}$, which colours white noise), and the
 `iterative-cn` corrector would iterate on it. A loop-level state
 increment leaves both schemes untouched and makes the per-kick response

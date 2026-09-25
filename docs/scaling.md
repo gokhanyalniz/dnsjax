@@ -62,9 +62,10 @@ the default backends:
   one super-linear option, and the reason Pallas is the wall-bounded
   default. (`solver.pallas_kernel` is a different axis: it selects which
   sweep reads the banded factors, not how they are stored, so it moves
-  nothing here.) Triply-periodic systems store no matrices at all (their implicit
-  solve is diagonal in spectral space), only four real coefficient arrays
-  — wavenumber and inverse-Laplacian factors, $\approx 2$ fields.
+  nothing here.) Triply-periodic systems store no matrices at all
+  (their implicit solve is diagonal in spectral space), only four real
+  coefficient arrays — wavenumber and inverse-Laplacian factors,
+  $\approx 2$ fields.
 
 Summing these, the leading-order total per device is
 
@@ -109,7 +110,7 @@ streamwise, **wn** wall-normal, **sh** shearwise, **sp** spanwise.
 |---|---|---|---|---|---|
 | Triply-periodic (Kolmogorov) | $(u_x, u_y, u_z)$ = (sw, sh, sp) | $[y, z, x]$ | $[k_y, k_z, k_x]$ | $y$ / $k_z$ | $z$ / $k_x$ |
 | Cartesian (plane-Poiseuille/Couette) | $(u_x, u_y, u_z)$ = (sw, wn, sp) | $[y, z, x]$ | $[y, k_z, k_x]$ | $y$ / $k_z$ | $z$ / $k_x$ |
-| Cylindrical (pipe, viscoelastic pipe) | $(u_z, u_r, u_\theta)$ = (sw, wn, sp) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
+| Cylindrical (pipe, curved pipe, viscoelastic pipe) | $(u_z, u_r, u_\theta)$ = (sw, wn, sp) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
 | Annular (Taylor–Couette, quasi-Keplerian, Dean, viscoelastic Dean) | $(u_z, u_r, u_\theta)$ = (**sp**, wn, **sw**) | $[r, \theta, z]$ | $[r, k_\theta, k_z]$ | $r$ / $k_\theta$ | $\theta$ / $k_z$ |
 
 Each `np0` / `np1` cell reads *physical axis* / *spectral axis*.
@@ -201,9 +202,9 @@ program.
 never runs — so `np1` may be taken as far as the mode count allows, and
 one device per process makes $n_{p0} \cdot n_{p1}$ the rank count.
 Measured at four and eight ranks, the per-exchange cost dominates its
-volume: a two-dimensional grid costs 9 to 19% against the best
+volume: a two-dimensional grid costs 9 to 19 % against the best
 one-dimensional one, where the $3/2$ volume difference between the two
-one-dimensional grids is worth some 18% of the transform itself but only
+one-dimensional grids is worth some 18 % of the transform itself but only
 a few percent of the step around it. Routing the collectives through MPI
 rather than `gloo` (see
 [CPU collectives](cpu-collectives.md)) speeds up
@@ -300,7 +301,7 @@ These are Open MPI's binding flags; under SLURM the equivalent is
 splits — the wall-normal points and the stored spanwise modes for `np0`,
 the streamwise modes and the oversampled spanwise points for `np1` — so
 at production sizes the 128-rank candidates are mostly two-dimensional.
-`node_benchmark.py --target cpu` runs every factorisation at each rank
+`node_benchmark.py --target cpu` runs every factorization at each rank
 count (`--ranks 16 32 64 128` by default), so the table also shows the
 rank count at which the step stops scaling.
 
