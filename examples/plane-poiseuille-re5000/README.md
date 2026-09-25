@@ -1,9 +1,10 @@
-# Plane-Poiseuille flow in a minimal channel
+# Plane-Poiseuille flow in a small channel box
 
-A channel in a minimal box — $\pi$ long and $\pi/2$ wide in half-height
-units, roughly one near-wall streak pair across the span at this
-Reynolds number — which is about as small a domain as sustains near-wall
-turbulence. Channel flow is **linearly stable** at $Re = 5000$: the
+A channel in a small periodic box, $\pi$ long and $\pi/2$ wide in
+half-height units. Even at the laminar friction Reynolds number,
+$Re_\tau = \sqrt{2Re} = 100$, that is about $314 \times 157$ wall units,
+and turbulence only raises $Re_\tau$: small, but larger than a minimal
+channel. Channel flow is **linearly stable** at $Re = 5000$: the
 critical Reynolds number for the laminar parabola is 5772 in this
 normalization (Orszag 1971), so nothing here grows from an infinitesimal
 disturbance. The transition is subcritical, driven entirely by the
@@ -22,12 +23,9 @@ the command line — `--phys.driving constant_pressure_gradient`,
 
 **What to watch.** `stats.dat` gets one row per 50 steps, with a
 `#`-commented header that `numpy.loadtxt` reads directly. Follow the
-**dissipation `D`** against its value in the first row, which is
-effectively the laminar reference: the spot breaks down by
-$t \approx 15$ with dissipation overshooting to about **14 times
-laminar**, then settles onto a turbulent state around **3.3 times
-laminar** and stays there — fluctuating by a few per cent — for the whole
-of the run.
+**dissipation `D`** against its laminar value, $4/(3Re)$: it rises
+steeply as the spot breaks down, then settles onto a turbulent level
+several times laminar.
 
 **The forcing moves, not the bulk.** `phys.driving` is set to
 `constant_bulk_velocity` here, so the flow rate is held fixed and the
@@ -41,19 +39,16 @@ dissipation.
 
 Under the default `constant_pressure_gradient` the roles swap: the
 forcing is fixed and a turbulent channel, being far more dissipative,
-settles at a *lower* flow rate — in this configuration about 20 % below
-laminar. That is also why `E'` is a poor turbulence indicator in general;
-it carries the mean profile's deviation as well as the fluctuations.
+settles at a *lower* flow rate than the laminar one. That is also why
+`E'` is a poor turbulence indicator in general; it carries the mean
+profile's deviation as well as the fluctuations.
 
-**It may relaminarize.** A minimal channel is a chaotic saddle like the
-minimal Couette cell: turbulence in it has a finite, stochastic lifetime
-rather than living forever. This configuration is still turbulent at the
-end of its horizon, but a longer run, or another perturbation, will
-eventually decay. `stop.check_laminarization` is on by default and ends
-the run once the *perturbation energy* falls below its threshold — a
-later event than the dissipation returning to laminar, since the mean
-profile relaxes on the viscous timescale.
+**It may relaminarize.** Turbulence in a box this small need not last
+forever: a longer run, or another perturbation, may decay back to
+laminar. `stop.check_laminarization` is on by default and ends the run
+once the *perturbation energy* falls below its threshold — a later event
+than the dissipation returning to laminar, since the mean profile relaxes
+on the viscous timescale.
 
-Just under two minutes on one core of an AMD Ryzen 7 PRO 7840U laptop CPU.
-All four examples' measured times are collected in
+All four examples' sizes are collected in
 [`examples/README.md`](../README.md).

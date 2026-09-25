@@ -1,6 +1,5 @@
-# Pipe flow in a short periodic cell, near the Reynolds number where
-# pipe turbulence first appears.  Laptop-sized -- a few minutes on one
-# core.
+# Pipe flow in a short periodic cell, at a transitional Reynolds
+# number.  Laptop-sized -- a few minutes on one core.
 #
 # A run reads `parameters.toml` from its own working directory, so copy
 # this file into a scratch directory and launch there.  Command-line
@@ -12,9 +11,9 @@
 [phys]
 system = "pipe"
 # Bulk/diameter Reynolds number, which for this normalization is also
-# the centerline/radius one (the factors of two cancel; D = 2).  Pipe
-# flow is linearly stable at every Reynolds number, so the transition
-# here is entirely down to the finite-amplitude spot below.
+# the centreline/radius one (the factors of two cancel; D = 2).  Pipe
+# flow has no known linear instability at any Reynolds number, so the
+# transition here is entirely down to the finite-amplitude spot below.
 re = 2500.0
 # Hold the bulk velocity fixed and let the axial pressure gradient
 # respond, rather than the default the other way round.  That keeps Re
@@ -62,7 +61,7 @@ scheme = "iterative-cn"   # or "cnab2" (CN viscous + explicit AB2)
 it_stats = 50     # steps between stats.dat records
 
 [stop]
-# Dissipation peaks near t = 30 and the flow is still several times
-# more dissipative than laminar out to t ~ 75; the rest of the horizon
-# is the decay back, which is the physics here -- see the README.
+# In a cell this short, turbulence is transient: expect the flow to
+# decay back towards laminar, which is the physics here -- see the
+# README.
 max_sim_time = 200.0

@@ -41,19 +41,19 @@ diagnostic rather than a stop condition).
 banded factors. It is not needed for differentiability — the Triton
 kernel carries its own adjoint, below — but `false` selects the portable
 pure-JAX sweep on a GPU, which differentiates through its own `lax.scan`
-with no hand-written rule. That is what makes it the oracle the kernel's
+with no custom rule. That is what makes it the reference the kernel's
 adjoint is checked against.
 
 ## The adjoint of the banded solve
 
 A Pallas kernel is opaque to reverse mode, so the wall-normal solve
 carries an explicit `jax.custom_vjp`. Its backward pass is the *same
-sweep mirrored*: the factorisation $A = LU$ has no pivoting, so
+sweep mirrored*: the factorization $A = LU$ has no pivoting, so
 $A^{\mathsf{T}} = U^{\mathsf{T}} L^{\mathsf{T}}$, and the transposed
 solve reads the stored factors in place — forward-substituting with
 $U^{\mathsf{T}}$, whose diagonal is the same reciprocated slot the
 forward sweep multiplies by, then back-substituting with unit-diagonal
-$L^{\mathsf{T}}$. No un-inversion, no second factorisation, no extra
+$L^{\mathsf{T}}$. No un-inversion, no second factorization, no extra
 storage. The rule is complete: it returns cotangents for the factors as
 well as the right-hand side, all $O(N_y p)$. The derivation, including
 why the reciprocated diagonal slot carries an extra factor that is easy
@@ -78,7 +78,7 @@ difference against every gradient.
 differences, and pins that the *default* configuration still refuses, so
 the fixed-count rows cannot pass vacuously.
 `tests/test_banded_solver.py` pins the adjoint: the transposed sweep
-against a dense oracle, the `custom_vjp` against the portable sweep's
+against a dense reference solve, the `custom_vjp` against the portable sweep's
 own automatic differentiation, and finite differences on the operator
 cotangents including the reciprocated diagonal.
 
@@ -99,5 +99,5 @@ lowered for cuda separately.
 
 If you would rather not depend on any of that, `solver.pallas_kernel =
 false` takes the portable sweep on a GPU as well, and that path
-differentiates through its own `lax.scan` with no hand-written rule at
+differentiates through its own `lax.scan` with no custom rule at
 all.

@@ -103,8 +103,9 @@ surfaces, the dispatch and the analysis geometry sets all derive from
 the registry. The full recipe, including what a spec may and may not
 import: [`docs/extending.md`](docs/extending.md).
 
-New flows also need a row in `tests/test_laminar_smoke.py` and one in
-`tests/test_random_smoke.py`.
+New flows also need a row in `tests/test_random_smoke.py`, and one in
+`tests/test_laminar_smoke.py` when the flow has a closed-form laminar
+state.
 
 ## Documentation
 
