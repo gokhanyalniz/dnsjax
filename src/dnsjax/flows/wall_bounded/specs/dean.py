@@ -24,6 +24,7 @@ SPEC = FlowSpec(
     geometry_label="annular",
     summary="force-driven curved-channel (annular) flow",
     flow_module="dnsjax.flows.wall_bounded.dean",
+    total_field=True,
     fields=(
         *wall_fields(0.0, CARTESIAN_ANNULAR_GRIDS),
         *cyl_annular_fields(),

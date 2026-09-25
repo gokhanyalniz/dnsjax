@@ -15,7 +15,8 @@ Depends only on NumPy, the standard library, and the JAX-free
 Conventions
 ===========
 - ``u`` is the stored **perturbation** state's mode profiles (the
-  total field for the force-driven Dean systems); the mean mode
+  total field for the force-driven systems,
+  :data:`~dnsjax.analysis._core.TOTAL_FIELD_SYSTEMS`); the mean mode
   ``(0,0)`` therefore records the perturbation's instantaneous mean
   profile, and :func:`mean_profile` adds the closed-form laminar
   profile back to return the **total** streamwise mean.

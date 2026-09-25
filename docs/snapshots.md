@@ -37,7 +37,10 @@ error naming the file and the cause.
 
 The stored field is the spectral **perturbation** $\mathbf{u}'$ for the
 base-flow systems (the laminar state is a zero array) and the **total**
-field for Dean, viscoelastic Dean, and the viscoelastic pipe.
+field for the force-driven ones: the curved pipe, Dean, viscoelastic
+Dean and the viscoelastic pipe. Each flow declares which
+(`FlowSpec.total_field`); `dnsjax.analysis` exposes the set as
+`TOTAL_FIELD_SYSTEMS`.
 
 The pipe family — pipe, curved pipe, viscoelastic pipe — can store one
 more array beside the state, `carry/`: two fields its default time
