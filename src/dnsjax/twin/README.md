@@ -54,7 +54,7 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.wall_confinement` | `0.14` | Scale-dependent narrowing of its wall window (`init.random_wall_confinement` convention); `0` gives every mode the same window, which is what a member recorded before 2026-09-04 ran with, and resumes only with `--twin.wall_confinement 0` |
 | `twin.mean_flow` | `true` | Perturb the $(k_x, k_z) = (0, 0)$ profile as well, conditioned on its conservation laws (below); `false` gives a mean-free partner |
 | `twin.bins` | `false` | Also record the $\Delta U$ / $\Delta u_1$ / $\Delta u_2$ three-bin energies in `twin.dat`; required by `it_budget` |
-| `twin.x0_planes` | `false` | Also store the $k_x = 0$ plane (the `_x0` fields) in both wall-normal-resolved streams, which is what `analysis.twin.bin_energies` recovers the same three-bin split from; off, it is never traced |
+| `twin.x0_planes` | `false` | Also store the $k_x = 0$ plane (the `_x0` fields) in both wall-normal-resolved streams: $E_{\Delta u_1}$ resolved in $k_z$. The three-bin split does not need it; off, it is never traced |
 | `twin.it_energy` | `1` | Steps between `twin.dat` rows |
 | `twin.it_budget` | unset | Steps between `twin_budget.dat` rows; unset disables the stream |
 | `twin.it_spectra` | unset | Steps between `twin_spectra.bin` records; unset disables the stream |
@@ -72,8 +72,11 @@ of every step — the two masked full-state copies the split forces —
 and leaving `x0_planes` off drops a third of each wall-normal-resolved
 record and a third of its collective. What the streams always carry
 instead is the $y$-resolved $(0,0)$ mode `_xz00`, which is
-$E_{\Delta U}$ on its own; the other two bins need the plane, so
-`analysis.twin.bin_energies` refuses without it and says so.
+$E_{\Delta U}$ on its own. The first column of the $k_x$ marginal is
+the whole $k_x = 0$ plane summed over $k_z$, so the other two bins
+follow from it as well: `analysis.twin.bin_energies` reads all three
+off the default streams, and the plane adds only $E_{\Delta u_1}$
+resolved in $k_z$.
 
 Three of these are not priced by cadence alone. `it_budget` sets the
 **run's peak memory**, not just its per-sample cost: the budget is a
@@ -203,8 +206,8 @@ E_\Delta^x[u,v,w](y, k_z), \qquad E_\Delta^z[u,v,w](y, k_x)
 the forward-norm convention *is* the average over that direction —
 plus the $(0,0)$ mode $E_\Delta^{xz00}[u,v,w](y)$, and under
 `twin.x0_planes` the whole $k_x = 0$ plane it comes from, which is the
-spectrum of the streamwise-averaged field and recovers
-$E_{\Delta U}$, $E_{\Delta u_1}$, $E_{\Delta u_2}$ exactly.
+spectrum of the streamwise-averaged field. $E_{\Delta U}$,
+$E_{\Delta u_1}$ and $E_{\Delta u_2}$ come back exactly without it.
 
 Which fields a record holds is the sidecar's `suffixes`, and the
 readers follow it rather than assume: a member written before `_xz00`

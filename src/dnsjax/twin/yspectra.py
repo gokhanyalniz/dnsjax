@@ -23,11 +23,14 @@ Why these replace the three-bin diagnostics: the `$\Delta U$` /
 `$(k_x, k_z)$` plane, and its own authors restrict it to minimal flow
 units (Egerique-de-la-Concha & Hwang, *J. Fluid Mech.* **1036**, A52,
 2026, after their eq. 2.5).  These streams refine the bin index to
-the wavenumber itself and drop the `$y$`-integration.  Recovering the
-old three numbers takes the full `$k_x = 0$` plane, which is
-``twin.x0_planes`` and is **off by default**; the `$(0, 0)$` mode --
-`$E_{\Delta U}$` on its own, and the mean the reference fluctuation
-energy is measured against -- is always there.
+the wavenumber itself and drop the `$y$`-integration.  The old three
+numbers come back from the default record: the `$(0, 0)$` mode is
+`$E_{\Delta U}$`, and the first column of the `$k_x$` marginal is the
+whole `$k_x = 0$` plane, so `$E_{\Delta u_1}$` is that column less the
+mode (:func:`dnsjax.analysis.twin.bin_energies`).  The full plane
+(``twin.x0_planes``, **off by default**) adds only the `$k_z$`
+resolution of `$E_{\Delta u_1}$`.  The mode is also the mean the
+reference fluctuation energy is measured against.
 
 File format
 ===========

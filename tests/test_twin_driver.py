@@ -1187,18 +1187,19 @@ def test_yspectra_streams() -> None:
             assert lean_b.meta["suffixes"] == ["x", "z", "xz00"]
             assert not [n for n in lean_y.fields if n.endswith("_x0")]
             assert not [n for n in lean_b.fields if n.endswith("_x0")]
-            try:
-                bin_energies(lean_y)
-            except ValueError as exc:
-                assert "twin.x0_planes" in str(exc), exc
-            else:
-                raise AssertionError("bin_energies accepted a plane-less run")
-            # Same trajectory as the run above, so the same numbers.
+            # Same trajectory as the run above, so the same numbers --
+            # the three bins included: they need the ``k_x`` marginal
+            # and the ``(0, 0)`` mode, not the plane.
             keep = np.isin(np.round(lean_y.t, 10), np.round(data.t, 10))
             take = np.isin(np.round(data.t, 10), np.round(lean_y.t, 10))
             assert_allclose(
                 lean_y["e_xz00"][keep], data["e_x0"][take][..., 0], rtol=0
             )
+            lean_bins = bin_energies(lean_y)
+            for name, value in bins.items():
+                assert_allclose(
+                    lean_bins[name][keep], value[take], rtol=1e-12, atol=0
+                )
 
         # A .bin without its sidecar is refused, not guessed at.
         (Path(tmp) / "twin_yspectra.json").unlink()

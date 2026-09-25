@@ -226,9 +226,9 @@ class ReconParams(BaseModel):
             "y-resolved streams (twin.x0_planes).  Stated here rather "
             "than inherited, like rotational_ybudget: to reproduce a "
             "member's own stream, match what the run wrote, which its "
-            "sidecars' 'suffixes' names outright.  Needed by "
-            "analysis.twin.bin_energies; off, only the always-stored "
-            "_xz00 mean mode is rebuilt."
+            "sidecars' 'suffixes' names outright.  Off, only the "
+            "always-stored _xz00 mean mode is rebuilt, which is all "
+            "analysis.twin.bin_energies needs besides the marginals."
         ),
     )
     bins: bool | None = Field(

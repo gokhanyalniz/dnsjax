@@ -920,12 +920,41 @@ _SUFFIX_WIDTH: dict[str, tuple[int, ...]] = {
 }
 
 
+def _plane_blocks(plane: np.ndarray, suffixes) -> dict[str, np.ndarray]:
+    """The stored blocks of one ``(..., NY, nz - 1, N_KX)`` mode plane.
+
+    What the writer stores (``twin.diagnostics._marginals_replicated``):
+    ``x`` sums over ``k_x`` and folds the wrap-order ``k_z`` axis onto
+    ``|k_z|``, ``z`` sums over ``k_z``, ``x0`` is the folded ``k_x = 0``
+    plane and ``xz00`` its ``k_z = 0`` column.  Built this way rather
+    than drawn per block, the blocks are slices and sums of *one*
+    plane, as a real stream's are -- the relation every three-bin
+    identity reads, and one independent draws would break.
+    """
+
+    def fold(a: np.ndarray) -> np.ndarray:
+        folded = a[..., :N_KZ].copy()
+        folded[..., 1:] += a[..., N_KZ:][..., ::-1]
+        return folded
+
+    blocks = {
+        "x": fold(plane.sum(axis=-1)),
+        "z": plane.sum(axis=-2),
+        "x0": fold(plane[..., 0]),
+        "xz00": plane[..., 0, 0],
+    }
+    return {suf: blocks[suf] for suf in suffixes}
+
+
 def _yspectra_fixture(suffixes, *, version, seed=3, n_t=4):
     """A ``twin_yspectra`` field table, values and sidecar.
 
     *suffixes* is the layout: the legacy triple written with no
     ``suffixes`` key (the pre-``xz00`` streams the reader must still
-    accept), or one of the current ones written with it.
+    accept), or one of the current ones written with it.  Every block
+    comes from one non-negative mode plane per prefix
+    (:func:`_plane_blocks`), so a given *seed* describes the same field
+    in every layout.
     """
     rng = np.random.default_rng(seed)
     fields = [
@@ -933,20 +962,11 @@ def _yspectra_fixture(suffixes, *, version, seed=3, n_t=4):
         for p in ("e", "r")
         for suf in suffixes
     ]
-    values = {n: rng.random((n_t, *sh)) for n, sh in fields}
-    # The stored blocks are slices/sums of one mode plane in a real
-    # stream; make them consistent here too, or ``bin_energies``
-    # would report a negative bin -- and ``xz00`` is exactly the
-    # plane's first column wherever both are stored.
+    values = {}
     for prefix in ("e", "r"):
-        if f"{prefix}_x0" in values:
-            values[f"{prefix}_x0"] = 0.25 * values[f"{prefix}_x"]
-        if f"{prefix}_xz00" in values:
-            values[f"{prefix}_xz00"] = (
-                values[f"{prefix}_x0"][..., 0]
-                if f"{prefix}_x0" in values
-                else 0.25 * values[f"{prefix}_x"][..., 0]
-            )
+        plane = rng.random((n_t, 3, NY, 2 * N_KZ - 1, N_KX))
+        for suf, block in _plane_blocks(plane, suffixes).items():
+            values[f"{prefix}_{suf}"] = block
     extra = {"format_version": version, "includes_ref": True, "it_yspectra": 1}
     if version > 1:
         extra["suffixes"] = list(suffixes)
@@ -1074,8 +1094,14 @@ def test_stored_layouts() -> None:
     print(f"stored layouts (record bytes {sizes}): OK")
 
 
-def test_bin_energies_needs_the_plane() -> None:
-    """Without ``x0`` the three-bin recovery refuses, by name."""
+def test_bin_energies_without_the_plane() -> None:
+    """The three bins come back from every layout, plane or not.
+
+    The ``k_x`` marginal's first column is the whole ``k_x = 0`` plane,
+    so ``E_du1`` and ``E_du2`` need only it and the ``(0, 0)`` mode.
+    One mode plane stored in all three layouts must give one answer --
+    the plane identity, evaluated on the plane itself.
+    """
     from dnsjax.analysis.twin import (
         bin_energies,
         integrate_y,
@@ -1083,24 +1109,45 @@ def test_bin_energies_needs_the_plane() -> None:
     )
 
     t = np.array([0.0, 0.01])
-    fields, values, sidecar = _yspectra_fixture(
-        ("x", "z", "xz00"), version=2, n_t=2
-    )
+    layouts = {
+        "legacy": (("x", "z", "x0"), 1),
+        "default": (("x", "z", "xz00"), 2),
+        "x0_planes": (("x", "z", "x0", "xz00"), 2),
+    }
+    plane = np.random.default_rng(5).random((2, 3, NY, 2 * N_KZ - 1, N_KX))
+    w = np.asarray(_y_sidecar({})["y_weights"])
+    per_k = np.einsum("j,tcjzx->tzx", w, plane)
+    want = {
+        "E_dU": per_k[:, 0, 0],
+        "E_du1": per_k[:, 1:, 0].sum(axis=1),
+        "E_du2": per_k[:, :, 1:].sum(axis=(1, 2)),
+    }
     with tempfile.TemporaryDirectory() as tmp:
-        d = Path(tmp)
-        _write_y_stream(d, "twin_yspectra", t, fields, values, sidecar)
-        data = read_twin_yspectra(d)
-        _expect_value_error("twin.x0_planes", lambda: bin_energies(data))
+        for label, (suffixes, version) in layouts.items():
+            d = Path(tmp) / label
+            d.mkdir()
+            fields, _, sidecar = _yspectra_fixture(
+                suffixes, version=version, n_t=2
+            )
+            values = {}
+            for prefix in ("e", "r"):
+                for suf, block in _plane_blocks(plane, suffixes).items():
+                    values[f"{prefix}_{suf}"] = block
+            _write_y_stream(d, "twin_yspectra", t, fields, values, sidecar)
+            data = read_twin_yspectra(d)
+            got = bin_energies(data)
+            for key, value in want.items():
+                # Summation order differs from the reference: eps.
+                assert_allclose(got[key], value, rtol=1e-14, err_msg=label)
 
-        # E_dU alone survives, on a field with no wavenumber axis --
-        # so ``integrate_y`` must not try to keep one.
-        w = np.asarray(sidecar["y_weights"])
+        # ``E_dU`` sits on a field with no wavenumber axis, so
+        # ``integrate_y`` must not try to keep one.
         got = integrate_y(data, "e_xz00")
         assert got.shape == (2, 3)
         assert_allclose(
-            got, np.einsum("j,tcj->tc", w, values["e_xz00"]), rtol=1e-14
+            got, np.einsum("j,tcj->tc", w, plane[..., 0, 0]), rtol=1e-14
         )
-    print("bin_energies refuses without the plane; E_dU survives: OK")
+    print("bin_energies from every layout, plane or not: OK")
 
 
 def test_fluctuation_energy() -> None:
@@ -1296,7 +1343,7 @@ if __name__ == "__main__":
     test_spectra_reader()
     test_yspectra_reader()
     test_stored_layouts()
-    test_bin_energies_needs_the_plane()
+    test_bin_energies_without_the_plane()
     test_fluctuation_energy()
     test_shape_alignment()
     test_ybudget_reader()

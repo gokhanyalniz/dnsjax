@@ -46,23 +46,24 @@ gradient -- zero in total, not per `$y$`.
 
 :func:`bin_energies` is the bridge back to the three-bin diagnostics
 of Egerique-de-la-Concha & Hwang (*J. Fluid Mech.* **1036**, A52,
-2026): the `$k_x = 0$` plane is exactly the spectrum of the
-streamwise-averaged difference field, so
+2026), and it needs nothing beyond the default streams: the first
+column of the `$k_x$` marginal is the whole `$k_x = 0$` plane summed
+over `$k_z$`, so
 
 .. math::
-    E_{\Delta U} = \textstyle\int \sum_\alpha e^{x0}_\alpha(y, 0)
-        = \int \sum_\alpha e^{xz00}_\alpha ,
+    E_{\Delta U} = \textstyle\int \sum_\alpha e^{xz00}_\alpha ,
     \quad
-    E_{\Delta u_1} = \int \sum_\alpha \sum_{k_z > 0} e^{x0}_\alpha ,
+    E_{\Delta u_1} = \int \sum_\alpha e^{z}_\alpha(y, 0)
+        - E_{\Delta U} ,
     \quad
-    E_{\Delta u_2} = \int \sum_\alpha \sum_{k_z}
-        \bigl(e^{x}_\alpha - e^{x0}_\alpha\bigr) ,
+    E_{\Delta u_2} = \int \sum_\alpha \sum_{k_x > 0} e^{z}_\alpha .
 
-now resolved in `$k_z$` rather than collapsed to three numbers.  It
-therefore needs a stream written under ``twin.x0_planes``; the first
-of the three survives on the always-stored ``e_xz00`` alone, and so
-does the `$(0, 0)$` mode's other use: taking it back off a spectrum,
-in the three reductions :func:`mean_free_spectrum` /
+The `$k_x = 0$` plane (``twin.x0_planes``) adds only the
+`$k_z$`-resolution of the second, `$E_{\Delta u_1}$` per `$k_z$` as
+`$\sum_\alpha e^{x0}_\alpha(y, k_z > 0)$`; a pre-``xz00`` stream
+takes its `$(0, 0)$` mode from that plane's first column instead
+(:func:`mean_mode_name`).  The mode's other use is taking it back off
+a spectrum, in the three reductions :func:`mean_free_spectrum` /
 :func:`fluctuation_profile` / :func:`fluctuation_energy`, which are
 one definition read at three resolutions -- `$(y, k)$`, `$(y)$` and a
 scalar.
@@ -443,21 +444,20 @@ def bin_energies(data: YResolvedData) -> dict[str, np.ndarray]:
     The three-bin decomposition recovered from the stored marginals
     (module docstring), component-summed, as ``E_dU`` / ``E_du1`` /
     ``E_du2`` -- the same numbers ``twin.dat`` carries under
-    ``twin.bins``, and the reason that flag can stay off.  Pass a
-    ``twin_yspectra`` stream written under ``twin.x0_planes``: all
-    three need the `$k_x = 0$` plane, and only ``E_dU`` survives
-    without it, as ``integrate_y(data, "e_xz00").sum(axis=1)``.
+    ``twin.bins``, and the reason that flag can stay off.  Every
+    layout carries what it needs: the `$(0, 0)$` mode
+    (:func:`mean_mode_name`) and the `$k_x$` marginal ``e_z``, whose
+    first column is the whole `$k_x = 0$` plane.  So ``twin.x0_planes``
+    is not required; it adds the `$k_z$`-resolved `$E_{\Delta u_1}$`,
+    which this does not return.
     """
-    if "e_x0" not in data.fields:
-        raise ValueError(
-            "bin_energies needs the k_x = 0 plane, which this stream "
-            f"does not carry (it stores {list(stored_suffixes(data.meta))}"
-            "); re-run or rebuild it with twin.x0_planes."
-        )
-    x0 = integrate_y(data, "e_x0").sum(axis=1)  # (n_t, n_kz)
-    x = integrate_y(data, "e_x").sum(axis=1)
+    name = mean_mode_name(data.meta, "e")
+    e_mean = np.einsum(
+        "j,tcj->t", data.y_weights, mean_mode_profile(data[name], name)
+    )
+    z = integrate_y(data, "e_z").sum(axis=1)  # (n_t, n_kx)
     return {
-        "E_dU": x0[:, 0],
-        "E_du1": x0[:, 1:].sum(axis=1),
-        "E_du2": (x - x0).sum(axis=1),
+        "E_dU": e_mean,
+        "E_du1": z[:, 0] - e_mean,
+        "E_du2": z[:, 1:].sum(axis=1),
     }
