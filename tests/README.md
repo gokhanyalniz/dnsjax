@@ -75,6 +75,6 @@ not reproduce on a clean serial rerun as contention.
 ## What each script covers
 
 Every script's module docstring states what it pins and how to run its
-variants. The index — one line per script — is in the **Tests** section
-of [`../CLAUDE.md`](../CLAUDE.md); the claims those tests back are mapped
-in [`../docs/validation.md`](../docs/validation.md).
+variants. The index — one line per script, grouped by what a change
+reaches — is [`CLAUDE.md`](CLAUDE.md) here; the claims those tests back
+are mapped in [`../docs/validation.md`](../docs/validation.md).
