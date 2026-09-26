@@ -54,7 +54,7 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.wall_confinement` | `0.14` | Scale-dependent narrowing of its wall window (`init.random_wall_confinement` convention); `0` gives every mode the same window, which is what a member recorded before 2026-09-04 ran with, and resumes only with `--twin.wall_confinement 0` |
 | `twin.mean_flow` | `true` | Perturb the $(k_x, k_z) = (0, 0)$ profile as well, conditioned on its conservation laws (below); `false` gives a mean-free partner |
 | `twin.bins` | `false` | Also record the $\Delta U$ / $\Delta u_1$ / $\Delta u_2$ three-bin energies in `twin.dat`; required by `it_budget` |
-| `twin.x0_planes` | `false` | Also store the $k_x = 0$ plane (the `_x0` fields) in both wall-normal-resolved streams: $E_{\Delta u_1}$ resolved in $k_z$. The three-bin split does not need it; off, it is never traced |
+| `twin.x0_planes` | `false` | Also store the $k_x = 0$ plane (the `_x0` fields) in both wall-normal-resolved streams: $E_{\Delta u_1}$, and with it $E_{\Delta u_2}$, resolved in $k_z$. The three-bin split does not need it; off, it is never traced |
 | `twin.it_energy` | `1` | Steps between `twin.dat` rows |
 | `twin.it_budget` | unset | Steps between `twin_budget.dat` rows; unset disables the stream |
 | `twin.it_spectra` | unset | Steps between `twin_spectra.bin` records; unset disables the stream |
@@ -75,8 +75,9 @@ instead is the $y$-resolved $(0,0)$ mode `_xz00`, which is
 $E_{\Delta U}$ on its own. The first column of the $k_x$ marginal is
 the whole $k_x = 0$ plane summed over $k_z$, so the other two bins
 follow from it as well: `analysis.twin.bin_energies` reads all three
-off the default streams, and the plane adds only $E_{\Delta u_1}$
-resolved in $k_z$.
+off the default streams, and the plane adds only the $k_z$ resolution
+of $E_{\Delta u_1}$ and $E_{\Delta u_2}$ (without it $E_{\Delta u_2}$
+is resolved in $k_x$ alone).
 
 Three of these are not priced by cadence alone. `it_budget` sets the
 **run's peak memory**, not just its per-sample cost: the budget is a

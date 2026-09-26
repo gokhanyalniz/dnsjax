@@ -234,9 +234,8 @@ the `$k_x = 0$` plane
 .. math::
     E_\Delta^{x0}[\alpha](y, k_z) = \hat{e}_\alpha(y, 0, k_z) ,
 
-of which `$E^{xz00}$` is the `$k_z = 0$` column.  The full plane is
-what makes these a strict refinement of the three-bin split rather
-than a replacement:
+of which `$E^{xz00}$` is the `$k_z = 0$` column.  With the full plane
+the three-bin split comes back resolved in `$k_z$`:
 
 .. math::
     E_{\Delta U} = \textstyle\int \sum_\alpha E^{x0}_\alpha(y, 0)
@@ -247,9 +246,8 @@ than a replacement:
     E_{\Delta u_2} = \int \sum_\alpha \sum_{k_z}
         (E^{x}_\alpha - E^{x0}_\alpha)
 
--- the three numbers of the old binning, now `$k_z$`-resolved, which
-is why ``twin.bins`` can stay off.  The `$\pm k_z$` fold this
-requires is not cosmetic: :func:`_fold_kz`.
+-- the three numbers of the old binning, per `$k_z$`.  The
+`$\pm k_z$` fold this requires is not cosmetic: :func:`_fold_kz`.
 
 Only `$E^{xz00}$` is stored unconditionally.  The plane it comes from
 is **opt-in** (``twin.x0_planes``, default off): it is a third of
@@ -265,9 +263,13 @@ the three numbers still come back, because the first column of the
     E_{\Delta u_2} = \int \sum_\alpha \sum_{k_x > 0} E^{z}_\alpha ,
 
 which is what :func:`~dnsjax.analysis.twin.bin_energies` evaluates.
-What goes with the plane is only the `$k_z$` resolution of
-`$E_{\Delta u_1}$`.  The mode is also what
-:func:`~dnsjax.analysis.twin.yspectra.fluctuation_energy` subtracts.
+So with or without the plane the stored marginals are a strict
+refinement of the three-bin split rather than a replacement, which is
+why ``twin.bins`` can stay off.  What goes with the plane is only the
+`$k_z$` resolution of the two fluctuating bins: `$E_{\Delta u_2}$`
+stays resolved in `$k_x$`, `$E_{\Delta u_1}$` in neither.  The mode is
+also what :func:`~dnsjax.analysis.twin.yspectra.fluctuation_energy`
+subtracts.
 
 Spectral budget
 ---------------
@@ -433,13 +435,14 @@ are the lab-frame ones ``get_nonlin`` uses rather than the shifted
 from omitting it in `$\widehat{\nabla\cdot\mathcal N}$` would be
 `$\mathrm{i}k_x U_{grid}\,\nabla\!\cdot\!\Delta\mathbf{u}$` and
 in the wall closure `$\mathrm{i}k_x U_{grid}(D_1\Delta\hat
-v)|_w$` -- both machine-zero under the default ``res.consistent_imm``
-(discrete continuity everywhere, and `$(D_1 v)|_w = 0$` imposed
-exactly by the influence matrix), and **neither** under the legacy
-flag, whose states carry an `$O(1)$` relative divergence.  Carrying
-the term costs one mode-diagonal multiply and makes
-:mod:`dnsjax.twin.pressure`'s "right under either
-``res.consistent_imm``" claim unconditional.
+v)|_w$`.  The second is machine-zero under either scheme -- each
+influence matrix imposes `$(D_1 v)|_w = 0$` exactly, the legacy one in
+the wall-divergence stages of ``_imm_iteration_vp`` -- and the first
+only under the default ``res.consistent_imm``, whose discrete
+continuity holds everywhere: the legacy flag's states carry an
+`$O(1)$` relative interior divergence.  Carrying the term costs one
+mode-diagonal multiply and makes :mod:`dnsjax.twin.pressure`'s "right
+under either ``res.consistent_imm``" claim unconditional.
 
 Mean-mode driving
 -----------------
@@ -1054,9 +1057,9 @@ def _marginals_replicated(density: Array, *, x0: bool) -> dict[str, Array]:
       over `$k_z$`);
     - ``x0`` `$(C, N_y, n_z/2)$`, under *x0* only: the `$k_x = 0$`
       plane, folded like ``x`` -- the spectrum *of the
-      streamwise-averaged field*, which is what recovers the
-      `$\Delta U$` / `$\Delta u_1$` / `$\Delta u_2$` binning from
-      ``x`` (module docstring).
+      streamwise-averaged field*, which splits each `$k_z$` of ``x``
+      into its `$k_x = 0$` part (`$\Delta u_1$`, or `$\Delta U$` at
+      `$k_z = 0$`) and its `$\Delta u_2$` part (module docstring).
 
     Each device reduces its own `$(k_z, k_x)$` tile, scatters its
     blocks into zero global-shape arrays at its mesh position, and one
@@ -1634,7 +1637,8 @@ def _driving_density(prof_dU: Array, flow_: object) -> Array:
     `$-\Delta\Pi_s \Delta U_s(y) - \Delta\Pi_n \Delta U_n(y)$` -- and
     what ``mean_driving_from_profile`` returns is `$-\Delta\Pi$`
     already, keyed ``-dPds'`` / ``-dPdn'``, so the code below adds it
-    with a plus.  The `$y$`-integral is
+    with a plus.  Its wall-normal average (the stored density's
+    `$y$`-integral, ``volume_fac`` being divided out) is
     `$-\Delta\Pi \cdot U_\text{bulk}(\Delta u) = 0$`
     exactly -- at constant flow rate both members hold the same bulk,
     at fixed pressure gradient `$\Delta\Pi = 0$`.  Under a held bulk
