@@ -29,8 +29,10 @@ numbers come back from the default record: the `$(0, 0)$` mode is
 whole `$k_x = 0$` plane, so `$E_{\Delta u_1}$` is that column less the
 mode (:func:`dnsjax.analysis.twin.bin_energies`).  The full plane
 (``twin.x0_planes``, **off by default**) adds only the `$k_z$`
-resolution of `$E_{\Delta u_1}$`.  The mode is also the mean the
-reference fluctuation energy is measured against.
+resolution of `$E_{\Delta u_1}$` and, as the rest of the `$k_z$`
+marginal, of `$E_{\Delta u_2}$`, which is otherwise resolved in `$k_x$`
+alone.  The mode is also the mean the reference fluctuation energy is
+measured against.
 
 File format
 ===========
@@ -125,8 +127,9 @@ def _suffix_shapes(x0: bool) -> tuple[tuple[str, tuple[int, ...]], ...]:
 
 #: Records buffered on device between flushes.  Smaller than the
 #: ``(k_z, k_x)`` stream's: these records carry a wall-normal axis
-#: (~0.4 MB for the energies, ~1.0 MB for the budget at
-#: `$n_y = 129$`, `$n_x = n_z = 192$`).
+#: (~1.2 MB for the energies with their reference half, ~1.4 MB for
+#: the convective budget at `$n_y = 129$`, `$n_x = n_z = 192$`, double
+#: precision).
 _NBUFFER: int = 4
 
 _YSPECTRA_MATCH_KEYS: tuple[str, ...] = (
@@ -269,8 +272,9 @@ class TwinYBudgetStream(BinStream):
                 "form writes it, the trailing P_lift (the classical "
                 "-Re{Du_i* Dv} d_y U_i, carried unchanged from the "
                 "convective form) also sits outside the sum.  Wp is "
-                "the work of the pressure gradient (the applied "
-                "driving at k = 0)"
+                "the work of the pressure gradient (at k = 0 that of "
+                "the driving, the difference of the two members' "
+                "wall-shear inferences)"
             ),
         }
         directory = Path(directory)

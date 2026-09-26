@@ -46,7 +46,8 @@ solver itself integrates (:mod:`dnsjax.rhs`),
 solver's own nonlinear term implies, rather than one reconstructed
 from an operator the solver never applies.  (The default
 `$v$`-`$\omega_y$` step forms no pressure at all; the legacy
-primitive path closes on exactly this one.)  The two differ by a
+primitive path closes on this one, in its time-discrete
+Crank-Nicolson-weighted form.)  The two differ by a
 gradient, so the total work is unchanged; the `$y$`-density is not
 (:mod:`dnsjax.twin.diagnostics`, "Two budget forms").  Everything
 below is form-independent: nothing in the solve reads

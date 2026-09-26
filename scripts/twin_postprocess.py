@@ -91,11 +91,12 @@ caller.
 
 Cost
 ====
-Per pair: two snapshot loads, one ``twin_ybudget`` sample (21 field
-transforms) and two cheap reductions.  Peak memory
-matches a live run with ``twin.it_ybudget`` set -- that program is the
-high-water mark.  The jitted programs compile once and are reused
-across pairs.
+Per pair: two snapshot loads, one ``twin_ybudget`` sample (33 field
+transforms; 21 under ``--recon.rotational_ybudget``) and the cheap,
+transform-free rest (``twin_energies``, ``twin_yspectra``, each
+state's ``get_stats``).  Peak memory matches a live run with
+``twin.it_ybudget`` set -- that program is the high-water mark.  The
+jitted programs compile once and are reused across pairs.
 
 Launch it like the solver: a lone process needs no launcher (and on GPU
 can span every visible device with ``--dist.np0``); several processes

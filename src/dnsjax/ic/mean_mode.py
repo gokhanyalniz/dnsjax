@@ -186,17 +186,22 @@ into a fixed polynomial shape.
 :func:`project_profile` instead conditions the generator's **own
 ensemble**.  The random Cartesian draw is `$\delta = M z$` with
 `$M = \mathrm{diag}(\text{window})\,F$` (`$F$` the wall-normal
-smoothness filter) and `$z \sim N(0, I)$`, so the distribution of
-`$\delta$` given `$C\delta = 0$` is centred on
+smoothness filter) and `$z \sim N(0, I)$`, and
 
 .. math::
     \delta' = \delta - K C^{\mathsf T}\,(C K C^{\mathsf T})^{-1}
-              C \delta , \qquad K = M M^{\mathsf T} .
+              C \delta , \qquad K = M M^{\mathsf T} ,
 
-That is the orthogonal projection in the ensemble's own metric, and it
-buys four things at once:
+is an exact draw from that ensemble conditioned on `$C\delta = 0$`
+(Matheron's update): `$\delta'$` is independent of `$C\delta$` and
+carries the conditional covariance
+`$K - K C^{\mathsf T}(C K C^{\mathsf T})^{-1} C K$`.  The
+conditional law is centred on zero; `$\delta'$` is a sample of it,
+not its centre.  It is also the orthogonal projection in the
+ensemble's own metric, and it buys four things at once:
 
-- it cannot amplify -- `$E\|\delta'\|^2 = \mathrm{tr}(KP) \le
+- it cannot amplify -- `$E\|\delta'\|^2 = \mathrm{tr}(K) -
+  \mathrm{tr}(K C^{\mathsf T}(C K C^{\mathsf T})^{-1} C K) \le
   \mathrm{tr}(K) = E\|\delta\|^2$`;
 - `$K$` low-passes the (spiky, one-sided) `$D_2$` wall stencils, so
   the correction is a smooth profile rather than a near-wall spike;
