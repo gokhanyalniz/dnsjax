@@ -1820,9 +1820,10 @@ def _select_half(
     Index ``j`` pairs with ``n_y - 1 - j`` -- checked against the grid
     rather than assumed -- and for odd ``n_y`` the mid-plane pairs with
     itself, so ``"mean"`` neither needs a special case there nor
-    double counts it.  Every stored quantity is even under the
-    reflection, so the mean carries no sign flips; the argument is in
-    the module docstring, "Folding the channel".  Returns the
+    double counts it.  Every stored quantity is even under the flow's
+    own mid-plane symmetry (plane Poiseuille's reflection, plane
+    Couette's rotation), so the mean carries no sign flips; the
+    argument is in the module docstring, "Folding the channel".  Returns the
     collapsed values and the wall distance `$1 - |y|$` of the retained
     rows, ascending from the wall.
     """
@@ -1857,9 +1858,9 @@ def _half_grid(y: np.ndarray, mode: str) -> np.ndarray:
     if mode != "lower" and not np.allclose(y, -y[::-1], rtol=0.0, atol=1e-12):
         raise ValueError(
             "the wall-normal grid is not symmetric about the centreline, "
-            "so the R_y fold has no partner row to average against, and "
-            "--half upper no wall distance to label its rows with; use "
-            "--half lower, which needs neither."
+            "so the mid-plane fold has no partner row to average against, "
+            "and --half upper no wall distance to label its rows with; "
+            "use --half lower, which needs neither."
         )
     return 1.0 + y[: (y.size + 1) // 2]
 
@@ -1914,7 +1915,7 @@ def _symmetrise_y(values: np.ndarray, half: str, axis: int = -2) -> np.ndarray:
     figure claims to show.  ``lower`` / ``upper`` fold nothing and
     keep each row's own divisor.
 
-    The reference is `$R_y$`-symmetric in the mean anyway, so this
+    The reference is mid-plane symmetric in the mean anyway, so this
     moves the numbers by the run's own asymmetry and no more; what it
     buys is that the answer no longer depends on the order.
     """

@@ -53,9 +53,10 @@ is an amplitude and this is an energy, `$j$` counts modes where `$|k|$`
 carries units -- but that alone would not force two *numbers*.  What
 does is that `$s$` moves a long way between uses while `$s_w$` should
 not move at all.  In the plane-Poiseuille `$4\pi \times 2\pi$` box,
-``init.random_smoothness = 0.4`` puts 93 % of a perturbation's energy
-inside `$|k_z| \le 2$`, and every mode beyond `$|k_z| = 36$` more
-than sixteen decades below the peak, while the twin partner's default
+``init.random_smoothness = 0.4`` puts 92 % of a (mean-free, the
+``init.random_mean_flow`` default) perturbation's energy inside
+`$|k_z| \le 2$`, and every mode beyond `$|k_z| = 36$` more than
+sixteen decades below the peak, while the twin partner's default
 ``twin.smoothness = 0.022`` peaks at `$\lambda^+ \approx 50$`.  The
 wall-normal law must **not** follow `$s$` down: lowering `$s_w$` moves
 the wall-normal profile *away* from the wall rather than towards it

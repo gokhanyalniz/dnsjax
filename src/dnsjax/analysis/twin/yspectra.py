@@ -59,9 +59,13 @@ over `$k_z$`, so
     E_{\Delta u_2} = \int \sum_\alpha \sum_{k_x > 0} e^{z}_\alpha .
 
 The `$k_x = 0$` plane (``twin.x0_planes``) adds only the
-`$k_z$`-resolution of the second, `$E_{\Delta u_1}$` per `$k_z$` as
-`$\sum_\alpha e^{x0}_\alpha(y, k_z > 0)$`; a pre-``xz00`` stream
-takes its `$(0, 0)$` mode from that plane's first column instead
+`$k_z$`-resolution of the two fluctuating bins:
+`$E_{\Delta u_1}$` per `$k_z$` as
+`$\sum_\alpha e^{x0}_\alpha(y, k_z > 0)$`, and with it
+`$E_{\Delta u_2}$` per `$k_z$` as
+`$\sum_\alpha (e^{x}_\alpha - e^{x0}_\alpha)$` -- which without the
+plane is resolved in `$k_x$` only.  A pre-``xz00`` stream takes its
+`$(0, 0)$` mode from that plane's first column instead
 (:func:`mean_mode_name`).  The mode's other use is taking it back off
 a spectrum, in the three reductions :func:`mean_free_spectrum` /
 :func:`fluctuation_profile` / :func:`fluctuation_energy`, which are
