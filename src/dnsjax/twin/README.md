@@ -131,9 +131,10 @@ s = 1 - \exp\left(-\frac{\lambda^{*+}}{4\pi\, Re_\tau}\right),
 which is 0.022 for plane Poiseuille at $Re = 4200$ in the
 $4\pi \times 2 \times 2\pi$ box ($Re_\tau = 178.6$) and 0.0079 at
 $Re_\tau = 500$. A minimal flow unit has no room below itself, so a
-run in one (the HKW box) sets `--twin.smoothness 0.4`, which is also
-the earlier default: members recorded with it resume only with that
-flag.
+run in one (the HKW box) sets `--twin.smoothness 0.4`
+(`ensemble_setup.py build-twin --smoothness 0.4` for a member tree),
+which is also the earlier default: members recorded with it resume only
+with that flag.
 
 Its $(k_x, k_z) = (0, 0)$ content follows `twin.mean_flow`, **on by
 default** (the driver's own knob, not the shared
@@ -334,10 +335,13 @@ the run directory's `twin.json`.
 "Matches" is the `twin.json` configuration record — `e0`, the seed,
 the smoothness, the cadences, `dt`, the precision — and a resume that
 differs in any of them is refused rather than appending to streams it
-does not belong to. `twin.seed` is *matched*, not re-read, which is why
-a resume with the seed left unset adopts the recorded one first: the
-pair is not re-perturbed, so what it needs is the seed it was born
-with, and an un-pinned member would otherwise fail its own first resume.
+does not belong to. The refusal names the recorded value beside the
+configured one: when a default has moved since the member was recorded,
+the recorded value is what to pass. `twin.seed` is *matched*, not
+re-read, which is why a resume with the seed left unset adopts the
+recorded one first: the pair is not re-perturbed, so what it needs is
+the seed it was born with, and an un-pinned member would otherwise fail
+its own first resume.
 
 On a paired resume a trajectory-defining parameter change is a hard
 error: switching mid-trajectory would disconnect the pair from its own
@@ -392,11 +396,15 @@ index, and `--members-per-snapshot` fans several seeds out of one
 parent. An unset `--seed-base` is drawn from the system entropy pool
 and printed, so two ensembles built from the same parents are
 independent rather than both running seeds `1..N`; either way each
-member's concrete seed is written into its `parameters.toml`, which is
-what keeps the tree reproducible and resumable. `check_laminarization`
-is forced off so every member runs the full horizon and the streams
-aggregate on one shared time grid; a relaminarized member stays visible
-offline in its `E_ref` column. The script emits `run_commands.txt` and
+member's concrete seed is written into its `parameters.toml`. So is its
+perturbation shape — `--smoothness`, `--wall-smoothness`,
+`--wall-confinement`, `--mean-flow`, each the driver's default unless
+given, and written out either way. That is what keeps the tree
+reproducible and resumable whichever code version launches or resumes
+a member, defaults included. `check_laminarization` is forced off so
+every member runs the full horizon and the streams aggregate on one
+shared time grid; a relaminarized member stays visible offline in its
+`E_ref` column. The script emits `run_commands.txt` and
 a `members.json` index, and never runs the solver itself.
 
 ## Offline analysis

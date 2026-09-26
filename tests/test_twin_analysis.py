@@ -16,15 +16,16 @@ decorrelation-ratio guards), the ``twin_yspectra.bin`` /
 ``twin_ybudget.bin`` readers (round trip, seam drop, truncation,
 floor) across all three stored layouts -- the reader floor stays
 below the writer's version, so a member recorded before ``xz00``
-still opens -- the three-bin recovery refusing without the ``x0``
-plane, ``fluctuation_energy`` agreeing between the two marginals,
-``shape_alignment`` (normalised, symmetric, amplitude-blind), the
-integral-length core against an independently evaluated two-mode
-reference, and
-``scripts/ensemble_setup.py build-twin`` (dry run leaves no tree;
-the built tree's TOMLs / ``members.json`` / ``run_commands.txt`` are
-consistent and feed ``aggregate_members`` end to end via synthetic
-member streams).
+still opens -- the three-bin recovery agreeing across all three
+layouts, plane or not, ``fluctuation_energy`` agreeing between the two
+marginals, ``shape_alignment`` (normalised, symmetric,
+amplitude-blind), the integral-length core against an independently
+evaluated two-mode reference, and ``scripts/ensemble_setup.py
+build-twin`` (dry run leaves no tree; an out-of-range shape knob is
+refused at build time; every member pins its seed and its whole
+perturbation shape, given or defaulted; the built tree's TOMLs /
+``members.json`` / ``run_commands.txt`` are consistent and feed
+``aggregate_members`` end to end via synthetic member streams).
 
 Usage::
 
@@ -814,16 +815,36 @@ def test_build_twin() -> None:
             # asserted by value.
             "--seed-base",
             "1",
+            # One shape knob given, three left to the driver's default:
+            # all four must be pinned in every member either way.
+            "--smoothness",
+            "0.4",
         ]
         result = run_live([*build_args, "--dry-run"], cwd=_REPO)
         assert result.returncode == 0 and not tree.exists()
         assert "m0001" in result.stdout
+        # Range-checked by the driver's own model, at build time.
+        result = run_live(
+            [*build_args, "--wall-smoothness", "1.5", "--dry-run"], cwd=_REPO
+        )
+        assert result.returncode != 0 and not tree.exists()
 
         result = run_live(build_args, cwd=_REPO)
         assert result.returncode == 0
 
         spec = json.loads((tree / "members.json").read_text())
         assert spec["kind"] == "twin" and len(spec["members"]) == 2
+        # JAX-free at import (the ``[twin]`` model only).
+        from dnsjax.twin.driver import TwinParams
+
+        defaults = TwinParams()
+        shape = {
+            "smoothness": 0.4,
+            "wall_smoothness": defaults.wall_smoothness,
+            "wall_confinement": defaults.wall_confinement,
+            "mean_flow": defaults.mean_flow,
+        }
+        assert {k: spec[k] for k in shape} == shape, spec
         assert (spec["it_stats"], spec["it_corrector"], spec["it_steps"]) == (
             2,
             3,
@@ -839,6 +860,7 @@ def test_build_twin() -> None:
                 toml = tomllib.load(fh)
             assert toml["init"]["snapshot"] == str(parent.resolve())
             assert toml["twin"]["seed"] == record["seed"]
+            assert {k: toml["twin"][k] for k in shape} == shape, toml
             assert toml["twin"]["e0"] == 1e-6
             assert toml["twin"]["it_budget"] == 5
             assert toml["outs"]["it_stats"] == 2
