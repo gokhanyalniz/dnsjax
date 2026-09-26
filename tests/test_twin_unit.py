@@ -719,7 +719,8 @@ def test_yspectra_fold_is_two_sided() -> None:
 
 
 def test_yspectra_partition() -> None:
-    """The stored marginals recover the three-bin energies exactly."""
+    """The stored marginals recover the three-bin energies exactly,
+    through the ``k_x = 0`` plane and without it."""
     state1, state2 = _make_state(salt=0.0), _make_state(salt=1.0)
     out = {
         k: np.asarray(v)
@@ -737,6 +738,16 @@ def test_yspectra_partition() -> None:
     }
     for name, value in got.items():
         assert_allclose(value, tvals[name], rtol=1e-13)
+    # The route that needs no plane (``analysis.twin.bin_energies``):
+    # the k_x marginal's first column is the whole k_x = 0 plane, so the
+    # streak bin is that column less the (0, 0) mode -- per component
+    # too -- and the rest of the marginal is the streamwise-varying bin.
+    z = np.einsum("j,cjk->ck", w, out["e_z"])  # (3, n_kx)
+    mean = np.einsum("j,cj->c", w, out["e_xz00"])
+    for c, comp in enumerate("xyz"):
+        assert_allclose(z[c, 0] - mean[c], tvals[f"E_du1_{comp}"], rtol=1e-13)
+    assert_allclose(float((z[:, 0] - mean).sum()), tvals["E_du1"], rtol=1e-13)
+    assert_allclose(float(z[:, 1:].sum()), tvals["E_du2"], rtol=1e-13)
     for marg in ("e_x", "e_z"):
         assert_allclose(
             float(np.einsum("j,cjk->", w, out[marg])),
