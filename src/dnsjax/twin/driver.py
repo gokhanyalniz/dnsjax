@@ -870,18 +870,23 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     resumed_pair: bool = False
     if have_partner and have_json:
         current = _twin_sidecar_stub()
-        mismatch = [
-            k
-            for k in _TWIN_MATCH_KEYS
-            if old.get(k, _legacy_default(k, old)) != current[k]
-        ]
+        # Each mismatch is named with both values: a default that has
+        # moved since the member was recorded is the common cause, and
+        # the recorded value is then exactly what to configure.
+        mismatch = []
+        for k in _TWIN_MATCH_KEYS:
+            recorded = old.get(k, _legacy_default(k, old))
+            if recorded != current[k]:
+                mismatch.append(
+                    f"{k} (recorded {recorded!r}, configured {current[k]!r})"
+                )
         if mismatch:
             raise SystemExit(
                 f"{_PROG}: error: this directory's twin.json does "
                 "not match the configured run (differs in: "
                 f"{', '.join(mismatch)}); a twin trajectory cannot "
-                "change these on resume.  Start a fresh member in a "
-                "clean directory instead."
+                "change these on resume.  Resume with the recorded "
+                "values, or start a fresh member in a clean directory."
             )
         if changes:
             raise SystemExit(
