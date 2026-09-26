@@ -963,15 +963,15 @@ def test_yspectra_streams() -> None:
 
     A fresh run plus a paired resume, then the identities that make
     these streams a strict refinement of the old diagnostics: both
-    marginals integrate to ``twin.dat``'s ``E_d``; the three-bin
-    energies come back out of the `$k_x = 0$` plane and partition
-    ``E_d`` between them; and the budget's `$k$`-sums reproduce
-    ``twin_budget.dat``'s ``P_tot`` / ``eps_tot`` -- all through the
-    binary round trip, in the default convective form.  ``twin.bins``
-    and ``twin.x0_planes`` are both on for that: the first so
-    ``twin.dat`` carries the columns to check against, the second
-    because the `$k_x = 0$` plane the three-bin recovery needs is
-    itself off by default.
+    marginals integrate to ``twin.dat``'s ``E_d``; every three-bin
+    column, the per-component streak split included, comes back out
+    of the stored marginals, and the three bins partition ``E_d``;
+    and the budget's `$k$`-sums reproduce ``twin_budget.dat``'s
+    ``P_tot`` / ``eps_tot`` -- all through the binary round trip, in
+    the default convective form.  ``twin.bins`` and ``twin.x0_planes``
+    are both on for that: the first so ``twin.dat`` carries the
+    columns to check against, the second so the plane's own layout is
+    exercised, it being off by default.
 
     Then ``twin.rotational_ybudget``, which is a *static* flag on the
     budget diagnostic and changes the stream's term set, so like
@@ -982,9 +982,10 @@ def test_yspectra_streams() -> None:
     every `$y$`.
 
     Then ``twin.x0_planes`` **off**, the default, which is also a
-    static flag: the plane must be absent from both streams, and the
+    static flag: the plane must be absent from both streams, the
     `$(0, 0)$` mode that replaces it must equal what the plane's
-    first column held in the run that stored one.
+    first column held in the run that stored one, and the three-bin
+    columns must come back the same without the plane.
 
     Then ``twin.spectra_ref = False``, which is a *static* flag on
     both spectra diagnostics rather than a write-time filter: the
@@ -1045,7 +1046,17 @@ def test_yspectra_streams() -> None:
                     rtol=1e-10,
                     err_msg=f"{marg} does not integrate to E_d at t={t}",
                 )
-            for name in ("E_dU", "E_du1", "E_du2"):
+            # Every twin.bins column, the per-component streak split
+            # included.
+            assert set(bins) == {
+                "E_dU",
+                "E_du1",
+                "E_du1_x",
+                "E_du1_y",
+                "E_du1_z",
+                "E_du2",
+            }, sorted(bins)
+            for name in bins:
                 assert_allclose(
                     bins[name][k], cols[name][i], rtol=1e-9, atol=1e-30
                 )

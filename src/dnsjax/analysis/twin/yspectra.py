@@ -442,22 +442,25 @@ def bin_energies(data: YResolvedData) -> dict[str, np.ndarray]:
     r"""`$E_{\Delta U}$`, `$E_{\Delta u_1}$`, `$E_{\Delta u_2}$` per record.
 
     The three-bin decomposition recovered from the stored marginals
-    (module docstring), component-summed, as ``E_dU`` / ``E_du1`` /
-    ``E_du2`` -- the same numbers ``twin.dat`` carries under
-    ``twin.bins``, and the reason that flag can stay off.  Every
-    layout carries what it needs: the `$(0, 0)$` mode
+    (module docstring): ``E_dU`` / ``E_du1`` / ``E_du2``
+    component-summed, and ``E_du1_x`` / ``E_du1_y`` / ``E_du1_z``, the
+    streak bin per velocity component -- every column ``twin.dat``
+    carries under ``twin.bins``, and the reason that flag can stay
+    off.  Every layout carries what it needs: the `$(0, 0)$` mode
     (:func:`mean_mode_name`) and the `$k_x$` marginal ``e_z``, whose
-    first column is the whole `$k_x = 0$` plane.  So ``twin.x0_planes``
-    is not required; it adds the `$k_z$`-resolved `$E_{\Delta u_1}$`,
-    which this does not return.
+    first column is the whole `$k_x = 0$` plane.  So
+    ``twin.x0_planes`` is not required; it adds the `$k_z$` resolution
+    of `$E_{\Delta u_1}$` and `$E_{\Delta u_2}$`, which this does not
+    return.
     """
     name = mean_mode_name(data.meta, "e")
     e_mean = np.einsum(
-        "j,tcj->t", data.y_weights, mean_mode_profile(data[name], name)
-    )
-    z = integrate_y(data, "e_z").sum(axis=1)  # (n_t, n_kx)
+        "j,tcj->tc", data.y_weights, mean_mode_profile(data[name], name)
+    )  # (n_t, 3)
+    z = integrate_y(data, "e_z")  # (n_t, 3, n_kx)
+    du1 = z[..., 0] - e_mean  # (n_t, 3)
     return {
-        "E_dU": e_mean,
-        "E_du1": z[:, 0] - e_mean,
-        "E_du2": z[:, 1:].sum(axis=1),
-    }
+        "E_dU": e_mean.sum(axis=1),
+        "E_du1": du1.sum(axis=1),
+        "E_du2": z[..., 1:].sum(axis=(1, 2)),
+    } | {f"E_du1_{c}": du1[:, i] for i, c in enumerate("xyz")}

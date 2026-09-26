@@ -1120,7 +1120,8 @@ def test_bin_energies_without_the_plane() -> None:
     """The three bins come back from every layout, plane or not.
 
     The ``k_x`` marginal's first column is the whole ``k_x = 0`` plane,
-    so ``E_du1`` and ``E_du2`` need only it and the ``(0, 0)`` mode.
+    so ``E_du1`` (per component too) and ``E_du2`` need only it and
+    the ``(0, 0)`` mode.
     One mode plane stored in all three layouts must give one answer --
     the plane identity, evaluated on the plane itself.
     """
@@ -1138,11 +1139,14 @@ def test_bin_energies_without_the_plane() -> None:
     }
     plane = np.random.default_rng(5).random((2, 3, NY, 2 * N_KZ - 1, N_KX))
     w = np.asarray(_y_sidecar({})["y_weights"])
-    per_k = np.einsum("j,tcjzx->tzx", w, plane)
+    per_k = np.einsum("j,tcjzx->tczx", w, plane)
     want = {
-        "E_dU": per_k[:, 0, 0],
-        "E_du1": per_k[:, 1:, 0].sum(axis=1),
-        "E_du2": per_k[:, :, 1:].sum(axis=(1, 2)),
+        "E_dU": per_k[:, :, 0, 0].sum(axis=1),
+        "E_du1": per_k[:, :, 1:, 0].sum(axis=(1, 2)),
+        "E_du2": per_k[:, :, :, 1:].sum(axis=(1, 2, 3)),
+    } | {
+        f"E_du1_{c}": per_k[:, i, 1:, 0].sum(axis=1)
+        for i, c in enumerate("xyz")
     }
     with tempfile.TemporaryDirectory() as tmp:
         for label, (suffixes, version) in layouts.items():
@@ -1158,6 +1162,7 @@ def test_bin_energies_without_the_plane() -> None:
             _write_y_stream(d, "twin_yspectra", t, fields, values, sidecar)
             data = read_twin_yspectra(d)
             got = bin_energies(data)
+            assert set(got) == set(want), (label, sorted(got))
             for key, value in want.items():
                 # Summation order differs from the reference: eps.
                 assert_allclose(got[key], value, rtol=1e-14, err_msg=label)
