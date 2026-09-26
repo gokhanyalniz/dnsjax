@@ -461,14 +461,50 @@ def _source_record(directory: Path, main: bool) -> dict:
         if main:
             print(
                 f"[recon] warning: no twin.json in {directory}; the "
-                "stream sidecars will record a null seed / e0 and the "
-                "readers will fall back to the first sample for "
-                "t_rel.",
+                "stream sidecars will record a null seed / e0 / "
+                "perturbation shape and the readers will fall back to "
+                "the first sample for t_rel.",
                 flush=True,
             )
         return {}
     with open(path) as f:
         return json.load(f)
+
+
+def twin_values(
+    source: dict, values: ReconParams, *, bins: bool, it_stride: int | None
+):
+    """The ``[twin]`` values the rebuilt stream sidecars are written from.
+
+    Two kinds of field.  What shapes the *streams* is this script's
+    own: the ``[recon]`` flags in *values*, *bins*, and the pair
+    cadence *it_stride*.  What they record as *provenance* -- ``seed``,
+    ``e0`` and the perturbation shape -- belongs to the member and
+    comes off its ``twin.json`` (*source*).  A key the record predates
+    takes the driver's own legacy back-fill
+    (``_TWIN_LEGACY_DEFAULTS``); with no record at all each of them is
+    unknown and written ``null``, as ``seed`` and ``e0`` always were --
+    never a default of today, which a member recorded under another one
+    did not run with.  Hence ``model_construct``: ``None`` is no valid
+    shape *setting*, only an honest record of an unknown one.
+    """
+    from dnsjax.twin.driver import TwinParams, _legacy_default
+
+    shape = {
+        key: source.get(key, _legacy_default(key, source)) if source else None
+        for key in ("smoothness", "wall_smoothness", "wall_confinement")
+    }
+    return TwinParams.model_construct(
+        e0=source.get("e0"),
+        seed=source.get("seed"),
+        **shape,
+        bins=bins,
+        spectra_ref=values.spectra_ref,
+        rotational_ybudget=values.rotational_ybudget,
+        x0_planes=values.x0_planes,
+        it_yspectra=it_stride,
+        it_ybudget=it_stride,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -632,7 +668,7 @@ def main(argv: list[str] | None = None) -> int:
     from dnsjax.sharding import sharding
     from dnsjax.snapshot import load_snapshot, validate_snapshot_params
     from dnsjax.twin import diagnostics
-    from dnsjax.twin.driver import TwinParams, _ScalarStream
+    from dnsjax.twin.driver import _ScalarStream
     from dnsjax.twin.pressure import DifferencePressure
     from dnsjax.twin.yspectra import TwinYBudgetStream, TwinYSpectraStream
 
@@ -658,25 +694,7 @@ def main(argv: list[str] | None = None) -> int:
             get_driving(state) if get_driving is not None else {},
         )
 
-    stream_values = TwinParams(
-        e0=source.get("e0"),
-        seed=source.get("seed"),
-        smoothness=source.get("smoothness", TwinParams().smoothness),
-        # A member recorded before the wall-normal pair existed drove
-        # both laws off one ``smoothness`` and gave every mode the same
-        # wall window -- the driver's own legacy back-fill.
-        wall_smoothness=source.get(
-            "wall_smoothness",
-            source.get("smoothness", TwinParams().smoothness),
-        ),
-        wall_confinement=source.get("wall_confinement", 0.0),
-        bins=bins,
-        spectra_ref=values.spectra_ref,
-        rotational_ybudget=values.rotational_ybudget,
-        x0_planes=values.x0_planes,
-        it_yspectra=it_stride,
-        it_ybudget=it_stride,
-    )
+    stream_values = twin_values(source, values, bins=bins, it_stride=it_stride)
     y_weights = diagnostics.flow.y_weights
     pressure = DifferencePressure(diagnostics.flow, diagnostics.fourier)
 

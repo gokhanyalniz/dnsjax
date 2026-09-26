@@ -277,6 +277,37 @@ def test_matches_live_streams() -> None:
     assert read_twin(out).meta["parent_t"] == PARENT_T
     meta = read_twin_yspectra(out).meta
     assert meta["it_yspectra"] == 1 and meta["includes_ref"] is True
+    # The perturbation's provenance is the member's, as the live
+    # sidecar recorded it -- not whatever the defaults are today.
+    live = read_twin_yspectra(member).meta["twin"]
+    assert meta["twin"] == live, (meta["twin"], live)
+
+
+def test_member_without_record() -> None:
+    """No ``twin.json``: the provenance is unknown, and says so.
+
+    Seed, ``e0`` and the perturbation shape are all written ``null``
+    rather than back-filled from today's defaults, which a member
+    recorded under other ones did not run with.
+    """
+    member = _member("plain", PARENT, 4, ["--twin.e0", str(E0)])
+    bare = _SESSION / "no_record"
+    if bare.exists():
+        shutil.rmtree(bare)
+    shutil.copytree(
+        member,
+        bare,
+        ignore=shutil.ignore_patterns("recon*", "stride2", "mid", "twin.json"),
+    )
+    assert "no twin.json" in _recon(bare, ["--recon.last", "1"])
+    provenance = read_twin_yspectra(bare / "recon").meta["twin"]
+    assert provenance == {
+        "seed": None,
+        "e0": None,
+        "smoothness": None,
+        "wall_smoothness": None,
+        "wall_confinement": None,
+    }, provenance
 
 
 def test_driven_member_rebuilds_identically() -> None:
