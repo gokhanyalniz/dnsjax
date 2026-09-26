@@ -1,15 +1,17 @@
 r"""Set up ensemble response experiments (harvest + member run trees).
 
 JAX-free orchestration (stdlib + the JAX-free ``dnsjax`` leaves
-``snapshot_meta``/``harmonics``) for ensemble-averaged response
-experiments: run a perturbed copy of many statistically independent
-snapshots, record the perturbed mode with the probe stream, and
-average -- the ensemble mean isolates the coherent (impulse) response
-while the incoherent turbulence cancels.  Residual noise in the mean
-decays as `$1/\sqrt{N}$` in the member count, so ``--n`` trades
-compute for a cleaner response (antithetic pairing lowers the
-prefactor, not the rate).  Aggregation / identification of the
-resulting probe streams: :mod:`dnsjax.analysis.response.ensemble`.
+``snapshot_meta``/``harmonics``/``seeding``, and for ``build-twin``
+the ``dnsjax-twin`` parameter model, which is JAX-free at import) for
+ensemble-averaged response experiments: run a perturbed copy of many
+statistically independent snapshots, record the perturbed mode with
+the probe stream, and average -- the ensemble mean isolates the
+coherent (impulse) response while the incoherent turbulence cancels.
+Residual noise in the mean decays as `$1/\sqrt{N}$` in the member
+count, so ``--n`` trades compute for a cleaner response (antithetic
+pairing lowers the prefactor, not the rate).  Aggregation /
+identification of the resulting probe streams:
+:mod:`dnsjax.analysis.response.ensemble`.
 
 Two subcommands:
 
@@ -59,18 +61,23 @@ Two subcommands:
     random divergence-free field of exactly ``--e0``), so a member
     directory holds only a generated ``parameters.toml`` ([init]
     snapshot, [stop] horizon, the [twin] section with the member's
-    seed, and an [outs] section for whichever cadences were asked
-    for).  The driver records ``stats.dat`` / ``steps.dat`` /
-    ``corrector.dat`` for **both** states of the pair, the partner's
-    under the ``_twin`` suffix, but each stream is gated on its own
-    ``[outs]`` cadence: without ``--it-stats`` / ``--it-steps`` /
-    ``--it-corrector`` a member records none of them.
-    Seeds are ``--seed-base + k`` over the flat member index
-    (``--members-per-snapshot`` fans several seeds out of one
-    parent).  ``check_laminarization`` is forced off so every member
-    runs the full horizon and the streams aggregate on one shared
-    time grid (a relaminarised member is visible offline in its
-    ``E_ref`` column).  Emits ``run_commands.txt`` and a
+    seed and perturbation shape, and an [outs] section for whichever
+    cadences were asked for).  The shape -- ``--smoothness``,
+    ``--wall-smoothness``, ``--wall-confinement``, ``--mean-flow`` --
+    is written into every member whether given or not, an unset one at
+    the driver's default of the moment: like the seed, it is what a
+    member *is*, so a tree has to mean the same thing whichever code
+    version launches or resumes it, and the defaults do move.  The
+    driver records ``stats.dat`` / ``steps.dat`` / ``corrector.dat``
+    for **both** states of the pair, the partner's under the ``_twin``
+    suffix, but each stream is gated on its own ``[outs]`` cadence:
+    without ``--it-stats`` / ``--it-steps`` / ``--it-corrector`` a
+    member records none of them.  Seeds are ``--seed-base + k`` over
+    the flat member index (``--members-per-snapshot`` fans several
+    seeds out of one parent).  ``check_laminarization`` is forced off
+    so every member runs the full horizon and the streams aggregate on
+    one shared time grid (a relaminarised member is visible offline in
+    its ``E_ref`` column).  Emits ``run_commands.txt`` and a
     ``members.json`` with ``kind: "twin"``, the index
     :func:`dnsjax.analysis.twin.ensemble.aggregate_members` consumes.
 
@@ -432,7 +439,43 @@ def build(args: argparse.Namespace) -> int:
 # ── build-twin ───────────────────────────────────────────────────
 
 
-def _twin_member_toml(mem: dict, args: argparse.Namespace) -> str:
+#: The ``[twin]`` fields that shape a member's perturbation, pinned in
+#: every member TOML (:func:`_twin_shape`).
+_TWIN_SHAPE_KEYS: tuple[str, ...] = (
+    "smoothness",
+    "wall_smoothness",
+    "wall_confinement",
+    "mean_flow",
+)
+
+
+def _twin_shape(args: argparse.Namespace) -> dict:
+    """The members' perturbation shape: each flag, else the default.
+
+    Resolved through the driver's own
+    :class:`~dnsjax.twin.driver.TwinParams`, so an unset knob takes
+    exactly the default ``dnsjax-twin`` would, and a set one is
+    range-checked by the model that will read it -- here, rather than
+    at every member's launch.  Written into each member either way (the
+    module docstring says why).
+    """
+    from pydantic import ValidationError
+
+    from dnsjax.twin.driver import TwinParams
+
+    given = {
+        key: getattr(args, key)
+        for key in _TWIN_SHAPE_KEYS
+        if getattr(args, key) is not None
+    }
+    try:
+        values = TwinParams(e0=args.e0, **given)
+    except ValidationError as exc:
+        raise SystemExit(f"ensemble_setup: error: {exc}") from None
+    return {key: getattr(values, key) for key in _TWIN_SHAPE_KEYS}
+
+
+def _twin_member_toml(mem: dict, args: argparse.Namespace, shape: dict) -> str:
     lines = [
         "# generated by scripts/ensemble_setup.py build-twin",
         "[init]",
@@ -466,6 +509,10 @@ def _twin_member_toml(mem: dict, args: argparse.Namespace) -> str:
         "[twin]",
         f"e0 = {args.e0!r}",
         f"seed = {mem['seed']}",
+        f"smoothness = {shape['smoothness']!r}",
+        f"wall_smoothness = {shape['wall_smoothness']!r}",
+        f"wall_confinement = {shape['wall_confinement']!r}",
+        f"mean_flow = {'true' if shape['mean_flow'] else 'false'}",
         f"it_energy = {args.it_energy}",
     ]
     # ``twin.bins`` is off by default; ``it_budget`` needs it (the
@@ -506,6 +553,12 @@ def build_twin(args: argparse.Namespace) -> int:
     if twin_bin is None:
         sibling = Path(sys.executable).with_name("dnsjax-twin")
         twin_bin = str(sibling) if sibling.exists() else "dnsjax-twin"
+
+    shape = _twin_shape(args)
+    print(
+        "[build-twin] perturbation shape, pinned in every member: "
+        + ", ".join(f"{key} = {value}" for key, value in shape.items())
+    )
 
     tree = Path(args.tree)
     # Unset base: draw one, so two ensembles built from the same parent
@@ -567,7 +620,9 @@ def build_twin(args: argparse.Namespace) -> int:
     for mem in members:
         mdir = tree / mem["dir"]
         mdir.mkdir(parents=True, exist_ok=True)
-        (mdir / "parameters.toml").write_text(_twin_member_toml(mem, args))
+        (mdir / "parameters.toml").write_text(
+            _twin_member_toml(mem, args, shape)
+        )
 
     (tree / "run_commands.txt").write_text("\n".join(run_lines) + "\n")
     with open(tree / "members.json", "w") as f:
@@ -576,6 +631,7 @@ def build_twin(args: argparse.Namespace) -> int:
                 "kind": "twin",
                 "manifest": str(Path(args.manifest).resolve()),
                 "e0": args.e0,
+                **shape,
                 "horizon": args.horizon,
                 "it_energy": args.it_energy,
                 "it_stats": args.it_stats,
@@ -715,6 +771,38 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         required=True,
         help="member run length past the parent snapshot time",
+    )
+    # The perturbation shape.  Unset means the driver's default, which
+    # is resolved here and written into every member all the same
+    # (:func:`_twin_shape`).
+    pt.add_argument(
+        "--smoothness",
+        type=float,
+        default=None,
+        help="periodic spectral envelope of the perturbation "
+        "(twin.smoothness; default: the driver's, pinned per member)",
+    )
+    pt.add_argument(
+        "--wall-smoothness",
+        type=float,
+        default=None,
+        help="its wall-normal envelope (twin.wall_smoothness; default: "
+        "the driver's, pinned per member)",
+    )
+    pt.add_argument(
+        "--wall-confinement",
+        type=float,
+        default=None,
+        help="scale-dependent narrowing of its wall window "
+        "(twin.wall_confinement; default: the driver's, pinned per "
+        "member)",
+    )
+    pt.add_argument(
+        "--mean-flow",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="perturb the (0, 0) mode as well (twin.mean_flow; default: "
+        "the driver's, pinned per member)",
     )
     pt.add_argument("--it-energy", type=int, default=1)
     pt.add_argument(
