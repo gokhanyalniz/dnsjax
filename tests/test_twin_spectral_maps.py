@@ -35,9 +35,9 @@ What each case pins:
    and ``--fill contour`` extends exactly where ``--quantile`` can put
    something above the top level.
 5. **The sign family is declared.** A budget term that never goes
-   negative still draws signed; a declared non-negative field with a
-   round-off negative draws non-negative and says so;
-   ``--signs-from-data`` infers both instead.
+   negative still draws signed; the declared non-positive
+   `$-\mathcal{D}_\Delta$` with a round-off positive draws signed and
+   says so; ``--signs-from-data`` infers both instead.
 6. **The fold.** ``mean`` averages `$j$` with `$n_y-1-j$` without
    double counting the mid-plane, ``upper`` relabels its rows with the
    opposite half's wall distances, and the grid preconditions each
@@ -75,6 +75,13 @@ What each case pins:
     spectra marginals and nothing else, and each of the five opt-in
     switches adds exactly its own family -- ``--decorr-k`` needing
     ``--spacetime`` as well before `$\mathcal{R}^k$` gets one.
+13. **The budget is the balance.** The panels are the balance terms
+    regrouped from the stored densities, each read the same way by
+    all three readers; a map's pressure panel leaves out the driving
+    input its `$m = 0$` column would hold, a spacetime map's carries
+    it, so those panels add up to the ``sum``, which stays the stored
+    one; a contribution's minus sign leads its title; and a rotational
+    stream is refused.
 
 Usage::
 
@@ -119,7 +126,9 @@ RE, RE_TAU = 4200.0, 178.62135279727977
 U_TAU = RE_TAU / RE
 NY, NKZ, NKX = 33, 6, 5
 LX, LZ, VOLUME_FAC = 4.0, 2.0, 2.0
-TERMS = ("P_U", "eps", "V")
+#: The default (convective) stream's stored terms, which the balance
+#: is built from (:func:`~dnsjax.analysis.twin.yspectra.balance_term`).
+TERMS = ("P_U", "P_r", "T_ref", "T_self", "V", "eps", "Wp")
 
 
 def _grid(ny: int = NY) -> np.ndarray:
@@ -358,7 +367,7 @@ def test_premultiplication() -> None:
         ),
         (
             _series("twin_ybudget", [_member(budget_meta, budget)]),
-            "P_U_z",
+            "tr_visc_z",
             NKX,
             LX,
             lambda v: units.rate(v),
@@ -560,7 +569,7 @@ def test_colour_scale_is_a_legend_for_the_box() -> None:
     )
     hidden = float(drawn.drawn()[1].max())
     assert hidden > 1e5 * visible  # the peak the floor hides
-    assert not notes  # a sum of squares, no sign complaint
+    assert not notes  # a stored field, drawn raw, declares no sign
 
     def levels(**kwargs) -> np.ndarray:
         figure = plt.figure()
@@ -608,8 +617,8 @@ def test_colour_scale_is_a_legend_for_the_box() -> None:
 
 
 def test_sign_family_is_declared() -> None:
-    """Non-negativity is declared; the data only checks it."""
-    meta = _meta("twin_ybudget", terms=["P_U", "eps"])
+    """One-signed fields are declared; the data only checks it."""
+    meta = _meta("twin_ybudget")
     rec = np.zeros(2, dtype=tsm._record_dtype(meta, "twin_ybudget"))
     rec["t"] = [0.0, 1.0]
     for suffix in tsm.stored_suffixes(meta):
@@ -619,20 +628,21 @@ def test_sign_family_is_declared() -> None:
     series = _series("twin_ybudget", [_member(meta, rec)])
     options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
     ylim = tsm.y_limits(series, options)
-    panels = [("P_U_x", None), ("eps_x", None), ("sum_x", None)]
+    panels = [("prod_x", None), ("diss_x", None), ("sum_x", None)]
 
     scales, notes = tsm.scan_panels(series, panels, options, ylim=ylim)
-    assert scales[("P_U_x", None)].non_negative is False
+    assert scales[("prod_x", None)].non_negative is False
     assert scales[("sum_x", None)].non_negative is False
-    assert scales[("eps_x", None)].non_negative is True
+    # Declared non-positive, and drawn on the signed scale all the same.
+    assert scales[("diss_x", None)].non_negative is False
     assert len(notes) == 1 and "round-off" in notes[0]
-    assert "eps_x" in notes[0]
+    assert "diss_x" in notes[0] and "non-positive" in notes[0]
 
     inferred, _ = tsm.scan_panels(
         series, panels, options, declared=False, ylim=ylim
     )
-    assert inferred[("P_U_x", None)].non_negative is True
-    assert inferred[("eps_x", None)].non_negative is False  # the dip
+    assert inferred[("prod_x", None)].non_negative is True
+    assert inferred[("diss_x", None)].non_negative is False
 
     # Zero sits on the colour map's neutral centre however lopsided the
     # trim, which is what makes a one-sided signed term readable.
@@ -1173,9 +1183,13 @@ def test_k_sum_streams() -> None:
             "twin_ybudget",
             [_member(bmeta, r, path=f"b{i}") for i, r in enumerate(brecs)],
         )
-        additive = [t for t in TERMS if t not in tsm.NON_ADDITIVE_TERMS]
+        # d_t e is the stored sum however the balance regroups it: every
+        # stored term but ``eps``, which ``diss`` and ``tr_visc`` take
+        # away and add back.
+        stored_sum = [t for t in TERMS if t != "eps"]
         want = np.mean(
-            [sum(r[f"{t}_x"] for t in additive).sum(-1) for r in brecs], axis=0
+            [sum(r[f"{t}_x"] for t in stored_sum).sum(-1) for r in brecs],
+            axis=0,
         )
         assert np.allclose(tsm.k_summed(budget, "sum"), want)
         assert np.allclose(budget.field("sum_x").sum(-1), want)
@@ -1354,6 +1368,105 @@ def test_spacetime() -> None:
         )
         assert [p.name for p in written] == ["one_frame.npz"]
         assert np.load(written[0])["values"].shape[1] == 1
+
+
+def test_budget_is_the_balance() -> None:
+    r"""The budget panels are the balance terms, however they are read.
+
+    On both layouts the `$(0, 0)$` mode lives in -- ``xz00``, and a
+    legacy member's ``x0`` -- every balance term is its combination of
+    stored densities, as each of the three readers reads it: the
+    ensemble mean (``YSeries.field``), one member's frame
+    (``_frame_mean``) and the chunked `$k$`-sum (``k_summed``).
+    ``input`` is that mode alone: a map's pressure panel leaves it
+    out, a spacetime map's carries it (the stored ``Wp``), and the
+    ``sum``, which counts it either way, is the stored one.
+    """
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    spec = tsm.SeriesSpec("twin_ybudget", "", "", tsm.SPACETIME)
+    for suffixes in (DEFAULT, LEGACY):
+        meta = _meta("twin_ybudget", suffixes=suffixes)
+        recs = [_records(meta, "twin_ybudget", 3, seed=s) for s in (61, 67)]
+        series = _series(
+            "twin_ybudget",
+            [_member(meta, r, path=f"m{i}") for i, r in enumerate(recs)],
+        )
+        assert series.terms == tsm.BALANCE_TERMS
+
+        def mean(name: str, recs=recs) -> np.ndarray:
+            return np.mean([r[name] for r in recs], axis=0)
+
+        mode_name = tsm.mean_mode_name(meta, "Wp")
+        mode = np.mean(
+            [tsm.mean_mode_profile(r[mode_name], mode_name) for r in recs],
+            axis=0,
+        )
+        for suf in ("x", "z"):
+
+            def field(term: str, suf=suf, series=series) -> np.ndarray:
+                return series.field(f"{term}_{suf}")
+
+            def stored(term: str, suf=suf) -> np.ndarray:
+                return mean(f"{term}_{suf}")
+
+            assert np.allclose(field("prod"), stored("P_U") + stored("P_r"))
+            assert np.allclose(field("prod_mean"), stored("P_U"))
+            assert np.allclose(field("prod_fluct"), stored("P_r"))
+            assert np.allclose(field("diss"), -stored("eps"))
+            assert np.allclose(field("tr_self"), stored("T_self"))
+            assert np.allclose(field("tr_ref"), stored("T_ref"))
+            assert np.allclose(field("tr_visc"), stored("V") + stored("eps"))
+            assert not field("input")[..., 1:].any()
+            assert np.allclose(field("input")[..., 0], mode)
+            assert np.allclose(
+                field("tr_press") + field("input"), stored("Wp")
+            )
+            assert np.allclose(field("press_input"), stored("Wp"))
+            assert np.allclose(
+                field("sum"), sum(stored(t) for t in TERMS if t != "eps")
+            )
+            one = tsm._frame_mean(series, f"input_{suf}", 1)
+            assert np.allclose(one[..., 0], mode[1])
+            assert f"input_{suf}" in series.additive(suf)
+            assert f"tr_press_{suf}" in series.additive(suf)
+
+        assert np.allclose(tsm.k_summed(series, "input"), mode)
+        assert np.allclose(
+            tsm.k_summed(series, "press_input"), mean("Wp_x").sum(-1)
+        )
+        for base in ("input", "tr_press", "press_input", "diss"):
+            tsm.check_k_sum(series, base)
+
+        panels = tsm.budget_panels(series, "x")
+        assert panels == [(f"{t}_x", None) for t in (*tsm.MAP_PANELS, "sum")]
+        assert ("tr_press_x", None) in panels
+        assert not {("input_x", None), ("press_input_x", None)} & set(panels)
+        spacetime = [base for base, _ in tsm.spacetime_panels(series, spec)]
+        assert spacetime == [*tsm.SPACETIME_PANELS, "sum"]
+        assert "press_input" in spacetime and "tr_press" not in spacetime
+
+    # A contribution's minus sign leads its title, ahead of the
+    # premultiplier; a gain carries none.
+    loss = tsm.make_map(series, "diss_x", 0, options=options).title
+    gain = tsm.make_map(series, "prod_x", 0, options=options).title
+    summed = tsm.make_spacetime(series, "tr_self", options=options).title
+    assert loss.startswith("$-k_") and gain.startswith("$k_")
+    assert summed.startswith(r"$-\mathcal{T}")
+    # A map's pressure panel is the pressure transport alone; a
+    # spacetime map's names the input it carries as well.
+    press = tsm.make_map(series, "tr_press_x", 0, options=options).title
+    assert press.startswith(r"$-k_{z}^+\,\mathcal{T}_{\Delta p}")
+    both = tsm.make_spacetime(series, "press_input", options=options).title
+    assert both.startswith(r"$(\mathcal{I}_\Delta - \mathcal{T}")
+
+    rotational = ["P_U", "P_r", "T_vort", "T_self", "V", "eps", "Wp"]
+    meta = _meta("twin_ybudget", terms=[*rotational, "P_lift"])
+    series = _series(
+        "twin_ybudget",
+        [_member(meta, _records(meta, "twin_ybudget", 2, seed=71))],
+    )
+    _raises(lambda: series.terms, "rotational")
+    _raises(lambda: series.field("prod_x"), "rotational")
 
 
 def test_main_renders_the_selected_series() -> None:
