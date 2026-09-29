@@ -25,9 +25,10 @@ Layout (one module per concern; none is imported by the top-level
   contraction, the three-bin energies recovered from them, and the
   total-in-`$(y, k)$` fluctuation energy (the total with the
   `$(0, 0)$` mode removed) that a difference spectrum is normalised
-  by, and the shape overlap of two such spectra that
+  by, the shape overlap of two such spectra that
   ``scripts/random_ic_calibrate.py`` scores an initial condition
-  with.
+  with, and the budget regrouped into the terms of the
+  difference-energy balance (:func:`~.yspectra.balance_term`).
 - :mod:`.lengths` -- integral length scales of the difference field
   from a paired snapshot.
 
@@ -61,8 +62,13 @@ from .spectra import (
     read_twin_spectra,
 )
 from .yspectra import (
+    BALANCE_PARTS,
+    BALANCE_SOURCES,
+    BALANCE_TERMS,
     LEGACY_SUFFIXES,
     YResolvedData,
+    balance_term,
+    balance_terms,
     bin_energies,
     fluctuation_energy,
     fluctuation_profile,
@@ -79,12 +85,17 @@ from .yspectra import (
 )
 
 __all__ = [
+    "BALANCE_PARTS",
+    "BALANCE_SOURCES",
+    "BALANCE_TERMS",
     "LEGACY_SUFFIXES",
     "ClosureResiduals",
     "TwinSeries",
     "TwinSpectraData",
     "YResolvedData",
     "aggregate_members",
+    "balance_term",
+    "balance_terms",
     "bin_energies",
     "budget_sums",
     "closure_residuals",

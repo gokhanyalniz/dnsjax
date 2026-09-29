@@ -221,6 +221,9 @@ term) and against its fluctuation gradients (`P_r`), transfer by the
 reference fluctuation (`T_ref`) and by the difference field's own
 advection (`T_self`), the viscous term in both forms (`V`, `eps`),
 and the work of the pressure gradient (`Wp`).
+`scripts/twin_spectral_maps.py --budget` draws them regrouped as the
+terms of the difference-energy balance, each as its contribution to
+$\partial_t e$ (`analysis.twin.balance_term`).
 
 `twin.rotational_ybudget` (default **off**) writes the same budget
 with the *rotational* nonlinear term the solver actually integrates.
@@ -435,7 +438,7 @@ such pairing is.
 | `series` | Readers for `twin.dat` / `twin_budget.dat` and the `twin.json` member record, plus the generic `read_dat` that loads any `.dat` stream (`stats.dat`, `stats_twin.dat`, …); per-component budget sums; `uniform_grid` |
 | `ensemble` | Member-tree aggregation on aligned relative time, plus the growth-rate fits (exponential-phase $\lambda$, algebraic-phase linear rate) |
 | `spectra` | Reader for `twin_spectra.bin` and the decorrelation ratio |
-| `yspectra` | Readers for `twin_yspectra.bin` / `twin_ybudget.bin`, the wall-normal quadrature contraction, and the three-bin energies recovered from them |
+| `yspectra` | Readers for `twin_yspectra.bin` / `twin_ybudget.bin`, the wall-normal quadrature contraction, the three-bin energies recovered from them, and the budget regrouped as the difference-energy balance |
 | `lengths` | Integral length scales of the difference field from a paired snapshot |
 
 Aggregation is also a command:

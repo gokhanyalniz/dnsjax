@@ -38,8 +38,12 @@ shape:
   else is selected: the difference and reference spectra always,
   `$\mathcal{R}^k$` under ``--decorr-k``, the budget under
   ``--budget`` ("Spacetime maps");
-- ``--budget`` adds the ``twin_ybudget`` series, one figure per
-  stored term;
+- ``--budget`` adds the ``twin_ybudget`` series: the terms of the
+  difference-energy balance, regrouped from the stored densities
+  (:func:`~dnsjax.analysis.twin.yspectra.balance_term`) and each drawn
+  as its contribution to `$\partial_t e$`; the driving input, one mode,
+  is drawn only by a spacetime map, with the pressure transport
+  (:data:`MAP_PANELS`, :data:`SPACETIME_PANELS`);
 - ``--x0`` adds the `$k_x = 0$` plane, where the stream has one --
   ``twin.x0_planes``, or any member recorded before that plane became
   opt-in.  It is a slice of the mode plane rather than a marginal of
@@ -420,28 +424,32 @@ under the reflection `$R_y:\,(u,v,w)(x,y,z) \mapsto
 `$x \to -x$` both marginals are blind to (a stored entry pairs `$\pm k$`
 already).  Every stored quantity is **even** under the flow's own
 symmetry, so the fold is a plain arithmetic mean with no sign flips.
-For the reflection: the spectra are moduli; `$\mathcal{P}^U$` flips both
-`$\Delta\hat v$` and `$\partial_y U$`; `$\mathcal{V}$`,
-`$\hat\varepsilon$` and `$\mathcal{W}$` pair each odd factor with a
-`$\partial_y$` or with the `$v$` slot; and each transfer term carries
-an even number of odd factors for the same reason.  The mid-plane
-pairs with itself and is **not** double counted, and the grid is
-checked for the symmetry the fold assumes rather than trusted --
-which binds ``upper`` as well, since it labels its rows with the
-*opposite* half's wall distances, but not ``lower``, where `$1 + y$`
-is the wall distance whatever the far half does.
+For the reflection: the spectra are moduli; every balance term is a
+sum of stored densities that are each even --
+`$\mathcal{P}_\Delta^{\mathbf{U}}$` flips both `$\Delta\hat v$` and
+`$\partial_y U$`, the viscous and pressure densities pair each odd
+factor with a `$\partial_y$` or with the `$v$` slot, and each
+advective one carries an even number of odd factors for the same
+reason.  The mid-plane pairs with itself and is **not** double
+counted, and the grid is checked for the symmetry the fold assumes
+rather than trusted -- which binds ``upper`` as well, since it labels
+its rows with the *opposite* half's wall distances, but not
+``lower``, where `$1 + y$` is the wall distance whatever the far half
+does.
 ``--half lower`` / ``upper`` keep one wall instead, which is how a
 run's own asymmetry is inspected.
 
 Colour scales
 =============
-Non-negativity is **declared**, not inferred: the energies and the
-pseudo-dissipation are sums of squares, which the division by a
-positive `$E^{\mathrm{ref}}$` -- and either decorrelation's by a
-positive reference -- leaves them (:data:`NON_NEGATIVE`), so those get
-the grey scale and everything else the diverging one.  The
-declaration is asserted against the data once per series and a
-negative excursion is reported with its size relative to the peak --
+Non-negativity is **declared**, not inferred: the energies are sums
+of squares, which the division by a positive `$E^{\mathrm{ref}}$` --
+and either decorrelation's by a positive reference -- leaves them
+(:data:`NON_NEGATIVE`), so those get the grey scale and everything
+else the diverging one.  The budget's `$-\mathcal{D}_\Delta$` is minus
+a sum of squares, declared non-positive (:data:`NON_POSITIVE`) and
+drawn on the diverging scale, whose negative side it fills.  Either
+declaration is asserted against the data once per series and an
+excursion across zero is reported with its size relative to the peak --
 at round-off it is truncation and the map is drawn regardless;
 anything larger is worth looking at, and the map is still drawn.
 ``--signs-from-data`` infers the sign instead, for a stream this list
@@ -478,7 +486,7 @@ rows the axes box shows: the ordinate's floor and limits included,
 not merely the wall row a logarithmic axis cannot place
 (:meth:`Map.drawn`, :func:`y_limits`).  The colour bar therefore
 labels the same numbers the contours do, which matters most for
-`$\hat\varepsilon$`: its peak is at the wall, below the default
+`$-\mathcal{D}_\Delta$`: its peak is at the wall, below the default
 floor, and would otherwise set a scale no visible contour reaches.
 
 Each panel's scale is frozen (``--clim series``, the default) on the
@@ -550,7 +558,7 @@ As a library (a notebook on the cluster, one stream at a time)::
 
     s = open_series(["twin1", "twin2"], "twin_ybudget", stride=10)
     opts = MapOptions(Units(re=4200.0, re_tau=178.62135279727977))
-    m = make_map(s, "P_U_x", frame=24, options=opts)
+    m = make_map(s, "prod_x", frame=24, options=opts)
     draw_map(ax, m, units=opts.units)
 
     e = open_series(["twin1", "twin2"], "twin_yspectra", stride=10)
@@ -589,8 +597,12 @@ from matplotlib.colors import (
 from matplotlib.ticker import FuncFormatter
 
 from dnsjax.analysis.twin.yspectra import (
+    BALANCE_PARTS,
+    BALANCE_TERMS,
     MIN_YBUDGET_VERSION,
     MIN_YSPECTRA_VERSION,
+    balance_term,
+    balance_terms,
     fluctuation_energy,
     fluctuation_profile,
     mean_free_spectrum,
@@ -694,7 +706,7 @@ NORMALISED_MARGINALS: frozenset[str] = frozenset({"x", "z"})
 
 #: Default bottom of a **logarithmic** ordinate, in wall units.  The
 #: grid reaches far below it (`$y^+ \approx 0.02$` at the resolutions
-#: these runs use), and nothing but `$\hat\varepsilon$` reaches its
+#: these runs use), and nothing but `$\mathcal{D}_\Delta$` reaches its
 #: first contour level down there, so the decade below `$y^+ = 1$`
 #: buys a taller box and no information.  A linear ordinate keeps the
 #: wall itself, which is a position it can show.
@@ -720,41 +732,78 @@ _LOG_BANDS_PER_DECADE: int = 8
 
 #: Fields that are non-negative **by construction**, keyed by the base
 #: name: the two spectra prefixes are `$\tfrac12|\hat u|^2$` sums,
-#: which a division by a positive `$E^{\mathrm{ref}}$` leaves them,
-#: and ``eps`` is `$\nu(|\partial_y\hat u|^2 + k^2|\hat u|^2)$`.
-#: ``V`` is deliberately absent -- the operator (discrete-Laplacian)
-#: viscous form is *not* sign-definite, as
-#: :mod:`dnsjax.twin.diagnostics` ("Dissipation form") sets out,
-#: however negative it happens to come out in any given run.  Both
-#: decorrelations are one of those sums over twice another, so they
-#: inherit it.
-NON_NEGATIVE: frozenset[str] = frozenset({"e", "r", "eps", DECORR, DECORR_K})
+#: which a division by a positive `$E^{\mathrm{ref}}$` leaves them.
+#: Both decorrelations are one of those sums over twice another, so
+#: they inherit it.
+NON_NEGATIVE: frozenset[str] = frozenset({"e", "r", DECORR, DECORR_K})
 
-#: Below this fraction of the peak, a negative excursion in a declared
-#: non-negative field is reported as truncation rather than a defect.
-#: These are sums of squares, so round-off is the only mechanism and
-#: it lands many orders below this.
+#: Budget terms that are non-positive **by construction**: ``diss`` is
+#: `$-\mathcal{D}_\Delta$`, minus a sum of squares.  Drawn on the
+#: signed scale, whose negative side it fills, and checked against the
+#: data as :data:`NON_NEGATIVE` is.  ``tr_visc`` is deliberately
+#: absent: it carries ``V``'s operator (discrete-Laplacian) form,
+#: which is not sign-definite (:mod:`dnsjax.twin.diagnostics`,
+#: "Dissipation form").
+NON_POSITIVE: frozenset[str] = frozenset({"diss"})
+
+#: Below this fraction of the peak, an excursion across zero in a
+#: declared one-signed field is reported as truncation rather than a
+#: defect.  These are sums of squares, so round-off is the only
+#: mechanism and it lands many orders below this.
 SIGN_TOLERANCE: float = 1e-9
 
-#: Budget terms excluded from the ``sum`` virtual field: ``eps`` is
-#: the pseudo-dissipation companion of ``V`` (not a separate sink) and
-#: ``P_lift`` sits outside the sum by construction.  What is left adds
-#: up to `$\partial_t \hat e(y, k)$` -- see "Two budget forms" in
-#: :mod:`dnsjax.twin.diagnostics`.
-NON_ADDITIVE_TERMS: frozenset[str] = frozenset({"eps", "P_lift"})
+#: Budget terms excluded from the ``sum`` virtual field: the two parts
+#: of ``prod``, which would count production twice.  What is left adds
+#: up to `$\partial_t e(y, k)$`
+#: (:func:`~dnsjax.analysis.twin.yspectra.balance_term`).
+NON_ADDITIVE_TERMS: frozenset[str] = BALANCE_PARTS
 
-#: Panel labels for the budget terms, matching the appendix notation.
-TERM_LABELS: dict[str, str] = {
-    "P_U": r"\mathcal{P}^{U}",
-    "P_r": r"\mathcal{P}^{r}",
-    "T_ref": r"\mathcal{T}^{\mathrm{ref}}",
-    "T_self": r"\mathcal{T}^{\mathrm{self}}",
-    "T_vort": r"\mathcal{T}^{\mathrm{vort}}",
-    "V": r"\mathcal{V}",
-    "eps": r"\hat{\varepsilon}",
-    "Wp": r"\mathcal{W}",
-    "P_lift": r"\mathcal{P}^{\mathrm{lift}}",
-    "sum": r"\partial_t\hat{e}",
+#: Budget panels that draw a sum of balance terms rather than one
+#: (:func:`balance_field`): ``press_input`` is `$\mathcal{I}_\Delta -
+#: \mathcal{T}^{\Delta\mathbf{u}}_{\Delta p}$`, the stored ``Wp``.
+COMBINED_PANELS: dict[str, tuple[str, ...]] = {
+    "press_input": ("tr_press", "input"),
+}
+
+#: The panels of a `$(\lambda, y)$` budget map, in the order drawn.
+#: ``input`` lives at `$(0, 0)$` alone, in the `$m = 0$` column no map
+#: draws, so the pressure panel is the pressure transport alone.
+MAP_PANELS: tuple[str, ...] = (
+    "prod",
+    "prod_mean",
+    "prod_fluct",
+    "diss",
+    "tr_self",
+    "tr_ref",
+    "tr_visc",
+    "tr_press",
+)
+
+#: The panels of a spacetime budget map: those of a map, the pressure
+#: panel carrying the driving input as well, which a `$k$`-sum does
+#: show.  Every panel but the two parts of ``prod`` then adds up to
+#: the ``sum``, `$\partial_t e$`.
+SPACETIME_PANELS: tuple[str, ...] = (*MAP_PANELS[:-1], "press_input")
+
+#: Panel labels for the budget terms in the write-up's notation, as
+#: ``(sign, symbol)``: each panel is the term's contribution to
+#: `$\partial_t e$`, and a contribution's minus sign leads its title,
+#: ahead of any premultiplier (:func:`field_title`).
+TERM_LABELS: dict[str, tuple[str, str]] = {
+    "prod": ("", r"\mathcal{P}_\Delta"),
+    "prod_mean": ("", r"\mathcal{P}_\Delta^{\mathbf{U}}"),
+    "prod_fluct": ("", r"\mathcal{P}_\Delta^{\tilde{\mathbf{u}}}"),
+    "input": ("", r"\mathcal{I}_\Delta"),
+    "diss": ("-", r"\mathcal{D}_\Delta"),
+    "tr_self": ("-", r"\mathcal{T}_{E_\Delta}^{\Delta\mathbf{u}}"),
+    "tr_ref": ("-", r"\mathcal{T}_{E_\Delta}^{\mathbf{u}}"),
+    "tr_visc": ("-", r"\mathcal{T}_{E_\Delta}^{\nu}"),
+    "tr_press": ("-", r"\mathcal{T}_{\Delta p}^{\Delta\mathbf{u}}"),
+    "press_input": (
+        "",
+        r"(\mathcal{I}_\Delta - \mathcal{T}_{\Delta p}^{\Delta\mathbf{u}})",
+    ),
+    "sum": ("", r"\partial_t e"),
 }
 
 #: ``(wavelength axis, energy superscript)`` per **drawable** stored
@@ -1027,6 +1076,31 @@ def _open_member(path: Path, stem: str) -> _Member:
     )
 
 
+def balance_field(read, meta: dict, name: str) -> np.ndarray:
+    """A field by name, the balance terms regrouped on the way.
+
+    ``<term>_<suffix>`` with *term* one of
+    :data:`~dnsjax.analysis.twin.yspectra.BALANCE_TERMS` is built from
+    the stored densities
+    (:func:`~dnsjax.analysis.twin.yspectra.balance_term`), and with
+    *term* one of :data:`COMBINED_PANELS` it is the sum of the balance
+    terms that panel names; any other name is a stored field and comes
+    back from *read* unchanged.  *read* returns a stored field by name,
+    which is what lets the three readers here -- the cached ensemble
+    mean (:meth:`YSeries.field`), the chunked `$k$`-sum
+    (:meth:`YSeries.reduced`) and one frame of one member
+    (:func:`_frame_mean`) -- share the one definition.
+    """
+    base, _, suffix = name.rpartition("_")
+    if base in COMBINED_PANELS:
+        terms = COMBINED_PANELS[base]
+    elif base in BALANCE_TERMS:
+        terms = (base,)
+    else:
+        return read(name)
+    return sum(balance_term(read, meta, term, suffix) for term in terms)
+
+
 @dataclass
 class YSeries:
     r"""An ensemble-averaged, subsampled `$(y, k)$` stream.
@@ -1135,8 +1209,16 @@ class YSeries:
 
     @property
     def terms(self) -> tuple[str, ...]:
-        """Budget term names (``twin_ybudget`` only)."""
-        return tuple(self.meta.get("terms", ()))
+        """The balance terms of a ``twin_ybudget`` stream.
+
+        :data:`~dnsjax.analysis.twin.yspectra.BALANCE_TERMS`, regrouped
+        from the stored densities (:func:`balance_field`); a stream the
+        balance cannot be built from is refused here, before any figure
+        is.  Empty for the spectra stream.
+        """
+        if self.stem != "twin_ybudget":
+            return ()
+        return balance_terms(self.meta)
 
     @property
     def suffixes(self) -> tuple[str, ...]:
@@ -1154,9 +1236,13 @@ class YSeries:
         r"""Ensemble mean of one field over the selected frames.
 
         Shape ``(n_frames, 3, n_y, n_k)`` for the spectra and
-        ``(n_frames, n_y, n_k)`` for the budget.  The virtual name
-        ``sum_<suffix>`` adds the budget terms that make up
-        `$\partial_t \hat e$` (:data:`NON_ADDITIVE_TERMS`).
+        ``(n_frames, n_y, n_k)`` for the budget.  A budget name is a
+        balance term (``prod_x``, ...) or a stored density
+        (``P_U_x``, ...), and the virtual ``sum_<suffix>`` adds the
+        balance terms that make up `$\partial_t e$`
+        (:data:`NON_ADDITIVE_TERMS`).  A balance term is a linear
+        combination of stored densities, so it is taken of their
+        ensemble means.
         """
         if name in self._cache:
             return self._cache[name]
@@ -1165,6 +1251,10 @@ class YSeries:
             value = np.sum(
                 [self.field(n) for n in self.additive(suffix)], axis=0
             )
+        elif self.stem == "twin_ybudget" and (
+            base in COMBINED_PANELS or base in BALANCE_TERMS
+        ):
+            value = balance_field(self.field, self.meta, name)
         else:
             total = None
             for member, rows in zip(self.members, self.rows, strict=True):
@@ -1177,10 +1267,12 @@ class YSeries:
         return value
 
     def additive(self, suffix: str) -> list[str]:
-        r"""The stored budget fields that add up to `$\partial_t \hat e$`.
+        r"""The balance terms that add up to `$\partial_t e$`.
 
         Every term of one marginal but :data:`NON_ADDITIVE_TERMS` --
         what the virtual ``sum_<suffix>`` adds, wherever it is read.
+        The driving input is among them whether or not a panel draws
+        it, so the sum is the whole rate.
         """
         names = [
             f"{term}_{suffix}"
@@ -1981,13 +2073,20 @@ def field_kind(series: YSeries) -> str:
 def declared_non_negative(name: str) -> bool:
     """Whether :data:`NON_NEGATIVE` covers a name.
 
-    Stored (``e_x``, ``eps_z``), virtual (``decorr_k_x``) or bare
+    Stored (``e_x``), virtual (``decorr_k_x``, ``diss_z``) or bare
     (``e``, ``sum``): a trailing marginal is stripped and anything
     else is looked up whole, so the `$k$`-summed spacetime bases
     resolve to the same declaration their marginals do.
     """
     base, _, suffix = name.rpartition("_")
     return (base if suffix in MARGINALS else name) in NON_NEGATIVE
+
+
+def declared_non_positive(name: str) -> bool:
+    """Whether :data:`NON_POSITIVE` covers a name, looked up as
+    :func:`declared_non_negative` looks one up."""
+    base, _, suffix = name.rpartition("_")
+    return (base if suffix in MARGINALS else name) in NON_POSITIVE
 
 
 def normalises(series: YSeries, name: str) -> bool:
@@ -2076,8 +2175,9 @@ def field_title(
         sup = "^{k}" if base == DECORR_K else ""
         sub = "" if component is None else f"_{{{COMPONENTS[component]}}}"
         return rf"${factor}\mathcal{{R}}{sup}{sub}$"
+    sign = ""
     if kind == "rate":
-        body = TERM_LABELS.get(base, base.replace("_", r"\_"))
+        sign, body = TERM_LABELS.get(base, ("", base.replace("_", r"\_")))
     else:
         delta = r"\Delta " if base == "e" else ""
         if component is None:
@@ -2088,7 +2188,7 @@ def field_title(
             body = rf"E^{{{superscript}}}_{{{sub}}}"
     scale = reference_norm(series, name, component)
     if scale is None:
-        return f"${factor}{body}{options.units.norm_suffix(kind)}$"
+        return f"${sign}{factor}{body}{options.units.norm_suffix(kind)}$"
     ref = reference_symbol(component)
     return (
         f"${factor}{body}/{ref}$\n"
@@ -2108,8 +2208,9 @@ def make_map(
 ) -> Map:
     r"""Build one premultiplied map from a stored (or virtual) field.
 
-    *name* is a stored field such as ``e_x`` / ``P_U_z``, or one of
-    the virtual ``sum_x`` / ``decorr_x`` / ``decorr_k_x``;
+    *name* is a stored field such as ``e_x``, a balance term such as
+    ``prod_z`` (:func:`balance_field`), or one of the virtual
+    ``sum_x`` / ``decorr_x`` / ``decorr_k_x``;
     *component* selects a velocity component of a ``twin_yspectra``
     field (``None`` sums the three).  *frame* indexes the series'
     subsampled records.  *non_negative* overrides the declaration of
@@ -2248,30 +2349,44 @@ def scan_panels(
             name if component is None else f"{name}[{COMPONENTS[component]}]"
         )
         non_negative = declared_non_negative(name) if declared else lo >= 0.0
+        note = None
         if declared and non_negative:
             note = _sign_note(label, lo, hi)
-            if note is not None:
-                notes.append(note)
+        elif declared and declared_non_positive(name):
+            note = _sign_note(label, lo, hi, positive=False)
+        if note is not None:
+            notes.append(note)
         scales[(name, component)] = PanelScale(lo, hi, non_negative)
     return scales, notes
 
 
-def _sign_note(label: str, lo: float, hi: float) -> str | None:
-    """What a declared non-negative field's negative minimum earns.
+def _sign_note(
+    label: str, lo: float, hi: float, *, positive: bool = True
+) -> str | None:
+    """What a declared one-signed field's excursion across zero earns.
 
-    ``None`` where there is nothing to say.  Shared by the two scans
-    (:func:`scan_panels`, :func:`spacetime_scales`), which differ in
-    what they sweep and not in how they judge a sign.
+    *positive* is the :data:`NON_NEGATIVE` declaration, whose negative
+    minimum is judged; otherwise the :data:`NON_POSITIVE` one, whose
+    positive maximum is judged the same way.  ``None`` where there is
+    nothing to say.  Shared by the two scans (:func:`scan_panels`,
+    :func:`spacetime_scales`), which differ in what they sweep and not
+    in how they judge a sign.
     """
     peak = max(abs(lo), abs(hi))
-    if lo >= 0.0 or peak <= 0.0:
+    stray = -lo if positive else hi
+    if stray <= 0.0 or peak <= 0.0:
         return None
-    ratio = -lo / peak
+    ratio = stray / peak
     verdict = (
         "round-off, i.e. truncation"
         if ratio < SIGN_TOLERANCE
         else "ABOVE round-off -- worth a look"
     )
+    if not positive:
+        return (
+            f"  {label}: declared non-positive, max/peak = "
+            f"{ratio:.3e} ({verdict}); drawn signed"
+        )
     return (
         f"  {label}: declared non-negative, min/peak = "
         f"-{ratio:.3e} ({verdict}); drawn as non-negative"
@@ -2384,10 +2499,10 @@ def band_colors(
       neutral centre, and each side is scaled on its own so that the
       most negative band is the darkest blue and the most positive the
       darkest red.  That is deliberately *not* symmetric in intensity:
-      a one-sided term such as `$\mathcal{P}^{U}$`, whose negative
-      excursion is a percent of its positive one, would otherwise
-      spend the entire blue half of the colour map on a single band
-      and read as unsigned.
+      a one-sided term such as `$\mathcal{P}_\Delta^{\mathbf{U}}$`,
+      whose negative excursion is a percent of its positive one, would
+      otherwise spend the entire blue half of the colour map on a
+      single band and read as unsigned.
 
     A signed field that never changes sign is the same statement with
     one side empty, and gets the whole ramp of the side it does use.
@@ -2915,8 +3030,10 @@ def spectra_panels(prefix: str, marginal: str) -> list[tuple[str, int | None]]:
 def budget_panels(
     series: YSeries, marginal: str
 ) -> list[tuple[str, int | None]]:
-    """Every stored budget term of one marginal, plus their sum."""
-    return [(f"{t}_{marginal}", None) for t in (*series.terms, "sum")]
+    """Every map panel of one marginal (:data:`MAP_PANELS`), plus their
+    sum, once the stream is known to support them."""
+    balance_terms(series.meta)
+    return [(f"{t}_{marginal}", None) for t in (*MAP_PANELS, "sum")]
 
 
 # ── Spacetime maps ───────────────────────────────────────────────────
@@ -2977,7 +3094,11 @@ def _frame_mean(series: YSeries, name: str, frame: int) -> np.ndarray:
     """
     total = None
     for member, rows in zip(series.members, series.rows, strict=True):
-        block = np.asarray(member.records[name][rows[frame]], dtype=np.float64)
+
+        def read(stored: str, member=member, row=rows[frame]) -> np.ndarray:
+            return np.asarray(member.records[stored][row], dtype=np.float64)
+
+        block = balance_field(read, series.meta, name)
         total = block if total is None else total + block
     return total / series.n_members
 
@@ -3012,7 +3133,9 @@ def k_summed(series: YSeries, base: str, marginal: str = "") -> np.ndarray:
         )
     names = series.additive(suffix) if base == "sum" else [f"{base}_{suffix}"]
     return series.reduced(
-        lambda read: sum(read(n).sum(axis=-1) for n in names)
+        lambda read: sum(
+            balance_field(read, series.meta, n).sum(axis=-1) for n in names
+        )
     )
 
 
@@ -3093,8 +3216,8 @@ def spacetime_title(
         sub = "" if component is None else f"_{{{COMPONENTS[component]}}}"
         return rf"$\mathcal{{R}}^{{k}}{sub}$"
     if kind == "rate":
-        body = TERM_LABELS.get(base, base.replace("_", r"\_"))
-        return f"${body}{options.units.norm_suffix(kind)}$"
+        sign, body = TERM_LABELS.get(base, ("", base.replace("_", r"\_")))
+        return f"${sign}{body}{options.units.norm_suffix(kind)}$"
     superscript = f"^{{{MARGINALS[marginal][1]}}}" if marginal else ""
     symbol = "{E'}" if base == "r" else "{E}"
     delta = r"\Delta " if base == "e" else ""
@@ -3209,12 +3332,14 @@ def spacetime_panels(
     """Which ``(base, component)`` panels a spacetime figure carries.
 
     A spectra series shows its three components and their sum; a
-    budget series every stored term and theirs, as
-    :func:`budget_panels` does.  The base is what
-    :func:`make_spacetime` takes.
+    budget series :data:`SPACETIME_PANELS` and their sum, whose
+    pressure panel carries the driving input that a map's leaves out
+    (:data:`MAP_PANELS`).  The base is what :func:`make_spacetime`
+    takes.
     """
     if spec.stem == "twin_ybudget":
-        return [(term, None) for term in (*series.terms, "sum")]
+        balance_terms(series.meta)
+        return [(term, None) for term in (*SPACETIME_PANELS, "sum")]
     return [(spec.base, c) for c in (*range(len(COMPONENTS)), None)]
 
 
@@ -3264,10 +3389,14 @@ def spacetime_scales(
         non_negative = (
             declared_non_negative(map_.name) if declared else lo >= 0.0
         )
+        label = f"{map_.name}[{map_.label}]"
+        note = None
         if declared and non_negative:
-            note = _sign_note(f"{map_.name}[{map_.label}]", lo, hi)
-            if note is not None:
-                notes.append(note)
+            note = _sign_note(label, lo, hi)
+        elif declared and declared_non_positive(map_.name):
+            note = _sign_note(label, lo, hi, positive=False)
+        if note is not None:
+            notes.append(note)
         scales.append(PanelScale(lo, hi, non_negative))
         floors.append(log_floor(values, decades))
     return scales, floors, notes
@@ -3925,8 +4054,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--budget",
         action="store_true",
-        help="also render the twin_ybudget series (one figure per "
-        "term); off by default",
+        help="also render the twin_ybudget series (the terms of the "
+        "difference-energy balance, a panel each); off by default",
     )
     p.add_argument(
         "--x0",

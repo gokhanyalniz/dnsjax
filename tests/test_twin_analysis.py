@@ -1361,6 +1361,141 @@ def test_ybudget_reader() -> None:
     print("twin_ybudget reader (both layouts): OK")
 
 
+def test_balance_terms() -> None:
+    r"""The budget regrouped as the difference-energy balance.
+
+    One mode plane per stored term, stored through
+    :func:`_plane_blocks` in the legacy layout (``x0``, no ``xz00``)
+    and in the current one, so the two describe the same field and the
+    regrouping can be held to exact arithmetic on both:
+
+    - each term is its combination of stored densities, and those that
+      :data:`~dnsjax.analysis.twin.yspectra.BALANCE_PARTS` leaves in
+      the sum add up to the stored sum, ``P_U + P_r + T_ref + T_self +
+      V + Wp``;
+    - ``input`` is ``Wp``'s `$(0, 0)$` mode and nothing else: zero off
+      column 0 of every marginal, that mode in column 0, the whole of
+      ``xz00``, and the same numbers whichever layout it is found in;
+    - ``tr_press`` is the rest of ``Wp``, exactly, and nothing at
+      `$(0, 0)$`;
+    - a rotational stream, and a name that is no balance term, are
+      refused.
+    """
+    from dnsjax.analysis.twin import (
+        BALANCE_PARTS,
+        BALANCE_TERMS,
+        balance_term,
+        balance_terms,
+        read_twin_ybudget,
+    )
+
+    terms = ["P_U", "P_r", "T_ref", "T_self", "V", "eps", "Wp"]
+    rng = np.random.default_rng(11)
+    n_t = 3
+    t = np.arange(n_t) * 0.02
+    planes = {
+        term: rng.random((n_t, NY, 2 * N_KZ - 1, N_KX)) - 0.5 for term in terms
+    }
+    planes["eps"] += 0.5  # a sum of squares in a real stream
+    mode00 = planes["Wp"][..., 0, 0]  # (n_t, NY)
+
+    got: dict[tuple[str, ...], dict[str, np.ndarray]] = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for suffixes, version in (
+            (("x", "z", "x0"), 2),
+            (("x", "z", "xz00"), 3),
+        ):
+            d = Path(tmp) / "_".join(suffixes)
+            d.mkdir()
+            fields = [
+                (f"{term}_{suf}", (NY, *_SUFFIX_WIDTH[suf]))
+                for term in terms
+                for suf in suffixes
+            ]
+            values = {
+                f"{term}_{suf}": block
+                for term in terms
+                for suf, block in _plane_blocks(planes[term], suffixes).items()
+            }
+            extra = {"format_version": version, "terms": terms}
+            if version > 2:
+                extra["suffixes"] = list(suffixes)
+            _write_y_stream(
+                d, "twin_ybudget", t, fields, values, _y_sidecar(extra)
+            )
+            data = read_twin_ybudget(d)
+            assert balance_terms(data.meta) == BALANCE_TERMS
+            out = got.setdefault(suffixes, {})
+            for suf in suffixes:
+                bal = {
+                    term: balance_term(data.__getitem__, data.meta, term, suf)
+                    for term in BALANCE_TERMS
+                }
+                for term, arr in bal.items():
+                    out[f"{term}_{suf}"] = arr
+
+                def s(name: str, suf=suf, values=values) -> np.ndarray:
+                    return values[f"{name}_{suf}"]
+
+                exact = {
+                    "prod": s("P_U") + s("P_r"),
+                    "prod_mean": s("P_U"),
+                    "prod_fluct": s("P_r"),
+                    "diss": -s("eps"),
+                    "tr_self": s("T_self"),
+                    "tr_ref": s("T_ref"),
+                    "tr_visc": s("V") + s("eps"),
+                }
+                for term, want in exact.items():
+                    assert_allclose(bal[term], want, rtol=0, atol=0)
+
+                if suf == "xz00":
+                    assert_allclose(bal["input"], mode00, rtol=0, atol=0)
+                    assert not bal["tr_press"].any()
+                else:
+                    assert not bal["input"][..., 1:].any()
+                    assert_allclose(
+                        bal["input"][..., 0], mode00, rtol=0, atol=0
+                    )
+                assert_allclose(
+                    bal["tr_press"] + bal["input"], s("Wp"), rtol=0, atol=0
+                )
+                in_sum = sum(
+                    bal[term]
+                    for term in BALANCE_TERMS
+                    if term not in BALANCE_PARTS
+                )
+                stored_sum = sum(s(name) for name in terms if name != "eps")
+                assert_allclose(in_sum, stored_sum, rtol=1e-12, atol=1e-15)
+
+    # The two layouts agree wherever they share a marginal: the (0, 0)
+    # mode came off ``x0`` in one and off ``xz00`` in the other.
+    legacy, current = got[("x", "z", "x0")], got[("x", "z", "xz00")]
+    for suf in ("x", "z"):
+        for term in BALANCE_TERMS:
+            name = f"{term}_{suf}"
+            assert_allclose(legacy[name], current[name], rtol=0, atol=0)
+
+    rotational = ["P_U", "P_r", "T_vort", "T_self", "V", "eps", "Wp"]
+    rotational += ["P_lift"]
+    _expect_value_error(
+        "rotational", lambda: balance_terms({"terms": rotational})
+    )
+    _expect_value_error(
+        "rotational",
+        lambda: balance_term(
+            lambda name: None, {"terms": rotational}, "prod", "x"
+        ),
+    )
+    try:
+        balance_term(lambda name: None, {"terms": terms}, "P_U", "x")
+    except KeyError as err:
+        assert "not a balance term" in str(err)
+    else:
+        raise AssertionError("a stored name is no balance term")
+    print("difference-energy balance from both layouts: OK")
+
+
 if __name__ == "__main__":
     test_readers()
     test_closure_residuals()
@@ -1374,6 +1509,7 @@ if __name__ == "__main__":
     test_fluctuation_energy()
     test_shape_alignment()
     test_ybudget_reader()
+    test_balance_terms()
     test_integral_lengths_core()
     test_build_twin()
     print("All twin analysis tests passed.")
