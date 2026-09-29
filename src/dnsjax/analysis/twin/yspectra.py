@@ -44,6 +44,11 @@ integration-by-parts residual that makes ``T_tot`` nonzero.  Under
 of the split differs from ``twin_budget.dat`` by the work of a
 gradient -- zero in total, not per `$y$`.
 
+:func:`balance_term` regroups the stored budget densities into the
+terms of the difference-energy balance, each as its contribution to
+`$\partial_t e$` (its docstring has the correspondence), and is what
+``scripts/twin_spectral_maps.py`` draws.
+
 :func:`bin_energies` is the bridge back to the three-bin diagnostics
 of Egerique-de-la-Concha & Hwang (*J. Fluid Mech.* **1036**, A52,
 2026), and it needs nothing beyond the default streams: the first
@@ -76,6 +81,7 @@ scalar.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -468,3 +474,141 @@ def bin_energies(data: YResolvedData) -> dict[str, np.ndarray]:
         "E_du1": du1.sum(axis=1),
         "E_du2": z[..., 1:].sum(axis=(1, 2)),
     } | {f"E_du1_{c}": du1[:, i] for i, c in enumerate("xyz")}
+
+
+# ── The difference-energy balance ────────────────────────────────────
+
+#: The stored terms the balance is built from: those of the default
+#: (convective) ``twin_ybudget`` form, the only one it reads.
+BALANCE_SOURCES: tuple[str, ...] = (
+    "P_U",
+    "P_r",
+    "T_ref",
+    "T_self",
+    "V",
+    "eps",
+    "Wp",
+)
+
+#: Each balance term as a combination of the stored densities,
+#: ``{stored term: coefficient}``.  ``input`` and ``tr_press`` split
+#: the `$(0, 0)$` mode off ``Wp`` on top of this (:func:`balance_term`).
+_BALANCE: dict[str, dict[str, float]] = {
+    "prod": {"P_U": 1.0, "P_r": 1.0},
+    "prod_mean": {"P_U": 1.0},
+    "prod_fluct": {"P_r": 1.0},
+    "input": {},
+    "diss": {"eps": -1.0},
+    "tr_self": {"T_self": 1.0},
+    "tr_ref": {"T_ref": 1.0},
+    "tr_visc": {"V": 1.0, "eps": 1.0},
+    "tr_press": {"Wp": 1.0},
+}
+
+#: The balance terms, in the order the write-up lists them.
+BALANCE_TERMS: tuple[str, ...] = tuple(_BALANCE)
+
+#: The two parts ``prod`` splits into.  They sit **outside** the sum
+#: the other terms make, which would otherwise count production twice.
+BALANCE_PARTS: frozenset[str] = frozenset({"prod_mean", "prod_fluct"})
+
+
+def balance_terms(meta: dict) -> tuple[str, ...]:
+    """:data:`BALANCE_TERMS`, once *meta* is known to support them.
+
+    Refuses a ``twin_ybudget`` sidecar whose ``terms`` lack any of
+    :data:`BALANCE_SOURCES`, which is every stream written under
+    ``twin.rotational_ybudget``: its production and transfer are
+    other quantities, with no reading as these terms.
+    """
+    stored = tuple(meta.get("terms", ()))
+    missing = [name for name in BALANCE_SOURCES if name not in stored]
+    if missing:
+        raise ValueError(
+            "the difference-energy balance is built from the convective "
+            f"twin_ybudget terms {list(BALANCE_SOURCES)}; this stream "
+            f"stores {list(stored)}, without {missing} (a stream written "
+            "under twin.rotational_ybudget has no such reading)."
+        )
+    return BALANCE_TERMS
+
+
+def balance_term(
+    read: Callable[[str], np.ndarray],
+    meta: dict,
+    term: str,
+    suffix: str,
+) -> np.ndarray:
+    r"""One term of the difference-energy balance, on one stored layout.
+
+    *read* returns a stored field by name (``"P_U_x"``, ...), so the
+    same arithmetic serves :class:`YResolvedData` (``data.__getitem__``)
+    and a memory-mapped reader alike; *suffix* is one of the sidecar's
+    :func:`stored_suffixes`.  The result has *read*'s shape and is
+    float64.
+
+    Each term is its **contribution to** `$\partial_t e$`, in the
+    write-up's notation (the per-mode `$\mathcal{P}$`, `$\mathcal{I}$`,
+    `$\mathcal{D}$` and `$\mathcal{T}$`, with `$e$` the modal energy):
+
+    - ``prod``: `$\mathcal{P}_\Delta$`, ``P_U + P_r``; its parts are
+      ``prod_mean``, `$\mathcal{P}_\Delta^{\mathbf{U}}$` (``P_U``), and
+      ``prod_fluct``, `$\mathcal{P}_\Delta^{\tilde{\mathbf{u}}}$`
+      (``P_r``);
+    - ``input``: `$\mathcal{I}_\Delta$`, ``Wp`` at `$(0, 0)$`;
+    - ``diss``: `$-\mathcal{D}_\Delta$`, ``-eps``;
+    - ``tr_self``: `$-\mathcal{T}^{\Delta\mathbf{u}}_{E_\Delta}$`,
+      ``T_self``;
+    - ``tr_ref``: `$-\mathcal{T}^{\mathbf{u}}_{E_\Delta}$`, ``T_ref``;
+    - ``tr_visc``: `$-\mathcal{T}^{\nu}_{E_\Delta}$`, ``V + eps``;
+    - ``tr_press``: `$-\mathcal{T}^{\Delta\mathbf{u}}_{\Delta p}$`,
+      ``Wp`` less ``input``.
+
+    Every term but the two :data:`BALANCE_PARTS` of ``prod`` adds up
+    to `$\partial_t e$`: ``P_U + P_r + T_ref + T_self + V + Wp``, the
+    stored sum, which the regrouping leaves unchanged.
+
+    ``input`` is ``Wp``'s `$(0, 0)$` entry and nothing else, exactly.
+    There ``Wp`` holds the driving alone, the pressure doing no work
+    on a mode whose wall-normal component is identically zero and
+    whose wall-parallel wavenumbers vanish
+    (:mod:`dnsjax.twin.diagnostics`, "State preconditions"); its
+    `$\Delta\Pi$` is the difference of the two members' wall-shear
+    inferences.  The entry is the whole of ``*_xz00`` and of column 0
+    of ``*_x0``, and one part of column 0 of ``*_x`` (the `$k_z = 0$`
+    column summed over `$k_x$`) and of ``*_z`` (the `$k_x = 0$` plane
+    summed over `$k_z$`); :func:`mean_mode_name` finds it on a legacy
+    layout too.
+
+    ``tr_visc`` inherits ``V``'s discrete form, the one the solver
+    applies, so the stored terms keep closing exactly; its wall-normal
+    integral is therefore the discrete summation-by-parts defect
+    between ``V`` and ``eps`` (:mod:`dnsjax.twin.diagnostics`,
+    "Dissipation form") rather than exactly zero.
+    """
+    if term not in _BALANCE:
+        raise KeyError(
+            f"{term!r} is not a balance term; expected one of "
+            f"{list(BALANCE_TERMS)}."
+        )
+    balance_terms(meta)
+
+    def stored(name: str) -> np.ndarray:
+        return np.asarray(read(f"{name}_{suffix}"), dtype=np.float64)
+
+    if term in ("input", "tr_press"):
+        name = mean_mode_name(meta, "Wp")
+        mode = np.asarray(
+            mean_mode_profile(read(name), name), dtype=np.float64
+        )
+        if suffix == "xz00":
+            driving = mode
+        else:
+            width = int(meta["n_kx" if suffix == "z" else "n_kz"])
+            driving = np.zeros((*mode.shape, width))
+            driving[..., 0] = mode
+        return driving if term == "input" else stored("Wp") - driving
+    return sum(
+        coefficient * stored(name)
+        for name, coefficient in _BALANCE[term].items()
+    )
