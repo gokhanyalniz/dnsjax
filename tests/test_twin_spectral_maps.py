@@ -71,17 +71,40 @@ What each case pins:
     value; a signed series gets no logarithmic figure and a
     one-sample selection none at all; and the ``.npz`` beside the
     pair carries the drawn arrays and every factor behind them.
-12. **End to end.** ``main()`` on a two-member set draws the two
-    spectra marginals and nothing else, and each of the five opt-in
-    switches adds exactly its own family -- ``--decorr-k`` needing
-    ``--spacetime`` as well before `$\mathcal{R}^k$` gets one.
+12. **End to end.** ``main()`` on a two-member set draws the
+    difference-spectra and budget marginals, each tracked series with
+    its ``_track`` directory, and nothing else; ``--no-budget`` drops
+    the budget, and each of the five opt-in switches adds exactly its
+    own family -- ``--reference`` and ``--decorr-k`` each needing
+    ``--spacetime`` as well before their spacetime map.  A budget
+    figure is three columns of the spectra's panels.
 13. **The budget is the balance.** The panels are the balance terms
     regrouped from the stored densities, each read the same way by
-    all three readers; a map's pressure panel leaves out the driving
-    input its `$m = 0$` column would hold, a spacetime map's carries
-    it, so those panels add up to the ``sum``, which stays the stored
-    one; a contribution's minus sign leads its title; and a rotational
-    stream is refused.
+    all three readers, in the rows of the 3 x 3 grid; a map's pressure
+    panel leaves out the driving input its `$m = 0$` column would
+    hold, a spacetime map's carries it in the same place, so those
+    panels add up to the ``sum``, which stays the stored one and is
+    titled `$\partial_t E_\Delta$`; a contribution's minus sign leads
+    its title; and a rotational stream is refused.
+14. **The budget grid.** Three columns whatever ``--ncols`` says, at
+    the panel size ``--width`` fits to ``--ncols`` columns, so a
+    budget figure is wider than ``--width`` rather than
+    narrower-paneled; the nine panels sit row by row.
+15. **``--clim ramped``.** Each frame's range is the extremes of every
+    frame so far: it contains the frame's own, never shrinks, holds an
+    earlier extreme through a dip, ramps the two sides of a signed
+    panel separately, is the frozen range from the frame holding the
+    series extreme onward, and is what the figure's levels are read
+    from.
+16. **Peak tracking.** The centroid of the frame's own top band --
+    the cells at or above `$(1 - 1/n)$` of its peak, weighted by value
+    and by trapezoidal widths in `$\ln\lambda$` and `$\ln y$`
+    (`$y$` on a linear ordinate), averaged in those coordinates -- sits
+    at the centre of a symmetric band, takes in the edge cell exactly
+    at the threshold, and is ``nan`` with nothing positive.  Exactly
+    the tracked panels carry it, it is the same under every
+    ``--clim``, and its figure and ``.npz`` are written beside the
+    frames.
 
 Usage::
 
@@ -116,6 +139,7 @@ matplotlib.use("Agg")
 
 import twin_spectral_maps as tsm  # noqa: E402
 from matplotlib import pyplot as plt  # noqa: E402
+from matplotlib.contour import ContourSet  # noqa: E402
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -865,11 +889,13 @@ def test_layouts_and_default_series() -> None:
     under ``twin.x0_planes``.  All three must open; the `$(0, 0)$`
     mode `$E^{\mathrm{ref}}$` subtracts is the same number in all
     three, whichever field it is read from; and what is *drawn* is the
-    two spectra marginals unless a switch asks for more -- each of the
-    five adding its own family and nothing else.
+    two difference-spectra marginals, and the budget's where there is
+    one, unless a switch asks for more -- each of the five adding its
+    own family and nothing else.
     """
     scales = {}
     registries = {}
+    opened = {}
     for label, suffixes in (
         ("legacy", LEGACY),
         ("default", DEFAULT),
@@ -884,6 +910,7 @@ def test_layouts_and_default_series() -> None:
         )
         scales[label] = series.reference_scale()
         registries[label] = tsm.available_series(series, None)
+        opened[label] = series
 
     # One plane, one E_ref -- the stored route to its (0, 0) mode is
     # a storage detail and nothing more.  The stored *values* are
@@ -901,27 +928,37 @@ def test_layouts_and_default_series() -> None:
     # ``xz00`` is never a tag: it has no abscissa.
     assert not any("xz00" in tag for tag in registries["x0_planes"])
 
-    spectra = [f"spectra_{p}_{m}" for p in ("e", "r") for m in ("x", "z")]
+    spectra = [f"spectra_e_{m}" for m in ("x", "z")]
+    reference = [f"spectra_r_{m}" for m in ("x", "z")]
     decorr = [f"spectra_decorr_{m}" for m in ("x", "z")]
     decorr_k = [f"spectra_decorr_k_{m}" for m in ("x", "z")]
-    spacetime = ["spacetime_e", "spacetime_r"]
     everything = dict(
-        x0=True, budget=True, decorr=True, decorr_k=True, spacetime=True
+        x0=True,
+        budget=True,
+        reference=True,
+        decorr=True,
+        decorr_k=True,
+        spacetime=True,
     )
     for label, registry in registries.items():
-        # The bare default is one family: the two marginals of the
-        # difference and reference spectra.
+        # The bare default of a spectra stream is the two marginals of
+        # the difference spectra, and nothing of the reference's.
         assert sorted(tsm.default_series(registry)) == sorted(spectra), label
-        # Each switch adds its own family and nothing else.  R^k's
-        # spacetime map is the one composite -- it needs both of its
-        # switches, so neither alone brings it.
+        # Each switch adds its own family and nothing else.  The
+        # reference's and R^k's spacetime maps are the composites --
+        # each needs both of its switches, so neither alone brings it.
         for switch, gained in (
+            ({"reference": True}, reference),
             ({"decorr": True}, decorr),
             ({"decorr_k": True}, decorr_k),
-            ({"spacetime": True}, spacetime),
+            ({"spacetime": True}, ["spacetime_e"]),
+            (
+                {"reference": True, "spacetime": True},
+                reference + ["spacetime_e", "spacetime_r"],
+            ),
             (
                 {"decorr_k": True, "spacetime": True},
-                decorr_k + spacetime + ["spacetime_decorr_k"],
+                decorr_k + ["spacetime_e", "spacetime_decorr_k"],
             ),
         ):
             got = tsm.default_series(registry, **switch)
@@ -929,6 +966,31 @@ def test_layouts_and_default_series() -> None:
         assert set(tsm.default_series(registry, **everything)) == set(
             registry
         ), label
+
+    # The budget is drawn unasked, its spacetime map under --spacetime,
+    # and --no-budget drops both.
+    budget_meta = _meta("twin_ybudget")
+    budget = _series(
+        "twin_ybudget",
+        [_member(budget_meta, _records(budget_meta, "twin_ybudget", 2))],
+    )
+    both = tsm.available_series(opened["default"], budget)
+    assert set(tsm.default_series(both)) == {
+        *spectra,
+        "budget_x",
+        "budget_z",
+    }
+    assert set(tsm.default_series(both, budget=False)) == set(spectra)
+    assert set(tsm.default_series(both, spacetime=True)) == {
+        *spectra,
+        "budget_x",
+        "budget_z",
+        "spacetime_e",
+        "spacetime_budget",
+    }
+    assert "spacetime_budget" not in tsm.default_series(
+        both, spacetime=True, budget=False
+    )
     print("layouts, their tags, and one E_ref across all three: OK")
 
 
@@ -1183,9 +1245,9 @@ def test_k_sum_streams() -> None:
             "twin_ybudget",
             [_member(bmeta, r, path=f"b{i}") for i, r in enumerate(brecs)],
         )
-        # d_t e is the stored sum however the balance regroups it: every
-        # stored term but ``eps``, which ``diss`` and ``tr_visc`` take
-        # away and add back.
+        # d_t E_Delta is the stored sum however the balance regroups
+        # it: every stored term but ``eps``, which ``diss`` and
+        # ``tr_visc`` take away and add back.
         stored_sum = [t for t in TERMS if t != "eps"]
         want = np.mean(
             [sum(r[f"{t}_x"] for t in stored_sum).sum(-1) for r in brecs],
@@ -1445,6 +1507,38 @@ def test_budget_is_the_balance() -> None:
         assert spacetime == [*tsm.SPACETIME_PANELS, "sum"]
         assert "press_input" in spacetime and "tr_press" not in spacetime
 
+    # The 3 x 3 grid, row by row: the production and its two parts; the
+    # dissipation and the viscous and pressure transports; the two
+    # advective transports and the sum budget_panels appends.  A
+    # spacetime map's pressure panel sits where the map's does.
+    assert tsm.MAP_PANELS == (
+        "prod",
+        "prod_mean",
+        "prod_fluct",
+        "diss",
+        "tr_visc",
+        "tr_press",
+        "tr_ref",
+        "tr_self",
+    )
+    assert tsm.SPACETIME_PANELS == (
+        "prod",
+        "prod_mean",
+        "prod_fluct",
+        "diss",
+        "tr_visc",
+        "press_input",
+        "tr_ref",
+        "tr_self",
+    )
+
+    # The sum is the rate of the difference energy, in the notation the
+    # transport terms' titles use.
+    total = tsm.make_map(series, "sum_x", 0, options=options).title
+    assert total.startswith(r"$k_{z}^+\,\partial_t E_\Delta"), total
+    total = tsm.make_spacetime(series, "sum", options=options).title
+    assert total.startswith(r"$\partial_t E_\Delta"), total
+
     # A contribution's minus sign leads its title, ahead of the
     # premultiplier; a gain carries none.
     loss = tsm.make_map(series, "diss_x", 0, options=options).title
@@ -1467,6 +1561,251 @@ def test_budget_is_the_balance() -> None:
     )
     _raises(lambda: series.terms, "rotational")
     _raises(lambda: series.field("prod_x"), "rotational")
+
+
+def test_budget_grid() -> None:
+    """The budget's 3 x 3 grid, at the panel size of the spectra."""
+    style = tsm.PlotStyle()
+    xlim, ylim = (14.0, 1122.0), (1.0, RE_TAU)
+    spectra = tsm.panel_geometry(4, xlim, ylim, style, y_log=True)
+    budget = tsm.panel_geometry(
+        9, xlim, ylim, style, y_log=True, ncols=tsm.BUDGET_NCOLS
+    )
+    assert (spectra.nrows, spectra.ncols) == (2, 2)
+    assert (budget.nrows, budget.ncols) == (3, 3)
+    # One panel size for both, fitted so that the spectra figure is
+    # exactly --width wide; the budget's third column widens it.
+    assert (budget.box_w, budget.box_h) == (spectra.box_w, spectra.box_h)
+    assert np.isclose(spectra.fig_w, style.width)
+    assert budget.fig_w > 1.4 * style.width
+
+    # Row by row: panel 4 (the viscous transport) under panel 1 (the
+    # mean-shear production), panel 8 (the sum) in the last corner.
+    lefts, bottoms = zip(
+        *(budget.axes_rect(p)[:2] for p in range(9)), strict=True
+    )
+    assert len(set(np.round(lefts, 12))) == 3
+    assert len(set(np.round(bottoms, 12))) == 3
+    assert np.isclose(lefts[4], lefts[1]) and bottoms[4] < bottoms[1]
+    assert lefts[8] == max(lefts) and bottoms[8] == min(bottoms)
+
+    # Both budget figures take that rule, and nothing else does.
+    meta = _meta("twin_ybudget")
+    series = _series(
+        "twin_ybudget", [_member(meta, _records(meta, "twin_ybudget", 1))]
+    )
+    assert tsm.figure_columns(series) == tsm.BUDGET_NCOLS
+    meta = _meta("twin_yspectra")
+    series = _series(
+        "twin_yspectra", [_member(meta, _records(meta, "twin_yspectra", 1))]
+    )
+    assert tsm.figure_columns(series) is None
+
+
+def test_ramped_clim() -> None:
+    """``--clim ramped``: the extremes of every frame so far."""
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    meta = _meta("twin_yspectra")
+    rec = _records(meta, "twin_yspectra", 6, seed=83)
+    # One shape, growing over three decades, dipping, then saturating.
+    amplitude = np.array([1e-3, 1e-2, 5e-3, 1e-1, 1.0, 0.8])
+    for suffix in tsm.stored_suffixes(meta):
+        field = rec[f"e_{suffix}"]
+        field[:] = field[0] * amplitude.reshape((-1,) + (1,) * field[0].ndim)
+    series = _series("twin_yspectra", [_member(meta, rec)])
+    ylim = tsm.y_limits(series, options)
+    panel = ("e_x", 0)
+    scale = tsm.scan_panels(series, [panel], options, ylim=ylim)[0][panel]
+    own = [
+        tsm.make_map(series, "e_x", f, options=options, component=0).drawn(
+            ylim
+        )[1]
+        for f in range(amplitude.size)
+    ]
+    lows = [float(v.min()) for v in own]
+    highs = [float(v.max()) for v in own]
+    ramped = [scale.data_range("ramped", f) for f in range(amplitude.size)]
+    for f, (lo, hi) in enumerate(ramped):
+        # The running extremes, which hold the frame's own range.
+        assert (lo, hi) == (min(lows[: f + 1]), max(highs[: f + 1])), f
+        assert lo <= lows[f] and hi >= highs[f], f
+    assert all(b[1] >= a[1] for a, b in zip(ramped, ramped[1:], strict=False))
+    # While the field grows it is the frame's own scale; through the dip
+    # it keeps the earlier extreme; from the frame holding the series
+    # extreme onward it is the frozen range.
+    assert ramped[1][1] == highs[1]
+    assert ramped[2][1] == highs[1] > highs[2]
+    assert ramped[4] == ramped[5] == scale.data_range("series", 5)
+    assert scale.data_range("series", 0) == (scale.lo, scale.hi)
+    assert scale.data_range("frame", 3) is None
+    _raises(lambda: scale.data_range("fixed", 0), "series/frame/ramped")
+
+    # ... and it is what the figure's levels are read from.
+    figure = tsm.panel_figure(
+        series,
+        2,
+        [panel],
+        options,
+        tsm.PlotStyle(clim="ramped"),
+        {panel: scale},
+    )
+    filled = next(
+        c for c in figure.axes[0].collections if isinstance(c, ContourSet)
+    )
+    plt.close(figure)
+    want = tsm.contour_levels(
+        own[2], 10, non_negative=True, data_range=ramped[2]
+    )
+    assert np.allclose(filled.levels, want)
+
+    # A signed panel ramps each side on its own: here the positive side
+    # peaks at frame 1 and the negative one at frame 2, on alternate
+    # rows (which the fold keeps apart, pairing j with n_y - 1 - j).
+    meta = _meta("twin_ybudget")
+    rec = np.zeros(4, dtype=tsm._record_dtype(meta, "twin_ybudget"))
+    rec["t"] = np.arange(4.0)
+    pattern = np.random.default_rng(97).random((NY, NKZ))
+    even = (np.arange(NY) % 2 == 0)[:, None]
+    for f, (up, down) in enumerate(((1, 1), (2, 1), (1, 3), (1, 1))):
+        rec["P_U_x"][f] = up * np.where(even, pattern, 0.0)
+        rec["P_r_x"][f] = -down * np.where(even, 0.0, pattern)
+    budget = _series("twin_ybudget", [_member(meta, rec)])
+    key = ("prod_x", None)
+    scale = tsm.scan_panels(
+        budget, [key], options, ylim=tsm.y_limits(budget, options)
+    )[0][key]
+    lo, hi = zip(
+        *(scale.data_range("ramped", f) for f in range(4)), strict=True
+    )
+    assert hi[2] == hi[1] > hi[0] and lo[2] < lo[1] == lo[0]
+    assert (lo[3], hi[3]) == (scale.lo, scale.hi)
+
+
+def test_peak_track() -> None:
+    r"""The top-band centroid, where it is drawn, and what is written."""
+    # A band symmetric in ln(lambda) and ln(y) about one cell, on axes
+    # uniform in the logarithm: its centroid is that cell exactly,
+    # whatever lies outside the band.
+    lam = 10.0 * 2.0 ** np.arange(7)
+    y = 2.0 ** np.arange(6)
+    values = np.full((y.size, lam.size), 0.5)
+    values[1:4, 2:5] = 0.95
+    values[2, 3] = 1.0
+    values[5, 0] = 0.89  # below (1 - 1/10) of the peak: left out
+
+    def at(v, *, y_axis=y, y_log=True) -> tsm.Map:
+        return tsm.Map(
+            lam=lam,
+            y=y_axis,
+            values=v,
+            title="",
+            name="e_x",
+            non_negative=True,
+            y_log=y_log,
+        )
+
+    centre = tsm.peak_centroid(at(values), 10)
+    assert np.allclose(centre, (lam[3], y[2])), centre
+    # A cell exactly at the threshold is in the band, and pulls on it.
+    edged = values.copy()
+    edged[5, 0] = (1.0 - 1.0 / 10) * values.max()
+    moved = tsm.peak_centroid(at(edged), 10)
+    assert moved[0] < centre[0] and moved[1] > centre[1], moved
+    # Nothing positive, no peak.
+    assert np.isnan(tsm.peak_centroid(at(-values), 10)).all()
+    # Only the rows the box shows count: a larger value two rows under
+    # its floor changes nothing.
+    hidden = values.copy()
+    hidden[0, 6] = 5.0
+    box = (y[2], y[-1])
+    assert tsm.peak_centroid(at(hidden), 10, box) == tsm.peak_centroid(
+        at(values), 10, box
+    )
+    # A linear ordinate averages y itself, over dy.
+    linear = np.linspace(0.0, 50.0, y.size)  # the wall included
+    got = tsm.peak_centroid(at(values, y_axis=linear, y_log=False), 10)
+    assert np.allclose(got, (lam[3], linear[2])), got
+
+    # Exactly the panels with one continuous bulk are tracked: every
+    # panel of the difference spectra's two marginals, and the
+    # production and its mean-shear part on the budget's.
+    difference = tsm.spectra_panels("e", "x")
+    assert [k for k in difference if k[0] in tsm.TRACKED] == difference
+    for prefix, marginal in (
+        ("r", "x"),
+        (tsm.DECORR, "z"),
+        (tsm.DECORR_K, "x"),
+        ("e", "x0"),
+    ):
+        panels = tsm.spectra_panels(prefix, marginal)
+        assert not any(k[0] in tsm.TRACKED for k in panels), prefix
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    meta = _meta("twin_ybudget")
+    budget = _series(
+        "twin_ybudget",
+        [_member(meta, _records(meta, "twin_ybudget", 3, seed=89))],
+    )
+    panels = tsm.budget_panels(budget, "x")
+    tracked = [k for k in panels if k[0] in tsm.TRACKED]
+    assert tracked == [("prod_x", None), ("prod_mean_x", None)]
+
+    # The track is drawn on those panels alone: the history up to the
+    # frame, and the frame's point.
+    ylim = tsm.y_limits(budget, options)
+    scales, _ = tsm.scan_panels(budget, panels, options, ylim=ylim)
+    tracks = {
+        k: tsm.track_peak(budget, *k, options=options, n_levels=10, ylim=ylim)
+        for k in tracked
+    }
+    figure = tsm.panel_figure(
+        budget, 2, panels, options, tsm.PlotStyle(), scales, tracks
+    )
+    lines = [len(ax.get_lines()) for ax in figure.axes[0::2]]
+    history = figure.axes[0].get_lines()[0].get_xdata()
+    plt.close(figure)
+    assert lines == [2, 2] + [0] * 7, lines
+    assert np.array_equal(history, tracks[tracked[0]].lam)
+
+    # The band is the frame's own, so no colour scale moves the track,
+    # and the figure and .npz beside the frames say so.
+    with tempfile.TemporaryDirectory() as scratch:
+        out = Path(scratch)
+        stored = {}
+        for clim in ("series", "frame", "ramped"):
+            written = tsm.render_series(
+                budget,
+                "budget_x",
+                "",
+                "x",
+                out / clim,
+                options=options,
+                style=tsm.PlotStyle(dpi=40, clim=clim),
+                quiet=True,
+            )
+            track_dir = out / clim / "budget_x_track"
+            names = ["budget_x_track.npz", "budget_x_track.png"]
+            assert sorted(p.name for p in track_dir.iterdir()) == names
+            assert set(names) <= {p.name for p in written}
+            stored[clim] = np.load(track_dir / "budget_x_track.npz")
+        for clim in ("frame", "ramped"):
+            for axis in ("lam", "y"):
+                assert np.array_equal(
+                    stored[clim][axis], stored["series"][axis]
+                ), (clim, axis)
+        track = stored["series"]
+        assert list(track["fields"]) == ["prod_x", "prod_mean_x"]
+        assert list(track["panels"]) == ["prod", "prod_mean"]
+        assert track["lam"].shape == track["y"].shape == (2, 3)
+        assert np.allclose(track["lam"][0], tracks[tracked[0]].lam)
+        assert np.allclose(track["y"][1], tracks[tracked[1]].y)
+        assert np.allclose(track["t"], budget.t_rel)
+        assert np.isclose(float(track["threshold"]), 0.9)
+        want = tsm.peak_centroid(
+            tsm.make_map(budget, "prod_mean_x", 1, options=options),
+            10,
+            ylim,
+        )
+        assert np.allclose((track["lam"][1, 1], track["y"][1, 1]), want)
 
 
 def test_main_renders_the_selected_series() -> None:
@@ -1510,12 +1849,14 @@ def test_main_renders_the_selected_series() -> None:
             ]
         )
         assert code == 0
-        # The bare default set: the difference and reference spectra
-        # marginals, and nothing else.
+        # The bare default set: the difference-spectra and budget
+        # marginals, each with the track of its tracked panels beside
+        # it, and nothing else.
         maps = [
-            f"spectra_{base}_{m}" for base in ("e", "r") for m in ("x", "z")
+            f"{kind}_{m}" for kind in ("spectra_e", "budget") for m in "xz"
         ]
-        assert sorted(p.name for p in out.iterdir()) == sorted(maps)
+        defaults = {*maps, *(f"{tag}_track" for tag in maps)}
+        assert {p.name for p in out.iterdir()} == defaults
         for tag in maps:
             frames = sorted((out / tag).glob("*.png"))
             assert [f.name for f in frames] == [
@@ -1523,6 +1864,21 @@ def test_main_renders_the_selected_series() -> None:
                 f"{tag}_2.png",
             ], tag
             assert all(f.stat().st_size > 0 for f in frames)
+            track = sorted(f.name for f in (out / f"{tag}_track").iterdir())
+            assert track == [f"{tag}_track.npz", f"{tag}_track.png"], tag
+        # A budget figure is three columns of the spectra's panels: the
+        # geometry is independent of the axis limits, so any serve.
+        style = tsm.PlotStyle(dpi=50)
+        for tag, ncols, n_panels in (
+            ("spectra_e_x", None, 4),
+            ("budget_x", tsm.BUDGET_NCOLS, 9),
+        ):
+            width = plt.imread(out / tag / f"{tag}_0.png").shape[1]
+            limits = (1.0, 10.0)
+            want = tsm.panel_geometry(
+                n_panels, limits, limits, style, y_log=True, ncols=ncols
+            ).fig_w
+            assert abs(width - want * style.dpi) <= 1, (tag, width)
 
         def run(target: Path, *extra: str) -> int:
             return tsm.main(
@@ -1547,63 +1903,91 @@ def test_main_renders_the_selected_series() -> None:
             )
 
         # ``--spacetime`` adds one figure per colour scale for the
-        # whole run, and the ``.npz`` behind the pair.
-        spacetime = ["spacetime_e", "spacetime_r"]
+        # whole run, and the ``.npz`` behind the pair.  The budget's
+        # k-sum changes sign, so it draws no log figure.
         st_dir = root / "st"
         assert run(st_dir, "--spacetime") == 0
-        assert sorted(p.name for p in st_dir.iterdir()) == sorted(
-            maps + spacetime
-        )
-        for tag in spacetime:
-            files = sorted(f.name for f in (st_dir / tag).iterdir())
-            assert files == [
-                f"{tag}.npz",
-                f"{tag}_lin.png",
-                f"{tag}_log.png",
-            ], tag
-            assert all(f.stat().st_size > 0 for f in (st_dir / tag).iterdir())
-
-        # ``--budget`` adds the other stream, its k-sum included under
-        # ``--spacetime``; ``--x0`` adds nothing here, these members
-        # carrying no such plane.  The budget changes sign, so it
-        # draws no log figure.
-        wider = root / "wider"
-        assert run(wider, "--budget", "--x0", "--spacetime") == 0
-        assert sorted(p.name for p in wider.iterdir()) == sorted(
-            maps + spacetime + ["budget_x", "budget_z", "spacetime_budget"]
-        )
+        assert {p.name for p in st_dir.iterdir()} - defaults == {
+            "spacetime_e",
+            "spacetime_budget",
+        }
+        files = sorted(f.name for f in (st_dir / "spacetime_e").iterdir())
+        assert files == [
+            "spacetime_e.npz",
+            "spacetime_e_lin.png",
+            "spacetime_e_log.png",
+        ]
         assert sorted(
-            f.name for f in (wider / "spacetime_budget").iterdir()
+            f.name for f in (st_dir / "spacetime_budget").iterdir()
         ) == ["spacetime_budget.npz", "spacetime_budget_lin.png"]
+        assert all(f.stat().st_size > 0 for f in st_dir.rglob("*.png"))
 
-        # Each switch adds exactly its own family, and R^k's spacetime
-        # map needs both of its switches.
+        # ``--no-budget`` drops the budget, and ``--budget`` -- the
+        # default -- still parses, for the command lines that pass it;
+        # ``--x0`` adds nothing here, these members carrying no such
+        # plane.
+        lean = root / "lean"
+        assert run(lean, "--no-budget", "--x0") == 0
+        assert {p.name for p in lean.iterdir()} == {
+            "spectra_e_x",
+            "spectra_e_z",
+            "spectra_e_x_track",
+            "spectra_e_z_track",
+        }
+        parser = tsm.build_parser()
+        required = ["--members", "m", "--out", "o", "--re", "1"]
+        for extra, drawn in (
+            ([], True),
+            (["--budget"], True),
+            (["--no-budget"], False),
+        ):
+            parsed = parser.parse_args([*required, "--re-tau", "1", *extra])
+            assert parsed.budget is drawn, extra
+
+        # Each switch adds exactly its own family, and the reference's
+        # and R^k's spacetime maps need both of their switches.  No
+        # reference map carries a track.
         for extra, gained in (
+            (["--reference"], {"spectra_r_x", "spectra_r_z"}),
             (["--decorr"], {"spectra_decorr_x", "spectra_decorr_z"}),
             (
                 ["--decorr-k"],
                 {"spectra_decorr_k_x", "spectra_decorr_k_z"},
             ),
-            (["--spacetime"], set(spacetime)),
+            (
+                ["--reference", "--spacetime"],
+                {
+                    "spectra_r_x",
+                    "spectra_r_z",
+                    "spacetime_e",
+                    "spacetime_r",
+                    "spacetime_budget",
+                },
+            ),
             (
                 ["--decorr-k", "--spacetime"],
                 {
                     "spectra_decorr_k_x",
                     "spectra_decorr_k_z",
                     "spacetime_decorr_k",
-                    *spacetime,
+                    "spacetime_e",
+                    "spacetime_budget",
                 },
             ),
         ):
             target = root / "-".join(e.strip("-") for e in extra)
             assert run(target, *extra) == 0
-            assert {p.name for p in target.iterdir()} - set(maps) == gained
+            got = {p.name for p in target.iterdir()} - defaults
+            assert got == gained, (extra, got)
 
         # ``--series`` is exact, and an unknown tag is refused rather
         # than quietly dropped.
         one = root / "one"
         assert run(one, "--series", "budget_z") == 0
-        assert [p.name for p in one.iterdir()] == ["budget_z"]
+        assert sorted(p.name for p in one.iterdir()) == [
+            "budget_z",
+            "budget_z_track",
+        ]
         _raises(
             lambda: run(root / "none", "--series", "spectra_e_x0"),
             "unknown series",

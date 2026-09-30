@@ -221,9 +221,9 @@ term) and against its fluctuation gradients (`P_r`), transfer by the
 reference fluctuation (`T_ref`) and by the difference field's own
 advection (`T_self`), the viscous term in both forms (`V`, `eps`),
 and the work of the pressure gradient (`Wp`).
-`scripts/twin_spectral_maps.py --budget` draws them regrouped as the
-terms of the difference-energy balance, each as its contribution to
-$\partial_t e$ (`analysis.twin.balance_term`).
+`scripts/twin_spectral_maps.py` draws them by default, regrouped as
+the terms of the difference-energy balance, each as its contribution
+to $\partial_t E_\Delta$ (`analysis.twin.balance_term`).
 
 `twin.rotational_ybudget` (default **off**) writes the same budget
 with the *rotational* nonlinear term the solver actually integrates.
