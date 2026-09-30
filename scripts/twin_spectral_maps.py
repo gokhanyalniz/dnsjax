@@ -18,16 +18,28 @@ Two figure families, and a tag for each series of each
 (:class:`SeriesSpec`).  A `$(\lambda, y)$` **map** is one figure per
 recorded sample; a **spacetime** map is one figure -- a pair, for its
 two colour scales -- for the whole run.  What a bare invocation draws
-is one family:
+is two sets of maps, each on both wavenumber marginals (``_z`` gives
+`$\lambda_x$`; the paper shows only `$\lambda_z$`):
 
-- both wavenumber marginals of the **spectra** stream (``_z`` gives
-  `$\lambda_x$`; the paper shows only `$\lambda_z$`), as maps, for the
-  difference field and for the reference.
+- the **difference** spectra, a panel per velocity component and one
+  for their sum;
+- the ``twin_ybudget`` series: the terms of the difference-energy
+  balance, regrouped from the stored densities
+  (:func:`~dnsjax.analysis.twin.yspectra.balance_term`) and each drawn
+  as its contribution to `$\partial_t E_\Delta$`, on a 3 x 3 grid
+  (:data:`MAP_PANELS`).  The driving input, one mode, is drawn only by
+  a spacetime map, with the pressure transport
+  (:data:`SPACETIME_PANELS`).  ``--no-budget`` drops the set.
 
-Everything else is held back behind its own flag rather than behind a
-tag name the caller has to know, and the five switches have the same
-shape:
+The panels whose spectra keep one continuous bulk carry the track of
+their peak ("Peak tracking").  Everything else is held back behind its
+own flag rather than behind a tag name the caller has to know, and the
+five switches have the same shape:
 
+- ``--reference`` adds the reference field's spectra, as maps -- and,
+  under ``--spacetime``, their `$k$`-summed map too.  They are the
+  turbulent flow's own, statistically the same in every frame, which
+  is why they are not drawn unasked;
 - ``--decorr`` adds `$\mathcal{R}$`, the decorrelation over a
   `$k$`-resolved reference, as maps ("Decorrelation");
 - ``--decorr-k`` adds `$\mathcal{R}^k$`, the decorrelation over a
@@ -35,15 +47,10 @@ shape:
   `$k$`-summed map too, that being the only spacetime series a
   decorrelation has;
 - ``--spacetime`` adds the `$k$`-summed `$(y, t)$` maps of whatever
-  else is selected: the difference and reference spectra always,
-  `$\mathcal{R}^k$` under ``--decorr-k``, the budget under
-  ``--budget`` ("Spacetime maps");
-- ``--budget`` adds the ``twin_ybudget`` series: the terms of the
-  difference-energy balance, regrouped from the stored densities
-  (:func:`~dnsjax.analysis.twin.yspectra.balance_term`) and each drawn
-  as its contribution to `$\partial_t e$`; the driving input, one mode,
-  is drawn only by a spacetime map, with the pressure transport
-  (:data:`MAP_PANELS`, :data:`SPACETIME_PANELS`);
+  else is selected: the difference spectra always, the reference
+  spectra under ``--reference``, `$\mathcal{R}^k$` under
+  ``--decorr-k``, the budget unless ``--no-budget`` ("Spacetime
+  maps");
 - ``--x0`` adds the `$k_x = 0$` plane, where the stream has one --
   ``twin.x0_planes``, or any member recorded before that plane became
   opt-in.  It is a slice of the mode plane rather than a marginal of
@@ -374,9 +381,10 @@ Sum a `$(y, k)$` stream over `$k$` and what is left is a `$(y, t)$`
 field, which is one figure for a whole run rather than one per frame:
 wall distance across, on the same scale and floor as the maps'
 ordinate, and time up.  ``--spacetime`` asks for them, and every
-`$k$`-summable series then has one -- the difference and reference
-spectra, `$\mathcal{R}^k$` under ``--decorr-k``, the `$k_x = 0$`
-slice under ``--x0``, the budget terms under ``--budget`` -- and each
+selected `$k$`-summable series then has one -- the difference spectra,
+the reference spectra under ``--reference``, `$\mathcal{R}^k$` under
+``--decorr-k``, the `$k_x = 0$` slice under ``--x0``, the budget
+terms unless ``--no-budget`` -- and each
 is **marginal-free**, `$\sum_m e_x = \sum_m e_z$` being two readings
 of one complete sum over the mode plane.  So there is one figure per
 quantity, its panels the three components and their sum (the budget's,
@@ -480,10 +488,10 @@ coarse in `$\log y$` at the wall (its first plotted cell spans 0.6 of
 a decade) and coarse in plain `$y$` at the centreline.  The contour
 lines are drawn on top either way.
 
-Every colour scale, per frame or frozen, is read off the **plotted**
-quantity -- premultiplied, folded, in inner units, over exactly the
-rows the axes box shows: the ordinate's floor and limits included,
-not merely the wall row a logarithmic axis cannot place
+Every colour scale, per frame, ramped or frozen, is read off the
+**plotted** quantity -- premultiplied, folded, in inner units, over
+exactly the rows the axes box shows: the ordinate's floor and limits
+included, not merely the wall row a logarithmic axis cannot place
 (:meth:`Map.drawn`, :func:`y_limits`).  The colour bar therefore
 labels the same numbers the contours do, which matters most for
 `$-\mathcal{D}_\Delta$`: its peak is at the wall, below the default
@@ -498,8 +506,60 @@ leaves the first frames below the first contour level, and they come
 out blank rather than rescaled.  ``--clim frame`` rescales every
 figure to its own peak instead, which is what shows the *shape* while
 the amplitude is still climbing -- at the cost of a colour bar that
-moves under you.  The sign family is decided once for the whole series
-either way, so a panel never changes colour map mid-run.
+moves under you.
+
+``--clim ramped`` sits between the two: each figure is frozen on the
+extremes of every frame up to and including its own
+(:meth:`PanelScale.data_range`), each side of a signed panel on its
+own.  That scale never shrinks and always contains the frame's own
+extremes, so nothing is clipped; while the field grows it is the
+frame's own scale, and from the frame that holds the series extreme
+onward it is the frozen one exactly.  In between -- through
+saturation -- it still rises a little whenever a frame sets a new
+extreme, which is what freezing on the frames seen so far costs
+against freezing on all of them.  The sign family is decided once for
+the whole series in every mode, so a panel never changes colour map
+mid-run.
+
+Peak tracking
+=============
+The panels whose spectra keep one continuous bulk -- every panel of
+the difference spectra, and `$\mathcal{P}_\Delta$` and
+`$\mathcal{P}_\Delta^{\mathbf{U}}$` among the budget terms
+(:data:`TRACKED`) -- carry the track of their peak: a point where it
+is in that frame, and a thin line through where it has been since the
+first (:func:`draw_track`).  Red on a grey map and black on a signed
+one, each haloed in white so it stays legible on the darkest band.
+
+The peak is not the largest value, which moves a whole cell at a time
+and jumps between near-equal maxima, but the **centroid of the top
+band** (:func:`peak_centroid`): the plotted quantity `$f$` treated as
+a density over the plotted plane, restricted to the cells at or above
+`$(1 - 1/n)$` of the frame's own peak for ``--levels`` `$n$` -- the
+top band the map would get on its own exact scale -- and averaged
+there,
+
+.. math::
+    \ln\lambda_c = \frac{\sum_{ij} w_{ij} \ln\lambda_j}
+        {\sum_{ij} w_{ij}} , \quad
+    \ln y_c = \frac{\sum_{ij} w_{ij} \ln y_i}{\sum_{ij} w_{ij}} ,
+    \qquad w_{ij} = f_{ij}\,\Delta\ln\lambda_j\,\Delta\ln y_i ,
+
+the `$\Delta$` being the grid's trapezoidal widths: both axes are
+non-uniform, and an unweighted sum would drift toward wherever the
+grid is fine.  A linear ordinate puts `$y$` in place of `$\ln y$`
+throughout.  The band is the frame's own rather than the drawn colour
+scale's, so the track is the same under every ``--clim``: it exists in
+a growth-phase frame that a frozen scale leaves blank, and it never
+collapses onto the one cell around the maximum, which the drawn top
+band does whenever the peak has just crossed a level.  The rows are
+the ones the box shows, as for the colour scale (:meth:`Map.drawn`).
+
+Beside the frames of each tracked series goes a directory
+``<tag>_track`` holding one figure of `$y_c$` and `$\lambda_c$`
+against time, a line per tracked panel, and its ``.npz``
+(:func:`render_tracks`) -- a directory of its own, so a glob over the
+series' frames still matches frames alone.
 
 Figure geometry
 ===============
@@ -508,6 +568,15 @@ The abscissa is sized by its decade count: the axes box is
 of the plotted limits, leaving only the scale free.  ``--width`` sets
 it (default 6.61546 in, the write-up's ``\linewidth``) and
 ``--decade`` sets the decade length directly instead.
+
+``--width`` fits that length to a figure of ``--ncols`` columns, the
+spectra's two, and every figure of the run takes it.  A budget figure
+is three columns whatever ``--ncols`` says (:data:`BUDGET_NCOLS`), its
+nine panels in the rows :data:`MAP_PANELS` sets, so its panels are the
+spectra's size and the figure is wider than ``--width`` -- half again
+as wide, at the defaults.  The page's width cannot hold three
+columns: each carries its ordinate labels, its secondary axis and its
+colour bar, two inches apiece before any box.
 
 The height follows the **ordinate's scale**.  Logarithmic (the
 default): the same decade length applies to it as well -- **one
@@ -518,8 +587,8 @@ the limits alone.  The default floor at `$y^+ = 1$`
 (:data:`Y_FLOOR_PLUS`) is most of what sets it: on
 `$y^+ \in [1, 179]$` against `$\lambda_z^+ \in [14, 1122]$` the box
 is 1.2 times taller than wide, where the grid's full
-`$y^+ \in [0.02, 179]$` would make it 2.1 and an eight-panel budget
-figure correspondingly tall.  ``--ylim`` trims it further.
+`$y^+ \in [0.02, 179]$` would make it 2.1 and every figure
+correspondingly tall.  ``--ylim`` trims it further.
 
 Linear: the height is ``--box-aspect`` times the width, 1 (square) by
 default, a linear axis having no decades to match.  ``set_aspect`` is
@@ -586,6 +655,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+from matplotlib import patheffects
 from matplotlib import pyplot as plt
 from matplotlib.colors import (
     BoundaryNorm,
@@ -754,7 +824,7 @@ SIGN_TOLERANCE: float = 1e-9
 
 #: Budget terms excluded from the ``sum`` virtual field: the two parts
 #: of ``prod``, which would count production twice.  What is left adds
-#: up to `$\partial_t e(y, k)$`
+#: up to `$\partial_t E_\Delta$` at every `$(y, k)$`
 #: (:func:`~dnsjax.analysis.twin.yspectra.balance_term`).
 NON_ADDITIVE_TERMS: frozenset[str] = BALANCE_PARTS
 
@@ -765,30 +835,41 @@ COMBINED_PANELS: dict[str, tuple[str, ...]] = {
     "press_input": ("tr_press", "input"),
 }
 
-#: The panels of a `$(\lambda, y)$` budget map, in the order drawn.
-#: ``input`` lives at `$(0, 0)$` alone, in the `$m = 0$` column no map
-#: draws, so the pressure panel is the pressure transport alone.
+#: The panels of a `$(\lambda, y)$` budget map, in the order drawn:
+#: with the ``sum`` :func:`budget_panels` appends, the three rows of
+#: the budget's grid (:data:`BUDGET_NCOLS`) -- the production and its
+#: two parts; the dissipation and the viscous and pressure transports;
+#: the two advective transports and the sum.  ``input`` lives at
+#: `$(0, 0)$` alone, in the `$m = 0$` column no map draws, so the
+#: pressure panel is the pressure transport alone.
 MAP_PANELS: tuple[str, ...] = (
     "prod",
     "prod_mean",
     "prod_fluct",
     "diss",
-    "tr_self",
-    "tr_ref",
     "tr_visc",
     "tr_press",
+    "tr_ref",
+    "tr_self",
 )
 
-#: The panels of a spacetime budget map: those of a map, the pressure
-#: panel carrying the driving input as well, which a `$k$`-sum does
-#: show.  Every panel but the two parts of ``prod`` then adds up to
-#: the ``sum``, `$\partial_t e$`.
-SPACETIME_PANELS: tuple[str, ...] = (*MAP_PANELS[:-1], "press_input")
+#: The panels of a spacetime budget map: those of a map, each in its
+#: place, the pressure panel carrying the driving input as well, which
+#: a `$k$`-sum does show.  Every panel but the two parts of ``prod``
+#: then adds up to the ``sum``, `$\partial_t E_\Delta$`.
+SPACETIME_PANELS: tuple[str, ...] = tuple(
+    "press_input" if term == "tr_press" else term for term in MAP_PANELS
+)
+
+#: Columns of every budget figure, map or spacetime alike, whatever
+#: ``--ncols`` sets for the spectra: its nine panels are the three rows
+#: of :data:`MAP_PANELS` (module docstring, "Figure geometry").
+BUDGET_NCOLS: int = 3
 
 #: Panel labels for the budget terms in the write-up's notation, as
 #: ``(sign, symbol)``: each panel is the term's contribution to
-#: `$\partial_t e$`, and a contribution's minus sign leads its title,
-#: ahead of any premultiplier (:func:`field_title`).
+#: `$\partial_t E_\Delta$`, and a contribution's minus sign leads its
+#: title, ahead of any premultiplier (:func:`field_title`).
 TERM_LABELS: dict[str, tuple[str, str]] = {
     "prod": ("", r"\mathcal{P}_\Delta"),
     "prod_mean": ("", r"\mathcal{P}_\Delta^{\mathbf{U}}"),
@@ -803,7 +884,7 @@ TERM_LABELS: dict[str, tuple[str, str]] = {
         "",
         r"(\mathcal{I}_\Delta - \mathcal{T}_{\Delta p}^{\Delta\mathbf{u}})",
     ),
-    "sum": ("", r"\partial_t e"),
+    "sum": ("", r"\partial_t E_\Delta"),
 }
 
 #: ``(wavelength axis, energy superscript)`` per **drawable** stored
@@ -824,12 +905,21 @@ MARGINALS: dict[str, tuple[str, str]] = {
     "x0": ("z", "x0"),
 }
 
-#: The marginals rendered unless ``--x0`` asks for the rest, and the
-#: streams rendered unless ``--budget`` does.  Both defaults are about
-#: what is worth looking at rather than what is on disk: the two true
-#: marginals of the difference and reference spectra.
+#: The marginals rendered unless ``--x0`` asks for the rest: the two
+#: true ones, a default about what is worth looking at rather than
+#: what is on disk.
 DEFAULT_MARGINALS: frozenset[str] = frozenset({"x", "z"})
-DEFAULT_STEMS: frozenset[str] = frozenset({"twin_yspectra"})
+
+#: The map panels that carry the track of their peak (module
+#: docstring, "Peak tracking"): every panel of the two
+#: difference-spectra marginals, and the production and its mean-shear
+#: part on the budget's -- the quantities whose spectra keep one
+#: continuous bulk, which is what makes one centroid a location.
+#: Never the reference spectra, a decorrelation or the `$k_x = 0$`
+#: slice.
+TRACKED: frozenset[str] = frozenset(
+    {"e_x", "e_z", "prod_x", "prod_z", "prod_mean_x", "prod_mean_z"}
+)
 
 #: LaTeX preamble matching the ``perturbation_dynamics`` write-up.
 LATEX_PREAMBLE: str = r"""
@@ -868,6 +958,38 @@ _TITLE_LINE: float = 0.17
 
 #: Upper bound on the number of labelled colour-bar ticks.
 _BAR_TICKS: int = 6
+
+#: A track's colour on a map, by the map's colour family (keyed on
+#: :attr:`Map.non_negative`): red reads on every grey band, black on
+#: every red and blue one (:func:`draw_track`).
+_TRACK_COLOURS: dict[bool, str] = {True: "#e41a1c", False: "black"}
+
+#: A track's history line and current point, in points.  Both are
+#: haloed in white, ``_TRACK_HALO`` wider than the line and
+#: ``_TRACK_EDGE`` round the point, which is what keeps them legible
+#: on the darkest band, where the colour alone is not.
+_TRACK_LINE: float = 0.9
+_TRACK_MARKER: float = 4.5
+_TRACK_EDGE: float = 0.8
+_TRACK_HALO: float = 1.2
+
+#: The track figure's lines, one per tracked panel in panel order
+#: (:func:`track_figure`): the write-up's categorical order, checked
+#: for colour-vision separation on white (worst pair `$\Delta E$` 11.0
+#: deutan, 8.6 tritan, 15.6 normal), each paired with a dash pattern so
+#: identity never rests on hue alone -- the orange sits at 2.3:1
+#: against the page.  Four is as many as a tracked figure has.
+_TRACK_SERIES: tuple[str, ...] = ("#0072B2", "#E69F00", "#009E73", "#D55E00")
+_TRACK_DASHES: tuple = (
+    "-",
+    (0, (5, 2)),
+    (0, (1.5, 1.5)),
+    (0, (7, 2, 1.5, 2)),
+)
+
+#: The track figure's height, in inches, at ``--width``: two rows,
+#: their twin axes and a legend underneath.
+_TRACK_HEIGHT: float = 4.6
 
 
 # ── Units ────────────────────────────────────────────────────────────
@@ -1239,7 +1361,7 @@ class YSeries:
         ``(n_frames, n_y, n_k)`` for the budget.  A budget name is a
         balance term (``prod_x``, ...) or a stored density
         (``P_U_x``, ...), and the virtual ``sum_<suffix>`` adds the
-        balance terms that make up `$\partial_t e$`
+        balance terms that make up `$\partial_t E_\Delta$`
         (:data:`NON_ADDITIVE_TERMS`).  A balance term is a linear
         combination of stored densities, so it is taken of their
         ensemble means.
@@ -1267,7 +1389,7 @@ class YSeries:
         return value
 
     def additive(self, suffix: str) -> list[str]:
-        r"""The balance terms that add up to `$\partial_t e$`.
+        r"""The balance terms that add up to `$\partial_t E_\Delta$`.
 
         Every term of one marginal but :data:`NON_ADDITIVE_TERMS` --
         what the virtual ``sum_<suffix>`` adds, wherever it is read.
@@ -2144,6 +2266,41 @@ def latex_float(value: float, digits: int = 4) -> str:
     return rf"{mantissa} \times 10^{{{int(exponent)}}}"
 
 
+def panel_symbol(
+    series: YSeries, name: str, component: int | None
+) -> tuple[str, str]:
+    r"""``(sign, symbol)`` of the quantity one map panel draws.
+
+    Before any premultiplier or normalisation: a balance term's
+    write-up symbol and the sign of its contribution
+    (:data:`TERM_LABELS`), or a spectrum's `$E$` with its marginal and
+    component.  What :func:`field_title` builds a title on and what a
+    track's legend names its panel by (:func:`track_figure`).  Not for
+    a decorrelation, whose symbol carries no marginal.
+    """
+    base, _, suffix = name.rpartition("_")
+    if field_kind(series) == "rate":
+        return TERM_LABELS.get(base, ("", base.replace("_", r"\_")))
+    superscript = MARGINALS[suffix][1]
+    delta = r"\Delta " if base == "e" else ""
+    if component is None:
+        inner = rf"{delta}\alpha" if base == "e" else r"\alpha"
+        return "", rf"\sum_\alpha E^{{{superscript}}}_{{{inner}}}"
+    return "", rf"E^{{{superscript}}}_{{{delta}{COMPONENTS[component]}}}"
+
+
+def panel_label(series: YSeries, base: str, component: int | None) -> str:
+    """Which panel of its figure a field is, in plain text.
+
+    Its term on a budget figure, its component (or ``sum``) on a
+    spectra one: what a spacetime ``.npz`` and a track ``.npz`` name
+    their rows by.
+    """
+    if series.stem == "twin_ybudget":
+        return base
+    return "sum" if component is None else COMPONENTS[component]
+
+
 def field_title(
     series: YSeries,
     name: str,
@@ -2158,7 +2315,7 @@ def field_title(
     absolute one; :func:`panel_geometry` budgets the extra line.
     """
     base, _, suffix = name.rpartition("_")
-    axis, superscript = MARGINALS[suffix]
+    axis = MARGINALS[suffix][0]
     wavenumber = rf"k_{{{axis}}}"
     kind = field_kind(series)
     plus = options.units.suffix
@@ -2175,17 +2332,7 @@ def field_title(
         sup = "^{k}" if base == DECORR_K else ""
         sub = "" if component is None else f"_{{{COMPONENTS[component]}}}"
         return rf"${factor}\mathcal{{R}}{sup}{sub}$"
-    sign = ""
-    if kind == "rate":
-        sign, body = TERM_LABELS.get(base, ("", base.replace("_", r"\_")))
-    else:
-        delta = r"\Delta " if base == "e" else ""
-        if component is None:
-            inner = rf"{delta}\alpha" if base == "e" else r"\alpha"
-            body = rf"\sum_\alpha E^{{{superscript}}}_{{{inner}}}"
-        else:
-            sub = f"{delta}{COMPONENTS[component]}"
-            body = rf"E^{{{superscript}}}_{{{sub}}}"
+    sign, body = panel_symbol(series, name, component)
     scale = reference_norm(series, name, component)
     if scale is None:
         return f"${sign}{factor}{body}{options.units.norm_suffix(kind)}$"
@@ -2293,11 +2440,47 @@ def make_map(
 
 @dataclass(frozen=True)
 class PanelScale:
-    """One panel's series-global range and its sign family."""
+    """One panel's series-global range and its sign family.
+
+    *frame_lo* / *frame_hi* are each frame's own extremes over the same
+    rows, ``nan`` where a frame has nothing finite: what ``--clim
+    ramped`` accumulates (:meth:`data_range`).  A spacetime panel, one
+    figure for the whole run, has neither.
+    """
 
     lo: float
     hi: float
     non_negative: bool
+    frame_lo: np.ndarray | None = field(
+        default=None, repr=False, compare=False
+    )
+    frame_hi: np.ndarray | None = field(
+        default=None, repr=False, compare=False
+    )
+
+    def data_range(self, clim: str, frame: int) -> tuple[float, float] | None:
+        """The range one frame's levels are read from, under *clim*.
+
+        ``series`` is the frozen range, ``frame`` none (the figure
+        reads its own), and ``ramped`` the extremes of every frame up
+        to and including *frame*, each side separately (module
+        docstring, "Colour scales").  That range always contains the
+        frame's own, never shrinks, and is the frozen range itself from
+        the frame holding the series extreme onward.  Before any frame
+        has anything finite it is ``(0, 0)``, which draws as
+        identically zero, as an empty series' frozen range does.
+        """
+        if clim == "series":
+            return self.lo, self.hi
+        if clim == "frame":
+            return None
+        if clim != "ramped":
+            raise ValueError(f"clim must be series/frame/ramped, not {clim!r}")
+        seen_lo = self.frame_lo[: frame + 1]
+        seen_hi = self.frame_hi[: frame + 1]
+        if np.all(np.isnan(seen_lo)):
+            return 0.0, 0.0
+        return float(np.nanmin(seen_lo)), float(np.nanmax(seen_hi))
 
 
 def scan_panels(
@@ -2324,12 +2507,14 @@ def scan_panels(
     *ylim* restricts the scan to the rows the axes box will show
     (:meth:`Map.drawn`), which is what keeps the colour bar a legend
     for the visible map rather than for a near-wall peak the ordinate
-    floors away.
+    floors away.  Each frame's own extremes over those rows are kept
+    as well, for ``--clim ramped`` (:meth:`PanelScale.data_range`).
     """
     scales: dict[tuple[str, int | None], PanelScale] = {}
     notes: list[str] = []
     for name, component in panels:
-        lo, hi = math.inf, -math.inf
+        frame_lo = np.full(series.t_rel.size, np.nan)
+        frame_hi = np.full(series.t_rel.size, np.nan)
         for frame in range(series.t_rel.size):
             _, values = make_map(
                 series,
@@ -2341,10 +2526,11 @@ def scan_panels(
             ).drawn(ylim)
             finite = values[np.isfinite(values)]
             if finite.size:
-                lo = min(lo, float(finite.min()))
-                hi = max(hi, float(finite.max()))
-        if not math.isfinite(lo):
-            lo = hi = 0.0
+                frame_lo[frame] = finite.min()
+                frame_hi[frame] = finite.max()
+        seen = np.isfinite(frame_lo)
+        lo = float(frame_lo[seen].min()) if seen.any() else 0.0
+        hi = float(frame_hi[seen].max()) if seen.any() else 0.0
         label = (
             name if component is None else f"{name}[{COMPONENTS[component]}]"
         )
@@ -2356,7 +2542,9 @@ def scan_panels(
             note = _sign_note(label, lo, hi, positive=False)
         if note is not None:
             notes.append(note)
-        scales[(name, component)] = PanelScale(lo, hi, non_negative)
+        scales[(name, component)] = PanelScale(
+            lo, hi, non_negative, frame_lo, frame_hi
+        )
     return scales, notes
 
 
@@ -2443,7 +2631,8 @@ def contour_levels(
     be, and no line is drawn through it.
 
     *data_range* freezes the scale on a range computed elsewhere
-    (``--clim series``); without it the map's own extremes are used.
+    (``--clim series`` / ``ramped``); without it the map's own extremes
+    are used.
     *quantile* (0-1) clips the peak to a quantile of ``|values|``
     instead of its maximum -- a guard against one near-wall cell
     setting the scale.  With *nice* the step is rounded up to a round
@@ -2668,9 +2857,9 @@ def draw_map(
 
     *ylim* both limits the axis and restricts the rows the **levels**
     are read from (:meth:`Map.drawn`), so the colour bar is a legend
-    for the visible map whether the scale is frozen (*data_range*,
-    already restricted by :func:`scan_panels`) or taken from this
-    frame.  Everything inside the box is still drawn from the
+    for the visible map whether the scale is frozen or ramped
+    (*data_range*, already restricted by :func:`scan_panels`) or taken
+    from this frame.  Everything inside the box is still drawn from the
     unrestricted array.
     """
     ax.set_xscale("log")
@@ -2679,9 +2868,10 @@ def draw_map(
     # The scale is a legend for what the box shows, so the levels are
     # read off the rows inside *ylim* -- while the fill still gets the
     # unrestricted array, so a contour reaches the edge of the box
-    # (:meth:`Map.drawn`).  Under ``--clim series`` *data_range* has
-    # already been restricted the same way (:func:`scan_panels`); this
-    # is what makes ``--clim frame`` and ``--quantile`` agree with it.
+    # (:meth:`Map.drawn`).  Under ``--clim series`` / ``ramped``
+    # *data_range* has already been restricted the same way
+    # (:func:`scan_panels`); this is what makes ``--clim frame`` and
+    # ``--quantile`` agree with it.
     scaled = values if ylim is None else map_.drawn(ylim)[1]
     levels = contour_levels(
         scaled,
@@ -2787,10 +2977,14 @@ class PlotStyle:
 
     *decade* is inches per decade of the abscissa, the one free
     parameter the decade rule leaves; ``None`` derives it from *width*
-    so the figure comes out exactly that wide.  *box_aspect* is the
-    axes box's height over its width, and applies only to a **linear**
-    ordinate -- a logarithmic one takes the same decade length as the
-    abscissa instead (module docstring, "Figure geometry").
+    so a figure of *ncols* columns comes out exactly that wide.
+    *ncols* is a spectra figure's column count; a budget figure is
+    :data:`BUDGET_NCOLS` wide whatever it says, at the same panel size.
+    *box_aspect* is the axes box's height over its width, and applies
+    only to a **linear** ordinate -- a logarithmic one takes the same
+    decade length as the abscissa instead (module docstring, "Figure
+    geometry").  *clim* is ``--clim``: ``series``, ``frame`` or
+    ``ramped`` (:meth:`PanelScale.data_range`).
     """
 
     width: float = PAGE_LINEWIDTH
@@ -2804,7 +2998,7 @@ class PlotStyle:
     nice: bool = True
     fill: str = "contour"
     lines: bool = True
-    freeze_clim: bool = True
+    clim: str = "series"
     xlim: tuple[float, float] | None = None
     ylim: tuple[float, float] | None = None
     dpi: int = 200
@@ -2890,6 +3084,7 @@ def panel_geometry(
     y_log: bool,
     x_log: bool = True,
     title_lines: int = 1,
+    ncols: int | None = None,
 ) -> Geometry:
     r"""Size a figure from the abscissa's decade count.
 
@@ -2913,8 +3108,15 @@ def panel_geometry(
     the top margin grows by :data:`_TITLE_LINE` for each one past the
     first, which is what makes room for the `$E^{\mathrm{ref}}$` a
     normalised panel reports (:func:`field_title`).
+
+    *ncols* is the figure's own column count where it is not
+    ``style.ncols``: a budget figure's (:func:`figure_columns`).  The
+    decade length is fitted on ``style.ncols`` either way, so such a
+    figure keeps the spectra's panel size and is wider or narrower than
+    ``style.width`` instead.
     """
-    nrows = math.ceil(n_panels / style.ncols)
+    columns = style.ncols if ncols is None else ncols
+    nrows = math.ceil(n_panels / columns)
     m_top = _M_TOP + (title_lines - 1) * _TITLE_LINE
     if x_log:
         decades_x = math.log10(xlim[1] / xlim[0])
@@ -2934,8 +3136,8 @@ def panel_geometry(
     )
     fig_w = (
         _M_LEFT
-        + style.ncols * (box_w + _COL_AFTER)
-        + (style.ncols - 1) * (_COL_GAP + _M_LEFT)
+        + columns * (box_w + _COL_AFTER)
+        + (columns - 1) * (_COL_GAP + _M_LEFT)
         + _M_RIGHT
     )
     fig_h = (
@@ -2943,7 +3145,17 @@ def panel_geometry(
         + nrows * (m_top + box_h + _M_BOTTOM)
         + (nrows - 1) * _ROW_GAP
     )
-    return Geometry(fig_w, fig_h, box_w, box_h, nrows, style.ncols, m_top)
+    return Geometry(fig_w, fig_h, box_w, box_h, nrows, columns, m_top)
+
+
+def figure_columns(series: YSeries) -> int | None:
+    """A figure's own column count: :data:`BUDGET_NCOLS` for a budget.
+
+    ``None`` -- ``--ncols`` -- for anything else.  Shared by the map and
+    the spacetime figures, so the two budget figures cannot be laid out
+    differently (module docstring, "Figure geometry").
+    """
+    return BUDGET_NCOLS if series.stem == "twin_ybudget" else None
 
 
 def _suptitle(series: YSeries, frame: int, units: Units) -> str:
@@ -2964,13 +3176,15 @@ def panel_figure(
     options: MapOptions,
     style: PlotStyle,
     scales: dict[tuple[str, int | None], PanelScale],
+    tracks: dict[tuple[str, int | None], PeakTrack] | None = None,
 ):
     """One figure, one ``(name, component)`` map per panel.
 
     Shared body of :func:`spectra_panels` and :func:`budget_panels`
     figures.  Every panel of a figure shares one wavelength axis and
     one wall-normal grid, so a single :func:`panel_geometry` sizes
-    them all.
+    them all.  A panel with an entry in *tracks* carries its peak's
+    track up to this frame (:func:`draw_track`).
     """
     maps = [
         make_map(
@@ -2992,19 +3206,20 @@ def panel_figure(
         style,
         y_log=options.y_log,
         title_lines=1 + max(m.title.count("\n") for m in maps),
+        ncols=figure_columns(series),
     )
 
     fig = plt.figure(figsize=(geometry.fig_w, geometry.fig_h))
     for panel, (map_, key) in enumerate(zip(maps, panels, strict=True)):
-        scale = scales[key]
+        ax = fig.add_axes(geometry.axes_rect(panel))
         draw_map(
-            fig.add_axes(geometry.axes_rect(panel)),
+            ax,
             map_,
             units=options.units,
             n_levels=style.n_levels,
             cmap_positive=style.cmap_positive,
             cmap_signed=style.cmap_signed,
-            data_range=(scale.lo, scale.hi) if style.freeze_clim else None,
+            data_range=scales[key].data_range(style.clim, frame),
             quantile=style.quantile,
             nice=style.nice,
             fill=style.fill,
@@ -3013,6 +3228,13 @@ def panel_figure(
             xlim=xlim,
             ylim=ylim,
         )
+        if tracks and key in tracks:
+            draw_track(
+                ax,
+                tracks[key],
+                frame,
+                colour=_TRACK_COLOURS[map_.non_negative],
+            )
     fig.suptitle(
         _suptitle(series, frame, options.units),
         y=1.0 - 0.3 * _SUP_HEIGHT / geometry.fig_h,
@@ -3034,6 +3256,308 @@ def budget_panels(
     sum, once the stream is known to support them."""
     balance_terms(series.meta)
     return [(f"{t}_{marginal}", None) for t in (*MAP_PANELS, "sum")]
+
+
+# ── Peak tracking ────────────────────────────────────────────────────
+
+
+def _trapezoid_widths(x: np.ndarray) -> np.ndarray:
+    """Trapezoidal quadrature weights on the ascending grid *x*.
+
+    Half the gap to each neighbour, and half the one gap at either
+    end, so they sum to the grid's span: the rule for a field known
+    between the first sample and the last and no further, which is
+    where a filled contour paints it.  A lone sample is the whole grid.
+    """
+    if x.size < 2:
+        return np.ones(x.size)
+    gaps = 0.5 * np.diff(x)
+    widths = np.zeros(x.size)
+    widths[:-1] += gaps
+    widths[1:] += gaps
+    return widths
+
+
+def peak_centroid(
+    map_: Map, n_levels: int, ylim: tuple[float, float] | None = None
+) -> tuple[float, float]:
+    r"""``(lambda_c, y_c)``: the centroid of one map's top band.
+
+    The cells at or above `$(1 - 1/n)$` of the frame's own peak, for
+    *n_levels* `$n$`, weighted by the plotted value times their
+    trapezoidal widths in `$\ln\lambda$` and `$\ln y$` -- `$y$` on a
+    linear ordinate -- and averaged in those same coordinates (module
+    docstring, "Peak tracking").  Over the rows the box shows, *ylim*
+    read as :meth:`Map.drawn` reads it for the colour scale.  Both in
+    the map's plotted units; ``nan`` where nothing is positive.
+    """
+    y, values = map_.drawn(ylim)
+    finite = np.isfinite(values)
+    peak = float(values[finite].max()) if finite.any() else 0.0
+    if not peak > 0.0:
+        return math.nan, math.nan
+    top = finite & (values >= (1.0 - 1.0 / max(n_levels, 2)) * peak)
+    ln_lam = np.log(map_.lam)
+    along_y = np.log(y) if map_.y_log else y
+    weight = (
+        np.where(top, values, 0.0)
+        * _trapezoid_widths(along_y)[:, None]
+        * _trapezoid_widths(ln_lam)[None, :]
+    )
+    mass = float(weight.sum())
+    if not mass > 0.0:
+        return math.nan, math.nan
+    lam_c = math.exp(float(weight.sum(axis=0) @ ln_lam) / mass)
+    y_c = float(weight.sum(axis=1) @ along_y) / mass
+    return lam_c, math.exp(y_c) if map_.y_log else y_c
+
+
+@dataclass(frozen=True)
+class PeakTrack:
+    """One panel's top-band centroid, frame by frame (:func:`track_peak`).
+
+    Both ``(n_frames,)``, in the map's plotted units, and ``nan`` at a
+    frame with nothing positive.
+    """
+
+    lam: np.ndarray
+    y: np.ndarray
+
+
+def track_peak(
+    series: YSeries,
+    name: str,
+    component: int | None,
+    *,
+    options: MapOptions,
+    n_levels: int,
+    ylim: tuple[float, float] | None = None,
+) -> PeakTrack:
+    """The centroid of one panel's top band, over every frame.
+
+    One :func:`make_map` per frame, all read before any figure is drawn
+    so that each frame can carry the history up to itself.  It sees
+    neither the colour scale nor ``--clim``: the band is the frame's
+    own (:func:`peak_centroid`).
+    """
+    points = np.array(
+        [
+            peak_centroid(
+                make_map(
+                    series, name, frame, options=options, component=component
+                ),
+                n_levels,
+                ylim,
+            )
+            for frame in range(series.t_rel.size)
+        ]
+    ).reshape(-1, 2)
+    return PeakTrack(lam=points[:, 0], y=points[:, 1])
+
+
+def draw_track(ax, track: PeakTrack, frame: int, *, colour: str) -> None:
+    """A peak's history up to *frame* as a thin line, *frame* as a point.
+
+    Both above the map and haloed in white (:data:`_TRACK_HALO`,
+    :data:`_TRACK_EDGE`), which is what keeps a red track legible on a
+    grey map's black top band and a black one on the darkest red.  A
+    frame with nothing positive has no point and breaks the line.  The
+    axes limits are the map's, already fixed, so neither moves them.
+    """
+    halo = [
+        patheffects.withStroke(
+            linewidth=_TRACK_LINE + _TRACK_HALO, foreground="white"
+        )
+    ]
+    ax.plot(
+        track.lam[: frame + 1],
+        track.y[: frame + 1],
+        color=colour,
+        linewidth=_TRACK_LINE,
+        path_effects=halo,
+        zorder=3,
+    )
+    if np.isfinite(track.lam[frame]) and np.isfinite(track.y[frame]):
+        ax.plot(
+            track.lam[frame],
+            track.y[frame],
+            linestyle="none",
+            marker="o",
+            markersize=_TRACK_MARKER,
+            markerfacecolor=colour,
+            markeredgecolor="white",
+            markeredgewidth=_TRACK_EDGE,
+            zorder=4,
+        )
+
+
+def track_figure(
+    series: YSeries,
+    keys: list[tuple[str, int | None]],
+    tracks: dict[tuple[str, int | None], PeakTrack],
+    options: MapOptions,
+    style: PlotStyle,
+):
+    r"""The tracks of one series against time: `$y_c$` above `$\lambda_c$`.
+
+    A line per tracked panel, in panel order, coloured and dashed by
+    :data:`_TRACK_SERIES` / :data:`_TRACK_DASHES` and named by the
+    panel's symbol (:func:`panel_symbol`).  Both ordinates are on the
+    maps' scales and in their units, with the outer-unit twins the maps
+    carry, and time is the spacetime maps' axis.
+    """
+    units = options.units
+    t = units.plotted_time(series.t_rel)
+    axis = MARGINALS[keys[0][0].rpartition("_")[2]][0]
+    fig, (ax_y, ax_lam) = plt.subplots(
+        2,
+        1,
+        sharex=True,
+        figsize=(style.width, _TRACK_HEIGHT),
+        layout="constrained",
+    )
+    for index, key in enumerate(keys):
+        sign, symbol = panel_symbol(series, *key)
+        line = {
+            "color": _TRACK_SERIES[index],
+            "linestyle": _TRACK_DASHES[index],
+            "label": f"${sign}{symbol}$",
+        }
+        ax_y.plot(t, tracks[key].y, **line)
+        ax_lam.plot(t, tracks[key].lam, **line)
+    ax_y.set_yscale("log" if options.y_log else "linear")
+    ax_lam.set_yscale("log")
+    ax_y.set_ylabel(units.y_label)
+    ax_lam.set_ylabel(units.lambda_label(axis))
+    ax_lam.set_xlabel(units.t_label)
+    ax_lam.set_xlim(float(t[0]), float(t[-1]))
+    for ax in (ax_y, ax_lam):
+        ax.grid(True, color="0.88", linewidth=0.5)
+    if units.wall:
+        # The maps' outer-unit twins, and the spacetime maps' for time.
+        lengths = (lambda v: v / units.re_tau, lambda v: v * units.re_tau)
+        factor = units.re_tau**2 / units.re
+        times = (lambda v: v / factor, lambda v: v * factor)
+        ax_y.secondary_yaxis("right", functions=lengths).set_ylabel(r"$y/h$")
+        ax_lam.secondary_yaxis("right", functions=lengths).set_ylabel(
+            units.lambda_label(axis, outer=True)
+        )
+        ax_y.secondary_xaxis("top", functions=times).set_xlabel(
+            r"$t\,U_\mathrm{cl}/h$"
+        )
+    handles, labels = ax_y.get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="outside lower center",
+        ncols=len(keys),
+        frameon=False,
+    )
+    fig.suptitle(_spacetime_suptitle(series, units))
+    return fig
+
+
+def write_track_npz(
+    path: Path,
+    series: YSeries,
+    keys: list[tuple[str, int | None]],
+    tracks: dict[tuple[str, int | None], PeakTrack],
+    options: MapOptions,
+    n_levels: int,
+) -> Path:
+    """Dump the tracks of one series, and what they were taken from.
+
+    A row per tracked panel, in the plotted units the maps use (the
+    factors that undo them beside), with the band's threshold and the
+    measure: enough to redraw the figure, or to set a track against
+    another estimate of the same peak, without it.
+    """
+    units = options.units
+    payload = {
+        "lam": np.stack([tracks[key].lam for key in keys]),
+        "y": np.stack([tracks[key].y for key in keys]),
+        "fields": np.asarray([name for name, _ in keys]),
+        "panels": np.asarray(
+            [
+                panel_label(series, name.rpartition("_")[0], component)
+                for name, component in keys
+            ]
+        ),
+        "t": series.t_rel,
+        "t_plotted": units.plotted_time(series.t_rel),
+        "index": series.index,
+        "threshold": 1.0 - 1.0 / max(n_levels, 2),
+        "measure": (
+            "value x trapezoidal widths in ln(lambda) and "
+            + ("ln(y)" if options.y_log else "y")
+            + "; centroid of ln(lambda) and "
+            + ("ln(y)" if options.y_log else "y")
+        ),
+        "length_factor": units.length(1.0),
+        "time_factor": units.plotted_time(1.0),
+        "wall_units": units.wall,
+        "re": units.re,
+        "re_tau": units.re_tau,
+        "half": options.half,
+        "premultiply": options.premultiply,
+        "volume_fac_applied": options.volume_fac,
+        "smooth": options.smooth,
+        "stem": series.stem,
+        "n_members": series.n_members,
+        "members": np.asarray([str(m.path) for m in series.members]),
+    }
+    np.savez_compressed(path, **payload)
+    return path
+
+
+def render_tracks(
+    series: YSeries,
+    tag: str,
+    keys: list[tuple[str, int | None]],
+    tracks: dict[tuple[str, int | None], PeakTrack],
+    out_dir: Path,
+    *,
+    options: MapOptions,
+    style: PlotStyle,
+    fmt: str = "png",
+    quiet: bool = False,
+) -> list[Path]:
+    """The track figure of one series and its ``.npz``, in ``<tag>_track``.
+
+    A directory of their own beside the series' frames rather than
+    among them, so that a glob over the frames matches frames alone.  A
+    selection of fewer than two frames has no time axis to draw and
+    gets the ``.npz`` alone, as a spacetime map does.
+    """
+    target = out_dir / f"{tag}_track"
+    target.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    if series.t_rel.size >= 2:
+        fig = track_figure(series, keys, tracks, options, style)
+        path = target / f"{tag}_track.{fmt}"
+        fig.savefig(path, dpi=style.dpi)
+        plt.close(fig)
+        written.append(path)
+    elif not quiet:
+        print(
+            f"  {tag}_track: no figure, a track needs two sample times "
+            f"and this selection has {series.t_rel.size}",
+            flush=True,
+        )
+    written.append(
+        write_track_npz(
+            target / f"{tag}_track.npz",
+            series,
+            keys,
+            tracks,
+            options,
+            style.n_levels,
+        )
+    )
+    if not quiet:
+        for path in written:
+            print(f"  {path.name}", flush=True)
+    return written
 
 
 # ── Spacetime maps ───────────────────────────────────────────────────
@@ -3307,11 +3831,7 @@ def make_spacetime(
         values=folded[..., 0],
         title=spacetime_title(series, base, marginal, component, options),
         name=name,
-        label=(
-            base
-            if series.stem == "twin_ybudget"
-            else ("sum" if component is None else COMPONENTS[component])
-        ),
+        label=panel_label(series, base, component),
         non_negative=(
             declared_non_negative(name)
             if non_negative is None
@@ -3571,6 +4091,7 @@ def spacetime_figure(
         y_log=False,
         x_log=options.y_log,
         title_lines=1 + max(m.title.count("\n") for m in maps),
+        ncols=figure_columns(series),
     )
     fig = plt.figure(figsize=(geometry.fig_w, geometry.fig_h))
     for panel, map_ in enumerate(maps):
@@ -3888,37 +4409,41 @@ def default_series(
     registry: dict[str, SeriesSpec],
     *,
     x0: bool = False,
-    budget: bool = False,
+    budget: bool = True,
+    reference: bool = False,
     decorr: bool = False,
     decorr_k: bool = False,
     spacetime: bool = False,
 ) -> list[str]:
     r"""The tags rendered when ``--series`` names none.
 
-    One family is drawn unasked -- the two wavenumber marginals of the
-    spectra stream, for the difference field and for the reference.
-    Five are held back, each behind its own flag rather than a tag the
-    caller has to know the name of, and each of the five is a
-    ``False`` here: the `$k_x = 0$` plane is a slice of the mode plane
-    rather than a marginal of it (and only a legacy or
-    ``twin.x0_planes`` stream has one); the ``twin_ybudget`` set is a
-    figure per term; the two decorrelations and the `$k$`-summed
-    `$(y, t)$` maps are second readings of the same records, and a
-    rendering run pays for each in full.  ``--series`` overrides every
-    one of them: naming a tag renders it.
+    Two families are drawn unasked, both as maps on the two
+    wavenumber marginals: the difference spectra, and the
+    ``twin_ybudget`` set, which ``--no-budget`` (*budget* false)
+    drops.  Five are held back, each behind its own flag rather than a
+    tag the caller has to know the name of, and each of the five is a
+    ``False`` here: the reference spectra are the turbulent flow's
+    own, statistically the same in every frame; the `$k_x = 0$` plane
+    is a slice of the mode plane rather than a marginal of it (and
+    only a legacy or ``twin.x0_planes`` stream has one); the two
+    decorrelations and the `$k$`-summed `$(y, t)$` maps are second
+    readings of the same records, and a rendering run pays for each in
+    full.  ``--series`` overrides every one of them: naming a tag
+    renders it.
 
-    The two composite cases fall out of the predicate rather than
-    being special-cased.  ``spacetime_decorr_k`` needs *both*
-    ``decorr_k`` (it is a :data:`DECORR_K` base) and ``spacetime`` (it
-    is a :data:`SPACETIME` family), which is what makes
-    `$\mathcal{R}^k$`'s spacetime map follow its maps; and a
-    ``spacetime_*_x0`` needs ``x0`` as well, its marginal being one.
+    The composite cases fall out of the predicate rather than being
+    special-cased.  ``spacetime_decorr_k`` needs *both* ``decorr_k``
+    (it is a :data:`DECORR_K` base) and ``spacetime`` (it is a
+    :data:`SPACETIME` family), which is what makes `$\mathcal{R}^k$`'s
+    spacetime map follow its maps; ``spacetime_r`` needs *reference*
+    and ``spacetime`` the same way; and a ``spacetime_*_x0`` needs
+    ``x0`` as well, its marginal being one.
     """
-    held = {DECORR: decorr, DECORR_K: decorr_k}
+    held = {"r": reference, DECORR: decorr, DECORR_K: decorr_k}
     return [
         tag
         for tag, spec in registry.items()
-        if (budget or spec.stem in DEFAULT_STEMS)
+        if (budget or spec.stem != "twin_ybudget")
         and (x0 or not spec.marginal or spec.marginal in DEFAULT_MARGINALS)
         and held.get(spec.base, True)
         and (spacetime or spec.family != SPACETIME)
@@ -3962,7 +4487,10 @@ def render_series(
     Filenames are ``<tag>_<index>.<fmt>`` with *index* the frame
     label of :attr:`YSeries.index`, zero-padded so a lexical sort is
     the time order.  The series is scanned once first
-    (:func:`scan_panels`) for the sign check and the frozen scale.
+    (:func:`scan_panels`) for the sign check and the frozen scale, and
+    its :data:`TRACKED` panels once more for their tracks
+    (:func:`track_peak`), which every frame draws and
+    :func:`render_tracks` writes out beside the frames.
 
     The reference normalisation a spectra series may carry is a
     property of the member set rather than of a tag, so it is
@@ -3973,28 +4501,54 @@ def render_series(
         if prefix
         else budget_panels(series, marginal)
     )
+    ylim = y_limits(series, options, style.ylim)
     scales, notes = scan_panels(
         series,
         panels,
         options,
         declared=declared_signs,
-        ylim=y_limits(series, options, style.ylim),
+        ylim=ylim,
     )
     if notes and not quiet:
         print("\n".join(notes), flush=True)
+    tracked = [key for key in panels if key[0] in TRACKED]
+    tracks = {
+        key: track_peak(
+            series,
+            *key,
+            options=options,
+            n_levels=style.n_levels,
+            ylim=ylim,
+        )
+        for key in tracked
+    }
 
     target = out_dir / tag
     target.mkdir(parents=True, exist_ok=True)
     width = pad or len(str(int(series.index.max())))
     written: list[Path] = []
     for frame in range(series.t_rel.size):
-        fig = panel_figure(series, frame, panels, options, style, scales)
+        fig = panel_figure(
+            series, frame, panels, options, style, scales, tracks
+        )
         path = target / f"{tag}_{int(series.index[frame]):0{width}d}.{fmt}"
         fig.savefig(path, dpi=style.dpi)
         plt.close(fig)
         written.append(path)
         if not quiet:
             print(f"  {path.name}  t = {series.t_rel[frame]:g}", flush=True)
+    if tracked:
+        written += render_tracks(
+            series,
+            tag,
+            tracked,
+            tracks,
+            out_dir,
+            options=options,
+            style=style,
+            fmt=fmt,
+            quiet=quiet,
+        )
     return written
 
 
@@ -4049,13 +4603,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="TAG",
         help="exact series tags to render, overriding every selection "
-        "switch (default: the spectra marginals present)",
+        "switch (default: the difference-spectra and budget marginals "
+        "present)",
     )
     p.add_argument(
         "--budget",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="render the twin_ybudget series, the terms of the "
+        "difference-energy balance on a 3 x 3 grid; on unless "
+        "--no-budget",
+    )
+    p.add_argument(
+        "--reference",
         action="store_true",
-        help="also render the twin_ybudget series (the terms of the "
-        "difference-energy balance, a panel each); off by default",
+        help="also render the reference field's spectra (their k-summed "
+        "map too, under --spacetime); off by default",
     )
     p.add_argument(
         "--x0",
@@ -4112,9 +4675,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--clim",
-        choices=("series", "frame"),
+        choices=("series", "frame", "ramped"),
         default="series",
-        help="colour scale frozen on the whole series, or per figure",
+        help="colour scale frozen on the whole series, per figure, or "
+        "ramped: frozen on the frames so far, so it grows with the "
+        "field and ends on the series scale",
     )
     p.add_argument(
         "--signs-from-data",
@@ -4176,7 +4741,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--width",
         type=float,
         default=PAGE_LINEWIDTH,
-        help="figure width in inches (sets the decade length)",
+        help="width of a spectra figure in inches, which sets the decade "
+        "length every figure shares",
     )
     p.add_argument(
         "--decade",
@@ -4190,7 +4756,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="axes box height over width, linear ordinate only",
     )
-    p.add_argument("--ncols", type=int, default=2)
+    p.add_argument(
+        "--ncols",
+        type=int,
+        default=2,
+        help="columns of a spectra figure, which --width fits the panel "
+        "size of every figure to; a budget figure is always 3 columns "
+        "of those panels, and so wider",
+    )
     p.add_argument("--dpi", type=int, default=200)
     p.add_argument("--format", default="png", help="savefig extension")
     p.add_argument(
@@ -4246,7 +4819,7 @@ def main(argv: list[str] | None = None) -> int:
         nice=not args.exact_levels,
         fill=args.fill,
         lines=not args.no_lines,
-        freeze_clim=args.clim == "series",
+        clim=args.clim,
         xlim=None if args.xlim is None else tuple(args.xlim),
         ylim=None if args.ylim is None else tuple(args.ylim),
         dpi=args.dpi,
@@ -4275,6 +4848,7 @@ def main(argv: list[str] | None = None) -> int:
         registry,
         x0=args.x0,
         budget=args.budget,
+        reference=args.reference,
         decorr=args.decorr,
         decorr_k=args.decorr_k,
         spacetime=args.spacetime,
@@ -4288,9 +4862,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             "no stream found under the given members"
             if not registry
-            else "every series present is held back by default; add "
-            "--decorr / --decorr-k / --spacetime / --budget / --x0, "
-            f"or name one of: {list(registry)}"
+            else "every series present is held back; add --reference / "
+            "--decorr / --decorr-k / --spacetime / --x0, drop "
+            f"--no-budget, or name one of: {list(registry)}"
         )
     held = [t for t in registry if t not in tags]
     if held and not args.quiet:
