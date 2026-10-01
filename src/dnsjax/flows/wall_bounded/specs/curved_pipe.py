@@ -26,6 +26,7 @@ from math import pi
 from ....flow_spec import DeferredSpec, FieldSpec, FlowSpec
 from ._family import (
     CYLINDRICAL_GRIDS,
+    DEFERRED_LOWRES_PRESSURE,
     DEFERRED_MEAN_FLOW,
     DEFERRED_TILT,
     PIPE_CARRY_FIELDS,
@@ -134,6 +135,7 @@ SPEC = FlowSpec(
     deferred=(
         DEFERRED_TILT,
         DEFERRED_MEAN_FLOW,
+        DEFERRED_LOWRES_PRESSURE,
         DEFERRED_SPLIT,
         DEFERRED_MEAN_COUPLING,
     ),

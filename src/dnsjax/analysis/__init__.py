@@ -20,12 +20,15 @@ Operate on fields::
     st = read_state("state00000.tar", return_spectral=True)
     div = divergence(st.spectral, st.params, st.spectral_coords)
 
+A reduced-resolution snapshot (``lowres/``, :mod:`dnsjax.lowres`) reads
+the same way, and its static pressure with :func:`read_pressure`.
+
 See :func:`read_state` and :mod:`dnsjax.analysis.snapshot_ops`.
 """
 
 # Object-like view over embedded params/stats (re-exported for typing).
 from ._core import Namespace, geometry_info, read_meta, read_stats
-from .snapshot_export import StateData, read_state
+from .snapshot_export import StateData, read_pressure, read_state
 from .snapshot_ops import (
     curl,
     derivative,
@@ -38,6 +41,7 @@ from .snapshot_ops import (
 
 __all__ = [
     "read_state",
+    "read_pressure",
     "StateData",
     "derivative",
     "gradient",

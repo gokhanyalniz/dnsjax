@@ -15,7 +15,8 @@ after the final layer. Every layer is parsed against the **selected flow's
 parameter surface**: only that flow's parameters exist (an irrelevant key is
 a hard error naming the flow), fields go by their geometry-natural public
 names (a pipe has `--geo.lz`/`--res.nz`/`--res.nr`/`--res.ntheta` where a
-plane channel has `--geo.lx`/`--res.nx`/`--res.ny`/`--res.nz`), and per-flow
+plane channel has `--geo.lx`/`--res.nx`/`--res.ny`/`--res.nz`, and the
+`[lowres]` resolution targets follow the same names), and per-flow
 defaults (the pipe's moving frame `u_grid = 0.5`, its scheme-dependent
 `grid_type`, the viscoelastic rheology values) are materialized before
 printing or recording. The parameters that must be known before JAX

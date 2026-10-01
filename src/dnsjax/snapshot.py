@@ -224,6 +224,7 @@ snapshots are rejected at read
 import json
 import math
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from functools import cache, partial
 from pathlib import Path
 
@@ -238,11 +239,12 @@ from .flows.registry import periodic_systems
 from .parameters import derived_params, params
 from .sharding import sharding
 from .snapshot_meta import (
-    CARRY_PREFIX,
+    checkpoint_refusal,
     git_hash,
     read_snapshot_meta,
     snapshot_carry_offsets,
     snapshot_component_offsets,
+    snapshot_pressure_offsets,
 )
 
 
@@ -590,6 +592,142 @@ def _resize_wrapped_axis(
     return jnp.concatenate([head, state[tuple(idx)]], axis=axis)
 
 
+# ── Wall-normal regrid (resume, reduced snapshots) ────────
+
+#: Axis-parity class of each **stored physical** state component, as
+#: ``True`` for the `$(-1)^m$` (even) class and ``False`` for
+#: `$(-1)^{m+1}$` (odd): the order is
+#: ``(u_z, u_r, u_theta, c_zz, c_rz, c_theta_z, c_rr, c_theta_theta,
+#: c_r_theta)``, truncated to the first 3 for a velocity-only flow.  A
+#: scalar (the pressure of a reduced snapshot) is even, like ``u_z``.
+#: Read by the pipe's parity-aware regrid; the annular and Cartesian
+#: geometries have no axis and ignore it.
+PARITY_EVEN_STORED: tuple[bool, ...] = (
+    True,  # u_z
+    False,  # u_r
+    False,  # u_theta
+    True,  # c_zz
+    False,  # c_rz
+    False,  # c_theta_z
+    True,  # c_rr
+    True,  # c_theta_theta
+    True,  # c_r_theta
+)
+
+
+def wall_regrid_geometry() -> str:
+    """This run's :func:`dnsjax.fd.build_interpolation_matrix` geometry.
+
+    Each geometry list includes its viscoelastic member, so the
+    9-component flows regrid with their own geometry's operators.
+    """
+    from .flows.registry import annular_systems, cylindrical_systems
+
+    if params.phys.system in cylindrical_systems:
+        return "cylindrical"
+    if params.phys.system in annular_systems:
+        return "annular"
+    return "cartesian"
+
+
+def wall_velocity_rows() -> tuple[int, ...]:
+    """The wall rows whose velocity a regrid resets to zero.
+
+    The pipe's one wall at `$r = 1$`; both walls elsewhere.
+    """
+    return (-1,) if wall_regrid_geometry() == "cylindrical" else (0, -1)
+
+
+def wall_regrid_matrix(y_old, y_new) -> Array | tuple[Array, Array]:
+    r"""The regrid from *y_old* to *y_new*, as replicated device arrays.
+
+    :func:`dnsjax.fd.build_interpolation_matrix` for this run's
+    geometry and ``fd_order`` -- Chebyshev for a CGL pair, the
+    ``(T_even, T_odd)`` parity pair for the pipe's radial CGL grids,
+    the local stencil otherwise -- cast to the run's real precision and
+    distributed with ``device_put``.  Real, because
+    :func:`apply_wall_normal_regrid` applies it as a real GEMM.  The
+    grids should be float64: a float32-rounded CGL grid misses the CGL
+    detection (:func:`dnsjax.fd.grid_nodes`).
+    """
+    from .fd import build_interpolation_matrix
+
+    T = build_interpolation_matrix(
+        np.asarray(y_old, dtype=np.float64),
+        np.asarray(y_new, dtype=np.float64),
+        wall_regrid_geometry(),
+        params.res.fd_order,
+    )
+
+    def put(matrix) -> Array:
+        return jax.device_put(
+            np.asarray(matrix, dtype=sharding.float_type), sharding.no_shard
+        )
+
+    if isinstance(T, tuple):
+        return tuple(put(m) for m in T)
+    return put(T)
+
+
+def apply_wall_normal_regrid(
+    state: Array,
+    T: Array | tuple[Array, Array],
+    *,
+    m_even: Array | None = None,
+    parity_even: tuple[bool, ...] = (),
+    zero_velocity_walls: tuple[int, ...] = (),
+) -> Array:
+    r"""Interpolate axis 1 of a spectral field with :func:`wall_regrid_matrix`.
+
+    The wall-normal axis is local in the solver layout, so this is a
+    device-local GEMM -- ``_base.apply_y_matrix``, a real GEMM on the
+    split real and imaginary parts.  A parity pair
+    *T* is applied per azimuthal mode by component class: *parity_even*
+    holds one :data:`PARITY_EVEN_STORED` entry per component of
+    *state*, *m_even* is ``cylindrical.fourier.m_is_even`` -- the
+    parity of the **physical** `$m = m_0 h$` over the padded axis, so
+    the regrid has to run before any `$m$` truncation.  Both
+    contractions run on every mode and the mask selects.
+
+    *zero_velocity_walls* lists the new grid's wall rows whose
+    velocity (the first three components) is reset to zero: a
+    downsampling is a projection and does not reproduce the wall
+    values exactly, and an upsampling's wall rows are only zero to
+    rounding.  Nothing else is touched -- the conformation tensor has
+    no Dirichlet wall condition, nor has a pressure.
+
+    Pure and traceable: :mod:`dnsjax.lowres` runs it inside ``jit``
+    with every array an argument, the resume regrid eagerly.
+    """
+    from .geometries.wall_bounded._base import apply_y_matrix
+
+    if isinstance(T, tuple):
+        if len(parity_even) != state.shape[0]:
+            raise ValueError(
+                f"a parity regrid needs one parity class per component "
+                f"({state.shape[0]}), got {len(parity_even)}."
+            )
+        T_even, T_odd = T
+        state = jnp.stack(
+            [
+                jnp.where(
+                    m_even,
+                    apply_y_matrix(a, state[c]),
+                    apply_y_matrix(b, state[c]),
+                )
+                for c, (a, b) in enumerate(
+                    (T_even, T_odd) if even else (T_odd, T_even)
+                    for even in parity_even
+                )
+            ]
+        )
+    else:
+        state = apply_y_matrix(T, state)
+    for row in zero_velocity_walls:
+        state = state.at[:3, row].set(0.0)
+    return state
+
+
 def _via_mid(
     state: Array, target, mid_fn: Callable[[Array], Array] | None = None
 ) -> Array:
@@ -624,9 +762,9 @@ def _via_mid(
     return jax.sharding.reshard(state, NamedSharding(sharding.mesh, target))
 
 
-@jax.jit
-def _to_io_layout_core(state: Array) -> Array:
-    r"""Pad the leading axis, reshard, and trim to the true modes.
+@partial(jax.jit, static_argnums=(1, 2))
+def _to_io_layout_core(state: Array, kz_out: int, kx_out: int) -> Array:
+    r"""Pad the leading axis, reshard, and cut the modes to the file's.
 
     **One** jitted program, and *where* each trim sits is what makes it
     free.  The solver layout pads `$k_z$` to a multiple of ``np0`` and
@@ -643,11 +781,25 @@ def _to_io_layout_core(state: Array) -> Array:
     (``round_up_padded(n, 1) == n``), i.e. exactly when the leg it
     follows is the identity: a grid that pads nothing compiles to the
     reshard alone.
+
+    *kz_out* / *kx_out* are the mode counts the file stores: the run's
+    true ones for a snapshot, fewer for a reduced-resolution one
+    (:mod:`dnsjax.lowres`), whose high-`$|k|$` modes are dropped at the
+    same two points and at no extra collective -- `$k_z$` by
+    :func:`_resize_wrapped_axis` (the wrap order), `$k_x$` by a prefix
+    slice of the half axis.  At the true counts the resize is the
+    identity, so a snapshot compiles to exactly the program it did.
     """
     ndev = _n_devices()
     state = _pad_axis(state, 1, _a_local(state.shape[1], ndev) * ndev)
-    state = _via_mid(state, _io_spec(), lambda x: _trim_axis(x, 2, _kz_true()))
-    return _trim_axis(state, 3, _kx_true())
+    state = _via_mid(
+        state,
+        _io_spec(),
+        lambda x: _resize_wrapped_axis(
+            _trim_axis(x, 2, _kz_true()), 2, _kz_true(), kz_out
+        ),
+    )
+    return _trim_axis(state, 3, kx_out)
 
 
 @partial(jax.jit, static_argnums=(1, 2, 3, 4))
@@ -697,7 +849,43 @@ def _from_io_layout_core(
     return _resize_wrapped_axis(state, 1, a_true, ky_dst)
 
 
-def _to_io_layout(state: Array) -> Array:
+@partial(jax.jit, static_argnums=(1, 2))
+def _resize_modes_local(state: Array, kz_out: int, kx_out: int) -> Array:
+    """The mode cut of :func:`_to_io_layout_core`, on one device."""
+    state = _resize_wrapped_axis(
+        _trim_axis(state, 2, _kz_true()), 2, _kz_true(), kz_out
+    )
+    return _trim_axis(state, 3, kx_out)
+
+
+@jax.jit
+def _replicated_to_io_layout_core(array: Array) -> Array:
+    """Pad the leading axis and slice it onto the I/O layout."""
+    ndev = _n_devices()
+    array = _pad_axis(array, 1, _a_local(array.shape[1], ndev) * ndev)
+    return jax.sharding.reshard(
+        array, NamedSharding(sharding.mesh, _io_spec())
+    )
+
+
+def replicated_to_io_layout(array: Array) -> Array:
+    r"""Place a replicated ``(C, A, ...)`` array on the I/O layout.
+
+    For an array every device already holds whole -- the twin's 3-D
+    cubes, which a ``psum`` leaves replicated (:mod:`dnsjax.twin.cubes`)
+    -- the I/O layout is a local slice, not an exchange: each device
+    keeps its slab of the leading axis, padded to a multiple of the
+    device count exactly as for a state (:func:`_a_local`), and
+    :func:`write_archive` writes it like any state slab.
+    """
+    if _n_devices() == 1:
+        return array
+    return _replicated_to_io_layout_core(array)
+
+
+def _to_io_layout(
+    state: Array, kz_out: int | None = None, kx_out: int | None = None
+) -> Array:
     r"""Reshard *state* onto the I/O layout, padding the leading axis.
 
     One exchange per save, against ~1e5 serialized 512 B writes per
@@ -716,10 +904,19 @@ def _to_io_layout(state: Array) -> Array:
     ``jit`` the identical two moves take **0.68 ms**: a 338x
     difference, and the whole reason a multi-device snapshot is now
     write-bound rather than reshard-bound.
+
+    *kz_out* / *kx_out* (default: the run's true counts) are the mode
+    counts the file stores (:func:`_to_io_layout_core`).  A single
+    device holds no padding, so there a reduced count is cut in place
+    (:func:`_resize_modes_local`) rather than by the reshard it skips.
     """
+    kz_out = _kz_true() if kz_out is None else kz_out
+    kx_out = _kx_true() if kx_out is None else kx_out
     if _n_devices() == 1:
-        return state
-    return _to_io_layout_core(state)
+        if (kz_out, kx_out) == (_kz_true(), _kx_true()):
+            return state
+        return _resize_modes_local(state, kz_out, kx_out)
+    return _to_io_layout_core(state, kz_out, kx_out)
 
 
 # ── Geometry / shape helpers ──────────────────────────────
@@ -877,7 +1074,9 @@ def _create_store(
                     "configuration": {"endian": "little"},
                 },
             ],
-            "fill_value": [0, 0],
+            # A complex fill value is a [re, im] pair; the twin's
+            # real cubes take a scalar.
+            "fill_value": [0, 0] if dtype.startswith("complex") else 0.0,
         },
     }
     ts.open(spec, create=True, delete_existing=True).result()
@@ -925,34 +1124,35 @@ def _write_tar_skeleton(
     comp_shape: tuple[int, ...],
     itemsize: int,
     meta_bytes: bytes,
-    zarr_bytes: bytes,
+    members: list[tuple[str, int, bytes]],
     stats_bytes: bytes | None = None,
-    carry_zarr_bytes: bytes | None = None,
-    n_carry: int = 0,
 ) -> None:
     """Lay out the whole uncompressed tar (process 0 only).
 
-    Small members (metadata, the optional stats JSON, the ``zarr.json``
-    of the state and, with *n_carry*, of the carried fields) are written
-    in full; each chunk member -- the state's components, then the
-    carried fields' -- gets a correct header followed by a
-    sparse-reserved, zero-filled data region padded to the 512-byte
-    block boundary.  The archive ends with the two zero blocks tar
-    expects.  After this the file is full-length, so every device can
-    safely write its disjoint byte ranges into the chunk regions.
+    *members* is ``[(name, n_components, zarr_json_bytes), ...]``,
+    ``state`` first.  Small members (metadata, the optional stats JSON,
+    then each member's ``zarr.json``) are written in full; each chunk
+    member -- every member's components in turn, ``{name}/c/{i}/0/0/0``
+    -- gets a correct header followed by a sparse-reserved, zero-filled
+    data region padded to the 512-byte block boundary.  For a snapshot
+    with ``carry/`` that is exactly the order it always had.  The
+    archive ends with the two zero blocks tar expects.  After this the
+    file is full-length, so every device can safely write its disjoint
+    byte ranges into the chunk regions.
     """
     comp_nbytes = math.prod(comp_shape) * itemsize
     comp_padded = comp_nbytes + (-comp_nbytes) % 512
-    members = [("_dnsjax_meta.json", meta_bytes)]
+    headers = [("_dnsjax_meta.json", meta_bytes)]
     if stats_bytes is not None:
-        members.append(("_dnsjax_stats.json", stats_bytes))
-    members.append(("state/zarr.json", zarr_bytes))
-    if n_carry:
-        members.append(("carry/zarr.json", carry_zarr_bytes))
-    chunks = [f"state/c/{c}/0/0/0" for c in range(_n_components())]
-    chunks += [f"{CARRY_PREFIX}{c}/0/0/0" for c in range(n_carry)]
+        headers.append(("_dnsjax_stats.json", stats_bytes))
+    headers += [(f"{name}/zarr.json", zarr) for name, _, zarr in members]
+    chunks = [
+        f"{name}/c/{c}/0/0/0"
+        for name, n_comp, _ in members
+        for c in range(n_comp)
+    ]
     with open(tar_path, "wb") as f:
-        for name, data in members:
+        for name, data in headers:
             f.write(_tar_header(name, len(data)))
             f.write(data)
             f.write(b"\x00" * ((-len(data)) % 512))
@@ -967,9 +1167,39 @@ def _write_tar_skeleton(
 # ── Snapshot metadata ─────────────────────────────────────
 
 
-def _metadata_bytes(
-    t: float, it: int, isnap: int = 0, carried: tuple[str, ...] = ()
-) -> bytes:
+@dataclass(frozen=True)
+class StoredLayout:
+    r"""What a tar stores when it is not the live run's own state.
+
+    A reduced-resolution snapshot (:mod:`dnsjax.lowres`) holds a field
+    at counts the run does not: ``a`` points / modes on the leading
+    axis, ``kz`` and ``kx`` stored modes on the other two (the file's
+    ``native_shape[1:]``).  Its ``wall_normal_grid`` and its ``params``
+    dump describe *that* field -- the grid it lives on, ``res`` at the
+    reduced counts under the flow's public names -- because every
+    reader takes the shapes from the dump and the grid from the
+    metadata (:func:`dnsjax.analysis._core.geometry_info`).  ``extra``
+    is merged into the metadata last (the ``lowres`` and ``pressure``
+    entries).
+    """
+
+    a: int
+    kz: int
+    kx: int
+    wall_normal_grid: list[float] | None
+    params: dict
+    extra: dict = field(default_factory=dict)
+
+
+def _metadata(
+    t: float,
+    it: int,
+    isnap: int | None = 0,
+    carried: tuple[str, ...] = (),
+    *,
+    layout: StoredLayout | None = None,
+    n_components: int | None = None,
+) -> dict:
     r"""Serialise the ``_dnsjax_meta.json`` member content.
 
     ``git_hash`` records the code revision that wrote the snapshot
@@ -988,9 +1218,21 @@ def _metadata_bytes(
     :func:`dnsjax.snapshot_meta.read_snapshot_meta`.  *carried* names
     the optional ``carry/`` fields (key ``carried``, present only with
     them).
+
+    With *layout* the shape, grid and dump are the layout's (and
+    *n_components* the stored array's), and its ``extra`` entries are
+    appended.
     """
     from .param_surface import recorded_params_dump
 
+    if layout is None:
+        shape = _true_spec_shape()
+        grid = derived_params.wall_normal_grid
+        dump = recorded_params_dump(params)
+    else:
+        shape = (layout.a, layout.kz, layout.kx)
+        grid = layout.wall_normal_grid
+        dump = layout.params
     meta = {
         "format_version": 6,
         "git_hash": git_hash(),
@@ -999,15 +1241,26 @@ def _metadata_bytes(
         "isnap": isnap,
         "geometry": ("triply_periodic" if _is_periodic() else "wall_bounded"),
         "system": params.phys.system,
-        "native_shape": [_n_components(), *_true_spec_shape()],
+        "native_shape": [n_components or _n_components(), *shape],
         "dtype": _zarr3_dtype_name(),
         "n_devices": sharding.n_devices,
-        "wall_normal_grid": derived_params.wall_normal_grid,
-        "params": recorded_params_dump(params),
+        "wall_normal_grid": grid,
+        "params": dump,
     }
     if carried:
         meta["carried"] = list(carried)
-    return json.dumps(meta, indent=2, default=str).encode("utf-8")
+    if layout is not None:
+        meta.update(layout.extra)
+    return meta
+
+
+def _metadata_bytes(
+    t: float, it: int, isnap: int = 0, carried: tuple[str, ...] = ()
+) -> bytes:
+    """A snapshot's ``_dnsjax_meta.json`` content (:func:`_metadata`)."""
+    return json.dumps(
+        _metadata(t, it, isnap, carried), indent=2, default=str
+    ).encode("utf-8")
 
 
 def read_metadata(path: Path) -> dict:
@@ -1287,6 +1540,96 @@ def _read_chunks_host(
 # ── Public API ────────────────────────────────────────────
 
 
+#: Each member a tar may hold, with the reader of its chunk offsets.
+_MEMBER_OFFSETS: dict[str, Callable[[Path], dict[int, int] | None]] = {
+    "state": snapshot_component_offsets,
+    "carry": snapshot_carry_offsets,
+    "pressure": snapshot_pressure_offsets,
+}
+
+
+def write_archive(
+    members: list[tuple[str, Array]],
+    comp_shape: tuple[int, ...],
+    dtype_name: str,
+    path: str | Path,
+    *,
+    meta: Callable[[], dict],
+    stats: dict | None = None,
+) -> None:
+    r"""Write one dnsjax tar and commit it under *path*.
+
+    The container every snapshot, reduced-resolution snapshot
+    (:mod:`dnsjax.lowres`) and twin cube (:mod:`dnsjax.twin.cubes`) is
+    written in, so all of them share one I/O path: process 0 lays out
+    the archive under a ``.partial`` name, every device writes its
+    disjoint byte ranges, and the rename commits it (module
+    docstring).
+
+    *members* is ``[(name, array), ...]`` from :data:`_MEMBER_OFFSETS`,
+    ``state`` first, each *array* already on the I/O layout
+    (:func:`_to_io_layout` / :func:`replicated_to_io_layout`) with
+    ``comp_shape = (A, kz, kx)`` true extents per component; one zarr3
+    array per member, one chunk per component, in *dtype_name*.
+    *meta* builds the ``_dnsjax_meta.json`` content and runs on the
+    main process only.  Collective: every process calls it, in the
+    same order as every other collective.
+    """
+    path = Path(path)
+    # Everything is written to a sibling and renamed at the end, so
+    # the final name never names a half-written archive (see
+    # :data:`_PARTIAL_SUFFIX`).
+    partial = path.with_name(path.name + _PARTIAL_SUFFIX)
+    itemsize = _np_dtype(dtype_name).itemsize
+
+    if sharding.main_device:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_tar_skeleton(
+            partial,
+            comp_shape,
+            itemsize,
+            json.dumps(meta(), indent=2, default=str).encode("utf-8"),
+            [
+                (
+                    name,
+                    int(array.shape[0]),
+                    _zarr_json_bytes(
+                        (int(array.shape[0]), *comp_shape),
+                        (1, *comp_shape),
+                        dtype_name,
+                    ),
+                )
+                for name, array in members
+            ],
+            None if stats is None else _stats_json_bytes(stats),
+        )
+    _barrier("snapshot_create")
+
+    use_gds = _gds_available()
+    if use_gds:
+        sharding.print("Snapshot: using GDS path")
+    write_fn = _write_chunks_gds if use_gds else _write_chunks_host
+
+    for name, array in members:
+        offsets = _MEMBER_OFFSETS[name](partial)
+        if params.outs.snapshot_write_mode == "serial":
+            _write_serialized(
+                write_fn, array, partial, offsets, comp_shape, itemsize
+            )
+        else:
+            write_fn(array, partial, offsets, comp_shape, itemsize)
+    # Every write has landed and every file handle is closed (the
+    # engines all use ``with``), so the archive is complete and can
+    # take its real name.
+    _barrier("snapshot_write")
+    if sharding.main_device:
+        partial.replace(path)
+    # Only after this does the snapshot exist for a reader, on every
+    # process -- so a rank that returns early cannot report a
+    # checkpoint the run has not actually committed.
+    _barrier("snapshot_commit")
+
+
 def save_snapshot(
     state: Array,
     t: float,
@@ -1294,9 +1637,11 @@ def save_snapshot(
     path: str | Path,
     *,
     stats: dict | None = None,
-    isnap: int = 0,
+    isnap: int | None = 0,
     carry: Array | None = None,
     carry_names: tuple[str, ...] = (),
+    layout: StoredLayout | None = None,
+    pressure: Array | None = None,
 ) -> None:
     r"""Save the spectral state to a single-file snapshot.
 
@@ -1340,77 +1685,63 @@ def save_snapshot(
         Optional solver-carried fields, ``(len(carry_names),
         *spec_shape)`` in the state's own sharding, written as the
         ``carry/`` member (module docstring); ``None`` writes none.
+    layout:
+        ``None`` (a snapshot of this run) or the
+        :class:`StoredLayout` of a reduced-resolution one: *state* is
+        then already on the reduced leading axis (wall-normal grid or
+        periodic `$k_y$`) at the run's own `$k_z$` / `$k_x$` layout,
+        and the reshard drops its high modes down to the layout's
+        counts.
+    pressure:
+        Optional ``(1, *...)`` scalar field in the same layout as
+        *state*, written as the ``pressure/`` member; *layout*'s
+        ``extra`` must then carry its ``pressure`` entry, which is how
+        a reader finds the member.
     """
-    path = Path(path)
     n_carry = 0 if carry is None else len(carry_names)
-    # Everything is written to a sibling and renamed at the end, so
-    # the final name never names a half-written archive (see
-    # :data:`_PARTIAL_SUFFIX`).
-    partial = path.with_name(path.name + _PARTIAL_SUFFIX)
-    comp_shape = _true_spec_shape()
-    dtype_name = _zarr3_dtype_name()
-    itemsize = _np_dtype(dtype_name).itemsize
-    on_disk = (_n_components(), *comp_shape)
-
-    if sharding.main_device:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        zarr_bytes = _zarr_json_bytes(on_disk, (1, *comp_shape), dtype_name)
-        carry_zarr = (
-            _zarr_json_bytes(
-                (n_carry, *comp_shape), (1, *comp_shape), dtype_name
-            )
-            if n_carry
-            else None
+    if layout is None:
+        comp_shape = _true_spec_shape()
+        modes: tuple[int | None, int | None] = (None, None)
+        n_components = None
+    else:
+        comp_shape = (layout.a, layout.kz, layout.kx)
+        modes = (layout.kz, layout.kx)
+        n_components = int(state.shape[0])
+    if pressure is not None and (
+        layout is None or "pressure" not in layout.extra
+    ):
+        raise ValueError(
+            "a pressure member needs a layout whose extra metadata "
+            "carries its 'pressure' entry (the reader's key to it)."
         )
-        meta_bytes = _metadata_bytes(
-            t, it, isnap, carry_names if n_carry else ()
+
+    # One reshard per member, then every device writes contiguous byte
+    # ranges.  Collective, so it is issued by every process alike,
+    # before the serial write mode's rank-ordered section.
+    members = [("state", _to_io_layout(state, *modes))]
+    if n_carry:
+        members.append(("carry", _to_io_layout(carry, *modes)))
+    if pressure is not None:
+        members.append(("pressure", _to_io_layout(pressure, *modes)))
+
+    def meta() -> dict:
+        return _metadata(
+            t,
+            it,
+            isnap,
+            carry_names if n_carry else (),
+            layout=layout,
+            n_components=n_components,
         )
-        stats_bytes = None if stats is None else _stats_json_bytes(stats)
-        _write_tar_skeleton(
-            partial,
-            comp_shape,
-            itemsize,
-            meta_bytes,
-            zarr_bytes,
-            stats_bytes,
-            carry_zarr,
-            n_carry,
-        )
-    _barrier("snapshot_create")
 
-    comp_offsets = snapshot_component_offsets(partial)
-    carry_offsets = snapshot_carry_offsets(partial) if n_carry else None
-
-    use_gds = _gds_available()
-    if use_gds:
-        sharding.print("Snapshot: using GDS path")
-    write_fn = _write_chunks_gds if use_gds else _write_chunks_host
-
-    # One reshard, then every device writes contiguous byte ranges.
-    # Collective, so it must happen outside the serial write mode's
-    # rank-ordered section -- and before it, since that section only
-    # reorders the writes.
-    parts = [(_to_io_layout(state), comp_offsets)]
-    if carry_offsets is not None:
-        parts.append((_to_io_layout(carry), carry_offsets))
-
-    for array, offsets in parts:
-        if params.outs.snapshot_write_mode == "serial":
-            _write_serialized(
-                write_fn, array, partial, offsets, comp_shape, itemsize
-            )
-        else:
-            write_fn(array, partial, offsets, comp_shape, itemsize)
-    # Every write has landed and every file handle is closed (the
-    # engines all use ``with``), so the archive is complete and can
-    # take its real name.
-    _barrier("snapshot_write")
-    if sharding.main_device:
-        partial.replace(path)
-    # Only after this does the snapshot exist for a reader, on every
-    # process -- so a rank that returns early cannot report a
-    # checkpoint the run has not actually committed.
-    _barrier("snapshot_commit")
+    write_archive(
+        members,
+        comp_shape,
+        _zarr3_dtype_name(),
+        path,
+        meta=meta,
+        stats=stats,
+    )
 
 
 def load_snapshot(
@@ -1576,6 +1907,9 @@ def validate_snapshot_params(
     from .flows.registry import internalize_stored, spec_for
 
     meta = read_metadata(Path(path))
+    refusal = checkpoint_refusal(meta, path)
+    if refusal is not None:
+        raise SnapshotMismatchError(refusal)
     stored = meta.get("params", {})
     system = meta.get("system") or stored.get("phys", {}).get("system")
     spec = spec_for(system or params.phys.system)

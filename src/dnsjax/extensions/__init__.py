@@ -237,6 +237,7 @@ _RESERVED_SECTIONS = frozenset(
         "res",
         "init",
         "outs",
+        "lowres",
         "step",
         "stop",
         "solver",

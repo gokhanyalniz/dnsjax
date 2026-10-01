@@ -19,7 +19,12 @@ below the writer's version, so a member recorded before ``xz00``
 still opens -- the three-bin recovery agreeing across all three
 layouts, plane or not, ``fluctuation_energy`` agreeing between the two
 marginals, ``shape_alignment`` (normalised, symmetric,
-amplitude-blind), the integral-length core against an independently
+amplitude-blind), the reference spectra read alike from their own
+streams and from the pre-split combined layout (merged on the
+difference times, ``nan`` where the reference has no sample), the 3-D
+cube reader on a hand-built tar (whole, by wall-distance slab, a
+directory stacked and subset, mismatched points and a wrong ``kind``
+refused), the integral-length core against an independently
 evaluated two-mode reference, and ``scripts/ensemble_setup.py
 build-twin`` (dry run leaves no tree; an out-of-range shape knob is
 refused at build time; every member pins its seed and its whole
@@ -689,6 +694,187 @@ def test_spectra_reader() -> None:
     print("spectra reader: OK")
 
 
+def test_reference_layouts() -> None:
+    """The reference spectra read alike in both layouts.
+
+    Pre-split, ``e_ref`` / ``r_*`` ride the difference records
+    (``includes_ref``); split, they are streams of their own on their
+    own cadence.  The merged reads place them on the difference times
+    exactly where they have samples and ``nan`` elsewhere; the
+    ``*_ref`` readers return them on their own times either way.
+    """
+    from dnsjax.analysis.twin import (
+        read_twin_spectra_ref,
+        read_twin_yspectra,
+        read_twin_yspectra_ref,
+    )
+
+    rng = np.random.default_rng(5)
+    t = np.array([0.0, 0.01, 0.02, 0.03])
+    e_delta, e_ref = rng.random((4, 7, 4)), rng.random((4, 7, 4))
+    fields, values, sidecar = _yspectra_fixture(
+        ("x", "z", "xz00"), version=2, n_t=4
+    )
+    e_fields = [(n, sh) for n, sh in fields if n.startswith("e_")]
+    r_fields = [(n, sh) for n, sh in fields if n.startswith("r_")]
+    with tempfile.TemporaryDirectory() as tmp:
+        legacy, split = Path(tmp) / "legacy", Path(tmp) / "split"
+        legacy.mkdir()
+        split.mkdir()
+        _write_spectra(legacy, t, e_delta, e_ref)
+        _write_y_stream(legacy, "twin_yspectra", t, fields, values, sidecar)
+        _write_spectra(split, t, e_delta, None)
+        ref_meta = json.loads((split / "twin_spectra.json").read_text())
+        ref_meta |= {"it_spectra_ref": 2}
+        del ref_meta["includes_ref"], ref_meta["it_spectra"]
+        rec = np.zeros(2, dtype=[("t", "<f8"), ("e_ref", "<f8", (7, 4))])
+        rec["t"], rec["e_ref"] = t[::2], e_ref[::2]
+        (split / "twin_spectra_ref.bin").write_bytes(rec.tobytes())
+        (split / "twin_spectra_ref.json").write_text(json.dumps(ref_meta))
+        _write_y_stream(
+            split,
+            "twin_yspectra",
+            t,
+            e_fields,
+            values,
+            sidecar | {"includes_ref": False},
+        )
+        _write_y_stream(
+            split,
+            "twin_yspectra_ref",
+            t[::2],
+            r_fields,
+            {n: v[::2] for n, v in values.items()},
+            {k: v for k, v in sidecar.items() if k != "includes_ref"}
+            | {"format_version": 1, "it_yspectra_ref": 2},
+        )
+
+        old, new = read_twin_spectra(legacy), read_twin_spectra(split)
+        assert np.array_equal(old.e_ref, e_ref)
+        assert np.array_equal(new.e_ref[::2], e_ref[::2])
+        assert np.isnan(new.e_ref[1::2]).all()
+        for directory in (legacy, split):
+            ref = read_twin_spectra_ref(directory)
+            step = 1 if directory is legacy else 2
+            assert np.array_equal(ref.t, t[::step])
+            assert np.array_equal(ref.e_ref, e_ref[::step])
+
+        old, new = read_twin_yspectra(legacy), read_twin_yspectra(split)
+        assert set(old.fields) == set(new.fields)
+        for name, _ in r_fields:
+            assert np.array_equal(new[name][::2], old[name][::2]), name
+            assert np.isnan(new[name][1::2]).all(), name
+        ref = read_twin_yspectra_ref(split)
+        assert set(ref.fields) == {n for n, _ in r_fields}
+        assert np.array_equal(ref.t, t[::2])
+        legacy_ref = read_twin_yspectra_ref(legacy)
+        assert set(legacy_ref.fields) == set(ref.fields)
+        none = Path(tmp) / "none"
+        none.mkdir()
+        _write_y_stream(
+            none,
+            "twin_yspectra",
+            t,
+            e_fields,
+            values,
+            sidecar | {"includes_ref": False},
+        )
+        _expect_value_error(
+            "no reference spectra", lambda: read_twin_yspectra_ref(none)
+        )
+    print("reference spectra, both layouts: OK")
+
+
+def _write_cube(path: Path, kind: str, cube: np.ndarray, meta: dict) -> None:
+    """A cube tar by hand: the snapshot container, stdlib only."""
+    import io
+    import tarfile
+
+    n_fields = cube.shape[0]
+    meta = {
+        "format_version": 6,
+        "kind": kind,
+        "cube_version": 1,
+        "native_shape": list(cube.shape),
+        "dtype": "float64",
+        **meta,
+    }
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as tf:
+
+        def add(name: str, data: bytes) -> None:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        add("_dnsjax_meta.json", json.dumps(meta).encode())
+        for c in range(n_fields):
+            add(f"state/c/{c}/0/0/0", cube[c].astype("<f8").tobytes())
+
+
+def test_cube_reader() -> None:
+    """The 3-D cube readers on hand-built tars."""
+    from dnsjax.analysis.twin import (
+        cube_files,
+        read_cube,
+        read_twin_spectra3d,
+    )
+
+    rng = np.random.default_rng(9)
+    base = {
+        "fields": ["e_u", "e_v", "e_w"],
+        "wall_distance": [0.0, 0.05, 0.4, 1.0],
+        "y": [-1.0, -0.95, -0.6, 0.0],
+        "iy": [0, 1, 3, 6],
+        "kz_harmonics": [0, 1, 3],
+        "kx_harmonics": [0, 2],
+        "lx": 2.0,
+        "lz": 1.0,
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp) / "twin_spectra3d"
+        directory.mkdir()
+        cubes = {}
+        for it in (104, 100, 102):
+            cubes[it] = rng.random((3, 4, 3, 2))
+            _write_cube(
+                directory / f"twin_spectra3d_{it:010d}.tar",
+                "twin_spectra3d",
+                cubes[it],
+                base | {"t": it / 100, "it": it},
+            )
+        assert [f.name[-14:-4] for f in cube_files(tmp, "twin_spectra3d")] == [
+            f"{it:010d}" for it in (100, 102, 104)
+        ]
+        one = read_cube(directory / "twin_spectra3d_0000000102.tar")
+        assert np.array_equal(one["e_v"], cubes[102][1])
+        assert_allclose(one.kz, 2 * np.pi * np.array([0, 1, 3]))
+        assert_allclose(one.kx, np.pi * np.array([0, 2]))
+        slab = read_cube(
+            directory / "twin_spectra3d_0000000102.tar", y_rows=[1, 3]
+        )
+        assert np.array_equal(slab["e_w"], cubes[102][2][[1, 3]])
+        assert np.array_equal(slab.wall_distance, [0.05, 1.0])
+        series = read_twin_spectra3d(tmp)
+        assert series.it.tolist() == [100, 102, 104]
+        assert np.array_equal(series["e_u"][2], cubes[104][0])
+        subset = read_twin_spectra3d(tmp, its=[102])
+        assert subset.it.tolist() == [102]
+
+        # One file on other points: refused, not stacked.
+        _write_cube(
+            directory / "twin_spectra3d_0000000106.tar",
+            "twin_spectra3d",
+            rng.random((3, 4, 3, 2)),
+            base | {"t": 1.06, "it": 106, "kx_harmonics": [0, 3]},
+        )
+        _expect_value_error("kx_harmonics", lambda: read_twin_spectra3d(tmp))
+        # A tar of another kind is no cube.
+        wrong = Path(tmp) / "other.tar"
+        _write_cube(wrong, "state", cubes[100], base | {"t": 1.0, "it": 100})
+        _expect_value_error("not a twin cube", lambda: read_cube(wrong))
+    print("3-D cube reader: OK")
+
+
 # ── Integral lengths (core) ──────────────────────────────────────────
 
 
@@ -819,6 +1005,18 @@ def test_build_twin() -> None:
             # all four must be pinned in every member either way.
             "--smoothness",
             "0.4",
+            # The 3-D cubes and the reduced snapshots pass straight
+            # through, the [lowres] block written only when given.
+            "--it-spectra3d",
+            "10",
+            "--n-y3d",
+            "8",
+            "--it-lowres-delta",
+            "20",
+            "--lowres-it",
+            "40",
+            "--lowres-ny",
+            "9",
         ]
         result = run_live([*build_args, "--dry-run"], cwd=_REPO)
         assert result.returncode == 0 and not tree.exists()
@@ -869,6 +1067,11 @@ def test_build_twin() -> None:
             assert "it_steps" not in toml["outs"], toml["outs"]
             assert toml["stop"]["max_sim_time"] == spec["horizon"]
             assert toml["stop"]["check_laminarization"] is False
+            assert toml["twin"]["it_spectra3d"] == 10
+            assert toml["twin"]["n_y3d"] == 8
+            assert toml["twin"]["it_lowres_delta"] == 20
+            assert "it_budget3d" not in toml["twin"], toml["twin"]
+            assert toml["lowres"] == {"it_lowres": 40, "ny": 9}
 
         # Simulate the completed runs, then aggregate through the
         # real members.json.
@@ -1510,6 +1713,8 @@ if __name__ == "__main__":
     test_shape_alignment()
     test_ybudget_reader()
     test_balance_terms()
+    test_reference_layouts()
+    test_cube_reader()
     test_integral_lengths_core()
     test_build_twin()
     print("All twin analysis tests passed.")

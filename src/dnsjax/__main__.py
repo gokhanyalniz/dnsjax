@@ -205,25 +205,6 @@ from .parameters import (
 )
 from .snapshot_meta import git_hash, read_snapshot_meta
 
-#: Axis-parity class of each **stored physical** state component, as
-#: ``True`` for the `$(-1)^m$` (even) class and ``False`` for
-#: `$(-1)^{m+1}$` (odd): the order is
-#: ``(u_z, u_r, u_theta, c_zz, c_rz, c_theta_z, c_rr, c_theta_theta,
-#: c_r_theta)``, truncated to the first 3 for a velocity-only flow.
-#: Read by the pipe's parity-aware resume regrid; the annular
-#: geometries have no axis and ignore it.
-_PARITY_EVEN_STORED = (
-    True,  # u_z
-    False,  # u_r
-    False,  # u_theta
-    True,  # c_zz
-    False,  # c_rz
-    False,  # c_theta_z
-    True,  # c_rr
-    True,  # c_theta_theta
-    True,  # c_r_theta
-)
-
 
 def _flush_stats(buffer, n_valid, ts_buf, file_path, p, col_width, names=None):
     """Write *n_valid* buffered rows to *file_path*, durably.
@@ -314,7 +295,6 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     """
     import numpy as np
 
-    from .fd import build_interpolation_matrix
     from .flows.registry import stored_value
 
     meta = read_metadata(Path(snap_path))
@@ -331,35 +311,23 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
     if not needs_interp:
         return state
 
-    curr_grid_np = np.array(curr_grid)
-    old_grid = np.array(snap_grid)
-
-    # Each geometry list includes its viscoelastic member, so the
-    # 9-component flows regrid with their own geometry's operators.
-    if params.phys.system in cylindrical_systems:
-        geometry = "cylindrical"
-    elif params.phys.system in annular_systems:
-        geometry = "annular"
-    else:
-        geometry = "cartesian"
-    T = build_interpolation_matrix(
-        old_grid, curr_grid_np, geometry, params.res.fd_order
+    from .snapshot import (
+        PARITY_EVEN_STORED,
+        apply_wall_normal_regrid,
+        wall_regrid_matrix,
+        wall_velocity_rows,
     )
 
+    T = wall_regrid_matrix(np.array(snap_grid), np.array(curr_grid))
+    m_even = None
     if isinstance(T, tuple):
-        # Spectral parity-aware cylindrical interpolation: apply the
-        # even / odd radial matrix per azimuthal mode m by component
-        # parity.  A component's axis parity is `$(-1)^{m+s}$` with
-        # `$s$` its spin weight, i.e. it is set by how many of its
-        # indices are radial/azimuthal (each flips sign under the axis
-        # reflection).  State layout (component, r, m, kz):
-        #
-        #   u_z, c_zz, c_rr, c_theta_theta, c_r_theta -> (-1)^m
-        #   u_r, u_theta, c_rz, c_theta_z             -> (-1)^{m+1}
-        #
-        # The 6 tensor slots are present only for a viscoelastic pipe;
-        # ``_PARITY_EVEN_STORED`` is indexed by the **stored physical**
-        # component order and truncated to the state's own length.
+        # Spectral parity-aware cylindrical interpolation: the even / odd
+        # radial matrix per azimuthal mode m by component parity.  A
+        # component's axis parity is `$(-1)^{m+s}$` with `$s$` its spin
+        # weight, i.e. it is set by how many of its indices are
+        # radial/azimuthal (each flips sign under the axis reflection);
+        # ``PARITY_EVEN_STORED`` tabulates it in the **stored physical**
+        # component order, truncated to the state's own length.
         #
         # The mask is the geometry's own ``Fourier.m_is_even``, which
         # is the parity of the **physical** `$m = m_0 j$` (the wedge
@@ -370,7 +338,7 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
         from .geometries.wall_bounded.cylindrical import fourier
 
         n_comp = state.shape[0]
-        if n_comp not in (3, len(_PARITY_EVEN_STORED)):
+        if n_comp not in (3, len(PARITY_EVEN_STORED)):
             raise ValueError(
                 "parity-aware radial interpolation is defined for the "
                 "3-component velocity state and the 9-component "
@@ -378,45 +346,18 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
                 "with a different layout needs its own parity "
                 "assignment here."
             )
-        T_even, T_odd = T
         m_even = fourier.m_is_even.astype(bool)
-        T_e = jnp.asarray(T_even, dtype=state.dtype)
-        T_o = jnp.asarray(T_odd, dtype=state.dtype)
-        # Contract with the two (i_new, j_old) matrices and select per
-        # mode, rather than materialising an (m, i_new, j_old) stack
-        # per component -- that stack is replicated on every device.
-        state = jnp.stack(
-            [
-                jnp.where(
-                    m_even,
-                    jnp.einsum("ij, jmk -> imk", a_even, state[c]),
-                    jnp.einsum("ij, jmk -> imk", a_odd, state[c]),
-                )
-                for c, (a_even, a_odd) in enumerate(
-                    (T_e, T_o) if even else (T_o, T_e)
-                    for even in _PARITY_EVEN_STORED[:n_comp]
-                )
-            ]
-        )
-    else:
-        T_jax = jnp.asarray(T, dtype=state.dtype)
-        # state: (3, ny_old, ...) -- the wall-normal axis is axis 1 in
-        # every geometry's spectral layout.
-        state = jnp.einsum("ij, cjzx -> cizx", T_jax, state)
-
-    # Enforce wall boundary conditions on the *velocity* only (the first
-    # 3 components).  A viscoelastic state carries 6 conformation-tensor
-    # components after the velocity; their wall BC is ``div(grad c) = 0``
-    # (handled by the Hc operator during stepping), not a Dirichlet zero,
-    # so they must not be zeroed here.  For the 3-component systems
-    # ``[:3]`` is the whole state.
-    if geometry == "cylindrical":
-        # Single wall at r = 1 (axis handled by parity).
-        state = state.at[:3, -1].set(0.0)
-    else:
-        # Two walls (Cartesian: y = +/-1; annular: r = r1, r2).
-        state = state.at[:3, 0].set(0.0)
-        state = state.at[:3, -1].set(0.0)
+    # Enforce the wall boundary condition on the *velocity* only (the
+    # first 3 components): a viscoelastic state's 6 conformation
+    # components have ``div(grad c) = 0`` at the wall (the Hc operator
+    # during stepping), not a Dirichlet zero.
+    state = apply_wall_normal_regrid(
+        state,
+        T,
+        m_even=m_even,
+        parity_even=PARITY_EVEN_STORED[: state.shape[0]],
+        zero_velocity_walls=wall_velocity_rows(),
+    )
 
     sharding.print(
         "Interpolated wall-normal grid; first corrector step "
@@ -739,6 +680,32 @@ def run(wall_time_start: int) -> None:
             return None
         return solver_state[n_physical:]
 
+    # Reduced-resolution snapshots (``[lowres]``, :mod:`dnsjax.lowres`):
+    # built once and only when enabled, since the pressure operator it
+    # may hold is resident for the run.  A file is written for every
+    # state the run holds at a multiple of the cadence -- the start
+    # included, the final state when aligned -- and an existing one is
+    # replaced (a resume rewrites its first sample).
+    lowres_writer = None
+    last_lowres_it: int | None = None
+    if params.lowres.it_lowres is not None:
+        from .lowres import LowResWriter
+
+        lowres_writer = LowResWriter()
+        sharding.print(
+            f"Reduced-resolution snapshots every {params.lowres.it_lowres} "
+            f"steps in lowres/ at {lowres_writer.target_public}"
+            + (", static pressure" if lowres_writer.pressure else "")
+        )
+
+    def _save_lowres(state_phys, t, it):
+        """Write ``lowres/lowres_{it}.tar`` from the physical view."""
+        from .lowres import LOWRES_DIR, lowres_path
+
+        lowres_writer.write_state(
+            state_phys, t, it, lowres_path(LOWRES_DIR, "lowres", it)
+        )
+
     dt_first: float = params.step.dt
     wall_time_now: int = perf_counter_ns()
     last_error: float = 0.0
@@ -819,6 +786,9 @@ def run(wall_time_start: int) -> None:
     if params.outs.snapshot_save_initial and not resumed_continuation:
         isnap = _save_numbered_snapshot(state, t, it, stats, isnap)
         last_saved_it = it
+    if lowres_writer is not None and lowres_writer.due(it):
+        _save_lowres(state, t, it)
+        last_lowres_it = it
 
     # Applied mean-mode driving (``constant_bulk_velocity`` /
     # ``block_mean_spanwise_velocity``): a *step* quantity, not a state
@@ -1199,8 +1169,15 @@ def run(wall_time_start: int) -> None:
             and it % params.outs.it_snapshot == 0
             and it > params.init.it0
         )
+        do_lowres = (
+            lowres_writer is not None
+            and lowres_writer.due(it)
+            and it > params.init.it0
+        )
         state_phys = (
-            from_solver_basis(state) if (do_stats or do_snapshot) else None
+            from_solver_basis(state)
+            if (do_stats or do_snapshot or do_lowres)
+            else None
         )
 
         # Periodic diagnostic output -> GPU buffer
@@ -1258,6 +1235,9 @@ def run(wall_time_start: int) -> None:
                 state_phys, t, it, snap_stats, isnap, _carried(state)
             )
             last_saved_it = it
+        if do_lowres:
+            _save_lowres(state_phys, t, it)
+            last_lowres_it = it
 
         # Release the physical view before the step: it is a
         # field-sized array, and holding it across the step would add
@@ -1552,6 +1532,14 @@ def run(wall_time_start: int) -> None:
             state_phys, t, it, stats, isnap, _carried(state)
         )
         last_saved_it = it
+    # The final state's reduced snapshot, when it falls on the cadence.
+    if (
+        lowres_writer is not None
+        and it > params.init.it0
+        and it != last_lowres_it
+        and lowres_writer.due(it)
+    ):
+        _save_lowres(state_phys, t, it)
 
     wall_time_now = perf_counter_ns()
     alive_time = ns_to_s * (wall_time_now - wall_time_start)

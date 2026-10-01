@@ -9,7 +9,12 @@ one-sided marginal bins of
   :func:`~dnsjax.twin.diagnostics.twin_yspectra`: the componentwise
   difference energy `$E_\Delta^x[u,v,w](y, k_z)$` and
   `$E_\Delta^z[u,v,w](y, k_x)$`, plus their `$(0, 0)$` mode
-  `$E_\Delta^{xz00}[u,v,w](y)$`;
+  `$E_\Delta^{xz00}[u,v,w](y)$` -- and, under ``twin.spectra_ref``,
+  the same three of the reference state in ``twin_yspectra_ref.bin``
+  (``twin.it_yspectra_ref``, by default the same steps).  A member
+  recorded before that split carries the reference inside
+  ``twin_yspectra.bin`` (``includes_ref: true``, the ``r_*`` fields)
+  and is resumed in that layout;
 - ``twin_ybudget.bin`` (``twin.it_ybudget``), from
   :func:`~dnsjax.twin.diagnostics.twin_ybudget`: the component-summed
   budget densities of
@@ -49,7 +54,8 @@ the prefixes (or the budget terms) with
     stored    always      always      x0_planes   always
 
     twin_yspectra:  e_<suffix>    leading axis (3,) + (ny, ...)
-                    r_<suffix>    when twin.spectra_ref
+                    r_<suffix>    pre-split layout only (includes_ref)
+    twin_yspectra_ref:  r_<suffix>    leading axis (3,) + (ny, ...)
     twin_ybudget:   <term>_<suffix>  for each of ybudget_terms(),
                     leading axis (ny, ...)
 
@@ -104,6 +110,10 @@ from .diagnostics import (
 YSPECTRA_FORMAT_VERSION: int = 2
 YBUDGET_FORMAT_VERSION: int = 3
 
+#: ``twin_yspectra_ref.json`` schema version (reader floor:
+#: ``analysis.twin.yspectra.MIN_YSPECTRA_REF_VERSION``).
+YSPECTRA_REF_FORMAT_VERSION: int = 1
+
 
 def _suffix_shapes(x0: bool) -> tuple[tuple[str, tuple[int, ...]], ...]:
     r"""``(suffix, trailing shape)`` in stored order.
@@ -142,6 +152,21 @@ _YSPECTRA_MATCH_KEYS: tuple[str, ...] = (
     "value_dtype",
     "includes_ref",
     "it_yspectra",
+    "dt",
+    "double_precision",
+    "lx",
+    "lz",
+)
+
+_YSPECTRA_REF_MATCH_KEYS: tuple[str, ...] = (
+    "format_version",
+    "system",
+    "ny",
+    "n_kz",
+    "n_kx",
+    "suffixes",
+    "value_dtype",
+    "it_yspectra_ref",
     "dt",
     "double_precision",
     "lx",
@@ -204,15 +229,22 @@ def _common_sidecar(twin_values, y_weights: list[float]) -> dict:
 
 
 class TwinYSpectraStream(BinStream):
-    """``twin_yspectra.bin`` writer (module docstring)."""
+    """``twin_yspectra.bin`` writer (module docstring).
+
+    *includes_ref* is the pre-split layout, the ``r_*`` fields in the
+    same record: only a paired resume of a member recorded in it asks
+    for it.
+    """
 
     def __init__(
         self,
         twin_values,
         y_weights: list[float],
         directory: str | Path = ".",
+        *,
+        includes_ref: bool = False,
     ) -> None:
-        self.includes_ref = bool(twin_values.spectra_ref)
+        self.includes_ref = includes_ref
         ny = params.res.ny
         prefixes = ("e", "r") if self.includes_ref else ("e",)
         fields = tuple(
@@ -237,6 +269,47 @@ class TwinYSpectraStream(BinStream):
             match_keys=_YSPECTRA_MATCH_KEYS,
             bin_path=directory / "twin_yspectra.bin",
             json_path=directory / "twin_yspectra.json",
+            value_dtype=sidecar["value_dtype"],
+            nbuffer=_NBUFFER,
+        )
+
+
+class TwinYSpectraRefStream(BinStream):
+    """``twin_yspectra_ref.bin`` writer: the reference state's marginals.
+
+    The ``r_<suffix>`` fields of the module docstring every *cadence*
+    steps (the resolved ``twin.it_yspectra_ref``), on the same bins and
+    with the same sidecar keys as ``twin_yspectra.bin``.
+    """
+
+    def __init__(
+        self,
+        twin_values,
+        y_weights: list[float],
+        cadence: int,
+        directory: str | Path = ".",
+    ) -> None:
+        ny = params.res.ny
+        fields = tuple(
+            (f"r_{suf}", (3, ny, *shape))
+            for suf, shape in _suffix_shapes(bool(twin_values.x0_planes))
+        )
+        sidecar = _common_sidecar(twin_values, y_weights) | {
+            "format_version": YSPECTRA_REF_FORMAT_VERSION,
+            "it_yspectra_ref": cadence,
+            "note": (
+                "the reference state's componentwise energy density in "
+                "y: sigma_kx |u_c|^2 / (2 V); one-sided folded k axes; "
+                "y_weights . r_x summed over k == E_ref"
+            ),
+        }
+        directory = Path(directory)
+        super().__init__(
+            fields=fields,
+            sidecar=sidecar,
+            match_keys=_YSPECTRA_REF_MATCH_KEYS,
+            bin_path=directory / "twin_yspectra_ref.bin",
+            json_path=directory / "twin_yspectra_ref.json",
             value_dtype=sidecar["value_dtype"],
             nbuffer=_NBUFFER,
         )

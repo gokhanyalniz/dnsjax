@@ -401,6 +401,35 @@ terms at all, so `$\sum_k\int(P_U + P_r)$` is
 the fluctuation half of the production has no convective counterpart
 in the stream.  That is why the convective form is the default.
 
+Reference halves and 3-D cubes
+------------------------------
+Each energy spectrum has a difference half (``e``) and, under
+``twin.spectra_ref``, a reference half (``r``), written to separate
+streams on separate cadences: ``twin.it_spectra_ref``,
+``it_yspectra_ref`` and ``it_spectra3d_ref``, each defaulting to its
+difference cadence.  Both halves are static flags of one program, so a
+half that is not due is never traced, and at the default cadences one
+program computes both, as before the split.  :mod:`dnsjax.twin.driver`
+says how a member recorded before the split goes on.
+
+The cubes keep the third axis that the `$(y, k)$` streams sum over.
+They hold the same per-mode densities, folded and subsampled
+(:func:`cube_selection`, :func:`_cube_replicated`):
+
+- `$y$` is folded about the centreline (the mean of the two halves);
+- `$k_z$` is folded onto `$|k_z|$`, summing each pair as
+  :func:`_fold_kz` does;
+- each axis is then thinned to points spaced uniformly in the
+  logarithm of the wall distance or of the wavenumber.
+
+Every density is computed at full resolution before any of this, so
+the kept entries are exact.  With no thinning, summing a cube over
+`$k_x$` (or `$|k_z|$`) gives the `$y$`-folded ``*_x`` (or ``*_z``)
+marginal of the matching stream (``tests/test_twin_unit.py``).  The
+budget cube holds the convective terms only, and shares the 2-D
+budget's density pass when both are due.  The file layout is in
+:mod:`dnsjax.twin.cubes`.
+
 Frame invariance
 ----------------
 A moving frame (``phys.u_grid``, e.g. the plane-Poiseuille default
@@ -511,14 +540,26 @@ at `$64\times65\times64$` and `$96\times97\times96$` (the two agree
 to 1 %), at ``solver.rhs_transform_chunks`` 1 and 3:
 
 - :func:`twin_budget` (three-bin): 43 / 37;
-- :func:`twin_ybudget`: 37 / 31 convective, 33 / 27 rotational;
-- for scale, the time step itself: 20 / 18 iterative-CN, 28 / 26
+- :func:`twin_ybudget`: 37 / 31 convective, 33 / 27 rotational, and
+  the same with the 3-D cube, alone or beside the marginals;
+- :func:`difference_pressure` (the ``lowres_delta/`` pressure): 34 /
+  29, the budget's sources and solve without its densities;
+- for scale, the time step itself: 30 / 28 iterative-CN, 31 / 29
   CN/AB2;
 - :func:`twin_energies` 2.6 (7.9 under ``twin.bins``), the two
-  spectra samples 1.5 and 1.3 -- none of them a peak.
+  spectra samples 1.5 and 1.3, the 3-D energy cubes 1.3 -- none of
+  them a peak.
+
+Every program is lowered as the run calls it, the singletons passed as
+arguments.  Baked in as constants instead (a ``jit`` of the bound
+step) the step measures 20 / 18 and 28 / 26: that program holds no
+copies of the banded factors inside its corrector loop, which the
+program a run executes does (visible in its compiled HLO).
 
 So either budget, when enabled, is the run's high-water mark, since
-the device allocator's pool grows to the maximum over every program.
+the device allocator's pool grows to the maximum over every program;
+without one, the difference pressure sits level with the step or up to
+a sixth above it.
 A count of live fields misses about half: every batched transform
 carries some two padded fields of pipeline transient per field in
 flight on top of its output (a 3-field :func:`spec_to_phys` alone
@@ -531,9 +572,11 @@ the driver's closing ``Peak device memory`` line, not this list.
 """
 
 import importlib
+from dataclasses import dataclass
 from functools import partial
 from typing import NamedTuple
 
+import numpy as np
 from jax import Array, jit, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
@@ -549,6 +592,7 @@ from ..geometries.wall_bounded._base import (
     phys_to_spec,
     spec_to_phys,
 )
+from ..geometries.wall_bounded._cartesian_pressure import mean_advect
 from ..geometries.wall_bounded.cartesian import (
     DRIVING_KEY_N,
     DRIVING_KEY_S,
@@ -915,7 +959,7 @@ def _mode_energy_replicated(field: Array, w: Array, k_metric: Array) -> Array:
     return gathered / (2.0 * vf)
 
 
-@partial(jit, static_argnames=("ref",))
+@partial(jit, static_argnames=("ref", "delta"))
 def _twin_spectra_jit(
     state1: Array,
     state2: Array,
@@ -923,6 +967,7 @@ def _twin_spectra_jit(
     flow_: object,
     *,
     ref: bool,
+    delta: bool = True,
 ) -> dict[str, Array]:
     r"""``(k_z, k_x)`` energy spectra of the difference and reference.
 
@@ -934,30 +979,35 @@ def _twin_spectra_jit(
     reproduces ``twin.dat``'s ``E_d`` to rounding (a
     ``tests/test_twin_unit.py`` guard).
 
-    *ref* is **static**, like ``bins`` on :func:`_twin_energies_jit`:
-    with it off the reference's whole field pass and its ``psum`` are
-    never traced, which is the only way ``twin.spectra_ref`` saves
-    anything.  The writer pins it in the stream sidecar
-    (``includes_ref``), so a resume cannot flip it mid-stream.
+    *ref* and *delta* are **static**, like ``bins`` on
+    :func:`_twin_energies_jit`: a half that is off is never traced,
+    field pass and ``psum`` alike.  The two halves go to two streams,
+    each on its own cadence (``twin.it_spectra`` /
+    ``twin.it_spectra_ref``, the second defaulting to the first), so a
+    sample asks for whichever are due; at the default cadences that is
+    both, in one program.
     """
     n2 = params.res.nz - 1
     n3 = params.res.nx // 2
     w = flow_.y_weights
     k_metric = fourier_.k_metric
-    delta = state2 - state1
-    out = {"e_delta": _mode_energy_replicated(delta, w, k_metric)[:n2, :n3]}
-    if not ref:
-        return out
-    return out | {
-        "e_ref": _mode_energy_replicated(state1, w, k_metric)[:n2, :n3]
-    }
+    out: dict[str, Array] = {}
+    if delta:
+        out["e_delta"] = _mode_energy_replicated(state2 - state1, w, k_metric)[
+            :n2, :n3
+        ]
+    if ref:
+        out["e_ref"] = _mode_energy_replicated(state1, w, k_metric)[:n2, :n3]
+    return out
 
 
 def twin_spectra_2d(
-    state1: Array, state2: Array, *, ref: bool = True
+    state1: Array, state2: Array, *, ref: bool = True, delta: bool = True
 ) -> dict[str, Array]:
     """Wrapper around ``_twin_spectra_jit`` binding the singletons."""
-    return _twin_spectra_jit(state1, state2, fourier, flow, ref=ref)
+    return _twin_spectra_jit(
+        state1, state2, fourier, flow, ref=ref, delta=delta
+    )
 
 
 # ── Wall-normal-resolved marginal spectra ────────────────────────────
@@ -1145,7 +1195,7 @@ def _energy_density(state: Array, fourier_: Fourier) -> Array:
     )
 
 
-@partial(jit, static_argnames=("ref", "x0"))
+@partial(jit, static_argnames=("ref", "x0", "delta"))
 def _twin_yspectra_jit(
     state1: Array,
     state2: Array,
@@ -1154,6 +1204,7 @@ def _twin_yspectra_jit(
     *,
     ref: bool,
     x0: bool,
+    delta: bool = True,
 ) -> dict[str, Array]:
     r"""Wall-normal-resolved componentwise spectra (module docstring).
 
@@ -1165,39 +1216,225 @@ def _twin_yspectra_jit(
     the stream's sidecar) to get the per-`$k$` energy, and sum over
     `$k$` for ``twin.dat``'s ``E_d``.
 
-    *ref* and *x0* are both **static**, like ``bins`` on
-    :func:`_twin_energies_jit`.  *ref* matters more here than on the
-    `$(k_z, k_x)$` stream: the reference half is a second full real
-    `$(3, N_y, N_{k_z}, N_{k_x})$` density **and** a second ``psum``,
-    i.e. about half this sample's cost and one of its two collectives.
-    *x0* (``twin.x0_planes``) is a third of each collective rather
-    than a field pass, and with it off nothing about the `$k_x = 0$`
-    plane is traced at all.  The writer pins both in the stream
-    sidecar (``includes_ref``, ``suffixes``), so a resume cannot flip
-    either mid-stream.
+    *ref*, *delta* and *x0* are all **static**, like ``bins`` on
+    :func:`_twin_energies_jit`.  The two halves -- each a full real
+    `$(3, N_y, N_{k_z}, N_{k_x})$` density **and** a ``psum`` -- go to
+    two streams on their own cadences (``twin.it_yspectra`` /
+    ``twin.it_yspectra_ref``, the second defaulting to the first), and
+    a half that is not due is never traced.  *x0*
+    (``twin.x0_planes``) is a third of each collective rather than a
+    field pass, and with it off nothing about the `$k_x = 0$` plane is
+    traced at all.  The writers pin *x0* in each stream's sidecar
+    (``suffixes``), so a resume cannot flip it mid-stream.
     """
-    delta = state2 - state1
-    out = {
-        f"e_{suf}": v
-        for suf, v in _marginals_replicated(
-            _energy_density(delta, fourier_), x0=x0
-        ).items()
-    }
-    if not ref:
-        return out
-    return out | {
-        f"r_{suf}": v
-        for suf, v in _marginals_replicated(
-            _energy_density(state1, fourier_), x0=x0
-        ).items()
-    }
+    out: dict[str, Array] = {}
+    halves = []
+    if delta:
+        halves.append(("e", state2 - state1))
+    if ref:
+        halves.append(("r", state1))
+    for prefix, field_ in halves:
+        out |= {
+            f"{prefix}_{suf}": v
+            for suf, v in _marginals_replicated(
+                _energy_density(field_, fourier_), x0=x0
+            ).items()
+        }
+    return out
 
 
 def twin_yspectra(
-    state1: Array, state2: Array, *, ref: bool = True, x0: bool = False
+    state1: Array,
+    state2: Array,
+    *,
+    ref: bool = True,
+    x0: bool = False,
+    delta: bool = True,
 ) -> dict[str, Array]:
     """Wrapper around ``_twin_yspectra_jit`` binding the singletons."""
-    return _twin_yspectra_jit(state1, state2, fourier, flow, ref=ref, x0=x0)
+    return _twin_yspectra_jit(
+        state1, state2, fourier, flow, ref=ref, x0=x0, delta=delta
+    )
+
+
+# ── Three-dimensional (y, k_z, k_x) cubes ────────────────────────────
+
+
+def log_spaced_indices(coord: np.ndarray, n: int | None) -> np.ndarray:
+    r"""Indices of *coord* spaced uniformly in its logarithm.
+
+    *coord* is ascending with ``coord[0]`` the zero of the axis (the
+    wall, or `$k = 0$`) and every other entry positive.  *n* targets
+    are laid out by ``geomspace`` from ``coord[1]`` to ``coord[-1]``,
+    each is snapped to the entry nearest it in log distance, the
+    duplicates go, and index 0 is always kept -- so the result is
+    ascending, holds both ends, and has at most ``n + 1`` entries;
+    fewer wherever the axis is coarser than the targets (the integer
+    harmonics at low `$k$`, a CGL grid near the wall).  *n* ``None``,
+    or at least the number of positive entries, keeps every index.
+    """
+    coord = np.asarray(coord, dtype=np.float64)
+    if n is None or n >= coord.size - 1:
+        return np.arange(coord.size)
+    positive = np.log(coord[1:])
+    targets = np.log(np.geomspace(coord[1], coord[-1], n))
+    nearest = np.abs(positive[None, :] - targets[:, None]).argmin(axis=1)
+    return np.concatenate([[0], np.unique(nearest) + 1])
+
+
+@dataclass(frozen=True)
+class CubeSelection:
+    r"""The static index sets of the 3-D twin cubes (hashable).
+
+    ``iy`` are the kept rows of the lower half, ascending from the wall,
+    and ``iy_mirror`` their partners ``ny - 1 - iy`` on the upper half;
+    ``kz_pos`` the stored index of `$+m$` for each kept `$|k_z| = m$`
+    (`$m = 0$` first, always) and ``kz_neg`` that of `$-m$` for each
+    kept `$m \ge 1$`, in the same order; ``kx`` the kept stored (equal:
+    harmonic) `$k_x$` indices.  A ``jit`` static argument, so one per
+    run compiles once.
+    """
+
+    iy: tuple[int, ...]
+    iy_mirror: tuple[int, ...]
+    kz_pos: tuple[int, ...]
+    kz_neg: tuple[int, ...]
+    kx: tuple[int, ...]
+
+
+def cube_selection(
+    y,
+    n_y: int | None,
+    n_kz: int | None,
+    n_kx: int | None,
+) -> CubeSelection:
+    r"""The cubes' rows and modes for this run (module docstring).
+
+    *y* is the run's ascending wall-normal grid.  The `$y$` fold pairs
+    row `$j$` with `$n_y - 1 - j$`, so the grid must be symmetric about
+    the centreline -- checked, to the run's precision, rather than
+    assumed (a custom ``geo.wall_grid`` need not be) -- and the log
+    spacing runs in the wall distance `$1 + y_j$` of the lower half.
+    `$k_z$` folds onto `$|k_z|$`, `$m = 0 \ldots n_z/2 - 1$`, and `$k_x$`
+    keeps its `$m = 0 \ldots n_x/2 - 1$`; each axis is subsampled by
+    :func:`log_spaced_indices` with its own count.
+    """
+    y = np.asarray(y, dtype=np.float64)
+    tol = 1e-12 if params.res.double_precision else 1e-6
+    if not np.allclose(y, -y[::-1], rtol=0.0, atol=tol):
+        raise ValueError(
+            "the 3-D twin cubes fold y about the centreline, and this "
+            "wall-normal grid is not symmetric about it (a custom "
+            "geo.wall_grid?); leave twin.it_spectra3d / it_budget3d "
+            "unset for it."
+        )
+    ny = y.size
+    iy = log_spaced_indices(1.0 + y[: (ny + 1) // 2], n_y)
+    nz, nx = params.res.nz, params.res.nx
+    mz = log_spaced_indices(np.arange(nz // 2), n_kz)
+    return CubeSelection(
+        iy=tuple(int(j) for j in iy),
+        iy_mirror=tuple(int(ny - 1 - j) for j in iy),
+        kz_pos=tuple(int(m) for m in mz),
+        kz_neg=tuple(int(nz - 1 - m) for m in mz if m >= 1),
+        kx=tuple(int(m) for m in log_spaced_indices(np.arange(nx // 2), n_kx)),
+    )
+
+
+def _cube_replicated(density: Array, sel: CubeSelection) -> Array:
+    r"""A per-mode density folded, subsampled and replicated.
+
+    *density* is a real `$(C, N_y, N_{k_z}, N_{k_x})$` array in the
+    spectral layout, as :func:`_marginals_replicated` takes it.
+    Returns `$(C, n_y, n_{k_z}, n_{k_x})$` on *sel*, replicated -- the
+    writer's host transfer needs a fully addressable array.
+
+    One ``shard_map``: each device folds `$y$` locally (the axis is not
+    sharded; the mean of a row and its mirror, the mid-plane pairing
+    with itself), takes the kept `$k_z$` indices -- both members of
+    each `$\pm m$` pair -- and `$k_x$` indices out of its own tile
+    (a clipped local index and a range mask, the global offsets being
+    its mesh position), and one ``psum`` over both mesh axes assembles
+    them.  The `$k_z$` fold, a sum, runs **after** the ``psum``: the
+    partners live on different ``np0`` devices
+    (:func:`_marginals_replicated`).  Folding commutes with taking
+    entries, so the result is the folded full-resolution cube on the
+    kept points exactly.
+    """
+    iy = np.asarray(sel.iy)
+    iy_mirror = np.asarray(sel.iy_mirror)
+    kz_idx = np.asarray(sel.kz_pos + sel.kz_neg)
+    kx_idx = np.asarray(sel.kx)
+
+    def _local(d: Array) -> Array:
+        nkz_loc, nkx_loc = d.shape[2], d.shape[3]
+        row0 = lax.axis_index("np0") * nkz_loc
+        col0 = lax.axis_index("np1") * nkx_loc
+        d = 0.5 * (jnp.take(d, iy, axis=1) + jnp.take(d, iy_mirror, axis=1))
+        local = kz_idx - row0
+        mine = (local >= 0) & (local < nkz_loc)
+        d = jnp.take(d, jnp.clip(local, 0, nkz_loc - 1), axis=2)
+        d = jnp.where(mine[None, None, :, None], d, 0.0)
+        local = kx_idx - col0
+        mine = (local >= 0) & (local < nkx_loc)
+        d = jnp.take(d, jnp.clip(local, 0, nkx_loc - 1), axis=3)
+        d = jnp.where(mine[None, None, None, :], d, 0.0)
+        return lax.psum(d, ("np0", "np1"))
+
+    gathered = shard_map(
+        _local,
+        mesh=sharding.mesh,
+        in_specs=(sharding.spec_vector_shard,),
+        out_specs=P(None, None, None, None),
+    )(density)
+    n_pos = len(sel.kz_pos)
+    # ``kz_neg`` pairs with ``kz_pos[1:]`` (every kept m >= 1).
+    return gathered[:, :, :n_pos].at[:, :, 1:].add(gathered[:, :, n_pos:])
+
+
+@partial(jit, static_argnames=("ref", "delta", "sel"))
+def _twin_spectra3d_jit(
+    state1: Array,
+    state2: Array,
+    fourier_: Fourier,
+    flow_: object,
+    *,
+    ref: bool,
+    delta: bool,
+    sel: CubeSelection,
+) -> dict[str, Array]:
+    r"""The 3-D componentwise energy cubes (module docstring).
+
+    ``e`` is the difference field's `$(3, n_y, n_{k_z}, n_{k_x})$`
+    cube and ``r`` the reference state's, each traced only when asked
+    for: they go to two directories on two cadences
+    (``twin.it_spectra3d`` / ``twin.it_spectra3d_ref``, the second
+    defaulting to the first).  Same density as :func:`twin_yspectra`,
+    so the full-sampling cube summed over either wavenumber is that
+    stream's marginal, folded in `$y$`.
+    """
+    out: dict[str, Array] = {}
+    if delta:
+        out["e"] = _cube_replicated(
+            _energy_density(state2 - state1, fourier_), sel
+        )
+    if ref:
+        out["r"] = _cube_replicated(_energy_density(state1, fourier_), sel)
+    return out
+
+
+def twin_spectra3d(
+    state1: Array,
+    state2: Array,
+    sel: CubeSelection,
+    *,
+    ref: bool = True,
+    delta: bool = True,
+) -> dict[str, Array]:
+    """Wrapper around ``_twin_spectra3d_jit`` binding the singletons."""
+    return _twin_spectra3d_jit(
+        state1, state2, fourier, flow, ref=ref, delta=delta, sel=sel
+    )
 
 
 # ── Wall-normal-resolved spectral budget ─────────────────────────────
@@ -1376,17 +1613,6 @@ def _convective_sources(
             [1j * kx * c, apply_y_matrix(d1, c), 1j * kz * c], axis=0
         )
 
-    def mean_advect(prof: Array, field: Array) -> Array:
-        r"""`$(\mathbf{P}\cdot\nabla)\mathbf{f}$` for a mean profile
-        `$\mathbf{P}$`: diagonal in `$k$`, so FFT-free.  The
-        wall-normal row of any mean profile vanishes -- the module
-        docstring's "State preconditions"."""
-        return (
-            1j
-            * (kx * prof[0][:, None, None] + kz * prof[2][:, None, None])
-            * field
-        )
-
     def advect(b_phys: Array, grad_phys: Array) -> Array:
         r"""`$(\mathbf{b}\cdot\nabla)\mathbf{c}$`, back to spectral."""
         return chunked_transform(
@@ -1408,7 +1634,7 @@ def _convective_sources(
     grad_ref = chunked_transform(spec_to_phys, grad_spec(ref_f))
     # `$(\Delta\mathbf{u}\cdot\nabla)\mathbf{u}'^{(1)}$`, split so the
     # advector is the mean-free half (docstring).
-    q_p = advect(adv[3:6], grad_ref) + mean_advect(prof_dU, ref_f)
+    q_p = advect(adv[3:6], grad_ref) + mean_advect(prof_dU, ref_f, kx, kz)
     # Statement order alone does not get that order: ``grad_del``
     # depends on nothing ``q_p`` does, and XLA schedules the two
     # nine-field transforms together.  The barrier makes the second
@@ -1426,8 +1652,8 @@ def _convective_sources(
         + q_tr
         + q_ts
         + q_pu
-        + mean_advect(prof_rU, delta)
-        + mean_advect(prof_dU, delta)
+        + mean_advect(prof_rU, delta, kx, kz)
+        + mean_advect(prof_dU, delta, kx, kz)
     )
     u_grid = derived_params.u_grid
     if u_grid:
@@ -1680,7 +1906,7 @@ def _driving_density(prof_dU: Array, flow_: object) -> Array:
     return (dens / derived_params.volume_fac)[:, None, None]
 
 
-@partial(jit, static_argnames=("rotational", "x0"))
+@partial(jit, static_argnames=("rotational", "x0", "marginals", "cube"))
 def _twin_ybudget_jit(
     state1: Array,
     state2: Array,
@@ -1690,6 +1916,8 @@ def _twin_ybudget_jit(
     *,
     rotational: bool,
     x0: bool,
+    marginals: bool = True,
+    cube: CubeSelection | None = None,
 ) -> dict[str, Array]:
     r"""Wall-normal-resolved spectral budget (module docstring).
 
@@ -1707,15 +1935,28 @@ def _twin_ybudget_jit(
     term list it names is what the stream's records are shaped by;
     *x0* (``twin.x0_planes``) selects the suffix list, and with it off
     the `$k_x = 0$` plane is never formed.
+
+    *marginals* and *cube* select the outputs, both static: the 2-D
+    marginals above, and under *cube* the 3-D budget cube ``cube``,
+    `$(n_{terms}, n_y, n_{k_z}, n_{k_x})$` on that selection
+    (:func:`_cube_replicated`).  A sample on which both streams are due
+    builds the densities -- the whole cost -- once.  The cube is
+    convective-only (the rotational form is being retired, and the
+    ``[twin]`` validation refuses the pair).
     """
     stacked = _ybudget_densities(
         state1, state2, fourier_, flow_, pressure, rotational
     )
-    marginals = _marginals_replicated(stacked, x0=x0)
     out: dict[str, Array] = {}
-    for i, name in enumerate(ybudget_terms(rotational)):
-        for suf, value in marginals.items():
-            out[f"{name}_{suf}"] = value[i]
+    if marginals:
+        reduced = _marginals_replicated(stacked, x0=x0)
+        for i, name in enumerate(ybudget_terms(rotational)):
+            for suf, value in reduced.items():
+                out[f"{name}_{suf}"] = value[i]
+    if cube is not None:
+        if rotational:
+            raise ValueError("the 3-D budget cube is convective-only")
+        out["cube"] = _cube_replicated(stacked, cube)
     return out
 
 
@@ -1726,6 +1967,8 @@ def twin_ybudget(
     *,
     rotational: bool = False,
     x0: bool = False,
+    marginals: bool = True,
+    cube: CubeSelection | None = None,
 ) -> dict[str, Array]:
     """Wrapper around ``_twin_ybudget_jit`` binding the singletons."""
     return _twin_ybudget_jit(
@@ -1736,7 +1979,38 @@ def twin_ybudget(
         pressure,
         rotational=rotational,
         x0=x0,
+        marginals=marginals,
+        cube=cube,
     )
+
+
+@jit
+def _difference_pressure_jit(
+    state1: Array,
+    state2: Array,
+    fourier_: Fourier,
+    flow_: object,
+    pressure: DifferencePressure,
+) -> tuple[Array, Array]:
+    r"""`$(\Delta\hat{\mathbf{u}}, \Delta\hat{p})$`, the static pair.
+
+    The convective sources and the solve of the budget's ``Wp``, so the
+    reduced difference snapshots (``twin.it_lowres_delta``) store
+    exactly the pressure the budget's work is computed from, formed
+    from `$\Delta\mathbf{u}$` directly rather than as a difference of
+    two `$O(1)$` pressures.
+    """
+    src = _convective_sources(state1, state2, fourier_, flow_)
+    return src.delta, pressure.solve(
+        src.delta, src.div_n, src.n_hat[1], flow_, fourier_
+    )
+
+
+def difference_pressure(
+    state1: Array, state2: Array, pressure: DifferencePressure
+) -> tuple[Array, Array]:
+    """Wrapper around ``_difference_pressure_jit`` binding the singletons."""
+    return _difference_pressure_jit(state1, state2, fourier, flow, pressure)
 
 
 @partial(jit, static_argnames=("rotational",))

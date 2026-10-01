@@ -39,7 +39,13 @@ five switches have the same shape:
 - ``--reference`` adds the reference field's spectra, as maps -- and,
   under ``--spacetime``, their `$k$`-summed map too.  They are the
   turbulent flow's own, statistically the same in every frame, which
-  is why they are not drawn unasked;
+  is why they are not drawn unasked.  They come from
+  ``twin_yspectra_ref.bin``, or from ``twin_yspectra.bin`` itself for a
+  member recorded before the reference had a stream of its own; one
+  set may mix the two layouts (:class:`_Reference`).  On another
+  cadence than the difference stream's (``twin.it_yspectra_ref``) the
+  reference *maps* need frames the two share, while the normalisation
+  below averages every reference sample either way;
 - ``--decorr`` adds `$\mathcal{R}$`, the decorrelation over a
   `$k$`-resolved reference, as maps ("Decorrelation");
 - ``--decorr-k`` adds `$\mathcal{R}^k$`, the decorrelation over a
@@ -670,6 +676,7 @@ from dnsjax.analysis.twin.yspectra import (
     BALANCE_PARTS,
     BALANCE_TERMS,
     MIN_YBUDGET_VERSION,
+    MIN_YSPECTRA_REF_VERSION,
     MIN_YSPECTRA_VERSION,
     balance_term,
     balance_terms,
@@ -742,9 +749,12 @@ _SHARED_KEYS: tuple[str, ...] = (
 #: ``suffixes`` is normalised onto every member's sidecar by
 #: :func:`_open_member`, so a set of pre-``xz00`` members compares on
 #: the legacy triple rather than on a key none of them has -- and a
-#: set that mixes layouts is refused by name.
+#: set that mixes layouts is refused by name.  ``has_ref`` is written
+#: the same way: whether a member has reference spectra at all,
+#: whichever of the two layouts holds them (:class:`_Reference`), so a
+#: set mixing them is one ensemble.
 _STREAM_KEYS: dict[str, tuple[str, ...]] = {
-    "twin_yspectra": ("includes_ref", "suffixes"),
+    "twin_yspectra": ("has_ref", "suffixes"),
     "twin_ybudget": ("terms", "suffixes"),
 }
 
@@ -1101,6 +1111,25 @@ def _record_dtype(meta: dict, stem: str) -> np.dtype:
 
 
 @dataclass(frozen=True)
+class _Reference:
+    """A member's reference spectra, memory-mapped and deduplicated.
+
+    Their own stream, ``twin_yspectra_ref.bin``, on its own cadence
+    (``twin.it_yspectra_ref``, by default the difference stream's) --
+    or, for a member recorded before the reference had a stream of its
+    own, the ``r_*`` fields of ``twin_yspectra.bin`` itself
+    (``includes_ref``), which is then this same memory map.  Every
+    ``r_*`` read goes through here, so the two layouts read alike.
+    """
+
+    meta: dict
+    records: np.memmap
+    rows: np.ndarray
+    t_abs: np.ndarray
+    t_rel: np.ndarray
+
+
+@dataclass(frozen=True)
 class _Member:
     """One member's memory-mapped stream, deduplicated in time."""
 
@@ -1111,6 +1140,7 @@ class _Member:
     t_abs: np.ndarray  # their absolute simulation times
     t_rel: np.ndarray  # the same, since the perturbation
     parent: str  # its parent snapshot, "" when unrecorded
+    ref: _Reference | None = None  # its reference spectra, if any
 
 
 def _check_cadence(path: Path, times: np.ndarray) -> None:
@@ -1155,18 +1185,18 @@ def _twin_record(path: Path) -> dict:
         return json.load(fh)
 
 
-def _open_member(path: Path, stem: str) -> _Member:
-    """Memory-map one member and resolve its usable records."""
+def _map_stream(path: Path, stem: str, floor: int):
+    """``(meta, records, rows, t_abs)`` of one stream, deduplicated."""
     bin_path, json_path = path / f"{stem}.bin", path / f"{stem}.json"
     if not json_path.is_file():
         raise FileNotFoundError(f"no sidecar {json_path}")
     with open(json_path) as fh:
         meta = json.load(fh)
     version = int(meta.get("format_version", 0))
-    if version < STEMS[stem]:
+    if version < floor:
         raise ValueError(
             f"{json_path}: format_version {version} predates the "
-            f"reader floor {STEMS[stem]}."
+            f"reader floor {floor}."
         )
     # Written in so the per-member sidecar comparison has a key to
     # compare (_STREAM_KEYS); a pre-``xz00`` sidecar has none.
@@ -1184,9 +1214,25 @@ def _open_member(path: Path, stem: str) -> _Member:
     rows = np.sort(np.unique(t, return_index=True)[1])
     t_abs = t[rows]
     _check_cadence(path, t_abs)
+    return meta, records, rows, t_abs
+
+
+def _open_member(path: Path, stem: str) -> _Member:
+    """Memory-map one member and resolve its usable records."""
+    meta, records, rows, t_abs = _map_stream(path, stem, STEMS[stem])
     record = _twin_record(path)
     parent_t = record.get("parent_t")
     t0 = float(t_abs[0]) if parent_t is None else float(parent_t)
+    ref = None
+    if stem == "twin_yspectra":
+        if bool(meta.get("includes_ref")):
+            ref = _Reference(meta, records, rows, t_abs, t_abs - t0)
+        elif (path / "twin_yspectra_ref.json").is_file():
+            r_meta, r_records, r_rows, r_t = _map_stream(
+                path, "twin_yspectra_ref", MIN_YSPECTRA_REF_VERSION
+            )
+            ref = _Reference(r_meta, r_records, r_rows, r_t, r_t - t0)
+        meta["has_ref"] = ref is not None
     return _Member(
         path,
         meta,
@@ -1195,6 +1241,7 @@ def _open_member(path: Path, stem: str) -> _Member:
         t_abs,
         t_abs - t0,
         str(record.get("parent", "")),
+        ref,
     )
 
 
@@ -1249,6 +1296,9 @@ class YSeries:
     matched: np.ndarray  # (n_members,) hits on members[0]'s full grid
     meta: dict  # the first member's sidecar
     ref_stride: int = 1  # subsampling of the reference normalisation
+    # (n_members, n_frames) reference record per frame, -1 where a
+    # member's reference has no sample there; None without references.
+    ref_rows: np.ndarray | None = None
     _cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
     _reference: tuple[dict[str, np.ndarray], list[str]] | None = field(
         default=None, repr=False
@@ -1352,7 +1402,34 @@ class YSeries:
         """Spectra prefixes present (``twin_yspectra`` only)."""
         if self.stem != "twin_yspectra":
             return ()
-        return ("e", "r") if bool(self.meta["includes_ref"]) else ("e",)
+        return ("e", "r") if bool(self.meta.get("has_ref")) else ("e",)
+
+    def source(self, index: int, name: str) -> tuple[np.memmap, np.ndarray]:
+        """``(records, rows)`` holding *name* for member *index*.
+
+        A difference or budget field reads the member's own stream on
+        the frames; an ``r_*`` field its reference (:class:`_Reference`),
+        whose rows on the frames were matched by relative time when
+        the series opened.  A frame its reference has no sample at --
+        only a ``twin.it_yspectra_ref`` off the difference cadence
+        does that -- refuses the read rather than borrowing a
+        neighbour.
+        """
+        member = self.members[index]
+        if not name.startswith("r_"):
+            return member.records, self.rows[index]
+        rows = self.ref_rows[index]
+        missing = int((rows < 0).sum())
+        if missing:
+            raise ValueError(
+                f"{member.path}: its reference spectra have no sample at "
+                f"{missing} of the {rows.size} selected frames (recorded "
+                "on another twin.it_yspectra_ref than twin.it_yspectra); "
+                "a reference map needs one at every frame -- select the "
+                "frames the two cadences share with --stride, or leave "
+                "the reference maps out."
+            )
+        return member.ref.records, rows
 
     def field(self, name: str) -> np.ndarray:
         r"""Ensemble mean of one field over the selected frames.
@@ -1379,10 +1456,9 @@ class YSeries:
             value = balance_field(self.field, self.meta, name)
         else:
             total = None
-            for member, rows in zip(self.members, self.rows, strict=True):
-                block = np.asarray(
-                    member.records[name][rows], dtype=np.float64
-                )
+            for index in range(self.n_members):
+                records, rows = self.source(index, name)
+                block = np.asarray(records[name][rows], dtype=np.float64)
                 total = block if total is None else total + block
             value = total / self.n_members
         self._cache[name] = value
@@ -1419,14 +1495,16 @@ class YSeries:
         maps").
         """
         total = None
-        for member, rows in zip(self.members, self.rows, strict=True):
+        n_frames = self.rows.shape[1]
+        for index in range(self.n_members):
             parts = []
-            for start in range(0, rows.size, _REF_CHUNK):
-                take = rows[start : start + _REF_CHUNK]
+            for start in range(0, n_frames, _REF_CHUNK):
+                frames = slice(start, start + _REF_CHUNK)
 
-                def read(name: str, member=member, take=take) -> np.ndarray:
+                def read(name: str, index=index, frames=frames) -> np.ndarray:
+                    records, rows = self.source(index, name)
                     return np.asarray(
-                        member.records[name][take], dtype=np.float64
+                        records[name][rows[frames]], dtype=np.float64
                     )
 
                 parts.append(reduce(read))
@@ -1531,17 +1609,16 @@ class YSeries:
             if rows.size == 0:  # every instant is another member's
                 continue
             self._check_marginals(member, int(rows[0]))
+            records = member.ref.records
             for start in range(0, rows.size, _REF_CHUNK):
                 take = rows[start : start + _REF_CHUNK]
                 mean_total = mean_total + mean_mode_profile(
-                    np.asarray(
-                        member.records[mean_name][take], dtype=np.float64
-                    ),
+                    np.asarray(records[mean_name][take], dtype=np.float64),
                     mean_name,
                 ).sum(axis=0)
                 for suf in wanted:
                     totals[suf] = totals[suf] + np.asarray(
-                        member.records[f"r_{suf}"][take], dtype=np.float64
+                        records[f"r_{suf}"][take], dtype=np.float64
                     ).sum(axis=0)
         mean_mode = mean_total / n_instants
         spectra = {
@@ -1585,8 +1662,8 @@ class YSeries:
         below the sampling cadence; :func:`_check_cadence` has already
         refused a stream where it does not.
         """
-        times = [m.t_abs[:: self.ref_stride] for m in self.members]
-        rows = [m.rows[:: self.ref_stride] for m in self.members]
+        times = [m.ref.t_abs[:: self.ref_stride] for m in self.members]
+        rows = [m.ref.rows[:: self.ref_stride] for m in self.members]
         flat = np.concatenate(times)
         owner = np.concatenate(
             [np.full(t.size, i, dtype=int) for i, t in enumerate(times)]
@@ -1611,7 +1688,7 @@ class YSeries:
         mismatch is a convention slip, not noise.  Checked once per
         member, on the first record its instants contribute.
         """
-        block = member.records[row]
+        block = member.ref.records[row]
         mean_name = mean_mode_name(member.meta, "r")
         mean = mean_mode_profile(
             np.asarray(block[mean_name], dtype=np.float64), mean_name
@@ -1630,7 +1707,8 @@ class YSeries:
         ):
             raise ValueError(
                 f"{member.path}: the k_z and k_x marginals disagree on "
-                f"the reference energy at t = {member.records['t'][row]:g} "
+                f"the reference energy at t = "
+                f"{member.ref.records['t'][row]:g} "
                 f"({by_x.tolist()} vs {by_z.tolist()}); one of them is "
                 "not a complete sum over the mode plane."
             )
@@ -1924,7 +2002,31 @@ def open_series(
         matched=matched,
         meta=opened[0].meta,
         ref_stride=ref_stride,
+        ref_rows=reference_rows(opened, common, align_atol),
     )
+
+
+def reference_rows(
+    members, frames: np.ndarray, atol: float = _T_ATOL
+) -> np.ndarray | None:
+    """Each member's reference record at each frame, or ``None``.
+
+    ``(n_members, n_frames)``: the reference record matched to each
+    relative time in *frames* the way the frames themselves are
+    (:func:`_match`), ``-1`` where a member's reference has no sample
+    -- which only a ``twin.it_yspectra_ref`` off the difference
+    cadence leaves (:meth:`YSeries.source`).  ``None`` unless every
+    member has reference spectra.
+    """
+    if not all(member.ref is not None for member in members):
+        return None
+    rows = []
+    for member in members:
+        pick = _match(member.ref.t_rel, frames, atol)
+        rows.append(
+            np.where(pick >= 0, member.ref.rows[np.maximum(pick, 0)], -1)
+        )
+    return np.stack(rows)
 
 
 # ── Map construction ─────────────────────────────────────────────────
@@ -3617,10 +3719,11 @@ def _frame_mean(series: YSeries, name: str, frame: int) -> np.ndarray:
     is what the maps want and what a one-off cross-check does not.
     """
     total = None
-    for member, rows in zip(series.members, series.rows, strict=True):
+    for index in range(series.n_members):
 
-        def read(stored: str, member=member, row=rows[frame]) -> np.ndarray:
-            return np.asarray(member.records[stored][row], dtype=np.float64)
+        def read(stored: str, index=index) -> np.ndarray:
+            records, rows = series.source(index, stored)
+            return np.asarray(records[stored][rows[frame]], dtype=np.float64)
 
         block = balance_field(read, series.meta, name)
         total = block if total is None else total + block

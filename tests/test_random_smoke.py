@@ -99,7 +99,10 @@ stacked array there); single-device band-vs-dense parity per geometry is
 unit-covered by ``test_cartesian.py`` / ``test_cylindrical.py`` /
 ``test_annular.py``, the shard_map-local solve by
 ``test_banded_solver_sharded.py``.  A ``curved-pipe-mpi-pad`` entry
-adds the toroidal metric on that shape.  The multi-process entries are
+adds the toroidal metric on that shape.  ``plane-couette-mpi-pad`` and
+``pipe-pallas-mpi-pad`` also write ``[lowres]`` snapshots (the static
+pressure in the first, the radial parity regrid in the second) and
+read them back (``_check_lowres``).  The multi-process entries are
 also the only ones that keep ``stop.check_laminarization`` on (their
 `$E'$` stays decades above its threshold): a flow's global arrays must
 reach every jitted program as arguments, a closed-over one traces on
@@ -419,6 +422,14 @@ SYSTEMS: list[dict] = [
         "oversubscribe": True,
         "check_laminarization": True,
         "res": {"nx": 34, "ny": 32, "nz": 32},
+        # Reduced snapshots with the static pressure (on by default
+        # here): kx = 9 does not divide np1 either.
+        "lowres": {
+            "it_lowres": 50,
+            "res": {"nx": 18, "ny": 17, "nz": 12},
+            "shape": (3, 17, 11, 9),
+            "pressure": True,
+        },
         "args": [
             "--phys.system",
             "plane-couette",
@@ -445,6 +456,14 @@ SYSTEMS: list[dict] = [
         "oversubscribe": True,
         "check_laminarization": True,
         "res": {"nx": 6, "ny": 24, "nz": 8},
+        # Reduced snapshots through the radial parity regrid, under
+        # the public names (no pressure for the pipe).
+        "lowres": {
+            "it_lowres": 50,
+            "res": {"nz": 4, "nr": 13, "ntheta": 6},
+            "shape": (3, 13, 5, 2),
+            "pressure": False,
+        },
         "args": [
             "--phys.system",
             "pipe",
@@ -1070,7 +1089,8 @@ def _build_command(
     Per-system ``force_np`` / ``force_np0`` / ``res`` /
     ``oversubscribe`` / ``max_sim_time`` / ``it_stats`` /
     ``check_laminarization`` override the suite defaults (used by the
-    multi-device padded entries and the nan-guard entry).
+    multi-device padded entries and the nan-guard entry); ``lowres``
+    adds the ``[lowres]`` flags (:func:`_check_lowres`).
     """
     np_count = system.get("force_np", args.np)
     np0 = system.get("force_np0", args.np0)
@@ -1145,7 +1165,68 @@ def _build_command(
         "--stop.check_laminarization",
         str(system.get("check_laminarization", False)),
     ]
+    lowres = system.get("lowres")
+    if lowres:
+        base += ["--lowres.it_lowres", str(lowres["it_lowres"])]
+        for axis, value in lowres["res"].items():
+            base += [f"--lowres.{axis}", str(value)]
     return base + system["args"]
+
+
+def _check_lowres(
+    workdir: Path, system: dict, max_sim_time: float, dt: float
+) -> str:
+    """Read a run's ``[lowres]`` files back (the entry's ``lowres``).
+
+    One file per aligned step, the initial condition included; each
+    with the reduced resolution recorded under the flow's public names,
+    the reduced stored shape, finite and non-zero, and a ``pressure/``
+    member exactly when the entry expects one.  Written by a
+    multi-process run, so a global array baked into one of the
+    writer's jitted programs fails here.
+    """
+    import numpy as np
+
+    from dnsjax.analysis import read_pressure, read_state
+    from dnsjax.snapshot_meta import read_snapshot_meta
+
+    name, spec = system["name"], system["lowres"]
+    files = sorted((workdir / "lowres").glob("lowres_*.tar"))
+    its = [int(f.stem.rsplit("_", 1)[1]) for f in files]
+    expected = list(range(0, round(max_sim_time / dt) + 1, spec["it_lowres"]))
+    if its != expected:
+        raise AssertionError(
+            f"{name}: lowres files at steps {its}, expected {expected}"
+        )
+    for f in files:
+        meta = read_snapshot_meta(f)
+        stored = {k: meta["params"]["res"][k] for k in spec["res"]}
+        if stored != spec["res"]:
+            raise AssertionError(f"{name}: {f.name} records res {stored}")
+        fields = np.stack(
+            read_state(f, return_physical=False, return_spectral=True).spectral
+        )
+        if fields.shape != spec["shape"]:
+            raise AssertionError(
+                f"{name}: {f.name} holds {fields.shape}, "
+                f"expected {spec['shape']}"
+            )
+        if not np.isfinite(fields).all() or not np.abs(fields).max() > 0:
+            raise AssertionError(f"{name}: {f.name} is non-finite or zero")
+        if bool(meta.get("pressure")) != spec["pressure"]:
+            raise AssertionError(
+                f"{name}: {f.name} pressure member "
+                f"{bool(meta.get('pressure'))}, expected {spec['pressure']}"
+            )
+        if spec["pressure"]:
+            p = read_pressure(
+                f, return_physical=False, return_spectral=True
+            ).spectral[0]
+            if p.shape != spec["shape"][1:] or not np.isfinite(p).all():
+                raise AssertionError(
+                    f"{name}: {f.name} pressure {p.shape} or non-finite"
+                )
+    return f"{len(files)} lowres files"
 
 
 def _final_summary_line(stdout: str) -> str | None:
@@ -1315,6 +1396,14 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
             )
         if system.get("check_error_max"):
             _check_error_max(Path(workdir) / "corrector.dat", summary, name)
+        if system.get("lowres"):
+            read_back = _check_lowres(
+                Path(workdir),
+                system,
+                system.get("max_sim_time", args.max_sim_time),
+                dt,
+            )
+            summary = f"{summary.strip()}; {read_back}"
 
     print(f"  PASS  {name}  ({summary.strip()})")
 

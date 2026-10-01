@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import tarfile
+from collections.abc import Callable
 from pathlib import Path
 
 #: Tar member holding the JSON metadata.
@@ -42,6 +43,22 @@ _CHUNK_SUFFIX = "/0/0/0"
 #: the solver's own resume.  Every other reader walks ``state/c/`` and
 #: never sees it.
 CARRY_PREFIX = "carry/c/"
+
+#: Tar member prefix of the optional static pressure
+#: (``pressure/c/0/0/0/0``): one more zarr3 array, of one component,
+#: written beside a reduced-resolution snapshot's ``state`` by
+#: :mod:`dnsjax.lowres` and read by
+#: :func:`dnsjax.analysis.snapshot_export.read_pressure`.  Like
+#: ``carry/`` it is invisible to every reader that walks ``state/c/``.
+PRESSURE_PREFIX = "pressure/c/"
+
+#: The ``kind`` of a tar that holds a solver state.  Every snapshot
+#: ever written is one and carries no ``kind`` key at all, so its
+#: absence means this; the writer records the key only for the other
+#: kinds -- today the twin's 3-D spectra and budget cubes
+#: (:mod:`dnsjax.twin.cubes`), which share the container and not its
+#: meaning.
+STATE_KIND = "state"
 
 
 class SnapshotArchiveError(ValueError):
@@ -226,12 +243,12 @@ def read_snapshot_stats(path: str | Path) -> dict | None:
         return json.loads(member.read())
 
 
-#: Bytes per element of the complex dtypes the snapshot writer emits
-#: (:func:`dnsjax.snapshot._zarr3_dtype_name`).  This module is
-#: deliberately numpy-free, so the size is tabulated rather than
-#: looked up; an unrecognised name skips the size check below instead
-#: of inventing a number.
-_ITEMSIZE = {"complex64": 8, "complex128": 16}
+#: Bytes per element of the dtypes the archive writer emits: complex
+#: for a state (:func:`dnsjax.snapshot._zarr3_dtype_name`), real for
+#: the twin's cubes.  This module is deliberately numpy-free, so the
+#: size is tabulated rather than looked up; an unrecognised name skips
+#: the size check below instead of inventing a number.
+_ITEMSIZE = {"complex64": 8, "complex128": 16, "float32": 4, "float64": 8}
 
 
 def _check_chunks_match_meta(
@@ -325,25 +342,25 @@ def snapshot_component_offsets(path: str | Path) -> dict[int, int]:
     return offsets
 
 
-def snapshot_carry_offsets(path: str | Path) -> dict[int, int] | None:
-    """Byte offsets of the optional ``carry/`` chunks, or ``None``.
+def _member_offsets(
+    path: Path, prefix: str, label: str, n_named: Callable[[dict], int]
+) -> dict[int, int] | None:
+    """Checked byte offsets of an optional member's chunks, or ``None``.
 
-    ``None`` when the archive has none (every snapshot but a
-    pipe-family one written with ``outs.snapshot_embed_carry``).  The
-    chunks are checked like the state's: a contiguous ``0..N-1`` range,
-    ``N`` the metadata's ``carried`` count, each exactly one component
-    of ``native_shape[1:]``.
+    ``None`` when the archive holds no ``prefix`` chunks.  Otherwise
+    they are checked like the state's: a contiguous ``0..N-1`` range,
+    ``N`` the count *n_named* reads off the metadata, each exactly one
+    component of ``native_shape[1:]``.
     """
-    path = Path(path)
-    offsets, sizes, meta_raw = _chunk_members(path, CARRY_PREFIX)
+    offsets, sizes, meta_raw = _chunk_members(path, prefix)
     if not offsets:
         return None
     meta = json.loads(meta_raw) if meta_raw is not None else {}
-    names = meta.get("carried") or []
-    if set(offsets) != set(range(len(names))):
+    count = n_named(meta)
+    if set(offsets) != set(range(count)):
         raise SnapshotArchiveError(
-            f"{path} holds carry chunks {sorted(offsets)} but its "
-            f"metadata names {len(names)} carried field(s)."
+            f"{path} holds {label} chunks {sorted(offsets)} but its "
+            f"metadata names {count} {label} field(s)."
         )
     shape = meta.get("native_shape")
     itemsize = _ITEMSIZE.get(meta.get("dtype"))
@@ -354,8 +371,73 @@ def snapshot_carry_offsets(path: str | Path) -> dict[int, int] | None:
         wrong = {c: n for c, n in sizes.items() if n != expected}
         if wrong:
             raise SnapshotArchiveError(
-                f"{path}: carry chunk(s) {sorted(wrong)} hold "
+                f"{path}: {label} chunk(s) {sorted(wrong)} hold "
                 f"{sorted(set(wrong.values()))} bytes, not one component "
                 f"({expected} bytes)."
             )
     return offsets
+
+
+def snapshot_carry_offsets(path: str | Path) -> dict[int, int] | None:
+    """Byte offsets of the optional ``carry/`` chunks, or ``None``.
+
+    ``None`` when the archive has none (every snapshot but a
+    pipe-family one written with ``outs.snapshot_embed_carry``).  The
+    chunks are checked like the state's: a contiguous ``0..N-1`` range,
+    ``N`` the metadata's ``carried`` count, each exactly one component
+    of ``native_shape[1:]``.
+    """
+    return _member_offsets(
+        Path(path),
+        CARRY_PREFIX,
+        "carried",
+        lambda meta: len(meta.get("carried") or []),
+    )
+
+
+def snapshot_pressure_offsets(path: str | Path) -> dict[int, int] | None:
+    """Byte offset of the optional ``pressure/`` chunk, or ``None``.
+
+    ``None`` when the archive carries no pressure (every full snapshot;
+    a reduced one written with ``lowres.pressure`` off).  Otherwise
+    ``{0: offset}``, checked against the metadata's ``pressure`` entry
+    and against one component of ``native_shape[1:]``.
+    """
+    return _member_offsets(
+        Path(path),
+        PRESSURE_PREFIX,
+        "pressure",
+        lambda meta: 1 if meta.get("pressure") else 0,
+    )
+
+
+def snapshot_kind(meta: dict) -> str:
+    """A tar's ``kind``: :data:`STATE_KIND` unless it records another."""
+    return str(meta.get("kind", STATE_KIND))
+
+
+def checkpoint_refusal(meta: dict, path: str | Path) -> str | None:
+    """Why the tar described by *meta* cannot seed a run, or ``None``.
+
+    Two kinds of dnsjax tar are not checkpoints though they share the
+    container: the twin's 3-D cubes (a ``kind`` other than
+    :data:`STATE_KIND`), which hold spectra rather than a field, and
+    the reduced-resolution snapshots of :mod:`dnsjax.lowres` (a
+    ``lowres`` entry), which hold a filtered field without what a
+    resume needs.  Shared by the resume path
+    (:func:`dnsjax.parameters.read_snapshot_params`,
+    :func:`dnsjax.snapshot.validate_snapshot_params`) and the parent
+    harvest of ``scripts/ensemble_setup.py``.
+    """
+    kind = snapshot_kind(meta)
+    if kind != STATE_KIND:
+        return (
+            f"{path} is a {kind!r} file (read it with "
+            "dnsjax.analysis.twin), not a state snapshot."
+        )
+    if meta.get("lowres") is not None:
+        return (
+            f"{path} is a reduced-resolution output snapshot (lowres), "
+            "not a checkpoint: resume from a full state*.tar."
+        )
+    return None

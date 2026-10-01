@@ -1,6 +1,8 @@
 ---
 paths:
   - "src/dnsjax/snapshot*.py"
+  - "src/dnsjax/lowres.py"
+  - "src/dnsjax/twin/cubes.py"
   - "src/dnsjax/{__main__,param_surface}.py"
   - "src/dnsjax/flows/registry.py"
   - "src/dnsjax/analysis/**/*.py"
@@ -40,3 +42,11 @@ paths:
   trajectory unless `init.force_resume`.
 - An interrupted save leaves `*.tar.partial`, which `*.tar` globs skip
   (`scripts/ensemble_setup.py` relies on it).
+- Every dnsjax tar goes through `snapshot.write_archive`: states, the
+  `[lowres]` files and the twin cubes. A new array output does too,
+  y-major, with a metadata `kind` if it is not a state (absent means a
+  state). Optional members beside `state/`: `carry/` and `pressure/`.
+- A non-state `kind` or a `lowres` entry is not a checkpoint:
+  `snapshot_meta.checkpoint_refusal` refuses it on every resume path
+  and the parent harvest, and the field readers refuse a non-state
+  `kind`.

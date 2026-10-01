@@ -1,10 +1,19 @@
 r"""JAX-free readers for the wall-normal-resolved twin streams.
 
 ``twin_yspectra.bin`` and ``twin_ybudget.bin``, written by
-:mod:`dnsjax.twin.yspectra`.  Both come back as a
+:mod:`dnsjax.twin.yspectra`, and the reference state's spectra
+``twin_yspectra_ref.bin``.  Each comes back as a
 :class:`YResolvedData`: a dict of ``(n_t, ..., n_y, n_k)`` float64
 arrays, the two wavenumber axes in physical units, the wall-normal
 grid and its quadrature weights, and the sidecar.
+
+The reference's ``r_*`` fields have a stream of their own, on their
+own cadence (by default the difference's steps).  A member recorded
+before that split holds them inside ``twin_yspectra.bin``
+(``includes_ref`` in its sidecar).  :func:`read_twin_yspectra` returns
+them either way, on the difference stream's times, with ``nan`` rows
+where the reference has no sample.  :func:`read_twin_yspectra_ref`
+returns them on their own times.
 
 Which fields a stream carries is the sidecar's ``suffixes``, and
 :func:`stored_fields` is the one place that turns it into a record
@@ -82,15 +91,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
+
+from .spectra import on_times
 
 #: Reader floors: the oldest layout this module can still *name*, not
 #: the current writer version (module docstring).
 MIN_YSPECTRA_VERSION: int = 1
 MIN_YBUDGET_VERSION: int = 2
+MIN_YSPECTRA_REF_VERSION: int = 1
 
 #: What a sidecar without a ``suffixes`` key stored, which is every
 #: stream written before ``xz00`` existed.
@@ -139,9 +151,10 @@ def stored_fields(meta: dict, stem: str) -> list[tuple[str, tuple[int, ...]]]:
     The counterpart of the writers' ``_suffix_shapes``
     (:mod:`dnsjax.twin.yspectra`), and the only place either reader
     turns a sidecar into a record layout.  *stem* is
-    ``"twin_yspectra"`` or ``"twin_ybudget"``: the first is prefixed
-    by ``e`` / ``r`` and carries a component axis, the second by the
-    sidecar's ``terms`` and does not.
+    ``"twin_yspectra"``, ``"twin_yspectra_ref"`` or ``"twin_ybudget"``:
+    the spectra are prefixed by ``e`` (and ``r`` in the pre-split
+    layout) or by ``r`` alone, and carry a component axis; the budget
+    is prefixed by the sidecar's ``terms`` and does not.
     """
     ny = int(meta["ny"])
     widths: dict[str, tuple[int, ...]] = {
@@ -157,8 +170,11 @@ def stored_fields(meta: dict, stem: str) -> list[tuple[str, tuple[int, ...]]]:
             f"unknown stored suffix(es) {unknown}; this reader knows "
             f"{sorted(widths)}."
         )
-    if stem == "twin_yspectra":
-        prefixes = ("e", "r") if bool(meta["includes_ref"]) else ("e",)
+    if stem in ("twin_yspectra", "twin_yspectra_ref"):
+        if stem == "twin_yspectra_ref":
+            prefixes: tuple[str, ...] = ("r",)
+        else:
+            prefixes = ("e", "r") if bool(meta["includes_ref"]) else ("e",)
         return [
             (f"{p}_{suf}", (_N_COMPONENTS, ny, *widths[suf]))
             for p in prefixes
@@ -290,8 +306,50 @@ def read_twin_yspectra(path: str | Path = ".") -> YResolvedData:
     ``.json``).  Fields ``e_<suffix>`` for each of
     :func:`stored_suffixes`, ``(n_t, 3, n_y, n_k)`` or
     ``(n_t, 3, n_y)``, plus the matching ``r_*`` set when the run set
-    ``twin.spectra_ref``."""
-    return _read(path, "twin_yspectra", MIN_YSPECTRA_VERSION)
+    ``twin.spectra_ref``: from the same records in the pre-split
+    layout, else from ``twin_yspectra_ref.bin`` placed on these
+    records' times, ``nan`` where the reference has no sample
+    (:func:`dnsjax.analysis.twin.spectra.on_times`)."""
+    data = _read(path, "twin_yspectra", MIN_YSPECTRA_VERSION)
+    if bool(data.meta.get("includes_ref")):
+        return data
+    directory = _resolve_pair(path, "twin_yspectra")[1].parent
+    if not (directory / "twin_yspectra_ref.json").is_file():
+        return data
+    ref = read_twin_yspectra_ref(directory)
+    fields = dict(data.fields) | {
+        name: on_times(data.t, ref.t, values)
+        for name, values in ref.fields.items()
+    }
+    return replace(data, fields=fields)
+
+
+def read_twin_yspectra_ref(path: str | Path = ".") -> YResolvedData:
+    """The reference marginals of a run directory, on their own times.
+
+    From ``twin_yspectra_ref.bin`` when the run has it, else the
+    ``r_*`` fields of a pre-split ``twin_yspectra.bin``; refused when
+    neither holds them (``twin.spectra_ref`` was off).  Fields
+    ``r_<suffix>``, shaped as in :func:`read_twin_yspectra`.
+    """
+    path = Path(path)
+    directory = path if path.is_dir() else path.parent
+    if (directory / "twin_yspectra_ref.json").is_file():
+        return _read(directory, "twin_yspectra_ref", MIN_YSPECTRA_REF_VERSION)
+    data = _read(directory, "twin_yspectra", MIN_YSPECTRA_VERSION)
+    if not bool(data.meta.get("includes_ref")):
+        raise ValueError(
+            f"{directory} carries no reference spectra "
+            "(twin.spectra_ref was off)."
+        )
+    return replace(
+        data,
+        fields={
+            name: values
+            for name, values in data.fields.items()
+            if name.startswith("r_")
+        },
+    )
 
 
 def read_twin_ybudget(path: str | Path = ".") -> YResolvedData:

@@ -33,6 +33,16 @@ def periodic_fields() -> tuple[FieldSpec, ...]:
         FieldSpec("init", "localized_rolls_amplitude"),
         FieldSpec("init", "localized_rolls_width"),
         FieldSpec("init", "localized_rolls_wavelength"),
+        FieldSpec("lowres", "nx"),
+        FieldSpec(
+            "lowres",
+            "ny",
+            description=(
+                "Shear-direction Fourier modes the reduced snapshots "
+                "keep (the highest dropped); unset = res.ny."
+            ),
+        ),
+        FieldSpec("lowres", "nz"),
     )
 
 
@@ -51,6 +61,14 @@ def periodic_deferred() -> tuple[DeferredSpec, ...]:
             "profile) is not implemented yet for the triply-periodic "
             "systems; their mean mode is a passive Galilean shift the "
             "solver re-zeroes every step anyway.",
+        ),
+        DeferredSpec(
+            "lowres",
+            "pressure",
+            "lowres.pressure (the static pressure in reduced-resolution "
+            "snapshots) is not implemented yet for the triply-periodic "
+            "systems: plane Couette and plane Poiseuille have it, and this "
+            "flow writes the velocity alone.",
         ),
     )
 

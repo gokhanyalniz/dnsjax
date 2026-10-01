@@ -12,7 +12,8 @@ from: the lockstep snapshot pairs ``state{isnap}.tar`` (reference) +
 This script walks those pairs and feeds the driver's own writers:
 
 - ``twin.dat`` -- :func:`dnsjax.twin.diagnostics.twin_energies`
-- ``twin_yspectra.bin`` (+ sidecar) --
+- ``twin_yspectra.bin`` (+ sidecar), and its reference half
+  ``twin_yspectra_ref.bin`` under ``--recon.spectra_ref`` --
   :func:`~dnsjax.twin.diagnostics.twin_yspectra`
 - ``twin_ybudget.bin`` (+ sidecar) --
   :func:`~dnsjax.twin.diagnostics.twin_ybudget`
@@ -135,8 +136,9 @@ _PROG = "python scripts/twin_postprocess.py"
 #: back, so it carries no reader floor (unlike the stream sidecars);
 #: the number is here so a record describes which fields to expect.
 #: 2 added ``stats_driving`` alongside the two ``stats*.dat`` streams;
-#: 3 added ``x0_planes``.
-PROVENANCE_VERSION: int = 3
+#: 3 added ``x0_planes``; 4 lists the streams actually written, the
+#: reference spectra now being one of their own.
+PROVENANCE_VERSION: int = 4
 
 #: The output files this script owns; an existing one is refused rather
 #: than appended to (both writer families append silently on a matching
@@ -145,6 +147,8 @@ _OUTPUTS: tuple[str, ...] = (
     "twin.dat",
     "twin_yspectra.bin",
     "twin_yspectra.json",
+    "twin_yspectra_ref.bin",
+    "twin_yspectra_ref.json",
     "twin_ybudget.bin",
     "twin_ybudget.json",
     "stats.dat",
@@ -671,7 +675,11 @@ def main(argv: list[str] | None = None) -> int:
     from dnsjax.twin import diagnostics
     from dnsjax.twin.driver import _ScalarStream
     from dnsjax.twin.pressure import DifferencePressure
-    from dnsjax.twin.yspectra import TwinYBudgetStream, TwinYSpectraStream
+    from dnsjax.twin.yspectra import (
+        TwinYBudgetStream,
+        TwinYSpectraRefStream,
+        TwinYSpectraStream,
+    )
 
     # The per-state streams need the flow module itself, dispatched
     # through the registry exactly as :func:`dnsjax.twin.driver.run`
@@ -723,15 +731,32 @@ def main(argv: list[str] | None = None) -> int:
     yspectra_stream = TwinYSpectraStream(
         stream_values, np.asarray(y_weights).tolist(), directory=out
     )
+    # The reference half on the pair cadence, as the driver's default
+    # (``twin.it_yspectra_ref`` unset) writes it.
+    yspectra_ref_stream = (
+        TwinYSpectraRefStream(
+            stream_values,
+            np.asarray(y_weights).tolist(),
+            it_stride,
+            directory=out,
+        )
+        if values.spectra_ref
+        else None
+    )
     ybudget_stream = TwinYBudgetStream(
         stream_values, np.asarray(y_weights).tolist(), directory=out
     )
-    streams = (
-        twin_stream,
-        stats_stream,
-        stats2_stream,
-        yspectra_stream,
-        ybudget_stream,
+    streams = tuple(
+        stream
+        for stream in (
+            twin_stream,
+            stats_stream,
+            stats2_stream,
+            yspectra_stream,
+            yspectra_ref_stream,
+            ybudget_stream,
+        )
+        if stream is not None
     )
 
     def abort(reason: str) -> None:
@@ -766,6 +791,9 @@ def main(argv: list[str] | None = None) -> int:
             stats_stream.push(_stats_row(*_stats_of(state1)), t),
             stats2_stream.push(_stats_row(*_stats_of(state2)), t),
             yspectra_stream.record(yvals, t),
+            None
+            if yspectra_ref_stream is None
+            else yspectra_ref_stream.record(yvals, t),
             ybudget_stream.record(ybvals, t),
         ):
             if bad is not None:
@@ -807,7 +835,10 @@ def main(argv: list[str] | None = None) -> int:
                     "source_dir": str(directory.resolve()),
                     "param_snapshot": str(param_pair.reference.resolve()),
                     "streams": [
-                        name for name in _OUTPUTS if not name.endswith(".json")
+                        name
+                        for name in _OUTPUTS
+                        if not name.endswith(".json")
+                        and (out / name).is_file()
                     ],
                     "n_pairs": len(kept),
                     "n_pairs_available": len(pairs),

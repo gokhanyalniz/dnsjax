@@ -16,8 +16,9 @@ Layout (one module per concern; none is imported by the top-level
 - :mod:`.ensemble` -- member-tree aggregation of the twin streams on
   aligned relative time, and the growth-rate fits (`$\lambda$` from
   the exponential phase, the algebraic-phase linear rate).
-- :mod:`.spectra` -- reader for the ``twin_spectra.bin`` stream
-  and the decorrelation ratio.
+- :mod:`.spectra` -- readers for the ``twin_spectra.bin`` stream
+  and its reference counterpart (either layout), and the
+  decorrelation ratio.
 - :mod:`.yspectra` -- readers for the wall-normal-resolved
   ``twin_yspectra.bin`` / ``twin_ybudget.bin`` streams, the
   sidecar-driven record layout they share with the memory-mapped
@@ -29,6 +30,9 @@ Layout (one module per concern; none is imported by the top-level
   ``scripts/random_ic_calibrate.py`` scores an initial condition
   with, and the budget regrouped into the terms of the
   difference-energy balance (:func:`~.yspectra.balance_term`).
+- :mod:`.cubes` -- readers for the 3-D ``(y, k_z, k_x)`` energy and
+  budget cubes (``twin_spectra3d/``, ``twin_spectra3d_ref/``,
+  ``twin_budget3d/``), one dnsjax tar per sample.
 - :mod:`.lengths` -- integral length scales of the difference field
   from a paired snapshot.
 
@@ -36,6 +40,16 @@ Everything here is importable without JAX (the
 ``tests/test_twin_analysis.py`` guarantee).
 """
 
+from .cubes import (
+    Cube,
+    CubeSeries,
+    cube_files,
+    read_cube,
+    read_cubes,
+    read_twin_budget3d,
+    read_twin_spectra3d,
+    read_twin_spectra3d_ref,
+)
 from .ensemble import (
     aggregate_members,
     fit_exponential_rate,
@@ -58,8 +72,10 @@ from .series import (
 )
 from .spectra import (
     TwinSpectraData,
+    TwinSpectraRefData,
     decorrelation_ratio,
     read_twin_spectra,
+    read_twin_spectra_ref,
 )
 from .yspectra import (
     BALANCE_PARTS,
@@ -78,6 +94,7 @@ from .yspectra import (
     mean_mode_profile,
     read_twin_ybudget,
     read_twin_yspectra,
+    read_twin_yspectra_ref,
     record_dtype,
     shape_alignment,
     stored_fields,
@@ -88,10 +105,13 @@ __all__ = [
     "BALANCE_PARTS",
     "BALANCE_SOURCES",
     "BALANCE_TERMS",
-    "LEGACY_SUFFIXES",
     "ClosureResiduals",
+    "Cube",
+    "CubeSeries",
+    "LEGACY_SUFFIXES",
     "TwinSeries",
     "TwinSpectraData",
+    "TwinSpectraRefData",
     "YResolvedData",
     "aggregate_members",
     "balance_term",
@@ -99,6 +119,7 @@ __all__ = [
     "bin_energies",
     "budget_sums",
     "closure_residuals",
+    "cube_files",
     "decorrelation_ratio",
     "fit_exponential_rate",
     "fit_linear_rate",
@@ -111,14 +132,21 @@ __all__ = [
     "mean_mode_name",
     "mean_mode_profile",
     "partner_of",
+    "read_cube",
+    "read_cubes",
     "read_dat",
     "read_twin",
+    "read_twin_budget3d",
     "read_twin_spectra",
-    "shape_alignment",
+    "read_twin_spectra3d",
+    "read_twin_spectra3d_ref",
+    "read_twin_spectra_ref",
     "read_twin_ybudget",
     "read_twin_yspectra",
+    "read_twin_yspectra_ref",
     "record_dtype",
     "relative_time",
+    "shape_alignment",
     "stored_fields",
     "stored_suffixes",
     "uniform_grid",

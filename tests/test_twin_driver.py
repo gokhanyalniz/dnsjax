@@ -61,6 +61,18 @@ scope, in temporary member directories:
 10. The corrector-convergence check judges every step since the
     previous host sync, for both states: the closing ``err =``
     against their first corrector-stream rows.
+11. The 3-D cubes and the reduced snapshots: one tar per sample at
+    every on-grid relative step, the final one included; the reduced
+    difference field is the host reduction of the full pair's
+    difference; nothing is written for the partner; a paired restart
+    carries every directory on; and at ``twin.e0 = 0`` every
+    difference cube, ``Delta u`` and ``Delta p`` is exactly zero.
+12. The reference spectra split: by default the reference streams
+    sample exactly the difference streams' times and the merged reads
+    equal the split ones; another reference cadence leaves ``nan``
+    rows in the merged read; and a member recorded in the pre-split
+    layout (made by rewriting a run's streams on disk) resumes in it,
+    combined, with no reference stream.
 
 Usage::
 
@@ -616,6 +628,15 @@ def test_np2_run() -> None:
                 "1",
                 "--twin.it_ybudget",
                 "1",
+                "--twin.it_spectra3d",
+                "1",
+                "--twin.it_budget3d",
+                "1",
+                "--twin.it_lowres_delta",
+                "1",
+                "--lowres.it_lowres",
+                "1",
+                *_LOWRES,
             ],
             np_count=2,
             np1=2,
@@ -649,7 +670,262 @@ def test_np2_run() -> None:
             assert_allclose(
                 spec.e_delta[k].sum(), cols["E_d"][by_t[t]], rtol=1e-10
             )
+
+        # The cubes, gathered by a third collective: kept whole, each
+        # sums over both wavenumbers to the y-folded k-sum of a marginal.
+        from dnsjax.analysis import read_pressure
+        from dnsjax.analysis.twin import read_twin_spectra3d
+
+        cube = read_twin_spectra3d(tmp)
+        assert np.array_equal(cube.t, data.t)
+        profile = data["e_x"].sum(axis=-1)  # (n_t, 3, ny)
+        half = (profile.shape[-1] + 1) // 2
+        folded = 0.5 * (profile[..., :half] + profile[..., ::-1][..., :half])
+        got = np.stack([cube[f"e_{c}"] for c in "uvw"], axis=1).sum((-1, -2))
+        assert_allclose(got, folded, rtol=1e-10)
+        for path in sorted((Path(tmp) / "lowres_delta").iterdir()):
+            assert np.isfinite(read_pressure(path).physical[0]).all()
+        assert len(list((Path(tmp) / "lowres").iterdir())) == data.t.size
     print("mpirun -np 2 (--dist.np1 2, every stream): OK")
+
+
+# ── 3-D cubes and reduced snapshots ─────────────────────────────────
+
+
+#: The reduced resolution these tests write at (the parent is 8 x 17 x 8).
+_LOWRES = ["--lowres.nx", "4", "--lowres.ny", "9", "--lowres.nz", "4"]
+
+
+def _host_reduce_delta(member: Path, isnap: int) -> np.ndarray:
+    """The reduced difference of a full snapshot pair, on the host."""
+    from dnsjax.analysis import read_state
+    from dnsjax.fd import build_interpolation_matrix, grid_nodes
+    from dnsjax.harmonics import stored_mode_counts
+
+    name = f"state{isnap:05d}"
+    a = np.stack(
+        read_state(
+            member / f"{name}.tar", return_physical=False, return_spectral=True
+        ).spectral
+    )
+    b = np.stack(
+        read_state(
+            member / f"{name}_twin.tar",
+            return_physical=False,
+            return_spectral=True,
+        ).spectral
+    )
+    T = build_interpolation_matrix(
+        grid_nodes("cartesian", 17, "cgl"),
+        grid_nodes("cartesian", 9, "cgl"),
+        "cartesian",
+        4,
+    )
+    out = np.einsum("ij,cjzx->cizx", T, b - a)
+    out[:, 0] = out[:, -1] = 0.0
+    pos, neg = stored_mode_counts(3)
+    keep = list(range(pos)) + list(range(7 - neg, 7))
+    return out[:, :, keep, :2]
+
+
+def test_cubes_and_lowres() -> None:
+    """Item 11 of the module docstring."""
+    from dnsjax.analysis import read_pressure, read_state
+    from dnsjax.analysis.twin import (
+        read_twin_budget3d,
+        read_twin_spectra3d,
+        read_twin_spectra3d_ref,
+    )
+
+    extra = [
+        "--twin.it_spectra3d",
+        "2",
+        "--twin.it_budget3d",
+        "2",
+        "--twin.n_y3d",
+        "4",
+        "--twin.n_kz3d",
+        "2",
+        "--twin.it_lowres_delta",
+        "2",
+        "--lowres.it_lowres",
+        "4",
+        *_LOWRES,
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        member = Path(tmp)
+        _run_twin(member, [*_twin_args(1.04), *extra])
+        steps = [PARENT_IT + k for k in (0, 2, 4)]
+        e = read_twin_spectra3d(member)
+        assert e.it.tolist() == steps, e.it
+        assert e["e_u"].shape[1:] == (5, 3, 4), e["e_u"].shape
+        assert read_twin_spectra3d_ref(member).it.tolist() == steps
+        b = read_twin_budget3d(member)
+        assert b.it.tolist() == steps and len(b.fields) == 7
+        for name in ("twin_spectra3d", "twin_budget3d"):
+            meta = read_snapshot_meta(
+                member / name / f"{name}_{PARENT_IT:010d}.tar"
+            )
+            assert meta["kind"] == name and meta["parent_it"] == PARENT_IT
+        lowres = sorted(p.name for p in (member / "lowres").iterdir())
+        assert lowres == [
+            f"lowres_{PARENT_IT:010d}.tar",
+            f"lowres_{PARENT_IT + 4:010d}.tar",
+        ], lowres
+        delta = sorted((member / "lowres_delta").iterdir())
+        assert [int(p.stem.rsplit("_", 1)[1]) for p in delta] == steps
+        assert not any("twin" in p.name for p in (member / "lowres").iterdir())
+        # The final difference file against the final full pair.
+        got = np.stack(
+            read_state(
+                delta[-1], return_physical=False, return_spectral=True
+            ).spectral
+        )
+        want = _host_reduce_delta(member, 1)
+        assert_allclose(got, want, rtol=0, atol=1e-13 * np.abs(want).max())
+        dp = read_pressure(delta[-1]).physical[0]
+        assert np.isfinite(dp).all() and np.abs(dp).max() > 0
+        assert read_snapshot_meta(delta[-1])["lowres"]["field"] == "difference"
+        # Resume from the final pair: every directory carries on.
+        _run_twin(
+            member,
+            [
+                *_twin_args(1.08, t_start=1.04),
+                "--init.snapshot",
+                str(member / "state00001.tar"),
+                *extra,
+            ],
+        )
+        assert read_twin_spectra3d(member).it.tolist() == [
+            PARENT_IT + k for k in (0, 2, 4, 6, 8)
+        ]
+
+    # e0 = 0: an exact copy, so every difference output is exactly 0.
+    with tempfile.TemporaryDirectory() as tmp:
+        member = Path(tmp)
+        _run_twin(member, [*_twin_args(1.02, e0=0.0), *extra])
+        assert not np.any(read_twin_spectra3d(member)["e_u"])
+        assert np.any(read_twin_spectra3d_ref(member)["r_u"])
+        for path in (member / "lowres_delta").iterdir():
+            st = read_state(path, return_physical=False, return_spectral=True)
+            assert not any(np.any(c) for c in st.spectral), path
+            assert not np.any(read_pressure(path).physical[0]), path
+    print("3-D cubes and reduced snapshots (+ resume, e0 = 0): OK")
+
+
+def _to_legacy(member: Path) -> None:
+    """Rewrite a member's spectra into the pre-split, combined layout.
+
+    What a member recorded before the reference had streams of its own
+    holds: ``e_*`` and ``r_*`` (``e_delta`` and ``e_ref``) in one record,
+    ``includes_ref: true``, no ``*_ref`` streams, and a ``twin.json``
+    without the reference and 3-D cadence keys.
+    """
+    from dnsjax.analysis.twin.yspectra import record_dtype
+
+    def dtype_of(meta: dict, stem: str) -> np.dtype:
+        if stem == "twin_spectra":
+            shape = (int(meta["n2"]), int(meta["n3"]))
+            names = ["e_delta"] + (["e_ref"] if meta["includes_ref"] else [])
+            return np.dtype(
+                [("t", "<f8")]
+                + [(n, meta["value_dtype"], shape) for n in names]
+            )
+        if stem == "twin_spectra_ref":
+            shape = (int(meta["n2"]), int(meta["n3"]))
+            return np.dtype(
+                [("t", "<f8"), ("e_ref", meta["value_dtype"], shape)]
+            )
+        return record_dtype(meta, stem)
+
+    for stem in ("twin_spectra", "twin_yspectra"):
+        meta = json.loads((member / f"{stem}.json").read_text())
+        ref_meta = json.loads((member / f"{stem}_ref.json").read_text())
+        diff = np.fromfile(member / f"{stem}.bin", dtype=dtype_of(meta, stem))
+        ref = np.fromfile(
+            member / f"{stem}_ref.bin", dtype=dtype_of(ref_meta, f"{stem}_ref")
+        )
+        assert np.array_equal(diff["t"], ref["t"])
+        meta["includes_ref"] = True
+        combined = np.zeros(diff.shape, dtype=dtype_of(meta, stem))
+        for name in combined.dtype.names:
+            combined[name] = (diff if name in diff.dtype.names else ref)[name]
+        combined.tofile(member / f"{stem}.bin")
+        (member / f"{stem}.json").write_text(json.dumps(meta))
+        (member / f"{stem}_ref.bin").unlink()
+        (member / f"{stem}_ref.json").unlink()
+    record = json.loads((member / "twin.json").read_text())
+    for key in (
+        "it_spectra_ref",
+        "it_yspectra_ref",
+        "it_spectra3d",
+        "it_spectra3d_ref",
+        "it_budget3d",
+    ):
+        record.pop(key, None)
+    (member / "twin.json").write_text(json.dumps(record))
+
+
+def test_reference_split() -> None:
+    """Item 12 of the module docstring."""
+    from dnsjax.analysis.twin import (
+        read_twin_spectra,
+        read_twin_spectra_ref,
+        read_twin_yspectra,
+        read_twin_yspectra_ref,
+    )
+
+    streams = ["--twin.it_spectra", "1", "--twin.it_yspectra", "1"]
+    with tempfile.TemporaryDirectory() as tmp:
+        member = Path(tmp)
+        _run_twin(member, [*_twin_args(1.03), *streams])
+        merged, ref = (
+            read_twin_yspectra(member),
+            read_twin_yspectra_ref(member),
+        )
+        assert np.array_equal(merged.t, ref.t)
+        for name, values in ref.fields.items():
+            assert np.array_equal(merged[name], values), name
+        assert not merged.meta["includes_ref"]
+        spec, spec_ref = (
+            read_twin_spectra(member),
+            read_twin_spectra_ref(member),
+        )
+        assert np.array_equal(spec.t, spec_ref.t)
+        assert np.array_equal(spec.e_ref, spec_ref.e_ref)
+
+        # The pre-split layout resumes combined, with no reference
+        # stream, and reads exactly as before.
+        _to_legacy(member)
+        _run_twin(
+            member,
+            [
+                *_twin_args(1.05, t_start=1.03),
+                "--init.snapshot",
+                str(member / "state00001.tar"),
+                *streams,
+            ],
+        )
+        assert not (member / "twin_yspectra_ref.bin").exists()
+        assert not (member / "twin_spectra_ref.bin").exists()
+        legacy = read_twin_yspectra(member)
+        assert legacy.meta["includes_ref"] and legacy.t.size == 6
+        assert np.isfinite(legacy["r_x"]).all()
+        assert np.isfinite(read_twin_spectra(member).e_ref).all()
+
+    # Another reference cadence: its own samples, nan rows when merged.
+    with tempfile.TemporaryDirectory() as tmp:
+        member = Path(tmp)
+        _run_twin(
+            member,
+            [*_twin_args(1.04), *streams, "--twin.it_yspectra_ref", "2"],
+        )
+        ref = read_twin_yspectra_ref(member)
+        assert ref.t.size == 3, ref.t
+        merged = read_twin_yspectra(member)
+        missing = np.isnan(merged["r_x"]).any(axis=(1, 2, 3))
+        assert missing.tolist() == [False, True, False, True, False]
+    print("reference split, its own cadence, legacy resume: OK")
 
 
 # ── Non-finite guard ─────────────────────────────────────────────────
@@ -1240,6 +1516,8 @@ if __name__ == "__main__":
         test_yspectra_streams,
         test_budget_closure,
         test_guards,
+        test_cubes_and_lowres,
+        test_reference_split,
     ]
     if "--only" in sys.argv:
         frag = sys.argv[sys.argv.index("--only") + 1]

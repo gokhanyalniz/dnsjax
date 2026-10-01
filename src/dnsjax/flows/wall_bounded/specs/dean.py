@@ -3,6 +3,7 @@ r"""Parameter spec for (force-driven) Dean flow."""
 from ....flow_spec import FieldSpec, FlowSpec
 from ._family import (
     CARTESIAN_ANNULAR_GRIDS,
+    DEFERRED_LOWRES_PRESSURE,
     DEFERRED_MEAN_FLOW,
     DEFERRED_TILT,
     annular_base_derive,
@@ -32,7 +33,7 @@ SPEC = FlowSpec(
         FieldSpec("phys", "re"),
         FieldSpec("phys", "block_mean_spanwise_velocity"),
     ),
-    deferred=(DEFERRED_TILT, DEFERRED_MEAN_FLOW),
+    deferred=(DEFERRED_TILT, DEFERRED_MEAN_FLOW, DEFERRED_LOWRES_PRESSURE),
     grid_type_default="cgl",
     derive=_derive,
     rehydrate=wedge_rehydrate,

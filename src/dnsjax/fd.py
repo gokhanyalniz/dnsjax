@@ -37,6 +37,9 @@ tanh_two_sided_grid:
 tanh_one_sided_grid:
     One-sided tanh-stretched radial grid on (0, 1] (clustering
     at the outer wall, no point at r = 0).
+grid_nodes:
+    The nodes each geometry's grid builder produces, in float64
+    and without its operators (any resolution, any run precision).
 axis_extrapolation_weights:
     Weights to evaluate a radial field at the axis `$r = 0$` (even /
     odd / one-sided); a shared JAX-free leaf.  On a detected radial
@@ -553,6 +556,86 @@ def tanh_one_sided_grid(nr: int, s: float) -> ndarray:
     """
     xi = np.arange(1, nr + 1, dtype=np.float64) / nr
     return 1.0 - np.tanh(s * (1.0 - xi)) / np.tanh(s)
+
+
+def grid_nodes(
+    family: str,
+    ny: int,
+    grid_type: str | None,
+    grid_stretch: float = 1.5,
+    r_inner: float | None = None,
+    r_outer: float | None = None,
+) -> ndarray:
+    r"""The wall-normal nodes a geometry builds, in float64.
+
+    The node formulas of ``cartesian.build_cartesian_grid``,
+    ``cylindrical.build_cylindrical_grid`` (with
+    ``build_radial_cgl_grid``) and ``annular.build_annular_grid``,
+    without the operators those also build and in float64 whatever
+    the run's precision.  Two things need exactly that: a grid at a
+    resolution the run does not hold (the reduced-resolution
+    snapshots of :mod:`dnsjax.lowres`), and a CGL grid that
+    :func:`is_cgl_grid` / :func:`cgl_axis_gap` still recognise in a
+    single-precision run -- a float32-rounded grid misses their
+    ``1e-12`` tolerance (an odd grid's centre node lands near
+    ``4e-8``), and :func:`build_interpolation_matrix` would then fall
+    back to the local stencil.
+
+    The builders keep their own formulas, so the solver's grids are
+    untouched; ``tests/test_integration.py`` pins the two against
+    each other.  A custom ``geo.wall_grid`` file has no formula and
+    is not handled here.
+
+    Parameters
+    ----------
+    family:
+        ``"cartesian"``, ``"cylindrical"`` or ``"annular"``.
+    ny:
+        Number of nodes.
+    grid_type:
+        The resolved ``geo.grid_type``: ``"cgl"`` / ``"tanh"``
+        (Cartesian, annular; anything but ``"tanh"`` is CGL, as in
+        the builders), ``"half-cgl"`` / ``"rigged-cgl"`` (``None``
+        too) / ``"half-tanh"`` (cylindrical).
+    grid_stretch:
+        ``geo.grid_stretch``, for the tanh grids.
+    r_inner, r_outer:
+        The annulus radii; required for ``"annular"``.
+
+    Returns
+    -------
+    :
+        Ascending nodes, shape ``(ny,)``: `$[-1, 1]$` (Cartesian),
+        `$(0, 1]$` (cylindrical), `$[r_1, r_2]$` (annular).
+    """
+    if family == "cylindrical":
+        if grid_type == "half-tanh":
+            return tanh_one_sided_grid(ny, grid_stretch)
+        if grid_type not in ("half-cgl", "rigged-cgl", None):
+            raise ValueError(
+                f"grid_type {grid_type!r} is not a cylindrical radial "
+                "grid; choose 'half-cgl', 'rigged-cgl', or 'half-tanh'."
+            )
+        gap = 0 if grid_type == "half-cgl" else 1
+        n_full = 2 * ny + gap
+        s = -np.cos(np.arange(n_full) * np.pi / (n_full - 1))
+        return s[ny + gap :]
+    if grid_type == "tanh":
+        xi = tanh_two_sided_grid(ny, grid_stretch)
+    else:
+        xi = -np.cos(np.arange(ny) * np.pi / (ny - 1))
+    if family == "cartesian":
+        return xi
+    if family == "annular":
+        if r_inner is None or r_outer is None:
+            raise ValueError("annular grid nodes need r_inner and r_outer")
+        mid = 0.5 * (r_inner + r_outer)
+        half = 0.5 * (r_outer - r_inner)
+        return mid + half * xi
+    raise ValueError(
+        f"unknown family {family!r}; expected 'cartesian', "
+        "'cylindrical' or 'annular'."
+    )
 
 
 # ── Grid detection ───────────────────────────────────────────
