@@ -451,6 +451,9 @@ def build_annular_grid(
                 f"[{r_inner}, {r_outer}] (got [{grid[0]}, {grid[-1]}])"
             )
         rs = jnp.asarray(grid, dtype=sharding.float_type)
+        # A custom grid takes the composite rule below, as tanh does
+        # (the docstring's ``y_weights``).
+        is_cgl = False
     elif grid_type == "tanh":
         xi = tanh_two_sided_grid(ny, grid_stretch)  # [-1, 1]
         rs = jnp.asarray(mid + half * xi, dtype=sharding.float_type)
