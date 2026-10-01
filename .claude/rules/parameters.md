@@ -18,6 +18,8 @@ paths:
 - The CLI, TOML files and snapshot metadata use public names:
   cylindrical/annular `geo.lz`, `res.nz` (axial), `res.nr`,
   `res.ntheta` are internally `geo.lx`, `res.nx`, `res.ny`, `res.nz`.
+  The `[lowres]` targets take the same names (the family specs'
+  `FieldSpec` aliases).
 - Per-flow `FieldSpec` defaults (`geo.grid_type`, `phys.u_grid`, the
   rheology values, ...) are re-materialized on every
   `update_parameters()` unless a layer set them. Scripts and tests set

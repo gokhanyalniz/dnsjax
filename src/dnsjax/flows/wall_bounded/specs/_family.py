@@ -117,6 +117,13 @@ def cartesian_fields() -> tuple[FieldSpec, ...]:
         # ``dnsjax-twin``, through its own ``twin.mean_flow``
         # (:class:`dnsjax.twin.driver.TwinParams`).
         FieldSpec("init", "random_mean_flow"),
+        FieldSpec("lowres", "nx"),
+        FieldSpec("lowres", "ny"),
+        FieldSpec("lowres", "nz"),
+        # The static pressure exists for these two flows only
+        # (``geometries/wall_bounded/_cartesian_pressure.py``), so it
+        # defaults on here and is deferred everywhere else.
+        FieldSpec("lowres", "pressure", default=True),
     )
 
 
@@ -165,6 +172,34 @@ def cyl_annular_fields(axial_default: Any = UNSET) -> tuple[FieldSpec, ...]:
             ),
         ),
         FieldSpec("geo", "m0"),
+        # ``[lowres]`` names its counts like ``res`` does.
+        FieldSpec(
+            "lowres",
+            "nx",
+            public="nz",
+            description=(
+                "Axial Fourier modes the reduced snapshots keep (the "
+                "highest dropped); unset = res.nz."
+            ),
+        ),
+        FieldSpec(
+            "lowres",
+            "ny",
+            public="nr",
+            description=(
+                "Radial points of the reduced snapshots' grid (same "
+                "grid type, interpolated); unset = res.nr."
+            ),
+        ),
+        FieldSpec(
+            "lowres",
+            "nz",
+            public="ntheta",
+            description=(
+                "Azimuthal Fourier modes the reduced snapshots keep "
+                "(the highest dropped); unset = res.ntheta."
+            ),
+        ),
     )
 
 
@@ -187,6 +222,17 @@ DEFERRED_MEAN_FLOW = DeferredSpec(
     "is not implemented yet for this flow: only the Cartesian flows "
     "have their mean-mode conservation laws established, and the "
     "perturbation is conditioned on them (dnsjax.ic.mean_mode).",
+)
+
+#: Deferred: the reduced snapshots' static pressure needs a pressure
+#: Poisson solve with the solver's own wall closure, which exists for
+#: the Cartesian flows only (``_cartesian_pressure.py``).
+DEFERRED_LOWRES_PRESSURE = DeferredSpec(
+    "lowres",
+    "pressure",
+    "lowres.pressure (the static pressure in reduced-resolution "
+    "snapshots) is not implemented yet for this flow: plane Couette and "
+    "plane Poiseuille have it, and this flow writes the velocity alone.",
 )
 
 # ── Shared derive math ───────────────────────────────────────────

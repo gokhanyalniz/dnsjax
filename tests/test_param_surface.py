@@ -339,6 +339,84 @@ def case_deferred() -> None:
         )
 
 
+def case_lowres() -> None:
+    """``[lowres]``: per-family names, the pressure knob, the refusals."""
+    from pydantic import ValidationError
+
+    import dnsjax.param_surface as PS
+    import dnsjax.parameters as P
+    from dnsjax.flows.registry import spec_for
+
+    # The counts carry the flow's own res names; the pressure is on
+    # the Cartesian surfaces only, deferred elsewhere.
+    for system, names, pressure in (
+        ("plane-poiseuille", ("nx", "ny", "nz"), True),
+        ("pipe", ("nz", "nr", "ntheta"), False),
+        ("taylor-couette", ("nz", "nr", "ntheta"), False),
+        ("kolmogorov", ("nx", "ny", "nz"), False),
+    ):
+        spec = spec_for(system)
+        model = PS.build_surface_model(spec, settings=False)
+        section = {"it_lowres": 10, **dict.fromkeys(names, 4)}
+        core = PS.internalize(
+            model.model_validate({"lowres": section}).model_dump(
+                exclude_unset=True
+            ),
+            spec,
+        )
+        check(
+            core == {"lowres": {"it_lowres": 10, "nx": 4, "ny": 4, "nz": 4}},
+            f"{system} [lowres] names follow res",
+            core,
+        )
+        v = model.model_validate({"lowres": {"pressure": True}})
+        try:
+            PS.internalize(v.model_dump(exclude_unset=True), spec)
+            check(pressure, f"{system} lowres.pressure on the surface")
+        except ValueError as ex:
+            check(
+                not pressure and "not implemented yet" in str(ex),
+                f"{system} lowres.pressure deferred",
+                ex,
+            )
+        except ValidationError as ex:  # pragma: no cover - a surface slip
+            check(False, f"{system} lowres.pressure parse", ex)
+
+    # The model default is off; the Cartesian flows default it on.
+    for system, want in (("plane-couette", True), ("pipe", False)):
+        _reset()
+        P.update_parameters(P.Parameters(phys={"system": system}))
+        check(
+            P.params.lowres.pressure is want,
+            f"{system} lowres.pressure default {want}",
+        )
+
+    # A target above the run's, an odd Fourier target, and a custom
+    # wall grid at another count are each refused.
+    for lowres, geo, fragment in (
+        ({"nx": 32}, {}, "exceeds"),
+        ({"nz": 7}, {}, "must be even"),
+        ({"ny": 9}, {"wall_grid": "grid.txt"}, "custom geo.wall_grid"),
+    ):
+        _reset()
+        P.update_parameters(
+            P.Parameters(
+                phys={"system": "plane-couette"},
+                res={"nx": 16, "ny": 17, "nz": 16},
+                lowres=lowres,
+            )
+        )
+        if geo:
+            P.params.geo.wall_grid = geo["wall_grid"]
+            P.params.geo.grid_type = None
+        try:
+            P.validate_parameters()
+            check(False, f"lowres {lowres} refused")
+        except ValueError as ex:
+            check(fragment in str(ex), f"lowres {lowres} refused", ex)
+    _reset()
+
+
 # ── Case D: update_parameters spec dispatch ──────────────────────────
 
 
@@ -889,6 +967,7 @@ def main() -> int:
     case_surface_strictness()
     case_cli_parse()
     case_deferred()
+    case_lowres()
     case_derive_and_defaults()
     case_validate_guards()
     case_externalize()

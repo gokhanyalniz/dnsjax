@@ -60,6 +60,30 @@ pipe snapshot's size lower by two fifths and a viscoelastic pipe's by
 two elevenths), for one a script wrote, and for any resume that starts
 a new trajectory, a re-grid included.
 
+### Other files in the same container
+
+Two more kinds of output use this format and its writer:
+
+- The **reduced-resolution snapshots** of the `[lowres]` section
+  (`lowres/lowres_<it>.tar`; see
+  [Running](running.md#reduced-resolution-snapshots)). Each is a
+  state at the reduced resolution, with its metadata describing the
+  reduced field and a `lowres` entry naming the run's own resolution.
+  On plane Couette and plane Poiseuille it can also hold a `pressure/`
+  array beside the state, one component: the static pressure. These
+  files are output, not checkpoints: `init.snapshot` refuses one.
+  `dnsjax-twin` writes the same files for its reference state, and in
+  `lowres_delta/` for the difference field.
+- The 3-D spectra and budget **cubes** of `dnsjax-twin`
+  ([twin runs](../src/dnsjax/twin/README.md)). These hold real
+  `(field, y, k_z, k_x)` arrays, y-major like a state, with a metadata
+  `kind` naming what they are. Every field reader and `init.snapshot`
+  refuses them by that name; `dnsjax.analysis.twin.read_cube` reads
+  them.
+
+A state snapshot carries no `kind`, so every file written before the
+field existed still reads as one.
+
 ## Resume and re-gridding
 
 Resume is agnostic to the device count (precision must match — a
@@ -124,6 +148,10 @@ advective time units: the wall-parallel plane at
 <a href="../README.md#fig-planes">&#128279;&nbsp;See three planes
 stacked in a 3D view.</a>
 </em></p>
+
+`read_pressure` reads the pressure member of a reduced-resolution
+snapshot the same way, with the same physical/spectral switches and
+wall-normal selection.
 
 The companion `dnsjax.analysis.snapshot_ops` module provides `derivative`,
 `gradient`, `divergence`, `curl`, and `integrate` that reproduce the

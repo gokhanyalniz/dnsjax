@@ -879,7 +879,11 @@ def _part_c(args, outdir: Path) -> None:
     t_meta = time.perf_counter() - t0
     t0 = time.perf_counter()
     snap._write_tar_skeleton(
-        skel, comp_shape, itemsize, meta_bytes, zarr_bytes, None
+        skel,
+        comp_shape,
+        itemsize,
+        meta_bytes,
+        [("state", snap._n_components(), zarr_bytes)],
     )
     t_skel = time.perf_counter() - t0
     t0 = time.perf_counter()

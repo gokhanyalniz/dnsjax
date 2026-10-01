@@ -97,6 +97,7 @@ from dnsjax.analysis.twin import (  # noqa: E402
     read_twin,
     read_twin_ybudget,
     read_twin_yspectra,
+    read_twin_yspectra_ref,
 )
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -231,8 +232,13 @@ def _recon(
 
 
 def _assert_streams_identical(live: Path, rebuilt: Path) -> None:
-    """Both binary streams equal, value for value, on a shared grid."""
-    for reader in (read_twin_yspectra, read_twin_ybudget):
+    """Every binary stream equal, value for value, on a shared grid
+    (the reference spectra both merged and on their own stream)."""
+    for reader in (
+        read_twin_yspectra,
+        read_twin_yspectra_ref,
+        read_twin_ybudget,
+    ):
         a, b = reader(live), reader(rebuilt)
         assert np.array_equal(a.t, b.t), (reader.__name__, a.t, b.t)
         assert set(a.fields) == set(b.fields), set(a.fields) ^ set(b.fields)
@@ -276,7 +282,9 @@ def test_matches_live_streams() -> None:
     assert (out / "twin.json").is_file()
     assert read_twin(out).meta["parent_t"] == PARENT_T
     meta = read_twin_yspectra(out).meta
-    assert meta["it_yspectra"] == 1 and meta["includes_ref"] is True
+    # The reference half is a stream of its own, on the pair cadence.
+    assert meta["it_yspectra"] == 1 and meta["includes_ref"] is False
+    assert read_twin_yspectra_ref(out).meta["it_yspectra_ref"] == 1
     # The perturbation's provenance is the member's, as the live
     # sidecar recorded it -- not whatever the defaults are today.
     live = read_twin_yspectra(member).meta["twin"]

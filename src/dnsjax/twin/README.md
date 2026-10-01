@@ -61,7 +61,14 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.it_yspectra` | unset | Steps between `twin_yspectra.bin` records (wall-normal-resolved componentwise spectra) |
 | `twin.it_ybudget` | unset | Steps between `twin_ybudget.bin` records (the same bins' budget) |
 | `twin.rotational_ybudget` | `false` | Write that budget with the rotational nonlinear term instead of the convective one |
-| `twin.spectra_ref` | `true` | Also compute and store the reference spectrum with each `it_spectra` / `it_yspectra` sample; off, it is never traced |
+| `twin.spectra_ref` | `true` | Also record the reference state's spectra, in streams of their own (below); off, they are never traced |
+| `twin.it_spectra_ref` | `it_spectra` | Steps between `twin_spectra_ref.bin` records |
+| `twin.it_yspectra_ref` | `it_yspectra` | Steps between `twin_yspectra_ref.bin` records |
+| `twin.it_spectra3d` | unset | Steps between `twin_spectra3d/` files: the difference energy as a subsampled $(y, k_z, k_x)$ cube, one file per sample |
+| `twin.it_spectra3d_ref` | `it_spectra3d` | Steps between `twin_spectra3d_ref/` files, the reference state's cube |
+| `twin.it_budget3d` | unset | Steps between `twin_budget3d/` files: the convective `twin_ybudget` terms on the same points |
+| `twin.n_y3d`, `n_kz3d`, `n_kx3d` | unset | Points the cubes keep per axis, spaced uniformly in the logarithm of the wall distance, $\lvert k_z \rvert$ and $k_x$; unset keeps every one |
+| `twin.it_lowres_delta` | unset | Steps between `lowres_delta/` reduced-resolution snapshots of the difference field and its pressure, at the `[lowres]` resolution |
 
 `twin.bins` and `twin.x0_planes` are both off by default, and both
 for the same reason. The three-bin split is a three-bin partition of
@@ -87,20 +94,32 @@ over every program. `it_ybudget` costs memory in two places — a
 resident second factored banded operator with its homogeneous columns
 (`twin/pressure.py`'s "Cost" section), and a per-sample transient that
 is the easy one to miss: measured on CPU at some 37 padded physical
-fields' worth, against 20 for the time step itself, so an enabled
+fields' worth, against 30 for the time step itself, so an enabled
 budget stream rather than the step sets the run's peak
-(`twin/diagnostics.py`'s "Memory" section). A GPU schedules its own;
+(`twin/diagnostics.py`'s "Memory" section). `it_budget3d` is the same
+program and the same costs, and a sample due for both shares one
+density pass. `it_lowres_delta` under `lowres.pressure` holds the same
+resident operator, and its sample peaks at some 34 fields: the
+budget's sources and solve without its densities. A GPU schedules its own;
 the driver's closing `Peak device memory` line is the number to size a
 job against. `spectra_ref`
-gates the reference half of **both** spectra streams in compute as well
-as on disk: it is a static flag on the two jitted samplers, so with it
-off the reference reduction is never traced — saving a field pass and a
+gates the reference half of **every** spectrum in compute as well as on
+disk: each half is a static flag on its jitted sampler, so with it off
+the reference reduction is never traced — saving a field pass and a
 collective on the $(k_z, k_x)$ stream, and about half the sample on the
-$y$-resolved one. What it costs is the decorrelation ratio.
+$y$-resolved one and the cubes. What it costs is the decorrelation
+ratio.
 
-The two $y$-resolved streams store $k_z$ folded onto $|k_z|$, which
-needs the even `res.nz` that every run has anyway: the solver refuses
-an odd Fourier count at parse.
+The two $y$-resolved streams and the cubes store $k_z$ folded onto
+$|k_z|$, which needs the even `res.nz` that every run has anyway: the
+solver refuses an odd Fourier count at parse.
+
+The solver's own `[lowres]` section (the root
+[running guide](../../../docs/running.md#reduced-resolution-snapshots))
+applies to the **reference** state: `lowres.it_lowres`, counted from
+the perturbation step like every cadence here, writes `lowres/`, and
+`lowres.nx` / `ny` / `nz` / `pressure` also shape the difference
+snapshots of `twin.it_lowres_delta`.
 
 ## The initial perturbation
 
@@ -257,8 +276,8 @@ reader integrates without rebuilding the grid.
 
 ### `twin_spectra.bin` — $(k_z, k_x)$ energy spectra
 
-The per-mode difference energy $E_\Delta(k_z, k_x)$ and, by default,
-the reference state's own spectrum. Their ratio
+The per-mode difference energy $E_\Delta(k_z, k_x)$, and in
+`twin_spectra_ref.bin` the reference state's own spectrum. Their ratio
 $E_\Delta / 2E^{(1)}$ is the scale-by-scale decorrelation measure —
 which scales have decorrelated at each time, rather than a single
 scalar. FFT-free (a masked reduction of data already in spectral
@@ -280,6 +299,53 @@ schema: mode counts, the integer harmonic lists of both axes, the
 domain lengths, the cadence, and the resolved parameter dump. Its
 `format_version` is enforced against the reader's floor, as for every
 other dnsjax stream.
+
+### `twin_spectra_ref.bin` / `twin_yspectra_ref.bin` — the reference
+
+The reference halves of the two spectra (`e_ref`, and the `r_*` set of
+the $y$-resolved stream), each a stream of its own on its own cadence.
+At the default cadences they sample the steps the difference streams
+do, in one program with them. A member recorded before they had streams
+of their own stored them inside the difference streams
+(`includes_ref: true` in the sidecar, the `e_ref` field above) and keeps
+writing that layout when resumed. The readers return the reference the
+same way from either layout — `read_twin_spectra` / `read_twin_yspectra`
+on the difference stream's sample times, `nan` where the reference has
+none, and the `*_ref` readers on its own — and so does
+`scripts/twin_spectral_maps.py`, for mixed ensembles too.
+
+### `twin_spectra3d/`, `twin_spectra3d_ref/`, `twin_budget3d/` — cubes
+
+The densities of the $y$-resolved streams without the sum over the
+other wavenumber: the componentwise difference energy (`e_u`, `e_v`,
+`e_w`), the reference's (`r_*`) and every convective budget term
+(`P_U`, `P_r`, `T_ref`, `T_self`, `V`, `eps`, `Wp`; no sum of them) as
+$(y, k_z, k_x)$ cubes, one file per sample named by step. Each is
+computed at full resolution, then folded — $y$ about the centreline
+(the mean of the two halves), $k_z$ onto $|k_z|$ — and thinned to the
+`n_y3d` / `n_kz3d` / `n_kx3d` points nearest a uniform spacing in the
+logarithm of each coordinate, the wall row and $k = 0$ always kept.
+
+Each file is a dnsjax tar, the snapshot container: y-major
+`(field, y, k_z, k_x)`, real, with its kept points, units and
+provenance in the metadata. `analysis.twin.read_cube` reads one,
+optionally only some wall distances; `read_twin_spectra3d`,
+`read_twin_spectra3d_ref` and `read_twin_budget3d` stack a directory.
+A resume checks the newest file against the run, and a different
+selection or cadence is refused.
+
+### `lowres/`, `lowres_delta/` — reduced-resolution snapshots
+
+`lowres/` holds the reference state at `[lowres]`'s cadence, exactly
+as a plain solver run writes it. `lowres_delta/` holds the difference
+field $\Delta\mathbf{u}$ at `twin.it_lowres_delta`. Under
+`lowres.pressure` (on by default for these flows) each file also holds
+its static pressure; the difference's, $\Delta p$, is the pressure the
+budget's `Wp` is computed from, solved from $\Delta\mathbf{u}$ directly
+rather than as a difference of two pressures. Both are computed at the run's
+resolution and then reduced. Both are snapshot files read by
+`dnsjax.analysis.read_state` / `read_pressure`, and neither is a
+checkpoint.
 
 ### `stats*.dat`, `steps*.dat`, `corrector*.dat` — per state
 
@@ -437,8 +503,9 @@ such pairing is.
 |---|---|
 | `series` | Readers for `twin.dat` / `twin_budget.dat` and the `twin.json` member record, plus the generic `read_dat` that loads any `.dat` stream (`stats.dat`, `stats_twin.dat`, …); per-component budget sums; `uniform_grid` |
 | `ensemble` | Member-tree aggregation on aligned relative time, plus the growth-rate fits (exponential-phase $\lambda$, algebraic-phase linear rate) |
-| `spectra` | Reader for `twin_spectra.bin` and the decorrelation ratio |
-| `yspectra` | Readers for `twin_yspectra.bin` / `twin_ybudget.bin`, the wall-normal quadrature contraction, the three-bin energies recovered from them, and the budget regrouped as the difference-energy balance |
+| `spectra` | Readers for `twin_spectra.bin` and its reference stream (either layout), and the decorrelation ratio |
+| `yspectra` | Readers for `twin_yspectra.bin` / `twin_ybudget.bin` and the reference stream, the wall-normal quadrature contraction, the three-bin energies recovered from them, and the budget regrouped as the difference-energy balance |
+| `cubes` | Readers for the 3-D cube directories, whole or by wall distance |
 | `lengths` | Integral length scales of the difference field from a paired snapshot |
 
 Aggregation is also a command:
@@ -459,5 +526,7 @@ uv run python -m dnsjax.analysis.twin.ensemble \
 Per-function behaviour, the difference-field derivations, the budget
 term list, the $\pm k_z$ fold, the pressure's wall closure and the
 frame-invariance notes live in the `twin/driver.py`,
-`twin/diagnostics.py`, `twin/pressure.py`, `twin/spectra.py` and
-`twin/yspectra.py` module docstrings.
+`twin/diagnostics.py`, `twin/pressure.py`, `twin/spectra.py`,
+`twin/yspectra.py` and `twin/cubes.py` module docstrings; the reduced
+snapshots in `dnsjax/lowres.py`'s and the static pressure in
+`geometries/wall_bounded/_cartesian_pressure.py`'s.

@@ -54,6 +54,7 @@ GLOBAL_FIELDS: tuple[tuple[str, str], ...] = (
     ("outs", "snapshot_save_initial"),
     ("outs", "snapshot_save_final"),
     ("outs", "snapshot_write_mode"),
+    ("lowres", "it_lowres"),
     ("step", "scheme"),
     ("step", "dt"),
     ("step", "implicitness"),
