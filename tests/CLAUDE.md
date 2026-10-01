@@ -69,6 +69,9 @@ Snapshots, resume, analysis:
   `test_snapshot_import.py`, `test_snapshot_export.py` (re-run after
   changing a primitive), `test_transient_growth.py` (`--fast`),
   `test_quasi_keplerian.py`.
+- `test_lowres.py` (`[lowres]` files, the static pressure, the cube
+  container); multi-process `[lowres]` writes: the `*-mpi-pad` rows of
+  `test_random_smoke.py`.
 
 Streams: `test_probes.py`, `test_forcing.py`, `test_driving.py` (each
 `--unit-only`).

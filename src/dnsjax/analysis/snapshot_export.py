@@ -19,6 +19,7 @@ from typing import NamedTuple
 
 import numpy as np
 
+from ..snapshot_meta import snapshot_pressure_offsets
 from . import _core
 
 
@@ -137,13 +138,85 @@ def read_state(
     base flow is never added.
     """
     path = Path(path)
-    meta = _core.read_meta(path)
+    meta = _core.read_state_meta(path)
     params = _core.params_namespace(meta)
+    info = _core.geometry_info(params)
+    out_components = _validate_components(components, len(info.components))
+    return _read_fields(
+        path,
+        meta,
+        params,
+        info,
+        out_components,
+        None,
+        return_physical=return_physical,
+        return_spectral=return_spectral,
+        wall_normal_points=wall_normal_points,
+    )
+
+
+def read_pressure(
+    path: str | Path,
+    *,
+    return_physical: bool = True,
+    return_spectral: bool = False,
+    wall_normal_points=None,
+) -> StateData:
+    r"""Read a reduced-resolution snapshot's static pressure.
+
+    The ``pressure/`` member :mod:`dnsjax.lowres` writes beside the
+    state under ``lowres.pressure`` (plane Couette and plane
+    Poiseuille): the periodic static pressure perturbation `$p'$` -- the
+    mean pressure gradient is the driving, in ``stats.dat`` -- with the
+    `$(0, 0)$` mode's gauge set to zero at the upper wall, or the
+    difference `$\Delta p$` in a twin run's ``lowres_delta/`` file.  The
+    snapshot's metadata ``pressure`` entry says which.
+
+    Same arguments and same :class:`StateData` as :func:`read_state`,
+    with the one scalar as the only component (``physical == (p,)``).
+    Raises ``ValueError`` for a snapshot without the member.
+    """
+    path = Path(path)
+    meta = _core.read_state_meta(path)
+    offsets = snapshot_pressure_offsets(path)
+    if offsets is None:
+        raise ValueError(
+            f"{path} carries no pressure member: only reduced-resolution "
+            "snapshots written with lowres.pressure do."
+        )
+    params = _core.params_namespace(meta)
+    return _read_fields(
+        path,
+        meta,
+        params,
+        _core.geometry_info(params),
+        (0,),
+        offsets,
+        return_physical=return_physical,
+        return_spectral=return_spectral,
+        wall_normal_points=wall_normal_points,
+    )
+
+
+def _read_fields(
+    path: Path,
+    meta: dict,
+    params: _core.Namespace,
+    info: _core.GeometryInfo,
+    out_components: tuple[int, ...],
+    offsets: dict[int, int] | None,
+    *,
+    return_physical: bool,
+    return_spectral: bool,
+    wall_normal_points,
+) -> StateData:
+    """The shared body of :func:`read_state` and :func:`read_pressure`.
+
+    *offsets* ``None`` reads the ``state/`` member, anything else the
+    member it names; *out_components* index that member.
+    """
     stats_raw = _core.read_stats(path)
     stats = _core.Namespace(stats_raw) if stats_raw is not None else None
-    info = _core.geometry_info(params)
-
-    out_components = _validate_components(components, len(info.components))
     native_needed = sorted(set(out_components))
     wall_normal_grid = meta.get("wall_normal_grid")
 
@@ -154,7 +227,9 @@ def read_state(
             wall_normal_grid, wall_normal_points
         )
 
-    raw = _core.read_chunks(path, meta, native_needed, slab_indices=wn_indices)
+    raw = _core.read_chunks(
+        path, meta, native_needed, slab_indices=wn_indices, offsets=offsets
+    )
     native = {c: raw[c] for c in out_components}
 
     wn_grid = wall_normal_grid

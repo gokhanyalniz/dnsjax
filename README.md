@@ -222,11 +222,12 @@ in [`docs/validation.md`](docs/validation.md).
 |---|---|
 | **Banded-LU GPU kernel** | $O(N_y p)$ factors instead of dense $O(N_y^2)$, with a dense reference solver; checked in interpret mode *and* by lowering to CUDA on GPU-less machines |
 | **Differentiable time steps** | `jax.grad` through a step, opt-in: a fixed-count corrector replaces the one construct reverse mode cannot traverse, and the banded GPU kernel carries a custom adjoint — [docs/differentiability.md](docs/differentiability.md) |
-| **Twin-run perturbation growth** | a reference snapshot and a perturbed copy stepped in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, and $(k_z, k_x)$ spectra — [twin/](src/dnsjax/twin/README.md) |
+| **Twin-run perturbation growth** | a reference snapshot and a perturbed copy stepped in lockstep, streaming difference-field energy, $y$-resolved spectra with the matching budget, $(k_z, k_x)$ spectra, and subsampled $(y, k_z, k_x)$ cubes of both — [twin/](src/dnsjax/twin/README.md) |
 | **Optimal-growth analysis** | linear optimal energy growth $G(t)$ about an arbitrary wall-normal profile, reusing the solver's own linear step per mode — [docs/validation.md](docs/validation.md#non-modal-optimal-growth-against-published-values) |
 | **Two-axis device mesh** | $(n_{p0}, n_{p1})$ with an in-FFT reshard pipeline — [docs/scaling.md](docs/scaling.md#parallelization) |
 | **A memory–throughput dial** | `solver.rhs_transform_chunks` splits the batched inverse transform $k$ ways, cutting its working set $k$-fold at identical results |
 | **Snapshots and resume** | tar + zarr3, written by every device in parallel; resume across any device count, re-gridding every changed axis — [docs/snapshots.md](docs/snapshots.md) |
+| **Reduced-resolution snapshots** | on a cadence of their own: Fourier axes truncated, the wall-normal axis interpolated, every field computed at full resolution first, with the static pressure on the plane channels — [docs/running.md](docs/running.md#reduced-resolution-snapshots) |
 | **External-data import** | pack a field produced elsewhere into a valid snapshot — [docs/snapshots.md](docs/snapshots.md#importing-a-field-from-elsewhere) |
 | **Initial conditions** | divergence-free random fields and deterministic localized spots, reproducible independent of device count |
 | **Adaptive CFL stepping** | re-selects $\Delta t$ and rebuilds the implicit operators on device with no recompilation |

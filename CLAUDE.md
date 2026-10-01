@@ -153,6 +153,7 @@ adaptive.py       CFL time-step controller
 fd.py             FD weights, quadrature, interpolation, grids
 solvers.py        dense (reference) and banded Pallas per-mode solves
 snapshot.py       snapshot save/load (snapshot_meta.py: tar metadata)
+lowres.py         [lowres]: reduced-resolution snapshots (+ pressure)
 seeding.py        the seed contract
 ic/               random_field (the default IC), localized_rolls, mean_mode
 twin/             dnsjax-twin

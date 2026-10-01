@@ -202,3 +202,42 @@ optional binary streams — a spectral-mode probe stream and a
 stochastic-forcing log — are available through the `[probes]` and
 `[force]` sections; see
 [`src/dnsjax/extensions`](../src/dnsjax/extensions/README.md).
+
+### Reduced-resolution snapshots
+
+The `[lowres]` section writes the state at a coarser resolution on a
+cadence of its own, for when full snapshots at that cadence would not
+fit on disk:
+
+```bash
+.venv/bin/dnsjax \
+  --phys.system plane-poiseuille --phys.re 4200 \
+  --res.nx 128 --res.ny 97 --res.nz 128 \
+  --lowres.it_lowres 100 --lowres.nx 64 --lowres.ny 49 --lowres.nz 64
+```
+
+Every `lowres.it_lowres` steps (counted like `outs.it_snapshot`) the
+run writes `lowres/lowres_<it>.tar`, the step count zero-padded to ten
+digits. The targets take the flow's own `res` names (`lowres.nz`,
+`lowres.nr` and `lowres.ntheta` on the pipes and the annulus). Each
+defaults to the run's own count, and a set one may not exceed it.
+
+Each field is computed at the run's resolution and only then reduced.
+The Fourier axes drop their highest modes. The wall-normal axis is
+interpolated onto the same grid type at the reduced count, exactly as a
+resume onto a new grid does it: spectrally between Chebyshev grids. A
+custom `geo.wall_grid` has no grid at another count, so it keeps its
+own.
+
+On plane Couette and plane Poiseuille, `lowres.pressure` (on by
+default there) adds the static pressure perturbation $p'$, computed
+from the full-resolution field. It is the pressure consistent with the
+discrete dynamics, in the gauge where its mean profile is zero at the
+upper wall. The mean pressure gradient is the driving, which
+`stats.dat` records.
+
+The files are ordinary snapshots for reading —
+`dnsjax.analysis.read_state` opens one, and `read_pressure` its
+pressure — but they are not checkpoints: they carry nothing a solver
+needs beyond the fields, and a resume refuses them
+([`snapshots.md`](snapshots.md)).

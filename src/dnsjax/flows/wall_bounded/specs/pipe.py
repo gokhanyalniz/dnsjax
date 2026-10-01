@@ -5,6 +5,7 @@ from math import pi
 from ....flow_spec import FieldSpec, FlowSpec
 from ._family import (
     CYLINDRICAL_GRIDS,
+    DEFERRED_LOWRES_PRESSURE,
     DEFERRED_MEAN_FLOW,
     DEFERRED_TILT,
     PIPE_CARRY_FIELDS,
@@ -55,7 +56,7 @@ SPEC = FlowSpec(
         FieldSpec("phys", "re"),
         FieldSpec("phys", "driving"),
     ),
-    deferred=(DEFERRED_TILT, DEFERRED_MEAN_FLOW),
+    deferred=(DEFERRED_TILT, DEFERRED_MEAN_FLOW, DEFERRED_LOWRES_PRESSURE),
     grid_type_default=_grid_default,
     derive=_derive,
     validate=_validate,

@@ -34,7 +34,24 @@ shows at ``np0 > 1`` *and* ``np1 > 1``):
 6. The ``[twin]`` extension validate hook, dispatched through the
    production paths: stray knobs without ``e0``, ``step.adaptive``
    rejection (both via ``validate_parameters``), and the
-   unsupported-system rejection (via ``validate_extensions``).
+   unsupported-system rejection (via ``validate_extensions``); a
+   reference cadence with ``spectra_ref`` off and a 3-D budget in the
+   rotational form are refused too.
+7. The reference spectra split: asking the ``(k_z, k_x)`` and
+   ``(y, k)`` samplers for one half returns exactly the values the
+   combined call returns for it.
+8. The 3-D cubes: ``log_spaced_indices``' contract; the energy cube
+   against a host fold-and-select reference; with every point kept,
+   each cube summed over `$k_x$` (`$|k_z|$`) equals the `$y$`-folded
+   ``*_x`` (``*_z``) marginal and its `$(0, 0)$` entry the folded
+   ``*_xz00``, for the difference and reference energies and every
+   budget term; a subsampled cube is exactly the full one at its
+   points; and the budget cube is the same array whether or not the
+   marginals ride the same call.
+9. The difference pressure of the reduced difference snapshots equals
+   the difference of the two states' static pressures
+   (:mod:`dnsjax.geometries.wall_bounded._cartesian_pressure`) -- the
+   twin path and the single-state path agreeing on the same algebra.
 
 Run as a script via ``uv run python tests/test_twin_unit.py``.
 """
@@ -526,6 +543,19 @@ def test_validate_hook() -> None:
     _expect_value_error("fixed time step", validate_parameters)
     params.step.adaptive = False
     params.step.dt_max = None
+
+    # A reference cadence with the reference off configures nothing.
+    twin_params.spectra_ref = False
+    twin_params.it_yspectra_ref = 2
+    _expect_value_error("spectra_ref off", validate_parameters)
+    twin_params.it_yspectra_ref = None
+    twin_params.spectra_ref = True
+    # The 3-D budget is the convective form's alone.
+    twin_params.it_budget3d = 3
+    twin_params.rotational_ybudget = True
+    _expect_value_error("convective budget terms", validate_parameters)
+    twin_params.rotational_ybudget = False
+    twin_params.it_budget3d = None
 
     # Unsupported system (validate_extensions is the registry layer
     # validate_parameters dispatches; the core parameter checks of
@@ -1037,6 +1067,144 @@ def test_pressure_solve() -> None:
     )
 
 
+# ── Reference split, 3-D cubes, difference pressure ─────────────────
+
+
+def test_reference_split() -> None:
+    """One half asked for alone is the combined call's half, exactly."""
+    s1, s2 = _make_state(salt=0.0), _make_state(salt=1.0)
+    both = td.twin_spectra_2d(s1, s2, ref=True, delta=True)
+    only_d = td.twin_spectra_2d(s1, s2, ref=False, delta=True)
+    only_r = td.twin_spectra_2d(s1, s2, ref=True, delta=False)
+    assert set(only_d) == {"e_delta"} and set(only_r) == {"e_ref"}
+    assert_array_equal(np.asarray(only_d["e_delta"]), both["e_delta"])
+    assert_array_equal(np.asarray(only_r["e_ref"]), both["e_ref"])
+    both = td.twin_yspectra(s1, s2, ref=True, x0=True)
+    only_r = td.twin_yspectra(s1, s2, ref=True, x0=True, delta=False)
+    assert set(only_r) == {k for k in both if k.startswith("r_")}
+    for key, value in only_r.items():
+        assert_array_equal(np.asarray(value), both[key])
+    print("reference split: each half exact: OK")
+
+
+def test_log_spaced_indices() -> None:
+    """Ascending, both ends kept, at most n + 1, log-spaced in between."""
+    coord = np.arange(48, dtype=float)
+    idx = td.log_spaced_indices(coord, 6)
+    assert idx[0] == 0 and idx[-1] == 47, idx
+    assert np.all(np.diff(idx) > 0) and idx.size <= 7, idx
+    # Low harmonics: the targets are denser than the integers, so they
+    # collapse and every low index survives.
+    assert {1, 2}.issubset(set(idx.tolist())), idx
+    gaps = np.diff(np.log(coord[idx[1:]]))
+    assert gaps.max() < 2.0 * np.log(47.0) / 5, gaps
+    assert_array_equal(td.log_spaced_indices(coord, None), np.arange(48))
+    assert_array_equal(td.log_spaced_indices(coord, 47), np.arange(48))
+    print("log_spaced_indices: OK")
+
+
+def _fold_y(a: np.ndarray) -> np.ndarray:
+    """Host ``y`` fold: the mean of row ``j`` and ``ny - 1 - j``."""
+    half = (a.shape[-2] + 1) // 2
+    return 0.5 * (a[..., :half, :] + a[..., ::-1, :][..., :half, :])
+
+
+def test_cube_vs_numpy() -> None:
+    """The energy cube against a host fold-and-select reference."""
+    s1, s2 = _make_state(salt=0.0), _make_state(salt=1.0)
+    y = np.asarray(derived_params.wall_normal_grid)
+    sel = td.cube_selection(y, 3, 3, 2)
+    out = td.twin_spectra3d(s1, s2, sel)
+    k_metric = np.full(N3_SPEC, 2.0)
+    k_metric[0] = 1.0
+    for key, field in (
+        ("e", _host_state(1.0) - _host_state(0.0)),
+        ("r", _host_state(0.0)),
+    ):
+        dens = (
+            (np.abs(field) ** 2)
+            * k_metric[None, None, None, :]
+            / (2.0 * derived_params.volume_fac)
+        )[:, :, :N2_TRUE, :N3_TRUE]
+        dens = 0.5 * (dens[:, list(sel.iy)] + dens[:, list(sel.iy_mirror)])
+        folded = dens[:, :, list(sel.kz_pos)]
+        folded[:, :, 1:] += dens[:, :, list(sel.kz_neg)]
+        expected = folded[:, :, :, list(sel.kx)]
+        assert_allclose(np.asarray(out[key]), expected, rtol=1e-13, atol=0)
+    print("3-D energy cube vs NumPy: OK")
+
+
+def test_cube_marginals() -> None:
+    """Full-sampling cubes reduce to the y-folded 2-D marginals."""
+    from dnsjax.twin.pressure import DifferencePressure
+
+    s1, s2 = _solenoidal_pair()
+    y = np.asarray(derived_params.wall_normal_grid)
+    full = td.cube_selection(y, None, None, None)
+    cubes = td.twin_spectra3d(s1, s2, full)
+    marg = td.twin_yspectra(s1, s2, ref=True, x0=False)
+
+    def check(cube, x, z, xz00, label):
+        cube = np.asarray(cube)
+        scale = np.abs(cube).max()
+        for got, want in (
+            (cube.sum(axis=-1), _fold_y(np.asarray(x))),
+            (cube.sum(axis=-2), _fold_y(np.asarray(z))),
+            (cube[..., 0, 0], _fold_y(np.asarray(xz00)[..., None])[..., 0]),
+        ):
+            assert np.abs(got - want).max() <= 1e-13 * scale, label
+
+    for key in ("e", "r"):
+        check(
+            cubes[key],
+            marg[f"{key}_x"],
+            marg[f"{key}_z"],
+            marg[f"{key}_xz00"],
+            key,
+        )
+    pressure = DifferencePressure(td.flow, fourier)
+    both = td.twin_ybudget(s1, s2, pressure, marginals=True, cube=full)
+    cube_only = td.twin_ybudget(s1, s2, pressure, marginals=False, cube=full)
+    assert set(cube_only) == {"cube"}
+    assert_array_equal(np.asarray(cube_only["cube"]), both["cube"])
+    for i, term in enumerate(td.CONVECTIVE_TERMS):
+        check(
+            np.asarray(both["cube"])[i],
+            both[f"{term}_x"],
+            both[f"{term}_z"],
+            both[f"{term}_xz00"],
+            term,
+        )
+    sub = td.cube_selection(y, 3, 2, 2)
+    small = np.asarray(td.twin_spectra3d(s1, s2, sub, ref=False)["e"])
+    big = np.asarray(cubes["e"])
+    picked = big[:, list(sub.iy)][:, :, list(sub.kz_pos)][
+        :, :, :, list(sub.kx)
+    ]
+    assert_array_equal(small, picked)
+    print("3-D cubes vs the 2-D marginals, all terms: OK")
+
+
+def test_difference_pressure() -> None:
+    """Delta p from the difference sources = p(state2) - p(state1)."""
+    from dnsjax.geometries.wall_bounded._cartesian_pressure import (
+        static_pressure,
+    )
+    from dnsjax.twin.pressure import DifferencePressure
+
+    s1, s2 = _solenoidal_pair()
+    pressure = DifferencePressure(td.flow, fourier)
+    delta, dp = td.difference_pressure(s1, s2, pressure)
+    assert_array_equal(np.asarray(delta), np.asarray(s2 - s1))
+    p1 = static_pressure(s1, pressure, fourier, td.flow)
+    p2 = static_pressure(s2, pressure, fourier, td.flow)
+    diff = np.asarray(p2 - p1)
+    scale = np.abs(np.asarray(p1)).max()
+    err = np.abs(np.asarray(dp) - diff).max() / scale
+    assert err < 1e-10, f"difference pressure: {err:.2e} of max |p|"
+    print(f"difference pressure = p2 - p1 ({err:.1e} of max |p|): OK")
+
+
 if __name__ == "__main__":
     test_masks_partition()
     test_energy_partition()
@@ -1055,4 +1223,9 @@ if __name__ == "__main__":
     test_nonlinear_matches_solver()
     test_pressure_solve()
     test_validate_hook()
+    test_reference_split()
+    test_log_spaced_indices()
+    test_cube_vs_numpy()
+    test_cube_marginals()
+    test_difference_pressure()
     print("All twin unit tests passed.")

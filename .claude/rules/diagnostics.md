@@ -43,11 +43,13 @@ paths:
   stored meaning changes. The pairs:
   - `extensions/probes.py` -> `analysis/response/probes.py`;
   - `extensions/forcing.py` -> `analysis/response/ssi.py`;
-  - `twin/spectra.py` -> `analysis/twin/spectra.py`;
+  - `twin/spectra.py` (two streams) -> `analysis/twin/spectra.py`;
   - `twin/driver.py` (`twin.json`) -> `analysis/twin/series.py`;
-  - `twin/yspectra.py` (two streams) -> `analysis/twin/yspectra.py`,
+  - `twin/yspectra.py` (three streams) -> `analysis/twin/yspectra.py`,
     whose floors deliberately stay below the writers' versions: a
-    layout change is named by the sidecar's `suffixes`.
+    layout change is named by the sidecar's `suffixes`;
+  - `twin/cubes.py` -> `analysis/twin/cubes.py`, by the tar
+    metadata's `cube_version` (no sidecar).
 - A non-finite flushed value prints one `FATAL: non-finite ...` line,
   skips the final snapshot and exits with code 3.
 - `dnsjax-twin` writes each state's own driving (`stats.dat`,

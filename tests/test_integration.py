@@ -13,6 +13,8 @@ Tests cover:
    the spectral ``cgl_parity_interpolation_matrices`` (half / rigged /
    mixed, both parities), and the local Fornberg fallback (bounded
    Lebesgue vs a global fit's blow-up).
+5. ``grid_nodes`` against every geometry builder, and the fine ->
+   coarse regrid the reduced-resolution snapshots apply.
 
 Run as a script via ``uv run python tests/test_integration.py``.
 """
@@ -49,11 +51,14 @@ from numpy.testing import assert_allclose  # noqa: E402
 
 from dnsjax.fd import (  # noqa: E402
     build_integration_weights,
+    build_interpolation_matrix,
     cgl_axis_gap,
     cgl_parity_interpolation_matrices,
     cgl_radial_quadrature_weights,
     chebyshev_interpolation_matrix,
     clenshaw_curtis_weights,
+    grid_nodes,
+    is_cgl_grid,
     local_grid_spacing,
     local_interpolation_matrix,
     tanh_one_sided_grid,
@@ -403,6 +408,109 @@ def test_cgl_parity_interpolation_spectral():
             f"gap {go}->{gn}: spectral ({e_even:.2e}) not beating "
             f"local ({e_local:.2e})"
         )
+
+
+# ── Grid nodes and the reduced-resolution regrid ───────────────────
+
+
+def test_grid_nodes_match_builders():
+    """``grid_nodes`` reproduces each geometry builder's nodes -- a
+    reduced snapshot is regridded onto them and records them, so a
+    drift between the two formulas would label a field with the wrong
+    grid -- and its float64 CGL nodes pass the CGL detectors that pick
+    the spectral regrid."""
+    from dnsjax.geometries.wall_bounded.annular import build_annular_grid
+    from dnsjax.geometries.wall_bounded.cartesian import (
+        build_cartesian_grid,
+    )
+    from dnsjax.geometries.wall_bounded.cylindrical import (
+        build_cylindrical_grid,
+    )
+
+    r1, r2 = 0.71 / 0.29, 1.0 / 0.29  # a radius pair float32 rounds
+    for ny in (16, 17, 33):
+        for gt in ("cgl", "tanh"):
+            assert_allclose(
+                grid_nodes("cartesian", ny, gt, 1.7),
+                build_cartesian_grid(ny, 4, None, gt, 1.7)[0],
+                rtol=0,
+                atol=1e-14,
+                err_msg=f"cartesian {gt} ny={ny}",
+            )
+            assert_allclose(
+                grid_nodes("annular", ny, gt, 1.7, r1, r2),
+                build_annular_grid(ny, 4, r1, r2, None, gt, 1.7)[0],
+                rtol=0,
+                atol=1e-14,
+                err_msg=f"annular {gt} ny={ny}",
+            )
+        for gt in ("half-cgl", "rigged-cgl", "half-tanh"):
+            assert_allclose(
+                grid_nodes("cylindrical", ny, gt, 1.7),
+                build_cylindrical_grid(ny, 4, None, gt, 1.7)[0],
+                rtol=0,
+                atol=1e-14,
+                err_msg=f"cylindrical {gt} ny={ny}",
+            )
+    for ny in (33, 65, 128, 129):
+        assert is_cgl_grid(grid_nodes("cartesian", ny, "cgl"))
+        assert cgl_axis_gap(grid_nodes("cylindrical", ny, "half-cgl")) == 0
+        assert cgl_axis_gap(grid_nodes("cylindrical", ny, "rigged-cgl")) == 1
+        t = build_interpolation_matrix(
+            grid_nodes("annular", ny, "cgl", r_inner=r1, r_outer=r2),
+            grid_nodes("annular", 17, "cgl", r_inner=r1, r_outer=r2),
+            "annular",
+        )
+        assert_allclose(t, chebyshev_interpolation_matrix(ny, 17))
+
+
+def test_regrid_downsampling():
+    """The reduced snapshots' wall-normal regrid, fine -> coarse, as
+    ``lowres.LowResWriter`` builds it (``build_interpolation_matrix``
+    on ``grid_nodes``): the CGL paths reach a resolved profile's
+    coarse-node values to machine precision -- Chebyshev truncation
+    (Cartesian, annular) and the parity pair (pipe, every gap
+    combination, both parities) -- while a tanh grid takes the local
+    stencil, ``order``-accurate."""
+
+    def smooth(y):
+        return np.cos(0.6 * np.pi * y) + 0.3 * y**3
+
+    for family, kw in (
+        ("cartesian", {}),
+        ("annular", {"r_inner": 1.0, "r_outer": 2.0}),
+    ):
+        y_old = grid_nodes(family, 49, "cgl", **kw)
+        y_new = grid_nodes(family, 21, "cgl", **kw)
+        t = build_interpolation_matrix(y_old, y_new, family)
+        err = np.max(np.abs(t @ smooth(y_old) - smooth(y_new)))
+        assert err < 1e-12, f"{family} cgl 49->21: {err:.2e}"
+
+    def even(r):  # sigma = +1
+        return np.cos(0.6 * np.pi * r) + 0.3 * r**2
+
+    def odd(r):  # sigma = -1
+        return r * np.cos(2.0 * r)
+
+    grids = ("half-cgl", "rigged-cgl")
+    for go in grids:
+        for gn in grids:
+            ro = grid_nodes("cylindrical", 40, go)
+            rn = grid_nodes("cylindrical", 13, gn)
+            pair = build_interpolation_matrix(ro, rn, "cylindrical")
+            assert isinstance(pair, tuple), f"{go}->{gn}: no parity pair"
+            t_even, t_odd = pair
+            e_even = np.max(np.abs(t_even @ even(ro) - even(rn)))
+            e_odd = np.max(np.abs(t_odd @ odd(ro) - odd(rn)))
+            assert e_even < 1e-12, f"{go}->{gn} even: {e_even:.2e}"
+            assert e_odd < 1e-12, f"{go}->{gn} odd: {e_odd:.2e}"
+
+    y_old = grid_nodes("cartesian", 49, "tanh", 1.7)
+    y_new = grid_nodes("cartesian", 21, "tanh", 1.7)
+    t = build_interpolation_matrix(y_old, y_new, "cartesian", 4)
+    assert_allclose(t, local_interpolation_matrix(y_old, y_new, 4))
+    err = np.max(np.abs(t @ smooth(y_old) - smooth(y_new)))
+    assert err < 1e-4, f"cartesian tanh 49->21: {err:.2e}"
 
 
 def test_local_interp_polynomial_exactness():

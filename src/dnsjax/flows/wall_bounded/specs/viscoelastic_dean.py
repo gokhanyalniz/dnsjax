@@ -12,6 +12,7 @@ from math import pi
 from ....flow_spec import FieldSpec, FlowSpec
 from ._family import (
     CARTESIAN_ANNULAR_GRIDS,
+    DEFERRED_LOWRES_PRESSURE,
     DEFERRED_MEAN_FLOW,
     DEFERRED_TILT,
     cyl_annular_fields,
@@ -70,7 +71,7 @@ SPEC = FlowSpec(
         FieldSpec("phys", "block_mean_spanwise_velocity"),
         FieldSpec("init", "random_conformation_amplitude"),
     ),
-    deferred=(DEFERRED_TILT, DEFERRED_MEAN_FLOW),
+    deferred=(DEFERRED_TILT, DEFERRED_MEAN_FLOW, DEFERRED_LOWRES_PRESSURE),
     grid_type_default="cgl",
     derive=_derive,
     rehydrate=_rehydrate,

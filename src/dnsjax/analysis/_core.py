@@ -67,10 +67,12 @@ from ..fd import build_diff_matrices
 from ..flows import registry as _registry
 from ..harmonics import complex_harmonics, real_harmonics
 from ..snapshot_meta import (
+    STATE_KIND,
     is_snapshot_file,
     read_snapshot_meta,
     read_snapshot_stats,
     snapshot_component_offsets,
+    snapshot_kind,
 )
 
 # Flow systems per geometry family, from the JAX-free flow-spec
@@ -98,6 +100,10 @@ LY_PERIODIC = 4.0
 _NP_DTYPES = {
     "complex128": np.dtype("<c16"),
     "complex64": np.dtype("<c8"),
+    # The twin's 3-D cubes share the container with real chunks
+    # (:mod:`dnsjax.analysis.twin.cubes`).
+    "float64": np.dtype("<f8"),
+    "float32": np.dtype("<f4"),
 }
 
 
@@ -315,6 +321,24 @@ def read_meta(path: str | Path) -> dict:
     return read_snapshot_meta(path)
 
 
+def read_state_meta(path: str | Path) -> dict:
+    """:func:`read_meta`, refusing a tar that holds no solver state.
+
+    The twin's 3-D cubes share the snapshot container but not its
+    meaning (a ``kind`` of their own,
+    :func:`dnsjax.snapshot_meta.snapshot_kind`), so the field readers
+    turn them away by name rather than misread spectra as a velocity.
+    """
+    meta = read_meta(path)
+    kind = snapshot_kind(meta)
+    if kind != STATE_KIND:
+        raise ValueError(
+            f"{path} is a {kind!r} file, not a state snapshot; read it "
+            "with dnsjax.analysis.twin.read_cube."
+        )
+    return meta
+
+
 def read_stats(path: str | Path) -> dict | None:
     """Parsed ``_dnsjax_stats.json`` of a snapshot, or ``None``."""
     return read_snapshot_stats(path)
@@ -335,6 +359,8 @@ def read_chunks(
     meta: dict,
     components,
     slab_indices: ndarray | None = None,
+    *,
+    offsets: dict[int, int] | None = None,
 ) -> dict[int, ndarray]:
     r"""Read native spectral chunks straight off disk (no transpose).
 
@@ -344,9 +370,16 @@ def read_chunks(
 
     *slab_indices* is only valid for the wall-bounded families, whose
     outer axis is the wall-normal direction (a slab is contiguous on
-    disk, so each is a single ``seek`` + ``read``).
+    disk, so each is a single ``seek`` + ``read``) -- and for the twin's
+    cubes, which keep that axis outermost too.
+
+    *offsets* selects another member than ``state/`` -- the
+    ``pressure/`` chunk of a reduced snapshot
+    (:func:`~dnsjax.snapshot_meta.snapshot_pressure_offsets`); every
+    member shares ``native_shape[1:]`` and ``dtype``.
     """
-    offsets = snapshot_component_offsets(path)
+    if offsets is None:
+        offsets = snapshot_component_offsets(path)
     _, a_size, n_kz, n_kx = meta["native_shape"]
     dtype = _np_dtype(meta["dtype"])
     itemsize = dtype.itemsize

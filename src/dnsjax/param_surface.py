@@ -57,6 +57,7 @@ _SECTION_DOCS: dict[str, str] = {
     "res": "Resolution.",
     "init": "Initial condition and resume policy.",
     "outs": "Output cadences and snapshot policy.",
+    "lowres": "Reduced-resolution snapshots (lowres/).",
     "step": "Time integration.",
     "stop": "Termination criteria.",
     "solver": "Numerical-kernel execution (speed/memory, never results).",

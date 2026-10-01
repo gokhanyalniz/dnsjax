@@ -103,6 +103,8 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_imm_continuity.py", (), _SLOW, 3600),
     ("test_integration.py", (), (), 1800),
     ("test_localized_rolls.py", (), (), 1800),
+    # In-process (forced CPU device) workers, one per case; no mpirun.
+    ("test_lowres.py", (), (), 1800),
     ("test_mean_mask.py", (), (), 1800),
     # Four in-process (forced CPU device) subprocesses, no mpirun.
     ("test_mean_mode.py", (), (), 1800),

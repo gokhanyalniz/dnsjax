@@ -304,12 +304,26 @@ def peek_run_context(
 
 
 def _snapshot_system(path: Path) -> str | None:
-    """The stored system of a dnsjax snapshot (``None`` otherwise)."""
-    from .snapshot_meta import is_snapshot_file, read_snapshot_meta
+    """The stored system of a dnsjax snapshot (``None`` otherwise).
+
+    Raises ``ValueError`` for a dnsjax tar that cannot seed a run --
+    a twin cube or a reduced-resolution snapshot
+    (:func:`dnsjax.snapshot_meta.checkpoint_refusal`) -- which the
+    caller reports as its one-line error.
+    """
+    from .snapshot_meta import (
+        checkpoint_refusal,
+        is_snapshot_file,
+        read_snapshot_meta,
+    )
 
     if not is_snapshot_file(path):
         return None
-    return read_snapshot_meta(path).get("system")
+    meta = read_snapshot_meta(path)
+    refusal = checkpoint_refusal(meta, path)
+    if refusal is not None:
+        raise ValueError(refusal)
+    return meta.get("system")
 
 
 def _format_toml_errors(exc: ValidationError, system: str) -> str:

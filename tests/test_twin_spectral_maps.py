@@ -105,6 +105,13 @@ What each case pins:
     the tracked panels carry it, it is the same under every
     ``--clim``, and its figure and ``.npz`` are written beside the
     frames.
+17. **The reference's two layouts.** The same reference records, kept
+    inside the difference stream (the pre-split layout) or in their
+    own ``twin_yspectra_ref.bin``, give the same normalisation, maps,
+    decorrelations and spacetime map, in a set of either or a mixed
+    set; a reference on half the difference cadence normalises over
+    its own samples and refuses a reference map only at the frames it
+    lacks.
 
 Usage::
 
@@ -140,6 +147,10 @@ matplotlib.use("Agg")
 import twin_spectral_maps as tsm  # noqa: E402
 from matplotlib import pyplot as plt  # noqa: E402
 from matplotlib.contour import ContourSet  # noqa: E402
+
+from dnsjax.analysis.twin.yspectra import (  # noqa: E402
+    MIN_YSPECTRA_REF_VERSION,
+)
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -254,6 +265,22 @@ def _records(
     return rec
 
 
+def _ref_meta(meta: dict) -> dict:
+    """The ``twin_yspectra_ref`` sidecar beside a split-layout *meta*."""
+    ref = {k: v for k, v in meta.items() if k != "includes_ref"}
+    ref["format_version"] = MIN_YSPECTRA_REF_VERSION
+    return ref
+
+
+def _ref_records(meta: dict, rec: np.ndarray) -> np.ndarray:
+    """The ``r_*`` half of combined records *rec*, as its own stream."""
+    dtype = tsm._record_dtype(meta, "twin_yspectra_ref")
+    out = np.zeros(rec.size, dtype=dtype)
+    for name in out.dtype.names:
+        out[name] = rec[name]
+    return out
+
+
 def _member(
     meta: dict,
     rec: np.ndarray,
@@ -261,28 +288,51 @@ def _member(
     path: str = "m",
     parent: str = "p0",
     parent_t: float | None = None,
+    ref: tuple[dict, np.ndarray] | None = None,
 ) -> tsm._Member:
-    """One opened member, without going through the filesystem."""
-    # ``_open_member`` writes the resolved layout back onto the
-    # sidecar so a legacy member has a key to compare; do the same
-    # here, since these members never pass through it.
-    meta = meta | {"suffixes": list(tsm.stored_suffixes(meta))}
-    t = rec["t"].astype(np.float64)
-    rows = np.sort(np.unique(t, return_index=True)[1])
-    t_abs = t[rows]
+    """One opened member, without going through the filesystem.
+
+    Resolved the way :func:`~twin_spectral_maps._open_member` resolves
+    one, since these members never pass through it: the stored layout
+    is written back onto the sidecar, so a legacy member has a key to
+    compare, and a ``twin_yspectra`` member takes its reference from
+    its own records when the sidecar ``includes_ref`` (the layout
+    before the reference had a stream of its own), else from *ref*, a
+    ``twin_yspectra_ref`` ``(meta, records)`` pair.
+    """
+
+    def resolve(meta: dict, rec: np.ndarray):
+        meta = meta | {"suffixes": list(tsm.stored_suffixes(meta))}
+        t = rec["t"].astype(np.float64)
+        rows = np.sort(np.unique(t, return_index=True)[1])
+        return meta, rows, t[rows]
+
+    meta, rows, t_abs = resolve(meta, rec)
     t0 = float(t_abs[0]) if parent_t is None else float(parent_t)
-    return tsm._Member(Path(path), meta, rec, rows, t_abs, t_abs - t0, parent)
+    reference = None
+    if "includes_ref" in meta:  # a twin_yspectra sidecar
+        if meta["includes_ref"]:
+            reference = tsm._Reference(meta, rec, rows, t_abs, t_abs - t0)
+        elif ref is not None:
+            r_meta, r_rows, r_t = resolve(*ref)
+            reference = tsm._Reference(r_meta, ref[1], r_rows, r_t, r_t - t0)
+        meta["has_ref"] = reference is not None
+    return tsm._Member(
+        Path(path), meta, rec, rows, t_abs, t_abs - t0, parent, reference
+    )
 
 
 def _series(stem: str, members, **over) -> tsm.YSeries:
     """A series over *members*, every record kept."""
     n = members[0].t_abs.size
+    t_rel = members[0].t_rel[:n]
+    over.setdefault("ref_rows", tsm.reference_rows(members, t_rel))
     return tsm.YSeries(
         stem=stem,
         members=tuple(members),
         rows=np.stack([m.rows[:n] for m in members]),
         index=np.arange(n),
-        t_rel=members[0].t_rel[:n],
+        t_rel=t_rel,
         t_members=np.stack([m.t_rel[:n] for m in members]),
         matched=np.full(len(members), n),
         meta=members[0].meta,
@@ -992,6 +1042,104 @@ def test_layouts_and_default_series() -> None:
         both, spacetime=True, budget=False
     )
     print("layouts, their tags, and one E_ref across all three: OK")
+
+
+def test_reference_layouts() -> None:
+    r"""The reference spectra read alike from both layouts.
+
+    The same records stored the pre-split way (``r_*`` inside
+    ``twin_yspectra.bin``, ``includes_ref``) and the split way (their
+    own ``twin_yspectra_ref.bin``) open through
+    :func:`~twin_spectral_maps.open_series` -- a set of either, and a
+    set mixing the two -- to the same `$E^{\mathrm{ref}}$`, reference
+    maps, decorrelations and reference spacetime map.  A split member
+    whose reference was sampled every other difference sample
+    (``twin.it_yspectra_ref``) normalises over its own samples and
+    draws every difference map and decorrelation, but a reference map
+    only at the frames the two cadences share.
+    """
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    meta = _meta("twin_yspectra")
+    split_meta = meta | {"includes_ref": False}
+    ref_meta = _ref_meta(split_meta)
+    lean_dtype = tsm._record_dtype(split_meta, "twin_yspectra")
+
+    def write(directory: Path, rec: np.ndarray, layout: str, every=1):
+        if layout == "legacy":
+            return _write_member(directory, "twin_yspectra", meta, rec)
+        lean = np.zeros(rec.size, dtype=lean_dtype)
+        for name in lean.dtype.names:
+            lean[name] = rec[name]
+        _write_member(directory, "twin_yspectra", split_meta, lean)
+        ref = _ref_records(ref_meta, rec)[::every]
+        (directory / "twin_yspectra_ref.json").write_text(json.dumps(ref_meta))
+        (directory / "twin_yspectra_ref.bin").write_bytes(ref.tobytes())
+        return directory
+
+    # Two members on different absolute clocks, so E_ref averages
+    # eight distinct instants rather than deduplicating four.
+    recs = [
+        _records(meta, "twin_yspectra", 4, t0=t0, seed=seed)
+        for t0, seed in ((100.0, 21), (300.0, 22))
+    ]
+    readings = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for label, layouts in (
+            ("legacy", ("legacy", "legacy")),
+            ("split", ("split", "split")),
+            ("mixed", ("legacy", "split")),
+        ):
+            members = [
+                write(root / label / f"m{k}", rec, layout)
+                for k, (rec, layout) in enumerate(
+                    zip(recs, layouts, strict=True)
+                )
+            ]
+            series = tsm.open_series(members, "twin_yspectra")
+            assert series.prefixes == ("e", "r"), label
+            readings[label] = [
+                series.reference_scale(),
+                series.field("r_x"),
+                series.field("r_z"),
+                tsm.make_map(series, "r_x", 1, options=options).values,
+                tsm.make_map(series, "decorr_x", 1, options=options).values,
+                tsm.make_map(series, "decorr_k_x", 2, options=options).values,
+                tsm.make_spacetime(series, "r", options=options).values,
+            ]
+        for label in ("split", "mixed"):
+            for got, want in zip(
+                readings[label], readings["legacy"], strict=True
+            ):
+                assert np.array_equal(got, want, equal_nan=True), label
+        both = (recs[0]["r_x"] + recs[1]["r_x"]) / 2.0
+        assert np.array_equal(readings["legacy"][1], both)
+
+        # The reference at half the difference cadence.
+        rec = recs[0]
+        sparse = write(root / "sparse", rec, "split", every=2)
+        alone = tsm.open_series([sparse], "twin_yspectra")
+        _raises(lambda: alone.field("r_x"), "twin.it_yspectra_ref")
+        _raises(
+            lambda: tsm.make_map(alone, "r_x", 1, options=options),
+            "twin.it_yspectra_ref",
+        )
+        # What divides by the time-averaged reference needs no sample
+        # at the frame itself.
+        for name in ("e_x", "decorr_x", "decorr_k_x"):
+            drawn = tsm.make_map(alone, name, 1, options=options).values
+            assert np.isfinite(drawn).any(), name
+        # E_ref averages the two samples the reference has, which is
+        # what a legacy member holding only those two would give.
+        thinned = _series(
+            "twin_yspectra", [_member(meta, rec[::2], parent_t=100.0)]
+        )
+        assert np.allclose(
+            alone.reference_scale(), thinned.reference_scale(), rtol=1e-14
+        )
+        shared = tsm.open_series([sparse], "twin_yspectra", stride=2)
+        assert np.array_equal(shared.field("r_x"), rec["r_x"][::2])
+    print("both reference layouts, and a mix of them, read alike: OK")
 
 
 def test_reference_scale_is_a_quadrature() -> None:

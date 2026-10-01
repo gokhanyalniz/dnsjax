@@ -1290,6 +1290,72 @@ class Outputs(BaseModel):
     )
 
 
+class Lowres(BaseModel):
+    r"""Reduced-resolution snapshots, written on a cadence of their own.
+
+    Every ``it_lowres`` steps the run writes
+    ``lowres/lowres_{it:010d}.tar`` (:mod:`dnsjax.lowres`): the stored
+    state -- the velocity, plus the conformation tensor of the
+    viscoelastic flows -- at the resolution below, in the snapshot
+    format, and under ``pressure`` the static pressure as one more
+    member.  The Fourier axes drop their highest modes; the wall-normal
+    axis is interpolated exactly as a regridding resume does it (the
+    spectral Chebyshev / parity maps between CGL grids), onto the same
+    grid type at the reduced count.  Every field is computed at the
+    run's own resolution and only then reduced.
+
+    Each target defaults to the run's own count, a set one may not
+    exceed it, and a Fourier target must be even, like ``res``.  The
+    names follow the flow's ``res`` names (``nz`` / ``nr`` /
+    ``ntheta`` on the cylindrical and annular flows).  These files are
+    output, not checkpoints: a resume refuses them, and they carry no
+    solver-carried fields.  Inherited on resume like ``[outs]``.
+    """
+
+    it_lowres: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Steps between reduced-resolution snapshots in lowres/; "
+            "unset disables them."
+        ),
+    )
+    nx: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Streamwise Fourier modes the reduced snapshots keep (the "
+            "highest dropped); unset = res.nx."
+        ),
+    )
+    ny: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Wall-normal points of the reduced snapshots' grid (same "
+            "grid type, interpolated); unset = res.ny."
+        ),
+    )
+    nz: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Spanwise Fourier modes the reduced snapshots keep (the "
+            "highest dropped); unset = res.nz."
+        ),
+    )
+    # The model default is off so that a flow without the static
+    # pressure (its ``DeferredSpec``) holds an inert value; the flows
+    # that have it default it on through their ``FieldSpec``.
+    pressure: bool = Field(
+        default=False,
+        description=(
+            "Also store the static pressure (not the dynamic one) in "
+            "each reduced snapshot, computed at full resolution."
+        ),
+    )
+
+
 class TimeStepping(BaseModel):
     r"""Time integration parameters.
 
@@ -1909,6 +1975,7 @@ class Parameters(BaseModel):
     res: Resolution = Resolution()
     init: Initiation = Initiation()
     outs: Outputs = Outputs()
+    lowres: Lowres = Lowres()
     step: TimeStepping = TimeStepping()
     stop: Termination = Termination()
     solver: Solver = Solver()
@@ -2008,11 +2075,18 @@ def read_snapshot_params(
     """
     from .extensions import EXTENSIONS
     from .flows.registry import internalize_stored
-    from .snapshot_meta import is_snapshot_file, read_snapshot_meta
+    from .snapshot_meta import (
+        checkpoint_refusal,
+        is_snapshot_file,
+        read_snapshot_meta,
+    )
 
     if not is_snapshot_file(snapshot_path):
         return None
     meta = read_snapshot_meta(snapshot_path)
+    refusal = checkpoint_refusal(meta, snapshot_path)
+    if refusal is not None:
+        raise ValueError(refusal)
     stored = meta.get("params")
     if not stored:
         return None
@@ -2410,6 +2484,39 @@ def validate_parameters() -> None:
                 "axes) or simply lost (the real-FFT axis); see "
                 f"dnsjax.harmonics.  Use {_n + 1}."
             )
+
+    # Reduced-resolution snapshots ([lowres]): a set target is a count
+    # the run holds at least as many of, even on a Fourier axis (the
+    # Nyquist argument above), and a custom wall grid has no
+    # counterpart at another wall-normal count.
+    for _axis in ("nx", "ny", "nz"):
+        _target = getattr(params.lowres, _axis)
+        if _target is None:
+            continue
+        _name = f"lowres.{spec.alias('lowres', _axis)}"
+        _run = getattr(params.res, _axis)
+        if _target > _run:
+            raise ValueError(
+                f"{_name} = {_target} exceeds the run's "
+                f"res.{spec.alias('res', _axis)} = {_run}: a reduced "
+                "snapshot drops modes and points, it never adds them."
+            )
+        if _axis in _fourier and _target % 2:
+            raise ValueError(
+                f"{_name} = {_target} must be even: it is a Fourier "
+                "axis, and the stored layout omits the Nyquist mode "
+                f"(the res check above says why).  Use {_target - 1}."
+            )
+    if (
+        params.lowres.ny is not None
+        and params.lowres.ny != params.res.ny
+        and params.geo.wall_grid is not None
+    ):
+        raise ValueError(
+            f"lowres.{spec.alias('lowres', 'ny')} = {params.lowres.ny}: "
+            "a custom geo.wall_grid has no counterpart at another "
+            "wall-normal count; leave it unset."
+        )
 
     # Azimuthal wedge (geo.m0): only flows whose surface carries the
     # field (the cylindrical/annular geometries, both viscoelastic

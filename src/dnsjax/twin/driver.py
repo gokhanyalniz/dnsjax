@@ -98,6 +98,26 @@ non-finite-guarded ``.dat`` format of ``stats.dat`` (shared
 :func:`dnsjax.__main__._flush_stats`; a ``t0`` row at setup, a final
 row after the last step).
 
+Each of the other outputs has its own cadence in :class:`TwinParams`:
+
+- the spectral streams (:mod:`dnsjax.twin.spectra`,
+  :mod:`dnsjax.twin.yspectra`) and the 3-D cube directories
+  (:mod:`dnsjax.twin.cubes`);
+- the reduced-resolution snapshots (:mod:`dnsjax.lowres`):
+  ``lowres/`` holds the reference state at ``[lowres]``'s cadence,
+  and ``lowres_delta/`` the difference field with its pressure at
+  ``twin.it_lowres_delta``.  Nothing is written for the partner.
+
+The reference halves of the energy spectra are streams of their own
+(``twin_spectra_ref``, ``twin_yspectra_ref``).  A member recorded
+before that split stored the reference inside the difference streams
+(``includes_ref: true`` in their sidecars).  On a paired resume it
+keeps writing that combined layout and gets no reference stream: the
+``twin.json`` back-fill already pins its reference cadences to the
+difference ones (:data:`_TWIN_LEGACY_DEFAULTS`).
+:data:`_STREAM_FILES` lists every file and directory that a fresh
+start refuses to find.
+
 Every cadence in this driver -- the ``[twin]`` streams, the
 per-state solver streams and ``outs.it_snapshot`` -- is counted from
 the member's own **perturbation step** (``twin.json``'s ``parent_it``,
@@ -150,6 +170,7 @@ import os
 import signal
 import sys
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from time import perf_counter_ns
 
@@ -225,6 +246,11 @@ _TWIN_MATCH_KEYS: tuple[str, ...] = (
     "it_spectra",
     "it_yspectra",
     "it_ybudget",
+    "it_spectra_ref",
+    "it_yspectra_ref",
+    "it_spectra3d",
+    "it_spectra3d_ref",
+    "it_budget3d",
     "dt",
     "double_precision",
 )
@@ -255,10 +281,24 @@ _TWIN_MATCH_KEYS: tuple[str, ...] = (
 #: recorded before ``wall_confinement`` existed back-fills to ``0``
 #: against the ``0.14`` default -- a real difference in the partner --
 #: and resumes only with ``--twin.wall_confinement 0``.
+#:
+#: The two reference cadences are the callable case too: before the
+#: reference spectra had streams of their own they were recorded in
+#: the difference streams' records, at their cadence, whenever
+#: ``spectra_ref`` was on (its default) -- which is the value a
+#: member recorded then holds, and what its resume continues
+#: (combined, :func:`run`).  The 3-D cadences back-fill ``None``
+#: without an entry: those outputs did not exist.
 _TWIN_LEGACY_DEFAULTS: dict[str, object] = {
     "mean_flow": True,
     "wall_smoothness": lambda old: old.get("smoothness"),
     "wall_confinement": 0.0,
+    "it_spectra_ref": lambda old: (
+        old.get("it_spectra") if old.get("spectra_ref", True) else None
+    ),
+    "it_yspectra_ref": lambda old: (
+        old.get("it_yspectra") if old.get("spectra_ref", True) else None
+    ),
 }
 
 
@@ -545,9 +585,90 @@ class TwinParams(BaseModel):
     spectra_ref: bool = Field(
         default=True,
         description=(
-            "Also record the reference state's spectrum with each "
-            "spectra / yspectra sample (for decorrelation ratios); "
-            "turning it off also skips computing it."
+            "Also record the reference state's spectra, in streams of "
+            "their own (twin_spectra_ref.bin, twin_yspectra_ref.bin, "
+            "twin_spectra3d_ref/) on cadences that default to the "
+            "difference streams' (for decorrelation ratios); turning it "
+            "off also skips computing them."
+        ),
+    )
+    it_spectra_ref: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Steps between twin_spectra_ref.bin records (the reference "
+            "state's (kz, kx) spectrum); unset = it_spectra."
+        ),
+    )
+    it_yspectra_ref: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Steps between twin_yspectra_ref.bin records (the reference "
+            "state's (y, k) spectra); unset = it_yspectra."
+        ),
+    )
+    it_spectra3d: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Steps between twin_spectra3d/ files: the difference "
+            "field's componentwise energy as a (y, kz, kx) cube, folded "
+            "in y and kz and subsampled log-uniformly (n_y3d, n_kz3d, "
+            "n_kx3d), one file per sample; unset disables them."
+        ),
+    )
+    it_spectra3d_ref: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Steps between twin_spectra3d_ref/ files (the reference "
+            "state's cube); unset = it_spectra3d."
+        ),
+    )
+    it_budget3d: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Steps between twin_budget3d/ files: the convective y-budget "
+            "terms as (y, kz, kx) cubes on the same points; unset "
+            "disables them.  Like it_ybudget, it holds the pressure "
+            "operator and sets the run's peak memory."
+        ),
+    )
+    n_y3d: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Log-spaced wall distances the 3-D cubes keep over the "
+            "folded half channel (the wall row always kept); unset "
+            "keeps every row."
+        ),
+    )
+    n_kz3d: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Log-spaced |kz| harmonics the 3-D cubes keep (kz = 0 "
+            "always kept); unset keeps every one."
+        ),
+    )
+    n_kx3d: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Log-spaced kx harmonics the 3-D cubes keep (kx = 0 always "
+            "kept); unset keeps every one."
+        ),
+    )
+    it_lowres_delta: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Steps between lowres_delta/ reduced-resolution snapshots "
+            "of the difference field (its velocity and, under "
+            "lowres.pressure, its static pressure) at the [lowres] "
+            "resolution; unset disables them."
         ),
     )
 
@@ -574,6 +695,15 @@ def _validate_twin(values: TwinParams, params) -> None:
                 "it_ybudget",
                 "rotational_ybudget",
                 "spectra_ref",
+                "it_spectra_ref",
+                "it_yspectra_ref",
+                "it_spectra3d",
+                "it_spectra3d_ref",
+                "it_budget3d",
+                "n_y3d",
+                "n_kz3d",
+                "n_kx3d",
+                "it_lowres_delta",
             )
             if getattr(values, name) != getattr(defaults, name)
         ]
@@ -614,10 +744,40 @@ def _validate_twin(values: TwinParams, params) -> None:
         "it_spectra",
         "it_yspectra",
         "it_ybudget",
+        "it_spectra_ref",
+        "it_yspectra_ref",
+        "it_spectra3d",
+        "it_spectra3d_ref",
+        "it_budget3d",
+        "it_lowres_delta",
     ):
         cadence = getattr(values, name)
         if cadence is not None and cadence < 1:
             raise ValueError(f"twin.{name} must be >= 1.")
+    for name in ("n_y3d", "n_kz3d", "n_kx3d"):
+        count = getattr(values, name)
+        if count is not None and count < 2:
+            raise ValueError(f"twin.{name} must be >= 2.")
+    if not values.spectra_ref:
+        stray = [
+            name
+            for name in (
+                "it_spectra_ref",
+                "it_yspectra_ref",
+                "it_spectra3d_ref",
+            )
+            if getattr(values, name) is not None
+        ]
+        if stray:
+            raise ValueError(
+                f"twin.{' / twin.'.join(stray)} set with twin.spectra_ref "
+                "off (no reference spectra are recorded)."
+            )
+    if values.it_budget3d is not None and values.rotational_ybudget:
+        raise ValueError(
+            "twin.it_budget3d records the convective budget terms only; "
+            "it cannot run with twin.rotational_ybudget."
+        )
     if values.it_budget is not None and not values.bins:
         raise ValueError(
             "twin.it_budget needs twin.bins: the three-bin budget is "
@@ -667,9 +827,49 @@ _STREAM_FILES: tuple[str, ...] = (
     "twin_yspectra.json",
     "twin_ybudget.bin",
     "twin_ybudget.json",
+    "twin_spectra_ref.bin",
+    "twin_spectra_ref.json",
+    "twin_yspectra_ref.bin",
+    "twin_yspectra_ref.json",
     "probes.bin",
     "probes.json",
+    # The per-sample directories: their files are named by ``it`` and
+    # replaced rather than appended to, so a stale one would mix two
+    # trajectories' samples in one directory instead.
+    "twin_spectra3d",
+    "twin_spectra3d_ref",
+    "twin_budget3d",
+    "lowres",
+    "lowres_delta",
 )
+
+
+def _stored_with_ref(stem: str) -> bool:
+    """Whether this directory's *stem* stream holds the reference too.
+
+    The layout before the reference spectra had streams of their own
+    (``includes_ref: true`` in the ``.json`` sidecar).
+    """
+    sidecar = Path(f"{stem}.json")
+    if not sidecar.exists():
+        return False
+    with open(sidecar) as f:
+        return bool(json.load(f).get("includes_ref"))
+
+
+def ref_cadence(values: TwinParams, name: str) -> int | None:
+    """The effective cadence of a reference spectra output.
+
+    *name* is the difference output's cadence field (``it_spectra``,
+    ``it_yspectra``, ``it_spectra3d``): its ``<name>_ref`` when set,
+    else the difference cadence itself -- the samples land where they
+    did before the reference had outputs of its own -- and ``None``
+    under ``spectra_ref`` off.
+    """
+    if not values.spectra_ref:
+        return None
+    own = getattr(values, f"{name}_ref")
+    return own if own is not None else getattr(values, name)
 
 
 def _partner_path(reference: Path) -> Path:
@@ -1159,34 +1359,8 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     if measure_budget:
         twin_budget = diagnostics.twin_budget
         bvals = twin_budget(state1, state2)
-    # Both y-resolved streams share it, and both take it statically.
+    # Both y-resolved outputs share it, and both take it statically.
     _yx0 = twin_params.x0_planes
-    measure_yspectra: bool = twin_params.it_yspectra is not None
-    if measure_yspectra:
-        # ``spectra_ref`` static, as for the (k_z, k_x) stream above:
-        # with it off the reference density and its psum -- about half
-        # this sample -- are never traced.
-        _yref = twin_params.spectra_ref
-
-        def twin_yspectra(s1, s2):
-            return diagnostics.twin_yspectra(s1, s2, ref=_yref, x0=_yx0)
-
-        yvals = twin_yspectra(state1, state2)
-    measure_ybudget: bool = twin_params.it_ybudget is not None
-    if measure_ybudget:
-        from .pressure import DifferencePressure
-
-        # One factored Poisson operator, held for the run (see the
-        # ``twin.it_ybudget`` field docs for what it costs).
-        pressure = DifferencePressure(diagnostics.flow, diagnostics.fourier)
-        rot = twin_params.rotational_ybudget
-
-        def twin_ybudget(s1, s2):
-            return diagnostics.twin_ybudget(
-                s1, s2, pressure, rotational=rot, x0=_yx0
-            )
-
-        ybvals = twin_ybudget(state1, state2)
 
     sharding.print(
         f"t = {t:.2f}",
@@ -1262,41 +1436,283 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         )
         budget_stream.push(jnp.stack(list(bvals.values())), t)
 
-    # --- Spectra stream (probes-style binary; t0 sample here, in-loop
-    # samples before each step, a final sample only when
-    # cadence-aligned -- uniform sample times for the reader; the gate
-    # is anchored on ``sample_it0``, above). ----------------------------
-    measure_spectra: bool = twin_params.it_spectra is not None
-    spectra_bad_t0: str | None = None
+    # --- Spectral outputs ------------------------------------------------
+    # The (k_z, k_x) and (y, k) streams, the 3-D cubes and the budget;
+    # each reference output runs on a cadence of its own
+    # (:func:`ref_cadence`, by default its difference output's).  A
+    # start sample here, in-loop samples before each step, a final one
+    # only on the grid -- all anchored on ``sample_it0`` (above).
+    ref_spectra_cad = ref_cadence(twin_params, "it_spectra")
+    ref_yspectra_cad = ref_cadence(twin_params, "it_yspectra")
+    ref_spectra3d_cad = ref_cadence(twin_params, "it_spectra3d")
+    # A member recorded before the reference spectra had streams of
+    # their own holds them inside the difference streams
+    # (``includes_ref``); its resume keeps that layout -- the twin.json
+    # check above has pinned its reference cadence to the difference
+    # one -- and opens no reference stream.
+    combined_spectra = resumed_pair and _stored_with_ref("twin_spectra")
+    combined_yspectra = resumed_pair and _stored_with_ref("twin_yspectra")
+    measure_spectra = twin_params.it_spectra is not None
+    measure_spectra_ref = ref_spectra_cad is not None and not combined_spectra
+    measure_yspectra = twin_params.it_yspectra is not None
+    measure_yspectra_ref = (
+        ref_yspectra_cad is not None and not combined_yspectra
+    )
+    measure_spectra3d = twin_params.it_spectra3d is not None
+    measure_spectra3d_ref = ref_spectra3d_cad is not None
+    measure_ybudget = twin_params.it_ybudget is not None
+    measure_budget3d = twin_params.it_budget3d is not None
+    rot = twin_params.rotational_ybudget
+    lowres_on = (
+        params.lowres.it_lowres is not None
+        or twin_params.it_lowres_delta is not None
+    )
+
+    # One factored Poisson operator, held for the run and shared by
+    # every consumer (the ``twin.it_ybudget`` field docs say what it
+    # costs).
+    pressure = None
+    if (
+        measure_ybudget
+        or measure_budget3d
+        or (lowres_on and params.lowres.pressure)
+    ):
+        from .pressure import DifferencePressure
+
+        pressure = DifferencePressure(diagnostics.flow, diagnostics.fourier)
+
+    # Every buffered binary stream, for the flush sites.
+    bin_streams: list = []
+    if measure_spectra or measure_spectra_ref:
+        from .spectra import TwinSpectraRefStream, TwinSpectraStream
     if measure_spectra:
-        from .spectra import TwinSpectraStream
-
-        # ``spectra_ref`` is static in the diagnostic (it decides
-        # whether the reference reduction is traced at all), so it is
-        # bound here once rather than passed per sample.
-        _ref = twin_params.spectra_ref
-
-        def twin_spectra_2d(s1, s2):
-            return diagnostics.twin_spectra_2d(s1, s2, ref=_ref)
-
-        spectra_stream = TwinSpectraStream(twin_params)
-        spectra_bad_t0 = spectra_stream.record(
-            twin_spectra_2d(state1, state2), t
+        spectra_stream = TwinSpectraStream(
+            twin_params, includes_ref=combined_spectra
         )
-
-    # --- Wall-normal-resolved streams (same discipline) ------------------
-    yspectra_bad_t0: str | None = None
-    ybudget_bad_t0: str | None = None
-    if measure_yspectra or measure_ybudget:
-        from .yspectra import TwinYBudgetStream, TwinYSpectraStream
+        bin_streams.append(spectra_stream)
+    if measure_spectra_ref:
+        spectra_ref_stream = TwinSpectraRefStream(twin_params, ref_spectra_cad)
+        bin_streams.append(spectra_ref_stream)
+    if measure_yspectra or measure_yspectra_ref or measure_ybudget:
+        from .yspectra import (
+            TwinYBudgetStream,
+            TwinYSpectraRefStream,
+            TwinYSpectraStream,
+        )
 
         y_weights = np.asarray(diagnostics.flow.y_weights).tolist()
     if measure_yspectra:
-        yspectra_stream = TwinYSpectraStream(twin_params, y_weights)
-        yspectra_bad_t0 = yspectra_stream.record(yvals, t)
+        yspectra_stream = TwinYSpectraStream(
+            twin_params, y_weights, includes_ref=combined_yspectra
+        )
+        bin_streams.append(yspectra_stream)
+    if measure_yspectra_ref:
+        yspectra_ref_stream = TwinYSpectraRefStream(
+            twin_params, y_weights, ref_yspectra_cad
+        )
+        bin_streams.append(yspectra_ref_stream)
     if measure_ybudget:
         ybudget_stream = TwinYBudgetStream(twin_params, y_weights)
-        ybudget_bad_t0 = ybudget_stream.record(ybvals, t)
+        bin_streams.append(ybudget_stream)
+
+    sel = None
+    if measure_spectra3d or measure_spectra3d_ref or measure_budget3d:
+        from .cubes import BUDGET3D, SPECTRA3D, SPECTRA3D_REF, CubeStore
+
+        try:
+            sel = diagnostics.cube_selection(
+                derived_params.wall_normal_grid,
+                twin_params.n_y3d,
+                twin_params.n_kz3d,
+                twin_params.n_kx3d,
+            )
+        except ValueError as exc:
+            raise SystemExit(f"{_PROG}: error: {exc}") from None
+        cube_store = partial(
+            CubeStore, sel=sel, twin_values=twin_params, parent_it=sample_it0
+        )
+        if measure_spectra3d:
+            spectra3d_store = cube_store(
+                SPECTRA3D,
+                ("e_u", "e_v", "e_w"),
+                cadence_key="it_spectra3d",
+                cadence=twin_params.it_spectra3d,
+            )
+        if measure_spectra3d_ref:
+            spectra3d_ref_store = cube_store(
+                SPECTRA3D_REF,
+                ("r_u", "r_v", "r_w"),
+                cadence_key="it_spectra3d_ref",
+                cadence=ref_spectra3d_cad,
+            )
+        if measure_budget3d:
+            budget3d_store = cube_store(
+                BUDGET3D,
+                diagnostics.CONVECTIVE_TERMS,
+                cadence_key="it_budget3d",
+                cadence=twin_params.it_budget3d,
+            )
+        sharding.print(
+            f"3-D cubes on {len(sel.iy)} x {len(sel.kz_pos)} x "
+            f"{len(sel.kx)} (wall distance, |k_z|, k_x) points."
+        )
+
+    def _due(cadence, it, phase, per_file):
+        """Whether an output on *cadence* samples step *it* in *phase*.
+
+        On the grid only, past the start -- except a ``.bin`` stream's
+        start sample, which is unconditional (a resume seam its
+        readers drop), where a per-file output, named by ``it``, keeps
+        to the grid.
+        """
+        if cadence is None:
+            return False
+        if phase == "start" and not per_file:
+            return True
+        on_grid = (it - sample_it0) % cadence == 0
+        return on_grid and (phase == "start" or it > it0)
+
+    def _record_spectral(s1, s2, t, it, phase) -> list[str]:
+        """Record every spectral output due; the non-finite messages.
+
+        Each difference/reference pair is one call computing the halves
+        that are due, and the two budget outputs share one density
+        pass.  Issued before the donating steps.
+        """
+        bad = []
+
+        def keep(msg):
+            if msg is not None:
+                bad.append(msg)
+
+        do_d = measure_spectra and _due(
+            twin_params.it_spectra, it, phase, False
+        )
+        do_r = measure_spectra_ref and _due(ref_spectra_cad, it, phase, False)
+        if do_d or do_r:
+            vals = diagnostics.twin_spectra_2d(
+                s1, s2, ref=do_r or (do_d and combined_spectra), delta=do_d
+            )
+            if do_d:
+                keep(spectra_stream.record(vals, t))
+            if do_r:
+                keep(spectra_ref_stream.record(vals, t))
+        do_d = measure_yspectra and _due(
+            twin_params.it_yspectra, it, phase, False
+        )
+        do_r = measure_yspectra_ref and _due(
+            ref_yspectra_cad, it, phase, False
+        )
+        if do_d or do_r:
+            vals = diagnostics.twin_yspectra(
+                s1,
+                s2,
+                ref=do_r or (do_d and combined_yspectra),
+                x0=_yx0,
+                delta=do_d,
+            )
+            if do_d:
+                keep(yspectra_stream.record(vals, t))
+            if do_r:
+                keep(yspectra_ref_stream.record(vals, t))
+        do_d = measure_spectra3d and _due(
+            twin_params.it_spectra3d, it, phase, True
+        )
+        do_r = measure_spectra3d_ref and _due(
+            ref_spectra3d_cad, it, phase, True
+        )
+        if do_d or do_r:
+            vals = diagnostics.twin_spectra3d(
+                s1, s2, sel, ref=do_r, delta=do_d
+            )
+            if do_d:
+                keep(spectra3d_store.write(vals["e"], t, it))
+            if do_r:
+                keep(spectra3d_ref_store.write(vals["r"], t, it))
+        do_m = measure_ybudget and _due(
+            twin_params.it_ybudget, it, phase, False
+        )
+        do_c = measure_budget3d and _due(
+            twin_params.it_budget3d, it, phase, True
+        )
+        if do_m or do_c:
+            vals = diagnostics.twin_ybudget(
+                s1,
+                s2,
+                pressure,
+                rotational=rot,
+                x0=_yx0,
+                marginals=do_m,
+                cube=sel if do_c else None,
+            )
+            if do_m:
+                keep(ybudget_stream.record(vals, t))
+            if do_c:
+                keep(budget3d_store.write(vals["cube"], t, it))
+        return bad
+
+    spectral_bad_t0 = _record_spectral(state1, state2, t, it, "start")
+
+    # --- Reduced-resolution snapshots ------------------------------------
+    # The reference state at the solver-wide ``lowres.it_lowres`` into
+    # ``lowres/``, the difference field at ``twin.it_lowres_delta`` into
+    # ``lowres_delta/`` -- separate files, nothing for the partner -- at
+    # the ``[lowres]`` resolution, with each one's static pressure under
+    # ``lowres.pressure``.  The difference pressure is the budget's own
+    # (``diagnostics.difference_pressure``), formed from the difference
+    # field rather than as a difference of two pressures.
+    lowres_writer = None
+    if lowres_on:
+        from ..lowres import LOWRES_DIR, LowResWriter, lowres_path
+
+        lowres_writer = LowResWriter(pressure_op=pressure)
+        sharding.print(
+            "Reduced-resolution snapshots at "
+            f"{lowres_writer.target_public}: reference every "
+            f"{params.lowres.it_lowres} steps, difference every "
+            f"{twin_params.it_lowres_delta} steps"
+            + (", static pressure" if lowres_writer.pressure else "")
+            + "."
+        )
+    twin_meta = {
+        "twin": {
+            "seed": twin_params.seed,
+            "e0": twin_params.e0,
+            "parent_it": sample_it0,
+        }
+    }
+
+    def _record_lowres(s1, s2, t, it, phase) -> None:
+        """Write the reduced snapshots due at step *it*."""
+        if lowres_writer is None:
+            return
+        if _due(params.lowres.it_lowres, it, phase, True):
+            lowres_writer.write_state(
+                s1,
+                t,
+                it,
+                lowres_path(LOWRES_DIR, "lowres", it),
+                extra_meta=twin_meta,
+            )
+        if _due(twin_params.it_lowres_delta, it, phase, True):
+            if lowres_writer.pressure is not None:
+                delta, dp = diagnostics.difference_pressure(
+                    s1, s2, lowres_writer.pressure
+                )
+            else:
+                delta, dp = s2 - s1, None
+            lowres_writer.write(
+                delta,
+                dp,
+                t,
+                it,
+                lowres_path("lowres_delta", "lowres_delta", it),
+                field="difference",
+                pressure_note="difference",
+                extra_meta=twin_meta,
+            )
+
+    _record_lowres(state1, state2, t, it, "start")
 
     # --- CN/AB2 history priming (both states; donated args copied) -------
     scheme: str = params.step.scheme
@@ -1378,16 +1794,8 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             bad = probe_stream.flush(check=check)
             if bad is not None:
                 _abort_non_finite(bad)
-        if measure_spectra:
-            bad = spectra_stream.flush(check=check)
-            if bad is not None:
-                _abort_non_finite(bad)
-        if measure_yspectra:
-            bad = yspectra_stream.flush(check=check)
-            if bad is not None:
-                _abort_non_finite(bad)
-        if measure_ybudget:
-            bad = ybudget_stream.flush(check=check)
+        for stream in bin_streams:
+            bad = stream.flush(check=check)
             if bad is not None:
                 _abort_non_finite(bad)
 
@@ -1415,12 +1823,8 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
 
     if probe_bad_t0 is not None:
         _abort_non_finite(probe_bad_t0)
-    if spectra_bad_t0 is not None:
-        _abort_non_finite(spectra_bad_t0)
-    if yspectra_bad_t0 is not None:
-        _abort_non_finite(yspectra_bad_t0)
-    if ybudget_bad_t0 is not None:
-        _abort_non_finite(ybudget_bad_t0)
+    for bad in spectral_bad_t0:
+        _abort_non_finite(bad)
 
     sharding.print("Started twin timestepping at", datetime.now())
 
@@ -1479,30 +1883,9 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
             bad = budget_stream.push(jnp.stack(list(bvals.values())), t)
             if bad is not None:
                 _abort_non_finite(bad)
-        if (
-            measure_spectra
-            and (it - sample_it0) % twin_params.it_spectra == 0
-            and it > it0
-        ):
-            bad = spectra_stream.record(twin_spectra_2d(state1, state2), t)
-            if bad is not None:
-                _abort_non_finite(bad)
-        if (
-            measure_yspectra
-            and (it - sample_it0) % twin_params.it_yspectra == 0
-            and it > it0
-        ):
-            bad = yspectra_stream.record(twin_yspectra(state1, state2), t)
-            if bad is not None:
-                _abort_non_finite(bad)
-        if (
-            measure_ybudget
-            and (it - sample_it0) % twin_params.it_ybudget == 0
-            and it > it0
-        ):
-            bad = ybudget_stream.record(twin_ybudget(state1, state2), t)
-            if bad is not None:
-                _abort_non_finite(bad)
+        for bad in _record_spectral(state1, state2, t, it, "loop"):
+            _abort_non_finite(bad)
+        _record_lowres(state1, state2, t, it, "loop")
         if (
             measure_probes
             and (it - sample_it0) % probes_params.it_probes == 0
@@ -1723,32 +2106,9 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
         if bad is not None:
             _abort_non_finite(bad)
 
-    if (
-        measure_spectra
-        and it > it0
-        and (it - sample_it0) % twin_params.it_spectra == 0
-    ):
-        bad = spectra_stream.record(twin_spectra_2d(state1, state2), t)
-        if bad is not None:
-            _abort_non_finite(bad)
-
-    if (
-        measure_yspectra
-        and it > it0
-        and (it - sample_it0) % twin_params.it_yspectra == 0
-    ):
-        bad = yspectra_stream.record(twin_yspectra(state1, state2), t)
-        if bad is not None:
-            _abort_non_finite(bad)
-
-    if (
-        measure_ybudget
-        and it > it0
-        and (it - sample_it0) % twin_params.it_ybudget == 0
-    ):
-        bad = ybudget_stream.record(twin_ybudget(state1, state2), t)
-        if bad is not None:
-            _abort_non_finite(bad)
+    for bad in _record_spectral(state1, state2, t, it, "final"):
+        _abort_non_finite(bad)
+    _record_lowres(state1, state2, t, it, "final")
 
     if params.outs.snapshot_save_final and it > it0 and it != last_saved_it:
         flush_all_buffers()
@@ -1823,12 +2183,23 @@ def _twin_sidecar_stub() -> dict:
         "it_spectra": twin_params.it_spectra,
         "it_yspectra": twin_params.it_yspectra,
         "it_ybudget": twin_params.it_ybudget,
+        # The effective reference cadences (:func:`ref_cadence`), so an
+        # unset one and one set to its default record alike.
+        "it_spectra_ref": ref_cadence(twin_params, "it_spectra"),
+        "it_yspectra_ref": ref_cadence(twin_params, "it_yspectra"),
+        "it_spectra3d": twin_params.it_spectra3d,
+        "it_spectra3d_ref": ref_cadence(twin_params, "it_spectra3d"),
+        "it_budget3d": twin_params.it_budget3d,
         "dt": params.step.dt,
         "double_precision": params.res.double_precision,
         # Recorded, not matched -- see the docstring.
         "rotational_ybudget": twin_params.rotational_ybudget,
         "spectra_ref": twin_params.spectra_ref,
         "x0_planes": twin_params.x0_planes,
+        "n_y3d": twin_params.n_y3d,
+        "n_kz3d": twin_params.n_kz3d,
+        "n_kx3d": twin_params.n_kx3d,
+        "it_lowres_delta": twin_params.it_lowres_delta,
     }
 
 
