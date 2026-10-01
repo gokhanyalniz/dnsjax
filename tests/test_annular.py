@@ -24,6 +24,8 @@ Tests cover:
    reference forms and wall values.
 9. Affine-mapped Clenshaw-Curtis integration weights (spectral) with
    the radial Jacobian on ``[r1, r2]``.
+10. A custom ``geo.wall_grid`` file: its nodes, and the composite rule
+    it takes instead.
 
 Run as a script via ``uv run python tests/test_annular.py``.
 """
@@ -640,6 +642,38 @@ def test_annular_integration_weights() -> None:
         err = abs(float(yw @ np.cos(2.0 * rs_np)) - ref)
         if ny == 33:
             assert err < 1e-9, f"ny={ny}: CC not spectral, err={err:.2e}"
+
+
+def test_annular_custom_grid() -> None:
+    r"""A ``geo.wall_grid`` file builds (its branch once chose no
+    quadrature and raised ``UnboundLocalError``), keeps the file's
+    nodes, and takes the ``fd_order`` composite rule times the
+    Jacobian: exact for `$\int r^{d+1} dr$` up to `$d + 1 = p$`."""
+    import tempfile
+    from pathlib import Path
+
+    from dnsjax.fd import build_integration_weights
+
+    p = params.res.fd_order
+    ny = 21
+    x = np.linspace(0.0, 1.0, ny)
+    grid = R1 + (R2 - R1) * (x + 0.05 * np.sin(2.0 * np.pi * x))
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "grid.txt"
+        np.savetxt(path, grid[::-1])  # wall-to-interior: r2 first
+        rs, d1, _, y_weights, _ = build_annular_grid(ny, p, R1, R2, str(path))
+    rs_np = np.asarray(rs)
+    yw = np.asarray(y_weights)
+    assert_allclose(rs_np, grid, rtol=0, atol=1e-15)
+    assert np.asarray(d1).shape == (ny, ny)
+    assert_allclose(yw, build_integration_weights(grid, p) * grid)
+    for d in (0, 2):
+        assert_allclose(
+            float(yw @ rs_np**d),
+            (R2 ** (d + 2) - R1 ** (d + 2)) / (d + 2),
+            atol=1e-12,
+            err_msg=f"custom grid: r^{d + 1} moment",
+        )
 
 
 # ── Runner ───────────────────────────────────────────────────────────
