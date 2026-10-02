@@ -791,7 +791,7 @@ def _configure_parameters(argv: list[str]) -> None:
 
     toml_flag = _scan_flag(argv, "--tg.parameters")
     toml_path = Path(toml_flag) if toml_flag is not None else None
-    ctx = peek_run_context(argv, toml_path=toml_path)
+    ctx = peek_run_context(argv, toml_path=toml_path, prog=_PROG)
     if ctx.help_requested and ctx.help_system is None:
         ext_map = {"tg": TG_EXTENSION}
     else:

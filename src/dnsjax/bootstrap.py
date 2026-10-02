@@ -215,7 +215,9 @@ def _check_system(name: str | None, origin: str) -> None:
 
 
 def peek_run_context(
-    argv: list[str], toml_path: Path | Literal[False] | None = None
+    argv: list[str],
+    toml_path: Path | Literal[False] | None = None,
+    prog: str = "dnsjax",
 ) -> RunContext:
     """Scan *argv* and the parameters TOML for the run context.
 
@@ -230,6 +232,11 @@ def peek_run_context(
     configuration is snapshot + CLI only (e.g. the offline
     ``snapshot_perturb`` injector), which must not pick up an
     unrelated ``parameters.toml`` from the working directory.
+
+    A snapshot that cannot seed a run -- unreadable, or a dnsjax tar
+    that is not a checkpoint -- exits with one *prog* ``error:`` line
+    here, as it does in :func:`resolve_parameters`: this is the call
+    that reads it first whenever no layer names the system.
     """
     raw_toml = None
     if toml_path is False:
@@ -286,7 +293,10 @@ def peek_run_context(
         and toml_system is None
         and (snapshot_path is not None)
     ):
-        snap_system = _snapshot_system(snapshot_path)
+        try:
+            snap_system = _snapshot_system(snapshot_path)
+        except ValueError as exc:
+            raise SystemExit(f"{prog}: error: {exc}") from None
 
     default_system = Physics.model_fields["system"].default
     system = cli_system or toml_system or snap_system or default_system
@@ -449,7 +459,7 @@ def resolve_parameters(
     precision) and before importing :mod:`dnsjax.sharding`.
     """
     argv = list(sys.argv[1:] if cli_args is None else cli_args)
-    ctx = peek_run_context(argv, toml_path=toml_path)
+    ctx = peek_run_context(argv, toml_path=toml_path, prog=prog)
 
     def _exts(system: str) -> tuple:
         if extensions is not None:
@@ -547,16 +557,18 @@ def resolve_parameters(
         # An unreadable snapshot (below ``MIN_FORMAT_VERSION``, or
         # malformed metadata) raises ``ValueError`` from deep inside
         # ``snapshot_meta``.  Present it the way every other
-        # resume-time failure here is presented -- one ``dnsjax:
+        # resume-time failure here is presented -- one ``<prog>:
         # error:`` line -- rather than as a raw traceback; the message
-        # already names the version and the reason.
+        # already names the version and the reason.  (A run naming no
+        # system meets the same refusal earlier, in
+        # ``peek_run_context``.)
         try:
             stored_system = _snapshot_system(snapshot_path)
         except ValueError as exc:
-            raise SystemExit(f"dnsjax: error: {exc}") from None
+            raise SystemExit(f"{prog}: error: {exc}") from None
         if stored_system is not None and stored_system != ctx.system:
             raise SystemExit(
-                f"dnsjax: error: snapshot '{snapshot_path}' stores "
+                f"{prog}: error: snapshot '{snapshot_path}' stores "
                 f"system {stored_system!r} but the run selects "
                 f"{ctx.system!r} (snapshots do not convert across "
                 "flows)."

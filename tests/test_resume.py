@@ -451,6 +451,159 @@ def run_grid_default_resolution_checks() -> str | None:
     return None
 
 
+def _write_meta_tar(path, meta: dict) -> None:
+    """A metadata-only tar: all the parameter layer reads of a snapshot."""
+    import io
+    import json
+    import tarfile
+
+    from dnsjax.snapshot_meta import META_MEMBER
+
+    payload = json.dumps(meta).encode()
+    with tarfile.open(path, "w") as tf:
+        info = tarfile.TarInfo(META_MEMBER)
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+
+
+def run_refusal_message_checks() -> str | None:
+    """Offline unit: a non-checkpoint ``--init.snapshot`` fails in one line.
+
+    A reduced-resolution snapshot (a ``lowres`` entry) or a twin cube (a
+    ``kind``), with no layer naming the system -- the ordinary resume --
+    is refused while the run context is peeked, before any layer is
+    read: one ``<prog>: error:`` line naming the file, not a traceback.
+    """
+    from pathlib import Path
+
+    from dnsjax.bootstrap import resolve_parameters
+    from dnsjax.param_surface import recorded_params_dump
+    from dnsjax.parameters import params
+
+    name = "non-checkpoint refusal"
+    base = {
+        "format_version": 6,
+        "system": "plane-couette",
+        "params": recorded_params_dump(params),
+    }
+    cases = {
+        "lowres": {"lowres": {"field": "state", "source_res": {}}},
+        "cube": {"kind": "twin_spectra3d"},
+    }
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for label, extra in cases.items():
+                path = Path(tmp) / f"{label}.tar"
+                _write_meta_tar(path, base | extra)
+                for prog in ("dnsjax", "dnsjax-twin"):
+                    try:
+                        resolve_parameters(
+                            ["--init.snapshot", str(path)],
+                            toml_path=False,
+                            prog=prog,
+                        )
+                    except SystemExit as exc:
+                        msg = str(exc.code)
+                    except ValueError as exc:
+                        raise AssertionError(
+                            f"{label}: uncaught ValueError: {exc}"
+                        ) from None
+                    else:
+                        raise AssertionError(f"{label}: accepted")
+                    assert msg.startswith(f"{prog}: error: "), (label, msg)
+                    assert str(path) in msg and "\n" not in msg, msg
+    except AssertionError as exc:
+        print(f"  FAIL  {name}: {exc}")
+        return str(exc)
+
+    print(f"  PASS  {name}")
+    return None
+
+
+def run_off_cadence_checks() -> str | None:
+    """Offline unit: an inherited cadence switches off at ``0``.
+
+    A layer cannot unset a field -- the merges drop a ``None`` -- so a
+    cadence the snapshot layer set survives ``--x.it_y None``, which is
+    asserted here as the reason ``0`` exists.  ``0`` turns it back into
+    unset (:data:`dnsjax.parameters.OFF_CADENCES`), the recorded dump
+    then says unset, and a configured all-or-none extension section
+    (``[probes]``, ``[force]``) whose cadence is ``0`` returns to its
+    defaults instead of failing its "set together" check on what it
+    inherited.
+    """
+    import dnsjax.parameters as P
+    from dnsjax.bootstrap import resolve_parameters
+    from dnsjax.extensions import force_params, probes_params, reset_extensions
+    from dnsjax.param_surface import recorded_params_dump
+    from dnsjax.parameters import params
+
+    name = "off cadences"
+    saved = params.model_dump()
+    saved_user_set = set(P._user_set_fields)
+    stored = recorded_params_dump(params)
+    stored["outs"] |= {"it_stats": 10, "it_snapshot": 10}
+    stored["lowres"] = {"it_lowres": 10}
+    configured = dict(
+        stored,
+        probes={"modes": "1,1", "it_probes": 5},
+        force={
+            "modes": "1,1",
+            "profiles": "profiles.npz",
+            "amplitude": 0.1,
+            "it_force": 5,
+            "seed": 7,
+        },
+    )
+    meta = {"format_version": 6, "system": "plane-couette"}
+
+    def resolve(path, *cli: str) -> None:
+        resolve_parameters(
+            ["--init.snapshot", str(path), *cli], toml_path=False
+        )
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            from pathlib import Path
+
+            plain = Path(tmp) / "plain.tar"
+            _write_meta_tar(plain, meta | {"params": stored})
+            resolve(plain, "--outs.it_stats", "None")
+            assert params.outs.it_stats == 10, ("None unset", params.outs)
+
+            resolve(plain, "--outs.it_stats", "0", "--lowres.it_lowres", "0")
+            assert params.outs.it_stats is None, params.outs
+            assert params.outs.it_snapshot == 10, params.outs
+            assert params.lowres.it_lowres is None, params.lowres
+            dump = recorded_params_dump(params)
+            assert dump["outs"]["it_stats"] is None, dump["outs"]
+            assert dump["lowres"]["it_lowres"] is None, dump["lowres"]
+
+            forced = Path(tmp) / "forced.tar"
+            _write_meta_tar(forced, meta | {"params": configured})
+            resolve(forced, "--probes.it_probes", "0", "--force.it_force", "0")
+            for values in (probes_params, force_params):
+                fresh = type(values)()
+                assert values == fresh, ("section not reset", values)
+            dump = recorded_params_dump(params)
+            assert not any(dump["probes"].values()), dump["probes"]
+            assert not any(dump["force"].values()), dump["force"]
+    except AssertionError as exc:
+        print(f"  FAIL  {name}: {exc}")
+        return str(exc)
+    finally:
+        for section, values in saved.items():
+            model = getattr(params, section)
+            for key, value in values.items():
+                setattr(model, key, value)
+        P._user_set_fields.clear()
+        P._user_set_fields.update(saved_user_set)
+        reset_extensions()
+
+    print(f"  PASS  {name}")
+    return None
+
+
 def _snap_indices(workdir: str) -> list[int]:
     """Sorted ``isnap`` indices of the ``stateNNNNN.tar`` files in dir."""
     out = []
@@ -927,6 +1080,8 @@ if __name__ == "__main__":
         ("snapshot-meta units", run_unit_checks()),
         ("grid_type half-cgl validation", run_grid_validation_checks()),
         ("grid_type default resolution", run_grid_default_resolution_checks()),
+        ("non-checkpoint refusal", run_refusal_message_checks()),
+        ("off cadences", run_off_cadence_checks()),
     ]
     if not cli.unit_only:
         results.append(("resume lineage", run_integration(cli.timeout)))

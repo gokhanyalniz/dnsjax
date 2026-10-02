@@ -534,38 +534,38 @@ class TwinParams(BaseModel):
     )
     it_budget: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between twin_budget.dat rows (the production/"
-            "transport/dissipation terms); unset disables the stream. "
+            "transport/dissipation terms); unset or 0 disables the stream. "
             "Not a pure cadence knob: enabling it raises the run's "
             "peak memory (see the field's docs)."
         ),
     )
     it_spectra: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between (kz, kx) difference-energy spectra "
-            "records; unset disables the stream."
+            "records; unset or 0 disables the stream."
         ),
     )
     it_yspectra: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between twin_yspectra.bin records (componentwise "
             "wall-normal-resolved (y, kz) and (y, kx) energy "
-            "spectra); unset disables the stream."
+            "spectra); unset or 0 disables the stream."
         ),
     )
     it_ybudget: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between twin_ybudget.bin records (the same bins' "
             "production / transfer / viscous / pressure densities); "
-            "unset disables the stream.  Like it_budget, not a pure "
+            "unset or 0 disables the stream.  Like it_budget, not a pure "
             "cadence knob: it raises both the run's resident and its "
             "peak memory (see the field's docs)."
         ),
@@ -594,45 +594,45 @@ class TwinParams(BaseModel):
     )
     it_spectra_ref: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between twin_spectra_ref.bin records (the reference "
-            "state's (kz, kx) spectrum); unset = it_spectra."
+            "state's (kz, kx) spectrum); unset = it_spectra, 0 = off."
         ),
     )
     it_yspectra_ref: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between twin_yspectra_ref.bin records (the reference "
-            "state's (y, k) spectra); unset = it_yspectra."
+            "state's (y, k) spectra); unset = it_yspectra, 0 = off."
         ),
     )
     it_spectra3d: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between twin_spectra3d/ files: the difference "
             "field's componentwise energy as a (y, kz, kx) cube, folded "
             "in y and kz and subsampled log-uniformly (n_y3d, n_kz3d, "
-            "n_kx3d), one file per sample; unset disables them."
+            "n_kx3d), one file per sample; unset or 0 disables them."
         ),
     )
     it_spectra3d_ref: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between twin_spectra3d_ref/ files (the reference "
-            "state's cube); unset = it_spectra3d."
+            "state's cube); unset = it_spectra3d, 0 = off."
         ),
     )
     it_budget3d: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between twin_budget3d/ files: the convective y-budget "
             "terms as (y, kz, kx) cubes on the same points; unset "
-            "disables them.  Like it_ybudget, it holds the pressure "
+            "or 0 disables them.  Like it_ybudget, it holds the pressure "
             "operator and sets the run's peak memory."
         ),
     )
@@ -663,14 +663,38 @@ class TwinParams(BaseModel):
     )
     it_lowres_delta: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between lowres_delta/ reduced-resolution snapshots "
             "of the difference field (its velocity and, under "
             "lowres.pressure, its static pressure) at the [lowres] "
-            "resolution; unset disables them."
+            "resolution; unset or 0 disables them."
         ),
     )
+
+
+#: The ``[twin]`` cadences that ``0`` switches off on a layer, turned
+#: back into unset there (``ParamExtension.off_cadences``, the core's
+#: :data:`dnsjax.parameters.OFF_CADENCES`): a member's TOML value can
+#: be overridden off from the command line.
+_TWIN_OFF_CADENCES: tuple[str, ...] = (
+    "it_budget",
+    "it_spectra",
+    "it_yspectra",
+    "it_ybudget",
+    "it_spectra3d",
+    "it_budget3d",
+    "it_lowres_delta",
+)
+
+#: The reference cadences, which keep a ``0``: unset means "the
+#: difference cadence" (:func:`ref_cadence`), so ``0`` is the only way
+#: to say "off" for one reference output alone.
+_TWIN_REF_CADENCES: tuple[str, ...] = (
+    "it_spectra_ref",
+    "it_yspectra_ref",
+    "it_spectra3d_ref",
+)
 
 
 def _validate_twin(values: TwinParams, params) -> None:
@@ -678,6 +702,14 @@ def _validate_twin(values: TwinParams, params) -> None:
     # silently ignoring them (the [force] discipline), else return.
     if values.e0 is None:
         defaults = TwinParams()
+
+        def configured(name: str) -> bool:
+            value = getattr(values, name)
+            if name in _TWIN_REF_CADENCES:
+                # A reference cadence's 0 is "off", as inert as unset.
+                return bool(value)
+            return value != getattr(defaults, name)
+
         stray = [
             name
             for name in (
@@ -705,7 +737,7 @@ def _validate_twin(values: TwinParams, params) -> None:
                 "n_kx3d",
                 "it_lowres_delta",
             )
-            if getattr(values, name) != getattr(defaults, name)
+            if configured(name)
         ]
         if stray:
             raise ValueError(
@@ -738,36 +770,22 @@ def _validate_twin(values: TwinParams, params) -> None:
         raise ValueError("twin.wall_smoothness must lie in (0, 1).")
     if values.wall_confinement < 0:
         raise ValueError("twin.wall_confinement must be >= 0.")
-    for name in (
-        "it_energy",
-        "it_budget",
-        "it_spectra",
-        "it_yspectra",
-        "it_ybudget",
-        "it_spectra_ref",
-        "it_yspectra_ref",
-        "it_spectra3d",
-        "it_spectra3d_ref",
-        "it_budget3d",
-        "it_lowres_delta",
-    ):
+    # A layer has already turned an off cadence's 0 into unset, so a 0
+    # left here was assigned directly; a reference cadence keeps its 0.
+    for name in ("it_energy", *_TWIN_OFF_CADENCES):
         cadence = getattr(values, name)
         if cadence is not None and cadence < 1:
             raise ValueError(f"twin.{name} must be >= 1.")
+    for name in _TWIN_REF_CADENCES:
+        cadence = getattr(values, name)
+        if cadence is not None and cadence < 0:
+            raise ValueError(f"twin.{name} must be >= 0 (0 = off).")
     for name in ("n_y3d", "n_kz3d", "n_kx3d"):
         count = getattr(values, name)
         if count is not None and count < 2:
             raise ValueError(f"twin.{name} must be >= 2.")
     if not values.spectra_ref:
-        stray = [
-            name
-            for name in (
-                "it_spectra_ref",
-                "it_yspectra_ref",
-                "it_spectra3d_ref",
-            )
-            if getattr(values, name) is not None
-        ]
+        stray = [name for name in _TWIN_REF_CADENCES if getattr(values, name)]
         if stray:
             raise ValueError(
                 f"twin.{' / twin.'.join(stray)} set with twin.spectra_ref "
@@ -796,6 +814,7 @@ TWIN_EXTENSION = register_extension(
         summary=("Twin-run perturbation-growth driver (dnsjax-twin only)."),
         validate=_validate_twin,
         record_in_metadata=False,
+        off_cadences=_TWIN_OFF_CADENCES,
     )
 )
 
@@ -864,11 +883,13 @@ def ref_cadence(values: TwinParams, name: str) -> int | None:
     ``it_yspectra``, ``it_spectra3d``): its ``<name>_ref`` when set,
     else the difference cadence itself -- the samples land where they
     did before the reference had outputs of its own -- and ``None``
-    under ``spectra_ref`` off.
+    under ``spectra_ref`` off or a ``<name>_ref`` of ``0``.
     """
     if not values.spectra_ref:
         return None
     own = getattr(values, f"{name}_ref")
+    if own == 0:
+        return None
     return own if own is not None else getattr(values, name)
 
 
@@ -1658,9 +1679,10 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     # ``lowres/``, the difference field at ``twin.it_lowres_delta`` into
     # ``lowres_delta/`` -- separate files, nothing for the partner -- at
     # the ``[lowres]`` resolution, with each one's static pressure under
-    # ``lowres.pressure``.  The difference pressure is the budget's own
-    # (``diagnostics.difference_pressure``), formed from the difference
-    # field rather than as a difference of two pressures.
+    # ``lowres.pressure``.  The difference pressure is the budget's own,
+    # to round-off (``diagnostics.difference_pressure``), formed from
+    # the difference field rather than as a difference of two
+    # pressures.
     lowres_writer = None
     if lowres_on:
         from ..lowres import LOWRES_DIR, LowResWriter, lowres_path

@@ -77,8 +77,12 @@ class ProbesParams(BaseModel):
     )
     it_probes: int | None = Field(
         default=None,
-        ge=1,
-        description=("Steps between probe records; set together with modes."),
+        ge=0,
+        description=(
+            "Steps between probe records; set together with modes. "
+            "0 switches the stream off, whatever else the section "
+            "inherited."
+        ),
     )
 
 
@@ -167,10 +171,11 @@ class ForceParams(BaseModel):
     # per-kick responses; smaller values more statistics per run time.
     it_force: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between kicks; must be a multiple of the probe "
-            "cadence when probing."
+            "cadence when probing.  0 switches the forcing off, "
+            "whatever else the section inherited."
         ),
     )
     # Unset means "draw one" (:mod:`dnsjax.seeding`), resolved by
@@ -204,8 +209,15 @@ class ParamExtension:
     (see :func:`validate_extensions`); ``trajectory_defining`` folds
     the section into the resume trajectory comparison;
     ``record_in_metadata`` includes the resolved section in snapshot
-    metadata / sidecar params dumps.  ``values`` is the live merged
-    singleton (analogous to the global ``params``).
+    metadata / sidecar params dumps.  ``off_cadences`` names the
+    section's optional cadences that ``0`` switches off -- turned back
+    into unset by :func:`apply_extension_layer`, as
+    :data:`dnsjax.parameters.OFF_CADENCES` are by the core merge --
+    and ``reset_when_off`` makes a ``0`` there reset the **whole**
+    section to its defaults, for an all-or-none section whose other
+    knobs, inherited and impossible to unset, would otherwise fail its
+    "set together" check.  ``values`` is the live merged singleton
+    (analogous to the global ``params``).
     """
 
     name: str
@@ -217,6 +229,8 @@ class ParamExtension:
     validate: Callable[[BaseModel, object], None] | None = None
     trajectory_defining: bool = False
     record_in_metadata: bool = True
+    off_cadences: tuple[str, ...] = ()
+    reset_when_off: bool = False
     values: BaseModel = field(init=False)
 
     def __post_init__(self) -> None:
@@ -276,13 +290,24 @@ def apply_extension_layer(overlays: dict[str, dict]) -> None:
 
     *overlays* maps section name -> ``exclude_unset``-style dict of
     explicitly-set fields; ``None`` values are skipped (mirroring the
-    core merge loop: a layer cannot unset a field).
+    core merge loop: a layer cannot unset a field).  A ``0`` in one of
+    a section's ``off_cadences`` is how a layer switches it off: it
+    becomes unset, and under ``reset_when_off`` the whole section
+    returns to its defaults.
     """
     for name, overlay in overlays.items():
         ext = EXTENSIONS[name]
         for key, value in overlay.items():
             if value is not None:
                 setattr(ext.values, key, value)
+        off = [
+            key for key in ext.off_cadences if getattr(ext.values, key) == 0
+        ]
+        if off and ext.reset_when_off:
+            _reset_values(ext)
+        else:
+            for key in off:
+                setattr(ext.values, key, None)
 
 
 def validate_extensions(params) -> None:
@@ -313,17 +338,22 @@ def extension_metadata(system: str) -> dict[str, dict]:
     }
 
 
-def reset_extensions() -> None:
-    """Reset every extension's ``values`` to defaults (test helper).
+def _reset_values(ext: ParamExtension) -> None:
+    """Return one extension's ``values`` to its defaults, in place.
 
-    Mutates the singletons in place -- consumers hold references to
-    them (e.g. ``from dnsjax.extensions import force_params``), so
-    they are never replaced.
+    In place because consumers hold references to the singleton (e.g.
+    ``from dnsjax.extensions import force_params``), so it is never
+    replaced.
     """
+    fresh = ext.model()
+    for name in ext.model.model_fields:
+        setattr(ext.values, name, getattr(fresh, name))
+
+
+def reset_extensions() -> None:
+    """Reset every extension's ``values`` to defaults (test helper)."""
     for ext in EXTENSIONS.values():
-        fresh = ext.model()
-        for name in ext.model.model_fields:
-            setattr(ext.values, name, getattr(fresh, name))
+        _reset_values(ext)
 
 
 # ── Built-in extensions ──────────────────────────────────────────
@@ -498,6 +528,8 @@ PROBES_EXTENSION = register_extension(
         relevant=lambda system: system in walled_systems,
         summary="Spectral-mode probe stream (response analysis).",
         validate=_validate_probes,
+        off_cadences=("it_probes",),
+        reset_when_off=True,
     )
 )
 
@@ -514,6 +546,8 @@ FORCE_EXTENSION = register_extension(
         ),
         validate=_validate_force,
         trajectory_defining=True,
+        off_cadences=("it_force",),
+        reset_when_off=True,
     )
 )
 

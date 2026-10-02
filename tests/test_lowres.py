@@ -12,14 +12,15 @@ singletons are captured at import, and several CPU devices need
    wall-normal axis mapped by :func:`dnsjax.fd.build_interpolation_matrix`
    between :func:`dnsjax.fd.grid_nodes` grids -- per azimuthal parity
    class and per component for the pipe, ``geo.m0 = 2`` so the
-   physical `$m$` decides the class -- and the velocity's wall rows
-   zeroed.  Plane Poiseuille also carries its static pressure, reduced
-   the same way; the viscoelastic pipe exercises the nine-component
-   parity table; Kolmogorov cuts its third Fourier axis instead of
-   interpolating.  The metadata must describe the reduced field (shape,
-   grid, ``res`` under the public names, the ``lowres`` entry).  Each
-   case runs on one device and on a ``(2, 2)`` mesh, and the parent
-   checks the two files hold the same data to round-off.
+   physical `$m$` decides the class -- the velocity's wall rows
+   zeroed, and the pressure's `$(0, 0)$` mode re-pinned to exactly
+   zero at the upper wall.  Plane Poiseuille also carries its static
+   pressure, reduced the same way; the viscoelastic pipe exercises the
+   nine-component parity table; Kolmogorov cuts its third Fourier axis
+   instead of interpolating.  The metadata must describe the reduced
+   field (shape, grid, ``res`` under the public names, the ``lowres``
+   entry).  Each case runs on one device and on a ``(2, 2)`` mesh, and
+   the parent checks the two files hold the same data to round-off.
 2. **pressure** -- plane Poiseuille and plane Couette (moving walls,
    where only the convective source keeps the mean mode's zero Neumann
    row exact): ``_cartesian_pressure.static_pressure`` equals the
@@ -187,6 +188,11 @@ def _host_reduce(np, field, *, scalar: bool):
         if not scalar:
             for row in wall_velocity_rows():
                 field[:3, row] = 0.0
+        else:
+            # The pressure's gauge, re-pinned after the truncation: its
+            # (0, 0) mode zero at the upper wall.
+            top = field[:, -1, 0, 0].copy()
+            field[:, :, 0, 0] -= top[:, None]
     field = field[:, :, wrap_keep(res.nz - 1, lo.nz - 1)]
     return field[:, :, :, : lo.nx // 2]
 
@@ -257,6 +263,8 @@ def _reduce_worker(system: str, ndev: int, out: Path) -> None:
         err = np.abs(p_got - p_expected).max() / np.abs(p_expected).max()
         assert err < RTOL_PRESSURE, f"pressure: relative error {err:.3e}"
         assert meta["pressure"]["kind"] == "static", meta["pressure"]
+        # The gauge the metadata states, exactly, after the reduction.
+        assert p_got[-1, 0, 0] == 0.0, p_got[-1, 0, 0]
     print(f"PASS reduce {system} on {ndev} device(s)")
 
 

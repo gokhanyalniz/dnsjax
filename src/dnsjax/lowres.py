@@ -43,7 +43,10 @@ reduced, axis by axis, where each axis is local:
   type at the reduced count -- Chebyshev coefficient truncation between
   CGL grids, the parity maps between the pipe's radial CGL grids, the
   local stencil otherwise -- with the velocity's wall rows reset to
-  zero.  Both grids are built in float64 by
+  zero and the pressure's `$(0, 0)$` mode re-pinned to zero at the
+  upper wall: a truncation moves end values, and both are stated
+  exactly (the no-slip condition, the pressure's gauge).  Both grids
+  are built in float64 by
   :func:`dnsjax.fd.grid_nodes`, so the CGL path holds in a
   single-precision run too.  A custom ``geo.wall_grid`` keeps its own
   count (``validate_parameters``);
@@ -71,6 +74,7 @@ from functools import partial
 from pathlib import Path
 
 from jax import Array, jit
+from jax import numpy as jnp
 
 from .flows.registry import cartesian_systems, periodic_systems, spec_for
 from .parameters import derived_params, params
@@ -135,6 +139,20 @@ def _reduce(
     if ky is not None:
         field = _resize_wrapped_axis(field, 1, *ky)
     return field
+
+
+@jit
+def _pin_mean_top(pressure: Array, mean_mask: Array) -> Array:
+    """Re-gauge a reduced ``(1, Ny, Nkz, Nkx)`` pressure.
+
+    Its `$(0, 0)$` mode, zero at the upper wall at full resolution,
+    moves there by the wall-normal reduction's truncation error;
+    subtracting that end value shifts the mean profile by a constant
+    and restores the gauge the metadata states.  *mean_mask* is the
+    geometry's one-hot ``fourier.mean_mask``, an argument like every
+    array here (``.claude/rules/jax.md``).
+    """
+    return pressure - jnp.where(mean_mask, pressure[:, -1:], 0.0)
 
 
 class LowResWriter:
@@ -293,6 +311,8 @@ class LowResWriter:
         reduced_p = None
         if pressure is not None:
             reduced_p = self.reduce(pressure[None], scalar=True)
+            if self.T is not None:
+                reduced_p = _pin_mean_top(reduced_p, self._fourier.mean_mask)
         save_snapshot(
             self.reduce(fields),
             t,

@@ -542,8 +542,9 @@ to 1 %), at ``solver.rhs_transform_chunks`` 1 and 3:
 - :func:`twin_budget` (three-bin): 43 / 37;
 - :func:`twin_ybudget`: 37 / 31 convective, 33 / 27 rotational, and
   the same with the 3-D cube, alone or beside the marginals;
-- :func:`difference_pressure` (the ``lowres_delta/`` pressure): 34 /
-  29, the budget's sources and solve without its densities;
+- :func:`difference_pressure` (the ``lowres_delta/`` pressure): 20 /
+  20, its single-pass source and the solve (34 / 29 when it was built
+  from the budget's six-piece sources);
 - for scale, the time step itself: 30 / 28 iterative-CN, 31 / 29
   CN/AB2;
 - :func:`twin_energies` 2.6 (7.9 under ``twin.bins``), the two
@@ -551,15 +552,20 @@ to 1 %), at ``solver.rhs_transform_chunks`` 1 and 3:
   them a peak.
 
 Every program is lowered as the run calls it, the singletons passed as
-arguments.  Baked in as constants instead (a ``jit`` of the bound
-step) the step measures 20 / 18 and 28 / 26: that program holds no
-copies of the banded factors inside its corrector loop, which the
-program a run executes does (visible in its compiled HLO).
+arguments.  The step's figure is a **CPU** one.  Some ten of its
+fields are the CPU banded sweep's per-solve permutations of the
+mode-inner factors to mode-outer
+(:func:`dnsjax.solvers._banded_mode_solve`): ``(N_y, N_{k_z},
+N_{k_x}, p)``-shaped transposes in its compiled HLO.  With the
+singletons baked in as constants (a ``jit`` of the bound step) XLA
+folds them, and the step measures 20 / 18 and 28 / 26.  The GPU
+kernel reads the stored mode-inner factors directly and makes no such
+permutation, so on a GPU the step's share is smaller and the other
+programs may sit further above it.
 
 So either budget, when enabled, is the run's high-water mark, since
 the device allocator's pool grows to the maximum over every program;
-without one, the difference pressure sits level with the step or up to
-a sixth above it.
+without one, the difference pressure sits below the step.
 A count of live fields misses about half: every batched transform
 carries some two padded fields of pipeline transient per field in
 flight on top of its output (a 3-field :func:`spec_to_phys` alone
@@ -592,7 +598,10 @@ from ..geometries.wall_bounded._base import (
     phys_to_spec,
     spec_to_phys,
 )
-from ..geometries.wall_bounded._cartesian_pressure import mean_advect
+from ..geometries.wall_bounded._cartesian_pressure import (
+    convective_nonlinear,
+    mean_advect,
+)
 from ..geometries.wall_bounded.cartesian import (
     DRIVING_KEY_N,
     DRIVING_KEY_S,
@@ -1994,16 +2003,20 @@ def _difference_pressure_jit(
 ) -> tuple[Array, Array]:
     r"""`$(\Delta\hat{\mathbf{u}}, \Delta\hat{p})$`, the static pair.
 
-    The convective sources and the solve of the budget's ``Wp``, so the
-    reduced difference snapshots (``twin.it_lowres_delta``) store
-    exactly the pressure the budget's work is computed from, formed
-    from `$\Delta\mathbf{u}$` directly rather than as a difference of
-    two `$O(1)$` pressures.
+    The pressure the budget's ``Wp`` is computed from, to round-off,
+    for the reduced difference snapshots (``twin.it_lowres_delta``):
+    the same convective source and the same solve, formed from
+    `$\Delta\mathbf{u}$` directly rather than as a difference of two
+    `$O(1)$` pressures.  The source is the summed single pass of
+    :func:`~dnsjax.geometries.wall_bounded._cartesian_pressure.convective_nonlinear`
+    with a reference, not the budget's six-piece split, which this
+    sample has no use for and which would set its peak ("Memory").
     """
-    src = _convective_sources(state1, state2, fourier_, flow_)
-    return src.delta, pressure.solve(
-        src.delta, src.div_n, src.n_hat[1], flow_, fourier_
+    delta = state2 - state1
+    n_hat, div_n = convective_nonlinear(
+        state2, fourier_, flow_, reference=state1
     )
+    return delta, pressure.solve(delta, div_n, n_hat[1], flow_, fourier_)
 
 
 def difference_pressure(
