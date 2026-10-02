@@ -25,6 +25,22 @@ initializes — `dist.np0`, `dist.np1`, `dist.platform`, and
 resume-decision fields `init.snapshot` and `init.force_resume` (recorded
 for lineage only), and the entire `solver` section is execution-only.
 
+A layer can set a field but never unset it: a `None` (`--outs.it_stats
+None`) is indistinguishable from not setting the field at all. So every
+optional output cadence is off at `0` as well as unset. That is how a
+resume switches off a cadence it inherited from its snapshot, and how a
+command line overrides one set in `parameters.toml`. The cadences are:
+
+- `outs.it_stats`, `it_steps`, `it_snapshot` and `it_corrector`;
+- `lowres.it_lowres`;
+- `probes.it_probes` and `force.it_force`; a `0` here switches the
+  whole section off, whatever else it inherited;
+- the `[twin]` cadences.
+
+A `0` is recorded as unset, so the next resume inherits "off". Three
+cadences have no off state: `outs.it_error_check`, `step.cfl_cadence`
+and `twin.it_energy`.
+
 Not every section is owned by the core parameter model. An
 **extension** registers a whole section of its own — parsed as
 `--<name>.<field>` and `[<name>]`, shown in `--help` and

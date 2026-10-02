@@ -1162,38 +1162,46 @@ class Initiation(BaseModel):
 
 
 class Outputs(BaseModel):
-    """Output frequency controls (in time-step counts)."""
+    """Output frequency controls (in time-step counts).
+
+    Each optional cadence is off when unset **or 0**: a layer cannot
+    unset a field it inherited (:func:`update_parameters` drops a
+    ``None``), so ``0`` is how a resume switches one off, and the merge
+    turns it back into unset (:data:`OFF_CADENCES`).
+    """
 
     # All cadences count time steps taken.
     it_stats: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
-            "Steps between stats.dat records; unset disables the stream."
+            "Steps between stats.dat records; unset or 0 disables the stream."
         ),
     )
     # Measured from the current state at the step's first
     # nonlinear-term evaluation (no extra Fourier transforms).
     it_steps: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between CFL time-step diagnostics in steps.dat; "
-            "unset disables the stream."
+            "unset or 0 disables the stream."
         ),
     )
     it_snapshot: int | None = Field(
         default=None,
-        ge=1,
-        description=("Steps between periodic snapshots; unset disables them."),
+        ge=0,
+        description=(
+            "Steps between periodic snapshots; unset or 0 disables them."
+        ),
     )
     # Same on-device buffering and file format as ``stats.dat``.
     it_corrector: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between corrector diagnostics (iteration count and "
-            "error) in corrector.dat; unset disables the stream; "
+            "error) in corrector.dat; unset or 0 disables the stream; "
             "requires it_error_check <= it_corrector.  All-zero rows "
             "under triply-periodic cnab2 (no corrector there)."
         ),
@@ -1309,15 +1317,17 @@ class Lowres(BaseModel):
     names follow the flow's ``res`` names (``nz`` / ``nr`` /
     ``ntheta`` on the cylindrical and annular flows).  These files are
     output, not checkpoints: a resume refuses them, and they carry no
-    solver-carried fields.  Inherited on resume like ``[outs]``.
+    solver-carried fields.  Inherited on resume like ``[outs]``, and
+    switched off the same way: ``it_lowres = 0`` (a ``dnsjax-twin``
+    member seeded from a ``[lowres]`` run included).
     """
 
     it_lowres: int | None = Field(
         default=None,
-        ge=1,
+        ge=0,
         description=(
             "Steps between reduced-resolution snapshots in lowres/; "
-            "unset disables them."
+            "unset or 0 disables them."
         ),
     )
     nx: int | None = Field(
@@ -2238,13 +2248,32 @@ _materialized_defaults: set[tuple[str, str]] = set()
 # quasi-Keplerian ``re2`` silently parameterizing Taylor-Couette).
 _derive_written: set[tuple[str, str]] = set()
 
+#: The optional output cadences: off when unset **or 0**.  A layer
+#: cannot unset a field (the merge below skips ``None``), so a cadence
+#: inherited from a snapshot or a lower layer could never be switched
+#: off; ``0`` can, and :func:`update_parameters` turns it back into
+#: unset, so every consumer and every recorded dump still sees
+#: ``None`` for off.  An extension declares its own
+#: (``ParamExtension.off_cadences``).  The always-on cadences
+#: (``outs.it_error_check``, ``step.cfl_cadence``) have no off state.
+OFF_CADENCES: tuple[tuple[str, str], ...] = (
+    ("outs", "it_stats"),
+    ("outs", "it_steps"),
+    ("outs", "it_snapshot"),
+    ("outs", "it_corrector"),
+    ("lowres", "it_lowres"),
+)
+
 
 def update_parameters(params_new: Parameters) -> None:
     """Merge *params_new* into the global ``params``
     and recompute derived values.
 
     Only fields that were explicitly set in *params_new* are applied, so
-    unset fields retain their previous values.  The ``(section, key)`` of
+    unset fields retain their previous values -- a ``None`` is skipped,
+    so no layer can unset a field, and an optional cadence is switched
+    off with ``0`` instead, turned back into unset here
+    (:data:`OFF_CADENCES`).  The ``(section, key)`` of
     every explicitly-set field is recorded (across all layers) in the
     module-level :data:`_user_set_fields`, so a per-flow default (a
     ``FieldSpec.default`` override, e.g. the viscoelastic axial period
@@ -2264,6 +2293,10 @@ def update_parameters(params_new: Parameters) -> None:
                 if value is not None:
                     _user_set_fields.add((category, key))
                     setattr(getattr(params, category), key, value)
+    # An off cadence (``0``) is unset from here on (:data:`OFF_CADENCES`).
+    for section, key in OFF_CADENCES:
+        if getattr(getattr(params, section), key) == 0:
+            setattr(getattr(params, section), key, None)
 
     # Per-flow parameter resolution.  Re-run after every layer, so a
     # later ``system``/``scheme`` override can never inherit a stale

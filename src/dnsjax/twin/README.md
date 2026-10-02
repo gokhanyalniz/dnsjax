@@ -56,19 +56,25 @@ which `dnsjax-twin` registers and the solver does not.
 | `twin.bins` | `false` | Also record the $\Delta U$ / $\Delta u_1$ / $\Delta u_2$ three-bin energies in `twin.dat`; required by `it_budget` |
 | `twin.x0_planes` | `false` | Also store the $k_x = 0$ plane (the `_x0` fields) in both wall-normal-resolved streams: $E_{\Delta u_1}$, and with it $E_{\Delta u_2}$, resolved in $k_z$. The three-bin split does not need it; off, it is never traced |
 | `twin.it_energy` | `1` | Steps between `twin.dat` rows |
-| `twin.it_budget` | unset | Steps between `twin_budget.dat` rows; unset disables the stream |
-| `twin.it_spectra` | unset | Steps between `twin_spectra.bin` records; unset disables the stream |
+| `twin.it_budget` | unset | Steps between `twin_budget.dat` rows; unset or `0` disables the stream |
+| `twin.it_spectra` | unset | Steps between `twin_spectra.bin` records; unset or `0` disables the stream |
 | `twin.it_yspectra` | unset | Steps between `twin_yspectra.bin` records (wall-normal-resolved componentwise spectra) |
 | `twin.it_ybudget` | unset | Steps between `twin_ybudget.bin` records (the same bins' budget) |
 | `twin.rotational_ybudget` | `false` | Write that budget with the rotational nonlinear term instead of the convective one |
 | `twin.spectra_ref` | `true` | Also record the reference state's spectra, in streams of their own (below); off, they are never traced |
-| `twin.it_spectra_ref` | `it_spectra` | Steps between `twin_spectra_ref.bin` records |
-| `twin.it_yspectra_ref` | `it_yspectra` | Steps between `twin_yspectra_ref.bin` records |
+| `twin.it_spectra_ref` | `it_spectra` | Steps between `twin_spectra_ref.bin` records; `0` switches this stream alone off |
+| `twin.it_yspectra_ref` | `it_yspectra` | Steps between `twin_yspectra_ref.bin` records; `0` switches this stream alone off |
 | `twin.it_spectra3d` | unset | Steps between `twin_spectra3d/` files: the difference energy as a subsampled $(y, k_z, k_x)$ cube, one file per sample |
-| `twin.it_spectra3d_ref` | `it_spectra3d` | Steps between `twin_spectra3d_ref/` files, the reference state's cube |
+| `twin.it_spectra3d_ref` | `it_spectra3d` | Steps between `twin_spectra3d_ref/` files, the reference state's cube; `0` switches them alone off |
 | `twin.it_budget3d` | unset | Steps between `twin_budget3d/` files: the convective `twin_ybudget` terms on the same points |
 | `twin.n_y3d`, `n_kz3d`, `n_kx3d` | unset | Points the cubes keep per axis, spaced uniformly in the logarithm of the wall distance, $\lvert k_z \rvert$ and $k_x$; unset keeps every one |
 | `twin.it_lowres_delta` | unset | Steps between `lowres_delta/` reduced-resolution snapshots of the difference field and its pressure, at the `[lowres]` resolution |
+
+Every optional cadence here is off when unset **or `0`**. A layer cannot
+unset a field, so `0` is how a command line switches off a cadence a
+member's `parameters.toml` sets (the root
+[configuration guide](../../../docs/configuration.md)); it is recorded
+in `twin.json` as unset. `it_energy` has no off state.
 
 `twin.bins` and `twin.x0_planes` are both off by default, and both
 for the same reason. The three-bin split is a three-bin partition of
@@ -94,15 +100,16 @@ over every program. `it_ybudget` costs memory in two places — a
 resident second factored banded operator with its homogeneous columns
 (`twin/pressure.py`'s "Cost" section), and a per-sample transient that
 is the easy one to miss: measured on CPU at some 37 padded physical
-fields' worth, against 30 for the time step itself, so an enabled
-budget stream rather than the step sets the run's peak
+fields' worth, against 30 for the time step itself (a CPU figure: the
+CPU solve's factor permutations account for some ten of those 30), so
+an enabled budget stream rather than the step sets the run's peak
 (`twin/diagnostics.py`'s "Memory" section). `it_budget3d` is the same
 program and the same costs, and a sample due for both shares one
 density pass. `it_lowres_delta` under `lowres.pressure` holds the same
-resident operator, and its sample peaks at some 34 fields: the
-budget's sources and solve without its densities. A GPU schedules its own;
-the driver's closing `Peak device memory` line is the number to size a
-job against. `spectra_ref`
+resident operator, and its sample peaks at some 20 fields, below the
+step: a single pass of the pressure's source, without the budget's
+split of it. A GPU schedules its own; the driver's closing
+`Peak device memory` line is the number to size a job against. `spectra_ref`
 gates the reference half of **every** spectrum in compute as well as on
 disk: each half is a static flag on its jitted sampler, so with it off
 the reference reduction is never traced — saving a field pass and a
@@ -341,8 +348,9 @@ as a plain solver run writes it. `lowres_delta/` holds the difference
 field $\Delta\mathbf{u}$ at `twin.it_lowres_delta`. Under
 `lowres.pressure` (on by default for these flows) each file also holds
 its static pressure; the difference's, $\Delta p$, is the pressure the
-budget's `Wp` is computed from, solved from $\Delta\mathbf{u}$ directly
-rather than as a difference of two pressures. Both are computed at the run's
+budget's `Wp` is computed from (to round-off), solved from
+$\Delta\mathbf{u}$ directly rather than as a difference of two
+pressures. Both are computed at the run's
 resolution and then reduced. Both are snapshot files read by
 `dnsjax.analysis.read_state` / `read_pressure`, and neither is a
 checkpoint.

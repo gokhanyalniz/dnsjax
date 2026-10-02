@@ -36,7 +36,9 @@ shows at ``np0 > 1`` *and* ``np1 > 1``):
    rejection (both via ``validate_parameters``), and the
    unsupported-system rejection (via ``validate_extensions``); a
    reference cadence with ``spectra_ref`` off and a 3-D budget in the
-   rotational form are refused too.
+   rotational form are refused too, while a cadence of ``0`` on a layer
+   is "off": unset for the streams, kept for a reference cadence,
+   recorded unset in ``twin.json`` either way.
 7. The reference spectra split: asking the ``(k_z, k_x)`` and
    ``(y, k)`` samplers for one half returns exactly the values the
    combined call returns for it.
@@ -51,7 +53,10 @@ shows at ``np0 > 1`` *and* ``np1 > 1``):
 9. The difference pressure of the reduced difference snapshots equals
    the difference of the two states' static pressures
    (:mod:`dnsjax.geometries.wall_bounded._cartesian_pressure`) -- the
-   twin path and the single-state path agreeing on the same algebra.
+   twin path and the single-state path agreeing on the same algebra --
+   and its single-pass source equals the budget's six convective
+   pieces summed, to round-off, and is exactly zero at a zero
+   difference.
 
 Run as a script via ``uv run python tests/test_twin_unit.py``.
 """
@@ -556,6 +561,30 @@ def test_validate_hook() -> None:
     _expect_value_error("convective budget terms", validate_parameters)
     twin_params.rotational_ybudget = False
     twin_params.it_budget3d = None
+
+    # ``0`` switches a cadence off on a layer: an off cadence becomes
+    # unset (a member's TOML value overridden from the command line), a
+    # reference cadence keeps its 0, which is "off" for that output
+    # alone while its difference stream runs, and twin.json records
+    # both as unset.  A 0 reference cadence is consistent with the
+    # reference switched off altogether.
+    from dnsjax.extensions import apply_extension_layer
+    from dnsjax.twin.driver import _twin_sidecar_stub, ref_cadence
+
+    apply_extension_layer({"twin": {"it_spectra": 5, "it_yspectra": 4}})
+    apply_extension_layer({"twin": {"it_spectra": 0, "it_yspectra_ref": 0}})
+    assert twin_params.it_spectra is None, twin_params.it_spectra
+    assert twin_params.it_yspectra_ref == 0, twin_params.it_yspectra_ref
+    assert ref_cadence(twin_params, "it_yspectra") is None
+    record = _twin_sidecar_stub()
+    assert record["it_spectra"] is None and record["it_yspectra"] == 4
+    assert record["it_yspectra_ref"] is None, record["it_yspectra_ref"]
+    validate_parameters()
+    twin_params.spectra_ref = False
+    validate_parameters()
+    twin_params.spectra_ref = True
+    twin_params.it_yspectra = None
+    twin_params.it_yspectra_ref = None
 
     # Unsupported system (validate_extensions is the registry layer
     # validate_parameters dispatches; the core parameter checks of
@@ -1205,6 +1234,40 @@ def test_difference_pressure() -> None:
     print(f"difference pressure = p2 - p1 ({err:.1e} of max |p|): OK")
 
 
+def test_difference_source() -> None:
+    r"""The reduced difference snapshots' source is the budget's, summed.
+
+    ``convective_nonlinear`` with a reference forms
+    `$-\mathcal{N}_\Delta = (\mathbf{u}^{(2)}\cdot\nabla)
+    \Delta\mathbf{u} + (\Delta\mathbf{u}\cdot\nabla)\mathbf{u}^{(1)}$`
+    in one pass, where ``_convective_sources`` builds the same sum from
+    the budget's six pieces: exact algebra both ways, so the two agree
+    to round-off.  At a zero difference the single pass is exactly
+    zero, which the ``e0 = 0`` guard of the reduced difference
+    snapshots relies on.
+    """
+    import jax
+
+    from dnsjax.geometries.wall_bounded._cartesian_pressure import (
+        convective_nonlinear,
+    )
+
+    single_pass = jax.jit(convective_nonlinear)
+    s1, s2 = _solenoidal_pair()
+    src = jax.jit(td._convective_sources)(s1, s2, fourier, td.flow)
+    n_hat, div_n = single_pass(s2, fourier, td.flow, reference=s1)
+    for got, want, label in (
+        (n_hat, src.n_hat, "n_hat"),
+        (div_n, src.div_n, "div_n"),
+    ):
+        want = np.asarray(want)
+        err = np.abs(np.asarray(got) - want).max() / np.abs(want).max()
+        assert err < 1e-13, f"{label}: {err:.2e} of its max"
+    zero, _ = single_pass(s1, fourier, td.flow, reference=s1)
+    assert not np.any(np.asarray(zero)), "a zero difference has a source"
+    print("difference source = the budget's sources, summed: OK")
+
+
 if __name__ == "__main__":
     test_masks_partition()
     test_energy_partition()
@@ -1228,4 +1291,5 @@ if __name__ == "__main__":
     test_cube_vs_numpy()
     test_cube_marginals()
     test_difference_pressure()
+    test_difference_source()
     print("All twin unit tests passed.")

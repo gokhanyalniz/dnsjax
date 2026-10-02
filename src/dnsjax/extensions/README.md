@@ -17,7 +17,10 @@ Neither is needed for an ordinary run.
 
 Every `probes.it_probes` steps, the complex wall-normal profiles
 $\hat{\mathbf{u}}(y, t)$ of a listed set of global spectral modes are
-appended to a binary `probes.bin`. Wall-bounded systems only.
+appended to a binary `probes.bin`. Wall-bounded systems only. The
+section is inherited on resume; `--probes.it_probes 0` switches it off,
+whatever modes it inherited
+([`configuration.md`](../../../docs/configuration.md)).
 
 ```bash
 .venv/bin/dnsjax \
@@ -101,6 +104,8 @@ is added to the carried $w_s = h\,u_s$ (the column `[probes]` records
 there), not to $u_s$. It is **trajectory-defining** — kicks
 alter the dynamics exactly as a `phys` change does, so resuming with
 changed forcing starts a new trajectory unless `init.force_resume`.
+`--force.it_force 0` switches an inherited section off, the whole
+quartet with it, which is such a change.
 
 | Knob | Meaning |
 |---|---|
