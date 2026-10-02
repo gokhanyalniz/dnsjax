@@ -277,13 +277,17 @@ back to `gloo` otherwise. The same docstring covers when raising
 
 The rules above fix a run's shape. What they leave open — the rank
 count on a CPU node, the grid axis and the Pallas tile on a GPU node,
-the precision — is measured on the machine itself by
+the precision, how far the step scales across nodes — is measured on
+the machine itself by
 [`scripts/node_benchmark.py`](../scripts/node_benchmark.py). It launches
 the ordinary solver on one fixed problem (the production configuration
-with a short horizon) across every candidate layout, and tabulates the
-seconds per time unit, the parallel efficiency, and on GPU the peak
-device memory, which the closing summary of every GPU run also reports.
-The starting points below are configuration, not measurements.
+with a short horizon) across every candidate layout, on one node or
+several, and tabulates the seconds per time unit, the parallel
+efficiency, the cost in node hours per time unit, the start-up time and
+the peak memory, which the closing summary of every run reports: the
+device's on GPU, the operating system's on CPU (`Peak host memory`, per
+rank and for the fullest node). The starting points below are
+configuration, not measurements.
 
 **A two-socket CPU node** (for example 2 × 64-core AMD EPYC 7742): one
 rank per physical core, bound to it and running one XLA thread (the
@@ -295,15 +299,66 @@ mpirun -np 128 --map-by core --bind-to core -x MPITRAMPOLINE_LIB \
   .venv/bin/dnsjax --dist.platform cpu --dist.np0 <n0> --dist.np1 <n1> ...
 ```
 
-These are Open MPI's binding flags; under SLURM the equivalent is
-`srun --ntasks-per-node 128 --cpu-bind=cores`. A one-dimensional grid of
-128 needs 128 to divide, or at least not badly overshoot, both axes it
+These are Open MPI's binding flags. Under SLURM, launch with `srun`
+and keep consecutive ranks on adjacent cores — the `np1` groups are
+consecutive ranks, and the heavier exchange runs within them:
+
+```bash
+srun --ntasks-per-node 128 --cpus-per-task 1 --hint=nomultithread \
+  --distribution=block:block .venv/bin/dnsjax ...
+```
+
+`--hint=nomultithread` gives each rank a physical core on a node with
+hardware threads. To run fewer ranks per node, give each rank several
+cores (`--ntasks-per-node 64 --cpus-per-task 2`, and
+`export SRUN_CPUS_PER_TASK=$SLURM_CPUS_PER_TASK` where `srun` does not
+inherit the job's value) rather than switching to a cyclic
+distribution: both spread the ranks over every memory channel, but a
+cyclic one also scatters each `np1` group across the node. A rank still
+runs one XLA thread; the cores left over are what an underpopulated
+node pays for more memory and memory bandwidth per rank.
+
+**Choose the grid against the padding.** A one-dimensional grid of 128
+needs 128 to divide, or at least not badly overshoot, both axes it
 splits — the wall-normal points and the stored spanwise modes for `np0`,
 the streamwise modes and the oversampled spanwise points for `np1` — so
-at production sizes the 128-rank candidates are mostly two-dimensional.
+at production sizes the 128-rank candidates are often two-dimensional,
+or split on `np1`. Divisibility padding inflates every array and idles
+the ranks that hold only padding: at `1280 x 385 x 320` on 128 ranks,
+`(128, 1)` pads the wall-normal axis from 385 to 512 points and the
+stored spanwise modes from 319 to 384, while `(4, 32)` pads them to 388
+and 320 and `(1, 128)` pads neither (its oversampled spanwise axis
+rounds from 480 to 512 points). `node_benchmark.py --dry-run` prints
+every layout's padding before anything runs.
+
+**Size the node, not just the rank.** On a node of many cores and a few
+GiB per core, every rank's own runtime — the interpreter, jaxlib, the
+compiled programs, the MPI library's buffers — is multiplied by the
+rank count, on top of the problem's share, and it is a large fraction
+of the budget (about 0.45 GiB of private memory per rank for a
+production plane-channel configuration on a workstation, before any
+site MPI's own). Three tools separate the two:
+[`scripts/memory_budget.py`](../scripts/memory_budget.py) predicts the
+problem's share per rank for any layout from XLA's own buffer
+assignment, without the machine; the `Peak host memory` line of a run
+reports what the operating system saw; and
+[`scripts/memory_watch.py`](../scripts/memory_watch.py) samples each
+node's total during a job, so an out-of-memory kill is placed against
+its layout and start-up phase. A layout that does not fit is helped, in
+order, by less padding, by `solver.rhs_transform_chunks`, and by fewer
+ranks per node.
+
+**Across nodes**, keep one node per `np1` group (`np1` = ranks per
+node, `np0` = number of nodes): XLA runs a cross-process all-to-all as
+a sequence of pairwise exchanges, without overlapping it with
+computation, so the exchange that stays inside a node is the cheaper
+one. `node_benchmark.py --launcher srun --nodes 1 2 4 ...`, run inside
+the allocation, measures the strong scaling of the production problem
+directly; its `--exe` arms compare two checkouts in one sweep.
 `node_benchmark.py --target cpu` runs every factorization at each rank
-count (`--ranks 16 32 64 128` by default), so the table also shows the
-rank count at which the step stops scaling.
+count (`--ranks 16 32 64 128` by default, or `--np1` to keep a few),
+so the table also shows the rank count at which the step stops
+scaling.
 
 **A four-GPU node** (for example 4 × NVIDIA H200): one process addressing
 all four GPUs, no launcher:

@@ -180,6 +180,7 @@ from ..__main__ import (
     _flush_stats,
     _interpolate_if_needed,
     _peak_device_bytes,
+    _peak_host_memory_line,
     _write_dat_header,
 )
 from ..__main__ import (
@@ -349,7 +350,7 @@ class TwinParams(BaseModel):
       numbers).  *Transient*: the sample program peaks at ~37
       padded physical components convectively and ~33 under
       ``twin.rotational_ybudget`` (measured on CPU; the iterative-CN
-      step is 20, CN/AB2 28), so it, not the step, sets the run's
+      step is 22, CN/AB2 24), so it, not the step, sets the run's
       peak; ``solver.rhs_transform_chunks = 3`` brings those to
       31 / 27.  The table, what a count of live fields misses, and
       why a GPU run reads its own ``Peak device memory`` line
@@ -2165,6 +2166,10 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                 f"Peak device memory: {peak / 2**30:.2f} GiB "
                 "(largest over this process's devices)."
             )
+        # Every rank: the CPU line gathers across processes.
+        host = _peak_host_memory_line(jax)
+        if host is not None:
+            sharding.print(host)
 
     flush_all_buffers()
 

@@ -261,6 +261,21 @@ class Distribution(BaseModel):
     change the rule, so measuring one is waste.  If a CPU run is
     device-starved, the answer is more ranks.
 
+    CPU runs under SLURM
+    --------------------
+    Under SLURM a CPU run is one ``srun`` task per core:
+    ``--hint=nomultithread --distribution=block:block`` keeps
+    consecutive ranks -- the ``np1`` groups -- on adjacent cores, and
+    fewer ranks per node take more cores each (``--cpus-per-task``)
+    rather than a cyclic distribution, which would scatter the groups
+    (``docs/scaling.md``, "Target nodes").  Such a launch completes
+    none of the rank layouts ``bootstrap._launcher_ranks`` reads (Cray
+    MPICH's PMI, for one, sets no ``MPI_LOCALRANKID``), so the ranks
+    find each other through JAX's own SLURM detection, whose
+    coordinator port derives from the job id: concurrent ``srun`` steps
+    that share their first node need a distinct
+    ``JAX_COORDINATOR_PORT`` each.
+
     CPU runs: cross-process collectives
     -----------------------------------
     JAX's CPU backend defaults to **gloo** (TCP) for cross-process

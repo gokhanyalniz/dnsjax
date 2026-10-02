@@ -371,17 +371,15 @@ def _make_complex(shape, seed, sharding, spec):
 def _part_a_cpu(op, sharding, reps: int) -> None:
     r"""CPU arm of Part A: where one ``Lk`` solve's time goes on CPU.
 
-    The GPU decomposition (kernel / split / recombine) does not
-    transfer, because a CPU run never reaches ``pallas_call``: it takes
-    the pure-JAX sweep, which first rebuilds the **mode-outer** factors
-    the sweep was written against -- crop off the Pallas tile pad,
-    ``moveaxis`` both factors, un-invert the ``U`` diagonal.  That
-    *factor prologue* is exactly what a CPU-native stored layout would
-    delete, so sizing it bounds what any such layout can win.
+    The GPU decomposition does not transfer as-is, because a CPU run
+    never reaches ``pallas_call``: it takes the pure-JAX
+    :func:`~dnsjax.solvers._banded_solve_mode_inner`, which reads the
+    stored mode-inner factors directly.  What surrounds that sweep is
+    the same as on GPU: the mandatory complex -> real split of the RHS
+    (re/im on axis 1) and the recombine.
 
-    Reported: the full solve, the sweep alone (factors and RHS
-    pre-prepared), the prologue alone, and the mandatory complex ->
-    real split / recombine.  As on GPU the isolated pieces over-count
+    Reported: the full solve, the sweep alone (RHS pre-split), and the
+    split / recombine alone.  As on GPU the isolated pieces over-count
     -- each pays a round trip it does not pay when fused -- so the
     honest figure for anything fused into the solve is ``full - sweep``.
 
@@ -389,18 +387,16 @@ def _part_a_cpu(op, sharding, reps: int) -> None:
     is not a detail: the real stepper takes ``flow`` as an argument
     (``_base.build_wall_bounded_stepper`` calls
     ``_predict_and_fully_correct_jit(state, fourier, flow)``), so the
-    factor arrays are runtime parameters and the prologue *executes*.
-    Closing over the operator instead makes them compile-time constants,
-    XLA folds the whole prologue away, and the solve then measures as if
-    the prologue were free -- which it is not, in the configuration that
-    ships.
+    factor arrays are runtime parameters.  Closing over the operator
+    instead makes them compile-time constants, which XLA may fold work
+    around, and the solve then measures something no run executes.
     """
     import jax.numpy as jnp
     from jax import lax
 
-    from dnsjax.solvers import _banded_solve_batched, _real_rhs_view
+    from dnsjax.solvers import _banded_solve_mode_inner
 
-    L, U = op.L, op.U  # mode-inner (N, p, Nkz*, Nkx*) / (N, p+1, ...)
+    L, U = op.L, op.U  # mode-inner (N, p, Nkz, Nkx) / (N, p+1, ...)
     N, p = L.shape[0], L.shape[1]
     pp1 = U.shape[1]
     Nkz, Nkx = sharding.nz_spec, sharding.nx_spec
@@ -417,47 +413,27 @@ def _part_a_cpu(op, sharding, reps: int) -> None:
         for i in range(reps)
     ]
 
-    def _prologue(L_, U_):
-        """The CPU branch's factor preparation, verbatim.
+    def _split(z):
+        return jnp.stack([z.real, z.imag], axis=1)
 
-        Two ``moveaxis`` and nothing else: the CPU build stores the
-        plain diagonal at the true plane, so there is no tile crop and
-        no un-inversion here (``from_banded_factors``).
-        """
-        return (
-            jnp.moveaxis(L_, (0, 1), (-2, -1)),
-            jnp.moveaxis(U_, (0, 1), (-2, -1)),
-        )
-
-    Lo, Uo = jax.block_until_ready(jax.jit(_prologue)(L, U))
-    bs = [
-        jax.block_until_ready(
-            jax.jit(lambda z: _real_rhs_view(jnp.moveaxis(z, 0, -1)))(z)
-        )
-        for z in zs
-    ]
+    bs = [jax.block_until_ready(jax.jit(_split)(z)) for z in zs]
 
     def _full(L_, U_, z):
         return type(op)(L=L_, U=U_).solve(z)
 
     def _sweep(L_, U_, b):
-        return _banded_solve_batched(L_, U_, b, p)
+        return _banded_solve_mode_inner(L_, U_, b, p)
 
     t_full = _bench(_full, [(L, U, z) for z in zs])
-    t_sweep = _bench(_sweep, [(Lo, Uo, b) for b in bs])
-    t_prol = _bench(_prologue, [(L, U)] * reps)
-    t_split = _bench(
-        lambda z: _real_rhs_view(jnp.moveaxis(z, 0, -1)), [(z,) for z in zs]
-    )
+    t_sweep = _bench(_sweep, [(L, U, b) for b in bs])
+    t_split = _bench(_split, [(z,) for z in zs])
     t_recomb = _bench(
-        lambda x: jnp.moveaxis(lax.complex(x[..., 0], x[..., 1]), -1, 0),
-        [(b,) for b in bs],
+        lambda x: lax.complex(x[:, 0], x[:, 1]), [(b,) for b in bs]
     )
 
     m = N * Nkz * Nkx
     fac = (m * p + m * pp1) * 8
     sweep_bytes = fac + m * 2 * 8 * 2
-    prol_bytes = 2 * fac  # read + write both factors
     split_bytes = m * 16 + m * 2 * 8
     recomb_bytes = m * 2 * 8 + m * 16
 
@@ -469,24 +445,20 @@ def _part_a_cpu(op, sharding, reps: int) -> None:
         f"{_bw(sweep_bytes + split_bytes + recomb_bytes, t_full)}"
     )
     print(
-        f"  sweep  _banded_solve_batched  {_ms(t_sweep)}   "
+        f"  sweep  mode-inner scans       {_ms(t_sweep)}   "
         f"{_bw(sweep_bytes, t_sweep)}   {_pct(t_sweep)}"
     )
     print(
-        f"  prolog moveaxis x2            {_ms(t_prol)}   "
-        f"{_bw(prol_bytes, t_prol)}   {_pct(t_prol)}"
-    )
-    print(
-        f"  split  moveaxis+re/im view    {_ms(t_split)}   "
+        f"  split  re/im onto axis 1      {_ms(t_split)}   "
         f"{_bw(split_bytes, t_split)}   {_pct(t_split)}"
     )
     print(
-        f"  recomb complex+moveaxis       {_ms(t_recomb)}   "
+        f"  recomb complex                {_ms(t_recomb)}   "
         f"{_bw(recomb_bytes, t_recomb)}   {_pct(t_recomb)}"
     )
 
     marginal = t_full - t_sweep
-    summ = t_sweep + t_prol + t_split + t_recomb
+    summ = t_sweep + t_split + t_recomb
     print(
         f"\n  sum(pieces)/full = {summ / t_full:4.2f}; the isolated pieces "
         "over-count (each pays\n  a round trip it does not pay fused), so "
@@ -496,18 +468,9 @@ def _part_a_cpu(op, sharding, reps: int) -> None:
     )
     if marginal <= 0.0:
         print(
-            "  That is <= 0: the prologue and the re/im plumbing are fused "
-            "into the sweep\n  and cost nothing measurable.  A CPU-native "
-            "stored factor layout has nothing\n  left to remove here -- "
-            "any change would have to make the SWEEP itself faster."
-        )
-    else:
-        print(
-            f"  The prologue alone measures {_ms(t_prol)} unfused, which "
-            "bounds nothing by\n  itself (it exceeds the full solve "
-            "whenever dispatch dominates).  Only the\n  fused figure "
-            "above caps what a CPU-native stored layout could win, and\n"
-            "  Part B's solve share caps what that is worth to the step."
+            "  That is <= 0: the re/im plumbing is fused into the sweep and "
+            "costs nothing\n  measurable.  Any change would have to make "
+            "the SWEEP itself faster."
         )
 
 
@@ -701,14 +664,11 @@ def _crossing_census(label: str, jitted, args) -> dict[str, int]:
 def _split_helpers():
     """Backend-matched split-real conversions and bare sweeps.
 
-    The carried split-real layout is the one the backend's own solve
-    body already builds internally, so the hoisted arm removes work
-    without inventing a layout:
-
-    - kernel path: mode-inner ``(N, 2, Nkz, Nkx)``, re/im on axis 1 --
-      exactly the buffer :func:`_pallas_banded_solve` ingests;
-    - CPU sweep: mode-outer ``(Nkz, Nkx, N, 2)`` -- exactly what
-      :func:`_banded_solve_batched` ingests.
+    The carried split-real layout is the one the solve body already
+    builds internally -- mode-inner ``(N, 2, Nkz, Nkx)``, re/im on axis
+    1, exactly the buffer :func:`_pallas_banded_solve` and the CPU
+    :func:`_banded_solve_mode_inner` both ingest -- so the hoisted arm
+    removes work without inventing a layout.
 
     Returned as ``(to_split, from_split, sweep, coeff)``; *coeff*
     reshapes a real mode-inner ``(N, Nkz, Nkx)`` coefficient into the
@@ -719,42 +679,29 @@ def _split_helpers():
     from jax import lax
 
     from dnsjax.solvers import (
-        _banded_solve_batched,
-        _complex_from_view,
+        _banded_solve_mode_inner,
         _kernel_path,
         _pallas_banded_solve,
-        _real_rhs_view,
     )
 
+    def to_split(z):
+        return jnp.stack([z.real, z.imag], axis=1)
+
+    def from_split(x):
+        return lax.complex(x[:, 0], x[:, 1])
+
     if _kernel_path():
-
-        def to_split(z):
-            return jnp.stack([z.real, z.imag], axis=1)
-
-        def from_split(x):
-            return lax.complex(x[:, 0], x[:, 1])
 
         def sweep(L, U, b, p):
             return _pallas_banded_solve(L, U, b, p)
 
-        def coeff(w):
-            return w[:, None]
-
     else:
 
-        def to_split(z):
-            return _real_rhs_view(jnp.moveaxis(z, 0, -1))
-
-        def from_split(x):
-            return jnp.moveaxis(_complex_from_view(x), -1, 0)
-
         def sweep(L, U, b, p):
-            Lo = jnp.moveaxis(L, (0, 1), (-2, -1))
-            Uo = jnp.moveaxis(U, (0, 1), (-2, -1))
-            return _banded_solve_batched(Lo, Uo, b, p)
+            return _banded_solve_mode_inner(L, U, b, p)
 
-        def coeff(w):
-            return jnp.moveaxis(w, 0, -1)[..., None]
+    def coeff(w):
+        return w[:, None]
 
     return to_split, from_split, sweep, coeff
 
@@ -783,7 +730,7 @@ def _part_a2(system, flow, sharding, reps, t_step, n) -> None:
     ``flow`` as one; closing over them folds stages away -- see
     :func:`_part_a_cpu`), and are timed as one jit region each.  The
     hoisted arm is one ``shard_map`` region built from the solver's own
-    :func:`_banded_solve_batched` / :func:`_pallas_banded_solve`, so it
+    :func:`_banded_solve_mode_inner` / :func:`_pallas_banded_solve`, so it
     cannot drift from the shipped body, and its output is asserted
     **bit-identical** -- a representation change that moves a value is
     a bug, and the assertion is also what pins the arm's fidelity.
@@ -2442,8 +2389,8 @@ def main() -> None:
     print("\n" + "=" * 72)
     print(
         "Done.  Paste the full stdout back.  Key numbers: Part A "
-        "'split+recombine\n% of the solve' (H1; on CPU the factor "
-        "prologue's share) and Part B\n'c*(Lk+Hk) / step' (H2)."
+        "'split+recombine\n% of the solve' (H1; on CPU 'full - sweep') "
+        "and Part B\n'c*(Lk+Hk) / step' (H2)."
     )
     print("=" * 72)
 

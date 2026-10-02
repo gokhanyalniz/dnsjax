@@ -25,6 +25,7 @@ paths:
   storage: from `_force_kernel_path`, then `solver.pallas_kernel`,
   then the live backend. A test that flips `_force_kernel_path` does
   so before building the operator.
-- The kernel's `custom_vjp` is checked against the portable
-  `_banded_solve_batched`, which differentiates through its own
-  `lax.scan`. Never route that oracle through the rule.
+- The kernel's `custom_vjp` is checked against the two portable
+  sweeps, `_banded_solve_batched` (mode-outer) and
+  `_banded_solve_mode_inner` (the CPU solve), which differentiate
+  through their own `lax.scan`. Never route either through the rule.

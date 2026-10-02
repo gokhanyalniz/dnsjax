@@ -100,16 +100,16 @@ over every program. `it_ybudget` costs memory in two places — a
 resident second factored banded operator with its homogeneous columns
 (`twin/pressure.py`'s "Cost" section), and a per-sample transient that
 is the easy one to miss: measured on CPU at some 37 padded physical
-fields' worth, against 30 for the time step itself (a CPU figure: the
-CPU solve's factor permutations account for some ten of those 30), so
-an enabled budget stream rather than the step sets the run's peak
+fields' worth, against 22 for the time step itself, so an enabled
+budget stream rather than the step sets the run's peak
 (`twin/diagnostics.py`'s "Memory" section). `it_budget3d` is the same
 program and the same costs, and a sample due for both shares one
 density pass. `it_lowres_delta` under `lowres.pressure` holds the same
 resident operator, and its sample peaks at some 20 fields, below the
 step: a single pass of the pressure's source, without the budget's
 split of it. A GPU schedules its own; the driver's closing
-`Peak device memory` line is the number to size a job against. `spectra_ref`
+`Peak device memory` line (`Peak host memory` on CPU) is the number to
+size a job against. `spectra_ref`
 gates the reference half of **every** spectrum in compute as well as on
 disk: each half is a static flag on its jitted sampler, so with it off
 the reference reduction is never traced — saving a field pass and a

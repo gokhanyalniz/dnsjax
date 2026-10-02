@@ -545,27 +545,25 @@ to 1 %), at ``solver.rhs_transform_chunks`` 1 and 3:
 - :func:`difference_pressure` (the ``lowres_delta/`` pressure): 20 /
   20, its single-pass source and the solve (34 / 29 when it was built
   from the budget's six-piece sources);
-- for scale, the time step itself: 30 / 28 iterative-CN, 31 / 29
+- for scale, the time step itself: 22 / 20 iterative-CN, 24 / 22
   CN/AB2;
 - :func:`twin_energies` 2.6 (7.9 under ``twin.bins``), the two
   spectra samples 1.5 and 1.3, the 3-D energy cubes 1.3 -- none of
   them a peak.
 
 Every program is lowered as the run calls it, the singletons passed as
-arguments.  The step's figure is a **CPU** one.  Some ten of its
-fields are the CPU banded sweep's per-solve permutations of the
-mode-inner factors to mode-outer
-(:func:`dnsjax.solvers._banded_mode_solve`): ``(N_y, N_{k_z},
-N_{k_x}, p)``-shaped transposes in its compiled HLO.  With the
-singletons baked in as constants (a ``jit`` of the bound step) XLA
-folds them, and the step measures 20 / 18 and 28 / 26.  The GPU
-kernel reads the stored mode-inner factors directly and makes no such
-permutation, so on a GPU the step's share is smaller and the other
-programs may sit further above it.
+arguments.  The step's figure is a **CPU** one.  Until 2026-10 it was
+30 / 28 and 31 / 29: some seven fields were the CPU banded sweep's
+per-solve permutations of the stored factors, which
+:func:`dnsjax.solvers._banded_solve_mode_inner` no longer makes (with
+the singletons baked in as constants XLA folds such work, so a ``jit``
+of the bound step measures 20 / 18 and 21 / 19 now).  A GPU schedule
+differs again, so on a GPU the other programs may sit further above the
+step.
 
 So either budget, when enabled, is the run's high-water mark, since
 the device allocator's pool grows to the maximum over every program;
-without one, the difference pressure sits below the step.
+without one, the difference pressure sits just below the step.
 A count of live fields misses about half: every batched transform
 carries some two padded fields of pipeline transient per field in
 flight on top of its output (a 3-field :func:`spec_to_phys` alone
@@ -574,7 +572,8 @@ it.  The two optimization barriers (:func:`_convective_sources`,
 :func:`_twin_budget_jit`) are worth 47 `$\to$` 37 and
 61 `$\to$` 43 of these, for the same numbers to rounding and no
 measurable CPU time.  A GPU schedule is its own: size a job against
-the driver's closing ``Peak device memory`` line, not this list.
+the driver's closing ``Peak device memory`` line (``Peak host memory``
+on CPU, which also counts the process's own runtime), not this list.
 """
 
 import importlib
