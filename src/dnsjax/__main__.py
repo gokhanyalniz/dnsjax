@@ -1595,6 +1595,10 @@ def run(wall_time_start: int) -> None:
                 f"Peak device memory: {peak / 2**30:.2f} GiB "
                 "(largest over this process's devices)."
             )
+        # Every rank: the CPU line gathers across processes.
+        host = _peak_host_memory_line(jax)
+        if host is not None:
+            sharding.print(host)
 
     # Flush any remaining buffered diagnostic rows.
     flush_all_buffers()
@@ -1607,7 +1611,8 @@ def _peak_device_bytes(jax) -> int | None:
     the closing summary prints the line only where it means something
     (a GPU's allocator peak includes XLA's temporaries, which is the
     number to size a run against).  Per process: a multi-process run
-    reports the main process's devices.
+    reports the main process's devices.  A CPU run reports host memory
+    instead (:func:`_peak_host_memory_line`).
     """
     peaks = []
     for device in jax.local_devices():
@@ -1615,6 +1620,86 @@ def _peak_device_bytes(jax) -> int | None:
         if stats and "peak_bytes_in_use" in stats:
             peaks.append(int(stats["peak_bytes_in_use"]))
     return max(peaks) if peaks else None
+
+
+def _peak_host_kib() -> tuple[int, int] | None:
+    """This process's ``(peak resident, shared resident)`` memory, KiB.
+
+    The peak is the kernel's high-water mark (``VmHWM``); the shared
+    part is the file-backed and shared-memory pages resident now
+    (``RssFile + RssShmem``: library text such as jaxlib's, and MPI's
+    on-node segments), which every process on a node maps but the node
+    holds once.  Falls back to ``getrusage`` (no shared part) where
+    ``/proc`` is absent, and to ``None`` where neither exists.
+    """
+    try:
+        with open("/proc/self/status") as fh:
+            status = dict(ln.split(":", 1) for ln in fh if ":" in ln)
+
+        def kib(key: str) -> int:
+            return int(status.get(key, "0 kB").split()[0])
+
+        return kib("VmHWM"), kib("RssFile") + kib("RssShmem")
+    except (OSError, ValueError):
+        pass
+    try:
+        import resource
+
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except (ImportError, OSError):
+        return None
+    # Linux reports KiB, macOS bytes.
+    return (peak // 1024 if sys.platform == "darwin" else peak), 0
+
+
+def _peak_host_memory_line(jax) -> str | None:
+    r"""The closing ``Peak host memory`` line of a CPU run.
+
+    A CPU run has no allocator statistics (:func:`_peak_device_bytes`),
+    so it reports what the operating system saw: the largest per-rank
+    high-water mark, and the fullest node's total -- each rank's peak
+    minus its shared pages, plus one copy of the largest shared part on
+    that node (an estimate: ranks peak at different moments, so it errs
+    high).  A node's total is what an out-of-memory kill is decided
+    on; a sampler (``scripts/memory_watch.py``) records it over time.
+
+    Collective on a multi-process run (an all-gather of three ``int32``
+    per rank -- KiB, and a node key -- so the payload is exact whether
+    or not ``jax_enable_x64`` is on), so **every** rank must call it;
+    the main process prints the result.  ``None`` off CPU, and where
+    the platform reports no memory figure at all.
+    """
+    if params.dist.platform != "cpu":
+        return None
+    mem = _peak_host_kib()
+    if mem is None:
+        return None
+    import socket
+    import zlib
+
+    import numpy as np
+
+    node = zlib.crc32(socket.gethostname().encode()) % 2**31
+    row = np.array([*mem, node], dtype=np.int32)
+    if jax.process_count() > 1:
+        from jax.experimental.multihost_utils import process_allgather
+
+        rows = np.asarray(process_allgather(row)).reshape(-1, 3)
+    else:
+        rows = row[None]
+    peak, shared, node = (rows[:, i].astype(np.int64) for i in range(3))
+    per_node = [
+        int(np.sum(peak[node == n] - shared[node == n]))
+        + int(np.max(shared[node == n]))
+        for n in np.unique(node)
+    ]
+    gib = 2**20  # KiB per GiB
+    return (
+        f"Peak host memory: {np.max(peak) / gib:.2f} GiB per rank (max of "
+        f"{len(peak)}, {np.max(shared) / gib:.2f} GiB of it shared pages), "
+        f"{max(per_node) / gib:.2f} GiB per node (fullest of "
+        f"{len(per_node)}, shared pages counted once)."
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

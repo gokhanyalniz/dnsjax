@@ -89,6 +89,7 @@ from dnsjax.solvers import (  # noqa: E402
     _banded_factor,
     _banded_from_dense,
     _banded_solve_batched,
+    _banded_solve_mode_inner,
     _build_pallas_operator,
     _pallas_banded_solve,
     _pallas_banded_solve_t,
@@ -190,6 +191,50 @@ def test_pallas_banded_matches_dense() -> None:
         rhs_c = jnp.tile(jnp.asarray(bc)[:, None, None], (1, Nkz, Nkx))
         x_c = np.asarray(op.solve(rhs_c))[:, 0, 0]
         assert_allclose(x_c, np.linalg.solve(A, bc), atol=1e-9, rtol=1e-9)
+
+
+def test_mode_inner_sweep_matches_mode_outer() -> None:
+    """The CPU sweep on the stored mode-inner factors reproduces the
+    mode-outer :func:`_banded_solve_batched` mode by mode.
+
+    Every mode gets its own operator (a single tiled one would hide a
+    mode-axis mix-up), and the sweep runs over ``p`` from 1 (a one-slot
+    window) to 8, real (``k = 1``) and re/im (``k = 2``) columns, and a
+    mode plane whose axes differ in length.
+    """
+    rng = np.random.default_rng(31)
+    for Nkz, Nkx in ((3, 2), (5, 8)):
+        for p in (1, 2, 4, 8):
+            Ny = 3 * p + 7
+            seeds = 1000 * p + 10 * np.arange(Nkz)[:, None] + np.arange(Nkx)
+            A = np.stack(
+                [
+                    np.stack([_make_random_banded(Ny, p, int(s)) for s in row])
+                    for row in seeds
+                ]
+            )  # (Nkz, Nkx, Ny, Ny), one operator per mode
+            Lo, Uo = _banded_factor(_banded_from_dense(jnp.asarray(A), p))
+            Li = jnp.moveaxis(Lo, (-2, -1), (0, 1))  # (Ny, p, Nkz, Nkx)
+            Ui = jnp.moveaxis(Uo, (-2, -1), (0, 1))  # plain diagonal
+            for k in (1, 2):
+                b = jnp.asarray(rng.standard_normal((Nkz, Nkx, Ny, k)))
+                x_outer = _banded_solve_batched(Lo, Uo, b, p)
+                bi = jnp.moveaxis(b, (0, 1), (-2, -1))  # (Ny, k, Nkz, Nkx)
+                x_inner = _banded_solve_mode_inner(Li, Ui, bi, p)
+                assert_allclose(
+                    np.asarray(jnp.moveaxis(x_inner, (-2, -1), (0, 1))),
+                    np.asarray(x_outer),
+                    atol=1e-12,
+                    rtol=1e-12,
+                )
+                # And against the dense solve of the last mode.
+                x_dense = np.linalg.solve(A[-1, -1], np.asarray(b)[-1, -1])
+                assert_allclose(
+                    np.asarray(x_inner)[:, :, -1, -1],
+                    x_dense,
+                    atol=1e-9,
+                    rtol=1e-9,
+                )
 
 
 def test_pallas_factors_prepadded_to_tiles() -> None:
@@ -391,15 +436,23 @@ def test_pallas_adjoint_matches_portable_sweep() -> None:
                 bo = jnp.moveaxis(jnp.moveaxis(b_, 0, -1), 0, -1)
                 return jnp.sum(_banded_solve_batched(Lo, Uo, bo, p) ** 2)
 
+            # The sweep ``.solve`` runs off the kernel path (and on a
+            # GPU under ``solver.pallas_kernel = False``): a second
+            # oracle with no hand-written rule, on the stored layout.
+            def f_mode_inner(L_, U_, b_, p=p):
+                Uu = U_.at[:, 0].set(1.0 / U_[:, 0])
+                return jnp.sum(_banded_solve_mode_inner(L_, Uu, b_, p) ** 2)
+
             gk = jax.grad(f_kernel, argnums=(0, 1, 2))(Li, Ui, b)
-            gp = jax.grad(f_portable, argnums=(0, 1, 2))(Li, Ui, b)
-            for name, a, o in zip(("L", "U", "b"), gk, gp, strict=True):
-                (
-                    assert_allclose(
-                        np.asarray(a), np.asarray(o), atol=1e-11, rtol=1e-9
-                    ),
-                    f"d/d{name} at p={p}",
-                )
+            for oracle in (f_portable, f_mode_inner):
+                go = jax.grad(oracle, argnums=(0, 1, 2))(Li, Ui, b)
+                for name, a, o in zip(("L", "U", "b"), gk, go, strict=True):
+                    (
+                        assert_allclose(
+                            np.asarray(a), np.asarray(o), atol=1e-11, rtol=1e-9
+                        ),
+                        f"d/d{name} at p={p} ({oracle.__name__})",
+                    )
 
             # Finite differences, one in-band slot per stored array.
             eps = 1e-6

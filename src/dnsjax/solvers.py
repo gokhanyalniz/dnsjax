@@ -26,13 +26,14 @@ whose backward pass is :func:`_pallas_banded_solve_t` -- the mirrored
 sweep on the *same stored factors*, with no un-inversion and no second
 factorisation.  The rule is complete (cotangents for ``L`` and ``U``
 as well as the right-hand side), and it is derived in that function's
-docstring; do not re-derive it elsewhere.  The pure-JAX
-:func:`_banded_solve_batched` is left differentiating through its own
-``lax.scan`` **deliberately**: it is the independent oracle the
-hand-written rule is checked against
-(``test_pallas_adjoint_matches_portable_sweep``), so it must not be
-replaced by a call into the rule.  ``solver.pallas_kernel = False``
-selects it on a GPU.
+docstring; do not re-derive it elsewhere.  The two pure-JAX sweeps,
+the mode-outer :func:`_banded_solve_batched` and the mode-inner
+:func:`_banded_solve_mode_inner` (the CPU solve, which
+``solver.pallas_kernel = False`` selects on a GPU), are left
+differentiating through their own ``lax.scan`` **deliberately**: they
+are the independent oracles the hand-written rule is checked against
+(``test_pallas_adjoint_matches_portable_sweep``), so neither may be
+replaced by a call into the rule.
 
 Complex right-hand sides
 ------------------------
@@ -369,8 +370,12 @@ def _banded_solve_batched(L: Array, U: Array, b: Array, p: int) -> Array:
 
     Solves `$L U x = b$` from banded factors.  Sequential along the
     `$N_y$` axis (axis ``-2``); vectorised over the leading batch dims
-    and the trailing RHS-column axis ``k``.  Used directly as the CPU
-    solve path and inside the Pallas kernel on each mode tile.
+    and the trailing RHS-column axis ``k``.  This is the **mode-outer**
+    sweep, for factors as :func:`_banded_factor` returns them: the
+    setup-time residual check (:func:`_banded_residual`) and the
+    independent oracle the kernel's adjoint is tested against.  A run
+    solves through :func:`_banded_solve_mode_inner` (CPU) or the
+    Pallas kernel (GPU), which read the stored mode-inner factors.
 
     Parameters
     ----------
@@ -423,6 +428,61 @@ def _banded_solve_batched(L: Array, U: Array, b: Array, p: int) -> Array:
 
     _, xs = lax.scan(back, winx0, (U_scan, y_scan))
     return jnp.moveaxis(xs[::-1], 0, -2)  # (..., N, k)
+
+
+def _banded_solve_mode_inner(L: Array, U: Array, b: Array, p: int) -> Array:
+    r"""Banded forward/back substitution on mode-inner arrays (CPU).
+
+    The pure-JAX sweep a run takes off the kernel path
+    (:func:`_banded_mode_solve`).  It reads the factors in the layout
+    :class:`PerModeBandedPallasOperator` stores them in, so a solve
+    touches no factor copy: the scans walk the leading `$N_y$` axis,
+    and every step updates a whole ``(k, Nkz, Nkx)`` mode block at once.
+    The recurrence is the kernel's (:func:`_banded_kernel_call`) over
+    the whole plane rather than one tile, with the ``U`` diagonal
+    stored plain and therefore divided by.  The back substitution scans
+    in reverse instead of reversing its operands, and the ``p``-deep
+    window is a tuple carry, so no step copies it.
+
+    Parameters
+    ----------
+    L:
+        Strict-lower factor band, ``(N, p, Nkz, Nkx)``:
+        ``L[i, d] = L_{i, i-p+d}``.
+    U:
+        Upper factor band, ``(N, p+1, Nkz, Nkx)``: ``U[i, 0] = U_{i,i}``
+        (plain, not reciprocated), ``U[i, d] = U_{i, i+d}``.
+    b:
+        Real right-hand side, ``(N, k, Nkz, Nkx)`` (a complex RHS is
+        carried as ``k = 2`` re/im columns by the caller).
+    p:
+        Half-bandwidth.
+    """
+    zero = jnp.zeros_like(b[0])  # (k, Nkz, Nkx)
+
+    # Forward: L y = b (unit lower); window[d] = y[i-p+d], zero before
+    # row 0.
+    def fwd(window, xs):
+        Li, bi = xs  # (p, Nkz, Nkx), (k, Nkz, Nkx)
+        yi = bi
+        for d in range(p):
+            yi = yi - Li[d][None] * window[d]
+        return (*window[1:], yi), yi
+
+    _, y = lax.scan(fwd, (zero,) * p, (L, b))
+
+    # Back: U x = y, i = N-1..0; window[d] = x[i+1+d], zero past the
+    # last row.
+    def back(window, xs):
+        Ui, yi = xs  # (p+1, Nkz, Nkx), (k, Nkz, Nkx)
+        s = yi
+        for d in range(p):
+            s = s - Ui[d + 1][None] * window[d]
+        xi = s / Ui[0][None]
+        return (xi, *window[:-1]), xi
+
+    _, x = lax.scan(back, (zero,) * p, (U, y), reverse=True)
+    return x
 
 
 def _banded_from_dense(A: Array, p: int) -> Array:
@@ -1118,20 +1178,21 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     into ``k = 2`` real columns (the factors are real), solved, and
     recombined.
 
-    On GPU the re/im split is the **only** layout touch: stacking the real
-    and imaginary parts on a new axis 1 lands directly in the kernel's
-    ``(N, k, Nkz, Nkx)`` layout (no transpose), and the recombine reads the
-    two columns back.  Because the contract is mode-inner the hot path
-    feeds this with no transpose at all; a mode-outer contract would
-    round-trip ``(N,Nkz,Nkx) <-> (Nkz,Nkx,N)`` around every ``.solve``
-    instead (a round-trip XLA does not fuse away, ~half this
-    memory-bound solve's HBM traffic).
+    On both paths the re/im split is the **only** layout touch: stacking
+    the real and imaginary parts on a new axis 1 lands directly in the
+    ``(N, k, Nkz, Nkx)`` layout the kernel and the CPU sweep
+    (:func:`_banded_solve_mode_inner`) both read, with no transpose, and
+    the recombine reads the two columns back.  Because the contract is
+    mode-inner the hot path feeds this with no transpose at all; a
+    mode-outer contract would round-trip ``(N,Nkz,Nkx) <-> (Nkz,Nkx,N)``
+    around every ``.solve`` instead (a round-trip XLA does not fuse
+    away, ~half this memory-bound solve's HBM traffic).
 
     *The split-real hoist: measured, and rejected.*  That split and
     recombine are **mandatory** per solve -- JAX has no zero-copy
     complex<->real bitcast, the f64 Triton kernel cannot ingest
-    ``c128``, and the CPU sweep runs on real columns too
-    (:func:`_real_rhs_view`) -- and some of them look redundant
+    ``c128``, and the CPU sweep runs on real columns too -- and some of
+    them look redundant
     *between* consumers: ``Hk_op.solve`` recombines its result to
     complex, the caller only indexes or linearly combines it, and
     ``Lk_op.solve`` splits it straight back apart.  XLA does **not**
@@ -1142,7 +1203,8 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     Carrying the field split-real across that chain nevertheless
     **loses**.  ``pallas_solve_profile.py`` Part A2 times the real
     ``Hk.solve -> map -> Lk.solve`` chain both ways, fidelity-gated,
-    factors as jit arguments (CPU, one device):
+    factors as jit arguments (CPU, one device; measured with the
+    permuting CPU sweep described below, before the mode-inner one):
 
     ==============  =========  =========
     geometry        96-ish      `$128^3$`
@@ -1158,32 +1220,34 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     are no better as proof than the one positive is as refutation, and
     the table decides nothing on its own.
 
-    What decides it is the measurement one level up: Part A's fused
-    ``full - sweep`` is already ``<= 0`` on CPU, i.e. the split and
-    recombine cost nothing measurable *inside the step*, so there is no
-    time there for a hoist to win back.  The A2 table is recorded
-    because it is what was run and because its sign does not contradict
-    that; it is not the reason for the decision.  The mechanism, if one
-    is wanted, is the layout finding's: pre-materialising a
-    representation that suits the two solves constrains layout
-    assignment across everything around them.
+    What decides it is the measurement one level up.  With the
+    permuting sweep, Part A's fused ``full - sweep`` was ``<= 0`` on
+    CPU: the split and recombine cost nothing measurable inside the
+    step, so there was no time there for a hoist to win back.  With the
+    mode-inner sweep it is 4.6 % of one ``Lk`` solve, and Part A2 times
+    the hoisted chain 1.6 % *slower* than the shipped one
+    (plane-Couette ``64 x 96 x 64``, one core; -0.25 % of the step).
+    The A2 table is recorded because it is what was run and because its
+    sign does not contradict that; it is not the reason for the
+    decision.  The mechanism, if one is wanted, is the layout finding's:
+    pre-materialising a representation that suits the two solves
+    constrains layout assignment across everything around them.
 
     The two arms agree to ~1e-15, which is the bar: the hoist changes
     only the representation a value is carried in, and XLA is free to
     contract differently around a differently-consumed sweep output.
 
-    On CPU the factors *and* RHS are moved to mode-outer for the
-    standard :func:`_banded_solve_batched` (``N_y`` on matrix axis -2).
-    There is no crop and no un-inversion: the CPU build already stores
-    the plain diagonal at the true plane
-    (:meth:`~PerModeBandedPallasOperator.from_banded_factors`).
+    On CPU the sweep is :func:`_banded_solve_mode_inner`, which scans the
+    stored factors as they are: no factor copy, no crop and no
+    un-inversion (the CPU build stores the plain diagonal at the true
+    plane, :meth:`~PerModeBandedPallasOperator.from_banded_factors`).
 
-    **The two permutations stay, and the layout is shared with the
-    kernel, because that is what measures fastest -- on CPU too.**  The
-    source reads as though the sweep should prefer its own storage, and
-    three CPU-native layouts were tried end to end (plane-Couette
-    ``64 x 96 x 64``, 29 steady steps, one device, every variant
-    bit-identical):
+    **Why the layout is shared with the kernel -- on CPU too.**  Three
+    CPU-native *stored* layouts were tried end to end against the
+    mode-inner one (plane-Couette ``64 x 96 x 64``, 29 steady steps, one
+    device, every variant bit-identical), when the CPU branch still
+    permuted the stored factors to mode-outer on every solve and ran
+    :func:`_banded_solve_batched`:
 
     ===========================  =============  ==============
     stored layout                isolated solve  full step
@@ -1199,36 +1263,48 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     so their stored layout constrains layout assignment across the whole
     step; pre-materialising a solve-optimal arrangement wins the solve
     and loses more elsewhere.  Setup compile degrades with it too
-    (27 s -> 53 s total wall for mode-outer).
+    (27 s -> 53 s total wall for mode-outer).  So: do not re-derive this
+    from a standalone ``jit`` of one solve, or from any isolated solve
+    timing -- both rank the options backwards.  Only an end-to-end step
+    measurement decides it.
 
-    So: do not re-derive this from a standalone ``jit`` of one solve, or
-    from any isolated solve timing -- both rank the options backwards.
-    Only an end-to-end step measurement decides it.
+    **The per-solve permutations are gone (2026-10).**  Keeping the
+    stored layout and changing only the sweep -- scan the mode-inner
+    factors directly, as the kernel does -- touches nothing the table is
+    about.  It removes two factor-sized transposes per solve, which the
+    as-run step held as temporaries (the singletons baked in as
+    constants, XLA had folded them, so the baked step never showed
+    them).  Measured end to end -- the as-run step compiled both ways in
+    one process, alternating executions, the first pair discarded,
+    plane Poiseuille, one device pinned to one core:
+
+    ==================  ===================  ===========================
+    grid                step temporaries     step time, old / new
+    ==================  ===================  ===========================
+    ``64 x 96 x 64``    29.7 -> 22.2 fields  0.325 -> 0.263 s, x1.24
+    ``10 x 385 x 320``  29.1 -> 22.0 fields  1.175 -> 0.884 s, x1.33
+    ==================  ===================  ===========================
+
+    (Medians of 10 pairs; per-pair ratios 1.07-1.32 and 1.19-1.56.
+    Fields are oversampled physical components; the second grid has the
+    per-rank mode count and point count of a ``1280 x 385 x 320`` run
+    on 128 ranks at ``(np0, np1) = (1, 128)``.)  The states agree to
+    ``2e-15`` and ``1e-14`` relative, with identical corrector counts:
+    the two sweeps sum the same terms in a different order, so they
+    agree to machine epsilon, not bit for bit.
     """
     p = L.shape[1]
     is_complex = jnp.iscomplexobj(rhs)
+    # (N, Nkz, Nkx) complex -> (N, k, Nkz, Nkx) real, re/im on axis 1:
+    # the layout both sweeps read, so neither path transposes.
+    b = jnp.stack([rhs.real, rhs.imag], axis=1) if is_complex else rhs[:, None]
     if _kernel_path():
-        if is_complex:
-            # (N, Nkz, Nkx) complex -> (N, k, Nkz, Nkx) real, re/im on
-            # axis 1: already the kernel layout, no transpose.
-            b = jnp.stack([rhs.real, rhs.imag], axis=1)
-        else:
-            b = rhs[:, None]  # (N, 1, Nkz, Nkx)
         x = _pallas_banded_solve(L, U, b, p)  # (N, k, Nkz, Nkx)
-        return lax.complex(x[:, 0], x[:, 1]) if is_complex else x[:, 0]
-    # CPU: standard mode-outer banded sweep (RHS and factors moved to
-    # (Nkz, Nkx, N, .) internally).  The CPU build stores the plain
-    # diagonal at the true plane, so neither the tile crop nor the
-    # diagonal un-inversion the kernel storage would need is here --
-    # both were measured, and removing them is where the CPU path's
-    # win came from (see ``from_banded_factors``).
-    Lo = jnp.moveaxis(L, (0, 1), (-2, -1))  # (Nkz, Nkx, N, p)
-    Uo = jnp.moveaxis(U, (0, 1), (-2, -1))  # (Nkz, Nkx, N, p+1)
-    rhs_o = jnp.moveaxis(rhs, 0, -1)  # (N, Nkz, Nkx) -> (Nkz, Nkx, N)
-    b = _real_rhs_view(rhs_o) if is_complex else rhs_o[..., None]
-    x = _banded_solve_batched(Lo, Uo, b, p)  # (Nkz, Nkx, N, k)
-    x = _complex_from_view(x) if is_complex else x[..., 0]  # (Nkz,Nkx,N)
-    return jnp.moveaxis(x, -1, 0)  # -> (N, Nkz, Nkx)
+    else:
+        # The CPU build stores the plain diagonal at the true plane
+        # (``from_banded_factors``), which is what this sweep reads.
+        x = _banded_solve_mode_inner(L, U, b, p)
+    return lax.complex(x[:, 0], x[:, 1]) if is_complex else x[:, 0]
 
 
 # Tile-padding diagnostics already reported (one entry per distinct
@@ -1244,8 +1320,9 @@ class PerModeBandedPallasOperator:
 
     Holds the no-pivot banded LU factors (real) in **mode-inner** storage
     (the ``(k_z, k_x)`` mode axes trailing/innermost, for coalesced GPU
-    loads); the solve is the mode-tiled banded substitution
-    (Pallas/Triton on GPU, pure-JAX mode-outer sweep on CPU).  Build via
+    loads); the solve is the banded substitution over that layout
+    (mode-tiled Pallas/Triton on GPU, the pure-JAX
+    :func:`_banded_solve_mode_inner` on CPU).  Build via
     :meth:`from_banded_factors` from the standard mode-outer factors of
     :func:`_banded_factor`.  The public ``.solve`` contract takes the
     **mode-inner** ``(N, Nkz, Nkx)`` spectral field, the velocity's
