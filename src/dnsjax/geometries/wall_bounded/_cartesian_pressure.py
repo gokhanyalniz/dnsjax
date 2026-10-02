@@ -6,10 +6,11 @@ Crank-Nicolson-weighted Bernoulli one.  This module recovers the
 instantaneous **static** pressure of a stored field from the field
 alone, consistently with the discrete dynamics that produced it.  Two
 consumers: the reduced-resolution snapshots of :mod:`dnsjax.lowres`
-(the perturbation pressure `$p'$` of one state) and the twin budget's
-difference pressure `$\Delta p$` (:mod:`dnsjax.twin.pressure`).  Both
-solve the same problem with a different source; nothing below reads
-the source except as a source.
+(the perturbation pressure `$p'$` of one state, or a twin run's
+difference pressure `$\Delta p$`, :func:`convective_nonlinear` with a
+reference) and the twin budget's `$\Delta p$`
+(:mod:`dnsjax.twin.pressure`).  All solve the same problem with a
+different source; nothing below reads the source except as a source.
 
 Interior equation
 -----------------
@@ -104,12 +105,14 @@ Resident, held for the run: one extra factored operator the size of
 ``flow.Lk_op`` and the two real `$(N_y, N_{k_z}, N_{k_x})$` columns --
 some 12 % on top at ``fd_order = 8``.  Build it only when a consumer
 is enabled.  Per sample, :func:`static_pressure` takes 15 single-field
-transforms (:func:`convective_nonlinear`) and one banded solve.  Its
-peak transient, measured as :mod:`dnsjax.twin.diagnostics` ("Memory")
-measures every program: 17 / 15 padded physical components at
-``solver.rhs_transform_chunks`` 1 / 3, about half the time step's own
-(30 / 28 iterative-CN), so a ``[lowres]`` pressure sample does not
-set a run's peak on CPU (a GPU schedules its own).
+transforms (:func:`convective_nonlinear`) and one banded solve, and a
+difference pressure 30 (the same function with a reference).  Their
+peak transients, measured as :mod:`dnsjax.twin.diagnostics`
+("Memory") measures every program: 17 / 15 and 20 / 20 padded
+physical components at ``solver.rhs_transform_chunks`` 1 / 3, below
+the time step's own on CPU (30 / 28 iterative-CN, a CPU figure: that
+section says why), so a ``[lowres]`` pressure sample does not set a
+CPU run's peak.  A GPU schedules its own.
 """
 
 from __future__ import annotations
@@ -126,6 +129,7 @@ from ...solvers import DenseJAXSolver, PerModeBandedPallasOperator
 from ._base import (
     apply_y_matrix,
     extract_mean_mode,
+    extract_mean_modes,
     phys_to_spec,
     spec_to_phys,
 )
@@ -277,9 +281,12 @@ def mean_advect(prof: Array, field: Array, kx: Array, kz: Array) -> Array:
 
 
 def convective_nonlinear(
-    state: Array, fourier_: Fourier, flow_: CartesianFlow
+    state: Array,
+    fourier_: Fourier,
+    flow_: CartesianFlow,
+    reference: Array | None = None,
 ) -> tuple[Array, Array]:
-    r"""A perturbation's convective nonlinear term and its divergence.
+    r"""A perturbation's convective nonlinear term, or a difference's.
 
     With `$\mathbf{u}' = \bar{\mathbf{u}}'(y) + \mathbf{u}'_f$` split
     into its `$(0, 0)$` mode and fluctuation, and
@@ -301,9 +308,33 @@ def convective_nonlinear(
     terms are mode-diagonal.  In a moving frame (``phys.u_grid``) the
     solver's `$+\mathrm{i}k_xU_{grid}\mathbf{u}'$` is added, so
     ``div_n`` and ``n_hat[1]`` match the solver term for term (the
-    twin module's "Frame invariance").  This is
-    :func:`dnsjax.twin.diagnostics._convective_sources` with a zero
-    reference, without the transforms of that zero.
+    twin module's "Frame invariance").
+
+    With a *reference* `$\mathbf{u}'^{(1)}$` the result is the source
+    of the difference `$\Delta\mathbf{u} = $` *state* `$-$`
+    *reference*, `$\mathcal{N}(\mathbf{u}^{(2)}) -
+    \mathcal{N}(\mathbf{u}^{(1)})$` formed **directly** in
+    `$\Delta\mathbf{u}$`, so a small difference is not the cancellation
+    of two `$O(1)$` terms:
+
+    .. math::
+        -\mathcal{N}_\Delta = (\mathbf{u}^{(2)}\cdot\nabla)\Delta\mathbf{u}
+        + (\Delta\mathbf{u}\cdot\nabla)\mathbf{u}^{(1)} .
+
+    Split as above, the two products are the mean-free *state*
+    advecting `$\Delta\mathbf{u}$` and the mean-free
+    `$\Delta\mathbf{u}$` advecting the *reference*; the mean-mode parts
+    are `$\mathrm{i}(k_xP_x + k_zP_z)\Delta\hat{\mathbf{u}}$` with
+    *state*'s profile, `$\mathrm{i}(k_x\Delta P_x + k_z\Delta P_z)
+    \hat{\mathbf{u}}'^{(1)}$` and `$\Delta\hat v\,\partial_y
+    \mathbf{U}_b$`.  That is :func:`dnsjax.twin.diagnostics.
+    _convective_sources` summed, to round-off, without the six-piece
+    split its budget needs: 30 transforms, and each half of a
+    component's pair goes back on its own, behind its own barrier, so
+    one gradient set is live at a time -- the peak the pressure of a
+    reduced difference snapshot sets (module docstring, "Cost").
+    Without a reference the program is the single-state one above,
+    unchanged.
 
     Returns ``(n_hat, div_n)``: `$\hat{\mathcal{N}}$`
     ``(3, Ny, Nkz, Nkx)`` and the solver's own discrete divergence of
@@ -312,31 +343,57 @@ def convective_nonlinear(
     kx, kz = fourier_.kx, fourier_.kz
     d1 = flow_.D1
     base = flow_.base_flow[:, :, 0, 0]
-    prof = extract_mean_mode(state).real + base
+    if reference is None:
+        delta = state
+        prof = extract_mean_mode(state).real + base
+    else:
+        delta = state - reference
+        mean_state, mean_delta = extract_mean_modes(state, delta)
+        prof = mean_state.real + base
+        prof_delta = mean_delta.real
     dy_base = jnp.einsum("ij,cj->ci", d1, base)
 
-    adv = chunked_transform(spec_to_phys, state * ~fourier_.mean_mask)
-    rows: list[Array] = []
-    for i in range(3):
-        c = state[i]
+    def advect(adv: Array, c: Array) -> Array:
+        r"""`$(\mathbf{a}\cdot\nabla)c$` for one component *c*, back
+        to spectral; *adv* is the advector in physical space."""
         grad = chunked_transform(
             spec_to_phys,
             jnp.stack([1j * kx * c, apply_y_matrix(d1, c), 1j * kz * c]),
         )
         product = adv[0] * grad[0] + adv[1] * grad[1] + adv[2] * grad[2]
-        rows.append(chunked_transform(phys_to_spec, product[None])[0])
-        # One component's gradient live at a time: the three are
-        # independent, so without this XLA forms them together.
-        rows, adv, state = lax.optimization_barrier((rows, adv, state))
+        return chunked_transform(phys_to_spec, product[None])[0]
+
+    adv = chunked_transform(spec_to_phys, state * ~fourier_.mean_mask)
+    rows: list[Array] = []
+    if reference is None:
+        for i in range(3):
+            rows.append(advect(adv, delta[i]))
+            # One component's gradient live at a time: the three are
+            # independent, so without this XLA forms them together.
+            rows, adv, delta = lax.optimization_barrier((rows, adv, delta))
+    else:
+        adv_d = chunked_transform(spec_to_phys, delta * ~fourier_.mean_mask)
+        live = (adv, adv_d, delta, reference)
+        for i in range(3):
+            row = advect(live[0], live[2][i])
+            # Each half's gradient set on its own: the second does not
+            # depend on the first, so without the barrier XLA forms
+            # both at once.
+            row, live = lax.optimization_barrier((row, live))
+            rows.append(row + advect(live[1], live[3][i]))
+            rows, live = lax.optimization_barrier((rows, live))
+        adv, adv_d, delta, reference = live
 
     n_hat = -(
         jnp.stack(rows)
-        + mean_advect(prof, state, kx, kz)
-        + state[1] * dy_base[:, :, None, None]
+        + mean_advect(prof, delta, kx, kz)
+        + delta[1] * dy_base[:, :, None, None]
     )
+    if reference is not None:
+        n_hat = n_hat - mean_advect(prof_delta, reference, kx, kz)
     u_grid = derived_params.u_grid
     if u_grid:
-        n_hat = n_hat + (1j * u_grid) * kx * state
+        n_hat = n_hat + (1j * u_grid) * kx * delta
     div_n = (
         1j * kx * n_hat[0] + apply_y_matrix(d1, n_hat[1]) + 1j * kz * n_hat[2]
     )

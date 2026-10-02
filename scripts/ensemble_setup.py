@@ -319,6 +319,10 @@ def build(args: argparse.Namespace) -> int:
         )
         probe_pairs.append((i2, i3))
     probe_modes = ";".join(f"{a},{b}" for a, b in probe_pairs)
+    if args.it_probes < 1:
+        # 0 is the probe stream switched off, and a response member
+        # without one records nothing to aggregate.
+        raise SystemExit("--it-probes must be >= 1")
 
     # Final-sample alignment check against the parents' step.dt.
     meta0 = read_snapshot_meta(Path(snapshots[0]["path"]))
@@ -522,8 +526,9 @@ def _twin_member_toml(mem: dict, args: argparse.Namespace, shape: dict) -> str:
         lines += [f"{k} = {v}" for k, v in outs if v is not None]
         # ``validate_parameters`` requires it_error_check <=
         # it_corrector; the default (10) is too coarse for a fine
-        # corrector cadence.
-        if args.it_corrector is not None and args.it_corrector < 10:
+        # corrector cadence.  ``0`` is the stream switched off, which
+        # constrains nothing.
+        if args.it_corrector and args.it_corrector < 10:
             lines.append(f"it_error_check = {args.it_corrector}")
         lines.append("")
     lines += [
@@ -537,8 +542,9 @@ def _twin_member_toml(mem: dict, args: argparse.Namespace, shape: dict) -> str:
         f"it_energy = {args.it_energy}",
     ]
     # ``twin.bins`` is off by default; ``it_budget`` needs it (the
-    # closure check reads twin.dat's three-bin energies).
-    if args.bins or args.it_budget is not None:
+    # closure check reads twin.dat's three-bin energies) -- a positive
+    # one, ``0`` being the budget switched off.
+    if args.bins or args.it_budget:
         lines.append("bins = true")
     if args.it_budget is not None:
         lines.append(f"it_budget = {args.it_budget}")
@@ -890,7 +896,8 @@ def main(argv: list[str] | None = None) -> int:
         dest="lowres_it_lowres",
         type=int,
         default=None,
-        help="reference-state reduced-snapshot cadence (lowres.it_lowres)",
+        help="reference-state reduced-snapshot cadence (lowres.it_lowres); "
+        "0 drops a [lowres] the members would inherit from their parent",
     )
     for key in ("nx", "ny", "nz"):
         pt.add_argument(

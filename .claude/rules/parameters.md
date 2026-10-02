@@ -29,6 +29,14 @@ paths:
 - A deferred field (`DeferredSpec`) is refused on the CLI, in TOML and
   on direct assignment; `validate_parameters` rejects a knob the
   flow's surface does not carry.
+- A layer drops a `None`, so it can never unset a field. An optional
+  output cadence is therefore off when unset **or 0**, and the merges
+  turn a `0` back into unset. A new cadence joins
+  `parameters.OFF_CADENCES` or its extension's
+  `ParamExtension.off_cadences`; an all-or-none section also sets
+  `reset_when_off`. A cadence whose unset means something else (the
+  twin `*_ref`) keeps its `0` and is read through a helper
+  (`twin.driver.ref_cadence`).
 - What a resume never inherits from a snapshot (the JAX-setup fields,
   `res.double_precision`, `[solver]`, `init.snapshot` /
   `init.force_resume`): the `parameters.py` module docstring and

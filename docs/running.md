@@ -220,7 +220,9 @@ Every `lowres.it_lowres` steps (counted like `outs.it_snapshot`) the
 run writes `lowres/lowres_<it>.tar`, the step count zero-padded to ten
 digits. The targets take the flow's own `res` names (`lowres.nz`,
 `lowres.nr` and `lowres.ntheta` on the pipes and the annulus). Each
-defaults to the run's own count, and a set one may not exceed it.
+defaults to the run's own count, and a set one may not exceed it. Like
+`[outs]`, the section is inherited on resume; `--lowres.it_lowres 0`
+switches it off ([`configuration.md`](configuration.md)).
 
 Each field is computed at the run's resolution and only then reduced.
 The Fourier axes drop their highest modes. The wall-normal axis is
@@ -233,8 +235,8 @@ On plane Couette and plane Poiseuille, `lowres.pressure` (on by
 default there) adds the static pressure perturbation $p'$, computed
 from the full-resolution field. It is the pressure consistent with the
 discrete dynamics, in the gauge where its mean profile is zero at the
-upper wall. The mean pressure gradient is the driving, which
-`stats.dat` records.
+upper wall, re-pinned there after the reduction. The mean pressure
+gradient is the driving, which `stats.dat` records.
 
 The files are ordinary snapshots for reading —
 `dnsjax.analysis.read_state` opens one, and `read_pressure` its
