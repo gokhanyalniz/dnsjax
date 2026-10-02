@@ -146,7 +146,9 @@ Success criteria per system:
 4. the final corrector error is finite and below ``corrector_tolerance``
    (catches a late divergence in the last ``it_error_check`` steps);
 5. every numeric value on the final summary line is finite (NaN/Inf
-   print as ``nan``/``inf``).
+   print as ``nan``/``inf``);
+6. on CPU, the closing ``Peak host memory`` line is there and counts
+   every rank (its all-gather is a collective each rank must reach).
 
 Usage (single device)::
 
@@ -1388,6 +1390,18 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
             system.get("max_sim_time", args.max_sim_time),
             system.get("slack_dt", dt),
         )
+
+        if args.platform == "cpu":
+            n_ranks = system.get("force_np", args.np)
+            mem = re.search(
+                r"Peak host memory: [\d.]+ GiB per rank \(max of (\d+),",
+                result.stdout,
+            )
+            if mem is None or int(mem.group(1)) != n_ranks:
+                raise AssertionError(
+                    f"{name}: no 'Peak host memory' line over {n_ranks} "
+                    "rank(s) in stdout"
+                )
 
         pattern = system.get("expect_pattern")
         if pattern and re.search(pattern, result.stdout) is None:
