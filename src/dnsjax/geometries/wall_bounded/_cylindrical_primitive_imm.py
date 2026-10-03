@@ -44,7 +44,6 @@ from ...solvers import (
     _banded_from_dense,
     _banded_wall_row,
 )
-from ._base import apply_y_matrix
 from .cylindrical import (
     CylindricalFlow,
     Fourier,
@@ -471,19 +470,18 @@ def _imm_iteration_vp(
     m_minus_1_sq = (m - 1) ** 2
     m_sq = fourier_.m2
 
-    # Batch all D1 y-derivatives with (-1)^{m+1} parity into
-    # one matvec each for D1_pos and D1_ghost (2 instead of 4);
-    # the ghost GEMM covers only its nonzero (g, gc) corner.  (Not
-    # ``c``: that is the implicitness, read below.)
-    g, gc = flow_.D1_ghost.shape
-    # Stack y-leading (N_r, 6, ...) so the batched D1 GEMM contracts the
-    # leading wall-normal axis transpose-free; the component axis is 1.
+    # Batch all D1 y-derivatives with (-1)^{m+1} parity into one
+    # parity-reduced matvec, stacked y-leading (N_r, 6, ...) so it runs
+    # along the leading wall-normal axis transpose-free; the component
+    # axis is 1.
     all_vparity = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1)
-    dy_common = apply_y_matrix(flow_.D1_pos, all_vparity, component_axis=1)
-    dy_ghost = apply_y_matrix(
-        flow_.D1_ghost, all_vparity[:gc], component_axis=1
+    dy_all = _parity_y_matvec(
+        flow_.D1_pos,
+        flow_.D1_ghost,
+        all_vparity,
+        parity_sign_v,
+        component_axis=1,
     )
-    dy_all = dy_common.at[:g].add(parity_sign_v * dy_ghost)
 
     # Cylindrical divergence at time n.  ``dnsjax.analysis`` mirrors
     # this operator in physical components; changing it here means

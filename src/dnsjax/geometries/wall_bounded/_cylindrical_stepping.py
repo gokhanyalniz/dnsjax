@@ -178,16 +178,17 @@ def _curl_fn(
     parity_sign_p = fourier_.m_is_even * 2 - 1
     parity_sign_v = -parity_sign_p
 
-    # Batch D1_pos and D1_ghost into two matvecs; the ghost GEMM
-    # covers only its nonzero (g, c) corner near the axis.
-    g, gc = flow_.D1_ghost.shape
-    # Stack y-leading (N_r, 2, ...) so the batched D1 matvec runs along
-    # the leading wall-normal axis transpose-free, then unstack to 3-d.
-    fields = jnp.stack([utheta, uz], axis=1)
-    dy_common = apply_y_matrix(flow_.D1_pos, fields, component_axis=1)
-    dy_ghost = apply_y_matrix(flow_.D1_ghost, fields[:gc], component_axis=1)
-    dy_utheta = dy_common[:, 0].at[:g].add(parity_sign_v * dy_ghost[:, 0])
-    dy_uz = dy_common[:, 1].at[:g].add(parity_sign_p * dy_ghost[:, 1])
+    # One parity-reduced D1 for both fields, stacked y-leading
+    # (N_r, 2, ...) so it runs along the leading wall-normal axis
+    # transpose-free, each field on its own parity; unstack to 3-d.
+    dy = _parity_y_matvec(
+        flow_.D1_pos,
+        flow_.D1_ghost,
+        jnp.stack([utheta, uz], axis=1),
+        jnp.stack([parity_sign_v, parity_sign_p], axis=1),
+        component_axis=1,
+    )
+    dy_utheta, dy_uz = dy[:, 0], dy[:, 1]
 
     omega_r = im * inv_r * uz - ikz * utheta
     omega_theta = ikz * ur - dy_uz

@@ -61,9 +61,9 @@ Per file: the reshard and write of a reduced field, a wall-normal GEMM,
 and with the pressure one static-pressure sample (15 field transforms
 and one banded solve,
 :func:`~dnsjax.geometries.wall_bounded._cartesian_pressure.static_pressure`),
-whose transient is about half the time step's.  The pressure operator
-is resident for the run once enabled: a second banded factor set the
-size of the Poisson factors (its module's "Cost").
+whose transient is some three fifths of the time step's.  The pressure
+operator is resident for the run once enabled: a second banded factor
+set the size of the Poisson factors (its module's "Cost").
 """
 
 from __future__ import annotations

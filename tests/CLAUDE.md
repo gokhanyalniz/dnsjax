@@ -57,7 +57,8 @@ Stepping:
   `test_imm_continuity.py` (`--ny`), `test_energy_budget.py`,
   `test_autodiff.py` (`--only`), `test_monochromatic.py` (Kolmogorov).
 - `test_wall_normal_matvec.py` (`--only`): one step under the GEMM and
-  the stencil (`solver.wall_normal_matvec`) must agree, per geometry.
+  the stencil (`solver.wall_normal_matvec`) must agree, per geometry
+  and legacy pass.
 
 Parameters, bootstrap, seeds:
 - `test_param_surface.py` (registry, surfaces, the total-field axis),
