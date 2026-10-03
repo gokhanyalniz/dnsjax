@@ -219,8 +219,8 @@ def derive_homogeneous_data(
     p1_s = flow_.Lk_op.solve(e1_b.transpose(2, 0, 1)).transpose(1, 2, 0)
     p2_s = flow_.Lk_op.solve(e2_b.transpose(2, 0, 1)).transpose(1, 2, 0)
 
-    rhs_v1 = -jnp.einsum("ij, zxj -> zxi", flow_.D1, p1_s)
-    rhs_v2 = -jnp.einsum("ij, zxj -> zxi", flow_.D1, p2_s)
+    rhs_v1 = -jnp.einsum("ij, zxj -> zxi", flow_.D1.dense, p1_s)
+    rhs_v2 = -jnp.einsum("ij, zxj -> zxi", flow_.D1.dense, p2_s)
     rhs_v1 = rhs_v1.at[..., 0].set(0.0).at[..., -1].set(0.0)
     rhs_v2 = rhs_v2.at[..., 0].set(0.0).at[..., -1].set(0.0)
     v1_s = flow_.Hk_op.solve(rhs_v1.transpose(2, 0, 1)).transpose(1, 2, 0)

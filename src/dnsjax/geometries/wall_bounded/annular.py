@@ -155,6 +155,7 @@ from ...solvers import (
     _factor_pallas_operator,
 )
 from ._base import (
+    YMatrix,
     apply_y_matrix,
     base_flow_coupling,
     build_wall_bounded_stepper,
@@ -794,10 +795,10 @@ class AnnularFlow:
     base_flow_padded: Array = field(init=False)
     curl_base_flow_padded: Array = field(init=False)
     base_flow_adv_padded: Array = field(init=False)
-    D1: Array = field(init=False)
-    D2: Array = field(init=False)
+    D1: YMatrix = field(init=False)
+    D2: YMatrix = field(init=False)
     D1_bnd: Array = field(init=False)
-    A_base: Array = field(init=False)
+    A_base: YMatrix = field(init=False)
     Lk_op: _WallBoundedOp = field(init=False)
     Hk_op: _WallBoundedOp = field(init=False)
     v_plus_1: Array | None = field(init=False)
@@ -845,13 +846,18 @@ class AnnularFlow:
             inv_sp[:, :, None, None], sharding.no_shard
         )
 
-        # FD matrices, wall rows, and base operator.
-        self.D1 = jax.device_put(D1_np, sharding.no_shard)
-        self.D2 = jax.device_put(D2_np, sharding.no_shard)
+        # FD matrices, wall rows, and base operator.  ``A_base`` is
+        # formed from the process-local matrices (eagerly, so it is
+        # the same matrix as formed from distributed ones), and every
+        # operator builder reads ``.dense`` of the one the matvecs use.
+        self.D1 = YMatrix.from_dense(D1_np)
+        self.D2 = YMatrix.from_dense(D2_np)
         self.D1_bnd = jax.device_put(
             np.stack([D1_np[0], D1_np[-1]]), sharding.no_shard
         )
-        self.A_base = _build_A_base(self.D1, self.D2, self.inv_r)
+        self.A_base = YMatrix.from_dense(
+            _build_A_base(D1_np, D2_np, self.inv_r)
+        )
 
         self.rs = jax.device_put(self.rs, sharding.no_shard)
         self.inv_r = jax.device_put(self.inv_r, sharding.no_shard)
@@ -871,7 +877,7 @@ class AnnularFlow:
         # Banded half-width: measured, not assumed (see the Cartesian
         # ``__post_init__`` note).  Both wall rows are overwritten with
         # BC rows, so their own stencil width need not fit.
-        fd_p = matrix_half_bandwidth(np.asarray(self.A_base), (0, -1))
+        fd_p = matrix_half_bandwidth(np.asarray(self.A_base.dense), (0, -1))
         dt = params.step.dt
 
         # Live-dt pytree leaves (class docstring; rebuilt by the
@@ -895,8 +901,8 @@ class AnnularFlow:
                 # operator lives in the Lk_op slot (there is no
                 # pressure), preserving the _hk_bands band readback.
                 Lk_band = _build_Lv_dir_band_gpu(
-                    self.D1,
-                    self.A_base,
+                    self.D1.dense,
+                    self.A_base.dense,
                     m_sq,
                     self.inv_r,
                     self.inv_r2,
@@ -909,8 +915,8 @@ class AnnularFlow:
                 from . import _annular_primitive_imm as prim
 
                 Lk_band = prim._build_Lk_band_gpu(
-                    self.D1,
-                    self.A_base,
+                    self.D1.dense,
+                    self.A_base.dense,
                     m_sq,
                     self.inv_r2,
                     kz2_s,
@@ -944,8 +950,8 @@ class AnnularFlow:
         else:
             if params.res.consistent_imm:
                 Lk_dense = _build_Lv_dir_dense_gpu(
-                    self.D1,
-                    self.A_base,
+                    self.D1.dense,
+                    self.A_base.dense,
                     m_sq,
                     self.inv_r,
                     self.inv_r2,
@@ -956,7 +962,12 @@ class AnnularFlow:
                 from . import _annular_primitive_imm as prim
 
                 Lk_dense = prim._build_Lk_dense_gpu(
-                    self.D1, self.A_base, m_sq, self.inv_r2, kz2_s, mean_s
+                    self.D1.dense,
+                    self.A_base.dense,
+                    m_sq,
+                    self.inv_r2,
+                    kz2_s,
+                    mean_s,
                 )
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
@@ -1170,7 +1181,7 @@ def _hk_vw_bands(
     kz2_s = fourier_.kz2[0, ..., None]
     return [
         _build_Hk_band_gpu(
-            flow_.A_base,
+            flow_.A_base.dense,
             meff2,
             flow_.inv_r2,
             kz2_s,
@@ -1194,7 +1205,7 @@ def _hk_vw_dense_op(
     ops = [
         DenseJAXSolver(
             _build_Hk_dense_gpu(
-                flow_.A_base,
+                flow_.A_base.dense,
                 meff2,
                 flow_.inv_r2,
                 kz2_s,

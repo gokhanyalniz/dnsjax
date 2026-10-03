@@ -137,7 +137,7 @@ def _hk_bands(
     # Taylor-Couette / Dean, beta/re for the viscoelastic subclass.
     return [
         _build_Hk_band_gpu(
-            flow_.A_base,
+            flow_.A_base.dense,
             meff2,
             flow_.inv_r2,
             kz2_s,
@@ -162,7 +162,7 @@ def _hk_dense_op(
     ops = [
         DenseJAXSolver(
             _build_Hk_dense_gpu(
-                flow_.A_base,
+                flow_.A_base.dense,
                 meff2,
                 flow_.inv_r2,
                 kz2_s,
@@ -270,7 +270,7 @@ def derive_homogeneous_data(
     mean_s = fourier_.mean_mask[0, ..., None]  # (Nm, Nkz, 1)
 
     def _helm_responses(p_s: Array) -> tuple[Array, Array, Array]:
-        D1_p = jnp.einsum("ij, mzj -> mzi", flow_.D1, p_s)
+        D1_p = jnp.einsum("ij, mzj -> mzi", flow_.D1.dense, p_s)
         rhs_v_plus = -(D1_p - m_over_r_s * p_s)
         rhs_v_minus = -(D1_p + m_over_r_s * p_s)
         rhs_v_plus = rhs_v_plus.at[..., 0].set(0.0).at[..., -1].set(0.0)

@@ -365,7 +365,7 @@ def _ref_budget(spec1: np.ndarray, spec2: np.ndarray) -> dict[str, float]:
     kz_mult[:N2_TRUE] = (
         1j * (2 * np.pi / params.geo.lz) * np.asarray(KZ_HARM, dtype=float)
     )
-    D1_np = np.asarray(td.flow.D1)
+    D1_np = np.asarray(td.flow.D1.dense)
     w = np.asarray(td.flow.y_weights)
     vf = derived_params.volume_fac
     re = params.phys.re
@@ -411,7 +411,7 @@ def _ref_budget(spec1: np.ndarray, spec2: np.ndarray) -> dict[str, float]:
     for kind, table in (("P", td._PRODUCTION), ("T", td._TRANSPORT)):
         for a, b, c in table:
             expected[f"{kind}_{a}({b},{c})"] = term(a, b, c)
-    D2_np = np.asarray(td.flow.D2)
+    D2_np = np.asarray(td.flow.D2.dense)
     for x in ("dU", "du1", "du2"):
         # The discrete-Laplacian (operator) form, matching the code
         # (the twin/diagnostics.py "Dissipation form" note): horizontal

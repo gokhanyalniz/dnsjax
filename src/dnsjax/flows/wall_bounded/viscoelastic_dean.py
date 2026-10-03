@@ -152,7 +152,7 @@ def _build_laminar_profile() -> Array:
     """
     prof = viscoelastic_laminar_profiles(
         flow.rs,
-        flow.D1,
+        flow.D1.dense,
         derived_params.r_inner,
         derived_params.r_outer,
         params.phys.wi,

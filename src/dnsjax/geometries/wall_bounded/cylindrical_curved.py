@@ -394,9 +394,9 @@ class CurvedCylindricalFlow(CylindricalFlow):
         # the discrete divergence the reconstruction enforces.  Stored
         # inverted: it is applied to a single mode column per corrector
         # iteration, where a dense matvec is free.
-        g_rows = self.D1_ghost.shape[0]
-        d1_odd = np.asarray(self.D1_pos).copy()
-        d1_odd[:g_rows] -= np.asarray(self.D1_ghost)
+        g_rows, g_cols = self.D1_ghost.shape
+        d1_odd = np.asarray(self.D1_pos.dense).copy()
+        d1_odd[:g_rows, :g_cols] -= np.asarray(self.D1_ghost)
         A = d1_odd + np.diag(1.0 / rs)
         A[-1, :] = 0.0
         A[-1, -1] = 1.0

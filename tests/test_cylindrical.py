@@ -23,6 +23,11 @@ Tests cover:
 6c. ``dnsjax.analysis`` rebuilds the same parity-reduced radial ``D1``
     the solver uses -- the ingredient behind every exported operator,
     where a mismatch fails silently.
+6d. The pipe's wall-normal FD storage: ``D1_pos`` / ``A_base_pos`` are
+    ``YMatrix`` (GEMM or stencil, ``solver.wall_normal_matvec``), the
+    stored ghosts are the full ghosts' nonzero corner with exact zeros
+    outside it, and ``_parity_y_matvec`` equals the explicit even/odd
+    matrices on both paths, in all three layouts.
 7. ``get_norm2_cyl`` correctness, and the metric identity linking it
    to the solver basis' 1/2-weighted norm.
 8. ``to_solver_basis``/``from_solver_basis`` round-trip: the
@@ -89,6 +94,7 @@ from dnsjax.fd import (  # noqa: E402
 )
 from dnsjax.flows.wall_bounded.pipe import flow as pipe_flow  # noqa: E402
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
+from dnsjax.geometries.wall_bounded._base import YMatrix  # noqa: E402
 from dnsjax.geometries.wall_bounded._cylindrical_primitive_imm import (  # noqa: E402
     _abase_matvec,
     _build_Lk_band_gpu,
@@ -101,9 +107,10 @@ from dnsjax.geometries.wall_bounded.cylindrical import (  # noqa: E402
     _build_Hk_dense_gpu,
     _build_Lv_dir_band_gpu,
     _build_Lv_dir_dense_gpu,
-    _ghost_row_count,
+    _ghost_extent,
     _hk_vw_bands,
     _hk_vw_dense_mats,
+    _parity_y_matvec,
     build_parity_reduced_matrices,
     build_radial_cgl_grid,
     extract_mean_mode,
@@ -285,15 +292,15 @@ def test_abase_matvec_matches_dense() -> None:
     D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos = (
         build_parity_reduced_matrices(rs, p)
     )
-    # Row-sliced ghost storage, as in CylindricalFlow.__post_init__.
+    # Corner-trimmed ghost storage, as in CylindricalFlow.__post_init__.
     D1_ghost_full = D1_even - D1_pos
     D2_ghost_full = D2_even - D2_pos
-    g_rows = _ghost_row_count(
+    g_rows, g_cols = _ghost_extent(
         np.asarray(D1_ghost_full), np.asarray(D2_ghost_full)
     )
-    assert g_rows < Nr, "ghost matrices unexpectedly full"
-    D1_ghost = D1_ghost_full[:g_rows]
-    D2_ghost = D2_ghost_full[:g_rows]
+    assert g_rows < Nr and g_cols < Nr, "ghost matrices unexpectedly full"
+    D1_ghost = D1_ghost_full[:g_rows, :g_cols]
+    D2_ghost = D2_ghost_full[:g_rows, :g_cols]
     A_even = np.asarray(_build_A_base(D1_even, D2_even, inv_r))
     A_odd = np.asarray(_build_A_base(D1_odd, D2_odd, inv_r))
 
@@ -303,7 +310,7 @@ def test_abase_matvec_matches_dense() -> None:
     # is what the reference below (the independent full even/odd
     # matrices) would catch getting wrong.
     flow_ = SimpleNamespace(
-        A_base_pos=_build_A_base(D1_pos, D2_pos, inv_r),
+        A_base_pos=YMatrix.from_dense(_build_A_base(D1_pos, D2_pos, inv_r)),
         A_base_ghost=_build_A_base(D1_ghost, D2_ghost, inv_r[:g_rows]),
     )
 
@@ -718,6 +725,90 @@ def test_analysis_radial_d1_matches_the_solver() -> None:
 
 
 # Group C: Norms
+
+
+def test_pipe_fd_storage_and_parity_matvec_paths() -> None:
+    r"""The pipe's FD storage, and ``_parity_y_matvec`` on both paths.
+
+    The stored ghosts must be the full ghost matrices' nonzero corner
+    with nothing but exact zeros outside it (the trim drops no entry),
+    and the parity-reduced matvec -- GEMM and stencil alike, for a 3-d
+    field and both 4-d layouts, with a random parity per mode -- must
+    equal the explicit even/odd matrices.
+    """
+    p = params.res.fd_order
+    rs = jnp.asarray(np.asarray(pipe_flow.rs))
+    D1_even, D2_even, D1_odd, D2_odd, D1_pos, D2_pos = (
+        build_parity_reduced_matrices(rs, p)
+    )
+    g, gc = pipe_flow.D1_ghost.shape
+    assert pipe_flow.A_base_ghost.shape == (g, gc)
+    for full in (np.asarray(D1_even - D1_pos), np.asarray(D2_even - D2_pos)):
+        outside = full.copy()
+        outside[:g, :gc] = 0.0
+        assert not outside.any(), "the ghost trim dropped a nonzero entry"
+    assert np.array_equal(
+        np.asarray(pipe_flow.D1_ghost), np.asarray(D1_even - D1_pos)[:g, :gc]
+    )
+    assert np.array_equal(np.asarray(pipe_flow.D1_pos.dense), D1_pos)
+
+    inv_r = 1.0 / rs
+    cases = (
+        ("D1", pipe_flow.D1_pos, pipe_flow.D1_ghost, D1_even, D1_odd),
+        (
+            "A_base",
+            pipe_flow.A_base_pos,
+            pipe_flow.A_base_ghost,
+            _build_A_base(D1_even, D2_even, inv_r),
+            _build_A_base(D1_odd, D2_odd, inv_r),
+        ),
+    )
+    Nr, Nm, Nkz = params.res.ny, params.res.nz - 1, params.res.nx // 2
+    rng = np.random.default_rng(23)
+    even = rng.random(Nm) < 0.5
+    sign = np.where(even, 1.0, -1.0)
+    x3 = rng.standard_normal((Nr, Nm, Nkz)) + 1j * rng.standard_normal(
+        (Nr, Nm, Nkz)
+    )
+    layouts = (
+        (x3, sign[None, :, None], 0, "ij, jmz -> imz"),
+        (
+            np.stack([x3, 2 * x3, -x3]),
+            sign[None, None, :, None],
+            0,
+            "ij, cjmz -> cimz",
+        ),
+        (
+            np.stack([x3, 2 * x3, -x3], axis=1),
+            sign[None, None, :, None],
+            1,
+            "ij, jcmz -> icmz",
+        ),
+    )
+    try:
+        for name, M_pos, M_ghost, M_even, M_odd in cases:
+            for x, ps, axis, spec in layouts:
+                pick = even.reshape(ps.shape)
+                ref = np.where(
+                    pick,
+                    np.einsum(spec, np.asarray(M_even), x),
+                    np.einsum(spec, np.asarray(M_odd), x),
+                )
+                for knob in ("dense", "banded"):
+                    params.solver.wall_normal_matvec = knob
+                    got = np.asarray(
+                        _parity_y_matvec(
+                            M_pos,
+                            M_ghost,
+                            jnp.asarray(x),
+                            jnp.asarray(ps),
+                            component_axis=axis,
+                        )
+                    )
+                    err = np.abs(got - ref).max() / np.abs(ref).max()
+                    assert err < 1e-12, (name, x.ndim, axis, knob, err)
+    finally:
+        params.solver.wall_normal_matvec = "auto"
 
 
 def test_get_norm2_cyl() -> None:
