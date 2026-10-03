@@ -12,15 +12,19 @@ A call site still holding a raw matrix, a ghost operand not sliced to
 its trimmed corner, or a stencil on the wrong axis would each show as
 an O(1) difference.
 
-One worker per flow, covering every geometry's derivative call sites:
+One worker per case, covering every geometry's derivative call sites:
 plane Couette (Cartesian), the pipe, the curved pipe (its continuity
 rows rebuild a parity-reduced ``D1`` from ``D1_pos`` and the trimmed
 ghost), Taylor-Couette (annular) and viscoelastic Dean (the
-component-leading 9-, 6- and 3-field tensor stacks).  The two paths
-sum the same products in a different order, and the solves amplify
-that by their conditioning, so the bound is a few orders above
-round-off and many below any real defect (measured: ``<= 1e-13``
-here, ``1.5e-12`` for the pipe at ``32 x 97 x 64``).
+component-leading 9-, 6- and 3-field tensor stacks); then the call
+sites those five cannot reach: the legacy primitive pass of each
+geometry (``res.consistent_imm = False``: the ``_*_primitive_imm``
+modules' own ``D1``/``D2``/``A_base`` stacks) and the viscoelastic pipe
+(its parity-reduced tensor stacks).  The two paths sum the same
+products in a different order, and the solves amplify that by their
+conditioning, so the bound is a few orders above round-off and many
+below any real defect (measured: ``<= 1.2e-13`` here, ``1.5e-12`` for
+the pipe at ``32 x 97 x 64``).
 
 Each case needs its own process: the parameter singletons and the
 jitted steppers capture ``params`` at import / trace time.
@@ -42,21 +46,50 @@ sys.stdout.reconfigure(line_buffering=True)
 
 BOUND = 1e-11
 
-#: ``(system, physics, geometry, initiation)`` per worker.
-CASES: dict[str, tuple[dict, dict, dict]] = {
-    "plane-couette": ({"re": 400.0}, {"lx": 6.0, "lz": 3.0}, {}),
-    "pipe": ({"re": 1800.0}, {"lx": 5.0}, {}),
-    "curved-pipe": ({"re": 1800.0}, {"lx": 5.0, "curvature": 0.3}, {}),
-    "taylor-couette": ({"re1": 100.0, "re2": 0.0}, {"eta": 0.5}, {}),
-    "viscoelastic-dean": (
-        {"wi": 20.0, "el": 20.0},
-        {"lx": 5.0},
-        {"random_conformation_amplitude": 10.0},
-    ),
+#: Per worker: the system (the case name unless given) and its
+#: ``phys`` / ``geo`` / ``init`` / ``res`` overrides.
+CASES: dict[str, dict[str, object]] = {
+    "plane-couette": {"phys": {"re": 400.0}, "geo": {"lx": 6.0, "lz": 3.0}},
+    "pipe": {"phys": {"re": 1800.0}, "geo": {"lx": 5.0}},
+    "curved-pipe": {
+        "phys": {"re": 1800.0},
+        "geo": {"lx": 5.0, "curvature": 0.3},
+    },
+    "taylor-couette": {
+        "phys": {"re1": 100.0, "re2": 0.0},
+        "geo": {"eta": 0.5},
+    },
+    "viscoelastic-dean": {
+        "phys": {"wi": 20.0, "el": 20.0},
+        "geo": {"lx": 5.0},
+        "init": {"random_conformation_amplitude": 10.0},
+    },
+}
+
+_LEGACY = {"consistent_imm": False}
+
+# The call sites the five above do not reach.
+CASES |= {
+    "plane-couette-legacy": {
+        **CASES["plane-couette"],
+        "system": "plane-couette",
+        "res": _LEGACY,
+    },
+    "pipe-legacy": {**CASES["pipe"], "system": "pipe", "res": _LEGACY},
+    "taylor-couette-legacy": {
+        **CASES["taylor-couette"],
+        "system": "taylor-couette",
+        "res": _LEGACY,
+    },
+    "viscoelastic-pipe": {
+        "phys": {"wi": 20.0, "el": 0.02},
+        "geo": {"lx": 5.0},
+        "init": {"random_conformation_amplitude": 10.0},
+    },
 }
 
 
-def _worker(system: str) -> None:
+def _worker(name: str) -> None:
     """Compile the as-run step under both knob values and compare."""
     os.environ.setdefault("NPROC", "1")
     from dnsjax.bootstrap import configure_jax_platform
@@ -68,13 +101,14 @@ def _worker(system: str) -> None:
         validate_parameters,
     )
 
-    phys, geo, init = CASES[system]
+    case = CASES[name]
+    system = case.get("system", name)
     update_parameters(
         Parameters(
-            phys={"system": system, **phys},
-            geo=geo,
-            init=init,
-            res={"nx": 8, "ny": 33, "nz": 16},
+            phys={"system": system, **case["phys"]},
+            geo=case["geo"],
+            init=case.get("init", {}),
+            res={"nx": 8, "ny": 33, "nz": 16, **case.get("res", {})},
             step={"dt": 0.002},
         )
     )
@@ -148,10 +182,10 @@ def main(only: list[str] | None) -> None:
         flush=True,
     )
     passed, failures = 0, []
-    for system in only or CASES:
-        print(f"\n--- {system} ---", flush=True)
+    for case in only or CASES:
+        print(f"\n--- {case} ---", flush=True)
         proc = run_live(
-            [sys.executable, os.path.abspath(__file__), "--worker", system],
+            [sys.executable, os.path.abspath(__file__), "--worker", case],
             timeout=1200,
         )
         lines = [
@@ -159,25 +193,25 @@ def main(only: list[str] | None) -> None:
         ]
         if proc.returncode != 0 or not lines:
             err = (proc.stderr or proc.stdout).strip()[-400:]
-            print(f"FAIL {system}: {err}", flush=True)
-            failures.append((system, err))
+            print(f"FAIL {case}: {err}", flush=True)
+            failures.append((case, err))
             continue
         rel = float(lines[-1].split()[1])
         if rel > BOUND:
             reason = f"states differ by {rel:.2e} > {BOUND:.0e}"
-            print(f"FAIL {system}: {reason}", flush=True)
-            failures.append((system, reason))
+            print(f"FAIL {case}: {reason}", flush=True)
+            failures.append((case, reason))
             continue
-        print(f"PASS {system}: states agree to {rel:.2e}", flush=True)
+        print(f"PASS {case}: states agree to {rel:.2e}", flush=True)
         passed += 1
     sys.exit(report(passed, failures))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--worker", metavar="SYSTEM")
+    parser.add_argument("--worker", metavar="CASE")
     parser.add_argument(
-        "--only", nargs="+", choices=list(CASES), help="a subset of flows"
+        "--only", nargs="+", choices=list(CASES), help="a subset of cases"
     )
     args = parser.parse_args()
     if args.worker:

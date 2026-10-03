@@ -108,11 +108,11 @@ is enabled.  Per sample, :func:`static_pressure` takes 15 single-field
 transforms (:func:`convective_nonlinear`) and one banded solve, and a
 difference pressure 30 (the same function with a reference).  Their
 peak transients, measured as :mod:`dnsjax.twin.diagnostics`
-("Memory") measures every program: 17 / 15 and 20 / 20 padded
+("Memory") measures every program: 13 / 11 and 16 / 17 padded
 physical components at ``solver.rhs_transform_chunks`` 1 / 3, below
-the time step's own on CPU (30 / 28 iterative-CN, a CPU figure: that
-section says why), so a ``[lowres]`` pressure sample does not set a
-CPU run's peak.  A GPU schedules its own.
+the time step's own on CPU (22 / 20 iterative-CN), so a ``[lowres]``
+pressure sample does not set a CPU run's peak.  A GPU schedules its
+own.
 """
 
 from __future__ import annotations

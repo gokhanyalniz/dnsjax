@@ -155,7 +155,6 @@ from ...solvers import (
 )
 from ._base import (
     YMatrix,
-    apply_y_matrix,
     extract_mean_mode,
     from_pm_basis,
     frozen_profile_flow,  # noqa: F401 — re-exported
@@ -425,13 +424,11 @@ def get_pert_enstrophy_cyl(
     p_sign_z = m_is_even * 2 - 1
     p_sign_v = -p_sign_z
 
-    # Batched D1 matvecs (2 for all 3 components; the ghost GEMM
-    # covers only its nonzero (g, c) corner).
-    g, gc = D1_ghost.shape
-    dy_pos = apply_y_matrix(D1_pos, state)
-    dy_ghost = apply_y_matrix(D1_ghost, state[:, :gc])
-    p_signs = jnp.stack([p_sign_z, p_sign_v, p_sign_v])
-    dy_state = dy_pos.at[:, :g].add(p_signs * dy_ghost)
+    # One parity-reduced D1 for all 3 components, each on its own
+    # parity.
+    dy_state = _parity_y_matvec(
+        D1_pos, D1_ghost, state, jnp.stack([p_sign_z, p_sign_v, p_sign_v])
+    )
 
     enstrophy_D1 = get_norm2_cyl(dy_state, k_metric, y_weights)
 

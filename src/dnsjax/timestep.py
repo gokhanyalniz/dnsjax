@@ -497,9 +497,10 @@ def make_stepper(
         # ``get_rhs_fn(state)`` already built for ``full_rhs``.  This
         # costs nothing: both live in one jit scope on the same input,
         # and XLA CSE merges the identical subgraphs -- verified on the
-        # optimized HLO (Cartesian and annular: the pair compiles to
-        # ONE curl D1 GEMM, not two), so no fused get_rhs+l_bf contract
-        # is needed.
+        # optimized HLO under either ``solver.wall_normal_matvec``
+        # (Cartesian, pipe and annular: the pair compiles to ONE curl
+        # D1 GEMM, or ONE stencil, not two), so no fused get_rhs+l_bf
+        # contract is needed.
         l_n = l_bf_fn(state, *args)
         nnl_n = full_rhs - l_n
         _, kappa = _step_scales(*args)
