@@ -136,7 +136,16 @@ continuity in every geometry.
 spectral modes -- keyed by the *global* mode index, so the field is
 identical at any ``(np0, np1)`` -- with NumPy per-mode loops (the
 `$D_1 \mathbf{v}$` continuity matvecs and the wall windows), because
-Python-level looping in JAX would incur tracing overhead.  No full array
+Python-level looping in JAX would incur tracing overhead.  Every
+real-matrix product in those loops (the wall-normal filter, `$D_1$`)
+goes through :func:`_real_product`: a mixed real-complex product would
+copy the matrix to complex for every mode, about 7 MB per mode at
+``ny = 383``, which ranks sharing a cache turn into memory traffic.
+At the per-rank block of a ``1280 x 383 x 384`` run on
+``(np0, np1) = (64, 1)`` the generator took 2.4-2.7 s with those copies
+and takes 1.5 s without them (one process, ``7 x 640`` modes); with
+eight ranks on eight cores (``6 x 320`` modes each), 7.0 s and 3.7 s.
+No full array
 is ever materialised: the shards are assembled with
 :func:`dnsjax.snapshot.assemble_local_shards`, and only the final
 norm/scale runs in JAX.  The wall-normal velocity carries a *squared*
@@ -349,6 +358,25 @@ def _wall_normal_filter(coord: np.ndarray, decay: float) -> np.ndarray:
     return (basis * decay ** (np.arange(n) / 2.0)) @ basis.T
 
 
+def _real_product(x: np.ndarray, mat_t: np.ndarray) -> np.ndarray:
+    r"""``x @ mat_t`` for a complex *x* ``(..., n)`` and a real *mat_t*.
+
+    The generators' two matrices -- :func:`_wall_normal_filter` and the
+    wall-normal `$D_1$` -- are real and the columns they act on are
+    complex.  A mixed product promotes the real operand first: a fresh
+    complex copy of the whole ``(n, n)`` matrix (2.3 MB at
+    ``n = 383``) for every column, then a complex product on it.
+    Stacking the real and imaginary rows into one real product against
+    the matrix as stored computes the same sums with no copy of the
+    matrix (the measured effect: the module docstring).  *mat_t* may
+    be a transposed view; BLAS reads it in place.
+    """
+    rows = x.reshape(-1, x.shape[-1])
+    y = np.concatenate([rows.real, rows.imag]) @ mat_t
+    n = rows.shape[0]
+    return (y[:n] + 1j * y[n:]).reshape(*x.shape[:-1], mat_t.shape[-1])
+
+
 def _scaled_wall_window(
     base: np.ndarray, k: float, confinement: float
 ) -> np.ndarray:
@@ -557,7 +585,7 @@ def generate_cartesian(
                     col = _hermitian_column(seed, g2, nz, ny)
                 else:
                     col = _column_draw(seed, g2, g3, ny)
-                col = col @ wn_filter.T
+                col = _real_product(col, wn_filter.T)
                 col[0] *= window_tang
                 col[1] *= window_wn
                 col[2] *= window_tang
@@ -574,11 +602,10 @@ def generate_cartesian(
                     else:
                         col[0], col[2] = project_mean(col[0].real, col[2].real)
                 elif kz_val != 0:
-                    col[2] = -(1j * kx_val * col[0] + D1_np @ col[1]) / (
-                        1j * kz_val
-                    )
+                    d1_v = _real_product(col[1], D1_np.T)
+                    col[2] = -(1j * kx_val * col[0] + d1_v) / (1j * kz_val)
                 else:
-                    col[0] = -(D1_np @ col[1]) / (1j * kx_val)
+                    col[0] = -_real_product(col[1], D1_np.T) / (1j * kx_val)
                 # Energy = envelope^2 (no continuity 1/k low-k inflation).
                 col = _normalize_mode(
                     col, yw_np, decay ** (abs(kz_val) + abs(kx_val))
@@ -695,7 +722,7 @@ def generate_cylindrical(
                     col = _hermitian_column(seed, g2, nz, Nr)
                 else:
                     col = _column_draw(seed, g2, g3, Nr)
-                col = col @ wn_filter.T
+                col = _real_product(col, wn_filter.T)
                 col[0] *= window_wall
                 col[1] *= window_wn
                 col[2] *= window_wn
@@ -719,7 +746,7 @@ def generate_cylindrical(
                 # exact discretely ((1/r).r = I elementwise).
                 if kz_val != 0:
                     div_perp = (
-                        D1_v @ col[1]
+                        _real_product(col[1], D1_v.T)
                         + inv_r_np * col[1]
                         + 1j * m_val * inv_r_np * col[2]
                     )
@@ -729,7 +756,7 @@ def generate_cylindrical(
                     col[2] = (
                         1j
                         * rs_np
-                        * (D1_v @ col[1] + inv_r_np * col[1])
+                        * (_real_product(col[1], D1_v.T) + inv_r_np * col[1])
                         / m_val
                     )
                 else:
@@ -842,7 +869,7 @@ def generate_annular(
                     col = _hermitian_column(seed, g2, nz, Nr)
                 else:
                     col = _column_draw(seed, g2, g3, Nr)
-                col = col @ wn_filter.T
+                col = _real_product(col, wn_filter.T)
                 col[0] *= window_lin
                 col[1] *= window_wn
                 col[2] *= window_wn
@@ -854,7 +881,7 @@ def generate_annular(
                 # exact discretely ((1/r).r = I elementwise).
                 if kz_val != 0:
                     div_perp = (
-                        D1_np @ col[1]
+                        _real_product(col[1], D1_np.T)
                         + inv_r_np * col[1]
                         + 1j * m_val * inv_r_np * col[2]
                     )
@@ -864,7 +891,7 @@ def generate_annular(
                     col[2] = (
                         1j
                         * rs_np
-                        * (D1_np @ col[1] + inv_r_np * col[1])
+                        * (_real_product(col[1], D1_np.T) + inv_r_np * col[1])
                         / m_val
                     )
                 else:
@@ -1102,7 +1129,7 @@ def generate_viscoelastic_dean(
                     vcol = _hermitian_column(seed, g2, nz, Nr)
                 else:
                     vcol = _column_draw(seed, g2, g3, Nr)
-                vcol = vcol @ wn_filter.T
+                vcol = _real_product(vcol, wn_filter.T)
                 vcol[0] *= window_lin
                 vcol[1] *= window_wn
                 vcol[2] *= window_wn
@@ -1111,19 +1138,15 @@ def generate_viscoelastic_dean(
                 # (same operator, same r-diagonal coefficients).
                 if kz_val != 0:
                     div_perp = (
-                        D1_np @ vcol[1]
+                        _real_product(vcol[1], D1_np.T)
                         + inv_r_np * vcol[1]
                         + 1j * m_val * inv_r_np * vcol[2]
                     )
                     vcol[0] = -div_perp / (1j * kz_val)
                 elif m_val != 0:
                     # k_z = 0: u_z drops out; close through u_theta.
-                    vcol[2] = (
-                        1j
-                        * rs_np
-                        * (D1_np @ vcol[1] + inv_r_np * vcol[1])
-                        / m_val
-                    )
+                    d1_v = _real_product(vcol[1], D1_np.T)
+                    vcol[2] = 1j * rs_np * (d1_v + inv_r_np * vcol[1]) / m_val
                 else:
                     # k_z = 0, m = 0 mean mode: (1/r) d(r u_r)/dr = 0
                     # with no-slip forces u_r = 0.
@@ -1146,7 +1169,7 @@ def generate_viscoelastic_dean(
                     )
                 else:
                     ccol = _column_draw(seed, g2, g3, Nr, rows=6, stream=(1,))
-                ccol = (ccol @ wn_filter.T) * window_wn
+                ccol = _real_product(ccol, wn_filter.T) * window_wn
                 ccol = _normalize_mode(ccol, yw_np, envelope)
                 if g2 == 0 and g3 == 0:
                     ccol[:] = 0.0
@@ -1310,7 +1333,7 @@ def generate_viscoelastic_pipe(
                     col = _hermitian_column(seed, g2, nz, Nr)
                 else:
                     col = _column_draw(seed, g2, g3, Nr)
-                col = col @ wn_filter.T
+                col = _real_product(col, wn_filter.T)
                 col[0] *= window_wall
                 col[1] *= window_wn
                 col[2] *= window_wn
@@ -1321,7 +1344,7 @@ def generate_viscoelastic_pipe(
                 col[0] *= env[0]
                 if kz_val != 0:
                     div_perp = (
-                        D1_v @ col[1]
+                        _real_product(col[1], D1_v.T)
                         + inv_r_np * col[1]
                         + 1j * m_val * inv_r_np * col[2]
                     )
@@ -1330,7 +1353,7 @@ def generate_viscoelastic_pipe(
                     col[2] = (
                         1j
                         * rs_np
-                        * (D1_v @ col[1] + inv_r_np * col[1])
+                        * (_real_product(col[1], D1_v.T) + inv_r_np * col[1])
                         / m_val
                     )
                 else:
@@ -1354,7 +1377,7 @@ def generate_viscoelastic_pipe(
                     )
                 else:
                     ccol = _column_draw(seed, g2, g3, Nr, rows=6, stream=(1,))
-                ccol = (ccol @ wn_filter.T) * window_wn
+                ccol = _real_product(ccol, wn_filter.T) * window_wn
                 # Stored physical order (c_zz, c_rz, c_thz, c_rr,
                 # c_thth, c_rth) -> spin combos (the definitions of
                 # ``_viscoelastic_common.phys_combos_to_spin``, inlined

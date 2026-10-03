@@ -18,7 +18,11 @@ Pallas banded backend (``PerModeBandedPallasOperator``):
 4. ``_build_pallas_operator``: a healthy operator builds and solves;
    a no-pivot breakdown or genuine element growth hard-errors; an
    above-tolerance residual with benign growth prints the
-   ill-conditioning notice and proceeds.
+   ill-conditioning notice and proceeds.  Its device half
+   (``_factor_checked``): the stored-layout factors multiply back to
+   each mode's operator, and the growth and residual it reports are
+   NumPy's (the residual on perturbed factors, where it is far above
+   round-off).
 5. The reverse-mode rule: the transposed sweep solves `$A^T x = b$`
    (``test_pallas_transpose_identity``); the ``custom_vjp`` matches
    the portable sweep's own autodiff in all three cotangents, with a
@@ -91,8 +95,10 @@ from dnsjax.solvers import (  # noqa: E402
     _banded_solve_batched,
     _banded_solve_mode_inner,
     _build_pallas_operator,
+    _factor_checked,
     _pallas_banded_solve,
     _pallas_banded_solve_t,
+    _probe_residual,
     _stack_pallas_operators,
 )
 
@@ -744,6 +750,62 @@ def test_build_pallas_operator_checks() -> None:
     assert isinstance(op_cond, PerModeBandedPallasOperator)
     assert "ill-conditioned" in buf.getvalue()
     assert_allclose(np.asarray(op_cond.solve(rhs))[:, 0, 0], ref, atol=1e-9)
+
+
+def _dense_factors(L: np.ndarray, U: np.ndarray, z: int, x: int):
+    """Mode ``(z, x)`` of stored-layout factors as dense ``(L, U)``."""
+    N, p = L.shape[:2]
+    Ld, Ud = np.eye(N), np.zeros((N, N))
+    for i in range(N):
+        for d in range(p):
+            if i - p + d >= 0:
+                Ld[i, i - p + d] = L[i, d, z, x]
+        for d in range(p + 1):
+            if i + d < N:
+                Ud[i, i + d] = U[i, d, z, x]
+    return Ld, Ud
+
+
+def test_factor_checked_measures() -> None:
+    """``_factor_checked``: stored-layout factors and their measures.
+
+    Every mode gets its own operator, so a mode mix-up cannot hide
+    behind a tiled one.  The factors come back mode-inner and multiply
+    back to each mode's matrix; the growth is ``max|U| / max|A|``
+    exactly; the residual is the probe NumPy computes, checked on the
+    real factors (round-off) and on factors with a perturbed diagonal,
+    where the probe is far above round-off and must match NumPy's to
+    many digits.
+    """
+    Nkz, Nkx = params.res.nz - 1, params.res.nx // 2
+    p, Ny = 4, 16
+    A = np.stack(
+        [_make_random_banded(Ny, p, seed=20 + m) for m in range(Nkz * Nkx)]
+    ).reshape(Nkz, Nkx, Ny, Ny)
+    band = _banded_from_dense(jnp.asarray(A), p)
+    L, U, resid, max_u, max_a = (np.asarray(v) for v in _factor_checked(band))
+    growth = max_u.max() / max_a.max()
+    assert L.shape == (Ny, p, Nkz, Nkx) and U.shape == (Ny, p + 1, Nkz, Nkx)
+    for z in range(Nkz):
+        for x in range(Nkx):
+            Ld, Ud = _dense_factors(L, U, z, x)
+            assert_allclose(Ld @ Ud, A[z, x], atol=1e-12 * np.abs(A).max())
+    assert growth == np.abs(U).max() / np.abs(np.asarray(band)).max()
+    assert resid.shape == (Nkz, Nkx) and resid.max() < 1e-12
+
+    U_bad = U.copy()
+    U_bad[:, 0] *= 1.001
+    probe = float(
+        jnp.max(_probe_residual(band, jnp.asarray(L), jnp.asarray(U_bad)))
+    )
+    ref = 0.0
+    for z in range(Nkz):
+        for x in range(Nkx):
+            Ld, Ud = _dense_factors(L, U_bad, z, x)
+            xs = np.linalg.solve(Ld @ Ud, np.ones(Ny))
+            ref = max(ref, np.abs(A[z, x] @ xs - 1.0).max())
+    assert ref > 1e-5
+    assert_allclose(probe, ref, rtol=1e-9)
 
 
 # ── Runner ───────────────────────────────────────────────────────────

@@ -300,19 +300,23 @@ class Fourier:
     mean_mask: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        kz_vals = (
-            pad_harmonics(
-                real_harmonics(params.res.nx),
-                params.res.nx,
-                sharding.nx_spec_pad,
+        # Every grid is built on the host and placed with its sharding:
+        # they are a few vectors, and each eager JAX operation on them
+        # would compile on its own at every start-up.
+        a0, a1 = sharding.a0, sharding.a1
+        kz = (
+            (
+                pad_harmonics(
+                    real_harmonics(params.res.nx),
+                    params.res.nx,
+                    sharding.nx_spec_pad,
+                )
+                * 2
+                * np.pi
+                / params.geo.lx
             )
-            * 2
-            * jnp.pi
-            / params.geo.lx
-        )
-        self.kz = jax.device_put(
-            kz_vals.reshape([1, 1, -1]).astype(sharding.float_type),
-            P(None, None, sharding.a1),
+            .reshape(1, 1, -1)
+            .astype(sharding.float_type)
         )
 
         # Azimuthal wavenumbers m = m0 * harmonic over the wedge
@@ -320,47 +324,38 @@ class Fourier:
         # multiply is exact and keeps the padding placeholders nonzero;
         # ``m_is_even`` below then tracks the parity of the *physical* m,
         # i.e. the correct r = 0 axis-regularity condition per mode.
-        m_vals = (
-            pad_harmonics(
-                complex_harmonics(params.res.nz),
-                params.res.nz,
-                sharding.nz_spec_pad,
+        m = (
+            (
+                pad_harmonics(
+                    complex_harmonics(params.res.nz),
+                    params.res.nz,
+                    sharding.nz_spec_pad,
+                )
+                * params.geo.m0
             )
-            * params.geo.m0
+            .reshape(1, -1, 1)
+            .astype(sharding.float_type)
         )
-        self.m = jax.device_put(
-            m_vals.reshape([1, -1, 1]).astype(sharding.float_type),
-            P(None, sharding.a0, None),
-        )
-
-        self.k_metric = jnp.where(self.kz == 0, 1, 2).astype(
-            sharding.float_type
-        )
-
-        self.kz2 = self.kz**2
-        self.m2 = self.m**2
-        self.m_is_even = (self.m % 2 == 0).astype(sharding.float_type)
 
         # One-hot at the mean mode (m, kz) = (0, 0): the true
         # modes precede the padding, so it is global index (0, 0).
         # The mean mode is the only m^2 + kz^2 = 0 mode (padding
         # slots carry nonzero placeholder wavenumbers).
-        e_m = (
-            jnp.zeros(m_vals.shape[0], dtype=sharding.float_type)
-            .at[0]
-            .set(1.0)
+        mean = np.zeros((1, m.shape[1], kz.shape[2]), dtype=bool)
+        mean[0, 0, 0] = True
+
+        self.kz = jax.device_put(kz, P(None, None, a1))
+        self.m = jax.device_put(m, P(None, a0, None))
+        self.k_metric = jax.device_put(
+            np.where(kz == 0, 1, 2).astype(sharding.float_type),
+            P(None, None, a1),
         )
-        e_kz = (
-            jnp.zeros(kz_vals.shape[0], dtype=sharding.float_type)
-            .at[0]
-            .set(1.0)
+        self.kz2 = jax.device_put(kz**2, P(None, None, a1))
+        self.m2 = jax.device_put(m**2, P(None, a0, None))
+        self.m_is_even = jax.device_put(
+            (m % 2 == 0).astype(sharding.float_type), P(None, a0, None)
         )
-        self.mean_mask = (
-            jax.device_put(e_m.reshape([1, -1, 1]), P(None, sharding.a0, None))
-            * jax.device_put(
-                e_kz.reshape([1, 1, -1]), P(None, None, sharding.a1)
-            )
-        ) == 1.0
+        self.mean_mask = jax.device_put(mean, P(None, a0, a1))
 
 
 fourier: Fourier = Fourier()
@@ -1304,9 +1299,6 @@ class CylindricalFlow:
             self.y_weights_odd, sharding.no_shard
         )
 
-        Nm = sharding.nz_spec
-        Nkz = sharding.nx_spec
-
         # Banded half-width: measured from the assembled base operator,
         # not assumed.  The wall row (r = 1) is replaced by a BC row in
         # every operator, so its own stencil need not fit.  Both
@@ -1444,12 +1436,19 @@ class CylindricalFlow:
 
                 self.Hk_op = prim._hk_dense_op(dt, fourier, self)
 
-        self._derive_imm_homogeneous_data(fourier, Nm, Nkz, Nr)
         # Any metric the geometry carries is built here: the grid,
         # weights and FD matrices above are its inputs, and the bulk
-        # response below reads it back through ``bulk_of_mean_profile``.
+        # response below reads it back through ``bulk_of_mean_profile``
+        # (the influence-matrix columns do not read it).
         self._build_metric()
-        self._precompute_bulk_response(fourier, Nm, Nkz, Nr)
+        # The influence-matrix columns and the bulk response, as one
+        # compiled program taking this flow -- still under construction
+        # -- as its argument; run eagerly, every operation and every
+        # ``.solve``'s ``shard_map`` body compiles on its own.  A fresh
+        # ``jit`` per build, since the traced body reads ``params``.
+        leaves = jax.jit(lambda f, fl: _imm_leaves(f, fl))(fourier, self)
+        for name, leaf in leaves.items():
+            setattr(self, name, leaf)
 
     def _derive_imm_homogeneous_data(
         self, fourier_: Fourier, Nm: int, Nkz: int, Nr: int
@@ -1831,7 +1830,8 @@ def _build_dt_leaves(
     at setup, and under ``step.adaptive`` additionally at ``dt_max``,
     the dominance-weakest point), then re-run the unmodified IMM
     derivation on a trace-local shallow copy of *flow_* and collect
-    the refreshed leaves.  `$L_k$` is ``dt``-independent and shared.
+    the refreshed leaves (:func:`_imm_leaves`, which the setup runs
+    too).  `$L_k$` is ``dt``-independent and shared.
     The returned leaves match the stored ones in
     shape/dtype/sharding, so swapping them onto the flow singleton
     retraces nothing.
@@ -1848,36 +1848,48 @@ def _build_dt_leaves(
         new.Hk_op = _factor_pallas_operator(hk_bands_fn(dt, fourier_, new))
     else:
         new.Hk_op = hk_dense_fn(dt, fourier_, new)
-    new._derive_imm_homogeneous_data(
-        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
-    )
-    new._precompute_bulk_response(
-        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
-    )
-    leaves = {
-        "dt": new.dt,
-        "Hk_op": new.Hk_op,
-        "M_inv": new.M_inv,
-        "h_bulk_response": new.h_bulk_response,
-        "H_bulk_inv": new.H_bulk_inv,
-    }
-    if params.res.consistent_imm:
-        # The vw scheme's u_r column and its carried-slot partner; the
-        # pressure-scheme columns are None (static aux-data) and Lk_op
-        # (= the dt-free recovery) is deliberately absent -- see
-        # test_adaptive's leaf dicts.
-        leaves |= {
-            "ur_1": new.ur_1,
-            "phi_1_diff": new.phi_1_diff,
-            "phi_1_sum": new.phi_1_sum,
-        }
-    else:
-        leaves |= {
-            "v_plus_1": new.v_plus_1,
-            "v_minus_1": new.v_minus_1,
-            "q_z_1": new.q_z_1,
-        }
+    # Lk_op (= the dt-free recovery under the vw scheme) is deliberately
+    # absent -- see test_adaptive's leaf dicts.
+    leaves = {"dt": new.dt, "Hk_op": new.Hk_op}
+    leaves |= _imm_leaves(fourier_, new)
     return leaves
+
+
+# The leaves the influence-matrix setup assigns: the vw scheme's u_r
+# column and the two halves of its unit spin-pair response, or the
+# primitive scheme's pressure-response columns -- the other scheme's set
+# ``None`` (static aux-data) either way.
+_IMM_LEAVES = (
+    "M_inv",
+    "ur_1",
+    "phi_1_diff",
+    "phi_1_sum",
+    "v_plus_1",
+    "v_minus_1",
+    "q_z_1",
+    "h_bulk_response",
+    "H_bulk_inv",
+)
+
+
+def _imm_leaves(
+    fourier_: Fourier, flow_: CylindricalFlow
+) -> dict[str, object]:
+    r"""The influence-matrix leaves of *flow_*'s current ``Hk_op``.
+
+    :meth:`CylindricalFlow._derive_imm_homogeneous_data` and
+    :meth:`CylindricalFlow._precompute_bulk_response` on a trace-local
+    shallow copy, returned by name (``None``-valued ones included).
+    Shared by the setup, which jits it with the flow under
+    construction as the argument (:meth:`CylindricalFlow.__post_init__`,
+    after the metric the bulk response reads), and the ``set_dt``
+    rebuild (:func:`_build_dt_leaves`), so the two cannot drift apart.
+    """
+    new = copy.copy(flow_)
+    dims = (sharding.nz_spec, sharding.nx_spec, params.res.ny)
+    new._derive_imm_homogeneous_data(fourier_, *dims)
+    new._precompute_bulk_response(fourier_, *dims)
+    return {name: getattr(new, name) for name in _IMM_LEAVES}
 
 
 # ── Stepper factory ─────────────────────────────────

@@ -74,6 +74,16 @@ from .parameters import (
 )
 
 
+class _Unset:
+    """Aux-data marker: a dataclass field not assigned yet."""
+
+    def __repr__(self) -> str:
+        return "<unset>"
+
+
+_UNSET = _Unset()
+
+
 def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     """Register a dataclass as a JAX pytree.
 
@@ -84,6 +94,16 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     slicing (read an array's ``.shape`` instead).  String,
     ``None``, and callable fields are stored as static
     aux_data (embedded in the trace as constants).
+
+    A field not assigned yet -- an object part-way through its
+    ``__post_init__`` -- flattens to nothing and is left unassigned by
+    the unflatten, so a constructor can hand the object it is building
+    to a jitted step: the wall-bounded geometries run their
+    influence-matrix setup as one program that way (each geometry's
+    ``_imm_leaves``), where an eager pass compiles every operation
+    separately.  A built object flattens exactly as before, and reading
+    an unassigned field inside the step still raises
+    ``AttributeError``.
 
     Used by the geometry base dataclasses
     (``TriplyPeriodicFlow``, ``CartesianFlow``,
@@ -104,8 +124,10 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
         children: list[object] = []
         aux_data: dict[str, object] = {}
         for f in dataclasses.fields(cls):
-            val = getattr(obj, f.name)
-            if (
+            val = getattr(obj, f.name, _UNSET)
+            if val is _UNSET:
+                aux_data[f.name] = _UNSET
+            elif (
                 isinstance(val, (str, type(None)))
                 or callable(val)
                 and not isinstance(val, (jax.Array, jnp.ndarray))
@@ -123,6 +145,8 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
         child_idx = 0
         for f in dataclasses.fields(cls):
             val_or_flag = aux_data.get(f.name)
+            if val_or_flag is _UNSET:
+                continue
             if val_or_flag is True:
                 setattr(obj, f.name, children[child_idx])
                 child_idx += 1

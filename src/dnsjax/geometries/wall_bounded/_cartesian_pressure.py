@@ -162,52 +162,8 @@ class PoissonPressure:
 
     def __init__(self, flow_: CartesianFlow, fourier_: Fourier) -> None:
         self.op = build_poisson_operator(flow_, fourier_)
-        zeros = jnp.zeros(
-            sharding.spec_shape,
-            dtype=sharding.float_type,
-            out_sharding=sharding.spec_scalar_shard,
-        )
-        # `$L_k p_i = e_i$`: unit Neumann data at wall `$i$`, no
-        # interior source.  Real operator, real data, real columns.
-        self.p1 = self.op.solve(zeros.at[0].set(1.0))
-        self.p2 = self.op.solve(zeros.at[-1].set(1.0))
-
-        d1 = flow_.D1_bnd
-        dd1 = apply_y_matrix(flow_.D1, self.p1)
-        dd2 = apply_y_matrix(flow_.D1, self.p2)
-        m00 = jnp.einsum("j,jzx->zx", d1[0], dd1)
-        m01 = jnp.einsum("j,jzx->zx", d1[0], dd2)
-        m10 = jnp.einsum("j,jzx->zx", d1[-1], dd1)
-        m11 = jnp.einsum("j,jzx->zx", d1[-1], dd2)
-        # At `$k^2 = 0$` both columns are harmonic, so `$M \equiv 0$`
-        # and every `$\alpha$` is admissible (the residual it would
-        # correct is identically zero there: `$\hat{v} = 0$`).  Zero
-        # ``M_inv`` to pick `$\alpha = 0$`, keeping the regular branch
-        # NaN-free before the selection -- the
-        # ``derive_homogeneous_data`` idiom.  Padding modes carry
-        # nonzero placeholder `$k^2$` and take the regular branch;
-        # their values are inert.
-        is_mean = fourier_.mean_mask[0]
-        det = m00 * m11 - m01 * m10
-        safe = jnp.where(is_mean, 1.0, det)
-        self.m_inv = jnp.stack(
-            [
-                jnp.stack(
-                    [
-                        jnp.where(is_mean, 0.0, m11 / safe),
-                        jnp.where(is_mean, 0.0, -m01 / safe),
-                    ],
-                    axis=-1,
-                ),
-                jnp.stack(
-                    [
-                        jnp.where(is_mean, 0.0, -m10 / safe),
-                        jnp.where(is_mean, 0.0, m00 / safe),
-                    ],
-                    axis=-1,
-                ),
-            ],
-            axis=-2,
+        self.p1, self.p2, self.m_inv = _homogeneous_columns(
+            self.op, flow_, fourier_
         )
 
     def solve(
@@ -263,6 +219,66 @@ class PoissonPressure:
         )
         alpha = jnp.einsum("zxab,zxb->zxa", self.m_inv, b)
         return p_part + alpha[..., 0] * self.p1 + alpha[..., 1] * self.p2
+
+
+@jit
+def _homogeneous_columns(
+    op: DenseJAXSolver | PerModeBandedPallasOperator,
+    flow_: CartesianFlow,
+    fourier_: Fourier,
+) -> tuple[Array, Array, Array]:
+    r"""``(p1, p2, m_inv)`` of :class:`PoissonPressure`, one program.
+
+    Run eagerly, the two solves' ``shard_map`` bodies and every
+    operation here would each compile on their own.
+    """
+    zeros = jnp.zeros(
+        sharding.spec_shape,
+        dtype=sharding.float_type,
+        out_sharding=sharding.spec_scalar_shard,
+    )
+    # `$L_k p_i = e_i$`: unit Neumann data at wall `$i$`, no interior
+    # source.  Real operator, real data, real columns.
+    p1 = op.solve(zeros.at[0].set(1.0))
+    p2 = op.solve(zeros.at[-1].set(1.0))
+
+    d1 = flow_.D1_bnd
+    dd1 = apply_y_matrix(flow_.D1, p1)
+    dd2 = apply_y_matrix(flow_.D1, p2)
+    m00 = jnp.einsum("j,jzx->zx", d1[0], dd1)
+    m01 = jnp.einsum("j,jzx->zx", d1[0], dd2)
+    m10 = jnp.einsum("j,jzx->zx", d1[-1], dd1)
+    m11 = jnp.einsum("j,jzx->zx", d1[-1], dd2)
+    # At `$k^2 = 0$` both columns are harmonic, so `$M \equiv 0$` and
+    # every `$\alpha$` is admissible (the residual it would correct is
+    # identically zero there: `$\hat{v} = 0$`).  Zero ``M_inv`` to pick
+    # `$\alpha = 0$`, keeping the regular branch NaN-free before the
+    # selection -- the ``derive_homogeneous_data`` idiom.  Padding modes
+    # carry nonzero placeholder `$k^2$` and take the regular branch;
+    # their values are inert.
+    is_mean = fourier_.mean_mask[0]
+    det = m00 * m11 - m01 * m10
+    safe = jnp.where(is_mean, 1.0, det)
+    m_inv = jnp.stack(
+        [
+            jnp.stack(
+                [
+                    jnp.where(is_mean, 0.0, m11 / safe),
+                    jnp.where(is_mean, 0.0, -m01 / safe),
+                ],
+                axis=-1,
+            ),
+            jnp.stack(
+                [
+                    jnp.where(is_mean, 0.0, -m10 / safe),
+                    jnp.where(is_mean, 0.0, m00 / safe),
+                ],
+                axis=-1,
+            ),
+        ],
+        axis=-2,
+    )
+    return p1, p2, m_inv
 
 
 def mean_advect(prof: Array, field: Array, kx: Array, kz: Array) -> Array:
