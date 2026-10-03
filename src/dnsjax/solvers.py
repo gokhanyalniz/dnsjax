@@ -43,12 +43,14 @@ All operators here are **real**; only the RHS may be complex.  To
 avoid promoting the (large) factors to complex on every solve --
 which `jax.scipy.linalg.lu_solve` would do, tripling the factor
 memory traffic and doubling the triangular-solve FLOPs -- a complex
-RHS is split into a real array with a trailing re/im axis of
-length 2 (`$\ldots, N_y$` complex `$\to \ldots, N_y, 2$` real)
-and solved as two real RHS columns, then recombined.  The split
+RHS is split into a real array with a re/im axis of length 2 and
+solved as two real RHS columns, then recombined: a trailing axis for
+the dense LU (`$\ldots, N_y$` complex `$\to \ldots, N_y, 2$` real),
+axis 1 of the mode-inner banded RHS (`$N_y, N_{k_z}, N_{k_x} \to
+N_y, 2, N_{k_z}, N_{k_x}$`, :func:`_banded_mode_solve`).  The split
 and merge are single fused elementwise passes over the RHS, far
-cheaper than the factor-sized conversion they replace.  The
-permutations are precomputed at factorisation time so the solve
+cheaper than the factor-sized conversion they replace.  The dense
+LU's permutations are precomputed at factorisation time so its solve
 path (:func:`_permuted_tri_solve`: permutation gather + two
 batched :func:`jax.lax.linalg.triangular_solve` calls) needs no
 per-call pivot conversion.
@@ -262,11 +264,13 @@ class DenseJAXSolver:
 # JAX/XLA cannot express a per-lane sequential loop (``vmap(scan)``
 # collapses to a single N_y-deep batched scan), so the sweep is written
 # as a Pallas (Triton) kernel: two ``fori_loop`` passes that read the
-# band one scalar at a time by index (``ref[0, 0, i, d]``) and carry the
-# sliding window in registers, so no whole-band block is ever loaded
-# (Triton supports neither a non-power-of-two block load nor value
-# slicing / reversal / scan ``xs``).  The same banded math runs in pure
-# JAX as the CPU path / oracle (``_banded_solve_batched``).
+# band one entry at a time by index (``l_ref[i, d]``, one value per mode
+# of the program's tile) and carry the sliding window in registers, so
+# no whole-band block is ever loaded (Triton supports neither a
+# non-power-of-two block load nor value slicing / reversal / scan
+# ``xs``).  The same banded math runs in pure JAX as the CPU path, on
+# the stored layout (``_banded_solve_mode_inner``), and as the
+# mode-outer oracle (``_banded_solve_batched``).
 #
 # Factors are stored banded: ``L`` carries the ``p`` strict sub-diagonals
 # of the unit-lower factor (``L[i, i-p+d]``, ``d = 0..p-1``); ``U`` carries
@@ -489,6 +493,15 @@ def _banded_solve_mode_inner(L: Array, U: Array, b: Array, p: int) -> Array:
     stored plain and therefore divided by.  The back substitution scans
     in reverse instead of reversing its operands, and the ``p``-deep
     window is a tuple carry, so no step copies it.
+
+    *Unrolling the two scans: measured, and rejected.*  The body is
+    small at a CPU rank's mode block, so ``unroll`` looked like a way
+    to amortise the loop.  It loses on both counts (the as-run step at
+    ``10 x 385 x 320``, plane Poiseuille, one pinned core, the variants
+    compiled in one process and executed alternately, 10 rounds): the
+    step's temporaries grow from 23.5 to 31.0 padded fields at any
+    ``unroll`` of 2, 4 or 8, and it runs x0.87, x0.83 and x0.75 as
+    fast.
 
     Parameters
     ----------
@@ -824,10 +837,10 @@ def _pallas_banded_solve(
     transpose to each other, so the rule needs no shape bookkeeping.
     The rule is complete: it returns cotangents for ``L`` and ``U`` as
     well as ``b`` -- see :func:`_pallas_banded_solve_t` for the
-    derivation.  The pure-JAX :func:`_banded_solve_batched` keeps
-    differentiating through its own ``lax.scan``, deliberately: it is
-    the independent oracle this rule is checked against
-    (``tests/test_banded_solver.py``,
+    derivation.  The two pure-JAX sweeps (:func:`_banded_solve_batched`,
+    :func:`_banded_solve_mode_inner`) keep differentiating through
+    their own ``lax.scan``, deliberately: they are the independent
+    oracles this rule is checked against (``tests/test_banded_solver.py``,
     ``test_pallas_adjoint_matches_portable_sweep``).
     """
     interpret = interpret or _force_interpret
@@ -1566,8 +1579,9 @@ class PerModeBandedPallasOperator:
         jitted ``set_dt`` rebuild, the one place
         :func:`_factor_pallas_operator` runs inside a ``jit`` (the
         setup build cannot fuse -- :func:`_build_pallas_operator`
-        host-syncs the factors for its residual/growth check before
-        packing).  Its first, compiling call takes **0.95-1.5 s** at
+        factors in one compiled program, :func:`_factor_checked`, and
+        packs in another, with its host-side stability verdict
+        between them).  Its first, compiling call takes **0.95-1.5 s** at
         plane-Couette ``64 x 96 x 64`` and **1.9-2.6 s** on the pipe at
         ``128^3``; reinstating a ``shard_map`` barrier on the CPU
         branch lands inside that same spread (three interleaved

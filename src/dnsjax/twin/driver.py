@@ -330,8 +330,8 @@ class TwinParams(BaseModel):
       per-sample cost.  ``_twin_budget_jit`` is a separate compiled
       program whose transient is the driver's global high-water
       mark, since the device allocator's pool grows to the maximum
-      over every program: ~43 padded physical components against
-      the iterative-CN step's 20, measured on CPU
+      over every program: ~44 padded physical components against
+      the iterative-CN step's 22, measured on CPU
       (:mod:`dnsjax.twin.diagnostics`, "Memory") -- some `$50$` GB
       in all at a `$1024\times257\times256$` double-precision
       plane-Poiseuille target, on that schedule.  If it ever binds,

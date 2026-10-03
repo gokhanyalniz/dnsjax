@@ -97,7 +97,9 @@ modules import neither geometry (guard: `test_no_cross_geometry_import`).
   `A_base_pos`) are `_base.YMatrix`: `apply_y_matrix` applies one as
   a GEMM or a stencil (`solver.wall_normal_matvec`), and every other
   use takes `.dense` (`np.asarray` on one raises). The pipe's ghosts
-  are plain `(g, c)` corners applied to the first `c` radial points.
+  are plain `(g, c)` corners applied to the first `c` radial points;
+  apply a parity-reduced matrix to a field through
+  `_cylindrical_stepping._parity_y_matvec`, which owns the ghost axis.
 - `apply_y_matrix` batches over the leading axis, so FD matvecs can be
   regrouped across IMM stages; which stacks go y-leading: its
   docstring and `PerModeBandedPallasOperator.solve`.
