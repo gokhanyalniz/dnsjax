@@ -548,9 +548,13 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         no mode-dependent mask needed (the same shortcut
         ``pipe.frozen_profile_flow`` takes).
         """
-        g = self.D1_ghost.shape[0]
+        g, gc = self.D1_ghost.shape
         sign = _mean_parity_signs(np.array([spin]))[0]
-        return (self.D1_pos @ prof).at[:g].add(sign * (self.D1_ghost @ prof))
+        return (
+            (self.D1_pos.dense @ prof)
+            .at[:g]
+            .add(sign * (self.D1_ghost @ prof[:gc]))
+        )
 
     def add_mean_body_force(
         self, nl_z: Array, nl_r: Array, nl_th: Array, fourier_: Fourier

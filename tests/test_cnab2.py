@@ -523,7 +523,7 @@ def _worker(system: str) -> None:
             # Curl is mode-diagonal: the mean of the spectral curl is
             # the D1 derivative of the mean profile,
             # curl(u, v, w)|_mean = (D1 w, 0, -D1 u).
-            D1 = np.asarray(flow_.D1)
+            D1 = np.asarray(flow_.D1.dense)
             prof, om_prof = u_m[:, :, 0, 0], om_m[:, :, 0, 0]
             np.testing.assert_allclose(om_prof[0], D1 @ prof[2], atol=1e-13)
             np.testing.assert_allclose(om_prof[2], -(D1 @ prof[0]), atol=1e-13)

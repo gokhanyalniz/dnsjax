@@ -176,8 +176,8 @@ def frozen_profile_flow(uz: Array) -> PipeFlow:
     carrying that base flow (all operators shared; see
     :func:`~dnsjax.geometries.wall_bounded._base.frozen_profile_flow`).
     """
-    g = flow.D1_ghost.shape[0]
-    duz = (flow.D1_pos @ uz).at[:g].add(flow.D1_ghost @ uz)
+    g, gc = flow.D1_ghost.shape
+    duz = (flow.D1_pos.dense @ uz).at[:g].add(flow.D1_ghost @ uz[:gc])
     base = (
         jnp.zeros(
             (3, params.res.ny),

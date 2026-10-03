@@ -528,8 +528,8 @@ def main(argv: list[str] | None = None) -> int:
     if (i2, i3) == (0, 0):
         bad = check_cartesian_mean_profile(
             vec,
-            np.asarray(fmod.flow.D1),
-            np.asarray(fmod.flow.D2),
+            np.asarray(fmod.flow.D1.dense),
+            np.asarray(fmod.flow.D2.dense),
             np.asarray(fmod.flow.y_weights),
         )
         if bad:

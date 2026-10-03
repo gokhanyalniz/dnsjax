@@ -9,15 +9,18 @@ modules.
 
 import copy
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import jax
+import numpy as np
 from jax import Array, lax, shard_map
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec as P
 
+from ...fd import stencil_decomposition
 from ...operators import phys_to_spec_2d, spec_to_phys_2d
 from ...parameters import derived_params, params
-from ...sharding import sharding
+from ...sharding import register_dataclass_pytree, sharding
 from ...timestep import make_stepper
 
 # ── Spectral transform aliases ──────────────────────────────────
@@ -30,15 +33,196 @@ spec_to_phys = spec_to_phys_2d
 # ── Wall-normal matrix application ──────────────────────────────
 
 
-def apply_y_matrix(mat: Array, field: Array, component_axis: int = 0) -> Array:
+@register_dataclass_pytree
+@dataclass
+class YMatrix:
+    r"""A square wall-normal FD operator, held for both ways of applying it.
+
+    ``dense`` is the full `$(N, N)$` matrix: the GEMM path of
+    :func:`apply_y_matrix`, and what every operator builder, profile
+    derivative and host-side reader takes (``.dense``).  ``inner``,
+    ``top`` and ``bottom`` are its stencil storage
+    (:func:`dnsjax.fd.stencil_decomposition`): the interior band
+    ``(N - q_lo - q_hi, q_lo + q_hi + 1)`` and the two near-wall
+    corner blocks ``(q_lo, c_lo)`` / ``(q_hi, c_hi)``, all of whose
+    sizes are read back from the shapes -- an ``int`` field would be a
+    traced leaf (:func:`~dnsjax.sharding.register_dataclass_pytree`).
+    Which path a call takes is ``solver.wall_normal_matvec``'s
+    (:func:`apply_y_matrix`).
+
+    The FD matrices of the three geometries are held this way (``D1``,
+    ``D2``, the annulus's ``A_base``, the pipe's ``D1_pos`` /
+    ``A_base_pos``); interpolation matrices, wall rows and the pipe's
+    trimmed ghost corners stay plain arrays and always take the GEMM.
+    It is not an array: ``np.asarray`` on one raises (a raw use left
+    unconverted would otherwise become a silent 0-d object array).
+    """
+
+    dense: Array
+    inner: Array
+    top: Array
+    bottom: Array
+
+    @classmethod
+    def from_dense(cls, mat: object) -> "YMatrix":
+        """Build from a **process-local** square matrix.
+
+        Each part is replicated with ``sharding.no_shard``; JAX
+        canonicalizes all four to the run's precision alike.  The
+        decomposition reads the host values, so pass the matrix before
+        it is distributed (every process builds the same one).
+        """
+        mat_np = np.asarray(mat)
+        inner, top, bottom = stencil_decomposition(mat_np)
+        return cls(
+            *(
+                jax.device_put(part, sharding.no_shard)
+                for part in (mat_np, inner, top, bottom)
+            )
+        )
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """The dense shape ``(N, N)``."""
+        return self.dense.shape
+
+    def __array__(self, *args: object, **kwargs: object) -> np.ndarray:
+        raise TypeError(
+            "YMatrix is not an array: take .dense for the (N, N) matrix, "
+            "or apply it with apply_y_matrix"
+        )
+
+
+def _wall_normal_stencil() -> bool:
+    """Whether a :class:`YMatrix` is applied as a stencil.
+
+    ``solver.wall_normal_matvec``, read at trace time: ``"auto"`` is
+    the stencil on CPU and the GEMM elsewhere (the GPU choice is
+    unmeasured; :func:`apply_y_matrix`).
+    """
+    choice = params.solver.wall_normal_matvec
+    if choice == "auto":
+        return jax.default_backend() == "cpu"
+    return choice == "banded"
+
+
+def _stencil(mat: YMatrix, x: Array, ax: int) -> Array:
+    """``mat @ x`` along axis *ax* of a real *x*, from the stencil storage.
+
+    Shifted slices of *x* along *ax* times broadcast band columns: the
+    interior band over the rows it covers, each edge block as a short
+    sum over its own columns, concatenated.  No padding and no
+    transpose -- the slices run along *ax* wherever it sits.
+    """
+    n = x.shape[ax]
+    q_lo, c_lo = mat.top.shape
+    q_hi, c_hi = mat.bottom.shape
+    m, w = mat.inner.shape
+
+    def col(v: Array) -> Array:
+        shape = [1] * x.ndim
+        shape[ax] = v.shape[0]
+        return v.reshape(shape)
+
+    def rows(start: int, size: int) -> Array:
+        return lax.slice_in_dim(x, start, start + size, axis=ax)
+
+    parts = []
+    if q_lo:
+        top = col(mat.top[:, 0]) * rows(0, 1)
+        for j in range(1, c_lo):
+            top = top + col(mat.top[:, j]) * rows(j, 1)
+        parts.append(top)
+    if m:
+        mid = col(mat.inner[:, 0]) * rows(0, m)
+        for d in range(1, w):
+            mid = mid + col(mat.inner[:, d]) * rows(d, m)
+        parts.append(mid)
+    if q_hi:
+        first = n - c_hi
+        bottom = col(mat.bottom[:, 0]) * rows(first, 1)
+        for j in range(1, c_hi):
+            bottom = bottom + col(mat.bottom[:, j]) * rows(first + j, 1)
+        parts.append(bottom)
+    return parts[0] if len(parts) == 1 else jnp.concatenate(parts, axis=ax)
+
+
+def _stencil_apply(mat: YMatrix, field: Array, component_axis: int) -> Array:
+    """The stencil path of :func:`apply_y_matrix` (same contract).
+
+    A complex *field* is stencilled part by part and recombined with
+    ``lax.complex``: a real band times a complex field would promote
+    the band and run complex arithmetic (measured slower), and unlike
+    the GEMM path no stacked re/im operand is needed.
+    """
+    ax = 0 if field.ndim == 3 or component_axis == 1 else 1
+    if jnp.iscomplexobj(field):
+        return lax.complex(
+            _stencil(mat, field.real, ax), _stencil(mat, field.imag, ax)
+        )
+    return _stencil(mat, field, ax)
+
+
+def apply_y_matrix(
+    mat: Array | YMatrix, field: Array, component_axis: int = 0
+) -> Array:
     r"""Left-multiply along the wall-normal axis with a real matrix.
 
     Computes ``einsum("ij, jzx -> izx", mat, field)`` for a 3-d
     *field*, or a component-batched contraction for a 4-d *field*.
 
-    **Layout / transposes.**  The contraction runs as a cuBLAS GEMM
-    over the wall-normal axis.  When that axis is **leading** (the 3-d
-    case, or 4-d with ``component_axis == 1`` so *field* is
+    **Two paths for an FD matrix.**  A :class:`YMatrix` (the
+    geometries' ``D1``, ``D2``, ``A_base``, ``D1_pos`` /
+    ``A_base_pos``) is applied either as the dense GEMM below or as a
+    stencil (:func:`_stencil`), per ``solver.wall_normal_matvec``
+    (``"auto"``: the stencil on CPU, the GEMM elsewhere).  A plain
+    array (an interpolation matrix, a ghost corner) always takes the
+    GEMM.  The two agree to machine precision.
+
+    The GEMM costs `$2 N_y$` FLOPs per output point, almost all of
+    them on structural zeros; the stencil costs two per term of the
+    row's own stencil, about 10 terms at ``fd_order = 8``.  On CPU,
+    where the GEMM is compute-bound, that decides it.  The as-run step
+    (iterative CN, one correction) on one pinned core, both paths
+    compiled in one process and executed alternately, first round
+    discarded, 10-24 rounds; plane Poiseuille at constant bulk
+    velocity:
+
+    ==============  ========  ========  ==============================
+    grid            GEMM      stencil   per-pair ratio, median (IQR)
+    ==============  ========  ========  ==============================
+    ``10x385x320``  937 ms    816 ms    x1.18 (1.04-1.23)
+    ``64x96x64``    288 ms    277 ms    x1.04 (1.02-1.08)
+    ``16x49x16``    3.1 ms    3.1 ms    x1.01 (1.00-1.02)
+    ==============  ========  ========  ==============================
+
+    and the other geometries, at a moderate and the smallest grid:
+    the pipe x1.04 (``32x97x64``) and x0.97 (``16x33x16``),
+    Taylor-Couette x1.08 and x0.95, viscoelastic Dean and pipe x1.04
+    and x1.05 (``16x65x32``).  (A Ryzen 7 PRO 7840U on mains power;
+    ``10x385x320`` has the per-rank modes and points of a
+    ``1280 x 385 x 320`` run on 128 ranks, where XLA's count for the
+    step falls from 18.25 to 4.45 GFLOP.)  The gain grows with `$N_y$`
+    (the GEMM's FLOPs per point do); on the smallest test grids the
+    stencil's fixed cost can leave it a few per cent behind.  The step
+    temporaries are unchanged, but for viscoelastic Dean's (+0.15 %:
+    its re/im split on the 9-field tensor stacks); the stored parts add
+    ``~30 KB`` per matrix, and the unrolled stencils about 2.5 s of
+    compile per step program.
+
+    *Why the stencil has no padding.*  Its first form padded the field
+    by the full half-bandwidth and summed `$2p + 3$` shifted slices
+    (19 at ``fd_order = 8``): x1.03 at the first size above and
+    **x0.85** at the last, because half those terms multiply the
+    zeros outside an interior row's stencil and the fused pad turns
+    every read into a bounds-checked select.  Splitting off the wall
+    rows (:func:`dnsjax.fd.stencil_decomposition`) removes both.
+    Promoting a real band onto a complex field cost a further ~10 %
+    of the step at the first size against the part-by-part form.
+
+    **Layout / transposes (GEMM path).**  The contraction runs as a
+    GEMM over the wall-normal axis.  When that axis is **leading** (the
+    3-d case, or 4-d with ``component_axis == 1`` so *field* is
     `$(N_y, C, N_1, N_2)$`) it is already in GEMM contraction position
     and **no transpose is emitted**.  With ``component_axis == 0``
     (*field* `$(C, N_y, N_1, N_2)$`) the wall-normal axis is interior,
@@ -61,8 +245,10 @@ def apply_y_matrix(mat: Array, field: Array, component_axis: int = 0) -> Array:
     Parameters
     ----------
     mat:
-        Real matrix, shape ``(M, N_y)``.  ``M = N_y`` for full
-        FD matrices; fewer rows for partial-row corrections.
+        A :class:`YMatrix` (a square FD operator), or a plain real
+        matrix ``(M, N_y)``, which always takes the GEMM: an
+        interpolation matrix, or ``M < N_y`` for partial-row
+        corrections.
     field:
         Real or complex field of shape ``(N_y, N_1, N_2)`` (3-d), or
         4-d with the wall-normal axis at position ``component_axis + 1``
@@ -75,6 +261,10 @@ def apply_y_matrix(mat: Array, field: Array, component_axis: int = 0) -> Array:
         leading, transpose-free).  Ignored for a 3-d *field*.  The
         output preserves the input layout.
     """
+    if isinstance(mat, YMatrix):
+        if _wall_normal_stencil():
+            return _stencil_apply(mat, field, component_axis)
+        mat = mat.dense
     if jnp.iscomplexobj(field) and not jnp.iscomplexobj(mat):
         f = jnp.stack([field.real, field.imag], axis=-1)
         if field.ndim == 3:
@@ -475,7 +665,7 @@ def get_norm(
 
 def get_pert_enstrophy(
     state: Array,
-    D1: Array,
+    D1: YMatrix,
     k2: Array,
     k_metric: Array,
     y_weights: Array,
@@ -496,7 +686,7 @@ def get_pert_enstrophy(
     state:
         Spectral velocity, shape ``(3, Ny, Nkz, Nkx)``.
     D1:
-        First-derivative FD matrix, shape ``(Ny, Ny)``.
+        First-derivative FD matrix (:class:`YMatrix`, ``(Ny, Ny)``).
     k2:
         `$k_x^2 + k_z^2$`, shape ``(1, Nkz, Nkx)``.
     k_metric:

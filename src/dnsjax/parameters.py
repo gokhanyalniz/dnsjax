@@ -1869,7 +1869,10 @@ class Solver(BaseModel):
     ``backend`` picks the operator **storage**; ``pallas_kernel`` is a
     separate axis picking which **sweep** reads banded storage (the
     Triton kernel or the portable pure-JAX one), and so changes no
-    memory figure.
+    memory figure.  ``wall_normal_matvec`` is a third, independent
+    axis: how the wall-normal finite-difference *derivatives* (not the
+    solves) are applied, a dense GEMM or a stencil, whose results agree
+    to machine precision rather than bit for bit.
     """
 
     # ``"pallas"`` (the default for all wall-bounded systems): the
@@ -1920,6 +1923,29 @@ class Solver(BaseModel):
             "Pallas backend only: force (true) or forbid (false) the "
             "Triton banded kernel, overriding the automatic choice "
             "(kernel on GPU, portable pure-JAX sweep elsewhere)."
+        ),
+    )
+    # How the wall-normal FD matrices (``D1``, ``D2``, the curvilinear
+    # ``A_base`` and the pipe's parity-reduced ``D1_pos`` /
+    # ``A_base_pos``) are *applied* -- the solves are ``backend``'s.
+    # Each is a ``YMatrix`` (``geometries/wall_bounded/_base``):
+    # ``"dense"`` contracts the full ``N_y x N_y`` matrix as a real
+    # GEMM; ``"banded"`` sums the stencil's shifted wall-normal slices
+    # and skips the structural zeros the GEMM multiplies (~95 % of its
+    # FLOPs at ``N_y = 385``).  ``"auto"`` takes the stencil on CPU --
+    # x1.18 per step at the per-rank size of a 128-rank
+    # ``1280 x 385 x 320`` run, x1.04-1.08 for the other geometries at
+    # moderate sizes, within a few per cent at the smallest test grids
+    # (``_base.apply_y_matrix``) -- and the GEMM elsewhere: on GPU the
+    # choice is unmeasured.  Read at trace time, like
+    # ``rhs_transform_chunks``.  Wall-bounded systems only.
+    wall_normal_matvec: Literal["auto", "dense", "banded"] = Field(
+        default="auto",
+        description=(
+            "How wall-normal finite-difference derivatives are applied: "
+            "'dense' (an Ny x Ny GEMM), 'banded' (a stencil), or 'auto' "
+            "(banded on CPU, dense elsewhere).  Results agree to "
+            "machine precision."
         ),
     )
     # ``"pallas"`` backend only: one Pallas program solves a

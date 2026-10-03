@@ -393,8 +393,8 @@ What the form buys: those two exact identities, and
 the recovered pressure is the Bernoulli pressure the influence matrix
 actually closes on, and the whole term is *checkable* against the
 solver instead of argued (``tests/test_twin_unit.py``).  It is also
-cheaper: 21 field transforms against 33, and a measured peak of 33
-padded components against 37 ("Memory" below).  What it costs:
+cheaper: 21 field transforms against 33, and a measured peak of 29
+padded components against 33 ("Memory" below).  What it costs:
 ``P_r``, ``T_vort`` and ``T_self`` no longer map onto the paper's
 terms at all, so `$\sum_k\int(P_U + P_r)$` is
 ``P_tot + T_tot`` up to truncation rather than ``P_tot`` exactly, and
@@ -537,14 +537,17 @@ buffer assignment (``temp_size_in_bytes`` of
 physical components -- one real field on the 3/2-rule grid,
 `$18\,n_x n_y n_z$` bytes at double precision.  CPU, plane-Poiseuille
 at `$64\times65\times64$` and `$96\times97\times96$` (the two agree
-to 1 %), at ``solver.rhs_transform_chunks`` 1 and 3:
+to 1 %), at ``solver.rhs_transform_chunks`` 1 and 3, with the
+wall-normal derivatives as stencils (the CPU default; as dense GEMMs,
+``solver.wall_normal_matvec = "dense"``, every figure moves by under
+half a field):
 
-- :func:`twin_budget` (three-bin): 43 / 37;
-- :func:`twin_ybudget`: 37 / 31 convective, 33 / 27 rotational, and
-  the same with the 3-D cube, alone or beside the marginals;
-- :func:`difference_pressure` (the ``lowres_delta/`` pressure): 20 /
-  20, its single-pass source and the solve (34 / 29 when it was built
-  from the budget's six-piece sources);
+- :func:`twin_budget` (three-bin): 44 / 37;
+- :func:`twin_ybudget`: 33 / 26 convective, 29 / 24 rotational;
+- :func:`difference_pressure` (the ``lowres_delta/`` pressure): 16 /
+  17, its single-pass source and the solve (34 / 29 when it was built
+  from the budget's six-piece sources, before the solve's factor
+  copies below were removed);
 - for scale, the time step itself: 22 / 20 iterative-CN, 24 / 22
   CN/AB2;
 - :func:`twin_energies` 2.6 (7.9 under ``twin.bins``), the two
@@ -552,9 +555,10 @@ to 1 %), at ``solver.rhs_transform_chunks`` 1 and 3:
   them a peak.
 
 Every program is lowered as the run calls it, the singletons passed as
-arguments.  The step's figure is a **CPU** one.  Until 2026-10 it was
-30 / 28 and 31 / 29: some seven fields were the CPU banded sweep's
-per-solve permutations of the stored factors, which
+arguments.  The figures are **CPU** ones.  Until 2026-10 the step's
+were 30 / 28 and 31 / 29 (and the ``y``-budget's and the pressure's
+some four fields above today's): some seven fields were the CPU banded
+sweep's per-solve permutations of the stored factors, which
 :func:`dnsjax.solvers._banded_solve_mode_inner` no longer makes (with
 the singletons baked in as constants XLA folds such work, so a ``jit``
 of the bound step measures 20 / 18 and 21 / 19 now).  A GPU schedule
@@ -563,7 +567,7 @@ step.
 
 So either budget, when enabled, is the run's high-water mark, since
 the device allocator's pool grows to the maximum over every program;
-without one, the difference pressure sits just below the step.
+without one, the difference pressure sits below the step.
 A count of live fields misses about half: every batched transform
 carries some two padded fields of pipeline transient per field in
 flight on top of its output (a 3-field :func:`spec_to_phys` alone
@@ -803,7 +807,7 @@ def _twin_budget_jit(
 
     def d_dy_prof(p: Array) -> Array:
         """FD wall-normal derivative of a ``(3, Ny)`` profile."""
-        return jnp.einsum("ij,cj->ci", D1, p)
+        return jnp.einsum("ij,cj->ci", D1.dense, p)
 
     def xz_mean_cross(f: Array, g: Array) -> Array:
         r"""``(C, Ny)`` profile of the `$xz$`-mean of the product of
@@ -1613,7 +1617,7 @@ def _convective_sources(
     mean_delta, mean_ref = extract_mean_modes(delta, state1)
     prof_dU = mean_delta.real
     prof_rU = mean_ref.real + flow_.base_flow[:, :, 0, 0]
-    dy_rU = jnp.einsum("ij,cj->ci", d1, prof_rU)
+    dy_rU = jnp.einsum("ij,cj->ci", d1.dense, prof_rU)
 
     def grad_spec(c: Array) -> Array:
         r"""Nine rows; row ``3 * d + i`` is `$\partial_d c_i$`."""
@@ -1739,8 +1743,8 @@ def _rotational_sources(
     which lets `$\boldsymbol{\omega}_f^{(1)}$` and
     `$\Delta\mathbf{u}$` go before `$\mathbf{u}_f^{(1)}$` arrives.
     That is a count of live fields, not the program's peak, which its
-    one nine-field transform sets: 33 padded components measured,
-    against the convective 37 (module docstring, "Memory").
+    one nine-field transform sets: 29 padded components measured,
+    against the convective 33 (module docstring, "Memory").
     """
     kx, kz = fourier_.kx, fourier_.kz
     d1 = flow_.D1
@@ -1761,7 +1765,7 @@ def _rotational_sources(
     # Mode-diagonal, transform-free (docstring).
     q_pu = _cross(prof_rU[:, :, None, None], omega_d)
     q_om = _cross(delta, prof_rom[:, :, None, None])
-    dy_rU = jnp.einsum("ij,cj->ci", d1, prof_rU)
+    dy_rU = jnp.einsum("ij,cj->ci", d1.dense, prof_rU)
     q_lift = delta[1] * dy_rU[:, :, None, None]
 
     def back(product: Array) -> Array:

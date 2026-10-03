@@ -138,7 +138,7 @@ def frozen_profile_flow(us: Array) -> PlaneCouetteFlow:
     return a flow copy carrying that base flow (all operators shared;
     see :func:`~dnsjax.geometries.wall_bounded._base.frozen_profile_flow`).
     """
-    dy_us = flow.D1 @ us
+    dy_us = flow.D1.dense @ us
     base, curl = tilted_profile_arrays(us, dy_us)
     return _frozen_flow_copy(flow, base, curl)
 

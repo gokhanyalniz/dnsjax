@@ -347,12 +347,12 @@ class TwinParams(BaseModel):
       holds a second factored banded operator the size of
       ``flow.Lk_op`` plus its two homogeneous columns, two real
       `$(N_y, N_{k_z}, N_{k_x})$` fields (its "Cost" section has the
-      numbers).  *Transient*: the sample program peaks at ~37
-      padded physical components convectively and ~33 under
+      numbers).  *Transient*: the sample program peaks at ~33
+      padded physical components convectively and ~29 under
       ``twin.rotational_ybudget`` (measured on CPU; the iterative-CN
       step is 22, CN/AB2 24), so it, not the step, sets the run's
       peak; ``solver.rhs_transform_chunks = 3`` brings those to
-      31 / 27.  The table, what a count of live fields misses, and
+      26 / 24.  The table, what a count of live fields misses, and
       why a GPU run reads its own ``Peak device memory`` line
       instead: :mod:`dnsjax.twin.diagnostics`, "Memory".
     - ``x0_planes`` gates the `$k_x = 0$` plane of **both**

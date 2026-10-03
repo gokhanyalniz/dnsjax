@@ -21,6 +21,13 @@ single-device suite (``test_banded_solver.py``) structurally cannot:
    needs collectives; the shard_map body makes all pad/crop
    bookkeeping local).
 
+3. **The wall-normal stencil** (``solver.wall_normal_matvec``,
+   ``_base.YMatrix``): its slices, broadcasts and concatenation run
+   along the wall-normal axis, which spectral fields keep whole on
+   every device, so it must trace under the Explicit mesh, keep the
+   field's sharding and equal the GEMM -- for a 3-d field and both 4-d
+   layouts.
+
 On CPU the solve takes the pure-JAX local sweep (the oracle path);
 kernel numerics are pinned single-device by the interpret tests.  The
 ``mpirun``-based guards for the same class are the ``*-mpi-pad``
@@ -69,6 +76,12 @@ import numpy as np  # noqa: E402
 from jax.sharding import PartitionSpec as P  # noqa: E402
 from numpy.testing import assert_allclose  # noqa: E402
 
+from dnsjax.fd import build_diff_matrices  # noqa: E402
+from dnsjax.geometries.wall_bounded._base import (  # noqa: E402
+    YMatrix,
+    _stencil_apply,
+    apply_y_matrix,
+)
 from dnsjax.solvers import (  # noqa: E402
     PerModeBandedPallasOperator,
     _banded_factor,
@@ -208,6 +221,31 @@ def test_sharded_stacked_component_axes() -> None:
     x1 = np.asarray(op.solve(rhs1, component_axis=1))
     assert_allclose(x1[:, 0, 0, 0], ref0, atol=1e-9, rtol=1e-9)
     assert_allclose(x1[:, 1, 0, 0], ref1, atol=1e-9, rtol=1e-9)
+
+
+def test_sharded_stencil_matches_gemm() -> None:
+    """The wall-normal stencil on a sharded spectral field equals the
+    GEMM and keeps the field's sharding, in every layout."""
+    y = -np.cos(np.pi * np.arange(NY) / (NY - 1))
+    _, D2 = build_diff_matrices(y, 8)
+    Y = YMatrix.from_dense(D2)
+    rng = np.random.default_rng(9)
+    f = rng.standard_normal((NY, NKZ, NKX)) + 1j * rng.standard_normal(
+        (NY, NKZ, NKX)
+    )
+    x3 = jax.device_put(jnp.asarray(f), _RHS_SPEC)
+    stencil = jax.jit(_stencil_apply, static_argnums=2)
+    gemm = jax.jit(apply_y_matrix, static_argnums=2)
+    for x, axis in (
+        (x3, 0),
+        (jnp.stack([x3, 2 * x3], axis=1), 1),  # (NY, C, NKZ, NKX)
+        (jnp.stack([x3, 2 * x3]), 0),  # (C, NY, NKZ, NKX)
+    ):
+        got = stencil(Y, x, axis)
+        assert got.sharding.spec == x.sharding.spec, got.sharding
+        ref = np.asarray(gemm(Y.dense, x, axis))
+        err = np.abs(np.asarray(got) - ref).max() / np.abs(ref).max()
+        assert err < 1e-13, (x.ndim, axis, err)
 
 
 # ── Runner ───────────────────────────────────────────────────────────

@@ -16,6 +16,9 @@ matrix_half_bandwidth:
     Measured half-bandwidth of an assembled operator, ignoring the
     rows a caller overwrites with boundary rows (the banded-storage
     size).
+stencil_decomposition:
+    Split a square banded operator into its interior band and the two
+    near-wall corner blocks (the storage of a stencil application).
 build_integration_weights:
     Composite polynomial quadrature weights on a non-uniform grid
     (``fd_order``-accurate; the general-purpose rule).
@@ -218,6 +221,115 @@ def matrix_half_bandwidth(A: ndarray, skip_rows: Sequence[int] = ()) -> int:
         if nz.size:
             half = max(half, abs(int(nz[0]) - i), abs(int(nz[-1]) - i))
     return half
+
+
+def stencil_decomposition(A: ndarray) -> tuple[ndarray, ndarray, ndarray]:
+    r"""Split a square banded operator into interior band and edge blocks.
+
+    The storage behind applying a wall-normal FD matrix as a stencil
+    rather than a dense product (``_base.YMatrix``).  An FD matrix is
+    narrow in its interior and wide only in its first and last few
+    rows: :func:`build_diff_matrices` centres a ``(p+1)``- or
+    ``(p+2)``-point stencil on every row it can, so an interior row
+    reaches about `$p/2$` points either side, while the one-sided wall
+    rows reach column `$p + 1$`.  One band wide enough for the wall
+    rows (:func:`matrix_half_bandwidth`, `$2p + 3$` diagonals) would
+    spend about half its work on structural zeros; this split keeps
+    the interior at its own width and gives the wall rows small dense
+    blocks of their own.
+
+    With `$(q_{lo}, q_{hi})$` the interior half-widths below and
+    above the diagonal, rows `$q_{lo} \le i < N - q_{hi}$` hold
+    nonzeros only in columns `$[i - q_{lo}, i + q_{hi}]$`, and the
+    first `$q_{lo}$` and last `$q_{hi}$` rows only within their
+    measured column reach `$c_{lo}$` / `$c_{hi}$`.  Choosing the
+    interior's first row equal to `$q_{lo}$` (and its last to
+    `$N - 1 - q_{hi}$`) keeps every interior stencil inside the
+    array, so applying it needs no padding.
+
+    The half-widths are the widest reach among the rows at least the
+    full half-bandwidth away from both ends (the middle row alone, on a
+    grid too small to have any).  One row is not enough: on a grid
+    symmetric about its middle point an off-centre stencil can give an
+    end point an exactly zero weight (``D2`` at ``fd_order = 4``,
+    ``N = 97``), and its reach then under-reports the interior.  If any
+    interior row still reaches beyond the half-widths (no FD matrix
+    built here does), they fall back to the full half-bandwidth on both
+    sides, which every row fits by definition; and if the two edge
+    blocks would overlap (a matrix about as wide as it is tall), the
+    whole matrix becomes the top block.  The split only ever drops
+    zeros: recomposition is asserted exact.
+
+    Parameters
+    ----------
+    A:
+        Square real operator, shape ``(N, N)``.
+
+    Returns
+    -------
+    inner:
+        ``(N - q_lo - q_hi, q_lo + q_hi + 1)``, with
+        ``inner[i - q_lo, d] = A[i, i - q_lo + d]``.
+    top:
+        ``A[:q_lo, :c_lo]``.
+    bottom:
+        ``A[N - q_hi:, N - c_hi:]``.
+    """
+    A = np.asarray(A)
+    N = A.shape[0]
+    if A.shape != (N, N):
+        raise ValueError(f"stencil_decomposition: not square, {A.shape}")
+
+    def _reach(i: int) -> tuple[int, int]:
+        """Row ``i``'s extent below and above the diagonal (>= 0)."""
+        nz = np.nonzero(A[i])[0]
+        if not nz.size:
+            return 0, 0
+        return max(i - int(nz[0]), 0), max(int(nz[-1]) - i, 0)
+
+    def _fits(q_lo: int, q_hi: int) -> bool:
+        return all(
+            lo <= q_lo and hi <= q_hi
+            for lo, hi in (_reach(i) for i in range(q_lo, N - q_hi))
+        )
+
+    p = matrix_half_bandwidth(A)
+    centre = [_reach(i) for i in (range(p, N - p) if 2 * p < N else [N // 2])]
+    q_lo = max(lo for lo, _ in centre)
+    q_hi = max(hi for _, hi in centre)
+    if not _fits(q_lo, q_hi):
+        q_lo = q_hi = p
+    if q_lo + q_hi > N:
+        q_lo, q_hi = N, 0
+
+    # Column reach of the edge rows: at least one column, so a block
+    # with rows always has a term (a zero one if the rows are empty).
+    c_lo = max(
+        [int(np.nonzero(A[i])[0][-1]) + 1 for i in range(q_lo) if A[i].any()]
+        + [1]
+    )
+    c_hi = max(
+        [
+            N - int(np.nonzero(A[i])[0][0])
+            for i in range(N - q_hi, N)
+            if A[i].any()
+        ]
+        + [1]
+    )
+    m = N - q_lo - q_hi
+    rows = q_lo + np.arange(m)[:, None]
+    inner = A[rows, rows - q_lo + np.arange(q_lo + q_hi + 1)[None, :]]
+    top = A[:q_lo, :c_lo].copy()
+    bottom = A[N - q_hi :, N - c_hi :].copy()
+
+    recomposed = np.zeros_like(A)
+    recomposed[:q_lo, :c_lo] = top
+    recomposed[N - q_hi :, N - c_hi :] = bottom
+    for k in range(m):
+        recomposed[q_lo + k, k : k + q_lo + q_hi + 1] = inner[k]
+    if not np.array_equal(recomposed, A):
+        raise AssertionError("stencil_decomposition dropped a nonzero entry")
+    return inner, top, bottom
 
 
 def build_integration_weights(y: ndarray, p: int) -> ndarray:
