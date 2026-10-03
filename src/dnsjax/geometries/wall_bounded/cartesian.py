@@ -123,64 +123,53 @@ class Fourier:
     mean_mask: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        kx_vals = (
-            pad_harmonics(
-                real_harmonics(params.res.nx),
-                params.res.nx,
-                sharding.nx_spec_pad,
+        # Every grid is built on the host and placed with its sharding:
+        # they are a few vectors, and each eager JAX operation on them
+        # would compile on its own at every start-up.
+        a0, a1 = sharding.a0, sharding.a1
+        kx = (
+            (
+                pad_harmonics(
+                    real_harmonics(params.res.nx),
+                    params.res.nx,
+                    sharding.nx_spec_pad,
+                )
+                * 2
+                * np.pi
+                / params.geo.lx
             )
-            * 2
-            * jnp.pi
-            / params.geo.lx
+            .reshape(1, 1, -1)
+            .astype(sharding.float_type)
         )
-        self.kx = jax.device_put(
-            kx_vals.reshape([1, 1, -1]).astype(sharding.float_type),
-            P(None, None, sharding.a1),
-        )
-
-        kz_vals = (
-            pad_harmonics(
-                complex_harmonics(params.res.nz),
-                params.res.nz,
-                sharding.nz_spec_pad,
+        kz = (
+            (
+                pad_harmonics(
+                    complex_harmonics(params.res.nz),
+                    params.res.nz,
+                    sharding.nz_spec_pad,
+                )
+                * 2
+                * np.pi
+                / params.geo.lz
             )
-            * 2
-            * jnp.pi
-            / params.geo.lz
+            .reshape(1, -1, 1)
+            .astype(sharding.float_type)
         )
-        self.kz = jax.device_put(
-            kz_vals.reshape([1, -1, 1]).astype(sharding.float_type),
-            P(None, sharding.a0, None),
-        )
-
-        self.k_metric = jnp.where(self.kx == 0, 1, 2).astype(
-            sharding.float_type
-        )
-
-        self.k2 = self.kx**2 + self.kz**2
-
         # One-hot at the mean mode (kz, kx) = (0, 0): the true
         # modes precede the padding, so it is global index (0, 0).
         # The mean mode is the only k^2 = 0 mode (padding slots
         # carry nonzero placeholder wavenumbers).
-        e_kx = (
-            jnp.zeros(kx_vals.shape[0], dtype=sharding.float_type)
-            .at[0]
-            .set(1.0)
+        mean = np.zeros((1, kz.shape[1], kx.shape[2]), dtype=bool)
+        mean[0, 0, 0] = True
+
+        self.kx = jax.device_put(kx, P(None, None, a1))
+        self.kz = jax.device_put(kz, P(None, a0, None))
+        self.k_metric = jax.device_put(
+            np.where(kx == 0, 1, 2).astype(sharding.float_type),
+            P(None, None, a1),
         )
-        e_kz = (
-            jnp.zeros(kz_vals.shape[0], dtype=sharding.float_type)
-            .at[0]
-            .set(1.0)
-        )
-        self.mean_mask = (
-            jax.device_put(
-                e_kz.reshape([1, -1, 1]), P(None, sharding.a0, None)
-            )
-            * jax.device_put(
-                e_kx.reshape([1, 1, -1]), P(None, None, sharding.a1)
-            )
-        ) == 1.0
+        self.k2 = jax.device_put(kx**2 + kz**2, P(None, a0, a1))
+        self.mean_mask = jax.device_put(mean, P(None, a0, a1))
 
 
 fourier: Fourier = Fourier()
@@ -490,7 +479,9 @@ class CartesianFlow:
         :class:`DenseJAXSolver`.  Homogeneous IMM data
         (``v1``, ``v2``, ``M_inv``, and the potentials ``q1``,
         ``q2`` of the primitive scheme) is derived from the GPU
-        operator by :meth:`_derive_imm_homogeneous_data`.
+        operator by :meth:`_derive_imm_homogeneous_data`, and the
+        bulk response by :meth:`_precompute_bulk_response`, both
+        under one ``jit`` (:func:`_imm_leaves`).
 
         ``res.consistent_imm`` selects the `$v$`-`$\omega_y$`
         formulation (:func:`_imm_iteration_vw`), whose `$L_k$` is
@@ -532,10 +523,6 @@ class CartesianFlow:
         self.D1 = YMatrix.from_dense(D1)
         self.D2 = YMatrix.from_dense(D2)
         self.D1_bnd = jax.device_put(D1[[0, -1], :], sharding.no_shard)
-
-        Nkz = sharding.nz_spec
-        Nkx = sharding.nx_spec
-        Ny = params.res.ny
 
         # Banded half-width: measured, not assumed.  Rows 0 and Ny-1
         # are overwritten with BC rows in every operator, so their own
@@ -605,8 +592,14 @@ class CartesianFlow:
             del Lk_dense
             self.Hk_op = _hk_dense_op(dt, fourier, self)
 
-        self._derive_imm_homogeneous_data(fourier, Nkz, Nkx, Ny)
-        self._precompute_bulk_response(fourier, Nkz, Nkx, Ny)
+        # The influence-matrix columns and the bulk response, as one
+        # compiled program taking this flow -- still under construction
+        # -- as its argument; run eagerly, every operation and every
+        # ``.solve``'s ``shard_map`` body compiles on its own.  A fresh
+        # ``jit`` per build, since the traced body reads ``params``.
+        leaves = jax.jit(lambda f, fl: _imm_leaves(f, fl))(fourier, self)
+        for name, leaf in leaves.items():
+            setattr(self, name, leaf)
 
     def _derive_imm_homogeneous_data(
         self, fourier_: Fourier, Nkz: int, Nkx: int, Ny: int
@@ -942,7 +935,8 @@ def _build_dt_leaves(
     at setup, and under ``step.adaptive`` additionally at ``dt_max``,
     the dominance-weakest point), then re-run the unmodified IMM
     derivation on a trace-local shallow copy of *flow_* and collect
-    the refreshed leaves.  `$L_k$` is ``dt``-independent and shared.
+    the refreshed leaves (:func:`_imm_leaves`, which the setup runs
+    too).  `$L_k$` is ``dt``-independent and shared.
     The returned leaves match the stored ones in
     shape/dtype/sharding, so swapping them onto the flow singleton
     retraces nothing.
@@ -953,27 +947,40 @@ def _build_dt_leaves(
         new.Hk_op = _factor_pallas_operator(_hk_bands(dt, fourier_, new))
     else:
         new.Hk_op = _hk_dense_op(dt, fourier_, new)
-    new._derive_imm_homogeneous_data(
-        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
-    )
-    new._precompute_bulk_response(
-        fourier_, sharding.nz_spec, sharding.nx_spec, params.res.ny
-    )
-    leaves = {
-        "dt": new.dt,
-        "Hk_op": new.Hk_op,
-        "v1": new.v1,
-        "v2": new.v2,
-        "M_inv": new.M_inv,
-        "h_bulk_response": new.h_bulk_response,
-        "H_bulk_inv": new.H_bulk_inv,
-    }
-    if not params.res.consistent_imm:
-        # The primitive scheme's horizontal potentials; the
-        # `$v$`-`$\omega_y$` columns carry no pressure, so its leaf
-        # set is a strict subset of this one.
-        leaves |= {"q1": new.q1, "q2": new.q2}
-    return leaves
+    return {"dt": new.dt, "Hk_op": new.Hk_op, **_imm_leaves(fourier_, new)}
+
+
+# The leaves the influence-matrix setup assigns.  ``q1``/``q2`` are the
+# primitive scheme's horizontal potentials: ``None`` (static aux-data)
+# under the default `$v$`-`$\omega_y$` scheme, whose columns carry no
+# pressure.
+_IMM_LEAVES = (
+    "v1",
+    "v2",
+    "q1",
+    "q2",
+    "M_inv",
+    "h_bulk_response",
+    "H_bulk_inv",
+)
+
+
+def _imm_leaves(fourier_: Fourier, flow_: CartesianFlow) -> dict[str, object]:
+    r"""The influence-matrix leaves of *flow_*'s current ``Hk_op``.
+
+    :meth:`CartesianFlow._derive_imm_homogeneous_data` and
+    :meth:`CartesianFlow._precompute_bulk_response` on a trace-local
+    shallow copy, returned by name (``None``-valued ones included).
+    Shared by the setup, which jits it with the flow under
+    construction as the argument (:meth:`CartesianFlow.__post_init__`),
+    and the ``set_dt`` rebuild (:func:`_build_dt_leaves`), so the two
+    cannot drift apart.
+    """
+    new = copy.copy(flow_)
+    dims = (sharding.nz_spec, sharding.nx_spec, params.res.ny)
+    new._derive_imm_homogeneous_data(fourier_, *dims)
+    new._precompute_bulk_response(fourier_, *dims)
+    return {name: getattr(new, name) for name in _IMM_LEAVES}
 
 
 # ── Solver functions ─────────────────────────────────────────────────────

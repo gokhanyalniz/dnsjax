@@ -11,12 +11,14 @@ support a leading batch axis (e.g. the 3 velocity components)
 transparently via an extra ``vmap``.
 
 The banded path factors each per-mode operator with a **no-pivot**
-banded LU (:func:`_banded_lu_factor_single`); pivoting is never
-needed for the diagonally-dominant Helmholtz/Poisson-like operators
-solved here.  :func:`_build_pallas_operator` verifies this once at
-setup (solve-residual probe + LU element-growth check) and hard-errors
-with an actionable message on a genuinely unstable factorisation
-instead of proceeding silently.
+banded LU (:func:`_banded_factor_mode_inner`, every mode at once,
+straight into the stored mode-inner layout); pivoting is never needed
+for the diagonally-dominant Helmholtz/Poisson-like operators solved
+here.  :func:`_build_pallas_operator` verifies this once at setup
+(solve-residual probe + LU element-growth check, computed with the
+factorisation: :func:`_factor_checked`) and hard-errors with an
+actionable message on a genuinely unstable factorisation instead of
+proceeding silently.
 
 Differentiability
 -----------------
@@ -299,70 +301,113 @@ class DenseJAXSolver:
 # (Nsight) to finalise -- see the ``gpu-validation-pallas-banded`` plan.
 
 
-def _banded_lu_factor_single(a_band: Array) -> tuple[Array, Array]:
-    r"""No-pivot banded LU of one operator in banded storage.
+def _lu_row(
+    a: Array, i: Array, window: tuple[Array, ...]
+) -> tuple[Array, Array]:
+    r"""Row *i* of the no-pivot banded LU, every mode at once.
 
-    Doolittle factorisation `$A = L U$` with `$L$` unit-lower
-    (``p`` sub-diagonals) and `$U$` upper (``p`` super-diagonals +
-    diagonal); no fill-in because there is no pivoting.  One-time
-    (setup); ``vmap`` over modes via :func:`_banded_factor`.
-
-    Parameters
-    ----------
-    a_band:
-        Operator band, shape ``(N, 2p+1)`` with
-        ``a_band[i, d] = A[i, i-p+d]``.
-
-    Returns
-    -------
-    L:
-        Strict-lower factor band, ``(N, p)``.
-    U:
-        Upper factor band (diagonal first), ``(N, p+1)``.
+    *a* is the operator's row, ``a[d] = A[i, i-p+d]`` (``(2p+1, ...)``,
+    out-of-range entries zero); ``window[e]`` is row ``i-p+e`` of ``U``
+    (zero before row 0).  Returns ``(L[i], U[i])``, ``(p, ...)`` and
+    ``(p+1, ...)``.  A column left of the matrix (``i - p + d < 0``) is
+    masked to an exact zero rather than divided into, so the leading
+    rows never form ``0/0``; a zero pivot still yields non-finite
+    factors, which :func:`_build_pallas_operator` reports as a
+    breakdown.
     """
-    N = a_band.shape[0]
-    p = (a_band.shape[1] - 1) // 2
-    dtype = a_band.dtype
-    Lband0 = jnp.zeros((N, p), dtype)
-    Upad0 = jnp.zeros((N + p, p + 1), dtype)  # Upad[k+p] holds U row k
+    p = len(window)
+    # L[i, j] with j = i-p+d, d = 0..p-1; U[i-p+e, j] sits at offset
+    # d-e of window row e.
+    lrow = []
+    for d in range(p):
+        s = a[d]
+        for e in range(d):
+            s = s - lrow[e] * window[e][d - e]
+        valid = i - p + d >= 0
+        lrow.append(
+            jnp.where(valid, s / jnp.where(valid, window[d][0], 1.0), 0.0)
+        )
+    # U[i, i+d], d = 0..p; window row e reaches column i+d at offset
+    # p+d-e, which is inside its band only for e >= d.
+    urow = []
+    for d in range(p + 1):
+        s = a[p + d]
+        for e in range(d, p):
+            s = s - lrow[e] * window[e][p + d - e]
+        urow.append(s)
+    return jnp.stack(lrow), jnp.stack(urow)
+
+
+def _band_row(a_band: Array, i: Array) -> Array:
+    """Row *i* of a mode-outer band ``(..., N, 2p+1)``, as
+    ``(2p+1, ...)``: one small in-cache transpose, so the arithmetic
+    runs on contiguous mode planes."""
+    return jnp.moveaxis(lax.dynamic_index_in_dim(a_band, i, -2, False), -1, 0)
+
+
+def _banded_factor_mode_inner(a_band: Array) -> tuple[Array, Array]:
+    r"""No-pivot banded LU of every mode at once, into the stored layout.
+
+    Doolittle factorisation `$A = L U$` per Fourier mode, `$L$`
+    unit-lower (``p`` sub-diagonals) and `$U$` upper (diagonal + ``p``
+    super-diagonals); no fill-in because there is no pivoting.
+    *a_band* is the operator as the builders assemble it, mode-outer
+    ``(Nkz, Nkx, N, 2p+1)`` with ``a_band[..., i, d] = A[i, i-p+d]``.
+    The factors come out **mode-inner**: ``L`` ``(N, p, Nkz, Nkx)``
+    with ``L[i, d] = L_{i, i-p+d}``, ``U`` ``(N, p+1, Nkz, Nkx)`` with
+    ``U[i, d] = U_{i, i+d}``, diagonal first and plain -- the layout
+    :class:`PerModeBandedPallasOperator` stores and solves.
+
+    One ``fori_loop`` over the rows reads row ``i`` of every mode in
+    place (:func:`_band_row`), updates them all at once
+    (:func:`_lu_row`) and writes the factor rows into the loop-carried
+    outputs; the previous ``p`` rows of ``U`` ride along as a tuple
+    window (the pattern of :func:`_banded_solve_mode_inner`).
+
+    *Why this form.*  At the per-rank block of a ``1280 x 383 x 384``
+    run on ``(np0, np1) = (64, 1)`` (``7 x 640`` modes, ``N = 383``,
+    ``p = 8``; one core, jitted, warm): the first form ``vmap``-ed a
+    one-mode ``fori_loop`` over the modes, 0.62 s plus 0.42 s of
+    factor transposes into the stored layout; a ``scan`` over a fully
+    transposed band takes 0.20 s but needs that band-sized transpose
+    (0.23 s), and a program that transposes and then loops holds two
+    band-sized temporaries (XLA copies a loop operand that is still
+    read after the loop).  Reading the rows in place takes 0.40 s with
+    5 MB of temporaries, and the factors agree bit for bit with both.
+    """
+    N = a_band.shape[-2]
+    p = (a_band.shape[-1] - 1) // 2
+    # Zeros in the factors' mode-inner layout, derived from the band so
+    # they inherit its mode sharding (a plain ``jnp.zeros`` would be
+    # replicated and mismatch under the Explicit mesh).
+    row0 = jnp.zeros_like(_band_row(a_band, 0))  # (2p+1, Nkz, Nkx)
+    L0 = jnp.broadcast_to(row0[None, :p], (N, p, *row0.shape[1:]))
+    U0 = jnp.broadcast_to(row0[None, : p + 1], (N, p + 1, *row0.shape[1:]))
 
     def body(i, carry):
-        Lband, Upad = carry
-        Arow = lax.dynamic_slice(a_band, (i, 0), (1, 2 * p + 1))[0]
-        Uwin = lax.dynamic_slice(Upad, (i, 0), (p, p + 1))  # U[i-p..i-1]
+        L, U, window = carry
+        lrow, urow = _lu_row(_band_row(a_band, i), i, window)
+        L = lax.dynamic_update_index_in_dim(L, lrow, i, 0)
+        U = lax.dynamic_update_index_in_dim(U, urow, i, 0)
+        return L, U, (*window[1:], urow)
 
-        # L row: Lrow[d] = L[i, i-p+d] (j = i-p+d), d = 0..p-1.
-        Lrow = jnp.zeros(p, dtype)
-        for d in range(p):
-            j_valid = (i - p + d) >= 0
-            s = Arow[d]
-            for e in range(d):  # U[i-p+e, j] sits at offset d-e in [1, d]
-                s = s - Lrow[e] * Uwin[e, d - e]
-            denom = Uwin[d, 0]
-            safe = jnp.where(j_valid, denom, 1.0)
-            Lrow = Lrow.at[d].set(jnp.where(j_valid, s / safe, 0.0))
-
-        # U row: Urow[d] = U[i, i+d] (j = i+d), d = 0..p.
-        Urow = jnp.zeros(p + 1, dtype)
-        for d in range(p + 1):
-            s = Arow[p + d]
-            for e in range(p):  # contributes only when offset p+d-e <= p
-                off = p + d - e
-                u = Uwin[e, jnp.clip(off, 0, p)]
-                s = s - jnp.where(off <= p, Lrow[e] * u, 0.0)
-            Urow = Urow.at[d].set(s)
-
-        Lband = lax.dynamic_update_slice(Lband, Lrow[None], (i, 0))
-        Upad = lax.dynamic_update_slice(Upad, Urow[None], (i + p, 0))
-        return (Lband, Upad)
-
-    Lband, Upad = lax.fori_loop(0, N, body, (Lband0, Upad0))
-    return Lband, Upad[p:]
+    L, U, _ = lax.fori_loop(0, N, body, (L0, U0, (row0[: p + 1],) * p))
+    return L, U
 
 
 def _banded_factor(a_band: Array) -> tuple[Array, Array]:
-    """Batched :func:`_banded_lu_factor_single` over ``(Nkz, Nkx)``."""
-    return jax.vmap(jax.vmap(_banded_lu_factor_single))(a_band)
+    """Mode-outer factors ``(Nkz, Nkx, N, p)`` / ``(Nkz, Nkx, N, p+1)``.
+
+    The layout :func:`_banded_solve_batched` and
+    :meth:`PerModeBandedPallasOperator.from_banded_factors` take, kept
+    for the tests and diagnostic scripts that work mode-outer; a run
+    factors with :func:`_banded_factor_mode_inner` and never builds it.
+    """
+    L, U = _banded_factor_mode_inner(a_band)
+    return (
+        jnp.moveaxis(L, (0, 1), (-2, -1)),
+        jnp.moveaxis(U, (0, 1), (-2, -1)),
+    )
 
 
 def _banded_solve_batched(L: Array, U: Array, b: Array, p: int) -> Array:
@@ -372,10 +417,11 @@ def _banded_solve_batched(L: Array, U: Array, b: Array, p: int) -> Array:
     `$N_y$` axis (axis ``-2``); vectorised over the leading batch dims
     and the trailing RHS-column axis ``k``.  This is the **mode-outer**
     sweep, for factors as :func:`_banded_factor` returns them: the
-    setup-time residual check (:func:`_banded_residual`) and the
     independent oracle the kernel's adjoint is tested against.  A run
-    solves through :func:`_banded_solve_mode_inner` (CPU) or the
-    Pallas kernel (GPU), which read the stored mode-inner factors.
+    solves -- and the setup check probes
+    (:func:`_factor_checked`) -- through :func:`_banded_solve_mode_inner`
+    (CPU) or the Pallas kernel (GPU), which read the stored mode-inner
+    factors.
 
     Parameters
     ----------
@@ -485,6 +531,7 @@ def _banded_solve_mode_inner(L: Array, U: Array, b: Array, p: int) -> Array:
     return x
 
 
+@partial(jax.jit, static_argnums=1)
 def _banded_from_dense(A: Array, p: int) -> Array:
     r"""Extract banded storage from a (banded) dense operator.
 
@@ -493,6 +540,11 @@ def _banded_from_dense(A: Array, p: int) -> Array:
     (``d = p`` the diagonal, out-of-range entries zero).  Used to build
     per-mode banded operators from the shared base operator without ever
     forming an ``(N, N)`` per mode.
+
+    Jitted, like the other band helpers here, because the setup calls
+    them eagerly: one compiled program per shape instead of
+    ``3 (2p+1)`` separately compiled operations, every build (inside a
+    jitted caller, such as the ``set_dt`` rebuild, it simply inlines).
     """
     N = A.shape[-1]
     cols = []
@@ -522,6 +574,7 @@ def _banded_diag_column(p: int, dtype: DTypeLike) -> Array:
     return jnp.zeros(2 * p + 1, dtype).at[p].set(1.0)
 
 
+@partial(jax.jit, static_argnums=(1, 2))
 def _banded_wall_row(dense_row: Array, i: int, p: int) -> Array:
     r"""Banded form of a full matrix row at a (static) boundary row.
 
@@ -579,31 +632,36 @@ def _assemble_banded_operator(
     walls:
         ``(row_index, band_row)`` overrides for the boundary rows
         (one per wall; ``band_row`` is ``(..., 2p+1)``).
+
+    One jitted program (the row indices static): the setup assembles
+    each operator eagerly, where the shift and the row overrides would
+    otherwise each be an operator-sized pass of their own.
     """
+    return _assemble_banded_jit(
+        base_band,
+        scale,
+        diag,
+        tuple(row for _, row in walls),
+        rows_at=tuple(idx for idx, _ in walls),
+    )
+
+
+@partial(jax.jit, static_argnames=("rows_at",))
+def _assemble_banded_jit(
+    base_band: Array,
+    scale: float,
+    diag: Array,
+    rows: tuple[Array, ...],
+    *,
+    rows_at: tuple[int, ...],
+) -> Array:
+    """The body of :func:`_assemble_banded_operator`."""
     p = (base_band.shape[-1] - 1) // 2
     e = _banded_diag_column(p, base_band.dtype)
     band = scale * base_band + diag[..., None] * e
-    for idx, row in walls:
+    for idx, row in zip(rows_at, rows, strict=True):
         band = band.at[..., idx, :].set(row)
     return band
-
-
-def _banded_matvec(a_band: Array, x: Array) -> Array:
-    """Banded matrix-vector product ``A @ x`` in banded storage.
-
-    ``a_band`` is ``(..., N, 2p+1)``, ``x`` is ``(..., N, k)``;
-    returns ``(..., N, k)``.  Used by the setup-time stability check.
-    """
-    p = (a_band.shape[-1] - 1) // 2
-    N = a_band.shape[-2]
-    pad = [(0, 0)] * (x.ndim - 2) + [(p, p), (0, 0)]
-    xp = jnp.pad(x, pad)
-    y = jnp.zeros_like(x)
-    for d in range(2 * p + 1):
-        y = y + a_band[..., d][..., None] * lax.slice_in_dim(
-            xp, d, d + N, axis=-2
-        )
-    return y
 
 
 # Test-only override: run the Pallas kernels in interpret mode wherever
@@ -637,7 +695,7 @@ def _tile_pad_planes(
     # Triton -- see the docstring).  Zero-fill is NaN-safe: padded modes
     # solve to zero (the backward sweep multiplies by the pre-inverted
     # diagonal, never divides).  The **stored factors are already padded
-    # to this plane at construction** (``from_banded_factors``), so only
+    # to this plane at construction** (``from_mode_inner_factors``), so only
     # the per-call RHS is padded here; factors from a direct caller that
     # are still at the true plane take the same pad as a fallback.  The
     # kernel plane is the whole-tile roundup of the **larger** of the
@@ -729,7 +787,7 @@ def _pallas_banded_solve(
     the backward sweep multiplies, never divides -- solve to a clean zero
     (no NaN) and are cropped off the result.  The **factors are padded
     once at construction** (:meth:`PerModeBandedPallasOperator.
-    from_banded_factors`), not per call: ``Nkz = nz - 1`` is odd, so the
+    from_mode_inner_factors`), not per call: ``Nkz = nz - 1`` is odd, so the
     plane virtually never tiles evenly, and a per-call ``jnp.pad`` of the
     factors would re-copy them (holding a transient duplicate) on every
     solve of every step.  Only the RHS is padded here per call (with a
@@ -1036,7 +1094,7 @@ def _banded_upper_matvec(U: Array, x: Array, p: int) -> Array:
 
     The diagonal term is `$x_i / R_i$`, and a **padded mode has
     `$R_i = 0$` and `$x_i = 0$`** -- a genuine ``0/0`` -- so it takes
-    the same guarded-denominator form as ``_banded_lu_factor_single``.
+    the same guarded-denominator form as :func:`_lu_row`.
     """
     N = x.shape[0]
     r = U[:, 0:1]
@@ -1131,8 +1189,8 @@ def _kernel_path() -> bool:
     r"""Whether this run solves through the Pallas kernel.
 
     The single predicate behind both the storage choice
-    (:meth:`PerModeBandedPallasOperator.from_banded_factors`) and the
-    solve dispatch (:func:`_banded_mode_solve`), so the two can never
+    (:meth:`PerModeBandedPallasOperator.from_mode_inner_factors`) and
+    the solve dispatch (:func:`_banded_mode_solve`), so the two can never
     disagree about what the stored factors mean.  Host-side Python
     either way -- the backend is fixed once ``bootstrap`` has run.
 
@@ -1169,7 +1227,7 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     device-local block (on one device, local = global).  ``L``/``U``
     are the **mode-inner** factors (``(N, p, nkz*, nkx*)`` /
     ``(N, p+1, nkz*, nkx*)``) in whichever of the two per-backend forms
-    :meth:`~PerModeBandedPallasOperator.from_banded_factors` stored --
+    :meth:`~PerModeBandedPallasOperator.from_mode_inner_factors` stored --
     ``U`` diagonal reciprocated and the plane tile-padded per shard on
     the kernel path, plain diagonal at the true plane on CPU; the
     branch below and the storage share :func:`_kernel_path`, so they
@@ -1240,7 +1298,7 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     On CPU the sweep is :func:`_banded_solve_mode_inner`, which scans the
     stored factors as they are: no factor copy, no crop and no
     un-inversion (the CPU build stores the plain diagonal at the true
-    plane, :meth:`~PerModeBandedPallasOperator.from_banded_factors`).
+    plane, :meth:`~PerModeBandedPallasOperator.from_mode_inner_factors`).
 
     **Why the layout is shared with the kernel -- on CPU too.**  Three
     CPU-native *stored* layouts were tried end to end against the
@@ -1302,7 +1360,7 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
         x = _pallas_banded_solve(L, U, b, p)  # (N, k, Nkz, Nkx)
     else:
         # The CPU build stores the plain diagonal at the true plane
-        # (``from_banded_factors``), which is what this sweep reads.
+        # (``from_mode_inner_factors``), which is what this sweep reads.
         x = _banded_solve_mode_inner(L, U, b, p)
     return lax.complex(x[:, 0], x[:, 1]) if is_complex else x[:, 0]
 
@@ -1323,8 +1381,10 @@ class PerModeBandedPallasOperator:
     loads); the solve is the banded substitution over that layout
     (mode-tiled Pallas/Triton on GPU, the pure-JAX
     :func:`_banded_solve_mode_inner` on CPU).  Build via
-    :meth:`from_banded_factors` from the standard mode-outer factors of
-    :func:`_banded_factor`.  The public ``.solve`` contract takes the
+    :meth:`from_mode_inner_factors` from the factors a run computes
+    (:func:`_banded_factor_mode_inner`), or :meth:`from_banded_factors`
+    from mode-outer ones (:func:`_banded_factor`).  The public
+    ``.solve`` contract takes the
     **mode-inner** ``(N, Nkz, Nkx)`` spectral field, the velocity's
     native layout -- see :meth:`solve` for the component-axis dispatch.
 
@@ -1359,7 +1419,7 @@ class PerModeBandedPallasOperator:
     ``Nkz* x Nkx*`` is the stored mode plane: on the kernel path the
     true plane rounded up to whole Pallas tiles **per device shard** at
     construction (zero-filled padded modes; see
-    :meth:`from_banded_factors`) -- slightly larger persistent storage
+    :meth:`from_mode_inner_factors`) -- slightly larger persistent storage
     in exchange for no per-solve factor pad/copy -- and on CPU the true
     plane itself (``Nkz* x Nkx* == Nkz x Nkx``).  Either way ``.solve``
     takes and returns the **true** mode plane and runs as a
@@ -1373,13 +1433,32 @@ class PerModeBandedPallasOperator:
     def from_banded_factors(
         cls, L: Array, U: Array
     ) -> PerModeBandedPallasOperator:
-        r"""Build from standard mode-outer banded factors.
+        r"""Build from mode-outer banded factors.
 
-        Transposes the factors from the mode-outer layout produced by
+        Transposes the factors from the mode-outer layout of
         :func:`_banded_factor` (``(Nkz, Nkx, N, p)`` /
         ``(..., N, p+1)``) to the mode-inner storage solved here
-        (``(N, p, Nkz, Nkx)`` / ``(N, p+1, Nkz, Nkx)``).  Mirrors
-        :meth:`DenseJAXSolver.from_factors`.
+        (``(N, p, Nkz, Nkx)`` / ``(N, p+1, Nkz, Nkx)``), then stores
+        them through :meth:`from_mode_inner_factors`.  Mirrors
+        :meth:`DenseJAXSolver.from_factors`.  The tests and diagnostic
+        scripts build this way; a run factors straight into the stored
+        layout and never transposes a factor.
+        """
+        return cls.from_mode_inner_factors(
+            jnp.moveaxis(L, (-2, -1), (0, 1)),  # (N, p, Nkz, Nkx)
+            jnp.moveaxis(U, (-2, -1), (0, 1)),  # (N, p+1, Nkz, Nkx)
+        )
+
+    @classmethod
+    def from_mode_inner_factors(
+        cls, Li: Array, Ui: Array
+    ) -> PerModeBandedPallasOperator:
+        r"""Store mode-inner factors in this backend's form.
+
+        *Li* / *Ui* are ``(N, p, Nkz, Nkx)`` / ``(N, p+1, Nkz, Nkx)``
+        at the true mode plane with a plain ``U`` diagonal, as
+        :func:`_banded_factor_mode_inner` returns them -- which is
+        already the CPU storage.
 
         **The layout is shared by both backends; two transforms on top
         of it are not.**  Only when the run will actually reach the
@@ -1478,10 +1557,12 @@ class PerModeBandedPallasOperator:
         work inside it.
 
         *That is a kernel-path statement, and the CPU branch is
-        measured not to need it.*  Returning early leaves only the two
-        ``moveaxis`` -- neither the reciprocal scatter nor the pad the
-        simplifier chokes on -- so there is nothing left for a barrier
-        to separate.  Checked where the two *can* fuse at all: the
+        measured not to need it.*  Returning early leaves nothing -- the
+        factors arrive in the stored layout, with neither the reciprocal
+        scatter nor the pad the simplifier chokes on -- so there is
+        nothing for a barrier to separate.  (It was measured when that
+        branch still made the two ``moveaxis`` a mode-outer
+        factorisation needed.)  Checked where the two *can* fuse at all: the
         jitted ``set_dt`` rebuild, the one place
         :func:`_factor_pallas_operator` runs inside a ``jit`` (the
         setup build cannot fuse -- :func:`_build_pallas_operator`
@@ -1493,21 +1574,18 @@ class PerModeBandedPallasOperator:
         repeats per arm, one process each, orders alternated).  No
         configuration reproduced the pathology without it.
         """
-        Li = jnp.moveaxis(L, (-2, -1), (0, 1))  # (N, p, Nkz, Nkx)
-        Ui = jnp.moveaxis(U, (-2, -1), (0, 1))  # (N, p+1, Nkz, Nkx)
         if not _kernel_path():
             # CPU storage: the shared layout, plain diagonal, true
             # plane.  The sweep divides by the diagonal and its grid is
             # the true plane, so both kernel transforms below would only
             # be undone again on every solve.
             return cls(L=Li, U=Ui)
-        Ui = Ui.at[:, 0].set(1.0 / Ui[:, 0])  # reciprocate diagonal slot
         bm0 = params.solver.pallas_block_m0
         bm1 = params.solver.pallas_block_m1
 
         # Report the whole-tile round-up once per distinct geometry
-        # (host-side; the pad itself happens per shard below and per
-        # solve for the RHS, both inside traced regions).
+        # (host-side; the pad itself happens per shard and per solve
+        # for the RHS, both inside traced regions).
         nkz_loc = Li.shape[2] // sharding.np0
         nkx_loc = Li.shape[3] // sharding.np1
         pad_kz = -nkz_loc % bm0
@@ -1522,22 +1600,7 @@ class PerModeBandedPallasOperator:
                     f"x {nkx_loc + pad_kx}) for whole ({bm0} x {bm1}) "
                     "tiles."
                 )
-
-        def _pad_local(L_l: Array, U_l: Array) -> tuple[Array, Array]:
-            pad_kz = -L_l.shape[2] % bm0
-            pad_kx = -L_l.shape[3] % bm1
-            if not (pad_kz or pad_kx):
-                return L_l, U_l
-            pad = [(0, 0), (0, 0), (0, pad_kz), (0, pad_kx)]
-            return jnp.pad(L_l, pad), jnp.pad(U_l, pad)
-
-        spec = P(None, None, sharding.a0, sharding.a1)
-        Li, Ui = shard_map(
-            _pad_local,
-            mesh=sharding.mesh,
-            in_specs=(spec, spec),
-            out_specs=(spec, spec),
-        )(Li, Ui)
+        Li, Ui = _kernel_storage(Li, Ui, bm0, bm1)
         return cls(L=Li, U=Ui)
 
     def solve(self, rhs: Array, component_axis: int = 0) -> Array:
@@ -1631,6 +1694,39 @@ class PerModeBandedPallasOperator:
         )(self.L, self.U, rhs)
 
 
+@partial(jax.jit, static_argnums=(2, 3))
+def _kernel_storage(
+    Li: Array, Ui: Array, bm0: int, bm1: int
+) -> tuple[Array, Array]:
+    """The kernel path's two storage transforms, as one program.
+
+    Reciprocate the ``U`` diagonal slot, then pad each device's local
+    mode plane to whole ``(bm0, bm1)`` tiles inside the ``shard_map``
+    that :meth:`PerModeBandedPallasOperator.from_mode_inner_factors`
+    explains (the barrier and the per-shard pad).  Jitted so a setup
+    build compiles it once instead of operation by operation, as an
+    eager ``shard_map`` would on every call; inside the jitted ``set_dt``
+    rebuild it inlines, keeping that barrier where it was.
+    """
+    Ui = Ui.at[:, 0].set(1.0 / Ui[:, 0])  # reciprocate diagonal slot
+
+    def _pad_local(L_l: Array, U_l: Array) -> tuple[Array, Array]:
+        pad_kz = -L_l.shape[2] % bm0
+        pad_kx = -L_l.shape[3] % bm1
+        if not (pad_kz or pad_kx):
+            return L_l, U_l
+        pad = [(0, 0), (0, 0), (0, pad_kz), (0, pad_kx)]
+        return jnp.pad(L_l, pad), jnp.pad(U_l, pad)
+
+    spec = P(None, None, sharding.a0, sharding.a1)
+    return shard_map(
+        _pad_local,
+        mesh=sharding.mesh,
+        in_specs=(spec, spec),
+        out_specs=(spec, spec),
+    )(Li, Ui)
+
+
 def _stack_pallas_operators(
     *ops: PerModeBandedPallasOperator,
 ) -> PerModeBandedPallasOperator:
@@ -1646,13 +1742,15 @@ def _pack_banded_factors(
 ) -> PerModeBandedPallasOperator:
     """Assemble factored band pairs into one Pallas operator.
 
-    One pair becomes a plain operator; several are stacked along a
-    leading component axis (:func:`_stack_pallas_operators`).  Shared
-    tail of the checked :func:`_build_pallas_operator` and the
-    unchecked :func:`_factor_pallas_operator`.
+    *factors* are mode-inner pairs, as :func:`_banded_factor_mode_inner`
+    returns them.  One pair becomes a plain operator; several are
+    stacked along a leading component axis
+    (:func:`_stack_pallas_operators`).  Shared tail of the checked
+    :func:`_build_pallas_operator` and the unchecked
+    :func:`_factor_pallas_operator`.
     """
     ops = [
-        PerModeBandedPallasOperator.from_banded_factors(L, U)
+        PerModeBandedPallasOperator.from_mode_inner_factors(L, U)
         for (L, U) in factors
     ]
     return ops[0] if len(ops) == 1 else _stack_pallas_operators(*ops)
@@ -1664,11 +1762,11 @@ def _factor_pallas_operator(
     r"""Factor one operator group for the Pallas backend, unchecked.
 
     The jittable counterpart of :func:`_build_pallas_operator`: the
-    same no-pivot banded LU (:func:`_banded_factor`) and operator
-    assembly, with **no** setup-time residual/growth verification (no
-    host syncs, no raise) -- so it can run inside ``jit``, e.g. the
-    adaptive-``dt`` operator rebuild (the flow builders'
-    ``set_dt``).
+    same no-pivot banded LU (:func:`_banded_factor_mode_inner`) and
+    operator assembly, with **no** setup-time residual/growth
+    verification (no host syncs, no raise) -- so it can run inside
+    ``jit``, e.g. the adaptive-``dt`` operator rebuild (the flow
+    builders' ``set_dt``).
 
     Skipping the check is sound only when an equivalent operator was
     already verified by the checked build: the adaptive setup runs
@@ -1678,22 +1776,81 @@ def _factor_pallas_operator(
     element growth of every rebuild at ``dt <= dt_max`` is bounded by
     the verified case.
     """
-    return _pack_banded_factors([_banded_factor(A) for A in a_bands])
+    return _pack_banded_factors(
+        [_banded_factor_mode_inner(A) for A in a_bands]
+    )
 
 
-def _banded_residual(a_band: Array, L: Array, U: Array) -> float:
-    """Max relative residual ``||A x - b|| / ||b||`` of the no-pivot
-    banded solve (``b = 1``), as a host float for the stability check."""
-    p = L.shape[-1]
-    # ``ones_like`` a slice of the (mode-sharded) operator so the test
-    # RHS inherits its sharding -- a plain ``jnp.ones`` is replicated and
-    # mismatches the factors under the Explicit mesh.
-    b = jnp.ones_like(a_band[..., :1])  # (..., N, 1), inherits sharding
-    x = _banded_solve_batched(L, U, b, p)
-    r = _banded_matvec(a_band, x) - b
-    num = jnp.max(jnp.abs(r))
-    den = jnp.max(jnp.abs(b))
-    return float(num / den)
+@jax.jit
+def _factor_checked(a_band: Array) -> tuple[Array, ...]:
+    r"""Factor one band and measure it, mode by mode.
+
+    The device half of :func:`_build_pallas_operator`, compiled once
+    per band shape -- a group's bands, and a run's ``Lk``,
+    ``Hk(dt_max)`` and ``Hk`` builds, share the program.  *a_band* is
+    in the builders' mode-outer layout.  Returns ``(L, U, residual,
+    max_u, max_a)``: the factors in the stored layout
+    (:func:`_banded_factor_mode_inner`), then three ``(Nkz, Nkx)``
+    per-mode planes the host reduces to the two stability measures --
+
+    - the solve residual `$\max |A x - b|$` with `$b = 1$`
+      (`$\|b\| = 1$`) through the factors (:func:`_probe_residual`);
+    - the element growth `$\max |U| / \max |A|$`, from the per-mode
+      ``max_u`` and ``max_a``.
+
+    The reductions across devices stay out of this program on purpose.
+    A version that took the maxima inside it failed at once on a
+    ``(2, 2)`` mesh under the MPI collectives (``MPI: Communicator
+    requested from a thread that is not the one MPI was initialized
+    from``, every rank, every launch; MPI requires its initialising
+    thread), while the same reductions as separate small programs --
+    which is how the eager check always ran them -- do not.  So the
+    host reduces the planes (:func:`_build_pallas_operator`).
+
+    Run eagerly, the same check was a few hundred separately compiled
+    operations -- the factorisation and the probe sweep recompiled on
+    every build -- with factor-sized transposed copies alongside.
+    Here the band is read in place by both loops, so the program holds
+    no band-sized temporary (45 MB of temporaries at the per-rank block
+    the factorisation's docstring measures, against 0.9 GB for a
+    version that transposed the band first).  A pure function of its
+    argument, so a module-level ``jit`` is safe to share.
+    """
+    L, U = _banded_factor_mode_inner(a_band)
+    max_u = jnp.max(jnp.abs(U), axis=(0, 1))
+    max_a = jnp.max(jnp.abs(a_band), axis=(-2, -1))
+    return L, U, _probe_residual(a_band, L, U), max_u, max_a
+
+
+def _probe_residual(a_band: Array, L: Array, U: Array) -> Array:
+    r"""Per-mode `$\max_i |(A x - b)_i|$` with `$b = 1$` through the factors.
+
+    Every mode at once: *a_band* is the operator in the builders'
+    mode-outer layout, *L* / *U* its plain stored factors, and `$x$`
+    comes from the CPU sweep :func:`_banded_solve_mode_inner`; the
+    result is the ``(Nkz, Nkx)`` plane of each mode's largest row
+    residual.  `$\|b\| = 1$`, so its maximum is the relative residual
+    :func:`_build_pallas_operator` judges.  The matvec runs row by row
+    on the band in place, keeping the running maximum, so it makes no
+    band-sized temporary.
+    """
+    p = L.shape[1]
+    N = L.shape[0]
+    # ``ones_like`` a slice of the (mode-sharded) factors so the probe
+    # inherits their sharding -- a plain ``jnp.ones`` is replicated and
+    # mismatches under the Explicit mesh.
+    ones = jnp.ones_like(L[:, :1])  # (N, 1, Nkz, Nkx)
+    x = _banded_solve_mode_inner(L, U, ones, p)[:, 0]  # (N, Nkz, Nkx)
+    xp = jnp.pad(x, [(p, p)] + [(0, 0)] * (x.ndim - 1))
+
+    def row(i, worst):
+        r = jnp.sum(
+            _band_row(a_band, i) * lax.dynamic_slice_in_dim(xp, i, 2 * p + 1),
+            axis=0,
+        )
+        return jnp.maximum(worst, jnp.abs(r - 1.0))
+
+    return lax.fori_loop(0, N, row, jnp.zeros_like(x[0]))
 
 
 # Element-growth bound for the setup-time stability check in
@@ -1732,6 +1889,10 @@ def _build_pallas_operator(
     A ``[pallas] {label}: ...`` line with the measured residual and
     growth is printed at setup for the group either way.
 
+    The factorisation and its per-mode measures are one compiled
+    program per band (:func:`_factor_checked`), their cross-device
+    maxima two small ones; only the two scalars cross to the host.
+
     Parameters
     ----------
     a_bands:
@@ -1739,15 +1900,15 @@ def _build_pallas_operator(
     label:
         Operator-group name for the diagnostic (e.g. ``"Hk"``).
     """
-    factors = [_banded_factor(A) for A in a_bands]
-    resid = max(
-        _banded_residual(A, L, U)
-        for A, (L, U) in zip(a_bands, factors, strict=True)
-    )
-    growth = max(
-        float(jnp.max(jnp.abs(U)) / jnp.max(jnp.abs(A)))
-        for A, (_, U) in zip(a_bands, factors, strict=True)
-    )
+    checked = [_factor_checked(A) for A in a_bands]
+    # The cross-device maxima run here, outside the looping program
+    # (:func:`_factor_checked` says why).
+    resids = [float(jnp.max(r)) for _, _, r, _, _ in checked]
+    growths = [float(jnp.max(mu) / jnp.max(ma)) for _, _, _, mu, ma in checked]
+    # The group's worst band -- and a NaN in *any* band, which ``max``
+    # would drop unless it came first.
+    resid = math.nan if any(map(math.isnan, resids)) else max(resids)
+    growth = math.nan if any(map(math.isnan, growths)) else max(growths)
 
     # ``not (growth <= tol)`` also catches non-finite growth from a
     # no-pivot breakdown (``nan > tol`` would be False).
@@ -1771,4 +1932,4 @@ def _build_pallas_operator(
             f"[pallas] {label}: no-pivot banded LU "
             f"(residual {resid:.2e}, growth {growth:.1e})"
         )
-    return _pack_banded_factors(factors)
+    return _pack_banded_factors([(L, U) for L, U, *_ in checked])

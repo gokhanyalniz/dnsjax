@@ -55,6 +55,11 @@ modules import neither geometry (guard: `test_no_cross_geometry_import`).
   `test_temporal_order.py`.
 - A legacy module is imported lazily, inside flag-off branches only: it
   imports back from its geometry module.
+- Setup computes the IMM columns and bulk response in one `jit` that
+  takes the flow under construction (each geometry's `_imm_leaves`,
+  shared with `_build_dt_leaves`). That relies on
+  `sharding.register_dataclass_pytree` flattening an unassigned field
+  as absent; a field the IMM methods read must be assigned before it.
 - Operators are assembled directly in banded storage through
   `solvers._assemble_banded_operator` (e.g. `_build_Lk_dir_band_gpu`,
   `_build_Lv_dir_band_gpu`, `_build_Hk_band_gpu`). The band width is
