@@ -88,7 +88,12 @@ modules import neither geometry (guard: `test_no_cross_geometry_import`).
 - For a mean-mode quantity, extract the mean mode first, and never
   stack fields to feed one extraction (`_base.extract_mean_modes` takes
   two in one collective).
-- `apply_y_matrix` batches over the leading axis, so FD GEMMs can be
+- The square FD matrices (`D1`, `D2`, `A_base`, `D1_pos`,
+  `A_base_pos`) are `_base.YMatrix`: `apply_y_matrix` applies one as
+  a GEMM or a stencil (`solver.wall_normal_matvec`), and every other
+  use takes `.dense` (`np.asarray` on one raises). The pipe's ghosts
+  are plain `(g, c)` corners applied to the first `c` radial points.
+- `apply_y_matrix` batches over the leading axis, so FD matvecs can be
   regrouped across IMM stages; which stacks go y-leading: its
   docstring and `PerModeBandedPallasOperator.solve`.
 - The fused `A_base = D2 + (1/r) D1` replaces two matvecs where `D1 x`

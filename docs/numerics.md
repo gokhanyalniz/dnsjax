@@ -70,8 +70,11 @@ machinery.
 Periodic directions are treated **pseudo-spectrally** with Fourier
 transforms; the single wall-bounded direction uses **banded finite
 differences** with Fornberg weights of order `fd_order` (half-bandwidth $p$
-equal to `fd_order`). The quadratic nonlinearity is dealiased with the
-**3/2 rule** — physical fields are evaluated on a
+equal to `fd_order`). Their derivatives are applied as a dense
+$N_y \times N_y$ matrix product on GPUs and as a stencil on CPUs, which
+skips the zeros outside each row's stencil (`solver.wall_normal_matvec`;
+the two agree to machine precision). The quadratic nonlinearity is
+dealiased with the **3/2 rule** — physical fields are evaluated on a
 $\tfrac{3}{2}$-oversampled grid and the product is truncated back — and the
 Nyquist mode is dropped on every stored spectral axis (FFTs use
 `norm="forward"`). The dealiasing *pad* carries no parity constraint —

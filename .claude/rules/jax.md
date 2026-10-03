@@ -39,9 +39,9 @@ paths:
   `bootstrap.configure_jax_platform` / `platform_from_argv`, before
   importing `sharding` or a geometry module.
 - JAX has no zero-copy complex<->real bitcast: a real operator on a
-  complex field splits re/im on a trailing axis. Reuse
-  `geometries/wall_bounded/_base.apply_y_matrix` or the `solvers.py`
-  pattern.
+  complex field splits re/im (never promotes the operator). Reuse
+  `geometries/wall_bounded/_base.apply_y_matrix` (either path) or the
+  `solvers.py` pattern.
 - FFTs use `norm="forward"`.
 - A dict returned from a jitted function comes back in sorted key
   order (pytree flattening); never rely on insertion order.
@@ -51,5 +51,7 @@ paths:
 - Memory and throughput levers: `phys.oversampling_factor` and
   `res.double_precision` dominate (`parameters.PaddedResolution`);
   `solver.rhs_transform_chunks` trades the RHS transform batch for
-  peak memory (`fft.chunked_transform`); cnab2 buys throughput, not
-  memory (`timestep.py`). The human memory model: `docs/scaling.md`.
+  peak memory (`fft.chunked_transform`); `solver.wall_normal_matvec`
+  picks GEMM or stencil derivatives (`_base.apply_y_matrix`); cnab2
+  buys throughput, not memory (`timestep.py`). The human memory model:
+  `docs/scaling.md`.

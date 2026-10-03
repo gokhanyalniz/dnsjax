@@ -133,7 +133,7 @@ def frozen_profile_flow(
     operators shared; see
     :func:`~dnsjax.geometries.wall_bounded._base.frozen_profile_flow`).
     """
-    du = flow.D1 @ u_theta
+    du = flow.D1.dense @ u_theta
     omega_z = du + flow.inv_r * u_theta
     base = (
         jnp.zeros(

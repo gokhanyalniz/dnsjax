@@ -221,7 +221,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         nz, nx = params.res.nz, params.res.nx
         s = np.asarray(st)[:, :, : nz - 1, : nx // 2]
         if system == "plane-couette":
-            D1 = np.asarray(flow.D1)
+            D1 = np.asarray(flow.D1.dense)
             dy = np.einsum("ij, jzx -> izx", D1, s[1])
             kx = np.asarray(fourier.kx)[..., : nx // 2]
             kz = np.asarray(fourier.kz)[:, : nz - 1]
@@ -234,7 +234,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
             # which would inflate ``scale`` and deflate the ratio.  The
             # parity-reduced radial D1 (parity (-1)^{m+1}) is the
             # mirrored fold, the only radial construction.
-            D1p = np.asarray(flow.D1_pos)
+            D1p = np.asarray(flow.D1_pos.dense)
             D1g = np.asarray(flow.D1_ghost)
             gg = D1g.shape[0]
             psv = -(np.asarray(fourier.m_is_even) * 2 - 1)[0, : nz - 1]
@@ -246,7 +246,9 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
 
             def _dy_v(u):
                 o = np.einsum("ij, jzx -> izx", D1p, u)
-                o[:gg] += psv * np.einsum("ij, jzx -> izx", D1g, u)
+                o[:gg] += psv * np.einsum(
+                    "ij, jzx -> izx", D1g, u[: D1g.shape[1]]
+                )
                 return o
 
             terms = [
@@ -255,7 +257,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
                 1j * kz * s[0],
             ]
         else:  # annular (taylor-couette)
-            D1 = np.asarray(flow.D1)
+            D1 = np.asarray(flow.D1.dense)
             dy = np.einsum("ij, jzx -> izx", D1, s[1])
             inv_r = np.asarray(flow.inv_r)[:, None, None]
             kz = np.asarray(fourier.kz)[..., : nx // 2]
@@ -299,8 +301,8 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         # divergence measure.
         nz, nx = params.res.nz, params.res.nx
         s = np.asarray(stepped)[:, :, : nz - 1, : nx // 2]
-        D1 = np.asarray(flow.D1)
-        D2 = np.asarray(flow.D2)
+        D1 = np.asarray(flow.D1.dense)
+        D2 = np.asarray(flow.D2.dense)
         kx = np.asarray(fourier.kx)[..., : nx // 2]
         kz = np.asarray(fourier.kz)[:, : nz - 1]
         k2 = kx**2 + kz**2

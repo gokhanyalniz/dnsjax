@@ -32,6 +32,12 @@ through the jitted stepper -- every other entry runs the default
 fused 6-field batch, and the chunk-vs-fused bit-parity is
 unit-covered by ``test_padding.py`` and
 ``test_viscoelastic.py::test_rhs_transform_chunks_parity``.
+Three ``*-gemm`` entries (``plane-couette-gemm``, ``pipe-gemm``,
+``taylor-couette-gemm``) pass ``--solver.wall_normal_matvec dense``:
+on CPU the wall-normal derivatives default to the stencil, so these
+keep the dense GEMM -- the GPU path, and the reference -- stepping
+here, one per geometry (the two paths' agreement:
+``test_wall_normal_matvec.py``).
 Seven entries (``plane-couette-cnab2``,
 ``pipe-cnab2``, ``viscoelastic-pipe-cnab2``, ``taylor-couette-cnab2``,
 ``dean-cnab2``, ``viscoelastic-dean-cnab2``, ``kolmogorov-cnab2``) pass
@@ -287,6 +293,56 @@ SYSTEMS: list[dict] = [
             "0.5",
             "--geo.lz",
             "5",
+        ],
+    },
+    # The GEMM path of the wall-normal derivatives, one row per
+    # geometry: ``solver.wall_normal_matvec`` defaults to the stencil on
+    # CPU, so without these the GEMM -- the GPU path, and the reference
+    # -- would never step here.  Agreement of the two paths is pinned by
+    # test_wall_normal_matvec.py; these drive the GEMM end to end.
+    {
+        "name": "plane-couette-gemm",
+        "args": [
+            "--phys.system",
+            "plane-couette",
+            "--phys.re",
+            "330",
+            "--geo.lx",
+            "5",
+            "--geo.lz",
+            "5",
+            "--solver.wall_normal_matvec",
+            "dense",
+        ],
+    },
+    {
+        "name": "pipe-gemm",
+        "args": [
+            "--phys.system",
+            "pipe",
+            "--phys.re",
+            "1800",
+            "--geo.lz",
+            "5",
+            "--solver.wall_normal_matvec",
+            "dense",
+        ],
+    },
+    {
+        "name": "taylor-couette-gemm",
+        "args": [
+            "--phys.system",
+            "taylor-couette",
+            "--phys.re1",
+            "400",
+            "--phys.re2",
+            "-400",
+            "--geo.eta",
+            "0.5",
+            "--geo.lz",
+            "5",
+            "--solver.wall_normal_matvec",
+            "dense",
         ],
     },
     {

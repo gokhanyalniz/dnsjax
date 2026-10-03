@@ -12,6 +12,10 @@ Tests cover:
    `$v$`-`$\omega_y$` scheme rests on: the reconstruction of
    `$(u, w)$` from `$(D_1 v, \omega_y)$` is exactly solenoidal, and
    the source projections annihilate a discrete gradient exactly.
+6. The wall-normal stencil (``solver.wall_normal_matvec``):
+   ``fd.stencil_decomposition`` drops only zeros, at the interior
+   widths; the stencil path of ``apply_y_matrix`` equals the dense
+   GEMM in every layout; and a ``YMatrix`` refuses ``np.asarray``.
 
 Run as a script via ``uv run python tests/test_cartesian.py``.
 """
@@ -54,8 +58,15 @@ from numpy.testing import assert_allclose  # noqa: E402
 from dnsjax.fd import (  # noqa: E402
     build_diff_matrices,
     matrix_half_bandwidth,
+    stencil_decomposition,
+    tanh_two_sided_grid,
 )
 from dnsjax.geometries.wall_bounded import get_norm2  # noqa: E402
+from dnsjax.geometries.wall_bounded._base import (  # noqa: E402
+    YMatrix,
+    _stencil_apply,
+    apply_y_matrix,
+)
 from dnsjax.geometries.wall_bounded._cartesian_primitive_imm import (  # noqa: E402
     _build_Lk_band_gpu,
     _build_Lk_dense_gpu,
@@ -430,6 +441,133 @@ def test_vw_source_projections_kill_gradients() -> None:
         # and k_z = 0 lines, which are exactly the ones worth testing.
         assert np.abs(s_phi).max() < 1e-12 * k2 * np.abs(n_v).max(), (kx, kz)
         assert np.abs(s_om).max() < 1e-12 * k2 * np.abs(q).max(), (kx, kz)
+
+
+def _recompose(
+    inner: np.ndarray, top: np.ndarray, bottom: np.ndarray, n: int
+) -> np.ndarray:
+    """The ``(n, n)`` matrix a stencil decomposition stores."""
+    q_lo, c_lo = top.shape
+    q_hi, c_hi = bottom.shape
+    out = np.zeros((n, n))
+    out[:q_lo, :c_lo] = top
+    out[n - q_hi :, n - c_hi :] = bottom
+    for k, row in enumerate(inner):
+        out[q_lo + k, k : k + row.size] = row
+    return out
+
+
+def test_stencil_decomposition_is_exact() -> None:
+    r"""``fd.stencil_decomposition`` keeps every nonzero, interior-narrow.
+
+    FD matrices on CGL and tanh grids at orders 4, 6 and 8, from the
+    smallest grid a stencil fits on: exact recomposition, and from
+    `$N = 2p + 3$` up the interior half-widths `$(p/2, p/2)$` for
+    ``D1`` and `$(p/2 + 1, p/2)$` for ``D2`` -- half the band
+    :func:`matrix_half_bandwidth` measures.  ``N = 97`` is the case
+    where the middle row alone under-reports ``D2``'s width (an
+    exactly zero end weight on the symmetric grid).
+    Random banded matrices, the fallback (an interior row wider than
+    the middle row's band) and the degenerate cases recompose exactly
+    too.
+    """
+    for p in (4, 6, 8):
+        for n in (p + 2, p + 3, 2 * p + 3, 33, 97):
+            grids = {
+                "cgl": -np.cos(np.pi * np.arange(n) / (n - 1)),
+                "tanh": tanh_two_sided_grid(n, 1.5),
+            }
+            for kind, y in grids.items():
+                D1, D2 = build_diff_matrices(y, p)
+                for name, M, widths in (
+                    ("D1", D1, (p // 2, p // 2)),
+                    ("D2", D2, (p // 2 + 1, p // 2)),
+                ):
+                    inner, top, bottom = stencil_decomposition(M)
+                    msg = f"{name} p={p} n={n} {kind}"
+                    assert np.array_equal(
+                        _recompose(inner, top, bottom, n), M
+                    ), msg
+                    if n < 2 * p + 3:
+                        continue  # a grid this small may keep wider blocks
+                    assert (top.shape[0], bottom.shape[0]) == widths, msg
+                    assert inner.shape[1] == sum(widths) + 1, msg
+
+    rng = np.random.default_rng(7)
+    n = 40
+    offset = np.abs(np.subtract.outer(np.arange(n), np.arange(n)))
+    for p in (1, 4, 9, 11):
+        M = np.where(offset <= p, rng.standard_normal((n, n)), 0.0)
+        parts = stencil_decomposition(M)
+        assert np.array_equal(_recompose(*parts, n), M), p
+        assert parts[0].shape[1] == 2 * p + 1, p
+    # A row the centre probe does not see (near the top, yet inside the
+    # interior range the probe's widths imply) reaching wider: the full
+    # half-bandwidth on both sides instead.
+    M = np.where(offset <= 1, rng.standard_normal((n, n)), 0.0)
+    M[2, 7] = 1.0
+    parts = stencil_decomposition(M)
+    assert np.array_equal(_recompose(*parts, n), M)
+    assert parts[1].shape[0] == parts[2].shape[0] == 5
+    for M in (np.zeros((7, 7)), rng.standard_normal((6, 6))):
+        parts = stencil_decomposition(M)
+        assert np.array_equal(_recompose(*parts, M.shape[0]), M)
+
+
+def test_stencil_apply_matches_gemm() -> None:
+    r"""The stencil path of ``apply_y_matrix`` equals the dense GEMM.
+
+    Both paths called directly (no knob toggling), on FD and random
+    banded matrices: 3-d fields and 4-d ones in both component layouts,
+    real and complex.  They sum the same products in different orders,
+    so they agree to machine precision, not bit for bit.
+    """
+    rng = np.random.default_rng(11)
+    n, c, a, b = 33, 3, 5, 4
+    y = -np.cos(np.pi * np.arange(n) / (n - 1))
+    D1, D2 = build_diff_matrices(y, 8)
+    offset = np.abs(np.subtract.outer(np.arange(n), np.arange(n)))
+    banded = np.where(offset <= 3, rng.standard_normal((n, n)), 0.0)
+    for name, M in (("D1", D1), ("D2", D2), ("random", banded)):
+        Y = YMatrix.from_dense(M)
+        assert Y.shape == (n, n)
+        for shape, axis in (
+            ((n, a, b), 0),
+            ((c, n, a, b), 0),
+            ((n, c, a, b), 1),
+        ):
+            for cplx in (False, True):
+                f = rng.standard_normal(shape)
+                if cplx:
+                    f = f + 1j * rng.standard_normal(shape)
+                f = jnp.asarray(f)
+                got = np.asarray(_stencil_apply(Y, f, axis))
+                ref = np.asarray(apply_y_matrix(Y.dense, f, axis))
+                scale = np.abs(ref).max()
+                assert np.abs(got - ref).max() < 1e-13 * scale, (
+                    name,
+                    shape,
+                    axis,
+                    cplx,
+                )
+
+
+def test_ymatrix_is_not_an_array() -> None:
+    """``np.asarray`` on a ``YMatrix`` raises rather than wrapping it.
+
+    A raw use left unconverted would otherwise be a silent 0-d object
+    array; ``.dense`` is the matrix.
+    """
+    y = -np.cos(np.pi * np.arange(17) / 16)
+    D1, _ = build_diff_matrices(y, 4)
+    Y = YMatrix.from_dense(D1)
+    assert np.array_equal(np.asarray(Y.dense), D1)
+    try:
+        np.asarray(Y)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("np.asarray(YMatrix) did not raise")
 
 
 # ── Runner ───────────────────────────────────────────────────────────

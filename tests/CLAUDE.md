@@ -38,7 +38,8 @@ script pins and its flags: its module docstring.
 
 Banded solve and Pallas kernel:
 - `test_banded_solver.py` (parity, whole tiles, cuda lowering, the
-  adjoint), `test_banded_solver_sharded.py` (a `(2, 2)` mesh).
+  adjoint), `test_banded_solver_sharded.py` (a `(2, 2)` mesh, also for
+  the wall-normal stencil).
 
 Geometry operators and grids:
 - `test_cartesian.py`, `test_cylindrical.py`, `test_annular.py`
@@ -55,6 +56,8 @@ Stepping:
 - `test_cnab2.py`, `test_temporal_order.py`, `test_adaptive.py`,
   `test_imm_continuity.py` (`--ny`), `test_energy_budget.py`,
   `test_autodiff.py` (`--only`), `test_monochromatic.py` (Kolmogorov).
+- `test_wall_normal_matvec.py` (`--only`): one step under the GEMM and
+  the stencil (`solver.wall_normal_matvec`) must agree, per geometry.
 
 Parameters, bootstrap, seeds:
 - `test_param_surface.py` (registry, surfaces, the total-field axis),

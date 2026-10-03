@@ -154,6 +154,7 @@ from ...solvers import (
     _factor_pallas_operator,
 )
 from ._base import (
+    YMatrix,
     apply_y_matrix,
     extract_mean_mode,
     from_pm_basis,
@@ -205,17 +206,27 @@ from ._cylindrical_stepping import (
 from_solver_basis = jax.jit(from_pm_basis)
 
 
-def _ghost_row_count(D1_ghost: np.ndarray, D2_ghost: np.ndarray) -> int:
-    r"""Number of leading nonzero rows of the ghost matrices.
+def _ghost_extent(
+    D1_ghost: np.ndarray, D2_ghost: np.ndarray
+) -> tuple[int, int]:
+    r"""Rows and columns of the ghost matrices' nonzero corner.
 
-    Stencils cross `$r = 0$` only for the first
-    `$\sim (p+2)//2$` radial points, so all later rows of the
-    ghost corrections vanish and need not be stored or applied.
+    Stencils cross `$r = 0$` only for the first `$\sim (p+2)//2$`
+    radial points, and only through the mirrored points nearest the
+    axis, so a ghost correction is nonzero only in a small leading
+    corner: about ``(p/2 + 1) x (p/2 + 1)`` at ``fd_order = p``.
+    Everything outside it is exactly zero, so only the corner is
+    stored and applied, to the first columns' worth of the field
+    (:func:`_parity_y_matvec`).  Kept full width, a ghost GEMM would
+    cost more than half a stencil-applied ``D1_pos`` (`$g N_r$` against
+    about `$(p + 1) N_r$` multiply-adds per mode column).
+    Both counts are unions over ``D1`` and ``D2``, so they bound
+    ``A_base_ghost`` too; at least 1 each.
     """
-    nz = np.nonzero(
-        np.any(D1_ghost != 0.0, axis=1) | np.any(D2_ghost != 0.0, axis=1)
-    )[0]
-    return int(nz[-1]) + 1 if nz.size else 1
+    nz = np.nonzero((D1_ghost != 0.0) | (D2_ghost != 0.0))
+    if not nz[0].size:
+        return 1, 1
+    return int(nz[0].max()) + 1, int(nz[1].max()) + 1
 
 
 @register_dataclass_pytree
@@ -360,7 +371,7 @@ fourier: Fourier = Fourier()
 
 def get_pert_enstrophy_cyl(
     state: Array,
-    D1_pos: Array,
+    D1_pos: YMatrix,
     D1_ghost: Array,
     m_is_even: Array,
     inv_r: Array,
@@ -396,10 +407,12 @@ def get_pert_enstrophy_cyl(
         Spectral velocity in `$(u_z, u_r, u_\theta)$` form,
         shape ``(3, Nr, Nm, Nkz)``.
     D1_pos:
-        Common part of first-derivative FD matrix.
+        Common part of first-derivative FD matrix (a
+        :class:`~._base.YMatrix`).
     D1_ghost:
-        Ghost correction for `$D_1$`, row-sliced to its
-        `$g$` nonzero rows: shape ``(g, Nr)``.
+        Ghost correction for `$D_1$`, trimmed to its nonzero
+        corner: shape ``(g, c)``, applied to the first ``c`` radial
+        points.
     m_is_even:
         Boolean mask for even `$m$`, shape ``(1, Nm, 1)``.
     inv_r:
@@ -417,11 +430,11 @@ def get_pert_enstrophy_cyl(
     p_sign_z = m_is_even * 2 - 1
     p_sign_v = -p_sign_z
 
-    # Batched D1 matvecs (2 GEMMs for all 3 components; the
-    # ghost GEMM covers only its g nonzero rows).
-    g = D1_ghost.shape[0]
+    # Batched D1 matvecs (2 for all 3 components; the ghost GEMM
+    # covers only its nonzero (g, c) corner).
+    g, gc = D1_ghost.shape
     dy_pos = apply_y_matrix(D1_pos, state)
-    dy_ghost = apply_y_matrix(D1_ghost, state)
+    dy_ghost = apply_y_matrix(D1_ghost, state[:, :gc])
     p_signs = jnp.stack([p_sign_z, p_sign_v, p_sign_v])
     dy_state = dy_pos.at[:, :g].add(p_signs * dy_ghost)
 
@@ -1137,13 +1150,13 @@ class CylindricalFlow:
     base_flow_padded: Array = field(init=False)
     curl_base_flow_padded: Array = field(init=False)
     base_flow_adv_padded: Array = field(init=False)
-    D1_pos: Array = field(init=False)
+    D1_pos: YMatrix = field(init=False)
     D1_ghost: Array = field(init=False)
     D1_wall: Array = field(init=False)
     D2_wall: Array | None = field(init=False)
     A_base_even: Array = field(init=False)
     A_base_odd: Array = field(init=False)
-    A_base_pos: Array = field(init=False)
+    A_base_pos: YMatrix = field(init=False)
     A_base_ghost: Array = field(init=False)
     Lk_op: _WallBoundedOp = field(init=False)
     Hk_op: _WallBoundedOp = field(init=False)
@@ -1228,20 +1241,20 @@ class CylindricalFlow:
             D2_pos,
         ) = build_parity_reduced_matrices(self.rs, params.res.fd_order)
 
-        self.D1_pos = jax.device_put(D1_pos, sharding.no_shard)
+        self.D1_pos = YMatrix.from_dense(D1_pos)
 
         # Ghost correction matrices: the difference between the
         # parity-reduced and the common (pos) part.  Stencils cross
-        # r = 0 only near the axis, so just the first g rows are
-        # nonzero; only those rows are stored and applied (a full
-        # (Nr, Nr) ghost GEMM would cost as much as its pos
-        # counterpart, doubling every FD matvec).  ``g_rows`` is the
-        # union over D1 and D2, so it bounds the ghost support of
-        # ``A_base_ghost`` too.
+        # r = 0 only near the axis, so only a small leading corner is
+        # nonzero, and only that ``(g_rows, g_cols)`` corner is stored
+        # and applied (:func:`_ghost_extent`).  Both counts are unions
+        # over D1 and D2, so they bound ``A_base_ghost`` too.
         D1_ghost_np = np.asarray(D1_even - D1_pos)
         D2_ghost_np = np.asarray(D2_even - D2_pos)
-        g_rows = _ghost_row_count(D1_ghost_np, D2_ghost_np)
-        self.D1_ghost = jax.device_put(D1_ghost_np[:g_rows], sharding.no_shard)
+        g_rows, g_cols = _ghost_extent(D1_ghost_np, D2_ghost_np)
+        self.D1_ghost = jax.device_put(
+            D1_ghost_np[:g_rows, :g_cols], sharding.no_shard
+        )
 
         # Wall rows of D1/D2 (parity-independent: the ghost correction
         # touches only the first ``g_rows``, never the wall).  D2's is
@@ -1270,13 +1283,13 @@ class CylindricalFlow:
         # non-solve stage of the default pass.  Built for **both**
         # schemes: the legacy primitive path's ``_a_base_matvec`` and
         # its `$H_k^-$` batch compute the same combination by hand.
-        self.A_base_pos = jax.device_put(
-            _build_A_base(D1_pos, D2_pos, self.inv_r), sharding.no_shard
+        self.A_base_pos = YMatrix.from_dense(
+            _build_A_base(D1_pos, D2_pos, self.inv_r)
         )
         self.A_base_ghost = jax.device_put(
             _build_A_base(
-                D1_ghost_np[:g_rows],
-                D2_ghost_np[:g_rows],
+                D1_ghost_np[:g_rows, :g_cols],
+                D2_ghost_np[:g_rows, :g_cols],
                 self.inv_r[:g_rows],
             ),
             sharding.no_shard,

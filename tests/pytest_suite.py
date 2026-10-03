@@ -135,6 +135,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_twin_unit.py", (), (), 1800),
     ("test_viscoelastic.py", (), (), 1800),
     ("test_viscoelastic_pipe.py", (), (), 1800),
+    # Five in-process (forced CPU device) workers, one per flow, each
+    # compiling one step twice; no mpirun.
+    ("test_wall_normal_matvec.py", (), (), 1800),
     ("test_temporal_order.py", (), _SLOW, 3600),
     ("test_energy_budget.py", (), _MPI + _SLOW, 3600),
     ("test_driving.py", (), _SLOW, 2400),

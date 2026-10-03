@@ -354,7 +354,7 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         """
         # Full narrow Laplacian BC wall rows (JAX-free build).
         row0_np, rowN_np = _narrow_abase_wall_rows(
-            np.asarray(self.rs), np.asarray(self.D1), params.res.fd_order
+            np.asarray(self.rs), np.asarray(self.D1.dense), params.res.fd_order
         )
         self.hc_narrow0 = jax.device_put(row0_np, sharding.no_shard)
         self.hc_narrowN = jax.device_put(rowN_np, sharding.no_shard)
@@ -436,7 +436,7 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         A direct matmul: no Fourier axes here, and no axis, so *spin*
         (which the pipe reads as its parity) is unused.
         """
-        return self.D1 @ prof
+        return self.D1.dense @ prof
 
     def add_mean_body_force(
         self, nl_z: Array, nl_r: Array, nl_th: Array, fourier_: Fourier
@@ -482,7 +482,8 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         rather than per slot.  The pipe instead selects a parity band
         per slot.
         """
-        base = _banded_from_dense(self.A_base, p) if banded else self.A_base
+        a_base = self.A_base.dense
+        base = _banded_from_dense(a_base, p) if banded else a_base
         return [base] * len(spins)
 
     def imm_iteration(

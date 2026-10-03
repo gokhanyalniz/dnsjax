@@ -31,7 +31,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, NamedTuple
 
-from jax import Array
+from jax import Array, lax
 from jax import numpy as jnp
 
 from ...measurements import get_cfl
@@ -40,6 +40,7 @@ from ...parameters import derived_params, params
 from ...rhs import get_nonlin
 from ...sharding import sharding
 from ._base import (
+    YMatrix,
     apply_y_matrix,
     base_flow_coupling,
     build_wall_bounded_stepper,
@@ -177,14 +178,14 @@ def _curl_fn(
     parity_sign_p = fourier_.m_is_even * 2 - 1
     parity_sign_v = -parity_sign_p
 
-    # Batch D1_pos and D1_ghost into two GEMMs; the ghost GEMM
-    # covers only its g nonzero rows near the axis.
-    g = flow_.D1_ghost.shape[0]
-    # Stack y-leading (N_r, 2, ...) so the batched D1 GEMM contracts the
-    # leading wall-normal axis transpose-free, then unstack to 3-d.
+    # Batch D1_pos and D1_ghost into two matvecs; the ghost GEMM
+    # covers only its nonzero (g, c) corner near the axis.
+    g, gc = flow_.D1_ghost.shape
+    # Stack y-leading (N_r, 2, ...) so the batched D1 matvec runs along
+    # the leading wall-normal axis transpose-free, then unstack to 3-d.
     fields = jnp.stack([utheta, uz], axis=1)
     dy_common = apply_y_matrix(flow_.D1_pos, fields, component_axis=1)
-    dy_ghost = apply_y_matrix(flow_.D1_ghost, fields, component_axis=1)
+    dy_ghost = apply_y_matrix(flow_.D1_ghost, fields[:gc], component_axis=1)
     dy_utheta = dy_common[:, 0].at[:g].add(parity_sign_v * dy_ghost[:, 0])
     dy_uz = dy_common[:, 1].at[:g].add(parity_sign_p * dy_ghost[:, 1])
 
@@ -335,7 +336,7 @@ def _get_rhs_measured(
 
 
 def _parity_y_matvec(
-    M_pos: Array,
+    M_pos: YMatrix,
     M_ghost: Array,
     x: Array,
     parity_sign: Array,
@@ -344,26 +345,41 @@ def _parity_y_matvec(
     r"""Apply one parity-reduced FD matrix to a (stacked) field.
 
     `$M^{(\sigma)} x = M_{\mathrm{pos}} x
-    + (-1)^{m_{\mathrm{eff}}}\,\widetilde M_{\mathrm{ghost}} x$`, with
-    the ghost GEMM restricted to its `$g$` nonzero near-axis rows.
-    *parity_sign* broadcasts against the result, so a stacked *x* can
-    carry a different parity per component (and, on the packed mean
-    plane, per mode).
+    + (-1)^{m_{\mathrm{eff}}}\,\widetilde M_{\mathrm{ghost}} x$`.
+    *M_pos* is a :class:`~._base.YMatrix` (a GEMM or a stencil,
+    per ``solver.wall_normal_matvec``); *M_ghost* is the ghost's
+    nonzero ``(g, c)`` corner (``cylindrical._ghost_extent``), a plain
+    GEMM on the first ``c`` radial points whose result lands on the
+    first ``g`` rows.  *parity_sign* broadcasts against the result, so
+    a stacked *x* can carry a different parity per component (and, on
+    the packed mean plane, per mode).
 
-    The ghost scatter has to land on the **wall-normal** axis, whose
-    position follows *component_axis*: leading for a 3-d *x* or the
-    transpose-free ``component_axis=1`` stacking, but axis 1 when a 4-d
-    *x* is component-leading.  Getting that wrong corrupts the first
-    `$g$` *components* instead of the first `$g$` radial rows, silently
-    and without a shape error, so the axis is derived here rather than
-    left to each call site.
+    The ghost slice and its addition have to act on the
+    **wall-normal** axis, whose position follows *component_axis*:
+    leading for a 3-d *x* or the transpose-free ``component_axis=1``
+    stacking, but axis 1 when a 4-d *x* is component-leading.  Getting
+    that wrong corrupts the first `$g$` *components* instead of the
+    first `$g$` radial rows, silently and without a shape error, so the
+    axis is derived here rather than left to each call site.
+
+    The ghost term is added to the first `$g$` rows sliced off and
+    concatenated back with the rest, not scattered in with
+    ``.at[:g].add``: on the stencil path that scatter held one extra
+    spectral field at the step's peak (+1.2 % of the pipe step's
+    temporaries, measured at ``16 x 33 x 16`` and ``32 x 97 x 64``);
+    the concatenation holds none, and trims the GEMM path's peak too.
     """
-    g = M_ghost.shape[0]
+    g, gc = M_ghost.shape
+    ax = 1 if x.ndim == 4 and component_axis == 0 else 0
     out = apply_y_matrix(M_pos, x, component_axis=component_axis)
-    ghost = apply_y_matrix(M_ghost, x, component_axis=component_axis)
-    if x.ndim == 4 and component_axis == 0:
-        return out.at[:, :g].add(parity_sign * ghost)
-    return out.at[:g].add(parity_sign * ghost)
+    ghost = apply_y_matrix(
+        M_ghost,
+        lax.slice_in_dim(x, 0, gc, axis=ax),
+        component_axis=component_axis,
+    )
+    head = lax.slice_in_dim(out, 0, g, axis=ax) + parity_sign * ghost
+    tail = lax.slice_in_dim(out, g, out.shape[ax], axis=ax)
+    return jnp.concatenate([head, tail], axis=ax)
 
 
 def _straight_divergence(

@@ -348,6 +348,15 @@ its layout and start-up phase. A layout that does not fit is helped, in
 order, by less padding, by `solver.rhs_transform_chunks`, and by fewer
 ranks per node.
 
+**Wall-normal derivatives** run as stencils on CPU rather than as dense
+$n_y \times n_y$ matrix products (`solver.wall_normal_matvec = "auto"`):
+at the per-rank size of a `1280 x 385 x 320` run on 128 ranks that
+removes three quarters of the step's floating-point work and about 15 %
+of its time on one workstation core, at unchanged memory (the measured
+table: `geometries/wall_bounded/_base.apply_y_matrix`).
+`node_benchmark.py --variant gemm="--solver.wall_normal_matvec dense"`
+measures the same trade on the target node, in one sweep.
+
 **Across nodes**, keep one node per `np1` group (`np1` = ranks per
 node, `np0` = number of nodes): XLA runs a cross-process all-to-all as
 a sequence of pairwise exchanges, without overlapping it with

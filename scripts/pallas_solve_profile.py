@@ -635,10 +635,12 @@ def _crossing_census(label: str, jitted, args) -> dict[str, int]:
 
     JAX has no zero-copy complex/real bitcast, so every banded solve and
     every :func:`~dnsjax.geometries.wall_bounded._base.apply_y_matrix`
-    FD GEMM brackets itself with a split (``real``/``imag``) and a
-    recombine (``complex``).  Some are redundant *between* consumers --
-    ``Hk_op.solve`` recombines, the caller only indexes the result, and
-    ``Lk_op.solve`` splits it straight back apart.
+    FD matvec (GEMM or, on CPU, stencil) brackets itself with a split
+    (``real``/``imag``) and a recombine (``complex``); the stencil also
+    adds one ``concatenate`` per call (its edge rows).  Some are
+    redundant *between* consumers -- ``Hk_op.solve`` recombines, the
+    caller only indexes the result, and ``Lk_op.solve`` splits it
+    straight back apart.
 
     This counts them **after** optimization, so it reports what
     survives XLA's simplifier rather than what the source writes.  A
@@ -2107,7 +2109,7 @@ def _part_c(geom, flow, m, sharding, trace_dir, hlo_out) -> None:
     print(
         "\n  complex <-> real crossings in the optimized HLO (the "
         "split-real\n  hoist's target; JAX has no zero-copy bitcast, so "
-        "each solve and each\n  apply_y_matrix GEMM brackets itself):"
+        "each solve and each\n  apply_y_matrix matvec brackets itself):"
     )
     fourier = m.fourier
     if isinstance(op, PerModeBandedPallasOperator):

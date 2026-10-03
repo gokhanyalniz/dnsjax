@@ -5,6 +5,8 @@ Tests cover:
 1. Annular grid properties (spans ``[r1, r2]``, monotone, endpoints).
 2. `$A_{\mathrm{base}}$` dense operator vs NumPy reference.
 3. ``_abase_matvec`` matrix-free vs dense reference.
+3b. The annulus's FD matrices (``D1``, ``D2``, ``A_base``) give the same
+    product on the stencil and the GEMM path, in every layout.
 4. ``_lk_matvec`` vs per-mode NumPy reference (Neumann at both walls,
    pin at the mean mode).
 5. Pallas band-vs-dense parity for `$L_k$`, the three `$H_k$`
@@ -84,6 +86,10 @@ from dnsjax.geometries.wall_bounded._annular_primitive_imm import (  # noqa: E40
     _build_Lk_dense_gpu,
     _lk_matvec,
 )
+from dnsjax.geometries.wall_bounded._base import (  # noqa: E402
+    _stencil_apply,
+    apply_y_matrix,
+)
 from dnsjax.geometries.wall_bounded.annular import (  # noqa: E402
     _build_Hk_band_gpu,
     _build_Hk_dense_gpu,
@@ -155,12 +161,39 @@ def test_annular_grid_properties() -> None:
 
 def test_A_base_matches_reference() -> None:
     r"""``_build_A_base`` matches `$D_2 + \mathrm{diag}(1/r) D_1$`."""
-    A_base = np.asarray(tc_flow.A_base)
-    D1 = np.asarray(tc_flow.D1)
-    D2 = np.asarray(tc_flow.D2)
+    A_base = np.asarray(tc_flow.A_base.dense)
+    D1 = np.asarray(tc_flow.D1.dense)
+    D2 = np.asarray(tc_flow.D2.dense)
     inv_r = np.asarray(tc_flow.inv_r)
     ref = D2 + np.diag(inv_r) @ D1
     assert_allclose(A_base, ref, atol=1e-12, err_msg="A_base")
+
+
+def test_fd_matrices_stencil_matches_gemm() -> None:
+    r"""The annulus's FD matrices: stencil and GEMM paths agree.
+
+    ``D1``, ``D2`` and the fused ``A_base`` are ``YMatrix``; their
+    stencil product equals the dense GEMM for a 3-d field and both 4-d
+    layouts -- the component-leading one being the viscoelastic
+    annulus's 9-, 6- and 3-field stacks.
+    """
+    Nr, Nm, Nkz = params.res.ny, params.res.nz - 1, params.res.nx // 2
+    rng = np.random.default_rng(12)
+    x3 = rng.standard_normal((Nr, Nm, Nkz)) + 1j * rng.standard_normal(
+        (Nr, Nm, Nkz)
+    )
+    layouts = (
+        (x3, 0),
+        (np.stack([x3, -2 * x3, x3.conj()]), 0),
+        (np.stack([x3, -2 * x3, x3.conj()], axis=1), 1),
+    )
+    for name in ("D1", "D2", "A_base"):
+        Y = getattr(tc_flow, name)
+        for x, axis in layouts:
+            got = np.asarray(_stencil_apply(Y, jnp.asarray(x), axis))
+            ref = np.asarray(apply_y_matrix(Y.dense, jnp.asarray(x), axis))
+            err = np.abs(got - ref).max() / np.abs(ref).max()
+            assert err < 1e-13, (name, x.ndim, axis, err)
 
 
 def test_abase_matvec_matches_dense() -> None:
@@ -179,9 +212,9 @@ def test_abase_matvec_matches_dense() -> None:
     # Reference composed by hand, **not** from ``flow.A_base``: the
     # matvec now applies the precomputed operator in one GEMM, so
     # referencing that same array would only test ``apply_y_matrix``.
-    ref_op = np.asarray(tc_flow.D2) + np.diag(
+    ref_op = np.asarray(tc_flow.D2.dense) + np.diag(
         np.asarray(tc_flow.inv_r)
-    ) @ np.asarray(tc_flow.D1)
+    ) @ np.asarray(tc_flow.D1.dense)
     got = np.asarray(_abase_matvec(u, flow_))
     ref = np.einsum("ij, jmz -> imz", ref_op, u_np)
     assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
@@ -192,7 +225,7 @@ def test_lk_matvec_matches_reference() -> None:
     Nr = params.res.ny
     inv_r2 = np.asarray(tc_flow.inv_r2)
     D1_bnd = np.asarray(tc_flow.D1_bnd)
-    A_base = np.asarray(tc_flow.A_base)
+    A_base = np.asarray(tc_flow.A_base.dense)
 
     m_vals = np.asarray(fourier.m).ravel()
     kz_vals = np.asarray(fourier.kz).ravel()
@@ -244,9 +277,9 @@ def test_pallas_vs_dense_on_annular_operators() -> None:
     c = params.step.implicitness
     nu = 1.0 / params.phys.re
 
-    D1 = tc_flow.D1
+    D1 = tc_flow.D1.dense
     inv_r2 = tc_flow.inv_r2
-    A_base = tc_flow.A_base
+    A_base = tc_flow.A_base.dense
     p = matrix_half_bandwidth(np.asarray(A_base), (0, -1))
 
     Nm = params.res.nz - 1
@@ -338,7 +371,7 @@ def test_vw_mean_plane_packing_reuses_the_primitive_operators() -> None:
     kz2_s = fourier.kz2[0, ..., None]
     dt, c = params.step.dt, params.step.implicitness
     nu = 1.0 / params.phys.re
-    A_base = tc_flow.A_base
+    A_base = tc_flow.A_base.dense
     inv_r2 = tc_flow.inv_r2
     p = matrix_half_bandwidth(np.asarray(A_base), (0, -1))
 
@@ -385,7 +418,7 @@ def test_vw_reconstruction_is_exactly_solenoidal() -> None:
     one ``analysis.snapshot_ops.divergence`` mirrors).
     """
     Nr = params.res.ny
-    D1 = np.asarray(tc_flow.D1)
+    D1 = np.asarray(tc_flow.D1.dense)
     inv_r = np.asarray(tc_flow.inv_r)
     rng = np.random.default_rng(3)
 
@@ -441,7 +474,7 @@ def test_vw_source_projections_kill_gradients() -> None:
     """
     Nr = params.res.ny
     rs = np.asarray(tc_flow.rs)
-    D1 = np.asarray(tc_flow.D1)
+    D1 = np.asarray(tc_flow.D1.dense)
     inv_r = np.asarray(tc_flow.inv_r)
     rng = np.random.default_rng(5)
 

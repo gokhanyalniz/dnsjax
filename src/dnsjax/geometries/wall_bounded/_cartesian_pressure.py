@@ -351,7 +351,7 @@ def convective_nonlinear(
         mean_state, mean_delta = extract_mean_modes(state, delta)
         prof = mean_state.real + base
         prof_delta = mean_delta.real
-    dy_base = jnp.einsum("ij,cj->ci", d1, base)
+    dy_base = jnp.einsum("ij,cj->ci", d1.dense, base)
 
     def advect(adv: Array, c: Array) -> Array:
         r"""`$(\mathbf{a}\cdot\nabla)c$` for one component *c*, back

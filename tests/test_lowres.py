@@ -295,7 +295,7 @@ def _pressure_worker(system: str) -> None:
 
     flow, fourier = td.flow, td.fourier
     y = np.asarray(flow.ys)
-    d1 = np.asarray(flow.D1)
+    d1 = np.asarray(flow.D1.dense)
     kx1 = 2.0 * np.pi / params.geo.lx
 
     # A solenoidal state: one streamwise mode (k_x, k_z) = (1, 0) and

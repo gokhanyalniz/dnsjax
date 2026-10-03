@@ -123,9 +123,11 @@ def _solver_divergence(state, system: str, flow, fourier):
     if system in cylindrical_systems:
         # (-1)^{m+1} parity of u_pm: D1_pos +/- the folded ghost rows.
         parity_sign_v = -(fourier.m_is_even * 2 - 1)
-        g = flow.D1_ghost.shape[0]
+        g, gc = flow.D1_ghost.shape
         dy = apply_y_matrix(flow.D1_pos, stacked, component_axis=1)
-        dy_ghost = apply_y_matrix(flow.D1_ghost, stacked, component_axis=1)
+        dy_ghost = apply_y_matrix(
+            flow.D1_ghost, stacked[:gc], component_axis=1
+        )
         dy_all = dy.at[:g].add(parity_sign_v * dy_ghost)
     else:  # annular: no axis, plain D1
         dy_all = apply_y_matrix(flow.D1, stacked, component_axis=1)

@@ -51,6 +51,7 @@ from ...solvers import (
     _factor_pallas_operator,
 )
 from ._base import (
+    YMatrix,
     apply_y_matrix,
     base_flow_coupling,
     build_wall_bounded_stepper,
@@ -412,9 +413,10 @@ class CartesianFlow:
     Attributes
     ----------
     D1:
-        First-derivative FD matrix, shape ``(Ny, Ny)``.
+        First-derivative FD matrix, a :class:`~._base.YMatrix`
+        (``.dense`` is ``(Ny, Ny)``).
     D2:
-        Second-derivative FD matrix, shape ``(Ny, Ny)``.
+        Second-derivative FD matrix, a :class:`~._base.YMatrix`.
     D1_bnd:
         Boundary rows `$D_1[0,:],\; D_1[-1,:]$`,
         shape ``(2, Ny)``.
@@ -450,8 +452,8 @@ class CartesianFlow:
     base_flow_padded: Array = field(init=False)
     curl_base_flow_padded: Array = field(init=False)
     base_flow_adv_padded: Array = field(init=False)
-    D1: Array = field(init=False)
-    D2: Array = field(init=False)
+    D1: YMatrix = field(init=False)
+    D2: YMatrix = field(init=False)
     D1_bnd: Array = field(init=False)
     Lk_op: _WallBoundedOp = field(init=False)
     Hk_op: _WallBoundedOp = field(init=False)
@@ -527,8 +529,8 @@ class CartesianFlow:
             inv_sp[:, :, None, None], sharding.no_shard
         )
 
-        self.D1 = jax.device_put(D1, sharding.no_shard)
-        self.D2 = jax.device_put(D2, sharding.no_shard)
+        self.D1 = YMatrix.from_dense(D1)
+        self.D2 = YMatrix.from_dense(D2)
         self.D1_bnd = jax.device_put(D1[[0, -1], :], sharding.no_shard)
 
         Nkz = sharding.nz_spec
@@ -562,13 +564,13 @@ class CartesianFlow:
             # at a time so the setup peak never holds two unfactored
             # operators at once.
             if params.res.consistent_imm:
-                Lk_band = _build_Lk_dir_band_gpu(self.D2, k2_s, p)
+                Lk_band = _build_Lk_dir_band_gpu(self.D2.dense, k2_s, p)
             else:
                 from . import _cartesian_primitive_imm as prim
 
                 mean_s = fourier.mean_mask[0, ..., None]
                 Lk_band = prim._build_Lk_band_gpu(
-                    self.D1, self.D2, k2_s, mean_s, p
+                    self.D1.dense, self.D2.dense, k2_s, mean_s, p
                 )
             self.Lk_op = _build_pallas_operator([Lk_band], "Lk")
             del Lk_band
@@ -591,13 +593,13 @@ class CartesianFlow:
             # (donated, so the factors reuse their buffers), then
             # dropped — only the factors are kept.
             if params.res.consistent_imm:
-                Lk_dense = _build_Lk_dir_dense_gpu(self.D2, k2_s)
+                Lk_dense = _build_Lk_dir_dense_gpu(self.D2.dense, k2_s)
             else:
                 from . import _cartesian_primitive_imm as prim
 
                 mean_s = fourier.mean_mask[0, ..., None]
                 Lk_dense = prim._build_Lk_dense_gpu(
-                    self.D1, self.D2, k2_s, mean_s
+                    self.D1.dense, self.D2.dense, k2_s, mean_s
                 )
             self.Lk_op = DenseJAXSolver(Lk_dense)
             del Lk_dense
@@ -868,13 +870,13 @@ def build_poisson_operator(
     k2_s = fourier_.k2[0, ..., None]
     mean_s = fourier_.mean_mask[0, ..., None]
     if params.solver.backend == "pallas":
-        p_band = matrix_half_bandwidth(np.asarray(flow_.D2), (0, -1))
+        p_band = matrix_half_bandwidth(np.asarray(flow_.D2.dense), (0, -1))
         band = prim._build_Lk_band_gpu(
-            flow_.D1, flow_.D2, k2_s, mean_s, p_band
+            flow_.D1.dense, flow_.D2.dense, k2_s, mean_s, p_band
         )
         return _build_pallas_operator([band], "Lp")
     return DenseJAXSolver(
-        prim._build_Lk_dense_gpu(flow_.D1, flow_.D2, k2_s, mean_s)
+        prim._build_Lk_dense_gpu(flow_.D1.dense, flow_.D2.dense, k2_s, mean_s)
     )
 
 
@@ -898,7 +900,7 @@ def _hk_bands(
     k2_s = fourier_.k2[0, ..., None]
     return [
         _build_Hk_band_gpu(
-            flow_.D2,
+            flow_.D2.dense,
             k2_s,
             dt,
             params.step.implicitness,
@@ -917,7 +919,7 @@ def _hk_dense_op(
     k2_s = fourier_.k2[0, ..., None]
     return DenseJAXSolver(
         _build_Hk_dense_gpu(
-            flow_.D2,
+            flow_.D2.dense,
             k2_s,
             dt,
             params.step.implicitness,

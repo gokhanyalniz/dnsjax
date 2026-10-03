@@ -345,12 +345,12 @@ def derive_homogeneous_data(
     p1_s = flow_.Lk_op.solve(e_wall.transpose(2, 0, 1)).transpose(1, 2, 0)
 
     # Pressure gradient components for the +/- equations.
-    # The ghost matrix holds only its g nonzero rows; its
-    # contribution lands in the first g radial entries.
+    # The ghost matrix holds only its nonzero (g, c) corner: it reads
+    # the first c radial entries and lands in the first g.
     parity_sign_p_s = fourier_.m_is_even[0, ..., None] * 2 - 1
-    g = flow_.D1_ghost.shape[0]
-    ghost_p1 = jnp.einsum("ij, mzj -> mzi", flow_.D1_ghost, p1_s)
-    D1_p1 = jnp.einsum("ij, mzj -> mzi", flow_.D1_pos, p1_s)
+    g, gc = flow_.D1_ghost.shape
+    ghost_p1 = jnp.einsum("ij, mzj -> mzi", flow_.D1_ghost, p1_s[..., :gc])
+    D1_p1 = jnp.einsum("ij, mzj -> mzi", flow_.D1_pos.dense, p1_s)
     D1_p1 = D1_p1.at[..., :g].add(parity_sign_p_s * ghost_p1)
     m_s = fourier_.m[0, ..., None]  # (Nm, 1, 1)
     m_over_r_s = m_s * flow_.inv_r  # (Nm, 1, Nr)
@@ -472,14 +472,17 @@ def _imm_iteration_vp(
     m_sq = fourier_.m2
 
     # Batch all D1 y-derivatives with (-1)^{m+1} parity into
-    # one GEMM each for D1_pos and D1_ghost (2 instead of 4);
-    # the ghost GEMM covers only its g nonzero rows.
-    g = flow_.D1_ghost.shape[0]
+    # one matvec each for D1_pos and D1_ghost (2 instead of 4);
+    # the ghost GEMM covers only its nonzero (g, gc) corner.  (Not
+    # ``c``: that is the implicitness, read below.)
+    g, gc = flow_.D1_ghost.shape
     # Stack y-leading (N_r, 6, ...) so the batched D1 GEMM contracts the
     # leading wall-normal axis transpose-free; the component axis is 1.
     all_vparity = jnp.stack([up_n, um_n, NLp_j, NLp_n, NLm_j, NLm_n], axis=1)
     dy_common = apply_y_matrix(flow_.D1_pos, all_vparity, component_axis=1)
-    dy_ghost = apply_y_matrix(flow_.D1_ghost, all_vparity, component_axis=1)
+    dy_ghost = apply_y_matrix(
+        flow_.D1_ghost, all_vparity[:gc], component_axis=1
+    )
     dy_all = dy_common.at[:g].add(parity_sign_v * dy_ghost)
 
     # Cylindrical divergence at time n.  ``dnsjax.analysis`` mirrors

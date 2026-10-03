@@ -302,8 +302,8 @@ def test_tensor_laplacian_diagonalization() -> None:
     kz_vals = np.asarray(fourier.kz).ravel()
     Nm, Nkz = len(m_vals), len(kz_vals)
 
-    D1 = np.asarray(flow.D1)
-    D2 = np.asarray(flow.D2)
+    D1 = np.asarray(flow.D1.dense)
+    D2 = np.asarray(flow.D2.dense)
     inv_r = np.asarray(flow.inv_r)
     inv_r2 = np.asarray(flow.inv_r2)
 
@@ -368,9 +368,9 @@ def test_laminar_velocity_balance_closes_only_at_zero_epsilon() -> None:
     from dnsjax.parameters import derived_params
 
     rs = np.asarray(flow.rs)
-    d1 = np.asarray(flow.D1)
+    d1 = np.asarray(flow.D1.dense)
     inv_r = 1.0 / rs
-    a_base = np.asarray(flow.D2) + np.diag(inv_r) @ d1
+    a_base = np.asarray(flow.D2.dense) + np.diag(inv_r) @ d1
     beta, re, wi = params.phys.beta, params.phys.re, params.phys.wi
     nu = beta / re
     coef = (1.0 - beta) / (re * wi)
@@ -479,7 +479,7 @@ def test_Hc_band_vs_dense() -> None:
     kz2_s = fourier.kz2[0, ..., None]  # (1, Nkz, 1)
 
     row0_np, rowN_np = _narrow_abase_wall_rows(
-        np.asarray(flow.rs), np.asarray(flow.D1), p
+        np.asarray(flow.rs), np.asarray(flow.D1.dense), p
     )
     # Both walls, as ``flow.hc_wall_rows()`` returns them (it cannot be
     # called here: the module kappa is 0, so the narrow-row leaves are

@@ -225,12 +225,24 @@ def case_surface_strictness() -> None:
     except ValidationError:
         check(True, "viscoelastic rejects [force]")
 
+    # The wall-normal derivative knob is on every wall-bounded surface
+    # (and, below, on no periodic one).
+    for system in ("plane-couette", "pipe", "taylor-couette"):
+        model = PS.build_surface_model(spec_for(system), settings=False)
+        v = model.model_validate({"solver": {"wall_normal_matvec": "dense"}})
+        check(
+            v.model_dump(exclude_unset=True)
+            == {"solver": {"wall_normal_matvec": "dense"}},
+            f"{system} accepts solver.wall_normal_matvec",
+        )
+
     # Periodic: wall-bounded fields are rejected outright.
     kol = spec_for("kolmogorov")
     kol_model = PS.build_surface_model(kol, settings=False)
     for bad in (
         {"geo": {"grid_type": "cgl"}},
         {"solver": {"backend": "dense"}},
+        {"solver": {"wall_normal_matvec": "dense"}},
     ):
         try:
             kol_model.model_validate(bad)
