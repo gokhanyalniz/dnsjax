@@ -60,9 +60,11 @@ Stepping:
   the stencil (`solver.wall_normal_matvec`) must agree, per geometry
   and legacy pass.
 
-Parameters, bootstrap, seeds:
+Parameters, bootstrap, mesh, seeds:
 - `test_param_surface.py` (registry, surfaces, the total-field axis),
   `test_bootstrap.py`, `test_seeding.py` (`--unit-only`).
+- `test_device_grid.py` (`--unit-only`): the mesh across nodes, two
+  hosts faked on one machine under `mpirun`.
 
 Initial conditions:
 - `test_localized_rolls.py`, `test_rolls_smoke.py` (6 roll builders),

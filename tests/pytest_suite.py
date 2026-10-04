@@ -31,9 +31,10 @@ Usage::
 
     uv run pytest                            # everything available
     uv run pytest -m "not slow and not mpi"  # offline: no mpirun launch
-    uv run pytest -m "not slow"              # + the four quick mpirun
+    uv run pytest -m "not slow"              # + the five quick mpirun
                                              #   rows (probes, forcing,
-                                             #   seeding, twin_postprocess)
+                                             #   seeding, twin_postprocess,
+                                             #   device_grid)
     uv run pytest -k padding                 # a single script
 """
 
@@ -75,10 +76,10 @@ _NO_MPI_ONLY = (
 
 # One row per invocation: (script, extra args, marks, timeout in s).
 # Scripts appearing twice: ``test_resume`` (offline ``--unit-only``
-# subset + full mpirun run), ``test_forcing``/``test_probes``/
-# ``test_seeding``/``test_twin_postprocess`` (the no-mpirun unit
-# fallback + the full run), ``test_driving`` (the always-run unit half
-# + the slow full run),
+# subset + full mpirun run), ``test_device_grid``/``test_forcing``/
+# ``test_probes``/``test_seeding``/``test_twin_postprocess`` (the
+# no-mpirun unit fallback + the full run), ``test_driving`` (the
+# always-run unit half + the slow full run),
 # ``test_transient_growth`` (offline ``--fast`` structure checks +
 # the slow full run with the literature anchors), and
 # ``test_laminar_smoke`` (single-device + the ``--np 2`` mesh row
@@ -111,6 +112,7 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_monochromatic.py", (), (), 1800),
     ("test_padding.py", (), (), 1800),
     ("test_param_surface.py", (), (), 1800),
+    ("test_device_grid.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_driving.py", ("--unit-only",), (), 1800),
     ("test_forcing.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
     ("test_probes.py", ("--unit-only",), _NO_MPI_ONLY, 1800),
@@ -140,6 +142,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_wall_normal_matvec.py", (), (), 1800),
     ("test_temporal_order.py", (), _SLOW, 3600),
     ("test_energy_budget.py", (), _MPI + _SLOW, 3600),
+    # Three (2, 2) launches of a few steps, two of them over a faked
+    # second host; about a minute.
+    ("test_device_grid.py", (), _MPI, 1800),
     ("test_driving.py", (), _SLOW, 2400),
     ("test_forcing.py", (), _MPI, 1800),
     ("test_laminar_smoke.py", (), _MPI + _SLOW, 3600),
