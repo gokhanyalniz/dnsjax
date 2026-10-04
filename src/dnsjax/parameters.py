@@ -109,18 +109,19 @@ class Distribution(BaseModel):
        instead when ``ny`` (``nr``) will not divide the device count
        or is too small for it.
     2. **Across nodes, align the grid with them**: ``np1`` = devices
-       per node, ``np0`` = number of nodes.  ``jax.make_mesh`` lays
-       the grid out row-major over the sorted devices and device ids
-       group by process, so with one task per node the ``np1`` groups
-       fall inside a node and the ``np0`` groups hold one device each.
-       That confines the heavier exchange to the intra-node
-       interconnect, and the network carries ``np0 - 1`` large
-       messages per device instead of the many small ones a grid-wide
-       exchange sends -- at equal volume (`$(N-g)/N^2 = (n-1)/(nN)$`
-       per device, for `$N$` devices in `$g$`-device groups on `$n$`
-       nodes).  Splitting on ``np1`` alone across nodes is the one
-       arrangement to avoid: it puts the `$3/2$`-sized exchange on the
-       network.
+       per node, ``np0`` = number of nodes.  The grid is laid out
+       row-major over the devices ordered by node, then id
+       (``sharding.device_grid``), so the ``np1`` groups fall inside a
+       node and the ``np0`` groups hold one device per node, whatever
+       order the launcher numbers the ranks in; a multi-node run prints
+       how many nodes each group spans.  That confines the heavier
+       exchange to the intra-node interconnect, and the network
+       carries ``np0 - 1`` large messages per device instead of the
+       many small ones a grid-wide exchange sends -- at equal volume
+       (`$(N-g)/N^2 = (n-1)/(nN)$` per device, for `$N$` devices in
+       `$g$`-device groups on `$n$` nodes).  Splitting on ``np1`` alone
+       across nodes is the one arrangement to avoid: it puts the
+       `$3/2$`-sized exchange on the network.
     3. **Snapshots** add only the same 1D preference -- a
        one-dimensional grid reshards once per save instead of twice.
        Write granularity does not enter the choice: the reshard trims
