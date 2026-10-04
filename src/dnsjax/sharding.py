@@ -19,6 +19,8 @@ The device mesh has shape ``(np0, np1)`` with axes ``"np0"`` and
 
 When ``np0 == 1`` the ``"np0"`` axis is trivially size-1 and all
 partition specs collapse to a 1D decomposition on `$k_x$` / `$z$`.
+Which device sits where on the mesh, across nodes included:
+:func:`device_grid`.
 
 Array layout convention
 -----------------------
@@ -59,11 +61,13 @@ component 2 -- the ``annular.py`` docstring covers why.
 
 import dataclasses
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import jax
+import numpy as np
 from jax import numpy as jnp
-from jax.sharding import AxisType, NamedSharding
+from jax.sharding import AxisType, Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 
 from .flows.registry import periodic_systems
@@ -158,6 +162,55 @@ def register_dataclass_pytree[T](cls: type[T]) -> type[T]:
     return cls
 
 
+def _node(device: object) -> int:
+    """A device's node: its ``slice_index``, 0 where it has none."""
+    return getattr(device, "slice_index", 0)
+
+
+def device_grid(
+    devices: Sequence[jax.Device], np0: int, np1: int
+) -> np.ndarray:
+    r"""The ``(np0, np1)`` array of *devices* the mesh is laid out on.
+
+    Row-major over the devices ordered by node, then by id.  The node is
+    the device's ``slice_index``, which the distributed runtime assigns
+    one per host, telling hosts apart by their boot id
+    (``/proc/sys/kernel/random/boot_id``); a device carrying none (a
+    lone CPU process's) counts as node 0.  On one node this is
+    ``jax.make_mesh``'s own CPU and GPU layout (device ids, which group
+    a multi-process run's devices by rank), and so the mesh every
+    single-node run has always had.  The mesh is not built *by*
+    ``make_mesh`` because that refuses any device set spanning several
+    slices -- its placement models a single TPU slice -- which is every
+    multi-node launch.
+
+    Ordering by node first keeps each node's devices contiguous whatever
+    order the launcher numbers the ranks in.  With ``np1`` dividing the
+    devices per node, every ``np1`` group (a row) lies on one node; with
+    ``np1`` a multiple of it, every group spans whole nodes.  Those are
+    the layouts the ``Distribution`` docstring's rule for a run across
+    nodes produces, and on them this is JAX's
+    ``create_hybrid_device_mesh``, without needing a per-node shape and
+    without refusing nodes that hold unequal device counts.
+    """
+    ordered = sorted(devices, key=lambda d: (_node(d), d.id))
+    return np.asarray(ordered, dtype=object).reshape(np0, np1)
+
+
+def node_spans(grid: np.ndarray) -> tuple[int, int, int]:
+    """Nodes *grid* covers, and the most any ``np0`` / ``np1`` group spans.
+
+    A ``np0`` group is a column of the grid, a ``np1`` group a row; the
+    node is the one :func:`device_grid` orders by.
+    """
+    node = np.vectorize(_node, otypes=[int])(grid)
+
+    def widest(groups: np.ndarray) -> int:
+        return max(len(set(group)) for group in groups)
+
+    return len(set(node.flat)), widest(node.T), widest(node)
+
+
 @dataclass
 class Sharding:
     r"""Device mesh, precision, partition specs, and array shapes.
@@ -237,12 +290,21 @@ class Sharding:
         )
 
     # ── 2D device mesh ────────────────────────────────────────
-    mesh = jax.make_mesh(
-        (np0, np1),
+    mesh = Mesh(
+        device_grid(devices, np0, np1),
         axis_names=("np0", "np1"),
         axis_types=(AxisType.Explicit, AxisType.Explicit),
     )
     jax.set_mesh(mesh)
+    # Across nodes, say how the grid lies on them: a group spanning
+    # nodes runs its exchange over the network.
+    n_nodes, _span0, _span1 = node_spans(mesh.devices)
+    if n_nodes > 1 and main_device:
+        print(
+            f"Device grid on {n_nodes} nodes: each np0 group spans up to "
+            f"{_span0}, each np1 group up to {_span1}.",
+            flush=True,
+        )
 
     # Axis-name helpers: None when the axis is trivially size-1,
     # so that P(a0, ...) becomes P(None, ...) = replicated,

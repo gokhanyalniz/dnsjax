@@ -185,13 +185,14 @@ program.
    not divide the device count or is too small for it.
 2. **Across nodes, align the grid with them** — `np1` = devices per node,
    `np0` = number of nodes. The grid is laid out row-major over the
-   sorted devices, so `np1` groups fall within a node and `np0` groups
-   hold one device per node. That confines the heavier exchange to the
-   intra-node interconnect and leaves the network $n_{p0} - 1$ large
-   messages per device in place of the many small ones a grid-wide
-   exchange sends, at equal network volume. Splitting on `np1` alone
-   across nodes is the worst choice: it puts the $3/2$-sized exchange
-   on the network.
+   devices ordered by node, so `np1` groups fall within a node and `np0`
+   groups hold one device per node, whatever order the launcher numbers
+   the ranks in; a multi-node run prints how many nodes each group
+   spans. That confines the heavier exchange to the intra-node
+   interconnect and leaves the network $n_{p0} - 1$ large messages per
+   device in place of the many small ones a grid-wide exchange sends, at
+   equal network volume. Splitting on `np1` alone across nodes is the
+   worst choice: it puts the $3/2$-sized exchange on the network.
 3. **Snapshots follow the same pattern**, but only for the first
    reason: a one-dimensional grid reshards once per save instead of
    twice. Write granularity does not enter the choice — the reshard
