@@ -14,12 +14,14 @@ ordinate instead.
 
 What is drawn
 =============
-Two figure families, and a tag for each series of each
-(:class:`SeriesSpec`).  A `$(\lambda, y)$` **map** is one figure per
-recorded sample; a **spacetime** map is one figure -- a pair, for its
-two colour scales -- for the whole run.  What a bare invocation draws
-is three sets of maps, each on both wavenumber marginals (``_z`` gives
-`$\lambda_x$`; the paper shows only `$\lambda_z$`):
+A tag for each series (:class:`SeriesSpec`), in one of several figure
+families.  A `$(\lambda, y)$` **map** is one figure per recorded
+sample; every other family is one figure (or a few) for the whole run:
+a **spacetime** map, a **history**, a moment budget, a decorrelation
+front, a growth-law figure.  What a bare invocation draws is three sets
+of maps, each on both wavenumber marginals (``_z`` gives `$\lambda_x$`;
+the paper shows only `$\lambda_z$`), and the histories of the tracked
+quantities:
 
 - the **difference** spectra, a panel per velocity component and one
   for their sum;
@@ -31,12 +33,19 @@ is three sets of maps, each on both wavenumber marginals (``_z`` gives
   as its contribution to `$\partial_t E_\Delta$`, on a 3 x 3 grid
   (:data:`MAP_PANELS`).  The driving input, one mode, is drawn only by
   a spacetime map, with the pressure transport
-  (:data:`SPACETIME_PANELS`).  ``--no-budget`` drops the set.
+  (:data:`SPACETIME_PANELS`).  ``--no-budget`` drops the set;
+- the **histories** of the difference spectra, of their shape maps and
+  of the production: the `$k$`-sum against wall distance and time, and
+  the wall-normal average against wavelength and time, each
+  premultiplied after its sum ("History maps").  ``--no-history``
+  drops them.
 
 The panels whose spectra keep one continuous bulk carry the track of
-their peak ("Peak tracking").  Everything else is held back behind its
-own flag rather than behind a tag name the caller has to know, and the
-five switches have the same shape:
+their peak and the ellipse of their size and tilt ("Peak tracking",
+"Size and tilt"); ``--no-frames`` keeps those and the whole-run figures
+and skips the frames.  Everything else is held back behind its own
+flag rather than behind a tag name the caller has to know, and the
+switches have the same shape:
 
 - ``--reference`` adds the reference field's spectra, as maps -- and,
   under ``--spacetime``, their `$k$`-summed map too.  They are the
@@ -63,7 +72,16 @@ five switches have the same shape:
   ``twin.x0_planes``, or any member recorded before that plane became
   opt-in.  It is a slice of the mode plane rather than a marginal of
   it, which is also why it is left absolute (below) and why neither
-  decorrelation is offered for it.
+  decorrelation is offered for it;
+- ``--moment-budget`` adds the budget of the difference energy's
+  log-coordinate moments, in wall distance and on each marginal
+  ("Moment budget"); it reads both streams;
+- ``--front`` adds the decorrelation front, the time each
+  `$(\lambda, y)$` cell rises through half its decorrelated level
+  ("Decorrelation front");
+- ``--growth`` adds the growth-law figures: the summary of the total
+  difference energy, the bands of each marginal and of the wall
+  distance, and the streaks, rolls and waves ("Growth laws").
 
 ``--series`` overrides all of them: it names exact tags, and
 :func:`available_series` lists what a given member set offers.  The
@@ -473,6 +491,130 @@ drawn arrays, their axes in both unit systems, the divisor or
 not applied, and the stream metadata the figures were labelled from.
 Enough to redraw a panel, or to undo its normalisation, without them.
 
+History maps
+============
+The tracked quantities against time, each reduced over one coordinate
+and premultiplied by the other only **after** the reduction: the
+`$k$`-sum against wall distance, times `$y$` in the plotted units
+(``<tag>_y``), and the wall-normal average against the wavelength of
+each marginal, times `$k$` (``<tag>_x`` for `$\lambda_z$`, ``<tag>_z``
+for `$\lambda_x$`).  Each is then area-true on its logarithmic axis:
+`$y \int \Phi\,\mathrm{d}k = \int k\,y\,\Phi\,\mathrm{d}\ln k$` and
+`$k \int \Phi\,\mathrm{d}y = \int k\,y\,\Phi\,\mathrm{d}\ln y$`, so the
+pair are the two marginals of the shape map's density, and their
+moments the shape map's centroid and spreads, one coordinate at a
+time.
+
+Three series: ``history_e``, the difference spectra over their
+`$E^{\mathrm{ref}}$` (u, v, w, sum); ``history_s``, the same with each
+time row over its own peak, on `$[0, 1]$` -- the shape-map rule, row by
+row, so every unit factor and the premultiplier's `$Re_\tau$` cancel;
+and ``history_budget``, the production row `$\mathcal{P}_\Delta$`,
+`$\mathcal{P}_\Delta^{\mathbf{U}}$`, `$\mathcal{P}_\Delta^{\tilde
+{\mathbf{u}}}$` (:data:`HISTORY_BUDGET_PANELS`).  The wall distance's
+`$y$` is the plotted one, so a wall-unit ``_y`` map carries the
+`$Re_\tau$` of "Premultiplication"; the wavelength average is the
+volume average per mode (:func:`half_weights`: the half-channel
+quadrature, doubled, which a symmetric field contracts to the whole
+channel), and ``volume_fac`` does not reach it.  The `$m = 0$` column
+is dropped from the wavelength maps, as from every map.
+
+The non-negative panels carry the 10, 50 and 90 % quantiles of each
+time row's as-drawn density (:func:`quantile_curves`) -- where the
+bulk sits and how wide it is along that coordinate.  An absolute
+history is drawn under both colour scales, as a spacetime map is; a
+shape or budget history under the linear one.  ``--first`` / ``--last``
+choose the time window, which matters: a run saturated for most of its
+length draws its migration in the bottom fifth of the box.
+
+Moment budget
+=============
+How each term of the balance moves the moments of the difference
+energy (:func:`moment_budget`).  The density is the energy itself --
+each folded off-wall cell weighted by :func:`half_weights`, so a cell's
+weight times its entry is its exact share of the volume average -- in
+the component sum, the only one the component-summed budget can
+explain.  If `$\partial_t e = \sum_B B$` then for any function
+`$\varphi$` of the cell
+
+.. math::
+    \frac{\mathrm{d}\langle\varphi\rangle}{\mathrm{d}t}
+      = E^{-1} \sum w\,(\varphi - \langle\varphi\rangle)\,
+        \partial_t e ,
+
+so every moment's rate is a sum over the terms
+(:func:`~dnsjax.analysis.twin.moments.moment_rates`): ``moments_y`` in
+physical space -- the `$k$`-sum over every mode, the history
+``_y`` map's distribution, with `$\mathrm{d}\ln E/\mathrm{d}t$`,
+`$\mathrm{d}\langle\ln y\rangle/\mathrm{d}t$` and the rate of
+`$\sigma^2_{\ln y}$` -- and ``moments_x`` / ``moments_z`` over the
+joint `$(\ln\lambda, \ln y)$` distribution of `$m \ge 1$`, whose
+wavelength moments are the history ``_x`` / ``_z`` maps', adding the
+wavelength centroid and variance and the covariance.  The groups are
+:data:`MOMENT_TERMS`, the production in its two parts; the physical
+space budget's pressure group carries the driving input too.
+
+Each figure draws every group, their sum, and the moments' own rate by
+second-order differences.  The identity is exact, so where those two
+part, it is the stream's closure or the sampling cadence: on a run's
+first few samples the moments change faster than a difference at the
+stream's cadence can follow.  A net drift is a small residual of
+large terms of opposite sign, so read the closure against the largest
+term, not against the drift.  The two streams must share their frames.
+
+Decorrelation front
+===================
+The time each `$(\lambda, y)$` cell decorrelates (``front_x``,
+``front_z``): the last upward crossing of ``--front-level`` (one half
+by default) by the mode-by-mode ratio `$\mathcal{R} =
+e/(2\langle r\rangle_t)$`, interpolated between frames
+(:func:`front_times`).  The last crossing rather than the first, so a
+seed that starts above the level and dips below it is not timed at
+the start; a cell that never stays above it by the end of the record
+is left white.  Four panels per marginal, the components and their
+sum, on one colour range of every time the boxes show, the iso-time
+lines drawn: the front's position at those times.
+
+Growth laws
+===========
+Which law the difference energy grows by, and when
+(:mod:`dnsjax.analysis.twin.growth`).  With `$R = E/E_\mathrm{sat}$`,
+`$E_\mathrm{sat}$` twice the reference's fluctuation energy, each law
+is a straight line on one set of axes: an exponential in `$\ln E$`
+against `$t$` and flat in the log-log `$\gamma$`-`$R$` diagram
+(`$\gamma = \mathrm{d}\ln E/\mathrm{d}t$`); an algebraic law
+`$E \propto (t - t_0)^\alpha$` a line of slope `$-1/\alpha$` in that
+diagram; constant-rate decorrelation, the twin correlation `$C = 1 - R$`
+decaying as `$e^{-\nu t}$`, a line of slope `$\nu$` in `$-\ln(1 - R)$`
+against `$t$`.  Saturation alone -- the logistic at the exponential's
+rate -- bends the `$\gamma$`-`$R$` diagram only as `$R \to 1$`, by
+`$-R/(1 - R)$`, and gives `$-\ln(1 - R)$` a late slope equal to the
+early rate; a slowing at `$R \ll 1$`, or a late rate well below the
+early one, is therefore no inflection.
+
+``growth_global`` is the summary: the total difference energy on each
+member's ``twin.dat`` cadence (aligned on whole steps since the
+perturbation; the spectra stream's totals where any member lacks one,
+the figure saying which), the member geometric mean, on the four sets
+of axes (:func:`growth_summary_figure`), with an exponential phase and
+a constant-rate decorrelation phase marked by a stated criterion
+(:func:`growth_phases`: the longest window within
+:data:`GROWTH_TOLERANCE` of its own mean).  ``growth_x`` /
+``growth_z`` follow one band per octave of `$m$` and the `$m = 0$`
+column (the `$(0, 0)$` mode off both halves), ``growth_y`` a row per
+octave of wall distance, each against twice its own reference share,
+with -- where the budget stream shares the frames -- the band budget
+per unit energy: the same-`$k$` production `$\mathcal{P}^{\mathbf{U}}
+_\Delta$`, which grows a band in proportion to itself, against the
+cross-scale terms, which feed it from other bands whatever its own
+energy (the production and the transport, for a row).
+``growth_ssp`` splits the `$k_x$` marginal into the self-sustaining
+process's parts -- the streaks `$\Delta u$` and rolls `$\Delta v$`,
+`$\Delta w$` at `$k_x = 0$`, the waves at `$k_x \neq 0$` (the
+three-bin split of :func:`~dnsjax.analysis.twin.yspectra.bin_energies`,
+its streak bin by component) -- with the `$k_x = 0$` plane's budget per
+unit energy: the lift-up that builds it and the transfer out of it.
+
 Folding the channel
 ===================
 ``--half mean`` (the default) averages the two channel halves at
@@ -616,7 +758,46 @@ Beside the frames of each tracked series goes a directory
 ``<tag>_track`` holding one figure of `$y_c$` and `$\lambda_c$`
 against time, a line per tracked panel, and its ``.npz``
 (:func:`render_tracks`) -- a directory of its own, so a glob over the
-series' frames still matches frames alone.
+series' frames still matches frames alone.  The size and tilt of the
+same panels go beside it ("Size and tilt").
+
+Size and tilt
+=============
+Where the track says where a panel's peak is, its **moments** say how
+large and how tilted the whole field is: the plotted quantity read as
+a density on the plotted plane -- value times the trapezoidal widths
+in `$\ln\lambda$` and `$\ln y$`, over the rows the box shows, the
+track's own measure applied to every cell rather than to the top band
+(:func:`map_moment_sums`) -- has a centroid, spreads
+`$\sigma_{\ln\lambda}$` and `$\sigma_{\ln y}$`, an area measure
+`$\sqrt{\det C}$` (the one-sigma ellipse's area over `$\pi$`), a
+correlation `$\rho$` and a ridge slope `$b = C_{\lambda y}/C_{yy}$`,
+the slope of the energy-weighted line through the row-by-row mean of
+`$\ln\lambda$`, so that `$b = 1$` is `$\lambda \propto y$`
+(:mod:`dnsjax.analysis.twin.moments`).
+
+**Only constants cancel from them** -- a shape map's per-frame peak,
+`$E^{\mathrm{ref}}$`, ``volume_fac``, the unit factors: every moment
+is a ratio over the mass.  The premultiplier does not cancel; it is
+what decides the weighting.  On a shape map the `$k\,y$`
+premultiplier is the Jacobian of `$(k, y) \to (\ln k, \ln y)$`,
+`$\Phi\,\mathrm{d}k\,\mathrm{d}y = k\,y\,\Phi\,\mathrm{d}\ln
+k\,\mathrm{d}\ln y$`, so each cell's weight is its energy -- to the
+quadrature, and to the half cells the trapezoid gives the first and
+last wavelength and the rows at the box's edges; there the moments are
+those of the energy distribution.  On a `$k$`-premultiplied map (a
+local spectrum per unit `$y$`) each row is weighted by `$1/y$` against
+its energy instead, so its centroid sits nearer the wall: the moments
+of what that map shows, not of where the energy is.  A budget panel's
+are its positive part's, the negative share beside them.
+
+Every tracked frame draws its one-sigma ellipse, dashed, in the
+track's colour (:func:`draw_ellipse`, built in the log coordinates so
+it is an ellipse on the logarithmic axes), and the track directory
+gets ``<tag>_moments`` -- the five against time, a line per tracked
+panel -- and its ``.npz``.  The principal-axis angle is used for the
+drawing only: it swings freely when the ellipse is nearly round, where
+`$\rho$` and `$b$` do not.
 
 Figure geometry
 ===============
@@ -692,6 +873,13 @@ As a library (a notebook on the cluster, one stream at a time)::
     r = make_spacetime(e, "decorr_k", options=opts, component=0)
     draw_spacetime(ax, r, units=opts.units, scale="log")
 
+The whole-run families on a long run, without redrawing its frames::
+
+    uv run --group plots python scripts/twin_spectral_maps.py \
+        --members RUN1 RUN2 --out FIGDIR --re 4200 \
+        --re-tau 178.62135279727977 --stride 1 --last 150 \
+        --no-frames --growth --front --moment-budget
+
 :func:`open_series` memory-maps each member and reads only the
 records a figure draws -- the selected frames of the fields a map
 shows, and for a spacetime map not even those whole: each record is
@@ -724,6 +912,21 @@ from matplotlib.colors import (
 )
 from matplotlib.ticker import FuncFormatter
 
+from dnsjax.analysis.twin.growth import (
+    bound_free,
+    decorrelation_rate,
+    log_rate,
+    log_slope,
+    logistic_rate,
+    longest_window,
+)
+from dnsjax.analysis.twin.moments import (
+    LogMoments,
+    log_moment_sums,
+    log_moments,
+    moment_rates,
+)
+from dnsjax.analysis.twin.series import read_twin, uniform_grid
 from dnsjax.analysis.twin.yspectra import (
     BALANCE_PARTS,
     BALANCE_TERMS,
@@ -836,6 +1039,17 @@ SHAPE: str = "s"
 MAP: str = "map"
 SPACETIME: str = "spacetime"
 
+#: The figure families beyond those two, each one figure (or a few)
+#: for the whole run: the premultiplied `$(y, t)$` and `$(\lambda, t)$`
+#: histories of the tracked quantities ("History maps"), the budget of
+#: the spectra's log-coordinate moments ("Moment budget"), the
+#: decorrelation front ("Decorrelation front") and the growth-law
+#: diagnostics ("Growth laws").
+HISTORY: str = "history"
+MOMENT_BUDGET: str = "moments"
+FRONT: str = "front"
+GROWTH: str = "growth"
+
 #: Stored suffixes whose panels are drawn relative to
 #: `$E^{\mathrm{ref}}$` (module docstring, "Reference
 #: normalisation").  ``x0`` is deliberately absent: it is a slice of
@@ -928,6 +1142,48 @@ MAP_PANELS: tuple[str, ...] = (
 SPACETIME_PANELS: tuple[str, ...] = tuple(
     "press_input" if term == "tr_press" else term for term in MAP_PANELS
 )
+
+#: The panels of the budget's history maps: the production and its two
+#: parts, the first row of the budget's grid.  The two tracked terms
+#: (:data:`TRACKED`) and the fluctuation part that completes them --
+#: the term that carries the growth phase, which a history of the
+#: other two alone would leave unexplained.
+HISTORY_BUDGET_PANELS: tuple[str, ...] = ("prod", "prod_mean", "prod_fluct")
+
+#: The quantiles of each time row's as-drawn density that a history map
+#: draws as lines, in the order they are drawn: the median and the two
+#: that bound the central 80 % (module docstring, "History maps").
+HISTORY_QUANTILES: tuple[float, ...] = (0.1, 0.5, 0.9)
+
+#: The moment budget's term groups, in the order drawn: the balance
+#: terms of :data:`~dnsjax.analysis.twin.yspectra.BALANCE_TERMS` with
+#: the production split into its two parts and the whole left out (it
+#: would count twice), so the groups add up to the rate.  The physical
+#: space budget swaps ``tr_press`` for ``press_input``, its pressure
+#: transport with the driving input it carries at `$(0, 0)$`.
+MOMENT_TERMS: tuple[str, ...] = (
+    "prod_mean",
+    "prod_fluct",
+    "diss",
+    "tr_visc",
+    "tr_press",
+    "tr_ref",
+    "tr_self",
+)
+
+#: The decorrelation level a front map times the crossing of (module
+#: docstring, "Decorrelation front"): half the decorrelated value, the
+#: level at which a cell holds half the energy it will hold.
+FRONT_LEVEL: float = 0.5
+
+#: The relative band a growth phase must stay within to be marked as
+#: one (:func:`~dnsjax.analysis.twin.growth.longest_window`): a rate
+#: within 10 % of its own mean over the window.
+GROWTH_TOLERANCE: float = 0.1
+
+#: Above this saturation fraction `$-\ln(1 - R)$` is noise: sampling
+#: fluctuations take `$R$` to 1 and beyond at saturation.
+GROWTH_R_MAX: float = 0.95
 
 #: Columns of every budget figure, map or spacetime alike, whatever
 #: ``--ncols`` sets for the spectra: its nine panels are the three rows
@@ -1067,6 +1323,43 @@ _TRACK_DASHES: tuple = (
 #: The track figure's height, in inches, at ``--width``: two rows,
 #: their twin axes and a legend underneath.
 _TRACK_HEIGHT: float = 4.6
+
+#: Height of each row of a line-figure grid (moments, moment budget,
+#: growth laws), in inches, legend and labels included.
+_ROW_HEIGHT: float = 1.55
+
+#: The moment budget's seven term groups (:data:`MOMENT_TERMS`), in
+#: order: the data-viz reference palette's seven categorical slots,
+#: validated for colour-vision separation on white (worst adjacent pair
+#: `$\Delta E$` 9.1 protan, normal-vision floor 19.6).  Three sit below
+#: 3:1 contrast against the page, so each also carries a dash pattern
+#: and the legend names every line; their sum is black and the
+#: finite-difference check a grey dashed line.
+_TERM_SERIES: tuple[str, ...] = (
+    "#2a78d6",
+    "#eb6834",
+    "#1baf7a",
+    "#eda100",
+    "#e87ba4",
+    "#008300",
+    "#4a3aa7",
+)
+_TERM_DASHES: tuple = (
+    "-",
+    (0, (5, 2)),
+    (0, (1.5, 1.5)),
+    (0, (7, 2, 1.5, 2)),
+    (0, (3, 1, 1, 1, 1, 1)),
+    (0, (8, 3)),
+    (0, (2, 2)),
+)
+
+#: Colour map of a family of lines ordered by a scale (a wavelength or
+#: a wall distance): one hue, light to dark with the scale, so order
+#: reads as lightness and no line is lost on the page (the ramp's
+#: palest quarter is never used).
+_BAND_CMAP: str = "Blues"
+_BAND_RANGE: tuple[float, float] = (0.3, 1.0)
 
 
 # ── Units ────────────────────────────────────────────────────────────
@@ -3479,6 +3772,7 @@ def panel_figure(
                 tracks[key],
                 frame,
                 colour=_TRACK_COLOURS[map_.non_negative],
+                y_log=map_.y_log,
             )
     fig.suptitle(
         _suptitle(series, frame, options.units),
@@ -3557,16 +3851,50 @@ def peak_centroid(
     return lam_c, math.exp(y_c) if map_.y_log else y_c
 
 
+def map_moment_sums(
+    map_: Map, ylim: tuple[float, float] | None = None
+) -> tuple[np.ndarray, float]:
+    r"""The raw moment sums of one map as drawn, and its negative share.
+
+    The plotted field read as a density on the plotted plane -- value
+    times the trapezoidal widths in `$\ln\lambda$` and `$\ln y$`
+    (`$y$` on a linear ordinate), over the rows the box shows: the
+    measure of :func:`peak_centroid`, applied to the whole map rather
+    than to its top band (module docstring, "Size and tilt").  Returns
+    :func:`~dnsjax.analysis.twin.moments.log_moment_sums` of the
+    positive part, and the mass of the negative part over that of the
+    positive one -- zero for a spectrum, the measure of what a signed
+    budget panel's moments leave out.
+    """
+    y, values = map_.drawn(ylim)
+    ln_lam = np.log(map_.lam)
+    along_y = np.log(y) if map_.y_log else y
+    widths = (
+        _trapezoid_widths(along_y)[:, None]
+        * _trapezoid_widths(ln_lam)[None, :]
+    )
+    finite = np.where(np.isfinite(values), values, 0.0)
+    sums = log_moment_sums(np.maximum(finite, 0.0), widths, ln_lam, along_y)
+    negative = float((np.maximum(-finite, 0.0) * widths).sum())
+    share = negative / float(sums[0]) if sums[0] > 0.0 else math.nan
+    return sums, share
+
+
 @dataclass(frozen=True)
 class PeakTrack:
     """One panel's top-band centroid, frame by frame (:func:`track_peak`).
 
-    Both ``(n_frames,)``, in the map's plotted units, and ``nan`` at a
-    frame with nothing positive.
+    ``lam`` and ``y`` are ``(n_frames,)``, in the map's plotted units,
+    and ``nan`` at a frame with nothing positive.  ``moments`` are the
+    whole map's, frame by frame (:func:`map_moment_sums`) -- natural
+    logs of the plotted units, `$y$` itself on a linear ordinate --
+    and ``negative`` each frame's negative share.
     """
 
     lam: np.ndarray
     y: np.ndarray
+    moments: LogMoments | None = None
+    negative: np.ndarray | None = None
 
 
 def track_peak(
@@ -3583,29 +3911,36 @@ def track_peak(
     One :func:`make_map` per frame, all read before any figure is drawn
     so that each frame can carry the history up to itself.  It sees
     neither the colour scale nor ``--clim``: the band is the frame's
-    own (:func:`peak_centroid`).
+    own (:func:`peak_centroid`).  The same maps give the whole map's
+    moments (:func:`map_moment_sums`), so the size and tilt cost no
+    second pass.
     """
-    points = np.array(
-        [
-            peak_centroid(
-                make_map(
-                    series,
-                    name,
-                    frame,
-                    options=options,
-                    component=component,
-                    ylim=ylim,
-                ),
-                n_levels,
-                ylim,
-            )
-            for frame in range(series.t_rel.size)
-        ]
-    ).reshape(-1, 2)
-    return PeakTrack(lam=points[:, 0], y=points[:, 1])
+    points, sums, negative = [], [], []
+    for frame in range(series.t_rel.size):
+        map_ = make_map(
+            series,
+            name,
+            frame,
+            options=options,
+            component=component,
+            ylim=ylim,
+        )
+        points.append(peak_centroid(map_, n_levels, ylim))
+        frame_sums, share = map_moment_sums(map_, ylim)
+        sums.append(frame_sums)
+        negative.append(share)
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    return PeakTrack(
+        lam=points[:, 0],
+        y=points[:, 1],
+        moments=log_moments(np.asarray(sums)),
+        negative=np.asarray(negative),
+    )
 
 
-def draw_track(ax, track: PeakTrack, frame: int, *, colour: str) -> None:
+def draw_track(
+    ax, track: PeakTrack, frame: int, *, colour: str, y_log: bool = True
+) -> None:
     """A peak's history up to *frame* as a thin line, *frame* as a point.
 
     Both above the map and haloed in white (:data:`_TRACK_HALO`,
@@ -3613,6 +3948,11 @@ def draw_track(ax, track: PeakTrack, frame: int, *, colour: str) -> None:
     grey map's black top band and a black one on the darkest red.  A
     frame with nothing positive has no point and breaks the line.  The
     axes limits are the map's, already fixed, so neither moves them.
+
+    Where the track carries the map's moments, the frame's one-sigma
+    ellipse is drawn as well (:func:`draw_ellipse`), dashed, in the same
+    colour: where the whole field sits, how large and how tilted,
+    beside where its peak is.
     """
     halo = [
         patheffects.withStroke(
@@ -3639,6 +3979,60 @@ def draw_track(ax, track: PeakTrack, frame: int, *, colour: str) -> None:
             markeredgewidth=_TRACK_EDGE,
             zorder=4,
         )
+    if track.moments is not None:
+        draw_ellipse(ax, track.moments, frame, colour=colour, y_log=y_log)
+
+
+def ellipse_points(
+    moments: LogMoments, frame: int, n_points: int = 121
+) -> tuple[np.ndarray, np.ndarray] | None:
+    r"""The one-sigma ellipse of one frame, in the moments' coordinates.
+
+    ``(x, y)``: `$\mu + L(\cos\theta, \sin\theta)$` for `$L$` the
+    Cholesky factor of the covariance, so the curve is the ellipse
+    whatever its tilt -- built in the log coordinates and only then
+    mapped back, so that it is an ellipse on the logarithmic axes.
+    ``None`` where the frame has no positive-definite covariance.
+    """
+    mean = np.array([moments.mean_lam[frame], moments.mean_y[frame]])
+    cov = np.array(
+        [
+            [moments.var_lam[frame], moments.cov[frame]],
+            [moments.cov[frame], moments.var_y[frame]],
+        ]
+    )
+    if not (np.isfinite(mean).all() and np.isfinite(cov).all()):
+        return None
+    try:
+        factor = np.linalg.cholesky(cov)
+    except np.linalg.LinAlgError:
+        return None
+    theta = np.linspace(0.0, 2.0 * np.pi, n_points)
+    pts = mean[:, None] + factor @ np.vstack([np.cos(theta), np.sin(theta)])
+    return pts[0], pts[1]
+
+
+def draw_ellipse(
+    ax, moments: LogMoments, frame: int, *, colour: str, y_log: bool = True
+) -> None:
+    """One frame's one-sigma ellipse on a map, dashed and haloed."""
+    pts = ellipse_points(moments, frame)
+    if pts is None:
+        return
+    halo = [
+        patheffects.withStroke(
+            linewidth=_TRACK_LINE + _TRACK_HALO, foreground="white"
+        )
+    ]
+    ax.plot(
+        np.exp(pts[0]),
+        np.exp(pts[1]) if y_log else pts[1],
+        color=colour,
+        linewidth=_TRACK_LINE,
+        linestyle=(0, (3, 1.5)),
+        path_effects=halo,
+        zorder=3,
+    )
 
 
 def track_figure(
@@ -3763,6 +4157,160 @@ def write_track_npz(
     return path
 
 
+def _decades(values: np.ndarray, log: bool) -> np.ndarray:
+    """A natural-log spread in decades, or as it is on a linear axis."""
+    return values / math.log(10.0) if log else values
+
+
+def moments_figure(
+    series: YSeries,
+    keys: list[tuple[str, int | None]],
+    tracks: dict[tuple[str, int | None], PeakTrack],
+    options: MapOptions,
+    style: PlotStyle,
+):
+    r"""How large and how tilted each tracked panel is, against time.
+
+    Five rows sharing the time axis, a line per tracked panel in the
+    track figure's order, colours and dashes (:func:`track_figure`):
+    the spreads `$\sigma_{\ln\lambda}$` and `$\sigma_{\ln y}$` in
+    decades, the area measure `$\sqrt{\det C}$` in decades squared,
+    the correlation `$\rho$` and the ridge slope `$b$`, whose
+    `$b = 1$` (`$\lambda \propto y$`) is drawn for reference (module
+    docstring, "Size and tilt").  On a linear ordinate the `$y$`
+    entries are in the plotted units instead of decades.
+    """
+    units = options.units
+    t = units.plotted_time(series.t_rel)
+    log_y = options.y_log
+    axis = MARGINALS[keys[0][0].rpartition("_")[2]][0]
+    rows = (
+        ("sd_lam", rf"$\sigma_{{\ln\lambda_{axis}}}$ (dec)"),
+        (
+            "sd_y",
+            r"$\sigma_{\ln y}$ (dec)" if log_y else r"$\sigma_y$",
+        ),
+        (
+            "sqrt_det",
+            r"$\sqrt{\det C}$ (dec$^2$)" if log_y else r"$\sqrt{\det C}$",
+        ),
+        ("rho", r"$\rho$"),
+        ("slope", r"$b = C_{\lambda y}/C_{yy}$"),
+    )
+    fig, axes = plt.subplots(
+        len(rows),
+        1,
+        sharex=True,
+        figsize=(style.width, _ROW_HEIGHT * len(rows) + 0.6),
+        layout="constrained",
+    )
+    for index, key in enumerate(keys):
+        m = tracks[key].moments
+        sign, symbol = panel_symbol(series, *key)
+        line = {
+            "color": _TRACK_SERIES[index],
+            "linestyle": _TRACK_DASHES[index],
+            "label": f"${sign}{symbol}$",
+        }
+        values = {
+            "sd_lam": _decades(m.sd_lam, True),
+            "sd_y": _decades(m.sd_y, log_y),
+            "sqrt_det": m.sqrt_det / (math.log(10.0) ** (2 if log_y else 1)),
+            "rho": m.rho,
+            "slope": m.slope,
+        }
+        for ax, (name, _) in zip(axes, rows, strict=True):
+            ax.plot(t, values[name], **line)
+    for ax, (name, label) in zip(axes, rows, strict=True):
+        ax.set_ylabel(label)
+        ax.grid(True, color="0.88", linewidth=0.5)
+        if name == "rho":
+            ax.axhline(0.0, color="0.5", linewidth=0.6)
+        if name == "slope" and log_y:
+            ax.axhline(1.0, color="0.5", linewidth=0.6, linestyle=":")
+    axes[-1].set_xlabel(units.t_label)
+    axes[-1].set_xlim(float(t[0]), float(t[-1]))
+    if units.wall:
+        factor = units.re_tau**2 / units.re
+        axes[0].secondary_xaxis(
+            "top", functions=(lambda v: v / factor, lambda v: v * factor)
+        ).set_xlabel(r"$t\,U_\mathrm{cl}/h$")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="outside lower center",
+        ncols=len(keys),
+        frameon=False,
+    )
+    fig.suptitle(_spacetime_suptitle(series, units))
+    return fig
+
+
+def write_moments_npz(
+    path: Path,
+    series: YSeries,
+    keys: list[tuple[str, int | None]],
+    tracks: dict[tuple[str, int | None], PeakTrack],
+    options: MapOptions,
+) -> Path:
+    """Dump the moments of each tracked panel, and how they were taken.
+
+    A row per tracked panel: the centroid in the plotted units, the
+    spreads and `$\\sqrt{\\det C}$` in natural-log units (decades are a
+    division by `$\\ln 10$` away), the correlation, the ridge slope,
+    the principal-axis angle, the mass and the negative share.
+    """
+    units = options.units
+    moments = [tracks[key].moments for key in keys]
+
+    def stack(name: str) -> np.ndarray:
+        return np.stack([np.asarray(getattr(m, name)) for m in moments])
+
+    centre_y = stack("mean_y")
+    payload = {
+        "lam_c": np.exp(stack("mean_lam")),
+        "y_c": np.exp(centre_y) if options.y_log else centre_y,
+        "sd_lam": stack("sd_lam"),
+        "sd_y": stack("sd_y"),
+        "sqrt_det": stack("sqrt_det"),
+        "rho": stack("rho"),
+        "slope": stack("slope"),
+        "angle": stack("angle"),
+        "var_lam": stack("var_lam"),
+        "var_y": stack("var_y"),
+        "cov": stack("cov"),
+        "mass": stack("mass"),
+        "negative_share": np.stack([tracks[key].negative for key in keys]),
+        "fields": np.asarray([name for name, _ in keys]),
+        "panels": np.asarray(
+            [
+                panel_label(series, name.rpartition("_")[0], component)
+                for name, component in keys
+            ]
+        ),
+        "t": series.t_rel,
+        "t_plotted": units.plotted_time(series.t_rel),
+        "index": series.index,
+        "measure": (
+            "plotted value x trapezoidal widths in ln(lambda) and "
+            + ("ln(y)" if options.y_log else "y")
+            + " over the rows the box shows; positive part"
+        ),
+        "y_log": options.y_log,
+        "premultiply": map_premultiplier(
+            keys[0][0].rpartition("_")[0], options
+        ),
+        "smooth": options.smooth,
+        "stem": series.stem,
+        "n_members": series.n_members,
+        "members": np.asarray([str(m.path) for m in series.members]),
+        **_units_payload(options),
+    }
+    np.savez_compressed(path, **payload)
+    return path
+
+
 def render_tracks(
     series: YSeries,
     tag: str,
@@ -3807,6 +4355,18 @@ def render_tracks(
             style.n_levels,
         )
     )
+    if all(tracks[key].moments is not None for key in keys):
+        if series.t_rel.size >= 2:
+            fig = moments_figure(series, keys, tracks, options, style)
+            path = target / f"{tag}_moments.{fmt}"
+            fig.savefig(path, dpi=style.dpi)
+            plt.close(fig)
+            written.append(path)
+        written.append(
+            write_moments_npz(
+                target / f"{tag}_moments.npz", series, keys, tracks, options
+            )
+        )
     if not quiet:
         for path in written:
             print(f"  {path.name}", flush=True)
@@ -3971,38 +4531,67 @@ def spacetime_title(
     marginal: str,
     component: int | None,
     options: MapOptions,
+    *,
+    premultiply: bool = False,
 ) -> str:
     r"""The LaTeX panel title for one `$k$`-summed field.
 
-    No premultiplier appears, there being none.  A prime marks the
-    one quantity here whose `$(0, 0)$` mode has been removed, the
-    reference energy; the difference energy carries all of its modes
-    and no prime (:func:`k_summed`).
+    No premultiplier appears unless *premultiply* (a history map's,
+    module docstring "History maps"), and then it is the wall
+    distance's, in the plotted units.  A prime marks the one quantity
+    here whose `$(0, 0)$` mode has been removed, the reference energy;
+    the difference energy carries all of its modes and no prime
+    (:func:`k_summed`).  A shape history is over each row's own peak,
+    which varies along time, so its title reports none.
     """
     kind = field_kind(series)
+    factor = rf"y{options.units.suffix}\," if premultiply else ""
     if base == DECORR_K:
         sub = "" if component is None else f"_{{{COMPONENTS[component]}}}"
         return rf"$\mathcal{{R}}^{{k}}{sub}$"
     if kind == "rate":
         sign, body = TERM_LABELS.get(base, ("", base.replace("_", r"\_")))
-        return f"${sign}{body}{options.units.norm_suffix(kind)}$"
+        return f"${sign}{factor}{body}{options.units.norm_suffix(kind)}$"
     superscript = f"^{{{MARGINALS[marginal][1]}}}" if marginal else ""
     symbol = "{E'}" if base == "r" else "{E}"
-    delta = r"\Delta " if base == "e" else ""
+    delta = r"\Delta " if base in ("e", SHAPE) else ""
     if component is None:
         body = rf"\sum_\alpha {symbol}{superscript}_{{{delta}\alpha}}"
     else:
         sub = f"{delta}{COMPONENTS[component]}"
         body = rf"{symbol}{superscript}_{{{sub}}}"
+    if base == SHAPE:
+        return rf"${factor}{body}/\max_y$"
     scale = spacetime_norm(series, base, marginal, component)
     if scale is None:
-        return f"${body}{options.units.norm_suffix(kind)}$"
+        return f"${factor}{body}{options.units.norm_suffix(kind)}$"
     ref = reference_symbol(component)
     return (
-        f"${body}/{ref}$\n"
+        f"${factor}{body}/{ref}$\n"
         f"${ref}{options.units.norm_suffix(kind)} = "
         f"{latex_float(options.units.energy(scale))}$"
     )
+
+
+def _row_peaks(
+    values: np.ndarray, keep: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Each row of *values* over its own peak among the columns *keep*.
+
+    Returns the scaled rows and the peaks.  A row with nothing positive
+    keeps its zeros rather than going ``nan``, as a shape map's frame
+    does.
+    """
+    shown = np.where(keep[None, :] & np.isfinite(values), values, -np.inf)
+    peaks = shown.max(axis=1, initial=-np.inf)
+    peaks = np.where(peaks > 0.0, peaks, 0.0)
+    scaled = np.divide(
+        values,
+        peaks[:, None],
+        out=np.array(values, dtype=np.float64),
+        where=peaks[:, None] > 0.0,
+    )
+    return scaled, peaks
 
 
 def make_spacetime(
@@ -4013,24 +4602,37 @@ def make_spacetime(
     options: MapOptions,
     component: int | None = None,
     non_negative: bool | None = None,
+    premultiply: bool = False,
+    ylim: tuple[float, float] | None = None,
 ) -> SpacetimeMap:
     r"""Build one `$(y, t)$` map from a `$k$`-summed field.
 
     *base* is a stored prefix (``e`` / ``r``), a budget term (or the
-    virtual ``sum``), or :data:`DECORR_K`, which is ``e`` over twice
-    the reference profile; *marginal* is empty for the complete sum
-    and ``"x0"`` for the `$k_x = 0$` slice.
+    virtual ``sum``), :data:`DECORR_K`, which is ``e`` over twice
+    the reference profile, or :data:`SHAPE`, which is ``e`` again;
+    *marginal* is empty for the complete sum and ``"x0"`` for the
+    `$k_x = 0$` slice.
 
-    Nothing here is premultiplied whatever ``--premultiply`` says:
-    `$\sum_m m\,\text{entry}$` is not a sum of energies, and there is
-    no logarithmic wavelength axis left for a premultiplier to serve.
+    No `$k$` premultiplier reaches these whatever ``--premultiply``
+    says: `$\sum_m m\,\text{entry}$` is not a sum of energies, and
+    there is no logarithmic wavelength axis left for one to serve.
     ``volume_fac`` and the unit conversion reach an absolute panel
     exactly as they reach a `$(\lambda, y)$` one, and cancel out of a
     ratio.  The divisor is symmetrised before the fold
     (:func:`_symmetrise_y`).
+
+    *premultiply* multiplies by the wall distance in the plotted units
+    **after** the sum and the fold -- a history map (module docstring,
+    "History maps") -- so that equal areas over `$\ln y$` are equal
+    energy.  :data:`SHAPE` implies it, and then divides each time row
+    by its own peak over the columns the box shows (*ylim*,
+    :func:`y_limits`' default when ``None``), which the provenance
+    records as ``row_peaks``.
     """
     ratio = base == DECORR_K
-    values = k_summed(series, "e" if ratio else base, marginal)
+    shape = base == SHAPE
+    premultiply = premultiply or shape
+    values = k_summed(series, "e" if ratio or shape else base, marginal)
     divisor = None
     if series.stem == "twin_yspectra":
         if ratio:
@@ -4068,12 +4670,27 @@ def make_spacetime(
         # ``mean``, so this fold only selects the rows.
         divisor = _select_half(divisor[..., None], series.y, options.half)[0]
         divisor = 2.0 * divisor[..., 0]
+    y = options.units.length(wall_distance)
+    folded = folded[..., 0]
+    if premultiply:
+        folded = folded * y[None, :]
+    row_peaks = None
+    if shape:
+        keep = _drawn_rows(y, options.y_log, y_limits(series, options, ylim))
+        folded, row_peaks = _row_peaks(folded, keep)
     name = f"{base}_{marginal}" if marginal else base
     return SpacetimeMap(
-        y=options.units.length(wall_distance),
+        y=y,
         t=options.units.plotted_time(series.t_rel),
-        values=folded[..., 0],
-        title=spacetime_title(series, base, marginal, component, options),
+        values=folded,
+        title=spacetime_title(
+            series,
+            base,
+            marginal,
+            component,
+            options,
+            premultiply=premultiply,
+        ),
         name=name,
         label=panel_label(series, base, component),
         non_negative=(
@@ -4086,6 +4703,205 @@ def make_spacetime(
             "divisor": divisor,
             "e_ref": scale,
             "kind": "ratio" if ratio else field_kind(series),
+            "premultiplier": "y" if premultiply else "none",
+            "row_peaks": row_peaks,
+        },
+    )
+
+
+def half_weights(series: YSeries) -> np.ndarray:
+    r"""Quadrature weights of the rows a fold keeps, doubled.
+
+    The weights of :func:`_half_grid`'s rows, each doubled to stand for
+    its mirror row as well -- except the mid-plane of an odd grid,
+    which is its own mirror -- so that contracting a folded profile
+    with them returns the full-channel contraction of a symmetric one.
+    The stored entries are already divided by ``volume_fac``, so that
+    contraction is a wall-normal **average** (module docstring,
+    "Premultiplication").
+    """
+    w = series.y_weights
+    n = (w.size + 1) // 2
+    out = 2.0 * w[:n]
+    if w.size % 2:
+        out[-1] = w[n - 1]
+    return out
+
+
+def y_averaged(
+    series: YSeries, base: str, marginal: str, half: str
+) -> np.ndarray:
+    r"""A stored field averaged over the wall distance, ``(n_t, [3,] n_k)``.
+
+    Read record by record and contracted on arrival
+    (:meth:`YSeries.reduced`), so the whole field is never held.  Each
+    record is folded first (:func:`_select_half`, so ``--half`` reaches
+    it as it reaches a map) and then contracted with
+    :func:`half_weights`: under ``mean`` that is the full-channel
+    average, which is the per-mode contribution to the volume-averaged
+    total.  *base* is ``e`` or a budget term (balance terms regrouped
+    on the way, :func:`balance_field`); every mode is kept, `$m = 0$`
+    included, so the caller decides what an axis can show.
+    """
+    weights = half_weights(series)
+    name = f"{base}_{marginal}"
+
+    def reduce(read) -> np.ndarray:
+        folded, _ = _select_half(
+            balance_field(read, series.meta, name), series.y, half
+        )
+        return np.einsum("j,...jk->...k", weights, folded)
+
+    return series.reduced(reduce)
+
+
+@dataclass(frozen=True)
+class ScaleMap:
+    r"""One panel's `$(\lambda, t)$` field: a wall-normal average.
+
+    ``values`` is ``(n_t, n_lam)``, time down the first axis and the
+    wavelength ascending, in the plotted units and premultiplied by
+    `$k$` (module docstring, "History maps").  ``name`` carries the
+    marginal suffix, which is what :attr:`lam_axis` reads.
+    """
+
+    lam: np.ndarray  # (n_lam,) wavelength, ascending, plotted units
+    t: np.ndarray  # (n_t,) time since the perturbation, plotted units
+    values: np.ndarray  # (n_t, n_lam)
+    title: str
+    name: str
+    label: str
+    non_negative: bool
+    provenance: dict = field(default_factory=dict, repr=False)
+
+    @property
+    def lam_axis(self) -> str:
+        """Which wavelength the abscissa is: ``x`` or ``z``."""
+        return MARGINALS[self.name.rpartition("_")[2]][0]
+
+    def drawn(
+        self, xlim: tuple[float, float] | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """The columns inside *xlim*, with one neighbour either side.
+
+        :meth:`SpacetimeMap.drawn` for a wavelength abscissa: there is
+        no wall column to drop, only the box's limits, and the
+        neighbours are kept because the fill interpolates.
+        """
+        keep = np.ones(self.lam.size, dtype=bool)
+        if xlim is not None:
+            keep = (self.lam >= xlim[0]) & (self.lam <= xlim[1])
+            inside = np.flatnonzero(keep)
+            if inside.size:
+                keep[max(int(inside[0]) - 1, 0)] = True
+                keep[min(int(inside[-1]) + 1, keep.size - 1)] = True
+        return self.lam[keep], self.values[:, keep]
+
+
+def scaletime_title(
+    series: YSeries,
+    base: str,
+    marginal: str,
+    component: int | None,
+    options: MapOptions,
+) -> str:
+    r"""The LaTeX panel title for one wall-normal-averaged field.
+
+    The `$k$` premultiplier of the marginal's own wavenumber, in the
+    plotted units, ahead of a `$\langle\cdot\rangle_y$` average; a
+    spectrum is over `$E^{\mathrm{ref}}$` as on a map (second line),
+    a shape history over each row's own peak.
+    """
+    kind = field_kind(series)
+    plus = options.units.suffix
+    factor = rf"k_{{{MARGINALS[marginal][0]}}}{plus}\,"
+    if kind == "rate":
+        sign, body = TERM_LABELS.get(base, ("", base.replace("_", r"\_")))
+        return (
+            rf"${sign}{factor}\langle {body}\rangle_y"
+            rf"{options.units.norm_suffix(kind)}$"
+        )
+    _, body = panel_symbol(series, f"e_{marginal}", component)
+    if base == SHAPE:
+        return rf"${factor}\langle {body}\rangle_y/\max_\lambda$"
+    scale = reference_norm(series, f"e_{marginal}", component)
+    if scale is None:
+        return (
+            rf"${factor}\langle {body}\rangle_y"
+            rf"{options.units.norm_suffix(kind)}$"
+        )
+    ref = reference_symbol(component)
+    return (
+        rf"${factor}\langle {body}\rangle_y/{ref}$" + "\n"
+        f"${ref}{options.units.norm_suffix(kind)} = "
+        f"{latex_float(options.units.energy(scale))}$"
+    )
+
+
+def make_scaletime(
+    series: YSeries,
+    base: str,
+    marginal: str,
+    *,
+    options: MapOptions,
+    component: int | None = None,
+    non_negative: bool | None = None,
+) -> ScaleMap:
+    r"""Build one `$(\lambda, t)$` map: a wall-normal average, `$\times k$`.
+
+    The history counterpart of :func:`make_spacetime` with the roles of
+    the two coordinates swapped (module docstring, "History maps"):
+    :func:`y_averaged` first, then the component reduction, the
+    `$m = 0$` column dropped (no position on a wavelength axis), and
+    only **then** the premultiplier `$m$`, so that equal areas over
+    `$\ln\lambda$` are equal energy.  A difference spectrum is divided
+    by its `$E^{\mathrm{ref}}$` (:func:`reference_norm`, the same
+    number as the maps'), a budget term takes the unit conversion, and
+    :data:`SHAPE` divides each time row by its own peak instead, which
+    the provenance records.  ``volume_fac`` does not apply: an average
+    over `$y$` has no local density to restore.
+    """
+    shape = base == SHAPE
+    stored = "e" if shape else base
+    values = y_averaged(series, stored, marginal, options.half)
+    if series.stem == "twin_yspectra":
+        values = (
+            values.sum(axis=1) if component is None else (values[:, component])
+        )
+    elif component is not None:
+        raise ValueError(f"{series.stem}: {base} has no component axis")
+    values = values[:, 1:] * series.harmonics(marginal)[None, 1:]
+    scale = None
+    if series.stem == "twin_yspectra" and not shape:
+        scale = reference_norm(series, f"e_{marginal}", component)
+    if scale is None:
+        values = options.units.convert(values, field_kind(series))
+    else:
+        values = values / scale
+    values = values[:, ::-1]  # ascending in wavelength, as the axis is
+    row_peaks = None
+    if shape:
+        values, row_peaks = _row_peaks(
+            values, np.ones(values.shape[1], dtype=bool)
+        )
+    name = f"{base}_{marginal}"
+    return ScaleMap(
+        lam=options.units.length(series.wavelengths(marginal)),
+        t=options.units.plotted_time(series.t_rel),
+        values=values,
+        title=scaletime_title(series, base, marginal, component, options),
+        name=name,
+        label=panel_label(series, base, component),
+        non_negative=(
+            declared_non_negative(name)
+            if non_negative is None
+            else non_negative
+        ),
+        provenance={
+            "e_ref": scale,
+            "kind": field_kind(series),
+            "premultiplier": "k",
+            "row_peaks": row_peaks,
         },
     )
 
@@ -4201,13 +5017,84 @@ def draw_spacetime(
     to say that something falls below the floor.  *floor* defaults to
     :func:`log_floor` of the columns inside *ylim* at *decades*, which
     is what :func:`render_spacetime` hands it anyway.
+
+    The body is :func:`draw_time_map`'s, which a wavelength abscissa
+    (:class:`ScaleMap`) shares.
     """
-    ax.set_xscale("log" if map_.y_log else "linear")
-    y, values = map_.drawn()
-    # As in draw_map: the levels come off the columns inside the box,
-    # while the fill still gets the unrestricted array, so a contour
-    # reaches the edge of the box (:meth:`SpacetimeMap.drawn`).
-    scaled = values if ylim is None else map_.drawn(ylim)[1]
+    return draw_time_map(
+        ax,
+        map_,
+        units=units,
+        scale=scale,
+        n_levels=n_levels,
+        cmap_positive=cmap_positive,
+        cmap_signed=cmap_signed,
+        data_range=data_range,
+        floor=floor,
+        decades=decades,
+        nice=nice,
+        fill=fill,
+        lines=lines,
+        cax=cax,
+        secondary=secondary,
+        title=title,
+        lim=ylim,
+    )
+
+
+def _time_map_abscissa(
+    map_, units: Units
+) -> tuple[np.ndarray, bool, str, str]:
+    """``(coordinate, log, label, outer label)`` of a map against time."""
+    if isinstance(map_, ScaleMap):
+        return (
+            map_.lam,
+            True,
+            units.lambda_label(map_.lam_axis),
+            units.lambda_label(map_.lam_axis, outer=True),
+        )
+    return map_.y, map_.y_log, units.y_label, r"$y/h$"
+
+
+def draw_time_map(
+    ax,
+    map_: SpacetimeMap | ScaleMap,
+    *,
+    units: Units,
+    scale: str = "linear",
+    n_levels: int = 10,
+    cmap_positive: str = "Greys",
+    cmap_signed: str = "RdBu_r",
+    data_range: tuple[float, float] | None = None,
+    floor: float | None = None,
+    decades: float = LOG_DECADES,
+    nice: bool = True,
+    fill: str = "contour",
+    lines: bool = True,
+    cax=None,
+    secondary: bool = True,
+    title: bool = True,
+    lim: tuple[float, float] | None = None,
+    quantiles: np.ndarray | None = None,
+):
+    r"""Draw a map against time -- `$(y, t)$` or `$(\lambda, t)$`.
+
+    :func:`draw_spacetime`'s rules for either abscissa: the wall
+    distance of a :class:`SpacetimeMap` on the maps' ordinate scale, or
+    the logarithmic wavelength of a :class:`ScaleMap`; time up the
+    ordinate, linear.  *lim* is the abscissa's limits, and the levels
+    are read off the columns inside it while the fill gets them all,
+    so a contour reaches the edge of the box.
+
+    *quantiles* is ``(n_t, n_q)`` positions on the abscissa
+    (:func:`quantile_curves`), drawn as lines over the fill: the median
+    solid, the others dashed, haloed in white like a track
+    (:func:`draw_track`).
+    """
+    x, x_log, x_label, x_outer = _time_map_abscissa(map_, units)
+    ax.set_xscale("log" if x_log else "linear")
+    _, values = map_.drawn()
+    scaled = values if lim is None else map_.drawn(lim)[1]
     log = scale == "log"
     if log:
         peak = (data_range or (0.0, float("-inf")))[1]
@@ -4225,6 +5112,7 @@ def draw_spacetime(
             data_range=data_range,
             nice=nice,
         )
+    x = map_.drawn()[0]
 
     filled = None
     if levels.size > 1:  # a single level bounds no band
@@ -4236,7 +5124,7 @@ def draw_spacetime(
         )
         if fill == "pcolormesh":
             filled = ax.pcolormesh(
-                cell_edges(y, log=map_.y_log),
+                cell_edges(x, log=x_log),
                 cell_edges(map_.t, log=False),
                 values,
                 cmap=shaded,
@@ -4244,7 +5132,7 @@ def draw_spacetime(
             )
         else:
             filled = ax.contourf(
-                y,
+                x,
                 map_.t,
                 values,
                 levels=levels,
@@ -4254,7 +5142,7 @@ def draw_spacetime(
             )
         if lines:
             ax.contour(
-                y,
+                x,
                 map_.t,
                 values,
                 levels=_decade_ticks(levels) if log else levels,
@@ -4271,10 +5159,14 @@ def draw_spacetime(
             va="center",
             transform=ax.transAxes,
         )
+    if quantiles is not None:
+        draw_quantiles(
+            ax, quantiles, map_.t, colour=_TRACK_COLOURS[map_.non_negative]
+        )
 
-    ax.set_xlim(*(ylim or (y.min(), y.max())))
+    ax.set_xlim(*(lim or (x.min(), x.max())))
     ax.set_ylim(float(map_.t.min()), float(map_.t.max()))
-    ax.set_xlabel(units.y_label)
+    ax.set_xlabel(x_label)
     ax.set_ylabel(units.t_label)
     if secondary and units.wall:
         # The outer-unit twins of both axes, as draw_map's are: a
@@ -4282,7 +5174,7 @@ def draw_spacetime(
         lengths = (lambda v: v / units.re_tau, lambda v: v * units.re_tau)
         factor = units.re_tau**2 / units.re
         times = (lambda v: v / factor, lambda v: v * factor)
-        ax.secondary_xaxis("top", functions=lengths).set_xlabel(r"$y/h$")
+        ax.secondary_xaxis("top", functions=lengths).set_xlabel(x_outer)
         ax.secondary_yaxis("right", functions=times).set_ylabel(
             r"$t\,U_\mathrm{cl}/h$"
         )
@@ -4301,6 +5193,63 @@ def draw_spacetime(
     elif cax is not None:
         cax.set_axis_off()
     return filled
+
+
+def quantile_curves(
+    x: np.ndarray,
+    values: np.ndarray,
+    quantiles: tuple[float, ...] = HISTORY_QUANTILES,
+    *,
+    x_log: bool = True,
+) -> np.ndarray:
+    r"""Quantiles of each row's as-drawn density, ``(n_t, n_q)``.
+
+    Each row of *values* -- a history map's premultiplied field on the
+    columns *x* the box shows -- is a density along its axis; times the
+    trapezoidal widths in `$\ln x$` (`$x$` on a linear axis) it is a
+    mass per column, the same measure the peak tracks and the size and
+    tilt descriptors use (module docstring, "Size and tilt").  The
+    quantiles interpolate the cumulative mass, each column's mass
+    centred on its own sample, in `$\ln x$`.  Negative values carry no
+    mass, and a row with none is ``nan`` throughout.
+    """
+    along = np.log(x) if x_log else np.asarray(x, dtype=np.float64)
+    mass = np.where(np.isfinite(values), np.maximum(values, 0.0), 0.0)
+    mass = mass * _trapezoid_widths(along)[None, :]
+    total = mass.sum(axis=1)
+    cumulative = np.cumsum(mass, axis=1) - 0.5 * mass
+    out = np.full((values.shape[0], len(quantiles)), np.nan)
+    for row in np.flatnonzero(total > 0.0):
+        cdf = cumulative[row] / total[row]
+        out[row] = np.interp(quantiles, cdf, along)
+    return np.exp(out) if x_log else out
+
+
+def draw_quantiles(
+    ax, quantiles: np.ndarray, t: np.ndarray, *, colour: str
+) -> None:
+    """The quantile lines of a map against time, haloed in white.
+
+    The middle column of *quantiles* (the median of
+    :data:`HISTORY_QUANTILES`) solid, the rest dashed; the axes limits
+    are the map's, already fixed or about to be, so neither moves them.
+    """
+    halo = [
+        patheffects.withStroke(
+            linewidth=_TRACK_LINE + _TRACK_HALO, foreground="white"
+        )
+    ]
+    middle = quantiles.shape[1] // 2
+    for column in range(quantiles.shape[1]):
+        ax.plot(
+            quantiles[:, column],
+            t,
+            color=colour,
+            linewidth=_TRACK_LINE,
+            linestyle="-" if column == middle else (0, (4, 2)),
+            path_effects=halo,
+            zorder=3,
+        )
 
 
 def _spacetime_suptitle(series: YSeries, units: Units) -> str:
@@ -4326,20 +5275,54 @@ def spacetime_figure(
     ylim: tuple[float, float],
 ):
     """One figure of the pair, one `$k$`-summed panel per component."""
+    return time_map_figure(
+        series,
+        maps,
+        scales,
+        floors,
+        options,
+        style,
+        scale=scale,
+        lim=ylim,
+    )
+
+
+def time_map_figure(
+    series: YSeries,
+    maps: list[SpacetimeMap] | list[ScaleMap],
+    scales: list[PanelScale],
+    floors: list[float],
+    options: MapOptions,
+    style: PlotStyle,
+    *,
+    scale: str,
+    lim: tuple[float, float],
+    quantiles: list[np.ndarray | None] | None = None,
+):
+    """One figure of maps against time, one panel per map.
+
+    The panels share an abscissa -- the wall distance, or one
+    marginal's wavelength -- whose limits are *lim*; the geometry is
+    :func:`panel_geometry`'s for a spacetime map, the decade rule
+    applying to a logarithmic abscissa and ``--box-aspect`` to time.
+    *quantiles* holds each panel's :func:`quantile_curves`, or
+    ``None`` where a panel draws none.
+    """
     tlim = (float(maps[0].t.min()), float(maps[0].t.max()))
+    _, x_log, _, _ = _time_map_abscissa(maps[0], options.units)
     geometry = panel_geometry(
         len(maps),
-        ylim,
+        lim,
         tlim,
         style,
         y_log=False,
-        x_log=options.y_log,
+        x_log=x_log,
         title_lines=1 + max(m.title.count("\n") for m in maps),
         ncols=figure_columns(series),
     )
     fig = plt.figure(figsize=(geometry.fig_w, geometry.fig_h))
     for panel, map_ in enumerate(maps):
-        draw_spacetime(
+        draw_time_map(
             fig.add_axes(geometry.axes_rect(panel)),
             map_,
             units=options.units,
@@ -4353,7 +5336,8 @@ def spacetime_figure(
             fill=style.fill,
             lines=style.lines,
             cax=fig.add_axes(geometry.cbar_rect(panel)),
-            ylim=ylim,
+            lim=lim,
+            quantiles=None if quantiles is None else quantiles[panel],
         )
     fig.suptitle(
         _spacetime_suptitle(series, options.units),
@@ -4547,6 +5531,2105 @@ def render_spacetime(
     return written
 
 
+# ── History maps ─────────────────────────────────────────────────────
+
+
+def history_panels(
+    series: YSeries, spec: SeriesSpec
+) -> list[tuple[str, int | None]]:
+    """Which ``(base, component)`` panels a history figure carries.
+
+    A spectra series (difference or shape) shows its three components
+    and their sum; a budget series the production row
+    (:data:`HISTORY_BUDGET_PANELS`).
+    """
+    if spec.stem == "twin_ybudget":
+        balance_terms(series.meta)
+        return [(term, None) for term in HISTORY_BUDGET_PANELS]
+    return [(spec.base, c) for c in (*range(len(COMPONENTS)), None)]
+
+
+def history_maps(
+    series: YSeries,
+    spec: SeriesSpec,
+    options: MapOptions,
+    ylim: tuple[float, float] | None = None,
+) -> dict[str, list]:
+    r"""Every panel of one history series, ``{"y": [...], "x": [...], ...}``.
+
+    The `$(y, t)$` maps under ``"y"`` -- marginal-free, so one set,
+    which :func:`check_k_sum` asserts rather than assumes -- and one
+    `$(\lambda, t)$` set per stored true marginal under its suffix.
+    *ylim* is what a shape history reads its row peaks over.
+    """
+    panels = history_panels(series, spec)
+    stored = "e" if spec.stem == "twin_yspectra" else panels[0][0]
+    check_k_sum(series, stored)
+    out: dict[str, list] = {
+        "y": [
+            make_spacetime(
+                series,
+                base,
+                options=options,
+                component=c,
+                premultiply=True,
+                ylim=ylim,
+            )
+            for base, c in panels
+        ]
+    }
+    for marginal in ("x", "z"):
+        if marginal in series.suffixes:
+            out[marginal] = [
+                make_scaletime(
+                    series, base, marginal, options=options, component=c
+                )
+                for base, c in panels
+            ]
+    return out
+
+
+def _stream_meta(series: YSeries) -> dict:
+    """The sidecar keys a written ``.npz`` records, as a dict."""
+    return {
+        key: series.meta.get(key)
+        for key in (
+            *_SHARED_KEYS,
+            *_STREAM_KEYS[series.stem],
+            "dt",
+            "value_dtype",
+            "git_hash",
+            "twin",
+            "it_yspectra",
+            "it_ybudget",
+        )
+        if key in series.meta
+    }
+
+
+def _units_payload(options: MapOptions) -> dict:
+    """The unit factors every written ``.npz`` carries."""
+    units = options.units
+    return {
+        "half": options.half,
+        "wall_units": units.wall,
+        "re": units.re,
+        "re_tau": units.re_tau,
+        "u_tau": units.u_tau,
+        "energy_factor": units.energy(1.0),
+        "rate_factor": units.rate(1.0),
+        "length_factor": units.length(1.0),
+        "time_factor": units.plotted_time(1.0),
+    }
+
+
+def write_history_npz(
+    path: Path,
+    series: YSeries,
+    key: str,
+    maps: list,
+    scales: list[PanelScale],
+    floors: list[float],
+    quantiles: list[np.ndarray | None],
+    options: MapOptions,
+    lim: tuple[float, float],
+) -> Path:
+    r"""Dump one set of history maps and everything behind them.
+
+    The drawn arrays (unrestricted by *lim*, which is stored beside
+    them), the abscissa in both unit systems, the premultiplier, each
+    panel's `$E^{\mathrm{ref}}$` or row peaks, the quantile lines and
+    the factors that were and were not applied -- enough to redraw a
+    panel or undo its scaling without the figure.
+    """
+    first = maps[0]
+    if key == "y":
+        abscissa, x, x_plotted = (
+            "y",
+            _half_grid(series.y, options.half),
+            first.y,
+        )
+    else:
+        axis = MARGINALS[key][0]
+        abscissa = f"lambda_{axis}"
+        x = series.wavelengths(key)
+        x_plotted = first.lam
+    n_t = first.t.size
+    peaks = [m.provenance.get("row_peaks") for m in maps]
+    e_refs = [m.provenance.get("e_ref") for m in maps]
+    n_q = len(HISTORY_QUANTILES)
+    payload = {
+        "values": np.stack([m.values for m in maps]),
+        "panels": np.asarray([m.label for m in maps]),
+        "fields": np.asarray([m.name for m in maps]),
+        "t": series.t_rel,
+        "t_plotted": first.t,
+        "index": series.index,
+        "abscissa": abscissa,
+        "x": x,
+        "x_plotted": x_plotted,
+        "premultiplier": first.provenance["premultiplier"],
+        "row_peaks": np.asarray(
+            [np.full(n_t, np.nan) if p is None else p for p in peaks]
+        ),
+        "e_ref": np.asarray(
+            [np.nan if v is None else v for v in e_refs], dtype=np.float64
+        ),
+        "quantile_levels": np.asarray(HISTORY_QUANTILES),
+        "quantiles": np.asarray(
+            [
+                np.full((n_t, n_q), np.nan) if q is None else q
+                for q in quantiles
+            ]
+        ),
+        "clim": np.asarray([(sc.lo, sc.hi) for sc in scales]),
+        "log_floor": np.asarray(floors),
+        "lim": np.asarray(lim),
+        "volume_fac_applied": bool(options.volume_fac and key == "y"),
+        "volume_fac": series.volume_fac,
+        "stem": series.stem,
+        "n_members": series.n_members,
+        "members": np.asarray([str(m.path) for m in series.members]),
+        "parents": np.asarray([m.parent for m in series.members]),
+        "meta_json": json.dumps(_stream_meta(series)),
+        **_units_payload(options),
+    }
+    np.savez_compressed(path, **payload)
+    return path
+
+
+def render_history(
+    series: YSeries,
+    spec: SeriesSpec,
+    tag: str,
+    out_dir: Path,
+    *,
+    options: MapOptions,
+    style: PlotStyle,
+    decades: float = LOG_DECADES,
+    declared_signs: bool = True,
+    fmt: str = "png",
+    quiet: bool = False,
+) -> list[Path]:
+    r"""Render one history series: its `$(y, t)$` and `$(\lambda, t)$` maps.
+
+    ``<tag>_y_*`` is the wall-distance history and ``<tag>_x_*`` /
+    ``<tag>_z_*`` the `$\lambda_z$` / `$\lambda_x$` ones, each under
+    the linear colour scale and, where every panel is non-negative and
+    not a shape history, the logarithmic one as well, which reads the
+    growth phase (module docstring, "History maps").  A shape history
+    is drawn on `$[0, 1]$`, its rows each over their own peak.  The
+    non-negative panels carry their quantile lines
+    (:func:`quantile_curves`); each set's ``.npz`` sits beside its
+    figures.  A selection of fewer than two sample times draws no
+    figure and still writes the data, as a spacetime map does.
+    """
+    ylim = y_limits(series, options, style.ylim)
+    sets = history_maps(series, spec, options, ylim)
+    shape = spec.base == SHAPE
+    target = out_dir / tag
+    target.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    drawable = series.t_rel.size >= 2
+    if not drawable and not quiet:
+        print(
+            f"  {tag}: no figures, a history needs two sample times and "
+            f"this selection has {series.t_rel.size}",
+            flush=True,
+        )
+    for key, maps in sets.items():
+        if key == "y":
+            lim = ylim
+            x_log = options.y_log
+        else:
+            lim = style.xlim or (
+                float(maps[0].lam.min()),
+                float(maps[0].lam.max()),
+            )
+            x_log = True
+        scales, floors, notes = spacetime_scales(
+            maps, lim, declared=declared_signs, decades=decades
+        )
+        if notes and not quiet:
+            print("\n".join(notes), flush=True)
+        if shape:
+            scales = [PanelScale(0.0, 1.0, True) for _ in maps]
+        quantiles = []
+        for map_, sc in zip(maps, scales, strict=True):
+            if not sc.non_negative:
+                quantiles.append(None)
+                continue
+            x, values = map_.drawn(lim)
+            quantiles.append(quantile_curves(x, values, x_log=x_log))
+        for scale in ("lin", "log") if drawable else ():
+            if scale == "log" and (
+                shape or not all(sc.non_negative for sc in scales)
+            ):
+                continue
+            fig = time_map_figure(
+                series,
+                maps,
+                scales,
+                floors,
+                options,
+                style,
+                scale="log" if scale == "log" else "linear",
+                lim=lim,
+                quantiles=quantiles,
+            )
+            path = target / f"{tag}_{key}_{scale}.{fmt}"
+            fig.savefig(path, dpi=style.dpi)
+            plt.close(fig)
+            written.append(path)
+            if not quiet:
+                print(f"  {path.name}", flush=True)
+        written.append(
+            write_history_npz(
+                target / f"{tag}_{key}.npz",
+                series,
+                key,
+                maps,
+                scales,
+                floors,
+                quantiles,
+                options,
+                lim,
+            )
+        )
+        if not quiet:
+            print(f"  {written[-1].name}", flush=True)
+    return written
+
+
+# ── Moment budget ────────────────────────────────────────────────────
+
+#: The rows of a moment budget figure: ``(MomentRates field, label)``
+#: in the order drawn, for the wall-distance budget (physical space)
+#: and for a marginal's joint one (Fourier space).
+_MOMENT_ROWS_Y: tuple[tuple[str, str], ...] = (
+    ("mass", r"$\mathrm{d}\ln E/\mathrm{d}t$"),
+    ("mean_y", r"$\mathrm{d}\langle\ln y\rangle/\mathrm{d}t$"),
+    ("var_y", r"$\mathrm{d}\sigma^2_{\ln y}/\mathrm{d}t$"),
+)
+_MOMENT_ROWS_JOINT: tuple[tuple[str, str], ...] = (
+    ("mass", r"$\mathrm{d}\ln E'/\mathrm{d}t$"),
+    ("mean_lam", r"$\mathrm{d}\langle\ln\lambda\rangle/\mathrm{d}t$"),
+    ("mean_y", r"$\mathrm{d}\langle\ln y\rangle/\mathrm{d}t$"),
+    ("var_lam", r"$\mathrm{d}\sigma^2_{\ln\lambda}/\mathrm{d}t$"),
+    ("var_y", r"$\mathrm{d}\sigma^2_{\ln y}/\mathrm{d}t$"),
+    ("cov", r"$\mathrm{d}C_{\lambda y}/\mathrm{d}t$"),
+)
+
+
+def moment_terms(marginal: str) -> tuple[str, ...]:
+    """The term groups of one moment budget (:data:`MOMENT_TERMS`).
+
+    The wall-distance budget covers every mode, `$(0, 0)$` included,
+    so its pressure group carries the driving input as well
+    (``press_input``); a marginal's covers `$m \\ge 1$`, where the
+    input has no entry and the pressure transport is all there is.
+    """
+    if marginal:
+        return MOMENT_TERMS
+    return tuple(
+        "press_input" if term == "tr_press" else term for term in MOMENT_TERMS
+    )
+
+
+def _moment_cells(
+    series: YSeries, marginal: str, options: MapOptions
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, slice]:
+    r"""``(weights, ln_lam, ln_y, columns)`` of a moment budget's cells.
+
+    The folded rows off the wall (the wall row has no `$\ln y$`, and
+    no energy either), weighted by :func:`half_weights`, so a cell's
+    weight times its entry is its exact share of the volume-averaged
+    energy: the distribution of energy itself, not of a map.  A
+    marginal's columns are `$m \ge 1$`, ascending in `$m$` as stored,
+    with `$\ln\lambda$` in the plotted units; the wall-distance budget
+    sums every column into one, at a dummy `$\ln\lambda = 0$`.
+    Both coordinates are in the plotted units, which shifts a mean and
+    moves no rate.
+    """
+    y = options.units.length(_half_grid(series.y, options.half))
+    rows = y > 0.0
+    weights = half_weights(series)[rows][:, None]
+    ln_y = np.log(y[rows])
+    if not marginal:
+        return weights, np.zeros(1), ln_y, slice(None)
+    lam = options.units.length(
+        float(series.meta["lx" if marginal == "z" else "lz"])
+        / series.harmonics(marginal)[1:]
+    )
+    return weights, np.log(lam), ln_y, slice(1, None)
+
+
+def moment_budget_sums(
+    spectra: YSeries,
+    budget: YSeries,
+    marginal: str,
+    options: MapOptions,
+) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    r"""Raw moment sums of the energy and of each term group, per frame.
+
+    ``(energy (n_t, 6), terms (n_t, n_groups, 6), groups)``, ensemble
+    means read in chunks (:meth:`YSeries.reduced`) -- exact, the sums
+    being linear (:mod:`dnsjax.analysis.twin.moments`).  The energy is
+    the component-summed difference spectrum, the only one the
+    component-summed budget can explain.  *marginal* empty is the
+    wall-distance budget over every mode (the history `$(y, t)$`
+    map's distribution); ``x`` / ``z`` the joint `$(\ln\lambda,
+    \ln y)$` one over `$m \ge 1$`.
+    """
+    weights, ln_lam, ln_y, columns = _moment_cells(spectra, marginal, options)
+    suffix = marginal or "x"
+    off_wall = options.units.length(_half_grid(spectra.y, options.half)) > 0.0
+
+    def cells(values: np.ndarray) -> np.ndarray:
+        folded, _ = _select_half(values, spectra.y, options.half)
+        folded = folded[..., off_wall, :]
+        if marginal:
+            return folded[..., columns]
+        return folded.sum(axis=-1, keepdims=True)
+
+    def energy(read) -> np.ndarray:
+        e = np.asarray(read(f"e_{suffix}"), dtype=np.float64).sum(axis=1)
+        return log_moment_sums(cells(e), weights, ln_lam, ln_y)
+
+    groups = moment_terms(marginal)
+
+    def terms(read) -> np.ndarray:
+        return np.stack(
+            [
+                log_moment_sums(
+                    cells(balance_field(read, budget.meta, f"{g}_{suffix}")),
+                    weights,
+                    ln_lam,
+                    ln_y,
+                )
+                for g in groups
+            ],
+            axis=1,
+        )
+
+    return spectra.reduced(energy), budget.reduced(terms), groups
+
+
+def _check_shared_frames(spectra: YSeries, budget: YSeries) -> None:
+    """A moment budget needs both streams on one frame grid."""
+    if spectra.t_rel.shape != budget.t_rel.shape or not np.allclose(
+        spectra.t_rel, budget.t_rel, rtol=0.0, atol=_T_ATOL
+    ):
+        raise ValueError(
+            "the moment budget sets the rates of the spectra stream's "
+            "moments against the budget stream's terms frame by frame, "
+            "so both need the same frames; these were recorded on "
+            f"different grids ({spectra.t_rel.size} vs "
+            f"{budget.t_rel.size} frames).  Select frames both streams "
+            "carry with --stride / --first / --last."
+        )
+
+
+def moment_budget(
+    spectra: YSeries,
+    budget: YSeries,
+    marginal: str,
+    options: MapOptions,
+) -> dict:
+    r"""Every term's share of every moment rate, and the check on them.
+
+    A dict of ``(n_groups, n_t)`` contributions per
+    :class:`~dnsjax.analysis.twin.moments.MomentRates` field, their
+    sum over the groups, and the same rate by second-order finite
+    differences of the moments themselves -- the closure check: the
+    identity is exact, so whatever separates the two is the budget
+    stream's own closure and the sampling cadence.  Rates are per unit
+    of plotted time.
+    """
+    _check_shared_frames(spectra, budget)
+    e_sums, t_sums, groups = moment_budget_sums(
+        spectra, budget, marginal, options
+    )
+    per_time = 1.0 / options.units.plotted_time(1.0)
+    rates = [moment_rates(e_sums, t_sums[:, g]) for g in range(len(groups))]
+    m = log_moments(e_sums)
+    t = spectra.t_rel
+    fields = ("mass", "mean_lam", "mean_y", "var_lam", "var_y", "cov")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        own = {
+            "mass": np.gradient(np.log(m.mass), t),
+            "mean_lam": np.gradient(m.mean_lam, t),
+            "mean_y": np.gradient(m.mean_y, t),
+            "var_lam": np.gradient(m.var_lam, t),
+            "var_y": np.gradient(m.var_y, t),
+            "cov": np.gradient(m.cov, t),
+        }
+    contributions = {
+        name: per_time * np.stack([getattr(r, name) for r in rates])
+        for name in fields
+    }
+    return {
+        "groups": groups,
+        "contributions": contributions,
+        "total": {k: v.sum(axis=0) for k, v in contributions.items()},
+        "finite_difference": {k: per_time * v for k, v in own.items()},
+        "moments": m,
+    }
+
+
+def moment_budget_figure(
+    series: YSeries,
+    result: dict,
+    marginal: str,
+    options: MapOptions,
+    style: PlotStyle,
+):
+    r"""The moment budget against time, a row per moment rate.
+
+    Each term group a line (:data:`_TERM_SERIES`, dashed for a second
+    cue), their sum black and the finite-difference rate of the
+    moments grey and dashed: where the two agree, the terms account
+    for all of the motion (module docstring, "Moment budget").
+    """
+    units = options.units
+    t = units.plotted_time(series.t_rel)
+    rows = _MOMENT_ROWS_JOINT if marginal else _MOMENT_ROWS_Y
+    fig, axes = plt.subplots(
+        len(rows),
+        1,
+        sharex=True,
+        figsize=(style.width, _ROW_HEIGHT * len(rows) + 0.9),
+        layout="constrained",
+    )
+    for ax, (name, label) in zip(axes, rows, strict=True):
+        for index, group in enumerate(result["groups"]):
+            sign, symbol = TERM_LABELS[group]
+            ax.plot(
+                t,
+                result["contributions"][name][index],
+                color=_TERM_SERIES[index],
+                linestyle=_TERM_DASHES[index],
+                linewidth=1.0,
+                label=f"${sign}{symbol}$",
+            )
+        ax.plot(
+            t, result["total"][name], color="black", linewidth=1.3, label="sum"
+        )
+        ax.plot(
+            t,
+            result["finite_difference"][name],
+            color="0.55",
+            linewidth=1.3,
+            linestyle=(0, (2, 1.5)),
+            label="moments, differenced",
+        )
+        ax.axhline(0.0, color="0.75", linewidth=0.5)
+        # Per unit of the plotted time: t+ in wall units.
+        ax.set_ylabel(
+            label.replace(r"\mathrm{d}t$", r"\mathrm{d}t^+$")
+            if units.wall
+            else label
+        )
+        ax.grid(True, color="0.92", linewidth=0.5)
+    axes[-1].set_xlabel(units.t_label)
+    axes[-1].set_xlim(float(t[0]), float(t[-1]))
+    if units.wall:
+        factor = units.re_tau**2 / units.re
+        axes[0].secondary_xaxis(
+            "top", functions=(lambda v: v / factor, lambda v: v * factor)
+        ).set_xlabel(r"$t\,U_\mathrm{cl}/h$")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="outside lower center",
+        ncols=5,
+        frameon=False,
+    )
+    where = (
+        "wall distance, every mode"
+        if not marginal
+        else rf"$(\lambda_{{{MARGINALS[marginal][0]}}}, y)$, $m \ge 1$"
+    )
+    fig.suptitle(
+        "Moment budget of the difference energy: "
+        + where
+        + "\n"
+        + _spacetime_suptitle(series, units)
+    )
+    return fig
+
+
+def write_moment_budget_npz(
+    path: Path,
+    series: YSeries,
+    result: dict,
+    marginal: str,
+    options: MapOptions,
+) -> Path:
+    """Dump a moment budget: contributions, sum, check and moments."""
+    m = result["moments"]
+    fields = ("mass", "mean_lam", "mean_y", "var_lam", "var_y", "cov")
+    payload = {
+        "groups": np.asarray(result["groups"]),
+        "rates": np.asarray(fields),
+        "contributions": np.stack(
+            [result["contributions"][f] for f in fields], axis=1
+        ),
+        "total": np.stack([result["total"][f] for f in fields]),
+        "finite_difference": np.stack(
+            [result["finite_difference"][f] for f in fields]
+        ),
+        "mass": m.mass,
+        "mean_lam": m.mean_lam,
+        "mean_y": m.mean_y,
+        "var_lam": m.var_lam,
+        "var_y": m.var_y,
+        "cov": m.cov,
+        "t": series.t_rel,
+        "t_plotted": options.units.plotted_time(series.t_rel),
+        "index": series.index,
+        "marginal": marginal,
+        "cells": (
+            "folded rows off the wall, every mode summed"
+            if not marginal
+            else "folded rows off the wall, m >= 1"
+        ),
+        "weights": "half_weights (exact energies)",
+        "coordinates": "ln of the plotted wavelength and wall distance",
+        "rate_units": "per unit of plotted time",
+        "n_members": series.n_members,
+        "members": np.asarray([str(mm.path) for mm in series.members]),
+        "meta_json": json.dumps(_stream_meta(series)),
+        **_units_payload(options),
+    }
+    np.savez_compressed(path, **payload)
+    return path
+
+
+def render_moment_budget(
+    spectra: YSeries,
+    budget: YSeries,
+    spec: SeriesSpec,
+    tag: str,
+    out_dir: Path,
+    *,
+    options: MapOptions,
+    style: PlotStyle,
+    fmt: str = "png",
+    quiet: bool = False,
+) -> list[Path]:
+    """Render one moment budget: its figure and its ``.npz``."""
+    result = moment_budget(spectra, budget, spec.marginal, options)
+    target = out_dir / tag
+    target.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    if spectra.t_rel.size >= 3:
+        fig = moment_budget_figure(
+            spectra, result, spec.marginal, options, style
+        )
+        path = target / f"{tag}.{fmt}"
+        fig.savefig(path, dpi=style.dpi)
+        plt.close(fig)
+        written.append(path)
+    elif not quiet:
+        print(
+            f"  {tag}: no figure, a rate needs three sample times and "
+            f"this selection has {spectra.t_rel.size}",
+            flush=True,
+        )
+    written.append(
+        write_moment_budget_npz(
+            target / f"{tag}.npz", spectra, result, spec.marginal, options
+        )
+    )
+    if not quiet:
+        for path in written:
+            print(f"  {path.name}", flush=True)
+    return written
+
+
+# ── Decorrelation front ──────────────────────────────────────────────
+
+
+def front_times(
+    t: np.ndarray, ratio: np.ndarray, level: float = FRONT_LEVEL
+) -> np.ndarray:
+    r"""When each cell's ratio rises through *level* for good.
+
+    *ratio* is ``(n_t, ...)``; the result has its trailing shape.  The
+    time is the **last** upward crossing of *level*, interpolated
+    linearly between the two frames that bracket it: the earliest time
+    after which the ratio stays at or above *level*.  A cell that is
+    never below it has ``t[0]`` (a seed already above the level), one
+    that ends below it ``nan`` (it has not decorrelated by the end of
+    the record).  Taking the last crossing rather than the first is
+    what keeps a seed that starts above the level and dips below it
+    from being timed at ``t[0]``.
+    """
+    r = np.asarray(ratio, dtype=np.float64)
+    t = np.asarray(t, dtype=np.float64)
+    above = np.where(np.isfinite(r), r >= level, False)
+    below = ~above
+    n = r.shape[0]
+    any_below = below.any(axis=0)
+    last_below = n - 1 - np.argmax(below[::-1], axis=0)
+    out = np.where(any_below, np.nan, t[0])
+    crossed = any_below & above[-1]
+    i0 = np.where(crossed, last_below, 0)
+    i1 = np.minimum(i0 + 1, n - 1)
+    r0 = np.take_along_axis(r, i0[None], axis=0)[0]
+    r1 = np.take_along_axis(r, i1[None], axis=0)[0]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        frac = np.clip((level - r0) / (r1 - r0), 0.0, 1.0)
+    return np.where(crossed, t[i0] + frac * (t[i1] - t[i0]), out)
+
+
+def front_maps(
+    series: YSeries,
+    marginal: str,
+    options: MapOptions,
+    level: float = FRONT_LEVEL,
+) -> list[Map]:
+    r"""The four `$t_{1/2}$` panels of one marginal: u, v, w and the sum.
+
+    Each from the mode-by-mode decorrelation
+    `$\mathcal{R} = e/(2\langle r\rangle_t)$` (the ``decorr`` maps'
+    ratio, :func:`map_divisor`, symmetrised before the fold), the summed
+    panel one ratio of sums; then folded, `$m = 0$` dropped, ascending
+    in wavelength, and timed (:func:`front_times`) in the plotted
+    units.  A :class:`Map` per panel, so the maps' geometry serves
+    them.
+    """
+    e = series.field(f"e_{marginal}")
+    divisor = map_divisor(series, DECORR, marginal, options.half)
+    t = options.units.plotted_time(series.t_rel)
+    maps = []
+    for component in (*range(len(COMPONENTS)), None):
+        if component is None:
+            ratio = _ratio(e.sum(axis=1), 2.0 * divisor.sum(axis=0))
+        else:
+            ratio = _ratio(e[:, component], 2.0 * divisor[component])
+        ratio = ratio[..., 1:][..., ::-1]
+        folded, wall_distance = _select_half(ratio, series.y, options.half)
+        _, symbol = panel_symbol(series, f"e_{marginal}", component)
+        maps.append(
+            Map(
+                lam=options.units.length(series.wavelengths(marginal)),
+                y=options.units.length(wall_distance),
+                values=front_times(t, folded, level),
+                title=rf"$t{options.units.suffix}_{{1/2}}$ of ${symbol}$",
+                name=f"e_{marginal}",
+                non_negative=True,
+                y_log=options.y_log,
+            )
+        )
+    return maps
+
+
+def draw_front(
+    ax,
+    map_: Map,
+    *,
+    units: Units,
+    data_range: tuple[float, float],
+    n_levels: int = 10,
+    cmap: str = "Blues",
+    cax=None,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+):
+    r"""One `$t_{1/2}$` panel: every band filled, the iso-time lines drawn.
+
+    Unlike a spectrum's map no band is left unfilled -- the earliest
+    times are as much data as the latest -- and a cell that never stays
+    above the level (``nan``) is left white, which the colour bar's
+    range never reaches.  The contour lines are the front's positions
+    at the labelled times.
+    """
+    ax.set_xscale("log")
+    ax.set_yscale("log" if map_.y_log else "linear")
+    y, values = map_.drawn()
+    lo, hi = data_range
+    step = nice_step(max(hi - lo, 1e-12) / max(n_levels, 2))
+    levels = np.arange(
+        math.floor(lo / step) * step, math.ceil(hi / step) * step + step, step
+    )
+    filled = None
+    if levels.size > 1 and np.isfinite(values).any():
+        filled = ax.contourf(
+            map_.lam, y, values, levels=levels, cmap=cmap, extend="neither"
+        )
+        ax.contour(
+            map_.lam,
+            y,
+            values,
+            levels=levels,
+            colors="k",
+            linewidths=0.3,
+            alpha=0.7,
+        )
+    ax.set_xlim(*(xlim or (map_.lam.min(), map_.lam.max())))
+    ax.set_ylim(*(ylim or (y.min(), y.max())))
+    if map_.y_log:
+        ax.set_aspect(1.0, adjustable="box", anchor="C")
+    ax.set_xlabel(units.lambda_label(map_.lam_axis))
+    ax.set_ylabel(units.y_label)
+    if units.wall:
+        outer = (lambda v: v / units.re_tau, lambda v: v * units.re_tau)
+        ax.secondary_xaxis("top", functions=outer).set_xlabel(
+            units.lambda_label(map_.lam_axis, outer=True)
+        )
+        ax.secondary_yaxis("right", functions=outer).set_ylabel(r"$y/h$")
+    ax.set_title(map_.title, pad=_TITLE_PAD)
+    if cax is not None and filled is not None:
+        bar = ax.figure.colorbar(filled, cax=cax, ticks=_bar_ticks(levels))
+        bar.ax.yaxis.set_major_formatter(
+            FuncFormatter(lambda v, _pos: f"{v:.3g}")
+        )
+        bar.ax.tick_params(labelsize="small")
+        bar.set_label(units.t_label, fontsize="small")
+    elif cax is not None:
+        cax.set_axis_off()
+    return filled
+
+
+def render_front(
+    series: YSeries,
+    spec: SeriesSpec,
+    tag: str,
+    out_dir: Path,
+    *,
+    options: MapOptions,
+    style: PlotStyle,
+    level: float = FRONT_LEVEL,
+    cmap: str = "Blues",
+    fmt: str = "png",
+    quiet: bool = False,
+) -> list[Path]:
+    r"""Render one marginal's decorrelation front: a figure and an ``.npz``.
+
+    The four panels share one colour range, the extremes of every
+    finite `$t_{1/2}$` the box shows, so a colour is one time across
+    the components (module docstring, "Decorrelation front").
+    """
+    maps = front_maps(series, spec.marginal, options, level)
+    ylim = y_limits(series, options, style.ylim)
+    shown = np.concatenate(
+        [m.drawn(ylim)[1][np.isfinite(m.drawn(ylim)[1])] for m in maps]
+    )
+    data_range = (
+        (float(shown.min()), float(shown.max())) if shown.size else (0.0, 1.0)
+    )
+    target = out_dir / tag
+    target.mkdir(parents=True, exist_ok=True)
+    xlim = style.xlim or (float(maps[0].lam.min()), float(maps[0].lam.max()))
+    geometry = panel_geometry(
+        len(maps), xlim, ylim, style, y_log=options.y_log
+    )
+    fig = plt.figure(figsize=(geometry.fig_w, geometry.fig_h))
+    for panel, map_ in enumerate(maps):
+        draw_front(
+            fig.add_axes(geometry.axes_rect(panel)),
+            map_,
+            units=options.units,
+            data_range=data_range,
+            n_levels=style.n_levels,
+            cmap=cmap,
+            cax=fig.add_axes(geometry.cbar_rect(panel)),
+            xlim=xlim,
+            ylim=ylim,
+        )
+    fig.suptitle(
+        rf"Time $\mathcal{{R}} = e/2\langle r\rangle$ rises through "
+        rf"${level:g}$ for good (white: not by the end)"
+        + "\n"
+        + _spacetime_suptitle(series, options.units),
+        y=1.0 - 0.15 * _SUP_HEIGHT / geometry.fig_h,
+        va="top",
+        fontsize="medium",
+    )
+    path = target / f"{tag}.{fmt}"
+    fig.savefig(path, dpi=style.dpi)
+    plt.close(fig)
+    units = options.units
+    npz = target / f"{tag}.npz"
+    np.savez_compressed(
+        npz,
+        t_half_plotted=np.stack([m.values for m in maps]),
+        t_half=np.stack([m.values for m in maps]) / units.plotted_time(1.0),
+        lam=series.wavelengths(spec.marginal),
+        lam_plotted=maps[0].lam,
+        y=_half_grid(series.y, options.half),
+        y_plotted=maps[0].y,
+        panels=np.asarray(["u", "v", "w", "sum"]),
+        level=level,
+        ratio="e / (2 <r>_t), mode by mode, (0,0) mode off the reference",
+        n_members=series.n_members,
+        members=np.asarray([str(m.path) for m in series.members]),
+        meta_json=json.dumps(_stream_meta(series)),
+        **_units_payload(options),
+    )
+    if not quiet:
+        print(f"  {path.name}\n  {npz.name}", flush=True)
+    return [path, npz]
+
+
+# ── Growth laws ──────────────────────────────────────────────────────
+
+#: The budget groups a growth figure reads per unit band energy: the
+#: same-`$k$` mean-shear production, and the three cross-scale terms
+#: (module docstring, "Growth laws") -- the fluctuation production and
+#: the two advective transfers, which only move energy between modes
+#: and wall distances -- with the dissipation that drains each band.
+GROWTH_TERMS: tuple[str, ...] = (
+    "prod_mean",
+    "prod_fluct",
+    "tr_ref",
+    "tr_self",
+    "diss",
+)
+
+#: The wall distances, in wall units, whose rows a ``growth_y`` figure
+#: follows: one per octave from the viscous sublayer to the centreline,
+#: each the nearest row of the grid.
+GROWTH_Y_PLUS: tuple[float, ...] = (2.0, 5.0, 10.0, 20.0, 40.0, 80.0, 160.0)
+
+
+@dataclass(frozen=True)
+class GrowthCurves:
+    r"""A family of growth curves on one clock (module docstring,
+    "Growth laws").
+
+    ``energy`` is ``(n_curves, n_t)`` and ``saturation`` ``(n_curves,)``
+    -- twice the reference's, the energy two independent fields
+    differ by -- so `$R$` = ``energy / saturation[:, None]``.
+    ``coords`` places each curve on a scale (a wavelength or a wall
+    distance, plotted units) where one exists, ``members`` holds each
+    member's own energy for a single curve, and ``rates`` the budget
+    groups per unit energy, ``{group: (n_curves, n_t)}``, where the
+    budget stream was read.
+    """
+
+    t: np.ndarray
+    energy: np.ndarray
+    saturation: np.ndarray
+    labels: list[str]
+    coords: np.ndarray | None = None
+    members: np.ndarray | None = None
+    rates: dict[str, np.ndarray] | None = None
+    source: str = "twin_yspectra"
+
+    @property
+    def r(self) -> np.ndarray:
+        """`$R = E/E_\\mathrm{sat}$`, per curve."""
+        return self.energy / self.saturation[:, None]
+
+    @property
+    def gamma(self) -> np.ndarray:
+        r"""`$\gamma = \mathrm{d}\ln E/\mathrm{d}t$`, per curve."""
+        return log_rate(self.t, self.energy)
+
+    @property
+    def f(self) -> np.ndarray:
+        r"""`$-\ln(1 - R)$`, ``nan`` above :data:`GROWTH_R_MAX`."""
+        r = self.r
+        return np.where(r <= GROWTH_R_MAX, bound_free(r), np.nan)
+
+
+def _y_averaged_many(
+    series: YSeries, names: list[str], half: str
+) -> list[np.ndarray]:
+    """Several stored or balance fields averaged over `$y$`, in one pass.
+
+    One array per name: ``(n_t, [3,] n_k)``, or ``(n_t, [3])`` for a
+    `$(0, 0)$`-mode name -- suffix ``xz00``, or ``x0:00`` for a legacy
+    ``x0`` plane's first column -- whose profile has no wavenumber
+    axis.  The records are read once whatever the number of names
+    (:meth:`YSeries.reduced`), each field flattened for the pass and
+    reshaped after it.
+    """
+    weights = half_weights(series)
+    shapes: list[tuple[int, ...]] = []
+
+    def one(read, name: str) -> np.ndarray:
+        if name.endswith(("_xz00", "_x0:00")):
+            if name.endswith("_x0:00"):
+                values = balance_field(read, series.meta, name[:-3])[..., 0]
+            else:
+                values = balance_field(read, series.meta, name)
+            folded, _ = _select_half(values[..., None], series.y, half)
+            return np.einsum("j,...j->...", weights, folded[..., 0])
+        folded, _ = _select_half(
+            balance_field(read, series.meta, name), series.y, half
+        )
+        return np.einsum("j,...jk->...k", weights, folded)
+
+    def reduce(read) -> np.ndarray:
+        parts = [one(read, n) for n in names]
+        if not shapes:
+            shapes.extend(p.shape[1:] for p in parts)
+        return np.concatenate(
+            [p.reshape(p.shape[0], -1) for p in parts], axis=1
+        )
+
+    flat = series.reduced(reduce)
+    out, start = [], 0
+    for shape in shapes:
+        size = int(np.prod(shape)) if shape else 1
+        out.append(
+            flat[:, start : start + size].reshape(flat.shape[0], *shape)
+        )
+        start += size
+    return out
+
+
+def _mean_mode_suffix(series: YSeries) -> str:
+    """How a stream stores its `$(0, 0)$` mode (:func:`_y_averaged_many`)."""
+    return "xz00" if "xz00" in series.suffixes else "x0:00"
+
+
+def _reference_bands(series: YSeries, marginal: str, half: str) -> np.ndarray:
+    r"""`$\langle r\rangle_t$` averaged over `$y$`, ``(3, n_k)``, mean-free."""
+    folded, _ = _select_half(
+        series.reference_spectrum(marginal), series.y, half
+    )
+    return np.einsum("j,...jk->...k", half_weights(series), folded)
+
+
+def _band_rates(
+    budget: YSeries | None,
+    marginal: str,
+    columns: np.ndarray,
+    energy: np.ndarray,
+    half: str,
+) -> dict[str, np.ndarray] | None:
+    r"""The budget groups per unit band energy, ``{group: (n_bands, n_t)}``.
+
+    Read off the budget stream's *marginal* at the band *columns*, the
+    `$(0, 0)$` mode taken off column 0 as it is off the energy, and
+    divided by the band's *energy* ``(n_bands, n_t)``.  ``None``
+    without a budget stream, or one on other frames.
+    """
+    if budget is None:
+        return None
+    try:
+        balance_terms(budget.meta)
+    except ValueError:
+        return None
+    mm = _mean_mode_suffix(budget)
+    names = [f"{g}_{marginal}" for g in GROWTH_TERMS]
+    mean_names = [f"{g}_{mm}" for g in GROWTH_TERMS]
+    values = _y_averaged_many(budget, names + mean_names, half)
+    out = {}
+    for index, group in enumerate(GROWTH_TERMS):
+        bands = values[index][:, columns].T.copy()
+        mean = values[len(GROWTH_TERMS) + index]
+        bands[columns == 0] -= mean
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out[group] = bands / energy
+    return out
+
+
+def _band_columns(n_k: int) -> np.ndarray:
+    """The bands a growth figure follows: `$m = 0$` and every octave."""
+    octaves = [1]
+    while octaves[-1] * 2 < n_k:
+        octaves.append(octaves[-1] * 2)
+    return np.asarray([0, *octaves])
+
+
+def growth_bands(
+    series: YSeries,
+    marginal: str,
+    options: MapOptions,
+    budget: YSeries | None = None,
+) -> GrowthCurves:
+    r"""The difference energy of one marginal's bands, on the frames.
+
+    Component-summed and averaged over `$y$` (:func:`y_averaged`): the
+    `$m = 0$` column -- with the `$(0, 0)$` mode taken off it, the
+    mean-flow difference being no fluctuation -- and one band per
+    octave of `$m$`, each against twice its own reference energy.
+    The budget groups per unit band energy come along where *budget*
+    is given on the same frames.
+    """
+    mm = _mean_mode_suffix(series)
+    band, mean = _y_averaged_many(
+        series, [f"e_{marginal}", f"e_{mm}"], options.half
+    )
+    k = band.sum(axis=1)  # (n_t, n_k)
+    k[:, 0] -= mean.sum(axis=1)
+    columns = _band_columns(k.shape[1])
+    ref = _reference_bands(series, marginal, options.half).sum(axis=0)
+    energy = k[:, columns].T
+    lam = options.units.length(
+        float(series.meta["lx" if marginal == "z" else "lz"])
+        / np.maximum(series.harmonics(marginal)[columns], 1)
+    )
+    axis = MARGINALS[marginal][0]
+    plus = options.units.suffix
+    labels = [
+        rf"$k_{axis} = 0$"
+        if c == 0
+        else rf"$\lambda_{axis}{plus} = {lam[i]:.0f}$"
+        for i, c in enumerate(columns)
+    ]
+    coords = np.where(columns == 0, np.inf, lam)
+    rates = None
+    if budget is not None and np.allclose(
+        budget.t_rel, series.t_rel, rtol=0.0, atol=_T_ATOL
+    ):
+        rates = _band_rates(budget, marginal, columns, energy, options.half)
+    return GrowthCurves(
+        t=series.t_rel,
+        energy=energy,
+        saturation=2.0 * ref[columns],
+        labels=labels,
+        coords=coords,
+        rates=rates,
+    )
+
+
+def growth_rows(
+    series: YSeries,
+    options: MapOptions,
+    budget: YSeries | None = None,
+) -> GrowthCurves:
+    r"""The difference energy at a few wall distances, every mode summed.
+
+    The `$k$`-summed profile (:func:`k_summed`) less its `$(0, 0)$`
+    mode, at the rows nearest :data:`GROWTH_Y_PLUS`, against twice the
+    reference's fluctuation profile there.  Where *budget* is given,
+    the production and the total transport per unit energy, each row
+    being fed by its own production and by what transport brings it.
+    """
+    weightless = k_summed(series, "e").sum(axis=1)  # (n_t, n_y)
+    mm_name = mean_mode_name(series.meta, "e")
+    mean = series.reduced(
+        lambda read: mean_mode_profile(read(mm_name), mm_name).sum(axis=1)
+    )
+    profile, wall = _select_half(
+        (weightless - mean)[..., None], series.y, options.half
+    )
+    profile = profile[..., 0]
+    ref, _ = _select_half(
+        series.reference_profile().sum(axis=0)[:, None], series.y, options.half
+    )
+    ref = ref[:, 0]
+    y_plus = wall * options.units.re_tau
+    rows = sorted(
+        {int(np.argmin(np.abs(y_plus - target))) for target in GROWTH_Y_PLUS}
+    )
+    rows = [r for r in rows if y_plus[r] > 0.0]
+    energy = profile[:, rows].T
+    coords = options.units.length(wall[rows])
+    labels = [rf"$y{options.units.suffix} = {c:.3g}$" for c in coords]
+    rates = None
+    if budget is not None and np.allclose(
+        budget.t_rel, series.t_rel, rtol=0.0, atol=_T_ATOL
+    ):
+        try:
+            balance_terms(budget.meta)
+            groups = {
+                "prod": ["prod"],
+                "transport": ["tr_visc", "tr_press", "tr_ref", "tr_self"],
+            }
+            rates = {}
+            mm = _mean_mode_suffix(budget)
+            for key, terms in groups.items():
+                total = sum(k_summed(budget, term) for term in terms)
+                mean_mode = sum(
+                    budget.reduced(
+                        lambda read, term=term: (
+                            balance_field(read, budget.meta, f"{term}_xz00")
+                            if mm == "xz00"
+                            else balance_field(
+                                read, budget.meta, f"{term}_x0"
+                            )[..., 0]
+                        )
+                    )
+                    for term in terms
+                )
+                folded, _ = _select_half(
+                    (total - mean_mode)[..., None], series.y, options.half
+                )
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    rates[key] = folded[..., 0][:, rows].T / energy
+        except ValueError:
+            rates = None
+    return GrowthCurves(
+        t=series.t_rel,
+        energy=energy,
+        saturation=2.0 * ref[rows],
+        labels=labels,
+        coords=coords,
+        rates=rates,
+    )
+
+
+def growth_ssp(
+    series: YSeries,
+    options: MapOptions,
+    budget: YSeries | None = None,
+) -> GrowthCurves:
+    r"""The difference energy of the self-sustaining process's three parts.
+
+    Off the `$k_x$` marginal, per component: the **streaks**, `$\Delta
+    u$` at `$k_x = 0$`; the **rolls**, `$\Delta v$` and `$\Delta w$`
+    there; the **waves**, every component at `$k_x \neq 0$` -- the
+    `$(0, 0)$` mode taken off the first two, each against twice its
+    reference share (module docstring, "Growth laws").  These are the
+    three-bin quantities of :func:`~dnsjax.analysis.twin.yspectra.
+    bin_energies` with the streak bin split by component.  The budget
+    stream is component-summed, so where *budget* is given the rates
+    are those of the whole `$k_x = 0$` plane (streaks and rolls
+    together) and of the waves, both per unit of their own energy:
+    the lift-up `$\mathcal{P}^{\mathbf{U}}_\Delta$` and the transfer
+    out of the plane are the SSP's growth and breakdown legs.
+    """
+    mm = _mean_mode_suffix(series)
+    ez, mean = _y_averaged_many(series, ["e_z", f"e_{mm}"], options.half)
+    ref = _reference_bands(series, "z", options.half)  # (3, n_kx)
+    streak = ez[:, 0, 0] - mean[:, 0]
+    roll = ez[:, 1, 0] + ez[:, 2, 0] - mean[:, 1] - mean[:, 2]
+    wave = ez[:, :, 1:].sum(axis=(1, 2))
+    energy = np.stack([streak, roll, wave])
+    saturation = 2.0 * np.array(
+        [ref[0, 0], ref[1, 0] + ref[2, 0], ref[:, 1:].sum()]
+    )
+    rates = None
+    if budget is not None and np.allclose(
+        budget.t_rel, series.t_rel, rtol=0.0, atol=_T_ATOL
+    ):
+        try:
+            balance_terms(budget.meta)
+            bmm = _mean_mode_suffix(budget)
+            names = [f"{g}_z" for g in GROWTH_TERMS]
+            means = [f"{g}_{bmm}" for g in GROWTH_TERMS]
+            b = _y_averaged_many(budget, names + means, options.half)
+            plane = streak + roll
+            rates = {}
+            for index, group in enumerate(GROWTH_TERMS):
+                kx0 = b[index][:, 0] - b[len(GROWTH_TERMS) + index]
+                waves = b[index][:, 1:].sum(axis=-1)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    rates[group] = np.stack([kx0 / plane, waves / wave])
+        except ValueError:
+            rates = None
+    return GrowthCurves(
+        t=series.t_rel,
+        energy=energy,
+        saturation=saturation,
+        labels=[
+            r"streaks $\Delta u,\ k_x = 0$",
+            r"rolls $\Delta v, \Delta w,\ k_x = 0$",
+            r"waves, $k_x \neq 0$",
+        ],
+        rates=rates,
+    )
+
+
+def growth_global(series: YSeries, options: MapOptions) -> GrowthCurves:
+    r"""The total difference energy, every member, on its finest clock.
+
+    Each member's ``twin.dat`` where every member has one -- the
+    ``twin.it_energy`` cadence, finer than the spectra's -- aligned on
+    whole steps since the perturbation (:func:`~dnsjax.analysis.twin.
+    series.relative_time`) and restricted to the frames' window; the
+    spectra stream's own per-member totals otherwise.  The curve is the
+    **geometric** member mean, `$\exp\langle\ln E\rangle$`: a rate is a
+    logarithmic derivative, and the arithmetic mean would let the
+    fastest member set it.  `$E_\mathrm{sat}$` is twice the reference's
+    fluctuation energy (:meth:`YSeries.reference_scale`).
+    """
+    lo, hi = float(series.t_rel[0]), float(series.t_rel[-1])
+    curves = []
+    source = "twin.dat"
+    try:
+        for member in series.members:
+            twin = read_twin(member.path)
+            dt, on_grid = uniform_grid(twin.t)
+            t_rel = twin.t_rel[on_grid]
+            step = float(twin.meta["dt"]) if twin.meta else dt
+            keep = (t_rel >= lo - 0.5 * step) & (t_rel <= hi + 0.5 * step)
+            keys = np.rint(t_rel[keep] / step).astype(np.int64)
+            curves.append((keys, twin.energies["E_d"][on_grid][keep], step))
+        common = curves[0][0]
+        for keys, _, _ in curves[1:]:
+            common = np.intersect1d(common, keys)
+        energies = np.stack(
+            [e[np.searchsorted(keys, common)] for keys, e, _ in curves]
+        )
+        t = common * curves[0][2]
+    except (FileNotFoundError, ValueError, KeyError, TypeError) as exc:
+        # Every member's twin.dat or none: a mixed set would put the
+        # members on two clocks.  Which source was used is recorded.
+        energies, t = member_energies(series), series.t_rel
+        source = f"twin_yspectra ({type(exc).__name__}: {exc})"
+    with np.errstate(divide="ignore"):
+        geometric = np.exp(np.log(energies).mean(axis=0))
+    saturation = 2.0 * float(series.reference_scale().sum())
+    return GrowthCurves(
+        t=t,
+        energy=geometric[None, :],
+        saturation=np.array([saturation]),
+        labels=[r"$E_\Delta$"],
+        members=energies,
+        source=source,
+    )
+
+
+def member_energies(series: YSeries) -> np.ndarray:
+    """Each member's total difference energy on the frames, ``(n, n_t)``."""
+    weights = series.y_weights
+    out = []
+    for index in range(series.n_members):
+        records, rows = series.source(index, "e_x")
+        e = np.asarray(records["e_x"][rows], dtype=np.float64)
+        out.append(np.einsum("j,tcjk->t", weights, e))
+    return np.stack(out)
+
+
+@dataclass(frozen=True)
+class GrowthPhases:
+    r"""The two phases a growth curve is marked by, by stated criteria.
+
+    ``exponential`` and ``decorrelation`` are ``(t_start, t_stop,
+    rate)`` in outer time, or ``None``: the longest window over which
+    `$\gamma$` -- respectively `$\mathrm{d}f/\mathrm{d}t$`, below
+    :data:`GROWTH_R_MAX` and after the exponential window -- stays
+    within :data:`GROWTH_TOLERANCE` of its own mean
+    (:func:`~dnsjax.analysis.twin.growth.longest_window`).  The rate of
+    the first is the exponential's `$\gamma_0$`, of the second the
+    decorrelation rate `$\nu$`.
+    """
+
+    exponential: tuple[float, float, float] | None
+    decorrelation: tuple[float, float, float] | None
+
+
+def growth_phases(
+    t: np.ndarray, energy: np.ndarray, saturation: float
+) -> GrowthPhases:
+    """One curve's exponential and decorrelation phases.
+
+    The windows :class:`GrowthPhases` describes, by its criteria.
+    """
+    r = energy / saturation
+    gamma = log_rate(t, energy)
+    start, stop, gamma0 = longest_window(
+        gamma, GROWTH_TOLERANCE, valid=(gamma > 0.0) & (r < 0.5)
+    )
+    exponential = None
+    if stop > start:
+        exponential = (float(t[start]), float(t[stop - 1]), gamma0)
+    f = np.where(r <= GROWTH_R_MAX, bound_free(r), np.nan)
+    df = np.gradient(f, t)
+    after = t > (exponential[1] if exponential else -np.inf)
+    a, b, nu = longest_window(
+        df, GROWTH_TOLERANCE, valid=after & (r <= GROWTH_R_MAX) & (df > 0.0)
+    )
+    decorrelation = None
+    if b > a:
+        decorrelation = (float(t[a]), float(t[b - 1]), nu)
+    return GrowthPhases(exponential, decorrelation)
+
+
+#: Pale tints that mark the two phases on a growth figure's time axes,
+#: behind the data: the exponential phase and the decorrelation phase.
+_PHASE_TINTS: tuple[str, str] = ("#dbe8f8", "#fbe0d2")
+
+
+def _shade_phases(ax, phases: GrowthPhases, units: Units) -> None:
+    """Tint the two phases' windows on a time axis, behind everything."""
+    for window, tint in zip(
+        (phases.exponential, phases.decorrelation), _PHASE_TINTS, strict=True
+    ):
+        if window is not None:
+            ax.axvspan(
+                units.plotted_time(window[0]),
+                units.plotted_time(window[1]),
+                color=tint,
+                zorder=0,
+                linewidth=0,
+            )
+
+
+def _time_axis(ax, t_plotted: np.ndarray, units: Units, *, top: bool) -> None:
+    """Grid, limits and (on the top row) the outer-time twin of a time axis."""
+    ax.set_xlim(float(t_plotted[0]), float(t_plotted[-1]))
+    ax.grid(True, color="0.92", linewidth=0.5)
+    if top and units.wall:
+        factor = units.re_tau**2 / units.re
+        ax.secondary_xaxis(
+            "top", functions=(lambda v: v / factor, lambda v: v * factor)
+        ).set_xlabel(r"$t\,U_\mathrm{cl}/h$")
+
+
+def _slope_key(ax, r_end: float, g_end: float) -> None:
+    r"""A key of algebraic slopes on a log-log `$\gamma$`-`$R$` diagram.
+
+    Grey segments ending at one point and rising to the left, of slope
+    `$-1/\alpha$` for `$\alpha$` = 1, 2 and 10, each labelled at its far
+    end: an algebraic phase `$E \propto (t - t_0)^\alpha$` runs parallel
+    to its own (:mod:`dnsjax.analysis.twin.growth`), an exponential to
+    none of them.  Placed by the caller where the data are not.
+    """
+    span = 1.0  # decades of R
+    for alpha in (1.0, 2.0, 10.0):
+        rr = np.array([r_end / 10.0**span, r_end])
+        gg = g_end * (rr / r_end) ** (-1.0 / alpha)
+        ax.plot(rr, gg, color="0.5", linewidth=0.9, zorder=1)
+        ax.annotate(
+            rf"$\alpha = {alpha:g}$",
+            (rr[0], gg[0]),
+            textcoords="offset points",
+            xytext=(-2, 0),
+            fontsize="xx-small",
+            color="0.3",
+            ha="right",
+            va="center",
+        )
+    # One legend entry names the family, so no note crowds the key.
+    ax.plot(
+        [],
+        [],
+        color="0.5",
+        linewidth=0.9,
+        label=r"algebraic, $(t - t_0)^\alpha$: slope $-1/\alpha$",
+    )
+
+
+def _saturation_time(
+    t: np.ndarray, r: np.ndarray, level: float = 0.98
+) -> float:
+    """When *r* first reaches *level*, or the end of the record."""
+    hit = np.flatnonzero(r >= level)
+    return float(t[hit[0]]) if hit.size else float(t[-1])
+
+
+def growth_summary_figure(
+    series: YSeries,
+    curves: GrowthCurves,
+    phases: GrowthPhases,
+    options: MapOptions,
+    style: PlotStyle,
+):
+    r"""Which growth law holds when, read off four sets of axes.
+
+    Each law is a straight line on one of them (module docstring,
+    "Growth laws"), and the two marked phases are tinted alike on every
+    time axis -- the exponential blue, constant-rate decorrelation
+    orange:
+
+    (a) `$\ln R$` against `$t$`: an exponential is a line, fitted on
+        its window and continued both ways, so the departure from it
+        shows;
+    (b) `$\ln\gamma$` against `$\ln R$`: an exponential is flat,
+        saturation alone bends the curve only near `$R = 1$` (the
+        logistic at the exponential's rate), an algebraic law runs
+        parallel to one of the keyed slopes `$-1/\alpha$`, and
+        constant-rate decorrelation follows `$\nu(1 - R)/R$`;
+    (c) `$-\ln(1 - R)$` against `$t$`: constant-rate decorrelation is a
+        line of slope `$\nu$`, where the logistic at the exponential's
+        rate, through the same half-saturation time, would end at slope
+        `$\gamma_0$`;
+    (d) `$R$` against `$t$`, with the tangent at the inflection and the
+        logistic of the same peak slope: the stretch that looks linear
+        is that inflection, as narrow as the logistic's, at an
+        `$O(1)$` fraction of saturation.
+
+    The time axes stop a fifth past the time `$R$` reaches 0.98.
+    """
+    units = options.units
+    t = curves.t
+    tp = units.plotted_time(t)
+    energy = curves.energy[0]
+    sat = float(curves.saturation[0])
+    r = energy / sat
+    gamma = log_rate(t, energy)
+    f = np.where(r <= GROWTH_R_MAX, bound_free(r), np.nan)
+    t_end = min(float(t[-1]), 1.15 * _saturation_time(t, r, GROWTH_R_MAX))
+    tp_end = units.plotted_time(t_end)
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=(style.width * 1.15, style.width * 0.95),
+        layout="constrained",
+    )
+    (ax_e, ax_g), (ax_f, ax_r) = axes
+    exp_w, dec_w = phases.exponential, phases.decorrelation
+    blue, vermillion = _TRACK_SERIES[0], _TRACK_SERIES[3]
+
+    def time_axes(ax, top: bool) -> None:
+        _shade_phases(ax, phases, units)
+        ax.set_xlim(0.0 if tp[0] <= 0 else float(tp[0]), tp_end)
+        ax.grid(True, color="0.92", linewidth=0.5)
+        ax.set_xlabel(units.t_label)
+        if top and units.wall:
+            factor = units.re_tau**2 / units.re
+            ax.secondary_xaxis(
+                "top", functions=(lambda v: v / factor, lambda v: v * factor)
+            ).set_xlabel(r"$t\,U_\mathrm{cl}/h$")
+
+    # (a) ln R against t.
+    time_axes(ax_e, top=True)
+    if curves.members is not None:
+        for member in curves.members:
+            ax_e.plot(tp, member / sat, color="0.82", linewidth=0.4)
+    ax_e.plot(
+        tp,
+        r,
+        color="black",
+        linewidth=1.4,
+        label=r"$R$, member geometric mean",
+    )
+    if exp_w is not None:
+        sel = (t >= exp_w[0]) & (t <= exp_w[1])
+        slope, intercept = np.polyfit(t[sel], np.log(r[sel]), 1)
+        span = exp_w[1] - exp_w[0]
+        tt = np.linspace(max(t[0], exp_w[0] - span), exp_w[1] + 2.5 * span, 50)
+        ax_e.plot(
+            units.plotted_time(tt),
+            np.exp(intercept + slope * tt),
+            color=blue,
+            linestyle=(0, (5, 2)),
+            linewidth=1.3,
+            label=(
+                rf"exponential, $\gamma_0 = {exp_w[2]:.3g}\,"
+                rf"U_\mathrm{{cl}}/h$"
+            ),
+        )
+    ax_e.set_yscale("log")
+    ax_e.set_ylim(r[r > 0].min() * 0.5, 2.0)
+    ax_e.set_ylabel(r"$R = E_\Delta/E_\mathrm{sat}$")
+    ax_e.legend(fontsize="x-small", loc="lower right", frameon=False)
+    for window, colour, name in (
+        (exp_w, blue, "exponential"),
+        (dec_w, vermillion, "decorrelation"),
+    ):
+        if window is not None:
+            ax_e.annotate(
+                name,
+                (units.plotted_time(0.5 * (window[0] + window[1])), 1.0),
+                xycoords=("data", "axes fraction"),
+                textcoords="offset points",
+                xytext=(0, -3),
+                ha="center",
+                va="top",
+                fontsize="xx-small",
+                color=colour,
+            )
+
+    # (b) ln gamma against ln R.
+    ok = (gamma > 0.0) & (r > 0.0) & np.isfinite(gamma)
+    peak = int(np.nanargmax(np.where(ok, gamma, -np.inf)))
+    path = ok & (np.arange(t.size) >= peak)
+    r_lo = float(r[path].min())
+    g_hi = float(gamma[path].max())
+    g_lo = max(float(gamma[path & (r < 0.99)].min()), 3e-3)
+    ax_g.set_xscale("log")
+    ax_g.set_yscale("log")
+    ax_g.set_xlim(r_lo * 0.5, 1.5)
+    ax_g.set_ylim(g_lo * 0.6, g_hi * 1.8)
+    ax_g.plot(
+        r[path],
+        gamma[path],
+        color="black",
+        linewidth=1.4,
+        zorder=3,
+        label=r"$\gamma(R)$",
+    )
+    for window, colour in ((exp_w, blue), (dec_w, vermillion)):
+        if window is not None:
+            sel = path & (t >= window[0]) & (t <= window[1])
+            ax_g.plot(
+                r[sel],
+                gamma[sel],
+                color=colour,
+                linewidth=4.0,
+                alpha=0.45,
+                zorder=2,
+                solid_capstyle="round",
+            )
+    rr = np.logspace(math.log10(r_lo * 0.5), math.log10(1.5), 300)
+    if exp_w is not None:
+        ax_g.plot(
+            rr,
+            logistic_rate(rr, exp_w[2]),
+            color="black",
+            linewidth=0.9,
+            linestyle=(0, (5, 2)),
+            label=r"saturation alone, $\gamma_0(1 - R)$",
+        )
+    if dec_w is not None:
+        big = rr >= 0.03
+        ax_g.plot(
+            rr[big],
+            decorrelation_rate(rr[big], dec_w[2]),
+            color=vermillion,
+            linewidth=1.0,
+            linestyle=(0, (1.5, 1.2)),
+            label=r"constant-rate decorrelation, $\nu(1 - R)/R$",
+        )
+    y_lo, y_hi = math.log10(g_lo * 0.6), math.log10(g_hi * 1.8)
+    _slope_key(
+        ax_g,
+        r_end=10.0 ** (math.log10(r_lo) + 1.8),
+        g_end=10.0 ** (y_lo + 0.1 * (y_hi - y_lo)),
+    )
+    for stamp in (10.0, 20.0, 30.0, 40.0, 50.0, 60.0):
+        i = int(np.argmin(np.abs(t - stamp)))
+        if path[i] and abs(t[i] - stamp) < 1.0 and r[i] < 1.0:
+            ax_g.plot(
+                r[i], gamma[i], "o", color="black", markersize=2.5, zorder=4
+            )
+            ax_g.annotate(
+                rf"$t = {stamp:g}$",
+                (r[i], gamma[i]),
+                textcoords="offset points",
+                xytext=(-4, -2),
+                ha="right",
+                va="top",
+                fontsize="xx-small",
+            )
+    ax_g.set_xlabel(r"$R$")
+    ax_g.set_ylabel(
+        r"$\gamma = \mathrm{d}\ln E_\Delta/\mathrm{d}t$"
+        r" ($U_\mathrm{cl}/h$)"
+    )
+    ax_g.grid(True, color="0.92", linewidth=0.5, which="both")
+    ax_g.legend(
+        fontsize="x-small",
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.24),
+        ncols=2,
+        frameon=False,
+    )
+
+    # (c) -ln(1 - R) against t.
+    time_axes(ax_f, top=False)
+    ax_f.plot(tp, f, color="black", linewidth=1.4, label=r"$-\ln(1 - R)$")
+    if dec_w is not None:
+        sel = (t >= dec_w[0]) & (t <= dec_w[1]) & np.isfinite(f)
+        slope, intercept = np.polyfit(t[sel], f[sel], 1)
+        span = dec_w[1] - dec_w[0]
+        tt = np.linspace(dec_w[0] - 0.7 * span, dec_w[1] + 0.5 * span, 50)
+        ax_f.plot(
+            units.plotted_time(tt),
+            intercept + slope * tt,
+            color=vermillion,
+            linestyle=(0, (5, 2)),
+            linewidth=1.3,
+            label=rf"constant rate, $\nu = {dec_w[2]:.3g}\,U_\mathrm{{cl}}/h$",
+        )
+    if exp_w is not None:
+        half = np.flatnonzero(r >= 0.5)
+        if half.size:
+            t_half = float(t[half[0]])
+            r_log = 1.0 / (1.0 + np.exp(-exp_w[2] * (t - t_half)))
+            f_log = np.where(r_log <= GROWTH_R_MAX, bound_free(r_log), np.nan)
+            ax_f.plot(
+                tp,
+                f_log,
+                color="black",
+                linewidth=0.9,
+                linestyle=(0, (1.5, 1.5)),
+                label=r"logistic at $\gamma_0$, same $t$ at $R = 1/2$",
+            )
+    ax_f.set_ylim(0.0, float(bound_free(np.array(GROWTH_R_MAX))) * 1.05)
+    ax_f.set_ylabel(r"$f = -\ln(1 - R) = -\ln C$")
+    ax_f.legend(fontsize="x-small", loc="upper left", frameon=False)
+
+    # (d) R against t: the inflection, and the logistic of its slope.
+    time_axes(ax_r, top=False)
+    ax_r.plot(tp, r, color="black", linewidth=1.4, label=r"$R$")
+    dr = np.gradient(r, t)
+    k = int(np.nanargmax(np.where(r < 0.9, dr, -np.inf)))
+    peak_slope = float(dr[k])
+    if peak_slope > 0.0:
+        rate = 4.0 * peak_slope
+        shift = math.log(1.0 / min(max(r[k], 1e-9), 1.0 - 1e-9) - 1.0)
+        ax_r.plot(
+            tp,
+            1.0 / (1.0 + np.exp(-rate * (t - t[k]) + shift)),
+            color="black",
+            linewidth=0.9,
+            linestyle=(0, (1.5, 1.5)),
+            label="logistic with that peak slope",
+        )
+        width = 1.0 / rate
+        tt = np.linspace(t[k] - 2.0 * width, t[k] + 2.0 * width, 20)
+        ax_r.plot(
+            units.plotted_time(tt),
+            r[k] + peak_slope * (tt - t[k]),
+            color=blue,
+            linestyle=(0, (5, 2)),
+            linewidth=1.2,
+            label="tangent at the inflection",
+        )
+        ax_r.plot(
+            units.plotted_time(t[k]),
+            r[k],
+            "o",
+            color=blue,
+            markersize=3.5,
+            zorder=4,
+        )
+    ax_r.set_ylim(0.0, 1.08)
+    ax_r.set_ylabel(r"$R$")
+    ax_r.legend(fontsize="x-small", loc="lower right", frameon=False)
+    for ax, letter in zip(axes.flat, "abcd", strict=True):
+        ax.set_title(f"({letter})", loc="left", fontsize="small")
+    origin = (
+        "twin.dat" if curves.source == "twin.dat" else "the spectra stream"
+    )
+    fig.suptitle(
+        "Growth of the difference energy: exponential (blue), "
+        "constant-rate decorrelation (orange)\n"
+        + _spacetime_suptitle(series, units)
+        + f", from {origin}",
+        fontsize="small",
+    )
+    return fig
+
+
+def _band_colours(curves: GrowthCurves) -> list:
+    """One colour per curve: lightness by its scale, black for `$k = 0$`."""
+    cmap = plt.get_cmap(_BAND_CMAP)
+    coords = curves.coords
+    finite = coords[np.isfinite(coords)]
+    lo, hi = np.log(finite.min()), np.log(finite.max())
+    out = []
+    for c in coords:
+        if not np.isfinite(c):
+            out.append("black")
+            continue
+        x = 0.5 if hi == lo else (np.log(c) - lo) / (hi - lo)
+        out.append(
+            cmap(_BAND_RANGE[0] + x * (_BAND_RANGE[1] - _BAND_RANGE[0]))
+        )
+    return out
+
+
+def growth_bands_figure(
+    series: YSeries,
+    curves: GrowthCurves,
+    title: str,
+    options: MapOptions,
+    style: PlotStyle,
+    *,
+    rate_panels: tuple[tuple[str, tuple[str, ...]], ...],
+):
+    r"""The growth laws of a family of bands, and what feeds each.
+
+    The `$\gamma$`-`$R$` diagram and `$-\ln(1 - R)$` per band, as on
+    the summary figure, and two of the band budget's groups per unit
+    band energy (*rate_panels*: a title and the groups it adds) --
+    the same-`$k$` and the cross-scale terms for a wavelength band, the
+    production and the transport for a wall distance.  Lightness is
+    the band's scale; the `$k = 0$` band is black.
+    """
+    units = options.units
+    t = curves.t
+    tp = units.plotted_time(t)
+    colours = _band_colours(curves)
+    n_rows = 2 if curves.rates else 1
+    fig, axes = plt.subplots(
+        n_rows,
+        2,
+        figsize=(style.width * 1.15, style.width * 0.48 * n_rows),
+        layout="constrained",
+        squeeze=False,
+    )
+    ax_g, ax_f = axes[0]
+    r_all, gamma_all = curves.r, curves.gamma
+    for index, label in enumerate(curves.labels):
+        r, gamma = r_all[index], gamma_all[index]
+        ok = (gamma > 0.0) & (r > 0.0)
+        peak = int(np.nanargmax(np.where(ok, gamma, -np.inf)))
+        path = ok & (np.arange(t.size) >= peak)
+        dash = (0, (4, 2)) if not np.isfinite(curves.coords[index]) else "-"
+        ax_g.plot(
+            r[path],
+            gamma[path],
+            color=colours[index],
+            linewidth=1.1,
+            linestyle=dash,
+            label=label,
+        )
+        ax_f.plot(
+            tp,
+            curves.f[index],
+            color=colours[index],
+            linewidth=1.1,
+            linestyle=dash,
+        )
+    g0 = float(
+        np.nanmedian(
+            np.nanmax(np.where(gamma_all > 0, gamma_all, np.nan), axis=1)
+        )
+    )
+    rr = np.logspace(-6, 0, 200)
+    ax_g.plot(
+        rr,
+        logistic_rate(rr, g0),
+        color="black",
+        linewidth=0.8,
+        linestyle=(0, (5, 2)),
+        label=r"$\gamma_0(1 - R)$",
+    )
+    ax_g.set_xscale("log")
+    ax_g.set_yscale("log")
+    r_lo = float(np.nanmin(np.where(r_all > 0, r_all, np.nan)))
+    ax_g.set_xlim(max(r_lo, 1e-8) * 0.5, 1.5)
+    ax_g.set_ylim(3e-3, 1.0)
+    _slope_key(
+        ax_g, r_end=10.0 ** (math.log10(max(r_lo, 1e-8)) + 3.0), g_end=5e-3
+    )
+    ax_g.set_xlabel(r"$R$")
+    ax_g.set_ylabel(r"$\gamma$ ($U_\mathrm{cl}/h$)")
+    ax_g.grid(True, color="0.92", linewidth=0.5, which="both")
+    ax_f.set_ylim(0.0, float(bound_free(np.array(GROWTH_R_MAX))) * 1.05)
+    ax_f.set_ylabel(r"$-\ln(1 - R)$")
+    ax_f.set_xlabel(units.t_label)
+    _time_axis(ax_f, tp, units, top=True)
+    if curves.rates:
+        for ax, (heading, groups) in zip(axes[1], rate_panels, strict=True):
+            for index in range(len(curves.labels)):
+                total = sum(curves.rates[g][index] for g in groups)
+                dash = (
+                    (0, (4, 2))
+                    if not np.isfinite(curves.coords[index])
+                    else "-"
+                )
+                ax.plot(
+                    tp,
+                    total,
+                    color=colours[index],
+                    linewidth=1.0,
+                    linestyle=dash,
+                )
+            ax.axhline(0.0, color="0.6", linewidth=0.6)
+            ax.set_ylabel(heading + r" ($U_\mathrm{cl}/h$)")
+            ax.set_xlabel(units.t_label)
+            _time_axis(ax, tp, units, top=False)
+    fig.legend(
+        *ax_g.get_legend_handles_labels(),
+        loc="outside lower center",
+        ncols=5,
+        fontsize="x-small",
+        frameon=False,
+    )
+    fig.suptitle(
+        title + "\n" + _spacetime_suptitle(series, units), fontsize="small"
+    )
+    return fig
+
+
+def growth_ssp_figure(
+    series: YSeries,
+    curves: GrowthCurves,
+    options: MapOptions,
+    style: PlotStyle,
+):
+    r"""The self-sustaining process's three parts, as growth curves.
+
+    Their shares of the difference energy against the reference's
+    (dashed), their `$\gamma$`-`$R$` diagrams, their `$-\ln(1 - R)$`
+    with each one's constant-rate window fitted, and -- where the
+    budget was read -- the `$k_x = 0$` plane's budget per unit energy:
+    the lift-up that builds it, the transfer out of it (breakdown) and
+    the rest (module docstring, "Growth laws").
+    """
+    units = options.units
+    t = curves.t
+    tp = units.plotted_time(t)
+    colours = _TRACK_SERIES[:3]
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=(style.width * 1.15, style.width * 0.95),
+        layout="constrained",
+    )
+    (ax_s, ax_g), (ax_f, ax_b) = axes
+    total = curves.energy.sum(axis=0)
+    shares = curves.saturation / curves.saturation.sum()
+    for index, label in enumerate(curves.labels):
+        ax_s.plot(
+            tp,
+            curves.energy[index] / total,
+            color=colours[index],
+            linestyle=_TRACK_DASHES[index],
+            linewidth=1.2,
+            label=label,
+        )
+        ax_s.axhline(
+            shares[index],
+            color=colours[index],
+            linewidth=0.8,
+            linestyle=(0, (1, 2)),
+        )
+    ax_s.set_yscale("log")
+    ax_s.set_ylabel(r"share of $E_\Delta$ (dotted: reference)")
+    ax_s.set_xlabel(units.t_label)
+    _time_axis(ax_s, tp, units, top=True)
+    ax_s.legend(
+        fontsize="x-small",
+        loc="center right",
+        bbox_to_anchor=(1.0, 0.42),
+        frameon=False,
+    )
+    r_all, gamma_all, f_all = curves.r, curves.gamma, curves.f
+    for index in range(len(curves.labels)):
+        r, gamma = r_all[index], gamma_all[index]
+        ok = (gamma > 0.0) & (r > 0.0)
+        peak = int(np.nanargmax(np.where(ok, gamma, -np.inf)))
+        path = ok & (np.arange(t.size) >= peak)
+        ax_g.plot(
+            r[path],
+            gamma[path],
+            color=colours[index],
+            linestyle=_TRACK_DASHES[index],
+            linewidth=1.2,
+        )
+        ax_f.plot(
+            tp,
+            f_all[index],
+            color=colours[index],
+            linestyle=_TRACK_DASHES[index],
+            linewidth=1.2,
+        )
+        phases = growth_phases(
+            t, curves.energy[index], float(curves.saturation[index])
+        )
+        if phases.decorrelation is not None:
+            a, b, nu = phases.decorrelation
+            sel = (t >= a) & (t <= b) & np.isfinite(f_all[index])
+            if sel.sum() >= 2:
+                slope, intercept = np.polyfit(t[sel], f_all[index][sel], 1)
+                ax_f.plot(
+                    units.plotted_time(t[sel]),
+                    intercept + slope * t[sel],
+                    color=colours[index],
+                    linewidth=3.0,
+                    alpha=0.35,
+                    label=rf"$\nu = {nu:.3g}$",
+                )
+    g0 = float(
+        np.nanmedian(
+            np.nanmax(np.where(gamma_all > 0, gamma_all, np.nan), axis=1)
+        )
+    )
+    rr = np.logspace(-6, 0, 200)
+    ax_g.plot(
+        rr,
+        logistic_rate(rr, g0),
+        color="black",
+        linewidth=0.8,
+        linestyle=(0, (5, 2)),
+        label=r"$\gamma_0(1 - R)$",
+    )
+    ax_g.set_xscale("log")
+    ax_g.set_yscale("log")
+    r_lo = float(np.nanmin(np.where(r_all > 0, r_all, np.nan)))
+    ax_g.set_xlim(max(r_lo, 1e-8) * 0.5, 1.5)
+    ax_g.set_ylim(3e-3, 1.0)
+    _slope_key(
+        ax_g, r_end=10.0 ** (math.log10(max(r_lo, 1e-8)) + 3.0), g_end=5e-3
+    )
+    ax_g.set_xlabel(r"$R$")
+    ax_g.set_ylabel(r"$\gamma$ ($U_\mathrm{cl}/h$)")
+    ax_g.grid(True, color="0.92", linewidth=0.5, which="both")
+    ax_g.legend(fontsize="x-small", loc="upper right", frameon=False)
+    ax_f.set_ylim(0.0, float(bound_free(np.array(GROWTH_R_MAX))) * 1.05)
+    ax_f.set_ylabel(r"$-\ln(1 - R)$")
+    ax_f.set_xlabel(units.t_label)
+    ax_f.legend(
+        fontsize="x-small",
+        loc="upper left",
+        frameon=False,
+        title=r"decorrelation rate ($U_\mathrm{cl}/h$)",
+        title_fontsize="x-small",
+    )
+    _time_axis(ax_f, tp, units, top=False)
+    if curves.rates:
+        terms = (
+            ("prod_mean", r"lift-up $\mathcal{P}^{\mathbf{U}}_\Delta$"),
+            ("prod_fluct", r"$\mathcal{P}^{\tilde{\mathbf{u}}}_\Delta$"),
+            (
+                "transfer",
+                r"transfer, $-\mathcal{T}^{\mathbf{u}}_{E_\Delta}"
+                r" - \mathcal{T}^{\Delta\mathbf{u}}_{E_\Delta}$",
+            ),
+            ("diss", r"$-\mathcal{D}_\Delta$"),
+        )
+        slots = {"prod_mean": 0, "prod_fluct": 1, "transfer": 5, "diss": 2}
+        for key, label in terms:
+            if key == "transfer":
+                values = curves.rates["tr_ref"][0] + curves.rates["tr_self"][0]
+            else:
+                values = curves.rates[key][0]
+            ax_b.plot(
+                tp,
+                values,
+                color=_TERM_SERIES[slots[key]],
+                linestyle=_TERM_DASHES[slots[key]],
+                linewidth=1.2,
+                label=label,
+            )
+        ax_b.axhline(0.0, color="0.6", linewidth=0.6)
+        ax_b.set_ylabel(
+            r"$k_x = 0$ plane, per unit energy ($U_\mathrm{cl}/h$)"
+        )
+        ax_b.set_xlabel(units.t_label)
+        ax_b.legend(fontsize="x-small", loc="upper right", frameon=False)
+        _time_axis(ax_b, tp, units, top=False)
+    else:
+        ax_b.set_axis_off()
+    for ax, letter in zip(axes.flat, "abcd", strict=True):
+        ax.set_title(f"({letter})", loc="left", fontsize="small")
+    fig.suptitle(
+        "Streaks, rolls and waves of the difference field\n"
+        + _spacetime_suptitle(series, units),
+        fontsize="small",
+    )
+    return fig
+
+
+def write_growth_npz(
+    path: Path,
+    series: YSeries,
+    curves: GrowthCurves,
+    options: MapOptions,
+    phases: list[GrowthPhases],
+) -> Path:
+    """Dump a growth figure's curves, their derived laws and the phases."""
+
+    def window(w):
+        return np.full(3, np.nan) if w is None else np.asarray(w, dtype=float)
+
+    payload = {
+        "t": curves.t,
+        "t_plotted": options.units.plotted_time(curves.t),
+        "energy": curves.energy,
+        "saturation": curves.saturation,
+        "r": curves.r,
+        "gamma": curves.gamma,
+        "f": curves.f,
+        "log_slope": log_slope(curves.r, curves.gamma),
+        "labels": np.asarray(curves.labels),
+        "coords": (
+            np.full(len(curves.labels), np.nan)
+            if curves.coords is None
+            else curves.coords
+        ),
+        "exponential": np.stack([window(p.exponential) for p in phases]),
+        "decorrelation": np.stack([window(p.decorrelation) for p in phases]),
+        "windows": "(t_start, t_stop, rate) in outer time; rate in U_cl/h",
+        "tolerance": GROWTH_TOLERANCE,
+        "r_max": GROWTH_R_MAX,
+        "rate_units": "U_cl/h (outer time)",
+        "source": curves.source,
+        "n_members": series.n_members,
+        "members": np.asarray([str(m.path) for m in series.members]),
+        "meta_json": json.dumps(_stream_meta(series)),
+        **_units_payload(options),
+    }
+    if curves.members is not None:
+        payload["member_energy"] = curves.members
+    if curves.rates:
+        for group, values in curves.rates.items():
+            payload[f"rate_{group}"] = values
+    np.savez_compressed(path, **payload)
+    return path
+
+
+def render_growth(
+    spectra: YSeries,
+    budget: YSeries | None,
+    spec: SeriesSpec,
+    tag: str,
+    out_dir: Path,
+    *,
+    options: MapOptions,
+    style: PlotStyle,
+    fmt: str = "png",
+    quiet: bool = False,
+) -> list[Path]:
+    """Render one growth-law figure and its ``.npz`` (module docstring)."""
+    kind = spec.marginal
+    if kind == "global":
+        curves = growth_global(spectra, options)
+    elif kind == "ssp":
+        curves = growth_ssp(spectra, options, budget)
+    elif kind == "y":
+        curves = growth_rows(spectra, options, budget)
+    else:
+        curves = growth_bands(spectra, kind, options, budget)
+    phases = [
+        growth_phases(curves.t, curves.energy[i], float(curves.saturation[i]))
+        for i in range(curves.energy.shape[0])
+    ]
+    target = out_dir / tag
+    target.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    if curves.t.size >= 5:
+        if kind == "global":
+            fig = growth_summary_figure(
+                spectra, curves, phases[0], options, style
+            )
+        elif kind == "ssp":
+            fig = growth_ssp_figure(spectra, curves, options, style)
+        elif kind == "y":
+            fig = growth_bands_figure(
+                spectra,
+                curves,
+                "Growth at fixed wall distances",
+                options,
+                style,
+                rate_panels=(
+                    (r"production$/E$", ("prod",)),
+                    (r"transport$/E$", ("transport",)),
+                ),
+            )
+        else:
+            axis = MARGINALS[kind][0]
+            fig = growth_bands_figure(
+                spectra,
+                curves,
+                rf"Growth of the $\lambda_{axis}$ bands",
+                options,
+                style,
+                rate_panels=(
+                    (
+                        r"same-$k$: $\mathcal{P}^{\mathbf{U}}_\Delta/E$",
+                        ("prod_mean",),
+                    ),
+                    (
+                        r"cross-scale: $(\mathcal{P}^{\tilde{\mathbf{u}}}"
+                        r"_\Delta - \mathcal{T}^{\mathbf{u}}"
+                        r" - \mathcal{T}^{\Delta\mathbf{u}})/E$",
+                        ("prod_fluct", "tr_ref", "tr_self"),
+                    ),
+                ),
+            )
+        path = target / f"{tag}.{fmt}"
+        fig.savefig(path, dpi=style.dpi)
+        plt.close(fig)
+        written.append(path)
+    written.append(
+        write_growth_npz(
+            target / f"{tag}.npz", spectra, curves, options, phases
+        )
+    )
+    if not quiet:
+        for path in written:
+            print(f"  {path.name}", flush=True)
+    return written
+
+
 def apply_rcparams(usetex: bool, font_size: float = 11.0) -> None:
     """The write-up's matplotlib style (fonts, preamble, exact size).
 
@@ -4645,6 +7728,10 @@ def available_series(
             out[f"spacetime_{DECORR_K}"] = SeriesSpec(
                 "twin_yspectra", DECORR_K, "", SPACETIME
             )
+        for base in ("e", SHAPE):
+            out[f"history_{base}"] = SeriesSpec(
+                "twin_yspectra", base, "", HISTORY
+            )
     if budget is not None:
         for marginal in budget.suffixes:
             if marginal in MARGINALS:
@@ -4652,6 +7739,27 @@ def available_series(
                     "twin_ybudget", "", marginal, MAP
                 )
         out["spacetime_budget"] = SeriesSpec("twin_ybudget", "", "", SPACETIME)
+        out["history_budget"] = SeriesSpec("twin_ybudget", "", "", HISTORY)
+    if spectra is not None and "r" in spectra.prefixes:
+        for marginal in ("x", "z"):
+            if marginal in spectra.suffixes:
+                out[f"front_{marginal}"] = SeriesSpec(
+                    "twin_yspectra", "e", marginal, FRONT
+                )
+    if spectra is not None and "r" in spectra.prefixes:
+        for kind in ("global", "x", "z", "y", "ssp"):
+            if kind in ("x", "z") and kind not in spectra.suffixes:
+                continue
+            out[f"growth_{kind}"] = SeriesSpec(
+                "twin_yspectra", "e", kind, GROWTH
+            )
+    if spectra is not None and budget is not None:
+        out["moments_y"] = SeriesSpec("twin_ybudget", "", "", MOMENT_BUDGET)
+        for marginal in ("x", "z"):
+            if marginal in spectra.suffixes and marginal in budget.suffixes:
+                out[f"moments_{marginal}"] = SeriesSpec(
+                    "twin_ybudget", "", marginal, MOMENT_BUDGET
+                )
     return out
 
 
@@ -4664,6 +7772,10 @@ def default_series(
     decorr: bool = False,
     decorr_k: bool = False,
     spacetime: bool = False,
+    history: bool = True,
+    moment_budget: bool = False,
+    front: bool = False,
+    growth: bool = False,
 ) -> list[str]:
     r"""The tags rendered when ``--series`` names none.
 
@@ -4694,9 +7806,13 @@ def default_series(
         tag
         for tag, spec in registry.items()
         if (budget or spec.stem != "twin_ybudget")
-        and (x0 or not spec.marginal or spec.marginal in DEFAULT_MARGINALS)
+        and (x0 or spec.marginal not in set(MARGINALS) - DEFAULT_MARGINALS)
         and held.get(spec.base, True)
         and (spacetime or spec.family != SPACETIME)
+        and (history or spec.family != HISTORY)
+        and (moment_budget or spec.family != MOMENT_BUDGET)
+        and (front or spec.family != FRONT)
+        and (growth or spec.family != GROWTH)
     ]
 
 
@@ -4712,6 +7828,10 @@ def needs_reference(series: YSeries, spec: SeriesSpec) -> bool:
     if spec.stem != "twin_yspectra":
         return False
     if spec.base in (DECORR, DECORR_K):
+        return True
+    if spec.family == HISTORY:
+        return spec.base == "e" and "r" in series.prefixes
+    if spec.family in (FRONT, GROWTH):
         return True
     if spec.family == SPACETIME:
         return spacetime_normalises(series, spec.base, spec.marginal)
@@ -4731,6 +7851,7 @@ def render_series(
     fmt: str = "png",
     pad: int | None = None,
     quiet: bool = False,
+    frames: bool = True,
 ) -> list[Path]:
     """Render every frame of one series into ``out_dir/tag``.
 
@@ -4738,9 +7859,13 @@ def render_series(
     label of :attr:`YSeries.index`, zero-padded so a lexical sort is
     the time order.  The series is scanned once first
     (:func:`scan_panels`) for the sign check and the frozen scale, and
-    its :data:`TRACKED` panels once more for their tracks
+    its :data:`TRACKED` panels once more for their tracks and moments
     (:func:`track_peak`), which every frame draws and
     :func:`render_tracks` writes out beside the frames.
+
+    Without *frames* (``--no-frames``) neither the scan nor the frames
+    are made, only the tracks and moments and their figures: what a
+    re-render of those needs, without redrawing every sample.
 
     The reference normalisation a spectra series may carry is a
     property of the member set rather than of a tag, so it is
@@ -4752,15 +7877,17 @@ def render_series(
         else budget_panels(series, marginal)
     )
     ylim = y_limits(series, options, style.ylim)
-    scales, notes = scan_panels(
-        series,
-        panels,
-        options,
-        declared=declared_signs,
-        ylim=ylim,
-    )
-    if notes and not quiet:
-        print("\n".join(notes), flush=True)
+    scales: dict = {}
+    if frames:
+        scales, notes = scan_panels(
+            series,
+            panels,
+            options,
+            declared=declared_signs,
+            ylim=ylim,
+        )
+        if notes and not quiet:
+            print("\n".join(notes), flush=True)
     tracked = [key for key in panels if key[0] in TRACKED]
     tracks = {
         key: track_peak(
@@ -4774,10 +7901,11 @@ def render_series(
     }
 
     target = out_dir / tag
-    target.mkdir(parents=True, exist_ok=True)
     width = pad or len(str(int(series.index.max())))
     written: list[Path] = []
-    for frame in range(series.t_rel.size):
+    if frames:
+        target.mkdir(parents=True, exist_ok=True)
+    for frame in range(series.t_rel.size if frames else 0):
         fig = panel_figure(
             series, frame, panels, options, style, scales, tracks
         )
@@ -4894,6 +8022,53 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also render the k-summed (y, t) maps and their .npz, "
         "for whatever else is selected; off by default",
+    )
+    p.add_argument(
+        "--frames",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="draw one figure per sample of the map series; --no-frames "
+        "keeps only their tracks, moments and the whole-run figures",
+    )
+    p.add_argument(
+        "--history",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="render the premultiplied (y, t) and (lambda, t) histories "
+        "of the tracked quantities (history_e, history_s, "
+        "history_budget); on unless --no-history",
+    )
+    p.add_argument(
+        "--moment-budget",
+        action="store_true",
+        help="also render the budget of the difference spectrum's "
+        "log-coordinate moments (moments_y, moments_x, moments_z); "
+        "needs both streams; off by default",
+    )
+    p.add_argument(
+        "--front",
+        action="store_true",
+        help="also render the decorrelation front, the time each "
+        "(lambda, y) cell's R rises through --front-level for good "
+        "(front_x, front_z); needs the reference; off by default",
+    )
+    p.add_argument(
+        "--front-level",
+        type=float,
+        default=FRONT_LEVEL,
+        help="the decorrelation level the front map times",
+    )
+    p.add_argument(
+        "--cmap-front",
+        default="Blues",
+        help="sequential colour map of the front's times",
+    )
+    p.add_argument(
+        "--growth",
+        action="store_true",
+        help="also render the growth-law figures (growth_global, the "
+        "summary; growth_x / growth_z / growth_y per band; growth_ssp, "
+        "streaks, rolls and waves); needs the reference; off by default",
     )
     p.add_argument(
         "--log-decades",
@@ -5102,6 +8277,10 @@ def main(argv: list[str] | None = None) -> int:
         decorr=args.decorr,
         decorr_k=args.decorr_k,
         spacetime=args.spacetime,
+        history=args.history,
+        moment_budget=args.moment_budget,
+        front=args.front,
+        growth=args.growth,
     )
     unknown = [t for t in tags if t not in registry]
     if unknown:
@@ -5165,6 +8344,60 @@ def main(argv: list[str] | None = None) -> int:
                 f"t = {series.t_rel[0]:g}..{series.t_rel[-1]:g}",
                 flush=True,
             )
+        if spec.family == GROWTH:
+            render_growth(
+                series,
+                opened["twin_ybudget"],
+                spec,
+                tag,
+                args.out,
+                options=options,
+                style=style,
+                fmt=args.format,
+                quiet=args.quiet,
+            )
+            continue
+        if spec.family == FRONT:
+            render_front(
+                series,
+                spec,
+                tag,
+                args.out,
+                options=options,
+                style=style,
+                level=args.front_level,
+                cmap=args.cmap_front,
+                fmt=args.format,
+                quiet=args.quiet,
+            )
+            continue
+        if spec.family == MOMENT_BUDGET:
+            render_moment_budget(
+                opened["twin_yspectra"],
+                opened["twin_ybudget"],
+                spec,
+                tag,
+                args.out,
+                options=options,
+                style=style,
+                fmt=args.format,
+                quiet=args.quiet,
+            )
+            continue
+        if spec.family == HISTORY:
+            render_history(
+                series,
+                spec,
+                tag,
+                args.out,
+                options=options,
+                style=style,
+                decades=args.log_decades,
+                declared_signs=not args.signs_from_data,
+                fmt=args.format,
+                quiet=args.quiet,
+            )
+            continue
         if spec.family == SPACETIME:
             render_spacetime(
                 series,
@@ -5191,6 +8424,7 @@ def main(argv: list[str] | None = None) -> int:
             fmt=args.format,
             pad=args.pad,
             quiet=args.quiet,
+            frames=args.frames,
         )
     return 0
 
