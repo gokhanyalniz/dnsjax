@@ -28,7 +28,8 @@ and diagnostics are fixed on purpose.
 - `solver_benchmark.py`: pallas-vs-dense validation and benchmark
   (`--cpu-bench`, `--cpu-smoke`).
 - `node_benchmark.py`: JAX-free layout and strong-scaling sweep of one
-  problem, `mpirun` or `srun` over nodes (`--dry-run`, `--cpu-smoke`).
+  problem, `mpirun` or `srun` over nodes, each row's `stats.dat` checked
+  against a reference (`--dry-run`, `--cpu-smoke`).
 - `memory_budget.py`: per-rank memory of the as-run step on any layout,
   offline (forced CPU devices; `--child-field-mib` bounds a child).
 - `memory_watch.py`: JAX-free per-node memory sampler (`sample`,
