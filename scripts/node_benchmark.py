@@ -40,6 +40,16 @@ those whose ``np1`` is listed in ``--np1``.  Export
 the collectives run over ``gloo``, which is not what a production run
 should measure.
 
+``--launch-prefix`` runs the launcher under another command.  The use
+it is for: every rank imports some 800 Python modules from the shared
+filesystem at start-up -- close to a thousand file opens and directory
+listings per rank, more with the metadata lookups behind them -- which
+on many full nodes is a burst a parallel filesystem's metadata server
+serves slowly and at everyone's expense.  A tool that has one process
+per node fetch the files and serve the node's ranks removes it -- e.g.
+``--launch-prefix "spindle --slurm --python-prefix=..."`` with
+``--srun-args=--overlap``, as the site documents it.
+
 ``--target gpu`` (e.g. 4 x NVIDIA H200 in one node)
     one process spanning every visible GPU (the launch the
     ``Distribution`` docstring recommends for a single node); sweeps the
@@ -71,6 +81,10 @@ What is reported
   to distributed runtime (imports, rank discovery), to the first step
   (initial condition, operators), and the first step itself (its
   compile);
+- on several nodes, how many nodes the ``np0`` and the ``np1`` groups
+  span (the solver's ``Device grid`` line);
+- each row's deviation from a reference run (``dev``; "Agreement"
+  below);
 - each row's padding: ``--dry-run`` prints, for every layout, what
   the start-up diagnostics would report, without launching anything.
 
@@ -79,6 +93,33 @@ kill, a timeout) are reported with their status and the tail of their
 output, and the sweep continues.  Choose a horizon of a few tens of
 steps at least, e.g. with ``--stop.max_wall_time`` so a row on more
 nodes takes more steps in the same time.
+
+Agreement
+---------
+Every row of a sweep runs one problem, so every row should compute one
+run: the layouts, the ``--exe`` checkouts and any ``--variant`` that
+changes no result (``--solver.wall_normal_matvec dense``, say) agree
+to round-off.  Each row's ``stats.dat`` is compared with a reference
+-- the file ``--stats-reference`` names, else the first row that ran
+-- over the times both carry: the row's ``dev`` is the largest
+difference in any column, in units of the reference's largest
+magnitude (one scale for all columns, since some columns hold only
+round-off; ``_deviation``), a non-finite value counting as infinite.
+Correct runs agree to ~1e-16, a gap that chaos widens only slowly; a
+broken layout or a single-precision slip shows at 1e-8 or more.  With
+``--stats-tolerance`` a row above it is reported as ``deviates``, and
+one that shares no time with the reference past the first (the
+initial state, which every run of the problem shares) as
+``unchecked``, so a broken layout or arm fails the sweep instead of
+merely timing well.
+The check needs the stream (``--outs.it_stats``, unset by default),
+and two more conditions make it sharp: ``--outs.stats_precision 17``,
+or the nine printed digits dominate the round-off; and a
+deterministic start -- a snapshot, or a random field with a fixed
+``--init.random_seed`` (an unset seed is drawn anew by every run).
+At a fixed ``dt`` from one snapshot every row stamps the same times,
+so a reference kept from an earlier sweep carries the check across
+jobs, node counts and machines.
 
 Usage (from the repository root)::
 
@@ -96,11 +137,17 @@ Usage (from the repository root)::
         --launcher srun --nodes 1 2 4 --tasks-per-node 128 \
         --np1 128 64 --repeats 2 --workdir "$PWD/bench" \
         --csv bench.csv --toml parameters.toml --solver-args "..."
+    # rows that must reproduce an earlier run to round-off
+    .venv/bin/python scripts/node_benchmark.py --target cpu \
+        --ranks 4 --stats-reference ref/stats.dat \
+        --stats-tolerance 1e-10 \
+        --solver-args "... --outs.stats_precision 17"
     # the GPU node
     .venv/bin/python scripts/node_benchmark.py --target gpu --gpus 4 \
         --tiles 2,32 1,32 2,64 --precisions double single \
         --solver-args "..."
-    # harness self-check on any machine (2 CPU ranks, tiny problem)
+    # harness self-check on any machine (2 CPU ranks, tiny problem;
+    # its three layouts must agree)
     .venv/bin/python scripts/node_benchmark.py --cpu-smoke
 """
 
@@ -109,6 +156,7 @@ from __future__ import annotations
 import argparse
 import csv
 import itertools
+import math
 import os
 import re
 import shlex
@@ -147,18 +195,31 @@ START_PATTERN = re.compile(rf"Started timestepping at {_STAMP}")
 FIRST_PATTERN = re.compile(rf"First iteration over at {_STAMP}")
 COLLECTIVES_PATTERN = re.compile(r"CPU cross-process collectives: (\S+)")
 OOM_PATTERN = re.compile(r"oom[-_ ]kill|oom killed|out of memory", re.I)
+#: The multi-node layout line (``sharding.node_spans``).
+GRID_PATTERN = re.compile(
+    r"Device grid on (\d+) nodes: each np0 group spans up to (\d+), "
+    r"each np1 group up to (\d+)"
+)
+
+#: The stream every row is checked against the reference (``dev``).
+STATS = "stats.dat"
 
 #: Open MPI's rank-per-core binding.
 OMPI_BINDING = ["--map-by", "core", "--bind-to", "core"]
 #: The ``srun`` flags every row carries.
 SRUN_FIXED = ["--hint=nomultithread", "--kill-on-bad-exit=1"]
 
-#: The ``--cpu-smoke`` problem: small enough for a laptop.
+#: The ``--cpu-smoke`` problem: small enough for a laptop, and seeded
+#: and printed in full so that its layouts must agree.
 SMOKE_ARGS = (
     "--phys.system plane-couette --phys.re 330 --geo.lx 5 --geo.lz 5 "
     "--res.nx 16 --res.ny 17 --res.nz 16 --stop.max_sim_time 0.1 "
+    "--init.random_seed 1 --outs.it_stats 2 --outs.stats_precision 17 "
     "--outs.snapshot_save_initial False --outs.snapshot_save_final False"
 )
+#: The ``--cpu-smoke`` agreement tolerance: far above round-off, far
+#: below any error a broken layout makes.
+SMOKE_TOLERANCE = 1e-10
 
 
 @dataclass
@@ -212,6 +273,7 @@ def _cpu_rows(a: argparse.Namespace) -> list[Row]:
     solver = shlex.split(a.solver_args)
     variants = _named(a.variant, ("base", ""))
     exes = _named(a.exe, ("dnsjax", str(DNSJAX)))
+    prefix = shlex.split(a.launch_prefix) if a.launch_prefix else []
     rows = []
     if a.launcher == "mpirun":
         binding = shlex.split(a.mpirun_args) if a.mpirun_args else OMPI_BINDING
@@ -220,6 +282,7 @@ def _cpu_rows(a: argparse.Namespace) -> list[Row]:
                 _layouts(n, a.np1), variants, exes
             ):
                 cmd = [
+                    *prefix,
                     "mpirun",
                     *(["--oversubscribe"] if a.oversubscribe else []),
                     "-np",
@@ -254,6 +317,7 @@ def _cpu_rows(a: argparse.Namespace) -> list[Row]:
                 _layouts(n, a.np1), variants, exes
             ):
                 cmd = [
+                    *prefix,
                     "srun",
                     f"--nodes={nodes}",
                     f"--ntasks={n}",
@@ -429,6 +493,10 @@ def _parse(out: str, err: str, status: int) -> dict:
     coll = COLLECTIVES_PATTERN.findall(out)
     if coll:
         rec["collectives"] = coll[-1]
+    grid = GRID_PATTERN.findall(out)
+    if grid:
+        nodes, span0, span1 = grid[-1]
+        rec["grid_spans"] = f"nodes={nodes} np0={span0} np1={span1}"
     alive = _stamp(ALIVE_PATTERN, err + out)
     init = _stamp(INIT_PATTERN, out)
     start = _stamp(START_PATTERN, out)
@@ -475,14 +543,110 @@ def _run(row: Row, a: argparse.Namespace, index: int) -> dict:
         except subprocess.TimeoutExpired as exc:
             out, err, status = _to_text(exc.stdout), _to_text(exc.stderr), -1
         t1 = time.time()
+        stats = _read_stats(Path(wd) / STATS)
         if a.workdir:
             (Path(wd) / "out.log").write_text(out)
             (Path(wd) / "err.log").write_text(err)
     rec = _parse(out, err, status)
     rec.update(start_unix=round(t0, 1), end_unix=round(t1, 1), rowdir=wd)
+    if stats is not None:
+        rec["_stats"] = stats
     if rec["status"] != "ok":
         _echo_tail(" ".join(row.cmd[-8:]), out, err)
     return rec
+
+
+def _read_stats(path: Path) -> dict | None:
+    """A run's ``stats.dat`` as ``{column: values}``.
+
+    ``None`` when the file is absent or unreadable (a run that died
+    before its first flush).
+    """
+    if not path.is_file():
+        return None
+    import warnings
+
+    from dnsjax.analysis.twin.series import read_dat
+
+    try:
+        with warnings.catch_warnings():
+            # A header-only stream: numpy warns, read_dat returns empties.
+            warnings.simplefilter("ignore", UserWarning)
+            return read_dat(path)
+    except (OSError, ValueError):
+        return None
+
+
+def _deviation(stats: dict, ref: dict) -> tuple[float, int, str]:
+    """``(dev, rows, column)``: how far *stats* strays from *ref*.
+
+    Over the rows whose ``t`` both carry -- exact matches, since runs
+    that agree step for step stamp identical times -- the largest
+    difference in any column, in units of the reference's largest
+    magnitude over all its columns, and the column it is in.  One scale
+    serves every column because a column can hold nothing but
+    round-off: one zero by construction (the bulk-velocity perturbation
+    under constant-bulk driving) or one small and computed from large
+    terms (the driving that holds the bulk) differs between two correct
+    runs by O(1) of itself, measured, where on the common scale the
+    same runs agree to ~1e-16.  Non-finite values are infinitely far;
+    ``rows`` is 0 when no time is common, and a stream with no column
+    in common is infinitely far.
+    """
+    import numpy as np
+
+    _, ia, ib = np.intersect1d(stats["t"], ref["t"], return_indices=True)
+    if ia.size == 0:
+        return 0.0, 0, ""
+    rows = int(ia.size)
+    cols = [c for c in ref if c != "t" and c in stats]
+    if not cols:
+        return math.inf, rows, "no common column"
+    worst, name = -1.0, ""
+    for col in cols:
+        diff = float(np.max(np.abs(stats[col][ia] - ref[col][ib])))
+        diff = diff if math.isfinite(diff) else math.inf
+        if diff > worst:
+            worst, name = diff, col
+    scale = max(float(np.max(np.abs(ref[col][ib]))) for col in cols)
+    if not math.isfinite(scale):
+        return math.inf, rows, name
+    if scale == 0:
+        return (0.0 if worst == 0 else math.inf), rows, name
+    return worst / scale, rows, name
+
+
+def _check_row(res: dict, ref: dict | None, tol: float | None):
+    """Record a finished row's deviation from *ref*; return the reference.
+
+    With no reference yet, the first ``ok`` row's stream becomes it
+    (and agrees with itself).  With a tolerance, an ``ok`` row above it
+    becomes ``deviates``, and one that cannot be compared -- no stream,
+    or no common time past the first, the initial state every run of
+    the problem shares -- ``unchecked``.
+    """
+    stats = res.pop("_stats", None)
+    if stats is not None:
+        if ref is None and res["status"] == "ok":
+            ref = stats
+        if ref is not None:
+            dev, rows, col = _deviation(stats, ref)
+            res.update(stats_dev=dev, stats_rows=rows, stats_column=col)
+    if tol is not None and res["status"] == "ok":
+        if res.get("stats_rows", 0) < 2:
+            res["status"] = "unchecked"
+        elif not res["stats_dev"] <= tol:
+            res["status"] = "deviates"
+    return ref
+
+
+def _dev_text(res: dict) -> str:
+    """A row's deviation for the table: ``-`` if never compared."""
+    if "stats_dev" not in res:
+        return "-"
+    if not res.get("stats_rows"):
+        return "no t"
+    return f"{res['stats_dev']:.1e}"
 
 
 def _nodelist() -> list[str]:
@@ -510,7 +674,7 @@ def _summarise(rows: list[Row], a: argparse.Namespace) -> None:
     head = f"\n{'layout':<44} {'s/t':>10} {'eff':>5}"
     if srun:
         head += f" {'CU/t':>8}"
-    head += f" {'mem GiB':>13} {'start s':>8}  status"
+    head += f" {'mem GiB':>13} {'start s':>8} {'dev':>8}  status"
     print(head)
     for r in rows:
         res = r.result
@@ -531,14 +695,20 @@ def _summarise(rows: list[Row], a: argparse.Namespace) -> None:
             res.get(k, 0.0)
             for k in ("t_init_s", "t_setup_s", "t_first_step_s")
         )
-        line += f" {mem:>13} {start:8.1f}  {res.get('status', '-')}"
-        print(line)
+        line += f" {mem:>13} {start:8.1f} {_dev_text(res):>8}"
+        print(f"{line}  {res.get('status', '-')}")
     if srun:
         print(
             "\neff: N0 T(N0) / (N T(N)) against the fastest row at the "
             "smallest node count;\nCU/t: node hours per unit of simulated "
             "time; mem: peak GiB per rank / per node;\nstart: process "
             "start to the end of the first (compiling) step."
+        )
+    if any("stats_dev" in r.result for r in rows):
+        print(
+            "dev: largest difference of the row's stats.dat from the "
+            "reference over their\ncommon times, in units of the "
+            "reference's largest magnitude."
         )
 
 
@@ -566,6 +736,10 @@ def _write_csv(rows: list[Row], path: str, hosts: list[str]) -> None:
         "t_setup_s",
         "t_first_step_s",
         "collectives",
+        "grid_spans",
+        "stats_dev",
+        "stats_rows",
+        "stats_column",
         "padding",
         "start_unix",
         "end_unix",
@@ -618,6 +792,11 @@ def main() -> int:
     ap.add_argument("--distribution", nargs="+", default=["block:block"])
     ap.add_argument("--srun-args", default=None, help="extra srun flags")
     ap.add_argument(
+        "--launch-prefix",
+        default=None,
+        help="command the launcher runs under, e.g. 'spindle --slurm'",
+    )
+    ap.add_argument(
         "--np1", nargs="+", default=["all"], help="np1 values to keep"
     )
     ap.add_argument("--variant", action="append", default=[])
@@ -625,6 +804,19 @@ def main() -> int:
     ap.add_argument("--repeats", type=int, default=1)
     ap.add_argument("--workdir", default=None, help="keep run dirs here")
     ap.add_argument("--csv", default=None, help="write one row per run")
+    ap.add_argument(
+        "--stats-reference",
+        default=None,
+        help="stats.dat every row is checked against (default: the "
+        "first row that ran)",
+    )
+    ap.add_argument(
+        "--stats-tolerance",
+        type=float,
+        default=None,
+        help="largest deviation a row may show; above it the row "
+        "'deviates' and the sweep fails",
+    )
     ap.add_argument("--gpus", type=int, default=4)
     ap.add_argument("--tiles", nargs="*", default=[])
     ap.add_argument(
@@ -647,8 +839,15 @@ def main() -> int:
         )
         a.solver_args = a.solver_args or SMOKE_ARGS
         a.timeout = min(a.timeout, 600.0)
+        if a.stats_tolerance is None:
+            a.stats_tolerance = SMOKE_TOLERANCE
     if not a.solver_args and not a.toml:
         ap.error("--solver-args or --toml is required (the problem)")
+    ref = None
+    if a.stats_reference:
+        ref = _read_stats(Path(a.stats_reference))
+        if ref is None:
+            ap.error(f"--stats-reference: no stats in {a.stats_reference}")
     launcher = a.launcher if a.target == "cpu" else None
     if launcher and not (a.dry_run or shutil.which(launcher)):
         ap.error(f"{launcher} not on PATH")
@@ -679,6 +878,7 @@ def main() -> int:
         if (row.np0, row.np1) in pads:
             row.result["padding"] = pads[(row.np0, row.np1)]
         res = row.result
+        ref = _check_row(res, ref, a.stats_tolerance)
         print(
             f"   {res['status']}"
             + (f", {res['s_per_t']:.3e} s/t" if "s_per_t" in res else "")
@@ -686,7 +886,8 @@ def main() -> int:
                 f", {res['host_node_gib']:.0f} GiB per node"
                 if "host_node_gib" in res
                 else ""
-            ),
+            )
+            + (f", dev {_dev_text(res)}" if "stats_dev" in res else ""),
             flush=True,
         )
     _summarise(rows, a)
