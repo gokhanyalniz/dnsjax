@@ -18,11 +18,13 @@ Two figure families, and a tag for each series of each
 (:class:`SeriesSpec`).  A `$(\lambda, y)$` **map** is one figure per
 recorded sample; a **spacetime** map is one figure -- a pair, for its
 two colour scales -- for the whole run.  What a bare invocation draws
-is two sets of maps, each on both wavenumber marginals (``_z`` gives
+is three sets of maps, each on both wavenumber marginals (``_z`` gives
 `$\lambda_x$`; the paper shows only `$\lambda_z$`):
 
 - the **difference** spectra, a panel per velocity component and one
   for their sum;
+- their **shape** maps, the same panels under the `$k\,y^+$`
+  premultiplier and each frame over its own peak ("Shape maps");
 - the ``twin_ybudget`` series: the terms of the difference-energy
   balance, regrouped from the stored densities
   (:func:`~dnsjax.analysis.twin.yspectra.balance_term`) and each drawn
@@ -95,8 +97,9 @@ and the log layer in one frame rather than to be integrated over.
 k\,y\,\Phi\,\mathrm{d}\log k\,\mathrm{d}\log y$` -- which makes the
 area of the *whole map* the energy rather than one wall distance's
 variance.  That is the reading the paper's budget argument needs and
-it is the minority one; it is a knob, not the default.  ``none``
-drops both factors.
+it is the minority one; it is a knob, not the default, except on the
+shape maps, which take it whatever the knob says ("Shape maps").
+``none`` drops both factors.
 
 **Its `$y$` is the wall distance in the plotted units, so (2.8) is
 exact only under ``--outer-units``.**  A premultiplier cancels the
@@ -381,6 +384,49 @@ halves.
 energy *of that frame* rather than of the run, is
 :func:`dnsjax.analysis.twin.decorrelation_ratio`.)
 
+Shape maps
+==========
+The difference spectra once more, as ``spectra_s_x`` /
+``spectra_s_z``, drawn for *where* their energy sits rather than for
+how much of it there is.  Each panel of each frame is the absolute
+quantity of the ``e_*`` panel under the `$k\,y$` premultiplier,
+whatever ``--premultiply`` says, divided by its own peak:
+
+.. math::
+    S_\alpha(y, \lambda) = \frac{k\,y\,\Phi_\alpha(y, k)}
+        {\max_{y,\,\lambda} k\,y\,\Phi_\alpha(y, k)} .
+
+The premultiplier is the area-true pair of "Premultiplication": equal
+areas on the two logarithmic axes are equal energy, so the map shows
+how the energy is distributed over wall distance as well as over
+wavelength, where the `$k$`-premultiplied map shows its local density
+at each wall distance.  The peak is the frame's own, read over the
+rows the box shows -- the ordinate's floor and ``--ylim`` included, as
+for every colour scale ("Colour scales") -- and taken last, after the
+fold and ``--smooth``, so the map reaches 1 there.  The summed panel
+is over the peak of the summed spectrum: one ratio, not a sum of
+three.
+
+The colour scale is therefore `$[0, 1]$` by construction, the same
+bands in every frame whatever ``--clim`` says, and ``--quantile`` does
+not reach it.  A growth phase decades below saturation draws as
+legibly as saturation does, which the frozen ``e_*`` scale cannot give
+and ``--clim frame`` gives only with a colour bar that moves.  The
+band below the first level stays unfilled, as on every non-negative
+map here.
+
+Whatever is constant over a frame cancels from the map: the unit
+conversion, ``volume_fac`` and `$E^{\mathrm{ref}}$`, which a shape map
+is therefore not divided by -- its peak is its scale, and a time
+average adds nothing to that, so a shape-only run never reads the
+reference.  So do the units of `$y$`: a shape map is the same in wall
+and outer units, the `$Re_\tau$` of "Premultiplication" included.  All
+of them survive in the peak, which each panel's title reports on its
+second line, in the plotted units, as an `$E^{\mathrm{ref}}$` is
+reported: the absolute ``ky`` map is the shape map times it.  The
+panels carry the track of their peak, as the ``e_*`` panels do ("Peak
+tracking").
+
 Spacetime maps
 ==============
 Sum a `$(y, k)$` stream over `$k$` and what is left is a `$(y, t)$`
@@ -527,15 +573,20 @@ against freezing on all of them.  The sign family is decided once for
 the whole series in every mode, so a panel never changes colour map
 mid-run.
 
+A shape map takes none of the three: each of its frames is over its
+own peak, so its scale is `$[0, 1]$` in every frame by construction
+("Shape maps").
+
 Peak tracking
 =============
 The panels whose spectra keep one continuous bulk -- every panel of
-the difference spectra, and `$\mathcal{P}_\Delta$` and
-`$\mathcal{P}_\Delta^{\mathbf{U}}$` among the budget terms
-(:data:`TRACKED`) -- carry the track of their peak: a point where it
-is in that frame, and a thin line through where it has been since the
-first (:func:`draw_track`).  Red on a grey map and black on a signed
-one, each haloed in white so it stays legible on the darkest band.
+the difference spectra and of their shape maps, and
+`$\mathcal{P}_\Delta$` and `$\mathcal{P}_\Delta^{\mathbf{U}}$` among
+the budget terms (:data:`TRACKED`) -- carry the track of their peak:
+a point where it is in that frame, and a thin line through where it
+has been since the first (:func:`draw_track`).  Red on a grey map and
+black on a signed one, each haloed in white so it stays legible on the
+darkest band.
 
 The peak is not the largest value, which moves a whole cell at a time
 and jumps between near-equal maxima, but the **centroid of the top
@@ -612,7 +663,8 @@ Everything around the box is a fixed inch budget (the ``_M_*``
 constants), with one thing free: the top margin grows by a line
 (:data:`_TITLE_LINE`) for the two-line title a normalised panel
 carries, so a figure never has to choose between the reported
-`$E^{\mathrm{ref}}$` and its neighbour's tick labels.
+`$E^{\mathrm{ref}}$` (or a shape map's peak) and its neighbour's tick
+labels.
 
 Usage
 =====
@@ -772,6 +824,12 @@ COMPONENTS: tuple[str, ...] = ("u", "v", "w")
 DECORR_K: str = "decorr_k"
 DECORR: str = "decorr"
 
+#: The virtual base of the shape maps: the stored ``e_*`` again,
+#: premultiplied by `$k\,y$` whatever ``--premultiply`` says and each
+#: frame divided by its own peak, so that it spans `$[0, 1]$` in every
+#: frame (module docstring, "Shape maps").
+SHAPE: str = "s"
+
 #: The two figure families a series tag can belong to
 #: (:class:`SeriesSpec`): a `$(\lambda, y)$` map per recorded sample,
 #: or one `$(y, t)$` map for the whole run.
@@ -813,9 +871,9 @@ _LOG_BANDS_PER_DECADE: int = 8
 #: Fields that are non-negative **by construction**, keyed by the base
 #: name: the two spectra prefixes are `$\tfrac12|\hat u|^2$` sums,
 #: which a division by a positive `$E^{\mathrm{ref}}$` leaves them.
-#: Both decorrelations are one of those sums over twice another, so
-#: they inherit it.
-NON_NEGATIVE: frozenset[str] = frozenset({"e", "r", DECORR, DECORR_K})
+#: Both decorrelations are one of those sums over twice another, and a
+#: shape map one of them over its own peak, so they inherit it.
+NON_NEGATIVE: frozenset[str] = frozenset({"e", "r", DECORR, DECORR_K, SHAPE})
 
 #: Budget terms that are non-positive **by construction**: ``diss`` is
 #: `$-\mathcal{D}_\Delta$`, minus a sum of squares.  Drawn on the
@@ -922,13 +980,22 @@ DEFAULT_MARGINALS: frozenset[str] = frozenset({"x", "z"})
 
 #: The map panels that carry the track of their peak (module
 #: docstring, "Peak tracking"): every panel of the two
-#: difference-spectra marginals, and the production and its mean-shear
-#: part on the budget's -- the quantities whose spectra keep one
-#: continuous bulk, which is what makes one centroid a location.
-#: Never the reference spectra, a decorrelation or the `$k_x = 0$`
-#: slice.
+#: difference-spectra marginals and of their shape maps, and the
+#: production and its mean-shear part on the budget's -- the
+#: quantities whose spectra keep one continuous bulk, which is what
+#: makes one centroid a location.  Never the reference spectra, a
+#: decorrelation or the `$k_x = 0$` slice.
 TRACKED: frozenset[str] = frozenset(
-    {"e_x", "e_z", "prod_x", "prod_z", "prod_mean_x", "prod_mean_z"}
+    {
+        "e_x",
+        "e_z",
+        f"{SHAPE}_x",
+        f"{SHAPE}_z",
+        "prod_x",
+        "prod_z",
+        "prod_mean_x",
+        "prod_mean_z",
+    }
 )
 
 #: LaTeX preamble matching the ``perturbation_dynamics`` write-up.
@@ -961,9 +1028,9 @@ _SUP_HEIGHT: float = 0.36
 _TITLE_PAD: float = 12.0
 
 #: What each title line beyond the first adds to ``_M_TOP``, in
-#: inches at the default font size: a panel normalised by
-#: `$E^{\mathrm{ref}}$` reports it on a second line, and ``_M_TOP``
-#: has no slack to absorb one.
+#: inches at the default font size: a normalised panel reports what it
+#: was divided by on a second line -- `$E^{\mathrm{ref}}$`, or a shape
+#: map's peak -- and ``_M_TOP`` has no slack to absorb one.
 _TITLE_LINE: float = 0.17
 
 #: Upper bound on the number of labelled colour-bar ticks.
@@ -2040,7 +2107,9 @@ class MapOptions:
     (2.8)) or ``"none"``, and *y_log* draws the ordinate logarithmic
     (the default); the two are independent, and the default pair is
     the usual convention for a spectrum rather than the paper's own
-    (module docstring, "Premultiplication").  *half* is how the two
+    (module docstring, "Premultiplication").  `$\mathcal{R}$` and the
+    shape maps fix their own premultiplier instead
+    (:func:`map_premultiplier`).  *half* is how the two
     channel halves collapse onto the one wall distance a `$y^+$` axis
     needs (module docstring, "Folding the channel"); *volume_fac*
     multiplies the stored `$y$`-mean density back to the local density
@@ -2066,9 +2135,36 @@ class MapOptions:
     y_log: bool = True
 
 
+def _drawn_rows(
+    y: np.ndarray, y_log: bool, ylim: tuple[float, float] | None
+) -> np.ndarray:
+    """Which wall distances an axis shows, within *ylim*, as a mask.
+
+    The rows :meth:`Map.drawn` keeps and the columns
+    :meth:`SpacetimeMap.drawn` keeps, by the rules the first of them
+    documents, and the rows a shape map's peak is read over
+    (:func:`make_map`), before there is a :class:`Map` to ask.
+    """
+    shown = y > 0.0 if y_log else np.ones(y.size, dtype=bool)
+    keep = shown.copy()
+    if ylim is not None:
+        keep &= (y >= ylim[0]) & (y <= ylim[1])
+        inside = np.flatnonzero(keep)
+        if inside.size:  # the interpolation neighbours, if any
+            keep[max(int(inside[0]) - 1, 0)] = True
+            keep[min(int(inside[-1]) + 1, keep.size - 1)] = True
+        keep &= shown
+    return keep
+
+
 @dataclass(frozen=True)
 class Map:
-    r"""One panel's data: ``values`` on the `$(\lambda, y)$` grid."""
+    r"""One panel's data: ``values`` on the `$(\lambda, y)$` grid.
+
+    ``peak`` is set on a shape map alone: the frame's own peak it was
+    divided by, which is what :func:`draw_map` reads to put it on the
+    `$[0, 1]$` scale it has by construction.
+    """
 
     lam: np.ndarray  # (n_lam,) wavelength, plotted units
     y: np.ndarray  # (n_y,) wall distance, plotted units
@@ -2077,6 +2173,7 @@ class Map:
     name: str  # the stored field it came from
     non_negative: bool  # declared or inferred; sets the colour family
     y_log: bool = False  # whether the ordinate is drawn logarithmic
+    peak: float | None = None  # a shape map's divisor, plotted units
 
     @property
     def lam_axis(self) -> str:
@@ -2113,18 +2210,7 @@ class Map:
         levels, and the unrestricted ones are what it draws, so a
         contour still reaches the edge of the box.
         """
-        if self.y_log:
-            shown = self.y > 0.0
-        else:
-            shown = np.ones(self.y.size, dtype=bool)
-        keep = shown.copy()
-        if ylim is not None:
-            keep &= (self.y >= ylim[0]) & (self.y <= ylim[1])
-            inside = np.flatnonzero(keep)
-            if inside.size:  # the interpolation neighbours, if any
-                keep[max(int(inside[0]) - 1, 0)] = True
-                keep[min(int(inside[-1]) + 1, keep.size - 1)] = True
-            keep &= shown
+        keep = _drawn_rows(self.y, self.y_log, ylim)
         return self.y[keep], self.values[keep]
 
 
@@ -2260,6 +2346,24 @@ def map_divisor(
     return _symmetrise_y(divisor, half)
 
 
+def map_premultiplier(base: str, options: MapOptions) -> str:
+    r"""Which premultiplier a map of *base* takes: ``k``, ``ky`` or ``none``.
+
+    ``--premultiply``'s, for `$\mathcal{R}^k$` and every absolute map,
+    and fixed for the other two.  `$\mathcal{R}$` takes none: it
+    divides mode by mode, so its `$k$` would cancel against its
+    divisor's, and the map is no longer additive in `$k$` for a `$y$`
+    factor to act on either (module docstring, "Decorrelation").  A
+    shape map takes both, whatever ``--premultiply`` says (module
+    docstring, "Shape maps").
+    """
+    if base == DECORR:
+        return "none"
+    if base == SHAPE:
+        return "ky"
+    return options.premultiply
+
+
 def y_limits(
     series: YSeries,
     options: MapOptions,
@@ -2384,10 +2488,10 @@ def panel_symbol(
     if field_kind(series) == "rate":
         return TERM_LABELS.get(base, ("", base.replace("_", r"\_")))
     superscript = MARGINALS[suffix][1]
-    delta = r"\Delta " if base == "e" else ""
+    # A shape map draws the difference spectrum too.
+    delta = r"\Delta " if base in ("e", SHAPE) else ""
     if component is None:
-        inner = rf"{delta}\alpha" if base == "e" else r"\alpha"
-        return "", rf"\sum_\alpha E^{{{superscript}}}_{{{inner}}}"
+        return "", rf"\sum_\alpha E^{{{superscript}}}_{{{delta}\alpha}}"
     return "", rf"E^{{{superscript}}}_{{{delta}{COMPONENTS[component]}}}"
 
 
@@ -2408,13 +2512,16 @@ def field_title(
     name: str,
     component: int | None,
     options: MapOptions,
+    peak: float | None = None,
 ) -> str:
     r"""The LaTeX panel title for one stored (or virtual) field.
 
     A normalised panel (:func:`normalises`) gets a second line
     carrying its `$E^{\mathrm{ref}}$` in the units the figure is
     drawn in, which is what makes its colour bar recoverable as an
-    absolute one; :func:`panel_geometry` budgets the extra line.
+    absolute one; :func:`panel_geometry` budgets the extra line.  A
+    shape map's second line carries its *peak* the same way, for the
+    same reason.
     """
     base, _, suffix = name.rpartition("_")
     axis = MARGINALS[suffix][0]
@@ -2425,7 +2532,7 @@ def field_title(
         "ky": rf"{wavenumber}{plus} y{plus}\,",
         "k": rf"{wavenumber}{plus}\,",
         "none": "",
-    }[options.premultiply if base != DECORR else "none"]
+    }[map_premultiplier(base, options)]
     if base in (DECORR, DECORR_K):
         # Which marginal it is comes off the abscissa (and off the
         # premultiplier where there is one), as it does for a
@@ -2435,6 +2542,16 @@ def field_title(
         sub = "" if component is None else f"_{{{COMPONENTS[component]}}}"
         return rf"${factor}\mathcal{{R}}{sup}{sub}$"
     sign, body = panel_symbol(series, name, component)
+    if base == SHAPE:
+        # Over the frame's own peak, which keeps the units the map has
+        # shed and is reported in the plotted ones, as an E_ref is
+        # (module docstring, "Shape maps").
+        top = r"\max"
+        return (
+            f"${factor}{body}/{top}$\n"
+            f"${top}{options.units.norm_suffix(kind)} = "
+            f"{latex_float(peak)}$"
+        )
     scale = reference_norm(series, name, component)
     if scale is None:
         return f"${sign}{factor}{body}{options.units.norm_suffix(kind)}$"
@@ -2454,12 +2571,13 @@ def make_map(
     options: MapOptions,
     component: int | None = None,
     non_negative: bool | None = None,
+    ylim: tuple[float, float] | None = None,
 ) -> Map:
     r"""Build one premultiplied map from a stored (or virtual) field.
 
     *name* is a stored field such as ``e_x``, a balance term such as
     ``prod_z`` (:func:`balance_field`), or one of the virtual
-    ``sum_x`` / ``decorr_x`` / ``decorr_k_x``;
+    ``sum_x`` / ``decorr_x`` / ``decorr_k_x`` / ``s_x``;
     *component* selects a velocity component of a ``twin_yspectra``
     field (``None`` sums the three).  *frame* indexes the series'
     subsampled records.  *non_negative* overrides the declaration of
@@ -2476,10 +2594,18 @@ def make_map(
     divisor a `$(0, 0)$`-carrying reference would get wrong, and a
     ratio that is only right where it happens to be plotted is not
     worth having.
+
+    A shape panel (``s_*``) is the absolute ``e_*`` panel under the
+    `$k\,y$` premultiplier, divided **last** by its own peak over the
+    rows the box shows -- *ylim*, :func:`y_limits`' default when
+    ``None`` -- so that it spans `$[0, 1]$` there; the peak is
+    :attr:`Map.peak` and its title's second line (module docstring,
+    "Shape maps").  Every other map ignores *ylim*.
     """
     base, _, suffix = name.rpartition("_")
     decorr = base in (DECORR, DECORR_K)
-    values = series.field(f"e_{suffix}" if decorr else name)[frame]
+    stored = f"e_{suffix}" if decorr or base == SHAPE else name
+    values = series.field(stored)[frame]
     if series.stem == "twin_yspectra":
         divisor = map_divisor(series, base, suffix, options.half)
         if component is None:
@@ -2494,12 +2620,8 @@ def make_map(
         raise ValueError(f"{series.stem}: {name} has no component axis")
 
     values = values[:, 1:]  # lambda = L/m has no place at m = 0
-    # R divides mode by mode, so its k-premultiplier cancels with its
-    # divisor's and the map is no longer additive in k for a y one to
-    # act on either; R^k and every absolute map take both (module
-    # docstring, "Decorrelation").
-    premultiplies = base != DECORR
-    if premultiplies and options.premultiply != "none":
+    premultiply = map_premultiplier(base, options)
+    if premultiply != "none":
         values = values * series.harmonics(suffix)[None, 1:]
     if not decorr:
         if options.volume_fac:
@@ -2517,16 +2639,27 @@ def make_map(
 
     values, wall_distance = _select_half(values, series.y, options.half)
     y = options.units.length(wall_distance)
-    if premultiplies and options.premultiply == "ky":
+    if premultiply == "ky":
         # A second logarithmic axis needs its own premultiplier, in
         # the units the ordinate is drawn in (module docstring).
         values = values * y[:, None]
     values = _running_mean(values, options.smooth)
+    peak = None
+    if base == SHAPE:
+        # Over the frame's own peak, read off the rows the box shows,
+        # as every colour scale is; an identically zero field has none
+        # and stays zero rather than going nan.
+        rows = _drawn_rows(y, options.y_log, y_limits(series, options, ylim))
+        shown = values[rows]
+        finite = shown[np.isfinite(shown)]
+        peak = float(finite.max()) if finite.size else 0.0
+        if peak > 0.0:
+            values = values / peak
     return Map(
         lam=options.units.length(series.wavelengths(suffix)),
         y=y,
         values=values,
-        title=field_title(series, name, component, options),
+        title=field_title(series, name, component, options, peak),
         name=name,
         non_negative=(
             declared_non_negative(name)
@@ -2534,6 +2667,7 @@ def make_map(
             else non_negative
         ),
         y_log=options.y_log,
+        peak=peak,
     )
 
 
@@ -2625,6 +2759,7 @@ def scan_panels(
                 options=options,
                 component=component,
                 non_negative=True,  # irrelevant here; decided below
+                ylim=ylim,
             ).drawn(ylim)
             finite = values[np.isfinite(values)]
             if finite.size:
@@ -2963,7 +3098,14 @@ def draw_map(
     (*data_range*, already restricted by :func:`scan_panels`) or taken
     from this frame.  Everything inside the box is still drawn from the
     unrestricted array.
+
+    A shape map (:attr:`Map.peak`) is drawn on `$[0, 1]$` whatever
+    *data_range* and *quantile* say: it is over its own peak, so that
+    is its scale in every frame by construction (module docstring,
+    "Shape maps").
     """
+    if map_.peak is not None:
+        data_range, quantile = (0.0, 1.0), None
     ax.set_xscale("log")
     ax.set_yscale("log" if map_.y_log else "linear")
     y, values = map_.drawn()
@@ -3288,6 +3430,7 @@ def panel_figure(
     them all.  A panel with an entry in *tracks* carries its peak's
     track up to this frame (:func:`draw_track`).
     """
+    ylim = y_limits(series, options, style.ylim)
     maps = [
         make_map(
             series,
@@ -3296,11 +3439,11 @@ def panel_figure(
             options=options,
             component=component,
             non_negative=scales[(name, component)].non_negative,
+            ylim=ylim,
         )
         for name, component in panels
     ]
     xlim = style.xlim or (maps[0].lam.min(), maps[0].lam.max())
-    ylim = y_limits(series, options, style.ylim)
     geometry = panel_geometry(
         len(panels),
         xlim,
@@ -3446,7 +3589,12 @@ def track_peak(
         [
             peak_centroid(
                 make_map(
-                    series, name, frame, options=options, component=component
+                    series,
+                    name,
+                    frame,
+                    options=options,
+                    component=component,
+                    ylim=ylim,
                 ),
                 n_levels,
                 ylim,
@@ -3601,7 +3749,10 @@ def write_track_npz(
         "re": units.re,
         "re_tau": units.re_tau,
         "half": options.half,
-        "premultiply": options.premultiply,
+        # What the tracked maps took, which a shape map fixes itself.
+        "premultiply": map_premultiplier(
+            keys[0][0].rpartition("_")[0], options
+        ),
         "volume_fac_applied": options.volume_fac,
         "smooth": options.smooth,
         "stem": series.stem,
@@ -3698,17 +3849,7 @@ class SpacetimeMap:
         this, which is what keeps a wall peak the ordinate floors away
         from setting a scale no visible contour reaches.
         """
-        shown = (
-            self.y > 0.0 if self.y_log else np.ones(self.y.size, dtype=bool)
-        )
-        keep = shown.copy()
-        if ylim is not None:
-            keep &= (self.y >= ylim[0]) & (self.y <= ylim[1])
-            inside = np.flatnonzero(keep)
-            if inside.size:  # the interpolation neighbours, if any
-                keep[max(int(inside[0]) - 1, 0)] = True
-                keep[min(int(inside[-1]) + 1, keep.size - 1)] = True
-            keep &= shown
+        keep = _drawn_rows(self.y, self.y_log, ylim)
         return self.y[keep], self.values[:, keep]
 
 
@@ -4443,9 +4584,10 @@ class SeriesSpec:
     """What one series tag names.
 
     *base* is a stored spectra prefix (``e`` / ``r``), one of the two
-    virtual decorrelations, or empty for a budget series, whose panels
-    are its terms.  *marginal* is empty exactly when `$k$` has been
-    summed away, which is what makes such a series marginal-free.
+    virtual decorrelations, the virtual :data:`SHAPE`, or empty for a
+    budget series, whose panels are its terms.  *marginal* is empty
+    exactly when `$k$` has been summed away, which is what makes such
+    a series marginal-free.
     """
 
     stem: str  # which stream it reads
@@ -4463,13 +4605,14 @@ def available_series(
     marginal -- :data:`MARGINALS` intersected with what the sidecar
     says the stream carries, so a default run offers no ``_x0`` tag
     because it has no such field, and ``xz00`` never becomes a tag at
-    all -- plus a decorrelation tag per marginal and a spacetime tag
-    per `$k$`-summable quantity.
+    all -- plus a shape tag and a decorrelation tag per true marginal,
+    and a spacetime tag per `$k$`-summable quantity.
 
     Neither decorrelation is offered for the `$k_x = 0$` plane, for
     the reason its panels are already left absolute: it is a slice of
     the mode plane and its divisor would be built from the whole.
-    Both need the stream's reference half.  Which tags come out
+    Both need the stream's reference half; a shape map needs only the
+    difference spectra it redraws.  Which tags come out
     normalised by `$E^{\mathrm{ref}}$` is :func:`normalises` /
     :func:`spacetime_normalises`, not a tag of its own, and which are
     rendered *by default* is :func:`default_series`.
@@ -4489,6 +4632,10 @@ def available_series(
                 out[f"spacetime_{prefix}_x0"] = SeriesSpec(
                     "twin_yspectra", prefix, "x0", SPACETIME
                 )
+        for marginal in ("x", "z"):
+            out[f"spectra_{SHAPE}_{marginal}"] = SeriesSpec(
+                "twin_yspectra", SHAPE, marginal, MAP
+            )
         if "r" in spectra.prefixes:
             for base in (DECORR_K, DECORR):
                 for marginal in ("x", "z"):
@@ -4520,19 +4667,19 @@ def default_series(
 ) -> list[str]:
     r"""The tags rendered when ``--series`` names none.
 
-    Two families are drawn unasked, both as maps on the two
-    wavenumber marginals: the difference spectra, and the
-    ``twin_ybudget`` set, which ``--no-budget`` (*budget* false)
-    drops.  Five are held back, each behind its own flag rather than a
-    tag the caller has to know the name of, and each of the five is a
-    ``False`` here: the reference spectra are the turbulent flow's
-    own, statistically the same in every frame; the `$k_x = 0$` plane
-    is a slice of the mode plane rather than a marginal of it (and
-    only a legacy or ``twin.x0_planes`` stream has one); the two
-    decorrelations and the `$k$`-summed `$(y, t)$` maps are second
-    readings of the same records, and a rendering run pays for each in
-    full.  ``--series`` overrides every one of them: naming a tag
-    renders it.
+    Three families are drawn unasked, all as maps on the two
+    wavenumber marginals: the difference spectra, their shape maps,
+    and the ``twin_ybudget`` set, which ``--no-budget`` (*budget*
+    false) drops.  Five are held back, each behind its own flag rather
+    than a tag the caller has to know the name of, and each of the
+    five is a ``False`` here: the reference spectra are the turbulent
+    flow's own, statistically the same in every frame; the
+    `$k_x = 0$` plane is a slice of the mode plane rather than a
+    marginal of it (and only a legacy or ``twin.x0_planes`` stream has
+    one); the two decorrelations and the `$k$`-summed `$(y, t)$` maps
+    are second readings of the same records, and a rendering run pays
+    for each in full.  ``--series`` overrides every one of them:
+    naming a tag renders it.
 
     The composite cases fall out of the predicate rather than being
     special-cased.  ``spacetime_decorr_k`` needs *both* ``decorr_k``
@@ -4557,10 +4704,10 @@ def needs_reference(series: YSeries, spec: SeriesSpec) -> bool:
     """Whether rendering *spec* touches the reference average.
 
     What decides whether ``main`` prints that average's report, and
-    so whether a run pays for the pass at all: a budget-only or
-    absolute-only selection never builds it.  *series* is the spectra
-    series, whatever stream *spec* names -- the reference average is
-    one and lives there.
+    so whether a run pays for the pass at all: a budget-only,
+    absolute-only or shape-only selection never builds it.  *series*
+    is the spectra series, whatever stream *spec* names -- the
+    reference average is one and lives there.
     """
     if spec.stem != "twin_yspectra":
         return False
@@ -4706,8 +4853,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="TAG",
         help="exact series tags to render, overriding every selection "
-        "switch (default: the difference-spectra and budget marginals "
-        "present)",
+        "switch (default: the difference-spectra, shape and budget "
+        "marginals present)",
     )
     p.add_argument(
         "--budget",
@@ -4760,7 +4907,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("ky", "k", "none"),
         default="k",
         help="premultiplier: both axes (log ordinate), wavenumber "
-        "only, or neither",
+        "only, or neither; the shape maps always take both",
     )
     p.add_argument(
         "--yscale",
