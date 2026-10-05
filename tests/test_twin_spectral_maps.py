@@ -120,6 +120,37 @@ What each case pins:
     frame of one shape grown by decades; the peak is what the title
     reports, a zero field keeps zeros, and the figure's levels are the
     same `$[0, 1]$` bands under every ``--clim`` and ``--quantile``.
+19. **History maps.** The `$(y, t)$` map is the `$k$`-summed map times
+    the plotted wall distance, the `$(\lambda, t)$` map the
+    wall-normal average over the doubled half-channel weights times
+    `$m$` with `$m = 0$` dropped -- each premultiplied after its sum,
+    ``--no-volume-fac`` reaching neither average; the two read one
+    total; a shape history's rows reach 1 in any unit system; the
+    budget history's production is its two parts; and the renderer
+    writes what the family promises, the logarithmic figure only for
+    an absolute non-negative history.
+20. **Quantile lines** sit at their fractions of a uniform density in
+    `$\ln x$` (in `$x$` on a linear axis), and an empty or negative
+    row has none.
+21. **Size and tilt.** A Gaussian planted in `$(\ln\lambda, \ln y)$`
+    comes back with its centroid and covariance; a constant factor
+    moves nothing; a signed map's moments are its positive part's,
+    the negative share reported; the ellipse is `$d^\top C^{-1} d =
+    1$`; every tracked frame carries its moments; and ``--no-frames``
+    writes the tracks and moments and no frame.
+22. **The moment budget closes.** On a stream whose terms add up to
+    `$\partial_t e$`, the per-term rates sum to the moments' own
+    rates in physical space and on both marginals, and two streams on
+    different frames are refused.
+23. **Front times** take the last upward crossing of the level,
+    interpolated, so a dip below it is not the crossing; a cell never
+    above it is ``nan``, one never below it the first time -- which
+    is every cell of a saturated pair.
+24. **Growth laws.** A curve built exponential-then-constant-rate is
+    marked with both rates; the global curve aligns the members'
+    ``twin.dat`` on whole steps, is their geometric mean, records its
+    source and falls back to the spectra totals without one; and a
+    band's budget rates are its own terms over its own energy.
 
 Usage::
 
@@ -947,9 +978,10 @@ def test_layouts_and_default_series() -> None:
     under ``twin.x0_planes``.  All three must open; the `$(0, 0)$`
     mode `$E^{\mathrm{ref}}$` subtracts is the same number in all
     three, whichever field it is read from; and what is *drawn* is the
-    two difference-spectra marginals and their shape maps, and the
-    budget's where there is one, unless a switch asks for more -- each
-    of the five adding its own family and nothing else.
+    two difference-spectra marginals, their shape maps and the
+    histories of both, and the budget's where there is one, unless a
+    switch asks for more -- each adding its own family and nothing
+    else, ``--no-history`` taking the histories away.
     """
     scales = {}
     registries = {}
@@ -988,10 +1020,13 @@ def test_layouts_and_default_series() -> None:
     # The shape maps redraw the two true marginals, never the slice.
     assert f"spectra_{tsm.SHAPE}_x0" not in registries["x0_planes"]
 
-    spectra = [f"spectra_{p}_{m}" for p in ("e", tsm.SHAPE) for m in "xz"]
+    maps = [f"spectra_{p}_{m}" for p in ("e", tsm.SHAPE) for m in "xz"]
+    spectra = maps + [f"history_{p}" for p in ("e", tsm.SHAPE)]
     reference = [f"spectra_r_{m}" for m in ("x", "z")]
     decorr = [f"spectra_decorr_{m}" for m in ("x", "z")]
     decorr_k = [f"spectra_decorr_k_{m}" for m in ("x", "z")]
+    front = ["front_x", "front_z"]
+    growth = [f"growth_{k}" for k in ("global", "x", "z", "y", "ssp")]
     everything = dict(
         x0=True,
         budget=True,
@@ -999,12 +1034,18 @@ def test_layouts_and_default_series() -> None:
         decorr=True,
         decorr_k=True,
         spacetime=True,
+        front=True,
+        growth=True,
+        moment_budget=True,
     )
     for label, registry in registries.items():
         # The bare default of a spectra stream is the two marginals of
-        # the difference spectra and of their shape maps, and nothing
-        # of the reference's.
+        # the difference spectra and of their shape maps, with the
+        # histories of both, and nothing of the reference's.
         assert sorted(tsm.default_series(registry)) == sorted(spectra), label
+        assert sorted(tsm.default_series(registry, history=False)) == (
+            sorted(maps)
+        ), label
         # Each switch adds its own family and nothing else.  The
         # reference's and R^k's spacetime maps are the composites --
         # each needs both of its switches, so neither alone brings it.
@@ -1021,6 +1062,8 @@ def test_layouts_and_default_series() -> None:
                 {"decorr_k": True, "spacetime": True},
                 decorr_k + ["spacetime_e", "spacetime_decorr_k"],
             ),
+            ({"front": True}, front),
+            ({"growth": True}, growth),
         ):
             got = tsm.default_series(registry, **switch)
             assert set(got) - set(spectra) == set(gained), (label, switch)
@@ -1040,18 +1083,30 @@ def test_layouts_and_default_series() -> None:
         *spectra,
         "budget_x",
         "budget_z",
+        "history_budget",
     }
     assert set(tsm.default_series(both, budget=False)) == set(spectra)
     assert set(tsm.default_series(both, spacetime=True)) == {
         *spectra,
         "budget_x",
         "budget_z",
+        "history_budget",
         "spacetime_e",
         "spacetime_budget",
     }
     assert "spacetime_budget" not in tsm.default_series(
         both, spacetime=True, budget=False
     )
+    # The moment budget needs both streams and its own switch, and
+    # --no-budget drops it with the rest of the budget.
+    moments = {"moments_y", "moments_x", "moments_z"}
+    assert moments <= set(both)
+    assert not moments & set(tsm.default_series(both))
+    assert moments <= set(tsm.default_series(both, moment_budget=True))
+    assert not moments & set(
+        tsm.default_series(both, moment_budget=True, budget=False)
+    )
+    assert not moments & set(tsm.available_series(opened["default"], None))
     print("layouts, their tags, and one E_ref across all three: OK")
 
 
@@ -1926,9 +1981,12 @@ def test_peak_track() -> None:
     )
     lines = [len(ax.get_lines()) for ax in figure.axes[0::2]]
     history = figure.axes[0].get_lines()[0].get_xdata()
+    ellipse = figure.axes[0].get_lines()[2]
     plt.close(figure)
-    assert lines == [2, 2] + [0] * 7, lines
+    # The history, the frame's point and the frame's one-sigma ellipse.
+    assert lines == [3, 3] + [0] * 7, lines
     assert np.array_equal(history, tracks[tracked[0]].lam)
+    assert ellipse.get_linestyle() == "--" and len(ellipse.get_xdata()) > 50
 
     # The band is the frame's own, so no colour scale moves the track,
     # and the figure and .npz beside the frames say so.
@@ -1947,7 +2005,12 @@ def test_peak_track() -> None:
                 quiet=True,
             )
             track_dir = out / clim / "budget_x_track"
-            names = ["budget_x_track.npz", "budget_x_track.png"]
+            names = [
+                "budget_x_moments.npz",
+                "budget_x_moments.png",
+                "budget_x_track.npz",
+                "budget_x_track.png",
+            ]
             assert sorted(p.name for p in track_dir.iterdir()) == names
             assert set(names) <= {p.name for p in written}
             stored[clim] = np.load(track_dir / "budget_x_track.npz")
@@ -2157,13 +2220,14 @@ def test_main_renders_the_selected_series() -> None:
         assert code == 0
         # The bare default set: the difference-spectra, shape and
         # budget marginals, each with the track of its tracked panels
-        # beside it, and nothing else.
+        # beside it, and the three histories, and nothing else.
         maps = [
             f"{kind}_{m}"
             for kind in ("spectra_e", f"spectra_{tsm.SHAPE}", "budget")
             for m in "xz"
         ]
-        defaults = {*maps, *(f"{tag}_track" for tag in maps)}
+        histories = {f"history_{b}" for b in ("e", tsm.SHAPE, "budget")}
+        defaults = {*maps, *(f"{tag}_track" for tag in maps), *histories}
         assert {p.name for p in out.iterdir()} == defaults
         for tag in maps:
             frames = sorted((out / tag).glob("*.png"))
@@ -2173,7 +2237,12 @@ def test_main_renders_the_selected_series() -> None:
             ], tag
             assert all(f.stat().st_size > 0 for f in frames)
             track = sorted(f.name for f in (out / f"{tag}_track").iterdir())
-            assert track == [f"{tag}_track.npz", f"{tag}_track.png"], tag
+            assert track == [
+                f"{tag}_moments.npz",
+                f"{tag}_moments.png",
+                f"{tag}_track.npz",
+                f"{tag}_track.png",
+            ], tag
         # A budget figure is three columns of the spectra's panels: the
         # geometry is independent of the axis limits, so any serve.
         style = tsm.PlotStyle(dpi=50)
@@ -2241,7 +2310,7 @@ def test_main_renders_the_selected_series() -> None:
             for prefix in ("e", tsm.SHAPE)
             for m in "xz"
             for track in ("", "_track")
-        }
+        } | {f"history_{b}" for b in ("e", tsm.SHAPE)}
         parser = tsm.build_parser()
         required = ["--members", "m", "--out", "o", "--re", "1"]
         for extra, drawn in (
@@ -2282,6 +2351,12 @@ def test_main_renders_the_selected_series() -> None:
                     "spacetime_budget",
                 },
             ),
+            (["--front"], {"front_x", "front_z"}),
+            (["--moment-budget"], {"moments_y", "moments_x", "moments_z"}),
+            (
+                ["--growth"],
+                {f"growth_{k}" for k in ("global", "x", "z", "y", "ssp")},
+            ),
         ):
             target = root / "-".join(e.strip("-") for e in extra)
             assert run(target, *extra) == 0
@@ -2300,6 +2375,498 @@ def test_main_renders_the_selected_series() -> None:
             lambda: run(root / "none", "--series", "spectra_e_x0"),
             "unknown series",
         )
+
+
+def test_history_maps() -> None:
+    r"""The premultiplied histories, each premultiplied after its sum.
+
+    The `$(y, t)$` map is the `$k$`-summed spacetime map times the wall
+    distance in the plotted units; the `$(\lambda, t)$` map is the
+    wall-normal average over the doubled half-channel weights, the
+    `$m = 0$` column dropped, times `$m$`, ascending in wavelength and
+    over `$E^{\mathrm{ref}}$` -- untouched by ``--no-volume-fac``.  The
+    two read one total; a shape history's rows each reach 1 and do not
+    see the unit system; a budget history's production is its two
+    parts; and the renderer writes the figures and ``.npz`` the family
+    promises, the logarithmic one only where every panel is a
+    non-negative absolute energy.
+    """
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    meta = _meta("twin_yspectra")
+    rec = _records(meta, "twin_yspectra", 4, seed=41)
+    series = _series("twin_yspectra", [_member(meta, rec)])
+    scale = series.reference_scale()
+    for component in (1, None):
+        plain = tsm.make_spacetime(
+            series, "e", options=options, component=component
+        )
+        pre = tsm.make_spacetime(
+            series, "e", options=options, component=component, premultiply=True
+        )
+        assert np.allclose(pre.values, plain.values * plain.y[None, :])
+        assert pre.provenance["premultiplier"] == "y"
+        assert pre.title.startswith("$y^+")
+    n_half = (NY + 1) // 2
+    weights = 2.0 * np.asarray(meta["y_weights"])[:n_half]
+    weights[-1] = meta["y_weights"][n_half - 1]  # the mid-plane: itself
+    assert np.allclose(tsm.half_weights(series), weights)
+    harmonics = np.arange(NKZ, dtype=float)
+    for component in (0, None):
+        e = (
+            rec["e_x"].sum(axis=1)
+            if component is None
+            else rec["e_x"][:, component]
+        )
+        folded = 0.5 * (e[:, :n_half] + e[:, ::-1][:, :n_half])
+        average = np.einsum("j,tjk->tk", weights, folded)
+        over = scale.sum() if component is None else scale[component]
+        want = (average[:, 1:] * harmonics[1:])[:, ::-1] / over
+        drawn = tsm.make_scaletime(
+            series, "e", "x", options=options, component=component
+        )
+        assert np.allclose(drawn.values, want)
+        assert np.all(np.diff(drawn.lam) > 0.0)
+        no_vf = tsm.MapOptions(options.units, volume_fac=False)
+        again = tsm.make_scaletime(
+            series, "e", "x", options=no_vf, component=component
+        )
+        assert np.allclose(again.values, drawn.values)
+    # One total, read both ways: the lambda map's bands, unpremultiplied
+    # and with the m = 0 column back, average to what the y map holds.
+    bands = drawn.values[:, ::-1] / harmonics[None, 1:] * scale.sum()
+    zero = tsm.y_averaged(series, "e", "x", "mean").sum(axis=1)[:, 0]
+    plain = tsm.make_spacetime(series, "e", options=options)
+    profile = plain.values * scale.sum() / VOLUME_FAC
+    assert np.allclose(
+        bands.sum(axis=1) + zero, np.einsum("j,tj->t", weights, profile)
+    )
+    # A shape history: each row over its own peak, in any unit system.
+    outer = tsm.MapOptions(tsm.Units(RE, RE_TAU, wall=False))
+    for component in (0, None):
+        wall_map = tsm.make_spacetime(
+            series, tsm.SHAPE, options=options, component=component
+        )
+        outer_map = tsm.make_spacetime(
+            series, tsm.SHAPE, options=outer, component=component
+        )
+        ylim = tsm.y_limits(series, options)
+        _, shown = wall_map.drawn(ylim)
+        assert np.allclose(shown.max(axis=1), 1.0)
+        assert np.allclose(wall_map.values, outer_map.values)
+        assert wall_map.provenance["row_peaks"].shape == (rec.size,)
+        lam_map = tsm.make_scaletime(
+            series, tsm.SHAPE, "z", options=options, component=component
+        )
+        assert np.allclose(lam_map.values.max(axis=1), 1.0)
+        assert np.allclose(
+            lam_map.values,
+            tsm.make_scaletime(
+                series, tsm.SHAPE, "z", options=outer, component=component
+            ).values,
+        )
+    # The budget's production is its two parts, in both histories.
+    budget_meta = _meta("twin_ybudget")
+    budget = _series(
+        "twin_ybudget",
+        [_member(budget_meta, _records(budget_meta, "twin_ybudget", 4))],
+    )
+    whole = tsm.make_spacetime(
+        budget, "prod", options=options, premultiply=True
+    )
+    parts = [
+        tsm.make_spacetime(budget, t, options=options, premultiply=True)
+        for t in ("prod_mean", "prod_fluct")
+    ]
+    assert np.allclose(whole.values, parts[0].values + parts[1].values)
+    whole = tsm.make_scaletime(budget, "prod", "z", options=options)
+    parts = [
+        tsm.make_scaletime(budget, t, "z", options=options)
+        for t in ("prod_mean", "prod_fluct")
+    ]
+    assert np.allclose(whole.values, parts[0].values + parts[1].values)
+    with tempfile.TemporaryDirectory() as scratch:
+        out = Path(scratch)
+        style = tsm.PlotStyle(dpi=40)
+        expected = {
+            "e": ["lin", "log"],
+            tsm.SHAPE: ["lin"],
+            "": ["lin"],
+        }
+        for base, scales in expected.items():
+            stem = "twin_ybudget" if base == "" else "twin_yspectra"
+            which = budget if base == "" else series
+            tag = f"history_{base or 'budget'}"
+            written = tsm.render_history(
+                which,
+                tsm.SeriesSpec(stem, base, "", tsm.HISTORY),
+                tag,
+                out,
+                options=options,
+                style=style,
+                quiet=True,
+            )
+            want = sorted(
+                [f"{tag}_{k}_{sc}.png" for k in "yxz" for sc in scales]
+                + [f"{tag}_{k}.npz" for k in "yxz"]
+            )
+            assert sorted(p.name for p in written) == want, (tag, written)
+            stored = np.load(out / tag / f"{tag}_x.npz")
+            n_panels = 3 if base == "" else 4
+            assert stored["values"].shape[:2] == (n_panels, rec.size)
+            assert str(stored["premultiplier"]) == "k"
+            assert str(stored["abscissa"]) == "lambda_z"
+            assert stored["quantiles"].shape == (n_panels, rec.size, 3)
+            if base == tsm.SHAPE:
+                assert np.isfinite(stored["row_peaks"]).all()
+            else:
+                assert np.isnan(stored["row_peaks"]).all()
+            assert (
+                str(np.load(out / tag / f"{tag}_y.npz")["premultiplier"])
+                == "y"
+            )
+    print("history maps: OK")
+
+
+def test_quantile_curves() -> None:
+    """The quantile lines of a history: of the as-drawn density."""
+    x = np.logspace(0.0, 2.0, 201)
+    values = np.ones((3, x.size))
+    values[1] = 0.0  # nothing drawn: no quantile
+    values[2] = -1.0  # negative values carry no mass either
+    q = tsm.quantile_curves(x, values, (0.1, 0.5, 0.9))
+    # Uniform in ln x: the quantiles sit at those fractions of the axis.
+    assert np.allclose(np.log10(q[0]), [0.2, 1.0, 1.8], atol=0.01)
+    assert np.isnan(q[1:]).all()
+    # A linear axis measures in x itself.
+    lin = tsm.quantile_curves(
+        np.linspace(0.0, 10.0, 101), np.ones((1, 101)), (0.5,), x_log=False
+    )
+    assert np.allclose(lin, 5.0, atol=0.06)
+    print("quantile lines: OK")
+
+
+def _gaussian_map(values_scale: float = 1.0, shift: float = 0.0) -> tsm.Map:
+    """A planted Gaussian blob in (ln lambda, ln y), as a drawn map."""
+    lam = np.logspace(1.0, 3.0, 161)
+    y = np.logspace(0.0, 2.2, 151)
+    dx = np.log(lam)[None, :] - np.log(150.0)
+    dy = np.log(y)[:, None] - np.log(30.0)
+    inv = np.linalg.inv([[0.3, 0.1], [0.1, 0.25]])
+    q = inv[0, 0] * dx**2 + 2.0 * inv[0, 1] * dx * dy + inv[1, 1] * dy**2
+    return tsm.Map(
+        lam=lam,
+        y=y,
+        values=values_scale * np.exp(-0.5 * q) - shift,
+        title="",
+        name="s_x",
+        non_negative=True,
+        y_log=True,
+    )
+
+
+def test_size_and_tilt() -> None:
+    r"""The moments of a map as drawn: planted, scaled, signed, drawn.
+
+    A Gaussian blob planted in `$(\ln\lambda, \ln y)$` comes back with
+    its centroid and covariance; a constant factor moves nothing (the
+    moments are ratios over the mass); a signed field's moments are
+    its positive part's, with the negative share reported; the frame's
+    one-sigma ellipse is the curve `$d^\top C^{-1} d = 1$`; every
+    tracked frame carries its moments; and ``--no-frames`` writes the
+    tracks and moments without a single frame.
+    """
+    from dnsjax.analysis.twin.moments import log_moments
+
+    sums, share = tsm.map_moment_sums(_gaussian_map())
+    m = log_moments(sums)
+    assert abs(float(m.mean_lam) - np.log(150.0)) < 2e-3
+    assert abs(float(m.mean_y) - np.log(30.0)) < 2e-3
+    assert np.allclose(
+        [m.var_lam, m.var_y, m.cov], [0.3, 0.25, 0.1], atol=3e-3
+    )
+    assert share == 0.0
+    scaled = log_moments(tsm.map_moment_sums(_gaussian_map(5.0))[0])
+    for name in ("mean_lam", "mean_y", "var_lam", "var_y", "cov"):
+        assert np.isclose(getattr(scaled, name), getattr(m, name))
+    signed, share = tsm.map_moment_sums(_gaussian_map(shift=0.1))
+    assert share > 0.0
+    positive = tsm.map_moment_sums(
+        tsm.Map(
+            lam=_gaussian_map().lam,
+            y=_gaussian_map().y,
+            values=np.maximum(_gaussian_map(shift=0.1).values, 0.0),
+            title="",
+            name="s_x",
+            non_negative=True,
+            y_log=True,
+        )
+    )[0]
+    assert np.allclose(signed, positive)
+    frames = log_moments(sums[None, :])
+    x, y = tsm.ellipse_points(frames, 0)
+    d = np.vstack([x - frames.mean_lam[0], y - frames.mean_y[0]])
+    cov = np.array(
+        [[frames.var_lam[0], frames.cov[0]], [frames.cov[0], frames.var_y[0]]]
+    )
+    assert np.allclose(np.einsum("in,ij,jn->n", d, np.linalg.inv(cov), d), 1.0)
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    meta = _meta("twin_ybudget")
+    budget = _series(
+        "twin_ybudget",
+        [_member(meta, _records(meta, "twin_ybudget", 3, seed=89))],
+    )
+    track = tsm.track_peak(
+        budget,
+        "prod_x",
+        None,
+        options=options,
+        n_levels=10,
+        ylim=tsm.y_limits(budget, options),
+    )
+    assert track.moments.mass.shape == (3,)
+    assert track.negative.shape == (3,) and np.all(track.negative >= 0.0)
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        spectra_meta = _meta("twin_yspectra")
+        _write_member(
+            root / "a",
+            "twin_yspectra",
+            spectra_meta,
+            _records(spectra_meta, "twin_yspectra", 3, seed=5),
+        )
+        code = tsm.main(
+            [
+                "--members",
+                str(root / "a"),
+                "--out",
+                str(root / "out"),
+                "--re",
+                str(RE),
+                "--re-tau",
+                str(RE_TAU),
+                "--series",
+                "spectra_e_x",
+                "--stride",
+                "1",
+                "--no-frames",
+                "--usetex",
+                "off",
+                "--dpi",
+                "40",
+                "--quiet",
+            ]
+        )
+        assert code == 0
+        assert sorted(p.name for p in (root / "out").iterdir()) == [
+            "spectra_e_x_track"
+        ]
+        names = sorted(
+            p.name for p in (root / "out" / "spectra_e_x_track").iterdir()
+        )
+        assert names == [
+            "spectra_e_x_moments.npz",
+            "spectra_e_x_moments.png",
+            "spectra_e_x_track.npz",
+            "spectra_e_x_track.png",
+        ]
+        stored = np.load(
+            root / "out" / "spectra_e_x_track" / "spectra_e_x_moments.npz"
+        )
+        assert stored["rho"].shape == (4, 3)
+        assert str(stored["premultiply"]) == "k"
+    print("size and tilt: OK")
+
+
+def _linear_pair(n_t: int = 41, dt: float = 0.01, seed: int = 3):
+    r"""A spectra and a budget member whose terms add up to `$\partial_t e$`.
+
+    The difference energy is linear in time on every plane entry, and
+    the six stored densities that make up the rate are a random split
+    of its slope (``eps`` is free: it cancels between the dissipation
+    and the viscous transport), so the moment budget must close on the
+    moments' own rates up to the differencing of the sampled clock.
+    """
+    rng = np.random.default_rng(seed)
+    base = rng.random((3, NY, NKZ, NKX)) + 0.5
+    slope = rng.random((3, NY, NKZ, NKX)) - 0.3
+    t = 100.0 + dt * np.arange(n_t)
+    s_meta, b_meta = _meta("twin_yspectra"), _meta("twin_ybudget")
+    spectra = np.zeros(n_t, dtype=tsm._record_dtype(s_meta, "twin_yspectra"))
+    budget = np.zeros(n_t, dtype=tsm._record_dtype(b_meta, "twin_ybudget"))
+    spectra["t"] = budget["t"] = t
+    plane = base[None] + (t - t[0])[:, None, None, None, None] * slope[None]
+    blocks = {
+        "x": lambda a: a.sum(axis=-1),
+        "z": lambda a: a.sum(axis=-2),
+        "xz00": lambda a: a[..., 0, 0],
+    }
+    for suffix, block in blocks.items():
+        spectra[f"e_{suffix}"] = block(plane)
+        spectra[f"r_{suffix}"] = block(np.broadcast_to(base, plane.shape))
+    rate = slope.sum(axis=0)  # the component-summed rate, (ny, nkz, nkx)
+    shares = rng.random(6)
+    shares /= shares.sum()
+    noise = rng.standard_normal((6, NY, NKZ, NKX))
+    noise -= noise.mean(axis=0)
+    stored = ("P_U", "P_r", "T_ref", "T_self", "V", "Wp")
+    for index, term in enumerate(stored):
+        density = shares[index] * rate + 0.3 * noise[index]
+        for suffix, block in blocks.items():
+            budget[f"{term}_{suffix}"] = block(
+                np.broadcast_to(density, (n_t, *density.shape))
+            )
+    eps = rng.random((NY, NKZ, NKX))
+    for suffix, block in blocks.items():
+        budget[f"eps_{suffix}"] = block(
+            np.broadcast_to(eps, (n_t, *eps.shape))
+        )
+    return (s_meta, spectra), (b_meta, budget)
+
+
+def test_moment_budget() -> None:
+    """The per-term rates add up to the moments' own rates."""
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    (s_meta, s_rec), (b_meta, b_rec) = _linear_pair()
+    spectra = _series("twin_yspectra", [_member(s_meta, s_rec)])
+    budget = _series("twin_ybudget", [_member(b_meta, b_rec)])
+    for marginal in ("", "x", "z"):
+        result = tsm.moment_budget(spectra, budget, marginal, options)
+        fields = (
+            ("mass", "mean_y", "var_y")
+            if not marginal
+            else ("mass", "mean_lam", "mean_y", "var_lam", "var_y", "cov")
+        )
+        for name in fields:
+            total = result["total"][name][1:-1]
+            own = result["finite_difference"][name][1:-1]
+            big = np.abs(result["contributions"][name]).max()
+            assert np.allclose(total, own, atol=2e-3 * big), (marginal, name)
+        assert len(result["groups"]) == 7
+        assert ("press_input" in result["groups"]) == (not marginal)
+    short = _series("twin_ybudget", [_member(b_meta, b_rec[:-1])])
+    _raises(
+        lambda: tsm.moment_budget(spectra, short, "x", options),
+        "different grids",
+    )
+    print("moment budget closes: OK")
+
+
+def test_front_times() -> None:
+    """When each cell rises through the level for good."""
+    t = np.arange(5.0)
+    r = np.array(
+        [
+            [0.6, 0.0, 0.1, 0.0, 0.7],
+            [0.4, 0.1, 0.2, 0.6, 0.8],
+            [0.3, 0.2, 0.3, 0.7, 0.9],
+            [0.6, 0.3, 0.9, 0.8, 0.9],
+            [0.7, 0.4, 1.0, 0.9, 0.9],
+        ]
+    )
+    got = tsm.front_times(t, r, 0.5)
+    # A dip below the level is not the crossing; the last rise is.
+    want = [2.0 + 0.2 / 0.3, np.nan, 2.0 + 0.2 / 0.6, 0.5 / 0.6, 0.0]
+    assert np.allclose(got, want, equal_nan=True), got
+    # A pair that has decorrelated completely is above the level from
+    # the first frame, everywhere.
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    meta = _meta("twin_yspectra")
+    series = _series("twin_yspectra", [_member(meta, _saturated(meta))])
+    for map_ in tsm.front_maps(series, "x", options):
+        finite = map_.values[np.isfinite(map_.values)]
+        assert finite.size and np.allclose(
+            finite, options.units.plotted_time(series.t_rel[0])
+        )
+    print("front times: OK")
+
+
+def test_growth_laws() -> None:
+    r"""The growth figures' phases, global curve and band rates.
+
+    A curve built to grow exponentially and then lose correlation at a
+    constant rate is marked with both rates; the global curve aligns
+    every member's ``twin.dat`` on whole steps, falls back to the
+    spectra totals without one, and is their geometric mean; and a
+    band's budget rates are the band's own terms over its energy.
+    """
+    gamma0, nu, t1 = 0.4, 0.06, 30.0
+    t = np.arange(0.0, 120.0, 0.1)
+    f = (nu / gamma0) * np.log1p(np.exp(gamma0 * (t - t1)))
+    sat = 2.5
+    phases = tsm.growth_phases(t, sat * (1.0 - np.exp(-f)), sat)
+    assert abs(phases.exponential[2] - gamma0) < 0.1 * gamma0
+    assert abs(phases.decorrelation[2] - nu) < 0.1 * nu
+    assert phases.decorrelation[0] > phases.exponential[1]
+    options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
+    meta = _meta("twin_yspectra")
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        members = []
+        for index, start in enumerate((100.0, 237.5)):
+            rec = _records(meta, "twin_yspectra", 4, t0=start, seed=index)
+            directory = _write_member(
+                root / f"m{index}",
+                "twin_yspectra",
+                meta,
+                rec,
+                parent_t=start,
+            )
+            record = json.loads((directory / "twin.json").read_text())
+            record["dt"] = 0.01
+            record["format_version"] = 1
+            (directory / "twin.json").write_text(json.dumps(record))
+            steps = np.arange(0, 311, 10)  # every 0.1 over 3.1 units
+            t_abs = start + 0.01 * steps
+            energy = (1.0 + index) * np.exp(0.3 * 0.01 * steps)
+            lines = ["#  t  E_d  E_ref"] + [
+                f"  {ta:.9g}  {e:.9g}  {1.0:.9g}"
+                for ta, e in zip(t_abs, energy, strict=True)
+            ]
+            (directory / "twin.dat").write_text("\n".join(lines) + "\n")
+            members.append(directory)
+        series = tsm.open_series(members, "twin_yspectra")
+        curves = tsm.growth_global(series, options)
+        assert curves.source == "twin.dat", curves.source
+        assert curves.members.shape == (2, 31)
+        assert np.allclose(curves.t, 0.1 * np.arange(31))
+        assert np.allclose(
+            curves.energy[0], np.sqrt(curves.members[0] * curves.members[1])
+        )
+        assert np.isclose(
+            curves.saturation[0], 2.0 * series.reference_scale().sum()
+        )
+        (members[1] / "twin.dat").unlink()  # one member without it
+        fallback = tsm.growth_global(
+            tsm.open_series(members, "twin_yspectra"), options
+        )
+        assert fallback.source.startswith("twin_yspectra")
+        assert np.allclose(fallback.t, series.t_rel)
+        totals = tsm.member_energies(series)
+        assert np.allclose(fallback.members, totals)
+    # A band's rates are its own terms over its own energy.
+    spectra = _series(
+        "twin_yspectra",
+        [_member(meta, _records(meta, "twin_yspectra", 4, seed=2))],
+    )
+    b_meta = _meta("twin_ybudget")
+    budget = _series(
+        "twin_ybudget",
+        [_member(b_meta, _records(b_meta, "twin_ybudget", 4, seed=8))],
+    )
+    bands = tsm.growth_bands(spectra, "z", options, budget)
+    columns = tsm._band_columns(NKX)
+    want_energy = tsm.y_averaged(spectra, "e", "z", "mean").sum(axis=1)
+    mean = tsm._y_averaged_many(spectra, ["e_xz00"], "mean")[0].sum(axis=1)
+    want_energy[:, 0] -= mean
+    assert np.allclose(bands.energy, want_energy[:, columns].T)
+    prod_mean = tsm.y_averaged(budget, "prod_mean", "z", "mean")
+    prod_mean[:, 0] -= tsm._y_averaged_many(
+        budget, ["prod_mean_xz00"], "mean"
+    )[0]
+    assert np.allclose(
+        bands.rates["prod_mean"], prod_mean[:, columns].T / bands.energy
+    )
+    print("growth laws: OK")
 
 
 # ── Runner ───────────────────────────────────────────────────────────
