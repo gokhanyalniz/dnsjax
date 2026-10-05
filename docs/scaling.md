@@ -287,7 +287,12 @@ several, and tabulates the seconds per time unit, the parallel
 efficiency, the cost in node hours per time unit, the start-up time and
 the peak memory, which the closing summary of every run reports: the
 device's on GPU, the operating system's on CPU (`Peak host memory`, per
-rank and for the fullest node). The starting points below are
+rank and for the fullest node). It also compares each row's `stats.dat`
+with a reference — the first row, or a file kept from an earlier sweep
+(`--stats-reference`) — so a sweep doubles as a check that every layout
+computes the same run to round-off: `--stats-tolerance` fails a row that
+does not, given a stats stream (`--outs.it_stats`) printed at
+`--outs.stats_precision 17`. The starting points below are
 configuration, not measurements.
 
 **A two-socket CPU node** (for example 2 × 64-core AMD EPYC 7742): one
@@ -369,6 +374,19 @@ directly; its `--exe` arms compare two checkouts in one sweep.
 count (`--ranks 16 32 64 128` by default, or `--np1` to keep a few),
 so the table also shows the rank count at which the step stops
 scaling.
+
+**Start-up on many nodes.** Every rank imports some 800 Python modules
+from the shared filesystem — close to a thousand file opens and
+directory listings per rank, more with the metadata lookups behind them —
+so on tens of full nodes the start-up is a burst that a parallel
+filesystem's metadata server serves slowly, and at every user's expense.
+Where the site offers a tool that has one process per node fetch the
+files for its ranks (Spindle, for one),
+`node_benchmark.py --launch-prefix` runs a sweep under it. Compile the
+checkout's own bytecode once after each update
+(`python -m compileall src`; installed packages are compiled by the
+installer) and keep the ranks from writing theirs
+(`PYTHONDONTWRITEBYTECODE=1`).
 
 **A four-GPU node** (for example 4 × NVIDIA H200): one process addressing
 all four GPUs, no launcher:
