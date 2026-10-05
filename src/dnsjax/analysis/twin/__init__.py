@@ -35,6 +35,13 @@ Layout (one module per concern; none is imported by the top-level
   ``twin_budget3d/``), one dnsjax tar per sample.
 - :mod:`.lengths` -- integral length scales of the difference field
   from a paired snapshot.
+- :mod:`.moments` -- the log-coordinate moments of a `$(y, k)$`
+  density (centroid, spreads, tilt) from raw sums that are linear in
+  the field, and the split of their rates over the terms of a budget.
+- :mod:`.growth` -- growth-law diagnostics of a decorrelating pair:
+  the logarithmic rate, the `$\gamma$`-`$R$` diagram's slope, the
+  local algebraic exponent, the bound-free variable `$-\ln(1 - R)$`
+  and the reference laws they are read against.
 
 Everything here is importable without JAX (the
 ``tests/test_twin_analysis.py`` guarantee).
@@ -55,10 +62,26 @@ from .ensemble import (
     fit_exponential_rate,
     fit_linear_rate,
 )
+from .growth import (
+    algebraic_exponent,
+    bound_free,
+    decorrelation_rate,
+    log_rate,
+    log_slope,
+    logistic_rate,
+    longest_window,
+)
 from .lengths import (
     integral_lengths,
     integral_lengths_from_modes,
     partner_of,
+)
+from .moments import (
+    LogMoments,
+    MomentRates,
+    log_moment_sums,
+    log_moments,
+    moment_rates,
 )
 from .series import (
     ClosureResiduals,
@@ -109,17 +132,22 @@ __all__ = [
     "Cube",
     "CubeSeries",
     "LEGACY_SUFFIXES",
+    "LogMoments",
+    "MomentRates",
     "TwinSeries",
     "TwinSpectraData",
     "TwinSpectraRefData",
     "YResolvedData",
     "aggregate_members",
+    "algebraic_exponent",
     "balance_term",
     "balance_terms",
     "bin_energies",
+    "bound_free",
     "budget_sums",
     "closure_residuals",
     "cube_files",
+    "decorrelation_rate",
     "decorrelation_ratio",
     "fit_exponential_rate",
     "fit_linear_rate",
@@ -128,9 +156,16 @@ __all__ = [
     "integral_lengths",
     "integral_lengths_from_modes",
     "integrate_y",
+    "log_moment_sums",
+    "log_moments",
+    "log_rate",
+    "log_slope",
+    "logistic_rate",
+    "longest_window",
     "mean_free_spectrum",
     "mean_mode_name",
     "mean_mode_profile",
+    "moment_rates",
     "partner_of",
     "read_cube",
     "read_cubes",

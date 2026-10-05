@@ -12,8 +12,9 @@ and diagnostics are fixed on purpose.
   ensemble member trees from a snapshot archive.
 - `twin_postprocess.py`: rebuild a twin member's streams from its
   snapshot pairs (`[recon]`).
-- `twin_spectral_maps.py`: `(λ, y)` and `(y, t)` maps of the twin
-  `(y, k)` streams over an ensemble.
+- `twin_spectral_maps.py`: `(λ, y)` maps, `(y, t)` / `(λ, t)`
+  histories, moment budgets, decorrelation fronts and growth-law
+  figures of the twin `(y, k)` streams over an ensemble.
 - `random_ic_calibrate.py`: score and sweep the random IC's `(y, k)`
   shape against a recorded ensemble (`[calib]`).
 - `snapshot_figure.py`: velocity-plane figures and animations (the

@@ -25,7 +25,17 @@ difference times, ``nan`` where the reference has no sample), the 3-D
 cube reader on a hand-built tar (whole, by wall-distance slab, a
 directory stacked and subset, mismatched points and a wrong ``kind``
 refused), the integral-length core against an independently
-evaluated two-mode reference, and ``scripts/ensemble_setup.py
+evaluated two-mode reference, the log-coordinate moments (a planted
+Gaussian's centroid, covariance, correlation and ridge slope
+recovered; a constant factor cancels; raw-sum averaging is the moments
+of the mean) and their budget (the per-term rates add up to the
+finite-difference rate of a moving density, a pure growth term moves
+no centred moment, a translation moves the centroid at its speed), the
+growth-law diagnostics on planted laws (an exponential's flat
+`$\gamma$`-`$R$` diagram, an algebraic law's constant `$-1/\alpha$`
+and exponent, the logistic's `$-R/(1 - R)$` and equal early and late
+rates, exponential decorrelation's linear `$-\ln(1 - R)$`) and the
+window finder, and ``scripts/ensemble_setup.py
 build-twin`` (dry run leaves no tree; an out-of-range shape knob is
 refused at build time; every member pins its seed and its whole
 perturbation shape, given or defaulted; the built tree's TOMLs /
@@ -60,6 +70,20 @@ from dnsjax.analysis.twin import (  # noqa: E402
     integral_lengths_from_modes,
     read_dat,
     read_twin,
+)
+from dnsjax.analysis.twin.growth import (  # noqa: E402
+    algebraic_exponent,
+    bound_free,
+    decorrelation_rate,
+    log_rate,
+    log_slope,
+    logistic_rate,
+    longest_window,
+)
+from dnsjax.analysis.twin.moments import (  # noqa: E402
+    log_moment_sums,
+    log_moments,
+    moment_rates,
 )
 from dnsjax.analysis.twin.spectra import (  # noqa: E402
     decorrelation_ratio,
@@ -1699,6 +1723,145 @@ def test_balance_terms() -> None:
     print("difference-energy balance from both layouts: OK")
 
 
+# ── Log-coordinate moments and growth laws ───────────────────────────
+
+
+def _gaussian(xi, eta, mean, cov) -> np.ndarray:
+    """An unnormalised bivariate Gaussian on the ``(eta, xi)`` grid."""
+    inv = np.linalg.inv(np.asarray(cov, dtype=float))
+    dx = xi[None, :] - mean[0]
+    dy = eta[:, None] - mean[1]
+    q = inv[0, 0] * dx**2 + 2.0 * inv[0, 1] * dx * dy + inv[1, 1] * dy**2
+    return np.exp(-0.5 * q)
+
+
+def test_log_moments() -> None:
+    """A planted Gaussian's moments, the cancellations, linearity."""
+    xi = np.linspace(-4.0, 6.0, 501)  # ln lambda
+    eta = np.linspace(-5.0, 4.0, 451)  # ln y
+    mean, cov = (1.3, -0.4), [[0.5, 0.18], [0.18, 0.3]]
+    f = _gaussian(xi, eta, mean, cov)
+    weights = np.ones_like(f)  # a uniform grid: equal cell areas
+    m = log_moments(log_moment_sums(f, weights, xi, eta))
+    assert_allclose([m.mean_lam, m.mean_y], mean, atol=1e-9)
+    assert_allclose([m.var_lam, m.var_y, m.cov], [0.5, 0.3, 0.18], rtol=1e-8)
+    assert_allclose(m.rho, 0.18 / np.sqrt(0.5 * 0.3), rtol=1e-8)
+    assert_allclose(m.slope, 0.18 / 0.3, rtol=1e-8)
+    assert_allclose(m.sqrt_det, np.sqrt(0.5 * 0.3 - 0.18**2), rtol=1e-8)
+    assert_allclose(m.angle, 0.5 * np.arctan2(0.36, 0.2), rtol=1e-8)
+    # A constant factor moves the mass and nothing else.
+    scaled = log_moments(log_moment_sums(7.3 * f, weights, xi, eta))
+    assert_allclose(scaled.mass, 7.3 * m.mass, rtol=1e-12)
+    for name in ("mean_lam", "mean_y", "var_lam", "var_y", "cov"):
+        assert_allclose(getattr(scaled, name), getattr(m, name), rtol=1e-10)
+    # A coordinate-dependent weight does move them: it reweights.
+    tilted = log_moments(
+        log_moment_sums(f, np.exp(-eta)[:, None] * weights, xi, eta)
+    )
+    assert tilted.mean_y < m.mean_y - 0.1
+    # The sums are linear, so the moments of a mean come from the mean
+    # of the sums -- which is not the mean of the moments.
+    g = _gaussian(xi, eta, (-0.5, 1.0), [[0.2, -0.05], [-0.05, 0.4]])
+    both = np.stack([f, g])
+    sums = log_moment_sums(both, weights, xi, eta)
+    of_mean = log_moments(log_moment_sums(both.mean(0), weights, xi, eta))
+    via_sums = log_moments(sums.mean(0))
+    assert_allclose(via_sums.cov, of_mean.cov, rtol=1e-10)
+    assert not np.isclose(of_mean.cov, log_moments(sums).cov.mean())
+    # A non-finite cell is an empty one.
+    holed = f.copy()
+    holed[0, 0] = np.nan
+    assert np.isfinite(log_moment_sums(holed, weights, xi, eta)).all()
+    print("log-coordinate moments: OK")
+
+
+def test_moment_rates() -> None:
+    """The per-term split closes on the finite-difference rates."""
+    xi = np.linspace(-5.0, 7.0, 481)
+    eta = np.linspace(-5.0, 5.0, 401)
+    weights = np.ones((eta.size, xi.size))
+
+    def density(t: float) -> np.ndarray:
+        # Moving, spreading, tilting and growing at once.
+        mean = (0.3 * t, -0.2 * t)
+        cov = [[0.4 + 0.1 * t, 0.05 + 0.04 * t], [0.05 + 0.04 * t, 0.3]]
+        return (1.0 + 0.5 * t) * _gaussian(xi, eta, mean, cov)
+
+    t, h = 0.7, 1e-4
+    rate = (density(t + h) - density(t - h)) / (2.0 * h)
+    e_sums = log_moment_sums(density(t), weights, xi, eta)
+    # Split the rate into two arbitrary parts: their contributions must
+    # add up to the whole, which must match the moments' own rates.
+    rng = np.random.default_rng(4)
+    part = rng.standard_normal(rate.shape) * np.abs(rate).max()
+    a = moment_rates(e_sums, log_moment_sums(part, weights, xi, eta))
+    b = moment_rates(e_sums, log_moment_sums(rate - part, weights, xi, eta))
+    plus = log_moments(log_moment_sums(density(t + h), weights, xi, eta))
+    minus = log_moments(log_moment_sums(density(t - h), weights, xi, eta))
+    for name in ("mean_lam", "mean_y", "var_lam", "var_y", "cov"):
+        fd = (getattr(plus, name) - getattr(minus, name)) / (2.0 * h)
+        assert_allclose(getattr(a, name) + getattr(b, name), fd, atol=1e-6)
+    fd_mass = (np.log(plus.mass) - np.log(minus.mass)) / (2.0 * h)
+    assert_allclose(a.mass + b.mass, fd_mass, atol=1e-6)
+    # Exact closures: mean_lam moves at 0.3, var_lam at 0.1.
+    assert_allclose(a.mean_lam + b.mean_lam, 0.3, atol=1e-6)
+    assert_allclose(a.var_lam + b.var_lam, 0.1, atol=1e-6)
+    # A pure growth term changes the mass and no centred moment.
+    f = density(t)
+    grow = moment_rates(e_sums, log_moment_sums(0.25 * f, weights, xi, eta))
+    assert_allclose(grow.mass, 0.25, rtol=1e-10)
+    for name in ("mean_lam", "mean_y", "var_lam", "var_y", "cov"):
+        assert abs(getattr(grow, name)) < 1e-10, name
+    print("moment budget: OK")
+
+
+def test_growth_laws() -> None:
+    """Each planted law reads as itself on its own axes."""
+    t = np.linspace(0.0, 30.0, 3001)
+    # Exponential, far from its bound: flat rate, flat gamma-R diagram.
+    e = 1e-8 * np.exp(0.4 * t)
+    g = log_rate(t, e)
+    assert_allclose(g[5:-5], 0.4, rtol=1e-6)
+    assert np.all(np.abs(log_slope(e / 1.0, g)[5:-5]) < 1e-4)
+    # Algebraic, E ~ (t - t0)^2: constant alpha and slope -1/2.
+    t0 = -3.0
+    e = (t - t0) ** 2
+    g = log_rate(t, e)
+    assert_allclose(algebraic_exponent(t, g)[10:-10], 2.0, rtol=1e-3)
+    assert_allclose(log_slope(e / 1e6, g)[10:-10], -0.5, rtol=1e-3)
+    # The logistic at rate gamma0: gamma = gamma0 (1 - R), the slope is
+    # -R/(1 - R), and f grows at exactly gamma0 R -- the early rate
+    # again once R is near 1.
+    gamma0, ts = 0.4, 15.0
+    r = 1.0 / (1.0 + np.exp(-gamma0 * (t - ts)))
+    g = log_rate(t, r)
+    assert_allclose(g[5:-5], logistic_rate(r, gamma0)[5:-5], rtol=1e-4)
+    s = log_slope(r, g)
+    assert_allclose(s[200:-200], (-r / (1.0 - r))[200:-200], rtol=1e-3)
+    df = np.gradient(bound_free(r), t)
+    assert_allclose(df[5:-5], (gamma0 * r)[5:-5], rtol=1e-4)
+    assert df[-6] > 0.99 * gamma0
+    # Exponential decorrelation: f is exactly linear.
+    nu = 0.06
+    r = 1.0 - np.exp(-nu * t[1:])
+    assert_allclose(bound_free(r), nu * t[1:], rtol=1e-10)
+    g = log_rate(t[1:], r)
+    away = t[1:] > 1.0  # gamma ~ 1/t near t = 0 outruns a difference
+    assert_allclose(
+        g[away][:-5], decorrelation_rate(r, nu)[away][:-5], rtol=1e-4
+    )
+    assert np.isnan(bound_free(np.array([1.0, 1.2]))).all()
+    # The window finder: the longest run within 10 % of its own mean.
+    v = np.array([1.0, 1.0, 1.0, 1.05, 0.95, 1.0, 2.0, 2.02, 3.0])
+    start, stop, mean = longest_window(v, 0.1)
+    assert (start, stop) == (0, 6) and abs(mean - 1.0) < 1e-12
+    valid = np.ones(v.size, dtype=bool)
+    valid[2] = False
+    assert longest_window(v, 0.1, valid)[:2] == (3, 6)
+    assert longest_window(np.array([1.0, 5.0, 25.0]), 0.1)[:2] == (0, 0)
+    print("growth laws: OK")
+
+
 if __name__ == "__main__":
     test_readers()
     test_closure_residuals()
@@ -1717,4 +1880,7 @@ if __name__ == "__main__":
     test_cube_reader()
     test_integral_lengths_core()
     test_build_twin()
+    test_log_moments()
+    test_moment_rates()
+    test_growth_laws()
     print("All twin analysis tests passed.")
