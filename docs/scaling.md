@@ -292,7 +292,8 @@ with a reference — the first row, or a file kept from an earlier sweep
 (`--stats-reference`) — so a sweep doubles as a check that every layout
 computes the same run to round-off: `--stats-tolerance` fails a row that
 does not, given a stats stream (`--outs.it_stats`) printed at
-`--outs.stats_precision 17`. The starting points below are
+`--outs.stats_precision 17` from a deterministic start (a snapshot, or
+a fixed `--init.random_seed`). The starting points below are
 configuration, not measurements.
 
 **A two-socket CPU node** (for example 2 × 64-core AMD EPYC 7742): one
@@ -383,10 +384,12 @@ filesystem's metadata server serves slowly, and at every user's expense.
 Where the site offers a tool that has one process per node fetch the
 files for its ranks (Spindle, for one),
 `node_benchmark.py --launch-prefix` runs a sweep under it. Compile the
-checkout's own bytecode once after each update
-(`python -m compileall src`; installed packages are compiled by the
-installer) and keep the ranks from writing theirs
-(`PYTHONDONTWRITEBYTECODE=1`).
+bytecode once after each update — the environment's with
+`uv sync --compile-bytecode` (uv otherwise leaves it to the first
+import), the checkout's own with `python -m compileall src` — and keep
+the ranks from writing theirs (`PYTHONDONTWRITEBYTECODE=1`): a module
+left uncompiled is then compiled in memory by every rank, at every
+start.
 
 **A four-GPU node** (for example 4 × NVIDIA H200): one process addressing
 all four GPUs, no launcher:

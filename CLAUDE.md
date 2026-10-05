@@ -41,8 +41,8 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
   devices. The launch contract, SLURM and the per-task-visibility trap:
   the `parameters.Distribution` docstring.
 - Laminar smoke on a 1D and a 2D mesh (pick `ny` divisible by `np0`).
-  Expect one corrector per step, a stepping error of O(1e-18) or less
-  and `E'` of O(1e-32) or less:
+  Expect `c/it = 0.00` (`c` counts corrections past the first), a
+  stepping error of O(1e-18) or less and `E'` of O(1e-32) or less:
 
   `mpirun -np 2 .venv/bin/dnsjax --dist.np1 2 --phys.system plane-couette --init.start_from_laminar True --stop.max_sim_time 0.04 --outs.it_stats 1 --res.nx 4 --res.nz 4 --res.ny 27`
 
