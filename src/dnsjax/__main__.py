@@ -553,11 +553,14 @@ def run(wall_time_start: int) -> None:
         # here is deliberate: falling through to an in-process mode
         # would start a run that computes something the user never
         # asked for (a typo'd path is the common case).
-        sharding.print(
-            f"init.snapshot ({params.init.snapshot}) is not a dnsjax "
-            "snapshot file: expected an uncompressed tar wrapping a "
-            "zarr3 store."
-        )
+        if Path(params.init.snapshot).exists():
+            why = (
+                "is not a dnsjax snapshot file: expected an uncompressed "
+                "tar wrapping a zarr3 store."
+            )
+        else:
+            why = f"does not exist (working directory: {Path.cwd()})."
+        sharding.print(f"init.snapshot ({params.init.snapshot}) {why}")
         sharding.exit(code=1)
     elif params.init.start_from_laminar:
         # Laminar / closed-form base state (snapshot is None here).
