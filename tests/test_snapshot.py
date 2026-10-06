@@ -59,7 +59,9 @@ Exercises the host (non-GDS) I/O path:
   metadata-driven ``snapshot._n_components``;
 - the ``isnap`` lineage index round-trips through the metadata, and the
   optional ``_dnsjax_stats.json`` member is written when stats are
-  supplied and omitted otherwise.
+  supplied and omitted otherwise;
+- the ``git_hash`` provenance agrees with ``git describe``, and git is
+  spawned with ``posix_spawn`` (never CPython's ``vfork`` path).
 
 Each (system, device count) needs its own process because the
 geometry/sharding singletons are captured at import time, and
@@ -1485,6 +1487,55 @@ def run_meta_chunk_consistency_case() -> str | None:
     return None
 
 
+def run_git_hash_case() -> str | None:
+    """``git_hash`` must spawn git with ``posix_spawn`` and match it.
+
+    CPython's other spawn path, ``vfork``, killed rank 0 under an
+    exec-wrapping launcher tool (the ``git_hash`` docstring), and
+    nothing else would notice a return to it: the provenance string
+    comes out the same.  Spy on ``os.posix_spawn`` (CPython's
+    ``posix_spawn`` path calls it through the module) and compare the
+    result with git's own answer.
+    """
+    import shutil
+
+    from dnsjax.snapshot_meta import git_hash
+
+    name = "git_hash spawns git with posix_spawn"
+    if shutil.which("git") is None:
+        print(f"  SKIP  {name}: no git on PATH")
+        return None
+    spawned: list[str] = []
+    real = os.posix_spawn
+
+    def spy(path, *args, **kwargs):
+        spawned.append(path)
+        return real(path, *args, **kwargs)
+
+    git_hash.cache_clear()
+    os.posix_spawn = spy
+    try:
+        got = git_hash()
+    finally:
+        os.posix_spawn = real
+        git_hash.cache_clear()
+    pkg = os.path.join(os.path.dirname(__file__), "..", "src", "dnsjax")
+    cli = subprocess.run(
+        ["git", "-C", pkg, "describe", "--always", "--dirty", "--abbrev=12"],
+        capture_output=True,
+        text=True,
+    )
+    want = cli.stdout.strip() if cli.returncode == 0 else "unknown"
+    if not spawned:
+        print(f"  FAIL  {name}: git was spawned another way (vfork/fork)")
+        return "git_hash did not spawn git with posix_spawn"
+    if got != want:
+        print(f"  FAIL  {name}: {got!r}, but git describes {want!r}")
+        return f"git_hash returned {got!r}, git describe {want!r}"
+    print(f"  PASS  {name} ({got})")
+    return None
+
+
 def run_atomic_write_case() -> str | None:
     """A save that fails mid-write must not destroy the good snapshot."""
     name = "failed save keeps the previous snapshot"
@@ -1849,6 +1900,9 @@ if __name__ == "__main__":
     # The I/O-layout slab arithmetic, over shapes the round-trip cases
     # above cannot reach (see run_io_layout_case).
     results.append(("I/O layout slabs", run_io_layout_case()))
+
+    # The provenance every snapshot records, and how git is spawned.
+    results.append(("git_hash via posix_spawn", run_git_hash_case()))
 
     failures = [(n, r) for n, r in results if r is not None]
     sys.exit(report(len(results) - len(failures), failures))
