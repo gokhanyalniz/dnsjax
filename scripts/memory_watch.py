@@ -27,9 +27,12 @@ out-of-memory failure is placed against its layout and, through the
 solver's own start-up timestamps, its phase.
 
 Usage, inside a Slurm job (``--overlap`` lets the sampler share the
-allocation with the runs it watches)::
+allocation with the runs it watches; ``--ntasks`` is needed, as a batch
+job's ``SLURM_NTASKS`` would otherwise win over ``--ntasks-per-node``
+and start a sampler per core)::
 
-    srun --overlap --nodes="$SLURM_NNODES" --ntasks-per-node=1 \
+    srun --overlap --nodes="$SLURM_NNODES" --ntasks="$SLURM_NNODES" \
+        --ntasks-per-node=1 \
         .venv/bin/python scripts/memory_watch.py sample --out mem &
     ...                        # the runs (srun, node_benchmark.py, ...)
     touch mem/stop; wait       # every sampler exits at its next sample
@@ -37,6 +40,10 @@ allocation with the runs it watches)::
 
 Locally (any Linux machine): start ``sample`` in the background, run
 the solver, then ``touch`` the stop file.
+
+One sampler per node and directory: ``sample`` refuses a
+``memwatch_<host>.csv`` that already exists, since a second sampler
+writing it would interleave the two records into one unreadable file.
 """
 
 from __future__ import annotations
@@ -185,6 +192,16 @@ def sample(args: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT, _stop)
     t_end = time.time() + args.duration if args.duration else None
     k = 0
+    try:
+        path.touch(exist_ok=False)  # O_EXCL: one sampler per file
+    except FileExistsError:
+        print(
+            f"memory_watch: {path} exists: another sampler on this node "
+            "writes it (one srun task per node), or an earlier one did "
+            "(pick a fresh --out)",
+            file=sys.stderr,
+        )
+        return 1
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(COLUMNS)
@@ -217,7 +234,13 @@ def sample(args: argparse.Namespace) -> int:
 def _load(path: Path) -> list[dict]:
     rows = []
     with open(path, newline="") as fh:
-        for rec in csv.DictReader(fh):
+        reader = csv.DictReader(fh)
+        for rec in reader:
+            if None in rec or None in rec.values():
+                raise SystemExit(
+                    f"{path}, line {reader.line_num}: the fields do not "
+                    "match the header (two samplers wrote this file?)"
+                )
             rows.append(
                 {k: (float(v) if v != "" else None) for k, v in rec.items()}
             )
