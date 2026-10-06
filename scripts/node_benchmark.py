@@ -48,7 +48,11 @@ on many full nodes is a burst a parallel filesystem's metadata server
 serves slowly and at everyone's expense.  A tool that has one process
 per node fetch the files and serve the node's ranks removes it -- e.g.
 ``--launch-prefix "spindle --slurm --python-prefix=..."`` with
-``--srun-args=--overlap``, as the site documents it.
+``--srun-args=--overlap``, as the site documents it.  Under uv's
+interpreter Spindle 0.13 also needs ``--reloc-aout=no
+--reloc-exec=no``: a relocatable interpreter copied into Spindle's
+cache looks for its standard library beside the copy ("No module named
+'encodings'").
 
 ``--target gpu`` (e.g. 4 x NVIDIA H200 in one node)
     one process spanning every visible GPU (the launch the

@@ -34,6 +34,11 @@ paths:
   `MPITRAMPOLINE_LIB`, `JAX_CPU_COLLECTIVES_IMPLEMENTATION`) are not
   parameters; the user-facing contract is the `Distribution` docstring
   and `docs/cpu-collectives.md`.
+- Code on a solver rank starts no process through CPython's `vfork`
+  path (a `subprocess` call naming a bare executable, or keeping
+  `close_fds=True`): a launcher's exec wrapper (Spindle's) runs in the
+  child and corrupts the rank. Spawn as `snapshot_meta.git_hash` does,
+  through `posix_spawn` (the why: its docstring).
 - Scripts and in-process tests take the platform from
   `--dist.platform` (default cpu) through
   `bootstrap.configure_jax_platform` / `platform_from_argv`, before
