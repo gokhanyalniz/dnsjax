@@ -77,10 +77,14 @@ What is reported
 - the peak memory: the CPU ``Peak host memory`` line (per rank, and
   the fullest node with shared pages counted once) or the GPU
   ``Peak device memory`` line;
-- the start-up phases from the solver's own timestamps: process start
-  to distributed runtime (imports, rank discovery), to the first step
-  (initial condition, operators), and the first step itself (its
-  compile);
+- the start-up phases from the solver's own timestamps: the first
+  rank's ``Alive`` line (its interpreter up and the pre-JAX modules
+  imported) to the distributed runtime (the JAX import, rank
+  discovery), to the first step (initial condition, operators), and
+  the first step itself (its compile); and ``boot``, the row's launch
+  to the distributed runtime -- the launcher, every rank's interpreter
+  and imports, the rank connection: everything an import cache such as
+  Spindle can change;
 - on several nodes, how many nodes the ``np0`` and the ``np1`` groups
   span (the solver's ``Device grid`` line);
 - each row's deviation from a reference run (``dev``; "Agreement"
@@ -549,6 +553,10 @@ def _run(row: Row, a: argparse.Namespace, index: int) -> dict:
             (Path(wd) / "err.log").write_text(err)
     rec = _parse(out, err, status)
     rec.update(start_unix=round(t0, 1), end_unix=round(t1, 1), rowdir=wd)
+    # The solver stamps local time, as time.time() reads it here.
+    init = _stamp(INIT_PATTERN, out)
+    if init:
+        rec["t_boot_s"] = round(init.timestamp() - t0, 1)
     if stats is not None:
         rec["_stats"] = stats
     if rec["status"] != "ok":
@@ -674,7 +682,8 @@ def _summarise(rows: list[Row], a: argparse.Namespace) -> None:
     head = f"\n{'layout':<44} {'s/t':>10} {'eff':>5}"
     if srun:
         head += f" {'CU/t':>8}"
-    head += f" {'mem GiB':>13} {'start s':>8} {'dev':>8}  status"
+    head += f" {'mem GiB':>13} {'boot s':>7} {'start s':>8} {'dev':>8}"
+    head += "  status"
     print(head)
     for r in rows:
         res = r.result
@@ -695,14 +704,17 @@ def _summarise(rows: list[Row], a: argparse.Namespace) -> None:
             res.get(k, 0.0)
             for k in ("t_init_s", "t_setup_s", "t_first_step_s")
         )
-        line += f" {mem:>13} {start:8.1f} {_dev_text(res):>8}"
+        boot = res.get("t_boot_s")
+        line += f" {mem:>13} " + (f"{boot:7.1f}" if boot else f"{'-':>7}")
+        line += f" {start:8.1f} {_dev_text(res):>8}"
         print(f"{line}  {res.get('status', '-')}")
     if srun:
         print(
             "\neff: N0 T(N0) / (N T(N)) against the fastest row at the "
             "smallest node count;\nCU/t: node hours per unit of simulated "
-            "time; mem: peak GiB per rank / per node;\nstart: process "
-            "start to the end of the first (compiling) step."
+            "time; mem: peak GiB per rank / per node;\nboot: the row's "
+            "launch to the distributed runtime; start: the first rank's\n"
+            "Alive line to the end of the first (compiling) step."
         )
     if any("stats_dev" in r.result for r in rows):
         print(
@@ -735,6 +747,7 @@ def _write_csv(rows: list[Row], path: str, hosts: list[str]) -> None:
         "t_init_s",
         "t_setup_s",
         "t_first_step_s",
+        "t_boot_s",
         "collectives",
         "grid_spans",
         "stats_dev",
