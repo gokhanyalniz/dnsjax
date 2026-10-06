@@ -35,7 +35,10 @@ EPYC 7742 per node): one rank per core, each pinned to one XLA thread
     node's ``/tmp``.
 
 At each rank count every ``(np0, np1)`` factorisation runs, or only
-those whose ``np1`` is listed in ``--np1``.  Export
+those whose ``np0`` is listed in ``--np0`` and whose ``np1`` in
+``--np1`` (``--np0 128 64`` keeps one ``(128, n/128)`` and one
+``(64, n/64)`` grid at every rank count ``n``: a strong-scaling
+family).  Export
 ``MPITRAMPOLINE_LIB`` first (``docs/cpu-collectives.md``): without it
 the collectives run over ``gloo``, which is not what a production run
 should measure.
@@ -267,12 +270,15 @@ def _named(items: list[str], default: tuple[str, str]) -> list[tuple]:
     return out
 
 
-def _layouts(n: int, np1_filter: list[str]) -> list[tuple[int, int]]:
-    """The factorisations of *n* the ``--np1`` filter keeps."""
+def _layouts(
+    n: int, np0_filter: list[str], np1_filter: list[str]
+) -> list[tuple[int, int]]:
+    """The factorisations of *n* the ``--np0`` and ``--np1`` filters keep."""
     pairs = _factorisations(n)
-    if np1_filter and np1_filter != ["all"]:
-        keep = {int(v) for v in np1_filter}
-        pairs = [(a, b) for a, b in pairs if b in keep]
+    for axis, kept in ((0, np0_filter), (1, np1_filter)):
+        if kept and kept != ["all"]:
+            keep = {int(v) for v in kept}
+            pairs = [p for p in pairs if p[axis] in keep]
     return pairs
 
 
@@ -287,7 +293,7 @@ def _cpu_rows(a: argparse.Namespace) -> list[Row]:
         binding = shlex.split(a.mpirun_args) if a.mpirun_args else OMPI_BINDING
         for n in a.ranks:
             for (np0, np1), (vn, va), (en, ep) in itertools.product(
-                _layouts(n, a.np1), variants, exes
+                _layouts(n, a.np0, a.np1), variants, exes
             ):
                 cmd = [
                     *prefix,
@@ -322,7 +328,7 @@ def _cpu_rows(a: argparse.Namespace) -> list[Row]:
         for cpt in cpts:
             n = nodes * tpn
             for (np0, np1), (vn, va), (en, ep) in itertools.product(
-                _layouts(n, a.np1), variants, exes
+                _layouts(n, a.np0, a.np1), variants, exes
             ):
                 cmd = [
                     *prefix,
@@ -812,6 +818,9 @@ def main() -> int:
         "--launch-prefix",
         default=None,
         help="command the launcher runs under, e.g. 'spindle --slurm'",
+    )
+    ap.add_argument(
+        "--np0", nargs="+", default=["all"], help="np0 values to keep"
     )
     ap.add_argument(
         "--np1", nargs="+", default=["all"], help="np1 values to keep"
