@@ -342,9 +342,12 @@ every layout's padding before anything runs.
 GiB per core, every rank's own runtime — the interpreter, jaxlib, the
 compiled programs, the MPI library's buffers — is multiplied by the
 rank count, on top of the problem's share, and it is a large fraction
-of the budget (about 0.45 GiB of private memory per rank for a
+of the budget: about 0.45 GiB of private memory per rank for a
 production plane-channel configuration on a workstation, before any
-site MPI's own). Three tools separate the two:
+site MPI's own; on an ARCHER2 node (128 EPYC 7742 cores, Cray MPICH),
+measured on a problem too small to matter, about 0.65 GiB per rank at
+`(2, 64)` and 1.0 GiB at `(1, 128)` — 85 and 130 GiB of the node's
+222 before the problem's own share. Three tools separate the two:
 [`scripts/memory_budget.py`](../scripts/memory_budget.py) predicts the
 problem's share per rank for any layout from XLA's own buffer
 assignment, without the machine; the `Peak host memory` line of a run
