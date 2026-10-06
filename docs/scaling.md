@@ -183,16 +183,26 @@ program.
    its exchange carries $2/3$ of the bytes, and its mode axis tiles far
    more coarsely on GPU. Split on `np1` instead when `ny` (`nr`) will
    not divide the device count or is too small for it.
-2. **Across nodes, align the grid with them** — `np1` = devices per node,
-   `np0` = number of nodes. The grid is laid out row-major over the
-   devices ordered by node, so `np1` groups fall within a node and `np0`
-   groups hold one device per node, whatever order the launcher numbers
-   the ranks in; a multi-node run prints how many nodes each group
-   spans. That confines the heavier exchange to the intra-node
-   interconnect and leaves the network $n_{p0} - 1$ large messages per
-   device in place of the many small ones a grid-wide exchange sends, at
-   equal network volume. Splitting on `np1` alone across nodes is the
-   worst choice: it puts the $3/2$-sized exchange on the network.
+2. **Across nodes, keep `np0` large as well.** The grid is laid out
+   row-major over the devices ordered by node, so with `np1` dividing
+   the devices per node the `np1` groups fall within a node, whatever
+   order the launcher numbers the ranks in; a multi-node run prints how
+   many nodes each group spans. Aligning the grid with the nodes
+   (`np1` = devices per node, `np0` = number of nodes) would confine the
+   heavier exchange to the node and leave the network $n_{p0} - 1$
+   large messages per device in place of the many small ones a
+   grid-wide exchange sends, at equal network volume. On CPU that
+   argument loses to the first rule's. On ARCHER2 (128 ranks per node,
+   Cray MPICH) at `1280 x 383 x 384` the fastest grid on 1, 2 and 4
+   nodes was `(128, n)` — the largest `np0` that splits the wall-normal
+   axis without padding, the rest on `np1`, whose groups of `n`
+   consecutive ranks still fall within a node — and the aligned
+   `(n, 128)` the slowest that fit, 25 % behind on two nodes and 22 to
+   25 % on four (on one node `(2, 64)` ran 30 % behind `(128, 1)`).
+   Splitting on `np1` alone across nodes is the one arrangement to
+   avoid: it puts the $3/2$-sized exchange on the network (`(1, 256)`
+   did not fit in two ARCHER2 nodes' memory). Untested across GPU
+   nodes.
 3. **Snapshots follow the same pattern**, but only for the first
    reason: a one-dimensional grid reshards once per save instead of
    twice. Write granularity does not enter the choice — the reshard
@@ -367,17 +377,16 @@ table: `geometries/wall_bounded/_base.apply_y_matrix`).
 `node_benchmark.py --variant gemm="--solver.wall_normal_matvec dense"`
 measures the same trade on the target node, in one sweep.
 
-**Across nodes**, keep one node per `np1` group (`np1` = ranks per
-node, `np0` = number of nodes): XLA runs a cross-process all-to-all as
-a sequence of pairwise exchanges, without overlapping it with
-computation, so the exchange that stays inside a node is the cheaper
-one. `node_benchmark.py --launcher srun --nodes 1 2 4 ...`, run inside
-the allocation, measures the strong scaling of the production problem
-directly; its `--exe` arms compare two checkouts in one sweep.
-`node_benchmark.py --target cpu` runs every factorization at each rank
-count (`--ranks 16 32 64 128` by default, or `--np1` to keep a few),
-so the table also shows the rank count at which the step stops
-scaling.
+**Across nodes**, start from the largest padding-free `np0` (rule 2 of
+*Choosing the device grid*) and measure.
+`node_benchmark.py --launcher srun --nodes 1 2 4 ...`, run inside the
+allocation, measures the strong scaling of the production problem
+directly — `--np0 128 64` keeps the `(128, n)` and `(64, 2n)` families
+at every node count — and its `--exe` arms compare two checkouts in one
+sweep. `node_benchmark.py --target cpu` runs every factorization at
+each rank count (`--ranks 16 32 64 128` by default, or `--np0` /
+`--np1` to keep a few), so the table also shows the rank count at
+which the step stops scaling.
 
 **Start-up on many nodes.** Every rank imports some 800 Python modules
 from the shared filesystem — close to a thousand file opens and

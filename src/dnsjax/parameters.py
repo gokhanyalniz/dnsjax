@@ -108,20 +108,29 @@ class Distribution(BaseModel):
        mode axis tiles far more coarsely on GPU.  Split on ``np1``
        instead when ``ny`` (``nr``) will not divide the device count
        or is too small for it.
-    2. **Across nodes, align the grid with them**: ``np1`` = devices
-       per node, ``np0`` = number of nodes.  The grid is laid out
-       row-major over the devices ordered by node, then id
-       (``sharding.device_grid``), so the ``np1`` groups fall inside a
-       node and the ``np0`` groups hold one device per node, whatever
-       order the launcher numbers the ranks in; a multi-node run prints
-       how many nodes each group spans.  That confines the heavier
-       exchange to the intra-node interconnect, and the network
-       carries ``np0 - 1`` large messages per device instead of the
-       many small ones a grid-wide exchange sends -- at equal volume
+    2. **Across nodes, keep ``np0`` large as well.**  The grid is laid
+       out row-major over the devices ordered by node, then id
+       (``sharding.device_grid``), so with ``np1`` dividing the devices
+       per node the ``np1`` groups fall inside a node, whatever order
+       the launcher numbers the ranks in; a multi-node run prints how
+       many nodes each group spans.  Aligning the grid with the nodes
+       (``np1`` = devices per node, ``np0`` = number of nodes) would
+       confine the heavier exchange to the node and leave the network
+       ``np0 - 1`` large messages per device in place of the many
+       small ones a grid-wide exchange sends, at equal volume
        (`$(N-g)/N^2 = (n-1)/(nN)$` per device, for `$N$` devices in
-       `$g$`-device groups on `$n$` nodes).  Splitting on ``np1`` alone
-       across nodes is the one arrangement to avoid: it puts the
-       `$3/2$`-sized exchange on the network.
+       `$g$`-device groups on `$n$` nodes).  On CPU that argument
+       loses to rule 1's.  On ARCHER2 (128 ranks per node, Cray MPICH)
+       at ``1280 x 383 x 384`` the fastest grid on 1, 2 and 4 nodes
+       was ``(128, n)`` -- the largest ``np0`` that splits the
+       wall-normal axis without padding, the rest on ``np1``, whose
+       groups of ``n`` consecutive ranks still fall inside a node --
+       and the aligned ``(n, 128)`` the slowest that fit, 25 % behind
+       on two nodes and 22 to 25 % on four (one node: ``(2, 64)`` 30 %
+       behind ``(128, 1)``).  Splitting on ``np1`` alone across nodes
+       is the one arrangement to avoid: it puts the `$3/2$`-sized
+       exchange on the network (``(1, 256)`` did not fit in two
+       ARCHER2 nodes' memory).  Untested across GPU nodes.
     3. **Snapshots** add only the same 1D preference -- a
        one-dimensional grid reshards once per save instead of twice.
        Write granularity does not enter the choice: the reshard trims
