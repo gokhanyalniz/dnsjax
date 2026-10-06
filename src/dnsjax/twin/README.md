@@ -249,7 +249,9 @@ advection (`T_self`), the viscous term in both forms (`V`, `eps`),
 and the work of the pressure gradient (`Wp`).
 `scripts/twin_spectral_maps.py` draws them by default, regrouped as
 the terms of the difference-energy balance, each as its contribution
-to $\partial_t E_\Delta$ (`analysis.twin.balance_term`), and under
+to $\partial_t E_\Delta$ (`analysis.twin.balance_term`), in wall
+units and once more over the production's peak (the shape maps), and
+under
 `--moment-budget` splits the rates of the difference energy's
 log-coordinate moments over the same terms (`analysis.twin.moments`).
 
