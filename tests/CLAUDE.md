@@ -59,6 +59,8 @@ Stepping:
 - `test_wall_normal_matvec.py` (`--only`): one step under the GEMM and
   the stencil (`solver.wall_normal_matvec`) must agree, per geometry
   and legacy pass.
+- `test_wall_time_stop.py` (`mpirun`): both drivers stop on
+  `stop.max_wall_time` together when the ranks' clocks disagree.
 
 Parameters, bootstrap, mesh, seeds:
 - `test_param_surface.py` (registry, surfaces, the total-field axis),

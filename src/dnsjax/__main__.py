@@ -37,7 +37,13 @@ Execution phases
    The loop terminates when the elapsed simulation time
    (``stop.max_sim_time``, counted from ``init.t0``), the
    wall-clock time, or the corrector divergence criterion is
-   reached.  The corrector error and iteration counters stay on
+   reached.  The wall-clock budget is judged at the
+   ``outs.it_error_check`` cadence by all processes together
+   (:meth:`~dnsjax.sharding.Sharding.any_process`): each reads its
+   own clock from its own start, and a budget running out between
+   two processes' readings would otherwise send one into another
+   step's collectives while the other leaves the loop, hanging
+   both.  The corrector error and iteration counters stay on
    the device; the error is synced to the host only every
    ``outs.it_error_check`` steps so that JAX async dispatch can
    pipeline steps.  What is synced is the device-side running
@@ -710,7 +716,6 @@ def run(wall_time_start: int) -> None:
         )
 
     dt_first: float = params.step.dt
-    wall_time_now: int = perf_counter_ns()
     last_error: float = 0.0
     # A fixed corrector count (``step.corrector_iterations``) makes the
     # reported error a diagnostic rather than a convergence verdict, so
@@ -1130,12 +1135,23 @@ def run(wall_time_start: int) -> None:
         # Deferred check of the t0 probe record (see the probe setup).
         _abort_non_finite(probe_bad_t0)
 
+    # The wall-clock budget: judged by all processes together, here and
+    # at the it_error_check cadence (the module docstring says why).
+    timed: bool = params.stop.max_wall_time is not None
+
+    def _out_of_time() -> bool:
+        return sharding.any_process(
+            perf_counter_ns() - wall_time_start >= wall_time_stop
+        )
+
+    out_of_time: bool = timed and _out_of_time()
+
     sharding.print("Started timestepping at", datetime.now())
 
     # --- Main time-stepping loop ---------------------------------------------
     while (
         t < t_stop
-        and wall_time_now - wall_time_start < wall_time_stop
+        and not out_of_time
         and (fixed_corrector or last_error < params.step.corrector_tolerance)
         and not laminarized
     ):
@@ -1442,7 +1458,7 @@ def run(wall_time_start: int) -> None:
                     )
                 laminarized = e_prime_host < laminarization_threshold
 
-        wall_time_now = perf_counter_ns()
+            out_of_time = timed and _out_of_time()
 
     # --- Post-processing -----------------------------------------------------
     # Single shutdown sync of the device-side corrector counters

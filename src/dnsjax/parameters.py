@@ -1834,7 +1834,8 @@ class Termination(BaseModel):
         default=None,
         description=(
             "Stop after this much wall-clock time (ISO 8601 "
-            "duration, e.g. 'PT11H30M')."
+            "duration, e.g. 'PT11H30M'), checked every "
+            "outs.it_error_check steps."
         ),
     )
     # ``E'`` is read on the host every ``outs.it_error_check`` steps
