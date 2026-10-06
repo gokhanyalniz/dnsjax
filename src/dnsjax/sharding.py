@@ -440,5 +440,22 @@ class Sharding:
         if self.main_device:
             print(*args, **kwargs, flush=True)
 
+    def any_process(self, flag: bool) -> bool:
+        """*flag* OR-ed over the processes: one answer on every process.
+
+        A host-side decision that can come out differently on
+        different processes -- a wall-clock budget, each process
+        reading its own clock -- goes through here, or the processes
+        part ways: some leave a loop of collectives while the rest
+        enter one more round of them, and all of them wait forever.  A
+        collective on a multi-process run, so every process must call
+        it at the same point; free on a single process.
+        """
+        if jax.process_count() == 1:
+            return flag
+        from jax.experimental.multihost_utils import process_allgather
+
+        return bool(np.any(process_allgather(np.int32(flag))))
+
 
 sharding: Sharding = Sharding()

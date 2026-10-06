@@ -31,10 +31,11 @@ Usage::
 
     uv run pytest                            # everything available
     uv run pytest -m "not slow and not mpi"  # offline: no mpirun launch
-    uv run pytest -m "not slow"              # + the five quick mpirun
+    uv run pytest -m "not slow"              # + the six quick mpirun
                                              #   rows (probes, forcing,
                                              #   seeding, twin_postprocess,
-                                             #   device_grid)
+                                             #   device_grid,
+                                             #   wall_time_stop)
     uv run pytest -k padding                 # a single script
 """
 
@@ -171,6 +172,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     # ~2.5 min: three short twin members plus the reconstructions of
     # them, the last on a (2, 1) mesh -- not a _SLOW row.
     ("test_twin_postprocess.py", (), _MPI, 1800),
+    # ~2.5 min: one solver and one twin run, each to its 60 s wall-clock
+    # budget on two ranks -- not a _SLOW row.
+    ("test_wall_time_stop.py", (), _MPI, 1800),
 ]
 
 

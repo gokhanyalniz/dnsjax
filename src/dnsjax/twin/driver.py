@@ -1317,7 +1317,6 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     isnap: int = isnap_start
     last_saved_it: int | None = None
     dt_first: float = params.step.dt
-    wall_time_now: int = perf_counter_ns()
     last_error: float = 0.0
     # A fixed corrector count (``step.corrector_iterations``) makes the
     # reported error a diagnostic rather than a convergence verdict, so
@@ -1849,12 +1848,24 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
     for bad in spectral_bad_t0:
         _abort_non_finite(bad)
 
+    # The wall-clock budget, judged by all processes together, here and
+    # at the it_error_check cadence (as in ``dnsjax.__main__``, whose
+    # module docstring says why).
+    timed: bool = params.stop.max_wall_time is not None
+
+    def _out_of_time() -> bool:
+        return sharding.any_process(
+            perf_counter_ns() - wall_time_start >= wall_time_stop
+        )
+
+    out_of_time: bool = timed and _out_of_time()
+
     sharding.print("Started twin timestepping at", datetime.now())
 
     # --- Main twin loop --------------------------------------------------
     while (
         t < t_stop
-        and wall_time_now - wall_time_start < wall_time_stop
+        and not out_of_time
         and (fixed_corrector or last_error < params.step.corrector_tolerance)
         and not laminarized
     ):
@@ -2040,7 +2051,7 @@ def run(wall_time_start: int, seed_source: str | None = None) -> None:
                     )
                 laminarized = e_prime_host < laminarization_threshold
 
-        wall_time_now = perf_counter_ns()
+            out_of_time = timed and _out_of_time()
 
     # --- Post-processing -------------------------------------------------
     n_steps: int = it - it0
