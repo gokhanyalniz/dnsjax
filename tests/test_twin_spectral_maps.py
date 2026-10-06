@@ -19,16 +19,18 @@ What each case pins:
    ``--premultiply none`` / ``--no-volume-fac`` drop exactly their own
    factor.
 2. **The ``ky`` convention.** Its second factor is the wall distance
-   *in the plotted units*, so a map's wall/outer ratio is `$Re_\tau$`
-   under ``ky`` against `$1$` under ``k`` -- the asymmetry the module
-   docstring documents ("Premultiplication"), asserted here so it
-   cannot change silently in either direction.
+   *in the plotted units*, so a ratio's wall/outer ratio is
+   `$Re_\tau$` under ``ky`` against `$1$` under ``k`` -- the asymmetry
+   the module docstring documents ("Premultiplication"), asserted here
+   so it cannot change silently in either direction -- and an energy
+   carries the unit conversion on top of it.
 3. **`$E^{\mathrm{ref}}$`.** The total-in-`$(y, k)$` reference energy
    less its `$(0, 0)$` mode, averaged over the **distinct** absolute
    instants of the member set: the dedup counts a pair straddling
-   :data:`~twin_spectral_maps._T_ATOL` once, the summed panel takes
-   the summed reference, the `$k_x = 0$` plane stays absolute, and a
-   doctored second marginal is refused.
+   :data:`~twin_spectral_maps._T_ATOL` once, and a doctored second
+   marginal is refused.  No map is drawn over it: a difference map and
+   its reference map are both in wall units, and a stream without its
+   reference half still draws both.
 4. **The colour scale is a legend for the visible map.** A peak below
    the ordinate's floor must not set the levels -- under ``--clim
    frame`` and ``--quantile`` as much as under the frozen default --
@@ -72,13 +74,13 @@ What each case pins:
     one-sample selection none at all; and the ``.npz`` beside the
     pair carries the drawn arrays and every factor behind them.
 12. **End to end.** ``main()`` on a two-member set draws the
-    difference-spectra, shape and budget marginals, each tracked
-    series with its ``_track`` directory, and nothing else;
-    ``--no-budget`` drops the budget, and each of the five opt-in
-    switches adds exactly its own family -- ``--reference`` and
+    difference-spectra and budget marginals and their shape maps,
+    each tracked series with its ``_track`` directory, and nothing
+    else; ``--no-budget`` drops both budget sets, and each opt-in
+    switch adds exactly its own family -- ``--reference`` and
     ``--decorr-k`` each needing ``--spacetime`` as well before their
-    spacetime map.  A budget figure is three columns of the spectra's
-    panels.
+    spacetime map.  A budget figure, shape or not, is three columns of
+    the spectra's panels.
 13. **The budget is the balance.** The panels are the balance terms
     regrouped from the stored densities, each read the same way by
     all three readers, in the rows of the 3 x 3 grid; a map's pressure
@@ -113,20 +115,24 @@ What each case pins:
     set; a reference on half the difference cadence normalises over
     its own samples and refuses a reference map only at the frames it
     lacks.
-18. **Shape maps.** Each panel of each frame is the absolute spectrum
-    premultiplied by `$k\,y^+$`, over its own peak on the rows the box
-    shows -- whatever ``--premultiply`` says, the same in wall and
-    outer units and without ``volume_fac``, and the same in every
-    frame of one shape grown by decades; the peak is what the title
-    reports, a zero field keeps zeros, and the figure's levels are the
-    same `$[0, 1]$` bands under every ``--clim`` and ``--quantile``.
+18. **Shape maps.** Each panel of each frame is the absolute panel
+    premultiplied by `$k\,y^+$`, over the frame's peak of its figure's
+    anchor panel -- the summed spectrum, the production -- on the rows
+    the box shows, whatever ``--premultiply`` says, the same in wall
+    and outer units and without ``volume_fac``, and the same in every
+    frame of one shape grown by decades; only the anchor panel's
+    title reports that peak, a zero field keeps zeros, and under every
+    ``--clim`` and ``--quantile`` the anchor's levels are frozen on the
+    series -- `$[0, 1]$` for the spectra -- and every other panel's
+    are its own frame's.
 19. **History maps.** The `$(y, t)$` map is the `$k$`-summed map times
     the plotted wall distance, the `$(\lambda, t)$` map the
     wall-normal average over the doubled half-channel weights times
-    `$m$` with `$m = 0$` dropped -- each premultiplied after its sum,
-    ``--no-volume-fac`` reaching neither average; the two read one
-    total; a shape history's rows reach 1 in any unit system; the
-    budget history's production is its two parts; and the renderer
+    `$m$` with `$m = 0$` dropped, in wall units -- each premultiplied
+    after its sum, ``--no-volume-fac`` reaching neither average; the
+    two read one total; a shape history's rows reach 1 in any unit
+    system; the budget history's production is its two parts; and the
+    renderer
     writes what the family promises, the logarithmic figure only for
     an absolute non-negative history.
 20. **Quantile lines** sit at their fractions of a uniform density in
@@ -462,10 +468,7 @@ def _saturated(meta: dict, n_t: int = 3, seed: int = 5) -> np.ndarray:
 def test_premultiplication() -> None:
     r"""A panel is `$m \times$` entry `$\times V$`, in stream units."""
     units = tsm.Units(RE, RE_TAU)
-    # ``e_x0`` is the absolute spectra panel, so it is the one that
-    # exercises the un-normalised branch -- on a legacy member, which
-    # is where that field now comes from.
-    spectra_meta = _meta("twin_yspectra", suffixes=LEGACY)
+    spectra_meta = _meta("twin_yspectra")
     spectra = _records(spectra_meta, "twin_yspectra", 2)
     budget_meta = _meta("twin_ybudget")
     budget = _records(budget_meta, "twin_ybudget", 2, seed=3)
@@ -473,7 +476,7 @@ def test_premultiplication() -> None:
         # (series, field, harmonic count, box length, stored -> plotted)
         (
             _series("twin_yspectra", [_member(spectra_meta, spectra)]),
-            "e_x0",
+            "e_x",
             NKZ,
             LZ,
             lambda v: units.energy(v),
@@ -530,11 +533,11 @@ def test_ky_is_the_plotted_y() -> None:
     `$y$` half is not, which is the whole difference between a
     wall-unit ``ky`` map and an outer-unit one -- the module
     docstring's "Premultiplication".  Pinned in both directions so
-    neither half can drift.
+    neither half can drift: on `$\mathcal{R}^k$`, a ratio with no unit
+    conversion to hide behind, and on an energy, which carries the
+    conversion on top.
     """
-    # Legacy layout: ``e_x0`` is the absolute panel the second half
-    # of this case needs, and only a legacy stream carries one.
-    meta = _meta("twin_yspectra", suffixes=LEGACY)
+    meta = _meta("twin_yspectra")
     series = _series(
         "twin_yspectra", [_member(meta, _records(meta, "twin_yspectra", 2))]
     )
@@ -548,27 +551,25 @@ def test_ky_is_the_plotted_y() -> None:
             options=tsm.MapOptions(units, premultiply=premultiply),
         )
 
-    k, ky = draw("e_x0", wall, "k"), draw("e_x0", wall, "ky")
+    k, ky = draw("e_z", wall, "k"), draw("e_z", wall, "ky")
     assert np.allclose(ky.values, k.values * ky.y[:, None])
     assert np.allclose(ky.y, k.y * 1.0)  # the same ordinate, y^+
 
-    # A normalised panel takes no unit conversion, so its wall/outer
-    # ratio *is* the premultiplier's unit dependence.
-    assert tsm.normalises(series, "e_z")
+    # A ratio takes no unit conversion, so its wall/outer ratio *is*
+    # the premultiplier's unit dependence.
+    for premultiply, factor in (("k", 1.0), ("ky", RE_TAU)):
+        got = draw("decorr_k_z", wall, premultiply).values
+        want = factor * draw("decorr_k_z", outer, premultiply).values
+        assert np.allclose(got, want, equal_nan=True)
+    # An energy carries the energy conversion on top of it.
     for premultiply, factor in (("k", 1.0), ("ky", RE_TAU)):
         got = draw("e_z", wall, premultiply).values
-        assert np.allclose(
-            got, factor * draw("e_z", outer, premultiply).values
-        )
-    # An absolute panel carries the energy conversion on top of it.
-    for premultiply, factor in (("k", 1.0), ("ky", RE_TAU)):
-        got = draw("e_x0", wall, premultiply).values
-        want = factor / U_TAU**2 * draw("e_x0", outer, premultiply).values
+        want = factor / U_TAU**2 * draw("e_z", outer, premultiply).values
         assert np.allclose(got, want)
 
 
 def test_reference_scale() -> None:
-    r"""`$E^{\mathrm{ref}}$` and what it does and does not normalise."""
+    r"""`$E^{\mathrm{ref}}$`, and that no map is drawn over it."""
     meta = _meta("twin_yspectra", suffixes=LEGACY)
     rec = _records(meta, "twin_yspectra", 4)
     series = _series("twin_yspectra", [_member(meta, rec)])
@@ -584,39 +585,22 @@ def test_reference_scale() -> None:
     assert np.allclose(series.reference_scale(), want)
     assert np.all(want > 0.0)
 
-    # The complete marginals normalise; the k_x = 0 plane does not, and
-    # a budget stream names no prefix at all.
-    assert tsm.normalises(series, "e_x") and tsm.normalises(series, "r_z")
-    assert not tsm.normalises(series, "e_x0")
-    # The summed panel is one ratio of sums, not a sum of three
-    # ratios.  Against the series' own scale, which the line above has
-    # already matched to *want*: this is which number a panel picks,
-    # not how it was accumulated.
-    scale = series.reference_scale()
-    assert tsm.reference_norm(series, "e_x", None) == float(scale.sum())
-    assert tsm.reference_norm(series, "e_x", 1) == float(scale[1])
-    assert tsm.reference_norm(series, "e_x0", None) is None
-
-    # A panel really is the absolute one over that constant -- which
-    # is what puts a difference map and its reference map on one
-    # scale, and a saturated pair's e_* at twice its r_*.
+    # No map is drawn over it: a difference map and its reference map
+    # are both in wall units, which puts them on one scale already --
+    # a saturated pair's e_* at twice its r_*.
     units = tsm.Units(RE, RE_TAU)
     options = tsm.MapOptions(units)
     harmonics = np.arange(1, NKZ, dtype=float)
-    for name, component, divisor in (
-        ("e_x", None, want.sum()),
-        ("r_x", 2, want[2]),
-    ):
+    for name, component in (("e_x", None), ("r_x", 2)):
         stored = series.field(name)[0]
         stored = stored.sum(axis=0) if component is None else stored[component]
-        absolute = (stored[:, 1:] * harmonics * VOLUME_FAC)[:, ::-1]
+        absolute = units.energy(stored[:, 1:] * harmonics * VOLUME_FAC)
         got = tsm.make_map(
             series, name, 0, options=options, component=component
         )
-        assert np.allclose(got.values, _folded(absolute) / divisor)
-        # The title reports E_ref in the plotted units, on its own line.
-        assert "E^{\\mathrm{ref}}" in got.title
-        assert got.title.count("\n") == 1
+        assert np.allclose(got.values, _folded(absolute[:, ::-1]))
+        assert got.title.endswith("/u_\\tau^2$"), got.title
+        assert "\n" not in got.title and "mathrm{ref}" not in got.title
 
     # Both marginals must report the same total; one that does not is a
     # convention slip, not noise.
@@ -631,8 +615,10 @@ def test_reference_scale() -> None:
         "twin_yspectra",
         [_member(lean_meta, _records(lean_meta, "twin_yspectra", 2))],
     )
-    assert not tsm.normalises(lean, "e_x")
     _raises(lean.reference_scale, "no reference spectra")
+    assert np.isfinite(
+        tsm.make_map(lean, "e_x", 0, options=options).values
+    ).all()
 
 
 def test_distinct_instants() -> None:
@@ -978,10 +964,9 @@ def test_layouts_and_default_series() -> None:
     under ``twin.x0_planes``.  All three must open; the `$(0, 0)$`
     mode `$E^{\mathrm{ref}}$` subtracts is the same number in all
     three, whichever field it is read from; and what is *drawn* is the
-    two difference-spectra marginals, their shape maps and the
-    histories of both, and the budget's where there is one, unless a
-    switch asks for more -- each adding its own family and nothing
-    else, ``--no-history`` taking the histories away.
+    two difference-spectra marginals and their shape maps, and the
+    budget's and theirs where there is one, unless a switch asks for
+    more -- each adding its own family and nothing else.
     """
     scales = {}
     registries = {}
@@ -1020,8 +1005,8 @@ def test_layouts_and_default_series() -> None:
     # The shape maps redraw the two true marginals, never the slice.
     assert f"spectra_{tsm.SHAPE}_x0" not in registries["x0_planes"]
 
-    maps = [f"spectra_{p}_{m}" for p in ("e", tsm.SHAPE) for m in "xz"]
-    spectra = maps + [f"history_{p}" for p in ("e", tsm.SHAPE)]
+    spectra = [f"spectra_{p}_{m}" for p in ("e", tsm.SHAPE) for m in "xz"]
+    history = [f"history_{p}" for p in ("e", tsm.SHAPE)]
     reference = [f"spectra_r_{m}" for m in ("x", "z")]
     decorr = [f"spectra_decorr_{m}" for m in ("x", "z")]
     decorr_k = [f"spectra_decorr_k_{m}" for m in ("x", "z")]
@@ -1030,6 +1015,7 @@ def test_layouts_and_default_series() -> None:
     everything = dict(
         x0=True,
         budget=True,
+        history=True,
         reference=True,
         decorr=True,
         decorr_k=True,
@@ -1040,12 +1026,9 @@ def test_layouts_and_default_series() -> None:
     )
     for label, registry in registries.items():
         # The bare default of a spectra stream is the two marginals of
-        # the difference spectra and of their shape maps, with the
-        # histories of both, and nothing of the reference's.
+        # the difference spectra and of their shape maps, and nothing
+        # of the reference's.
         assert sorted(tsm.default_series(registry)) == sorted(spectra), label
-        assert sorted(tsm.default_series(registry, history=False)) == (
-            sorted(maps)
-        ), label
         # Each switch adds its own family and nothing else.  The
         # reference's and R^k's spacetime maps are the composites --
         # each needs both of its switches, so neither alone brings it.
@@ -1054,6 +1037,7 @@ def test_layouts_and_default_series() -> None:
             ({"decorr": True}, decorr),
             ({"decorr_k": True}, decorr_k),
             ({"spacetime": True}, ["spacetime_e"]),
+            ({"history": True}, history),
             (
                 {"reference": True, "spacetime": True},
                 reference + ["spacetime_e", "spacetime_r"],
@@ -1071,32 +1055,34 @@ def test_layouts_and_default_series() -> None:
             registry
         ), label
 
-    # The budget is drawn unasked, its spacetime map under --spacetime,
-    # and --no-budget drops both.
+    # The budget and its shape maps are drawn unasked, its spacetime
+    # map under --spacetime and its history under --history, and
+    # --no-budget drops all of them.
     budget_meta = _meta("twin_ybudget")
     budget = _series(
         "twin_ybudget",
         [_member(budget_meta, _records(budget_meta, "twin_ybudget", 2))],
     )
     both = tsm.available_series(opened["default"], budget)
-    assert set(tsm.default_series(both)) == {
-        *spectra,
-        "budget_x",
-        "budget_z",
-        "history_budget",
-    }
+    budgets = {f"budget_{p}{m}" for p in ("", f"{tsm.SHAPE}_") for m in "xz"}
+    assert set(tsm.default_series(both)) == {*spectra, *budgets}
     assert set(tsm.default_series(both, budget=False)) == set(spectra)
     assert set(tsm.default_series(both, spacetime=True)) == {
         *spectra,
-        "budget_x",
-        "budget_z",
-        "history_budget",
+        *budgets,
         "spacetime_e",
         "spacetime_budget",
     }
-    assert "spacetime_budget" not in tsm.default_series(
-        both, spacetime=True, budget=False
-    )
+    assert set(tsm.default_series(both, history=True)) == {
+        *spectra,
+        *budgets,
+        *history,
+        "history_budget",
+    }
+    for switch in ("spacetime", "history"):
+        assert not {"spacetime_budget", "history_budget"} & set(
+            tsm.default_series(both, budget=False, **{switch: True})
+        ), switch
     # The moment budget needs both streams and its own switch, and
     # --no-budget drops it with the rest of the budget.
     moments = {"moments_y", "moments_x", "moments_z"}
@@ -1120,9 +1106,9 @@ def test_reference_layouts() -> None:
     set mixing the two -- to the same `$E^{\mathrm{ref}}$`, reference
     maps, decorrelations and reference spacetime map.  A split member
     whose reference was sampled every other difference sample
-    (``twin.it_yspectra_ref``) normalises over its own samples and
-    draws every difference map and decorrelation, but a reference map
-    only at the frames the two cadences share.
+    (``twin.it_yspectra_ref``) averages its own samples and draws every
+    difference map and decorrelation, but a reference map only at the
+    frames the two cadences share.
     """
     options = tsm.MapOptions(tsm.Units(RE, RE_TAU))
     meta = _meta("twin_yspectra")
@@ -1190,8 +1176,8 @@ def test_reference_layouts() -> None:
             lambda: tsm.make_map(alone, "r_x", 1, options=options),
             "twin.it_yspectra_ref",
         )
-        # What divides by the time-averaged reference needs no sample
-        # at the frame itself.
+        # Neither the difference map nor what divides by the
+        # time-averaged reference needs a reference sample at the frame.
         for name in ("e_x", "decorr_x", "decorr_k_x"):
             drawn = tsm.make_map(alone, name, 1, options=options).values
             assert np.isfinite(drawn).any(), name
@@ -1483,15 +1469,12 @@ def test_spacetime() -> None:
 
     # The k-sum of the panel, in the plotted units, folded, and with
     # no premultiplier whatever --premultiply says.
-    scale = series.reference_scale()
     for component in (2, None):
         if component is None:
             total = rec["e_x"].sum(-1).sum(axis=1)
-            over = scale.sum()
         else:
             total = rec["e_x"].sum(-1)[:, component]
-            over = scale[component]
-        want = _folded((total * VOLUME_FAC / over).T).T
+        want = options.units.energy(_folded((total * VOLUME_FAC).T).T)
         for premultiply in ("k", "ky", "none"):
             drawn = tsm.make_spacetime(
                 series,
@@ -1503,8 +1486,7 @@ def test_spacetime() -> None:
         assert drawn.values.shape == (rec.size, (NY + 1) // 2)
         assert np.allclose(drawn.t, options.units.time(series.t_rel))
 
-    # The k_x = 0 slice keeps its name and stays absolute, so it
-    # carries the unit conversion the normalised panels cancel.
+    # The k_x = 0 slice keeps its name, and the unit conversion.
     x0_meta = _meta("twin_yspectra", suffixes=WITH_X0)
     x0_rec = _records(x0_meta, "twin_yspectra", 3, seed=37)
     x0_series = _series("twin_yspectra", [_member(x0_meta, x0_rec)])
@@ -1515,7 +1497,6 @@ def test_spacetime() -> None:
         _folded((x0_rec["r_x0"][:, 0, :, 1:].sum(-1) * VOLUME_FAC).T).T
     )
     assert np.allclose(slice_map.values, want)
-    assert tsm.spacetime_norm(x0_series, "r", "x0", 0) is None
     assert "x0" in slice_map.title and "\n" not in slice_map.title
 
     # The colour range is a legend for the columns the box shows: a
@@ -1603,7 +1584,7 @@ def test_spacetime() -> None:
         assert all(p.stat().st_size > 0 for p in written)
 
         # The .npz carries the drawn arrays and every factor behind
-        # them -- enough to undo the normalisation without the figure.
+        # them -- enough to undo the division without the figure.
         stored = np.load(written[-1])
         panels = tsm.spacetime_maps(
             series,
@@ -1619,7 +1600,6 @@ def test_spacetime() -> None:
         assert float(stored["re_tau"]) == RE_TAU
         assert float(stored["volume_fac"]) == VOLUME_FAC
         assert str(stored["half"]) == "mean"
-        assert np.all(np.isnan(stored["e_ref"]))  # a ratio, not an E_ref
         # Multiplying the divisor back recovers the k-summed numerator.
         numerator = _folded(rec["e_x"].sum(-1)[:, 0].T).T
         assert np.allclose(
@@ -1941,9 +1921,9 @@ def test_peak_track() -> None:
     assert np.allclose(got, (lam[3], linear[2])), got
 
     # Exactly the panels with one continuous bulk are tracked: every
-    # panel of the difference spectra's two marginals and of their
-    # shape maps, and the production and its mean-shear part on the
-    # budget's.
+    # panel of the difference spectra's two marginals, and the
+    # production and its mean-shear part on the budget's, each on its
+    # shape map too.
     for prefix in ("e", tsm.SHAPE):
         for marginal in "xz":
             difference = tsm.spectra_panels(prefix, marginal)
@@ -1967,6 +1947,11 @@ def test_peak_track() -> None:
     panels = tsm.budget_panels(budget, "x")
     tracked = [k for k in panels if k[0] in tsm.TRACKED]
     assert tracked == [("prod_x", None), ("prod_mean_x", None)]
+    shaped = tsm.budget_panels(budget, "x", shape=True)
+    assert [k for k in shaped if k[0] in tsm.TRACKED] == [
+        ("s_prod_x", None),
+        ("s_prod_mean_x", None),
+    ]
 
     # The track is drawn on those panels alone: the history up to the
     # frame, and the frame's point.
@@ -2036,12 +2021,14 @@ def test_peak_track() -> None:
 
 
 def test_shape_maps() -> None:
-    r"""Each frame over its own peak, under the `$k\,y^+$` premultiplier.
+    r"""Each panel over its frame's anchor peak, under `$k\,y^+$`.
 
     One shape grown by four decades, on a grid fine enough to put rows
     under the ordinate's floor, with a spike planted there: the peak
     is read off the rows the box shows, so the spike sets nothing, and
-    every frame draws the same map on the same bands.
+    every frame draws the same map.  The anchor -- the summed spectrum,
+    and on the budget the production -- reaches 1 and is frozen on the
+    series; every other panel is over the same peak, on its own range.
     """
     units = tsm.Units(RE, RE_TAU)
     options = tsm.MapOptions(units)
@@ -2060,45 +2047,59 @@ def test_shape_maps() -> None:
 
     harmonics = np.arange(1, NKZ, dtype=float)
     y_plus = (1.0 + _grid(ny)[: (ny + 1) // 2]) * RE_TAU
+
+    def absolute(frame: int, component: int | None) -> np.ndarray:
+        """The absolute k y+ map, written out independently."""
+        e = rec["e_x"][frame]
+        e = e.sum(axis=0) if component is None else e[component]
+        plotted = units.energy(e[:, 1:] * harmonics * VOLUME_FAC)[:, ::-1]
+        return _folded(plotted, ny) * y_plus[:, None]
+
+    def boxed(values: np.ndarray) -> np.ndarray:
+        """*values* on the rows the box shows."""
+        return tsm.Map(
+            lam=np.ones(values.shape[1]),
+            y=y_plus,
+            values=values,
+            title="",
+            name="e_x",
+            non_negative=True,
+            y_log=True,
+        ).drawn(ylim)[1]
+
     shapes = {}
     for frame in range(amplitude.size):
-        for component in (0, None):
-            e = rec["e_x"][frame]
-            e = e.sum(axis=0) if component is None else e[component]
-            # The absolute k y+ map, written out independently: no
-            # E_ref, whatever the stream carries.
-            absolute = (
-                _folded(
-                    units.energy(e[:, 1:] * harmonics * VOLUME_FAC)[:, ::-1],
-                    ny,
-                )
-                * y_plus[:, None]
-            )
+        # Every panel is over the summed panel's peak in the box.
+        peak = float(boxed(absolute(frame, None)).max())
+        for component in (0, 1, 2, None):
             got = tsm.make_map(
                 series, "s_x", frame, options=options, component=component
             )
             assert np.allclose(got.y, y_plus)
-            box = tsm.Map(
-                lam=got.lam,
-                y=y_plus,
-                values=absolute,
-                title="",
-                name="e_x",
-                non_negative=True,
-                y_log=True,
-            )
-            peak = float(box.drawn(ylim)[1].max())
             assert np.isclose(got.peak, peak), (frame, component)
-            assert np.allclose(got.values, absolute / peak), (frame, component)
-            # 1 on the rows the box shows, and the spike under the
-            # floor far above it, setting nothing.
-            assert np.isclose(got.drawn(ylim)[1].max(), 1.0)
-            assert got.drawn()[1].max() > 10.0
-            # The title reports that peak on its own line, in wall units.
-            assert got.title.count("\n") == 1
-            assert tsm.latex_float(peak) in got.title
-            assert "y^+" in got.title and r"/\max$" in got.title
-            assert r"\max/u_\tau^2 = " in got.title
+            assert np.allclose(got.values, absolute(frame, component) / peak)
+            shown = float(got.drawn(ylim)[1].max())
+            if component is None:
+                # The anchor: 1 on the rows the box shows, the spike
+                # under the floor far above it and setting nothing,
+                # and the peak on its title's own line, in wall units.
+                assert np.isclose(shown, 1.0)
+                assert got.drawn()[1].max() > 10.0
+                assert got.clim == "series"
+                assert got.title.count("\n") == 1
+                assert tsm.latex_float(peak) in got.title
+                assert "y^+" in got.title and r"/\max$" in got.title
+                assert r"\max/u_\tau^2 = " in got.title
+            else:
+                # A component: its share of that peak, which it never
+                # exceeds, on its own range, and no number reported.
+                assert 0.0 < shown < 1.0, (frame, component)
+                assert got.clim == "frame"
+                assert "\n" not in got.title
+                assert (
+                    r"/\max(k_{z}^+ y^+\,\sum_\alpha E^{x}_{\Delta \alpha})$"
+                    in got.title
+                ), got.title
             shapes[(frame, component)] = got.values
     # The difference spectrum, as on the e_* panels.
     assert (
@@ -2114,36 +2115,40 @@ def test_shape_maps() -> None:
 
     # The premultiplier is fixed, and every frame-constant factor
     # cancels from the map and survives in the peak alone.
-    base = tsm.make_map(series, "s_x", 1, options=options)
     outer_units = tsm.Units(RE, RE_TAU, wall=False)
-    for other, factor in (
-        (tsm.MapOptions(units, premultiply="none"), 1.0),
-        (tsm.MapOptions(units, premultiply="ky"), 1.0),
-        (tsm.MapOptions(units, volume_fac=False), 1.0 / VOLUME_FAC),
-        (tsm.MapOptions(outer_units), U_TAU**2 / RE_TAU),
-    ):
-        moved = tsm.make_map(series, "s_x", 1, options=other)
-        assert np.allclose(moved.values, base.values)
-        assert np.isclose(moved.peak, factor * base.peak)
+    for component in (0, None):
+        base = tsm.make_map(
+            series, "s_x", 1, options=options, component=component
+        )
+        for other, factor in (
+            (tsm.MapOptions(units, premultiply="none"), 1.0),
+            (tsm.MapOptions(units, premultiply="ky"), 1.0),
+            (tsm.MapOptions(units, volume_fac=False), 1.0 / VOLUME_FAC),
+            (tsm.MapOptions(outer_units), U_TAU**2 / RE_TAU),
+        ):
+            moved = tsm.make_map(
+                series, "s_x", 1, options=other, component=component
+            )
+            assert np.allclose(moved.values, base.values)
+            assert np.isclose(moved.peak, factor * base.peak)
     outer = tsm.make_map(
         series, "s_x", 1, options=tsm.MapOptions(outer_units)
     ).title
     assert r"\max = " in outer and r"u_\tau" not in outer, outer
-    # Taken last: a smoothed map still reaches 1 in the box.
+    # Taken last: a smoothed anchor still reaches 1 in the box.
     smoothed = tsm.make_map(
         series, "s_x", 1, options=tsm.MapOptions(units, smooth=3)
     )
     assert np.isclose(smoothed.drawn(ylim)[1].max(), 1.0)
     # A shape-only selection never reads the reference.
     spec = tsm.SeriesSpec("twin_yspectra", tsm.SHAPE, "x", tsm.MAP)
-    assert not tsm.needs_reference(series, spec)
+    assert not tsm.needs_reference(spec)
 
-    # The same [0, 1] bands in every frame, under every --clim, and
-    # --quantile reaches none of them.
+    # The anchor's [0, 1] bands in every frame, every other panel's
+    # own frame's, under every --clim; --quantile reaches none of them.
     panels = tsm.spectra_panels(tsm.SHAPE, "x")
     scales, notes = tsm.scan_panels(series, panels, options, ylim=ylim)
     assert not notes  # declared non-negative, and it is
-    want = np.arange(1, 11) / 10.0
     for clim in ("series", "frame", "ramped"):
         for quantile in (None, 0.5):
             for frame in (0, 2):
@@ -2155,11 +2160,25 @@ def test_shape_maps() -> None:
                     tsm.PlotStyle(clim=clim, quantile=quantile),
                     scales,
                 )
-                for ax in figure.axes[0::2]:
+                for ax, (name, component) in zip(
+                    figure.axes[0::2], panels, strict=True
+                ):
                     filled = next(
                         c for c in ax.collections if isinstance(c, ContourSet)
                     )
                     assert filled.filled
+                    if component is None:
+                        want = np.arange(1, 11) / 10.0
+                    else:
+                        own = tsm.make_map(
+                            series,
+                            name,
+                            frame,
+                            options=options,
+                            component=component,
+                        ).drawn(ylim)[1]
+                        want = tsm.contour_levels(own, 10, non_negative=True)
+                        assert want[-1] < 1.0
                     assert np.allclose(filled.levels, want), (clim, frame)
                     assert filled.extend == "neither", (clim, quantile)
                 plt.close(figure)
@@ -2175,6 +2194,67 @@ def test_shape_maps() -> None:
         options=options,
     )
     assert flat.peak == 0.0 and not flat.values.any()
+
+    # The budget's: every panel over the frame's peak of the k y+
+    # production in the box, its sign family its term's.
+    budget_meta = _meta("twin_ybudget", ny=ny)
+    budget = _series(
+        "twin_ybudget",
+        [_member(budget_meta, _records(budget_meta, "twin_ybudget", 3))],
+    )
+    ky = tsm.MapOptions(units, premultiply="ky")
+    panels = tsm.budget_panels(budget, "z", shape=True)
+    assert panels[0] == ("s_prod_z", None)
+    assert panels[-1] == ("s_sum_z", None)
+    assert tsm.declared_non_positive("s_diss_z")
+    assert not tsm.declared_non_negative("s_prod_z")
+    for frame in range(3):
+        peak = float(
+            tsm.make_map(budget, "prod_z", frame, options=ky)
+            .drawn(ylim)[1]
+            .max()
+        )
+        for name, _ in panels:
+            got = tsm.make_map(budget, name, frame, options=options)
+            source = tsm.make_map(
+                budget, tsm.shape_source(name), frame, options=ky
+            )
+            assert np.isclose(got.peak, peak), (frame, name)
+            assert np.allclose(got.values, source.values / peak), name
+            anchor = name == "s_prod_z"
+            assert got.clim == ("series" if anchor else "frame"), name
+            assert ("\n" in got.title) == anchor, name
+    diss = tsm.make_map(budget, "s_diss_z", 0, options=options).title
+    assert diss.startswith("$-"), diss
+    assert r"/\max(k_{x}^+ y^+\,\mathcal{P}_\Delta)$" in diss, diss
+    prod = tsm.make_map(budget, "s_prod_z", 0, options=options).title
+    assert r"\max\,\nu/u_\tau^4 = " in prod, prod
+
+    # The production's levels are frozen on the series -- from its most
+    # negative value in any frame up to 1 -- whatever --clim says, and
+    # every other panel's are its own frame's.
+    scales, _ = tsm.scan_panels(budget, panels, options, ylim=ylim)
+    frozen = scales[("s_prod_z", None)]
+    assert frozen.lo < 0.0 and frozen.hi == 1.0
+    for clim in ("series", "frame", "ramped"):
+        figure = tsm.panel_figure(
+            budget, 1, panels, options, tsm.PlotStyle(clim=clim), scales
+        )
+        for ax, (name, _) in zip(figure.axes[0::2], panels, strict=True):
+            filled = next(
+                c for c in ax.collections if isinstance(c, ContourSet)
+            )
+            own = tsm.make_map(budget, name, 1, options=options).drawn(ylim)[1]
+            want = tsm.contour_levels(
+                own,
+                10,
+                non_negative=False,
+                data_range=(
+                    (frozen.lo, frozen.hi) if name == "s_prod_z" else None
+                ),
+            )
+            assert np.allclose(filled.levels, want), (clim, name)
+        plt.close(figure)
 
 
 def test_main_renders_the_selected_series() -> None:
@@ -2218,16 +2298,20 @@ def test_main_renders_the_selected_series() -> None:
             ]
         )
         assert code == 0
-        # The bare default set: the difference-spectra, shape and
-        # budget marginals, each with the track of its tracked panels
-        # beside it, and the three histories, and nothing else.
+        # The bare default set: the difference-spectra and budget
+        # marginals and their shape maps, each with the track of its
+        # tracked panels beside it, and nothing else.
         maps = [
             f"{kind}_{m}"
-            for kind in ("spectra_e", f"spectra_{tsm.SHAPE}", "budget")
+            for kind in (
+                "spectra_e",
+                f"spectra_{tsm.SHAPE}",
+                "budget",
+                f"budget_{tsm.SHAPE}",
+            )
             for m in "xz"
         ]
-        histories = {f"history_{b}" for b in ("e", tsm.SHAPE, "budget")}
-        defaults = {*maps, *(f"{tag}_track" for tag in maps), *histories}
+        defaults = {*maps, *(f"{tag}_track" for tag in maps)}
         assert {p.name for p in out.iterdir()} == defaults
         for tag in maps:
             frames = sorted((out / tag).glob("*.png"))
@@ -2243,12 +2327,14 @@ def test_main_renders_the_selected_series() -> None:
                 f"{tag}_track.npz",
                 f"{tag}_track.png",
             ], tag
-        # A budget figure is three columns of the spectra's panels: the
-        # geometry is independent of the axis limits, so any serve.
+        # A budget figure, shape or not, is three columns of the
+        # spectra's panels: the geometry is independent of the axis
+        # limits, so any serve.
         style = tsm.PlotStyle(dpi=50)
         for tag, ncols, n_panels in (
             ("spectra_e_x", None, 4),
             ("budget_x", tsm.BUDGET_NCOLS, 9),
+            (f"budget_{tsm.SHAPE}_z", tsm.BUDGET_NCOLS, 9),
         ):
             width = plt.imread(out / tag / f"{tag}_0.png").shape[1]
             limits = (1.0, 10.0)
@@ -2299,10 +2385,10 @@ def test_main_renders_the_selected_series() -> None:
         ) == ["spacetime_budget.npz", "spacetime_budget_lin.png"]
         assert all(f.stat().st_size > 0 for f in st_dir.rglob("*.png"))
 
-        # ``--no-budget`` drops the budget, and ``--budget`` -- the
-        # default -- still parses, for the command lines that pass it;
-        # ``--x0`` adds nothing here, these members carrying no such
-        # plane.
+        # ``--no-budget`` drops both budget sets, and ``--budget`` --
+        # the default -- still parses, for the command lines that pass
+        # it; ``--x0`` adds nothing here, these members carrying no
+        # such plane.
         lean = root / "lean"
         assert run(lean, "--no-budget", "--x0") == 0
         assert {p.name for p in lean.iterdir()} == {
@@ -2310,7 +2396,7 @@ def test_main_renders_the_selected_series() -> None:
             for prefix in ("e", tsm.SHAPE)
             for m in "xz"
             for track in ("", "_track")
-        } | {f"history_{b}" for b in ("e", tsm.SHAPE)}
+        }
         parser = tsm.build_parser()
         required = ["--members", "m", "--out", "o", "--re", "1"]
         for extra, drawn in (
@@ -2351,6 +2437,10 @@ def test_main_renders_the_selected_series() -> None:
                     "spacetime_budget",
                 },
             ),
+            (
+                ["--history"],
+                {f"history_{b}" for b in ("e", tsm.SHAPE, "budget")},
+            ),
             (["--front"], {"front_x", "front_z"}),
             (["--moment-budget"], {"moments_y", "moments_x", "moments_z"}),
             (
@@ -2384,7 +2474,7 @@ def test_history_maps() -> None:
     distance in the plotted units; the `$(\lambda, t)$` map is the
     wall-normal average over the doubled half-channel weights, the
     `$m = 0$` column dropped, times `$m$`, ascending in wavelength and
-    over `$E^{\mathrm{ref}}$` -- untouched by ``--no-volume-fac``.  The
+    in wall units -- untouched by ``--no-volume-fac``.  The
     two read one total; a shape history's rows each reach 1 and do not
     see the unit system; a budget history's production is its two
     parts; and the renderer writes the figures and ``.npz`` the family
@@ -2395,7 +2485,6 @@ def test_history_maps() -> None:
     meta = _meta("twin_yspectra")
     rec = _records(meta, "twin_yspectra", 4, seed=41)
     series = _series("twin_yspectra", [_member(meta, rec)])
-    scale = series.reference_scale()
     for component in (1, None):
         plain = tsm.make_spacetime(
             series, "e", options=options, component=component
@@ -2419,8 +2508,7 @@ def test_history_maps() -> None:
         )
         folded = 0.5 * (e[:, :n_half] + e[:, ::-1][:, :n_half])
         average = np.einsum("j,tjk->tk", weights, folded)
-        over = scale.sum() if component is None else scale[component]
-        want = (average[:, 1:] * harmonics[1:])[:, ::-1] / over
+        want = options.units.energy((average[:, 1:] * harmonics[1:])[:, ::-1])
         drawn = tsm.make_scaletime(
             series, "e", "x", options=options, component=component
         )
@@ -2433,10 +2521,10 @@ def test_history_maps() -> None:
         assert np.allclose(again.values, drawn.values)
     # One total, read both ways: the lambda map's bands, unpremultiplied
     # and with the m = 0 column back, average to what the y map holds.
-    bands = drawn.values[:, ::-1] / harmonics[None, 1:] * scale.sum()
+    bands = drawn.values[:, ::-1] / harmonics[None, 1:] * U_TAU**2
     zero = tsm.y_averaged(series, "e", "x", "mean").sum(axis=1)[:, 0]
     plain = tsm.make_spacetime(series, "e", options=options)
-    profile = plain.values * scale.sum() / VOLUME_FAC
+    profile = plain.values * U_TAU**2 / VOLUME_FAC
     assert np.allclose(
         bands.sum(axis=1) + zero, np.einsum("j,tj->t", weights, profile)
     )
