@@ -124,7 +124,13 @@ broken layout or a single-precision slip shows at 1e-8 or more.  With
 one that shares no time with the reference past the first (the
 initial state, which every run of the problem shares) as
 ``unchecked``, so a broken layout or arm fails the sweep instead of
-merely timing well.
+merely timing well.  A first row that becomes the reference is not
+compared with anything: its ``dev`` reads ``ref`` (empty in the CSV,
+whose ``stats_reference`` column names each row's reference), and
+with ``--stats-tolerance`` it is ``unchecked`` unless another row
+agreed with it.  A sweep of one row and no ``--stats-reference``
+therefore checks nothing, and says so, where a ``dev`` of 0 would
+read as a pass.
 The check needs the stream (``--outs.it_stats``, unset by default),
 and two more conditions make it sharp: ``--outs.stats_precision 17``,
 or the nine printed digits dominate the round-off; and a
@@ -648,22 +654,34 @@ def _deviation(stats: dict, ref: dict) -> tuple[float, int, str]:
     return worst / scale, rows, name
 
 
-def _check_row(res: dict, ref: dict | None, tol: float | None):
+def _check_row(
+    res: dict, ref: tuple[dict, str] | None, tol: float | None, label: str
+) -> tuple[dict, str] | None:
     """Record a finished row's deviation from *ref*; return the reference.
 
-    With no reference yet, the first ``ok`` row's stream becomes it
-    (and agrees with itself).  With a tolerance, an ``ok`` row above it
-    becomes ``deviates``, and one that cannot be compared -- no stream,
-    or no common time past the first, the initial state every run of
-    the problem shares -- ``unchecked``.
+    *ref* is ``(stream, name)``.  With no reference yet, the first
+    ``ok`` row's stream becomes it, named by the row's *label*; that row
+    is marked ``stats_reference = "self"`` and not compared, since a
+    stream agrees with itself whatever it holds (whether anything else
+    agreed with it is settled after the sweep, :func:`_check_reference`).
+    With a tolerance, an ``ok`` row above it becomes ``deviates``, and
+    one that cannot be compared -- no stream, or no common time past the
+    first, the initial state every run of the problem shares --
+    ``unchecked``.
     """
     stats = res.pop("_stats", None)
     if stats is not None:
         if ref is None and res["status"] == "ok":
-            ref = stats
+            res["stats_reference"] = "self"
+            return stats, label
         if ref is not None:
-            dev, rows, col = _deviation(stats, ref)
-            res.update(stats_dev=dev, stats_rows=rows, stats_column=col)
+            dev, rows, col = _deviation(stats, ref[0])
+            res.update(
+                stats_dev=dev,
+                stats_rows=rows,
+                stats_column=col,
+                stats_reference=ref[1],
+            )
     if tol is not None and res["status"] == "ok":
         if res.get("stats_rows", 0) < 2:
             res["status"] = "unchecked"
@@ -672,8 +690,35 @@ def _check_row(res: dict, ref: dict | None, tol: float | None):
     return ref
 
 
+def _check_reference(rows: list[Row], tol: float | None) -> bool:
+    """Settle the self-referenced row once the sweep has run.
+
+    A row that served as the reference was never compared; with a
+    tolerance it stays ``ok`` only if another row shares more than the
+    initial state with it and agreed (``ok``).  Otherwise it becomes
+    ``unchecked``.  Returns whether any row was checked against an
+    independent run.
+    """
+    checked = any(
+        r.result.get("stats_reference") not in (None, "self")
+        and r.result.get("stats_rows", 0) >= 2
+        and r.result.get("status") == "ok"
+        for r in rows
+    )
+    if tol is not None and not checked:
+        for r in rows:
+            if (
+                r.result.get("stats_reference") == "self"
+                and r.result.get("status") == "ok"
+            ):
+                r.result["status"] = "unchecked"
+    return checked
+
+
 def _dev_text(res: dict) -> str:
-    """A row's deviation for the table: ``-`` if never compared."""
+    """A row's deviation for the table: ``ref``, or ``-`` if not compared."""
+    if res.get("stats_reference") == "self":
+        return "ref"
     if "stats_dev" not in res:
         return "-"
     if not res.get("stats_rows"):
@@ -740,11 +785,12 @@ def _summarise(rows: list[Row], a: argparse.Namespace) -> None:
             "launch to the distributed runtime; start: the first rank's\n"
             "Alive line to the end of the first (compiling) step."
         )
-    if any("stats_dev" in r.result for r in rows):
+    if any("stats_reference" in r.result for r in rows):
         print(
             "dev: largest difference of the row's stats.dat from the "
             "reference over their\ncommon times, in units of the "
-            "reference's largest magnitude."
+            "reference's largest magnitude (ref: the row\nthat is the "
+            "reference, compared with nothing)."
         )
 
 
@@ -779,6 +825,7 @@ def _write_csv(rows: list[Row], path: str, hosts: list[str]) -> None:
         "stats_dev",
         "stats_rows",
         "stats_column",
+        "stats_reference",
         "padding",
         "start_unix",
         "end_unix",
@@ -887,9 +934,10 @@ def main() -> int:
         ap.error("--solver-args or --toml is required (the problem)")
     ref = None
     if a.stats_reference:
-        ref = _read_stats(Path(a.stats_reference))
-        if ref is None:
+        stream = _read_stats(Path(a.stats_reference))
+        if stream is None:
             ap.error(f"--stats-reference: no stats in {a.stats_reference}")
+        ref = (stream, a.stats_reference)
     launcher = a.launcher if a.target == "cpu" else None
     if launcher and not (a.dry_run or shutil.which(launcher)):
         ap.error(f"{launcher} not on PATH")
@@ -920,7 +968,7 @@ def main() -> int:
         if (row.np0, row.np1) in pads:
             row.result["padding"] = pads[(row.np0, row.np1)]
         res = row.result
-        ref = _check_row(res, ref, a.stats_tolerance)
+        ref = _check_row(res, ref, a.stats_tolerance, row.label.strip())
         print(
             f"   {res['status']}"
             + (f", {res['s_per_t']:.3e} s/t" if "s_per_t" in res else "")
@@ -929,10 +977,18 @@ def main() -> int:
                 if "host_node_gib" in res
                 else ""
             )
-            + (f", dev {_dev_text(res)}" if "stats_dev" in res else ""),
+            + (f", dev {_dev_text(res)}" if "stats_reference" in res else ""),
             flush=True,
         )
+    checked = _check_reference(rows, a.stats_tolerance)
     _summarise(rows, a)
+    if not checked and any(
+        r.result.get("stats_reference") == "self" for r in rows
+    ):
+        print(
+            "\nnothing was checked against an independent run: the only "
+            "stream is the\nreference row's own (give --stats-reference)."
+        )
     if a.csv:
         _write_csv(rows, a.csv, hosts)
         print(f"\nwrote {a.csv}")
