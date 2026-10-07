@@ -306,11 +306,13 @@ class Distribution(BaseModel):
     2 ranks, 2.28x on 4).  By how much is a property of the target
     machine's interconnect, so it is worth timing again there.
 
-    Selecting MPI also turns CPU async dispatch off -- XLA's MPI
-    backend cannot take a communicator request from a thread pool, and
-    the failure is load-dependent rather than obvious
-    (``bootstrap._select_cpu_collectives``).  The numbers above already
-    include that cost.  It applies to
+    Selecting MPI also turns CPU async dispatch off, and the mesh opens
+    its MPI communicators as it is built -- XLA's MPI backend cannot
+    take a communicator request from a thread pool, and the failure is
+    load-dependent rather than obvious
+    (``bootstrap._select_cpu_collectives``,
+    ``sharding._warm_communicators``).  The numbers above already
+    include the dispatch cost.  It applies to
     ``JAX_CPU_COLLECTIVES_IMPLEMENTATION=mpi`` as much as to the
     discovered choice: the two reach the same backend.
 

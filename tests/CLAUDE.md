@@ -70,6 +70,9 @@ Parameters, bootstrap, mesh, seeds:
 - `test_host_placement.py` (`mpirun`, `--only`): no host array reaches
   the mesh through JAX's cross-process gather
   (`sharding.Sharding.distribute`).
+- `test_mpi_communicators.py` (`mpirun`): the mesh's MPI communicators
+  are open before a collective can run off the MPI thread
+  (`sharding._warm_communicators`).
 
 Initial conditions:
 - `test_localized_rolls.py`, `test_rolls_smoke.py` (6 roll builders),

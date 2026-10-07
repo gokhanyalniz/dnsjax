@@ -1115,9 +1115,15 @@ def _select_cpu_collectives(lib: str | None) -> str:
     the failure looks like a mesh or machine quirk rather than a race
     -- ``Communicator requested from a thread that is not the one MPI
     was initialized from`` -- and it is fatal.  Reproduced at
-    ``np0=4 x np1=4`` on 16 ranks and fixed by the inline dispatch,
-    which does not cost MPI its advantage: 0.80 s/t against gloo's
-    1.14 (4 ranks, plane-Couette 32^3, interleaved).
+    ``np0=4 x np1=4`` on 16 ranks and fixed there by the inline
+    dispatch, which does not cost MPI its advantage: 0.80 s/t against
+    gloo's 1.14 (4 ranks, plane-Couette 32^3, interleaved).  Inline
+    dispatch is not the whole fix, though: a program dispatched while
+    an input is still being written goes to the pool all the same,
+    and a program's collectives can run off the launching thread
+    anyway.  So :mod:`dnsjax.sharding` also opens every communicator
+    the mesh uses as it builds the mesh, on this thread
+    (``sharding._warm_communicators``, which has the cases).
 
     The choice is made per rank against that rank's own filesystem, and
     reported by rank 0 only, so the wrapper library has to be visible
