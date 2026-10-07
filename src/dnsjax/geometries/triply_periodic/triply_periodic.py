@@ -34,7 +34,9 @@ from ...rhs import get_nonlin
 from ...sharding import register_dataclass_pytree, sharding
 from ...timestep import make_stepper
 
-ly = 4  # Shear-direction box length is the length reference and fixed
+# Shear-direction box length: the length reference, fixed, and mirrored
+# JAX-free by ``analysis._core.LY_PERIODIC`` (change both together).
+ly = 4
 
 
 @register_dataclass_pytree

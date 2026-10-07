@@ -15,7 +15,7 @@ The external-facing snapshot API: `snapshot_export.read_state` and
   `__init__.py`.
 - Return data in the stored layout: a chunk reshaped to
   `meta["native_shape"][1:]` is the solver's own layout, and coordinate
-  tuples are ordered to match. Never transpose.
+  tuples are ordered to match.
 - `divergence` and `curl` reproduce the solver's discrete operators
   node for node (pinned by `test_snapshot_export.py`): re-run it after
   changing any primitive. The pipe's parity follows the physical
@@ -29,7 +29,7 @@ The external-facing snapshot API: `snapshot_export.read_state` and
   harvest parents at multiples of the probe cadence or
   `response.ensemble.aggregate_tree` refuses the set. The pipeline and
   the route trade-offs: `response/__init__.py`.
-- `transient_growth.py`: the scope is `WALL_BOUNDED_TG_SYSTEMS`
-  (derived from `FlowSpec.total_field`); `--tg.save_operator` exports
-  the per-mode generators `response/` consumes; `single_mode_state` /
-  `mode_state_energy` are shared with `scripts/snapshot_perturb.py`.
+- `transient_growth.single_mode_state` / `mode_state_energy` are
+  shared with `scripts/snapshot_perturb.py`, and `--tg.save_operator`
+  exports the per-mode generators `response/` consumes: change either
+  end with the other.
