@@ -163,7 +163,6 @@ are never transcribed here -- they follow from the operators
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-import jax
 import numpy as np
 from jax import Array, lax, shard_map
 from jax import numpy as jnp
@@ -310,8 +309,8 @@ class CurvedCylindricalFlow(CylindricalFlow):
         h = 1.0 + KAPPA * r_p[:, None] * np.cos(theta)[None, :]
 
         def _phys(a: np.ndarray) -> Array:
-            return jax.device_put(
-                jnp.asarray(a[None, :, :, None], dtype=sharding.float_type),
+            return sharding.distribute(
+                a[None, :, :, None].astype(sharding.float_type),
                 sharding.phys_vector_shard,
             )
 
@@ -322,8 +321,8 @@ class CurvedCylindricalFlow(CylindricalFlow):
         self.inv_h2_m1 = _phys(1.0 / h**2 - 1.0)
 
         # `$\chi = r\cos\theta$` multiply: the (m ± 1) shift.
-        self.half_rs = jax.device_put(
-            jnp.asarray(0.5 * rs, dtype=sharding.float_type)[:, None, None],
+        self.half_rs = sharding.distribute(
+            (0.5 * rs).astype(sharding.float_type)[:, None, None],
             sharding.no_shard,
         )
         m_vals = np.asarray(
@@ -346,8 +345,8 @@ class CurvedCylindricalFlow(CylindricalFlow):
         last[n_true - 1] = 1.0
 
         def _mode(a: np.ndarray) -> Array:
-            return jax.device_put(
-                jnp.asarray(a[None, :, None], dtype=sharding.float_type),
+            return sharding.distribute(
+                a[None, :, None].astype(sharding.float_type),
                 P(None, sharding.a0, None),
             )
 
@@ -362,14 +361,12 @@ class CurvedCylindricalFlow(CylindricalFlow):
         c_m = _inv_h_harmonics(rs, m_vals)
         c_m[:, n_true:] = 0.0
         yw = np.asarray(self.y_weights)
-        self.flux_weights = jax.device_put(
-            jnp.asarray(2.0 * yw[:, None] * c_m, dtype=sharding.float_type)[
-                :, :, None
-            ],
+        self.flux_weights = sharding.distribute(
+            (2.0 * yw[:, None] * c_m).astype(sharding.float_type)[:, :, None],
             P(None, sharding.a0, None),
         )
-        self.flux_weights_mean = jax.device_put(
-            jnp.asarray(2.0 * yw * c_m[:, 0], dtype=sharding.float_type),
+        self.flux_weights_mean = sharding.distribute(
+            (2.0 * yw * c_m[:, 0]).astype(sharding.float_type),
             sharding.no_shard,
         )
         kz_vals = np.asarray(
@@ -379,11 +376,8 @@ class CurvedCylindricalFlow(CylindricalFlow):
                 sharding.nx_spec_pad,
             )
         )
-        self.kz0_mask = jax.device_put(
-            jnp.asarray(
-                (kz_vals == 0).astype(float)[None, None, :],
-                dtype=sharding.float_type,
-            ),
+        self.kz0_mask = sharding.distribute(
+            (kz_vals == 0).astype(sharding.float_type)[None, None, :],
             P(None, None, sharding.a1),
         )
 
@@ -400,8 +394,8 @@ class CurvedCylindricalFlow(CylindricalFlow):
         A = d1_odd + np.diag(1.0 / rs)
         A[-1, :] = 0.0
         A[-1, -1] = 1.0
-        self.mean_radial_inv = jax.device_put(
-            jnp.asarray(np.linalg.inv(A), dtype=sharding.float_type),
+        self.mean_radial_inv = sharding.distribute(
+            np.linalg.inv(A).astype(sharding.float_type),
             sharding.no_shard,
         )
 

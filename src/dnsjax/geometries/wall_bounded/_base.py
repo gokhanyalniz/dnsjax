@@ -67,16 +67,17 @@ class YMatrix:
     def from_dense(cls, mat: object) -> "YMatrix":
         """Build from a **process-local** square matrix.
 
-        Each part is replicated with ``sharding.no_shard``; JAX
-        canonicalizes all four to the run's precision alike.  The
-        decomposition reads the host values, so pass the matrix before
-        it is distributed (every process builds the same one).
+        Each part is placed replicated (``sharding.no_shard``) by
+        ``sharding.distribute``, and canonicalized to the run's
+        precision alike.  The decomposition reads the host values, so
+        pass the matrix before it is distributed (every process builds
+        the same one).
         """
         mat_np = np.asarray(mat)
         inner, top, bottom = stencil_decomposition(mat_np)
         return cls(
             *(
-                jax.device_put(part, sharding.no_shard)
+                sharding.distribute(part, sharding.no_shard)
                 for part in (mat_np, inner, top, bottom)
             )
         )

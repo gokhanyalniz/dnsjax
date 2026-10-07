@@ -660,7 +660,7 @@ def wall_regrid_matrix(y_old, y_new) -> Array | tuple[Array, Array]:
     )
 
     def put(matrix) -> Array:
-        return jax.device_put(
+        return sharding.distribute(
             np.asarray(matrix, dtype=sharding.float_type), sharding.no_shard
         )
 

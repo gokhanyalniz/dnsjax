@@ -11,7 +11,11 @@ paths:
   `jax.lax.with_sharding_constraint`.
 - Allocate a sharded array on its devices (`out_sharding` on
   `jnp.zeros`, `.at[...].get/set`, ...). Where that is impossible,
-  distribute a host array with `jax.device_put`, never `jnp.asarray`.
+  place a host array with `sharding.distribute`, never `jnp.asarray`
+  and never `jax.device_put` onto the mesh: across processes that
+  gathers every process's copy onto each first (the why:
+  `sharding.Sharding.distribute`). A `jax.device_put` to one device,
+  or of an array already on the mesh, is fine.
 - Reshard an existing multi-device array inside `jax.jit` with
   `jax.sharding.reshard`, one mesh axis per step: moving both axes at
   once replicates the array on every device, which shows only when

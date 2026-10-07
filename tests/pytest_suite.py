@@ -31,10 +31,11 @@ Usage::
 
     uv run pytest                            # everything available
     uv run pytest -m "not slow and not mpi"  # offline: no mpirun launch
-    uv run pytest -m "not slow"              # + the six quick mpirun
+    uv run pytest -m "not slow"              # + the seven quick mpirun
                                              #   rows (probes, forcing,
                                              #   seeding, twin_postprocess,
                                              #   device_grid,
+                                             #   host_placement,
                                              #   wall_time_stop)
     uv run pytest -k padding                 # a single script
 """
@@ -148,6 +149,10 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_device_grid.py", (), _MPI, 1800),
     ("test_driving.py", (), _SLOW, 2400),
     ("test_forcing.py", (), _MPI, 1800),
+    # ~4 min: fifteen 2-rank launches of a few steps each (every flow
+    # family, [force], [lowres], adaptive dt, cnab2, a twin member, a
+    # regrid resume) -- not a _SLOW row.
+    ("test_host_placement.py", (), _MPI, 1800),
     ("test_laminar_smoke.py", (), _MPI + _SLOW, 3600),
     # Multi-device, and specifically on the np1 (k_x / axial) axis:
     # every entry runs at the runner default --np 1 otherwise, which

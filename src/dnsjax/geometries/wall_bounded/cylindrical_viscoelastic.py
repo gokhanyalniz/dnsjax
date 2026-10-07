@@ -399,7 +399,7 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         ny_phys = Nr + sharding.ny_y_pad
         inv_r_pad = np.zeros(ny_phys, dtype=sharding.float_type)
         inv_r_pad[:Nr] = np.asarray(self.inv_r)
-        self.inv_r_padded = jax.device_put(
+        self.inv_r_padded = sharding.distribute(
             inv_r_pad.reshape(ny_phys, 1, 1), sharding.no_shard
         )
 
@@ -430,7 +430,7 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         rowN_np = narrow_abase_wall_row(
             rs_np, D1_even, params.res.fd_order, inner=False
         )
-        self.hc_narrowN = jax.device_put(rowN_np, sharding.no_shard)
+        self.hc_narrowN = sharding.distribute(rowN_np, sharding.no_shard)
 
         if params.step.adaptive and params.solver.backend == "pallas":
             # Verify the no-pivot LU where the Helmholtz diagonal is

@@ -329,7 +329,7 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         ny_phys = Nr + sharding.ny_y_pad
         inv_r_pad = np.zeros(ny_phys, dtype=sharding.float_type)
         inv_r_pad[:Nr] = np.asarray(self.inv_r)
-        self.inv_r_padded = jax.device_put(
+        self.inv_r_padded = sharding.distribute(
             inv_r_pad.reshape(ny_phys, 1, 1), sharding.no_shard
         )
 
@@ -356,8 +356,8 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         row0_np, rowN_np = _narrow_abase_wall_rows(
             np.asarray(self.rs), np.asarray(self.D1.dense), params.res.fd_order
         )
-        self.hc_narrow0 = jax.device_put(row0_np, sharding.no_shard)
-        self.hc_narrowN = jax.device_put(rowN_np, sharding.no_shard)
+        self.hc_narrow0 = sharding.distribute(row0_np, sharding.no_shard)
+        self.hc_narrowN = sharding.distribute(rowN_np, sharding.no_shard)
 
         if params.step.adaptive and params.solver.backend == "pallas":
             # Verify the no-pivot LU where the Helmholtz diagonal is

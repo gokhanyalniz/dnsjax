@@ -337,7 +337,6 @@ def _separable_scalar(
         Real-FFT-axis (`$k_x$` / `$k_{z,\mathrm{ax}}$`, ``np1``)
         spectrum, true length ``nx // 2``.
     """
-    import jax
     from jax.sharding import PartitionSpec as P
 
     from ..sharding import sharding
@@ -345,17 +344,21 @@ def _separable_scalar(
     npc = np.complex128 if params.res.double_precision else np.complex64
 
     # Replicated wall-normal profile (Ny / Nr is local on every device).
-    prof_f = jax.device_put(
+    prof_f = sharding.distribute(
         prof.reshape(-1, 1, 1).astype(npc), sharding.no_shard
     )
     # Complex-FFT-axis factor (k_z / m), sharded on np0, padding zero.
     cfac = np.zeros(sharding.nz_spec, dtype=npc)
     cfac[: complex_spectrum.shape[0]] = complex_spectrum
-    cfac_f = jax.device_put(cfac.reshape(1, -1, 1), P(None, sharding.a0, None))
+    cfac_f = sharding.distribute(
+        cfac.reshape(1, -1, 1), P(None, sharding.a0, None)
+    )
     # Real-FFT-axis factor (k_x / k_z,ax), sharded on np1, padding zero.
     rfac = np.zeros(sharding.nx_spec, dtype=npc)
     rfac[: real_spectrum.shape[0]] = real_spectrum
-    rfac_f = jax.device_put(rfac.reshape(1, 1, -1), P(None, None, sharding.a1))
+    rfac_f = sharding.distribute(
+        rfac.reshape(1, 1, -1), P(None, None, sharding.a1)
+    )
     return prof_f * cfac_f * rfac_f
 
 
