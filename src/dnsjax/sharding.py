@@ -211,6 +211,69 @@ def node_spans(grid: np.ndarray) -> tuple[int, int, int]:
     return len(set(node.flat)), widest(node.T), widest(node)
 
 
+def _warm_communicators(mesh: Mesh) -> None:
+    r"""Open every MPI communicator *mesh* needs, now, on this thread.
+
+    XLA's MPI collectives open one communicator per device group, the
+    first time a program runs a collective over that group, and refuse
+    unless they are on the thread that initialized MPI: ``MPI:
+    Communicator requested from a thread that is not the one MPI was
+    initialized from``.  The error is fatal, and the run does not end:
+    the failed ranks wait in the distributed runtime's shutdown, the
+    others in the collective, until the job is killed.
+
+    The inline dispatch :func:`dnsjax.bootstrap._select_cpu_collectives`
+    turns on keeps a program's launch on the calling thread, not every
+    collective in it.  A program whose input is still being written
+    when it is dispatched runs on the runtime's own thread pool
+    instead, and a program's collectives can run off the launching
+    thread anyway: the banded factorisation with its cross-device
+    maxima taken inside the same program (``solvers._factor_checked``
+    has the history) failed on every rank of every launch on a
+    ``(2, 2)`` mesh, its inputs ready.  On ARCHER2 the wall-bounded
+    influence-matrix setup program failed on 81 of 128 ranks, once in
+    about 30 launches.
+
+    A communicator, once open, serves any thread and any kind of
+    collective over its group.  So one small ``psum`` per group the
+    solver's collectives use runs here, before any other program: the
+    whole mesh (which a ``ppermute`` along either axis also uses), and,
+    when both axes exceed 1, each ``np0`` group and each ``np1`` group
+    (otherwise the one non-trivial axis's group is the whole mesh).
+    Each runs on a ready input and is waited for, so it cannot itself
+    leave this thread.  Only multi-process CPU runs on the MPI
+    collectives need it.  ``tests/test_mpi_communicators.py`` runs both
+    failing patterns.
+    """
+    if (
+        jax.process_count() == 1
+        or mesh.devices.flat[0].platform != "cpu"
+        or jax.config.jax_cpu_collectives_implementation != "mpi"
+    ):
+        return
+    shape = mesh.devices.shape
+    spec = P("np0", "np1")
+    ones = jax.make_array_from_callback(
+        shape,
+        NamedSharding(mesh, spec),
+        lambda index: np.ones(shape, np.float32)[index],
+    )
+    ones.block_until_ready()
+    groups: list[tuple[str, ...]] = [("np0", "np1")]
+    if min(shape) > 1:
+        groups += [("np0",), ("np1",)]
+    for axes in groups:
+        warm = jax.jit(
+            jax.shard_map(
+                lambda block, axes=axes: jax.lax.psum(block, axes),
+                mesh=mesh,
+                in_specs=spec,
+                out_specs=spec,
+            )
+        )
+        warm(ones).block_until_ready()
+
+
 @dataclass
 class Sharding:
     r"""Device mesh, precision, partition specs, and array shapes.
@@ -296,6 +359,7 @@ class Sharding:
         axis_types=(AxisType.Explicit, AxisType.Explicit),
     )
     jax.set_mesh(mesh)
+    _warm_communicators(mesh)
     # Across nodes, say how the grid lies on them: a group spanning
     # nodes runs its exchange over the network.
     n_nodes, _span0, _span1 = node_spans(mesh.devices)

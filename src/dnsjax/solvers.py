@@ -1812,14 +1812,16 @@ def _factor_checked(a_band: Array) -> tuple[Array, ...]:
     - the element growth `$\max |U| / \max |A|$`, from the per-mode
       ``max_u`` and ``max_a``.
 
-    The reductions across devices stay out of this program on purpose.
-    A version that took the maxima inside it failed at once on a
+    The reductions across devices run as separate small programs, the
+    host reducing the planes (:func:`_build_pallas_operator`).  A
+    version that took the maxima inside this one failed at once on a
     ``(2, 2)`` mesh under the MPI collectives (``MPI: Communicator
     requested from a thread that is not the one MPI was initialized
-    from``, every rank, every launch; MPI requires its initialising
-    thread), while the same reductions as separate small programs --
-    which is how the eager check always ran them -- do not.  So the
-    host reduces the planes (:func:`_build_pallas_operator`).
+    from``, every rank, every launch): its collectives ran off the
+    launching thread and were the first over their device groups, so
+    MPI refused to open the communicators there.  The mesh now opens
+    them as it is built (``sharding._warm_communicators``), and
+    ``tests/test_mpi_communicators.py`` runs that version.
 
     Run eagerly, the same check was a few hundred separately compiled
     operations -- the factorisation and the probe sweep recompiled on
@@ -1916,7 +1918,7 @@ def _build_pallas_operator(
     """
     checked = [_factor_checked(A) for A in a_bands]
     # The cross-device maxima run here, outside the looping program
-    # (:func:`_factor_checked` says why).
+    # (:func:`_factor_checked` has the history).
     resids = [float(jnp.max(r)) for _, _, r, _, _ in checked]
     growths = [float(jnp.max(mu) / jnp.max(ma)) for _, _, _, mu, ma in checked]
     # The group's worst band -- and a NaN in *any* band, which ``max``
