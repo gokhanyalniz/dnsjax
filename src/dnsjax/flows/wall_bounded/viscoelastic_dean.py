@@ -63,7 +63,6 @@ kept and the defect documented instead.
 
 from dataclasses import dataclass
 
-import jax
 import numpy as np
 from jax import Array, jit
 from jax import numpy as jnp
@@ -158,7 +157,7 @@ def _build_laminar_profile() -> Array:
         params.phys.wi,
         params.phys.epsilon,
     )
-    return jax.device_put(
+    return sharding.distribute(
         np.asarray(prof, dtype=sharding.complex_type), sharding.no_shard
     )
 

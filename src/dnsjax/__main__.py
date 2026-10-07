@@ -1641,15 +1641,17 @@ def _peak_device_bytes(jax) -> int | None:
     return max(peaks) if peaks else None
 
 
-def _peak_host_kib() -> tuple[int, int] | None:
-    """This process's ``(peak resident, shared resident)`` memory, KiB.
+def _peak_host_kib() -> tuple[int, int, int] | None:
+    """This process's ``(peak, shared, resident)`` memory, KiB.
 
-    The peak is the kernel's high-water mark (``VmHWM``); the shared
-    part is the file-backed and shared-memory pages resident now
+    The peak is the kernel's high-water mark (``VmHWM``), the resident
+    figure what the process holds now (``VmRSS``); the shared part is
+    the file-backed and shared-memory pages resident now
     (``RssFile + RssShmem``: library text such as jaxlib's, and MPI's
     on-node segments), which every process on a node maps but the node
-    holds once.  Falls back to ``getrusage`` (no shared part) where
-    ``/proc`` is absent, and to ``None`` where neither exists.
+    holds once.  Falls back to ``getrusage`` (the peak alone: no shared
+    part, and ``-1`` for the resident figure) where ``/proc`` is absent,
+    and to ``None`` where neither exists.
     """
     try:
         with open("/proc/self/status") as fh:
@@ -1658,7 +1660,8 @@ def _peak_host_kib() -> tuple[int, int] | None:
         def kib(key: str) -> int:
             return int(status.get(key, "0 kB").split()[0])
 
-        return kib("VmHWM"), kib("RssFile") + kib("RssShmem")
+        shared = kib("RssFile") + kib("RssShmem")
+        return kib("VmHWM"), shared, kib("VmRSS")
     except (OSError, ValueError):
         pass
     try:
@@ -1668,11 +1671,11 @@ def _peak_host_kib() -> tuple[int, int] | None:
     except (ImportError, OSError):
         return None
     # Linux reports KiB, macOS bytes.
-    return (peak // 1024 if sys.platform == "darwin" else peak), 0
+    return (peak // 1024 if sys.platform == "darwin" else peak), 0, -1
 
 
 def _peak_host_memory_line(jax) -> str | None:
-    r"""The closing ``Peak host memory`` line of a CPU run.
+    r"""The closing ``Peak host memory`` lines of a CPU run.
 
     A CPU run has no allocator statistics (:func:`_peak_device_bytes`),
     so it reports what the operating system saw: the largest per-rank
@@ -1682,11 +1685,19 @@ def _peak_host_memory_line(jax) -> str | None:
     high).  A node's total is what an out-of-memory kill is decided
     on; a sampler (``scripts/memory_watch.py``) records it over time.
 
-    Collective on a multi-process run (an all-gather of three ``int32``
-    per rank -- KiB, and a node key -- so the payload is exact whether
-    or not ``jax_enable_x64`` is on), so **every** rank must call it;
-    the main process prints the result.  ``None`` off CPU, and where
-    the platform reports no memory figure at all.
+    A second line, ``Resident host memory at the end``, sums what each
+    rank still holds (``VmRSS``) the same way, at one moment.  A
+    high-water mark keeps any start-up transient: on ARCHER2 one at
+    1.46 GiB a rank stood over 0.95-1.3 GiB of stepping on every
+    4-node layout (``sharding.Sharding.distribute``), and was read as
+    the run's footprint.  The resident figure is what the run settles
+    at; it is absent where the platform has no ``/proc``.
+
+    Collective on a multi-process run (an all-gather of four ``int32``
+    per rank -- three KiB figures and a node key -- so the payload is
+    exact whether or not ``jax_enable_x64`` is on), so **every** rank
+    must call it; the main process prints the result.  ``None`` off
+    CPU, and where the platform reports no memory figure at all.
     """
     if params.dist.platform != "cpu":
         return None
@@ -1703,22 +1714,39 @@ def _peak_host_memory_line(jax) -> str | None:
     if jax.process_count() > 1:
         from jax.experimental.multihost_utils import process_allgather
 
-        rows = np.asarray(process_allgather(row)).reshape(-1, 3)
+        rows = np.asarray(process_allgather(row)).reshape(-1, 4)
     else:
         rows = row[None]
-    peak, shared, node = (rows[:, i].astype(np.int64) for i in range(3))
-    per_node = [
-        int(np.sum(peak[node == n] - shared[node == n]))
-        + int(np.max(shared[node == n]))
-        for n in np.unique(node)
-    ]
+    peak, shared, resident, node = (
+        rows[:, i].astype(np.int64) for i in range(4)
+    )
+
+    def per_node(held: np.ndarray) -> list[int]:
+        """Each node's *held* past the shared pages, plus one copy of
+        its largest shared part."""
+        return [
+            int(np.sum(held[node == n] - shared[node == n]))
+            + int(np.max(shared[node == n]))
+            for n in np.unique(node)
+        ]
+
     gib = 2**20  # KiB per GiB
-    return (
+    peaks = per_node(peak)
+    lines = [
         f"Peak host memory: {np.max(peak) / gib:.2f} GiB per rank (max of "
         f"{len(peak)}, {np.max(shared) / gib:.2f} GiB of it shared pages), "
-        f"{max(per_node) / gib:.2f} GiB per node (fullest of "
-        f"{len(per_node)}, shared pages counted once)."
-    )
+        f"{max(peaks) / gib:.2f} GiB per node (fullest of "
+        f"{len(peaks)}, shared pages counted once)."
+    ]
+    if np.all(resident >= 0):
+        held = per_node(resident)
+        lines.append(
+            "Resident host memory at the end: "
+            f"{np.max(resident) / gib:.2f} GiB per rank (max of "
+            f"{len(resident)}), {max(held) / gib:.2f} GiB per node "
+            f"(fullest of {len(held)}, shared pages counted once)."
+        )
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -440,6 +440,37 @@ class Sharding:
         if self.main_device:
             print(*args, **kwargs, flush=True)
 
+    def distribute(self, host: object, spec: P | NamedSharding) -> jax.Array:
+        r"""Place *host*, which every process holds alike, on the mesh.
+
+        Returns the global array of sharding *spec* (a ``PartitionSpec``
+        on :attr:`mesh`, or a ``NamedSharding``), each device's shard cut
+        from this process's own copy of *host* -- a NumPy array, or
+        anything ``np.asarray`` takes.  Every process must pass the same
+        values; dnsjax builds them from the same parameters, and nothing
+        here checks that they agree.
+
+        Not ``jax.device_put``: onto a sharding that spans several
+        processes, it checks a host value first by gathering every
+        process's copy onto each
+        (``jax.experimental.multihost_utils.assert_equal``, unconditional
+        in jax 0.11), then concatenating the local copy as often to
+        compare.  Measured on two and four processes, each one's peak
+        rises by `$2.125\,W$` times the array (float64), `$W$` being the
+        process count, and each call compiles and runs that gather.  On
+        ARCHER2, at 128 processes a node, the two dense wall-normal
+        derivative matrices at ``ny = 383`` (1.12 MiB each) took every
+        rank to 1.46 GiB in setup on 4 nodes, the peak of every layout
+        there; the same law gives about 340 GiB a node on 8, over the
+        222 GiB a job step gets.
+        """
+        host = np.asarray(host)
+        if not isinstance(spec, NamedSharding):
+            spec = NamedSharding(self.mesh, spec)
+        return jax.make_array_from_callback(
+            host.shape, spec, lambda index: host[index]
+        )
+
     def any_process(self, flag: bool) -> bool:
         """*flag* OR-ed over the processes: one answer on every process.
 

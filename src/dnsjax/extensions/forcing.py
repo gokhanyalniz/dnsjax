@@ -501,7 +501,7 @@ class StochasticForcer:
         rep = NamedSharding(sharding.mesh, P(None, None, None))
 
         def put(a: np.ndarray, dtype) -> Array:
-            return jax.device_put(a.reshape(1, -1, 1).astype(dtype), rep)
+            return sharding.distribute(a.reshape(1, -1, 1).astype(dtype), rep)
 
         ftype = sharding.float_type
         columns = ModeColumns(
@@ -518,13 +518,13 @@ class StochasticForcer:
         if cols is None:
             n_c, ny = self._profiles[0].shape[1:]
             cols = np.zeros((self._n_slots, n_c, ny), dtype=complex)
-        return jax.device_put(
+        return sharding.distribute(
             cols.astype(
                 np.complex128
                 if sharding.complex_type == jnp.complex128
                 else np.complex64
             ),
-            NamedSharding(sharding.mesh, P(None, None, None)),
+            P(None, None, None),
         )
 
     def _open_files(self) -> int:

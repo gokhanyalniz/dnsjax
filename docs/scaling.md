@@ -361,7 +361,9 @@ measured on a problem too small to matter, about 0.65 GiB per rank at
 [`scripts/memory_budget.py`](../scripts/memory_budget.py) predicts the
 problem's share per rank for any layout from XLA's own buffer
 assignment, without the machine; the `Peak host memory` line of a run
-reports what the operating system saw; and
+reports what the operating system saw at the high-water mark, start-up
+included, and the `Resident host memory` line under it what the run
+still holds at the end; and
 [`scripts/memory_watch.py`](../scripts/memory_watch.py) samples each
 node's total during a job, so an out-of-memory kill is placed against
 its layout and start-up phase. A layout that does not fit is helped, in

@@ -153,8 +153,9 @@ Success criteria per system:
    (catches a late divergence in the last ``it_error_check`` steps);
 5. every numeric value on the final summary line is finite (NaN/Inf
    print as ``nan``/``inf``);
-6. on CPU, the closing ``Peak host memory`` line is there and counts
-   every rank (its all-gather is a collective each rank must reach).
+6. on CPU, the closing ``Peak host memory`` and ``Resident host
+   memory`` lines are there and count every rank (their all-gather is
+   a collective each rank must reach).
 
 Usage (single device)::
 
@@ -1449,15 +1450,19 @@ def run_smoke_test(system: dict, args: argparse.Namespace) -> None:
 
         if args.platform == "cpu":
             n_ranks = system.get("force_np", args.np)
-            mem = re.search(
-                r"Peak host memory: [\d.]+ GiB per rank \(max of (\d+),",
-                result.stdout,
-            )
-            if mem is None or int(mem.group(1)) != n_ranks:
-                raise AssertionError(
-                    f"{name}: no 'Peak host memory' line over {n_ranks} "
-                    "rank(s) in stdout"
+            for line in (
+                "Peak host memory",
+                "Resident host memory at the end",
+            ):
+                mem = re.search(
+                    rf"{line}: [\d.]+ GiB per rank \(max of (\d+)[,)]",
+                    result.stdout,
                 )
+                if mem is None or int(mem.group(1)) != n_ranks:
+                    raise AssertionError(
+                        f"{name}: no '{line}' line over {n_ranks} "
+                        "rank(s) in stdout"
+                    )
 
         pattern = system.get("expect_pattern")
         if pattern and re.search(pattern, result.stdout) is None:
