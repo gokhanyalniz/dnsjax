@@ -645,7 +645,7 @@ def wall_regrid_matrix(y_old, y_new) -> Array | tuple[Array, Array]:
     geometry and ``fd_order`` -- Chebyshev for a CGL pair, the
     ``(T_even, T_odd)`` parity pair for the pipe's radial CGL grids,
     the local stencil otherwise -- cast to the run's real precision and
-    distributed with ``device_put``.  Real, because
+    placed by ``sharding.distribute``.  Real, because
     :func:`apply_wall_normal_regrid` applies it as a real GEMM.  The
     grids should be float64: a float32-rounded CGL grid misses the CGL
     detection (:func:`dnsjax.fd.grid_nodes`).
