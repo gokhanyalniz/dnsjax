@@ -155,8 +155,10 @@ What each case pins:
 24. **Growth laws.** A curve built exponential-then-constant-rate is
     marked with both rates; the global curve aligns the members'
     ``twin.dat`` on whole steps, is their geometric mean, records its
-    source and falls back to the spectra totals without one; and a
-    band's budget rates are its own terms over its own energy.
+    source and falls back to the spectra totals without one; a
+    band's budget rates are its own terms over its own energy; and the
+    summary figure draws a window with no positive rate -- inside
+    saturation, its energy drifting down -- rather than failing on it.
 
 Usage::
 
@@ -168,6 +170,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 import numpy as np
@@ -2954,6 +2957,25 @@ def test_growth_laws() -> None:
     assert np.allclose(
         bands.rates["prod_mean"], prod_mean[:, columns].T / bands.energy
     )
+    # A window inside saturation whose energy drifts down has no
+    # positive rate: the summary draws it, its gamma-R panel empty.
+    t = np.arange(150.0, 160.0, 0.1)
+    drift = sat * (1.02 - 0.002 * (t - 150.0))
+    window = tsm.GrowthCurves(
+        t=t,
+        energy=drift[None, :],
+        saturation=np.array([sat]),
+        labels=["E"],
+        members=drift[None, :],
+    )
+    fig = tsm.growth_summary_figure(
+        types.SimpleNamespace(t_rel=t, n_members=1),
+        window,
+        tsm.growth_phases(t, drift, sat),
+        options,
+        tsm.PlotStyle(),
+    )
+    plt.close(fig)
     print("growth laws: OK")
 
 

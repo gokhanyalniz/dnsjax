@@ -118,17 +118,19 @@ def git_hash() -> str:
     Cached, so at most one git process per process.
 
     git is spawned with ``posix_spawn``, which CPython uses only for
-    an executable named with its directory and with no descriptors
-    to close (git inherits the caller's inheritable ones for its few
-    milliseconds).  CPython's other path is ``vfork``, whose child
-    runs in the caller's memory until it execs: on a solver rank
-    that child runs any exec wrapper the launcher interposed, and
-    Spindle 0.13's wrapper corrupts the parent -- rank 0 died between
-    the ``Distribution initialized`` and ``Code version`` lines, on
-    ARCHER2 and on one local process.  ``posix_spawn`` runs no
-    interposed code in the child, and, unlike ``fork``, neither
-    copies a large multithreaded process's page tables nor runs the
-    fork handlers of the MPI and RPC libraries it has loaded.
+    an executable named with its directory and -- in a build without
+    ``os.POSIX_SPAWN_CLOSEFROM``, uv's interpreters among them -- with
+    no descriptors to close (git inherits the caller's inheritable
+    ones for its few milliseconds).  CPython's other path is
+    ``vfork``, whose child runs in the caller's memory until it
+    execs: on a solver rank that child runs any exec wrapper the
+    launcher interposed, and Spindle 0.13's wrapper corrupts the
+    parent -- rank 0 died between the ``Distribution initialized``
+    and ``Code version`` lines, on ARCHER2 and on one local process.
+    ``posix_spawn`` runs no interposed code in the child, and, unlike
+    ``fork``, neither copies a large multithreaded process's page
+    tables nor runs the fork handlers of the MPI and RPC libraries it
+    has loaded.
     """
     git = shutil.which("git")
     if git is None:

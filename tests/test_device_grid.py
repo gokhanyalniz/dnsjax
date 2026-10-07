@@ -11,17 +11,19 @@ died building the mesh -- a failure no run on one machine could show.
    each node one block of rows either way; one row across both nodes;
    two rows per node; unequal nodes; and :func:`node_spans` on each.
 2. Two hosts on one machine, under ``mpirun``: the ranks of the second
-   host run in their own user and mount namespace, with another boot
-   id bound over the real one, so XLA counts two hosts.  The ``(2, 2)``
-   random-IC smoke runs on one host, on two with ranks 2 and 3 on the
-   second, and on two with the odd ranks there (the order the node sort
-   has to undo).  Each two-host run must report its grid -- every
-   ``np1`` group on one node -- and reproduce the one-host
-   ``stats.dat``.  The collectives are gloo: Open MPI's start-up fails
-   in a rank that runs as root in its namespace, and gloo needs nothing
-   from the launcher but the rank variables.  Where the namespace
-   cannot be made (no ``unshare``, unprivileged user namespaces
-   disabled) the half is skipped with a notice.
+   host run with another boot id bound over the real one, so XLA counts
+   two hosts (``_fake_host.py``).  The ``(2, 2)`` random-IC smoke runs
+   on one host, on two with ranks 2 and 3 on the second, and on two
+   with the odd ranks there (the order the node sort has to undo).
+   Each two-host run must report its grid -- every ``np1`` group on one
+   node -- and reproduce the one-host ``stats.dat`` and final snapshot.
+   The snapshot is the check on the I/O path: its writer places each
+   slab by the device's position on the mesh, which the interleaved
+   layout sets apart from the device ids.  The collectives are gloo,
+   which needs nothing from the launcher but the rank variables (the
+   MPI collectives on two hosts: ``test_mpi_communicators.py``).
+   Where the namespaces cannot be made (no ``unshare``, unprivileged
+   user namespaces disabled) the half is skipped with a notice.
 
 Usage::
 
@@ -33,13 +35,13 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import _fake_host
 import numpy as np
 from _live import report, run_live
 
@@ -136,23 +138,6 @@ def run_unit_cases() -> tuple[int, list[tuple[str, str]]]:
 
 # ── two hosts on one machine ─────────────────────────────────────────
 
-#: ``sh -c`` wrapper around one rank's command.  A rank for which the
-#: shell expression ``$DNSJAX_TEST_SECOND_HOST`` (in ``rank``) is
-#: nonzero re-runs the command in a fresh user and mount namespace with
-#: the file ``$DNSJAX_TEST_BOOT_ID`` bound over the real boot id.
-_FAKE_HOST = r"""
-rank=${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-0}}
-if [ $(( $DNSJAX_TEST_SECOND_HOST )) -ne 0 ]; then
-    exec unshare --user --map-root-user --mount sh -c '
-        mount --bind "$DNSJAX_TEST_BOOT_ID" /proc/sys/kernel/random/boot_id &&
-        exec "$@"' sh "$@"
-fi
-exec "$@"
-"""
-
-_BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
-_FAKE_BOOT_ID = "00000000-0000-4000-8000-00000000d0e5\n"
-
 #: The ``(2, 2)`` random-IC smoke: ``ny = 17`` and ``nz - 1 = 15`` also
 #: engage the ``np0`` padding of the physical ``y`` and spectral
 #: ``k_z`` axes.
@@ -189,8 +174,6 @@ _SMOKE = [
     "False",
     "--outs.snapshot_save_initial",
     "False",
-    "--outs.snapshot_save_final",
-    "False",
 ]
 
 #: What a two-host run of the smoke must print: ranks on two nodes, and
@@ -208,32 +191,6 @@ _LAYOUTS = [
 ]
 
 
-def _fake_host_unavailable(boot_id: Path) -> str | None:
-    """Why this machine cannot fake a second host, or ``None``."""
-    if shutil.which("unshare") is None:
-        return "no `unshare` on PATH"
-    env = {
-        **os.environ,
-        "OMPI_COMM_WORLD_RANK": "1",
-        "DNSJAX_TEST_SECOND_HOST": "rank",
-        "DNSJAX_TEST_BOOT_ID": str(boot_id),
-    }
-    try:
-        probe = subprocess.run(
-            ["sh", "-c", _FAKE_HOST, "sh", "cat", _BOOT_ID_PATH],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        return "the namespace probe timed out"
-    if probe.stdout == _FAKE_BOOT_ID:
-        return None
-    detail = probe.stderr.strip() or f"exit {probe.returncode}"
-    return f"cannot bind a boot id in a user namespace ({detail})"
-
-
 def _run_smoke(second_host: str, boot_id: Path, workdir: str) -> str:
     """Launch the smoke with *second_host* ranks on the fake host."""
     env = {
@@ -247,14 +204,7 @@ def _run_smoke(second_host: str, boot_id: Path, workdir: str) -> str:
         "--oversubscribe",
         "-np",
         "4",
-        "sh",
-        "-c",
-        _FAKE_HOST,
-        "sh",
-        sys.executable,
-        "-m",
-        "dnsjax",
-        *_SMOKE,
+        *_fake_host.wrap([sys.executable, "-m", "dnsjax", *_SMOKE]),
     ]
     result = run_live(cmd, timeout=300, env=env, cwd=workdir)
     if result.returncode != 0:
@@ -264,32 +214,49 @@ def _run_smoke(second_host: str, boot_id: Path, workdir: str) -> str:
 
 def run_two_host_cases() -> tuple[int, list[tuple[str, str]]]:
     """The ``mpirun`` launches; ``(passed, failures)``."""
+    from dnsjax.analysis import read_state
+
     with tempfile.TemporaryDirectory(prefix="device_grid_") as tmp:
-        boot_id = Path(tmp) / "boot_id"
-        boot_id.write_text(_FAKE_BOOT_ID)
-        why = _fake_host_unavailable(boot_id)
+        boot_id = _fake_host.write_boot_id(Path(tmp))
+        why = _fake_host.unavailable(boot_id)
         if why is not None:
             print(f"  SKIP  two hosts: {why}")
             return 0, []
 
         passed = 0
         failures: list[tuple[str, str]] = []
-        reference: np.ndarray | None = None
+        reference: tuple[np.ndarray, np.ndarray] | None = None
         for name, second_host in _LAYOUTS:
             workdir = Path(tmp) / name.replace(" ", "_").replace(",", "")
             workdir.mkdir()
             try:
                 stdout = _run_smoke(second_host, boot_id, str(workdir))
                 stats = np.loadtxt(workdir / "stats.dat", ndmin=2)
+                snapshots = sorted(workdir.glob("state*.tar"))
+                if len(snapshots) != 1:
+                    raise AssertionError(
+                        f"{len(snapshots)} snapshots, not the final one"
+                    )
+                state = read_state(
+                    snapshots[0], return_physical=False, return_spectral=True
+                ).spectral
                 if reference is None:
                     if "Device grid" in stdout:
                         raise AssertionError("one host reported a grid")
-                    reference = stats
+                    reference = stats, state
                 else:
                     if stdout.count(_GRID_LINE) != 1:
                         raise AssertionError(f"no {_GRID_LINE!r} line")
                     np.testing.assert_allclose(
-                        stats, reference, rtol=1e-12, atol=1e-15
+                        stats, reference[0], rtol=1e-12, atol=1e-15
+                    )
+                    scale = float(np.max(np.abs(reference[1])))
+                    np.testing.assert_allclose(
+                        state,
+                        reference[1],
+                        rtol=1e-12,
+                        atol=1e-12 * scale,
+                        err_msg="final snapshot",
                     )
             except (AssertionError, subprocess.TimeoutExpired) as exc:
                 reason = str(exc).strip().splitlines()[0]

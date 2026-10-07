@@ -24,6 +24,20 @@ Then, as controls, the same two patterns over the mesh's diagonal
 pairs, a device group the solver never uses and so nothing opened:
 each must be refused, or the cases above prove nothing.
 
+A second launch puts the odd ranks on a faked second host
+(``_fake_host.py``).  The mesh then groups each node's devices, an
+order of its own, while ``jax.experimental.multihost_utils`` -- the
+wall-clock stop's ``any_process``, the snapshot barrier, the closing
+memory line -- gathers over the devices in id order: a group of the
+same devices in another order, which is another communicator.  There
+a pending ``psum`` over that group must work, and ``any_process`` agree
+on every rank; a pending ``psum`` over the reversed order, which
+nothing opens, is the control.  Each reduces one row of its copied
+block, the copy alone keeping the input pending: a 32 MiB message
+stalls between the faked hosts, whose ranks Open MPI's shared memory
+cannot reach by single copy across user namespaces.  Where the
+namespaces cannot be made the launch is skipped with a notice.
+
 Needs ``mpirun``, coreutils ``timeout`` and the MPIwrapper library the
 MPI collectives load (``README.md``, "Installation"); without the
 library the run would be on gloo, so the script skips.  Run as a
@@ -35,14 +49,17 @@ script::
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.stdout.reconfigure(line_buffering=True)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _fake_host  # noqa: E402
 from _live import report, run_live  # noqa: E402
 
 _RANKS = 4
@@ -63,9 +80,15 @@ _CASES = (
     "pending psum mesh",
 )
 _CONTROLS = ("control in-program maxima", "control pending psum")
+_HOST_CASES = (
+    "two hosts: the mesh's order is not the ids'",
+    "two hosts: pending psum, id order",
+    "two hosts: any_process",
+)
+_HOST_CONTROLS = ("two hosts: control pending psum, reversed order",)
 
 
-def _child() -> None:
+def _child(two_hosts: bool) -> None:
     """One rank: build the mesh as the solver does, run every case."""
     from dnsjax.parameters import padded_res, params
 
@@ -91,7 +114,8 @@ def _child() -> None:
         print(f"RESULT {rank} {case} | {status} | {detail}", flush=True)
 
     if jax.config.jax_cpu_collectives_implementation != "mpi":
-        for case in _CASES + _CONTROLS:
+        cases = _HOST_CASES + _HOST_CONTROLS if two_hosts else _CASES
+        for case in cases + (() if two_hosts else _CONTROLS):
             emit(case, "skipped", "the run is not on the MPI collectives")
         return
 
@@ -124,9 +148,15 @@ def _child() -> None:
         return run
 
     def pending(mesh: Mesh, body):
-        """Run *body*, compiled ahead, on an input still being copied."""
-        spec = P(*mesh.axis_names)
-        shape = tuple(_ROWS * n for n in mesh.devices.shape)
+        """Run *body*, compiled ahead, on an input still being copied.
+
+        A 1-D mesh gets a second, unsharded axis on its data, so that
+        every device's block is the same ``(_ROWS, _ROWS)`` either way.
+        """
+        names = mesh.axis_names
+        spec = P(*names) if len(names) == 2 else P(names[0], None)
+        blocks = mesh.devices.shape if len(names) == 2 else (mesh.size, 1)
+        shape = tuple(_ROWS * n for n in blocks)
         x = jax.make_array_from_callback(
             shape,
             NamedSharding(mesh, spec),
@@ -163,6 +193,46 @@ def _child() -> None:
 
     def ppermute(axis: str):
         return lambda b: jax.lax.ppermute(b, axis, [(0, 1), (1, 0)])
+
+    def one_d(devices: list) -> Mesh:
+        return Mesh(np.array(devices), ("w",), axis_types=(AxisType.Explicit,))
+
+    def psum_w(b):
+        # One row of the block: a message of 32 MiB stalls between the
+        # faked hosts (Open MPI's shared memory has no single-copy path
+        # across user namespaces), and the copy alone keeps the input
+        # pending.
+        return jax.lax.psum(b[:1], "w")
+
+    if two_hosts:
+        ids = [d.id for d in jax.devices()]
+        order = [d.id for d in sharding.mesh.devices.flat]
+        if order != ids:
+            emit(_HOST_CASES[0], "ok", f"mesh {order}, ids {ids}")
+        else:
+            emit(_HOST_CASES[0], "error", f"both {ids}: no second host")
+        # The group multihost_utils gathers over: every device, in id
+        # order (one per process).
+        by_id = one_d(jax.devices())
+        jax.set_mesh(by_id)
+        attempt(_HOST_CASES[1], pending(by_id, psum_w))
+        jax.set_mesh(sharding.mesh)
+
+        def agree() -> str:
+            some, none = (
+                sharding.any_process(rank == 1),
+                sharding.any_process(False),
+            )
+            if (some, none) != (True, False):
+                raise RuntimeError(f"any_process gave {some}, {none}")
+            return ""
+
+        attempt(_HOST_CASES[2], agree)
+        reversed_ = one_d(jax.devices()[::-1])
+        jax.set_mesh(reversed_)
+        attempt(_HOST_CONTROLS[0], pending(reversed_, psum_w))
+        jax.set_mesh(sharding.mesh)
+        return
 
     mesh = sharding.mesh
     attempt(
@@ -204,53 +274,36 @@ def _mpi_wrapper_found() -> bool:
 
 
 def _verdicts(stdout: str) -> dict[str, list[tuple[str, str]]]:
-    """Each case's ``(status, detail)`` per rank, from the RESULT lines."""
+    """Each case's ``(status, detail)`` per rank, from the RESULT lines.
+
+    Split on the ``RESULT <rank>`` token rather than on line ends:
+    ``mpirun`` merges the ranks' streams, and one rank's line can land
+    in the middle of another's.
+    """
     seen: dict[str, list[tuple[str, str]]] = {}
-    for line in stdout.splitlines():
-        if not line.startswith("RESULT "):
+    for record in re.split(r"(?=RESULT \d+ )", stdout):
+        if not record.startswith("RESULT "):
             continue
+        line = record.splitlines()[0]
         head, status, detail = (p.strip() for p in line.split("|", 2))
         case = head.split(" ", 2)[2]
         seen.setdefault(case, []).append((status, detail))
     return seen
 
 
-def main() -> int:
-    if "--child" in sys.argv:
-        _child()
-        return 0
-    if shutil.which("mpirun") is None or shutil.which("timeout") is None:
-        print("mpirun and coreutils timeout are needed")
-        return 1
-    if not _mpi_wrapper_found():
-        print("  SKIP  no MPIwrapper library: the run would be on gloo")
-        return 0
-
-    # The MPI collectives are the point, so nothing may pick gloo, and
-    # the forced host-device count of the in-process tests must not
-    # reach a production launch.
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in ("XLA_FLAGS", "JAX_CPU_COLLECTIVES_IMPLEMENTATION")
-    }
-    env["NO_COLOR"] = "1"
-    # coreutils ``timeout`` ends a hung run with SIGTERM, which mpirun
-    # passes on to its ranks.
-    cmd = ["timeout", str(_TIMEOUT), "mpirun", "--oversubscribe"]
-    cmd += ["-np", str(_RANKS), sys.executable, __file__, "--child"]
-    try:
-        res = run_live(cmd, env=env, timeout=_TIMEOUT + 60)
-    except subprocess.TimeoutExpired:
-        return report(0, [("launch", "outlived its backstop")])
+def _judge(
+    res: subprocess.CompletedProcess,
+    cases: tuple[str, ...],
+    controls: tuple[str, ...],
+) -> tuple[int, list[tuple[str, str]]]:
+    """``(passed, failures)`` of one launch's cases and controls."""
     seen = _verdicts(res.stdout)
-
     passed = 0
     failures: list[tuple[str, str]] = []
-    for case in _CASES + _CONTROLS:
+    for case in cases + controls:
         got = seen.get(case, [])
         statuses = {status for status, _ in got}
-        control = case in _CONTROLS
+        control = case in controls
         want = "refused" if control else "ok"
         if statuses == {"skipped"}:
             print(f"  SKIP  {case}: {got[0][1]}")
@@ -276,7 +329,76 @@ def main() -> int:
         failures.append((case, reason))
     if not failures and res.returncode != 0:
         failures.append(("launch", f"exit {res.returncode}"))
-    return report(passed, failures)
+    return passed, failures
+
+
+def main() -> int:
+    if "--child" in sys.argv:
+        _child(two_hosts=False)
+        return 0
+    if "--child-two-hosts" in sys.argv:
+        _child(two_hosts=True)
+        return 0
+    if shutil.which("mpirun") is None or shutil.which("timeout") is None:
+        print("mpirun and coreutils timeout are needed")
+        return 1
+    if not _mpi_wrapper_found():
+        print("  SKIP  no MPIwrapper library: the run would be on gloo")
+        return 0
+
+    # The MPI collectives are the point, so nothing may pick gloo, and
+    # the forced host-device count of the in-process tests must not
+    # reach a production launch.
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("XLA_FLAGS", "JAX_CPU_COLLECTIVES_IMPLEMENTATION")
+    }
+    env["NO_COLOR"] = "1"
+    # coreutils ``timeout`` ends a hung run with SIGTERM, which mpirun
+    # passes on to its ranks; ``-k`` kills one that ignores it.
+    launch = [
+        "timeout",
+        "-k",
+        "10",
+        str(_TIMEOUT),
+        "mpirun",
+        "--oversubscribe",
+    ]
+    launch += ["-np", str(_RANKS)]
+    try:
+        res = run_live(
+            [*launch, sys.executable, __file__, "--child"],
+            env=env,
+            timeout=_TIMEOUT + 60,
+        )
+    except subprocess.TimeoutExpired:
+        return report(0, [("launch", "outlived its backstop")])
+    passed, failures = _judge(res, _CASES, _CONTROLS)
+
+    with tempfile.TemporaryDirectory(prefix="mpi_communicators_") as tmp:
+        boot_id = _fake_host.write_boot_id(Path(tmp))
+        why = _fake_host.unavailable(boot_id)
+        if why is not None:
+            print(f"  SKIP  two hosts: {why}")
+            return report(passed, failures)
+        child = [sys.executable, __file__, "--child-two-hosts"]
+        two_env = {
+            **env,
+            "DNSJAX_TEST_SECOND_HOST": "rank % 2",
+            "DNSJAX_TEST_BOOT_ID": str(boot_id),
+        }
+        try:
+            res = run_live(
+                [*launch, *_fake_host.wrap(child)],
+                env=two_env,
+                timeout=_TIMEOUT + 60,
+            )
+        except subprocess.TimeoutExpired:
+            failures.append(("two hosts", "outlived its backstop"))
+            return report(passed, failures)
+    more, also = _judge(res, _HOST_CASES, _HOST_CONTROLS)
+    return report(passed + more, failures + also)
 
 
 if __name__ == "__main__":
