@@ -366,10 +366,10 @@ measured on a problem too small to matter, about 0.65 GiB per rank at
 `(2, 64)` and 1.0 GiB at `(1, 128)` — 85 and 130 GiB of the node's
 222 before the problem's own share. On the production run measured
 there, a rank held about 1.1 GiB besides its share of the problem's
-93.5 GiB while stepping at `(128, n)` (0.9 GiB at `(64, 2n)`), at every
-node count from 1 to 64 — but for one process on the first node, which
-held some 70 KiB more per rank of the job (0.27 GiB more at 4096
-ranks). Three tools separate the two:
+93.5 GiB while stepping at `(128, n)` (0.9 GiB at `(64, 2n)`) on up to
+16 nodes, and more beyond: 1.2 GiB at 32 nodes and 1.3 at 64. One
+process on the first node held some 70 KiB more per rank of the job on
+top (0.57 GiB more at 8192 ranks). Three tools separate the two:
 [`scripts/memory_budget.py`](../scripts/memory_budget.py) predicts the
 problem's share per rank for any layout from XLA's own buffer
 assignment, without the machine; the `Peak host memory` line of a run
