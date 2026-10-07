@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ext=\"${TOOL_INPUT_file_path##*.}\"; [ \"$ext\" = \"py\" ] && uv run ruff check --fix --quiet \"$TOOL_INPUT_file_path\" && uv run ruff format --quiet \"$TOOL_INPUT_file_path\" || true"
+            "command": "f=$(uv run python -c 'import json,sys; print(json.load(sys.stdin).get(\"tool_input\",{}).get(\"file_path\",\"\"))'); case \"$f\" in *.py) uv run ruff check --fix --quiet \"$f\"; uv run ruff format --quiet \"$f\";; esac; exit 0"
           }
         ]
       }
