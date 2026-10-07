@@ -120,17 +120,23 @@ class Distribution(BaseModel):
        small ones a grid-wide exchange sends, at equal volume
        (`$(N-g)/N^2 = (n-1)/(nN)$` per device, for `$N$` devices in
        `$g$`-device groups on `$n$` nodes).  On CPU that argument
-       loses to rule 1's.  On ARCHER2 (128 ranks per node, Cray MPICH)
-       at ``1280 x 383 x 384`` the fastest grid on 1, 2 and 4 nodes
-       was ``(128, n)`` -- the largest ``np0`` that splits the
-       wall-normal axis without padding, the rest on ``np1``, whose
-       groups of ``n`` consecutive ranks still fall inside a node --
-       and the aligned ``(n, 128)`` the slowest that fit, 25 % behind
-       on two nodes and 22 to 25 % on four (one node: ``(2, 64)`` 30 %
-       behind ``(128, 1)``).  Splitting on ``np1`` alone across nodes
-       is the one arrangement to avoid: it puts the `$3/2$`-sized
-       exchange on the network (``(1, 256)`` did not fit in two
-       ARCHER2 nodes' memory).  Untested across GPU nodes.
+       loses to rule 1's.  On ARCHER2 (two 64-core AMD EPYC 7742 and
+       16 DDR4-3200 channels per node, Slingshot between nodes; 128
+       ranks per node, Cray MPICH) at ``1280 x 383 x 384`` the fastest
+       grid on 1, 2 and 4 nodes was ``(128, n)`` -- the largest
+       ``np0`` dividing the rank count that pads the 383 wall-normal
+       points by only the one point any split of them needs, the rest
+       on ``np1``, whose groups of ``n`` consecutive ranks still fall
+       inside a node -- and the aligned ``(n, 128)`` the slowest that
+       fit, 25 % behind on two nodes and 22 to 25 % on four (one node:
+       ``(2, 64)`` 30 % behind ``(128, 1)``).  ``(128, n)`` kept its
+       lead to 32 nodes, the runner-up ``(64, 2n)`` 2 to 8 % behind
+       from 2 nodes on (the node in full, and the strong scaling to 64
+       nodes: ``docs/scaling.md``, "Strong scaling on ARCHER2").
+       Splitting on ``np1`` alone across nodes is the one arrangement
+       to avoid: it puts the `$3/2$`-sized exchange on the network
+       (``(1, 256)`` did not fit in two ARCHER2 nodes' memory).
+       Untested across GPU nodes.
     3. **Snapshots** add only the same 1D preference -- a
        one-dimensional grid reshards once per save instead of twice.
        Write granularity does not enter the choice: the reshard trims

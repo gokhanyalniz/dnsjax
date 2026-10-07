@@ -1,9 +1,11 @@
 # Memory, layout and parallelization
 
 How `dnsjax` lays its data out, what a configuration costs in memory,
-and how the work is split across devices. Everything here is
-independent of the flow — the geometry sets the meaning of each axis,
-and the device grid is chosen the same way for all ten systems.
+and how the work is split across devices. All of it is independent of
+the flow — the geometry sets the meaning of each axis, and the device
+grid is chosen the same way for all ten systems. The last section
+measures how one plane-channel run scales on a CPU cluster, from 1 to
+64 nodes.
 
 Start at the [README](../README.md) for the solver itself.
 
@@ -192,17 +194,21 @@ program.
    heavier exchange to the node and leave the network $n_{p0} - 1$
    large messages per device in place of the many small ones a
    grid-wide exchange sends, at equal network volume. On CPU that
-   argument loses to the first rule's. On ARCHER2 (128 ranks per node,
-   Cray MPICH) at `1280 x 383 x 384` the fastest grid on 1, 2 and 4
-   nodes was `(128, n)` — the largest `np0` that splits the wall-normal
-   axis without padding, the rest on `np1`, whose groups of `n`
-   consecutive ranks still fall within a node — and the aligned
+   argument loses to the first rule's. On
+   [ARCHER2](#strong-scaling-on-archer2) (two 64-core AMD EPYC 7742
+   and 16 DDR4-3200 channels per node, Slingshot between nodes; 128
+   ranks per node, Cray MPICH) at `1280 x 383 x 384` the fastest grid
+   on 1, 2 and 4 nodes was `(128, n)` — the largest `np0` dividing the
+   rank count that pads the 383 wall-normal points by only the one
+   point any split of them needs, the rest on `np1`, whose groups of
+   `n` consecutive ranks still fall within a node — and the aligned
    `(n, 128)` the slowest that fit, 25 % behind on two nodes and 22 to
    25 % on four (on one node `(2, 64)` ran 30 % behind `(128, 1)`).
-   Splitting on `np1` alone across nodes is the one arrangement to
-   avoid: it puts the $3/2$-sized exchange on the network (`(1, 256)`
-   did not fit in two ARCHER2 nodes' memory). Untested across GPU
-   nodes.
+   `(128, n)` kept its lead to 32 nodes, the runner-up `(64, 2n)` 2 to
+   8 % behind from 2 nodes on. Splitting on `np1` alone across nodes is
+   the one arrangement to avoid: it puts the $3/2$-sized exchange on
+   the network (`(1, 256)` did not fit in two ARCHER2 nodes' memory).
+   Untested across GPU nodes.
 3. **Snapshots follow the same pattern**, but only for the first
    reason: a one-dimensional grid reshards once per save instead of
    twice. Write granularity does not enter the choice — the reshard
@@ -354,10 +360,16 @@ compiled programs, the MPI library's buffers — is multiplied by the
 rank count, on top of the problem's share, and it is a large fraction
 of the budget: about 0.45 GiB of private memory per rank for a
 production plane-channel configuration on a workstation, before any
-site MPI's own; on an ARCHER2 node (128 EPYC 7742 cores, Cray MPICH),
+site MPI's own; on an [ARCHER2](#strong-scaling-on-archer2) node (two
+64-core AMD EPYC 7742, 256 GB over 16 DDR4-3200 channels; Cray MPICH),
 measured on a problem too small to matter, about 0.65 GiB per rank at
 `(2, 64)` and 1.0 GiB at `(1, 128)` — 85 and 130 GiB of the node's
-222 before the problem's own share. Three tools separate the two:
+222 before the problem's own share. On the production run measured
+there, a rank held about 1.1 GiB besides its share of the problem's
+93.5 GiB while stepping at `(128, n)` (0.9 GiB at `(64, 2n)`), at every
+node count from 1 to 64 — but for one process on the first node, which
+held some 70 KiB more per rank of the job (0.27 GiB more at 4096
+ranks). Three tools separate the two:
 [`scripts/memory_budget.py`](../scripts/memory_budget.py) predicts the
 problem's share per rank for any layout from XLA's own buffer
 assignment, without the machine; the `Peak host memory` line of a run
@@ -388,7 +400,12 @@ at every node count — and its `--exe` arms compare two checkouts in one
 sweep. `node_benchmark.py --target cpu` runs every factorization at
 each rank count (`--ranks 16 32 64 128` by default, or `--np0` /
 `--np1` to keep a few), so the table also shows the rank count at
-which the step stops scaling.
+which the step stops scaling. Measure at the node counts you will run:
+on ARCHER2 the cost of a step moved by a quarter between 16 and 32
+nodes, for a reason no smaller run shows
+([Strong scaling on ARCHER2](#strong-scaling-on-archer2), which also
+gives a one-node test that tells a per-rank effect from the
+network's).
 
 **Start-up on many nodes.** Every rank imports some 800 Python modules
 from the shared filesystem — close to a thousand file opens and
@@ -397,13 +414,17 @@ so on tens of full nodes the start-up is a burst that a parallel
 filesystem's metadata server serves slowly, and at every user's expense.
 Where the site offers a tool that has one process per node fetch the
 files for its ranks (Spindle, for one),
-`node_benchmark.py --launch-prefix` runs a sweep under it. Compile the
-bytecode once after each update — the environment's with
-`uv sync --compile-bytecode` (uv otherwise leaves it to the first
-import), the checkout's own with `python -m compileall src` — and keep
-the ranks from writing theirs (`PYTHONDONTWRITEBYTECODE=1`): a module
-left uncompiled is then compiled in memory by every rank, at every
-start.
+`node_benchmark.py --launch-prefix` runs a sweep under it. On ARCHER2,
+Spindle cut the time from launch to a running distributed runtime from
+59 to 25 s on two nodes, at no cost per step; under it that phase
+stayed under a minute on up to 64 nodes (a job's first launch the
+slowest), and the solver's own set-up took a further 70 to 120 s at
+every node count. Compile the bytecode once after each update — the
+environment's with `uv sync --compile-bytecode` (uv otherwise leaves it
+to the first import), the checkout's own with
+`python -m compileall src` — and keep the ranks from writing theirs
+(`PYTHONDONTWRITEBYTECODE=1`): a module left uncompiled is then
+compiled in memory by every rank, at every start.
 
 **A four-GPU node** (for example 4 × NVIDIA H200): one process addressing
 all four GPUs, no launcher:
@@ -432,3 +453,137 @@ all four GPUs, no launcher:
   [Memory footprint](#memory-footprint);
   `node_benchmark.py --precisions double single` puts the two side by
   side.
+
+## Strong scaling on ARCHER2
+
+One production-sized run, timed on 1 to 64 nodes of a CPU cluster with
+[`scripts/node_benchmark.py`](../scripts/node_benchmark.py).
+
+**The machine.** A standard compute node of
+[ARCHER2](https://docs.archer2.ac.uk/user-guide/hardware/), an HPE Cray
+EX system, as the site's documentation described it on 7 October 2026:
+
+- **Processors:** two AMD EPYC 7742 (Zen 2, "Rome"), 64 cores each,
+  2.25 GHz nominal, run at the site's default cap of 2.0 GHz, which
+  leaves boost off. Each core has two hardware threads; the runs used
+  one.
+- **Caches:** 32 KiB of L1 data and 512 KiB of L2 per core, and 16 MiB
+  of L3 per complex of four cores (256 MiB per socket). A socket is
+  eight dies of two such complexes around one I/O die.
+- **Memory:** 256 GB over eight DDR4-3200 channels per socket (one
+  16 GB DIMM each, 204.8 GB/s peak per socket), in eight NUMA regions
+  of 16 cores (NPS4). A job step could use 222 GiB of it.
+- **Within a socket:** AMD's Infinity Fabric, 32 bytes read and 16
+  written per fabric clock (at most 1467 MHz) from die to die.
+- **Between the two sockets:** three xGMI links of 16 PCIe lanes each
+  at 16 GT/s: 96 GB/s per direction in theory, 63.5 to 72 GB/s
+  sustained.
+- **Between nodes:** HPE Slingshot, two 100 Gb/s ports per node, in a
+  dragonfly: groups of 128 nodes on 16 switches, connected all-to-all
+  by electrical links within a group and by optical ones between
+  groups.
+- **MPI:** Cray MPICH 8.1.27 over libfabric's `verbs` provider, reached
+  through MPItrampoline ([CPU collectives](cpu-collectives.md)).
+
+**The run.** Plane-Poiseuille flow at $Re = 14000$ under a constant
+bulk velocity ($Re_\tau \approx 550$ in the state used), in an
+$8\pi \times 2 \times \pi$ box at $1280 \times 383 \times 384$, which
+is $1920 \times 383 \times 576$ points on the oversampled grid, in
+double precision. It steps from one turbulent state at a fixed
+$\Delta t = 0.0025$ with the default predictor–corrector, which here
+converges at its first correction on every step: two right-hand-side
+evaluations a step. One MPI rank per core, each running one XLA
+thread, on whole nodes, placed by
+`srun --distribution=block:block --hint=nomultithread`.
+
+**The measurement.** Each run steps for 7 to 12 minutes of wall time,
+start-up included, timed from the end of its first (compiling) step. A
+point is the mean of two or three runs, each on its own allocation; a
+run that its repeats did not reproduce is left out. Every run
+reproduces the same trajectory: its statistics match a reference
+run's to round-off.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)"
+          srcset="figures/archer2-scaling-dark.svg">
+  <img src="figures/archer2-scaling-light.svg" width="820"
+       alt="Strong scaling on ARCHER2 from 1 to 64 nodes for the device grids (128, n) and (64, 2n): the speed-up over one node follows the ideal line closely, and the parallel efficiency falls from 1.00 on one node to 0.75 on 16, then rises to 1.01 on 32 and stands at 0.94 on 64.">
+</picture>
+
+Speed-up and efficiency are against the fastest one-node run,
+`(128, 1)`; the figure's bars span the runs behind each point
+([`scripts/scaling_figure.py`](../scripts/scaling_figure.py) draws it,
+and these tables, from
+[`figures/archer2-scaling.csv`](figures/archer2-scaling.csv)).
+
+| nodes | ranks | `(128, n)`: s per time unit | speed-up | efficiency | node hours per time unit | `(64, 2n)`: s per time unit |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 128 | 2708.5 | 1.00 | 1.00 | 0.75 | 3027.0 |
+| 2 | 256 | 1511.5 | 1.79 | 0.90 | 0.84 | 1575.5 |
+| 4 | 512 | 793.7 | 3.41 | 0.85 | 0.88 | 854.8 |
+| 8 | 1024 | 426.3 | 6.35 | 0.79 | 0.95 | 460.3 |
+| 16 | 2048 | 224.9 | 12.0 | 0.75 | 1.00 | 228.6 |
+| 32 | 4096 | 83.91 | 32.3 | 1.01 | 0.75 | 87.00 |
+| 64 | 8192 | 45.01 | 60.2 | 0.94 | 0.80 | — |
+
+`(128, n)`, the grid of rule 2, leads `(64, 2n)` at every node count:
+by 12 % on one node and by 2 to 8 % from 2 to 32 nodes. (`(64, 128)`,
+the next grid of that family, pads the spanwise axis and was not run.)
+Its efficiency falls to 0.75 by 16 nodes, returns to 1.01 at 32, and
+is 0.94 at 64. The runs spread most at 32 nodes, from 80.6 to 86.5
+seconds per time unit, an efficiency of 0.98 to 1.05.
+
+**Why 32 nodes cost what one does.** From 16 to 32 nodes the time per
+unit falls 2.7-fold, for half the work per rank. The fall belongs to
+the rank, not to the network. One node running the same problem at
+`nx = 1280/N` gives each of its ranks the spectral block of the
+`N`-node run, and the same spanwise-transform stage, with no traffic
+between nodes; it shows the same fall from `N = 16` to 32, 2.71-fold
+after 1.96 and 1.98 for the halvings before. Set against those runs,
+each `N`-node time splits into a per-rank factor (the one-node time
+times `N`, against the full problem on one node) and an off-node factor
+(the `N`-node time over the one-node one), whose product is the
+node-hour cost against one node:
+
+| N | one node, `nx = 1280/N`: s per time unit | per-rank factor | N nodes: s per time unit | off-node factor |
+|---:|---:|---:|---:|---:|
+| 4 | 677.1 | 1.00 | 793.7 | 1.17 |
+| 8 | 345.4 | 1.02 | 426.3 | 1.23 |
+| 16 | 174.7 | 1.03 | 224.9 | 1.29 |
+| 32 | 64.48 | 0.76 | 83.91 | 1.30 |
+| 64 | 26.30 | 0.62 | 45.01 | 1.71 |
+
+The per-rank cost holds within 3 % up to the block of 16 nodes, falls
+by a quarter at 32 and further at 64; the off-node factor grows
+smoothly to 1.30 at 32 nodes, then to 1.71 at 64. At 32 nodes the two
+nearly cancel, $0.76 \times 1.30 = 0.99$: that, not a free network, is
+why the run costs what one node does. The off-node factor holds more
+than the network: the `np1` exchange, absent from `(128, 1)` on one
+node, and the full-length streamwise transform.
+
+The compiled step is the same program at both sizes: its optimized
+HLO differs only in how the `np1` exchange is packed (one piece per
+peer) and in one small reduction. The fall also shows in `(64, 2n)`,
+whose `np0` exchange sends each peer twice as many bytes. So the same
+work runs faster on a smaller block. That is consistent with each
+rank's working set starting to fit in cache — one spectral field per
+rank is 720 KiB at 16 nodes and 360 KiB at 32, against 512 KiB of L2
+per core — though no hardware counters were read to show it.
+
+**What it means for a run.** Measure at the node counts you will run:
+the cost per step moved by a quarter between 16 and 32 nodes, which no
+smaller run would have shown. The one-node test above tells a per-rank
+effect from the network's on any machine. With a `parameters.toml` that
+names no `[init] snapshot` (a smaller `nx` starts a new trajectory
+anyway), inside a one-node allocation:
+
+```bash
+.venv/bin/python scripts/node_benchmark.py --target cpu \
+  --launcher srun --nodes 1 --tasks-per-node 128 --np0 128 \
+  --toml parameters.toml \
+  --variant n16="--res.nx 80" --variant n32="--res.nx 40" \
+  --solver-args "--init.random_seed 1 --stop.max_wall_time PT3M30S"
+```
+
+Compare each row's seconds per time unit, times its `N`, with the
+full problem's on one node.
