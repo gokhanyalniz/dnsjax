@@ -18,11 +18,13 @@ paths:
   `forcing.bin` + `forcing.json` (`[force]`, `extensions/forcing.py`,
   read by `analysis.response.ssi`). Buffering, flushing and the
   non-finite guard: the `__main__.py` module docstring.
-- Columns come in the sorted key order of the jitted dicts, never in
-  insertion order.
 - Header rows are `#`-commented (`__main__._write_dat_header`, shared
   with `twin/driver.py`): `np.loadtxt` reads a stream bare, and a
   reader must `lstrip("#")` the header line before splitting it.
+- Never align rows across files on a `.dat` `t`: it is written at
+  `outs.stats_precision` significant digits. Count steps with `dt`
+  (`analysis.twin.series.relative_time`), or use a `.bin` stream's
+  float64 `t`.
 - Driving columns (`-dPds'`, `-dPdn'`, `-dPdz'`, last, under
   `phys.driving = "constant_bulk_velocity"` or
   `phys.block_mean_spanwise_velocity`) hold the applied force `-Π`:
@@ -35,22 +37,15 @@ paths:
   - Names come from `CylindricalFlow.driving_key` in the cylindrical
     family and from module constants in the Cartesian and annular
     ones.
-  - `get_driving` takes the physical-basis state; the `t = t0` row is
-    its inference, every later row the applied value (the read-site
-    comment in `__main__.py`, `tests/test_driving.py`).
 - Every stream with a JSON sidecar carries a `format_version` checked
   against its reader's floor; move writer and reader together when the
   stored meaning changes. The pairs:
   - `extensions/probes.py` -> `analysis/response/probes.py`;
   - `extensions/forcing.py` -> `analysis/response/ssi.py`;
-  - `twin/spectra.py` (two streams) -> `analysis/twin/spectra.py`;
+  - `twin/spectra.py` -> `analysis/twin/spectra.py`;
   - `twin/driver.py` (`twin.json`) -> `analysis/twin/series.py`;
-  - `twin/yspectra.py` (three streams) -> `analysis/twin/yspectra.py`,
-    whose floors deliberately stay below the writers' versions: a
-    layout change is named by the sidecar's `suffixes`;
+  - `twin/yspectra.py` -> `analysis/twin/yspectra.py`, whose floors
+    deliberately stay below the writers' versions: a layout change is
+    named by the sidecar's `suffixes`;
   - `twin/cubes.py` -> `analysis/twin/cubes.py`, by the tar
     metadata's `cube_version` (no sidecar).
-- A non-finite flushed value prints one `FATAL: non-finite ...` line,
-  skips the final snapshot and exits with code 3.
-- `dnsjax-twin` writes each state's own driving (`stats.dat`,
-  `stats_twin.dat`); `twin.dat` has no driving column.

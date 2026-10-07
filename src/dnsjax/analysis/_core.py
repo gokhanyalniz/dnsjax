@@ -93,8 +93,9 @@ PERIODIC_SYSTEMS = frozenset(_registry.periodic_systems)
 #: another axis cutting across the geometry sets.
 TOTAL_FIELD_SYSTEMS = frozenset(_registry.total_field_systems)
 
-#: Triply-periodic shear-direction box length (fixed length reference;
-#: see :mod:`dnsjax.geometries.triply_periodic`).
+#: Triply-periodic shear-direction box length (fixed length reference):
+#: a JAX-free mirror of ``dnsjax.geometries.triply_periodic``'s ``ly``,
+#: to change with it.
 LY_PERIODIC = 4.0
 
 _NP_DTYPES = {

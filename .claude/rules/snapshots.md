@@ -13,16 +13,15 @@ paths:
 
 # Snapshots and resume
 
-- A snapshot is one uncompressed tar wrapping a zarr3 store at
-  `format_version` 6; readers reject older ones (no translation, by
-  design). Layout, the raw offset I/O and the `.partial`
-  commit-by-rename: the `snapshot.py` and `snapshot_meta.py` module
-  docstrings. On disk is the solver-native layout: never transpose it.
+- A snapshot is one uncompressed tar wrapping a zarr3 store; readers
+  reject a `format_version` below `snapshot_meta.MIN_FORMAT_VERSION`
+  (no translation, by design). Layout, the raw offset I/O and the
+  `.partial` commit-by-rename: the `snapshot.py` and `snapshot_meta.py`
+  module docstrings. On disk is the solver-native layout: never
+  transpose it.
 - Stored components are the physical ones for every family (the
   cylindrical/annular solver basis is converted at the write/read
-  boundary). The stored state is the perturbation `u'` for base-flow
-  systems (laminar = a zero array) and the total field for
-  `flows.registry.total_field_systems`.
+  boundary); a base-flow system's laminar state is a zero array.
 - The pipe family's solver state carries two slots it does not store:
   `from_solver_basis` drops them, `to_solver_basis` re-derives them,
   and only the optional `carry/` member (`outs.snapshot_embed_carry`)
@@ -33,13 +32,10 @@ paths:
   `flows.registry.internalize_stored` / `stored_value`, which raise on
   a core-section key this version does not define.
 - A resume is np-agnostic, needs matching precision, and regrids every
-  changed axis at load, by index (so an `lx`/`lz` change rescales what
-  the surviving modes mean): wall-normal by interpolation
-  (`__main__._interpolate_if_needed`), Fourier axes by padding or
-  truncation (`snapshot._from_io_layout_core`). `t`/`it`/`isnap`
-  continue only while `parameters.trajectory_defining_changes` is
-  empty: a `phys`, `geo`, `res` or `[force]` change starts a new
-  trajectory unless `init.force_resume`.
+  changed axis at load (`__main__._interpolate_if_needed`,
+  `snapshot._from_io_layout_core`). `t`/`it`/`isnap` continue only
+  while `parameters.trajectory_defining_changes` is empty, unless
+  `init.force_resume`.
 - An interrupted save leaves `*.tar.partial`, which `*.tar` globs skip
   (`scripts/ensemble_setup.py` relies on it).
 - Every dnsjax tar goes through `snapshot.write_archive`: states, the

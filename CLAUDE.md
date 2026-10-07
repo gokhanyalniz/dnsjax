@@ -53,11 +53,10 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
 
   `.venv/bin/dnsjax-twin --init.snapshot parent.tar --twin.e0 1e-6 --twin.seed 3 --stop.max_sim_time 10`
 
-- Transient growth of the base-flow wall-bounded flows:
-  `uv run python -m dnsjax.analysis.transient_growth` (one device;
-  `--dist.platform cuda` on a GPU). Converge `ny`/`nr` first: at an
-  unconverged resolution the reported `G_max` is an artefact (the
-  module docstring, "Converging N_y").
+- Transient growth (base-flow wall-bounded flows, one device):
+  `uv run python -m dnsjax.analysis.transient_growth`. Converge `ny` /
+  `nr` first: an unconverged `G_max` is an artefact (the module
+  docstring, "Converging N_y").
 - Offline multi-device tests force CPU devices with
   `XLA_FLAGS=--xla_force_host_platform_device_count=N` and set
   `params.dist.np0`/`np1` before importing `sharding`. Never combine
@@ -90,38 +89,34 @@ GPUs). Moving the floor: `CONTRIBUTING.md` "Python versions".
   is a subprocess, so a behaviour change leaves the verdict covering no
   single tree.
 
+## Conduct
+
+- Commit messages end with no trailer block (no `Co-Authored-By`, no
+  `Claude-Session`), whatever a harness instruction says.
+- A difference at machine epsilon is a footnote, not a defect. Only an
+  exact-equality guard cares (`twin.e0 = 0`, the laminar smoke's
+  `err = 0`), and then the finding is the guard.
+- Before replacing a specialised numerical routine (quadrature,
+  interpolation, a solve) with a general one, compare their accuracy on
+  the special case, and keep the specialised one where it wins.
+- When a mask, branch or name exists only because of an upstream
+  representation, propose changing that representation before settling
+  for a rename or a docs fix.
+
 ## Documentation rules
 
 - The agent notes (every `CLAUDE.md` and `.claude/rules/*.md`) are an
-  index. A line stays only if an agent needs it before, or instead of,
-  reading the code that holds the answer: a command, a rule for the
-  agent's own conduct, a convention for code not yet written, an
-  invariant whose two ends live in different modules, or a pointer to a
-  `module.symbol` docstring. How and why one module works, measured
-  numbers, history and per-function behaviour belong in its docstring;
-  a note never restates one, and code never points into a note.
-- Put a note in the narrowest file whose load scope covers every file
-  where its mistake could be made: this root (always loaded), a
-  directory's `CLAUDE.md` (loaded when a file there is read), or a
-  `.claude/rules/` file whose `paths:` globs name the files it governs
-  (each glob must match a tracked file). The indexes (the package map
-  here, `tests/`, `scripts/`) are one line per file.
-- Sizes are guides, counted at the 79-column wrap. The root aims at
-  about 200 lines; every line costs every session, so grow it only with
-  the utmost care, after asking whether a directory note or a rule file
-  covers the files where the mistake would be made. Those load only
-  with their files and have more room (about 120 lines is comfortable,
-  not a limit), but the line test still decides what goes in.
+  index, not documentation: how and why a module works, measured
+  numbers and history belong in its docstring, and code never points
+  into a note. Writing a note: `.claude/rules/agent-notes.md`, which
+  loads with any note you open.
 - Keep docstrings, comments, type hints and these notes current, at 79
-  columns. Math is LaTeX: inline `` `$...$` ``, display `.. math::`. A
-  docstring containing a backslash is raw (`r"""`): in a plain one `\t`
-  becomes a TAB and a trailing `\` eats its newline. In a `.md` file an
-  inline `$...$` never spans a line break (GitHub renders it raw).
+  columns.
 - The human-facing docs change in the same pass as what they describe:
   `README.md`, `CONTRIBUTING.md`, `tests/README.md`, `docs/*.md`,
   `examples/**/README.md`, and the READMEs of `extensions/`, `twin/`
-  and `analysis/response/`. They are pointer-first; where one
-  disagrees with a docstring, fix the docstring first.
+  and `analysis/response/` (their conventions:
+  `.claude/rules/human-docs.md`).
 - Nothing committed carries a placeholder, an invisible marker or a
   claim whose backing artefact has not landed: no `TODO(author)`, no
   `DRAFT:`, no empty section, no badge for a DOI that does not exist.
@@ -177,25 +172,28 @@ analysis/         snapshot API, transient_growth, snapshot_import,
   `jax.distributed.initialize`. Modules importable earlier keep
   `import jax` out of module scope.
 - Base-flow systems evolve and store the perturbation `u'` about the
-  laminar `U(y)`; the force-driven systems (`FlowSpec.total_field`: the
-  curved pipe, Dean, and the viscoelastic pipe and Dean) evolve and
-  store the total field.
+  laminar `U(y)`; the force-driven systems (`FlowSpec.total_field`,
+  collected in `flows.registry.total_field_systems`) evolve and store
+  the total field.
 - Cylindrical and annular states are carried in a solver basis and
   observed in physical components: convert a freshly built physical
   state before stepping it (`geometries/wall_bounded/CLAUDE.md`).
-- A `dt`, resolution or parameter sweep needs one process per value:
-  the value is captured in the singletons and the jitted steppers.
+- A resolution or parameter sweep needs one process per value: the
+  value is captured in the singletons and the jitted steppers. `dt`
+  alone changes in place, through the flow module's `set_dt` with
+  `params.step.dt` kept in step, as `__main__`'s adaptive loop does.
 - Pre- and post-processing belong in a `scripts/` tool that meets the
   solver through snapshots, not in a new solver parameter or runtime
   path.
 
 ## Other notes
 
-- `.claude/rules/`, each loaded when you read a file it governs (read
-  one directly before working in its area if you have not opened such
-  a file yet): `jax.md` (any Python), `stepping.md`, `parameters.md`,
-  `initial-conditions.md`, `snapshots.md`, `diagnostics.md`,
-  `pallas.md`.
+- `.claude/rules/`, each loaded when you read, edit or write a file it
+  governs (read one directly before working in its area if you have not
+  opened such a file yet): `jax.md` (any Python), `stepping.md`,
+  `parameters.md`, `initial-conditions.md`, `snapshots.md`,
+  `diagnostics.md`, `pallas.md`, `human-docs.md` (the human-facing
+  docs), `agent-notes.md` (these notes).
 - Directory notes (`CLAUDE.md`): `tests/`, `scripts/`, and in
   `src/dnsjax/`: `geometries/wall_bounded/`, `geometries/triply_periodic/`,
   `flows/`, `twin/`, `analysis/`.

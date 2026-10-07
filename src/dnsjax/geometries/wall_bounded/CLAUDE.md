@@ -24,10 +24,10 @@ modules import neither geometry (guard: `test_no_cross_geometry_import`).
   `to_solver_basis` / `from_solver_basis` (9 components:
   `_viscoelastic_common.to_spin_basis` / `from_spin_basis`).
   `__main__` owns the field-level crossings; `extensions/probes.py`
-  and `forcing.py` convert their own mode columns.
-- **Convert a freshly built (physical) state before stepping it**: an
-  unconverted one steps without error, just wrong. Templates:
-  `__main__`'s post-IC line, `transient_growth._linear_step`.
+  and `forcing.py` convert their own mode columns. An unconverted
+  state steps without error, just wrong; templates for converting a
+  freshly built one: `__main__`'s post-IC line,
+  `transient_growth._linear_step`.
 - The pipe family carries two more trailing slots (the spin quad's
   difference halves): its `to_solver_basis` appends them,
   `from_solver_basis` drops them, and RHS arrays and the cnab2 carry
@@ -44,14 +44,13 @@ modules import neither geometry (guard: `test_no_cross_geometry_import`).
   `_get_rhs_core` and `_l_bf`; never shift the cross-product velocity
   (`pad_base_flow` says which field goes where).
 - Each geometry's `_imm_iteration` and
-  `Flow._derive_imm_homogeneous_data` dispatch between the default
-  reconstruction (`_imm_iteration_vw`) and the legacy primitive path.
-  Records: the shared derivation and retired routes in
-  `cartesian._imm_iteration`, the cylindrical algebra in
-  `annular._imm_iteration_vw`, the pipe's additions in
-  `_cylindrical_stepping._imm_iteration_vw`; the flag in
-  `Resolution.consistent_imm` (the curved pipe refuses the legacy
-  path). Guards: `test_imm_continuity.py`, `test_random_smoke.py`,
+  `Flow._derive_imm_homogeneous_data` dispatch on
+  `Resolution.consistent_imm` between the default reconstruction
+  (`_imm_iteration_vw`) and the legacy primitive path. The derivations:
+  `cartesian._imm_iteration` (shared, with the retired routes),
+  `annular._imm_iteration_vw` (cylindrical),
+  `_cylindrical_stepping._imm_iteration_vw` (the pipe's additions).
+  Guards: `test_imm_continuity.py`, `test_random_smoke.py`,
   `test_temporal_order.py`.
 - A legacy module is imported lazily, inside flag-off branches only: it
   imports back from its geometry module.
@@ -109,10 +108,6 @@ modules import neither geometry (guard: `test_no_cross_geometry_import`).
 
 ## Curvature (toroidal pipe)
 
-- Carrying `w = (h u_s, u_r, u_θ)` keeps every operator the straight
-  pipe's: curvature enters only the explicit RHS (the `rhs.get_nonlin`
-  metric hooks) and the continuity rows (`divergence_defect`, on the
-  corrector iterate).
 - Zero any source added to the `L_v,mod` solve on the wall row: that
   row is a Dirichlet identity, so the RHS value there becomes `u_r` at
   the wall and the corrector stops converging.
