@@ -155,7 +155,8 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     # a twin member, a regrid resume) -- not a _SLOW row.
     ("test_host_placement.py", (), _MPI, 1800),
     ("test_laminar_smoke.py", (), _MPI + _SLOW, 3600),
-    # ~5 s: one 4-rank launch, no stepping -- not a _SLOW row.
+    # Under 10 s: two 4-rank launches, the second over a faked second
+    # host, no stepping -- not a _SLOW row.
     ("test_mpi_communicators.py", (), _MPI, 1800),
     # Multi-device, and specifically on the np1 (k_x / axial) axis:
     # every entry runs at the runner default --np 1 otherwise, which

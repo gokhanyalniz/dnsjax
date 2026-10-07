@@ -244,6 +244,19 @@ def _warm_communicators(mesh: Mesh) -> None:
     leave this thread.  Only multi-process CPU runs on the MPI
     collectives need it.  ``tests/test_mpi_communicators.py`` runs both
     failing patterns.
+
+    One more group is not the solver's own.
+    ``jax.experimental.multihost_utils`` -- :meth:`Sharding.any_process`,
+    the snapshot barrier, the closing memory line -- gathers over every
+    device in id order, on a mesh of its own, and XLA keys a
+    communicator by the group's devices *in order*.  Where
+    :func:`device_grid` keeps the ids' order (one node, or ranks
+    numbered node by node) that is the whole mesh's group, opened
+    above; where it reorders them (ranks interleaved across nodes) it
+    is another communicator, opened here too.  Those programs read host
+    values, which are copied at once, so they would open it on this
+    thread anyway; opening it here does not rest on that.  The test's
+    second launch, on an interleaved two-host layout, runs that case.
     """
     if (
         jax.process_count() == 1
@@ -251,27 +264,48 @@ def _warm_communicators(mesh: Mesh) -> None:
         or jax.config.jax_cpu_collectives_implementation != "mpi"
     ):
         return
+    groups: list[tuple[str, ...]] = [("np0", "np1")]
+    if min(mesh.devices.shape) > 1:
+        groups += [("np0",), ("np1",)]
+    _open_groups(mesh, groups)
+    devices = jax.devices()
+    if [d.id for d in devices] != [d.id for d in mesh.devices.flat]:
+        # multihost_utils' own mesh, built as it builds it.
+        by_process = Mesh(
+            np.asarray(devices, dtype=object).reshape(
+                jax.process_count(), jax.local_device_count()
+            ),
+            ("processes", "local_devices"),
+            axis_types=(AxisType.Explicit, AxisType.Explicit),
+        )
+        _open_groups(by_process, [("processes",)])
+
+
+def _open_groups(mesh: Mesh, groups: list[tuple[str, ...]]) -> None:
+    """Run one small ``psum`` over each of *groups*, axes of *mesh*.
+
+    On an input made ready first, and each waited for, so every one
+    runs on this thread (:func:`_warm_communicators`).
+    """
     shape = mesh.devices.shape
-    spec = P("np0", "np1")
+    spec = P(*mesh.axis_names)
     ones = jax.make_array_from_callback(
         shape,
         NamedSharding(mesh, spec),
         lambda index: np.ones(shape, np.float32)[index],
     )
     ones.block_until_ready()
-    groups: list[tuple[str, ...]] = [("np0", "np1")]
-    if min(shape) > 1:
-        groups += [("np0",), ("np1",)]
-    for axes in groups:
-        warm = jax.jit(
-            jax.shard_map(
-                lambda block, axes=axes: jax.lax.psum(block, axes),
-                mesh=mesh,
-                in_specs=spec,
-                out_specs=spec,
+    with jax.set_mesh(mesh):
+        for axes in groups:
+            warm = jax.jit(
+                jax.shard_map(
+                    lambda block, axes=axes: jax.lax.psum(block, axes),
+                    mesh=mesh,
+                    in_specs=spec,
+                    out_specs=spec,
+                )
             )
-        )
-        warm(ones).block_until_ready()
+            warm(ones).block_until_ready()
 
 
 @dataclass

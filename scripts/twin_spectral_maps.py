@@ -6893,7 +6893,9 @@ def growth_summary_figure(
         saturation alone bends the curve only near `$R = 1$` (the
         logistic at the exponential's rate), an algebraic law runs
         parallel to one of the keyed slopes `$-1/\alpha$`, and
-        constant-rate decorrelation follows `$\nu(1 - R)/R$`;
+        constant-rate decorrelation follows `$\nu(1 - R)/R$` -- and a
+        window with no positive rate (one inside saturation) leaves it
+        empty, saying so;
     (c) `$-\ln(1 - R)$` against `$t$`: constant-rate decorrelation is a
         line of slope `$\nu$`, where the logistic at the exponential's
         rate, through the same half-saturation time, would end at slope
@@ -6989,13 +6991,30 @@ def growth_summary_figure(
     ok = (gamma > 0.0) & (r > 0.0) & np.isfinite(gamma)
     peak = int(np.nanargmax(np.where(ok, gamma, -np.inf)))
     path = ok & (np.arange(t.size) >= peak)
-    r_lo = float(r[path].min())
-    g_hi = float(gamma[path].max())
-    g_lo = max(float(gamma[path & (r < 0.99)].min()), 3e-3)
+    if path.any():
+        r_lo = float(r[path].min())
+        slow = gamma[path & (r < 0.99)]
+        g_bottom = 0.6 * max(float(slow.min()) if slow.size else 0.0, 3e-3)
+        g_top = 1.8 * float(gamma[path].max())
+    else:
+        # A window with no positive rate -- one inside saturation, its
+        # energy drifting down -- has no curve to draw here, and takes
+        # the bands figure's range.
+        r_lo = float(r[r > 0.0].min())
+        g_bottom, g_top = 3e-3, 1.0
+        ax_g.text(
+            0.5,
+            0.5,
+            "no positive rate in this window",
+            ha="center",
+            va="center",
+            transform=ax_g.transAxes,
+            fontsize="x-small",
+        )
     ax_g.set_xscale("log")
     ax_g.set_yscale("log")
     ax_g.set_xlim(r_lo * 0.5, 1.5)
-    ax_g.set_ylim(g_lo * 0.6, g_hi * 1.8)
+    ax_g.set_ylim(g_bottom, g_top)
     ax_g.plot(
         r[path],
         gamma[path],
@@ -7036,7 +7055,7 @@ def growth_summary_figure(
             linestyle=(0, (1.5, 1.2)),
             label=r"constant-rate decorrelation, $\nu(1 - R)/R$",
         )
-    y_lo, y_hi = math.log10(g_lo * 0.6), math.log10(g_hi * 1.8)
+    y_lo, y_hi = math.log10(g_bottom), math.log10(g_top)
     _slope_key(
         ax_g,
         r_end=10.0 ** (math.log10(r_lo) + 1.8),
@@ -7109,8 +7128,10 @@ def growth_summary_figure(
     time_axes(ax_r, top=False)
     ax_r.plot(tp, r, color="black", linewidth=1.4, label=r"$R$")
     dr = np.gradient(r, t)
-    k = int(np.nanargmax(np.where(r < 0.9, dr, -np.inf)))
-    peak_slope = float(dr[k])
+    rising = np.where(r < 0.9, dr, -np.inf)
+    k = int(np.nanargmax(rising))
+    # -inf, and nothing drawn, where no sample is below R = 0.9.
+    peak_slope = float(rising[k])
     if peak_slope > 0.0:
         rate = 4.0 * peak_slope
         shift = math.log(1.0 / min(max(r[k], 1e-9), 1.0 - 1e-9) - 1.0)

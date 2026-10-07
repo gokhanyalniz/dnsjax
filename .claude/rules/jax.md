@@ -40,12 +40,15 @@ paths:
   and `docs/cpu-collectives.md`.
 - Under the MPI collectives a device group's communicator opens only
   on the thread that initialized MPI, and a collective can run off it
-  even with async dispatch off. `sharding._warm_communicators` opens
-  the solver mesh's groups (whole mesh, each np0 and np1 group) as the
-  mesh is built. A collective over any other group (another `Mesh`, a
-  regrouped or sub-mesh) must be opened the same way first, or a run
-  dies at random with `MPI: Communicator requested from a thread...`
-  and hangs. Guard: `tests/test_mpi_communicators.py`.
+  even with async dispatch off. XLA keys a communicator by the group's
+  devices in order: the same devices in another order are another
+  group. `sharding._warm_communicators` opens the solver mesh's groups
+  (whole mesh, each np0 and np1 group) as the mesh is built, and
+  `multihost_utils`' (every device, in id order) where that is not the
+  mesh's order. A collective over any other group (another `Mesh`, a
+  regrouped, reordered or sub-mesh) must be opened the same way first,
+  or a run dies at random with `MPI: Communicator requested from a
+  thread...` and hangs. Guard: `tests/test_mpi_communicators.py`.
 - Code on a solver rank starts no process through CPython's `vfork`
   path (a `subprocess` call naming a bare executable, or keeping
   `close_fds=True`): a launcher's exec wrapper (Spindle's) runs in the

@@ -85,6 +85,8 @@ map to them as follows.
 | Per-geometry operators and matvecs match independent NumPy constructions | `tests/test_cartesian.py`, `tests/test_cylindrical.py`, `tests/test_annular.py`, `tests/test_viscoelastic.py`, `tests/test_viscoelastic_pipe.py` |
 | Snapshots round-trip, resume across any device count, and carry lineage; a pipe-family resume continues the uninterrupted run to round-off | `tests/test_snapshot.py`, `tests/test_resume.py` |
 | Host-built arrays reach the devices without JAX's cross-process gather, at setup and at every forcing kick, in every flow family and the twin driver | `tests/test_host_placement.py` |
+| A run spans nodes: each `np1` group stays on one node whatever order the launcher numbers the ranks in, and a two-host run reproduces the one-host statistics and snapshot | `tests/test_device_grid.py` |
+| Under the MPI collectives every device group a run uses has its communicator open before a collective can run off the MPI thread, on one host and across two | `tests/test_mpi_communicators.py` |
 | The JAX-free analysis API reproduces the solver's own discrete operators | `tests/test_snapshot_export.py` |
 | The $(k_x, k_z) = (0, 0)$ perturbation respects its conservation laws | `tests/test_mean_mode.py` |
 | The applied mean-mode driving column agrees with the wall-shear inference at converged resolution, and on the toroidal pipe with its whole mean-momentum balance | `tests/test_driving.py`, `tests/test_curved_pipe.py` |
