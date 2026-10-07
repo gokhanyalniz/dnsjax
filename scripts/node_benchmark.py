@@ -556,11 +556,15 @@ def _run(row: Row, a: argparse.Namespace, index: int) -> dict:
             shutil.copy(a.toml, Path(wd) / "parameters.toml")
         t0 = time.time()
         try:
+            # errors="replace": thousands of ranks share one pipe, and a
+            # byte that is not UTF-8 there (job 15541627) made the strict
+            # decode raise and lose the whole row's output.
             proc = subprocess.run(
                 row.cmd,
                 cwd=wd,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=a.timeout,
             )
             out, err, status = proc.stdout, proc.stderr, proc.returncode
