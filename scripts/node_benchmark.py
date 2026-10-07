@@ -83,7 +83,9 @@ What is reported
   hours per unit of simulated time (``CU/t``);
 - the peak memory: the CPU ``Peak host memory`` line (per rank, and
   the fullest node with shared pages counted once) or the GPU
-  ``Peak device memory`` line;
+  ``Peak device memory`` line; on CPU also what is still resident at
+  the end (``Resident host memory``, the same two figures), which a
+  start-up transient does not reach;
 - the start-up phases from the solver's own timestamps: the first
   rank's ``Alive`` line (its interpreter up and the pre-JAX modules
   imported) to the distributed runtime (the JAX import, rank
@@ -197,6 +199,10 @@ DNSJAX = REPO / ".venv" / "bin" / "dnsjax"
 PEAK_PATTERN = re.compile(r"Peak device memory: ([\d.]+) GiB")
 HOST_PATTERN = re.compile(
     r"Peak host memory: ([\d.]+) GiB per rank .*?, ([\d.]+) GiB per node"
+)
+RESIDENT_PATTERN = re.compile(
+    r"Resident host memory at the end: ([\d.]+) GiB per rank .*?, "
+    r"([\d.]+) GiB per node"
 )
 #: Start-up timestamps (``Alive at`` is per rank, on stderr).
 _STAMP = r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d(?:\.\d+)?)"
@@ -504,6 +510,10 @@ def _parse(out: str, err: str, status: int) -> dict:
     if host:
         rec["host_rank_gib"] = float(host[-1][0])
         rec["host_node_gib"] = float(host[-1][1])
+    resident = RESIDENT_PATTERN.findall(out)
+    if resident:
+        rec["host_rank_end_gib"] = float(resident[-1][0])
+        rec["host_node_end_gib"] = float(resident[-1][1])
     coll = COLLECTIVES_PATTERN.findall(out)
     if coll:
         rec["collectives"] = coll[-1]
@@ -753,6 +763,8 @@ def _write_csv(rows: list[Row], path: str, hosts: list[str]) -> None:
         "c_per_it",
         "host_rank_gib",
         "host_node_gib",
+        "host_rank_end_gib",
+        "host_node_end_gib",
         "peak_device_gib",
         "t_init_s",
         "t_setup_s",
