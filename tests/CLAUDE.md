@@ -67,6 +67,9 @@ Parameters, bootstrap, mesh, seeds:
   `test_bootstrap.py`, `test_seeding.py` (`--unit-only`).
 - `test_device_grid.py` (`--unit-only`): the mesh across nodes, two
   hosts faked on one machine under `mpirun`.
+- `test_host_placement.py` (`mpirun`, `--only`): no host array reaches
+  the mesh through JAX's cross-process gather
+  (`sharding.Sharding.distribute`).
 
 Initial conditions:
 - `test_localized_rolls.py`, `test_rolls_smoke.py` (6 roll builders),

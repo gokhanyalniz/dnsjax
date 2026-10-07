@@ -225,9 +225,10 @@ class Fourier:
     mean_mask: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        # Every grid is built on the host and placed with its sharding:
-        # they are a few vectors, and each eager JAX operation on them
-        # would compile on its own at every start-up.
+        # The wavenumber vectors start as the ``operators`` wrappers'
+        # arrays, replicated on the mesh, so ``device_put`` reshards
+        # them on the devices; the arrays built in NumPy (the metric
+        # and the mean mask) are placed by ``sharding.distribute``.
         a0, a1 = sharding.a0, sharding.a1
         kz = (
             (
@@ -267,13 +268,13 @@ class Fourier:
 
         self.kz = jax.device_put(kz, P(None, None, a1))
         self.m = jax.device_put(m, P(None, a0, None))
-        self.k_metric = jax.device_put(
+        self.k_metric = sharding.distribute(
             np.where(kz == 0, 1, 2).astype(sharding.float_type),
             P(None, None, a1),
         )
         self.kz2 = jax.device_put(kz**2, P(None, None, a1))
         self.m2 = jax.device_put(m**2, P(None, a0, None))
-        self.mean_mask = jax.device_put(mean, P(None, a0, a1))
+        self.mean_mask = sharding.distribute(mean, P(None, a0, a1))
 
 
 fourier: Fourier = Fourier()
@@ -835,7 +836,7 @@ class AnnularFlow:
         inv_sp[0, :Nr] = params.res.nx / params.geo.lx
         inv_sp[1, :Nr] = 1.0 / local_grid_spacing(np.asarray(self.rs))
         inv_sp[2, :Nr] = np.asarray(self.inv_r) * params.res.nz / params.geo.lz
-        self.cfl_inv_spacing = jax.device_put(
+        self.cfl_inv_spacing = sharding.distribute(
             inv_sp[:, :, None, None], sharding.no_shard
         )
 
@@ -845,14 +846,14 @@ class AnnularFlow:
         # operator builder reads ``.dense`` of the one the matvecs use.
         self.D1 = YMatrix.from_dense(D1_np)
         self.D2 = YMatrix.from_dense(D2_np)
-        self.D1_bnd = jax.device_put(
+        self.D1_bnd = sharding.distribute(
             np.stack([D1_np[0], D1_np[-1]]), sharding.no_shard
         )
         self.A_base = YMatrix.from_dense(
             _build_A_base(D1_np, D2_np, self.inv_r)
         )
 
-        self.rs = jax.device_put(self.rs, sharding.no_shard)
+        self.rs = sharding.distribute(self.rs, sharding.no_shard)
         self.inv_r = jax.device_put(self.inv_r, sharding.no_shard)
         self.inv_r2 = jax.device_put(self.inv_r2, sharding.no_shard)
         self.y_weights = jax.device_put(self.y_weights, sharding.no_shard)

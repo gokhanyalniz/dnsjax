@@ -123,9 +123,10 @@ class Fourier:
     mean_mask: Array = field(init=False)
 
     def __post_init__(self) -> None:
-        # Every grid is built on the host and placed with its sharding:
-        # they are a few vectors, and each eager JAX operation on them
-        # would compile on its own at every start-up.
+        # The wavenumber vectors start as the ``operators`` wrappers'
+        # arrays, replicated on the mesh, so ``device_put`` reshards
+        # them on the devices; the arrays built in NumPy (the metric
+        # and the mean mask) are placed by ``sharding.distribute``.
         a0, a1 = sharding.a0, sharding.a1
         kx = (
             (
@@ -164,12 +165,12 @@ class Fourier:
 
         self.kx = jax.device_put(kx, P(None, None, a1))
         self.kz = jax.device_put(kz, P(None, a0, None))
-        self.k_metric = jax.device_put(
+        self.k_metric = sharding.distribute(
             np.where(kx == 0, 1, 2).astype(sharding.float_type),
             P(None, None, a1),
         )
         self.k2 = jax.device_put(kx**2 + kz**2, P(None, a0, a1))
-        self.mean_mask = jax.device_put(mean, P(None, a0, a1))
+        self.mean_mask = sharding.distribute(mean, P(None, a0, a1))
 
 
 fourier: Fourier = Fourier()
@@ -516,13 +517,13 @@ class CartesianFlow:
             np.asarray(self.ys)
         )
         inv_sp[2, : params.res.ny] = params.res.nz / params.geo.lz
-        self.cfl_inv_spacing = jax.device_put(
+        self.cfl_inv_spacing = sharding.distribute(
             inv_sp[:, :, None, None], sharding.no_shard
         )
 
         self.D1 = YMatrix.from_dense(D1)
         self.D2 = YMatrix.from_dense(D2)
-        self.D1_bnd = jax.device_put(D1[[0, -1], :], sharding.no_shard)
+        self.D1_bnd = sharding.distribute(D1[[0, -1], :], sharding.no_shard)
 
         # Banded half-width: measured, not assumed.  Rows 0 and Ny-1
         # are overwritten with BC rows in every operator, so their own
