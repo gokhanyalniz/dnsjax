@@ -31,11 +31,12 @@ Usage::
 
     uv run pytest                            # everything available
     uv run pytest -m "not slow and not mpi"  # offline: no mpirun launch
-    uv run pytest -m "not slow"              # + the seven quick mpirun
+    uv run pytest -m "not slow"              # + the eight quick mpirun
                                              #   rows (probes, forcing,
                                              #   seeding, twin_postprocess,
                                              #   device_grid,
                                              #   host_placement,
+                                             #   mpi_communicators,
                                              #   wall_time_stop)
     uv run pytest -k padding                 # a single script
 """
@@ -154,6 +155,8 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     # a twin member, a regrid resume) -- not a _SLOW row.
     ("test_host_placement.py", (), _MPI, 1800),
     ("test_laminar_smoke.py", (), _MPI + _SLOW, 3600),
+    # ~5 s: one 4-rank launch, no stepping -- not a _SLOW row.
+    ("test_mpi_communicators.py", (), _MPI, 1800),
     # Multi-device, and specifically on the np1 (k_x / axial) axis:
     # every entry runs at the runner default --np 1 otherwise, which
     # is how a total np1 > 1 failure of res.consistent_imm reached
