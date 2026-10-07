@@ -24,8 +24,7 @@ paths:
   only a seed the run would draw with): `seeding.py`. The solver
   resolves them in `bootstrap.resolve_run_seeds`, between
   `configure_jax_runtime` and the `sharding` import; `dnsjax-twin`
-  resolves `twin.seed` itself, after its paired-resume decision. The
-  seeds in the benchmark and diagnostic scripts stay fixed on purpose.
+  resolves `twin.seed` itself, after its paired-resume decision.
 - Only the Cartesian flows may perturb the `(kx, kz) = (0, 0)` mode,
   and only through the conservation laws in `ic/mean_mode.py`, so that
   a state and its perturbed copy are the same flow, driven

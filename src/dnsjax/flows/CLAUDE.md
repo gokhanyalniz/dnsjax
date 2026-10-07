@@ -17,8 +17,7 @@ Adding a flow `X` (the human recipe: `docs/extending.md`):
    components (and add its branch to `analysis/_core.geometry_info`),
    and `total_field=True` for a flow that integrates the total field.
 4. Add a row to `tests/test_laminar_smoke.py` and one to
-   `tests/test_random_smoke.py` (`Re` above onset, a small box); they
-   cover the base flow, so write no per-field unit tests for it. Three
+   `tests/test_random_smoke.py` (`Re` above onset, a small box). Three
    couplings there are kept by hand: the laminar smoke picks its CFL
    columns by system-name prefix and needs its own check branch for a
    flow without a perturbation `E'`, and the random smoke lists the

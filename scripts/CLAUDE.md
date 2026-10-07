@@ -28,17 +28,16 @@ and diagnostics are fixed on purpose.
 - `pallas_tiling_diagnostic.py`: GPU harness for the Triton
   partial-tile miscompile.
 - `pallas_solve_profile.py`: GPU profile of the banded solve and its
-  share of a step (`--solve-only`, `--steps-only`, `--cpu-smoke`).
+  share of a step (`--cpu-smoke`).
 - `solver_benchmark.py`: pallas-vs-dense validation and benchmark
-  (`--cpu-bench`, `--cpu-smoke`).
+  (`--cpu-smoke`).
 - `node_benchmark.py`: JAX-free layout and strong-scaling sweep of one
   problem, `mpirun` or `srun` over nodes, each row's `stats.dat` checked
   against a reference (`--dry-run`, `--cpu-smoke`).
 - `memory_budget.py`: per-rank memory of the as-run step on any layout,
-  offline (forced CPU devices; `--child-field-mib` bounds a child).
-- `memory_watch.py`: JAX-free per-node memory sampler (`sample`,
-  `summary --rows`).
+  offline (forced CPU devices).
+- `memory_watch.py`: JAX-free per-node memory sampler.
 - `grad_probe.py`: forward/reverse differentiability matrix with a
-  finite-difference check (`--full`, `--dist.platform cuda`).
+  finite-difference check.
 - `gds_probe.py`: cluster diagnostic for the snapshot GDS path
-  (`--env-only`, `--end-to-end`, `--end-to-end-only`, `--cpu-smoke`).
+  (`--cpu-smoke`).

@@ -4,8 +4,7 @@ r"""Temporal-order guard for the two time-stepping schemes (offline).
 Pins the second-order accuracy of ``step.scheme == "cnab2"`` against
 ``"iterative-cn"`` with two complementary studies, each stepping
 in-process on 1 forced CPU device (no ``mpirun``), one subprocess per
-``(system, scheme, dt)`` (the singletons capture ``dt`` at trace time,
-so a ``dt`` sweep needs a subprocess per value):
+``(system, scheme, dt)``:
 
 - **Kolmogorov (triply-periodic), absolute order**: the pressure
   projection is algebraically exact there and the triply-periodic

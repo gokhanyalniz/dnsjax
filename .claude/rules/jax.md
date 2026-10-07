@@ -5,7 +5,7 @@ paths:
   - "scripts/**/*.py"
 ---
 
-# JAX conventions (any Python in this repo)
+# Python conventions (JAX, sharding, docstrings)
 
 - Sharding is Explicit mode everywhere; never call
   `jax.lax.with_sharding_constraint`.
@@ -16,6 +16,15 @@ paths:
   gathers every process's copy onto each first (the why:
   `sharding.Sharding.distribute`). A `jax.device_put` to one device,
   or of an array already on the mesh, is fine.
+- `jnp.broadcast_to` keeps its source's sharding, not the target's:
+  pass `out_sharding` wherever the result meets a fully sharded array
+  (a `jnp.where` against `fourier.mean_mask`, then a `jnp.stack`), or
+  the operands mismatch once `np1 > 1` (precedent:
+  `_cylindrical_stepping`'s `psv_b`).
+- Slicing a sharded axis to a length its mesh axis does not divide
+  raises `ShardingTypeError`. Crop or pad per device inside a
+  `shard_map` on local shards, as `PerModeBandedPallasOperator.solve`
+  does.
 - Reshard an existing multi-device array inside `jax.jit` with
   `jax.sharding.reshard`, one mesh axis per step: moving both axes at
   once replicates the array on every device, which shows only when
@@ -32,28 +41,20 @@ paths:
   real multi-process run catches a slip: `test_twin_driver.py`'s
   `test_np2_run`, the `*-mpi-pad` rows of `test_random_smoke.py`.
 - Nothing may initialize MPI before XLA does: an earlier `MPI_Init`
-  aborts the run. Rank bootstrap and the CPU collectives:
-  `bootstrap.configure_jax_runtime`. Its environment knobs
-  (`JAX_COORDINATOR_ADDRESS`, `JAX_COORDINATOR_PORT`,
-  `MPITRAMPOLINE_LIB`, `JAX_CPU_COLLECTIVES_IMPLEMENTATION`) are not
-  parameters; the user-facing contract is the `Distribution` docstring
-  and `docs/cpu-collectives.md`.
-- Under the MPI collectives a device group's communicator opens only
-  on the thread that initialized MPI, and a collective can run off it
-  even with async dispatch off. XLA keys a communicator by the group's
-  devices in order: the same devices in another order are another
-  group. `sharding._warm_communicators` opens the solver mesh's groups
-  (whole mesh, each np0 and np1 group) as the mesh is built, and
-  `multihost_utils`' (every device, in id order) where that is not the
-  mesh's order. A collective over any other group (another `Mesh`, a
-  regrouped, reordered or sub-mesh) must be opened the same way first,
-  or a run dies at random with `MPI: Communicator requested from a
-  thread...` and hangs. Guard: `tests/test_mpi_communicators.py`.
+  aborts the run. Rank bootstrap, the CPU collectives and their
+  environment knobs: `bootstrap.configure_jax_runtime`; the user-facing
+  contract: the `Distribution` docstring and `docs/cpu-collectives.md`.
+- A collective over a device group that `sharding._warm_communicators`
+  does not open (another `Mesh`; a regrouped, reordered or sub-mesh,
+  since the same devices in another order are another group) needs its
+  MPI communicator opened the same way first, or a multi-process CPU
+  run dies at random (`MPI: Communicator requested from a thread...`)
+  and hangs. Guard: `tests/test_mpi_communicators.py`.
 - Code on a solver rank starts no process through CPython's `vfork`
   path (a `subprocess` call naming a bare executable, or keeping
   `close_fds=True`): a launcher's exec wrapper (Spindle's) runs in the
-  child and corrupts the rank. Spawn as `snapshot_meta.git_hash` does,
-  through `posix_spawn` (the why: its docstring).
+  child and corrupts the rank. Spawn through `posix_spawn`, as
+  `snapshot_meta.git_hash` does (the why: its docstring).
 - Scripts and in-process tests take the platform from
   `--dist.platform` (default cpu) through
   `bootstrap.configure_jax_platform` / `platform_from_argv`, before
@@ -68,10 +69,9 @@ paths:
 - `fourier`'s wavenumber arrays are global multi-device arrays: host
   code recomputes them from `harmonics.real_harmonics` /
   `complex_harmonics` times `2π/L`, never `np.asarray`.
-- Memory and throughput levers: `phys.oversampling_factor` and
-  `res.double_precision` dominate (`parameters.PaddedResolution`);
-  `solver.rhs_transform_chunks` trades the RHS transform batch for
-  peak memory (`fft.chunked_transform`); `solver.wall_normal_matvec`
-  picks GEMM or stencil derivatives (`_base.apply_y_matrix`); cnab2
-  buys throughput, not memory (`timestep.py`). The human memory model:
-  `docs/scaling.md`.
+- Memory and throughput levers and the per-rank memory model:
+  `docs/scaling.md` and the `parameters.PaddedResolution` docstring;
+  measure a layout offline with `scripts/memory_budget.py`.
+- Docstring math is LaTeX: inline `` `$...$` ``, display `.. math::`.
+  A docstring containing a backslash is raw (`r"""`): in a plain one
+  `\t` becomes a TAB and a trailing `\` eats its newline.

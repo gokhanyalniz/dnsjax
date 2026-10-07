@@ -8,16 +8,10 @@ script pins and its flags: its module docstring.
 ## Writing a test
 
 - Configure the singletons once, at module top, before importing
-  `sharding` or a geometry module (`test_cartesian.py` assigns
-  `params.*` directly; the others call `update_parameters()`). A test
-  that re-calls `update_parameters()` mutates the shared
-  `params`/`derived_params` and must restore the module configuration
-  before returning (only `test_annular.py` does).
-- `taylor-couette` needs `phys.re1`, `phys.re2` and `geo.eta` set
-  before the singletons are built (`update_parameters()` raises
-  otherwise); the unit tests use `100` / `0` / `0.5`.
-  `quasi-keplerian` takes `re1` / `r_omega` / `eta` instead (tests:
-  `-1.2` and `0.71` for the last two).
+  `sharding` or a geometry module. A test that re-calls
+  `update_parameters()` mutates the shared `params`/`derived_params`
+  and must restore the module configuration before returning (as
+  `test_annular.py` does).
 - A test that builds its own FD reference grid passes the resolved
   selection, `build_*_grid(ny, params.res.fd_order,
   params.geo.wall_grid, params.geo.grid_type, params.geo.grid_stretch)`,
@@ -28,9 +22,14 @@ script pins and its flags: its module docstring.
 - The laminar smoke has `u' = 0`, so it never exercises the nonlinear
   term (a broken advection can still report `err = 0`);
   `test_random_smoke.py` does.
-- A slip that only multi-process runs expose (a global array baked
-  into a jit) needs a real `mpirun` row; forced CPU devices in one
-  process do not catch it.
+- Normalise a roundoff guard by its input, never by an output the
+  operation may legitimately shrink, and set its margin to a decade
+  after sweeping seeds and sizes: summation order alone moves such a
+  quantity by about 1.5x.
+- A guard for a silent failure must fail on the pre-fix code with a
+  real input. A stub keeps the real input's awkward property (a missing
+  attribute, a PAX tar header), or the test passes for the same reason
+  the bug shipped.
 - A script whose children stream output uses `_live.run_live` and
   `_live.report`. Shared response fixtures: `response/_common.py`.
 - A launch across two hosts fakes the second one with
@@ -52,11 +51,11 @@ Geometry operators and grids:
   (padded sizes, FFT exactness, `chunked_transform`).
 
 Stepping:
-- `test_laminar_smoke.py` (every wall-bounded flow but the curved pipe;
-  `--np`, `--np0`), `test_random_smoke.py` (the seven stepping
-  machineries and variants; `--np`).
+- `test_laminar_smoke.py` (every wall-bounded flow but the curved
+  pipe), `test_random_smoke.py` (every stepping machinery and its
+  variants).
 - `test_cnab2.py`, `test_temporal_order.py`, `test_adaptive.py`,
-  `test_imm_continuity.py` (`--ny`), `test_energy_budget.py`,
+  `test_imm_continuity.py`, `test_energy_budget.py`,
   `test_autodiff.py` (`--only`), `test_monochromatic.py` (Kolmogorov).
 - `test_wall_normal_matvec.py` (`--only`): one step under the GEMM and
   the stencil (`solver.wall_normal_matvec`) must agree, per geometry
@@ -77,7 +76,7 @@ Parameters, bootstrap, mesh, seeds:
   (`sharding._warm_communicators`).
 
 Initial conditions:
-- `test_localized_rolls.py`, `test_rolls_smoke.py` (6 roll builders),
+- `test_localized_rolls.py`, `test_rolls_smoke.py` (the roll builders),
   `test_mean_mode.py` (`--unit-only`), `test_snapshot_perturb.py`.
 
 Snapshots, resume, analysis:
@@ -92,9 +91,8 @@ Snapshots, resume, analysis:
 Streams: `test_probes.py`, `test_forcing.py`, `test_driving.py` (each
 `--unit-only`).
 
-Twin: `test_twin_unit.py`, `test_twin_driver.py` (`--only`, `--seed`,
-`--mean-free`), `test_twin_budget.py` (`--only`, `--ladder`,
-`--seeds`, `--measure`, `--quick`), `test_twin_analysis.py`,
+Twin: `test_twin_unit.py`, `test_twin_driver.py` (`--only`),
+`test_twin_budget.py` (`--only`, `--quick`), `test_twin_analysis.py`,
 `test_twin_postprocess.py` (`--unit-only`), `test_twin_spectral_maps.py`
 (skips without the `plots` group).
 

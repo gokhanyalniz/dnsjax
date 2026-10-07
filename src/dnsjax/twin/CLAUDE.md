@@ -9,13 +9,11 @@ docstrings. The human overview: `README.md` here.
 
 - Every twin cadence counts from the member's own perturbation step
   (`twin.json`'s `parent_it`), not from the absolute `it`, so members
-  meet on `t - parent_t` counted in steps. Members recorded before
-  that rule carry displaced grids: `analysis.twin.aggregate_members`
-  and `scripts/twin_spectral_maps.py` refuse them unless given
-  `align_atol` (`--align-atol`).
+  meet on `t - parent_t` counted in steps.
 - Both states write the per-state solver streams (`stats_twin.dat`,
   `steps_twin.dat`, `corrector_twin.dat`; byte-identical to the
-  reference's at `twin.e0 = 0`); `[probes]` is reference-only.
+  reference's at `twin.e0 = 0`), each with its own state's driving
+  columns; `twin.dat` has none, and `[probes]` is reference-only.
 - A resume never re-perturbs, and every `_TWIN_MATCH_KEYS` entry must
   match the recorded `twin.json`, a back-filled legacy value included
   (the `_TWIN_LEGACY_DEFAULTS` comment).
@@ -31,8 +29,9 @@ docstrings. The human overview: `README.md` here.
   dnsjax tars through `snapshot.write_archive`, one file per step;
   `_STREAM_FILES` names their directories so a fresh start refuses
   stale ones.
-- The `[twin]` defaults decide what a run costs and what its streams
-  can answer; each field's description in `driver.py` says why.
+- Change a `[twin]` default only after reading its field description
+  in `driver.py`: the defaults decide what a run costs and what its
+  streams can answer.
 - Offline tools: `scripts/twin_postprocess.py`,
   `scripts/twin_spectral_maps.py` and `scripts/ensemble_setup.py
   build-twin` (`scripts/CLAUDE.md`).

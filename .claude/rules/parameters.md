@@ -47,5 +47,8 @@ paths:
   `scripts/snapshot_perturb.py`, `[recon]` to
   `scripts/twin_postprocess.py`, `[calib]` to
   `scripts/random_ic_calibrate.py`.
+- Add no knob, and no per-hardware table of defaults, for a value
+  nobody has measured: ship the measured default and point at the tool
+  that tunes it.
 - Every Fourier count is even (`validate_parameters`; `harmonics.py`
   says why). Odd *derived* sizes (`nz - 1`, padded sizes) are normal.
