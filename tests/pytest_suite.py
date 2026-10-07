@@ -149,9 +149,9 @@ _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [
     ("test_device_grid.py", (), _MPI, 1800),
     ("test_driving.py", (), _SLOW, 2400),
     ("test_forcing.py", (), _MPI, 1800),
-    # ~4 min: fifteen 2-rank launches of a few steps each (every flow
-    # family, [force], [lowres], adaptive dt, cnab2, a twin member, a
-    # regrid resume) -- not a _SLOW row.
+    # ~4 min: sixteen 2-rank launches of a few steps each (every flow
+    # family, [force], [lowres], adaptive dt, cnab2, single precision,
+    # a twin member, a regrid resume) -- not a _SLOW row.
     ("test_host_placement.py", (), _MPI, 1800),
     ("test_laminar_smoke.py", (), _MPI + _SLOW, 3600),
     # Multi-device, and specifically on the np1 (k_x / axial) axis:

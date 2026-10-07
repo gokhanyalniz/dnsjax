@@ -23,11 +23,14 @@ payload over :data:`_LIMIT` bytes.  The expected small one is
 The cases build every flow family and step it a few times: Cartesian
 with ``[probes]``, with ``[force]`` (its per-kick columns), resumed
 onto a changed ``ny`` (the regrid matrix), with adaptive ``dt`` and
-``[lowres]``, and as the parent of a twin member (``dnsjax-twin``, its
-streams and reduced differences on); Kolmogorov from localized rolls;
-the pipe with ``[force]`` (its mode columns) and with cnab2; the curved
-pipe; Taylor-Couette, Dean and the quasi-Keplerian wedge; and both
-viscoelastic flows.
+``[lowres]``, as the parent of a twin member (``dnsjax-twin``, its
+streams and reduced differences on), and in single precision;
+Kolmogorov from localized rolls; the pipe with ``[force]`` (its mode
+columns) and with cnab2; the curved pipe; Taylor-Couette, Dean and the
+quasi-Keplerian wedge; and both viscoelastic flows.  In single
+precision the check itself failed every multi-process setup: it
+compares the gathered copies, canonicalized to float32, with the
+float64 host originals, so no float64 array survives it.
 
 Run as a script (``--only`` takes case names; a ``-force``,
 ``-regrid`` or ``-twin`` case brings the case it reads from along)::
@@ -163,6 +166,18 @@ _CASES: list[tuple[str, str, list[str], str | None]] = [
             *_LOWRES,
             "--lowres.pressure",
             "True",
+        ],
+        None,
+    ),
+    (
+        "cartesian-single",
+        "dnsjax",
+        [
+            *_COMMON,
+            *_POISEUILLE,
+            *_CART,
+            "--res.double_precision",
+            "False",
         ],
         None,
     ),
