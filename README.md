@@ -54,6 +54,11 @@ plane by itself.</a>
   many, double or single precision, all from the same code path;
   wall-normal solves go through a custom Pallas/Triton banded-LU kernel
   on GPUs.
+- **Measured from 1 to 64 CPU nodes** — on ARCHER2 (two 64-core AMD
+  EPYC 7742 and 256 GB of DDR4-3200 per node), a turbulent channel at
+  $1280 \times 383 \times 384$ runs 60 times faster on 64 nodes (8192
+  MPI ranks) than on one, at a parallel efficiency of 0.75 to 1.01 on
+  every node count from 2 to 64 ([figure](#fig-scaling)).
 - **Machine-precision discrete incompressibility, by default** — a
   stepped state's divergence sits at round-off *at any resolution*,
   with less operator storage than in a primitive-variable formulation
@@ -169,6 +174,32 @@ per geometry, a symbolic memory model linear in $n_x n_y n_z$ that sizes
 a configuration before it is launched, and how to pick the device grid
 $(n_{p0}, n_{p1})$ on one node and across many.
 
+<a id="fig-scaling"></a>
+<picture>
+  <source media="(prefers-color-scheme: dark)"
+          srcset="docs/figures/archer2-scaling-dark.svg">
+  <img src="docs/figures/archer2-scaling-light.svg" width="820"
+       alt="Strong scaling on ARCHER2 from 1 to 64 nodes for the device grids (128, n) and (64, 2n): the speed-up over one node follows the ideal line closely, and the parallel efficiency falls from 1.00 on one node to 0.75 on 16, then rises to 1.01 on 32 and stands at 0.94 on 64.">
+</picture>
+
+<p align="center"><em>
+Strong scaling of a turbulent channel at 1280 &times; 383 &times; 384 on
+ARCHER2, from 1 to 64 nodes (128 to 8192 MPI ranks, one per core),
+against the fastest one-node run; each point is the mean of two or
+three runs, its bar their range. A node: two 64-core AMD EPYC 7742
+(Zen&nbsp;2, 2.25&nbsp;GHz nominal, run at 2.0) with 256 GB of
+DDR4-3200 over eight channels per socket, Infinity Fabric within a
+socket and three xGMI links between the two, and HPE Slingshot between
+nodes.
+</em></p>
+
+Every run reproduces the same trajectory to round-off. The efficiency
+falls to 0.75 by 16 nodes and returns to 1.01 at 32. That rise is a
+per-rank speed-up, not the network's: one node shows it too when each
+of its ranks holds the same share of the problem.
+[`docs/scaling.md`](docs/scaling.md#strong-scaling-on-archer2) has the
+machine, the method, the tables and that breakdown.
+
 ## Validation
 
 The optimal-growth module reproduces published values for all five of
@@ -242,7 +273,7 @@ in [`docs/validation.md`](docs/validation.md).
 | file | what it covers |
 |---|---|
 | [`docs/numerics.md`](docs/numerics.md) | equations, discretization, wall-normal grids, the influence-matrix method, per-flow conventions |
-| [`docs/scaling.md`](docs/scaling.md) | array layout, the memory model, choosing the device grid |
+| [`docs/scaling.md`](docs/scaling.md) | array layout, the memory model, choosing the device grid, measured strong scaling |
 | [`docs/running.md`](docs/running.md) | a worked run, start modes, seeds, the moving frame, every output stream |
 | [`docs/configuration.md`](docs/configuration.md) | how the parameter layers combine; extension sections |
 | [`docs/snapshots.md`](docs/snapshots.md) | the snapshot format, resume and re-gridding, the JAX-free API, the importer |

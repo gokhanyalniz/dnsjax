@@ -1,9 +1,10 @@
 # Offline tools
 
 Each script's module docstring is its manual. Only
-`twin_spectral_maps.py` and `snapshot_figure.py` need matplotlib: run
-them as `uv run --group plots python scripts/<name>.py` (`uv sync`
-alone does not install the `plots` group). The seeds in the benchmarks
+`twin_spectral_maps.py`, `snapshot_figure.py` and `scaling_figure.py`
+need matplotlib: run them as
+`uv run --group plots python scripts/<name>.py` (`uv sync` alone does
+not install the `plots` group). The seeds in the benchmarks
 and diagnostics are fixed on purpose.
 
 - `snapshot_perturb.py`: inject a scaled single-mode perturbation into
@@ -20,6 +21,8 @@ and diagnostics are fixed on purpose.
 - `snapshot_figure.py`: velocity-plane figures and animations (the
   `docs/figures/` sources); `_figure_common.py` holds its JAX-free
   per-flow helpers.
+- `scaling_figure.py`: the strong-scaling figure (light and dark SVG)
+  and tables of `docs/scaling.md`, from `docs/figures/*-scaling.csv`.
 - `wall_normal_resolution.py`: size `res.ny` / `fd_order` /
   `geo.grid_type` against a Chebyshev order (Cartesian).
 - `pallas_tiling_diagnostic.py`: GPU harness for the Triton
