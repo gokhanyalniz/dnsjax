@@ -358,6 +358,14 @@ class Sharding:
         axis_names=("np0", "np1"),
         axis_types=(AxisType.Explicit, AxisType.Explicit),
     )
+    # Held in JAX's global state for the life of the process, the mesh
+    # also keeps XLA's MPI communicators alive past interpreter
+    # teardown.  Without that, a multi-process run on the MPI
+    # collectives aborts at exit (exit 1, though the run completed):
+    # JAX finalizes MPI from an ``atexit`` handler, and each
+    # communicator released afterwards calls ``MPI_Comm_free``.  The
+    # launch's exit code in ``tests/test_mpi_communicators.py`` guards
+    # it.
     jax.set_mesh(mesh)
     _warm_communicators(mesh)
     # Across nodes, say how the grid lies on them: a group spanning
