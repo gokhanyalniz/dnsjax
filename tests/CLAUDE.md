@@ -33,6 +33,8 @@ script pins and its flags: its module docstring.
   process do not catch it.
 - A script whose children stream output uses `_live.run_live` and
   `_live.report`. Shared response fixtures: `response/_common.py`.
+- A launch across two hosts fakes the second one with
+  `_fake_host.py` (gloo or the MPI collectives alike).
 
 ## Which script a change reaches
 
