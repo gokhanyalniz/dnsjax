@@ -670,6 +670,7 @@ def _spawn_child(
             cmd,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=args.child_timeout,
             env=env,
             cwd=REPO,
@@ -1017,7 +1018,12 @@ def _probe_step(
     """Run one preflight probe; returns ``(ok, why, output)``."""
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env
+            cmd,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            env=env,
         )
         out = proc.stdout + "\n--- stderr ---\n" + proc.stderr
         ok = proc.returncode == 0 and (marker == "" or marker in proc.stdout)
@@ -1488,6 +1494,7 @@ def _run_mpi(
             cmd,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout,
             cwd=rundir,
             env=env,
