@@ -63,7 +63,8 @@ and one banded solve,
 :func:`~dnsjax.geometries.wall_bounded._cartesian_pressure.static_pressure`),
 whose transient is some three fifths of the time step's.  The pressure
 operator is resident for the run once enabled: a second banded factor
-set the size of the Poisson factors (its module's "Cost").
+set the size of the Poisson factors (its module's Design notes,
+"Cost").
 """
 
 from __future__ import annotations
