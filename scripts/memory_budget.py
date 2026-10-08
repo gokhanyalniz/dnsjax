@@ -153,7 +153,11 @@ def _y_scale(ny: int, ny_red: int, np0: int) -> float:
 
 def _child(args: argparse.Namespace) -> int:
     """Compile the step at one reduced problem; print one JSON line."""
-    from dnsjax.bootstrap import configure_jax_platform, resolve_parameters
+    from dnsjax.bootstrap import (
+        configure_jax_platform,
+        platform_from_argv,
+        resolve_parameters,
+    )
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -174,7 +178,9 @@ def _child(args: argparse.Namespace) -> int:
     update_parameters(Parameters(res={"nx": args.nx_red, "ny": args.ny_red}))
     padded_res.set_padded_resolution(params)
     validate_parameters()
-    configure_jax_platform("cpu", double_precision=params.res.double_precision)
+    configure_jax_platform(
+        platform_from_argv(), double_precision=params.res.double_precision
+    )
 
     import importlib
 

@@ -125,15 +125,12 @@ def label(row: _Row) -> str:
 
 def run_child(a: argparse.Namespace) -> None:
     """Measure one configuration and print its ``@@RESULT`` line."""
-    from dnsjax.bootstrap import configure_jax_platform
-
-    configure_jax_platform(a.platform)
-
     import importlib
 
     import jax
     import jax.numpy as jnp
 
+    from dnsjax.bootstrap import configure_jax_platform
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -150,7 +147,7 @@ def run_child(a: argparse.Namespace) -> None:
         solver["pallas_kernel"] = a.pallas_kernel == "true"
     update_parameters(
         Parameters(
-            dist={"np0": 1, "np1": 1, "platform": a.platform},
+            dist={"np0": 1, "np1": 1},
             phys={"system": a.system, "re": 100.0},
             geo={"lx": 5.0} if a.system == "pipe" else {"lx": 5.0, "lz": 5.0},
             res={
@@ -170,6 +167,7 @@ def run_child(a: argparse.Namespace) -> None:
     )
     padded_res.set_padded_resolution(params)
     validate_parameters()
+    configure_jax_platform(a.platform)
 
     mod = importlib.import_module(FLOW_MODULES[a.system])
     from dnsjax.ic.random_field import generate_random_state
@@ -259,7 +257,7 @@ def spawn(row: _Row, platform: str, timeout: int) -> dict:
         "--system", system,
         "--scheme", scheme,
         "--corrector-iterations", str(n),
-        "--platform", platform,
+        "--dist.platform", platform,
         "--pallas-kernel",
         "unset" if kern is None else str(kern).lower(),
     ]  # fmt: skip
@@ -328,7 +326,6 @@ def main() -> None:
         choices=["cpu", "cuda", "rocm", "tpu"],
         help="JAX backend the children run on (default cpu).",
     )
-    ap.add_argument("--platform", dest="platform", help=argparse.SUPPRESS)
     ap.add_argument(
         "--full",
         action="store_true",

@@ -130,7 +130,7 @@ OFF_FLOOR = 1e-3
 def _worker(system: str, consistent_imm: bool, ny: int) -> None:
     import numpy as np
 
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Geometry,
         Initiation,
@@ -142,8 +142,6 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         update_parameters,
         validate_parameters,
     )
-
-    configure_jax_platform("cpu")
 
     phys: dict = {"system": system}
     geo: dict = {}
@@ -183,6 +181,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         )
     )
     validate_parameters()
+    configure_jax_platform(platform_from_argv())
 
     import jax.numpy as jnp
 

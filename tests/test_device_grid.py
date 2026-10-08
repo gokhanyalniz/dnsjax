@@ -110,12 +110,11 @@ _UNIT_CASES = [
 
 def run_unit_cases() -> tuple[int, list[tuple[str, str]]]:
     """The stub-device cases; ``(passed, failures)``."""
-    from dnsjax.bootstrap import configure_jax_platform
-
-    configure_jax_platform("cpu")
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import padded_res, params
 
     padded_res.set_padded_resolution(params)
+    configure_jax_platform(platform_from_argv())
     from dnsjax.sharding import device_grid, node_spans
 
     passed = 0

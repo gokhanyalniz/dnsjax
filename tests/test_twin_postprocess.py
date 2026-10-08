@@ -60,10 +60,10 @@ sys.stdout.reconfigure(line_buffering=True)
 # snapshots the driver subprocesses start from (the bootstrap
 # contract -- params final and JAX configured before any geometry
 # import).
-from dnsjax.bootstrap import configure_jax_platform  # noqa: E402
-
-configure_jax_platform("cpu")
-
+from dnsjax.bootstrap import (  # noqa: E402
+    configure_jax_platform,
+    platform_from_argv,
+)
 from dnsjax.parameters import (  # noqa: E402
     Parameters,
     padded_res,
@@ -87,6 +87,7 @@ update_parameters(
     )
 )
 padded_res.set_padded_resolution(params)
+configure_jax_platform(platform_from_argv())
 
 import numpy as np  # noqa: E402
 from _live import run_live  # noqa: E402

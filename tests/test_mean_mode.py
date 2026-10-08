@@ -508,20 +508,23 @@ def test_per_flow_surface(check) -> None:
 
 
 def _configure_jax() -> None:
-    """Enable float64 before JAX initializes any array.
+    """Select the platform and enable float64 before any JAX array.
 
-    The worker's ``XLA_FLAGS`` device count and platform come from
+    The worker's ``XLA_FLAGS`` device count comes from
     :func:`_run_worker`; ``res.double_precision`` only records the
     *intent*, so x64 has to be turned on here or every check below
     silently measures float32 roundoff instead.
     """
-    import jax
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
 
-    jax.config.update("jax_enable_x64", True)
+    configure_jax_platform(platform_from_argv())
 
 
 def _worker_matrix() -> int:
     """Build a random IC per :data:`CASES` and check its (0,0) column."""
+    # Ahead of the parameters, unlike the bootstrap order: every case
+    # below finalizes its own, and JAX's platform and precision are
+    # process-wide, so they are set once, before the first.
     _configure_jax()
 
     from dnsjax.parameters import (
@@ -644,8 +647,6 @@ def _worker_matrix() -> int:
 
 def _worker_column(np0: int, np1: int, out: str) -> int:
     """Save the `$(0,0)$` column of one fixed IC on an (np0, np1) mesh."""
-    _configure_jax()
-
     from dnsjax.parameters import (
         Distribution,
         Geometry,
@@ -680,6 +681,7 @@ def _worker_column(np0: int, np1: int, out: str) -> int:
     )
     validate_parameters()
     padded_res.set_padded_resolution(params)
+    _configure_jax()
 
     from dnsjax.ic.random_field import generate_random_state
 
@@ -701,7 +703,6 @@ def _run_worker(args: list[str], devices: int, timeout: int = 900):
     """Run this file as a worker with *devices* forced CPU devices."""
     env = dict(os.environ)
     env["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={devices}"
-    env["JAX_PLATFORMS"] = "cpu"
     return run_live(
         [sys.executable, str(Path(__file__).resolve()), "--worker", *args],
         timeout=timeout,
