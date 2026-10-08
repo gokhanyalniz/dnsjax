@@ -46,46 +46,17 @@ since that is a statement about *derivatives*.
 :func:`_wall_normal_filter` supplies it, weighting the **energy** of
 wall-normal polynomial index `$j$` by `$(1 - s_w)^{j}$`, where `$s_w$`
 is the separate ``wall_smoothness`` argument
-(``init.random_wall_smoothness`` / ``twin.wall_smoothness``).
+(``init.random_wall_smoothness`` / ``twin.wall_smoothness``); why the
+two are separate knobs: Design notes, "Two knobs, not one".
 
-**Why the two are separate knobs.**  They are not the same law -- `$A$`
-is an amplitude and this is an energy, `$j$` counts modes where `$|k|$`
-carries units -- but that alone would not force two *numbers*.  What
-does is that `$s$` moves a long way between uses while `$s_w$` should
-not move at all.  In the plane-Poiseuille `$4\pi \times 2\pi$` box,
-``init.random_smoothness = 0.4`` puts 92 % of a (mean-free, the
-``init.random_mean_flow`` default) perturbation's energy inside
-`$|k_z| \le 2$`, and every mode beyond `$|k_z| = 36$` more than
-sixteen decades below the peak, while the twin partner's default
-``twin.smoothness = 0.022`` peaks at `$\lambda^+ \approx 50$`.  The
-wall-normal law must **not** follow `$s$` down: lowering `$s_w$` moves
-the wall-normal profile *away* from the wall rather than towards it
-(the wall window, not the filter, is what sets that distribution --
-see :func:`_scaled_wall_window`), and `$s_w$` is also what keeps
-grid-white Nyquist content out of the legacy IMM boundary term
-(``tests/test_imm_continuity.py``).  So `$s$` buys a physical
-correlation length where there is a box length to measure it against,
-and `$s_w$` a polynomial-degree cutoff where there is not.  The
-triply-periodic family has neither a filter nor a wall window: it
-carries `$|k_y|$` in `$A$` and takes `$s$` alone.
-
-**Two defaults for one law.**  ``init.random_smoothness`` stays at
+**Two defaults for one law.**  ``init.random_smoothness`` defaults to
 0.4: it seeds a *laminar* state, where large scales are what trigger
 transition.  The twin partner perturbs a *turbulent* one, and
 ``twin.smoothness`` (:class:`dnsjax.twin.driver.TwinParams`) puts it
 below the minimal flow unit instead, with the choice of `$\lambda^{*+}$`
 and its values per flow.  Neither default is fitted to the `$(y, k)$`
-shape a turbulent difference field settles into
-(``scripts/random_ic_calibrate.py``), because that shape is not a
-growth predictor: at an HKW minimal plane-Couette box
-(`$Re_\tau \approx 34$`) the score peaks at `$s \approx 0.15$`,
-while over 60 advective units the difference energy gains 2.07 decades
-at `$s = 0.4$`, 1.15 at 0.15 and 0.09 at 0.04 (two seeds, both) -- a
-seed placed at `$\lambda^{*+} = 218, 69, 17$` in a box whose own span
-is 128 wall units.  An attractor's small-scale content is sustained by
-transfer from larger scales, and energy seeded well below the scales
-the box can sustain goes to `$k^2/Re$` first.  Hence the twin default's
-margin above the grid scale as well as below the minimal unit.
+shape a turbulent difference field settles into (Design notes: "Shape
+is not growth").
 
 **The wall window is scale-dependent** (``random_wall_confinement``,
 the `$a$` of :func:`_scaled_wall_window`): a mode's window peaks where
@@ -93,10 +64,8 @@ the base window equals `$1/(a|k|)$`, so modes below `$1/a$` still fill
 the gap while smaller ones sit nearer the wall.  This is the one factor
 that moves the perturbation's wall-normal distribution at all -- the
 smoothness filter does not, measurably.  It is on by default for
-both uses: it improves the `$(y, k)$` overlap at both Reynolds
-numbers above, and at the minimal box, where growth is measurable, it
-is exactly neutral (2.07 and 1.65 decades over 60 units with it, the
-same two numbers without).  `$a$` is dimensionless, so it carries no
+both uses (Design notes: "The scale-dependent window, measured").  `$a$`
+is dimensionless, so it carries no
 Reynolds number and no box length; `$a = 0$` is the plain window; and
 `$|k| = 0$` recovers it whatever `$a$` is, which is why the `$(0, 0)$`
 column and :mod:`dnsjax.ic.mean_mode` see no change from any of this.
@@ -111,11 +80,14 @@ scaling the raw draw.  The triply-periodic family instead uses a Leray
 projection (:func:`_leray`) that never divides by `$k$` and needs no such
 step.
 
-**Total-field Dean flows** (``dean`` / ``viscoelastic-dean``) integrate
-the *total* field: the divergence-free perturbation is added to the
-analytical laminar profile -- ``add_dean_laminar`` for Dean, while the
-viscoelastic builder forms its 9-component total state directly and
-``add_viscoelastic_laminar`` serves velocity-only ICs (the rolls path).
+**Total-field flows** (``dean``, ``curved-pipe`` and the two
+viscoelastic flows) integrate the *total* field, so the perturbation is
+added to a laminar profile: :func:`add_dean_laminar` adds Dean's
+analytical one, and :func:`add_curved_pipe_laminar` the straight pipe's
+(the curved pipe's own laminar state is numerical).  The viscoelastic
+builders form their 9-component total states directly, and
+:func:`add_viscoelastic_laminar` / :func:`add_viscoelastic_pipe_laminar`
+serve velocity-only ICs (the rolls path).
 
 **The mean mode** `$(k_x, k_z) = (0, 0)$` is dropped unless the
 caller asks for it -- ``init.random_mean_flow`` for a solver run
@@ -138,15 +110,9 @@ identical at any ``(np0, np1)`` -- with NumPy per-mode loops (the
 `$D_1 \mathbf{v}$` continuity matvecs and the wall windows), because
 Python-level looping in JAX would incur tracing overhead.  Every
 real-matrix product in those loops (the wall-normal filter, `$D_1$`)
-goes through :func:`_real_product`: a mixed real-complex product would
-copy the matrix to complex for every mode, about 7 MB per mode at
-``ny = 383``, which ranks sharing a cache turn into memory traffic.
-At the per-rank block of a ``1280 x 383 x 384`` run on
-``(np0, np1) = (64, 1)`` the generator took 2.4-2.7 s with those copies
-and takes 1.5 s without them (one process, ``7 x 640`` modes); with
-eight ranks on eight cores (``6 x 320`` modes each), 7.0 s and 3.7 s.
-No full array
-is ever materialized: the shards are assembled with
+goes through :func:`_real_product`, which never copies the matrix to
+complex (Design notes: "Real products, measured").  No full array is
+ever materialized: the shards are assembled with
 :func:`dnsjax.snapshot.assemble_local_shards`, and only the final
 norm/scale runs in JAX.  The wall-normal velocity carries a *squared*
 wall window so its value and first derivative vanish at the walls
@@ -169,6 +135,72 @@ recorded seed at all.
 singleton at import) are imported lazily inside each generator, so
 importing this module is safe before JAX is configured and before the
 flow system is selected.
+
+Design notes
+------------
+**Two knobs, not one.**  `$A$` and the wall-normal filter follow different laws
+(`$A$` is an amplitude and the filter's weight an energy; `$j$` counts modes
+where `$|k|$` carries units), but that alone would not force two *numbers*.
+What does is that `$s$` moves a long way between uses while `$s_w$` should not
+move at all.  In the plane-Poiseuille `$4\pi \times 2\pi$` box,
+``init.random_smoothness = 0.4`` puts 92 % of a (mean-free, the
+``init.random_mean_flow`` default) perturbation's energy inside
+`$|k_z| \le 2$`, and every mode beyond `$|k_z| = 36$` more than sixteen decades
+below the peak, while the twin partner's default ``twin.smoothness = 0.022``
+peaks at `$\lambda^+ \approx 50$`.  The wall-normal law must **not** follow
+`$s$` down: lowering `$s_w$` moves the wall-normal profile *away* from the wall
+rather than towards it (the wall window, not the filter, is what sets that
+distribution: "The window sets the wall-normal distribution" below), and
+`$s_w$` is also what keeps grid-white Nyquist content out of the legacy IMM
+boundary term (``tests/test_imm_continuity.py``).  So `$s$` buys a physical
+correlation length where there is a box length to measure it against, and
+`$s_w$` a polynomial-degree cutoff where there is not.  The triply-periodic
+family has neither a filter nor a wall window: it carries `$|k_y|$` in `$A$`
+and takes `$s$` alone.
+
+**Shape is not growth.**  Neither smoothness default is fitted to the
+`$(y, k)$` shape a turbulent difference field settles into
+(``scripts/random_ic_calibrate.py``), because that shape is not a
+growth predictor: at the minimal plane-Couette box of Hamilton, Kim &
+Waleffe (*J. Fluid Mech.* **287**, 317, 1995; `$Re_\tau \approx 34$`)
+the score peaks at `$s \approx 0.15$`, while over 60 advective units
+the difference energy gains 2.07 decades at `$s = 0.4$`, 1.15 at 0.15
+and 0.09 at 0.04 (two seeds, both) -- a seed placed at
+`$\lambda^{*+} = 218, 69, 17$` in a box whose own span is 128 wall
+units.  An attractor's small-scale content is sustained by transfer
+from larger scales, and energy seeded well below the scales the box can
+sustain goes to `$k^2/Re$` first.  Hence the twin default's margin
+above the grid scale as well as below the minimal unit.
+
+**The scale-dependent window, measured.**  ``random_wall_confinement`` improves
+the `$(y, k)$` overlap at both `$Re_\tau = 178.6$` and 34, and at the minimal
+box, where growth is measurable, it is exactly neutral (2.07 and 1.65 decades
+over 60 units with it, the same two numbers without).
+
+**The window sets the wall-normal distribution.**  The wall-normal
+energy distribution of a windowed draw is set by the window and
+essentially not by the filter: sweeping the filter's `$s_w$` over
+`$0.4 \to 0.01$` moves the energy-weighted median wall distance of the
+finished field by under 5 % (and the wrong way), and the bare
+`$(1 - y^2)^2$` energy window alone reproduces the full generator's
+profile.  Only the window can move it, because `$1 - y^2$` is
+centre-peaked by construction for any `$s_w$`; hence the
+scale-dependent window (:func:`_scaled_wall_window`) rather than a
+smaller ``wall_smoothness``.
+
+**Real products, measured.**  A mixed real-complex product copies the
+real matrix to complex for every mode, about 7 MB per mode at
+``ny = 383``, which ranks sharing a cache turn into memory traffic.  At
+the per-rank block of a ``1280 x 383 x 384`` run on
+``(np0, np1) = (64, 1)`` the generator took 2.4-2.7 s with those copies
+and takes 1.5 s without them (one process, ``7 x 640`` modes); with
+eight ranks on eight cores (``6 x 320`` modes each), 7.0 s and 3.7 s.
+
+**Per-mode keys, not one stream.**  NumPy has no random access into a
+single PRNG stream, so each mode draws from its own key.  A JAX version
+of these generators would use ``jax_threefry_partitionable`` with a
+replicated key and draws under ``out_shardings`` instead, which
+partitions one stream across devices directly.
 """
 
 from __future__ import annotations
@@ -250,23 +282,21 @@ def enforce_hermitian_slice(
 # device configuration.  Numpy has no random access into a single PRNG
 # stream, so each mode draws from its own key; the divergence-free /
 # no-slip / norm properties and device-count independence hold by
-# construction.  Conjugate symmetry on the real-FFT-axis-0
-# plane is enforced *by construction* (the negative partner is the
-# conjugate of the same canonical draw), so no cross-device communication
-# and no plane replication are needed.
-#
-# Future note (not applicable while this stays numpy): if these
-# generators are ever vectorized into JAX (removing the per-mode Python
-# loops), use ``jax_threefry_partitionable=True`` with a replicated key
-# and draws under ``out_shardings`` for trivial partition-aware PRNG.
+# construction (Design notes: "Per-mode keys, not one stream").
+# Conjugate symmetry on the real-FFT-axis-0 plane is enforced *by
+# construction* (the negative partner is the conjugate of the same
+# canonical draw), so no cross-device communication and no plane
+# replication are needed.
 
 
 def _column_draw(
     seed: int, i2: int, i3: int, n: int, rows: int = 3, stream: tuple = ()
 ) -> np.ndarray:
-    """Independent complex ``(rows, n)`` draw keyed by global
-    ``(i2, i3)``; *stream* extends the PRNG key to keep e.g. the
-    viscoelastic conformation draw distinct from the velocity draw."""
+    """Independent complex ``(rows, n)`` draw keyed by global ``(i2, i3)``.
+
+    *stream* extends the PRNG key to keep e.g. the viscoelastic
+    conformation draw distinct from the velocity draw.
+    """
     rng = np.random.default_rng((seed, i2, i3, *stream))
     return rng.standard_normal((rows, n)) + 1j * rng.standard_normal((rows, n))
 
@@ -274,8 +304,7 @@ def _column_draw(
 def _hermitian_column(
     seed: int, i2: int, n2: int, n: int, rows: int = 3, stream: tuple = ()
 ) -> np.ndarray:
-    r"""Conjugate-consistent ``(rows, n)`` draw for the real-FFT-axis-0
-    plane.
+    r"""Conjugate-consistent ``(rows, n)`` draw on the real-FFT-axis-0 plane.
 
     Mirrors :func:`enforce_hermitian_slice`'s pairing over the length
     ``n2 - 1`` complex axis (axis-2 index ``i2``): index 0 real,
@@ -320,24 +349,22 @@ def _leray(
 
 
 def _wall_normal_filter(coord: np.ndarray, decay: float) -> np.ndarray:
-    r"""Wall-normal factor of the smoothness envelope, as a real
-    ``(N, N)`` operator applied to a raw column draw.
+    r"""The wall-normal smoothness filter, a real ``(N, N)`` operator.
 
-    The periodic directions get their `$(1-s)^{2|k|}$` energy envelope
-    from :func:`_normalize_mode`'s per-mode target, but a raw draw is
-    ``standard_normal`` **per grid point** -- grid-white in the
-    wall-normal direction, i.e. flat all the way to the wall-normal
-    Nyquist.  This applies the missing factor: expand the column in the
-    orthonormal polynomial basis of *coord*, weight index `$j$` by
+    It acts on a raw column draw.  The periodic directions get their
+    `$(1-s)^{2|k|}$` energy envelope from :func:`_normalize_mode`'s per-mode
+    target, but a raw draw is ``standard_normal`` **per grid point** --
+    grid-white in the wall-normal direction, i.e. flat all the way to the
+    wall-normal Nyquist.  This applies the missing factor: expand the column in
+    the orthonormal polynomial basis of *coord*, weight index `$j$` by
     `$\sqrt{\text{decay}}^{\,j}$` -- so its *energy* follows
-    `$\text{decay}^{\,j}$` -- and transform back.  *decay* is
-    `$1 - s_w$` from the **separate** ``wall_smoothness`` knob, not the
-    periodic directions' `$1 - s$`: theirs is `$(1-s)^{2|k|}$` in
-    energy, in a wavenumber that carries units where `$j$` counts
-    modes, and the two calibrate an order of magnitude apart.  The
-    module docstring has the argument, and
-    :func:`_scaled_wall_window` has the reason this is *not* the knob
-    that moves the field's wall-normal energy distribution.
+    `$\text{decay}^{\,j}$` -- and transform back.  *decay* is `$1 - s_w$` from
+    the **separate** ``wall_smoothness`` knob, not the periodic directions'
+    `$1 - s$`: theirs is `$(1-s)^{2|k|}$` in energy, in a wavenumber that
+    carries units where `$j$` counts modes, and the two calibrate an order of
+    magnitude apart.  The module docstring has the argument, and
+    :func:`_scaled_wall_window` has the reason this is *not* the knob that
+    moves the field's wall-normal energy distribution.
 
     *coord* is the variable the field is smooth in, ascending: `$y$`
     (Cartesian), `$r$` (annular), and `$r^2$` for the pipe -- an
@@ -368,7 +395,7 @@ def _real_product(x: np.ndarray, mat_t: np.ndarray) -> np.ndarray:
     ``n = 383``) for every column, then a complex product on it.
     Stacking the real and imaginary rows into one real product against
     the matrix as stored computes the same sums with no copy of the
-    matrix (the measured effect: the module docstring).  *mat_t* may
+    matrix (Design notes: "Real products, measured").  *mat_t* may
     be a transposed view; BLAS reads it in place.
     """
     rows = x.reshape(-1, x.shape[-1])
@@ -380,14 +407,12 @@ def _real_product(x: np.ndarray, mat_t: np.ndarray) -> np.ndarray:
 def _scaled_wall_window(
     base: np.ndarray, k: float, confinement: float
 ) -> np.ndarray:
-    r"""The wall window of one mode: *base*, narrowed towards the wall
-    for modes above `$1/a$`.
+    r"""The wall window of one mode: *base*, narrowed for `$|k| > 1/a$`.
 
     *base* is the geometry's own wall window, already normalized to a
     peak of 1 -- `$1 - y^2$` (Cartesian), `$1 - r$` (pipe, peaking at
     the axis), `$(r - r_1)(r_2 - r)$` (annulus, peaking at mid-gap).
-    With ``confinement = 0`` it is returned unchanged, which is the
-    behaviour every mode had before this argument existed.  Otherwise
+    With ``confinement = 0`` it is returned unchanged.  Otherwise
 
     .. math::
         w_k = \frac{b\,e^{-a |k| b}}{\max_y b\,e^{-a |k| b}},
@@ -400,14 +425,10 @@ def _scaled_wall_window(
     so it fixes a ratio rather than a wall distance and needs no
     Reynolds number.
 
-    Why this rather than a smaller ``wall_smoothness``: the wall-normal
-    energy distribution of a windowed draw is set by the window and
-    essentially not by the filter.  Sweeping the filter's `$s_w$` over
-    `$0.4 \to 0.01$` moves the energy-weighted median wall distance of
-    the finished field by under 5 % (and the wrong way); the bare
-    `$(1 - y^2)^2$` energy window alone reproduces the full generator's
-    profile.  Only the window can move it, because `$1 - y^2$` is
-    centre-peaked by construction for any `$s_w$`.
+    This, rather than a smaller ``wall_smoothness``, because the window
+    and not the filter sets a windowed draw's wall-normal energy
+    distribution (Design notes: "The window sets the wall-normal
+    distribution").
 
     The narrowing is inert structurally: it is a real, positive,
     smooth factor applied before the continuity closure, and
@@ -432,8 +453,7 @@ def _scaled_wall_window(
 def _normalize_mode(
     col: np.ndarray, y_weights: np.ndarray, envelope: float
 ) -> np.ndarray:
-    r"""Scale a ``(C, Ny)`` spectral mode to wall-normal energy
-    `$= \text{envelope}^2$`.
+    r"""Scale a ``(C, Ny)`` mode to wall-normal energy `$\text{envelope}^2$`.
 
     The wall-bounded generators build each divergence-free mode by solving
     continuity for one component (`$u_z = -\mathrm{div}/\mathrm{i}k_z$`,
@@ -458,16 +478,15 @@ def _normalize_mode(
 def _periodic_hermitian_raw(
     seed: int, i2: int, n2: int, ny: int, ky_flip: np.ndarray
 ) -> np.ndarray:
-    r"""Hermitian-consistent raw ``(3, ny-1)`` column for the ``kx=0``
-    plane of a triply-periodic field (the joint ``(ky, kz)`` symmetry
-    ``f(ky,kz,0)=conj(f(-ky,-kz,0))``).
+    r"""Hermitian-consistent raw ``(3, ny-1)`` column, periodic ``kx = 0``.
 
-    ``kz`` (axis 2) is paired as in :func:`_hermitian_column`; the
-    negative-``kz`` partner is ``conj`` of the canonical column with its
-    ``ky`` axis flipped (``ky_flip``).  The ``kz=0`` column carries the
-    within-column ``ky`` symmetry (:func:`enforce_hermitian_slice`).
-    Returns the raw draw; the caller applies the (symmetry-preserving)
-    decay and Leray projection.
+    The ``kx = 0`` plane of a triply-periodic field carries the joint
+    ``(ky, kz)`` symmetry ``f(ky,kz,0) = conj(f(-ky,-kz,0))``.  ``kz`` (axis 2)
+    is paired as in :func:`_hermitian_column`; the negative-``kz`` partner is
+    ``conj`` of the canonical column with its ``ky`` axis flipped
+    (``ky_flip``).  The ``kz=0`` column carries the within-column ``ky``
+    symmetry (:func:`enforce_hermitian_slice`).  Returns the raw draw; the
+    caller applies the (symmetry-preserving) decay and Leray projection.
     """
     n_pos = n2 // 2
     nky = ny - 1
@@ -1006,8 +1025,7 @@ def add_curved_pipe_laminar(state: Array) -> Array:
 
 
 def add_viscoelastic_laminar(vel_state: Array) -> Array:
-    r"""Turn a 3-component velocity perturbation into a 9-component
-    viscoelastic total-field state.
+    r"""Turn a velocity perturbation into a viscoelastic Dean total state.
 
     Adds the analytical laminar velocity profile to *vel_state* and
     appends the laminar sPTT-equilibrium conformation (both at the mean
@@ -1059,9 +1077,9 @@ def generate_viscoelastic_dean(
     Built per device (no full-array replication): the velocity part is
     the divergence-free annular draw of :func:`generate_annular` (rows
     ``0:3``); the conformation part (rows ``3:9``) is windowed,
-    spectrally-decaying symmetric-tensor noise (the reference
-    restart recipe).  Velocity and conformation noise are
-    rescaled to *amplitude* / *conf_amplitude* separately, then the
+    spectrally-decaying symmetric-tensor noise.  Velocity and
+    conformation noise are rescaled to *amplitude* / *conf_amplitude*
+    separately, then the
     analytical laminar pair (velocity profile + sPTT-equilibrium
     conformation) is added at the mean mode (total-field IC).  The
     conformation noise vanishes at both walls and at the mean mode (so
@@ -1196,7 +1214,7 @@ def generate_viscoelastic_dean(
 
 
 def add_viscoelastic_pipe_laminar(vel_state: Array) -> Array:
-    r"""Pipe twin of :func:`add_viscoelastic_laminar`.
+    r"""The pipe counterpart of :func:`add_viscoelastic_laminar`.
 
     Adds the Hagen-Poiseuille laminar velocity to *vel_state* and
     appends the laminar sPTT-equilibrium conformation (both at the mean
@@ -1255,7 +1273,7 @@ def generate_viscoelastic_pipe(
     (total-field IC).  The conformation noise vanishes at the wall and
     at the mean mode (so the laminar wall / mean values are preserved).
 
-    Unlike the annular twin, the inner end is the pipe **axis**, so
+    Unlike the annular flow, the inner end is the pipe **axis**, so
     each tensor column also carries the axis-regularity envelope
     `$r^{|m+s|}$` of its spin weight `$s$` -- applied in the spin
     basis, for the same reason the velocity envelope is
@@ -1513,8 +1531,9 @@ def generate_random_state(
     ``params.phys.system`` and returns the sharded spectral state (on
     ``sharding.spec_vector_shard``), ready to time step -- the same
     object type that ``init_state`` / ``load_snapshot`` return.  For the
-    total-field Dean flow the analytical laminar profile is added to the
-    perturbation; every other system returns the perturbation directly.
+    total-field flows a laminar profile is added to the perturbation (the
+    straight pipe's for the curved pipe); every other system returns the
+    perturbation directly.
 
     *mean_flow* (``init.random_mean_flow`` for the solver,
     ``twin.mean_flow`` for the twin partner) reaches only the Cartesian

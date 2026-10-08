@@ -28,19 +28,18 @@ streamfunction `$\psi = G(y)\,\Psi(z)\,X(x)$`,
     u_y = G(y)\,\Psi'(z)\,X(x), \quad
     u_z = -G'(y)\,\Psi(z)\,X(x),
 
-which is divergence-free for **any** profiles (`$u_x = 0$` lets `$X$`
-factor out of the divergence, and the `$y$`-`$z$` pair is a
-streamfunction) -- an argument that never mentions walls, which is why
-the triply-periodic member below is the same construction with one
-factor swapped.  `$G = (1 - y^2)^2$` (peak 1, value + derivative zero at
-both walls).  `$X(x)$` is a fixed-physical-width streamwise localization
-and `$\Psi(z)$` a spanwise roll (wavelength `$\lambda$`) under a
-fixed-physical-width envelope, so the spot is localized in both `$x$` and
-`$z$`.  The spanwise derivative `$\Psi'$` is built **spectrally** as
-`$\mathrm{i}k_z\,\hat\Psi$` so the discrete divergence is truncation-level
-(projected out by the first corrector step).  Pipe and
-annular use the analogous per-geometry streamfunction (see the
-per-generator docstrings).
+which is divergence-free for **any** profiles (`$u_x = 0$` lets `$X$` factor
+out of the divergence, and the `$y$`-`$z$` pair is a streamfunction) -- an
+argument that never mentions walls, which is why the triply-periodic member
+below is the same construction with one factor swapped.  `$G = (1 - y^2)^2$`
+(peak 1, value + derivative zero at both walls).  `$X(x)$` is a
+fixed-physical-width streamwise localization and `$\Psi(z)$` a spanwise roll
+(wavelength `$\lambda$`) under a fixed-physical-width envelope, so the spot is
+localized in both `$x$` and `$z$`.  The spanwise derivative `$\Psi'$` is built
+**spectrally** as `$\mathrm{i}k_z\,\hat\Psi$` so the discrete divergence is
+truncation-level (projected out by the first corrector step).  Pipe and annular
+use the analogous per-geometry streamfunction (see the per-generator
+docstrings).
 
 **Triply-periodic.** `$y$` is Fourier rather than a wall-normal grid, so
 the only wall-specific ingredient -- `$G$`, whose shape exists to satisfy
@@ -50,22 +49,20 @@ localization the homogeneous directions use, and `$G'$` becomes the exact
 (round-off, not truncation-level) and the mean mode is zero structurally;
 see :func:`generate_periodic_rolls`.
 
-**Mean-free by construction**, and (wall-bounded) there is nothing
-admissible to keep.  The `$(0,0)$` content the roll pair would otherwise
-carry is `$-G'(y)$` times two scalars, and with `$G = (1-y^2)^2$` that is
-a **cubic** in `$y$` -- while the mean mode's own conservation laws
+**Mean-free by construction**, and (wall-bounded) there is nothing admissible
+to keep.  The `$(0,0)$` content the roll pair would otherwise carry is
+`$-G'(y)$` times two scalars, and with `$G = (1-y^2)^2$` that is a **cubic** in
+`$y$` -- while the mean mode's own conservation laws
 (:mod:`dnsjax.ic.mean_mode`) require `$\delta(\pm 1) = 0$` *and*
-`$\delta''(\pm 1) = 0$`, whose only cubic solution is
-`$\delta \equiv 0$`.  The spot's natural mean content is therefore
-*entirely* inadmissible: any compatible profile put in its place would
-be a different function, not a scaled roll.  So the mode stays zero
-whatever ``init.random_mean_flow`` is set to: the `$(k_x, k_z) =
-(0, 0)$` mode of every component is **identically zero**, and a spot
-never changes the field's bulk velocity or wall shear (the
-total-field flows' laminar profiles are the only mean-mode content,
-added separately).  Two
-independent mechanisms give that, one per component of each
-streamfunction pair:
+`$\delta''(\pm 1) = 0$`, whose only cubic solution is `$\delta \equiv 0$`.  The
+spot's natural mean content is therefore *entirely* inadmissible: any
+compatible profile put in its place would be a different function, not a scaled
+roll.  So the mode stays zero whatever ``init.random_mean_flow`` is set to: the
+`$(k_x, k_z) = (0, 0)$` mode of every component is **identically zero**, and a
+spot never changes the field's bulk velocity or wall shear (the total-field
+flows' laminar profiles are the only mean-mode content, added separately).  Two
+independent mechanisms give that, one per component of each streamfunction
+pair:
 
 - the *cross-stream* component carries a spectral derivative
   `$\mathrm{i}k\,\hat f$` of its roll factor, which vanishes at
@@ -73,13 +70,12 @@ streamfunction pair:
 - the *roll* component would otherwise inherit its roll factor's DC bin,
   so every roll factor is made mean-free (:func:`_mean_free` on the
   signal, for the peak normalization; :func:`_zero_dc` on its spectrum,
-  for an exact zero).  That bin is **not** generically zero: the roll is
-  odd about the box centre under an even envelope, so all discrete pairs
-  `$j \leftrightarrow n-j$`
-  cancel except the self-paired `$j = 0$` box edge, leaving
-  `$-\sin(\pi L/\lambda)\,e^{-(L/\pi\sigma)^2} / n$` -- machine-zero
-  only when `$L/\lambda \in \mathbb{Z}$`, and 2 % of the peak
-  coefficient at e.g. `$L = 2\pi$`, `$\lambda = 4$`.
+  for an exact zero).  That bin is **not** generically zero: the roll is odd
+  about the box centre under an even envelope, so all discrete pairs
+  `$j \leftrightarrow n-j$` cancel except the self-paired `$j = 0$` box edge,
+  leaving `$-\sin(\pi L/\lambda)\,e^{-(L/\pi\sigma)^2} / n$` -- machine-zero
+  only when `$L/\lambda \in \mathbb{Z}$`, and 2 % of the peak coefficient at
+  e.g. `$L = 2\pi$`, `$\lambda = 4$`.
 
 In the triply-periodic family the mean mode is a single bin rather than
 a `$y$` profile, and the *first* mechanism alone settles it on both
@@ -220,12 +216,12 @@ def _zero_dc(spectrum: np.ndarray) -> np.ndarray:
 
 
 def _sin_signal(n: int) -> np.ndarray:
-    r"""One full sine wave `$\sin(2\pi j / n)$`, length n (azimuthal m=1)."""
+    r"""One sine period `$\sin(2\pi j/n)$` over the n points (the wedge)."""
     return np.sin(2 * pi * np.arange(n) / n)
 
 
 def _cos_signal(n: int) -> np.ndarray:
-    r"""One full cosine wave `$\cos(2\pi j / n)$`, length n (azimuthal m=1)."""
+    r"""One cosine period `$\cos(2\pi j/n)$` over the n points (the wedge)."""
     return np.cos(2 * pi * np.arange(n) / n)
 
 
@@ -256,7 +252,7 @@ def _real_axis_spectrum(signal: np.ndarray) -> np.ndarray:
     """dnsjax real-FFT forward of a 1-D signal.
 
     ``rfft`` with ``norm="forward"``, Nyquist dropped: the ``n // 2``
-    non-negative modes in :func:`operators.real_harmonics` order.
+    non-negative modes in :func:`dnsjax.harmonics.real_harmonics` order.
     """
     n = signal.shape[0]
     return np.fft.rfft(signal, norm="forward")[: n // 2]
@@ -266,7 +262,7 @@ def _complex_axis_spectrum(signal: np.ndarray) -> np.ndarray:
     """dnsjax complex-FFT forward of a 1-D signal.
 
     ``fft`` with ``norm="forward"``, Nyquist dropped and reordered to
-    :func:`operators.complex_harmonics` order
+    :func:`dnsjax.harmonics.complex_harmonics` order
     ``[0, 1, .., n//2-1, -n//2+1, .., -1]`` (length ``n - 1``).
     """
     n = signal.shape[0]
@@ -309,17 +305,16 @@ def _separable_scalar(
 ) -> Array:
     r"""Outer-product one sharded spectral scalar from 1-D factors.
 
-    Builds ``prof[:, None, None] * complex[None, :, None] *
-    real[None, None, :]`` as a ``(Ny, nz_spec, nx_spec)`` array on
-    ``spec_scalar_shard`` (``Ny -> Nky = ny - 1`` for the
-    triply-periodic family, whose leading axis is spectral) via the
-    dnsjax broadcast-of-sharded-factors idiom (cf. ``Fourier.k2`` /
-    ``mean_mask``): the complex-FFT-axis
-    factor is placed on the ``np0`` mesh axis and the real-FFT-axis
-    factor on ``np1``, so the broadcast product is sharded and **no full
-    array is materialized**.  The 1-D spectra are zero-padded to the
-    mesh-padded mode counts (``nz_spec`` / ``nx_spec``), so padding modes
-    stay zero.
+    Builds the product
+    ``prof[:, None, None] * complex[None, :, None] * real[None, None, :]``
+    as a ``(Ny, nz_spec, nx_spec)`` array on ``spec_scalar_shard``
+    (``Ny -> Nky = ny - 1`` for the triply-periodic family, whose leading
+    axis is spectral) via the dnsjax broadcast-of-sharded-factors idiom
+    (cf. ``Fourier.k2`` / ``mean_mask``): the complex-FFT-axis factor is
+    placed on the ``np0`` mesh axis and the real-FFT-axis factor on
+    ``np1``, so the broadcast product is sharded and **no full array is
+    materialized**.  The 1-D spectra are zero-padded to the mesh-padded
+    mode counts (``nz_spec`` / ``nx_spec``), so padding modes stay zero.
 
     Parameters
     ----------
@@ -511,19 +506,19 @@ def generate_annular_rolls(
 ) -> Array:
     r"""Localized-spot rolls for Taylor-Couette / Dean flow.
 
-    Components `$(u_z, u_r, u_\theta)$`,
-    axes `$[r, m, k_z]$`.  The streamwise/spanwise roles **swap** versus
-    pipe: streamwise azimuthal `$\theta$` (complex `$m$` axis) carries a
-    fixed-width localization `$A(\theta)$` (physical width converted to an
-    arc at mid-radius); spanwise axial `$z$` (real `$k_z$` axis) a roll
-    `$Z(z)$` of wavelength `$\lambda$` under a fixed-width envelope;
+    Components `$(u_z, u_r, u_\theta)$`, axes `$[r, m, k_z]$`.  The
+    streamwise/spanwise roles **swap** versus pipe: streamwise azimuthal
+    `$\theta$` (complex `$m$` axis) carries a fixed-width localization
+    `$\Theta(\theta)$` (physical width converted to an arc at
+    mid-radius); spanwise axial `$z$` (real `$k_z$` axis) a roll `$Z(z)$`
+    of wavelength `$\lambda$` under a fixed-width envelope;
     `$r \in [r_1, r_2]$` the wall-normal profile.  A Stokes streamfunction
-    `$\Phi = P(r)\,Z(z)\,A(\theta)$` in the `$r$`-`$z$` plane
+    `$\Phi = P(r)\,Z(z)\,\Theta(\theta)$` in the `$r$`-`$z$` plane
     (`$P = ((r - r_1)(r_2 - r))^2$`) gives the divergence-free pair
 
     .. math::
-        u_r &= -(P/r) \otimes \hat A \otimes (\mathrm{i}k_z\hat Z) \\
-        u_z &= (P'/r) \otimes \hat A \otimes \hat Z \\
+        u_r &= -(P/r) \otimes \hat\Theta \otimes (\mathrm{i}k_z\hat Z) \\
+        u_z &= (P'/r) \otimes \hat\Theta \otimes \hat Z \\
         u_\theta &= 0
 
     with `$P' = 2 (r - r_1)(r_2 - r)(r_1 + r_2 - 2 r)$`.  `$P$` and `$P'$`

@@ -67,7 +67,8 @@ relations follow:
    **first-order compatibility condition** between the initial data
    and the no-slip boundary condition: data violating it is
    inconsistent with `$\partial_t\langle u\rangle|_{\text{wall}} = 0$`
-   and launches a singular near-wall adjustment layer.
+   and launches a singular near-wall adjustment layer (Design notes:
+   "Compatible and violating starts, measured").
 
 2. **When the direction's bulk is held fixed**, integrating the
    balance across the channel (the `$\partial_y\tau$` term telescopes,
@@ -84,30 +85,6 @@ relations follow:
    already reports, as the force `$-\Pi$`.  `$\Pi$` is then a
    **response**: whatever the state's own wall shears demand, rather
    than a number the run imposes.
-
-Measured, on a controlled pair -- plane-Poiseuille at ``re = 400``,
-``ny = 65``, ``fd_order = 6``, ``constant_bulk_velocity``,
-``dt = 2e-4``, an otherwise laminar state carrying one mean-mode
-profile of peak ``0.05``.  Both profiles are **odd** in `$y$`, so both
-have exactly zero bulk and (their `$\partial_y\delta$` being even)
-equal wall shears -- both held-bulk rows are inert for both, and they
-differ only in `$\partial_y^2\delta(\pm 1)$`, which is `$0$` for
-`$\sin(\pi y)$` and `$\mp 6$` (scaled) for `$y(1-y^2)$`:
-
-    t            0.0002   0.001    0.005    0.02
-    compatible   1.9e-9   9.7e-9   4.8e-8   1.9e-7    (linear in t)
-    violating    1.1e-6   3.5e-6   7.8e-6   1.5e-5    (~ sqrt(t))
-
-as `$\tau'_{s,b}(t) - \tau'_{s,b}(0)$`.  The violating trace divided by
-`$\sqrt{t}$` is flat to 1.5 % across two decades (1.10, 1.11, 1.10,
-1.09 `$\times 10^{-4}$`) -- the `$\sqrt{\nu t}$` adjustment layer,
-exactly -- while the compatible one is linear (its first step takes
-1.00 % of the 100-step change, the uniform-rate value; the violating
-one takes 6.9 %).  The excursion is 80-550x larger, worst at the
-earliest times, and it contaminates a physical diagnostic: the applied
-driving ``-dPds'`` peaks at ``3.7e-7`` for the violating start against
-``2.0e-12`` -- machine zero -- for the compatible one, though both
-hold the bulk at ``9e-18``.
 
 Reduction to homogeneous conditions
 -----------------------------------
@@ -151,20 +128,10 @@ equal-wall-shear row, and the held bulk adds one more:
     \mathbf{w}\cdot\delta = 0 ,
 
 with `$\mathbf{w}$` the grid's own quadrature weights (the same ones
-``_apply_bulk_corrections`` integrates with).  The two curvature rows
-are **the same rows in both cases**; case B adds the two that keep
-them true under a responding `$\Pi$`.
-
-Test profiles, measured at ``cgl``/``ny = 65``/``fd_order = 6``:
-`$\sin(k\pi(y+1)/2)$` satisfies case A for every `$k$`;
-`$\sin(m\pi y)$` satisfies case B (odd, so both extra rows are
-inert).  The even quartic `$(1-y^2)(5-y^2)$` separates them --
-machine-exact on the two curvature rows and `$O(1)$` on each of case
-B's extras (``1.000`` and ``0.640``, its wall shears being `$\mp 8$`
-and its bulk ``6.4``) -- which is what makes the four rows
-independent statements.  Laminar plane-Poiseuille `$1-y^2$` violates
-**every** row of both cases (``1, 1`` and ``1, 1, 1, 0.667``): legal
-as a base flow, never as a perturbation.
+``_apply_bulk_corrections`` integrates with).  The two curvature rows are **the
+same rows in both cases**; case B adds the two that keep them true under a
+responding `$\Pi$`.  The four rows are independent statements (Design notes:
+"The four rows are independent, measured").
 
 The two directions are the **tilted** ones,
 `$\delta_s = \delta_x\cos\theta + \delta_z\sin\theta$` and
@@ -176,15 +143,10 @@ identically zero by continuity and is never touched here.
 Enforcement: condition, do not project blindly
 ----------------------------------------------
 The constrained subspace has codimension 2 (A) or 4 (B) inside the
-wall-vanishing profiles.  Projecting a candidate along a *fixed*
-complement is a poor generator: the natural complement
-`$\mathrm{span}\{(1-y^2),\, y(1-y^2)\}$` is exactly where a windowed
-random draw puts its near-wall curvature, so the "correction" comes out
-an order of magnitude larger than the input and the profile degenerates
-into a fixed polynomial shape.
-
-:func:`project_profile` instead conditions the generator's **own
-ensemble**.  The random Cartesian draw is `$\delta = M z$` with
+wall-vanishing profiles.  :func:`project_profile` conditions the
+generator's **own ensemble** rather than projecting along a fixed
+complement (Design notes: "Projection along a fixed complement").  The
+random Cartesian draw is `$\delta = M z$` with
 `$M = \mathrm{diag}(\text{window})\,F$` (`$F$` the wall-normal
 smoothness filter) and `$z \sim N(0, I)$`, and
 
@@ -228,6 +190,84 @@ build_cartesian_projector:
 check_cartesian_mean_profile:
     Human-readable violations of a candidate `$(0,0)$` column
     (``scripts/snapshot_perturb.py``'s guard); empty when compatible.
+
+Design notes
+------------
+**Compatible and violating starts, measured.**  On a controlled pair:
+plane-Poiseuille at ``re = 400``, ``ny = 65``, ``fd_order = 6``,
+``constant_bulk_velocity``, ``dt = 2e-4``, an otherwise laminar state carrying
+one mean-mode profile of peak ``0.05``.  Both profiles are **odd** in `$y$`, so
+both have exactly zero bulk and (their `$\partial_y\delta$` being even) equal
+wall shears -- both held-bulk rows are inert for both, and they differ only in
+`$\partial_y^2\delta(\pm 1)$`, which is `$0$` for `$\sin(\pi y)$` and `$\mp 6$`
+(scaled) for `$y(1-y^2)$`::
+
+    t            0.0002   0.001    0.005    0.02
+    compatible   1.9e-9   9.7e-9   4.8e-8   1.9e-7    (linear in t)
+    violating    1.1e-6   3.5e-6   7.8e-6   1.5e-5    (~ sqrt(t))
+
+as `$\tau'_{s,b}(t) - \tau'_{s,b}(0)$`.  The violating trace divided by
+`$\sqrt{t}$` is flat to 1.5 % across two decades (1.10, 1.11, 1.10,
+1.09 `$\times 10^{-4}$`) -- the `$\sqrt{\nu t}$` adjustment layer,
+exactly -- while the compatible one is linear (its first step takes
+1.00 % of the 100-step change, the uniform-rate value; the violating
+one takes 6.9 %).  The excursion is 80-550x larger, worst at the
+earliest times, and it contaminates a physical diagnostic: the applied
+driving ``-dPds'`` peaks at ``3.7e-7`` for the violating start against
+``2.0e-12`` -- machine zero -- for the compatible one, though both
+hold the bulk at ``9e-18``.
+
+**The four rows are independent, measured.**  Test profiles at
+``cgl``/``ny = 65``/``fd_order = 6``: `$\sin(k\pi(y+1)/2)$` satisfies case A
+for every `$k$`; `$\sin(m\pi y)$` satisfies case B (odd, so both extra rows are
+inert).  The even quartic `$(1-y^2)(5-y^2)$` separates them -- machine-exact on
+the two curvature rows and `$O(1)$` on each of case B's extras (``1.000`` and
+``0.640``, its wall shears being `$\mp 8$` and its bulk ``6.4``) -- which is
+what makes the four rows independent statements.  Laminar plane-Poiseuille
+`$1-y^2$` violates **every** row of both cases (``1, 1`` and
+``1, 1, 1, 0.667``): legal as a base flow, never as a perturbation.
+
+**Projection along a fixed complement.**  Projecting a candidate along
+a *fixed* complement is a poor generator: the natural complement
+`$\mathrm{span}\{(1-y^2),\, y(1-y^2)\}$` is exactly where a windowed
+random draw puts its near-wall curvature, so the "correction" comes out
+an order of magnitude larger than the input and the profile degenerates
+into a fixed polynomial shape.
+
+**The kernel floor.**  At an extreme ``random_wall_smoothness`` -- the
+filter's own knob, ``s_w``, not the periodic ``s`` -- the filter
+retains only four or five effective wall-normal modes (index 6 at
+``s_w = 0.95``, index 4 at ``0.99``, ``ny = 65``), and the case-B
+constraint rows, which need four, go linearly dependent after
+smoothing, making ``C K C^T`` singular.  ``_KERNEL_FLOOR`` is a white
+component *inside* the wall-vanishing space (it keeps the window
+factor), so it restores full rank without breaking no-slip.  At the
+default ``s_w = 0.4`` it sits 29 filter indices down and is invisible:
+raising it from ``1e-6`` to ``1e-5`` moved the projected draw's
+retained energy by 0.1 % there, while cutting ``cond(C K C^T)`` by a
+decade at ``s_w = 0.95``-``0.99`` (1.3e12 -> 1.3e11), which is what the
+fourth row needed.
+
+**The compatibility tolerance.**  A profile that is compatible in the
+*continuum* still has a truncation-level, not a machine-level, discrete
+residual, so ``COMPAT_TOL`` is measured rather than set to an epsilon.
+Worst relative residual over the analytically compatible families --
+``sin(k pi (y+1)/2)`` for case A and ``sin(m pi y)`` for case B --
+restricted to modes the grid resolves (>= 8 points per wavelength),
+maximized over ``fd_order`` in ``{4, 6, 8}``::
+
+    ny        17       25       33       65      129
+    cgl    2.9e-4   4.3e-5   1.1e-5   3.6e-7   1.1e-8
+    tanh   5.6e-4   8.2e-5   1.4e-4   4.9e-6   1.7e-6
+
+The floor at large ``ny`` is roundoff, not truncation: the CGL
+near-wall ``D_2`` entries grow like ``ny^4``.  A profile that genuinely
+violates a relation scores `$O(1)$`: ``1 - y^2`` scores ``1.0`` on
+every row of both cases except case B's bulk row, at ``0.67``.  So
+``5e-3`` sits about a decade above the worst compatible case and two
+below the violating one.  An *unresolved* profile (~2 points per
+wavelength) scores ``1.0`` and is rejected, correctly: the grid cannot
+carry it compatibly.
 """
 
 from __future__ import annotations
@@ -240,43 +280,15 @@ from numpy import ndarray
 from ..parameters import derived_params, params
 
 # Relative floor added to the ensemble covariance's spectrum
-# (:func:`smoothing_kernel`).  At an extreme ``random_wall_smoothness``
-# -- the filter's own knob, ``s_w``, not the periodic ``s`` -- the
-# filter retains only four or five effective wall-normal modes (index
-# 6 at ``s_w = 0.95``, index 4 at ``0.99``, ``ny = 65``), and the
-# case-B constraint rows -- which need four -- go linearly dependent
-# after smoothing, making ``C K C^T`` singular.  The floor is a white
-# component *inside* the wall-vanishing space (it keeps the window
-# factor), so it restores full rank without breaking no-slip.  At the
-# default ``s_w = 0.4`` it sits 29 filter indices down and is
-# invisible: switching it from ``1e-6`` moved the projected draw's
-# retained energy by 0.1 % there, while cutting ``cond(C K C^T)`` by a
-# decade at ``s_w = 0.95``-``0.99`` (1.3e12 -> 1.3e11) -- which is
-# what the fourth row needed.
+# (:func:`smoothing_kernel`): keeps ``C K C^T`` invertible where an
+# extreme ``random_wall_smoothness`` leaves fewer effective wall-normal
+# modes than case B's four rows (Design notes: "The kernel floor").
 _KERNEL_FLOOR = 1e-5
 
-# Residual below which a relation counts as satisfied.  A profile that
-# is compatible in the *continuum* still has a truncation-level, not a
-# machine-level, discrete residual, so this is measured rather than set
-# to an epsilon.  Worst relative residual over the analytically
-# compatible families -- ``sin(k pi (y+1)/2)`` for case A and
-# ``sin(m pi y)`` for case B -- restricted to modes the grid resolves
-# (>= 8 points per wavelength), maximized over ``fd_order`` in
-# ``{4, 6, 8}``:
-#
-#     ny        17       25       33       65      129
-#     cgl    2.9e-4   4.3e-5   1.1e-5   3.6e-7   1.1e-8
-#     tanh   5.6e-4   8.2e-5   1.4e-4   4.9e-6   1.7e-6
-#
-# (the floor at large ``ny`` is roundoff, not truncation: the CGL
-# near-wall ``D_2`` entries grow like ``ny^4``).  A profile that
-# genuinely violates a relation scores `$O(1)$`: ``1 - y^2`` scores
-# ``1.0`` on every row of both cases except case B's bulk row, at
-# ``0.67``.  So this sits ~1 decade above the worst compatible case
-# and ~2 below the violating one.  An *unresolved* profile (~2 points
-# per wavelength) scores ``1.0`` and is rejected, correctly: the grid
-# cannot carry it compatibly.  Do not tighten without re-measuring
-# the table.
+# Residual below which a relation counts as satisfied: measured, about
+# a decade above the worst compatible profile and two below a violating
+# one (Design notes: "The compatibility tolerance").  Do not tighten
+# without re-measuring.
 COMPAT_TOL = 5e-3
 
 # Relation labels, in the row order of :func:`constraint_rows`.
@@ -303,8 +315,8 @@ def constraint_rows(
     `$m = 4$` in case B.  The first two rows -- relation 1, the
     vanishing wall curvature -- are the **same in both cases**; case B
     adds the two rows that make them so under a responding `$\Pi$`.
-    The no-slip rows are **not** included (see
-    the module docstring).  Rows are unscaled -- the projection is
+    The no-slip rows are **not** included (see the module
+    docstring).  Rows are unscaled -- the projection is
     invariant under row scaling, and :func:`constraint_residuals`
     applies each relation's own physical scale.
 
