@@ -22,7 +22,7 @@ is the input for mode statistics (covariances, spectra) and for
 ensemble-averaged response curves.
 
 File format
-===========
+-----------
 ``probes.bin`` is a flat sequence of fixed-size records,
 
 .. code-block:: python
@@ -57,7 +57,7 @@ record and the child's t0 record hold the same state at the same
 timestamps (a re-run trajectory segment).
 
 Sharded gather
-==============
+--------------
 The state's mode axes are sharded (`$k_2$` by ``np0``, `$k_3$` by
 ``np1``), and slicing a sharded axis of the global array is not
 supported under explicit sharding; :func:`build_mode_extractor`
@@ -184,20 +184,17 @@ def build_mode_extractor(
     from the local shard shape at trace time (the indices are static)
     and contributes the column to a ``psum`` over both mesh axes.
 
-    Only the first *n_components* slots are gathered (every slot
-    when ``None``) -- the flow's physical ones; a pipe state's trailing
-    carried slots are solver internals (``_cylindrical_stepping``).
-    Where the state is carried
-    in a **solver** basis (cylindrical / annular `$u_\pm$`, the
-    viscoelastic spin tensor) it is converted to physical components
-    -- the basis of ``_component_labels`` and of the written stream --
-    *after* the gather, on a ``(C, N_y)`` slice rather than the whole
-    spectral field, so a sample costs essentially nothing and
-    ``it_probes = 1`` is affordable.  (The map is linear and maps zero
-    to zero, so it commutes with the owner mask and the ``psum``.)
-    Cartesian carries physical components under both
-    ``res.consistent_imm`` formulations and needs no conversion at
-    all.
+    Only the first *n_components* slots are gathered (every slot when ``None``)
+    -- the flow's physical ones; a pipe state's trailing carried slots are
+    solver internals (``_cylindrical_stepping``).  Where the state is carried
+    in a **solver** basis (cylindrical / annular `$u_\pm$`, the viscoelastic
+    spin tensor) it is converted to physical components -- the basis of
+    ``_component_labels`` and of the written stream -- *after* the gather, on a
+    ``(C, N_y)`` slice rather than the whole spectral field, so a sample costs
+    essentially nothing and ``it_probes = 1`` is affordable.  (The map is
+    linear and maps zero to zero, so it commutes with the owner mask and the
+    ``psum``.)  Cartesian carries physical components under both
+    ``res.consistent_imm`` formulations and needs no conversion at all.
     """
     pairs = tuple((int(i2), int(i3)) for i2, i3 in mode_pairs)
     if params.phys.system in cartesian_systems:

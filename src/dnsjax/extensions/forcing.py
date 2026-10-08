@@ -16,7 +16,7 @@ profile is added to the carried `$w_s = h\,u_s$`, not to `$u_s$`
 (:class:`dnsjax.extensions.ForceParams`).
 
 Why kicks, not a body-force term
-================================
+--------------------------------
 A forcing term inside the nonlinear RHS would be traced into the
 jitted steppers and integrated by the scheme: ``cnab2`` would
 AB2-extrapolate the random sequence (``1.5 f^n - 0.5 f^{n-1}``,
@@ -29,22 +29,20 @@ the price of one fused scatter-add per ``it_force`` steps.  (Under
 single step after a kick: an `$O(\varepsilon\,\Delta t)$`
 perturbation of the same class as the scheme's local error.)
 
-A kick's increment is generally **not** discretely solenoidal, and
-what happens to that part depends on the scheme.  Under the default
-``res.consistent_imm`` there is no pressure Poisson to absorb it: the
-kick lands in the carried state intact and is **discarded** one step
-later, when the reconstruction rebuilds the tangential pair from the
-wall-normal velocity and vorticity alone (stage 7 in every geometry).
-The legacy primitive IMM instead feeds it into the pressure Poisson
-RHS and *damps* it over the following steps.  So it reaches exactly one step's
-nonlinear evaluation -- two under ``cnab2``, which carries that
-evaluation forward -- and never a solve.  Either way it is a bounded,
-per-event, truncation-class effect, not an accumulating one; keep
-injected profiles solenoidal if the distinction matters for the
-response being identified.
+A kick's increment is generally **not** discretely solenoidal, and what happens
+to that part depends on the scheme.  Under the default ``res.consistent_imm``
+there is no pressure Poisson to absorb it: it lands in the carried state intact
+and is **discarded** one step later, when the reconstruction rebuilds the
+tangential pair from the wall-normal velocity and vorticity alone (stage 7 in
+every geometry), so it reaches exactly one step's nonlinear evaluation -- two
+under ``cnab2``, which carries that evaluation forward -- and never a solve.
+The legacy primitive IMM instead feeds it into the pressure Poisson RHS and
+*damps* it over the following steps.  Either way it is a bounded, per-event,
+truncation-class effect, not an accumulating one; keep injected profiles
+solenoidal if the distinction matters for the response being identified.
 
 Timing conventions (shared with the readers and resume)
-=======================================================
+-------------------------------------------------------
 - A kick fires at the **top** of the loop for every iteration with
   ``it % it_force == 0`` -- after the equal-``t`` probe sample and
   any snapshot write (both therefore record the *pre-kick* state; a
@@ -71,27 +69,25 @@ level follows from the operator's Lyapunov equation
 the identified operator unchanged.
 
 File format
-===========
+-----------
 ``forcing.bin`` is a flat sequence of fixed-size records,
 
 .. code-block:: python
 
     numpy.dtype([("t", "<f8"), ("w", "<f8", (K, m, 2))])
 
-with ``K`` forced modes, ``m`` channels, and the trailing axis the
-``(re, im)`` of the `$\mathcal{CN}(0,1)$` coefficients `$w$` exactly
-as applied (unscaled by ``amplitude``, which is in the sidecar; the
-kick was ``amplitude * sum_j w_j profile_j``).  Coefficients
-are host-generated float64 regardless of the state precision (the
-volume is tiny).  The ``forcing.json`` sidecar carries the schema:
-modes (and the wavenumbers they denote -- a resume may change
-``res.nx`` / ``res.nz``, which moves what a negative-block `$k_z$`
-index means), channel count, amplitude, cadence, seed, the profile
-bundle's path and SHA-256 (an append-resume must match all of these --
-changing the basis mid-experiment invalidates the stream), and the full
-resolved parameter dump.  No non-finite scan is needed: the coefficients are
-finite by construction and the state itself is guarded by the
-regular diagnostics.
+with ``K`` forced modes, ``m`` channels, and the trailing axis the ``(re, im)``
+of the `$\mathcal{CN}(0,1)$` coefficients `$w$` exactly as applied (unscaled by
+``amplitude``, which is in the sidecar; the kick was
+``amplitude * sum_j w_j profile_j``).  Coefficients are host-generated float64
+regardless of the state precision (the volume is tiny).  The ``forcing.json``
+sidecar carries the schema: modes (and the wavenumbers they denote -- a resume
+may change ``res.nx`` / ``res.nz``, which moves what a negative-block `$k_z$`
+index means), channel count, amplitude, cadence, seed, the profile bundle's
+path and SHA-256 (an append-resume must match all of these -- changing the
+basis mid-experiment invalidates the stream), and the full resolved parameter
+dump.  No non-finite scan is needed: the coefficients are finite by
+construction and the state itself is guarded by the regular diagnostics.
 
 The record layout is fixed across schema versions, so a stale stream
 reads *cleanly* and only its values mean something else -- which makes
@@ -101,7 +97,7 @@ basis, the partner rule), and raise the reader's
 ``MIN_FORMAT_VERSION`` with it.
 
 Sharded scatter
-===============
+---------------
 :func:`build_mode_injector` is the scatter dual of
 :func:`dnsjax.extensions.probes.build_mode_extractor`: inside a
 ``shard_map``, the device owning each static global mode index adds
@@ -110,11 +106,9 @@ zeros), so no global sharded axis is ever indexed.  The real-FFT
 conjugate partner (``i3 = 0``) is just another scatter target; its
 column -- the plain conjugate (every physical component is the
 transform of a real field) -- is built on the host (the placement
-rules of
-``transient_growth.single_mode_state``, here in sharded form).  The
-injector is generic runtime machinery: any future loop-level state
-modification (feedback control, further forcing schemes) can reuse
-it as is.
+rules of ``transient_growth.single_mode_state``, here in sharded form).
+The injector is generic: any loop-level state modification (feedback
+control, another forcing scheme) can reuse it as is.
 """
 
 import hashlib
@@ -143,8 +137,8 @@ from .probes import _component_labels
 #: changes at fixed layout -- the physical basis of the injected
 #: profiles (and the real-FFT conjugate-partner rule that goes with
 #: it), the physical (`$m = m_0 j$`) azimuthal wavenumber labels --
-#: so a stale coefficient log cannot be silently replayed against
-#: today's profile bundle.  The reader's floor is
+#: so a stale coefficient log cannot be silently replayed against a
+#: newer profile bundle.  The reader's floor is
 #: ``analysis.response.ssi.MIN_FORMAT_VERSION``.
 FORMAT_VERSION: int = 3
 
@@ -255,8 +249,7 @@ class StochasticForcer:
 
     Construct once with the initial state (shape/dtype source) after
     the ``force`` extension section is validated; then let the main
-    loop call
-    :meth:`kick` at the ``it_force`` cadence and :meth:`flush` at the
+    loop call :meth:`kick` at the ``it_force`` cadence and :meth:`flush` at the
     ``flush_all_buffers`` sites.  All randomness is host-side and
     rank-identical (every rank draws the same sequence); disk I/O is
     main-process only, with the buffer cleared on all ranks in
@@ -352,22 +345,14 @@ class StochasticForcer:
         # taken so a resume continues the uninterrupted sequence (one
         # fixed-shape draw per kick, mirrored in ``kick``).
         #
-        # On a *resume* the record count must equal the number of
-        # kicks the state has actually been through, ``it0 //
-        # it_force``.  The two agree only when resuming off the
-        # snapshot the stream was written up to; resuming off an
-        # earlier one (parent ran to it = 1000 snapshotting at 500 and
-        # 1000, resume from the it = 500 one) would otherwise skip
-        # past the whole file and append records duplicating times
-        # already present, silently -- ``_MATCH_KEYS`` compares the
-        # configuration, which is identical, so nothing else catches
-        # it.  Deleting ``forcing.bin`` while keeping the sidecar is
-        # the same failure with the skip count at zero.
-        # A fresh start (``it0 == 0``) that finds records is the same
-        # inconsistency with the count at zero: the kick times would
-        # restart from t0 and duplicate every time already in the
-        # file, so an existing stream there is a leftover, not a
-        # parent.
+        # The record count must equal the kicks the state has been
+        # through, ``it0 // it_force``.  Resuming off an earlier
+        # snapshot than the stream was written up to (a parent run to
+        # it = 1000 with snapshots at 500 and 1000, resumed from 500),
+        # deleting ``forcing.bin`` but not its sidecar, or a fresh start
+        # (``it0 == 0``) that finds records would each append records
+        # duplicating times already present -- silently, since
+        # ``_MATCH_KEYS`` compares only the (identical) configuration.
         n_taken = params.init.it0 // f.it_force
         if n_existing != n_taken:
             where = (
@@ -407,8 +392,8 @@ class StochasticForcer:
             # The bundle records the basis its rows are in; a stale
             # one written in the solver's decoupled `$u_\pm$` basis
             # has the right shape and grid, so nothing else here
-            # would catch it -- it would simply be injected as if it
-            # were physical.  ``FORMAT_VERSION`` guards readers of
+            # would catch it -- it would be injected as if it were
+            # physical.  ``FORMAT_VERSION`` guards readers of
             # ``forcing.bin``, not this input.
             want_labels = _component_labels(n_components)
             if "component_labels" in npz.files:
