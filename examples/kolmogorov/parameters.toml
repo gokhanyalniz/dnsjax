@@ -30,10 +30,9 @@ lz = 5.0
 nx = 32
 ny = 32
 nz = 32
-# Double precision (the model default, stated here because it is a real
-# choice rather than an incidental one: the timings in
-# examples/README.md are for this setting, and single precision would
-# halve the memory).
+# Double precision, the model default, stated here because it is a
+# real choice: single precision would halve the memory, at reduced
+# accuracy.
 double_precision = true
 
 [init]

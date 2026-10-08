@@ -15,8 +15,8 @@ abstract: >-
   combined with banded finite differences in up to one wall-bounded
   direction, where an influence-matrix method reconciles
   incompressibility with the wall boundary conditions. Written in JAX,
-  it runs on CPUs, GPUs and TPUs, on a single device or sharded across
-  many, in single or double precision.
+  it runs on a single device or sharded across many, in single or double
+  precision, and is tested on CPUs and NVIDIA GPUs.
 keywords:
   - computational fluid dynamics
   - direct numerical simulation

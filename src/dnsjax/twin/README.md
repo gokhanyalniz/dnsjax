@@ -158,7 +158,8 @@ s = 1 - \exp\left(-\frac{\lambda^{*+}}{4\pi\, Re_\tau}\right),
 which is 0.022 for plane Poiseuille at $Re = 4200$ in the
 $4\pi \times 2 \times 2\pi$ box ($Re_\tau = 178.6$) and 0.0079 at
 $Re_\tau = 500$. A minimal flow unit has no room below itself, so a
-run in one (the HKW box) sets `--twin.smoothness 0.4`
+run in one (the plane-Couette box of Hamilton, Kim & Waleffe, *J. Fluid
+Mech.* **287**, 317–348, 1995) sets `--twin.smoothness 0.4`
 (`ensemble_setup.py build-twin --smoothness 0.4` for a member tree),
 which is also the earlier default: members recorded with it resume only
 with that flag.
@@ -231,7 +232,7 @@ E_\Delta^x[u,v,w](y, k_z), \qquad E_\Delta^z[u,v,w](y, k_x)
 
 — energy first, then the sum over the other wavenumber, which under
 the forward-norm convention *is* the average over that direction —
-plus the $(0,0)$ mode $E_\Delta^{xz00}[u,v,w](y)$, and under
+plus the $(0,0)$ mode, $E_\Delta^{xz00}(y)$ per component, and under
 `twin.x0_planes` the whole $k_x = 0$ plane it comes from, which is the
 spectrum of the streamwise-averaged field. $E_{\Delta U}$,
 $E_{\Delta u_1}$ and $E_{\Delta u_2}$ come back exactly without it.
@@ -268,11 +269,17 @@ its $\Delta v$ half into `Wp`, which becomes the Bernoulli-pressure
 work, and the rest into the production. The two forms differ
 by a gradient, so volume totals agree while the $y$-densities move
 between production, transfer and `Wp`. An eighth column, `P_lift`,
-carries the convective `P_U` unchanged and outside the sum — the
+carries the convective `P_U` unchanged and outside the sum. It is the
 classical density
-$-\sigma\,\mathrm{Re}\{\Delta\hat u_i^*\Delta\hat v\}\,\partial_y U^{(1)}_i$,
-otherwise unrecoverable from what the streams hold, and the piece a
-channel-budget reader will look for.
+
+```math
+-\sigma_{k_x}\,\mathrm{Re}\{\Delta\hat u_i^*\,\Delta\hat v\}\,
+  \partial_y U^{(1)}_i
+```
+
+($\sigma_{k_x}$ weights the stored half plane: 1 at $k_x = 0$, 2
+elsewhere), otherwise unrecoverable from what the streams hold, and the
+piece a channel-budget reader will look for.
 
 Both wavenumber axes are one-sided, with $|k_z|$ folded — a
 requirement, not a convenience: the stored half-plane's entries are
@@ -457,7 +464,7 @@ Every cadence a member records at — the `[twin]` streams, the
 per-state solver streams, `outs.it_snapshot` — is counted from that
 member's own perturbation step, recorded as `parent_it` in its
 `twin.json` and inherited across a paired resume. Its samples
-therefore sit at $t_\mathrm{parent} + n\,c\,\Delta t$ whatever
+therefore sit at $t_\mathrm{parent} + n c \Delta t$ whatever
 iteration number the parent snapshot was harvested at, which is what
 puts the members of an ensemble on one relative grid: the clock every
 reader aligns on is $t - t_\mathrm{parent}$, and a cadence counted

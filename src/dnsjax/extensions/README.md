@@ -40,14 +40,14 @@ profile of the perturbation, and adding the closed-form laminar profile
 recovers the total mean (the reader does this for you).
 
 On `curved-pipe` the component-0 profile is the solver's carried
-streamwise variable $w_s = h\,u_s$ with $h = 1 + \kappa r\cos\theta$,
+streamwise variable $w_s = h u_s$ with $h = 1 + \kappa r\cos\theta$,
 not $u_s$: $1/h$ couples every azimuthal mode, so no single mode
 column converts exactly (the label stays the cylindrical `u_z`).
 
 **Why a separate stream.** A mode time series wants $10^5$ to $10^6$
 samples. A snapshot per sample is some three orders of magnitude more
-bytes, and the scalar `.dat` streams cannot hold a complex per-$y$
-profile. The probe stream is the input for mode statistics —
+bytes, and the scalar `.dat` streams cannot hold a complex profile in
+$y$. The probe stream is the input for mode statistics —
 covariances, spectra — and for every response route.
 
 **On disk.** `probes.bin` is a flat sequence of fixed-size records,
@@ -100,7 +100,7 @@ those modes. The drawn coefficients stream to `forcing.bin`.
 The section is **all-or-none**: `modes`, `profiles`, `amplitude` and
 `it_force` are set together or not at all. Wall-bounded,
 non-viscoelastic systems only; on `curved-pipe` a component-0 profile
-is added to the carried $w_s = h\,u_s$ (the column `[probes]` records
+is added to the carried $w_s = h u_s$ (the column `[probes]` records
 there), not to $u_s$. It is **trajectory-defining** — kicks
 alter the dynamics exactly as a `phys` change does, so resuming with
 changed forcing starts a new trajectory unless `init.force_resume`.
@@ -127,8 +127,8 @@ export encodes — at the cost of one fused scatter-add every
 `it_force` steps.
 
 **Timing.** A kick fires at the top of the loop on every iteration with
-`it % it_force == 0`: after the equal-$t$ probe sample and after any
-snapshot write, so both record the **pre-kick** state. A probe sample
+`it % it_force == 0`: after the probe sample at the same $t$ and after
+any snapshot write, so both record the **pre-kick** state. A probe sample
 taken at a kick time therefore correlates with earlier kicks only,
 which gives the identification a clean zero-lag causality check.
 Snapshots are never post-kick, so a resumed continuation applies the

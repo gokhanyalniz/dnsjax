@@ -35,8 +35,8 @@ and SciPy only.
 
 ## The pipeline
 
-Steps 1-3 stand alone — turbulent statistics, and optimal growth about
-a measured mean. Steps 4-6 build on their outputs.
+Steps 1–3 stand alone — turbulent statistics, and optimal growth about
+a measured mean. Steps 4–6 build on their outputs.
 
 ### 1. Probe the run
 
@@ -99,9 +99,11 @@ is in the transient-growth module docstring.
 
 ### 4. The injection basis
 
-The leading **controllability modes** of a generator are the directions
-it is most excitable in — the natural basis for a response experiment,
-and far smaller than the full state.
+The leading **controllability modes** of a generator — the leading
+eigenvectors of its controllability Gramian under white-in-time forcing
+(Farrell & Ioannou 1993, 1996) — are the directions it is most
+excitable in: the natural basis for a response experiment, and far
+smaller than the full state.
 
 ```bash
 uv run python -m dnsjax.analysis.response.operator_tools \
@@ -186,7 +188,7 @@ per-lag residuals, and the growth curves `G_id` (of `L`) against
 
 ## Three routes to the same operator
 
-Steps 5-6 are the direct route. Two alternatives replace them on the
+Steps 5–6 are the direct route. Two alternatives replace them on the
 same basis, coordinates and output convention.
 
 | Route | What it needs | What it assumes |
@@ -194,6 +196,9 @@ same basis, coordinates and output convention.
 | `ensemble` | An ensemble per basis index — the most compute | Nothing about the background; the response is measured directly |
 | `lim` | Only the step-1 probe stream of the plain, **unforced** run — no extra runs at all | That the turbulent forcing is white in time |
 | `ssi` | One run re-run with `[force]` stochastic kicks — one experiment, not an ensemble | Nothing about the background: the kicks are known exactly |
+
+`lim` is linear inverse modelling (Penland 1989; Penland & Sardeshmukh
+1995) applied to one Fourier mode's probe stream.
 
 ```bash
 # Linear inverse modelling: lagged covariances of an unforced stream.
@@ -249,3 +254,14 @@ restricted to the same subspace.
 Orchestration lives in `scripts/ensemble_setup.py`; per-function
 behaviour, storage layouts and knob guidance live in the module
 docstrings. Guards: `tests/response/`.
+
+## References
+
+- B. F. Farrell and P. J. Ioannou, *Stochastic forcing of the linearized
+  Navier–Stokes equations*, Phys. Fluids A **5**(11), 2600–2609 (1993).
+- B. F. Farrell and P. J. Ioannou, *Generalized stability theory. Part I:
+  Autonomous operators*, J. Atmos. Sci. **53**(14), 2025–2040 (1996).
+- C. Penland, *Random forcing and forecasting using principal oscillation
+  pattern analysis*, Mon. Weather Rev. **117**(10), 2165–2185 (1989).
+- C. Penland and P. D. Sardeshmukh, *The optimal growth of tropical sea
+  surface temperature anomalies*, J. Climate **8**(8), 1999–2024 (1995).

@@ -4,8 +4,8 @@ What `dnsjax` integrates, and how it is discretized: the equations, the
 pseudo-spectral / finite-difference spatial discretization, the two
 time-stepping schemes, the wall-normal grids, and the influence-matrix
 method that reconciles incompressibility with the wall boundary
-conditions. The closing section collects the parameter conventions each
-flow follows.
+conditions. [Conventions](#conventions) collects the parameter
+conventions each flow follows.
 
 Start at the [README](../README.md) for the solver itself, and
 [`scaling.md`](scaling.md) for array layout, memory and the device grid.
@@ -42,7 +42,7 @@ pipe bent onto a circle of radius $R_c$, with curvature
 $\kappa = a/R_c$ (`geo.curvature`) and zero torsion, whose scale factors
 are $(1, r, h)$ with $h = 1 + \kappa r\cos\theta$. It solves the same
 equations in that metric, and it does so on the *straight* pipe's
-operators: carrying $h\,u_s$ in place of $u_s$ leaves the curl, the
+operators: carrying $h u_s$ in place of $u_s$ leaves the curl, the
 pressure projection, the influence matrix and every Helmholtz solve
 untouched, so no operator couples azimuthal modes. The four identities
 that make that work, and the two places curvature does survive, are
@@ -61,9 +61,16 @@ through a simplified Phan-Thien–Tanner constitutive law,
 ```
 
 with the polymer stress feeding momentum as
-$\tfrac{1-\beta}{Re\,Wi}\nabla\cdot\mathbf{c}$ and solvent viscosity
+$\tfrac{1-\beta}{Re\ Wi}\nabla\cdot\mathbf{c}$ and solvent viscosity
 $\nu = \beta/Re$. This grows the state to nine components on the same solver
-machinery.
+machinery. The system is that of Lellep, Linkmann & Morozov
+([2024](#references), eqs. 1–3), carried over from their channel to the
+pipe and the annulus, with their stress diffusivity $\kappa$ and its wall
+condition: at a wall the conformation obeys the $\kappa = 0$ equation,
+which dnsjax imposes in the equivalent form $\nabla^2 \mathbf{c} = 0$.
+The defaults $\beta = 0.8$, $\epsilon = 10^{-3}$ and
+$\kappa = 5 \cdot 10^{-5}$ are theirs too; the Weissenberg and
+elasticity numbers are each flow's own.
 
 ## Spatial discretization
 
@@ -84,14 +91,13 @@ only at an even count, so at an odd one the layout would drop a genuine
 harmonic instead and strand its conjugate partner, and every Fourier axis
 is therefore required to be even (`nx` and `nz`, plus `ny` in the
 triply-periodic box; a wall-normal grid size is unconstrained). The
-oversampled sizes are
-then rounded up, with a startup note, to **7-smooth** lengths (no prime
-factor beyond 7, so every transform takes the fast FFT radix kernels
-whatever the base resolution) that also divide evenly across the device
-grid; the streamwise real-FFT axis, never sharded, is rounded to an
-*even* 7-smooth length instead, the length an inverse real FFT returns.
-The extra slots carry only zero modes, so the rounding is physically
-neutral.
+oversampled sizes are then rounded up, with a startup note, to
+**7-smooth** lengths (no prime factor beyond 7, so every transform takes
+the fast FFT radix kernels whatever the base resolution) that also
+divide evenly across the device grid; the streamwise real-FFT axis,
+never sharded, is rounded to an *even* 7-smooth length instead, the
+length an inverse real FFT returns. The extra slots carry only zero
+modes, so the rounding is physically neutral.
 
 ## Temporal discretization
 
@@ -117,7 +123,7 @@ The `implicitness` knob $c$ is the Crank–Nicolson weight, with
 `corrector_tolerance` and `max_corrector_iterations` governing the fixed
 point. $c = 0.5$ is the trapezoidal rule, which barely damps the stiffest
 viscous modes: those on the first grid points off a wall flip sign every
-step and shrink by only $4/(\nu\,\Delta t\,\Lambda_{\max})$, less on every
+step and shrink by only $4/(\nu \Delta t \Lambda_{\max})$, less on every
 refinement of the wall grid. The default $c = 0.5001$ keeps that damping
 above about $4(c - \tfrac12)$ per step at any resolution. Its first-order
 error term stays below the second-order one at any practical step, and the
@@ -258,7 +264,7 @@ A few conventions worth knowing across the flow surfaces:
   signs), or counter-rotating (`re2 < 0`); `eta = r_1/r_2` is the radius
   ratio. The quasi-Keplerian flow is the same annulus parameterized by
   `re1`, the rotation number `r_omega` on the quasi-Keplerian half-line
-  $R_\Omega < -1$, and `eta`, with the outer Reynolds number `re2`
+  $R_\Omega \lt -1$, and `eta`, with the outer Reynolds number `re2`
   derived from them.
 - **Viscoelastic controls.** `el` is the elasticity number and sets
   $Re = Wi/El$; `wi` is the Weissenberg number; `beta` the solvent-to-total
@@ -298,3 +304,13 @@ A few conventions worth knowing across the flow surfaces:
   $0^\circ$, $\pm 90^\circ$ and $180^\circ$ take exact values for
   $\cos\theta$ and $\sin\theta$ rather than going through the
   trigonometric functions.
+
+## References
+
+The numerical methods' references are collected in the
+[README](../README.md#references). Specific to this page:
+
+- M. Lellep, M. Linkmann and A. Morozov, *Purely elastic turbulence in
+  pressure-driven channel flows*, Proc. Natl. Acad. Sci. USA **121**(9),
+  e2318851121 (2024). The sPTT system with stress diffusivity, its wall
+  condition and the default $\beta$, $\epsilon$ and $\kappa$.

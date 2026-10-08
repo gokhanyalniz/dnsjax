@@ -64,10 +64,11 @@ uv run ruff check --fix
 uv run ruff format src tests scripts
 ```
 
-Line length is **79 for every line**, code and prose alike. Name the
-directories when formatting — a bare `uv run ruff format` also reformats
-the Python blocks in the Markdown docs and the example notebook, which
-are laid out to be read rather than to satisfy the formatter.
+Line length is **79** for code and prose alike (the Markdown docs'
+tables and HTML excepted). Name the directories when formatting — a bare
+`uv run ruff format` also reformats the Python blocks in the Markdown
+docs and the example notebook, which are laid out to be read rather than
+to satisfy the formatter.
 
 `prek.toml` configures the commit hook, which runs both:
 
@@ -110,12 +111,15 @@ state.
 ## Documentation
 
 Docstrings, comments and type hints stay current with the code, at 79
-columns; math is LaTeX. The human-facing documents — `README.md`, this
-file, the `docs/` pages, `tests/README.md`, the `examples/` READMEs and
-the three subpackage READMEs — are updated in the same change that
-makes them wrong. They
-are written pointer-first: they link the module docstring that owns a
-detail rather than restating it, which is what keeps that affordable.
+columns; math is LaTeX. A docstring states its contract first and its
+reasons in a sentence or two; measurements, rejected alternatives and
+history go in a closing "Design notes" section of the module docstring.
+The human-facing documents — `README.md`, this file, the `docs/` pages,
+`tests/README.md`, `scripts/README.md`, the `examples/` READMEs and the
+three subpackage READMEs — are updated in the same change that makes
+them wrong. They are written pointer-first: they link the module
+docstring that owns a detail rather than restating it, which is what
+keeps that affordable.
 
 Nothing committed carries a placeholder: no `TODO(author)`, no draft
 block, no section waiting on a number. Content that cannot be finished
