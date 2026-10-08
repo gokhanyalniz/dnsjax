@@ -23,7 +23,7 @@ kicks, :mod:`dnsjax.extensions.forcing`).  All three default to
 every member draws the same initial condition, the same partner and the
 same kick sequence.  Reproducibility is not what the fixed default was
 buying -- recording the drawn seed buys the same thing without pinning
-every user to one realisation.
+every user to one realization.
 
 **Why the sentinel is ``None`` and not a pydantic ``default_factory``.**
 Several sites compare a live value against a freshly constructed model
@@ -43,7 +43,7 @@ an explicit startup step (``bootstrap.resolve_run_seeds``) instead.
 generator keys each mode's draw on ``(seed, global mode index)`` so the
 field is identical at any ``(np0, np1)``, and per-rank draws would
 assemble one field out of several unrelated streams -- divergence-free
-and correctly normalised, but reproducible from no recorded seed at
+and correctly normalized, but reproducible from no recorded seed at
 all.  Process 0 therefore draws and the value is broadcast
 (``bootstrap.resolve_seed``).  :func:`split_seed` / :func:`join_seed`
 carry it as two 31-bit words so the payload is exact in ``int32``,
@@ -101,7 +101,7 @@ def draw_seed() -> int:
         cannot be read (a sandbox denying ``/dev/urandom``).
         ``os.getrandom`` is deliberately not used: it is absent on some
         supported builds, and ``os.urandom`` blocks rather than failing
-        while the pool initialises.
+        while the pool initializes.
     """
     try:
         raw = os.urandom(8)

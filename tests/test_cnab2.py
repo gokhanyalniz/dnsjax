@@ -10,12 +10,12 @@ subprocess smoke tests cannot check directly:
   ``get_rhs(u) - l_bf(u) == get_rhs(u; U = 0)`` (checked with
   ``step.implicit_mean_coupling`` off) -- the explicit AB2 forcing
   really is the pure self-advection `$u' \times \omega'$`.  The
-  zero-base-flow oracle reuses the geometry ``_get_rhs`` on a
+  zero-base-flow reference reuses the geometry ``_get_rhs`` on a
   shallow flow copy with zeroed ``base_flow_padded`` /
   ``curl_base_flow_padded`` (identical transforms, so the difference
   isolates exactly the coupling terms).  For the total-field Dean
   flow (``base_flow = 0``) the check is ``l_bf == 0`` identically.
-- **Mean-flow coupling oracle**: with ``implicit_mean_coupling`` on
+- **Mean-flow coupling reference**: with ``implicit_mean_coupling`` on
   (the default), ``l_bf`` gains exactly `$L_{mf} = \mathbf{u}
   \times \bar{\boldsymbol{\omega}} + \bar{\mathbf{u}} \times
   \boldsymbol{\omega}$` -- checked against a manually-written cross
@@ -477,7 +477,7 @@ def _worker(system: str) -> None:
         finally:
             params.step.implicit_mean_coupling = True
 
-        # Manual L_mf oracle in the coupling basis -- Cartesian
+        # Manual L_mf reference in the coupling basis -- Cartesian
         # (u, v, w) or cylindrical/annular (u_z, u_r, u_theta) -- with
         # the mean profiles read directly off the single device's
         # (0, 0) mode entry.
@@ -535,9 +535,9 @@ def _worker(system: str) -> None:
             )
             print(f"{system}: l_bf == 0 exactly (total-field, L_mf off)")
         else:
-            # Zero-base-flow oracle: also zero the moving-frame speed
+            # Zero-base-flow reference: also zero the moving-frame speed
             # (pipe / plane-Poiseuille default to the bulk frame), so
-            # the oracle is the pure self-advection u' x omega' and
+            # the reference is the pure self-advection u' x omega' and
             # the check covers the frame term's rhs/l_bf cancellation.
             flow0 = copy.copy(flow_)
             flow0.base_flow_padded = jnp.zeros_like(flow_.base_flow_padded)

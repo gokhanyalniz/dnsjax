@@ -244,7 +244,7 @@ class ClosureResiduals:
     ``components`` holds the three per-component residuals of
     `$\partial_t E_X = P_X + T_X - \epsilon_X$` (``dU`` / ``du1`` /
     ``du2``) plus ``T_tot``.  Each is a maximum over the sample
-    times, normalised to read as a fraction: ``0`` is exact closure,
+    times, normalized to read as a fraction: ``0`` is exact closure,
     ``1`` a residual as large as the budget itself.  ``n_samples``
     is how many budget rows contributed, ``dt`` the ``twin.dat``
     sample spacing the derivative used.  Indexing delegates to
@@ -306,9 +306,9 @@ def closure_residuals(series: TwinSeries) -> ClosureResiduals:
     from ``twin.dat`` is compared against `$P_X + T_X - \epsilon_X$`
     from ``twin_budget.dat`` at every budget sample time that has an
     energy sample on both sides, and the largest absolute mismatch is
-    normalised by the largest magnitude either side reaches.
+    normalized by the largest magnitude either side reaches.
     ``T_tot`` -- which cancels pairwise by parts, so vanishes
-    continuously rather than balancing anything -- is normalised by
+    continuously rather than balancing anything -- is normalized by
     the largest individual transport term instead.
 
     What remains is discrete truncation error (pressure work against

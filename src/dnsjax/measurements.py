@@ -16,7 +16,7 @@ maps column names to replicated scalars.  The dict structure
 must be static (same keys every call) so the JIT-compiled
 stepper has a fixed output pytree; ``__main__`` derives the
 ``steps.dat`` header from the keys of a warm-up call.  Note
-that dicts returned through ``jit`` are canonicalised to
+that dicts returned through ``jit`` are canonicalized to
 sorted key order, which sets the column order of
 ``steps.dat`` (as with ``get_stats`` and ``stats.dat``).
 

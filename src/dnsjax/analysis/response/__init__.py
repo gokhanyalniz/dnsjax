@@ -15,7 +15,7 @@ Submodules (import them explicitly; this ``__init__`` stays empty so
 - :mod:`dnsjax.analysis.response.ensemble` -- ensemble-response
   aggregation and direct operator identification from injected-mode
   response data.  JAX-based, SciPy imported lazily.
-- :mod:`dnsjax.analysis.response.lim` -- linear inverse modeling:
+- :mod:`dnsjax.analysis.response.lim` -- linear inverse modelling:
   the same operator identified from lagged covariances of a plain
   *unforced* probe stream (no extra runs; assumes white-in-time
   turbulent forcing).  JAX-based, SciPy imported lazily.
@@ -80,7 +80,7 @@ package-level JAX-free import guarantee is unaffected; the
 
 The JAX/NumPy line is drawn by profitability, not habit: the dense
 time sweeps (batched ``expm``/SVD growth curves) run in JAX and are
-GPU-capable; matrix factorisations (``logm``, the Lyapunov solves,
+GPU-capable; matrix factorizations (``logm``, the Lyapunov solves,
 non-symmetric ``eig``) stay SciPy/LAPACK, which JAX has no (GPU)
 kernels for; and the stream projections / covariance estimators
 stay NumPy BLAS deliberately -- the identified coordinates are

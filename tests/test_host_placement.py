@@ -332,7 +332,7 @@ _ENTRIES = {"dnsjax": "dnsjax.__main__", "dnsjax-twin": "dnsjax.twin.driver"}
 
 
 def _nbytes(leaf: object) -> int:
-    """A checked leaf's size, without materialising a device array."""
+    """A checked leaf's size, without materializing a device array."""
     dtype = getattr(leaf, "dtype", None)
     if dtype is None:
         leaf = np.asarray(leaf)

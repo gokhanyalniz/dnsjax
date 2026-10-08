@@ -14,7 +14,7 @@ Tests cover:
    the parity-reduced builders' refactor onto the shared
    ``solvers._assemble_banded_operator`` helpers.
 6b. The pipe's ``res.consistent_imm`` structure: the spin pair really
-    diagonalises the vector Laplacian onto the existing
+    diagonalizes the vector Laplacian onto the existing
     `$H_{k,\pm}$` operators, every vw quantity lands in the parity
     class its operator assumes, and the packed mean plane reuses the
     primitive scheme's mean operators bit-exactly (including the
@@ -554,7 +554,7 @@ def test_vw_spin_pair_diagonalises_the_vector_laplacian() -> None:
     The load-bearing identity of the pipe's ``res.consistent_imm``
     scheme (``_cylindrical_stepping._imm_iteration_vw``): the `$-2im/r^2$` spin
     coupling that ties `$(\Delta\mathbf{u})_r$` to `$u_\theta$` is
-    diagonalised by the same `$u_\pm$` combination the primitive
+    diagonalized by the same `$u_\pm$` combination the primitive
     scheme already uses, with eigenvalues `$(m \pm 1)^2/r^2$` -- which
     is why the quad needs no new operator family.  Checked against the
     physical-component vector Laplacian on random radial profiles, per

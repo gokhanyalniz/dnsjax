@@ -107,7 +107,7 @@ class PlanePoiseuilleFlow(CartesianFlow):
 
         Delegates the CGL grid, FD matrices, and per-mode IMM
         operator setup to :meth:`CartesianFlow.__post_init__`,
-        which assembles and factorises `$L_k$`, `$H_k$` directly
+        which assembles and factorizes `$L_k$`, `$H_k$` directly
         on the device.  This method then defines the
         plane-Poiseuille base flow
         `$\mathbf{U} = (1-y^2)(\cos\theta, 0, \sin\theta)$`

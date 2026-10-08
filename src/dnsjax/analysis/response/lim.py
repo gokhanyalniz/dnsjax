@@ -1,4 +1,4 @@
-r"""Linear inverse modeling (LIM) from unforced probe streams.
+r"""Linear inverse modelling (LIM) from unforced probe streams.
 
 Identifies the linear operator `$L$` governing a mode's fluctuation
 statistics from a plain (unforced, unperturbed) turbulent run: under
@@ -33,7 +33,7 @@ segments (independent runs / stream files):
     C_0(\tau) = \sum_k \mathbf{b}_k\mathbf{b}_k^H,
 
 so `$M(\tau) = C\,C_0^{-1}$` is exact (to roundoff) for noiseless
-linear data -- the anchor the unit tests pin -- and unbiased under
+linear data -- the case the unit tests pin -- and unbiased under
 stationarity.  ``b`` are the probe profiles projected onto the
 exported operator's energy coordinates
 (:func:`~dnsjax.analysis.response.ensemble.project_series`), each
@@ -272,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser(
         prog="python -m dnsjax.analysis.response.lim",
-        description="Linear inverse modeling from unforced probe "
+        description="Linear inverse modelling from unforced probe "
         "streams (see the module docstring).",
         allow_abbrev=False,
     )

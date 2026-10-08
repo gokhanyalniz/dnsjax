@@ -1,11 +1,11 @@
 r"""Ensemble machinery tests (``ensemble_setup.py`` + ``response.ensemble``).
 
 Covers the orchestration + aggregation + identification chain without
-solver runs (the probe streams of the "members" are synthesised; the
+solver runs (the probe streams of the "members" are synthesized; the
 solver-side probe integration is ``tests/test_probes.py``, and the
 full chain is a documented manual rehearsal):
 
-1. **harvest + build (real artifacts)**: two real mini snapshots ->
+1. **harvest + build (real artefacts)**: two real mini snapshots ->
    ``harvest`` manifest (spacing/t-min honoured) -> ``build``
    ``--dry-run`` (prints the plan, writes nothing) -> real ``build``
    with an ``--npy`` source and antithetic pairing: member dirs with

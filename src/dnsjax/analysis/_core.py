@@ -51,7 +51,7 @@ component 2 and its spanwise (axial) is component 0.
 
 Transforms reinstate the omitted Nyquist mode as zero and use NumPy
 ``ifft`` / ``irfft`` with ``norm="forward"`` (the inverse of the
-solver's forward-normalised transform), differentiating in place along
+solver's forward-normalized transform), differentiating in place along
 the stored axes -- no transpose.
 """
 

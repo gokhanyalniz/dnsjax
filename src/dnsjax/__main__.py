@@ -15,7 +15,7 @@ applied.
 
 Execution phases
 ----------------
-1. **Initialisation** (:func:`main`, via :mod:`dnsjax.bootstrap`):
+1. **Initialization** (:func:`main`, via :mod:`dnsjax.bootstrap`):
    parse CLI arguments (``--help`` exits here, side-effect
    free), apply the configuration layers, configure the
    distributed JAX runtime, print the final parameter set.
@@ -23,7 +23,7 @@ Execution phases
    and the ``python -m dnsjax`` guard target.
 
 2. **Main loop** (:func:`run`):
-   initialise velocity (a provided snapshot wins; otherwise an
+   initialize velocity (a provided snapshot wins; otherwise an
    in-process random / localized-rolls / laminar IC, with random
    the default), then iterate:
 
@@ -135,7 +135,7 @@ final stats -- are checked directly.  A NaN or inf prints one
 ``FATAL: non-finite ...`` line naming the quantity, flushes all
 streams unchecked (the offending rows are already on disk for
 post-mortem), skips the final snapshot (the state is non-finite;
-the last snapshot on disk is the post-mortem artifact), and exits
+the last snapshot on disk is the post-mortem artefact), and exits
 with code **3**.  Detection lags the device by at most the flush /
 ``it_error_check`` cadence, preserving async dispatch.
 
@@ -373,7 +373,7 @@ def _interpolate_if_needed(state, snap_path, read_metadata, sharding, jnp):
 
 
 def run(wall_time_start: int) -> None:
-    """Run the time-stepping loop after parameters and JAX are initialised.
+    """Run the time-stepping loop after parameters and JAX are initialized.
 
     *wall_time_start* is the ``perf_counter_ns`` timestamp taken at
     process start (:func:`main`) -- the reference for the
@@ -1099,7 +1099,7 @@ def run(wall_time_start: int) -> None:
         offending rows are already on disk from the checked flush that
         found them), and exits with code 3.  Deliberately writes no
         final snapshot -- the state is non-finite; the last snapshot on
-        disk is the post-mortem artifact.  Buffer-scan aborts fire on
+        disk is the post-mortem artefact.  Buffer-scan aborts fire on
         the main process only (flushes are main-device-gated) and rely
         on the launcher to tear down the peers, like
         ``sharding.exit``; the scalar-guard aborts (corrector error,

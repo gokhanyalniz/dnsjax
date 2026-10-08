@@ -101,7 +101,7 @@ an outer product `$(\text{wall-normal profile}) \otimes (\text{complex-}
 dnsjax broadcast-of-sharded-factors idiom (the same pattern that builds
 ``Fourier.k2`` / ``mean_mask``): the complex-FFT-axis factor is placed on
 the ``np0`` mesh axis, the real-FFT-axis factor on ``np1``, and the
-broadcast product is sharded -- so **no full array is ever materialised**
+broadcast product is sharded -- so **no full array is ever materialized**
 and the field is device-count-independent.  The peak normalization is a
 one-time host-side computation on the small 1-D factor signals (also
 replication-free).  No-slip is **exact** where there are walls (the wall
@@ -146,7 +146,7 @@ from ..harmonics import complex_harmonics, real_harmonics
 from ..parameters import derived_params, params
 
 if TYPE_CHECKING:
-    # ``Array`` is used only in (stringised) annotations, so it never
+    # ``Array`` is used only in (stringized) annotations, so it never
     # needs importing at runtime -- keeping this module importable
     # before JAX is configured (see the module docstring).
     from jax import Array
@@ -317,7 +317,7 @@ def _separable_scalar(
     ``mean_mask``): the complex-FFT-axis
     factor is placed on the ``np0`` mesh axis and the real-FFT-axis
     factor on ``np1``, so the broadcast product is sharded and **no full
-    array is materialised**.  The 1-D spectra are zero-padded to the
+    array is materialized**.  The 1-D spectra are zero-padded to the
     mesh-padded mode counts (``nz_spec`` / ``nx_spec``), so padding modes
     stay zero.
 

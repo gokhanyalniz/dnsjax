@@ -94,7 +94,7 @@ class ForceParams(BaseModel):
     the main loop adds to each listed spectral mode (plus its
     real-FFT conjugate partner) a random superposition of the stored
     channel profiles -- a sequence of independent state increments
-    ("kicks"), the discrete-time realisation of white-in-time
+    ("kicks"), the discrete-time realization of white-in-time
     forcing.  The drawn coefficients stream to
     ``forcing.bin``/``forcing.json``, keeping the run's full forcing
     history available to offline analysis -- e.g. their

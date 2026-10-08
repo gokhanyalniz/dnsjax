@@ -4,7 +4,7 @@ base dataclass, solvers, and stepper factory.
 Provides all geometry-general infrastructure for triply-periodic flows:
 the ``Fourier`` wavenumber class, the ``TriplyPeriodicFlow`` base
 dataclass (time-stepping coefficients), algebraic Helmholtz predict /
-correct operations, divergence correction, state initialisation, and the
+correct operations, divergence correction, state initialization, and the
 ``build_triply_periodic_stepper`` factory.
 
 Flow-specific modules (e.g. ``flows.triply_periodic.monochromatic``)

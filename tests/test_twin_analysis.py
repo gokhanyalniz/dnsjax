@@ -18,7 +18,7 @@ floor) across all three stored layouts -- the reader floor stays
 below the writer's version, so a member recorded before ``xz00``
 still opens -- the three-bin recovery agreeing across all three
 layouts, plane or not, ``fluctuation_energy`` agreeing between the two
-marginals, ``shape_alignment`` (normalised, symmetric,
+marginals, ``shape_alignment`` (normalized, symmetric,
 amplitude-blind), the reference spectra read alike from their own
 streams and from the pre-split combined layout (merged on the
 difference times, ``nan`` where the reference has no sample), the 3-D
@@ -283,7 +283,7 @@ def _closing_budget_columns(
     Per component, the production terms carry the whole balance
     (all equal), the four transport terms cancel in two pairs (so
     ``T_x`` and ``T_tot`` are identically zero while the individual
-    terms stay `$O(1)$` -- the normaliser must not be zero), and
+    terms stay `$O(1)$` -- the normalizer must not be zero), and
     ``eps_x`` is a fixed offset.  Solving
     `$n_p a_x - e_x = \dot{E}_x$` with `$e_x = 1$` fixes `$a_x$`.
     """
@@ -349,7 +349,7 @@ def test_closure_residuals() -> None:
         assert res["dU"] < 1e-12 and res["du2"] < 1e-12
         assert res["T_tot"] < 1e-12
 
-        # 3. T_tot is normalised by the largest individual transport
+        # 3. T_tot is normalized by the largest individual transport
         #    term (2.0 here), not by the balance: breaking one pair by
         #    0.5 must read 0.25.
         cols = _closing_member(root / "transport")
@@ -952,7 +952,7 @@ def test_build_twin() -> None:
     --build-parent`` worker in a subprocess (this process stays
     JAX-free); ``harvest`` and ``build-twin`` run as real CLIs; the
     built tree's TOMLs and index are checked, member streams are then
-    synthesised in place (as if the runs had completed), and
+    synthesized in place (as if the runs had completed), and
     ``aggregate_members`` consumes the real ``members.json`` end to
     end.
     """
@@ -1464,7 +1464,7 @@ def test_fluctuation_energy() -> None:
 
 
 def test_shape_alignment() -> None:
-    """The `(y, k)` shape overlap: normalised, symmetric, and blind to
+    """The `(y, k)` shape overlap: normalized, symmetric, and blind to
     amplitude -- the three properties a calibration reads off it."""
     from dnsjax.analysis.twin import shape_alignment
 
@@ -1727,7 +1727,7 @@ def test_balance_terms() -> None:
 
 
 def _gaussian(xi, eta, mean, cov) -> np.ndarray:
-    """An unnormalised bivariate Gaussian on the ``(eta, xi)`` grid."""
+    """An unnormalized bivariate Gaussian on the ``(eta, xi)`` grid."""
     inv = np.linalg.inv(np.asarray(cov, dtype=float))
     dx = xi[None, :] - mean[0]
     dy = eta[:, None] - mean[1]

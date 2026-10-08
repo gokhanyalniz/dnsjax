@@ -50,7 +50,7 @@ dispatches on (plain `$D_1$`/`$D_2$` radial derivatives, two wall
 rows, the azimuthal body force -- see
 :class:`ViscoelasticAnnularFlow`).
 
-Spin diagonalisation of the tensor Laplacian
+Spin diagonalization of the tensor Laplacian
 --------------------------------------------
 The cylindrical Laplacian couples the physical tensor components through
 `$1/r^2$` terms, exactly as the vector Laplacian couples `$u_r, u_\theta$`.
@@ -60,7 +60,7 @@ basis), the angular part of the Laplacian is
 `$\tfrac{1}{r^2}(\mathcal R + im)^2$`.  Each spin projection is an
 eigenvector of `$\mathcal R$` with eigenvalue `$is$` (spin weight
 `$s$`), so `$(\mathcal R + im)^2 \to -(m + s)^2$` and the tensor
-Laplacian **diagonalises**:
+Laplacian **diagonalizes**:
 
 .. math::
     (\nabla^2 \mathbf{c})_{\text{spin }s} =
@@ -382,7 +382,7 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         conformation combos -- one GEMM instead of two (bit-identical;
         the per-field matmul is batch-independent).  *fields* is the
         flat 9-tuple `$(u_r, u_\theta, u_z, c_{rr}, \ldots)$` and
-        *combos* the already-materialised `$(6, \ldots)$` tensor batch:
+        *combos* the already-materialized `$(6, \ldots)$` tensor batch:
         the annulus concatenates behind the velocity triple (reusing
         that buffer), the pipe stacks the flat tuple y-leading, so the
         shared caller hands over both forms.  Returns
@@ -426,7 +426,7 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         measurement.  Kept on the FLOPs and the dropped transient, not
         on a timing.  The full record, the pipe twin, and why the GPU
         case does not follow:
-        ``cylindrical_viscoelastic.tensor_abase_matvec``.
+        ``ViscoelasticCylindricalFlow.tensor_abase_matvec``.
         """
         return apply_y_matrix(self.A_base, c_spin)
 

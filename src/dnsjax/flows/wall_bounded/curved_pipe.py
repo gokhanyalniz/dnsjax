@@ -30,7 +30,7 @@ Consequences for the diagnostics:
   kinetic energy of the `$k_s \neq 0$` (streamwise-varying) modes.  It
   vanishes identically on any 2D or steady state, needs no reference
   profile, and is exactly the transition indicator here, so
-  ``stop.check_laminarization`` reads "relaminarised to 2D".
+  ``stop.check_laminarization`` reads "relaminarized to 2D".
 
 Exports the flow interface consumed by ``__main__``:
 ``predict_and_fully_correct`` (+ the measured variant), ``init_state``,

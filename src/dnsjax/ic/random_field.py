@@ -101,7 +101,7 @@ Reynolds number and no box length; `$a = 0$` is the plain window; and
 `$|k| = 0$` recovers it whatever `$a$` is, which is why the `$(0, 0)$`
 column and :mod:`dnsjax.ic.mean_mode` see no change from any of this.
 
-The field is then normalised so the volume-averaged L2 norm equals
+The field is then normalized so the volume-averaged L2 norm equals
 ``amplitude``.  Each wall-bounded mode is built by solving continuity for
 one velocity component (a `$1/k$` factor that would **inflate** the
 low-wavenumber spectrum and make it domain-dependent -- as the box grows
@@ -146,7 +146,7 @@ At the per-rank block of a ``1280 x 383 x 384`` run on
 and takes 1.5 s without them (one process, ``7 x 640`` modes); with
 eight ranks on eight cores (``6 x 320`` modes each), 7.0 s and 3.7 s.
 No full array
-is ever materialised: the shards are assembled with
+is ever materialized: the shards are assembled with
 :func:`dnsjax.snapshot.assemble_local_shards`, and only the final
 norm/scale runs in JAX.  The wall-normal velocity carries a *squared*
 wall window so its value and first derivative vanish at the walls
@@ -160,7 +160,7 @@ the entry points' job: an unset ``init.random_seed`` / ``twin.seed`` is
 drawn once and agreed across processes before any generator here is
 called (:mod:`dnsjax.seeding`, ``bootstrap.resolve_seed``).  Per-rank
 draws would assemble one field out of unrelated streams -- still
-divergence-free, still correctly normalised, and reproducible from no
+divergence-free, still correctly normalized, and reproducible from no
 recorded seed at all.
 
 **Import-order discipline**: only NumPy and the JAX-free
@@ -195,7 +195,7 @@ from ..parameters import derived_params, params
 from .mean_mode import build_cartesian_projector
 
 if TYPE_CHECKING:
-    # ``Array`` is used only in (stringised) annotations, so it never
+    # ``Array`` is used only in (stringized) annotations, so it never
     # needs importing at runtime -- keeping this module importable
     # before JAX is configured (see the module docstring).
     from jax import Array
@@ -256,7 +256,7 @@ def enforce_hermitian_slice(
 # and no plane replication are needed.
 #
 # Future note (not applicable while this stays numpy): if these
-# generators are ever vectorised into JAX (removing the per-mode Python
+# generators are ever vectorized into JAX (removing the per-mode Python
 # loops), use ``jax_threefry_partitionable=True`` with a replicated key
 # and draws under ``out_shardings`` for trivial partition-aware PRNG.
 
@@ -383,7 +383,7 @@ def _scaled_wall_window(
     r"""The wall window of one mode: *base*, narrowed towards the wall
     for modes above `$1/a$`.
 
-    *base* is the geometry's own wall window, already normalised to a
+    *base* is the geometry's own wall window, already normalized to a
     peak of 1 -- `$1 - y^2$` (Cartesian), `$1 - r$` (pipe, peaking at
     the axis), `$(r - r_1)(r_2 - r)$` (annulus, peaking at mid-gap).
     With ``confinement = 0`` it is returned unchanged, which is the
@@ -420,7 +420,7 @@ def _scaled_wall_window(
     untouched.
     """
     # The early return is the exact `$a = 0$` limit, not a sentinel:
-    # it also spares the renormalisation, which would only reproduce
+    # it also spares the renormalization, which would only reproduce
     # *base* up to whether the base's own peak is exactly 1.
     if confinement == 0.0:
         return base

@@ -354,7 +354,7 @@ def convective_nonlinear(
 
     Returns ``(n_hat, div_n)``: `$\hat{\mathcal{N}}$`
     ``(3, Ny, Nkz, Nkx)`` and the solver's own discrete divergence of
-    it (``cartesian._imm_iteration_vp`` stage 1).
+    it (``_cartesian_primitive_imm._imm_iteration_vp`` stage 1).
     """
     kx, kz = fourier_.kx, fourier_.kz
     d1 = flow_.D1

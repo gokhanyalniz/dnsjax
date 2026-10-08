@@ -974,7 +974,7 @@ def _check_steps_file(workdir: Path, name: str) -> None:
     lines = [ln for ln in steps_file.read_text().splitlines() if ln.strip()]
     header = lines[0].lstrip("#").split()
 
-    # Dicts returned through ``jit`` are canonicalised to sorted
+    # Dicts returned through ``jit`` are canonicalized to sorted
     # key order, so compare as sets and index columns by name
     # ("t" is always written first by ``_flush_stats``).
     # Both viscoelastic flows write an extra ``TrC_max`` column (the
