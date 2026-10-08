@@ -191,10 +191,10 @@ analysis/         snapshot API, transient_growth, snapshot_import,
 
 - `.claude/rules/`, each loaded when you read, edit or write a file it
   governs (read one directly before working in its area if you have not
-  opened such a file yet): `jax.md` (any Python), `stepping.md`,
-  `parameters.md`, `initial-conditions.md`, `snapshots.md`,
-  `diagnostics.md`, `pallas.md`, `human-docs.md` (the human-facing
-  docs), `agent-notes.md` (these notes).
+  opened such a file yet): `jax.md` and `docstrings.md` (any Python),
+  `stepping.md`, `parameters.md`, `initial-conditions.md`,
+  `snapshots.md`, `diagnostics.md`, `pallas.md`, `human-docs.md` (the
+  human-facing docs), `agent-notes.md` (these notes).
 - Directory notes (`CLAUDE.md`): `tests/`, `scripts/`, and in
   `src/dnsjax/`: `geometries/wall_bounded/`, `geometries/triply_periodic/`,
   `flows/`, `twin/`, `analysis/`.
