@@ -71,16 +71,20 @@ Cylindrical wall-normal interpolation on resume takes the spectral
 parity path (``cgl_parity_interpolation_matrices``) for the detected
 half-CGL / rigged-CGL grids (machine precision); custom / tanh /
 undetected grids use the local ``fd_order`` stencil
-(``local_interpolation_matrix``).  A *global* barycentric Lagrange
-fit **in r** is spectrally optimal only on a true CGL grid and blows
-up on the lopsided half-CGL point set (Lebesgue ``1e9``--``1e15``),
-so it is not used here; the safe global formulation on these grids is
-the parity-constrained fit in `$u = 2 r^2 - 1$` (where the radial CGL
-points are Chebyshev-distributed), solved in the Chebyshev basis --
-:func:`_spectral_even_axis_weights`, also the *interpolation*
-completion's axis-node reconstruction (the *quadrature* completion
-keeps the local rule: full exactness and weight positivity are
-incompatible there, see :func:`_cgl_completion_matrices`).
+(``local_interpolation_matrix``).
+
+Design notes
+------------
+**No global fit in** `$r$`.  A global barycentric Lagrange fit in `$r$`
+is spectrally optimal only on a true CGL grid and blows up on the
+lopsided half-CGL point set (Lebesgue constant ``1e9``--``1e15``), so
+it is not used.  The safe global formulation on these grids is the
+parity-constrained fit in `$u = 2 r^2 - 1$` (where the radial CGL
+points are Chebyshev-distributed), solved in the Chebyshev basis:
+:func:`_spectral_even_axis_weights`, which is also the *interpolation*
+completion's axis-node reconstruction.  The *quadrature* completion
+keeps the local rule, because full exactness and weight positivity are
+incompatible there (:func:`_cgl_completion_matrices`).
 """
 
 from collections.abc import Sequence
@@ -414,9 +418,9 @@ def clenshaw_curtis_weights(ny: int) -> ndarray:
     (half of a CGL, with the coordinate axis) cannot use it: the
     `$r$`-Jacobian makes the even extension of `$g = f r$` kink at the
     axis, so a single Clenshaw-Curtis vector is spectral for only one
-    parity of `$f$` -- that grid uses the axis-augmented
-    ``build_integration_weights`` rule instead (correct for both
-    parities).
+    parity of `$f$` -- that grid uses the parity-specific
+    :func:`cgl_radial_quadrature_weights` instead, and a non-CGL radial
+    grid the axis-augmented :func:`build_integration_weights` rule.
 
     Parameters
     ----------
@@ -467,8 +471,8 @@ def _spectral_even_axis_weights(r: ndarray) -> ndarray:
     analytic field is a polynomial in `$u = 2 r^2 - 1$`, the radial
     CGL points map to a (near-)CGL point set in `$u$`, and the fit is
     solved in the Chebyshev basis, where it is well-conditioned (the
-    monomial / barycentric-in-`$r$` formulations are not; see the
-    module docstring).  `$r = 0$` is `$u = -1$`.
+    monomial / barycentric-in-`$r$` formulations are not; the module's
+    Design notes).  `$r = 0$` is `$u = -1$`.
 
     The price of full exactness is the weight 1-norm (the noise
     amplification of the evaluation functional): exactly
@@ -1032,8 +1036,8 @@ def cgl_parity_interpolation_matrices(
     per mode): `$u_z$` `$\sigma = (-1)^m$`; `$u_\pm$`
     `$\sigma = (-1)^{m+1}$`.
 
-    Every ingredient is now spectral (the axis reconstruction
-    included), so this is machine-precision for a resolved field --
+    Every ingredient is spectral (the axis reconstruction included),
+    so this is machine-precision for a resolved field --
     vastly better than the ``fd_order``
     :func:`local_interpolation_matrix` on these grids.  Used for
     every half/rigged cylindrical resume; ``local`` handles only

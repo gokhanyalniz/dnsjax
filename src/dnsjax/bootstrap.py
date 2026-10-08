@@ -3,8 +3,7 @@ r"""Shared entry-point setup: parameter layering and JAX runtime init.
 Every dnsjax entry point -- the ``dnsjax`` / ``dnsjax-twin`` console
 scripts (``python -m dnsjax`` / ``-m dnsjax.twin``), the analysis
 CLIs, the diagnostic scripts, and the offline tests -- must finalize
-parameters and
-configure JAX in the same order **before** importing
+parameters and configure JAX in the same order **before** importing
 :mod:`dnsjax.sharding` or any geometry module, because those modules
 capture ``params`` / ``padded_res`` / the devices in module-level
 singletons at import time:
@@ -48,6 +47,95 @@ applied to the extension singletons right after its core
 
 This module is JAX-free at import time (JAX is imported inside the
 configuration functions), so it is always safe to import first.
+
+Design notes
+------------
+**No distributed runtime for one process.**  A lone process has
+nothing to coordinate, and ``process_index`` / ``process_count`` are
+0 / 1 either way.  Skipping the runtime means a lone run needs no
+coordinator address at all, so it runs on a laptop, a Mac or a login
+node with no MPI installed and no launcher to interrogate; it binds no
+port, so concurrent single-rank ensemble members cannot collide on
+one; and it cannot hang out JAX's 300 s initialization timeout on an
+address that was never reachable.  Verified by construction and by
+measurement: the only coordinator-dependent call in the tree is
+``snapshot._barrier``, itself gated on ``process_count() > 1``, and a
+full one-process run with ``jax.distributed.initialize`` made
+fatal-if-called reproduces the normal run's ``stats.dat`` and snapshot
+byte for byte.  Device selection loses nothing, because
+:func:`_apply_local_device_ids` does by hand the one thing
+``initialize`` would have done: a launch under ``mpirun -np 1`` keeps
+exactly its devices, while a bare one -- which no source narrows --
+takes every visible device, which is what lets one process drive a
+whole multi-GPU node without MPI.
+
+**The coordinator port.**  The order of :data:`_PORT_VARS` is not
+cosmetic.  A *scheduler job id* is shared by every ``mpirun`` in the
+job, so seeding on it hands two concurrent launches -- the ensemble
+members of one allocation (``scripts/ensemble_setup.py``) -- the same
+port, whereupon the second run's rank 0 connects to the first run's
+coordination service and is killed by it (``INTERNAL: wrong service
+incarnation``, then ``signal 6``; measured).  ``PMIX_NAMESPACE``
+identifies the *launch* and is published identically to every rank by
+every PMIx-based launcher (Open MPI 4 and 5, PRRTE, Flux, Slurm's PMIx
+plugin), so it comes first, and the job ids are the fallback for
+launchers that publish none.  That every rank agrees on it is the PMIx
+contract, and is measured: one namespace shared by four ranks on four
+*different* nodes of a scattered Open MPI 5.0.10 PBS job, and in every
+single-node job sampled.  The string (``prterun-<launch host>-<pid>@<n>``)
+names the launch and its mother superior rather than the local daemon,
+which is why it is node-invariant; had it not been, ranks would have
+derived different ports and failed to connect, a startup timeout
+rather than a wrong answer.  The seed is *checksummed* rather than
+reduced modulo the range, because these identifiers are not uniformly
+distributed and one is pathological: an Open MPI PMIx namespace is the
+ORTE job id plus one, and job ids are multiples of `$2^{12}$`, so
+``namespace % 2**12`` is 1 for every launch on the machine (measured
+across four).  JAX's own Open MPI plugin escapes that by dividing by
+`$2^{12}$` first, which works only because it knows its seed is a job
+id; a checksum works for any format a launcher invents, and
+``zlib.crc32`` is stable across processes where ``hash``
+(``PYTHONHASHSEED``) is not.
+
+**The coordinator host.**  The scheduler node lists name the job's
+first node, where ``mpirun`` runs and rank 0 lands under the default
+by-slot mapping.  Confirmed on a scattered four-node PBS job, which is
+where it could have failed: the first entry is rank 0's node even under
+``--map-by node``, spelled as the FQDN where ``hostname`` gives the
+short name -- the better thing to connect to anyway.  Open MPI 5 does
+not export the daemon URI JAX's own plugin keys on: PRRTE exports no
+``hnp_uri`` under any name (measured on 5.0.10), which is why 5.x falls
+through that plugin and why the sources around :func:`_hnp_host`, not
+it, carry 5.x.
+
+**MPI collectives on CPU.**  Routing the cross-process collectives
+through MPI rather than gloo is the faster choice on a cluster and
+costs nothing to arrange, since a multi-device CPU run is one process
+per device and so under ``mpirun`` by definition.  Two conditions come
+with it.  Nothing may touch ``MPI_Init`` before XLA: XLA's is unguarded
+and ignores its own return value, so a process that had already
+initialized MPI aborts (Open MPI 4.1.6: ``mpi_init: invoked multiple
+times``).  And CPU async dispatch has to go: XLA's MPI backend requires
+every communicator request to come from the thread that called
+``MPI_Init``, while PjRt's CPU client hands an executable to its own
+thread pool as soon as the inputs are not already available.  That
+only starts once a run has real work in flight, so the failure looks
+like a mesh or machine quirk rather than a race -- ``Communicator
+requested from a thread that is not the one MPI was initialized from``
+-- and it is fatal.  Reproduced at ``np0=4 x np1=4`` on 16 ranks and
+fixed there by the inline dispatch, which does not cost MPI its
+advantage: 0.80 s/t against gloo's 1.14 (4 ranks, plane Couette
+`$32^3$`, interleaved).  Inline dispatch is not the whole fix, though:
+a program dispatched while an input is still being written goes to the
+pool all the same, and a program's collectives can run off the
+launching thread anyway, so :mod:`dnsjax.sharding` also opens every
+communicator the mesh uses as it builds the mesh
+(``sharding._warm_communicators``).  The choice is made per rank
+against that rank's own filesystem and reported by rank 0 only, so the
+wrapper library has to be visible identically everywhere: a node that
+cannot see it picks gloo while its peers pick MPI, and the run hangs
+with nothing said.  Exporting ``MPITRAMPOLINE_LIB`` in the job script
+is what guarantees that.
 """
 
 import os
@@ -143,14 +231,15 @@ def configure_jax_platform(
     here; do not read its absence as licence to relax the production
     one.
 
-    After this, :data:`sharding` reports the active device unambiguously
-    (its banner reads the live device, so a stale ``params.dist.platform``
-    can no longer contradict it), and ``--dist.platform cuda`` (via
-    :func:`platform_from_argv`) runs the real Pallas / Triton kernels on a
-    GPU from any script or test, not just the production entry point.
+    After this, :data:`sharding` reports the active device
+    unambiguously (its banner reads the live device), and
+    ``--dist.platform cuda`` (via :func:`platform_from_argv`) runs the
+    real Pallas / Triton kernels on a GPU from any script or test, not
+    just the production entry point.
 
-    Also line-buffers ``sys.stdout``, so piped output (agent-tailed
-    runs, SLURM logs) arrives per line instead of in 8 KiB blocks.
+    Also line-buffers ``sys.stdout``, so piped output (a log being
+    followed, SLURM output) arrives per line instead of in 8 KiB
+    blocks.
     """
     # Guarded: wrapped/captured stdout objects may lack
     # ``reconfigure``; the switch flushes anything already buffered.
@@ -469,8 +558,8 @@ def resolve_parameters(
     production flow: *toml_path* overrides the default
     ``./parameters.toml`` lookup (``False`` skips the TOML layer
     entirely -- see :func:`peek_run_context`); *extensions* pins the
-    extension
-    sections riding the surface (``None`` -- the production default --
+    extension sections riding the surface (``None`` -- the production
+    default --
     selects every registered extension relevant to the resolved flow,
     :func:`dnsjax.extensions.relevant_extensions`; an entry point with
     its own section, e.g. the transient-growth ``[tg]``, passes an
@@ -657,14 +746,12 @@ _RANK_VARS: tuple[tuple[str, str, str, str], ...] = (
     ("PMI_RANK", "PMI_SIZE", "MPI_LOCALRANKID", "MPI_LOCALNRANKS"),
 )
 
-# The Open MPI daemon URI: ORTE's name (4.x, the one JAX reads) and
-# the PRRTE spelling it would have taken in 5.x.  The mixed case is
+# The Open MPI daemon URI: ORTE's name (up to 4.x, the one JAX reads)
+# and the PRRTE spelling it would have taken in 5.x, which exports
+# neither (Design notes: "The coordinator host").  The mixed case is
 # verbatim -- an MCA parameter is exported as
 # ``<PROJECT>_MCA_<param>`` -- so the capitalized spellings ruff
-# suggests (SIM112) are not the variables.  In practice this is an
-# Open MPI *4* source only: a 5.0.10 PBS site publishes no variable
-# whose name contains ``hnp_uri`` at all (measured), which is why the
-# chain below cannot lean on it.
+# suggests (SIM112) are not the variables.
 _HNP_URI_VARS: tuple[str, ...] = (
     "OMPI_MCA_orte_hnp_uri",  # noqa: SIM112
     "PRTE_MCA_prte_hnp_uri",  # noqa: SIM112
@@ -802,41 +889,10 @@ def _coordinator_port() -> str:
 
     ``JAX_COORDINATOR_PORT`` (JAX's own override, which the explicit
     bootstrap bypasses along with the rest of its detection) wins;
-    otherwise the first seed of :data:`_PORT_VARS` that is set is
-    mapped into the same ephemeral range JAX's own plugins pick from
-    -- by checksum, for the reason at the end of this docstring.
-
-    The order is not cosmetic.  A *scheduler job id* is shared by every
-    ``mpirun`` in the job, so seeding on it hands two concurrent
-    launches -- the ensemble members of one allocation
-    (``scripts/ensemble_setup.py``) -- the same port, whereupon the
-    second run's rank 0 connects to the first run's coordination
-    service and is killed by it (``INTERNAL: wrong service
-    incarnation``, then ``signal 6``; measured, not inferred).
-    ``PMIX_NAMESPACE`` identifies the *launch* and is published
-    identically to every rank by every PMIx-based launcher (Open MPI 4
-    and 5, PRRTE, Flux, Slurm's PMIx plugin), so it comes first and the
-    job ids are the fallback for launchers that publish none.  That
-    every rank agrees on it is the PMIx contract, and is measured:
-    one namespace shared by four ranks on four *different* nodes of a
-    scattered Open MPI 5.0.10 PBS job, plus every single-node job
-    sampled.  The string
-    (``prterun-<launch host>-<pid>@<n>``) names the launch and its
-    mother superior rather than the local daemon, which is why it is
-    node-invariant -- had it not been, ranks would have derived
-    different ports and failed to connect, a startup timeout rather
-    than a wrong answer.
-
-    The seed is *checksummed* rather than reduced modulo the range
-    directly, because these identifiers are not uniformly distributed
-    and one of them is pathological: an Open MPI PMIx namespace is the
-    ORTE job id plus one, and job ids are multiples of ``2^12``, so
-    ``namespace % 2**12`` is **1** for every launch on the machine
-    (measured across four).  JAX's own Open MPI plugin escapes that by
-    dividing by ``2^12`` first, which only works because it knows its
-    seed is a job id; a checksum works for any format a launcher
-    invents, and ``zlib.crc32`` is stable across processes where
-    ``hash`` (PYTHONHASHSEED) is not -- ranks must agree.
+    otherwise the first seed of :data:`_PORT_VARS` that is set,
+    launch-scoped before job-scoped, is mapped by a CRC32 checksum into
+    the ephemeral range JAX's own plugins pick from (Design notes: "The
+    coordinator port").
     """
     override = os.environ.get("JAX_COORDINATOR_PORT")
     if override:
@@ -867,16 +923,12 @@ def _first_field(path: str | None) -> str | None:
 def _hnp_host() -> str | None:
     """The launch node's address out of the Open MPI daemon URI.
 
-    ``OMPI_MCA_orte_hnp_uri`` is what JAX's own Open MPI plugin keys
-    on, and Open MPI 5 does not replace it: PRRTE exports no
-    ``hnp_uri`` under any name (measured on 5.0.10), which is why 5.x
-    falls through that plugin and why the sources around this one --
-    not this one -- are what carry it.  The URI reads
-    ``<jobid>.<vpid>;tcp://<ip>[,<ip>...]:<port>`` (or ``tcp6://`` with
-    the address bracketed), and the host is the node ``mpirun`` itself
-    runs on -- rank 0's node under every mapping that does not reorder
-    the hosts explicitly.  The parse is JAX's.  The PRRTE spelling is
-    kept as a free catch in case some build does export it.
+    The URI reads ``<jobid>.<vpid>;tcp://<ip>[,<ip>...]:<port>`` (or
+    ``tcp6://`` with the address bracketed), and the host is the node
+    ``mpirun`` itself runs on -- rank 0's node under every mapping that
+    does not reorder the hosts explicitly.  The parse is JAX's.  Open
+    MPI 5 exports no URI; the PRRTE spelling is a free catch in case
+    some build does (Design notes: "The coordinator host").
     """
     uri = ""
     for name in _HNP_URI_VARS:
@@ -935,16 +987,14 @@ def _coordinator_host(ranks: _Ranks) -> str | None:
        (:func:`_slurm_host`), LSF's ``LSB_DJOB_HOSTFILE`` / ``LSB_HOSTS``,
        Grid Engine's ``PE_HOSTFILE``.  Each names the job's first node,
        which is where ``mpirun`` runs and where rank 0 lands under the
-       default by-slot mapping, and every rank reads the same value.
-       Confirmed on a scattered 4-node PBS job, which is where it
-       could have failed: the first entry is rank 0's node even under
-       ``--map-by node``, spelled as the FQDN where ``hostname``
-       gives the short name -- the better thing to connect to anyway.
+       default by-slot mapping, and every rank reads the same value
+       (Design notes: "The coordinator host").
 
-    Every source is pinned offline (``tests/test_bootstrap.py``), but
-    only the first two have been exercised by a real launcher here;
-    the scheduler entries are the published contracts of those
-    queueing systems.  A site matching none is one
+    Every source is pinned offline (``tests/test_bootstrap.py``).
+    Loopback and ``PBS_NODEFILE`` have also met real launches (one
+    node; a scattered four-node PBS job); the daemon URI follows JAX's
+    own parse, and the other node lists are the published contracts of
+    those queueing systems.  A site matching none is one
     ``JAX_COORDINATOR_ADDRESS`` export away, and
     :func:`_bootstrap_distributed` says so by name.
     """
@@ -1008,13 +1058,12 @@ def _launcher_params() -> dict[str, object] | None:
 def _undetectable_launcher(exc: ValueError) -> str:
     r"""The failure message for a launcher nothing could identify.
 
-    Which half is missing decides the advice, and getting it wrong
-    costs a debugging session: a process with no layout to complete
-    cannot be helped by exporting ``JAX_COORDINATOR_ADDRESS``, which
-    only moves the failure on to ``Number of processes must be
-    defined`` (measured).  Reaching this at all means a marker said
-    "one rank of several" -- a lone process never gets here, it skips
-    the runtime entirely -- so the marker is the thing to name.
+    Which half is missing decides the advice: a process with no rank
+    layout cannot be helped by exporting ``JAX_COORDINATOR_ADDRESS``,
+    which only moves the failure on to ``Number of processes must be
+    defined`` (measured).  A lone process never gets here -- it skips
+    the runtime entirely -- so a marker said "one rank of several", and
+    the marker is the thing to name.
     """
     ranks = _launcher_ranks()
     if ranks is None:
@@ -1045,28 +1094,9 @@ def _bootstrap_distributed() -> None:
 
     **One process means no distributed runtime, ever**
     (:func:`_solo_launch`) -- whether the launcher said so or nothing
-    in the environment claims otherwise.  There is nothing to
-    coordinate, and ``process_index`` / ``process_count`` are 0 / 1
-    either way.  What that buys is not tidiness: a lone run then needs
-    no coordinator address at all, so it runs on a laptop, a Mac or a
-    login node with no MPI installed and no launcher to interrogate;
-    it binds no port, so concurrent single-rank ensemble members
-    cannot collide on one; and it cannot hang out JAX's 300 s
-    initialization timeout on an address that was never reachable.
-    Verified by construction and by measurement: the only
-    coordinator-dependent call in the tree is ``snapshot._barrier``,
-    itself gated on ``process_count() > 1``, and a full one-process run
-    with ``jax.distributed.initialize`` made fatal-if-called
-    reproduces the normal run's ``stats.dat`` and snapshot byte for
-    byte.
-
-    Skipping it costs nothing in device selection, because
-    :func:`_apply_local_device_ids` does by hand the one thing
-    ``initialize`` would have done with ``JAX_LOCAL_DEVICE_IDS`` and
-    the local rank.  A launch under ``mpirun -np 1`` therefore keeps
-    exactly the devices it has today, while a bare one -- which no
-    source narrows -- takes every visible device, which is what lets a
-    single process drive a whole multi-GPU node without MPI.
+    in the environment claims otherwise; :func:`_apply_local_device_ids`
+    then selects the devices ``initialize`` would have (Design notes:
+    "No distributed runtime for one process").
     """
     import jax
 
@@ -1088,8 +1118,8 @@ def _mpiwrapper_lib() -> str | None:
 
     ``jaxlib`` links MPItrampoline statically but ships no MPI: its MPI
     collectives dlopen the library named by ``MPITRAMPOLINE_LIB`` --
-    the thin wrapper MPIwrapper builds around the site's own MPI (the
-    ``README.md`` "Installation" section) -- and abort without it.
+    the thin wrapper MPIwrapper builds around the site's own MPI
+    (``docs/cpu-collectives.md``) -- and abort without it.
     Honour that variable when it points at a real file, otherwise look
     for ``libmpiwrapper.so`` on ``LD_LIBRARY_PATH`` and write the hit
     back into the environment.  The scan is a plain path test on
@@ -1099,8 +1129,8 @@ def _mpiwrapper_lib() -> str | None:
     **Call this before ``import jax``.**  MPItrampoline reads the
     variable while jaxlib is being loaded, so exporting a discovered
     path afterwards is silently too late -- the run reaches its first
-    collective and dies with ``MPITRAMPOLINE_LIB is not set`` (measured
-    here, not inferred).
+    collective and dies with ``MPITRAMPOLINE_LIB is not set``
+    (measured).
     """
     lib = os.environ.get("MPITRAMPOLINE_LIB")
     if lib:
@@ -1115,45 +1145,15 @@ def _mpiwrapper_lib() -> str | None:
 def _select_cpu_collectives(lib: str | None) -> str:
     r"""Pick the CPU cross-process collectives backend; report it.
 
-    JAX defaults to **gloo** (TCP).  Routing the collectives through
-    MPI instead is the faster choice on a cluster and costs nothing to
-    arrange -- a multi-device CPU run is one process per device, so it
-    is under ``mpirun`` by definition -- so take it whenever the
-    MPItrampoline wrapper library *lib* was
-    found (:func:`_mpiwrapper_lib`, which had to run earlier).  JAX's
-    own ``JAX_CPU_COLLECTIVES_IMPLEMENTATION`` wins over that -- JAX
-    applies it itself (the flag is an enum *state*, which reads the
-    environment), so what is left here is the dispatch pin below,
-    which MPI needs however it was selected.
-
-    Two conditions come with MPI, neither of them a choice.  Nothing
-    may touch ``MPI_Init`` before XLA: XLA's is unguarded and ignores
-    its own return value, so a process that had already initialized
-    MPI aborts (Open MPI 4.1.6: ``mpi_init: invoked multiple times``).
-    And CPU async dispatch has to go, which is why this also sets
-    ``jax_cpu_enable_async_dispatch``: XLA's MPI backend requires every
-    communicator request to come from the thread that called
-    ``MPI_Init``, while PjRt's CPU client hands an executable to its
-    own thread pool as soon as the inputs are not already available.
-    That only starts happening once a run has real work in flight, so
-    the failure looks like a mesh or machine quirk rather than a race
-    -- ``Communicator requested from a thread that is not the one MPI
-    was initialized from`` -- and it is fatal.  Reproduced at
-    ``np0=4 x np1=4`` on 16 ranks and fixed there by the inline
-    dispatch, which does not cost MPI its advantage: 0.80 s/t against
-    gloo's 1.14 (4 ranks, plane-Couette 32^3, interleaved).  Inline
-    dispatch is not the whole fix, though: a program dispatched while
-    an input is still being written goes to the pool all the same,
-    and a program's collectives can run off the launching thread
-    anyway.  So :mod:`dnsjax.sharding` also opens every communicator
-    the mesh uses as it builds the mesh, on this thread
-    (``sharding._warm_communicators``, which has the cases).
-
-    The choice is made per rank against that rank's own filesystem, and
-    reported by rank 0 only, so the wrapper library has to be visible
-    identically everywhere: a node that cannot see it picks gloo while
-    its peers pick MPI, and the run hangs with nothing said.  Exporting
-    ``MPITRAMPOLINE_LIB`` in the job script is what guarantees that.
+    JAX defaults to **gloo** (TCP).  MPI is taken whenever the
+    MPItrampoline wrapper library *lib* was found
+    (:func:`_mpiwrapper_lib`, which had to run earlier), unless JAX's
+    own ``JAX_CPU_COLLECTIVES_IMPLEMENTATION`` says otherwise -- JAX
+    applies that variable itself, so what is left here is the inline
+    dispatch pin (``jax_cpu_enable_async_dispatch = False``), which MPI
+    needs however it was selected: XLA's MPI backend refuses a
+    communicator request off the thread that called ``MPI_Init``
+    (Design notes: "MPI collectives on CPU").
 
     Returns the one-line startup diagnostic: which backend a run got is
     a performance-relevant decision made by the launch environment
@@ -1183,8 +1183,8 @@ def _select_cpu_collectives(lib: str | None) -> str:
         return (
             "CPU cross-process collectives: gloo (TCP).  MPI is "
             "usually faster: build MPIwrapper and point "
-            "MPITRAMPOLINE_LIB at its libmpiwrapper.so (README.md, "
-            "'Installation')."
+            "MPITRAMPOLINE_LIB at its libmpiwrapper.so "
+            "(docs/cpu-collectives.md)."
         )
     jax.config.update("jax_cpu_collectives_implementation", "mpi")
     jax.config.update("jax_cpu_enable_async_dispatch", False)

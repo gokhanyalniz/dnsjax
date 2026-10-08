@@ -304,7 +304,7 @@ class Distribution(BaseModel):
     collectives dlopen: ``MPITRAMPOLINE_LIB`` pointing at an
     MPIwrapper-built ``libmpiwrapper.so``, or that library on
     ``LD_LIBRARY_PATH``.  Without one the run stays on gloo and says
-    so (building the wrapper: ``README.md``, "Installation"); with
+    so (building the wrapper: ``docs/cpu-collectives.md``); with
     ``JAX_CPU_COLLECTIVES_IMPLEMENTATION`` set, that choice wins
     outright.  Worth having: measured on a 16-core box at 4 ranks,
     plane-Couette ``32^3``, MPI runs at 0.80 s/t against gloo's 1.14
