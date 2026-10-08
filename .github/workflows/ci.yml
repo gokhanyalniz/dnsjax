@@ -110,8 +110,8 @@ jobs:
 
   full-cpu:
     name: full offline suite (CPU)
-    # Weekly and on demand only: ~36 script launches, far too long for
-    # every push.
+    # Weekly and on demand only: the whole offline suite is far too long
+    # for every push.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90

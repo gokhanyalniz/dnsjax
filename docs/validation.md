@@ -12,8 +12,8 @@ being checked.
 growth $G(t)$ about a wall-normal total profile by reusing the solver's
 own linear step, one Fourier mode at a time — so every check here tests the
 production stepper, not a separate linear code. Each case below is a
-single mode, matched on the solver's finite-difference-in-$y$
-discretization to about **2 %** or better:
+single mode, matched on the solver's discretization (finite differences
+in $y$) to about **2 %** or better:
 
 | Flow | Control parameters | Mode | Published $G_{\max}$ | at $t$ | Source |
 |---|---|---|---|---|---|
@@ -21,7 +21,7 @@ discretization to about **2 %** or better:
 | Plane-Couette | $Re = 1000$ | $(\alpha, \beta) = (0.035,\ 1.60)$ | $\approx 1185$ | $\approx 117$ | Butler & Farrell 1992 |
 | Pipe | $Re = 3000$ | $m = 1$, $\alpha = 0$ | $649$ | $147$ | Schmid & Henningson 1994, p. 217 |
 | Taylor–Couette | $\eta = 0.881$, $Re_1 = 591$, $Re_2 = -2588$ | $n = 10$, $k = 1.994$ | $71.58$ | — | Maretzke, Hof & Avila 2014, table 3 |
-| Quasi-Keplerian | $\eta = 0.71$, $R_\Omega = -1.2$, $Re_1 = 10^4$ | $m = 4$, $k_z = 0$ | $13.04$ | $27\,\tau_d$ | Shi et al. 2017, table III case I |
+| Quasi-Keplerian | $\eta = 0.71$, $R_\Omega = -1.2$, $Re_1 = 10^4$ | $m = 4$, $k_z = 0$ | $13.04$ | $27 \tau_d$ | Shi et al. 2017, table III case I |
 
 Two further checks ride along: the centrifugally unstable
 Taylor–Couette case ($Re_1 = 100$, $Re_2 = 0$, $\eta = 1/2$) must come

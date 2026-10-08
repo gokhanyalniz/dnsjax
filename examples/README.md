@@ -61,9 +61,9 @@ laptop core, in minutes:
 
 These are not GPU-sized problems. Cases this small do not come close to
 filling one, so there is no reason to expect a GPU to help here and some
-reason to expect it to hurt; they are sized for a laptop on purpose. What
-the solver does on hardware it was built for is a different question, and
-one this repository does not yet answer with numbers.
+reason to expect it to hurt; they are sized for a laptop on purpose. How
+a production-sized run scales, from 1 to 64 CPU nodes, is measured in
+[`docs/scaling.md`](../docs/scaling.md#strong-scaling-on-archer2).
 
 The production-scale run these are the small counterpart to — a
 100-diameter pipe over 500 advective time units — is walked through flag

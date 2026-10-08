@@ -131,8 +131,8 @@ itself), and the output streams, see
 | Flow | Geometry | Laminar base / driving | Defining controls |
 |---|---|---|---|
 | **Pipe** | cylindrical | $U_z = 1 - r^2$, pressure-driven | `re`, axial length `lz` |
-| **Curved Pipe** | cylindrical (toroidal) | uniform body force on a pipe bent onto a circle, total field; no closed-form laminar state | `re`, `curvature`, `lz` |
-| **Viscoelastic Pipe** | cylindrical (sPTT) | pressure-driven, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `lz` |
+| **Curved pipe** | cylindrical (toroidal) | uniform body force on a pipe bent onto a circle, total field; no closed-form laminar state | `re`, `curvature`, `lz` |
+| **Viscoelastic pipe** | cylindrical (sPTT) | pressure-driven, 9-component total field | `el`, `wi`, `beta`, `epsilon`, `kappa`, `lz` |
 | **Taylor–Couette** | annular | $U_\theta = A_0 r + B_0/r$, wall rotation | `re1`, `re2`, `eta`, `lz` |
 | **Quasi-Keplerian** | annular | $U_\theta = A_0 r + B_0/r$, Rayleigh-stable co-rotation | `re1`, `r_omega`, `eta`, `lz` |
 | **Dean** | annular | azimuthal body force (a pressure-driven *curved* channel), total field | `re`, `eta`, `lz` |
@@ -190,7 +190,7 @@ three runs, its bar their range. A node: two 64-core AMD EPYC 7742
 (Zen&nbsp;2, 2.25&nbsp;GHz nominal, run at 2.0) with 256 GB of
 DDR4-3200 over eight channels per socket, Infinity Fabric within a
 socket and three xGMI links between the two, and HPE Slingshot between
-nodes.
+nodes, as the site documented them on 7 October 2026.
 </em></p>
 
 Every run reproduces the same trajectory to round-off. The efficiency
@@ -282,6 +282,7 @@ in [`docs/validation.md`](docs/validation.md).
 | [`docs/extending.md`](docs/extending.md) | adding a flow system |
 | [`docs/cpu-collectives.md`](docs/cpu-collectives.md) | routing multi-process CPU collectives through MPI |
 | [`tests/README.md`](tests/README.md) | how the suite is laid out and how to run it |
+| [`scripts/README.md`](scripts/README.md) | the offline tools: figures, benchmarks, ensembles, post-processing |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | setup, lint, tests, adding a flow, commit style |
 | [`src/dnsjax/extensions`](src/dnsjax/extensions/README.md) | the `[probes]` and `[force]` runtime streams |
 | [`src/dnsjax/analysis/response`](src/dnsjax/analysis/response/README.md) | probe stream → turbulent mean → linear operator → identification |
@@ -350,6 +351,12 @@ The numerics follow these references:
 - A. P. Willis, *The Openpipeflow Navier–Stokes solver*, SoftwareX **6**,
   124–127 (2017). Predictor–corrector time stepping and the decoupled
   $u_\pm$ pipe/annular formulation.
+- S. A. Orszag, *On the elimination of aliasing in finite-difference
+  schemes by filtering high-wavenumber components*, J. Atmos. Sci.
+  **28**(6), 1074 (1971). The 3/2 dealiasing rule.
+- C. Canuto, M. Y. Hussaini, A. Quarteroni and T. A. Zang, *Spectral
+  Methods in Fluid Dynamics*, Springer (1988). Pseudo-spectral methods,
+  and the continuity argument behind the influence-matrix method.
 - L. Kleiser and U. Schumann, *Treatment of incompressibility and boundary
   conditions in 3-D numerical spectral simulations of plane channel flows*,
   in *Proc. 3rd GAMM Conference on Numerical Methods in Fluid Mechanics*,
@@ -390,8 +397,9 @@ Institute of Science and Technology Austria, and I am grateful for that
 opportunity and for the time it gave me to work on this. Substantial
 changes have followed, and continue, since I joined Yongyun Hwang's
 group at Imperial College London. I also thank Ashley P. Willis for
-openpipeflow, from which I learned a great deal. None of them was
-involved in the development of this code. Any errors are my own.
+[`openpipeflow`](https://openpipeflow.org), from which I learned a great
+deal. None of them was involved in the development of this code. Any
+errors are my own.
 
 ## Use of AI
 

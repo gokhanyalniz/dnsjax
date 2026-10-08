@@ -1,15 +1,17 @@
 r"""Convert a native-layout velocity field into a dnsjax snapshot.
 
-This is a **library** (not a CLI): it exposes functions that future,
-per-simulator CLIs import to pack a velocity field -- already arranged in
-dnsjax's **native** component/axis structure -- into dnsjax's single-file
-(tar-wrapped zarr3) snapshot format.  Like :mod:`dnsjax.ic.random_field`
-it configures the global parameter singletons (one system per process)
-and calls ``snapshot.save_snapshot``, but instead of *generating* a field
-it *packs a supplied one*.  Conversion runs single-device (``np = 1``);
+This is a **library** (not a CLI): a converter for a particular
+simulator imports it to pack a velocity field -- already arranged in
+dnsjax's **native** component/axis structure -- into dnsjax's
+single-file (tar-wrapped zarr3) snapshot format.  Every velocity flow
+is accepted; the nine-component viscoelastic ones are refused.  Like
+:mod:`dnsjax.ic.random_field` it configures the global parameter
+singletons (one system per process) and calls
+``snapshot.save_snapshot``, but instead of *generating* a field it
+*packs a supplied one*.  Conversion runs single-device (``np = 1``);
 any external ``[streamwise, wall-normal, spanwise]`` -> native
-permutation and component mixing is the **caller's** responsibility, not
-this module's.
+permutation and component mixing is the **caller's** responsibility,
+not this module's.
 
 It is the *inbound* half of :mod:`dnsjax.analysis`, whose other members
 only read: it belongs here because it is the round trip's other
@@ -25,21 +27,22 @@ Native input layout (physical and spectral)
 The input is array-like with shape ``(3, axis1, axis2, axis3)`` in
 dnsjax's native ordering for every geometry:
 
-=================  ==========================  =========================
-system family      components (axis 0)         axes (1, 2, 3)
-=================  ==========================  =========================
-Cartesian          `$(u_x, u_y, u_z)$`         `$(y, z, x)$`
-triply-periodic    `$(u_x, u_y, u_z)$`         `$(y, z, x)$`
-pipe / TC          `$(u_z, u_r, u_\theta)$`    `$(r, \theta, z_{ax})$`
-=================  ==========================  =========================
+=====================  ==========================  =======================
+system family          components (axis 0)         axes (1, 2, 3)
+=====================  ==========================  =======================
+Cartesian              `$(u_x, u_y, u_z)$`         `$(y, z, x)$`
+triply-periodic        `$(u_x, u_y, u_z)$`         `$(y, z, x)$`
+cylindrical, annular   `$(u_z, u_r, u_\theta)$`    `$(r, \theta, z_{ax})$`
+=====================  ==========================  =======================
 
 Axis 3 is the real-FFT (``nx``) slot, axis 2 the complex-FFT (``nz``)
 slot, axis 1 the wall-normal (``ny``; untransformed for wall-bounded)
-or `$k_y$` (periodic) slot.  **Pipe and Taylor-Couette share the same
-native layout** ``(r, θ, z_ax)``: dnsjax maps the axial direction to
-the real-FFT (``nx``) slot and the azimuthal to the complex (``nz``)
-slot, so for Taylor-Couette the spanwise (axial) resolution is ``nx``
-and the streamwise (azimuthal) ``nz``.
+or `$k_y$` (periodic) slot.  **The cylindrical and annular flows share
+one native layout** ``(r, θ, z_ax)``: dnsjax maps the axial direction
+to the real-FFT (``nx``) slot and the azimuthal to the complex (``nz``)
+slot, so for the annular flows the spanwise (axial) resolution is
+``nx`` and the streamwise (azimuthal) ``nz``.  On the curved pipe
+component 0 is the streamwise `$u_s$` along the bent axis.
 
 Physical input has shape ``(3, ny, nz, nx)`` and is **real** in every
 family (all native components are physical velocity components).
@@ -49,23 +52,25 @@ transformed (no 3/2 dealiasing padding): the real axis (3) holds
 complex axis (2) ``nz - 1`` modes in ``complex_harmonics`` order (or
 ``nz`` in numpy-FFT order with Nyquist), and for periodic the `$k_y$`
 axis (1) likewise; ``input_norm`` (numpy naming) is the source's
-forward-FFT normalisation.
+forward-FFT normalization.
 
 dnsjax stored state (the on-disk contract)
 ------------------------------------------
-The snapshot stores the **complex spectral perturbation velocity** at
-true (unpadded) resolution (``np = 1`` -> no device padding):
+The snapshot stores the **complex spectral velocity** -- the
+perturbation or the total field, by flow ("Perturbation or total
+field" below) -- at true (unpadded) resolution (``np = 1`` -> no
+device padding):
 
-=================  =======================  ====================
-system family      state components         state axes
-=================  =======================  ====================
-Cartesian          `$(u_x,u_y,u_z)$`        `$(y, k_z, k_x)$`
-triply-periodic    `$(u_x,u_y,u_z)$`        `$(k_y, k_z, k_x)$`
-pipe / TC          `$(u_z,u_r,u_\theta)$`   `$(r, m, k_z)$`
-=================  =======================  ====================
+=====================  =======================  ====================
+system family          state components         state axes
+=====================  =======================  ====================
+Cartesian              `$(u_x,u_y,u_z)$`        `$(y, k_z, k_x)$`
+triply-periodic        `$(u_x,u_y,u_z)$`        `$(k_y, k_z, k_x)$`
+cylindrical, annular   `$(u_z,u_r,u_\theta)$`   `$(r, m, k_z)$`
+=====================  =======================  ====================
 
-True shapes are ``(ny, nz-1, nx//2)`` (Cartesian, pipe, TC) and
-``(ny-1, nz-1, nx//2)`` (triply-periodic).  In format 6 (the
+True shapes are ``(ny, nz-1, nx//2)`` (Cartesian, cylindrical,
+annular) and ``(ny-1, nz-1, nx//2)`` (triply-periodic).  In format 6 (the
 reader's floor) this table is literal: the on-disk chunk bytes *are*
 this native state (the solver's spectral layout, no transpose), in
 the physical component basis above.
@@ -77,9 +82,12 @@ Parameter surface
 keyword arguments -- exactly the names the solver CLI documents
 (``dnsjax --help <system>``): ``nx``/``ny``/``nz``/``lx``/``lz``/
 ``re`` for the Cartesian and periodic flows; ``nz`` (axial), ``nr``
-(radial), ``ntheta`` (azimuthal), ``lz`` (axial length), optional
-``m0`` (azimuthal wedge) and ``re`` (pipe) or ``re1``/``re2``/``eta``
-(Taylor-Couette) for the cylindrical/annular flows.  The three
+(radial), ``ntheta`` (azimuthal) and ``lz`` (axial length) for the
+cylindrical and annular flows, with ``re`` (pipe, Dean),
+``re``/``curvature`` (curved pipe), ``re1``/``re2``/``eta``
+(Taylor-Couette), ``re1``/``r_omega``/``eta`` (quasi-Keplerian) and
+``eta`` (Dean), plus an optional ``m0`` (azimuthal wedge) wherever the
+flow's surface has one.  The three
 resolutions are required (they fix the input shape); anything omitted
 falls to the flow's defaults, and a name not on the flow's surface is
 a hard error, as on the CLI.  Resolutions count the physical modes /
@@ -99,13 +107,15 @@ Algorithm
   (dropping any Nyquist mode) and the field is rescaled from
   ``input_norm`` to dnsjax's ``"forward"`` convention.
 
-Perturbation only
------------------
-dnsjax snapshots store the perturbation `$\mathbf{u}'$` around the
-laminar base flow `$\mathbf{U}$`, which lives in the ``flow`` dataclass
-and is **not** part of the state.  This module performs **no** base-flow
-subtraction: the input field must already be a perturbation around
-dnsjax's base flow for the chosen system.
+Perturbation or total field
+---------------------------
+What a snapshot stores depends on the flow (``FlowSpec.total_field``):
+the perturbation `$\mathbf{u}'$` around the laminar base flow
+`$\mathbf{U}$` for the base-flow systems, where `$\mathbf{U}$` lives in
+the ``flow`` dataclass and is **not** part of the state; the **total**
+field for the force-driven ones this module accepts, Dean and the
+curved pipe.  It performs **no** base-flow subtraction: the input must
+already be the stored quantity for the chosen system.
 
 Wall-normal grid
 ----------------
@@ -114,7 +124,7 @@ For wall-bounded flows the field is stored on the *supplied*
 ``derived_params.wall_normal_grid``); dnsjax interpolates it to the run
 grid at load time (``__main__._interpolate_if_needed``).  The grid must
 lie on the canonical domain (`$[-1, 1]$` Cartesian, `$(0, 1]$` pipe,
-`$[r_1, r_2]$` Taylor-Couette); nondimensionalisation is the caller's
+`$[r_1, r_2]$` annulus); nondimensionalization is the caller's
 responsibility.
 
 Usage

@@ -23,9 +23,10 @@ before any of that happens. A test therefore owns its process:
 
 - Importing a test module *is* configuring it. If pytest collected these
   files, the top level would execute with the singletons unset.
-- A sweep over `dt`, resolution or any parameter needs one process per
-  value, because the value is baked into the jitted steppers when they
-  are traced.
+- A sweep over the resolution or any parameter but `dt` needs one
+  process per value, because the value is baked into the jitted steppers
+  when they are traced. `dt` alone is rebuilt in place (the flow
+  module's `set_dt`), which the temporal-order study relies on.
 - Several scripts launch real `mpirun` multi-device runs, or spawn
   subprocesses with forced CPU device counts, to exercise sharded paths
   that are invisible on one device.
@@ -75,6 +76,17 @@ not reproduce on a clean serial rerun as contention.
 ## What each script covers
 
 Every script's module docstring states what it pins and how to run its
-variants. The index — one line per script, grouped by what a change
-reaches — is [`CLAUDE.md`](CLAUDE.md) here; the claims those tests back
-are mapped in [`../docs/validation.md`](../docs/validation.md).
+variants; the claims the scripts back are mapped in
+[`../docs/validation.md`](../docs/validation.md). By area:
+
+| Area | Scripts (`test_` prefix dropped) |
+|---|---|
+| Banded solve and Pallas kernel | `banded_solver`, `banded_solver_sharded` |
+| Geometry operators and grids | `cartesian`, `cylindrical`, `annular`, `curved_pipe`, `viscoelastic`, `viscoelastic_pipe`, `integration`, `mean_mask`, `padding` |
+| Stepping | `laminar_smoke`, `random_smoke`, `cnab2`, `temporal_order`, `adaptive`, `imm_continuity`, `energy_budget`, `autodiff`, `monochromatic`, `wall_normal_matvec`, `wall_time_stop` |
+| Parameters, bootstrap, device mesh, seeds | `param_surface`, `bootstrap`, `seeding`, `device_grid`, `host_placement`, `mpi_communicators` |
+| Initial conditions | `localized_rolls`, `rolls_smoke`, `mean_mode`, `snapshot_perturb` |
+| Snapshots, resume, analysis | `snapshot`, `resume`, `snapshot_import`, `snapshot_export`, `transient_growth`, `quasi_keplerian`, `lowres` |
+| Diagnostic streams | `probes`, `forcing`, `driving` |
+| Twin runs | `twin_unit`, `twin_driver`, `twin_budget`, `twin_analysis`, `twin_postprocess`, `twin_spectral_maps` |
+| Response analysis (`response/`) | `probes_reader`, `operator_tools`, `ensemble`, `lim`, `ssi` |
