@@ -206,8 +206,9 @@ from_solver_basis = jax.jit(from_spin_basis)
 def viscoelastic_laminar_profiles(
     rs: np.ndarray, D1: np.ndarray, r1: float, r2: float, wi: float, eps: float
 ) -> np.ndarray:
-    r"""9-component laminar `$r$`-profiles for a force-driven annular
-    sPTT flow (complex ``(9, Nr)``), in the **physical** state layout
+    r"""9-component laminar `$r$`-profiles of a force-driven annular sPTT flow.
+
+    Complex ``(9, Nr)``, in the **physical** state layout
     `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
     c_{\theta\theta}, c_{r\theta})$` -- these feed initial conditions
     and the flow's laminar reference, both of which live outside the
@@ -298,7 +299,7 @@ class ViscoelasticAnnularFlow(AnnularFlow):
     derivatives (no axis, so no parity anywhere), two `$\nabla^2 c = 0$`
     wall rows, and an azimuthal mean-mode body force.
 
-    Subclasses (:class:`~dnsjax.flows.wall_bounded.viscoelastic_dean`)
+    Subclasses (:mod:`~dnsjax.flows.wall_bounded.viscoelastic_dean`)
     set ``force_theta`` and zero the base flow (total-field integration).
     """
 
@@ -398,14 +399,16 @@ class ViscoelasticAnnularFlow(AnnularFlow):
     def div_c_radial_derivatives(
         self, c_rr: Array, c_rth: Array, c_rz: Array, fourier_: Fourier
     ) -> Array:
-        r"""`$(\partial_r c_{rr}, \partial_r c_{r\theta},
-        \partial_r c_{rz})$`, one batched `$D_1$` GEMM,
-        ``(3, Nr, Nm, Nkz)``."""
+        r"""Radial derivatives of `$c_{rr}$`, `$c_{r\theta}$`, `$c_{rz}$`.
+
+        One batched `$D_1$` GEMM, ``(3, Nr, Nm, Nkz)``.
+        """
         return apply_y_matrix(self.D1, jnp.array([c_rr, c_rth, c_rz]))
 
     def tensor_abase_matvec(self, c_spin: Array, fourier_: Fourier) -> Array:
-        r"""`$A_{\mathrm{base}} c = (\partial_r^2 + \tfrac1r\partial_r)c$`
-        on the 6 spin slots, ``(6, Nr, Nm, Nkz)``.
+        r"""`$A_{\mathrm{base}} c$` on the 6 spin slots, ``(6, Nr, Nm, Nkz)``.
+
+        `$A_{\mathrm{base}} c = (\partial_r^2 + \tfrac1r\partial_r)c$`.
 
         One GEMM against the **precomputed** ``AnnularFlow.A_base``
         (which the implicit bands are already built from), not a
@@ -418,15 +421,12 @@ class ViscoelasticAnnularFlow(AnnularFlow):
         is component-leading -- two of the four field-sized transposes
         ``apply_y_matrix`` emits at ``component_axis = 0``.
 
-        **It buys no measurable wall time on CPU**: an interleaved A/B
-        at `$64^3$` gives -0.7 % at ``num_c = 0`` and -0.7 % again at
-        ``num_c = 3-4`` (chained, so the field develops), both well
-        inside an 11-25 % within-arm spread.  Two operating points
-        agreeing is what makes this a wash rather than an unresolved
-        measurement.  Kept on the FLOPs and the dropped transient, not
-        on a timing.  The full record, the pipe twin, and why the GPU
-        case does not follow:
-        ``ViscoelasticCylindricalFlow.tensor_abase_matvec``.
+        It buys no measurable wall time on CPU and is kept on the FLOPs
+        and the dropped transient, not on a timing; the A/B, which
+        covers this flow too: the
+        :mod:`~dnsjax.geometries.wall_bounded.cylindrical_viscoelastic`
+        Design notes ("Fusing `$A_{\mathrm{base}}$` on the tensor
+        slots").
         """
         return apply_y_matrix(self.A_base, c_spin)
 
