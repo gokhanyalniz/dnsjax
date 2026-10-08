@@ -103,9 +103,9 @@ Every radial derivative therefore carries a per-slot sign, built by
 :func:`_parity_signs` from the spin weights (the flow's
 ``rhs_radial_derivatives`` / ``div_c_radial_derivatives`` /
 ``tensor_abase_matvec`` adapters below).  Those GEMMs stack their
-inputs **y-leading** (``component_axis=1``), which is both the
-transpose-free layout and the one whose ghost scatter-add lands on the
-radial axis (:func:`~.cylindrical._parity_y_matvec`).
+inputs **y-leading** (``component_axis=1``), the transpose-free layout;
+:func:`~.cylindrical._parity_y_matvec` lands the ghost correction on
+the radial axis either way.
 
 Time integration
 ----------------
@@ -142,6 +142,27 @@ structured so the explicit AB2 remainder is the pure
 fluctuation-fluctuation nonlinearity plus the nonlinear relaxation) --
 and advances that remainder explicitly.  It reproduces ``iterative-cn``
 to O(`$\Delta t^2$`) at ~1 FFT/step versus ~4.
+
+Design notes
+------------
+**Fusing** `$A_{\mathrm{base}}$` **on the tensor slots.**
+:meth:`ViscoelasticCylindricalFlow.tensor_abase_matvec` buys no measurable wall
+time on CPU: interleaved A/B at `$64^3$`, both orderings, warm-up discarded,
+gave this flow -1.8 % at ``num_c = 0`` and the annular twin -0.7 % at
+``num_c = 0`` *and* -0.7 % again at ``num_c = 3-4`` (chained, so the field
+develops).  Every one of those sits inside a 5-25 % within-arm spread, and the
+two operating points agreeing to 0.0 pp on the annulus is what makes "wash" the
+right reading rather than "unresolved".  An sPTT step is dominated by its
+~36-field transform batch, not by FD GEMMs, so halving one FD stage does not
+move the clock.  Chaining *this* flow at `$64^3$` gives no usable measurement:
+the corrector collapses from 10 to 0 mid-run and the step drops 3.7x, so the
+arms get sampled at different points of a relaxing transient (260 % within-arm
+spread); the annulus supplies the developed-field point.  The fusion is kept on
+grounds that need no stopwatch: strictly fewer FLOPs (6 full-width field-GEMMs
+instead of 12), one fewer field-sized transient -- which is what bites at
+production sizes -- and consistency with the four velocity sites.  Whether it
+pays on GPU is untested and would not follow from any of this: the balance
+there is far less FFT-dominated (~47 % IMM on an H100).
 """
 
 from dataclasses import dataclass, field
@@ -256,8 +277,9 @@ def _mean_parity_signs(spins: np.ndarray) -> np.ndarray:
 def viscoelastic_laminar_profiles(
     rs: np.ndarray, D1_even: np.ndarray, wi: float, eps: float
 ) -> np.ndarray:
-    r"""9-component laminar `$r$`-profiles for the axially driven sPTT
-    pipe (complex ``(9, Nr)``), in the **physical** state layout
+    r"""9-component laminar `$r$`-profiles of the axially driven sPTT pipe.
+
+    Complex ``(9, Nr)``, in the **physical** state layout
     `$(u_z, u_r, u_\theta, c_{zz}, c_{rz}, c_{\theta z}, c_{rr},
     c_{\theta\theta}, c_{r\theta})$` -- these feed initial conditions
     and the flow's laminar reference, both of which live outside the
@@ -360,9 +382,9 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
     `$\nabla^2 c = 0$` wall row (the axis is closed by the parity
     reduction), and an axial mean-mode body force.
 
-    ``force_z`` is that body force, zero here and set by the flow subclass
-    (:class:`~dnsjax.flows.wall_bounded.viscoelastic_pipe`), which also
-    zeros the base flow (total-field integration).
+    ``force_z`` is that body force, zero here and set by the flow
+    subclass (:mod:`~dnsjax.flows.wall_bounded.viscoelastic_pipe`),
+    which also zeros the base flow (total-field integration).
     """
 
     #: CFL column labels (a ``ClassVar``: as an annotated field this
@@ -453,9 +475,8 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
 
         One parity-reduced `$D_1$` GEMM **pair** over the 3 velocity
         components and the 6 conformation combos -- one pair instead of
-        two -- stacked y-leading ``(Nr, 9, Nm, Nkz)``, which is both
-        transpose-free and the layout whose ghost scatter-add lands on
-        the radial axis.  *fields* is the flat 9-tuple the stack wants;
+        two -- stacked y-leading ``(Nr, 9, Nm, Nkz)``, the
+        transpose-free layout.  *fields* is the flat 9-tuple the stack wants;
         *combos* (the same six tensor entries already materialized as
         one array) is the annulus's preferred form and unused here.
         Returns ``(9, Nr, Nm, Nkz)``.
@@ -472,8 +493,9 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
     def div_c_radial_derivatives(
         self, c_rr: Array, c_rth: Array, c_rz: Array, fourier_: Fourier
     ) -> Array:
-        r"""`$(\partial_r c_{rr}, \partial_r c_{r\theta},
-        \partial_r c_{rz})$`, one batched parity-reduced `$D_1$` GEMM.
+        r"""Radial derivatives of `$c_{rr}$`, `$c_{r\theta}$`, `$c_{rz}$`.
+
+        One batched parity-reduced `$D_1$` GEMM.
 
         `$c_{rr}$` and `$c_{r\theta}$` are in the `$(-1)^m$` class,
         `$c_{rz}$` in the `$(-1)^{m+1}$` one.  Returns
@@ -489,49 +511,23 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         return jnp.swapaxes(dr_y, 0, 1)
 
     def tensor_abase_matvec(self, c_spin: Array, fourier_: Fourier) -> Array:
-        r"""`$A_{\mathrm{base}}^{(\sigma)} c
-        = (\partial_r^2 + \tfrac1r\partial_r)c$` on the 6 spin slots,
-        each on its own `$(-1)^{m+s}$` parity band.  ``(6, Nr, Nm,
-        Nkz)``.
+        r"""`$A_{\mathrm{base}}^{(\sigma)} c$` on the 6 spin slots.
 
-        One matvec against the **precomputed** parity-reduced pair
-        (``CylindricalFlow.A_base_pos`` / ``A_base_ghost``), not a
-        `$D_2$` matvec, a `$D_1$` matvec and a field-sized `$1/r$`
-        multiply-add between them: `$D_1 c$` has no other consumer
-        here (the tensor's own radial derivatives are separate,
-        narrower stacks -- ``dr_batch`` and
-        ``div_c_radial_derivatives``), which is the premise the
-        curvilinear fusion needs.  6 full-width field-GEMMs instead of
-        12, and one fewer ``(N_r, 6, N_m, N_{k_z})`` transient.
-
-        **It buys no measurable wall time on CPU** -- interleaved A/B
-        at `$64^3$`, both orderings, warm-up discarded: this flow
-        -1.8 % at ``num_c = 0``; the annular twin -0.7 % at
-        ``num_c = 0`` *and* -0.7 % again at ``num_c = 3-4`` (chained,
-        so the field develops).  Every one of those sits inside a
-        5-25 % within-arm spread, and the two operating points agreeing
-        to 0.0 pp on the annulus is what makes "wash" the right reading
-        rather than "unresolved".  An sPTT step is dominated by its
-        ~36-field transform batch, not by FD GEMMs, so halving one FD
-        stage does not move the clock.
-
-        (Chaining *this* flow at `$64^3$` does not give a usable
-        measurement: the corrector collapses from 10 to 0 mid-run and
-        the step drops 3.7x, so the arms get sampled at different
-        points of a relaxing transient -- 260 % within-arm spread.
-        Take the annulus for the developed-field point.)
-
-        It is kept on the grounds that do not need a stopwatch:
-        strictly fewer FLOPs (6 full-width field-GEMMs instead of 12),
-        one fewer field-sized transient -- which is what bites at
-        production sizes -- and consistency with the four velocity
-        sites.  Whether it pays on **GPU** is untested and would not
-        follow from any of this: the balance there is far less
-        FFT-dominated (~47 % IMM on an H100).
+        `$A_{\mathrm{base}}^{(\sigma)} c = (\partial_r^2 + \tfrac1r
+        \partial_r)c$`, each slot on its own `$(-1)^{m+s}$` parity band,
+        returned as ``(6, Nr, Nm, Nkz)``.  One matvec against the
+        **precomputed** parity-reduced pair (``CylindricalFlow.A_base_pos`` /
+        ``A_base_ghost``), not a `$D_2$` matvec, a `$D_1$` matvec and a
+        field-sized `$1/r$` multiply-add between them: `$D_1 c$` has no other
+        consumer here (the tensor's own radial derivatives are separate,
+        narrower stacks -- ``dr_batch`` and ``div_c_radial_derivatives``),
+        which is the premise the curvilinear fusion needs.  6 full-width
+        field-GEMMs instead of 12, and one fewer ``(N_r, 6, N_m, N_{k_z})``
+        transient, kept although it buys no measurable CPU time (Design notes:
+        "Fusing `$A_{\mathrm{base}}$` on the tensor slots").
         """
         par = _parity_signs(TENSOR_SPIN, fourier_)
-        # y-leading (Nr, 6, Nm, Nkz): transpose-free GEMM, and the ghost
-        # scatter lands on the radial axis.
+        # y-leading (Nr, 6, Nm, Nkz): the transpose-free GEMM layout.
         c_y = jnp.swapaxes(c_spin, 0, 1)
         A_c = _parity_y_matvec(
             self.A_base_pos, self.A_base_ghost, c_y, par, component_axis=1
@@ -568,8 +564,10 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         )
 
     def zero_hc_wall_rows(self, R: Array) -> Array:
-        r"""Zero the `$H_c$` RHS at the single `$\nabla^2 c = 0$` wall
-        row (`$r = 1$`); the axis carries no row."""
+        r"""Zero the `$H_c$` RHS at the single `$\nabla^2 c = 0$` wall row.
+
+        That row is `$r = 1$`; the axis carries no row.
+        """
         return R.at[:, -1].set(0.0)
 
     def hc_wall_rows(self) -> tuple[tuple[int, Array], ...]:
