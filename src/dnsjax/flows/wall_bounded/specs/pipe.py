@@ -37,7 +37,7 @@ def _validate(params, derived) -> None:
         raise ValueError(
             "geo.grid_type='half-cgl' requires "
             "step.scheme='iterative-cn' (the tighter half-CGL axis "
-            f"destabilises the explicit {params.step.scheme!r} scheme "
+            f"destabilizes the explicit {params.step.scheme!r} scheme "
             "at low dt); use the rigged-CGL grid ('rigged-cgl', the "
             "cnab2 default) instead."
         )

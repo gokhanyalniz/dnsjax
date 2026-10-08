@@ -11,11 +11,15 @@ fluid and the geometry rather than of the flow rate, so it is the
 control parameter, and `$\mathrm{Re}$` follows.  The defaults below put
 that at `$\mathrm{Wi} = 20$`, `$\mathrm{El} = 0.02$`, hence
 `$\mathrm{Re} = 1000$` -- the Newtonian pipe's own default Reynolds
-number, in the elasto-inertial range where a viscoelastic pipe is
-usually run.  (The annular sPTT flow defaults to `$\mathrm{El} = 80$`,
-`$\mathrm{Re} \approx 1.3$` instead: its subject is the inertialess,
-strongly elastic regime, which is not this one.)  To sweep
-`$\mathrm{Re}$` at fixed `$\mathrm{Wi}$`, vary ``el``.
+number, in the elasto-inertial range.  (The annular sPTT flow defaults
+to `$\mathrm{El} = 80$`, `$\mathrm{Re} \approx 1.3$` instead, for the
+low-inertia, strongly elastic regime.)  To sweep `$\mathrm{Re}$` at
+fixed `$\mathrm{Wi}$`, vary ``el``.
+
+The rheology defaults ``beta = 0.8``, ``epsilon = 1e-3`` and
+``kappa = 5e-5`` are those of Lellep, Linkmann & Morozov, *Proc. Natl.
+Acad. Sci. USA* **121**, e2318851121 (2024), shared with
+``viscoelastic-dean``.
 """
 
 from math import pi
@@ -46,7 +50,7 @@ def _derive(params, derived, user_set) -> None:
     params.geo.lz = 2 * pi / params.geo.m0
     derived.volume_fac = 0.5  # int_0^1 r dr
     # Re := Wi/El -- derived, not a user parameter here: any directly
-    # assigned value is simply overwritten (resumed snapshots replay a
+    # assigned value is overwritten (resumed snapshots replay a
     # consistent value).
     params.phys.re = params.phys.wi / params.phys.el
 
@@ -72,10 +76,10 @@ SPEC = FlowSpec(
         *wall_fields(0.5, CYLINDRICAL_GRIDS),
         *cyl_annular_fields(),
         *PIPE_CARRY_FIELDS,
-        # Wi = 20, El = 0.02 => Re = 1000, the Newtonian pipe's default
-        # (see the module docstring); the rheology below is the shared
-        # sPTT reference (dilute solvent ratio, weak extensibility, a
-        # trace of artificial conformation diffusion).
+        # Wi = 20, El = 0.02 => Re = 1000, the Newtonian pipe's default;
+        # beta, epsilon and kappa are the published sPTT values (the
+        # module docstring): solvent ratio 0.8, weak extensibility, a
+        # trace of artificial conformation diffusion.
         FieldSpec("phys", "el", default=0.02),
         FieldSpec("phys", "wi", default=20.0),
         FieldSpec("phys", "beta", default=0.8),

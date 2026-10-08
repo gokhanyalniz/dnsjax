@@ -2,8 +2,7 @@ r"""Shared spec fragments and derive math for the wall-bounded flows.
 
 Field fragments (tuples of :class:`~dnsjax.flow_spec.FieldSpec`) are
 composed by the per-flow spec modules in this package; the derive
-helpers are the family-shared parameter math (the former per-system
-branches of ``parameters.update_parameters``).  Everything here is
+helpers hold the parameter math the family shares.  Everything here is
 JAX-free and never imports :mod:`dnsjax.parameters` (hooks receive the
 live ``params`` / ``derived_params`` objects as arguments).
 """
@@ -106,17 +105,12 @@ def cartesian_fields() -> tuple[FieldSpec, ...]:
         FieldSpec("res", "nz"),
         FieldSpec("phys", "re"),
         FieldSpec("phys", "block_mean_spanwise_velocity"),
-        # Offered here and deferred everywhere else: the Cartesian
-        # flows are the ones whose (0, 0) conservation laws are
-        # established, so the random IC *may* perturb the mean profile
-        # (:mod:`dnsjax.ic.mean_mode`).  It is opt-in, at the model
-        # default (off), so that every wall-bounded flow behaves the
-        # same way out of the box -- the geometries that defer the knob
-        # have nothing that respects the mean mode's bulk / driving
-        # laws, and a default that holds for only two of the flows is
-        # a trap.  The one entry point that defaults it on is
-        # ``dnsjax-twin``, through its own ``twin.mean_flow``
-        # (:class:`dnsjax.twin.driver.TwinParams`).
+        # Offered here and deferred everywhere else: only the Cartesian
+        # flows have their (0, 0) conservation laws established
+        # (:mod:`dnsjax.ic.mean_mode`).  Opt-in at the model default
+        # (off), so every wall-bounded flow behaves the same out of the
+        # box; ``dnsjax-twin`` defaults it on through its own
+        # ``twin.mean_flow`` (:class:`dnsjax.twin.driver.TwinParams`).
         FieldSpec("init", "random_mean_flow"),
         FieldSpec("lowres", "nx"),
         FieldSpec("lowres", "ny"),
@@ -204,8 +198,8 @@ def cyl_annular_fields(axial_default: Any = UNSET) -> tuple[FieldSpec, ...]:
     )
 
 
-#: Deferred: tilting is Cartesian/periodic-only for now (the
-#: cylindrical/annular geometries never read the tilt).
+#: Deferred: only the Cartesian and triply-periodic geometries read
+#: the tilt.
 DEFERRED_TILT = DeferredSpec(
     "geo",
     "tilt_degree",
@@ -240,15 +234,15 @@ DEFERRED_LOWRES_PRESSURE = DeferredSpec(
 
 
 def cartesian_derive(params, derived, user_set) -> None:
-    """Cartesian channel: int_{-1}^{1} dy area normalization."""
+    r"""Set the channel's volume factor, `$\int_{-1}^{1} dy = 2$`."""
     derived.volume_fac = 2
 
 
 def annular_base_derive(params, derived) -> float:
-    """Annular geometry shared by TC / quasi-Keplerian / Dean.
+    """Derive the annular geometry of every annular flow.
 
-    Validates the radius ratio ``eta``, derives the non-dim radii on
-    the unit gap, forces the azimuthal wedge extent ``lz = 2*pi/m0``,
+    Validates the radius ratio ``eta``, derives the dimensionless radii
+    on the unit gap, forces the azimuthal wedge extent ``lz = 2*pi/m0``,
     and sets the area normalization.  Returns ``eta``.
     """
     eta = params.geo.eta

@@ -1,19 +1,14 @@
 r"""Plane Poiseuille (channel) flow: pressure-driven flow between plates.
 
-This module defines the ``PlanePoiseuilleFlow`` dataclass that holds
-the plane-Poiseuille-specific base flow.  Geometry-general
-infrastructure (CGL grid, FD matrices, IMM operators,
-Kleiser-Schumann IMM iteration, predict / correct / norm, Pallas /
-dense LU solvers) is inherited from
-``geometries.wall_bounded.cartesian.CartesianFlow``.
-
-It also exports the flow interface consumed by ``__main__``:
-
-- ``predict_and_fully_correct`` -- fused predictor + corrector
-- ``predict_and_fully_correct_measured`` -- fused step + CFL
-  measurements (``steps.dat``)
-- ``init_state`` -- the ``start_from_laminar`` initial state
-- ``get_stats`` -- diagnostic statistics
+This module defines the ``PlanePoiseuilleFlow`` dataclass, which holds
+the plane-Poiseuille base flow; the geometry (wall-normal grid, FD
+matrices, influence-matrix operators and iteration, solvers) is
+inherited from
+:class:`~dnsjax.geometries.wall_bounded.cartesian.CartesianFlow`.  The
+module exports the flow-module surface that
+:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
+optional ``get_driving``, and the transient-growth hook
+``frozen_profile_flow``.
 
 Base flow
 ---------
@@ -41,14 +36,14 @@ U_{grid}\hat{\mathbf{x}}$` (see ``parameters.update_parameters`` and
 
 Driving
 -------
-With ``driving = "constant_pressure_gradient"`` (default), the base
-flow is maintained by a fixed mean pressure gradient and the
-perturbation pressure gradient is a diagnostic output.
+With ``driving = "constant_pressure_gradient"`` (default), a fixed
+mean pressure gradient maintains the base flow and the bulk velocity
+is free (``Ub'_s`` in ``stats.dat``).
 
 With ``driving = "constant_bulk_velocity"``, each IMM iteration
-adjusts the mean-mode streamwise velocity to maintain zero
-perturbation bulk velocity; the perturbation pressure gradient is
-the diagnostic quantity.
+adjusts the mean-mode streamwise velocity to hold the perturbation
+bulk velocity at zero, and the force it applies is the diagnostic
+(``-dPds'`` in ``stats.dat``).
 
 Spanwise blocking
 -----------------
@@ -103,15 +98,13 @@ class PlanePoiseuilleFlow(CartesianFlow):
     U_bulk_lam: float = 2.0 / 3.0
 
     def __post_init__(self) -> None:
-        r"""Build CGL grid, base flow, and IMM operators.
+        r"""Add the plane-Poiseuille base flow to the geometry's setup.
 
-        Delegates the CGL grid, FD matrices, and per-mode IMM
-        operator setup to :meth:`CartesianFlow.__post_init__`,
-        which assembles and factorizes `$L_k$`, `$H_k$` directly
-        on the device.  This method then defines the
-        plane-Poiseuille base flow
-        `$\mathbf{U} = (1-y^2)(\cos\theta, 0, \sin\theta)$`
-        and its derived quantities.
+        :meth:`CartesianFlow.__post_init__` builds the wall-normal grid,
+        the FD matrices and the factorized per-mode operators; this
+        method adds the base flow
+        `$\mathbf{U} = (1-y^2)(\cos\theta, 0, \sin\theta)$` and its
+        curl.
         """
         super().__post_init__()
         self.I_lam = 4.0 / (3.0 * params.phys.re)
@@ -199,38 +192,30 @@ def _get_stats_jit(
     - `$U'_{b,s}$`, `$U'_{b,n}$`: perturbation bulk
       velocity in the streamwise and spanwise directions.
 
-    Under ``constant_bulk_velocity`` the driving work is the
-    whole of `$I - I_\mathrm{lam}$`.  The **exact** input rate
-    is `$-U_{b,\mathrm{lam}}\Pi$` with `$-\Pi$` the force the
-    corrector applied (``stats.dat``'s ``-dPds'``); this
-    state-only function cannot see that, so it estimates
-    `$\Pi$` from the wall shear instead, low by
-    `$\mathrm{bulk}(\bar N_s)$` -- continuously zero, a
-    wall-normal truncation residual discretely, and convergent.
+    Under ``constant_bulk_velocity`` the driving work is the whole of
+    `$I - I_\mathrm{lam}$`.  The **exact** input rate is
+    `$-U_{b,\mathrm{lam}}\Pi$` with `$-\Pi$` the force the corrector applied
+    (``stats.dat``'s ``-dPds'``); this state-only function cannot see that, so
+    it estimates `$\Pi$` from the wall shear instead, low by
+    `$\mathrm{bulk}(\bar N_s)$` -- continuously zero, a wall-normal truncation
+    residual discretely, and convergent.
 
-    Substituting the exact value nonetheless makes
-    `$dE/dt = I - D$` close **worse** (measured), which is a
-    statement about that two-term form rather than about either
-    estimate: it omits the discrete
-    `$\langle u\cdot N(u)\rangle$`, zero continuously, whose
-    dominant part is `$-U_b\,\mathrm{bulk}(\bar N_s)$`.  The
-    estimate's error is that same quantity with the opposite
-    sign, so it absorbs the omission.  Read `$I$` as the
-    budget-consistent input rate, not as the applied power;
-    they converge.  Measured table:
-    ``tests/test_energy_budget.py``'s
+    Substituting the exact value nonetheless makes `$dE/dt = I - D$` close
+    **worse** (measured), which is a statement about that two-term form rather
+    than about either estimate: it omits the discrete
+    `$\langle u\cdot N(u)\rangle$`, zero continuously, whose dominant part is
+    `$-U_b\,\mathrm{bulk}(\bar N_s)$`.  The estimate's error is that same
+    quantity with the opposite sign, so it absorbs the omission.  Read `$I$` as
+    the budget-consistent input rate, not as the applied power; they converge.
+    Measured table: ``tests/test_energy_budget.py``'s
     ``_check_applied_vs_inferred``.
 
-    All total-field quantities are computed algebraically
-    from perturbation norms and laminar constants, without
-    constructing `$\mathbf{u}' + \mathbf{U}$`.  For
-    `$-\nabla^2 U = 2$` (constant), the cross-enstrophy
-    reduces to
-    `$\langle \boldsymbol{\omega}_U \cdot
-    \boldsymbol{\omega}_{u'} \rangle
-    = 2\,U'_{b,s}$`
-    where `$U'_{b,s}$` is the perturbation bulk streamwise
-    velocity.
+    All total-field quantities are computed algebraically from perturbation
+    norms and laminar constants, without constructing
+    `$\mathbf{u}' + \mathbf{U}$`.  For `$-\nabla^2 U = 2$` (constant), the
+    cross-enstrophy reduces to `$\langle \boldsymbol{\omega}_U \cdot
+    \boldsymbol{\omega}_{u'} \rangle = 2\,U'_{b,s}$` where `$U'_{b,s}$` is the
+    perturbation bulk streamwise velocity.
     """
     Re = params.phys.re
     perturbation_energy = _perturbation_energy(state, fourier_, flow_)
@@ -301,7 +286,7 @@ def _get_stats_jit(
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around ``_get_stats_jit``."""
+    """The ``stats.dat`` columns of *state* (``_get_stats_jit``)."""
     return _get_stats_jit(state, fourier, flow)
 
 
@@ -331,7 +316,7 @@ def get_driving(state: Array) -> dict[str, Array]:
 
     The optional flow-module export ``__main__`` uses for the one
     ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector actually applied, threaded out
+    row carries the value the corrector applied, threaded out
     of the step.  Same keys and sign as that column
     (`$-\partial p'/\partial s$`, the applied forcing), ``{}`` when no
     driving knob is on.  Takes the **physical** view of *state*, like

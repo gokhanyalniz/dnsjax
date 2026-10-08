@@ -10,13 +10,12 @@ origin of turbulence in Keplerian disks.
 
 The physics, operators, and base flow are **identical** to
 :mod:`.taylor_couette` (both are the circular-Couette base flow
-`$U_\theta = A_0 r + B_0/r$` on the annular geometry) and both bind
-the shared implementation in :mod:`._circular_couette`; this module
-differs only in the *control-parameter interface* and its documented
-conventions.  Geometry-general infrastructure (radial grid, FD
-matrices, IMM operators, the `$2 \times 2$` annular IMM iteration,
-predict / correct / norm, Pallas / dense LU solvers) is inherited from
-``geometries.wall_bounded.annular.AnnularFlow``.
+`$U_\theta = A_0 r + B_0/r$` on the annular geometry) and both bind the shared
+implementation in :mod:`._circular_couette`; this module differs only in the
+*control-parameter interface* and its documented conventions.  The geometry
+(radial grid, FD matrices, the `$2 \times 2$` influence-matrix operators and
+iteration, solvers) is inherited from
+:class:`~dnsjax.geometries.wall_bounded.annular.AnnularFlow`.
 
 Control parameters and the quasi-Keplerian regime
 -------------------------------------------------
@@ -24,9 +23,9 @@ Instead of Taylor-Couette's `$(\mathrm{Re}_1, \mathrm{Re}_2)$` the flow
 is specified by the **inner Reynolds number** `$\mathrm{Re}_i$`
 (``phys.re1``), the **rotation number** `$R_\Omega$` (``phys.r_omega``),
 and the radius ratio `$\eta = r_1/r_2$` (``geo.eta``).  Following the
-shear/rotation parameterization of Dubrulle et al. (Phys. Fluids 2005),
-with `$\mathrm{Re}_{i(o)} = \Omega_{i(o)} r_{i(o)} d / \nu$` on the gap
-`$d = r_2 - r_1$`,
+shear/rotation parameterization of Dubrulle et al., *Phys. Fluids* **17**,
+095103 (2005), with `$\mathrm{Re}_{i(o)} = \Omega_{i(o)} r_{i(o)} d / \nu$` on
+the gap `$d = r_2 - r_1$`,
 
 .. math::
     R_\Omega = \frac{(1 - \eta)(\mathrm{Re}_i + \mathrm{Re}_o)}
@@ -85,7 +84,7 @@ maps to the code fields by multiplying every velocity by
 `$\mathrm{Re}_i$` while keeping the same `$t/\tau_d$`.
 
 Azimuthal wedge
---------------
+---------------
 The reduced azimuthal domains
 (`$\theta \in [0, 2\pi/m_0)$` with fundamental azimuthal wavenumber
 `$m_0$`) are available through ``geo.m0`` (see the ``annular.Fourier``
@@ -102,11 +101,11 @@ uniform axial vorticity `$\omega_z = 2 A_0$` and
 `$I_{\mathrm{lam}} = D_{\mathrm{lam}} = 4 B_0^2/(\mathrm{Re}\,r_1^2
 r_2^2)$` and `$E_{\mathrm{lam}} = \tfrac12\langle U_\theta^2\rangle$`.
 
-It exports the flow interface consumed by ``__main__``
-(``predict_and_fully_correct`` / ``_measured``, ``step_cnab2`` /
-``_measured``, ``init_state``, ``get_stats``,
-``get_perturbation_energy``) and the ``frozen_profile_flow`` hook for
-``dnsjax.analysis.transient_growth``.
+The module exports the flow-module surface that
+:class:`~dnsjax.flow_spec.FlowSpec` lists under ``flow_module``, the
+optional ``get_driving``, the transient-growth hook
+``frozen_profile_flow``, and the basis pair ``to_solver_basis`` /
+``from_solver_basis``.
 """
 
 from jax import Array
@@ -141,15 +140,16 @@ flow: CircularCouetteFlow = CircularCouetteFlow()
 
 
 def frozen_profile_flow(u_theta: Array) -> CircularCouetteFlow:
-    r"""Flow linearized around an arbitrary azimuthal profile
-    `$U_\theta(r)$` (transient-growth hook; see
-    :func:`~dnsjax.flows.wall_bounded._circular_couette.frozen_profile_flow`).
+    r"""Flow linearized around an azimuthal profile `$U_\theta(r)$`.
+
+    The transient-growth hook; see
+    :func:`~dnsjax.flows.wall_bounded._circular_couette.frozen_profile_flow`.
     """
     return _frozen_cc_flow(flow, u_theta)
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Shared circular-Couette ``_get_stats_jit`` (physical *state*)."""
+    """The ``stats.dat`` columns of the physical-basis *state*."""
     return _get_stats_jit(state, fourier, flow)
 
 
@@ -158,7 +158,7 @@ def get_driving(state: Array) -> dict[str, Array]:
 
     The optional flow-module export ``__main__`` uses for the one
     ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector actually applied.  Empty unless
+    row carries the value the corrector applied.  Empty unless
     ``phys.block_mean_spanwise_velocity`` is on.
     """
     return _get_driving_jit(state, flow)

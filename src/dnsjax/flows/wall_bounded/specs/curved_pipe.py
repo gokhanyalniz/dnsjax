@@ -35,8 +35,8 @@ from ._family import (
 )
 
 #: One measured travelling-wave wavelength in pipe radii: 19 degrees
-#: of toroidal angle at `$R_c/a = 18.2$` (Webster & Humphrey 1997,
-#: Table I, Re = 5480).
+#: of toroidal angle at `$R_c/a = 18.2$` (Webster & Humphrey, *Phys.
+#: Fluids* **9**, 407 (1997), Table I, Re = 5480).
 WH_BOX: float = 6.04
 
 #: The azimuthal wedge is unavailable: `$h = 1 + \kappa r\cos\theta$`
@@ -94,7 +94,8 @@ def _validate(params, derived) -> None:
             "FFT-free corrector has nothing to iterate here -- with "
             "no base flow its coupling term is identically zero, so "
             "both would be lagged across the time step (the "
-            "instability recorded in _cylindrical_stepping._imm_iteration_vw)."
+            "instability in the _cylindrical_stepping Design notes, "
+            "'Wall differences on the iterate')."
         )
     if not params.res.consistent_imm:
         raise ValueError(

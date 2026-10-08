@@ -230,18 +230,10 @@ def internalize_stored(
             if internal is None and (section, public) in global_keys:
                 internal = public
             if internal is None and (section, public) in spec.deferred_map:
-                # A field this version *defers* for this flow.  Not an
-                # unknown key: it is known and deliberately refused,
-                # and it may well have been on the flow's surface when
-                # the snapshot was written (``externalize`` records
-                # only non-deferred fields, so this reaches only
-                # snapshots older than the deferral).  Internalizing
-                # it is what keeps those resumable: an inert stored
-                # default lands on the model default and passes, while
-                # a value the old run actually used is refused by
-                # ``validate_parameters`` with the deferral's own
-                # message -- overridable by setting the field
-                # explicitly on the resume command line.
+                # Known and deliberately refused for this flow: passed
+                # through so a snapshot older than the deferral stays
+                # resumable (the docstring; ``externalize`` never
+                # records a deferred field, so only those reach here).
                 internal = public
             if internal is None:
                 if section != "solver":

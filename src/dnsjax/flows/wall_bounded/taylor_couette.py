@@ -1,22 +1,17 @@
 r"""Taylor-Couette flow: shear-driven flow in a rotating annulus.
 
 This module binds the shared circular-Couette machinery
-(:mod:`._circular_couette`: the ``CircularCouetteFlow`` dataclass,
-diagnostics, and the transient-growth hook) to the Taylor-Couette
-control parameters `$(\mathrm{Re}_1, \mathrm{Re}_2, \eta)$` (whose
-circular-Couette coefficients the ``taylor_couette`` spec derives).
-Geometry-general infrastructure (radial grid on `$[r_1, r_2]$`, FD
-matrices, IMM operators, the `$2 \times 2$` annular IMM iteration,
-predict / correct / norm, Pallas / dense LU solvers) is inherited from
-``geometries.wall_bounded.annular.AnnularFlow``.
-
-It exports the flow interface consumed by ``__main__``:
-
-- ``predict_and_fully_correct`` -- fused predictor + corrector
-- ``predict_and_fully_correct_measured`` -- fused step + CFL
-  measurements (``steps.dat``)
-- ``init_state`` -- the ``start_from_laminar`` initial state
-- ``get_stats`` -- diagnostic statistics
+(:mod:`._circular_couette`: the ``CircularCouetteFlow`` dataclass, diagnostics,
+and the transient-growth hook) to the Taylor-Couette control parameters
+`$(\mathrm{Re}_1, \mathrm{Re}_2, \eta)$` (whose circular-Couette coefficients
+the ``taylor_couette`` spec derives).  The geometry (radial grid on
+`$[r_1, r_2]$`, FD matrices, the `$2 \times 2$` influence-matrix operators and
+iteration, solvers) is inherited from
+:class:`~dnsjax.geometries.wall_bounded.annular.AnnularFlow`.  The module
+exports the flow-module surface that :class:`~dnsjax.flow_spec.FlowSpec` lists
+under ``flow_module``, the optional ``get_driving``, the transient-growth hook
+``frozen_profile_flow``, and the basis pair ``to_solver_basis`` /
+``from_solver_basis``.
 
 Like plane-Couette (and unlike the pressure-driven pipe), the flow is
 **shear-driven** by the rotating walls; its statistics use the same
@@ -84,15 +79,16 @@ flow: CircularCouetteFlow = CircularCouetteFlow()
 
 
 def frozen_profile_flow(u_theta: Array) -> CircularCouetteFlow:
-    r"""Flow linearized around an arbitrary azimuthal profile
-    `$U_\theta(r)$` (transient-growth hook; see
-    :func:`~dnsjax.flows.wall_bounded._circular_couette.frozen_profile_flow`).
+    r"""Flow linearized around an azimuthal profile `$U_\theta(r)$`.
+
+    The transient-growth hook; see
+    :func:`~dnsjax.flows.wall_bounded._circular_couette.frozen_profile_flow`.
     """
     return _frozen_cc_flow(flow, u_theta)
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Shared circular-Couette ``_get_stats_jit`` (physical *state*)."""
+    """The ``stats.dat`` columns of the physical-basis *state*."""
     return _get_stats_jit(state, fourier, flow)
 
 
@@ -101,7 +97,7 @@ def get_driving(state: Array) -> dict[str, Array]:
 
     The optional flow-module export ``__main__`` uses for the one
     ``stats.dat`` row with no step behind it (``t = t0``); every other
-    row carries the value the corrector actually applied.  Empty unless
+    row carries the value the corrector applied.  Empty unless
     ``phys.block_mean_spanwise_velocity`` is on.
     """
     return _get_driving_jit(state, flow)

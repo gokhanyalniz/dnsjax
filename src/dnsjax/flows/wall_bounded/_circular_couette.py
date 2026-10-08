@@ -13,10 +13,9 @@ flow, curl, laminar constants), the transient-growth
 
 The per-system modules (:mod:`.taylor_couette`,
 :mod:`.quasi_keplerian`) remain the user-facing surface -- their
-docstrings carry the per-flow conventions -- and each instantiates
-its own ``flow`` singleton here-defined class plus the thin
-singleton-binding wrappers ``__main__`` and the analysis drivers
-consume.
+docstrings carry the per-flow conventions -- and each instantiates its
+own ``flow`` singleton of the class defined here, plus the thin
+wrappers that bind it for ``__main__`` and the analysis drivers.
 """
 
 from dataclasses import dataclass
@@ -44,8 +43,7 @@ from ...sharding import register_dataclass_pytree, sharding
 @register_dataclass_pytree
 @dataclass
 class CircularCouetteFlow(AnnularFlow):
-    r"""Precomputed data for a circular-Couette (Taylor-Couette-family)
-    flow.
+    r"""Precomputed data for a circular-Couette flow (Taylor-Couette family).
 
     Laminar constants for `$U_\theta = A_0 r + B_0/r$` on
     `$[r_1, r_2]$` are computed in ``__post_init__`` from the
@@ -60,12 +58,12 @@ class CircularCouetteFlow(AnnularFlow):
     E_lam: float = 0.0
 
     def __post_init__(self) -> None:
-        r"""Build radial grid, base flow, and IMM operators.
+        r"""Add the circular-Couette base flow to the geometry's setup.
 
-        Delegates the grid, FD matrices, and per-mode IMM operator setup
-        to :meth:`AnnularFlow.__post_init__`, then defines the
-        circular-Couette base flow `$U_\theta = A_0 r + B_0/r$` and its
-        derived quantities and laminar constants.
+        :meth:`AnnularFlow.__post_init__` builds the radial grid, the FD
+        matrices and the factorized per-mode operators; this method adds
+        the base flow `$U_\theta = A_0 r + B_0/r$`, its curl and the
+        laminar constants.
         """
         super().__post_init__()
 

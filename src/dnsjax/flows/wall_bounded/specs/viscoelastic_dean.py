@@ -1,14 +1,12 @@
 r"""Parameter spec for viscoelastic (sPTT) Dean flow.
 
-Lengths are in half-gap units (gap = 2, so ``r1 = delta``,
-``r2 = delta + 2``), and the Reynolds number is derived as
-``Re := Wi/El``.  The rheology defaults ``beta = 0.8``,
-``epsilon = 1e-3`` and ``kappa = 5e-5`` are those of Lellep, Linkmann &
-Morozov, *Proc. Natl. Acad. Sci. USA* **121**, e2318851121 (2024);
-``el = 80`` and ``wi = 105`` (``Re`` about 1.3: inertialess and
-strongly elastic) and ``delta = 11`` are this flow's own.  The
-``default`` overrides below are materialized by
-``update_parameters``.
+Lengths are in half-gap units (gap = 2, so ``r1 = delta``, ``r2 = delta + 2``),
+and the Reynolds number is derived as ``Re := Wi/El``.  The rheology defaults
+``beta = 0.8``, ``epsilon = 1e-3`` and ``kappa = 5e-5`` are those of Lellep,
+Linkmann & Morozov, *Proc. Natl. Acad. Sci. USA* **121**, e2318851121 (2024);
+``el = 80`` and ``wi = 105`` (``Re`` about 1.3: low inertia, strong elasticity)
+and ``delta = 11`` are this flow's own.  The ``default`` overrides below are
+materialized by ``update_parameters``.
 """
 
 from math import pi
@@ -41,7 +39,7 @@ def _derive(params, derived, user_set) -> None:
     params.geo.lz = 2 * pi / params.geo.m0
     derived.volume_fac = (r2**2 - r1**2) / 2  # int_{r1}^{r2} r dr
     # Re := Wi/El -- derived, not a user parameter here: any directly
-    # assigned value is simply overwritten (resumed snapshots replay a
+    # assigned value is overwritten (resumed snapshots replay a
     # consistent value).
     params.phys.re = params.phys.wi / params.phys.el
 

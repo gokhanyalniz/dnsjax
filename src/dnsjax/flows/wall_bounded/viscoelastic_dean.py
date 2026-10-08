@@ -45,23 +45,26 @@ conformation is neglected, and the equilibrium profile does not satisfy
 the `$\nabla^2 c = 0$` wall rows `$H_c$` imposes.
 
 **The velocity slice closes exactly only at** `$\epsilon = 0$`, where
-`$f \equiv 1$` and the polymer contributes a constant extra viscosity,
-so the Newtonian `$U_\theta$` is also the sPTT one.  At
-`$\epsilon > 0$` the polymer shear-thins (the true balance is
+`$f \equiv 1$` and the polymer contributes a constant extra viscosity, so the
+Newtonian `$U_\theta$` is also the sPTT one.  At `$\epsilon > 0$` the polymer
+shear-thins (the true balance is
 `$(1/r^2)\,\partial_r[r^2\tau] - \Pi_\theta = 0$` with
 `$\tau = (S/\mathrm{Re})[\beta + (1-\beta)/f]$`) and that correction is
-neglected, exactly as in the pipe twin -- so the pair is **not** a
-steady state there.  It is not small at the shipped defaults: stepping
-it at `$\epsilon = 10^{-3}$` drifts at `$\max|\Delta u|/\Delta t
-\approx 0.3$` against `$2\!\cdot\!10^{-13}$` at `$\epsilon = 0$`, and
-the laminar ledger `$I = D_s - W_p$` misses by 15 % (the pipe's 8 %).
-Consequences: ``start_from_laminar`` is not laminar, and `$E'$` --
-which is measured against *this* reference, hence the
-``stop.check_laminarization`` quantity -- has a floor of a few percent
-of `$E$` instead of decaying to zero.  Fixing it needs a shooting
-solve for `$U_\theta$` (invert `$\tau(S)$` through the cubic,
-integrate, match both no-slip walls), which is why the closed form is
-kept and the defect documented instead.
+neglected, as in ``viscoelastic-pipe``, so the pair is **not** a steady state
+there, and the defect is not small at the shipped defaults (Design notes: "The
+laminar defect, measured").  Consequences: ``start_from_laminar`` is not
+laminar, and `$E'$` -- which is measured against *this* reference, hence the
+``stop.check_laminarization`` quantity -- has a floor of a few percent of `$E$`
+instead of decaying to zero.  Fixing it needs a shooting solve for `$U_\theta$`
+(invert `$\tau(S)$` through the cubic, integrate, match both no-slip walls),
+which is why the closed form is kept and the defect documented instead.
+
+Design notes
+------------
+**The laminar defect, measured.**  Stepping the laminar pair at
+`$\epsilon = 10^{-3}$` drifts at `$\max|\Delta u|/\Delta t \approx 0.3$`,
+against `$2\!\cdot\!10^{-13}$` at `$\epsilon = 0$`, and the laminar
+ledger `$I = D_s - W_p$` misses by 15 % (``viscoelastic-pipe``: 8 %).
 """
 
 from dataclasses import dataclass
@@ -114,7 +117,7 @@ class ViscoelasticDeanFlow(ViscoelasticAnnularFlow):
         r2 = derived_params.r_outer
         Re = params.phys.re
 
-        # Azimuthal body force Pi_theta = (r1 + r2) / (Re r), applied
+        # Azimuthal body force -Pi_theta = (r1 + r2) / (Re r), applied
         # at the mean mode by
         # ``ViscoelasticAnnularFlow.add_mean_body_force`` (the shared
         # RHS's driving adapter).
@@ -144,8 +147,7 @@ flow: ViscoelasticDeanFlow = ViscoelasticDeanFlow()
 
 
 def _build_laminar_profile() -> Array:
-    r"""The 9-component laminar state's mean-mode column,
-    ``(9, N_r)``.
+    r"""The laminar state's mean-mode column, ``(9, N_r)``.
 
     The analytical laminar `$r$`-profiles (velocity + sPTT-equilibrium
     conformation; see
@@ -177,8 +179,10 @@ _laminar_profile: Array = _build_laminar_profile()
 
 
 def _laminar_field(profile: Array, fourier_: Fourier) -> Array:
-    """The spectral field carrying *profile* ``(C, N_r)`` on the mean
-    mode alone (zero on every other mode, padding included)."""
+    """The spectral field that is *profile* ``(C, N_r)`` on the mean mode.
+
+    Zero on every other mode, padding included.
+    """
     return jnp.where(fourier_.mean_mask[None], profile[:, :, None, None], 0.0)
 
 
@@ -188,12 +192,11 @@ def _perturbation_energy(
     fourier_: Fourier,
     flow_: ViscoelasticDeanFlow,
 ) -> Array:
-    r"""Velocity-only deviation energy `$E' = \|u -
-    U_{\mathrm{lam}}\|^2/2$`.
+    r"""Velocity-only kinetic energy of the deviation from laminar.
 
-    The single definition, shared by :func:`get_stats` (which reports
-    it as ``E'``) and the laminarization read
-    :func:`get_perturbation_energy`.
+    `$E' = \|u - U_{\mathrm{lam}}\|^2/2$` over the three velocity components.
+    The single definition, shared by :func:`get_stats` (which reports it as
+    ``E'``) and the laminarization read :func:`get_perturbation_energy`.
     """
     return (
         get_norm2_annular(
@@ -337,7 +340,7 @@ def _get_stats_jit(
 
 
 def get_stats(state: Array) -> dict[str, Array]:
-    """Wrapper around ``_get_stats_jit`` (physical-basis *state*)."""
+    """The ``stats.dat`` columns of the physical-basis *state*."""
     return _get_stats_jit(state, _laminar_profile, fourier, flow)
 
 
@@ -372,9 +375,9 @@ def get_driving(state: Array) -> dict[str, Array]:
     its own axial traction at the walls, so the solvent-only number
     would be wrong rather than merely approximate.
 
-    Rather than report a wrong value this returns zero under the right
-    key, so the column exists and is correctly shaped from the first
-    row; every later row carries the value the corrector actually
+    Rather than report a wrong value, this returns a zero placeholder
+    under the right key, so the column exists and is correctly shaped
+    from the first row; every later row carries the value the corrector
     applied, which is exact.  Empty unless
     ``phys.block_mean_spanwise_velocity`` is on.
     """

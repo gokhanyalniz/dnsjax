@@ -39,7 +39,7 @@ def _derive(params, derived, user_set) -> None:
             f"got r_omega={r_omega}"
         )
     # ``re2`` is derived, not a quasi-Keplerian parameter: any directly
-    # assigned value is simply overwritten (the derived value also
+    # assigned value is overwritten (the derived value also
     # replays through resumed-snapshot layers).
     params.phys.re2 = _derive_re2(re1, r_omega, eta)
     circular_couette_derive(params, derived, eta)
