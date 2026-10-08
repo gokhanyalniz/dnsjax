@@ -99,9 +99,9 @@ mean `$y$`-momentum balance, and `$\langle v'^2\rangle = 0$` at both
 walls).  The mean pressure *gradient* is not here: it is the driving,
 a uniform body force, which ``stats.dat`` records.
 
-Cost
-----
-Resident, held for the run: one extra factored operator the size of
+Design notes
+------------
+**Cost.**  Resident, held for the run: one extra factored operator the size of
 ``flow.Lk_op`` and the two real `$(N_y, N_{k_z}, N_{k_x})$` columns --
 some 12 % on top at ``fd_order = 8``.  Build it only when a consumer
 is enabled.  Per sample, :func:`static_pressure` takes 15 single-field
@@ -144,7 +144,7 @@ class PoissonPressure:
     Construction factors the Neumann Poisson operator and derives the
     two homogeneous columns and the `$2\times2$` influence matrix --
     all field-independent, all done once.  Hold one instance for the
-    run (its cost: the module docstring).
+    run (its cost: the module's Design notes).
 
     A **pytree**, like the flow and solver dataclasses it is built
     from, and for the same reason: every field is a global
@@ -343,14 +343,12 @@ def convective_nonlinear(
     are `$\mathrm{i}(k_xP_x + k_zP_z)\Delta\hat{\mathbf{u}}$` with
     *state*'s profile, `$\mathrm{i}(k_x\Delta P_x + k_z\Delta P_z)
     \hat{\mathbf{u}}'^{(1)}$` and `$\Delta\hat v\,\partial_y
-    \mathbf{U}_b$`.  That is :func:`dnsjax.twin.diagnostics.
-    _convective_sources` summed, to round-off, without the six-piece
-    split its budget needs: 30 transforms, and each half of a
-    component's pair goes back on its own, behind its own barrier, so
-    one gradient set is live at a time -- the peak the pressure of a
-    reduced difference snapshot sets (module docstring, "Cost").
-    Without a reference the program is the single-state one above,
-    unchanged.
+    \mathbf{U}_b$`. That is :func:`dnsjax.twin.diagnostics._convective_sources`
+    summed, to round-off, without the six-piece split its budget needs: 30
+    transforms, and each half of a component's pair goes back on its own,
+    behind its own barrier, so one gradient set is live at a time -- the peak
+    the pressure of a reduced difference snapshot sets (Design notes: "Cost").
+    Without a reference the program is the single-state one above, unchanged.
 
     Returns ``(n_hat, div_n)``: `$\hat{\mathcal{N}}$`
     ``(3, Ny, Nkz, Nkx)`` and the solver's own discrete divergence of
@@ -370,8 +368,10 @@ def convective_nonlinear(
     dy_base = jnp.einsum("ij,cj->ci", d1.dense, base)
 
     def advect(adv: Array, c: Array) -> Array:
-        r"""`$(\mathbf{a}\cdot\nabla)c$` for one component *c*, back
-        to spectral; *adv* is the advector in physical space."""
+        r"""`$(\mathbf{a}\cdot\nabla)c$` for one component *c*, in spectral.
+
+        *adv* is the advector in physical space.
+        """
         grad = chunked_transform(
             spec_to_phys,
             jnp.stack([1j * kx * c, apply_y_matrix(d1, c), 1j * kz * c]),
