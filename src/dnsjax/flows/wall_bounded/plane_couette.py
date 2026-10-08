@@ -92,7 +92,7 @@ class PlaneCouetteFlow(CartesianFlow):
 
         Delegates the CGL grid, FD matrices, and per-mode IMM
         operator setup to :meth:`CartesianFlow.__post_init__`,
-        which assembles and factorises `$L_k$`, `$H_k$` directly
+        which assembles and factorizes `$L_k$`, `$H_k$` directly
         on the device.  This method then defines the
         plane-Couette base flow
         `$\mathbf{U} = y(\cos\theta, 0, \sin\theta)$`

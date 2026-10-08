@@ -519,7 +519,7 @@ def annular_forced_laminar_u_theta(
     Shared by the two force-driven annular flows: Newtonian Dean
     (:func:`dean_laminar_u_theta`, `$C = 2(r_1 + r_2)$`) and the
     viscoelastic sPTT flow (`$C = r_1 + r_2$`, the reference
-    normalisation).  Pure function (no flow construction), so it is
+    normalization).  Pure function (no flow construction), so it is
     importable both by the ``start_from_laminar`` state and by
     :mod:`dnsjax.ic.random_field` (the total-field IC = laminar profile +
     perturbation).
@@ -615,7 +615,7 @@ def _vw_recovery_parts(
 ) -> tuple[Array, Array]:
     r"""Per-mode pieces of the `$u_r$` recovery operator (vw scheme).
 
-    The recovery realises the `$\Phi$` definition with the
+    The recovery realizes the `$\Phi$` definition with the
     reconstruction's `$u_\theta(u_r, \omega_r)$` substituted in, so it
     is exact per pass (no iterated operand):
 

@@ -250,7 +250,7 @@ def make_stepper(
 
         Uses ``lax.while_loop`` so that the corrector convergence
         check stays on-device, eliminating per-iteration
-        GPU-to-CPU synchronisation.  Under
+        GPU-to-CPU synchronization.  Under
         ``step.corrector_iterations = n > 0`` the same body runs a
         fixed ``n - 1`` times in a ``lax.fori_loop`` instead (the
         first correction is already outside the loop), so ``num_c``
@@ -294,7 +294,7 @@ def make_stepper(
     ) -> tuple[Array, Array, Array, dict[str, Array]]:
         r"""Split corrector: FFT-free coupling tail + full refreshes.
 
-        Same CN fixed point as ``_step_core``, reorganised so the
+        Same CN fixed point as ``_step_core``, reorganized so the
         corrector iterations driven by the *linear* coupling
         ``l_bf_fn`` (base-flow coupling + frame term + -- per
         ``step.implicit_mean_coupling`` -- the instantaneous
@@ -425,7 +425,7 @@ def make_stepper(
     @jit(donate_argnums=0)
     def predict_and_fully_correct(
         state: Array, *args
-    ) -> tuple[Array, Array, Array]:
+    ) -> tuple[Array, Array, Array, dict[str, Array]]:
         """Predict + all corrector iterations in one JIT scope.
 
         Wall-bounded flows run the split corrector (``_split_core``)
@@ -449,7 +449,7 @@ def make_stepper(
         @jit(donate_argnums=0)
         def predict_and_fully_correct_measured(
             state: Array, *args
-        ) -> tuple[Array, Array, Array, dict[str, Array]]:
+        ) -> tuple[Array, Array, Array, dict[str, Array], dict[str, Array]]:
             """Fused step that also measures physical-space data.
 
             The measurements come from the step's first RHS
@@ -471,7 +471,7 @@ def make_stepper(
 
     def _cnab2_lbf_core(
         state: Array, nnl_prev: Array, full_rhs: Array, *args
-    ) -> tuple[Array, Array, Array, Array]:
+    ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
         r"""CN/AB2 body with implicit base-flow coupling.
 
         Splits the nonlinear RHS ``full_rhs = get_rhs_fn(u^n)`` into
@@ -485,7 +485,8 @@ def make_stepper(
         **FFT-free** corrector that re-evaluates only ``l_bf_fn`` each
         iteration -- a converged linear corrector is the exact
         CN-implicit ``L_bf`` solve.  Returns
-        ``(state_next, N_nl^n, error, num_c)``.
+        ``(state_next, N_nl^n, error, num_c, aux)``, *aux* as in
+        :func:`make_stepper`'s *correct_fn*.
 
         Under ``step.corrector_iterations = n > 0`` the coupling
         corrector runs a fixed ``n - 1`` iterations in a
@@ -592,7 +593,7 @@ def make_stepper(
     @jit(donate_argnums=(0, 1))
     def step_cnab2(
         state: Array, carry: Array, *args
-    ) -> tuple[Array, Array, Array, Array]:
+    ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
         r"""One CN/AB2 step (``step.scheme == "cnab2"``).
 
         Crank-Nicolson viscous + 2nd-order Adams-Bashforth explicit
@@ -604,8 +605,10 @@ def make_stepper(
         ``step_cnab2(state_0, zeros)`` call and take the *first*
         integration step with ``iterative-cn`` (the ``__main__``
         bootstrap) -- no forward-Euler start is involved.  Returns
-        ``(state_next, carry, error, num_c)``.  *state* and *carry*
-        are both donated (callers reusing either pass copies).
+        ``(state_next, carry, error, num_c, aux)``, *aux* as in
+        :func:`make_stepper`'s *correct_fn* (``{}`` without a
+        corrector).  *state* and *carry* are both donated (callers
+        reusing either pass copies).
 
         With *l_bf_fn* (wall-bounded) the base-flow coupling is made
         implicit via an FFT-free corrector (see ``_cnab2_lbf_core``);
@@ -618,7 +621,7 @@ def make_stepper(
         `$N^{n-1}$` and there is no corrector (``error = 0``,
         ``num_c = 0``).
 
-        **Memory**: cnab2 is a *throughput* optimisation (1 vs
+        **Memory**: cnab2 is a *throughput* optimization (1 vs
         `$2 + c$` FFT evaluations per step), not a peak-memory one --
         it carries one extra state-sized array (``carry``) across
         steps, and for wall-bounded flows the compiled step still
@@ -647,10 +650,15 @@ def make_stepper(
         @jit(donate_argnums=(0, 1))
         def step_cnab2_measured(
             state: Array, carry: Array, *args
-        ) -> tuple[Array, Array, Array, Array, dict[str, Array]]:
-            """CN/AB2 step that also returns physical-space measurements
-            from its first RHS evaluation (at `$u^n$`).  *state* and
-            *carry* are donated (warm-up callers pass copies)."""
+        ) -> tuple[
+            Array, Array, Array, Array, dict[str, Array], dict[str, Array]
+        ]:
+            """CN/AB2 step that also returns physical-space measurements.
+
+            The measurements come from the step's first RHS evaluation
+            (at `$u^n$`) and are returned last.  *state* and *carry* are
+            donated (warm-up callers pass copies).
+            """
             full_rhs, measurements = get_rhs_measured_fn(state, *args)
             if l_bf_fn is None:
                 _, kappa = _step_scales(*args)

@@ -2,13 +2,16 @@ r"""Viscoelastic (sPTT) Dean flow between two stationary cylinders.
 
 Force-driven flow of an sPTT viscoelastic fluid in the annular gap
 between two **stationary** concentric cylinders, driven by an azimuthal
-body force `$-\Pi_\theta = (r_1 + r_2)/(\mathrm{Re}\,r)$` (an external
-reference normalisation, `$r_1 = \delta$`, `$r_2 = \delta + 2$`).  The
-velocity is coupled to a symmetric conformation tensor `$\mathbf{c}$` via
-the polymer-stress divergence; see the module docstring of
+body force `$-\Pi_\theta = (r_1 + r_2)/(\mathrm{Re}\,r)$` (half-gap
+units, `$r_1 = \delta$`, `$r_2 = \delta + 2$`; at mid-gap the force is
+the `$2/\mathrm{Re}$` that drives the plane channel of the sPTT system
+this flow integrates,
+:mod:`~dnsjax.geometries.wall_bounded._viscoelastic_common`).  The
+velocity is coupled to a symmetric conformation tensor `$\mathbf{c}$`
+via the polymer-stress divergence; see the module docstring of
 :mod:`~dnsjax.geometries.wall_bounded.annular_viscoelastic` for the
 governing equations, the 9-component state layout, and the spin
-diagonalisation of the tensor Laplacian.
+diagonalization of the tensor Laplacian.
 
 Total-field formulation
 -----------------------

@@ -95,7 +95,7 @@ Hamilton-Kim-Waleffe `$1.75\pi \times 2 \times 1.2\pi$` at `$Re = 400$`.
 Wall-normal ladders are sized with ``scripts/wall_normal_resolution.py
 match`` and sit **above** the literature Chebyshev counts (at
 ``fd_order = 8`` on the CGL grid, ``ny = 49`` resolves what 33 Chebyshev
-polynomials do to 1 %): the closure residual is a discretisation error,
+polynomials do to 1 %): the closure residual is a discretization error,
 so the resolution that settles it is not the resolution that settles the
 physics.
 
@@ -104,7 +104,7 @@ re-gridding one fine parent down.  Both would work, but a truncated fine
 state carries more grid-scale content than the coarse scheme would ever
 produce, which is the adverse case for the very FD adjointness defect
 being measured -- it would manufacture convergence.  A per-rung parent
-is a bona fide solution of its own discretisation.  (It is also why
+is a bona fide solution of its own discretization.  (It is also why
 these numbers are not comparable to ``test_twin_driver.py``'s, which
 uses ``fd_order = 4`` and an *unstepped* random field as its parent.)
 
@@ -179,7 +179,7 @@ _PC_BOUNDS = {"dU": 5e-3, "du1": 1e-3, "du2": 5e-4, "T_tot": 1e-3}
 #: ``dU`` is bounded absolutely but **not** asserted to converge: it
 #: grows under refinement (plane-Couette: 5.9e-5 -> 1.3e-4 -> 4.2e-4
 #: over its ladder), because the mean-mode difference budget it is
-#: normalised by shrinks faster than its own absolute residual does.
+#: normalized by shrinks faster than its own absolute residual does.
 #: The same exclusion, for the same reason, as in
 #: ``tests/test_twin_driver.py``.
 #:
@@ -477,7 +477,7 @@ def _yresolved(member: Path) -> dict[str, float]:
     *Algebraic* -- the same Parseval sum regrouped, so they hold to
     rounding at every rung and on any state.  They are the
     load-bearing check that the marginal reduction, the `$\pm k_z$`
-    fold and the density normalisation are all right, here on real
+    fold and the density normalization are all right, here on real
     turbulence rather than the synthetic states of
     ``tests/test_twin_unit.py``:
 
@@ -513,7 +513,7 @@ def _yresolved(member: Path) -> dict[str, float]:
       |\Delta\mathbf{u}|^2/2$`, whose work is a wall-normal flux --
       zero continuously, and discretely the same residual again.
     - ``pi_flux``: `$\max_k|\int W_p\,\mathrm{d}y|$`, which the
-      continuity identity forces to zero at every mode, normalised by
+      continuity identity forces to zero at every mode, normalized by
       the largest `$|\int\mathcal{V}\,\mathrm{d}y|$` over the same
       modes.  Form-*dependent* in magnitude though not in kind: the
       rotational ``Wp`` is the work of the Bernoulli pressure, a
@@ -619,7 +619,7 @@ def _check_closure(
     three ``twin.seed`` values at a fixed rung), so a one-seed ladder
     comparison can flip on noise alone.  Taking the max over seeds is
     what makes the shrinkage assertion a statement about the
-    discretisation rather than about the draw -- and it is why the
+    discretization rather than about the draw -- and it is why the
     absolute bounds below carry ~10x margin over the measured worst
     case rather than the 2-3x that would look tighter.
     """

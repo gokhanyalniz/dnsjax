@@ -12,7 +12,7 @@ fields.
 
 :func:`integrate` works on **physical** fields and ``physical_coords``
 (nonlinear integrands such as ``|u|²`` are formed in physical space;
-this avoids Parseval/Nyquist normalisation pitfalls): a uniform
+this avoids Parseval/Nyquist normalization pitfalls): a uniform
 ``L / n`` rule along Fourier axes and finite-difference quadrature
 (with the radial Jacobian for cylindrical/annular) along the wall-normal
 axis.

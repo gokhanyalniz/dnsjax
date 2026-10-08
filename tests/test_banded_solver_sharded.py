@@ -12,7 +12,7 @@ single-device suite (``test_banded_solver.py``) structurally cannot:
    roundup) -- asserted on a plane whose local blocks do not tile.  A
    CPU run stores the true plane instead (it never launches the kernel
    grid); both storages are asserted here.
-2. **shard_map-local ``.solve``** on sharded mode axes: dense-oracle
+2. **shard_map-local ``.solve``** on sharded mode axes: dense-reference
    parity for real + complex RHS, single + stacked operators, and both
    ``component_axis`` layouts, plus the result sharding matching the
    RHS sharding.  This is the exact path that raised
@@ -28,7 +28,7 @@ single-device suite (``test_banded_solver.py``) structurally cannot:
    field's sharding and equal the GEMM -- for a 3-d field and both 4-d
    layouts.
 
-On CPU the solve takes the pure-JAX local sweep (the oracle path);
+On CPU the solve takes the pure-JAX local sweep (the reference path);
 kernel numerics are pinned single-device by the interpret tests.  The
 ``mpirun``-based guards for the same class are the ``*-mpi-pad``
 entries of ``test_random_smoke.py`` and ``test_laminar_smoke.py``

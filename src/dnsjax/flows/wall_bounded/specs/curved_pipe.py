@@ -8,7 +8,7 @@ that laminar value, which makes ``phys.re`` the literature Reynolds
 number `$\mathrm{Re} = U_b d/\nu$` of the toroidal-pipe work, with
 Dean number `$\mathrm{De} = \mathrm{Re}\sqrt{\kappa}$`; under the
 default constant pressure gradient it is instead the *nominal*
-Reynolds number of the same driving, and the realised bulk is lower by
+Reynolds number of the same driving, and the realized bulk is lower by
 the Dean friction increase.
 
 Defaults: `$\kappa = 0.037$` (`$R_c/a = 27.03$`, `$R_c/D = 13.51$`),

@@ -16,7 +16,7 @@ real field), so the checks pin the *native* contract:
 - **single-mode placement**: a pure cosine along one native input axis
   lands in exactly the expected dnsjax spectral slot with the
   ``norm="forward"`` amplitude 1/2 -- pins the native component basis,
-  the axis mapping, and the normalisation.
+  the axis mapping, and the normalization.
 - **no swap / no mixing** (pipe / TC): ``u_z`` -> ``state[0]``,
   ``u_r`` -> ``state[1]``, ``u_theta`` -> ``state[2]`` independently
   (pipe and TC are identical; the converter neither swaps axes nor

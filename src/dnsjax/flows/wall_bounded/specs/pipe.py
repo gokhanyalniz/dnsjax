@@ -16,7 +16,7 @@ from ._family import (
 
 
 def _grid_default(scheme: str) -> str:
-    # Half-CGL's tighter near-axis point destabilises explicit cnab2;
+    # Half-CGL's tighter near-axis point destabilizes explicit cnab2;
     # the rigged grid's 2x larger innermost radius doubles cnab2's
     # admissible dt.  See the ``Geometry`` docstring.
     return "half-cgl" if scheme == "iterative-cn" else "rigged-cgl"

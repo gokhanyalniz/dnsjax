@@ -274,7 +274,7 @@ def _spectral_to_native(
     r"""Convert a native-layout spectral input to the dnsjax state.
 
     The input is already in native component/axis order; only the Fourier
-    mode order / Nyquist presence and the normalisation differ.  Reorders
+    mode order / Nyquist presence and the normalization differ.  Reorders
     each Fourier axis to native order (real axis -> ``[0, nx//2)``; full
     axes -> ``complex_harmonics``, Nyquist dropped) and rescales
     ``input_norm`` -> dnsjax's ``"forward"``.
@@ -569,7 +569,7 @@ def to_spectral_state(
     space:
         ``"physical"`` or ``"spectral"`` (native layout, no 3/2 padding).
     input_norm:
-        For ``space="spectral"``: the source's forward-FFT normalisation
+        For ``space="spectral"``: the source's forward-FFT normalization
         (numpy naming; default ``"backward"``).  Ignored for physical
         input.
 

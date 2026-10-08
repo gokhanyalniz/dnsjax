@@ -1,5 +1,5 @@
 r"""2D and 3D real FFT with 3/2-rule dealiasing via zero-padding
-and truncation, plus double-parallelisation reshards.
+and truncation, plus double-parallelization reshards.
 
 For the 2D case:
 The forward transform (physical -> spectral) is ``_rfft2d``; the inverse
@@ -17,9 +17,9 @@ between the three sharding stages of the pipeline:
 
 1. **phys** ``P(a0, a1, None)`` — ``[y_{np0}, z_{np1}, x]``
 2. **mid**  ``P(a0, None, a1)`` — ``[y_{np0}, z, kx_{np1}]``
-   (after the `$z \leftrightarrow k_x$` reshard, Ns-way)
+   (after the `$z \leftrightarrow k_x$` reshard, ``np1``-way)
 3. **spec** ``P(None, a0, a1)`` — ``[y, kz_{np0}, kx_{np1}]``
-   (after the `$y \leftrightarrow k_z$` reshard, Nr-way)
+   (after the `$y \leftrightarrow k_z$` reshard, ``np0``-way)
 
 When ``np0 == 1`` the mid and spec layouts are identical and the
 second reshard is skipped.  When ``np1 == 1`` the phys and mid
@@ -47,7 +47,7 @@ full-complex axis, `$n / 2$` modes for the real-FFT axis).
 
 Memory
 ------
-Beyond its input and output, each transform materialises one to two
+Beyond its input and output, each transform materializes one to two
 batch-sized intermediates per padded axis: the ``zeropad_*`` /
 ``truncate_*`` concatenate output and the per-axis (i)FFT result,
 plus the reshard copies.  For the batched RHS transforms (6 fields
@@ -58,17 +58,17 @@ off -- a memory/throughput trade).  Fusing the zero-pad into the
 adjacent FFT stage instead (transforming over the padded length
 while reading only the unpadded input) is a dead end: XLA's FFT is
 an opaque custom call (cuFFT/ducc) whose operands must be
-materialised -- ``jnp.fft.irfft(a, n=)`` performs the identical pad
+materialized -- ``jnp.fft.irfft(a, n=)`` performs the identical pad
 inside its wrapper (byte-identical compiled HLO), and
 ``jnp.fft.ifft(a, n=)`` end-pads, the wrong placement for a
-full-complex axis -- and a hand-written pruned-input (Pallas) FFT
+full-complex axis -- and a custom pruned-input (Pallas) FFT
 kernel is not worth it: the 3/2 zero-pattern is decimation-invariant
 (each radix-r input subsequence is again 3/2-padded), so pruning
 only a first stage saves nothing, and a full kernel would have to
 beat cuFFT to reclaim a transient (~-17%) that chunking already
 caps.
 
-Normalisation
+Normalization
 -------------
 All transforms use ``norm="forward"``, which divides by *N* on the
 forward transform and applies no factor on the inverse.
@@ -363,7 +363,7 @@ def _rfft2d(x: Array) -> Array:
         out_shard=phys,
     )
 
-    # ---- Reshard #1: z <-> kx (Ns-way, skipped when np1==1) --
+    # ---- Reshard #1: z <-> kx (np1-way, skipped when np1==1) --
     if sharding.a1 is not None:
         y = reshard(y, mid)
 
@@ -382,7 +382,7 @@ def _rfft2d(x: Array) -> Array:
         out_shard=mid,
     )
 
-    # ---- Reshard #2: y <-> kz (Nr-way, skipped when np0==1) --
+    # ---- Reshard #2: y <-> kz (np0-way, skipped when np0==1) --
     if sharding.a0 is not None:
         y = reshard(y, spec)
 

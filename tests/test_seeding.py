@@ -34,7 +34,7 @@ driver's late adopt-or-draw):
    drawn once and broadcast, so the two ranks build one random field.
    Checked against a single-process run at the printed seed -- the
    failure this catches (per-rank draws) is silent otherwise: the
-   field stays divergence-free and correctly normalised, and the
+   field stays divergence-free and correctly normalized, and the
    snapshot records rank 0's seed for a trajectory no seed reproduces.
 7. **Twin adopt-or-draw** (subprocess): a fresh ``dnsjax-twin`` start
    with no ``--twin.seed`` draws and records it, and the paired resume

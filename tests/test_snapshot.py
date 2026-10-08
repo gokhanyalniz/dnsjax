@@ -1320,7 +1320,7 @@ def run_gds_detection_case() -> str | None:
         **no** ``defaults`` attribute, exactly like the installed
         package before its submodule is imported, so reaching for
         ``kvikio.defaults`` through the package raises
-        ``AttributeError`` here as it did on the cluster.
+        ``AttributeError`` here as it did with the real package.
         """
         kv = types.ModuleType("kvikio")
         kvd = types.ModuleType("kvikio.defaults")

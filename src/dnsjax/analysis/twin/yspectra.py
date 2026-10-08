@@ -464,7 +464,7 @@ def shape_alignment(
 
     The Bhattacharyya coefficient
     `$A = \int \sqrt{p\,q}\,\mathrm{d}y\,\mathrm{d}k$` of two
-    ``(n_y, n_k)`` densities, each first normalised to unit total
+    ``(n_y, n_k)`` densities, each first normalized to unit total
     against *y_weights*, so it reads **shape only** -- an amplitude
     is divided out, and `$A = 1$` exactly when the two shapes agree.
     Negative entries (a budget term, say) are not distributions and

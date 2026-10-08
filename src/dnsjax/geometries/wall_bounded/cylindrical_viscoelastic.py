@@ -97,7 +97,7 @@ wedge folds in unchanged (``Fourier.m_is_even``).
 Like the velocity, the conformation is held to the parity condition
 only -- smoothness across the axis -- and not to the stronger
 spin-weighted `$r^{|m+s|}$` vanishing rate, which the parity-reduced
-discretisation does not represent for either field.
+discretization does not represent for either field.
 
 Every radial derivative therefore carries a per-slot sign, built by
 :func:`_parity_signs` from the spin weights (the flow's
@@ -456,7 +456,7 @@ class ViscoelasticCylindricalFlow(CylindricalFlow):
         two -- stacked y-leading ``(Nr, 9, Nm, Nkz)``, which is both
         transpose-free and the layout whose ghost scatter-add lands on
         the radial axis.  *fields* is the flat 9-tuple the stack wants;
-        *combos* (the same six tensor entries already materialised as
+        *combos* (the same six tensor entries already materialized as
         one array) is the annulus's preferred form and unused here.
         Returns ``(9, Nr, Nm, Nkz)``.
         """

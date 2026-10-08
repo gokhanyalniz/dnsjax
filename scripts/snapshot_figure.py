@@ -383,7 +383,7 @@ def _render_stack(
 
     Each plane keeps its own `$x$`-`$z$` mean removed, but they share
     one symmetric colour scale, so the decay of the fluctuation away
-    from the wall is visible rather than normalised away -- at
+    from the wall is visible rather than normalized away -- at
     `$Re_\tau \approx 180$` the centreline rms is a third of the
     near-wall one, and the middle plane is meant to look fainter.
 
@@ -466,7 +466,7 @@ def _render_stack(
 def _trim(path: Path, palette: int = 0, box=None):
     """Crop the white margin a 3D axes reserves around its content.
 
-    With *palette* set, the result is also quantised to that many
+    With *palette* set, the result is also quantized to that many
     colours.  A figure like this is a smooth colormap ramp over white,
     so 256 entries reproduce it to well under one level on average --
     measured on the README figure, mean channel error 0.4/255, with no
@@ -546,7 +546,7 @@ def _animate(args, info) -> int:
     r"""Animate one wall-parallel plane, or a stack of them, over time.
 
     Every frame shares one colour scale -- otherwise the animation
-    pulses as each frame renormalises itself -- taken from ``--clim`` or
+    pulses as each frame renormalizes itself -- taken from ``--clim`` or
     from the given percentile over **all** frames, so the bounds suit
     the whole sequence rather than any one of it.  Only the requested
     component and the requested wall-normal slabs are read from each
@@ -738,7 +738,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--palette",
         type=int,
         default=0,
-        help="quantise the PNG to this many colours (0 = truecolour); "
+        help="quantize the PNG to this many colours (0 = truecolour); "
         "256 roughly halves the file of a smooth colormap render",
     )
     p.add_argument(

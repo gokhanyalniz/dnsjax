@@ -329,7 +329,7 @@ field transforms against 69 (:func:`_convective_sources`), because
 binning no longer forces a separate physical product per bin pair.
 What it adds instead is the pressure -- one factored Poisson operator
 held for the run, plus its two homogeneous columns.  Pressure is the
-one term the volume-averaged budget omits for free and a localised
+one term the volume-averaged budget omits for free and a localized
 one cannot; :mod:`dnsjax.twin.pressure` has the whole argument, and
 its "Cost" section the footprint.
 
@@ -525,7 +525,7 @@ The masks derive from ``fourier.kx`` (spec ``P(None, None, a1)``) and
 only, which infer the combined partition spec -- the
 ``jnp.broadcast_to``-keeps-the-source-spec trap (see the precedent
 note in ``cylindrical.py``, ``_imm_iteration_vw``) cannot arise
-because no mask is ever materialised standalone at full shape.
+because no mask is ever materialized standalone at full shape.
 Reductions are plain ``get_norm2`` sums over the sharded axes;
 outputs are replicated scalars.
 
@@ -687,7 +687,7 @@ def _twin_energies_jit(
     spectra").
 
     Keys are chosen so their *sorted* order (the ``twin.dat`` column
-    order -- dicts returned through ``jit`` are canonicalised, see
+    order -- dicts returned through ``jit`` are canonicalized, see
     :mod:`dnsjax.measurements`) groups the components readably.
     """
     k_metric = fourier_.k_metric
@@ -1063,7 +1063,7 @@ def _fold_kz(a: Array) -> Array:
     **Why the fold is mandatory, not a convenience.**  The stored
     half-plane carries `$k_x \ge 0$` with the conjugate-pair weight
     ``k_metric``, so a stored entry is the energy of the *pair*
-    `$\{(k_x, k_z), (-k_x, -k_z)\}$`.  Marginalising that over
+    `$\{(k_x, k_z), (-k_x, -k_z)\}$`.  Marginalizing that over
     `$k_x$` therefore does **not** give the two-sided spectrum at
     `$k_z$` -- the partner of `$(k_x > 0, k_z)$` sits at `$-k_z$`.
     Only after summing the `$\pm k_z$` pair do the two agree:
@@ -1673,7 +1673,7 @@ def _convective_sources(
         # part of the pressure's source.
         n_hat = n_hat + (1j * u_grid) * kx * delta
     # The solver's own discrete divergence
-    # (``cartesian._imm_iteration_vp`` stage 1).
+    # (``_cartesian_primitive_imm._imm_iteration_vp`` stage 1).
     div_n = (
         1j * kx * n_hat[0] + apply_y_matrix(d1, n_hat[1]) + 1j * kz * n_hat[2]
     )
@@ -2059,7 +2059,7 @@ def _twin_pressure_check_jit(
     - ``n_hat``, ``div_n``, ``dy_dtv``: the nonlinear term, the
       Poisson source and `$\partial_y\,\partial_t\Delta\hat v$` --
       what the residuals above are measured *against*, returned so a
-      caller can normalise by them, and so ``n_hat`` can be pinned
+      caller can normalize by them, and so ``n_hat`` can be pinned
       against the solver's own RHS.  All **full-size**
       `$(3, N_y, N_{k_z}, N_{k_x})$` / `$(N_y, N_{k_z}, N_{k_x})$`
       complex arrays -- this entry point is for tests, not for a

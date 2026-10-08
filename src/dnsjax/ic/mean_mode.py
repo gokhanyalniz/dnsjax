@@ -155,7 +155,7 @@ with `$\mathbf{w}$` the grid's own quadrature weights (the same ones
 are **the same rows in both cases**; case B adds the two that keep
 them true under a responding `$\Pi$`.
 
-Anchors, measured at ``cgl``/``ny = 65``/``fd_order = 6``:
+Test profiles, measured at ``cgl``/``ny = 65``/``fd_order = 6``:
 `$\sin(k\pi(y+1)/2)$` satisfies case A for every `$k$`;
 `$\sin(m\pi y)$` satisfies case B (odd, so both extra rows are
 inert).  The even quartic `$(1-y^2)(5-y^2)$` separates them --
@@ -261,7 +261,7 @@ _KERNEL_FLOOR = 1e-5
 # to an epsilon.  Worst relative residual over the analytically
 # compatible families -- ``sin(k pi (y+1)/2)`` for case A and
 # ``sin(m pi y)`` for case B -- restricted to modes the grid resolves
-# (>= 8 points per wavelength), maximised over ``fd_order`` in
+# (>= 8 points per wavelength), maximized over ``fd_order`` in
 # ``{4, 6, 8}``:
 #
 #     ny        17       25       33       65      129
@@ -393,7 +393,7 @@ def project_profile(delta: ndarray, C: ndarray, K: ndarray) -> ndarray:
     r"""Condition *delta* on `$C\delta = 0$` in the `$K$` metric.
 
     `$\delta' = \delta - K C^{\mathsf T} (C K C^{\mathsf T})^{-1}
-    C\delta$` (module docstring).  Rows of `$C$` are normalised to unit
+    C\delta$` (module docstring).  Rows of `$C$` are normalized to unit
     length first -- the `$D_2$` wall rows carry `$1/h^2 \sim 10^5$`
     entries on a wall-clustered grid -- which leaves the projection
     itself unchanged.

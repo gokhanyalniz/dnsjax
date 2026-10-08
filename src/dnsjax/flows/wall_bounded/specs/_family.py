@@ -240,7 +240,7 @@ DEFERRED_LOWRES_PRESSURE = DeferredSpec(
 
 
 def cartesian_derive(params, derived, user_set) -> None:
-    """Cartesian channel: int_{-1}^{1} dy area normalisation."""
+    """Cartesian channel: int_{-1}^{1} dy area normalization."""
     derived.volume_fac = 2
 
 
@@ -249,7 +249,7 @@ def annular_base_derive(params, derived) -> float:
 
     Validates the radius ratio ``eta``, derives the non-dim radii on
     the unit gap, forces the azimuthal wedge extent ``lz = 2*pi/m0``,
-    and sets the area normalisation.  Returns ``eta``.
+    and sets the area normalization.  Returns ``eta``.
     """
     eta = params.geo.eta
     if eta is None:
