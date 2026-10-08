@@ -357,7 +357,7 @@ def _wedge_common(m0: int, nz: int) -> None:
             geo={"eta": ETA, "m0": m0, "lx": 2.0},
             res={"nx": WEDGE_NX, "nz": nz, "ny": WEDGE_NY},
             # A tight corrector: the fixed point is only pinned to
-            # ``corrector_tolerance``, so it -- not the discretisation
+            # ``corrector_tolerance``, so it -- not the discretization
             # -- would otherwise floor the two arms' agreement.
             step={
                 "dt": 0.005,

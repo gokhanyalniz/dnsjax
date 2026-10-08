@@ -266,7 +266,7 @@ def read_snapshot_stats(path: str | Path) -> dict | None:
 #: Bytes per element of the dtypes the archive writer emits: complex
 #: for a state (:func:`dnsjax.snapshot._zarr3_dtype_name`), real for
 #: the twin's cubes.  This module is deliberately numpy-free, so the
-#: size is tabulated rather than looked up; an unrecognised name skips
+#: size is tabulated rather than looked up; an unrecognized name skips
 #: the size check below instead of inventing a number.
 _ITEMSIZE = {"complex64": 8, "complex128": 16, "float32": 4, "float64": 8}
 

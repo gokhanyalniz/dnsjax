@@ -34,7 +34,7 @@ EPYC 7742 per node): one rank per core, each pinned to one XLA thread
     (``--workdir``): a rank on another node cannot enter the driver
     node's ``/tmp``.
 
-At each rank count every ``(np0, np1)`` factorisation runs, or only
+At each rank count every ``(np0, np1)`` factorization runs, or only
 those whose ``np0`` is listed in ``--np0`` and whose ``np1`` in
 ``--np1`` (``--np0 128 64`` keeps one ``(128, n/128)`` and one
 ``(64, n/64)`` grid at every rank count ``n``: a strong-scaling
@@ -60,7 +60,7 @@ cache looks for its standard library beside the copy ("No module named
 ``--target gpu`` (e.g. 4 x NVIDIA H200 in one node)
     one process spanning every visible GPU (the launch the
     ``Distribution`` docstring recommends for a single node); sweeps the
-    mesh (every factorisation of ``--gpus``), optionally the Pallas
+    mesh (every factorization of ``--gpus``), optionally the Pallas
     tile (``--tiles``) and the precision (``--precisions``).
 
 Arms and repeats
@@ -285,7 +285,7 @@ def _named(items: list[str], default: tuple[str, str]) -> list[tuple]:
 def _layouts(
     n: int, np0_filter: list[str], np1_filter: list[str]
 ) -> list[tuple[int, int]]:
-    """The factorisations of *n* the ``--np0`` and ``--np1`` filters keep."""
+    """The factorizations of *n* the ``--np0`` and ``--np1`` filters keep."""
     pairs = _factorisations(n)
     for axis, kept in ((0, np0_filter), (1, np1_filter)):
         if kept and kept != ["all"]:

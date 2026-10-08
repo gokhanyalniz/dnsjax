@@ -176,7 +176,7 @@ PARENT_OFFPHASE = _SESSION / "parent_offphase.tar"
 OFFPHASE_STEPS = 3
 
 #: The sorted twin.dat column set (t first; the rest is the
-#: JIT-canonicalised sorted key order of ``twin_energies``).
+#: JIT-canonicalized sorted key order of ``twin_energies``).
 #: ``twin.dat`` columns without ``twin.bins`` (the default) and with
 #: it.  The set is the sorted keys of the ``twin_energies`` dict, so a
 #: column added there shows up here first.

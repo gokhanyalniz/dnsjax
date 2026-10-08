@@ -59,7 +59,7 @@ What each case pins:
    ``volume_fac`` / the unit conversion reach neither.  A saturated
    pair reads exactly 1, and an empty reference reads ``nan`` without
    touching a colour scale.
-9. **The divisor is symmetrised before the fold.** On a deliberately
+9. **The divisor is symmetrized before the fold.** On a deliberately
    asymmetric reference, ``--half mean`` gives the ratio of the
    folded halves rather than the mean of the two ratios, which is
    what makes the answer independent of the order.
@@ -110,9 +110,9 @@ What each case pins:
     frames.
 17. **The reference's two layouts.** The same reference records, kept
     inside the difference stream (the pre-split layout) or in their
-    own ``twin_yspectra_ref.bin``, give the same normalisation, maps,
+    own ``twin_yspectra_ref.bin``, give the same normalization, maps,
     decorrelations and spacetime map, in a set of either or a mixed
-    set; a reference on half the difference cadence normalises over
+    set; a reference on half the difference cadence normalizes over
     its own samples and refuses a reference map only at the frames it
     lacks.
 18. **Shape maps.** Each panel of each frame is the absolute panel
@@ -1266,8 +1266,8 @@ def test_decorrelation() -> None:
     for component in (0, 2, None):
         e = rec["e_x"][1]
         e = e.sum(axis=0) if component is None else e[component]
-        # The divisor is symmetrised for the fold (next case), so the
-        # hand computation symmetrises too.  The summed panel takes
+        # The divisor is symmetrized for the fold (next case), so the
+        # hand computation symmetrizes too.  The summed panel takes
         # the summed divisor: one ratio of sums.
         flat = profile.sum(0) if component is None else profile[component]
         resolved = (
@@ -1321,7 +1321,7 @@ def test_decorrelation() -> None:
     holed = _records(meta, "twin_yspectra", 2, seed=13)
     for suffix in tsm.stored_suffixes(meta):
         # Two whole wall-normal rows, and R_y partners: the divisor is
-        # symmetrised, so one alone would be filled in by the other.
+        # symmetrized, so one alone would be filled in by the other.
         holed[f"r_{suffix}"][:, :, [5, NY - 6]] = 0.0
     empty = _series("twin_yspectra", [_member(meta, holed)])
     for name in ("decorr_x", "decorr_k_x"):
@@ -1355,7 +1355,7 @@ def test_divisor_is_symmetrised_before_the_fold() -> None:
     # The ratio of the folded halves ...
     want = _folded(numerator.T).T / (2.0 * _folded(_symmetric(profile[0])))
     assert np.allclose(drawn.values, want)
-    # ... which is not the mean of the two unsymmetrised ratios.
+    # ... which is not the mean of the two unsymmetrized ratios.
     naive = _folded((numerator / (2.0 * profile[0])).T).T
     assert not np.allclose(drawn.values, naive)
 

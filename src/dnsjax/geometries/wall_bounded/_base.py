@@ -482,7 +482,7 @@ def extract_mean_modes(*states: Array) -> tuple[Array, ...]:
     fields to make one call: a ``shard_map`` operand crosses a
     manual-sharding boundary, so XLA cannot sink the interior
     ``[:, :, 0, 0]`` slice back out into the producer, and the stack is
-    materialised in full -- a field-sized copy written, read once and
+    materialized in full -- a field-sized copy written, read once and
     discarded, on every call.  Passing the two fields separately costs
     nothing (each is an array the caller already holds; a bare
     ``x[None]`` on a `$(N_y, N_{k_z}, N_{k_x})$` field is a degenerate
@@ -503,7 +503,7 @@ def extract_mean_modes(*states: Array) -> tuple[Array, ...]:
     ``c/it = 0``, where a step sheds only two `$(2, N_y, N_{k_z},
     N_{k_x})$` stacks (34 MB each at that size, written and read once)
     and two collectives, against a 0.7-2.0 s step: a few tenths of a
-    percent, under this box's noise floor.
+    percent, under the timing noise floor.
 
     It is kept because it is bit-identical and strictly less work, and
     because both halves grow exactly where an 8-core box cannot show
@@ -723,7 +723,7 @@ def get_pert_enstrophy(
     return horiz + wall_normal
 
 
-# ── Flow state initialisation ───────────────────────────────────
+# ── Flow state initialization ───────────────────────────────────
 
 
 def init_state() -> Array:

@@ -9,7 +9,7 @@ questions for the ``pallas`` backend on real hardware:
       change did **not** remove), rather than the layout transpose
       (which it did)?  The split is mandatory: the f64 Triton kernel
       cannot ingest ``c128`` (JAX has no zero-copy complex<->real
-      bitcast), so every solve must materialise a real buffer and
+      bitcast), so every solve must materialize a real buffer and
       recombine.  If the split/recombine is a large share of the solve,
       no transpose removal could ever help -- the transpose was fused
       *into* that mandatory copy (same bytes), which is exactly why
@@ -17,7 +17,7 @@ questions for the ``pallas`` backend on real hardware:
 
   H2  Is the banded solve even the bottleneck of a corrector step, or do
       the FFTs / FD matvecs / influence-matrix apply dominate?  If the
-      solve is a small share of the step, no solve-kernel optimisation
+      solve is a small share of the step, no solve-kernel optimization
       can move the wall clock.
 
 Part A  micro-breakdown of one ``Lk`` solve: full solve vs kernel-only
@@ -81,8 +81,8 @@ with ``grep '^SUMMARY'`` instead of pasting full dumps::
 A full run also ends with a ``SUMMARY`` line (adds ``imm``/``step``/
 ``cnab2`` too), so the same grep works for the step-level confirmations.
 
-On a GPU-less box it prints the HLO census only (timings need real
-hardware) so the harness can be sanity-checked before the cluster;
+Without a GPU it prints the HLO census only (timings need real
+hardware), so the harness can be checked before a GPU run;
 ``--cpu-smoke`` additionally exercises Parts B/C once on CPU at tiny
 resolution (numerics only) to validate the harness end-to-end.
 ``--steps-only N`` runs ``N`` steps and exits, skipping Parts A/B/C:
@@ -2299,7 +2299,7 @@ def main() -> None:
     if args.cpu_smoke:
         # Exercise the full Part B (incl. the IMM stage breakdown and
         # cnab2 composition) and Part C on CPU so the added code is
-        # validated on the GPU-less dev box.  Timings are meaningless.
+        # validated without a GPU.  Timings are meaningless.
         print(
             "\n--cpu-smoke: exercising Parts B/C + solve-only on CPU at "
             f"ny={args.ny} nx={args.nx} nz={args.nz} "

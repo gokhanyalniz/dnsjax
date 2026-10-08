@@ -25,7 +25,7 @@ Markers:
 - ``mpi``: the script launches solver runs via ``mpirun`` (even at
   ``-np 1``); skipped automatically when ``mpirun`` is not on PATH.
 - ``slow``: full solver integration runs / dt sweeps / the
-  transient-growth literature anchors (minutes each).
+  published transient-growth values (minutes each).
 
 Usage::
 
@@ -84,7 +84,7 @@ _NO_MPI_ONLY = (
 # no-mpirun unit fallback + the full run), ``test_driving`` (the
 # always-run unit half + the slow full run),
 # ``test_transient_growth`` (offline ``--fast`` structure checks +
-# the slow full run with the literature anchors), and
+# the slow full run with the published values), and
 # ``test_laminar_smoke`` (single-device + the ``--np 2`` mesh row
 # whose reason is spelled out at that entry).
 _SCRIPTS: list[tuple[str, tuple[str, ...], tuple, int]] = [

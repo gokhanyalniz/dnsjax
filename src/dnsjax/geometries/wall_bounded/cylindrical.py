@@ -113,7 +113,7 @@ operators, the norms, and the ``CylindricalFlow`` dataclass.  The
 base-flow coupling, the influence-matrix pass, the predictor /
 corrector / norm and the stepper factory -- lives once in
 :mod:`._cylindrical_stepping`, shared with the curved (toroidal) pipe
-and parametrised by the flow dataclass; the names below re-exported
+and parametrized by the flow dataclass; the names below re-exported
 from it keep this module the single import site it has always been.
 """
 
@@ -509,12 +509,12 @@ def build_radial_cgl_grid(Nr: int, axis_gap: int = 1) -> Array:
     quadrature covers the segment via the parity-specific
     spectral rule in :func:`build_cylindrical_grid` /
     :func:`~dnsjax.fd.cgl_radial_quadrature_weights`), so
-    `$r_0$` is a free discretisation choice.  It bounds the near-axis azimuthal
+    `$r_0$` is a free discretization choice.  It bounds the near-axis azimuthal
     advection CFL `$\propto 1/r_0$` -- the pipe's explicit
     (cnab2) timestep limit -- so the rigged grid's
     `$2\times$`-larger `$r_0$` doubles the admissible cnab2
     ``dt`` (measured), which is why it is the ``cnab2``
-    default; the tighter half-CGL axis destabilises cnab2 (a
+    default; the tighter half-CGL axis destabilizes cnab2 (a
     near-axis explicit instability) and is restricted to
     ``iterative-cn`` (``geo.grid_type = "half-cgl"``), which
     integrates it cleanly, gains its finer near-axis
@@ -570,7 +570,7 @@ def build_parity_reduced_matrices(
     5-1000x *pointwise near-axis* accuracy gain but loses on every
     global measure: the refit trades away accuracy
     at `$r \approx 1$`, where the pipe's optimal-growth and wall-shear
-    physics live.  On the Schmid & Henningson `$G_{\max} = 649$` anchor
+    physics live.  On the Schmid & Henningson `$G_{\max} = 649$` case
     the mirrored fold errs by -4.1 / -0.6 / -0.06 / +0.01 % at
     `$N_r = 20/28/40/72$` against the fit's +357 / +37 / +3.5 / +0.25 %
     (unchanged with ``res.consistent_imm`` either way), and on a
@@ -1178,7 +1178,7 @@ class CylindricalFlow:
         Constructs the radial CGL grid on `$(0, 1]$` (half-CGL or
         rigged-CGL, per the resolved ``geo.grid_type``), builds
         parity-reduced FD matrices,
-        assembles and factorises `$L_k$`, `$H_{k,+}$`,
+        assembles and factorizes `$L_k$`, `$H_{k,+}$`,
         `$H_{k,-}$`, `$H_{k,z}$` directly on the device, then
         derives all homogeneous IMM data.
         """
@@ -1274,7 +1274,7 @@ class CylindricalFlow:
         # which is where ``inv_r[:g_rows]`` applies), and it halves the
         # FD GEMMs of the quad-wide stage -- measured as the largest
         # non-solve stage of the default pass.  Built for **both**
-        # schemes: the legacy primitive path's ``_a_base_matvec`` and
+        # schemes: the legacy primitive path's ``_abase_matvec`` and
         # its `$H_k^-$` batch compute the same combination by hand.
         self.A_base_pos = YMatrix.from_dense(
             _build_A_base(D1_pos, D2_pos, self.inv_r)

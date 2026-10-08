@@ -1,10 +1,14 @@
 r"""Parameter spec for viscoelastic (sPTT) Dean flow.
 
-The reference normalisation uses a half-gap length unit (gap = 2, so
-``r1 = delta``, ``r2 = delta + 2``) and derives the Reynolds number as
-``Re := Wi/El``; the unset control parameters default to the reference
-configuration (the ``default`` overrides below, materialized by
-``update_parameters``).
+Lengths are in half-gap units (gap = 2, so ``r1 = delta``,
+``r2 = delta + 2``), and the Reynolds number is derived as
+``Re := Wi/El``.  The rheology defaults ``beta = 0.8``,
+``epsilon = 1e-3`` and ``kappa = 5e-5`` are those of Lellep, Linkmann &
+Morozov, *Proc. Natl. Acad. Sci. USA* **121**, e2318851121 (2024);
+``el = 80`` and ``wi = 105`` (``Re`` about 1.3: inertialess and
+strongly elastic) and ``delta = 11`` are this flow's own.  The
+``default`` overrides below are materialized by
+``update_parameters``.
 """
 
 from math import pi
@@ -22,7 +26,7 @@ from ._family import (
 
 
 def _derive(params, derived, user_set) -> None:
-    # The el/wi/beta/epsilon/kappa/delta reference defaults are
+    # The el/wi/beta/epsilon/kappa/delta defaults are
     # materialized generically from the FieldSpec overrides before
     # this hook runs; only the geometry / Reynolds derivation remains.
     r1 = params.geo.delta

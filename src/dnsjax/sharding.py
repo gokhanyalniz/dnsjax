@@ -1,10 +1,10 @@
 r"""JAX multi-device mesh setup, precision types, and partition specs.
 
-Initialised at import time from the global ``params``.  The singleton
+Initialized at import time from the global ``params``.  The singleton
 ``sharding`` exposes the device mesh, data-type choices, partition specs
 for spectral/physical arrays, and convenience helpers (``print``, ``exit``).
 
-Double parallelisation
+Double parallelization
 ----------------------
 The device mesh has shape ``(np0, np1)`` with axes ``"np0"`` and
 ``"np1"``.
@@ -236,7 +236,7 @@ def _warm_communicators(mesh: Mesh) -> None:
     collective in it.  A program whose input is still being written
     when it is dispatched runs on the runtime's own thread pool
     instead, and a program's collectives can run off the launching
-    thread anyway: the banded factorisation with its cross-device
+    thread anyway: the banded factorization with its cross-device
     maxima taken inside the same program (``solvers._factor_checked``
     has the history) failed on every rank of every launch on a
     ``(2, 2)`` mesh, its inputs ready.  On ARCHER2 the wall-bounded
@@ -368,7 +368,7 @@ class Sharding:
         sys.exit(1)
 
     # Report the *actual* device platform / kind read from the
-    # initialised backend, not the requested ``params.dist.platform``:
+    # initialized backend, not the requested ``params.dist.platform``:
     # once JAX is configured the two agree, and reading the live device
     # means this banner can never contradict the hardware (the old
     # "1 cpu devices ... cuda:0" arose when a script left

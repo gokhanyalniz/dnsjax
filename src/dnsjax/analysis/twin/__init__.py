@@ -25,7 +25,7 @@ Layout (one module per concern; none is imported by the top-level
   reader in ``scripts/twin_spectral_maps.py``, the quadrature
   contraction, the three-bin energies recovered from them, and the
   total-in-`$(y, k)$` fluctuation energy (the total with the
-  `$(0, 0)$` mode removed) that a difference spectrum is normalised
+  `$(0, 0)$` mode removed) that a difference spectrum is normalized
   by, the shape overlap of two such spectra that
   ``scripts/random_ic_calibrate.py`` scores an initial condition
   with, and the budget regrouped into the terms of the

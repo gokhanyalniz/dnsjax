@@ -170,7 +170,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
                 # The pipe uses the deterministic axis-regular rolls IC
                 # (a grid-white random draw has no continuum limit near
                 # the axis, so its divergence is under-resolved noise and
-                # the gate shows no clean gain -- see the plan file).
+                # the gate shows no clean gain).
                 Initiation(
                     localized_rolls=True, localized_rolls_amplitude=0.15
                 )

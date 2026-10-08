@@ -357,7 +357,7 @@ def _ref_budget(spec1: np.ndarray, spec2: np.ndarray) -> dict[str, float]:
 
     Every advective term is evaluated the same single way -- physical
     fields on the fine grid, pointwise products, xz grid mean, the
-    code's quadrature -- with no FFT-free/mean-slot specialisation,
+    code's quadrature -- with no FFT-free/mean-slot specialization,
     so it genuinely cross-checks all four evaluation classes.
     """
     kx_mult = np.zeros(N3_SPEC, dtype=complex)

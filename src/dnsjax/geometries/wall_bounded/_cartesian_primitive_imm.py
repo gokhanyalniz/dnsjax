@@ -304,7 +304,7 @@ def _imm_iteration_vp(
 
        where `$\Delta q = \alpha_1 q_1 + \alpha_2 q_2$` and
        `$q_i = H_k^{-1} p_i$` (precomputed), using the
-       factorisation `$u^{(i)} = -i k_x q_i$`,
+       factorization `$u^{(i)} = -i k_x q_i$`,
        `$w^{(i)} = -i k_z q_i$` (the scalar `$-i k_x$`,
        `$-i k_z$` commute with `$H_k^{-1}$` per mode).
     7. Zero the mean-mode wall-normal velocity `$v$`.
@@ -403,7 +403,7 @@ def _imm_iteration_vp(
     # all arrive component-leading, so a y-leading conversion would add
     # three transposes to remove the one matvec's two -- a net loss.
     # (Cylindrical/annular convert theirs -- several batched matvecs to
-    # amortise; see those modules.)
+    # amortize; see those modules.)
     dx_pP = ikx * pP
     dy_pP = apply_y_matrix(flow_.D1, pP)
     dz_pP = ikz * pP

@@ -12,7 +12,7 @@ completes with no error, NaN, or blow-up.  ``plane-poiseuille`` and
 plane-couette / taylor-couette machinery respectively (see the SYSTEMS
 comments), with their flow-specific pieces covered by
 ``test_laminar_smoke.py``, ``test_quasi_keplerian.py``, and the
-transient-growth anchors.
+published transient-growth values.
 
 Unlike ``tests/test_laminar_smoke.py`` (which starts from ``u' = 0``, so
 all `$\omega'$`/`$u'$`-proportional terms -- including the rotational
@@ -224,7 +224,7 @@ SYSTEMS: list[dict] = [
         # plane-poiseuille needs no entry of its own: it shares this
         # entry's Cartesian nonlinear machinery, and its
         # driving/base-flow specifics are covered by the laminar
-        # smoke (pp + pp-cbv) and the transient-growth PP anchors.
+        # smoke (pp + pp-cbv) and the transient-growth PP case.
         "name": "plane-couette",
         "omit_random_flag": True,
         "args": [
@@ -435,10 +435,10 @@ SYSTEMS: list[dict] = [
         # Re = wi/el is derived (no --phys.re).  The kappa > 0 default
         # also builds the conformation Helmholtz operator (``Hc_op``).
         # wi = el = 20 (Re = 1) and a reduced conformation-noise amplitude
-        # (10, vs the reference restart default 700) keep the coupled
-        # system robust at the coarse smoke resolution -- the reference
-        # wi = 105 with the full noise is a genuinely stiff elastic
-        # instability on a 32^3 grid, not a solver defect.
+        # (10, against the default 700) keep the coupled system robust at
+        # the coarse smoke resolution -- the default wi = 105 with the
+        # full noise is a genuinely stiff elastic instability on a 32^3
+        # grid, not a solver defect.
         "name": "viscoelastic-dean",
         "args": [
             "--phys.system",
@@ -807,7 +807,7 @@ SYSTEMS: list[dict] = [
         # doubling the admissible ``dt``
         # (measured dt* ~ 0.0125 -> 0.0175 at 32^3/Re=1800); the
         # tighter half-CGL grid (``geo.grid_type = "half-cgl"``)
-        # destabilises cnab2 and is iterative-cn-only.  ny=32 here
+        # destabilizes cnab2 and is iterative-cn-only.  ny=32 here
         # like the other pipe entries.
         "name": "pipe-cnab2",
         "res": {"nx": 32, "ny": 32, "nz": 32},

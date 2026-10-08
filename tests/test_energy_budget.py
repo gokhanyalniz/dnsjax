@@ -20,7 +20,7 @@ The residual is finite-difference/truncation level: a central-difference
 both convergent.  The guard is deliberately loose (``< BUDGET_TOL``
 relative to the *term* magnitudes ``max(|I|, |D|, |dE/dt|)``, **excluding
 the first-step projection transient**) so it catches an ``O(1)`` leak,
-not the expected ``O(dt)`` finite-difference size.  Normalising by the
+not the expected ``O(dt)`` finite-difference size.  Normalizing by the
 term magnitudes -- not by ``I - D``, which is near-zero for a
 laminar-dominated pipe roll -- keeps it well-conditioned in every case.
 

@@ -6,7 +6,7 @@ Pallas per-mode banded production solver
 the default) and the batched dense LU reference solver
 (:class:`DenseJAXSolver`, ``"dense"`` -- full `$(N_y, N_y)$` pivoted
 factors per Fourier mode, kept for mathematical readability and as
-the regression oracle for the banded path).  Both solver classes
+the regression reference for the banded path).  Both solver classes
 support a leading batch axis (e.g. the 3 velocity components)
 transparently via an extra ``vmap``.
 
@@ -16,8 +16,8 @@ straight into the stored mode-inner layout); pivoting is never needed
 for the diagonally-dominant Helmholtz/Poisson-like operators solved
 here.  :func:`_build_pallas_operator` verifies this once at setup
 (solve-residual probe + LU element-growth check, computed with the
-factorisation: :func:`_factor_checked`) and hard-errors with an
-actionable message on a genuinely unstable factorisation instead of
+factorization: :func:`_factor_checked`) and hard-errors with an
+actionable message on a genuinely unstable factorization instead of
 proceeding silently.
 
 Differentiability
@@ -26,14 +26,14 @@ The Pallas sweep is opaque to reverse mode, so
 :func:`_pallas_banded_solve_core` carries a :func:`jax.custom_vjp`
 whose backward pass is :func:`_pallas_banded_solve_t` -- the mirrored
 sweep on the *same stored factors*, with no un-inversion and no second
-factorisation.  The rule is complete (cotangents for ``L`` and ``U``
+factorization.  The rule is complete (cotangents for ``L`` and ``U``
 as well as the right-hand side), and it is derived in that function's
 docstring; do not re-derive it elsewhere.  The two pure-JAX sweeps,
 the mode-outer :func:`_banded_solve_batched` and the mode-inner
 :func:`_banded_solve_mode_inner` (the CPU solve, which
 ``solver.pallas_kernel = False`` selects on a GPU), are left
 differentiating through their own ``lax.scan`` **deliberately**: they
-are the independent oracles the hand-written rule is checked against
+are the independent references the custom rule is checked against
 (``test_pallas_adjoint_matches_portable_sweep``), so neither may be
 replaced by a call into the rule.
 
@@ -50,7 +50,7 @@ axis 1 of the mode-inner banded RHS (`$N_y, N_{k_z}, N_{k_x} \to
 N_y, 2, N_{k_z}, N_{k_x}$`, :func:`_banded_mode_solve`).  The split
 and merge are single fused elementwise passes over the RHS, far
 cheaper than the factor-sized conversion they replace.  The dense
-LU's permutations are precomputed at factorisation time so its solve
+LU's permutations are precomputed at factorization time so its solve
 path (:func:`_permuted_tri_solve`: permutation gather + two
 batched :func:`jax.lax.linalg.triangular_solve` calls) needs no
 per-call pivot conversion.
@@ -183,7 +183,7 @@ class DenseJAXSolver:
     def from_factors(cls, lu: Array, perm: Array) -> DenseJAXSolver:
         """Construct from pre-factored LU arrays.
 
-        Bypasses the ``__post_init__`` factorisation, useful for
+        Bypasses the ``__post_init__`` factorization, useful for
         building a combined solver from individually factored
         operators (e.g. stacking cylindrical
         ``Hk_plus``, ``Hk_minus``, ``Hk_z``).
@@ -258,9 +258,9 @@ class DenseJAXSolver:
 # ── Pallas per-mode banded solver ────────────────────────────────
 #
 # The implicit step is one independent banded system per Fourier mode
-# (size N_y, half-bandwidth p).  The throughput-optimal GPU strategy is
-# the standard one-program-per-mode sequential banded sweep: across-mode
-# parallelism fills the GPU while each program walks N_y in fast memory.
+# (size N_y, half-bandwidth p), so the parallelism is across modes: each
+# Pallas program walks the sequential banded sweep along N_y for a tile
+# of modes, and the many programs fill the GPU.
 # JAX/XLA cannot express a per-lane sequential loop (``vmap(scan)``
 # collapses to a single N_y-deep batched scan), so the sweep is written
 # as a Pallas (Triton) kernel: two ``fori_loop`` passes that read the
@@ -270,7 +270,7 @@ class DenseJAXSolver:
 # non-power-of-two block load nor value slicing / reversal / scan
 # ``xs``).  The same banded math runs in pure JAX as the CPU path, on
 # the stored layout (``_banded_solve_mode_inner``), and as the
-# mode-outer oracle (``_banded_solve_batched``).
+# mode-outer reference (``_banded_solve_batched``).
 #
 # Factors are stored banded: ``L`` carries the ``p`` strict sub-diagonals
 # of the unit-lower factor (``L[i, i-p+d]``, ``d = 0..p-1``); ``U`` carries
@@ -281,7 +281,7 @@ class DenseJAXSolver:
 # Pallas mode-tile per program: ``(bm0, bm1)`` Fourier modes along the
 # ``(k_z, k_x)`` axes, read from ``params.solver.pallas_block_m0`` /
 # ``pallas_block_m1`` (must be powers of two -- Triton block loads).  Each
-# program runs the sequential banded sweep vectorised across its tile, so
+# program runs the sequential banded sweep vectorized across its tile, so
 # ``bm0 * bm1 * k`` SIMD lanes are filled instead of just ``k``.
 #
 # Default ``(2, 32)`` is the H100 tuning.  Partial boundary tiles (when the
@@ -301,8 +301,8 @@ class DenseJAXSolver:
 # mode-count-occupancy-limited on an H100 regardless of tile size.  Tuning
 # rule: keep ``bm1 >= 32`` (coalescing) and the program count
 # ``cdiv(Nkz, bm0) * cdiv(Nkx, bm1)`` at least a few x the SM count; shrink
-# the tile for small mode counts, grow it for very large DNS.  Profile
-# (Nsight) to finalise -- see the ``gpu-validation-pallas-banded`` plan.
+# the tile for small mode counts, grow it for very large DNS, and
+# profile a change (``scripts/pallas_solve_profile.py``, Nsight).
 
 
 def _lu_row(
@@ -352,7 +352,7 @@ def _band_row(a_band: Array, i: Array) -> Array:
 def _banded_factor_mode_inner(a_band: Array) -> tuple[Array, Array]:
     r"""No-pivot banded LU of every mode at once, into the stored layout.
 
-    Doolittle factorisation `$A = L U$` per Fourier mode, `$L$`
+    Doolittle factorization `$A = L U$` per Fourier mode, `$L$`
     unit-lower (``p`` sub-diagonals) and `$U$` upper (diagonal + ``p``
     super-diagonals); no fill-in because there is no pivoting.
     *a_band* is the operator as the builders assemble it, mode-outer
@@ -418,10 +418,10 @@ def _banded_solve_batched(L: Array, U: Array, b: Array, p: int) -> Array:
     r"""Banded forward/back substitution, arbitrary leading batch.
 
     Solves `$L U x = b$` from banded factors.  Sequential along the
-    `$N_y$` axis (axis ``-2``); vectorised over the leading batch dims
+    `$N_y$` axis (axis ``-2``); vectorized over the leading batch dims
     and the trailing RHS-column axis ``k``.  This is the **mode-outer**
     sweep, for factors as :func:`_banded_factor` returns them: the
-    independent oracle the kernel's adjoint is tested against.  A run
+    independent reference the kernel's adjoint is tested against.  A run
     solves -- and the setup check probes
     (:func:`_factor_checked`) -- through :func:`_banded_solve_mode_inner`
     (CPU) or the Pallas kernel (GPU), which read the stored mode-inner
@@ -496,7 +496,7 @@ def _banded_solve_mode_inner(L: Array, U: Array, b: Array, p: int) -> Array:
 
     *Unrolling the two scans: measured, and rejected.*  The body is
     small at a CPU rank's mode block, so ``unroll`` looked like a way
-    to amortise the loop.  It loses on both counts (the as-run step at
+    to amortize the loop.  It loses on both counts (the as-run step at
     ``10 x 385 x 320``, plane Poiseuille, one pinned core, the variants
     compiled in one process and executed alternately, 10 rounds): the
     step's temporaries grow from 23.5 to 31.0 padded fields at any
@@ -679,13 +679,13 @@ def _assemble_banded_jit(
 
 # Test-only override: run the Pallas kernels in interpret mode wherever
 # they are reached.  Paired with :data:`_force_kernel_path`, this lets a
-# GPU-less box *execute* the whole ``.solve`` composition -- shard_map,
-# the vmap over components, the ``custom_vjp`` and both sweeps -- rather
-# than only lower it, which is the one way to check that the adjoint
-# composes.  (Lowering the *differentiated* region for cuda is not an
-# option: shard_map's transpose compares cotangent shardings, and
-# against an abstract mesh they do not compare equal.)  Read at trace
-# time in :func:`_pallas_banded_solve` and
+# machine without a GPU *execute* the whole ``.solve`` composition --
+# shard_map, the vmap over components, the ``custom_vjp`` and both
+# sweeps -- rather than only lower it, which is the one way to check
+# that the adjoint composes.  (Lowering the *differentiated* region for
+# cuda is not an option: shard_map's transpose compares cotangent
+# shardings, and against an abstract mesh they do not compare equal.)
+# Read at trace time in :func:`_pallas_banded_solve` and
 # :func:`_pallas_banded_solve_t`; ``False`` leaves every production
 # trace untouched.  See ``test_pallas_adjoint_composes_in_solve``.
 _force_interpret: bool = False
@@ -744,7 +744,7 @@ def _pallas_banded_solve(
 
     Solves `$L U x = b$` for every `$(k_z, k_x)$` Fourier mode.  The grid
     covers the mode plane in ``(bm0, bm1)`` tiles (one Pallas program per
-    tile); each program runs the sequential banded sweep **vectorised
+    tile); each program runs the sequential banded sweep **vectorized
     across its mode tile**, filling ``bm0 * bm1 * k`` SIMD lanes instead of
     just ``k`` (one mode's ``k`` re/im columns).  ``interpret`` runs the
     same kernel in pure JAX on CPU (correctness; the GPU path uses
@@ -791,7 +791,7 @@ def _pallas_banded_solve(
     double-index band loads ``l_ref[i, d]`` / ``u_ref[i, d]`` *and* even a
     single-index window-carry sweep), while interpret mode and the CUDA
     lowering both accept it.  ``scripts/pallas_tiling_diagnostic.py``
-    localised it: only trivial copy/round-trip kernels survive a partial
+    localized it: only trivial copy/round-trip kernels survive a partial
     plane; full tiles (no partial boundary anywhere) are always correct at
     ``(2, 32)``.  The fix is to **pad the mode plane up to whole tiles**
     so the kernel only ever runs the correct full-tile path; the padded
@@ -807,7 +807,7 @@ def _pallas_banded_solve(
     fallback factor pad for direct callers passing true-plane factors).
     The sequential `$N$`-loop
     itself is an intrinsic recurrence (no Triton-lowerable parallel scan);
-    the only parallelism is across modes, which the tiling + grid maximise.
+    the only parallelism is across modes, which the tiling + grid maximize.
 
     Parameters
     ----------
@@ -840,8 +840,9 @@ def _pallas_banded_solve(
     derivation.  The two pure-JAX sweeps (:func:`_banded_solve_batched`,
     :func:`_banded_solve_mode_inner`) keep differentiating through
     their own ``lax.scan``, deliberately: they are the independent
-    oracles this rule is checked against (``tests/test_banded_solver.py``,
-    ``test_pallas_adjoint_matches_portable_sweep``).
+    references this rule is checked against
+    (``test_pallas_adjoint_matches_portable_sweep`` in
+    ``tests/test_banded_solver.py``).
     """
     interpret = interpret or _force_interpret
     L, U, b, Nkz, Nkx = _tile_pad_planes(L, U, b)
@@ -870,7 +871,7 @@ def _banded_kernel_call(
     assert Nkz_pad % bm0 == 0 and Nkx_pad % bm1 == 0
 
     def kernel(l_ref, u_ref, b_ref, x_ref):
-        # Window row of zeros, vectorised over the (bm0, bm1) mode tile.
+        # Window row of zeros, vectorized over the (bm0, bm1) mode tile.
         zero = jnp.zeros((k, bm0, bm1), b.dtype)
 
         # Forward: L y = b (unit lower).  window[d] = y[i-p+d] (zero
@@ -1034,7 +1035,7 @@ def _pallas_banded_solve_t(
 
     Solves `$A^T \bar b = \bar x$` for every Fourier mode **on the
     stored factors**, with no un-inversion and no second
-    factorisation: `$A = LU$` with no pivoting, so
+    factorization: `$A = LU$` with no pivoting, so
     `$A^T = U^T L^T$` -- forward-substitute with `$U^T$` (lower, its
     diagonal the same reciprocated `$1/U_{ii}$` slot, so a multiply),
     then back-substitute with `$L^T$` (upper, unit diagonal, no
@@ -1210,13 +1211,13 @@ def _kernel_path() -> bool:
     Three inputs, in order:
 
     1. :data:`_force_kernel_path`, the **trace-only** test override.
-       It exists so a GPU-less box can *lower* the
+       It exists so a machine without a GPU can *lower* the
        ``shard_map(pallas_call)`` composition for cuda, which is a
        different job from choosing a sweep, so it stays first and
        stays out of the parameter surface.
     2. ``solver.pallas_kernel``, the user's pin: ``False`` takes the
        portable pure-JAX sweep even on GPU (differentiable without the
-       custom adjoint, and the oracle that adjoint is checked
+       custom adjoint, and the reference that adjoint is checked
        against), ``True`` forces the kernel.  ``None`` (the default)
        defers to
     3. the live backend -- the kernel on GPU, the portable sweep
@@ -1301,7 +1302,7 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     The A2 table is recorded because it is what was run and because its
     sign does not contradict that; it is not the reason for the
     decision.  The mechanism, if one is wanted, is the layout finding's:
-    pre-materialising a representation that suits the two solves
+    pre-materializing a representation that suits the two solves
     constrains layout assignment across everything around them.
 
     The two arms agree to ~1e-15, which is the bar: the hoist changes
@@ -1332,7 +1333,7 @@ def _banded_mode_solve(L: Array, U: Array, rhs: Array) -> Array:
     the sweep in isolation, the slower the step gets, monotonically.
     The factors are jit *arguments* (the stepper takes ``flow`` as one),
     so their stored layout constrains layout assignment across the whole
-    step; pre-materialising a solve-optimal arrangement wins the solve
+    step; pre-materializing a solve-optimal arrangement wins the solve
     and loses more elsewhere.  Setup compile degrades with it too
     (27 s -> 53 s total wall for mode-outer).  So: do not re-derive this
     from a standalone ``jit`` of one solve, or from any isolated solve
@@ -1415,7 +1416,7 @@ class PerModeBandedPallasOperator:
 
     A CPU run never reaches the kernel, so both kernel transforms would
     only be undone again on every solve.  The two backends therefore
-    share this class, the layout, the factorisation and the ``.solve``
+    share this class, the layout, the factorization and the ``.solve``
     skeleton, and differ in exactly those two rows plus the local solve
     body.
 
@@ -1561,7 +1562,7 @@ class PerModeBandedPallasOperator:
         process), since the padded modes cost solve work and memory.
 
         That ``shard_map`` is also load-bearing as a **compilation
-        barrier** between the no-pivot factorisation and the
+        barrier** between the no-pivot factorization and the
         reciprocate-and-pad above, independently of the pad it carries:
         without it the two fuse into one graph and XLA's CPU algebraic
         simplifier reports a circular simplification loop while
@@ -1575,7 +1576,7 @@ class PerModeBandedPallasOperator:
         scatter nor the pad the simplifier chokes on -- so there is
         nothing for a barrier to separate.  (It was measured when that
         branch still made the two ``moveaxis`` a mode-outer
-        factorisation needed.)  Checked where the two *can* fuse at all: the
+        factorization needed.)  Checked where the two *can* fuse at all: the
         jitted ``set_dt`` rebuild, the one place
         :func:`_factor_pallas_operator` runs inside a ``jit`` (the
         setup build cannot fuse -- :func:`_build_pallas_operator`
@@ -1824,11 +1825,11 @@ def _factor_checked(a_band: Array) -> tuple[Array, ...]:
     ``tests/test_mpi_communicators.py`` runs that version.
 
     Run eagerly, the same check was a few hundred separately compiled
-    operations -- the factorisation and the probe sweep recompiled on
+    operations -- the factorization and the probe sweep recompiled on
     every build -- with factor-sized transposed copies alongside.
     Here the band is read in place by both loops, so the program holds
     no band-sized temporary (45 MB of temporaries at the per-rank block
-    the factorisation's docstring measures, against 0.9 GB for a
+    the factorization's docstring measures, against 0.9 GB for a
     version that transposed the band first).  A pure function of its
     argument, so a module-level ``jit`` is safe to share.
     """
@@ -1894,18 +1895,18 @@ def _build_pallas_operator(
 
     - LU element growth ``max|U| / max|A|`` above
       :data:`_NO_PIVOT_GROWTH_TOL`, or any non-finite factor or
-      residual, means the no-pivot factorisation itself is unstable:
+      residual, means the no-pivot factorization itself is unstable:
       hard ``RuntimeError`` (use ``solver.backend = "dense"``, the
       pivoted reference, or revisit the wall-normal grid).
     - A solve residual above ``params.solver.pallas_stability_tol``
       with benign growth indicates an ill-conditioned operator, not an
-      unstable factorisation; pivoting would not help, so the build
+      unstable factorization; pivoting would not help, so the build
       proceeds after printing a notice.
 
     A ``[pallas] {label}: ...`` line with the measured residual and
     growth is printed at setup for the group either way.
 
-    The factorisation and its per-mode measures are one compiled
+    The factorization and its per-mode measures are one compiled
     program per band (:func:`_factor_checked`), their cross-device
     maxima two small ones; only the two scalars cross to the host.
 

@@ -316,7 +316,7 @@ def _pressure_worker(system: str) -> None:
     op = PoissonPressure(flow, fourier)
     p = static_pressure(state, op, fourier, flow)
 
-    # The oracle: the twin's difference path with a zero reference --
+    # The reference: the twin's difference path with a zero reference --
     # the same algebra in another arrangement (it transforms the zero
     # reference, batches the gradients together), so round-off through
     # the Poisson solve: 1-2e-12 measured, a 50x margin below.

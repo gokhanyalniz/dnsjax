@@ -11,7 +11,7 @@ default can be *calibrated* rather than assumed.
 
 **What it computes.**  The initial condition is built by the shipped
 generator (:func:`dnsjax.ic.random_field.generate_random_state`) and
-marginalised by the shipped stream function
+marginalized by the shipped stream function
 (:func:`dnsjax.twin.diagnostics.twin_yspectra`, evaluated against a
 zero reference so the difference field *is* the perturbation) -- so
 the map compared here and the `$t = 0$` record of a real
@@ -274,7 +274,7 @@ def _member_shapes(
     r"""``(meta, t_rel, shapes)`` for one member.
 
     *shapes* is ``(n_t, n_y, n_k)``, component-summed, the `$(0, 0)$`
-    mode removed, each record normalised to unit total -- the shape
+    mode removed, each record normalized to unit total -- the shape
     alone.  Read through a memory map: the eager reader would pull a
     gigabyte per member for the handful of records a window needs
     (:func:`dnsjax.analysis.twin.yspectra.record_dtype` exists for
@@ -325,7 +325,7 @@ def build_target(
 
     Returns ``(meta, target, series)``: *target* is the mean of every
     record whose time since the perturbation lies in *window*, over
-    every member, renormalised; *series* pairs each member's `$t$`
+    every member, renormalized; *series* pairs each member's `$t$`
     with its per-record shapes, for the `$\mu$` fit.
     """
     from dnsjax.analysis.twin.yspectra import shape_alignment  # noqa: F401
@@ -403,7 +403,7 @@ def ic_shape(marginal: str) -> tuple[np.ndarray, np.ndarray]:
     r"""``(y_weights, shape)`` of the perturbation the resolved
     ``init.random_*`` knobs build.
 
-    Marginalised by :func:`dnsjax.twin.diagnostics.twin_yspectra`
+    Marginalized by :func:`dnsjax.twin.diagnostics.twin_yspectra`
     against a zero reference, so the map is the stream's own `$t = 0$`
     record and not a re-derivation of it.
     """

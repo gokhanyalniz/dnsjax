@@ -10,7 +10,7 @@ integral length scales
 
 of the streak difference field `$\Delta u_1$` (the `$k_x = 0$`,
 `$k_z \ne 0$` modes of `$\Delta\mathbf{u}$`), per velocity
-component, evaluated at a wall-normal anchor (the channel centre in
+component, evaluated at a reference height (the channel centre in
 the paper).  Their saturation at the geometry-permitted scale marks
 the onset of the linear-growth phase.
 
@@ -67,7 +67,7 @@ def partner_of(reference: str | Path) -> Path:
 def _integrate_to_first_zero(f: np.ndarray, r: np.ndarray) -> float:
     """Trapezoid integral of ``f(r)`` up to its first zero crossing.
 
-    ``f[0]`` must be 1 (the normalised correlation); the crossing is
+    ``f[0]`` must be 1 (the normalized correlation); the crossing is
     linearly interpolated between the bracketing samples.  With no
     crossing the integral runs to ``r[-1]`` (the domain edge).
     """
@@ -97,7 +97,7 @@ def integral_lengths_from_modes(
     the difference field with the mean mode dropped -- with *kz* the
     ``(n_m,)`` physical wavenumbers and *y* the wall-normal grid.
     Returns ``{"y0", "l_y" (3,), "l_z" (3,), "variance" (3,)}``;
-    ``variance`` is the anchor-height spanwise variance `$C(0)$`
+    ``variance`` is the spanwise variance `$C(0)$` at that height
     (zero variance yields ``nan`` lengths).
     """
     j0 = int(np.argmin(np.abs(np.asarray(y) - y0)))
@@ -139,7 +139,7 @@ def integral_lengths(
 
     Reads both snapshots' stored spectra, forms the difference's
     `$k_x = 0$` column (mean mode dropped), and dispatches to
-    :func:`integral_lengths_from_modes` at the anchor ``y0``.
+    :func:`integral_lengths_from_modes` at the reference height ``y0``.
 
     The two snapshots must be the same lockstep write -- same system
     and same `$(t, \mathrm{it})$`, as ``dnsjax-twin`` itself requires

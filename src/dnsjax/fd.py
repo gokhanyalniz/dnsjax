@@ -2,7 +2,7 @@ r"""Finite-difference and interpolation infrastructure.
 
 Offline precomputation for the influence-matrix method (IMM) and
 wall-normal grid interpolation.  All functions run at
-initialisation time outside ``@jit``, so Python loops and
+initialization time outside ``@jit``, so Python loops and
 concrete-value branching are used directly.
 
 Functions
@@ -341,7 +341,7 @@ def build_integration_weights(y: ndarray, p: int) -> ndarray:
     :func:`build_diff_matrices`) is used to build a polynomial
     interpolant whose integral over that sub-interval is
     computed exactly via a Vandermonde system.  The stencil is
-    normalised to `$[-1, 1]$` before forming the system for
+    normalized to `$[-1, 1]$` before forming the system for
     numerical conditioning.  Per-interval contributions are
     summed to give global weights `$w_j$` satisfying
 
@@ -687,7 +687,7 @@ def grid_nodes(
     the run's precision.  Two things need exactly that: a grid at a
     resolution the run does not hold (the reduced-resolution
     snapshots of :mod:`dnsjax.lowres`), and a CGL grid that
-    :func:`is_cgl_grid` / :func:`cgl_axis_gap` still recognise in a
+    :func:`is_cgl_grid` / :func:`cgl_axis_gap` still recognize in a
     single-precision run -- a float32-rounded grid misses their
     ``1e-12`` tolerance (an odd grid's centre node lands near
     ``4e-8``), and :func:`build_interpolation_matrix` would then fall
@@ -1192,7 +1192,7 @@ def build_interpolation_matrix(
 
     if geometry == "annular":
         # The annular grid is a CGL grid affinely mapped to [r1, r2];
-        # normalise each grid to [-1, 1] to detect it.  The Chebyshev
+        # normalize each grid to [-1, 1] to detect it.  The Chebyshev
         # interpolation matrix depends only on the point counts (it
         # works in coefficient space), so it is invariant under the
         # affine domain map.

@@ -161,7 +161,7 @@ the factor every map is a factor of two low.
 
 Inner units
 ===========
-With `$h = U_\mathrm{cl} = 1$` in the code's non-dimensionalisation,
+With `$h = U_\mathrm{cl} = 1$` in the code's non-dimensionalization,
 `$\nu = 1/Re$` and `$u_\tau = Re_\tau/Re$`, so
 
 .. math::
@@ -382,7 +382,7 @@ floor puts that row outside the box regardless.
 One subtlety the fold introduces: the mean of two ratios is not the
 ratio of two means once the divisor depends on `$y$`, so a
 decorrelation would otherwise depend on whether ``--half mean`` ran
-before or after the division.  The divisor is therefore symmetrised
+before or after the division.  The divisor is therefore symmetrized
 about the centreline first (:func:`_symmetrise_y`), which makes the
 two orders identical and the folded map the ratio of the folded
 halves.
@@ -857,7 +857,7 @@ dependency group::
 
 Every number above is a knob; ``--help`` lists the rest.
 
-As a library (a notebook on the cluster, one stream at a time)::
+As a library (in a notebook, one stream at a time)::
 
     from twin_spectral_maps import (
         MapOptions, Units, draw_map, draw_spacetime, make_map,
@@ -1000,7 +1000,7 @@ _SHARED_KEYS: tuple[str, ...] = (
 
 #: Added to :data:`_SHARED_KEYS` per stream: what sets the field table,
 #: and so what a stored name means, rather than the grid it lives on.
-#: ``suffixes`` is normalised onto every member's sidecar by
+#: ``suffixes`` is normalized onto every member's sidecar by
 #: :func:`_open_member`, so a set of pre-``xz00`` members compares on
 #: the legacy triple rather than on a key none of them has -- and a
 #: set that mixes layouts is refused by name.  ``has_ref`` is written
@@ -1270,7 +1270,8 @@ TRACKED: frozenset[str] = frozenset(
     }
 )
 
-#: LaTeX preamble matching the ``perturbation_dynamics`` write-up.
+#: LaTeX preamble under ``--usetex``: STIX Two text and maths with Lato
+#: sans, the fonts of the document the figures are sized for.
 LATEX_PREAMBLE: str = r"""
 \usepackage[p]{stickstootext}
 \usepackage[scaled=1.05,stix2,vvarbb]{newtxmath}
@@ -1461,7 +1462,7 @@ class Units:
         return r"$t^+$" if self.wall else r"$t\,U_\mathrm{cl}/h$"
 
     def norm_suffix(self, kind: str) -> str:
-        """Normalisation appended to a panel title."""
+        """Normalization appended to a panel title."""
         if not self.wall:
             return ""
         if kind == "energy":
@@ -1770,7 +1771,7 @@ class YSeries:
 
     @property
     def suffixes(self) -> tuple[str, ...]:
-        """Stored marginals, normalised onto the sidecar on open."""
+        """Stored marginals, normalized onto the sidecar on open."""
         return tuple(self.meta["suffixes"])
 
     @property
@@ -2479,7 +2480,7 @@ class Map:
     lam: np.ndarray  # (n_lam,) wavelength, plotted units
     y: np.ndarray  # (n_y,) wall distance, plotted units
     values: np.ndarray  # (n_y, n_lam)
-    title: str  # LaTeX panel title, with normalisation
+    title: str  # LaTeX panel title, with normalization
     name: str  # the stored (or virtual) field it came from
     non_negative: bool  # declared or inferred; sets the colour family
     y_log: bool = False  # whether the ordinate is drawn logarithmic
@@ -2621,7 +2622,7 @@ def _symmetrise_y(values: np.ndarray, half: str, axis: int = -2) -> np.ndarray:
     ``--half mean`` averages `$y$` with `$-y$`, and the mean of two
     ratios is not the ratio of two means once the divisor depends on
     `$y$` -- so a decorrelation would come out depending on whether
-    the fold ran before or after the division.  Symmetrising the
+    the fold ran before or after the division.  Symmetrizing the
     divisor first removes the choice: division by a symmetric profile
     commutes with the fold exactly, and the folded map is then the
     ratio of the folded halves, which is what a channel-averaged
@@ -2645,7 +2646,7 @@ def map_divisor(
     `$\mathcal{R}$` divides mode by mode and `$\mathcal{R}^k$` by the
     same reference summed over `$k$`, broadcast back over it; both
     come off :meth:`YSeries.reference_spectrum`, which has the
-    `$(0, 0)$` mode off already, and both are symmetrised for the fold
+    `$(0, 0)$` mode off already, and both are symmetrized for the fold
     (:func:`_symmetrise_y`).  The caller applies the factor of two.
     """
     if base == DECORR:
@@ -2776,7 +2777,7 @@ def panel_symbol(
 ) -> tuple[str, str]:
     r"""``(sign, symbol)`` of the quantity one map panel draws.
 
-    Before any premultiplier or normalisation: a balance term's
+    Before any premultiplier or normalization: a balance term's
     write-up symbol and the sign of its contribution
     (:data:`TERM_LABELS`), or a spectrum's `$E$` with its marginal and
     component -- a shape panel's being those of the field it redraws
@@ -4614,7 +4615,7 @@ def make_spacetime(
     there is no logarithmic wavelength axis left for one to serve.
     ``volume_fac`` and the unit conversion reach an absolute panel
     exactly as they reach a `$(\lambda, y)$` one, and cancel out of a
-    ratio.  The divisor is symmetrised before the fold
+    ratio.  The divisor is symmetrized before the fold
     (:func:`_symmetrise_y`).
 
     *premultiply* multiplies by the wall distance in the plotted units
@@ -6158,7 +6159,7 @@ def front_maps(
 
     Each from the mode-by-mode decorrelation
     `$\mathcal{R} = e/(2\langle r\rangle_t)$` (the ``decorr`` maps'
-    ratio, :func:`map_divisor`, symmetrised before the fold), the summed
+    ratio, :func:`map_divisor`, symmetrized before the fold), the summed
     panel one ratio of sums; then folded, `$m = 0$` dropped, ascending
     in wavelength, and timed (:func:`front_times`) in the plotted
     units.  A :class:`Map` per panel, so the maps' geometry serves

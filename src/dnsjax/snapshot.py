@@ -348,7 +348,7 @@ def _require_dense(vec) -> None:
     ``__cuda_array_interface__`` and cupy's dlpack import honours
     whatever strides it is handed, so a non-default XLA layout would
     transfer the *wrong bytes* with no error at all -- silent
-    corruption of a snapshot, which is the one artifact a run cannot
+    corruption of a snapshot, which is the one artefact a run cannot
     reconstruct.  Cheap to check, and it converts that class into a
     crash.
     """
@@ -1001,7 +1001,7 @@ def assemble_local_shards(
     the trailing padding modes stay zero.  Shards are placed onto
     ``sharding.spec_vector_shard`` with
     ``jax.make_array_from_single_device_arrays`` -- np-agnostic, and **no
-    full array is ever materialised** on any device (so in-process random /
+    full array is ever materialized** on any device (so in-process random /
     rolls ICs match dnsjax's per-device construction idiom).
 
     Parameters
@@ -1200,7 +1200,7 @@ def _metadata(
     layout: StoredLayout | None = None,
     n_components: int | None = None,
 ) -> dict:
-    r"""Serialise the ``_dnsjax_meta.json`` member content.
+    r"""Serialize the ``_dnsjax_meta.json`` member content.
 
     ``git_hash`` records the code revision that wrote the snapshot
     (provenance only -- never read back on load).  Additive keys like
@@ -1269,7 +1269,7 @@ def read_metadata(path: Path) -> dict:
 
 
 def _stats_json_bytes(stats: dict) -> bytes:
-    """Serialise a ``get_stats`` dict for the ``_dnsjax_stats.json``
+    """Serialize a ``get_stats`` dict for the ``_dnsjax_stats.json``
     member, converting the (replicated) device scalars to host floats."""
     return json.dumps(
         {k: float(v) for k, v in stats.items()}, indent=2

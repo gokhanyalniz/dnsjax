@@ -353,7 +353,7 @@ def run_grid_validation_checks() -> str | None:
         ok = ok and raises()
 
         # half-CGL on the pipe with the explicit cnab2 scheme ->
-        # rejected (destabilises the explicit scheme near the axis).
+        # rejected (destabilizes the explicit scheme near the axis).
         params.phys.system = "pipe"
         params.step.scheme = "cnab2"
         ok = ok and raises()

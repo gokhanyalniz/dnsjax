@@ -1,6 +1,6 @@
 r"""LIM identification tests (``dnsjax.analysis.response.lim``).
 
-All offline (no solver runs; the probe streams are synthesised, the
+All offline (no solver runs; the probe streams are synthesized, the
 operator bundle comes from a real transient-growth
 ``--tg.save_operator`` subprocess as in ``test_ensemble.py``):
 
@@ -277,7 +277,7 @@ def test_identify_lim_files_and_cli() -> None:
         a_r = ot.restrict(op.A, p)
 
         # Noiseless data through the full file pipeline: exact.  The
-        # synthesised law is a mild synthetic generator, not the
+        # synthesized law is a mild synthetic generator, not the
         # physical a_r: a single decaying trajectory of the real
         # operator loses its fast controllability directions within
         # one probe interval and trips the conditioning guard -- LIM

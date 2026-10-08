@@ -6,7 +6,7 @@ and the curved, zero-torsion pipe
 set of stepping functions: the pseudo-spectral RHS, the FFT-free
 base-flow coupling, the `$u_r$`-`$\omega_r$` influence-matrix pass, the
 predictor / corrector / norm and the stepper factory.  They are written
-once here and parametrised by the flow dataclass, whose operators,
+once here and parametrized by the flow dataclass, whose operators,
 grids, parity classes and band families all stay in the geometry
 modules.
 
@@ -609,7 +609,7 @@ def _imm_iteration_vw(
     fit, whose sharper near-axis stencils amplified the loop), so it
     cannot be iterated at all.
 
-    The fix is to evolve the *spin combinations*, which diagonalise
+    The fix is to evolve the *spin combinations*, which diagonalize
     that coupling exactly -- the same trick `$u_\pm = u_r \pm i
     u_\theta$` already plays for the primitive scheme.  With
     `$\Phi_\pm := (\Delta\mathbf{u})_\pm$` and
@@ -631,7 +631,7 @@ def _imm_iteration_vw(
         \omega_r = \tfrac12(\omega_+ + \omega_-)
 
     feed the recovery.  Nothing in the **interior** is Picard-iterated
-    -- the spin coupling the annulus lags is diagonalised exactly here,
+    -- the spin coupling the annulus lags is diagonalized exactly here,
     not lagged.  The one iterated quantity is the pair of free wall
     differences below, whose loop the corrector's own contraction
     bounds (and reports).  Cost: five per-mode banded solves
@@ -647,7 +647,7 @@ def _imm_iteration_vw(
     families to three, and the pressure-response columns are replaced
     by the cheaper `$u_r$` ones).  The trade is forced, not chosen: the
     `$\mp 2im/r^2$` spin coupling is what the annulus lags and the axis
-    forbids lagging, so exact diagonalisation -- and the doubling it
+    forbids lagging, so exact diagonalization -- and the doubling it
     brings -- is the only route here.
 
     Why this pass costs ~2x Cartesian, measured
@@ -718,7 +718,7 @@ def _imm_iteration_vw(
     `$g$` rows while the wall is the last.
 
     Having *four* wall values against *two* conditions is the price of
-    the spin diagonalisation above, and it is unique to this geometry:
+    the spin diagonalization above, and it is unique to this geometry:
     Cartesian and annular evolve exactly as many scalars as they have
     conditions plus the influence unknown, so neither has a free wall
     value to source at all.
@@ -778,8 +778,7 @@ def _imm_iteration_vw(
     Zeroing the differences instead of lagging them -- formally as
     admissible, since only the sums are physical -- was also tried and
     is *worse* than the lag (`$t \approx 0.35$` against `$0.37$`): they
-    are load-bearing, not arbitrary.  Record:
-    ``investigate-consistent-imm-viscoelastic-pipe-axial-heron.md``.
+    are load-bearing, not arbitrary.
 
     The two difference halves are carried, not re-derived -- measured
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -812,7 +811,7 @@ def _imm_iteration_vw(
     at `$0.0025$` (1.88e-4 ... 2.89e-6).  Carrying either half alone
     leaves it first order (0.98 / 1.02 / 1.09 and 0.95 / 1.01 / 1.08).
     The carried halves do not stay equal to the ones the velocity
-    implies -- they are two discretisations of one continuum quantity
+    implies -- they are two discretizations of one continuum quantity
     -- but the gap between them is spatial truncation, bounded in time
     and removed by refinement: 20 steps from a relaxed state it is
     1.1e-1 / 1.2e-2 / 1.1e-3 relative at `$n_r$` = 17 / 33 / 65.

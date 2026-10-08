@@ -30,9 +30,9 @@ Run **on a GPU** (single device, no mpirun)::
     .venv/bin/python scripts/pallas_tiling_diagnostic.py        # full sweep
     .venv/bin/python scripts/pallas_tiling_diagnostic.py --quick
 
-On a GPU-less box it falls back to a **lowering-only** check
+Without a GPU it falls back to a **lowering-only** check
 (``lower(lowering_platforms=("cuda",))``) so the probes can be validated
-before they reach the cluster. **Paste the full stdout back** for
+before a GPU run. **Paste the full stdout back** for
 diagnosis.
 
 Probes (ladder; ``b`` is per-mode-scaled so cross-lane contamination is
@@ -610,7 +610,7 @@ def main() -> None:
                                 dumped = True
                     else:
                         # Abstract GPU mesh so Triton can resolve the
-                        # target on this GPU-less box (JAX >= 0.11).
+                        # target without a GPU (JAX >= 0.11).
                         with jax.sharding.use_abstract_mesh(
                             _ABSTRACT_GPU_MESH
                         ):

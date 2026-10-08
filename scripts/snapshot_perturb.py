@@ -60,7 +60,7 @@ Amplitude (exactly one):
 - ``--perturb.amplitude_scale S``: a raw multiplier.
 
 Choosing ``E0``: small enough for a *linear* response (the check:
-halving ``E0`` must leave the amplitude-normalised ensemble response
+halving ``E0`` must leave the amplitude-normalized ensemble response
 unchanged), large enough that the response stands above the residual
 ensemble noise at the chosen member count.  Antithetic pairing
 cancels the even-order nonlinear contributions, which widens the

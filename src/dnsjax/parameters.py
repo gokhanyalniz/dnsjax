@@ -51,7 +51,7 @@ class Distribution(BaseModel):
     The total device count is ``np0 * np1``.  Both default
     to 1 (single device).
 
-    Double parallelisation
+    Double parallelization
     ----------------------
     ``np0`` splits the wall-normal axis (`$y$` / `$r$`) in
     physical space and the spanwise-wavenumber axis
@@ -98,7 +98,7 @@ class Distribution(BaseModel):
     ``64 x 144 x 144`` on four devices).  And a second grid axis does
     not divide the first exchange more finely, it **adds** a second
     one: one all-to-all per transform on a 1D grid, two on a 2D one,
-    each a synchronisation point.  Both the count and the volume are
+    each a synchronization point.  Both the count and the volume are
     readable off the compiled program.
 
     Whatever the device type:
@@ -264,7 +264,7 @@ class Distribution(BaseModel):
     set there with ``setdefault``, so ``export NPROC=<n>`` before
     launching overrides the pin for a deliberate experiment;
     ``--xla_cpu_multi_thread_eigen=false`` rides along as a small extra
-    serialisation and is applied only while the pin is 1.
+    serialization and is applied only while the pin is 1.
 
     Nothing measured here argues against the rule, which is the only
     role measurement has in this section: plane-Couette
@@ -426,11 +426,14 @@ class Physics(BaseModel):
     # ``geometries.wall_bounded.{cylindrical,annular}_viscoelastic``).
     # All ``None`` for other systems; unset values fall back to each
     # flow's own FieldSpec defaults.  beta 0.8 / epsilon 0.001 /
-    # kappa 5e-5 are shared, but el and wi are not: Re := Wi/El is
-    # derived, so those two *are* the Reynolds number, and each flow
-    # picks the regime it is about -- el 80, wi 105 (Re ~ 1.3,
-    # inertialess and strongly elastic) for the annulus; el 0.02,
-    # wi 20 (Re = 1000, elasto-inertial) for the pipe.
+    # kappa 5e-5 are shared -- the values of Lellep, Linkmann &
+    # Morozov, PNAS 121, e2318851121 (2024), whose sPTT system both
+    # flows integrate (``_viscoelastic_common``) -- but el and wi are
+    # not: Re := Wi/El is derived, so those two *are* the Reynolds
+    # number, and each flow picks the regime it is about -- el 80,
+    # wi 105 (Re ~ 1.3, inertialess and strongly elastic) for the
+    # annulus; el 0.02, wi 20 (Re = 1000, elasto-inertial) for the
+    # pipe.
     el: float | None = Field(
         default=None,
         gt=0,
@@ -594,7 +597,7 @@ class Geometry(BaseModel):
       (`$= \sin(\pi/(2\,(2 n_y - 1)))$`) -- half the rigged value.
 
     Rationale: the near-axis *azimuthal* advection CFL
-    `$\propto 1/r_0$` is a stability artifact of explicit stepping
+    `$\propto 1/r_0$` is a stability artefact of explicit stepping
     evaluated at grid points only, so it relaxes `$\propto r_0$` at a
     truncation-level accuracy cost.  The rigged grid's `$2\times$`
     larger `$r_0$` doubles the admissible explicit-``cnab2`` ``dt``
@@ -822,10 +825,10 @@ class Resolution(BaseModel):
     # (it diverges: measured contraction 1.13 on the plain-`$r$` fit,
     # 19.1 on the retired `$x = r^2$` axis fit), so the **spin quad**
     # `$(\Phi_\pm, \omega_\pm)$` is advanced through the *existing*
-    # `$H_{k,\pm}$` families, which diagonalise that coupling exactly
+    # `$H_{k,\pm}$` families, which diagonalize that coupling exactly
     # -- five solves over three band families, with only the quad's two
     # free wall differences taken from the corrector iterate (four wall
-    # values against two conditions is what the exact diagonalisation
+    # values against two conditions is what the exact diagonalization
     # costs).  **No geometry changes what it observes**: the evolved
     # scalars are re-derived from the carried velocity at the top of
     # each corrector pass and reconstructed away at its exit, so
@@ -926,7 +929,7 @@ class Resolution(BaseModel):
     # solve count goes 4 -> 3 on the Cartesian and annular families and
     # 4 -> **5** on the pipe, which is the one place the default costs
     # throughput (~+6 % per step; its axis forces the exact spin-quad
-    # diagonalisation, doubling the evolved scalars against only two
+    # diagonalization, doubling the evolved scalars against only two
     # wall conditions -- ``_cylindrical_stepping._imm_iteration_vw``).  Against
     # that, the corrector contracts in fewer iterations: measured as a
     # *paired* run (one configuration, one backend, the formulation the
@@ -1153,8 +1156,8 @@ class Initiation(BaseModel):
             "in each direction whose mean the driving holds."
         ),
     )
-    # Radially windowed to zero at both walls (the reference restart
-    # recipe); shares the velocity draw's ``random_smoothness`` /
+    # Radially windowed to zero at both walls, which keep their laminar
+    # conformation; shares the velocity draw's ``random_smoothness`` /
     # ``random_wall_smoothness`` / ``random_wall_confinement`` shaping.
     random_conformation_amplitude: float = Field(
         default=700.0,
@@ -1502,7 +1505,7 @@ class TimeStepping(BaseModel):
       corrector cost) and is why it is the ``cnab2``-default radial
       grid, whereas the tighter half-CGL grid
       (``geo.grid_type = 'half-cgl'``, the ``iterative-cn`` default)
-      destabilises cnab2 and is
+      destabilizes cnab2 and is
       restricted to ``iterative-cn``); Cartesian flows feel the
       near-wall ``dy ~ 1/N^2`` spacing instead.  A strongly
       non-normal base flow
@@ -1667,7 +1670,8 @@ class TimeStepping(BaseModel):
     overrides it, and ``steps.dat`` always carries a ``dt`` column.
 
     ``dt_max`` is required when adaptive: besides bounding the step
-    it anchors the setup-time no-pivot stability check -- the
+    it sets the operator of the setup-time no-pivot stability check --
+    the
     Helmholtz diagonal `$1/\Delta t + c\,\nu\,k^2$` is least
     dominant at ``dt_max``, so one checked factorization there
     covers every ``dt <= dt_max`` and the runtime rebuilds skip the
@@ -1787,8 +1791,8 @@ class TimeStepping(BaseModel):
         gt=0,
         default=None,
         description=(
-            "Adaptive cap on dt; required when adaptive (also "
-            "anchors the setup-time no-pivot stability check)."
+            "Adaptive cap on dt; required when adaptive (also the dt "
+            "of the setup-time no-pivot stability check)."
         ),
     )
     dt_min_change: float = Field(
@@ -1911,7 +1915,7 @@ class Solver(BaseModel):
     # local mode-plane block; no communication).
     # ``"dense"``: full ``Ny x Ny`` pivoted LU factors per Fourier
     # mode.  The *reference* backend: the mathematically readable
-    # formulation of the operators and the regression oracle the
+    # formulation of the operators and the regression reference the
     # Pallas path is tested against -- not a production backend (a
     # wall-bounded run selecting it prints a warning).
     # Triply-periodic systems have no wall-normal matrix solves (the
@@ -1933,7 +1937,7 @@ class Solver(BaseModel):
     # runs is normally decided by the live device (kernel on GPU,
     # portable elsewhere -- ``solvers._kernel_path``); this pins it.
     # ``False`` on GPU buys reverse-mode differentiability without the
-    # custom adjoint, and is the oracle that adjoint is checked
+    # custom adjoint, and is the reference that adjoint is checked
     # against; it costs the kernel's speed.  ``True`` off GPU cannot
     # execute a Triton kernel and is refused.
     pallas_kernel: bool | None = Field(
@@ -1968,7 +1972,7 @@ class Solver(BaseModel):
         ),
     )
     # ``"pallas"`` backend only: one Pallas program solves a
-    # ``bm0 x bm1`` tile of Fourier modes, vectorising the banded
+    # ``bm0 x bm1`` tile of Fourier modes, vectorizing the banded
     # sweep across the tile.  ``1`` is one program per mode; ``> 1``
     # coalesces mode loads and fills more SIMD lanes (default 2: the
     # H100 tuning, 4 warps/program).  The mode plane is padded up to
@@ -2769,7 +2773,7 @@ def round_up_padded(n_padded: int, divisor: int) -> int:
     return -(-n_padded // d) * d
 
 
-#: Primes with specialised FFT radix kernels (cuFFT, pocketfft/XLA).
+#: Primes with specialized FFT radix kernels (cuFFT, pocketfft/XLA).
 #: A transform length with only these factors takes the fast kernels;
 #: any larger prime factor falls back to a markedly slower generic
 #: (Bluestein-type) algorithm.
@@ -2779,7 +2783,7 @@ _FFT_SMOOTH_PRIMES = (2, 3, 5, 7)
 def is_fft_smooth(n: int) -> bool:
     r"""True when *n* has no prime factor beyond `$\{2, 3, 5, 7\}$`.
 
-    Such 7-smooth transform lengths take the specialised FFT radix
+    Such 7-smooth transform lengths take the specialized FFT radix
     kernels; padded FFT sizes are therefore rounded up to them
     (:func:`round_up_padded_smooth`).
     """

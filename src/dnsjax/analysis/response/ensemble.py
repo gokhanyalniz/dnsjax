@@ -38,7 +38,7 @@ the basis -- and feed the ``m`` response bundles to ``identify``:
 the responses are projected onto the basis coordinates
 (`$b_j(t) = P^H T_\mathrm{proj}\,\langle\hat{u}\rangle_j(t)$`, with
 `$P$` recovered from the controllability bundle via `$P =
-T_\mathrm{proj}\,\mathrm{lifted}$`), normalised by their own
+T_\mathrm{proj}\,\mathrm{lifted}$`), normalized by their own
 `$t = 0$` coefficients, and assembled into
 `$M(t_k) \approx e^{t_k L}$`; :func:`identify_generator` then fits
 
@@ -402,7 +402,7 @@ def identify_from_responses(
         axis=2,
     )  # (nt, m coords, m inputs)
 
-    # Normalise each column by its own t=0 coefficient; the t=0
+    # Normalize each column by its own t=0 coefficient; the t=0
     # cross-coefficients must vanish (orthonormal injections).
     scales = np.array([b_mat[0, j, j] for j in range(m)])
     if np.min(np.abs(scales)) == 0.0:

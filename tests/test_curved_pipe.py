@@ -38,7 +38,7 @@ of the things they capture.
           + r\,\partial_s w_s ,
 
     whose right-hand side is `$r h$` times the toroidal divergence.
-    Discretised with the *scheme's* radial form, so it also pins the
+    Discretized with the *scheme's* radial form, so it also pins the
     choice of `$r D_1 x + x$` over `$D_1(r x)$`.
 
 ``straight``

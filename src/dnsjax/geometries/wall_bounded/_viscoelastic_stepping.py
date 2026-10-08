@@ -1,4 +1,4 @@
-r"""Geometry-parametrised time stepping shared by the sPTT flows.
+r"""Geometry-parametrized time stepping shared by the sPTT flows.
 
 The sPTT extension exists in two wall-bounded geometries -- the annulus
 (:mod:`~dnsjax.geometries.wall_bounded.annular_viscoelastic`) and the
@@ -400,7 +400,7 @@ def _get_rhs_core(
     ``k``x the FFT dispatches (and ``k`` smaller reshard rounds per
     stage on multi-device runs); the results are identical.
 
-    **Deferred optimisation (interleaved transform/accumulate)**:
+    **Deferred optimization (interleaved transform/accumulate)**:
     chunking caps only the transform transient -- all 36 physical
     fields must still coexist as inputs of the single pointwise
     stage, so they plus the 9 outputs (~45 oversampled fields) are

@@ -4,8 +4,7 @@ This module defines the ``MonochromaticFlow`` dataclass that holds all
 precomputed, flow-specific data: base flow, forcing, and laminar-state
 diagnostics.  Geometry-general infrastructure (time-stepping coefficients,
 solvers, divergence correction) is inherited from
-``geometries.triply_periodic.TriplyPeriodicFlow``
-(via ``geometries.triply_periodic.triply_periodic``).
+``geometries.triply_periodic.triply_periodic.TriplyPeriodicFlow``.
 
 It also exports the flow interface consumed by ``__main__``:
 
@@ -69,7 +68,7 @@ class MonochromaticFlow(TriplyPeriodicFlow):
     """Precomputed data for the monochromatic (Kolmogorov) flow.
 
     All attributes are built by ``__post_init__``, so the module-level
-    singleton ``flow = MonochromaticFlow()`` is fully initialised at
+    singleton ``flow = MonochromaticFlow()`` is fully initialized at
     import.
     """
 

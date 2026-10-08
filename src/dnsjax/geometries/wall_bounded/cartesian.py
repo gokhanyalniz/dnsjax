@@ -472,11 +472,11 @@ class CartesianFlow:
         :func:`_build_Hk_band_gpu`) and factored by the
         setup-checked no-pivot banded LU
         (:func:`solvers._build_pallas_operator`), with no
-        `$(N_y, N_y)$` array materialised.  Under the
+        `$(N_y, N_y)$` array materialized.  Under the
         dense backend they are built as full
         `$(N_y, N_y)$` blocks via
         :func:`_build_Lk_dense_gpu` /
-        :func:`_build_Hk_dense_gpu` and factorised by
+        :func:`_build_Hk_dense_gpu` and factorized by
         :class:`DenseJAXSolver`.  Homogeneous IMM data
         (``v1``, ``v2``, ``M_inv``, and the potentials ``q1``,
         ``q2`` of the primitive scheme) is derived from the GPU
@@ -1497,7 +1497,7 @@ def _imm_iteration_vw(
     fourth order in `$y$` (the pressure is removed at the cost of an
     inverse Laplacian).
 
-    That fourth order is realised **without any fourth-order
+    That fourth order is realized **without any fourth-order
     operator**.  With `$L = D_2 - k^2$`, `$\varphi \equiv L v$` and
     `$\tilde H = I/\Delta t - c\nu L$`, the split is
 
@@ -1518,7 +1518,7 @@ def _imm_iteration_vw(
     precedent.  The only place fourth-order *content* appears is the
     explicit half `$\tilde H^-\varphi^n = \varphi^n/\Delta t +
     (1 - c)\nu L(L v^n)$`, applied as two sequential narrow matvecs to
-    **data** -- never assembled, never factorised.
+    **data** -- never assembled, never factorized.
 
     The price, and where it is paid
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1767,7 +1767,7 @@ def _imm_iteration(
        kills the commutator and the pressure
        mismatch, and a Kleiser-Schumann boundary closure
        (Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3,
-       eqs. (7.3.51)-(7.3.58)), realised as two extra homogeneous
+       eqs. (7.3.51)-(7.3.58)), realized as two extra homogeneous
        columns and a `$4 \times 4$` influence matrix, kills the
        boundary term.  It works (`$d \sim 10^{-14}$`) but widens every
        banded operator (half-width 8 to 11 at ``fd_order = 8``) and
@@ -1838,7 +1838,7 @@ def _imm_iteration(
     metric's counterpart of `$k^2$` commuting with `$D_1$`; the direct
     form fails at `$O(10)$`), and the wall-normal pair carries a spin
     coupling to its `$\theta$` partner -- lagged on the annulus,
-    diagonalised through the existing `$H_{k,\pm}$` families on the
+    diagonalized through the existing `$H_{k,\pm}$` families on the
     pipe, where lagging it diverges near the axis.
     """
     if params.res.consistent_imm:

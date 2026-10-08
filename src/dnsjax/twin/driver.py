@@ -384,7 +384,7 @@ class TwinParams(BaseModel):
     extra jitted call per step forming ``delta`` and reducing it and
     ``state1``, three full-state passes against the two steps' FFT and
     solve work.  **On**: ``delta`` and ``du1`` are each read four
-    times, so both materialise (~2 full-state complex temporaries) --
+    times, so both materialize (~2 full-state complex temporaries) --
     **a few percent of a twin step**, measured at 1.3 % for
     plane-Couette `$48^3$` and 5.0 % at `$64^3$` (the rise is the
     working set leaving cache; the step itself is pure FFT/solve work

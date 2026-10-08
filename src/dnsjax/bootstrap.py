@@ -734,7 +734,7 @@ def _rank_marker() -> str | None:
     :func:`_launcher_ranks` can build a layout out of its family.
 
     Getting it wrong in the permissive direction is the worst failure
-    in the bootstrap: a multi-rank launch nobody here recognises would
+    in the bootstrap: a multi-rank launch nobody here recognizes would
     have every rank believe it is alone, run the whole problem, and
     overwrite the others' ``.dat`` files in the shared directory,
     silently.  A stray marker in a login shell, the other direction,
@@ -1294,7 +1294,7 @@ def resolve_seed(label: str, flag: str, value: int | None) -> int:
     seed**: :mod:`dnsjax.ic.random_field` keys each mode's draw on
     ``(seed, global mode index)`` and per-rank draws would assemble one
     field out of unrelated streams -- divergence-free and correctly
-    normalised, but reproducible from no recorded seed at all.
+    normalized, but reproducible from no recorded seed at all.
 
     The payload is ``[ok, high, low]`` in ``int32``: the seed as the two
     31-bit words of :func:`dnsjax.seeding.split_seed` (exact whether or

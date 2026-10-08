@@ -232,7 +232,7 @@ def test_get_norm2_cartesian() -> None:
     Pins the spectral contraction: sum `$|u|^2$` over components and the
     two periodic wavenumber axes with the real-FFT multiplicity
     ``k_metric``, integrate over `$y$` with the CGL quadrature weights,
-    and normalise by ``derived_params.volume_fac``.
+    and normalize by ``derived_params.volume_fac``.
     """
     Ny = params.res.ny
     Nkz = params.res.nz - 1
@@ -302,7 +302,7 @@ def test_pallas_vs_dense_on_cartesian_operators() -> None:
 
     Run twice: with the direct-fit `$D_2$` at the ``fd_order`` band
     that every shipped operator uses, and with `$D_2 = D_1 D_1$` at its
-    wider measured band -- the assembly, the no-pivot factorisation and
+    wider measured band -- the assembly, the no-pivot factorization and
     the Pallas sweep all have to hold at both widths, which is backend
     capability coverage rather than a shipped configuration.
     """
@@ -436,7 +436,7 @@ def test_vw_source_projections_kill_gradients() -> None:
         s_phi = -k2 * n_v - D1 @ (1j * kx * n_u + 1j * kz * n_w)
         s_om = 1j * kz * n_u - 1j * kx * n_w
 
-        # Both residuals are normalised by the size of the terms that
+        # Both residuals are normalized by the size of the terms that
         # cancel; a component-wise scale would vanish on the k_x = 0
         # and k_z = 0 lines, which are exactly the ones worth testing.
         assert np.abs(s_phi).max() < 1e-12 * k2 * np.abs(n_v).max(), (kx, kz)

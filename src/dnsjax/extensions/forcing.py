@@ -4,7 +4,7 @@ Adds, every ``force.it_force`` steps, a random superposition of
 wall-normal channel profiles to each ``force.modes`` spectral mode
 (the ``force`` extension section; :mod:`dnsjax.extensions`) --
 a sequence of independent state increments ("kicks"), the
-discrete-time realisation of white-in-time forcing localised at the
+discrete-time realization of white-in-time forcing localized at the
 chosen modes.  The drawn coefficients stream to
 ``forcing.bin``/``forcing.json`` next to the ``.dat`` diagnostics,
 keeping the run's full forcing history available to any offline
@@ -587,7 +587,7 @@ class StochasticForcer:
         # CN(0,1): real/imag ~ N(0, 1/2), so E|w|^2 = 1 per channel.
         # The *coefficients* (not the raw draws) are what the sidecar
         # documents and the record stores -- the SSI estimator's
-        # E[w w^H] = I normalisation depends on it.
+        # E[w w^H] = I normalization depends on it.
         coeff = (draw[..., 0] + 1j * draw[..., 1]) / np.sqrt(2.0)
         n_c, ny = self._profiles[0].shape[1:]
         cols = np.zeros((self._n_slots, n_c, ny), dtype=complex)

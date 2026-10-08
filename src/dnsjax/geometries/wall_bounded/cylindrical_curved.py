@@ -383,7 +383,7 @@ class CurvedCylindricalFlow(CylindricalFlow):
 
         # Mean-plane radial operator: continuity at (m, k) = (0, 0) is
         # the first-order ODE `$(\partial_r + 1/r) w_r = g$` with
-        # `$w_r(1) = 0$`, discretised with the *same* odd-parity D1 the
+        # `$w_r(1) = 0$`, discretized with the *same* odd-parity D1 the
         # rest of the pass uses, so the discrete divergence it feeds is
         # the discrete divergence the reconstruction enforces.  Stored
         # inverted: it is applied to a single mode column per corrector

@@ -744,7 +744,7 @@ def test_mpi_forced_laminar_prediction() -> None:
 
         # identify_ssi runs end-to-end on the same directory (the
         # statistical quality at 20 kicks is not asserted; the
-        # estimator has offline anchors).
+        # estimator's own checks are offline, in tests/response/).
         from dnsjax.analysis.response.ssi import identify_ssi
 
         result = identify_ssi(

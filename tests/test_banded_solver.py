@@ -28,7 +28,7 @@ Pallas banded backend (``PerModeBandedPallasOperator``):
    the portable sweep's own autodiff in all three cotangents, with a
    finite-difference check on every band slot
    (``test_pallas_adjoint_matches_portable_sweep`` -- the portable
-   :func:`_banded_solve_batched` is the independent oracle, so it
+   :func:`_banded_solve_batched` is the independent reference, so it
    must never be routed through the rule); and the adjoint composes
    inside ``.solve``'s ``shard_map``
    (``test_pallas_adjoint_composes_in_solve``).
@@ -150,7 +150,7 @@ def _mode_inner_factors(Lo: jnp.ndarray, Uo: jnp.ndarray):
     return Li, Ui.at[:, 0].set(1.0 / Ui[:, 0])
 
 
-# ── cuda lowering on a GPU-less box (JAX >= 0.11) ────────────────────
+# ── cuda lowering without a GPU (JAX >= 0.11) ──────────────────────────
 # ``pl.pallas_call``'s Triton lowering resolves the target GPU's compute
 # capability from the mesh context's abstract device
 # (:class:`jax.sharding.AbstractDevice`); with no physical GPU *and* no
@@ -254,7 +254,7 @@ def test_pallas_factors_prepadded_to_tiles() -> None:
     transforms would otherwise be undone on every solve (measured; see
     the ``from_banded_factors`` docstring).  Either way ``.solve``
     takes and returns the true (non-tiling) plane and matches the dense
-    oracle on its last true mode, adjacent to any padding.
+    reference on its last true mode, adjacent to any padding.
     """
     import dnsjax.solvers as solvers_mod
 
@@ -312,7 +312,7 @@ def test_pallas_interpret_matches_cpu_path() -> None:
     stores discharge (interpret only) to ``dynamic_update_slice``, which
     rejects the ``{Explicit}`` vs ``{}`` sharding pair under that mesh.
     The real Triton path lowers the store natively (no discharge), so
-    this is an interpret-mode artifact; the mesh is a trivial 1-device
+    this is an interpret-mode artefact; the mesh is a trivial 1-device
     mesh here, so clearing it leaves the numerics unchanged."""
     rng = np.random.default_rng(3)
     orig_mesh = sharding.mesh
@@ -406,8 +406,8 @@ def test_pallas_adjoint_matches_portable_sweep() -> None:
     finite difference.
 
     The pure-JAX :func:`_banded_solve_batched` differentiates through
-    its ``lax.scan`` with no hand-written rule, so it is an
-    **independent** oracle -- the one place a sign or a chain-rule slip
+    its ``lax.scan`` with no custom rule, so it is an
+    **independent** reference -- the one place a sign or a chain-rule slip
     in the hand-derived rule would show.  It is fed the same stored
     factors with the diagonal slot un-reciprocated inside the
     differentiated function, so its ``dU`` comes back in the stored
@@ -444,7 +444,7 @@ def test_pallas_adjoint_matches_portable_sweep() -> None:
 
             # The sweep ``.solve`` runs off the kernel path (and on a
             # GPU under ``solver.pallas_kernel = False``): a second
-            # oracle with no hand-written rule, on the stored layout.
+            # reference with no custom rule, on the stored layout.
             def f_mode_inner(L_, U_, b_, p=p):
                 Uu = U_.at[:, 0].set(1.0 / U_[:, 0])
                 return jnp.sum(_banded_solve_mode_inner(L_, Uu, b_, p) ** 2)
@@ -497,8 +497,8 @@ def test_pallas_cuda_lowering() -> None:
     that rejected the earlier kernel designs (f64 TMA, non-power-of-two
     block loads, value slices / reversal / scan ``xs``); the mode-tiled
     ``fori_loop`` kernel passes it.  Triton IR generation needs no GPU,
-    so this runs on the CPU dev box -- a regression guard for the exact
-    class of errors hit on the cluster.  ``Ny`` and ``p`` are
+    so this runs on any CPU-only machine -- a regression guard for the
+    class of errors a real GPU run hit.  ``Ny`` and ``p`` are
     deliberately non-powers-of-two (the band axes), and the
     ``(bm0, bm1) = (2, 32)`` tile (now the default, set explicitly here)
     does not divide ``(Nkz, Nkx)``, so the kernel zero-pads the plane up to
@@ -576,7 +576,7 @@ def test_pallas_cuda_lowering_sharded_solve() -> None:
     shard_map wiring.
 
     Because ``.solve``'s ``shard_map`` binds ``mesh=sharding.mesh``,
-    the abstract H100 device that lets Triton lower on a GPU-less box
+    the abstract H100 device that lets Triton lower without a GPU
     (see :func:`_abstract_gpu_mesh`) must live *inside* that mesh:
     ``sharding.mesh`` is swapped to the matching abstract GPU mesh for
     the lowering (shard_map also requires the context mesh to match its

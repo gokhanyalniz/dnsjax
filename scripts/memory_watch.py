@@ -348,7 +348,7 @@ def main() -> int:
     sp.add_argument(
         "--duration", type=float, default=None, help="stop after N s"
     )
-    sm = sub.add_parser("summary", help="summarise a sample directory")
+    sm = sub.add_parser("summary", help="summarize a sample directory")
     sm.add_argument("dir")
     sm.add_argument(
         "--rows", default=None, help="node_benchmark.py --csv output"

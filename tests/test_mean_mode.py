@@ -203,7 +203,7 @@ def test_tolerance_table(check) -> None:
         f"least={least_bad:.2e} >= {VIOLATION_FLOOR:g}",
     )
 
-    # The derivation's sharpest anchor: the even quartic
+    # The derivation's sharpest check: the even quartic
     # (1-y^2)(5-y^2) is *exact* on both curvature rows -- which are
     # literally the same rows in both cases -- and O(1) on each of the
     # two rows case B adds, so the four rows really are independent
@@ -347,7 +347,7 @@ def test_projector_properties(check) -> None:
             # Idempotent as algebra, so a recompute shows roundoff
             # only.  Measured on the operator, not on the draw above:
             # what the draw comes back with is a fraction of what went
-            # in (``keep`` above), so normalising its drift by its own
+            # in (``keep`` above), so normalizing its drift by its own
             # norm reports that shrinkage rather than the projector --
             # on the s=0.99 case-B row it reads 8e-14 at this seed and
             # up to 2e-11 at others, and at this one it tipped over a

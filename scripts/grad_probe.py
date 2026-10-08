@@ -34,11 +34,11 @@ Usage::
     uv run python scripts/grad_probe.py --dist.platform cuda
 
 The default is CPU in double precision.  ``--dist.platform cuda`` is
-the run this box cannot do: it exercises the real Triton lowering of
-the transposed banded sweep that backs the kernel's ``custom_vjp``
-(``solvers._pallas_banded_solve_t``), which interpret mode and a CUDA
-lowering check between them do not cover -- the same footing the
-forward kernel shipped on.
+the run a machine without a GPU cannot do: it exercises the real Triton
+lowering of the transposed banded sweep that backs the kernel's
+``custom_vjp`` (``solvers._pallas_banded_solve_t``), which interpret
+mode and a CUDA lowering check between them do not cover -- the same
+footing the forward kernel shipped on.
 """
 
 from __future__ import annotations

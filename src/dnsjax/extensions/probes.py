@@ -65,7 +65,7 @@ instead gathers inside a ``shard_map`` -- the owning device is
 computed from the *local* shard shape and every device contributes
 either the column or zeros to a ``psum`` (the
 ``extract_mean_mode`` pattern of
-:mod:`dnsjax.geometries.wall_bounded._base`, generalised to arbitrary
+:mod:`dnsjax.geometries.wall_bounded._base`, generalized to arbitrary
 static mode indices).  Probed indices always address *true* modes
 (``validate_parameters`` bounds them by the unpadded mode counts), so
 spectral padding slots are never read.

@@ -10,7 +10,7 @@ coupled to a symmetric conformation tensor `$\mathbf{c}$` via the
 polymer-stress divergence; see the module docstring of
 :mod:`~dnsjax.geometries.wall_bounded.cylindrical_viscoelastic` for the
 governing equations, the 9-component state layout, the axis parity of
-the tensor, and the spin diagonalisation of its Laplacian.
+the tensor, and the spin diagonalization of its Laplacian.
 
 Total-field formulation
 -----------------------

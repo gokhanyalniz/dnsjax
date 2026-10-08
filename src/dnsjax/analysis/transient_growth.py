@@ -1,14 +1,14 @@
 r"""Linear transient (optimal energy) growth around arbitrary profiles.
 
 Compute the three-dimensional linear transient-growth spectrum of a
-wall-bounded flow **linearised about an arbitrary wall-normal total
+wall-bounded flow **linearized about an arbitrary wall-normal total
 profile** `$\mathbf{U}(y)$` -- not necessarily a laminar / stationary
 solution.  Supported systems: the wall-bounded base-flow flows
 (:data:`WALL_BOUNDED_TG_SYSTEMS`) -- ``plane-couette`` /
 ``plane-poiseuille`` (Cartesian), ``pipe`` (cylindrical),
 ``taylor-couette`` and ``quasi-keplerian`` (annular).  The total-field
 flows (``FlowSpec.total_field``: the curved pipe, Dean and the two
-viscoelastic flows) have no base flow to linearise about and are out
+viscoelastic flows) have no base flow to linearize about and are out
 of scope.
 
 Run as a CLI (single process, single device; GPU with
@@ -43,7 +43,7 @@ The base profile enters the solver only through the pair of flow arrays
 coupling is **exact for any wall-parallel `$y$`-only profile**: because
 `$\mathbf{U}\cdot\nabla\mathbf{U}\equiv 0$`, the base self-interaction is
 a pure gradient absorbed by the pressure (see the :mod:`dnsjax.rhs`
-module docstring), so linearising about a *non-solution* profile
+module docstring), so linearizing about a *non-solution* profile
 introduces **no extra terms** in the Jacobian -- the base residual is a
 constant forcing that does not enter the linear operator.  Every other
 operator (the viscous Helmholtz `$H_k$`, the pressure Poisson `$L_k$`,
@@ -55,7 +55,7 @@ flow module's ``frozen_profile_flow(profile)`` builder).
 
 Mathematical formulation
 ========================
-Per non-mean Fourier mode `$(k_2, k_3)$` the linearised dynamics are
+Per non-mean Fourier mode `$(k_2, k_3)$` the linearized dynamics are
 `$d\mathbf{q}/dt = \mathcal{A}\,\mathbf{q}$` on the complex state
 `$\mathbf{q}\in\mathbb{C}^{n}$`, `$n = 3 N_y$` (three velocity
 components on the wall-normal grid), restricted to the discretely
@@ -90,13 +90,13 @@ With CN weight `$\theta = 1$` (backward Euler,
 .. math::
     \Phi = (I - \Delta t\,\mathcal{A})^{-1}\quad\text{on } S,
 
-realised exactly by the influence-matrix pressure solve (see the
+realized exactly by the influence-matrix pressure solve (see the
 ``_imm_iteration`` docstring in
 :mod:`dnsjax.geometries.wall_bounded.cartesian` and
 :func:`dnsjax.timestep.make_stepper`).  Backward Euler is an *exact
 rational function* of `$\mathcal{A}$`, so inverting the relation
 recovers `$\mathcal{A}$` to rounding -- `$\Delta t$` is a probe, **not**
-an accuracy knob, and there is no time-discretisation error.
+an accuracy knob, and there is no time-discretization error.
 
 The propagator is the solver's, so it inherits ``res.consistent_imm``.
 By default that is the reconstruction scheme, in every wall-bounded
@@ -149,12 +149,12 @@ The pipeline per mode is:
 5. **Restriction to the resolved eigenspace.**  Growth is measured on
    the probe-*resolved* eigenspace only (`$|\mu| > \tfrac12$`, i.e.
    `$|\lambda| \lesssim 2/\Delta t$`).  Its energy-coordinate
-   eigenvectors are factorised `$E_{\mathrm{res}} = QR$` (`$Q$`
+   eigenvectors are factorized `$E_{\mathrm{res}} = QR$` (`$Q$`
    orthonormal, so the 2-norm in `$Q$` coordinates *is* the energy
    norm), giving the reduced generator `$\mathcal{A}_{\mathrm{res}} =
    Q^{H}\mathcal{A}Q = R\,\mathrm{diag}(\lambda_{\mathrm{res}})
    \,R^{-1}$` -- already in eigenform, so no ``expm`` is needed.
-   This restriction is **not** an optimisation: carrying the
+   This restriction is **not** an optimization: carrying the
    unresolved modes would turn the propagator into a *non-orthogonal
    spectral projector* the instant their `$e^{t\lambda}$` dies, so
    the computed `$G$` would jump from `$1$` to `$\lVert$`projector
@@ -228,7 +228,7 @@ mode below is guarded per mode with an explicit error.
     must satisfy `$|\lambda| \lesssim 2/\Delta t$`) or to fix a
     diverging corrector (contraction `$\propto \Delta t$`).
   * *Raise* it to tighten the window.  A wider window admits the
-    fast, wall-clustered FD eigenmodes, which are **discretisation
+    fast, wall-clustered FD eigenmodes, which are **discretization
     artefacts** unless `$N_y$` resolves them: they are strongly
     non-normal, and their short-time growth is real for the *discrete*
     operator while having no continuum counterpart.  It shows up as an
@@ -368,7 +368,7 @@ Only the eigen*values* are stored.  The eigen*vectors* of
 `$\mathcal{A}$` (the linear-stability modes) are already in hand:
 the columns `$\mathbf{y}_i^{(r)}$` of `$Y$` from the `$\Phi_S$`
 eigendecomposition in ``_analyze_mode`` (same eigenvectors as
-`$\mathcal{A}_S$`).  To expose them: energy-normalise so
+`$\mathcal{A}_S$`).  To expose them: energy-normalize so
 `$\lVert F\mathbf{y}_i^{(r)}\rVert_2 = 1$`, lift to the full state
 `$\mathbf{y}_i = V\mathbf{y}_i^{(r)}$`, sort by
 `$\mathrm{Re}\,\lambda_i$`, and store alongside ``eigvals`` (adding a
@@ -415,7 +415,7 @@ if TYPE_CHECKING:
 # The TG scope: the wall-bounded *base-flow* (perturbation-form)
 # systems, whose flow modules export ``frozen_profile_flow``.  A
 # total-field flow (``FlowSpec.total_field``) integrates around
-# ``base_flow = 0`` and has no profile to linearise about, so it is
+# ``base_flow = 0`` and has no profile to linearize about, so it is
 # out of scope; the modules and geometry come from the registry
 # (``FlowSpec.flow_module`` / ``family``) in :func:`_dispatch`.
 WALL_BOUNDED_TG_SYSTEMS = tuple(

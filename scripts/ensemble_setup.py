@@ -27,7 +27,7 @@ Two subcommands:
     JSON manifest consumed by ``build``.
 
 ``build``
-    Materialise the member run tree from a manifest: per parent
+    Materialize the member run tree from a manifest: per parent
     snapshot, one directory per ensemble member containing a
     perturbed seed snapshot (via ``scripts/snapshot_perturb.py``, one
     subprocess each -- sources and the ``--amplitude-energy``
@@ -54,7 +54,7 @@ Two subcommands:
     This script never executes solver runs.
 
 ``build-twin``
-    Materialise a **twin-run** member tree from a manifest: one
+    Materialize a **twin-run** member tree from a manifest: one
     directory per member, each launched with ``dnsjax-twin``
     (:mod:`dnsjax.twin.driver`) against its parent snapshot.  No seed
     subprocesses -- the driver perturbs in-process at start (the
@@ -76,7 +76,7 @@ Two subcommands:
     the flat member index (``--members-per-snapshot`` fans several
     seeds out of one parent).  ``check_laminarization`` is forced off
     so every member runs the full horizon and the streams aggregate on
-    one shared time grid (a relaminarised member is visible offline in
+    one shared time grid (a relaminarized member is visible offline in
     its ``E_ref`` column).  Emits ``run_commands.txt`` and a
     ``members.json`` with ``kind: "twin"``, the index
     :func:`dnsjax.analysis.twin.ensemble.aggregate_members` consumes.
@@ -741,7 +741,7 @@ def main(argv: list[str] | None = None) -> int:
     ph.add_argument("--out", required=True, help="manifest JSON path")
     ph.set_defaults(func=harvest)
 
-    pb = sub.add_parser("build", help="materialise the member tree")
+    pb = sub.add_parser("build", help="materialize the member tree")
     pb.add_argument("--manifest", required=True)
     pb.add_argument("--tree", required=True, help="member tree root")
     pb.add_argument("--mode", required=True, help='"i2,i3" injected mode')
@@ -789,7 +789,7 @@ def main(argv: list[str] | None = None) -> int:
     pb.set_defaults(func=build)
 
     pt = sub.add_parser(
-        "build-twin", help="materialise a twin-run member tree"
+        "build-twin", help="materialize a twin-run member tree"
     )
     pt.add_argument("--manifest", required=True)
     pt.add_argument("--tree", required=True, help="member tree root")

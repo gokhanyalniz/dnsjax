@@ -365,7 +365,7 @@ def case_coordinator_port() -> None:
     )
 
     # Open MPI 5 spells the namespace "prterun-<host>-<pid>@<n>" (the
-    # format verbatim off a 5.0.10 PBS job, host anonymised), so the
+    # format verbatim off a 5.0.10 PBS job, host anonymized), so the
     # rule may not assume a number at all -- and two launches on one
     # node differ only in the pid.
     prterun = {}
@@ -720,7 +720,7 @@ def case_bootstrap() -> None:
                     calls,
                 )
 
-    # An unrecognised launcher must name the way out, not surface
+    # An unrecognized launcher must name the way out, not surface
     # JAX's bare ``coordinator_address should be defined``.  Which way
     # out depends on what was missing: advising the address export to
     # a process with no layout to complete only moves it on to

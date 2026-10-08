@@ -20,7 +20,7 @@ Total-field formulation
 -----------------------
 Unlike every other flow in the solver, Dean flow time-integrates the
 **total** velocity field, not a perturbation around a base flow.  This is
-realised with **no special stepper**: the flow sets
+realized with **no special stepper**: the flow sets
 ``base_flow = curl_base_flow = 0`` so the rotational-form nonlinear term
 (:func:`dnsjax.rhs.get_nonlin`) evaluates the full
 `$(\nabla\times\mathbf{u})\times\mathbf{u}$` of the total field, and the

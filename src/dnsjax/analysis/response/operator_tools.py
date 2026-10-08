@@ -201,7 +201,7 @@ def controllability_gramian(a: np.ndarray) -> np.ndarray:
     (infinite-horizon) controllability Gramian and the steady forced
     covariance.  Requires a stable `$A$`.  Uses SciPy's
     Bartels-Stewart solver when available, else the eigendecomposition
-    closed form; the result is Hermitian-symmetrised.
+    closed form; the result is Hermitian-symmetrized.
     """
     a = np.asarray(a)
     abscissa = float(np.max(np.linalg.eigvals(a).real))

@@ -36,7 +36,7 @@ A.  **Single-device matrix** (one subprocess per config x backend --
 B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
     from scratch dirs): multi-GPU execution of the Pallas Triton
     kernel -- correctness via JAX-free ``dnsjax.analysis`` snapshot
-    diffs across device counts and vs the dense oracle (including a
+    diffs across device counts and vs the dense reference (including a
     padding-inducing ``nx = 34`` plane, a ``2 x 2`` mesh, and a
     ``1 x 4`` case), and production-size timing runs parsed from the
     ``__main__`` benchmark summary.

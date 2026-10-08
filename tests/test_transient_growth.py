@@ -11,10 +11,10 @@ Three test layers, run from the parent process:
   property the propagator build relies on).
 * **CLI subprocesses** (``python -m dnsjax.analysis.transient_growth``):
   a per-system smoke run, the wall-BC / folder / snapshot-export
-  features, and the literature anchors.
+  features, and the published values.
 
-Literature anchors (each a single mode; digits are the paper values,
-matched here on the solver's FD-in-``y`` discretisation to ~2 %):
+Published values (each a single mode; digits are the paper values,
+matched here on the solver's FD-in-``y`` discretization to ~2 %):
 
 * plane-Poiseuille ``Re=1000``, ``(alpha,beta)=(0,2.044)``:
   ``G_max ~ 196`` at ``t ~ 76`` (Reddy & Henningson 1993; Butler &
@@ -33,7 +33,7 @@ matched here on the solver's FD-in-``y`` discretisation to ~2 %):
   table 3, cross-validated against Meseguer 2002). dnsjax ``re1``/``re2``
   equal Maretzke ``Re_i``/``Re_o`` (both use the gap width as the length
   scale); ``G_max`` is a dimensionless energy ratio, so the advective-
-  vs-viscous time normalisation is immaterial to it.
+  vs-viscous time normalization is immaterial to it.
 
 ``--slow`` adds the Orszag (1971) plane-Poiseuille eigenvalue
 (``Re=1e4, alpha=1``): the extracted generator's leading eigenvalue has
@@ -41,8 +41,8 @@ matched here on the solver's FD-in-``y`` discretisation to ~2 %):
 precision, so it is matched loosely).
 
 Run: ``uv run python tests/test_transient_growth.py`` (``--fast`` skips
-the anchors; ``--slow`` adds Orszag; ``--system`` / ``--worker`` select
-one flow).
+the published values; ``--slow`` adds Orszag; ``--system`` /
+``--worker`` select one flow).
 """
 
 import argparse
@@ -108,15 +108,15 @@ def _write_laminar(system: str, path: Path, **kw) -> None:
 # ── CLI driver ───────────────────────────────────────────────────
 
 
-#: Appended to every anchor run by ``--legacy-imm``, which selects the
-#: primitive `$(v, p)$` scheme (``res.consistent_imm = False``) in
-#: *every* wall-bounded geometry.  By default the anchors run on the
-#: shipped reconstruction scheme and check it against the published
-#: digits -- the strongest available statement that the reformulation
-#: did not perturb the linear physics (the eigenvalue content of the
-#: operator these anchors measure is exactly what an
+#: Appended to every published-value run by ``--legacy-imm``, which
+#: selects the primitive `$(v, p)$` scheme (``res.consistent_imm =
+#: False``) in *every* wall-bounded geometry.  By default those runs
+#: use the shipped reconstruction scheme and check it against the
+#: published digits -- the strongest available statement that the
+#: reformulation did not perturb the linear physics (the eigenvalue
+#: content of the operator these runs measure is exactly what an
 #: Orr-Sommerfeld/Squire check would test).  Measured agreement between
-#: the two propagators: 4-6 significant figures on every anchor, so
+#: the two propagators: 4-6 significant figures on every case, so
 #: ``--legacy-imm`` must hit the same published digits too.
 EXTRA_ARGS: list[str] = []
 
@@ -563,7 +563,7 @@ def _test_export() -> None:
     print("  snapshot export + JAX-free read-back  OK")
 
 
-# ── literature anchors ───────────────────────────────────────────
+# ── published values ───────────────────────────────────────────────
 
 
 def _anchor_pp() -> None:
@@ -939,14 +939,15 @@ def main() -> None:
     ap.add_argument(
         "--legacy-imm",
         action="store_true",
-        help="run the anchors on the legacy res.consistent_imm=False path",
+        help="run the published values on the legacy "
+        "res.consistent_imm=False path",
     )
     ap.add_argument("--worker", choices=SYSTEMS, default=None)
     ap.add_argument("--system", choices=SYSTEMS, default=None)
     ap.add_argument(
         "--fast",
         action="store_true",
-        help="structural checks only (skip anchors)",
+        help="structural checks only (skip the published values)",
     )
     ap.add_argument(
         "--slow", action="store_true", help="add the Orszag eigenvalue check"

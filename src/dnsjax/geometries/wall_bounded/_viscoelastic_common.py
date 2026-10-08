@@ -15,6 +15,41 @@ how a radial derivative is taken (a plain FD matrix on the annulus, a
 parity-reduced pair on the pipe), how many walls carry a boundary row,
 and the driving.  Each geometry module owns those.
 
+The model
+---------
+Both geometries integrate, in cylindrical coordinates, the simplified
+Phan-Thien--Tanner (sPTT) system of Lellep, Linkmann & Morozov,
+*Proc. Natl. Acad. Sci. USA* **121**, e2318851121 (2024), eqs.
+(1)--(3):
+
+.. math::
+    \partial_t \mathbf{c} + (\mathbf{u}\cdot\nabla)\mathbf{c}
+      - (\nabla\mathbf{u})^{\mathsf T}\mathbf{c}
+      - \mathbf{c}\,(\nabla\mathbf{u})
+      = \kappa\nabla^2\mathbf{c}
+      - \frac{1 - 3\epsilon + \epsilon\,\mathrm{tr}\,\mathbf{c}}
+             {\mathrm{Wi}}\,(\mathbf{c} - \mathbf{I}),
+
+    \partial_t \mathbf{u} + (\mathbf{u}\cdot\nabla)\mathbf{u}
+      = -\nabla p + \frac{\beta}{\mathrm{Re}}\nabla^2\mathbf{u}
+      + \frac{1 - \beta}{\mathrm{Re}\,\mathrm{Wi}}\nabla\cdot\mathbf{c}
+      + \mathbf{f},
+    \qquad \nabla\cdot\mathbf{u} = 0,
+
+each with its own driving `$\mathbf{f}$`, and with that paper's
+`$\beta = 0.8$`, `$\epsilon = 10^{-3}$`, `$\kappa = 5 \cdot 10^{-5}$` as
+defaults.  The constitutive law is that of Phan-Thien & Tanner,
+*J. Non-Newtonian Fluid Mech.* **2**, 353--365 (1977), and `$\kappa$` is
+an artificial stress diffusivity (Sureshkumar & Beris, *J. Non-Newtonian
+Fluid Mech.* **60**, 53--80, 1995).  For `$\kappa > 0$` the conformation
+at a wall obeys the `$\kappa = 0$` equation (Thomas, Al-Mubaiyedh,
+Sureshkumar & Khomami, *J. Non-Newtonian Fluid Mech.* **138**, 111--133,
+2006), imposed in the equivalent form `$\nabla^2\mathbf{c} = 0$` as each
+wall row of the conformation solve (:func:`narrow_abase_wall_row`); at
+`$\kappa = 0$` the transport is hyperbolic and takes no wall condition.
+The two-dimensional precursor of the system is Morozov,
+*Phys. Rev. Lett.* **129**, 017801 (2022).
+
 State layout
 ------------
 Solver (spin) basis, the stacked spectral array ``(9, N_r, N_m,
@@ -49,7 +84,7 @@ Each spin projection is an eigenvector of the basis-rotation generator
 `$\mathcal R$` (the `$\partial_\theta$` action on the tensor basis) with
 eigenvalue `$is$`, so the angular part
 `$\tfrac{1}{r^2}(\mathcal R + im)^2$` of the Laplacian becomes
-`$-(m+s)^2/r^2$` and the tensor Laplacian **diagonalises** with
+`$-(m+s)^2/r^2$` and the tensor Laplacian **diagonalizes** with
 `$m_{\mathrm{eff}} = m + s$` (:data:`TENSOR_SPIN`).  The velocity is the
 same mechanism at spin `$\pm1$` (`$u_\pm$`) and `$0$` (`$u_z$`).
 
