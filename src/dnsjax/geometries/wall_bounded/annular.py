@@ -1709,7 +1709,8 @@ def _imm_iteration_vw(
     in 0-1 passes, so no shipped configuration is affected.  This is
     **the one corner where selecting ``res.consistent_imm = False`` is
     a reasonable answer** rather than a compatibility choice (the
-    ``Resolution.consistent_imm`` docs point here for exactly that).
+    ``consistent_imm`` field comment in :mod:`dnsjax.parameters` points
+    here for exactly that).
     The important structural point is that the lag sits **inside** the
     corrector: degradation surfaces as an iteration count and
     ultimately as a *reported* non-convergence, never as the silent

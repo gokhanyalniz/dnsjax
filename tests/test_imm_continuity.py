@@ -99,7 +99,8 @@ PIPE_STEPS = 10
 # ``random_field._wall_normal_filter`` keeps grid-white Nyquist
 # content out of the boundary term's `$D_1[1,0] \sim N_y^2$`
 # amplification (without it they are 2-3 orders larger and *grow* as
-# `$N_y^2$`).  ``Resolution.consistent_imm`` records this table.
+# `$N_y^2$`).  The :mod:`dnsjax.parameters` Design notes ("Consistent
+# influence matrix") record this table.
 
 # (label, system, consistent_imm, max relative divergence allowed).
 # Both formulations are named explicitly, so the pair stays a contrast
@@ -289,7 +290,7 @@ def _worker(system: str, consistent_imm: bool, ny: int) -> None:
         #   bound because it assumes all of Q lands in the tangential
         #   pair at fixed v; differencing the two schemes' stepped
         #   states directly gives 2.4e-3 / 3.2e-5, ~20x smaller (the
-        #   ``Resolution.consistent_imm`` docs).  Either way it is
+        #   ``parameters`` Design notes).  Either way it is
         #   truncation-level and refines, and -- the point of the
         #   reformulation -- no solve reads it back, so it does not
         #   re-excite (the post-hoc projection that relocated the same

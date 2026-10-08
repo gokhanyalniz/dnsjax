@@ -10,8 +10,8 @@ against a pressure Poisson solve and enforces continuity only at the two
 walls.  It is retained for reference and for reproducing older
 trajectories; a state it steps carries an `$O(1)$` *relative* discrete
 divergence.  The full comparison, the measured ledger and the four other
-repairs that were tried and retired: the ``Resolution.consistent_imm``
-docs (``parameters.py``) and
+repairs that were tried and retired: the :mod:`dnsjax.parameters`
+Design notes ("Consistent influence matrix") and
 :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`.
 
 Everything here is reachable **only** when the flag is off, so

@@ -1,4 +1,4 @@
-"""Simulation parameter management via Pydantic models and TOML files.
+r"""Simulation parameter management via Pydantic models and TOML files.
 
 Configuration is layered, lowest priority first: hard-coded defaults ->
 parameters embedded in a resumed snapshot (:func:`read_snapshot_params`)
@@ -11,6 +11,255 @@ resume-decision fields ``init.snapshot`` / ``init.force_resume``
 defaults / TOML / CLI.  The global singletons ``params``,
 ``derived_params``, and ``padded_res`` are mutated in-place by
 :func:`update_parameters` so that every module sees the same state.
+
+Design notes
+------------
+**Choosing the device grid.**  The ``np1`` exchange moves 2.654 MB per
+device per forward+inverse pair at ``64 x 144 x 144`` on four devices,
+against ``np0``'s 1.769 MB.  On CPU, measured at four and eight ranks,
+the per-exchange cost dominates the volume: a 2D grid costs 9 to 19 %
+against the best 1D one, while the `$3/2$` volume difference between
+the two 1D grids is worth some 18 % of the transform pair itself but
+only a few percent of the step around it (the transforms being roughly
+half of it).  On ARCHER2 (node hardware: ``docs/scaling.md``, "Strong
+scaling on ARCHER2"; 128 ranks per node, Cray MPICH) at
+``1280 x 383 x 384`` the fastest grid on 1, 2 and 4 nodes was
+``(128, n)`` -- the largest ``np0`` dividing the rank count that pads
+the 383 wall-normal points by only the one point any split of them
+needs, the rest on ``np1``, whose groups of ``n`` consecutive ranks
+still fall inside a node -- and the node-aligned ``(n, 128)`` the
+slowest that fit, 25 % behind on two nodes and 22 to 25 % on four (one
+node: ``(2, 64)`` 30 % behind ``(128, 1)``).  ``(128, n)`` kept its
+lead to 32 nodes, the runner-up ``(64, 2n)`` 2 to 8 % behind from 2
+nodes on, and ``(1, 256)`` did not fit in two nodes' memory.
+
+**One thread per rank.**  The rule is a design decision, and
+measurement only checks that nothing argues against it.  Plane Couette
+``64 x 48 x 64``, 30 steps: 2 ranks take 5.2 s at 1 thread against
+5.1 s at 8, and 4 ranks 3.2 s at 1 thread against 3.7 s at 4; the same
+case at 1 rank runs 17.3 / 18.1 s/t at 1 thread against 17.6 / 18.0 at
+16 (interleaved, on a 16-core machine).  Threads buy nothing at a
+realistic per-rank block size and can cost, and a faster threaded arm
+would not change the rule, so timing one again is waste.
+
+**Consistent influence matrix (``res.consistent_imm``).**  The
+primitive influence-matrix method's continuity argument
+(Kleiser-Schumann; Canuto, Hussaini, Quarteroni & Zang 1988, sec. 7.3)
+is derived for *continuous* differentiation operators.  Two discrete
+identities have to hold for the stepped state's divergence to vanish,
+`$\nabla\cdot\nabla = L_k$` (that is, `$D_1 D_1 = D_2$`) and
+`$[D_1, D_2] = 0$`; independent Fornberg fits satisfy neither, and
+replacing the momentum wall rows by Dirichlet rows leaves an
+unaccounted residual that the divergence's own `$D_1$` spreads into
+the interior.  So a state the legacy path steps carries a discrete
+divergence that is `$O(1)$` *relative*: a convergent truncation error,
+physically inert for resolved fields, but not zero.
+
+The default -- one mechanism in all three geometries since 2026-07-26
+-- advances the **wall-normal velocity and vorticity** instead of the
+three velocity components and *reconstructs* the tangential pair from
+them.  Continuity is then an algebraic identity, exact at every row
+including the walls, for any operator, grid or axis fit, and the
+pressure is eliminated discretely, never formed.  `$D_1$` and `$D_2$`
+stay individually Fornberg-fit and the band stays at ``fd_order``.
+The wall-normal-velocity equation is the pressure-eliminated
+fourth-order one, integrated as two second-order banded solves that
+commute exactly (Tuckerman 1989; Luchini & Quadrio 2006 is the
+FD-in-`$y$` precedent), so no fourth-order operator is assembled
+anywhere.  Tangential no-slip is not imposed but *emerges* from the
+reconstruction, so the tangential wall values become a live diagnostic
+of influence-matrix health.
+
+Per geometry: **Cartesian** advances `$(v, \omega_y)$`, four per-mode
+banded solves down to three.  **Annular** advances the
+`$(u_r, \omega_r)$` pair, whose two slots share one Helmholtz operator
+(`$m_{\mathrm{eff}}^2 = m^2+1$`, the spin-block diagonal): four solves
+down to three, four band families down to three, `$u_\pm$` unchanged.
+**Pipe** the same, except that the pair's `$-2im/r^2$` spin coupling
+cannot be lagged near the axis (it diverges: measured contraction 1.13
+on the plain-`$r$` fit, 19.1 on the retired `$x = r^2$` axis fit), so
+the **spin quad** `$(\Phi_\pm, \omega_\pm)$` is advanced through the
+existing `$H_{k,\pm}$` families, which diagonalize that coupling
+exactly: five solves over three band families, with only the quad's
+two free wall differences taken from the corrector iterate (four wall
+values against two conditions is what the exact diagonalization
+costs).  No geometry changes what it observes: the evolved scalars are
+re-derived from the carried velocity at the top of each corrector pass
+and reconstructed away at its exit, so snapshots, probes, forcing,
+diagnostics, the analysis package and resume see the same physical
+state under both formulations.  The one internal exception is the
+pipe family, which also carries the quad's two difference halves: the
+velocity does not determine them, and re-deriving them made it first
+order in time at coarse radial resolution (trailing solver-basis slots
+plus an optional snapshot member, ``outs.snapshot_embed_carry``).  The
+price is two wall rows per mode (the influence coefficients cannot be
+carried), a bounded truncation-level substitute whose argument and
+measurement ``cartesian._imm_iteration_vw`` carries.  Construction,
+boundary conditions and the retired routes: the
+``cartesian._imm_iteration`` (shared record),
+``annular._imm_iteration_vw`` (cylindrical algebra) and
+``_cylindrical_stepping._imm_iteration_vw`` (the quad) docstrings.
+
+*Efficacy.*  Measured at ``fd_order = 8``, one step from a random IC,
+seed 7 (ten steps from an axis-regular rolls IC on the pipe;
+``tests/test_imm_continuity.py``), the stepped-state relative
+divergence, legacy -> default:
+
+==============  ===================  ===================
+flow            ``ny = 25``          ``ny = 97``
+==============  ===================  ===================
+plane-couette   4.5e-2 -> 2.9e-16    1.1e-3 -> 1.6e-15
+taylor-couette  6.4e-2 -> 5.6e-16    5.7e-4 -> 1.9e-15
+pipe            2.8e-2 -> 1.1e-15    1.5e-5 -> 8.2e-15
+==============  ===================  ===================
+
+Round-off everywhere, following no `$h^p$` law at all (the mild growth
+with `$N_y$` is the longer `$D_1$` dot product, not truncation),
+because continuity here is an identity rather than something a solve
+delivers -- which is why every default-formulation bound is asserted
+at every ``--ny``.  These replace the operator-identity route's floors
+(4.2e-14 Cartesian, 8.0e-6 annular, 5.6e-5 pipe), each set by a
+commutator that route could not remove.  The wall-bounded *temporal*
+order is restored too: from a relaxed state, plane-Couette
+iterative-CN self-convergence goes from ``1.4e-2`` (``dt = 0.01``) at
+order ~0.5-0.8 on the legacy path to ``6.3e-6`` at order 2 on the
+default, and Taylor-Couette and the pipe likewise (the divergence
+residual was the dominant projection-splitting error), pinned by
+``tests/test_temporal_order.py``.
+
+*Price.*  Exact continuity is bought by *not* imposing the tangential
+momentum combination, so what continuity gains, that equation loses.
+Measured end to end on the Cartesian pair -- the same random IC
+stepped once by each scheme, differenced in the Helmholtz norm
+`$\max|\tilde H \delta|/\max|\tilde H u|$` -- the two answers differ by
+``2.4e-3`` (``ny = 25``) / ``3.2e-5`` (``ny = 97``) in the tangential
+pair and ``8.9e-3`` / ``1.8e-5`` in `$v$`: truncation-level, refining
+at roughly third to fourth order, with **no plateau** (the signature
+that would mean a formulation error rather than a truncation one).
+The ``CHI-MOM`` figure ``tests/test_imm_continuity.py`` prints
+(``4.5e-2`` / ``1.6e-3``) is a cruder upper bound on the same
+quantity.  Nothing reads the residual back -- the difference from the
+rejected projection below -- so it neither accumulates nor re-excites;
+the stepped energy budget in fact closes *tighter* on the default
+(``2.8e-3`` against the legacy path's ``5.1e-3``,
+``tests/test_energy_budget.py``), as it must when pressure does no
+work on an exactly solenoidal field.  There is no operator price (same
+`$D_1$`, same direct-fit `$D_2$`, same band) and operator storage
+*drops*; against that, `$L(Lv)$` is applied in the explicit half, and
+the reconstruction's `$1/k^2$` (`$1/(k_z^2 + m^2/r^2)$` in the
+cylindrical geometries) amplifies the gravest mode by `$1/k_{\min}$`
+(`$O(1-10)$` for sane boxes).
+
+*Rejected alternatives.*  (1) **Operator-side identities**, shipped on
+the annular and pipe geometries before the default:
+`$D_2 := D_1 D_1$` plus the CHQZ (7.3.51)-(7.3.58) boundary closure.
+It works, but cannot reach round-off in a cylindrical geometry (the
+metric commutator `$[D_1, 1/r] \ne -1/r^2$` survives; on the pipe a
+parity invariant forbids both parities' commutators vanishing at
+once), it widens every banded operator, it costs an order in the
+`$D_2$` truncation constant, and -- because a composed `$D_2$` is not
+grid-scale-dissipative -- it made the pipe unstable from a grid-white
+random IC.  (2) **Commutator cancellation**: feeding the commutator
+back into the Poisson RHS reaches machine zero but contracts like
+`$N_y^{-2}$`.  (3) **State-side tangential projection**: back-solving
+the tangential pair from continuity at the primitive `$v$` zeroes the
+interior divergence and passes every *linear* gate, but is violently
+unstable nonlinearly (x5-10 per step at the gravest modes, worse per
+unit time at smaller ``dt``, not cured by the boundary closure) --
+Kleiser's tau-method instability (CHQZ p. 219) in FD form.  (4) Merely
+solving an `$\omega_y$` Helmholtz beside the existing `$(v, p)$` IMM
+and reconstructing is the *same state map* as (3), so it inherits the
+instability: only advancing the wall-normal velocity by the
+pressure-eliminated dynamics escapes it.  (5) Decoupling the annular
+`$(u_r, \omega_r)$` pair the way `$u_\pm$` decouples
+`$(u_r, u_\theta)$` is impossible, since it mixes two vector fields;
+the exactly decoupled candidates are enumerated and dismissed in the
+``annular._imm_iteration_vw`` docstring.
+
+*Step cost.*  The per-mode banded solve count goes 4 -> 3 on the
+Cartesian and annular families and 4 -> **5** on the pipe, the one
+place the default costs throughput (~+6 % per step: its axis forces
+the exact spin-quad diagonalization, doubling the evolved scalars
+against only two wall conditions --
+``_cylindrical_stepping._imm_iteration_vw``).  Against that, the
+corrector contracts in fewer iterations.  Measured as a *paired* run
+(one configuration, one backend, the formulation the only difference),
+the pipe's ``c/it`` drops ``1.00 -> 0.10`` and Taylor-Couette's
+``0.09 -> 0.00``, because the reconstruction removes the projection
+error the corrector was working against (consistent with Kleiser's
+report, via CHQZ p. 220, of *lower* time-step stability limits when
+the boundary correction is omitted).  ``tests/test_random_smoke.py``
+does not reprint those: its ``*-legacy-imm`` entries deliberately run
+a different ``Re``, box and resolution from their default
+counterparts, so the ``c/it`` values it prints side by side are not a
+controlled pair.  One configuration on one backend either way: the net
+speed-up is a bonus, not a guarantee.
+
+**The split corrector stays opt-in.**  At realistic ``dt`` the
+unsplit corrector converges in ~1-2 iterations for *every* flow
+(measured, the total-field Dean and high-Wi viscoelastic Dean
+included: unsplit ``c`` stays 2-3, far from the cap, at
+``dt = 0.01``), so it is both correct and faster -- the split measured
+a few % slower at production sizes on GPU, up to tens of % on small
+problems.  The split pays off only once ``dt`` is pushed far enough
+that the unsplit corrector approaches ``max_corrector_iterations``:
+Dean at ``dt = 0.15``, an unrealistically large step, where the
+unsplit corrector hits the cap (``c = 10``) and fails while the split
+converges it FFT-free.
+
+**Where the cnab2 step bound binds.**  On the pipe, the rigged-CGL
+radial grid raises the admissible cnab2 ``dt`` from ``dt* ~ 0.0125``
+to ``0.0175`` at ``32^3``, ``Re = 1800``, while ``iterative-cn`` rides
+``CFL_th ~ 1.5-2`` there at growing corrector cost.  Counter-rotating
+Taylor-Couette needs a ``dt`` ~8x smaller; at coarser resolution the
+induced corrector stress can trip the fallback into rescuing single
+steps (``ny = 32`` completes via fallbacks, while ``ny = 48`` diverges
+with the corrector still converged).
+
+**Implicit mean-flow coupling.**  Decisive for Dean: at ``nz = 64``,
+``dt = 0.15`` (mean-flow ``CFL_th ~ 0.5``) the coupling off NaNs by
+``t ~ 4`` while the coupling on runs clean, matching ``iterative-cn``
+at ~4 FFT-free Picard iterations per step against its ~4 FFT
+evaluations.  Neutral where the limit is fluctuation-driven (the pipe
+near the axis), and only mildly slowing the counter-rotating
+Taylor-Couette blow-up.
+
+**The default implicitness.**  Measured on the solver's own one-step
+propagator (pipe, ``Re = 1``, ``dt = 0.01``, ``fd_order = 4``), the
+trapezoidal rule's ``1 - |mu|`` is ``6.3e-4`` at ``nr = 32``,
+``3.8e-5`` at ``nr = 64`` and ``1.5e-5`` at ``Re = 100`` /
+``nr = 256``, following the formula to four digits in ``dt`` and *c*;
+the same mode appears in plane Couette and Taylor-Couette and on the
+legacy ``res.consistent_imm = False`` path.  At the default
+``c = 0.5001`` it is ``1.0e-3`` at ``nr = 32`` and ``4.4e-4`` at
+``nr = 64``, 11x the trapezoidal value there, the gap widening with
+every refinement.  In the ``tests/test_temporal_order.py``
+configuration the first-order coefficient ``B`` is 1.3 (pipe) and 0.33
+(plane Couette), so at the default it stays below the second-order
+error for ``dt`` above ~5e-4: the measured errors are within 10 % of
+the trapezoidal rule's (smaller, in fact) at ``dt = 0.01 ... 0.0025``,
+orders 2.04-2.16, which that study guards.  ``c = 0.501`` buys a ten
+times firmer floor for a ten times larger first-order term, which
+overtakes the second-order error below ``dt`` ~ 3e-3 to 5e-3;
+``c = 0.51`` is first order over the whole practical range (errors
+2-20x the trapezoidal rule's).
+
+**The azimuthal wedge is resolved, not decimated.**  The FFT is purely
+index-based and never sees `$\theta$`, so it maps mode index `$j$` to
+grid index `$p$` and returns one period of the field it was handed.
+Every retained harmonic being a multiple of ``m0``, that period *is*
+the wedge: the ``nz`` (dealiased ``nz_padded``) points span
+`$[0, 2\pi/m_0)$` at spacing ``lz/nz``, ``m0`` times *finer* than the
+full circle at the same ``nz``, exactly what resolving ``m0`` times
+higher wavenumbers requires.  Equivalently the code solves in
+`$\phi = m_0 \theta \in [0, 2\pi)$`, with ``m0`` entering only where a
+physical wavenumber (``Fourier.m``) or length (``lz``) is needed, and
+every ``geo.lz`` consumer follows automatically (the CFL azimuthal
+spacing ``nz/lz``, the random-field and localized-rolls generators,
+the ``analysis._core`` lengths).  Pinned end to end by the
+``wedge_nonlinear`` case in ``tests/test_quasi_keplerian.py``: a wedge
+decimated over the full azimuth would evaluate the pseudo-spectral
+product on an ``m0``-times too coarse grid and fail it outright.
 """
 
 from dataclasses import dataclass, field
@@ -93,13 +342,13 @@ class Distribution(BaseModel):
     (`$z \leftrightarrow k_x$`) runs while the array still carries the
     **oversampled** spanwise extent, the ``np0`` one
     (`$y \leftrightarrow k_z$`) after the truncation to stored modes,
-    so at the default oversampling ``np1`` moves `$3/2$` as many bytes
-    (2.654 against 1.769 MB per device per forward+inverse pair at
-    ``64 x 144 x 144`` on four devices).  And a second grid axis does
-    not divide the first exchange more finely, it **adds** a second
-    one: one all-to-all per transform on a 1D grid, two on a 2D one,
-    each a synchronization point.  Both the count and the volume are
-    readable off the compiled program.
+    so at the default oversampling ``np1`` moves `$3/2$` as many bytes.
+    And a second grid axis does not divide the first exchange more
+    finely, it **adds** a second one: one all-to-all per transform on a
+    1D grid, two on a 2D one, each a synchronization point.  Both the
+    count and the volume are readable off the compiled program; the
+    measurements behind the rules below are in the Design notes
+    ("Choosing the device grid").
 
     Whatever the device type:
 
@@ -120,23 +369,13 @@ class Distribution(BaseModel):
        small ones a grid-wide exchange sends, at equal volume
        (`$(N-g)/N^2 = (n-1)/(nN)$` per device, for `$N$` devices in
        `$g$`-device groups on `$n$` nodes).  On CPU that argument
-       loses to rule 1's.  On ARCHER2 (two 64-core AMD EPYC 7742 and
-       16 DDR4-3200 channels per node, Slingshot between nodes; 128
-       ranks per node, Cray MPICH) at ``1280 x 383 x 384`` the fastest
-       grid on 1, 2 and 4 nodes was ``(128, n)`` -- the largest
-       ``np0`` dividing the rank count that pads the 383 wall-normal
-       points by only the one point any split of them needs, the rest
-       on ``np1``, whose groups of ``n`` consecutive ranks still fall
-       inside a node -- and the aligned ``(n, 128)`` the slowest that
-       fit, 25 % behind on two nodes and 22 to 25 % on four (one node:
-       ``(2, 64)`` 30 % behind ``(128, 1)``).  ``(128, n)`` kept its
-       lead to 32 nodes, the runner-up ``(64, 2n)`` 2 to 8 % behind
-       from 2 nodes on (the node in full, and the strong scaling to 64
-       nodes: ``docs/scaling.md``, "Strong scaling on ARCHER2").
-       Splitting on ``np1`` alone across nodes is the one arrangement
-       to avoid: it puts the `$3/2$`-sized exchange on the network
-       (``(1, 256)`` did not fit in two ARCHER2 nodes' memory).
-       Untested across GPU nodes.
+       loses to rule 1's: on ARCHER2 the largest ``np0`` that pads the
+       wall-normal points least, the rest on ``np1``, was fastest from
+       one node to 32, and the node-aligned grid the slowest that fit
+       (the strong scaling to 64 nodes: ``docs/scaling.md``, "Strong
+       scaling on ARCHER2").  Splitting on ``np1`` alone across nodes
+       is the one arrangement to avoid: it puts the `$3/2$`-sized
+       exchange on the network.  Untested across GPU nodes.
     3. **Snapshots** add only the same 1D preference -- a
        one-dimensional grid reshards once per save instead of twice.
        Write granularity does not enter the choice: the reshard trims
@@ -146,13 +385,9 @@ class Distribution(BaseModel):
     **On CPU** the mode plane carries no tile round-up (the Pallas
     kernel never runs), so ``np1`` may be taken as far as the mode
     count allows, and one device per process makes ``np0 * np1`` the
-    rank count.  Measured at four and eight ranks, the per-exchange
-    cost dominates its volume: a 2D grid costs 9 to 19 % against the
-    best 1D one, where the `$3/2$` volume difference between the two
-    1D grids is worth some 18 % of the transform pair itself but only
-    a few percent of the step around it (the transforms being roughly
-    half of it).  That is why the 1D rule is the firm one and the axis
-    a lesser trade.  Routing the collectives through MPI rather than
+    rank count.  There the per-exchange cost dominates its volume,
+    which is why the 1D rule is the firm one and the axis a lesser
+    trade.  Routing the collectives through MPI rather than
     gloo (below) speeds up every exchange, shifting weight from the
     per-exchange cost back toward volume.
 
@@ -177,15 +412,17 @@ class Distribution(BaseModel):
 
     Process topology
     ----------------
-    Only a **multi-process** run needs a launcher.  One
-    process starts no distributed runtime at all
-    (``bootstrap._bootstrap_distributed``), so a run that
-    fits in one is launched directly -- no ``mpirun``, no
-    coordinator, no MPI on the machine, ``uv run dnsjax ...``
-    included.  On CPU that means exactly one device: several
-    CPU devices in one process is oversubscription, and
-    asking for it is refused with the ``mpirun -np N`` that
-    works.
+    Only a **multi-process** run needs a launcher.  One process
+    starts no distributed runtime at all -- there is nothing to
+    coordinate -- so a run that fits in one is launched directly: no
+    ``mpirun``, no coordinator, no site knowledge and no MPI on the
+    machine, ``uv run dnsjax ...`` included
+    (``bootstrap._bootstrap_distributed``).  ``JAX_LOCAL_DEVICE_IDS``
+    is still honoured there: ``bootstrap._apply_local_device_ids``
+    narrows the devices as ``jax.distributed.initialize`` would have.
+    On CPU one process means exactly one device: several CPU devices
+    in one process is oversubscription, and asking for it is refused
+    with the ``mpirun -np N`` that works.
 
     ``np0 * np1`` counts *devices*, not processes: the mesh
     only requires ``jax.device_count() == np0 * np1``, so a
@@ -202,7 +439,7 @@ class Distribution(BaseModel):
     --dist.np1 2``.  Both topologies produce identical
     global meshes, trajectories, and snapshots (resume is
     np-agnostic), and both are validated on real multi-GPU
-    hardware (``scripts/solver_benchmark.py``, 2026-07).
+    hardware (``scripts/solver_benchmark.py``).
     The single-process form avoids cross-process NCCL
     entirely -- the reliable choice on single-node
     allocations whose multi-process collective stack is
@@ -246,36 +483,20 @@ class Distribution(BaseModel):
     either way, so the single-process launch above is
     unaffected.
 
-    A launch the environment reports as **one process** skips
-    the distributed runtime altogether -- there is nothing to
-    coordinate -- which is why a single-rank run needs no
-    coordinator, and no site knowledge, anywhere.  Setting
-    ``JAX_LOCAL_DEVICE_IDS`` opts back in, since narrowing a
-    process to a subset of its devices is JAX's to apply.
-
     CPU runs: threads per rank
-    -------------------------
+    --------------------------
     **A CPU run takes one XLA thread per rank.**  Parallelism on CPU
     comes from MPI ranks and from nothing else; an intra-op thread pool
     is not a second axis to tune, and this holds however many devices
     the run has -- a lone process is pinned exactly like a rank of
-    sixteen, and is not special-cased.  ``bootstrap.
-    configure_jax_runtime`` applies it: ``NPROC`` sizes the pool and is
-    set there with ``setdefault``, so ``export NPROC=<n>`` before
-    launching overrides the pin for a deliberate experiment;
+    sixteen, and is not special-cased.
+    ``bootstrap.configure_jax_runtime`` applies it: ``NPROC`` sizes the
+    pool and is set there with ``setdefault``, so ``export NPROC=<n>``
+    before launching overrides the pin for a deliberate experiment;
     ``--xla_cpu_multi_thread_eigen=false`` rides along as a small extra
-    serialization and is applied only while the pin is 1.
-
-    Nothing measured here argues against the rule, which is the only
-    role measurement has in this section: plane-Couette
-    ``64 x 48 x 64``, 30 steps, gives 2 ranks 5.2 s at 1 thread against
-    5.1 s at 8 and 4 ranks 3.2 s at 1 thread against 3.7 s at 4, and
-    the same case at 1 rank 17.3 / 18.1 s/t at 1 thread against 17.6 /
-    18.0 at 16 (interleaved, 16-core box) -- i.e. threads buy nothing
-    at a realistic per-rank block size and can cost.  Do not re-open
-    the question with another timing: a faster threaded arm would not
-    change the rule, so measuring one is waste.  If a CPU run is
-    device-starved, the answer is more ranks.
+    serialization and is applied only while the pin is 1.  If a CPU
+    run is device-starved, the answer is more ranks (Design notes:
+    "One thread per rank").
 
     CPU runs under SLURM
     --------------------
@@ -306,19 +527,18 @@ class Distribution(BaseModel):
     ``LD_LIBRARY_PATH``.  Without one the run stays on gloo and says
     so (building the wrapper: ``docs/cpu-collectives.md``); with
     ``JAX_CPU_COLLECTIVES_IMPLEMENTATION`` set, that choice wins
-    outright.  Worth having: measured on a 16-core box at 4 ranks,
-    plane-Couette ``32^3``, MPI runs at 0.80 s/t against gloo's 1.14
-    (interleaved), on top of gloo's own strong scaling there (1.39x on
-    2 ranks, 2.28x on 4).  By how much is a property of the target
-    machine's interconnect, so it is worth timing again there.
+    outright.  By how much MPI wins is a property of the target
+    machine's interconnect, so it is worth timing there (one
+    measurement: the :mod:`dnsjax.bootstrap` Design notes, "MPI
+    collectives on CPU").
 
     Selecting MPI also turns CPU async dispatch off, and the mesh opens
     its MPI communicators as it is built -- XLA's MPI backend cannot
     take a communicator request from a thread pool, and the failure is
     load-dependent rather than obvious
     (``bootstrap._select_cpu_collectives``,
-    ``sharding._warm_communicators``).  The numbers above already
-    include the dispatch cost.  It applies to
+    ``sharding._warm_communicators``).  The measured gain already
+    includes the dispatch cost.  It applies to
     ``JAX_CPU_COLLECTIVES_IMPLEMENTATION=mpi`` as much as to the
     discovered choice: the two reach the same backend.
 
@@ -600,8 +820,9 @@ class Geometry(BaseModel):
     `$\propto 1/r_0$` is a stability artefact of explicit stepping
     evaluated at grid points only, so it relaxes `$\propto r_0$` at a
     truncation-level accuracy cost.  The rigged grid's `$2\times$`
-    larger `$r_0$` doubles the admissible explicit-``cnab2`` ``dt``
-    (measured), which is why it is the ``cnab2`` default; the tighter
+    larger `$r_0$` raises the admissible explicit-``cnab2`` ``dt``
+    (by 1.4x, measured: Design notes, "Where the cnab2 step bound
+    binds"), which is why it is the ``cnab2`` default; the tighter
     half-CGL axis makes ``cnab2`` blow up at low ``dt`` (near-axis
     explicit instability), so half-CGL is restricted to the
     implicitly-iterated ``iterative-cn`` scheme, which integrates it
@@ -649,25 +870,9 @@ class Geometry(BaseModel):
     # under the dynamics), cutting azimuthal cost/memory by a factor m0
     # at fixed nz: the same physical azimuthal resolution as a full
     # circle with m0*nz modes.  Default 1 (full circle).  A changed m0 on
-    # resume is trajectory-defining (geo section).
-    #
-    # In *physical* space the wedge is fully resolved, not decimated: the
-    # FFT is purely index-based and never sees theta, so it maps mode
-    # index j to grid index p and returns one period of the field it was
-    # handed.  Every retained harmonic being a multiple of m0, that
-    # period *is* the wedge -- the nz (dealiased nz_padded) points span
-    # [0, 2*pi/m0) at spacing dtheta = lz/nz, i.e. m0-times *finer* than
-    # the full circle at the same nz, exactly what resolving m0-times
-    # higher wavenumbers requires.  Equivalently the code solves in
-    # phi = m0*theta in [0, 2*pi), with m0 entering only where a physical
-    # wavenumber (``Fourier.m``) or length (``lz``) is needed; every
-    # ``geo.lz`` consumer then follows automatically (the CFL azimuthal
-    # spacing nz/lz, the random_field / localized_rolls generators,
-    # ``analysis/_core`` lengths).  Pinned end-to-end by the
-    # ``wedge_nonlinear`` case in ``tests/test_quasi_keplerian.py``: a
-    # wedge decimated over the full azimuth would evaluate the
-    # pseudo-spectral product on an m0-times too coarse grid and fail it
-    # outright.
+    # resume is trajectory-defining (geo section).  In physical space the
+    # wedge is fully resolved, not decimated (Design notes: "The
+    # azimuthal wedge is resolved, not decimated").
     m0: int = Field(
         ge=1,
         default=1,
@@ -765,185 +970,21 @@ class Resolution(BaseModel):
             "half-width, not an accuracy order)."
         ),
     )
-    # Wall-bounded only (all three families), **on by default**.  It
-    # buys a discretely exact projection with a **reformulation** of
-    # the implicit step; the price is a truncation-level residual moved
-    # into a momentum equation nothing solves.  Every measurement below
-    # says that trade is worth making everywhere, which is why it is
-    # the default rather than an opt-in.
-    #
-    # *Setting it to ``False``* selects the **legacy** primitive
-    # Kleiser-Schumann `$(v, p)$` scheme (each geometry's
-    # ``_<geometry>_primitive_imm.py``).  It is kept, tested and
-    # supported, but not recommended: a state it steps carries the
-    # `$O(1)$` *relative* discrete divergence described next.  Two
-    # reasons remain to select it -- reproducing a trajectory computed
-    # before the default moved, and the one corner where the default
-    # costs corrector iterations: a **deep annulus** (small ``geo.eta``)
-    # at tight ``step.corrector_tolerance``, where the `$(u_r,
-    # \omega_r)$` pair's Picard-lagged spin partners contract slowly
-    # (the measured table, and why that degradation is loud rather than
-    # silent: ``annular._imm_iteration_vw``).
-    #
-    # *What it enforces.*  The primitive influence-matrix method's
-    # continuity argument (Kleiser-Schumann; Canuto, Hussaini,
-    # Quarteroni & Zang 1988, sec. 7.3) is derived for *continuous*
-    # differentiation operators.  Two discrete identities have to hold
-    # for the stepped state's divergence to vanish:
-    # `$\nabla\cdot\nabla = L_k$` (i.e. `$D_1 D_1 = D_2$`) and
-    # `$[D_1, D_2] = 0$`.  Independent Fornberg fits satisfy neither,
-    # and -- separately -- replacing the momentum wall rows by
-    # Dirichlet rows leaves an unaccounted residual that the
-    # divergence's own `$D_1$` spreads into the interior.  So a state
-    # the legacy path steps carries a discrete divergence that is O(1)
-    # *relative*: a convergent truncation error, physically inert for
-    # resolved fields, but not zero.
-    #
-    # *The mechanism* (one, in all three geometries, since
-    # 2026-07-26).  Advance the **wall-normal velocity and vorticity**
-    # instead of the three velocity components, and *reconstruct* the
-    # tangential pair from them.  Continuity is then an algebraic
-    # identity -- exact at every row including the walls, for any
-    # operator, grid or axis fit -- and the pressure is eliminated
-    # discretely, never formed.  `$D_1$` and `$D_2$` stay individually
-    # Fornberg-fit and the band stays at ``fd_order``.  The
-    # wall-normal-velocity equation is the pressure-eliminated
-    # fourth-order one, integrated as two second-order banded solves
-    # that commute exactly (Tuckerman 1989; Luchini & Quadrio 2006 is
-    # the FD-in-`$y$` precedent) -- no fourth-order operator is
-    # assembled anywhere.  Tangential no-slip is not imposed but
-    # *emerges* from the reconstruction, so the tangential wall values
-    # become a live diagnostic of influence-matrix health.
-    #
-    # Per geometry: **Cartesian** advances `$(v, \omega_y)$`, four
-    # per-mode banded solves down to three.  **Annular** advances the
-    # `$(u_r, \omega_r)$` pair, whose two slots share one Helmholtz
-    # operator (`$m_{\mathrm{eff}}^2 = m^2+1$`, the spin-block
-    # diagonal): four solves down to three, four band families down to
-    # three, `$u_\pm$` unchanged.  **Pipe** the same, except that the
-    # pair's `$-2im/r^2$` spin coupling cannot be lagged near the axis
-    # (it diverges: measured contraction 1.13 on the plain-`$r$` fit,
-    # 19.1 on the retired `$x = r^2$` axis fit), so the **spin quad**
-    # `$(\Phi_\pm, \omega_\pm)$` is advanced through the *existing*
-    # `$H_{k,\pm}$` families, which diagonalize that coupling exactly
-    # -- five solves over three band families, with only the quad's two
-    # free wall differences taken from the corrector iterate (four wall
-    # values against two conditions is what the exact diagonalization
-    # costs).  **No geometry changes what it observes**: the evolved
-    # scalars are re-derived from the carried velocity at the top of
-    # each corrector pass and reconstructed away at its exit, so
-    # snapshots, probes, forcing, diagnostics, the analysis package and
-    # resume see the same physical state under both formulations.  The
-    # one internal exception is the pipe family, which also carries the
-    # quad's two difference halves: the velocity does not determine
-    # them, and re-deriving them made it first order in time at coarse
-    # radial resolution (trailing solver-basis slots plus an optional
-    # snapshot member, ``outs.snapshot_embed_carry``).  The price is
-    # two wall rows per mode (the influence coefficients cannot be
-    # carried), a bounded truncation-level substitute --
-    # ``cartesian._imm_iteration_vw`` carries the argument and the
-    # measurement.  Construction, boundary
-    # conditions and the retired routes: the
-    # ``cartesian._imm_iteration`` (shared record),
-    # ``annular._imm_iteration_vw`` (cylindrical algebra) and
-    # ``_cylindrical_stepping._imm_iteration_vw`` (the quad) docstrings.
-    #
-    # *Efficacy* (measured, ``fd_order = 8``, ``ny = 25`` / ``ny = 97``,
-    # one step from a random IC, seed 7 -- ten steps from an
-    # axis-regular rolls IC on the pipe; ``tests/test_imm_continuity``).
-    # Stepped-state relative divergence, ``legacy -> default``:
-    #
-    #   plane-couette   4.5e-2 -> 2.9e-16   1.1e-3 -> 1.6e-15
-    #   taylor-couette  6.4e-2 -> 5.6e-16   5.7e-4 -> 1.9e-15
-    #   pipe            2.8e-2 -> 1.1e-15   1.5e-5 -> 8.2e-15
-    #
-    # -- round-off everywhere, and following no `$h^p$` law at all (the
-    # mild growth with `$N_y$` is the longer `$D_1$` dot product, not
-    # truncation), because continuity here is an identity rather than
-    # something a solve delivers; which is why every default-formulation
-    # bound is asserted at every ``--ny``.  These replace the
-    # operator-identity route's floors (4.2e-14 Cartesian, 8.0e-6
-    # annular, 5.6e-5 pipe), each set by a commutator that route could
-    # not remove.  The wall-bounded *temporal* order is restored too:
-    # from a relaxed state, plane-Couette iterative-CN self-convergence
-    # goes from ``1.4e-2`` (``dt = 0.01``) at order ~0.5-0.8 on the
-    # legacy path to ``6.3e-6`` at order 2 on the default, and
-    # Taylor-Couette and the pipe likewise (the divergence residual
-    # **was** the dominant projection-splitting error) -- pinned by
-    # ``tests/test_temporal_order.py``.
-    #
-    # *Price.*  Exact continuity is bought by *not* imposing the
-    # tangential momentum combination, so what continuity gains, that
-    # equation loses.  Measured end to end on the Cartesian pair --
-    # the same random IC stepped once by each scheme, differenced in
-    # the Helmholtz norm `$\max|\tilde H \delta|/\max|\tilde H u|$` --
-    # the two answers differ by ``2.4e-3`` (``ny = 25``) / ``3.2e-5``
-    # (``ny = 97``) in the tangential pair and ``8.9e-3`` / ``1.8e-5``
-    # in `$v$`: truncation-level, refining at roughly third to fourth
-    # order, with **no plateau** (the signature that would mean a
-    # formulation error rather than a truncation one).  The
-    # ``CHI-MOM`` figure ``tests/test_imm_continuity.py`` prints
-    # (``4.5e-2`` / ``1.6e-3``) is a cruder *upper bound* on the same
-    # quantity.  Nothing reads the residual back -- the difference
-    # between this and the rejected projection below -- so it neither
-    # accumulates nor re-excites; the stepped energy budget in fact
-    # closes *tighter* on the default (``2.8e-3`` vs the legacy path's
-    # ``5.1e-3``, ``tests/test_energy_budget.py``), as it must when
-    # pressure does
-    # no work on an exactly solenoidal field.  There is no operator
-    # price at all (same `$D_1$`, same direct-fit `$D_2$`, same band)
-    # and operator storage *drops*; against that, `$L(Lv)$` is applied
-    # in the explicit half, and the reconstruction's `$1/k^2$` (
-    # `$1/(k_z^2 + m^2/r^2)$` in the cylindrical geometries) amplifies
-    # the gravest mode by `$1/k_{\min}$` (`$O(1-10)$` for sane boxes).
-    #
-    # *Rejected alternatives.*  (1) **Operator-side identities**
-    # (shipped on annular/pipe until 2026-07-26): `$D_2 := D_1 D_1$`
-    # plus the CHQZ (7.3.51)-(7.3.58) boundary closure.  It works, but
-    # cannot reach round-off in a cylindrical geometry (the metric
-    # commutator `$[D_1, 1/r] \ne -1/r^2$` survives; on the pipe a
-    # parity invariant forbids both parities' commutators vanishing at
-    # once), it widens every banded operator, it costs an order in the
-    # `$D_2$` truncation constant, and -- because a composed `$D_2$`
-    # is not grid-scale-dissipative -- it made the pipe unstable from a
-    # grid-white random IC.  All four drawbacks are gone.
-    # (2) **Commutator cancellation**: feeding the commutator back into
-    # the Poisson RHS reaches machine-zero but contracts like
-    # `$N_y^{-2}$`.  (3) **State-side tangential projection**
-    # (2026-07-24): back-solving the tangential pair from continuity at
-    # the primitive `$v$` zeroes the interior divergence and passes
-    # every *linear* gate, but is violently unstable nonlinearly
-    # (x5-10 per step at the gravest modes, worse per unit time at
-    # smaller ``dt``, not cured by the boundary closure) -- Kleiser's
-    # tau-method instability (CHQZ p. 219) in FD form.  (4) Merely
-    # solving an `$\omega_y$` Helmholtz beside the existing `$(v, p)$`
-    # IMM and reconstructing is the *same state map* as (3), so it
-    # inherits the instability: only advancing the wall-normal velocity
-    # by the pressure-eliminated dynamics escapes it.  (5) Decoupling
-    # the annular `$(u_r, \omega_r)$` pair the way `$u_\pm$` decouples
-    # `$(u_r, u_\theta)$` is impossible -- it mixes two vector fields;
-    # the exactly-decoupled candidates are enumerated and dismissed in
-    # the ``annular._imm_iteration_vw`` docstring.
-    #
-    # *Measured step cost*, ``legacy -> default``.  The per-mode banded
-    # solve count goes 4 -> 3 on the Cartesian and annular families and
-    # 4 -> **5** on the pipe, which is the one place the default costs
-    # throughput (~+6 % per step; its axis forces the exact spin-quad
-    # diagonalization, doubling the evolved scalars against only two
-    # wall conditions -- ``_cylindrical_stepping._imm_iteration_vw``).  Against
-    # that, the corrector contracts in fewer iterations: measured as a
-    # *paired* run (one configuration, one backend, the formulation the
-    # only difference), the pipe's ``c/it`` drops ``1.00 -> 0.10`` and
-    # Taylor-Couette's ``0.09 -> 0.00``, because the reconstruction
-    # removes the projection error the corrector was working against
-    # (consistent with Kleiser's report, via CHQZ p. 220, of *lower*
-    # time-step stability limits when the boundary correction is
-    # omitted).  Do **not** expect ``test_random_smoke.py`` to reprint
-    # those: its ``*-legacy-imm`` entries deliberately run different
-    # ``Re``/box/resolution from their default counterparts, so the
-    # ``c/it`` values it prints side by side are not a controlled pair.
-    # One configuration on one backend either way: treat the net
-    # speedup as a bonus, not a guarantee.
+    # Wall-bounded only (all three families), on by default: advance the
+    # wall-normal velocity and vorticity and reconstruct the tangential
+    # pair, which makes the projection discretely exact at the price of
+    # a truncation-level residual in a momentum equation nothing solves
+    # (Design notes: "Consistent influence matrix").  ``False`` selects
+    # the legacy primitive Kleiser-Schumann `$(v, p)$` scheme (each
+    # geometry's ``_<geometry>_primitive_imm.py``): kept, tested and
+    # supported, but not recommended, since a state it steps carries an
+    # `$O(1)$` *relative* discrete divergence.  Two reasons remain to
+    # select it: reproducing a trajectory computed before the default
+    # moved, and a **deep annulus** (small ``geo.eta``) at tight
+    # ``step.corrector_tolerance``, where the `$(u_r, \omega_r)$` pair's
+    # Picard-lagged spin partners contract slowly (the measured table,
+    # and why that degradation is loud rather than silent:
+    # ``annular._imm_iteration_vw``).
     consistent_imm: bool = Field(
         default=True,
         description=(
@@ -978,8 +1019,7 @@ class Resolution(BaseModel):
 
 
 class Initiation(BaseModel):
-    """Initial condition: from a snapshot, a random field (default), or
-    laminar.
+    """Initial condition: a snapshot, a random field (default), or laminar.
 
     Start-mode precedence (resolved in ``__main__.py``): a provided
     ``snapshot`` file (a single-file tar snapshot; see
@@ -1069,7 +1109,7 @@ class Initiation(BaseModel):
     # The *horizontal* law only: per-mode energy
     # ``(1 - s)^(2(|k_x| + |k_z|))`` in physical wavenumbers.  The
     # wall-normal polynomial-degree law is ``random_wall_smoothness``,
-    # its own field since 2026-09-03: the two are separate laws, and
+    # its own field: the two are separate laws, and
     # the moment either moves they want values an order of magnitude
     # apart, so one knob cannot serve both.  The value here seeds a
     # *laminar* state, where large scales trigger transition; the
@@ -1405,8 +1445,9 @@ class Lowres(BaseModel):
 class TimeStepping(BaseModel):
     r"""Time integration parameters.
 
-    Two schemes (``scheme``), both semi-implicit (implicit viscous,
-    IMM pressure) and both second-order at ``implicitness = 0.5`` (the
+    Two schemes (``scheme``), both semi-implicit (implicit viscous term,
+    incompressibility by the influence-matrix method) and both
+    second-order at ``implicitness = 0.5`` (the
     default 0.5001 adds a first-order term too small to measure at any
     practical ``dt``; see "Why the default implicitness is 0.5001"):
 
@@ -1418,8 +1459,9 @@ class TimeStepping(BaseModel):
       Stable well past the advective CFL; costs ``2 + num_corrector``
       RHS/FFT evaluations per step.
 
-      Wall-bounded split corrector (``split_corrector``).  In the
-      rotational perturbation form the iterated RHS contains the
+      Wall-bounded split corrector (``split_corrector``, an opt-in,
+      default off).  In the rotational perturbation form the iterated
+      RHS contains the
       *linear* coupling -- ``L_bf``, the frame term, and (per
       ``implicit_mean_coupling``) ``L_mf`` -- i.e. exactly the
       FFT-free ``_l_bf`` the CN/AB2 scheme makes implicit.  The split
@@ -1433,20 +1475,11 @@ class TimeStepping(BaseModel):
       within ``corrector_tolerance`` and the reported ``num_c`` /
       ``error`` keep their meaning (extra FFT evaluations / last
       fresh-RHS correction norm) -- ``corrector.dat`` is comparable
-      across the setting.  It is an **opt-in** (``split_corrector``,
-      default **off**): at realistic ``dt`` the corrector converges in
-      ~1--2 iterations for *every* flow (measured, including the
-      total-field Dean and high-Wi viscoelastic-dean -- unsplit ``c``
-      stays 2--3, far from the cap, at ``dt = 0.01``), so the unsplit
-      corrector is both correct and faster (the split is measured a
-      few % slower at production sizes on GPU, up to tens of % on small
-      problems).  The split only pays off once ``dt`` is pushed far
-      enough that the unsplit corrector approaches
-      ``max_corrector_iterations`` -- e.g. Dean at ``dt = 0.15`` (an
-      unrealistically large step), where the unsplit corrector hits the
-      cap (``c = 10``) and fails while the split converges it FFT-free.
-      When enabled: the tail launches an implicit solve only while the
-      coupling estimate still moves the state
+      across the setting.  It pays off only once ``dt`` pushes the
+      unsplit corrector toward ``max_corrector_iterations``, and is
+      slower otherwise (Design notes: "The split corrector stays
+      opt-in").  When enabled: the tail launches an implicit solve only
+      while the coupling estimate still moves the state
       (``c dt ||l_bf(u_j) - l_bf(u_{j-1})|| > tol``, a cheap test), so a
       fluctuation-driven iteration adds one ``l_bf`` evaluation and a
       norm, not a solve -- and a step whose first correction already
@@ -1462,9 +1495,9 @@ class TimeStepping(BaseModel):
       nonlinear RHS is carried by the main loop, seeded by a discarded
       priming ``step_cnab2(state, zeros)`` call while ``iterative-cn``
       takes the very first integration step (see ``step_cnab2`` in
-      ``timestep.py``).  Explicit
-      *self-advection*, so ``dt`` is advective-CFL-limited -- a net win
-      (~3x fewer FFTs) on CFL-limited (turbulent) runs.
+      ``timestep.py``).  Explicit *self-advection*, so ``dt`` is
+      advective-CFL-limited -- a net win (~3x fewer FFTs) on
+      CFL-limited (turbulent) runs.
 
       Wall-bounded caveat and coupling corrector.  In the rotational
       perturbation form the nonlinear term includes the *linear*
@@ -1476,52 +1509,45 @@ class TimeStepping(BaseModel):
       a naive explicit-AB2 cnab2 blows up at CFL << 1 for moving-wall
       flows (plane-Couette, Taylor-Couette, where ``U ~ O(1)`` at the
       wall).  To restore the advective limit, wall-bounded cnab2 makes
-      only the *self-advection* ``u' x omega'`` explicit (AB2) and treats
-      ``L_bf`` implicitly (Crank-Nicolson) via an **FFT-free** fixed-point
-      corrector (it re-evaluates only the matrix-free ``L_bf``, no FFT),
-      so ``corrector_tolerance`` / ``max_corrector_iterations`` **do**
-      apply here.  The first step self-starts with ``iterative-cn``,
-      and if the coupling corrector fails to converge on a step (its
-      Picard rate reaches 1 -- only at ``dt`` well past the advective
-      limit, e.g. plane-Couette ``dt >~ 0.2``) that step automatically
-      falls back to a full ``iterative-cn`` step (a stdout diagnostic
-      is printed).  The
-      residual ``dt`` bound is then the ordinary explicit self-advection
-      CFL of the *fluctuations* on the clustered grid (stationary-wall
-      flows -- Poiseuille, pipe, Dean -- are bounded only by this, their
-      ``L_bf`` being mild as ``U -> 0`` at the wall).  Where it binds is
-      geometry-specific: for the **pipe** it is the *near-axis
-      azimuthal* advection (the innermost radial node
-      ``r_0 ~ pi/(2 ny)`` on the default rigged-CGL grid makes
-      ``CFL_th = dt |u_th(r_0)| nz/(2 pi r_0)`` the dominant
-      column -- linear in ``nz`` and in the fluctuation amplitude, and
-      a *weak* AB2 imaginary-axis instability, so it needs sustained
-      ``CFL_th >~ 0.5`` and pass/fail is trajectory-marginal near the
-      boundary; the **rigged-CGL** radial grid sits at
-      ``r_0 ~ Delta r`` -- twice the half-CGL ``Delta r/2`` --
-      which raises the admissible cnab2 ``dt`` (measured ``dt* ~
-      0.0125 -> 0.0175`` at the 32^3 / Re = 1800 reference config;
-      ``iterative-cn`` rides ``CFL_th ~ 1.5--2`` there at growing
-      corrector cost) and is why it is the ``cnab2``-default radial
-      grid, whereas the tighter half-CGL grid
-      (``geo.grid_type = 'half-cgl'``, the ``iterative-cn`` default)
-      destabilizes cnab2 and is
-      restricted to ``iterative-cn``); Cartesian flows feel the
-      near-wall ``dy ~ 1/N^2`` spacing instead.  A strongly
-      non-normal base flow
+      only the *self-advection* ``u' x omega'`` explicit (AB2) and
+      treats ``L_bf`` implicitly (Crank-Nicolson) via an **FFT-free**
+      fixed-point corrector (it re-evaluates only the matrix-free
+      ``L_bf``, no FFT), so ``corrector_tolerance`` /
+      ``max_corrector_iterations`` **do** apply here.  The first step
+      self-starts with ``iterative-cn``, and if the coupling corrector
+      fails to converge on a step (its Picard rate reaches 1 -- only at
+      ``dt`` well past the advective limit, e.g. plane-Couette
+      ``dt >~ 0.2``) that step automatically falls back to a full
+      ``iterative-cn`` step (a stdout diagnostic is printed).
+
+      The residual ``dt`` bound is then the ordinary explicit
+      self-advection CFL of the *fluctuations* on the clustered grid
+      (stationary-wall flows -- Poiseuille, pipe, Dean -- are bounded
+      only by this, their ``L_bf`` being mild as ``U -> 0`` at the
+      wall).  Where it binds is geometry-specific.  For the **pipe** it
+      is the *near-axis azimuthal* advection at the innermost radial
+      node ``r_0 ~ pi/(2 ny)`` of the rigged-CGL grid,
+      ``CFL_th = dt |u_th(r_0)| nz/(2 pi r_0)``: linear in ``nz`` and in
+      the fluctuation amplitude, and a *weak* AB2 imaginary-axis
+      instability that needs sustained ``CFL_th >~ 0.5``, so pass/fail
+      is trajectory-marginal near the boundary.  The **rigged-CGL**
+      radial grid puts ``r_0 ~ Delta r``, twice the half-CGL
+      ``Delta r/2``, which raises the admissible cnab2 ``dt`` and is
+      why it is the ``cnab2``-default radial grid; the tighter half-CGL
+      grid (``geo.grid_type = 'half-cgl'``, the ``iterative-cn``
+      default) destabilizes cnab2 and is restricted to
+      ``iterative-cn``.  Cartesian flows feel the near-wall
+      ``dy ~ 1/N^2`` spacing instead.  A strongly non-normal base flow
       (counter-rotating Taylor-Couette) amplifies the explicit
-      self-advection error further into a delayed blow-up needing
-      ~8x smaller ``dt``; the coupling corrector converges throughout
-      (it is *not* a corrector failure), so the fallback typically
-      does not fire -- at coarser resolution the induced corrector
-      stress can trip it into rescuing single steps (``ny = 32``
-      completes via fallbacks; ``ny = 48`` diverges with the
-      corrector still converged).  These are inherent
-      explicit-nonlinear
-      limits, not the coupling bug: such regimes want ``iterative-cn``
-      or a smaller ``dt``.  Triply-periodic cnab2 has none of this (uniform
-      Fourier grid, no coupling stiffness): it is the plain one-FFT
-      no-corrector explicit-AB2 step.
+      self-advection error further into a delayed blow-up needing a
+      much smaller ``dt``; the coupling corrector converges throughout
+      (it is *not* a corrector failure), so the fallback typically does
+      not fire.  These are inherent explicit-nonlinear limits, not a
+      coupling failure: such regimes want ``iterative-cn`` or a smaller
+      ``dt`` (Design notes: "Where the cnab2 step bound binds").
+      Triply-periodic cnab2 has none of this (uniform Fourier grid, no
+      coupling stiffness): it is the plain one-FFT no-corrector
+      explicit-AB2 step.
 
       ``implicit_mean_coupling`` (wall-bounded cnab2 only, default on)
       additionally folds the coupling with the *instantaneous mean
@@ -1535,13 +1561,9 @@ class TimeStepping(BaseModel):
       fluctuation-fluctuation advection: the mean-flow *distortion*
       (streaks; for total-field Dean the entire evolving mean profile,
       whose ``L_bf`` is otherwise zero) no longer rides the explicit
-      term, removing its advective-CFL contribution.  Decisive for
-      Dean: at ``nz = 64, dt = 0.15`` (mean-flow ``CFL_th ~ 0.5``)
-      coupling-off NaNs by ``t ~ 4`` while coupling-on runs clean,
-      matching ``iterative-cn`` at ~4 FFT-free Picard iterations per
-      step vs its ~4 FFT evaluations; neutral where the limit is
-      fluctuation-driven (the pipe near-axis) and only mildly slowing
-      the counter-rotating-TC blow-up.  The double-counted
+      term, removing its advective-CFL contribution (decisive for Dean at a
+      large ``dt``; Design notes: "Implicit mean-flow coupling").  The
+      double-counted
       mean-mean product is a purely wall-normal (radial) profile at the
       mean mode, absorbed by the mean pressure in the projection -- and
       the AB2/CN split is second-order consistent for *any* choice of
@@ -1555,8 +1577,8 @@ class TimeStepping(BaseModel):
     wall-bounded, the implicit base-flow coupling), while the explicit
     AB2 self-advection is independent of *c*.
 
-    Why the default implicitness is 0.5001 -- measured
-    --------------------------------------------------
+    Why the default implicitness is 0.5001
+    --------------------------------------
     The trapezoidal rule is A-stable but not L-stable.  A mode of
     viscous eigenvalue `$-\nu\Lambda$` is multiplied per step by
     `$\mu = (1 - (1-c)x)/(1 + cx)$` with `$x = \nu\,\Delta t\,\Lambda$`,
@@ -1565,35 +1587,18 @@ class TimeStepping(BaseModel):
     off each wall, where `$\Lambda_{\max}$` grows like the fourth
     power of the wall resolution; so at ``c = 0.5`` they flip sign every
     step and lose only `$4/x$` of their amplitude, less on every
-    refinement, at lower ``Re`` and at larger ``dt``.  Measured on the
-    solver's own one-step propagator (pipe, ``Re = 1``,
-    ``dt = 0.01``, ``fd_order = 4``): ``1 - |mu| = 6.3e-4`` at
-    ``nr = 32`` and ``3.8e-5`` at ``nr = 64``, ``1.5e-5`` at
-    ``Re = 100`` / ``nr = 256``, following the formula to four digits
-    in ``dt`` and *c*; the same mode appears in plane-Couette and
-    Taylor-Couette and on the legacy ``res.consistent_imm = False``
-    path.  A smooth flow barely excites it, but a grid-scale wall
-    residual injected every step accumulates in it -- as the pipe's
-    carried spin-quad differences once did
-    (``_cylindrical_stepping._imm_iteration_vw``).
+    refinement, at lower ``Re`` and at larger ``dt``.  A smooth flow
+    barely excites such a mode, but a grid-scale wall residual injected
+    every step accumulates in it -- as the pipe's carried spin-quad
+    differences once did (``_cylindrical_stepping._imm_iteration_vw``).
 
     Off-centring bounds it: `$|\mu| \to (1-c)/c$` as `$x \to \infty$`,
-    so ``1 - |mu|`` stays above about ``4 (c - 1/2)`` at any resolution
-    -- ``4e-4`` per step at the default (measured ``1.0e-3`` at
-    ``nr = 32`` and ``4.4e-4`` at ``nr = 64``, 11x the trapezoidal value
-    there, the gap widening with every refinement).  The price is a
-    first-order error ``B (c - 1/2) dt``.  In the
-    ``tests/test_temporal_order.py`` configuration ``B`` is 1.3 (pipe)
-    and 0.33 (plane-Couette), so at the default it stays below the
-    second-order error for ``dt`` above ~5e-4: the measured errors are
-    within 10 % of the trapezoidal rule's (smaller, in fact) at
-    ``dt = 0.01 ... 0.0025``, orders 2.04--2.16, which that study
-    guards.  ``c = 0.501`` buys a ten times firmer floor for a ten times
-    larger first-order term, which overtakes the second-order error
-    below ``dt`` ~ 3e-3 to 5e-3; ``c = 0.51`` is first order over the
-    whole practical range (errors 2--20x the trapezoidal rule's).
-    ``c = 0.5`` restores the exact trapezoidal rule, which the
-    temporal-order studies pin.
+    so ``1 - |mu|`` stays above about ``4 (c - 1/2)`` at any resolution,
+    ``4e-4`` per step at the default.  The price is a first-order error
+    ``B (c - 1/2) dt``, which at the default stays below the
+    second-order error at any practical ``dt``; ``c = 0.5`` restores
+    the exact trapezoidal rule, which the temporal-order studies pin
+    (the measurements: Design notes, "The default implicitness").
 
     Corrector convergence is ``dt``-limited, not CFL-limited
     ------------------------------------------------------------
@@ -1671,8 +1676,7 @@ class TimeStepping(BaseModel):
 
     ``dt_max`` is required when adaptive: besides bounding the step
     it sets the operator of the setup-time no-pivot stability check --
-    the
-    Helmholtz diagonal `$1/\Delta t + c\,\nu\,k^2$` is least
+    the Helmholtz diagonal `$1/\Delta t + c\,\nu\,k^2$` is least
     dominant at ``dt_max``, so one checked factorization there
     covers every ``dt <= dt_max`` and the runtime rebuilds skip the
     check.  Pick ``cfl_target`` for the scheme: ``cnab2``'s explicit
@@ -1900,8 +1904,8 @@ class Solver(BaseModel):
 
     # ``"pallas"`` (the default for all wall-bounded systems): the
     # production backend -- a one-program-per-mode sequential banded
-    # sweep via a Pallas/Triton kernel on GPU (single- and multi-GPU
-    # validated 2026-07), the same banded math as a sequential
+    # sweep via a Pallas/Triton kernel on GPU (validated on one GPU and
+    # on several), the same banded math as a sequential
     # pure-JAX sweep on CPU, and the smallest operator storage
     # (``O(N_y p)`` no-pivot banded factors per mode vs the dense
     # ``O(N_y^2)``).  Operators are assembled directly in banded
@@ -2330,8 +2334,7 @@ OFF_CADENCES: tuple[tuple[str, str], ...] = (
 
 
 def update_parameters(params_new: Parameters) -> None:
-    """Merge *params_new* into the global ``params``
-    and recompute derived values.
+    """Merge *params_new* into the global ``params``; re-derive the rest.
 
     Only fields that were explicitly set in *params_new* are applied, so
     unset fields retain their previous values -- a ``None`` is skipped,
@@ -2543,28 +2546,13 @@ def validate_parameters() -> None:
 
     spec = spec_for(params.phys.system)
 
-    # Fourier axes must carry an **even** mode count.  The stored
-    # spectral layout omits the Nyquist mode -- and a Nyquist mode
-    # exists only at an even count: it is the single self-aliasing slot
-    # holding ``+n/2 == -n/2``.  At an odd count the DFT frequencies
-    # are ``0, +-1, ..., +-(n-1)/2``, all in conjugate pairs bar the
-    # mean, so there is nothing to drop and
-    # ``harmonics.complex_harmonics`` removes a *genuine* harmonic
-    # instead.  On a complex axis that strands its conjugate partner in
-    # a slot which is stored, sharded, padded and solved for but cannot
-    # hold physical content: a unit coefficient there survives one
-    # spectral <-> physical round trip at half amplitude, so it is
-    # silently damped on every nonlinear evaluation.  On the real-FFT
-    # axis the top wavenumber is merely lost (``nx = 9`` resolves no
-    # more than ``nx = 8`` while paying for a larger padded grid).
-    # Refused rather than supported: an even count is what every other
-    # constraint wants anyway (an integral 3/2 dealiasing size,
-    # FFT-friendly padded sizes, mesh divisibility, power-of-two Pallas
-    # tiles), so odd buys at most one mode -- the least trustworthy one
-    # -- for a parity branch through every stored mode count.
-    # ``res.nx`` (real FFT) and ``res.nz`` (complex) are Fourier axes
-    # for every flow; ``res.ny`` is one only for the triply-periodic
-    # family, and is the wall-normal grid size elsewhere.
+    # Fourier axes must carry an **even** mode count: the stored layout
+    # omits the Nyquist mode, which exists only at an even count, and
+    # supporting odd ones would buy at most one, untrustworthy, mode
+    # (:mod:`dnsjax.harmonics` says why).  ``res.nx`` (real FFT) and
+    # ``res.nz`` (complex) are Fourier axes for every flow; ``res.ny``
+    # is one only for the triply-periodic family, and is the
+    # wall-normal grid size elsewhere.
     _fourier = ["nx", "nz"]
     if params.phys.system in periodic_systems:
         _fourier.append("ny")
@@ -2730,9 +2718,7 @@ def validate_parameters() -> None:
                 "(Triton block-load constraint)."
             )
 
-    # The dense backend is a readability/regression reference, not a
-    # production path; nudge wall-bounded production runs back to the
-    # default.  Plain ``print``: this runs before JAX is configured.
+    # Pinning the Triton kernel needs a GPU to run it on.
     if params.solver.pallas_kernel and params.dist.platform not in (
         "cuda",
         "rocm",
@@ -2744,6 +2730,9 @@ def validate_parameters() -> None:
             "unset for the automatic choice."
         )
 
+    # The dense backend is a readability/regression reference, not a
+    # production path; nudge wall-bounded production runs back to the
+    # default.  Plain ``print``: this runs before JAX is configured.
     if (
         params.solver.backend == "dense"
         and params.phys.system in walled_systems

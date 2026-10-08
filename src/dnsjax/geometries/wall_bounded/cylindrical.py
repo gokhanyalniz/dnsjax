@@ -512,10 +512,11 @@ def build_radial_cgl_grid(Nr: int, axis_gap: int = 1) -> Array:
     `$r_0$` is a free discretization choice.  It bounds the near-axis azimuthal
     advection CFL `$\propto 1/r_0$` -- the pipe's explicit
     (cnab2) timestep limit -- so the rigged grid's
-    `$2\times$`-larger `$r_0$` doubles the admissible cnab2
-    ``dt`` (measured), which is why it is the ``cnab2``
-    default; the tighter half-CGL axis destabilizes cnab2 (a
-    near-axis explicit instability) and is restricted to
+    `$2\times$`-larger `$r_0$` raises the admissible cnab2
+    ``dt`` (by 1.4x, measured: the :mod:`dnsjax.parameters` Design
+    notes), which is why it is the ``cnab2`` default; the tighter
+    half-CGL axis destabilizes cnab2 (a near-axis explicit
+    instability) and is restricted to
     ``iterative-cn`` (``geo.grid_type = "half-cgl"``), which
     integrates it cleanly, gains its finer near-axis
     resolution, and defaults to it.

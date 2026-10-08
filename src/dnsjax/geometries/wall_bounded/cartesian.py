@@ -1528,7 +1528,8 @@ def _imm_iteration_vw(
     mismatch relocated out of the constraint, it is truncation-level
     and refines with the grid, and -- unlike the projection's -- it is
     a *static* model error: no solve re-reads it.  The
-    ``Resolution.consistent_imm`` docs carry the measured ledger.
+    :mod:`dnsjax.parameters` Design notes ("Consistent influence
+    matrix") carry the measured ledger.
 
     Boundary conditions
     ~~~~~~~~~~~~~~~~~~~
@@ -1754,8 +1755,9 @@ def _imm_iteration(
     it is never solved.  `$D_1$` and `$D_2$` stay individually
     Fornberg-fit, the band stays at ``fd_order``, and the per-mode
     banded solve count drops from four to three.  See
-    :func:`_imm_iteration_vw` for the construction and
-    ``Resolution.consistent_imm`` for the measured trade.
+    :func:`_imm_iteration_vw` for the construction and the
+    :mod:`dnsjax.parameters` Design notes ("Consistent influence
+    matrix") for the measured trade.
 
     Routes tried and retired
     ~~~~~~~~~~~~~~~~~~~~~~~~

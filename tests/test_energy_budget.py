@@ -25,8 +25,8 @@ term magnitudes -- not by ``I - D``, which is near-zero for a
 laminar-dominated pipe roll -- keeps it well-conditioned in every case.
 
 Background: the residual is a convergent truncation error, physically
-inert for resolved fields -- the ``Resolution.consistent_imm``
-docstring.  The pipe entries start
+inert for resolved fields -- the :mod:`dnsjax.parameters` Design
+notes ("Consistent influence matrix").  The pipe entries start
 from a resolved IC (``localized_rolls``) to keep the two formulations
 comparable; neither *needs* it.
 

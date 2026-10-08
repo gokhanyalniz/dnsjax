@@ -26,13 +26,13 @@ A.  **Single-device matrix** (one subprocess per config x backend --
     independent of the default -- which is off, an opt-in; see
     ``_split_core`` in ``timestep.py``), reported per row and as a
     verdict section; a dedicated coupling-stressed
-    ``dean-split-stress`` entry
-    (``nz = 64``, ``dt = 0.15``, the ``TimeStepping``-docstring
-    reference regime) shows the split's FFT-refresh savings, while the
-    default-``dt`` entries pin the
-    no-regression claim (corrector converges in ~1 iteration either
-    way -- a count the ``res.consistent_imm`` formulation moves, so
-    read it against the formulation the row was run with).
+    ``dean-split-stress`` entry (``nz = 64``, ``dt = 0.15``, the
+    reference regime of the :mod:`dnsjax.parameters` Design notes)
+    shows the split's FFT-refresh savings, while the default-``dt``
+    entries pin the no-regression claim (corrector converges in ~1
+    iteration either way -- a count the ``res.consistent_imm``
+    formulation moves, so read it against the formulation the row was
+    run with).
 B.  **Multi-GPU section** (``mpirun ... -m dnsjax`` production runs
     from scratch dirs): multi-GPU execution of the Pallas Triton
     kernel -- correctness via JAX-free ``dnsjax.analysis`` snapshot
@@ -1640,7 +1640,7 @@ def _build_entries(args: argparse.Namespace) -> list[dict]:
         )
     if "small" in args.sizes:
         # Split-corrector stress case: total-field Dean at the
-        # TimeStepping-docstring reference regime (nz = 64,
+        # reference regime of the parameters Design notes (nz = 64,
         # dt = 0.15), where the corrector cost is dominated by the
         # instantaneous mean-flow coupling (l_bf == L_mf) -- the
         # regime the split corrector targets.  The other entries

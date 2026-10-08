@@ -128,8 +128,7 @@ refinement of the wall grid. The default $c = 0.5001$ keeps that damping
 above about $4(c - \tfrac12)$ per step at any resolution. Its first-order
 error term stays below the second-order one at any practical step, and the
 temporal-order test holds it to the trapezoidal rule's accuracy. The
-`TimeStepping` docstring in `src/dnsjax/parameters.py` has the
-measurements. An **opt-in split corrector**
+Design notes of `src/dnsjax/parameters.py` have the measurements. An **opt-in split corrector**
 (`split_corrector`, off by default) iterates the wall-stiff linear coupling
 FFT-free between full right-hand-side refreshes; it only helps when the step
 is pushed near the corrector iteration cap and is otherwise slower, hence the

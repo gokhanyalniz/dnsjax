@@ -9,8 +9,9 @@ influence-matrix method, which solves `$(u_z, u_+, u_-)$` against a
 pressure Poisson solve and enforces continuity only at the wall.  It is
 retained for reference and for reproducing older trajectories; a state
 it steps carries an `$O(1)$` *relative* discrete divergence.  The full
-comparison and the measured ledger: the ``Resolution.consistent_imm``
-docs (``parameters.py``) and the shared scheme record on
+comparison and the measured ledger: the :mod:`dnsjax.parameters`
+Design notes ("Consistent influence matrix") and the shared scheme
+record on
 :func:`~dnsjax.geometries.wall_bounded.cartesian._imm_iteration`.
 
 Everything here is reachable **only** when the flag is off, so
