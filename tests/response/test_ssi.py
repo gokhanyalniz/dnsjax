@@ -32,26 +32,23 @@ from __future__ import annotations
 
 import sys
 
-sys.stdout.reconfigure(line_buffering=True)
-
-import jax  # noqa: E402
-
-jax.config.update("jax_enable_x64", True)
-jax.config.update("jax_platforms", "cpu")
-
-from _common import (  # noqa: E402
+from _common import (
     IT_PROBES,
     NX,
     NY,
     NZ,
     write_probe_stream,
 )
-from _common import (  # noqa: E402
+from _common import (
     operator_artifacts as _operator_artifacts,
 )
-from _common import run as _run  # noqa: E402
+from _common import run as _run
 
-from dnsjax.parameters import (  # noqa: E402
+from dnsjax.bootstrap import (
+    configure_jax_platform,
+    platform_from_argv,
+)
+from dnsjax.parameters import (
     Parameters,
     padded_res,
     params,
@@ -73,6 +70,7 @@ update_parameters(
 )
 validate_parameters()
 padded_res.set_padded_resolution(params)
+configure_jax_platform(platform_from_argv())
 
 import json  # noqa: E402
 import tempfile  # noqa: E402

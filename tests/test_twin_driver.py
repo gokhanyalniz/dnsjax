@@ -97,10 +97,10 @@ sys.stdout.reconfigure(line_buffering=True)
 # captured per process, so a parent at a different resolution (the
 # closure self-convergence pair) is built by re-invoking this script
 # as a worker: ``--build-parent NX NY NZ OUT``.
-from dnsjax.bootstrap import configure_jax_platform  # noqa: E402
-
-configure_jax_platform("cpu")
-
+from dnsjax.bootstrap import (  # noqa: E402
+    configure_jax_platform,
+    platform_from_argv,
+)
 from dnsjax.parameters import (  # noqa: E402
     Parameters,
     padded_res,
@@ -144,6 +144,7 @@ update_parameters(
     )
 )
 padded_res.set_padded_resolution(params)
+configure_jax_platform(platform_from_argv())
 
 import numpy as np  # noqa: E402
 from _live import run_live  # noqa: E402

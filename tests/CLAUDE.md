@@ -7,11 +7,16 @@ script pins and its flags: its module docstring.
 
 ## Writing a test
 
-- Configure the singletons once, at module top, before importing
-  `sharding` or a geometry module. A test that re-calls
-  `update_parameters()` mutates the shared `params`/`derived_params`
-  and must restore the module configuration before returning (as
-  `test_annular.py` does).
+- Configure the singletons once per process, before importing
+  `sharding` or a geometry module (a test that needs several
+  configurations runs one subprocess per configuration). A test that
+  re-calls `update_parameters()` mutates the shared
+  `params`/`derived_params` and must restore the module configuration
+  before returning (as `test_annular.py` does).
+- Offline multi-device tests force CPU devices with
+  `XLA_FLAGS=--xla_force_host_platform_device_count=N` and set
+  `params.dist.np0`/`np1` before importing `sharding`. Never combine
+  that with `mpirun`.
 - A test that builds its own FD reference grid passes the resolved
   selection, `build_*_grid(ny, params.res.fd_order,
   params.geo.wall_grid, params.geo.grid_type, params.geo.grid_stretch)`,

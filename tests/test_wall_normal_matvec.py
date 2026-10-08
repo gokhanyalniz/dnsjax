@@ -92,7 +92,7 @@ CASES |= {
 def _worker(name: str) -> None:
     """Compile the as-run step under both knob values and compare."""
     os.environ.setdefault("NPROC", "1")
-    from dnsjax.bootstrap import configure_jax_platform
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -114,7 +114,7 @@ def _worker(name: str) -> None:
     )
     padded_res.set_padded_resolution(params)
     validate_parameters()
-    configure_jax_platform("cpu")
+    configure_jax_platform(platform_from_argv())
 
     import importlib
 

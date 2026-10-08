@@ -154,11 +154,7 @@ def _configure(system: str) -> None:
     """
     os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=1"
 
-    import jax
-
-    jax.config.update("jax_enable_x64", True)
-    jax.config.update("jax_platforms", "cpu")
-
+    from dnsjax.bootstrap import configure_jax_platform, platform_from_argv
     from dnsjax.parameters import (
         Parameters,
         padded_res,
@@ -190,7 +186,7 @@ def _configure(system: str) -> None:
 
     update_parameters(
         Parameters(
-            dist={"np0": 1, "np1": 1, "platform": "cpu"},
+            dist={"np0": 1, "np1": 1},
             phys=phys,
             geo=geo,
             res={
@@ -205,6 +201,7 @@ def _configure(system: str) -> None:
         )
     )
     padded_res.set_padded_resolution(params)
+    configure_jax_platform(platform_from_argv())
 
 
 # ── jaxpr FFT-count traversal ────────────────────────────────────

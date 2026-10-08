@@ -126,7 +126,7 @@ def _reduce(
 
     *T* ``None`` skips the wall-normal regrid; *ky* ``(src, dst)`` cuts
     the periodic `$k_y$`.  Every array is an argument
-    (``.claude/rules/jax.md``).
+    (:func:`dnsjax.sharding.register_dataclass_pytree` says why).
     """
     if T is not None:
         field = apply_wall_normal_regrid(
@@ -150,7 +150,8 @@ def _pin_mean_top(pressure: Array, mean_mask: Array) -> Array:
     subtracting that end value shifts the mean profile by a constant
     and restores the gauge the metadata states.  *mean_mask* is the
     geometry's one-hot ``fourier.mean_mask``, an argument like every
-    array here (``.claude/rules/jax.md``).
+    array here (:func:`dnsjax.sharding.register_dataclass_pytree` says
+    why).
     """
     return pressure - jnp.where(mean_mask, pressure[:, -1:], 0.0)
 

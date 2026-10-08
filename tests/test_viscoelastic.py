@@ -45,9 +45,6 @@ from __future__ import annotations
 import subprocess
 import sys
 
-# Select the JAX backend from --dist.platform (default cpu) before the
-# geometry import below builds sharding.  --dist.platform cuda runs the
-# Pallas Hc parity on a GPU.
 from dnsjax.bootstrap import (
     configure_jax_platform,
     platform_from_argv,
@@ -58,10 +55,6 @@ from dnsjax.parameters import (
     params,
     update_parameters,
 )
-
-sys.stdout.reconfigure(line_buffering=True)
-
-configure_jax_platform(platform_from_argv())
 
 # Module config: viscoelastic-dean with epsilon = kappa = 0 (the exact
 # discrete laminar fixed point, test 3) and a modest Weissenberg number.
@@ -88,6 +81,10 @@ update_parameters(
     )
 )
 padded_res.set_padded_resolution(params)
+# Select the JAX backend from --dist.platform (default cpu) before the
+# geometry import below builds sharding.  --dist.platform cuda runs the
+# Pallas Hc parity on a GPU.
+configure_jax_platform(platform_from_argv())
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
@@ -568,14 +565,15 @@ def test_no_cross_geometry_import() -> None:
     """
     src = (
         "import sys\n"
-        "from dnsjax.bootstrap import configure_jax_platform\n"
+        "from dnsjax.bootstrap import (\n"
+        "    configure_jax_platform, platform_from_argv)\n"
         "from dnsjax.parameters import (\n"
         "    Parameters, padded_res, params, update_parameters)\n"
-        "configure_jax_platform('cpu')\n"
         "update_parameters(Parameters(\n"
         "    phys={'system': 'viscoelastic-dean'},\n"
         "    res={'nx': 8, 'ny': 13, 'nz': 8}))\n"
         "padded_res.set_padded_resolution(params)\n"
+        "configure_jax_platform(platform_from_argv())\n"
         "import dnsjax.geometries.wall_bounded.annular_viscoelastic\n"
         "bad = sorted(m for m in sys.modules if 'cylindrical' in m)\n"
         "print(' '.join(bad))\n"

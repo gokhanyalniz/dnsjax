@@ -32,14 +32,10 @@ paths:
   reshards that repeat (each jit is a compile). Pattern and failure
   signature: `snapshot._via_mid` / `snapshot._to_io_layout_core`.
 - A global (multi-device) array reaches a jitted function as an
-  argument, never through a closure or `static_argnames`: a baked-in
-  global is legal in one process and fails at trace time in two. So
-  every array-carrying object (flows, `Fourier`, solver operators,
-  `DifferencePressure`) is a `sharding.register_dataclass_pytree`
-  pytree passed in, and an outer jit around a function that hands
-  module globals to an inner jit bakes them in all the same. Only a
-  real multi-process run catches a slip: `test_twin_driver.py`'s
-  `test_np2_run`, the `*-mpi-pad` rows of `test_random_smoke.py`.
+  argument, never through a closure or `static_argnames`, so every
+  array-carrying object is a `sharding.register_dataclass_pytree`
+  pytree passed in. The why and the multi-process guards that catch a
+  slip: that function's docstring.
 - Nothing may initialize MPI before XLA does: an earlier `MPI_Init`
   aborts the run. Rank bootstrap, the CPU collectives and their
   environment knobs: `bootstrap.configure_jax_runtime`; the user-facing
